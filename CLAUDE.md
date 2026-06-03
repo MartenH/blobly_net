@@ -90,6 +90,12 @@ SUT is Python, each V module gets a direct counterpart to verify against:
   need software-GL env for the GUI under WSLg — see `docs/known_issues.md`).
 - `v test modules/<name>/` — run a module's tests.
 
+### Debugging (VS Code)
+`.vscode/launch.json` has gdb configs ("Debug GUI (main window)", "Debug demo: …"). They build with
+`v -g` (source-level symbols — breakpoints map to `.v` lines) and set the software-GL env so the
+window isn't blank. Requires the **C/C++ extension** (`ms-vscode.cpptools`) for the `cppdbg` type.
+Verified: a breakpoint at `main__main` resolves to `src/main.v` and stops there.
+
 ## References
 
 - V docs: https://docs.vlang.io/introduction.html  ·  vlang/gui: https://github.com/vlang/gui

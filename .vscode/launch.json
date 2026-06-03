@@ -1,0 +1,65 @@
+{
+	"version": "0.2.0",
+	"comments": [
+		"V debugging: build with `v -g` (debug symbols), then debug the native binary with gdb.",
+		"Requires the C/C++ extension (ms-vscode.cpptools) for the 'cppdbg' type.",
+		"The LIBGL_ALWAYS_SOFTWARE env is essential — without it the GUI window is blank under WSLg",
+		"(see docs/known_issues.md)."
+	],
+	"configurations": [
+		{
+			"name": "Debug GUI (main window)",
+			"type": "cppdbg",
+			"request": "launch",
+			"program": "${workspaceFolder}/build/main.dbg",
+			"args": [],
+			"cwd": "${workspaceFolder}",
+			"stopAtEntry": false,
+			"MIMode": "gdb",
+			"preLaunchTask": "debug-build: main",
+			"environment": [
+				{ "name": "LIBGL_ALWAYS_SOFTWARE", "value": "1" },
+				{ "name": "GALLIUM_DRIVER", "value": "llvmpipe" }
+			],
+			"setupCommands": [
+				{ "description": "Enable pretty-printing", "text": "-enable-pretty-printing", "ignoreFailures": true }
+			]
+		},
+		{
+			"name": "Debug demo: dashboard",
+			"type": "cppdbg",
+			"request": "launch",
+			"program": "${workspaceFolder}/build/dashboard.dbg",
+			"args": [],
+			"cwd": "${workspaceFolder}",
+			"stopAtEntry": false,
+			"MIMode": "gdb",
+			"preLaunchTask": "debug-build: dashboard",
+			"environment": [
+				{ "name": "LIBGL_ALWAYS_SOFTWARE", "value": "1" },
+				{ "name": "GALLIUM_DRIVER", "value": "llvmpipe" }
+			],
+			"setupCommands": [
+				{ "description": "Enable pretty-printing", "text": "-enable-pretty-printing", "ignoreFailures": true }
+			]
+		},
+		{
+			"name": "Debug demo: frame → signals",
+			"type": "cppdbg",
+			"request": "launch",
+			"program": "${workspaceFolder}/build/decode.dbg",
+			"args": [],
+			"cwd": "${workspaceFolder}",
+			"stopAtEntry": false,
+			"MIMode": "gdb",
+			"preLaunchTask": "debug-build: decode",
+			"environment": [
+				{ "name": "LIBGL_ALWAYS_SOFTWARE", "value": "1" },
+				{ "name": "GALLIUM_DRIVER", "value": "llvmpipe" }
+			],
+			"setupCommands": [
+				{ "description": "Enable pretty-printing", "text": "-enable-pretty-printing", "ignoreFailures": true }
+			]
+		}
+	]
+}
