@@ -93,11 +93,13 @@ fn main() {
 	window.run()
 }
 
-// Trace (left) | [ Signals / Send tabs ] over [ Statistics ] (right).
+// Trace (left) | Signals / Send / Statistics stacked (right) — each its own
+// panel so all are visible. They can still be tabbed/dragged by the user.
 fn default_layout() &gui.DockNode {
-	return gui.dock_split('root', .horizontal, 0.64, gui.dock_panel_group('main', ['trace'],
-		'trace'), gui.dock_split('right', .vertical, 0.62, gui.dock_panel_group('rt', ['signals', 'send'],
-		'signals'), gui.dock_panel_group('rb', ['stats'], 'stats')))
+	return gui.dock_split('root', .horizontal, 0.62, gui.dock_panel_group('g_trace', ['trace'],
+		'trace'), gui.dock_split('r1', .vertical, 0.32, gui.dock_panel_group('g_sig', ['signals'],
+		'signals'), gui.dock_split('r2', .vertical, 0.64, gui.dock_panel_group('g_send', ['send'],
+		'send'), gui.dock_panel_group('g_stats', ['stats'], 'stats'))))
 }
 
 fn rx_loop(mut w gui.Window) {
@@ -381,8 +383,9 @@ fn send_panel(app &App) gui.View {
 						id_focus:        10
 						text:            app.send_id
 						width:           90
-						max_height:      36
-						sizing:          gui.fixed_fit
+						height:          34
+						padding:         gui.Padding{4, 8, 4, 8}
+						sizing:          gui.fixed_fixed
 						placeholder:     'hex id'
 						on_text_changed: fn (_ &gui.Layout, s string, mut w gui.Window) {
 							mut a := w.state[App]()
@@ -401,8 +404,9 @@ fn send_panel(app &App) gui.View {
 						id_focus:        11
 						text:            app.send_data
 						width:           200
-						max_height:      36
-						sizing:          gui.fixed_fit
+						height:          34
+						padding:         gui.Padding{4, 8, 4, 8}
+						sizing:          gui.fixed_fixed
 						placeholder:     'hex bytes'
 						on_enter:        fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 							do_send(mut w)
