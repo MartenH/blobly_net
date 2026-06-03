@@ -24,8 +24,11 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
 
 ## vlang/gui
 
-- _None confirmed as gui bugs yet._ The data_grid, draw_canvas, animations, theming and live
-  updates have all behaved per docs. (Keep this section honest — only real gui defects go here.)
+- 🟡 **data_grid detail rows are fixed to one row's height.** `on_detail_row_view` content is placed
+  in a container hard-coded to `height: row_height` (`view_data_grid_rows.v:51`), so multi-line detail
+  content overflows and overlaps the next row. Use it only for single-line detail. For our expandable
+  trace we instead **insert signal rows as normal grid rows** under the frame (toggled via
+  `on_selection_change` + `active_row_id`), which reflows correctly. See `src/main.v` grouped view.
 
 ## Rendering stack (sokol / vglyph / GL)
 

@@ -19,6 +19,7 @@ pub:
 	factor     f64 = 1.0
 	offset     f64
 	unit       string
+	desc       string // human-readable description / interpretation
 	is_signed  bool
 	byte_order ByteOrder = .little_endian
 }
