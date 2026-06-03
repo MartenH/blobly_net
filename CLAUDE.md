@@ -144,4 +144,10 @@ Passwordless sudo scoped to `apt-get`, `modprobe`, `ip` via `/etc/sudoers.d/cant
   MODVERSIONS CRC mismatch (ENOEXEC). User to rebuild+install matching modules to unblock.
 - 2026-06-03: **GUI VALIDATED** — built `cmd/dashboard` demo (live signal data_grid + anti-aliased
   line chart, conditional formatting, ~25fps). Confirms vlang/gui is the right choice. Screenshots
-  in docs/gui_validation/. Next: Phase 2 transport code + Python SUT (no-regret, while kernel fixed).
+  in docs/gui_validation/.
+- 2026-06-03: `modules/candb` (signal en/decode + 7 tests) and `cmd/signal_decode` (frame→signals
+  bit-layout visualizer, byte-exact). Dev tooling: VS Code tasks + gdb launch.json, docs/known_issues.md.
+- 2026-06-03: **vcan0 unblocked** — CAN is built into the kernel (=y), no modprobe/rebuild needed.
+- 2026-06-03: **Phase 2 transport DONE & VERIFIED** — `modules/transport` (SocketCAN via tiny C shim
+  + `Bus` interface) and `cmd/can_smoke`. Frames verified both ways on vcan0 vs candump/cansend
+  (standard + 29-bit extended). Next: Python virtual SUT.

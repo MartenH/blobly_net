@@ -16,6 +16,11 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
   on a file that imports a local module will fail without it. (Tooling ergonomics, not a bug.)
 - ⚪ `draw_canvas.version` is `u64` — passing an `int` errors (`cannot assign … expected u64`).
   Just cast: `version: u64(app.ticks)`.
+- 🟡 **C interop parse friction.** `&char(s.str)` cast and no-arg C funcs used inside an expression
+  (`(x & C.mask()) | …`) both gave `unexpected token )`. Fixes: pass `s.str` to a `&u8` C param;
+  define stable C constants (e.g. CAN flag masks) as V `const`s instead of calling C accessors.
+  For larger C surfaces, generate bindings with **c2v** (https://github.com/vlang/c2v) rather than
+  hand-writing — keep the hand shim only for tiny surfaces (like `modules/transport`'s ~40 lines).
 
 ## vlang/gui
 
@@ -34,11 +39,12 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
 
 ## Environment (WSL2 / kernel)
 
-- 🔴 **`vcan` kernel module won't load** (`modprobe vcan` → `Exec format error`/ENOEXEC). The
-  installed modules (built Jun 2 13:52) predate the running kernel (rebuilt Jun 2 20:34); with
-  `CONFIG_MODVERSIONS` the symbol CRCs mismatch even though the version string matches. **Fix
-  (user, on the kernel source tree):** `make modules && sudo make modules_install && sudo depmod -a`,
-  then `sudo modprobe vcan`. Blocks live `vcan0` testing (Phase 2 end-to-end).
+- 🟢 **`vcan` "won't load" was a non-issue.** `modprobe vcan` → ENOEXEC because the stale `.ko` in
+  /lib/modules predates the running kernel (custom WSL2 build). BUT the running kernel has
+  `CONFIG_CAN_VCAN=y`, `CONFIG_CAN_RAW=y`, `CONFIG_CAN_ISOTP=y` — all **built-in** (verified via
+  `/proc/config.gz`). So no modprobe is needed at all:
+  `sudo ip link add dev vcan0 type vcan && sudo ip link set up vcan0` just works. The `.ko` is
+  irrelevant; ignore it. `scripts/setup_vcan.sh` no longer calls modprobe.
 
 ## Our code (cantester)
 
