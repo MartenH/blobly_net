@@ -4,6 +4,7 @@ main
 *.tmp.c
 /src/main
 /src/cantester
+/build/
 
 # Editor
 *.swp
