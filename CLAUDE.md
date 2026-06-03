@@ -161,4 +161,10 @@ Passwordless sudo scoped to `apt-get`, `modprobe`, `ip` via `/etc/sudoers.d/cant
   0x101 → SUT 0x102 reply confirmed via candump + RX/TX counters). New `modules/sampledb` message
   catalog (decode demo refactored to share it). Screenshot docs/gui_validation/phase3_live_trace.png.
   Threading: RX thread mutates shared state under `sync.Mutex`; a ~20fps UI timer redraws (all gui
-  calls stay on the UI thread). Next: Phase 5 — DBC parsing to replace hand-coded sampledb.
+  calls stay on the UI thread).
+- 2026-06-03: **Expandable grouped trace** — `src/main.v` now has two trace views (toggle): chronological
+  "all", and "grouped" (one row per ID, click to expand into indented signal rows: Signal/Value/Raw/
+  Interpretation — J1939-trace style). Signals are inserted as real grid rows (gui's built-in detail
+  rows are fixed to one row height — see known_issues), toggled via on_selection_change/active_row_id.
+  Added `desc` to candb.Signal. Screenshot docs/gui_validation/trace_expand_signals.png.
+  Next: Phase 5 — DBC parsing to replace hand-coded sampledb.

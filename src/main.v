@@ -1,32 +1,43 @@
-// CANTester — main application window (Phase 3).
+// CANTester — main application window (Phase 3+).
 //
-// A live CAN tester shell: opens vcan0, reads frames on a background thread into
-// a trace table, decodes known IDs into signals via `candb`, and sends frames
-// from a small form. Run the Python virtual SUT (sut/can_sut.py) to give it
-// traffic. Logic lives in modules/ (transport, candb, sampledb); this file is
-// the view + glue.
+// A live CAN tester shell on vcan0. Two trace views:
+//   - Grouped: one row per CAN ID (latest data), expandable (▸) into decoded
+//     signals — name / value / raw / interpretation, via `candb` + `sampledb`.
+//   - All: chronological scroll of every frame.
+// Plus a send form. Run sut/can_sut.py to feed it traffic. Logic lives in
+// modules/ (transport, candb, sampledb); this file is view + glue.
 module main
 
 import gui
 import sync
 import time
 import transport
-import candb
 import sampledb
 
 const iface = 'vcan0'
-const max_trace = 1000 // rows retained in memory
-const max_shown = 250  // newest rows rendered
+const max_trace = 1000
+const max_shown = 250
 
 struct TraceRow {
 	seq  int
 	t_ms f64
-	dir  string // 'RX' | 'TX'
+	dir  string
 	id   u32
 	ext  bool
 	dlc  int
 	data []u8
-	name string // decoded message name, or ''
+	name string
+}
+
+// MsgAgg is the latest state of one CAN ID, for the grouped view.
+struct MsgAgg {
+mut:
+	id      u32
+	ext     bool
+	last    []u8
+	count   int
+	last_ms f64
+	name    string
 }
 
 @[heap]
@@ -37,14 +48,18 @@ mut:
 	connected bool
 	status    string
 	t0        i64
-	// shared with RX thread (guard with mtx): trace, counts, last_pt, paused
+	// shared with RX thread (guard with mtx)
 	trace    []TraceRow
+	grouped  map[u32]MsgAgg
+	order    []u32
 	seq      int
 	rx_count int
 	tx_count int
 	paused   bool
-	last_pt  []u8
-	// send form (UI thread only)
+	// UI-thread only
+	mode      string = 'grouped' // 'grouped' | 'all'
+	expand_id i64    = -1         // grouped frame currently expanded into signals
+	selection gui.GridSelection
 	send_id   string = '101'
 	send_data string = 'AABBCC'
 }
@@ -53,8 +68,8 @@ fn main() {
 	mut window := gui.window(
 		title:   'CANTester — CAN'
 		state:   &App{}
-		width:   1040
-		height:  640
+		width:   1100
+		height:  660
 		on_init: fn (mut w gui.Window) {
 			mut app := w.state[App]()
 			app.t0 = time.ticks()
@@ -75,22 +90,19 @@ fn main() {
 	window.run()
 }
 
-// rx_loop runs on a background thread: block for frames and append to the trace.
 fn rx_loop(mut app App) {
 	for app.connected {
-		frame := app.bus.recv(200) or { continue } // 'timeout' or transient
+		frame := app.bus.recv(200) or { continue }
 		app.mtx.lock()
 		if !app.paused {
 			app.push('RX', frame)
-			if frame.id == sampledb.powertrain().id {
-				app.last_pt = frame.data.clone()
-			}
 		}
 		app.mtx.unlock()
 	}
 }
 
-// push appends a row. Caller must hold mtx.
+// push records a frame into both the chronological trace and the grouped map.
+// Caller must hold mtx.
 fn (mut app App) push(dir string, f transport.CanFrame) {
 	app.seq++
 	if dir == 'RX' {
@@ -98,10 +110,11 @@ fn (mut app App) push(dir string, f transport.CanFrame) {
 	} else {
 		app.tx_count++
 	}
+	t_ms := f64(time.ticks() - app.t0)
 	name := if m := sampledb.lookup(f.id) { m.name } else { '' }
 	app.trace << TraceRow{
 		seq:  app.seq
-		t_ms: f64(time.ticks() - app.t0)
+		t_ms: t_ms
 		dir:  dir
 		id:   f.id
 		ext:  f.extended
@@ -112,10 +125,19 @@ fn (mut app App) push(dir string, f transport.CanFrame) {
 	if app.trace.len > max_trace {
 		app.trace.delete(0)
 	}
+	if f.id !in app.grouped {
+		app.order << f.id
+	}
+	app.grouped[f.id] = MsgAgg{
+		id:      f.id
+		ext:     f.extended
+		last:    f.data.clone()
+		count:   (app.grouped[f.id] or { MsgAgg{} }).count + 1
+		last_ms: t_ms
+		name:    name
+	}
 }
 
-// start_ui_timer re-arms a short timer so the view redraws and picks up new
-// frames from the RX thread (~20 fps). Keeps all gui calls on the UI thread.
 fn start_ui_timer(mut w gui.Window) {
 	w.animation_add(mut gui.TweenAnimation{
 		id:       'ui_tick'
@@ -133,30 +155,109 @@ fn main_view(mut window gui.Window) gui.View {
 	w, h := window.window_size()
 	mut app := window.state[App]()
 
-	// Snapshot shared state quickly under lock, then build the view unlocked.
+	grouped := app.mode == 'grouped'
 	app.mtx.lock()
 	rx := app.rx_count
 	tx := app.tx_count
 	paused := app.paused
-	pt := app.last_pt.clone()
-	n := app.trace.len
-	start := if n > max_shown { n - max_shown } else { 0 }
-	mut rows := []gui.GridRow{cap: n - start}
-	for i := n - 1; i >= start; i-- {
-		r := app.trace[i]
-		rows << gui.GridRow{
-			id:    '${r.seq}'
-			cells: {
-				'time': '${r.t_ms:.0f}'
-				'dir':  r.dir
-				'id':   if r.ext { '0x${r.id:08X}' } else { '0x${r.id:03X}' }
-				'dlc':  '${r.dlc}'
-				'data': hex(r.data)
-				'name': r.name
+	mut rows := []gui.GridRow{}
+	if grouped {
+		for id in app.order {
+			a := app.grouped[id] or { continue }
+			expanded := app.expand_id == i64(id)
+			chevron := if expanded { '▼' } else { '▶' }
+			rows << gui.GridRow{
+				id:    '${id}'
+				cells: {
+					'id':    '${chevron} ${hexid(id, a.ext)}'
+					'name':  a.name
+					'dlc':   '${a.last.len}'
+					'data':  hex(a.last)
+					'count': '${a.count}'
+					'time':  '${a.last_ms:.0f}'
+				}
+			}
+			if expanded {
+				if m := sampledb.lookup(id) {
+					for s in m.signals {
+						raw := s.raw_value(a.last)
+						rows << gui.GridRow{
+							id:    's:${id}:${s.name}'
+							cells: {
+								'id':    '       ${s.name}'
+								'name':  '${s.physical(a.last):.2f} ${s.unit}'
+								'dlc':   '0x${raw:X}'
+								'data':  s.desc
+								'count': ''
+								'time':  ''
+							}
+						}
+					}
+				}
+			}
+		}
+	} else {
+		n := app.trace.len
+		start := if n > max_shown { n - max_shown } else { 0 }
+		for i := n - 1; i >= start; i-- {
+			r := app.trace[i]
+			rows << gui.GridRow{
+				id:    '${r.seq}'
+				cells: {
+					'time': '${r.t_ms:.0f}'
+					'dir':  r.dir
+					'id':   hexid(r.id, r.ext)
+					'dlc':  '${r.dlc}'
+					'data': hex(r.data)
+					'name': r.name
+				}
 			}
 		}
 	}
 	app.mtx.unlock()
+
+	grid_h := f32(h) - 150
+	trace := if grouped {
+		window.data_grid(
+			id:                  'trace_grouped'
+			max_height:          grid_h
+			columns:             [
+				gui.GridColumnCfg{ id: 'id', title: 'ID / Signal', width: 200 },
+				gui.GridColumnCfg{ id: 'name', title: 'Message / Value', width: 150 },
+				gui.GridColumnCfg{ id: 'dlc', title: 'DLC / Raw', width: 90, align: .end },
+				gui.GridColumnCfg{ id: 'data', title: 'Data / Interpretation', width: 300 },
+				gui.GridColumnCfg{ id: 'count', title: 'Count', width: 70, align: .end },
+				gui.GridColumnCfg{ id: 'time', title: 'Last(ms)', width: 90, align: .end },
+			]
+			rows:                rows
+			selection:           app.selection
+			on_selection_change: fn (selection gui.GridSelection, mut _ gui.Event, mut w gui.Window) {
+				mut a := w.state[App]()
+				a.selection = selection
+				rid := selection.active_row_id
+				if rid.len > 0 && !rid.starts_with('s:') {
+					id := i64(rid.u32())
+					a.expand_id = if a.expand_id == id { i64(-1) } else { id }
+				}
+			}
+			on_cell_format:      trace_cell_format
+		)
+	} else {
+		window.data_grid(
+			id:             'trace_all'
+			max_height:     grid_h
+			columns:        [
+				gui.GridColumnCfg{ id: 'time', title: 'Time(ms)', width: 80, align: .end },
+				gui.GridColumnCfg{ id: 'dir', title: 'Dir', width: 50 },
+				gui.GridColumnCfg{ id: 'id', title: 'ID', width: 110 },
+				gui.GridColumnCfg{ id: 'dlc', title: 'DLC', width: 50, align: .end },
+				gui.GridColumnCfg{ id: 'data', title: 'Data', width: 250 },
+				gui.GridColumnCfg{ id: 'name', title: 'Message', width: 150 },
+			]
+			rows:           rows
+			on_cell_format: trace_cell_format
+		)
+	}
 
 	return gui.column(
 		width:   w
@@ -166,32 +267,7 @@ fn main_view(mut window gui.Window) gui.View {
 		spacing: 8
 		content: [
 			toolbar(app, rx, tx, paused),
-			gui.row(
-				sizing:  gui.fill_fill
-				spacing: 10
-				content: [
-					gui.column(
-						sizing:  gui.fill_fill
-						content: [
-							window.data_grid(
-								id:         'trace'
-								max_height:  f32(h) - 170
-								columns:    [
-									gui.GridColumnCfg{ id: 'time', title: 'Time(ms)', width: 80, align: .end },
-									gui.GridColumnCfg{ id: 'dir', title: 'Dir', width: 50 },
-									gui.GridColumnCfg{ id: 'id', title: 'ID', width: 100 },
-									gui.GridColumnCfg{ id: 'dlc', title: 'DLC', width: 50, align: .end },
-									gui.GridColumnCfg{ id: 'data', title: 'Data', width: 230 },
-									gui.GridColumnCfg{ id: 'name', title: 'Message', width: 130 },
-								]
-								rows:           rows
-								on_cell_format: trace_cell_format
-							),
-						]
-					),
-					signals_panel(pt),
-				]
-			),
+			trace,
 			send_panel(app),
 		]
 	)
@@ -202,13 +278,21 @@ fn toolbar(app &App, rx int, tx int, paused bool) gui.View {
 	return gui.row(
 		v_align: .middle
 		sizing:  gui.fill_fit
-		spacing: 12
+		spacing: 10
 		content: [
 			gui.text(text: 'CANTester', text_style: gui.theme().b1),
 			gui.text(text: '${dot} ${app.status}', text_style: gui.theme().n4),
 			gui.text(text: 'RX ${rx}  TX ${tx}', text_style: gui.theme().n4),
 			gui.button(
 				id_focus: 100
+				content:  [gui.text(text: 'View: ${app.mode}')]
+				on_click: fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					mut a := w.state[App]()
+					a.mode = if a.mode == 'grouped' { 'all' } else { 'grouped' }
+				}
+			),
+			gui.button(
+				id_focus: 101
 				content:  [gui.text(text: if paused { '▶ Resume' } else { '⏸ Pause' })]
 				on_click: fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					mut a := w.state[App]()
@@ -218,38 +302,19 @@ fn toolbar(app &App, rx int, tx int, paused bool) gui.View {
 				}
 			),
 			gui.button(
-				id_focus: 101
+				id_focus: 102
 				content:  [gui.text(text: '🗑 Clear')]
 				on_click: fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					mut a := w.state[App]()
 					a.mtx.lock()
 					a.trace = []TraceRow{}
+					a.grouped = map[u32]MsgAgg{}
+					a.order = []u32{}
 					a.mtx.unlock()
+					a.expand_id = -1
 				}
 			),
 		]
-	)
-}
-
-fn signals_panel(pt []u8) gui.View {
-	mut lines := []gui.View{}
-	lines << gui.text(text: 'Signals — 0x100 Powertrain', text_style: gui.theme().b3)
-	if pt.len == 8 {
-		for s in sampledb.powertrain().signals {
-			lines << gui.text(text: '${s.name}: ${s.physical(pt):.1f} ${s.unit}',
-				text_style: gui.theme().n4)
-		}
-	} else {
-		lines << gui.text(text: '(waiting for 0x100 frames…)', text_style: gui.theme().n4)
-	}
-	return gui.column(
-		width:   300
-		sizing:  gui.fixed_fill
-		padding: gui.padding_medium
-		spacing: 5
-		color:   gui.Color{30, 30, 40, 255}
-		radius:  6
-		content: lines
 	)
 }
 
@@ -275,7 +340,7 @@ fn send_panel(app &App) gui.View {
 			gui.input(
 				id_focus:        11
 				text:            app.send_data
-				width:           240
+				width:           250
 				sizing:          gui.fixed_fit
 				placeholder:     'hex bytes'
 				on_enter:        fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
@@ -333,6 +398,10 @@ fn trace_cell_format(row gui.GridRow, _ int, col gui.GridColumnCfg, value string
 	return gui.GridCellFormat{}
 }
 
+fn hexid(id u32, ext bool) string {
+	return if ext { '0x${id:08X}' } else { '0x${id:03X}' }
+}
+
 fn hex(data []u8) string {
 	mut s := ''
 	for i, b in data {
@@ -345,7 +414,7 @@ fn hex(data []u8) string {
 }
 
 fn parse_hex_u32(s string) u32 {
-	mut clean := s.trim_space().trim_string_left('0x').trim_string_left('0X')
+	clean := s.trim_space().trim_string_left('0x').trim_string_left('0X')
 	mut v := u32(0)
 	for c in clean {
 		d := hex_digit(c) or { continue }
@@ -356,9 +425,6 @@ fn parse_hex_u32(s string) u32 {
 
 fn hex_to_bytes(s string) []u8 {
 	mut clean := s.replace(' ', '').trim_string_left('0x')
-	if clean.len % 2 != 0 {
-		clean = '0' + clean
-	}
 	mut out := []u8{}
 	mut hi := -1
 	for c in clean {
