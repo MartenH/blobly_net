@@ -78,9 +78,13 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
     profile mask; patching sokol's profile request is the other (invasive) option.
   - **⚠️ Each hardware-GL test of our app resets the GPU (TDR) and blacks out the display.** Only
     retest deliberately, ideally right after a `wsl --shutdown`.
+  - **Newer Mesa on 22.04 is a dead end:** kisak-mesa PPA dropped jammy (InRelease only, no packages),
+    so 22.04 is stuck at Mesa 23.2. To get Mesa 24.x (improved d3d12 core path → likely fixes our app's
+    hardware GL), move to **Ubuntu 24.04** (ships Mesa 24.x natively). The custom CAN kernel still
+    applies — WSL2 shares one kernel across all distros (`.wslconfig`), so only userspace changes.
   - **Verdict (for now):** keep `LIBGL_ALWAYS_SOFTWARE=1` (llvmpipe) — stable, fine for this 2D app
-    (60fps, 1000+ widgets). `scripts/run.sh` honours `CANTESTER_SOFTWARE_GL=0` to retry hardware after
-    a Mesa upgrade.
+    (60fps, 1000+ widgets). Hardware GL is optional polish; revisit on Ubuntu 24.04.
+    `scripts/run.sh` honours `CANTESTER_SOFTWARE_GL=0` to retry hardware after a Mesa upgrade.
 
 
 - 🟢 **`vcan` "won't load" was a non-issue.** `modprobe vcan` → ENOEXEC because the stale `.ko` in
