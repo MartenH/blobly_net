@@ -72,10 +72,17 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
   - Root cause: incomplete WSLg GPU userspace — `/usr/lib/wsl/lib` only has `libd3d12*.so` (a standard
     WSLg also ships the Mesa GL frontend + a dzn Vulkan ICD there). This is the "non-standard WSL"
     missing rendering bits.
-  - **Verdict:** keep `LIBGL_ALWAYS_SOFTWARE=1` (llvmpipe) — stable and fine for this 2D app
-    (validated 60fps with 1000+ widgets). `scripts/run.sh` honours `CANTESTER_SOFTWARE_GL=0` to try
-    hardware once the env is fixed. Possible host-side fixes: newer Mesa (e.g. kisak-mesa PPA — the
-    d3d12 device-removal may be a Mesa 23.2 bug), or a standard WSL2 kernel + complete WSLg distro.
+  - Kernel side looks complete: `CONFIG_DXGKRNL=y`, `/dev/dxg` works, config is `Microsoft/config-wsl`
+    based (i.e. stock-equivalent). `CONFIG_UDMABUF` is off (no `/dev/udmabuf`) — candidate fix for the
+    no-composite, but stock config-wsl also has it off, so unproven. The `Removing Device` crash is a
+    *userspace/host-GPU* failure, not a missing kernel module — a kernel rebuild alone won't fix it.
+  - Most-likely real cause: **Mesa 23.2.1 (Ubuntu 22.04) is too old for the Intel Arc 140T (2024+ GPU)**
+    under WSL D3D12 passthrough. Highest-likelihood fix = newer Mesa (kisak-mesa PPA → 24.x). Other
+    levers: `CONFIG_UDMABUF=y` (cheap, low odds), pick the NVIDIA GPU instead, standard WSLg.
+  - **⚠️ Do NOT re-test hardware GL casually:** the device-removal crash resets the host GPU (TDR) and
+    blacks out the Windows display(s); recover with `wsl --shutdown`. Retest only deliberately.
+  - **Verdict:** keep `LIBGL_ALWAYS_SOFTWARE=1` (llvmpipe) — stable, fine for this 2D app (60fps with
+    1000+ widgets). `scripts/run.sh` honours `CANTESTER_SOFTWARE_GL=0` to try hardware once env is fixed.
 
 
 - 🟢 **`vcan` "won't load" was a non-issue.** `modprobe vcan` → ENOEXEC because the stale `.ko` in
