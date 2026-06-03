@@ -100,6 +100,11 @@ Verified: a breakpoint at `main__main` resolves to `src/main.v` and stops there.
 ## References
 
 - V docs: https://docs.vlang.io/introduction.html  ·  vlang/gui: https://github.com/vlang/gui
+- **gui maintenance:** the original gui author has left V and is rebuilding the same design in Go at
+  https://github.com/go-gui-org/go-gui. So vlang/gui may stagnate (we pinned commit 68b9302); treat
+  go-gui as a reference for API *intent*/docs since it mirrors the same concepts. Risk to watch:
+  future V versions breaking the pinned gui. The CAN/engine logic is deliberately GUI-free so the GUI
+  stays replaceable if needed.
 - **`docs/known_issues.md`** — categorized gotchas (V / gui / rendering / env / our code). Check it
   first when something breaks, and add new findings there under the right layer.
 - vcan setup (later): `scripts/setup_vcan.sh`; cross-check with `candump vcan0` / `cansend vcan0 ...`.
@@ -167,4 +172,13 @@ Passwordless sudo scoped to `apt-get`, `modprobe`, `ip` via `/etc/sudoers.d/cant
   Interpretation — J1939-trace style). Signals are inserted as real grid rows (gui's built-in detail
   rows are fixed to one row height — see known_issues), toggled via on_selection_change/active_row_id.
   Added `desc` to candb.Signal. Screenshot docs/gui_validation/trace_expand_signals.png.
-  Next: Phase 5 — DBC parsing to replace hand-coded sampledb.
+- 2026-06-03: Trace fills window width (flexible Data column; window-width folded into grid id so
+  columns re-flow on resize; raised gui's 600px max_width). Replaced the always-on animation timer
+  with event-driven refresh (RX thread → `w.queue_command` → UI thread; no mutex) — also removes
+  suspected interference with header drag-resize. Columns are resizable/reorderable (gui default),
+  sorting disabled on the live trace.
+- 2026-06-03: **Dock layout VALIDATED** (`cmd/dock_demo`) — gui's `dock_layout` does resizable splits,
+  tabbed panel groups, a data_grid nested in a panel, working inputs/buttons, and drag-to-redock with
+  drop-zone preview + layout persistence. Solid under WSLg. Screenshots docs/gui_validation/dock_*.png.
+  → Greenlit to refactor `src/main.v` into a dockable panel layout (Trace/Signals/Send/… panels).
+  Next: that refactor, or Phase 5 (DBC parsing).

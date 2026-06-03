@@ -24,6 +24,13 @@
 			"presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
 		},
 		{
+			"label": "Run demo: dock spike",
+			"type": "shell",
+			"command": "./scripts/run.sh cmd/dock_demo/dock_demo.v",
+			"problemMatcher": [],
+			"presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+		},
+		{
 			"label": "Setup: vcan0",
 			"type": "shell",
 			"command": "./scripts/setup_vcan.sh",
