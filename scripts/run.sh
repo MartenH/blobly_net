@@ -17,4 +17,7 @@ if [ "${CANTESTER_SOFTWARE_GL:-1}" = "1" ]; then
 	export GALLIUM_DRIVER="${GALLIUM_DRIVER:-llvmpipe}"
 fi
 
-exec "$V" run src/main.v "$@"
+# First arg is the target to run; defaults to the main window.
+TARGET="${1:-src/main.v}"
+shift || true
+exec "$V" run "$TARGET" "$@"
