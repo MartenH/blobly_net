@@ -1,0 +1,6 @@
+# Reference / oracle libraries for LATER phases. The current SUT (can_sut.py)
+# needs NONE of these — it's stdlib-only. Install when the relevant phase starts.
+python-can      # high-level CAN, bus abstractions, virtual buses
+cantools        # DBC parsing + signal encode/decode  -> oracle for modules/candb
+can-isotp       # ISO-TP segmentation (kernel socket)  -> oracle for future isotp
+udsoncan        # UDS diagnostics                       -> oracle for future uds

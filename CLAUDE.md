@@ -150,4 +150,8 @@ Passwordless sudo scoped to `apt-get`, `modprobe`, `ip` via `/etc/sudoers.d/cant
 - 2026-06-03: **vcan0 unblocked** — CAN is built into the kernel (=y), no modprobe/rebuild needed.
 - 2026-06-03: **Phase 2 transport DONE & VERIFIED** — `modules/transport` (SocketCAN via tiny C shim
   + `Bus` interface) and `cmd/can_smoke`. Frames verified both ways on vcan0 vs candump/cansend
-  (standard + 29-bit extended). Next: Python virtual SUT.
+  (standard + 29-bit extended).
+- 2026-06-03: **Python virtual SUT DONE & VERIFIED** — `sut/can_sut.py` (stdlib AF_CAN): emits
+  Powertrain 0x100 @10Hz + heartbeat 0x700, answers 0x101→0x102. Cross-check PASSED: V `candb` and an
+  independent Python decoder produce identical physical values for the SUT's 0x100 frame. The oracle
+  approach works. Next: Phase 3 — wire live CAN RX/TX into the GUI (trace + send).
