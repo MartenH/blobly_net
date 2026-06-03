@@ -1,0 +1,42 @@
+VERSION "cantester-1.0"
+
+
+NS_ :
+	BS_:
+	CM_
+	BA_DEF_
+	BA_
+	VAL_
+	CM_ SG_
+
+BS_:
+
+BU_: SUT Tester
+
+BO_ 256 Powertrain: 8 SUT
+ SG_ EngineSpeed : 0|16@1+ (0.25,0) [0|16383.75] "rpm" Tester
+ SG_ VehicleSpeed : 16|12@1+ (0.1,0) [0|409.5] "km/h" Tester
+ SG_ CoolantTemp : 28|8@1+ (1,-40) [-40|215] "degC" Tester
+ SG_ ThrottlePos : 36|7@1+ (1,0) [0|127] "%" Tester
+ SG_ Gear : 43|4@1+ (1,0) [0|15] "" Tester
+ SG_ CruiseOn : 47|1@1+ (1,0) [0|1] "" Tester
+
+BO_ 1792 Heartbeat: 1 SUT
+ SG_ Counter : 0|8@1+ (1,0) [0|255] "" Tester
+
+BO_ 257 Request: 8 Tester
+ SG_ ReqCode : 0|8@1+ (1,0) [0|255] "" SUT
+
+BO_ 258 Response: 8 SUT
+ SG_ RespCode : 0|8@1+ (1,0) [0|255] "" Tester
+
+CM_ SG_ 256 EngineSpeed "Crankshaft rotational speed";
+CM_ SG_ 256 VehicleSpeed "Road speed of the vehicle";
+CM_ SG_ 256 CoolantTemp "Engine coolant temperature";
+CM_ SG_ 256 ThrottlePos "Accelerator pedal / throttle position";
+CM_ SG_ 256 Gear "Currently engaged gear";
+CM_ SG_ 256 CruiseOn "Cruise control active flag";
+CM_ SG_ 1792 Counter "Rolling alive counter";
+
+VAL_ 256 Gear 0 "Neutral" 1 "First" 2 "Second" 3 "Third" 4 "Fourth" 5 "Fifth" 6 "Sixth" ;
+VAL_ 256 CruiseOn 0 "Off" 1 "On" ;

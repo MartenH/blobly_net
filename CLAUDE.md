@@ -74,11 +74,15 @@ vcan0 (kernel)  <--->  Virtual SUT simulator (separate process on vcan0)
 ```
 v.mod                       module manifest
 src/main.v                  GUI entry point (thin consumer of modules)
-modules/candb/              CAN signal db: messages, signals, bit encode/decode (+ tests)
+modules/candb/              CAN signal db: messages, signals, bit en/decode + DBC parser (+ tests)
+modules/sampledb/           hand-coded message catalog (being superseded by DBC loading)
 modules/transport/          SocketCAN backend + Bus interface         (Phase 2)
+dbc/cantester.dbc           real DBC describing the SUT's messages    (Phase 5)
 cmd/dashboard/              throwaway GUI capability demo
 cmd/signal_decode/          frame -> signals visualizer demo
-sut/                        Python virtual SUT / reference oracle      (Phase 2+)
+cmd/dbc_decode/             load a DBC + decode one frame (machine-readable; oracle diff)
+sut/can_sut.py              Python virtual SUT (emits/answers frames on vcan0)
+sut/dbc_oracle.py           independent stdlib DBC parser+decoder (cross-validates candb)
 scripts/run.sh              build+run with WSLg software-GL workaround
 scripts/setup_vcan.sh       bring up vcan0 (sudo)
 docs/gui_validation/        screenshots proving gui capabilities
@@ -111,7 +115,9 @@ SUT is Python, each V module gets a direct counterpart to verify against:
 2. ✅ SocketCAN transport (vcan0) + CLI smoke test vs candump/cansend.
 4. ✅ Virtual SUT (Python) on vcan0 + candb cross-validation.
 3. ✅ Wire CAN into GUI — live trace table, signal decode, send panel.  ⟵ done
-5. **DBC database & signals** ⟵ next: replace hand-coded `sampledb` with real DBC parsing.
+5. ✅ **DBC database & signals** — `candb` parses real `.dbc` files (BO_/SG_/VAL_/CM_), Intel +
+   Motorola bit order, value tables; `dbc/cantester.dbc` matches the SUT; cross-validated vs an
+   independent Python oracle. Still TODO: wire DBC loading into the app to replace `sampledb`.
 6+. UDS diagnostics (ISO-TP is built into the kernel), scripting/sequences, panels;
    then LIN + Ethernet (DoIP/SOME-IP) backends behind the same `Bus` abstraction.
 
@@ -244,3 +250,12 @@ Passwordless sudo scoped to `apt-get`, `modprobe`, `ip` via `/etc/sudoers.d/cant
   "stock kernel, no CAN", but `.wslconfig` → `bzImage-can.new` compiles CAN in (`=y`); AF_CAN bind +
   cansend/candump loopback on vcan0 PASS. CAN is fully operational. Doc'd the socket-probe-not-lsmod
   rule. Next: Phase 5 (DBC parsing) + big-endian in candb.
+- 2026-06-03: **Phase 5 DBC parsing DONE & VERIFIED.** `candb` now: (a) Motorola/big-endian bit order
+  in raw_value/set_raw/owns (Intel was the only order before) — anchored by a textbook 0x1234 vector;
+  (b) `dbc.v` parser for BO_/SG_/VAL_/CM_ → Database, with value tables (enums) + comments, Signal
+  gained minimum/maximum/values/label(). Authored `dbc/cantester.dbc` mirroring the SUT (0x100/0x700/
+  0x101/0x102). Cross-validation: V tests prove DBC == hand-coded `sampledb` layout AND decodes a frame
+  identically; `cmd/dbc_decode` + `sut/dbc_oracle.py` (independent stdlib DBC impl) agree on 1800 random
+  decodes and on a live SUT 0x100 frame. NOT yet wired into the GUI (still uses sampledb) — next step.
+  Note: passwordless sudo (/etc/sudoers.d/cantester) did NOT transfer to this box, so cantools couldn't
+  be apt/pip-installed; the hand-written Python oracle covers the cross-check instead.
