@@ -8,3 +8,13 @@ main
 
 # Editor
 *.swp
+
+# Python tools venv (asammdf MF4 bridge) — dev-only, not committed
+.venv-tools/
+
+# Real MF4 sample recordings (binary, fetched by scripts/setup_mf4_tools.sh)
+samples/
+
+# Python bytecode cache
+__pycache__/
+*.pyc
