@@ -16,6 +16,15 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
   on a file that imports a local module will fail without it. (Tooling ergonomics, not a bug.)
 - ⚪ `draw_canvas.version` is `u64` — passing an `int` errors (`cannot assign … expected u64`).
   Just cast: `version: u64(app.ticks)`.
+- 🟡 **`v test` mangles a `-path` with `|`.** `v -path "@vlib|@vmodules|modules" test modules/` fails
+  (`/bin/sh: @vmodules: not found`, `modules: Permission denied`) because the test runner re-invokes
+  `v` per file and the `|`-separated path leaks into a shell unquoted. Workaround: run `v test
+  modules/<name>/` **without** `-path` — it resolves as long as the module's own imports don't need the
+  local `modules` dir on the path (candb/sampledb tests are fine). This is what `scripts/setup_env.sh`
+  does. For building/running (not testing), `-path` is still required (see the local-module note above).
+- ⚪ **`cannot copy map: call move or clone`.** Assigning a `map` value into a struct field (e.g.
+  `sig.values = vals`) errors — V won't implicitly copy a map. Use `vals.move()` (transfers ownership,
+  cheap) or `vals.clone()` (deep copy) explicitly. Same applies when storing maps built locally.
 - 🟡 **C interop parse friction.** `&char(s.str)` cast and no-arg C funcs used inside an expression
   (`(x & C.mask()) | …`) both gave `unexpected token )`. Fixes: pass `s.str` to a `&u8` C param;
   define stable C constants (e.g. CAN flag masks) as V `const`s instead of calling C accessors.
@@ -50,9 +59,12 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
 
 ## Rendering stack (sokol / vglyph / GL)
 
-- 🟡 **Blank/black window under WSLg.** Default GPU GL passthrough (d3d12) draws frames but never
-  composites — window shows blank despite thousands of frames drawn. Fix: force software GL
-  `LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe` (in `scripts/run.sh`). sokol/WSLg interaction.
+- 🟢 **Blank/black window under WSLg — FIXED on Ubuntu 24.04 (Mesa 25.2.8).** Historically (22.04,
+  Mesa 23.2) the GPU GL passthrough (d3d12) drew frames but never composited, so the window showed
+  blank; the workaround was software GL (`LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe`). On 24.04
+  with Mesa 25.x the d3d12 core-profile path works and our sokol app renders with **hardware GL**, so
+  `scripts/run.sh` now defaults to hardware GL; pass `CANTESTER_SOFTWARE_GL=1` to force the software
+  fallback. Verified 2026-06-03 (docs/gui_validation/phase5_dbc_decode.png).
 - ⚪ sokol `LINUX_X11_QUERY_SYSTEM_DPI_FAILED` on launch → falls back to 96 DPI. Harmless.
 - 🟢 **vglyph/sokol need many native dev libs** that aren't installed by default (freetype,
   harfbuzz, fribidi, fontconfig, pango, glib, dbus, atk, atk-bridge, atspi, GL, X11). Resolved by
@@ -60,8 +72,10 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
 
 ## Environment (WSL2 / kernel)
 
-- 🟡 **Hardware GL works here, but vlang/gui (sokol) crashes the D3D12 driver → we use software GL.**
-  Investigated 2026-06-03 (corrected — it is NOT "broken WSL"):
+- 🟢 **RESOLVED on Ubuntu 24.04 (Mesa 25.x): sokol hardware GL no longer crashes the D3D12 driver.**
+  The migration worked — our app now runs on hardware GL (see the blank-window entry above). The
+  investigation below is kept for the record (it explains *why* 22.04/Mesa 23.2 failed). Original
+  2026-06-03 notes (it was NOT "broken WSL"):
   - **Hardware GL works**: `glmark2` renders its scenes fine on `D3D12 (Intel Arc 140T)`, no crash.
     `/dev/dxg` present, `glxinfo` shows GL 4.2 **Compatibility** profile, direct rendering Yes.
   - **App-specific failures:** `glxgears` (ancient fixed-function GL) → black; **our sokol app** →
