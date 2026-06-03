@@ -37,6 +37,27 @@
 			"problemMatcher": [],
 			"presentation": { "reveal": "always", "panel": "shared" },
 			"group": "test"
+		},
+		{
+			"label": "debug-build: main",
+			"type": "shell",
+			"command": "${env:HOME}/v/v -g -path \"@vlib|@vmodules|modules\" -o build/main.dbg src/main.v",
+			"problemMatcher": "$gcc",
+			"presentation": { "reveal": "silent", "panel": "shared" }
+		},
+		{
+			"label": "debug-build: dashboard",
+			"type": "shell",
+			"command": "${env:HOME}/v/v -g -path \"@vlib|@vmodules|modules\" -o build/dashboard.dbg cmd/dashboard/dashboard.v",
+			"problemMatcher": "$gcc",
+			"presentation": { "reveal": "silent", "panel": "shared" }
+		},
+		{
+			"label": "debug-build: decode",
+			"type": "shell",
+			"command": "${env:HOME}/v/v -g -path \"@vlib|@vmodules|modules\" -o build/decode.dbg cmd/signal_decode/decode.v",
+			"problemMatcher": "$gcc",
+			"presentation": { "reveal": "silent", "panel": "shared" }
 		}
 	]
 }
