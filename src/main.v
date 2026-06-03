@@ -14,8 +14,10 @@
 module main
 
 import gui
+import os
 import time
 import transport
+import candb
 import sampledb
 
 const iface = 'vcan0'
@@ -48,6 +50,8 @@ struct App {
 mut:
 	bus       &transport.SocketCanBus = unsafe { nil }
 	dock_root &gui.DockNode           = unsafe { nil }
+	db        candb.Database // message catalog (loaded from DBC, sampledb fallback)
+	db_source string
 	connected bool
 	status    string
 	t0        i64
@@ -75,6 +79,18 @@ fn main() {
 			mut app := w.state[App]()
 			app.t0 = time.ticks()
 			app.dock_root = default_layout()
+			// Load the message catalog from a real DBC; fall back to the
+			// hand-coded sampledb so the app still runs if the file is missing.
+			dbc_path := os.getenv_opt('CANTESTER_DBC') or { 'dbc/cantester.dbc' }
+			if db := candb.load_dbc_file(dbc_path) {
+				app.db = db
+				app.db_source = dbc_path
+			} else {
+				app.db = candb.Database{
+					messages: sampledb.catalog()
+				}
+				app.db_source = 'sampledb (DBC load failed)'
+			}
 			app.status = 'opening ${iface}…'
 			w.update_view(main_view)
 			if bus := transport.open_socketcan(iface) {
@@ -125,7 +141,7 @@ fn (mut app App) push(dir string, f transport.CanFrame) {
 		app.tx_count++
 	}
 	t_ms := f64(time.ticks() - app.t0)
-	name := if m := sampledb.lookup(f.id) { m.name } else { '' }
+	name := if m := app.db.lookup(f.id) { m.name } else { '' }
 	app.trace << TraceRow{
 		seq:  app.seq
 		t_ms: t_ms
@@ -255,14 +271,20 @@ fn trace_panel(mut window gui.Window) gui.View {
 				}
 			}
 			if expanded {
-				if m := sampledb.lookup(id) {
+				if m := app.db.lookup(id) {
 					for s in m.signals {
 						raw := s.raw_value(a.last)
+						label := s.label(a.last)
+						value := if label != '' {
+							'${s.physical(a.last):.2f} ${s.unit} (${label})'
+						} else {
+							'${s.physical(a.last):.2f} ${s.unit}'
+						}
 						rows << gui.GridRow{
 							id:    's:${id}:${s.name}'
 							cells: {
 								'id':    '       ${s.name}'
-								'name':  '${s.physical(a.last):.2f} ${s.unit}'
+								'name':  value
 								'dlc':   '0x${raw:X}'
 								'data':  s.desc
 								'count': ''
@@ -333,12 +355,16 @@ fn trace_panel(mut window gui.Window) gui.View {
 }
 
 fn signals_panel(app &App) gui.View {
-	pt := (app.grouped[sampledb.powertrain().id] or { MsgAgg{} }).last
+	ptmsg := app.db.lookup(0x100) or { sampledb.powertrain() }
+	pt := (app.grouped[ptmsg.id] or { MsgAgg{} }).last
 	mut lines := []gui.View{}
-	lines << gui.text(text: 'Signals — 0x100 Powertrain', text_style: gui.theme().b3)
+	lines << gui.text(text: 'Signals — 0x100 ${ptmsg.name}', text_style: gui.theme().b3)
 	if pt.len == 8 {
-		for s in sampledb.powertrain().signals {
-			lines << gui.text(text: '${s.name}: ${s.physical(pt):.1f} ${s.unit}', text_style: gui.theme().n4)
+		for s in ptmsg.signals {
+			label := s.label(pt)
+			suffix := if label != '' { ' (${label})' } else { '' }
+			lines << gui.text(text: '${s.name}: ${s.physical(pt):.1f} ${s.unit}${suffix}',
+				text_style: gui.theme().n4)
 		}
 	} else {
 		lines << gui.text(text: '(waiting for 0x100 frames…)', text_style: gui.theme().n4)
@@ -362,6 +388,8 @@ fn stats_panel(app &App) gui.View {
 			gui.text(text: 'TX frames: ${app.tx_count}', text_style: gui.theme().n4),
 			gui.text(text: 'Unique IDs: ${app.order.len}', text_style: gui.theme().n4),
 			gui.text(text: 'Interface: ${iface}', text_style: gui.theme().n4),
+			gui.text(text: 'Database: ${app.db.messages.len} msgs', text_style: gui.theme().n4),
+			gui.text(text: 'DB source: ${app.db_source}', text_style: gui.theme().n4),
 		]
 	)
 }

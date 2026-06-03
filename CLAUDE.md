@@ -117,7 +117,8 @@ SUT is Python, each V module gets a direct counterpart to verify against:
 3. ✅ Wire CAN into GUI — live trace table, signal decode, send panel.  ⟵ done
 5. ✅ **DBC database & signals** — `candb` parses real `.dbc` files (BO_/SG_/VAL_/CM_), Intel +
    Motorola bit order, value tables; `dbc/cantester.dbc` matches the SUT; cross-validated vs an
-   independent Python oracle. Still TODO: wire DBC loading into the app to replace `sampledb`.
+   independent Python oracle. The GUI loads the DBC at startup (sampledb is now just a fallback);
+   trace/signals decode from it and show value-table labels live.
 6+. UDS diagnostics (ISO-TP is built into the kernel), scripting/sequences, panels;
    then LIN + Ethernet (DoIP/SOME-IP) backends behind the same `Bus` abstraction.
 
@@ -259,3 +260,9 @@ Passwordless sudo scoped to `apt-get`, `modprobe`, `ip` via `/etc/sudoers.d/cant
   decodes and on a live SUT 0x100 frame. NOT yet wired into the GUI (still uses sampledb) — next step.
   Note: passwordless sudo (/etc/sudoers.d/cantester) did NOT transfer to this box, so cantools couldn't
   be apt/pip-installed; the hand-written Python oracle covers the cross-check instead.
+- 2026-06-03: **DBC wired into the GUI.** `src/main.v` loads `dbc/cantester.dbc` at startup into
+  `App.db` (env override `CANTESTER_DBC`; falls back to `sampledb.catalog()` if the file is missing);
+  trace name lookup, the inline signal-expand, and the Signals panel all decode from the DBC, and now
+  render VAL_ value-table labels (e.g. `Gear 1.0 (First)`, `CruiseOn (On)`). Verified live vs SUT with
+  hardware GL — screenshot docs/gui_validation/phase5_dbc_decode.png (note the unit reads "degC" from
+  the DBC, not sampledb's "°C", proving the swap). Stats panel shows the DB source + message count.
