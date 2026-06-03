@@ -1,15 +1,18 @@
-// CANTester — main application window (Phase 3+).
+// CANTester — main application window.
 //
-// A live CAN tester shell on vcan0. Two trace views:
-//   - Grouped: one row per CAN ID (latest data), expandable (▸) into decoded
-//     signals — name / value / raw / interpretation, via `candb` + `sampledb`.
+// Live CAN tester on vcan0. Two trace views (toggle):
+//   - Grouped: one row per CAN ID, click to expand into decoded signal rows
+//     (Signal / Value / Raw / Interpretation) — J1939-trace style.
 //   - All: chronological scroll of every frame.
-// Plus a send form. Run sut/can_sut.py to feed it traffic. Logic lives in
-// modules/ (transport, candb, sampledb); this file is view + glue.
+// Plus a send form. Run sut/can_sut.py to feed it traffic.
+//
+// Threading: a background thread blocks on bus.recv and hands each frame to the
+// UI thread via w.queue_command (the gui-sanctioned cross-thread bridge). All
+// app state is therefore mutated on the UI thread only — no locks, and no
+// always-on animation timer (which interfered with interactive column resizing).
 module main
 
 import gui
-import sync
 import time
 import transport
 import sampledb
@@ -43,22 +46,19 @@ mut:
 @[heap]
 struct App {
 mut:
-	mtx       sync.Mutex
 	bus       &transport.SocketCanBus = unsafe { nil }
 	connected bool
 	status    string
 	t0        i64
-	// shared with RX thread (guard with mtx)
-	trace    []TraceRow
-	grouped  map[u32]MsgAgg
-	order    []u32
-	seq      int
-	rx_count int
-	tx_count int
-	paused   bool
-	// UI-thread only
+	trace     []TraceRow
+	grouped   map[u32]MsgAgg
+	order     []u32
+	seq       int
+	rx_count  int
+	tx_count  int
+	paused    bool
 	mode      string = 'grouped' // 'grouped' | 'all'
-	expand_id i64    = -1         // grouped frame currently expanded into signals
+	expand_id i64    = -1
 	selection gui.GridSelection
 	send_id   string = '101'
 	send_data string = 'AABBCC'
@@ -79,30 +79,36 @@ fn main() {
 				app.bus = bus
 				app.connected = true
 				app.status = 'connected to ${iface}'
-				spawn rx_loop(mut app)
+				// RX thread: block for frames, deliver to the UI thread.
+				spawn fn (mut w gui.Window) {
+					rx_loop(mut w)
+				}(mut w)
 			} else {
 				app.status = 'open ${iface} failed: ${err} (run scripts/setup_vcan.sh)'
 			}
-			start_ui_timer(mut w)
 		}
 	)
 	window.set_theme(gui.theme_dark_bordered)
 	window.run()
 }
 
-fn rx_loop(mut app App) {
+fn rx_loop(mut w gui.Window) {
+	app := w.state[App]()
+	bus := app.bus
 	for app.connected {
-		frame := app.bus.recv(200) or { continue }
-		app.mtx.lock()
-		if !app.paused {
-			app.push('RX', frame)
-		}
-		app.mtx.unlock()
+		frame := bus.recv(200) or { continue }
+		w.queue_command(fn [frame] (mut w gui.Window) {
+			mut a := w.state[App]()
+			if !a.paused {
+				a.push('RX', frame)
+				w.update_window()
+			}
+		})
 	}
 }
 
-// push records a frame into both the chronological trace and the grouped map.
-// Caller must hold mtx.
+// push records a frame into the chronological trace and the grouped map.
+// Runs on the UI thread only.
 fn (mut app App) push(dir string, f transport.CanFrame) {
 	app.seq++
 	if dir == 'RX' {
@@ -138,28 +144,11 @@ fn (mut app App) push(dir string, f transport.CanFrame) {
 	}
 }
 
-fn start_ui_timer(mut w gui.Window) {
-	w.animation_add(mut gui.TweenAnimation{
-		id:       'ui_tick'
-		from:     0
-		to:       1
-		duration: 50 * time.millisecond
-		on_value: fn (_ f32, mut _ gui.Window) {}
-		on_done:  fn (mut w gui.Window) {
-			start_ui_timer(mut w)
-		}
-	})
-}
-
 fn main_view(mut window gui.Window) gui.View {
 	w, h := window.window_size()
 	mut app := window.state[App]()
 
 	grouped := app.mode == 'grouped'
-	app.mtx.lock()
-	rx := app.rx_count
-	tx := app.tx_count
-	paused := app.paused
 	mut rows := []gui.GridRow{}
 	if grouped {
 		for id in app.order {
@@ -214,18 +203,22 @@ fn main_view(mut window gui.Window) gui.View {
 			}
 		}
 	}
-	app.mtx.unlock()
 
 	grid_h := f32(h) - 150
+	// Window id is folded into the grid id (coarsely) so the columns re-flow
+	// when the window is resized; the Data column flexes to fill the width.
+	wbucket := int(w) / 25
 	trace := if grouped {
+		fixed := f32(200 + 150 + 90 + 70 + 90)
+		data_w := fill_width(f32(w), fixed, 250)
 		window.data_grid(
-			id:                  'trace_grouped'
+			id:                  'trace_grouped_${wbucket}'
 			max_height:          grid_h
 			columns:             [
 				tcol('id', 'ID / Signal', 200, .start),
 				tcol('name', 'Message / Value', 150, .start),
 				tcol('dlc', 'DLC / Raw', 90, .end),
-				tcol('data', 'Data / Interpretation', 300, .start),
+				tcol('data', 'Data / Interpretation', data_w, .start),
 				tcol('count', 'Count', 70, .end),
 				tcol('time', 'Last(ms)', 90, .end),
 			]
@@ -243,15 +236,17 @@ fn main_view(mut window gui.Window) gui.View {
 			on_cell_format:      trace_cell_format
 		)
 	} else {
+		fixed := f32(80 + 50 + 110 + 50 + 150)
+		data_w := fill_width(f32(w), fixed, 200)
 		window.data_grid(
-			id:             'trace_all'
+			id:             'trace_all_${wbucket}'
 			max_height:     grid_h
 			columns:        [
 				tcol('time', 'Time(ms)', 80, .end),
 				tcol('dir', 'Dir', 50, .start),
 				tcol('id', 'ID', 110, .start),
 				tcol('dlc', 'DLC', 50, .end),
-				tcol('data', 'Data', 250, .start),
+				tcol('data', 'Data', data_w, .start),
 				tcol('name', 'Message', 150, .start),
 			]
 			rows:           rows
@@ -266,11 +261,17 @@ fn main_view(mut window gui.Window) gui.View {
 		padding: gui.padding_medium
 		spacing: 8
 		content: [
-			toolbar(app, rx, tx, paused),
+			toolbar(app, app.rx_count, app.tx_count, app.paused),
 			trace,
 			send_panel(app),
 		]
 	)
+}
+
+// fill_width sizes the flexible Data column to consume the leftover window width.
+fn fill_width(win f32, fixed f32, min f32) f32 {
+	w := win - fixed - 80 // outer padding + scrollbar + expander indent
+	return if w < min { min } else { w }
 }
 
 fn toolbar(app &App, rx int, tx int, paused bool) gui.View {
@@ -296,9 +297,7 @@ fn toolbar(app &App, rx int, tx int, paused bool) gui.View {
 				content:  [gui.text(text: if paused { '▶ Resume' } else { '⏸ Pause' })]
 				on_click: fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					mut a := w.state[App]()
-					a.mtx.lock()
 					a.paused = !a.paused
-					a.mtx.unlock()
 				}
 			),
 			gui.button(
@@ -306,11 +305,9 @@ fn toolbar(app &App, rx int, tx int, paused bool) gui.View {
 				content:  [gui.text(text: '🗑 Clear')]
 				on_click: fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					mut a := w.state[App]()
-					a.mtx.lock()
 					a.trace = []TraceRow{}
 					a.grouped = map[u32]MsgAgg{}
 					a.order = []u32{}
-					a.mtx.unlock()
 					a.expand_id = -1
 				}
 			),
@@ -377,9 +374,7 @@ fn do_send(mut w gui.Window) {
 		app.status = 'send failed: ${err}'
 		return
 	}
-	app.mtx.lock()
 	app.push('TX', frame)
-	app.mtx.unlock()
 }
 
 fn trace_cell_format(row gui.GridRow, _ int, col gui.GridColumnCfg, value string, mut _ gui.Window) gui.GridCellFormat {
@@ -402,11 +397,12 @@ fn trace_cell_format(row gui.GridRow, _ int, col gui.GridColumnCfg, value string
 // sortable — sorting a live trace would reshuffle the streaming rows.
 fn tcol(id string, title string, width f32, align gui.HorizontalAlign) gui.GridColumnCfg {
 	return gui.GridColumnCfg{
-		id:       id
-		title:    title
-		width:    width
-		align:    align
-		sortable: false
+		id:        id
+		title:     title
+		width:     width
+		align:     align
+		sortable:  false
+		max_width: 4000 // default is 600; let the flexible Data column fill wide windows
 	}
 }
 
@@ -436,7 +432,7 @@ fn parse_hex_u32(s string) u32 {
 }
 
 fn hex_to_bytes(s string) []u8 {
-	mut clean := s.replace(' ', '').trim_string_left('0x')
+	clean := s.replace(' ', '').trim_string_left('0x')
 	mut out := []u8{}
 	mut hi := -1
 	for c in clean {

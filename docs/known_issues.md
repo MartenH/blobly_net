@@ -24,6 +24,16 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
 
 ## vlang/gui
 
+- ⚪ **data_grid columns are fixed px width and clamp to `max_width` (default 600).** They don't
+  auto-stretch to fill the container. To make a column fill: compute its width from the window size
+  AND raise its `max_width` (we set 4000). Also, column widths are cached per grid `id` and ignore
+  later `cfg.width` changes — so for responsive re-flow we fold the window-width bucket into the grid
+  `id` (`trace_grouped_${w/25}`), which refreshes the cache on resize. See `src/main.v`.
+- ⚠️ **An always-on animation timer can block interactive column resizing.** We originally drove the
+  ~20fps redraw with a re-arming `TweenAnimation`; that appeared to interfere with header drag-resize.
+  Fixed by refreshing event-driven instead: the RX thread hands frames to the UI via
+  `w.queue_command(...)` (the sanctioned cross-thread bridge) which calls `update_window()`. No timer,
+  no mutex (all state mutates on the UI thread). Resize should be re-tested by the user.
 - 🟡 **data_grid detail rows are fixed to one row's height.** `on_detail_row_view` content is placed
   in a container hard-coded to `height: row_height` (`view_data_grid_rows.v:51`), so multi-line detail
   content overflows and overlaps the next row. Use it only for single-line detail. For our expandable
