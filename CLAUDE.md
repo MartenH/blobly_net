@@ -73,13 +73,14 @@ SUT is Python, each V module gets a direct counterpart to verify against:
 
 ## Phased roadmap
 
-0. Toolchain & skeleton — install V + gui, project layout, trivial build.
-1. **Minimal GUI window** ⟵ current milestone.
-2. SocketCAN transport (vcan0) + CLI smoke test vs candump/cansend.
-3. Wire CAN into GUI — live trace table + send panel.
-4. Virtual SUT simulator on vcan0.
-5. DBC database & signals.
-6+. UDS diagnostics, scripting/sequences, panels; then LIN + Ethernet backends.
+0. ✅ Toolchain & skeleton — install V + gui, project layout, trivial build.
+1. ✅ Minimal GUI window.
+2. ✅ SocketCAN transport (vcan0) + CLI smoke test vs candump/cansend.
+4. ✅ Virtual SUT (Python) on vcan0 + candb cross-validation.
+3. ✅ Wire CAN into GUI — live trace table, signal decode, send panel.  ⟵ done
+5. **DBC database & signals** ⟵ next: replace hand-coded `sampledb` with real DBC parsing.
+6+. UDS diagnostics (ISO-TP is built into the kernel), scripting/sequences, panels;
+   then LIN + Ethernet (DoIP/SOME-IP) backends behind the same `Bus` abstraction.
 
 ## Build / run
 
@@ -153,5 +154,11 @@ Passwordless sudo scoped to `apt-get`, `modprobe`, `ip` via `/etc/sudoers.d/cant
   (standard + 29-bit extended).
 - 2026-06-03: **Python virtual SUT DONE & VERIFIED** — `sut/can_sut.py` (stdlib AF_CAN): emits
   Powertrain 0x100 @10Hz + heartbeat 0x700, answers 0x101→0x102. Cross-check PASSED: V `candb` and an
-  independent Python decoder produce identical physical values for the SUT's 0x100 frame. The oracle
-  approach works. Next: Phase 3 — wire live CAN RX/TX into the GUI (trace + send).
+  independent Python decoder produce identical physical values for the SUT's 0x100 frame.
+- 2026-06-03: **Phase 3 DONE & VERIFIED** — `src/main.v` is now the real app: opens vcan0, RX on a
+  background thread → live trace data_grid (decoded Message column via `sampledb`/`candb`), a live
+  Signals panel for 0x100, and a Send form. Verified live against the SUT (RX streaming; GUI Send of
+  0x101 → SUT 0x102 reply confirmed via candump + RX/TX counters). New `modules/sampledb` message
+  catalog (decode demo refactored to share it). Screenshot docs/gui_validation/phase3_live_trace.png.
+  Threading: RX thread mutates shared state under `sync.Mutex`; a ~20fps UI timer redraws (all gui
+  calls stay on the UI thread). Next: Phase 5 — DBC parsing to replace hand-coded sampledb.

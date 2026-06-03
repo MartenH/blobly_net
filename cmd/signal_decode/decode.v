@@ -11,22 +11,10 @@ module main
 import gui
 import math
 import time
-import candb
+import sampledb
 
-// The message we decode. Signals pack into the low 48 bits of an 8-byte frame.
-const msg = candb.Message{
-	name:    'Powertrain'
-	id:      0x100
-	dlc:     8
-	signals: [
-		candb.Signal{ name: 'EngineSpeed',  start_bit: 0,  length: 16, factor: 0.25, unit: 'rpm' },
-		candb.Signal{ name: 'VehicleSpeed', start_bit: 16, length: 12, factor: 0.1,  unit: 'km/h' },
-		candb.Signal{ name: 'CoolantTemp',  start_bit: 28, length: 8,  offset: -40,  unit: '°C' },
-		candb.Signal{ name: 'ThrottlePos',  start_bit: 36, length: 7,  unit: '%' },
-		candb.Signal{ name: 'Gear',         start_bit: 43, length: 4,  unit: '' },
-		candb.Signal{ name: 'CruiseOn',     start_bit: 47, length: 1,  unit: '' },
-	]
-}
+// The message we decode (shared catalog; same layout the SUT emits).
+const msg = sampledb.powertrain()
 
 const palette = [
 	gui.Color{90, 170, 250, 255},
