@@ -12,7 +12,8 @@ memory (the old `~/.claude` memory does not transfer); everything needed is in g
 
 Bootstrap a fresh box in one shot:
 ```sh
-./scripts/setup_env.sh          # installs V + gui native deps + can-utils, builds, brings up vcan0, runs tests
+sudo ./scripts/setup_sudoers.sh   # optional: scoped passwordless sudo (apt-get/ip/modprobe) so the below won't prompt
+./scripts/setup_env.sh            # installs V + gui native deps + can-utils, builds, brings up vcan0, runs tests
 ```
 Then run the app:
 ```sh
@@ -183,7 +184,11 @@ forcing Mesa software rendering (`LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpip
 Mesa 25.2.8 hardware GL renders correctly**, so `scripts/run.sh` now defaults to hardware GL; pass
 `CANTESTER_SOFTWARE_GL=1` to re-enable the software fallback if a future Mesa regresses.
 
-Passwordless sudo scoped to `apt-get`, `modprobe`, `ip` via `/etc/sudoers.d/cantester`.
+Passwordless sudo scoped to `apt-get`, `ip`, `modprobe` via `/etc/sudoers.d/cantester`. This is the
+one bit of machine state NOT in git, so it does **not** transfer to a fresh box — re-create it once
+per machine with `sudo ./scripts/setup_sudoers.sh` (generates the drop-in and `visudo -c`-validates it
+before installing, so a typo can't lock you out). Without it, `setup_env.sh`/`setup_vcan.sh` will
+prompt for a password.
 
 ## Status log
 
