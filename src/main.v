@@ -222,12 +222,12 @@ fn main_view(mut window gui.Window) gui.View {
 			id:                  'trace_grouped'
 			max_height:          grid_h
 			columns:             [
-				gui.GridColumnCfg{ id: 'id', title: 'ID / Signal', width: 200 },
-				gui.GridColumnCfg{ id: 'name', title: 'Message / Value', width: 150 },
-				gui.GridColumnCfg{ id: 'dlc', title: 'DLC / Raw', width: 90, align: .end },
-				gui.GridColumnCfg{ id: 'data', title: 'Data / Interpretation', width: 300 },
-				gui.GridColumnCfg{ id: 'count', title: 'Count', width: 70, align: .end },
-				gui.GridColumnCfg{ id: 'time', title: 'Last(ms)', width: 90, align: .end },
+				tcol('id', 'ID / Signal', 200, .start),
+				tcol('name', 'Message / Value', 150, .start),
+				tcol('dlc', 'DLC / Raw', 90, .end),
+				tcol('data', 'Data / Interpretation', 300, .start),
+				tcol('count', 'Count', 70, .end),
+				tcol('time', 'Last(ms)', 90, .end),
 			]
 			rows:                rows
 			selection:           app.selection
@@ -247,12 +247,12 @@ fn main_view(mut window gui.Window) gui.View {
 			id:             'trace_all'
 			max_height:     grid_h
 			columns:        [
-				gui.GridColumnCfg{ id: 'time', title: 'Time(ms)', width: 80, align: .end },
-				gui.GridColumnCfg{ id: 'dir', title: 'Dir', width: 50 },
-				gui.GridColumnCfg{ id: 'id', title: 'ID', width: 110 },
-				gui.GridColumnCfg{ id: 'dlc', title: 'DLC', width: 50, align: .end },
-				gui.GridColumnCfg{ id: 'data', title: 'Data', width: 250 },
-				gui.GridColumnCfg{ id: 'name', title: 'Message', width: 150 },
+				tcol('time', 'Time(ms)', 80, .end),
+				tcol('dir', 'Dir', 50, .start),
+				tcol('id', 'ID', 110, .start),
+				tcol('dlc', 'DLC', 50, .end),
+				tcol('data', 'Data', 250, .start),
+				tcol('name', 'Message', 150, .start),
 			]
 			rows:           rows
 			on_cell_format: trace_cell_format
@@ -396,6 +396,18 @@ fn trace_cell_format(row gui.GridRow, _ int, col gui.GridColumnCfg, value string
 		}
 	}
 	return gui.GridCellFormat{}
+}
+
+// tcol builds a trace column: resizable + reorderable (gui defaults), but NOT
+// sortable — sorting a live trace would reshuffle the streaming rows.
+fn tcol(id string, title string, width f32, align gui.HorizontalAlign) gui.GridColumnCfg {
+	return gui.GridColumnCfg{
+		id:       id
+		title:    title
+		width:    width
+		align:    align
+		sortable: false
+	}
 }
 
 fn hexid(id u32, ext bool) string {
