@@ -89,6 +89,8 @@ cmd/uds_smoke/              drive the UDS client vs sut/uds_server.py
 sut/can_sut.py              Python virtual SUT (emits/answers frames on vcan0)
 sut/dbc_oracle.py           independent stdlib DBC parser+decoder (cross-validates candb)
 sut/uds_server.py           Python virtual UDS server (stdlib ISO-TP) — oracle for modules/uds
+sut/mf4_bridge.py           asammdf MF4 -> candump/.asc converter + semantic diff (needs .venv-tools)
+scripts/setup_mf4_tools.sh  build .venv-tools (asammdf) + fetch real J1939 MF4/DBC samples
 scripts/run.sh              build+run with WSLg software-GL workaround
 scripts/setup_vcan.sh       bring up vcan0 (sudo)
 docs/gui_validation/        screenshots proving gui capabilities
@@ -146,7 +148,14 @@ into shared code. The convention:
    negative-response/0x78-pending handling). Verified end-to-end vs `sut/uds_server.py` (stdlib).
    Still TODO: a Diagnostics GUI panel, more services (0x19 DTCs, 0x2E write, 0x27 security), and
    DID↔signal mapping via the DBC.
-7+. Scripting/sequences (conventional test cases), more panels/plotting; then LIN + Ethernet
+7. 🚧 **Log replay** — real recordings are ASAM **MF4** (CANedge/CSS Electronics), paired with a DBC.
+   DONE: `sut/mf4_bridge.py` (asammdf) converts MF4 → candump `.log` and **semantically diffs** two
+   recordings (canonical frame stream, not bytes — MF4 is never byte-equal); validated our `candb`
+   decode == asammdf on a real J1939 driving log (EngineSpeed/WheelBasedVehicleSpeed, once the J1939
+   0xFFFF "not-available" sentinel is filtered). TODO: `modules/canlog` (V candump parse/format) + a
+   player (replay onto vcan0 AND direct-to-trace), then a GUI "open log" action. (Native MF4-in-V is a
+   later option; the Python bridge is the path for now.)
+8+. Scripting/sequences (conventional test cases), more panels/plotting; then LIN + Ethernet
    (DoIP/SOME-IP) backends behind the same `Bus`/`Channel` abstractions (see Platform support).
 
 ## Build / run
@@ -317,3 +326,14 @@ prompt for a password.
   `asammdf` bridge** (convert MF4 → candump/.asc) rather than a native V MF4 parser, then replay
   through `modules/canlog` (next) onto vcan0 or direct-to-trace. Real-data sources: comma.ai opendbc,
   CSS Electronics sample data, nberlette/canbus.
+- 2026-06-04: **MF4 bridge + real-data validation DONE.** `scripts/setup_mf4_tools.sh` builds
+  `.venv-tools` (asammdf) and fetches real CSS Electronics J1939 samples (parked + driving MF4 + demo
+  DBC) into `samples/` (git-ignored binaries). `sut/mf4_bridge.py`: `convert` MF4→candump `.log`,
+  `frames` (canonical dump), `diff` (SEMANTIC diff — compares the (id,ext,data) stream + timestamps
+  within tolerance, since two MF4s of identical traffic are never byte-equal: start-time/history/
+  offsets/zlib-DZ all vary). Extracted 145k–150k real frames; **candb decode == asammdf** on the real
+  driving log (EngineSpeed 913–1761 rpm ×19584, WheelBasedVehicleSpeed 19–88 km/h ×1958) after
+  filtering the J1939 `0xFFFF` "not-available" sentinel — asammdf drops those (valid count matched
+  exactly). This enables the round-trip test: SUT replays MF4 → we record MF4 → `mf4_bridge diff` ==
+  empty. **Found a candb TODO:** flag J1939 not-available (all-0xFF) signal values. Next: `modules/
+  canlog` + player + GUI "open log".
