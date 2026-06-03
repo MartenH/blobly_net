@@ -60,29 +60,27 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
 
 ## Environment (WSL2 / kernel)
 
-- 🔴 **Hardware GL is broken on this WSL → we use software GL (llvmpipe).** Investigated 2026-06-03:
-  - The GPU *renders*: `/dev/dxg` present; `glxinfo` shows `direct rendering: Yes`, renderer
-    `D3D12 (Intel Arc 140T)`, GL 4.2. So it's not "no GPU."
-  - But accelerated GLX content **never composites** — `glxgears` on hardware GL is solid black (not
-    app-specific), and our app on hardware GL logs `D3D12: Removing Device` + `invalid memory access`
-    (Mesa's d3d12 driver crashes the device after ~110 frames).
-  - **Vulkan hardware path missing** too: after installing `mesa-vulkan-drivers`, the only working
-    Vulkan device is `llvmpipe` (software); the real GPU ICD (dozen/D3D12→Vulkan) isn't present, so
-    Zink can't run.
-  - Root cause: incomplete WSLg GPU userspace — `/usr/lib/wsl/lib` only has `libd3d12*.so` (a standard
-    WSLg also ships the Mesa GL frontend + a dzn Vulkan ICD there). This is the "non-standard WSL"
-    missing rendering bits.
-  - Kernel side looks complete: `CONFIG_DXGKRNL=y`, `/dev/dxg` works, config is `Microsoft/config-wsl`
-    based (i.e. stock-equivalent). `CONFIG_UDMABUF` is off (no `/dev/udmabuf`) — candidate fix for the
-    no-composite, but stock config-wsl also has it off, so unproven. The `Removing Device` crash is a
-    *userspace/host-GPU* failure, not a missing kernel module — a kernel rebuild alone won't fix it.
-  - Most-likely real cause: **Mesa 23.2.1 (Ubuntu 22.04) is too old for the Intel Arc 140T (2024+ GPU)**
-    under WSL D3D12 passthrough. Highest-likelihood fix = newer Mesa (kisak-mesa PPA → 24.x). Other
-    levers: `CONFIG_UDMABUF=y` (cheap, low odds), pick the NVIDIA GPU instead, standard WSLg.
-  - **⚠️ Do NOT re-test hardware GL casually:** the device-removal crash resets the host GPU (TDR) and
-    blacks out the Windows display(s); recover with `wsl --shutdown`. Retest only deliberately.
-  - **Verdict:** keep `LIBGL_ALWAYS_SOFTWARE=1` (llvmpipe) — stable, fine for this 2D app (60fps with
-    1000+ widgets). `scripts/run.sh` honours `CANTESTER_SOFTWARE_GL=0` to try hardware once env is fixed.
+- 🟡 **Hardware GL works here, but vlang/gui (sokol) crashes the D3D12 driver → we use software GL.**
+  Investigated 2026-06-03 (corrected — it is NOT "broken WSL"):
+  - **Hardware GL works**: `glmark2` renders its scenes fine on `D3D12 (Intel Arc 140T)`, no crash.
+    `/dev/dxg` present, `glxinfo` shows GL 4.2 **Compatibility** profile, direct rendering Yes.
+  - **App-specific failures:** `glxgears` (ancient fixed-function GL) → black; **our sokol app** →
+    black + `D3D12: Removing Device` (GPU TDR reset, blacks out the Windows display; recover with
+    `wsl --shutdown`).
+  - **Root cause:** sokol requests a **GL 4.1 _core_ profile** context (sokol_app.h: defaults to 4.x +
+    `GLX_CONTEXT_CORE_PROFILE_BIT_ARB`). Mesa 23.2's D3D12 driver only does the **compatibility**
+    profile well; its **core-profile** path is buggy and crashes the device. glmark2 works because it
+    uses the compatibility profile.
+  - **Likely fix:** newer Mesa (kisak-mesa PPA → 24.x) where the d3d12 core path is much improved —
+    *userspace only, no kernel change*. (Kernel is fine: `CONFIG_DXGKRNL=y`, config-wsl based. The
+    `CONFIG_UDMABUF`/dzn-Vulkan gaps are real but not the cause, since glmark2 already composites.)
+    Forcing compat via `MESA_GL_VERSION_OVERRIDE` is unreliable because sokol hard-requests the core
+    profile mask; patching sokol's profile request is the other (invasive) option.
+  - **⚠️ Each hardware-GL test of our app resets the GPU (TDR) and blacks out the display.** Only
+    retest deliberately, ideally right after a `wsl --shutdown`.
+  - **Verdict (for now):** keep `LIBGL_ALWAYS_SOFTWARE=1` (llvmpipe) — stable, fine for this 2D app
+    (60fps, 1000+ widgets). `scripts/run.sh` honours `CANTESTER_SOFTWARE_GL=0` to retry hardware after
+    a Mesa upgrade.
 
 
 - 🟢 **`vcan` "won't load" was a non-issue.** `modprobe vcan` → ENOEXEC because the stale `.ko` in
