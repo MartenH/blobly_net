@@ -1,0 +1,42 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run GUI (main window)",
+			"type": "shell",
+			"command": "./scripts/run.sh",
+			"problemMatcher": [],
+			"presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+			"group": { "kind": "build", "isDefault": true }
+		},
+		{
+			"label": "Run demo: dashboard (live table + chart)",
+			"type": "shell",
+			"command": "./scripts/run.sh cmd/dashboard/dashboard.v",
+			"problemMatcher": [],
+			"presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+		},
+		{
+			"label": "Run demo: frame → signals",
+			"type": "shell",
+			"command": "./scripts/run.sh cmd/signal_decode/decode.v",
+			"problemMatcher": [],
+			"presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+		},
+		{
+			"label": "Build GUI (compile only)",
+			"type": "shell",
+			"command": "${env:HOME}/v/v -path \"@vlib|@vmodules|modules\" -o build/cantester src/main.v",
+			"problemMatcher": [],
+			"presentation": { "reveal": "always", "panel": "shared" }
+		},
+		{
+			"label": "Test: candb module",
+			"type": "shell",
+			"command": "${env:HOME}/v/v test modules/candb/",
+			"problemMatcher": [],
+			"presentation": { "reveal": "always", "panel": "shared" },
+			"group": "test"
+		}
+	]
+}
