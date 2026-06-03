@@ -9,6 +9,11 @@ Under Test) over **CAN / Ethernet / LIN** and the protocols on them. **Starting 
 - **Language:** V (vlang). Beta — expect compiler/runtime rough edges.
 - **GUI:** [vlang/gui](https://github.com/vlang/gui) — immediate-mode, thread-safe state, tables/grids.
   Immature; if it won't build/render, fall back to `vlang/gg` then `vlang/ui`.
+  **VALIDATED** for our needs via `cmd/dashboard` (throwaway demo): production-grade `data_grid`
+  (sort/filter/page/freeze/group/aggregate/inline-edit/conditional-format/CSV-XLSX-PDF export),
+  `draw_canvas` anti-aliased `polyline` (caps/joins) for plots, and smooth live updates at ~25fps.
+  Screenshots in `docs/gui_validation/`. Caveat: extreme trace volume (10k+ rows @ 1000 msg/s)
+  not yet stress-tested — a `data_source` virtualized grid exists for that; revisit in Phase 3.
 - **Virtual CAN:** Linux **vcan0** via **SocketCAN** (C-interop over `<linux/can.h>`), behind a
   transport interface so swapping to real `can0` hardware later is a drop-in. WSL2 kernel has `vcan.ko`.
 - **First milestone:** minimal GUI window (prove V + gui + WSLg render), then iterate.
@@ -98,4 +103,11 @@ Passwordless sudo scoped to `apt-get`, `modprobe`, `ip` via `/etc/sudoers.d/cant
   + GL/X11). `src/main.v` compiles and renders a CANTester window under WSLg.
 - 2026-06-03: Diagnosed blank-window-under-WSLg (GL passthrough doesn't composite); fix =
   software GL (`LIBGL_ALWAYS_SOFTWARE=1`), wrapped in `scripts/run.sh`. Verified by screenshot
-  + by user. **Phase 1 DONE & VERIFIED.** Next: Phase 2 — SocketCAN transport over vcan0.
+  + by user. **Phase 1 DONE & VERIFIED.**
+- 2026-06-03: Decisions — SUT/reference side will be **Python** (mature automotive stack as an
+  independent verification oracle); virtual bus stays **vcan0/SocketCAN** (primary). vcan kernel
+  module won't load here: modules built 13:52 predate the running kernel rebuilt 20:34 (Jun 2) →
+  MODVERSIONS CRC mismatch (ENOEXEC). User to rebuild+install matching modules to unblock.
+- 2026-06-03: **GUI VALIDATED** — built `cmd/dashboard` demo (live signal data_grid + anti-aliased
+  line chart, conditional formatting, ~25fps). Confirms vlang/gui is the right choice. Screenshots
+  in docs/gui_validation/. Next: Phase 2 transport code + Python SUT (no-regret, while kernel fixed).
