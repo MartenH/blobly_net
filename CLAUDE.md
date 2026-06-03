@@ -181,4 +181,8 @@ Passwordless sudo scoped to `apt-get`, `modprobe`, `ip` via `/etc/sudoers.d/cant
   tabbed panel groups, a data_grid nested in a panel, working inputs/buttons, and drag-to-redock with
   drop-zone preview + layout persistence. Solid under WSLg. Screenshots docs/gui_validation/dock_*.png.
   → Greenlit to refactor `src/main.v` into a dockable panel layout (Trace/Signals/Send/… panels).
-  Next: that refactor, or Phase 5 (DBC parsing).
+- 2026-06-03: **App refactored to dock layout** — `src/main.v` is now a global toolbar over a
+  `dock_layout` with panels: Trace (grouped/all grid, inline signal expand), Signals (live 0x100
+  decode), Send (form), Statistics (counters). Panels split/tab/drag-redock/close; layout persisted
+  in `app.dock_root`. Verified live vs SUT (RX streaming, inline expand, all panels updating).
+  Screenshot docs/gui_validation/app_dockable.png. Next: Phase 5 (DBC parsing) / more panels.
