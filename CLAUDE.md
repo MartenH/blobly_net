@@ -77,13 +77,18 @@ v.mod                       module manifest
 src/main.v                  GUI entry point (thin consumer of modules)
 modules/candb/              CAN signal db: messages, signals, bit en/decode + DBC parser (+ tests)
 modules/sampledb/           hand-coded message catalog (being superseded by DBC loading)
-modules/transport/          SocketCAN backend + Bus interface         (Phase 2)
+modules/transport/          Bus interface (transport.v) + Linux SocketCAN backend (socketcan_linux.v)
+modules/isotp/              ISO-TP: Channel interface (isotp.v) + Linux kernel backend (kernel_linux.v)
+modules/uds/                UDS diagnostic client over isotp (pure V, + tests)   (Phase 6)
 dbc/cantester.dbc           real DBC describing the SUT's messages    (Phase 5)
 cmd/dashboard/              throwaway GUI capability demo
 cmd/signal_decode/          frame -> signals visualizer demo
 cmd/dbc_decode/             load a DBC + decode one frame (machine-readable; oracle diff)
+cmd/isotp_smoke/            send one ISO-TP PDU, print the reply (multi-frame smoke)
+cmd/uds_smoke/              drive the UDS client vs sut/uds_server.py
 sut/can_sut.py              Python virtual SUT (emits/answers frames on vcan0)
 sut/dbc_oracle.py           independent stdlib DBC parser+decoder (cross-validates candb)
+sut/uds_server.py           Python virtual UDS server (stdlib ISO-TP) — oracle for modules/uds
 scripts/run.sh              build+run with WSLg software-GL workaround
 scripts/setup_vcan.sh       bring up vcan0 (sudo)
 docs/gui_validation/        screenshots proving gui capabilities
@@ -100,9 +105,25 @@ SUT is Python, each V module gets a direct counterpart to verify against:
 |------------------------|-----------------------------|-------------------------------|
 | `transport`            | python-can                  | bus I/O (SocketCAN/vcan0)     |
 | `candb`                | cantools                    | DBC parse + signal en/decode  |
-| `isotp`   (future)     | can-isotp                   | ISO-TP segmentation           |
-| `uds`     (future)     | udsoncan                    | UDS diagnostics               |
+| `isotp`                | can-isotp / stdlib CAN_ISOTP| ISO-TP segmentation           |
+| `uds`                  | udsoncan / stdlib server    | UDS diagnostics               |
 | `doip`/`someip` (fut.) | scapy automotive            | Ethernet protocols            |
+
+### Platform support (WSL/Linux now, Windows later) — KEEP THE SEAM CLEAN
+We develop on **WSL2/Linux** and the bus backends are Linux-specific (SocketCAN raw + kernel
+CAN_ISOTP, via `<linux/can.h>`). **Native Windows support is a later goal**, so all OS-specific code
+must stay isolated behind a platform-agnostic interface — never let `linux/*` headers or syscalls leak
+into shared code. The convention:
+- **Agnostic** API + interface lives in the unsuffixed file (e.g. `transport/transport.v` defines
+  `Bus`; `isotp/isotp.v` defines `Channel` + `open()` contract). Callers depend ONLY on these.
+- **OS-specific** backends live in `*_linux.v` (V gates compilation by the `_linux.v`/`_windows.v`
+  suffix), so they never compile into the wrong target. Linux backends today: `transport/
+  socketcan_linux.v`, `isotp/kernel_linux.v` (+ their `*_shim.h`).
+- **Windows later** = add `*_windows.v` implementing the SAME interface. Note: Windows has no kernel
+  ISO-TP, so its `isotp` backend will be a **software** ISO-TP state machine over a vendor CAN driver
+  (PCAN/Vector/SocketCAN-over-IP) — which is also useful on Linux for real hardware that lacks kernel
+  ISO-TP. `uds`/`candb` are already pure-V and portable. When adding a backend, put platform code ONLY
+  in suffixed files and keep the interface untouched.
 
 ## Environment (verified 2026-06-03)
 
@@ -120,8 +141,13 @@ SUT is Python, each V module gets a direct counterpart to verify against:
    Motorola bit order, value tables; `dbc/cantester.dbc` matches the SUT; cross-validated vs an
    independent Python oracle. The GUI loads the DBC at startup (sampledb is now just a fallback);
    trace/signals decode from it and show value-table labels live.
-6+. UDS diagnostics (ISO-TP is built into the kernel), scripting/sequences, panels;
-   then LIN + Ethernet (DoIP/SOME-IP) backends behind the same `Bus` abstraction.
+6. 🚧 **UDS diagnostics over ISO-TP** — FOUNDATION DONE: `modules/isotp` (kernel CAN_ISOTP socket
+   behind a platform-agnostic `Channel`) + `modules/uds` (client: 0x10 session, 0x22 RDBI, 0x3E,
+   negative-response/0x78-pending handling). Verified end-to-end vs `sut/uds_server.py` (stdlib).
+   Still TODO: a Diagnostics GUI panel, more services (0x19 DTCs, 0x2E write, 0x27 security), and
+   DID↔signal mapping via the DBC.
+7+. Scripting/sequences (conventional test cases), more panels/plotting; then LIN + Ethernet
+   (DoIP/SOME-IP) backends behind the same `Bus`/`Channel` abstractions (see Platform support).
 
 ## Build / run
 
@@ -271,3 +297,14 @@ prompt for a password.
   render VAL_ value-table labels (e.g. `Gear 1.0 (First)`, `CruiseOn (On)`). Verified live vs SUT with
   hardware GL — screenshot docs/gui_validation/phase5_dbc_decode.png (note the unit reads "degC" from
   the DBC, not sampledb's "°C", proving the swap). Stats panel shows the DB source + message count.
+- 2026-06-04: **Phase 6 ISO-TP + UDS foundation DONE & VERIFIED.** Confirmed kernel `CAN_ISOTP=y`
+  works on vcan0 (Python loopback, multi-frame). New `modules/isotp`: a platform-agnostic `Channel`
+  interface (`isotp.v`) + Linux kernel-socket backend (`kernel_linux.v` + `isotp_shim.h`); kernel does
+  SF/FF/CF + flow control (verified via candump: FF `10 14`, FC `30 00 00`, CFs). New `modules/uds`:
+  client for 0x10/0x22/0x3E with positive/negative-response + 0x78-pending handling (8 hermetic tests
+  via a mock Channel). `sut/uds_server.py` (stdlib ISO-TP) is the oracle. End-to-end PASS (`cmd/
+  uds_smoke`): session, multi-frame VIN read, EngineSpeed DID → 1600 rpm, tester-present, and a
+  negative response (0x31 requestOutOfRange) surfaced correctly. **Platform seam honoured** per user
+  directive: OS-specific code isolated in `*_linux.v` (also renamed `transport/socketcan.v` →
+  `socketcan_linux.v`); added a "Platform support" section so Windows can drop in a `*_windows.v`
+  software-ISO-TP backend later. Next: Diagnostics GUI panel + more UDS services.
