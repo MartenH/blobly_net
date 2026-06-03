@@ -308,3 +308,12 @@ prompt for a password.
   directive: OS-specific code isolated in `*_linux.v` (also renamed `transport/socketcan.v` →
   `socketcan_linux.v`); added a "Platform support" section so Windows can drop in a `*_windows.v`
   software-ISO-TP backend later. Next: Diagnostics GUI panel + more UDS services.
+- 2026-06-04: **candb multiplexing modelled** (prep for replaying real OBD2/J1939 logs, which need it).
+  Signal gains is_multiplexor/is_multiplexed/multiplexor_value; DBC parses `M` / `m<N>` / `m<N>M`
+  (extended) markers; `Message.active_signals(data)` returns only the signals present for the current
+  multiplexor value. GUI (trace expand + Signals panel) now iterates active_signals so muxed messages
+  render correctly. Tests cover parse + selection. Decision (2026-06-04): real recordings come as
+  **MF4** (CANedge/CSS Electronics ecosystem) paired with a DBC; we'll ingest them via a **Python
+  `asammdf` bridge** (convert MF4 → candump/.asc) rather than a native V MF4 parser, then replay
+  through `modules/canlog` (next) onto vcan0 or direct-to-trace. Real-data sources: comma.ai opendbc,
+  CSS Electronics sample data, nberlette/canbus.

@@ -272,7 +272,7 @@ fn trace_panel(mut window gui.Window) gui.View {
 			}
 			if expanded {
 				if m := app.db.lookup(id) {
-					for s in m.signals {
+					for s in m.active_signals(a.last) {
 						raw := s.raw_value(a.last)
 						label := s.label(a.last)
 						value := if label != '' {
@@ -360,7 +360,7 @@ fn signals_panel(app &App) gui.View {
 	mut lines := []gui.View{}
 	lines << gui.text(text: 'Signals — 0x100 ${ptmsg.name}', text_style: gui.theme().b3)
 	if pt.len == 8 {
-		for s in ptmsg.signals {
+		for s in ptmsg.active_signals(pt) {
 			label := s.label(pt)
 			suffix := if label != '' { ' (${label})' } else { '' }
 			lines << gui.text(text: '${s.name}: ${s.physical(pt):.1f} ${s.unit}${suffix}',

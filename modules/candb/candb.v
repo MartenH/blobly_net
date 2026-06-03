@@ -25,6 +25,13 @@ pub:
 	values     map[u64]string    // DBC VAL_ table: raw value -> named state (enum)
 	is_signed  bool
 	byte_order ByteOrder = .little_endian
+	// Multiplexing (DBC 'M' / 'm<N>'): a message may have ONE multiplexor switch
+	// signal; multiplexed signals are only present when the switch equals their
+	// selector value. is_multiplexor and is_multiplexed can both be true for
+	// extended multiplexing ('m<N>M').
+	is_multiplexor bool // 'M' — selects which multiplexed signals are present
+	is_multiplexed bool // 'm<N>' — present only when the switch == multiplexor_value
+	multiplexor_value int // the N in 'm<N>'
 }
 
 // label returns the VAL_ table name for the signal's current raw value in
@@ -155,4 +162,34 @@ pub fn (m Message) signal_at(g int) int {
 		}
 	}
 	return -1
+}
+
+// multiplexor_index returns the index of the message's multiplexor switch
+// signal ('M'), or -1 if the message is not multiplexed.
+pub fn (m Message) multiplexor_index() int {
+	for i, s in m.signals {
+		if s.is_multiplexor {
+			return i
+		}
+	}
+	return -1
+}
+
+// active_signals returns the signals actually present in `data`: every
+// non-multiplexed signal, plus the multiplexed signals whose selector matches
+// the current value of the multiplexor switch. For a non-multiplexed message it
+// returns all signals unchanged.
+pub fn (m Message) active_signals(data []u8) []Signal {
+	mux_idx := m.multiplexor_index()
+	if mux_idx < 0 {
+		return m.signals
+	}
+	mux_val := m.signals[mux_idx].raw_value(data)
+	mut out := []Signal{}
+	for s in m.signals {
+		if !s.is_multiplexed || u64(s.multiplexor_value) == mux_val {
+			out << s
+		}
+	}
+	return out
 }

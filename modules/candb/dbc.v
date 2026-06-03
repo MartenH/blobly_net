@@ -41,18 +41,21 @@ pub fn load_dbc_file(path string) !Database {
 
 struct SigBuilder {
 mut:
-	name       string
-	start_bit  int
-	length     int
-	factor     f64 = 1.0
-	offset     f64
-	minimum    f64
-	maximum    f64
-	unit       string
-	desc       string
-	values     map[u64]string
-	is_signed  bool
-	byte_order ByteOrder
+	name              string
+	start_bit         int
+	length            int
+	factor            f64 = 1.0
+	offset            f64
+	minimum           f64
+	maximum           f64
+	unit              string
+	desc              string
+	values            map[u64]string
+	is_signed         bool
+	byte_order        ByteOrder
+	is_multiplexor    bool
+	is_multiplexed    bool
+	multiplexor_value int
 }
 
 struct MsgBuilder {
@@ -102,18 +105,21 @@ pub fn parse_dbc(text string) !Database {
 		mut sigs := []Signal{cap: mb.sigs.len}
 		for sb in mb.sigs {
 			sigs << Signal{
-				name:       sb.name
-				start_bit:  sb.start_bit
-				length:     sb.length
-				factor:     sb.factor
-				offset:     sb.offset
-				minimum:    sb.minimum
-				maximum:    sb.maximum
-				unit:       sb.unit
-				desc:       sb.desc
-				values:     sb.values.clone()
-				is_signed:  sb.is_signed
-				byte_order: sb.byte_order
+				name:              sb.name
+				start_bit:         sb.start_bit
+				length:            sb.length
+				factor:            sb.factor
+				offset:            sb.offset
+				minimum:           sb.minimum
+				maximum:           sb.maximum
+				unit:              sb.unit
+				desc:              sb.desc
+				values:            sb.values.clone()
+				is_signed:         sb.is_signed
+				byte_order:        sb.byte_order
+				is_multiplexor:    sb.is_multiplexor
+				is_multiplexed:    sb.is_multiplexed
+				multiplexor_value: sb.multiplexor_value
 			}
 		}
 		out << Message{
@@ -157,6 +163,24 @@ fn parse_sg(line string) !SigBuilder {
 	}
 	name := hf[1]
 
+	// Optional multiplexing marker between the name and ':' — 'M' (the switch),
+	// 'm<N>' (multiplexed, selector N), or 'm<N>M' (extended: both).
+	mut is_multiplexor := false
+	mut is_multiplexed := false
+	mut multiplexor_value := 0
+	if hf.len > 2 {
+		marker := hf[2]
+		if marker == 'M' {
+			is_multiplexor = true
+		} else if marker.starts_with('m') {
+			is_multiplexed = true
+			multiplexor_value = marker[1..].trim_right('M').int()
+			if marker.ends_with('M') {
+				is_multiplexor = true
+			}
+		}
+	}
+
 	// unit is quoted and may contain spaces; split the body at the first quote.
 	q1 := index_byte_from(body, `"`, 0) or { return error('SG_ missing unit quotes: ${line}') }
 	q2 := index_byte_from(body, `"`, q1 + 1) or { return error('SG_ unterminated unit: ${line}') }
@@ -198,16 +222,19 @@ fn parse_sg(line string) !SigBuilder {
 	}
 
 	return SigBuilder{
-		name:       name
-		start_bit:  start
-		length:     length
-		factor:     factor
-		offset:     offset
-		minimum:    minimum
-		maximum:    maximum
-		unit:       unit
-		is_signed:  is_signed
-		byte_order: byte_order
+		name:              name
+		start_bit:         start
+		length:            length
+		factor:            factor
+		offset:            offset
+		minimum:           minimum
+		maximum:           maximum
+		unit:              unit
+		is_signed:         is_signed
+		byte_order:        byte_order
+		is_multiplexor:    is_multiplexor
+		is_multiplexed:    is_multiplexed
+		multiplexor_value: multiplexor_value
 	}
 }
 

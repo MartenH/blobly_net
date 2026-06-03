@@ -97,6 +97,53 @@ fn test_missing_file_is_error() {
 	}
 }
 
+fn test_multiplexing_parse_and_select() {
+	// A message with a multiplexor switch (Mode) and two multiplexed signals that
+	// share the same bits but only appear for their selector value.
+	text := 'BO_ 400 Mux: 8 SUT\n' +
+		' SG_ Mode M : 0|8@1+ (1,0) [0|255] "" Tester\n' +
+		' SG_ TempA m0 : 8|16@1+ (0.1,0) [0|0] "degC" Tester\n' +
+		' SG_ PressB m1 : 8|16@1+ (0.5,0) [0|0] "kPa" Tester\n'
+	m := (parse_dbc(text) or { panic(err) }).lookup(400) or { panic('no msg') }
+	assert m.multiplexor_index() == 0
+	assert m.signals[0].is_multiplexor
+	assert m.signals[1].is_multiplexed && m.signals[1].multiplexor_value == 0
+	assert m.signals[2].is_multiplexed && m.signals[2].multiplexor_value == 1
+
+	// Mode=0 -> Mode + TempA present, PressB hidden.
+	mut d0 := []u8{len: 8}
+	m.signals[0].encode(mut d0, 0)
+	m.signals[1].encode(mut d0, 12.5)
+	active0 := m.active_signals(d0)
+	assert active0.len == 2
+	assert active0[0].name == 'Mode' && active0[1].name == 'TempA'
+
+	// Mode=1 -> Mode + PressB present, TempA hidden.
+	mut d1 := []u8{len: 8}
+	m.signals[0].encode(mut d1, 1)
+	m.signals[2].encode(mut d1, 50.0)
+	active1 := m.active_signals(d1)
+	assert active1.len == 2
+	assert active1[1].name == 'PressB'
+	assert active1[1].physical(d1) == 50.0
+}
+
+fn test_extended_mux_marker() {
+	// 'm0M' = a signal that is both multiplexed (selector 0) and itself a switch.
+	text := 'BO_ 401 ExtMux: 8 SUT\n SG_ Sub m0M : 0|8@1+ (1,0) [0|255] "" Tester\n'
+	m := (parse_dbc(text) or { panic(err) }).lookup(401) or { panic('no msg') }
+	s := m.signals[0]
+	assert s.is_multiplexed && s.multiplexor_value == 0
+	assert s.is_multiplexor
+}
+
+fn test_non_multiplexed_returns_all() {
+	// cantester.dbc is not multiplexed: active_signals == all signals.
+	pt := cantester_dbc().lookup(0x100) or { panic('no Powertrain') }
+	assert pt.multiplexor_index() == -1
+	assert pt.active_signals([]u8{len: 8}).len == pt.signals.len
+}
+
 fn test_dbc_decode_roundtrip_and_label() {
 	pt := cantester_dbc().lookup(0x100) or { panic('no Powertrain') }
 	mut data := []u8{len: 8}
