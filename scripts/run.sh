@@ -20,4 +20,7 @@ fi
 # First arg is the target to run; defaults to the main window.
 TARGET="${1:-src/main.v}"
 shift || true
-exec "$V" run "$TARGET" "$@"
+
+# Local modules live in ./modules — add it to V's lookup order (which -path
+# otherwise replaces, so the defaults @vlib|@vmodules must be re-listed).
+exec "$V" -path "@vlib|@vmodules|modules" run "$TARGET" "$@"
