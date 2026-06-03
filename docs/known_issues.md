@@ -60,6 +60,24 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
 
 ## Environment (WSL2 / kernel)
 
+- 🔴 **Hardware GL is broken on this WSL → we use software GL (llvmpipe).** Investigated 2026-06-03:
+  - The GPU *renders*: `/dev/dxg` present; `glxinfo` shows `direct rendering: Yes`, renderer
+    `D3D12 (Intel Arc 140T)`, GL 4.2. So it's not "no GPU."
+  - But accelerated GLX content **never composites** — `glxgears` on hardware GL is solid black (not
+    app-specific), and our app on hardware GL logs `D3D12: Removing Device` + `invalid memory access`
+    (Mesa's d3d12 driver crashes the device after ~110 frames).
+  - **Vulkan hardware path missing** too: after installing `mesa-vulkan-drivers`, the only working
+    Vulkan device is `llvmpipe` (software); the real GPU ICD (dozen/D3D12→Vulkan) isn't present, so
+    Zink can't run.
+  - Root cause: incomplete WSLg GPU userspace — `/usr/lib/wsl/lib` only has `libd3d12*.so` (a standard
+    WSLg also ships the Mesa GL frontend + a dzn Vulkan ICD there). This is the "non-standard WSL"
+    missing rendering bits.
+  - **Verdict:** keep `LIBGL_ALWAYS_SOFTWARE=1` (llvmpipe) — stable and fine for this 2D app
+    (validated 60fps with 1000+ widgets). `scripts/run.sh` honours `CANTESTER_SOFTWARE_GL=0` to try
+    hardware once the env is fixed. Possible host-side fixes: newer Mesa (e.g. kisak-mesa PPA — the
+    d3d12 device-removal may be a Mesa 23.2 bug), or a standard WSL2 kernel + complete WSLg distro.
+
+
 - 🟢 **`vcan` "won't load" was a non-issue.** `modprobe vcan` → ENOEXEC because the stale `.ko` in
   /lib/modules predates the running kernel (custom WSL2 build). BUT the running kernel has
   `CONFIG_CAN_VCAN=y`, `CONFIG_CAN_RAW=y`, `CONFIG_CAN_ISOTP=y` — all **built-in** (verified via
