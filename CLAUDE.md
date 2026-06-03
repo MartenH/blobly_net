@@ -16,14 +16,23 @@ Bootstrap a fresh box in one shot:
 ```
 Then run the app:
 ```sh
-./scripts/run.sh                       # software GL (always works)
-CANTESTER_SOFTWARE_GL=0 ./scripts/run.sh   # HARDWARE GL — try this first on Ubuntu 24.04 (Mesa 24.x)
+./scripts/run.sh                       # HARDWARE GL (now the default — works on 24.04 / Mesa 24.x+)
+CANTESTER_SOFTWARE_GL=1 ./scripts/run.sh   # software-GL fallback (always works; for old Mesa)
 python3 sut/can_sut.py vcan0            # virtual ECU, in another terminal
 ```
 **Context:** we moved off Ubuntu 22.04 → **24.04** specifically to get **Mesa 24.x**, because 22.04's
-Mesa 23.2 crashed the GPU on our sokol hardware-GL path (full story in `docs/known_issues.md`). On
-24.04, verify hardware GL works; if it does, change `scripts/run.sh` to default `CANTESTER_SOFTWARE_GL=0`.
-If it still crashes, keep software GL — it's perfectly fine for this 2D app.
+Mesa 23.2 crashed the GPU on our sokol hardware-GL path (full story in `docs/known_issues.md`).
+**RESOLVED 2026-06-03:** on 24.04 + **Mesa 25.2.8** (OpenGL 4.5), hardware GL renders correctly under
+WSLg — so `scripts/run.sh` now defaults to hardware GL. Software GL stays a one-env-var fallback if
+hardware ever regresses; it's perfectly fine for this 2D app.
+
+**⚠️ CAN is built into this kernel (`=y`), NOT a module.** Don't be fooled: `modprobe vcan` fails with
+"Module vcan not found" and `/lib/modules/<ver>/` is empty — that is EXPECTED, not breakage. The custom
+WSL kernel (`.wslconfig` → `bzImage-can.new`) compiles CAN/vcan in (`CONFIG_CAN=y`, `CONFIG_CAN_VCAN=y`).
+Verify CAN actually works with a socket probe, not `lsmod`/`modprobe`:
+`python3 -c "import socket;s=socket.socket(socket.AF_CAN,socket.SOCK_RAW,socket.CAN_RAW);s.bind(('vcan0',));print('CAN OK')"`
+or `cansend vcan0 123#DEADBEEF` + `candump vcan0`. If `.wslconfig` points to a stock MS kernel instead,
+THEN CAN is genuinely absent — check `zcat /proc/config.gz | grep CONFIG_CAN`.
 
 Note: some patterns were adapted from a private reference project — **never name external/private
 projects anywhere in this repo** (re-implement generically).
@@ -144,9 +153,12 @@ Verified: a breakpoint at `main__main` resolves to `src/main.v` and stops there.
 
 ## Pinned versions (fill in once a working combo is confirmed)
 
-- V: 0.5.1 (commit 4dbcba6), built from source to `~/v`, symlinked `~/.local/bin/v`.
+- V: 0.5.1 (built from source to `~/v`, symlinked `~/.local/bin/v`). Original pin 4dbcba6; the
+  24.04 box rebuilt at commit **de365a1** — still reports `0.5.1`, builds + tests pass, so the drift
+  is cosmetic. Re-pin to de365a1 unless a regression surfaces.
 - vlang/gui: commit 68b9302 (2026-05-11), in `~/.vmodules/gui`. Depends on `vglyph`.
-- **CONFIRMED WORKING**: builds clean, window renders under WSLg (X11/sokol backend).
+- Mesa: **25.2.8** on Ubuntu 24.04.4 (OpenGL 4.5 Compatibility) — hardware GL works under WSLg.
+- **CONFIRMED WORKING**: builds clean, window renders under WSLg with **hardware GL** (sokol backend).
 
 ## System dependencies (all installed via apt)
 
@@ -158,10 +170,11 @@ libxinerama-dev libasound2-dev` (plus libxi/libxtst pulled in as deps).
 
 Benign at runtime: sokol `LINUX_X11_QUERY_SYSTEM_DPI_FAILED` → falls back to 96 DPI.
 
-**WSLg blank-window gotcha (IMPORTANT):** default GPU GL passthrough (d3d12) draws frames
-but composites a BLANK/black window under WSLg. Fix = force Mesa software rendering:
-`LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe`. Always launch via `scripts/run.sh`,
-which sets this. Confirmed via screenshots: hardware GL = black, software GL = full UI.
+**WSLg blank-window gotcha (HISTORICAL — fixed on 24.04):** on Ubuntu 22.04 (Mesa 23.2) the GPU GL
+passthrough (d3d12) drew frames but composited a BLANK/black window under WSLg; the workaround was
+forcing Mesa software rendering (`LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe`). On **24.04 +
+Mesa 25.2.8 hardware GL renders correctly**, so `scripts/run.sh` now defaults to hardware GL; pass
+`CANTESTER_SOFTWARE_GL=1` to re-enable the software fallback if a future Mesa regresses.
 
 Passwordless sudo scoped to `apt-get`, `modprobe`, `ip` via `/etc/sudoers.d/cantester`.
 
@@ -224,3 +237,10 @@ Passwordless sudo scoped to `apt-get`, `modprobe`, `ip` via `/etc/sudoers.d/cant
   decode), Send (form), Statistics (counters). Panels split/tab/drag-redock/close; layout persisted
   in `app.dock_root`. Verified live vs SUT (RX streaming, inline expand, all panels updating).
   Screenshot docs/gui_validation/app_dockable.png. Next: Phase 5 (DBC parsing) / more panels.
+- 2026-06-03: **Migration to 24.04 complete & hardware GL WORKS.** Fresh 24.04.4 box, Mesa 25.2.8
+  (OpenGL 4.5). User confirmed hardware GL renders under WSLg → flipped `scripts/run.sh` to default
+  hardware GL (`CANTESTER_SOFTWARE_GL=1` is now the fallback). V rebuilt at commit de365a1 (still
+  0.5.1). **Corrected a CAN false-alarm:** `modprobe vcan` fails + `/lib/modules` empty looked like
+  "stock kernel, no CAN", but `.wslconfig` → `bzImage-can.new` compiles CAN in (`=y`); AF_CAN bind +
+  cansend/candump loopback on vcan0 PASS. CAN is fully operational. Doc'd the socket-probe-not-lsmod
+  rule. Next: Phase 5 (DBC parsing) + big-endian in candb.
