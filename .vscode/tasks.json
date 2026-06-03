@@ -24,6 +24,27 @@
 			"presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
 		},
 		{
+			"label": "Setup: vcan0",
+			"type": "shell",
+			"command": "./scripts/setup_vcan.sh",
+			"problemMatcher": [],
+			"presentation": { "reveal": "always", "panel": "shared" }
+		},
+		{
+			"label": "Run virtual SUT (Python)",
+			"type": "shell",
+			"command": "python3 sut/can_sut.py",
+			"problemMatcher": [],
+			"dependsOn": "Setup: vcan0",
+			"presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+		},
+		{
+			"label": "CAN: SUT + Tester",
+			"dependsOn": ["Run virtual SUT (Python)", "Run GUI (main window)"],
+			"dependsOrder": "parallel",
+			"problemMatcher": []
+		},
+		{
 			"label": "Build GUI (compile only)",
 			"type": "shell",
 			"command": "${env:HOME}/v/v -path \"@vlib|@vmodules|modules\" -o build/cantester src/main.v",
