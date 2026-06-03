@@ -129,6 +129,15 @@ Verified: a breakpoint at `main__main` resolves to `src/main.v` and stops there.
   go-gui as a reference for API *intent*/docs since it mirrors the same concepts. Risk to watch:
   future V versions breaking the pinned gui. The CAN/engine logic is deliberately GUI-free so the GUI
   stays replaceable if needed.
+- **GUI fallback options** (if vlang/gui's immaturity keeps costing us). We chose vlang/gui for being
+  *native V*, app-like, with real text shaping (vglyph) and a production-grade `data_grid`. If we
+  switch, the strongest fallback is **Dear ImGui** via the `cimgui` C bindings (V can wrap C) —
+  battle-tested, huge ecosystem, and **ImPlot** is best-in-class for real-time signal plots (very
+  relevant once we do heavy plotting). Trade-offs: it's a C++ FFI layer to wrap/build, has a
+  "debug-tool" aesthetic, and weaker typography. **Key caveat:** ImGui is *also* GPU-rendered, so it
+  would hit the **same WSLg hardware-GL wall** — not an escape from that. Other V options: `vlang/ui`
+  (older, native-ish widgets) and raw `vlang/gg` (build your own widgets). Decision stays vlang/gui
+  for now; revisit ImGui+ImPlot if gui blocks us or when the plotting phase demands more.
 - **`docs/known_issues.md`** — categorized gotchas (V / gui / rendering / env / our code). Check it
   first when something breaks, and add new findings there under the right layer.
 - vcan setup (later): `scripts/setup_vcan.sh`; cross-check with `candump vcan0` / `cansend vcan0 ...`.
