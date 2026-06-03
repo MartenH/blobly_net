@@ -373,6 +373,7 @@ fn send_panel(app &App) gui.View {
 			gui.text(text: 'Transmit a frame', text_style: gui.theme().b3),
 			gui.row(
 				v_align: .middle
+				sizing:  gui.fill_fit
 				spacing: 6
 				content: [
 					gui.text(text: 'id', text_style: gui.theme().n4),
@@ -380,6 +381,7 @@ fn send_panel(app &App) gui.View {
 						id_focus:        10
 						text:            app.send_id
 						width:           90
+						max_height:      36
 						sizing:          gui.fixed_fit
 						placeholder:     'hex id'
 						on_text_changed: fn (_ &gui.Layout, s string, mut w gui.Window) {
@@ -391,6 +393,7 @@ fn send_panel(app &App) gui.View {
 			),
 			gui.row(
 				v_align: .middle
+				sizing:  gui.fill_fit
 				spacing: 6
 				content: [
 					gui.text(text: 'data', text_style: gui.theme().n4),
@@ -398,6 +401,7 @@ fn send_panel(app &App) gui.View {
 						id_focus:        11
 						text:            app.send_data
 						width:           200
+						max_height:      36
 						sizing:          gui.fixed_fit
 						placeholder:     'hex bytes'
 						on_enter:        fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
