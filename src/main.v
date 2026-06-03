@@ -1,15 +1,16 @@
 // CANTester — main application window.
 //
-// Live CAN tester on vcan0. Two trace views (toggle):
-//   - Grouped: one row per CAN ID, click to expand into decoded signal rows
-//     (Signal / Value / Raw / Interpretation) — J1939-trace style.
-//   - All: chronological scroll of every frame.
-// Plus a send form. Run sut/can_sut.py to feed it traffic.
+// Live CAN tester on vcan0, built as a dockable workspace (gui dock_layout):
+//   - Trace panel: grouped (one row per ID, click to expand into decoded signal
+//     rows) or chronological "all" — toggled from the toolbar.
+//   - Signals panel: live decode of 0x100 Powertrain.
+//   - Send panel: transmit a frame.
+//   - Statistics panel: bus counters.
+// Panels can be split, tabbed, dragged to re-dock, and closed; the layout tree
+// is persisted in app state. Run sut/can_sut.py to feed it traffic.
 //
 // Threading: a background thread blocks on bus.recv and hands each frame to the
-// UI thread via w.queue_command (the gui-sanctioned cross-thread bridge). All
-// app state is therefore mutated on the UI thread only — no locks, and no
-// always-on animation timer (which interfered with interactive column resizing).
+// UI thread via w.queue_command. All app state mutates on the UI thread (no locks).
 module main
 
 import gui
@@ -32,7 +33,6 @@ struct TraceRow {
 	name string
 }
 
-// MsgAgg is the latest state of one CAN ID, for the grouped view.
 struct MsgAgg {
 mut:
 	id      u32
@@ -47,6 +47,7 @@ mut:
 struct App {
 mut:
 	bus       &transport.SocketCanBus = unsafe { nil }
+	dock_root &gui.DockNode           = unsafe { nil }
 	connected bool
 	status    string
 	t0        i64
@@ -68,18 +69,18 @@ fn main() {
 	mut window := gui.window(
 		title:   'CANTester — CAN'
 		state:   &App{}
-		width:   1100
-		height:  660
+		width:   1180
+		height:  680
 		on_init: fn (mut w gui.Window) {
 			mut app := w.state[App]()
 			app.t0 = time.ticks()
+			app.dock_root = default_layout()
 			app.status = 'opening ${iface}…'
 			w.update_view(main_view)
 			if bus := transport.open_socketcan(iface) {
 				app.bus = bus
 				app.connected = true
 				app.status = 'connected to ${iface}'
-				// RX thread: block for frames, deliver to the UI thread.
 				spawn fn (mut w gui.Window) {
 					rx_loop(mut w)
 				}(mut w)
@@ -90,6 +91,13 @@ fn main() {
 	)
 	window.set_theme(gui.theme_dark_bordered)
 	window.run()
+}
+
+// Trace (left) | [ Signals / Send tabs ] over [ Statistics ] (right).
+fn default_layout() &gui.DockNode {
+	return gui.dock_split('root', .horizontal, 0.64, gui.dock_panel_group('main', ['trace'],
+		'trace'), gui.dock_split('right', .vertical, 0.62, gui.dock_panel_group('rt', ['signals', 'send'],
+		'signals'), gui.dock_panel_group('rb', ['stats'], 'stats')))
 }
 
 fn rx_loop(mut w gui.Window) {
@@ -107,8 +115,6 @@ fn rx_loop(mut w gui.Window) {
 	}
 }
 
-// push records a frame into the chronological trace and the grouped map.
-// Runs on the UI thread only.
 fn (mut app App) push(dir string, f transport.CanFrame) {
 	app.seq++
 	if dir == 'RX' {
@@ -146,9 +152,89 @@ fn (mut app App) push(dir string, f transport.CanFrame) {
 
 fn main_view(mut window gui.Window) gui.View {
 	w, h := window.window_size()
-	mut app := window.state[App]()
+	app := window.state[App]()
 
+	return gui.column(
+		width:   w
+		height:  h
+		sizing:  gui.fixed_fixed
+		padding: gui.padding_medium
+		spacing: 8
+		content: [
+			toolbar(app),
+			gui.dock_layout(
+				id:               'dock'
+				root:             app.dock_root
+				panels:           [
+					gui.DockPanelDef{ id: 'trace', label: 'Trace', content: [trace_panel(mut window)] },
+					gui.DockPanelDef{ id: 'signals', label: 'Signals', content: [signals_panel(app)] },
+					gui.DockPanelDef{ id: 'send', label: 'Send', content: [send_panel(app)] },
+					gui.DockPanelDef{ id: 'stats', label: 'Statistics', content: [stats_panel(app)] },
+				]
+				on_layout_change: fn (nr &gui.DockNode, mut w gui.Window) {
+					mut a := w.state[App]()
+					a.dock_root = unsafe { nr }
+				}
+				on_panel_select:  fn (group_id string, panel_id string, mut w gui.Window) {
+					mut a := w.state[App]()
+					a.dock_root = gui.dock_tree_select_panel(a.dock_root, group_id, panel_id)
+				}
+				on_panel_close:   fn (panel_id string, mut w gui.Window) {
+					mut a := w.state[App]()
+					a.dock_root = gui.dock_tree_remove_panel(a.dock_root, panel_id)
+				}
+			),
+		]
+	)
+}
+
+fn toolbar(app &App) gui.View {
+	dot := if app.connected { '🟢' } else { '🔴' }
+	return gui.row(
+		v_align: .middle
+		sizing:  gui.fill_fit
+		spacing: 10
+		content: [
+			gui.text(text: 'CANTester', text_style: gui.theme().b1),
+			gui.text(text: '${dot} ${app.status}', text_style: gui.theme().n4),
+			gui.text(text: 'RX ${app.rx_count}  TX ${app.tx_count}', text_style: gui.theme().n4),
+			gui.button(
+				id_focus: 100
+				content:  [gui.text(text: 'View: ${app.mode}')]
+				on_click: fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					mut a := w.state[App]()
+					a.mode = if a.mode == 'grouped' { 'all' } else { 'grouped' }
+				}
+			),
+			gui.button(
+				id_focus: 101
+				content:  [gui.text(text: if app.paused { '▶ Resume' } else { '⏸ Pause' })]
+				on_click: fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					mut a := w.state[App]()
+					a.paused = !a.paused
+				}
+			),
+			gui.button(
+				id_focus: 102
+				content:  [gui.text(text: '🗑 Clear')]
+				on_click: fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					mut a := w.state[App]()
+					a.trace = []TraceRow{}
+					a.grouped = map[u32]MsgAgg{}
+					a.order = []u32{}
+					a.expand_id = -1
+				}
+			),
+		]
+	)
+}
+
+fn trace_panel(mut window gui.Window) gui.View {
+	_, h := window.window_size()
+	app := window.state[App]()
 	grouped := app.mode == 'grouped'
+	grid_h := f32(h) - 130
+
 	mut rows := []gui.GridRow{}
 	if grouped {
 		for id in app.order {
@@ -185,40 +271,15 @@ fn main_view(mut window gui.Window) gui.View {
 				}
 			}
 		}
-	} else {
-		n := app.trace.len
-		start := if n > max_shown { n - max_shown } else { 0 }
-		for i := n - 1; i >= start; i-- {
-			r := app.trace[i]
-			rows << gui.GridRow{
-				id:    '${r.seq}'
-				cells: {
-					'time': '${r.t_ms:.0f}'
-					'dir':  r.dir
-					'id':   hexid(r.id, r.ext)
-					'dlc':  '${r.dlc}'
-					'data': hex(r.data)
-					'name': r.name
-				}
-			}
-		}
-	}
-
-	grid_h := f32(h) - 150
-	// Window id is folded into the grid id (coarsely) so the columns re-flow
-	// when the window is resized; the Data column flexes to fill the width.
-	wbucket := int(w) / 25
-	trace := if grouped {
-		fixed := f32(200 + 150 + 90 + 70 + 90)
-		data_w := fill_width(f32(w), fixed, 250)
-		window.data_grid(
-			id:                  'trace_grouped_${wbucket}'
+		return window.data_grid(
+			id:                  'trace_grouped'
+			sizing:              gui.fill_fill
 			max_height:          grid_h
 			columns:             [
 				tcol('id', 'ID / Signal', 200, .start),
 				tcol('name', 'Message / Value', 150, .start),
 				tcol('dlc', 'DLC / Raw', 90, .end),
-				tcol('data', 'Data / Interpretation', data_w, .start),
+				tcol('data', 'Data / Interpretation', 300, .start),
 				tcol('count', 'Count', 70, .end),
 				tcol('time', 'Last(ms)', 90, .end),
 			]
@@ -235,118 +296,119 @@ fn main_view(mut window gui.Window) gui.View {
 			}
 			on_cell_format:      trace_cell_format
 		)
-	} else {
-		fixed := f32(80 + 50 + 110 + 50 + 150)
-		data_w := fill_width(f32(w), fixed, 200)
-		window.data_grid(
-			id:             'trace_all_${wbucket}'
-			max_height:     grid_h
-			columns:        [
-				tcol('time', 'Time(ms)', 80, .end),
-				tcol('dir', 'Dir', 50, .start),
-				tcol('id', 'ID', 110, .start),
-				tcol('dlc', 'DLC', 50, .end),
-				tcol('data', 'Data', data_w, .start),
-				tcol('name', 'Message', 150, .start),
-			]
-			rows:           rows
-			on_cell_format: trace_cell_format
-		)
 	}
-
-	return gui.column(
-		width:   w
-		height:  h
-		sizing:  gui.fixed_fixed
-		padding: gui.padding_medium
-		spacing: 8
-		content: [
-			toolbar(app, app.rx_count, app.tx_count, app.paused),
-			trace,
-			send_panel(app),
+	n := app.trace.len
+	start := if n > max_shown { n - max_shown } else { 0 }
+	for i := n - 1; i >= start; i-- {
+		r := app.trace[i]
+		rows << gui.GridRow{
+			id:    '${r.seq}'
+			cells: {
+				'time': '${r.t_ms:.0f}'
+				'dir':  r.dir
+				'id':   hexid(r.id, r.ext)
+				'dlc':  '${r.dlc}'
+				'data': hex(r.data)
+				'name': r.name
+			}
+		}
+	}
+	return window.data_grid(
+		id:             'trace_all'
+		sizing:         gui.fill_fill
+		max_height:     grid_h
+		columns:        [
+			tcol('time', 'Time(ms)', 80, .end),
+			tcol('dir', 'Dir', 50, .start),
+			tcol('id', 'ID', 110, .start),
+			tcol('dlc', 'DLC', 50, .end),
+			tcol('data', 'Data', 300, .start),
+			tcol('name', 'Message', 150, .start),
 		]
+		rows:           rows
+		on_cell_format: trace_cell_format
 	)
 }
 
-// fill_width sizes the flexible Data column to consume the leftover window width.
-fn fill_width(win f32, fixed f32, min f32) f32 {
-	w := win - fixed - 80 // outer padding + scrollbar + expander indent
-	return if w < min { min } else { w }
+fn signals_panel(app &App) gui.View {
+	pt := (app.grouped[sampledb.powertrain().id] or { MsgAgg{} }).last
+	mut lines := []gui.View{}
+	lines << gui.text(text: 'Signals — 0x100 Powertrain', text_style: gui.theme().b3)
+	if pt.len == 8 {
+		for s in sampledb.powertrain().signals {
+			lines << gui.text(text: '${s.name}: ${s.physical(pt):.1f} ${s.unit}', text_style: gui.theme().n4)
+		}
+	} else {
+		lines << gui.text(text: '(waiting for 0x100 frames…)', text_style: gui.theme().n4)
+	}
+	return gui.column(
+		sizing:  gui.fill_fill
+		padding: gui.padding_medium
+		spacing: 5
+		content: lines
+	)
 }
 
-fn toolbar(app &App, rx int, tx int, paused bool) gui.View {
-	dot := if app.connected { '🟢' } else { '🔴' }
-	return gui.row(
-		v_align: .middle
-		sizing:  gui.fill_fit
-		spacing: 10
+fn stats_panel(app &App) gui.View {
+	return gui.column(
+		sizing:  gui.fill_fill
+		padding: gui.padding_medium
+		spacing: 5
 		content: [
-			gui.text(text: 'CANTester', text_style: gui.theme().b1),
-			gui.text(text: '${dot} ${app.status}', text_style: gui.theme().n4),
-			gui.text(text: 'RX ${rx}  TX ${tx}', text_style: gui.theme().n4),
-			gui.button(
-				id_focus: 100
-				content:  [gui.text(text: 'View: ${app.mode}')]
-				on_click: fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
-					mut a := w.state[App]()
-					a.mode = if a.mode == 'grouped' { 'all' } else { 'grouped' }
-				}
-			),
-			gui.button(
-				id_focus: 101
-				content:  [gui.text(text: if paused { '▶ Resume' } else { '⏸ Pause' })]
-				on_click: fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
-					mut a := w.state[App]()
-					a.paused = !a.paused
-				}
-			),
-			gui.button(
-				id_focus: 102
-				content:  [gui.text(text: '🗑 Clear')]
-				on_click: fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
-					mut a := w.state[App]()
-					a.trace = []TraceRow{}
-					a.grouped = map[u32]MsgAgg{}
-					a.order = []u32{}
-					a.expand_id = -1
-				}
-			),
+			gui.text(text: 'Bus statistics', text_style: gui.theme().b3),
+			gui.text(text: 'RX frames: ${app.rx_count}', text_style: gui.theme().n4),
+			gui.text(text: 'TX frames: ${app.tx_count}', text_style: gui.theme().n4),
+			gui.text(text: 'Unique IDs: ${app.order.len}', text_style: gui.theme().n4),
+			gui.text(text: 'Interface: ${iface}', text_style: gui.theme().n4),
 		]
 	)
 }
 
 fn send_panel(app &App) gui.View {
-	return gui.row(
-		v_align: .middle
-		sizing:  gui.fill_fit
+	return gui.column(
+		sizing:  gui.fill_fill
+		padding: gui.padding_medium
 		spacing: 8
 		content: [
-			gui.text(text: 'Send  id', text_style: gui.theme().n4),
-			gui.input(
-				id_focus:        10
-				text:            app.send_id
-				width:           90
-				sizing:          gui.fixed_fit
-				placeholder:     'hex id'
-				on_text_changed: fn (_ &gui.Layout, s string, mut w gui.Window) {
-					mut a := w.state[App]()
-					a.send_id = s
-				}
+			gui.text(text: 'Transmit a frame', text_style: gui.theme().b3),
+			gui.row(
+				v_align: .middle
+				spacing: 6
+				content: [
+					gui.text(text: 'id', text_style: gui.theme().n4),
+					gui.input(
+						id_focus:        10
+						text:            app.send_id
+						width:           90
+						sizing:          gui.fixed_fit
+						placeholder:     'hex id'
+						on_text_changed: fn (_ &gui.Layout, s string, mut w gui.Window) {
+							mut a := w.state[App]()
+							a.send_id = s
+						}
+					),
+				]
 			),
-			gui.text(text: 'data', text_style: gui.theme().n4),
-			gui.input(
-				id_focus:        11
-				text:            app.send_data
-				width:           250
-				sizing:          gui.fixed_fit
-				placeholder:     'hex bytes'
-				on_enter:        fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
-					do_send(mut w)
-				}
-				on_text_changed: fn (_ &gui.Layout, s string, mut w gui.Window) {
-					mut a := w.state[App]()
-					a.send_data = s
-				}
+			gui.row(
+				v_align: .middle
+				spacing: 6
+				content: [
+					gui.text(text: 'data', text_style: gui.theme().n4),
+					gui.input(
+						id_focus:        11
+						text:            app.send_data
+						width:           200
+						sizing:          gui.fixed_fit
+						placeholder:     'hex bytes'
+						on_enter:        fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+							do_send(mut w)
+						}
+						on_text_changed: fn (_ &gui.Layout, s string, mut w gui.Window) {
+							mut a := w.state[App]()
+							a.send_data = s
+						}
+					),
+				]
 			),
 			gui.button(
 				id_focus: 12
@@ -393,8 +455,9 @@ fn trace_cell_format(row gui.GridRow, _ int, col gui.GridColumnCfg, value string
 	return gui.GridCellFormat{}
 }
 
-// tcol builds a trace column: resizable + reorderable (gui defaults), but NOT
-// sortable — sorting a live trace would reshuffle the streaming rows.
+// tcol builds a trace column: resizable + reorderable (gui defaults), NOT
+// sortable (sorting a live trace would reshuffle the streaming rows), and with
+// max_width lifted from gui's 600 default so it can be widened freely.
 fn tcol(id string, title string, width f32, align gui.HorizontalAlign) gui.GridColumnCfg {
 	return gui.GridColumnCfg{
 		id:        id
@@ -402,7 +465,7 @@ fn tcol(id string, title string, width f32, align gui.HorizontalAlign) gui.GridC
 		width:     width
 		align:     align
 		sortable:  false
-		max_width: 4000 // default is 600; let the flexible Data column fill wide windows
+		max_width: 4000
 	}
 }
 
