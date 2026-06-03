@@ -34,11 +34,14 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
   Fixed by refreshing event-driven instead: the RX thread hands frames to the UI via
   `w.queue_command(...)` (the sanctioned cross-thread bridge) which calls `update_window()`. No timer,
   no mutex (all state mutates on the UI thread). Resize should be re-tested by the user.
-- 🟡 **`gui.input` stretches vertically inside a `fill_fill` container.** Its internal text area is
-  `fill_fill`, so in a filling column/panel the field balloons into a huge empty box. Pitfalls:
-  `sizing: fixed_fixed` or a hard `height:` make the field render with NO visible text/placeholder.
-  Working combo: `sizing: gui.fixed_fit` + `max_height: 36` (clamps the stretch while text still
-  renders). A ~1px top-clip on the text remains; acceptable. See `send_panel` in `src/main.v`.
+- 🟢 **`gui.input` stretches vertically inside a `fill_fill` container.** Its interior is a
+  `fill_fill` row with no intrinsic height, so in a filling column/panel the field balloons into a
+  huge box. The clean fix: give the input an explicit **`height`** + **`sizing: gui.fixed_fixed`** +
+  a tight **`padding`** (the theme's default `padding_medium` is too tall for ~32px and clips the
+  text). Working values: `height: 34, padding: gui.Padding{4, 8, 4, 8}, sizing: gui.fixed_fixed` —
+  text renders centered, no clip. (`max_height`-only clamps the box but mis-positions/clips the text.)
+  See `send_panel` in `src/main.v`. Note: `gui.Sizing` is `{width, height}` (e.g. `fill_fit` =
+  fill-width, fit-height).
 - 🟡 **data_grid detail rows are fixed to one row's height.** `on_detail_row_view` content is placed
   in a container hard-coded to `height: row_height` (`view_data_grid_rows.v:51`), so multi-line detail
   content overflows and overlaps the next row. Use it only for single-line detail. For our expandable
