@@ -4,6 +4,30 @@ A CANoe-like automotive bus tester written in **V (vlang)**. Long-term goal: tes
 Under Test) over **CAN / Ethernet / LIN** and the protocols on them. **Starting with CAN only**, and
 **virtual first** (no real hardware yet). Build incrementally: get the GUI up first, then add features.
 
+## 🆕 Fresh setup / new session — START HERE
+
+This repo is the **single source of truth** — a new Claude session on a new machine has NO prior
+memory (the old `~/.claude` memory does not transfer); everything needed is in git: this file +
+`docs/known_issues.md` + the scripts.
+
+Bootstrap a fresh box in one shot:
+```sh
+./scripts/setup_env.sh          # installs V + gui native deps + can-utils, builds, brings up vcan0, runs tests
+```
+Then run the app:
+```sh
+./scripts/run.sh                       # software GL (always works)
+CANTESTER_SOFTWARE_GL=0 ./scripts/run.sh   # HARDWARE GL — try this first on Ubuntu 24.04 (Mesa 24.x)
+python3 sut/can_sut.py vcan0            # virtual ECU, in another terminal
+```
+**Context:** we moved off Ubuntu 22.04 → **24.04** specifically to get **Mesa 24.x**, because 22.04's
+Mesa 23.2 crashed the GPU on our sokol hardware-GL path (full story in `docs/known_issues.md`). On
+24.04, verify hardware GL works; if it does, change `scripts/run.sh` to default `CANTESTER_SOFTWARE_GL=0`.
+If it still crashes, keep software GL — it's perfectly fine for this 2D app.
+
+Note: some patterns were adapted from a private reference project — **never name external/private
+projects anywhere in this repo** (re-implement generically).
+
 ## Decisions (locked)
 
 - **Language:** V (vlang). Beta — expect compiler/runtime rough edges.
@@ -181,6 +205,11 @@ Passwordless sudo scoped to `apt-get`, `modprobe`, `ip` via `/etc/sudoers.d/cant
   tabbed panel groups, a data_grid nested in a panel, working inputs/buttons, and drag-to-redock with
   drop-zone preview + layout persistence. Solid under WSLg. Screenshots docs/gui_validation/dock_*.png.
   → Greenlit to refactor `src/main.v` into a dockable panel layout (Trace/Signals/Send/… panels).
+- 2026-06-03: GUI is dockable (Trace/Signals/Send/Statistics panels); fixed gui.input sizing quirk.
+  Hardware-GL investigation: GPU works (glmark2) but our sokol app crashes Mesa 23.2's d3d12 core
+  profile → **migrating to Ubuntu 24.04 for Mesa 24.x**. Added `scripts/setup_env.sh` (one-shot
+  bootstrap) + this handoff section so a fresh session/distro can rebuild everything. Repo is the
+  source of truth (memory doesn't transfer). Next after migration: confirm hardware GL, then Phase 5.
 - 2026-06-03: **App refactored to dock layout** — `src/main.v` is now a global toolbar over a
   `dock_layout` with panels: Trace (grouped/all grid, inline signal expand), Signals (live 0x100
   decode), Send (form), Statistics (counters). Panels split/tab/drag-redock/close; layout persisted
