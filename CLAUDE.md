@@ -39,13 +39,32 @@ vcan0 (kernel)  <--->  Virtual SUT simulator (separate process on vcan0)
 ## Project layout
 
 ```
-v.mod                  module manifest
-src/main.v             entry point
-src/gui/               GUI code            (later)
-src/transport/         SocketCAN + iface   (later)
-src/sut/               virtual SUT sim     (later)
-scripts/setup_vcan.sh  brings up vcan0 (sudo) (later)
+v.mod                       module manifest
+src/main.v                  GUI entry point (thin consumer of modules)
+modules/candb/              CAN signal db: messages, signals, bit encode/decode (+ tests)
+modules/transport/          SocketCAN backend + Bus interface         (Phase 2)
+cmd/dashboard/              throwaway GUI capability demo
+cmd/signal_decode/          frame -> signals visualizer demo
+sut/                        Python virtual SUT / reference oracle      (Phase 2+)
+scripts/run.sh              build+run with WSLg software-GL workaround
+scripts/setup_vcan.sh       bring up vcan0 (sudo)
+docs/gui_validation/        screenshots proving gui capabilities
 ```
+
+### Module convention
+Split reusable, GUI-free logic into its own `modules/<name>/` as soon as it earns independence
+(isolated tests, importable by both `cmd/` tools and the GUI). `src/` (GUI) and `cmd/` (CLI) are
+thin consumers. Prefer many small focused modules over a monolith.
+
+**Mirror the Python automotive stack's boundaries** — they're a proven decomposition, and since the
+SUT is Python, each V module gets a direct counterpart to verify against:
+| V module (ours)        | Python counterpart (oracle) | Concern                       |
+|------------------------|-----------------------------|-------------------------------|
+| `transport`            | python-can                  | bus I/O (SocketCAN/vcan0)     |
+| `candb`                | cantools                    | DBC parse + signal en/decode  |
+| `isotp`   (future)     | can-isotp                   | ISO-TP segmentation           |
+| `uds`     (future)     | udsoncan                    | UDS diagnostics               |
+| `doip`/`someip` (fut.) | scapy automotive            | Ethernet protocols            |
 
 ## Environment (verified 2026-06-03)
 
@@ -64,9 +83,18 @@ scripts/setup_vcan.sh  brings up vcan0 (sudo) (later)
 
 ## Build / run
 
-- `scripts/run.sh` — **preferred**: build & run with WSLg software-GL workaround applied.
-- `v run src/main.v` — raw build & run (blank window under WSLg — see gotcha below).
-- `v version` — toolchain check.
+- `scripts/run.sh [target.v]` — **preferred**: build & run a target (default `src/main.v`) with the
+  WSLg software-GL workaround AND the local-module `-path` applied. e.g.
+  `scripts/run.sh cmd/signal_decode/decode.v`.
+- `v -path "@vlib|@vmodules|modules" run <file>` — raw equivalent (need `-path` for local modules;
+  need software-GL env for the GUI under WSLg — see `docs/known_issues.md`).
+- `v test modules/<name>/` — run a module's tests.
+
+## References
+
+- V docs: https://docs.vlang.io/introduction.html  ·  vlang/gui: https://github.com/vlang/gui
+- **`docs/known_issues.md`** — categorized gotchas (V / gui / rendering / env / our code). Check it
+  first when something breaks, and add new findings there under the right layer.
 - vcan setup (later): `scripts/setup_vcan.sh`; cross-check with `candump vcan0` / `cansend vcan0 ...`.
 
 ## Pinned versions (fill in once a working combo is confirmed)
