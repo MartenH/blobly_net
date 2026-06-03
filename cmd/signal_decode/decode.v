@@ -9,12 +9,25 @@
 module main
 
 import gui
+import os
 import math
 import time
+import candb
 import sampledb
 
-// The message we decode (shared catalog; same layout the SUT emits).
-const msg = sampledb.powertrain()
+// The message we decode — loaded from the real DBC (env CANTESTER_DBC overrides
+// the path), falling back to the hand-coded sampledb if the file isn't found.
+const msg = load_powertrain()
+
+fn load_powertrain() candb.Message {
+	path := os.getenv_opt('CANTESTER_DBC') or { 'dbc/cantester.dbc' }
+	if db := candb.load_dbc_file(path) {
+		if m := db.lookup(0x100) {
+			return m
+		}
+	}
+	return sampledb.powertrain()
+}
 
 const palette = [
 	gui.Color{90, 170, 250, 255},
