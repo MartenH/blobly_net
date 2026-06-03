@@ -1,0 +1,9 @@
+# V build artifacts
+cantester
+main
+*.tmp.c
+/src/main
+/src/cantester
+
+# Editor
+*.swp
