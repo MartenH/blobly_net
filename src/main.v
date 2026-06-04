@@ -259,7 +259,7 @@ fn toolbar(app &App) gui.View {
 				height:          30
 				padding:         gui.Padding{4, 8, 4, 8}
 				sizing:          gui.fixed_fixed
-				placeholder:     'path/to/capture.log'
+				placeholder:     'path/to/capture.log or .mf4'
 				on_enter:        fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					a := w.state[App]()
 					load_log(a.log_path, mut w)
@@ -278,8 +278,8 @@ fn toolbar(app &App) gui.View {
 					// fall back to the path typed in the box.
 					typed := w.state[App]().log_path
 					w.native_open_dialog(
-						title:   'Open CAN log (candump .log)'
-						filters: [gui.NativeFileFilter{ name: 'CAN logs', extensions: ['log'] }]
+						title:   'Open CAN recording (candump .log or ASAM .mf4)'
+						filters: [gui.NativeFileFilter{ name: 'CAN recordings', extensions: ['log', 'mf4'] }]
 						on_done: fn [typed] (result gui.NativeDialogResult, mut w gui.Window) {
 							match result.status {
 								.ok {
@@ -534,19 +534,44 @@ fn do_send(mut w gui.Window) {
 	app.push('TX', frame)
 }
 
-// load_log opens a candump `.log` file and shows it as a static capture:
-// live RX is paused and the trace is reset so the recording stands alone, with
-// each frame stamped by its recorded timestamp. The grouped view keeps every
-// unique ID + count; the chronological view shows the tail (max_trace cap).
+// mf4_to_log bridges an ASAM MF4 recording to a candump `.log` via the Python
+// asammdf bridge (`sut/mf4_bridge.py convert`), returning the temp `.log` path.
+// MF4 is a heavy binary container, so we don't parse it natively in V (see
+// CLAUDE.md Phase 7) — the mature asammdf/python-can stack does the extraction.
+fn mf4_to_log(mf4 string) !string {
+	py := if os.exists('.venv-tools/bin/python') { '.venv-tools/bin/python' } else { 'python3' }
+	out := os.join_path(os.temp_dir(), 'cantester_mf4_open.log')
+	res := os.execute('${py} sut/mf4_bridge.py convert "${mf4}" "${out}"')
+	if res.exit_code != 0 {
+		return error(res.output.trim_space())
+	}
+	return out
+}
+
+// load_log opens a candump `.log` (or an MF4 recording, bridged to `.log`) and
+// shows it as a static capture: live RX is paused and the trace is reset so the
+// recording stands alone, with each frame stamped by its recorded timestamp. The
+// grouped view keeps every unique ID + count; the chronological view shows the
+// tail (max_trace cap).
 fn load_log(path string, mut w gui.Window) {
 	mut app := w.state[App]()
 	p := path.trim_space()
 	if p.len == 0 {
-		app.status = 'no file picker here — type a log path and press Enter'
+		app.status = 'no file picker here — type a log/mf4 path and press Enter'
 		return
 	}
-	entries := canlog.load_file(p) or {
-		app.status = 'open log failed: ${err}'
+	// MF4 → candump .log via the asammdf bridge (blocks briefly on convert).
+	mut src := p
+	if p.to_lower().ends_with('.mf4') {
+		app.status = 'converting ${os.base(p)} via asammdf bridge…'
+		w.update_window()
+		src = mf4_to_log(p) or {
+			app.status = 'MF4 open failed: ${err}'
+			return
+		}
+	}
+	entries := canlog.load_file(src) or {
+		app.status = 'open failed: ${err}'
 		return
 	}
 	app.paused = true

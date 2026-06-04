@@ -19,9 +19,12 @@ if [ ! -x "$VENV/bin/python" ]; then
 		python3 -m venv "$VENV"
 	fi
 fi
+# asammdf reads MF4; python-can writes it (MF4Writer) + reads candump .log
+# (CanutilsLogReader) — used by `mf4_bridge.py tomf4` to mint an MF4 from any
+# capture we own. python-can is also our `transport` oracle (see CLAUDE.md).
 "$VENV/bin/pip" install --quiet --upgrade pip
-"$VENV/bin/pip" install --quiet asammdf
-"$VENV/bin/python" -c "import asammdf; print('asammdf', asammdf.__version__)"
+"$VENV/bin/pip" install --quiet asammdf python-can
+"$VENV/bin/python" -c "import asammdf, can; print('asammdf', asammdf.__version__, '| python-can', can.__version__)"
 
 # Real CSS Electronics / CANedge J1939 samples (a parked log + a driving log) and
 # the matching demo DBC. Hosted in their public api-examples repo.
@@ -42,5 +45,6 @@ done
 echo
 echo "Ready. Try:"
 echo "  $VENV/bin/python sut/mf4_bridge.py convert samples/driving.mf4 /tmp/drive.log"
+echo "  $VENV/bin/python sut/mf4_bridge.py tomf4   samples/demo.log    samples/demo.mf4"
 echo "  $VENV/bin/python sut/mf4_bridge.py diff    samples/parked.mf4 samples/parked.mf4"
 echo "  v -path \"@vlib|@vmodules|modules\" run cmd/dbc_decode/decode.v samples/j1939.dbc 0CF004FE <data_hex>"

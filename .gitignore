@@ -16,8 +16,10 @@ main
 # Exclude the contents but not the dir itself, so the demo log below can be
 # re-included (git can't un-ignore a file whose parent dir is excluded).
 samples/*
-# …but ship the tiny candump demo log so "Open Log" works out of the box.
+# …but ship the tiny candump demo log + its MF4 twin so "Open Log" (and the
+# MF4-aware open) work out of the box.
 !samples/demo.log
+!samples/demo.mf4
 
 # Python bytecode cache
 __pycache__/

@@ -6,6 +6,7 @@ logs — usually paired with a DBC. MF4 is a heavy binary container, so instead 
 parsing it natively in V we bridge it here with the mature `asammdf` library:
 
   convert <in.mf4> <out.log> [iface]   extract CAN frames -> candump .log
+  tomf4   <in.log> <out.mf4>           candump .log -> MF4 (python-can writer)
   frames  <in.mf4>                     print canonical frames (ts id[#]data)
   diff    <a.mf4> <b.mf4> [t_tol_ms]   SEMANTIC diff of two recordings
 
@@ -101,6 +102,26 @@ def cmd_diff(a_path, b_path, t_tol_ms=1.0):
     return 1
 
 
+def cmd_tomf4(in_log, out_mf4):
+    """candump .log -> MF4 (asammdf bus-logging layout) via python-can's
+    MF4Writer. Inverse of `convert`. Lets us mint a real MF4 from any candump
+    capture we own (e.g. sut/can_sut.py traffic), so MF4 features can be demoed
+    on non-J1939 data that decodes against dbc/cantester.dbc, and so the round
+    trip log -> mf4 -> convert -> frames closes on traffic we control."""
+    try:
+        import can
+        from can.io import MF4Writer
+    except ImportError:
+        sys.exit("python-can not installed — pip install python-can into "
+                 ".venv-tools (see CLAUDE.md)")
+    n = 0
+    with MF4Writer(out_mf4) as writer:
+        for msg in can.CanutilsLogReader(in_log):
+            writer.on_message_received(msg)
+            n += 1
+    print(f"wrote {n} frames -> {out_mf4}")
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -110,6 +131,8 @@ def main():
         cmd_frames(sys.argv[2])
     elif cmd == "convert":
         cmd_convert(sys.argv[2], sys.argv[3], *(sys.argv[4:5]))
+    elif cmd == "tomf4":
+        cmd_tomf4(sys.argv[2], sys.argv[3])
     elif cmd == "diff":
         tol = float(sys.argv[4]) if len(sys.argv) > 4 else 1.0
         return cmd_diff(sys.argv[2], sys.argv[3], tol)
