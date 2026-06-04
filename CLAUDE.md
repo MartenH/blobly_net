@@ -90,7 +90,7 @@ cmd/uds_smoke/              drive the UDS client vs sut/uds_server.py
 sut/can_sut.py              Python virtual SUT (emits/answers frames on vcan0)
 sut/dbc_oracle.py           independent stdlib DBC parser+decoder (cross-validates candb)
 sut/uds_server.py           Python virtual UDS server (stdlib ISO-TP) — oracle for modules/uds
-sut/mf4_bridge.py           asammdf MF4 -> candump/.asc converter + semantic diff (needs .venv-tools)
+sut/mf4_bridge.py           MF4<->candump bridge: convert/tomf4/frames/semantic-diff (needs .venv-tools)
 scripts/setup_mf4_tools.sh  build .venv-tools (asammdf) + fetch real J1939 MF4/DBC samples
 scripts/run.sh              build+run with WSLg software-GL workaround
 scripts/setup_vcan.sh       bring up vcan0 (sudo)
@@ -156,8 +156,14 @@ into shared code. The convention:
    0xFFFF "not-available" sentinel is filtered). DONE: `modules/canlog` (V candump `.log` parse/format,
    pure-V + tests) and a GUI **"Open Log"** action (toolbar) that loads a `.log` direct-to-trace —
    decodes via the DBC and times relative to the first frame (`samples/demo.log` shipped as a demo).
-   TODO: a timed *player* (replay onto vcan0 at recorded cadence) and MF4-aware open via the bridge.
-   (Native MF4-in-V is a later option; the Python bridge is the path for now.)
+   DONE: **MF4-aware open** — the GUI opens `.mf4` too (toolbar filter + `.mf4` detection in
+   `load_log`), shelling out to `sut/mf4_bridge.py convert` (MF4 → temp `.log` → direct-to-trace). To
+   keep the demo non-J1939 (J1939 needs PGN matching, deferred), `mf4_bridge.py` gained **`tomf4`**
+   (candump `.log` → MF4 via python-can's `MF4Writer`); we minted `samples/demo.mf4` from
+   `samples/demo.log` (round-trips identically, decodes against `cantester.dbc`) and ship it.
+   TODO: a timed *player* (replay onto vcan0 at recorded cadence); **J1939 PGN-aware lookup in `candb`**
+   so the real CSS J1939 MF4s decode (their DBC IDs carry priority+PGN+source-addr — exact-id match =
+   0 frames, PGN match = ~8k). (Native MF4-in-V is a later option; the Python bridge is the path now.)
 8+. Scripting/sequences (conventional test cases), more panels/plotting; then LIN + Ethernet
    (DoIP/SOME-IP) backends behind the same `Bus`/`Channel` abstractions (see Platform support).
 
@@ -363,3 +369,16 @@ prompt for a password.
   is ever unavailable (`.error`) the app falls back to the typed log-path box. Builds clean,
   `v test modules/canlog/` green. TODO: timed player (replay onto vcan0 at recorded cadence) +
   MF4-aware open via the bridge.
+- 2026-06-04: **MF4-aware "Open Log" DONE & VERIFIED (non-J1939 first).** The GUI now opens `.mf4`
+  too: `load_log` detects a `.mf4` path and shells out to `sut/mf4_bridge.py convert` (`os.execute`,
+  prefers `.venv-tools/bin/python`) to bridge MF4 → a temp candump `.log`, then replays it
+  direct-to-trace exactly like a `.log`; the toolbar picker filter now lists `log` + `mf4`. Deliberately
+  **did NOT start with J1939**: the only MF4 samples we had (CSS Electronics `parked/driving.mf4`) are
+  J1939, whose DBC message IDs embed priority+PGN+source-addr, so `candb.lookup` (exact id) matches **0**
+  of 150k frames (PGN-ignoring-SA match would catch ~8k) — that needs J1939 PGN-aware lookup, deferred.
+  Instead we made a sample we control: added **`tomf4`** to `mf4_bridge.py` (candump `.log` → MF4 via
+  **python-can** `MF4Writer`; `python-can` 4.6.1 added to `.venv-tools` + `setup_mf4_tools.sh`) and
+  minted `samples/demo.mf4` from `samples/demo.log`. Verified: `tomf4`→`convert` round-trips the frame
+  stream **identically**, and all 60 frames decode against `cantester.dbc` (EngineSpeed 1913 rpm, etc.).
+  Shipped `samples/demo.mf4` (un-ignored). Builds clean. NEXT MF4 step (when wanted): J1939 PGN-aware
+  lookup in `candb` so the real CSS J1939 recordings decode; then a timed player onto vcan0.
