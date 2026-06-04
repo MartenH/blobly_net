@@ -22,8 +22,7 @@ import canlog
 import sampledb
 
 const iface = 'vcan0'
-const max_trace = 1000
-const max_shown = 250
+const max_trace = 1000 // ring-buffer cap on retained frames (all are scrollable)
 
 struct TraceRow {
 	seq  int
@@ -358,6 +357,7 @@ fn trace_panel(mut window gui.Window) gui.View {
 			id:                  'trace_grouped'
 			sizing:              gui.fill_fill
 			max_height:          grid_h
+			scrollbar:           .visible
 			columns:             [
 				tcol('id', 'ID / Signal', 200, .start),
 				tcol('name', 'Message / Value', 150, .start),
@@ -380,9 +380,9 @@ fn trace_panel(mut window gui.Window) gui.View {
 			on_cell_format:      trace_cell_format
 		)
 	}
-	n := app.trace.len
-	start := if n > max_shown { n - max_shown } else { 0 }
-	for i := n - 1; i >= start; i-- {
+	// Newest first: the latest frame sits at the top, so a live trace "follows"
+	// without any scroll math; scroll down to review the retained history.
+	for i := app.trace.len - 1; i >= 0; i-- {
 		r := app.trace[i]
 		rows << gui.GridRow{
 			id:    '${r.seq}'
@@ -400,6 +400,7 @@ fn trace_panel(mut window gui.Window) gui.View {
 		id:             'trace_all'
 		sizing:         gui.fill_fill
 		max_height:     grid_h
+		scrollbar:      .visible
 		columns:        [
 			tcol('time', 'Time(ms)', 80, .end),
 			tcol('dir', 'Dir', 50, .start),
