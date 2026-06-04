@@ -164,7 +164,33 @@ into shared code. The convention:
    TODO: a timed *player* (replay onto vcan0 at recorded cadence); **J1939 PGN-aware lookup in `candb`**
    so the real CSS J1939 MF4s decode (their DBC IDs carry priority+PGN+source-addr — exact-id match =
    0 frames, PGN match = ~8k). (Native MF4-in-V is a later option; the Python bridge is the path now.)
-8+. Scripting/sequences (CANoe-style test cases), more panels/plotting; then LIN + Ethernet
+8. 🔜 **Operating modes + replay player** — formalize per-bus modes: **Off / Monitor ("watch") /
+   Replay ("play")**. A GUI-free `modules/player` replays a loaded recording (the `canlog.LogEntry`
+   stream — timestamps live in `t_s`) at recorded cadence × a speed factor (play/pause/stop/seek).
+   *Sinks*: to the trace (offline review, no bus) and/or onto an interface via `bus.send()` (the SUT
+   sees it; monitoring that same bus then shows the replay via the normal RX path — no special wiring).
+   Replay is inherently **per-interface**. A global **Start/Stop** measurement control (top-left
+   toolbar) attaches/detaches all *enabled* channels at once (CANoe-style measurement lifecycle):
+   Start opens each enabled channel per its mode (monitor → RX thread; replay → player), Stop tears
+   them down. UI started: the trace got a visible scrollbar + uncapped history (newest-first ordering
+   = inherent "follow"); gui exposes no public scroll-to-bottom, so a bottom-anchored autoscroll would
+   need a gui patch.
+9. 🔜 **Project/config files (`.yml`) + menus** — a gui `menubar`; **File** first: New / Open Project /
+   Save / Save As / Open Recording / **Open Recent** / Exit (later: Bus, View, Tools, Help). The project
+   file (vlib `yaml`; fall back to vlib `toml` if yaml proves too thin) is the single source of truth
+   for the bus setup: `channels[]`, each with name/type(can|canfd)/interface/bitrate (+ fd/
+   data_bitrate/sample_point/`timing{brp,tseg1,tseg2,sjw}`)/`mode`(off|monitor|replay)/listen_only/
+   `databases[]` (DBCs) and a `replay{source,speed,loop}` block. For `vcan0` the bitrate/timing are
+   nominal; for real `can0` they map to `ip link set can0 type can bitrate … sample-point …`. This moves
+   DBC association from the hardcoded startup load + `CANTESTER_DBC` env into per-channel `databases`,
+   and stores a recent-projects list for Open Recent. Full schema sketch was proposed 2026-06-04.
+   A **Bus/Channel tree** panel (gui `tree`, see `view_tree.v`) renders the project's channels: one
+   node per channel with an **enable checkbox** and a **state colour** (green = running/ok, red =
+   bus-off or error frames seen, amber = warning, grey = disabled/stopped), expandable to per-channel
+   stats (RX/TX/error-frame counts, bus load). It's the live front-end of Start/Stop (Phase 8): the
+   checkbox sets `enabled`; the colour reflects measurement state. (CAN error frames come from
+   SocketCAN's `CAN_RAW_ERR_FILTER`; vcan rarely emits them, so the wiring lands before real `can0`.)
+10+. Scripting/sequences (CANoe-style test cases), more panels/plotting; then LIN + Ethernet
    (DoIP/SOME-IP) backends behind the same `Bus`/`Channel` abstractions (see Platform support).
 
 ## Build / run
