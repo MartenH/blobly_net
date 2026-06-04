@@ -21,7 +21,10 @@ sudo apt-get install -y \
 	libatk-bridge2.0-dev libatspi2.0-dev libgl1-mesa-dev libx11-dev \
 	libxcursor-dev libxrandr-dev libxinerama-dev libasound2-dev \
 	can-utils \
+	zenity \
 	mesa-utils xdotool imagemagick x11-utils   # diagnostics + screenshot verification
+	# zenity backs gui's native file dialog (toolbar "Open Log"); without it the
+	# picker silently no-ops and the app falls back to the typed log-path box.
 
 echo "==> 2/6 V compiler (built from source)"
 if [ ! -x "$HOME/v/v" ]; then
