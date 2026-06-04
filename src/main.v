@@ -18,6 +18,7 @@ import os
 import time
 import transport
 import candb
+import canlog
 import sampledb
 
 const iface = 'vcan0'
@@ -67,6 +68,7 @@ mut:
 	selection gui.GridSelection
 	send_id   string = '101'
 	send_data string = 'AABBCC'
+	log_path  string // candump .log to open from the toolbar
 }
 
 fn main() {
@@ -91,6 +93,7 @@ fn main() {
 				}
 				app.db_source = 'sampledb (DBC load failed)'
 			}
+			app.log_path = os.getenv_opt('CANTESTER_LOG') or { '' }
 			app.status = 'opening ${iface}…'
 			w.update_view(main_view)
 			if bus := transport.open_socketcan(iface) {
@@ -133,14 +136,20 @@ fn rx_loop(mut w gui.Window) {
 	}
 }
 
+// push records a live frame, stamping it with the current wall-clock offset.
 fn (mut app App) push(dir string, f transport.CanFrame) {
+	app.record(dir, f, f64(time.ticks() - app.t0))
+}
+
+// record appends a frame to the trace + grouped aggregate at an explicit time
+// (ms). Live capture passes "now"; log replay passes the recorded timestamp.
+fn (mut app App) record(dir string, f transport.CanFrame, t_ms f64) {
 	app.seq++
 	if dir == 'RX' {
 		app.rx_count++
 	} else {
 		app.tx_count++
 	}
-	t_ms := f64(time.ticks() - app.t0)
 	name := if m := app.db.lookup(f.id) { m.name } else { '' }
 	app.trace << TraceRow{
 		seq:  app.seq
@@ -241,6 +250,56 @@ fn toolbar(app &App) gui.View {
 					a.grouped = map[u32]MsgAgg{}
 					a.order = []u32{}
 					a.expand_id = -1
+				}
+			),
+			gui.input(
+				id_focus:        13
+				text:            app.log_path
+				width:           220
+				height:          30
+				padding:         gui.Padding{4, 8, 4, 8}
+				sizing:          gui.fixed_fixed
+				placeholder:     'path/to/capture.log'
+				on_enter:        fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					a := w.state[App]()
+					load_log(a.log_path, mut w)
+				}
+				on_text_changed: fn (_ &gui.Layout, s string, mut w gui.Window) {
+					mut a := w.state[App]()
+					a.log_path = s
+				}
+			),
+			gui.button(
+				id_focus: 14
+				content:  [gui.text(text: '📂 Open Log')]
+				on_click: fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					// Try a native file picker; on a box without one (e.g. WSLg
+					// with no zenity/kdialog) the bridge returns .error, so we
+					// fall back to the path typed in the box.
+					typed := w.state[App]().log_path
+					w.native_open_dialog(
+						title:   'Open CAN log (candump .log)'
+						filters: [gui.NativeFileFilter{ name: 'CAN logs', extensions: ['log'] }]
+						on_done: fn [typed] (result gui.NativeDialogResult, mut w gui.Window) {
+							match result.status {
+								.ok {
+									paths := result.path_strings()
+									if paths.len > 0 {
+										load_log(paths[0], mut w)
+									}
+								}
+								.cancel {}
+								.error {
+									if typed.trim_space().len > 0 {
+										load_log(typed, mut w)
+									} else {
+										mut a := w.state[App]()
+										a.status = 'no file picker (install zenity) — type a log path + Enter'
+									}
+								}
+							}
+						}
+					)
 				}
 			),
 		]
@@ -473,6 +532,40 @@ fn do_send(mut w gui.Window) {
 		return
 	}
 	app.push('TX', frame)
+}
+
+// load_log opens a candump `.log` file and shows it as a static capture:
+// live RX is paused and the trace is reset so the recording stands alone, with
+// each frame stamped by its recorded timestamp. The grouped view keeps every
+// unique ID + count; the chronological view shows the tail (max_trace cap).
+fn load_log(path string, mut w gui.Window) {
+	mut app := w.state[App]()
+	p := path.trim_space()
+	if p.len == 0 {
+		app.status = 'no file picker here — type a log path and press Enter'
+		return
+	}
+	entries := canlog.load_file(p) or {
+		app.status = 'open log failed: ${err}'
+		return
+	}
+	app.paused = true
+	app.log_path = p
+	app.trace = []TraceRow{}
+	app.grouped = map[u32]MsgAgg{}
+	app.order = []u32{}
+	app.expand_id = -1
+	app.rx_count = 0
+	app.tx_count = 0
+	app.seq = 0
+	// candump stamps absolute epoch seconds; show times relative to the first
+	// frame so the Time(ms) column reads 0, 100, 200… not a huge epoch value.
+	t0_log := if entries.len > 0 { entries[0].t_s } else { 0.0 }
+	for e in entries {
+		app.record('RX', e.frame, (e.t_s - t0_log) * 1000.0)
+	}
+	app.status = 'loaded ${entries.len} frames from ${os.base(p)} (paused — Resume for live)'
+	w.update_window()
 }
 
 fn trace_cell_format(row gui.GridRow, _ int, col gui.GridColumnCfg, value string, mut _ gui.Window) gui.GridCellFormat {

@@ -80,6 +80,7 @@ modules/sampledb/           hand-coded message catalog (being superseded by DBC 
 modules/transport/          Bus interface (transport.v) + Linux SocketCAN backend (socketcan_linux.v)
 modules/isotp/              ISO-TP: Channel interface (isotp.v) + Linux kernel backend (kernel_linux.v)
 modules/uds/                UDS diagnostic client over isotp (pure V, + tests)   (Phase 6)
+modules/canlog/             candump .log parse/format (pure V, + tests)          (Phase 7)
 dbc/cantester.dbc           real DBC describing the SUT's messages    (Phase 5)
 cmd/dashboard/              throwaway GUI capability demo
 cmd/signal_decode/          frame -> signals visualizer demo
@@ -152,9 +153,11 @@ into shared code. The convention:
    DONE: `sut/mf4_bridge.py` (asammdf) converts MF4 → candump `.log` and **semantically diffs** two
    recordings (canonical frame stream, not bytes — MF4 is never byte-equal); validated our `candb`
    decode == asammdf on a real J1939 driving log (EngineSpeed/WheelBasedVehicleSpeed, once the J1939
-   0xFFFF "not-available" sentinel is filtered). TODO: `modules/canlog` (V candump parse/format) + a
-   player (replay onto vcan0 AND direct-to-trace), then a GUI "open log" action. (Native MF4-in-V is a
-   later option; the Python bridge is the path for now.)
+   0xFFFF "not-available" sentinel is filtered). DONE: `modules/canlog` (V candump `.log` parse/format,
+   pure-V + tests) and a GUI **"Open Log"** action (toolbar) that loads a `.log` direct-to-trace —
+   decodes via the DBC and times relative to the first frame (`samples/demo.log` shipped as a demo).
+   TODO: a timed *player* (replay onto vcan0 at recorded cadence) and MF4-aware open via the bridge.
+   (Native MF4-in-V is a later option; the Python bridge is the path for now.)
 8+. Scripting/sequences (CANoe-style test cases), more panels/plotting; then LIN + Ethernet
    (DoIP/SOME-IP) backends behind the same `Bus`/`Channel` abstractions (see Platform support).
 
@@ -210,6 +213,13 @@ Verified: a breakpoint at `main__main` resolves to `src/main.v` and stops there.
 libpango1.0-dev libglib2.0-dev libdbus-1-dev libatk1.0-dev libatk-bridge2.0-dev
 libatspi2.0-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev
 libxinerama-dev libasound2-dev` (plus libxi/libxtst pulled in as deps).
+
+**Runtime dep — `zenity`** (apt: `zenity`): gui's `native_open_dialog` (used by the toolbar **Open
+Log** button) has no GTK/portal of its own on Linux — it shells out to `zenity` (or `kdialog`). Without
+it the bridge returns `.error` and the app silently falls back to the typed log-path box, so the file
+picker just won't appear. Installed here (4.0.1); opens under WSLg fine (the `libEGL/MESA ZINK` warnings
+it prints are benign GL-accel noise — the dialog still renders). Not needed on Windows/macOS (native
+pickers there). `scripts/setup_env.sh` should install it alongside the dev libs.
 
 Benign at runtime: sokol `LINUX_X11_QUERY_SYSTEM_DPI_FAILED` → falls back to 96 DPI.
 
@@ -337,3 +347,19 @@ prompt for a password.
   exactly). This enables the round-trip test: SUT replays MF4 → we record MF4 → `mf4_bridge diff` ==
   empty. **Found a candb TODO:** flag J1939 not-available (all-0xFF) signal values. Next: `modules/
   canlog` + player + GUI "open log".
+- 2026-06-04: **`modules/canlog` + GUI "Open Log" DONE & VERIFIED.** New pure-V `modules/canlog`
+  (`parse_line`/`parse`/`load_file`/`format_line`) reads the candump `.log` line format
+  `(<ts>) <iface> <id>#<hexdata>` (standard vs extended by id hex width, empty payload, `#R` RTR,
+  skips blanks/`#`-comments) into `[]LogEntry{t_s, iface, transport.CanFrame}`; 10 hermetic tests
+  incl. round-trip. GUI: toolbar gains a log-path input + **📂 Open Log** button; `load_log()` pauses
+  live RX, resets the trace, and replays the file *direct-to-trace* (`App.push` refactored to
+  `record(dir, frame, t_ms)` so log frames keep their recorded time, normalised to the first frame).
+  It decodes through the DBC exactly like live traffic — verified on a real 60-frame candump capture
+  from `sut/can_sut.py` (30×0x100 + 30×0x700; EngineSpeed/VehicleSpeed/CoolantTemp/Gear all decode).
+  Shipped `samples/demo.log` (un-ignored via `samples/*` + `!samples/demo.log`) so the action works
+  out of the box; `CANTESTER_LOG` env pre-fills the path. **gui's `native_open_dialog` is wired too**;
+  its Linux backend shells out to `zenity`/`kdialog`, so we `apt install zenity` (4.0.1, now a runtime
+  dep + in `setup_env.sh`) to make the real picker appear — verified it opens under WSLg. If the picker
+  is ever unavailable (`.error`) the app falls back to the typed log-path box. Builds clean,
+  `v test modules/canlog/` green. TODO: timed player (replay onto vcan0 at recorded cadence) +
+  MF4-aware open via the bridge.

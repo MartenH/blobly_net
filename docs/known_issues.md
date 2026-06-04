@@ -56,6 +56,22 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
   content overflows and overlaps the next row. Use it only for single-line detail. For our expandable
   trace we instead **insert signal rows as normal grid rows** under the frame (toggled via
   `on_selection_change` + `active_row_id`), which reflows correctly. See `src/main.v` grouped view.
+- 🟡 **Keyboard copy/paste/cut/undo don't fire in `gui.input` on Linux/X11 (incl. WSLg).** The
+  clipboard itself is fine — V's `clipboard` module round-trips and the WSLg bridge works both ways
+  (`printf X | clip.exe` → `cb.paste()` returns X; `to_clipboard` → `powershell Get-Clipboard` sees
+  it). The break is in **key-event matching**: `view_input.v` handles paste in its `on_char` branch as
+  `event.modifiers == .ctrl && char_code == ctrl_v` where `ctrl_v = 0x16` (the SYN control code that
+  Windows/macOS deliver for Ctrl+V). But **sokol's X11 backend ignores `XLookupString`'s string**
+  (`sokol_app.h`: `XLookupString(&ev->xkey, NULL, 0, &keysym, NULL)`) and derives the char from the
+  *keysym* via `_sapp_x11_keysym_to_unicode` — so Ctrl+V arrives as `char_code = 0x76` ('v') + ctrl
+  modifier, which never matches `0x16`. Same for ctrl+c/x/z and data_grid Ctrl-C copy
+  (`view_data_grid_events.v` also tests `char_code == ctrl_c`). This is upstream (gui/sokol), in the
+  pinned `~/.vmodules/gui` (NOT in our repo), so a local edit wouldn't be tracked or survive a gui
+  reinstall — the real fix is upstream (match `ctrl + base-letter` too, or read `XLookupString`'s
+  buffer). **Workarounds:** (1) the toolbar **Open Log** uses the native file picker (zenity), so you
+  don't need to paste a path; (2) middle-click paste / typing still work. If keyboard paste in our
+  inputs becomes important, add an `on_key_down` shim on those inputs that calls `gui.from_clipboard()`
+  on Ctrl+V and rewrites the bound state.
 
 ## Rendering stack (sokol / vglyph / GL)
 
@@ -66,6 +82,15 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
   `scripts/run.sh` now defaults to hardware GL; pass `CANTESTER_SOFTWARE_GL=1` to force the software
   fallback. Verified 2026-06-03 (docs/gui_validation/phase5_dbc_decode.png).
 - ⚪ sokol `LINUX_X11_QUERY_SYSTEM_DPI_FAILED` on launch → falls back to 96 DPI. Harmless.
+- 🟡 **Mouse pointer disappears over XWayland windows (WSLg-wide, not ours).** Symptom: the pointer
+  vanishes while hovering a Linux GUI window but the Windows desktop cursor is fine. **Confirmed
+  WSLg-wide** (2026-06-04): it's gone over `xeyes`/`glxgears` too, not just our sokol app, and is
+  independent of GL mode — `CANTESTER_SOFTWARE_GL=1` doesn't help, nor does pinning
+  `XCURSOR_THEME`/`XCURSOR_SIZE` (a red-herring fix we tried and reverted; the cursor theme install
+  that pulled in Adwaita via zenity correlated in time but is not the cause). Nothing in this repo can
+  fix it. **Fix = restart the WSLg session from Windows:** `wsl --shutdown` (PowerShell/cmd), then
+  reopen the distro; run `wsl --update` first if it persists. It's a known WSLg/WSLg-compositor
+  glitch, occasionally triggered by suspend/resume or display changes.
 - 🟢 **vglyph/sokol need many native dev libs** that aren't installed by default (freetype,
   harfbuzz, fribidi, fontconfig, pango, glib, dbus, atk, atk-bridge, atspi, GL, X11). Resolved by
   installing the full set (listed in CLAUDE.md → System dependencies). Packaging friction, not code.
