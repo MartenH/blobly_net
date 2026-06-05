@@ -408,3 +408,19 @@ prompt for a password.
   stream **identically**, and all 60 frames decode against `cantester.dbc` (EngineSpeed 1913 rpm, etc.).
   Shipped `samples/demo.mf4` (un-ignored). Builds clean. NEXT MF4 step (when wanted): J1939 PGN-aware
   lookup in `candb` so the real CSS J1939 recordings decode; then a timed player onto vcan0.
+- 2026-06-05: **Phase 9 foundation — project config + Buses panel + Start/Stop + File menu (slice 1).**
+  New GUI-free `modules/project` (vlib `yaml`) parses a project `.yml` → `Project{channels[]}` (each
+  with interface/bitrate/timing/mode/listen_only/enabled/databases/replay; defaults + built-in
+  fallback; 6 tests). Ships `projects/demo.yml` (CAN1 vcan0 monitor + disabled CAN2 vcan1 replay). The
+  app is now **config-driven**: it loads the project at startup (env `CANTESTER_PROJECT`) instead of
+  hardcoding vcan0, and DBCs come from the channels (not the old `CANTESTER_DBC`). A global **Start/
+  Stop** (top-left, CANoe-style measurement lifecycle) opens/closes enabled *monitor* channels per
+  channel (each its own RX thread, closes itself on stop); `do_send` TXes on the first running channel.
+  New **Buses** panel (narrow left): per-channel enable checkbox + state-colour dot (green running /
+  amber enabled-stopped / grey disabled / red errored). New gui **menubar** — **File**: New / Open
+  Project… / Save (stub) / Open Recording… / Open Recent (stub) / Exit (`sapp.quit`). Trace got a
+  compact font + small headers. **Verified by screenshotting the running app** (`import -window` +
+  `xdotool`; see known_issues). **Found a gui bug:** centered text doesn't render, so `gui.button`
+  labels come out blank — rebuilt the Send control as a clickable left-aligned `gui.row` (doc'd in
+  known_issues). TODO (Phase 8): wire `mode: replay` into a real `modules/player`; persist Open Recent;
+  Save Project; multi-bus trace column.
