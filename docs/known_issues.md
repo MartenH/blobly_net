@@ -99,6 +99,26 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
   `scripts/run.sh` now defaults to hardware GL; pass `CANTESTER_SOFTWARE_GL=1` to force the software
   fallback. Verified 2026-06-03 (docs/gui_validation/phase5_dbc_decode.png).
 - ⚪ sokol `LINUX_X11_QUERY_SYSTEM_DPI_FAILED` on launch → falls back to 96 DPI. Harmless.
+- 🔴 **Each repaint is ~100ms of CPU under WSLg → live updates must be rate-limited.** Profiling the
+  running app (measure *instantaneous* CPU via `/proc/<pid>/stat` utime+stime delta, NOT `ps %cpu`
+  which is a lifetime average that ramps): idle ≈ 2%, but with the SUT feeding ~40 frames/s the app hit
+  **~147%**. Root cause isn't our code — a `-cc gcc -cflags -O2` build was just as heavy as the TCC one,
+  so it's the **GL frame submission under WSLg's GL translation** (d3d12/zink), ~100ms per frame vs
+  ~5ms on native. The trap: `w.queue_command` (the cross-thread bridge) **forces a full GL frame per
+  call**, so one wake per CAN frame = bus-rate repaints = CPU meltdown. CPU scales linearly with the
+  *repaint* rate (measured: 2fps→22%, 5fps→45%, 10fps→107%), independent of `update_window`. **Fix:**
+  `rx_loop` batches frames thread-locally and wakes the UI once per `rx_flush_ms` (200ms ≈ 5fps),
+  decoupling repaint rate from bus rate — every frame is still recorded. On real hardware (cheap GL) the
+  cap could be much higher. User clicks (Send, row-select) repaint immediately — only the live RX stream
+  is throttled — a toolbar **dropdown picks 3/5/10 fps** (`App.fps`, default 5 ≈ ~45% of one core here;
+  3 ≈ ~30%, 10 ≈ ~107%). `-prod` builds fail on a
+  vglyph warning-as-error (FT_GlyphRec cast), so use `-cc gcc -cflags -O2` for an optimized build (won't
+  help this, but helps compute paths). **Where the per-frame cost goes** (measured by swapping the trace
+  `data_grid` for a trivial text view at 3fps): grid ≈ ~1/3 (30%→19%), the other ~2/3 is the GL-frame
+  floor + recomposing every panel each frame (gui immediate-mode rebuilds the whole view tree regardless
+  of what changed — there's no subtree memoization). So no single cheap win; the fps cap is the lever,
+  and a native (non-WSLg) build with real GL would be far lighter. In Win11 Task-Manager terms (÷ logical
+  cores, 16 here) ~30%/core ≈ ~2%.
 - 🟡 **Mouse pointer disappears over XWayland windows (WSLg-wide, not ours).** Symptom: the pointer
   vanishes while hovering a Linux GUI window but the Windows desktop cursor is fine. **Confirmed
   WSLg-wide** (2026-06-04): it's gone over `xeyes`/`glxgears` too, not just our sokol app, and is

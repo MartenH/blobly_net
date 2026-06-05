@@ -24,6 +24,17 @@ import sampledb
 import project
 
 const max_trace = 1000 // ring-buffer cap on retained frames (all are scrollable)
+const default_fps = 5  // trace repaint rate; user-tunable (3/5/10) from the toolbar
+const fps_options = ['3 fps', '5 fps', '10 fps']
+
+// flush_ms_for converts a repaint rate (fps) to the RX batch/repaint interval.
+// The UI refresh rate — not the bus frame rate — sets the CPU cost, because each
+// repaint forces a full GL frame (very expensive under WSLg's GL translation).
+// Cost is spread across the whole view (data_grid ~1/3, rest = GL floor +
+// recomposing all panels). See rx_loop + docs/known_issues.md.
+fn flush_ms_for(fps int) i64 {
+	return if fps > 0 { i64(1000 / fps) } else { i64(1000 / default_fps) }
+}
 
 struct TraceRow {
 	seq  int
@@ -77,11 +88,13 @@ mut:
 	tx_count  int
 	paused    bool
 	mode      string = 'grouped' // 'grouped' | 'all'
-	expand_id i64    = -1
+	expanded  map[u32]bool // grouped-trace IDs currently expanded (multi-select)
+	sel_id    i64 = -1     // message ID the Signals panel inspects (trace selection)
 	selection gui.GridSelection
 	send_id   string = '101'
 	send_data string = 'AABBCC'
 	log_path  string // candump .log to open from the toolbar
+	fps       int = default_fps // trace repaint rate (toolbar dropdown)
 }
 
 fn main() {
@@ -195,19 +208,39 @@ fn stop_measurement(mut w gui.Window) {
 	app.status = 'stopped'
 }
 
+// rx_loop reads frames and hands them to the UI in **batches**, not one-by-one.
+// Each w.queue_command wakes sokol and forces a full GL frame (~tens of ms under
+// WSLg's GL translation), so one wake per frame pegs the CPU on a busy bus. We
+// instead accumulate frames in a thread-local batch and flush every rx_flush_ms
+// — every frame is still recorded, but the UI repaints at a bounded rate. The
+// batch is moved into the closure, so all state mutates on the UI thread (no locks).
 fn rx_loop(idx int, mut w gui.Window) {
 	app := w.state[App]()
 	bus := app.rt[idx].bus
+	mut batch := []transport.CanFrame{}
+	mut last_flush := time.ticks()
 	for app.rt[idx].running {
-		frame := bus.recv(200) or { continue }
-		w.queue_command(fn [frame, idx] (mut w gui.Window) {
-			mut a := w.state[App]()
-			if !a.paused {
-				a.rt[idx].rx_count++
-				a.push('RX', frame)
+		flush_ms := flush_ms_for(app.fps) // live: reflects the toolbar dropdown
+		if frame := bus.recv(int(flush_ms)) {
+			batch << frame
+		}
+		now := time.ticks()
+		if batch.len > 0 && now - last_flush >= flush_ms {
+			last_flush = now
+			frames := batch.clone()
+			batch.clear()
+			w.queue_command(fn [frames, idx] (mut w gui.Window) {
+				mut a := w.state[App]()
+				if a.paused {
+					return
+				}
+				a.rt[idx].rx_count += frames.len
+				for f in frames {
+					a.push('RX', f)
+				}
 				w.update_window()
-			}
-		})
+			})
+		}
 	}
 	bus.close()
 }
@@ -237,8 +270,11 @@ fn (mut app App) record(dir string, f transport.CanFrame, t_ms f64) {
 		data: f.data.clone()
 		name: name
 	}
-	if app.trace.len > max_trace {
-		app.trace.delete(0)
+	// Trim in bulk, not per-frame: delete(0) shifts the whole array every frame
+	// (O(n)) and dominates CPU on a busy bus. Let it overrun by 1/4, then slice
+	// back to the cap — amortised O(1) per frame.
+	if app.trace.len > max_trace + max_trace / 4 {
+		app.trace = app.trace[app.trace.len - max_trace..].clone()
 	}
 	if f.id !in app.grouped {
 		app.order << f.id
@@ -265,7 +301,7 @@ fn main_view(mut window gui.Window) gui.View {
 		spacing: 8
 		content: [
 			menu_bar(mut window),
-			toolbar(app),
+			toolbar(mut window),
 			gui.dock_layout(
 				id:               'dock'
 				root:             app.dock_root
@@ -407,7 +443,8 @@ fn open_project(path string, mut w gui.Window) {
 	w.update_window()
 }
 
-fn toolbar(app &App) gui.View {
+fn toolbar(mut window gui.Window) gui.View {
+	app := window.state[App]()
 	dot := if app.running { '🟢' } else { '⚪' }
 	return gui.row(
 		v_align: .middle
@@ -455,7 +492,23 @@ fn toolbar(app &App) gui.View {
 					a.trace = []TraceRow{}
 					a.grouped = map[u32]MsgAgg{}
 					a.order = []u32{}
-					a.expand_id = -1
+					a.expanded = map[u32]bool{}
+					a.sel_id = -1
+				}
+			),
+			gui.text(text: 'screen', text_style: gui.theme().n4),
+			window.select(
+				id:        'fps'
+				id_focus:  105
+				select:    ['${app.fps} fps']
+				options:   fps_options
+				min_width: 76
+				max_width: 92
+				on_select: fn (sel []string, mut _ gui.Event, mut w gui.Window) {
+					mut a := w.state[App]()
+					if sel.len > 0 {
+						a.fps = sel[0].all_before(' ').int()
+					}
 				}
 			),
 			gui.input(
@@ -522,7 +575,7 @@ fn trace_panel(mut window gui.Window) gui.View {
 	if grouped {
 		for id in app.order {
 			a := app.grouped[id] or { continue }
-			expanded := app.expand_id == i64(id)
+			expanded := id in app.expanded
 			chevron := if expanded { '▼' } else { '▶' }
 			rows << gui.GridRow{
 				id:    '${id}'
@@ -584,8 +637,13 @@ fn trace_panel(mut window gui.Window) gui.View {
 				a.selection = selection
 				rid := selection.active_row_id
 				if rid.len > 0 && !rid.starts_with('s:') {
-					id := i64(rid.u32())
-					a.expand_id = if a.expand_id == id { i64(-1) } else { id }
+					id := rid.u32()
+					a.sel_id = i64(id) // Signals panel follows the selected message
+					if id in a.expanded {
+						a.expanded.delete(id) // toggle this ID; others stay expanded
+					} else {
+						a.expanded[id] = true
+					}
 				}
 			}
 			on_cell_format:      trace_cell_format
@@ -596,7 +654,7 @@ fn trace_panel(mut window gui.Window) gui.View {
 	for i := app.trace.len - 1; i >= 0; i-- {
 		r := app.trace[i]
 		rows << gui.GridRow{
-			id:    '${r.seq}'
+			id:    '${r.seq}:${r.id}' // seq keeps it unique; id lets selection drive Signals
 			cells: {
 				'time': '${r.t_ms:.0f}'
 				'dir':  r.dir
@@ -624,25 +682,47 @@ fn trace_panel(mut window gui.Window) gui.View {
 			tcol('data', 'Data', 300, .start),
 			tcol('name', 'Message', 150, .start),
 		]
-		rows:           rows
-		on_cell_format: trace_cell_format
+		rows:                rows
+		selection:           app.selection
+		on_selection_change: fn (selection gui.GridSelection, mut _ gui.Event, mut w gui.Window) {
+			mut a := w.state[App]()
+			a.selection = selection
+			parts := selection.active_row_id.split(':')
+			if parts.len == 2 {
+				a.sel_id = i64(parts[1].u32()) // Signals follows the clicked frame's ID
+			}
+		}
+		on_cell_format:      trace_cell_format
 	)
 }
 
+// signals_panel decodes the message currently selected in the Trace (any ID),
+// live. Click a row in either trace view to inspect its signals here.
 fn signals_panel(app &App) gui.View {
-	ptmsg := app.db.lookup(0x100) or { sampledb.powertrain() }
-	pt := (app.grouped[ptmsg.id] or { MsgAgg{} }).last
 	mut lines := []gui.View{}
-	lines << gui.text(text: 'Signals — 0x100 ${ptmsg.name}', text_style: gui.theme().b3)
-	if pt.len == 8 {
-		for s in ptmsg.active_signals(pt) {
-			label := s.label(pt)
+	if app.sel_id < 0 {
+		lines << gui.text(text: 'Signals', text_style: gui.theme().b3)
+		lines << gui.text(text: '(click a message in the Trace)', text_style: gui.theme().n4)
+		return gui.column(sizing: gui.fill_fill, padding: gui.padding_medium, spacing: 5, content: lines)
+	}
+	id := u32(app.sel_id)
+	agg := app.grouped[id] or { MsgAgg{} }
+	msg := app.db.lookup(id) or {
+		lines << gui.text(text: 'Signals — ${hexid(id, agg.ext)}', text_style: gui.theme().b3)
+		lines << gui.text(text: '(no DBC message for this ID)', text_style: gui.theme().n4)
+		return gui.column(sizing: gui.fill_fill, padding: gui.padding_medium, spacing: 5, content: lines)
+	}
+	data := agg.last
+	lines << gui.text(text: 'Signals — ${hexid(id, agg.ext)} ${msg.name}', text_style: gui.theme().b3)
+	if data.len > 0 {
+		for s in msg.active_signals(data) {
+			label := s.label(data)
 			suffix := if label != '' { ' (${label})' } else { '' }
-			lines << gui.text(text: '${s.name}: ${s.physical(pt):.1f} ${s.unit}${suffix}',
+			lines << gui.text(text: '${s.name}: ${s.physical(data):.1f} ${s.unit}${suffix}',
 				text_style: gui.theme().n4)
 		}
 	} else {
-		lines << gui.text(text: '(waiting for 0x100 frames…)', text_style: gui.theme().n4)
+		lines << gui.text(text: '(waiting for frames…)', text_style: gui.theme().n4)
 	}
 	return gui.column(
 		sizing:  gui.fill_fill
@@ -873,7 +953,8 @@ fn load_log(path string, mut w gui.Window) {
 	app.trace = []TraceRow{}
 	app.grouped = map[u32]MsgAgg{}
 	app.order = []u32{}
-	app.expand_id = -1
+	app.expanded = map[u32]bool{}
+	app.sel_id = -1
 	app.rx_count = 0
 	app.tx_count = 0
 	app.seq = 0
