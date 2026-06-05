@@ -60,7 +60,7 @@ mut:
 // ChannelRT is the live runtime state of one configured channel (bus).
 struct ChannelRT {
 mut:
-	bus      &transport.SocketCanBus = unsafe { nil }
+	bus      ?transport.Bus // backend (SocketCAN or udp software bus); none until opened
 	running  bool
 	err      bool // open failed / bus error
 	rx_count int
@@ -177,7 +177,7 @@ fn start_measurement(mut w gui.Window) {
 			app.rt[i].note = '${ch.mode} (not yet wired)'
 			continue
 		}
-		if bus := transport.open_socketcan(ch.iface) {
+		if bus := transport.open(ch.iface) {
 			app.rt[i].bus = bus
 			app.rt[i].running = true
 			app.rt[i].note = 'monitoring'
@@ -216,7 +216,7 @@ fn stop_measurement(mut w gui.Window) {
 // batch is moved into the closure, so all state mutates on the UI thread (no locks).
 fn rx_loop(idx int, mut w gui.Window) {
 	app := w.state[App]()
-	bus := app.rt[idx].bus
+	mut bus := app.rt[idx].bus or { return }
 	mut batch := []transport.CanFrame{}
 	mut last_flush := time.ticks()
 	for app.rt[idx].running {
@@ -882,10 +882,10 @@ fn send_panel(app &App) gui.View {
 
 fn do_send(mut w gui.Window) {
 	mut app := w.state[App]()
-	// Transmit on the first running channel.
+	// Transmit on the first running channel that has an open bus.
 	mut idx := -1
 	for i in 0 .. app.rt.len {
-		if app.rt[i].running && app.rt[i].bus != unsafe { nil } {
+		if app.rt[i].running && app.rt[i].bus != none {
 			idx = i
 			break
 		}
@@ -900,7 +900,8 @@ fn do_send(mut w gui.Window) {
 		extended: id > 0x7ff
 		data:     hex_to_bytes(app.send_data)
 	}
-	app.rt[idx].bus.send(frame) or {
+	mut bus := app.rt[idx].bus or { return }
+	bus.send(frame) or {
 		app.status = 'send failed: ${err}'
 		return
 	}
