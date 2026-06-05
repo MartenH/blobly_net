@@ -474,3 +474,14 @@ prompt for a password.
   hermetic tests: cross-instance delivery + self-filter, incl. extended/RTR). TODO to make it usable:
   (a) wire it behind the project `interface:` (e.g. `udp:group:port` selects udpbus vs SocketCAN);
   (b) give `sut/can_sut.py` a matching UDP mode so the virtual SUT runs driver-free on Windows.
+- 2026-06-05: **W2 integration DONE — virtual-first works over the software bus, end to end.** Added a
+  platform-gated dispatcher `transport.open(iface) !Bus` (`open_linux.v`: `udp[:group[:port]]`→udpbus
+  else SocketCAN; `open_windows.v`: udp only, errors on `vcan`) so `open_socketcan` stays referenced
+  ONLY in `_linux` (seam intact). The GUI now stores the backend as `?transport.Bus` (was a concrete
+  `&SocketCanBus`) and calls `transport.open(ch.iface)` — so a channel's `interface:` selects the
+  backend; nothing in `src/main.v` names a Linux type anymore. `sut/can_sut.py` gained a **UDP mode**
+  (`SocketCanBus`/`UdpBus` behind one send/recv contract; `udp[:group[:port]]`) matching udpbus's wire
+  format. Shipped `projects/demo-udp.yml`. **Verified on Linux:** `python3 sut/can_sut.py udp` +
+  a V `transport.open('udp')` client interoperate — 0x100/0x700 received and decoded (EngineSpeed
+  etc.). This same flow runs on Windows with zero drivers once the GUI builds (W1). Run:
+  `python3 sut/can_sut.py udp` + `CANTESTER_PROJECT=projects/demo-udp.yml ./scripts/run.sh`.
