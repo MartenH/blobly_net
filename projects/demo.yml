@@ -1,0 +1,35 @@
+# CANTester project — default virtual bench.
+#
+# The single source of truth for the bus setup. The GUI loads this at startup
+# (override with CANTESTER_PROJECT=path/to/other.yml) and Start/Stop attaches the
+# enabled channels. For vcan0 the bitrate/timing are nominal; on real can0 they
+# map to `ip link set can0 type can bitrate … sample-point …`.
+project:
+  name: virtual-bench
+  version: 1
+
+channels:
+  - name: CAN1
+    type: can            # can | canfd
+    interface: vcan0     # SocketCAN iface (can0/can1 for real hardware)
+    bitrate: 500000      # nominal/arbitration baud (vcan ignores it)
+    mode: monitor        # off | monitor | replay
+    listen_only: false   # silent / no-ACK read-only tap
+    enabled: true
+    databases:
+      - dbc/cantester.dbc
+
+  # A second, disabled channel to show the Buses panel with >1 bus. Enable it
+  # (and bring up vcan1) to attach it. Configured for replay of the demo MF4.
+  - name: CAN2
+    type: can
+    interface: vcan1
+    bitrate: 500000
+    mode: replay
+    enabled: false
+    databases:
+      - dbc/cantester.dbc
+    replay:
+      source: samples/demo.mf4
+      speed: 1.0
+      loop: false
