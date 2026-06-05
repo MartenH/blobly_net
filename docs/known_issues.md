@@ -56,16 +56,19 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
   content overflows and overlaps the next row. Use it only for single-line detail. For our expandable
   trace we instead **insert signal rows as normal grid rows** under the frame (toggled via
   `on_selection_change` + `active_row_id`), which reflows correctly. See `src/main.v` grouped view.
-- 🔴 **Centered text doesn't render — `gui.button` labels come out blank.** A `gui.text` whose
-  container centers it on the main axis (`h_align: .center`) draws *nothing* on our pinned gui under
-  WSLg. Because `gui.button` hard-defaults its content to centered (`ButtonCfg.h_align = .center`),
-  **every `gui.button` with a text label renders as an empty box** when its width exceeds the label
-  (toolbar buttons happen to render because their row packs them to content width — but it's fragile).
-  Left-aligned text always renders. **Workaround:** don't rely on `gui.button` for labelled buttons in
-  panels — build a clickable `gui.row` (it supports `on_click`/`id_focus`/`color`/`radius`, like gui's
-  own checkbox) with a **left-aligned** `gui.text`. See the Send control in `src/main.v` (the blue
-  clickable row). Verified by screenshotting the running app (`import -window`); the label only
-  appeared once `h_align: .center` was removed. Worth reporting upstream / checking on a gui bump.
+- 🟡 **Centered text doesn't render — `gui.button` labels come out blank when wider than the text.**
+  A `gui.text` whose container centers it on the main axis (`h_align: .center`) draws *nothing* on our
+  pinned gui. Because `gui.button` hard-defaults its content to centered (`ButtonCfg.h_align = .center`),
+  **a `gui.button` with a text label renders as an empty box whenever its width exceeds the label**
+  (toolbar buttons render because their row packs them to content width). Confirmed on BOTH WSLg and
+  **native Windows** (GL), so it's a gui bug, not a rendering-stack one. Left-aligned text always renders.
+  **Cleanest fix (preferred): you CAN use `gui.button` in panels — just pass `h_align: .left` so the
+  label draws, and cap the width with `min_width`/`max_width` (a button in a `fill` column otherwise
+  stretches full-width — "very long"). See the Send control in `src/main.v` (`gui.button` with
+  `h_align: .left`, `min_width`/`max_width: 90`).** This supersedes the older workaround (a hand-styled
+  clickable `gui.row`), which also worked but used hardcoded colors so it didn't follow the theme. NOTE:
+  a fit-sized (`sizing: fit_fit`) lone row child does NOT shrink to content here — use `min/max_width`.
+  Worth reporting upstream / checking on a gui bump.
 - 🟢 **Screenshotting the running app for visual verification.** `import -window <wid>` (ImageMagick)
   + `xdotool search --name CANTester` capture the live window under WSLg — invaluable when iterating
   on layout you can't otherwise see. Set `XCURSOR_THEME=Adwaita XCURSOR_SIZE=24` first. Caveats: pick
