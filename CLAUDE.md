@@ -424,3 +424,19 @@ prompt for a password.
   labels come out blank — rebuilt the Send control as a clickable left-aligned `gui.row` (doc'd in
   known_issues). TODO (Phase 8): wire `mode: replay` into a real `modules/player`; persist Open Recent;
   Save Project; multi-bus trace column.
+- 2026-06-05: **Trace UX + render-perf pass.** (a) **Signals panel follows the trace selection** (any
+  ID via a new `App.sel_id`, set on row-click in both views) instead of the hardcoded 0x100 demo; (b)
+  **multi-expand** — the grouped trace's single `expand_id` became an `expanded map[u32]bool` set, so
+  expanding one ID no longer collapses another. (c) **Render perf:** profiling the running app (measure
+  *instantaneous* CPU via `/proc/<pid>/stat` deltas, NOT `ps %cpu` — a lifetime average that ramps) the
+  app hit ~147% with the SUT feeding ~40 frames/s. Root cause is **not our code** (`-cc gcc -cflags -O2`
+  was just as heavy) — it's the **GL frame submission under WSLg's translation** (~100ms/frame), and
+  `w.queue_command` **forces a full GL frame per call**, so one wake per CAN frame = bus-rate repaints.
+  Fix: `rx_loop` **batches frames and repaints at a bounded rate** (`App.fps`, a toolbar **3/5/10 fps
+  dropdown**, default 5 ≈ ~45% of one core ≈ ~3% in Win11 Task-Manager ÷16). CPU scales with repaint
+  rate, ~independent of traffic; the data_grid is ~1/3 of a frame's cost, the rest is the GL floor +
+  recomposing every panel (gui immediate-mode, no subtree memoization). Also fixed the trace ring buffer
+  (`delete(0)` shifted ~1000 elems/frame, O(n)) → amortised bulk trim (overrun 25%, slice back). Note:
+  the 1000-frame cap bounds only the **display** buffer — a future **record** sink (write-side of Open
+  Log) would tap the full RX stream, uncapped. All measured by screenshotting/flooding (`cangen`) the
+  running app. Next: Windows port planning (see Platform support).
