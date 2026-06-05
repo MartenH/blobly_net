@@ -88,6 +88,7 @@ mut:
 	tx_count  int
 	paused    bool
 	mode      string = 'grouped' // 'grouped' | 'all'
+	dark      bool = true // current theme: dark (theme_dark_bordered) vs light (theme_light_bordered)
 	expanded  map[u32]bool // grouped-trace IDs currently expanded (multi-select)
 	sel_id    i64 = -1     // message ID the Signals panel inspects (trace selection)
 	selection gui.GridSelection
@@ -494,6 +495,17 @@ fn toolbar(mut window gui.Window) gui.View {
 					a.order = []u32{}
 					a.expanded = map[u32]bool{}
 					a.sel_id = -1
+				}
+			),
+			gui.button(
+				id_focus: 106
+				content:  [gui.text(text: if app.dark { '☀ Light' } else { '🌙 Dark' })]
+				on_click: fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					mut a := w.state[App]()
+					a.dark = !a.dark
+					// set_theme also re-applies titlebar_dark; safe here since the
+					// app is running (sapp is valid), unlike the startup call.
+					w.set_theme(if a.dark { gui.theme_dark_bordered } else { gui.theme_light_bordered })
 				}
 			),
 			gui.text(text: 'screen', text_style: gui.theme().n4),
