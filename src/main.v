@@ -16,12 +16,13 @@ module main
 import gui
 import os
 import time
+import sokol.sapp
 import transport
 import candb
 import canlog
 import sampledb
+import project
 
-const iface = 'vcan0'
 const max_trace = 1000 // ring-buffer cap on retained frames (all are scrollable)
 
 struct TraceRow {
@@ -45,16 +46,29 @@ mut:
 	name    string
 }
 
+// ChannelRT is the live runtime state of one configured channel (bus).
+struct ChannelRT {
+mut:
+	bus      &transport.SocketCanBus = unsafe { nil }
+	running  bool
+	err      bool // open failed / bus error
+	rx_count int
+	tx_count int
+	note     string
+}
+
 @[heap]
 struct App {
 mut:
-	bus       &transport.SocketCanBus = unsafe { nil }
-	dock_root &gui.DockNode           = unsafe { nil }
-	db        candb.Database // message catalog (loaded from DBC, sampledb fallback)
-	db_source string
-	connected bool
-	status    string
-	t0        i64
+	dock_root      &gui.DockNode = unsafe { nil }
+	proj           project.Project // bus setup (loaded from a .yml; built-in default fallback)
+	proj_source    string
+	rt             []ChannelRT // runtime per proj.channels (parallel index)
+	running        bool        // measurement started?
+	db             candb.Database // message catalog (loaded from DBC, sampledb fallback)
+	db_source      string
+	status         string
+	t0             i64
 	trace     []TraceRow
 	grouped   map[u32]MsgAgg
 	order     []u32
@@ -80,59 +94,122 @@ fn main() {
 			mut app := w.state[App]()
 			app.t0 = time.ticks()
 			app.dock_root = default_layout()
-			// Load the message catalog from a real DBC; fall back to the
-			// hand-coded sampledb so the app still runs if the file is missing.
-			dbc_path := os.getenv_opt('CANTESTER_DBC') or { 'dbc/cantester.dbc' }
-			if db := candb.load_dbc_file(dbc_path) {
-				app.db = db
-				app.db_source = dbc_path
+			// Load the project (bus setup) — env override, else the default file,
+			// else a built-in single-vcan0 default so the app always runs.
+			proj_path := os.getenv_opt('CANTESTER_PROJECT') or { 'projects/demo.yml' }
+			if p := project.load(proj_path) {
+				app.proj = p
+				app.proj_source = proj_path
 			} else {
-				app.db = candb.Database{
-					messages: sampledb.catalog()
-				}
-				app.db_source = 'sampledb (DBC load failed)'
+				app.proj = project.default_project()
+				app.proj_source = 'built-in default (${err})'
 			}
+			app.rt = []ChannelRT{len: app.proj.channels.len}
+			app.load_databases()
 			app.log_path = os.getenv_opt('CANTESTER_LOG') or { '' }
-			app.status = 'opening ${iface}…'
+			app.status = 'stopped — press ▶ Start (${app.proj.channels.len} channel(s))'
 			w.update_view(main_view)
-			if bus := transport.open_socketcan(iface) {
-				app.bus = bus
-				app.connected = true
-				app.status = 'connected to ${iface}'
-				spawn fn (mut w gui.Window) {
-					rx_loop(mut w)
-				}(mut w)
-			} else {
-				app.status = 'open ${iface} failed: ${err} (run scripts/setup_vcan.sh)'
-			}
 		}
 	)
 	window.set_theme(gui.theme_dark_bordered)
 	window.run()
 }
 
-// Trace (left) | Signals / Send / Statistics stacked (right) — each its own
-// panel so all are visible. They can still be tabbed/dragged by the user.
+// Buses (narrow left) | Trace (centre) | Signals / Send / Statistics stacked
+// (right) — each its own panel. They can still be tabbed/dragged by the user.
 fn default_layout() &gui.DockNode {
-	return gui.dock_split('root', .horizontal, 0.62, gui.dock_panel_group('g_trace', ['trace'],
-		'trace'), gui.dock_split('r1', .vertical, 0.32, gui.dock_panel_group('g_sig', ['signals'],
-		'signals'), gui.dock_split('r2', .vertical, 0.64, gui.dock_panel_group('g_send', ['send'],
-		'send'), gui.dock_panel_group('g_stats', ['stats'], 'stats'))))
+	right := gui.dock_split('r1', .vertical, 0.22, gui.dock_panel_group('g_sig', ['signals'],
+		'signals'), gui.dock_split('r2', .vertical, 0.66, gui.dock_panel_group('g_send', ['send'],
+		'send'), gui.dock_panel_group('g_stats', ['stats'], 'stats')))
+	mid := gui.dock_split('mid', .horizontal, 0.66, gui.dock_panel_group('g_trace', ['trace'],
+		'trace'), right)
+	return gui.dock_split('root', .horizontal, 0.17, gui.dock_panel_group('g_buses', ['buses'],
+		'buses'), mid)
 }
 
-fn rx_loop(mut w gui.Window) {
+// load_databases loads the message catalog from the first channel that names a
+// DBC; falls back to the hand-coded sampledb so the app still decodes.
+fn (mut app App) load_databases() {
+	for ch in app.proj.channels {
+		if ch.databases.len > 0 {
+			if db := candb.load_dbc_file(ch.databases[0]) {
+				app.db = db
+				app.db_source = ch.databases[0]
+				return
+			}
+		}
+	}
+	app.db = candb.Database{
+		messages: sampledb.catalog()
+	}
+	app.db_source = 'sampledb (no DBC in project)'
+}
+
+// start_measurement attaches every enabled monitor channel: opens its bus and
+// spawns an RX thread. (Replay channels are wired in a later phase.)
+fn start_measurement(mut w gui.Window) {
+	mut app := w.state[App]()
+	if app.running {
+		return
+	}
+	mut opened := 0
+	for i, ch in app.proj.channels {
+		app.rt[i].err = false
+		app.rt[i].note = ''
+		if !ch.enabled {
+			app.rt[i].note = 'disabled'
+			continue
+		}
+		if ch.mode != .monitor {
+			app.rt[i].note = '${ch.mode} (not yet wired)'
+			continue
+		}
+		if bus := transport.open_socketcan(ch.iface) {
+			app.rt[i].bus = bus
+			app.rt[i].running = true
+			app.rt[i].note = 'monitoring'
+			opened++
+			spawn fn [i] (mut w gui.Window) {
+				rx_loop(i, mut w)
+			}(mut w)
+		} else {
+			app.rt[i].err = true
+			app.rt[i].note = 'open failed: ${err}'
+		}
+	}
+	app.running = true
+	app.status = 'running — ${opened} channel(s) attached'
+}
+
+// stop_measurement signals every running channel's RX thread to exit; each
+// thread closes its own bus on the way out (avoids closing under a blocked recv).
+fn stop_measurement(mut w gui.Window) {
+	mut app := w.state[App]()
+	for i in 0 .. app.rt.len {
+		if app.rt[i].running {
+			app.rt[i].running = false
+			app.rt[i].note = 'stopped'
+		}
+	}
+	app.running = false
+	app.status = 'stopped'
+}
+
+fn rx_loop(idx int, mut w gui.Window) {
 	app := w.state[App]()
-	bus := app.bus
-	for app.connected {
+	bus := app.rt[idx].bus
+	for app.rt[idx].running {
 		frame := bus.recv(200) or { continue }
-		w.queue_command(fn [frame] (mut w gui.Window) {
+		w.queue_command(fn [frame, idx] (mut w gui.Window) {
 			mut a := w.state[App]()
 			if !a.paused {
+				a.rt[idx].rx_count++
 				a.push('RX', frame)
 				w.update_window()
 			}
 		})
 	}
+	bus.close()
 }
 
 // push records a live frame, stamping it with the current wall-clock offset.
@@ -187,12 +264,14 @@ fn main_view(mut window gui.Window) gui.View {
 		padding: gui.padding_medium
 		spacing: 8
 		content: [
+			menu_bar(mut window),
 			toolbar(app),
 			gui.dock_layout(
 				id:               'dock'
 				root:             app.dock_root
 				panels:           [
 					gui.DockPanelDef{ id: 'trace', label: 'Trace', content: [trace_panel(mut window)] },
+					gui.DockPanelDef{ id: 'buses', label: 'Buses', content: [buses_panel(app)] },
 					gui.DockPanelDef{ id: 'signals', label: 'Signals', content: [signals_panel(app)] },
 					gui.DockPanelDef{ id: 'send', label: 'Send', content: [send_panel(app)] },
 					gui.DockPanelDef{ id: 'stats', label: 'Statistics', content: [stats_panel(app)] },
@@ -214,13 +293,141 @@ fn main_view(mut window gui.Window) gui.View {
 	)
 }
 
+// menu_bar is the top menubar. File covers projects + recordings + exit; the
+// other menus are scaffolded for later (Phase 9). Project/Recording opens reuse
+// the native picker (zenity on Linux) with the typed-path/log box as fallback.
+fn menu_bar(mut window gui.Window) gui.View {
+	return window.menubar(
+		id_focus: 90
+		items:    [
+			gui.MenuItemCfg{
+				id:      'file'
+				text:    'File'
+				submenu: [
+					gui.MenuItemCfg{
+						id:     'file.new'
+						text:   'New Project'
+						action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {
+							mut a := w.state[App]()
+							if a.running {
+								stop_measurement(mut w)
+							}
+							a.proj = project.default_project()
+							a.proj_source = 'new (built-in default)'
+							a.rt = []ChannelRT{len: a.proj.channels.len}
+							a.load_databases()
+							a.status = 'new project — press ▶ Start'
+						}
+					},
+					gui.MenuItemCfg{
+						id:     'file.open'
+						text:   'Open Project…'
+						action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {
+							w.native_open_dialog(
+								title:   'Open Project (.yml)'
+								filters: [gui.NativeFileFilter{ name: 'Projects', extensions: ['yml', 'yaml'] }]
+								on_done: fn (r gui.NativeDialogResult, mut w gui.Window) {
+									if r.status == .ok && r.paths.len > 0 {
+										open_project(r.path_strings()[0], mut w)
+									}
+								}
+							)
+						}
+					},
+					gui.MenuItemCfg{
+						id:     'file.save'
+						text:   'Save Project'
+						action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {
+							mut a := w.state[App]()
+							a.status = 'Save Project: not implemented yet'
+						}
+					},
+					gui.MenuItemCfg{
+						id:        'sep1'
+						separator: true
+					},
+					gui.MenuItemCfg{
+						id:     'file.rec'
+						text:   'Open Recording…'
+						action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {
+							w.native_open_dialog(
+								title:   'Open Recording (.log / .mf4)'
+								filters: [gui.NativeFileFilter{ name: 'CAN recordings', extensions: ['log', 'mf4'] }]
+								on_done: fn (r gui.NativeDialogResult, mut w gui.Window) {
+									if r.status == .ok && r.paths.len > 0 {
+										load_log(r.path_strings()[0], mut w)
+									}
+								}
+							)
+						}
+					},
+					gui.MenuItemCfg{
+						id:      'file.recent'
+						text:    'Open Recent'
+						submenu: [
+							gui.MenuItemCfg{
+								id:     'file.recent.none'
+								text:   '(none yet)'
+								action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {}
+							},
+						]
+					},
+					gui.MenuItemCfg{
+						id:        'sep2'
+						separator: true
+					},
+					gui.MenuItemCfg{
+						id:     'file.exit'
+						text:   'Exit'
+						action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut _ gui.Window) {
+							sapp.quit()
+						}
+					},
+				]
+			},
+		]
+	)
+}
+
+// open_project loads a project file, rebuilds the runtime, and reloads DBCs.
+fn open_project(path string, mut w gui.Window) {
+	mut app := w.state[App]()
+	if app.running {
+		stop_measurement(mut w)
+	}
+	p := project.load(path) or {
+		app.status = 'open project failed: ${err}'
+		return
+	}
+	app.proj = p
+	app.proj_source = path
+	app.rt = []ChannelRT{len: p.channels.len}
+	app.load_databases()
+	app.status = 'loaded ${p.name} (${p.channels.len} ch) — press ▶ Start'
+	w.update_window()
+}
+
 fn toolbar(app &App) gui.View {
-	dot := if app.connected { '🟢' } else { '🔴' }
+	dot := if app.running { '🟢' } else { '⚪' }
 	return gui.row(
 		v_align: .middle
 		sizing:  gui.fill_fit
 		spacing: 10
 		content: [
+			gui.button(
+				id_focus: 103
+				content:  [gui.text(text: '▶ Start')]
+				on_click: fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					start_measurement(mut w)
+				}
+			),
+			gui.button(
+				id_focus: 104
+				content:  [gui.text(text: '■ Stop')]
+				on_click: fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					stop_measurement(mut w)
+				}
+			),
 			gui.text(text: 'CANTester', text_style: gui.theme().b1),
 			gui.text(text: '${dot} ${app.status}', text_style: gui.theme().n4),
 			gui.text(text: 'RX ${app.rx_count}  TX ${app.tx_count}', text_style: gui.theme().n4),
@@ -358,6 +565,10 @@ fn trace_panel(mut window gui.Window) gui.View {
 			sizing:              gui.fill_fill
 			max_height:          grid_h
 			scrollbar:           .visible
+			row_height:          22
+			header_height:       24
+			text_style:          trace_text_style()
+			text_style_header:   trace_text_style()
 			columns:             [
 				tcol('id', 'ID / Signal', 200, .start),
 				tcol('name', 'Message / Value', 150, .start),
@@ -401,6 +612,10 @@ fn trace_panel(mut window gui.Window) gui.View {
 		sizing:         gui.fill_fill
 		max_height:     grid_h
 		scrollbar:      .visible
+		row_height:     22
+		header_height:  24
+		text_style:     trace_text_style()
+		text_style_header: trace_text_style()
 		columns:        [
 			tcol('time', 'Time(ms)', 80, .end),
 			tcol('dir', 'Dir', 50, .start),
@@ -447,18 +662,74 @@ fn stats_panel(app &App) gui.View {
 			gui.text(text: 'RX frames: ${app.rx_count}', text_style: gui.theme().n4),
 			gui.text(text: 'TX frames: ${app.tx_count}', text_style: gui.theme().n4),
 			gui.text(text: 'Unique IDs: ${app.order.len}', text_style: gui.theme().n4),
-			gui.text(text: 'Interface: ${iface}', text_style: gui.theme().n4),
+			gui.text(text: 'Channels: ${app.proj.channels.len}', text_style: gui.theme().n4),
 			gui.text(text: 'Database: ${app.db.messages.len} msgs', text_style: gui.theme().n4),
 			gui.text(text: 'DB source: ${app.db_source}', text_style: gui.theme().n4),
+			gui.text(text: 'Project: ${app.proj.name} (${app.proj_source})', text_style: gui.theme().n4),
 		]
 	)
+}
+
+// buses_panel lists the project's channels (buses): a click-to-toggle enable
+// box, a state-colour dot, the name/interface, and live RX/TX counts. It's the
+// front-end of Start/Stop — enable a channel, then Start attaches it.
+fn buses_panel(app &App) gui.View {
+	mut rows := []gui.View{}
+	rows << gui.text(text: 'Buses', text_style: gui.theme().b3)
+	for i, ch in app.proj.channels {
+		rt := app.rt[i] or { ChannelRT{} }
+		dot_style := gui.TextStyle{
+			...trace_text_style()
+			color: channel_color(ch, rt, app.running)
+		}
+		rows << gui.row(
+			v_align: .middle
+			spacing: 5
+			padding: gui.padding_none
+			content: [
+				gui.text(text: '●', text_style: dot_style),
+				gui.checkbox(
+					id_focus:         u32(200 + i)
+					select:           ch.enabled
+					label:            '${ch.name}  ${ch.iface}'
+					text_style:       trace_text_style()
+					text_style_label: trace_text_style()
+					padding:          gui.Padding{0, 4, 0, 4}
+					on_click:         fn [i] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+						mut a := w.state[App]()
+						a.proj.channels[i].enabled = !a.proj.channels[i].enabled
+					}
+				),
+			]
+		)
+	}
+	return gui.column(
+		sizing:  gui.fill_fill
+		padding: gui.padding_medium
+		spacing: 2
+		content: rows
+	)
+}
+
+// channel_color: green running, red errored, amber enabled-but-stopped, grey off.
+fn channel_color(ch project.Channel, rt ChannelRT, running bool) gui.Color {
+	if !ch.enabled {
+		return gui.Color{120, 120, 120, 255}
+	}
+	if rt.err {
+		return gui.Color{220, 90, 90, 255}
+	}
+	if rt.running {
+		return gui.Color{120, 220, 150, 255}
+	}
+	return gui.Color{210, 180, 90, 255}
 }
 
 fn send_panel(app &App) gui.View {
 	return gui.column(
 		sizing:  gui.fill_fill
 		padding: gui.padding_medium
-		spacing: 8
+		spacing: 6
 		content: [
 			gui.text(text: 'Transmit a frame', text_style: gui.theme().b3),
 			gui.row(
@@ -471,7 +742,7 @@ fn send_panel(app &App) gui.View {
 						id_focus:        10
 						text:            app.send_id
 						width:           90
-						height:          34
+						height:          30
 						padding:         gui.Padding{4, 8, 4, 8}
 						sizing:          gui.fixed_fixed
 						placeholder:     'hex id'
@@ -491,8 +762,8 @@ fn send_panel(app &App) gui.View {
 					gui.input(
 						id_focus:        11
 						text:            app.send_data
-						width:           200
-						height:          34
+						width:           150
+						height:          30
 						padding:         gui.Padding{4, 8, 4, 8}
 						sizing:          gui.fixed_fixed
 						placeholder:     'hex bytes'
@@ -506,12 +777,24 @@ fn send_panel(app &App) gui.View {
 					),
 				]
 			),
-			gui.button(
-				id_focus: 12
-				content:  [gui.text(text: '➤ Send')]
-				on_click: fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+			// NOTE: gui.button's content label fails to render when nested in a
+			// dock panel (toolbar buttons are fine), so the Send control is a
+			// styled clickable row — same approach gui's own checkbox uses.
+			gui.row(
+				id_focus:     12
+				sizing:       gui.fit_fit
+				color:        gui.Color{72, 84, 110, 255}
+				color_border: gui.Color{110, 130, 170, 255}
+				size_border:  1
+				radius:       5
+				v_align:      .middle
+				padding:      gui.Padding{7, 18, 7, 18}
+				on_click:     fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					do_send(mut w)
 				}
+				content:      [
+					gui.text(text: 'Send', text_style: gui.theme().n2),
+				]
 			),
 		]
 	)
@@ -519,7 +802,16 @@ fn send_panel(app &App) gui.View {
 
 fn do_send(mut w gui.Window) {
 	mut app := w.state[App]()
-	if !app.connected {
+	// Transmit on the first running channel.
+	mut idx := -1
+	for i in 0 .. app.rt.len {
+		if app.rt[i].running && app.rt[i].bus != unsafe { nil } {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		app.status = 'not running — press ▶ Start to send'
 		return
 	}
 	id := parse_hex_u32(app.send_id)
@@ -528,10 +820,11 @@ fn do_send(mut w gui.Window) {
 		extended: id > 0x7ff
 		data:     hex_to_bytes(app.send_data)
 	}
-	app.bus.send(frame) or {
+	app.rt[idx].bus.send(frame) or {
 		app.status = 'send failed: ${err}'
 		return
 	}
+	app.rt[idx].tx_count++
 	app.push('TX', frame)
 }
 
@@ -621,6 +914,14 @@ fn tcol(id string, title string, width f32, align gui.HorizontalAlign) gui.GridC
 		align:     align
 		sortable:  false
 		max_width: 4000
+	}
+}
+
+// trace_text_style is a compact font for the dense trace grid.
+fn trace_text_style() gui.TextStyle {
+	return gui.TextStyle{
+		...gui.theme().n4
+		size: 13
 	}
 }
 

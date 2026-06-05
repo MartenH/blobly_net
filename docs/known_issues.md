@@ -56,6 +56,23 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
   content overflows and overlaps the next row. Use it only for single-line detail. For our expandable
   trace we instead **insert signal rows as normal grid rows** under the frame (toggled via
   `on_selection_change` + `active_row_id`), which reflows correctly. See `src/main.v` grouped view.
+- 🔴 **Centered text doesn't render — `gui.button` labels come out blank.** A `gui.text` whose
+  container centers it on the main axis (`h_align: .center`) draws *nothing* on our pinned gui under
+  WSLg. Because `gui.button` hard-defaults its content to centered (`ButtonCfg.h_align = .center`),
+  **every `gui.button` with a text label renders as an empty box** when its width exceeds the label
+  (toolbar buttons happen to render because their row packs them to content width — but it's fragile).
+  Left-aligned text always renders. **Workaround:** don't rely on `gui.button` for labelled buttons in
+  panels — build a clickable `gui.row` (it supports `on_click`/`id_focus`/`color`/`radius`, like gui's
+  own checkbox) with a **left-aligned** `gui.text`. See the Send control in `src/main.v` (the blue
+  clickable row). Verified by screenshotting the running app (`import -window`); the label only
+  appeared once `h_align: .center` was removed. Worth reporting upstream / checking on a gui bump.
+- 🟢 **Screenshotting the running app for visual verification.** `import -window <wid>` (ImageMagick)
+  + `xdotool search --name CANTester` capture the live window under WSLg — invaluable when iterating
+  on layout you can't otherwise see. Set `XCURSOR_THEME=Adwaita XCURSOR_SIZE=24` first. Caveats: pick
+  the newest window id (`| tail -1`) since stale `v run`/`src/main` instances linger (kill by
+  `ps -eo pid,args | grep -E 'cantester|src/main'`, NOT `pkill -f build/cantester` — that matches your
+  own shell and kills it); and xdotool clicking is unreliable (title-bar offset), so screenshot, don't
+  drive.
 - 🟡 **Keyboard copy/paste/cut/undo don't fire in `gui.input` on Linux/X11 (incl. WSLg).** The
   clipboard itself is fine — V's `clipboard` module round-trips and the WSLg bridge works both ways
   (`printf X | clip.exe` → `cb.paste()` returns X; `to_clipboard` → `powershell Get-Clipboard` sees
