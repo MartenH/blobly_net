@@ -89,6 +89,7 @@ mut:
 	paused    bool
 	mode      string = 'grouped' // 'grouped' | 'all'
 	dark      bool = true // current theme: dark (theme_dark_bordered) vs light (theme_light_bordered)
+	recents   []string // recently opened project file paths (most-recent first; persisted)
 	expanded  map[u32]bool // grouped-trace IDs currently expanded (multi-select)
 	sel_id    i64 = -1     // message ID the Signals panel inspects (trace selection)
 	selection gui.GridSelection
@@ -108,12 +109,17 @@ fn main() {
 			mut app := w.state[App]()
 			app.t0 = time.ticks()
 			app.dock_root = default_layout()
-			// Load the project (bus setup) — env override, else the default file,
-			// else a built-in single-vcan0 default so the app always runs.
-			proj_path := os.getenv_opt('CANTESTER_PROJECT') or { 'projects/demo.yml' }
+			// Load the project (bus setup). Precedence: CANTESTER_PROJECT env >
+			// most-recently-opened project > projects/demo.yml > a built-in
+			// single-vcan0 default so the app always runs.
+			app.recents = load_recents()
+			proj_path := os.getenv_opt('CANTESTER_PROJECT') or {
+				if app.recents.len > 0 { app.recents[0] } else { 'projects/demo.yml' }
+			}
 			if p := project.load(proj_path) {
 				app.proj = p
 				app.proj_source = proj_path
+				app.remember_project(proj_path)
 			} else {
 				app.proj = project.default_project()
 				app.proj_source = 'built-in default (${err})'
@@ -334,6 +340,7 @@ fn main_view(mut window gui.Window) gui.View {
 // other menus are scaffolded for later (Phase 9). Project/Recording opens reuse
 // the native picker (zenity on Linux) with the typed-path/log box as fallback.
 fn menu_bar(mut window gui.Window) gui.View {
+	app := window.state[App]()
 	return window.menubar(
 		id_focus: 90
 		items:    [
@@ -401,13 +408,7 @@ fn menu_bar(mut window gui.Window) gui.View {
 					gui.MenuItemCfg{
 						id:      'file.recent'
 						text:    'Open Recent'
-						submenu: [
-							gui.MenuItemCfg{
-								id:     'file.recent.none'
-								text:   '(none yet)'
-								action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {}
-							},
-						]
+						submenu: recent_submenu(app.recents)
 					},
 					gui.MenuItemCfg{
 						id:        'sep2'
@@ -438,10 +439,98 @@ fn open_project(path string, mut w gui.Window) {
 	}
 	app.proj = p
 	app.proj_source = path
+	app.remember_project(path)
 	app.rt = []ChannelRT{len: p.channels.len}
 	app.load_databases()
 	app.status = 'loaded ${p.name} (${p.channels.len} ch) — press ▶ Start'
 	w.update_window()
+}
+
+const max_recents = 8
+
+// recents_path is the per-user file that stores recently opened projects,
+// one path per line, in the OS config dir (%APPDATA%\cantester on Windows,
+// ~/.config/cantester on Linux). It is user state, not part of the repo.
+fn recents_path() string {
+	cfg := os.config_dir() or { return '' }
+	return os.join_path(cfg, 'cantester', 'recent_projects.txt')
+}
+
+// load_recents reads the recents file, dropping blanks, duplicates, and paths
+// that no longer exist on disk.
+fn load_recents() []string {
+	p := recents_path()
+	if p == '' || !os.exists(p) {
+		return []string{}
+	}
+	content := os.read_file(p) or { return []string{} }
+	mut out := []string{}
+	for line in content.split_into_lines() {
+		s := line.trim_space()
+		if s != '' && os.exists(s) && s !in out {
+			out << s
+		}
+	}
+	return out
+}
+
+fn save_recents(recents []string) {
+	p := recents_path()
+	if p == '' {
+		return
+	}
+	dir := os.dir(p)
+	if !os.exists(dir) {
+		os.mkdir_all(dir) or { return }
+	}
+	os.write_file(p, recents.join('\n')) or {}
+}
+
+// remember_project moves path to the front of the recents list (absolute,
+// deduped, capped at max_recents) and persists it.
+fn (mut app App) remember_project(path string) {
+	abs := os.abs_path(path)
+	mut r := [abs]
+	for x in app.recents {
+		if x != abs && r.len < max_recents {
+			r << x
+		}
+	}
+	app.recents = r
+	save_recents(r)
+}
+
+// recent_submenu builds the File ▸ Open Recent items from the recents list.
+fn recent_submenu(recents []string) []gui.MenuItemCfg {
+	if recents.len == 0 {
+		return [
+			gui.MenuItemCfg{
+				id:     'file.recent.none'
+				text:   '(none yet)'
+				action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut _ gui.Window) {}
+			},
+		]
+	}
+	mut items := []gui.MenuItemCfg{}
+	for i, path in recents {
+		p := path // capture per-item for the closure
+		items << gui.MenuItemCfg{
+			id:     'file.recent.${i}'
+			text:   recent_label(p)
+			action: fn [p] (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {
+				open_project(p, mut w)
+			}
+		}
+	}
+	return items
+}
+
+// recent_label shows the file name plus its parent dir for disambiguation,
+// e.g. .../projects/demo-udp.yml -> "demo-udp.yml — projects".
+fn recent_label(path string) string {
+	base := os.base(path)
+	parent := os.base(os.dir(path))
+	return if parent == '' || parent == '.' { base } else { '${base} — ${parent}' }
 }
 
 fn toolbar(mut window gui.Window) gui.View {
@@ -834,7 +923,7 @@ fn send_panel(app &App) gui.View {
 						id_focus:        10
 						text:            app.send_id
 						width:           90
-						height:          30
+						height:          34
 						padding:         gui.Padding{4, 8, 4, 8}
 						sizing:          gui.fixed_fixed
 						placeholder:     'hex id'
@@ -855,7 +944,7 @@ fn send_panel(app &App) gui.View {
 						id_focus:        11
 						text:            app.send_data
 						width:           150
-						height:          30
+						height:          34
 						padding:         gui.Padding{4, 8, 4, 8}
 						sizing:          gui.fixed_fixed
 						placeholder:     'hex bytes'
@@ -869,24 +958,20 @@ fn send_panel(app &App) gui.View {
 					),
 				]
 			),
-			// NOTE: gui.button's content label fails to render when nested in a
-			// dock panel (toolbar buttons are fine), so the Send control is a
-			// styled clickable row — same approach gui's own checkbox uses.
-			gui.row(
-				id_focus:     12
-				sizing:       gui.fit_fit
-				color:        gui.Color{72, 84, 110, 255}
-				color_border: gui.Color{110, 130, 170, 255}
-				size_border:  1
-				radius:       5
-				v_align:      .middle
-				padding:      gui.Padding{7, 18, 7, 18}
-				on_click:     fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+			// A real themed gui.button (matches the toolbar buttons + follows the
+			// dark/light theme), fixed to a compact width via min/max_width so it
+			// doesn't stretch the whole column. h_align: .left because gui's centered
+			// button label renders blank once the button is wider than its text;
+			// left-aligned text always draws.
+			gui.button(
+				id_focus:  12
+				min_width: 90
+				max_width: 90
+				h_align:   .left
+				content:   [gui.text(text: 'Send')]
+				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					do_send(mut w)
 				}
-				content:      [
-					gui.text(text: 'Send', text_style: gui.theme().n2),
-				]
 			),
 		]
 	)
