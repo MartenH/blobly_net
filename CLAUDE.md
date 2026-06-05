@@ -77,7 +77,8 @@ v.mod                       module manifest
 src/main.v                  GUI entry point (thin consumer of modules)
 modules/candb/              CAN signal db: messages, signals, bit en/decode + DBC parser (+ tests)
 modules/sampledb/           hand-coded message catalog (being superseded by DBC loading)
-modules/transport/          Bus interface (transport.v) + Linux SocketCAN backend (socketcan_linux.v)
+modules/transport/          Bus interface (transport.v) + SocketCAN backend (socketcan_linux.v) +
+                            cross-platform UDP-multicast software bus (udpbus.v) — the vcan stand-in
 modules/isotp/              ISO-TP: Channel interface (isotp.v) + Linux kernel backend (kernel_linux.v)
 modules/uds/                UDS diagnostic client over isotp (pure V, + tests)   (Phase 6)
 modules/canlog/             candump .log parse/format (pure V, + tests)          (Phase 7)
@@ -127,6 +128,27 @@ into shared code. The convention:
   (PCAN/Vector/SocketCAN-over-IP) — which is also useful on Linux for real hardware that lacks kernel
   ISO-TP. `uds`/`candb` are already pure-V and portable. When adding a backend, put platform code ONLY
   in suffixed files and keep the interface untouched.
+
+### Windows build (W1) — handoff for a native-Windows session
+Goal: get the **GUI building + rendering natively on Windows** (no CAN yet). Native sokol uses **D3D11**,
+so the WSLg ~100ms/frame render cost (see `docs/known_issues.md`) should largely vanish — verify CPU is
+low. Decisions so far: **virtual-first** (no real CAN HW yet), toolchain **mingw-w64 (gcc) via MSYS2**
+(V dislikes MSVC, and so do we).
+- **Clone onto native NTFS** (e.g. `C:\dev\cantester_v`), NOT `\\wsl$\…` (the 9p FS is slow + has
+  line-ending/permission quirks). Sync via the GitHub remote (`MartenH/cantester_v`).
+- **Use a DEDICATED, isolated MSYS2** for this project — `pacman` is global per MSYS2 root, so install a
+  *second* MSYS2 root (e.g. `C:\dev\msys64-ct`) and do all installs there. **Do NOT pollute the user's
+  personal MSYS2.**
+- In that dedicated MINGW64 shell: `pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-pkgconf
+  mingw-w64-x86_64-freetype mingw-w64-x86_64-harfbuzz mingw-w64-x86_64-fribidi
+  mingw-w64-x86_64-fontconfig mingw-w64-x86_64-pango mingw-w64-x86_64-glib2`. Smaller dep set than Linux
+  — **no X11/mesa/dbus/atk** (those were Linux desktop bits). Then V (clone+`make.bat` or prebuilt) +
+  put `gui`/`vglyph` in `~/.vmodules`, and `v -cc gcc -path "@vlib|@vmodules|modules" run src/main.v`.
+- **No vcan on Windows** → use `transport/udpbus.v` (the cross-platform localhost UDP-multicast software
+  bus, built on the Linux side) instead of `vcan0` for the virtual-first flow.
+- Risks: gui is immature + its author left → expect link/dep friction; check the gui repo for Windows
+  notes. Native file dialogs are native Win32 (no zenity needed). Fallback escape hatch if gui blocks:
+  **imgui+implot** (MSVC-friendly; user has experience).
 
 ## Environment (verified 2026-06-03)
 
@@ -440,3 +462,15 @@ prompt for a password.
   the 1000-frame cap bounds only the **display** buffer — a future **record** sink (write-side of Open
   Log) would tap the full RX stream, uncapped. All measured by screenshotting/flooding (`cangen`) the
   running app. Next: Windows port planning (see Platform support).
+- 2026-06-05: **Windows port kickoff — virtual-first.** Decided (with user): Windows target is
+  **virtual-first** (no real CAN HW yet), toolchain **mingw-w64/gcc via MSYS2** (not MSVC), and the
+  Windows dev session will be a **separate clone on native NTFS** synced via the GitHub remote, using a
+  **dedicated isolated MSYS2 root** (don't pollute the user's personal one). Added a "Windows build
+  (W1)" handoff section above. Built **W2: `transport/udpbus.v`** — a cross-platform localhost
+  **UDP-multicast** software bus implementing the same `Bus` interface (the `vcan0` stand-in for
+  Windows): every participant joins the group and sees every frame; per-instance `src` id filters our
+  own multicast echoes (loopback must be ON for same-host peers). Pure V (vlib `net`, which exposes
+  `join_multicast_group`/`set_multicast_loop`), so it runs on Windows unchanged; verified on Linux (2
+  hermetic tests: cross-instance delivery + self-filter, incl. extended/RTR). TODO to make it usable:
+  (a) wire it behind the project `interface:` (e.g. `udp:group:port` selects udpbus vs SocketCAN);
+  (b) give `sut/can_sut.py` a matching UDP mode so the virtual SUT runs driver-free on Windows.
