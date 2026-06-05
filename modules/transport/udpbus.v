@@ -20,6 +20,33 @@ import time
 pub const udp_default_group = '239.63.42.1'
 pub const udp_default_port = 20000
 
+// UdpTarget is a parsed `udp[:group[:port]]` software-bus interface spec.
+struct UdpTarget {
+	group string
+	port  int
+}
+
+// parse_udp_iface recognises software-bus interfaces of the form `udp`,
+// `udp:GROUP`, or `udp:GROUP:PORT` (defaults fill any missing part). Returns
+// none for anything else (e.g. `vcan0`, `can0`). Used by open() to dispatch.
+fn parse_udp_iface(iface string) ?UdpTarget {
+	if iface != 'udp' && !iface.starts_with('udp:') {
+		return none
+	}
+	mut group := udp_default_group
+	mut port := udp_default_port
+	if iface.starts_with('udp:') {
+		parts := iface[4..].split(':')
+		if parts.len >= 1 && parts[0].len > 0 {
+			group = parts[0]
+		}
+		if parts.len >= 2 && parts[1].len > 0 {
+			port = parts[1].int()
+		}
+	}
+	return UdpTarget{group, port}
+}
+
 pub struct UdpBus {
 mut:
 	tx  &net.UdpConn = unsafe { nil } // dialed to group:port — sends
