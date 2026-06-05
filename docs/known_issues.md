@@ -170,6 +170,39 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
   `sudo ip link add dev vcan0 type vcan && sudo ip link set up vcan0` just works. The `.ko` is
   irrelevant; ignore it. `scripts/setup_vcan.sh` no longer calls modprobe.
 
+## Windows (native build — W1)
+
+Full recipe + vendored-patch manifest: **`docs/windows_build.md`**. The headline
+gotchas (first-ever native Windows run of vlang/gui, 2026-06-05):
+
+- 🟡 **Smart App Control blocks locally-built unsigned exes.** If SAC is *enforced*
+  (`HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy\VerifiedAndReputablePolicyState==1`),
+  freshly built `cantester.exe` is hard-blocked ("An Application Control policy has
+  blocked this file"). No per-app allowlist, won't trust self-signed certs → native
+  dev needs SAC turned **Off** (Settings → Windows Security → App & browser control),
+  which is **irreversible** (re-enable needs a Windows reset). V/tcc themselves run;
+  only no-reputation app binaries get blocked, per-hash, sometimes a few builds in.
+- 🟡 **V's `v.pkgconfig` doesn't relocate a `.pc` `prefix=`.** mingw `.pc` files say
+  `prefix=/mingw64`; system `pkgconf` redefines it to the real relocated root but
+  V's built-in resolver doesn't → bogus `-I/mingw64/...` and "Cannot find freetype2".
+  Fix: feed the system `pkgconf`'s flags via `-cflags`/`-ldflags` (`scripts/build_win.ps1`).
+- 🔴 **gui requires the sokol GL backend (its shaders are GLSL-only).** On D3D11 the
+  HLSL compiler rejects gui's GLSL (`error X1504: invalid preprocessor command
+  'version'`). Native Windows uses `SOKOL_GLCORE` (V's default). D3D11 would need a
+  gui-side HLSL shader port — deferred; not needed for perf (native GL idle ≈0.3% CPU,
+  the WSLg GL-translation tax is gone). NOTE: V's sokol glue also never wired D3D11 at
+  all (`glue_environment`/`glue_swapchain` only do metal/gl) — an upstream V bug
+  documented in `windows_build.md` for when gui gains HLSL shaders.
+- ⚪ **gcc 16 strictness + gui's untested Win32 C bridge.** `nativebridge/*_windows.c`
+  needed `#define COBJMACROS` (before `<d3d11.h>`) and `<stdio.h>`/`<wchar.h>` (for
+  `_snwprintf`) to compile; vglyph's debug build panicked on whitespace glyphs
+  (`outline.n_points==0`). All patched (see the manifest).
+- ⚪ **No console output from the GUI exe when piped/redirected.** It's a console-
+  subsystem app, but stderr is fully buffered to a pipe/file and a C `abort()`
+  discards the buffer → silent exit. Run it in a *real* terminal (unbuffered) or under
+  `gdb` (mingw gdb) to see panics/sokol logs; `gdb -ex run -ex bt` was the workhorse
+  for this bring-up.
+
 ## Our code (cantester)
 
 - 🟢 **`candb.encode` rounding bug.** `i64(x + 0.5)` truncated negatives toward zero (`-4.5 → -4`),

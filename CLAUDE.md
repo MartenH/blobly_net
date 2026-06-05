@@ -129,11 +129,18 @@ into shared code. The convention:
   ISO-TP. `uds`/`candb` are already pure-V and portable. When adding a backend, put platform code ONLY
   in suffixed files and keep the interface untouched.
 
-### Windows build (W1) — handoff for a native-Windows session
-Goal: get the **GUI building + rendering natively on Windows** (no CAN yet). Native sokol uses **D3D11**,
-so the WSLg ~100ms/frame render cost (see `docs/known_issues.md`) should largely vanish — verify CPU is
-low. Decisions so far: **virtual-first** (no real CAN HW yet), toolchain **mingw-w64 (gcc) via MSYS2**
-(V dislikes MSVC, and so do we).
+### Windows build (W1) — ✅ DONE (2026-06-05). Full recipe: `docs/windows_build.md`
+The GUI **builds + renders natively on Windows** (mingw-w64 gcc) and the driver-free
+virtual-first flow works (Python SUT over the UDP software bus). Idle render ≈ **0.3% CPU** (16-core) —
+the WSLg GL-translation tax is gone. **Backend correction:** the W1 plan assumed D3D11, but vlang/gui's
+shaders are **GLSL-only** (`gui/shaders_glsl.v`), so gui requires sokol's **GL backend** (`SOKOL_GLCORE`,
+V's default); D3D11 would need a gui-side HLSL shader port (deferred — and unnecessary, GL perf is already
+great). First-ever native Windows run of vlang/gui surfaced several real upstream bugs (gui Win32 C
+bridge, a `titlebar_dark` pre-init abort, a vglyph whitespace-glyph panic, and V's sokol glue never
+wiring D3D11) — all captured with upstream-style patches in `docs/windows_build.md` (manifest) for
+contributing back to V/gui. **Smart App Control** (if enforced) blocks unsigned local builds and must be
+turned Off (irreversible). Original handoff notes below (toolchain **mingw-w64 (gcc) via MSYS2**;
+**virtual-first**, no real CAN HW yet):
 - **Clone onto native NTFS** (e.g. `C:\dev\cantester_v`), NOT `\\wsl$\…` (the 9p FS is slow + has
   line-ending/permission quirks). Sync via the GitHub remote (`MartenH/cantester_v`).
 - **Use a DEDICATED, isolated MSYS2** for this project — `pacman` is global per MSYS2 root, so install a
@@ -485,3 +492,24 @@ prompt for a password.
   a V `transport.open('udp')` client interoperate — 0x100/0x700 received and decoded (EngineSpeed
   etc.). This same flow runs on Windows with zero drivers once the GUI builds (W1). Run:
   `python3 sut/can_sut.py udp` + `CANTESTER_PROJECT=projects/demo-udp.yml ./scripts/run.sh`.
+- 2026-06-05: **W1 DONE — GUI builds + RENDERS natively on Windows, virtual-first verified.** Stood up
+  the whole toolchain isolated under `C:\dev` (dedicated `msys64-ct` MSYS2 + mingw-w64 gcc 16/pkgconf/
+  pango/glib/freetype/harfbuzz/fribidi/fontconfig; V 0.5.1 @ de365a1 via `makev.bat`+tcc; gui@68b9302 +
+  vglyph in `vmodules-ct` via `VMODULES`). **First-ever native-Windows run of vlang/gui** surfaced and
+  fixed real upstream bugs: gui's Win32 C bridge (`readback_windows.c` missing `COBJMACROS`,
+  `dialog_windows.c` missing `<wchar.h>`/`<stdio.h>` — gcc 16 implicit-decl errors); `titlebar_dark()`
+  calling `sapp.win32_get_hwnd()` before `sapp.run()` → `_sapp.valid` abort (guarded with
+  `sapp.isvalid()`); vglyph panicking on whitespace glyphs (`outline.n_points==0`). **Key finding:**
+  gui's shaders are **GLSL-only**, so it requires sokol's **GL backend** — the W1 "D3D11" premise was
+  wrong; D3D11 needs a gui HLSL shader port (deferred, and unneeded: native GL idle ≈**0.3% CPU** on a
+  16-core box, the WSLg translation tax gone). While chasing D3D11 I also found V's sokol glue never
+  wires D3D11 at all (`glue_environment`/`glue_swapchain` only do metal/gl) — a genuine upstream V bug,
+  captured (reverted) in the manifest. Also: **V's `v.pkgconfig` doesn't relocate a `.pc` `prefix=`** →
+  feed system `pkgconf`'s flags via `-cflags`/`-ldflags`. **Smart App Control** (enforced) hard-blocks
+  unsigned local exes — user turned it Off (irreversible). **Verified by screenshot** (full dock layout,
+  trace/Buses/Signals/Send panels, crisp pango text) and the virtual-first UDP flow end-to-end (V
+  `transport.open('udp:…')` client received the SUT's 0x100/0x700 over the software bus, driver-free).
+  All vendored patches are upstream-style (no project tags) for contributing back to V/gui/vglyph. Full
+  recipe + patch manifest: **`docs/windows_build.md`**; gotchas in `docs/known_issues.md`. Build:
+  `scripts\build_win.ps1`. NEXT: optionally press ▶ Start in the live GUI to watch frames; later, gui
+  HLSL shaders → D3D11 (+ the V glue fix); real CAN HW; the rest of the roadmap.
