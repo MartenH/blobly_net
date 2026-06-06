@@ -125,13 +125,16 @@ struct TraceRow {
 
 struct MsgAgg {
 mut:
-	id      u32
-	ext     bool
-	last    []u8
-	count   int
-	last_ms f64
-	name    string
+	id       u32
+	ext      bool
+	last     []u8
+	count    int
+	last_ms  f64
+	name     string
+	byte_age []int // per-byte updates since it last changed (0 = just changed); fades the highlight
 }
+
+const byte_fade_steps = 6 // updates over which a changed-byte highlight fades to none
 
 // ChannelRT is the live runtime state of one configured channel (bus).
 struct ChannelRT {
@@ -432,13 +435,35 @@ fn (mut app App) record(dir string, f transport.CanFrame, t_ms f64) {
 	if f.id !in app.grouped {
 		app.order << f.id
 	}
+	prev := app.grouped[f.id] or { MsgAgg{} }
+	// Per-byte change highlight: age 0 = changed this update, then ages up each
+	// frame so the highlight fades. First sighting of an ID is the baseline (no
+	// highlight), so seed at byte_fade_steps.
+	mut ages := []int{len: 8, init: byte_fade_steps}
+	if prev.byte_age.len == 8 {
+		ages = prev.byte_age.clone()
+	}
+	first := prev.last.len == 0
+	for i in 0 .. 8 {
+		changed := i < f.data.len && (i >= prev.last.len || f.data[i] != prev.last[i])
+		ages[i] = if first {
+			byte_fade_steps
+		} else if changed {
+			0
+		} else if ages[i] < byte_fade_steps {
+			ages[i] + 1
+		} else {
+			ages[i]
+		}
+	}
 	app.grouped[f.id] = MsgAgg{
-		id:      f.id
-		ext:     f.extended
-		last:    f.data.clone()
-		count:   (app.grouped[f.id] or { MsgAgg{} }).count + 1
-		last_ms: t_ms
-		name:    name
+		id:       f.id
+		ext:      f.extended
+		last:     f.data.clone()
+		count:    prev.count + 1
+		last_ms:  t_ms
+		name:     name
+		byte_age: ages
 	}
 }
 
@@ -824,16 +849,19 @@ fn trace_panel(mut window gui.Window) gui.View {
 			a := app.grouped[id] or { continue }
 			expanded := id in app.expanded
 			chevron := if expanded { '▼' } else { '▶' }
+			mut cells := {
+				'id':    '${chevron} ${hexid(id, a.ext)}'
+				'name':  a.name
+				'dlc':   '${a.last.len}'
+				'count': '${a.count}'
+				'time':  '${a.last_ms:.0f}'
+			}
+			for i in 0 .. 8 {
+				cells['b${i}'] = if i < a.last.len { '${a.last[i]:02X}' } else { '' }
+			}
 			rows << gui.GridRow{
 				id:    '${id}'
-				cells: {
-					'id':    '${chevron} ${hexid(id, a.ext)}'
-					'name':  a.name
-					'dlc':   '${a.last.len}'
-					'data':  hex(a.last)
-					'count': '${a.count}'
-					'time':  '${a.last_ms:.0f}'
-				}
+				cells: cells
 			}
 			if expanded {
 				if m := app.db.lookup(id) {
@@ -851,7 +879,6 @@ fn trace_panel(mut window gui.Window) gui.View {
 								'id':    '       ${s.name}'
 								'name':  value
 								'dlc':   '0x${raw:X}'
-								'data':  s.desc
 								'count': ''
 								'time':  ''
 							}
@@ -870,12 +897,13 @@ fn trace_panel(mut window gui.Window) gui.View {
 			text_style:          trace_text_style()
 			text_style_header:   trace_text_style()
 			columns:             [
-				tcol('id', 'ID / Signal', 200, .start),
+				tcol('id', 'ID / Signal', 180, .start),
 				tcol('name', 'Message / Value', 150, .start),
-				tcol('dlc', 'DLC / Raw', 90, .end),
-				tcol('data', 'Data / Interpretation', 300, .start),
-				tcol('count', 'Count', 70, .end),
-				tcol('time', 'Last(ms)', 90, .end),
+				tcol('dlc', 'DLC/Raw', 64, .end),
+				bcol('b0'), bcol('b1'), bcol('b2'), bcol('b3'),
+				bcol('b4'), bcol('b5'), bcol('b6'), bcol('b7'),
+				tcol('count', 'Count', 60, .end),
+				tcol('time', 'Last(ms)', 76, .end),
 			]
 			rows:                rows
 			selection:           app.selection
@@ -1212,20 +1240,42 @@ fn load_log(path string, mut w gui.Window) {
 	w.update_window()
 }
 
-fn trace_cell_format(row gui.GridRow, _ int, col gui.GridColumnCfg, value string, mut _ gui.Window) gui.GridCellFormat {
+fn trace_cell_format(row gui.GridRow, _ int, col gui.GridColumnCfg, value string, mut w gui.Window) gui.GridCellFormat {
 	if col.id == 'dir' && value == 'TX' {
 		return gui.GridCellFormat{
 			has_text_color: true
-			text_color:     gui.Color{240, 200, 90, 255}
+			text_color:     gui.Color{210, 140, 30, 255} // TX: amber (readable on white)
 		}
 	}
-	if col.id == 'name' && value.len > 0 {
-		return gui.GridCellFormat{
-			has_text_color: true
-			text_color:     gui.Color{120, 220, 150, 255}
+	// Per-byte change highlight (grouped view): byte cells b0..b7 fade from yellow
+	// as the byte stays unchanged. Empty cells (signal rows / no byte) are skipped.
+	if col.id.len == 2 && col.id[0] == `b` && value.len > 0 {
+		idx := int(col.id[1] - `0`)
+		mut a := w.state[App]()
+		agg := a.grouped[row.id.u32()] or { return gui.GridCellFormat{} }
+		if idx < agg.byte_age.len {
+			if bg := byte_highlight(agg.byte_age[idx], a.dark) {
+				return gui.GridCellFormat{
+					has_bg_color: true
+					bg_color:     bg
+				}
+			}
 		}
 	}
 	return gui.GridCellFormat{}
+}
+
+// byte_highlight blends the row background toward yellow by how recently the byte
+// changed (age 0 = brightest), returning none once it has fully faded.
+fn byte_highlight(age int, dark bool) ?gui.Color {
+	if age >= byte_fade_steps {
+		return none
+	}
+	t := f32(byte_fade_steps - age) / f32(byte_fade_steps)
+	// base = row interior (white on light, grey on dark); target = yellow.
+	br, bg, bb := if dark { f32(74), f32(74), f32(74) } else { f32(255), f32(255), f32(255) }
+	yr, yg, yb := f32(255), f32(214), f32(64)
+	return gui.Color{u8(br + (yr - br) * t), u8(bg + (yg - bg) * t), u8(bb + (yb - bb) * t), 255}
 }
 
 // tcol builds a trace column: resizable + reorderable (gui defaults), NOT
@@ -1239,6 +1289,20 @@ fn tcol(id string, title string, width f32, align gui.HorizontalAlign) gui.GridC
 		align:     align
 		sortable:  false
 		max_width: 4000
+	}
+}
+
+// bcol is a narrow per-byte column for the grouped trace (b0..b7). Title is the
+// byte index; the cell holds two hex digits and gets the change-highlight fade.
+fn bcol(id string) gui.GridColumnCfg {
+	return gui.GridColumnCfg{
+		id:        id
+		title:     id[1..] // 'b3' -> '3'
+		width:     26
+		min_width: 22
+		align:     .center
+		sortable:  false
+		max_width: 60
 	}
 }
 
