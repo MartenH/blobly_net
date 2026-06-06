@@ -46,6 +46,63 @@ const ui_size_x_large = f32(16)
 const trace_row_height = f32(14)
 const trace_header_height = f32(16)
 
+// ---- Color palettes: one struct, fed into make_theme() ----
+// Every gui color knob in one place (parallel to the ui_size_* scale). Swap the
+// whole look by swapping a Palette; the dark/light toggle picks between two.
+struct Palette {
+	name       string
+	dark       bool // drives titlebar_dark + the gui base preset
+	background gui.Color // window chrome (menus/toolbars/panel headers)
+	panel      gui.Color // panel backgrounds
+	interior   gui.Color // list/input interior (the data area)
+	hover      gui.Color
+	focus      gui.Color
+	active     gui.Color
+	border     gui.Color // panel / menu / input frames (Opus "Frame")
+	gridline   gui.Color // data-grid lines (Opus listview gridlines; darker than border)
+	select     gui.Color // selection bar (text colour is preserved, not whitened)
+	accent     gui.Color // focus / selection-frame accent
+	text       gui.Color
+}
+
+// Directory-Opus light theme, matched to the user's actual DOpus settings:
+// pure-white backgrounds (255/255/255) and 109/109/109 lines. The blue accents
+// come from the theme file (Themes/foo.dlt → theme.xml): selection #0078d4
+// (rendered pale via blending=yes over white) and hover #8bc9f8. No green — the
+// sage seen in DOpus is the Windows window tint (syscols), not an Opus value.
+const palette_opus = Palette{
+	name:       'opus-light'
+	dark:       false
+	background: gui.rgb(242, 242, 242) // chrome / menus / toolbars (DOpus Menus bg)
+	panel:      gui.rgb(255, 255, 255) // panels hold list/tree/form content → white
+	interior:   gui.rgb(255, 255, 255) // inputs + data-grid background (DOpus listview)
+	hover:      gui.rgb(214, 236, 252) // #8bc9f8 blended light
+	focus:      gui.rgb(199, 222, 244) // #0078d4 ~22% over white
+	active:     gui.rgb(180, 211, 240) // #0078d4 stronger
+	border:     gui.rgb(204, 204, 204) // panel/menu/input frames (DOpus Frame)
+	gridline:   gui.rgb(109, 109, 109) // data-grid lines (DOpus listview gridlines)
+	select:     gui.rgb(199, 222, 244) // #0078d4 selection, blended over white
+	accent:     gui.rgb(0, 120, 212)   // #0078d4 — focus/selection frame (crisp blue)
+	text:       gui.rgb(20, 20, 20)
+}
+
+// The previous neutral-grey dark look, preserved (gui's dark_bordered palette).
+const palette_dark = Palette{
+	name:       'dark'
+	dark:       true
+	background: gui.rgb(48, 48, 48)
+	panel:      gui.rgb(64, 64, 64)
+	interior:   gui.rgb(74, 74, 74)
+	hover:      gui.rgb(84, 84, 84)
+	focus:      gui.rgb(94, 94, 94)
+	active:     gui.rgb(104, 104, 104)
+	border:     gui.rgb(100, 100, 100)
+	gridline:   gui.rgb(88, 88, 88)
+	select:     gui.rgb(65, 105, 225)
+	accent:     gui.rgb(90, 140, 240)
+	text:       gui.rgb(225, 225, 225)
+}
+
 // flush_ms_for converts a repaint rate (fps) to the RX batch/repaint interval.
 // The UI refresh rate — not the bus frame rate — sets the CPU cost, because each
 // repaint forces a full GL frame (very expensive under WSLg's GL translation).
@@ -107,7 +164,7 @@ mut:
 	tx_count  int
 	paused    bool
 	mode      string = 'grouped' // 'grouped' | 'all'
-	dark      bool = true // current theme: dark (theme_dark_bordered) vs light (theme_light_bordered)
+	dark      bool // current theme: false = Opus sage-light (default), true = dark
 	recents   []string // recently opened project file paths (most-recent first; persisted)
 	expanded  map[u32]bool // grouped-trace IDs currently expanded (multi-select)
 	sel_id    i64 = -1     // message ID the Signals panel inspects (trace selection)
@@ -156,24 +213,38 @@ fn main() {
 			}
 		}
 	)
-	window.set_theme(compact_theme(gui.theme_dark_bordered))
+	window.set_theme(make_theme(palette_opus))
 	window.run()
 }
 
-// compact_theme tightens a base theme (smaller fonts, padding, spacing, radius)
-// for a dense, Directory-Opus-like layout, while keeping the base's colors.
-fn compact_theme(base gui.Theme) gui.Theme {
-	// Base text style: drives the app-wide font. family flows to every derived
-	// style via gui's font_variants(); fall back to the base family (gui's
-	// bundled default) when ui_font_family is ''.
+// make_theme builds the app theme from a Palette (colours) + the ui_size_* scale
+// (fonts) + tightened padding/spacing for a dense, Directory-Opus-like layout.
+// One function, one palette in — the single source of truth for look & feel.
+fn make_theme(p Palette) gui.Theme {
+	base := if p.dark { gui.theme_dark_bordered } else { gui.theme_light_bordered }
+	// Base text style: drives the app-wide font + text colour. family flows to
+	// every derived style via gui's font_variants(); fall back to the base family
+	// (gui's bundled default) when ui_font_family is ''.
 	family := if ui_font_family != '' { ui_font_family } else { base.cfg.text_style.family }
 	text_style := gui.TextStyle{
 		...base.cfg.text_style
 		family: family
 		size:   ui_size_medium
+		color:  p.text
 	}
 	cfg := gui.ThemeCfg{
 		...base.cfg
+		name:               p.name
+		color_background:   p.background
+		color_panel:        p.panel
+		color_interior:     p.interior
+		color_hover:        p.hover
+		color_focus:        p.focus
+		color_active:       p.active
+		color_border:       p.border
+		color_border_focus: p.accent
+		color_select:       p.select
+		titlebar_dark:      p.dark
 		size_text_tiny:    ui_size_tiny
 		size_text_x_small: ui_size_x_small
 		size_text_small:   ui_size_small
@@ -204,6 +275,8 @@ fn compact_theme(base gui.Theme) gui.Theme {
 		...t.data_grid_style
 		padding_cell:   gui.Padding{0, 4, 0, 4}
 		padding_header: gui.Padding{0, 4, 0, 4}
+		color_border:   p.gridline   // listview gridlines (darker than panel frames)
+		color_header:   p.background // grey header strip, distinct from white rows
 	})
 	return t
 }
@@ -667,7 +740,7 @@ fn toolbar(mut window gui.Window) gui.View {
 					a.dark = !a.dark
 					// set_theme also re-applies titlebar_dark; safe here since the
 					// app is running (sapp is valid), unlike the startup call.
-					w.set_theme(compact_theme(if a.dark { gui.theme_dark_bordered } else { gui.theme_light_bordered }))
+					w.set_theme(make_theme(if a.dark { palette_dark } else { palette_opus }))
 				}
 			),
 			gui.text(text: 'screen', text_style: gui.theme().n4),
