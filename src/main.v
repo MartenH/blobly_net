@@ -131,8 +131,50 @@ fn main() {
 			w.update_view(main_view)
 		}
 	)
-	window.set_theme(gui.theme_dark_bordered)
+	window.set_theme(compact_theme(gui.theme_dark_bordered))
 	window.run()
+}
+
+// compact_theme tightens a base theme (smaller fonts, padding, spacing, radius)
+// for a dense, Directory-Opus-like layout, while keeping the base's colors.
+fn compact_theme(base gui.Theme) gui.Theme {
+	cfg := gui.ThemeCfg{
+		...base.cfg
+		size_text_tiny:    8
+		size_text_x_small: 9
+		size_text_small:   10
+		size_text_medium:  11
+		size_text_large:   13
+		size_text_x_large: 16
+		text_style:        gui.TextStyle{
+			...base.cfg.text_style
+			size: 11
+		}
+		padding:        gui.Padding{3, 6, 3, 6}
+		padding_small:  gui.Padding{2, 4, 2, 4}
+		padding_medium: gui.Padding{3, 6, 3, 6}
+		padding_large:  gui.Padding{5, 10, 5, 10}
+		spacing_small:  2
+		spacing_medium: 5
+		spacing_large:  8
+		radius:         3
+		radius_small:   2
+		radius_medium:  3
+		radius_large:   4
+	}
+	mut t := gui.theme_maker(&cfg)
+	// Slim the toolbar buttons and grid cells/headers — their padding isn't
+	// driven by ThemeCfg (it uses fixed consts), so override the widget styles.
+	t = t.with_button_style(gui.ButtonStyle{
+		...t.button_style
+		padding: gui.Padding{2, 8, 2, 8}
+	})
+	t = t.with_data_grid_style(gui.DataGridStyle{
+		...t.data_grid_style
+		padding_cell:   gui.Padding{1, 4, 1, 4}
+		padding_header: gui.Padding{1, 4, 1, 4}
+	})
+	return t
 }
 
 // Buses (narrow left) | Trace (centre) | Signals / Send / Statistics stacked
@@ -594,7 +636,7 @@ fn toolbar(mut window gui.Window) gui.View {
 					a.dark = !a.dark
 					// set_theme also re-applies titlebar_dark; safe here since the
 					// app is running (sapp is valid), unlike the startup call.
-					w.set_theme(if a.dark { gui.theme_dark_bordered } else { gui.theme_light_bordered })
+					w.set_theme(compact_theme(if a.dark { gui.theme_dark_bordered } else { gui.theme_light_bordered }))
 				}
 			),
 			gui.text(text: 'screen', text_style: gui.theme().n4),
@@ -616,7 +658,7 @@ fn toolbar(mut window gui.Window) gui.View {
 				id_focus:        13
 				text:            app.log_path
 				width:           220
-				height:          30
+				height:          26
 				padding:         gui.Padding{4, 8, 4, 8}
 				sizing:          gui.fixed_fixed
 				placeholder:     'path/to/capture.log or .mf4'
@@ -719,8 +761,8 @@ fn trace_panel(mut window gui.Window) gui.View {
 			sizing:              gui.fill_fill
 			max_height:          grid_h
 			scrollbar:           .visible
-			row_height:          22
-			header_height:       24
+			row_height:          18
+			header_height:       20
 			text_style:          trace_text_style()
 			text_style_header:   trace_text_style()
 			columns:             [
@@ -771,8 +813,8 @@ fn trace_panel(mut window gui.Window) gui.View {
 		sizing:         gui.fill_fill
 		max_height:     grid_h
 		scrollbar:      .visible
-		row_height:     22
-		header_height:  24
+		row_height:     18
+		header_height:  20
 		text_style:     trace_text_style()
 		text_style_header: trace_text_style()
 		columns:        [
@@ -923,7 +965,7 @@ fn send_panel(app &App) gui.View {
 						id_focus:        10
 						text:            app.send_id
 						width:           90
-						height:          34
+						height:          26
 						padding:         gui.Padding{4, 8, 4, 8}
 						sizing:          gui.fixed_fixed
 						placeholder:     'hex id'
@@ -944,7 +986,7 @@ fn send_panel(app &App) gui.View {
 						id_focus:        11
 						text:            app.send_data
 						width:           150
-						height:          34
+						height:          26
 						padding:         gui.Padding{4, 8, 4, 8}
 						sizing:          gui.fixed_fixed
 						placeholder:     'hex bytes'
@@ -1100,7 +1142,7 @@ fn tcol(id string, title string, width f32, align gui.HorizontalAlign) gui.GridC
 fn trace_text_style() gui.TextStyle {
 	return gui.TextStyle{
 		...gui.theme().n4
-		size: 13
+		size: 11
 	}
 }
 
