@@ -95,6 +95,7 @@ sut/mf4_bridge.py           MF4<->candump bridge: convert/tomf4/frames/semantic-
 scripts/setup_mf4_tools.sh  build .venv-tools (asammdf) + fetch real J1939 MF4/DBC samples
 scripts/run.sh              build+run with WSLg software-GL workaround
 scripts/setup_vcan.sh       bring up vcan0 (sudo)
+scripts/shot.sh             screenshot the running app window (xdotool search + import -window)
 docs/gui_validation/        screenshots proving gui capabilities
 ```
 

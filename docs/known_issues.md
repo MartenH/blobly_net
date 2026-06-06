@@ -75,7 +75,11 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
   the newest window id (`| tail -1`) since stale `v run`/`src/main` instances linger (kill by
   `ps -eo pid,args | grep -E 'cantester|src/main'`, NOT `pkill -f build/cantester` — that matches your
   own shell and kills it); and xdotool clicking is unreliable (title-bar offset), so screenshot, don't
-  drive.
+  drive. **`scripts/shot.sh [out.png]`** wraps the whole capture (search newest wid + `import`). For a
+  deterministic *live-data* loop, launch with **`CANTESTER_AUTOSTART=1`** (begins measurement on launch,
+  so the trace is populated without a Start click). Clicking that DOES work for toggling views/expanding
+  rows: `xdotool windowfocus $wid` then `mousemove --window $wid X Y click --window $wid 1` —
+  `windowactivate` is what fails under WSLg, `windowfocus` succeeds.
 - 🟡 **Keyboard copy/paste/cut/undo don't fire in `gui.input` on Linux/X11 (incl. WSLg).** The
   clipboard itself is fine — V's `clipboard` module round-trips and the WSLg bridge works both ways
   (`printf X | clip.exe` → `cb.paste()` returns X; `to_clipboard` → `powershell Get-Clipboard` sees
