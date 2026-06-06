@@ -27,6 +27,25 @@ const max_trace = 1000 // ring-buffer cap on retained frames (all are scrollable
 const default_fps = 5  // trace repaint rate; user-tunable (3/5/10) from the toolbar
 const fps_options = ['3 fps', '5 fps', '10 fps']
 
+// ---- Look & feel: the few knobs that restyle the whole app ----
+// Font family for ALL UI text. '' keeps gui's bundled default; set e.g.
+// 'Cascadia Mono' and it flows through gui's font_variants() to every derived
+// style (normal/bold/italic) — one knob for the whole app's typeface.
+const ui_font_family = ''
+// The type scale (px). These ARE the font sizes — every widget references one of
+// them via the theme (trace = small, panels = medium, app title = x_large), so
+// bumping these restyles the whole UI. Tuned tight for a dense layout.
+const ui_size_tiny = f32(8)
+const ui_size_x_small = f32(9)
+const ui_size_small = f32(10)
+const ui_size_medium = f32(11)
+const ui_size_large = f32(13)
+const ui_size_x_large = f32(16)
+// Trace-grid density (the Directory-Opus-dense rows). Pixel heights gui needs
+// explicitly; keep ~4px of leading over ui_size_small so descenders don't clip.
+const trace_row_height = f32(14)
+const trace_header_height = f32(16)
+
 // flush_ms_for converts a repaint rate (fps) to the RX batch/repaint interval.
 // The UI refresh rate — not the bus frame rate — sets the CPU cost, because each
 // repaint forces a full GL frame (very expensive under WSLg's GL translation).
@@ -144,18 +163,24 @@ fn main() {
 // compact_theme tightens a base theme (smaller fonts, padding, spacing, radius)
 // for a dense, Directory-Opus-like layout, while keeping the base's colors.
 fn compact_theme(base gui.Theme) gui.Theme {
+	// Base text style: drives the app-wide font. family flows to every derived
+	// style via gui's font_variants(); fall back to the base family (gui's
+	// bundled default) when ui_font_family is ''.
+	family := if ui_font_family != '' { ui_font_family } else { base.cfg.text_style.family }
+	text_style := gui.TextStyle{
+		...base.cfg.text_style
+		family: family
+		size:   ui_size_medium
+	}
 	cfg := gui.ThemeCfg{
 		...base.cfg
-		size_text_tiny:    8
-		size_text_x_small: 9
-		size_text_small:   10
-		size_text_medium:  11
-		size_text_large:   13
-		size_text_x_large: 16
-		text_style:        gui.TextStyle{
-			...base.cfg.text_style
-			size: 11
-		}
+		size_text_tiny:    ui_size_tiny
+		size_text_x_small: ui_size_x_small
+		size_text_small:   ui_size_small
+		size_text_medium:  ui_size_medium
+		size_text_large:   ui_size_large
+		size_text_x_large: ui_size_x_large
+		text_style:        text_style
 		padding:        gui.Padding{3, 6, 3, 6}
 		padding_small:  gui.Padding{2, 4, 2, 4}
 		padding_medium: gui.Padding{3, 6, 3, 6}
@@ -767,8 +792,8 @@ fn trace_panel(mut window gui.Window) gui.View {
 			sizing:              gui.fill_fill
 			max_height:          grid_h
 			scrollbar:           .visible
-			row_height:          14
-			header_height:       16
+			row_height:          trace_row_height
+			header_height:       trace_header_height
 			text_style:          trace_text_style()
 			text_style_header:   trace_text_style()
 			columns:             [
@@ -819,8 +844,8 @@ fn trace_panel(mut window gui.Window) gui.View {
 		sizing:         gui.fill_fill
 		max_height:     grid_h
 		scrollbar:      .visible
-		row_height:     14
-		header_height:  16
+		row_height:     trace_row_height
+		header_height:  trace_header_height
 		text_style:     trace_text_style()
 		text_style_header: trace_text_style()
 		columns:        [
@@ -1145,11 +1170,10 @@ fn tcol(id string, title string, width f32, align gui.HorizontalAlign) gui.GridC
 }
 
 // trace_text_style is a compact font for the dense trace grid.
+// trace_text_style is the dense trace font. n4 already == size_text_small, so it
+// tracks the ui_size_small knob automatically — no literal size override.
 fn trace_text_style() gui.TextStyle {
-	return gui.TextStyle{
-		...gui.theme().n4
-		size: 10
-	}
+	return gui.theme().n4
 }
 
 fn hexid(id u32, ext bool) string {
