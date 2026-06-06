@@ -129,6 +129,12 @@ fn main() {
 			app.log_path = os.getenv_opt('CANTESTER_LOG') or { '' }
 			app.status = 'stopped — press ▶ Start (${app.proj.channels.len} channel(s))'
 			w.update_view(main_view)
+			// CANTESTER_AUTOSTART=1 begins measurement immediately on launch —
+			// handy for the screenshot loop (xdotool clicking is unreliable under
+			// WSLg), harmless otherwise.
+			if os.getenv('CANTESTER_AUTOSTART') != '' {
+				start_measurement(mut w)
+			}
 		}
 	)
 	window.set_theme(compact_theme(gui.theme_dark_bordered))
@@ -167,12 +173,12 @@ fn compact_theme(base gui.Theme) gui.Theme {
 	// driven by ThemeCfg (it uses fixed consts), so override the widget styles.
 	t = t.with_button_style(gui.ButtonStyle{
 		...t.button_style
-		padding: gui.Padding{2, 8, 2, 8}
+		padding: gui.Padding{1, 7, 1, 7}
 	})
 	t = t.with_data_grid_style(gui.DataGridStyle{
 		...t.data_grid_style
-		padding_cell:   gui.Padding{1, 4, 1, 4}
-		padding_header: gui.Padding{1, 4, 1, 4}
+		padding_cell:   gui.Padding{0, 4, 0, 4}
+		padding_header: gui.Padding{0, 4, 0, 4}
 	})
 	return t
 }
@@ -761,8 +767,8 @@ fn trace_panel(mut window gui.Window) gui.View {
 			sizing:              gui.fill_fill
 			max_height:          grid_h
 			scrollbar:           .visible
-			row_height:          18
-			header_height:       20
+			row_height:          14
+			header_height:       16
 			text_style:          trace_text_style()
 			text_style_header:   trace_text_style()
 			columns:             [
@@ -813,8 +819,8 @@ fn trace_panel(mut window gui.Window) gui.View {
 		sizing:         gui.fill_fill
 		max_height:     grid_h
 		scrollbar:      .visible
-		row_height:     18
-		header_height:  20
+		row_height:     14
+		header_height:  16
 		text_style:     trace_text_style()
 		text_style_header: trace_text_style()
 		columns:        [
@@ -1142,7 +1148,7 @@ fn tcol(id string, title string, width f32, align gui.HorizontalAlign) gui.GridC
 fn trace_text_style() gui.TextStyle {
 	return gui.TextStyle{
 		...gui.theme().n4
-		size: 11
+		size: 10
 	}
 }
 
