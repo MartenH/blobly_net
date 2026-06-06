@@ -22,6 +22,9 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
   modules/<name>/` **without** `-path` — it resolves as long as the module's own imports don't need the
   local `modules` dir on the path (candb/sampledb tests are fine). This is what `scripts/setup_env.sh`
   does. For building/running (not testing), `-path` is still required (see the local-module note above).
+  **When a module's test DOES need the local path** (e.g. `mf4` imports `transport`+`canlog`), use a
+  `:`-separated path, which survives the unquoted shell because `:` isn't a metachar:
+  `v -path '@vlib:@vmodules:modules' test modules/mf4/mf4_test.v` — green where the `|` form dies.
 - ⚪ **`cannot copy map: call move or clone`.** Assigning a `map` value into a struct field (e.g.
   `sig.values = vals`) errors — V won't implicitly copy a map. Use `vals.move()` (transfers ownership,
   cheap) or `vals.clone()` (deep copy) explicitly. Same applies when storing maps built locally.
