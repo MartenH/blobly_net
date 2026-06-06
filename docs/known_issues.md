@@ -205,6 +205,13 @@ gotchas (first-ever native Windows run of vlang/gui, 2026-06-05):
   discards the buffer → silent exit. Run it in a *real* terminal (unbuffered) or under
   `gdb` (mingw gdb) to see panics/sokol logs; `gdb -ex run -ex bt` was the workhorse
   for this bring-up.
+- 🔴 **The window's [X]/close button doesn't quit the app on Windows.** Clicking the
+  title-bar close (or otherwise hitting `WM_CLOSE`) doesn't terminate the process — only
+  **File ▸ Exit** (`sapp.quit()`) does. So instances linger and pile up (kill via Task
+  Manager or `Stop-Process -Name cantester`). Almost certainly sokol/gui not wiring
+  `WM_CLOSE`→quit on the Win32 backend (untested there). TODO: handle the close/quit
+  request (sokol `sapp_request_quit`/`on_event .quit_requested`, or a Win32 `WM_CLOSE`
+  hook) so the X closes the app. Not seen on Linux/X11.
 
 ## Our code (cantester)
 
