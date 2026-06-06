@@ -82,10 +82,13 @@ modules/transport/          Bus interface (transport.v) + SocketCAN backend (soc
 modules/isotp/              ISO-TP: Channel interface (isotp.v) + Linux kernel backend (kernel_linux.v)
 modules/uds/                UDS diagnostic client over isotp (pure V, + tests)   (Phase 6)
 modules/canlog/             candump .log parse/format (pure V, + tests)          (Phase 7)
+modules/mf4/                native-V ASAM MF4 reader: DZ-compressed + MLSD/VLSD CAN-FD -> canlog
+                            entries (pure V, no asammdf; + tests vs samples/demo.mf4)  (Phase 7)
 dbc/cantester.dbc           real DBC describing the SUT's messages    (Phase 5)
 cmd/dashboard/              throwaway GUI capability demo
 cmd/signal_decode/          frame -> signals visualizer demo
 cmd/dbc_decode/             load a DBC + decode one frame (machine-readable; oracle diff)
+cmd/mf4_dump/               native-V MF4 reader smoke/oracle-diff (count, unique IDs, frames)
 cmd/isotp_smoke/            send one ISO-TP PDU, print the reply (multi-frame smoke)
 cmd/uds_smoke/              drive the UDS client vs sut/uds_server.py
 sut/can_sut.py              Python virtual SUT (emits/answers frames on vcan0)
@@ -112,6 +115,7 @@ SUT is Python, each V module gets a direct counterpart to verify against:
 | `candb`                | cantools                    | DBC parse + signal en/decode  |
 | `isotp`                | can-isotp / stdlib CAN_ISOTP| ISO-TP segmentation           |
 | `uds`                  | udsoncan / stdlib server    | UDS diagnostics               |
+| `mf4`                  | asammdf                     | ASAM MF4 log read (CAN frames)|
 | `doip`/`someip` (fut.) | scapy automotive            | Ethernet protocols            |
 
 ### Platform support (WSL/Linux now, Windows later) — KEEP THE SEAM CLEAN
@@ -187,13 +191,22 @@ turned Off (irreversible). Original handoff notes below (toolchain **mingw-w64 (
    pure-V + tests) and a GUI **"Open Log"** action (toolbar) that loads a `.log` direct-to-trace —
    decodes via the DBC and times relative to the first frame (`samples/demo.log` shipped as a demo).
    DONE: **MF4-aware open** — the GUI opens `.mf4` too (toolbar filter + `.mf4` detection in
-   `load_log`), shelling out to `sut/mf4_bridge.py convert` (MF4 → temp `.log` → direct-to-trace). To
-   keep the demo non-J1939 (J1939 needs PGN matching, deferred), `mf4_bridge.py` gained **`tomf4`**
-   (candump `.log` → MF4 via python-can's `MF4Writer`); we minted `samples/demo.mf4` from
+   `load_log`). To keep the demo non-J1939 (J1939 needs PGN matching, deferred), `mf4_bridge.py` gained
+   **`tomf4`** (candump `.log` → MF4 via python-can's `MF4Writer`); we minted `samples/demo.mf4` from
    `samples/demo.log` (round-trips identically, decodes against `cantester.dbc`) and ship it.
+   DONE 2026-06-07: **native-V MF4 reader `modules/mf4`** — the GUI now opens `.mf4` with **zero
+   Python** (the bridge was only the bootstrap). It parses MDF 4.x directly: DZ-compressed data blocks
+   (zlib inflate + zip_type-1 byte de-transposition), DL/HL data lists, and three DataBytes layouts —
+   MLSD (type 5, inline, Vector classic CAN), VLSD (type 1, separate length-prefixed signal-data block,
+   Vector **CAN-FD**), and fixed inline arrays (python-can). Master time read as int-ns × a linear
+   CCBLOCK (or float secs). Returns `[]canlog.LogEntry`, so `load_log` reuses the same trace path.
+   Validated **frame-for-frame against asammdf** on a real 62 324-frame J1939+CAN-FD recording (id+data
+   identical, timestamps within sub-µs) — and it reads the VLSD CAN-FD groups asammdf **fails** on
+   ("Wrong signal data block reference"). `cmd/mf4_dump` is the oracle-diff CLI. `modules/mf4` tests run
+   vs `samples/demo.mf4`.
    TODO: a timed *player* (replay onto vcan0 at recorded cadence); **J1939 PGN-aware lookup in `candb`**
    so the real CSS J1939 MF4s decode (their DBC IDs carry priority+PGN+source-addr — exact-id match =
-   0 frames, PGN match = ~8k). (Native MF4-in-V is a later option; the Python bridge is the path now.)
+   0 frames, PGN match = ~8k).
 8. 🔜 **Operating modes + replay player** — formalize per-bus modes: **Off / Monitor ("watch") /
    Replay ("play")**. A GUI-free `modules/player` replays a loaded recording (the `canlog.LogEntry`
    stream — timestamps live in `t_s`) at recorded cadence × a speed factor (play/pause/stop/seek).
@@ -514,3 +527,29 @@ prompt for a password.
   recipe + patch manifest: **`docs/windows_build.md`**; gotchas in `docs/known_issues.md`. Build:
   `scripts\build_win.ps1`. NEXT: optionally press ▶ Start in the live GUI to watch frames; later, gui
   HLSL shaders → D3D11 (+ the V glue fix); real CAN HW; the rest of the roadmap.
+- 2026-06-06: **Dense theme + Directory-Opus colour theme + per-byte trace highlight.** Centralised all
+  look&feel into one block in `src/main.v`: `ui_size_*` (type scale, one knob for font/size — see how
+  `font_variants()` flows a single `text_style.family` to every derived style), `trace_row/header_height`
+  (dense grid), and a `Palette` struct fed to `make_theme()` (`make_theme` replaced `compact_theme`).
+  Two palettes: **opus-light** (default) matched to the user's real DOpus *Windows Colors* — white
+  255/255/255 lists, 204 frames, 109 listview gridlines (data-grid carries its own `color_border`),
+  `#0078d4` selection (pale via blending). Finding: DOpus `.dlt` themes are **ZIP+`theme.xml`** and
+  `.oxc` configs are XML — the sage tint people see is the *Windows* chrome (syscols), not an Opus value.
+  Trace: signal/message text now black (was green); grouped view splits the payload into 8 byte cells
+  with a **conventional yellow change-highlight that fades** over `byte_fade_steps` (per-ID `byte_age` in
+  `MsgAgg`). Dev helpers: `scripts/shot.sh` + `CANTESTER_AUTOSTART=1` for the screenshot loop.
+- 2026-06-07: **Native-V MF4 reader (`modules/mf4`) + MF4 replay in the GUI, no Python.** Reverse-
+  engineered ASAM MDF4 v4.20 (DZ-compressed) by raw-parsing the binary, then ported to pure V:
+  IDBLOCK/HD/DG/CG/CN walk, **DZ inflate (`compress.zlib`) + zip_type-1 byte de-transposition**, DL/HL
+  data lists, struct **composition** recursion (the `CAN_DataFrame.*` sub-channels live under a parent
+  CN, not the flat chain), and three DataBytes layouts: **MLSD** (inline, classic CAN), **VLSD**
+  (separate length-prefixed block, **CAN-FD**), and fixed inline arrays (python-can). Master time =
+  int-ns × linear CCBLOCK (or float secs); master found by `cn_type==2`, not name (Vector `t` /
+  python-can `time`). `load_log` now parses `.mf4` natively → `[]canlog.LogEntry` (dropped the
+  `mf4_to_log` Python shell-out). **Validated frame-for-frame vs asammdf** on a real **62 324-frame
+  J1939+CAN-FD** log (id+data identical, ts sub-µs) — and it reads the **VLSD CAN-FD groups asammdf
+  cannot** ("Wrong signal data block reference"). `cmd/mf4_dump` = oracle-diff CLI; `modules/mf4` tests
+  vs `samples/demo.mf4`. The real `Logging*.mf4` files are the user's **private data — NOT committed**
+  (used locally for validation only). Verified in the GUI: opened the J1939 file → 62 324 frames stream
+  the trace with per-byte highlights, CAN-FD payloads (DLC 16/20/32/48) intact. NEXT: timed replay
+  *player* (Phase 8) onto vcan0/udpbus at recorded cadence; J1939 PGN-aware `candb` lookup for decode.

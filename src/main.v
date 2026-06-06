@@ -20,6 +20,7 @@ import sokol.sapp
 import transport
 import candb
 import canlog
+import mf4
 import sampledb
 import project
 
@@ -1180,21 +1181,7 @@ fn do_send(mut w gui.Window) {
 	app.push('TX', frame)
 }
 
-// mf4_to_log bridges an ASAM MF4 recording to a candump `.log` via the Python
-// asammdf bridge (`sut/mf4_bridge.py convert`), returning the temp `.log` path.
-// MF4 is a heavy binary container, so we don't parse it natively in V (see
-// CLAUDE.md Phase 7) — the mature asammdf/python-can stack does the extraction.
-fn mf4_to_log(mf4 string) !string {
-	py := if os.exists('.venv-tools/bin/python') { '.venv-tools/bin/python' } else { 'python3' }
-	out := os.join_path(os.temp_dir(), 'cantester_mf4_open.log')
-	res := os.execute('${py} sut/mf4_bridge.py convert "${mf4}" "${out}"')
-	if res.exit_code != 0 {
-		return error(res.output.trim_space())
-	}
-	return out
-}
-
-// load_log opens a candump `.log` (or an MF4 recording, bridged to `.log`) and
+// load_log opens a candump `.log` (or an MF4 recording, parsed natively) and
 // shows it as a static capture: live RX is paused and the trace is reset so the
 // recording stands alone, with each frame stamped by its recorded timestamp. The
 // grouped view keeps every unique ID + count; the chronological view shows the
@@ -1206,19 +1193,19 @@ fn load_log(path string, mut w gui.Window) {
 		app.status = 'no file picker here — type a log/mf4 path and press Enter'
 		return
 	}
-	// MF4 → candump .log via the asammdf bridge (blocks briefly on convert).
-	mut src := p
-	if p.to_lower().ends_with('.mf4') {
-		app.status = 'converting ${os.base(p)} via asammdf bridge…'
-		w.update_window()
-		src = mf4_to_log(p) or {
+	// ASAM MF4 is read natively (modules/mf4 — DZ-compressed + VLSD CAN-FD, no
+	// Python/asammdf); candump .log via canlog. Both yield []canlog.LogEntry.
+	is_mf4 := p.to_lower().ends_with('.mf4')
+	entries := if is_mf4 {
+		mf4.load_file(p) or {
 			app.status = 'MF4 open failed: ${err}'
 			return
 		}
-	}
-	entries := canlog.load_file(src) or {
-		app.status = 'open failed: ${err}'
-		return
+	} else {
+		canlog.load_file(p) or {
+			app.status = 'open failed: ${err}'
+			return
+		}
 	}
 	app.paused = true
 	app.log_path = p
