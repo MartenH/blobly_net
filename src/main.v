@@ -314,6 +314,14 @@ fn main() {
 			if os.getenv('CANTESTER_AUTOSTART') != '' {
 				start_measurement(mut w)
 			}
+			// CANTESTER_RUN_MS=N exits the process after N ms — for clean profiler
+			// (heaptrack/valgrind) finalization. Dev-only.
+			if ms := os.getenv_opt('CANTESTER_RUN_MS') {
+				spawn fn (n int) {
+					time.sleep(n * time.millisecond)
+					exit(0)
+				}(ms.int())
+			}
 		}
 	)
 	window.set_theme(make_theme(palette_opus))
