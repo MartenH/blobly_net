@@ -28,3 +28,5 @@ samples/*
 # Python bytecode cache
 __pycache__/
 *.pyc
+heaptrack.*.gz
+massif.out.*
