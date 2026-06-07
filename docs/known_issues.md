@@ -113,14 +113,24 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
     gg__Context_end ← gui__frame_fn` — i.e. sokol's draw call into the GL driver, which allocates per
     draw and never frees. ~45 MB leaked over ~250 k draw-path calls in a 22 s / 1237-frame run.
   - Reproduces on **both** software GL (llvmpipe) **and** hardware GL (d3d12) — both go through Mesa
-    gallium under WSLg — so it's the **WSLg Mesa GL stack**, an *environment* issue. (The vglyph
-    fontconfig/Pango calls heaptrack also showed are **temporary** — allocated+freed — not the leak;
-    the one 8.4 MB `vglyph__new_atlas_page` is the one-time glyph-atlas texture, not growth.)
-  - **Implication:** the native **Windows** build (W1) uses the real GPU's GL, *not* WSLg/Mesa, so it
-    should not have this leak; same for a native Linux GPU. This is a WSL dev-environment artifact.
-  - **Mitigations:** lower the trace repaint rate (toolbar 3/5/10 fps → fewer frames → fewer draws →
-    slower growth); Pause/Stop halts it; restart the long-running session periodically while on WSL.
-    A real fix would be upstream in Mesa/WSLg (or fewer draw calls per frame from gui's immediate mode).
+    gallium. (The vglyph fontconfig/Pango calls heaptrack also showed are **temporary** —
+    allocated+freed — not the leak; the one 8.4 MB `vglyph__new_atlas_page` is the one-time glyph-atlas
+    texture, not growth.)
+  - **DECISIVE isolation:** a throwaway ~30-line `gg` app drawing 40 rectangles/frame — *no* cantester
+    code, *no* vglyph, *no* text — **also leaks ~27 MB in libgallium in 18 s**, stack entirely Mesa.
+    So it is the **bare sokol→Mesa GL draw path**, independent of our app and of text rendering.
+  - **Production note (don't over-claim "it's just the environment"):** sokol and Mesa *are* production
+    libraries — but sokol here is only the *caller* (a standard `glDraw`); the bytes are allocated and
+    held *inside Mesa's GL driver*. WHICH GL driver runs is platform-specific: WSLg → **Mesa**
+    (llvmpipe/d3d12, leaks here); native **Linux** desktop → also **Mesa** (iris/radeonsi) so it
+    **could** leak too; native **Windows** → the GPU vendor's OpenGL ICD (not Mesa) → different code
+    path, **unverified**; macOS → Apple GL. Since *both* Mesa backends leak, it's likely in shared
+    Mesa/gallium code or a sokol draw pattern Mesa mishandles — **not** safely "WSL-only."
+  - **To nail it / next steps:** (1) Mesa **dbgsym** to resolve the `libgallium` `???` frames →
+    name the function (gallium-core `st_*`/`util_*` vs a backend) — needs the ddebs repo (`apt update`
+    + write `/etc/apt`), which the scoped sudo here can't do; (2) test the **native Windows (W1)** build
+    — the empirically decisive one for the deploy target; (3) file the **minimal `gg` repro** upstream
+    (sokol or Mesa). Mitigations meanwhile: lower trace fps (3/5/10), Pause/Stop, restart long sessions.
   - Repro/profile: build `-g` makes the window draw only 1 frame under WSLg (avoid `-g` here); profile
     the normal build: `CANTESTER_RUN_MS=22000 heaptrack ./build/cantester` then
     `heaptrack_print -l 1 -p 0 -a 0 <file>`. `CANTESTER_RUN_MS=N` exits cleanly for the profiler.
