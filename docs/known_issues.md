@@ -129,10 +129,17 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
     4-min `cmd/mem_leak_repro` runs: **both** modes plateau after a ~30 s ramp; `changing` sits ~26 MB
     higher (bounded cache-fill) but its **post-ramp slope matches `static`** (~0.025 MB/s baseline
     drift). Data (Private MB): `changing` 162→196 (30 s)→201 (230 s); `static` 152→170 (30 s)→175
-    (230 s). ⇒ the unbounded climb is **Linux-specific**, NOT vglyph's portable code — this **refutes**
-    the earlier "probably leaks the same way" guess. vglyph's V/Pango code is identical on both, so the
-    leak is in the **Linux native text stack** (Pango/Cairo/fontconfig/FreeType as built/loaded on
-    Linux/WSLg) or the WSLg environment — *not* portable. Root-cause hunt should refocus there.
+    (230 s). ⇒ the unbounded climb is **Linux-specific** — refutes the "probably leaks the same way" guess.
+  - **NARROWED to vglyph's RENDERER, not Pango (2026-06-07, by isolation loops):** ruled the layout
+    path OUT — a raw-Pango loop (`pango_layout_new`/`set_text`/`set_font_description`/`get_metrics`/
+    `get_iter`, changing text) is **flat** at 14 MB over 250 k iters, and **vglyph's own
+    `Context.layout_text`** in a loop (with *and* without width/wrapping) is **flat** at ~19 MB over
+    200 k+ iters. The GUI leaks only because it also **renders** the layout. So the leak is in vglyph's
+    **glyph render path** (`Renderer.draw_layout` → `get_or_load_glyph` → atlas/`FT_Load_Glyph`), which
+    retains per-frame for *changing* content on Linux but not Windows. NOT Pango/fontconfig layout, NOT
+    the GL driver, NOT our code. Pinpointing the exact retained allocation needs isolating the renderer
+    with a GL context (follow-up); candidate: glyph-cache/atlas churn from sub-pixel-positioned variants
+    as text shifts, or a per-draw allocation, that the Linux FreeType/atlas path doesn't free.
   - **Mitigations:** lower the trace repaint rate (toolbar 3/5/10 fps → fewer reshapes); Pause/Stop;
     restart long sessions. Reduce unique strings (e.g. fewer decimals on the live timestamp) to slow it.
     A real fix is in the Linux Pango/fontconfig path (or a vglyph workaround there) — and since native
