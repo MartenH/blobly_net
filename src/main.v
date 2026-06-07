@@ -183,6 +183,47 @@ mut:
 	send_data string = 'AABBCC'
 	log_path  string // candump .log to open from the toolbar
 	fps       int = default_fps // trace repaint rate (toolbar dropdown)
+	sim_nodes []SimNode // simulated ECUs available per channel (Simulation panel)
+}
+
+// SimNode is one simulated ECU offered in the Simulation panel: a DBC node on a
+// channel, with a checkbox to connect it to the bus (= have the tester simulate it).
+struct SimNode {
+mut:
+	ch_idx  int
+	node    string
+	enabled bool
+}
+
+// build_sim_nodes lists, per channel that has a database, the ECU nodes the DBC
+// declares — each connectable via the Simulation panel. Defaults to enabled for
+// nodes named in the project's `simulate:` list.
+fn (mut app App) build_sim_nodes() {
+	app.sim_nodes = []SimNode{}
+	for i, ch in app.proj.channels {
+		if ch.databases.len == 0 {
+			continue
+		}
+		for node in app.db.nodes {
+			app.sim_nodes << SimNode{
+				ch_idx:  i
+				node:    node
+				enabled: node in ch.simulate
+			}
+		}
+	}
+}
+
+// sim_signature is the set of currently-enabled simulated nodes on a channel,
+// used by sim_loop to detect live connect/disconnect and rebuild its engine.
+fn sim_signature(app &App, ch_idx int) string {
+	mut on := []string{}
+	for sn in app.sim_nodes {
+		if sn.ch_idx == ch_idx && sn.enabled {
+			on << sn.node
+		}
+	}
+	return on.join(',')
 }
 
 fn main() {
@@ -212,6 +253,7 @@ fn main() {
 			}
 			app.rt = []ChannelRT{len: app.proj.channels.len}
 			app.load_databases()
+			app.build_sim_nodes()
 			app.log_path = os.getenv_opt('CANTESTER_LOG') or { '' }
 			app.status = 'stopped — press ▶ Start (${app.proj.channels.len} channel(s))'
 			w.update_view(main_view)
@@ -299,8 +341,10 @@ fn default_layout() &gui.DockNode {
 		'send'), gui.dock_panel_group('g_stats', ['stats'], 'stats')))
 	mid := gui.dock_split('mid', .horizontal, 0.66, gui.dock_panel_group('g_trace', ['trace'],
 		'trace'), right)
-	return gui.dock_split('root', .horizontal, 0.17, gui.dock_panel_group('g_buses', ['buses'],
-		'buses'), mid)
+	// Left column: Buses (top) over Simulation (bottom).
+	left := gui.dock_split('l1', .vertical, 0.45, gui.dock_panel_group('g_buses', ['buses'],
+		'buses'), gui.dock_panel_group('g_sim', ['simulation'], 'simulation'))
+	return gui.dock_split('root', .horizontal, 0.18, left, mid)
 }
 
 // load_databases loads the message catalog from the first channel that names a
@@ -343,19 +387,17 @@ fn start_measurement(mut w gui.Window) {
 		if bus := transport.open(ch.iface) {
 			app.rt[i].bus = bus
 			app.rt[i].running = true
-			app.rt[i].note = if ch.simulate.len > 0 {
-				'monitoring + simulating ${ch.simulate.join(",")}'
-			} else {
-				'monitoring'
-			}
+			can_sim := app.sim_nodes.any(it.ch_idx == i)
+			app.rt[i].note = if can_sim { 'monitoring + simulation' } else { 'monitoring' }
 			opened++
 			spawn fn [i] (mut w gui.Window) {
 				rx_loop(i, mut w)
 			}(mut w)
-			// If the network hosts simulated ECUs, spawn the sim engine on its own
-			// bus instance attached to the same interface (so the monitor's RX
-			// thread hears the simulated traffic via the normal path).
-			if ch.simulate.len > 0 {
+			// If the network can host simulated ECUs, spawn the sim engine on its own
+			// bus instance attached to the same interface (so the monitor's RX thread
+			// hears the simulated traffic via the normal path). It simulates whichever
+			// nodes are checked in the Simulation panel, live.
+			if can_sim {
 				spawn fn [i] (mut w gui.Window) {
 					sim_loop(i, mut w)
 				}(mut w)
@@ -394,11 +436,21 @@ fn sim_loop(idx int, mut w gui.Window) {
 	ch := app.proj.channels[idx]
 	mut bus := transport.open(ch.iface) or { return }
 	mut engine := sim.Engine{}
-	for node in ch.simulate {
-		engine.ecus << sim.build_ecu(app.db, node)
-	}
+	mut sig := '\x00' // force an initial build (differs from any real signature)
 	t0 := time.ticks()
 	for app.rt[idx].running {
+		// Live connect/disconnect: when the set of enabled nodes (Simulation panel
+		// checkboxes) changes, rebuild the engine to match.
+		cur := sim_signature(app, idx)
+		if cur != sig {
+			sig = cur
+			engine = sim.Engine{}
+			for sn in app.sim_nodes {
+				if sn.ch_idx == idx && sn.enabled {
+					engine.ecus << sim.build_ecu(app.db, sn.node)
+				}
+			}
+		}
 		now_ms := f64(time.ticks() - t0)
 		for f in engine.due_frames(now_ms) {
 			bus.send(f) or {}
@@ -529,6 +581,7 @@ fn main_view(mut window gui.Window) gui.View {
 				panels:           [
 					gui.DockPanelDef{ id: 'trace', label: 'Trace', content: [trace_panel(mut window)] },
 					gui.DockPanelDef{ id: 'buses', label: 'Buses', content: [buses_panel(app)] },
+						gui.DockPanelDef{ id: 'simulation', label: 'Simulation', content: [simulation_panel(app)] },
 					gui.DockPanelDef{ id: 'signals', label: 'Signals', content: [signals_panel(app)] },
 					gui.DockPanelDef{ id: 'send', label: 'Send', content: [send_panel(app)] },
 					gui.DockPanelDef{ id: 'stats', label: 'Statistics', content: [stats_panel(app)] },
@@ -656,6 +709,7 @@ fn open_project(path string, mut w gui.Window) {
 	app.remember_project(path)
 	app.rt = []ChannelRT{len: p.channels.len}
 	app.load_databases()
+	app.build_sim_nodes()
 	app.status = 'loaded ${p.name} (${p.channels.len} ch) — press ▶ Start'
 	w.update_window()
 }
@@ -1100,6 +1154,68 @@ fn buses_panel(app &App) gui.View {
 				),
 			]
 		)
+	}
+	return gui.column(
+		sizing:  gui.fill_fill
+		padding: gui.padding_medium
+		spacing: 2
+		content: rows
+	)
+}
+
+// simulation_panel is the connect-the-simulation tree: each network with a DBC
+// lists its ECU nodes, each with a checkbox to "connect" it to the bus (= have
+// the tester simulate that ECU). Toggling is live while a measurement runs.
+fn simulation_panel(app &App) gui.View {
+	mut rows := []gui.View{}
+	rows << gui.text(text: 'Simulation', text_style: gui.theme().b3)
+	if app.sim_nodes.len == 0 {
+		rows << gui.text(text: '(no DBC nodes to simulate)', text_style: gui.theme().n4)
+		return gui.column(sizing: gui.fill_fill, padding: gui.padding_medium, spacing: 2, content: rows)
+	}
+	for i, ch in app.proj.channels {
+		if !app.sim_nodes.any(it.ch_idx == i) {
+			continue
+		}
+		// network node
+		rows << gui.text(text: '${ch.name}', text_style: gui.theme().b4)
+		rt := app.rt[i] or { ChannelRT{} }
+		for j, sn in app.sim_nodes {
+			if sn.ch_idx != i {
+				continue
+			}
+			on := sn.enabled && rt.running
+			dot_style := gui.TextStyle{
+				...trace_text_style()
+				color: if on {
+					gui.Color{120, 200, 120, 255} // simulating now
+				} else if sn.enabled {
+					gui.Color{210, 180, 90, 255} // enabled, will run on Start
+				} else {
+					gui.Color{170, 170, 170, 255} // not connected
+				}
+			}
+			rows << gui.row(
+				v_align: .middle
+				spacing: 5
+				padding: gui.Padding{0, 0, 0, 12} // indent under the network
+				content: [
+					gui.text(text: '●', text_style: dot_style),
+					gui.checkbox(
+						id_focus:         u32(300 + j)
+						select:           sn.enabled
+						label:            sn.node
+						text_style:       trace_text_style()
+						text_style_label: trace_text_style()
+						padding:          gui.Padding{0, 4, 0, 4}
+						on_click:         fn [j] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+							mut a := w.state[App]()
+							a.sim_nodes[j].enabled = !a.sim_nodes[j].enabled
+						}
+					),
+				]
+			)
+		}
 	}
 	return gui.column(
 		sizing:  gui.fill_fill
