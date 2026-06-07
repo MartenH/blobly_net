@@ -23,6 +23,7 @@ import canlog
 import mf4
 import sampledb
 import project
+import sim
 
 const max_trace = 1000 // ring-buffer cap on retained frames (all are scrollable)
 const default_fps = 5  // trace repaint rate; user-tunable (3/5/10) from the toolbar
@@ -342,11 +343,23 @@ fn start_measurement(mut w gui.Window) {
 		if bus := transport.open(ch.iface) {
 			app.rt[i].bus = bus
 			app.rt[i].running = true
-			app.rt[i].note = 'monitoring'
+			app.rt[i].note = if ch.simulate.len > 0 {
+				'monitoring + simulating ${ch.simulate.join(",")}'
+			} else {
+				'monitoring'
+			}
 			opened++
 			spawn fn [i] (mut w gui.Window) {
 				rx_loop(i, mut w)
 			}(mut w)
+			// If the network hosts simulated ECUs, spawn the sim engine on its own
+			// bus instance attached to the same interface (so the monitor's RX
+			// thread hears the simulated traffic via the normal path).
+			if ch.simulate.len > 0 {
+				spawn fn [i] (mut w gui.Window) {
+					sim_loop(i, mut w)
+				}(mut w)
+			}
 		} else {
 			app.rt[i].err = true
 			app.rt[i].note = 'open failed: ${err}'
@@ -368,6 +381,35 @@ fn stop_measurement(mut w gui.Window) {
 	}
 	app.running = false
 	app.status = 'stopped'
+}
+
+// sim_loop runs the simulated ECUs for channel `idx` on a dedicated in-process
+// bus instance attached to the same interface as the monitor, so its emitted
+// frames reach the monitor's RX thread via the normal bus path (no special
+// wiring — exactly like a real ECU on the wire). Transmits due cyclic frames and
+// answers requests until the channel stops. GUI-free engine; this thread only
+// touches the bus + its own engine.
+fn sim_loop(idx int, mut w gui.Window) {
+	app := w.state[App]()
+	ch := app.proj.channels[idx]
+	mut bus := transport.open(ch.iface) or { return }
+	mut engine := sim.Engine{}
+	for node in ch.simulate {
+		engine.ecus << sim.build_ecu(app.db, node)
+	}
+	t0 := time.ticks()
+	for app.rt[idx].running {
+		now_ms := f64(time.ticks() - t0)
+		for f in engine.due_frames(now_ms) {
+			bus.send(f) or {}
+		}
+		if frame := bus.recv(5) {
+			for resp in engine.on_frame(frame) {
+				bus.send(resp) or {}
+			}
+		}
+	}
+	bus.close()
 }
 
 // rx_loop reads frames and hands them to the UI in **batches**, not one-by-one.

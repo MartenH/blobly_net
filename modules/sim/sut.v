@@ -49,3 +49,26 @@ pub fn sut_ecu(db candb.Database) SimEcu {
 	]
 	return ecu
 }
+
+// ecu_from_dbc builds a generic ECU for `node`: every message whose DBC
+// transmitter is it, sent cyclically per its GenMsgCycleTime, with signals held
+// constant (no generators configured). A neutral default until per-signal
+// generators are configured.
+pub fn ecu_from_dbc(db candb.Database, node string) SimEcu {
+	mut ecu := SimEcu{
+		name: node
+	}
+	for m in db.messages_from(node) {
+		ecu.messages << SimMessage{
+			msg:       m
+			period_ms: m.cycle_ms
+		}
+	}
+	return ecu
+}
+
+// build_ecu returns the richest model available for `node`: the hand-tuned SUT
+// reference (matching can_sut.py) for 'SUT', else a generic DBC-derived ECU.
+pub fn build_ecu(db candb.Database, node string) SimEcu {
+	return if node == 'SUT' { sut_ecu(db) } else { ecu_from_dbc(db, node) }
+}
