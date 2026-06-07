@@ -84,7 +84,7 @@ const palette_opus = Palette{
 	focus:      gui.rgb(199, 222, 244) // #0078d4 ~22% over white
 	active:     gui.rgb(180, 211, 240) // #0078d4 stronger
 	border:     gui.rgb(204, 204, 204) // panel/menu/input frames (DOpus Frame)
-	gridline:   gui.rgb(109, 109, 109) // data-grid lines (DOpus listview gridlines)
+	gridline:   gui.rgb(224, 224, 224) // data-grid lines — subtle, not a heavy black grid
 	select:     gui.rgb(199, 222, 244) // #0078d4 selection, blended over white
 	accent:     gui.rgb(0, 120, 212)   // #0078d4 — focus/selection frame (crisp blue)
 	text:       gui.rgb(20, 20, 20)
@@ -101,7 +101,7 @@ const palette_dark = Palette{
 	focus:      gui.rgb(94, 94, 94)
 	active:     gui.rgb(104, 104, 104)
 	border:     gui.rgb(100, 100, 100)
-	gridline:   gui.rgb(88, 88, 88)
+	gridline:   gui.rgb(82, 82, 82) // subtle lines on the dark interior
 	select:     gui.rgb(65, 105, 225)
 	accent:     gui.rgb(90, 140, 240)
 	text:       gui.rgb(225, 225, 225)
