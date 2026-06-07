@@ -872,7 +872,7 @@ fn trace_panel(mut window gui.Window) gui.View {
 				'name':  a.name
 				'dlc':   '${a.last.len}'
 				'count': '${a.count}'
-				'time':  '${a.last_ms:.0f}'
+				'time':  '${a.last_ms / 1000.0:.6f}'
 			}
 			for i in 0 .. 8 {
 				cells['b${i}'] = if i < a.last.len { '${a.last[i]:02X}' } else { '' }
@@ -918,10 +918,10 @@ fn trace_panel(mut window gui.Window) gui.View {
 				tcol('id', 'ID / Signal', 180, .start),
 				tcol('name', 'Message / Value', 150, .start),
 				tcol('dlc', 'DLC/Raw', 64, .end),
+				tcol('count', 'Count', 60, .end),
+				tcol('time', 'Last(s)', 84, .end),
 				bcol('b0'), bcol('b1'), bcol('b2'), bcol('b3'),
 				bcol('b4'), bcol('b5'), bcol('b6'), bcol('b7'),
-				tcol('count', 'Count', 60, .end),
-				tcol('time', 'Last(ms)', 76, .end),
 			]
 			rows:                rows
 			selection:           app.selection
