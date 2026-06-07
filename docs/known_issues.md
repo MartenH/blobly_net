@@ -102,6 +102,21 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
 
 ## Rendering stack (sokol / vglyph / GL)
 
+- 🔴 **Memory grows while live data is on screen (vglyph C-land leak).** RSS climbs ~1–1.5 MB/s the
+  whole time a measurement runs with *changing* displayed values (sim/replay/live trace); it is FLAT
+  when idle (the refresh is event-driven, so no redraw = no growth). Diagnosis (2026-06-07): the GC is
+  **on** (boehm linked: `GC_init`/`GC_malloc`; `gc_collect()` works) and the **V heap is bounded** —
+  `gc_memory_use()` oscillates ~42–66 MB and `gc_collect()` reclaims to ~50 MB — but **RSS** reaches
+  hundreds of MB. So the leak is **C-land, not GC**, and it reproduces on **both** hardware and
+  software GL. It scales with the number of *unique strings* rendered (changing numbers miss vglyph's
+  by-text layout cache, so each redraw reshapes new text via Pango/FreeType). vglyph's layout cache
+  (time-evicted, 5 s) and glyph atlas (≤4 pages, LRU) are both bounded, and the create/free pairs in
+  the Pango path *look* balanced — so the precise unfreed allocation needs a C heap profiler
+  (valgrind/heaptrack) on the pinned `~/.vmodules/vglyph`. **Mitigations today:** lower the trace
+  repaint rate (toolbar 3/5/10 fps → fewer redraws → slower growth); Pause/Stop halts it. **Real fix:**
+  a vglyph patch (free the leaked per-layout C resource), to be captured upstream-style like the other
+  vglyph fixes in `docs/windows_build.md`. NOT our V code — `src/main.v` allocations are GC-tracked
+  and bounded.
 - 🟢 **Blank/black window under WSLg — FIXED on Ubuntu 24.04 (Mesa 25.2.8).** Historically (22.04,
   Mesa 23.2) the GPU GL passthrough (d3d12) drew frames but never composited, so the window showed
   blank; the workaround was software GL (`LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe`). On 24.04
