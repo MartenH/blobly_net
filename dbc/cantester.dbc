@@ -11,7 +11,7 @@ NS_ :
 
 BS_:
 
-BU_: SUT Tester
+BU_: SUT Tester BodyECU ChassisECU BatteryECU
 
 BO_ 256 Powertrain: 8 SUT
  SG_ EngineSpeed : 0|16@1+ (0.25,0) [0|16383.75] "rpm" Tester
@@ -30,6 +30,33 @@ BO_ 257 Request: 8 Tester
 BO_ 258 Response: 8 SUT
  SG_ RespCode : 0|8@1+ (1,0) [0|255] "" Tester
 
+BO_ 512 BodyStatus: 8 BodyECU
+ SG_ DoorFL : 0|1@1+ (1,0) [0|1] "" Tester
+ SG_ DoorFR : 1|1@1+ (1,0) [0|1] "" Tester
+ SG_ DoorRL : 2|1@1+ (1,0) [0|1] "" Tester
+ SG_ DoorRR : 3|1@1+ (1,0) [0|1] "" Tester
+ SG_ Locked : 4|1@1+ (1,0) [0|1] "" Tester
+ SG_ Headlights : 5|2@1+ (1,0) [0|3] "" Tester
+ SG_ Indicators : 7|2@1+ (1,0) [0|3] "" Tester
+ SG_ InteriorTemp : 16|8@1+ (0.5,-40) [-40|87.5] "degC" Tester
+
+BO_ 768 WheelSpeeds: 8 ChassisECU
+ SG_ WheelFL : 0|16@1+ (0.01,0) [0|655.35] "km/h" Tester
+ SG_ WheelFR : 16|16@1+ (0.01,0) [0|655.35] "km/h" Tester
+ SG_ WheelRL : 32|16@1+ (0.01,0) [0|655.35] "km/h" Tester
+ SG_ WheelRR : 48|16@1+ (0.01,0) [0|655.35] "km/h" Tester
+
+BO_ 769 BrakeStatus: 4 ChassisECU
+ SG_ BrakePressure : 0|16@1+ (0.1,0) [0|6553.5] "kPa" Tester
+ SG_ ABSActive : 16|1@1+ (1,0) [0|1] "" Tester
+ SG_ BrakePedal : 17|7@1+ (1,0) [0|100] "%" Tester
+
+BO_ 1024 BatteryStatus: 8 BatteryECU
+ SG_ PackVoltage : 0|16@1+ (0.01,0) [0|655.35] "V" Tester
+ SG_ PackCurrent : 16|16@1- (0.1,0) [-3276.8|3276.7] "A" Tester
+ SG_ SoC : 32|8@1+ (0.5,0) [0|100] "%" Tester
+ SG_ PackTemp : 40|8@1+ (1,-40) [-40|215] "degC" Tester
+
 CM_ SG_ 256 EngineSpeed "Crankshaft rotational speed";
 CM_ SG_ 256 VehicleSpeed "Road speed of the vehicle";
 CM_ SG_ 256 CoolantTemp "Engine coolant temperature";
@@ -40,7 +67,14 @@ CM_ SG_ 1792 Counter "Rolling alive counter";
 
 VAL_ 256 Gear 0 "Neutral" 1 "First" 2 "Second" 3 "Third" 4 "Fourth" 5 "Fifth" 6 "Sixth" ;
 VAL_ 256 CruiseOn 0 "Off" 1 "On" ;
+VAL_ 512 Headlights 0 "Off" 1 "Low" 2 "High" 3 "Auto" ;
+VAL_ 512 Indicators 0 "Off" 1 "Left" 2 "Right" 3 "Hazard" ;
+VAL_ 769 ABSActive 0 "Inactive" 1 "Active" ;
 
 BA_DEF_ BO_ "GenMsgCycleTime" INT 0 65535;
 BA_ "GenMsgCycleTime" BO_ 256 100;
 BA_ "GenMsgCycleTime" BO_ 1792 100;
+BA_ "GenMsgCycleTime" BO_ 512 200;
+BA_ "GenMsgCycleTime" BO_ 768 20;
+BA_ "GenMsgCycleTime" BO_ 769 50;
+BA_ "GenMsgCycleTime" BO_ 1024 500;

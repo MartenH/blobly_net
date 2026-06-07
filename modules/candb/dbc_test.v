@@ -11,7 +11,8 @@ fn cantester_dbc() Database {
 
 fn test_dbc_messages_parsed() {
 	db := cantester_dbc()
-	assert db.messages.len == 4
+	// SUT/Tester core (4) + BodyECU/ChassisECU/BatteryECU messages (4) = 8.
+	assert db.messages.len == 8
 	pt := db.lookup(0x100) or { panic('no Powertrain') }
 	assert pt.name == 'Powertrain'
 	assert pt.dlc == 8
@@ -22,6 +23,10 @@ fn test_dbc_messages_parsed() {
 	assert hb.signals.len == 1
 	assert db.lookup(0x101) != none
 	assert db.lookup(0x102) != none
+	// nodes + transmitter mapping for the added ECUs
+	assert db.nodes == ['SUT', 'Tester', 'BodyECU', 'ChassisECU', 'BatteryECU']
+	assert db.messages_from('ChassisECU').len == 2 // WheelSpeeds + BrakeStatus
+	assert db.lookup(0x300) or { panic('no WheelSpeeds') }.signals.len == 4
 }
 
 fn test_dbc_signal_layout() {
