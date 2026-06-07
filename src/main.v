@@ -186,31 +186,68 @@ mut:
 	sim_nodes []SimNode // simulated ECUs available per channel (Simulation panel)
 }
 
-// SimNode is one simulated ECU offered in the Simulation panel: a DBC node on a
-// channel, with a checkbox to connect it to the bus (= have the tester simulate it).
+// SimNode is one simulated ECU offered in the Simulation panel: a configured ECU
+// on a channel, with a checkbox to connect it to the bus (= have the tester
+// simulate it). `cfg` carries its per-signal generators + response rules.
 struct SimNode {
 mut:
 	ch_idx  int
 	node    string
 	enabled bool
+	cfg     project.NodeCfg
 }
 
-// build_sim_nodes lists, per channel that has a database, the ECU nodes the DBC
-// declares — each connectable via the Simulation panel. Defaults to enabled for
-// nodes named in the project's `simulate:` list.
+// build_sim_nodes lists the configured simulated ECUs per channel (from `nodes:`
+// + the `simulate:` shorthand), each connectable via the Simulation panel and
+// connected (enabled) by default.
 fn (mut app App) build_sim_nodes() {
 	app.sim_nodes = []SimNode{}
 	for i, ch in app.proj.channels {
 		if ch.databases.len == 0 {
 			continue
 		}
-		for node in app.db.nodes {
+		for ncfg in ch.all_nodes() {
 			app.sim_nodes << SimNode{
 				ch_idx:  i
-				node:    node
-				enabled: node in ch.simulate
+				node:    ncfg.name
+				enabled: true
+				cfg:     ncfg
 			}
 		}
+	}
+}
+
+// build_node turns a project node config into a simulation ECU: when it carries
+// signal/response config, build from that; otherwise use the built-in default
+// behaviour (the hand-tuned SUT for 'SUT', generic DBC-derived otherwise).
+fn build_node(db candb.Database, cfg project.NodeCfg) sim.SimEcu {
+	if cfg.signals.len == 0 && cfg.responses.len == 0 {
+		return sim.build_ecu(db, cfg.name)
+	}
+	mut gens := map[string]sim.Gen{}
+	for g in cfg.signals {
+		gens[g.signal] = gen_of(g)
+	}
+	mut rules := []sim.ResponseRule{}
+	for r in cfg.responses {
+		rules << sim.ResponseRule{
+			req_id:     r.request
+			resp_id:    r.response
+			byte_index: r.byte
+			add:        r.add
+		}
+	}
+	return sim.build_configured_ecu(db, cfg.name, gens, rules)
+}
+
+// gen_of maps a project generator spec to a sim.Gen.
+fn gen_of(g project.GenCfg) sim.Gen {
+	return match g.typ {
+		'sine' { sim.gen_sine(g.offset, g.amplitude, g.freq, g.phase) }
+		'sawtooth' { sim.gen_sawtooth(g.min, g.max, g.period) }
+		'counter' { sim.gen_counter(g.start, g.step, g.modulo) }
+		'stepmod' { sim.gen_stepmod(g.period, g.count, g.base) }
+		else { sim.gen_const(g.value) }
 	}
 }
 
@@ -447,7 +484,7 @@ fn sim_loop(idx int, mut w gui.Window) {
 			engine = sim.Engine{}
 			for sn in app.sim_nodes {
 				if sn.ch_idx == idx && sn.enabled {
-					engine.ecus << sim.build_ecu(app.db, sn.node)
+					engine.ecus << build_node(app.db, sn.cfg)
 				}
 			}
 		}

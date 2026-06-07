@@ -72,3 +72,22 @@ pub fn ecu_from_dbc(db candb.Database, node string) SimEcu {
 pub fn build_ecu(db candb.Database, node string) SimEcu {
 	return if node == 'SUT' { sut_ecu(db) } else { ecu_from_dbc(db, node) }
 }
+
+// build_configured_ecu builds `node` from the DBC (messages + cyclic periods) and
+// attaches the supplied per-signal generators + response rules — the engine model
+// for a project-file-configured ECU. Signals without a generator stay constant 0.
+pub fn build_configured_ecu(db candb.Database, node string, gens map[string]Gen, rules []ResponseRule) SimEcu {
+	mut ecu := ecu_from_dbc(db, node)
+	for i, m in ecu.messages {
+		for sig in m.msg.signals {
+			if g := gens[sig.name] {
+				ecu.messages[i].signals << SimSignal{
+					name: sig.name
+					gen:  g
+				}
+			}
+		}
+	}
+	ecu.rules = rules
+	return ecu
+}
