@@ -581,3 +581,21 @@ prompt for a password.
   (used locally for validation only). Verified in the GUI: opened the J1939 file → 62 324 frames stream
   the trace with per-byte highlights, CAN-FD payloads (DLC 16/20/32/48) intact. NEXT: timed replay
   *player* (Phase 8) onto vcan0/udpbus at recorded cadence; J1939 PGN-aware `candb` lookup for decode.
+- 2026-06-07: **Memory-leak hunt + Trace filter + Graphics panel.** (a) **Leak — final answer:** the
+  steady RSS growth while live values are on screen is **Linux-only** (VERIFIED clear on native Windows
+  W1 — both changing/static plateau) and lives in **vglyph's glyph RENDER path**, NOT Pango layout and
+  NOT the GL driver. Trail (full detail in `docs/known_issues.md`): GC is on + V heap bounded (~50 MB);
+  a heaptrack-at-`exit(0)` reading first mis-blamed Mesa/gallium (that was GL working-set freed only on
+  clean teardown — retracted); direct RSS + minimal repros then nailed it — raw Pango
+  (`new`/`set_text`/`font_desc`/`metrics`/`iter`, changing text) is FLAT at 14 MB/250k iters, vglyph's
+  `Context.layout_text` (±wrapping) is FLAT at ~19 MB/200k+, a rects-only `gg` app is FLAT — only the
+  path that also **renders** (the GUI) leaks, and only for *changing* (cache-miss) strings. So it's
+  glyph/atlas churn under Linux FreeType, per new string. `cmd/mem_leak_repro` reproduces it
+  (`MEM_REPRO=changing` climbs, `static` plateaus). Production (native Windows) is unaffected;
+  mitigations: lower trace fps, Pause/Stop. Exact retained alloc needs renderer-with-GL isolation
+  (follow-up). (b) **Trace filter:** a Filter row above the grid (both views) — case-insensitive
+  substring on ID/name/Ch/(all-view)data, with a ✕ clear; verified `CAN2` → only CAN2 msgs. (c)
+  **Graphics panel** (tabbed with Signals): plots the trace-selected message's signals over the recorded
+  history as auto-scaled coloured polylines + a value legend (`gui.draw_canvas`/`dc.polyline`,
+  re-tessellates on new frames). Verified live: 0x100 sines, 0x301 BrakePressure sawtooth + BrakePedal
+  sine. NEXT (deferred): renderer-leak exact line; plot real-time x-axis / per-signal toggle.
