@@ -897,12 +897,12 @@ fn trace_panel(mut window gui.Window) gui.View {
 			columns:             [
 				tcol('time', 'Time(s)', 80, .end),
 				tcol('ch', 'Ch', 44, .start),
+				tcol('count', 'Count', 56, .end),
 				tcol('id', 'ID', 110, .start),
 				tcol('name', 'Name', 130, .start),
 				tcol('dlc', 'DLC', 44, .end),
 				tcol('dir', 'Dir', 44, .start),
 				tcol('data', 'Data', 320, .start),
-				tcol('count', 'Count', 56, .end),
 			]
 			rows:                rows
 			selection:           app.selection
