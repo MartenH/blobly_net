@@ -43,10 +43,13 @@ pub fn (s Signal) label(data []u8) string {
 
 pub struct Message {
 pub:
-	name    string
-	id      u32
-	dlc     int
-	signals []Signal
+	name     string
+	id       u32
+	ext      bool   // 29-bit extended identifier (DBC EFF high-bit was set)
+	dlc      int
+	sender   string // transmitting node (DBC BO_ transmitter); '' / 'Vector__XXX' = none
+	cycle_ms int    // GenMsgCycleTime attribute if present (0 = not cyclic / unknown)
+	signals  []Signal
 }
 
 // raw_value extracts the unsigned raw bits of the signal from `data`. Handles
