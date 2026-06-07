@@ -35,3 +35,31 @@ channels:
           # On a Request (0x101), reply with Response (0x102) = request data with
           # byte[0] + 1 (mirrors sut/can_sut.py).
           - { request: "0x101", response: "0x102", byte: 0, add: 1 }
+
+      # More ECUs sharing the same CAN1 network — each sends the messages whose
+      # DBC transmitter is its name. Untick them in the Simulation panel to
+      # disconnect; tick a DBC node with no config here to simulate it with
+      # constant signals.
+      - name: ChassisECU
+        signals:
+          - { name: WheelFL, type: sine, offset: 60, amplitude: 8, freq: 0.9, phase: 0.0 }
+          - { name: WheelFR, type: sine, offset: 60, amplitude: 8, freq: 0.9, phase: 0.1 }
+          - { name: WheelRL, type: sine, offset: 60, amplitude: 8, freq: 0.9, phase: 0.2 }
+          - { name: WheelRR, type: sine, offset: 60, amplitude: 8, freq: 0.9, phase: 0.3 }
+          - { name: BrakePressure, type: sawtooth, min: 0, max: 1500, period: 6 }
+          - { name: BrakePedal, type: sine, offset: 20, amplitude: 20, freq: 0.5 }
+
+      - name: BodyECU
+        signals:
+          - { name: InteriorTemp, type: sine, offset: 22, amplitude: 3, freq: 0.05 }
+          - { name: Headlights, type: stepmod, period: 5, count: 4, base: 0 }
+          - { name: Indicators, type: stepmod, period: 3, count: 4, base: 0 }
+          - { name: Locked, type: const, value: 1 }
+          - { name: DoorFL, type: stepmod, period: 7, count: 2, base: 0 }
+
+      - name: BatteryECU
+        signals:
+          - { name: PackVoltage, type: sine, offset: 400, amplitude: 5, freq: 0.2 }
+          - { name: PackCurrent, type: sine, offset: 0, amplitude: 50, freq: 0.3 }
+          - { name: SoC, type: sawtooth, min: 100, max: 20, period: 30 }
+          - { name: PackTemp, type: sine, offset: 30, amplitude: 5, freq: 0.1 }
