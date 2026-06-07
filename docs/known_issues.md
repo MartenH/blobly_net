@@ -102,38 +102,39 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
 
 ## Rendering stack (sokol / vglyph / GL)
 
-- 🟠 **Memory grows while redrawing under WSLg — it's the Mesa/gallium GL driver, not our code.**
-  RSS climbs ~1–1.5 MB/s whenever the app redraws with live data (sim/replay/live trace); FLAT when
-  idle (event-driven refresh → no redraw → no growth). **Pinned by heaptrack + valgrind massif
-  (2026-06-07)** — earlier guesses (V heap / vglyph) were WRONG:
-  - GC is **on** (boehm; `gc_collect()` works) and the **V heap is bounded** (`gc_memory_use()`
-    oscillates ~42–66 MB). So it is **not** the GC and **not** our V allocations.
-  - heaptrack's **leaked-memory** stacks are almost entirely `libgallium-25.2.8` (Mesa's GL driver)
-    reached through the per-frame draw path: `_sg_gl_draw ← _sgl_draw ← sokol__sgl__draw ←
-    gg__Context_end ← gui__frame_fn` — i.e. sokol's draw call into the GL driver, which allocates per
-    draw and never frees. ~45 MB leaked over ~250 k draw-path calls in a 22 s / 1237-frame run.
-  - Reproduces on **both** software GL (llvmpipe) **and** hardware GL (d3d12) — both go through Mesa
-    gallium. (The vglyph fontconfig/Pango calls heaptrack also showed are **temporary** —
-    allocated+freed — not the leak; the one 8.4 MB `vglyph__new_atlas_page` is the one-time glyph-atlas
-    texture, not growth.)
-  - **DECISIVE isolation:** a throwaway ~30-line `gg` app drawing 40 rectangles/frame — *no* cantester
-    code, *no* vglyph, *no* text — **also leaks ~27 MB in libgallium in 18 s**, stack entirely Mesa.
-    So it is the **bare sokol→Mesa GL draw path**, independent of our app and of text rendering.
-  - **Production note (don't over-claim "it's just the environment"):** sokol and Mesa *are* production
-    libraries — but sokol here is only the *caller* (a standard `glDraw`); the bytes are allocated and
-    held *inside Mesa's GL driver*. WHICH GL driver runs is platform-specific: WSLg → **Mesa**
-    (llvmpipe/d3d12, leaks here); native **Linux** desktop → also **Mesa** (iris/radeonsi) so it
-    **could** leak too; native **Windows** → the GPU vendor's OpenGL ICD (not Mesa) → different code
-    path, **unverified**; macOS → Apple GL. Since *both* Mesa backends leak, it's likely in shared
-    Mesa/gallium code or a sokol draw pattern Mesa mishandles — **not** safely "WSL-only."
-  - **To nail it / next steps:** (1) Mesa **dbgsym** to resolve the `libgallium` `???` frames →
-    name the function (gallium-core `st_*`/`util_*` vs a backend) — needs the ddebs repo (`apt update`
-    + write `/etc/apt`), which the scoped sudo here can't do; (2) test the **native Windows (W1)** build
-    — the empirically decisive one for the deploy target; (3) file the **minimal `gg` repro** upstream
-    (sokol or Mesa). Mitigations meanwhile: lower trace fps (3/5/10), Pause/Stop, restart long sessions.
-  - Repro/profile: build `-g` makes the window draw only 1 frame under WSLg (avoid `-g` here); profile
-    the normal build: `CANTESTER_RUN_MS=22000 heaptrack ./build/cantester` then
-    `heaptrack_print -l 1 -p 0 -a 0 <file>`. `CANTESTER_RUN_MS=N` exits cleanly for the profiler.
+- 🔴 **Memory grows when the trace shows *changing* values — it's vglyph rendering unique text strings
+  (Pango/FreeType), NOT the GL driver and NOT our code.** RSS climbs ~1.5 MB/s whenever live values are
+  on screen (sim/replay/live trace); FLAT when idle (event-driven refresh → no redraw). Final diagnosis
+  **2026-06-07, by direct RSS measurement + minimal repros** (two earlier guesses were wrong — see the
+  retraction note below). The evidence:
+  - GC is **on** (boehm; `gc_collect()` works) and the **V heap is bounded** (`gc_memory_use()` ~16–50 MB
+    flat). Not the GC, not our V allocations.
+  - **Minimal repro `cmd/mem_leak_repro`** (a gui window redrawing 30 text rows ~7 fps, *no* CAN/sim):
+    `MEM_REPRO=changing` (unique strings each frame) → **RSS climbs**; `MEM_REPRO=static` (fixed strings)
+    → **RSS plateaus**. A third control — a `gg` app drawing only rectangles (no text) — stays **flat**.
+    ⇒ the leak is the **text path**, and specifically rendering *new* strings (cache misses), not the GL
+    draw path and not cantester logic.
+  - heaptrack **diff** (changing − static) puts the extra allocations in
+    `gui__layout_wrap_text → vglyph__Context_layout_text → vglyph__build_layout_from_pango →
+    pango_layout_get_iter` — i.e. building a fresh Pango layout per unique string. The net-retained
+    bytes are many small allocations in the Pango/FreeType/fontconfig layout path (changing numbers miss
+    vglyph's by-text layout cache, so every redraw reshapes from scratch).
+  - **⚠️ RETRACTION:** an earlier version of this note blamed the **Mesa/gallium GL driver** (heaptrack
+    showed `libgallium` "leaked" via `_sg_gl_draw`). That was a **misread**: with `CANTESTER_RUN_MS`'s
+    hard `exit(0)`, the GL driver's normal **working set** (freed only on clean teardown) is counted by
+    heaptrack as "leaked". Run **directly**, the rects-only `gg` app's RSS is **flat** — the GL path does
+    NOT leak. Lesson: trust **direct RSS over time**, not heaptrack-at-`exit(0)`, for driver/working-set
+    questions.
+  - **Cross-platform — likely affects the native Windows build too.** vglyph uses Pango/FreeType/
+    fontconfig/HarfBuzz on *every* platform, including the W1 mingw build — so this is **not** a WSLg/Mesa
+    artifact and the native Windows target probably leaks the same way. **Confirm by running
+    `cmd/mem_leak_repro` on native Windows and watching Task Manager** (changing vs static).
+  - **Mitigations:** lower the trace repaint rate (toolbar 3/5/10 fps → fewer reshapes); Pause/Stop;
+    restart long sessions. **Real fix:** in vglyph — free the per-layout Pango resources / bound the
+    fontconfig-Pango churn for cache-miss strings (upstream-style patch, like the others in
+    `docs/windows_build.md`); or reduce unique strings (e.g. fewer decimals on the live timestamp).
+  - Profiling: avoid a `-g` build (only draws 1 frame under WSLg). `CANTESTER_RUN_MS=N` exits cleanly.
+    heaptrack diff: `heaptrack_print -d <static.gz> -a 1 -p 0 <changing.gz>`.
 - 🟢 **Blank/black window under WSLg — FIXED on Ubuntu 24.04 (Mesa 25.2.8).** Historically (22.04,
   Mesa 23.2) the GPU GL passthrough (d3d12) drew frames but never composited, so the window showed
   blank; the workaround was software GL (`LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe`). On 24.04
