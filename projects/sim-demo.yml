@@ -1,25 +1,22 @@
-# Native simulation demo — no drivers, no Python, no vcan.
+# Native simulation demo — two networks, ECUs distributed across them.
 #
-# CAN1 is a driver-free in-process network. The tester monitors it AND simulates
-# the ECUs declared under `nodes:`. This file shows the FULL ECU configuration —
-# which network, which DBC (databases), which ECUs (nodes), and exactly how each
-# ECU drives its signals + answers requests. Press ▶ Start and toggle nodes in
-# the Simulation panel. Runs identically on Linux and Windows.
+# CAN1 (powertrain/chassis) and CAN2 (body/energy) are independent driver-free
+# in-process buses. The tester monitors BOTH and simulates the ECUs configured on
+# each. The Buses + Simulation panels show both networks; the trace's Ch column
+# tells CAN1 frames from CAN2. Press ▶ Start and toggle nodes per network. Runs
+# identically on Linux and Windows, no drivers.
 project:
-  name: Simulation demo (configured SUT ECU, in-process)
+  name: Simulation demo — CAN1 + CAN2
   version: 1
 
 channels:
+  # --- CAN1: powertrain + chassis ---
   - name: CAN1
     type: can
-    interface: inproc:CAN1     # driver-free in-process bus
+    interface: inproc:CAN1
     mode: monitor
-    databases:                 # the NETWORK owns the database (not the ECU)
-      - dbc/cantester.dbc
-
-    # Simulated ECUs on this network. A node sends every message whose DBC
-    # transmitter is its name; `signals:` drives each signal, `responses:` answers
-    # requests. (Periods come from the DBC's GenMsgCycleTime.)
+    databases:
+      - dbc/cantester.dbc        # the network owns the database
     nodes:
       - name: SUT
         signals:
@@ -32,14 +29,7 @@ channels:
           - { name: CruiseOn,     type: stepmod, period: 2,    count: 2,        base: 0 }
           - { name: Counter,      type: counter, start: 0,     step: 1,         modulo: 256 }
         responses:
-          # On a Request (0x101), reply with Response (0x102) = request data with
-          # byte[0] + 1 (mirrors sut/can_sut.py).
           - { request: "0x101", response: "0x102", byte: 0, add: 1 }
-
-      # More ECUs sharing the same CAN1 network — each sends the messages whose
-      # DBC transmitter is its name. Untick them in the Simulation panel to
-      # disconnect; tick a DBC node with no config here to simulate it with
-      # constant signals.
       - name: ChassisECU
         signals:
           - { name: WheelFL, type: sine, offset: 60, amplitude: 8, freq: 0.9, phase: 0.0 }
@@ -49,6 +39,14 @@ channels:
           - { name: BrakePressure, type: sawtooth, min: 0, max: 1500, period: 6 }
           - { name: BrakePedal, type: sine, offset: 20, amplitude: 20, freq: 0.5 }
 
+  # --- CAN2: body + energy ---
+  - name: CAN2
+    type: can
+    interface: inproc:CAN2
+    mode: monitor
+    databases:
+      - dbc/cantester.dbc
+    nodes:
       - name: BodyECU
         signals:
           - { name: InteriorTemp, type: sine, offset: 22, amplitude: 3, freq: 0.05 }
@@ -56,7 +54,6 @@ channels:
           - { name: Indicators, type: stepmod, period: 3, count: 4, base: 0 }
           - { name: Locked, type: const, value: 1 }
           - { name: DoorFL, type: stepmod, period: 7, count: 2, base: 0 }
-
       - name: BatteryECU
         signals:
           - { name: PackVoltage, type: sine, offset: 400, amplitude: 5, freq: 0.2 }
