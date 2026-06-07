@@ -131,16 +131,16 @@ struct TraceRow {
 
 struct MsgAgg {
 mut:
-	id       u32
-	ext      bool
-	last     []u8
-	count    int
-	last_ms  f64
-	name     string
-	byte_age []int // per-byte updates since it last changed (0 = just changed); fades the highlight
+	id      u32
+	ext     bool
+	ch      string
+	dir     string
+	last    []u8
+	count   int
+	last_ms f64
+	name    string
+	repeat  bool // latest frame was byte-identical to the prior one for this ID
 }
-
-const byte_fade_steps = 6 // updates over which a changed-byte highlight fades to none
 
 // ChannelRT is the live runtime state of one configured channel (bus).
 struct ChannelRT {
@@ -455,33 +455,16 @@ fn (mut app App) record(dir string, f transport.CanFrame, t_ms f64, ch string) {
 	if f.id !in app.grouped {
 		app.order << f.id
 	}
-	// Grouped view: per-byte age (0 = changed this update) that ages up while a
-	// byte stays unchanged, driving the black->grey fade. First sighting is the
-	// baseline (fully aged), so a brand-new message isn't all-highlighted.
-	mut ages := []int{len: 8, init: byte_fade_steps}
-	if prev.byte_age.len == 8 {
-		ages = prev.byte_age.clone()
-	}
-	for i in 0 .. 8 {
-		bit_changed := (changed >> i) & 1 == 1
-		ages[i] = if first {
-			byte_fade_steps
-		} else if bit_changed {
-			0
-		} else if ages[i] < byte_fade_steps {
-			ages[i] + 1
-		} else {
-			ages[i]
-		}
-	}
 	app.grouped[f.id] = MsgAgg{
-		id:       f.id
-		ext:      f.extended
-		last:     f.data.clone()
-		count:    prev.count + 1
-		last_ms:  t_ms
-		name:     name
-		byte_age: ages
+		id:      f.id
+		ext:     f.extended
+		ch:      ch
+		dir:     dir
+		last:    f.data.clone()
+		count:   prev.count + 1
+		last_ms: t_ms
+		name:    name
+		repeat:  !first && changed == 0 // unchanged vs the prior frame for this ID
 	}
 }
 
@@ -867,19 +850,18 @@ fn trace_panel(mut window gui.Window) gui.View {
 			a := app.grouped[id] or { continue }
 			expanded := id in app.expanded
 			chevron := if expanded { '▼' } else { '▶' }
-			mut cells := {
-				'id':    '${chevron} ${hexid(id, a.ext)}'
-				'name':  a.name
-				'dlc':   '${a.last.len}'
-				'count': '${a.count}'
-				'time':  '${a.last_ms / 1000.0:.6f}'
-			}
-			for i in 0 .. 8 {
-				cells['b${i}'] = if i < a.last.len { '${a.last[i]:02X}' } else { '' }
-			}
 			rows << gui.GridRow{
 				id:    '${id}'
-				cells: cells
+				cells: {
+					'time':  '${a.last_ms / 1000.0:.6f}'
+					'ch':    a.ch
+					'id':    '${chevron} ${hexid(id, a.ext)}'
+					'name':  a.name
+					'dlc':   '${a.last.len}'
+					'dir':   a.dir
+					'data':  hex_crop(a.last, trace_data_max_bytes)
+					'count': '${a.count}'
+				}
 			}
 			if expanded {
 				if m := app.db.lookup(id) {
@@ -894,11 +876,9 @@ fn trace_panel(mut window gui.Window) gui.View {
 						rows << gui.GridRow{
 							id:    's:${id}:${s.name}'
 							cells: {
-								'id':    '       ${s.name}'
-								'name':  value
-								'dlc':   '0x${raw:X}'
-								'count': ''
-								'time':  ''
+								'id':   '       ${s.name}'
+								'name': value
+								'dlc':  '0x${raw:X}'
 							}
 						}
 					}
@@ -915,13 +895,14 @@ fn trace_panel(mut window gui.Window) gui.View {
 			text_style:          trace_text_style()
 			text_style_header:   trace_text_style()
 			columns:             [
-				tcol('id', 'ID / Signal', 180, .start),
-				tcol('name', 'Message / Value', 150, .start),
-				tcol('dlc', 'DLC/Raw', 64, .end),
-				tcol('count', 'Count', 60, .end),
-				tcol('time', 'Last(s)', 84, .end),
-				bcol('b0'), bcol('b1'), bcol('b2'), bcol('b3'),
-				bcol('b4'), bcol('b5'), bcol('b6'), bcol('b7'),
+				tcol('time', 'Time(s)', 80, .end),
+				tcol('ch', 'Ch', 44, .start),
+				tcol('id', 'ID', 110, .start),
+				tcol('name', 'Name', 130, .start),
+				tcol('dlc', 'DLC', 44, .end),
+				tcol('dir', 'Dir', 44, .start),
+				tcol('data', 'Data', 320, .start),
+				tcol('count', 'Count', 56, .end),
 			]
 			rows:                rows
 			selection:           app.selection
@@ -971,7 +952,7 @@ fn trace_panel(mut window gui.Window) gui.View {
 		columns:        [
 			tcol('time', 'Time(s)', 80, .end),
 			tcol('ch', 'Ch', 44, .start),
-			tcol('id', 'ID', 96, .start),
+			tcol('id', 'ID', 110, .start),
 			tcol('name', 'Name', 130, .start),
 			tcol('dlc', 'DLC', 44, .end),
 			tcol('dir', 'Dir', 44, .start),
@@ -1254,49 +1235,37 @@ fn trace_cell_format(row gui.GridRow, _ int, col gui.GridColumnCfg, value string
 			text_color:     gui.Color{210, 140, 30, 255} // TX: amber (readable on white)
 		}
 	}
-	// conventional change colouring: just-changed bytes are full-contrast (black on
-	// light, white on dark) and fade to grey as they stay unchanged — no highlight
-	// fill. Grouped byte cells (b0..b7) fade gradually by per-byte age; the
-	// chronological Data cell is binary (changed=full, exact-repeat=grey).
-	mut a := w.state[App]()
-	if col.id.len == 2 && col.id[0] == `b` && value.len > 0 {
-		// Grouped view only (its rows id by the bare message id, no ':').
-		if !row.id.contains(':') {
-			idx := int(col.id[1] - `0`)
-			agg := a.grouped[row.id.u32()] or { return gui.GridCellFormat{} }
-			if idx < agg.byte_age.len {
-				t := f32(agg.byte_age[idx]) / f32(byte_fade_steps)
-				return gui.GridCellFormat{
-					has_text_color: true
-					text_color:     fade_text(t, a.dark)
+	// conventional "repeat" greying on the Data cell: a frame whose payload is
+	// byte-identical to the previous instance of its ID is dimmed to grey;
+	// changing frames keep the normal text colour. (Chronological rows id as
+	// 'seq:id'; grouped rows by the bare message id.)
+	if col.id == 'data' && value.len > 0 {
+		mut a := w.state[App]()
+		mut is_repeat := false
+		if row.id.contains(':') {
+			seq := row.id.all_before(':').int()
+			if a.trace.len > 0 {
+				ix := seq - a.trace[0].seq
+				if ix >= 0 && ix < a.trace.len {
+					is_repeat = a.trace[ix].changed == 0
 				}
 			}
+		} else {
+			agg := a.grouped[row.id.u32()] or { return gui.GridCellFormat{} }
+			is_repeat = agg.repeat
 		}
-	}
-	if col.id == 'data' && value.len > 0 {
-		// Chronological view: grey out a frame that exactly repeats the previous
-		// instance of its ID (changed bitmask 0); otherwise leave it full-contrast.
-		seq := row.id.all_before(':').int()
-		if a.trace.len > 0 {
-			ix := seq - a.trace[0].seq
-			if ix >= 0 && ix < a.trace.len && a.trace[ix].changed == 0 {
-				return gui.GridCellFormat{
-					has_text_color: true
-					text_color:     fade_text(1.0, a.dark)
+		if is_repeat {
+			return gui.GridCellFormat{
+				has_text_color: true
+				text_color:     if a.dark {
+					gui.Color{120, 120, 120, 255}
+				} else {
+					gui.Color{160, 160, 160, 255}
 				}
 			}
 		}
 	}
 	return gui.GridCellFormat{}
-}
-
-// fade_text interpolates the trace's change colour: t=0 is full-contrast (just
-// changed — black on light, near-white on dark), t=1 is grey (long unchanged).
-fn fade_text(t f32, dark bool) gui.Color {
-	tc := if t < 0 { f32(0) } else if t > 1 { f32(1) } else { t }
-	rr, rg, rb := if dark { f32(235), f32(235), f32(235) } else { f32(20), f32(20), f32(20) }
-	gr, gg, gb := if dark { f32(120), f32(120), f32(120) } else { f32(155), f32(155), f32(155) }
-	return gui.Color{u8(rr + (gr - rr) * tc), u8(rg + (gg - rg) * tc), u8(rb + (gb - rb) * tc), 255}
 }
 
 // tcol builds a trace column: resizable + reorderable (gui defaults), NOT
@@ -1310,20 +1279,6 @@ fn tcol(id string, title string, width f32, align gui.HorizontalAlign) gui.GridC
 		align:     align
 		sortable:  false
 		max_width: 4000
-	}
-}
-
-// bcol is a narrow per-byte column for the grouped trace (b0..b7). Title is the
-// byte index; the cell holds two hex digits and gets the change-highlight fade.
-fn bcol(id string) gui.GridColumnCfg {
-	return gui.GridColumnCfg{
-		id:        id
-		title:     id[1..] // 'b3' -> '3'
-		width:     26
-		min_width: 22
-		align:     .center
-		sortable:  false
-		max_width: 60
 	}
 }
 
