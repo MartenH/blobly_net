@@ -40,3 +40,7 @@ CM_ SG_ 1792 Counter "Rolling alive counter";
 
 VAL_ 256 Gear 0 "Neutral" 1 "First" 2 "Second" 3 "Third" 4 "Fourth" 5 "Fifth" 6 "Sixth" ;
 VAL_ 256 CruiseOn 0 "Off" 1 "On" ;
+
+BA_DEF_ BO_ "GenMsgCycleTime" INT 0 65535;
+BA_ "GenMsgCycleTime" BO_ 256 100;
+BA_ "GenMsgCycleTime" BO_ 1792 100;
