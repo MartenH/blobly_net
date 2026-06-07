@@ -50,6 +50,7 @@ const trace_header_height = f32(16)
 // Crop the chronological-trace Data cell after this many bytes (CAN-FD payloads
 // reach 64 bytes and would otherwise overflow the column); the rest is summarised.
 const trace_data_max_bytes = 16
+const plot_max_points = 400 // samples shown per signal in the Graphics panel
 
 // ---- Color palettes: one struct, fed into make_theme() ----
 // Every gui color knob in one place (parallel to the ui_size_* scale). Swap the
@@ -411,8 +412,8 @@ fn make_theme(p Palette) gui.Theme {
 // Buses (narrow left) | Trace (centre) | Signals / Send / Statistics stacked
 // (right) — each its own panel. They can still be tabbed/dragged by the user.
 fn default_layout() &gui.DockNode {
-	right := gui.dock_split('r1', .vertical, 0.22, gui.dock_panel_group('g_sig', ['signals'],
-		'signals'), gui.dock_split('r2', .vertical, 0.66, gui.dock_panel_group('g_send', ['send'],
+	right := gui.dock_split('r1', .vertical, 0.45, gui.dock_panel_group('g_sig', ['signals', 'plot'],
+		'signals'), gui.dock_split('r2', .vertical, 0.55, gui.dock_panel_group('g_send', ['send'],
 		'send'), gui.dock_panel_group('g_stats', ['stats'], 'stats')))
 	mid := gui.dock_split('mid', .horizontal, 0.66, gui.dock_panel_group('g_trace', ['trace'],
 		'trace'), right)
@@ -658,6 +659,7 @@ fn main_view(mut window gui.Window) gui.View {
 					gui.DockPanelDef{ id: 'buses', label: 'Buses', content: [buses_panel(app)] },
 						gui.DockPanelDef{ id: 'simulation', label: 'Simulation', content: [simulation_panel(app)] },
 					gui.DockPanelDef{ id: 'signals', label: 'Signals', content: [signals_panel(app)] },
+					gui.DockPanelDef{ id: 'plot', label: 'Graphics', content: [plot_panel(mut window)] },
 					gui.DockPanelDef{ id: 'send', label: 'Send', content: [send_panel(app)] },
 					gui.DockPanelDef{ id: 'stats', label: 'Statistics', content: [stats_panel(app)] },
 				]
@@ -1233,6 +1235,132 @@ fn signals_panel(app &App) gui.View {
 		spacing: 5
 		content: lines
 	)
+}
+
+// plot_colors is the per-signal line palette for the Graphics panel.
+const plot_colors = [
+	gui.Color{90, 170, 250, 255},
+	gui.Color{120, 220, 150, 255},
+	gui.Color{250, 175, 90, 255},
+	gui.Color{230, 120, 200, 255},
+	gui.Color{120, 220, 220, 255},
+	gui.Color{245, 220, 95, 255},
+	gui.Color{180, 150, 250, 255},
+]
+
+// plot_panel graphs the selected message's signals over the trace history — a
+// conventional Graphics window. Each signal is a coloured polyline, auto-scaled to
+// its own range; the legend shows the current value. Click a message in the Trace.
+fn plot_panel(mut window gui.Window) gui.View {
+	w, h := window.window_size()
+	app := window.state[App]()
+	mut content := [gui.text(text: 'Graphics', text_style: gui.theme().b3)]
+	if app.sel_id < 0 {
+		content << gui.text(text: '(click a message in the Trace to plot its signals)',
+			text_style: gui.theme().n4)
+		return gui.column(sizing: gui.fill_fill, padding: gui.padding_medium, spacing: 5, content: content)
+	}
+	id := u32(app.sel_id)
+	m := app.db.lookup(id) or {
+		content << gui.text(text: '0x${id:X}: no DBC message', text_style: gui.theme().n4)
+		return gui.column(sizing: gui.fill_fill, padding: gui.padding_medium, spacing: 5, content: content)
+	}
+	content << gui.text(text: '0x${id:X} ${m.name} — last ${plot_max_points} samples',
+		text_style: gui.theme().n4)
+
+	// Collect a per-signal series from the recorded trace (chronological).
+	sigs := m.signals
+	mut series := [][]f32{len: sigs.len, init: []f32{}}
+	mut cur := []f64{len: sigs.len}
+	scan_start := if app.trace.len > 2000 { app.trace.len - 2000 } else { 0 }
+	for i := scan_start; i < app.trace.len; i++ {
+		r := app.trace[i]
+		if r.id != id {
+			continue
+		}
+		for j, s in sigs {
+			v := s.physical(r.data)
+			series[j] << f32(v)
+			cur[j] = v
+		}
+	}
+	for j in 0 .. series.len {
+		if series[j].len > plot_max_points {
+			series[j] = series[j][series[j].len - plot_max_points..]
+		}
+	}
+
+	cw := clampf(f32(if w > 0 { w } else { 1180 }) * 0.21, 220, 520)
+	ph := clampf(f32(if h > 0 { h } else { 680 }) * 0.24, 130, 360) // leave room for the legend
+	content << gui.draw_canvas(
+		id:      'sigplot'
+		version: u64(app.rx_count) // re-tessellate only when new frames arrive
+		width:   cw
+		height:  ph
+		color:   gui.Color{24, 24, 30, 255}
+		radius:  4
+		padding: gui.Padding{6, 6, 6, 6}
+		on_draw: fn [series] (mut dc gui.DrawContext) {
+			draw_signals(mut dc, series)
+		}
+	)
+	for j, s in sigs {
+		c := plot_colors[j % plot_colors.len]
+		content << gui.text(
+			text:       '● ${s.name}: ${cur[j]:.2f} ${s.unit}'
+			text_style: gui.TextStyle{
+				...gui.theme().n4
+				color: c
+			}
+		)
+	}
+	return gui.column(sizing: gui.fill_fill, padding: gui.padding_medium, spacing: 4, content: content)
+}
+
+fn draw_signals(mut dc gui.DrawContext, series [][]f32) {
+	cw := dc.width
+	ch := dc.height
+	grid := gui.Color{55, 55, 70, 255}
+	for i in 0 .. 5 {
+		y := ch * f32(i) / 4
+		dc.line(0, y, cw, y, grid, 1)
+	}
+	for j, s in series {
+		draw_one_series(mut dc, s, plot_colors[j % plot_colors.len])
+	}
+}
+
+// draw_one_series plots a single signal, auto-scaled to its own min/max so all
+// signals are visible regardless of their physical range.
+fn draw_one_series(mut dc gui.DrawContext, series []f32, color gui.Color) {
+	if series.len < 2 {
+		return
+	}
+	cw := dc.width
+	ch := dc.height
+	mut mn := series[0]
+	mut mx := series[0]
+	for v in series {
+		if v < mn {
+			mn = v
+		}
+		if v > mx {
+			mx = v
+		}
+	}
+	span := if mx > mn { mx - mn } else { f32(1) }
+	mut pts := []f32{cap: series.len * 2}
+	for i, v in series {
+		x := cw * f32(i) / f32(series.len - 1)
+		y := ch - ch * (v - mn) / span * 0.92 - ch * 0.04 // 4% top/bottom margin
+		pts << x
+		pts << y
+	}
+	dc.polyline(pts, color, 1.5, .round, .round)
+}
+
+fn clampf(v f32, lo f32, hi f32) f32 {
+	return if v < lo { lo } else if v > hi { hi } else { v }
 }
 
 fn stats_panel(app &App) gui.View {
