@@ -20,6 +20,7 @@ import os
 pub struct Database {
 pub:
 	messages []Message
+	nodes    []string // ECU nodes declared by the DBC BU_ record
 }
 
 // lookup returns the message defined for `id`, if any.
@@ -30,6 +31,12 @@ pub fn (db Database) lookup(id u32) ?Message {
 		}
 	}
 	return none
+}
+
+// messages_from returns every message whose transmitter is `node` — i.e. the
+// messages a simulated ECU named `node` is responsible for sending.
+pub fn (db Database) messages_from(node string) []Message {
+	return db.messages.filter(it.sender == node)
 }
 
 // load_dbc_file reads and parses a .dbc file from disk.
@@ -60,10 +67,13 @@ mut:
 
 struct MsgBuilder {
 mut:
-	name string
-	id   u32
-	dlc  int
-	sigs []SigBuilder
+	name     string
+	id       u32
+	ext      bool
+	dlc      int
+	sender   string
+	cycle_ms int
+	sigs     []SigBuilder
 }
 
 // CAN_EFF_FLAG marks an extended (29-bit) id in a DBC BO_ record.
@@ -76,6 +86,7 @@ pub fn parse_dbc(text string) !Database {
 	mut msgs := []MsgBuilder{}
 	mut by_id := map[u32]int{} // message id -> index into msgs
 	mut cur := -1              // index of the message SG_ lines attach to
+	mut nodes := []string{}
 
 	for raw_line in text.split_into_lines() {
 		line := raw_line.trim_space()
@@ -93,10 +104,13 @@ pub fn parse_dbc(text string) !Database {
 			apply_val(mut msgs, by_id, line)
 		} else if line.starts_with('CM_ SG_ ') {
 			apply_cm_sg(mut msgs, by_id, line)
+		} else if line.starts_with('BU_:') {
+			// BU_: NodeA NodeB …  — the declared ECU nodes
+			nodes = line[4..].fields()
+		} else if line.starts_with('BA_ "GenMsgCycleTime"') {
+			apply_cycle_time(mut msgs, by_id, line)
 		}
-		// every other record type (BU_, BA_, blank, …) is ignored; SG_ always
-		// follows its BO_ and VAL_/CM_ resolve by id, so no message-close bookkeeping
-		// is needed.
+		// other records (BA_DEF_, blank, …) are ignored.
 	}
 
 	// emit immutable model
@@ -123,14 +137,33 @@ pub fn parse_dbc(text string) !Database {
 			}
 		}
 		out << Message{
-			name:    mb.name
-			id:      mb.id
-			dlc:     mb.dlc
-			signals: sigs
+			name:     mb.name
+			id:       mb.id
+			ext:      mb.ext
+			dlc:      mb.dlc
+			sender:   mb.sender
+			cycle_ms: mb.cycle_ms
+			signals:  sigs
 		}
 	}
 	return Database{
 		messages: out
+		nodes:    nodes
+	}
+}
+
+// apply_cycle_time parses `BA_ "GenMsgCycleTime" BO_ <id> <ms>;` and records the
+// period on the matching message (DBC convention for cyclic-message timing).
+fn apply_cycle_time(mut msgs []MsgBuilder, by_id map[u32]int, line string) {
+	f := line.replace(';', '').fields()
+	// f: BA_ "GenMsgCycleTime" BO_ <id> <ms>
+	if f.len < 5 || f[2] != 'BO_' {
+		return
+	}
+	raw_id := u32(f[3].u64())
+	id := if raw_id & can_eff_flag != 0 { raw_id & can_eff_mask } else { raw_id }
+	if idx := by_id[id] {
+		msgs[idx].cycle_ms = f[4].int()
 	}
 }
 
@@ -142,11 +175,14 @@ fn parse_bo(line string) !MsgBuilder {
 	}
 	raw_id := u32(f[1].u64())
 	// DBC tags extended ids with the high bit; strip it for the real id.
-	id := if raw_id & can_eff_flag != 0 { raw_id & can_eff_mask } else { raw_id }
+	ext := raw_id & can_eff_flag != 0
+	id := if ext { raw_id & can_eff_mask } else { raw_id }
 	return MsgBuilder{
-		name: f[2].trim_right(':')
-		id:   id
-		dlc:  f[3].int()
+		name:   f[2].trim_right(':')
+		id:     id
+		ext:    ext
+		dlc:    f[3].int()
+		sender: if f.len >= 5 { f[4] } else { '' }
 	}
 }
 
