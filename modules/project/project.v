@@ -53,6 +53,7 @@ pub mut:
 	listen_only  bool
 	enabled      bool = true
 	databases    []string
+	simulate     []string // ECU node names to simulate on this network (from the DBC)
 	replay       ?Replay
 }
 
@@ -117,6 +118,9 @@ fn parse_channel(c yaml.Any) Channel {
 	}
 	if dbs := c.value_opt('databases') {
 		ch.databases = dbs.array().as_strings()
+	}
+	if sim := c.value_opt('simulate') {
+		ch.simulate = sim.array().as_strings()
 	}
 	if t := c.value_opt('timing') {
 		ch.timing = Timing{

@@ -1,0 +1,18 @@
+# Native simulation demo — no drivers, no Python, no vcan.
+# CAN1 is a driver-free in-process network. The tester monitors it AND simulates
+# the 'SUT' ECU on it (native twin of sut/can_sut.py): press ▶ Start and the
+# Powertrain (0x100) + Heartbeat (0x700) stream in, and a Send of 0x101 is
+# answered with 0x102. Runs identically on Linux and Windows.
+project:
+  name: Simulation demo (native SUT ECU, in-process)
+  version: 1
+
+channels:
+  - name: CAN1
+    type: can
+    interface: inproc:CAN1
+    mode: monitor
+    databases:
+      - dbc/cantester.dbc
+    simulate:
+      - SUT
