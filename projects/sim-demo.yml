@@ -1,18 +1,37 @@
 # Native simulation demo — no drivers, no Python, no vcan.
+#
 # CAN1 is a driver-free in-process network. The tester monitors it AND simulates
-# the 'SUT' ECU on it (native twin of sut/can_sut.py): press ▶ Start and the
-# Powertrain (0x100) + Heartbeat (0x700) stream in, and a Send of 0x101 is
-# answered with 0x102. Runs identically on Linux and Windows.
+# the ECUs declared under `nodes:`. This file shows the FULL ECU configuration —
+# which network, which DBC (databases), which ECUs (nodes), and exactly how each
+# ECU drives its signals + answers requests. Press ▶ Start and toggle nodes in
+# the Simulation panel. Runs identically on Linux and Windows.
 project:
-  name: Simulation demo (native SUT ECU, in-process)
+  name: Simulation demo (configured SUT ECU, in-process)
   version: 1
 
 channels:
   - name: CAN1
     type: can
-    interface: inproc:CAN1
+    interface: inproc:CAN1     # driver-free in-process bus
     mode: monitor
-    databases:
+    databases:                 # the NETWORK owns the database (not the ECU)
       - dbc/cantester.dbc
-    simulate:
-      - SUT
+
+    # Simulated ECUs on this network. A node sends every message whose DBC
+    # transmitter is its name; `signals:` drives each signal, `responses:` answers
+    # requests. (Periods come from the DBC's GenMsgCycleTime.)
+    nodes:
+      - name: SUT
+        signals:
+          # type: const | sine | sawtooth | counter | stepmod
+          - { name: EngineSpeed,  type: sine,    offset: 1600, amplitude: 1500, freq: 0.7, phase: 0 }
+          - { name: VehicleSpeed, type: sine,    offset: 70,   amplitude: 60,   freq: 0.9, phase: 1 }
+          - { name: CoolantTemp,  type: sine,    offset: 90,   amplitude: 15,   freq: 1.1, phase: 2 }
+          - { name: ThrottlePos,  type: sine,    offset: 45,   amplitude: 45,   freq: 1.3, phase: 3 }
+          - { name: Gear,         type: stepmod, period: 1,    count: 6,        base: 1 }
+          - { name: CruiseOn,     type: stepmod, period: 2,    count: 2,        base: 0 }
+          - { name: Counter,      type: counter, start: 0,     step: 1,         modulo: 256 }
+        responses:
+          # On a Request (0x101), reply with Response (0x102) = request data with
+          # byte[0] + 1 (mirrors sut/can_sut.py).
+          - { request: "0x101", response: "0x102", byte: 0, add: 1 }
