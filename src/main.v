@@ -184,6 +184,22 @@ mut:
 	log_path  string // candump .log to open from the toolbar
 	fps       int = default_fps // trace repaint rate (toolbar dropdown)
 	sim_nodes []SimNode // simulated ECUs available per channel (Simulation panel)
+	trace_filter string // case-insensitive substring filter on ID/name/ch/data
+}
+
+// trace_match reports whether any of the given fields contains the (lowercased)
+// filter — empty filter matches everything. Used to filter trace rows.
+fn trace_match(filter string, fields ...string) bool {
+	if filter.len == 0 {
+		return true
+	}
+	f := filter.to_lower()
+	for fld in fields {
+		if fld.to_lower().contains(f) {
+			return true
+		}
+	}
+	return false
 }
 
 // SimNode is one simulated ECU offered in the Simulation panel: a configured ECU
@@ -997,12 +1013,15 @@ fn trace_panel(mut window gui.Window) gui.View {
 	_, h := window.window_size()
 	app := window.state[App]()
 	grouped := app.mode == 'grouped'
-	grid_h := f32(h) - 130
+	grid_h := f32(h) - 158 // leave room for the filter row
 
 	mut rows := []gui.GridRow{}
 	if grouped {
 		for id in app.order {
 			a := app.grouped[id] or { continue }
+			if !trace_match(app.trace_filter, hexid(id, a.ext), a.name, a.ch) {
+				continue
+			}
 			expanded := id in app.expanded
 			chevron := if expanded { '▼' } else { '▶' }
 			rows << gui.GridRow{
@@ -1040,7 +1059,7 @@ fn trace_panel(mut window gui.Window) gui.View {
 				}
 			}
 		}
-		return window.data_grid(
+		grouped_grid := window.data_grid(
 			id:                  'trace_grouped'
 			sizing:              gui.fill_fill
 			max_height:          grid_h
@@ -1077,11 +1096,20 @@ fn trace_panel(mut window gui.Window) gui.View {
 			}
 			on_cell_format:      trace_cell_format
 		)
+		return gui.column(
+			sizing:  gui.fill_fill
+			spacing: 2
+			padding: gui.padding_none
+			content: [trace_filter_row(app), grouped_grid]
+		)
 	}
 	// Newest first: the latest frame sits at the top, so a live trace "follows"
 	// without any scroll math; scroll down to review the retained history.
 	for i := app.trace.len - 1; i >= 0; i-- {
 		r := app.trace[i]
+		if !trace_match(app.trace_filter, hexid(r.id, r.ext), r.name, r.ch, hex(r.data)) {
+			continue
+		}
 		rows << gui.GridRow{
 			id:    '${r.seq}:${r.id}' // seq keeps it unique; id lets selection drive Signals
 			cells: {
@@ -1095,7 +1123,7 @@ fn trace_panel(mut window gui.Window) gui.View {
 			}
 		}
 	}
-	return window.data_grid(
+	all_grid := window.data_grid(
 		id:             'trace_all'
 		sizing:         gui.fill_fill
 		max_height:     grid_h
@@ -1124,6 +1152,50 @@ fn trace_panel(mut window gui.Window) gui.View {
 			}
 		}
 		on_cell_format:      trace_cell_format
+	)
+	return gui.column(
+		sizing:  gui.fill_fill
+		spacing: 2
+		padding: gui.padding_none
+		content: [trace_filter_row(app), all_grid]
+	)
+}
+
+// trace_filter_row is the filter input above the trace grid: a case-insensitive
+// substring matched against each row's ID / name / channel / data.
+fn trace_filter_row(app &App) gui.View {
+	mut content := [
+		gui.text(text: 'Filter', text_style: gui.theme().n4),
+		gui.input(
+			id_focus:        30
+			text:            app.trace_filter
+			width:           260
+			height:          22
+			padding:         gui.Padding{2, 6, 2, 6}
+			sizing:          gui.fixed_fixed
+			placeholder:     'id / name / ch / data — e.g. 0x100, Wheel, CAN2, FF'
+			on_text_changed: fn (_ &gui.Layout, s string, mut w gui.Window) {
+				mut a := w.state[App]()
+				a.trace_filter = s
+			}
+		),
+	]
+	if app.trace_filter.len > 0 {
+		content << gui.button(
+			id_focus: 31
+			content:  [gui.text(text: '✕', text_style: trace_text_style())]
+			padding:  gui.Padding{2, 6, 2, 6}
+			on_click: fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				mut a := w.state[App]()
+				a.trace_filter = ''
+			}
+		)
+	}
+	return gui.row(
+		v_align: .middle
+		spacing: 6
+		padding: gui.Padding{2, 4, 4, 4}
+		content: content
 	)
 }
 
