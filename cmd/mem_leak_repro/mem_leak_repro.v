@@ -1,24 +1,23 @@
 // mem_leak_repro — minimal reproducer for the steady memory growth seen when the
-// trace shows live (constantly changing) values. It isolates the cause to one
-// thing: rendering **unique text strings every frame** via gui → vglyph → Pango.
-// No cantester logic, no CAN, no simulation — just a gui window that redraws ~7
-// rows of text on a timer.
+// trace shows live (constantly changing) values. No cantester logic, no CAN, no
+// simulation — just a gui window that redraws ~7 rows of text on a timer.
 //
 // Modes (env MEM_REPRO=changing|static, default changing):
 //   - changing : each row's text contains a counter, so every redraw is a NEW
 //                string → misses vglyph's by-text layout cache → OS RSS climbs.
 //   - static   : the rows are fixed strings → cache hits → RSS plateaus.
 // The printed **V heap** (gc_memory_use, GC-managed) stays bounded in BOTH modes;
-// the growth is below V (C-land), in the Pango/FreeType text-layout path
-// (heaptrack diff: vglyph__build_layout_from_pango ← pango_layout_get_iter).
+// the growth is below V (C-land).
 //
-// A third control — drawing only rectangles (gg, no text) — stays flat, proving
-// it is the TEXT path, not the GL draw path. See docs/known_issues.md → Rendering.
-//
-// Cross-platform note: vglyph uses Pango/FreeType/fontconfig on every platform,
-// incl. the native Windows (mingw) build — so this should reproduce there too;
-// it is NOT a WSLg/Mesa artifact. Run it on native Windows and watch Task Manager
-// to confirm.
+// FINAL DIAGNOSIS (see docs/known_issues.md → Rendering, for the full trail):
+//   - It is **Linux-only** — VERIFIED it does NOT reproduce on native Windows
+//     (both modes plateau there). So it is not portable vglyph/Pango code.
+//   - It is in vglyph's **glyph RENDER path**, not Pango layout: isolation loops
+//     show raw Pango and vglyph's `Context.layout_text` are both flat for changing
+//     text; only the path that also RENDERS (this app) leaks. So rendering *new*
+//     strings each frame on Linux retains memory (glyph/atlas churn under FreeType),
+//     while re-rendering the same strings (static) does not.
+//   - NOT the GL driver (a rects-only gg control is flat), NOT V/GC, NOT our code.
 //
 // Run:    v -enable-globals -path "@vlib|@vmodules|modules" run cmd/mem_leak_repro/mem_leak_repro.v
 // Static: MEM_REPRO=static  <same>
