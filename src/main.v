@@ -197,21 +197,35 @@ mut:
 	cfg     project.NodeCfg
 }
 
-// build_sim_nodes lists the configured simulated ECUs per channel (from `nodes:`
-// + the `simulate:` shorthand), each connectable via the Simulation panel and
-// connected (enabled) by default.
+// build_sim_nodes lists, per channel, the ECU nodes the DBC declares (BU_) — the
+// node list is the database's, not the project's. The project then (a) enables a
+// node by naming it in `nodes:`/`simulate:` and (b) optionally configures its
+// behaviour there; un-named DBC nodes still appear (so you can connect them from
+// the panel) but start disconnected and use default behaviour.
 fn (mut app App) build_sim_nodes() {
 	app.sim_nodes = []SimNode{}
 	for i, ch in app.proj.channels {
 		if ch.databases.len == 0 {
 			continue
 		}
-		for ncfg in ch.all_nodes() {
+		cfgs := ch.all_nodes()
+		for node in app.db.nodes {
+			mut cfg := project.NodeCfg{
+				name: node
+			}
+			mut enabled := false
+			for c in cfgs {
+				if c.name == node {
+					cfg = c
+					enabled = true
+					break
+				}
+			}
 			app.sim_nodes << SimNode{
 				ch_idx:  i
-				node:    ncfg.name
-				enabled: true
-				cfg:     ncfg
+				node:    node
+				enabled: enabled
+				cfg:     cfg
 			}
 		}
 	}
