@@ -46,6 +46,9 @@ const ui_size_x_large = f32(16)
 // explicitly; keep ~4px of leading over ui_size_small so descenders don't clip.
 const trace_row_height = f32(14)
 const trace_header_height = f32(16)
+// Crop the chronological-trace Data cell after this many bytes (CAN-FD payloads
+// reach 64 bytes and would otherwise overflow the column); the rest is summarised.
+const trace_data_max_bytes = 16
 
 // ---- Color palettes: one struct, fed into make_theme() ----
 // Every gui color knob in one place (parallel to the ui_size_* scale). Swap the
@@ -116,6 +119,7 @@ fn flush_ms_for(fps int) i64 {
 struct TraceRow {
 	seq  int
 	t_ms f64
+	ch   string // channel/interface the frame was seen on (CAN1, can, …)
 	dir  string
 	id   u32
 	ext  bool
@@ -392,8 +396,9 @@ fn rx_loop(idx int, mut w gui.Window) {
 					return
 				}
 				a.rt[idx].rx_count += frames.len
+				ch := if idx < a.proj.channels.len { a.proj.channels[idx].name } else { 'CAN${idx + 1}' }
 				for f in frames {
-					a.push('RX', f)
+					a.push('RX', f, ch)
 				}
 				w.update_window()
 			})
@@ -403,13 +408,13 @@ fn rx_loop(idx int, mut w gui.Window) {
 }
 
 // push records a live frame, stamping it with the current wall-clock offset.
-fn (mut app App) push(dir string, f transport.CanFrame) {
-	app.record(dir, f, f64(time.ticks() - app.t0))
+fn (mut app App) push(dir string, f transport.CanFrame, ch string) {
+	app.record(dir, f, f64(time.ticks() - app.t0), ch)
 }
 
 // record appends a frame to the trace + grouped aggregate at an explicit time
 // (ms). Live capture passes "now"; log replay passes the recorded timestamp.
-fn (mut app App) record(dir string, f transport.CanFrame, t_ms f64) {
+fn (mut app App) record(dir string, f transport.CanFrame, t_ms f64, ch string) {
 	app.seq++
 	if dir == 'RX' {
 		app.rx_count++
@@ -420,6 +425,7 @@ fn (mut app App) record(dir string, f transport.CanFrame, t_ms f64) {
 	app.trace << TraceRow{
 		seq:  app.seq
 		t_ms: t_ms
+		ch:   ch
 		dir:  dir
 		id:   f.id
 		ext:  f.extended
@@ -932,12 +938,13 @@ fn trace_panel(mut window gui.Window) gui.View {
 		rows << gui.GridRow{
 			id:    '${r.seq}:${r.id}' // seq keeps it unique; id lets selection drive Signals
 			cells: {
-				'time': '${r.t_ms:.0f}'
-				'dir':  r.dir
+				'time': '${r.t_ms / 1000.0:.6f}'
+				'ch':   r.ch
 				'id':   hexid(r.id, r.ext)
-				'dlc':  '${r.dlc}'
-				'data': hex(r.data)
 				'name': r.name
+				'dlc':  '${r.dlc}'
+				'dir':  r.dir
+				'data': hex_crop(r.data, trace_data_max_bytes)
 			}
 		}
 	}
@@ -951,12 +958,13 @@ fn trace_panel(mut window gui.Window) gui.View {
 		text_style:     trace_text_style()
 		text_style_header: trace_text_style()
 		columns:        [
-			tcol('time', 'Time(ms)', 80, .end),
-			tcol('dir', 'Dir', 50, .start),
-			tcol('id', 'ID', 110, .start),
-			tcol('dlc', 'DLC', 50, .end),
-			tcol('data', 'Data', 300, .start),
-			tcol('name', 'Message', 150, .start),
+			tcol('time', 'Time(s)', 80, .end),
+			tcol('ch', 'Ch', 44, .start),
+			tcol('id', 'ID', 96, .start),
+			tcol('name', 'Name', 130, .start),
+			tcol('dlc', 'DLC', 44, .end),
+			tcol('dir', 'Dir', 44, .start),
+			tcol('data', 'Data', 320, .start),
 		]
 		rows:                rows
 		selection:           app.selection
@@ -1178,7 +1186,8 @@ fn do_send(mut w gui.Window) {
 		return
 	}
 	app.rt[idx].tx_count++
-	app.push('TX', frame)
+	ch := if idx < app.proj.channels.len { app.proj.channels[idx].name } else { 'CAN${idx + 1}' }
+	app.push('TX', frame, ch)
 }
 
 // load_log opens a candump `.log` (or an MF4 recording, parsed natively) and
@@ -1221,7 +1230,7 @@ fn load_log(path string, mut w gui.Window) {
 	// frame so the Time(ms) column reads 0, 100, 200… not a huge epoch value.
 	t0_log := if entries.len > 0 { entries[0].t_s } else { 0.0 }
 	for e in entries {
-		app.record('RX', e.frame, (e.t_s - t0_log) * 1000.0)
+		app.record('RX', e.frame, (e.t_s - t0_log) * 1000.0, e.iface)
 	}
 	app.status = 'loaded ${entries.len} frames from ${os.base(p)} (paused — Resume for live)'
 	w.update_window()
@@ -1313,6 +1322,15 @@ fn hex(data []u8) string {
 		s += '${b:02X}'
 	}
 	return s
+}
+
+// hex_crop renders payload bytes, truncating after max_bytes with a "+N" tail so
+// long CAN-FD frames stay inside the Data column instead of overflowing it.
+fn hex_crop(data []u8, max_bytes int) string {
+	if data.len <= max_bytes {
+		return hex(data)
+	}
+	return hex(data[..max_bytes]) + ' …+${data.len - max_bytes}'
 }
 
 fn parse_hex_u32(s string) u32 {
