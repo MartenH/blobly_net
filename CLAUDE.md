@@ -235,6 +235,13 @@ turned Off (irreversible). Original handoff notes below (toolchain **mingw-w64 (
    SocketCAN's `CAN_RAW_ERR_FILTER`; vcan rarely emits them, so the wiring lands before real `can0`.)
 10+. Scripting/sequences (CANoe-style test cases), more panels/plotting; then LIN + Ethernet
    (DoIP/SOME-IP) backends behind the same `Bus`/`Channel` abstractions (see Platform support).
+11. 🔜 **Simulation (networks + simulated ECUs)** — turn the tester into a CANoe-style sim host:
+   simulated ECUs and the tester's own functions all attach to shared **virtual networks** (the
+   database lives on the network, not the ECU), in one process, **driver-free by default** (an
+   in-process bus backend), with the Python SUT as the oracle that proves the native protocol stack
+   first. Behaviour is **declarative-from-DBC** (an ECU sends the messages whose DBC transmitter is it,
+   signals via simple generators + a config UDS server). Full design + phasing: **`docs/
+   simulation_architecture.md`** (agreed 2026-06-07). Phase 1 = an `inproc:` `transport` backend.
 
 ## Build / run
 
