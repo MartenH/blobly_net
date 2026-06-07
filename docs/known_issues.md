@@ -125,14 +125,18 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
     heaptrack as "leaked". Run **directly**, the rects-only `gg` app's RSS is **flat** — the GL path does
     NOT leak. Lesson: trust **direct RSS over time**, not heaptrack-at-`exit(0)`, for driver/working-set
     questions.
-  - **Cross-platform — likely affects the native Windows build too.** vglyph uses Pango/FreeType/
-    fontconfig/HarfBuzz on *every* platform, including the W1 mingw build — so this is **not** a WSLg/Mesa
-    artifact and the native Windows target probably leaks the same way. **Confirm by running
-    `cmd/mem_leak_repro` on native Windows and watching Task Manager** (changing vs static).
+  - **Cross-platform — ⚠️ VERIFIED it does NOT reproduce on native Windows (W1, 2026-06-06).** Matched
+    4-min `cmd/mem_leak_repro` runs: **both** modes plateau after a ~30 s ramp; `changing` sits ~26 MB
+    higher (bounded cache-fill) but its **post-ramp slope matches `static`** (~0.025 MB/s baseline
+    drift). Data (Private MB): `changing` 162→196 (30 s)→201 (230 s); `static` 152→170 (30 s)→175
+    (230 s). ⇒ the unbounded climb is **Linux-specific**, NOT vglyph's portable code — this **refutes**
+    the earlier "probably leaks the same way" guess. vglyph's V/Pango code is identical on both, so the
+    leak is in the **Linux native text stack** (Pango/Cairo/fontconfig/FreeType as built/loaded on
+    Linux/WSLg) or the WSLg environment — *not* portable. Root-cause hunt should refocus there.
   - **Mitigations:** lower the trace repaint rate (toolbar 3/5/10 fps → fewer reshapes); Pause/Stop;
-    restart long sessions. **Real fix:** in vglyph — free the per-layout Pango resources / bound the
-    fontconfig-Pango churn for cache-miss strings (upstream-style patch, like the others in
-    `docs/windows_build.md`); or reduce unique strings (e.g. fewer decimals on the live timestamp).
+    restart long sessions. Reduce unique strings (e.g. fewer decimals on the live timestamp) to slow it.
+    A real fix is in the Linux Pango/fontconfig path (or a vglyph workaround there) — and since native
+    Windows is unaffected, the **production target is clear**; this mainly bites long WSL/Linux sessions.
   - Profiling: avoid a `-g` build (only draws 1 frame under WSLg). `CANTESTER_RUN_MS=N` exits cleanly.
     heaptrack diff: `heaptrack_print -d <static.gz> -a 1 -p 0 <changing.gz>`.
 - 🟢 **Blank/black window under WSLg — FIXED on Ubuntu 24.04 (Mesa 25.2.8).** Historically (22.04,
