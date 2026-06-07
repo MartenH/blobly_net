@@ -25,4 +25,6 @@ shift || true
 
 # Local modules live in ./modules — add it to V's lookup order (which -path
 # otherwise replaces, so the defaults @vlib|@vmodules must be re-listed).
-exec "$V" -path "@vlib|@vmodules|modules" run "$TARGET" "$@"
+# -enable-globals: the in-process bus (transport/inproc.v) uses a process-global
+# registry so independent open('inproc:…') calls share one medium.
+exec "$V" -enable-globals -path "@vlib|@vmodules|modules" run "$TARGET" "$@"
