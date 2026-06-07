@@ -84,11 +84,14 @@ modules/uds/                UDS diagnostic client over isotp (pure V, + tests)  
 modules/canlog/             candump .log parse/format (pure V, + tests)          (Phase 7)
 modules/mf4/                native-V ASAM MF4 reader: DZ-compressed + MLSD/VLSD CAN-FD -> canlog
                             entries (pure V, no asammdf; + tests vs samples/demo.mf4)  (Phase 7)
+modules/sim/                simulation engine: SimEcu/Engine + signal generators + the native
+                            SUT ECU (twin of can_sut.py, verified vs Python golden)  (Phase 11)
 dbc/cantester.dbc           real DBC describing the SUT's messages    (Phase 5)
 cmd/dashboard/              throwaway GUI capability demo
 cmd/signal_decode/          frame -> signals visualizer demo
 cmd/dbc_decode/             load a DBC + decode one frame (machine-readable; oracle diff)
 cmd/mf4_dump/               native-V MF4 reader smoke/oracle-diff (count, unique IDs, frames)
+cmd/sim_smoke/              run the native simulated SUT ECU on the in-proc bus, verify end-to-end
 cmd/isotp_smoke/            send one ISO-TP PDU, print the reply (multi-frame smoke)
 cmd/uds_smoke/              drive the UDS client vs sut/uds_server.py
 sut/can_sut.py              Python virtual SUT (emits/answers frames on vcan0)
@@ -242,6 +245,18 @@ turned Off (irreversible). Original handoff notes below (toolchain **mingw-w64 (
    first. Behaviour is **declarative-from-DBC** (an ECU sends the messages whose DBC transmitter is it,
    signals via simple generators + a config UDS server). Full design + phasing: **`docs/
    simulation_architecture.md`** (agreed 2026-06-07). Phase 1 = an `inproc:` `transport` backend.
+   **DONE 2026-06-07 (Phases 1–3.5):** (1) `transport/inproc.v` — driver-free in-process bus
+   (`open('inproc:CAN1')`, process-global hub, needs `-enable-globals`, now in run.sh); (2) `candb`
+   exposes the transmitter node / ext / `GenMsgCycleTime` / `BU_` node list +
+   `messages_from(node)`; (3) `modules/sim` — `Gen` signal generators (const/sine/sawtooth/counter/
+   stepmod), `SimEcu`/`Engine` (cyclic `due_frames` + request/response `on_frame`, pure+testable,
+   plus `run_for` live), and `sut_ecu()` the **native twin of `can_sut.py`** — **verified
+   byte-for-byte against Python golden vectors** (the gate passed); (3.5) wired into the GUI:
+   `simulate: [SUT]` on a channel spawns the engine on its own in-proc bus instance alongside the
+   monitor, so the tester sees simulated traffic via the normal RX path. `projects/sim-demo.yml`
+   runs the SUT ECU with **no Python, no vcan, no drivers** — verified in the GUI (Powertrain+Heartbeat
+   @10Hz decoded live, Send 0x101→0x102 answered). NEXT: native UDS server node (vs `uds_server.py`),
+   per-signal generator config in the project `.yml`, then LIN/Eth.
 
 ## Build / run
 
