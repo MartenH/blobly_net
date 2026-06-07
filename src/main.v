@@ -126,6 +126,7 @@ struct TraceRow {
 	dlc  int
 	data []u8
 	name string
+	changed u8 // per-byte changed-vs-previous-instance bitmask; 0 = exact repeat
 }
 
 struct MsgAgg {
@@ -422,16 +423,28 @@ fn (mut app App) record(dir string, f transport.CanFrame, t_ms f64, ch string) {
 		app.tx_count++
 	}
 	name := if m := app.db.lookup(f.id) { m.name } else { '' }
+	prev := app.grouped[f.id] or { MsgAgg{} }
+	first := prev.last.len == 0
+	// Per-byte change vs the previous instance of this ID (bit i set = byte i
+	// differs, or is new this frame). The chronological view colours a frame's
+	// bytes by this; 0 means an exact repeat (shown greyed).
+	mut changed := u8(0)
+	for i in 0 .. 8 {
+		if i < f.data.len && (first || i >= prev.last.len || f.data[i] != prev.last[i]) {
+			changed |= u8(1) << i
+		}
+	}
 	app.trace << TraceRow{
-		seq:  app.seq
-		t_ms: t_ms
-		ch:   ch
-		dir:  dir
-		id:   f.id
-		ext:  f.extended
-		dlc:  f.data.len
-		data: f.data.clone()
-		name: name
+		seq:     app.seq
+		t_ms:    t_ms
+		ch:      ch
+		dir:     dir
+		id:      f.id
+		ext:     f.extended
+		dlc:     f.data.len
+		data:    f.data.clone()
+		name:    name
+		changed: changed
 	}
 	// Trim in bulk, not per-frame: delete(0) shifts the whole array every frame
 	// (O(n)) and dominates CPU on a busy bus. Let it overrun by 1/4, then slice
@@ -442,20 +455,18 @@ fn (mut app App) record(dir string, f transport.CanFrame, t_ms f64, ch string) {
 	if f.id !in app.grouped {
 		app.order << f.id
 	}
-	prev := app.grouped[f.id] or { MsgAgg{} }
-	// Per-byte change highlight: age 0 = changed this update, then ages up each
-	// frame so the highlight fades. First sighting of an ID is the baseline (no
-	// highlight), so seed at byte_fade_steps.
+	// Grouped view: per-byte age (0 = changed this update) that ages up while a
+	// byte stays unchanged, driving the black->grey fade. First sighting is the
+	// baseline (fully aged), so a brand-new message isn't all-highlighted.
 	mut ages := []int{len: 8, init: byte_fade_steps}
 	if prev.byte_age.len == 8 {
 		ages = prev.byte_age.clone()
 	}
-	first := prev.last.len == 0
 	for i in 0 .. 8 {
-		changed := i < f.data.len && (i >= prev.last.len || f.data[i] != prev.last[i])
+		bit_changed := (changed >> i) & 1 == 1
 		ages[i] = if first {
 			byte_fade_steps
-		} else if changed {
+		} else if bit_changed {
 			0
 		} else if ages[i] < byte_fade_steps {
 			ages[i] + 1
@@ -1243,17 +1254,35 @@ fn trace_cell_format(row gui.GridRow, _ int, col gui.GridColumnCfg, value string
 			text_color:     gui.Color{210, 140, 30, 255} // TX: amber (readable on white)
 		}
 	}
-	// Per-byte change highlight (grouped view): byte cells b0..b7 fade from yellow
-	// as the byte stays unchanged. Empty cells (signal rows / no byte) are skipped.
+	// conventional change colouring: just-changed bytes are full-contrast (black on
+	// light, white on dark) and fade to grey as they stay unchanged — no highlight
+	// fill. Grouped byte cells (b0..b7) fade gradually by per-byte age; the
+	// chronological Data cell is binary (changed=full, exact-repeat=grey).
+	mut a := w.state[App]()
 	if col.id.len == 2 && col.id[0] == `b` && value.len > 0 {
-		idx := int(col.id[1] - `0`)
-		mut a := w.state[App]()
-		agg := a.grouped[row.id.u32()] or { return gui.GridCellFormat{} }
-		if idx < agg.byte_age.len {
-			if bg := byte_highlight(agg.byte_age[idx], a.dark) {
+		// Grouped view only (its rows id by the bare message id, no ':').
+		if !row.id.contains(':') {
+			idx := int(col.id[1] - `0`)
+			agg := a.grouped[row.id.u32()] or { return gui.GridCellFormat{} }
+			if idx < agg.byte_age.len {
+				t := f32(agg.byte_age[idx]) / f32(byte_fade_steps)
 				return gui.GridCellFormat{
-					has_bg_color: true
-					bg_color:     bg
+					has_text_color: true
+					text_color:     fade_text(t, a.dark)
+				}
+			}
+		}
+	}
+	if col.id == 'data' && value.len > 0 {
+		// Chronological view: grey out a frame that exactly repeats the previous
+		// instance of its ID (changed bitmask 0); otherwise leave it full-contrast.
+		seq := row.id.all_before(':').int()
+		if a.trace.len > 0 {
+			ix := seq - a.trace[0].seq
+			if ix >= 0 && ix < a.trace.len && a.trace[ix].changed == 0 {
+				return gui.GridCellFormat{
+					has_text_color: true
+					text_color:     fade_text(1.0, a.dark)
 				}
 			}
 		}
@@ -1261,17 +1290,13 @@ fn trace_cell_format(row gui.GridRow, _ int, col gui.GridColumnCfg, value string
 	return gui.GridCellFormat{}
 }
 
-// byte_highlight blends the row background toward yellow by how recently the byte
-// changed (age 0 = brightest), returning none once it has fully faded.
-fn byte_highlight(age int, dark bool) ?gui.Color {
-	if age >= byte_fade_steps {
-		return none
-	}
-	t := f32(byte_fade_steps - age) / f32(byte_fade_steps)
-	// base = row interior (white on light, grey on dark); target = yellow.
-	br, bg, bb := if dark { f32(74), f32(74), f32(74) } else { f32(255), f32(255), f32(255) }
-	yr, yg, yb := f32(255), f32(214), f32(64)
-	return gui.Color{u8(br + (yr - br) * t), u8(bg + (yg - bg) * t), u8(bb + (yb - bb) * t), 255}
+// fade_text interpolates the trace's change colour: t=0 is full-contrast (just
+// changed — black on light, near-white on dark), t=1 is grey (long unchanged).
+fn fade_text(t f32, dark bool) gui.Color {
+	tc := if t < 0 { f32(0) } else if t > 1 { f32(1) } else { t }
+	rr, rg, rb := if dark { f32(235), f32(235), f32(235) } else { f32(20), f32(20), f32(20) }
+	gr, gg, gb := if dark { f32(120), f32(120), f32(120) } else { f32(155), f32(155), f32(155) }
+	return gui.Color{u8(rr + (gr - rr) * tc), u8(rg + (gg - rg) * tc), u8(rb + (gb - rb) * tc), 255}
 }
 
 // tcol builds a trace column: resizable + reorderable (gui defaults), NOT
