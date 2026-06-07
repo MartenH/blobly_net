@@ -255,8 +255,14 @@ turned Off (irreversible). Original handoff notes below (toolchain **mingw-w64 (
    `simulate: [SUT]` on a channel spawns the engine on its own in-proc bus instance alongside the
    monitor, so the tester sees simulated traffic via the normal RX path. `projects/sim-demo.yml`
    runs the SUT ECU with **no Python, no vcan, no drivers** — verified in the GUI (Powertrain+Heartbeat
-   @10Hz decoded live, Send 0x101→0x102 answered). NEXT: native UDS server node (vs `uds_server.py`),
-   per-signal generator config in the project `.yml`, then LIN/Eth.
+   @10Hz decoded live, Send 0x101→0x102 answered). **DONE (Phase 5 — diagnostics):**
+   `isotp/software.v` — a pure-V ISO-TP state machine (SF + multi-frame FF/CF/FC) over any
+   `transport.Bus`, so diagnostics work on the in-proc bus / Windows with no kernel CAN_ISOTP;
+   `uds/server.v` — native UDS server (twin of `uds_server.py`: 0x10/0x22-RDBI/0x3E + negatives,
+   17-byte VIN forces multi-frame). **Verified in-process** (no Python, no kernel ISO-TP):
+   `uds.Client` ↔ `uds.Server` over software ISO-TP — session, single+multi-frame RDBI, tester
+   present, negative response all pass. NEXT: wire the UDS server into a simulated node in the GUI;
+   per-signal generator config in the project `.yml`; then LIN/Eth.
 
 ## Build / run
 
