@@ -18,13 +18,18 @@
 #   - Only the #03 titlebar patch is needed on MSVC (#01/#02 are gcc-only; #04 is
 #     debug-only). setup_win.ps1 already applies it.
 #
-# ⚠ BEST-EFFORT / UNTESTED: the one uncertain piece is how V's cl.exe invocation
-# discovers the vcpkg headers/libs on a non-CI box (the GitHub runner has vcpkg
-# pre-integrated; a fresh box does not). This script tries, in order:
-#   (a) PKG_CONFIG_PATH -> vcpkg's lib\pkgconfig  (V's built-in v.pkgconfig reads it)
-#   (b) explicit  /I<include>  and  /LIBPATH:<lib>  as -cflags/-ldflags fallback
-# If V still can't find pango/freetype, paste the first error — the exact missing
-# header/symbol tells us which flag to fix.
+# ✅ VALIDATED 2026-06-08 on a fresh box (VS 2022 BuildTools + vcpkg @ C:\dev\vcpkg):
+# builds AND renders. V's built-in v.pkgconfig resolves the vcpkg .pc files via
+# PKG_CONFIG_PATH (vcpkg's prefix is `${pcfiledir}/../..` — relocatable, so it Just
+# Works; no prefix-rewrite needed), and V's msvc backend correctly turns the .pc
+# `-lfreetype`-style flags into proper .lib linking. The explicit /I + /LIBPATH below
+# are a belt-and-suspenders fallback. Notes:
+#   - `vcpkg install pango freetype` builds the whole tree FROM SOURCE on a cold box
+#     (~30-60 min). GitHub CI is fast only because the runner restores from a warm
+#     vcpkg binary cache; first run there is from-source too. Our build is cached in
+#     %LOCALAPPDATA%\vcpkg\archives, so re-runs here are instant.
+#   - If you `set VCPKG_ROOT` then enter a VS dev shell, note VsDevCmd OVERWRITES
+#     VCPKG_ROOT to the VS-bundled vcpkg — set VCPKG_ROOT *after* VsDevCmd.
 param(
     [string]$Target = 'src\main.v',
     [string]$Out    = 'build\cantester-msvc.exe',
@@ -77,7 +82,7 @@ $ldflags = "/LIBPATH:`"$installed\lib`""
 $outPath = Join-Path $repo $Out
 New-Item -ItemType Directory -Force (Split-Path -Parent $outPath) | Out-Null
 
-$vargs = @('-cc','msvc','-no-parallel')
+$vargs = @('-cc','msvc','-no-parallel','-enable-globals')  # main.v uses the in-proc bus (__global)
 if ($Debug) { $vargs += '-g' }
 $vargs += @('-path','@vlib|@vmodules|modules','-cflags',$cflags,'-ldflags',$ldflags,'-o',$outPath,(Join-Path $repo $Target))
 
