@@ -25,6 +25,14 @@ shared MSYS2, no global PATH changes — the build sets env per-invocation).
 
 ## One-time setup
 
+**Automated:** `.\scripts\setup_win.ps1` does everything below — installs the
+dedicated MSYS2, the mingw-w64 deps, builds V at the pin via `makev.bat`, clones
+`gui`/`vglyph` at their pins, and applies the four W1 patches (from
+`scripts\win_patches\*.patch`). It's idempotent (re-run safely; existing pieces
+are skipped) and touches nothing outside `C:\dev`. It must be PowerShell, not a
+`.sh`, because it *installs* MSYS2 — there's no bash to run until it's done. The
+manual steps it automates, for reference:
+
 ```powershell
 # 1. Dedicated MSYS2 (self-extracting installer -> rename to the dedicated root)
 Invoke-WebRequest https://github.com/msys2/msys2-installer/releases/download/nightly-x86_64/msys2-base-x86_64-latest.sfx.exe -OutFile C:\dev\msys2-base.sfx.exe
@@ -62,6 +70,48 @@ C:\dev\msys64-ct\mingw64\bin\python.exe sut\can_sut.py udp
 `build_win.ps1` encodes the two non-obvious build details: it feeds the *system*
 `pkgconf`'s include/lib flags to V (see gotcha #2) and links `-ld3d11 -ldxgi`
 (gui's readback bridge references D3D11 even on the GL backend).
+
+**bash alternative — `scripts/build_win.sh`** (same build, run from the MINGW64
+shell instead of PowerShell), for an all-`.sh` workflow consistent with
+`bundle_dlls.sh` and the Linux scripts:
+
+```bash
+bash scripts/build_win.sh                 # -> build/cantester.exe
+bash scripts/build_win.sh -run            # build + run
+CANTESTER_PROJECT=projects/demo-udp.yml bash scripts/build_win.sh -run
+```
+
+It does exactly what the `.ps1` does (same env, same `pkgconf` flags, same
+`-ld3d11 -ldxgi`). One nuance: inside MINGW64 the `/mingw64` mount makes V's own
+`v.pkgconfig` `-I/mingw64/...` output valid, so gotcha #2 doesn't bite there — the
+explicit `pkgconf` feeding is kept only as belt-and-braces so both paths build
+identically. Choose by preference: `.ps1` launches from the native PowerShell /
+VS Code terminal; `.sh` keeps you in the MSYS2 shell where `pkgconf`/`gcc`/`ldd`
+(and `bundle_dlls.sh`) already live.
+
+### Alternative toolchain — MSVC + vcpkg (`scripts/build_win_msvc.ps1`)
+
+A second, independent route that mirrors **vlang/gui's own Windows CI** (`-cc msvc`,
+libs from `vcpkg install pango freetype`) instead of mingw/MSYS2. Run it from a
+**"x64 Native Tools Command Prompt for VS 2022"** (needs the VS 2022 "Desktop
+development with C++" workload, which also bundles vcpkg):
+
+```powershell
+.\scripts\build_win_msvc.ps1 -Deps -Run    # vcpkg install + build + run
+```
+
+It reuses the same isolated `C:\dev\v` and `C:\dev\vmodules-ct`. Notes:
+- **Backend is still GL** (`-cc msvc` uses V's default `SOKOL_GLCORE`; D3D11 stays
+  broken in V's sokol glue — see the manifest). MSVC ≠ D3D11 here.
+- **Patches:** only **#03** (titlebar `isvalid()`, a *runtime* abort) is needed on
+  MSVC. **#01/#02 are gcc-16-only** (that's why gui's MSVC CI is green without
+  them); **#04** is debug-only.
+- **The fragile bit** is lib discovery off the GitHub runner (which is
+  pre-integrated): the script points `PKG_CONFIG_PATH` at vcpkg's `lib\pkgconfig`
+  and also passes explicit `/I<include>` + `/LIBPATH:<lib>`, then copies the
+  `installed\<triplet>\bin\*.dll` next to the exe. **Status: best-effort / not yet
+  verified on a real box** — if V can't find a `pango`/`freetype` header or symbol,
+  the first error names the flag to fix.
 
 ---
 
@@ -108,6 +158,15 @@ V/gui/vglyph reinstall loses them — re-apply from here. They are written
 upstream-style (no project tags) because they are **genuine upstream bugs** in the
 never-before-exercised native-Windows path and are intended to be contributed back
 to V / vlang-gui / vglyph.
+
+The four gui/vglyph patches are committed as applyable diffs in
+`scripts/win_patches/` (`01..04`) and `setup_win.ps1` applies them automatically
+(idempotently). They were generated against the pins (`gui` `68b9302`, `vglyph`
+`5685a6d` — `setup_win.ps1` now pins vglyph too, since upstream is unpinned and
+the patch is context-sensitive). If you change a pin and a patch stops applying,
+re-create it from your verified working modules with
+`.\scripts\setup_win.ps1 -CapturePatches`. (The sokol/V D3D11 items below are NOT
+shipped as patches — they're GL-path-irrelevant and kept as prose only.)
 
 | # | File (vendored)                                  | Change                                                                                          | Upstream-worthy? |
 |---|--------------------------------------------------|-------------------------------------------------------------------------------------------------|------------------|
