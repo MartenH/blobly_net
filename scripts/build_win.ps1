@@ -42,7 +42,7 @@ $v = 'C:\dev\v\v.exe'
 $outPath = Join-Path $repo $Out
 New-Item -ItemType Directory -Force (Split-Path -Parent $outPath) | Out-Null
 
-$vargs = @('-cc','gcc')
+$vargs = @('-cc','gcc','-enable-globals')  # main.v uses the in-proc bus (__global)
 if ($Debug) { $vargs += '-g' }
 $vargs += @('-path','@vlib|@vmodules|modules','-cflags',$cflags,'-ldflags',$ldflags,'-o',$outPath,(Join-Path $repo $Target))
 
