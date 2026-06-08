@@ -21,6 +21,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The V self-compile (makev.bat: 3 single-threaded tcc passes over thousands of
+      # generated files) is murdered by the runner's real-time AV scanning — it timed
+      # out at 30 min with it on, vs ~2 min locally. Turn it off (ephemeral runner).
+      - name: Disable Defender real-time scanning (speeds up the V build a lot)
+        shell: pwsh
+        run: |
+          try { Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Stop; Write-Host 'Defender real-time monitoring: off' }
+          catch { Write-Host "Could not disable Defender (continuing): $_" }
+
       # V pinned at de365a1 ("V 0.5.1"), built with the WINDOWS build script. We do
       # NOT use vlang/setup-v: with check-latest it builds V *master* from source and
       # on windows-latest runs the Unix GNUmakefile (mingw) -> fails on V's POSIX path
