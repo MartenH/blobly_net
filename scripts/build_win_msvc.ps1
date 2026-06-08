@@ -34,6 +34,12 @@ param(
     [string]$Target = 'src\main.v',
     [string]$Out    = 'build\cantester-msvc.exe',
     [string]$Triplet = 'x64-windows',
+    # Captured here (before any VS dev-shell setup) because VsDevCmd/Launch-VsDevShell
+    # OVERWRITES VCPKG_ROOT to the VS-bundled vcpkg. Default to our C:\dev\vcpkg, else
+    # VCPKG_ROOT, else the CI runner's pre-installed vcpkg.
+    [string]$VcpkgRoot = $(if (Test-Path 'C:\dev\vcpkg\vcpkg.exe') { 'C:\dev\vcpkg' }
+                          elseif ($env:VCPKG_ROOT) { $env:VCPKG_ROOT }
+                          else { $env:VCPKG_INSTALLATION_ROOT }),
     [switch]$Deps,
     [switch]$Run,
     [switch]$Debug
@@ -43,23 +49,27 @@ $repo = Split-Path -Parent $PSScriptRoot
 
 function Die($m) { Write-Host $m -ForegroundColor Red; exit 1 }
 
-# --- 1. must be in a VS dev shell (cl.exe on PATH) ---
+# --- 1. ensure cl.exe — auto-enter the VS dev env if we're not already in one ---
 if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
-    Die "cl.exe not found. Open 'x64 Native Tools Command Prompt for VS 2022' (or Developer PowerShell) and re-run."
+    $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (-not (Test-Path $vswhere)) { Die "cl.exe not found and no VS installer present. Install VS 2022 Build Tools ('Desktop development with C++')." }
+    $vsInstall = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1
+    if (-not $vsInstall) { Die "No VS C++ tools found. Install VS 2022 Build Tools ('Desktop development with C++')." }
+    Write-Host "==== entering VS dev shell: $vsInstall ====" -ForegroundColor Cyan
+    & (Join-Path $vsInstall 'Common7\Tools\Launch-VsDevShell.ps1') -Arch amd64 -HostArch amd64 -SkipAutomaticLocation | Out-Null
+    if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) { Die "Failed to put cl.exe on PATH via the VS dev shell." }
 }
 
-# --- 2. locate vcpkg + its installed tree ---
-$vcpkgCmd = Get-Command vcpkg -ErrorAction SilentlyContinue
-$vcpkgExe = if ($vcpkgCmd) { $vcpkgCmd.Source } else { $null }
-$vcpkgRoot = if ($env:VCPKG_ROOT) { $env:VCPKG_ROOT }
-             elseif ($env:VCPKG_INSTALLATION_ROOT) { $env:VCPKG_INSTALLATION_ROOT }
-             elseif ($vcpkgExe) { Split-Path -Parent $vcpkgExe }
-             else { $null }
-if (-not $vcpkgRoot) { Die "vcpkg not found. Install VS 2022 C++ workload (bundles vcpkg) or set VCPKG_ROOT." }
+# --- 2. vcpkg installed tree (VcpkgRoot captured in param defaults, before the dev
+#       shell could overwrite VCPKG_ROOT to the VS-bundled vcpkg) ---
+$vcpkgRoot = $VcpkgRoot
+if (-not $vcpkgRoot) { Die "vcpkg not found. Pass -VcpkgRoot, set VCPKG_ROOT, or install the VS C++ workload (bundles vcpkg)." }
+$vcpkgExe = Join-Path $vcpkgRoot 'vcpkg.exe'
+if (-not (Test-Path $vcpkgExe)) { $vcpkgExe = 'vcpkg' }   # fall back to PATH (CI runner)
 
 if ($Deps) {
     Write-Host "==== vcpkg install pango freetype ($Triplet) ====" -ForegroundColor Cyan
-    & vcpkg install pango freetype --triplet $Triplet
+    & $vcpkgExe install pango freetype --triplet $Triplet
     if ($LASTEXITCODE -ne 0) { Die "vcpkg install failed." }
 }
 
