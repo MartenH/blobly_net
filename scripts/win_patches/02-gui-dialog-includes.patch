@@ -1,0 +1,13 @@
+diff --git a/nativebridge/dialog_windows.c b/nativebridge/dialog_windows.c
+index 625aefd..b80c102 100644
+--- a/nativebridge/dialog_windows.c
++++ b/nativebridge/dialog_windows.c
+@@ -14,6 +14,8 @@
+ #include <shlwapi.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <stdio.h>
++#include <wchar.h>
+ 
+ #include "dialog_bridge.h"
+ 
