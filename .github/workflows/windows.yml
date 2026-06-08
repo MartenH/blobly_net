@@ -13,10 +13,13 @@ on:
 jobs:
   build-msvc:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 60   # cold first run builds vcpkg pango/freetype from source (~30-40 min); cached after
     env:
       # gui + vglyph live here (cloned at their pins below). V's -path picks this up.
       VMODULES: ${{ github.workspace }}\vmodules
+      # vcpkg binary cache (persisted across runs by actions/cache) so the from-source
+      # pango/freetype build is paid once, then restored in seconds on later runs.
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-bincache
     steps:
       - uses: actions/checkout@v4
 
@@ -66,11 +69,21 @@ jobs:
       - name: Set up MSVC (cl.exe on PATH)
         uses: ilammy/msvc-dev-cmd@v1
 
-      # The runner's pre-installed vcpkg restores pango/freetype from its warm binary
-      # cache (fast); a cold box builds them from source (~30-60 min) — see
-      # scripts\build_win_msvc.ps1 header.
+      # The runner's vcpkg builds pango/freetype FROM SOURCE (it is NOT warm-cached on
+      # the image — confirmed by a 30-min timeout stuck in this step). Persist vcpkg's
+      # binary archives via actions/cache so the cold build is paid once (~30-40 min),
+      # then restored in seconds on every later run.
+      - name: Cache vcpkg binaries (pango/freetype)
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}\vcpkg-bincache
+          key: vcpkg-x64-windows-pango-freetype-v1
+
       - name: vcpkg install pango freetype
-        run: vcpkg install pango freetype --triplet x64-windows
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          vcpkg install pango freetype --triplet x64-windows
 
       - name: Build (V -cc msvc + vcpkg)
         shell: pwsh
