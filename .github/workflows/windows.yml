@@ -1,0 +1,84 @@
+name: windows-build
+
+# Native Windows build of CANTester in CI, mirroring vlang/gui's own Windows CI
+# (runs-on: windows-latest, -cc msvc, libs from vcpkg). This compiles + links the
+# full GUI app; it does NOT run it (the runner is headless, sokol needs a display).
+# The local equivalents are scripts\build_win_msvc.ps1 (MSVC) and build_win.ps1 (mingw).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-msvc:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      # gui + vglyph live here (cloned at their pins below). V's -path picks this up.
+      VMODULES: ${{ github.workspace }}\vmodules
+    steps:
+      - uses: actions/checkout@v4
+
+      # NOTE: setup-v installs the LATEST V; our local build is pinned to V de365a1
+      # (validated with gui@68b9302). If a future V breaks the pinned gui, either bump
+      # the gui pin or build V from source at de365a1 (see scripts/setup_win.ps1).
+      - name: Install V
+        uses: vlang/setup-v@v1.4
+        with:
+          check-latest: true
+
+      - name: Install gui + vglyph (pinned) and apply the W1 patches
+        shell: pwsh
+        run: |
+          $vm = $env:VMODULES
+          New-Item -ItemType Directory -Force $vm | Out-Null
+          # core.autocrlf=false so the working trees stay LF and the LF patches apply.
+          git -c core.autocrlf=false clone --quiet https://github.com/vlang/gui.git    "$vm\gui"
+          git -C "$vm\gui"    -c advice.detachedHead=false checkout --quiet 68b9302
+          git -c core.autocrlf=false clone --quiet https://github.com/vlang/vglyph.git "$vm\vglyph"
+          git -C "$vm\vglyph" -c advice.detachedHead=false checkout --quiet 5685a6d
+          # The four W1 fixes (captured in scripts\win_patches\*.patch).
+          $patches = @(
+            @{ Repo = 'gui';    File = '01-gui-readback-cobjmacros.patch' },
+            @{ Repo = 'gui';    File = '02-gui-dialog-includes.patch'     },
+            @{ Repo = 'gui';    File = '03-gui-titlebar-isvalid.patch'    },
+            @{ Repo = 'vglyph'; File = '04-vglyph-empty-outline.patch'    }
+          )
+          foreach ($p in $patches) {
+            $patch = "$env:GITHUB_WORKSPACE\scripts\win_patches\$($p.File)"
+            git -C "$vm\$($p.Repo)" apply --ignore-whitespace $patch
+            if ($LASTEXITCODE -ne 0) { throw "patch $($p.File) failed to apply to $($p.Repo)" }
+            Write-Host "applied $($p.File)"
+          }
+
+      - name: Set up MSVC (cl.exe on PATH)
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # The runner's pre-installed vcpkg restores pango/freetype from its warm binary
+      # cache (fast); a cold box builds them from source (~30-60 min) — see
+      # scripts\build_win_msvc.ps1 header.
+      - name: vcpkg install pango freetype
+        run: vcpkg install pango freetype --triplet x64-windows
+
+      - name: Build (V -cc msvc + vcpkg)
+        shell: pwsh
+        run: |
+          $vcpkg = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows"
+          $env:PKG_CONFIG_PATH = "$vcpkg\lib\pkgconfig"   # V's v.pkgconfig reads this
+          New-Item -ItemType Directory -Force build | Out-Null
+          # -enable-globals: main.v uses the in-proc bus (transport/inproc.v __global).
+          # /I + /LIBPATH are a belt-and-suspenders fallback to the pkgconfig flags.
+          v -cc msvc -no-parallel -enable-globals -path "@vlib|@vmodules|modules" `
+            -cflags "/I`"$vcpkg\include`"" -ldflags "/LIBPATH:`"$vcpkg\lib`"" `
+            -o build\cantester-msvc.exe src\main.v
+          if ($LASTEXITCODE -ne 0) { throw "build failed" }
+          Write-Host "BUILD OK -> build\cantester-msvc.exe"
+
+      - name: Upload exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: cantester-msvc-x64
+          path: build/cantester-msvc.exe
+          if-no-files-found: error
