@@ -29,6 +29,12 @@ const max_trace = 1000 // ring-buffer cap on retained frames (all are scrollable
 const default_fps = 5  // trace repaint rate; user-tunable (3/5/10) from the toolbar
 const fps_options = ['3 fps', '5 fps', '10 fps']
 
+// Scroll ids for the side panels — non-zero + unique per window (gui enables a
+// column's scrollbar when id_scroll > 0). Kept clear of the checkbox id_focus
+// ranges (200+ buses, 300+ sim nodes).
+const id_scroll_buses = u32(7100)
+const id_scroll_sim = u32(7200)
+
 // ---- Look & feel: the few knobs that restyle the whole app ----
 // Font family for ALL UI text. '' keeps gui's bundled default; set e.g.
 // 'Cascadia Mono' and it flows through gui's font_variants() to every derived
@@ -163,7 +169,8 @@ mut:
 	proj_source    string
 	rt             []ChannelRT // runtime per proj.channels (parallel index)
 	running        bool        // measurement started?
-	db             candb.Database // message catalog (loaded from DBC, sampledb fallback)
+	db             candb.Database // merged catalog across all channels' DBCs (decode/lookup)
+	dbs            []candb.Database // per-channel catalog (parallel to proj.channels); drives node list + sim
 	db_source      string
 	status         string
 	t0             i64
@@ -185,6 +192,7 @@ mut:
 	log_path  string // candump .log to open from the toolbar
 	fps       int = default_fps // trace repaint rate (toolbar dropdown)
 	sim_nodes []SimNode // simulated ECUs available per channel (Simulation panel)
+	sim_expanded map[int]bool // Simulation tree: channel idx -> expanded (default collapsed)
 	trace_filter string // case-insensitive substring filter on ID/name/ch/data
 }
 
@@ -226,7 +234,8 @@ fn (mut app App) build_sim_nodes() {
 			continue
 		}
 		cfgs := ch.all_nodes()
-		for node in app.db.nodes {
+		ch_db := if i < app.dbs.len { app.dbs[i] } else { candb.Database{} }
+		for node in ch_db.nodes {
 			mut cfg := project.NodeCfg{
 				name: node
 			}
@@ -423,22 +432,48 @@ fn default_layout() &gui.DockNode {
 	return gui.dock_split('root', .horizontal, 0.18, left, mid)
 }
 
-// load_databases loads the message catalog from the first channel that names a
-// DBC; falls back to the hand-coded sampledb so the app still decodes.
+// load_databases loads each channel's DBC into a per-channel catalog (app.dbs,
+// parallel to proj.channels) — so every bus simulates/decodes its OWN messages —
+// and builds a merged catalog (app.db) for id-based decode lookups across buses.
+// Falls back to the hand-coded sampledb so the app still decodes with no DBC.
 fn (mut app App) load_databases() {
-	for ch in app.proj.channels {
+	app.dbs = []candb.Database{len: app.proj.channels.len}
+	mut sources := []string{}
+	for i, ch in app.proj.channels {
 		if ch.databases.len > 0 {
 			if db := candb.load_dbc_file(ch.databases[0]) {
-				app.db = db
-				app.db_source = ch.databases[0]
-				return
+				app.dbs[i] = db
+				sources << ch.databases[0]
 			}
 		}
 	}
-	app.db = candb.Database{
-		messages: sampledb.catalog()
+	// Merge for decode: first DBC to define an id wins (cross-bus id collisions
+	// are rare; the chronological view's Ch column still disambiguates them).
+	mut msgs := []candb.Message{}
+	mut seen := map[u32]bool{}
+	for db in app.dbs {
+		for m in db.messages {
+			if m.id !in seen {
+				seen[m.id] = true
+				msgs << m
+			}
+		}
 	}
-	app.db_source = 'sampledb (no DBC in project)'
+	if msgs.len == 0 {
+		app.db = candb.Database{
+			messages: sampledb.catalog()
+		}
+		app.db_source = 'sampledb (no DBC in project)'
+		return
+	}
+	app.db = candb.Database{
+		messages: msgs
+	}
+	app.db_source = if sources.len == 1 {
+		sources[0]
+	} else {
+		'${sources.len} DBCs merged (${msgs.len} msgs)'
+	}
 }
 
 // start_measurement attaches every enabled monitor channel: opens its bus and
@@ -510,6 +545,7 @@ fn stop_measurement(mut w gui.Window) {
 fn sim_loop(idx int, mut w gui.Window) {
 	app := w.state[App]()
 	ch := app.proj.channels[idx]
+	ch_db := if idx < app.dbs.len { app.dbs[idx] } else { candb.Database{} }
 	mut bus := transport.open(ch.iface) or { return }
 	mut engine := sim.Engine{}
 	mut sig := '\x00' // force an initial build (differs from any real signature)
@@ -523,7 +559,7 @@ fn sim_loop(idx int, mut w gui.Window) {
 			engine = sim.Engine{}
 			for sn in app.sim_nodes {
 				if sn.ch_idx == idx && sn.enabled {
-					engine.ecus << build_node(app.db, sn.cfg)
+					engine.ecus << build_node(ch_db, sn.cfg)
 				}
 			}
 		}
@@ -1415,10 +1451,15 @@ fn buses_panel(app &App) gui.View {
 		)
 	}
 	return gui.column(
-		sizing:  gui.fill_fill
-		padding: gui.padding_medium
-		spacing: 2
-		content: rows
+		sizing:          gui.fill_fill
+		padding:         gui.padding_medium
+		spacing:         2
+		id_scroll:       id_scroll_buses
+		scroll_mode:     .vertical_only
+		scrollbar_cfg_y: &gui.ScrollbarCfg{
+			overflow: .visible
+		}
+		content:         rows
 	)
 }
 
@@ -1436,9 +1477,56 @@ fn simulation_panel(app &App) gui.View {
 		if !app.sim_nodes.any(it.ch_idx == i) {
 			continue
 		}
-		// network node
-		rows << gui.text(text: '${ch.name}', text_style: gui.theme().b4)
 		rt := app.rt[i] or { ChannelRT{} }
+		expanded := app.sim_expanded[i]
+		// Per-bus summary: how many of its nodes are enabled / running.
+		mut total := 0
+		mut enabled := 0
+		mut any_running := false
+		for sn in app.sim_nodes {
+			if sn.ch_idx != i {
+				continue
+			}
+			total++
+			if sn.enabled {
+				enabled++
+				if rt.running {
+					any_running = true
+				}
+			}
+		}
+		bus_dot := gui.TextStyle{
+			...trace_text_style()
+			color: if any_running {
+				gui.Color{120, 200, 120, 255} // simulating now
+			} else if enabled > 0 {
+				gui.Color{210, 180, 90, 255} // enabled, will run on Start
+			} else {
+				gui.Color{170, 170, 170, 255} // nothing connected
+			}
+		}
+		// Clickable bus header: disclosure triangle + dot + name + count.
+		rows << gui.row(
+			v_align:  .middle
+			spacing:  5
+			padding:  gui.Padding{2, 0, 2, 0}
+			on_click: fn [i] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				mut a := w.state[App]()
+				a.sim_expanded[i] = !a.sim_expanded[i]
+			}
+			content:  [
+				gui.text(text: if expanded { '▾' } else { '▸' }, text_style: trace_text_style()),
+				gui.text(text: '●', text_style: bus_dot),
+				gui.text(text: '${ch.name}', text_style: gui.theme().b4),
+				gui.text(text: '${enabled}/${total}', text_style: gui.TextStyle{
+					...trace_text_style()
+					color: gui.Color{150, 150, 150, 255}
+				}),
+			]
+		)
+		if !expanded {
+			continue
+		}
 		for j, sn in app.sim_nodes {
 			if sn.ch_idx != i {
 				continue
@@ -1457,7 +1545,7 @@ fn simulation_panel(app &App) gui.View {
 			rows << gui.row(
 				v_align: .middle
 				spacing: 5
-				padding: gui.Padding{0, 0, 0, 12} // indent under the network
+				padding: gui.Padding{0, 0, 0, 24} // indent under the network
 				content: [
 					gui.text(text: '●', text_style: dot_style),
 					gui.checkbox(
@@ -1477,10 +1565,15 @@ fn simulation_panel(app &App) gui.View {
 		}
 	}
 	return gui.column(
-		sizing:  gui.fill_fill
-		padding: gui.padding_medium
-		spacing: 2
-		content: rows
+		sizing:          gui.fill_fill
+		padding:         gui.padding_medium
+		spacing:         2
+		id_scroll:       id_scroll_sim
+		scroll_mode:     .vertical_only
+		scrollbar_cfg_y: &gui.ScrollbarCfg{
+			overflow: .visible
+		}
+		content:         rows
 	)
 }
 
