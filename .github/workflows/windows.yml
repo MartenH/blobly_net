@@ -14,28 +14,38 @@ on:
 jobs:
   build-msvc:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45   # cold first run builds V from source (~10 min); cached after
     env:
       # gui + vglyph live here (cloned at their pins below). V's -path picks this up.
       VMODULES: ${{ github.workspace }}\vmodules
     steps:
       - uses: actions/checkout@v4
 
-      # Build V from source at the pinned commit (de365a1 = "V 0.5.1") with the
-      # WINDOWS build script. We deliberately do NOT use vlang/setup-v: with
-      # check-latest it builds V *master* from source, and on windows-latest it runs
-      # the Unix GNUmakefile (mingw) — which fails compiling V's POSIX code path
+      # V pinned at de365a1 ("V 0.5.1"), built with the WINDOWS build script. We do
+      # NOT use vlang/setup-v: with check-latest it builds V *master* from source and
+      # on windows-latest runs the Unix GNUmakefile (mingw) -> fails on V's POSIX path
       # (<sys/mman.h>, pthread_t, struct tm.tm_gmtoff, mkdir arity, ...). makev.bat is
-      # the correct Windows build, and de365a1 is the commit gui@68b9302 was validated
-      # against (so the pinned gui + vglyph keep compiling).
-      - name: Build V (pinned de365a1) with makev.bat
+      # the correct Windows build; de365a1 is the commit gui@68b9302 was validated with.
+      # Cache the built V so the slow single-threaded self-compile (~10 min) runs once.
+      - name: Cache V (de365a1)
+        id: cache-v
+        uses: actions/cache@v4
+        with:
+          path: C:\v-ct
+          key: v-de365a1-windows-latest
+
+      - name: Build V (makev.bat) — on cache miss
+        if: steps.cache-v.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           git clone --quiet https://github.com/vlang/v.git C:\v-ct
           git -C C:\v-ct -c advice.detachedHead=false checkout --quiet de365a1
           cmd /c C:\v-ct\makev.bat
           if (-not (Test-Path C:\v-ct\v.exe)) { throw "makev.bat did not produce v.exe" }
-          "C:\v-ct" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding ascii
+
+      - name: Add V to PATH
+        shell: pwsh
+        run: '"C:\v-ct" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding ascii'
 
       - name: Install gui + vglyph (pinned) and apply the W1 patches
         shell: pwsh
