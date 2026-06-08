@@ -13,6 +13,10 @@ cmd/mf4_dump/mf4_dump
 # Python tools venv (asammdf MF4 bridge) — dev-only, not committed
 .venv-tools/
 
+# Private external DBCs copied in locally for simulation — NOT ours to commit.
+dbc/ecu_vcm/
+projects/ecu-vcm.yml
+
 # MF4 recordings are private/binary — never commit one anywhere in the tree
 # (the only exception is the tiny synthetic samples/demo.mf4, re-included below).
 *.mf4
