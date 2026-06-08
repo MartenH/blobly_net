@@ -1,0 +1,21 @@
+diff --git a/glyph_atlas.v b/glyph_atlas.v
+index 938636d..44353dd 100644
+--- a/glyph_atlas.v
++++ b/glyph_atlas.v
+@@ -293,12 +293,11 @@ fn (mut renderer Renderer) load_glyph(cfg LoadGlyphConfig) !CachedGlyph {
+ 		// State: outline loaded (NO_BITMAP flag used, no FT_LOAD_RENDER)
+ 		// Requires: glyph.outline valid with n_points > 0
+ 		// Produces: outline shifted by subpixel amount
+-		$if debug {
+-			if glyph.outline.n_points == 0 {
+-				panic('FT_Outline_Translate requires loaded outline, got empty. Check FT_Load_Glyph flags.')
+-			}
++		// Whitespace glyphs (e.g. space) legitimately have an empty outline;
++		// skip the translate instead of panicking.
++		if glyph.outline.n_points > 0 {
++			C.FT_Outline_Translate(&glyph.outline, shift, 0)
+ 		}
+-		C.FT_Outline_Translate(&glyph.outline, shift, 0)
+ 
+ 		// Now Render
+ 		render_mode := if is_high_dpi {

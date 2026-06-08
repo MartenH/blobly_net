@@ -1,0 +1,15 @@
+diff --git a/nativebridge/readback_windows.c b/nativebridge/readback_windows.c
+index e5475f4..37846f8 100644
+--- a/nativebridge/readback_windows.c
++++ b/nativebridge/readback_windows.c
+@@ -5,6 +5,10 @@
+ 
+ #ifdef _WIN32
+ 
++#ifndef COBJMACROS
++#define COBJMACROS
++#endif
++
+ #include <d3d11.h>
+ #include <stdlib.h>
+ #include <string.h>
