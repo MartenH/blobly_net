@@ -313,12 +313,15 @@ fn main() {
 			mut app := w.state[App]()
 			app.t0 = time.ticks()
 			app.dock_root = default_layout()
-			// Load the project (bus setup). Precedence: CANTESTER_PROJECT env >
+			// Load the project (bus setup). Precedence: CLI arg (first positional
+			// path, e.g. `cantester projects/foo.yml`) > CANTESTER_PROJECT env >
 			// most-recently-opened project > projects/demo.yml > a built-in
 			// single-vcan0 default so the app always runs.
 			app.recents = load_recents()
-			proj_path := os.getenv_opt('CANTESTER_PROJECT') or {
-				if app.recents.len > 0 { app.recents[0] } else { 'projects/demo.yml' }
+			proj_path := cli_project_arg() or {
+				os.getenv_opt('CANTESTER_PROJECT') or {
+					if app.recents.len > 0 { app.recents[0] } else { 'projects/demo.yml' }
+				}
 			}
 			if p := project.load(proj_path) {
 				app.proj = p
@@ -805,6 +808,22 @@ fn menu_bar(mut window gui.Window) gui.View {
 			},
 		]
 	)
+}
+
+// cli_project_arg returns the first positional CLI argument that looks like a
+// project file (a path ending in .yml/.yaml, or any existing file), so
+// `cantester projects/ecu-vcm.yml` loads that project. Flags (leading '-') are
+// skipped so sokol/gg options don't get mistaken for a path.
+fn cli_project_arg() ?string {
+	for a in os.args[1..] {
+		if a.starts_with('-') {
+			continue
+		}
+		if a.ends_with('.yml') || a.ends_with('.yaml') || os.is_file(a) {
+			return a
+		}
+	}
+	return none
 }
 
 // open_project loads a project file, rebuilds the runtime, and reloads DBCs.
