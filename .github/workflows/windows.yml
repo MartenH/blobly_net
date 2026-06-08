@@ -21,13 +21,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # NOTE: setup-v installs the LATEST V; our local build is pinned to V de365a1
-      # (validated with gui@68b9302). If a future V breaks the pinned gui, either bump
-      # the gui pin or build V from source at de365a1 (see scripts/setup_win.ps1).
-      - name: Install V
-        uses: vlang/setup-v@v1.4
-        with:
-          check-latest: true
+      # Build V from source at the pinned commit (de365a1 = "V 0.5.1") with the
+      # WINDOWS build script. We deliberately do NOT use vlang/setup-v: with
+      # check-latest it builds V *master* from source, and on windows-latest it runs
+      # the Unix GNUmakefile (mingw) — which fails compiling V's POSIX code path
+      # (<sys/mman.h>, pthread_t, struct tm.tm_gmtoff, mkdir arity, ...). makev.bat is
+      # the correct Windows build, and de365a1 is the commit gui@68b9302 was validated
+      # against (so the pinned gui + vglyph keep compiling).
+      - name: Build V (pinned de365a1) with makev.bat
+        shell: pwsh
+        run: |
+          git clone --quiet https://github.com/vlang/v.git C:\v-ct
+          git -C C:\v-ct -c advice.detachedHead=false checkout --quiet de365a1
+          cmd /c C:\v-ct\makev.bat
+          if (-not (Test-Path C:\v-ct\v.exe)) { throw "makev.bat did not produce v.exe" }
+          "C:\v-ct" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding ascii
 
       - name: Install gui + vglyph (pinned) and apply the W1 patches
         shell: pwsh
