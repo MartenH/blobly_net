@@ -189,3 +189,21 @@ contribution discovered while attempting D3D11, captured here so it isn't lost:
   the live build stays on GL and this patch is reverted.
 - `vlib/sokol/c/declaration.c.v` — would flip Windows to `-DSOKOL_D3D11`
   (`-ld3d11 -ldxgi`); reverted (GL).
+
+### Upstreaming plan (decided 2026-06-09)
+
+We're going to actually submit these upstream as PRs (user rates gui's merge odds as
+**good**). `gh` is authed. **PRs target each repo's `master`**, but the patches are vs the
+pins gui@68b9302 / vglyph@5685a6d — so first confirm each bug still exists on master and
+rebase the fix onto it. Continuing this on the **WSL/Linux** side (simpler dev env).
+
+- **Tier 1 (lead with — real bugs/warnings):** patches #1–#4 above, **plus** a vglyph
+  one-liner not yet in the table — `glyph_atlas.v:418` casts `&C.FT_GlyphRec` →
+  `&C.FT_BitmapGlyphRec` outside `unsafe` (V warns); fix:
+  `bmp_glyph := unsafe { &C.FT_BitmapGlyphRec(ft_glyph) }`. Suggested first PR: one focused
+  **vglyph** PR bundling empty-outline (#4) + this unsafe-cast.
+- **Tier 2 (optional, high-churn):** the cosmetic V *notices* (`unused parameter` →
+  `_`-prefix the name, the V analogue of C's `(void)param;`; `variable shadows a function
+  declaration` → rename). No tool does this — `v fmt` is layout-only, `v vet` only reports —
+  so it's a manual signature-by-signature sweep. Decide separately; a maintainer may view
+  it as noise.
