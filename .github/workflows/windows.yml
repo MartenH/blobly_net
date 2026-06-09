@@ -46,21 +46,27 @@ jobs:
         id: cache-v
         uses: actions/cache@v4
         with:
-          path: C:\v-ct
-          key: v-de365a1-windows-latest-v2
+          path: D:\v-ct
+          key: v-de365a1-windows-latest-v3
 
-      - name: Build V (makev.bat) — on cache miss
+      - name: Build V (makev.bat) on the fast D: disk — on cache miss
         if: steps.cache-v.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          git clone --quiet https://github.com/vlang/v.git C:\v-ct
-          git -C C:\v-ct -c advice.detachedHead=false checkout --quiet de365a1
-          cmd /c C:\v-ct\makev.bat
-          if (-not (Test-Path C:\v-ct\v.exe)) { throw "makev.bat did not produce v.exe" }
+          # Build on the runner's FAST local SSD (D:), not the slow C: OS disk, and put
+          # V's codegen TEMP there too. V's tcc self-compile is thousands of tiny file
+          # operations; on C: the I/O latency turns ~100s (local) into a 90-min timeout.
+          # The compiler (tcc) was never the problem — it builds fine locally; the disk is.
+          $vtmp = 'D:\vtmp'; New-Item -ItemType Directory -Force $vtmp | Out-Null
+          $env:TEMP = $vtmp; $env:TMP = $vtmp
+          git clone --quiet https://github.com/vlang/v.git D:\v-ct
+          git -C D:\v-ct -c advice.detachedHead=false checkout --quiet de365a1
+          cmd /c D:\v-ct\makev.bat
+          if (-not (Test-Path D:\v-ct\v.exe)) { throw "makev.bat did not produce v.exe" }
 
       - name: Add V to PATH
         shell: pwsh
-        run: '"C:\v-ct" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding ascii'
+        run: '"D:\v-ct" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding ascii'
 
       - name: Install gui + vglyph (pinned) and apply the W1 patches
         shell: pwsh
