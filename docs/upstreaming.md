@@ -27,13 +27,20 @@ transfer and are recreated from the patches.
   `.agent/workflows/verify.md` → `v run _check.vsh` (`v fmt . -w`, syntax-check
   every `examples/*.v`, `v test .`, `v check-md .`). So nothing runs on the PR
   automatically; a maintainer runs `_check.vsh` by hand. Run it before/after any
-  vglyph PR. Verified on PR 1's branch: `v test .` = **12/12 pass**. The full
-  `_check.vsh` only goes green on a **recent V** — our 0.5.1 pin flags pre-existing
-  `unused parameter` notices/errors (`accessibility/*`, `load_stroked_glyph`) and a
-  pre-existing long line at `glyph_atlas.v:327`; all reproduce on pristine `main`,
-  so they are V-version skew, not the PR. Note: examples `import vglyph` resolve the
-  module from `~/.vmodules/vglyph`, not the cwd — to verify a branch via the example
-  checks, point `~/.vmodules/vglyph` at it (apply the patches there, then restore).
+  vglyph PR. Verified on PR 1's branch: `v test .` = **12/12 pass**.
+  **`_check.vsh` is RED on vglyph's own `main`** — confirmed under both our old pin
+  (de365a1) and latest V (ed17e5f, 2026-06-09): `v -check` reports `unused parameter`
+  as a hard **error** in pre-existing code (`accessibility/backend_stub.v`,
+  `backend_linux.v`, `load_stroked_glyph`'s `stroke_radius`), and `v fmt . -w`
+  reformats a pre-existing long line at `glyph_atlas.v:327`. All of this reproduces
+  on **pristine `main` with no PR applied**, so the baseline is already failing —
+  newer V (which promotes unused params to errors) outran the repo. **PR 1 is clean
+  relative to that baseline: it adds zero new failures, its two added lines are
+  `v fmt`-clean (untouched by `v fmt -w`), and it REMOVES the unsafe-cast warning at
+  line 418.** So a maintainer running `_check.vsh` sees the same pre-existing noise
+  with/without the PR. Gotcha: examples `import vglyph` resolve the module from
+  `~/.vmodules/vglyph`, not the cwd — to verify a branch via the example checks,
+  point `~/.vmodules/vglyph` at it (apply the patches there, then `git checkout -- .`).
   - Caveat: a *local* `v fmt -verify` on an old V (our 0.5.1 pin) reports ~98
     pre-existing "not vfmt'ed" files on pristine `main` too — that's vfmt
     version skew vs CI's check-latest V, NOT our changes. Verify deltas by
