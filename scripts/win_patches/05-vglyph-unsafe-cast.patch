@@ -1,0 +1,13 @@
+diff --git a/glyph_atlas.v b/glyph_atlas.v
+index 44353dd..446c6ae 100644
+--- a/glyph_atlas.v
++++ b/glyph_atlas.v
+@@ -413,7 +413,7 @@ fn (mut renderer Renderer) load_stroked_glyph(cfg LoadGlyphConfig,
+ 	}
+ 
+ 	// Cast to BitmapGlyph
+-	bmp_glyph := &C.FT_BitmapGlyphRec(ft_glyph)
++	bmp_glyph := unsafe { &C.FT_BitmapGlyphRec(ft_glyph) }
+ 	ft_bitmap := &bmp_glyph.bitmap
+ 
+ 	if ft_bitmap.buffer == 0 || ft_bitmap.width == 0 || ft_bitmap.rows == 0 {
