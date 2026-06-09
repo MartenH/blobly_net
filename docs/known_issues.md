@@ -264,6 +264,30 @@ gotchas (first-ever native Windows run of vlang/gui, 2026-06-05):
   request (sokol `sapp_request_quit`/`on_event .quit_requested`, or a Win32 `WM_CLOSE`
   hook) so the X closes the app. Not seen on Linux/X11.
 
+## CI (GitHub Actions — Windows)
+
+`.github/workflows/windows.yml` builds the app on `windows-latest` (MSVC + vcpkg) and is
+green + fast (cold ≈43 min, warm ≈2 min). Getting there hit three runner realities
+(2026-06-09):
+
+- 🔴 **V will NOT self-compile on the runner — CI must DOWNLOAD a prebuilt V.**
+  `makev.bat` HANGS at `Compiling v_stage.exe with v_win_bootstrap.exe` (the bootstrap V
+  *executing* V's codegen), independent of the bootstrap compiler (tcc **or** clang), the
+  final compiler (tcc **or** MSVC, via `-msvc`), the disk (slow `C:` **or** fast `D:` with
+  `TMP` there too), and Defender on/off — every combo timed out (we gave it up to 90 min;
+  locally the same build is ~100 s, so it's the runner environment, not V-on-Windows). And
+  there's no prebuilt to fall back on: V's newest *release* is `0.5.1` (2026-03-09), which
+  PREDATES the `vlib/yaml` that `modules/project` imports → `cannot import module yaml`.
+  **Fix:** build V locally (where it works) and have CI download it — the workflow pulls a
+  zipped de365a1 V from this repo's **`v-toolchain`** release (`v-de365a1-windows.zip`,
+  v.exe + vlib at the zip root). Re-mint that asset if the V pin ever moves.
+- 🟡 **vcpkg builds pango/freetype FROM SOURCE on the runner** (it is *not* warm-cached on
+  the image, contrary to assumption). Cache its binary archives
+  (`VCPKG_DEFAULT_BINARY_CACHE` + `actions/cache`): cold ≈35 min, then restored in seconds.
+- ⚪ **A `D:` + space in a step `name:` invalidates the whole workflow.** YAML reads
+  `name: ... D: disk` as a nested mapping → "workflow file issue" / HTTP 422 on dispatch.
+  Quote any step name containing a colon-space. (Bitten twice.)
+
 ## Our code (cantester)
 
 - 🟢 **`candb.encode` rounding bug.** `i64(x + 0.5)` truncated negatives toward zero (`-4.5 → -4`),
