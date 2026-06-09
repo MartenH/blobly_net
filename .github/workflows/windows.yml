@@ -3,6 +3,10 @@ name: windows-build
 # Native Windows build of CANTester in CI (MSVC + vcpkg), mirroring vlang/gui's own
 # Windows CI. Compiles + links the full GUI app; does NOT run it (headless runner).
 # Local equivalents: scripts\build_win_msvc.ps1 (MSVC), scripts\build_win.ps1 (mingw).
+#
+# The first run is SLOW (cold caches): it builds V from source AND builds vcpkg's
+# pango/freetype from source. Both are cached, so later runs are ~5-10 min. Do NOT
+# cancel the first run — let it populate the caches.
 
 on:
   push:
@@ -13,34 +17,50 @@ on:
 jobs:
   build-msvc:
     runs-on: windows-latest
-    timeout-minutes: 60   # cold first run builds vcpkg pango/freetype from source (~30-40 min); cached after
+    timeout-minutes: 90   # COLD first run = V build (~15 min) + vcpkg pango build (~35 min); both cached after
     env:
       # gui + vglyph live here (cloned at their pins below). V's -path picks this up.
       VMODULES: ${{ github.workspace }}\vmodules
-      # vcpkg binary cache (persisted across runs by actions/cache) so the from-source
-      # pango/freetype build is paid once, then restored in seconds on later runs.
+      # vcpkg binary cache (persisted by actions/cache) so the from-source pango/freetype
+      # build is paid once, then restored in seconds on later runs.
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-bincache
     steps:
       - uses: actions/checkout@v4
 
-      # Use a PREBUILT V. We tried two from-source routes and both fail on the runner:
-      #   - vlang/setup-v --check-latest builds V *master* via the Unix GNUmakefile on
-      #     Windows -> fails on V's POSIX path (<sys/mman.h>, pthread_t, mkdir arity...).
-      #   - makev.bat (the Windows build) HANGS / times out at the tcc bootstrap stage
-      #     on the runner (not AV — disabling Defender didn't help).
-      # The prebuilt v_windows.zip is seconds. CAVEAT: this is the LATEST V, while the
-      # app + pinned gui@68b9302 were validated on ~V 0.5.1 (de365a1). If latest V has
-      # drifted incompatibly, pin a specific weekly here (a vlang/v release with a
-      # v_windows.zip asset, e.g. .../releases/download/weekly.YYYY.WW/v_windows.zip).
-      - name: Install V (prebuilt)
+      # V's tcc self-compile (makev.bat: 3 single-threaded passes over thousands of
+      # generated files) is murdered by the runner's real-time AV. Turn it off
+      # (ephemeral runner). With it ON, the build timed out at 30 min.
+      - name: Disable Defender real-time scanning (speeds up the V build a lot)
         shell: pwsh
         run: |
-          $zip = "$env:RUNNER_TEMP\v_windows.zip"
-          Invoke-WebRequest -Uri 'https://github.com/vlang/v/releases/latest/download/v_windows.zip' -OutFile $zip
-          Expand-Archive -LiteralPath $zip -DestinationPath C:\ -Force
-          if (-not (Test-Path C:\v\v.exe)) { throw "v_windows.zip did not contain C:\v\v.exe" }
-          "C:\v" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding ascii
-          & C:\v\v.exe version
+          try { Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Stop; Write-Host 'Defender real-time monitoring: off' }
+          catch { Write-Host "Could not disable Defender (continuing): $_" }
+
+      # V pinned at de365a1 ("V 0.5.1", 2026-06-03), built with the WINDOWS build script
+      # (makev.bat). Why from source: (a) vlang/setup-v --check-latest builds V master via
+      # the Unix GNUmakefile on Windows and fails on V's POSIX path; (b) there is NO
+      # prebuilt V from this era — the newest release is 0.5.1 (2026-03-09), which predates
+      # `vlib/yaml` that modules/project uses. de365a1 is the commit gui@68b9302 was
+      # validated with. Cache it so the slow self-compile runs once.
+      - name: Cache V (de365a1)
+        id: cache-v
+        uses: actions/cache@v4
+        with:
+          path: C:\v-ct
+          key: v-de365a1-windows-latest-v2
+
+      - name: Build V (makev.bat) — on cache miss
+        if: steps.cache-v.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          git clone --quiet https://github.com/vlang/v.git C:\v-ct
+          git -C C:\v-ct -c advice.detachedHead=false checkout --quiet de365a1
+          cmd /c C:\v-ct\makev.bat
+          if (-not (Test-Path C:\v-ct\v.exe)) { throw "makev.bat did not produce v.exe" }
+
+      - name: Add V to PATH
+        shell: pwsh
+        run: '"C:\v-ct" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding ascii'
 
       - name: Install gui + vglyph (pinned) and apply the W1 patches
         shell: pwsh
@@ -70,9 +90,8 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
 
       # The runner's vcpkg builds pango/freetype FROM SOURCE (it is NOT warm-cached on
-      # the image — confirmed by a 30-min timeout stuck in this step). Persist vcpkg's
-      # binary archives via actions/cache so the cold build is paid once (~30-40 min),
-      # then restored in seconds on every later run.
+      # the image — confirmed by a 30-min timeout stuck here). Persist vcpkg's binary
+      # archives so the cold build is paid once, then restored in seconds.
       - name: Cache vcpkg binaries (pango/freetype)
         uses: actions/cache@v4
         with:
