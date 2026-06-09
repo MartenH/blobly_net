@@ -1,0 +1,48 @@
+name: diag-build-v-msvc
+
+# DIAGNOSTIC ONLY (manual dispatch) — does NOT run on push and does NOT affect the
+# main windows-build CI. Settles the question: can V de365a1 be built ON THE RUNNER
+# with `makev.bat -msvc` (cl.exe doing the C compile), when the default tcc build
+# hangs there?
+#
+# Fair comparison: this uses the SAME best-case mitigations under which the default
+# tcc build STILL hung — the fast D: disk (+ V's TEMP on D:) and Defender off — so the
+# only changed variable is the compiler. makev.bat -msvc still bootstraps v_win_bootstrap
+# with clang/gcc/tcc first, THEN uses MSVC for the self-compile's C step, so this tells
+# us whether the hang was the C compiler (tcc) or V's codegen/bootstrap execution on the
+# runner. A timeout here = "effectively no" (tcc ran past 90 min).
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-v-msvc:
+    runs-on: windows-latest
+    timeout-minutes: 50   # generous: MSVC compiling all of V's generated C is legitimately slow
+    steps:
+      - name: Disable Defender real-time scanning
+        shell: pwsh
+        run: |
+          try { Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Stop; Write-Host 'Defender real-time monitoring: off' }
+          catch { Write-Host "Could not disable Defender (continuing): $_" }
+
+      - name: Set up MSVC (cl.exe + INCLUDE/LIB on PATH)
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build V de365a1 with makev.bat -msvc on the fast D: disk
+        shell: pwsh
+        run: |
+          if (-not (Get-Command cl -ErrorAction SilentlyContinue)) { throw "cl.exe not on PATH (msvc-dev-cmd failed?)" }
+          cl 2>&1 | Select-Object -First 1
+          $vtmp = 'D:\vtmp'; New-Item -ItemType Directory -Force $vtmp | Out-Null
+          $env:TEMP = $vtmp; $env:TMP = $vtmp
+          git clone --quiet https://github.com/vlang/v.git D:\v-msvc
+          git -C D:\v-msvc -c advice.detachedHead=false checkout --quiet de365a1
+          Write-Host "==== makev.bat -msvc (a hang shows as a 50-min timeout) ===="
+          cmd /c D:\v-msvc\makev.bat -msvc
+          if (Test-Path D:\v-msvc\v.exe) {
+            Write-Host "RESULT: makev.bat -msvc SUCCEEDED — v.exe produced"
+            & D:\v-msvc\v.exe version
+          } else {
+            throw "RESULT: makev.bat -msvc finished without producing v.exe"
+          }
