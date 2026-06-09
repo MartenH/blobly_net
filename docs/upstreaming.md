@@ -48,13 +48,23 @@ transfer and are recreated from the patches.
 - **Flow:** neither account has org push, so it's the standard **fork → push
   branch → PR**. `gh` (authed as `MartenH`, scopes `repo`+`workflow`) does it.
 
-## The PR set (3 PRs across 2 repos)
+## The PR set (4 PRs across 2 repos)
 
 | PR | Repo | Branch (head) | Base | Commits | Body file |
 |----|------|---------------|------|---------|-----------|
 | 1 | `vlang/vglyph` | `fix/whitespace-glyph-empty-outline` | `main` | patch #04 + #05 | `scripts/win_patches/pr1-vglyph-glyph-fixes.md` |
 | 2 | `vlang/gui` | `fix/windows-titlebar-before-sapp-run` | `main` | patch #03 | `scripts/win_patches/pr2-gui-titlebar.md` |
 | 3 | `vlang/gui` | `fix/windows-gcc16-compile` | `main` | patch #01 + #02 | `scripts/win_patches/pr3-gui-gcc16.md` |
+| 4 | `vlang/vglyph` | `fix/restore-check-green` | `main` | 15 `_`-prefix renames | `scripts/win_patches/pr4-vglyph-restore-check-green.md` |
+
+PR 4 was discovered while verifying PR 1 with `_check.vsh`: under recent V the
+verify gate is red on *pristine* `main` because `v -check -N` errors on 15
+pre-existing unused params (`accessibility/*`, `glyph_atlas.v`, two examples). PR 4
+`_`-prefixes them — restoring the gate — and is **independent of PR 1** (rebased
+onto `main`). Note: do NOT add `v fmt` output to vglyph PRs — current `master`
+vfmt is buggy on multi-line calls (inserts a stray blank line inside argument
+lists, ~20 files); `_check.vsh`'s `v fmt . -w` step is auto-fix/non-gating, so
+formatting is intentionally left untouched.
 
 **Grouping rationale:** PR 2 (titlebar) is a runtime-abort fix affecting *all*
 Windows toolchains incl. MSVC; PR 3 (#01/#02) are gcc-16-only *compile* fixes —
@@ -130,12 +140,18 @@ gh pr create --repo vlang/vglyph \
 
 ## Submission status
 
-- **PR 1 (vglyph):** OPEN — https://github.com/vlang/vglyph/pull/4 (opened
-  2026-06-09 by MartenH; base `main`, 1 file +5/−6, MERGEABLE). vglyph has no CI.
+- **PR 1 (vglyph):** OPEN — https://github.com/vlang/vglyph/pull/4 (base `main`,
+  1 file +5/−6, MERGEABLE). The two glyph bug fixes.
+- **PR 4 (vglyph):** OPEN — https://github.com/vlang/vglyph/pull/5 (base `main`,
+  5 files +12/−12, MERGEABLE). Restores `_check.vsh` to green. Verified: 0
+  unused-param errors under `-N`, `v test .` 12/12, `v check-md .` clean.
 - **PR 2 (gui titlebar):** not yet opened — branch `fix/windows-titlebar-before-sapp-run` ready.
 - **PR 3 (gui gcc16):** not yet opened — branch `fix/windows-gcc16-compile` ready.
 
-Plan (decided 2026-06-09): **opened PR 1 first** to confirm it renders correctly
-on GitHub (✅ title/body/diff all good). Next: watch PR 1 for maintainer
-response, then open PR 2 and PR 3 to `vlang/gui` the same way (push both branches
-to one `MartenH/gui` fork).
+Plan (decided 2026-06-09): opened the two vglyph PRs (#4 bug fixes, #5 restore
+verify-green) first. Next: watch them for maintainer response, then open PR 2 and
+PR 3 to `vlang/gui` the same way (push both branches to one `MartenH/gui` fork).
+
+**Env note:** `v up`'d to `ed17e5f` (2026-06-09) to verify against current V;
+cantester still builds (gui@68b9302 ok), so no pin regression. `gh` 2.93 installed
+at `~/.local/bin/gh`, authed as `MartenH`.
