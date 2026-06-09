@@ -29,7 +29,7 @@ jobs:
       - name: Set up MSVC (cl.exe + INCLUDE/LIB on PATH)
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Build V de365a1 with makev.bat -msvc on the fast D: disk
+      - name: "Build V de365a1 with makev.bat -msvc on the fast D: disk"
         shell: pwsh
         run: |
           if (-not (Get-Command cl -ErrorAction SilentlyContinue)) { throw "cl.exe not on PATH (msvc-dev-cmd failed?)" }
