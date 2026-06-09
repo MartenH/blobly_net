@@ -49,7 +49,7 @@ jobs:
           path: D:\v-ct
           key: v-de365a1-windows-latest-v3
 
-      - name: Build V (makev.bat) on the fast D: disk — on cache miss
+      - name: "Build V (makev.bat) on the fast D: disk — on cache miss"
         if: steps.cache-v.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
