@@ -192,6 +192,10 @@ contribution discovered while attempting D3D11, captured here so it isn't lost:
 
 ### Upstreaming plan (decided 2026-06-09)
 
+> **Submission record + reproducible recipe: `docs/upstreaming.md`.** PR 1
+> (vglyph) is open: https://github.com/vlang/vglyph/pull/4. The PR-body texts
+> live in `scripts/win_patches/pr*.md`; the unsafe-cast fix is `05-vglyph-unsafe-cast.patch`.
+
 We're going to actually submit these upstream as PRs (user rates gui's merge odds as
 **good**). `gh` is authed. **PRs target each repo's `master`**, but the patches are vs the
 pins gui@68b9302 / vglyph@5685a6d — so first confirm each bug still exists on master and
