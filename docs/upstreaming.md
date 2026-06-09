@@ -22,7 +22,18 @@ transfer and are recreated from the patches.
   It does **not** build Windows — so our Windows fixes aren't *exercised* by CI,
   but also can't break it: the `.c` fixes are `#ifdef _WIN32`-gated and the
   titlebar fix is `$if windows`, all inert on ubuntu/macos; `titlebar.c.v` is
-  `v fmt`-clean. **vglyph has no CI.**
+  `v fmt`-clean.
+- **vglyph has no GitHub Actions** — its verification is an **agent workflow**:
+  `.agent/workflows/verify.md` → `v run _check.vsh` (`v fmt . -w`, syntax-check
+  every `examples/*.v`, `v test .`, `v check-md .`). So nothing runs on the PR
+  automatically; a maintainer runs `_check.vsh` by hand. Run it before/after any
+  vglyph PR. Verified on PR 1's branch: `v test .` = **12/12 pass**. The full
+  `_check.vsh` only goes green on a **recent V** — our 0.5.1 pin flags pre-existing
+  `unused parameter` notices/errors (`accessibility/*`, `load_stroked_glyph`) and a
+  pre-existing long line at `glyph_atlas.v:327`; all reproduce on pristine `main`,
+  so they are V-version skew, not the PR. Note: examples `import vglyph` resolve the
+  module from `~/.vmodules/vglyph`, not the cwd — to verify a branch via the example
+  checks, point `~/.vmodules/vglyph` at it (apply the patches there, then restore).
   - Caveat: a *local* `v fmt -verify` on an old V (our 0.5.1 pin) reports ~98
     pre-existing "not vfmt'ed" files on pristine `main` too — that's vfmt
     version skew vs CI's check-latest V, NOT our changes. Verify deltas by
