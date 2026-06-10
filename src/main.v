@@ -40,6 +40,7 @@ const id_scroll_sim = u32(7200)
 const id_scroll_plot = u32(7300)
 const id_scroll_diag = u32(7400)
 const id_scroll_plot_outer = u32(7500) // Graphics root: clamps the panel measurement
+const id_scroll_symbols = u32(7600)    // Symbol Browser tree
 
 // UDS request/response CAN ids (classic OBD physical addressing): the tester
 // transmits on 0x7E0, the ECU answers on 0x7E8. The simulated ECU's UDS
@@ -219,6 +220,9 @@ mut:
 	// can drive multi-select + "add to filter"); track the last click to detect it.
 	last_click_id string
 	last_click_ms i64
+	// Symbol Browser: search string + which message rows are expanded.
+	symbol_filter   string
+	symbol_expanded map[u32]bool
 	// Graphics panel: signals UNchecked in the legend (key '<id>:<signal>') —
 	// default empty = plot everything, so new selections start fully visible.
 	plot_off map[string]bool
@@ -488,9 +492,9 @@ fn default_layout() &gui.DockNode {
 	traces := gui.dock_split('t1', .vertical, 0.55, gui.dock_panel_group('g_trace', ['trace'],
 		'trace'), gui.dock_panel_group('g_ftrace', ['ftrace'], 'ftrace'))
 	mid := gui.dock_split('mid', .horizontal, 0.66, traces, right)
-	// Left column: Buses (top) over Simulation (bottom).
+	// Left column: Buses (top) over Simulation / Symbol Browser tabs (bottom).
 	left := gui.dock_split('l1', .vertical, 0.45, gui.dock_panel_group('g_buses', ['buses'],
-		'buses'), gui.dock_panel_group('g_sim', ['simulation'], 'simulation'))
+		'buses'), gui.dock_panel_group('g_sim', ['simulation', 'symbols'], 'simulation'))
 	return gui.dock_split('root', .horizontal, 0.18, left, mid)
 }
 
@@ -953,6 +957,7 @@ fn main_view(mut window gui.Window) gui.View {
 					gui.DockPanelDef{ id: 'send', label: 'Send', content: [send_panel(app)] },
 				gui.DockPanelDef{ id: 'diag', label: 'Diagnostics', content: [diag_panel(app)] },
 					gui.DockPanelDef{ id: 'stats', label: 'Statistics', content: [stats_panel(app)] },
+						gui.DockPanelDef{ id: 'symbols', label: 'Symbol Browser', content: [symbol_browser_panel(app)] },
 				]
 				on_layout_change: fn (nr &gui.DockNode, mut w gui.Window) {
 					mut a := w.state[App]()
@@ -2053,6 +2058,128 @@ fn draw_one_series(mut dc gui.DrawContext, series []f32, times []f32, wstart f32
 
 fn clampf(v f32, lo f32, hi f32) f32 {
 	return if v < lo { lo } else if v > hi { hi } else { v }
+}
+
+// symbol_browser_panel browses the loaded DBC (CANoe-style Symbol Browser): a
+// searchable, collapsible tree of messages → signals. Each signal shows its live
+// decoded value (from the latest received frame) and DBC range; a green/grey dot
+// marks whether the message is currently on the bus. Clicking a message header
+// selects it (Signals/Graphics follow) and toggles its signal list.
+fn symbol_browser_panel(app &App) gui.View {
+	mut rows := [gui.View(gui.text(text: 'Symbol Browser', text_style: gui.theme().b3))]
+	rows << gui.row(
+		v_align: .middle
+		spacing: 6
+		padding: gui.Padding{2, 0, 4, 0}
+		content: [
+			gui.text(text: 'Find', text_style: gui.theme().n4),
+			gui.input(
+				id_focus:        60
+				text:            app.symbol_filter
+				width:           200
+				height:          22
+				padding:         gui.Padding{2, 6, 2, 6}
+				sizing:          gui.fixed_fixed
+				placeholder:     'message / signal name or id'
+				on_text_changed: fn (_ &gui.Layout, s string, mut w gui.Window) {
+					mut a := w.state[App]()
+					a.symbol_filter = s
+				}
+			),
+		]
+	)
+	if app.db.messages.len == 0 {
+		rows << gui.text(text: '(no database loaded)', text_style: gui.theme().n4)
+		return gui.column(sizing: gui.fill_fill, padding: gui.padding_medium, spacing: 4, content: rows)
+	}
+	mut msgs := app.db.messages.clone()
+	msgs.sort(a.id < b.id)
+	filt := app.symbol_filter.to_lower()
+	for m in msgs {
+		if filt != '' {
+			mut hit := m.name.to_lower().contains(filt) || hexid(m.id, m.ext).to_lower().contains(filt)
+			if !hit {
+				for s in m.signals {
+					if s.name.to_lower().contains(filt) {
+						hit = true
+						break
+					}
+				}
+			}
+			if !hit {
+				continue
+			}
+		}
+		expanded := app.symbol_expanded[m.id]
+		data := if agg := app.grouped[m.id] { agg.last } else { []u8{} }
+		live := data.len > 0
+		mid := m.id
+		ext := m.ext
+		rows << gui.row(
+			v_align:  .middle
+			spacing:  4
+			padding:  gui.Padding{1, 2, 1, 2}
+			on_click: fn [mid] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				mut a := w.state[App]()
+				a.sel_id = i64(mid)
+				if mid in a.symbol_expanded {
+					a.symbol_expanded.delete(mid)
+				} else {
+					a.symbol_expanded[mid] = true
+				}
+			}
+			content:  [
+				gui.text(text: if expanded { '▼' } else { '▶' }, text_style: trace_text_style()),
+				gui.text(text: '●', text_style: gui.TextStyle{
+					...trace_text_style()
+					color: if live { gui.Color{120, 200, 120, 255} } else { gui.Color{180, 180, 180, 255} }
+				}),
+				gui.text(text: hexid(mid, ext), text_style: trace_text_style()),
+				gui.text(text: m.name, text_style: gui.theme().b4),
+				gui.text(text: '(${m.signals.len})', text_style: gui.theme().n4),
+			]
+		)
+		if expanded {
+			for s in m.signals {
+				val := if data.len > 0 {
+					lbl := s.label(data)
+					if lbl != '' {
+						'${s.physical(data):.2f} ${s.unit} (${lbl})'
+					} else {
+						'${s.physical(data):.2f} ${s.unit}'
+					}
+				} else {
+					'— ${s.unit}'
+				}
+				rng := if s.minimum != 0 || s.maximum != 0 {
+					'[${s.minimum:.0f}..${s.maximum:.0f}]'
+				} else {
+					''
+				}
+				rows << gui.row(
+					v_align: .middle
+					spacing: 6
+					padding: gui.Padding{0, 0, 0, 22}
+					content: [
+						gui.text(text: s.name, text_style: trace_text_style()),
+						gui.text(text: val, text_style: gui.theme().n4),
+						gui.text(text: rng, text_style: gui.theme().n4),
+					]
+				)
+			}
+		}
+	}
+	return gui.column(
+		sizing:          gui.fill_fill
+		padding:         gui.padding_medium
+		spacing:         2
+		id_scroll:       id_scroll_symbols
+		scroll_mode:     .vertical_only
+		scrollbar_cfg_y: &gui.ScrollbarCfg{
+			overflow: .visible
+		}
+		content:         rows
+	)
 }
 
 fn stats_panel(app &App) gui.View {
