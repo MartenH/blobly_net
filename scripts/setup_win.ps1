@@ -33,13 +33,16 @@ $vglyphpin  = '5685a6d'   # vlang/vglyph (validated for the W1 patch)
 
 function Step($m) { Write-Host "`n==== $m ====" -ForegroundColor Cyan }
 
-# The four W1 patches: (module path under $vmodules, patch file). Order matters
-# only in that all gui patches target the gui clone.
+# The gui/vglyph patches: (module path under $vmodules, patch file). Order matters
+# only in that all gui patches target the gui clone. 01-04 are the W1 Windows-build
+# fixes; 06 exposes WindowCfg.sample_count (MSAA) which src/main.v sets, so it's
+# required for the build to compile.
 $patches = @(
     @{ Repo = 'gui';    File = '01-gui-readback-cobjmacros.patch' },
     @{ Repo = 'gui';    File = '02-gui-dialog-includes.patch'     },
     @{ Repo = 'gui';    File = '03-gui-titlebar-isvalid.patch'    },
-    @{ Repo = 'vglyph'; File = '04-vglyph-empty-outline.patch'    }
+    @{ Repo = 'vglyph'; File = '04-vglyph-empty-outline.patch'    },
+    @{ Repo = 'gui';    File = '06-gui-sample-count.patch'        }
 )
 
 # -------- maintainer mode: capture verified patches from the live modules --------
