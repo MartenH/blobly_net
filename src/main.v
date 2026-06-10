@@ -32,7 +32,7 @@ const fps_options = ['3 fps', '5 fps', '10 fps']
 
 // Scroll ids for the side panels — non-zero + unique per window (gui enables a
 // column's scrollbar when id_scroll > 0). Kept clear of the checkbox id_focus
-// ranges (200+ buses, 300+ sim nodes, 400+ Graphics legend).
+// ranges (200+ buses, 300+ sim nodes, 400+ Graphics legend, 500+ watch chips).
 const id_scroll_buses = u32(7100)
 const id_scroll_sim = u32(7200)
 const id_scroll_plot = u32(7300)
@@ -58,7 +58,8 @@ const trace_header_height = f32(16)
 // Crop the chronological-trace Data cell after this many bytes (CAN-FD payloads
 // reach 64 bytes and would otherwise overflow the column); the rest is summarised.
 const trace_data_max_bytes = 16
-const plot_max_points = 400 // samples shown per signal in the Graphics panel
+const plot_max_points = 2000 // sample cap per signal (60s window @ 20Hz fits)
+const plot_win_options = ['5 s', '10 s', '30 s', '60 s'] // Graphics time window
 
 // ---- Color palettes: one struct, fed into make_theme() ----
 // Every gui color knob in one place (parallel to the ui_size_* scale). Swap the
@@ -196,14 +197,20 @@ mut:
 	sim_nodes []SimNode // simulated ECUs available per channel (Simulation panel)
 	sim_expanded map[int]bool // Simulation tree: channel idx -> expanded (default collapsed)
 	trace_filter string // case-insensitive substring filter on ID/name/ch/data
-	// The second, independent trace panel ("Trace (filter)" tab): same data,
-	// its own filter + selection — keep the full trace and a filtered slice
-	// open side by side (conventional multiple trace windows).
+	// The second, independent trace panel ("Trace (filter)"): same data, its
+	// own filter + selection — keep the full trace and a curated slice open
+	// side by side (conventional). It starts EMPTY: rows appear only for IDs
+	// added to the watch set (the ＋ button adds the Trace-selected message;
+	// each watched ID is a chip with ✕ to remove) or matching a typed filter.
 	trace_filter2 string
 	selection2    gui.GridSelection
+	watch         map[u32]bool
 	// Graphics panel: signals UNchecked in the legend (key '<id>:<signal>') —
 	// default empty = plot everything, so new selections start fully visible.
 	plot_off map[string]bool
+	// Strip-chart time window (seconds): the plot shows [latest - win, latest]
+	// and slides as frames arrive, instead of compressing all history.
+	plot_win int = 10
 }
 
 // trace_match reports whether any of the given fields contains the (lowercased)
@@ -219,6 +226,20 @@ fn trace_match(filter string, fields ...string) bool {
 		}
 	}
 	return false
+}
+
+// trace_pass is the row predicate per trace panel. The main Trace (which 0)
+// shows everything its filter matches (empty filter = everything). The
+// "Trace (filter)" panel (which 1) is opt-in: a row shows only if its ID is in
+// the watch set or a NON-empty filter matches — so it starts empty.
+fn trace_pass(app &App, which int, filter string, id u32, fields ...string) bool {
+	if which == 0 {
+		return trace_match(filter, ...fields)
+	}
+	if app.watch[id] {
+		return true
+	}
+	return filter.len > 0 && trace_match(filter, ...fields)
 }
 
 // SimNode is one simulated ECU offered in the Simulation panel: a configured ECU
@@ -434,9 +455,12 @@ fn make_theme(p Palette) gui.Theme {
 // Buses (narrow left) | Trace (centre) | Signals / Send / Statistics stacked
 // (right) — each its own panel. They can still be tabbed/dragged by the user.
 fn default_layout() &gui.DockNode {
-	right := gui.dock_split('r1', .vertical, 0.45, gui.dock_panel_group('g_sig', ['signals', 'plot'],
-		'signals'), gui.dock_split('r2', .vertical, 0.55, gui.dock_panel_group('g_send', ['send'],
-		'send'), gui.dock_panel_group('g_stats', ['stats'], 'stats')))
+	// Right column: Signals over Graphics (both visible — the plot used to hide
+	// behind a tab), then Send over Statistics.
+	right := gui.dock_split('r1', .vertical, 0.30, gui.dock_panel_group('g_sig', ['signals'],
+		'signals'), gui.dock_split('r3', .vertical, 0.48, gui.dock_panel_group('g_plot', ['plot'],
+		'plot'), gui.dock_split('r2', .vertical, 0.5, gui.dock_panel_group('g_send', ['send'],
+		'send'), gui.dock_panel_group('g_stats', ['stats'], 'stats'))))
 	// Trace over the independently-filtered trace (conventional second trace
 	// window) — both visible at once; drag to re-dock/tab them as preferred.
 	traces := gui.dock_split('t1', .vertical, 0.55, gui.dock_panel_group('g_trace', ['trace'],
@@ -1206,7 +1230,7 @@ fn trace_view(mut window gui.Window, which int) gui.View {
 	if grouped {
 		for id in app.order {
 			a := app.grouped[id] or { continue }
-			if !trace_match(filter, hexid(id, a.ext), a.name, a.ch) {
+			if !trace_pass(app, which, filter, id, hexid(id, a.ext), a.name, a.ch) {
 				continue
 			}
 			expanded := id in app.expanded
@@ -1298,7 +1322,7 @@ fn trace_view(mut window gui.Window, which int) gui.View {
 	// without any scroll math; scroll down to review the retained history.
 	for i := app.trace.len - 1; i >= 0; i-- {
 		r := app.trace[i]
-		if !trace_match(filter, hexid(r.id, r.ext), r.name, r.ch, hex(r.data)) {
+		if !trace_pass(app, which, filter, r.id, hexid(r.id, r.ext), r.name, r.ch, hex(r.data)) {
 			continue
 		}
 		rows << gui.GridRow{
@@ -1373,7 +1397,7 @@ fn trace_filter_row(app &App, which int) gui.View {
 			placeholder:     if which == 0 {
 				'id / name / ch / data — e.g. 0x100, Wheel, CAN2, FF'
 			} else {
-				'filtered view — own filter, e.g. 0x700'
+				'select a message in Trace, press ＋ (or type a filter)'
 			}
 			on_text_changed: fn [which] (_ &gui.Layout, s string, mut w gui.Window) {
 				mut a := w.state[App]()
@@ -1399,6 +1423,42 @@ fn trace_filter_row(app &App, which int) gui.View {
 				}
 			}
 		)
+	}
+	if which == 1 {
+		// Watch-list controls: ＋ adds the message selected in the Trace; each
+		// watched ID is a chip — click its ✕ to drop it again.
+		if app.sel_id >= 0 && !app.watch[u32(app.sel_id)] {
+			add_id := u32(app.sel_id)
+			content << gui.button(
+				id_focus: 34
+				content:  [
+					gui.text(text: '＋ ${hexid(add_id, add_id > 0x7ff)}', text_style: trace_text_style()),
+				]
+				padding:  gui.Padding{2, 6, 2, 6}
+				on_click: fn [add_id] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					mut a := w.state[App]()
+					a.watch[add_id] = true
+				}
+			)
+		}
+		mut ids := app.watch.keys()
+		ids.sort()
+		for k, wid in ids {
+			content << gui.button(
+				id_focus: u32(500 + k) // 500+ = watch chips (see id ranges note)
+				content:  [
+					gui.text(
+						text:       '${hexid(wid, wid > 0x7ff)} ✕'
+						text_style: trace_text_style()
+					),
+				]
+				padding:  gui.Padding{2, 6, 2, 6}
+				on_click: fn [wid] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					mut a := w.state[App]()
+					a.watch.delete(wid)
+				}
+			)
+		}
 	}
 	return gui.row(
 		v_align: .middle
@@ -1456,14 +1516,15 @@ const plot_colors = [
 ]
 
 // plot_panel graphs the selected message's signals over the trace history — a
-// conventional Graphics window. Each signal is a coloured polyline, auto-scaled
-// to its own range and positioned on a real **timeline** (x = recorded time,
-// labelled below the canvas), so uneven frame spacing shows as uneven spacing.
-// The legend is a per-signal **checkbox**: untick a signal to drop it from the
-// plot (state in App.plot_off). Click a message in the Trace to select the PDU.
+// conventional Graphics strip chart. The x-axis is a **fixed time window**
+// ([latest − window, latest], selectable 5/10/30/60 s) that slides as frames
+// arrive — older samples scroll off the left edge instead of compressing the
+// plot. Samples are positioned by recorded time; labels below the canvas mark
+// the window. The legend is a per-signal **checkbox**: untick a signal to drop
+// it from the plot (App.plot_off). Click a message in the Trace to select the PDU.
 fn plot_panel(mut window gui.Window) gui.View {
 	w, h := window.window_size()
-	app := window.state[App]()
+	mut app := window.state[App]()
 	mut content := [gui.text(text: 'Graphics', text_style: gui.theme().b3)]
 	if app.sel_id < 0 {
 		content << gui.text(text: '(click a message in the Trace to plot its signals)',
@@ -1475,8 +1536,29 @@ fn plot_panel(mut window gui.Window) gui.View {
 		content << gui.text(text: '0x${id:X}: no DBC message', text_style: gui.theme().n4)
 		return gui.column(sizing: gui.fill_fill, padding: gui.padding_medium, spacing: 5, content: content)
 	}
-	content << gui.text(text: '0x${id:X} ${m.name} — last ${plot_max_points} samples',
-		text_style: gui.theme().n4)
+	content << gui.row(
+		v_align: .middle
+		spacing: 6
+		padding: gui.padding_none
+		content: [
+			gui.text(text: '0x${id:X} ${m.name}', text_style: gui.theme().n4),
+			gui.text(text: 'window', text_style: trace_text_style()),
+			window.select(
+				id:        'plotwin'
+				id_focus:  108
+				select:    ['${app.plot_win} s']
+				options:   plot_win_options
+				min_width: 58
+				max_width: 70
+				on_select: fn (sel []string, mut _ gui.Event, mut w gui.Window) {
+					mut a := w.state[App]()
+					if sel.len > 0 {
+						a.plot_win = sel[0].all_before(' ').int()
+					}
+				}
+			),
+		]
+	)
 
 	// Collect per-signal series + the shared sample timeline from the recorded
 	// trace (chronological; every matching frame yields one sample per signal).
@@ -1497,14 +1579,28 @@ fn plot_panel(mut window gui.Window) gui.View {
 			cur[j] = v
 		}
 	}
+	// Strip-chart window: keep only samples inside [latest − win, latest]. The
+	// x mapping below uses the FIXED window, so the curve slides left as new
+	// frames arrive and short captures fill from the right edge.
+	win := f32(if app.plot_win > 0 { app.plot_win } else { 10 })
+	t_end := if times.len > 0 { times.last() } else { f32(0) }
+	wstart := t_end - win
+	mut first := 0
+	for first < times.len && times[first] < wstart {
+		first++
+	}
+	if first > 0 {
+		times = times[first..]
+		for j in 0 .. series.len {
+			series[j] = series[j][first..]
+		}
+	}
 	if times.len > plot_max_points {
 		times = times[times.len - plot_max_points..]
 		for j in 0 .. series.len {
 			series[j] = series[j][series[j].len - plot_max_points..]
 		}
 	}
-	t0 := if times.len > 0 { times[0] } else { f32(0) }
-	t1 := if times.len > 0 { times.last() } else { f32(0) }
 
 	// Only legend-checked signals are plotted (colour stays stable per signal
 	// index, so toggling one doesn't recolour the rest).
@@ -1529,18 +1625,17 @@ fn plot_panel(mut window gui.Window) gui.View {
 		color:   gui.Color{24, 24, 30, 255}
 		radius:  4
 		padding: gui.Padding{6, 6, 6, 6}
-		on_draw: fn [shown, shown_colors, times] (mut dc gui.DrawContext) {
-			draw_signals(mut dc, shown, shown_colors, times)
+		on_draw: fn [shown, shown_colors, times, wstart, win] (mut dc gui.DrawContext) {
+			draw_signals(mut dc, shown, shown_colors, times, wstart, win)
 		}
 	)
 	// Timeline labels under the canvas, aligned with the vertical gridlines
-	// (start / quarter / mid / three-quarter / end of the visible window).
-	if times.len > 1 {
-		span := t1 - t0
+	// (start / quarter / mid / three-quarter / end of the fixed window).
+	if times.len > 0 {
 		mut labels := []gui.View{}
 		for k in 0 .. 5 {
 			labels << gui.text(
-				text:       '${t0 + span * f32(k) / 4:.1f}s'
+				text:       '${wstart + win * f32(k) / 4:.1f}s'
 				text_style: trace_text_style()
 			)
 			if k < 4 {
@@ -1592,7 +1687,8 @@ fn plot_panel(mut window gui.Window) gui.View {
 
 // draw_signals paints the plot grid (4 horizontal bands + 4 vertical time
 // divisions matching the labels below the canvas) and each visible series.
-fn draw_signals(mut dc gui.DrawContext, series [][]f32, colors []gui.Color, times []f32) {
+fn draw_signals(mut dc gui.DrawContext, series [][]f32, colors []gui.Color, times []f32,
+	wstart f32, win f32) {
 	cw := dc.width
 	ch := dc.height
 	grid := gui.Color{55, 55, 70, 255}
@@ -1603,14 +1699,15 @@ fn draw_signals(mut dc gui.DrawContext, series [][]f32, colors []gui.Color, time
 		dc.line(x, 0, x, ch, grid, 1)
 	}
 	for j, s in series {
-		draw_one_series(mut dc, s, times, colors[j % colors.len])
+		draw_one_series(mut dc, s, times, wstart, win, colors[j % colors.len])
 	}
 }
 
-// draw_one_series plots a single signal on the shared timeline (x positioned by
-// recorded time, not sample index), auto-scaled to its own min/max so all
-// signals are visible regardless of their physical range.
-fn draw_one_series(mut dc gui.DrawContext, series []f32, times []f32, color gui.Color) {
+// draw_one_series plots a single signal on the FIXED strip-chart window
+// (x = recorded time mapped over [wstart, wstart+win]), auto-scaled to its own
+// min/max so all signals are visible regardless of their physical range.
+fn draw_one_series(mut dc gui.DrawContext, series []f32, times []f32, wstart f32, win f32,
+	color gui.Color) {
 	if series.len < 2 || times.len != series.len {
 		return
 	}
@@ -1627,11 +1724,10 @@ fn draw_one_series(mut dc gui.DrawContext, series []f32, times []f32, color gui.
 		}
 	}
 	span := if mx > mn { mx - mn } else { f32(1) }
-	t0 := times[0]
-	tspan := if times.last() > t0 { times.last() - t0 } else { f32(1) }
+	tspan := if win > 0 { win } else { f32(1) }
 	mut pts := []f32{cap: series.len * 2}
 	for i, v in series {
-		x := cw * (times[i] - t0) / tspan
+		x := cw * (times[i] - wstart) / tspan
 		y := ch - ch * (v - mn) / span * 0.92 - ch * 0.04 // 4% top/bottom margin
 		pts << x
 		pts << y

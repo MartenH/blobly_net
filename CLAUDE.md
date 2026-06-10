@@ -624,6 +624,19 @@ prompt for a password.
   build/cantester (stale Jun-8 binary, "0 channels attached") until rebuilt + timestamp-checked.
   NEXT (Phase 8 rest): per-channel transport-control UI (play/pause/seek/speed — player API ready);
   replay direct-to-trace sink (no bus) for offline review at cadence.
+- 2026-06-10: **Graphics strip-chart window + own panel; Trace (filter) is now an opt-in watch list.**
+  (a) The Graphics plot scrolls like a strip chart: a **fixed time window** ([latest − win, latest],
+  toolbar-style `select` 5/10/30/60 s, `App.plot_win`) slides as frames arrive — old samples drop off
+  the left edge instead of compressing the x-scale; short captures fill from the right.
+  `plot_max_points` raised to 2000 (60 s @ 20 Hz). (b) Graphics moved out of the Signals tab group
+  into its **own panel below Signals** (right column: Signals / Graphics / Send / Stats) — visible by
+  default. (c) **Trace (filter) starts EMPTY**: rows appear only for IDs in the new `App.watch` set
+  or a NON-empty typed filter (`trace_pass` predicate). A **＋ <id>** button (shown when a Trace
+  message is selected) adds it; each watched ID renders as a **chip with ✕** to remove (id_focus
+  500+). All click-driven — no typing needed (xdotool-friendly too). VERIFIED live on sim-demo:
+  10 s window slid 25.8–35.8s → 60.2–70.2s with constant span; ＋ 0x100 → only Powertrain in the
+  filtered view (chip shown), ✕ → empty again. Note: trace clicks toggle expand AND select — fixed
+  screen coords hit the inserted signal sub-rows on later clicks (debug eprintln confirmed; not a bug).
 - 2026-06-10: **Graphics panel: real timeline + per-signal legend checkboxes.** The plot's x-axis is
   now a true **timeline**: samples are positioned by recorded time (`TraceRow.t_ms`, shared per-PDU
   sample clock), not sample index — uneven frame spacing shows as uneven spacing — with 4 vertical
