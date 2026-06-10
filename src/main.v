@@ -39,6 +39,7 @@ const id_scroll_buses = u32(7100)
 const id_scroll_sim = u32(7200)
 const id_scroll_plot = u32(7300)
 const id_scroll_diag = u32(7400)
+const id_scroll_plot_outer = u32(7500) // Graphics root: clamps the panel measurement
 
 // UDS request/response CAN ids (classic OBD physical addressing): the tester
 // transmits on 0x7E0, the ECU answers on 0x7E8. The simulated ECU's UDS
@@ -224,6 +225,9 @@ mut:
 	// Strip-chart time window (seconds): the plot shows [latest - win, latest]
 	// and slides as frames arrive, instead of compressing all history.
 	plot_win int = 10
+	// Graphics hover cursor: fraction [0,1] across the canvas width of the last
+	// mouse-over position; -1 = not hovering. Drives the crosshair + value readout.
+	plot_hover_frac f32 = -1
 }
 
 // trace_match reports whether any of the given fields contains the (lowercased)
@@ -1610,15 +1614,17 @@ fn signals_panel(app &App) gui.View {
 	)
 }
 
-// plot_colors is the per-signal line palette for the Graphics panel.
+// plot_colors is the per-signal line palette for the Graphics panel. Saturated
+// mid-tones (matplotlib tab10-ish) so the lines read on BOTH the white opus-light
+// canvas and the dark canvas — the old palette washed out on white.
 const plot_colors = [
-	gui.Color{90, 170, 250, 255},
-	gui.Color{120, 220, 150, 255},
-	gui.Color{250, 175, 90, 255},
-	gui.Color{230, 120, 200, 255},
-	gui.Color{120, 220, 220, 255},
-	gui.Color{245, 220, 95, 255},
-	gui.Color{180, 150, 250, 255},
+	gui.Color{31, 119, 180, 255},  // blue
+	gui.Color{214, 39, 40, 255},   // red
+	gui.Color{44, 160, 44, 255},   // green
+	gui.Color{148, 103, 189, 255}, // purple
+	gui.Color{255, 127, 14, 255},  // orange
+	gui.Color{23, 158, 175, 255},  // teal
+	gui.Color{140, 86, 75, 255},   // brown
 ]
 
 // plot_panel graphs the selected message's signals over the trace history — a
@@ -1629,42 +1635,56 @@ const plot_colors = [
 // the window. The legend is a per-signal **checkbox**: untick a signal to drop
 // it from the plot (App.plot_off). Click a message in the Trace to select the PDU.
 fn plot_panel(mut window gui.Window) gui.View {
-	w, h := window.window_size()
 	mut app := window.state[App]()
-	mut content := [gui.text(text: 'Graphics', text_style: gui.theme().b3)]
 	if app.sel_id < 0 {
-		content << gui.text(text: '(click a message in the Trace to plot its signals)',
-			text_style: gui.theme().n4)
-		return gui.column(sizing: gui.fill_fill, padding: gui.padding_medium, spacing: 5, content: content)
+		return gui.column(
+			id:      'plot_root'
+			sizing:  gui.fill_fill
+			padding: gui.padding_medium
+			spacing: 5
+			content: [
+				gui.text(text: 'Graphics', text_style: gui.theme().b3),
+				gui.text(text: '(click a message in the Trace to plot its signals)',
+					text_style: gui.theme().n4),
+			]
+		)
 	}
 	id := u32(app.sel_id)
 	m := app.db.lookup_frame(id, id > 0x7ff) or {
-		content << gui.text(text: '0x${id:X}: no DBC message', text_style: gui.theme().n4)
-		return gui.column(sizing: gui.fill_fill, padding: gui.padding_medium, spacing: 5, content: content)
+		return gui.column(
+			id:      'plot_root'
+			sizing:  gui.fill_fill
+			padding: gui.padding_medium
+			spacing: 5
+			content: [
+				gui.text(text: 'Graphics', text_style: gui.theme().b3),
+				gui.text(text: '0x${id:X}: no DBC message', text_style: gui.theme().n4),
+			]
+		)
 	}
-	content << gui.row(
-		v_align: .middle
-		spacing: 6
-		padding: gui.padding_none
-		content: [
-			gui.text(text: '0x${id:X} ${m.name}', text_style: gui.theme().n4),
-			gui.text(text: 'window', text_style: trace_text_style()),
-			window.select(
-				id:        'plotwin'
-				id_focus:  108
-				select:    ['${app.plot_win} s']
-				options:   plot_win_options
-				min_width: 58
-				max_width: 70
-				on_select: fn (sel []string, mut _ gui.Event, mut w gui.Window) {
-					mut a := w.state[App]()
-					if sel.len > 0 {
-						a.plot_win = sel[0].all_before(' ').int()
-					}
-				}
-			),
-		]
-	)
+
+	// Measure THIS panel from the previous frame's layout tree so the canvas fills
+	// it exactly — draw_canvas needs explicit px (it can't fill-size), so feeding it
+	// the resolved panel size is what makes the plot stretch with the dock divider
+	// AND stops it overflowing the panel. One-frame lag is imperceptible; on the
+	// first frame the id isn't found yet, so we start from a small safe default.
+	mut avail_w := f32(360)
+	mut avail_h := f32(220)
+	if root := window.find_layout_by_id('plot_root') {
+		if root.shape.width > 1 {
+			avail_w = root.shape.width - 2 * gui.pad_medium
+			avail_h = root.shape.height - 2 * gui.pad_medium
+		}
+	}
+	// CANoe-style: fixed-width signal list on the LEFT, plot fills the rest. The
+	// canvas needs explicit px, so width = measured panel − legend − spacing; height
+	// is capped to the measured panel so its draw batches (clipped only to the canvas
+	// itself) can never bleed past the dock panel into neighbours below.
+	legend_w := f32(150)
+	header_h := f32(34)
+	labels_h := f32(18)
+	cw := clampf(avail_w - legend_w - 16, 140, 6000)
+	ph := clampf(avail_h - header_h - labels_h - 8, 90, avail_h - 44)
 
 	// Collect per-signal series + the shared sample timeline from the recorded
 	// trace (chronological; every matching frame yields one sample per signal).
@@ -1719,56 +1739,128 @@ fn plot_panel(mut window gui.Window) gui.View {
 		}
 	}
 
-	cw := clampf(f32(if w > 0 { w } else { 1180 }) * 0.21, 220, 520)
-	// Shorter than the old 0.24×h: the timeline labels + per-signal legend
-	// checkboxes must fit below the canvas inside the (scrollable) panel.
-	ph := clampf(f32(if h > 0 { h } else { 680 }) * 0.15, 100, 240)
-	content << gui.draw_canvas(
-		id:      'sigplot'
-		version: u64(app.rx_count + app.tx_count) // re-tessellate only on new frames
-		width:   cw
-		height:  ph
-		color:   gui.Color{24, 24, 30, 255}
-		radius:  4
-		padding: gui.Padding{6, 6, 6, 6}
-		on_draw: fn [shown, shown_colors, times, wstart, win] (mut dc gui.DrawContext) {
-			draw_signals(mut dc, shown, shown_colors, times, wstart, win)
-		}
-	)
-	// Timeline labels under the canvas, aligned with the vertical gridlines
-	// (start / quarter / mid / three-quarter / end of the fixed window).
-	if times.len > 0 {
-		mut labels := []gui.View{}
-		for k in 0 .. 5 {
-			labels << gui.text(
-				text:       '${wstart + win * f32(k) / 4:.1f}s'
-				text_style: trace_text_style()
-			)
-			if k < 4 {
-				labels << gui.row(sizing: gui.fill_fit, padding: gui.padding_none) // spacer
+	plot_bg := if app.dark { gui.Color{24, 24, 30, 255} } else { gui.rgb(255, 255, 255) }
+	plot_grid := if app.dark { gui.Color{55, 55, 70, 255} } else { gui.rgb(214, 214, 214) }
+	// Hover cursor: map the stored fraction to a sample index + time for the
+	// crosshair (on-canvas) and the value readout (left signal list).
+	hf := app.plot_hover_frac
+	mut hover_idx := -1
+	mut hover_time := f32(0)
+	if hf >= 0 && times.len > 0 {
+		hover_time = wstart + hf * win
+		mut bestd := f32(1e30)
+		for i, t in times {
+			d := if t > hover_time { t - hover_time } else { hover_time - t }
+			if d < bestd {
+				bestd = d
+				hover_idx = i
 			}
 		}
-		content << gui.row(
-			width:   cw
-			sizing:  gui.fixed_fit
-			padding: gui.padding_none
-			content: labels
-		)
 	}
+
+	// --- Header: title + zoom toolbar ('−' widens the time window, '+' narrows it). ---
+	header := gui.row(
+		v_align: .middle
+		spacing: 6
+		padding: gui.padding_none
+		content: [
+			gui.text(text: '0x${id:X} ${m.name}', text_style: gui.theme().n4),
+			gui.button(
+				id_focus:  109
+				max_width: 34
+				content:   [gui.text(text: '−')]
+				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					zoom_window(mut w, 1)
+				}
+			),
+			window.select(
+				id:        'plotwin'
+				id_focus:  108
+				select:    ['${app.plot_win} s']
+				options:   plot_win_options
+				min_width: 58
+				max_width: 70
+				on_select: fn (sel []string, mut _ gui.Event, mut w gui.Window) {
+					mut a := w.state[App]()
+					if sel.len > 0 {
+						a.plot_win = sel[0].all_before(' ').int()
+					}
+				}
+			),
+			gui.button(
+				id_focus:  110
+				max_width: 34
+				content:   [gui.text(text: '+')]
+				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					zoom_window(mut w, -1)
+				}
+			),
+		]
+	)
+
+	// --- Canvas (full panel width) + timeline labels directly under it. ---
+	canvas := gui.draw_canvas(
+		id:       'sigplot'
+		// re-tessellate on new frames OR when the hover cursor moves
+		version:  u64(app.rx_count + app.tx_count) * 8192 + u64(int((hf + 1) * 2000))
+		width:    cw
+		height:   ph
+		color:    plot_bg
+		radius:   4
+		padding:  gui.Padding{6, 6, 6, 6}
+		on_draw:  fn [shown, shown_colors, times, wstart, win, plot_grid, hf] (mut dc gui.DrawContext) {
+			draw_signals(mut dc, shown, shown_colors, times, wstart, win, plot_grid, hf)
+		}
+		on_hover: fn (mut layout gui.Layout, mut e gui.Event, mut w gui.Window) {
+			mut a := w.state[App]()
+			cwid := layout.shape.width - layout.shape.padding.left - layout.shape.padding.right
+			if cwid <= 0 {
+				return
+			}
+			rel := e.mouse_x - layout.shape.x - layout.shape.padding.left
+			a.plot_hover_frac = clampf(rel / cwid, 0, 1)
+		}
+	)
+	mut tlabels := []gui.View{}
+	for k in 0 .. 5 {
+		tlabels << gui.text(text: '${wstart + win * f32(k) / 4:.1f}s', text_style: trace_text_style())
+		if k < 4 {
+			tlabels << gui.row(sizing: gui.fill_fit, padding: gui.padding_none) // spacer
+		}
+	}
+	// RIGHT side: the plot canvas + timeline labels under it.
+	right := gui.column(
+		sizing:  gui.fill_fill
+		spacing: 2
+		padding: gui.padding_none
+		content: [
+			canvas,
+			gui.row(width: cw, sizing: gui.fixed_fit, padding: gui.padding_none, content: tlabels),
+		]
+	)
+
+	// LEFT side: the signal list (fixed width, scrolls if long) — each signal a
+	// colour-coded checkbox showing its live/cursor value; cursor time on top.
+	mut legend := []gui.View{}
+	if hover_idx >= 0 {
+		legend << gui.text(text: '⌖ @ ${hover_time:.2f}s', text_style: gui.theme().n4)
+	}
+	// Each signal is a clickable row I fully control (gui.checkbox's label vanishes
+	// in a narrow fixed-width column): [check glyph] [colour-coded name] [value].
 	for j, s in sigs {
 		key := '${id}:${s.name}'
 		c := plot_colors[j % plot_colors.len]
-		content << gui.checkbox(
-			id_focus:         u32(400 + j) // 400+ = Graphics legend (see id ranges note)
-			select:           !app.plot_off[key]
-			label:            '● ${s.name}: ${cur[j]:.2f} ${s.unit}'
-			text_style:       trace_text_style()
-			text_style_label: gui.TextStyle{
-				...gui.theme().n4
-				color: c
-			}
-			padding:          gui.Padding{0, 4, 0, 4}
-			on_click:         fn [key] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+		on := !app.plot_off[key]
+		val := if hover_idx >= 0 && hover_idx < series[j].len {
+			f64(series[j][hover_idx])
+		} else {
+			cur[j]
+		}
+		legend << gui.row(
+			v_align:  .middle
+			spacing:  4
+			padding:  gui.Padding{1, 2, 1, 2}
+			on_click: fn [key] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 				mut a := w.state[App]()
 				if key in a.plot_off {
 					a.plot_off.delete(key)
@@ -1776,36 +1868,87 @@ fn plot_panel(mut window gui.Window) gui.View {
 					a.plot_off[key] = true
 				}
 			}
+			content:  [
+				gui.text(text: if on { '☑' } else { '☐' }, text_style: trace_text_style()),
+				gui.text(text: s.name, text_style: gui.TextStyle{
+					...trace_text_style()
+					color: if on { c } else { gui.Color{150, 150, 150, 255} }
+				}),
+				gui.text(text: '${val:.1f}', text_style: trace_text_style()),
+			]
 		)
 	}
-	return gui.column(
-		sizing:          gui.fill_fill
-		padding:         gui.padding_medium
-		spacing:         4
+	left := gui.column(
+		width:           legend_w
+		sizing:          gui.fixed_fill
+		spacing:         2
+		padding:         gui.padding_none
 		id_scroll:       id_scroll_plot
 		scroll_mode:     .vertical_only
 		scrollbar_cfg_y: &gui.ScrollbarCfg{
 			overflow: .visible
 		}
-		content:         content
+		content:         legend
 	)
+
+	return gui.column(
+		id:              'plot_root'
+		sizing:          gui.fill_fill
+		padding:         gui.padding_medium
+		spacing:         4
+		// Vertical scroll clamps plot_root's measured size to the panel viewport —
+		// without it, measuring plot_root (which contains the fixed-size canvas)
+		// feeds the canvas size back into avail_h and the panel grows without bound.
+		id_scroll:       id_scroll_plot_outer
+		scroll_mode:     .vertical_only
+		scrollbar_cfg_y: &gui.ScrollbarCfg{
+			overflow: .visible
+		}
+		content:         [
+			header,
+			gui.row(sizing: gui.fill_fill, spacing: 8, padding: gui.padding_none, content: [left, right]),
+		]
+	)
+}
+
+// zoom_window steps the Graphics time window through 5/10/30/60 s. dir +1 widens
+// (zoom out), -1 narrows (zoom in).
+fn zoom_window(mut w gui.Window, dir int) {
+	mut a := w.state[App]()
+	wins := [5, 10, 30, 60]
+	mut idx := wins.index(a.plot_win)
+	if idx < 0 {
+		idx = 1
+	}
+	idx += dir
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= wins.len {
+		idx = wins.len - 1
+	}
+	a.plot_win = wins[idx]
 }
 
 // draw_signals paints the plot grid (4 horizontal bands + 4 vertical time
 // divisions matching the labels below the canvas) and each visible series.
 fn draw_signals(mut dc gui.DrawContext, series [][]f32, colors []gui.Color, times []f32,
-	wstart f32, win f32) {
+	wstart f32, win f32, grid gui.Color, hover f32) {
 	cw := dc.width
 	ch := dc.height
-	grid := gui.Color{55, 55, 70, 255}
 	for i in 0 .. 5 {
 		y := ch * f32(i) / 4
 		dc.line(0, y, cw, y, grid, 1)
 		x := cw * f32(i) / 4
 		dc.line(x, 0, x, ch, grid, 1)
 	}
+	// Vertical hover crosshair (neutral grey reads on both white and dark).
+	if hover >= 0 {
+		hx := cw * hover
+		dc.line(hx, 0, hx, ch, gui.Color{130, 130, 140, 255}, 1)
+	}
 	for j, s in series {
-		draw_one_series(mut dc, s, times, wstart, win, colors[j % colors.len])
+		draw_one_series(mut dc, s, times, wstart, win, colors[j % colors.len], hover)
 	}
 }
 
@@ -1813,7 +1956,7 @@ fn draw_signals(mut dc gui.DrawContext, series [][]f32, colors []gui.Color, time
 // (x = recorded time mapped over [wstart, wstart+win]), auto-scaled to its own
 // min/max so all signals are visible regardless of their physical range.
 fn draw_one_series(mut dc gui.DrawContext, series []f32, times []f32, wstart f32, win f32,
-	color gui.Color) {
+	color gui.Color, hover f32) {
 	if series.len < 2 || times.len != series.len {
 		return
 	}
@@ -1839,6 +1982,22 @@ fn draw_one_series(mut dc gui.DrawContext, series []f32, times []f32, wstart f32
 		pts << y
 	}
 	dc.polyline(pts, color, 1.5, .round, .round)
+	// Marker dot where the hover crosshair crosses this series (nearest sample).
+	if hover >= 0 {
+		ht := wstart + hover * win
+		mut idx := 0
+		mut bestd := f32(1e30)
+		for i, t in times {
+			d := if t > ht { t - ht } else { ht - t }
+			if d < bestd {
+				bestd = d
+				idx = i
+			}
+		}
+		dx := cw * (times[idx] - wstart) / tspan
+		dy := ch - ch * (series[idx] - mn) / span * 0.92 - ch * 0.04
+		dc.filled_circle(dx, dy, 3, color)
+	}
 }
 
 fn clampf(v f32, lo f32, hi f32) f32 {
