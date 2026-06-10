@@ -768,7 +768,7 @@ fn (mut app App) record(dir string, f transport.CanFrame, t_ms f64, ch string) {
 	} else {
 		app.tx_count++
 	}
-	name := if m := app.db.lookup(f.id) { m.name } else { '' }
+	name := if m := app.db.lookup_frame(f.id, f.extended) { m.name } else { '' }
 	prev := app.grouped[f.id] or { MsgAgg{} }
 	first := prev.last.len == 0
 	// Per-byte change vs the previous instance of this ID (bit i set = byte i
@@ -1249,7 +1249,7 @@ fn trace_view(mut window gui.Window, which int) gui.View {
 				}
 			}
 			if expanded {
-				if m := app.db.lookup(id) {
+				if m := app.db.lookup_frame(id, a.ext) {
 					for s in m.active_signals(a.last) {
 						raw := s.raw_value(a.last)
 						label := s.label(a.last)
@@ -1479,7 +1479,7 @@ fn signals_panel(app &App) gui.View {
 	}
 	id := u32(app.sel_id)
 	agg := app.grouped[id] or { MsgAgg{} }
-	msg := app.db.lookup(id) or {
+	msg := app.db.lookup_frame(id, agg.ext) or {
 		lines << gui.text(text: 'Signals — ${hexid(id, agg.ext)}', text_style: gui.theme().b3)
 		lines << gui.text(text: '(no DBC message for this ID)', text_style: gui.theme().n4)
 		return gui.column(sizing: gui.fill_fill, padding: gui.padding_medium, spacing: 5, content: lines)
@@ -1532,7 +1532,7 @@ fn plot_panel(mut window gui.Window) gui.View {
 		return gui.column(sizing: gui.fill_fill, padding: gui.padding_medium, spacing: 5, content: content)
 	}
 	id := u32(app.sel_id)
-	m := app.db.lookup(id) or {
+	m := app.db.lookup_frame(id, id > 0x7ff) or {
 		content << gui.text(text: '0x${id:X}: no DBC message', text_style: gui.theme().n4)
 		return gui.column(sizing: gui.fill_fill, padding: gui.padding_medium, spacing: 5, content: content)
 	}

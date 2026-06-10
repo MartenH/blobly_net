@@ -23,10 +23,45 @@ pub:
 	nodes    []string // ECU nodes declared by the DBC BU_ record
 }
 
-// lookup returns the message defined for `id`, if any.
+// lookup returns the message defined for `id`, if any (exact id match).
 pub fn (db Database) lookup(id u32) ?Message {
 	for m in db.messages {
 		if m.id == id {
+			return m
+		}
+	}
+	return none
+}
+
+// j1939_pgn extracts the Parameter Group Number from a 29-bit J1939 id.
+// Layout (MSB→LSB): priority(3) | EDP(1) | DP(1) | PF(8) | PS(8) | SA(8).
+// For PDU1 (PF < 0xF0) the PS byte is a destination address and is NOT part
+// of the PGN; for PDU2 (PF >= 0xF0) it is. Priority and source address are
+// never part of the PGN.
+pub fn j1939_pgn(id u32) u32 {
+	pf := (id >> 16) & 0xFF
+	mut pgn := (id >> 8) & 0x3FFFF // EDP+DP+PF+PS
+	if pf < 0xF0 {
+		pgn &= 0x3FF00 // PDU1: drop the destination-address byte
+	}
+	return pgn
+}
+
+// lookup_frame resolves a received frame to a message: exact id first, then —
+// for extended (29-bit) frames only — a J1939 PGN match that ignores the
+// priority and source-address bits. Real J1939 DBCs (e.g. the CSS/CANedge
+// ones) encode prio+PGN+SA in the BO_ id, so live frames from a different
+// source address never match exactly; the PGN is the stable key.
+pub fn (db Database) lookup_frame(id u32, ext bool) ?Message {
+	if m := db.lookup(id) {
+		return m
+	}
+	if !ext {
+		return none
+	}
+	pgn := j1939_pgn(id)
+	for m in db.messages {
+		if m.ext && j1939_pgn(m.id) == pgn {
 			return m
 		}
 	}

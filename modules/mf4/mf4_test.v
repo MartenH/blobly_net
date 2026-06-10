@@ -1,5 +1,7 @@
 module mf4
 
+import os
+
 // Hermetic test against the committed samples/demo.mf4 (a python-can MF4Writer
 // file: master named 'time' as float64 seconds, DataBytes as a fixed inline
 // array). 60 frames: 30×0x100 (8-byte powertrain) + 30×0x700 (1-byte heartbeat),
@@ -57,4 +59,32 @@ fn test_rejects_non_mdf() {
 		return
 	}
 	assert false, 'expected an error for non-MDF input'
+}
+
+// Real-data regression vs the asammdf-validated ground truth (2026-06-04):
+// the CSS Electronics J1939 driving log is UNFINALIZED ("UnFinMF "), UNSORTED
+// (CAN_DataFrame + error/remote CGs interleaved with record ids) and
+// bit-packed, with DataBytes in a VLSD channel GROUP. asammdf extracted
+// 145534 frames with EngineSpeed 913-1761 rpm x19584 — we must match.
+// Skipped when the (git-ignored) sample isn't fetched; get it with
+// scripts/setup_mf4_tools.sh.
+fn test_unfinalized_unsorted_canedge() {
+	path := @VMODROOT + '/samples/driving.mf4'
+	if !os.exists(path) {
+		println('skip: ${path} not present (run scripts/setup_mf4_tools.sh)')
+		return
+	}
+	entries := load_file(path) or {
+		assert false, '${err}'
+		return
+	}
+	assert entries.len == 145534
+	mut prev := entries[0].t_s
+	mut all_ext := true
+	for e in entries {
+		assert e.t_s >= prev - 1e-9
+		prev = e.t_s
+		all_ext = all_ext && e.frame.extended
+	}
+	assert all_ext // J1939: every frame uses a 29-bit id
 }
