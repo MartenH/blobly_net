@@ -300,3 +300,13 @@ green + fast (cold ≈43 min, warm ≈2 min). Getting there hit three runner rea
 - 🟢 **`candb.encode` rounding bug.** `i64(x + 0.5)` truncated negatives toward zero (`-4.5 → -4`),
   so `encode(-5.0)` produced `-4`. Caught by `candb_test.v::test_signed_negative`. Fixed with
   `math.round` (round half away from zero). Reminder: keep testing module logic in isolation.
+- 🟠 **Headless launch crashes in `v_stable_sort` (no display only).** Running the GUI with no
+  `DISPLAY` (`DISPLAY= ./build/cantester …`) logs `LINUX_X11_OPEN_DISPLAY_FAILED` then aborts with
+  `v_stable_sort: invalid memory access` inside gui's degraded first render (the dump shows gui's
+  View-State/struct-size stats). It reproduces on builds BEFORE the Trace/Graphics work too, so it's
+  pre-existing and **display-only** — the app runs fine with a real display. Likely a gui/sokol
+  failure path rendering with a half-initialised GL/state, not our logic. Separately found while
+  here: V's `.sort(a.id < b.id)` on `[]candb.Message` (structs containing the `Signal.values` map)
+  can fault — the Symbol Browser now sorts message *ids* (a plain `[]u32` sort) via an id→index map
+  instead of moving the structs. Caveat: GUI launches from the agent shell are flaky (the harness
+  kills the windowed process; headless runs execute), so verify GUI changes from an interactive shell.

@@ -70,6 +70,7 @@ const trace_header_height = f32(16)
 // reach 64 bytes and would otherwise overflow the column); the rest is summarised.
 const trace_data_max_bytes = 16
 const plot_max_points = 2000 // sample cap per signal (60s window @ 20Hz fits)
+const plot_history = 6000     // per-message frames retained for the plot (deep history)
 const plot_win_options = ['5 s', '10 s', '30 s', '60 s'] // Graphics time window
 
 // ---- Color palettes: one struct, fed into make_theme() ----
@@ -164,6 +165,14 @@ mut:
 	repeat  bool // latest frame was byte-identical to the prior one for this ID
 }
 
+// PlotSample is one retained frame of a message for the Graphics strip chart —
+// kept in a per-message history (App.plot_hist) that is much deeper than the
+// 1000-frame display trace, so the plot can fill a long time window.
+struct PlotSample {
+	t_s  f32
+	data []u8
+}
+
 // ChannelRT is the live runtime state of one configured channel (bus).
 struct ChannelRT {
 mut:
@@ -198,7 +207,9 @@ mut:
 	mode      string = 'grouped' // 'grouped' | 'all'
 	dark      bool // current theme: false = Opus sage-light (default), true = dark
 	recents   []string // recently opened project file paths (most-recent first; persisted)
-	expanded  map[u32]bool // grouped-trace IDs currently expanded (multi-select)
+	expanded  map[u32]bool // grouped-trace IDs expanded in the main Trace (which 0)
+	expanded2 map[u32]bool // …and independently in Trace (filter) (which 1)
+	plot_hist map[u32][]PlotSample // deep per-message history for the Graphics plot
 	sel_id    i64 = -1     // message ID the Signals panel inspects (trace selection)
 	selection gui.GridSelection
 	send_id   string = '101'
@@ -918,6 +929,17 @@ fn (mut app App) record(dir string, f transport.CanFrame, t_ms f64, ch string) {
 	if f.id !in app.grouped {
 		app.order << f.id
 	}
+	// Deep per-message plot history (independent of the 1000-frame display cap),
+	// so the Graphics strip chart can fill a long window. Amortised trim like trace.
+	mut hist := app.plot_hist[f.id] or { []PlotSample{} }
+	hist << PlotSample{
+		t_s:  f32(t_ms / 1000.0)
+		data: f.data.clone()
+	}
+	if hist.len > plot_history + plot_history / 4 {
+		hist = hist[hist.len - plot_history..].clone()
+	}
+	app.plot_hist[f.id] = hist
 	app.grouped[f.id] = MsgAgg{
 		id:      f.id
 		ext:     f.extended
@@ -1063,8 +1085,61 @@ fn menu_bar(mut window gui.Window) gui.View {
 					},
 				]
 			},
+			gui.MenuItemCfg{
+				id:      'view'
+				text:    'View'
+				submenu: view_submenu(app)
+			},
 		]
 	)
+}
+
+// view_panels lists every dock panel (id, label) for the View menu — its order
+// is also the menu order. Must stay in sync with the dock_layout panels list.
+const view_panels = [
+	['trace', 'Trace'],
+	['ftrace', 'Trace (filter)'],
+	['buses', 'Buses'],
+	['simulation', 'Simulation'],
+	['symbols', 'Symbol Browser'],
+	['signals', 'Signals'],
+	['plot', 'Graphics'],
+	['send', 'Send'],
+	['diag', 'Diagnostics'],
+	['stats', 'Statistics'],
+]
+
+// dock_has_panel reports whether a panel id is currently placed somewhere in the
+// dock tree (i.e. open). Used to tick the View menu and toggle show/hide.
+fn dock_has_panel(root &gui.DockNode, pid string) bool {
+	if _ := gui.dock_tree_find_group_by_panel(root, pid) {
+		return true
+	}
+	return false
+}
+
+// view_submenu builds the View menu: one toggle per dock panel. A ✓ marks open
+// panels; selecting one hides it (if open) or re-adds it at the right edge.
+fn view_submenu(app &App) []gui.MenuItemCfg {
+	mut items := []gui.MenuItemCfg{}
+	for p in view_panels {
+		pid := p[0]
+		open := dock_has_panel(app.dock_root, pid)
+		mark := if open { '✓ ' } else { '    ' }
+		items << gui.MenuItemCfg{
+			id:     'view.${pid}'
+			text:   '${mark}${p[1]}'
+			action: fn [pid] (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {
+				mut a := w.state[App]()
+				if dock_has_panel(a.dock_root, pid) {
+					a.dock_root = gui.dock_tree_remove_panel(a.dock_root, pid)
+				} else {
+					a.dock_root = gui.dock_tree_wrap_root(a.dock_root, pid, .right)
+				}
+			}
+		}
+	}
+	return items
 }
 
 // cli_project_arg returns the first positional CLI argument that looks like a
@@ -1240,6 +1315,8 @@ fn toolbar(mut window gui.Window) gui.View {
 					a.grouped = map[u32]MsgAgg{}
 					a.order = []u32{}
 					a.expanded = map[u32]bool{}
+					a.expanded2 = map[u32]bool{}
+					a.plot_hist = map[u32][]PlotSample{}
 					a.sel_id = -1
 				}
 			),
@@ -1352,7 +1429,7 @@ fn trace_view(mut window gui.Window, which int) gui.View {
 			if !trace_pass(app, which, filter, id, hexid(id, a.ext), a.name, a.ch) {
 				continue
 			}
-			expanded := id in app.expanded
+			expanded := if which == 0 { id in app.expanded } else { id in app.expanded2 }
 			chevron := if expanded { '▼' } else { '▶' }
 			rows << gui.GridRow{
 				id:    '${id}'
@@ -1427,10 +1504,18 @@ fn trace_view(mut window gui.Window, which int) gui.View {
 					// a second click on the same row within 400 ms = expand toggle.
 					now := time.ticks()
 					if rid == a.last_click_id && now - a.last_click_ms < 400 {
-						if id in a.expanded {
-							a.expanded.delete(id)
+						if which == 0 {
+							if id in a.expanded {
+								a.expanded.delete(id)
+							} else {
+								a.expanded[id] = true
+							}
 						} else {
-							a.expanded[id] = true
+							if id in a.expanded2 {
+								a.expanded2.delete(id)
+							} else {
+								a.expanded2[id] = true
+							}
 						}
 						a.last_click_id = '' // consume, so a 3rd click isn't a double
 					} else {
@@ -1573,10 +1658,11 @@ fn trace_filter_row(app &App, which int) gui.View {
 	]
 	if filter.len > 0 {
 		content << gui.button(
-			id_focus: u32(31 + which * 2)
-			content:  [gui.text(text: '✕', text_style: trace_text_style())]
-			padding:  gui.Padding{2, 6, 2, 6}
-			on_click: fn [which] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+			id_focus:  u32(31 + which * 2)
+			max_width: 30
+			content:   [gui.text(text: '✕', text_style: trace_text_style())]
+			padding:   gui.Padding{2, 6, 2, 6}
+			on_click:  fn [which] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 				mut a := w.state[App]()
 				if which == 0 {
 					a.trace_filter = ''
@@ -1592,10 +1678,11 @@ fn trace_filter_row(app &App, which int) gui.View {
 		mids := selected_msg_ids(app.selection)
 		if mids.len > 0 {
 			content << gui.button(
-				id_focus: 34
-				content:  [gui.text(text: '＋ filter (${mids.len})', text_style: trace_text_style())]
-				padding:  gui.Padding{2, 6, 2, 6}
-				on_click: fn [mids] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				id_focus:  34
+				max_width: 96
+				content:   [gui.text(text: '＋ filter (${mids.len})', text_style: trace_text_style())]
+				padding:   gui.Padding{2, 6, 2, 6}
+				on_click:  fn [mids] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					mut a := w.state[App]()
 					for mid in mids {
 						a.watch[mid] = true
@@ -1605,21 +1692,39 @@ fn trace_filter_row(app &App, which int) gui.View {
 		}
 	}
 	if which == 1 {
+		// − filter: remove every selected message from the watch list (mirror of the
+		// Trace's ＋). Operates on this panel's own selection.
+		rmids := selected_msg_ids(app.selection2).filter(app.watch[it])
+		if rmids.len > 0 {
+			content << gui.button(
+				id_focus:  35
+				max_width: 100
+				content:   [gui.text(text: '− filter (${rmids.len})', text_style: trace_text_style())]
+				padding:   gui.Padding{2, 6, 2, 6}
+				on_click:  fn [rmids] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					mut a := w.state[App]()
+					for mid in rmids {
+						a.watch.delete(mid)
+					}
+				}
+			)
+		}
 		// Watch-list chips: each watched ID (added from the Trace's ＋) is a chip —
 		// click its ✕ to drop it again.
 		mut ids := app.watch.keys()
 		ids.sort()
 		for k, wid in ids {
 			content << gui.button(
-				id_focus: u32(500 + k) // 500+ = watch chips (see id ranges note)
-				content:  [
+				id_focus:  u32(500 + k) // 500+ = watch chips (see id ranges note)
+				max_width: 72
+				content:   [
 					gui.text(
 						text:       '${hexid(wid, wid > 0x7ff)} ✕'
 						text_style: trace_text_style()
 					),
 				]
-				padding:  gui.Padding{2, 6, 2, 6}
-				on_click: fn [wid] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				padding:   gui.Padding{2, 6, 2, 6}
+				on_click:  fn [wid] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					mut a := w.state[App]()
 					a.watch.delete(wid)
 				}
@@ -1742,21 +1847,18 @@ fn plot_panel(mut window gui.Window) gui.View {
 	cw := clampf(avail_w - legend_w - 16, 140, 6000)
 	ph := clampf(avail_h - header_h - labels_h - 8, 90, avail_h - 44)
 
-	// Collect per-signal series + the shared sample timeline from the recorded
-	// trace (chronological; every matching frame yields one sample per signal).
+	// Collect per-signal series + the shared sample timeline from this message's
+	// DEEP plot history (not the 1000-frame display trace), so the strip chart can
+	// fill the whole window even on a busy bus.
 	sigs := m.signals
 	mut series := [][]f32{len: sigs.len, init: []f32{}}
 	mut times := []f32{}
 	mut cur := []f64{len: sigs.len}
-	scan_start := if app.trace.len > 2000 { app.trace.len - 2000 } else { 0 }
-	for i := scan_start; i < app.trace.len; i++ {
-		r := app.trace[i]
-		if r.id != id {
-			continue
-		}
-		times << f32(r.t_ms / 1000.0) // trace time base, seconds
+	hist := app.plot_hist[id] or { []PlotSample{} }
+	for smp in hist {
+		times << smp.t_s
 		for j, s in sigs {
-			v := s.physical(r.data)
+			v := s.physical(smp.data)
 			series[j] << f32(v)
 			cur[j] = v
 		}
@@ -2092,10 +2194,19 @@ fn symbol_browser_panel(app &App) gui.View {
 		rows << gui.text(text: '(no database loaded)', text_style: gui.theme().n4)
 		return gui.column(sizing: gui.fill_fill, padding: gui.padding_medium, spacing: 4, content: rows)
 	}
-	mut msgs := app.db.messages.clone()
-	msgs.sort(a.id < b.id)
+	// Iterate messages by sorted id WITHOUT sorting the Message structs: V's stable
+	// sort can fault ('invalid memory access') moving structs that contain maps
+	// (Signal.values). Sort the u32 ids (a plain int sort is safe) via an id→index
+	// map and index back into the unsorted catalog.
+	mut idx := map[u32]int{}
+	for i, msg in app.db.messages {
+		idx[msg.id] = i
+	}
+	mut ids := idx.keys()
+	ids.sort()
 	filt := app.symbol_filter.to_lower()
-	for m in msgs {
+	for id in ids {
+		m := app.db.messages[idx[id]]
 		if filt != '' {
 			mut hit := m.name.to_lower().contains(filt) || hexid(m.id, m.ext).to_lower().contains(filt)
 			if !hit {
@@ -2594,6 +2705,8 @@ fn load_log(path string, mut w gui.Window) {
 	app.grouped = map[u32]MsgAgg{}
 	app.order = []u32{}
 	app.expanded = map[u32]bool{}
+	app.expanded2 = map[u32]bool{}
+	app.plot_hist = map[u32][]PlotSample{}
 	app.sel_id = -1
 	app.rx_count = 0
 	app.tx_count = 0
