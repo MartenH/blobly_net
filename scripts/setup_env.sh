@@ -44,7 +44,7 @@ echo "==> 3/6 vlang/gui module (pulls vglyph automatically)"
 #   ( cd ~/.vmodules/gui && git fetch && git checkout 68b9302 )
 
 echo "==> 4/6 Build + test"
-"$HOME/v/v" -path "@vlib|@vmodules|modules" -o build/cantester src/main.v
+"$HOME/v/v" -enable-globals -path "@vlib|@vmodules|modules" -o build/cantester src/main.v
 "$HOME/v/v" test modules/candb/
 
 echo "==> 5/6 Virtual CAN bus (vcan0)"
