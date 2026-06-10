@@ -32,9 +32,10 @@ const fps_options = ['3 fps', '5 fps', '10 fps']
 
 // Scroll ids for the side panels — non-zero + unique per window (gui enables a
 // column's scrollbar when id_scroll > 0). Kept clear of the checkbox id_focus
-// ranges (200+ buses, 300+ sim nodes).
+// ranges (200+ buses, 300+ sim nodes, 400+ Graphics legend).
 const id_scroll_buses = u32(7100)
 const id_scroll_sim = u32(7200)
+const id_scroll_plot = u32(7300)
 
 // ---- Look & feel: the few knobs that restyle the whole app ----
 // Font family for ALL UI text. '' keeps gui's bundled default; set e.g.
@@ -200,6 +201,9 @@ mut:
 	// open side by side (CANoe-style multiple trace windows).
 	trace_filter2 string
 	selection2    gui.GridSelection
+	// Graphics panel: signals UNchecked in the legend (key '<id>:<signal>') —
+	// default empty = plot everything, so new selections start fully visible.
+	plot_off map[string]bool
 }
 
 // trace_match reports whether any of the given fields contains the (lowercased)
@@ -1452,8 +1456,11 @@ const plot_colors = [
 ]
 
 // plot_panel graphs the selected message's signals over the trace history — a
-// CANoe-style Graphics window. Each signal is a coloured polyline, auto-scaled to
-// its own range; the legend shows the current value. Click a message in the Trace.
+// CANoe-style Graphics window. Each signal is a coloured polyline, auto-scaled
+// to its own range and positioned on a real **timeline** (x = recorded time,
+// labelled below the canvas), so uneven frame spacing shows as uneven spacing.
+// The legend is a per-signal **checkbox**: untick a signal to drop it from the
+// plot (state in App.plot_off). Click a message in the Trace to select the PDU.
 fn plot_panel(mut window gui.Window) gui.View {
 	w, h := window.window_size()
 	app := window.state[App]()
@@ -1471,9 +1478,11 @@ fn plot_panel(mut window gui.Window) gui.View {
 	content << gui.text(text: '0x${id:X} ${m.name} — last ${plot_max_points} samples',
 		text_style: gui.theme().n4)
 
-	// Collect a per-signal series from the recorded trace (chronological).
+	// Collect per-signal series + the shared sample timeline from the recorded
+	// trace (chronological; every matching frame yields one sample per signal).
 	sigs := m.signals
 	mut series := [][]f32{len: sigs.len, init: []f32{}}
+	mut times := []f32{}
 	mut cur := []f64{len: sigs.len}
 	scan_start := if app.trace.len > 2000 { app.trace.len - 2000 } else { 0 }
 	for i := scan_start; i < app.trace.len; i++ {
@@ -1481,62 +1490,128 @@ fn plot_panel(mut window gui.Window) gui.View {
 		if r.id != id {
 			continue
 		}
+		times << f32(r.t_ms / 1000.0) // trace time base, seconds
 		for j, s in sigs {
 			v := s.physical(r.data)
 			series[j] << f32(v)
 			cur[j] = v
 		}
 	}
-	for j in 0 .. series.len {
-		if series[j].len > plot_max_points {
+	if times.len > plot_max_points {
+		times = times[times.len - plot_max_points..]
+		for j in 0 .. series.len {
 			series[j] = series[j][series[j].len - plot_max_points..]
+		}
+	}
+	t0 := if times.len > 0 { times[0] } else { f32(0) }
+	t1 := if times.len > 0 { times.last() } else { f32(0) }
+
+	// Only legend-checked signals are plotted (colour stays stable per signal
+	// index, so toggling one doesn't recolour the rest).
+	mut shown := [][]f32{}
+	mut shown_colors := []gui.Color{}
+	for j, s in sigs {
+		if !app.plot_off['${id}:${s.name}'] {
+			shown << series[j]
+			shown_colors << plot_colors[j % plot_colors.len]
 		}
 	}
 
 	cw := clampf(f32(if w > 0 { w } else { 1180 }) * 0.21, 220, 520)
-	ph := clampf(f32(if h > 0 { h } else { 680 }) * 0.24, 130, 360) // leave room for the legend
+	// Shorter than the old 0.24×h: the timeline labels + per-signal legend
+	// checkboxes must fit below the canvas inside the (scrollable) panel.
+	ph := clampf(f32(if h > 0 { h } else { 680 }) * 0.15, 100, 240)
 	content << gui.draw_canvas(
 		id:      'sigplot'
-		version: u64(app.rx_count) // re-tessellate only when new frames arrive
+		version: u64(app.rx_count + app.tx_count) // re-tessellate only on new frames
 		width:   cw
 		height:  ph
 		color:   gui.Color{24, 24, 30, 255}
 		radius:  4
 		padding: gui.Padding{6, 6, 6, 6}
-		on_draw: fn [series] (mut dc gui.DrawContext) {
-			draw_signals(mut dc, series)
+		on_draw: fn [shown, shown_colors, times] (mut dc gui.DrawContext) {
+			draw_signals(mut dc, shown, shown_colors, times)
 		}
 	)
+	// Timeline labels under the canvas, aligned with the vertical gridlines
+	// (start / quarter / mid / three-quarter / end of the visible window).
+	if times.len > 1 {
+		span := t1 - t0
+		mut labels := []gui.View{}
+		for k in 0 .. 5 {
+			labels << gui.text(
+				text:       '${t0 + span * f32(k) / 4:.1f}s'
+				text_style: trace_text_style()
+			)
+			if k < 4 {
+				labels << gui.row(sizing: gui.fill_fit, padding: gui.padding_none) // spacer
+			}
+		}
+		content << gui.row(
+			width:   cw
+			sizing:  gui.fixed_fit
+			padding: gui.padding_none
+			content: labels
+		)
+	}
 	for j, s in sigs {
+		key := '${id}:${s.name}'
 		c := plot_colors[j % plot_colors.len]
-		content << gui.text(
-			text:       '● ${s.name}: ${cur[j]:.2f} ${s.unit}'
-			text_style: gui.TextStyle{
+		content << gui.checkbox(
+			id_focus:         u32(400 + j) // 400+ = Graphics legend (see id ranges note)
+			select:           !app.plot_off[key]
+			label:            '● ${s.name}: ${cur[j]:.2f} ${s.unit}'
+			text_style:       trace_text_style()
+			text_style_label: gui.TextStyle{
 				...gui.theme().n4
 				color: c
 			}
+			padding:          gui.Padding{0, 4, 0, 4}
+			on_click:         fn [key] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				mut a := w.state[App]()
+				if key in a.plot_off {
+					a.plot_off.delete(key)
+				} else {
+					a.plot_off[key] = true
+				}
+			}
 		)
 	}
-	return gui.column(sizing: gui.fill_fill, padding: gui.padding_medium, spacing: 4, content: content)
+	return gui.column(
+		sizing:          gui.fill_fill
+		padding:         gui.padding_medium
+		spacing:         4
+		id_scroll:       id_scroll_plot
+		scroll_mode:     .vertical_only
+		scrollbar_cfg_y: &gui.ScrollbarCfg{
+			overflow: .visible
+		}
+		content:         content
+	)
 }
 
-fn draw_signals(mut dc gui.DrawContext, series [][]f32) {
+// draw_signals paints the plot grid (4 horizontal bands + 4 vertical time
+// divisions matching the labels below the canvas) and each visible series.
+fn draw_signals(mut dc gui.DrawContext, series [][]f32, colors []gui.Color, times []f32) {
 	cw := dc.width
 	ch := dc.height
 	grid := gui.Color{55, 55, 70, 255}
 	for i in 0 .. 5 {
 		y := ch * f32(i) / 4
 		dc.line(0, y, cw, y, grid, 1)
+		x := cw * f32(i) / 4
+		dc.line(x, 0, x, ch, grid, 1)
 	}
 	for j, s in series {
-		draw_one_series(mut dc, s, plot_colors[j % plot_colors.len])
+		draw_one_series(mut dc, s, times, colors[j % colors.len])
 	}
 }
 
-// draw_one_series plots a single signal, auto-scaled to its own min/max so all
+// draw_one_series plots a single signal on the shared timeline (x positioned by
+// recorded time, not sample index), auto-scaled to its own min/max so all
 // signals are visible regardless of their physical range.
-fn draw_one_series(mut dc gui.DrawContext, series []f32, color gui.Color) {
-	if series.len < 2 {
+fn draw_one_series(mut dc gui.DrawContext, series []f32, times []f32, color gui.Color) {
+	if series.len < 2 || times.len != series.len {
 		return
 	}
 	cw := dc.width
@@ -1552,9 +1627,11 @@ fn draw_one_series(mut dc gui.DrawContext, series []f32, color gui.Color) {
 		}
 	}
 	span := if mx > mn { mx - mn } else { f32(1) }
+	t0 := times[0]
+	tspan := if times.last() > t0 { times.last() - t0 } else { f32(1) }
 	mut pts := []f32{cap: series.len * 2}
 	for i, v in series {
-		x := cw * f32(i) / f32(series.len - 1)
+		x := cw * (times[i] - t0) / tspan
 		y := ch - ch * (v - mn) / span * 0.92 - ch * 0.04 // 4% top/bottom margin
 		pts << x
 		pts << y

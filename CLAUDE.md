@@ -624,6 +624,18 @@ prompt for a password.
   build/cantester (stale Jun-8 binary, "0 channels attached") until rebuilt + timestamp-checked.
   NEXT (Phase 8 rest): per-channel transport-control UI (play/pause/seek/speed — player API ready);
   replay direct-to-trace sink (no bus) for offline review at cadence.
+- 2026-06-10: **Graphics panel: real timeline + per-signal legend checkboxes.** The plot's x-axis is
+  now a true **timeline**: samples are positioned by recorded time (`TraceRow.t_ms`, shared per-PDU
+  sample clock), not sample index — uneven frame spacing shows as uneven spacing — with 4 vertical
+  grid divisions in the canvas and **time labels** (start/quarters/end, seconds) in a width-matched
+  row below it (gui's `DrawContext` has no text API, so labels live outside the canvas; empty
+  `fill` rows act as spacers). The legend is now **per-signal checkboxes** (`App.plot_off`, key
+  `'<id>:<signal>'`, default all-on; id_focus 400+) — untick a signal to drop its polyline; colours
+  stay stable per signal index. Panel got `id_scroll` (7300) + a shorter canvas (0.15×h, cap 240)
+  so timeline+legend fit; longer PDUs scroll. VERIFIED live on the replay demo: timeline reads
+  0.4s→39.0s across the gridlines, and unticking EngineSpeed removes exactly the blue polyline
+  (crop-zoom screenshot). Debug tip re-learned: `pkill -f <name>` from a Bash tool call kills its
+  own wrapping shell (the command line contains the pattern) — kill by `ps`+pid instead.
 - 2026-06-10: **Second trace panel "Trace (filter)" + bigger default window.** `trace_panel` refactored
   into `trace_view(which)` (0 = main, 1 = filtered): the new dockable **Trace (filter)** panel renders
   the SAME trace buffer through its **own independent filter** (`App.trace_filter2`) and selection
