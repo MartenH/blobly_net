@@ -69,7 +69,7 @@ const trace_header_height = f32(16)
 // Crop the chronological-trace Data cell after this many bytes (CAN-FD payloads
 // reach 64 bytes and would otherwise overflow the column); the rest is summarised.
 const trace_data_max_bytes = 16
-const plot_max_points = 2000 // sample cap per signal (60s window @ 20Hz fits)
+const plot_max_points = 1200 // drawn points per signal cap (tessellation cost ∝ this)
 const plot_history = 6000     // per-message frames retained for the plot (deep history)
 const plot_win_options = ['5 s', '10 s', '30 s', '60 s'] // Graphics time window
 
@@ -377,11 +377,12 @@ fn sim_signature(app &App, ch_idx int) string {
 
 fn main() {
 	mut window := gui.window(
-		title:   'CANTester — CAN'
-		state:   &App{}
-		width:   1500
-		height:  920
-		on_init: fn (mut w gui.Window) {
+		title:        'CANTester — CAN'
+		state:        &App{}
+		width:        1500
+		height:       920
+		sample_count: 4 // MSAA — antialias the Graphics polylines (needs gui patch)
+		on_init:      fn (mut w gui.Window) {
 			mut app := w.state[App]()
 			app.t0 = time.ticks()
 			app.dock_root = default_layout()
@@ -1875,39 +1876,33 @@ fn plot_panel(mut window gui.Window) gui.View {
 	// Collect per-signal series + the shared sample timeline from this message's
 	// DEEP plot history (not the 1000-frame display trace), so the strip chart can
 	// fill the whole window even on a busy bus.
+	// Strip-chart window: [latest − win, latest]. CRUCIAL for perf — decode ONLY the
+	// samples inside the window, not the whole deep history. Decoding + tessellating
+	// every retained sample each frame is what made the Graphics panel stutter (and
+	// stall) the entire UI. hist is time-ordered, so walk back from the end to wstart,
+	// then cap to plot_max_points (keep the most recent).
 	sigs := m.signals
+	win := f32(if app.plot_win > 0 { app.plot_win } else { 10 })
+	hist := app.plot_hist[id] or { []PlotSample{} }
+	t_end := if hist.len > 0 { hist.last().t_s } else { f32(0) }
+	wstart := t_end - win
+	mut start := hist.len
+	for start > 0 && hist[start - 1].t_s >= wstart {
+		start--
+	}
+	if hist.len - start > plot_max_points {
+		start = hist.len - plot_max_points
+	}
 	mut series := [][]f32{len: sigs.len, init: []f32{}}
 	mut times := []f32{}
 	mut cur := []f64{len: sigs.len}
-	hist := app.plot_hist[id] or { []PlotSample{} }
-	for smp in hist {
+	for i := start; i < hist.len; i++ {
+		smp := hist[i]
 		times << smp.t_s
 		for j, s in sigs {
 			v := s.physical(smp.data)
 			series[j] << f32(v)
 			cur[j] = v
-		}
-	}
-	// Strip-chart window: keep only samples inside [latest − win, latest]. The
-	// x mapping below uses the FIXED window, so the curve slides left as new
-	// frames arrive and short captures fill from the right edge.
-	win := f32(if app.plot_win > 0 { app.plot_win } else { 10 })
-	t_end := if times.len > 0 { times.last() } else { f32(0) }
-	wstart := t_end - win
-	mut first := 0
-	for first < times.len && times[first] < wstart {
-		first++
-	}
-	if first > 0 {
-		times = times[first..]
-		for j in 0 .. series.len {
-			series[j] = series[j][first..]
-		}
-	}
-	if times.len > plot_max_points {
-		times = times[times.len - plot_max_points..]
-		for j in 0 .. series.len {
-			series[j] = series[j][series[j].len - plot_max_points..]
 		}
 	}
 
