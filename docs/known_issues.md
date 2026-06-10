@@ -99,6 +99,13 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
   don't need to paste a path; (2) middle-click paste / typing still work. If keyboard paste in our
   inputs becomes important, add an `on_key_down` shim on those inputs that calls `gui.from_clipboard()`
   on Ctrl+V and rewrites the bound state.
+- 🟡 **`xdotool` synthetic keyboard/middle-click input never reaches `gui.input` (WSLg).** Related to
+  the above: when driving the app for automated verification (`scripts/shot.sh` workflow),
+  `xdotool type` / `key` / middle-click-paste focus the input (it highlights) but no text arrives —
+  sokol under XWayland doesn't see the synthetic XTEST key events. Mouse *clicks* (tab switching,
+  buttons, checkboxes) DO work. Workaround for verifying input-dependent behaviour: temporarily seed
+  the App-struct field default (e.g. `trace_filter2 string = '700'`), build to a throwaway binary,
+  screenshot, revert — exercises the same render path without typing.
 
 ## Rendering stack (sokol / vglyph / GL)
 

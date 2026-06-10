@@ -195,6 +195,11 @@ mut:
 	sim_nodes []SimNode // simulated ECUs available per channel (Simulation panel)
 	sim_expanded map[int]bool // Simulation tree: channel idx -> expanded (default collapsed)
 	trace_filter string // case-insensitive substring filter on ID/name/ch/data
+	// The second, independent trace panel ("Trace (filter)" tab): same data,
+	// its own filter + selection — keep the full trace and a filtered slice
+	// open side by side (conventional multiple trace windows).
+	trace_filter2 string
+	selection2    gui.GridSelection
 }
 
 // trace_match reports whether any of the given fields contains the (lowercased)
@@ -308,8 +313,8 @@ fn main() {
 	mut window := gui.window(
 		title:   'CANTester — CAN'
 		state:   &App{}
-		width:   1180
-		height:  680
+		width:   1500
+		height:  920
 		on_init: fn (mut w gui.Window) {
 			mut app := w.state[App]()
 			app.t0 = time.ticks()
@@ -428,8 +433,11 @@ fn default_layout() &gui.DockNode {
 	right := gui.dock_split('r1', .vertical, 0.45, gui.dock_panel_group('g_sig', ['signals', 'plot'],
 		'signals'), gui.dock_split('r2', .vertical, 0.55, gui.dock_panel_group('g_send', ['send'],
 		'send'), gui.dock_panel_group('g_stats', ['stats'], 'stats')))
-	mid := gui.dock_split('mid', .horizontal, 0.66, gui.dock_panel_group('g_trace', ['trace'],
-		'trace'), right)
+	// Trace over the independently-filtered trace (conventional second trace
+	// window) — both visible at once; drag to re-dock/tab them as preferred.
+	traces := gui.dock_split('t1', .vertical, 0.55, gui.dock_panel_group('g_trace', ['trace'],
+		'trace'), gui.dock_panel_group('g_ftrace', ['ftrace'], 'ftrace'))
+	mid := gui.dock_split('mid', .horizontal, 0.66, traces, right)
 	// Left column: Buses (top) over Simulation (bottom).
 	left := gui.dock_split('l1', .vertical, 0.45, gui.dock_panel_group('g_buses', ['buses'],
 		'buses'), gui.dock_panel_group('g_sim', ['simulation'], 'simulation'))
@@ -796,6 +804,7 @@ fn main_view(mut window gui.Window) gui.View {
 				root:             app.dock_root
 				panels:           [
 					gui.DockPanelDef{ id: 'trace', label: 'Trace', content: [trace_panel(mut window)] },
+				gui.DockPanelDef{ id: 'ftrace', label: 'Trace (filter)', content: [filtered_trace_panel(mut window)] },
 					gui.DockPanelDef{ id: 'buses', label: 'Buses', content: [buses_panel(app)] },
 						gui.DockPanelDef{ id: 'simulation', label: 'Simulation', content: [simulation_panel(app)] },
 					gui.DockPanelDef{ id: 'signals', label: 'Signals', content: [signals_panel(app)] },
@@ -1167,17 +1176,33 @@ fn toolbar(mut window gui.Window) gui.View {
 	)
 }
 
+// trace_panel is the main Trace; filtered_trace_panel is the second,
+// independently-filtered view of the same data ("Trace (filter)" tab). Both
+// render through trace_view, parameterized by `which` (0 = main, 1 = filtered):
+// own filter string, own selection, own grid/focus ids — shared trace buffer,
+// expand state and Signals-panel follow.
 fn trace_panel(mut window gui.Window) gui.View {
+	return trace_view(mut window, 0)
+}
+
+fn filtered_trace_panel(mut window gui.Window) gui.View {
+	return trace_view(mut window, 1)
+}
+
+fn trace_view(mut window gui.Window, which int) gui.View {
 	_, h := window.window_size()
 	app := window.state[App]()
 	grouped := app.mode == 'grouped'
 	grid_h := f32(h) - 158 // leave room for the filter row
+	filter := if which == 0 { app.trace_filter } else { app.trace_filter2 }
+	sel := if which == 0 { app.selection } else { app.selection2 }
+	gid := if which == 0 { 'trace' } else { 'ftrace' }
 
 	mut rows := []gui.GridRow{}
 	if grouped {
 		for id in app.order {
 			a := app.grouped[id] or { continue }
-			if !trace_match(app.trace_filter, hexid(id, a.ext), a.name, a.ch) {
+			if !trace_match(filter, hexid(id, a.ext), a.name, a.ch) {
 				continue
 			}
 			expanded := id in app.expanded
@@ -1218,7 +1243,7 @@ fn trace_panel(mut window gui.Window) gui.View {
 			}
 		}
 		grouped_grid := window.data_grid(
-			id:                  'trace_grouped'
+			id:                  '${gid}_grouped'
 			sizing:              gui.fill_fill
 			max_height:          grid_h
 			scrollbar:           .visible
@@ -1237,10 +1262,14 @@ fn trace_panel(mut window gui.Window) gui.View {
 				tcol('data', 'Data', 320, .start),
 			]
 			rows:                rows
-			selection:           app.selection
-			on_selection_change: fn (selection gui.GridSelection, mut _ gui.Event, mut w gui.Window) {
+			selection:           sel
+			on_selection_change: fn [which] (selection gui.GridSelection, mut _ gui.Event, mut w gui.Window) {
 				mut a := w.state[App]()
-				a.selection = selection
+				if which == 0 {
+					a.selection = selection
+				} else {
+					a.selection2 = selection
+				}
 				rid := selection.active_row_id
 				if rid.len > 0 && !rid.starts_with('s:') {
 					id := rid.u32()
@@ -1258,14 +1287,14 @@ fn trace_panel(mut window gui.Window) gui.View {
 			sizing:  gui.fill_fill
 			spacing: 2
 			padding: gui.padding_none
-			content: [trace_filter_row(app), grouped_grid]
+			content: [trace_filter_row(app, which), grouped_grid]
 		)
 	}
 	// Newest first: the latest frame sits at the top, so a live trace "follows"
 	// without any scroll math; scroll down to review the retained history.
 	for i := app.trace.len - 1; i >= 0; i-- {
 		r := app.trace[i]
-		if !trace_match(app.trace_filter, hexid(r.id, r.ext), r.name, r.ch, hex(r.data)) {
+		if !trace_match(filter, hexid(r.id, r.ext), r.name, r.ch, hex(r.data)) {
 			continue
 		}
 		rows << gui.GridRow{
@@ -1282,7 +1311,7 @@ fn trace_panel(mut window gui.Window) gui.View {
 		}
 	}
 	all_grid := window.data_grid(
-		id:             'trace_all'
+		id:             '${gid}_all'
 		sizing:         gui.fill_fill
 		max_height:     grid_h
 		scrollbar:      .visible
@@ -1300,10 +1329,14 @@ fn trace_panel(mut window gui.Window) gui.View {
 			tcol('data', 'Data', 320, .start),
 		]
 		rows:                rows
-		selection:           app.selection
-		on_selection_change: fn (selection gui.GridSelection, mut _ gui.Event, mut w gui.Window) {
+		selection:           sel
+		on_selection_change: fn [which] (selection gui.GridSelection, mut _ gui.Event, mut w gui.Window) {
 			mut a := w.state[App]()
-			a.selection = selection
+			if which == 0 {
+				a.selection = selection
+			} else {
+				a.selection2 = selection
+			}
 			parts := selection.active_row_id.split(':')
 			if parts.len == 2 {
 				a.sel_id = i64(parts[1].u32()) // Signals follows the clicked frame's ID
@@ -1315,37 +1348,51 @@ fn trace_panel(mut window gui.Window) gui.View {
 		sizing:  gui.fill_fill
 		spacing: 2
 		padding: gui.padding_none
-		content: [trace_filter_row(app), all_grid]
+		content: [trace_filter_row(app, which), all_grid]
 	)
 }
 
-// trace_filter_row is the filter input above the trace grid: a case-insensitive
-// substring matched against each row's ID / name / channel / data.
-fn trace_filter_row(app &App) gui.View {
+// trace_filter_row is the filter input above a trace grid: a case-insensitive
+// substring matched against each row's ID / name / channel / data. Each trace
+// panel (`which`) edits its own filter string and gets its own focus ids.
+fn trace_filter_row(app &App, which int) gui.View {
+	filter := if which == 0 { app.trace_filter } else { app.trace_filter2 }
 	mut content := [
 		gui.text(text: 'Filter', text_style: gui.theme().n4),
 		gui.input(
-			id_focus:        30
-			text:            app.trace_filter
+			id_focus:        u32(30 + which * 2)
+			text:            filter
 			width:           260
 			height:          22
 			padding:         gui.Padding{2, 6, 2, 6}
 			sizing:          gui.fixed_fixed
-			placeholder:     'id / name / ch / data — e.g. 0x100, Wheel, CAN2, FF'
-			on_text_changed: fn (_ &gui.Layout, s string, mut w gui.Window) {
+			placeholder:     if which == 0 {
+				'id / name / ch / data — e.g. 0x100, Wheel, CAN2, FF'
+			} else {
+				'filtered view — own filter, e.g. 0x700'
+			}
+			on_text_changed: fn [which] (_ &gui.Layout, s string, mut w gui.Window) {
 				mut a := w.state[App]()
-				a.trace_filter = s
+				if which == 0 {
+					a.trace_filter = s
+				} else {
+					a.trace_filter2 = s
+				}
 			}
 		),
 	]
-	if app.trace_filter.len > 0 {
+	if filter.len > 0 {
 		content << gui.button(
-			id_focus: 31
+			id_focus: u32(31 + which * 2)
 			content:  [gui.text(text: '✕', text_style: trace_text_style())]
 			padding:  gui.Padding{2, 6, 2, 6}
-			on_click: fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+			on_click: fn [which] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 				mut a := w.state[App]()
-				a.trace_filter = ''
+				if which == 0 {
+					a.trace_filter = ''
+				} else {
+					a.trace_filter2 = ''
+				}
 			}
 		)
 	}

@@ -624,3 +624,15 @@ prompt for a password.
   build/cantester (stale Jun-8 binary, "0 channels attached") until rebuilt + timestamp-checked.
   NEXT (Phase 8 rest): per-channel transport-control UI (play/pause/seek/speed — player API ready);
   replay direct-to-trace sink (no bus) for offline review at cadence.
+- 2026-06-10: **Second trace panel "Trace (filter)" + bigger default window.** `trace_panel` refactored
+  into `trace_view(which)` (0 = main, 1 = filtered): the new dockable **Trace (filter)** panel renders
+  the SAME trace buffer through its **own independent filter** (`App.trace_filter2`) and selection
+  (`selection2`) — conventional "keep the full trace and a filtered slice open side by side". Shared:
+  trace data, grouped/all view mode (toolbar), expand state, Signals-panel follow (clicking either
+  trace drives it). Per-panel: filter string + ✕, grid ids (`ftrace_*`), focus ids (32/33), distinct
+  placeholder. Default layout now stacks **Trace over Trace (filter)** in the middle column (drag to
+  re-tab if preferred); default window upped 1180×680 → **1500×920** so all panels fit. VERIFIED by
+  screenshot: bottom filtered to `700` → only Heartbeat; top unfiltered → both messages. Gotcha doc'd
+  in known_issues: `xdotool` synthetic typing/middle-paste never reaches gui.input under WSLg (clicks
+  work) — verify input-dependent behaviour by temporarily seeding the App field default in a throwaway
+  build.
