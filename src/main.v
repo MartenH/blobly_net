@@ -215,6 +215,10 @@ mut:
 	trace_filter2 string
 	selection2    gui.GridSelection
 	watch         map[u32]bool
+	// Grouped-trace expand is now double-click (single click just selects, so it
+	// can drive multi-select + "add to filter"); track the last click to detect it.
+	last_click_id string
+	last_click_ms i64
 	// Graphics panel: signals UNchecked in the legend (key '<id>:<signal>') —
 	// default empty = plot everything, so new selections start fully visible.
 	plot_off map[string]bool
@@ -1401,6 +1405,8 @@ fn trace_view(mut window gui.Window, which int) gui.View {
 			]
 			rows:                rows
 			selection:           sel
+			multi_select:        true
+			range_select:        true
 			on_selection_change: fn [which] (selection gui.GridSelection, mut _ gui.Event, mut w gui.Window) {
 				mut a := w.state[App]()
 				if which == 0 {
@@ -1412,10 +1418,19 @@ fn trace_view(mut window gui.Window, which int) gui.View {
 				if rid.len > 0 && !rid.starts_with('s:') {
 					id := rid.u32()
 					a.sel_id = i64(id) // Signals panel follows the selected message
-					if id in a.expanded {
-						a.expanded.delete(id) // toggle this ID; others stay expanded
+					// Single click = select (for multi-select + add-to-filter);
+					// a second click on the same row within 400 ms = expand toggle.
+					now := time.ticks()
+					if rid == a.last_click_id && now - a.last_click_ms < 400 {
+						if id in a.expanded {
+							a.expanded.delete(id)
+						} else {
+							a.expanded[id] = true
+						}
+						a.last_click_id = '' // consume, so a 3rd click isn't a double
 					} else {
-						a.expanded[id] = true
+						a.last_click_id = rid
+						a.last_click_ms = now
 					}
 				}
 			}
@@ -1468,6 +1483,8 @@ fn trace_view(mut window gui.Window, which int) gui.View {
 		]
 		rows:                rows
 		selection:           sel
+		multi_select:        true
+		range_select:        true
 		on_selection_change: fn [which] (selection gui.GridSelection, mut _ gui.Event, mut w gui.Window) {
 			mut a := w.state[App]()
 			if which == 0 {
@@ -1488,6 +1505,36 @@ fn trace_view(mut window gui.Window, which int) gui.View {
 		padding: gui.padding_none
 		content: [trace_filter_row(app, which), all_grid]
 	)
+}
+
+// selected_msg_ids returns the unique message IDs in a grid selection. Grouped
+// rows are '<id>', chronological rows '<seq>:<id>'; signal sub-rows ('s:…') are
+// skipped. Falls back to the active row when nothing is multi-selected.
+fn selected_msg_ids(sel gui.GridSelection) []u32 {
+	mut out := []u32{}
+	mut rids := []string{}
+	for rid, on in sel.selected_row_ids {
+		if on {
+			rids << rid
+		}
+	}
+	if rids.len == 0 && sel.active_row_id.len > 0 {
+		rids << sel.active_row_id
+	}
+	for rid in rids {
+		if rid.starts_with('s:') {
+			continue
+		}
+		idstr := if rid.contains(':') { rid.all_after_last(':') } else { rid }
+		if idstr.len == 0 {
+			continue
+		}
+		mid := idstr.u32()
+		if mid !in out {
+			out << mid
+		}
+	}
+	return out
 }
 
 // trace_filter_row is the filter input above a trace grid: a case-insensitive
@@ -1534,23 +1581,27 @@ fn trace_filter_row(app &App, which int) gui.View {
 			}
 		)
 	}
-	if which == 1 {
-		// Watch-list controls: ＋ adds the message selected in the Trace; each
-		// watched ID is a chip — click its ✕ to drop it again.
-		if app.sel_id >= 0 && !app.watch[u32(app.sel_id)] {
-			add_id := u32(app.sel_id)
+	if which == 0 {
+		// ＋ Add to filter: push every message ID selected in the Trace (ctrl/shift-
+		// click for several) into the watch set, so they appear in Trace (filter).
+		mids := selected_msg_ids(app.selection)
+		if mids.len > 0 {
 			content << gui.button(
 				id_focus: 34
-				content:  [
-					gui.text(text: '＋ ${hexid(add_id, add_id > 0x7ff)}', text_style: trace_text_style()),
-				]
+				content:  [gui.text(text: '＋ filter (${mids.len})', text_style: trace_text_style())]
 				padding:  gui.Padding{2, 6, 2, 6}
-				on_click: fn [add_id] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				on_click: fn [mids] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					mut a := w.state[App]()
-					a.watch[add_id] = true
+					for mid in mids {
+						a.watch[mid] = true
+					}
 				}
 			)
 		}
+	}
+	if which == 1 {
+		// Watch-list chips: each watched ID (added from the Trace's ＋) is a chip —
+		// click its ✕ to drop it again.
 		mut ids := app.watch.keys()
 		ids.sort()
 		for k, wid in ids {
