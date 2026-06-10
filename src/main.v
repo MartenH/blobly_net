@@ -252,6 +252,9 @@ mut:
 	// Graphics hover cursor: fraction [0,1] across the canvas width of the last
 	// mouse-over position; -1 = not hovering. Drives the crosshair + value readout.
 	plot_hover_frac f32 = -1
+	// Graphics line style: true = step / sample-and-hold (CANoe-style for discrete
+	// signals), false = linear interpolation between samples.
+	plot_step bool = true
 }
 
 // trace_match reports whether any of the given fields contains the (lowercased)
@@ -1973,24 +1976,35 @@ fn plot_panel(mut window gui.Window) gui.View {
 					zoom_window(mut w, -1)
 				}
 			),
+			gui.button(
+				id_focus:  111
+				max_width: 72
+				content:   [gui.text(text: if app.plot_step { '⎍ Step' } else { '╱ Linear' })]
+				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					mut a := w.state[App]()
+					a.plot_step = !a.plot_step
+				}
+			),
 		]
 	)
 
+	step := app.plot_step
 	// --- Canvas (full panel width) + timeline labels directly under it. ---
 	canvas := gui.draw_canvas(
 		id:       'sigplot'
 		// re-tessellate on new frames, OR (crucially, while STOPPED) when the zoom
 		// window, hover cursor, or the set of shown signals changes — otherwise the
 		// cached geometry never refreshes and the zoom buttons appear dead.
-		version:  u64(app.rx_count + app.tx_count) * 10_000_000 + u64(shown.len) * 1_000_000 +
-			u64(app.plot_win) * 10_000 + u64(int((hf + 1) * 2000))
+		version:  u64(app.rx_count + app.tx_count) * 20_000_000 + u64(shown.len) * 2_000_000 +
+			(if step { u64(1_000_000) } else { u64(0) }) + u64(app.plot_win) * 10_000 +
+			u64(int((hf + 1) * 2000))
 		width:    cw
 		height:   ph
 		color:    plot_bg
 		radius:   4
 		padding:  gui.Padding{6, 6, 6, 6}
-		on_draw:  fn [shown, shown_colors, times, wstart, win, plot_grid, hf] (mut dc gui.DrawContext) {
-			draw_signals(mut dc, shown, shown_colors, times, wstart, win, plot_grid, hf)
+		on_draw:  fn [shown, shown_colors, times, wstart, win, plot_grid, hf, step] (mut dc gui.DrawContext) {
+			draw_signals(mut dc, shown, shown_colors, times, wstart, win, plot_grid, hf, step)
 		}
 		on_hover: fn (mut layout gui.Layout, mut e gui.Event, mut w gui.Window) {
 			mut a := w.state[App]()
@@ -2114,7 +2128,7 @@ fn zoom_window(mut w gui.Window, dir int) {
 // draw_signals paints the plot grid (4 horizontal bands + 4 vertical time
 // divisions matching the labels below the canvas) and each visible series.
 fn draw_signals(mut dc gui.DrawContext, series [][]f32, colors []gui.Color, times []f32,
-	wstart f32, win f32, grid gui.Color, hover f32) {
+	wstart f32, win f32, grid gui.Color, hover f32, step bool) {
 	cw := dc.width
 	ch := dc.height
 	for i in 0 .. 5 {
@@ -2129,7 +2143,7 @@ fn draw_signals(mut dc gui.DrawContext, series [][]f32, colors []gui.Color, time
 		dc.line(hx, 0, hx, ch, gui.Color{130, 130, 140, 255}, 1)
 	}
 	for j, s in series {
-		draw_one_series(mut dc, s, times, wstart, win, colors[j % colors.len], hover)
+		draw_one_series(mut dc, s, times, wstart, win, colors[j % colors.len], hover, step)
 	}
 }
 
@@ -2137,7 +2151,7 @@ fn draw_signals(mut dc gui.DrawContext, series [][]f32, colors []gui.Color, time
 // (x = recorded time mapped over [wstart, wstart+win]), auto-scaled to its own
 // min/max so all signals are visible regardless of their physical range.
 fn draw_one_series(mut dc gui.DrawContext, series []f32, times []f32, wstart f32, win f32,
-	color gui.Color, hover f32) {
+	color gui.Color, hover f32, step bool) {
 	if series.len < 2 || times.len != series.len {
 		return
 	}
@@ -2155,12 +2169,24 @@ fn draw_one_series(mut dc gui.DrawContext, series []f32, times []f32, wstart f32
 	}
 	span := if mx > mn { mx - mn } else { f32(1) }
 	tspan := if win > 0 { win } else { f32(1) }
-	mut pts := []f32{cap: series.len * 2}
+	// Pre-compute each sample's pixel position once.
+	mut xs := []f32{cap: series.len}
+	mut ys := []f32{cap: series.len}
 	for i, v in series {
-		x := cw * (times[i] - wstart) / tspan
-		y := ch - ch * (v - mn) / span * 0.92 - ch * 0.04 // 4% top/bottom margin
-		pts << x
-		pts << y
+		xs << cw * (times[i] - wstart) / tspan
+		ys << ch - ch * (v - mn) / span * 0.92 - ch * 0.04 // 4% top/bottom margin
+	}
+	// Step (sample-and-hold): hold the value horizontally to the next sample's time,
+	// then jump vertically — the CANoe look for discrete signals. Linear: straight
+	// segments between samples.
+	mut pts := []f32{cap: series.len * 4}
+	for i in 0 .. series.len {
+		if step && i > 0 {
+			pts << xs[i]
+			pts << ys[i - 1] // horizontal hold of the previous value up to this time
+		}
+		pts << xs[i]
+		pts << ys[i]
 	}
 	dc.polyline(pts, color, 1.5, .round, .round)
 	// Marker dot where the hover crosshair crosses this series (nearest sample).
@@ -2175,9 +2201,7 @@ fn draw_one_series(mut dc gui.DrawContext, series []f32, times []f32, wstart f32
 				idx = i
 			}
 		}
-		dx := cw * (times[idx] - wstart) / tspan
-		dy := ch - ch * (series[idx] - mn) / span * 0.92 - ch * 0.04
-		dc.filled_circle(dx, dy, 3, color)
+		dc.filled_circle(xs[idx], ys[idx], 3, color)
 	}
 }
 
