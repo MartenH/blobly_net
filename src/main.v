@@ -25,6 +25,8 @@ import sampledb
 import project
 import sim
 import player
+import isotp
+import uds
 
 const max_trace = 1000 // ring-buffer cap on retained frames (all are scrollable)
 const default_fps = 5  // trace repaint rate; user-tunable (3/5/10) from the toolbar
@@ -36,6 +38,13 @@ const fps_options = ['3 fps', '5 fps', '10 fps']
 const id_scroll_buses = u32(7100)
 const id_scroll_sim = u32(7200)
 const id_scroll_plot = u32(7300)
+const id_scroll_diag = u32(7400)
+
+// UDS request/response CAN ids (classic OBD physical addressing): the tester
+// transmits on 0x7E0, the ECU answers on 0x7E8. The simulated ECU's UDS
+// server listens accordingly.
+const diag_tx_id = u32(0x7E0)
+const diag_rx_id = u32(0x7E8)
 
 // ---- Look & feel: the few knobs that restyle the whole app ----
 // Font family for ALL UI text. '' keeps gui's bundled default; set e.g.
@@ -208,6 +217,10 @@ mut:
 	// Graphics panel: signals UNchecked in the legend (key '<id>:<signal>') —
 	// default empty = plot everything, so new selections start fully visible.
 	plot_off map[string]bool
+	// Diagnostics panel: response log (newest first) + the typed DID for the
+	// free-form RDBI read.
+	diag_log []string
+	diag_did string = 'F190'
 	// Strip-chart time window (seconds): the plot shows [latest - win, latest]
 	// and slides as frames arrive, instead of compressing all history.
 	plot_win int = 10
@@ -457,10 +470,11 @@ fn make_theme(p Palette) gui.Theme {
 fn default_layout() &gui.DockNode {
 	// Right column: Signals over Graphics (both visible — the plot used to hide
 	// behind a tab), then Send over Statistics.
-	right := gui.dock_split('r1', .vertical, 0.30, gui.dock_panel_group('g_sig', ['signals'],
-		'signals'), gui.dock_split('r3', .vertical, 0.48, gui.dock_panel_group('g_plot', ['plot'],
-		'plot'), gui.dock_split('r2', .vertical, 0.5, gui.dock_panel_group('g_send', ['send'],
-		'send'), gui.dock_panel_group('g_stats', ['stats'], 'stats'))))
+	right := gui.dock_split('r1', .vertical, 0.26, gui.dock_panel_group('g_sig', ['signals'],
+		'signals'), gui.dock_split('r3', .vertical, 0.38, gui.dock_panel_group('g_plot', ['plot'],
+		'plot'), gui.dock_split('r2', .vertical, 0.55, gui.dock_panel_group('g_diag', ['diag'],
+		'diag'), gui.dock_split('r4', .vertical, 0.55, gui.dock_panel_group('g_send', ['send'],
+		'send'), gui.dock_panel_group('g_stats', ['stats'], 'stats')))))
 	// Trace over the independently-filtered trace (CANoe-style second trace
 	// window) — both visible at once; drag to re-dock/tab them as preferred.
 	traces := gui.dock_split('t1', .vertical, 0.55, gui.dock_panel_group('g_trace', ['trace'],
@@ -554,6 +568,12 @@ fn start_measurement(mut w gui.Window) {
 					if can_sim {
 						spawn fn [i] (mut w gui.Window) {
 							sim_loop(i, mut w)
+						}(mut w)
+						// The simulated ECU also answers UDS (0x7E0 -> 0x7E8) over
+						// software ISO-TP on the same bus — diagnostics with no
+						// Python and no kernel CAN_ISOTP.
+						spawn fn [i] (mut w gui.Window) {
+							diag_server_loop(i, mut w)
 						}(mut w)
 					}
 				} else {
@@ -716,6 +736,91 @@ fn replay_loop(idx int, mut w gui.Window) {
 	bus.close()
 }
 
+// diag_server_loop runs the native UDS server for channel `idx`'s simulated
+// ECU: software ISO-TP on its own bus instance, answering tester requests on
+// the standard physical pair (rx 0x7E0 / tx 0x7E8) until the channel stops.
+fn diag_server_loop(idx int, mut w gui.Window) {
+	app := w.state[App]()
+	iface := app.proj.channels[idx].iface
+	mut ch := isotp.open_software(iface, diag_rx_id, diag_tx_id, false) or { return }
+	mut srv := uds.default_server()
+	for app.rt[idx].running {
+		req := ch.recv(50) or { continue }
+		resp := srv.handle(req)
+		if resp.len > 0 {
+			ch.send(resp) or {}
+		}
+	}
+	ch.close()
+}
+
+// diag_post appends one line to the Diagnostics log (UI thread, newest first).
+fn diag_post(line string, mut w gui.Window) {
+	w.queue_command(fn [line] (mut w gui.Window) {
+		mut a := w.state[App]()
+		a.diag_log.insert(0, line)
+		if a.diag_log.len > 50 {
+			a.diag_log = a.diag_log[..50].clone()
+		}
+		w.update_window()
+	})
+}
+
+// diag_request sends one UDS request from a worker thread: opens a software
+// ISO-TP channel (tester side: tx 0x7E0 / rx 0x7E8) on the first running
+// channel's interface, runs the request, posts the outcome to the log. The
+// ISO-TP frames travel the real bus, so the Trace shows them too.
+fn diag_request(req []u8, label string, mut w gui.Window) {
+	app := w.state[App]()
+	mut iface := ''
+	for i, ch in app.proj.channels {
+		if app.rt[i].running {
+			iface = ch.iface
+			break
+		}
+	}
+	if iface == '' {
+		diag_post('${label}: no running channel — press ▶ Start first', mut w)
+		return
+	}
+	spawn fn [req, label, iface] (mut w gui.Window) {
+		mut ch := isotp.open_software(iface, diag_tx_id, diag_rx_id, false) or {
+			diag_post('${label}: open failed: ${err}', mut w)
+			return
+		}
+		defer {
+			ch.close()
+		}
+		mut client := uds.new_client(ch)
+		resp := client.raw(req) or {
+			diag_post('${label}: ${err.msg()}', mut w)
+			return
+		}
+		diag_post('${label}: ${diag_render(resp)}', mut w)
+	}(mut w)
+}
+
+// diag_render shows a positive response as hex, plus ASCII when the payload
+// is printable text (VIN, serial number…).
+fn diag_render(resp []u8) string {
+	h := hex(resp)
+	// RDBI: try the data record (after SID + DID echo) as text.
+	if resp.len > 3 && resp[0] == 0x62 {
+		data := resp[3..]
+		mut printable := data.len > 0
+		for b in data {
+			if b < 0x20 || b > 0x7E {
+				printable = false
+				break
+			}
+		}
+		if printable {
+			return '${h}  ("${data.bytestr()}")'
+		}
+	}
+	return h
+}
+
 // rx_loop reads frames and hands them to the UI in **batches**, not one-by-one.
 // Each w.queue_command wakes sokol and forces a full GL frame (~tens of ms under
 // WSLg's GL translation), so one wake per frame pegs the CPU on a busy bus. We
@@ -838,6 +943,7 @@ fn main_view(mut window gui.Window) gui.View {
 					gui.DockPanelDef{ id: 'signals', label: 'Signals', content: [signals_panel(app)] },
 					gui.DockPanelDef{ id: 'plot', label: 'Graphics', content: [plot_panel(mut window)] },
 					gui.DockPanelDef{ id: 'send', label: 'Send', content: [send_panel(app)] },
+				gui.DockPanelDef{ id: 'diag', label: 'Diagnostics', content: [diag_panel(app)] },
 					gui.DockPanelDef{ id: 'stats', label: 'Statistics', content: [stats_panel(app)] },
 				]
 				on_layout_change: fn (nr &gui.DockNode, mut w gui.Window) {
@@ -1999,6 +2105,103 @@ fn send_panel(app &App) gui.View {
 				}
 			),
 		]
+	)
+}
+
+// diag_panel is the UDS tester (Phase 6 GUI): one-click services against the
+// simulated ECU's UDS server (or any ECU listening on 0x7E0) over software
+// ISO-TP, with a newest-first response log. Works driver-free on the in-proc
+// bus — press ▶ Start on a channel with simulated nodes first.
+fn diag_panel(app &App) gui.View {
+	mut rows := []gui.View{}
+	rows << gui.text(text: 'Diagnostics (UDS)', text_style: gui.theme().b3)
+	rows << gui.text(
+		text:       'tester 0x7E0 → ECU 0x7E8, software ISO-TP'
+		text_style: trace_text_style()
+	)
+	rows << gui.row(
+		spacing: 4
+		padding: gui.padding_none
+		content: [
+			diag_button(600, 'Session', fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				diag_request([u8(0x10), 0x03], 'Session(ext)', mut w)
+			}),
+			diag_button(601, 'Read VIN', fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				diag_request([u8(0x22), 0xF1, 0x90], 'VIN(F190)', mut w)
+			}),
+			diag_button(602, 'Serial', fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				diag_request([u8(0x22), 0xF1, 0x8C], 'Serial(F18C)', mut w)
+			}),
+		]
+	)
+	rows << gui.row(
+		spacing: 4
+		padding: gui.padding_none
+		content: [
+			diag_button(603, 'SW ver', fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				diag_request([u8(0x22), 0xF1, 0x95], 'SWver(F195)', mut w)
+			}),
+			diag_button(604, 'Tester present', fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				diag_request([u8(0x3E), 0x00], 'TesterPresent', mut w)
+			}),
+		]
+	)
+	// Free-form RDBI: type a 16-bit DID in hex and read it.
+	rows << gui.row(
+		v_align: .middle
+		spacing: 4
+		padding: gui.padding_none
+		content: [
+			gui.text(text: 'DID', text_style: gui.theme().n4),
+			gui.input(
+				id_focus:        610
+				text:            app.diag_did
+				width:           60
+				height:          22
+				padding:         gui.Padding{2, 6, 2, 6}
+				sizing:          gui.fixed_fixed
+				on_text_changed: fn (_ &gui.Layout, s string, mut w gui.Window) {
+					mut a := w.state[App]()
+					a.diag_did = s
+				}
+			),
+			diag_button(611, 'Read DID', fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				a := w.state[App]()
+				did := parse_hex_u32(a.diag_did)
+				diag_request([u8(0x22), u8(did >> 8), u8(did)], 'RDBI(${a.diag_did})', mut w)
+			}),
+		]
+	)
+	for line in app.diag_log {
+		rows << gui.text(text: line, text_style: trace_text_style())
+	}
+	return gui.column(
+		sizing:          gui.fill_fill
+		padding:         gui.padding_medium
+		spacing:         4
+		id_scroll:       id_scroll_diag
+		scroll_mode:     .vertical_only
+		scrollbar_cfg_y: &gui.ScrollbarCfg{
+			overflow: .visible
+		}
+		content:         rows
+	)
+}
+
+// diag_button is a small clickable labelled button for the Diagnostics panel
+// (left-aligned text — gui.button centered labels render blank, see known_issues).
+fn diag_button(focus u32, label string, on_click fn (&gui.Layout, mut gui.Event, mut gui.Window)) gui.View {
+	// min/max width + left alignment work around gui's centered-text bug
+	// (centered button labels render blank — see known_issues).
+	w := f32(14 + label.len * 6)
+	return gui.button(
+		id_focus:  focus
+		min_width: w
+		max_width: w
+		h_align:   .left
+		content:   [gui.text(text: label, text_style: trace_text_style())]
+		padding:   gui.Padding{3, 8, 3, 8}
+		on_click:  on_click
 	)
 }
 

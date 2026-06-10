@@ -187,8 +187,14 @@ turned Off (irreversible). Original handoff notes below (toolchain **mingw-w64 (
 6. 🚧 **UDS diagnostics over ISO-TP** — FOUNDATION DONE: `modules/isotp` (kernel CAN_ISOTP socket
    behind a platform-agnostic `Channel`) + `modules/uds` (client: 0x10 session, 0x22 RDBI, 0x3E,
    negative-response/0x78-pending handling). Verified end-to-end vs `sut/uds_server.py` (stdlib).
-   Still TODO: a Diagnostics GUI panel, more services (0x19 DTCs, 0x2E write, 0x27 security), and
-   DID↔signal mapping via the DBC.
+   **DONE 2026-06-10: Diagnostics GUI panel** (own dock group, right column) — one-click Session/
+   Read VIN/Serial/SW ver/Tester Present + free-form RDBI (hex DID input), newest-first response
+   log (hex + ASCII for printable records). Requests run on a worker thread over **software
+   ISO-TP** (tester 0x7E0 → ECU 0x7E8) on the first running channel; and every channel hosting
+   simulated nodes now also runs the **native `uds.Server`** (`diag_server_loop`), so diagnostics
+   work driver-free on the in-proc bus — GUI-verified on sim-demo (multi-frame VIN
+   "CANTESTERV0SUT001"; the 0x7E0/0x7E8 ISO-TP frames visible in the Trace).
+   Still TODO: more services (0x19 DTCs, 0x2E write, 0x27 security), DID↔signal mapping via the DBC.
 7. 🚧 **Log replay** — real recordings are ASAM **MF4** (CANedge/CSS Electronics), paired with a DBC.
    DONE: `sut/mf4_bridge.py` (asammdf) converts MF4 → candump `.log` and **semantically diffs** two
    recordings (canonical frame stream, not bytes — MF4 is never byte-equal); validated our `candb`
@@ -661,3 +667,19 @@ prompt for a password.
   in known_issues: `xdotool` synthetic typing/middle-paste never reaches gui.input under WSLg (clicks
   work) — verify input-dependent behaviour by temporarily seeding the App field default in a throwaway
   build.
+- 2026-06-10: **J1939 PGN decode + native CANedge (unfinalized/unsorted) MF4 + Diagnostics panel.**
+  (a) `candb.j1939_pgn()` (PDU1 drops the destination byte; priority/SA never count) +
+  `Database.lookup_frame(id, ext)` — exact id first, PGN fallback for 29-bit frames; all GUI decode
+  paths use it. (b) `modules/mf4` now reads the files CANedge loggers actually produce: `UnFinMF `
+  magic, stale cycle counts (derived from data length), last-DT clamp/extend, **unsorted DG demux**
+  (record-id-prefixed interleaved CGs) incl. **VLSD channel GROUPS** (CANedge's DataBytes: cn_data
+  names the VLSD CG; offsets index its concatenated length-prefixed records), `cn_bit_offset`
+  honoured (CANedge bit-packs), separate IDE channel. **Validated vs the 2026-06-04 asammdf ground
+  truth** on the real CSS J1939 driving log: 145 534 frames, EngineSpeed 913–1762 rpm ×19 584 via
+  PGN match (exact id = 0); guarded regression test skips when the git-ignored sample is absent
+  (fetch: scripts/setup_mf4_tools.sh). (c) **Diagnostics GUI panel** (Phase 6): own dock group;
+  buttons run uds.Client over software ISO-TP from a worker thread; channels with simulated nodes
+  also spawn the native uds.Server (`diag_server_loop`, rx 0x7E0/tx 0x7E8) — multi-frame VIN read
+  verified in the GUI on sim-demo, ISO-TP frames visible in the Trace. Gotcha: gui.button labels
+  need min/max_width + h_align .left or they render blank (the known centered-text bug) — that, not
+  dock tabs, was why the first attempt showed an "empty" panel.
