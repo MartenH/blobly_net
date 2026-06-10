@@ -86,6 +86,9 @@ modules/mf4/                native-V ASAM MF4 reader: DZ-compressed + MLSD/VLSD 
                             entries (pure V, no asammdf; + tests vs samples/demo.mf4)  (Phase 7)
 modules/sim/                simulation engine: SimEcu/Engine + signal generators + the native
                             SUT ECU (twin of can_sut.py, verified vs Python golden)  (Phase 11)
+modules/player/             replay engine: plays a []canlog.LogEntry recording at recorded
+                            cadence x speed, play/pause/stop/seek/loop; caller supplies the
+                            clock via due(now_ms) (pure V, hermetic tests)           (Phase 8)
 dbc/cantester.dbc           real DBC describing the SUT's messages    (Phase 5)
 cmd/dashboard/              throwaway GUI capability demo
 cmd/signal_decode/          frame -> signals visualizer demo
@@ -210,17 +213,23 @@ turned Off (irreversible). Original handoff notes below (toolchain **mingw-w64 (
    TODO: a timed *player* (replay onto vcan0 at recorded cadence); **J1939 PGN-aware lookup in `candb`**
    so the real CSS J1939 MF4s decode (their DBC IDs carry priority+PGN+source-addr — exact-id match =
    0 frames, PGN match = ~8k).
-8. 🔜 **Operating modes + replay player** — formalize per-bus modes: **Off / Monitor ("watch") /
-   Replay ("play")**. A GUI-free `modules/player` replays a loaded recording (the `canlog.LogEntry`
-   stream — timestamps live in `t_s`) at recorded cadence × a speed factor (play/pause/stop/seek).
-   *Sinks*: to the trace (offline review, no bus) and/or onto an interface via `bus.send()` (the SUT
-   sees it; monitoring that same bus then shows the replay via the normal RX path — no special wiring).
-   Replay is inherently **per-interface**. A global **Start/Stop** measurement control (top-left
-   toolbar) attaches/detaches all *enabled* channels at once (conventional measurement lifecycle):
-   Start opens each enabled channel per its mode (monitor → RX thread; replay → player), Stop tears
-   them down. UI started: the trace got a visible scrollbar + uncapped history (newest-first ordering
-   = inherent "follow"); gui exposes no public scroll-to-bottom, so a bottom-anchored autoscroll would
-   need a gui patch.
+8. 🚧 **Operating modes + replay player** — per-bus modes **Off / Monitor / Replay**.
+   **DONE 2026-06-10: `modules/player` + GUI replay wiring.** The GUI-free player replays a
+   `[]canlog.LogEntry` recording (`.log` and native `.mf4` both yield it — shared `load_entries`
+   helper) at recorded cadence × a speed factor, with play/pause/stop/seek/loop. Hermetic by
+   design: the caller supplies the clock via `due(now_ms)` (same pattern as
+   `sim.Engine.due_frames`), 13 simulated-clock tests; a 1 µs epsilon absorbs f64 epoch-offset
+   error at exact-boundary ticks. Wired into **Start/Stop**: `start_measurement` matches on mode —
+   replay channels open their bus and spawn `replay_loop`, which loads the recording in-thread,
+   `bus.send()`s frames at cadence, records them as **TX** rows (same batched-repaint scheme as
+   rx_loop, respects Pause), shows live progress / loop count in the Buses-panel note, and
+   auto-stops with "replay finished" at the end. Monitoring the same iface on another channel shows
+   the replay via the normal RX path — like a real node on the wire. `projects/replay-demo.yml`
+   loops `samples/demo.log` on an in-proc bus (zero drivers/Python; GUI-verified at exactly the
+   recorded 20 frames/s). TODO: transport-control UI (per-channel play/pause/seek/speed — the
+   player API supports it; no GUI surface yet). Earlier UI work: trace scrollbar + uncapped history
+   (newest-first ordering = inherent "follow"); gui exposes no public scroll-to-bottom, so a
+   bottom-anchored autoscroll would need a gui patch.
 9. 🔜 **Project/config files (`.yml`) + menus** — a gui `menubar`; **File** first: New / Open Project /
    Save / Save As / Open Recording / **Open Recent** / Exit (later: Bus, View, Tools, Help). The project
    file (vlib `yaml`; fall back to vlib `toml` if yaml proves too thin) is the single source of truth
@@ -599,3 +608,19 @@ prompt for a password.
   history as auto-scaled coloured polylines + a value legend (`gui.draw_canvas`/`dc.polyline`,
   re-tessellates on new frames). Verified live: 0x100 sines, 0x301 BrakePressure sawtooth + BrakePedal
   sine. NEXT (deferred): renderer-leak exact line; plot real-time x-axis / per-signal toggle.
+- 2026-06-10: **Phase 8 replay player DONE & VERIFIED (core).** New GUI-free `modules/player`:
+  replays a `[]canlog.LogEntry` recording at recorded cadence × speed with play/pause/stop/seek/
+  loop; the caller supplies the playback clock via `due(now_ms)` (sim.Engine pattern) so the module
+  is hermetic — 13 simulated-clock tests (cadence, tick granularity, speed, pause/resume, loop
+  period = duration, zero-duration guard, seek both ways, fp-epsilon boundaries). GUI:
+  `start_measurement` now matches on channel mode; `mode: replay` opens the bus and spawns
+  `replay_loop` (recording loaded in-thread via the new shared `load_entries()` — also re-used by
+  Open Log; frames sent at cadence and recorded as TX rows with rx_loop's batched-repaint scheme;
+  live "replay N% / loop N" note in the Buses panel; "replay finished" + channel auto-stop).
+  Shipped `projects/replay-demo.yml` (loops samples/demo.log on `inproc:` — zero drivers).
+  **Verified in the GUI**: 1 channel attached, green dot, trace streaming TX 0x100/0x700 decoded
+  via the DBC, and the TX counter advanced 124 frames in 6 s ≈ the recording's exact 20 frames/s.
+  Gotcha re-learned: `v ... | head` makes `$?` head's rc — the build had silently not rewritten
+  build/cantester (stale Jun-8 binary, "0 channels attached") until rebuilt + timestamp-checked.
+  NEXT (Phase 8 rest): per-channel transport-control UI (play/pause/seek/speed — player API ready);
+  replay direct-to-trace sink (no bus) for offline review at cadence.

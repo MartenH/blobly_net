@@ -24,6 +24,7 @@ import mf4
 import sampledb
 import project
 import sim
+import player
 
 const max_trace = 1000 // ring-buffer cap on retained frames (all are scrollable)
 const default_fps = 5  // trace repaint rate; user-tunable (3/5/10) from the toolbar
@@ -479,8 +480,10 @@ fn (mut app App) load_databases() {
 	}
 }
 
-// start_measurement attaches every enabled monitor channel: opens its bus and
-// spawns an RX thread. (Replay channels are wired in a later phase.)
+// start_measurement attaches every enabled channel per its mode (the conventional
+// measurement lifecycle): monitor → opens the bus + RX thread (+ sim engine if
+// the channel hosts simulated nodes); replay → opens the bus + a player thread
+// that transmits the configured recording at its recorded cadence.
 fn start_measurement(mut w gui.Window) {
 	mut app := w.state[App]()
 	if app.running {
@@ -494,31 +497,53 @@ fn start_measurement(mut w gui.Window) {
 			app.rt[i].note = 'disabled'
 			continue
 		}
-		if ch.mode != .monitor {
-			app.rt[i].note = '${ch.mode} (not yet wired)'
-			continue
-		}
-		if bus := transport.open(ch.iface) {
-			app.rt[i].bus = bus
-			app.rt[i].running = true
-			can_sim := app.sim_nodes.any(it.ch_idx == i)
-			app.rt[i].note = if can_sim { 'monitoring + simulation' } else { 'monitoring' }
-			opened++
-			spawn fn [i] (mut w gui.Window) {
-				rx_loop(i, mut w)
-			}(mut w)
-			// If the network can host simulated ECUs, spawn the sim engine on its own
-			// bus instance attached to the same interface (so the monitor's RX thread
-			// hears the simulated traffic via the normal path). It simulates whichever
-			// nodes are checked in the Simulation panel, live.
-			if can_sim {
-				spawn fn [i] (mut w gui.Window) {
-					sim_loop(i, mut w)
-				}(mut w)
+		match ch.mode {
+			.off {
+				app.rt[i].note = 'off'
 			}
-		} else {
-			app.rt[i].err = true
-			app.rt[i].note = 'open failed: ${err}'
+			.monitor {
+				if bus := transport.open(ch.iface) {
+					app.rt[i].bus = bus
+					app.rt[i].running = true
+					can_sim := app.sim_nodes.any(it.ch_idx == i)
+					app.rt[i].note = if can_sim { 'monitoring + simulation' } else { 'monitoring' }
+					opened++
+					spawn fn [i] (mut w gui.Window) {
+						rx_loop(i, mut w)
+					}(mut w)
+					// If the network can host simulated ECUs, spawn the sim engine on its own
+					// bus instance attached to the same interface (so the monitor's RX thread
+					// hears the simulated traffic via the normal path). It simulates whichever
+					// nodes are checked in the Simulation panel, live.
+					if can_sim {
+						spawn fn [i] (mut w gui.Window) {
+							sim_loop(i, mut w)
+						}(mut w)
+					}
+				} else {
+					app.rt[i].err = true
+					app.rt[i].note = 'open failed: ${err}'
+				}
+			}
+			.replay {
+				rcfg := ch.replay or {
+					app.rt[i].err = true
+					app.rt[i].note = 'replay: no source configured'
+					continue
+				}
+				if bus := transport.open(ch.iface) {
+					app.rt[i].bus = bus
+					app.rt[i].running = true
+					app.rt[i].note = 'replay: ${os.base(rcfg.source)}'
+					opened++
+					spawn fn [i] (mut w gui.Window) {
+						replay_loop(i, mut w)
+					}(mut w)
+				} else {
+					app.rt[i].err = true
+					app.rt[i].note = 'open failed: ${err}'
+				}
+			}
 		}
 	}
 	app.running = true
@@ -575,6 +600,82 @@ fn sim_loop(idx int, mut w gui.Window) {
 				bus.send(resp) or {}
 			}
 		}
+	}
+	bus.close()
+}
+
+// replay_loop transmits channel `idx`'s configured recording onto its bus at
+// the recorded cadence × speed (modules/player drives the timing; this thread
+// only supplies the wall clock and the bus). Sent frames are recorded as TX in
+// batches with the same bounded-repaint scheme as rx_loop. Monitoring the same
+// interface on another channel shows the replay via the normal RX path —
+// exactly like traffic from a real node on the wire.
+fn replay_loop(idx int, mut w gui.Window) {
+	app := w.state[App]()
+	ch := app.proj.channels[idx]
+	rcfg := ch.replay or { return } // start_measurement guarantees it
+	mut bus := app.rt[idx].bus or { return }
+	// Load in this thread so Start stays snappy (a big MF4 takes a moment).
+	entries := load_entries(rcfg.source) or {
+		msg := 'replay: ${err}'
+		w.queue_command(fn [idx, msg] (mut w gui.Window) {
+			mut a := w.state[App]()
+			a.rt[idx].err = true
+			a.rt[idx].note = msg
+			a.rt[idx].running = false
+			w.update_window()
+		})
+		bus.close()
+		return
+	}
+	mut pl := player.new_player(entries, rcfg.speed, rcfg.repeat)
+	t0 := time.ticks()
+	pl.play(0)
+	mut batch := []transport.CanFrame{}
+	mut last_flush := time.ticks()
+	for app.rt[idx].running {
+		now := f64(time.ticks() - t0)
+		for e in pl.due(now) {
+			bus.send(e.frame) or {}
+			batch << e.frame
+		}
+		fin := pl.finished()
+		nticks := time.ticks()
+		if fin || (batch.len > 0 && nticks - last_flush >= flush_ms_for(app.fps)) {
+			last_flush = nticks
+			frames := batch.clone()
+			batch.clear()
+			note := if fin {
+				'replay finished (${pl.len()} frames)'
+			} else if rcfg.repeat {
+				'replay loop ${pl.passes() + 1} — ${int(pl.progress(now) * 100)}%'
+			} else {
+				'replay ${int(pl.progress(now) * 100)}% (${pl.sent()}/${pl.len()})'
+			}
+			w.queue_command(fn [frames, idx, note, fin] (mut w gui.Window) {
+				mut a := w.state[App]()
+				a.rt[idx].note = note
+				if fin {
+					a.rt[idx].running = false
+				}
+				if !a.paused {
+					a.rt[idx].tx_count += frames.len
+					chn := if idx < a.proj.channels.len {
+						a.proj.channels[idx].name
+					} else {
+						'CAN${idx + 1}'
+					}
+					for f in frames {
+						a.push('TX', f, chn)
+					}
+				}
+				w.update_window()
+			})
+			if fin {
+				break
+			}
+		}
+		time.sleep(time.millisecond)
 	}
 	bus.close()
 }
@@ -1723,19 +1824,9 @@ fn load_log(path string, mut w gui.Window) {
 		app.status = 'no file picker here — type a log/mf4 path and press Enter'
 		return
 	}
-	// ASAM MF4 is read natively (modules/mf4 — DZ-compressed + VLSD CAN-FD, no
-	// Python/asammdf); candump .log via canlog. Both yield []canlog.LogEntry.
-	is_mf4 := p.to_lower().ends_with('.mf4')
-	entries := if is_mf4 {
-		mf4.load_file(p) or {
-			app.status = 'MF4 open failed: ${err}'
-			return
-		}
-	} else {
-		canlog.load_file(p) or {
-			app.status = 'open failed: ${err}'
-			return
-		}
+	entries := load_entries(p) or {
+		app.status = 'open failed: ${err}'
+		return
 	}
 	app.paused = true
 	app.log_path = p
@@ -1755,6 +1846,17 @@ fn load_log(path string, mut w gui.Window) {
 	}
 	app.status = 'loaded ${entries.len} frames from ${os.base(p)} (paused — Resume for live)'
 	w.update_window()
+}
+
+// load_entries reads a recording into the common []canlog.LogEntry stream:
+// ASAM MF4 natively via modules/mf4 (DZ-compressed + VLSD CAN-FD, no Python),
+// anything else as a candump `.log` via canlog. Shared by the toolbar Open
+// Log action (direct-to-trace) and replay channels (onto the bus).
+fn load_entries(path string) ![]canlog.LogEntry {
+	if path.to_lower().ends_with('.mf4') {
+		return mf4.load_file(path)
+	}
+	return canlog.load_file(path)
 }
 
 fn trace_cell_format(row gui.GridRow, _ int, col gui.GridColumnCfg, value string, mut w gui.Window) gui.GridCellFormat {
