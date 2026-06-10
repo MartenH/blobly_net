@@ -61,7 +61,8 @@ jobs:
             @{ Repo = 'gui';    File = '01-gui-readback-cobjmacros.patch' },
             @{ Repo = 'gui';    File = '02-gui-dialog-includes.patch'     },
             @{ Repo = 'gui';    File = '03-gui-titlebar-isvalid.patch'    },
-            @{ Repo = 'vglyph'; File = '04-vglyph-empty-outline.patch'    }
+            @{ Repo = 'vglyph'; File = '04-vglyph-empty-outline.patch'    },
+            @{ Repo = 'gui';    File = '06-gui-sample-count.patch'        }  # WindowCfg.sample_count (MSAA) — main.v sets sample_count: 4
           )
           foreach ($p in $patches) {
             $patch = "$env:GITHUB_WORKSPACE\scripts\win_patches\$($p.File)"
@@ -100,9 +101,35 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "build failed" }
           Write-Host "BUILD OK -> build\cantester-msvc.exe"
 
-      - name: Upload exe
+      # The exe dynamically links vcpkg's pango/cairo/glib/freetype/harfbuzz/… DLLs;
+      # without them next to it the artifact won't run. Copy the whole vcpkg runtime
+      # bin (a superset — reliable, avoids resolving the transitive import graph).
+      - name: Bundle runtime DLLs
+        shell: pwsh
+        run: |
+          $vbin = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin"
+          Copy-Item "$vbin\*.dll" -Destination build\ -Force
+          $dlls = Get-ChildItem build\*.dll
+          Write-Host "bundled $($dlls.Count) vcpkg DLLs next to the exe:"
+          $dlls | ForEach-Object { Write-Host "  $($_.Name)" }
+          # MSVC C++ runtime (vcpkg x64-windows links the DYNAMIC CRT, so these are
+          # needed too and don't ship in vcpkg\bin). Best-effort: PATH, then the VC
+          # redist dir. If absent the target just needs the VC++ 2015-2022 redist.
+          foreach ($d in @('vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll')) {
+            $src = (Get-Command $d -ErrorAction SilentlyContinue).Source
+            if (-not $src -and $env:VCToolsRedistDir) {
+              $hit = Get-ChildItem "$env:VCToolsRedistDir\x64\Microsoft.VC*.CRT\$d" -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($hit) { $src = $hit.FullName }
+            }
+            if ($src) { Copy-Item $src -Destination build\ -Force; Write-Host "  CRT $d" }
+            else { Write-Host "  CRT $d NOT FOUND (target needs the VC++ redist)" }
+          }
+
+      - name: Upload exe + DLLs
         uses: actions/upload-artifact@v4
         with:
           name: cantester-msvc-x64
-          path: build/cantester-msvc.exe
+          path: |
+            build/cantester-msvc.exe
+            build/*.dll
           if-no-files-found: error

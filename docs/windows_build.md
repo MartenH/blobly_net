@@ -174,6 +174,7 @@ shipped as patches — they're GL-path-irrelevant and kept as prose only.)
 | 2 | `gui/nativebridge/dialog_windows.c`              | add `<stdio.h>`/`<wchar.h>` for `_snwprintf` (gcc treats implicit decls as errors)              | yes (gui)        |
 | 3 | `gui/titlebar.c.v`                               | guard `titlebar_dark()` with `sapp.isvalid()` — set_theme() runs before sapp.run() → abort      | yes (gui)        |
 | 4 | `vglyph/glyph_atlas.v`                            | don't panic on empty outline (`n_points==0`) — whitespace glyphs (space) are legal              | yes (vglyph)     |
+| 6 | `gui/window.v`                                   | expose `WindowCfg.sample_count` → `gg.new_context` (MSAA); `src/main.v` sets `sample_count: 4` for antialiased Graphics polylines. **Required for the build** | yes (gui)        |
 
 **Applied in the live GL build:** all four above.
 
