@@ -204,7 +204,8 @@ mut:
 	rx_count  int
 	tx_count  int
 	paused    bool
-	mode      string = 'grouped' // 'grouped' | 'all'
+	mode      string = 'grouped' // main Trace view: 'grouped' | 'all'
+	mode2     string = 'grouped' // Trace (filter) view, independent toggle
 	dark      bool // current theme: false = Opus sage-light (default), true = dark
 	recents   []string // recently opened project file paths (most-recent first; persisted)
 	expanded  map[u32]bool // grouped-trace IDs expanded in the main Trace (which 0)
@@ -214,6 +215,10 @@ mut:
 	selection gui.GridSelection
 	send_id   string = '101'
 	send_data string = 'AABBCC'
+	// Recording: when on, record() also appends every frame to record_entries; the
+	// toolbar ⏺ button toggles it and writes a candump .log on stop.
+	recording      bool
+	record_entries []canlog.LogEntry
 	log_path  string // candump .log to open from the toolbar
 	fps       int = default_fps // trace repaint rate (toolbar dropdown)
 	sim_nodes []SimNode // simulated ECUs available per channel (Simulation panel)
@@ -896,6 +901,13 @@ fn (mut app App) record(dir string, f transport.CanFrame, t_ms f64, ch string) {
 	} else {
 		app.tx_count++
 	}
+	if app.recording {
+		app.record_entries << canlog.LogEntry{
+			t_s:   t_ms / 1000.0
+			iface: ch
+			frame: f
+		}
+	}
 	name := if m := app.db.lookup_frame(f.id, f.extended) { m.name } else { '' }
 	prev := app.grouped[f.id] or { MsgAgg{} }
 	first := prev.last.len == 0
@@ -976,8 +988,8 @@ fn main_view(mut window gui.Window) gui.View {
 						gui.DockPanelDef{ id: 'simulation', label: 'Simulation', content: [simulation_panel(app)] },
 					gui.DockPanelDef{ id: 'signals', label: 'Signals', content: [signals_panel(app)] },
 					gui.DockPanelDef{ id: 'plot', label: 'Graphics', content: [plot_panel(mut window)] },
-					gui.DockPanelDef{ id: 'send', label: 'Send', content: [send_panel(app)] },
-				gui.DockPanelDef{ id: 'diag', label: 'Diagnostics', content: [diag_panel(app)] },
+					gui.DockPanelDef{ id: 'send', label: 'Send', content: [send_panel(mut window)] },
+				gui.DockPanelDef{ id: 'diag', label: 'Diagnostics', content: [diag_panel(mut window)] },
 					gui.DockPanelDef{ id: 'stats', label: 'Statistics', content: [stats_panel(app)] },
 						gui.DockPanelDef{ id: 'symbols', label: 'Symbol Browser', content: [symbol_browser_panel(app)] },
 				]
@@ -1267,7 +1279,7 @@ fn recent_label(path string) string {
 
 fn toolbar(mut window gui.Window) gui.View {
 	app := window.state[App]()
-	dot := if app.running { '🟢' } else { '⚪' }
+	dot := if app.running { '🟢' } else { '🔴' } // red ring when stopped
 	return gui.row(
 		v_align: .middle
 		sizing:  gui.fill_fit
@@ -1287,17 +1299,8 @@ fn toolbar(mut window gui.Window) gui.View {
 					stop_measurement(mut w)
 				}
 			),
-			gui.text(text: 'CANTester', text_style: gui.theme().b1),
 			gui.text(text: '${dot} ${app.status}', text_style: gui.theme().n4),
 			gui.text(text: 'RX ${app.rx_count}  TX ${app.tx_count}', text_style: gui.theme().n4),
-			gui.button(
-				id_focus: 100
-				content:  [gui.text(text: 'View: ${app.mode}')]
-				on_click: fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
-					mut a := w.state[App]()
-					a.mode = if a.mode == 'grouped' { 'all' } else { 'grouped' }
-				}
-			),
 			gui.button(
 				id_focus: 101
 				content:  [gui.text(text: if app.paused { '▶ Resume' } else { '⏸ Pause' })]
@@ -1318,6 +1321,13 @@ fn toolbar(mut window gui.Window) gui.View {
 					a.expanded2 = map[u32]bool{}
 					a.plot_hist = map[u32][]PlotSample{}
 					a.sel_id = -1
+				}
+			),
+			gui.button(
+				id_focus: 105
+				content:  [gui.text(text: if app.recording { '⏹ Recording (${app.record_entries.len})' } else { '⏺ Record' })]
+				on_click: fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					toggle_record(mut w)
 				}
 			),
 			gui.button(
@@ -1416,7 +1426,7 @@ fn filtered_trace_panel(mut window gui.Window) gui.View {
 fn trace_view(mut window gui.Window, which int) gui.View {
 	_, h := window.window_size()
 	app := window.state[App]()
-	grouped := app.mode == 'grouped'
+	grouped := if which == 0 { app.mode == 'grouped' } else { app.mode2 == 'grouped' }
 	grid_h := f32(h) - 158 // leave room for the filter row
 	filter := if which == 0 { app.trace_filter } else { app.trace_filter2 }
 	sel := if which == 0 { app.selection } else { app.selection2 }
@@ -1632,7 +1642,22 @@ fn selected_msg_ids(sel gui.GridSelection) []u32 {
 // panel (`which`) edits its own filter string and gets its own focus ids.
 fn trace_filter_row(app &App, which int) gui.View {
 	filter := if which == 0 { app.trace_filter } else { app.trace_filter2 }
+	mode := if which == 0 { app.mode } else { app.mode2 }
 	mut content := [
+		gui.View(gui.button(
+			id_focus:  u32(36 + which) // per-panel grouped/all toggle
+			max_width: 92
+			content:   [gui.text(text: 'View: ${mode}')]
+			padding:   gui.Padding{2, 6, 2, 6}
+			on_click:  fn [which] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				mut a := w.state[App]()
+				if which == 0 {
+					a.mode = if a.mode == 'grouped' { 'all' } else { 'grouped' }
+				} else {
+					a.mode2 = if a.mode2 == 'grouped' { 'all' } else { 'grouped' }
+				}
+			}
+		)),
 		gui.text(text: 'Filter', text_style: gui.theme().n4),
 		gui.input(
 			id_focus:        u32(30 + which * 2)
@@ -1959,8 +1984,11 @@ fn plot_panel(mut window gui.Window) gui.View {
 	// --- Canvas (full panel width) + timeline labels directly under it. ---
 	canvas := gui.draw_canvas(
 		id:       'sigplot'
-		// re-tessellate on new frames OR when the hover cursor moves
-		version:  u64(app.rx_count + app.tx_count) * 8192 + u64(int((hf + 1) * 2000))
+		// re-tessellate on new frames, OR (crucially, while STOPPED) when the zoom
+		// window, hover cursor, or the set of shown signals changes — otherwise the
+		// cached geometry never refreshes and the zoom buttons appear dead.
+		version:  u64(app.rx_count + app.tx_count) * 10_000_000 + u64(shown.len) * 1_000_000 +
+			u64(app.plot_win) * 10_000 + u64(int((hf + 1) * 2000))
 		width:    cw
 		height:   ph
 		color:    plot_bg
@@ -2485,13 +2513,52 @@ fn channel_color(ch project.Channel, rt ChannelRT, running bool) gui.Color {
 	return gui.Color{210, 180, 90, 255}
 }
 
-fn send_panel(app &App) gui.View {
+fn send_panel(mut window gui.Window) gui.View {
+	app := window.state[App]()
+	// Pick a message straight from the loaded database: selecting one fills the id
+	// (hex) and a DLC-length zero payload, ready to tweak + Send.
+	mut msg_opts := ['(database message…)']
+	for m in app.db.messages {
+		msg_opts << '0x${m.id:X} ${m.name}'
+	}
 	return gui.column(
 		sizing:  gui.fill_fill
 		padding: gui.padding_medium
 		spacing: 6
 		content: [
 			gui.text(text: 'Transmit a frame', text_style: gui.theme().b3),
+			gui.row(
+				v_align: .middle
+				sizing:  gui.fill_fit
+				spacing: 6
+				content: [
+					gui.text(text: 'msg', text_style: gui.theme().n4),
+					window.select(
+						id:        'sendmsg'
+						id_focus:  13
+						select:    ['(database message…)']
+						options:   msg_opts
+						min_width: 150
+						max_width: 230
+						on_select: fn (sel []string, mut _ gui.Event, mut w gui.Window) {
+							mut a := w.state[App]()
+							if sel.len > 0 && sel[0].starts_with('0x') {
+								idhex := sel[0].all_before(' ').all_after('0x')
+								a.send_id = idhex
+								id := parse_hex_u32(idhex)
+								if m := a.db.lookup_frame(id, id > 0x7ff) {
+									dlc := if m.dlc > 0 { m.dlc } else { 8 }
+									mut bytes := []string{}
+									for _ in 0 .. dlc {
+										bytes << '00'
+									}
+									a.send_data = bytes.join(' ')
+								}
+							}
+						}
+					),
+				]
+			),
 			gui.row(
 				v_align: .middle
 				sizing:  gui.fill_fit
@@ -2560,7 +2627,29 @@ fn send_panel(app &App) gui.View {
 // simulated ECU's UDS server (or any ECU listening on 0x7E0) over software
 // ISO-TP, with a newest-first response log. Works driver-free on the in-proc
 // bus — press ▶ Start on a channel with simulated nodes first.
-fn diag_panel(app &App) gui.View {
+// known_dids: common UDS Read-Data-By-Identifier records, offered as a pick-list
+// in the Diagnostics panel (DBCs don't define DIDs, so this is a curated list;
+// DID↔DBC-signal mapping is a future step).
+const known_dids = [
+	['F190', 'VIN'],
+	['F18C', 'ECU Serial'],
+	['F195', 'SW Version'],
+	['F187', 'Spare Part No'],
+	['F18A', 'Supplier Id'],
+	['F197', 'System Name'],
+]
+
+// merge_did_opts builds the Diagnostics DID dropdown options ('F190 VIN', …).
+fn merge_did_opts() []string {
+	mut o := ['pick…']
+	for d in known_dids {
+		o << '${d[0]} ${d[1]}'
+	}
+	return o
+}
+
+fn diag_panel(mut window gui.Window) gui.View {
+	app := window.state[App]()
 	mut rows := []gui.View{}
 	rows << gui.text(text: 'Diagnostics (UDS)', text_style: gui.theme().b3)
 	rows << gui.text(
@@ -2601,6 +2690,20 @@ fn diag_panel(app &App) gui.View {
 		padding: gui.padding_none
 		content: [
 			gui.text(text: 'DID', text_style: gui.theme().n4),
+			window.select(
+				id:        'diagdid'
+				id_focus:  612
+				select:    ['pick…']
+				options:   merge_did_opts()
+				min_width: 120
+				max_width: 150
+				on_select: fn (sel []string, mut _ gui.Event, mut w gui.Window) {
+					mut a := w.state[App]()
+					if sel.len > 0 && sel[0].len >= 4 && sel[0] != 'pick…' {
+						a.diag_did = sel[0].all_before(' ')
+					}
+				}
+			),
 			gui.input(
 				id_focus:        610
 				text:            app.diag_did
@@ -2681,6 +2784,36 @@ fn do_send(mut w gui.Window) {
 	app.rt[idx].tx_count++
 	ch := if idx < app.proj.channels.len { app.proj.channels[idx].name } else { 'CAN${idx + 1}' }
 	app.push('TX', frame, ch)
+}
+
+// toggle_record starts/stops capturing every frame. On stop it writes the
+// captured stream to a timestamped candump `.log` (canlog format) in the cwd and
+// reports the path. Recording is uncapped (unlike the 1000-frame display trace).
+fn toggle_record(mut w gui.Window) {
+	mut app := w.state[App]()
+	if app.recording {
+		app.recording = false
+		entries := app.record_entries
+		if entries.len == 0 {
+			app.status = 'recording stopped — no frames captured'
+			return
+		}
+		t := time.now()
+		path := 'cantester-${t.year}${t.month:02}${t.day:02}-${t.hour:02}${t.minute:02}${t.second:02}.log'
+		mut lines := []string{}
+		for e in entries {
+			lines << canlog.format_line(e)
+		}
+		os.write_file(path, lines.join('\n') + '\n') or {
+			app.status = 'record save failed: ${err}'
+			return
+		}
+		app.status = 'recorded ${entries.len} frames → ${path}'
+	} else {
+		app.record_entries = []canlog.LogEntry{}
+		app.recording = true
+		app.status = 'recording…'
+	}
 }
 
 // load_log opens a candump `.log` (or an MF4 recording, parsed natively) and
