@@ -6,21 +6,21 @@ import json
 // Minimal projection of `ip -details -json link show` — V's json.decode ignores the many
 // other fields. A CAN/vcan netdev has linkinfo.info_kind == "can"/"vcan"; a configured real
 // `can0` also carries linkinfo.info_data.bittiming.bitrate (vcan has none → 0).
-struct ipLink {
+struct IpLink {
 	ifname   string
-	linkinfo ipLinkInfo
+	linkinfo IpLinkInfo
 }
 
-struct ipLinkInfo {
+struct IpLinkInfo {
 	info_kind string
-	info_data ipInfoData
+	info_data IpInfoData
 }
 
-struct ipInfoData {
-	bittiming ipBittiming
+struct IpInfoData {
+	bittiming IpBittiming
 }
 
-struct ipBittiming {
+struct IpBittiming {
 	bitrate int
 }
 
@@ -31,7 +31,7 @@ pub fn list_interfaces() ![]Iface {
 	mut out := []Iface{}
 	res := os.execute('ip -details -json link show')
 	if res.exit_code == 0 {
-		links := json.decode([]ipLink, res.output) or { []ipLink{} }
+		links := json.decode([]IpLink, res.output) or { []IpLink{} }
 		for l in links {
 			kind := l.linkinfo.info_kind
 			if kind != 'can' && kind != 'vcan' {
