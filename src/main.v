@@ -177,6 +177,7 @@ struct BusCandidate {
 	virtual bool
 	in_proj bool   // already a channel in the project
 	state   string // 'connected' | 'no carrier' | 'down' | '' (virtual)
+	hw      string // hardware id for a real USB CAN netdev, e.g. "Kvaser Leaf Light v2 [3-3:1.0]"
 }
 
 // PlotSample is one retained frame of a message for the Graphics strip chart —
@@ -1213,6 +1214,31 @@ fn open_project(path string, mut w gui.Window) {
 	w.update_window()
 }
 
+// can_hw_id identifies the physical hardware behind a real CAN netdev by reading
+// sysfs: the USB product + USB busid, e.g. "PCAN-USB Pro FD [1-2]". The busid GROUPS
+// the channels of a multi-channel adapter (both PCAN channels share one busid; the
+// canN name distinguishes them) and separates distinct adapters. Falls back to the
+// driver (kvaser_usb→Kvaser, peak_usb→PEAK). '' for vcan / non-USB (no device dir).
+fn can_hw_id(iface string) string {
+	dev := '/sys/class/net/${iface}/device'
+	if !os.exists(dev) {
+		return ''
+	}
+	usbdir := os.dir(os.real_path(dev)) // …/1-2 (the USB device — has product, is the busid)
+	busid := os.base(usbdir)
+	product := (os.read_file('${usbdir}/product') or { '' }).trim_space()
+	if product != '' {
+		return '${product} [${busid}]'
+	}
+	drv := os.base(os.real_path('${dev}/driver'))
+	vendor := match drv {
+		'kvaser_usb' { 'Kvaser' }
+		'peak_usb' { 'PEAK' }
+		else { drv }
+	}
+	return '${vendor} [${busid}]'
+}
+
 // discover_to_candidates scans interfaces (transport.list_interfaces: real can/vcan
 // netdevs with bitrate + virtual udp/inproc buses), enriches each with its live link
 // state (from `ip -brief link show type can`: connected / no carrier / down), and
@@ -1253,6 +1279,7 @@ fn discover_to_candidates(mut w gui.Window) {
 			virtual: f.virtual
 			in_proj: f.iface in have
 			state:   linkstate[f.iface] or { '' }
+			hw:      if f.kind == 'can' { can_hw_id(f.iface) } else { '' }
 		}
 	}
 	app.bus_candidates = cands
@@ -2571,7 +2598,9 @@ fn bus_config_panel(app &App) gui.View {
 			'inproc' { 'simulation' }
 			else { c.kind }
 		}
-		mut info := kindlbl
+		// Lead with the real hardware model when we have it (Kvaser/PCAN…) so you can
+		// tell which physical adapter each canN is; else the generic kind.
+		mut info := if c.hw != '' { c.hw } else { kindlbl }
 		if c.bitrate > 0 {
 			info += ' · ${c.bitrate}'
 		}
