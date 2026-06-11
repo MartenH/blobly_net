@@ -61,6 +61,13 @@ make olddefconfig && make -j"$(nproc)"              # rebuild bzImage-can.new
 Then point `.wslconfig` at the new bzImage, `wsl --shutdown`, reattach with `usbipd`,
 and `can0` appears. (No `CAN_VECTOR` symbol exists — Vector can't ride this path.)
 
+> **Status on this box (verified 2026-06-11):** the kernel rebuild is **already done** —
+> `CAN_DEV`, `CAN_KVASER_USB`, `CAN_PEAK_USB`, `USB`, `USBIP_CORE`, `USBIP_VHCI_HCD` are
+> all `=y`. So no rebuild needed here; just `usbipd attach --wsl` the adapter and run
+> **`scripts/setup_can_hw.sh [iface] [bitrate] [data_bitrate]`** to set the rate and bring
+> the interface up (the hardware twin of `setup_vcan.sh`). **PCAN often must be plugged
+> directly into the PC, not through a USB hub, to enumerate for usbipd.**
+
 ## Native Windows — vendor backends behind the `*_windows.v` seam
 
 No SocketCAN on Windows, so each vendor needs its SDK DLL wrapped via C-interop as a
