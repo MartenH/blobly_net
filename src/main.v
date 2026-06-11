@@ -1194,6 +1194,102 @@ fn open_project(path string, mut w gui.Window) {
 	w.update_window()
 }
 
+// discover_channels scans for bus interfaces (transport.list_interfaces: real
+// can/vcan netdevs with their bitrate, + the driver-free udp/inproc buses) and
+// APPENDS any not already in the project as monitor channels. In-memory only — the
+// Buses panel updates live; persist with File ▸ Save. Stops measurement first so
+// the runtime arrays rebuild cleanly.
+fn discover_channels(mut w gui.Window) {
+	mut app := w.state[App]()
+	if app.running {
+		stop_measurement(mut w)
+	}
+	ifaces := transport.list_interfaces() or {
+		app.status = 'discover failed: ${err}'
+		return
+	}
+	mut have := map[string]bool{}
+	for ch in app.proj.channels {
+		have[ch.iface] = true
+	}
+	mut added := 0
+	for f in ifaces {
+		if f.iface in have {
+			continue
+		}
+		app.proj.channels << project.Channel{
+			name:    f.name
+			typ:     'can'
+			iface:   f.iface
+			bitrate: if f.bitrate > 0 { f.bitrate } else { 500000 }
+			mode:    .monitor
+			enabled: !f.virtual // real interfaces on; virtual fallbacks off
+		}
+		have[f.iface] = true
+		added++
+	}
+	app.rt = []ChannelRT{len: app.proj.channels.len}
+	app.load_databases()
+	app.build_sim_nodes()
+	app.status = if added > 0 {
+		'discovered ${added} new interface(s) — review in Buses, then File ▸ Save'
+	} else {
+		'discover: no new interfaces (${ifaces.len} found, all already channels)'
+	}
+	w.update_window()
+}
+
+// usbipd_exe finds the Windows usbipd-win binary (WSL can run it via interop).
+fn usbipd_exe() ?string {
+	p := '/mnt/c/Program Files/usbipd-win/usbipd.exe'
+	return if os.exists(p) { p } else { none }
+}
+
+// usb_attach_can attaches every BOUND-but-not-attached CAN adapter (Kvaser 0bfd /
+// PEAK 0c72) into WSL via usbipd, so its can0/… netdev appears for Discover. The
+// one-time `usbipd bind` still needs an elevated Windows shell; attach does not.
+fn usb_attach_can(mut w gui.Window) {
+	mut app := w.state[App]()
+	usbipd := usbipd_exe() or {
+		app.status = 'usbipd.exe not found — install usbipd-win on Windows'
+		return
+	}
+	res := os.execute('"${usbipd}" list')
+	if res.exit_code != 0 {
+		app.status = 'usbipd list failed (is usbipd-win installed?)'
+		return
+	}
+	mut attached := 0
+	mut seen := 0
+	for line in res.output.split_into_lines() {
+		low := line.to_lower()
+		is_can := low.contains('0bfd:') || low.contains('0c72:') || low.contains('kvaser')
+			|| low.contains('peak')
+		if !is_can {
+			continue
+		}
+		seen++
+		if low.contains('attached') {
+			continue
+		}
+		busid := line.trim_space().all_before(' ')
+		if busid.len == 0 {
+			continue
+		}
+		if os.execute('"${usbipd}" attach --wsl --busid ${busid}').exit_code == 0 {
+			attached++
+		}
+	}
+	app.status = if attached > 0 {
+		'attached ${attached} CAN adapter(s) — press 🔍 Discover'
+	} else if seen > 0 {
+		'CAN adapter(s) already attached — press 🔍 Discover'
+	} else {
+		'no CAN adapters found (run `usbipd bind` elevated on Windows first)'
+	}
+	w.update_window()
+}
+
 const max_recents = 8
 
 // recents_path is the per-user file that stores recently opened projects,
@@ -2364,6 +2460,32 @@ fn stats_panel(app &App) gui.View {
 fn buses_panel(app &App) gui.View {
 	mut rows := []gui.View{}
 	rows << gui.text(text: 'Buses', text_style: gui.theme().b3)
+	// Discover: scan for real CAN/vcan interfaces (+ virtual buses) and append any
+	// new ones as project channels. USB: attach bound CAN adapters into WSL (usbipd)
+	// so they show up as can0/… for the next Discover.
+	rows << gui.row(
+		v_align: .middle
+		spacing: 5
+		padding: gui.Padding{0, 0, 4, 0}
+		content: [
+			gui.button(
+				id_focus:  120
+				max_width: 92
+				content:   [gui.text(text: '🔍 Discover')]
+				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					discover_channels(mut w)
+				}
+			),
+			gui.button(
+				id_focus:  121
+				max_width: 80
+				content:   [gui.text(text: '⚲ USB CAN')]
+				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					usb_attach_can(mut w)
+				}
+			),
+		]
+	)
 	for i, ch in app.proj.channels {
 		rt := app.rt[i] or { ChannelRT{} }
 		dot_style := gui.TextStyle{
