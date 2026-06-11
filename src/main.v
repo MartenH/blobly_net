@@ -1358,6 +1358,27 @@ fn add_ticked_channels(mut w gui.Window) {
 	w.update_window()
 }
 
+// create_vcan adds + brings up the next free virtual CAN netdev (vcan0, vcan1, …)
+// via `sudo -n ip link` (scoped passwordless sudo is configured for `ip`), then
+// re-scans so it appears as a candidate. Driver-free extra buses with no hardware.
+fn create_vcan(mut w gui.Window) {
+	mut app := w.state[App]()
+	mut n := 0
+	for n < 64 && os.exists('/sys/class/net/vcan${n}') {
+		n++
+	}
+	iface := 'vcan${n}'
+	add := os.execute('sudo -n ip link add dev ${iface} type vcan')
+	if add.exit_code != 0 {
+		app.status = 'create ${iface} failed — need passwordless sudo for ip (scripts/setup_sudoers.sh): ${add.output.trim_space()}'
+		return
+	}
+	os.execute('sudo -n ip link set up ${iface}')
+	discover_to_candidates(mut w)
+	app.status = 'created ${iface} — tick it + ＋ Add to use it'
+	w.update_window()
+}
+
 // open_bus_config ensures the Bus Config panel is docked, then scans (the Buses
 // '🔍 Discover' button). gui has no custom-content modal, so it's a dock panel
 // (float it by dragging its tab if you want a window).
@@ -2614,6 +2635,14 @@ fn bus_config_panel(app &App) gui.View {
 				content:   [gui.text(text: '🔍 Discover')]
 				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					discover_to_candidates(mut w)
+				}
+			),
+			gui.button(
+				id_focus:  124
+				max_width: 84
+				content:   [gui.text(text: '＋ vcan')]
+				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					create_vcan(mut w)
 				}
 			),
 			gui.button(
