@@ -254,9 +254,13 @@ mut:
 	// Symbol Browser: search string + which message rows are expanded.
 	symbol_filter   string
 	symbol_expanded map[u32]bool
-	// Bus Config panel: discovered candidate interfaces + which are ticked to add.
+	// Bus Config panel: discovered candidate interfaces, which are ticked to add,
+	// and the (editable) name to give each — so you can label can0 'vehicle-can'
+	// etc. and that name is what lands in the project / Buses / trace Ch column.
 	bus_candidates []BusCandidate
 	bus_ticked     map[string]bool
+	bus_names      map[string]string // iface -> chosen channel name
+	send_ch        string            // Send target bus (channel name); '' = first running
 	// Graphics panel: signals UNchecked in the legend (key '<id>:<signal>') —
 	// default empty = plot everything, so new selections start fully visible.
 	plot_off map[string]bool
@@ -1284,11 +1288,14 @@ fn discover_to_candidates(mut w gui.Window) {
 	}
 	app.bus_candidates = cands
 	for c in cands {
+		if c.iface !in app.bus_names {
+			app.bus_names[c.iface] = c.name // default; user can rename before Add
+		}
 		if !c.virtual && !c.in_proj {
 			app.bus_ticked[c.iface] = true
 		}
 	}
-	app.status = 'discovered ${cands.len} interface(s) — tick the ones to add, then ＋ Add'
+	app.status = 'discovered ${cands.len} interface(s) — name + tick the ones to add, then ＋ Add'
 }
 
 // add_ticked_channels appends the ticked, not-already-present candidates as monitor
@@ -1308,8 +1315,9 @@ fn add_ticked_channels(mut w gui.Window) {
 		if !(app.bus_ticked[c.iface] or { false }) || c.iface in have {
 			continue
 		}
+		chname := app.bus_names[c.iface] or { c.name }
 		app.proj.channels << project.Channel{
-			name:    c.name
+			name:    if chname.trim_space() != '' { chname.trim_space() } else { c.name }
 			typ:     'can'
 			iface:   c.iface
 			bitrate: if c.bitrate > 0 { c.bitrate } else { 500000 }
@@ -2589,7 +2597,7 @@ fn bus_config_panel(app &App) gui.View {
 	if app.bus_candidates.len == 0 {
 		rows << gui.text(text: '(press Discover to scan interfaces)', text_style: gui.theme().n4)
 	}
-	for c in app.bus_candidates {
+	for idx, c in app.bus_candidates {
 		iface := c.iface
 		kindlbl := match c.kind {
 			'can' { 'hardware CAN' }
@@ -2617,21 +2625,41 @@ fn bus_config_panel(app &App) gui.View {
 			'down' { gui.Color{170, 170, 170, 255} }
 			else { gui.Color{150, 150, 200, 255} }
 		}
+		cname := app.bus_names[iface] or { c.name }
 		rows << gui.row(
-			v_align:  .middle
-			spacing:  5
-			padding:  gui.Padding{1, 2, 1, 2}
-			on_click: fn [iface] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
-				mut a := w.state[App]()
-				a.bus_ticked[iface] = !(a.bus_ticked[iface] or { false })
-			}
-			content:  [
-				gui.text(text: if ticked { '☑' } else { '☐' }, text_style: trace_text_style()),
+			v_align: .middle
+			spacing: 5
+			padding: gui.Padding{1, 2, 1, 2}
+			content: [
+				// tick on its OWN clickable so editing the name doesn't toggle it
+				gui.row(
+					v_align:  .middle
+					padding:  gui.Padding{0, 3, 0, 1}
+					on_click: fn [iface] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+						mut a := w.state[App]()
+						a.bus_ticked[iface] = !(a.bus_ticked[iface] or { false })
+					}
+					content:  [
+						gui.text(text: if ticked { '☑' } else { '☐' }, text_style: trace_text_style()),
+					]
+				),
 				gui.text(text: '●', text_style: gui.TextStyle{
 					...trace_text_style()
 					color: statecolor
 				}),
-				gui.text(text: c.name, text_style: gui.theme().b4),
+				// editable channel name — what lands in the project (e.g. 'vehicle-can')
+				gui.input(
+					id_focus:        u32(130 + idx)
+					text:            cname
+					width:           120
+					height:          22
+					padding:         gui.Padding{2, 6, 2, 6}
+					sizing:          gui.fixed_fixed
+					on_text_changed: fn [iface] (_ &gui.Layout, s string, mut w gui.Window) {
+						mut a := w.state[App]()
+						a.bus_names[iface] = s
+					}
+				),
 				gui.text(text: iface, text_style: trace_text_style()),
 				gui.text(text: info, text_style: gui.theme().n4),
 			]
@@ -2855,12 +2883,40 @@ fn send_panel(mut window gui.Window) gui.View {
 	for m in app.db.messages {
 		msg_opts << '0x${m.id:X} ${m.name}'
 	}
+	// Target bus: '(first running)' or a specific channel by name.
+	mut bus_opts := ['(first running)']
+	for ch in app.proj.channels {
+		bus_opts << ch.name
+	}
+	cur_bus := if app.send_ch != '' { app.send_ch } else { '(first running)' }
 	return gui.column(
 		sizing:  gui.fill_fill
 		padding: gui.padding_medium
 		spacing: 6
 		content: [
 			gui.text(text: 'Transmit a frame', text_style: gui.theme().b3),
+			gui.row(
+				v_align: .middle
+				sizing:  gui.fill_fit
+				spacing: 6
+				content: [
+					gui.text(text: 'bus', text_style: gui.theme().n4),
+					window.select(
+						id:        'sendbus'
+						id_focus:  14
+						select:    [cur_bus]
+						options:   bus_opts
+						min_width: 110
+						max_width: 160
+						on_select: fn (sel []string, mut _ gui.Event, mut w gui.Window) {
+							mut a := w.state[App]()
+							if sel.len > 0 {
+								a.send_ch = if sel[0] == '(first running)' { '' } else { sel[0] }
+							}
+						}
+					),
+				]
+			),
 			gui.row(
 				v_align: .middle
 				sizing:  gui.fill_fit
@@ -3092,16 +3148,25 @@ fn diag_button(focus u32, label string, on_click fn (&gui.Layout, mut gui.Event,
 
 fn do_send(mut w gui.Window) {
 	mut app := w.state[App]()
-	// Transmit on the first running channel that has an open bus.
+	// Transmit on the SELECTED bus (App.send_ch, a channel name) if its bus is open,
+	// else the first running channel.
 	mut idx := -1
 	for i in 0 .. app.rt.len {
-		if app.rt[i].running && app.rt[i].bus != none {
+		if !(app.rt[i].running && app.rt[i].bus != none) {
+			continue
+		}
+		chname := if i < app.proj.channels.len { app.proj.channels[i].name } else { '' }
+		if app.send_ch == '' || app.send_ch == chname {
 			idx = i
 			break
 		}
 	}
 	if idx < 0 {
-		app.status = 'not running — press ▶ Start to send'
+		app.status = if app.send_ch != '' {
+			'bus "${app.send_ch}" is not running — press ▶ Start'
+		} else {
+			'not running — press ▶ Start to send'
+		}
 		return
 	}
 	id := parse_hex_u32(app.send_id)
