@@ -213,8 +213,10 @@ mut:
 	status         string
 	t0             i64
 	trace     []TraceRow
-	grouped   map[u32]MsgAgg
-	order     []u32
+	// Grouped trace: keyed by (id, bus, dir) — see trace_group_key — so the same ID
+	// on different buses or RX vs TX are SEPARATE rows. order keeps first-seen order.
+	grouped   map[string]MsgAgg
+	order     []string
 	seq       int
 	rx_count  int
 	tx_count  int
@@ -223,8 +225,8 @@ mut:
 	mode2     string = 'grouped' // Trace (filter) view, independent toggle
 	dark      bool // current theme: false = Opus sage-light (default), true = dark
 	recents   []string // recently opened project file paths (most-recent first; persisted)
-	expanded  map[u32]bool // grouped-trace IDs expanded in the main Trace (which 0)
-	expanded2 map[u32]bool // …and independently in Trace (filter) (which 1)
+	expanded  map[string]bool // grouped-trace group-keys expanded in the main Trace (which 0)
+	expanded2 map[string]bool // …and independently in Trace (filter) (which 1)
 	plot_hist map[u32][]PlotSample // deep per-message history for the Graphics plot
 	sel_id    i64 = -1     // message ID the Signals panel inspects (trace selection)
 	selection gui.GridSelection
@@ -920,6 +922,27 @@ fn (mut app App) push(dir string, f transport.CanFrame, ch string) {
 
 // record appends a frame to the trace + grouped aggregate at an explicit time
 // (ms). Live capture passes "now"; log replay passes the recorded timestamp.
+// trace_group_key is the grouped-trace bucket: same ID on a different bus, or RX vs
+// TX, are distinct groups. id is first so the message id parses back out (all_before '|').
+fn trace_group_key(id u32, ch string, dir string) string {
+	return '${id}|${ch}|${dir}'
+}
+
+// latest_for returns the most-recent aggregate for a message id across ALL groups
+// (any bus/dir) — used by the Signals panel + Symbol Browser, which decode by id and
+// don't care which bus/dir it came from. Empty MsgAgg if the id hasn't been seen.
+fn (app &App) latest_for(id u32) MsgAgg {
+	mut best := MsgAgg{}
+	mut found := false
+	for _, agg in app.grouped {
+		if agg.id == id && (!found || agg.last_ms > best.last_ms) {
+			best = agg
+			found = true
+		}
+	}
+	return best
+}
+
 fn (mut app App) record(dir string, f transport.CanFrame, t_ms f64, ch string) {
 	app.seq++
 	if dir == 'RX' {
@@ -935,7 +958,8 @@ fn (mut app App) record(dir string, f transport.CanFrame, t_ms f64, ch string) {
 		}
 	}
 	name := if m := app.db.lookup_frame(f.id, f.extended) { m.name } else { '' }
-	prev := app.grouped[f.id] or { MsgAgg{} }
+	gkey := trace_group_key(f.id, ch, dir)
+	prev := app.grouped[gkey] or { MsgAgg{} }
 	first := prev.last.len == 0
 	// Per-byte change vs the previous instance of this ID (bit i set = byte i
 	// differs, or is new this frame). The chronological view colours a frame's
@@ -964,8 +988,8 @@ fn (mut app App) record(dir string, f transport.CanFrame, t_ms f64, ch string) {
 	if app.trace.len > max_trace + max_trace / 4 {
 		app.trace = app.trace[app.trace.len - max_trace..].clone()
 	}
-	if f.id !in app.grouped {
-		app.order << f.id
+	if gkey !in app.grouped {
+		app.order << gkey
 	}
 	// Deep per-message plot history (independent of the 1000-frame display cap),
 	// so the Graphics strip chart can fill a long window. Amortised trim like trace.
@@ -978,7 +1002,7 @@ fn (mut app App) record(dir string, f transport.CanFrame, t_ms f64, ch string) {
 		hist = hist[hist.len - plot_history..].clone()
 	}
 	app.plot_hist[f.id] = hist
-	app.grouped[f.id] = MsgAgg{
+	app.grouped[gkey] = MsgAgg{
 		id:      f.id
 		ext:     f.extended
 		ch:      ch
@@ -1522,10 +1546,10 @@ fn toolbar(mut window gui.Window) gui.View {
 				on_click: fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					mut a := w.state[App]()
 					a.trace = []TraceRow{}
-					a.grouped = map[u32]MsgAgg{}
-					a.order = []u32{}
-					a.expanded = map[u32]bool{}
-					a.expanded2 = map[u32]bool{}
+					a.grouped = map[string]MsgAgg{}
+					a.order = []string{}
+					a.expanded = map[string]bool{}
+					a.expanded2 = map[string]bool{}
 					a.plot_hist = map[u32][]PlotSample{}
 					a.sel_id = -1
 				}
@@ -1641,19 +1665,19 @@ fn trace_view(mut window gui.Window, which int) gui.View {
 
 	mut rows := []gui.GridRow{}
 	if grouped {
-		for id in app.order {
-			a := app.grouped[id] or { continue }
-			if !trace_pass(app, which, filter, id, hexid(id, a.ext), a.name, a.ch) {
+		for gkey in app.order {
+			a := app.grouped[gkey] or { continue }
+			if !trace_pass(app, which, filter, a.id, hexid(a.id, a.ext), a.name, a.ch) {
 				continue
 			}
-			expanded := if which == 0 { id in app.expanded } else { id in app.expanded2 }
+			expanded := if which == 0 { gkey in app.expanded } else { gkey in app.expanded2 }
 			chevron := if expanded { '▼' } else { '▶' }
 			rows << gui.GridRow{
-				id:    '${id}'
+				id:    gkey
 				cells: {
 					'time':  '${a.last_ms / 1000.0:.6f}'
 					'ch':    a.ch
-					'id':    '${chevron} ${hexid(id, a.ext)}'
+					'id':    '${chevron} ${hexid(a.id, a.ext)}'
 					'name':  a.name
 					'dlc':   '${a.last.len}'
 					'dir':   a.dir
@@ -1662,7 +1686,7 @@ fn trace_view(mut window gui.Window, which int) gui.View {
 				}
 			}
 			if expanded {
-				if m := app.db.lookup_frame(id, a.ext) {
+				if m := app.db.lookup_frame(a.id, a.ext) {
 					for s in m.active_signals(a.last) {
 						raw := s.raw_value(a.last)
 						label := s.label(a.last)
@@ -1672,7 +1696,7 @@ fn trace_view(mut window gui.Window, which int) gui.View {
 							'${s.physical(a.last):.2f} ${s.unit}'
 						}
 						rows << gui.GridRow{
-							id:    's:${id}:${s.name}'
+							id:    's:${gkey}:${s.name}'
 							cells: {
 								'id':   '       ${s.name}'
 								'name': value
@@ -1713,25 +1737,26 @@ fn trace_view(mut window gui.Window, which int) gui.View {
 				} else {
 					a.selection2 = selection
 				}
-				rid := selection.active_row_id
+				rid := selection.active_row_id // the group key 'id|ch|dir'
 				if rid.len > 0 && !rid.starts_with('s:') {
-					id := rid.u32()
-					a.sel_id = i64(id) // Signals panel follows the selected message
+					a.sel_id = i64(rid.all_before('|').u32()) // message id from the group key
 					// Single click = select (for multi-select + add-to-filter);
 					// a second click on the same row within 400 ms = expand toggle.
+					// Expand state is keyed by the GROUP key so each bus/dir row toggles
+					// independently.
 					now := time.ticks()
 					if rid == a.last_click_id && now - a.last_click_ms < 400 {
 						if which == 0 {
-							if id in a.expanded {
-								a.expanded.delete(id)
+							if rid in a.expanded {
+								a.expanded.delete(rid)
 							} else {
-								a.expanded[id] = true
+								a.expanded[rid] = true
 							}
 						} else {
-							if id in a.expanded2 {
-								a.expanded2.delete(id)
+							if rid in a.expanded2 {
+								a.expanded2.delete(rid)
 							} else {
-								a.expanded2[id] = true
+								a.expanded2[rid] = true
 							}
 						}
 						a.last_click_id = '' // consume, so a 3rd click isn't a double
@@ -1832,7 +1857,14 @@ fn selected_msg_ids(sel gui.GridSelection) []u32 {
 		if rid.starts_with('s:') {
 			continue
 		}
-		idstr := if rid.contains(':') { rid.all_after_last(':') } else { rid }
+		// grouped row = 'id|ch|dir', chronological = 'seq:id', signal sub = 's:…' (skipped)
+		idstr := if rid.contains('|') {
+			rid.all_before('|')
+		} else if rid.contains(':') {
+			rid.all_after_last(':')
+		} else {
+			rid
+		}
 		if idstr.len == 0 {
 			continue
 		}
@@ -1981,7 +2013,7 @@ fn signals_panel(app &App) gui.View {
 		return gui.column(sizing: gui.fill_fill, padding: gui.padding_medium, spacing: 5, content: lines)
 	}
 	id := u32(app.sel_id)
-	agg := app.grouped[id] or { MsgAgg{} }
+	agg := app.latest_for(id) // latest across any bus/dir
 	msg := app.db.lookup_frame(id, agg.ext) or {
 		lines << gui.text(text: 'Signals — ${hexid(id, agg.ext)}', text_style: gui.theme().b3)
 		lines << gui.text(text: '(no DBC message for this ID)', text_style: gui.theme().n4)
@@ -2472,7 +2504,7 @@ fn symbol_browser_panel(app &App) gui.View {
 			}
 		}
 		expanded := app.symbol_expanded[m.id]
-		data := if agg := app.grouped[m.id] { agg.last } else { []u8{} }
+		data := app.latest_for(m.id).last
 		live := data.len > 0
 		mid := m.id
 		ext := m.ext
@@ -2552,7 +2584,7 @@ fn stats_panel(app &App) gui.View {
 			gui.text(text: 'Bus statistics', text_style: gui.theme().b3),
 			gui.text(text: 'RX frames: ${app.rx_count}', text_style: gui.theme().n4),
 			gui.text(text: 'TX frames: ${app.tx_count}', text_style: gui.theme().n4),
-			gui.text(text: 'Unique IDs: ${app.order.len}', text_style: gui.theme().n4),
+			gui.text(text: 'Trace groups (id/bus/dir): ${app.order.len}', text_style: gui.theme().n4),
 			gui.text(text: 'Channels: ${app.proj.channels.len}', text_style: gui.theme().n4),
 			gui.text(text: 'Database: ${app.db.messages.len} msgs', text_style: gui.theme().n4),
 			gui.text(text: 'DB source: ${app.db_source}', text_style: gui.theme().n4),
@@ -3007,6 +3039,7 @@ fn send_panel(mut window gui.Window) gui.View {
 				content:   [gui.text(text: 'Send')]
 				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					do_send(mut w)
+					w.set_id_focus(0) // don't leave the button stuck in the focused/pressed look
 				}
 			),
 		]
@@ -3234,10 +3267,10 @@ fn load_log(path string, mut w gui.Window) {
 	app.paused = true
 	app.log_path = p
 	app.trace = []TraceRow{}
-	app.grouped = map[u32]MsgAgg{}
-	app.order = []u32{}
-	app.expanded = map[u32]bool{}
-	app.expanded2 = map[u32]bool{}
+	app.grouped = map[string]MsgAgg{}
+	app.order = []string{}
+	app.expanded = map[string]bool{}
+	app.expanded2 = map[string]bool{}
 	app.plot_hist = map[u32][]PlotSample{}
 	app.sel_id = -1
 	app.rx_count = 0
@@ -3273,12 +3306,15 @@ fn trace_cell_format(row gui.GridRow, _ int, col gui.GridColumnCfg, value string
 	}
 	// CANoe-style "repeat" greying on the Data cell: a frame whose payload is
 	// byte-identical to the previous instance of its ID is dimmed to grey;
-	// changing frames keep the normal text colour. (Chronological rows id as
-	// 'seq:id'; grouped rows by the bare message id.)
+	// changing frames keep the normal text colour. (Grouped rows id as the group
+	// key 'id|ch|dir'; chronological rows as 'seq:id'.)
 	if col.id == 'data' && value.len > 0 {
 		mut a := w.state[App]()
 		mut is_repeat := false
-		if row.id.contains(':') {
+		if row.id.contains('|') {
+			agg := a.grouped[row.id] or { return gui.GridCellFormat{} }
+			is_repeat = agg.repeat
+		} else if row.id.contains(':') {
 			seq := row.id.all_before(':').int()
 			if a.trace.len > 0 {
 				ix := seq - a.trace[0].seq
@@ -3286,9 +3322,6 @@ fn trace_cell_format(row gui.GridRow, _ int, col gui.GridColumnCfg, value string
 					is_repeat = a.trace[ix].changed == 0
 				}
 			}
-		} else {
-			agg := a.grouped[row.id.u32()] or { return gui.GridCellFormat{} }
-			is_repeat = agg.repeat
 		}
 		if is_repeat {
 			return gui.GridCellFormat{
