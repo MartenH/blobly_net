@@ -41,6 +41,7 @@ const id_scroll_plot = u32(7300)
 const id_scroll_diag = u32(7400)
 const id_scroll_plot_outer = u32(7500) // Graphics root: clamps the panel measurement
 const id_scroll_symbols = u32(7600)    // Symbol Browser tree
+const id_scroll_busconfig = u32(7700)  // Bus Config candidate list
 
 // UDS request/response CAN ids (classic OBD physical addressing): the tester
 // transmits on 0x7E0, the ECU answers on 0x7E8. The simulated ECU's UDS
@@ -165,6 +166,19 @@ mut:
 	repeat  bool // latest frame was byte-identical to the prior one for this ID
 }
 
+// BusCandidate is one discovered interface shown in the Bus Config panel: a real
+// can/vcan netdev or a virtual software bus, with its live link state so you can see
+// what's actually connected before adding it as a project channel.
+struct BusCandidate {
+	name    string
+	iface   string
+	kind    string // can | vcan | udp | inproc
+	bitrate int
+	virtual bool
+	in_proj bool   // already a channel in the project
+	state   string // 'connected' | 'no carrier' | 'down' | '' (virtual)
+}
+
 // PlotSample is one retained frame of a message for the Graphics strip chart —
 // kept in a per-message history (App.plot_hist) that is much deeper than the
 // 1000-frame display trace, so the plot can fill a long time window.
@@ -239,6 +253,9 @@ mut:
 	// Symbol Browser: search string + which message rows are expanded.
 	symbol_filter   string
 	symbol_expanded map[u32]bool
+	// Bus Config panel: discovered candidate interfaces + which are ticked to add.
+	bus_candidates []BusCandidate
+	bus_ticked     map[string]bool
 	// Graphics panel: signals UNchecked in the legend (key '<id>:<signal>') —
 	// default empty = plot everything, so new selections start fully visible.
 	plot_off map[string]bool
@@ -996,6 +1013,7 @@ fn main_view(mut window gui.Window) gui.View {
 				gui.DockPanelDef{ id: 'diag', label: 'Diagnostics', content: [diag_panel(mut window)] },
 					gui.DockPanelDef{ id: 'stats', label: 'Statistics', content: [stats_panel(app)] },
 						gui.DockPanelDef{ id: 'symbols', label: 'Symbol Browser', content: [symbol_browser_panel(app)] },
+						gui.DockPanelDef{ id: 'busconfig', label: 'Bus Config', content: [bus_config_panel(app)] },
 				]
 				on_layout_change: fn (nr &gui.DockNode, mut w gui.Window) {
 					mut a := w.state[App]()
@@ -1116,6 +1134,7 @@ const view_panels = [
 	['trace', 'Trace'],
 	['ftrace', 'Trace (filter)'],
 	['buses', 'Buses'],
+	['busconfig', 'Bus Config'],
 	['simulation', 'Simulation'],
 	['symbols', 'Symbol Browser'],
 	['signals', 'Signals'],
@@ -1194,48 +1213,101 @@ fn open_project(path string, mut w gui.Window) {
 	w.update_window()
 }
 
-// discover_channels scans for bus interfaces (transport.list_interfaces: real
-// can/vcan netdevs with their bitrate, + the driver-free udp/inproc buses) and
-// APPENDS any not already in the project as monitor channels. In-memory only — the
-// Buses panel updates live; persist with File ▸ Save. Stops measurement first so
-// the runtime arrays rebuild cleanly.
-fn discover_channels(mut w gui.Window) {
+// discover_to_candidates scans interfaces (transport.list_interfaces: real can/vcan
+// netdevs with bitrate + virtual udp/inproc buses), enriches each with its live link
+// state (from `ip -brief link show type can`: connected / no carrier / down), and
+// fills the Bus Config candidate list. Real, not-yet-added interfaces are pre-ticked.
+fn discover_to_candidates(mut w gui.Window) {
 	mut app := w.state[App]()
-	if app.running {
-		stop_measurement(mut w)
-	}
 	ifaces := transport.list_interfaces() or {
 		app.status = 'discover failed: ${err}'
 		return
+	}
+	mut linkstate := map[string]string{}
+	lr := os.execute('ip -brief link show type can')
+	if lr.exit_code == 0 {
+		for line in lr.output.split_into_lines() {
+			parts := line.fields()
+			if parts.len >= 2 {
+				linkstate[parts[0]] = if parts[1] != 'UP' {
+					'down'
+				} else if line.contains('LOWER_UP') {
+					'connected'
+				} else {
+					'no carrier'
+				}
+			}
+		}
+	}
+	mut have := map[string]bool{}
+	for ch in app.proj.channels {
+		have[ch.iface] = true
+	}
+	mut cands := []BusCandidate{}
+	for f in ifaces {
+		cands << BusCandidate{
+			name:    f.name
+			iface:   f.iface
+			kind:    f.kind
+			bitrate: f.bitrate
+			virtual: f.virtual
+			in_proj: f.iface in have
+			state:   linkstate[f.iface] or { '' }
+		}
+	}
+	app.bus_candidates = cands
+	for c in cands {
+		if !c.virtual && !c.in_proj {
+			app.bus_ticked[c.iface] = true
+		}
+	}
+	app.status = 'discovered ${cands.len} interface(s) — tick the ones to add, then ＋ Add'
+}
+
+// add_ticked_channels appends the ticked, not-already-present candidates as monitor
+// channels and rebuilds the runtime (stops measurement first). In-memory only — the
+// Buses panel updates live; persist with File ▸ Save.
+fn add_ticked_channels(mut w gui.Window) {
+	mut app := w.state[App]()
+	if app.running {
+		stop_measurement(mut w)
 	}
 	mut have := map[string]bool{}
 	for ch in app.proj.channels {
 		have[ch.iface] = true
 	}
 	mut added := 0
-	for f in ifaces {
-		if f.iface in have {
+	for c in app.bus_candidates {
+		if !(app.bus_ticked[c.iface] or { false }) || c.iface in have {
 			continue
 		}
 		app.proj.channels << project.Channel{
-			name:    f.name
+			name:    c.name
 			typ:     'can'
-			iface:   f.iface
-			bitrate: if f.bitrate > 0 { f.bitrate } else { 500000 }
+			iface:   c.iface
+			bitrate: if c.bitrate > 0 { c.bitrate } else { 500000 }
 			mode:    .monitor
-			enabled: !f.virtual // real interfaces on; virtual fallbacks off
+			enabled: true
 		}
-		have[f.iface] = true
+		have[c.iface] = true
 		added++
 	}
 	app.rt = []ChannelRT{len: app.proj.channels.len}
 	app.load_databases()
 	app.build_sim_nodes()
-	app.status = if added > 0 {
-		'discovered ${added} new interface(s) — review in Buses, then File ▸ Save'
-	} else {
-		'discover: no new interfaces (${ifaces.len} found, all already channels)'
+	app.status = 'added ${added} channel(s) — review in Buses, then File ▸ Save'
+	w.update_window()
+}
+
+// open_bus_config ensures the Bus Config panel is docked, then scans (the Buses
+// '🔍 Discover' button). gui has no custom-content modal, so it's a dock panel
+// (float it by dragging its tab if you want a window).
+fn open_bus_config(mut w gui.Window) {
+	mut app := w.state[App]()
+	if !dock_has_panel(app.dock_root, 'busconfig') {
+		app.dock_root = gui.dock_tree_wrap_root(app.dock_root, 'busconfig', .right)
 	}
+	discover_to_candidates(mut w)
 	w.update_window()
 }
 
@@ -2457,6 +2529,98 @@ fn stats_panel(app &App) gui.View {
 // buses_panel lists the project's channels (buses): a click-to-toggle enable
 // box, a state-colour dot, the name/interface, and live RX/TX counts. It's the
 // front-end of Start/Stop — enable a channel, then Start attaches it.
+// bus_config_panel is the conventional "Network Hardware Configuration": Discover
+// fills a candidate list (real can/vcan + virtual buses, each with live link state),
+// you tick the ones you want, then ＋ Add appends them as project channels. In-memory
+// — review in Buses, persist with File ▸ Save. (A dock panel, not a modal — gui has
+// no custom-content modal; drag its tab out to float it.)
+fn bus_config_panel(app &App) gui.View {
+	mut rows := [gui.View(gui.text(text: 'Bus / Channel Configuration', text_style: gui.theme().b3))]
+	rows << gui.row(
+		v_align: .middle
+		spacing: 6
+		padding: gui.Padding{0, 0, 4, 0}
+		content: [
+			gui.button(
+				id_focus:  122
+				max_width: 92
+				content:   [gui.text(text: '🔍 Discover')]
+				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					discover_to_candidates(mut w)
+				}
+			),
+			gui.button(
+				id_focus:  123
+				max_width: 110
+				content:   [gui.text(text: '＋ Add ticked')]
+				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					add_ticked_channels(mut w)
+				}
+			),
+		]
+	)
+	if app.bus_candidates.len == 0 {
+		rows << gui.text(text: '(press Discover to scan interfaces)', text_style: gui.theme().n4)
+	}
+	for c in app.bus_candidates {
+		iface := c.iface
+		kindlbl := match c.kind {
+			'can' { 'hardware CAN' }
+			'vcan' { 'virtual CAN' }
+			'udp' { 'software bus' }
+			'inproc' { 'simulation' }
+			else { c.kind }
+		}
+		mut info := kindlbl
+		if c.bitrate > 0 {
+			info += ' · ${c.bitrate}'
+		}
+		if c.state != '' {
+			info += ' · ${c.state}'
+		}
+		if c.in_proj {
+			info += ' · (already added)'
+		}
+		ticked := app.bus_ticked[iface] or { false }
+		statecolor := match c.state {
+			'connected' { gui.Color{120, 200, 120, 255} }
+			'no carrier' { gui.Color{210, 180, 90, 255} }
+			'down' { gui.Color{170, 170, 170, 255} }
+			else { gui.Color{150, 150, 200, 255} }
+		}
+		rows << gui.row(
+			v_align:  .middle
+			spacing:  5
+			padding:  gui.Padding{1, 2, 1, 2}
+			on_click: fn [iface] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				mut a := w.state[App]()
+				a.bus_ticked[iface] = !(a.bus_ticked[iface] or { false })
+			}
+			content:  [
+				gui.text(text: if ticked { '☑' } else { '☐' }, text_style: trace_text_style()),
+				gui.text(text: '●', text_style: gui.TextStyle{
+					...trace_text_style()
+					color: statecolor
+				}),
+				gui.text(text: c.name, text_style: gui.theme().b4),
+				gui.text(text: iface, text_style: trace_text_style()),
+				gui.text(text: info, text_style: gui.theme().n4),
+			]
+		)
+	}
+	return gui.column(
+		sizing:          gui.fill_fill
+		padding:         gui.padding_medium
+		spacing:         3
+		id_scroll:       id_scroll_busconfig
+		scroll_mode:     .vertical_only
+		scrollbar_cfg_y: &gui.ScrollbarCfg{
+			overflow: .visible
+		}
+		content:         rows
+	)
+}
+
 fn buses_panel(app &App) gui.View {
 	mut rows := []gui.View{}
 	rows << gui.text(text: 'Buses', text_style: gui.theme().b3)
@@ -2473,7 +2637,7 @@ fn buses_panel(app &App) gui.View {
 				max_width: 92
 				content:   [gui.text(text: '🔍 Discover')]
 				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
-					discover_channels(mut w)
+					open_bus_config(mut w)
 				}
 			),
 			gui.button(
