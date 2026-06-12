@@ -228,7 +228,14 @@ mut:
 	expanded  map[string]bool // grouped-trace group-keys expanded in the main Trace (which 0)
 	expanded2 map[string]bool // …and independently in Trace (filter) (which 1)
 	plot_hist map[u32][]PlotSample // deep per-message history for the Graphics plot
-	sel_id    i64 = -1     // message ID the Signals panel inspects (trace selection)
+	// Persistent, REUSED decode buffers for the Graphics panel — refilled in place
+	// (not reallocated) each render, and only when the data actually changed
+	// (plot_sig). Allocating these fresh every frame was the Graphics stutter.
+	plot_sig    string  // signature of what's currently in the buffers below
+	plot_series [][]f32 // per-signal decoded values over the window
+	plot_times  []f32   // shared sample timeline
+	plot_cur    []f64   // latest value per signal (legend)
+	sel_id      i64 = -1 // message ID the Signals panel inspects (trace selection)
 	selection gui.GridSelection
 	send_id   string = '101'
 	send_data string = 'AABBCC'
@@ -2220,6 +2227,31 @@ const plot_colors = [
 // plot. Samples are positioned by recorded time; labels below the canvas mark
 // the window. The legend is a per-signal **checkbox**: untick a signal to drop
 // it from the plot (App.plot_off). Click a message in the Trace to select the PDU.
+// FNV-1a 64-bit fold — mixes a few small ints into one key with no arbitrary
+// multipliers (these two are the standard FNV-1a offset basis + prime).
+const fnv64_offset = u64(14695981039346656037)
+const fnv64_prime = u64(1099511628211)
+
+fn fnv64(h u64, v u64) u64 {
+	return (h ^ v) * fnv64_prime
+}
+
+// plot_version is the draw_canvas cache key: it changes iff something the plot
+// geometry depends on changes — THIS message's sample count (not total bus traffic),
+// the shown-signal count, step vs linear, the zoom window, the hover cursor, or the
+// canvas size — so the canvas re-tessellates exactly when needed and no more.
+fn plot_version(samples int, shown int, step bool, win int, hover_frac f32, cw f32, ph f32) u64 {
+	mut h := fnv64_offset
+	h = fnv64(h, u64(samples))
+	h = fnv64(h, u64(shown))
+	h = fnv64(h, if step { u64(1) } else { u64(0) })
+	h = fnv64(h, u64(win))
+	h = fnv64(h, u64(int((hover_frac + 1) * 10000))) // quantize the hover fraction
+	h = fnv64(h, u64(int(cw)))
+	h = fnv64(h, u64(int(ph)))
+	return h
+}
+
 fn plot_panel(mut window gui.Window) gui.View {
 	mut app := window.state[App]()
 	if app.sel_id < 0 {
@@ -2292,18 +2324,40 @@ fn plot_panel(mut window gui.Window) gui.View {
 	if hist.len - start > plot_max_points {
 		start = hist.len - plot_max_points
 	}
-	mut series := [][]f32{len: sigs.len, init: []f32{}}
-	mut times := []f32{}
-	mut cur := []f64{len: sigs.len}
-	for i := start; i < hist.len; i++ {
-		smp := hist[i]
-		times << smp.t_s
+	// Decode the in-window samples into PERSISTENT, reused App buffers rather than
+	// fresh arrays each render. The strip-chart window is anchored to the last
+	// sample, so it only moves when a new sample arrives — so recompute only when
+	// this message's data (sample count / window start / zoom) actually changed.
+	// Buffers are .clear()'d (capacity kept) and refilled, so steady state allocates
+	// nothing. This — not the polyline drawing — was the per-frame GC churn.
+	mut offsig := []u8{cap: sigs.len}
+	for s in sigs {
+		offsig << if app.plot_off['${id}:${s.name}'] { u8(`0`) } else { u8(`1`) }
+	}
+	sig := '${id}|${hist.len}|${start}|${app.plot_win}|${offsig.bytestr()}'
+	if sig != app.plot_sig {
+		app.plot_sig = sig
+		if app.plot_series.len != sigs.len {
+			app.plot_series = [][]f32{len: sigs.len, init: []f32{}}
+			app.plot_cur = []f64{len: sigs.len}
+		}
+		app.plot_times.clear()
+		for i := start; i < hist.len; i++ {
+			app.plot_times << hist[i].t_s
+		}
 		for j, s in sigs {
-			v := s.physical(smp.data)
-			series[j] << f32(v)
-			cur[j] = v
+			mut inner := app.plot_series[j]
+			inner.clear()
+			for i := start; i < hist.len; i++ {
+				inner << f32(s.physical(hist[i].data))
+			}
+			app.plot_series[j] = inner
+			app.plot_cur[j] = if inner.len > 0 { f64(inner.last()) } else { f64(0) }
 		}
 	}
+	times := app.plot_times
+	series := app.plot_series
+	cur := app.plot_cur
 
 	// Only legend-checked signals are plotted (colour stays stable per signal
 	// index, so toggling one doesn't recolour the rest).
@@ -2388,12 +2442,10 @@ fn plot_panel(mut window gui.Window) gui.View {
 	// --- Canvas (full panel width) + timeline labels directly under it. ---
 	canvas := gui.draw_canvas(
 		id:       'sigplot'
-		// re-tessellate on new frames, OR (crucially, while STOPPED) when the zoom
-		// window, hover cursor, or the set of shown signals changes — otherwise the
-		// cached geometry never refreshes and the zoom buttons appear dead.
-		version:  u64(app.rx_count + app.tx_count) * 20_000_000 + u64(shown.len) * 2_000_000 +
-			(if step { u64(1_000_000) } else { u64(0) }) + u64(app.plot_win) * 10_000 +
-			u64(int((hf + 1) * 2000))
+		// Re-tessellate only when the geometry actually changes (see plot_version) —
+		// keyed off THIS message's sample count, not total bus traffic, so a busy bus
+		// with a slow plotted signal stops rebuilding the plot every frame.
+		version:  plot_version(hist.len, shown.len, step, app.plot_win, hf, cw, ph)
 		width:    cw
 		height:   ph
 		color:    plot_bg
@@ -2546,6 +2598,16 @@ fn draw_signals(mut dc gui.DrawContext, series [][]f32, colors []gui.Color, time
 // draw_one_series plots a single signal on the FIXED strip-chart window
 // (x = recorded time mapped over [wstart, wstart+win]), auto-scaled to its own
 // min/max so all signals are visible regardless of their physical range.
+// Reused scratch for plot tessellation. The draw path is single-threaded and each
+// series is filled then drawn before the next, so sharing these is safe — and it
+// avoids allocating fresh pixel/point arrays on every re-tessellation (steady state
+// allocates nothing once capacity settles).
+__global (
+	g_plot_xs  []f32
+	g_plot_ys  []f32
+	g_plot_pts []f32
+)
+
 fn draw_one_series(mut dc gui.DrawContext, series []f32, times []f32, wstart f32, win f32,
 	color gui.Color, hover f32, step bool) {
 	if series.len < 2 || times.len != series.len {
@@ -2565,26 +2627,27 @@ fn draw_one_series(mut dc gui.DrawContext, series []f32, times []f32, wstart f32
 	}
 	span := if mx > mn { mx - mn } else { f32(1) }
 	tspan := if win > 0 { win } else { f32(1) }
-	// Pre-compute each sample's pixel position once.
-	mut xs := []f32{cap: series.len}
-	mut ys := []f32{cap: series.len}
+	// Pre-compute each sample's pixel position once, into the reused scratch globals
+	// (cleared, not reallocated). Operate on them directly so there's no aliasing copy.
+	g_plot_xs.clear()
+	g_plot_ys.clear()
 	for i, v in series {
-		xs << cw * (times[i] - wstart) / tspan
-		ys << ch - ch * (v - mn) / span * 0.92 - ch * 0.04 // 4% top/bottom margin
+		g_plot_xs << cw * (times[i] - wstart) / tspan
+		g_plot_ys << ch - ch * (v - mn) / span * 0.92 - ch * 0.04 // 4% top/bottom margin
 	}
 	// Step (sample-and-hold): hold the value horizontally to the next sample's time,
 	// then jump vertically — the CANoe look for discrete signals. Linear: straight
 	// segments between samples.
-	mut pts := []f32{cap: series.len * 4}
+	g_plot_pts.clear()
 	for i in 0 .. series.len {
 		if step && i > 0 {
-			pts << xs[i]
-			pts << ys[i - 1] // horizontal hold of the previous value up to this time
+			g_plot_pts << g_plot_xs[i]
+			g_plot_pts << g_plot_ys[i - 1] // horizontal hold of the previous value
 		}
-		pts << xs[i]
-		pts << ys[i]
+		g_plot_pts << g_plot_xs[i]
+		g_plot_pts << g_plot_ys[i]
 	}
-	dc.polyline(pts, color, 1.5, .round, .round)
+	dc.polyline(g_plot_pts, color, 1.5, .round, .round)
 	// Marker dot where the hover crosshair crosses this series (nearest sample).
 	if hover >= 0 {
 		ht := wstart + hover * win
@@ -2597,7 +2660,7 @@ fn draw_one_series(mut dc gui.DrawContext, series []f32, times []f32, wstart f32
 				idx = i
 			}
 		}
-		dc.filled_circle(xs[idx], ys[idx], 3, color)
+		dc.filled_circle(g_plot_xs[idx], g_plot_ys[idx], 3, color)
 	}
 }
 
