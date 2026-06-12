@@ -3246,25 +3246,27 @@ fn simulation_panel(app &App) gui.View {
 			}
 			ndix := i
 			nname := sn.node
+			en := sn.enabled
 			rows << gui.row(
 				v_align: .middle
-				spacing: 5
-				padding: gui.Padding{0, 0, 0, 24} // indent under the network
+				spacing: 6
+				padding: gui.Padding{1, 0, 1, 24} // indent under the network
 				content: [
 					gui.text(text: '●', text_style: dot_style),
-					gui.checkbox(
-						id_focus:         u32(300 + j)
-						select:           sn.enabled
-						label:            sn.node
-						text_style:       trace_text_style()
-						text_style_label: trace_text_style()
-						padding:          gui.Padding{0, 4, 0, 4}
-						on_click:         fn [j] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					// Clean check glyph instead of gui.checkbox's oversized box.
+					gui.row(
+						v_align:  .middle
+						padding:  gui.Padding{0, 2, 0, 2}
+						on_click: fn [j] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 							mut a := w.state[App]()
 							a.sim_nodes[j].enabled = !a.sim_nodes[j].enabled
 						}
+						content:  [
+							gui.text(text: if en { '☑' } else { '☐' }, text_style: trace_text_style()),
+						]
 					),
-					// Scaffold default generators for this node from its DBC signals.
+					// Fixed-width name so every Scaffold button lines up in a column.
+					gui.text(text: sn.node, text_style: trace_text_style(), min_width: 130),
 					gui.button(
 						id_focus:  u32(720 + j)
 						max_width: 84
