@@ -76,11 +76,21 @@ jobs:
 
       # The runner's vcpkg builds pango/freetype FROM SOURCE (not warm-cached on the
       # image). Persist its binary archives so the cold build is paid once.
+      #
+      # ROLLING key (not a static one): actions/cache will NOT overwrite an existing
+      # key, so a static key meant that whenever the runner's system vcpkg drifted
+      # (it floats with the image — e.g. a new cmake/powershell or bumped port bumps
+      # the ABI hashes), the packages it rebuilt were never saved, and EVERY run
+      # rebuilt them. github.run_id makes the key unique so the archive is always
+      # saved at job end; restore-keys prefix-matches the most recent archive, so the
+      # next run starts from it and only genuinely-drifted packages rebuild — once.
       - name: Cache vcpkg binaries (pango/freetype)
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}\vcpkg-bincache
-          key: vcpkg-x64-windows-pango-freetype-v1
+          key: vcpkg-x64-windows-v2-${{ github.run_id }}
+          restore-keys: |
+            vcpkg-x64-windows-v2-
 
       - name: vcpkg install pango freetype
         shell: pwsh
