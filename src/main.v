@@ -434,6 +434,7 @@ fn main() {
 			app.rt = []ChannelRT{len: app.proj.channels.len}
 			app.load_databases()
 			app.build_sim_nodes()
+			set_window_title(app.proj.name)
 			app.log_path = os.getenv_opt('CANTESTER_LOG') or { '' }
 			app.status = 'stopped — press ▶ Start (${app.proj.channels.len} channel(s))'
 			w.update_view(main_view)
@@ -1238,6 +1239,7 @@ fn open_project(path string, mut w gui.Window) {
 	app.rt = []ChannelRT{len: p.channels.len}
 	app.load_databases()
 	app.build_sim_nodes()
+	set_window_title(p.name)
 	app.status = 'loaded ${p.name} (${p.channels.len} ch) — press ▶ Start'
 	w.update_window()
 }
@@ -1388,6 +1390,57 @@ fn open_bus_config(mut w gui.Window) {
 		app.dock_root = gui.dock_tree_wrap_root(app.dock_root, 'busconfig', .right)
 	}
 	discover_to_candidates(mut w)
+	w.update_window()
+}
+
+// set_window_title updates the OS titlebar to show the open project (sapp is valid
+// inside on_init / once running). In-app the Buses panel header + Stats also show it.
+fn set_window_title(project_name string) {
+	title := 'CANTester — ${project_name}'
+	C.sapp_set_window_title(&char(title.str))
+}
+
+// pick_dbc opens a native file picker and attaches the chosen .dbc to channel ch_idx.
+fn pick_dbc(ch_idx int, mut w gui.Window) {
+	w.native_open_dialog(
+		title:   'Attach DBC to channel'
+		filters: [gui.NativeFileFilter{
+			name:       'DBC databases'
+			extensions: ['dbc']
+		}]
+		on_done: fn [ch_idx] (r gui.NativeDialogResult, mut w gui.Window) {
+			if r.status == .ok && r.paths.len > 0 {
+				attach_dbc(ch_idx, r.path_strings()[0], mut w)
+			}
+		}
+	)
+}
+
+// attach_dbc adds a DBC path to a channel and reloads — so decode AND the Simulation
+// panel's node list (build_sim_nodes skips channels with no DBC) come alive. In-memory
+// only; persists on File ▸ Save (a YAML writer is still TODO).
+fn attach_dbc(ch_idx int, path string, mut w gui.Window) {
+	mut app := w.state[App]()
+	if ch_idx < 0 || ch_idx >= app.proj.channels.len {
+		return
+	}
+	app.proj.channels[ch_idx].databases << path
+	app.load_databases()
+	app.build_sim_nodes()
+	app.status = 'attached ${os.base(path)} to ${app.proj.channels[ch_idx].name} (session-only until Save)'
+	w.update_window()
+}
+
+// clear_dbc removes all DBCs from a channel and reloads.
+fn clear_dbc(ch_idx int, mut w gui.Window) {
+	mut app := w.state[App]()
+	if ch_idx < 0 || ch_idx >= app.proj.channels.len {
+		return
+	}
+	app.proj.channels[ch_idx].databases = []string{}
+	app.load_databases()
+	app.build_sim_nodes()
+	app.status = 'cleared DBCs on ${app.proj.channels[ch_idx].name}'
 	w.update_window()
 }
 
@@ -2742,6 +2795,8 @@ fn bus_config_panel(app &App) gui.View {
 fn buses_panel(app &App) gui.View {
 	mut rows := []gui.View{}
 	rows << gui.text(text: 'Buses', text_style: gui.theme().b3)
+	// Which project is open (also in the titlebar + Stats).
+	rows << gui.text(text: 'Project: ${app.proj.name}', text_style: gui.theme().n4)
 	// Discover: scan for real CAN/vcan interfaces (+ virtual buses) and append any
 	// new ones as project channels. USB: attach bound CAN adapters into WSL (usbipd)
 	// so they show up as can0/… for the next Discover.
@@ -2793,6 +2848,40 @@ fn buses_panel(app &App) gui.View {
 					}
 				),
 			]
+		)
+		// DBC(s) on this channel + attach/clear. Attaching one lights up decode AND
+		// the Simulation panel's node list for this bus.
+		dbnames := if ch.databases.len > 0 {
+			ch.databases.map(os.base(it)).join(', ')
+		} else {
+			'—'
+		}
+		mut dbrow := [
+			gui.View(gui.button(
+				id_focus:  u32(250 + i)
+				max_width: 58
+				content:   [gui.text(text: '＋ DBC')]
+				on_click:  fn [i] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					pick_dbc(i, mut w)
+				}
+			)),
+			gui.text(text: 'DBC: ${dbnames}', text_style: gui.theme().n4),
+		]
+		if ch.databases.len > 0 {
+			dbrow << gui.button(
+				id_focus:  u32(270 + i)
+				max_width: 30
+				content:   [gui.text(text: '✕')]
+				on_click:  fn [i] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					clear_dbc(i, mut w)
+				}
+			)
+		}
+		rows << gui.row(
+			v_align: .middle
+			spacing: 5
+			padding: gui.Padding{0, 0, 2, 18} // indent under the channel
+			content: dbrow
 		)
 	}
 	return gui.column(
