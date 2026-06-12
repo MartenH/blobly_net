@@ -72,6 +72,24 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
   clickable `gui.row`), which also worked but used hardcoded colors so it didn't follow the theme. NOTE:
   a fit-sized (`sizing: fit_fit`) lone row child does NOT shrink to content here — use `min/max_width`.
   Worth reporting upstream / checking on a gui bump.
+- 🟡 **An `on_click` `gui.row` used as a *row child* stretches and shoves its following siblings to
+  the far right.** Everything is `fit` by default (`SizingType` zero value is `.fit`; `gui.text`
+  single-line is `fit_fit`; `ContainerCfg.sizing` defaults to `fit_fit`), and the container honours
+  `cfg.sizing` — yet a clickable `gui.row` (one with `on_click`) does NOT pack to content like its
+  text/button siblings: it expands, pushing a trailing button (e.g. `⚙ Scaffold`, a channel `✕`) to
+  the panel's right edge. Explicit `sizing: fit_fit` / `min/max_width` on that clickable row did NOT
+  fix it. **Fix: don't make a `gui.row` clickable for a small glyph/label — use `gui.button`
+  instead** (a button with `on_click` *does* size to content and packs left, as the `＋ DBC` / `✕`
+  sub-row proves). See the Buses + Simulation node rows in `src/main.v` (enable ☑/☐ and the node-name
+  expander are buttons, not on_click rows). A `tooltip`-only row (`on_mouse_move`, no `on_click`) does
+  NOT stretch, so it's specifically the click handler. Report upstream.
+- 🟡 **`gui.button` stays highlighted (focus colour) after a click.** A button's `amend_layout` paints
+  `color_focus` whenever `w.is_focus(id_focus)` — and a clicked button keeps focus, so it reads as
+  "stuck blue/pressed". Two fixes: (a) call `w.set_id_focus(0)` at the end of the click handler (used
+  for the Send button), or (b) simplest for mouse-only action buttons, set **`id_focus: 0`** — since
+  `is_focus()` is `id_focus > 0 && id_focus == arg`, `is_focus(0)` is *always false*, so the button is
+  never painted focused (and still clicks fine via the mouse; it just isn't keyboard-tabbable). We use
+  `id_focus: 0` on the Buses/Bus Config/Simulation action buttons. Keep real ids on inputs/selects.
 - 🟢 **Screenshotting the running app for visual verification.** `import -window <wid>` (ImageMagick)
   + `xdotool search --name CANTester` capture the live window under WSLg — invaluable when iterating
   on layout you can't otherwise see. Set `XCURSOR_THEME=Adwaita XCURSOR_SIZE=24` first. Caveats: pick
