@@ -793,21 +793,18 @@ fn make_theme(p Palette) gui.Theme {
 // Buses (narrow left) | Trace (centre) | Signals / Send / Statistics stacked
 // (right) — each its own panel. They can still be tabbed/dragged by the user.
 fn default_layout() &gui.DockNode {
-	// Right column: Signals over Graphics (both visible — the plot used to hide
-	// behind a tab), then Send over Statistics.
-	right := gui.dock_split('r1', .vertical, 0.26, gui.dock_panel_group('g_sig', ['signals'],
-		'signals'), gui.dock_split('r3', .vertical, 0.38, gui.dock_panel_group('g_plot', ['plot'],
-		'plot'), gui.dock_split('r2', .vertical, 0.55, gui.dock_panel_group('g_diag', ['diag'],
-		'diag'), gui.dock_split('r4', .vertical, 0.55, gui.dock_panel_group('g_send', ['send'],
-		'send'), gui.dock_panel_group('g_stats', ['stats'], 'stats')))))
-	// Trace over the independently-filtered trace (conventional second trace
-	// window) — both visible at once; drag to re-dock/tab them as preferred.
+	// A focused default — Trace + Buses + Simulation + Signals + Graphics. Send,
+	// Diagnostics, Statistics and Symbol Browser start hidden; toggle them from the
+	// left activity bar (or the View menu). Right column: Signals over Graphics.
+	right := gui.dock_split('r1', .vertical, 0.42, gui.dock_panel_group('g_sig', ['signals'],
+		'signals'), gui.dock_panel_group('g_plot', ['plot'], 'plot'))
+	// Trace over the independently-filtered trace (conventional second trace window).
 	traces := gui.dock_split('t1', .vertical, 0.55, gui.dock_panel_group('g_trace', ['trace'],
 		'trace'), gui.dock_panel_group('g_ftrace', ['ftrace'], 'ftrace'))
 	mid := gui.dock_split('mid', .horizontal, 0.66, traces, right)
-	// Left column: Buses (top) over Simulation / Symbol Browser tabs (bottom).
+	// Left column: Buses (top) over Simulation (bottom).
 	left := gui.dock_split('l1', .vertical, 0.45, gui.dock_panel_group('g_buses', ['buses'],
-		'buses'), gui.dock_panel_group('g_sim', ['simulation', 'symbols'], 'simulation'))
+		'buses'), gui.dock_panel_group('g_sim', ['simulation'], 'simulation'))
 	return gui.dock_split('root', .horizontal, 0.18, left, mid)
 }
 
@@ -1297,7 +1294,13 @@ fn main_view(mut window gui.Window) gui.View {
 		content: [
 			menu_bar(mut window),
 			toolbar(mut window),
-			gui.dock_layout(
+			gui.row(
+				sizing:  gui.fill_fill
+				spacing: 4
+				padding: gui.padding_none
+				content: [
+					activity_bar(app),
+					gui.dock_layout(
 				id:               'dock'
 				root:             app.dock_root
 				panels:           [
@@ -1325,6 +1328,8 @@ fn main_view(mut window gui.Window) gui.View {
 					mut a := w.state[App]()
 					a.dock_root = gui.dock_tree_remove_panel(a.dock_root, panel_id)
 				}
+			),
+				]
 			),
 		]
 	)
@@ -1463,6 +1468,67 @@ fn dock_has_panel(root &gui.DockNode, pid string) bool {
 		return true
 	}
 	return false
+}
+
+// toggle_panel shows/hides a dock panel by id (the activity bar + View menu both use it).
+fn toggle_panel(pid string, mut w gui.Window) {
+	mut app := w.state[App]()
+	if dock_has_panel(app.dock_root, pid) {
+		app.dock_root = gui.dock_tree_remove_panel(app.dock_root, pid)
+	} else {
+		app.dock_root = gui.dock_tree_wrap_root(app.dock_root, pid, .right)
+	}
+	w.update_window()
+}
+
+// activity_bar is the VS Code-style vertical icon strip on the far left: one toggle
+// per dock panel (highlighted when open), each with a tooltip naming it.
+fn activity_bar(app &App) gui.View {
+	icons := {
+		'trace':      '📋'
+		'ftrace':     '📑'
+		'buses':      '🚌'
+		'busconfig':  '🔧'
+		'simulation': '🔌'
+		'symbols':    '📖'
+		'signals':    '📈'
+		'plot':       '📊'
+		'send':       '📤'
+		'diag':       '🩺'
+		'stats':      '🧮'
+	}
+	mut items := []gui.View{}
+	for p in view_panels {
+		pid := p[0]
+		label := p[1]
+		shown := dock_has_panel(app.dock_root, pid)
+		icon := icons[pid] or { '•' }
+		items << gui.button(
+			id_focus:  0
+			min_width: 30
+			max_width: 30
+			h_align:   .left
+			color:     if shown {
+				gui.Color{205, 224, 247, 255}
+			} else {
+				gui.theme().button_style.color
+			}
+			tooltip:   &gui.TooltipCfg{
+				id:      'act_${pid}'
+				content: [gui.text(text: '${if shown { 'Hide' } else { 'Show' }} ${label}')]
+			}
+			content:   [gui.text(text: icon)]
+			on_click:  fn [pid] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				toggle_panel(pid, mut w)
+			}
+		)
+	}
+	return gui.column(
+		sizing:  gui.fit_fill
+		spacing: 3
+		padding: gui.Padding{4, 4, 4, 4}
+		content: items
+	)
 }
 
 // view_submenu builds the View menu: one toggle per dock panel. A ✓ marks open
