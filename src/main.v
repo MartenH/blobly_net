@@ -1293,14 +1293,21 @@ fn main_view(mut window gui.Window) gui.View {
 		spacing: 8
 		content: [
 			menu_bar(mut window),
-			toolbar(mut window),
+			// VS Code-style: the activity bar runs the full left edge (under the menu),
+			// with the toolbar + dock stacked to its right.
 			gui.row(
 				sizing:  gui.fill_fill
 				spacing: 4
 				padding: gui.padding_none
 				content: [
 					activity_bar(app),
-					gui.dock_layout(
+					gui.column(
+						sizing:  gui.fill_fill
+						spacing: 8
+						padding: gui.padding_none
+						content: [
+							toolbar(mut window),
+							gui.dock_layout(
 				id:               'dock'
 				root:             app.dock_root
 				panels:           [
@@ -1329,6 +1336,8 @@ fn main_view(mut window gui.Window) gui.View {
 					a.dock_root = gui.dock_tree_remove_panel(a.dock_root, panel_id)
 				}
 			),
+						]
+					),
 				]
 			),
 		]
@@ -1497,6 +1506,10 @@ fn activity_bar(app &App) gui.View {
 		'diag':       '🩺'
 		'stats':      '🧮'
 	}
+	icon_style := gui.TextStyle{
+		...gui.theme().b2
+		size: 19
+	}
 	mut items := []gui.View{}
 	for p in view_panels {
 		pid := p[0]
@@ -1505,9 +1518,10 @@ fn activity_bar(app &App) gui.View {
 		icon := icons[pid] or { '•' }
 		items << gui.button(
 			id_focus:  0
-			min_width: 30
-			max_width: 30
-			h_align:   .left
+			min_width: 40
+			max_width: 40
+			h_align:   .left // .center renders blank (gui bug); left-pad to centre instead
+			padding:   gui.Padding{5, 6, 5, 10}
 			color:     if shown {
 				gui.Color{205, 224, 247, 255}
 			} else {
@@ -1517,7 +1531,7 @@ fn activity_bar(app &App) gui.View {
 				id:      'act_${pid}'
 				content: [gui.text(text: '${if shown { 'Hide' } else { 'Show' }} ${label}')]
 			}
-			content:   [gui.text(text: icon)]
+			content:   [gui.text(text: icon, text_style: icon_style)]
 			on_click:  fn [pid] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 				toggle_panel(pid, mut w)
 			}
@@ -1525,8 +1539,8 @@ fn activity_bar(app &App) gui.View {
 	}
 	return gui.column(
 		sizing:  gui.fit_fill
-		spacing: 3
-		padding: gui.Padding{4, 4, 4, 4}
+		spacing: 4
+		padding: gui.Padding{4, 5, 4, 5}
 		content: items
 	)
 }
