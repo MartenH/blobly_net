@@ -235,6 +235,11 @@ mut:
 	plot_series [][]f32 // per-signal decoded values over the window
 	plot_times  []f32   // shared sample timeline
 	plot_cur    []f64   // latest value per signal (legend)
+	// Reused tessellation scratch (pixel positions + polyline points), refilled per
+	// series during draw — accessed via the app pointer captured into the draw closure.
+	plot_xs  []f32
+	plot_ys  []f32
+	plot_pts []f32
 	sel_id      i64 = -1 // message ID the Signals panel inspects (trace selection)
 	selection gui.GridSelection
 	send_id   string = '101'
@@ -2451,8 +2456,9 @@ fn plot_panel(mut window gui.Window) gui.View {
 		color:    plot_bg
 		radius:   4
 		padding:  gui.Padding{6, 6, 6, 6}
-		on_draw:  fn [shown, shown_colors, times, wstart, win, plot_grid, hf, step] (mut dc gui.DrawContext) {
-			draw_signals(mut dc, shown, shown_colors, times, wstart, win, plot_grid, hf, step)
+		on_draw:  fn [mut app, shown, shown_colors, times, wstart, win, plot_grid, hf, step] (mut dc gui.DrawContext) {
+			draw_signals(mut dc, mut app, shown, shown_colors, times, wstart, win, plot_grid,
+				hf, step)
 		}
 		on_hover: fn (mut layout gui.Layout, mut e gui.Event, mut w gui.Window) {
 			mut a := w.state[App]()
@@ -2575,8 +2581,8 @@ fn zoom_window(mut w gui.Window, dir int) {
 
 // draw_signals paints the plot grid (4 horizontal bands + 4 vertical time
 // divisions matching the labels below the canvas) and each visible series.
-fn draw_signals(mut dc gui.DrawContext, series [][]f32, colors []gui.Color, times []f32,
-	wstart f32, win f32, grid gui.Color, hover f32, step bool) {
+fn draw_signals(mut dc gui.DrawContext, mut app App, series [][]f32, colors []gui.Color,
+	times []f32, wstart f32, win f32, grid gui.Color, hover f32, step bool) {
 	cw := dc.width
 	ch := dc.height
 	for i in 0 .. 5 {
@@ -2591,25 +2597,20 @@ fn draw_signals(mut dc gui.DrawContext, series [][]f32, colors []gui.Color, time
 		dc.line(hx, 0, hx, ch, gui.Color{130, 130, 140, 255}, 1)
 	}
 	for j, s in series {
-		draw_one_series(mut dc, s, times, wstart, win, colors[j % colors.len], hover, step)
+		draw_one_series(mut dc, mut app, s, times, wstart, win, colors[j % colors.len],
+			hover, step)
 	}
 }
 
 // draw_one_series plots a single signal on the FIXED strip-chart window
 // (x = recorded time mapped over [wstart, wstart+win]), auto-scaled to its own
 // min/max so all signals are visible regardless of their physical range.
-// Reused scratch for plot tessellation. The draw path is single-threaded and each
-// series is filled then drawn before the next, so sharing these is safe — and it
-// avoids allocating fresh pixel/point arrays on every re-tessellation (steady state
-// allocates nothing once capacity settles).
-__global (
-	g_plot_xs  []f32
-	g_plot_ys  []f32
-	g_plot_pts []f32
-)
-
-fn draw_one_series(mut dc gui.DrawContext, series []f32, times []f32, wstart f32, win f32,
-	color gui.Color, hover f32, step bool) {
+// draw_one_series tessellates+draws one signal, reusing app's scratch buffers
+// (app.plot_xs/ys/pts) instead of allocating fresh arrays each re-tessellation. The
+// draw path is single-threaded and each series is filled then drawn before the next,
+// so sharing the scratch is safe; steady state allocates nothing once capacity settles.
+fn draw_one_series(mut dc gui.DrawContext, mut app App, series []f32, times []f32, wstart f32,
+	win f32, color gui.Color, hover f32, step bool) {
 	if series.len < 2 || times.len != series.len {
 		return
 	}
@@ -2627,27 +2628,27 @@ fn draw_one_series(mut dc gui.DrawContext, series []f32, times []f32, wstart f32
 	}
 	span := if mx > mn { mx - mn } else { f32(1) }
 	tspan := if win > 0 { win } else { f32(1) }
-	// Pre-compute each sample's pixel position once, into the reused scratch globals
-	// (cleared, not reallocated). Operate on them directly so there's no aliasing copy.
-	g_plot_xs.clear()
-	g_plot_ys.clear()
+	// Pre-compute each sample's pixel position once, into app's reused scratch
+	// (cleared, not reallocated) — no aliasing copy, mutated through the app pointer.
+	app.plot_xs.clear()
+	app.plot_ys.clear()
 	for i, v in series {
-		g_plot_xs << cw * (times[i] - wstart) / tspan
-		g_plot_ys << ch - ch * (v - mn) / span * 0.92 - ch * 0.04 // 4% top/bottom margin
+		app.plot_xs << cw * (times[i] - wstart) / tspan
+		app.plot_ys << ch - ch * (v - mn) / span * 0.92 - ch * 0.04 // 4% top/bottom margin
 	}
 	// Step (sample-and-hold): hold the value horizontally to the next sample's time,
 	// then jump vertically — the CANoe look for discrete signals. Linear: straight
 	// segments between samples.
-	g_plot_pts.clear()
+	app.plot_pts.clear()
 	for i in 0 .. series.len {
 		if step && i > 0 {
-			g_plot_pts << g_plot_xs[i]
-			g_plot_pts << g_plot_ys[i - 1] // horizontal hold of the previous value
+			app.plot_pts << app.plot_xs[i]
+			app.plot_pts << app.plot_ys[i - 1] // horizontal hold of the previous value
 		}
-		g_plot_pts << g_plot_xs[i]
-		g_plot_pts << g_plot_ys[i]
+		app.plot_pts << app.plot_xs[i]
+		app.plot_pts << app.plot_ys[i]
 	}
-	dc.polyline(g_plot_pts, color, 1.5, .round, .round)
+	dc.polyline(app.plot_pts, color, 1.5, .round, .round)
 	// Marker dot where the hover crosshair crosses this series (nearest sample).
 	if hover >= 0 {
 		ht := wstart + hover * win
@@ -2660,7 +2661,7 @@ fn draw_one_series(mut dc gui.DrawContext, series []f32, times []f32, wstart f32
 				idx = i
 			}
 		}
-		dc.filled_circle(g_plot_xs[idx], g_plot_ys[idx], 3, color)
+		dc.filled_circle(app.plot_xs[idx], app.plot_ys[idx], 3, color)
 	}
 }
 
