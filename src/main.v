@@ -1493,23 +1493,35 @@ fn toggle_panel(pid string, mut w gui.Window) {
 // activity_bar is the VS Code-style vertical icon strip on the far left: one toggle
 // per dock panel (highlighted when open), each with a tooltip naming it.
 fn activity_bar(app &App) gui.View {
+	// Monochrome glyphs (NOT colour emoji) — they render in the text colour, so they
+	// follow the theme and look identical across WSLg/Windows, like VS Code's icons.
 	icons := {
-		'trace':      '📋'
-		'ftrace':     '📑'
-		'buses':      '🚌'
-		'busconfig':  '🔧'
-		'simulation': '🔌'
-		'symbols':    '📖'
-		'signals':    '📈'
-		'plot':       '📊'
-		'send':       '📤'
-		'diag':       '🩺'
-		'stats':      '🧮'
+		'trace':      '☰'
+		'ftrace':     '▽'
+		'buses':      '⊞'
+		'busconfig':  '⊙'
+		'simulation': '▷'
+		'symbols':    '⌗'
+		'signals':    '∿'
+		'plot':       '▦'
+		'send':       '➤'
+		'diag':       '✚'
+		'stats':      'Σ'
 	}
-	icon_style := gui.TextStyle{
+	// Active = bright (theme text colour), inactive = dim — flat buttons, no boxes.
+	icon_on := gui.TextStyle{
 		...gui.theme().b2
 		size: 19
 	}
+	dim := if app.dark { gui.Color{150, 155, 165, 255} } else { gui.Color{150, 150, 155, 255} }
+	icon_off := gui.TextStyle{
+		...gui.theme().b2
+		size:  19
+		color: dim
+	}
+	transparent := gui.Color{0, 0, 0, 0}
+	hl := if app.dark { gui.Color{58, 66, 84, 255} } else { gui.Color{210, 224, 245, 255} }
+	hover := if app.dark { gui.Color{46, 52, 66, 255} } else { gui.Color{228, 232, 240, 255} }
 	mut items := []gui.View{}
 	for p in view_panels {
 		pid := p[0]
@@ -1517,22 +1529,20 @@ fn activity_bar(app &App) gui.View {
 		shown := dock_has_panel(app.dock_root, pid)
 		icon := icons[pid] or { '•' }
 		items << gui.button(
-			id_focus:  0
-			min_width: 40
-			max_width: 40
-			h_align:   .left // .center renders blank (gui bug); left-pad to centre instead
-			padding:   gui.Padding{5, 6, 5, 10}
-			color:     if shown {
-				gui.Color{205, 224, 247, 255}
-			} else {
-				gui.theme().button_style.color
-			}
-			tooltip:   &gui.TooltipCfg{
+			id_focus:     0
+			min_width:    40
+			max_width:    40
+			h_align:      .left // .center renders blank (gui bug); left-pad to centre
+			padding:      gui.Padding{5, 6, 5, 11}
+			color:        if shown { hl } else { transparent }
+			color_border: transparent
+			color_hover:  hover
+			tooltip:      &gui.TooltipCfg{
 				id:      'act_${pid}'
 				content: [gui.text(text: '${if shown { 'Hide' } else { 'Show' }} ${label}')]
 			}
-			content:   [gui.text(text: icon, text_style: icon_style)]
-			on_click:  fn [pid] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+			content:      [gui.text(text: icon, text_style: if shown { icon_on } else { icon_off })]
+			on_click:     fn [pid] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 				toggle_panel(pid, mut w)
 			}
 		)
