@@ -2995,6 +2995,27 @@ fn bus_config_panel(app &App) gui.View {
 					add_sim_network(mut w)
 				}
 			),
+			// USB CAN attach (moved here from Buses) with an explanatory hover.
+			gui.row(
+				v_align: .middle
+				padding: gui.padding_none
+				tooltip: &gui.TooltipCfg{
+					id:      'usbcan_tip'
+					content: [
+						gui.text(text: 'Attach USB CAN adapters (Kvaser/PEAK) into WSL\nvia usbipd, so they appear as can0/… for Discover.\n(One-time `usbipd bind` still needs an elevated\nWindows shell.)'),
+					]
+				}
+				content: [
+					gui.button(
+						id_focus:  121
+						max_width: 80
+						content:   [gui.text(text: '⚲ USB CAN')]
+						on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+							usb_attach_can(mut w)
+						}
+					),
+				]
+			),
 			gui.button(
 				id_focus:  123
 				max_width: 110
@@ -3094,9 +3115,7 @@ fn buses_panel(app &App) gui.View {
 	rows << gui.text(text: 'Buses', text_style: gui.theme().b3)
 	// Which project is open (also in the titlebar + Stats).
 	rows << gui.text(text: 'Project: ${app.proj.name}', text_style: gui.theme().n4)
-	// Discover: scan for real CAN/vcan interfaces (+ virtual buses) and append any
-	// new ones as project channels. USB: attach bound CAN adapters into WSL (usbipd)
-	// so they show up as can0/… for the next Discover.
+	// Discover opens the Bus Config panel and scans. (USB CAN attach moved there.)
 	rows << gui.row(
 		v_align: .middle
 		spacing: 5
@@ -3108,14 +3127,6 @@ fn buses_panel(app &App) gui.View {
 				content:   [gui.text(text: '🔍 Discover')]
 				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					open_bus_config(mut w)
-				}
-			),
-			gui.button(
-				id_focus:  121
-				max_width: 80
-				content:   [gui.text(text: '⚲ USB CAN')]
-				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
-					usb_attach_can(mut w)
 				}
 			),
 		]
