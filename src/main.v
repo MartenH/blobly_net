@@ -1534,6 +1534,39 @@ fn create_vcan(mut w gui.Window) {
 	w.update_window()
 }
 
+// add_sim_network offers a NEW in-process simulated network as a candidate (a unique
+// inproc:SIM<N> bus, editable name, pre-ticked) — the simulated-network twin of ＋ vcan.
+// Unlike vcan, an inproc bus is not a system object (no ip link); it exists as soon as
+// a channel opens it, so this just mints a uniquely-named one to rename + Add.
+fn add_sim_network(mut w gui.Window) {
+	mut app := w.state[App]()
+	mut used := map[string]bool{}
+	for ch in app.proj.channels {
+		used[ch.iface] = true
+	}
+	for c in app.bus_candidates {
+		used[c.iface] = true
+	}
+	mut n := 1
+	for {
+		if 'inproc:SIM${n}' !in used {
+			break
+		}
+		n++
+	}
+	iface := 'inproc:SIM${n}'
+	app.bus_candidates << BusCandidate{
+		name:    'SIM${n}'
+		iface:   iface
+		kind:    'inproc'
+		virtual: true
+	}
+	app.bus_names[iface] = 'SIM${n}'
+	app.bus_ticked[iface] = true
+	app.status = 'new simulated network ${iface} — rename it, then ＋ Add ticked'
+	w.update_window()
+}
+
 // open_bus_config ensures the Bus Config panel is docked, then scans (the Buses
 // '🔍 Discover' button). gui has no custom-content modal, so it's a dock panel
 // (float it by dragging its tab if you want a window).
@@ -2952,6 +2985,14 @@ fn bus_config_panel(app &App) gui.View {
 				content:   [gui.text(text: '＋ vcan')]
 				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					create_vcan(mut w)
+				}
+			),
+			gui.button(
+				id_focus:  125
+				max_width: 92
+				content:   [gui.text(text: '＋ Sim net')]
+				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					add_sim_network(mut w)
 				}
 			),
 			gui.button(
