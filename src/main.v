@@ -252,6 +252,10 @@ mut:
 	fps       int = default_fps // trace repaint rate (toolbar dropdown)
 	sim_nodes []SimNode // simulated ECUs available per channel (Simulation panel)
 	sim_expanded map[int]bool // Simulation tree: channel idx -> expanded (default collapsed)
+	// Generator editor: which node's signals are shown ('ch:node'), and which single
+	// signal's inline editor is open ('ch:node:signal'; '' = none, one at a time).
+	sim_sig_expanded map[string]bool
+	sim_sig_edit     string
 	trace_filter string // case-insensitive substring filter on ID/name/ch/data
 	// The second, independent trace panel ("Trace (filter)"): same data, its
 	// own filter + selection — keep the full trace and a curated slice open
@@ -513,6 +517,128 @@ fn scaffold_node(db candb.Database, node string) project.NodeCfg {
 	return project.NodeCfg{
 		name:    node
 		signals: sigs
+	}
+}
+
+// --- Generator editor helpers (GUI authoring of per-signal generators) ---
+
+// gnum formats a number compactly (no trailing .0 when integral).
+fn gnum(v f64) string {
+	return if v == f64(int(v)) { '${int(v)}' } else { '${v:.2f}' }
+}
+
+// node_gens returns a node's configured generators (its project NodeCfg.signals), or
+// [] if the node isn't configured yet (Scaffold first to get editable generators).
+fn node_gens(app &App, ch_idx int, node string) []project.GenCfg {
+	if ch_idx < 0 || ch_idx >= app.proj.channels.len {
+		return []project.GenCfg{}
+	}
+	for n in app.proj.channels[ch_idx].nodes {
+		if n.name == node {
+			return n.signals
+		}
+	}
+	return []project.GenCfg{}
+}
+
+// gen_summary is the one-line description shown for a signal's generator.
+fn gen_summary(g project.GenCfg) string {
+	return match g.typ {
+		'const' { 'const ${gnum(g.value)}' }
+		'sine' { 'sine ${gnum(g.offset)}±${gnum(g.amplitude)} @${gnum(g.freq)}' }
+		'sawtooth' { 'sawtooth ${gnum(g.min)}..${gnum(g.max)} /${gnum(g.period)}s' }
+		'counter' { 'counter ${gnum(g.start)}+${gnum(g.step)} %${gnum(g.modulo)}' }
+		'stepmod' { 'stepmod ${gnum(g.base)} ×${gnum(g.count)} /${gnum(g.period)}s' }
+		else { g.typ }
+	}
+}
+
+// gen_fields lists the editable parameters relevant to a generator type.
+fn gen_fields(typ string) []string {
+	return match typ {
+		'const' { ['value'] }
+		'sine' { ['offset', 'amplitude', 'freq', 'phase'] }
+		'sawtooth' { ['min', 'max', 'period'] }
+		'counter' { ['start', 'step', 'modulo'] }
+		'stepmod' { ['period', 'count', 'base'] }
+		else { []string{} }
+	}
+}
+
+// gen_field_val reads one named parameter from a generator.
+fn gen_field_val(g project.GenCfg, f string) f64 {
+	return match f {
+		'value' { g.value }
+		'offset' { g.offset }
+		'amplitude' { g.amplitude }
+		'freq' { g.freq }
+		'phase' { g.phase }
+		'min' { g.min }
+		'max' { g.max }
+		'period' { g.period }
+		'start' { g.start }
+		'step' { g.step }
+		'modulo' { g.modulo }
+		'count' { g.count }
+		'base' { g.base }
+		else { f64(0) }
+	}
+}
+
+// set_gen_type / set_gen_field mutate a signal's generator in the project (in-memory;
+// persists on Save, applies to the sim on the next ▶ Start). They don't rebuild the
+// running engine (that would reset the per-node enable toggles), and the displayed
+// summary reads back from the config so the edit shows immediately.
+fn set_gen_type(ch_idx int, node string, sig string, typ string, mut w gui.Window) {
+	mut app := w.state[App]()
+	if ch_idx < 0 || ch_idx >= app.proj.channels.len {
+		return
+	}
+	for ni in 0 .. app.proj.channels[ch_idx].nodes.len {
+		if app.proj.channels[ch_idx].nodes[ni].name != node {
+			continue
+		}
+		for si in 0 .. app.proj.channels[ch_idx].nodes[ni].signals.len {
+			if app.proj.channels[ch_idx].nodes[ni].signals[si].signal == sig {
+				app.proj.channels[ch_idx].nodes[ni].signals[si].typ = typ
+				w.update_window()
+				return
+			}
+		}
+	}
+}
+
+fn set_gen_field(ch_idx int, node string, sig string, field string, val f64, mut w gui.Window) {
+	mut app := w.state[App]()
+	if ch_idx < 0 || ch_idx >= app.proj.channels.len {
+		return
+	}
+	for ni in 0 .. app.proj.channels[ch_idx].nodes.len {
+		if app.proj.channels[ch_idx].nodes[ni].name != node {
+			continue
+		}
+		for si in 0 .. app.proj.channels[ch_idx].nodes[ni].signals.len {
+			if app.proj.channels[ch_idx].nodes[ni].signals[si].signal != sig {
+				continue
+			}
+			match field {
+				'value' { app.proj.channels[ch_idx].nodes[ni].signals[si].value = val }
+				'offset' { app.proj.channels[ch_idx].nodes[ni].signals[si].offset = val }
+				'amplitude' { app.proj.channels[ch_idx].nodes[ni].signals[si].amplitude = val }
+				'freq' { app.proj.channels[ch_idx].nodes[ni].signals[si].freq = val }
+				'phase' { app.proj.channels[ch_idx].nodes[ni].signals[si].phase = val }
+				'min' { app.proj.channels[ch_idx].nodes[ni].signals[si].min = val }
+				'max' { app.proj.channels[ch_idx].nodes[ni].signals[si].max = val }
+				'period' { app.proj.channels[ch_idx].nodes[ni].signals[si].period = val }
+				'start' { app.proj.channels[ch_idx].nodes[ni].signals[si].start = val }
+				'step' { app.proj.channels[ch_idx].nodes[ni].signals[si].step = val }
+				'modulo' { app.proj.channels[ch_idx].nodes[ni].signals[si].modulo = val }
+				'count' { app.proj.channels[ch_idx].nodes[ni].signals[si].count = val }
+				'base' { app.proj.channels[ch_idx].nodes[ni].signals[si].base = val }
+				else {}
+			}
+			return
+		}
 	}
 }
 
@@ -1178,7 +1304,7 @@ fn main_view(mut window gui.Window) gui.View {
 					gui.DockPanelDef{ id: 'trace', label: 'Trace', content: [trace_panel(mut window)] },
 				gui.DockPanelDef{ id: 'ftrace', label: 'Trace (filter)', content: [filtered_trace_panel(mut window)] },
 					gui.DockPanelDef{ id: 'buses', label: 'Buses', content: [buses_panel(app)] },
-						gui.DockPanelDef{ id: 'simulation', label: 'Simulation', content: [simulation_panel(app)] },
+						gui.DockPanelDef{ id: 'simulation', label: 'Simulation', content: [simulation_panel(mut window)] },
 					gui.DockPanelDef{ id: 'signals', label: 'Signals', content: [signals_panel(app)] },
 					gui.DockPanelDef{ id: 'plot', label: 'Graphics', content: [plot_panel(mut window)] },
 					gui.DockPanelDef{ id: 'send', label: 'Send', content: [send_panel(mut window)] },
@@ -2974,10 +3100,11 @@ fn stats_panel(app &App) gui.View {
 // no custom-content modal; drag its tab out to float it.)
 fn bus_config_panel(app &App) gui.View {
 	mut rows := [gui.View(gui.text(text: 'Bus / Channel Configuration', text_style: gui.theme().b3))]
+	// Row 1: discovery / attach.
 	rows << gui.row(
 		v_align: .middle
 		spacing: 6
-		padding: gui.Padding{0, 0, 4, 0}
+		padding: gui.Padding{0, 0, 2, 0}
 		content: [
 			gui.button(
 				id_focus:  122
@@ -2987,23 +3114,7 @@ fn bus_config_panel(app &App) gui.View {
 					discover_to_candidates(mut w)
 				}
 			),
-			gui.button(
-				id_focus:  124
-				max_width: 84
-				content:   [gui.text(text: '＋ vcan')]
-				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
-					create_vcan(mut w)
-				}
-			),
-			gui.button(
-				id_focus:  125
-				max_width: 92
-				content:   [gui.text(text: '＋ Sim net')]
-				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
-					add_sim_network(mut w)
-				}
-			),
-			// USB CAN attach (moved here from Buses) with an explanatory hover.
+			// USB CAN attach with an explanatory hover.
 			gui.row(
 				v_align: .middle
 				padding: gui.padding_none
@@ -3023,6 +3134,30 @@ fn bus_config_panel(app &App) gui.View {
 						}
 					),
 				]
+			),
+		]
+	)
+	// Row 2: add a network / add the ticked candidates.
+	rows << gui.row(
+		v_align: .middle
+		spacing: 6
+		padding: gui.Padding{0, 0, 4, 0}
+		content: [
+			gui.button(
+				id_focus:  124
+				max_width: 84
+				content:   [gui.text(text: '＋ vcan')]
+				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					create_vcan(mut w)
+				}
+			),
+			gui.button(
+				id_focus:  125
+				max_width: 92
+				content:   [gui.text(text: '＋ Sim net')]
+				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					add_sim_network(mut w)
+				}
 			),
 			gui.button(
 				id_focus:  123
@@ -3216,7 +3351,8 @@ fn buses_panel(app &App) gui.View {
 // simulation_panel is the connect-the-simulation tree: each network with a DBC
 // lists its ECU nodes, each with a checkbox to "connect" it to the bus (= have
 // the tester simulate that ECU). Toggling is live while a measurement runs.
-fn simulation_panel(app &App) gui.View {
+fn simulation_panel(mut window gui.Window) gui.View {
+	app := window.state[App]()
 	mut rows := []gui.View{}
 	rows << gui.text(text: 'Simulation', text_style: gui.theme().b3)
 	// Validation: flag config that doesn't match the DBC (silent-typo guard).
@@ -3307,6 +3443,8 @@ fn simulation_panel(app &App) gui.View {
 			ndix := i
 			nname := sn.node
 			en := sn.enabled
+			nkey := '${i}:${sn.node}'
+			nexp := app.sim_sig_expanded[nkey]
 			rows << gui.row(
 				v_align: .middle
 				spacing: 6
@@ -3325,8 +3463,21 @@ fn simulation_panel(app &App) gui.View {
 							gui.text(text: if en { '☑' } else { '☐' }, text_style: trace_text_style()),
 						]
 					),
-					// Fixed-width name so every Scaffold button lines up in a column.
-					gui.text(text: sn.node, text_style: trace_text_style(), min_width: 130),
+					// Name (click to expand the node's signal generators) — fixed width
+					// + a chevron so the Scaffold buttons still line up.
+					gui.row(
+						v_align:  .middle
+						spacing:  3
+						padding:  gui.padding_none
+						on_click: fn [nkey] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+							mut a := w.state[App]()
+							a.sim_sig_expanded[nkey] = !a.sim_sig_expanded[nkey]
+						}
+						content:  [
+							gui.text(text: if nexp { '▾' } else { '▸' }, text_style: trace_text_style()),
+							gui.text(text: sn.node, text_style: trace_text_style(), min_width: 116),
+						]
+					),
 					gui.button(
 						id_focus:  u32(720 + j)
 						max_width: 84
@@ -3337,6 +3488,74 @@ fn simulation_panel(app &App) gui.View {
 					),
 				]
 			)
+			// Expanded: per-signal generator summaries; click one to edit it inline.
+			if nexp {
+				gens := node_gens(app, i, sn.node)
+				if gens.len == 0 {
+					rows << gui.text(text: '   (⚙ Scaffold to add editable generators)',
+						text_style: gui.theme().n4)
+				}
+				for gi, g in gens {
+					sigkey := '${i}:${sn.node}:${g.signal}'
+					editing := app.sim_sig_edit == sigkey
+					rows << gui.row(
+						v_align:  .middle
+						spacing:  4
+						padding:  gui.Padding{0, 0, 0, 52}
+						on_click: fn [sigkey] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+							mut a := w.state[App]()
+							a.sim_sig_edit = if a.sim_sig_edit == sigkey { '' } else { sigkey }
+						}
+						content:  [
+							gui.text(text: if editing { '▾' } else { '▸' }, text_style: trace_text_style()),
+							gui.text(text: g.signal, text_style: gui.theme().b4, min_width: 104),
+							gui.text(text: gen_summary(g), text_style: gui.theme().n4),
+						]
+					)
+					if editing {
+						ci := i
+						nn := sn.node
+						sg := g.signal
+						mut ed := [
+							gui.View(gui.text(text: 'type', text_style: gui.theme().n4)),
+							window.select(
+								id:        'gentype_${sigkey}'
+								id_focus:  1000
+								select:    [g.typ]
+								options:   ['const', 'sine', 'sawtooth', 'counter', 'stepmod']
+								min_width: 90
+								max_width: 110
+								on_select: fn [ci, nn, sg] (sel []string, mut _ gui.Event, mut w gui.Window) {
+									if sel.len > 0 {
+										set_gen_type(ci, nn, sg, sel[0], mut w)
+									}
+								}
+							),
+						]
+						for fx, f in gen_fields(g.typ) {
+							fname := f
+							ed << gui.text(text: f, text_style: gui.theme().n4)
+							ed << gui.input(
+								id_focus:        u32(1001 + fx)
+								text:            gnum(gen_field_val(g, f))
+								width:           54
+								height:          22
+								sizing:          gui.fixed_fixed
+								padding:         gui.Padding{2, 5, 2, 5}
+								on_text_changed: fn [ci, nn, sg, fname] (_ &gui.Layout, s string, mut w gui.Window) {
+									set_gen_field(ci, nn, sg, fname, s.f64(), mut w)
+								}
+							)
+						}
+						rows << gui.row(
+							v_align: .middle
+							spacing: 4
+							padding: gui.Padding{0, 0, 2, 70}
+							content: ed
+						)
+					}
+				}
+			}
 		}
 	}
 	return gui.column(
