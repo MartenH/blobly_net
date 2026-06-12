@@ -388,6 +388,31 @@ fn sim_warnings(app &App) []string {
 	return out
 }
 
+// scaffold_sim_node fills (or replaces) a node's config with default generators
+// derived from the channel's DBC, then rebuilds the sim. In-memory; persist on Save.
+fn scaffold_sim_node(ch_idx int, node string, mut w gui.Window) {
+	mut app := w.state[App]()
+	if ch_idx < 0 || ch_idx >= app.proj.channels.len {
+		return
+	}
+	db := app.dbs[ch_idx] or { return }
+	cfg := scaffold_node(db, node)
+	mut found := false
+	for k in 0 .. app.proj.channels[ch_idx].nodes.len {
+		if app.proj.channels[ch_idx].nodes[k].name == node {
+			app.proj.channels[ch_idx].nodes[k] = cfg
+			found = true
+			break
+		}
+	}
+	if !found {
+		app.proj.channels[ch_idx].nodes << cfg
+	}
+	app.build_sim_nodes()
+	app.status = 'scaffolded ${cfg.signals.len} signal(s) for ${node} — tweak/Save (session-only until Save)'
+	w.update_window()
+}
+
 // build_node turns a project node config into a simulation ECU: when it carries
 // signal/response config, build from that; otherwise use the built-in default
 // behaviour (the hand-tuned SUT for 'SUT', generic DBC-derived otherwise).
@@ -409,6 +434,86 @@ fn build_node(db candb.Database, cfg project.NodeCfg) sim.SimEcu {
 		}
 	}
 	return sim.build_configured_ecu(db, cfg.name, gens, rules)
+}
+
+// scaffold_signal picks a sensible default generator for a DBC signal so a
+// scaffolded node transmits realistic, in-range data with zero hand-tuning (and no
+// possible typo — it's derived from the DBC): a 1-bit signal toggles, an enum cycles
+// its value table, anything else sines across its physical range (the DBC [min|max],
+// or, when unspecified, the range derived from the bit width + factor/offset).
+fn scaffold_signal(s candb.Signal) project.GenCfg {
+	if s.length == 1 {
+		return project.GenCfg{
+			signal: s.name
+			typ:    'stepmod'
+			period: 2
+			count:  2
+			base:   0
+		} // toggle 0/1
+	}
+	if s.values.len > 0 {
+		mut base := f64(1e30)
+		for k, _ in s.values {
+			if f64(k) < base {
+				base = f64(k)
+			}
+		}
+		if base > 1e29 {
+			base = 0
+		}
+		return project.GenCfg{
+			signal: s.name
+			typ:    'stepmod'
+			period: 2
+			count:  f64(s.values.len)
+			base:   base
+		} // cycle the enum
+	}
+	mut lo := s.minimum
+	mut hi := s.maximum
+	if !(hi > lo) {
+		// No DBC range — derive the physical range from the bit width + factor/offset.
+		if s.is_signed && s.length >= 2 {
+			half := f64(u64(1) << (s.length - 1))
+			lo = -half * s.factor + s.offset
+			hi = (half - 1) * s.factor + s.offset
+		} else {
+			rawmax := if s.length >= 63 {
+				f64(u64(-1))
+			} else {
+				f64((u64(1) << u64(s.length)) - 1)
+			}
+			lo = s.offset
+			hi = rawmax * s.factor + s.offset
+		}
+	}
+	return project.GenCfg{
+		signal:    s.name
+		typ:       'sine'
+		offset:    (lo + hi) / 2
+		amplitude: (hi - lo) / 2
+		freq:      0.5
+	}
+}
+
+// scaffold_node builds a NodeCfg whose signals all have default generators — every
+// signal the node transmits (its DBC messages), deduped, mux switch left alone.
+fn scaffold_node(db candb.Database, node string) project.NodeCfg {
+	mut sigs := []project.GenCfg{}
+	mut seen := map[string]bool{}
+	for m in db.messages_from(node) {
+		for s in m.signals {
+			if s.is_multiplexor || s.name in seen {
+				continue
+			}
+			seen[s.name] = true
+			sigs << scaffold_signal(s)
+		}
+	}
+	return project.NodeCfg{
+		name:    node
+		signals: sigs
+	}
 }
 
 // gen_of maps a project generator spec to a sim.Gen.
@@ -3139,6 +3244,8 @@ fn simulation_panel(app &App) gui.View {
 					gui.Color{170, 170, 170, 255} // not connected
 				}
 			}
+			ndix := i
+			nname := sn.node
 			rows << gui.row(
 				v_align: .middle
 				spacing: 5
@@ -3155,6 +3262,15 @@ fn simulation_panel(app &App) gui.View {
 						on_click:         fn [j] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 							mut a := w.state[App]()
 							a.sim_nodes[j].enabled = !a.sim_nodes[j].enabled
+						}
+					),
+					// Scaffold default generators for this node from its DBC signals.
+					gui.button(
+						id_focus:  u32(720 + j)
+						max_width: 84
+						content:   [gui.text(text: '⚙ Scaffold')]
+						on_click:  fn [ndix, nname] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+							scaffold_sim_node(ndix, nname, mut w)
 						}
 					),
 				]
