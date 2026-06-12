@@ -436,7 +436,12 @@ fn main() {
 			app.build_sim_nodes()
 			set_window_title(app.proj.name)
 			app.log_path = os.getenv_opt('CANTESTER_LOG') or { '' }
-			app.status = 'stopped — press ▶ Start (${app.proj.channels.len} channel(s))'
+			vnote := app.proj.version_note()
+			app.status = if vnote != '' {
+				'⚠ ${vnote}'
+			} else {
+				'stopped — press ▶ Start (${app.proj.channels.len} channel(s))'
+			}
 			w.update_view(main_view)
 			// CANTESTER_AUTOSTART=1 begins measurement immediately on launch —
 			// handy for the screenshot loop (xdotool clicking is unreliable under
@@ -1108,8 +1113,14 @@ fn menu_bar(mut window gui.Window) gui.View {
 						id:     'file.save'
 						text:   'Save Project'
 						action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {
-							mut a := w.state[App]()
-							a.status = 'Save Project: not implemented yet'
+							do_save_project(mut w)
+						}
+					},
+					gui.MenuItemCfg{
+						id:     'file.saveas'
+						text:   'Save Project As…'
+						action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {
+							save_project_as(mut w)
 						}
 					},
 					gui.MenuItemCfg{
@@ -1240,7 +1251,12 @@ fn open_project(path string, mut w gui.Window) {
 	app.load_databases()
 	app.build_sim_nodes()
 	set_window_title(p.name)
-	app.status = 'loaded ${p.name} (${p.channels.len} ch) — press ▶ Start'
+	note := p.version_note()
+	app.status = if note != '' {
+		'loaded ${p.name} — ⚠ ${note}'
+	} else {
+		'loaded ${p.name} (${p.channels.len} ch) — press ▶ Start'
+	}
 	w.update_window()
 }
 
@@ -1391,6 +1407,57 @@ fn open_bus_config(mut w gui.Window) {
 	}
 	discover_to_candidates(mut w)
 	w.update_window()
+}
+
+// save_project_to writes the in-memory project to `path` (the inverse of load —
+// project.to_yaml emits the `simulation:` schema) and adopts it as the source.
+fn save_project_to(path string, mut w gui.Window) {
+	mut app := w.state[App]()
+	app.proj.save(path) or {
+		app.status = 'save failed: ${err}'
+		return
+	}
+	app.proj_source = path
+	app.remember_project(path)
+	set_window_title(app.proj.name)
+	app.status = 'saved ${app.proj.name} → ${path}'
+	w.update_window()
+}
+
+// save_project_as prompts for a path (native save dialog) then writes.
+fn save_project_as(mut w gui.Window) {
+	app := w.state[App]()
+	dn := if app.proj_source.ends_with('.yml') || app.proj_source.ends_with('.yaml') {
+		os.base(app.proj_source)
+	} else {
+		'project.yml'
+	}
+	w.native_save_dialog(
+		title:             'Save Project As'
+		default_name:      dn
+		default_extension: 'yml'
+		filters:           [gui.NativeFileFilter{
+			name:       'Projects'
+			extensions: ['yml', 'yaml']
+		}]
+		on_done:           fn (r gui.NativeDialogResult, mut w gui.Window) {
+			if r.status == .ok && r.paths.len > 0 {
+				save_project_to(r.path_strings()[0], mut w)
+			}
+		}
+	)
+}
+
+// do_save_project saves to the current file if there is one, else asks where (the
+// project was the built-in default / never saved).
+fn do_save_project(mut w gui.Window) {
+	app := w.state[App]()
+	src := app.proj_source
+	if src.ends_with('.yml') || src.ends_with('.yaml') {
+		save_project_to(src, mut w)
+	} else {
+		save_project_as(mut w)
+	}
 }
 
 // set_window_title updates the OS titlebar to show the open project (sapp is valid
