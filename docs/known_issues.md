@@ -171,6 +171,17 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
     Windows is unaffected, the **production target is clear**; this mainly bites long WSL/Linux sessions.
   - Profiling: avoid a `-g` build (only draws 1 frame under WSLg). `CANTESTER_RUN_MS=N` exits cleanly.
     heaptrack diff: `heaptrack_print -d <static.gz> -a 1 -p 0 <changing.gz>`.
+- 🟢 **SEPARATE cross-platform leak — undrained `queue_command` frames piling up — FIXED 2026-06-12.**
+  Distinct from the vglyph one above (this is *our* code, and it bites **Windows** too, where vglyph is
+  clean). `rx_loop`/`replay_loop` called `w.queue_command(fn [frames] …)` every flush; gui's
+  `window.commands` list is drained only by the main loop's `flush_commands`, so **when rendering stalls
+  (occluded/minimised window, or the "no window that renders anything" case) the commands pile up, each
+  holding a clone of the batched frames** → unbounded RSS with no rendering. Isolation that pinned it:
+  a **headless** sim + `record()`-style accumulation (no GUI) **plateaus** (trace/grouped/plot_hist all
+  trim correctly) — so the data path is clean and the growth was purely the queued closures. **Fix:**
+  frames go into a **bounded** `App.inbox` (drops oldest past `rx_inbox_cap`) and **at most one** drain
+  command is ever pending (`drain_queued`); `drain_inbox` records them on the UI thread. Memory is now
+  capped regardless of whether the UI is draining. (`src/main.v` `rx_loop`/`replay_loop`/`drain_inbox`.)
 - 🟢 **Blank/black window under WSLg — FIXED on Ubuntu 24.04 (Mesa 25.2.8).** Historically (22.04,
   Mesa 23.2) the GPU GL passthrough (d3d12) drew frames but never composited, so the window showed
   blank; the workaround was software GL (`LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe`). On 24.04
