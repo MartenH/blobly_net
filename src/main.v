@@ -356,6 +356,26 @@ fn (mut app App) build_sim_nodes() {
 	}
 }
 
+// sim_warnings validates every channel's simulated ECUs against its DBC and returns
+// human-readable issues (node not a DBC BU_ / generator signal not in the node's
+// messages) — the silent-typo guard surfaced at the top of the Simulation panel.
+fn sim_warnings(app &App) []string {
+	mut out := []string{}
+	for i, ch in app.proj.channels {
+		if ch.databases.len == 0 {
+			continue
+		}
+		db := app.dbs[i] or { continue }
+		for node in ch.all_nodes() {
+			signames := node.signals.map(it.signal)
+			for warn in sim.validate_node(db, node.name, signames) {
+				out << '${ch.name}: ${warn}'
+			}
+		}
+	}
+	return out
+}
+
 // build_node turns a project node config into a simulation ECU: when it carries
 // signal/response config, build from that; otherwise use the built-in default
 // behaviour (the hand-tuned SUT for 'SUT', generic DBC-derived otherwise).
@@ -2970,6 +2990,18 @@ fn buses_panel(app &App) gui.View {
 fn simulation_panel(app &App) gui.View {
 	mut rows := []gui.View{}
 	rows << gui.text(text: 'Simulation', text_style: gui.theme().b3)
+	// Validation: flag config that doesn't match the DBC (silent-typo guard).
+	warns := sim_warnings(app)
+	if warns.len > 0 {
+		warn_style := gui.TextStyle{
+			...trace_text_style()
+			color: gui.Color{200, 90, 70, 255}
+		}
+		rows << gui.text(text: '⚠ ${warns.len} issue(s):', text_style: warn_style)
+		for warn in warns {
+			rows << gui.text(text: '   ${warn}', text_style: warn_style)
+		}
+	}
 	if app.sim_nodes.len == 0 {
 		rows << gui.text(text: '(no DBC nodes to simulate)', text_style: gui.theme().n4)
 		return gui.column(sizing: gui.fill_fill, padding: gui.padding_medium, spacing: 2, content: rows)
