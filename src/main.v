@@ -1224,11 +1224,19 @@ fn menu_bar(mut window gui.Window) gui.View {
 							if a.running {
 								stop_measurement(mut w)
 							}
-							a.proj = project.default_project()
-							a.proj_source = 'new (built-in default)'
-							a.rt = []ChannelRT{len: a.proj.channels.len}
+							// Empty canvas — build it up in Bus Config (＋ Sim net / ＋ vcan
+							// / Discover), attach DBCs in Buses, scaffold in Simulation, Save.
+							a.proj = project.Project{
+								name:    'untitled'
+								version: project.schema_version
+							}
+							a.proj_source = 'new' // not a file yet → Save acts as Save As
+							a.rt = []ChannelRT{}
 							a.load_databases()
-							a.status = 'new project — press ▶ Start'
+							a.build_sim_nodes()
+							set_window_title(a.proj.name)
+							a.status = 'new project — add a network in Bus Config (＋ Sim net / ＋ vcan / Discover)'
+							open_bus_config(mut w)
 						}
 					},
 					gui.MenuItemCfg{
