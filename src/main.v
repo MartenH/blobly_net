@@ -3126,7 +3126,7 @@ fn bus_config_panel(app &App) gui.View {
 		padding: gui.Padding{0, 0, 2, 0}
 		content: [
 			gui.button(
-				id_focus:  122
+				id_focus:  0
 				max_width: 92
 				content:   [gui.text(text: '🔍 Discover')]
 				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
@@ -3145,7 +3145,7 @@ fn bus_config_panel(app &App) gui.View {
 				}
 				content: [
 					gui.button(
-						id_focus:  121
+						id_focus:  0
 						max_width: 80
 						content:   [gui.text(text: '⚲ USB CAN')]
 						on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
@@ -3163,7 +3163,7 @@ fn bus_config_panel(app &App) gui.View {
 		padding: gui.Padding{0, 0, 4, 0}
 		content: [
 			gui.button(
-				id_focus:  124
+				id_focus:  0
 				max_width: 84
 				content:   [gui.text(text: '＋ vcan')]
 				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
@@ -3171,7 +3171,7 @@ fn bus_config_panel(app &App) gui.View {
 				}
 			),
 			gui.button(
-				id_focus:  125
+				id_focus:  0
 				max_width: 92
 				content:   [gui.text(text: '＋ Sim net')]
 				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
@@ -3179,7 +3179,7 @@ fn bus_config_panel(app &App) gui.View {
 				}
 			),
 			gui.button(
-				id_focus:  123
+				id_focus:  0
 				max_width: 110
 				content:   [gui.text(text: '＋ Add ticked')]
 				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
@@ -3284,7 +3284,7 @@ fn buses_panel(app &App) gui.View {
 		padding: gui.Padding{0, 0, 4, 0}
 		content: [
 			gui.button(
-				id_focus:  120
+				id_focus:  0
 				max_width: 92
 				content:   [gui.text(text: '🔍 Discover')]
 				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
@@ -3306,23 +3306,21 @@ fn buses_panel(app &App) gui.View {
 			padding: gui.padding_none
 			content: [
 				gui.text(text: '●', text_style: dot_style),
-				// Clean enable glyph instead of gui.checkbox's oversized box.
-				gui.row(
-					v_align:  .middle
-					sizing:   gui.fit_fit
-					padding:  gui.Padding{0, 2, 0, 2}
-					on_click: fn [i] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				// Enable toggle as a button (an on_click gui.row stretches and pushes
+				// the rest right — see docs/known_issues.md). id_focus:0 → no stuck blue.
+				gui.button(
+					id_focus:  0
+					max_width: 26
+					content:   [gui.text(text: if en { '☑' } else { '☐' })]
+					on_click:  fn [i] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 						mut a := w.state[App]()
 						a.proj.channels[i].enabled = !a.proj.channels[i].enabled
 					}
-					content:  [
-						gui.text(text: if en { '☑' } else { '☐' }, text_style: trace_text_style()),
-					]
 				),
 				gui.text(text: '${ch.name}  ${ch.iface}', text_style: trace_text_style()),
 				// Remove this channel from the project.
 				gui.button(
-					id_focus:  u32(280 + i)
+					id_focus:  0
 					max_width: 30
 					content:   [gui.text(text: '✕')]
 					on_click:  fn [i] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
@@ -3340,7 +3338,7 @@ fn buses_panel(app &App) gui.View {
 		}
 		mut dbrow := [
 			gui.View(gui.button(
-				id_focus:  u32(250 + i)
+				id_focus:  0
 				max_width: 58
 				content:   [gui.text(text: '＋ DBC')]
 				on_click:  fn [i] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
@@ -3351,7 +3349,7 @@ fn buses_panel(app &App) gui.View {
 		]
 		if ch.databases.len > 0 {
 			dbrow << gui.button(
-				id_focus:  u32(270 + i)
+				id_focus:  0
 				max_width: 30
 				content:   [gui.text(text: '✕')]
 				on_click:  fn [i] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
@@ -3482,38 +3480,35 @@ fn simulation_panel(mut window gui.Window) gui.View {
 				padding: gui.Padding{1, 0, 1, 24} // indent under the network
 				content: [
 					gui.text(text: '●', text_style: dot_style),
-					// Clean check glyph instead of gui.checkbox's oversized box.
-					gui.row(
-						v_align:  .middle
-						padding:  gui.Padding{0, 2, 0, 2}
-						on_click: fn [j] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					// gui.button (not an on_click gui.row) for the clickable bits — a
+					// clickable row STRETCHES and shoves the next siblings to the far
+					// right (docs/known_issues.md); a button sizes to content. id_focus:0
+					// so it doesn't stay highlighted after a click (is_focus(0) == false).
+					gui.button(
+						id_focus:  0
+						max_width: 26
+						content:   [gui.text(text: if en { '☑' } else { '☐' })]
+						on_click:  fn [j] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 							mut a := w.state[App]()
 							a.sim_nodes[j].enabled = !a.sim_nodes[j].enabled
 						}
-						content:  [
-							gui.text(text: if en { '☑' } else { '☐' }, text_style: trace_text_style()),
-						]
 					),
-					// Name (click to expand the node's signal generators) — fit width (so
-					// it doesn't stretch and shove the Scaffold button to the far right)
-					// + a chevron, with min_width on the name so the buttons still align.
-					gui.row(
-						v_align:  .middle
-						spacing:  3
-						sizing:   gui.fit_fit
-						padding:  gui.padding_none
-						on_click: fn [nkey] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					// Name + expand chevron (click to show/edit this node's generators).
+					gui.button(
+						id_focus:  0
+						min_width: 150
+						max_width: 150
+						h_align:   .left
+						content:   [gui.text(text: '${if nexp { '▾' } else { '▸' }} ${sn.node}')]
+						on_click:  fn [nkey] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 							mut a := w.state[App]()
 							a.sim_sig_expanded[nkey] = !a.sim_sig_expanded[nkey]
 						}
-						content:  [
-							gui.text(text: if nexp { '▾' } else { '▸' }, text_style: trace_text_style()),
-							gui.text(text: sn.node, text_style: trace_text_style(), min_width: 116),
-						]
 					),
 					gui.button(
-						id_focus:  u32(720 + j)
+						id_focus:  0
 						max_width: 84
+						h_align:   .left
 						content:   [gui.text(text: '⚙ Scaffold')]
 						on_click:  fn [ndix, nname] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 							scaffold_sim_node(ndix, nname, mut w)
