@@ -16,6 +16,7 @@ module main
 import gui
 import os
 import time
+import sync
 import sokol.sapp
 import transport
 import candb
@@ -250,6 +251,13 @@ mut:
 	record_entries []canlog.LogEntry
 	log_path  string // candump .log to open from the toolbar
 	fps       int = default_fps // trace repaint rate (toolbar dropdown)
+	// RX/TX inbox: the bus threads append frames here (bounded — drop oldest on
+	// overflow) and queue AT MOST ONE drain command (drain_queued) to record them on
+	// the UI thread. This caps memory regardless of whether the UI is draining — the
+	// old per-flush queue_command(frames) piled up unboundedly when not rendering.
+	inbox        []InboxItem
+	inbox_mu     sync.Mutex
+	drain_queued bool
 	sim_nodes []SimNode // simulated ECUs available per channel (Simulation panel)
 	sim_expanded map[int]bool // Simulation tree: channel idx -> expanded (default collapsed)
 	// Generator editor: which node's signals are shown ('ch:node'), and which single
@@ -989,7 +997,7 @@ fn sim_loop(idx int, mut w gui.Window) {
 // interface on another channel shows the replay via the normal RX path —
 // exactly like traffic from a real node on the wire.
 fn replay_loop(idx int, mut w gui.Window) {
-	app := w.state[App]()
+	mut app := w.state[App]()
 	ch := app.proj.channels[idx]
 	rcfg := ch.replay or { return } // start_measurement guarantees it
 	mut bus := app.rt[idx].bus or { return }
@@ -1009,20 +1017,17 @@ fn replay_loop(idx int, mut w gui.Window) {
 	mut pl := player.new_player(entries, rcfg.speed, rcfg.repeat)
 	t0 := time.ticks()
 	pl.play(0)
-	mut batch := []transport.CanFrame{}
 	mut last_flush := time.ticks()
 	for app.rt[idx].running {
 		now := f64(time.ticks() - t0)
 		for e in pl.due(now) {
 			bus.send(e.frame) or {}
-			batch << e.frame
+			app.inbox_push(InboxItem{ idx: idx, dir: 'TX', frame: e.frame })
 		}
 		fin := pl.finished()
 		nticks := time.ticks()
-		if fin || (batch.len > 0 && nticks - last_flush >= flush_ms_for(app.fps)) {
+		if fin || nticks - last_flush >= flush_ms_for(app.fps) {
 			last_flush = nticks
-			frames := batch.clone()
-			batch.clear()
 			note := if fin {
 				'replay finished (${pl.len()} frames)'
 			} else if rcfg.repeat {
@@ -1030,22 +1035,12 @@ fn replay_loop(idx int, mut w gui.Window) {
 			} else {
 				'replay ${int(pl.progress(now) * 100)}% (${pl.sent()}/${pl.len()})'
 			}
-			w.queue_command(fn [frames, idx, note, fin] (mut w gui.Window) {
+			app.request_drain(mut w) // TX frames recorded via the bounded inbox
+			w.queue_command(fn [idx, note, fin] (mut w gui.Window) {
 				mut a := w.state[App]()
 				a.rt[idx].note = note
 				if fin {
 					a.rt[idx].running = false
-				}
-				if !a.paused {
-					a.rt[idx].tx_count += frames.len
-					chn := if idx < a.proj.channels.len {
-						a.proj.channels[idx].name
-					} else {
-						'CAN${idx + 1}'
-					}
-					for f in frames {
-						a.push('TX', f, chn)
-					}
 				}
 				w.update_window()
 			})
@@ -1143,42 +1138,87 @@ fn diag_render(resp []u8) string {
 	return h
 }
 
-// rx_loop reads frames and hands them to the UI in **batches**, not one-by-one.
-// Each w.queue_command wakes sokol and forces a full GL frame (~tens of ms under
-// WSLg's GL translation), so one wake per frame pegs the CPU on a busy bus. We
-// instead accumulate frames in a thread-local batch and flush every rx_flush_ms
-// — every frame is still recorded, but the UI repaints at a bounded rate. The
-// batch is moved into the closure, so all state mutates on the UI thread (no locks).
+// InboxItem is one received/sent frame queued for the UI thread to record.
+struct InboxItem {
+	idx   int
+	dir   string
+	frame transport.CanFrame
+}
+
+const rx_inbox_cap = 8192 // buffered frames before the inbox drops oldest
+
+// rx_loop reads frames and buffers them in App.inbox (bounded), waking the UI to
+// record them at a bounded rate via request_drain. Each w.queue_command wakes sokol
+// and forces a full GL frame (~tens of ms under WSLg's GL translation), so one wake
+// per frame pegs the CPU on a busy bus — and undrained commands carrying frame
+// clones used to pile up unboundedly when the window wasn't rendering (the leak).
+// Now the frames live in a capped buffer and at most one drain is ever pending.
 fn rx_loop(idx int, mut w gui.Window) {
-	app := w.state[App]()
+	mut app := w.state[App]()
 	mut bus := app.rt[idx].bus or { return }
-	mut batch := []transport.CanFrame{}
 	mut last_flush := time.ticks()
 	for app.rt[idx].running {
 		flush_ms := flush_ms_for(app.fps) // live: reflects the toolbar dropdown
 		if frame := bus.recv(int(flush_ms)) {
-			batch << frame
+			app.inbox_push(InboxItem{ idx: idx, dir: 'RX', frame: frame })
 		}
 		now := time.ticks()
-		if batch.len > 0 && now - last_flush >= flush_ms {
+		if now - last_flush >= flush_ms {
 			last_flush = now
-			frames := batch.clone()
-			batch.clear()
-			w.queue_command(fn [frames, idx] (mut w gui.Window) {
-				mut a := w.state[App]()
-				if a.paused {
-					return
-				}
-				a.rt[idx].rx_count += frames.len
-				ch := if idx < a.proj.channels.len { a.proj.channels[idx].name } else { 'CAN${idx + 1}' }
-				for f in frames {
-					a.push('RX', f, ch)
-				}
-				w.update_window()
-			})
+			app.request_drain(mut w) // queues AT MOST ONE drain (fps-bounded repaint)
 		}
 	}
 	bus.close()
+}
+
+// inbox_push appends one frame to the shared inbox, dropping the oldest on overflow
+// (amortised) — so it can never grow unbounded if the UI thread isn't draining.
+fn (mut app App) inbox_push(it InboxItem) {
+	app.inbox_mu.lock()
+	app.inbox << it
+	if app.inbox.len > rx_inbox_cap + rx_inbox_cap / 4 {
+		app.inbox = app.inbox[app.inbox.len - rx_inbox_cap..].clone()
+	}
+	app.inbox_mu.unlock()
+}
+
+// request_drain queues a drain_inbox command only if one isn't already pending, so
+// undrained commands never pile up (the old per-flush queue_command(frames) leak).
+fn (mut app App) request_drain(mut w gui.Window) {
+	app.inbox_mu.lock()
+	need := app.inbox.len > 0 && !app.drain_queued
+	if need {
+		app.drain_queued = true
+	}
+	app.inbox_mu.unlock()
+	if need {
+		w.queue_command(drain_inbox)
+	}
+}
+
+// drain_inbox (UI thread) records everything buffered since the last drain.
+fn drain_inbox(mut w gui.Window) {
+	mut a := w.state[App]()
+	a.inbox_mu.lock()
+	items := a.inbox.clone()
+	a.inbox.clear()
+	a.drain_queued = false
+	a.inbox_mu.unlock()
+	if a.paused {
+		return // frames were already dropped from the bounded inbox
+	}
+	for it in items {
+		ch := if it.idx < a.proj.channels.len { a.proj.channels[it.idx].name } else { 'CAN${it.idx + 1}' }
+		if it.idx < a.rt.len {
+			if it.dir == 'RX' {
+				a.rt[it.idx].rx_count++
+			} else {
+				a.rt[it.idx].tx_count++
+			}
+		}
+		a.push(it.dir, it.frame, ch)
+	}
+	w.update_window()
 }
 
 // push records a live frame, stamping it with the current wall-clock offset.
