@@ -127,9 +127,47 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
 
 ## Rendering stack (sokol / vglyph / GL)
 
-- 🔴 **Memory grows when the trace shows *changing* values — it's vglyph rendering unique text strings
-  (Pango/FreeType), NOT the GL driver and NOT our code.** RSS climbs ~1.5 MB/s whenever live values are
-  on screen (sim/replay/live trace); FLAT when idle (event-driven refresh → no redraw). Final diagnosis
+- 🟡 **DOWNGRADED 2026-06-13 (was "🔴 DEFINITIVE libgallium" — REFUTED by a direct control).**
+  The 2026-06-12 note below claimed the leak "IS the Mesa GL driver (`libgallium`) on the per-frame
+  TEXTURED-draw path" — concluded from heaptrack symbols. That conclusion **does not survive a
+  decisive control experiment**, and the claim is retracted. Two independent reasons:
+  - **Plausibility:** `libgallium` is the shared core of *every* Mesa driver (llvmpipe/d3d12/iris/…)
+    on WSLg — in the path of every GL app that draws text. A real 1.5–2 MB/s per-frame textured-draw
+    leak there would be one of the most-reported WSLg bugs in existence. It isn't.
+  - **`cmd/textured_control` (the control):** a pure-textured-draw app — a **static** in-memory
+    texture uploaded ONCE, drawn as 30 quads at **changing positions** every frame (~60 fps),
+    **no vglyph / no Pango / no text shaping** — i.e. exactly the path the note blamed, minus the
+    glyph stack. **Result: RSS is FLAT** — 138→139 MB over ~2 800 frames (≈85 000 textured quads),
+    hardware GL. If libgallium leaked on textured draws this would climb; it doesn't. So the
+    rects-flat / text-climbs differential the note leaned on does **not** isolate Mesa — it merely
+    swaps in vglyph's whole glyph-render path, which is the real variable.
+  - **The original repro no longer reproduces the unbounded climb either** (same box, 2026-06-13):
+    `cmd/mem_leak_repro` `MEM_REPRO=changing`, RSS sampled from `/proc/self|pid/status` — **hardware
+    GL: flat** 226→228 MB over 90 s / 645 unique-string frames (≈0.02 MB/s drift); **software GL
+    (llvmpipe): a bounded warmup** 188→215 MB in 20 s then ~215→225 decelerating (≈0.2 MB/s and
+    falling — classic cache-fill plateau), NOT the claimed 273→521 MB / 2.7 min @ ~1.5 MB/s. At
+    1.5 MB/s a 90 s run would have shown +135 MB; we saw +2 MB.
+  - **Why the heaptrack story was wrong (again):** "bytes resident in libgallium at exit" is the GL
+    driver's normal working set / caches, freed only on clean teardown — the *exact* mis-attribution
+    already retracted on 2026-06-07 (see below). heaptrack symbols answer "where do un-freed bytes
+    sit at exit", not "what grows unbounded over time"; only direct RSS-over-time answers the latter,
+    and direct RSS is flat/bounded here.
+  - **Honest current status:** there may be a **bounded** warmup cache-fill on the Linux text path
+    (tens of MB, plateaus) — there is **no evidence** of an unbounded per-frame libgallium leak in
+    the current environment (Mesa 25.2.8). If a long live session ever climbs unboundedly again,
+    re-measure with **direct RSS over time**, reproduce in `cmd/textured_control` (textured, no text)
+    to test Mesa, and only then trust a heaptrack attribution. Whatever the 2026-06-12 run saw, it is
+    not reproducing, so a confirmed-driver-bug label is unsafe. Mitigations if it recurs: lower trace
+    fps, Pause/Stop. Controls: `v -enable-globals -path "@vlib|@vmodules|modules" run
+    cmd/textured_control/textured_control.v` (`REPRO_MODE=textured|textured_static|rects`, prints
+    its own VmRSS); text path `cmd/mem_leak_repro` (`MEM_REPRO=changing|static`).
+- 🟡 **(historical; its vglyph-renderer conclusion is REINSTATED — the 2026-06-12 libgallium
+  "correction" that displaced it is itself refuted, see the 2026-06-13 downgrade above)** Memory
+  grows when the trace shows *changing* values — diagnosed as vglyph rendering unique text strings
+  (Pango/FreeType render path), NOT the GL driver and NOT our code. RSS was seen climbing ~1.5 MB/s
+  whenever live values are on screen (sim/replay/live trace); FLAT when idle (event-driven refresh →
+  no redraw). (Note: this ~1.5 MB/s climb also did not reproduce on the 2026-06-13 re-measure —
+  treat the rate as environment/session-dependent, the *path* as the durable finding.) Final diagnosis
   **2026-06-07, by direct RSS measurement + minimal repros** (two earlier guesses were wrong — see the
   retraction note below). The evidence:
   - GC is **on** (boehm; `gc_collect()` works) and the **V heap is bounded** (`gc_memory_use()` ~16–50 MB
