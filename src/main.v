@@ -728,6 +728,30 @@ fn main() {
 					exit(0)
 				}(ms.int())
 			}
+			// CANTESTER_MEMLOG=1 logs RSS + the V GC heap every 3s; CANTESTER_GCFORCE=1
+			// also forces a collection each tick — to tell a V-heap leak (both grow)
+			// from a C-side one (RSS grows, gcheap flat). Dev-only.
+			if os.getenv('CANTESTER_MEMLOG') != '' {
+				spawn fn () {
+					force := os.getenv('CANTESTER_GCFORCE') != ''
+					for {
+						time.sleep(3 * time.second)
+						if force {
+							gc_collect()
+						}
+						mut rss := 0
+						if s := os.read_file('/proc/self/status') {
+							for line in s.split_into_lines() {
+								if line.starts_with('VmRSS:') {
+									rss = line.fields()[1].int()
+									break
+								}
+							}
+						}
+						eprintln('[mem] RSS=${rss} kB  gcheap=${gc_memory_use() / 1024} kB')
+					}
+				}()
+			}
 		}
 	)
 	window.set_theme(make_theme(palette_opus))
