@@ -17,7 +17,7 @@ channels:
     mode: monitor
     databases:
       - dbc/cantester.dbc        # the network owns the database
-    nodes:
+    simulation:           # the simulation workload on this bus (was `nodes:`)
       - name: SUT
         signals:
           # type: const | sine | sawtooth | counter | stepmod
@@ -46,7 +46,7 @@ channels:
     mode: monitor
     databases:
       - dbc/cantester.dbc
-    nodes:
+    simulation:           # the simulation workload on this bus (was `nodes:`)
       - name: BodyECU
         signals:
           - { name: InteriorTemp, type: sine, offset: 22, amplitude: 3, freq: 0.05 }

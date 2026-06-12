@@ -14,6 +14,12 @@ module project
 import os
 import yaml
 
+// schema_version is the current project-file format version. Bump it when the `.yml`
+// schema changes incompatibly. Files carry `version:`; Save writes schema_version,
+// and the loader flags a file whose version is NEWER than the app understands
+// (is_supported / version_note) so opening a future-format file isn't silent.
+pub const schema_version = 1
+
 // Mode is a channel's operating mode within a measurement.
 pub enum Mode {
 	off     // configured but not attached
@@ -124,13 +130,27 @@ pub mut:
 	channels []Channel
 }
 
+// is_supported reports whether this app understands the file's format version
+// (i.e. it isn't newer than schema_version).
+pub fn (p Project) is_supported() bool {
+	return p.version <= schema_version
+}
+
+// version_note returns a human warning if the file came from a newer app, else ''.
+pub fn (p Project) version_note() string {
+	if p.version > schema_version {
+		return 'file format v${p.version} is newer than this app (v${schema_version}) — some settings may be ignored'
+	}
+	return ''
+}
+
 // parse decodes a project `.yml` document.
 pub fn parse(text string) !Project {
 	doc := yaml.parse_text(text)!
 	mut p := Project{}
 	pj := doc.value('project')
 	p.name = pj.value('name').default_to('untitled').string()
-	p.version = pj.value('version').default_to(i64(1)).int()
+	p.version = pj.value('version').default_to(i64(schema_version)).int()
 	if chs := doc.value_opt('channels') {
 		for c in chs.array() {
 			if c is yaml.Null {
@@ -181,6 +201,14 @@ fn parse_channel(c yaml.Any) Channel {
 	if sim := c.value_opt('simulate') {
 		ch.simulate = sim.array().as_strings()
 	}
+	// Simulated ECUs. `simulation:` is the preferred key (separates the simulation
+	// workload from the bus config visually); `nodes:` is the legacy alias. Both
+	// append, so either — or both — work.
+	if ns := c.value_opt('simulation') {
+		for n in ns.array() {
+			ch.nodes << parse_node(n)
+		}
+	}
 	if ns := c.value_opt('nodes') {
 		for n in ns.array() {
 			ch.nodes << parse_node(n)
@@ -206,8 +234,12 @@ fn parse_channel(c yaml.Any) Channel {
 
 // parse_node parses one simulated-ECU entry: name + signals[] + responses[].
 fn parse_node(n yaml.Any) NodeCfg {
+	mut nm := n.value('name').default_to('').string()
+	if nm == '' {
+		nm = n.value('node').default_to('').string() // accept `node:` too
+	}
 	mut node := NodeCfg{
-		name: n.value('name').string()
+		name: nm
 	}
 	if sigs := n.value_opt('signals') {
 		for s in sigs.array() {
