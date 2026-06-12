@@ -1802,6 +1802,25 @@ fn attach_dbc(ch_idx int, path string, mut w gui.Window) {
 	w.update_window()
 }
 
+// remove_channel deletes a bus from the project (stops measurement first, then
+// rebuilds the runtime). In-memory; persists on Save.
+fn remove_channel(ch_idx int, mut w gui.Window) {
+	mut app := w.state[App]()
+	if app.running {
+		stop_measurement(mut w)
+	}
+	if ch_idx < 0 || ch_idx >= app.proj.channels.len {
+		return
+	}
+	name := app.proj.channels[ch_idx].name
+	app.proj.channels.delete(ch_idx)
+	app.rt = []ChannelRT{len: app.proj.channels.len}
+	app.load_databases()
+	app.build_sim_nodes()
+	app.status = 'removed ${name} — Save to persist'
+	w.update_window()
+}
+
 // clear_dbc removes all DBCs from a channel and reloads.
 fn clear_dbc(ch_idx int, mut w gui.Window) {
 	mut app := w.state[App]()
@@ -3280,22 +3299,34 @@ fn buses_panel(app &App) gui.View {
 			...trace_text_style()
 			color: channel_color(ch, rt, app.running)
 		}
+		en := ch.enabled
 		rows << gui.row(
 			v_align: .middle
-			spacing: 5
+			spacing: 6
 			padding: gui.padding_none
 			content: [
 				gui.text(text: '●', text_style: dot_style),
-				gui.checkbox(
-					id_focus:         u32(200 + i)
-					select:           ch.enabled
-					label:            '${ch.name}  ${ch.iface}'
-					text_style:       trace_text_style()
-					text_style_label: trace_text_style()
-					padding:          gui.Padding{0, 4, 0, 4}
-					on_click:         fn [i] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				// Clean enable glyph instead of gui.checkbox's oversized box.
+				gui.row(
+					v_align:  .middle
+					sizing:   gui.fit_fit
+					padding:  gui.Padding{0, 2, 0, 2}
+					on_click: fn [i] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 						mut a := w.state[App]()
 						a.proj.channels[i].enabled = !a.proj.channels[i].enabled
+					}
+					content:  [
+						gui.text(text: if en { '☑' } else { '☐' }, text_style: trace_text_style()),
+					]
+				),
+				gui.text(text: '${ch.name}  ${ch.iface}', text_style: trace_text_style()),
+				// Remove this channel from the project.
+				gui.button(
+					id_focus:  u32(280 + i)
+					max_width: 30
+					content:   [gui.text(text: '✕')]
+					on_click:  fn [i] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+						remove_channel(i, mut w)
 					}
 				),
 			]
@@ -3463,11 +3494,13 @@ fn simulation_panel(mut window gui.Window) gui.View {
 							gui.text(text: if en { '☑' } else { '☐' }, text_style: trace_text_style()),
 						]
 					),
-					// Name (click to expand the node's signal generators) — fixed width
-					// + a chevron so the Scaffold buttons still line up.
+					// Name (click to expand the node's signal generators) — fit width (so
+					// it doesn't stretch and shove the Scaffold button to the far right)
+					// + a chevron, with min_width on the name so the buttons still align.
 					gui.row(
 						v_align:  .middle
 						spacing:  3
+						sizing:   gui.fit_fit
 						padding:  gui.padding_none
 						on_click: fn [nkey] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 							mut a := w.state[App]()
