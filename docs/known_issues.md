@@ -127,6 +127,27 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
 
 ## Rendering stack (sokol / vglyph / GL)
 
+- 🟠 **NEW 2026-06-13 — the leak is the `data_grid`'s per-cell `text_width` (vglyph layout
+  build), NOT the glyph-render path, and it reproduces on native Windows (msys2/mingw) — so
+  it is NOT Linux-only.** Full hunt on the W1 msys2 build: cantester leaks **~1 MB/s
+  unbounded** (+460 MB / 8 min, **C-side** — survives forced `gc_collect`). Bisected with
+  minimal gui repros: `cmd/mem_leak_repro` (changing text) = **flat** on Windows;
+  `cmd/mem_leak_canvas` (draw_canvas polyline) = **flat**; **`cmd/mem_leak_grid`** (a gui
+  `data_grid` of 30×8 cells) = **LEAKS ~2.5 MB/s — and *static* cells leak just as fast** (so
+  it's NOT glyph-atlas churn; static = cache hits). Instrumented vglyph `prune_cache`: the
+  layout cache **plateaus ~10k (eviction works)** and the glyph atlas stays **1 page** — both
+  bounded. ⇒ the leak is **per `layout_text` (per `text_width` cache-MISS)**, which the
+  data_grid triggers ~4 800×/s by re-measuring every cell every frame for column auto-sizing.
+  Source-read every C object in vglyph's pango build path — `PangoLayout` (`g_object_unref`),
+  font descriptions (×2 sites), attr lists, the layout iter, tab arrays — **all free
+  correctly**, so it's a **subtle unfreed pango/glib allocation**, not an obvious missing
+  `free`. **NEXT — do this on WSL** (Windows profiling is a dead end: Dr. Memory 2.6 crashes
+  internally on Win11 build 26200; mingw/DWARF defeats the MSVC-symbol Windows tools):
+  `valgrind --leak-check=full --show-leak-kinds=all` (or `heaptrack`) on `mem_leak_grid` with
+  `MEM_REPRO=changing CANTESTER_RUN_MS=20000` → names the exact `pango_*_new`/`malloc` stack
+  with real symbols ⇒ a high-value **vglyph PR**. Mitigation (no root cause needed): make the
+  trace grid stop re-measuring unchanged cells (fixed/cached column widths). Repros:
+  `cmd/mem_leak_grid`, `cmd/mem_leak_canvas` (both `MEM_REPRO=changing|static`).
 - 🟡 **DOWNGRADED 2026-06-13 (was "🔴 DEFINITIVE libgallium" — REFUTED by a direct control).**
   The 2026-06-12 note below claimed the leak "IS the Mesa GL driver (`libgallium`) on the per-frame
   TEXTURED-draw path" — concluded from heaptrack symbols. That conclusion **does not survive a
