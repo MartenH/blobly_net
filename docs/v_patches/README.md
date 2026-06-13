@@ -29,6 +29,13 @@ layout, and `closure.reclaim_frames(2)` at the end of each `update()`. `keep=2` 
 previous frame's handlers. **Contract:** event handlers must be created per-frame in the view function
 (the immediate-mode norm); don't hoist one closure and reuse the same value across frames.
 
+## `gui-msaa-sample-count.patch` — gui (`window.v`)
+
+Adds a `sample_count` field to `WindowCfg` and forwards it to `gg.new_context` (sokol MSAA).
+`src/main.v` passes `sample_count: 4` to antialias the Graphics-panel polylines; without this patch the
+app fails to build (`unknown field 'sample_count'`). Default `1` (off) — inert for any app that doesn't
+set it.
+
 ## `autofree-boehm_leak-fixes.patch` — two `-autofree`/`-gc boehm_leak` codegen bugs
 
 Found while getting `-gc boehm_leak` to compile the GUI (the diagnostic that cracked the root cause).
@@ -62,6 +69,7 @@ git apply $P/autofree-boehm_leak-fixes.patch  # diagnostic-only codegen fixes
 ./v self                                       # rebuild the compiler
 cd ~/.vmodules/gui
 git apply $P/gui-closure-reclaim.patch         # gui side of the leak fix
+git apply $P/gui-msaa-sample-count.patch       # WindowCfg.sample_count (src/main.v needs it to build)
 ```
 
 ## Build a leak-profiling binary
