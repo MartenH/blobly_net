@@ -683,3 +683,19 @@ prompt for a password.
   verified in the GUI on sim-demo, ISO-TP frames visible in the Trace. Gotcha: gui.button labels
   need min/max_width + h_align .left or they render blank (the known centered-text bug) — that, not
   dock tabs, was why the first attempt showed an "empty" panel.
+- 2026-06-13: **MEMORY LEAK ROOT-CAUSED & FIXED — it was a V *closure* leak.** The long-running RSS
+  growth (data_grid / live trace) is **not** vglyph or conservative-GC false-retention (earlier
+  guesses, all retracted in `docs/known_issues.md`). Root cause: **V never reclaims a capturing
+  closure's context** (`memdup_uncollectable`, freed only for temporary closures), so vlang/gui —
+  which rebuilds capturing event-handler closures every frame — leaked them unboundedly. 20-line
+  repro: `docs/v_patches/closure_leak_repro.v`. **FIX = frame-epoch closure reclamation**: collectable
+  contexts + a GC-scanned table in V + `begin_frame_build`/`end_frame_build`/`reclaim_frames` API,
+  called once per frame in gui's `window_update.v`. Validated: live GUI 180 s went from unbounded
+  (live → 364 MB) to **bounded (46–126 MB, RSS plateaus ~401 MB)**; real app on sim-demo plateaus
+  ~318 MB. **⚠️ The fix lives in LOCAL patches to `~/v` and `~/.vmodules/gui`, NOT in this repo's
+  build** — captured in `docs/v_patches/*.patch`. **Do NOT `v up` / re-pin V or update gui without
+  re-applying them** (recipe: `docs/v_patches/README.md`); on a fresh box they must be re-applied to
+  get the leak-free build. Also fixed: `WindowCfg.sample_count` (gui MSAA — `src/main.v` needs it to
+  build) + two autofree/`-gc boehm_leak` codegen bugs. GitHub-ready upstream issue/PR drafts (V + gui)
+  in `docs/v_patches/UPSTREAM_*.md` — **NOT yet filed** (user will file manually). Full story +
+  the two failed fix attempts: `docs/known_issues.md` (Rendering stack, "ROOT CAUSE / ✅ FIXED").
