@@ -1,138 +1,170 @@
-# Upstream V issue/PR — capturing closures are never garbage-collected under `-gc boehm`
+# Upstream vlang/v — capturing closures leak their captured context under `-gc boehm`
 
-Draft text for an issue (and optional PR) against [vlang/v](https://github.com/vlang/v).
-Patches: `closure-gc-leak-fix.patch` (the fix), `closure_leak_repro.v` (the repro).
+Two pieces, ready to paste: a **GitHub Issue** (organized to V's bug-report form fields) and a **Pull
+Request** (title + body). Patch file: `closure-gc-leak-fix.patch`. Minimal repro: `closure_leak_repro.v`.
+
+> Conventions used here (verified against vlang/v): the bug report is a GitHub **issue form** whose
+> required fields are *Describe the bug · Reproduction Steps · Expected Behavior · Current Behavior ·
+> Possible Solution · Additional Information/Context · V version · Environment details*. PR/commit
+> titles are **`module: description`** (lowercase), e.g. `builtin: preserve array capacity ...`.
 
 ---
 
-## Title
+# ───────────────  ISSUE  ───────────────
 
-`-gc boehm`: capturing closures (`fn [x] () {}`) leak their captured context forever when stored
+## Describe the bug
 
-## Labels
+A closure that **captures** data (`fn [x] (...) { ... }`) never has its captured context reclaimed by
+the GC when the closure is **stored** (assigned to a variable, returned, kept in a collection, used as
+a struct-field event handler, …). Programs that create capturing closures repeatedly — most importantly
+any **immediate-mode GUI** that rebuilds handler closures every frame — grow in memory without bound.
 
-Bug, Memory, GC, Closures
+## Reproduction Steps
+
+Self-contained, runnable (`v run closure_leak.v`):
+
+```v
+module main
+
+fn main() {
+	for n in 0 .. 2_000_000 {
+		big := []int{len: 200, init: index + n} // ~1.6 KB heap array, new each iteration
+		// Capture `big` in a stored closure, use it once, drop it:
+		h := fn [big] (x int) int { return big[x % big.len] }
+		_ = h(n % 200)
+		if n % 400_000 == 0 {
+			gc_collect() // force a full collection so `live` = truly reachable memory
+			println('n=${n:8}  live=${gc_memory_use() / 1024 / 1024} MB')
+		}
+	}
+}
+```
+
+Control (no leak): replace the two closure lines with a direct read — `_ = big[n % 200]`.
+
+## Expected Behavior
+
+Both versions allocate the same `big` each iteration and drop it; after each `gc_collect()` the
+unreferenced arrays should be reclaimed, so `live` stays roughly flat (as it does for the control).
+
+```
+n=       0  live=0 MB
+n= 1600000  live=0 MB
+final       live=0 MB     # control (no closure)
+```
+
+## Current Behavior
+
+With the closure, `live` climbs **linearly to ~2 GB** and never plateaus (≈1 KB/iteration: the closure
+context plus the captured array it pins). The control is flat at ~0 MB.
+
+```
+n=       0  live=0 MB
+n=  800000  live=805 MB
+n= 1600000  live=1611 MB
+final       live=2014 MB  # with closure
+```
+
+## Possible Solution
+
+The captured context is allocated **uncollectable** and only reclaimed for closures the codegen treats
+as temporary:
+
+- `vlib/v/gen/c/fn.v` emits `builtin__memdup_uncollectable(...)` for the context — memory the GC never
+  collects.
+- It is freed only by `closure_try_destroy`, which `fn.v` emits **only for temporary closures passed
+  straight into a call** (~line 2437). Stored closures are never destroyed → their context leaks for
+  the process lifetime. (Separately, `closure_try_destroy` calls `free()`, which is a **no-op under
+  `-gc boehm`**, so even that path only reclaimed the trampoline slot, not the context.)
+
+Proposed fix (see the linked PR): allocate the context **collectably** (`memdup`) and keep each live
+closure's context reachable via a GC-scanned table, so it's collected once the closure is gone; add an
+opt-in frame-epoch reclamation API (`begin_frame_build`/`end_frame_build`/`reclaim_frames`) for
+long-running frame-based apps (an immediate-mode GUI calls it once per frame). Non-frame programs behave
+exactly as today.
+
+## Additional Information/Context
+
+Found while building a long-running GUI on vlang/gui: per-frame event-handler closures leaked ~1.3 MB/s
+unbounded. Bisected to this with the SSCCE above (closure leaks; identical array churn without a closure
+is flat). The fix takes the GUI's `live` from a linear climb (→ 364 MB / 4 min) to bounded (46–126 MB).
+
+Two simpler fixes were tried and **fail** (documented so they aren't re-suggested):
+1. Have the app `GC_FREE` the context via `closure_try_destroy` → **double-free** when transient
+   closure pointers are shared/duplicated (an explicit free can't be made idempotent here).
+2. Make the context collectable and register the trampoline pages as GC roots (`GC_add_roots`) →
+   **premature free** in a real app, because Boehm's `GC_MAX_ROOT_SETS` silently stops registering
+   after enough pages, so later contexts go unscanned and are collected mid-use.
 
 ## V version
 
-`v 0.5.1 4dbcba6` (Linux/x86-64, `-gc boehm`, the default).
+`V 0.5.1 4dbcba6` (built from source). *(Run `v version` / `v up` to fill in for the real submission.)*
 
-## What happens
+## Environment details (OS name and version, etc.)
 
-A closure that **captures** data (`fn [captured] (...) { ... }`) never has its captured-context
-reclaimed by the GC. Programs that create capturing closures repeatedly — most importantly any
-**immediate-mode GUI** that rebuilds event-handler closures every frame — grow in memory without bound.
+Linux x86-64 (WSL2, Ubuntu 24.04), `-gc boehm` (default), `cc gcc`. *(Run `v doctor` for the real
+submission.)*
 
-## Minimal reproduction
+---
 
-```v
-// closure_leak.v  —  run: v -path . run closure_leak.v
-module main
+# ───────────────  PULL REQUEST  ───────────────
 
-import os
+## Title
 
-fn rss_mb() int {
-	s := os.read_file('/proc/self/status') or { return -1 }
-	for line in s.split_into_lines() {
-		if line.starts_with('VmRSS:') {
-			return line.fields()[1].int() / 1024
-		}
-	}
-	return -1
-}
-
-fn main() {
-	noclo := os.getenv('NOCLO') != ''
-	mut sink := 0
-	for n in 0 .. 2_000_000 {
-		big := []int{len: 200, init: index + n} // ~1.6 KB heap array
-		if noclo {
-			sink += big[n % big.len] // control: same array, NO closure
-		} else {
-			h := fn [big] (x int) int { return big[x % big.len] } // captures big
-			sink += h(n % 200) // use + drop
-		}
-		if n % 400_000 == 0 {
-			gc_collect()
-			println('n=${n:8} live=${gc_memory_use() / 1024 / 1024}MB RSS=${rss_mb()}MB')
-		}
-	}
-	println('final live=${gc_memory_use() / 1024 / 1024}MB')
-}
+```
+builtin: collect captured closure contexts under -gc boehm (fix unbounded stored-closure leak)
 ```
 
-Results:
+*(Touches `vlib/builtin/closure/closure.c.v` and `vlib/v/gen/c/fn.v`; `builtin` is the primary module.)*
 
-| run | `live` (GC heap, post-`gc_collect`) |
-|-----|--------------------------------------|
-| default (closure)   | **0 → ~2 GB, linear** |
-| `NOCLO=1` (control) | **flat at ~0 MB** |
+## Body
 
-The captured array is collected fine on its own; only the version that wraps it in a closure leaks.
-So it is the closure **context** that is never freed, not the captured data.
+### Problem
 
-## Root cause
+Capturing closures (`fn [x] (...)`) leak their captured context whenever the closure is stored, under
+the default `-gc boehm`. `gen/c/fn.v` allocates the context with `memdup_uncollectable`, and the only
+reclaimer — `closure_try_destroy` — is emitted only for temporary closures (and used `free()`, a no-op
+in boehm mode, so it didn't free the context anyway). Minimal repro / measurements: see the linked
+issue (closure → `live` 0→2 GB; identical array churn without a closure → flat).
 
-`vlib/v/gen/c/fn.v` allocates each closure's captured context with `memdup_uncollectable`
-(`GC_MALLOC_UNCOLLECTABLE`) — memory the Boehm GC never collects:
+### Fix
 
-```v
-g.write('builtin__closure__closure_create(${fn_name}, (${ctx_struct}*) builtin__memdup_uncollectable(...)')
-```
+Make the context **collectable** and keep it reachable through a GC-scanned table while the closure is
+live; reclaim it by clearing the trampoline slot and dropping the table entry (no explicit free).
 
-It is reclaimed only by `closure_try_destroy` (`vlib/builtin/closure/closure.c.v`), which the codegen
-emits **only for temporary closures passed straight to a call and immediately discarded**
-(`fn.v` ~line 2437). Closures that are **stored** (assigned to a struct field, returned, kept in a
-collection — e.g. UI event handlers) are never destroyed, so their uncollectable context leaks for the
-lifetime of the process.
-
-(Note: `closure_try_destroy` itself also does not actually free under `-gc boehm` — it calls `free()`,
-which is a no-op in boehm mode, so even the temporary path only reclaimed the *slot*, not the context.)
-
-## Proposed fix (PR `closure-gc-leak-fix.patch`)
-
-Make closure contexts **collectable** and keep each live closure's context reachable through a
-GC-scanned table, then add an opt-in **frame-epoch** reclamation API for long-running frame-based apps:
-
-- `gen/c/fn.v`: `memdup_uncollectable` → `memdup` (collectable context).
+- `gen/c/fn.v`: `memdup_uncollectable` → `memdup`.
 - `vlib/builtin/closure/closure.c.v`:
-  - `g_closure_live map[voidptr]ClosureLiveInfo` — maps each live closure to `{ctx, frame}`. The `ctx`
-    pointer stored in the GC-scanned map value keeps the (now collectable) context alive while the
-    closure lives; the trampoline slot that also points at it lives in an mmap page the GC does not
-    scan, so this table is what makes collectable contexts safe.
-  - `closure_create` inserts into the table; `closure_try_destroy` removes from it and returns the slot
-    to the free list (no `GC_FREE` → idempotent, can never double-free; the GC reclaims the context).
-  - New API:
-    - `begin_frame_build()` / `end_frame_build()` — frame-stamp closures created during a frame's view
-      build. Closures created outside this window (app setup, event handlers) get a sentinel frame and
-      are never auto-reclaimed.
-    - `reclaim_frames(keep u32)` — reclaim every frame-stamped closure created `keep`+ frames ago.
-    - `try_destroy(c voidptr)` — reclaim one closure immediately (also exposed publicly).
-    - `live_count() int` — introspection.
+  - `g_closure_live map[voidptr]ClosureLiveInfo` (`{ctx, frame}`). The `ctx` in the GC-scanned map
+    value keeps the collectable context alive while the closure lives (the trampoline slot that also
+    points at it is in an mmap page the GC doesn't scan).
+  - `closure_create` inserts; `closure_try_destroy` removes + returns the slot to the free list — **no
+    `GC_FREE`**, so it's idempotent and can never double-free; the GC reclaims the context.
+  - New (public, `@[markused]`) API: `try_destroy(c)`, `begin_frame_build()`, `end_frame_build()`,
+    `reclaim_frames(keep u32)`, `live_count()`. Closures created outside a `begin/end_frame_build`
+    window get a sentinel frame and are never auto-reclaimed (so app-setup/event-handler closures are
+    untouched).
 
-This keeps non-frame programs behaving exactly as before (closures still "leak" if never reclaimed,
-since nothing calls the new API — but now via a collectable table rather than uncollectable memory),
-while giving immediate-mode UIs a way to bound closure memory. See the companion vlang/gui change.
+### Why not simpler
 
-### Why not simpler approaches (both tried, both fail)
+- `closure_try_destroy` + real `GC_FREE`, called by the app → **double-free** with shared transient
+  closures (no idempotent explicit free).
+- collectable + per-page `GC_add_roots` → **premature free** (`GC_MAX_ROOT_SETS` cap drops later page
+  roots). The table+epoch design avoids both.
 
-1. **`closure_try_destroy` + `GC_FREE` it from the app** — works in isolation but **double-frees**
-   ("Duplicate large block deallocation") when an app shares/duplicates transient closure pointers; an
-   explicit free can't be made idempotent here.
-2. **Collectable context + register the trampoline pages as GC roots (`GC_add_roots`)** — works on the
-   repro but **premature-frees** in a real app (crash in a sort comparator's closure), because Boehm's
-   `GC_MAX_ROOT_SETS` silently stops registering after enough pages, so later contexts aren't scanned.
+### Compatibility / risk
 
-The table approach avoids both (no explicit free → no double-free; one GC-scanned map → no roots cap).
+- Programs that never call the new API behave as before (closures still aren't auto-reclaimed, but now
+  via a collectable table instead of uncollectable memory — same order of memory, no behavior change).
+- Per-closure cost: one map insert on create / delete on destroy (under the existing closure mutex).
+- The bootstrap-sensitive thunk byte-tables are untouched; `v self` rebuilds cleanly.
 
-## Validation
+### Validation
 
-- Repro above: `live` 2 GB → **0** with reclamation.
-- Closure correctness (sort comparators, `map`/`filter`, captured-string closures invoked in a loop,
-  double/triple `try_destroy`) unchanged.
-- Real immediate-mode GUI (vlang/gui data_grid, 180 s / 3400 frames): unbounded live (→ 364 MB) →
-  **bounded (46–126 MB)**, RSS plateaus.
-- `v self` rebuilds; the bootstrap-sensitive closure thunk tables are untouched.
+- SSCCE: `live` 2 GB → 0 with reclamation.
+- Closure correctness unchanged: sort comparators, `map`/`filter`, captured-string closures invoked in
+  a loop, and double/triple `try_destroy` all pass.
+- Companion vlang/gui change (one call per frame in `Window.update()`): a live `data_grid`
+  (180 s / 3400 frames) goes from unbounded `live` (→ 364 MB) to bounded (46–126 MB), RSS plateaus.
 
-Happy to open the PR if the maintainers are OK with the API shape (or adapt it — e.g. fold
-`begin/end_frame_build` into a single `set_frame(u32)`).
+Open to reshaping the API (e.g. a single `set_frame(u32)` instead of `begin/end_frame_build`) if
+preferred.
