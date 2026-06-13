@@ -1,0 +1,45 @@
+diff --git a/window_update.v b/window_update.v
+index 63e5c19..542848f 100644
+--- a/window_update.v
++++ b/window_update.v
+@@ -8,6 +8,7 @@ module gui
+ //   run SVG offscreen filter passes -> draw swapchain pass.
+ // - Locking: layout/renderer rebuild runs under window lock.
+ import log
++import builtin.closure
+ import sokol.sapp
+ 
+ // frame_fn is the only place where the window is rendered.
+@@ -80,6 +81,15 @@ fn (mut window Window) update() {
+ 	clip_rect := window.window_rect()
+ 	background_color := window.color_background()
+ 
++	// Frame-epoch closure reclamation: V allocates each capturing closure's
++	// context in a GC table that pins it for the closure's lifetime, but cannot
++	// know when a stored UI handler dies. Immediate mode rebuilds every handler
++	// each frame, so closures created two+ frames ago are dead. Mark the view
++	// build so only closures created here are eligible for reclamation (app-setup
++	// and event-handler closures are left alone); reclaim_frames below frees them.
++	// Without this, every per-frame handler leaks its captured context.
++	closure.begin_frame_build()
++
+ 	mut view := window.view_generator(window)
+ 	$if !prod {
+ 		if window.inspector_enabled {
+@@ -91,11 +101,16 @@ fn (mut window Window) update() {
+ 	}
+ 	layout_clear(mut window.layout)
+ 	window.layout = window.compose_layout(mut view)
++	closure.end_frame_build()
+ 	window.build_renderers(background_color, clip_rect)
+ 	window.unlock()
+ 	//--------------------------------------------
+ 
+ 	view_clear(mut view)
++	// Reclaim closures created 2+ frames ago. keep=2 protects the just-built
++	// frame and the previous one (which may still be the live/dispatched tree
++	// until this update is committed).
++	closure.reclaim_frames(2)
+ 	window.stats.update_max_renderers(usize(window.renderers.len))
+ }
+ 
