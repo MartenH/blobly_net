@@ -269,12 +269,27 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
       flat + double-destroy-safe on the repro, but the real app **premature-frees** (crash in
       `v_stable_sort`'s comparator closure) — almost certainly Boehm's `GC_MAX_ROOT_SETS` cap
       silently dropping later page roots, so some contexts aren't scanned and get collected mid-use.
-  - **Status:** root cause is **definitive and minimal** (the 20-line repro). A correct fix needs
-    proper closure-slot↔GC integration in V (e.g. a finalized closure handle, or one persistent GC
-    root region the slab grows within, instead of per-page `GC_add_roots`), plus making gui reclaim
-    per-frame handlers in a pooling-safe way. That is the upstream V/gui contribution to pursue.
-    Kept locally: the two **autofree/`boehm_leak` codegen fixes** (in `docs/v_patches/`); the closure
-    experiments were reverted (V + gui are clean) since neither was production-safe yet.
+  - **✅ FIXED 2026-06-13 — frame-epoch closure reclamation.** Two earlier V-side attempts failed
+    (GC_FREE → double-free with gui's transient sharing; collectable + per-page `GC_add_roots` →
+    premature free, `GC_MAX_ROOT_SETS`). The working fix (`docs/v_patches/closure-gc-leak-fix.patch`
+    + `gui-closure-reclaim.patch`):
+    - **V:** closure contexts are now **collectable** (`memdup`), kept reachable for the GC via a
+      scanned table `g_closure_live` (so a live closure's context is never collected). New API:
+      `closure.begin_frame_build()`/`end_frame_build()` (frame-stamp closures created during a view
+      build) and `closure.reclaim_frames(keep)` (drop everything `keep`+ frames old — clears the
+      trampoline slot + the GC ref, no `GC_FREE`, so it's idempotent and can never double-free).
+      Closures created outside a view build (app setup, event handlers) get a sentinel frame and are
+      never auto-reclaimed.
+    - **gui:** `window_update.v` calls `begin_frame_build()` → generate view → `end_frame_build()` →
+      … → `reclaim_frames(2)` each `update()`. `keep=2` protects the current + previous frame's
+      handlers. Contract: handlers must be created per-frame (immediate-mode norm).
+    - **Validated:** data_grid headless went 3 GB → 0; the live GUI over 180 s / 3400 frames now has a
+      **flat closure table (~2258)**, **bounded `live` (46–126 MB)** and **RSS plateaus (~401 MB)** —
+      vs the unfixed linear climb (live → 364 MB, RSS → 803 MB). Closure correctness (sort/map/filter/
+      captured, double-destroy) intact; no closure-test regression. Minimal repro:
+      `docs/v_patches/closure_leak_repro.v`.
+    - These are **upstream candidates for V + vlang/gui** (the leak hits any immediate-mode V GUI).
+      Also kept: the two autofree/`boehm_leak` codegen fixes (`docs/v_patches/`).
   - **Mitigations (unchanged, all real):** lower trace fps; fewer unique strings (e.g. fewer
     timestamp decimals); Pause/Stop; cache/freeze column widths so the grid stops re-measuring.
   - **Windows caveat:** commit da3f79a called the Windows leak "C-side, survives `gc_collect`"

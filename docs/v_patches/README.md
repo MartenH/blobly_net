@@ -1,10 +1,39 @@
-# Local V compiler patches (upstream candidates)
+# Local V + gui patches (upstream candidates)
 
-Patches applied to the local V install (`~/v`, pinned at `4dbcba6` / reports `0.5.1`) while hunting
-the data_grid memory leak (see `docs/known_issues.md` → Rendering stack, 2026-06-13). They fix two
-real V codegen bugs in the **autofree / `-gc boehm_leak`** path. **Both are inert for our normal
-build** (`scripts/run.sh` uses the default `-gc boehm`, which does not run autofree scope-cleanup),
-so they only matter when you want a leak-profiling build.
+Patches found/applied while hunting **and fixing** the data_grid memory leak (see
+`docs/known_issues.md` → Rendering stack, 2026-06-13). Three patches:
+
+## `closure-gc-leak-fix.patch` — THE LEAK FIX (V: `closure.c.v` + `gen/c/fn.v`)
+
+Fixes the root cause: **V never reclaimed captured closure contexts** (allocated `memdup_uncollectable`,
+freed only for temporary closures), so an immediate-mode GUI that rebuilds capturing event handlers
+every frame leaked them unboundedly. The fix makes closure contexts **collectable** and keeps each live
+closure's context reachable via a GC-scanned table (`g_closure_live`), and adds a **frame-epoch
+reclamation** API:
+- `closure.begin_frame_build()` / `end_frame_build()` — mark a frame's view build; only closures
+  created in that window are eligible for reclamation (app-setup / event-handler closures are left
+  alone).
+- `closure.reclaim_frames(keep)` — reclaim closures created `keep`+ frames ago (clears the trampoline
+  slot, drops the GC ref → the GC collects the context). Idempotent; never double-frees.
+- `closure.try_destroy(c)` — reclaim one closure immediately (still used by V for temporaries).
+
+Apply with `gui-closure-reclaim.patch` (gui calls begin/end/reclaim per frame). Validated: the
+data_grid leak goes from **unbounded (live → 364 MB / 3 GB headless)** to **bounded** (live ~50–126 MB,
+closure table flat, RSS plateaus); closure correctness (sort/map/filter/captured) intact. Minimal
+repro: `closure_leak_repro.v`.
+
+## `gui-closure-reclaim.patch` — gui side (`window_update.v`)
+
+Calls `closure.begin_frame_build()` before generating the view, `end_frame_build()` after composing the
+layout, and `closure.reclaim_frames(2)` at the end of each `update()`. `keep=2` protects the current and
+previous frame's handlers. **Contract:** event handlers must be created per-frame in the view function
+(the immediate-mode norm); don't hoist one closure and reuse the same value across frames.
+
+## `autofree-boehm_leak-fixes.patch` — two `-autofree`/`-gc boehm_leak` codegen bugs
+
+Found while getting `-gc boehm_leak` to compile the GUI (the diagnostic that cracked the root cause).
+**Inert for the normal build** (`scripts/run.sh` uses default `-gc boehm`, which doesn't run autofree
+scope-cleanup).
 
 ## `autofree-boehm_leak-fixes.patch`
 
@@ -26,9 +55,13 @@ Two independent fixes (both needed before `v -gc boehm_leak` will compile the GU
 ## Reapply (after any V rebuild / re-pin)
 
 ```sh
+P=/home/mahi/repos/cantester_v/docs/v_patches
 cd ~/v
-git apply /home/mahi/repos/cantester_v/docs/v_patches/autofree-boehm_leak-fixes.patch
-./v self          # rebuild the compiler
+git apply $P/closure-gc-leak-fix.patch        # THE leak fix (V side)
+git apply $P/autofree-boehm_leak-fixes.patch  # diagnostic-only codegen fixes
+./v self                                       # rebuild the compiler
+cd ~/.vmodules/gui
+git apply $P/gui-closure-reclaim.patch         # gui side of the leak fix
 ```
 
 ## Build a leak-profiling binary
