@@ -50,8 +50,11 @@ cflags=$(pkgconf --cflags $libs)
 ldflags="$(pkgconf --libs $libs) -ld3d11 -ldxgi"
 
 mkdir -p "$(dirname "$out")"
-/c/dev/v/v.exe -cc gcc $dbg -path '@vlib|@vmodules|modules' \
+# -enable-globals: main.v imports the in-proc bus (transport/inproc.v __global).
+/c/dev/v/v.exe -cc gcc -enable-globals $dbg -path '@vlib|@vmodules|modules' \
   -cflags "$cflags" -ldflags "$ldflags" -o "$out" "$target"
 
 echo "BUILD OK -> $out"
-[ "$run" -eq 1 ] && exec "./$out"
+# Use `if` (not `[ ] && …`): a false test as the script's last command would make
+# `set -e` exit non-zero on a *successful* build when -run is absent.
+if [ "$run" -eq 1 ]; then exec "./$out"; fi
