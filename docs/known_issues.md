@@ -148,6 +148,140 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
   with real symbols ⇒ a high-value **vglyph PR**. Mitigation (no root cause needed): make the
   trace grid stop re-measuring unchanged cells (fixed/cached column widths). Repros:
   `cmd/mem_leak_grid`, `cmd/mem_leak_canvas` (both `MEM_REPRO=changing|static`).
+- 🟠 **UPDATE 2026-06-13 (WSL valgrind+heaptrack hunt) — the leak is GC-managed V memory, NOT a
+  nameable C/pango `free()`. The "valgrind will name a `pango_*_new` line" premise is REFUTED.**
+  Ran the requested `valgrind --leak-check=full` and `heaptrack` on `cmd/mem_leak_grid`
+  (`MEM_REPRO=changing`) plus direct RSS / `gc_memory_use()` / `/proc/<pid>/smaps` instrumentation.
+  Findings, each independently cross-checked:
+  - **It IS a real, unbounded leak on Linux/WSL** (refines the 2026-06-13 "doesn't reproduce"
+    downgrade above — that was too few samples). Direct RSS climbs ~2–4 MB/s; over 185 s the
+    `gc_memory_use()` **floor** rises monotonically (≈55→350 MB troughs) and keeps going — and it
+    **survives a forced `gc_collect()` every 2 s** (51→221 MB at 90 s), so the retained memory is
+    genuinely **reachable**, not GC lag.
+  - **It is GC-managed V memory, not libc/C malloc.** `smaps` diff (early vs late): the **only**
+    growing mapping is `[anon]` (+137 MB); `[heap]` (libc) is **flat**, and the `[anon]` growth
+    tracks `gc_memory_use` (boehm heap) 1:1. heaptrack (which only sees libc malloc, not boehm's
+    `GC_malloc`) confirms: leaked-allocation **count is flat** (~25 200 whether 10 s/396 frames or
+    30 s/1481 frames) and a 30 s−10 s leak **diff is +9.7 KB total** (~0.5 KB/s). valgrind agrees:
+    its only growing bucket is **"possibly lost"** (15.9 MB — boehm blocks reached via interior
+    pointers); **"still reachable" 22.8 MB / 12 009 blocks ≈ the bounded layout cache** (below).
+  - **The vglyph layout cache is correctly BOUNDED and IRRELEVANT.** Instrumented `ts.cache.len`:
+    it plateaus at ~12 000 (age-eviction works). Dropping `eviction_age` 5000→1000 ms shrank the
+    cache ~5× (≈2 580) but the **leak rate was unchanged** ⇒ the leak is **independent of cache
+    size** — it accrues **per unique rendered string** (~600 B each, retained for process life),
+    *outside* the cache, at layout-create/draw time. Clearing the evicted `CachedLayout.layout`
+    before `delete` did **not** help (confirms it's not the cached Layout arrays being retained).
+  - **Pure-V can't reproduce it ⇒ it's intrinsic to the real Pango+render path.** A minimal
+    `map[u64]&Big` churn (12 000-deep window, fresh heap object/iter, even with embedded `voidptr`/
+    C-pointer members and interior-pointer-rich arrays to mimic `Layout`/`Item`) is **FLAT** at
+    13–31 MB over 5.8 M iterations. So it is **not** generic boehm/map-churn or conservative-GC
+    false-retention — it requires the real `vglyph` glyph **render** path (reaffirms the 2026-06-07
+    "vglyph renderer, not Pango layout, not the GL driver" diagnosis).
+  - **The ONE real C leak valgrind found is one-time startup**, not the climb: 424 KB / 742 blocks
+    `definitely lost` in `gui.initialize_fonts → vglyph.add_font_file → pango_fc_font_map_cache_clear
+    → FcFontSetList` (fontconfig font-set not freed at init). Worth a tiny upstream fix, but it
+    fires **once** and does not grow.
+  - **`-gc boehm_leak` now builds — and says the memory is REACHABLE, not unreachable-leaked.**
+    `v -gc boehm_leak` is the right tool (boehm find-leak + allocation backtraces; the local libgc
+    *does* have `KEEP_BACK_PTRS`), but it failed to compile this GUI code via **two real V autofree
+    codegen bugs** that also break plain `-autofree` — both **fixed locally in `~/v`** (see below).
+    With those fixed, the boehm_leak build runs and reports **~0 unreachable-leaked objects at any
+    runtime** (3 s and 9 s both → 0; only ~20 one-time startup bits like `gui__init`/
+    `locale_register`) **while RSS still grows ~2 MB/s**. So the growth is **reachable to the GC**
+    (matches "survives forced `gc_collect`") — no missing `free()`/`delete` will reach it.
+  - **It is NOT interior-pointer false-retention** (`GC_ALL_INTERIOR_POINTERS=0` → +132 MB vs +127
+    MB, no change), and the back-graph height is tiny (1–4 back-edges) ⇒ retained via **short,
+    full-pointer chains** (≈1–2 hops from a root). Two candidate readings remain, both fit the data
+    (reachable, full-ptr, short chain, per-unique-content with `static` flat, pure-V can't repro):
+    (a) **conservative-GC false-retention** — stray heap/stack bit patterns (some f64 / glyph data /
+    coords) alias live allocation base addresses and pin dead per-string Layout/render allocations;
+    (b) a **genuine retained reference inside the C render state that boehm conservatively scans**
+    (gg/sokol/Pango buffers holding a V pointer per draw). Pure-V churn can't reproduce it, so it
+    needs the real Pango+`gg`/sokol render path either way. Both are **GC-precision / render-path**
+    problems, **not a missing `free()`** — so the lever is reducing unique per-frame render work, not
+    a deletion. Distinguishing (a) vs (b) needs the live-allocation/root dump noted below.
+  - **Two V compiler bugs found+fixed (upstream candidates, in `~/v`, zero effect on normal
+    `-gc boehm` builds — the changed code only runs under `-autofree`/`-gc boehm_leak`):**
+    1. `parser/assign.v` — `x := f() or {…}`'s `is_or` flag (which tells autofree to skip the var,
+       since C declares it *after* the `or` block) was set only under `pref.autofree`, not under
+       `boehm_leak` (which also does scope-cleanup) → `free(&x)` emitted inside `x`'s own `or` block
+       (`'result'/'head'/'new_text' undeclared`). Fix: also set it when `gc_mode == .boehm_leak`.
+    2. `gen/c/autofree.v` — an early `return`/`continue` mid-scope freed vars declared *later* in the
+       same scope (e.g. `vglyph.GlyphAtlas.grow_page`'s `new_staging_*`: `'new_staging_back'
+       undeclared`). Fix: thread the cleanup position (`cur_pos`) into `autofree_scope_vars2` and
+       skip any var with `obj.pos.pos > cur_pos`. (This one fixes plain `-autofree` too.)
+  - **BISECTION (2026-06-13, `cmd/mem_leak_grid` via env-gated vglyph stubs + forced-GC `live=`
+    probe, 30 rows / 30 s):** localized the leak by disabling render path stages one at a time:
+    | variant | what runs | live MB growth/30s |
+    |---|---|---|
+    | baseline | full | **+90** |
+    | no-draw (skip `renderer.draw_layout`) | layout build+cache, **no glyph render** | **+90 (identical)** |
+    | no-layout (stub `text_width`/`draw_text`, no Pango) | gui tree machinery only | **+34** |
+    | empty-layout (cache churn, `Layout{}` instead of Pango build) | cache, no build | +51 |
+    | zero-evict (vmemset the evicted Layout's array backings) | full + zero on evict | **+90 (no change)** |
+    Conclusions: **(1)** glyph rendering is NOT the leak (no-draw == baseline) — *refutes the
+    2026-06-07 "vglyph renderer" diagnosis*. **(2)** It splits ~⅔ `text layout-build` (`layout_text`)
+    + ~⅓ `gui per-frame tree machinery` (present even with all text stubbed). **(3)** It is NOT the
+    *cached* Layout being stale-retained — zeroing evicted layout backings changed nothing. **(4)** It
+    scales with row count (1→40 rows: +11→+105 MB) ⇒ per-rendered-cell.
+  - **Verdict — conservative-GC retention of per-frame churn, not one freeable line.** On 64-bit,
+    false-retention from *numeric data* is implausible, so this is **stale real pointers in
+    churned/reused backing memory** that boehm scans — *exactly* the class gui's `gc.v` documents and
+    fights (`array_clear`/`layout_clear`/`view_clear` zero backing because V's `.clear()` leaves stale
+    pointers; there's even a `_gc_lint_test.v` enforcing it **for gui files only**). The residual leak
+    is the transient pointer churn inside `vglyph.layout_text` (Pango iteration → per-run arrays/
+    strings/hit-test rects, **no zeroing discipline in vglyph**) plus gui-tree-build churn. So it is
+    **fixable only by pervasively applying the zero-on-free discipline through the hot path**
+    (whack-a-mole), *not* by adding a single `free()`/`delete`. This is the structural tax of V's
+    conservative Boehm GC under an immediate-mode GUI redrawing unique content every frame — the gui
+    author building dedicated anti-false-retention tooling is itself evidence it's an ongoing battle in
+    this stack, not a one-off bug.
+- 🟢 **ROOT CAUSE NAILED 2026-06-13 — it is a V *closure* leak, not generic conservative-GC
+  retention. (Supersedes the "whack-a-mole / structural tax" verdict above.)** Bisected with a
+  fast headless harness (driving `gui.data_grid()` in a loop, no window — reproduces the leak at
+  ~50 KB/call, linear to 3 GB) plus minimal isolations:
+  - **`vglyph` is fully exonerated**: `Context.layout_text` in a loop is flat (RSS 17 MB/360k
+    calls); real layouts churned through a bounded age-evicted cache plateau (~261 MB/1.6M).
+  - A plain `column` of 30 `text()` rows is **flat**; the data_grid leaks. The one thing the
+    data_grid does that text doesn't: it builds **23+ capturing closures per call** (event
+    handlers; one captures the whole `rows` array).
+  - **Minimal 20-line repro:** a loop creating `h := fn [big] (...)` that captures a heap array and
+    dropping it → **live grows 0→2 GB linearly**; the identical loop *without* the closure is
+    **dead flat**. ⇒ **a V closure that captures data is never reclaimed by the GC.**
+  - **Mechanism (V source):** `gen/c/fn.v` allocates each closure's captured context with
+    `memdup_uncollectable` (`GC_MALLOC_UNCOLLECTABLE`) — memory the GC never frees. It is reclaimed
+    only by `closure_try_destroy` (`vlib/builtin/closure/`), which V emits **only for temporary
+    closures passed straight to a call**, never for **stored** closures (gui event handlers in the
+    view/Shape tree). So every per-frame stored closure permanently leaks its context, which roots
+    its captured data. Confirmed: switching the context to collectable `memdup` drops the data_grid
+    headless leak from **3 GB → 0**.
+  - **Two V-side fixes were prototyped; both hit real Boehm walls (so the proper fix is a non-trivial
+    V-runtime project, captured for upstream):**
+    1. **`closure_try_destroy` + `GC_FREE` + gui calls it in `layout_clear`.** Validated *flat* on the
+      minimal repro (single- and multi-threaded). But in the real gui it **double-frees**
+      ("Duplicate large block deallocation") — gui pools/reuses `Layout`/`Shape` objects
+      (`scratch_pools.v`), so a stale closure pointer can be destroyed after its slot was reused.
+      (A second bug found+fixed en route: plain `free()` is a **no-op under `-gc boehm`** —
+      `allocation.c.v` only frees under `gcboehm_leak` — so `closure_try_destroy` never actually
+      freed; it must `GC_FREE`.)
+    2. **Collectable context + register the trampoline pages as GC roots (`GC_add_roots`) +
+      `try_destroy` clears the slot only (no `GC_FREE`, so double-free is impossible).** Validated
+      flat + double-destroy-safe on the repro, but the real app **premature-frees** (crash in
+      `v_stable_sort`'s comparator closure) — almost certainly Boehm's `GC_MAX_ROOT_SETS` cap
+      silently dropping later page roots, so some contexts aren't scanned and get collected mid-use.
+  - **Status:** root cause is **definitive and minimal** (the 20-line repro). A correct fix needs
+    proper closure-slot↔GC integration in V (e.g. a finalized closure handle, or one persistent GC
+    root region the slab grows within, instead of per-page `GC_add_roots`), plus making gui reclaim
+    per-frame handlers in a pooling-safe way. That is the upstream V/gui contribution to pursue.
+    Kept locally: the two **autofree/`boehm_leak` codegen fixes** (in `docs/v_patches/`); the closure
+    experiments were reverted (V + gui are clean) since neither was production-safe yet.
+  - **Mitigations (unchanged, all real):** lower trace fps; fewer unique strings (e.g. fewer
+    timestamp decimals); Pause/Stop; cache/freeze column widths so the grid stops re-measuring.
+  - **Windows caveat:** commit da3f79a called the Windows leak "C-side, survives `gc_collect`"
+    (+460 MB/8 min). That was inferred from **RSS** — but boehm never returns freed pages to the OS,
+    and the GC heap is anonymous (looks "C-side" in a process monitor), so RSS can't tell GC-heap
+    growth from a true C leak. **Re-measure Windows with `gc_memory_use()` (live, post-`gc_collect`),
+    not RSS**, before concluding it's a different (C) leak — on Linux the same symptom is GC memory.
 - 🟡 **DOWNGRADED 2026-06-13 (was "🔴 DEFINITIVE libgallium" — REFUTED by a direct control).**
   The 2026-06-12 note below claimed the leak "IS the Mesa GL driver (`libgallium`) on the per-frame
   TEXTURED-draw path" — concluded from heaptrack symbols. That conclusion **does not survive a
