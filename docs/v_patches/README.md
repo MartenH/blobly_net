@@ -3,6 +3,11 @@
 Patches found/applied while hunting **and fixing** the data_grid memory leak (see
 `docs/known_issues.md` → Rendering stack, 2026-06-13). Three patches:
 
+> **Design note:** `RFC_closures.md` argues the *end-state* fix — make V closures GC-visible (fat
+> `{fn, …captures}` values; trampoline synthesised only at the C-FFI boundary, à la Go/Rust), which
+> eliminates the stored×high-churn leak class structurally and removes the manual reclaim API below.
+> The patches here are the **interim** fix that works under the current closure ABI.
+
 ## `closure-gc-leak-fix.patch` — THE LEAK FIX (V: `closure.c.v` + `gen/c/fn.v`)
 
 Fixes the root cause: **V never reclaimed captured closure contexts** (allocated `memdup_uncollectable`,
@@ -28,6 +33,28 @@ Calls `closure.begin_frame_build()` before generating the view, `end_frame_build
 layout, and `closure.reclaim_frames(2)` at the end of each `update()`. `keep=2` protects the current and
 previous frame's handlers. **Contract:** event handlers must be created per-frame in the view function
 (the immediate-mode norm); don't hoist one closure and reuse the same value across frames.
+
+**Drag guard (2026-06-14):** reclamation is **skipped while `window.mouse_is_locked()`** (an in-progress
+drag — splitter, scrollbar, slider, dock-redock, text-select). During a drag gui stores the *mousedown
+frame's* captured callbacks in `view_state.mouse_lock` and keeps invoking them across the rebuilds the
+drag triggers; those callbacks capture per-frame state (e.g. a `SplitterCore` whose `on_change` is a
+per-frame dock closure). Without the guard, `reclaim_frames(2)` frees that still-live closure after 2
+frames, so the next drag event calls a **NULL fn pointer** → crash (it surfaced as a *bogus*
+`v_stable_sort` backtrace; the real fault is `view_splitter.v:560 core.on_change`). The few frames'
+closures that pile up during a short drag are reclaimed on the first idle frame after mouse-up.
+
+## `vglyph-empty-outline.patch` — vglyph (`glyph_atlas.v`)
+
+`load_glyph` required a vector outline (`glyph.outline.n_points > 0`) before `FT_Outline_Translate`. An
+**empty outline is legal** — whitespace (space), and any glyph the font has no outline for (a colour
+emoji loaded as a bitmap, or a missing glyph). The original code **panicked in debug** and, in
+**release** (`$if debug` compiled out), fed the empty outline to `FT_Outline_Translate`/`FT_Render_Glyph`
+→ memory corruption / `invalid memory access` (again a misleading `v_stable_sort` backtrace). The patch
+guards the translate/render on `n_points > 0` and reloads an empty-outline glyph as a direct (empty)
+bitmap, which the existing zero-size-bitmap branch handles. This is the Linux counterpart of the
+Windows-build "patch #4" (`docs/windows_build.md`) — apply it on Linux too. **App rule (see
+`docs/known_issues.md`):** still only use glyphs the bundled font can render — this patch makes the
+missing ones *blank* instead of *crashing*, but a button labelled with an invisible glyph is still a bug.
 
 ## `gui-msaa-sample-count.patch` — gui (`window.v`)
 
@@ -68,8 +95,10 @@ git apply $P/closure-gc-leak-fix.patch        # THE leak fix (V side)
 git apply $P/autofree-boehm_leak-fixes.patch  # diagnostic-only codegen fixes
 ./v self                                       # rebuild the compiler
 cd ~/.vmodules/gui
-git apply $P/gui-closure-reclaim.patch         # gui side of the leak fix
+git apply $P/gui-closure-reclaim.patch         # gui side of the leak fix (+ drag/mouse-lock guard)
 git apply $P/gui-msaa-sample-count.patch       # WindowCfg.sample_count (src/main.v needs it to build)
+cd ~/.vmodules/vglyph
+git apply $P/vglyph-empty-outline.patch        # don't crash on empty-outline glyphs (whitespace/emoji)
 ```
 
 ## Build a leak-profiling binary
