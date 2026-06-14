@@ -721,3 +721,21 @@ prompt for a password.
   Tiers 2–4 captured in memory for later. TODO (Tier 1 polish): per-sender target-bus override in the
   panel; live signal-value editing in the panel (currently fixed from the .yml); manual-button verify
   was inferred from the shared `fire_sender` path (key + cyclic directly verified).
+- 2026-06-14: **Generators in-panel editor DONE & VERIFIED.** The Generators panel is now a full editor
+  (mirrors the Simulation panel's inline-edit pattern): senders grouped by channel, each row = fire
+  button (`▸ name [key]`) · edit toggle (`✎`/`▾`) · remove (`✕`); per-channel **＋ Add** and a top
+  **💾 Save**. The inline editor (`sender_editor`, opened via `App.gen_edit['ci:si']`) edits name, key
+  (1 char), trigger (manual|key|cyclic select), cycle_ms (cyclic only), the DBC **message** (select of
+  `(raw id/data)` + all DBC message names) and either the message's **per-signal values** (one input
+  per `Signal`, shown with its unit, current value from the sender or 0) or, for raw senders, the
+  **id + hex data**. Setters (`set_sender_*`, `add_sender`, `remove_sender`) mutate the project model
+  (`proj.channels[ci].senders[si]` — the source of truth) then `build_senders()` to refresh the live
+  flattened `App.senders` (so buttons/hotkeys/cyclic loop update immediately); `SenderRT` gained `sidx`
+  (within-channel index) to map edits back. **Save** reuses `do_save_project` (sender serialization
+  already round-trips, save_test.v). **Verified in the GUI** (screenshots): editor shows ReqCode=1 live
+  for the Ping sender; ＋ Add created a "New sender" with its editor auto-opened. Note: gui.input typing
+  isn't testable via xdotool under WSLg (known issue), so value-edit *typing* was verified by code path
+  (identical to the proven sim-editor `on_text_changed`), not synthetic input; clicks (fire/add/remove/
+  toggle) and rendering verified live. ⚠ Caveat (pre-existing, not new): Save rewrites the whole project
+  `.yml` via `to_yaml`, which **drops comments** + reformats — fine for app-authored files, lossy on
+  hand-commented demos like sim-demo.yml (so I did NOT click Save on it during verification).
