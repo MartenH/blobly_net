@@ -23,8 +23,7 @@ on:
   workflow_dispatch:
 
 env:
-  V_RELEASE: v-toolchain
-  V_ASSET: v-de365a1-windows.zip
+  V_RELEASE: v-toolchain   # release that stores the prebuilt vcpkg-deps asset
   DEPS_ASSET: vcpkg-pango-x64-windows.zip   # prebuilt vcpkg x64-windows tree on the V_RELEASE
 
 jobs:
@@ -41,14 +40,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download prebuilt V (de365a1)
+      # Build V from the closure-leak-fix branch (PR vlang/v#27446). The leak fix is
+      # partly a COMPILER codegen change (gen/c/fn.v emits a COLLECTABLE memdup for
+      # closure contexts instead of memdup_uncollectable), so it cannot be patched
+      # onto a prebuilt V — V must be built with it. make.bat bootstraps via the
+      # bundled tcc (~few min, no external compiler). This replaces the old prebuilt
+      # de365a1 download (= bumping the V pin to the leak-fix branch).
+      - name: Build V (closure-leak-fix branch, vlang/v#27446)
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download $env:V_RELEASE --repo "$env:GITHUB_REPOSITORY" --pattern "$env:V_ASSET" --dir "$env:RUNNER_TEMP"
-          Expand-Archive -LiteralPath "$env:RUNNER_TEMP\$env:V_ASSET" -DestinationPath C:\v-ct -Force
-          if (-not (Test-Path C:\v-ct\v.exe)) { throw "v.exe not found after extracting $env:V_ASSET" }
+          git -c core.autocrlf=false clone --quiet --depth 1 --branch fix-closure-context-leak https://github.com/MartenH/v.git C:\v-ct
+          Push-Location C:\v-ct
+          .\make.bat
+          Pop-Location
+          if (-not (Test-Path C:\v-ct\v.exe)) { throw "v.exe not built from fix-closure-context-leak" }
           "C:\v-ct" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding ascii
           & C:\v-ct\v.exe version
 
@@ -75,6 +80,14 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "patch $($p.File) failed to apply to $($p.Repo)" }
             Write-Host "applied $($p.File)"
           }
+          # gui side of the closure leak fix: per-frame begin/end_frame_build +
+          # reclaim_frames (skipped while mouse-locked — the drag guard). Calls the
+          # builtin.closure API that the leak-fix V (built above) provides. Lives in
+          # docs/v_patches and is generated against this same gui pin (68b9302).
+          $reclaim = "$env:GITHUB_WORKSPACE\docs\v_patches\gui-closure-reclaim.patch"
+          git -C "$vm\gui" apply --ignore-whitespace $reclaim
+          if ($LASTEXITCODE -ne 0) { throw "gui-closure-reclaim.patch failed to apply" }
+          Write-Host "applied gui-closure-reclaim.patch (leak fix, gui side)"
 
       - name: Set up MSVC (cl.exe on PATH)
         uses: ilammy/msvc-dev-cmd@v1
