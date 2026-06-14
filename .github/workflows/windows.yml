@@ -29,9 +29,11 @@ env:
 jobs:
   build-msvc:
     runs-on: windows-latest
-    # First run that lacks the prebuilt deps asset builds pango once (~30-40 min) then
-    # publishes it; every run after downloads + extracts it (~1 min).
-    timeout-minutes: 60
+    # The BOOTSTRAP run (no prebuilt deps asset yet) builds V + pango from source and
+    # must finish to upload the deps asset — the old 60 min ceiling cancelled it mid
+    # vcpkg build, so the asset was never minted. 120 gives the one-time bootstrap room;
+    # every run after downloads the asset and finishes in ~15 min, well under this.
+    timeout-minutes: 120
     permissions:
       contents: write   # upload the prebuilt-deps asset to the release on first run
     env:
