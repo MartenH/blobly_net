@@ -739,3 +739,17 @@ prompt for a password.
   toggle) and rendering verified live. ⚠ Caveat (pre-existing, not new): Save rewrites the whole project
   `.yml` via `to_yaml`, which **drops comments** + reformats — fine for app-authored files, lossy on
   hand-commented demos like sim-demo.yml (so I did NOT click Save on it during verification).
+- 2026-06-14: **FIX: Generators panel crashed release build — colour-emoji/unsupported glyph in
+  `gui.text`.** User hit `invalid memory access` (bogus deep `v_stable_sort` backtrace) opening the
+  Generators panel. Root cause: vglyph's `load_glyph` needs a vector outline; the panel's `💾 Save`
+  (colour emoji → embedded bitmap, `n_points==0`) — plus `✎`/`⚙` (dingbats the bundled font lacks) —
+  have no outline. A `-g` build panics explicitly (`FT_Outline_Translate … got empty`); release
+  compiles out the `$if debug` guard and corrupts memory instead. Fix: replaced with screenshot-
+  verified-safe glyphs (`💾`→`Save`, `✎`→`…`, `⚙`→`…`, `✕`→`×`). **Verified stable in a RELEASE build**
+  through Add / message-select / open-editor / cyclic-fire (no crash, panic-count 0). Full rule + the
+  safe/unsafe glyph sets + the deterministic `-g` repro are in `docs/known_issues.md` (vlang/gui
+  section, 🔴 glyph-outline crash). Note: a `-g` build ALSO panics on a **pre-existing latent** empty
+  glyph in the always-rendered UI (benign in release) — separate from this; real fix is the vglyph
+  whitespace-glyph patch (`docs/windows_build.md`), not yet applied on Linux. Pre-existing `⚙ Scaffold`
+  in the Simulation panel uses `⚙` too (renders only when a node is expanded) — left as-is (not my
+  regression), flagged for cleanup.
