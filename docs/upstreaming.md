@@ -48,13 +48,35 @@ transfer and are recreated from the patches.
 - **Flow:** neither account has org push, so it's the standard **fork → push
   branch → PR**. `gh` (authed as `MartenH`, scopes `repo`+`workflow`) does it.
 
-## The PR set (4 PRs across 2 repos)
+## The PR set — STATUS (updated 2026-06-14)
+
+| PR | Repo | Title | Status (2026-06-14) |
+|----|------|-------|---------------------|
+| 1 | `vlang/vglyph` | empty-outline + unsafe-cast | **OPEN** — [vglyph#4](https://github.com/vlang/vglyph/pull/4) |
+| 4 | `vlang/vglyph` | restore `_check.vsh` green | **OPEN** — [vglyph#5](https://github.com/vlang/vglyph/pull/5) |
+| 2 | `vlang/gui` | titlebar_dark isvalid guard | **FILED** — [gui#60](https://github.com/vlang/gui/pull/60) |
+| — | `vlang/gui` | WindowCfg.sample_count (MSAA) | **FILED** — [gui#61](https://github.com/vlang/gui/pull/61) (new; was a local-only patch) |
+| 3 | `vlang/gui` | windows gcc-16 compile (`#01`+`#02`) | **OBSOLETE** — already upstream (native-Windows work added COBJMACROS + `<stdio.h>`/`<wchar.h>`); do not file |
+
+**Major upstream change (2026-06-11→13):** `vlang/gui` got **native Windows support** merged to `main`
+(JalonSolov/GGRei/CreeperFace/Dylan Donnell) + Windows CI; README says "active development". So the
+project is being actively maintained again (the "author left → may stagnate" risk is materially lower).
+Our gui pin `68b9302` → `main` is now `26f7784`.
+
+**Pin-bump assessment (2026-06-14): GREEN.** Verified our two local gui patches (`gui-closure-reclaim.patch`
+incl. the mouse-lock drag guard, `gui-msaa-sample-count.patch`) **apply clean to `main`**, `window_update.v`
+**did not drift**, and the app **builds and runs** against gui `main` + patches (isolated VMODULES build;
+full layout renders, trace streams, splitter-drag does not crash). Bumping the pin is low-risk — main
+blocker is just re-verifying the closure-reclaim behaviour after the bump. The MSAA patch can be dropped
+once gui#61 merges.
+
+The ORIGINAL prepared-PR table (for recreating branches from `scripts/win_patches/`):
 
 | PR | Repo | Branch (head) | Base | Commits | Body file |
 |----|------|---------------|------|---------|-----------|
 | 1 | `vlang/vglyph` | `fix/whitespace-glyph-empty-outline` | `main` | patch #04 + #05 | `scripts/win_patches/pr1-vglyph-glyph-fixes.md` |
 | 2 | `vlang/gui` | `fix/windows-titlebar-before-sapp-run` | `main` | patch #03 | `scripts/win_patches/pr2-gui-titlebar.md` |
-| 3 | `vlang/gui` | `fix/windows-gcc16-compile` | `main` | patch #01 + #02 | `scripts/win_patches/pr3-gui-gcc16.md` |
+| 3 | `vlang/gui` | `fix/windows-gcc16-compile` (OBSOLETE) | `main` | patch #01 + #02 | `scripts/win_patches/pr3-gui-gcc16.md` |
 | 4 | `vlang/vglyph` | `fix/restore-check-green` | `main` | 15 `_`-prefix renames | `scripts/win_patches/pr4-vglyph-restore-check-green.md` |
 
 PR 4 was discovered while verifying PR 1 with `_check.vsh`: under recent V the

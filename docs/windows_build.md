@@ -170,11 +170,17 @@ shipped as patches — they're GL-path-irrelevant and kept as prose only.)
 
 | # | File (vendored)                                  | Change                                                                                          | Upstream-worthy? |
 |---|--------------------------------------------------|-------------------------------------------------------------------------------------------------|------------------|
-| 1 | `gui/nativebridge/readback_windows.c`            | `#define COBJMACROS` before `<d3d11.h>` (C-style COM macros; else won't compile under gcc 16)   | yes (gui)        |
-| 2 | `gui/nativebridge/dialog_windows.c`              | add `<stdio.h>`/`<wchar.h>` for `_snwprintf` (gcc treats implicit decls as errors)              | yes (gui)        |
-| 3 | `gui/titlebar.c.v`                               | guard `titlebar_dark()` with `sapp.isvalid()` — set_theme() runs before sapp.run() → abort      | yes (gui)        |
+| 1 | `gui/nativebridge/readback_windows.c`            | `#define COBJMACROS` before `<d3d11.h>` — **✅ UPSTREAM (gui main, 2026-06)**; drop local patch     | done             |
+| 2 | `gui/nativebridge/dialog_windows.c`              | add `<stdio.h>`/`<wchar.h>` for `_snwprintf` — **✅ UPSTREAM (gui main, 2026-06)**; drop local patch | done             |
+| 3 | `gui/titlebar.c.v`                               | guard `titlebar_dark()` with `sapp.isvalid()` — **FILED [gui#60](https://github.com/vlang/gui/pull/60)** (still needed on main) | filed            |
 | 4 | `vglyph/glyph_atlas.v`                            | don't panic on empty outline (`n_points==0`) — whitespace glyphs (space) are legal              | yes (vglyph)     |
-| 6 | `gui/window.v`                                   | expose `WindowCfg.sample_count` → `gg.new_context` (MSAA); `src/main.v` sets `sample_count: 4` for antialiased Graphics polylines. **Required for the build** | yes (gui)        |
+| 6 | `gui/window.v`                                   | expose `WindowCfg.sample_count` → `gg.new_context` (MSAA) — **FILED [gui#61](https://github.com/vlang/gui/pull/61)**; drop local patch once merged | filed            |
+
+> **⚠️ 2026-06-14 — much of this is now UPSTREAM.** `vlang/gui` merged **native Windows support** to
+> `main` (2026-06-11→13) + Windows CI. The gcc-16 compile fixes (#1/#2) are already in `main`, so a fresh
+> Windows bring-up should **clone gui `main`** and skip those — the only local gui patches still needed are
+> the leak/closure stack (`docs/v_patches/`) and, until they merge, gui#60 (titlebar) + gui#61 (MSAA).
+> Pin-bump from `68b9302` → `main` assessed GREEN (see `docs/upstreaming.md`).
 
 **Applied in the live GL build:** all four above.
 
