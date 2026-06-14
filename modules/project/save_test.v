@@ -88,3 +88,50 @@ fn test_roundtrip() {
 	assert c.nodes[0].responses[0].request == u32(0x101)
 	assert c.nodes[0].responses[0].response == u32(0x102)
 }
+
+// Senders (interactive generators) survive the Save round-trip.
+fn test_roundtrip_senders() {
+	orig := Project{
+		name:     'rts'
+		channels: [
+			Channel{
+				name:    'CAN1'
+				iface:   'inproc:CAN1'
+				senders: [
+					Sender{
+						name:    'Ignition On'
+						key:     'i'
+						message: 'Powertrain'
+						trigger: 'key'
+						signals: [
+							SenderSig{
+								name:  'EngineSpeed'
+								value: 800
+							},
+						]
+					},
+					Sender{
+						name:     'Wake'
+						id:       0x123
+						data:     [u8(0xDE), 0xAD]
+						trigger:  'cyclic'
+						cycle_ms: 100
+					},
+				]
+			},
+		]
+	}
+	c := parse(orig.to_yaml())!.channels[0]
+	assert c.senders.len == 2
+	assert c.senders[0].name == 'Ignition On'
+	assert c.senders[0].key == 'i'
+	assert c.senders[0].message == 'Powertrain'
+	assert c.senders[0].trigger == 'key'
+	assert c.senders[0].signals[0].name == 'EngineSpeed'
+	assert c.senders[0].signals[0].value == 800.0
+	assert c.senders[1].name == 'Wake'
+	assert c.senders[1].id == 0x123
+	assert c.senders[1].data == [u8(0xDE), 0xAD]
+	assert c.senders[1].trigger == 'cyclic'
+	assert c.senders[1].cycle_ms == 100
+}
