@@ -4291,7 +4291,7 @@ fn generators_panel(mut window gui.Window) gui.View {
 				id_focus:  0
 				max_width: 70
 				h_align:   .left
-				content:   [gui.text(text: '💾 Save')]
+				content:   [gui.text(text: 'Save')]
 				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					do_save_project(mut w)
 				}
@@ -4299,7 +4299,7 @@ fn generators_panel(mut window gui.Window) gui.View {
 		]
 	)
 	rows << gui.text(
-		text:       'click ▸ or press its key to transmit (▶ Start first); ✎ edits, ✕ removes'
+		text:       'click ▸ or press its key to transmit (▶ Start first); … edits, × removes'
 		text_style: trace_text_style()
 	)
 	mut focus := u32(2000) // unique id_focus base per editable widget (stride below)
@@ -4356,7 +4356,7 @@ fn generators_panel(mut window gui.Window) gui.View {
 						id_focus:  0
 						max_width: 30
 						h_align:   .left
-						content:   [gui.text(text: if editing { '▾' } else { '✎' })]
+						content:   [gui.text(text: if editing { '▾' } else { '…' })]
 						on_click:  fn [ekey] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 							mut a := w.state[App]()
 							a.gen_edit[ekey] = !a.gen_edit[ekey]
@@ -4366,7 +4366,7 @@ fn generators_panel(mut window gui.Window) gui.View {
 						id_focus:  0
 						max_width: 30
 						h_align:   .left
-						content:   [gui.text(text: '✕')]
+						content:   [gui.text(text: '×')]
 						on_click:  fn [ci, si] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 							remove_sender(ci, si, mut w)
 						}
