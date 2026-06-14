@@ -753,3 +753,21 @@ prompt for a password.
   whitespace-glyph patch (`docs/windows_build.md`), not yet applied on Linux. Pre-existing `⚙ Scaffold`
   in the Simulation panel uses `⚙` too (renders only when a node is expanded) — left as-is (not my
   regression), flagged for cleanup.
+- 2026-06-14: **FIX: dragging any dock splitter crashed — the CLOSURE-RECLAIM patch freed a live
+  drag handler.** Same misleading `v_stable_sort` backtrace; a **gdb** backtrace showed the real fault:
+  a **NULL fn-pointer call** at `view_splitter.v:560` (`core.on_change`) during `splitter_on_drag_move`.
+  Root cause (NOT a regression from the generators work — reproduced on the pre-generators commit too):
+  the local **`gui-closure-reclaim.patch`**. During a drag gui keeps invoking the *mousedown frame's*
+  captured callbacks (stored in `view_state.mouse_lock`) across the rebuilds the drag triggers; those
+  callbacks capture a per-frame `SplitterCore` whose `on_change` is a per-frame dock closure.
+  `reclaim_frames(2)` freed that still-live closure after 2 frames → NULL call. **Proven** by disabling
+  `reclaim_frames` (crash gone) then re-enabling with the fix. **Fix:** skip reclamation while
+  `window.mouse_is_locked()` (any active drag) — defer it until mouse-up; the short drag's few frames of
+  closures are freed on the next idle frame, so the leak fix is intact. Updated `gui-closure-reclaim.patch`.
+  Separately **applied the Linux `vglyph-empty-outline.patch`** (`glyph_atlas.v`): empty-outline glyphs
+  (whitespace / unsupported) no longer panic (debug) or corrupt memory (release) — the Linux counterpart
+  of the Windows "patch #4", which had never been applied here (so a `-g` build panicked on frame 1 on a
+  whitespace glyph, masking real bugs). Both are LOCAL patches (`docs/v_patches/`, reapply on a fresh box
+  — see README); **verified in a RELEASE build**: aggressive multi-splitter drags, no crash. ⚠ Takeaway:
+  the `v_stable_sort` backtrace is GARBAGE under our patched build — always get a real stack via
+  `gdb -batch -ex run -ex 'bt 40' --args ./build/<app>_dbg` (the `-g` build) before theorising.
