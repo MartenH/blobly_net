@@ -25,14 +25,19 @@ on:
 env:
   V_RELEASE: v-toolchain
   V_ASSET: v-de365a1-windows.zip
+  DEPS_ASSET: vcpkg-pango-x64-windows.zip   # prebuilt vcpkg x64-windows tree on the V_RELEASE
 
 jobs:
   build-msvc:
     runs-on: windows-latest
-    timeout-minutes: 60   # cold run builds vcpkg pango/freetype from source (~30-40 min); cached after
+    # First run that lacks the prebuilt deps asset builds pango once (~30-40 min) then
+    # publishes it; every run after downloads + extracts it (~1 min).
+    timeout-minutes: 60
+    permissions:
+      contents: write   # upload the prebuilt-deps asset to the release on first run
     env:
       VMODULES: ${{ github.workspace }}\vmodules
-      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-bincache
+      VCPKG_DEPS: ${{ github.workspace }}\vcpkg-deps   # extracted x64-windows tree lives here
     steps:
       - uses: actions/checkout@v4
 
@@ -74,34 +79,45 @@ jobs:
       - name: Set up MSVC (cl.exe on PATH)
         uses: ilammy/msvc-dev-cmd@v1
 
-      # The runner's vcpkg builds pango/freetype FROM SOURCE (not warm-cached on the
-      # image). Persist its binary archives so the cold build is paid once.
+      # Prebuilt pango/freetype, mirroring how V itself is provided: download a
+      # ready-made vcpkg `x64-windows` tree from the V_RELEASE (~1 min) rather than
+      # building pango from source every run (~30-40 min). SELF-BOOTSTRAPPING: if the
+      # asset is missing (first run, or after a deliberate refresh) it builds once and
+      # uploads it, so every later run is fast.
       #
-      # ROLLING key (not a static one): actions/cache will NOT overwrite an existing
-      # key, so a static key meant that whenever the runner's system vcpkg drifted
-      # (it floats with the image — e.g. a new cmake/powershell or bumped port bumps
-      # the ABI hashes), the packages it rebuilt were never saved, and EVERY run
-      # rebuilt them. github.run_id makes the key unique so the archive is always
-      # saved at job end; restore-keys prefix-matches the most recent archive, so the
-      # next run starts from it and only genuinely-drifted packages rebuild — once.
-      - name: Cache vcpkg binaries (pango/freetype)
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}\vcpkg-bincache
-          key: vcpkg-x64-windows-v2-${{ github.run_id }}
-          restore-keys: |
-            vcpkg-x64-windows-v2-
-
-      - name: vcpkg install pango freetype
+      # Why not actions/cache: vcpkg keys its binary cache on ABI hashes of the
+      # FLOATING windows-latest toolchain (vcpkg/cmake/msvc), so a from-source build
+      # never reused its archive across image updates — it just piled up one ~89 MB
+      # cache per run with zero reuse. A pinned release asset has no ABI drift.
+      - name: Get prebuilt pango/freetype (or build + publish once)
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
-          vcpkg install pango freetype --triplet x64-windows
+          $zip = "$env:RUNNER_TEMP\$env:DEPS_ASSET"
+          $have = $false
+          gh release download $env:V_RELEASE --repo "$env:GITHUB_REPOSITORY" --pattern "$env:DEPS_ASSET" --dir "$env:RUNNER_TEMP" 2>$null
+          if (Test-Path $zip) {
+            Expand-Archive -LiteralPath $zip -DestinationPath $env:VCPKG_DEPS -Force
+            if (Test-Path "$env:VCPKG_DEPS\x64-windows\lib\pkgconfig") {
+              $have = $true; Write-Host "restored prebuilt deps -> $env:VCPKG_DEPS\x64-windows"
+            }
+          }
+          if (-not $have) {
+            Write-Host "no $env:DEPS_ASSET on release $env:V_RELEASE — building once with vcpkg…"
+            vcpkg install pango freetype --triplet x64-windows
+            if ($LASTEXITCODE -ne 0) { throw "vcpkg install failed" }
+            New-Item -ItemType Directory -Force $env:VCPKG_DEPS | Out-Null
+            Copy-Item "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows" "$env:VCPKG_DEPS\x64-windows" -Recurse -Force
+            Compress-Archive -Path "$env:VCPKG_DEPS\x64-windows" -DestinationPath $zip -Force
+            gh release upload $env:V_RELEASE $zip --repo "$env:GITHUB_REPOSITORY" --clobber
+            Write-Host "published $env:DEPS_ASSET to release $env:V_RELEASE — future runs will be fast"
+          }
 
       - name: Build (V -cc msvc + vcpkg)
         shell: pwsh
         run: |
-          $vcpkg = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows"
+          $vcpkg = "$env:VCPKG_DEPS\x64-windows"
           $env:PKG_CONFIG_PATH = "$vcpkg\lib\pkgconfig"   # V's v.pkgconfig reads this
           New-Item -ItemType Directory -Force build | Out-Null
           # -enable-globals: main.v uses the in-proc bus (transport/inproc.v __global).
@@ -117,7 +133,7 @@ jobs:
       - name: Bundle runtime DLLs
         shell: pwsh
         run: |
-          $vbin = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin"
+          $vbin = "$env:VCPKG_DEPS\x64-windows\bin"
           Copy-Item "$vbin\*.dll" -Destination build\ -Force
           $dlls = Get-ChildItem build\*.dll
           Write-Host "bundled $($dlls.Count) vcpkg DLLs next to the exe:"
