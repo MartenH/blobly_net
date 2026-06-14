@@ -771,3 +771,19 @@ prompt for a password.
   — see README); **verified in a RELEASE build**: aggressive multi-splitter drags, no crash. ⚠ Takeaway:
   the `v_stable_sort` backtrace is GARBAGE under our patched build — always get a real stack via
   `gdb -batch -ex run -ex 'bt 40' --args ./build/<app>_dbg` (the `-g` build) before theorising.
+- 2026-06-14: **Upstreaming + gui pin-bump assessment.** `vlang/gui` is **actively maintained again**:
+  native **Windows support** merged to `main` (2026-06-11→13, JalonSolov/GGRei/CreeperFace/Dylan Donnell)
+  + Windows CI; README says "active development". Filed two gui PRs from the MartenH fork:
+  **[gui#60](https://github.com/vlang/gui/pull/60)** (titlebar_dark `sapp.isvalid()` guard — still present
+  on main, `v fmt`-clean) and **[gui#61](https://github.com/vlang/gui/pull/61)** (`WindowCfg.sample_count`
+  MSAA — was a local-only patch; gg already supports it). **Did NOT file:** the gcc-16 compile fixes
+  (`win_patches #01/#02`) — already upstream in main's native-Windows work (verified COBJMACROS +
+  `<stdio.h>`/`<wchar.h>` present); and the `splitter_emit_change` NULL-`on_change` guard — that field is
+  `@[required]` so it's only NULL because of OUR closure-reclaim patch (not a stock bug; lives as our local
+  caller guard). Already-open (not gui): vglyph **#4** (empty-outline) + **#5** still OPEN/unmerged → keep
+  the local vglyph patch; V **#27446** (closure leak) DRAFT. **Pin-bump assessment (68b9302 → main 26f7784):
+  GREEN** — both local gui patches (`gui-closure-reclaim` incl. drag guard, `gui-msaa-sample-count`) apply
+  clean, `window_update.v` didn't drift, and the app **builds + runs** against gui `main` + patches
+  (isolated VMODULES; layout renders, trace streams, splitter-drag safe). Bumping the pin is low-risk and
+  would shed the gcc-16 local patches + gain active maintenance; drop the MSAA patch once gui#61 merges.
+  Details: `docs/upstreaming.md` (status table), `docs/windows_build.md` (manifest banner).
