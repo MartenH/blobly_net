@@ -69,6 +69,37 @@ pub fn (p Project) to_yaml() string {
 				}
 			}
 		}
+		if ch.senders.len > 0 {
+			b.writeln('    senders:')
+			for s in ch.senders {
+				b.writeln('      - name: ${s.name}')
+				if s.key != '' {
+					b.writeln('        key: ${s.key}')
+				}
+				if s.message != '' {
+					b.writeln('        message: ${s.message}')
+				}
+				if s.id != 0 {
+					b.writeln('        id: "0x${s.id:X}"')
+				}
+				if s.ext {
+					b.writeln('        extended: true')
+				}
+				if s.data.len > 0 {
+					b.writeln('        data: ${hex_bytes(s.data)}')
+				}
+				b.writeln('        trigger: ${s.trigger}')
+				if s.trigger == 'cyclic' && s.cycle_ms > 0 {
+					b.writeln('        cycle_ms: ${s.cycle_ms}')
+				}
+				if s.signals.len > 0 {
+					b.writeln('        signals:')
+					for sg in s.signals {
+						b.writeln('          - { name: ${sg.name}, value: ${num(sg.value)} }')
+					}
+				}
+			}
+		}
 		if replay := ch.replay {
 			b.writeln('    replay:')
 			b.writeln('      source: ${replay.source}')
@@ -116,6 +147,16 @@ fn gen_inline(g GenCfg) string {
 		else {}
 	}
 	return '{ ${parts.join(', ')} }'
+}
+
+// hex_bytes renders a raw payload as space-separated hex (round-trips through
+// parse_hex_bytes): [0xDE,0xAD] -> "DE AD".
+fn hex_bytes(data []u8) string {
+	mut parts := []string{}
+	for b in data {
+		parts << '${b:02X}'
+	}
+	return parts.join(' ')
 }
 
 // num formats an f64 without a trailing `.0` when it's integral (cleaner files).

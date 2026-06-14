@@ -38,6 +38,32 @@ channels:
           - { name: WheelRR, type: sine, offset: 60, amplitude: 8, freq: 0.9, phase: 0.3 }
           - { name: BrakePressure, type: sawtooth, min: 0, max: 1500, period: 6 }
           - { name: BrakePedal, type: sine, offset: 20, amplitude: 20, freq: 0.5 }
+    # Interactive generators (conventional tooling IG-style): triggerable custom frames. Press
+    # the button in the Generators panel, or the listed key (when no input is
+    # focused). The SUT's response rule above answers 0x101 (Request) with 0x102,
+    # so "Ping ECU" round-trips. Per-channel, so these send on CAN1.
+    senders:
+      - name: Ping ECU (Request)
+        key: p
+        message: Request
+        trigger: key
+        signals:
+          - { name: ReqCode, value: 1 }
+      - name: Rev to 6000 rpm
+        key: r
+        message: Powertrain
+        trigger: key
+        signals:
+          - { name: EngineSpeed, value: 6000 }
+          - { name: Gear, value: 4 }
+      - name: Heartbeat pulse
+        message: Heartbeat
+        trigger: manual
+      - name: Cyclic wake (0x123)
+        id: "0x123"
+        data: DE AD BE EF
+        trigger: cyclic
+        cycle_ms: 500
 
   # --- CAN2: body + energy ---
   - name: CAN2
