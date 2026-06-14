@@ -40,6 +40,7 @@ const id_scroll_buses = u32(7100)
 const id_scroll_sim = u32(7200)
 const id_scroll_plot = u32(7300)
 const id_scroll_diag = u32(7400)
+const id_scroll_gen = u32(7800) // Generators (interactive senders) panel
 const id_scroll_plot_outer = u32(7500) // Graphics root: clamps the panel measurement
 const id_scroll_symbols = u32(7600)    // Symbol Browser tree
 const id_scroll_busconfig = u32(7700)  // Bus Config candidate list
@@ -258,12 +259,15 @@ mut:
 	inbox        []InboxItem
 	inbox_mu     sync.Mutex
 	drain_queued bool
+	senders   []SenderRT // interactive generators flattened across channels (Generators panel + hotkeys)
 	sim_nodes []SimNode // simulated ECUs available per channel (Simulation panel)
 	sim_expanded map[int]bool // Simulation tree: channel idx -> expanded (default collapsed)
 	// Generator editor: which node's signals are shown ('ch:node'), and which single
 	// signal's inline editor is open ('ch:node:signal'; '' = none, one at a time).
 	sim_sig_expanded map[string]bool
 	sim_sig_edit     string
+	// Generators panel: which sender's inline editor is open (key '<ch_idx>:<sidx>').
+	gen_edit map[string]bool
 	trace_filter string // case-insensitive substring filter on ID/name/ch/data
 	// The second, independent trace panel ("Trace (filter)"): same data, its
 	// own filter + selection — keep the full trace and a curated slice open
@@ -334,6 +338,16 @@ fn trace_pass(app &App, which int, filter string, id u32, fields ...string) bool
 	return filter.len > 0 && trace_match(filter, ...fields)
 }
 
+// SenderRT is one interactive generator (project.Sender) bound to the channel it
+// belongs to. Flattened across all channels in App.senders so the Generators
+// panel and the global hotkey handler can fire any of them by index.
+struct SenderRT {
+mut:
+	ch_idx int             // index into proj.channels
+	sidx   int             // index into proj.channels[ch_idx].senders (maps edits back)
+	cfg    project.Sender
+}
+
 // SimNode is one simulated ECU offered in the Simulation panel: a configured ECU
 // on a channel, with a checkbox to connect it to the bus (= have the tester
 // simulate it). `cfg` carries its per-signal generators + response rules.
@@ -378,6 +392,252 @@ fn (mut app App) build_sim_nodes() {
 			}
 		}
 	}
+	app.build_senders()
+}
+
+// build_senders flattens every channel's interactive generators (`senders:`) into
+// App.senders, tagging each with its channel index. Rebuilt with build_sim_nodes
+// whenever the project changes, so the Generators panel + hotkeys stay in sync.
+fn (mut app App) build_senders() {
+	app.senders = []SenderRT{}
+	for i, ch in app.proj.channels {
+		for si, s in ch.senders {
+			app.senders << SenderRT{
+				ch_idx: i
+				sidx:   si
+				cfg:    s
+			}
+		}
+	}
+}
+
+// build_sender_frame resolves a Sender into a CAN frame. With a `message` that
+// the DBC knows, it takes the id/ext/dlc from the message and encodes each signal
+// value onto a zero (or the explicit `data`) payload. Otherwise it uses the
+// explicit id + raw data verbatim.
+fn (app &App) build_sender_frame(s project.Sender) transport.CanFrame {
+	if s.message != '' {
+		for m in app.db.messages {
+			if m.name != s.message {
+				continue
+			}
+			mut data := if s.data.len > 0 {
+				s.data.clone()
+			} else {
+				dlc := if m.dlc > 0 { m.dlc } else { 8 }
+				[]u8{len: dlc}
+			}
+			for sg in s.signals {
+				for sig in m.signals {
+					if sig.name == sg.name {
+						sig.encode(mut data, sg.value)
+						break
+					}
+				}
+			}
+			return transport.CanFrame{
+				id:       m.id
+				extended: m.ext
+				data:     data
+			}
+		}
+	}
+	// No DBC message — explicit id/data (default to an 8-byte zero payload).
+	data := if s.data.len > 0 { s.data.clone() } else { []u8{len: 8} }
+	return transport.CanFrame{
+		id:       s.id
+		extended: s.ext || s.id > 0x7ff
+		data:     data
+	}
+}
+
+// fire_sender transmits sender `si`'s frame from the UI thread. It prefers the
+// sender's own channel when running, else the first running channel (so a sender
+// on an off bus still fires somewhere); records the frame as a TX trace row.
+fn fire_sender(si int, mut w gui.Window) {
+	mut app := w.state[App]()
+	if si < 0 || si >= app.senders.len {
+		return
+	}
+	sr := app.senders[si]
+	mut idx := -1
+	if sr.ch_idx < app.rt.len && app.rt[sr.ch_idx].running && app.rt[sr.ch_idx].bus != none {
+		idx = sr.ch_idx
+	} else {
+		for i in 0 .. app.rt.len {
+			if app.rt[i].running && app.rt[i].bus != none {
+				idx = i
+				break
+			}
+		}
+	}
+	if idx < 0 {
+		app.status = 'not running — press ▶ Start to send "${sr.cfg.name}"'
+		return
+	}
+	frame := app.build_sender_frame(sr.cfg)
+	mut bus := app.rt[idx].bus or { return }
+	bus.send(frame) or {
+		app.status = 'send failed: ${err}'
+		return
+	}
+	app.rt[idx].tx_count++
+	chname := if idx < app.proj.channels.len { app.proj.channels[idx].name } else { 'CAN${idx + 1}' }
+	app.push('TX', frame, chname)
+	app.status = 'sent "${sr.cfg.name}"'
+}
+
+// handle_hotkey fires the first sender whose `key` matches the typed character,
+// unless a text input is focused (so typing in a field never triggers sends).
+// Returns true if a sender fired (the event was consumed).
+fn handle_hotkey(char_code u32, mut w gui.Window) bool {
+	if w.id_focus() != 0 {
+		return false // a focusable widget (input/select) has focus — don't hijack typing
+	}
+	app := w.state[App]()
+	for si, sr in app.senders {
+		if sr.cfg.key.len == 0 {
+			continue
+		}
+		if u32(sr.cfg.key[0]) == char_code {
+			fire_sender(si, mut w)
+			w.update_window()
+			return true
+		}
+	}
+	return false
+}
+
+// --- Generators panel editing -------------------------------------------------
+// Setters mutate the project model (proj.channels[ci].senders[si]) in place — the
+// single source of truth that Save writes — then rebuild the flattened App.senders
+// so the buttons/hotkeys/cyclic loop pick up the change immediately.
+
+// sender_ok bounds-checks a (channel, sender) index pair against the project.
+fn (app &App) sender_ok(ci int, si int) bool {
+	return ci >= 0 && ci < app.proj.channels.len && si >= 0
+		&& si < app.proj.channels[ci].senders.len
+}
+
+fn set_sender_name(ci int, si int, name string, mut w gui.Window) {
+	mut app := w.state[App]()
+	if !app.sender_ok(ci, si) {
+		return
+	}
+	app.proj.channels[ci].senders[si].name = name
+	app.build_senders()
+}
+
+fn set_sender_key(ci int, si int, key string, mut w gui.Window) {
+	mut app := w.state[App]()
+	if !app.sender_ok(ci, si) {
+		return
+	}
+	// A single character only; ignore the rest so one keypress maps to one sender.
+	app.proj.channels[ci].senders[si].key = if key.len > 0 { key[..1] } else { '' }
+	app.build_senders()
+}
+
+fn set_sender_trigger(ci int, si int, trig string, mut w gui.Window) {
+	mut app := w.state[App]()
+	if !app.sender_ok(ci, si) {
+		return
+	}
+	app.proj.channels[ci].senders[si].trigger = trig
+	app.build_senders()
+}
+
+fn set_sender_cycle(ci int, si int, ms int, mut w gui.Window) {
+	mut app := w.state[App]()
+	if !app.sender_ok(ci, si) {
+		return
+	}
+	app.proj.channels[ci].senders[si].cycle_ms = ms
+	app.build_senders()
+}
+
+// set_sender_message points the sender at a DBC message (clearing the raw id/data
+// path); msg == '' / the raw sentinel switches it back to explicit id/data.
+fn set_sender_message(ci int, si int, msg string, mut w gui.Window) {
+	mut app := w.state[App]()
+	if !app.sender_ok(ci, si) {
+		return
+	}
+	if msg == '' || msg == raw_msg_opt {
+		app.proj.channels[ci].senders[si].message = ''
+	} else {
+		app.proj.channels[ci].senders[si].message = msg
+	}
+	app.build_senders()
+}
+
+// set_sender_signal sets (or adds) a signal value on a message-based sender.
+fn set_sender_signal(ci int, si int, signame string, value f64, mut w gui.Window) {
+	mut app := w.state[App]()
+	if !app.sender_ok(ci, si) {
+		return
+	}
+	mut found := false
+	for k in 0 .. app.proj.channels[ci].senders[si].signals.len {
+		if app.proj.channels[ci].senders[si].signals[k].name == signame {
+			app.proj.channels[ci].senders[si].signals[k].value = value
+			found = true
+			break
+		}
+	}
+	if !found {
+		app.proj.channels[ci].senders[si].signals << project.SenderSig{
+			name:  signame
+			value: value
+		}
+	}
+	app.build_senders()
+}
+
+fn set_sender_id(ci int, si int, id u32, mut w gui.Window) {
+	mut app := w.state[App]()
+	if !app.sender_ok(ci, si) {
+		return
+	}
+	app.proj.channels[ci].senders[si].id = id
+	app.proj.channels[ci].senders[si].ext = id > 0x7ff
+	app.build_senders()
+}
+
+fn set_sender_data(ci int, si int, hexstr string, mut w gui.Window) {
+	mut app := w.state[App]()
+	if !app.sender_ok(ci, si) {
+		return
+	}
+	app.proj.channels[ci].senders[si].data = hex_to_bytes(hexstr)
+	app.build_senders()
+}
+
+// add_sender appends a blank manual sender to a channel and opens its editor.
+fn add_sender(ci int, mut w gui.Window) {
+	mut app := w.state[App]()
+	if ci < 0 || ci >= app.proj.channels.len {
+		return
+	}
+	app.proj.channels[ci].senders << project.Sender{
+		name:    'New sender'
+		trigger: 'manual'
+	}
+	new_si := app.proj.channels[ci].senders.len - 1
+	app.build_senders()
+	app.gen_edit['${ci}:${new_si}'] = true // open it for editing right away
+	w.update_window()
+}
+
+fn remove_sender(ci int, si int, mut w gui.Window) {
+	mut app := w.state[App]()
+	if !app.sender_ok(ci, si) {
+		return
+	}
+	app.proj.channels[ci].senders.delete(si)
+	app.gen_edit.delete('${ci}:${si}')
+	app.build_senders()
+	w.update_window()
 }
 
 // sim_warnings validates every channel's simulated ECUs against its DBC and returns
@@ -680,6 +940,14 @@ fn main() {
 		width:        1500
 		height:       920
 		sample_count: 4 // MSAA — antialias the Graphics polylines (needs gui patch)
+		// Global hotkeys for interactive generators: a `char` event with no input
+		// focused fires the matching sender (conventional tooling "key on"). gui's per-widget
+		// handlers still run; we only act on otherwise-unconsumed typing.
+		on_event:     fn (e &gui.Event, mut w gui.Window) {
+			if e.typ == .char {
+				handle_hotkey(e.char_code, mut w)
+			}
+		}
 		on_init:      fn (mut w gui.Window) {
 			mut app := w.state[App]()
 			app.t0 = time.ticks()
@@ -958,6 +1226,62 @@ fn start_measurement(mut w gui.Window) {
 	}
 	app.running = true
 	app.status = 'running — ${opened} channel(s) attached'
+	// One thread drives all cyclic interactive generators (trigger: cyclic).
+	if app.senders.any(it.cfg.trigger == 'cyclic' && it.cfg.cycle_ms > 0) {
+		spawn fn (mut w gui.Window) {
+			gen_loop(mut w)
+		}(mut w)
+	}
+}
+
+// gen_loop transmits the cyclic interactive generators (trigger: cyclic) at their
+// configured periods while the measurement runs. Sends on each sender's own
+// channel bus (a dedicated bus instance per interface, like sim_loop) and records
+// the frames as TX via the bounded inbox. Manual/key senders fire on the UI
+// thread instead (see fire_sender); only cyclic ones need this clock.
+fn gen_loop(mut w gui.Window) {
+	mut app := w.state[App]()
+	// A dedicated bus per interface used by a cyclic sender (opened lazily; closed
+	// on exit) — avoids sharing the monitor's bus handle across threads.
+	mut buses := map[string]transport.Bus{}
+	mut next := map[int]f64{} // sender index -> next-due ms
+	t0 := time.ticks()
+	for app.running {
+		now := f64(time.ticks() - t0)
+		mut sent_any := false
+		for si, sr in app.senders {
+			if sr.cfg.trigger != 'cyclic' || sr.cfg.cycle_ms <= 0 {
+				continue
+			}
+			if sr.ch_idx >= app.rt.len || !app.rt[sr.ch_idx].running {
+				continue
+			}
+			if now < (next[si] or { 0.0 }) {
+				continue
+			}
+			iface := app.proj.channels[sr.ch_idx].iface
+			if iface !in buses {
+				buses[iface] = transport.open(iface) or { continue }
+			}
+			mut bus := buses[iface] or { continue }
+			frame := app.build_sender_frame(sr.cfg)
+			bus.send(frame) or {}
+			app.inbox_push(InboxItem{
+				idx:   sr.ch_idx
+				dir:   'TX'
+				frame: frame
+			})
+			next[si] = now + f64(sr.cfg.cycle_ms)
+			sent_any = true
+		}
+		if sent_any {
+			app.request_drain(mut w)
+		}
+		time.sleep(2 * time.millisecond)
+	}
+	for _, mut b in buses {
+		b.close()
+	}
 }
 
 // stop_measurement signals every running channel's RX thread to exit; each
@@ -1382,6 +1706,7 @@ fn main_view(mut window gui.Window) gui.View {
 					gui.DockPanelDef{ id: 'signals', label: 'Signals', content: [signals_panel(app)] },
 					gui.DockPanelDef{ id: 'plot', label: 'Graphics', content: [plot_panel(mut window)] },
 					gui.DockPanelDef{ id: 'send', label: 'Send', content: [send_panel(mut window)] },
+				gui.DockPanelDef{ id: 'generators', label: 'Generators', content: [generators_panel(mut window)] },
 				gui.DockPanelDef{ id: 'diag', label: 'Diagnostics', content: [diag_panel(mut window)] },
 					gui.DockPanelDef{ id: 'stats', label: 'Statistics', content: [stats_panel(app)] },
 						gui.DockPanelDef{ id: 'symbols', label: 'Symbol Browser', content: [symbol_browser_panel(app)] },
@@ -1530,6 +1855,7 @@ const view_panels = [
 	['signals', 'Signals'],
 	['plot', 'Graphics'],
 	['send', 'Send'],
+	['generators', 'Generators'],
 	['diag', 'Diagnostics'],
 	['stats', 'Statistics'],
 ]
@@ -1569,6 +1895,7 @@ fn activity_bar(app &App) gui.View {
 		'signals':    '∿'
 		'plot':       '▦'
 		'send':       '➤'
+		'generators': '⎍'
 		'diag':       '✚'
 		'stats':      'Σ'
 	}
@@ -3929,6 +4256,318 @@ fn merge_did_opts() []string {
 		o << '${d[0]} ${d[1]}'
 	}
 	return o
+}
+
+// raw_msg_opt is the message-select option for a raw (no-DBC) sender.
+const raw_msg_opt = '(raw id/data)'
+
+// sender_flat returns the index of (ci, si) in the flattened App.senders list, or
+// -1. fire_sender works off that flat index.
+fn sender_flat(app &App, ci int, si int) int {
+	for k, sr in app.senders {
+		if sr.ch_idx == ci && sr.sidx == si {
+			return k
+		}
+	}
+	return -1
+}
+
+// generators_panel is the interactive-generator surface (conventional tooling IG-style): senders
+// grouped by channel, each a clickable button that transmits its frame plus an
+// inline editor (name/key/trigger/cycle + DBC message & signal values, or a raw
+// id/data). Add/remove senders here; Save writes them back to the project `.yml`.
+// Hotkeys work app-wide (see handle_hotkey) whether or not this panel is open.
+fn generators_panel(mut window gui.Window) gui.View {
+	app := window.state[App]()
+	mut rows := []gui.View{}
+	// Header: title + Save (persists the edited senders to the project file).
+	rows << gui.row(
+		v_align: .middle
+		sizing:  gui.fill_fit
+		spacing: 8
+		content: [
+			gui.text(text: 'Interactive generators', text_style: gui.theme().b3),
+			gui.button(
+				id_focus:  0
+				max_width: 70
+				h_align:   .left
+				content:   [gui.text(text: 'Save')]
+				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					do_save_project(mut w)
+				}
+			),
+		]
+	)
+	rows << gui.text(
+		text:       'click ▸ or press its key to transmit (▶ Start first); … edits, × removes'
+		text_style: trace_text_style()
+	)
+	mut focus := u32(2000) // unique id_focus base per editable widget (stride below)
+	for ci, ch in app.proj.channels {
+		// Channel header + Add button.
+		rows << gui.row(
+			v_align: .middle
+			sizing:  gui.fill_fit
+			spacing: 6
+			padding: gui.Padding{6, 0, 1, 0}
+			content: [
+				gui.text(text: ch.name, text_style: gui.theme().b4),
+				gui.button(
+					id_focus:  0
+					max_width: 60
+					h_align:   .left
+					content:   [gui.text(text: '＋ Add')]
+					on_click:  fn [ci] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+						add_sender(ci, mut w)
+					}
+				),
+			]
+		)
+		for si, s in ch.senders {
+			ekey := '${ci}:${si}'
+			editing := app.gen_edit[ekey]
+			flat := sender_flat(app, ci, si)
+			frame := app.build_sender_frame(s)
+			mut tags := ['0x${frame.id:X}']
+			if s.trigger == 'cyclic' && s.cycle_ms > 0 {
+				tags << 'every ${s.cycle_ms}ms'
+			} else {
+				tags << s.trigger
+			}
+			key_label := if s.key != '' { '  [${s.key}]' } else { '' }
+			// Row: fire button · edit toggle · remove.
+			rows << gui.row(
+				v_align: .middle
+				spacing: 4
+				padding: gui.Padding{0, 0, 0, 8}
+				content: [
+					gui.button(
+						id_focus:  0
+						min_width: 180
+						max_width: 230
+						h_align:   .left
+						content:   [gui.text(text: '▸ ${s.name}${key_label}')]
+						on_click:  fn [flat] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+							fire_sender(flat, mut w)
+							w.set_id_focus(0)
+						}
+					),
+					gui.button(
+						id_focus:  0
+						max_width: 30
+						h_align:   .left
+						content:   [gui.text(text: if editing { '▾' } else { '…' })]
+						on_click:  fn [ekey] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+							mut a := w.state[App]()
+							a.gen_edit[ekey] = !a.gen_edit[ekey]
+						}
+					),
+					gui.button(
+						id_focus:  0
+						max_width: 30
+						h_align:   .left
+						content:   [gui.text(text: '×')]
+						on_click:  fn [ci, si] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+							remove_sender(ci, si, mut w)
+						}
+					),
+				]
+			)
+			rows << gui.text(text: '    ${tags.join(' · ')}', text_style: trace_text_style())
+			if editing {
+				rows << sender_editor(app, mut window, ci, si, s, focus)
+			}
+			focus += 40 // reserve a unique id_focus block per sender (editor uses focus..+~30)
+		}
+	}
+	return gui.column(
+		sizing:          gui.fill_fill
+		padding:         gui.padding_medium
+		spacing:         3
+		id_scroll:       id_scroll_gen
+		scroll_mode:     .vertical_only
+		scrollbar_cfg_y: &gui.ScrollbarCfg{
+			overflow: .visible
+		}
+		content:         rows
+	)
+}
+
+// sender_editor renders the inline editor for one sender: name, key, trigger,
+// cycle_ms (cyclic only), the DBC message (or raw), and the per-signal values
+// (message-based) or the id + hex data (raw). `focus` is the unique id_focus base.
+fn sender_editor(app &App, mut window gui.Window, ci int, si int, s project.Sender, focus u32) gui.View {
+	mut ed := []gui.View{}
+	lbl := gui.theme().n4
+	// name + key.
+	ed << gui.row(
+		v_align: .middle
+		spacing: 4
+		content: [
+			gui.text(text: 'name', text_style: lbl),
+			gui.input(
+				id_focus:        focus + 0
+				text:            s.name
+				width:           150
+				height:          22
+				sizing:          gui.fixed_fixed
+				padding:         gui.Padding{2, 5, 2, 5}
+				on_text_changed: fn [ci, si] (_ &gui.Layout, v string, mut w gui.Window) {
+					set_sender_name(ci, si, v, mut w)
+				}
+			),
+			gui.text(text: 'key', text_style: lbl),
+			gui.input(
+				id_focus:        focus + 1
+				text:            s.key
+				width:           34
+				height:          22
+				sizing:          gui.fixed_fixed
+				padding:         gui.Padding{2, 5, 2, 5}
+				on_text_changed: fn [ci, si] (_ &gui.Layout, v string, mut w gui.Window) {
+					set_sender_key(ci, si, v, mut w)
+				}
+			),
+		]
+	)
+	// trigger + cycle_ms.
+	mut trig_row := [
+		gui.View(gui.text(text: 'trigger', text_style: lbl)),
+		window.select(
+			id:        'gentrig_${ci}_${si}'
+			id_focus:  focus + 2
+			select:    [s.trigger]
+			options:   ['manual', 'key', 'cyclic']
+			min_width: 84
+			max_width: 100
+			on_select: fn [ci, si] (sel []string, mut _ gui.Event, mut w gui.Window) {
+				if sel.len > 0 {
+					set_sender_trigger(ci, si, sel[0], mut w)
+				}
+			}
+		),
+	]
+	if s.trigger == 'cyclic' {
+		trig_row << gui.text(text: 'ms', text_style: lbl)
+		trig_row << gui.input(
+			id_focus:        focus + 3
+			text:            '${s.cycle_ms}'
+			width:           54
+			height:          22
+			sizing:          gui.fixed_fixed
+			padding:         gui.Padding{2, 5, 2, 5}
+			on_text_changed: fn [ci, si] (_ &gui.Layout, v string, mut w gui.Window) {
+				set_sender_cycle(ci, si, v.int(), mut w)
+			}
+		)
+	}
+	ed << gui.row(v_align: .middle, spacing: 4, content: trig_row)
+	// message select: raw or any DBC message.
+	mut msg_opts := [raw_msg_opt]
+	for m in app.db.messages {
+		msg_opts << m.name
+	}
+	cur_msg := if s.message != '' { s.message } else { raw_msg_opt }
+	ed << gui.row(
+		v_align: .middle
+		spacing: 4
+		content: [
+			gui.text(text: 'msg', text_style: lbl),
+			window.select(
+				id:        'genmsg_${ci}_${si}'
+				id_focus:  focus + 4
+				select:    [cur_msg]
+				options:   msg_opts
+				min_width: 130
+				max_width: 180
+				on_select: fn [ci, si] (sel []string, mut _ gui.Event, mut w gui.Window) {
+					if sel.len > 0 {
+						set_sender_message(ci, si, sel[0], mut w)
+					}
+				}
+			),
+		]
+	)
+	// Per-signal value inputs (message-based) OR id + data (raw).
+	if s.message != '' && app.db.messages.any(it.name == s.message) {
+		msg := app.db.messages.filter(it.name == s.message)[0]
+		mut fx := u32(6)
+		for sig in msg.signals {
+			cur := sender_sig_value(s, sig.name)
+			signame := sig.name
+			unit := if sig.unit != '' { ' ${sig.unit}' } else { '' }
+			ed << gui.row(
+				v_align: .middle
+				spacing: 4
+				padding: gui.Padding{0, 0, 0, 8}
+				content: [
+					gui.text(text: signame, text_style: gui.theme().b4, min_width: 100),
+					gui.input(
+						id_focus:        focus + fx
+						text:            gnum(cur)
+						width:           70
+						height:          22
+						sizing:          gui.fixed_fixed
+						padding:         gui.Padding{2, 5, 2, 5}
+						on_text_changed: fn [ci, si, signame] (_ &gui.Layout, v string, mut w gui.Window) {
+							set_sender_signal(ci, si, signame, v.f64(), mut w)
+						}
+					),
+					gui.text(text: unit, text_style: lbl),
+				]
+			)
+			fx++
+		}
+	} else {
+		ed << gui.row(
+			v_align: .middle
+			spacing: 4
+			content: [
+				gui.text(text: 'id', text_style: lbl),
+				gui.input(
+					id_focus:        focus + 6
+					text:            '${s.id:X}'
+					width:           70
+					height:          22
+					sizing:          gui.fixed_fixed
+					padding:         gui.Padding{2, 5, 2, 5}
+					placeholder:     'hex'
+					on_text_changed: fn [ci, si] (_ &gui.Layout, v string, mut w gui.Window) {
+						set_sender_id(ci, si, parse_hex_u32(v), mut w)
+					}
+				),
+				gui.text(text: 'data', text_style: lbl),
+				gui.input(
+					id_focus:        focus + 7
+					text:            hex(s.data)
+					width:           150
+					height:          22
+					sizing:          gui.fixed_fixed
+					padding:         gui.Padding{2, 5, 2, 5}
+					placeholder:     'hex bytes'
+					on_text_changed: fn [ci, si] (_ &gui.Layout, v string, mut w gui.Window) {
+						set_sender_data(ci, si, v, mut w)
+					}
+				),
+			]
+		)
+	}
+	return gui.column(
+		sizing:  gui.fill_fit
+		spacing: 3
+		padding: gui.Padding{2, 4, 4, 16}
+		content: ed
+	)
+}
+
+// sender_sig_value returns the configured value for a sender's signal, or 0.
+fn sender_sig_value(s project.Sender, name string) f64 {
+	for sg in s.signals {
+		if sg.name == name {
+			return sg.value
+		}
+	}
+	return 0.0
 }
 
 fn diag_panel(mut window gui.Window) gui.View {

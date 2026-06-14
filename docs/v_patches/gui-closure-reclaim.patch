@@ -1,5 +1,5 @@
 diff --git a/window_update.v b/window_update.v
-index 63e5c19..542848f 100644
+index 63e5c19..b18acb0 100644
 --- a/window_update.v
 +++ b/window_update.v
 @@ -8,6 +8,7 @@ module gui
@@ -26,7 +26,7 @@ index 63e5c19..542848f 100644
  	mut view := window.view_generator(window)
  	$if !prod {
  		if window.inspector_enabled {
-@@ -91,11 +101,16 @@ fn (mut window Window) update() {
+@@ -91,11 +101,26 @@ fn (mut window Window) update() {
  	}
  	layout_clear(mut window.layout)
  	window.layout = window.compose_layout(mut view)
@@ -39,7 +39,17 @@ index 63e5c19..542848f 100644
 +	// Reclaim closures created 2+ frames ago. keep=2 protects the just-built
 +	// frame and the previous one (which may still be the live/dispatched tree
 +	// until this update is committed).
-+	closure.reclaim_frames(2)
++	// EXCEPTION: while the mouse is locked (an in-progress drag — splitter,
++	// scrollbar, slider, dock-redock, text-select), gui holds the mousedown
++	// frame's captured callbacks in view_state.mouse_lock and keeps invoking
++	// them across the rebuilds the drag triggers. Reclaiming would free those
++	// still-live closures (e.g. a splitter's on_change), turning the next drag
++	// event into a NULL-fn-pointer crash. Defer reclamation until the drag ends;
++	// the few frames' closures that accumulate during a short drag are freed on
++	// the first idle frame after mouse_up.
++	if !window.mouse_is_locked() {
++		closure.reclaim_frames(2)
++	}
  	window.stats.update_max_renderers(usize(window.renderers.len))
  }
  

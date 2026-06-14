@@ -1,8 +1,8 @@
 diff --git a/vlib/builtin/closure/closure.c.v b/vlib/builtin/closure/closure.c.v
-index ffe438d..d36f0b1 100644
+index ffe438dc8..068654bd8 100644
 --- a/vlib/builtin/closure/closure.c.v
 +++ b/vlib/builtin/closure/closure.c.v
-@@ -29,6 +29,42 @@ mut:
+@@ -29,6 +29,66 @@ mut:
  
  __global g_closure = Closure{}
  
@@ -15,6 +15,11 @@ index ffe438d..d36f0b1 100644
 +mut:
 +	ctx   voidptr
 +	frame u32
++	// owner identifies the thread whose frame-build window stamped this closure
++	// (0 = not frame-stamped). reclaim_frames only reclaims closures it owns, so
++	// one build thread can never collect another build thread's live closures
++	// even though the table and frame counters would otherwise let it.
++	owner u64
 +}
 +
 +// g_closure_live maps each live closure (its user-facing pointer) to its
@@ -30,14 +35,33 @@ index ffe438d..d36f0b1 100644
 +__global g_closure_live = map[voidptr]ClosureLiveInfo{}
 +
 +// g_closure_frame is the current frame counter, advanced by closure_begin_frame_build.
++// THREAD-LOCAL: the frame-build window belongs to the thread that opened it (the
++// UI thread in an immediate-mode app). Were this process-global, a closure created
++// on a *worker* thread while the UI thread is mid-build would be stamped with the
++// UI frame and could be reclaimed by closure_reclaim_frames even though it was
++// never part of the discarded frame tree — a dangling function pointer. Keeping it
++// per-thread means only closures created on the building thread are frame-stamped.
++@[thread_local]
 +__global g_closure_frame = u32(0)
 +
 +// g_closure_in_build is true only between closure_begin_frame_build and
 +// closure_end_frame_build (i.e. while an immediate-mode UI is building a frame's
 +// view). Only closures created in that window are frame-stamped and thus eligible
-+// for closure_reclaim_frames; all others (app setup, event handlers) get the
-+// closure_frame_never sentinel and are never auto-reclaimed.
++// for closure_reclaim_frames; all others (app setup, event handlers, and closures
++// built on other threads) get the closure_frame_never sentinel and are never
++// auto-reclaimed. THREAD-LOCAL for the same reason as g_closure_frame above.
++@[thread_local]
 +__global g_closure_in_build = false
++
++// g_closure_owner_seq hands out a unique, stable owner id to each thread that
++// builds frames. Assigned under closure_mtx (see closure_owner_id), so no atomics.
++__global g_closure_owner_seq = u64(0)
++
++// g_closure_owner is THIS thread's frame-build owner id (0 = not yet assigned).
++// Thread-local: each build thread gets its own id, recorded on the closures it
++// stamps so reclaim_frames only touches its own (see ClosureLiveInfo.owner).
++@[thread_local]
++__global g_closure_owner = u64(0)
 +
 +// closure_frame_never marks a closure as not eligible for frame-epoch reclamation.
 +const closure_frame_never = u32(0xffffffff)
@@ -45,7 +69,7 @@ index ffe438d..d36f0b1 100644
  enum MemoryProtectAtrr {
  	read_exec
  	read_write
-@@ -402,10 +438,22 @@ fn closure_create(func voidptr, data voidptr) voidptr {
+@@ -402,10 +462,23 @@ fn closure_create(func voidptr, data voidptr) voidptr {
  			p[1] = func // Target function to execute
  		}
  	}
@@ -58,6 +82,7 @@ index ffe438d..d36f0b1 100644
 +			g_closure_live[ret] = ClosureLiveInfo{
 +				ctx:   data
 +				frame: if g_closure_in_build { g_closure_frame } else { closure_frame_never }
++				owner: if g_closure_in_build { closure_owner_id() } else { u64(0) }
 +			}
 +		}
 +	}
@@ -69,7 +94,7 @@ index ffe438d..d36f0b1 100644
  }
  
  // closure_data returns the userdata pointer associated with a closure object.
-@@ -421,20 +469,22 @@ fn closure_data(closure voidptr) voidptr {
+@@ -421,20 +494,22 @@ fn closure_data(closure voidptr) voidptr {
  	}
  }
  
@@ -103,7 +128,7 @@ index ffe438d..d36f0b1 100644
  		mut data := nil
  		if is_ppc64() {
  			data = p[2]
-@@ -442,7 +492,15 @@ fn closure_try_destroy(closure voidptr) {
+@@ -442,7 +517,22 @@ fn closure_try_destroy(closure voidptr) {
  			data = p[0]
  		}
  		if !isnil(data) {
@@ -112,6 +137,13 @@ index ffe438d..d36f0b1 100644
 +				// Drop the GC reference; the collectable context is reclaimed by
 +				// the GC. No explicit free -> no possibility of a double-free.
 +				if !isnil(user_ptr) {
++					// Clear the value before deleting the key. `map.delete` zeroes
++					// only the key; the value (whose `ctx` field is GC-scanned) can
++					// linger in the backing DenseArray until a later compaction —
++					// which for small/sparse maps may never come — keeping the
++					// context rooted and defeating reclamation. Null the root in
++					// place first so the deleted slot holds no live pointer.
++					g_closure_live[user_ptr] = ClosureLiveInfo{}
 +					g_closure_live.delete(user_ptr)
 +				}
 +			} $else {
@@ -120,7 +152,7 @@ index ffe438d..d36f0b1 100644
  		}
  		p[0] = g_closure.free_closure_ptr
  		if is_ppc64() {
-@@ -454,5 +512,115 @@ fn closure_try_destroy(closure voidptr) {
+@@ -454,5 +544,134 @@ fn closure_try_destroy(closure voidptr) {
  		}
  		g_closure.free_closure_ptr = exec_ptr
  	}
@@ -144,20 +176,31 @@ index ffe438d..d36f0b1 100644
 +// closure_begin_frame_build advances the frame counter and marks the start of a
 +// frame's view build: closures created until closure_end_frame_build are stamped
 +// with this frame and become eligible for closure_reclaim_frames (INTERNAL).
++// closure_owner_id returns this thread's stable frame-build owner id, assigning
++// one on first use. CALLER MUST HOLD the closure mutex (g_closure_owner_seq is
++// shared); both call sites (closure_create stamping, closure_reclaim_frames) do.
++fn closure_owner_id() u64 {
++	if g_closure_owner == 0 {
++		g_closure_owner_seq++
++		g_closure_owner = g_closure_owner_seq
++	}
++	return g_closure_owner
++}
++
 +fn closure_begin_frame_build() {
 +	closure_mtx_lock_platform()
 +	g_closure_frame++
 +	g_closure_in_build = true
- 	closure_mtx_unlock_platform()
- }
++	closure_mtx_unlock_platform()
++}
 +
 +// closure_end_frame_build ends the current frame's view-build window; closures
 +// created after this are not frame-stamped and never auto-reclaimed (INTERNAL).
 +fn closure_end_frame_build() {
 +	closure_mtx_lock_platform()
 +	g_closure_in_build = false
-+	closure_mtx_unlock_platform()
-+}
+ 	closure_mtx_unlock_platform()
+ }
 +
 +// closure_reclaim_frames reclaims every live closure created `keep` or more
 +// frames ago (by closure_advance_frame). Intended for long-running immediate-mode
@@ -171,11 +214,19 @@ index ffe438d..d36f0b1 100644
 +		}
 +		closure_mtx_lock_platform()
 +		cur := g_closure_frame
++		me := closure_owner_id()
 +		mut doomed := []voidptr{}
 +		for k, info in g_closure_live {
 +			// skip closures not created during a view build (setup / event
 +			// handlers): they may legitimately outlive `keep` frames.
 +			if info.frame == closure_frame_never {
++				continue
++			}
++			// only reclaim closures stamped by THIS thread's frame builds — the
++			// table is process-global but frame counters are per-thread, so
++			// another build thread's frames are meaningless here (and its
++			// closures may still be live).
++			if info.owner != me {
 +				continue
 +			}
 +			// reclaim if created `keep`+ frames ago (guard against u32 wrap)
@@ -236,8 +287,21 @@ index ffe438d..d36f0b1 100644
 +		return -1
 +	}
 +}
+diff --git a/vlib/v/gen/c/cgen.v b/vlib/v/gen/c/cgen.v
+index 084bacfb5..3034d5fe9 100644
+--- a/vlib/v/gen/c/cgen.v
++++ b/vlib/v/gen/c/cgen.v
+@@ -7318,7 +7318,7 @@ fn (mut g Gen) selector_expr(node ast.SelectorExpr) {
+ 			}
+ 			g.write('builtin__closure__closure_create(${name}, ')
+ 			if !receiver.typ.is_ptr() {
+-				g.write('builtin__memdup_uncollectable(')
++				g.write('builtin__memdup(')
+ 			}
+ 			mut has_addr := false
+ 			if !node.expr_type.is_ptr() {
 diff --git a/vlib/v/gen/c/fn.v b/vlib/v/gen/c/fn.v
-index ec92a84..06071fb 100644
+index 3a3f2a726..3fbdc2796 100644
 --- a/vlib/v/gen/c/fn.v
 +++ b/vlib/v/gen/c/fn.v
 @@ -1805,7 +1805,11 @@ fn (mut g Gen) gen_anon_fn(mut node ast.AnonFn) {
@@ -253,3 +317,16 @@ index ec92a84..06071fb 100644
  	g.indent++
  	for var in node.inherited_vars {
  		mut has_inherited := false
+diff --git a/vlib/v/markused/markused.v b/vlib/v/markused/markused.v
+index 41c541e2d..a107396da 100644
+--- a/vlib/v/markused/markused.v
++++ b/vlib/v/markused/markused.v
+@@ -113,7 +113,7 @@ pub fn mark_used(mut table ast.Table, mut pref_ pref.Preferences, ast_files []&a
+ 			core_fns << '_result_ok'
+ 		}
+ 		if table.used_features.anon_fn {
+-			core_fns << 'memdup_uncollectable'
++			core_fns << 'memdup'
+ 			core_fns << 'builtin.closure.closure_alloc'
+ 			core_fns << 'builtin.closure.closure_init'
+ 			core_fns << 'builtin.closure.closure_create'

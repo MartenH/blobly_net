@@ -72,6 +72,25 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
   clickable `gui.row`), which also worked but used hardcoded colors so it didn't follow the theme. NOTE:
   a fit-sized (`sizing: fit_fit`) lone row child does NOT shrink to content here — use `min/max_width`.
   Worth reporting upstream / checking on a gui bump.
+- 🔴 **CRASH: only use glyphs the bundled font can OUTLINE in `gui.text`. Colour-emoji / unsupported
+  glyphs crash the release build.** vglyph's glyph path (`glyph_atlas.v` `load_glyph`) requires a
+  vector outline (`glyph.outline.n_points > 0`). A glyph the font lacks an outline for — a **colour
+  emoji** (loaded as an embedded bitmap, e.g. `💾`) or a dingbat the bundled font doesn't carry
+  (`✎` U+270E, `⚙` U+2699) — has `n_points == 0`. In a **`-g`/debug** build that hits an explicit
+  `panic('FT_Outline_Translate requires loaded outline, got empty')`; in a **release** build the
+  `$if debug` guard is compiled out, so it proceeds on the empty/bitmap glyph and **corrupts memory →
+  `invalid memory access`, usually with a bogus deep `v_stable_sort` backtrace** (the backtrace is
+  misleading — the real fault is the glyph). Symptom that bit us: the Generators panel's `💾 Save`
+  button crashed `./build/cantester` for the user. **Rule: only use glyphs you've SEEN render in a
+  screenshot.** Verified-safe set in this app: `▸ ▾ ● ＋ × … ▶` + the activity-bar icons
+  `☰ ▽ ⊞ ⊙ ▷ ⌗ ∿ ▦ ➤ ⎍ ✚ Σ ╱`. Known-UNSAFE in the bundled font: `💾 ✎ ⚙`. (The toolbar's
+  `🌙 📂 ⏺` happen to have outlines in this font, so not all emoji are unsafe — but don't assume; test.)
+  Diagnose deterministically with a `-g` build: `v -g … && ./build/<app>_dbg` panics on the first bad
+  glyph with the vglyph message. ⚠️ Caveat: a `-g` build also panics on a **pre-existing latent** empty
+  glyph somewhere in the always-rendered UI (a whitespace/decorative glyph) — that one is benign in
+  release (FT translate of 0 points is a no-op), distinct from the colour-emoji corruption above. The
+  real upstream fix is the vglyph whitespace-glyph guard (captured in `docs/windows_build.md`); until
+  it's applied on Linux, just avoid unsupported glyphs.
 - 🟡 **An `on_click` `gui.row` used as a *row child* stretches and shoves its following siblings to
   the far right.** Everything is `fit` by default (`SizingType` zero value is `.fit`; `gui.text`
   single-line is `fit_fit`; `ContainerCfg.sizing` defaults to `fit_fit`), and the container honours

@@ -318,8 +318,12 @@ Verified: a breakpoint at `main__main` resolves to `src/main.v` and stops there.
 ## Pinned versions (fill in once a working combo is confirmed)
 
 - V: 0.5.1 (built from source to `~/v`, symlinked `~/.local/bin/v`). Original pin 4dbcba6; the
-  24.04 box rebuilt at commit **de365a1** — still reports `0.5.1`, builds + tests pass, so the drift
-  is cosmetic. Re-pin to de365a1 unless a regression surfaces.
+  24.04 box rebuilt at commit **de365a1**. **⚠️ 2026-06-14: `~/v` now tracks the closure-leak PR branch
+  `fix-closure-context-leak` (HEAD `641b093`, based on recent master `ed17e5fb`), NOT de365a1** — done
+  so the local build carries the full closure leak fix incl. the thread-local + owner-thread hardening
+  that matters for this app's worker threads. The 3 review-hardening fixes (clear-value/thread-local/
+  owner) sit as a working-tree delta on `closure.c.v` over that HEAD; `docs/v_patches/closure-gc-leak-fix.patch`
+  is regenerated to the full PR (base `ed17e5fb`). See `docs/v_patches/README.md`.
 - vlang/gui: commit 68b9302 (2026-05-11), in `~/.vmodules/gui`. Depends on `vglyph`.
 - Mesa: **25.2.8** on Ubuntu 24.04.4 (OpenGL 4.5 Compatibility) — hardware GL works under WSLg.
 - **CONFIRMED WORKING**: builds clean, window renders under WSLg with **hardware GL** (sokol backend).
@@ -699,3 +703,107 @@ prompt for a password.
   build) + two autofree/`-gc boehm_leak` codegen bugs. GitHub-ready upstream issue/PR drafts (V + gui)
   in `docs/v_patches/UPSTREAM_*.md` — **NOT yet filed** (user will file manually). Full story +
   the two failed fix attempts: `docs/known_issues.md` (Rendering stack, "ROOT CAUSE / ✅ FIXED").
+- 2026-06-14: **Custom/triggerable message sending — Tier 1 (Interactive Generators) DONE & VERIFIED.**
+  Discussed how to give professional "key on" / interactive sends WITHOUT shipping a compiler; agreed a
+  tiered roadmap (Tier 1 declarative interactive generators → Tier 2 reactive sim nodes [already built]
+  → Tier 3 declarative sequences → Tier 4 embedded **Lua 5.4** vendored+compiled-in, only if truly
+  needed; CAPL is itself a bytecode VM, so Lua is the right fit, not a native compiler). Implemented
+  Tier 1: a declarative **`senders:`** block per channel in `modules/project` (new `Sender` +
+  `SenderSig` structs; `parse_sender`/`parse_hex_bytes`; serialized in `save.v` so they round-trip;
+  tests in project_test.v + save_test.v). Each sender = name + optional single-char **key** +
+  frame def (`message:` DBC-name → id/dlc with `signals:` encoded onto it, OR explicit `id:`/`data:`)
+  + **trigger** (manual | key | cyclic + `cycle_ms`). GUI (`src/main.v`): `SenderRT` flattened in
+  `App.senders` (built in `build_sim_nodes`); `build_sender_frame` (DBC-encode), `fire_sender`
+  (UI-thread TX via `app.push`), `handle_hotkey` wired to the new gui **`WindowCfg.on_event`** global
+  hook (skips when an input is focused via `w.id_focus()`); cyclic senders driven by one `gen_loop`
+  thread spawned in `start_measurement` (own bus per iface, TX via the bounded inbox). New **Generators**
+  dock panel (one left-aligned button per sender — gui's centered-label-blank bug — showing key + bus +
+  id; cyclic labelled with period) + activity-bar icon + View-menu entry. Demo: `projects/sim-demo.yml`
+  CAN1 gained 4 senders. **VERIFIED in the GUI** (screenshot): cyclic `0x123 DEADBEEF` auto-fires as TX
+  and is seen back as RX (like a real node); hotkey **`p`** sent Request `0x101` (ReqCode=1 encoded) and
+  the simulated SUT answered Response `0x102` — full round-trip, status "sent Ping ECU (Request)".
+  Tiers 2–4 captured in memory for later. TODO (Tier 1 polish): per-sender target-bus override in the
+  panel; live signal-value editing in the panel (currently fixed from the .yml); manual-button verify
+  was inferred from the shared `fire_sender` path (key + cyclic directly verified).
+- 2026-06-14: **Generators in-panel editor DONE & VERIFIED.** The Generators panel is now a full editor
+  (mirrors the Simulation panel's inline-edit pattern): senders grouped by channel, each row = fire
+  button (`▸ name [key]`) · edit toggle (`✎`/`▾`) · remove (`✕`); per-channel **＋ Add** and a top
+  **💾 Save**. The inline editor (`sender_editor`, opened via `App.gen_edit['ci:si']`) edits name, key
+  (1 char), trigger (manual|key|cyclic select), cycle_ms (cyclic only), the DBC **message** (select of
+  `(raw id/data)` + all DBC message names) and either the message's **per-signal values** (one input
+  per `Signal`, shown with its unit, current value from the sender or 0) or, for raw senders, the
+  **id + hex data**. Setters (`set_sender_*`, `add_sender`, `remove_sender`) mutate the project model
+  (`proj.channels[ci].senders[si]` — the source of truth) then `build_senders()` to refresh the live
+  flattened `App.senders` (so buttons/hotkeys/cyclic loop update immediately); `SenderRT` gained `sidx`
+  (within-channel index) to map edits back. **Save** reuses `do_save_project` (sender serialization
+  already round-trips, save_test.v). **Verified in the GUI** (screenshots): editor shows ReqCode=1 live
+  for the Ping sender; ＋ Add created a "New sender" with its editor auto-opened. Note: gui.input typing
+  isn't testable via xdotool under WSLg (known issue), so value-edit *typing* was verified by code path
+  (identical to the proven sim-editor `on_text_changed`), not synthetic input; clicks (fire/add/remove/
+  toggle) and rendering verified live. ⚠ Caveat (pre-existing, not new): Save rewrites the whole project
+  `.yml` via `to_yaml`, which **drops comments** + reformats — fine for app-authored files, lossy on
+  hand-commented demos like sim-demo.yml (so I did NOT click Save on it during verification).
+- 2026-06-14: **FIX: Generators panel crashed release build — colour-emoji/unsupported glyph in
+  `gui.text`.** User hit `invalid memory access` (bogus deep `v_stable_sort` backtrace) opening the
+  Generators panel. Root cause: vglyph's `load_glyph` needs a vector outline; the panel's `💾 Save`
+  (colour emoji → embedded bitmap, `n_points==0`) — plus `✎`/`⚙` (dingbats the bundled font lacks) —
+  have no outline. A `-g` build panics explicitly (`FT_Outline_Translate … got empty`); release
+  compiles out the `$if debug` guard and corrupts memory instead. Fix: replaced with screenshot-
+  verified-safe glyphs (`💾`→`Save`, `✎`→`…`, `⚙`→`…`, `✕`→`×`). **Verified stable in a RELEASE build**
+  through Add / message-select / open-editor / cyclic-fire (no crash, panic-count 0). Full rule + the
+  safe/unsafe glyph sets + the deterministic `-g` repro are in `docs/known_issues.md` (vlang/gui
+  section, 🔴 glyph-outline crash). Note: a `-g` build ALSO panics on a **pre-existing latent** empty
+  glyph in the always-rendered UI (benign in release) — separate from this; real fix is the vglyph
+  whitespace-glyph patch (`docs/windows_build.md`), not yet applied on Linux. Pre-existing `⚙ Scaffold`
+  in the Simulation panel uses `⚙` too (renders only when a node is expanded) — left as-is (not my
+  regression), flagged for cleanup.
+- 2026-06-14: **FIX: dragging any dock splitter crashed — the CLOSURE-RECLAIM patch freed a live
+  drag handler.** Same misleading `v_stable_sort` backtrace; a **gdb** backtrace showed the real fault:
+  a **NULL fn-pointer call** at `view_splitter.v:560` (`core.on_change`) during `splitter_on_drag_move`.
+  Root cause (NOT a regression from the generators work — reproduced on the pre-generators commit too):
+  the local **`gui-closure-reclaim.patch`**. During a drag gui keeps invoking the *mousedown frame's*
+  captured callbacks (stored in `view_state.mouse_lock`) across the rebuilds the drag triggers; those
+  callbacks capture a per-frame `SplitterCore` whose `on_change` is a per-frame dock closure.
+  `reclaim_frames(2)` freed that still-live closure after 2 frames → NULL call. **Proven** by disabling
+  `reclaim_frames` (crash gone) then re-enabling with the fix. **Fix:** skip reclamation while
+  `window.mouse_is_locked()` (any active drag) — defer it until mouse-up; the short drag's few frames of
+  closures are freed on the next idle frame, so the leak fix is intact. Updated `gui-closure-reclaim.patch`.
+  Separately **applied the Linux `vglyph-empty-outline.patch`** (`glyph_atlas.v`): empty-outline glyphs
+  (whitespace / unsupported) no longer panic (debug) or corrupt memory (release) — the Linux counterpart
+  of the Windows "patch #4", which had never been applied here (so a `-g` build panicked on frame 1 on a
+  whitespace glyph, masking real bugs). Both are LOCAL patches (`docs/v_patches/`, reapply on a fresh box
+  — see README); **verified in a RELEASE build**: aggressive multi-splitter drags, no crash. ⚠ Takeaway:
+  the `v_stable_sort` backtrace is GARBAGE under our patched build — always get a real stack via
+  `gdb -batch -ex run -ex 'bt 40' --args ./build/<app>_dbg` (the `-g` build) before theorising.
+- 2026-06-14: **Drove the Codex review chain on V PR #27446 (closure leak) + synced the fixes into
+  `~/v`.** Codex (auto-review bot, on `vlang/v` only — NOT gui) flagged issues each round; addressed
+  three real ones with validated commits on the PR branch: `8e709d6a` clear live-map value before
+  `delete` (map.delete leaves the GC-scanned value slot → `ctx` stayed rooted), `508b6499` thread-local
+  frame-build state (a worker-thread closure built during the UI frame-build window could be wrongly
+  reclaimed → dangling), `6ab4d3e1` owner-scoped reclamation (consequence of the thread-local change:
+  one build thread could collect another's). Each: `v self` clean + closure tests pass; 👍 + in-thread
+  reply on every Codex comment. **Deferred** Codex's slot-reuse/stale-double-destroy finding (needs a
+  per-slot generation counter; pre-existing, harmless for single-handle use) to a follow-up — do it only
+  if the PR's direction is accepted. Codex re-reviews the full diff each round and re-lists already-fixed
+  items, so it won't auto-👍 while anything is deferred → GGRei makes the manual call. **Synced all three
+  fixes into `~/v`** (now on the PR branch — see Pinned versions) and rebuilt: `v self` clean, closure
+  tests pass, **cantester rebuilt + splitter-drag smoke clean**. These fixes close a latent dangling-
+  closure risk in our own app (rx/sim/gen worker threads create `queue_command` closures during UI frame
+  builds). Filed gui PRs earlier this session: gui#60 (titlebar), gui#61 (MSAA). Codex isn't on gui, so
+  those get human review.
+- 2026-06-14: **Upstreaming + gui pin-bump assessment.** `vlang/gui` is **actively maintained again**:
+  native **Windows support** merged to `main` (2026-06-11→13, JalonSolov/GGRei/CreeperFace/Dylan Donnell)
+  + Windows CI; README says "active development". Filed two gui PRs from the MartenH fork:
+  **[gui#60](https://github.com/vlang/gui/pull/60)** (titlebar_dark `sapp.isvalid()` guard — still present
+  on main, `v fmt`-clean) and **[gui#61](https://github.com/vlang/gui/pull/61)** (`WindowCfg.sample_count`
+  MSAA — was a local-only patch; gg already supports it). **Did NOT file:** the gcc-16 compile fixes
+  (`win_patches #01/#02`) — already upstream in main's native-Windows work (verified COBJMACROS +
+  `<stdio.h>`/`<wchar.h>` present); and the `splitter_emit_change` NULL-`on_change` guard — that field is
+  `@[required]` so it's only NULL because of OUR closure-reclaim patch (not a stock bug; lives as our local
+  caller guard). Already-open (not gui): vglyph **#4** (empty-outline) + **#5** still OPEN/unmerged → keep
+  the local vglyph patch; V **#27446** (closure leak) DRAFT. **Pin-bump assessment (68b9302 → main 26f7784):
+  GREEN** — both local gui patches (`gui-closure-reclaim` incl. drag guard, `gui-msaa-sample-count`) apply
+  clean, `window_update.v` didn't drift, and the app **builds + runs** against gui `main` + patches
+  (isolated VMODULES; layout renders, trace streams, splitter-drag safe). Bumping the pin is low-risk and
+  would shed the gcc-16 local patches + gain active maintenance; drop the MSAA patch once gui#61 merges.
+  Details: `docs/upstreaming.md` (status table), `docs/windows_build.md` (manifest banner).

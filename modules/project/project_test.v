@@ -85,3 +85,67 @@ fn test_empty_channels() {
 	assert p.name == 'bare'
 	assert p.channels.len == 0
 }
+
+const senders_sample = '
+project:
+  name: senders
+channels:
+  - name: CAN1
+    interface: inproc:CAN1
+    senders:
+      - name: Ignition On
+        key: i
+        message: Powertrain
+        trigger: key
+        signals:
+          - { name: EngineSpeed, value: 800 }
+          - { name: Gear, value: 1 }
+      - name: Wake pulse
+        id: "0x123"
+        data: DE AD BE EF
+        trigger: cyclic
+        cycle_ms: 100
+'
+
+fn test_parse_senders() {
+	p := parse(senders_sample) or { panic(err) }
+	c := p.channels[0]
+	assert c.senders.len == 2
+
+	s0 := c.senders[0]
+	assert s0.name == 'Ignition On'
+	assert s0.key == 'i'
+	assert s0.message == 'Powertrain'
+	assert s0.trigger == 'key'
+	assert s0.signals.len == 2
+	assert s0.signals[0].name == 'EngineSpeed'
+	assert s0.signals[0].value == 800.0
+	assert s0.signals[1].name == 'Gear'
+	assert s0.signals[1].value == 1.0
+
+	s1 := c.senders[1]
+	assert s1.name == 'Wake pulse'
+	assert s1.id == 0x123
+	assert s1.data == [u8(0xDE), 0xAD, 0xBE, 0xEF]
+	assert s1.trigger == 'cyclic'
+	assert s1.cycle_ms == 100
+}
+
+fn test_sender_defaults() {
+	p := parse('project:\n  name: d\nchannels:\n  - name: CAN1\n    senders:\n      - name: Bare\n') or {
+		panic(err)
+	}
+	s := p.channels[0].senders[0]
+	assert s.name == 'Bare'
+	assert s.trigger == 'manual' // default
+	assert s.key == ''
+	assert s.signals.len == 0
+}
+
+fn test_parse_hex_bytes() {
+	assert parse_hex_bytes('DEADBEEF') == [u8(0xDE), 0xAD, 0xBE, 0xEF]
+	assert parse_hex_bytes('DE AD BE EF') == [u8(0xDE), 0xAD, 0xBE, 0xEF]
+	assert parse_hex_bytes('de:ad') == [u8(0xDE), 0xAD]
+	assert parse_hex_bytes('') == []u8{}
+	assert parse_hex_bytes('AABBC') == [u8(0xAA), 0xBB] // odd trailing nibble dropped
+}
