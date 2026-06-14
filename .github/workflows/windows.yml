@@ -53,8 +53,10 @@ jobs:
         run: |
           git -c core.autocrlf=false clone --quiet --depth 1 --branch fix-closure-context-leak https://github.com/MartenH/v.git C:\v-ct
           Push-Location C:\v-ct
-          .\make.bat
+          cmd /c makev.bat        # V's Windows bootstrap (tcc); NOT make.bat
+          $rc = $LASTEXITCODE
           Pop-Location
+          if ($rc -ne 0) { throw "makev.bat failed (exit $rc)" }
           if (-not (Test-Path C:\v-ct\v.exe)) { throw "v.exe not built from fix-closure-context-leak" }
           "C:\v-ct" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding ascii
           & C:\v-ct\v.exe version
