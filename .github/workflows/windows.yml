@@ -23,7 +23,8 @@ on:
   workflow_dispatch:
 
 env:
-  V_RELEASE: v-toolchain   # release that stores the prebuilt vcpkg-deps asset
+  V_RELEASE: v-toolchain   # release that stores the prebuilt V + vcpkg-deps assets
+  V_ASSET: v-closurefix-windows.zip   # prebuilt V BUILT FROM vlang/v#27446 (leak fix); mint on a working Windows V
   DEPS_ASSET: vcpkg-pango-x64-windows.zip   # prebuilt vcpkg x64-windows tree on the V_RELEASE
 
 jobs:
@@ -42,22 +43,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Build V from the closure-leak-fix branch (PR vlang/v#27446). The leak fix is
-      # partly a COMPILER codegen change (gen/c/fn.v emits a COLLECTABLE memdup for
-      # closure contexts instead of memdup_uncollectable), so it cannot be patched
-      # onto a prebuilt V — V must be built with it. make.bat bootstraps via the
-      # bundled tcc (~few min, no external compiler). This replaces the old prebuilt
-      # de365a1 download (= bumping the V pin to the leak-fix branch).
-      - name: Build V (closure-leak-fix branch, vlang/v#27446)
+      # Download a prebuilt V that already carries the closure leak fix. We do NOT
+      # build V here: makev.bat on Windows does a cold bootstrap (clone vlang/vc ->
+      # v_win.c via tcc -> v_stage.exe) that is known-broken — which is exactly why a
+      # prebuilt V is shipped as a release asset. The leak fix is partly a compiler
+      # codegen change (collectable memdup for closure contexts), so this asset must
+      # be V BUILT FROM the leak-fix branch (vlang/v#27446), produced on a working
+      # Windows V (`v self` on that branch), NOT the stock de365a1.
+      # Mint once:  (on a working Windows V checked out at fix-closure-context-leak)
+      #   v self;  Compress-Archive <v-install> v-closurefix-windows.zip
+      #   gh release upload v-toolchain v-closurefix-windows.zip --clobber
+      - name: Download prebuilt V (closure-leak fix, vlang/v#27446)
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          git -c core.autocrlf=false clone --quiet --depth 1 --branch fix-closure-context-leak https://github.com/MartenH/v.git C:\v-ct
-          Push-Location C:\v-ct
-          cmd /c makev.bat        # V's Windows bootstrap (tcc); NOT make.bat
-          $rc = $LASTEXITCODE
-          Pop-Location
-          if ($rc -ne 0) { throw "makev.bat failed (exit $rc)" }
-          if (-not (Test-Path C:\v-ct\v.exe)) { throw "v.exe not built from fix-closure-context-leak" }
+          gh release download $env:V_RELEASE --repo "$env:GITHUB_REPOSITORY" --pattern "$env:V_ASSET" --dir "$env:RUNNER_TEMP"
+          Expand-Archive -LiteralPath "$env:RUNNER_TEMP\$env:V_ASSET" -DestinationPath C:\v-ct -Force
+          if (-not (Test-Path C:\v-ct\v.exe)) { throw "v.exe not found after extracting $env:V_ASSET" }
           "C:\v-ct" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding ascii
           & C:\v-ct\v.exe version
 
