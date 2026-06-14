@@ -318,8 +318,12 @@ Verified: a breakpoint at `main__main` resolves to `src/main.v` and stops there.
 ## Pinned versions (fill in once a working combo is confirmed)
 
 - V: 0.5.1 (built from source to `~/v`, symlinked `~/.local/bin/v`). Original pin 4dbcba6; the
-  24.04 box rebuilt at commit **de365a1** — still reports `0.5.1`, builds + tests pass, so the drift
-  is cosmetic. Re-pin to de365a1 unless a regression surfaces.
+  24.04 box rebuilt at commit **de365a1**. **⚠️ 2026-06-14: `~/v` now tracks the closure-leak PR branch
+  `fix-closure-context-leak` (HEAD `641b093`, based on recent master `ed17e5fb`), NOT de365a1** — done
+  so the local build carries the full closure leak fix incl. the thread-local + owner-thread hardening
+  that matters for this app's worker threads. The 3 review-hardening fixes (clear-value/thread-local/
+  owner) sit as a working-tree delta on `closure.c.v` over that HEAD; `docs/v_patches/closure-gc-leak-fix.patch`
+  is regenerated to the full PR (base `ed17e5fb`). See `docs/v_patches/README.md`.
 - vlang/gui: commit 68b9302 (2026-05-11), in `~/.vmodules/gui`. Depends on `vglyph`.
 - Mesa: **25.2.8** on Ubuntu 24.04.4 (OpenGL 4.5 Compatibility) — hardware GL works under WSLg.
 - **CONFIRMED WORKING**: builds clean, window renders under WSLg with **hardware GL** (sokol backend).
@@ -771,6 +775,22 @@ prompt for a password.
   — see README); **verified in a RELEASE build**: aggressive multi-splitter drags, no crash. ⚠ Takeaway:
   the `v_stable_sort` backtrace is GARBAGE under our patched build — always get a real stack via
   `gdb -batch -ex run -ex 'bt 40' --args ./build/<app>_dbg` (the `-g` build) before theorising.
+- 2026-06-14: **Drove the Codex review chain on V PR #27446 (closure leak) + synced the fixes into
+  `~/v`.** Codex (auto-review bot, on `vlang/v` only — NOT gui) flagged issues each round; addressed
+  three real ones with validated commits on the PR branch: `8e709d6a` clear live-map value before
+  `delete` (map.delete leaves the GC-scanned value slot → `ctx` stayed rooted), `508b6499` thread-local
+  frame-build state (a worker-thread closure built during the UI frame-build window could be wrongly
+  reclaimed → dangling), `6ab4d3e1` owner-scoped reclamation (consequence of the thread-local change:
+  one build thread could collect another's). Each: `v self` clean + closure tests pass; 👍 + in-thread
+  reply on every Codex comment. **Deferred** Codex's slot-reuse/stale-double-destroy finding (needs a
+  per-slot generation counter; pre-existing, harmless for single-handle use) to a follow-up — do it only
+  if the PR's direction is accepted. Codex re-reviews the full diff each round and re-lists already-fixed
+  items, so it won't auto-👍 while anything is deferred → GGRei makes the manual call. **Synced all three
+  fixes into `~/v`** (now on the PR branch — see Pinned versions) and rebuilt: `v self` clean, closure
+  tests pass, **cantester rebuilt + splitter-drag smoke clean**. These fixes close a latent dangling-
+  closure risk in our own app (rx/sim/gen worker threads create `queue_command` closures during UI frame
+  builds). Filed gui PRs earlier this session: gui#60 (titlebar), gui#61 (MSAA). Codex isn't on gui, so
+  those get human review.
 - 2026-06-14: **Upstreaming + gui pin-bump assessment.** `vlang/gui` is **actively maintained again**:
   native **Windows support** merged to `main` (2026-06-11→13, JalonSolov/GGRei/CreeperFace/Dylan Donnell)
   + Windows CI; README says "active development". Filed two gui PRs from the MartenH fork:
