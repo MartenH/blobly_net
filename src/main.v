@@ -40,6 +40,7 @@ const id_scroll_buses = u32(7100)
 const id_scroll_sim = u32(7200)
 const id_scroll_plot = u32(7300)
 const id_scroll_diag = u32(7400)
+const id_scroll_gen = u32(7800) // Generators (interactive senders) panel
 const id_scroll_plot_outer = u32(7500) // Graphics root: clamps the panel measurement
 const id_scroll_symbols = u32(7600)    // Symbol Browser tree
 const id_scroll_busconfig = u32(7700)  // Bus Config candidate list
@@ -258,6 +259,7 @@ mut:
 	inbox        []InboxItem
 	inbox_mu     sync.Mutex
 	drain_queued bool
+	senders   []SenderRT // interactive generators flattened across channels (Generators panel + hotkeys)
 	sim_nodes []SimNode // simulated ECUs available per channel (Simulation panel)
 	sim_expanded map[int]bool // Simulation tree: channel idx -> expanded (default collapsed)
 	// Generator editor: which node's signals are shown ('ch:node'), and which single
@@ -334,6 +336,15 @@ fn trace_pass(app &App, which int, filter string, id u32, fields ...string) bool
 	return filter.len > 0 && trace_match(filter, ...fields)
 }
 
+// SenderRT is one interactive generator (project.Sender) bound to the channel it
+// belongs to. Flattened across all channels in App.senders so the Generators
+// panel and the global hotkey handler can fire any of them by index.
+struct SenderRT {
+mut:
+	ch_idx int
+	cfg    project.Sender
+}
+
 // SimNode is one simulated ECU offered in the Simulation panel: a configured ECU
 // on a channel, with a checkbox to connect it to the bus (= have the tester
 // simulate it). `cfg` carries its per-signal generators + response rules.
@@ -378,6 +389,119 @@ fn (mut app App) build_sim_nodes() {
 			}
 		}
 	}
+	app.build_senders()
+}
+
+// build_senders flattens every channel's interactive generators (`senders:`) into
+// App.senders, tagging each with its channel index. Rebuilt with build_sim_nodes
+// whenever the project changes, so the Generators panel + hotkeys stay in sync.
+fn (mut app App) build_senders() {
+	app.senders = []SenderRT{}
+	for i, ch in app.proj.channels {
+		for s in ch.senders {
+			app.senders << SenderRT{
+				ch_idx: i
+				cfg:    s
+			}
+		}
+	}
+}
+
+// build_sender_frame resolves a Sender into a CAN frame. With a `message` that
+// the DBC knows, it takes the id/ext/dlc from the message and encodes each signal
+// value onto a zero (or the explicit `data`) payload. Otherwise it uses the
+// explicit id + raw data verbatim.
+fn (app &App) build_sender_frame(s project.Sender) transport.CanFrame {
+	if s.message != '' {
+		for m in app.db.messages {
+			if m.name != s.message {
+				continue
+			}
+			mut data := if s.data.len > 0 {
+				s.data.clone()
+			} else {
+				dlc := if m.dlc > 0 { m.dlc } else { 8 }
+				[]u8{len: dlc}
+			}
+			for sg in s.signals {
+				for sig in m.signals {
+					if sig.name == sg.name {
+						sig.encode(mut data, sg.value)
+						break
+					}
+				}
+			}
+			return transport.CanFrame{
+				id:       m.id
+				extended: m.ext
+				data:     data
+			}
+		}
+	}
+	// No DBC message — explicit id/data (default to an 8-byte zero payload).
+	data := if s.data.len > 0 { s.data.clone() } else { []u8{len: 8} }
+	return transport.CanFrame{
+		id:       s.id
+		extended: s.ext || s.id > 0x7ff
+		data:     data
+	}
+}
+
+// fire_sender transmits sender `si`'s frame from the UI thread. It prefers the
+// sender's own channel when running, else the first running channel (so a sender
+// on an off bus still fires somewhere); records the frame as a TX trace row.
+fn fire_sender(si int, mut w gui.Window) {
+	mut app := w.state[App]()
+	if si < 0 || si >= app.senders.len {
+		return
+	}
+	sr := app.senders[si]
+	mut idx := -1
+	if sr.ch_idx < app.rt.len && app.rt[sr.ch_idx].running && app.rt[sr.ch_idx].bus != none {
+		idx = sr.ch_idx
+	} else {
+		for i in 0 .. app.rt.len {
+			if app.rt[i].running && app.rt[i].bus != none {
+				idx = i
+				break
+			}
+		}
+	}
+	if idx < 0 {
+		app.status = 'not running — press ▶ Start to send "${sr.cfg.name}"'
+		return
+	}
+	frame := app.build_sender_frame(sr.cfg)
+	mut bus := app.rt[idx].bus or { return }
+	bus.send(frame) or {
+		app.status = 'send failed: ${err}'
+		return
+	}
+	app.rt[idx].tx_count++
+	chname := if idx < app.proj.channels.len { app.proj.channels[idx].name } else { 'CAN${idx + 1}' }
+	app.push('TX', frame, chname)
+	app.status = 'sent "${sr.cfg.name}"'
+}
+
+// handle_hotkey fires the first sender whose `key` matches the typed character,
+// unless a text input is focused (so typing in a field never triggers sends).
+// Returns true if a sender fired (the event was consumed).
+fn handle_hotkey(char_code u32, mut w gui.Window) bool {
+	if w.id_focus() != 0 {
+		return false // a focusable widget (input/select) has focus — don't hijack typing
+	}
+	app := w.state[App]()
+	for si, sr in app.senders {
+		if sr.cfg.key.len == 0 {
+			continue
+		}
+		if u32(sr.cfg.key[0]) == char_code {
+			fire_sender(si, mut w)
+			w.update_window()
+			return true
+		}
+	}
+	return false
 }
 
 // sim_warnings validates every channel's simulated ECUs against its DBC and returns
@@ -680,6 +804,14 @@ fn main() {
 		width:        1500
 		height:       920
 		sample_count: 4 // MSAA — antialias the Graphics polylines (needs gui patch)
+		// Global hotkeys for interactive generators: a `char` event with no input
+		// focused fires the matching sender (CANoe "key on"). gui's per-widget
+		// handlers still run; we only act on otherwise-unconsumed typing.
+		on_event:     fn (e &gui.Event, mut w gui.Window) {
+			if e.typ == .char {
+				handle_hotkey(e.char_code, mut w)
+			}
+		}
 		on_init:      fn (mut w gui.Window) {
 			mut app := w.state[App]()
 			app.t0 = time.ticks()
@@ -958,6 +1090,62 @@ fn start_measurement(mut w gui.Window) {
 	}
 	app.running = true
 	app.status = 'running — ${opened} channel(s) attached'
+	// One thread drives all cyclic interactive generators (trigger: cyclic).
+	if app.senders.any(it.cfg.trigger == 'cyclic' && it.cfg.cycle_ms > 0) {
+		spawn fn (mut w gui.Window) {
+			gen_loop(mut w)
+		}(mut w)
+	}
+}
+
+// gen_loop transmits the cyclic interactive generators (trigger: cyclic) at their
+// configured periods while the measurement runs. Sends on each sender's own
+// channel bus (a dedicated bus instance per interface, like sim_loop) and records
+// the frames as TX via the bounded inbox. Manual/key senders fire on the UI
+// thread instead (see fire_sender); only cyclic ones need this clock.
+fn gen_loop(mut w gui.Window) {
+	mut app := w.state[App]()
+	// A dedicated bus per interface used by a cyclic sender (opened lazily; closed
+	// on exit) — avoids sharing the monitor's bus handle across threads.
+	mut buses := map[string]transport.Bus{}
+	mut next := map[int]f64{} // sender index -> next-due ms
+	t0 := time.ticks()
+	for app.running {
+		now := f64(time.ticks() - t0)
+		mut sent_any := false
+		for si, sr in app.senders {
+			if sr.cfg.trigger != 'cyclic' || sr.cfg.cycle_ms <= 0 {
+				continue
+			}
+			if sr.ch_idx >= app.rt.len || !app.rt[sr.ch_idx].running {
+				continue
+			}
+			if now < (next[si] or { 0.0 }) {
+				continue
+			}
+			iface := app.proj.channels[sr.ch_idx].iface
+			if iface !in buses {
+				buses[iface] = transport.open(iface) or { continue }
+			}
+			mut bus := buses[iface] or { continue }
+			frame := app.build_sender_frame(sr.cfg)
+			bus.send(frame) or {}
+			app.inbox_push(InboxItem{
+				idx:   sr.ch_idx
+				dir:   'TX'
+				frame: frame
+			})
+			next[si] = now + f64(sr.cfg.cycle_ms)
+			sent_any = true
+		}
+		if sent_any {
+			app.request_drain(mut w)
+		}
+		time.sleep(2 * time.millisecond)
+	}
+	for _, mut b in buses {
+		b.close()
+	}
 }
 
 // stop_measurement signals every running channel's RX thread to exit; each
@@ -1382,6 +1570,7 @@ fn main_view(mut window gui.Window) gui.View {
 					gui.DockPanelDef{ id: 'signals', label: 'Signals', content: [signals_panel(app)] },
 					gui.DockPanelDef{ id: 'plot', label: 'Graphics', content: [plot_panel(mut window)] },
 					gui.DockPanelDef{ id: 'send', label: 'Send', content: [send_panel(mut window)] },
+				gui.DockPanelDef{ id: 'generators', label: 'Generators', content: [generators_panel(mut window)] },
 				gui.DockPanelDef{ id: 'diag', label: 'Diagnostics', content: [diag_panel(mut window)] },
 					gui.DockPanelDef{ id: 'stats', label: 'Statistics', content: [stats_panel(app)] },
 						gui.DockPanelDef{ id: 'symbols', label: 'Symbol Browser', content: [symbol_browser_panel(app)] },
@@ -1530,6 +1719,7 @@ const view_panels = [
 	['signals', 'Signals'],
 	['plot', 'Graphics'],
 	['send', 'Send'],
+	['generators', 'Generators'],
 	['diag', 'Diagnostics'],
 	['stats', 'Statistics'],
 ]
@@ -1569,6 +1759,7 @@ fn activity_bar(app &App) gui.View {
 		'signals':    '∿'
 		'plot':       '▦'
 		'send':       '➤'
+		'generators': '⎍'
 		'diag':       '✚'
 		'stats':      'Σ'
 	}
@@ -3929,6 +4120,78 @@ fn merge_did_opts() []string {
 		o << '${d[0]} ${d[1]}'
 	}
 	return o
+}
+
+// generators_panel is the interactive-generator surface (CANoe IG-style): one row
+// per configured sender with a clickable button that transmits its frame. Buttons
+// show the hotkey (if any) and the resolved id; cyclic generators are labelled
+// with their period. Senders are defined per-channel in the project `.yml`
+// (`senders:`); this panel is their live front end. Hotkeys work app-wide (see
+// handle_hotkey) regardless of whether this panel is open.
+fn generators_panel(mut window gui.Window) gui.View {
+	app := window.state[App]()
+	mut rows := []gui.View{}
+	rows << gui.text(text: 'Interactive generators', text_style: gui.theme().b3)
+	if app.senders.len == 0 {
+		rows << gui.text(
+			text:       'No senders configured. Add a `senders:` block to a channel in the project .yml.'
+			text_style: trace_text_style()
+		)
+		return gui.column(
+			sizing:      gui.fill_fill
+			padding:     gui.padding_medium
+			spacing:     6
+			id_scroll:   id_scroll_gen
+			scroll_mode: .vertical_only
+			content:     rows
+		)
+	}
+	rows << gui.text(
+		text:       'press a button or its key to transmit (▶ Start first)'
+		text_style: trace_text_style()
+	)
+	for si, sr in app.senders {
+		s := sr.cfg
+		chname := if sr.ch_idx < app.proj.channels.len {
+			app.proj.channels[sr.ch_idx].name
+		} else {
+			'CAN${sr.ch_idx + 1}'
+		}
+		frame := app.build_sender_frame(s)
+		// Subtitle: bus · id · trigger.
+		mut tags := ['${chname}', '0x${frame.id:X}']
+		if s.trigger == 'cyclic' && s.cycle_ms > 0 {
+			tags << 'every ${s.cycle_ms}ms'
+		}
+		key_label := if s.key != '' { '  [${s.key}]' } else { '' }
+		rows << gui.column(
+			sizing:  gui.fill_fit
+			spacing: 1
+			padding: gui.padding_none
+			content: [
+				gui.button(
+					id_focus:  u32(700 + si)
+					min_width: 220
+					max_width: 320
+					h_align:   .left // centered labels render blank (gui bug)
+					content:   [gui.text(text: '▸ ${s.name}${key_label}')]
+					on_click:  fn [si] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+						fire_sender(si, mut w)
+						w.set_id_focus(0) // don't leave the button stuck focused (and stealing hotkeys)
+					}
+				),
+				gui.text(text: '    ${tags.join(' · ')}', text_style: trace_text_style()),
+			]
+		)
+	}
+	return gui.column(
+		sizing:      gui.fill_fill
+		padding:     gui.padding_medium
+		spacing:     6
+		id_scroll:   id_scroll_gen
+		scroll_mode: .vertical_only
+		content:     rows
+	)
 }
 
 fn diag_panel(mut window gui.Window) gui.View {

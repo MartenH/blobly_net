@@ -699,3 +699,25 @@ prompt for a password.
   build) + two autofree/`-gc boehm_leak` codegen bugs. GitHub-ready upstream issue/PR drafts (V + gui)
   in `docs/v_patches/UPSTREAM_*.md` — **NOT yet filed** (user will file manually). Full story +
   the two failed fix attempts: `docs/known_issues.md` (Rendering stack, "ROOT CAUSE / ✅ FIXED").
+- 2026-06-14: **Custom/triggerable message sending — Tier 1 (Interactive Generators) DONE & VERIFIED.**
+  Discussed how to give CANoe-like "key on" / interactive sends WITHOUT shipping a compiler; agreed a
+  tiered roadmap (Tier 1 declarative interactive generators → Tier 2 reactive sim nodes [already built]
+  → Tier 3 declarative sequences → Tier 4 embedded **Lua 5.4** vendored+compiled-in, only if truly
+  needed; CAPL is itself a bytecode VM, so Lua is the right fit, not a native compiler). Implemented
+  Tier 1: a declarative **`senders:`** block per channel in `modules/project` (new `Sender` +
+  `SenderSig` structs; `parse_sender`/`parse_hex_bytes`; serialized in `save.v` so they round-trip;
+  tests in project_test.v + save_test.v). Each sender = name + optional single-char **key** +
+  frame def (`message:` DBC-name → id/dlc with `signals:` encoded onto it, OR explicit `id:`/`data:`)
+  + **trigger** (manual | key | cyclic + `cycle_ms`). GUI (`src/main.v`): `SenderRT` flattened in
+  `App.senders` (built in `build_sim_nodes`); `build_sender_frame` (DBC-encode), `fire_sender`
+  (UI-thread TX via `app.push`), `handle_hotkey` wired to the new gui **`WindowCfg.on_event`** global
+  hook (skips when an input is focused via `w.id_focus()`); cyclic senders driven by one `gen_loop`
+  thread spawned in `start_measurement` (own bus per iface, TX via the bounded inbox). New **Generators**
+  dock panel (one left-aligned button per sender — gui's centered-label-blank bug — showing key + bus +
+  id; cyclic labelled with period) + activity-bar icon + View-menu entry. Demo: `projects/sim-demo.yml`
+  CAN1 gained 4 senders. **VERIFIED in the GUI** (screenshot): cyclic `0x123 DEADBEEF` auto-fires as TX
+  and is seen back as RX (like a real node); hotkey **`p`** sent Request `0x101` (ReqCode=1 encoded) and
+  the simulated SUT answered Response `0x102` — full round-trip, status "sent Ping ECU (Request)".
+  Tiers 2–4 captured in memory for later. TODO (Tier 1 polish): per-sender target-bus override in the
+  panel; live signal-value editing in the panel (currently fixed from the .yml); manual-button verify
+  was inferred from the shared `fire_sender` path (key + cyclic directly verified).

@@ -84,6 +84,35 @@ pub mut:
 	responses []ResponseCfg
 }
 
+// SenderSig is one signal value applied when building a Sender's frame: the
+// signal `name` (must be a signal of the resolved message) set to `value`
+// (physical units; encoded onto the payload via the DBC).
+pub struct SenderSig {
+pub mut:
+	name  string
+	value f64
+}
+
+// Sender is a declarative "interactive generator" (CANoe IG-style): a named,
+// user-triggerable frame. The frame is built either from `message` (a DBC
+// message name → id/dlc, with `signals` encoded onto a zero payload) or from an
+// explicit `id` + raw `data`. `key` is an optional single-character hotkey that
+// fires it; `trigger` is manual (button only) | key (button + hotkey) | cyclic
+// (auto-sent every `cycle_ms` while the measurement runs). GUI-free config; the
+// app resolves the message and encodes signals using the loaded DBC at send time.
+pub struct Sender {
+pub mut:
+	name     string
+	key      string // single-character hotkey ('' = none)
+	message  string // DBC message name (optional)
+	id       u32    // explicit CAN id (used when message is empty / unresolved)
+	ext      bool   // 29-bit extended id
+	data     []u8   // explicit raw payload (optional; overrides the zero/dlc default)
+	signals  []SenderSig
+	trigger  string = 'manual' // manual | key | cyclic
+	cycle_ms int    // cyclic period (ms); only used when trigger == cyclic
+}
+
 // Channel is one bus the tester attaches to.
 pub struct Channel {
 pub mut:
@@ -101,6 +130,7 @@ pub mut:
 	databases    []string
 	simulate     []string  // shorthand: ECU node names to simulate with default behaviour
 	nodes        []NodeCfg // fully-configured simulated ECUs (signals + responses)
+	senders      []Sender  // interactive generators: triggerable custom frames
 	replay       ?Replay
 }
 
@@ -214,6 +244,11 @@ fn parse_channel(c yaml.Any) Channel {
 			ch.nodes << parse_node(n)
 		}
 	}
+	if ss := c.value_opt('senders') {
+		for s in ss.array() {
+			ch.senders << parse_sender(s)
+		}
+	}
 	if t := c.value_opt('timing') {
 		ch.timing = Timing{
 			brp:   t.value('brp').int()
@@ -273,6 +308,58 @@ fn parse_node(n yaml.Any) NodeCfg {
 		}
 	}
 	return node
+}
+
+// parse_sender parses one interactive-generator entry: name + key + the frame
+// definition (message name or explicit id/data) + signal values + trigger.
+fn parse_sender(s yaml.Any) Sender {
+	mut snd := Sender{
+		name:     s.value('name').default_to('').string()
+		key:      s.value('key').default_to('').string()
+		message:  s.value('message').default_to('').string()
+		ext:      s.value('extended').default_to(false).bool()
+		trigger:  s.value('trigger').default_to('manual').string().to_lower()
+		cycle_ms: s.value('cycle_ms').int()
+	}
+	if idv := s.value_opt('id') {
+		snd.id = parse_id(idv.str())
+	}
+	if dv := s.value_opt('data') {
+		snd.data = parse_hex_bytes(dv.str())
+	}
+	if sigs := s.value_opt('signals') {
+		for sg in sigs.array() {
+			snd.signals << SenderSig{
+				name:  sg.value('name').string()
+				value: sg.value('value').f64()
+			}
+		}
+	}
+	return snd
+}
+
+// parse_hex_bytes reads a raw CAN payload written as hex bytes, with or without
+// separators: "DE AD BE EF", "DEADBEEF" and "de:ad" all give [0xDE,0xAD,…].
+// Non-hex characters are skipped; an odd trailing nibble is dropped.
+fn parse_hex_bytes(s string) []u8 {
+	mut nibbles := []u8{}
+	for ch in s.trim_space().trim('"') {
+		d := if ch >= `0` && ch <= `9` {
+			u8(ch - `0`)
+		} else if ch >= `a` && ch <= `f` {
+			u8(ch - `a`) + 10
+		} else if ch >= `A` && ch <= `F` {
+			u8(ch - `A`) + 10
+		} else {
+			continue
+		}
+		nibbles << d
+	}
+	mut out := []u8{}
+	for i := 0; i + 1 < nibbles.len; i += 2 {
+		out << (nibbles[i] << 4) | nibbles[i + 1]
+	}
+	return out
 }
 
 // parse_id reads a CAN id written as decimal or `0x`-prefixed hex.
