@@ -933,7 +933,28 @@ fn sim_signature(app &App, ch_idx int) string {
 	return on.join(',')
 }
 
+// is_wsl reports whether we're running under WSL — where the XDG Desktop Portal's
+// file-dialog Response never arrives and hangs the UI thread, so we prefer gui's
+// zenity backend (see the GUI_NO_PORTAL default in main).
+fn is_wsl() bool {
+	if os.getenv('WSL_DISTRO_NAME') != '' || os.getenv('WSL_INTEROP') != '' {
+		return true
+	}
+	rel := os.read_file('/proc/sys/kernel/osrelease') or { return false }
+	low := rel.to_lower()
+	return low.contains('microsoft') || low.contains('wsl')
+}
+
 fn main() {
+	// On WSL, default to gui's zenity/kdialog file dialogs instead of the XDG
+	// Desktop Portal: gui's portal path (nativebridge/portal_linux.c) does a
+	// synchronous D-Bus wait for the FileChooser Response that never arrives under
+	// WSLg, wedging the UI thread (the file requester opens, then the app hangs
+	// after OK). Real desktops keep the working portal. An explicit GUI_NO_PORTAL
+	// (0 or 1) always wins. See docs/known_issues.md + docs/v_patches/gui-no-portal-fallback.
+	if os.getenv('GUI_NO_PORTAL') == '' && is_wsl() {
+		os.setenv('GUI_NO_PORTAL', '1', true)
+	}
 	mut window := gui.window(
 		title:        'CANTester — CAN'
 		state:        &App{}
@@ -1116,11 +1137,29 @@ fn (mut app App) load_databases() {
 	app.dbs = []candb.Database{len: app.proj.channels.len}
 	mut sources := []string{}
 	for i, ch in app.proj.channels {
-		if ch.databases.len > 0 {
-			if db := candb.load_dbc_file(ch.databases[0]) {
-				app.dbs[i] = db
-				sources << ch.databases[0]
+		// Merge every DBC attached to this channel into one per-channel catalog
+		// (first DBC to define an id wins on collision; nodes deduped).
+		mut chan_msgs := []candb.Message{}
+		mut chan_nodes := []string{}
+		mut chan_seen := map[u32]bool{}
+		for path in ch.databases {
+			db := candb.load_dbc_file(path) or { continue }
+			sources << path
+			for m in db.messages {
+				if m.id !in chan_seen {
+					chan_seen[m.id] = true
+					chan_msgs << m
+				}
 			}
+			for n in db.nodes {
+				if n !in chan_nodes {
+					chan_nodes << n
+				}
+			}
+		}
+		app.dbs[i] = candb.Database{
+			messages: chan_msgs
+			nodes:    chan_nodes
 		}
 	}
 	// Merge for decode: first DBC to define an id wins (cross-bus id collisions
@@ -1784,6 +1823,13 @@ fn menu_bar(mut window gui.Window) gui.View {
 						}
 					},
 					gui.MenuItemCfg{
+						id:     'file.adddbc'
+						text:   'Add DBC(s)…'
+						action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {
+							add_dbcs_menu(mut w)
+						}
+					},
+					gui.MenuItemCfg{
 						id:     'file.save'
 						text:   'Save Project'
 						action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {
@@ -2252,34 +2298,136 @@ fn set_window_title(project_name string) {
 	C.sapp_set_window_title(&char(title.str))
 }
 
-// pick_dbc opens a native file picker and attaches the chosen .dbc to channel ch_idx.
-fn pick_dbc(ch_idx int, mut w gui.Window) {
+// add_dbcs_menu (File ▸ Add DBC(s)…) multi-selects .dbc files and attaches each to the
+// channel whose name its file name matches (CAN01-postfix.dbc → channel "CAN01"); files
+// with no name match go to the first channel. Use the Buses panel ＋ DBC to target one bus.
+fn add_dbcs_menu(mut w gui.Window) {
+	mut app := w.state[App]()
+	if app.proj.channels.len == 0 {
+		app.status = 'add a bus first (Bus Config), then attach DBCs'
+		w.update_window()
+		return
+	}
 	w.native_open_dialog(
-		title:   'Attach DBC to channel'
-		filters: [gui.NativeFileFilter{
+		title:          'Add DBC(s) — auto-routed to matching channels'
+		allow_multiple: true
+		filters:        [gui.NativeFileFilter{
 			name:       'DBC databases'
 			extensions: ['dbc']
 		}]
-		on_done: fn [ch_idx] (r gui.NativeDialogResult, mut w gui.Window) {
+		on_done: fn (r gui.NativeDialogResult, mut w gui.Window) {
 			if r.status == .ok && r.paths.len > 0 {
-				attach_dbc(ch_idx, r.path_strings()[0], mut w)
+				attach_dbcs_routed(r.path_strings(), mut w)
 			}
 		}
 	)
 }
 
-// attach_dbc adds a DBC path to a channel and reloads — so decode AND the Simulation
-// panel's node list (build_sim_nodes skips channels with no DBC) come alive. In-memory
-// only; persists on File ▸ Save (a YAML writer is still TODO).
-fn attach_dbc(ch_idx int, path string, mut w gui.Window) {
+// bus_key extracts a normalized (letters, has-number, number) bus token from the start
+// of a name: "CAN01" → ('can', true, 1), "CAN1" → ('can', true, 1), "IPC04-postfix" →
+// ('ipc', true, 4), "Powertrain" → ('powertrain', false, 0). Comparing the number as an
+// int makes zero-padding irrelevant, so a "CAN01-…" DBC matches a "CAN1" channel.
+fn bus_key(s string) (string, bool, int) {
+	mut i := 0
+	mut alpha := ''
+	for i < s.len {
+		c := s[i]
+		if (c >= `A` && c <= `Z`) || (c >= `a` && c <= `z`) {
+			alpha += c.ascii_str()
+			i++
+		} else {
+			break
+		}
+	}
+	mut numstr := ''
+	for i < s.len && s[i] >= `0` && s[i] <= `9` {
+		numstr += s[i].ascii_str()
+		i++
+	}
+	return alpha.to_lower(), numstr.len > 0, if numstr.len > 0 { numstr.int() } else { 0 }
+}
+
+// channel_for_dbc returns the index of the channel whose bus token matches the DBC file
+// name's (e.g. CAN01-postfix.dbc → channel "CAN1" or "CAN01"; IPC04-*.dbc → "IPC04").
+// Matching is on (letters, number) so zero-padding and case don't matter. none = no match.
+fn (app &App) channel_for_dbc(path string) ?int {
+	stem := os.base(path).all_before_last('.')
+	sa, sh, sn := bus_key(stem)
+	if sa == '' {
+		return none
+	}
+	for i, ch in app.proj.channels {
+		ca, chh, cn := bus_key(ch.name)
+		if ca == sa && chh == sh && cn == sn {
+			return i
+		}
+	}
+	return none
+}
+
+// attach_dbcs_routed attaches each picked DBC to its name-matched channel (see
+// channel_for_dbc); files with no match go to the first channel. One reload for the lot.
+// In-memory only; persists on File ▸ Save.
+fn attach_dbcs_routed(paths []string, mut w gui.Window) {
 	mut app := w.state[App]()
-	if ch_idx < 0 || ch_idx >= app.proj.channels.len {
+	if app.proj.channels.len == 0 || paths.len == 0 {
 		return
 	}
-	app.proj.channels[ch_idx].databases << path
+	mut routed := 0
+	mut fallback := 0
+	for p in paths {
+		idx := app.channel_for_dbc(p) or {
+			app.proj.channels[0].databases << p
+			fallback++
+			continue
+		}
+		app.proj.channels[idx].databases << p
+		routed++
+	}
 	app.load_databases()
 	app.build_sim_nodes()
-	app.status = 'attached ${os.base(path)} to ${app.proj.channels[ch_idx].name} (session-only until Save)'
+	first := app.proj.channels[0].name
+	app.status = if routed == 0 {
+		'added ${paths.len} DBC(s) → ${first}: NO channel name matched the file names — all went to ${first} (Save to persist)'
+	} else {
+		'added ${paths.len} DBC(s): ${routed} routed by name, ${fallback} → ${first} (Save to persist)'
+	}
+	w.update_window()
+}
+
+// pick_dbc opens a native file picker (multi-select) and attaches the chosen .dbc
+// file(s) to channel ch_idx.
+fn pick_dbc(ch_idx int, mut w gui.Window) {
+	w.native_open_dialog(
+		title:          'Attach DBC(s) to channel'
+		allow_multiple: true
+		filters:        [gui.NativeFileFilter{
+			name:       'DBC databases'
+			extensions: ['dbc']
+		}]
+		on_done: fn [ch_idx] (r gui.NativeDialogResult, mut w gui.Window) {
+			if r.status == .ok && r.paths.len > 0 {
+				attach_dbcs(ch_idx, r.path_strings(), mut w)
+			}
+		}
+	)
+}
+
+// attach_dbcs adds one or more DBC paths to a channel and reloads — so decode AND the
+// Simulation panel's node list (build_sim_nodes skips channels with no DBC) come alive.
+// In-memory only; persists on File ▸ Save.
+fn attach_dbcs(ch_idx int, paths []string, mut w gui.Window) {
+	mut app := w.state[App]()
+	if ch_idx < 0 || ch_idx >= app.proj.channels.len || paths.len == 0 {
+		return
+	}
+	for p in paths {
+		app.proj.channels[ch_idx].databases << p
+	}
+	app.load_databases()
+	app.build_sim_nodes()
+	names := paths.map(os.base(it)).join(', ')
+	app.status = 'attached ${names} to ${app.proj.channels[ch_idx].name} (session-only until Save)'
 	w.update_window()
 }
 
