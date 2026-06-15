@@ -44,6 +44,7 @@ const id_scroll_gen = u32(7800) // Generators (interactive senders) panel
 const id_scroll_plot_outer = u32(7500) // Graphics root: clamps the panel measurement
 const id_scroll_symbols = u32(7600)    // Symbol Browser tree
 const id_scroll_busconfig = u32(7700)  // Bus Config candidate list
+const id_scroll_log = u32(7900)        // Log panel (scrolling event log)
 
 // UDS request/response CAN ids (classic OBD physical addressing): the tester
 // transmits on 0x7E0, the ECU answers on 0x7E8. The simulated ECU's UDS
@@ -201,6 +202,21 @@ mut:
 	note     string
 }
 
+// StatusLevel tags a Log-panel entry for colouring.
+enum StatusLevel {
+	info
+	ok
+	warn
+	error
+}
+
+// StatusMsg is one entry in the scrolling Log panel.
+struct StatusMsg {
+	tstamp string // HH:MM:SS
+	level  StatusLevel
+	text   string
+}
+
 @[heap]
 struct App {
 mut:
@@ -213,6 +229,7 @@ mut:
 	dbs            []candb.Database // per-channel catalog (parallel to proj.channels); drives node list + sim
 	db_source      string
 	status         string
+	logs           []StatusMsg // scrolling event log (Log panel); newest appended
 	t0             i64
 	trace     []TraceRow
 	// Grouped trace: keyed by (id, bus, dir) — see trace_group_key — so the same ID
@@ -472,19 +489,19 @@ fn fire_sender(si int, mut w gui.Window) {
 		}
 	}
 	if idx < 0 {
-		app.status = 'not running — press ▶ Start to send "${sr.cfg.name}"'
+		app.notify(.warn, 'not running — press ▶ Start to send "${sr.cfg.name}"')
 		return
 	}
 	frame := app.build_sender_frame(sr.cfg)
 	mut bus := app.rt[idx].bus or { return }
 	bus.send(frame) or {
-		app.status = 'send failed: ${err}'
+		app.notify(.error, 'send failed: ${err}')
 		return
 	}
 	app.rt[idx].tx_count++
 	chname := if idx < app.proj.channels.len { app.proj.channels[idx].name } else { 'CAN${idx + 1}' }
 	app.push('TX', frame, chname)
-	app.status = 'sent "${sr.cfg.name}"'
+	app.notify(.info, 'sent "${sr.cfg.name}"')
 }
 
 // handle_hotkey fires the first sender whose `key` matches the typed character,
@@ -681,7 +698,7 @@ fn scaffold_sim_node(ch_idx int, node string, mut w gui.Window) {
 		app.proj.channels[ch_idx].nodes << cfg
 	}
 	app.build_sim_nodes()
-	app.status = 'scaffolded ${cfg.signals.len} signal(s) for ${node} — tweak/Save (session-only until Save)'
+	app.notify(.info, 'scaffolded ${cfg.signals.len} signal(s) for ${node} — tweak/Save (session-only until Save)')
 	w.update_window()
 }
 
@@ -997,11 +1014,11 @@ fn main() {
 			set_window_title(app.proj.name)
 			app.log_path = os.getenv_opt('CANTESTER_LOG') or { '' }
 			vnote := app.proj.version_note()
-			app.status = if vnote != '' {
+			app.notify(if vnote != '' { .warn } else { .info }, if vnote != '' {
 				'⚠ ${vnote}'
 			} else {
 				'stopped — press ▶ Start (${app.proj.channels.len} channel(s))'
-			}
+			})
 			w.update_view(main_view)
 			// CANTESTER_AUTOSTART=1 begins measurement immediately on launch —
 			// handy for the screenshot loop (xdotool clicking is unreliable under
@@ -1115,8 +1132,8 @@ fn make_theme(p Palette) gui.Theme {
 // (right) — each its own panel. They can still be tabbed/dragged by the user.
 fn default_layout() &gui.DockNode {
 	// A focused default — Trace + Buses + Simulation + Signals + Graphics. Send,
-	// Diagnostics, Statistics and Symbol Browser start hidden; toggle them from the
-	// left activity bar (or the View menu). Right column: Signals over Graphics.
+	// Diagnostics, Statistics, Symbol Browser and Log start hidden; toggle them from
+	// the left activity bar (or the View menu). Right column: Signals over Graphics.
 	right := gui.dock_split('r1', .vertical, 0.42, gui.dock_panel_group('g_sig', ['signals'],
 		'signals'), gui.dock_panel_group('g_plot', ['plot'], 'plot'))
 	// Trace over the independently-filtered trace (conventional second trace window).
@@ -1133,6 +1150,22 @@ fn default_layout() &gui.DockNode {
 // parallel to proj.channels) — so every bus simulates/decodes its OWN messages —
 // and builds a merged catalog (app.db) for id-based decode lookups across buses.
 // Falls back to the hand-coded sampledb so the app still decodes with no DBC.
+// notify updates the toolbar status line AND appends a timestamped entry to the
+// scrolling Log panel (bounded). `level` colours the Log entry. Use this instead
+// of assigning `app.status` directly so events are kept in the Log.
+fn (mut app App) notify(level StatusLevel, msg string) {
+	app.status = msg
+	t := time.now()
+	app.logs << StatusMsg{
+		tstamp: '${t.hour:02}:${t.minute:02}:${t.second:02}'
+		level:  level
+		text:   msg
+	}
+	if app.logs.len > 300 {
+		app.logs = app.logs[app.logs.len - 200..].clone()
+	}
+}
+
 fn (mut app App) load_databases() {
 	app.dbs = []candb.Database{len: app.proj.channels.len}
 	mut sources := []string{}
@@ -1264,7 +1297,7 @@ fn start_measurement(mut w gui.Window) {
 		}
 	}
 	app.running = true
-	app.status = 'running — ${opened} channel(s) attached'
+	app.notify(.info, 'running — ${opened} channel(s) attached')
 	// One thread drives all cyclic interactive generators (trigger: cyclic).
 	if app.senders.any(it.cfg.trigger == 'cyclic' && it.cfg.cycle_ms > 0) {
 		spawn fn (mut w gui.Window) {
@@ -1334,7 +1367,7 @@ fn stop_measurement(mut w gui.Window) {
 		}
 	}
 	app.running = false
-	app.status = 'stopped'
+	app.notify(.info, 'stopped')
 }
 
 // sim_loop runs the simulated ECUs for channel `idx` on a dedicated in-process
@@ -1748,6 +1781,7 @@ fn main_view(mut window gui.Window) gui.View {
 				gui.DockPanelDef{ id: 'generators', label: 'Generators', content: [generators_panel(mut window)] },
 				gui.DockPanelDef{ id: 'diag', label: 'Diagnostics', content: [diag_panel(mut window)] },
 					gui.DockPanelDef{ id: 'stats', label: 'Statistics', content: [stats_panel(app)] },
+						gui.DockPanelDef{ id: 'log', label: 'Log', content: [log_panel(mut window)] },
 						gui.DockPanelDef{ id: 'symbols', label: 'Symbol Browser', content: [symbol_browser_panel(app)] },
 						gui.DockPanelDef{ id: 'busconfig', label: 'Bus Config', content: [bus_config_panel(app)] },
 				]
@@ -1803,7 +1837,7 @@ fn menu_bar(mut window gui.Window) gui.View {
 							a.load_databases()
 							a.build_sim_nodes()
 							set_window_title(a.proj.name)
-							a.status = 'new project — add a network in Bus Config (＋ Sim net / ＋ vcan / Discover)'
+							a.notify(.info, 'new project — add a network in Bus Config (＋ Sim net / ＋ vcan / Discover)')
 							open_bus_config(mut w)
 						}
 					},
@@ -1904,6 +1938,7 @@ const view_panels = [
 	['generators', 'Generators'],
 	['diag', 'Diagnostics'],
 	['stats', 'Statistics'],
+	['log', 'Log'],
 ]
 
 // dock_has_panel reports whether a panel id is currently placed somewhere in the
@@ -1944,6 +1979,7 @@ fn activity_bar(app &App) gui.View {
 		'generators': '⎍'
 		'diag':       '✚'
 		'stats':      'Σ'
+		'log':        '▤'
 	}
 	// Active = bright (theme text colour), inactive = dim — flat buttons, no boxes.
 	icon_on := gui.TextStyle{
@@ -2039,7 +2075,7 @@ fn open_project(path string, mut w gui.Window) {
 		stop_measurement(mut w)
 	}
 	p := project.load(path) or {
-		app.status = 'open project failed: ${err}'
+		app.notify(.error, 'open project failed: ${err}')
 		return
 	}
 	app.proj = p
@@ -2050,11 +2086,11 @@ fn open_project(path string, mut w gui.Window) {
 	app.build_sim_nodes()
 	set_window_title(p.name)
 	note := p.version_note()
-	app.status = if note != '' {
+	app.notify(if note != '' { .warn } else { .info }, if note != '' {
 		'loaded ${p.name} — ⚠ ${note}'
 	} else {
 		'loaded ${p.name} (${p.channels.len} ch) — press ▶ Start'
-	}
+	})
 	w.update_window()
 }
 
@@ -2090,7 +2126,7 @@ fn can_hw_id(iface string) string {
 fn discover_to_candidates(mut w gui.Window) {
 	mut app := w.state[App]()
 	ifaces := transport.list_interfaces() or {
-		app.status = 'discover failed: ${err}'
+		app.notify(.error, 'discover failed: ${err}')
 		return
 	}
 	mut linkstate := map[string]string{}
@@ -2135,7 +2171,7 @@ fn discover_to_candidates(mut w gui.Window) {
 			app.bus_ticked[c.iface] = true
 		}
 	}
-	app.status = 'discovered ${cands.len} interface(s) — name + tick the ones to add, then ＋ Add'
+	app.notify(.info, 'discovered ${cands.len} interface(s) — name + tick the ones to add, then ＋ Add')
 }
 
 // add_ticked_channels appends the ticked, not-already-present candidates as monitor
@@ -2170,7 +2206,7 @@ fn add_ticked_channels(mut w gui.Window) {
 	app.rt = []ChannelRT{len: app.proj.channels.len}
 	app.load_databases()
 	app.build_sim_nodes()
-	app.status = 'added ${added} channel(s) — review in Buses, then File ▸ Save'
+	app.notify(.info, 'added ${added} channel(s) — review in Buses, then File ▸ Save')
 	w.update_window()
 }
 
@@ -2186,12 +2222,12 @@ fn create_vcan(mut w gui.Window) {
 	iface := 'vcan${n}'
 	add := os.execute('sudo -n ip link add dev ${iface} type vcan')
 	if add.exit_code != 0 {
-		app.status = 'create ${iface} failed — need passwordless sudo for ip (scripts/setup_sudoers.sh): ${add.output.trim_space()}'
+		app.notify(.error, 'create ${iface} failed — need passwordless sudo for ip (scripts/setup_sudoers.sh): ${add.output.trim_space()}')
 		return
 	}
 	os.execute('sudo -n ip link set up ${iface}')
 	discover_to_candidates(mut w)
-	app.status = 'created ${iface} — tick it + ＋ Add to use it'
+	app.notify(.info, 'created ${iface} — tick it + ＋ Add to use it')
 	w.update_window()
 }
 
@@ -2224,7 +2260,7 @@ fn add_sim_network(mut w gui.Window) {
 	}
 	app.bus_names[iface] = 'SIM${n}'
 	app.bus_ticked[iface] = true
-	app.status = 'new simulated network ${iface} — rename it, then ＋ Add ticked'
+	app.notify(.info, 'new simulated network ${iface} — rename it, then ＋ Add ticked')
 	w.update_window()
 }
 
@@ -2245,13 +2281,13 @@ fn open_bus_config(mut w gui.Window) {
 fn save_project_to(path string, mut w gui.Window) {
 	mut app := w.state[App]()
 	app.proj.save(path) or {
-		app.status = 'save failed: ${err}'
+		app.notify(.error, 'save failed: ${err}')
 		return
 	}
 	app.proj_source = path
 	app.remember_project(path)
 	set_window_title(app.proj.name)
-	app.status = 'saved ${app.proj.name} → ${path}'
+	app.notify(.info, 'saved ${app.proj.name} → ${path}')
 	w.update_window()
 }
 
@@ -2299,15 +2335,10 @@ fn set_window_title(project_name string) {
 }
 
 // add_dbcs_menu (File ▸ Add DBC(s)…) multi-selects .dbc files and attaches each to the
-// channel whose name its file name matches (CAN01-postfix.dbc → channel "CAN01"); files
-// with no name match go to the first channel. Use the Buses panel ＋ DBC to target one bus.
+// channel whose name its file name matches (CAN01-postfix.dbc → channel "CAN01"); a DBC
+// with no matching bus auto-creates one from its name (so it works on an empty project
+// too). Use the Buses panel ＋ DBC to target one specific bus.
 fn add_dbcs_menu(mut w gui.Window) {
-	mut app := w.state[App]()
-	if app.proj.channels.len == 0 {
-		app.status = 'add a bus first (Bus Config), then attach DBCs'
-		w.update_window()
-		return
-	}
 	w.native_open_dialog(
 		title:          'Add DBC(s) — auto-routed to matching channels'
 		allow_multiple: true
@@ -2365,33 +2396,65 @@ fn (app &App) channel_for_dbc(path string) ?int {
 	return none
 }
 
-// attach_dbcs_routed attaches each picked DBC to its name-matched channel (see
-// channel_for_dbc); files with no match go to the first channel. One reload for the lot.
-// In-memory only; persists on File ▸ Save.
+// dbc_bus_name derives a channel name from a DBC file name: the leading
+// alphanumeric run of the stem (CAN01-postfix.dbc → "CAN01"; Powertrain.dbc →
+// "Powertrain"). Used to name an auto-created bus.
+fn dbc_bus_name(path string) string {
+	stem := os.base(path).all_before_last('.')
+	mut i := 0
+	for i < stem.len {
+		c := stem[i]
+		if (c >= `A` && c <= `Z`) || (c >= `a` && c <= `z`) || (c >= `0` && c <= `9`) {
+			i++
+		} else {
+			break
+		}
+	}
+	name := stem[..i]
+	return if name == '' { stem } else { name }
+}
+
+// attach_dbcs_routed attaches each picked DBC to the channel whose name matches the
+// file name (channel_for_dbc). A DBC with NO matching channel gets a new inproc bus
+// created from its name — so Add DBC(s)… works on an empty project, and an unmatched
+// DBC becomes its own bus instead of landing on an arbitrary one. Channels created
+// earlier in the same call are matchable by later DBCs (so CAN01-a.dbc + CAN01-b.dbc
+// share one bus). One reload for the lot; in-memory only, persists on File ▸ Save.
 fn attach_dbcs_routed(paths []string, mut w gui.Window) {
 	mut app := w.state[App]()
-	if app.proj.channels.len == 0 || paths.len == 0 {
+	if paths.len == 0 {
 		return
 	}
 	mut routed := 0
-	mut fallback := 0
+	mut created := 0
 	for p in paths {
-		idx := app.channel_for_dbc(p) or {
-			app.proj.channels[0].databases << p
-			fallback++
+		if idx := app.channel_for_dbc(p) {
+			app.proj.channels[idx].databases << p
+			routed++
 			continue
 		}
-		app.proj.channels[idx].databases << p
-		routed++
+		name := dbc_bus_name(p)
+		app.proj.channels << project.Channel{
+			name:      name
+			typ:       'can'
+			iface:     'inproc:${name}'
+			mode:      .monitor
+			enabled:   true
+			databases: [p]
+		}
+		created++
+	}
+	// Grow the parallel runtime array for any new channels (preserve existing).
+	for app.rt.len < app.proj.channels.len {
+		app.rt << ChannelRT{}
 	}
 	app.load_databases()
 	app.build_sim_nodes()
-	first := app.proj.channels[0].name
-	app.status = if routed == 0 {
-		'added ${paths.len} DBC(s) → ${first}: NO channel name matched the file names — all went to ${first} (Save to persist)'
+	app.notify(.info, if created > 0 {
+		'added ${paths.len} DBC(s): ${routed} matched, ${created} new bus(es) created (Save to persist)'
 	} else {
-		'added ${paths.len} DBC(s): ${routed} routed by name, ${fallback} → ${first} (Save to persist)'
-	}
+		'added ${paths.len} DBC(s): ${routed} routed by name to existing buses (Save to persist)'
+	})
 	w.update_window()
 }
 
@@ -2427,7 +2490,7 @@ fn attach_dbcs(ch_idx int, paths []string, mut w gui.Window) {
 	app.load_databases()
 	app.build_sim_nodes()
 	names := paths.map(os.base(it)).join(', ')
-	app.status = 'attached ${names} to ${app.proj.channels[ch_idx].name} (session-only until Save)'
+	app.notify(.info, 'attached ${names} to ${app.proj.channels[ch_idx].name} (session-only until Save)')
 	w.update_window()
 }
 
@@ -2446,7 +2509,7 @@ fn remove_channel(ch_idx int, mut w gui.Window) {
 	app.rt = []ChannelRT{len: app.proj.channels.len}
 	app.load_databases()
 	app.build_sim_nodes()
-	app.status = 'removed ${name} — Save to persist'
+	app.notify(.info, 'removed ${name} — Save to persist')
 	w.update_window()
 }
 
@@ -2459,7 +2522,7 @@ fn clear_dbc(ch_idx int, mut w gui.Window) {
 	app.proj.channels[ch_idx].databases = []string{}
 	app.load_databases()
 	app.build_sim_nodes()
-	app.status = 'cleared DBCs on ${app.proj.channels[ch_idx].name}'
+	app.notify(.info, 'cleared DBCs on ${app.proj.channels[ch_idx].name}')
 	w.update_window()
 }
 
@@ -2475,12 +2538,12 @@ fn usbipd_exe() ?string {
 fn usb_attach_can(mut w gui.Window) {
 	mut app := w.state[App]()
 	usbipd := usbipd_exe() or {
-		app.status = 'usbipd.exe not found — install usbipd-win on Windows'
+		app.notify(.error, 'usbipd.exe not found — install usbipd-win on Windows')
 		return
 	}
 	res := os.execute('"${usbipd}" list')
 	if res.exit_code != 0 {
-		app.status = 'usbipd list failed (is usbipd-win installed?)'
+		app.notify(.error, 'usbipd list failed (is usbipd-win installed?)')
 		return
 	}
 	mut attached := 0
@@ -2504,13 +2567,13 @@ fn usb_attach_can(mut w gui.Window) {
 			attached++
 		}
 	}
-	app.status = if attached > 0 {
+	app.notify(if attached > 0 || seen > 0 { .info } else { .warn }, if attached > 0 {
 		'attached ${attached} CAN adapter(s) — press 🔍 Discover'
 	} else if seen > 0 {
 		'CAN adapter(s) already attached — press 🔍 Discover'
 	} else {
 		'no CAN adapters found (run `usbipd bind` elevated on Windows first)'
-	}
+	})
 	w.update_window()
 }
 
@@ -2722,7 +2785,7 @@ fn toolbar(mut window gui.Window) gui.View {
 										load_log(typed, mut w)
 									} else {
 										mut a := w.state[App]()
-										a.status = 'no file picker (install zenity) — type a log path + Enter'
+										a.notify(.warn, 'no file picker (install zenity) — type a log path + Enter')
 									}
 								}
 							}
@@ -3735,6 +3798,57 @@ fn stats_panel(app &App) gui.View {
 			gui.text(text: 'DB source: ${app.db_source}', text_style: gui.theme().n4),
 			gui.text(text: 'Project: ${app.proj.name} (${app.proj_source})', text_style: gui.theme().n4),
 		]
+	)
+}
+
+// log_panel renders the scrolling event log (App.logs) newest-first, each line
+// timestamped and coloured by level (info/ok/warn/error). The toolbar status line
+// shows only the latest; this keeps the history. Clear empties it.
+fn log_panel(mut window gui.Window) gui.View {
+	app := window.state[App]()
+	mut rows := []gui.View{}
+	rows << gui.row(
+		v_align: .middle
+		spacing: 6
+		content: [
+			gui.text(text: 'Log (${app.logs.len})', text_style: gui.theme().b3),
+			gui.button(
+				id_focus:  0
+				max_width: 56
+				content:   [gui.text(text: 'Clear')]
+				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					mut a := w.state[App]()
+					a.logs = []StatusMsg{}
+				}
+			),
+		]
+	)
+	if app.logs.len == 0 {
+		rows << gui.text(text: '(no messages yet)', text_style: gui.theme().n4)
+	}
+	for i := app.logs.len - 1; i >= 0; i-- {
+		m := app.logs[i]
+		col := match m.level {
+			.error { gui.Color{200, 60, 60, 255} }
+			.warn { gui.Color{170, 120, 0, 255} }
+			.ok { gui.Color{50, 140, 60, 255} }
+			.info { gui.theme().n4.color }
+		}
+		rows << gui.text(
+			text:       '${m.tstamp}  ${m.text}'
+			text_style: gui.TextStyle{
+				...gui.theme().n4
+				color: col
+			}
+		)
+	}
+	return gui.column(
+		sizing:      gui.fill_fill
+		padding:     gui.padding_medium
+		spacing:     3
+		id_scroll:   id_scroll_log
+		scroll_mode: .vertical_only
+		content:     rows
 	)
 }
 
@@ -4842,11 +4956,11 @@ fn do_send(mut w gui.Window) {
 		}
 	}
 	if idx < 0 {
-		app.status = if app.send_ch != '' {
+		app.notify(.warn, if app.send_ch != '' {
 			'bus "${app.send_ch}" is not running — press ▶ Start'
 		} else {
 			'not running — press ▶ Start to send'
-		}
+		})
 		return
 	}
 	id := parse_hex_u32(app.send_id)
@@ -4857,7 +4971,7 @@ fn do_send(mut w gui.Window) {
 	}
 	mut bus := app.rt[idx].bus or { return }
 	bus.send(frame) or {
-		app.status = 'send failed: ${err}'
+		app.notify(.error, 'send failed: ${err}')
 		return
 	}
 	app.rt[idx].tx_count++
@@ -4874,7 +4988,7 @@ fn toggle_record(mut w gui.Window) {
 		app.recording = false
 		entries := app.record_entries
 		if entries.len == 0 {
-			app.status = 'recording stopped — no frames captured'
+			app.notify(.warn, 'recording stopped — no frames captured')
 			return
 		}
 		t := time.now()
@@ -4884,14 +4998,14 @@ fn toggle_record(mut w gui.Window) {
 			lines << canlog.format_line(e)
 		}
 		os.write_file(path, lines.join('\n') + '\n') or {
-			app.status = 'record save failed: ${err}'
+			app.notify(.error, 'record save failed: ${err}')
 			return
 		}
-		app.status = 'recorded ${entries.len} frames → ${path}'
+		app.notify(.info, 'recorded ${entries.len} frames → ${path}')
 	} else {
 		app.record_entries = []canlog.LogEntry{}
 		app.recording = true
-		app.status = 'recording…'
+		app.notify(.info, 'recording…')
 	}
 }
 
@@ -4904,11 +5018,11 @@ fn load_log(path string, mut w gui.Window) {
 	mut app := w.state[App]()
 	p := path.trim_space()
 	if p.len == 0 {
-		app.status = 'no file picker here — type a log/mf4 path and press Enter'
+		app.notify(.warn, 'no file picker here — type a log/mf4 path and press Enter')
 		return
 	}
 	entries := load_entries(p) or {
-		app.status = 'open failed: ${err}'
+		app.notify(.error, 'open failed: ${err}')
 		return
 	}
 	app.paused = true
@@ -4929,7 +5043,7 @@ fn load_log(path string, mut w gui.Window) {
 	for e in entries {
 		app.record('RX', e.frame, (e.t_s - t0_log) * 1000.0, e.iface)
 	}
-	app.status = 'loaded ${entries.len} frames from ${os.base(p)} (paused — Resume for live)'
+	app.notify(.info, 'loaded ${entries.len} frames from ${os.base(p)} (paused — Resume for live)')
 	w.update_window()
 }
 
