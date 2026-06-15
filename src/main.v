@@ -1131,9 +1131,10 @@ fn make_theme(p Palette) gui.Theme {
 // Buses (narrow left) | Trace (centre) | Signals / Send / Statistics stacked
 // (right) — each its own panel. They can still be tabbed/dragged by the user.
 fn default_layout() &gui.DockNode {
-	// A focused default — Trace + Buses + Simulation + Signals + Graphics. Send,
-	// Diagnostics, Statistics, Symbol Browser and Log start hidden; toggle them from
-	// the left activity bar (or the View menu). Right column: Signals over Graphics.
+	// A focused default — Trace + Buses + Simulation + Signals + Graphics, with a Log
+	// strip across the bottom. Send, Diagnostics, Statistics and Symbol Browser start
+	// hidden; toggle them from the left activity bar (or the View menu). Right column:
+	// Signals over Graphics.
 	right := gui.dock_split('r1', .vertical, 0.42, gui.dock_panel_group('g_sig', ['signals'],
 		'signals'), gui.dock_panel_group('g_plot', ['plot'], 'plot'))
 	// Trace over the independently-filtered trace (CANoe-style second trace window).
@@ -1143,7 +1144,10 @@ fn default_layout() &gui.DockNode {
 	// Left column: Buses (top) over Simulation (bottom).
 	left := gui.dock_split('l1', .vertical, 0.45, gui.dock_panel_group('g_buses', ['buses'],
 		'buses'), gui.dock_panel_group('g_sim', ['simulation'], 'simulation'))
-	return gui.dock_split('root', .horizontal, 0.18, left, mid)
+	main_area := gui.dock_split('main', .horizontal, 0.18, left, mid)
+	// Log strip across the bottom, visible at startup (full window width).
+	return gui.dock_split('root', .vertical, 0.82, main_area, gui.dock_panel_group('g_log',
+		['log'], 'log'))
 }
 
 // load_databases loads each channel's DBC into a per-channel catalog (app.dbs,
