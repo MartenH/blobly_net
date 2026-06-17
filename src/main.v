@@ -69,6 +69,53 @@ const ui_size_x_large = f32(16)
 // explicitly; keep ~4px of leading over ui_size_small so descenders don't clip.
 const trace_row_height = f32(14)
 const trace_header_height = f32(16)
+
+// UI scale factor — the DPI workaround. sokol can't query the system DPI under
+// WSLg/X11 (LINUX_X11_QUERY_SYSTEM_DPI_FAILED → it assumes 96 dpi → gg.scale stays
+// 1.0), so on a HiDPI monitor the whole UI renders 1:1 device-pixel and looks tiny.
+// There's no real DPI to read back, so we expose a manual multiplier instead: it
+// scales every font size, padding/spacing and the explicit grid row heights at
+// theme-build time, so the UI grows uniformly (text via vglyph just renders bigger
+// glyphs). A process global because the dense-grid helpers (make_theme,
+// trace_text_style via the theme, the activity-bar icons) are free functions with
+// no App handle; globals are already enabled (-enable-globals, for the in-proc bus).
+// Set CANTESTER_UI_SCALE=1.5 at startup, or pick it live from the toolbar control.
+__global (
+	g_ui_scale = f32(1.0)
+)
+
+const ui_scale_min = f32(0.75)
+const ui_scale_max = f32(3.0)
+// Toolbar choices (label → factor); 100% is the no-scale baseline.
+const ui_scale_options = ['100%', '125%', '150%', '175%', '200%', '250%', '300%']
+
+fn clamp_scale(s f32) f32 {
+	return if s < ui_scale_min {
+		ui_scale_min
+	} else if s > ui_scale_max {
+		ui_scale_max
+	} else {
+		s
+	}
+}
+
+// sc scales a hand-set pixel dimension (widget width/height/min/max) by the UI
+// scale. Theme-derived sizes already scale in make_theme; these literals don't, so
+// wrap them so fixed boxes (inputs, the activity bar) grow with the font.
+@[inline]
+fn sc(v f32) f32 {
+	return v * g_ui_scale
+}
+
+// scpad scales an explicit Padding the same way (theme paddings already scale).
+fn scpad(top f32, right f32, bottom f32, left f32) gui.Padding {
+	return gui.Padding{top * g_ui_scale, right * g_ui_scale, bottom * g_ui_scale, left * g_ui_scale}
+}
+
+// ui_scale_label renders the current scale as the nearest toolbar percentage label.
+fn ui_scale_label() string {
+	return '${int(g_ui_scale * 100 + 0.5)}%'
+}
 // Crop the chronological-trace Data cell after this many bytes (CAN-FD payloads
 // reach 64 bytes and would otherwise overflow the column); the rest is summarised.
 const trace_data_max_bytes = 16
@@ -934,11 +981,22 @@ fn sim_signature(app &App, ch_idx int) string {
 }
 
 fn main() {
+	// DPI workaround (see g_ui_scale): read the startup UI scale BEFORE building the
+	// window/theme so the initial window size and all theme sizes use it. Accepts a
+	// factor (1.5) or a percentage (150%).
+	if v := os.getenv_opt('CANTESTER_UI_SCALE') {
+		raw := v.trim_space()
+		if raw.ends_with('%') {
+			g_ui_scale = clamp_scale(raw.trim_right('%').f32() / 100)
+		} else {
+			g_ui_scale = clamp_scale(raw.f32())
+		}
+	}
 	mut window := gui.window(
 		title:        'CANTester — CAN'
 		state:        &App{}
-		width:        1500
-		height:       920
+		width:        int(1500 * g_ui_scale)
+		height:       int(920 * g_ui_scale)
 		sample_count: 4 // MSAA — antialias the Graphics polylines (needs gui patch)
 		// Global hotkeys for interactive generators: a `char` event with no input
 		// focused fires the matching sender (CANoe "key on"). gui's per-widget
@@ -1035,10 +1093,15 @@ fn make_theme(p Palette) gui.Theme {
 	// every derived style via gui's font_variants(); fall back to the base family
 	// (gui's bundled default) when ui_font_family is ''.
 	family := if ui_font_family != '' { ui_font_family } else { base.cfg.text_style.family }
+	// One DPI knob: scale every font size + padding/spacing/radius uniformly.
+	s := g_ui_scale
+	pad := fn (top f32, right f32, bottom f32, left f32, s f32) gui.Padding {
+		return gui.Padding{top * s, right * s, bottom * s, left * s}
+	}
 	text_style := gui.TextStyle{
 		...base.cfg.text_style
 		family: family
-		size:   ui_size_medium
+		size:   ui_size_medium * s
 		color:  p.text
 	}
 	cfg := gui.ThemeCfg{
@@ -1054,36 +1117,36 @@ fn make_theme(p Palette) gui.Theme {
 		color_border_focus: p.accent
 		color_select:       p.select
 		titlebar_dark:      p.dark
-		size_text_tiny:    ui_size_tiny
-		size_text_x_small: ui_size_x_small
-		size_text_small:   ui_size_small
-		size_text_medium:  ui_size_medium
-		size_text_large:   ui_size_large
-		size_text_x_large: ui_size_x_large
+		size_text_tiny:    ui_size_tiny * s
+		size_text_x_small: ui_size_x_small * s
+		size_text_small:   ui_size_small * s
+		size_text_medium:  ui_size_medium * s
+		size_text_large:   ui_size_large * s
+		size_text_x_large: ui_size_x_large * s
 		text_style:        text_style
-		padding:        gui.Padding{3, 6, 3, 6}
-		padding_small:  gui.Padding{2, 4, 2, 4}
-		padding_medium: gui.Padding{3, 6, 3, 6}
-		padding_large:  gui.Padding{5, 10, 5, 10}
-		spacing_small:  2
-		spacing_medium: 5
-		spacing_large:  8
-		radius:         3
-		radius_small:   2
-		radius_medium:  3
-		radius_large:   4
+		padding:        pad(3, 6, 3, 6, s)
+		padding_small:  pad(2, 4, 2, 4, s)
+		padding_medium: pad(3, 6, 3, 6, s)
+		padding_large:  pad(5, 10, 5, 10, s)
+		spacing_small:  2 * s
+		spacing_medium: 5 * s
+		spacing_large:  8 * s
+		radius:         3 * s
+		radius_small:   2 * s
+		radius_medium:  3 * s
+		radius_large:   4 * s
 	}
 	mut t := gui.theme_maker(&cfg)
 	// Slim the toolbar buttons and grid cells/headers — their padding isn't
 	// driven by ThemeCfg (it uses fixed consts), so override the widget styles.
 	t = t.with_button_style(gui.ButtonStyle{
 		...t.button_style
-		padding: gui.Padding{1, 7, 1, 7}
+		padding: pad(1, 7, 1, 7, s)
 	})
 	t = t.with_data_grid_style(gui.DataGridStyle{
 		...t.data_grid_style
-		padding_cell:   gui.Padding{0, 4, 0, 4}
-		padding_header: gui.Padding{0, 4, 0, 4}
+		padding_cell:   pad(0, 4, 0, 4, s)
+		padding_header: pad(0, 4, 0, 4, s)
 		color_border:   p.gridline   // listview gridlines (darker than panel frames)
 		color_header:   p.background // grey header strip, distinct from white rows
 	})
@@ -1902,12 +1965,12 @@ fn activity_bar(app &App) gui.View {
 	// Active = bright (theme text colour), inactive = dim — flat buttons, no boxes.
 	icon_on := gui.TextStyle{
 		...gui.theme().b2
-		size: 19
+		size: 19 * g_ui_scale
 	}
 	dim := if app.dark { gui.Color{150, 155, 165, 255} } else { gui.Color{150, 150, 155, 255} }
 	icon_off := gui.TextStyle{
 		...gui.theme().b2
-		size:  19
+		size:  19 * g_ui_scale
 		color: dim
 	}
 	transparent := gui.Color{0, 0, 0, 0}
@@ -1921,10 +1984,10 @@ fn activity_bar(app &App) gui.View {
 		icon := icons[pid] or { '•' }
 		items << gui.button(
 			id_focus:     0
-			min_width:    40
-			max_width:    40
+			min_width:    sc(40)
+			max_width:    sc(40)
 			h_align:      .left // .center renders blank (gui bug); left-pad to centre
-			padding:      gui.Padding{5, 6, 5, 11}
+			padding:      scpad(5, 6, 5, 11)
 			color:        if shown { hl } else { transparent }
 			color_border: transparent
 			color_hover:  hover
@@ -1940,8 +2003,8 @@ fn activity_bar(app &App) gui.View {
 	}
 	return gui.column(
 		sizing:  gui.fit_fill
-		spacing: 4
-		padding: gui.Padding{4, 5, 4, 5}
+		spacing: sc(4)
+		padding: scpad(4, 5, 4, 5)
 		content: items
 	)
 }
@@ -2517,14 +2580,42 @@ fn toolbar(mut window gui.Window) gui.View {
 					w.set_theme(make_theme(if a.dark { palette_dark } else { palette_opus }))
 				}
 			),
+			gui.text(text: 'scale', text_style: gui.theme().n4),
+			window.select(
+				id:        'uiscale'
+				id_focus:  107
+				select:    [ui_scale_label()]
+				options:   ui_scale_options
+				min_width: sc(76)
+				max_width: sc(92)
+				on_select: fn (sel []string, mut _ gui.Event, mut w gui.Window) {
+					if sel.len == 0 {
+						return
+					}
+					// DPI workaround: re-scale the whole UI live by rebuilding the
+					// theme (same path as the dark/light toggle — sapp is valid here).
+					old := g_ui_scale
+					g_ui_scale = clamp_scale(sel[0].trim_right('%').f32() / 100)
+					a := w.state[App]()
+					w.set_theme(make_theme(if a.dark { palette_dark } else { palette_opus }))
+					// Grow/shrink the window by the same ratio so content density
+					// stays constant (startup already sizes the window × scale). The
+					// ratio (not scale×base) respects any manual user resize.
+					if old > 0 && g_ui_scale != old {
+						cw, ch := w.window_size()
+						ratio := g_ui_scale / old
+						w.resize(int(f32(cw) * ratio), int(f32(ch) * ratio))
+					}
+				}
+			),
 			gui.text(text: 'screen', text_style: gui.theme().n4),
 			window.select(
 				id:        'fps'
 				id_focus:  105
 				select:    ['${app.fps} fps']
 				options:   fps_options
-				min_width: 76
-				max_width: 92
+				min_width: sc(76)
+				max_width: sc(92)
 				on_select: fn (sel []string, mut _ gui.Event, mut w gui.Window) {
 					mut a := w.state[App]()
 					if sel.len > 0 {
@@ -2535,9 +2626,9 @@ fn toolbar(mut window gui.Window) gui.View {
 			gui.input(
 				id_focus:        13
 				text:            app.log_path
-				width:           220
-				height:          26
-				padding:         gui.Padding{4, 8, 4, 8}
+				width:           sc(220)
+				height:          sc(26)
+				padding:         scpad(4, 8, 4, 8)
 				sizing:          gui.fixed_fixed
 				placeholder:     'path/to/capture.log or .mf4'
 				on_enter:        fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
@@ -2657,8 +2748,8 @@ fn trace_view(mut window gui.Window, which int) gui.View {
 			sizing:              gui.fill_fill
 			max_height:          grid_h
 			scrollbar:           .visible
-			row_height:          trace_row_height
-			header_height:       trace_header_height
+			row_height:          trace_row_height * g_ui_scale
+			header_height:       trace_header_height * g_ui_scale
 			text_style:          trace_text_style()
 			text_style_header:   trace_text_style()
 			columns:             [
@@ -2745,8 +2836,8 @@ fn trace_view(mut window gui.Window, which int) gui.View {
 		sizing:         gui.fill_fill
 		max_height:     grid_h
 		scrollbar:      .visible
-		row_height:     trace_row_height
-		header_height:  trace_header_height
+		row_height:     trace_row_height * g_ui_scale
+		header_height:  trace_header_height * g_ui_scale
 		text_style:     trace_text_style()
 		text_style_header: trace_text_style()
 		columns:        [
@@ -2830,9 +2921,9 @@ fn trace_filter_row(app &App, which int) gui.View {
 	mut content := [
 		gui.View(gui.button(
 			id_focus:  u32(36 + which) // per-panel grouped/all toggle
-			max_width: 92
+			max_width: sc(92)
 			content:   [gui.text(text: 'View: ${mode}')]
-			padding:   gui.Padding{2, 6, 2, 6}
+			padding:   scpad(2, 6, 2, 6)
 			on_click:  fn [which] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 				mut a := w.state[App]()
 				if which == 0 {
@@ -2846,9 +2937,9 @@ fn trace_filter_row(app &App, which int) gui.View {
 		gui.input(
 			id_focus:        u32(30 + which * 2)
 			text:            filter
-			width:           260
-			height:          22
-			padding:         gui.Padding{2, 6, 2, 6}
+			width:           sc(260)
+			height:          sc(22)
+			padding:         scpad(2, 6, 2, 6)
 			sizing:          gui.fixed_fixed
 			placeholder:     if which == 0 {
 				'id / name / ch / data — e.g. 0x100, Wheel, CAN2, FF'
@@ -2868,9 +2959,9 @@ fn trace_filter_row(app &App, which int) gui.View {
 	if filter.len > 0 {
 		content << gui.button(
 			id_focus:  u32(31 + which * 2)
-			max_width: 30
+			max_width: sc(30)
 			content:   [gui.text(text: '✕', text_style: trace_text_style())]
-			padding:   gui.Padding{2, 6, 2, 6}
+			padding:   scpad(2, 6, 2, 6)
 			on_click:  fn [which] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 				mut a := w.state[App]()
 				if which == 0 {
@@ -2888,9 +2979,9 @@ fn trace_filter_row(app &App, which int) gui.View {
 		if mids.len > 0 {
 			content << gui.button(
 				id_focus:  34
-				max_width: 96
+				max_width: sc(96)
 				content:   [gui.text(text: '＋ filter (${mids.len})', text_style: trace_text_style())]
-				padding:   gui.Padding{2, 6, 2, 6}
+				padding:   scpad(2, 6, 2, 6)
 				on_click:  fn [mids] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					mut a := w.state[App]()
 					for mid in mids {
@@ -2907,9 +2998,9 @@ fn trace_filter_row(app &App, which int) gui.View {
 		if rmids.len > 0 {
 			content << gui.button(
 				id_focus:  35
-				max_width: 100
+				max_width: sc(100)
 				content:   [gui.text(text: '− filter (${rmids.len})', text_style: trace_text_style())]
-				padding:   gui.Padding{2, 6, 2, 6}
+				padding:   scpad(2, 6, 2, 6)
 				on_click:  fn [rmids] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					mut a := w.state[App]()
 					for mid in rmids {
@@ -2925,14 +3016,14 @@ fn trace_filter_row(app &App, which int) gui.View {
 		for k, wid in ids {
 			content << gui.button(
 				id_focus:  u32(500 + k) // 500+ = watch chips (see id ranges note)
-				max_width: 72
+				max_width: sc(72)
 				content:   [
 					gui.text(
 						text:       '${hexid(wid, wid > 0x7ff)} ✕'
 						text_style: trace_text_style()
 					),
 				]
-				padding:   gui.Padding{2, 6, 2, 6}
+				padding:   scpad(2, 6, 2, 6)
 				on_click:  fn [wid] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					mut a := w.state[App]()
 					a.watch.delete(wid)
@@ -2943,7 +3034,7 @@ fn trace_filter_row(app &App, which int) gui.View {
 	return gui.row(
 		v_align: .middle
 		spacing: 6
-		padding: gui.Padding{2, 4, 4, 4}
+		padding: scpad(2, 4, 4, 4)
 		content: content
 	)
 }
@@ -3175,7 +3266,7 @@ fn plot_panel(mut window gui.Window) gui.View {
 			gui.text(text: '0x${id:X} ${m.name}', text_style: gui.theme().n4),
 			gui.button(
 				id_focus:  109
-				max_width: 34
+				max_width: sc(34)
 				content:   [gui.text(text: '−')]
 				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					zoom_window(mut w, 1)
@@ -3186,8 +3277,8 @@ fn plot_panel(mut window gui.Window) gui.View {
 				id_focus:  108
 				select:    ['${app.plot_win} s']
 				options:   plot_win_options
-				min_width: 58
-				max_width: 70
+				min_width: sc(58)
+				max_width: sc(70)
 				on_select: fn (sel []string, mut _ gui.Event, mut w gui.Window) {
 					mut a := w.state[App]()
 					if sel.len > 0 {
@@ -3197,7 +3288,7 @@ fn plot_panel(mut window gui.Window) gui.View {
 			),
 			gui.button(
 				id_focus:  110
-				max_width: 34
+				max_width: sc(34)
 				content:   [gui.text(text: '+')]
 				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					zoom_window(mut w, -1)
@@ -3205,7 +3296,7 @@ fn plot_panel(mut window gui.Window) gui.View {
 			),
 			gui.button(
 				id_focus:  111
-				max_width: 72
+				max_width: sc(72)
 				content:   [gui.text(text: if app.plot_step { '⎍ Step' } else { '╱ Linear' })]
 				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					mut a := w.state[App]()
@@ -3227,7 +3318,7 @@ fn plot_panel(mut window gui.Window) gui.View {
 		height:   ph
 		color:    plot_bg
 		radius:   4
-		padding:  gui.Padding{6, 6, 6, 6}
+		padding:  scpad(6, 6, 6, 6)
 		on_draw:  fn [mut app, shown, shown_colors, times, wstart, win, plot_grid, hf, step] (mut dc gui.DrawContext) {
 			draw_signals(mut dc, mut app, shown, shown_colors, times, wstart, win, plot_grid,
 				hf, step)
@@ -3280,7 +3371,7 @@ fn plot_panel(mut window gui.Window) gui.View {
 		legend << gui.row(
 			v_align:  .middle
 			spacing:  4
-			padding:  gui.Padding{1, 2, 1, 2}
+			padding:  scpad(1, 2, 1, 2)
 			on_click: fn [key] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 				mut a := w.state[App]()
 				if key in a.plot_off {
@@ -3451,15 +3542,15 @@ fn symbol_browser_panel(app &App) gui.View {
 	rows << gui.row(
 		v_align: .middle
 		spacing: 6
-		padding: gui.Padding{2, 0, 4, 0}
+		padding: scpad(2, 0, 4, 0)
 		content: [
 			gui.text(text: 'Find', text_style: gui.theme().n4),
 			gui.input(
 				id_focus:        60
 				text:            app.symbol_filter
-				width:           200
-				height:          22
-				padding:         gui.Padding{2, 6, 2, 6}
+				width:           sc(200)
+				height:          sc(22)
+				padding:         scpad(2, 6, 2, 6)
 				sizing:          gui.fixed_fixed
 				placeholder:     'message / signal name or id'
 				on_text_changed: fn (_ &gui.Layout, s string, mut w gui.Window) {
@@ -3508,7 +3599,7 @@ fn symbol_browser_panel(app &App) gui.View {
 		rows << gui.row(
 			v_align:  .middle
 			spacing:  4
-			padding:  gui.Padding{1, 2, 1, 2}
+			padding:  scpad(1, 2, 1, 2)
 			on_click: fn [mid] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 				mut a := w.state[App]()
 				a.sel_id = i64(mid)
@@ -3549,7 +3640,7 @@ fn symbol_browser_panel(app &App) gui.View {
 				rows << gui.row(
 					v_align: .middle
 					spacing: 6
-					padding: gui.Padding{0, 0, 0, 22}
+					padding: scpad(0, 0, 0, 22)
 					content: [
 						gui.text(text: s.name, text_style: trace_text_style()),
 						gui.text(text: val, text_style: gui.theme().n4),
@@ -3604,11 +3695,11 @@ fn bus_config_panel(app &App) gui.View {
 	rows << gui.row(
 		v_align: .middle
 		spacing: 6
-		padding: gui.Padding{0, 0, 2, 0}
+		padding: scpad(0, 0, 2, 0)
 		content: [
 			gui.button(
 				id_focus:  0
-				max_width: 92
+				max_width: sc(92)
 				content:   [gui.text(text: '🔍 Discover')]
 				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					discover_to_candidates(mut w)
@@ -3627,7 +3718,7 @@ fn bus_config_panel(app &App) gui.View {
 				content: [
 					gui.button(
 						id_focus:  0
-						max_width: 80
+						max_width: sc(80)
 						content:   [gui.text(text: '⚲ USB CAN')]
 						on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 							usb_attach_can(mut w)
@@ -3641,11 +3732,11 @@ fn bus_config_panel(app &App) gui.View {
 	rows << gui.row(
 		v_align: .middle
 		spacing: 6
-		padding: gui.Padding{0, 0, 4, 0}
+		padding: scpad(0, 0, 4, 0)
 		content: [
 			gui.button(
 				id_focus:  0
-				max_width: 84
+				max_width: sc(84)
 				content:   [gui.text(text: '＋ vcan')]
 				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					create_vcan(mut w)
@@ -3653,7 +3744,7 @@ fn bus_config_panel(app &App) gui.View {
 			),
 			gui.button(
 				id_focus:  0
-				max_width: 92
+				max_width: sc(92)
 				content:   [gui.text(text: '＋ Sim net')]
 				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					add_sim_network(mut w)
@@ -3661,7 +3752,7 @@ fn bus_config_panel(app &App) gui.View {
 			),
 			gui.button(
 				id_focus:  0
-				max_width: 110
+				max_width: sc(110)
 				content:   [gui.text(text: '＋ Add ticked')]
 				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					add_ticked_channels(mut w)
@@ -3704,12 +3795,12 @@ fn bus_config_panel(app &App) gui.View {
 		rows << gui.row(
 			v_align: .middle
 			spacing: 5
-			padding: gui.Padding{1, 2, 1, 2}
+			padding: scpad(1, 2, 1, 2)
 			content: [
 				// tick on its OWN clickable so editing the name doesn't toggle it
 				gui.row(
 					v_align:  .middle
-					padding:  gui.Padding{0, 3, 0, 1}
+					padding:  scpad(0, 3, 0, 1)
 					on_click: fn [iface] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 						mut a := w.state[App]()
 						a.bus_ticked[iface] = !(a.bus_ticked[iface] or { false })
@@ -3726,9 +3817,9 @@ fn bus_config_panel(app &App) gui.View {
 				gui.input(
 					id_focus:        u32(130 + idx)
 					text:            cname
-					width:           120
-					height:          22
-					padding:         gui.Padding{2, 6, 2, 6}
+					width:           sc(120)
+					height:          sc(22)
+					padding:         scpad(2, 6, 2, 6)
 					sizing:          gui.fixed_fixed
 					on_text_changed: fn [iface] (_ &gui.Layout, s string, mut w gui.Window) {
 						mut a := w.state[App]()
@@ -3762,11 +3853,11 @@ fn buses_panel(app &App) gui.View {
 	rows << gui.row(
 		v_align: .middle
 		spacing: 5
-		padding: gui.Padding{0, 0, 4, 0}
+		padding: scpad(0, 0, 4, 0)
 		content: [
 			gui.button(
 				id_focus:  0
-				max_width: 92
+				max_width: sc(92)
 				content:   [gui.text(text: '🔍 Discover')]
 				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					open_bus_config(mut w)
@@ -3791,7 +3882,7 @@ fn buses_panel(app &App) gui.View {
 				// the rest right — see docs/known_issues.md). id_focus:0 → no stuck blue.
 				gui.button(
 					id_focus:  0
-					max_width: 26
+					max_width: sc(26)
 					content:   [gui.text(text: if en { '☑' } else { '☐' })]
 					on_click:  fn [i] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 						mut a := w.state[App]()
@@ -3802,7 +3893,7 @@ fn buses_panel(app &App) gui.View {
 				// Remove this channel from the project.
 				gui.button(
 					id_focus:  0
-					max_width: 30
+					max_width: sc(30)
 					content:   [gui.text(text: '✕')]
 					on_click:  fn [i] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 						remove_channel(i, mut w)
@@ -3820,7 +3911,7 @@ fn buses_panel(app &App) gui.View {
 		mut dbrow := [
 			gui.View(gui.button(
 				id_focus:  0
-				max_width: 58
+				max_width: sc(58)
 				content:   [gui.text(text: '＋ DBC')]
 				on_click:  fn [i] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					pick_dbc(i, mut w)
@@ -3831,7 +3922,7 @@ fn buses_panel(app &App) gui.View {
 		if ch.databases.len > 0 {
 			dbrow << gui.button(
 				id_focus:  0
-				max_width: 30
+				max_width: sc(30)
 				content:   [gui.text(text: '✕')]
 				on_click:  fn [i] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					clear_dbc(i, mut w)
@@ -3841,7 +3932,7 @@ fn buses_panel(app &App) gui.View {
 		rows << gui.row(
 			v_align: .middle
 			spacing: 5
-			padding: gui.Padding{0, 0, 2, 18} // indent under the channel
+			padding: scpad(0, 0, 2, 18) // indent under the channel
 			content: dbrow
 		)
 	}
@@ -3917,7 +4008,7 @@ fn simulation_panel(mut window gui.Window) gui.View {
 		rows << gui.row(
 			v_align:  .middle
 			spacing:  5
-			padding:  gui.Padding{2, 0, 2, 0}
+			padding:  scpad(2, 0, 2, 0)
 			on_click: fn [i] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 				mut a := w.state[App]()
 				a.sim_expanded[i] = !a.sim_expanded[i]
@@ -3958,7 +4049,7 @@ fn simulation_panel(mut window gui.Window) gui.View {
 			rows << gui.row(
 				v_align: .middle
 				spacing: 6
-				padding: gui.Padding{1, 0, 1, 24} // indent under the network
+				padding: scpad(1, 0, 1, 24) // indent under the network
 				content: [
 					gui.text(text: '●', text_style: dot_style),
 					// gui.button (not an on_click gui.row) for the clickable bits — a
@@ -3967,7 +4058,7 @@ fn simulation_panel(mut window gui.Window) gui.View {
 					// so it doesn't stay highlighted after a click (is_focus(0) == false).
 					gui.button(
 						id_focus:  0
-						max_width: 26
+						max_width: sc(26)
 						content:   [gui.text(text: if en { '☑' } else { '☐' })]
 						on_click:  fn [j] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 							mut a := w.state[App]()
@@ -3977,8 +4068,8 @@ fn simulation_panel(mut window gui.Window) gui.View {
 					// Name + expand chevron (click to show/edit this node's generators).
 					gui.button(
 						id_focus:  0
-						min_width: 150
-						max_width: 150
+						min_width: sc(150)
+						max_width: sc(150)
 						h_align:   .left
 						content:   [gui.text(text: '${if nexp { '▾' } else { '▸' }} ${sn.node}')]
 						on_click:  fn [nkey] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
@@ -3988,7 +4079,7 @@ fn simulation_panel(mut window gui.Window) gui.View {
 					),
 					gui.button(
 						id_focus:  0
-						max_width: 84
+						max_width: sc(84)
 						h_align:   .left
 						content:   [gui.text(text: '⚙ Scaffold')]
 						on_click:  fn [ndix, nname] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
@@ -4010,14 +4101,14 @@ fn simulation_panel(mut window gui.Window) gui.View {
 					rows << gui.row(
 						v_align:  .middle
 						spacing:  4
-						padding:  gui.Padding{0, 0, 0, 52}
+						padding:  scpad(0, 0, 0, 52)
 						on_click: fn [sigkey] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 							mut a := w.state[App]()
 							a.sim_sig_edit = if a.sim_sig_edit == sigkey { '' } else { sigkey }
 						}
 						content:  [
 							gui.text(text: if editing { '▾' } else { '▸' }, text_style: trace_text_style()),
-							gui.text(text: g.signal, text_style: gui.theme().b4, min_width: 104),
+							gui.text(text: g.signal, text_style: gui.theme().b4, min_width: sc(104)),
 							gui.text(text: gen_summary(g), text_style: gui.theme().n4),
 						]
 					)
@@ -4032,8 +4123,8 @@ fn simulation_panel(mut window gui.Window) gui.View {
 								id_focus:  1000
 								select:    [g.typ]
 								options:   ['const', 'sine', 'sawtooth', 'counter', 'stepmod']
-								min_width: 90
-								max_width: 110
+								min_width: sc(90)
+								max_width: sc(110)
 								on_select: fn [ci, nn, sg] (sel []string, mut _ gui.Event, mut w gui.Window) {
 									if sel.len > 0 {
 										set_gen_type(ci, nn, sg, sel[0], mut w)
@@ -4047,10 +4138,10 @@ fn simulation_panel(mut window gui.Window) gui.View {
 							ed << gui.input(
 								id_focus:        u32(1001 + fx)
 								text:            gnum(gen_field_val(g, f))
-								width:           54
-								height:          22
+								width:           sc(54)
+								height:          sc(22)
 								sizing:          gui.fixed_fixed
-								padding:         gui.Padding{2, 5, 2, 5}
+								padding:         scpad(2, 5, 2, 5)
 								on_text_changed: fn [ci, nn, sg, fname] (_ &gui.Layout, s string, mut w gui.Window) {
 									set_gen_field(ci, nn, sg, fname, s.f64(), mut w)
 								}
@@ -4059,7 +4150,7 @@ fn simulation_panel(mut window gui.Window) gui.View {
 						rows << gui.row(
 							v_align: .middle
 							spacing: 4
-							padding: gui.Padding{0, 0, 2, 70}
+							padding: scpad(0, 0, 2, 70)
 							content: ed
 						)
 					}
@@ -4125,8 +4216,8 @@ fn send_panel(mut window gui.Window) gui.View {
 						id_focus:  14
 						select:    [cur_bus]
 						options:   bus_opts
-						min_width: 110
-						max_width: 160
+						min_width: sc(110)
+						max_width: sc(160)
 						on_select: fn (sel []string, mut _ gui.Event, mut w gui.Window) {
 							mut a := w.state[App]()
 							if sel.len > 0 {
@@ -4147,8 +4238,8 @@ fn send_panel(mut window gui.Window) gui.View {
 						id_focus:  13
 						select:    ['(database message…)']
 						options:   msg_opts
-						min_width: 150
-						max_width: 230
+						min_width: sc(150)
+						max_width: sc(230)
 						on_select: fn (sel []string, mut _ gui.Event, mut w gui.Window) {
 							mut a := w.state[App]()
 							if sel.len > 0 && sel[0].starts_with('0x') {
@@ -4177,9 +4268,9 @@ fn send_panel(mut window gui.Window) gui.View {
 					gui.input(
 						id_focus:        10
 						text:            app.send_id
-						width:           90
-						height:          26
-						padding:         gui.Padding{4, 8, 4, 8}
+						width:           sc(90)
+						height:          sc(26)
+						padding:         scpad(4, 8, 4, 8)
 						sizing:          gui.fixed_fixed
 						placeholder:     'hex id'
 						on_text_changed: fn (_ &gui.Layout, s string, mut w gui.Window) {
@@ -4198,9 +4289,9 @@ fn send_panel(mut window gui.Window) gui.View {
 					gui.input(
 						id_focus:        11
 						text:            app.send_data
-						width:           150
-						height:          26
-						padding:         gui.Padding{4, 8, 4, 8}
+						width:           sc(150)
+						height:          sc(26)
+						padding:         scpad(4, 8, 4, 8)
 						sizing:          gui.fixed_fixed
 						placeholder:     'hex bytes'
 						on_enter:        fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
@@ -4220,8 +4311,8 @@ fn send_panel(mut window gui.Window) gui.View {
 			// left-aligned text always draws.
 			gui.button(
 				id_focus:  12
-				min_width: 90
-				max_width: 90
+				min_width: sc(90)
+				max_width: sc(90)
 				h_align:   .left
 				content:   [gui.text(text: 'Send')]
 				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
@@ -4289,7 +4380,7 @@ fn generators_panel(mut window gui.Window) gui.View {
 			gui.text(text: 'Interactive generators', text_style: gui.theme().b3),
 			gui.button(
 				id_focus:  0
-				max_width: 70
+				max_width: sc(70)
 				h_align:   .left
 				content:   [gui.text(text: 'Save')]
 				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
@@ -4309,12 +4400,12 @@ fn generators_panel(mut window gui.Window) gui.View {
 			v_align: .middle
 			sizing:  gui.fill_fit
 			spacing: 6
-			padding: gui.Padding{6, 0, 1, 0}
+			padding: scpad(6, 0, 1, 0)
 			content: [
 				gui.text(text: ch.name, text_style: gui.theme().b4),
 				gui.button(
 					id_focus:  0
-					max_width: 60
+					max_width: sc(60)
 					h_align:   .left
 					content:   [gui.text(text: '＋ Add')]
 					on_click:  fn [ci] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
@@ -4339,12 +4430,12 @@ fn generators_panel(mut window gui.Window) gui.View {
 			rows << gui.row(
 				v_align: .middle
 				spacing: 4
-				padding: gui.Padding{0, 0, 0, 8}
+				padding: scpad(0, 0, 0, 8)
 				content: [
 					gui.button(
 						id_focus:  0
-						min_width: 180
-						max_width: 230
+						min_width: sc(180)
+						max_width: sc(230)
 						h_align:   .left
 						content:   [gui.text(text: '▸ ${s.name}${key_label}')]
 						on_click:  fn [flat] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
@@ -4354,7 +4445,7 @@ fn generators_panel(mut window gui.Window) gui.View {
 					),
 					gui.button(
 						id_focus:  0
-						max_width: 30
+						max_width: sc(30)
 						h_align:   .left
 						content:   [gui.text(text: if editing { '▾' } else { '…' })]
 						on_click:  fn [ekey] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
@@ -4364,7 +4455,7 @@ fn generators_panel(mut window gui.Window) gui.View {
 					),
 					gui.button(
 						id_focus:  0
-						max_width: 30
+						max_width: sc(30)
 						h_align:   .left
 						content:   [gui.text(text: '×')]
 						on_click:  fn [ci, si] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
@@ -4408,10 +4499,10 @@ fn sender_editor(app &App, mut window gui.Window, ci int, si int, s project.Send
 			gui.input(
 				id_focus:        focus + 0
 				text:            s.name
-				width:           150
-				height:          22
+				width:           sc(150)
+				height:          sc(22)
 				sizing:          gui.fixed_fixed
-				padding:         gui.Padding{2, 5, 2, 5}
+				padding:         scpad(2, 5, 2, 5)
 				on_text_changed: fn [ci, si] (_ &gui.Layout, v string, mut w gui.Window) {
 					set_sender_name(ci, si, v, mut w)
 				}
@@ -4420,10 +4511,10 @@ fn sender_editor(app &App, mut window gui.Window, ci int, si int, s project.Send
 			gui.input(
 				id_focus:        focus + 1
 				text:            s.key
-				width:           34
-				height:          22
+				width:           sc(34)
+				height:          sc(22)
 				sizing:          gui.fixed_fixed
-				padding:         gui.Padding{2, 5, 2, 5}
+				padding:         scpad(2, 5, 2, 5)
 				on_text_changed: fn [ci, si] (_ &gui.Layout, v string, mut w gui.Window) {
 					set_sender_key(ci, si, v, mut w)
 				}
@@ -4438,8 +4529,8 @@ fn sender_editor(app &App, mut window gui.Window, ci int, si int, s project.Send
 			id_focus:  focus + 2
 			select:    [s.trigger]
 			options:   ['manual', 'key', 'cyclic']
-			min_width: 84
-			max_width: 100
+			min_width: sc(84)
+			max_width: sc(100)
 			on_select: fn [ci, si] (sel []string, mut _ gui.Event, mut w gui.Window) {
 				if sel.len > 0 {
 					set_sender_trigger(ci, si, sel[0], mut w)
@@ -4452,10 +4543,10 @@ fn sender_editor(app &App, mut window gui.Window, ci int, si int, s project.Send
 		trig_row << gui.input(
 			id_focus:        focus + 3
 			text:            '${s.cycle_ms}'
-			width:           54
-			height:          22
+			width:           sc(54)
+			height:          sc(22)
 			sizing:          gui.fixed_fixed
-			padding:         gui.Padding{2, 5, 2, 5}
+			padding:         scpad(2, 5, 2, 5)
 			on_text_changed: fn [ci, si] (_ &gui.Layout, v string, mut w gui.Window) {
 				set_sender_cycle(ci, si, v.int(), mut w)
 			}
@@ -4478,8 +4569,8 @@ fn sender_editor(app &App, mut window gui.Window, ci int, si int, s project.Send
 				id_focus:  focus + 4
 				select:    [cur_msg]
 				options:   msg_opts
-				min_width: 130
-				max_width: 180
+				min_width: sc(130)
+				max_width: sc(180)
 				on_select: fn [ci, si] (sel []string, mut _ gui.Event, mut w gui.Window) {
 					if sel.len > 0 {
 						set_sender_message(ci, si, sel[0], mut w)
@@ -4499,16 +4590,16 @@ fn sender_editor(app &App, mut window gui.Window, ci int, si int, s project.Send
 			ed << gui.row(
 				v_align: .middle
 				spacing: 4
-				padding: gui.Padding{0, 0, 0, 8}
+				padding: scpad(0, 0, 0, 8)
 				content: [
-					gui.text(text: signame, text_style: gui.theme().b4, min_width: 100),
+					gui.text(text: signame, text_style: gui.theme().b4, min_width: sc(100)),
 					gui.input(
 						id_focus:        focus + fx
 						text:            gnum(cur)
-						width:           70
-						height:          22
+						width:           sc(70)
+						height:          sc(22)
 						sizing:          gui.fixed_fixed
-						padding:         gui.Padding{2, 5, 2, 5}
+						padding:         scpad(2, 5, 2, 5)
 						on_text_changed: fn [ci, si, signame] (_ &gui.Layout, v string, mut w gui.Window) {
 							set_sender_signal(ci, si, signame, v.f64(), mut w)
 						}
@@ -4527,10 +4618,10 @@ fn sender_editor(app &App, mut window gui.Window, ci int, si int, s project.Send
 				gui.input(
 					id_focus:        focus + 6
 					text:            '${s.id:X}'
-					width:           70
-					height:          22
+					width:           sc(70)
+					height:          sc(22)
 					sizing:          gui.fixed_fixed
-					padding:         gui.Padding{2, 5, 2, 5}
+					padding:         scpad(2, 5, 2, 5)
 					placeholder:     'hex'
 					on_text_changed: fn [ci, si] (_ &gui.Layout, v string, mut w gui.Window) {
 						set_sender_id(ci, si, parse_hex_u32(v), mut w)
@@ -4540,10 +4631,10 @@ fn sender_editor(app &App, mut window gui.Window, ci int, si int, s project.Send
 				gui.input(
 					id_focus:        focus + 7
 					text:            hex(s.data)
-					width:           150
-					height:          22
+					width:           sc(150)
+					height:          sc(22)
 					sizing:          gui.fixed_fixed
-					padding:         gui.Padding{2, 5, 2, 5}
+					padding:         scpad(2, 5, 2, 5)
 					placeholder:     'hex bytes'
 					on_text_changed: fn [ci, si] (_ &gui.Layout, v string, mut w gui.Window) {
 						set_sender_data(ci, si, v, mut w)
@@ -4555,7 +4646,7 @@ fn sender_editor(app &App, mut window gui.Window, ci int, si int, s project.Send
 	return gui.column(
 		sizing:  gui.fill_fit
 		spacing: 3
-		padding: gui.Padding{2, 4, 4, 16}
+		padding: scpad(2, 4, 4, 16)
 		content: ed
 	)
 }
@@ -4617,8 +4708,8 @@ fn diag_panel(mut window gui.Window) gui.View {
 				id_focus:  612
 				select:    ['pick…']
 				options:   merge_did_opts()
-				min_width: 120
-				max_width: 150
+				min_width: sc(120)
+				max_width: sc(150)
 				on_select: fn (sel []string, mut _ gui.Event, mut w gui.Window) {
 					mut a := w.state[App]()
 					if sel.len > 0 && sel[0].len >= 4 && sel[0] != 'pick…' {
@@ -4629,9 +4720,9 @@ fn diag_panel(mut window gui.Window) gui.View {
 			gui.input(
 				id_focus:        610
 				text:            app.diag_did
-				width:           60
-				height:          22
-				padding:         gui.Padding{2, 6, 2, 6}
+				width:           sc(60)
+				height:          sc(22)
+				padding:         scpad(2, 6, 2, 6)
 				sizing:          gui.fixed_fixed
 				on_text_changed: fn (_ &gui.Layout, s string, mut w gui.Window) {
 					mut a := w.state[App]()
@@ -4673,7 +4764,7 @@ fn diag_button(focus u32, label string, on_click fn (&gui.Layout, mut gui.Event,
 		max_width: w
 		h_align:   .left
 		content:   [gui.text(text: label, text_style: trace_text_style())]
-		padding:   gui.Padding{3, 8, 3, 8}
+		padding:   scpad(3, 8, 3, 8)
 		on_click:  on_click
 	)
 }
@@ -4846,7 +4937,7 @@ fn tcol(id string, title string, width f32, align gui.HorizontalAlign) gui.GridC
 		width:     width
 		align:     align
 		sortable:  false
-		max_width: 4000
+		max_width: sc(4000)
 	}
 }
 
