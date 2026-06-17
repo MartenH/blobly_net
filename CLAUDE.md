@@ -324,7 +324,9 @@ Verified: a breakpoint at `main__main` resolves to `src/main.v` and stops there.
   that matters for this app's worker threads. The 3 review-hardening fixes (clear-value/thread-local/
   owner) sit as a working-tree delta on `closure.c.v` over that HEAD; `docs/v_patches/closure-gc-leak-fix.patch`
   is regenerated to the full PR (base `ed17e5fb`). See `docs/v_patches/README.md`.
-- vlang/gui: commit 68b9302 (2026-05-11), in `~/.vmodules/gui`. Depends on `vglyph`.
+- vlang/gui: commit 68b9302 (2026-05-11), in `~/.vmodules/gui`. Depends on `vglyph`. Local patches applied
+  (re-apply on a fresh box — `docs/v_patches/README.md`): `gui-closure-reclaim`, `gui-msaa-sample-count`,
+  `gui-window-resize` (Window.resize() for the live scale dropdown).
 - Mesa: **25.2.8** on Ubuntu 24.04.4 (OpenGL 4.5 Compatibility) — hardware GL works under WSLg.
 - **CONFIRMED WORKING**: builds clean, window renders under WSLg with **hardware GL** (sokol backend).
 
@@ -807,3 +809,38 @@ prompt for a password.
   (isolated VMODULES; layout renders, trace streams, splitter-drag safe). Bumping the pin is low-risk and
   would shed the gcc-16 local patches + gain active maintenance; drop the MSAA patch once gui#61 merges.
   Details: `docs/upstreaming.md` (status table), `docs/windows_build.md` (manifest banner).
+- 2026-06-17: **Manual UI scale (DPI workaround) DONE & VERIFIED.** On HiDPI screens the whole UI rendered
+  tiny — root cause is the benign-looking sokol log `LINUX_X11_QUERY_SYSTEM_DPI_FAILED … assuming default
+  96.0`: under WSLg/X11 sokol can't read the system DPI, so `sapp.dpi_scale()` returns 1.0 → `gg.Context.scale`
+  **and** vglyph's `scale_factor` (captured independently at init) both stay 1.0 → everything draws 1:1
+  device-pixel. There is **no real DPI to read back**, so we expose a **manual scale multiplier** instead
+  (the standard workaround). Implementation is **app-side**, matching the "one knob restyles the whole UI"
+  design (`src/main.v`): a process global `g_ui_scale` (globals already on for the in-proc bus) multiplies
+  (a) every theme size/padding/spacing/radius in `make_theme`, (b) the explicit grid row/header heights and
+  the activity-bar icon size, and (c) ~120 hand-set widget pixel literals (input width/height, activity-bar
+  width, tree indents, label min-widths) via two helpers `sc(v)` / `scpad(t,r,b,l)`; the window is created at
+  `1500×920 × scale`. Text scales because vglyph just renders bigger glyphs at the larger px size. Set at
+  startup via **`CANTESTER_UI_SCALE`** (accepts `1.5` or `150%`, clamped 0.75–3.0) or live from the toolbar
+  **scale** dropdown (100–300%, rebuilds the theme like the dark/light toggle). At 100% every `sc()`/`scpad()`
+  is a no-op, so the unscaled look is byte-identical to before. **Verified by screenshot at 150%** (uniform
+  enlargement; activity-bar icons no longer clip; input boxes scale correctly; clean run, no panics).
+  **Why NOT a gui/gg patch:** the "true DPI" route (`window.ui.scale`) is private *and* a trap — gg would
+  draw scaled into a framebuffer sokol already sized at 1×, clipping the right/bottom; making it correct
+  means coordinating the backing-store size too (a sokol/gg concern, high effort, low certainty under WSLg's
+  no-HiDPI-backing-store). The clean upstream feature would instead be a gui `ThemeCfg.scale`/`theme.scaled()`
+  (multiply theme sizes in `theme_maker`) — it'd also scale gui-internal chrome the app can't reach, but
+  WON'T cover gui's fixed widget-style consts (we already override button/data_grid padding) nor the app's
+  hand-set literals. Decided to keep it app-side (no pin/patch risk); a `ThemeCfg.scale` PR is a possible
+  later contribution (gui is active again). The scale is a per-session setting (env or toolbar) and is
+  deliberately **NOT persisted**: DPI scaling is inherently **per-monitor**, not per-machine or per-project —
+  the right value depends on which display the window is currently on and would ideally change live when the
+  window moves between monitors. So a static stored value (project `.yml` or a per-machine prefs file) is the
+  wrong model; the live dropdown is the pragmatic surface. A future "proper" per-monitor version would react
+  to display changes — which is exactly the sokol/gg DPI plumbing we chose to skip. Good enough for now.
+  **Window scaling:** the window is created at `1500×920 × scale` at startup, and the live **scale** dropdown
+  now also resizes the window by the same ratio (`new = current × newscale/oldscale`, so it respects manual
+  resizes) so content density stays constant. That needed one new local gui patch —
+  `docs/v_patches/gui-window-resize.patch`: `pub fn (mut Window) resize(w, h int)`, a one-line wrapper over
+  the already-public `gg.Context.resize()` (gui's `Window.ui` is private, so the app couldn't reach it). This
+  is a clean gui API-gap fill (a real upstream candidate), NOT the DPI workaround itself. Verified live under
+  WSLg/X11 (programmatic `resize(1000,700)` took the window 1500×920 → 1000×700 exactly).

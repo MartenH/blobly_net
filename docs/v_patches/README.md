@@ -78,6 +78,16 @@ Adds a `sample_count` field to `WindowCfg` and forwards it to `gg.new_context` (
 app fails to build (`unknown field 'sample_count'`). Default `1` (off) — inert for any app that doesn't
 set it.
 
+## `gui-window-resize.patch` — gui (`window_api.v`)
+
+Adds `pub fn (mut Window) resize(width, height int)` — a one-line wrapper over the already-public
+`gg.Context.resize()` (which implements the per-platform resize: macOS / Windows / X11; no-op on
+Wayland). gg has the capability but `gui.Window.ui` is private, so an app can't drive a runtime resize
+without it. `src/main.v` uses it so the toolbar **scale** dropdown grows/shrinks the window by the same
+ratio as the UI scale (the DPI workaround — see CLAUDE.md 2026-06-17), keeping content density constant.
+Pure addition, inert for any app that doesn't call it. **Clean upstream candidate** (fills a real gui API
+gap, not a workaround) — verified live under WSLg/X11 (1500×920 → 1000×700 on a programmatic call).
+
 ## `autofree-boehm_leak-fixes.patch` — two `-autofree`/`-gc boehm_leak` codegen bugs
 
 Found while getting `-gc boehm_leak` to compile the GUI (the diagnostic that cracked the root cause).
@@ -122,6 +132,7 @@ git apply $P/autofree-boehm_leak-fixes.patch  # diagnostic-only codegen fixes
 cd ~/.vmodules/gui
 git apply $P/gui-closure-reclaim.patch         # gui side of the leak fix (+ drag/mouse-lock guard)
 git apply $P/gui-msaa-sample-count.patch       # WindowCfg.sample_count (src/main.v needs it to build)
+git apply $P/gui-window-resize.patch           # Window.resize() — toolbar scale dropdown resizes the window
 cd ~/.vmodules/vglyph
 git apply $P/vglyph-empty-outline.patch        # don't crash on empty-outline glyphs (whitespace/emoji)
 ```

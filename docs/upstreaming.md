@@ -56,6 +56,7 @@ transfer and are recreated from the patches.
 | 4 | `vlang/vglyph` | restore `_check.vsh` green | **OPEN** — [vglyph#5](https://github.com/vlang/vglyph/pull/5) |
 | 2 | `vlang/gui` | titlebar_dark isvalid guard | **FILED** — [gui#60](https://github.com/vlang/gui/pull/60) |
 | — | `vlang/gui` | WindowCfg.sample_count (MSAA) | **FILED** — [gui#61](https://github.com/vlang/gui/pull/61) (new; was a local-only patch) |
+| — | `vlang/gui` | `Window.resize()` wrapper | **CANDIDATE — not filed.** Local patch `docs/v_patches/gui-window-resize.patch`; one-line `pub fn (mut Window) resize(w,h int)` over the public `gg.Context.resize()` (gui's `ui` is private). Clean API-gap fill; verified WSLg/X11. File if/when convenient. |
 | 3 | `vlang/gui` | windows gcc-16 compile (`#01`+`#02`) | **OBSOLETE** — already upstream (native-Windows work added COBJMACROS + `<stdio.h>`/`<wchar.h>`); do not file |
 
 **Major upstream change (2026-06-11→13):** `vlang/gui` got **native Windows support** merged to `main`
