@@ -19,6 +19,11 @@ if [ "${CANTESTER_SOFTWARE_GL:-0}" = "1" ]; then
 	export GALLIUM_DRIVER="${GALLIUM_DRIVER:-llvmpipe}"
 fi
 
+# Native file dialogs: the app itself detects WSL and defaults GUI_NO_PORTAL=1
+# there (gui's XDG Desktop Portal path hangs the UI thread under WSLg — see
+# src/main.v is_wsl() + docs/known_issues.md). No env setup needed here. To force
+# either backend regardless of platform, set GUI_NO_PORTAL=1 (zenity) or =0 (portal).
+
 # First arg is the target to run; defaults to the main window.
 TARGET="${1:-src/main.v}"
 shift || true

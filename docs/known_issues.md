@@ -36,6 +36,27 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
 
 ## vlang/gui
 
+- 🔴 **Native file dialog hangs the whole app under WSLg (XDG Desktop Portal) — FIXED via
+  `GUI_NO_PORTAL`.** Symptom: opening *any* file requester (Open Log / Open Project / Add DBC(s)…),
+  picking a file and pressing OK froze the entire app — the window could still be moved by the WM but
+  every button was dead, and it had to be killed from the shell. Root cause (nailed by a `gdb`
+  backtrace of the hung **main thread**): gui's native dialog prefers the **XDG Desktop Portal**
+  (`org.freedesktop.portal.FileChooser`) over D-Bus when `gui_portal_available()` is true, and its
+  `portal_wait_response()` (`nativebridge/portal_linux.c`) does a **synchronous 120 s D-Bus poll on the
+  UI thread** for the `Response` signal — which never arrives under WSLg, so the UI thread wedges in
+  `portal_wait_response → __poll` forever. It is **not** GC / fork / zenity related (all chased and
+  ruled out — the dialog never reaches zenity when the portal is "available"); "it used to work"
+  because older gui used the zenity backend. **Fix:** `gui-no-portal-fallback.patch` adds a
+  `GUI_NO_PORTAL` escape hatch to `gui_portal_available()` (truthy → returns 0 → falls back to the
+  working zenity backend; `0`/unset keep the portal). **The app auto-detects WSL** (`src/main.v`
+  `is_wsl()` — `WSL_DISTRO_NAME`/`WSL_INTEROP` or `microsoft`/`wsl` in `/proc/sys/kernel/osrelease`)
+  and sets `GUI_NO_PORTAL=1` there, so it works on any launch (not just `run.sh`); real Linux desktops
+  keep the portal. An explicit `GUI_NO_PORTAL=0` (or `=1`) always wins. Requires **zenity** installed
+  (already a runtime dep). Debugging note: `gdb`
+  cannot *run* this Boehm app (ptrace breaks the GC's signal-based stop-the-world), but **attaching to
+  an already-hung process to snapshot stacks works fine** — that's what cracked it. The process is
+  named `main` (run.sh does `v run src/main.v`), so use `pgrep -f cantester_v/src/main`, not
+  `cantester`. See `docs/v_patches/gui-no-portal-fallback.patch`.
 - ⚪ **data_grid columns are fixed px width and clamp to `max_width` (default 600).** They don't
   auto-stretch to fill the container. To make a column fill: compute its width from the window size
   AND raise its `max_width` (we set 4000). Also, column widths are cached per grid `id` and ignore

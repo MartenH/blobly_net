@@ -111,6 +111,29 @@ Two independent fixes (both needed before `v -gc boehm_leak` will compile the GU
    `-autofree`** for the same pattern (regression-tested: early-return with later-declared vars now
    compiles and runs correctly).
 
+## `gui-no-portal-fallback.patch` — gui (`nativebridge/portal_linux.c`) — NATIVE DIALOG HANG FIX
+
+> **2026-06-15.** Fixes the file-requester hang: opening **any** native dialog (Open Log / Open Project /
+> Add DBC(s)…) and dismissing it froze the whole app (window still movable by the WM, but every button
+> dead; killable only from the shell).
+
+gui's native dialog prefers the **XDG Desktop Portal** (`org.freedesktop.portal.FileChooser`) over
+D-Bus when `gui_portal_available()` is true, falling back to zenity/kdialog otherwise. Its portal path
+(`portal_wait_response`) does a **synchronous 120 s D-Bus poll** on the UI thread waiting for the portal
+`Response` signal. Under **WSLg** that signal never matches/arrives, so the UI thread wedges in
+`portal_wait_response → __poll` forever (confirmed by a `gdb` backtrace of the hung main thread). It is
+**not** GC/fork/zenity related — those were red herrings; the dialog never reaches zenity at all when the
+portal is "available". The patch adds an escape hatch: `gui_portal_available()` returns 0 when
+**`GUI_NO_PORTAL`** is truthy (a value other than `0`/empty), so gui uses the working zenity backend.
+**The app sets this automatically on WSL** — `src/main.v` `is_wsl()` defaults `GUI_NO_PORTAL=1` when it
+detects WSL, so it works regardless of launch method; real Linux desktops keep the portal. An explicit
+`GUI_NO_PORTAL=0`/`=1` always overrides.
+
+> **Considered and rejected:** `GC_set_handle_fork(1)` in `cmain.v` (Boehm fork-safety). Tried while
+> mis-diagnosing the dialog hang as a fork/GC race; it did nothing (the cause was the portal, above) and
+> guards a scenario that never occurs here — the only `fork` is `os.new_process`'s fork+**exec** of
+> zenity, and exec wipes the child while the parent is unaffected by fork. Reverted; `~/v` stays pristine.
+
 ## Reapply (after any V rebuild / re-pin)
 
 > **V base note (2026-06-14):** `closure-gc-leak-fix.patch` is now generated against base
@@ -133,9 +156,18 @@ cd ~/.vmodules/gui
 git apply $P/gui-closure-reclaim.patch         # gui side of the leak fix (+ drag/mouse-lock guard)
 git apply $P/gui-msaa-sample-count.patch       # WindowCfg.sample_count (src/main.v needs it to build)
 git apply $P/gui-window-resize.patch           # Window.resize() — toolbar scale dropdown resizes the window
+git apply $P/gui-no-portal-fallback.patch      # GUI_NO_PORTAL escape hatch (file-dialog hang under WSLg)
 cd ~/.vmodules/vglyph
 git apply $P/vglyph-empty-outline.patch        # don't crash on empty-outline glyphs (whitespace/emoji)
 ```
+
+> **Note (this box, 2026-06-15):** `~/v` is upstream master `7134f48` with `closure-gc-leak-fix.patch` +
+> `autofree-boehm_leak-fixes.patch` applied as a working-tree delta (NOT the PR branch — the patches
+> apply cleanly to master, so no `ed17e5fb`/PR-branch checkout was needed), rebuilt via `./v self`.
+> Module-side: `gui-closure-reclaim`, `gui-msaa-sample-count`, `gui-no-portal-fallback` (gui) and
+> `vglyph-empty-outline` (vglyph). So this box now carries the **full leak-free set**. Verified: the
+> `cmd/mem_leak_grid` changing-rows V-heap is bounded (~95–149 MB sawtooth, flat trend) instead of
+> climbing.
 
 ## Build a leak-profiling binary
 
