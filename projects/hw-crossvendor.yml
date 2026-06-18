@@ -1,0 +1,28 @@
+# Real two-vendor wire test — Kvaser Leaf Light v2 + PCAN-USB Pro FD on ONE physical
+# 500 kbit/s classic-CAN bus. Proves both Windows backends AND cross-vendor interop:
+# Send from one channel, see it arrive on the other (real wire, two different DLLs).
+#
+# Needs the vendor drivers installed first (canlib32.dll, PCANBasic.dll). ADJUST the
+# channel identifiers to what your tools report:
+#   - Kvaser channel number  -> Kvaser Device Guide (physical channel, e.g. 0)
+#   - PEAK channel handle     -> PCAN-View (e.g. PCAN_USBBUS1)
+# Classic CAN @ 500k because the Leaf Light v2 is classic-only (no FD).
+project:
+  name: hw-crossvendor (Kvaser + PCAN, same bus)
+  version: 1
+
+channels:
+  - name: KV
+    type: can
+    interface: kvaser:0@500000          # <- Kvaser channel number from Device Guide
+    mode: monitor
+    enabled: true
+    databases:
+      - dbc/cantester.dbc
+  - name: PC
+    type: can
+    interface: pcan:PCAN_USBBUS1@500000 # <- PEAK channel handle from PCAN-View
+    mode: monitor
+    enabled: true
+    databases:
+      - dbc/cantester.dbc

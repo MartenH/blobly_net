@@ -35,14 +35,16 @@ function Step($m) { Write-Host "`n==== $m ====" -ForegroundColor Cyan }
 
 # The gui/vglyph patches: (module path under $vmodules, patch file). Order matters
 # only in that all gui patches target the gui clone. 01-04 are the W1 Windows-build
-# fixes; 06 exposes WindowCfg.sample_count (MSAA) which src/main.v sets, so it's
-# required for the build to compile.
+# fixes; 06 exposes WindowCfg.sample_count (MSAA) and 07 adds Window.resize — both are
+# set by src/main.v, so both are required for the build to compile. (Mirrors of the
+# canonical docs/v_patches/ used on Linux; keep them in sync.)
 $patches = @(
     @{ Repo = 'gui';    File = '01-gui-readback-cobjmacros.patch' },
     @{ Repo = 'gui';    File = '02-gui-dialog-includes.patch'     },
     @{ Repo = 'gui';    File = '03-gui-titlebar-isvalid.patch'    },
     @{ Repo = 'vglyph'; File = '04-vglyph-empty-outline.patch'    },
-    @{ Repo = 'gui';    File = '06-gui-sample-count.patch'        }
+    @{ Repo = 'gui';    File = '06-gui-sample-count.patch'        },
+    @{ Repo = 'gui';    File = '07-gui-window-resize.patch'       }
 )
 
 # -------- maintainer mode: capture verified patches from the live modules --------
