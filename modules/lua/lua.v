@@ -12,7 +12,9 @@ module lua
 
 #flag -I@VMODROOT/thirdparty/lua
 #flag @VMODROOT/thirdparty/lua/ct_lua_amalg.c
-#flag -lm
+// -lm/-ldl are GCC/Unix linker flags (libm, libdl) — Linux only. On Windows the
+// math fns live in the CRT and there's no dlopen, and MSVC's linker rejects -l*.
+#flag linux -lm
 #flag linux -ldl
 #flag linux -DLUA_USE_LINUX
 #include "ct_lua_shim.h"
