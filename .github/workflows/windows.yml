@@ -1,20 +1,23 @@
 name: windows-build
 
-# Native Windows build of CANTester in CI (MSVC + vcpkg). Compiles + links the full
-# GUI app; does NOT run it (headless runner). Local equivalents:
-# scripts\build_win_msvc.ps1 (MSVC), scripts\build_win.ps1 (mingw).
+# Native Windows build of CANTester in CI. Compiles + links the full GUI app; does
+# NOT run it. Two jobs:
+#   * build-msvc  — MSVC + vcpkg (pango/freetype). Local equiv: scripts\build_win_msvc.ps1
+#   * build-msys2 — MSYS2/mingw gcc + pacman pango/freetype (no vcpkg, no ABI-drift
+#                   caching). Local equiv: scripts\build_win.ps1 / docs\windows_build.md
 #
-# V acquisition: we DOWNLOAD a pre-built V (de365a1) from this repo's "v-toolchain"
-# release instead of building it. Why: there is no prebuilt V from de365a1's era
-# (newest release 0.5.1/March predates the vlib/yaml modules/project needs), and V's
-# makev.bat self-compile (which leans on the vlang/tccbin prebuilt tcc) HANGS on the
-# runner regardless of disk/compiler (tcc/clang/gcc all wedge — TinyCC's own CI builds
-# with MSVC for the same reason). So we ship the known-good V binary and reuse it.
+# V acquisition (both jobs): DOWNLOAD the prebuilt V (de365a1) from this repo's
+# "v-toolchain" release. Why not build V here: V's makev.bat self-compile (leaning on
+# vlang/tccbin's prebuilt tcc) HANGS on the runner (tcc/clang/gcc all wedge — TinyCC's
+# own CI uses MSVC for the same reason). de365a1 already carries vlib/yaml (which
+# modules/project needs); the 0.5.1 *release* predates it. The closure leak fix is a
+# RUNTIME memory optimisation — a compile/link check doesn't need it, so we use the
+# stock de365a1 asset and skip the closure-reclaim patch (it would need a closure-API
+# V anyway). The prebuilt v.exe is backend-agnostic: it drives MSVC or mingw gcc by -cc.
 #
-# ONE-TIME SETUP (maintainer): create a release tagged `v-toolchain` and attach
-# `v-de365a1-windows.zip` (a zip of a working V de365a1 install — v.exe + vlib at the
-# zip root; produced locally from C:\dev\v minus .git). Update the V_RELEASE/ASSET
-# below if you re-mint it.
+# RELEASE ASSET (maintainer): the `v-toolchain` release holds `v-de365a1-windows.zip`
+# (v.exe + vlib at the zip root). The MSVC job also self-publishes the vcpkg deps asset
+# on its first run (see that step). MSYS2 needs no prebuilt deps (pacman is fast).
 
 on:
   push:
@@ -22,10 +25,14 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   V_RELEASE: v-toolchain   # release that stores the prebuilt V + vcpkg-deps assets
-  V_ASSET: v-closurefix-windows.zip   # prebuilt V BUILT FROM vlang/v#27446 (leak fix); mint on a working Windows V
-  DEPS_ASSET: vcpkg-pango-x64-windows.zip   # prebuilt vcpkg x64-windows tree on the V_RELEASE
+  V_ASSET: v-de365a1-windows.zip   # the prebuilt V that EXISTS on the release (de365a1, has vlib/yaml)
+  DEPS_ASSET: vcpkg-pango-x64-windows.zip   # prebuilt vcpkg x64-windows tree (MSVC job self-bootstraps it)
 
 jobs:
   build-msvc:
@@ -43,17 +50,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Download a prebuilt V that already carries the closure leak fix. We do NOT
+      # Download the prebuilt V (de365a1) from the v-toolchain release. We do NOT
       # build V here: makev.bat on Windows does a cold bootstrap (clone vlang/vc ->
       # v_win.c via tcc -> v_stage.exe) that is known-broken — which is exactly why a
-      # prebuilt V is shipped as a release asset. The leak fix is partly a compiler
-      # codegen change (collectable memdup for closure contexts), so this asset must
-      # be V BUILT FROM the leak-fix branch (vlang/v#27446), produced on a working
-      # Windows V (`v self` on that branch), NOT the stock de365a1.
-      # Mint once:  (on a working Windows V checked out at fix-closure-context-leak)
-      #   v self;  Compress-Archive <v-install> v-closurefix-windows.zip
-      #   gh release upload v-toolchain v-closurefix-windows.zip --clobber
-      - name: Download prebuilt V (closure-leak fix, vlang/v#27446)
+      # prebuilt V is shipped as a release asset. de365a1 has vlib/yaml; the closure
+      # leak fix is a runtime concern this compile/link check doesn't need.
+      - name: Download prebuilt V (de365a1)
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -64,7 +66,11 @@ jobs:
           "C:\v-ct" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding ascii
           & C:\v-ct\v.exe version
 
-      - name: Install gui + vglyph (pinned) and apply the W1 patches
+      # gui + vglyph pinned, then the patches main.v needs to BUILD with stock
+      # de365a1 V. NOT applied: gui-closure-reclaim (needs a closure-API V — runtime
+      # leak fix, irrelevant to a build check). The gcc-16 C-bridge patches (01/02)
+      # are harmless on MSVC and required by the MSYS2 job.
+      - name: Install gui + vglyph (pinned) and apply build patches
         shell: pwsh
         run: |
           $vm = $env:VMODULES
@@ -74,27 +80,21 @@ jobs:
           git -C "$vm\gui"    -c advice.detachedHead=false checkout --quiet 68b9302
           git -c core.autocrlf=false clone --quiet https://github.com/vlang/vglyph.git "$vm\vglyph"
           git -C "$vm\vglyph" -c advice.detachedHead=false checkout --quiet 5685a6d
+          # (Dir, Repo, File) — patches live in scripts\win_patches and docs\v_patches.
           $patches = @(
-            @{ Repo = 'gui';    File = '01-gui-readback-cobjmacros.patch' },
-            @{ Repo = 'gui';    File = '02-gui-dialog-includes.patch'     },
-            @{ Repo = 'gui';    File = '03-gui-titlebar-isvalid.patch'    },
-            @{ Repo = 'vglyph'; File = '04-vglyph-empty-outline.patch'    },
-            @{ Repo = 'gui';    File = '06-gui-sample-count.patch'        }  # WindowCfg.sample_count (MSAA) — main.v sets sample_count: 4
+            @{ Dir = 'scripts\win_patches'; Repo = 'gui';    File = '01-gui-readback-cobjmacros.patch' },
+            @{ Dir = 'scripts\win_patches'; Repo = 'gui';    File = '02-gui-dialog-includes.patch'     },
+            @{ Dir = 'scripts\win_patches'; Repo = 'gui';    File = '03-gui-titlebar-isvalid.patch'    },
+            @{ Dir = 'scripts\win_patches'; Repo = 'vglyph'; File = '04-vglyph-empty-outline.patch'    },
+            @{ Dir = 'scripts\win_patches'; Repo = 'gui';    File = '06-gui-sample-count.patch'        },  # WindowCfg.sample_count — main.v sets sample_count: 4
+            @{ Dir = 'docs\v_patches';      Repo = 'gui';    File = 'gui-window-resize.patch'          }   # Window.resize() — main.v calls w.resize()
           )
           foreach ($p in $patches) {
-            $patch = "$env:GITHUB_WORKSPACE\scripts\win_patches\$($p.File)"
+            $patch = "$env:GITHUB_WORKSPACE\$($p.Dir)\$($p.File)"
             git -C "$vm\$($p.Repo)" apply --ignore-whitespace $patch
             if ($LASTEXITCODE -ne 0) { throw "patch $($p.File) failed to apply to $($p.Repo)" }
             Write-Host "applied $($p.File)"
           }
-          # gui side of the closure leak fix: per-frame begin/end_frame_build +
-          # reclaim_frames (skipped while mouse-locked — the drag guard). Calls the
-          # builtin.closure API that the leak-fix V (built above) provides. Lives in
-          # docs/v_patches and is generated against this same gui pin (68b9302).
-          $reclaim = "$env:GITHUB_WORKSPACE\docs\v_patches\gui-closure-reclaim.patch"
-          git -C "$vm\gui" apply --ignore-whitespace $reclaim
-          if ($LASTEXITCODE -ne 0) { throw "gui-closure-reclaim.patch failed to apply" }
-          Write-Host "applied gui-closure-reclaim.patch (leak fix, gui side)"
 
       - name: Set up MSVC (cl.exe on PATH)
         uses: ilammy/msvc-dev-cmd@v1
@@ -178,4 +178,93 @@ jobs:
           path: |
             build/cantester-msvc.exe
             build/*.dll
+          if-no-files-found: error
+
+  # MSYS2 / mingw-w64 gcc build — no vcpkg (pacman provides pango/freetype/…), no
+  # ABI-drift caching. The bash twin of scripts\build_win.sh / docs\windows_build.md.
+  # Uses the SAME prebuilt de365a1 v.exe (it just drives mingw gcc via -cc gcc).
+  build-msys2:
+    name: mingw (MSYS2)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      VMODULES: ${{ github.workspace }}\vmodules
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download prebuilt V (de365a1)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download $env:V_RELEASE --repo "$env:GITHUB_REPOSITORY" --pattern "$env:V_ASSET" --dir "$env:RUNNER_TEMP"
+          Expand-Archive -LiteralPath "$env:RUNNER_TEMP\$env:V_ASSET" -DestinationPath C:\v-ct -Force
+          if (-not (Test-Path C:\v-ct\v.exe)) { throw "v.exe not found after extracting $env:V_ASSET" }
+          & C:\v-ct\v.exe version
+
+      # Same gui/vglyph pins + build patches as the MSVC job. The gcc-16 C-bridge
+      # patches (01/02) genuinely matter here (mingw gcc); on older gcc they're inert.
+      - name: Install gui + vglyph (pinned) and apply build patches
+        shell: pwsh
+        run: |
+          $vm = $env:VMODULES
+          New-Item -ItemType Directory -Force $vm | Out-Null
+          git -c core.autocrlf=false clone --quiet https://github.com/vlang/gui.git    "$vm\gui"
+          git -C "$vm\gui"    -c advice.detachedHead=false checkout --quiet 68b9302
+          git -c core.autocrlf=false clone --quiet https://github.com/vlang/vglyph.git "$vm\vglyph"
+          git -C "$vm\vglyph" -c advice.detachedHead=false checkout --quiet 5685a6d
+          $patches = @(
+            @{ Dir = 'scripts\win_patches'; Repo = 'gui';    File = '01-gui-readback-cobjmacros.patch' },
+            @{ Dir = 'scripts\win_patches'; Repo = 'gui';    File = '02-gui-dialog-includes.patch'     },
+            @{ Dir = 'scripts\win_patches'; Repo = 'gui';    File = '03-gui-titlebar-isvalid.patch'    },
+            @{ Dir = 'scripts\win_patches'; Repo = 'vglyph'; File = '04-vglyph-empty-outline.patch'    },
+            @{ Dir = 'scripts\win_patches'; Repo = 'gui';    File = '06-gui-sample-count.patch'        },
+            @{ Dir = 'docs\v_patches';      Repo = 'gui';    File = 'gui-window-resize.patch'          }
+          )
+          foreach ($p in $patches) {
+            $patch = "$env:GITHUB_WORKSPACE\$($p.Dir)\$($p.File)"
+            git -C "$vm\$($p.Repo)" apply --ignore-whitespace $patch
+            if ($LASTEXITCODE -ne 0) { throw "patch $($p.File) failed to apply to $($p.Repo)" }
+            Write-Host "applied $($p.File)"
+          }
+
+      - name: Set up MSYS2 (mingw-w64 gcc + pango/freetype)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-pango
+            mingw-w64-x86_64-glib2
+            mingw-w64-x86_64-freetype
+            mingw-w64-x86_64-harfbuzz
+            mingw-w64-x86_64-fribidi
+            mingw-w64-x86_64-fontconfig
+
+      # Build with mingw gcc (the bash twin of scripts\build_win.sh). V's built-in
+      # v.pkgconfig doesn't relocate a .pc prefix=, so feed pkgconf's flags directly.
+      # -ld3d11 -ldxgi: gui's readback_windows.c references D3D11 unconditionally on
+      # Windows (screenshots) even on the GL backend. cygpath -m gives V (a native
+      # Windows exe) forward-slash Windows paths from the MSYS2 shell.
+      - name: Build (V -cc gcc)
+        shell: msys2 {0}
+        run: |
+          export VMODULES="$(cygpath -m "$GITHUB_WORKSPACE/vmodules")"
+          export PKG_CONFIG_PATH="/mingw64/lib/pkgconfig"
+          libs='freetype2 harfbuzz fribidi fontconfig pango pangoft2 gobject-2.0 glib-2.0'
+          cflags=$(pkgconf --cflags $libs)
+          ldflags="$(pkgconf --libs $libs) -ld3d11 -ldxgi"
+          mkdir -p build
+          /c/v-ct/v.exe -cc gcc -no-parallel -enable-globals -path '@vlib|@vmodules|modules' \
+            -cflags "$cflags" -ldflags "$ldflags" -o build/cantester-mingw.exe src/main.v
+          test -f build/cantester-mingw.exe && echo "BUILD OK -> build/cantester-mingw.exe"
+
+      - name: Upload exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: cantester-mingw-x64
+          path: build/cantester-mingw.exe
           if-no-files-found: error

@@ -1,0 +1,107 @@
+name: ci
+
+# Linux CI for CANTester. Two jobs:
+#   * test     — the reliable backbone: `v test modules/` (every GUI-free module,
+#                incl. the embedded-Lua `lua`/`script` modules) + the headless Lua
+#                integration tests (scripts/runtests.sh) against the in-process sim.
+#                No GUI, no vcan, no Windows — fast and deterministic.
+#   * gui-build — compile-links the full GUI app (gui + vglyph + the two
+#                build-required patches). It does NOT run the app (no display).
+#
+# V acquisition: vlang/setup-v with check-latest — the same approach vlang/gui's
+# own CI uses against this exact gui stack. (V's 0.5.1 *release* predates vlib/yaml
+# which modules/project needs, so we can't use the default pinned release.)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# One in-flight run per ref; new pushes cancel the old run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: linux • modules + headless Lua
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install V (latest)
+        uses: vlang/setup-v@v1.4
+        with:
+          check-latest: true
+
+      - name: V version
+        run: v version
+
+      # All GUI-free modules. -enable-globals: the in-process bus
+      # (transport/inproc.v) uses a process-global hub. The vendored Lua compiles
+      # in here too (modules/lua/modules/script pull it via #flag).
+      - name: Unit tests (v test modules/)
+        run: v -enable-globals test modules/
+
+      # End-to-end: brings the sim-demo project's simulated ECUs + native UDS
+      # server up driver-free on the in-proc bus and runs the Lua test scripts.
+      # Non-zero exit on any failing test (the script enforces it).
+      - name: Headless Lua tests (scripts/runtests.sh)
+        run: |
+          chmod +x scripts/runtests.sh
+          ./scripts/runtests.sh tests/diag_basic.lua tests/bus_signals.lua
+
+  gui-build:
+    name: linux • GUI compile-link
+    runs-on: ubuntu-latest
+    env:
+      VMODULES: ${{ github.workspace }}/.vmodules
+      # gui/vglyph pins (CLAUDE.md → Pinned versions).
+      GUI_COMMIT: 68b9302
+      VGLYPH_COMMIT: 5685a6d
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install V (latest)
+        uses: vlang/setup-v@v1.4
+        with:
+          check-latest: true
+
+      # vglyph + sokol native deps (text shaping + GL/X11). Compile-only, so no
+      # runtime bits (zenity) needed. Mirrors CLAUDE.md → System dependencies.
+      - name: Native deps (apt)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libfreetype-dev libharfbuzz-dev libfribidi-dev \
+            libfontconfig1-dev libpango1.0-dev libglib2.0-dev libdbus-1-dev \
+            libatk1.0-dev libatk-bridge2.0-dev libatspi2.0-dev libgl1-mesa-dev \
+            libx11-dev libxcursor-dev libxrandr-dev libxinerama-dev libasound2-dev
+
+      # Pinned gui + vglyph into VMODULES, then the two BUILD-REQUIRED patches:
+      #   gui-msaa-sample-count  — WindowCfg.sample_count (main.v sets it)
+      #   gui-window-resize      — Window.resize() (main.v calls it)
+      # The closure-reclaim + vglyph-empty-outline patches are RUNTIME-only (leak
+      # fix / glyph-crash guard); a compile job doesn't need them, and the reclaim
+      # patch would require a closure-API V build — out of scope for a build check.
+      - name: Fetch gui + vglyph (pinned) + apply build-required patches
+        run: |
+          mkdir -p "$VMODULES"
+          git -c advice.detachedHead=false clone --quiet https://github.com/vlang/gui.git    "$VMODULES/gui"
+          git -C "$VMODULES/gui"    -c advice.detachedHead=false checkout --quiet "$GUI_COMMIT"
+          git -c advice.detachedHead=false clone --quiet https://github.com/vlang/vglyph.git "$VMODULES/vglyph"
+          git -C "$VMODULES/vglyph" -c advice.detachedHead=false checkout --quiet "$VGLYPH_COMMIT"
+          git -C "$VMODULES/gui" apply --ignore-whitespace \
+            "$GITHUB_WORKSPACE/docs/v_patches/gui-msaa-sample-count.patch"
+          git -C "$VMODULES/gui" apply --ignore-whitespace \
+            "$GITHUB_WORKSPACE/docs/v_patches/gui-window-resize.patch"
+          echo "applied gui-msaa-sample-count + gui-window-resize"
+
+      # Compile + link only (no run — there's no display). -enable-globals for the
+      # in-proc bus; -path re-lists the defaults because it replaces the lookup order.
+      - name: Build GUI (compile-link src/main.v)
+        run: |
+          mkdir -p build
+          v -enable-globals -path "@vlib|@vmodules|modules" -o build/cantester src/main.v
+          test -x build/cantester && echo "BUILD OK -> build/cantester"
