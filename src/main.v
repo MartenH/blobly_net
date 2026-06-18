@@ -22,7 +22,6 @@ import transport
 import candb
 import canlog
 import mf4
-import sampledb
 import project
 import sim
 import player
@@ -1223,7 +1222,8 @@ fn default_layout() &gui.DockNode {
 // load_databases loads each channel's DBC into a per-channel catalog (app.dbs,
 // parallel to proj.channels) — so every bus simulates/decodes its OWN messages —
 // and builds a merged catalog (app.db) for id-based decode lookups across buses.
-// Falls back to the hand-coded sampledb so the app still decodes with no DBC.
+// With no DBC attached, the merged catalog is left EMPTY (raw frames only — no
+// phantom messages in Send), rather than falling back to a built-in sample catalog.
 // notify updates the toolbar status line AND appends a timestamped entry to the
 // scrolling Log panel (bounded). `level` colours the Log entry. Use this instead
 // of assigning `app.status` directly so events are kept in the Log.
@@ -1282,10 +1282,11 @@ fn (mut app App) load_databases() {
 		}
 	}
 	if msgs.len == 0 {
-		app.db = candb.Database{
-			messages: sampledb.catalog()
-		}
-		app.db_source = 'sampledb (no DBC in project)'
+		// No DBC attached to any channel — leave the catalog EMPTY. Trace shows raw
+		// frames and Send offers raw-only (no phantom DBC messages). Previously this
+		// fell back to sampledb, which looked like a stale database after New Project.
+		app.db = candb.Database{}
+		app.db_source = 'no database'
 		return
 	}
 	app.db = candb.Database{
