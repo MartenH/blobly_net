@@ -6,17 +6,36 @@ A CANoe-like automotive bus tester written in [V](https://vlang.io). It tests a 
 
 > Early WIP. See [CLAUDE.md](CLAUDE.md) for architecture, decisions, and roadmap.
 
-## Status
-
-- Phase 0/1: bringing up the GUI (vlang/gui). CAN transport comes next.
-
 ## Build & run
 
 ```sh
-v run src/main.v
+scripts/run.sh                 # build + run the GUI
+python3 sut/can_sut.py vcan0   # a virtual ECU on vcan0, in another terminal
 ```
 
-Requires the V compiler and the `gui` module. See [CLAUDE.md](CLAUDE.md).
+Requires the V compiler and the `gui` module (+ native deps). Full setup, the
+hardware/software-GL notes, and the roadmap are in [CLAUDE.md](CLAUDE.md).
+
+## Scripting & testing
+
+CANTester runs **Lua** test scripts (diagnostics, raw frames, DBC signals) against a
+CAN setup — headless for CI, or live in the GUI's **Script** panel. No hardware
+needed: the runner spins up a simulated bus + ECU for you.
+
+```sh
+scripts/runtests.sh tests/diag_basic.lua tests/bus_signals.lua
+```
+
+See the **[scripting & test guide](docs/scripting.md)** for the command-line runner
+and the full Lua API.
+
+## Docs
+
+- [scripting.md](docs/scripting.md) — Lua scripting + the headless test runner
+- [windows_can_hardware.md](docs/windows_can_hardware.md) — real CAN hardware on Windows (design)
+- [windows_build.md](docs/windows_build.md) — native Windows build recipe
+- [known_issues.md](docs/known_issues.md) — gotchas (V / gui / rendering / env)
+- [CLAUDE.md](CLAUDE.md) — architecture, decisions, full roadmap & status log
 
 ## License
 
