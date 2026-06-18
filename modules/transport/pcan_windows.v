@@ -21,11 +21,30 @@ fn C.ct_pcan_init(u16, u16) u32
 fn C.ct_pcan_uninit(u16) u32
 fn C.ct_pcan_write(u16, u32, u8, u8, &u8) u32
 fn C.ct_pcan_read(u16, &u32, &u8, &u8, &u8) int
+fn C.ct_pcan_condition(u16) int
 
 // PCAN message-type flags (mirror pcan_shim.h).
 const pcan_msg_rtr = u8(0x01)
 const pcan_msg_extended = u8(0x02)
 const pcan_msg_status = u8(0x80)
+
+// pcan_list probes the fixed PCAN USB channel handles (PCAN_USBBUS1..8 = 0x51..0x58)
+// for discovery. Returns [] when PCANBasic.dll is absent or nothing is attached.
+fn pcan_list() []Iface {
+	mut out := []Iface{}
+	for n in 1 .. 9 {
+		cond := C.ct_pcan_condition(u16(0x50 + n)) // PCAN_USBBUS1 = 0x51
+		if cond > 0 {                              // 0x01 available | 0x04 occupied
+			out << Iface{
+				name:    'PCAN_USBBUS${n}'
+				iface:   'pcan:PCAN_USBBUS${n}'
+				kind:    'can'
+				virtual: false
+			}
+		}
+	}
+	return out
+}
 
 // PcanBus is one initialized PCAN channel.
 pub struct PcanBus {

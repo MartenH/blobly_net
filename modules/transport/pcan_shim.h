@@ -33,10 +33,13 @@ typedef uint32_t (__stdcall *ct_pUninit)(uint16_t);
 typedef uint32_t (__stdcall *ct_pWrite)(uint16_t, CT_TPCANMsg *);
 typedef uint32_t (__stdcall *ct_pRead)(uint16_t, CT_TPCANMsg *, void *);
 
-static ct_pInit   ct_fn_init;
-static ct_pUninit ct_fn_uninit;
-static ct_pWrite  ct_fn_write;
-static ct_pRead   ct_fn_read;
+typedef uint32_t (__stdcall *ct_pGetValue)(uint16_t, uint8_t, void *, uint32_t);
+
+static ct_pInit     ct_fn_init;
+static ct_pUninit   ct_fn_uninit;
+static ct_pWrite    ct_fn_write;
+static ct_pRead     ct_fn_read;
+static ct_pGetValue ct_fn_getvalue; /* CAN_GetValue — discovery only, optional */
 
 /* Load the DLL + resolve the four entry points. 0 ok, -1 DLL missing, -2 symbol missing. */
 static int ct_pcan_load(void) {
@@ -46,8 +49,20 @@ static int ct_pcan_load(void) {
 	ct_fn_uninit = (ct_pUninit)(void *)GetProcAddress(h, "CAN_Uninitialize");
 	ct_fn_write  = (ct_pWrite)(void *)GetProcAddress(h, "CAN_Write");
 	ct_fn_read   = (ct_pRead)(void *)GetProcAddress(h, "CAN_Read");
+	ct_fn_getvalue = (ct_pGetValue)(void *)GetProcAddress(h, "CAN_GetValue");
 	if (!ct_fn_init || !ct_fn_uninit || !ct_fn_write || !ct_fn_read) return -2;
 	return 0;
+}
+
+/* Condition of a PCAN channel handle (param PCAN_CHANNEL_CONDITION = 0x0D; queryable on
+ * an UNinitialized channel): returns 0 unavailable, 0x01 available, 0x04 occupied (bits),
+ * or -1 if it can't be queried. Discovery probes the fixed USB handles (PCAN_USBBUS1 =
+ * 0x51, …). NOTE: 0x07 is PCAN_BUSOFF_AUTORESET, not the condition — easy to get wrong. */
+static int ct_pcan_condition(uint16_t handle) {
+	uint32_t cond = 0;
+	if (ct_pcan_load() != 0 || !ct_fn_getvalue) return -1;
+	if (ct_fn_getvalue(handle, 0x0D, &cond, 4) != CT_PCAN_ERROR_OK) return -1;
+	return (int)cond;
 }
 
 /* CAN_Initialize(channel, baud, hwtype=0, ioport=0, irq=0) — 0 on success. */
