@@ -1,9 +1,16 @@
 # Windows real-CAN hardware support — design
 
-Status: **DESIGN ONLY (2026-06-18)** — no backend code yet. This documents how real
-CAN adapters (PCAN / Kvaser / Vector) and the vendor-neutral `slcan` path will slot
-into CANTester on Windows, behind the existing `transport.Bus` seam. Owner has PCAN
-+ Kvaser hardware on hand and intermittent access to a Vector machine.
+Status: **PCAN + Kvaser backends IMPLEMENTED (2026-06-18), not yet HW-verified.**
+This documents how real CAN adapters (PCAN / Kvaser / Vector) and the vendor-neutral
+`slcan` path slot into CANTester on Windows, behind the existing `transport.Bus`
+seam. Owner has PCAN + Kvaser hardware and intermittent access to a Vector machine.
+
+- **Done:** `transport/pcan_windows.v` + `pcan_shim.h`, `transport/kvaser_windows.v`
+  + `kvaser_shim.h`, wired into `open_windows.v` (`pcan:` / `kvaser:` prefixes).
+  Both are LoadLibrary-based (no SDK). **Cross-compiled to a real Windows x64 PE
+  from WSL** (mingw-w64) and compile-checked in the Windows CI — but **not yet run
+  against hardware** (no adapter/driver on the dev box).
+- **Pending:** owner runs the verification below; Vector + slcan backends later.
 
 ## Why there's work to do at all
 
@@ -111,14 +118,56 @@ Backends can be **written** here but **not verified against hardware from Linux*
 4. **GUI smoke**: point a project `.yml` channel at `pcan:…`, press ▶ Start, confirm
    live trace + decode, and a Send round-trips against a second node / `candump`-equiv.
 
+## Owner verification steps (run on Windows)
+
+Prereq: a CANTester Windows build (`scripts\build_win.ps1` mingw, or the
+`build-msvc`/`build-mingw` CI artifacts). Then:
+
+### Kvaser — testable with NO hardware connected (virtual channel)
+1. Install the **Kvaser drivers** (Kvaser Drivers for Windows — free). This adds
+   `canlib32.dll` *and* software **virtual channels**.
+2. Open **Kvaser Device Guide** and note a **virtual channel's number** (virtuals
+   are listed alongside physical ones, e.g. channel 0/1).
+3. Loopback over the virtual bus — two CANTester channels on the same number:
+   ```yaml
+   channels:
+     - { name: KV, interface: "kvaser:0@500000", mode: monitor }      # the number from step 2
+     - { name: KVTX, interface: "kvaser:0@500000", mode: monitor }
+   ```
+   Send on one (Generators/Send panel or a Lua `bus.send`), see it on the other.
+4. **python-can cross-check** (oracle): `pip install canlib` (Kvaser's Python) or
+   use `python-can` with `interface="kvaser", channel=0`; transmit/receive and diff
+   against CANTester's trace.
+
+### PCAN — needs the physical adapter
+1. Install the **PEAK PCAN driver** (free) → brings `PCANBasic.dll`.
+2. Plug in the PCAN-USB adapter on a **terminated, powered** bus (or two PCAN
+   channels back-to-back).
+3. Project channel:
+   ```yaml
+   channels:
+     - { name: PCAN, interface: "pcan:PCAN_USBBUS1@500000", mode: monitor }
+   ```
+   ▶ Start → confirm live trace + decode; Send a frame and see it answered by a
+   second node (or another tool: `python-can` with `interface="pcan"`).
+
+### What "good" looks like
+- `transport.open("pcan:…"/"kvaser:…")` returns without error (DLL found, channel
+  opens, bus-on).
+- Frames sent by CANTester appear in `python-can` (same adapter/bus) byte-identical,
+  and vice-versa — the established SUT-oracle pattern.
+- Bitrate mismatch or missing termination shows up as no RX / bus-off — expected.
+
+Report results (and any ABI surprises — struct packing, status codes) back into the
+CLAUDE.md status log so the backend can be corrected; the code is written from the
+documented ABI but unverified against silicon.
+
 ## Phasing
 
-1. **P1 — PCAN backend** (`transport/pcan_windows.v` + `pcan_shim.h`,
-   `open_windows.v` branch, bitrate map). Establishes the LoadLibrary pattern + the
-   verification recipe. Owner verifies on the PCAN adapter.
-2. **P2 — Kvaser backend**; use a virtual channel to self-test before hardware.
-3. **P3 — slcan backend** (serial; cross-platform — also usable on Linux).
-4. **P4 — Vector backend** when a Vector machine is available.
+1. **P1 — PCAN backend** ✅ implemented (cross-compiled; HW-verify pending).
+2. **P2 — Kvaser backend** ✅ implemented (virtual-channel self-test pending).
+3. **P3 — slcan backend** (serial; cross-platform — also usable on Linux). TODO.
+4. **P4 — Vector backend** when a Vector machine is available. TODO.
 
 Each phase: backend compiles in Windows CI (gate), then owner runs the verification
-plan above and reports results back into the status log.
+above and reports results back into the status log.

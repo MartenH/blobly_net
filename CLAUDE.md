@@ -908,3 +908,34 @@ prompt for a password.
   untrusted scripts, on_message/on_timer event callbacks, more UDS services; a project `scripts:`
   block + recent-scripts; JUnit-XML output for CI. ⚠ The vendored Lua is plain MIT-licensed source
   (notice in `lua.h`); `thirdparty/lua/README.md` records provenance + upgrade steps.
+- 2026-06-18: **CI stood up (Linux + Windows) + user docs.** Root-caused the failing Windows CI: NOT
+  caching — `windows.yml` pointed `V_ASSET` at `v-closurefix-windows.zip` which was never minted, so
+  `gh release download` failed in 22 s. **New `.github/workflows/ci.yml` (Linux, green on first run):**
+  `test` job = `v test modules/` (20/20, incl. `lua`/`script`) + headless Lua tests
+  (`scripts/runtests.sh`) on the in-proc sim; `gui-build` job = gui+vglyph pinned + the two
+  build-required patches (`gui-msaa-sample-count`, `gui-window-resize` — verified to apply clean to
+  68b9302) → compile-link `src/main.v`. V via `vlang/setup-v@v1.4 check-latest` (the 0.5.1 *release*
+  predates vlib/yaml; same approach vlang/gui's own CI uses). **Windows `windows.yml`:** fixed the MSVC
+  job (repoint to the existing `v-de365a1-windows.zip`; drop closure-reclaim — needs a closure-API V;
+  add `gui-window-resize`) — now **green** (first run also bootstrapped + published the
+  `vcpkg-pango-x64-windows.zip` deps asset, so later runs are ~15 min); **added a `build-mingw`
+  (MSYS2/pacman, no vcpkg) job** — green. `modules/lua/lua.v`: gated `-lm`/`-ldl` to `linux` so the
+  vendored Lua links under MSVC/mingw (MSVC's linker rejects `-l*`). All 4 jobs pass. **User docs:**
+  `docs/scripting.md` (headless runner + full Lua API), README refresh (Docs index, killed the stale
+  "Phase 0/1"). Risk noted: `setup-v check-latest` tracks bleeding-edge V — pin to a built-from-source
+  commit if it ever breaks the Linux jobs.
+- 2026-06-18: **Windows real-CAN-HW backends — PCAN + Kvaser IMPLEMENTED (not yet HW-verified).** Per
+  the user (has PCAN + Kvaser adapters; Vector machine intermittently). Both behind the existing
+  `transport.Bus` seam, Windows-only (`_windows.v`), vendor DLL loaded at **runtime via
+  LoadLibrary/GetProcAddress → NO SDK, NO import lib, mingw OR MSVC**: `transport/pcan_windows.v` +
+  `pcan_shim.h` (PCANBasic.dll) and `transport/kvaser_windows.v` + `kvaser_shim.h` (canlib32.dll),
+  wired into `open_windows.v` (`pcan:<ch>[@<bitrate>]` / `kvaser:<ch>[@<bitrate>]`; bitrate carried in
+  the iface string since `transport.open(iface)` gets no Channel cfg — default 500k; mapped to PCAN
+  BTR0BTR1 / Kvaser canBITRATE_* codes). **Compile-verified FROM WSL** by cross-compiling the transport
+  module to a real Windows x64 PE (`v -os windows -cc x86_64-w64-mingw32-gcc`; linked with no vendor
+  .lib, confirming the LoadLibrary approach) — and compile-checked in the Windows CI (full GUI build).
+  Linux build unaffected (`_windows.v` excluded; transport tests still 3/3). **NOT run against
+  hardware** (no adapter/driver on the dev box). Owner verification (driver install, Kvaser virtual
+  channel = test with NO adapter connected, PCAN needs the physical bus, python-can cross-check) +
+  status: `docs/windows_can_hardware.md`. The ABI is from vendor docs — watch for struct-packing /
+  status-code surprises on real silicon. TODO: slcan (serial, cross-platform) + Vector (XL API) backends.
