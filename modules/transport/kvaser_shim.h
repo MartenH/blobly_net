@@ -39,6 +39,12 @@ static ct_kvWrite    ct_kv_write;
 static ct_kvReadWait ct_kv_readwait;
 static ct_kvClose    ct_kv_close;
 
+/* enumeration (optional — used for discovery, not I/O; older canlib may lack them) */
+typedef int (__stdcall *ct_kvNumChan)(int *);
+typedef int (__stdcall *ct_kvChanData)(int, int, void *, size_t);
+static ct_kvNumChan  ct_kv_numchan;
+static ct_kvChanData ct_kv_chandata;
+
 /* 0 ok, -1 DLL missing, -2 a symbol missing. */
 static int ct_kvaser_load(void) {
 	HMODULE h = LoadLibraryA("canlib32.dll");
@@ -51,8 +57,28 @@ static int ct_kvaser_load(void) {
 	ct_kv_write    = (ct_kvWrite)(void *)GetProcAddress(h, "canWrite");
 	ct_kv_readwait = (ct_kvReadWait)(void *)GetProcAddress(h, "canReadWait");
 	ct_kv_close    = (ct_kvClose)(void *)GetProcAddress(h, "canClose");
+	ct_kv_numchan  = (ct_kvNumChan)(void *)GetProcAddress(h, "canGetNumberOfChannels");
+	ct_kv_chandata = (ct_kvChanData)(void *)GetProcAddress(h, "canGetChannelData");
 	if (!ct_kv_initlib || !ct_kv_open || !ct_kv_setbus || !ct_kv_buson ||
 		!ct_kv_write || !ct_kv_readwait || !ct_kv_close) return -2;
+	return 0;
+}
+
+/* Total channels (physical + virtual), or -1 if unavailable. For discovery. */
+static int ct_kvaser_count(void) {
+	int n = 0;
+	if (ct_kvaser_load() != 0 || !ct_kv_numchan) return -1;
+	ct_kv_initlib();
+	if (ct_kv_numchan(&n) < 0) return -1;
+	return n;
+}
+
+/* Device description (ASCII) for channel `ch`. 0 ok (buf NUL-terminated), -1 not. */
+static int ct_kvaser_descr(int ch, char *buf, int len) {
+	if (len > 0) buf[0] = 0;
+	if (!ct_kv_chandata) return -1;
+	/* canCHANNELDATA_DEVDESCR_ASCII == 26 */
+	if (ct_kv_chandata(ch, 26, buf, (size_t)len) < 0) { if (len > 0) buf[0] = 0; return -1; }
 	return 0;
 }
 

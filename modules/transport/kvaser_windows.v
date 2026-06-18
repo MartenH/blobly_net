@@ -24,6 +24,8 @@ fn C.ct_kvaser_open(int, int) int
 fn C.ct_kvaser_write(int, u32, u8, &u8, int) int
 fn C.ct_kvaser_read(int, &u32, &u8, &u8, &int, u32) int
 fn C.ct_kvaser_close(int)
+fn C.ct_kvaser_count() int
+fn C.ct_kvaser_descr(int, &char, int) int
 
 // KvaserBus is one open + bus-on CANlib channel handle.
 pub struct KvaserBus {
@@ -107,4 +109,32 @@ fn kvaser_bitrate_code(bitrate int) !int {
 		10000 { -9 }   // canBITRATE_10K
 		else { error('unsupported Kvaser bitrate ${bitrate} (use 10k/50k/62k/83k/100k/125k/250k/500k/1M)') }
 	}
+}
+
+// kvaser_list enumerates attached Kvaser channels (physical + virtual) for discovery.
+// Returns [] when canlib32.dll is absent (drivers not installed) or has no channels.
+fn kvaser_list() []Iface {
+	mut out := []Iface{}
+	n := C.ct_kvaser_count()
+	if n <= 0 {
+		return out
+	}
+	for ch in 0 .. n {
+		mut buf := [64]u8{}
+		ptr := unsafe { &char(&buf[0]) }
+		mut name := 'Kvaser ch${ch}'
+		if C.ct_kvaser_descr(ch, ptr, 64) == 0 {
+			d := unsafe { cstring_to_vstring(ptr) }.trim_space()
+			if d != '' {
+				name = '${d} (ch${ch})'
+			}
+		}
+		out << Iface{
+			name:    name
+			iface:   'kvaser:${ch}'
+			kind:    'can'
+			virtual: false
+		}
+	}
+	return out
 }
