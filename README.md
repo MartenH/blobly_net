@@ -32,6 +32,7 @@ and the full Lua API.
 ## Docs
 
 - [scripting.md](docs/scripting.md) — Lua scripting + the headless test runner
+- [windows_handoff.md](docs/windows_handoff.md) — **start here on the Windows box** (verify PCAN/Kvaser)
 - [windows_can_hardware.md](docs/windows_can_hardware.md) — real CAN hardware on Windows (design)
 - [windows_build.md](docs/windows_build.md) — native Windows build recipe
 - [known_issues.md](docs/known_issues.md) — gotchas (V / gui / rendering / env)
