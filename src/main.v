@@ -30,6 +30,11 @@ import uds
 import script
 
 const max_trace = 1000 // ring-buffer cap on retained frames (all are scrollable)
+
+// Embedded Help docs — rendered in-app via gui.markdown, so the exe is self-contained
+// (no loose files, no browser). Paths are relative to this source file (src/).
+const help_quickstart = $embed_file('../docs/help/quickstart.md').to_string()
+const help_examples = $embed_file('../docs/help/examples.md').to_string()
 const default_fps = 5  // trace repaint rate; user-tunable (3/5/10) from the toolbar
 const fps_options = ['3 fps', '5 fps', '10 fps']
 
@@ -290,6 +295,7 @@ mut:
 	paused    bool
 	mode      string = 'grouped' // main Trace view: 'grouped' | 'all'
 	mode2     string = 'grouped' // Trace (filter) view, independent toggle
+	help_page string = 'quickstart' // Help panel page: 'quickstart' | 'examples' | 'about'
 	dark      bool // current theme: false = Opus sage-light (default), true = dark
 	recents   []string // recently opened project file paths (most-recent first; persisted)
 	expanded  map[string]bool // grouped-trace group-keys expanded in the main Trace (which 0)
@@ -1860,6 +1866,7 @@ fn main_view(mut window gui.Window) gui.View {
 						gui.DockPanelDef{ id: 'log', label: 'Log', content: [log_panel(mut window)] },
 						gui.DockPanelDef{ id: 'symbols', label: 'Symbol Browser', content: [symbol_browser_panel(app)] },
 						gui.DockPanelDef{ id: 'busconfig', label: 'Bus Config', content: [bus_config_panel(app)] },
+					gui.DockPanelDef{ id: 'help', label: 'Help', content: [help_panel(mut window)] },
 				]
 				on_layout_change: fn (nr &gui.DockNode, mut w gui.Window) {
 					mut a := w.state[App]()
@@ -1933,6 +1940,40 @@ fn menu_bar(mut window gui.Window) gui.View {
 						}
 					},
 					gui.MenuItemCfg{
+						id:   'file.examples'
+						text: 'Open Example'
+						submenu: [
+							gui.MenuItemCfg{
+								id:     'ex.sim'
+								text:   'Simulation (2 networks, multi-ECU)'
+								action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {
+									open_project('projects/sim-demo.yml', mut w)
+								}
+							},
+							gui.MenuItemCfg{
+								id:     'ex.replay'
+								text:   'Replay (recorded log)'
+								action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {
+									open_project('projects/replay-demo.yml', mut w)
+								}
+							},
+							gui.MenuItemCfg{
+								id:     'ex.udp'
+								text:   'UDP software bus'
+								action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {
+									open_project('projects/demo-udp.yml', mut w)
+								}
+							},
+							gui.MenuItemCfg{
+								id:     'ex.hw'
+								text:   'Hardware (Kvaser + PCAN, same bus)'
+								action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {
+									open_project('projects/hw-crossvendor.yml', mut w)
+								}
+							},
+						]
+					},
+					gui.MenuItemCfg{
 						id:     'file.adddbc'
 						text:   'Add DBC(s)…'
 						action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {
@@ -1995,6 +2036,33 @@ fn menu_bar(mut window gui.Window) gui.View {
 				text:    'View'
 				submenu: view_submenu(app)
 			},
+			gui.MenuItemCfg{
+				id:   'help'
+				text: 'Help'
+				submenu: [
+					gui.MenuItemCfg{
+						id:     'help.quick'
+						text:   'Quick Start'
+						action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {
+							open_help('quickstart', mut w)
+						}
+					},
+					gui.MenuItemCfg{
+						id:     'help.examples'
+						text:   'Examples'
+						action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {
+							open_help('examples', mut w)
+						}
+					},
+					gui.MenuItemCfg{
+						id:     'help.about'
+						text:   'About'
+						action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {
+							open_help('about', mut w)
+						}
+					},
+				]
+			},
 		]
 	)
 }
@@ -2016,6 +2084,7 @@ const view_panels = [
 	['script', 'Script'],
 	['stats', 'Statistics'],
 	['log', 'Log'],
+	['help', 'Help'],
 ]
 
 // dock_has_panel reports whether a panel id is currently placed somewhere in the
@@ -2025,6 +2094,90 @@ fn dock_has_panel(root &gui.DockNode, pid string) bool {
 		return true
 	}
 	return false
+}
+
+// ---- Help panel: in-app docs rendered from embedded markdown (self-contained exe) ----
+
+// about_text builds the About page (version + links) at runtime.
+fn about_text() string {
+	return '# CANTester\n\n' +
+		'A **CANoe-style** automotive bus tester written in V (vlang). Virtual-first — it ' +
+		'runs driver-free with a built-in simulation; real CAN hardware (Kvaser/PCAN) drops ' +
+		'in behind the same bus abstraction.\n\n' +
+		'Live trace + DBC decode · signal plots · Send / Generators · UDS diagnostics · ' +
+		'MF4 / candump log replay · embedded **Lua** scripting.\n\n' +
+		'- Repo: https://github.com/MartenH/cantester_v\n' +
+		'- Issues: https://github.com/MartenH/cantester_v/issues\n' +
+		'- Docs: the `docs/` folder — scripting.md, can_hardware.md, windows_build.md\n\n' +
+		'Built with vlang/gui + vglyph.'
+}
+
+fn help_doc(page string) string {
+	return match page {
+		'examples' { help_examples }
+		'about' { about_text() }
+		else { help_quickstart }
+	}
+}
+
+fn help_tab(page string, label string, current string) gui.View {
+	on := page == current
+	return gui.button(
+		id_focus:     0
+		h_align:      .left // .center renders blank (gui bug)
+		min_width:    sc(96)
+		max_width:    sc(140)
+		padding:      scpad(4, 10, 4, 10)
+		color:        gui.Color{0, 0, 0, 0}
+		color_border: gui.Color{0, 0, 0, 0}
+		content:      [
+			gui.text(text: label, text_style: if on { gui.theme().b3 } else { gui.theme().n3 }),
+		]
+		on_click:     fn [page] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+			mut a := w.state[App]()
+			a.help_page = page
+			w.update_window()
+		}
+	)
+}
+
+// help_panel renders the in-app documentation (embedded markdown) with page tabs.
+// Driver-free, no internet — the docs ship inside the binary via $embed_file.
+fn help_panel(mut window gui.Window) gui.View {
+	app := window.state[App]()
+	page := app.help_page
+	return gui.column(
+		sizing:  gui.fill_fill
+		spacing: sc(6)
+		padding: scpad(6, 8, 6, 8)
+		content: [
+			gui.row(
+				spacing: sc(6)
+				content: [
+					help_tab('quickstart', 'Quick Start', page),
+					help_tab('examples', 'Examples', page),
+					help_tab('about', 'About', page),
+				]
+			),
+			gui.column(
+				id_scroll: 7400
+				sizing:    gui.fill_fill
+				content:   [
+					window.markdown(id: 'help_md', source: help_doc(page)),
+				]
+			),
+		]
+	)
+}
+
+// open_help shows the Help panel and switches to `page`.
+fn open_help(page string, mut w gui.Window) {
+	mut app := w.state[App]()
+	app.help_page = page
+	if !dock_has_panel(app.dock_root, 'help') {
+		app.dock_root = gui.dock_tree_wrap_root(app.dock_root, 'help', .right)
+	}
+	w.update_window()
 }
 
 // toggle_panel shows/hides a dock panel by id (the activity bar + View menu both use it).
@@ -2058,6 +2211,7 @@ fn activity_bar(app &App) gui.View {
 		'script':     'ƒ'
 		'stats':      'Σ'
 		'log':        '▤'
+		'help':       '?'
 	}
 	// Active = bright (theme text colour), inactive = dim — flat buttons, no boxes.
 	icon_on := gui.TextStyle{
