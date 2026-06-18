@@ -89,6 +89,15 @@ modules/sim/                simulation engine: SimEcu/Engine + signal generators
 modules/player/             replay engine: plays a []canlog.LogEntry recording at recorded
                             cadence x speed, play/pause/stop/seek/loop; caller supplies the
                             clock via due(now_ms) (pure V, hermetic tests)           (Phase 8)
+modules/lua/                embedded Lua 5.4: thin typed V facade over the Lua macro C-API
+                            (ct_lua_shim.h flat wrappers); vendored+compiled-in (thirdparty/
+                            lua) — no system liblua. GUI-free, protocol-free.       (Tier 4)
+modules/script/             cantester scripting runtime: a Lua Env wired to the GUI-free stack
+                            (uds/isotp/transport/candb) + a Lua prelude (test()/check/uds:/
+                            bus./decode + byte helpers). CANoe-CAPL replacement.    (Tier 4)
+thirdparty/lua/             vendored Lua 5.4.7 source (committed) + ct_lua_amalg.c (our 1-TU
+                            amalgamation) — see thirdparty/lua/README.md
+tests/                      Lua test scripts (diag_basic.lua, bus_signals.lua)
 dbc/cantester.dbc           real DBC describing the SUT's messages    (Phase 5)
 cmd/dashboard/              throwaway GUI capability demo
 cmd/signal_decode/          frame -> signals visualizer demo
@@ -97,6 +106,9 @@ cmd/mf4_dump/               native-V MF4 reader smoke/oracle-diff (count, unique
 cmd/sim_smoke/              run the native simulated SUT ECU on the in-proc bus, verify end-to-end
 cmd/isotp_smoke/            send one ISO-TP PDU, print the reply (multi-frame smoke)
 cmd/uds_smoke/              drive the UDS client vs sut/uds_server.py
+cmd/lua_smoke/              embedded-Lua smoke (runs a script + host callback)
+cmd/script/                 headless Lua test runner: load project, bring up sim+UDS server
+                            (driver-free), run *.lua, report pass/fail, exit≠0 on failure
 sut/can_sut.py              Python virtual SUT (emits/answers frames on vcan0)
 sut/dbc_oracle.py           independent stdlib DBC parser+decoder (cross-validates candb)
 sut/uds_server.py           Python virtual UDS server (stdlib ISO-TP) — oracle for modules/uds
@@ -105,6 +117,7 @@ scripts/setup_mf4_tools.sh  build .venv-tools (asammdf) + fetch real J1939 MF4/D
 scripts/run.sh              build+run with WSLg software-GL workaround
 scripts/setup_vcan.sh       bring up vcan0 (sudo)
 scripts/shot.sh             screenshot the running app window (xdotool search + import -window)
+scripts/runtests.sh         run Lua test scripts headlessly vs a project's sim (cmd/script)
 docs/gui_validation/        screenshots proving gui capabilities
 ```
 
@@ -251,8 +264,16 @@ turned Off (irreversible). Original handoff notes below (toolchain **mingw-w64 (
    stats (RX/TX/error-frame counts, bus load). It's the live front-end of Start/Stop (Phase 8): the
    checkbox sets `enabled`; the colour reflects measurement state. (CAN error frames come from
    SocketCAN's `CAN_RAW_ERR_FILTER`; vcan rarely emits them, so the wiring lands before real `can0`.)
-10+. Scripting/sequences (CANoe-style test cases), more panels/plotting; then LIN + Ethernet
-   (DoIP/SOME-IP) backends behind the same `Bus`/`Channel` abstractions (see Platform support).
+10. 🚧 **Scripting (CANoe-CAPL replacement)** — FOUNDATION DONE 2026-06-18 (Tier 4 of the
+   custom-send roadmap, built ahead of Tiers 1–3's sequence DSL because the user wanted
+   scriptable diagnostic *tests* first). **Embedded Lua 5.4.7**, vendored + compiled into the
+   binary (`thirdparty/lua` + `modules/lua` facade), wired to the GUI-free protocol stack via
+   `modules/script` (a Lua prelude gives `test()`/`check`/`uds:`/`bus.`/`decode`). Runs both
+   **headless** (`cmd/script` / `scripts/runtests.sh`, CI-ready exit code — 10/10 vs sim-demo)
+   and from a **GUI Script panel** (against the live measurement). TODO: coroutine wait/expect
+   sequences, sandbox, on_message/on_timer callbacks, more UDS services. More panels/plotting;
+   then LIN + Ethernet (DoIP/SOME-IP) backends behind the same `Bus`/`Channel` abstractions
+   (see Platform support).
 11. 🔜 **Simulation (networks + simulated ECUs)** — turn the tester into a CANoe-style sim host:
    simulated ECUs and the tester's own functions all attach to shared **virtual networks** (the
    database lives on the network, not the ECU), in one process, **driver-free by default** (an
@@ -844,3 +865,46 @@ prompt for a password.
   the already-public `gg.Context.resize()` (gui's `Window.ui` is private, so the app couldn't reach it). This
   is a clean gui API-gap fill (a real upstream candidate), NOT the DPI workaround itself. Verified live under
   WSLg/X11 (programmatic `resize(1000,700)` took the window 1500×920 → 1000×700 exactly).
+- 2026-06-18: **Phase 10 / Tier 4 — embedded Lua scripting DONE & VERIFIED (foundation).** Added a
+  CANoe-CAPL **replacement** via an embedded **Lua 5.4.7** interpreter — built ahead of the Tier 1–3
+  sequence DSL because the user wanted scriptable *diagnostic tests* first. **Why Lua not Python**
+  (asked & answered this session): Lua is an *extension language* designed to be embedded — ~250 KB
+  of dependency-free C that compiles into our binary with the existing C-interop path and links on
+  both Linux and mingw-w64 with no runtime install; CPython would mean shipping a whole interpreter +
+  stdlib, fighting the GIL, refcount lifetime and a hard-to-sandbox ambient environment. Lua is also
+  GIL-free, trivially sandboxable, and its coroutines map onto our host-supplied-clock test sequences
+  (the `due(now_ms)` pattern). Python stays where it already earns its keep — the **SUT/oracle side**
+  (`can_sut.py`, `uds_server.py`). CAPL itself is a bytecode VM, so Lua is the right shape; we build
+  CAPL-*capability*, not a CAPL parser. **Build:** Lua 5.4.7 source **vendored + committed**
+  (`thirdparty/lua`, ~60 files, 944 KB; standalone `lua.c`/`luac.c` dropped) and compiled into the
+  binary via a single-TU amalgamation `ct_lua_amalg.c` (5.4.7 ships no `onelua.c`), wired by V
+  `#flag` (`-DLUA_USE_LINUX -lm -ldl`). `modules/lua` = a thin typed V facade over Lua's **macro**
+  C-API through flat `ctlua_*` wrappers in `ct_lua_shim.h` (same pattern as `socketcan_shim.h`; the
+  host `&Env` is stashed in `lua_getextraspace`, byte-clean strings cross the boundary). `modules/
+  script` = an `Env` exposing scalar/string **host primitives** wired to the GUI-free stack
+  (uds/isotp/transport/candb) + a **Lua prelude** that builds the ergonomic CANoe-like API:
+  `test()` + `check.equal|truthy|between|nrc`, `uds.open():session/read_did/tester_present/raw`,
+  `bus.send/recv/send_message`, `decode()`, and byte helpers (`tohex`/`fromhex`/`u16be`). Design
+  keeps the V↔C surface scalar-only: e.g. `bus.send_message` iterates the signal table **in Lua**
+  calling `__encode_signal` per signal (no Lua-table reads from C); only `decode()` builds a table
+  from C. **Headless runner `cmd/script`** (`scripts/runtests.sh`) loads a project, brings the same
+  engine the GUI uses up driver-free (sim ECUs + native `uds.Server` over software ISO-TP on the
+  in-proc bus), runs the `.lua` files and reports pass/fail with a **non-zero exit on failure**
+  (CI-ready). VERIFIED **10/10** vs `projects/sim-demo.yml` — `tests/diag_basic.lua` (session, VIN
+  multi-frame, serial, SW ver, tester-present, NRC 0x31) + `tests/bus_signals.lua` (cyclic RX,
+  decode-range, encode→send→decode round-trip, 0x101→0x102 request/response). **GUI Script panel**
+  (toggle-only, `ƒ` activity-bar icon): file input + ▶ Run + one-click sample buttons; runs against
+  the **live measurement** on a worker thread; output is buffered in `env.log_lines` and dumped in
+  one `queue_command` when the run finishes — deliberately NOT streamed per-line, which would need a
+  closure capturing `mut w` (V can't). **GUI-VERIFIED** by screenshot: ▶ Run on `diag_basic.lua` →
+  "6 passed, 0 failed" with the VIN, and the `0x7E0` ISO-TP request frames appear in the Trace.
+  Hermetic tests added: `modules/lua` (host callback, error propagation, byte-clean NUL payload) +
+  `modules/script` (prelude + framework counts + decode + `check.nrc`). Gotchas (also in memory):
+  (a) `v test` shell-splits `-path "@vlib|@vmodules|modules"` on its per-file re-exec — run module
+  tests **without** `-path` (V auto-resolves `modules/` from `v.mod`); (b) any `fn test_*` is treated
+  as a test by V, so name helpers `sample_*`; (c) hit the documented `pkill -f <pat>` self-kill twice
+  (the tool's own cmdline contains the pattern) — kill by pid or `pkill -x <comm>`. NEXT (Tier 4
+  rest): coroutine-based wait/expect sequences (Tier 3 *on* Lua), a sandbox (drop os/io) for
+  untrusted scripts, on_message/on_timer event callbacks, more UDS services; a project `scripts:`
+  block + recent-scripts; JUnit-XML output for CI. ⚠ The vendored Lua is plain MIT-licensed source
+  (notice in `lua.h`); `thirdparty/lua/README.md` records provenance + upgrade steps.
