@@ -28,6 +28,7 @@ import sim
 import player
 import isotp
 import uds
+import script
 
 const max_trace = 1000 // ring-buffer cap on retained frames (all are scrollable)
 const default_fps = 5  // trace repaint rate; user-tunable (3/5/10) from the toolbar
@@ -45,6 +46,7 @@ const id_scroll_plot_outer = u32(7500) // Graphics root: clamps the panel measur
 const id_scroll_symbols = u32(7600)    // Symbol Browser tree
 const id_scroll_busconfig = u32(7700)  // Bus Config candidate list
 const id_scroll_log = u32(7900)        // Log panel (scrolling event log)
+const id_scroll_script = u32(8000)     // Script panel (Lua test output)
 
 // UDS request/response CAN ids (classic OBD physical addressing): the tester
 // transmits on 0x7E0, the ECU answers on 0x7E8. The simulated ECU's UDS
@@ -362,6 +364,11 @@ mut:
 	// free-form RDBI read.
 	diag_log []string
 	diag_did string = 'F190'
+	// Script panel: the Lua script to run, its output log (chronological), and a
+	// busy flag while a run is in flight on a worker thread.
+	script_path    string = 'tests/diag_basic.lua'
+	script_log     []string
+	script_running bool
 	// Strip-chart time window (seconds): the plot shows [latest - win, latest]
 	// and slides as frames arrive, instead of compressing all history.
 	plot_win int = 10
@@ -1195,9 +1202,9 @@ fn make_theme(p Palette) gui.Theme {
 // (right) — each its own panel. They can still be tabbed/dragged by the user.
 fn default_layout() &gui.DockNode {
 	// A focused default — Trace + Buses + Simulation + Signals + Graphics, with a Log
-	// strip across the bottom. Send, Diagnostics, Statistics and Symbol Browser start
-	// hidden; toggle them from the left activity bar (or the View menu). Right column:
-	// Signals over Graphics.
+	// strip across the bottom. Send, Diagnostics, Script, Statistics and Symbol Browser
+	// start hidden; toggle them from the left activity bar (or the View menu). Right
+	// column: Signals over Graphics.
 	right := gui.dock_split('r1', .vertical, 0.42, gui.dock_panel_group('g_sig', ['signals'],
 		'signals'), gui.dock_panel_group('g_plot', ['plot'], 'plot'))
 	// Trace over the independently-filtered trace (conventional second trace window).
@@ -1847,6 +1854,7 @@ fn main_view(mut window gui.Window) gui.View {
 					gui.DockPanelDef{ id: 'send', label: 'Send', content: [send_panel(mut window)] },
 				gui.DockPanelDef{ id: 'generators', label: 'Generators', content: [generators_panel(mut window)] },
 				gui.DockPanelDef{ id: 'diag', label: 'Diagnostics', content: [diag_panel(mut window)] },
+				gui.DockPanelDef{ id: 'script', label: 'Script', content: [script_panel(mut window)] },
 					gui.DockPanelDef{ id: 'stats', label: 'Statistics', content: [stats_panel(app)] },
 						gui.DockPanelDef{ id: 'log', label: 'Log', content: [log_panel(mut window)] },
 						gui.DockPanelDef{ id: 'symbols', label: 'Symbol Browser', content: [symbol_browser_panel(app)] },
@@ -2004,6 +2012,7 @@ const view_panels = [
 	['send', 'Send'],
 	['generators', 'Generators'],
 	['diag', 'Diagnostics'],
+	['script', 'Script'],
 	['stats', 'Statistics'],
 	['log', 'Log'],
 ]
@@ -2045,6 +2054,7 @@ fn activity_bar(app &App) gui.View {
 		'send':       '➤'
 		'generators': '⎍'
 		'diag':       '✚'
+		'script':     'ƒ'
 		'stats':      'Σ'
 		'log':        '▤'
 	}
@@ -5033,6 +5043,142 @@ fn diag_button(focus u32, label string, on_click fn (&gui.Layout, mut gui.Event,
 		padding:   scpad(3, 8, 3, 8)
 		on_click:  on_click
 	)
+}
+
+// script_panel is the Lua scripting console (Phase 10 scripting, Tier 4): pick a
+// .lua test script and run it against the LIVE measurement — the script reaches
+// the same running buses, simulated ECUs and UDS server the GUI does, so the
+// conventional test cases (test()/check/uds:/bus.) run with no GUI knowledge.
+// Output (per-test ok/FAIL + log lines + a pass/fail summary) streams into the
+// panel. Same scripts run headless via cmd/script (scripts/runtests.sh).
+fn script_panel(mut window gui.Window) gui.View {
+	app := window.state[App]()
+	mut rows := []gui.View{}
+	rows << gui.text(text: 'Script (Lua)', text_style: gui.theme().b3)
+	rows << gui.text(
+		text:       'runs against the live measurement — press ▶ Start first'
+		text_style: trace_text_style()
+	)
+	// Script path + Run.
+	rows << gui.row(
+		v_align: .middle
+		spacing: 4
+		padding: gui.padding_none
+		content: [
+			gui.text(text: 'File', text_style: gui.theme().n4),
+			gui.input(
+				id_focus:        620
+				text:            app.script_path
+				width:           sc(260)
+				height:          sc(22)
+				padding:         scpad(2, 6, 2, 6)
+				sizing:          gui.fixed_fixed
+				on_text_changed: fn (_ &gui.Layout, s string, mut w gui.Window) {
+					mut a := w.state[App]()
+					a.script_path = s
+				}
+			),
+			diag_button(621, if app.script_running { 'Running…' } else { '▶ Run' },
+				fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				a := w.state[App]()
+				if !a.script_running {
+					run_script(a.script_path, mut w)
+				}
+			}),
+		]
+	)
+	// One-click sample scripts.
+	rows << gui.row(
+		spacing: 4
+		padding: gui.padding_none
+		content: [
+			diag_button(622, 'diag_basic.lua', fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				mut a := w.state[App]()
+				a.script_path = 'tests/diag_basic.lua'
+				run_script(a.script_path, mut w)
+			}),
+			diag_button(623, 'bus_signals.lua', fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				mut a := w.state[App]()
+				a.script_path = 'tests/bus_signals.lua'
+				run_script(a.script_path, mut w)
+			}),
+			diag_button(624, 'Clear', fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				mut a := w.state[App]()
+				a.script_log = []
+			}),
+		]
+	)
+	for line in app.script_log {
+		rows << gui.text(text: line, text_style: trace_text_style())
+	}
+	return gui.column(
+		sizing:          gui.fill_fill
+		padding:         gui.padding_medium
+		spacing:         4
+		id_scroll:       id_scroll_script
+		scroll_mode:     .vertical_only
+		scrollbar_cfg_y: &gui.ScrollbarCfg{
+			overflow: .visible
+		}
+		content:         rows
+	)
+}
+
+// run_script launches a Lua script on a worker thread against the currently
+// running channels (their buses/DBCs/sims). Output is buffered by the Env and
+// dumped into the Script panel in one queue_command when the run finishes —
+// avoiding the closure-capturing-`w` problem of streaming each line live.
+fn run_script(path string, mut w gui.Window) {
+	mut app := w.state[App]()
+	mut chans := []script.ChanInfo{}
+	for i, ch in app.proj.channels {
+		if app.rt[i].running {
+			db := app.dbs[i] or { candb.Database{} }
+			chans << script.ChanInfo{
+				name:  ch.name
+				iface: ch.iface
+				db:    db
+			}
+		}
+	}
+	if chans.len == 0 {
+		script_post(['no running channel — press ▶ Start first'], mut w)
+		return
+	}
+	app.script_running = true
+	app.script_log << '── run ${path} ──'
+	spawn fn [path, chans] (mut w gui.Window) {
+		mut env := script.new_env(chans) or {
+			script_post(['script init failed: ${err}'], mut w)
+			return
+		}
+		env.on_output = fn (s string) {} // buffer only; we dump env.log_lines after
+		mut errline := ''
+		env.run_file(path) or { errline = 'ERROR: ${err}' }
+		mut lines := env.log_lines.clone()
+		if errline != '' {
+			lines << errline
+		}
+		lines << '— ${env.passed()} passed, ${env.failed()} failed —'
+		env.close()
+		script_post(lines, mut w)
+	}(mut w)
+}
+
+// script_post appends lines to the Script panel log (bounded) and clears the
+// busy flag, on the UI thread.
+fn script_post(lines []string, mut w gui.Window) {
+	w.queue_command(fn [lines] (mut w gui.Window) {
+		mut a := w.state[App]()
+		for ln in lines {
+			a.script_log << ln
+		}
+		if a.script_log.len > 500 {
+			a.script_log = a.script_log[a.script_log.len - 400..].clone()
+		}
+		a.script_running = false
+		w.update_window()
+	})
 }
 
 fn do_send(mut w gui.Window) {
