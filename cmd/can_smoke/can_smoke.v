@@ -19,7 +19,7 @@ fn main() {
 	}
 	mode := args[1]
 	iface := args[2]
-	mut bus := transport.open_socketcan(iface) or {
+	mut bus := transport.open(iface) or {
 		eprintln('error: ${err}')
 		exit(1)
 	}
@@ -39,6 +39,7 @@ fn main() {
 					break
 				}
 				println('RX ${frame}')
+				flush_stdout() // flush live so a headless capture sees frames before the dump is killed
 			}
 		}
 		'send' {

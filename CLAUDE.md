@@ -939,3 +939,15 @@ prompt for a password.
   channel = test with NO adapter connected, PCAN needs the physical bus, python-can cross-check) +
   status: `docs/windows_can_hardware.md`. The ABI is from vendor docs — watch for struct-packing /
   status-code surprises on real silicon. TODO: slcan (serial, cross-platform) + Vector (XL API) backends.
+- 2026-06-18: **Windows PCAN + Kvaser backends HW-VERIFIED.** Drivers installed (Kvaser Drivers for
+  Windows → `canlib32.dll` + virtual channels; `winget install PEAKSystem.PEAKDrivers` → `PCANBasic.dll`).
+  Cross-vendor + bidirectional on a shared 500k bus (Kvaser Leaf Light v2 ↔ PCAN-USB Pro FD) via
+  `cmd/can_smoke`: Kvaser TX `0x123#DEADBEEF` → PCAN RX byte-identical, AND PCAN TX `0x456#CAFE` →
+  Kvaser RX — each backend does send+recv on real silicon; the two vendor stacks agreeing on the wire
+  IS the cross-vendor oracle. Defaults `kvaser:0` / `pcan:PCAN_USBBUS1` worked first try — **no ABI /
+  struct-packing surprises**. Two enabling fixes: `cmd/can_smoke` switched from the Linux-only
+  `open_socketcan()` to the agnostic `transport.open()` (so it runs on Windows) + flushes each RX (live
+  headless capture); and the mingw build needed `gui-window-resize.patch` synced into `setup_win.ps1`
+  (+ `win_patches/07`) — the WSL side left it `docs/v_patches`-only, so a fresh local Windows build
+  failed on `unknown method gui.Window.resize` (CI already applied it). NEXT (optional): GUI smoke via
+  `projects/hw-crossvendor.yml` + python-can oracle; then slcan + Vector.

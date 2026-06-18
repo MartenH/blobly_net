@@ -1,6 +1,10 @@
 # Windows real-CAN hardware support — design
 
-Status: **PCAN + Kvaser backends IMPLEMENTED (2026-06-18), not yet HW-verified.**
+Status: **PCAN + Kvaser backends HW-VERIFIED 2026-06-18.** Cross-vendor, bidirectional
+send/recv on a shared 500 kbit/s bus (Kvaser Leaf Light v2 ↔ PCAN-USB Pro FD): Kvaser
+TX `0x123#DEADBEEF` → PCAN RX byte-identical, and PCAN TX `0x456#CAFE` → Kvaser RX,
+via `cmd/can_smoke` (defaults `kvaser:0` / `pcan:PCAN_USBBUS1` worked first try). The two
+vendor stacks agreeing on the wire is itself the cross-vendor oracle.
 This documents how real CAN adapters (PCAN / Kvaser / Vector) and the vendor-neutral
 `slcan` path slot into CANTester on Windows, behind the existing `transport.Bus`
 seam. Owner has PCAN + Kvaser hardware and intermittent access to a Vector machine.
@@ -164,8 +168,8 @@ documented ABI but unverified against silicon.
 
 ## Phasing
 
-1. **P1 — PCAN backend** ✅ implemented (cross-compiled; HW-verify pending).
-2. **P2 — Kvaser backend** ✅ implemented (virtual-channel self-test pending).
+1. **P1 — PCAN backend** ✅ implemented + **HW-verified 2026-06-18** (TX+RX on real bus).
+2. **P2 — Kvaser backend** ✅ implemented + **HW-verified 2026-06-18** (TX+RX on real bus).
 3. **P3 — slcan backend** (serial; cross-platform — also usable on Linux). TODO.
 4. **P4 — Vector backend** when a Vector machine is available. TODO.
 
