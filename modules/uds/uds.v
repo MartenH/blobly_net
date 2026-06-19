@@ -12,7 +12,10 @@ import isotp
 // Request service ids.
 pub const sid_diagnostic_session_control = u8(0x10)
 pub const sid_ecu_reset = u8(0x11)
+pub const sid_read_dtc_information = u8(0x19)
 pub const sid_read_data_by_identifier = u8(0x22)
+pub const sid_security_access = u8(0x27)
+pub const sid_write_data_by_identifier = u8(0x2E)
 pub const sid_tester_present = u8(0x3E)
 
 const positive_response_offset = u8(0x40)
@@ -106,6 +109,48 @@ pub fn (mut c Client) diagnostic_session(session u8) ![]u8 {
 // tester_present (0x3E sub 0x00) keeps the session alive.
 pub fn (mut c Client) tester_present() ! {
 	c.raw([sid_tester_present, u8(0x00)])!
+}
+
+// write_data_by_identifier (0x2E) writes a data record to a DID.
+pub fn (mut c Client) write_data_by_identifier(did u16, data []u8) ! {
+	mut req := [sid_write_data_by_identifier, u8(did >> 8), u8(did)]
+	req << data
+	c.raw(req)! // positive response is 0x6E <did_hi> <did_lo>
+}
+
+// security_request_seed (0x27, odd sub-function) asks for the seed for `level`.
+pub fn (mut c Client) security_request_seed(level u8) ![]u8 {
+	resp := c.raw([sid_security_access, level])!
+	// 0x67 <level> <seed...>
+	if resp.len < 2 {
+		return error('security seed response too short')
+	}
+	return resp[2..].clone()
+}
+
+// security_send_key (0x27, even sub-function = seed level + 1) sends the computed key.
+pub fn (mut c Client) security_send_key(level u8, key []u8) ! {
+	mut req := [sid_security_access, level]
+	req << key
+	c.raw(req)! // positive response is 0x67 <level>
+}
+
+// read_dtc_by_status_mask (0x19 sub 0x02 reportDTCByStatusMask) returns the DTC
+// record (status-availability mask byte followed by DTC(3)+status(1) tuples).
+pub fn (mut c Client) read_dtc_by_status_mask(mask u8) ![]u8 {
+	resp := c.raw([sid_read_dtc_information, 0x02, mask])!
+	// 0x59 0x02 <data...>
+	if resp.len < 2 {
+		return error('readDTC response too short')
+	}
+	return resp[2..].clone()
+}
+
+// security_key derives the key from a seed for the SIMULATED server's demo
+// algorithm (key[i] = seed[i] XOR 0xFF). Real OEM algorithms differ — this is the
+// shared secret between modules/uds' Server and a test that wants to unlock it.
+pub fn security_key(seed []u8) []u8 {
+	return seed.map(it ^ u8(0xFF))
 }
 
 // nrc_name maps the common negative response codes to readable names.

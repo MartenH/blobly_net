@@ -951,3 +951,34 @@ prompt for a password.
   (+ `win_patches/07`) — the WSL side left it `docs/v_patches`-only, so a fresh local Windows build
   failed on `unknown method gui.Window.resize` (CI already applied it). NEXT (optional): GUI smoke via
   `projects/hw-crossvendor.yml` + python-can oracle; then slcan + Vector.
+- 2026-06-19: **Validated GGRei's upstream closure fix (v#27483 + gui#62) as a replacement for our
+  local patches.** v#27483 ("builtin: add closure lifetime reclamation") is GGRei's cleaned-up recovery
+  of our #27446 work, against master, with a proper **`closure.Lifetime` API** (`new_lifetime()` →
+  `frame`/`reclaim`/`reclaim_all`/`dispose`/`suspend`/`untracked`) + Cgen non-escape auto-cleanup;
+  gui#62 ("reclaim layout callback lifetimes") uses it in `Window.update()` and **pins persistent
+  callbacks** (animations/hover/async grid+listbox/CRUD/drag-reorder) instead of our minimal
+  `reclaim_frames(2)` + mouse-lock guard. **Tested in isolation** (built V from the PR into /tmp,
+  gui#62 + vglyph into a separate VMODULES, cantester built with NO local closure patches — only the
+  two build-required gui API patches sample-count + window-resize): compiles clean, and live sim-demo
+  **RSS plateaus ~315 MB** (10s 279→ 90s 315 → flat 315.7 MB over the last minute), matching our
+  patched build's ~318 MB and unlike the unfixed unbounded climb. **Recommendation: adopt when both
+  merge** (gui#62 depends on v#27483; both OPEN) and drop our two local closure patches; keep the
+  sample-count/window-resize gap-fills. Our Linux CI (`setup-v check-latest`) will pick up v#27483
+  automatically once merged.
+- 2026-06-19: **Scripting Tier 4 extended — sequences, reactive callbacks, more UDS.** (a) **UDS
+  services** added to BOTH `uds.Client` and the native `uds.Server` (so they're testable headless):
+  **0x2E WriteDataByIdentifier**, **0x27 SecurityAccess** (server hands a demo seed `11 22 33 44`,
+  validates key = `uds.security_key(seed)` = seed XOR 0xFF; `unlocked` flag; wrong key → NRC 0x35),
+  **0x19 sub 0x02 ReadDTCInformation** (canned DTC records). Hermetic `modules/uds/server_test.v`
+  (write+read, unlock, bad-key, DTC). (b) **Lua prelude** gained sequence helpers `expect(channel,id,
+  timeout)` / `expect_signal(channel,id,sig,want,timeout)` (blocking wait-for, want = value or
+  predicate) and a reactive event loop `on_message(channel,id,fn)` / `on_timer(period,fn)` /
+  `run(duration)` — built in Lua over `bus.recv` + a new host `__now_ms()` (monotonic clock); no raw
+  coroutines exposed (Lua's are available for advanced use). uds object gained `:write_did`,
+  `:security_access(level[,keyfn])` (default keyfn = the sim's XOR-0xFF algo), `:read_dtcs([mask])`.
+  (c) New scripts `tests/diag_advanced.lua` (write/security/DTC) + `tests/sequences.lua` (expect /
+  on_message / on_timer). **VERIFIED headless 17/17** vs sim-demo (event loop healthy: 15 heartbeats +
+  14 timer ticks over 1.5 s @ 100 ms); module tests 4/4; GUI still builds. Docs: `docs/scripting.md`
+  updated (UDS table + Sequences/Reactive sections). Gotcha: V has no `...spread` in an array literal
+  — build the slice with `mut req := [...]; req << key`. TODO (Tier 4 rest): sandbox (drop os/io) for
+  untrusted scripts; project `scripts:` block + recent-scripts; JUnit-XML for CI; DID↔signal mapping.

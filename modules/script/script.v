@@ -163,6 +163,11 @@ fn (mut env Env) register_all() {
 	env.st.register('__msg_template', l_msg_template)
 	env.st.register('__encode_signal', l_encode_signal)
 	env.st.register('__decode', l_decode)
+	env.st.register('__now_ms', l_now_ms)
+	env.st.register('__uds_write_did', l_uds_write_did)
+	env.st.register('__uds_sec_seed', l_uds_sec_seed)
+	env.st.register('__uds_sec_key', l_uds_sec_key)
+	env.st.register('__uds_read_dtc', l_uds_read_dtc)
 }
 
 // env_of recovers the &Env stashed in the Lua state by new_env.
@@ -256,6 +261,42 @@ fn l_uds_raw(l lua.State) int {
 	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
 	resp := c.cli.raw(l.arg_bytes(2)) or { return l.fail(err.msg()) }
 	l.push_bytes(resp)
+	return 1
+}
+
+fn l_uds_write_did(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	c.cli.write_data_by_identifier(u16(l.arg_int(2)), l.arg_bytes(3)) or { return l.fail(err.msg()) }
+	return 0
+}
+
+fn l_uds_sec_seed(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	seed := c.cli.security_request_seed(u8(l.arg_int(2))) or { return l.fail(err.msg()) }
+	l.push_bytes(seed)
+	return 1
+}
+
+fn l_uds_sec_key(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	c.cli.security_send_key(u8(l.arg_int(2)), l.arg_bytes(3)) or { return l.fail(err.msg()) }
+	return 0
+}
+
+fn l_uds_read_dtc(l lua.State) int {
+	mut env := env_of(l)
+	mut c := env.conn(int(l.arg_int(1))) or { return l.fail('bad uds handle') }
+	dtcs := c.cli.read_dtc_by_status_mask(u8(l.arg_int(2))) or { return l.fail(err.msg()) }
+	l.push_bytes(dtcs)
+	return 1
+}
+
+// l_now_ms returns a monotonic millisecond clock for the prelude's expect/run/timers.
+fn l_now_ms(l lua.State) int {
+	l.push_int(time.ticks())
 	return 1
 }
 
