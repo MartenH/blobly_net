@@ -10,9 +10,15 @@ import isotp
 
 pub struct Server {
 pub mut:
-	dids    map[u16][]u8 // ReadDataByIdentifier table
-	session u8 = 1
+	dids     map[u16][]u8 // ReadDataByIdentifier table (0x22/0x2E)
+	session  u8 = 1
+	sec_seed []u8 // last seed handed out (0x27 request seed)
+	unlocked bool // security access granted (0x27 valid key accepted)
 }
+
+// server_security_seed is the demo seed the simulated server returns for any
+// level; paired with uds.security_key() (XOR 0xFF) as the shared test secret.
+const server_security_seed = [u8(0x11), 0x22, 0x33, 0x44]
 
 // default_server returns a server populated like sut/uds_server.py (VIN forces a
 // multi-frame ISO-TP response).
@@ -49,6 +55,41 @@ pub fn (mut s Server) handle(req []u8) []u8 {
 				return resp
 			}
 			return neg(sid, 0x31) // requestOutOfRange
+		}
+		0x2E { // WriteDataByIdentifier
+			if req.len < 3 {
+				return neg(sid, 0x13)
+			}
+			did := (u16(req[1]) << 8) | u16(req[2])
+			s.dids[did] = req[3..].clone()
+			return [u8(0x6E), req[1], req[2]]
+		}
+		0x27 { // SecurityAccess — odd sub = request seed, even sub = send key
+			sub := if req.len > 1 { req[1] } else { u8(0) }
+			if sub == 0 {
+				return neg(sid, 0x12) // subFunctionNotSupported
+			}
+			if sub % 2 == 1 { // requestSeed
+				s.sec_seed = server_security_seed.clone()
+				mut resp := [u8(0x67), sub]
+				resp << s.sec_seed
+				return resp
+			}
+			// sendKey: validate against the demo algorithm
+			key := if req.len > 2 { req[2..].clone() } else { []u8{} }
+			if s.sec_seed.len > 0 && key == security_key(s.sec_seed) {
+				s.unlocked = true
+				return [u8(0x67), sub]
+			}
+			return neg(sid, 0x35) // invalidKey
+		}
+		0x19 { // ReadDTCInformation (sub 0x02 reportDTCByStatusMask)
+			sub := if req.len > 1 { req[1] } else { u8(0) }
+			if sub != 0x02 {
+				return neg(sid, 0x12) // subFunctionNotSupported
+			}
+			// [0x59, 0x02, statusAvailabilityMask, {DTC hi/mid/lo, status}...]
+			return [u8(0x59), 0x02, 0xFF, 0x12, 0x34, 0x56, 0x09, 0xAB, 0xCD, 0xEF, 0x08]
 		}
 		0x3E { // TesterPresent
 			return [u8(0x7E), 0x00]

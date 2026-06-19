@@ -119,11 +119,19 @@ The returned object has:
 |---|---|---|
 | `diag:session(sub)` | `0x10` DiagnosticSessionControl (`sub` defaults `0x01`) | session params (bytes) |
 | `diag:read_did(did)` | `0x22` ReadDataByIdentifier | the data record (bytes) |
+| `diag:write_did(did, data)` | `0x2E` WriteDataByIdentifier | — |
+| `diag:security_access(level [, keyfn])` | `0x27` SecurityAccess (request seed at `level`, send key at `level+1`) | the seed (bytes) |
+| `diag:read_dtcs([mask])` | `0x19` sub `0x02` reportDTCByStatusMask (`mask` defaults `0xFF`) | DTC record (bytes) |
 | `diag:tester_present()` | `0x3E` | — |
 | `diag:raw(req)` | send any request PDU | the response (bytes) |
 
 A negative response **raises a Lua error** (so it aborts the `test`, or is caught by
-`check.nrc`). Multi-frame responses (e.g. the 17-byte VIN) are reassembled for you.
+`check.nrc` — e.g. `check.nrc(0x35, …)` for an invalid security key). Multi-frame
+responses (e.g. the 17-byte VIN) are reassembled for you.
+
+`security_access(level, keyfn)`: `keyfn(seed) -> key` defaults to the **simulated
+server's** demo algorithm (key = seed XOR 0xFF) so it unlocks the sim out of the box;
+pass your own `keyfn` for a real ECU's algorithm.
 
 ### Raw frames & signals
 
@@ -152,6 +160,37 @@ CAN/UDS payloads are Lua **byte strings** (8-bit clean). Helpers:
 | `frombytes(t)` | `frombytes({0xDE, 0xAD})` | 2-byte string |
 | `u16be(s [, i])` | `u16be(raw)` | big-endian u16 at byte `i` (default 1) |
 | `ascii(s)` | `ascii(vin)` | the string itself (payloads already are strings) |
+
+### Sequences — wait / expect
+
+Linear "wait for an event with a timeout" (CANoe `testWaitFor` style). These block
+the script until the condition or the timeout, then return or raise.
+
+| Call | Meaning |
+|---|---|
+| `expect(channel, id, timeout_ms)` | Wait for a frame with CAN `id`; returns the frame `{id,ext,data}`, or raises on timeout. |
+| `expect_signal(channel, id, signal, want, timeout_ms)` | Wait until decoded `signal` of message `id` matches `want` (a value, or a `function(v)->bool` predicate); returns the matching value, or raises. |
+
+### Reactive callbacks — on_message / on_timer / run
+
+Register handlers, then `run()` a cooperative event loop that pumps the listened
+channels and fires due timers. Handlers fire *during* `run()`.
+
+| Call | Meaning |
+|---|---|
+| `on_message(channel, id, fn)` | `fn(frame)` fires for each matching frame during `run()`. `id` may be `nil` to match every frame on the channel. |
+| `on_timer(period_ms, fn)` | `fn()` fires roughly every `period_ms` during `run()`. |
+| `run(duration_ms)` | Run the event loop for `duration_ms`, dispatching messages + timers. |
+
+```lua
+local hb = 0
+on_message("CAN1", 0x700, function(f) hb = hb + 1 end)   -- Heartbeat
+on_timer(500, function() log("tick, heartbeats so far:", hb) end)
+run(3000)
+```
+
+(Lua's own coroutines are available too if you want to hand-roll more elaborate
+flows, but `expect` + `on_message`/`run` cover the common test shapes.)
 
 ### Logging & timing
 

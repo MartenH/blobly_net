@@ -81,8 +81,21 @@ function uds.open(channel, opts)
   local self = { handle = h, channel = channel }
   function self:session(sub) return __uds_session(self.handle, sub or 0x01) end
   function self:read_did(did) return __uds_read_did(self.handle, did) end
+  function self:write_did(did, data) return __uds_write_did(self.handle, did, data) end
   function self:tester_present() return __uds_tester_present(self.handle) end
   function self:raw(req) return __uds_raw(self.handle, req) end
+  function self:read_dtcs(mask) return __uds_read_dtc(self.handle, mask or 0xFF) end
+  -- security access: request the seed for `level` (odd), compute the key with
+  -- `keyfn` (default = the simulated servers algorithm, XOR 0xFF), send it at
+  -- level+1. Returns the seed. Raises on an invalid key (NRC 0x35).
+  function self:security_access(level, keyfn)
+    local seed = __uds_sec_seed(self.handle, level)
+    keyfn = keyfn or function(s)
+      return (s:gsub(".", function(c) return string.char(string.byte(c) ~ 0xFF) end))
+    end
+    __uds_sec_key(self.handle, level + 1, keyfn(seed))
+    return seed
+  end
   return self
 end
 
@@ -109,5 +122,74 @@ end
 -- decode raw bytes against the channel`s DBC -> { SignalName = physical_value }
 function decode(channel, id, data, ext)
   return __decode(channel, id, ext or false, data)
+end
+
+-- ============================ sequences (wait / expect) ============================
+-- Block up to timeout_ms for a frame with CAN id `id` on `channel`; return it or error.
+function expect(channel, id, timeout_ms)
+  timeout_ms = timeout_ms or 1000
+  local deadline = __now_ms() + timeout_ms
+  repeat
+    local left = deadline - __now_ms()
+    local f = bus.recv(channel, left > 0 and left or 0)
+    if f and f.id == id then return f end
+  until __now_ms() >= deadline
+  error(string.format("expect: no frame id=0x%X on %s within %dms", id, channel, timeout_ms), 2)
+end
+
+-- Block until a decoded signal of message `id` matches `want` (a value, or a
+-- predicate function), or timeout. Returns the matching value.
+function expect_signal(channel, id, signal, want, timeout_ms)
+  timeout_ms = timeout_ms or 1000
+  local deadline = __now_ms() + timeout_ms
+  repeat
+    local left = deadline - __now_ms()
+    local f = bus.recv(channel, left > 0 and left or 0)
+    if f and f.id == id then
+      local s = decode(channel, f.id, f.data)
+      local v = s and s[signal]
+      if v ~= nil then
+        if type(want) == "function" then
+          if want(v) then return v end
+        elseif v == want then
+          return v
+        end
+      end
+    end
+  until __now_ms() >= deadline
+  error("expect_signal: " .. signal .. " did not match within " .. timeout_ms .. "ms", 2)
+end
+
+-- ============================ reactive callbacks ============================
+-- on_message(channel, id, fn): fn(frame) fires for each matching frame during run().
+-- id may be nil to match every frame on the channel.
+-- on_timer(period_ms, fn): fn() fires every period_ms during run().
+-- run(duration_ms): cooperative event loop — pump the listened channels + timers.
+__on_msg = {}
+__timers = {}
+function on_message(channel, id, fn) __on_msg[#__on_msg + 1] = { channel = channel, id = id, fn = fn } end
+function on_timer(period_ms, fn) __timers[#__timers + 1] = { due = __now_ms() + period_ms, period = period_ms, fn = fn } end
+
+function run(duration_ms)
+  local deadline = __now_ms() + (duration_ms or 1000)
+  local chans = {}
+  for _, h in ipairs(__on_msg) do chans[h.channel] = true end
+  repeat
+    local now = __now_ms()
+    for _, t in ipairs(__timers) do
+      if now >= t.due then t.fn(); t.due = now + t.period end
+    end
+    local any = false
+    for ch, _ in pairs(chans) do
+      local f = bus.recv(ch, 5)
+      if f then
+        any = true
+        for _, h in ipairs(__on_msg) do
+          if h.channel == ch and (h.id == nil or h.id == f.id) then h.fn(f) end
+        end
+      end
+    end
+    if not any then sleep_ms(2) end
+  until __now_ms() >= deadline
 end
 '
