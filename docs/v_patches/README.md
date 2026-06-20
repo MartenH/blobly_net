@@ -96,7 +96,8 @@ placed in the **fit-height** `dock_tab_bar` row; a fill child in a fit container
 *between* tabs), so single-panel groups (the whole default layout) never show it. The patch makes the
 separator a definite `fixed_fixed` height (no fill) — the bar fits the tabs again, divider still
 visible. Applies cleanly to both gui pins (68b9302 + 7a20a6a); identical buggy line in both, so it's
-not a regression from the pin bump. Upstream candidate (vlang/gui).
+not a regression from the pin bump. **Filed upstream as [vlang/gui#64]** — drop this local patch once
+it merges.
 
 ## `gui-msaa-sample-count.patch` — gui (`window.v`)
 
