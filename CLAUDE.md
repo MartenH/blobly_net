@@ -1057,3 +1057,17 @@ prompt for a password.
   the real ceiling, not the data plane.** Future scaling work (if ever) is the display/record split +
   bounded buffers, not more threads. Note: this benchmarks the in-proc simulation path; real HW buses
   are ~8k/s/bus max (kernel/driver-bound) so 20 of them ≈ 160k/s = the trivial case above.
+- 2026-06-19: **Toolbar stutter-spinner — visual GUI-render health/jank indicator.** Small rotating
+  arc in the toolbar (next to the running/stopped status). `spinner_view` draws it via `gui.draw_canvas`
+  + `dc.arc`/`dc.circle`; the angle is **time-based** (`time.ticks()`, ~1 rev/s) so it shows true frame
+  timing — a smooth spin = healthy render loop, a jerk/jump = a frame stutter. Our render is event-
+  driven/on-demand (gui `refresh_layout` flags; not a 60fps loop), so a new `spin_loop` thread (spawned
+  in `start_measurement`, exits on `!app.running`) requests `update_window()` ~30×/s **while running**
+  to drive a steady repaint cadence. Stopped = a faint static track ring, no thread, no idle cost.
+  `draw_canvas.version` is u64 and time-bucketed (`ticks/16`) so it re-tessellates each frame while
+  spinning. Note: forcing ~30 fps repaint while running raises CPU (esp. under WSLg's GL tax — which is
+  exactly what the spinner makes visible); it's only while running. gui (7a20a6a) has NO spinner widget
+  (the screenshot in chat was a newer gui/go-gui showcase) so this is a custom one. (go-gui's "animated
+  math curves" — rose/lissajous/lemniscate/hypotrochoid — are just parametric equations = not
+  copyrightable; addable later as styles with zero code-copying if eye-candy is wanted; a plain arc is
+  the clearest stutter cue.)
