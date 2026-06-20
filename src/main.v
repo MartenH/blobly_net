@@ -308,6 +308,11 @@ mut:
 	plot_series [][]f32 // per-signal decoded values over the window
 	plot_times  []f32   // shared sample timeline
 	plot_cur    []f64   // latest value per signal (legend)
+	// Expand-only running y-range per '<id>:<signal>' so a scrolling waveform keeps a
+	// STABLE vertical scale (it only widens for new extremes, never shrinks as samples
+	// leave the window). Without this, the per-window auto-scale made signals "breathe"
+	// / stretch independently. Reset when the plot history is cleared.
+	plot_range map[string][2]f32
 	// Reused tessellation scratch (pixel positions + polyline points), refilled per
 	// series during draw — accessed via the app pointer captured into the draw closure.
 	plot_xs  []f32
@@ -3014,6 +3019,7 @@ fn toolbar(mut window gui.Window) gui.View {
 					a.expanded = map[string]bool{}
 					a.expanded2 = map[string]bool{}
 					a.plot_hist = map[u32][]PlotSample{}
+					a.plot_range = map[string][2]f32{}
 					a.sel_id = -1
 				}
 			),
@@ -3667,8 +3673,31 @@ fn plot_panel(mut window gui.Window) gui.View {
 		for j, s in sigs {
 			mut inner := app.plot_series[j]
 			inner.clear()
+			// Widen (never shrink) this signal's running y-range as we decode, for a
+			// stable scale (see App.plot_range).
+			key := '${id}:${s.name}'
+			mut lo := f32(0)
+			mut hi := f32(0)
+			mut have := false
+			if r := app.plot_range[key] {
+				lo, hi, have = r[0], r[1], true
+			}
 			for i := start; i < hist.len; i++ {
-				inner << f32(s.physical(hist[i].data))
+				v := f32(s.physical(hist[i].data))
+				inner << v
+				if !have {
+					lo, hi, have = v, v, true
+				} else {
+					if v < lo {
+						lo = v
+					}
+					if v > hi {
+						hi = v
+					}
+				}
+			}
+			if have {
+				app.plot_range[key] = [lo, hi]!
 			}
 			app.plot_series[j] = inner
 			app.plot_cur[j] = if inner.len > 0 { f64(inner.last()) } else { f64(0) }
@@ -3682,10 +3711,15 @@ fn plot_panel(mut window gui.Window) gui.View {
 	// index, so toggling one doesn't recolour the rest).
 	mut shown := [][]f32{}
 	mut shown_colors := []gui.Color{}
+	mut shown_min := []f32{}
+	mut shown_max := []f32{}
 	for j, s in sigs {
 		if !app.plot_off['${id}:${s.name}'] {
 			shown << series[j]
 			shown_colors << plot_colors[j % plot_colors.len]
+			r := app.plot_range['${id}:${s.name}'] or { [f32(0), f32(1)]! }
+			shown_min << r[0]
+			shown_max << r[1]
 		}
 	}
 
@@ -3770,9 +3804,9 @@ fn plot_panel(mut window gui.Window) gui.View {
 		color:    plot_bg
 		radius:   4
 		padding:  scpad(6, 6, 6, 6)
-		on_draw:  fn [mut app, shown, shown_colors, times, wstart, win, plot_grid, hf, step] (mut dc gui.DrawContext) {
-			draw_signals(mut dc, mut app, shown, shown_colors, times, wstart, win, plot_grid,
-				hf, step)
+		on_draw:  fn [mut app, shown, shown_colors, shown_min, shown_max, times, wstart, win, plot_grid, hf, step] (mut dc gui.DrawContext) {
+			draw_signals(mut dc, mut app, shown, shown_colors, shown_min, shown_max, times,
+				wstart, win, plot_grid, hf, step)
 		}
 		on_hover: fn (mut layout gui.Layout, mut e gui.Event, mut w gui.Window) {
 			mut a := w.state[App]()
@@ -3896,7 +3930,7 @@ fn zoom_window(mut w gui.Window, dir int) {
 // draw_signals paints the plot grid (4 horizontal bands + 4 vertical time
 // divisions matching the labels below the canvas) and each visible series.
 fn draw_signals(mut dc gui.DrawContext, mut app App, series [][]f32, colors []gui.Color,
-	times []f32, wstart f32, win f32, grid gui.Color, hover f32, step bool) {
+	mins []f32, maxs []f32, times []f32, wstart f32, win f32, grid gui.Color, hover f32, step bool) {
 	cw := dc.width
 	ch := dc.height
 	for i in 0 .. 5 {
@@ -3911,7 +3945,7 @@ fn draw_signals(mut dc gui.DrawContext, mut app App, series [][]f32, colors []gu
 		dc.line(hx, 0, hx, ch, gui.Color{130, 130, 140, 255}, 1)
 	}
 	for j, s in series {
-		draw_one_series(mut dc, mut app, s, times, wstart, win, colors[j % colors.len],
+		draw_one_series(mut dc, mut app, s, mins[j], maxs[j], times, wstart, win, colors[j % colors.len],
 			hover, step)
 	}
 }
@@ -3923,23 +3957,13 @@ fn draw_signals(mut dc gui.DrawContext, mut app App, series [][]f32, colors []gu
 // (app.plot_xs/ys/pts) instead of allocating fresh arrays each re-tessellation. The
 // draw path is single-threaded and each series is filled then drawn before the next,
 // so sharing the scratch is safe; steady state allocates nothing once capacity settles.
-fn draw_one_series(mut dc gui.DrawContext, mut app App, series []f32, times []f32, wstart f32,
+fn draw_one_series(mut dc gui.DrawContext, mut app App, series []f32, mn f32, mx f32, times []f32, wstart f32,
 	win f32, color gui.Color, hover f32, step bool) {
 	if series.len < 2 || times.len != series.len {
 		return
 	}
 	cw := dc.width
 	ch := dc.height
-	mut mn := series[0]
-	mut mx := series[0]
-	for v in series {
-		if v < mn {
-			mn = v
-		}
-		if v > mx {
-			mx = v
-		}
-	}
 	span := if mx > mn { mx - mn } else { f32(1) }
 	tspan := if win > 0 { win } else { f32(1) }
 	// Pre-compute each sample's pixel position once, into app's reused scratch
@@ -5497,6 +5521,7 @@ fn load_log(path string, mut w gui.Window) {
 	app.expanded = map[string]bool{}
 	app.expanded2 = map[string]bool{}
 	app.plot_hist = map[u32][]PlotSample{}
+	app.plot_range = map[string][2]f32{}
 	app.sel_id = -1
 	app.rx_count = 0
 	app.tx_count = 0
