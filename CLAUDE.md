@@ -1114,7 +1114,12 @@ prompt for a password.
   This is **defense-in-depth, NOT a build dependency** — our app-side `draw_one_series` decimation remains
   the primary fix; gui#65 just makes any future over-feed degrade gracefully (drop excess + warn) instead of
   blanking. PR notes a follow-up: check `sgl.error()` to surface `SGL_ERROR_VERTICES_FULL`. Logged in
-  `docs/upstreaming.md`.
+  `docs/upstreaming.md`. **Codex P1 follow-up (addressed):** stencil-clipped SVG groups draw the mask
+  geometry TWICE per frame (`draw_clipped_svg_group` step 1 stencil-write + step 3 stencil-clear) plus
+  content once, so a ~24k-mask+24k-content group passed the 49,152 cap but emitted ~72k → could still
+  blank. Fixed: `emit_renderer_if_valid` now budgets `is_clip_mask` DrawSvg vertices at **2×** (matches
+  real SGL emissions); added 2 regression tests on the clipped path (skip-when-doubled-overflows +
+  consumes-2×), verified to fail without the 2× accounting.
 - 2026-06-20: **FIX: Graphics strip chart stuttered — it advanced per-sample, not with wall-clock.**
   User: the plot "stutters a bit", expected super-smooth. Root cause: the screen repaints ~30 fps
   (`spin_loop`) but the PLOT only moved when a new sample of the selected message arrived — `plot_version`
