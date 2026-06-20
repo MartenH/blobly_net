@@ -29,4 +29,5 @@ then **Save**.
 
 ## Real hardware (Windows)
 Install the vendor driver (Kvaser / PEAK), open **Bus Config ▸ Discover**, and tick your
-adapter to add it as a channel. Details in **Help ▸ Examples** and `docs/can_hardware.md`.
+adapter to add it as a channel. Details on the [Examples](examples) page and in
+`docs/can_hardware.md`.
