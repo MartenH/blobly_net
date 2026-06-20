@@ -58,6 +58,7 @@ transfer and are recreated from the patches.
 | — | `vlang/gui` | WindowCfg.sample_count (MSAA) | **FILED** — [gui#61](https://github.com/vlang/gui/pull/61) (new; was a local-only patch) |
 | — | `vlang/gui` | `Window.resize()` wrapper | **CANDIDATE — not filed.** Local patch `docs/v_patches/gui-window-resize.patch`; one-line `pub fn (mut Window) resize(w,h int)` over the public `gg.Context.resize()` (gui's `ui` is private). Clean API-gap fill; verified WSLg/X11. File if/when convenient. |
 | 3 | `vlang/gui` | windows gcc-16 compile (`#01`+`#02`) | **OBSOLETE** — already upstream (native-Windows work added COBJMACROS + `<stdio.h>`/`<wchar.h>`); do not file |
+| — | `vlang/gui` | per-frame triangle-vertex budget (sokol-gl overflow → blank window) | **FILED** — [gui#65](https://github.com/vlang/gui/pull/65) (2026-06-20). Render guard now skips DrawSvg batches that would push a frame past the shared 64k sokol-gl buffer, instead of silently blanking. Defense-in-depth, NOT a build dep — our app-side `draw_one_series` decimation is the primary fix. Tests in `_render_test.v` verified to fail without the guard. |
 
 **Major upstream change (2026-06-11→13):** `vlang/gui` got **native Windows support** merged to `main`
 (JalonSolov/GGRei/CreeperFace/Dylan Donnell) + Windows CI; README says "active development". So the

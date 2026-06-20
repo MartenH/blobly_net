@@ -1099,3 +1099,19 @@ prompt for a password.
   vertex-buffer overflow (no clip/warn) is itself a gui robustness gap — candidate upstream report; the
   app-side point cap is the right fix regardless. xdotool can't reliably click gui's tiny zoom buttons
   under WSLg (verified via the 60 s default instead).
+- 2026-06-20: **Filed the gui robustness gap upstream — [gui#65](https://github.com/vlang/gui/pull/65).**
+  Followed the blank-window root cause (gg sets up sokol-gl with the default 64k-vertex buffer, shared by
+  ALL triangles in a frame; overflow → sokol-gl silently drops the whole frame → blank, no error). The PR
+  extends gui's existing render guard (`render_validate.v`) with a **cumulative per-frame triangle-vertex
+  budget**: `emit_renderer_if_valid` counts `DrawSvg` vertices (`triangles.len/2`) into a new
+  `Window.frame_triangle_vertices` (reset in `Window.update` beside `array_clear(renderers)`) and **skips**
+  a batch that would push the frame past `max_frame_triangle_vertices = 49152` (64k − 16k chrome headroom)
+  with a one-time warning, instead of overflowing. Factored the warn-once into `render_guard_warn_once`
+  (reused by the validity guard, no behavior change). **Tests** (`_render_test.v`): single oversized batch
+  skipped; cumulative medium batches accepted until overflow (the exact blank pattern); non-triangle
+  renderer unaffected — and **verified the tests FAIL when the budget is removed** (they genuinely hit the
+  guard). Ran gui's render test suite via the clone (`v test`, VMODULES=~/.vmodules, vglyph resolved): green.
+  This is **defense-in-depth, NOT a build dependency** — our app-side `draw_one_series` decimation remains
+  the primary fix; gui#65 just makes any future over-feed degrade gracefully (drop excess + warn) instead of
+  blanking. PR notes a follow-up: check `sgl.error()` to surface `SGL_ERROR_VERTICES_FULL`. Logged in
+  `docs/upstreaming.md`.
