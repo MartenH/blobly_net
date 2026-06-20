@@ -103,6 +103,8 @@ cmd/dashboard/              throwaway GUI capability demo
 cmd/signal_decode/          frame -> signals visualizer demo
 cmd/dbc_decode/             load a DBC + decode one frame (machine-readable; oracle diff)
 cmd/mf4_dump/               native-V MF4 reader smoke/oracle-diff (count, unique IDs, frames)
+cmd/loadtest/               headless data-plane benchmark: N producer+consumer bus threads at a
+                            target/max rate, reports throughput / drops / cores / RSS (no GUI)
 cmd/sim_smoke/              run the native simulated SUT ECU on the in-proc bus, verify end-to-end
 cmd/isotp_smoke/            send one ISO-TP PDU, print the reply (multi-frame smoke)
 cmd/uds_smoke/              drive the UDS client vs sut/uds_server.py
@@ -1038,3 +1040,20 @@ prompt for a password.
   gui bump (done for the closure leak fix) also fixed this. The `h_align: .left` workarounds
   (`diag_button`, Send/Generators/Script panel buttons) are now optional — they still work; revert to
   centered `gui.button` if/when a centered look is wanted. Doc'd in `docs/known_issues.md`.
+- 2026-06-19: **Data-plane load benchmark (`cmd/loadtest`) — threading scales, data plane is not the
+  bottleneck.** Headless harness (no GUI): N buses, each a producer + consumer thread (consumer DBC-
+  decodes), at a target/max rate; reports throughput / drops / cores / RSS. Built to validate the
+  "20+ CAN + a couple Eth" question before the GUI ceiling muddies it. Results on this 16-core box
+  (in-proc bus, decode ON, 20 buses): **8k/s/bus (157k/s agg = saturated classic CAN) → 0 drops, 1.7
+  cores, 43 MB**; 20k/s/bus (393k/s) → 5.1 cores; 40k/s/bus (784k/s) → 10.9 cores; all **flat 43 MB,
+  ~0% drops**. Max flood ≈ **830k frames/s aggregate** ceiling. Findings: (1) realistic load (a fully
+  saturated 20-bus system) is trivial — <2 cores, 43 MB; (2) the data plane scales ~linearly to ~800k
+  frames/s, ~5× a saturated 20-bus classic-CAN system; (3) **memory is flat regardless of rate** (the
+  in-proc bus's drop-on-full bounds it — `inproc_queue_cap` 8192/sub; no leak); (4) the ceiling is V
+  `chan` throughput/contention, NOT decode (decode ~4.3M signals/s and parallelizes — counter-intuitively
+  decode-ON out-throughputs decode-OFF in max-flood because decode work off the channel lock cuts
+  producer/consumer contention); (5) per-bus threading parallelizes well (CPU grows with load across
+  cores). **Conclusion: keep per-bus I/O threads + single-threaded GUI w/ bounded repaint; the GUI is
+  the real ceiling, not the data plane.** Future scaling work (if ever) is the display/record split +
+  bounded buffers, not more threads. Note: this benchmarks the in-proc simulation path; real HW buses
+  are ~8k/s/bus max (kernel/driver-bound) so 20 of them ≈ 160k/s = the trivial case above.
