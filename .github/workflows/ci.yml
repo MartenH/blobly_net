@@ -57,8 +57,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       VMODULES: ${{ github.workspace }}/.vmodules
-      # gui/vglyph pins (CLAUDE.md → Pinned versions).
-      GUI_COMMIT: 68b9302
+      # gui/vglyph pins (CLAUDE.md → Pinned versions). gui 7a20a6a is the gui#62
+      # merge (upstream closure-leak fix + native-Windows fixes); compiles against
+      # the closure API in master V that setup-v check-latest provides.
+      GUI_COMMIT: 7a20a6a
       VGLYPH_COMMIT: 5685a6d
     steps:
       - uses: actions/checkout@v4
@@ -82,9 +84,9 @@ jobs:
       # Pinned gui + vglyph into VMODULES, then the two BUILD-REQUIRED patches:
       #   gui-msaa-sample-count  — WindowCfg.sample_count (main.v sets it)
       #   gui-window-resize      — Window.resize() (main.v calls it)
-      # The closure-reclaim + vglyph-empty-outline patches are RUNTIME-only (leak
-      # fix / glyph-crash guard); a compile job doesn't need them, and the reclaim
-      # patch would require a closure-API V build — out of scope for a build check.
+      # The closure-leak fix is now UPSTREAM in this gui pin (gui#62) + master V — no
+      # local closure patch needed. vglyph-empty-outline is a runtime glyph-crash
+      # guard, not needed for a compile job.
       - name: Fetch gui + vglyph (pinned) + apply build-required patches
         run: |
           mkdir -p "$VMODULES"

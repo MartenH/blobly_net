@@ -1,5 +1,20 @@
 # Local V + gui patches (upstream candidates)
 
+> **✅ 2026-06-19 — THE CLOSURE LEAK FIX IS NOW UPSTREAM. `closure-gc-leak-fix.patch`
+> and `gui-closure-reclaim.patch` below are SUPERSEDED** and are no longer applied on
+> Linux. GGRei's cleaned-up version merged as **[vlang/v#27483]** (closure `Lifetime`
+> API, merge `1a2d0e5b`) + **[vlang/gui#62]** (uses it in `Window.update()`, merge
+> `7a20a6ac`). Adoption: **V** = master via `setup-v check-latest` (has the API);
+> **gui pin** bumped `68b9302 → 7a20a6ac` (Linux ci.yml + local dev). Validated:
+> cantester builds with NO closure patches and live RSS plateaus ~330 MB (was
+> unbounded). The gcc-16 C-bridge patches (`01`/`02`) are also upstream at that pin
+> now (native-Windows work) — only `03-titlebar`, `06-sample-count`,
+> `gui-window-resize`, and the vglyph patches remain. **Windows CI/build stays on
+> `68b9302`**: its prebuilt `de365a1` V predates the closure API, so gui#62 won't
+> compile there until a master-built V Windows asset is minted — and the leak is
+> Linux-only, so Windows loses nothing. The two patch files are kept for history /
+> the old Windows pin.
+
 Patches found/applied while hunting **and fixing** the data_grid memory leak (see
 `docs/known_issues.md` → Rendering stack, 2026-06-13). Three patches:
 

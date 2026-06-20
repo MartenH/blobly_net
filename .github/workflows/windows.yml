@@ -75,6 +75,11 @@ jobs:
         run: |
           $vm = $env:VMODULES
           New-Item -ItemType Directory -Force $vm | Out-Null
+          # gui stays pinned at 68b9302 here (NOT bumped to the gui#62 closure-fix pin
+          # like Linux ci.yml): gui#62 calls the new closure.Lifetime API, which the
+          # prebuilt de365a1 V used by these jobs predates. Bumping would need a
+          # master-built V Windows asset. The closure leak is Linux-only anyway
+          # (verified plateau on native Windows), so Windows loses nothing here.
           # core.autocrlf=false so the working trees stay LF and the LF patches apply.
           git -c core.autocrlf=false clone --quiet https://github.com/vlang/gui.git    "$vm\gui"
           git -C "$vm\gui"    -c advice.detachedHead=false checkout --quiet 68b9302

@@ -338,16 +338,20 @@ Verified: a breakpoint at `main__main` resolves to `src/main.v` and stops there.
 
 ## Pinned versions (fill in once a working combo is confirmed)
 
-- V: 0.5.1 (built from source to `~/v`, symlinked `~/.local/bin/v`). Original pin 4dbcba6; the
-  24.04 box rebuilt at commit **de365a1**. **⚠️ 2026-06-14: `~/v` now tracks the closure-leak PR branch
-  `fix-closure-context-leak` (HEAD `641b093`, based on recent master `ed17e5fb`), NOT de365a1** — done
-  so the local build carries the full closure leak fix incl. the thread-local + owner-thread hardening
-  that matters for this app's worker threads. The 3 review-hardening fixes (clear-value/thread-local/
-  owner) sit as a working-tree delta on `closure.c.v` over that HEAD; `docs/v_patches/closure-gc-leak-fix.patch`
-  is regenerated to the full PR (base `ed17e5fb`). See `docs/v_patches/README.md`.
-- vlang/gui: commit 68b9302 (2026-05-11), in `~/.vmodules/gui`. Depends on `vglyph`. Local patches applied
-  (re-apply on a fresh box — `docs/v_patches/README.md`): `gui-closure-reclaim`, `gui-msaa-sample-count`,
-  `gui-window-resize` (Window.resize() for the live scale dropdown).
+- V: 0.5.1. **⚠️ 2026-06-19: the closure leak fix is now UPSTREAM (merged [vlang/v#27483],
+  merge `1a2d0e5b`), so Linux should track plain master** — `~/v` no longer needs the
+  `fix-closure-context-leak` branch or the `closure-gc-leak-fix.patch` working-tree delta (both
+  superseded). (History: original pin 4dbcba6 → 24.04 rebuilt at `de365a1` → tracked the closure
+  PR branch `641b093` until #27483 merged.) Windows CI still uses the prebuilt `de365a1` asset,
+  which predates the closure API.
+- vlang/gui: **2026-06-19 bumped 68b9302 → `7a20a6a`** (the [vlang/gui#62] merge — upstream
+  closure-leak reclaim + native-Windows fixes), in `~/.vmodules/gui`. Depends on `vglyph` (still
+  `5685a6d`). Remaining local patches at this pin (re-apply on a fresh box — `docs/v_patches/README.md`):
+  `gui-msaa-sample-count`, `gui-window-resize`, + vglyph patches. **Dropped** (now upstream at this
+  pin): `gui-closure-reclaim` (→ gui#62), the gcc-16 C-bridge `01`/`02` (→ native-Windows work).
+  Validated: cantester builds with no closure patches; live RSS plateaus ~330 MB. **Windows CI/build
+  stays on `68b9302`** — its `de365a1` V can't compile gui#62 (no closure API); the leak is Linux-only
+  so Windows is unaffected (bump once a master-built V Windows asset exists).
 - Mesa: **25.2.8** on Ubuntu 24.04.4 (OpenGL 4.5 Compatibility) — hardware GL works under WSLg.
 - **CONFIRMED WORKING**: builds clean, window renders under WSLg with **hardware GL** (sokol backend).
 
@@ -982,3 +986,20 @@ prompt for a password.
   updated (UDS table + Sequences/Reactive sections). Gotcha: V has no `...spread` in an array literal
   — build the slice with `mut req := [...]; req << key`. TODO (Tier 4 rest): sandbox (drop os/io) for
   untrusted scripts; project `scripts:` block + recent-scripts; JUnit-XML for CI; DID↔signal mapping.
+- 2026-06-19: **Help links kept in-app (no surprise browser) + closure leak fix ADOPTED from upstream.**
+  (a) **Help link handler:** gui's markdown opens any non-anchor link via `os.open_uri()` = the OS
+  browser (gui is single-window — sokol_app — so it genuinely can't pop a 2nd app window; the only real
+  extra windows are native file pickers + a browser from a markdown link). Added `help_link_handler` via
+  `w.set_link_handler()` in `on_init`: real `http(s)://` still open in the browser; relative/internal
+  links are handled in-app (switch Help page if it names one, else swallow — never a browser). Made
+  quickstart.md's Examples reference a real `[Examples](examples)` link to exercise it. (b) **Closure
+  leak fix is UPSTREAM** — GGRei's [vlang/v#27483] (closure `Lifetime` API, merge `1a2d0e5b`) +
+  [vlang/gui#62] (uses it in `Window.update()`, merge `7a20a6ac`) both merged. **Validated the adopted
+  stack** (built V from #27483 + gui `7a20a6a`, cantester with NO local closure patches — only
+  `sample-count`/`window-resize`/vglyph): builds clean, live sim-demo **RSS plateaus ~330 MB** (flat
+  90→120 s), leak gone. **Repo adoption:** Linux `ci.yml` gui pin `68b9302 → 7a20a6a`; CLAUDE.md Pinned
+  versions + `docs/v_patches/README.md` mark `closure-gc-leak-fix.patch` + `gui-closure-reclaim.patch`
+  SUPERSEDED (and the gcc-16 `01`/`02` are upstream at the new pin too — only 03/06/window-resize/vglyph
+  remain). **Windows CI/build stays `68b9302`** (its prebuilt `de365a1` V predates the closure API; the
+  leak is Linux-only so Windows is unaffected — bump once a master-built V Windows asset is minted). TODO:
+  update the live `~/v`→master + `~/.vmodules/gui`→`7a20a6a` (drop patches) for the local dev build.
