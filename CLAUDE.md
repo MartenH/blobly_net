@@ -1131,3 +1131,13 @@ prompt for a password.
   while running. Verified: renders correctly, plot actively scrolls (≈15.5k px changed between two shots);
   perceived smoothness is for the user to confirm on the live display. Knob: raise both `33`s (and
   spin_loop's 33 ms) to ~16 for 60 fps if 30 isn't smooth enough (costs more under WSLg's GL tax).
+  **Follow-up (same day): startup "horizontal drift" — fill clamp.** With the wall-clock anchor, before a
+  full `win` of history exists, `wstart = now − win` advanced every frame so the partial trace slid left
+  as the window filled (the "scales horizontally" drift the user saw in the first seconds). Fix:
+  `wstart := if t_end > win { t_end - win } else { 0 }` — pin the left edge at t=0 until the window is
+  full, so the trace draws in **left→right** (strip-chart-recorder warm-up), reaching the right edge
+  exactly as the window fills, then scrolls. Verified by screenshot (~40% filled, left-pinned, at ~4 s).
+  The remaining VERTICAL settle (a sine's amplitude "drifts" until the first peak+trough are seen) is the
+  expand-only y auto-range learning the range — kept as-is (user agreed: "it's sort of auto scaling").
+  DBC ranges are full sensor scales ([0|16383] rpm, [-40|215] °C) so pinning to them would make real
+  swings tiny; auto-fit is the right visual, and the one-time first-cycle settle is inherent to it.

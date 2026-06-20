@@ -3652,7 +3652,11 @@ fn plot_panel(mut window gui.Window) gui.View {
 	} else {
 		last_t // stopped or paused: hold the chart still at the last sample
 	}
-	wstart := t_end - win
+	// Until a full window of history exists, pin the left edge at t=0 so the trace draws
+	// in left→right (scope warm-up) instead of the partial data sliding left every frame
+	// as the window fills (the "drift" seen only in the first seconds). Once t_end > win,
+	// scroll normally ([t_end−win, t_end]).
+	wstart := if t_end > win { t_end - win } else { f32(0) }
 	mut start := hist.len
 	for start > 0 && hist[start - 1].t_s >= wstart {
 		start--
