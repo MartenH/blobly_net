@@ -1,0 +1,17 @@
+diff --git a/view_dock_layout.v b/view_dock_layout.v
+index 1b18848..c75e918 100644
+--- a/view_dock_layout.v
++++ b/view_dock_layout.v
+@@ -203,7 +203,11 @@ fn dock_group_view(core &DockLayoutCore, group &DockNode, cfg DockLayoutCfg, dra
+ 		}
+ 
+ 		if tab_buttons.len > 0 {
+-			tab_buttons << column(width: 1, sizing: fixed_fill, color: color_sep)
++			// A definite (fixed) height — NOT fixed_fill. A height-fill child inside
++			// the fit-height tab-bar row makes the row balloon (a large blank gap
++			// above the panel content) whenever a group has 2+ tabs. See cantester
++			// docs/v_patches/gui-dock-tab-separator.patch.
++			tab_buttons << column(width: 1, height: 20, sizing: fixed_fixed, color: color_sep)
+ 		}
+ 		tab_buttons << dock_tab_button(core, group, panel_def, is_selected, cfg)
+ 	}

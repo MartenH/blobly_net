@@ -44,7 +44,8 @@ $patches = @(
     @{ Repo = 'gui';    File = '03-gui-titlebar-isvalid.patch'    },
     @{ Repo = 'vglyph'; File = '04-vglyph-empty-outline.patch'    },
     @{ Repo = 'gui';    File = '06-gui-sample-count.patch'        },
-    @{ Repo = 'gui';    File = '07-gui-window-resize.patch'       }
+    @{ Repo = 'gui';    File = '07-gui-window-resize.patch'       },
+    @{ Repo = 'gui';    File = '08-gui-dock-tab-separator.patch'  }
 )
 
 # -------- maintainer mode: capture verified patches from the live modules --------

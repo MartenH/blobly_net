@@ -86,6 +86,18 @@ Windows-build "patch #4" (`docs/windows_build.md`) — apply it on Linux too. **
 `docs/known_issues.md`):** still only use glyphs the bundled font can render — this patch makes the
 missing ones *blank* instead of *crashing*, but a button labelled with an invisible glyph is still a bug.
 
+## `gui-dock-tab-separator.patch` — gui (`view_dock_layout.v`)
+
+Fixes a **blank gap above the content of any tabbed dock group** (2+ panels sharing one group, as
+created by dragging a panel onto another with the whole target highlighted = the tabify drop zone).
+Cause: the per-tab separator is `column(width: 1, sizing: fixed_fill, …)` — a height-**fill** child
+placed in the **fit-height** `dock_tab_bar` row; a fill child in a fit container makes the row balloon
+(~150 px), pushing the panel content down. It only triggers with 2+ tabs (the separator is added
+*between* tabs), so single-panel groups (the whole default layout) never show it. The patch makes the
+separator a definite `fixed_fixed` height (no fill) — the bar fits the tabs again, divider still
+visible. Applies cleanly to both gui pins (68b9302 + 7a20a6a); identical buggy line in both, so it's
+not a regression from the pin bump. Upstream candidate (vlang/gui).
+
 ## `gui-msaa-sample-count.patch` — gui (`window.v`)
 
 Adds a `sample_count` field to `WindowCfg` and forwards it to `gg.new_context` (sokol MSAA).
