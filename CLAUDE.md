@@ -1115,3 +1115,19 @@ prompt for a password.
   the primary fix; gui#65 just makes any future over-feed degrade gracefully (drop excess + warn) instead of
   blanking. PR notes a follow-up: check `sgl.error()` to surface `SGL_ERROR_VERTICES_FULL`. Logged in
   `docs/upstreaming.md`.
+- 2026-06-20: **FIX: Graphics strip chart stuttered — it advanced per-sample, not with wall-clock.**
+  User: the plot "stutters a bit", expected super-smooth. Root cause: the screen repaints ~30 fps
+  (`spin_loop`) but the PLOT only moved when a new sample of the selected message arrived — `plot_version`
+  (the draw_canvas cache key) was keyed to THIS message's sample count, and `t_end` (the strip-chart's
+  right edge) was pinned to `hist.last().t_s`. So between samples the plot was served from cache (frozen),
+  and each new sample snapped it forward one inter-sample gap → scroll quantized to the message's frame
+  rate (e.g. 10–20 jumps/s) instead of the 30 fps repaint. **Fix (oscilloscope-style):** while LIVE
+  (`app.running && !app.paused`), anchor `t_end` to **wall-clock now** (`f32(f64(time.ticks()-app.t0)/1000)`,
+  same clock as the samples, clamped ≥ last sample) so the waveform slides continuously and new samples
+  enter at the right edge; and fold a **~30 Hz wall-clock bucket** (`time.ticks()/33`) into `plot_version`
+  so the canvas re-tessellates each repaint to reposition. Stopped/paused/loaded → bucket 0 + `t_end` =
+  last sample, so the chart holds still (a loaded log doesn't scroll off). Affordable now that
+  `draw_one_series` decimates to ~pixel-width points, and `spin_loop` already forces 30 fps full repaints
+  while running. Verified: renders correctly, plot actively scrolls (≈15.5k px changed between two shots);
+  perceived smoothness is for the user to confirm on the live display. Knob: raise both `33`s (and
+  spin_loop's 33 ms) to ~16 for 60 fps if 30 isn't smooth enough (costs more under WSLg's GL tax).
