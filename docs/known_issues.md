@@ -80,9 +80,15 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
   content overflows and overlaps the next row. Use it only for single-line detail. For our expandable
   trace we instead **insert signal rows as normal grid rows** under the frame (toggled via
   `on_selection_change` + `active_row_id`), which reflows correctly. See `src/main.v` grouped view.
-- 🟡 **Centered text doesn't render — `gui.button` labels come out blank when wider than the text.**
-  A `gui.text` whose container centers it on the main axis (`h_align: .center`) draws *nothing* on our
-  pinned gui. Because `gui.button` hard-defaults its content to centered (`ButtonCfg.h_align = .center`),
+- 🟢 **FIXED on gui `7a20a6a` (2026-06-19): centered text now renders.** Verified with a minimal
+  standalone repro (a `gui.button` with the default centered label, width > text): the label draws
+  correctly on the bumped gui. So this is **fixed by the gui pin bump** `68b9302 → 7a20a6a` (done for the
+  closure leak). The `h_align: .left` workarounds below (`diag_button`, the Send control, the Generators/
+  Script panels) are now **optional** — they still work, so no urgent change; revert to centered
+  `gui.button` if a centered look is preferred. Original bug (on the OLD pin `68b9302`) for reference:
+- 🟡 **(OLD, ≤68b9302) Centered text doesn't render — `gui.button` labels come out blank when wider than the text.**
+  A `gui.text` whose container centers it on the main axis (`h_align: .center`) draws *nothing* on the
+  old pinned gui. Because `gui.button` hard-defaults its content to centered (`ButtonCfg.h_align = .center`),
   **a `gui.button` with a text label renders as an empty box whenever its width exceeds the label**
   (toolbar buttons render because their row packs them to content width). Confirmed on BOTH WSLg and
   **native Windows** (GL), so it's a gui bug, not a rendering-stack one. Left-aligned text always renders.

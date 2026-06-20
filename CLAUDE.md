@@ -1031,3 +1031,10 @@ prompt for a password.
   jobs) + setup_win.ps1 (`win_patches/08`) + applied to live `~/.vmodules/gui`. (vlang/gui is
   effectively stagnant, so a local patch — not an upstream wait — is the right call; still a clean
   upstream candidate.)
+- 2026-06-19: **Known bug RESOLVED by the gui bump: centered text in buttons no longer renders blank.**
+  The long-standing "`gui.button` labels come out blank when wider than the text / centered `gui.text`
+  draws nothing" bug (confirmed on the old pin `68b9302`, both WSLg + native Windows) is **fixed on
+  `7a20a6a`** — verified with a minimal standalone repro (default-centered button label renders). So the
+  gui bump (done for the closure leak fix) also fixed this. The `h_align: .left` workarounds
+  (`diag_button`, Send/Generators/Script panel buttons) are now optional — they still work; revert to
+  centered `gui.button` if/when a centered look is wanted. Doc'd in `docs/known_issues.md`.
