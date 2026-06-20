@@ -1003,3 +1003,16 @@ prompt for a password.
   remain). **Windows CI/build stays `68b9302`** (its prebuilt `de365a1` V predates the closure API; the
   leak is Linux-only so Windows is unaffected — bump once a master-built V Windows asset is minted). TODO:
   update the live `~/v`→master + `~/.vmodules/gui`→`7a20a6a` (drop patches) for the local dev build.
+  DONE same day: live `~/v` rebuilt on master `c0624b2`, `~/.vmodules/gui` → `7a20a6a` (closure
+  patches dropped, only sample-count/window-resize re-applied); local build 21/21 + 17/17 + runs.
+- 2026-06-19: **FIX: Trace "blank lines below the dock text" after moving docks — was an app bug, not
+  gui.** Root-caused from a user screenshot: `trace_view` sized the data_grid with
+  `max_height: f32(window_height) - 158` — a WINDOW-height cap tuned for the default layout. When a
+  dock rearrangement made the Trace panel TALLER than `window_height-158` (e.g. closing other panels so
+  Trace fills the column), the cap stopped the grid short → blank gap below it. Fix: drop `max_height`
+  (and the `window_size()`-derived `grid_h`) entirely — `gui.data_grid`'s default `sizing: fill_fill`
+  already bounds it to its actual dock container, so it now tracks the panel height in any layout.
+  Verified by screenshot: default layout unchanged; with Trace made full-height the grid fills to the
+  bottom (previously ~110 px blank). gui is single-window + the dock TREE mutation is sound, so this was
+  ours, not gui. (Only `trace_view` had the window-height grid sizing; other window_size() uses are the
+  activity bar + the scale-dropdown resize, both fine.)
