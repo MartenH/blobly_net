@@ -3099,10 +3099,8 @@ fn filtered_trace_panel(mut window gui.Window) gui.View {
 }
 
 fn trace_view(mut window gui.Window, which int) gui.View {
-	_, h := window.window_size()
 	app := window.state[App]()
 	grouped := if which == 0 { app.mode == 'grouped' } else { app.mode2 == 'grouped' }
-	grid_h := f32(h) - 158 // leave room for the filter row
 	filter := if which == 0 { app.trace_filter } else { app.trace_filter2 }
 	sel := if which == 0 { app.selection } else { app.selection2 }
 	gid := if which == 0 { 'trace' } else { 'ftrace' }
@@ -3154,7 +3152,6 @@ fn trace_view(mut window gui.Window, which int) gui.View {
 		grouped_grid := window.data_grid(
 			id:                  '${gid}_grouped'
 			sizing:              gui.fill_fill
-			max_height:          grid_h
 			scrollbar:           .visible
 			row_height:          trace_row_height * g_ui_scale
 			header_height:       trace_header_height * g_ui_scale
@@ -3242,7 +3239,6 @@ fn trace_view(mut window gui.Window, which int) gui.View {
 	all_grid := window.data_grid(
 		id:             '${gid}_all'
 		sizing:         gui.fill_fill
-		max_height:     grid_h
 		scrollbar:      .visible
 		row_height:     trace_row_height * g_ui_scale
 		header_height:  trace_header_height * g_ui_scale
