@@ -2128,7 +2128,7 @@ fn help_tab(page string, label string, current string) gui.View {
 	on := page == current
 	return gui.button(
 		id_focus:     0
-		h_align:      .left // .center renders blank (gui bug)
+		h_align:      .center
 		min_width:    sc(96)
 		max_width:    sc(140)
 		padding:      scpad(4, 10, 4, 10)
@@ -2265,8 +2265,8 @@ fn activity_bar(app &App) gui.View {
 			id_focus:     0
 			min_width:    sc(40)
 			max_width:    sc(40)
-			h_align:      .left // .center renders blank (gui bug); left-pad to centre
-			padding:      scpad(5, 6, 5, 11)
+			h_align:      .center
+			padding:      scpad(5, 8, 5, 8)
 			color:        if shown { hl } else { transparent }
 			color_border: transparent
 			color_hover:  hover
@@ -4535,7 +4535,7 @@ fn simulation_panel(mut window gui.Window) gui.View {
 					gui.button(
 						id_focus:  0
 						max_width: sc(84)
-						h_align:   .left
+						h_align:      .center
 						content:   [gui.text(text: '⚙ Scaffold')]
 						on_click:  fn [ndix, nname] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 							scaffold_sim_node(ndix, nname, mut w)
@@ -4761,14 +4761,12 @@ fn send_panel(mut window gui.Window) gui.View {
 			),
 			// A real themed gui.button (matches the toolbar buttons + follows the
 			// dark/light theme), fixed to a compact width via min/max_width so it
-			// doesn't stretch the whole column. h_align: .left because gui's centered
-			// button label renders blank once the button is wider than its text;
-			// left-aligned text always draws.
+			// doesn't stretch the whole column.
 			gui.button(
 				id_focus:  12
 				min_width: sc(90)
 				max_width: sc(90)
-				h_align:   .left
+				h_align:      .center
 				content:   [gui.text(text: 'Send')]
 				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					do_send(mut w)
@@ -4836,7 +4834,7 @@ fn generators_panel(mut window gui.Window) gui.View {
 			gui.button(
 				id_focus:  0
 				max_width: sc(70)
-				h_align:   .left
+				h_align:      .center
 				content:   [gui.text(text: 'Save')]
 				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					do_save_project(mut w)
@@ -4861,7 +4859,7 @@ fn generators_panel(mut window gui.Window) gui.View {
 				gui.button(
 					id_focus:  0
 					max_width: sc(60)
-					h_align:   .left
+					h_align:      .center
 					content:   [gui.text(text: '＋ Add')]
 					on_click:  fn [ci] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 						add_sender(ci, mut w)
@@ -4901,7 +4899,7 @@ fn generators_panel(mut window gui.Window) gui.View {
 					gui.button(
 						id_focus:  0
 						max_width: sc(30)
-						h_align:   .left
+						h_align:      .center
 						content:   [gui.text(text: if editing { '▾' } else { '…' })]
 						on_click:  fn [ekey] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 							mut a := w.state[App]()
@@ -4911,7 +4909,7 @@ fn generators_panel(mut window gui.Window) gui.View {
 					gui.button(
 						id_focus:  0
 						max_width: sc(30)
-						h_align:   .left
+						h_align:      .center
 						content:   [gui.text(text: '×')]
 						on_click:  fn [ci, si] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 							remove_sender(ci, si, mut w)
@@ -5210,14 +5208,13 @@ fn diag_panel(mut window gui.Window) gui.View {
 // diag_button is a small clickable labelled button for the Diagnostics panel
 // (left-aligned text — gui.button centered labels render blank, see known_issues).
 fn diag_button(focus u32, label string, on_click fn (&gui.Layout, mut gui.Event, mut gui.Window)) gui.View {
-	// min/max width + left alignment work around gui's centered-text bug
-	// (centered button labels render blank — see known_issues).
+	// Snug width capped to the label so the button doesn't stretch its column.
 	w := f32(14 + label.len * 6)
 	return gui.button(
 		id_focus:  focus
 		min_width: w
 		max_width: w
-		h_align:   .left
+		h_align:      .center
 		content:   [gui.text(text: label, text_style: trace_text_style())]
 		padding:   scpad(3, 8, 3, 8)
 		on_click:  on_click
