@@ -3565,7 +3565,7 @@ fn fnv64(h u64, v u64) u64 {
 // geometry depends on changes — THIS message's sample count (not total bus traffic),
 // the shown-signal count, step vs linear, the zoom window, the hover cursor, or the
 // canvas size — so the canvas re-tessellates exactly when needed and no more.
-fn plot_version(samples int, shown int, step bool, win int, hover_frac f32, cw f32, ph f32) u64 {
+fn plot_version(samples int, shown int, step bool, win int, hover_frac f32, cw f32, ph f32, tbucket u64) u64 {
 	mut h := fnv64_offset
 	h = fnv64(h, u64(samples))
 	h = fnv64(h, u64(shown))
@@ -3574,6 +3574,7 @@ fn plot_version(samples int, shown int, step bool, win int, hover_frac f32, cw f
 	h = fnv64(h, u64(int((hover_frac + 1) * 10000))) // quantize the hover fraction
 	h = fnv64(h, u64(int(cw)))
 	h = fnv64(h, u64(int(ph)))
+	h = fnv64(h, tbucket) // wall-clock bucket while live: re-tessellate per frame so the strip chart slides smoothly between samples (0 = stopped, cached)
 	return h
 }
 
@@ -3640,7 +3641,17 @@ fn plot_panel(mut window gui.Window) gui.View {
 	sigs := m.signals
 	win := f32(if app.plot_win > 0 { app.plot_win } else { 10 })
 	hist := app.plot_hist[id] or { []PlotSample{} }
-	t_end := if hist.len > 0 { hist.last().t_s } else { f32(0) }
+	last_t := if hist.len > 0 { hist.last().t_s } else { f32(0) }
+	// Right edge of the strip chart: while LIVE, track wall-clock NOW (same clock as the
+	// samples: seconds since app.t0) so the waveform slides continuously and new samples
+	// enter at the right — instead of snapping forward one inter-sample gap per frame
+	// (the stutter). When stopped/loaded, pin to the last sample so the plot holds still.
+	t_end := if app.running && !app.paused {
+		now_s := f32(f64(time.ticks() - app.t0) / 1000.0)
+		if now_s > last_t { now_s } else { last_t }
+	} else {
+		last_t // stopped or paused: hold the chart still at the last sample
+	}
 	wstart := t_end - win
 	mut start := hist.len
 	for start > 0 && hist[start - 1].t_s >= wstart {
@@ -3795,10 +3806,17 @@ fn plot_panel(mut window gui.Window) gui.View {
 	// --- Canvas (full panel width) + timeline labels directly under it. ---
 	canvas := gui.draw_canvas(
 		id:       'sigplot'
-		// Re-tessellate only when the geometry actually changes (see plot_version) —
-		// keyed off THIS message's sample count, not total bus traffic, so a busy bus
-		// with a slow plotted signal stops rebuilding the plot every frame.
-		version:  plot_version(hist.len, shown.len, step, app.plot_win, hf, cw, ph)
+		// Re-tessellate when the geometry changes (see plot_version) — keyed off THIS
+		// message's sample count + canvas/zoom/hover. While LIVE we also fold in a
+		// ~30 Hz wall-clock bucket so the strip chart slides smoothly between samples
+		// (the window's right edge tracks real time, not the last sample); when stopped
+		// the bucket is 0, so a static/loaded plot stays cached.
+		version:  plot_version(hist.len, shown.len, step, app.plot_win, hf, cw, ph, if app.running
+			&& !app.paused {
+			u64(time.ticks() / 33)
+		} else {
+			u64(0)
+		})
 		width:    cw
 		height:   ph
 		color:    plot_bg
