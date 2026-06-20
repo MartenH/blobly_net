@@ -1071,3 +1071,14 @@ prompt for a password.
   math curves" — rose/lissajous/lemniscate/hypotrochoid — are just parametric equations = not
   copyrightable; addable later as styles with zero code-copying if eye-candy is wanted; a plain arc is
   the clearest stutter cue.)
+- 2026-06-19: **FIX: Graphics waveforms "stretched / moved independently" — per-window auto-scale
+  breathing.** User saw plotted signals (sines) stretch/rescale vertically and independently as they
+  scrolled. Root cause: `draw_one_series` recomputed each signal's y min/max from the **visible sliding
+  window every frame** — so as a peak/trough scrolled off, the local span changed and the waveform
+  rescaled (and each signal did it independently). The x-axis was already correct (shared `times`, time-
+  based `x = (t-wstart)/win`), so this was purely the y-scale. **Fix:** an **expand-only running y-range
+  per `<id>:<signal>`** (`App.plot_range`, widened in the decode/recompute loop, never shrinks) used for
+  scaling instead of the per-window extremes → a stable scale: a scrolling sine keeps constant amplitude
+  (one brief settle as full amplitude is first seen, then fixed). Reset with the trace Clear / on new
+  data. Threaded `shown_min`/`shown_max` through the draw closure → `draw_signals` → `draw_one_series`.
+  Verified by screenshot: 0x100 Powertrain's 6 signals scroll with steady amplitude (no breathing).
