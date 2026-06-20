@@ -1389,6 +1389,26 @@ fn start_measurement(mut w gui.Window) {
 			gen_loop(mut w)
 		}(mut w)
 	}
+	// Drive the toolbar stutter-spinner (~30 fps) while running. This forces a
+	// steady repaint cadence so GUI render hitches show up as a jerk in the spin.
+	spawn fn (mut w gui.Window) {
+		spin_loop(mut w)
+	}(mut w)
+}
+
+// spin_loop requests a repaint ~30×/s while a measurement runs, animating the
+// toolbar spinner and surfacing GUI render stutters. Exits when running stops.
+fn spin_loop(mut w gui.Window) {
+	for {
+		app := w.state[App]()
+		if !app.running {
+			break
+		}
+		w.queue_command(fn (mut w gui.Window) {
+			w.update_window()
+		})
+		time.sleep(33 * time.millisecond)
+	}
 }
 
 // gen_loop transmits the cyclic interactive generators (trigger: cyclic) at their
@@ -1824,6 +1844,32 @@ fn (mut app App) record(dir string, f transport.CanFrame, t_ms f64, ch string) {
 		name:    name
 		repeat:  !first && changed == 0 // unchanged vs the prior frame for this ID
 	}
+}
+
+// spinner_view is a small toolbar spinner that rotates while a measurement runs.
+// It's time-based (angle from the wall clock) and driven at ~30 fps by spin_loop,
+// so a smooth spin means a healthy render loop and any jerk/jump is a GUI frame
+// stutter. Frozen (faint ring) when stopped, so it costs nothing idle.
+fn spinner_view(app &App) gui.View {
+	sz := sc(18)
+	r := sz / 2
+	running := app.running
+	// ~1 revolution/sec while running (phase in radians, 2π = 6.2831855).
+	phase := if running { f32(f64(time.ticks() % 1000) / 1000.0) * 6.2831855 } else { f32(0) }
+	col := if running { gui.rgb(0x2f, 0x86, 0xff) } else { gui.Color{150, 150, 155, 120} }
+	return gui.draw_canvas(
+		id:      'stutter_spin'
+		version: if running { u64(time.ticks() / 16) } else { u64(0) } // re-tessellate each frame while spinning
+		width:   sz
+		height:  sz
+		padding: gui.padding_none
+		on_draw: fn [r, phase, col, running] (mut dc gui.DrawContext) {
+			dc.circle(r, r, r - 2, gui.Color{120, 120, 128, 80}, 1.5) // faint track ring
+			if running {
+				dc.arc(r, r, r - 2, r - 2, phase, f32(4.712389), col, 2.5) // a 270° arc
+			}
+		}
+	)
 }
 
 fn main_view(mut window gui.Window) gui.View {
@@ -2947,6 +2993,7 @@ fn toolbar(mut window gui.Window) gui.View {
 				}
 			),
 			gui.text(text: '${dot} ${app.status}', text_style: gui.theme().n4),
+			spinner_view(app),
 			gui.text(text: 'RX ${app.rx_count}  TX ${app.tx_count}', text_style: gui.theme().n4),
 			gui.button(
 				id_focus: 101
