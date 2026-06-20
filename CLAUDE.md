@@ -1082,3 +1082,20 @@ prompt for a password.
   (one brief settle as full amplitude is first seen, then fixed). Reset with the trace Clear / on new
   data. Threaded `shown_min`/`shown_max` through the draw closure → `draw_signals` → `draw_one_series`.
   Verified by screenshot: 0x100 Powertrain's 6 signals scroll with steady amplitude (no breathing).
+- 2026-06-19: **FIX: Graphics zoom-out blanked the WHOLE window (render-buffer overflow).** User: after
+  ~a number of seconds running, pressing the Graphics `−` (zoom out, e.g. 10s→30s) blanked the entire
+  window — not just the plot. Process stayed ALIVE, RSS normal (~312 MB), and a `-g` (asserts-on) build
+  printed **no panic** → not a logic bug. Root cause: `draw_one_series` emitted **one polyline vertex
+  per sample**; zooming out widens the window so (once deep history fills) it pulls 1000+ samples/signal
+  × 6 signals into the polylines → the tessellated triangles **silently overflow gui's shared render
+  buffer**, so the whole frame draws nothing, every frame (the wide window persists → permanent blank).
+  "Works for a while" = time for history to accumulate; the zoom-out is the tipping action. **Fix
+  (`draw_one_series`):** decimate the drawn polyline to **~1 point per horizontal pixel** (stride =
+  `series.len / int(cw)`; you can't resolve more, and it bounds the vertex count regardless of
+  zoom/history), step-hold uses the previous EMITTED sample, and lighter `.butt`/`.bevel` joins (fewer
+  triangles than `.round`). `plot_xs/ys` stay full-length so the hover marker is unaffected. **Verified**
+  by temporarily defaulting the window to 60 s (worst case) + ~48 s history (well past the failure
+  point): the plot renders instead of blanking. NOTE: gui silently blanking the whole window on a
+  vertex-buffer overflow (no clip/warn) is itself a gui robustness gap — candidate upstream report; the
+  app-side point cap is the right fix regardless. xdotool can't reliably click gui's tiny zoom buttons
+  under WSLg (verified via the 60 s default instead).
