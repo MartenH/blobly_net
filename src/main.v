@@ -3974,19 +3974,39 @@ fn draw_one_series(mut dc gui.DrawContext, mut app App, series []f32, mn f32, mx
 		app.plot_xs << cw * (times[i] - wstart) / tspan
 		app.plot_ys << ch - ch * (v - mn) / span * 0.92 - ch * 0.04 // 4% top/bottom margin
 	}
-	// Step (sample-and-hold): hold the value horizontally to the next sample's time,
-	// then jump vertically — the CANoe look for discrete signals. Linear: straight
-	// segments between samples.
-	app.plot_pts.clear()
-	for i in 0 .. series.len {
-		if step && i > 0 {
-			app.plot_pts << app.plot_xs[i]
-			app.plot_pts << app.plot_ys[i - 1] // horizontal hold of the previous value
-		}
-		app.plot_pts << app.plot_xs[i]
-		app.plot_pts << app.plot_ys[i]
+	// Decimate to ~1 point per horizontal pixel. More points than the canvas is wide
+	// can't be resolved AND explode tessellation — a wide zoom window pulling 1000+
+	// samples per signal × N signals overflowed gui's render buffer, blanking the
+	// WHOLE window (no panic — a silent GPU-buffer overflow). Stride keeps the count
+	// bounded regardless of zoom/history; butt/bevel joins also cut triangles vs round.
+	mut budget := int(cw)
+	if budget < 2 {
+		budget = 2
 	}
-	dc.polyline(app.plot_pts, color, 1.5, .round, .round)
+	stride := if series.len > budget { series.len / budget } else { 1 }
+	// Step (sample-and-hold): hold the value horizontally to the next sample, then jump
+	// vertically — the CANoe look. Linear: straight segments. Held value = previous
+	// EMITTED sample (so it works under decimation too).
+	app.plot_pts.clear()
+	mut prev := -1
+	mut k := 0
+	for {
+		if step && prev >= 0 {
+			app.plot_pts << app.plot_xs[k]
+			app.plot_pts << app.plot_ys[prev]
+		}
+		app.plot_pts << app.plot_xs[k]
+		app.plot_pts << app.plot_ys[k]
+		prev = k
+		if k >= series.len - 1 {
+			break
+		}
+		k += stride
+		if k > series.len - 1 {
+			k = series.len - 1 // always include the most recent sample
+		}
+	}
+	dc.polyline(app.plot_pts, color, 1.5, .butt, .bevel)
 	// Marker dot where the hover crosshair crosses this series (nearest sample).
 	if hover >= 0 {
 		ht := wstart + hover * win
