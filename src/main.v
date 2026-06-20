@@ -1090,6 +1090,10 @@ fn main() {
 				'stopped — press ▶ Start (${app.proj.channels.len} channel(s))'
 			})
 			w.update_view(main_view)
+			// Intercept markdown link clicks (Help panel): keep internal/relative
+			// links in-app instead of letting gui spawn the OS browser. Only real
+			// http(s) URLs fall through to the browser. See help_link_handler.
+			w.set_link_handler(help_link_handler)
 			// CANTESTER_AUTOSTART=1 begins measurement immediately on launch —
 			// handy for the screenshot loop (xdotool clicking is unreliable under
 			// WSLg), harmless otherwise.
@@ -2168,6 +2172,30 @@ fn help_panel(mut window gui.Window) gui.View {
 			),
 		]
 	)
+}
+
+// help_link_handler intercepts markdown link clicks so the in-app Help never
+// surprise-launches the OS browser. Real http(s):// URLs fall through (we leave
+// `is_handled` unset, so gui opens them in the browser as expected); everything
+// else (relative paths, bare doc names) is handled in-app: if it names a Help
+// page we switch to it, otherwise we swallow it. (`#anchor` links are scrolled
+// in-app by gui before the handler is even called.)
+fn help_link_handler(url string, mut e gui.Event, mut w gui.Window) {
+	if url.starts_with('http://') || url.starts_with('https://') {
+		return // leave unhandled → gui opens a real external link in the browser
+	}
+	// internal/relative link: never spawn a browser. Map e.g. "examples",
+	// "docs/examples.md", "examples.md" → the help page id.
+	page := url.all_after_last('/').all_before('.').to_lower()
+	if page in ['quickstart', 'examples', 'about'] {
+		mut app := w.state[App]()
+		app.help_page = page
+		if !dock_has_panel(app.dock_root, 'help') {
+			app.dock_root = gui.dock_tree_wrap_root(app.dock_root, 'help', .right)
+		}
+		w.update_window()
+	}
+	e.is_handled = true // swallow: internal/relative links do not reach the browser
 }
 
 // open_help shows the Help panel and switches to `page`.
