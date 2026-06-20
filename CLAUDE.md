@@ -1119,7 +1119,13 @@ prompt for a password.
   content once, so a ~24k-mask+24k-content group passed the 49,152 cap but emitted ~72k → could still
   blank. Fixed: `emit_renderer_if_valid` now budgets `is_clip_mask` DrawSvg vertices at **2×** (matches
   real SGL emissions); added 2 regression tests on the clipped path (skip-when-doubled-overflows +
-  consumes-2×), verified to fail without the 2× accounting.
+  consumes-2×), verified to fail without the 2× accounting. **Codex P2 follow-up (addressed):** skipping
+  only an over-budget clip mask left its content queued, and the draw path treats "content but no mask"
+  as draw-UNCLIPPED → visibly wrong rendering. Fixed order-independently: emit **poisons** the whole
+  `clip_group` when any part is budget-skipped (`Window.frame_poisoned_clip_groups`, reset per frame) and
+  skips later group geometry; `draw_clipped_svg_group` **drops the whole poisoned group** (covers content
+  queued before the mask). So an over-budget clipped group simply doesn't render that frame (warned) instead
+  of rendering unclipped. Regression test + verified-fails-without-poison.
 - 2026-06-20: **FIX: Graphics strip chart stuttered — it advanced per-sample, not with wall-clock.**
   User: the plot "stutters a bit", expected super-smooth. Root cause: the screen repaints ~30 fps
   (`spin_loop`) but the PLOT only moved when a new sample of the selected message arrived — `plot_version`
