@@ -92,7 +92,8 @@ jobs:
             @{ Dir = 'scripts\win_patches'; Repo = 'gui';    File = '03-gui-titlebar-isvalid.patch'    },
             @{ Dir = 'scripts\win_patches'; Repo = 'vglyph'; File = '04-vglyph-empty-outline.patch'    },
             @{ Dir = 'scripts\win_patches'; Repo = 'gui';    File = '06-gui-sample-count.patch'        },  # WindowCfg.sample_count — main.v sets sample_count: 4
-            @{ Dir = 'docs\v_patches';      Repo = 'gui';    File = 'gui-window-resize.patch'          }   # Window.resize() — main.v calls w.resize()
+            @{ Dir = 'docs\v_patches';      Repo = 'gui';    File = 'gui-window-resize.patch'          },  # Window.resize() — main.v calls w.resize()
+            @{ Dir = 'docs\v_patches';      Repo = 'gui';    File = 'gui-dock-tab-separator.patch'    }   # tabbed-group blank-gap fix
           )
           foreach ($p in $patches) {
             $patch = "$env:GITHUB_WORKSPACE\$($p.Dir)\$($p.File)"
@@ -225,7 +226,8 @@ jobs:
             @{ Dir = 'scripts\win_patches'; Repo = 'gui';    File = '03-gui-titlebar-isvalid.patch'    },
             @{ Dir = 'scripts\win_patches'; Repo = 'vglyph'; File = '04-vglyph-empty-outline.patch'    },
             @{ Dir = 'scripts\win_patches'; Repo = 'gui';    File = '06-gui-sample-count.patch'        },
-            @{ Dir = 'docs\v_patches';      Repo = 'gui';    File = 'gui-window-resize.patch'          }
+            @{ Dir = 'docs\v_patches';      Repo = 'gui';    File = 'gui-window-resize.patch'          },
+            @{ Dir = 'docs\v_patches';      Repo = 'gui';    File = 'gui-dock-tab-separator.patch'    }
           )
           foreach ($p in $patches) {
             $patch = "$env:GITHUB_WORKSPACE\$($p.Dir)\$($p.File)"

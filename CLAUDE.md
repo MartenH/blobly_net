@@ -347,7 +347,7 @@ Verified: a breakpoint at `main__main` resolves to `src/main.v` and stops there.
 - vlang/gui: **2026-06-19 bumped 68b9302 → `7a20a6a`** (the [vlang/gui#62] merge — upstream
   closure-leak reclaim + native-Windows fixes), in `~/.vmodules/gui`. Depends on `vglyph` (still
   `5685a6d`). Remaining local patches at this pin (re-apply on a fresh box — `docs/v_patches/README.md`):
-  `gui-msaa-sample-count`, `gui-window-resize`, + vglyph patches. **Dropped** (now upstream at this
+  `gui-msaa-sample-count`, `gui-window-resize`, `gui-dock-tab-separator`, + vglyph patches. **Dropped** (now upstream at this
   pin): `gui-closure-reclaim` (→ gui#62), the gcc-16 C-bridge `01`/`02` (→ native-Windows work).
   Validated: cantester builds with no closure patches; live RSS plateaus ~330 MB. **Windows CI/build
   stays on `68b9302`** — its `de365a1` V can't compile gui#62 (no closure API); the leak is Linux-only
@@ -1016,3 +1016,18 @@ prompt for a password.
   bottom (previously ~110 px blank). gui is single-window + the dock TREE mutation is sound, so this was
   ours, not gui. (Only `trace_view` had the window-height grid sizing; other window_size() uses are the
   activity bar + the scale-dropdown resize, both fine.)
+- 2026-06-19: **FIX: tabbed dock groups rendered a big blank gap above their content (gui patch).**
+  User hit it dragging Trace(filter) onto Graphics with the whole dock highlighted (the center/tabify
+  drop → a group with 2+ panel tabs). Root-caused (deterministic repro: any `dock_panel_group` with 2+
+  panel_ids): gui's per-tab **separator** is `column(width:1, sizing: fixed_fill, …)` — a height-**fill**
+  child inside the **fit-height** `dock_tab_bar` row. A fill child in a fit row makes the row balloon
+  (~150 px), pushing the content down → the blank. It only appears with 2+ tabs (the separator is added
+  between tabs), which is why single-panel default layouts never showed it, and why it looked like a
+  "moving docks" glitch. NOT our code (confirmed: same gap whether plot or ftrace was the selected tab)
+  and NOT a regression from the gui bump (the buggy line is identical in 68b9302 and 7a20a6a). **Fix:**
+  `docs/v_patches/gui-dock-tab-separator.patch` — separator → `fixed_fixed` height 20 (definite height,
+  no fill → the bar fits the tabs; divider still visible). Verified by screenshot: tabbed group content
+  now sits directly under the tab bar. Applies clean to BOTH pins; wired into ci.yml + windows.yml (both
+  jobs) + setup_win.ps1 (`win_patches/08`) + applied to live `~/.vmodules/gui`. (vlang/gui is
+  effectively stagnant, so a local patch — not an upstream wait — is the right call; still a clean
+  upstream candidate.)

@@ -98,7 +98,9 @@ jobs:
             "$GITHUB_WORKSPACE/docs/v_patches/gui-msaa-sample-count.patch"
           git -C "$VMODULES/gui" apply --ignore-whitespace \
             "$GITHUB_WORKSPACE/docs/v_patches/gui-window-resize.patch"
-          echo "applied gui-msaa-sample-count + gui-window-resize"
+          git -C "$VMODULES/gui" apply --ignore-whitespace \
+            "$GITHUB_WORKSPACE/docs/v_patches/gui-dock-tab-separator.patch"
+          echo "applied gui-msaa-sample-count + gui-window-resize + gui-dock-tab-separator"
 
       # Compile + link only (no run — there's no display). -enable-globals for the
       # in-proc bus; -path re-lists the defaults because it replaces the lookup order.
