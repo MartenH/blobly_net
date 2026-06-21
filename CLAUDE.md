@@ -1144,7 +1144,11 @@ prompt for a password.
   No perf penalty (rides existing loops, drops the per-frame map). Scope unchanged: only unbounded DrawSvg
   geometry metered; bounded chrome covered by the 16k reserve. Tests retargeted at the pure helpers
   (`admit_triangle_vertices`/`group_triangle_vertices`), each verified to fail when the cap or 2× is
-  removed. Pushed to the PR branch; design explained on the PR thread.
+  removed. Pushed to the PR branch; design explained on the PR thread. **Cleanup follow-up:** dropped
+  the dead `if .len == 0 { init }` guard in `render_guard_warn_once` (V auto-inits map struct fields —
+  verified: the warn path writes `render_guard_warned` on a zero-value `Window{}` and all render tests
+  pass), and made the cumulative-budget test derive its batch size from `max_frame_triangle_vertices`
+  (with an explicit `2*half > budget` assert) so retuning the const can't silently invalidate it.
 - 2026-06-20: **FIX: Graphics strip chart stuttered — it advanced per-sample, not with wall-clock.**
   User: the plot "stutters a bit", expected super-smooth. Root cause: the screen repaints ~30 fps
   (`spin_loop`) but the PLOT only moved when a new sample of the selected message arrived — `plot_version`
