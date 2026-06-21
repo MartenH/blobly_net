@@ -1126,6 +1126,25 @@ prompt for a password.
   skips later group geometry; `draw_clipped_svg_group` **drops the whole poisoned group** (covers content
   queued before the mask). So an over-budget clipped group simply doesn't render that frame (warned) instead
   of rendering unclipped. Regression test + verified-fails-without-poison.
+- 2026-06-21: **gui#65 REWORKED to draw-pass budgeting after a self-run `/code-review high`.** A
+  high-effort review (8 finder angles via subagents) of the emit-time guard found a real bug it
+  introduced: `frame_poisoned_clip_groups` was keyed globally by `clip_group`, but clip-group ids are
+  **per-SVG-local** (`svg/tessellate.v` resets the counter each `tessellate()`), so one over-budget
+  clipped SVG would wrongly drop every OTHER clipped SVG sharing the same local id; plus print_raster
+  re-emits via `render_layout` without resetting the new counters (stale budget → missing print
+  geometry), and filtered SVG content was counted but rendered offscreen (over-count). Root cause:
+  emit-time budgeting counts *queued* geometry, not actual sokol-gl emissions — which is also why it
+  needed the 2× clip-mask heuristic and the poison map. **Fix (Codex's original "group-level budgeting
+  in the draw path" suggestion):** moved metering into the DRAW pass — `frame_triangle_vertices` resets
+  at the top of `renderers_draw()` (covers print_raster for free), `admit_triangle_vertices()` is called
+  at the real emission sites (`draw_svg_batch` per-renderer, `draw_triangles_gradient` per-call), and
+  `draw_clipped_svg_group` budgets the whole consecutive run **atomically** via `group_triangle_vertices()`
+  (mask counted 2× for stencil write+clear, content 1×) — per-run, so repeated clip ids never interfere
+  and a group is all-or-nothing. Removed the poison map, the emit-time block, and the 2× heuristic.
+  No perf penalty (rides existing loops, drops the per-frame map). Scope unchanged: only unbounded DrawSvg
+  geometry metered; bounded chrome covered by the 16k reserve. Tests retargeted at the pure helpers
+  (`admit_triangle_vertices`/`group_triangle_vertices`), each verified to fail when the cap or 2× is
+  removed. Pushed to the PR branch; design explained on the PR thread.
 - 2026-06-20: **FIX: Graphics strip chart stuttered — it advanced per-sample, not with wall-clock.**
   User: the plot "stutters a bit", expected super-smooth. Root cause: the screen repaints ~30 fps
   (`spin_loop`) but the PLOT only moved when a new sample of the selected message arrived — `plot_version`
