@@ -110,7 +110,7 @@ with `git ls-remote` first; if HEAD moved, re-check each bug still exists and
 rebase). Apply order for vglyph: **#04 then #05** (#05's context follows #04).
 
 ```sh
-P=/home/mahi/repos/cantester_v/scripts/win_patches
+P=/home/mahi/repos/blobly_net/scripts/win_patches
 mkdir -p ~/pr-prep && cd ~/pr-prep
 
 # --- vglyph (PR 1) ---
@@ -159,7 +159,7 @@ git push -u fork fix/whitespace-glyph-empty-outline
 gh pr create --repo vlang/vglyph \
   --base main --head MartenH:fix/whitespace-glyph-empty-outline \
   --title "fix: don't panic on whitespace glyphs; mark FT_BitmapGlyph cast unsafe" \
-  --body-file /home/mahi/repos/cantester_v/scripts/win_patches/pr1-vglyph-glyph-fixes.md
+  --body-file /home/mahi/repos/blobly_net/scripts/win_patches/pr1-vglyph-glyph-fixes.md
 ```
 
 ## Submission status
@@ -177,5 +177,5 @@ verify-green) first. Next: watch them for maintainer response, then open PR 2 an
 PR 3 to `vlang/gui` the same way (push both branches to one `MartenH/gui` fork).
 
 **Env note:** `v up`'d to `ed17e5f` (2026-06-09) to verify against current V;
-cantester still builds (gui@68b9302 ok), so no pin regression. `gh` 2.93 installed
+blobly_net still builds (gui@68b9302 ok), so no pin regression. `gh` 2.93 installed
 at `~/.local/bin/gh`, authed as `MartenH`.

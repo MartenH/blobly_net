@@ -1,6 +1,6 @@
 // Dock-layout spike — validates gui's docking before we rebuild the app around it.
 //
-// Puts CANTester-style panels (Trace grid, Signals, Send, Stats, Log) into a
+// Puts Blobly Net-style panels (Trace grid, Signals, Send, Stats, Log) into a
 // dockable/splittable/tabbed layout. Drag a panel's tab to re-dock it; splits
 // are resizable; the layout tree is persisted via on_layout_change.
 //
@@ -25,7 +25,7 @@ fn main() {
 	mut app := &DockApp{}
 	app.dock_root = default_layout()
 	mut window := gui.window(
-		title:   'CANTester — dock spike'
+		title:   'Blobly Net — dock spike'
 		state:   app
 		width:   1100
 		height:  680

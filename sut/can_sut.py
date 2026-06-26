@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Virtual CAN SUT (System Under Test) for cantester.
+"""Virtual CAN SUT (System Under Test) for blobly_net.
 
 A stand-in ECU. It:
   - transmits a periodic Powertrain frame (0x100) with encoded signals, using the

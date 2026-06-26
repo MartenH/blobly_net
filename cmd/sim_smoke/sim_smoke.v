@@ -26,7 +26,7 @@ fn (mut r EcuRunner) run(duration_ms int) {
 }
 
 fn main() {
-	dbc := os.getenv_opt('CANTESTER_DBC') or { 'dbc/cantester.dbc' }
+	dbc := os.getenv_opt('BLOBLY_DBC') or { 'dbc/blobly_net.dbc' }
 	db := candb.load_dbc_file(dbc) or {
 		eprintln('load dbc: ${err}')
 		exit(1)

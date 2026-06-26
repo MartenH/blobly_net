@@ -3,7 +3,7 @@
 // diff V's decode against an independent implementation.
 //
 //   v -path "@vlib|@vmodules|modules" run cmd/dbc_decode/decode.v <dbc> <id_hex> <data_hex>
-//   e.g.  ... dbc/cantester.dbc 100 1234ABCD00000000
+//   e.g.  ... dbc/blobly_net.dbc 100 1234ABCD00000000
 module main
 
 import candb

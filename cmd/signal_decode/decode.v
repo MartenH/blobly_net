@@ -15,12 +15,12 @@ import time
 import candb
 import sampledb
 
-// The message we decode — loaded from the real DBC (env CANTESTER_DBC overrides
+// The message we decode — loaded from the real DBC (env BLOBLY_DBC overrides
 // the path), falling back to the hand-coded sampledb if the file isn't found.
 const msg = load_powertrain()
 
 fn load_powertrain() candb.Message {
-	path := os.getenv_opt('CANTESTER_DBC') or { 'dbc/cantester.dbc' }
+	path := os.getenv_opt('BLOBLY_DBC') or { 'dbc/blobly_net.dbc' }
 	if db := candb.load_dbc_file(path) {
 		if m := db.lookup(0x100) {
 			return m
@@ -49,7 +49,7 @@ mut:
 
 fn main() {
 	mut window := gui.window(
-		title:   'CANTester — frame → signals'
+		title:   'Blobly Net — frame → signals'
 		state:   &DecApp{}
 		width:   860
 		height:  520

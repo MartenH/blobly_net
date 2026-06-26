@@ -11,7 +11,7 @@ channels:
     bitrate: 500000
     mode: monitor
     databases:
-      - dbc/cantester.dbc
+      - dbc/blobly_net.dbc
   - name: CAN2
     interface: vcan1
     bitrate: 250000
@@ -45,7 +45,7 @@ fn test_channel_one_defaults_and_db() {
 	assert c.mode == .monitor
 	assert c.enabled == true // default
 	assert c.listen_only == false // default
-	assert c.databases == ['dbc/cantester.dbc']
+	assert c.databases == ['dbc/blobly_net.dbc']
 	assert c.replay == none
 }
 
@@ -70,7 +70,7 @@ fn test_default_project() {
 	assert p.channels.len == 1
 	assert p.channels[0].iface == 'vcan0'
 	assert p.channels[0].mode == .monitor
-	assert p.channels[0].databases == ['dbc/cantester.dbc']
+	assert p.channels[0].databases == ['dbc/blobly_net.dbc']
 }
 
 fn test_mode_from_and_str() {

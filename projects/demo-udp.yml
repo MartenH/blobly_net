@@ -1,4 +1,4 @@
-# CANTester project — driver-free virtual bench over the UDP software bus.
+# Blobly Net project — driver-free virtual bench over the UDP software bus.
 #
 # Cross-platform alternative to projects/demo.yml: instead of Linux `vcan0`, the
 # channel uses the `udp:` software bus (transport/udpbus.v), so the whole
@@ -6,7 +6,7 @@
 #
 # Run it:
 #   python3 sut/can_sut.py udp                       # the virtual ECU
-#   CANTESTER_PROJECT=projects/demo-udp.yml ./scripts/run.sh   # the tester → Start
+#   BLOBLY_PROJECT=projects/demo-udp.yml ./scripts/run.sh   # the tester → Start
 project:
   name: virtual-bench-udp
   version: 1
@@ -18,4 +18,4 @@ channels:
     mode: monitor
     enabled: true
     databases:
-      - dbc/cantester.dbc
+      - dbc/blobly_net.dbc

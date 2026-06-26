@@ -1,5 +1,5 @@
 // sut_ecu — the native-V twin of sut/can_sut.py, built declaratively from the
-// 'SUT' node of cantester.dbc. It is the default simulated ECU and the reference
+// 'SUT' node of blobly_net.dbc. It is the default simulated ECU and the reference
 // the native simulation is verified against (its emitted frames must match the
 // Python SUT's). Replicates exactly:
 //   - Powertrain (0x100) @100ms: EngineSpeed/VehicleSpeed/CoolantTemp/ThrottlePos

@@ -27,7 +27,7 @@ RESPONSE_ID = 0x7E8  # ECU -> tester
 
 # ReadDataByIdentifier table: DID -> data bytes.
 DIDS = {
-    0xF190: b"CANTESTERV0SUT001",            # VIN (17 chars, forces multi-frame)
+    0xF190: b"BLOBLYNETV0SUT001",            # VIN (17 chars, forces multi-frame)
     0xF18C: b"SN-0001",                       # ECU serial number
     0xF195: bytes([0x01, 0x00]),              # software version 1.00
     0x0100: struct.pack(">H", 6400),          # EngineSpeed raw (0.25 rpm/bit -> 1600 rpm)

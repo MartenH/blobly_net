@@ -18,11 +18,11 @@ channels:
     mode: monitor
     enabled: true
     databases:
-      - dbc/cantester.dbc
+      - dbc/blobly_net.dbc
   - name: PC
     type: can
     interface: pcan:PCAN_USBBUS1@500000 # <- PEAK channel handle from PCAN-View
     mode: monitor
     enabled: true
     databases:
-      - dbc/cantester.dbc
+      - dbc/blobly_net.dbc

@@ -1,6 +1,6 @@
-# CANTester — Quick Start
+# Blobly Net — Quick Start
 
-CANTester is a **conventional** bus tester for automotive **CAN** (Ethernet/LIN later).
+Blobly Net is a **conventional** bus tester for automotive **CAN** (Ethernet/LIN later).
 It runs **driver-free** out of the box: a built-in simulation, no hardware or Python.
 
 ## 60-second tour

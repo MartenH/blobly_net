@@ -2,8 +2,8 @@
 // all segmentation/reassembly + flow control, so V just reads/writes whole PDUs.
 // Keeping sockaddr_can/ioctl in C (as in the raw SocketCAN shim) avoids modelling
 // kernel structs in V.
-#ifndef CANTESTER_ISOTP_SHIM_H
-#define CANTESTER_ISOTP_SHIM_H
+#ifndef BLOBLY_ISOTP_SHIM_H
+#define BLOBLY_ISOTP_SHIM_H
 
 #include <stdint.h>
 #include <string.h>
@@ -63,4 +63,4 @@ static inline int ct_isotp_recv(int fd, uint8_t *buf, int cap, int timeout_ms) {
 
 static inline void ct_isotp_close(int fd) { if (fd >= 0) close(fd); }
 
-#endif // CANTESTER_ISOTP_SHIM_H
+#endif // BLOBLY_ISOTP_SHIM_H

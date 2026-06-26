@@ -1,4 +1,4 @@
-# CANTester (V) — project guide for Codex
+# Blobly Net (V) — project guide for Codex
 
 An automotive bus tester written in **V (vlang)**. Long-term goal: test a SUT (System
 Under Test) over **CAN / Ethernet / LIN** and the protocols on them. **Starting with CAN only**, and
@@ -18,7 +18,7 @@ sudo ./scripts/setup_sudoers.sh   # optional: scoped passwordless sudo (apt-get/
 Then run the app:
 ```sh
 ./scripts/run.sh                       # HARDWARE GL (now the default — works on 24.04 / Mesa 24.x+)
-CANTESTER_SOFTWARE_GL=1 ./scripts/run.sh   # software-GL fallback (always works; for old Mesa)
+BLOBLY_SOFTWARE_GL=1 ./scripts/run.sh   # software-GL fallback (always works; for old Mesa)
 python3 sut/can_sut.py vcan0            # virtual ECU, in another terminal
 ```
 **Context:** we moved off Ubuntu 22.04 → **24.04** specifically to get **Mesa 24.x**, because 22.04's
@@ -89,7 +89,7 @@ modules/sim/                simulation engine: SimEcu/Engine + signal generators
 modules/player/             replay engine: plays a []canlog.LogEntry recording at recorded
                             cadence x speed, play/pause/stop/seek/loop; caller supplies the
                             clock via due(now_ms) (pure V, hermetic tests)           (Phase 8)
-dbc/cantester.dbc           real DBC describing the SUT's messages    (Phase 5)
+dbc/blobly_net.dbc           real DBC describing the SUT's messages    (Phase 5)
 cmd/dashboard/              throwaway GUI capability demo
 cmd/signal_decode/          frame -> signals visualizer demo
 cmd/dbc_decode/             load a DBC + decode one frame (machine-readable; oracle diff)
@@ -152,8 +152,8 @@ wiring D3D11) — all captured with upstream-style patches in `docs/windows_buil
 contributing back to V/gui. **Smart App Control** (if enforced) blocks unsigned local builds and must be
 turned Off (irreversible). Original handoff notes below (toolchain **mingw-w64 (gcc) via MSYS2**;
 **virtual-first**, no real CAN HW yet):
-- **Clone onto native NTFS** (e.g. `C:\dev\cantester_v`), NOT `\\wsl$\…` (the 9p FS is slow + has
-  line-ending/permission quirks). Sync via the GitHub remote (`MartenH/cantester_v`).
+- **Clone onto native NTFS** (e.g. `C:\dev\blobly_net`), NOT `\\wsl$\…` (the 9p FS is slow + has
+  line-ending/permission quirks). Sync via the GitHub remote (`MartenH/blobly_net`).
 - **Use a DEDICATED, isolated MSYS2** for this project — `pacman` is global per MSYS2 root, so install a
   *second* MSYS2 root (e.g. `C:\dev\msys64-ct`) and do all installs there. **Do NOT pollute the user's
   personal MSYS2.**
@@ -181,7 +181,7 @@ turned Off (irreversible). Original handoff notes below (toolchain **mingw-w64 (
 4. ✅ Virtual SUT (Python) on vcan0 + candb cross-validation.
 3. ✅ Wire CAN into GUI — live trace table, signal decode, send panel.  ⟵ done
 5. ✅ **DBC database & signals** — `candb` parses real `.dbc` files (BO_/SG_/VAL_/CM_), Intel +
-   Motorola bit order, value tables; `dbc/cantester.dbc` matches the SUT; cross-validated vs an
+   Motorola bit order, value tables; `dbc/blobly_net.dbc` matches the SUT; cross-validated vs an
    independent Python oracle. The GUI loads the DBC at startup (sampledb is now just a fallback);
    trace/signals decode from it and show value-table labels live.
 6. 🚧 **UDS diagnostics over ISO-TP** — FOUNDATION DONE: `modules/isotp` (kernel CAN_ISOTP socket
@@ -193,7 +193,7 @@ turned Off (irreversible). Original handoff notes below (toolchain **mingw-w64 (
    ISO-TP** (tester 0x7E0 → ECU 0x7E8) on the first running channel; and every channel hosting
    simulated nodes now also runs the **native `uds.Server`** (`diag_server_loop`), so diagnostics
    work driver-free on the in-proc bus — GUI-verified on sim-demo (multi-frame VIN
-   "CANTESTERV0SUT001"; the 0x7E0/0x7E8 ISO-TP frames visible in the Trace).
+   "BLOBLYNETV0SUT001"; the 0x7E0/0x7E8 ISO-TP frames visible in the Trace).
    Still TODO: more services (0x19 DTCs, 0x2E write, 0x27 security), DID↔signal mapping via the DBC.
 7. 🚧 **Log replay** — real recordings are ASAM **MF4** (CANedge/CSS Electronics), paired with a DBC.
    DONE: `sut/mf4_bridge.py` (asammdf) converts MF4 → candump `.log` and **semantically diffs** two
@@ -205,7 +205,7 @@ turned Off (irreversible). Original handoff notes below (toolchain **mingw-w64 (
    DONE: **MF4-aware open** — the GUI opens `.mf4` too (toolbar filter + `.mf4` detection in
    `load_log`). To keep the demo non-J1939 (J1939 needs PGN matching, deferred), `mf4_bridge.py` gained
    **`tomf4`** (candump `.log` → MF4 via python-can's `MF4Writer`); we minted `samples/demo.mf4` from
-   `samples/demo.log` (round-trips identically, decodes against `cantester.dbc`) and ship it.
+   `samples/demo.log` (round-trips identically, decodes against `blobly_net.dbc`) and ship it.
    DONE 2026-06-07: **native-V MF4 reader `modules/mf4`** — the GUI now opens `.mf4` with **zero
    Python** (the bridge was only the bootstrap). It parses MDF 4.x directly: DZ-compressed data blocks
    (zlib inflate + zip_type-1 byte de-transposition), DL/HL data lists, and three DataBytes layouts —
@@ -243,7 +243,7 @@ turned Off (irreversible). Original handoff notes below (toolchain **mingw-w64 (
    data_bitrate/sample_point/`timing{brp,tseg1,tseg2,sjw}`)/`mode`(off|monitor|replay)/listen_only/
    `databases[]` (DBCs) and a `replay{source,speed,loop}` block. For `vcan0` the bitrate/timing are
    nominal; for real `can0` they map to `ip link set can0 type can bitrate … sample-point …`. This moves
-   DBC association from the hardcoded startup load + `CANTESTER_DBC` env into per-channel `databases`,
+   DBC association from the hardcoded startup load + `BLOBLY_DBC` env into per-channel `databases`,
    and stores a recent-projects list for Open Recent. Full schema sketch was proposed 2026-06-04.
    A **Bus/Channel tree** panel (gui `tree`, see `view_tree.v`) renders the project's channels: one
    node per channel with an **enable checkbox** and a **state colour** (green = running/ok, red =
@@ -345,9 +345,9 @@ Benign at runtime: sokol `LINUX_X11_QUERY_SYSTEM_DPI_FAILED` → falls back to 9
 passthrough (d3d12) drew frames but composited a BLANK/black window under WSLg; the workaround was
 forcing Mesa software rendering (`LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe`). On **24.04 +
 Mesa 25.2.8 hardware GL renders correctly**, so `scripts/run.sh` now defaults to hardware GL; pass
-`CANTESTER_SOFTWARE_GL=1` to re-enable the software fallback if a future Mesa regresses.
+`BLOBLY_SOFTWARE_GL=1` to re-enable the software fallback if a future Mesa regresses.
 
-Passwordless sudo scoped to `apt-get`, `ip`, `modprobe` via `/etc/sudoers.d/cantester`. This is the
+Passwordless sudo scoped to `apt-get`, `ip`, `modprobe` via `/etc/sudoers.d/blobly_net`. This is the
 one bit of machine state NOT in git, so it does **not** transfer to a fresh box — re-create it once
 per machine with `sudo ./scripts/setup_sudoers.sh` (generates the drop-in and `visudo -c`-validates it
 before installing, so a typo can't lock you out). Without it, `setup_env.sh`/`setup_vcan.sh` will
@@ -361,7 +361,7 @@ prompt for a password.
 - 2026-06-03: BLOCKED — gui build fails: vglyph needs native deps (freetype/harfbuzz/fribidi/
   fontconfig/pango/glib). Awaiting apt install (needs sudo). User opted for passwordless sudo.
 - 2026-06-03: UNBLOCKED — installed full native dep set (text shaping + dbus/atk accessibility
-  + GL/X11). `src/main.v` compiles and renders a CANTester window under WSLg.
+  + GL/X11). `src/main.v` compiles and renders a Blobly Net window under WSLg.
 - 2026-06-03: Diagnosed blank-window-under-WSLg (GL passthrough doesn't composite); fix =
   software GL (`LIBGL_ALWAYS_SOFTWARE=1`), wrapped in `scripts/run.sh`. Verified by screenshot
   + by user. **Phase 1 DONE & VERIFIED.**
@@ -414,7 +414,7 @@ prompt for a password.
   Screenshot docs/gui_validation/app_dockable.png. Next: Phase 5 (DBC parsing) / more panels.
 - 2026-06-03: **Migration to 24.04 complete & hardware GL WORKS.** Fresh 24.04.4 box, Mesa 25.2.8
   (OpenGL 4.5). User confirmed hardware GL renders under WSLg → flipped `scripts/run.sh` to default
-  hardware GL (`CANTESTER_SOFTWARE_GL=1` is now the fallback). V rebuilt at commit de365a1 (still
+  hardware GL (`BLOBLY_SOFTWARE_GL=1` is now the fallback). V rebuilt at commit de365a1 (still
   0.5.1). **Corrected a CAN false-alarm:** `modprobe vcan` fails + `/lib/modules` empty looked like
   "stock kernel, no CAN", but `.wslconfig` → `bzImage-can.new` compiles CAN in (`=y`); AF_CAN bind +
   cansend/candump loopback on vcan0 PASS. CAN is fully operational. Doc'd the socket-probe-not-lsmod
@@ -422,14 +422,14 @@ prompt for a password.
 - 2026-06-03: **Phase 5 DBC parsing DONE & VERIFIED.** `candb` now: (a) Motorola/big-endian bit order
   in raw_value/set_raw/owns (Intel was the only order before) — anchored by a textbook 0x1234 vector;
   (b) `dbc.v` parser for BO_/SG_/VAL_/CM_ → Database, with value tables (enums) + comments, Signal
-  gained minimum/maximum/values/label(). Authored `dbc/cantester.dbc` mirroring the SUT (0x100/0x700/
+  gained minimum/maximum/values/label(). Authored `dbc/blobly_net.dbc` mirroring the SUT (0x100/0x700/
   0x101/0x102). Cross-validation: V tests prove DBC == hand-coded `sampledb` layout AND decodes a frame
   identically; `cmd/dbc_decode` + `sut/dbc_oracle.py` (independent stdlib DBC impl) agree on 1800 random
   decodes and on a live SUT 0x100 frame. NOT yet wired into the GUI (still uses sampledb) — next step.
-  Note: passwordless sudo (/etc/sudoers.d/cantester) did NOT transfer to this box, so cantools couldn't
+  Note: passwordless sudo (/etc/sudoers.d/blobly_net) did NOT transfer to this box, so cantools couldn't
   be apt/pip-installed; the hand-written Python oracle covers the cross-check instead.
-- 2026-06-03: **DBC wired into the GUI.** `src/main.v` loads `dbc/cantester.dbc` at startup into
-  `App.db` (env override `CANTESTER_DBC`; falls back to `sampledb.catalog()` if the file is missing);
+- 2026-06-03: **DBC wired into the GUI.** `src/main.v` loads `dbc/blobly_net.dbc` at startup into
+  `App.db` (env override `BLOBLY_DBC`; falls back to `sampledb.catalog()` if the file is missing);
   trace name lookup, the inline signal-expand, and the Signals panel all decode from the DBC, and now
   render VAL_ value-table labels (e.g. `Gear 1.0 (First)`, `CruiseOn (On)`). Verified live vs SUT with
   hardware GL — screenshot docs/gui_validation/phase5_dbc_decode.png (note the unit reads "degC" from
@@ -475,7 +475,7 @@ prompt for a password.
   It decodes through the DBC exactly like live traffic — verified on a real 60-frame candump capture
   from `sut/can_sut.py` (30×0x100 + 30×0x700; EngineSpeed/VehicleSpeed/CoolantTemp/Gear all decode).
   Shipped `samples/demo.log` (un-ignored via `samples/*` + `!samples/demo.log`) so the action works
-  out of the box; `CANTESTER_LOG` env pre-fills the path. **gui's `native_open_dialog` is wired too**;
+  out of the box; `BLOBLY_LOG` env pre-fills the path. **gui's `native_open_dialog` is wired too**;
   its Linux backend shells out to `zenity`/`kdialog`, so we `apt install zenity` (4.0.1, now a runtime
   dep + in `setup_env.sh`) to make the real picker appear — verified it opens under WSLg. If the picker
   is ever unavailable (`.error`) the app falls back to the typed log-path box. Builds clean,
@@ -491,15 +491,15 @@ prompt for a password.
   Instead we made a sample we control: added **`tomf4`** to `mf4_bridge.py` (candump `.log` → MF4 via
   **python-can** `MF4Writer`; `python-can` 4.6.1 added to `.venv-tools` + `setup_mf4_tools.sh`) and
   minted `samples/demo.mf4` from `samples/demo.log`. Verified: `tomf4`→`convert` round-trips the frame
-  stream **identically**, and all 60 frames decode against `cantester.dbc` (EngineSpeed 1913 rpm, etc.).
+  stream **identically**, and all 60 frames decode against `blobly_net.dbc` (EngineSpeed 1913 rpm, etc.).
   Shipped `samples/demo.mf4` (un-ignored). Builds clean. NEXT MF4 step (when wanted): J1939 PGN-aware
   lookup in `candb` so the real CSS J1939 recordings decode; then a timed player onto vcan0.
 - 2026-06-05: **Phase 9 foundation — project config + Buses panel + Start/Stop + File menu (slice 1).**
   New GUI-free `modules/project` (vlib `yaml`) parses a project `.yml` → `Project{channels[]}` (each
   with interface/bitrate/timing/mode/listen_only/enabled/databases/replay; defaults + built-in
   fallback; 6 tests). Ships `projects/demo.yml` (CAN1 vcan0 monitor + disabled CAN2 vcan1 replay). The
-  app is now **config-driven**: it loads the project at startup (env `CANTESTER_PROJECT`) instead of
-  hardcoding vcan0, and DBCs come from the channels (not the old `CANTESTER_DBC`). A global **Start/
+  app is now **config-driven**: it loads the project at startup (env `BLOBLY_PROJECT`) instead of
+  hardcoding vcan0, and DBCs come from the channels (not the old `BLOBLY_DBC`). A global **Start/
   Stop** (top-left, conventional measurement lifecycle) opens/closes enabled *monitor* channels per
   channel (each its own RX thread, closes itself on stop); `do_send` TXes on the first running channel.
   New **Buses** panel (narrow left): per-channel enable checkbox + state-colour dot (green running /
@@ -548,7 +548,7 @@ prompt for a password.
   format. Shipped `projects/demo-udp.yml`. **Verified on Linux:** `python3 sut/can_sut.py udp` +
   a V `transport.open('udp')` client interoperate — 0x100/0x700 received and decoded (EngineSpeed
   etc.). This same flow runs on Windows with zero drivers once the GUI builds (W1). Run:
-  `python3 sut/can_sut.py udp` + `CANTESTER_PROJECT=projects/demo-udp.yml ./scripts/run.sh`.
+  `python3 sut/can_sut.py udp` + `BLOBLY_PROJECT=projects/demo-udp.yml ./scripts/run.sh`.
 - 2026-06-05: **W1 DONE — GUI builds + RENDERS natively on Windows, virtual-first verified.** Stood up
   the whole toolchain isolated under `C:\dev` (dedicated `msys64-ct` MSYS2 + mingw-w64 gcc 16/pkgconf/
   pango/glib/freetype/harfbuzz/fribidi/fontconfig; V 0.5.1 @ de365a1 via `makev.bat`+tcc; gui@68b9302 +
@@ -580,7 +580,7 @@ prompt for a password.
   `.oxc` configs are XML — the sage tint people see is the *Windows* chrome (syscols), not an Opus value.
   Trace: signal/message text now black (was green); grouped view splits the payload into 8 byte cells
   with a **conventional yellow change-highlight that fades** over `byte_fade_steps` (per-ID `byte_age` in
-  `MsgAgg`). Dev helpers: `scripts/shot.sh` + `CANTESTER_AUTOSTART=1` for the screenshot loop.
+  `MsgAgg`). Dev helpers: `scripts/shot.sh` + `BLOBLY_AUTOSTART=1` for the screenshot loop.
 - 2026-06-07: **Native-V MF4 reader (`modules/mf4`) + MF4 replay in the GUI, no Python.** Reverse-
   engineered ASAM MDF4 v4.20 (DZ-compressed) by raw-parsing the binary, then ported to pure V:
   IDBLOCK/HD/DG/CG/CN walk, **DZ inflate (`compress.zlib`) + zip_type-1 byte de-transposition**, DL/HL
@@ -627,7 +627,7 @@ prompt for a password.
   **Verified in the GUI**: 1 channel attached, green dot, trace streaming TX 0x100/0x700 decoded
   via the DBC, and the TX counter advanced 124 frames in 6 s ≈ the recording's exact 20 frames/s.
   Gotcha re-learned: `v ... | head` makes `$?` head's rc — the build had silently not rewritten
-  build/cantester (stale Jun-8 binary, "0 channels attached") until rebuilt + timestamp-checked.
+  build/blobly_net (stale Jun-8 binary, "0 channels attached") until rebuilt + timestamp-checked.
   NEXT (Phase 8 rest): per-channel transport-control UI (play/pause/seek/speed — player API ready);
   replay direct-to-trace sink (no bus) for offline review at cadence.
 - 2026-06-10: **Graphics strip-chart window + own panel; Trace (filter) is now an opt-in watch list.**

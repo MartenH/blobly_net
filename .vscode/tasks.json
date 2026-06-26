@@ -54,7 +54,7 @@
 		{
 			"label": "Build GUI (compile only)",
 			"type": "shell",
-			"command": "${env:HOME}/v/v -path \"@vlib|@vmodules|modules\" -o build/cantester src/main.v",
+			"command": "${env:HOME}/v/v -path \"@vlib|@vmodules|modules\" -o build/blobly_net src/main.v",
 			"problemMatcher": [],
 			"presentation": { "reveal": "always", "panel": "shared" }
 		},

@@ -1,11 +1,11 @@
 #!/bin/bash
-# build_win.sh — native Windows build of CANTester via mingw-w64 gcc (W1),
+# build_win.sh — native Windows build of Blobly Net via mingw-w64 gcc (W1),
 # the bash twin of build_win.ps1. RUN FROM MSYS2 (MINGW64 shell):
 #
-#   bash scripts/build_win.sh                 # -> build/cantester.exe  (GL backend)
+#   bash scripts/build_win.sh                 # -> build/blobly_net.exe  (GL backend)
 #   bash scripts/build_win.sh -run            # build then run
 #   bash scripts/build_win.sh -debug          # build with -g (asserts on) for gdb
-#   CANTESTER_PROJECT=projects/demo-udp.yml bash scripts/build_win.sh -run
+#   BLOBLY_PROJECT=projects/demo-udp.yml bash scripts/build_win.sh -run
 #
 # Uses the DEDICATED, isolated toolchain under C:\dev (see CLAUDE.md "Windows
 # build (W1)" + docs/windows_build.md). Nothing outside C:\dev is touched.
@@ -27,7 +27,7 @@ export PATH="$mingw/bin:$PATH"                  # gcc + pkgconf + runtime DLLs
 
 # flags
 target='src/main.v'
-out='build/cantester.exe'
+out='build/blobly_net.exe'
 dbg=''
 run=0
 for a in "$@"; do

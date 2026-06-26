@@ -48,7 +48,7 @@ fn test_inproc_uds_roundtrip() {
 		assert false, 'VIN: ${err}'
 		return
 	}
-	assert vin.bytestr() == 'CANTESTERV0SUT001', 'VIN was ${vin.bytestr()}'
+	assert vin.bytestr() == 'BLOBLYNETV0SUT001', 'VIN was ${vin.bytestr()}'
 
 	// 0x22 RDBI 0xF195 — single-frame, 2 data bytes
 	sw := client.read_data_by_identifier(0xF195) or {

@@ -1,4 +1,4 @@
-// mem_leak_grid — isolate the gui data_grid render path. Mirrors the cantester Trace
+// mem_leak_grid — isolate the gui data_grid render path. Mirrors the blobly_net Trace
 // grid (same columns) and NOTHING else: a data_grid of ~30 rows, redrawn ~20 fps.
 //
 // Modes (env MEM_REPRO=changing|static, default changing):
@@ -6,7 +6,7 @@
 //   - static   : fixed cell values.
 // If `changing` climbs and `static` is flat, the leak is in gui's data_grid render
 // (an upstream gui issue). If both are flat, the data_grid is innocent too, and the
-// cantester leak is gui's whole-tree per-frame composition (scales with panel count).
+// blobly_net leak is gui's whole-tree per-frame composition (scales with panel count).
 //
 // Run: v -enable-globals -path "@vlib|@vmodules|modules" run cmd/mem_leak_grid/mem_leak_grid.v
 module main
@@ -47,7 +47,7 @@ fn main() {
 			}(mut w)
 		}
 	)
-	if ms := os.getenv_opt('CANTESTER_RUN_MS') {
+	if ms := os.getenv_opt('BLOBLY_RUN_MS') {
 		spawn fn (n int) {
 			time.sleep(n * time.millisecond)
 			exit(0)

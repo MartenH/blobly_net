@@ -1,10 +1,10 @@
 # V build artifacts
-cantester
+blobly_net
 main
 cmd/mf4_dump/mf4_dump
 *.tmp.c
 /src/main
-/src/cantester
+/src/blobly_net
 /build/
 
 # Editor

@@ -3,9 +3,9 @@ module sim
 import candb
 import transport
 
-// The cantester.dbc, loaded once. @VMODROOT resolves to the repo root regardless
+// The blobly_net.dbc, loaded once. @VMODROOT resolves to the repo root regardless
 // of CWD. The 'SUT' node's messages drive the reference ECU.
-const dbc_path = @VMODROOT + '/dbc/cantester.dbc'
+const dbc_path = @VMODROOT + '/dbc/blobly_net.dbc'
 
 fn load_db() candb.Database {
 	return candb.load_dbc_file(dbc_path) or { panic(err) }

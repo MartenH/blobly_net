@@ -28,7 +28,7 @@ fn producer(iface string, rate int, deadline i64) u64 {
 	defer {
 		bus.close()
 	}
-	// IDs that exist in dbc/cantester.dbc so the consumer's decode does real work.
+	// IDs that exist in dbc/blobly_net.dbc so the consumer's decode does real work.
 	ids := [u32(0x100), 0x300, 0x301, 0x200]
 	mut sent := u64(0)
 	start := time.ticks()
@@ -101,7 +101,7 @@ fn main() {
 	secs := if os.args.len > 3 { os.args[3].int() } else { 5 }
 	decode := if os.args.len > 4 { os.args[4].int() != 0 } else { true }
 
-	db := candb.load_dbc_file('dbc/cantester.dbc') or {
+	db := candb.load_dbc_file('dbc/blobly_net.dbc') or {
 		eprintln('cannot load DBC: ${err}')
 		exit(1)
 	}

@@ -34,7 +34,7 @@ fn test_roundtrip() {
 			Channel{
 				name:      'CAN1'
 				iface:     'inproc:CAN1'
-				databases: ['dbc/cantester.dbc']
+				databases: ['dbc/blobly_net.dbc']
 				nodes:     [
 					NodeCfg{
 						name:      'SUT'
@@ -73,7 +73,7 @@ fn test_roundtrip() {
 	c := reparsed.channels[0]
 	assert c.name == 'CAN1'
 	assert c.iface == 'inproc:CAN1'
-	assert c.databases == ['dbc/cantester.dbc']
+	assert c.databases == ['dbc/blobly_net.dbc']
 	assert c.nodes.len == 1
 	assert c.nodes[0].name == 'SUT'
 	assert c.nodes[0].signals.len == 2

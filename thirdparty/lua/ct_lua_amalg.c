@@ -1,5 +1,5 @@
 /* ct_lua_amalg.c — single translation unit that builds the whole Lua 5.4 core +
- * standard library compiled INTO the cantester binary (no system liblua, no
+ * standard library compiled INTO the blobly_net binary (no system liblua, no
  * runtime install). Lua's sources are designed to be #include'd into one TU
  * (this is what upstream's onelua.c does); we list them here ourselves because
  * the 5.4.7 tarball ships no onelua.c. The standalone programs lua.c / luac.c are

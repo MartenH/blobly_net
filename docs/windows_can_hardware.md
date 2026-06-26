@@ -6,7 +6,7 @@ TX `0x123#DEADBEEF` → PCAN RX byte-identical, and PCAN TX `0x456#CAFE` → Kva
 via `cmd/can_smoke` (defaults `kvaser:0` / `pcan:PCAN_USBBUS1` worked first try). The two
 vendor stacks agreeing on the wire is itself the cross-vendor oracle.
 This documents how real CAN adapters (PCAN / Kvaser / Vector) and the vendor-neutral
-`slcan` path slot into CANTester on Windows, behind the existing `transport.Bus`
+`slcan` path slot into Blobly Net on Windows, behind the existing `transport.Bus`
 seam. Owner has PCAN + Kvaser hardware and intermittent access to a Vector machine.
 
 - **Done:** `transport/pcan_windows.v` + `pcan_shim.h`, `transport/kvaser_windows.v`
@@ -24,14 +24,14 @@ program talks to it the same way — which is why `transport/socketcan_linux.v` 
 
 **Windows has no OS-level CAN standard.** Installing a vendor's driver makes the
 device work and ships the vendor's **user-mode DLL**, but each vendor exposes its
-*own* proprietary API. So the end user installs a driver and is done; CANTester, by
+*own* proprietary API. So the end user installs a driver and is done; Blobly Net, by
 contrast, needs a **per-vendor backend** that loads that DLL and calls its functions.
 
 | | Linux | Windows |
 |---|---|---|
 | CAN API | one kernel standard (`AF_CAN`) | none — per-vendor DLLs |
 | What the user installs | (kernel has it) | vendor driver package |
-| What CANTester needs | one SocketCAN backend | one backend **per vendor** |
+| What Blobly Net needs | one SocketCAN backend | one backend **per vendor** |
 
 ## The seam (unchanged)
 
@@ -124,7 +124,7 @@ Backends can be **written** here but **not verified against hardware from Linux*
 
 ## Owner verification steps (run on Windows)
 
-Prereq: a CANTester Windows build (`scripts\build_win.ps1` mingw, or the
+Prereq: a Blobly Net Windows build (`scripts\build_win.ps1` mingw, or the
 `build-msvc`/`build-mingw` CI artifacts). Then:
 
 ### Kvaser — testable with NO hardware connected (virtual channel)
@@ -132,7 +132,7 @@ Prereq: a CANTester Windows build (`scripts\build_win.ps1` mingw, or the
    `canlib32.dll` *and* software **virtual channels**.
 2. Open **Kvaser Device Guide** and note a **virtual channel's number** (virtuals
    are listed alongside physical ones, e.g. channel 0/1).
-3. Loopback over the virtual bus — two CANTester channels on the same number:
+3. Loopback over the virtual bus — two Blobly Net channels on the same number:
    ```yaml
    channels:
      - { name: KV, interface: "kvaser:0@500000", mode: monitor }      # the number from step 2
@@ -141,7 +141,7 @@ Prereq: a CANTester Windows build (`scripts\build_win.ps1` mingw, or the
    Send on one (Generators/Send panel or a Lua `bus.send`), see it on the other.
 4. **python-can cross-check** (oracle): `pip install canlib` (Kvaser's Python) or
    use `python-can` with `interface="kvaser", channel=0`; transmit/receive and diff
-   against CANTester's trace.
+   against Blobly Net's trace.
 
 ### PCAN — needs the physical adapter
 1. Install the **PEAK PCAN driver** (free) → brings `PCANBasic.dll`.
@@ -158,7 +158,7 @@ Prereq: a CANTester Windows build (`scripts\build_win.ps1` mingw, or the
 ### What "good" looks like
 - `transport.open("pcan:…"/"kvaser:…")` returns without error (DLL found, channel
   opens, bus-on).
-- Frames sent by CANTester appear in `python-can` (same adapter/bus) byte-identical,
+- Frames sent by Blobly Net appear in `python-can` (same adapter/bus) byte-identical,
   and vice-versa — the established SUT-oracle pattern.
 - Bitrate mismatch or missing termination shows up as no RX / bus-off — expected.
 

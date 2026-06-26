@@ -55,8 +55,8 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
   (already a runtime dep). Debugging note: `gdb`
   cannot *run* this Boehm app (ptrace breaks the GC's signal-based stop-the-world), but **attaching to
   an already-hung process to snapshot stacks works fine** — that's what cracked it. The process is
-  named `main` (run.sh does `v run src/main.v`), so use `pgrep -f cantester_v/src/main`, not
-  `cantester`. See `docs/v_patches/gui-no-portal-fallback.patch`.
+  named `main` (run.sh does `v run src/main.v`), so use `pgrep -f blobly_net/src/main`, not
+  `blobly_net`. See `docs/v_patches/gui-no-portal-fallback.patch`.
 - ⚪ **data_grid columns are fixed px width and clamp to `max_width` (default 600).** They don't
   auto-stretch to fill the container. To make a column fill: compute its width from the window size
   AND raise its `max_width` (we set 4000). Also, column widths are cached per grid `id` and ignore
@@ -108,7 +108,7 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
   `$if debug` guard is compiled out, so it proceeds on the empty/bitmap glyph and **corrupts memory →
   `invalid memory access`, usually with a bogus deep `v_stable_sort` backtrace** (the backtrace is
   misleading — the real fault is the glyph). Symptom that bit us: the Generators panel's `💾 Save`
-  button crashed `./build/cantester` for the user. **Rule: only use glyphs you've SEEN render in a
+  button crashed `./build/blobly_net` for the user. **Rule: only use glyphs you've SEEN render in a
   screenshot.** Verified-safe set in this app: `▸ ▾ ● ＋ × … ▶` + the activity-bar icons
   `☰ ▽ ⊞ ⊙ ▷ ⌗ ∿ ▦ ➤ ⎍ ✚ Σ ╱`. Known-UNSAFE in the bundled font: `💾 ✎ ⚙`. (The toolbar's
   `🌙 📂 ⏺` happen to have outlines in this font, so not all emoji are unsafe — but don't assume; test.)
@@ -137,13 +137,13 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
   never painted focused (and still clicks fine via the mouse; it just isn't keyboard-tabbable). We use
   `id_focus: 0` on the Buses/Bus Config/Simulation action buttons. Keep real ids on inputs/selects.
 - 🟢 **Screenshotting the running app for visual verification.** `import -window <wid>` (ImageMagick)
-  + `xdotool search --name CANTester` capture the live window under WSLg — invaluable when iterating
+  + `xdotool search --name Blobly Net` capture the live window under WSLg — invaluable when iterating
   on layout you can't otherwise see. Set `XCURSOR_THEME=Adwaita XCURSOR_SIZE=24` first. Caveats: pick
   the newest window id (`| tail -1`) since stale `v run`/`src/main` instances linger (kill by
-  `ps -eo pid,args | grep -E 'cantester|src/main'`, NOT `pkill -f build/cantester` — that matches your
+  `ps -eo pid,args | grep -E 'blobly_net|src/main'`, NOT `pkill -f build/blobly_net` — that matches your
   own shell and kills it); and xdotool clicking is unreliable (title-bar offset), so screenshot, don't
   drive. **`scripts/shot.sh [out.png]`** wraps the whole capture (search newest wid + `import`). For a
-  deterministic *live-data* loop, launch with **`CANTESTER_AUTOSTART=1`** (begins measurement on launch,
+  deterministic *live-data* loop, launch with **`BLOBLY_AUTOSTART=1`** (begins measurement on launch,
   so the trace is populated without a Start click). Clicking that DOES work for toggling views/expanding
   rows: `xdotool windowfocus $wid` then `mousemove --window $wid X Y click --window $wid 1` —
   `windowactivate` is what fails under WSLg, `windowfocus` succeeds.
@@ -175,7 +175,7 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
 
 - 🟠 **NEW 2026-06-13 — the leak is the `data_grid`'s per-cell `text_width` (vglyph layout
   build), NOT the glyph-render path, and it reproduces on native Windows (msys2/mingw) — so
-  it is NOT Linux-only.** Full hunt on the W1 msys2 build: cantester leaks **~1 MB/s
+  it is NOT Linux-only.** Full hunt on the W1 msys2 build: blobly_net leaks **~1 MB/s
   unbounded** (+460 MB / 8 min, **C-side** — survives forced `gc_collect`). Bisected with
   minimal gui repros: `cmd/mem_leak_repro` (changing text) = **flat** on Windows;
   `cmd/mem_leak_canvas` (draw_canvas polyline) = **flat**; **`cmd/mem_leak_grid`** (a gui
@@ -190,7 +190,7 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
   `free`. **NEXT — do this on WSL** (Windows profiling is a dead end: Dr. Memory 2.6 crashes
   internally on Win11 build 26200; mingw/DWARF defeats the MSVC-symbol Windows tools):
   `valgrind --leak-check=full --show-leak-kinds=all` (or `heaptrack`) on `mem_leak_grid` with
-  `MEM_REPRO=changing CANTESTER_RUN_MS=20000` → names the exact `pango_*_new`/`malloc` stack
+  `MEM_REPRO=changing BLOBLY_RUN_MS=20000` → names the exact `pango_*_new`/`malloc` stack
   with real symbols ⇒ a high-value **vglyph PR**. Mitigation (no root cause needed): make the
   trace grid stop re-measuring unchanged cells (fixed/cached column widths). Repros:
   `cmd/mem_leak_grid`, `cmd/mem_leak_canvas` (both `MEM_REPRO=changing|static`).
@@ -392,14 +392,14 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
     `MEM_REPRO=changing` (unique strings each frame) → **RSS climbs**; `MEM_REPRO=static` (fixed strings)
     → **RSS plateaus**. A third control — a `gg` app drawing only rectangles (no text) — stays **flat**.
     ⇒ the leak is the **text path**, and specifically rendering *new* strings (cache misses), not the GL
-    draw path and not cantester logic.
+    draw path and not blobly_net logic.
   - heaptrack **diff** (changing − static) puts the extra allocations in
     `gui__layout_wrap_text → vglyph__Context_layout_text → vglyph__build_layout_from_pango →
     pango_layout_get_iter` — i.e. building a fresh Pango layout per unique string. The net-retained
     bytes are many small allocations in the Pango/FreeType/fontconfig layout path (changing numbers miss
     vglyph's by-text layout cache, so every redraw reshapes from scratch).
   - **⚠️ RETRACTION:** an earlier version of this note blamed the **Mesa/gallium GL driver** (heaptrack
-    showed `libgallium` "leaked" via `_sg_gl_draw`). That was a **misread**: with `CANTESTER_RUN_MS`'s
+    showed `libgallium` "leaked" via `_sg_gl_draw`). That was a **misread**: with `BLOBLY_RUN_MS`'s
     hard `exit(0)`, the GL driver's normal **working set** (freed only on clean teardown) is counted by
     heaptrack as "leaked". Run **directly**, the rects-only `gg` app's RSS is **flat** — the GL path does
     NOT leak. Lesson: trust **direct RSS over time**, not heaptrack-at-`exit(0)`, for driver/working-set
@@ -423,7 +423,7 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
     restart long sessions. Reduce unique strings (e.g. fewer decimals on the live timestamp) to slow it.
     A real fix is in the Linux Pango/fontconfig path (or a vglyph workaround there) — and since native
     Windows is unaffected, the **production target is clear**; this mainly bites long WSL/Linux sessions.
-  - Profiling: avoid a `-g` build (only draws 1 frame under WSLg). `CANTESTER_RUN_MS=N` exits cleanly.
+  - Profiling: avoid a `-g` build (only draws 1 frame under WSLg). `BLOBLY_RUN_MS=N` exits cleanly.
     heaptrack diff: `heaptrack_print -d <static.gz> -a 1 -p 0 <changing.gz>`.
 - 🟢 **SEPARATE cross-platform leak — undrained `queue_command` frames piling up — FIXED 2026-06-12.**
   Distinct from the vglyph one above (this is *our* code, and it bites **Windows** too, where vglyph is
@@ -440,7 +440,7 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
   Mesa 23.2) the GPU GL passthrough (d3d12) drew frames but never composited, so the window showed
   blank; the workaround was software GL (`LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe`). On 24.04
   with Mesa 25.x the d3d12 core-profile path works and our sokol app renders with **hardware GL**, so
-  `scripts/run.sh` now defaults to hardware GL; pass `CANTESTER_SOFTWARE_GL=1` to force the software
+  `scripts/run.sh` now defaults to hardware GL; pass `BLOBLY_SOFTWARE_GL=1` to force the software
   fallback. Verified 2026-06-03 (docs/gui_validation/phase5_dbc_decode.png).
 - ⚪ sokol `LINUX_X11_QUERY_SYSTEM_DPI_FAILED` on launch → falls back to 96 DPI. Harmless.
 - 🔴 **Each repaint is ~100ms of CPU under WSLg → live updates must be rate-limited.** Profiling the
@@ -466,7 +466,7 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
 - 🟡 **Mouse pointer disappears over XWayland windows (WSLg-wide, not ours).** Symptom: the pointer
   vanishes while hovering a Linux GUI window but the Windows desktop cursor is fine. **Confirmed
   WSLg-wide** (2026-06-04): it's gone over `xeyes`/`glxgears` too, not just our sokol app, and is
-  independent of GL mode — `CANTESTER_SOFTWARE_GL=1` doesn't help, nor does pinning
+  independent of GL mode — `BLOBLY_SOFTWARE_GL=1` doesn't help, nor does pinning
   `XCURSOR_THEME`/`XCURSOR_SIZE` (a red-herring fix we tried and reverted; the cursor theme install
   that pulled in Adwaita via zenity correlated in time but is not the cause). Nothing in this repo can
   fix it. **Fix = restart the WSLg session from Windows:** `wsl --shutdown` (PowerShell/cmd), then
@@ -504,7 +504,7 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed · ⚪ benign/expected
     applies — WSL2 shares one kernel across all distros (`.wslconfig`), so only userspace changes.
   - **Verdict (for now):** keep `LIBGL_ALWAYS_SOFTWARE=1` (llvmpipe) — stable, fine for this 2D app
     (60fps, 1000+ widgets). Hardware GL is optional polish; revisit on Ubuntu 24.04.
-    `scripts/run.sh` honours `CANTESTER_SOFTWARE_GL=0` to retry hardware after a Mesa upgrade.
+    `scripts/run.sh` honours `BLOBLY_SOFTWARE_GL=0` to retry hardware after a Mesa upgrade.
 
 
 - 🟢 **`vcan` "won't load" was a non-issue.** `modprobe vcan` → ENOEXEC because the stale `.ko` in
@@ -521,7 +521,7 @@ gotchas (first-ever native Windows run of vlang/gui, 2026-06-05):
 
 - 🟡 **Smart App Control blocks locally-built unsigned exes.** If SAC is *enforced*
   (`HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy\VerifiedAndReputablePolicyState==1`),
-  freshly built `cantester.exe` is hard-blocked ("An Application Control policy has
+  freshly built `blobly_net.exe` is hard-blocked ("An Application Control policy has
   blocked this file"). No per-app allowlist, won't trust self-signed certs → native
   dev needs SAC turned **Off** (Settings → Windows Security → App & browser control),
   which is **irreversible** (re-enable needs a Windows reset). V/tcc themselves run;
@@ -549,7 +549,7 @@ gotchas (first-ever native Windows run of vlang/gui, 2026-06-05):
 - 🔴 **The window's [X]/close button doesn't quit the app on Windows.** Clicking the
   title-bar close (or otherwise hitting `WM_CLOSE`) doesn't terminate the process — only
   **File ▸ Exit** (`sapp.quit()`) does. So instances linger and pile up (kill via Task
-  Manager or `Stop-Process -Name cantester`). Almost certainly sokol/gui not wiring
+  Manager or `Stop-Process -Name blobly_net`). Almost certainly sokol/gui not wiring
   `WM_CLOSE`→quit on the Win32 backend (untested there). TODO: handle the close/quit
   request (sokol `sapp_request_quit`/`on_event .quit_requested`, or a Win32 `WM_CLOSE`
   hook) so the X closes the app. Not seen on Linux/X11.
@@ -578,13 +578,13 @@ green + fast (cold ≈43 min, warm ≈2 min). Getting there hit three runner rea
   `name: ... D: disk` as a nested mapping → "workflow file issue" / HTTP 422 on dispatch.
   Quote any step name containing a colon-space. (Bitten twice.)
 
-## Our code (cantester)
+## Our code (blobly_net)
 
 - 🟢 **`candb.encode` rounding bug.** `i64(x + 0.5)` truncated negatives toward zero (`-4.5 → -4`),
   so `encode(-5.0)` produced `-4`. Caught by `candb_test.v::test_signed_negative`. Fixed with
   `math.round` (round half away from zero). Reminder: keep testing module logic in isolation.
 - 🟠 **Headless launch crashes in `v_stable_sort` (no display only).** Running the GUI with no
-  `DISPLAY` (`DISPLAY= ./build/cantester …`) logs `LINUX_X11_OPEN_DISPLAY_FAILED` then aborts with
+  `DISPLAY` (`DISPLAY= ./build/blobly_net …`) logs `LINUX_X11_OPEN_DISPLAY_FAILED` then aborts with
   `v_stable_sort: invalid memory access` inside gui's degraded first render (the dump shows gui's
   View-State/struct-size stats). It reproduces on builds BEFORE the Trace/Graphics work too, so it's
   pre-existing and **display-only** — the app runs fine with a real display. Likely a gui/sokol

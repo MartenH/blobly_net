@@ -2,7 +2,7 @@
 
 Unmodified upstream Lua **5.4.7** core + standard library source, from
 <https://www.lua.org/ftp/lua-5.4.7.tar.gz> (the `src/` tree), compiled directly
-into the cantester binary — no system `liblua`, no runtime install — so a fresh
+into the blobly_net binary — no system `liblua`, no runtime install — so a fresh
 box builds offline from git alone (the repo's single-source-of-truth principle).
 
 Lua is distributed under the **MIT license**; the copyright notice lives in

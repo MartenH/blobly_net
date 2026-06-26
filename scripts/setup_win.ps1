@@ -1,4 +1,4 @@
-# setup_win.ps1 — one-time native-Windows toolchain bootstrap for CANTester (W1).
+# setup_win.ps1 — one-time native-Windows toolchain bootstrap for Blobly Net (W1).
 #
 # The PowerShell counterpart to scripts/setup_env.sh. It MUST be PowerShell, not
 # bash: it *installs* MSYS2, so it runs before any MSYS2/bash shell exists. Once

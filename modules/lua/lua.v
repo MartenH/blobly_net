@@ -6,7 +6,7 @@
 // The fiddly bits (Lua's macro-based C API) live in ct_lua_shim.h as flat
 // `ctlua_*` functions, the same pattern transport/socketcan_shim.h uses. This
 // module is GUI-free and protocol-free: it only knows how to run Lua code and
-// move scalars/strings across the boundary. The cantester scripting API (diag,
+// move scalars/strings across the boundary. The blobly_net scripting API (diag,
 // bus, signals, the test framework) is layered on top in modules/script.
 module lua
 

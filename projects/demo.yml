@@ -1,7 +1,7 @@
-# CANTester project — default virtual bench.
+# Blobly Net project — default virtual bench.
 #
 # The single source of truth for the bus setup. The GUI loads this at startup
-# (override with CANTESTER_PROJECT=path/to/other.yml) and Start/Stop attaches the
+# (override with BLOBLY_PROJECT=path/to/other.yml) and Start/Stop attaches the
 # enabled channels. For vcan0 the bitrate/timing are nominal; on real can0 they
 # map to `ip link set can0 type can bitrate … sample-point …`.
 project:
@@ -17,7 +17,7 @@ channels:
     listen_only: false   # silent / no-ACK read-only tap
     enabled: true
     databases:
-      - dbc/cantester.dbc
+      - dbc/blobly_net.dbc
 
   # A second, disabled channel to show the Buses panel with >1 bus. Enable it
   # (and bring up vcan1) to attach it. Configured for replay of the demo MF4.
@@ -28,7 +28,7 @@ channels:
     mode: replay
     enabled: false
     databases:
-      - dbc/cantester.dbc
+      - dbc/blobly_net.dbc
     replay:
       source: samples/demo.mf4
       speed: 1.0

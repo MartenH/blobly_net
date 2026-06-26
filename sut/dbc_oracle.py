@@ -19,7 +19,7 @@ import subprocess
 import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_DBC = os.path.join(REPO, "dbc", "cantester.dbc")
+DEFAULT_DBC = os.path.join(REPO, "dbc", "blobly_net.dbc")
 
 _SG_RE = re.compile(
     r"SG_\s+(\w+)\s*(?:\w+\s+)?:\s*"        # name (+ optional mux marker)
@@ -92,7 +92,7 @@ def build_v_decoder():
     v = os.path.expanduser("~/v/v")
     if not os.path.exists(v):
         v = "v"
-    out = "/tmp/cantester_dbc_decode"
+    out = "/tmp/blobly_net_dbc_decode"
     subprocess.run(
         [v, "-path", "@vlib|@vmodules|modules", "-o", out,
          os.path.join("cmd", "dbc_decode", "decode.v")],

@@ -13,10 +13,10 @@ Picking this up on the Windows machine? Here's the state and the next moves.
 
 ## Do this, in order
 
-### 0. Build CANTester on Windows
+### 0. Build Blobly Net on Windows
 - mingw: `scripts\build_win.ps1` (see [windows_build.md](windows_build.md) for the
-  one-time toolchain setup), **or** download the `cantester-mingw-x64` /
-  `cantester-msvc-x64` artifact from the latest green CI run.
+  one-time toolchain setup), **or** download the `blobly_net-mingw-x64` /
+  `blobly_net-msvc-x64` artifact from the latest green CI run.
 
 ### 1. Kvaser FIRST — it needs NO adapter connected
 - Install the **Kvaser Drivers for Windows** (free) → installs `canlib32.dll` + the
@@ -27,10 +27,10 @@ Picking this up on the Windows machine? Here's the state and the next moves.
   project: { name: kvaser-virtual, version: 1 }
   channels:
     - { name: KV,   type: can, interface: "kvaser:0@500000", mode: monitor,
-        databases: ["dbc/cantester.dbc"] }
+        databases: ["dbc/blobly_net.dbc"] }
     - { name: KVTX, type: can, interface: "kvaser:0@500000", mode: monitor }
   ```
-  Run `scripts\run.ps1` (or the built exe) with `CANTESTER_PROJECT` pointed at it,
+  Run `scripts\run.ps1` (or the built exe) with `BLOBLY_PROJECT` pointed at it,
   ▶ Start, then send a frame (Send/Generators panel, or a Lua `bus.send("KVTX", …)`)
   and confirm it shows up on `KV`. This proves the whole Kvaser path with no wiring.
 
@@ -42,7 +42,7 @@ Picking this up on the Windows machine? Here's the state and the next moves.
 
 ### 3. Cross-check against python-can (the oracle, like the SUT)
 - `pip install python-can`; transmit/receive with `interface="kvaser"` /
-  `"pcan"`, channel matching above, and diff against CANTester's trace.
+  `"pcan"`, channel matching above, and diff against Blobly Net's trace.
 
 ## If something's off
 - The shims are written from the **documented** vendor ABI, unverified on silicon.

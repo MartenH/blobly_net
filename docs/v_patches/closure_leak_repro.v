@@ -1,4 +1,4 @@
-// Minimal reproducer for the V closure leak (the root cause of the cantester
+// Minimal reproducer for the V closure leak (the root cause of the blobly_net
 // data_grid memory leak — see docs/known_issues.md, "ROOT CAUSE NAILED").
 //
 //   v -path "@vlib|@vmodules|modules" run docs/v_patches/closure_leak_repro.v

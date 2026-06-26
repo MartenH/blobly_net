@@ -44,7 +44,7 @@ mut:
 
 fn main() {
 	mut window := gui.window(
-		title:   'CANTester — vlang/gui capability demo'
+		title:   'Blobly Net — vlang/gui capability demo'
 		state:   &DashApp{}
 		width:   980
 		height:  600
@@ -130,7 +130,7 @@ fn main_view(mut window gui.Window) gui.View {
 				sizing:  gui.fill_fit
 				spacing: 12
 				content: [
-					gui.text(text: 'CANTester', text_style: gui.theme().b1),
+					gui.text(text: 'Blobly Net', text_style: gui.theme().b1),
 					gui.text(text: 'live signal table + plot', text_style: gui.theme().b3),
 					gui.button(
 						id_focus: 1

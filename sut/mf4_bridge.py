@@ -106,7 +106,7 @@ def cmd_tomf4(in_log, out_mf4):
     """candump .log -> MF4 (asammdf bus-logging layout) via python-can's
     MF4Writer. Inverse of `convert`. Lets us mint a real MF4 from any candump
     capture we own (e.g. sut/can_sut.py traffic), so MF4 features can be demoed
-    on non-J1939 data that decodes against dbc/cantester.dbc, and so the round
+    on non-J1939 data that decodes against dbc/blobly_net.dbc, and so the round
     trip log -> mf4 -> convert -> frames closes on traffic we control."""
     try:
         import can
