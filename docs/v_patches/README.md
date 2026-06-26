@@ -6,7 +6,7 @@
 > API, merge `1a2d0e5b`) + **[vlang/gui#62]** (uses it in `Window.update()`, merge
 > `7a20a6ac`). Adoption: **V** = master via `setup-v check-latest` (has the API);
 > **gui pin** bumped `68b9302 → 7a20a6ac` (Linux ci.yml + local dev). Validated:
-> cantester builds with NO closure patches and live RSS plateaus ~330 MB (was
+> blobly_net builds with NO closure patches and live RSS plateaus ~330 MB (was
 > unbounded). The gcc-16 C-bridge patches (`01`/`02`) are also upstream at that pin
 > now (native-Windows work) — only `03-titlebar`, `06-sample-count`,
 > `gui-window-resize`, and the vglyph patches remain. **Windows CI/build stays on
@@ -174,7 +174,7 @@ detects WSL, so it works regardless of launch method; real Linux desktops keep t
 > for a fresh checkout, not this one.
 
 ```sh
-P=/home/mahi/repos/cantester_v/docs/v_patches
+P=/home/mahi/repos/blobly_net/docs/v_patches
 cd ~/v
 git checkout ed17e5fb                          # base the closure patch is generated against
 git apply $P/closure-gc-leak-fix.patch        # THE leak fix (V side, = PR #27446)
@@ -202,7 +202,7 @@ git apply $P/vglyph-empty-outline.patch        # don't crash on empty-outline gl
 ```sh
 v -gc boehm_leak -enable-globals -path "@vlib|@vmodules|modules" -o build/mem_leak_grid \
   cmd/mem_leak_grid/mem_leak_grid.v
-MEM_REPRO=changing CANTESTER_RUN_MS=6000 ./build/mem_leak_grid    # prints boehm leak backtraces
+MEM_REPRO=changing BLOBLY_RUN_MS=6000 ./build/mem_leak_grid    # prints boehm leak backtraces
 ```
 
 [vlang/v#27446]: https://github.com/vlang/v/pull/27446

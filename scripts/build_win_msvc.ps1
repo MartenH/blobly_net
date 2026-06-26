@@ -1,9 +1,9 @@
-# build_win_msvc.ps1 — native Windows build of CANTester via MSVC + vcpkg.
+# build_win_msvc.ps1 — native Windows build of Blobly Net via MSVC + vcpkg.
 #
 # The MSVC/vcpkg counterpart to build_win.ps1 (which uses mingw-w64 gcc + MSYS2).
 # This mirrors vlang/gui's own Windows CI recipe (`-cc msvc`, libs from vcpkg).
 #
-#   .\scripts\build_win_msvc.ps1            # build build\cantester-msvc.exe
+#   .\scripts\build_win_msvc.ps1            # build build\blobly_net-msvc.exe
 #   .\scripts\build_win_msvc.ps1 -Run       # build then run
 #   .\scripts\build_win_msvc.ps1 -Deps      # `vcpkg install pango freetype` first
 #   .\scripts\build_win_msvc.ps1 -Debug     # -g (asserts on) for cdb/WinDbg
@@ -32,7 +32,7 @@
 #     VCPKG_ROOT to the VS-bundled vcpkg — set VCPKG_ROOT *after* VsDevCmd.
 param(
     [string]$Target = 'src\main.v',
-    [string]$Out    = 'build\cantester-msvc.exe',
+    [string]$Out    = 'build\blobly_net-msvc.exe',
     [string]$Triplet = 'x64-windows',
     # Captured here (before any VS dev-shell setup) because VsDevCmd/Launch-VsDevShell
     # OVERWRITES VCPKG_ROOT to the VS-bundled vcpkg. Default to our C:\dev\vcpkg, else

@@ -1,4 +1,4 @@
-// project — CANTester project / configuration files (`.yml`).
+// project — Blobly Net project / configuration files (`.yml`).
 //
 // A project is the single source of truth for the bus setup: which channels
 // (buses) exist and how each is configured — interface, bitrate/timing, the
@@ -198,7 +198,7 @@ pub fn load(path string) !Project {
 }
 
 // default_project is the built-in fallback when no project file is available:
-// a single vcan0 monitor channel decoding dbc/cantester.dbc.
+// a single vcan0 monitor channel decoding dbc/blobly_net.dbc.
 pub fn default_project() Project {
 	return Project{
 		name:     'default'
@@ -206,7 +206,7 @@ pub fn default_project() Project {
 			Channel{
 				name:      'CAN1'
 				iface:     'vcan0'
-				databases: ['dbc/cantester.dbc']
+				databases: ['dbc/blobly_net.dbc']
 			},
 		]
 	}

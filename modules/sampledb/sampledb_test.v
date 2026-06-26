@@ -3,16 +3,16 @@ module sampledb
 import candb
 import os
 
-// The real dbc/cantester.dbc must describe exactly the same layouts as the
+// The real dbc/blobly_net.dbc must describe exactly the same layouts as the
 // hand-coded catalog here — this test is the contract that lets us swap the
 // hand-coded sampledb for DBC loading without changing decode behaviour.
-fn cantester_db() candb.Database {
-	path := os.join_path(os.dir(@FILE), '..', '..', 'dbc', 'cantester.dbc')
+fn blobly_net_db() candb.Database {
+	path := os.join_path(os.dir(@FILE), '..', '..', 'dbc', 'blobly_net.dbc')
 	return candb.load_dbc_file(path) or { panic('cannot load ${path}: ${err}') }
 }
 
 fn test_dbc_matches_handcoded_layout() {
-	db := cantester_db()
+	db := blobly_net_db()
 	for hand in catalog() {
 		from_dbc := db.lookup(hand.id) or { panic('DBC missing 0x${hand.id:X}') }
 		assert from_dbc.dlc == hand.dlc
@@ -42,7 +42,7 @@ fn test_dbc_decodes_frame_identically() {
 	// A concrete Powertrain frame (the kind the Python SUT emits), decoded by the
 	// hand-coded catalog and by the DBC, must yield identical physical values.
 	hand := powertrain()
-	dbc_pt := cantester_db().lookup(0x100) or { panic('no Powertrain in DBC') }
+	dbc_pt := blobly_net_db().lookup(0x100) or { panic('no Powertrain in DBC') }
 
 	mut data := []u8{len: 8}
 	hand.signals[0].encode(mut data, 1600.0) // EngineSpeed rpm

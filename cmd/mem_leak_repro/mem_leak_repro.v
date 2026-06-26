@@ -1,5 +1,5 @@
 // mem_leak_repro — minimal reproducer for the steady memory growth seen when the
-// trace shows live (constantly changing) values. No cantester logic, no CAN, no
+// trace shows live (constantly changing) values. No blobly_net logic, no CAN, no
 // simulation — just a gui window that redraws ~7 rows of text on a timer.
 //
 // Modes (env MEM_REPRO=changing|static, default changing):
@@ -23,7 +23,7 @@
 // Static: MEM_REPRO=static  <same>
 // Profile diff (Linux): heaptrack each mode, then
 //   heaptrack_print -d <static.gz> -a 1 -p 0 <changing.gz>   # shows the text-only allocs
-// CANTESTER_RUN_MS=N exits after N ms (clean finalize for heaptrack/valgrind).
+// BLOBLY_RUN_MS=N exits after N ms (clean finalize for heaptrack/valgrind).
 module main
 
 import gui
@@ -63,7 +63,7 @@ fn main() {
 			}(mut w)
 		}
 	)
-	if ms := os.getenv_opt('CANTESTER_RUN_MS') {
+	if ms := os.getenv_opt('BLOBLY_RUN_MS') {
 		spawn fn (n int) {
 			time.sleep(n * time.millisecond)
 			exit(0)

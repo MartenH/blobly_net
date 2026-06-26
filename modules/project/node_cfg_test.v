@@ -5,7 +5,7 @@ const node_yaml = 'project:
 channels:
   - name: CAN1
     interface: inproc:CAN1
-    databases: [dbc/cantester.dbc]
+    databases: [dbc/blobly_net.dbc]
     simulate: [Gateway]
     nodes:
       - name: SUT

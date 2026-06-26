@@ -1,4 +1,4 @@
-// script — the cantester scripting runtime: an embedded Lua 5.4 interpreter
+// script — the blobly_net scripting runtime: an embedded Lua 5.4 interpreter
 // (modules/lua) wired to the GUI-free protocol stack so test scripts can drive
 // diagnostics (UDS over ISO-TP), send/receive raw CAN frames, and decode/encode
 // DBC signals. The CANoe-like ergonomics (test()/check/uds:/bus.) live in the

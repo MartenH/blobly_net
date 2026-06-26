@@ -30,7 +30,7 @@
 //
 // Run:    v -enable-globals -path "@vlib|@vmodules|modules" run cmd/mem_leak_repro/textured_control.v
 //   REPRO_MODE=rects <same>   /   REPRO_MODE=textured_static <same>
-// CANTESTER_RUN_MS=N exits cleanly after N ms (for heaptrack/valgrind).
+// BLOBLY_RUN_MS=N exits cleanly after N ms (for heaptrack/valgrind).
 module main
 
 import gg
@@ -62,7 +62,7 @@ fn main() {
 		frame_fn:     frame
 		user_data:    app
 	)
-	if ms := os.getenv_opt('CANTESTER_RUN_MS') {
+	if ms := os.getenv_opt('BLOBLY_RUN_MS') {
 		spawn fn (n int) {
 			time.sleep(n * time.millisecond)
 			exit(0)

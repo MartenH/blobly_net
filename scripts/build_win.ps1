@@ -1,12 +1,12 @@
-# build_win.ps1 — native Windows build of CANTester via mingw-w64 gcc (W1).
+# build_win.ps1 — native Windows build of Blobly Net via mingw-w64 gcc (W1).
 #
 # Uses a DEDICATED, isolated toolchain under C:\dev (see CLAUDE.md "Windows build
 # (W1)" and docs/windows_build.md). Nothing outside C:\dev is touched.
 #
-#   .\scripts\build_win.ps1                 # build build\cantester.exe
+#   .\scripts\build_win.ps1                 # build build\blobly_net.exe
 #   .\scripts\build_win.ps1 -Run            # build then run
 #   .\scripts\build_win.ps1 -Debug          # build with -g (asserts on) for gdb
-#   $env:CANTESTER_PROJECT='projects\demo-udp.yml'; .\scripts\build_win.ps1 -Run
+#   $env:BLOBLY_PROJECT='projects\demo-udp.yml'; .\scripts\build_win.ps1 -Run
 #
 # Prereqs (one-time, see docs/windows_build.md):
 #   - C:\dev\msys64-ct           dedicated MSYS2 + mingw-w64 gcc/pkgconf/pango/...
@@ -14,7 +14,7 @@
 #   - C:\dev\vmodules-ct\{gui,vglyph}  gui@68b9302 + vglyph (with the W1 patches)
 param(
     [string]$Target = 'src\main.v',
-    [string]$Out    = 'build\cantester.exe',
+    [string]$Out    = 'build\blobly_net.exe',
     [switch]$Run,
     [switch]$Debug
 )

@@ -1,11 +1,11 @@
-# CANTester project — replay demo (Phase 8), zero drivers.
+# Blobly Net project — replay demo (Phase 8), zero drivers.
 #
 # Replays samples/demo.log onto an in-process bus at its recorded cadence
 # (10 Hz Powertrain 0x100 + Heartbeat 0x700), looping forever. No vcan, no
 # Python, no kernel modules — runs identically on Linux and Windows.
 #
-#   CANTESTER_PROJECT=projects/replay-demo.yml ./scripts/run.sh
-#   → press ▶ Start: the trace fills with TX frames decoded via cantester.dbc;
+#   BLOBLY_PROJECT=projects/replay-demo.yml ./scripts/run.sh
+#   → press ▶ Start: the trace fills with TX frames decoded via blobly_net.dbc;
 #     the Buses panel shows live loop/progress on the channel.
 #
 # `speed` scales playback (2.0 = twice as fast); `loop: false` plays once and
@@ -22,7 +22,7 @@ channels:
     mode: replay
     enabled: true
     databases:
-      - dbc/cantester.dbc
+      - dbc/blobly_net.dbc
     replay:
       source: samples/demo.log
       speed: 1.0

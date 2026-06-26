@@ -5,8 +5,8 @@
  * names, exactly like socketcan_shim.h does for the SocketCAN macros. V calls
  * only these `ctlua_*` helpers; it never needs the Lua headers directly.
  */
-#ifndef CANTESTER_LUA_SHIM_H
-#define CANTESTER_LUA_SHIM_H
+#ifndef BLOBLY_LUA_SHIM_H
+#define BLOBLY_LUA_SHIM_H
 
 #include <string.h>
 #include "lua.h"
@@ -103,4 +103,4 @@ static inline int ctlua_error(lua_State *L, const char *msg) {
 	return lua_error(L);
 }
 
-#endif /* CANTESTER_LUA_SHIM_H */
+#endif /* BLOBLY_LUA_SHIM_H */

@@ -1,4 +1,4 @@
-// CANTester — main application window.
+// Blobly Net — main application window.
 //
 // Live CAN tester on vcan0, built as a dockable workspace (gui dock_layout):
 //   - Trace panel: grouped (one row per ID, click to expand into decoded signal
@@ -86,7 +86,7 @@ const trace_header_height = f32(16)
 // glyphs). A process global because the dense-grid helpers (make_theme,
 // trace_text_style via the theme, the activity-bar icons) are free functions with
 // no App handle; globals are already enabled (-enable-globals, for the in-proc bus).
-// Set CANTESTER_UI_SCALE=1.5 at startup, or pick it live from the toolbar control.
+// Set BLOBLY_UI_SCALE=1.5 at startup, or pick it live from the toolbar control.
 __global (
 	g_ui_scale = f32(1.0)
 )
@@ -1030,7 +1030,7 @@ fn main() {
 	// DPI workaround (see g_ui_scale): read the startup UI scale BEFORE building the
 	// window/theme so the initial window size and all theme sizes use it. Accepts a
 	// factor (1.5) or a percentage (150%).
-	if v := os.getenv_opt('CANTESTER_UI_SCALE') {
+	if v := os.getenv_opt('BLOBLY_UI_SCALE') {
 		raw := v.trim_space()
 		if raw.ends_with('%') {
 			g_ui_scale = clamp_scale(raw.trim_right('%').f32() / 100)
@@ -1048,7 +1048,7 @@ fn main() {
 		os.setenv('GUI_NO_PORTAL', '1', true)
 	}
 	mut window := gui.window(
-		title:        'CANTester — CAN'
+		title:        'Blobly Net — CAN'
 		state:        &App{}
 		width:        int(1500 * g_ui_scale)
 		height:       int(920 * g_ui_scale)
@@ -1066,12 +1066,12 @@ fn main() {
 			app.t0 = time.ticks()
 			app.dock_root = default_layout()
 			// Load the project (bus setup). Precedence: CLI arg (first positional
-			// path, e.g. `cantester projects/foo.yml`) > CANTESTER_PROJECT env >
+			// path, e.g. `blobly_net projects/foo.yml`) > BLOBLY_PROJECT env >
 			// most-recently-opened project > projects/demo.yml > a built-in
 			// single-vcan0 default so the app always runs.
 			app.recents = load_recents()
 			proj_path := cli_project_arg() or {
-				os.getenv_opt('CANTESTER_PROJECT') or {
+				os.getenv_opt('BLOBLY_PROJECT') or {
 					if app.recents.len > 0 { app.recents[0] } else { 'projects/demo.yml' }
 				}
 			}
@@ -1087,7 +1087,7 @@ fn main() {
 			app.load_databases()
 			app.build_sim_nodes()
 			set_window_title(app.proj.name)
-			app.log_path = os.getenv_opt('CANTESTER_LOG') or { '' }
+			app.log_path = os.getenv_opt('BLOBLY_LOG') or { '' }
 			vnote := app.proj.version_note()
 			app.notify(if vnote != '' { .warn } else { .info }, if vnote != '' {
 				'⚠ ${vnote}'
@@ -1099,26 +1099,26 @@ fn main() {
 			// links in-app instead of letting gui spawn the OS browser. Only real
 			// http(s) URLs fall through to the browser. See help_link_handler.
 			w.set_link_handler(help_link_handler)
-			// CANTESTER_AUTOSTART=1 begins measurement immediately on launch —
+			// BLOBLY_AUTOSTART=1 begins measurement immediately on launch —
 			// handy for the screenshot loop (xdotool clicking is unreliable under
 			// WSLg), harmless otherwise.
-			if os.getenv('CANTESTER_AUTOSTART') != '' {
+			if os.getenv('BLOBLY_AUTOSTART') != '' {
 				start_measurement(mut w)
 			}
-			// CANTESTER_RUN_MS=N exits the process after N ms — for clean profiler
+			// BLOBLY_RUN_MS=N exits the process after N ms — for clean profiler
 			// (heaptrack/valgrind) finalization. Dev-only.
-			if ms := os.getenv_opt('CANTESTER_RUN_MS') {
+			if ms := os.getenv_opt('BLOBLY_RUN_MS') {
 				spawn fn (n int) {
 					time.sleep(n * time.millisecond)
 					exit(0)
 				}(ms.int())
 			}
-			// CANTESTER_MEMLOG=1 logs RSS + the V GC heap every 3s; CANTESTER_GCFORCE=1
+			// BLOBLY_MEMLOG=1 logs RSS + the V GC heap every 3s; BLOBLY_GCFORCE=1
 			// also forces a collection each tick — to tell a V-heap leak (both grow)
 			// from a C-side one (RSS grows, gcheap flat). Dev-only.
-			if os.getenv('CANTESTER_MEMLOG') != '' {
+			if os.getenv('BLOBLY_MEMLOG') != '' {
 				spawn fn () {
-					force := os.getenv('CANTESTER_GCFORCE') != ''
+					force := os.getenv('BLOBLY_GCFORCE') != ''
 					for {
 						time.sleep(3 * time.second)
 						if force {
@@ -2155,14 +2155,14 @@ fn dock_has_panel(root &gui.DockNode, pid string) bool {
 
 // about_text builds the About page (version + links) at runtime.
 fn about_text() string {
-	return '# CANTester\n\n' +
+	return '# Blobly Net\n\n' +
 		'A **CANoe-style** automotive bus tester written in V (vlang). Virtual-first — it ' +
 		'runs driver-free with a built-in simulation; real CAN hardware (Kvaser/PCAN) drops ' +
 		'in behind the same bus abstraction.\n\n' +
 		'Live trace + DBC decode · signal plots · Send / Generators · UDS diagnostics · ' +
 		'MF4 / candump log replay · embedded **Lua** scripting.\n\n' +
-		'- Repo: https://github.com/MartenH/cantester_v\n' +
-		'- Issues: https://github.com/MartenH/cantester_v/issues\n' +
+		'- Repo: https://github.com/MartenH/blobly_net\n' +
+		'- Issues: https://github.com/MartenH/blobly_net/issues\n' +
 		'- Docs: the `docs/` folder — scripting.md, can_hardware.md, windows_build.md\n\n' +
 		'Built with vlang/gui + vglyph.'
 }
@@ -2365,7 +2365,7 @@ fn view_submenu(app &App) []gui.MenuItemCfg {
 
 // cli_project_arg returns the first positional CLI argument that looks like a
 // project file (a path ending in .yml/.yaml, or any existing file), so
-// `cantester projects/ecu-vcm.yml` loads that project. Flags (leading '-') are
+// `blobly_net projects/ecu-vcm.yml` loads that project. Flags (leading '-') are
 // skipped so sokol/gg options don't get mistaken for a path.
 fn cli_project_arg() ?string {
 	for a in os.args[1..] {
@@ -2641,7 +2641,7 @@ fn do_save_project(mut w gui.Window) {
 // set_window_title updates the OS titlebar to show the open project (sapp is valid
 // inside on_init / once running). In-app the Buses panel header + Stats also show it.
 fn set_window_title(project_name string) {
-	title := 'CANTester — ${project_name}'
+	title := 'Blobly Net — ${project_name}'
 	C.sapp_set_window_title(&char(title.str))
 }
 
@@ -2891,11 +2891,11 @@ fn usb_attach_can(mut w gui.Window) {
 const max_recents = 8
 
 // recents_path is the per-user file that stores recently opened projects,
-// one path per line, in the OS config dir (%APPDATA%\cantester on Windows,
-// ~/.config/cantester on Linux). It is user state, not part of the repo.
+// one path per line, in the OS config dir (%APPDATA%\blobly_net on Windows,
+// ~/.config/blobly_net on Linux). It is user state, not part of the repo.
 fn recents_path() string {
 	cfg := os.config_dir() or { return '' }
-	return os.join_path(cfg, 'cantester', 'recent_projects.txt')
+	return os.join_path(cfg, 'blobly_net', 'recent_projects.txt')
 }
 
 // load_recents reads the recents file, dropping blanks, duplicates, and paths
@@ -5522,7 +5522,7 @@ fn toggle_record(mut w gui.Window) {
 			return
 		}
 		t := time.now()
-		path := 'cantester-${t.year}${t.month:02}${t.day:02}-${t.hour:02}${t.minute:02}${t.second:02}.log'
+		path := 'blobly_net-${t.year}${t.month:02}${t.day:02}-${t.hour:02}${t.minute:02}${t.second:02}.log'
 		mut lines := []string{}
 		for e in entries {
 			lines << canlog.format_line(e)

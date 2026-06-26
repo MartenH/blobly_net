@@ -16,7 +16,7 @@ channels:
     interface: inproc:CAN1
     mode: monitor
     databases:
-      - dbc/cantester.dbc        # the network owns the database
+      - dbc/blobly_net.dbc        # the network owns the database
     simulation:           # the simulation workload on this bus (was `nodes:`)
       - name: SUT
         signals:
@@ -71,7 +71,7 @@ channels:
     interface: inproc:CAN2
     mode: monitor
     databases:
-      - dbc/cantester.dbc
+      - dbc/blobly_net.dbc
     simulation:           # the simulation workload on this bus (was `nodes:`)
       - name: BodyECU
         signals:

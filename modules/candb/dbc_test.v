@@ -4,13 +4,13 @@ import os
 
 // Resolve the repo's real DBC relative to this source file, so the test passes
 // regardless of the working directory `v test` runs from.
-fn cantester_dbc() Database {
-	path := os.join_path(os.dir(@FILE), '..', '..', 'dbc', 'cantester.dbc')
+fn blobly_net_dbc() Database {
+	path := os.join_path(os.dir(@FILE), '..', '..', 'dbc', 'blobly_net.dbc')
 	return load_dbc_file(path) or { panic('cannot load ${path}: ${err}') }
 }
 
 fn test_dbc_messages_parsed() {
-	db := cantester_dbc()
+	db := blobly_net_dbc()
 	// SUT/Tester core (4) + BodyECU/ChassisECU/BatteryECU messages (4) = 8.
 	assert db.messages.len == 8
 	pt := db.lookup(0x100) or { panic('no Powertrain') }
@@ -30,7 +30,7 @@ fn test_dbc_messages_parsed() {
 }
 
 fn test_dbc_signal_layout() {
-	pt := cantester_dbc().lookup(0x100) or { panic('no Powertrain') }
+	pt := blobly_net_dbc().lookup(0x100) or { panic('no Powertrain') }
 	es := pt.signals[0]
 	assert es.name == 'EngineSpeed'
 	assert es.start_bit == 0
@@ -49,7 +49,7 @@ fn test_dbc_signal_layout() {
 }
 
 fn test_dbc_value_table() {
-	pt := cantester_dbc().lookup(0x100) or { panic('no Powertrain') }
+	pt := blobly_net_dbc().lookup(0x100) or { panic('no Powertrain') }
 	gear := pt.signals[4]
 	assert gear.name == 'Gear'
 	assert gear.values[3] == 'Third'
@@ -60,7 +60,7 @@ fn test_dbc_value_table() {
 }
 
 fn test_dbc_comments() {
-	pt := cantester_dbc().lookup(0x100) or { panic('no Powertrain') }
+	pt := blobly_net_dbc().lookup(0x100) or { panic('no Powertrain') }
 	assert pt.signals[0].desc == 'Crankshaft rotational speed'
 	assert pt.signals[4].desc == 'Currently engaged gear'
 }
@@ -143,14 +143,14 @@ fn test_extended_mux_marker() {
 }
 
 fn test_non_multiplexed_returns_all() {
-	// cantester.dbc is not multiplexed: active_signals == all signals.
-	pt := cantester_dbc().lookup(0x100) or { panic('no Powertrain') }
+	// blobly_net.dbc is not multiplexed: active_signals == all signals.
+	pt := blobly_net_dbc().lookup(0x100) or { panic('no Powertrain') }
 	assert pt.multiplexor_index() == -1
 	assert pt.active_signals([]u8{len: 8}).len == pt.signals.len
 }
 
 fn test_dbc_decode_roundtrip_and_label() {
-	pt := cantester_dbc().lookup(0x100) or { panic('no Powertrain') }
+	pt := blobly_net_dbc().lookup(0x100) or { panic('no Powertrain') }
 	mut data := []u8{len: 8}
 	pt.signals[0].encode(mut data, 2000.0) // EngineSpeed
 	pt.signals[1].encode(mut data, 88.0)   // VehicleSpeed

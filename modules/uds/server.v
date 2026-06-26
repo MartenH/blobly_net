@@ -25,7 +25,7 @@ const server_security_seed = [u8(0x11), 0x22, 0x33, 0x44]
 pub fn default_server() Server {
 	return Server{
 		dids: {
-			u16(0xF190): 'CANTESTERV0SUT001'.bytes() // VIN, 17 bytes -> multi-frame
+			u16(0xF190): 'BLOBLYNETV0SUT001'.bytes() // VIN, 17 bytes -> multi-frame
 			u16(0xF18C): 'SN-0001'.bytes()           // ECU serial number
 			u16(0xF195): [u8(0x01), 0x00]            // software version 1.00
 		}

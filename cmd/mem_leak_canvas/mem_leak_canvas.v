@@ -1,13 +1,13 @@
 // mem_leak_canvas — isolate the gui draw_canvas polyline re-tessellation path.
-// Mirrors the cantester Graphics panel and NOTHING else (no CAN, no text rows): a
+// Mirrors the blobly_net Graphics panel and NOTHING else (no CAN, no text rows): a
 // single draw_canvas drawing one polyline, re-tessellated every frame.
 //
 // Modes (env MEM_REPRO=changing|static, default changing):
 //   - changing : version moves every frame → on_draw runs + the polyline geometry
-//                changes → re-tessellate every frame (the cantester live-plot case).
+//                changes → re-tessellate every frame (the blobly_net live-plot case).
 //   - static   : version fixed → cache hit, on_draw skipped after the first frame.
 // If `changing` climbs and `static` is flat, the leak is in gui's draw_canvas /
-// polyline / SGL path (an upstream gui issue). If BOTH are flat, the cantester leak
+// polyline / SGL path (an upstream gui issue). If BOTH are flat, the blobly_net leak
 // is NOT the canvas — it's a data structure (uncapped plot history / record buffer).
 //
 // Run:    v -enable-globals -path "@vlib|@vmodules|modules" run cmd/mem_leak_canvas/mem_leak_canvas.v
@@ -51,7 +51,7 @@ fn main() {
 			}(mut w)
 		}
 	)
-	if ms := os.getenv_opt('CANTESTER_RUN_MS') {
+	if ms := os.getenv_opt('BLOBLY_RUN_MS') {
 		spawn fn (n int) {
 			time.sleep(n * time.millisecond)
 			exit(0)

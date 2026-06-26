@@ -1,4 +1,4 @@
-# CANTester
+# Blobly Net
 
 A CANoe-like automotive bus tester written in [V](https://vlang.io). It tests a System Under Test
 (SUT) over automotive buses — **CAN / Ethernet / LIN** — starting with **CAN**, **virtual first**
@@ -18,7 +18,7 @@ hardware/software-GL notes, and the roadmap are in [CLAUDE.md](CLAUDE.md).
 
 ## Scripting & testing
 
-CANTester runs **Lua** test scripts (diagnostics, raw frames, DBC signals) against a
+Blobly Net runs **Lua** test scripts (diagnostics, raw frames, DBC signals) against a
 CAN setup — headless for CI, or live in the GUI's **Script** panel. No hardware
 needed: the runner spins up a simulated bus + ECU for you.
 

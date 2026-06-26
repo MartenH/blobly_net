@@ -13,7 +13,7 @@ end)
 
 test("VIN reads back over multi-frame ISO-TP", function()
   local vin = diag:read_did(0xF190)         -- 0x22 ReadDataByIdentifier
-  check.equal(vin, "CANTESTERV0SUT001")
+  check.equal(vin, "BLOBLYNETV0SUT001")
   check.equal(#vin, 17)
   log("VIN =", vin)
 end)

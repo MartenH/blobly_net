@@ -1,12 +1,12 @@
-# CANTester scripting & test guide
+# Blobly Net scripting & test guide
 
-CANTester runs **Lua 5.4** test scripts against a CAN setup — diagnostics (UDS),
+Blobly Net runs **Lua 5.4** test scripts against a CAN setup — diagnostics (UDS),
 raw frames, and DBC signal decode/encode. The same script runs two ways:
 
 - **Headless** from the command line (`scripts/runtests.sh`) — for development and CI.
 - **In the GUI**, against a live measurement (the **Script** panel).
 
-You don't need anything installed: Lua is compiled into CANTester, and the headless
+You don't need anything installed: Lua is compiled into Blobly Net, and the headless
 runner brings up a simulated bus + ECU for you (no hardware, no Python, no drivers).
 
 ---
@@ -68,7 +68,7 @@ changes.
 
 ## 2. Writing a Lua script
 
-A script is plain Lua. The CANTester API (below) is already loaded — just call it.
+A script is plain Lua. The Blobly Net API (below) is already loaded — just call it.
 The smallest useful script:
 
 ```lua
@@ -77,7 +77,7 @@ local diag = uds.open("CAN1")            -- tester on 0x7E0 / ECU on 0x7E8
 
 test("ECU returns its VIN", function()
   local vin = diag:read_did(0xF190)      -- 0x22 ReadDataByIdentifier
-  check.equal(vin, "CANTESTERV0SUT001")
+  check.equal(vin, "BLOBLYNETV0SUT001")
   log("VIN =", vin)
 end)
 ```
@@ -197,7 +197,7 @@ flows, but `expect` + `on_message`/`run` cover the common test shapes.)
 | Call | Meaning |
 |---|---|
 | `log(...)` | Print a line to the output (tab-separated args). |
-| `print(...)` | Same as `log` (routed to the CANTester output). |
+| `print(...)` | Same as `log` (routed to the Blobly Net output). |
 | `sleep_ms(ms)` | Wait `ms` milliseconds. |
 
 Plus the full Lua 5.4 standard library (`string`, `table`, `math`, …).
@@ -208,7 +208,7 @@ Plus the full Lua 5.4 standard library (`string`, `table`, `math`, …).
 
 Scripts run against a **project** `.yml`, which defines the channels. The shipped
 `projects/sim-demo.yml` declares `CAN1` (and `CAN2`) on a driver-free in-process bus,
-each with the `dbc/cantester.dbc` database and simulated ECUs. That's why the example
+each with the `dbc/blobly_net.dbc` database and simulated ECUs. That's why the example
 scripts can read a VIN and decode `Powertrain` with no hardware.
 
 The channel `name:` in the project is the string you pass to `uds.open` / `bus.*` /

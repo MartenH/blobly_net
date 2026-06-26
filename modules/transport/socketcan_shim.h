@@ -1,8 +1,8 @@
 // Thin C helpers over Linux SocketCAN (raw CAN). Keeping the fiddly bits
 // (sockaddr_can, SIOCGIFINDEX ioctl, struct can_frame) in C avoids fighting V's
 // representation of these kernel structs. V calls only these flat functions.
-#ifndef CANTESTER_SOCKETCAN_SHIM_H
-#define CANTESTER_SOCKETCAN_SHIM_H
+#ifndef BLOBLY_SOCKETCAN_SHIM_H
+#define BLOBLY_SOCKETCAN_SHIM_H
 
 #include <stdint.h>
 #include <string.h>
@@ -74,4 +74,4 @@ static inline uint32_t ct_rtr_flag(void) { return CAN_RTR_FLAG; }
 static inline uint32_t ct_sff_mask(void) { return CAN_SFF_MASK; }
 static inline uint32_t ct_eff_mask(void) { return CAN_EFF_MASK; }
 
-#endif // CANTESTER_SOCKETCAN_SHIM_H
+#endif // BLOBLY_SOCKETCAN_SHIM_H

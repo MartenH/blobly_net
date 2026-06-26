@@ -1,6 +1,6 @@
 name: ci
 
-# Linux CI for CANTester. Two jobs:
+# Linux CI for Blobly Net. Two jobs:
 #   * test     — the reliable backbone: `v test modules/` (every GUI-free module,
 #                incl. the embedded-Lua `lua`/`script` modules) + the headless Lua
 #                integration tests (scripts/runtests.sh) against the in-process sim.
@@ -107,5 +107,5 @@ jobs:
       - name: Build GUI (compile-link src/main.v)
         run: |
           mkdir -p build
-          v -enable-globals -path "@vlib|@vmodules|modules" -o build/cantester src/main.v
-          test -x build/cantester && echo "BUILD OK -> build/cantester"
+          v -enable-globals -path "@vlib|@vmodules|modules" -o build/blobly_net src/main.v
+          test -x build/blobly_net && echo "BUILD OK -> build/blobly_net"

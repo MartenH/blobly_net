@@ -1,6 +1,6 @@
 name: windows-build
 
-# Native Windows build of CANTester in CI. Compiles + links the full GUI app; does
+# Native Windows build of Blobly Net in CI. Compiles + links the full GUI app; does
 # NOT run it. Two jobs:
 #   * build-msvc  — MSVC + vcpkg (pango/freetype). Local equiv: scripts\build_win_msvc.ps1
 #   * build-msys2 — MSYS2/mingw gcc + pacman pango/freetype (no vcpkg, no ABI-drift
@@ -149,9 +149,9 @@ jobs:
           # -enable-globals: main.v uses the in-proc bus (transport/inproc.v __global).
           v -cc msvc -no-parallel -enable-globals -path "@vlib|@vmodules|modules" `
             -cflags "/I`"$vcpkg\include`"" -ldflags "/LIBPATH:`"$vcpkg\lib`"" `
-            -o build\cantester-msvc.exe src\main.v
+            -o build\blobly_net-msvc.exe src\main.v
           if ($LASTEXITCODE -ne 0) { throw "build failed" }
-          Write-Host "BUILD OK -> build\cantester-msvc.exe"
+          Write-Host "BUILD OK -> build\blobly_net-msvc.exe"
 
       # The exe dynamically links vcpkg's pango/cairo/glib/freetype/harfbuzz/… DLLs;
       # without them next to it the artifact won't run. Copy the whole vcpkg runtime
@@ -180,9 +180,9 @@ jobs:
       - name: Upload exe + DLLs
         uses: actions/upload-artifact@v4
         with:
-          name: cantester-msvc-x64
+          name: blobly_net-msvc-x64
           path: |
-            build/cantester-msvc.exe
+            build/blobly_net-msvc.exe
             build/*.dll
           if-no-files-found: error
 
@@ -266,12 +266,12 @@ jobs:
           ldflags="$(pkgconf --libs $libs) -ld3d11 -ldxgi"
           mkdir -p build
           /c/v-ct/v.exe -cc gcc -no-parallel -enable-globals -path '@vlib|@vmodules|modules' \
-            -cflags "$cflags" -ldflags "$ldflags" -o build/cantester-mingw.exe src/main.v
-          test -f build/cantester-mingw.exe && echo "BUILD OK -> build/cantester-mingw.exe"
+            -cflags "$cflags" -ldflags "$ldflags" -o build/blobly_net-mingw.exe src/main.v
+          test -f build/blobly_net-mingw.exe && echo "BUILD OK -> build/blobly_net-mingw.exe"
 
       - name: Upload exe
         uses: actions/upload-artifact@v4
         with:
-          name: cantester-mingw-x64
-          path: build/cantester-mingw.exe
+          name: blobly_net-mingw-x64
+          path: build/blobly_net-mingw.exe
           if-no-files-found: error

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the CANTester scoped passwordless-sudo drop-in.
+# Install the Blobly Net scoped passwordless-sudo drop-in.
 #
 # Grants the invoking user NOPASSWD for exactly three commands the setup/run
 # scripts need: apt-get (install deps), ip (bring up vcan0), modprobe (load
@@ -14,7 +14,7 @@
 # BEFORE it is installed, so a typo can never lock you out of sudo.
 set -euo pipefail
 
-DEST=/etc/sudoers.d/cantester
+DEST=/etc/sudoers.d/blobly_net
 
 # The user to grant the rule to: the human who invoked `sudo`, not root.
 TARGET_USER="${SUDO_USER:-$(id -un)}"
@@ -36,7 +36,7 @@ MODPROBE="$(command -v modprobe || echo /usr/sbin/modprobe)"
 TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT
 cat >"$TMP" <<EOF
-# CANTester scoped passwordless sudo — managed by scripts/setup_sudoers.sh.
+# Blobly Net scoped passwordless sudo — managed by scripts/setup_sudoers.sh.
 # Lets the setup/run scripts install deps and bring up vcan0 without a prompt.
 ${TARGET_USER} ALL=(ALL) NOPASSWD: ${APT}, ${IP}, ${MODPROBE}
 EOF

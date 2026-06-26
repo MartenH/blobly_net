@@ -1,6 +1,6 @@
 # Native Windows build (W1) — recipe, gotchas & vendored patches
 
-**Status (2026-06-05): DONE.** The CANTester GUI builds and renders natively on
+**Status (2026-06-05): DONE.** The Blobly Net GUI builds and renders natively on
 Windows (mingw-w64 gcc, sokol **GL** backend), and the driver-free virtual-first
 flow works (Python SUT over the UDP software bus). Idle render cost ≈ **0.3% CPU**
 (16-core box) — the WSLg GL-translation tax is gone.
@@ -21,7 +21,7 @@ shared MSYS2, no global PATH changes — the build sets env per-invocation).
 | `C:\dev\msys64-ct\mingw64`    | mingw-w64 gcc 16, pkgconf, freetype/harfbuzz/fribidi/fontconfig/pango/glib, mingw python 3.14 |
 | `C:\dev\v`                    | V 0.5.1 @ commit `de365a1` (matches the Linux pin), built with tcc via `makev.bat` |
 | `C:\dev\vmodules-ct`          | V modules dir (via `VMODULES` env): `gui` @ `68b9302`, `vglyph`   |
-| `C:\dev\cantester_v`          | this repo                                                         |
+| `C:\dev\blobly_net`          | this repo                                                         |
 
 ## One-time setup
 
@@ -59,8 +59,8 @@ git clone https://github.com/vlang/vglyph.git C:\dev\vmodules-ct\vglyph
 ## Build & run
 
 ```powershell
-.\scripts\build_win.ps1                      # -> build\cantester.exe   (GL backend)
-$env:CANTESTER_PROJECT='projects\demo-udp.yml'
+.\scripts\build_win.ps1                      # -> build\blobly_net.exe   (GL backend)
+$env:BLOBLY_PROJECT='projects\demo-udp.yml'
 .\scripts\build_win.ps1 -Run                 # build + run on the UDP project
 # virtual ECU, driver-free (separate shell):
 C:\dev\msys64-ct\mingw64\bin\python.exe sut\can_sut.py udp
@@ -76,9 +76,9 @@ shell instead of PowerShell), for an all-`.sh` workflow consistent with
 `bundle_dlls.sh` and the Linux scripts:
 
 ```bash
-bash scripts/build_win.sh                 # -> build/cantester.exe
+bash scripts/build_win.sh                 # -> build/blobly_net.exe
 bash scripts/build_win.sh -run            # build + run
-CANTESTER_PROJECT=projects/demo-udp.yml bash scripts/build_win.sh -run
+BLOBLY_PROJECT=projects/demo-udp.yml bash scripts/build_win.sh -run
 ```
 
 It does exactly what the `.ps1` does (same env, same `pkgconf` flags, same
@@ -119,7 +119,7 @@ It reuses the same isolated `C:\dev\v` and `C:\dev\vmodules-ct`. Notes:
 
 1. **Smart App Control (SAC) blocks locally-built unsigned exes.** If SAC is
    *enforced* (`HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy\VerifiedAndReputablePolicyState
-   == 1`), every freshly compiled `cantester.exe` is blocked ("An Application
+   == 1`), every freshly compiled `blobly_net.exe` is blocked ("An Application
    Control policy has blocked this file" / "Part of this app has been blocked").
    SAC has no per-app allowlist and won't trust a self-signed cert, so native dev
    requires turning SAC **Off** (Settings → Privacy & security → Windows Security →
