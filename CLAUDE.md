@@ -1244,3 +1244,25 @@ prompt for a password.
   module const `doip.port` miscompiled (tcc "'port' undeclared") — name locals distinctly. NEXT (E2): wire `doip:<host>[:port]` into `transport.open()` +
   project config + the GUI Diagnostics panel (already speaks `isotp.Channel`); then E3 = `modules/someip`
   (service discovery + RPC, its own oracle — does NOT reuse the UDS stack).
+- 2026-06-29: **Phase E2 — DoIP wired into the app (config + Start/Stop + Diagnostics panel) DONE &
+  VERIFIED.** `modules/project`: a `type: doip` channel with `interface: doip:<host>[:<port>]` +
+  `tester_address`/`ecu_address` (logical addrs, default 0x0E80/0x1000); `Channel.is_doip()` +
+  `doip_endpoint()` parse it (bare `doip`/host-only fall back to 127.0.0.1:13400), addresses
+  round-trip through `save.v` (only emitted for DoIP channels), 2 new tests. **Deliberate deviation
+  from the E1 plan's wording:** DoIP is NOT plumbed into `transport.open()` — that returns a
+  `transport.Bus` (CAN-frame pipe) and DoIP has no frames to monitor; the carrier-swap seam is one
+  level up at `isotp.Channel` (where `DoipClient` already plugs in), so DoIP is wired at the
+  diagnostics layer. `src/main.v`: `start_measurement` branches on `is_doip()` before the CAN
+  mode-match (no Bus/RX thread); if the channel hosts a simulated ECU it spawns `doip_server_loop`
+  (native `DoipServer` wrapping `uds.default_server()` over real localhost TCP/UDP, short-timeout
+  TCP+UDP poll, exits on the running flag). The Diagnostics panel resolves the first running channel
+  to a `DiagTarget`; `open_diag_channel()` returns `doip.open_doip(...)` for DoIP else software
+  ISO-TP, so `uds.Client` (and every diag button) rides either carrier unchanged; the panel header
+  (`diag_target_label`) shows the live carrier. `projects/doip-demo.yml` (single DoIP channel,
+  `simulate: [SUT]`) runs the entity driver-free. **Verified end-to-end**: GUI launched with the demo
+  + `BLOBLY_AUTOSTART=1` served the entity on 127.0.0.1:13400 and an external UDS client read VIN
+  `BLOBLYNETV0SUT001` over Ethernet (the GUI's own diag buttons use the identical client path); full
+  suite **23/23**; `cmd/doip_smoke` still all-green. NEXT (E3): `modules/someip` (SOME-IP header +
+  RPC + SD service discovery over UDP multicast; its own sim service + oracle, does NOT reuse UDS).
+  Optional E2 polish: per-channel diag target selection in the panel (today it picks the first
+  running channel); a GUI screenshot of the DoIP diag flow.

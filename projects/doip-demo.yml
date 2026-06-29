@@ -1,0 +1,22 @@
+# DoIP diagnostics demo — UDS over Ethernet (ISO 13400), driver-free.
+#
+# A single DoIP channel: a diagnostics-over-Ethernet endpoint, NOT a CAN bus, so
+# there are no frames to monitor and no vcan/drivers involved. Because it lists a
+# simulated ECU (`simulate: [SUT]`), pressing ▶ Start spawns a native DoIP entity
+# on real localhost TCP/UDP (port 13400) wrapping the same UDS server the CAN demo
+# uses. The Diagnostics panel then connects to it as a DoIP client over the
+# logical-address pair below — Session / Read VIN / Serial / SW ver / Tester
+# Present / RDBI all work exactly as over CAN (the uds.Client rides the DoIP
+# carrier unchanged). Runs identically on Linux and Windows.
+project:
+  name: DoIP diagnostics demo
+  version: 1
+
+channels:
+  - name: DoIP1
+    type: doip
+    interface: doip:127.0.0.1:13400  # bitrate/timing are meaningless for Ethernet
+    tester_address: "0x0E80"         # our (tester) logical address
+    ecu_address: "0x1000"            # the simulated ECU's logical address
+    simulate:
+      - SUT                          # host a simulated UDS ECU (the DoIP entity)

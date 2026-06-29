@@ -39,6 +39,10 @@ pub fn (p Project) to_yaml() string {
 		if ch.timing.brp != 0 || ch.timing.tseg1 != 0 || ch.timing.tseg2 != 0 {
 			b.writeln('    timing: { brp: ${ch.timing.brp}, tseg1: ${ch.timing.tseg1}, tseg2: ${ch.timing.tseg2}, sjw: ${ch.timing.sjw} }')
 		}
+		if ch.is_doip() {
+			b.writeln('    tester_address: "0x${ch.tester_addr:X}"')
+			b.writeln('    ecu_address: "0x${ch.ecu_addr:X}"')
+		}
 		if ch.databases.len > 0 {
 			b.writeln('    databases:')
 			for d in ch.databases {
