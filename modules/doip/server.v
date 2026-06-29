@@ -43,10 +43,16 @@ pub fn new_server(cfg ServerCfg, handler DiagHandler) &DoipServer {
 	}
 }
 
-// listen opens the TCP listener and UDP discovery socket on host:port.
+// listen opens the TCP listener and UDP discovery socket on host:port. Atomic: if
+// the UDP bind fails after the TCP listener is already open, the TCP listener is
+// closed before returning, so a failed listen() never leaves a socket bound.
 pub fn (mut s DoipServer) listen(host string, port int) ! {
 	s.listener = net.listen_tcp(.ip, '${host}:${port}')!
-	s.udp = net.listen_udp('${host}:${port}')!
+	s.udp = net.listen_udp('${host}:${port}') or {
+		s.listener.close() or {}
+		s.listener = unsafe { nil }
+		return err
+	}
 }
 
 // accept_and_serve waits up to timeout_ms for a TCP connection, then serves its

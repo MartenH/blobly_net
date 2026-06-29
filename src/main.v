@@ -1654,6 +1654,7 @@ fn doip_server_loop(idx int, mut w gui.Window) {
 	}
 	mut srv := doip.new_server(doip.ServerCfg{ logical_address: ch.ecu_addr }, handler)
 	srv.listen(host, port) or {
+		srv.close() // release any partially-opened socket (listen() is atomic, but be safe)
 		// On the worker thread — bounce the failure status onto the UI thread (the
 		// app's cross-thread convention) instead of mutating App + repainting here.
 		emsg := err.msg()
@@ -1682,12 +1683,19 @@ fn doip_server_loop(idx int, mut w gui.Window) {
 	defer {
 		srv.close()
 	}
+	// UDP vehicle discovery runs on its OWN thread so it stays orthogonal to TCP:
+	// otherwise a connected/idle tester holds accept_and_serve in serve_connection
+	// and discovery would go unanswered until that session ends. Both threads exit
+	// on the running flag (and on srv.close() erroring their socket op).
+	spawn fn [idx, srv] (mut w gui.Window) {
+		app := w.state[App]()
+		for app.rt[idx].running {
+			srv.serve_udp_once(50) or {}
+		}
+	}(mut w)
 	for app.rt[idx].running {
-		// Interleave UDP discovery + TCP diagnostics with short timeouts so the
-		// loop stays responsive to Stop (each call returns on timeout). A client
-		// that connects then idles can still hold the per-connection read up to its
-		// timeout; Stop closing the server (below) is what guarantees teardown.
-		srv.serve_udp_once(50) or {}
+		// TCP diagnostics. Short accept timeout keeps the loop responsive to Stop;
+		// Stop also closes the server (interrupting a blocked per-connection read).
 		srv.accept_and_serve(50) or {}
 	}
 }
