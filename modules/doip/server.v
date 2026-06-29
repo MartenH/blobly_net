@@ -126,30 +126,33 @@ pub fn (mut s DoipServer) close() {
 }
 
 // read_message reads one full DoIP message from a TCP stream (shared by client).
+// The payload buffer comes straight from read_exact (already a fresh allocation),
+// so we build the Message directly rather than reassembling the wire bytes and
+// re-parsing them.
 fn read_message(mut conn net.TcpConn, timeout_ms int) !Message {
 	conn.set_read_timeout(timeout_ms * time.millisecond)
 	header := read_exact(mut conn, header_len)!
-	_, payload_len := parse_header(header)!
+	payload_type, payload_len := parse_header(header)!
 	if payload_len > max_payload_len {
 		return error('DoIP payload too large: ${payload_len} > ${max_payload_len}')
 	}
 	payload := if payload_len > 0 { read_exact(mut conn, int(payload_len))! } else { []u8{} }
-	mut full := header.clone()
-	full << payload
-	return parse(full)!
+	return Message{
+		payload_type: payload_type
+		payload:      payload
+	}
 }
 
+// read_exact reads exactly n bytes (TCP may deliver them in pieces), filling the
+// output buffer in place via read_ptr — each read targets the unfilled tail at
+// &out[got], so there's no temp buffer and no copy.
 fn read_exact(mut conn net.TcpConn, n int) ![]u8 {
 	mut out := []u8{len: n}
 	mut got := 0
 	for got < n {
-		mut chunk := []u8{len: n - got}
-		r := conn.read(mut chunk)!
+		r := conn.read_ptr(unsafe { &out[got] }, n - got)!
 		if r <= 0 {
 			return error('DoIP: connection closed mid-message')
-		}
-		for i in 0 .. r {
-			out[got + i] = chunk[i]
 		}
 		got += r
 	}

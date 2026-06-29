@@ -5,7 +5,11 @@
 //
 // Every DoIP message is an 8-byte generic header followed by a payload:
 //   version(1) inverse_version(1) payload_type(2, BE) payload_length(4, BE) payload(N)
+// Multi-byte fields are big-endian; we use encoding.binary for every pack/unpack
+// (the same helper modules/mf4 uses) rather than hand-rolling byte shifts.
 module doip
+
+import encoding.binary
 
 // Default DoIP port (same for TCP diagnostics and UDP discovery).
 pub const port = 13400
@@ -51,16 +55,11 @@ pub:
 
 // encode builds a full DoIP message: generic header + payload.
 pub fn encode(payload_type u16, payload []u8) []u8 {
-	mut out := []u8{cap: header_len + payload.len}
-	out << protocol_version
-	out << u8(~protocol_version)
-	out << u8(payload_type >> 8)
-	out << u8(payload_type)
-	n := u32(payload.len)
-	out << u8(n >> 24)
-	out << u8(n >> 16)
-	out << u8(n >> 8)
-	out << u8(n)
+	mut out := []u8{len: header_len, cap: header_len + payload.len}
+	out[0] = protocol_version
+	out[1] = u8(~protocol_version)
+	binary.big_endian_put_u16_at(mut out, payload_type, 2)
+	binary.big_endian_put_u32_at(mut out, u32(payload.len), 4)
 	out << payload
 	return out
 }
@@ -77,8 +76,8 @@ pub fn parse_header(buf []u8) !(u16, u32) {
 	if inv != u8(~ver) {
 		return error('DoIP header: inverse version 0x${inv:02X} != ~0x${ver:02X}')
 	}
-	payload_type := (u16(buf[2]) << 8) | u16(buf[3])
-	payload_len := (u32(buf[4]) << 24) | (u32(buf[5]) << 16) | (u32(buf[6]) << 8) | u32(buf[7])
+	payload_type := binary.big_endian_u16_at(buf, 2)
+	payload_len := binary.big_endian_u32_at(buf, 4)
 	return payload_type, payload_len
 }
 
@@ -107,35 +106,47 @@ pub fn parse(buf []u8) !Message {
 
 // routing_activation_request: source(2) activation-type(1=0x00 default) reserved-ISO(4=0).
 pub fn routing_activation_request(source u16) []u8 {
-	payload := [u8(source >> 8), u8(source), 0x00, 0x00, 0x00, 0x00, 0x00]
+	mut payload := []u8{len: 7} // zero-filled: activation type + reserved-ISO stay 0
+	binary.big_endian_put_u16_at(mut payload, source, 0)
 	return encode(pt_routing_activation_request, payload)
 }
 
 // routing_activation_response: tester-addr(2) entity-addr(2) code(1) reserved-ISO(4=0).
 pub fn routing_activation_response(tester u16, entity u16, code u8) []u8 {
-	payload := [u8(tester >> 8), u8(tester), u8(entity >> 8), u8(entity), code, 0x00, 0x00,
-		0x00, 0x00]
+	mut payload := []u8{len: 9} // reserved-ISO (bytes 5..9) stays 0
+	binary.big_endian_put_u16_at(mut payload, tester, 0)
+	binary.big_endian_put_u16_at(mut payload, entity, 2)
+	payload[4] = code
 	return encode(pt_routing_activation_response, payload)
 }
 
 // diagnostic_message: source(2) target(2) user-data(N).
 pub fn diagnostic_message(source u16, target u16, user_data []u8) []u8 {
-	mut payload := [u8(source >> 8), u8(source), u8(target >> 8), u8(target)]
+	mut payload := []u8{len: 4, cap: 4 + user_data.len}
+	binary.big_endian_put_u16_at(mut payload, source, 0)
+	binary.big_endian_put_u16_at(mut payload, target, 2)
 	payload << user_data
 	return encode(pt_diagnostic_message, payload)
 }
 
 // diagnostic_message_ack: source(2) target(2) ack-code(1).
 pub fn diagnostic_message_ack(source u16, target u16, code u8) []u8 {
-	payload := [u8(source >> 8), u8(source), u8(target >> 8), u8(target), code]
-	return encode(pt_diagnostic_message_ack, payload)
+	return diag_status(pt_diagnostic_message_ack, source, target, code)
 }
 
 // diagnostic_message_nack: source(2) target(2) nack-code(1) — sent when a
 // diagnostic message can't be accepted (e.g. unknown target address).
 pub fn diagnostic_message_nack(source u16, target u16, code u8) []u8 {
-	payload := [u8(source >> 8), u8(source), u8(target >> 8), u8(target), code]
-	return encode(pt_diagnostic_message_nack, payload)
+	return diag_status(pt_diagnostic_message_nack, source, target, code)
+}
+
+// diag_status builds the shared 0x8002/0x8003 layout: source(2) target(2) code(1).
+fn diag_status(payload_type u16, source u16, target u16, code u8) []u8 {
+	mut payload := []u8{len: 5}
+	binary.big_endian_put_u16_at(mut payload, source, 0)
+	binary.big_endian_put_u16_at(mut payload, target, 2)
+	payload[4] = code
+	return encode(payload_type, payload)
 }
 
 // vehicle_id_request: empty payload (UDP broadcast for discovery).
@@ -147,8 +158,7 @@ pub fn vehicle_id_request() []u8 {
 // vin is padded/truncated to 17 bytes; eid/gid to 6.
 pub fn vehicle_announcement(vin string, logical_addr u16, eid []u8, gid []u8) []u8 {
 	mut payload := fixed_bytes(vin.bytes(), 17)
-	payload << u8(logical_addr >> 8)
-	payload << u8(logical_addr)
+	payload << binary.big_endian_get_u16(logical_addr)
 	payload << fixed_bytes(eid, 6)
 	payload << fixed_bytes(gid, 6)
 	payload << u8(0x00) // further action required: none
@@ -171,8 +181,8 @@ pub fn parse_diagnostic_message(payload []u8) !DiagMessage {
 		return error('DoIP diagnostic message too short: ${payload.len} < 4')
 	}
 	return DiagMessage{
-		source: (u16(payload[0]) << 8) | u16(payload[1])
-		target: (u16(payload[2]) << 8) | u16(payload[3])
+		source: binary.big_endian_u16_at(payload, 0)
+		target: binary.big_endian_u16_at(payload, 2)
 		data:   payload[4..].clone()
 	}
 }
@@ -190,16 +200,14 @@ pub fn parse_routing_activation_request(payload []u8) !RoutingActivation {
 		return error('DoIP routing activation request too short: ${payload.len} < 3')
 	}
 	return RoutingActivation{
-		source:          (u16(payload[0]) << 8) | u16(payload[1])
+		source:          binary.big_endian_u16_at(payload, 0)
 		activation_type: payload[2]
 	}
 }
 
 // fixed_bytes returns src truncated or zero-padded to exactly n bytes.
 fn fixed_bytes(src []u8, n int) []u8 {
-	mut out := []u8{len: n}
-	for i in 0 .. n {
-		out[i] = if i < src.len { src[i] } else { u8(0) }
-	}
+	mut out := []u8{len: n} // zero-filled; copy fills the prefix, the tail stays 0
+	copy(mut out, src[..if src.len < n { src.len } else { n }])
 	return out
 }
