@@ -168,14 +168,20 @@ pub fn (ch Channel) doip_endpoint() (string, int) {
 		if end := rest.index(']') {
 			host := rest[1..end]
 			after := rest[end + 1..]
+			if after == '' {
+				return host, 13400 // bare [host]
+			}
 			if after.starts_with(':') {
 				if p := valid_port(after[1..]) {
 					return host, p
 				}
 			}
-			return host, 13400
+			// malformed suffix ([host]:badport or [host]junk) → keep the whole
+			// string as the host so it fails loudly on connect, matching the
+			// non-bracketed path, rather than silently defaulting the port.
+			return rest, 13400
 		}
-		return rest, 13400 // malformed; let the caller's dial/listen surface it
+		return rest, 13400 // no closing bracket; let the caller's dial/listen surface it
 	}
 	// Split host:port only on a SINGLE colon whose suffix is a valid port. An
 	// unbracketed IPv6 literal (multiple colons) or a typo'd port is kept whole as
@@ -302,18 +308,10 @@ fn parse_channel(c yaml.Any) !Channel {
 		enabled:      c.value('enabled').default_to(true).bool()
 	}
 	if v := c.value_opt('tester_address') {
-		a := parse_id(v.str())
-		if a > 0xFFFF {
-			return error('tester_address 0x${a:X} out of range (DoIP logical addresses are 16-bit, max 0xFFFF)')
-		}
-		ch.tester_addr = u16(a)
+		ch.tester_addr = parse_addr16(v.str()) or { return error('tester_address: ${err.msg()}') }
 	}
 	if v := c.value_opt('ecu_address') {
-		a := parse_id(v.str())
-		if a > 0xFFFF {
-			return error('ecu_address 0x${a:X} out of range (DoIP logical addresses are 16-bit, max 0xFFFF)')
-		}
-		ch.ecu_addr = u16(a)
+		ch.ecu_addr = parse_addr16(v.str()) or { return error('ecu_address: ${err.msg()}') }
 	}
 	if dbs := c.value_opt('databases') {
 		ch.databases = dbs.array().as_strings()
@@ -450,6 +448,37 @@ fn parse_hex_bytes(s string) []u8 {
 		out << (nibbles[i] << 4) | nibbles[i + 1]
 	}
 	return out
+}
+
+// parse_addr16 parses a 16-bit DoIP logical address ("0x"-hex or decimal),
+// erroring if it isn't a valid integer or exceeds 0xFFFF. The range is checked
+// during accumulation (in u64) so an overflowing value (e.g. 0x100000000) can't
+// wrap through a narrower type and slip past the guard as 0.
+fn parse_addr16(s string) !u16 {
+	t := s.trim_space().trim('"')
+	mut v := u64(0)
+	hex := t.starts_with('0x') || t.starts_with('0X')
+	body := if hex { t[2..] } else { t }
+	if body == '' {
+		return error('"${s}" is not a valid address')
+	}
+	base := if hex { u64(16) } else { u64(10) }
+	for ch in body {
+		d := if ch >= `0` && ch <= `9` {
+			u64(ch - `0`)
+		} else if hex && ch >= `a` && ch <= `f` {
+			u64(ch - `a`) + 10
+		} else if hex && ch >= `A` && ch <= `F` {
+			u64(ch - `A`) + 10
+		} else {
+			return error('"${s}" is not a valid address')
+		}
+		v = v * base + d
+		if v > 0xFFFF {
+			return error('${s} out of range (DoIP logical addresses are 16-bit, max 0xFFFF)')
+		}
+	}
+	return u16(v)
 }
 
 // parse_id reads a CAN id written as decimal or `0x`-prefixed hex.

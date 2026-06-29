@@ -26,7 +26,7 @@ mut:
 // open_doip connects to a DoIP entity, performs routing activation, and returns a
 // ready tester channel. `source` is our logical address, `target` the ECU's.
 pub fn open_doip(host string, port int, source u16, target u16) !&DoipClient {
-	addr := '${host}:${port}'
+	addr := join_host_port(host, port) // brackets an IPv6 literal for dial_tcp
 	conn := net.dial_tcp(addr)!
 	mut c := &DoipClient{
 		iface:  addr

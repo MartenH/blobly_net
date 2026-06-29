@@ -52,14 +52,30 @@ pub fn (s &DoipServer) is_stopping() bool {
 
 // listen opens the TCP listener and UDP discovery socket on host:port. Atomic: if
 // the UDP bind fails after the TCP listener is already open, the TCP listener is
-// closed before returning, so a failed listen() never leaves a socket bound.
+// closed before returning, so a failed listen() never leaves a socket bound. An
+// IPv6 host literal (one containing ':') is bracketed and bound on the IPv6 family.
 pub fn (mut s DoipServer) listen(host string, port int) ! {
-	s.listener = net.listen_tcp(.ip, '${host}:${port}')!
-	s.udp = net.listen_udp('${host}:${port}') or {
+	addr := join_host_port(host, port)
+	s.listener = net.listen_tcp(addr_family(host), addr)!
+	s.udp = net.listen_udp(addr) or {
 		s.listener.close() or {}
 		s.listener = unsafe { nil }
 		return err
 	}
+}
+
+// join_host_port formats host:port for net dial/listen, bracketing an IPv6 literal
+// (a host containing ':', e.g. ::1) as [host]:port. IPv4/hostnames are host:port.
+fn join_host_port(host string, port int) string {
+	if host.contains(':') && !host.starts_with('[') {
+		return '[${host}]:${port}'
+	}
+	return '${host}:${port}'
+}
+
+// addr_family picks the socket family for a host: ip6 for an IPv6 literal, else ip.
+fn addr_family(host string) net.AddrFamily {
+	return if host.contains(':') { net.AddrFamily.ip6 } else { net.AddrFamily.ip }
 }
 
 // accept_and_serve waits up to timeout_ms for a TCP connection, then serves its
