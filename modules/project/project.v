@@ -163,13 +163,51 @@ pub fn (ch Channel) doip_endpoint() (string, int) {
 	if rest == '' {
 		return '127.0.0.1', 13400
 	}
-	// host may itself contain ':' (IPv6); split on the LAST colon for the port.
-	if i := rest.last_index(':') {
+	// Bracketed IPv6: `[host]` or `[host]:port`.
+	if rest.starts_with('[') {
+		if end := rest.index(']') {
+			host := rest[1..end]
+			after := rest[end + 1..]
+			if after.starts_with(':') {
+				if p := valid_port(after[1..]) {
+					return host, p
+				}
+			}
+			return host, 13400
+		}
+		return rest, 13400 // malformed; let the caller's dial/listen surface it
+	}
+	// Split host:port only on a SINGLE colon whose suffix is a valid port. An
+	// unbracketed IPv6 literal (multiple colons) or a typo'd port is kept whole as
+	// the host with the default port, so a bad value surfaces as a connect/listen
+	// error rather than silently mangling the address or jumping to 13400.
+	if rest.count(':') == 1 {
+		i := rest.index(':') or { -1 }
 		host := rest[..i]
-		port := rest[i + 1..].int()
-		return if host == '' { '127.0.0.1' } else { host }, if port == 0 { 13400 } else { port }
+		if p := valid_port(rest[i + 1..]) {
+			return if host == '' { '127.0.0.1' } else { host }, p
+		}
 	}
 	return rest, 13400
+}
+
+// valid_port parses a TCP/UDP port: all-digits, 1..65535. Returns none otherwise
+// (so a non-numeric or out-of-range suffix isn't mistaken for a port).
+fn valid_port(s string) ?int {
+	t := s.trim_space()
+	if t == '' {
+		return none
+	}
+	for c in t {
+		if c < `0` || c > `9` {
+			return none
+		}
+	}
+	p := t.int()
+	if p < 1 || p > 65535 {
+		return none
+	}
+	return p
 }
 
 // all_nodes merges the rich `nodes:` configs with the `simulate:` shorthand
@@ -224,7 +262,7 @@ pub fn parse(text string) !Project {
 			if c is yaml.Null {
 				continue
 			}
-			p.channels << parse_channel(c)
+			p.channels << parse_channel(c)!
 		}
 	}
 	return p
@@ -250,7 +288,7 @@ pub fn default_project() Project {
 	}
 }
 
-fn parse_channel(c yaml.Any) Channel {
+fn parse_channel(c yaml.Any) !Channel {
 	mut ch := Channel{
 		name:         c.value('name').default_to('CAN').string()
 		typ:          c.value('type').default_to('can').string()
@@ -264,10 +302,18 @@ fn parse_channel(c yaml.Any) Channel {
 		enabled:      c.value('enabled').default_to(true).bool()
 	}
 	if v := c.value_opt('tester_address') {
-		ch.tester_addr = u16(parse_id(v.str()))
+		a := parse_id(v.str())
+		if a > 0xFFFF {
+			return error('tester_address 0x${a:X} out of range (DoIP logical addresses are 16-bit, max 0xFFFF)')
+		}
+		ch.tester_addr = u16(a)
 	}
 	if v := c.value_opt('ecu_address') {
-		ch.ecu_addr = u16(parse_id(v.str()))
+		a := parse_id(v.str())
+		if a > 0xFFFF {
+			return error('ecu_address 0x${a:X} out of range (DoIP logical addresses are 16-bit, max 0xFFFF)')
+		}
+		ch.ecu_addr = u16(a)
 	}
 	if dbs := c.value_opt('databases') {
 		ch.databases = dbs.array().as_strings()

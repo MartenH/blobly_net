@@ -43,6 +43,13 @@ pub fn new_server(cfg ServerCfg, handler DiagHandler) &DoipServer {
 	}
 }
 
+// is_stopping reports whether close() has been called. Serve loops driven as
+// `for { srv.accept_and_serve(t) or { continue } }` should break on it, otherwise
+// they hot-spin after close() (the listener is shut so every call errors at once).
+pub fn (s &DoipServer) is_stopping() bool {
+	return s.stopping
+}
+
 // listen opens the TCP listener and UDP discovery socket on host:port. Atomic: if
 // the UDP bind fails after the TCP listener is already open, the TCP listener is
 // closed before returning, so a failed listen() never leaves a socket bound.

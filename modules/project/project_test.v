@@ -203,3 +203,55 @@ fn test_doip_endpoint_defaults() {
 	assert h2 == '127.0.0.1'
 	assert p2 == 13400
 }
+
+fn test_doip_endpoint_parsing() {
+	// explicit valid host:port
+	h0, p0 := Channel{
+		iface: 'doip:10.0.0.5:5000'
+	}.doip_endpoint()
+	assert h0 == '10.0.0.5'
+	assert p0 == 5000
+	// typo'd port (non-numeric) → kept whole as host + default port (so it fails
+	// loudly on connect rather than silently dialing 13400 on a truncated host).
+	h1, p1 := Channel{
+		iface: 'doip:ecu.local:1340O'
+	}.doip_endpoint()
+	assert h1 == 'ecu.local:1340O'
+	assert p1 == 13400
+	// out-of-range port → not treated as a port.
+	h2, p2 := Channel{
+		iface: 'doip:host:99999'
+	}.doip_endpoint()
+	assert h2 == 'host:99999'
+	assert p2 == 13400
+	// bracketed IPv6 with + without port.
+	h3, p3 := Channel{
+		iface: 'doip:[fe80::1]:13401'
+	}.doip_endpoint()
+	assert h3 == 'fe80::1'
+	assert p3 == 13401
+	h4, p4 := Channel{
+		iface: 'doip:[::1]'
+	}.doip_endpoint()
+	assert h4 == '::1'
+	assert p4 == 13400
+	// unbracketed IPv6 (multiple colons) → kept whole as host, default port.
+	h5, p5 := Channel{
+		iface: 'doip:fe80::1'
+	}.doip_endpoint()
+	assert h5 == 'fe80::1'
+	assert p5 == 13400
+}
+
+fn test_doip_address_out_of_range() {
+	// a 16-bit-overflowing logical address must surface as an error, not wrap to 0.
+	parse('project:\n  name: d\nchannels:\n  - name: D\n    type: doip\n    tester_address: "0x10000"\n') or {
+		// expected
+		parse('project:\n  name: d\nchannels:\n  - name: D\n    type: doip\n    ecu_address: "0x20000"\n') or {
+			return
+		}
+		assert false, 'expected ecu_address out-of-range error'
+		return
+	}
+	assert false, 'expected tester_address out-of-range error'
+}
