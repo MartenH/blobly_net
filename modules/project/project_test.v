@@ -149,3 +149,39 @@ fn test_parse_hex_bytes() {
 	assert parse_hex_bytes('') == []u8{}
 	assert parse_hex_bytes('AABBC') == [u8(0xAA), 0xBB] // odd trailing nibble dropped
 }
+
+fn test_doip_channel() {
+	p := parse('project:\n  name: d\nchannels:\n  - name: DoIP1\n    type: doip\n    interface: "doip:127.0.0.1:13400"\n    tester_address: "0x0E80"\n    ecu_address: "0x1000"\n') or {
+		panic(err)
+	}
+	c := p.channels[0]
+	assert c.is_doip()
+	assert c.tester_addr == 0x0E80
+	assert c.ecu_addr == 0x1000
+	host, port := c.doip_endpoint()
+	assert host == '127.0.0.1'
+	assert port == 13400
+}
+
+fn test_doip_endpoint_defaults() {
+	// `type: doip` with a bare/short interface falls back to 127.0.0.1:13400.
+	bare := Channel{
+		typ:   'doip'
+		iface: 'doip'
+	}
+	assert bare.is_doip()
+	h0, p0 := bare.doip_endpoint()
+	assert h0 == '127.0.0.1'
+	assert p0 == 13400
+	// host-only (no port) keeps the default port.
+	hostonly := Channel{
+		iface: 'doip:192.168.1.5'
+	}
+	assert hostonly.is_doip() // recognised via the iface prefix even without type
+	h1, p1 := hostonly.doip_endpoint()
+	assert h1 == '192.168.1.5'
+	assert p1 == 13400
+	// default addresses when unset.
+	assert bare.tester_addr == 0x0E80
+	assert bare.ecu_addr == 0x1000
+}

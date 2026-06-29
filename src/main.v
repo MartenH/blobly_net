@@ -26,6 +26,7 @@ import project
 import sim
 import player
 import isotp
+import doip
 import uds
 import script
 
@@ -1331,6 +1332,28 @@ fn start_measurement(mut w gui.Window) {
 			app.rt[i].note = 'disabled'
 			continue
 		}
+		// DoIP channels are diagnostics-over-Ethernet endpoints, not CAN buses:
+		// there are no frames to monitor, so we don't open a transport.Bus or an
+		// RX thread. If the channel hosts a simulated ECU, spawn the DoIP server
+		// (driver-free, real localhost TCP/UDP); the Diagnostics panel then talks
+		// to it (or to a real/external entity) as a DoIP client.
+		if ch.is_doip() {
+			host, port := ch.doip_endpoint()
+			hosts_ecu := ch.all_nodes().len > 0
+			app.rt[i].running = true
+			app.rt[i].note = if hosts_ecu {
+				'DoIP entity @${host}:${port}'
+			} else {
+				'DoIP client → ${host}:${port}'
+			}
+			opened++
+			if hosts_ecu {
+				spawn fn [i] (mut w gui.Window) {
+					doip_server_loop(i, mut w)
+				}(mut w)
+			}
+			continue
+		}
 		match ch.mode {
 			.off {
 				app.rt[i].note = 'off'
@@ -1601,6 +1624,37 @@ fn diag_server_loop(idx int, mut w gui.Window) {
 	ch.close()
 }
 
+// doip_server_loop runs a native DoIP entity (simulated ECU) for channel `idx`:
+// it wraps the same uds.Server the CAN path uses, but over real localhost
+// TCP/UDP (ISO 13400) instead of software ISO-TP — driver-free, no CAN bus. The
+// Diagnostics panel connects to it as a DoIP client. Serves TCP diagnostics and
+// UDP vehicle discovery, polling the channel's running flag to exit.
+fn doip_server_loop(idx int, mut w gui.Window) {
+	mut app := w.state[App]()
+	ch := app.proj.channels[idx]
+	host, port := ch.doip_endpoint()
+	mut us := uds.default_server()
+	handler := fn [mut us] (req []u8) []u8 {
+		return us.handle(req)
+	}
+	mut srv := doip.new_server(doip.ServerCfg{ logical_address: ch.ecu_addr }, handler)
+	srv.listen(host, port) or {
+		app.rt[idx].err = true
+		app.rt[idx].note = 'DoIP listen failed: ${err}'
+		w.update_window()
+		return
+	}
+	defer {
+		srv.close()
+	}
+	for app.rt[idx].running {
+		// Interleave UDP discovery + TCP diagnostics with short timeouts so the
+		// loop stays responsive to Stop (each call returns on timeout).
+		srv.serve_udp_once(50) or {}
+		srv.accept_and_serve(50) or {}
+	}
+}
+
 // diag_post appends one line to the Diagnostics log (UI thread, newest first).
 fn diag_post(line string, mut w gui.Window) {
 	w.queue_command(fn [line] (mut w gui.Window) {
@@ -1613,25 +1667,61 @@ fn diag_post(line string, mut w gui.Window) {
 	})
 }
 
-// diag_request sends one UDS request from a worker thread: opens a software
-// ISO-TP channel (tester side: tx 0x7E0 / rx 0x7E8) on the first running
-// channel's interface, runs the request, posts the outcome to the log. The
-// ISO-TP frames travel the real bus, so the Trace shows them too.
+// DiagTarget describes where a UDS request should go: a CAN channel (software
+// ISO-TP, tester 0x7E0 / ECU 0x7E8) or a DoIP entity (TCP, logical addresses).
+// Both resolve to an isotp.Channel that uds.Client rides unchanged.
+struct DiagTarget {
+	is_doip     bool
+	iface       string // CAN: the bus interface
+	host        string // DoIP: host
+	port        int    // DoIP: port
+	tester_addr u16    // DoIP: our (tester) logical address
+	ecu_addr    u16    // DoIP: ECU logical address
+}
+
+// open_diag_channel opens the right isotp.Channel for a DiagTarget. DoipClient
+// implements isotp.Channel, so UDS-over-Ethernet needs no client changes.
+fn open_diag_channel(t DiagTarget) !isotp.Channel {
+	if t.is_doip {
+		return doip.open_doip(t.host, t.port, t.tester_addr, t.ecu_addr)!
+	}
+	return isotp.open_software(t.iface, diag_tx_id, diag_rx_id, false)!
+}
+
+// diag_request sends one UDS request from a worker thread: opens a diagnostics
+// channel on the first running channel (software ISO-TP for CAN, or a DoIP TCP
+// connection for a DoIP channel), runs the request, posts the outcome. For CAN
+// the ISO-TP frames travel the real bus, so the Trace shows them too.
 fn diag_request(req []u8, label string, mut w gui.Window) {
 	app := w.state[App]()
-	mut iface := ''
+	mut target := DiagTarget{}
+	mut found := false
 	for i, ch in app.proj.channels {
 		if app.rt[i].running {
-			iface = ch.iface
+			if ch.is_doip() {
+				host, port := ch.doip_endpoint()
+				target = DiagTarget{
+					is_doip:     true
+					host:        host
+					port:        port
+					tester_addr: ch.tester_addr
+					ecu_addr:    ch.ecu_addr
+				}
+			} else {
+				target = DiagTarget{
+					iface: ch.iface
+				}
+			}
+			found = true
 			break
 		}
 	}
-	if iface == '' {
+	if !found {
 		diag_post('${label}: no running channel — press ▶ Start first', mut w)
 		return
 	}
-	spawn fn [req, label, iface] (mut w gui.Window) {
-		mut ch := isotp.open_software(iface, diag_tx_id, diag_rx_id, false) or {
+	spawn fn [req, label, target] (mut w gui.Window) {
+		mut ch := open_diag_channel(target) or {
 			diag_post('${label}: open failed: ${err}', mut w)
 			return
 		}
@@ -5232,7 +5322,7 @@ fn diag_panel(mut window gui.Window) gui.View {
 	mut rows := []gui.View{}
 	rows << gui.text(text: 'Diagnostics (UDS)', text_style: gui.theme().b3)
 	rows << gui.text(
-		text:       'tester 0x7E0 → ECU 0x7E8, software ISO-TP'
+		text:       diag_target_label(app)
 		text_style: trace_text_style()
 	)
 	rows << gui.row(
@@ -5316,6 +5406,22 @@ fn diag_panel(mut window gui.Window) gui.View {
 		}
 		content:         rows
 	)
+}
+
+// diag_target_label describes where Diagnostics requests will go, based on the
+// first running channel (DoIP entity vs CAN software ISO-TP), so the panel header
+// reflects the active carrier.
+fn diag_target_label(app &App) string {
+	for i, ch in app.proj.channels {
+		if app.rt[i].running {
+			if ch.is_doip() {
+				host, port := ch.doip_endpoint()
+				return 'tester 0x${ch.tester_addr:04X} → ECU 0x${ch.ecu_addr:04X}, DoIP @${host}:${port}'
+			}
+			return 'tester 0x7E0 → ECU 0x7E8, software ISO-TP'
+		}
+	}
+	return 'tester 0x7E0 → ECU 0x7E8, software ISO-TP (press ▶ Start)'
 }
 
 // diag_button is a small clickable labelled button for the Diagnostics panel

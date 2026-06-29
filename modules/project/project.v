@@ -117,7 +117,7 @@ pub mut:
 pub struct Channel {
 pub mut:
 	name         string = 'CAN'
-	typ          string = 'can' // yaml `type`: can | canfd
+	typ          string = 'can' // yaml `type`: can | canfd | doip
 	iface        string = 'vcan0' // yaml `interface` (a V keyword, so the field is `iface`)
 	bitrate      int    = 500000
 	fd           bool
@@ -132,6 +132,35 @@ pub mut:
 	nodes        []NodeCfg // fully-configured simulated ECUs (signals + responses)
 	senders      []Sender  // interactive generators: triggerable custom frames
 	replay       ?Replay
+	// DoIP (type: doip) — a diagnostics-over-Ethernet endpoint, NOT a CAN bus.
+	// `iface` carries `doip:<host>[:<port>]`; bitrate/timing are meaningless here.
+	// The logical addresses identify the tester (source) and ECU (target) per
+	// ISO 13400; they replace the CAN diag pair (0x7E0/0x7E8).
+	tester_addr u16 = 0x0E80 // our (tester) logical address
+	ecu_addr    u16 = 0x1000 // the ECU's logical address
+}
+
+// is_doip reports whether this channel is a DoIP (diagnostics-over-Ethernet)
+// endpoint rather than a CAN bus.
+pub fn (ch Channel) is_doip() bool {
+	return ch.typ == 'doip' || ch.iface.starts_with('doip:')
+}
+
+// doip_endpoint parses `iface` ("doip:host:port" / "doip:host" / "doip") into a
+// host + port, defaulting to 127.0.0.1:13400. Only meaningful when is_doip().
+pub fn (ch Channel) doip_endpoint() (string, int) {
+	mut rest := ch.iface.trim_space()
+	rest = if rest.starts_with('doip:') { rest['doip:'.len..] } else if rest == 'doip' { '' } else { rest }
+	if rest == '' {
+		return '127.0.0.1', 13400
+	}
+	// host may itself contain ':' (IPv6); split on the LAST colon for the port.
+	if i := rest.last_index(':') {
+		host := rest[..i]
+		port := rest[i + 1..].int()
+		return if host == '' { '127.0.0.1' } else { host }, if port == 0 { 13400 } else { port }
+	}
+	return rest, 13400
 }
 
 // all_nodes merges the rich `nodes:` configs with the `simulate:` shorthand
@@ -224,6 +253,12 @@ fn parse_channel(c yaml.Any) Channel {
 		mode:         mode_from(c.value('mode').default_to('monitor').string())
 		listen_only:  c.value('listen_only').default_to(false).bool()
 		enabled:      c.value('enabled').default_to(true).bool()
+	}
+	if v := c.value_opt('tester_address') {
+		ch.tester_addr = u16(parse_id(v.str()))
+	}
+	if v := c.value_opt('ecu_address') {
+		ch.ecu_addr = u16(parse_id(v.str()))
 	}
 	if dbs := c.value_opt('databases') {
 		ch.databases = dbs.array().as_strings()

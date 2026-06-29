@@ -99,13 +99,27 @@ one-way (`uds → isotp`; `cmd/* → doip + uds`) and `doip` a leaf transport mo
    client vs our server), the role `uds_server.py` plays for `modules/uds`.
 3. Hermetic framing tests in `modules/doip/doip_test.v` (round-trip every builder/parser).
 
-## App wiring (phase E2, after E1)
+## App wiring (phase E2) — ✅ DONE 2026-06-29
 
-- `transport.open()` / project config gain a DoIP channel form: `interface: doip:<host>[:<port>]`
-  (a `type: doip` channel). Bitrate/timing are meaningless for Ethernet; the channel carries
-  host/port + logical addresses instead. A `projects/doip-demo.yml` runs the DoIP server driver-free.
-- The GUI **Diagnostics** panel can target a DoIP ECU: it already drives `uds.Client` over an
-  `isotp.Channel`, so it accepts a DoIP channel with minimal wiring.
+- **Project config** gained a DoIP channel form: `type: doip` with `interface: doip:<host>[:<port>]`
+  plus `tester_address` / `ecu_address` (logical addresses, default 0x0E80 / 0x1000). Bitrate/timing
+  are meaningless for Ethernet and ignored. `project.Channel.is_doip()` + `doip_endpoint()` parse it;
+  the addresses round-trip through Save. `projects/doip-demo.yml` runs the entity driver-free.
+- **NOT wired into `transport.open()`** (a deliberate deviation from the original sketch): that returns
+  a `transport.Bus` — a CAN-*frame* pipe — but DoIP is a diagnostics carrier with no frames to monitor.
+  The real carrier-swap seam is one level up at `isotp.Channel`, which is where the Diagnostics panel
+  already operates and where `DoipClient` plugs in. So DoIP is wired at the diagnostics layer instead.
+- **Start/Stop:** `start_measurement` branches on `ch.is_doip()` before the CAN mode-match — it does
+  NOT open a `Bus` or RX thread. If the DoIP channel hosts a simulated ECU (`simulate:`/`simulation:`
+  non-empty), it spawns `doip_server_loop` (a native `DoipServer` wrapping `uds.default_server()` over
+  real localhost TCP/UDP, polling the running flag to exit); otherwise the channel is just a client
+  target for an external/real entity.
+- **GUI Diagnostics panel:** `diag_request` resolves the first running channel to a `DiagTarget` and
+  `open_diag_channel()` returns the right `isotp.Channel` — `doip.open_doip(...)` for DoIP, else
+  software ISO-TP — so `uds.Client` rides either carrier unchanged. The panel header
+  (`diag_target_label`) shows the active carrier (DoIP host/port + logical addresses, or 0x7E0/0x7E8
+  software ISO-TP). **Verified** end-to-end: the GUI (autostart + `doip-demo.yml`) serves the entity on
+  127.0.0.1:13400 and an external UDS client reads VIN `BLOBLYNETV0SUT001` over Ethernet.
 
 ## Known limitations (virtual-first scope)
 
