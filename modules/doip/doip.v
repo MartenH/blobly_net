@@ -1,0 +1,178 @@
+// doip — DoIP (Diagnostics over IP, ISO 13400-2) wire framing: the generic header
+// plus the handful of message types we need to carry UDS over Ethernet. Pure-V,
+// GUI-free, protocol-only (no imports of uds/isotp) — the client/server in this
+// module build on these. See docs/ethernet_architecture.md.
+//
+// Every DoIP message is an 8-byte generic header followed by a payload:
+//   version(1) inverse_version(1) payload_type(2, BE) payload_length(4, BE) payload(N)
+module doip
+
+// Default DoIP port (same for TCP diagnostics and UDP discovery).
+pub const port = 13400
+
+// Protocol version (0x02 = ISO 13400-2:2012). inverse = ~version.
+pub const protocol_version = u8(0x02)
+
+// Payload types (the subset we implement).
+pub const pt_vehicle_id_request = u16(0x0001)
+pub const pt_vehicle_announcement = u16(0x0004) // a.k.a. vehicle identification response
+pub const pt_routing_activation_request = u16(0x0005)
+pub const pt_routing_activation_response = u16(0x0006)
+pub const pt_diagnostic_message = u16(0x8001)
+pub const pt_diagnostic_message_ack = u16(0x8002) // positive ack
+pub const pt_diagnostic_message_nack = u16(0x8003) // negative ack
+
+// Routing activation response codes.
+pub const ra_success = u8(0x10)
+
+// Diagnostic message ack code (positive).
+pub const diag_ack_ok = u8(0x00)
+
+// header_len is the fixed generic-header size.
+pub const header_len = 8
+
+// Message is a parsed DoIP message (header fields + raw payload).
+pub struct Message {
+pub:
+	payload_type u16
+	payload      []u8
+}
+
+// encode builds a full DoIP message: generic header + payload.
+pub fn encode(payload_type u16, payload []u8) []u8 {
+	mut out := []u8{cap: header_len + payload.len}
+	out << protocol_version
+	out << u8(~protocol_version)
+	out << u8(payload_type >> 8)
+	out << u8(payload_type)
+	n := u32(payload.len)
+	out << u8(n >> 24)
+	out << u8(n >> 16)
+	out << u8(n >> 8)
+	out << u8(n)
+	out << payload
+	return out
+}
+
+// parse_header validates the generic header and returns (payload_type, payload_length).
+// It does NOT require the payload bytes to be present yet (callers stream the body
+// after reading the length).
+pub fn parse_header(buf []u8) !(u16, u32) {
+	if buf.len < header_len {
+		return error('DoIP header too short: ${buf.len} < ${header_len}')
+	}
+	ver := buf[0]
+	inv := buf[1]
+	if inv != u8(~ver) {
+		return error('DoIP header: inverse version 0x${inv:02X} != ~0x${ver:02X}')
+	}
+	payload_type := (u16(buf[2]) << 8) | u16(buf[3])
+	payload_len := (u32(buf[4]) << 24) | (u32(buf[5]) << 16) | (u32(buf[6]) << 8) | u32(buf[7])
+	return payload_type, payload_len
+}
+
+// parse decodes a complete in-memory message (header + full payload).
+pub fn parse(buf []u8) !Message {
+	payload_type, payload_len := parse_header(buf)!
+	if buf.len < header_len + int(payload_len) {
+		return error('DoIP message truncated: have ${buf.len}, need ${header_len + int(payload_len)}')
+	}
+	return Message{
+		payload_type: payload_type
+		payload:      buf[header_len..header_len + int(payload_len)].clone()
+	}
+}
+
+// --- message builders -------------------------------------------------------
+
+// routing_activation_request: source(2) activation-type(1=0x00 default) reserved-ISO(4=0).
+pub fn routing_activation_request(source u16) []u8 {
+	payload := [u8(source >> 8), u8(source), 0x00, 0x00, 0x00, 0x00, 0x00]
+	return encode(pt_routing_activation_request, payload)
+}
+
+// routing_activation_response: tester-addr(2) entity-addr(2) code(1) reserved-ISO(4=0).
+pub fn routing_activation_response(tester u16, entity u16, code u8) []u8 {
+	payload := [u8(tester >> 8), u8(tester), u8(entity >> 8), u8(entity), code, 0x00, 0x00,
+		0x00, 0x00]
+	return encode(pt_routing_activation_response, payload)
+}
+
+// diagnostic_message: source(2) target(2) user-data(N).
+pub fn diagnostic_message(source u16, target u16, user_data []u8) []u8 {
+	mut payload := [u8(source >> 8), u8(source), u8(target >> 8), u8(target)]
+	payload << user_data
+	return encode(pt_diagnostic_message, payload)
+}
+
+// diagnostic_message_ack: source(2) target(2) ack-code(1).
+pub fn diagnostic_message_ack(source u16, target u16, code u8) []u8 {
+	payload := [u8(source >> 8), u8(source), u8(target >> 8), u8(target), code]
+	return encode(pt_diagnostic_message_ack, payload)
+}
+
+// vehicle_id_request: empty payload (UDP broadcast for discovery).
+pub fn vehicle_id_request() []u8 {
+	return encode(pt_vehicle_id_request, [])
+}
+
+// vehicle_announcement: VIN(17) logical-addr(2) EID(6) GID(6) further-action(1).
+// vin is padded/truncated to 17 bytes; eid/gid to 6.
+pub fn vehicle_announcement(vin string, logical_addr u16, eid []u8, gid []u8) []u8 {
+	mut payload := fixed_bytes(vin.bytes(), 17)
+	payload << u8(logical_addr >> 8)
+	payload << u8(logical_addr)
+	payload << fixed_bytes(eid, 6)
+	payload << fixed_bytes(gid, 6)
+	payload << u8(0x00) // further action required: none
+	return encode(pt_vehicle_announcement, payload)
+}
+
+// --- payload parsers --------------------------------------------------------
+
+// DiagMessage is the parsed body of a 0x8001 diagnostic message.
+pub struct DiagMessage {
+pub:
+	source u16
+	target u16
+	data   []u8 // UDS user data
+}
+
+// parse_diagnostic_message extracts source/target/user-data from a 0x8001 payload.
+pub fn parse_diagnostic_message(payload []u8) !DiagMessage {
+	if payload.len < 4 {
+		return error('DoIP diagnostic message too short: ${payload.len} < 4')
+	}
+	return DiagMessage{
+		source: (u16(payload[0]) << 8) | u16(payload[1])
+		target: (u16(payload[2]) << 8) | u16(payload[3])
+		data:   payload[4..].clone()
+	}
+}
+
+// RoutingActivation is the parsed body of a 0x0005 request.
+pub struct RoutingActivation {
+pub:
+	source          u16
+	activation_type u8
+}
+
+// parse_routing_activation_request extracts source + activation type from a 0x0005 payload.
+pub fn parse_routing_activation_request(payload []u8) !RoutingActivation {
+	if payload.len < 3 {
+		return error('DoIP routing activation request too short: ${payload.len} < 3')
+	}
+	return RoutingActivation{
+		source:          (u16(payload[0]) << 8) | u16(payload[1])
+		activation_type: payload[2]
+	}
+}
+
+// fixed_bytes returns src truncated or zero-padded to exactly n bytes.
+fn fixed_bytes(src []u8, n int) []u8 {
+	mut out := []u8{len: n}
+	for i in 0 .. n {
+		out[i] = if i < src.len { src[i] } else { u8(0) }
+	}
+	return out
+}

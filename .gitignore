@@ -12,6 +12,8 @@ cmd/mf4_dump/mf4_dump
 
 # Python tools venv (asammdf MF4 bridge) — dev-only, not committed
 .venv-tools/
+# Python DoIP oracle venv (scapy) — dev-only, not committed
+.venv-doip/
 
 # Private external DBCs copied in locally for simulation — NOT ours to commit.
 dbc/ecu_vcm/
