@@ -100,6 +100,33 @@ fn test_client_server_roundtrip() {
 	}
 	wrong.close()
 
+	// Regression: after activation, a diagnostic message whose source differs from
+	// the activated source must be NACKed (invalid source 0x02), not dispatched.
+	mut spoof := net.dial_tcp('127.0.0.1:${test_port}') or {
+		assert false, 'dial (spoof): ${err}'
+		return
+	}
+	spoof.write(routing_activation_request(0x0E80)) or { assert false, 'activate: ${err}' }
+	ra_resp := read_message(mut spoof, 2000) or {
+		assert false, 'activation resp: ${err}'
+		return
+	}
+	assert ra_resp.payload_type == pt_routing_activation_response
+	spoof.write(diagnostic_message(0x0E81, 0x1000, [u8(0x10), 0x20, 0x30])) or {
+		assert false, 'spoof send: ${err}'
+	}
+	nack := read_message(mut spoof, 2000) or {
+		assert false, 'expected NACK for spoofed source: ${err}'
+		return
+	}
+	assert nack.payload_type == pt_diagnostic_message_nack
+	ndm := parse_diagnostic_message(nack.payload) or {
+		assert false, 'parse nack: ${err}'
+		return
+	}
+	assert ndm.data.len >= 1 && ndm.data[0] == diag_nack_invalid_source
+	spoof.close() or {}
+
 	// Regression: a diagnostic message before routing activation must NOT be
 	// dispatched (the server drops it; the peer gets no response).
 	mut raw := net.dial_tcp('127.0.0.1:${test_port}') or {
