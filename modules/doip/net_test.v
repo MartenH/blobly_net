@@ -112,6 +112,17 @@ fn test_client_server_roundtrip() {
 		return
 	}
 	assert ra_resp.payload_type == pt_routing_activation_response
+	assert ra_resp.payload[4] == ra_success
+	// A second activation with a DIFFERENT source must be denied (0x02) and must
+	// NOT overwrite the activated source — otherwise the spoofed-source guard below
+	// could be bypassed by re-activating.
+	spoof.write(routing_activation_request(0x0E81)) or { assert false, 'reactivate: ${err}' }
+	ra2 := read_message(mut spoof, 2000) or {
+		assert false, 'reactivation resp: ${err}'
+		return
+	}
+	assert ra2.payload_type == pt_routing_activation_response
+	assert ra2.payload[4] == ra_denied_source_mismatch
 	spoof.write(diagnostic_message(0x0E81, 0x1000, [u8(0x10), 0x20, 0x30])) or {
 		assert false, 'spoof send: ${err}'
 	}

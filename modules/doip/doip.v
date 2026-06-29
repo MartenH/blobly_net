@@ -27,6 +27,7 @@ pub const pt_diagnostic_message_ack = u16(0x8002) // positive ack
 pub const pt_diagnostic_message_nack = u16(0x8003) // negative ack
 
 // Routing activation response codes.
+pub const ra_denied_source_mismatch = u8(0x02) // SA differs from the one already activated here
 pub const ra_success = u8(0x10)
 
 // Diagnostic message ack code (positive).
