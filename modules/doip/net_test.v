@@ -211,3 +211,48 @@ fn test_client_server_roundtrip() {
 
 	srv.close()
 }
+
+// close() must tear down the in-progress accepted connection from another thread
+// (a GUI Stop), interrupting serve_connection's per-connection read PROMPTLY
+// rather than waiting out its 60s timeout.
+fn test_close_interrupts_active_connection() {
+	lport := 13458
+	mut srv := new_server(ServerCfg{ logical_address: 0x1000 }, echo_handler)
+	srv.listen('127.0.0.1', lport) or {
+		assert false, 'listen: ${err}'
+		return
+	}
+	spawn fn (mut srv DoipServer) {
+		for {
+			srv.accept_and_serve(200) or {
+				if srv.stopping {
+					break
+				}
+				continue
+			}
+		}
+	}(mut srv)
+	time.sleep(150 * time.millisecond)
+	// Connect + activate routing, then idle so the server is parked in the
+	// per-connection read (s.active set).
+	mut c := net.dial_tcp('127.0.0.1:${lport}') or {
+		assert false, 'dial: ${err}'
+		return
+	}
+	c.write(routing_activation_request(0x0E80)) or { assert false, 'write: ${err}' }
+	_ := read_message(mut c, 2000) or {
+		assert false, 'activation resp: ${err}'
+		return
+	}
+	time.sleep(150 * time.millisecond)
+	// Stop from this (different) thread.
+	t0 := time.ticks()
+	srv.close()
+	c.set_read_timeout(3 * time.second)
+	mut buf := []u8{len: 16}
+	n := c.read(mut buf) or { -1 } // server-side close → EOF (0) or error
+	elapsed := time.ticks() - t0
+	assert n <= 0, 'expected the server to close the active connection, read ${n} bytes'
+	assert elapsed < 5000, 'close() did not interrupt the active read promptly (${elapsed} ms)'
+	c.close() or {}
+}
