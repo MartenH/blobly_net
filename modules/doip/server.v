@@ -58,8 +58,11 @@ pub fn (mut s DoipServer) accept_and_serve(timeout_ms int) ! {
 }
 
 // serve_connection handles one client: routing activation, then diagnostic
-// messages (ack + handler reply) until the peer closes the connection.
+// messages (ack + handler reply) until the peer closes the connection. Per
+// ISO 13400, diagnostics are only dispatched after a successful routing
+// activation on this connection.
 fn (mut s DoipServer) serve_connection(mut conn net.TcpConn) {
+	mut activated := false
 	for {
 		msg := read_message(mut conn, 60000) or { return } // peer closed / timeout
 		match msg.payload_type {
@@ -67,8 +70,12 @@ fn (mut s DoipServer) serve_connection(mut conn net.TcpConn) {
 				ra := parse_routing_activation_request(msg.payload) or { continue }
 				conn.write(routing_activation_response(ra.source, s.cfg.logical_address,
 					ra_success)) or { return }
+				activated = true
 			}
 			pt_diagnostic_message {
+				if !activated {
+					continue // routing activation is mandatory before diagnostics
+				}
 				dm := parse_diagnostic_message(msg.payload) or { continue }
 				// positive ack first (entity → tester), then the UDS response.
 				conn.write(diagnostic_message_ack(s.cfg.logical_address, dm.source, diag_ack_ok)) or {
@@ -117,6 +124,9 @@ fn read_message(mut conn net.TcpConn, timeout_ms int) !Message {
 	conn.set_read_timeout(timeout_ms * time.millisecond)
 	header := read_exact(mut conn, header_len)!
 	_, payload_len := parse_header(header)!
+	if payload_len > max_payload_len {
+		return error('DoIP payload too large: ${payload_len} > ${max_payload_len}')
+	}
 	payload := if payload_len > 0 { read_exact(mut conn, int(payload_len))! } else { []u8{} }
 	mut full := header.clone()
 	full << payload

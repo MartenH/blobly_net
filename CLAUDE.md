@@ -1221,6 +1221,12 @@ prompt for a password.
   with `u8(~x)` in header build/validate; (b) `spawn` needs a **reference** arg, so `new_server` returns
   `&DoipServer` (and its fields are module-private, so the cmd can't build the pointer itself); (c)
   scapy's plain `DoIPSocket` does NOT auto-wrap bare `UDS()` (sends raw UDS bytes) — use
-  **`UDS_DoIPSocket`** for UDS-over-DoIP. NEXT (E2): wire `doip:<host>[:port]` into `transport.open()` +
+  **`UDS_DoIPSocket`** for UDS-over-DoIP. **Codex review (PR #1) — 2 P2s addressed:** (1) server now
+  **requires routing activation before dispatching diagnostics** (per-connection `activated` flag; a
+  `0x8001` before a successful `0x0005`/`0x0006` is dropped, not forwarded to the UDS handler); (2)
+  `read_message` **caps the advertised `payload_length`** (`doip.max_payload_len` = 64 KiB) before
+  allocating, so a hostile/buggy peer can't force a multi-GB allocation or a hang on a body that never
+  arrives. Both have regression tests in `net_test.v` (raw-TCP diag-without-activation → no reply;
+  oversized header → connection rejected). NEXT (E2): wire `doip:<host>[:port]` into `transport.open()` +
   project config + the GUI Diagnostics panel (already speaks `isotp.Channel`); then E3 = `modules/someip`
   (service discovery + RPC, its own oracle — does NOT reuse the UDS stack).

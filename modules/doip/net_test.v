@@ -67,5 +67,37 @@ fn test_client_server_roundtrip() {
 	assert ann.payload[..17].bytestr() == 'TESTVIN0000000001'
 	u.close() or {}
 
+	// Regression: a diagnostic message before routing activation must NOT be
+	// dispatched (the server drops it; the peer gets no response).
+	mut raw := net.dial_tcp('127.0.0.1:${test_port}') or {
+		assert false, 'dial: ${err}'
+		return
+	}
+	raw.write(diagnostic_message(0x0E80, 0x1000, [u8(0x10), 0x20, 0x30])) or {
+		assert false, 'write: ${err}'
+	}
+	raw.set_read_timeout(500 * time.millisecond)
+	mut rbuf := []u8{len: 32}
+	got := raw.read(mut rbuf) or { -1 } // timeout → error → -1
+	assert got <= 0, 'server replied to diagnostics without routing activation'
+	raw.close() or {}
+
+	// Regression: an oversized advertised payload length must be rejected before
+	// allocating a buffer (the server returns an error → closes the connection,
+	// rather than allocating gigabytes or hanging on a body that never arrives).
+	mut big := net.dial_tcp('127.0.0.1:${test_port}') or {
+		assert false, 'dial: ${err}'
+		return
+	}
+	// generic header only: payload_type 0x8001, payload_length 0x7FFFFFFF, no body.
+	header := [protocol_version, u8(~protocol_version), u8(0x80), 0x01, 0x7F, 0xFF, 0xFF,
+		0xFF]
+	big.write(header) or { assert false, 'write: ${err}' }
+	big.set_read_timeout(1 * time.second)
+	mut bbuf := []u8{len: 16}
+	bgot := big.read(mut bbuf) or { -1 } // connection closed (EOF) or timeout
+	assert bgot <= 0, 'server did not reject oversized payload length'
+	big.close() or {}
+
 	srv.close()
 }
