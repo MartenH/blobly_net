@@ -156,13 +156,23 @@ fn discover(port int) !string {
 
 fn tcp_loop(mut srv doip.DoipServer) {
 	for {
-		srv.accept_and_serve(500) or { continue }
+		srv.accept_and_serve(500) or {
+			if srv.is_stopping() {
+				break
+			}
+			continue
+		}
 	}
 }
 
 fn udp_loop(mut srv doip.DoipServer) {
 	for {
-		srv.serve_udp_once(500) or { continue }
+		srv.serve_udp_once(500) or {
+			if srv.is_stopping() {
+				break
+			}
+			continue
+		}
 	}
 }
 

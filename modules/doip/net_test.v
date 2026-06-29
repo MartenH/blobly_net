@@ -61,12 +61,22 @@ fn test_client_server_roundtrip() {
 	}
 	spawn fn (mut s DoipServer) {
 		for {
-			s.accept_and_serve(300) or { continue }
+			s.accept_and_serve(300) or {
+				if s.stopping {
+					break
+				}
+				continue
+			}
 		}
 	}(mut srv)
 	spawn fn (mut s DoipServer) {
 		for {
-			s.serve_udp_once(300) or { continue }
+			s.serve_udp_once(300) or {
+				if s.stopping {
+					break
+				}
+				continue
+			}
 		}
 	}(mut srv)
 	time.sleep(150 * time.millisecond)
