@@ -33,6 +33,7 @@ pub const ra_success = u8(0x10)
 pub const diag_ack_ok = u8(0x00)
 
 // Diagnostic message negative-ack codes (ISO 13400-2, 0x8003 payload).
+pub const diag_nack_invalid_source = u8(0x02)
 pub const diag_nack_unknown_target = u8(0x03)
 
 // header_len is the fixed generic-header size.

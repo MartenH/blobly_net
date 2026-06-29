@@ -63,6 +63,7 @@ pub fn (mut s DoipServer) accept_and_serve(timeout_ms int) ! {
 // activation on this connection.
 fn (mut s DoipServer) serve_connection(mut conn net.TcpConn) {
 	mut activated := false
+	mut tester_source := u16(0) // the source address activated on this connection
 	for {
 		msg := read_message(mut conn, 60000) or { return } // peer closed / timeout
 		match msg.payload_type {
@@ -71,12 +72,19 @@ fn (mut s DoipServer) serve_connection(mut conn net.TcpConn) {
 				conn.write(routing_activation_response(ra.source, s.cfg.logical_address,
 					ra_success)) or { return }
 				activated = true
+				tester_source = ra.source
 			}
 			pt_diagnostic_message {
 				if !activated {
 					continue // routing activation is mandatory before diagnostics
 				}
 				dm := parse_diagnostic_message(msg.payload) or { continue }
+				if dm.source != tester_source {
+					// spoofed source (≠ the activated tester) — NACK, don't dispatch.
+					conn.write(diagnostic_message_nack(s.cfg.logical_address, dm.source,
+						diag_nack_invalid_source)) or { return }
+					continue
+				}
 				if dm.target != s.cfg.logical_address {
 					// not addressed to this entity — NACK, don't ack/dispatch.
 					conn.write(diagnostic_message_nack(s.cfg.logical_address, dm.source,
