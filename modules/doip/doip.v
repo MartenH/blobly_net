@@ -79,9 +79,18 @@ pub fn parse_header(buf []u8) !(u16, u32) {
 	return payload_type, payload_len
 }
 
-// parse decodes a complete in-memory message (header + full payload).
+// parse decodes a complete in-memory message (header + full payload). It rejects
+// an advertised payload length above max_payload_len BEFORE any int() cast or
+// slice — payload_len is u32, and a hostile/buggy peer advertising >= 2^31 would
+// otherwise wrap int() negative, defeat the truncation guard, and panic on the
+// slice. This guard makes parse() safe for every caller (e.g. serve_udp_once,
+// which has no separate cap), not just the ones that pre-check.
 pub fn parse(buf []u8) !Message {
 	payload_type, payload_len := parse_header(buf)!
+	if payload_len > max_payload_len {
+		return error('DoIP payload too large: ${payload_len} > ${max_payload_len}')
+	}
+	// payload_len <= max_payload_len (64 KiB) now, so int() math cannot overflow.
 	if buf.len < header_len + int(payload_len) {
 		return error('DoIP message truncated: have ${buf.len}, need ${header_len + int(payload_len)}')
 	}
