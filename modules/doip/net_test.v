@@ -87,6 +87,19 @@ fn test_client_server_roundtrip() {
 	assert ann2.payload_type == pt_vehicle_announcement
 	u.close() or {}
 
+	// Regression: a diagnostic message addressed to a DIFFERENT target must be
+	// NACKed (0x8003), not ACKed+dispatched. DoipClient.recv surfaces the NACK as
+	// an error.
+	mut wrong := open_doip('127.0.0.1', test_port, 0x0E80, 0x9999) or {
+		assert false, 'open_doip (wrong target): ${err}'
+		return
+	}
+	wrong.send([u8(0x10), 0x20, 0x30]) or { assert false, 'send (wrong target): ${err}' }
+	if _ := wrong.recv(2000) {
+		assert false, 'server dispatched a diagnostic message for a foreign target'
+	}
+	wrong.close()
+
 	// Regression: a diagnostic message before routing activation must NOT be
 	// dispatched (the server drops it; the peer gets no response).
 	mut raw := net.dial_tcp('127.0.0.1:${test_port}') or {
