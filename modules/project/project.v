@@ -149,8 +149,15 @@ pub fn (ch Channel) is_doip() bool {
 // doip_endpoint parses `iface` ("doip:host:port" / "doip:host" / "doip") into a
 // host + port, defaulting to 127.0.0.1:13400. Only meaningful when is_doip().
 pub fn (ch Channel) doip_endpoint() (string, int) {
-	mut rest := ch.iface.trim_space()
-	rest = if rest.starts_with('doip:') { rest['doip:'.len..] } else if rest == 'doip' { '' } else { rest }
+	// Only an explicit `doip[:host[:port]]` interface carries an endpoint. A
+	// `type: doip` channel that omits `interface` inherits the CAN default
+	// (`vcan0`), which is NOT a host — fall back to localhost rather than dialing
+	// "vcan0:13400".
+	trimmed := ch.iface.trim_space()
+	if !trimmed.starts_with('doip') {
+		return '127.0.0.1', 13400
+	}
+	rest := if trimmed.starts_with('doip:') { trimmed['doip:'.len..] } else { '' }
 	if rest == '' {
 		return '127.0.0.1', 13400
 	}

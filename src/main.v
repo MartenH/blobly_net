@@ -248,7 +248,8 @@ struct PlotSample {
 // ChannelRT is the live runtime state of one configured channel (bus).
 struct ChannelRT {
 mut:
-	bus      ?transport.Bus // backend (SocketCAN or udp software bus); none until opened
+	bus      ?transport.Bus    // backend (SocketCAN or udp software bus); none until opened
+	doip_srv ?&doip.DoipServer // DoIP entity (type: doip channels); none until listening
 	running  bool
 	err      bool // open failed / bus error
 	rx_count int
@@ -1332,6 +1333,12 @@ fn start_measurement(mut w gui.Window) {
 			app.rt[i].note = 'disabled'
 			continue
 		}
+		// `mode: off` means "configured but not attached" for every channel type
+		// (CAN or DoIP) — checked here so the DoIP special case below honours it too.
+		if ch.mode == .off {
+			app.rt[i].note = 'off'
+			continue
+		}
 		// DoIP channels are diagnostics-over-Ethernet endpoints, not CAN buses:
 		// there are no frames to monitor, so we don't open a transport.Bus or an
 		// RX thread. If the channel hosts a simulated ECU, spawn the DoIP server
@@ -1491,12 +1498,20 @@ fn gen_loop(mut w gui.Window) {
 
 // stop_measurement signals every running channel's RX thread to exit; each
 // thread closes its own bus on the way out (avoids closing under a blocked recv).
+// For DoIP channels we ALSO close the server here so its bound TCP/UDP sockets are
+// released immediately (a flag flip alone can't interrupt a blocked accept/read):
+// the serve loop then exits on the next iteration and its defer close()s again
+// harmlessly.
 fn stop_measurement(mut w gui.Window) {
 	mut app := w.state[App]()
 	for i in 0 .. app.rt.len {
 		if app.rt[i].running {
 			app.rt[i].running = false
 			app.rt[i].note = 'stopped'
+		}
+		if mut srv := app.rt[i].doip_srv {
+			srv.close()
+			app.rt[i].doip_srv = none
 		}
 	}
 	app.running = false
@@ -1630,7 +1645,7 @@ fn diag_server_loop(idx int, mut w gui.Window) {
 // Diagnostics panel connects to it as a DoIP client. Serves TCP diagnostics and
 // UDP vehicle discovery, polling the channel's running flag to exit.
 fn doip_server_loop(idx int, mut w gui.Window) {
-	mut app := w.state[App]()
+	app := w.state[App]()
 	ch := app.proj.channels[idx]
 	host, port := ch.doip_endpoint()
 	mut us := uds.default_server()
@@ -1639,17 +1654,32 @@ fn doip_server_loop(idx int, mut w gui.Window) {
 	}
 	mut srv := doip.new_server(doip.ServerCfg{ logical_address: ch.ecu_addr }, handler)
 	srv.listen(host, port) or {
-		app.rt[idx].err = true
-		app.rt[idx].note = 'DoIP listen failed: ${err}'
-		w.update_window()
+		// On the worker thread — bounce the failure status onto the UI thread (the
+		// app's cross-thread convention) instead of mutating App + repainting here.
+		emsg := err.msg()
+		w.queue_command(fn [idx, emsg] (mut w gui.Window) {
+			mut a := w.state[App]()
+			a.rt[idx].err = true
+			a.rt[idx].running = false
+			a.rt[idx].note = 'DoIP listen failed: ${emsg}'
+			w.update_window()
+		})
 		return
 	}
+	// Publish the server handle so Stop can close the sockets promptly (releasing
+	// the bound port for an immediate restart and unblocking a pending accept).
+	w.queue_command(fn [idx, srv] (mut w gui.Window) {
+		mut a := w.state[App]()
+		a.rt[idx].doip_srv = srv
+	})
 	defer {
 		srv.close()
 	}
 	for app.rt[idx].running {
 		// Interleave UDP discovery + TCP diagnostics with short timeouts so the
-		// loop stays responsive to Stop (each call returns on timeout).
+		// loop stays responsive to Stop (each call returns on timeout). A client
+		// that connects then idles can still hold the per-connection read up to its
+		// timeout; Stop closing the server (below) is what guarantees teardown.
 		srv.serve_udp_once(50) or {}
 		srv.accept_and_serve(50) or {}
 	}
