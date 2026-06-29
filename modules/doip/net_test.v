@@ -277,3 +277,41 @@ fn test_close_interrupts_active_connection() {
 	assert elapsed < 250, 'close() did not interrupt the active read promptly (${elapsed} ms)'
 	c.close() or {}
 }
+
+// IPv6 end-to-end: the entity binds an IPv6 literal (bracketed + ip6 family) and
+// DoipClient dials it. Guarded — skips cleanly where IPv6 loopback is unavailable
+// (some CI runners) rather than failing.
+fn test_ipv6_roundtrip() {
+	mut srv := new_server(ServerCfg{ logical_address: 0x1000, vin: 'TESTVIN0000000001' },
+		echo_handler)
+	srv.listen('::1', 13467) or {
+		eprintln('skipping IPv6 roundtrip (no IPv6 loopback here): ${err}')
+		return
+	}
+	spawn fn (mut s DoipServer) {
+		for {
+			s.accept_and_serve(300) or {
+				if s.stopping {
+					break
+				}
+				continue
+			}
+		}
+	}(mut srv)
+	time.sleep(150 * time.millisecond)
+	mut ch := open_doip('::1', 13467, 0x0E80, 0x1000) or {
+		srv.close()
+		assert false, 'IPv6 open_doip: ${err}'
+		return
+	}
+	ch.send([u8(0x10), 0x03]) or { assert false, 'send: ${err}' }
+	resp := ch.recv(2000) or {
+		ch.close()
+		srv.close()
+		assert false, 'recv: ${err}'
+		return
+	}
+	assert resp == [u8(0x11), 0x04] // echo+1 of the request
+	ch.close()
+	srv.close()
+}

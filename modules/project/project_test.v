@@ -241,6 +241,18 @@ fn test_doip_endpoint_parsing() {
 	}.doip_endpoint()
 	assert h5 == 'fe80::1'
 	assert p5 == 13400
+	// malformed bracketed suffix → kept whole (fails loudly on connect), not
+	// silently defaulted to ::1 + 13400.
+	h6, p6 := Channel{
+		iface: 'doip:[::1]:1340O'
+	}.doip_endpoint()
+	assert h6 == '[::1]:1340O'
+	assert p6 == 13400
+	h7, p7 := Channel{
+		iface: 'doip:[::1]junk'
+	}.doip_endpoint()
+	assert h7 == '[::1]junk'
+	assert p7 == 13400
 }
 
 fn test_doip_address_out_of_range() {
@@ -254,4 +266,12 @@ fn test_doip_address_out_of_range() {
 		return
 	}
 	assert false, 'expected tester_address out-of-range error'
+}
+
+fn test_doip_address_u32_overflow() {
+	// a value larger than u32 must NOT wrap through a narrow type and pass as 0.
+	parse('project:\n  name: d\nchannels:\n  - name: D\n    type: doip\n    tester_address: "0x100000000"\n') or {
+		return
+	}
+	assert false, 'expected u32-overflowing tester_address to error'
 }
