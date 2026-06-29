@@ -1227,6 +1227,20 @@ prompt for a password.
   `read_message` **caps the advertised `payload_length`** (`doip.max_payload_len` = 64 KiB) before
   allocating, so a hostile/buggy peer can't force a multi-GB allocation or a hang on a body that never
   arrives. Both have regression tests in `net_test.v` (raw-TCP diag-without-activation → no reply;
-  oversized header → connection rejected). NEXT (E2): wire `doip:<host>[:port]` into `transport.open()` +
+  oversized header → connection rejected). **Full Codex review chain + self high-effort `/code-review`
+  on PR #1 (7 fix commits, all real, all regression-tested) — MERGED:** (P2) `parse()` cast u32
+  `payload_length`→int *before* the bounds check, so ≥2^31 wrapped negative, defeated the truncation
+  guard and panicked on the slice — remotely triggerable via `serve_udp_once` (UDP, no cap, `or{}`
+  can't catch a panic); fixed at root (cap inside `parse()` before any int()/slice). (P2) NACK
+  diagnostic messages for a foreign **target** (≠ entity addr). (P2) NACK a **spoofed source** (≠ the
+  activated source) after activation. (P2) deny **re-activation** with a different source (ISO 13400
+  code 0x02) so the source guard can't be bypassed. (P2) **client** validates response addressing
+  (`dm.source==c.target && dm.target==c.source`) — mirror of the server guard. (P3) smoke counts a
+  bad SW-version response as a failure. Plus a reuse/efficiency pass (`encoding.binary` for all BE
+  packing — matches `modules/mf4`; zero-copy `read_ptr` receive path; dropped a reassemble-then-reparse
+  double-clone). **Deferred by design:** single-connection server (one tester at a time; thread-per-
+  conn would need locking around the non-thread-safe `uds.Server`) — documented in
+  `docs/ethernet_architecture.md` "Known limitations". V gotcha learned: a local `port` shadowing the
+  module const `doip.port` miscompiled (tcc "'port' undeclared") — name locals distinctly. NEXT (E2): wire `doip:<host>[:port]` into `transport.open()` +
   project config + the GUI Diagnostics panel (already speaks `isotp.Channel`); then E3 = `modules/someip`
   (service discovery + RPC, its own oracle — does NOT reuse the UDS stack).
