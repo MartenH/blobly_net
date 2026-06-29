@@ -30,6 +30,8 @@ pub struct DoipServer {
 mut:
 	listener &net.TcpListener = unsafe { nil }
 	udp      &net.UdpConn     = unsafe { nil }
+	active   &net.TcpConn     = unsafe { nil } // the in-progress accepted connection (nil between)
+	stopping bool // set by close(): stop accepting/serving and tear down the active conn
 }
 
 // new_server builds an entity with the given identity + UDS handler. Returns a
@@ -57,9 +59,16 @@ pub fn (mut s DoipServer) listen(host string, port int) ! {
 // thread-per-connection model would need handler synchronisation (uds.Server is
 // not thread-safe).
 pub fn (mut s DoipServer) accept_and_serve(timeout_ms int) ! {
+	if s.stopping {
+		return error('DoIP server stopping')
+	}
 	s.listener.set_accept_timeout(timeout_ms * time.millisecond)
 	mut conn := s.listener.accept()!
+	// Publish the accepted connection so close() can tear it down from another
+	// thread (Stop), interrupting an otherwise-blocking per-connection read.
+	s.active = conn
 	s.serve_connection(mut conn)
+	s.active = unsafe { nil }
 	conn.close() or {}
 }
 
@@ -71,7 +80,10 @@ fn (mut s DoipServer) serve_connection(mut conn net.TcpConn) {
 	mut activated := false
 	mut tester_source := u16(0) // the source address activated on this connection
 	for {
-		msg := read_message(mut conn, 60000) or { return } // peer closed / timeout
+		if s.stopping {
+			return // Stop requested — drop the connection without serving further
+		}
+		msg := read_message(mut conn, 60000) or { return } // peer closed / timeout / closed by Stop
 		match msg.payload_type {
 			pt_routing_activation_request {
 				ra := parse_routing_activation_request(msg.payload) or { continue }
@@ -137,7 +149,15 @@ pub fn (mut s DoipServer) serve_udp_once(timeout_ms int) ! {
 	}
 }
 
+// close stops the entity and releases its sockets. It is safe to call from a
+// different thread than the serving loop (e.g. a GUI Stop): it sets `stopping`
+// and closes the currently-active accepted connection, so a serve loop blocked in
+// a per-connection read is interrupted rather than waiting out the read timeout.
 pub fn (mut s DoipServer) close() {
+	s.stopping = true
+	if !isnil(s.active) {
+		s.active.close() or {}
+	}
 	if !isnil(s.listener) {
 		s.listener.close() or {}
 	}

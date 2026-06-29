@@ -181,6 +181,14 @@ fn test_doip_endpoint_defaults() {
 	h1, p1 := hostonly.doip_endpoint()
 	assert h1 == '192.168.1.5'
 	assert p1 == 13400
+	// bare `interface: doip` shorthand (no explicit type) is recognised too.
+	shorthand := Channel{
+		iface: 'doip'
+	}
+	assert shorthand.is_doip()
+	hs, ps := shorthand.doip_endpoint()
+	assert hs == '127.0.0.1'
+	assert ps == 13400
 	// default addresses when unset.
 	assert bare.tester_addr == 0x0E80
 	assert bare.ecu_addr == 0x1000

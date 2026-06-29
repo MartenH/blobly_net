@@ -141,9 +141,11 @@ pub mut:
 }
 
 // is_doip reports whether this channel is a DoIP (diagnostics-over-Ethernet)
-// endpoint rather than a CAN bus.
+// endpoint rather than a CAN bus. Recognised via `type: doip` or an interface of
+// `doip` (bare shorthand) / `doip:<host>[:<port>]`.
 pub fn (ch Channel) is_doip() bool {
-	return ch.typ == 'doip' || ch.iface.starts_with('doip:')
+	t := ch.iface.trim_space()
+	return ch.typ == 'doip' || t == 'doip' || t.starts_with('doip:')
 }
 
 // doip_endpoint parses `iface` ("doip:host:port" / "doip:host" / "doip") into a

@@ -1662,6 +1662,13 @@ fn doip_server_loop(idx int, mut w gui.Window) {
 			a.rt[idx].err = true
 			a.rt[idx].running = false
 			a.rt[idx].note = 'DoIP listen failed: ${emsg}'
+			// If this failure leaves no channel attached, drop back out of the
+			// global Running state so Start works again (otherwise a single-channel
+			// DoIP project is stuck "running" with no live target).
+			if !a.rt.any(it.running) {
+				a.running = false
+				a.notify(.warn, 'stopped — no channels attached (DoIP bind failed)')
+			}
 			w.update_window()
 		})
 		return
