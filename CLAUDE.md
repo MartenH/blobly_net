@@ -81,6 +81,10 @@ modules/transport/          Bus interface (transport.v) + SocketCAN backend (soc
                             cross-platform UDP-multicast software bus (udpbus.v) — the vcan stand-in
 modules/isotp/              ISO-TP: Channel interface (isotp.v) + Linux kernel backend (kernel_linux.v)
 modules/uds/                UDS diagnostic client over isotp (pure V, + tests)   (Phase 6)
+modules/doip/               DoIP (ISO 13400) diagnostics over Ethernet/TCP: framing (doip.v) +
+                            DoipClient (implements isotp.Channel → uds.Client rides it unchanged) +
+                            DoipServer (TCP/UDP entity, uds-agnostic handler callback). Driver-free,
+                            real localhost TCP/UDP. scapy oracle.                  (Phase E1)
 modules/canlog/             candump .log parse/format (pure V, + tests)          (Phase 7)
 modules/mf4/                native-V ASAM MF4 reader: DZ-compressed + MLSD/VLSD CAN-FD -> canlog
                             entries (pure V, no asammdf; + tests vs samples/demo.mf4)  (Phase 7)
@@ -108,14 +112,19 @@ cmd/loadtest/               headless data-plane benchmark: N producer+consumer b
 cmd/sim_smoke/              run the native simulated SUT ECU on the in-proc bus, verify end-to-end
 cmd/isotp_smoke/            send one ISO-TP PDU, print the reply (multi-frame smoke)
 cmd/uds_smoke/              drive the UDS client vs sut/uds_server.py
+cmd/doip_smoke/             UDS over DoIP, V tester ↔ V entity over localhost TCP/UDP (+ `serve`
+                            mode for the scapy oracle); no CAN/vcan/drivers
 cmd/lua_smoke/              embedded-Lua smoke (runs a script + host callback)
 cmd/script/                 headless Lua test runner: load project, bring up sim+UDS server
                             (driver-free), run *.lua, report pass/fail, exit≠0 on failure
 sut/can_sut.py              Python virtual SUT (emits/answers frames on vcan0)
 sut/dbc_oracle.py           independent stdlib DBC parser+decoder (cross-validates candb)
 sut/uds_server.py           Python virtual UDS server (stdlib ISO-TP) — oracle for modules/uds
+sut/doip_server.py          independent DoIP/UDS oracle (scapy automotive) — drives the V DoIP
+                            entity as a client; needs .venv-doip
 sut/mf4_bridge.py           MF4<->candump bridge: convert/tomf4/frames/semantic-diff (needs .venv-tools)
 scripts/setup_mf4_tools.sh  build .venv-tools (asammdf) + fetch real J1939 MF4/DBC samples
+scripts/setup_doip_oracle.sh build .venv-doip (scapy) for the DoIP oracle
 scripts/run.sh              build+run with WSLg software-GL workaround
 scripts/setup_vcan.sh       bring up vcan0 (sudo)
 scripts/shot.sh             screenshot the running app window (xdotool search + import -window)
@@ -1191,3 +1200,47 @@ prompt for a password.
   blobly_net`. **Verified:** GUI builds + renders (title "Blobly Net — …"), full module suite 21/21, headless
   Lua runner 17/17 (VIN reads back BLOBLYNETV0SUT001 over multi-frame ISO-TP). Local checkout dir kept as
   `cantester_v` (renaming it would orphan the session/memory paths; GitHub repo name is independent).
+- 2026-06-29: **Phase E1 — Ethernet DoIP diagnostics FOUNDATION DONE & VERIFIED (headless, no HW).**
+  First automotive-Ethernet protocol, picked as the next subject (CAN HW is off-site). DoIP (ISO 13400)
+  is **UDS-over-IP**, so it reuses the whole UDS stack via the same carrier-swap seam CAN uses: new
+  **`modules/doip`** — `doip.v` (generic-header framing + routing-activation / diagnostic-message /
+  vehicle-announcement builders+parsers, 8 hermetic tests) · `client.v` **`DoipClient` implements
+  `isotp.Channel`** (tx_id/rx_id = tester/ECU logical addresses), so `uds.new_client(open_doip(...)!)`
+  speaks UDS over Ethernet **unchanged** · `server.v` `DoipServer` = a TCP/UDP entity that's
+  **uds-AGNOSTIC** (takes a `handler fn([]u8)[]u8` callback; the caller wires `uds.Server.handle`), so
+  `doip` imports neither uds nor isotp and stays a leaf transport. **No virtual device, no driver,
+  every platform** — runs on real localhost TCP/UDP (port 13400). `cmd/doip_smoke` drives the full
+  flow V-tester ↔ V-entity (routing activation → session 0x10 → RDBI VIN 0xF190 → NRC 0x31) + UDP
+  vehicle discovery (0x0001→0x0004) — **ALL CHECKS PASSED**; `modules/doip/net_test.v` is the hermetic
+  uds-free networking test (kept globals-free so `v test modules/doip/` needs no `-enable-globals`).
+  **Independent scapy oracle** `sut/doip_server.py` (scapy `automotive.doip` `UDS_DoIPSocket`, in
+  `.venv-doip` via `scripts/setup_doip_oracle.sh`): an independent DoIP+UDS stack interoperates with
+  our V entity on the wire — routing activation, session, multi-byte VIN RDBI, negative response all
+  pass. Full module suite **23/23** (`v -enable-globals test modules/`). Design: `docs/
+  ethernet_architecture.md`. Gotchas: (a) V's `~` promotes `u8`→`int` (`~0x02` = −3, not 0xFD) — mask
+  with `u8(~x)` in header build/validate; (b) `spawn` needs a **reference** arg, so `new_server` returns
+  `&DoipServer` (and its fields are module-private, so the cmd can't build the pointer itself); (c)
+  scapy's plain `DoIPSocket` does NOT auto-wrap bare `UDS()` (sends raw UDS bytes) — use
+  **`UDS_DoIPSocket`** for UDS-over-DoIP. **Codex review (PR #1) — 2 P2s addressed:** (1) server now
+  **requires routing activation before dispatching diagnostics** (per-connection `activated` flag; a
+  `0x8001` before a successful `0x0005`/`0x0006` is dropped, not forwarded to the UDS handler); (2)
+  `read_message` **caps the advertised `payload_length`** (`doip.max_payload_len` = 64 KiB) before
+  allocating, so a hostile/buggy peer can't force a multi-GB allocation or a hang on a body that never
+  arrives. Both have regression tests in `net_test.v` (raw-TCP diag-without-activation → no reply;
+  oversized header → connection rejected). **Full Codex review chain + self high-effort `/code-review`
+  on PR #1 (7 fix commits, all real, all regression-tested) — MERGED:** (P2) `parse()` cast u32
+  `payload_length`→int *before* the bounds check, so ≥2^31 wrapped negative, defeated the truncation
+  guard and panicked on the slice — remotely triggerable via `serve_udp_once` (UDP, no cap, `or{}`
+  can't catch a panic); fixed at root (cap inside `parse()` before any int()/slice). (P2) NACK
+  diagnostic messages for a foreign **target** (≠ entity addr). (P2) NACK a **spoofed source** (≠ the
+  activated source) after activation. (P2) deny **re-activation** with a different source (ISO 13400
+  code 0x02) so the source guard can't be bypassed. (P2) **client** validates response addressing
+  (`dm.source==c.target && dm.target==c.source`) — mirror of the server guard. (P3) smoke counts a
+  bad SW-version response as a failure. Plus a reuse/efficiency pass (`encoding.binary` for all BE
+  packing — matches `modules/mf4`; zero-copy `read_ptr` receive path; dropped a reassemble-then-reparse
+  double-clone). **Deferred by design:** single-connection server (one tester at a time; thread-per-
+  conn would need locking around the non-thread-safe `uds.Server`) — documented in
+  `docs/ethernet_architecture.md` "Known limitations". V gotcha learned: a local `port` shadowing the
+  module const `doip.port` miscompiled (tcc "'port' undeclared") — name locals distinctly. NEXT (E2): wire `doip:<host>[:port]` into `transport.open()` +
+  project config + the GUI Diagnostics panel (already speaks `isotp.Channel`); then E3 = `modules/someip`
+  (service discovery + RPC, its own oracle — does NOT reuse the UDS stack).
