@@ -31,6 +31,14 @@ pub const diag_ack_ok = u8(0x00)
 // header_len is the fixed generic-header size.
 pub const header_len = 8
 
+// max_payload_len caps the advertised payload length we will accept before
+// allocating a receive buffer. A malformed/hostile peer can otherwise advertise a
+// multi-GB length and force the reader to allocate it (and block forever waiting
+// for a body that never comes). 64 KiB comfortably covers UDS-over-DoIP diagnostic
+// messages (UDS block transfers are chunked well below this) while bounding the
+// worst-case allocation.
+pub const max_payload_len = u32(64 * 1024)
+
 // Message is a parsed DoIP message (header fields + raw payload).
 pub struct Message {
 pub:
