@@ -77,6 +77,12 @@ fn (mut s DoipServer) serve_connection(mut conn net.TcpConn) {
 					continue // routing activation is mandatory before diagnostics
 				}
 				dm := parse_diagnostic_message(msg.payload) or { continue }
+				if dm.target != s.cfg.logical_address {
+					// not addressed to this entity — NACK, don't ack/dispatch.
+					conn.write(diagnostic_message_nack(s.cfg.logical_address, dm.source,
+						diag_nack_unknown_target)) or { return }
+					continue
+				}
 				// positive ack first (entity → tester), then the UDS response.
 				conn.write(diagnostic_message_ack(s.cfg.logical_address, dm.source, diag_ack_ok)) or {
 					return

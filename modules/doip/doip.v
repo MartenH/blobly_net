@@ -28,6 +28,9 @@ pub const ra_success = u8(0x10)
 // Diagnostic message ack code (positive).
 pub const diag_ack_ok = u8(0x00)
 
+// Diagnostic message negative-ack codes (ISO 13400-2, 0x8003 payload).
+pub const diag_nack_unknown_target = u8(0x03)
+
 // header_len is the fixed generic-header size.
 pub const header_len = 8
 
@@ -126,6 +129,13 @@ pub fn diagnostic_message(source u16, target u16, user_data []u8) []u8 {
 pub fn diagnostic_message_ack(source u16, target u16, code u8) []u8 {
 	payload := [u8(source >> 8), u8(source), u8(target >> 8), u8(target), code]
 	return encode(pt_diagnostic_message_ack, payload)
+}
+
+// diagnostic_message_nack: source(2) target(2) nack-code(1) — sent when a
+// diagnostic message can't be accepted (e.g. unknown target address).
+pub fn diagnostic_message_nack(source u16, target u16, code u8) []u8 {
+	payload := [u8(source >> 8), u8(source), u8(target >> 8), u8(target), code]
+	return encode(pt_diagnostic_message_nack, payload)
 }
 
 // vehicle_id_request: empty payload (UDP broadcast for discovery).
