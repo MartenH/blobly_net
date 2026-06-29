@@ -21,6 +21,20 @@ fn test_bad_inverse_version() {
 	}
 }
 
+fn test_parse_rejects_oversized_payload_len() {
+	// A header advertising a huge payload (high bit set) must ERROR, not panic on
+	// an int()-overflow slice. Regression for the remote serve_udp_once crash.
+	huge := [protocol_version, u8(~protocol_version), 0x00, 0x01, 0xFF, 0xFF, 0xFF, 0xFF]
+	if _ := parse(huge) {
+		assert false, 'expected oversized payload_len (0xFFFFFFFF) to be rejected'
+	}
+	// Just over the cap (max_payload_len = 64 KiB → 0x00010001 = 65537).
+	over := [protocol_version, u8(~protocol_version), 0x00, 0x01, 0x00, 0x01, 0x00, 0x01]
+	if _ := parse(over) {
+		assert false, 'expected payload_len over max_payload_len to be rejected'
+	}
+}
+
 fn test_truncated_payload() {
 	msg := encode(pt_diagnostic_message, [u8(1), 2, 3, 4])
 	if _ := parse(msg[..msg.len - 1]) {

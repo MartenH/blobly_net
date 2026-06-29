@@ -144,6 +144,9 @@ fn discover(port int) !string {
 	if msg.payload_type != doip.pt_vehicle_announcement {
 		return error('expected announcement, got 0x${msg.payload_type:04X}')
 	}
+	if msg.payload.len < 17 {
+		return error('announcement payload too short for a VIN: ${msg.payload.len} bytes')
+	}
 	return msg.payload[..17].bytestr()
 }
 

@@ -65,6 +65,26 @@ fn test_client_server_roundtrip() {
 	}
 	assert ann.payload_type == pt_vehicle_announcement
 	assert ann.payload[..17].bytestr() == 'TESTVIN0000000001'
+
+	// Regression: a hostile UDP datagram advertising a 0xFFFFFFFF payload length
+	// must NOT crash the discovery thread (parse() rejects it before slicing).
+	hostile := [protocol_version, u8(~protocol_version), u8(0x00), 0x01, 0xFF, 0xFF, 0xFF,
+		0xFF]
+	u.write(hostile) or { assert false, 'udp write hostile: ${err}' }
+	time.sleep(100 * time.millisecond)
+	// The thread should still answer a subsequent valid request.
+	u.write(vehicle_id_request()) or { assert false, 'udp write 2: ${err}' }
+	u.set_read_timeout(2 * time.second)
+	mut buf2 := []u8{len: 128}
+	n2, _ := u.read(mut buf2) or {
+		assert false, 'discovery thread died after hostile datagram: ${err}'
+		return
+	}
+	ann2 := parse(buf2[..n2]) or {
+		assert false, 'parse after hostile: ${err}'
+		return
+	}
+	assert ann2.payload_type == pt_vehicle_announcement
 	u.close() or {}
 
 	// Regression: a diagnostic message before routing activation must NOT be
