@@ -87,7 +87,11 @@ fn main() {
 		[]u8{}
 	}
 	if sw.len > 0 {
-		println('  read SW ver 0xF195 = ${hex(sw)} ${tick(sw == [u8(0x01), 0x00])}')
+		ok := sw == [u8(0x01), 0x00]
+		println('  read SW ver 0xF195 = ${hex(sw)} ${tick(ok)}')
+		if !ok {
+			fails++
+		}
 	}
 
 	// 4) Negative response: unknown DID → NRC 0x31 requestOutOfRange

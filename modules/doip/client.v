@@ -74,6 +74,9 @@ pub fn (mut c DoipClient) recv(timeout_ms int) ![]u8 {
 		match msg.payload_type {
 			pt_diagnostic_message {
 				dm := parse_diagnostic_message(msg.payload)!
+				if dm.source != c.target || dm.target != c.source {
+					continue // a response for another logical address — not ours
+				}
 				return dm.data
 			}
 			pt_diagnostic_message_ack {
