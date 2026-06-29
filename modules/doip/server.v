@@ -69,6 +69,13 @@ fn (mut s DoipServer) serve_connection(mut conn net.TcpConn) {
 		match msg.payload_type {
 			pt_routing_activation_request {
 				ra := parse_routing_activation_request(msg.payload) or { continue }
+				if activated && ra.source != tester_source {
+					// already activated with a different source — deny and keep the
+					// first source, so re-activation can't bypass the source guard.
+					conn.write(routing_activation_response(ra.source, s.cfg.logical_address,
+						ra_denied_source_mismatch)) or { return }
+					continue
+				}
 				conn.write(routing_activation_response(ra.source, s.cfg.logical_address,
 					ra_success)) or { return }
 				activated = true
