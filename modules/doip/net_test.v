@@ -248,11 +248,22 @@ fn test_close_interrupts_active_connection() {
 	// Stop from this (different) thread.
 	t0 := time.ticks()
 	srv.close()
-	c.set_read_timeout(3 * time.second)
+	// Use a client read timeout (10s) FAR above the promptness bound we assert
+	// (250ms): if close() failed to interrupt the server's read, the server would
+	// hold the connection and this client read would block until its own 10s
+	// timeout — blowing the 250ms bound. So a pass genuinely proves the server
+	// closed the connection promptly, not that the client merely timed out.
+	c.set_read_timeout(10 * time.second)
 	mut buf := []u8{len: 16}
-	n := c.read(mut buf) or { -1 } // server-side close → EOF (0) or error
+	mut timed_out := false
+	n := c.read(mut buf) or {
+		// distinguish a real close (EOF/reset, arrives promptly) from a read timeout
+		timed_out = err.code() == net.err_timed_out_code
+		-1
+	}
 	elapsed := time.ticks() - t0
+	assert !timed_out, 'client read timed out — server did not close the connection'
 	assert n <= 0, 'expected the server to close the active connection, read ${n} bytes'
-	assert elapsed < 5000, 'close() did not interrupt the active read promptly (${elapsed} ms)'
+	assert elapsed < 250, 'close() did not interrupt the active read promptly (${elapsed} ms)'
 	c.close() or {}
 }
