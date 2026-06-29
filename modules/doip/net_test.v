@@ -13,6 +13,45 @@ fn echo_handler(req []u8) []u8 {
 	return req.map(it + 1) // distinct from the request so we know it round-tripped
 }
 
+// A DoipClient must ignore a diagnostic-message response addressed to/from other
+// logical addresses (gateway noise / spoofing) and only accept the one for its own
+// source/target pair.
+fn test_client_ignores_foreign_response() {
+	lport := 13457
+	mut ln := net.listen_tcp(.ip, '127.0.0.1:${lport}') or {
+		assert false, 'listen: ${err}'
+		return
+	}
+	spawn fn (mut ln net.TcpListener) {
+		mut c := ln.accept() or { return }
+		// routing activation handshake
+		_ := read_message(mut c, 2000) or { return }
+		c.write(routing_activation_response(0x0E80, 0x1000, ra_success)) or { return }
+		// consume the diagnostic request, then reply: a FOREIGN-addressed 0x8001
+		// first, then the correctly-addressed one.
+		_ := read_message(mut c, 2000) or { return }
+		c.write(diagnostic_message(0x2222, 0x0E80, [u8(0x59), 0x99])) or { return } // wrong source
+		c.write(diagnostic_message(0x1000, 0x9999, [u8(0x58), 0x88])) or { return } // wrong target
+		c.write(diagnostic_message(0x1000, 0x0E80, [u8(0x62), 0xAA])) or { return } // ours
+		time.sleep(200 * time.millisecond)
+		c.close() or {}
+	}(mut ln)
+	time.sleep(150 * time.millisecond)
+
+	mut ch := open_doip('127.0.0.1', lport, 0x0E80, 0x1000) or {
+		assert false, 'open_doip: ${err}'
+		return
+	}
+	ch.send([u8(0x22), 0xF1, 0x90]) or { assert false, 'send: ${err}' }
+	resp := ch.recv(2000) or {
+		assert false, 'recv: ${err}'
+		return
+	}
+	assert resp == [u8(0x62), 0xAA] // skipped both foreign responses, took ours
+	ch.close()
+	ln.close() or {}
+}
+
 fn test_client_server_roundtrip() {
 	mut srv := new_server(ServerCfg{ logical_address: 0x1000, vin: 'TESTVIN0000000001' },
 		echo_handler)
