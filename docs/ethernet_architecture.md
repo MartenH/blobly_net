@@ -107,6 +107,18 @@ one-way (`uds → isotp`; `cmd/* → doip + uds`) and `doip` a leaf transport mo
 - The GUI **Diagnostics** panel can target a DoIP ECU: it already drives `uds.Client` over an
   `isotp.Channel`, so it accepts a DoIP channel with minimal wiring.
 
+## Known limitations (virtual-first scope)
+
+- **Single connection at a time.** `DoipServer` serves one accepted TCP connection
+  to completion (`accept_and_serve` → `serve_connection`) before accepting the next,
+  with a 60 s per-read timeout. A stale/idle peer can therefore delay other testers'
+  routing activation. This is intentional for now: the entity is driven by a single
+  tester at a time, and a thread-per-connection model would run multiple testers'
+  UDS requests concurrently against a **shared, non-thread-safe `uds.Server`**
+  (session / security-unlock / DID-map state), so it needs handler locking or
+  per-connection handler state on top of the threading change. Deferred until
+  multi-tester concurrency is actually required (Codex PR #1 finding, by design).
+
 ## SOME-IP (phase E3, deferred)
 
 A separate `modules/someip/`: 16-byte SOME-IP header (message/request id, length, protocol/interface

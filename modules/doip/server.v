@@ -50,6 +50,12 @@ pub fn (mut s DoipServer) listen(host string, port int) ! {
 // accept_and_serve waits up to timeout_ms for a TCP connection, then serves its
 // request/response loop until the peer disconnects. Returns an error on accept
 // timeout (so callers can poll a shutdown flag between attempts).
+//
+// NOTE: one connection is served to completion before the next is accepted, so a
+// stale peer can delay others (see docs/ethernet_architecture.md "Known
+// limitations"). Intentional for the single-tester virtual-first scope; a
+// thread-per-connection model would need handler synchronisation (uds.Server is
+// not thread-safe).
 pub fn (mut s DoipServer) accept_and_serve(timeout_ms int) ! {
 	s.listener.set_accept_timeout(timeout_ms * time.millisecond)
 	mut conn := s.listener.accept()!
