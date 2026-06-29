@@ -184,4 +184,14 @@ fn test_doip_endpoint_defaults() {
 	// default addresses when unset.
 	assert bare.tester_addr == 0x0E80
 	assert bare.ecu_addr == 0x1000
+	// type: doip but interface omitted -> inherits the CAN default `vcan0`, which
+	// must NOT be treated as the DoIP host: fall back to localhost.
+	inherited := Channel{
+		typ: 'doip'
+		// iface left at its 'vcan0' default
+	}
+	assert inherited.is_doip()
+	h2, p2 := inherited.doip_endpoint()
+	assert h2 == '127.0.0.1'
+	assert p2 == 13400
 }
