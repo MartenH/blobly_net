@@ -1341,5 +1341,12 @@ prompt for a password.
   jobs (clone-pinned like gui/vglyph). Verified: local build clean; `markdown.to_html()` renders the real
   help docs to well-formed HTML (11 headings / 16 list items / code / links); app launches on the new
   sim-demo default without crash. Avoided the `↗` glyph in the button label (vglyph no-outline crash
-  rule). TODO: Linux/AppImage bundle (the Linux CI job is compile-only today); bundle the mingw runtime
-  DLLs (msvc bundle is the self-contained one).
+  rule). **Codex PR #5 review (4×P2, 5×P3 across rounds) addressed:** markdown added to the fresh-setup
+  scripts (pinned `ef2f101`); chdir-to-bundle skips when an explicit project override is given (relative
+  `BLOBLY_PROJECT`/CLI arg keeps resolving against the user CWD); bundle stages `tests/` (Script-panel
+  sample scripts); **mingw bundle ships its ldd-resolved `/mingw64/bin` runtime DLLs** so it too runs on a
+  clean machine; relative help links stripped to text for the browser doc; per-pid Help temp file; Open
+  Example menu gained DoIP + CPU-load entries (both ship in the bundle). **WSL help-open:** `os.open_uri`
+  finds no Linux browser under WSL → route to the Windows browser via `wslview`/`explorer.exe` (wslpath
+  UNC, launched through `os.new_process` so backslashes survive). TODO: Linux/AppImage bundle (the Linux
+  CI job is compile-only today).
