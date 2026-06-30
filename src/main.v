@@ -1078,8 +1078,15 @@ fn main() {
 	// loaded by relative path (projects/…, dbc/…), which resolves against the CWD —
 	// fine in a dev checkout, but a downloaded build double-clicked from elsewhere
 	// has a different CWD. If the resources aren't in the CWD but sit beside the
-	// executable, chdir there so everything resolves out of the box.
-	if !os.exists('projects') {
+	// executable, chdir there so everything resolves out of the box. ONLY for the
+	// zero-config case: if the user gave an explicit project (a relative
+	// `blobly_net foo.yml` or BLOBLY_PROJECT is resolved against the CURRENT cwd),
+	// chdir'ing first would break it, so skip the relocate then.
+	mut has_proj_override := os.getenv('BLOBLY_PROJECT') != ''
+	if _ := cli_project_arg() {
+		has_proj_override = true
+	}
+	if !has_proj_override && !os.exists('projects') {
 		exe_dir := os.dir(os.executable())
 		if os.exists(os.join_path(exe_dir, 'projects')) {
 			os.chdir(exe_dir) or {}
@@ -2414,8 +2421,8 @@ fn help_doc(page string) string {
 // browser gives proper typography, code blocks, tables and scrolling. The docs
 // are the same $embed_file markdown, so this stays offline + self-contained.
 fn help_html() string {
-	md := help_doc('quickstart') + '\n\n---\n\n' + help_doc('examples') + '\n\n---\n\n' +
-		about_text()
+	md := strip_relative_links(help_doc('quickstart') + '\n\n---\n\n' + help_doc('examples') +
+		'\n\n---\n\n' + about_text())
 	body := markdown.to_html(md)
 	style := 'body{font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;' +
 		'line-height:1.6;color:#1b1b1b;max-width:820px;margin:0 auto;padding:2rem 1.5rem;}' +
@@ -2433,11 +2440,43 @@ fn help_html() string {
 		body + '\n</body></html>\n'
 }
 
+// strip_relative_links drops relative markdown link TARGETS (e.g. Quick Start's
+// `[Examples](examples)`, handled only by the in-app link handler) to plain text
+// for the standalone browser doc — they'd resolve against the temp file (/tmp/
+// examples) and 404. http(s):// and #anchor links are kept intact.
+fn strip_relative_links(md string) string {
+	mut out := ''
+	mut i := 0
+	for i < md.len {
+		if md[i] == `[` {
+			c := md.index_after_(']', i + 1)
+			if c >= 0 && c + 1 < md.len && md[c + 1] == `(` {
+				e := md.index_after_(')', c + 2)
+				if e >= 0 {
+					url := md[c + 2..e]
+					if url.contains('://') || url.starts_with('#') {
+						out += md[i..e + 1] // external/anchor — keep the whole link
+					} else {
+						out += md[i + 1..c] // relative — keep only the link text
+					}
+					i = e + 1
+					continue
+				}
+			}
+		}
+		out += md[i].ascii_str()
+		i++
+	}
+	return out
+}
+
 // open_help_in_browser writes the rendered Help HTML to a temp file and opens it
 // in the system browser (a real, nicely-rendered second window — gui is
 // single-window, so the browser is how we get a separate help view).
 fn (mut app App) open_help_in_browser() {
-	path := os.join_path(os.temp_dir(), 'blobly_net_help.html')
+	// Per-process filename: avoids a predictable shared-temp path (a symlink a
+	// hostile local process could pre-plant) and lets two instances not clobber.
+	path := os.join_path(os.temp_dir(), 'blobly_net_help_${os.getpid()}.html')
 	os.write_file(path, help_html()) or {
 		app.status = 'Help: could not write ${path} (${err})'
 		return

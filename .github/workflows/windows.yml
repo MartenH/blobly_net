@@ -191,6 +191,7 @@ jobs:
           Copy-Item build\*.dll dist\ -Force
           Copy-Item projects dist\projects -Recurse
           Copy-Item dbc dist\dbc -Recurse
+          Copy-Item tests dist\tests -Recurse   # Lua scripts the Script panel's sample buttons run
           New-Item -ItemType Directory -Force dist\samples | Out-Null
           Copy-Item samples\*.log,samples\*.mf4 dist\samples\ -Force -ErrorAction SilentlyContinue
           Copy-Item packaging\README.txt dist\README.txt
@@ -287,18 +288,25 @@ jobs:
           /c/v-ct/v.exe -cc gcc -no-parallel -enable-globals -path '@vlib|@vmodules|modules' \
             -cflags "$cflags" -ldflags "$ldflags" -o build/blobly_net-mingw.exe src/main.v
           test -f build/blobly_net-mingw.exe && echo "BUILD OK -> build/blobly_net-mingw.exe"
+          # Copy the exe's mingw64 runtime DLLs (pango/glib/freetype/gcc/…) next to it
+          # via ldd, so the bundled artifact runs outside an MSYS2 shell. ldd resolves
+          # the exact transitive set (not all of /mingw64/bin).
+          ldd build/blobly_net-mingw.exe | awk '/\/mingw64\/bin\// {print $3}' | sort -u \
+            | while read -r d; do cp -f "$d" build/; done
+          echo "bundled $(ls build/*.dll 2>/dev/null | wc -l) mingw64 DLLs"
 
-      # Stage the demo projects/DBCs/samples next to the exe (see the MSVC job).
-      # NOTE: the mingw exe links MSYS2's mingw64 runtime DLLs (pango/glib/…), which
-      # are NOT bundled here — run it from a mingw64 shell (DLLs on PATH). The MSVC
-      # artifact is the fully self-contained download.
+      # Stage the demo projects/DBCs/samples + the ldd-resolved mingw64 runtime DLLs
+      # next to the exe, so this artifact is also runnable on a clean machine (the
+      # MSVC bundle remains the primary download).
       - name: Stage bundle
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item build\blobly_net-mingw.exe dist\blobly_net.exe
+          Copy-Item build\*.dll dist\ -Force
           Copy-Item projects dist\projects -Recurse
           Copy-Item dbc dist\dbc -Recurse
+          Copy-Item tests dist\tests -Recurse
           New-Item -ItemType Directory -Force dist\samples | Out-Null
           Copy-Item samples\*.log,samples\*.mf4 dist\samples\ -Force -ErrorAction SilentlyContinue
           Copy-Item packaging\README.txt dist\README.txt
