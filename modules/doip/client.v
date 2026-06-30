@@ -10,6 +10,27 @@ module doip
 import net
 import time
 
+// discover sends a UDP vehicle-identification request to host:port and returns the
+// entity's announcement, or an error on timeout / wrong reply. Unicast — works on
+// loopback and against a known gateway IP; a subnet broadcast scan can layer on
+// later. Driver-free; no TCP connection / routing activation needed.
+pub fn discover(host string, port int, timeout_ms int) !VehicleInfo {
+	addr := join_host_port(host, port) // brackets an IPv6 literal
+	mut u := net.dial_udp(addr)!
+	defer {
+		u.close() or {}
+	}
+	u.write(vehicle_id_request())!
+	u.set_read_timeout(timeout_ms * time.millisecond)
+	mut buf := []u8{len: 64}
+	n, _ := u.read(mut buf)!
+	msg := parse(buf[..n])!
+	if msg.payload_type != pt_vehicle_announcement {
+		return error('expected vehicle announcement, got 0x${msg.payload_type:04X}')
+	}
+	return parse_vehicle_announcement(msg.payload)!
+}
+
 // DoipClient is a connected DoIP tester. The isotp.Channel fields map as:
 //   tx_id = our (tester) source logical address, rx_id = the ECU target address.
 pub struct DoipClient {

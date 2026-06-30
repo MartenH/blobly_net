@@ -315,3 +315,32 @@ fn test_ipv6_roundtrip() {
 	ch.close()
 	srv.close()
 }
+
+// discover() sends a UDP vehicle-id request and parses the announcement.
+fn test_discover() {
+	mut srv := new_server(ServerCfg{ logical_address: 0x1234, vin: 'TESTVIN0000000099' },
+		echo_handler)
+	srv.listen('127.0.0.1', 13468) or {
+		assert false, 'listen: ${err}'
+		return
+	}
+	spawn fn (mut s DoipServer) {
+		for {
+			s.serve_udp_once(300) or {
+				if s.stopping {
+					break
+				}
+				continue
+			}
+		}
+	}(mut srv)
+	time.sleep(150 * time.millisecond)
+	info := discover('127.0.0.1', 13468, 1000) or {
+		srv.close()
+		assert false, 'discover: ${err}'
+		return
+	}
+	assert info.vin == 'TESTVIN0000000099'
+	assert info.logical_address == 0x1234
+	srv.close()
+}
