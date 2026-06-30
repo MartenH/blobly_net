@@ -1508,6 +1508,17 @@ fn gen_loop(mut w gui.Window) {
 	}
 }
 
+// reset_diag_discovery clears discovered DoIP entities + any selected diagnostics
+// target, and bumps the scan generation so an in-flight discovery worker's late
+// callback is discarded. Called whenever the project/measurement changes (Stop /
+// New / Open) so stale entities can't be shown or selected.
+fn (mut app App) reset_diag_discovery() {
+	app.doip_entities = []
+	app.doip_scan_gen++
+	app.diag_sel = none
+	app.diag_sel_name = ''
+}
+
 // stop_measurement signals every running channel's RX thread to exit; each
 // thread closes its own bus on the way out (avoids closing under a blocked recv).
 // For DoIP channels we ALSO close the server here so its bound TCP/UDP sockets are
@@ -1527,12 +1538,7 @@ fn stop_measurement(mut w gui.Window) {
 		}
 	}
 	app.running = false
-	// Discovered entities + any explicit DoIP target are stale once stopped; bump
-	// the scan generation so an in-flight discovery worker's result is discarded.
-	app.doip_entities = []
-	app.doip_scan_gen++
-	app.diag_sel = none
-	app.diag_sel_name = ''
+	app.reset_diag_discovery() // discovered entities / target are stale once stopped
 	app.notify(.info, 'stopped')
 }
 
@@ -2152,6 +2158,7 @@ fn menu_bar(mut window gui.Window) gui.View {
 							}
 							a.proj_source = 'new' // not a file yet → Save acts as Save As
 							a.rt = []ChannelRT{}
+							a.reset_diag_discovery()
 							a.load_databases()
 							a.build_sim_nodes()
 							set_window_title(a.proj.name)
@@ -2575,10 +2582,7 @@ fn open_project(path string, mut w gui.Window) {
 	app.proj_source = path
 	app.remember_project(path)
 	app.rt = []ChannelRT{len: p.channels.len}
-	app.doip_entities = []
-	app.doip_scan_gen++
-	app.diag_sel = none
-	app.diag_sel_name = ''
+	app.reset_diag_discovery()
 	app.load_databases()
 	app.build_sim_nodes()
 	set_window_title(p.name)
