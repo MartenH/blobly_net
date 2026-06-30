@@ -312,7 +312,7 @@ mut:
 	recents   []string // recently opened project file paths (most-recent first; persisted)
 	expanded  map[string]bool // grouped-trace group-keys expanded in the main Trace (which 0)
 	expanded2 map[string]bool // …and independently in Trace (filter) (which 1)
-	plot_hist map[u32][]PlotSample // deep per-message history for the Graphics plot
+	plot_hist map[u64][]PlotSample // deep per-message history for the Graphics plot, keyed by hist_key(id, ext)
 	// Persistent, REUSED decode buffers for the Graphics panel — refilled in place
 	// (not reallocated) each render, and only when the data actually changed
 	// (plot_sig). Allocating these fresh every frame was the Graphics stutter.
@@ -2043,7 +2043,7 @@ fn (mut app App) record(dir string, f transport.CanFrame, t_ms f64, ch string) {
 	}
 	// Deep per-message plot history (independent of the 1000-frame display cap),
 	// so the Graphics strip chart can fill a long window. Amortised trim like trace.
-	mut hist := app.plot_hist[f.id] or { []PlotSample{} }
+	mut hist := app.plot_hist[hist_key(f.id, f.extended)] or { []PlotSample{} }
 	hist << PlotSample{
 		t_s:  f32(t_ms / 1000.0)
 		data: f.data.clone()
@@ -2051,7 +2051,7 @@ fn (mut app App) record(dir string, f transport.CanFrame, t_ms f64, ch string) {
 	if hist.len > plot_history + plot_history / 4 {
 		hist = hist[hist.len - plot_history..].clone()
 	}
-	app.plot_hist[f.id] = hist
+	app.plot_hist[hist_key(f.id, f.extended)] = hist
 	app.grouped[gkey] = MsgAgg{
 		id:      f.id
 		ext:     f.extended
@@ -2189,7 +2189,7 @@ fn menu_bar(mut window gui.Window) gui.View {
 							a.rt = []ChannelRT{}
 							a.reset_diag_discovery()
 							a.reset_plot()
-							a.plot_hist = map[u32][]PlotSample{}
+							a.plot_hist = map[u64][]PlotSample{}
 							a.load_databases()
 							a.build_sim_nodes()
 							set_window_title(a.proj.name)
@@ -2615,7 +2615,7 @@ fn open_project(path string, mut w gui.Window) {
 	app.rt = []ChannelRT{len: p.channels.len}
 	app.reset_diag_discovery()
 	app.reset_plot()
-	app.plot_hist = map[u32][]PlotSample{} // old project's history is meaningless now
+	app.plot_hist = map[u64][]PlotSample{} // old project's history is meaningless now
 	app.load_databases()
 	app.build_sim_nodes()
 	set_window_title(p.name)
@@ -3241,7 +3241,7 @@ fn toolbar(mut window gui.Window) gui.View {
 					a.order = []string{}
 					a.expanded = map[string]bool{}
 					a.expanded2 = map[string]bool{}
-					a.plot_hist = map[u32][]PlotSample{}
+					a.plot_hist = map[u64][]PlotSample{}
 					a.reset_plot() // also drop the graph watch list (was left dangling over cleared history)
 					a.sel_id = -1
 				}
@@ -3719,6 +3719,13 @@ fn trace_filter_row(app &App, which int) gui.View {
 	)
 }
 
+// hist_key keys plot_hist by frame id AND format, so a standard and an extended
+// frame that share a numeric id keep separate sample histories (else their payloads
+// mix and a signal decodes the wrong frame's bytes).
+fn hist_key(id u32, ext bool) u64 {
+	return if ext { u64(id) | (u64(1) << 32) } else { u64(id) }
+}
+
 // pin_key is the canonical Graphics key (watch dedup / plot_off / plot_range) for a
 // signal. It includes the frame format (ext) so a standard and an extended frame
 // that share a numeric id AND signal name don't collide into one plot entry.
@@ -3738,7 +3745,9 @@ fn (mut app App) toggle_pin(id u32, ext bool, signal string) {
 	for i, p in app.plot_watch {
 		if p.id == id && p.ext == ext && p.signal == signal {
 			app.plot_watch.delete(i)
-			app.plot_range.delete(pin_key(id, ext, signal))
+			k := pin_key(id, ext, signal)
+			app.plot_range.delete(k) // stale expand-only Y-range
+			app.plot_off.delete(k) // stale hide-state (else a re-add looks pinned but stays hidden)
 			return
 		}
 	}
@@ -3766,7 +3775,9 @@ fn (mut app App) add_pins(id u32, ext bool, names []string) {
 fn (mut app App) drop_frame_pins(id u32, ext bool) {
 	for p in app.plot_watch {
 		if p.id == id && p.ext == ext {
-			app.plot_range.delete(pin_key(id, ext, p.signal))
+			k := pin_key(id, ext, p.signal)
+			app.plot_range.delete(k)
+			app.plot_off.delete(k)
 		}
 	}
 	app.plot_watch = app.plot_watch.filter(it.id != id || it.ext != ext)
@@ -4009,7 +4020,7 @@ fn plot_panel(mut window gui.Window) gui.View {
 	// while LIVE, track wall-clock NOW so the chart slides smoothly between samples.
 	mut last_t := f32(0)
 	for pl in plotted {
-		h := app.plot_hist[pl.id] or { []PlotSample{} }
+		h := app.plot_hist[hist_key(pl.id, pl.ext)] or { []PlotSample{} }
 		if h.len > 0 && h.last().t_s > last_t {
 			last_t = h.last().t_s
 		}
@@ -4030,7 +4041,7 @@ fn plot_panel(mut window gui.Window) gui.View {
 	// timelines, so times is per-series.
 	mut sig := '${app.plot_win}:${int(wstart * 4)}|'
 	for pl in plotted {
-		h := app.plot_hist[pl.id] or { []PlotSample{} }
+		h := app.plot_hist[hist_key(pl.id, pl.ext)] or { []PlotSample{} }
 		sig += '${pl.key}:${h.len}:${app.plot_off[pl.key]};'
 	}
 	// Hash of `sig` folded into the canvas version below, so the plot re-tessellates
@@ -4048,7 +4059,7 @@ fn plot_panel(mut window gui.Window) gui.View {
 			app.plot_cur = []f64{len: plotted.len}
 		}
 		for j, pl in plotted {
-			h := app.plot_hist[pl.id] or { []PlotSample{} }
+			h := app.plot_hist[hist_key(pl.id, pl.ext)] or { []PlotSample{} }
 			mut st := h.len
 			for st > 0 && h[st - 1].t_s >= wstart {
 				st--
@@ -6256,7 +6267,7 @@ fn load_log(path string, mut w gui.Window) {
 	app.order = []string{}
 	app.expanded = map[string]bool{}
 	app.expanded2 = map[string]bool{}
-	app.plot_hist = map[u32][]PlotSample{}
+	app.plot_hist = map[u64][]PlotSample{}
 	app.plot_range = map[string][2]f32{}
 	app.sel_id = -1
 	app.rx_count = 0
