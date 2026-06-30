@@ -1,0 +1,29 @@
+# Blobly Net project — watch blobly_emb's self-reported per-core CPU load.
+#
+# The blobly_emb `scale` example transmits a CpuLoad frame (id 0x7E0) on vcan0
+# every 500 ms — one byte per core = load percent (the Loom measures its own
+# handler duty cycle; see blobly_emb/docs/telemetry.md). This project monitors
+# vcan0 and decodes it via dbc/cpuload.dbc, so the Signals/Trace panels show
+# Load_Core0..7 live (the DBC defines eight cores; a producer may populate fewer).
+#
+# Run it:
+#   # in blobly_emb:
+#   sudo make vcan && (cd examples/scale && make all) && scripts/scale-bench.sh &
+#   # here:
+#   BLOBLY_PROJECT=projects/scale-cpuload.yml ./scripts/run.sh   # → Start
+project:
+  name: scale-cpuload
+  version: 1
+
+channels:
+  - name: CAN1
+    type: can            # classic CAN; CpuLoad is an 8-byte standard frame
+    interface: vcan0     # the bus blobly_emb scale sends CpuLoad on (can0)
+    bitrate: 500000      # nominal (vcan ignores it)
+    mode: monitor        # observe the load frames
+    listen_only: true    # bus-config intent (maps to `ip link set canX type can listen-only`
+                         # on real HW). NOTE: blobly_net's UI does not yet block manual
+                         # Send/Generators on a listen-only channel — enforcement is a TODO.
+    enabled: true
+    databases:
+      - dbc/cpuload.dbc
