@@ -382,9 +382,12 @@ mut:
 	diag_sel      ?DiagTarget
 	diag_sel_name string
 	// DoIP discovery panel: the last scan's discovered entities + the manual
-	// host[:port] to probe in addition to the running DoIP channels.
+	// host[:port] to probe in addition to the running DoIP channels. doip_scan_gen
+	// is bumped on each scan / Stop / project load so a late worker callback from a
+	// superseded scan is ignored instead of repopulating cleared/stale results.
 	doip_entities  []DiscoveredEntity
 	doip_scan_host string
+	doip_scan_gen  int
 	// Script panel: the Lua script to run, its output log (chronological), and a
 	// busy flag while a run is in flight on a worker thread.
 	script_path    string = 'tests/diag_basic.lua'
@@ -1524,8 +1527,10 @@ fn stop_measurement(mut w gui.Window) {
 		}
 	}
 	app.running = false
-	// Discovered entities + any explicit DoIP target are stale once stopped.
+	// Discovered entities + any explicit DoIP target are stale once stopped; bump
+	// the scan generation so an in-flight discovery worker's result is discarded.
 	app.doip_entities = []
+	app.doip_scan_gen++
 	app.diag_sel = none
 	app.diag_sel_name = ''
 	app.notify(.info, 'stopped')
@@ -1662,6 +1667,11 @@ fn doip_server_loop(idx int, mut w gui.Window) {
 	ch := app.proj.channels[idx]
 	host, port := ch.doip_endpoint()
 	mut us := uds.default_server()
+	// Make UDS RDBI of the VIN (DID 0xF190) match this entity's announced VIN, so a
+	// selected entity reads back its own identity instead of the default SUT VIN.
+	if ch.vin != '' {
+		us.dids[0xF190] = ch.vin.bytes()
+	}
 	handler := fn [mut us] (req []u8) []u8 {
 		return us.handle(req)
 	}
@@ -2566,6 +2576,7 @@ fn open_project(path string, mut w gui.Window) {
 	app.remember_project(path)
 	app.rt = []ChannelRT{len: p.channels.len}
 	app.doip_entities = []
+	app.doip_scan_gen++
 	app.diag_sel = none
 	app.diag_sel_name = ''
 	app.load_databases()
@@ -5458,7 +5469,12 @@ fn split_host_port(s string) (string, int) {
 // on a worker thread, then posts the announcements to the panel. (Unicast probes,
 // which work on the loopback "subnet" and against a known gateway IP.)
 fn doip_discover(mut w gui.Window) {
-	app := w.state[App]()
+	mut app := w.state[App]()
+	// Bump the scan generation (UI thread) and capture it; the worker's result is
+	// only applied if this is still the current scan (not superseded by another
+	// scan / Stop / project load).
+	app.doip_scan_gen++
+	gen := app.doip_scan_gen
 	mut probes := []DiscoveredEntity{}
 	for i, ch in app.proj.channels {
 		if ch.is_doip() && app.rt[i].running {
@@ -5471,7 +5487,7 @@ fn doip_discover(mut w gui.Window) {
 		}
 	}
 	manual := app.doip_scan_host.trim_space()
-	spawn fn [probes, manual] (mut w gui.Window) {
+	spawn fn [probes, manual, gen] (mut w gui.Window) {
 		mut targets := probes.clone()
 		if manual != '' {
 			h, p := split_host_port(manual)
@@ -5493,8 +5509,12 @@ fn doip_discover(mut w gui.Window) {
 				ch_idx:  t.ch_idx
 			}
 		}
-		w.queue_command(fn [found] (mut w gui.Window) {
+		w.queue_command(fn [found, gen] (mut w gui.Window) {
 			mut a := w.state[App]()
+			// Drop results from a superseded scan (Stop / load / newer scan bumped gen).
+			if gen != a.doip_scan_gen {
+				return
+			}
 			a.doip_entities = found
 			a.notify(.info, 'DoIP discover: ${found.len} entit${if found.len == 1 { 'y' } else { 'ies' }} found')
 			w.update_window()
