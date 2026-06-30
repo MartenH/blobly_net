@@ -2442,11 +2442,41 @@ fn (mut app App) open_help_in_browser() {
 		app.status = 'Help: could not write ${path} (${err})'
 		return
 	}
-	os.open_uri(path) or {
-		app.status = 'Help written to ${path} — open it manually (${err})'
-		return
+	ok, note := open_uri_in_browser(path)
+	app.status = if ok { note } else { 'Help written to ${path} — ${note}' }
+}
+
+// open_uri_in_browser opens a local file in the OS browser, returning (ok, note).
+// On WSL, os.open_uri's xdg-open finds no Linux browser, so route to the WINDOWS
+// browser: wslview (wslu) if present, else explorer.exe with a wslpath-converted
+// UNC path. explorer.exe is launched via os.new_process (a DIRECT exec, not a
+// shell) so the UNC backslashes survive intact; it returns 1 even on success, so
+// a clean launch is treated as opened.
+fn open_uri_in_browser(path string) (bool, string) {
+	if is_wsl() {
+		if exe := os.find_abs_path_of_executable('wslview') {
+			mut p := os.new_process(exe)
+			p.set_args([path])
+			p.run()
+			p.wait()
+			if p.code == 0 {
+				return true, 'opened Help in the Windows browser'
+			}
+		}
+		if exe := os.find_abs_path_of_executable('explorer.exe') {
+			win := os.execute('wslpath -w ' + os.quoted_path(path))
+			if win.exit_code == 0 {
+				mut p := os.new_process(exe)
+				p.set_args([win.output.trim_space()])
+				p.run()
+				p.wait()
+				return true, 'opening Help in the Windows browser'
+			}
+		}
+		return false, 'open it manually (no WSL browser launcher — install wslu for wslview)'
 	}
-	app.status = 'opened Help in browser'
+	os.open_uri(path) or { return false, 'open it manually (${err.msg()})' }
+	return true, 'opened Help in browser'
 }
 
 fn help_tab(page string, label string, current string) gui.View {
