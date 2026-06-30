@@ -35,8 +35,11 @@ Verify CAN actually works with a socket probe, not `lsmod`/`modprobe`:
 or `cansend vcan0 123#DEADBEEF` + `candump vcan0`. If `.wslconfig` points to a stock MS kernel instead,
 THEN CAN is genuinely absent — check `zcat /proc/config.gz | grep CONFIG_CAN`.
 
-Note: some patterns were adapted from a private reference project — **never name external/private
-projects anywhere in this repo** (re-implement generically).
+Note: some patterns were adapted from a **third-party private reference project** — **never name that
+(or any external/private third-party) project anywhere in this repo** (re-implement generically). This
+does NOT apply to the author's own sibling projects in the `blobly_` family (e.g. **`blobly_emb`**, the
+embedded/ECU half) — those **may be named and referenced freely** (they openly cross-reference blobly_net
+too). The rule is about not leaking a borrowed-from private reference, not about the author's own repos.
 
 ## Decisions (locked)
 
