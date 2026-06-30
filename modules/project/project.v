@@ -117,7 +117,7 @@ pub mut:
 pub struct Channel {
 pub mut:
 	name         string = 'CAN'
-	typ          string = 'can' // yaml `type`: can | canfd
+	typ          string = 'can' // yaml `type`: can | canfd | doip
 	iface        string = 'vcan0' // yaml `interface` (a V keyword, so the field is `iface`)
 	bitrate      int    = 500000
 	fd           bool
@@ -132,6 +132,88 @@ pub mut:
 	nodes        []NodeCfg // fully-configured simulated ECUs (signals + responses)
 	senders      []Sender  // interactive generators: triggerable custom frames
 	replay       ?Replay
+	// DoIP (type: doip) — a diagnostics-over-Ethernet endpoint, NOT a CAN bus.
+	// `iface` carries `doip:<host>[:<port>]`; bitrate/timing are meaningless here.
+	// The logical addresses identify the tester (source) and ECU (target) per
+	// ISO 13400; they replace the CAN diag pair (0x7E0/0x7E8).
+	tester_addr u16 = 0x0E80 // our (tester) logical address
+	ecu_addr    u16 = 0x1000 // the ECU's logical address
+}
+
+// is_doip reports whether this channel is a DoIP (diagnostics-over-Ethernet)
+// endpoint rather than a CAN bus. Recognised via `type: doip` or an interface of
+// `doip` (bare shorthand) / `doip:<host>[:<port>]`.
+pub fn (ch Channel) is_doip() bool {
+	t := ch.iface.trim_space()
+	return ch.typ == 'doip' || t == 'doip' || t.starts_with('doip:')
+}
+
+// doip_endpoint parses `iface` ("doip:host:port" / "doip:host" / "doip") into a
+// host + port, defaulting to 127.0.0.1:13400. Only meaningful when is_doip().
+pub fn (ch Channel) doip_endpoint() (string, int) {
+	// Only an explicit `doip[:host[:port]]` interface carries an endpoint. A
+	// `type: doip` channel that omits `interface` inherits the CAN default
+	// (`vcan0`), which is NOT a host — fall back to localhost rather than dialing
+	// "vcan0:13400".
+	trimmed := ch.iface.trim_space()
+	if !trimmed.starts_with('doip') {
+		return '127.0.0.1', 13400
+	}
+	rest := if trimmed.starts_with('doip:') { trimmed['doip:'.len..] } else { '' }
+	if rest == '' {
+		return '127.0.0.1', 13400
+	}
+	// Bracketed IPv6: `[host]` or `[host]:port`.
+	if rest.starts_with('[') {
+		if end := rest.index(']') {
+			host := rest[1..end]
+			after := rest[end + 1..]
+			if after == '' {
+				return host, 13400 // bare [host]
+			}
+			if after.starts_with(':') {
+				if p := valid_port(after[1..]) {
+					return host, p
+				}
+			}
+			// malformed suffix ([host]:badport or [host]junk) → keep the whole
+			// string as the host so it fails loudly on connect, matching the
+			// non-bracketed path, rather than silently defaulting the port.
+			return rest, 13400
+		}
+		return rest, 13400 // no closing bracket; let the caller's dial/listen surface it
+	}
+	// Split host:port only on a SINGLE colon whose suffix is a valid port. An
+	// unbracketed IPv6 literal (multiple colons) or a typo'd port is kept whole as
+	// the host with the default port, so a bad value surfaces as a connect/listen
+	// error rather than silently mangling the address or jumping to 13400.
+	if rest.count(':') == 1 {
+		i := rest.index(':') or { -1 }
+		host := rest[..i]
+		if p := valid_port(rest[i + 1..]) {
+			return if host == '' { '127.0.0.1' } else { host }, p
+		}
+	}
+	return rest, 13400
+}
+
+// valid_port parses a TCP/UDP port: all-digits, 1..65535. Returns none otherwise
+// (so a non-numeric or out-of-range suffix isn't mistaken for a port).
+fn valid_port(s string) ?int {
+	t := s.trim_space()
+	if t == '' {
+		return none
+	}
+	for c in t {
+		if c < `0` || c > `9` {
+			return none
+		}
+	}
+	p := t.int()
+	if p < 1 || p > 65535 {
+		return none
+	}
+	return p
 }
 
 // all_nodes merges the rich `nodes:` configs with the `simulate:` shorthand
@@ -186,7 +268,7 @@ pub fn parse(text string) !Project {
 			if c is yaml.Null {
 				continue
 			}
-			p.channels << parse_channel(c)
+			p.channels << parse_channel(c)!
 		}
 	}
 	return p
@@ -212,7 +294,7 @@ pub fn default_project() Project {
 	}
 }
 
-fn parse_channel(c yaml.Any) Channel {
+fn parse_channel(c yaml.Any) !Channel {
 	mut ch := Channel{
 		name:         c.value('name').default_to('CAN').string()
 		typ:          c.value('type').default_to('can').string()
@@ -224,6 +306,12 @@ fn parse_channel(c yaml.Any) Channel {
 		mode:         mode_from(c.value('mode').default_to('monitor').string())
 		listen_only:  c.value('listen_only').default_to(false).bool()
 		enabled:      c.value('enabled').default_to(true).bool()
+	}
+	if v := c.value_opt('tester_address') {
+		ch.tester_addr = parse_addr16(v.str()) or { return error('tester_address: ${err.msg()}') }
+	}
+	if v := c.value_opt('ecu_address') {
+		ch.ecu_addr = parse_addr16(v.str()) or { return error('ecu_address: ${err.msg()}') }
 	}
 	if dbs := c.value_opt('databases') {
 		ch.databases = dbs.array().as_strings()
@@ -360,6 +448,37 @@ fn parse_hex_bytes(s string) []u8 {
 		out << (nibbles[i] << 4) | nibbles[i + 1]
 	}
 	return out
+}
+
+// parse_addr16 parses a 16-bit DoIP logical address ("0x"-hex or decimal),
+// erroring if it isn't a valid integer or exceeds 0xFFFF. The range is checked
+// during accumulation (in u64) so an overflowing value (e.g. 0x100000000) can't
+// wrap through a narrower type and slip past the guard as 0.
+fn parse_addr16(s string) !u16 {
+	t := s.trim_space().trim('"')
+	mut v := u64(0)
+	hex := t.starts_with('0x') || t.starts_with('0X')
+	body := if hex { t[2..] } else { t }
+	if body == '' {
+		return error('"${s}" is not a valid address')
+	}
+	base := if hex { u64(16) } else { u64(10) }
+	for ch in body {
+		d := if ch >= `0` && ch <= `9` {
+			u64(ch - `0`)
+		} else if hex && ch >= `a` && ch <= `f` {
+			u64(ch - `a`) + 10
+		} else if hex && ch >= `A` && ch <= `F` {
+			u64(ch - `A`) + 10
+		} else {
+			return error('"${s}" is not a valid address')
+		}
+		v = v * base + d
+		if v > 0xFFFF {
+			return error('${s} out of range (DoIP logical addresses are 16-bit, max 0xFFFF)')
+		}
+	}
+	return u16(v)
 }
 
 // parse_id reads a CAN id written as decimal or `0x`-prefixed hex.
