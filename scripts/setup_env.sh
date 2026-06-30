@@ -42,6 +42,9 @@ echo "==> 3/6 vlang/gui module (pulls vglyph automatically)"
 "$HOME/v/v" install gui
 # Last known-good gui commit: 68b9302 (2026-05-11). If newer gui breaks, pin it:
 #   ( cd ~/.vmodules/gui && git fetch && git checkout 68b9302 )
+# vlang/markdown (md4c) — src/main.v renders the Help docs to HTML via
+# markdown.to_html(). NOT a gui dependency, so install it explicitly.
+"$HOME/v/v" install markdown
 
 echo "==> 4/6 Build + test"
 "$HOME/v/v" -enable-globals -path "@vlib|@vmodules|modules" -o build/blobly_net src/main.v
