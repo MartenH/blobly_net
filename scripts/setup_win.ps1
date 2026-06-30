@@ -27,9 +27,10 @@ $bash       = "$msys\usr\bin\bash.exe"
 $vdir       = 'C:\dev\v'
 $vexe       = "$vdir\v.exe"
 $vmodules   = 'C:\dev\vmodules-ct'
-$vpin       = 'de365a1'   # V 0.5.1
-$guipin     = '68b9302'   # vlang/gui
-$vglyphpin  = '5685a6d'   # vlang/vglyph (validated for the W1 patch)
+$vpin        = 'de365a1'   # V 0.5.1
+$guipin      = '68b9302'   # vlang/gui
+$vglyphpin   = '5685a6d'   # vlang/vglyph (validated for the W1 patch)
+$markdownpin = 'ef2f101'   # vlang/markdown (md4c) — src/main.v renders Help to HTML via markdown.to_html()
 
 function Step($m) { Write-Host "`n==== $m ====" -ForegroundColor Cyan }
 
@@ -111,8 +112,9 @@ function CloneModule($name, $url, $pin) {
     & git -c core.autocrlf=false clone $url $dst
     & git -C $dst -c advice.detachedHead=false checkout $pin
 }
-CloneModule 'gui'    'https://github.com/vlang/gui.git'    $guipin
-CloneModule 'vglyph' 'https://github.com/vlang/vglyph.git' $vglyphpin
+CloneModule 'gui'      'https://github.com/vlang/gui.git'      $guipin
+CloneModule 'vglyph'   'https://github.com/vlang/vglyph.git'   $vglyphpin
+CloneModule 'markdown' 'https://github.com/vlang/markdown.git' $markdownpin
 
 # -------- 5. apply the W1 patches (idempotent) --------
 Step '5/5 W1 upstream patches'
