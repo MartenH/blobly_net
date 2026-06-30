@@ -1291,3 +1291,32 @@ prompt for a password.
   screenshot-verified click-through of the panel (blind xdotool coords under WSLg unreliable) — mechanics
   verified via the module API + the proven diag_button render path. NEXT: subnet-broadcast discovery; then
   E3 `modules/someip`.
+- 2026-06-30: **Graphics panel reworked to a build-up "watch list" (multi-frame) + scaled Y-axis;
+  cpuload sim cadence.** The Graphics plot was a quick-watch that auto-followed the Trace selection
+  (showed the clicked frame's signals) with no Y-axis scale. Reworked into an explicit **watch list**:
+  the plot shows exactly the signals you've **added** (and stays put as you click around the Trace),
+  accumulated across **any number of frames**. Add via a discoverable **`＋ Plot`** (green) / **`✕ Drop`**
+  (red) per signal in the Signals panel + **`＋ Plot all`** per frame; **Clear** in the Graphics header
+  empties it. New `App.plot_watch []PlotPin` (id/ext/signal) is the source of truth; `plot_panel` builds
+  its plotted set from it (each signal pulls history+timeline from ITS own message — `plot_series`/
+  `plot_times` are now per-series `[][]f32`, since cross-frame signals have different cadences). Added a
+  **Y-axis label column** (left of the canvas, gridline-aligned): **shared** mode scales all visible
+  signals to one range with numeric labels (+ the common unit when homogeneous — e.g. CpuLoad shows
+  0–100 %); a header **⊞ Shared / ⊟ Fit each** toggle flips to per-signal autoscale (Y labels become
+  0–100 % normalised). Legend = one clickable row per signal (whole row toggles show/hide; a nested
+  clickable child broke the row layout — keep it flat); pinned signals show their `0xID` source.
+  `dbc/cpuload.dbc` gained **`GenMsgCycleTime` 500 ms** so the native sim actually transmits CpuLoad
+  (cycle_ms 0 = event-driven, never auto-sent → empty trace); shipped `projects/cpuload-sim.yml`
+  (driver-free CpuLoad demo) + `projects/scale-cpuload.yml` (monitor blobly_emb's real CpuLoad on vcan0).
+  **VERIFIED by screenshot** (sim-demo + cpuload-sim, real click workflow): added EngineSpeed (0x100) +
+  BrakePressure (0x301) → both persist across Trace clicks ("2 signals / 2 frames"); CpuLoad cores plot
+  with a 0–95 % unit-labelled axis. ⚠️ **Debugging lesson (cost hours):** a throwaway test harness that
+  force-set `sel_id` at startup (frame 0) made `plot_panel`'s `window.find_layout_by_id('plot_root')` run
+  before the dock layout existed → gui segfault (garbage `v_stable_sort` backtrace). It looked like a V/
+  cpuload/software-GL bug and sent me reverting `~/v` (c0624b2↔5bc4b1a) — all red herrings. The real plot
+  is fine in normal use (the `if sel_id < 0` guard returns a `plot_root`-bearing hint from frame 0, so the
+  measure never runs early). **Verify GUI behaviour via real interaction (xdotool clicks work; typing
+  doesn't), never a forced-state shortcut; and `v_stable_sort` backtraces are garbage — gdb the `-g`
+  build.** `~/v` left at the known-good **c0624b2** (the 5bc4b1a "regression" was unproven — the harness,
+  not V); recheck the newer V (cgen-v3 / scalable-GC commits) in ~2 weeks. Also captured
+  `docs/blobly_emb_synergies.md` (tester↔ECU synergies; `candb` is the one clear shared-vmodule candidate).
