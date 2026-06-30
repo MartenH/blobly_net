@@ -5402,25 +5402,53 @@ fn sender_sig_value(s project.Sender, name string) f64 {
 	return 0.0
 }
 
+// port_or_none parses a strict TCP/UDP port (all-digits, 1..65535), else none —
+// so a non-numeric / out-of-range suffix isn't silently treated as a port.
+fn port_or_none(s string) ?int {
+	t := s.trim_space()
+	if t == '' {
+		return none
+	}
+	for c in t {
+		if c < `0` || c > `9` {
+			return none
+		}
+	}
+	p := t.int()
+	if p < 1 || p > 65535 {
+		return none
+	}
+	return p
+}
+
 // split_host_port parses "host", "host:port", or "[ipv6]:port" into (host, port),
-// defaulting the port to the DoIP port (13400). Used by the manual scan field.
+// defaulting the port to 13400. A malformed suffix (bad/out-of-range port) is kept
+// whole as the host so it fails visibly on connect — matching the project endpoint
+// parser — rather than silently truncating the host and probing a different ECU.
 fn split_host_port(s string) (string, int) {
 	t := s.trim_space()
 	if t.starts_with('[') {
 		if end := t.index(']') {
 			host := t[1..end]
 			after := t[end + 1..]
-			if after.starts_with(':') {
-				p := after[1..].int()
-				return host, if p > 0 { p } else { 13400 }
+			if after == '' {
+				return host, 13400
 			}
-			return host, 13400
+			if after.starts_with(':') {
+				if p := port_or_none(after[1..]) {
+					return host, p
+				}
+			}
+			return t, 13400 // malformed suffix → keep whole, fail visibly
 		}
+		return t, 13400
 	}
 	if t.count(':') == 1 {
 		i := t.index(':') or { -1 }
-		p := t[i + 1..].int()
-		return t[..i], if p > 0 { p } else { 13400 }
+		if p := port_or_none(t[i + 1..]) {
+			return t[..i], p
+		}
+		return t, 13400 // bad port → keep whole, fail visibly
 	}
 	return t, 13400
 }

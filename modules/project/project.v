@@ -319,8 +319,11 @@ fn parse_channel(c yaml.Any) !Channel {
 		ch.ecu_addr = parse_addr16(v.str()) or { return error('ecu_address: ${err.msg()}') }
 	}
 	ch.vin = c.value('vin').default_to('').string()
+	if ch.vin != '' && ch.vin.len != 17 {
+		return error('vin must be exactly 17 characters, got ${ch.vin.len} ("${ch.vin}")')
+	}
 	if e := c.value_opt('eid') {
-		ch.eid = parse_hex_bytes(e.str())
+		ch.eid = parse_eid(e.str()) or { return error('eid: ${err.msg()}') }
 	}
 	if dbs := c.value_opt('databases') {
 		ch.databases = dbs.array().as_strings()
@@ -488,6 +491,37 @@ fn parse_addr16(s string) !u16 {
 		}
 	}
 	return u16(v)
+}
+
+// parse_eid parses a DoIP entity id as EXACTLY six strict hex bytes. Separators
+// (space / colon / dash) are allowed between bytes; any other character (incl. an
+// `0x` prefix) or a length other than 6 bytes is an error — so a mistyped EID
+// surfaces at project load instead of being silently mangled by parse_hex_bytes.
+fn parse_eid(s string) ![]u8 {
+	mut nibbles := []u8{}
+	for c in s.trim_space() {
+		if c == ` ` || c == `:` || c == `-` {
+			continue
+		}
+		d := if c >= `0` && c <= `9` {
+			u8(c - `0`)
+		} else if c >= `a` && c <= `f` {
+			u8(c - `a`) + 10
+		} else if c >= `A` && c <= `F` {
+			u8(c - `A`) + 10
+		} else {
+			return error('invalid hex in "${s}"')
+		}
+		nibbles << d
+	}
+	if nibbles.len != 12 {
+		return error('must be exactly 6 bytes (12 hex digits), got ${nibbles.len} nibbles in "${s}"')
+	}
+	mut out := []u8{cap: 6}
+	for i := 0; i < 12; i += 2 {
+		out << (nibbles[i] << 4) | nibbles[i + 1]
+	}
+	return out
 }
 
 // parse_id reads a CAN id written as decimal or `0x`-prefixed hex.
