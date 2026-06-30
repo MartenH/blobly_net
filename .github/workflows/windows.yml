@@ -33,6 +33,7 @@ env:
   V_RELEASE: v-toolchain   # release that stores the prebuilt V + vcpkg-deps assets
   V_ASSET: v-de365a1-windows.zip   # the prebuilt V that EXISTS on the release (de365a1, has vlib/yaml)
   DEPS_ASSET: vcpkg-pango-x64-windows.zip   # prebuilt vcpkg x64-windows tree (MSVC job self-bootstraps it)
+  MARKDOWN_COMMIT: ef2f101   # vlang/markdown (md4c) — main.v renders Help to HTML via markdown.to_html()
 
 jobs:
   build-msvc:
@@ -85,6 +86,8 @@ jobs:
           git -C "$vm\gui"    -c advice.detachedHead=false checkout --quiet 68b9302
           git -c core.autocrlf=false clone --quiet https://github.com/vlang/vglyph.git "$vm\vglyph"
           git -C "$vm\vglyph" -c advice.detachedHead=false checkout --quiet 5685a6d
+          git -c core.autocrlf=false clone --quiet https://github.com/vlang/markdown.git "$vm\markdown"
+          git -C "$vm\markdown" -c advice.detachedHead=false checkout --quiet $env:MARKDOWN_COMMIT
           # (Dir, Repo, File) — patches live in scripts\win_patches and docs\v_patches.
           $patches = @(
             @{ Dir = 'scripts\win_patches'; Repo = 'gui';    File = '01-gui-readback-cobjmacros.patch' },
@@ -177,13 +180,30 @@ jobs:
             else { Write-Host "  CRT $d NOT FOUND (target needs the VC++ redist)" }
           }
 
-      - name: Upload exe + DLLs
+      # Stage a runnable bundle: the exe + its DLLs alongside the demo projects,
+      # DBCs and sample recordings, so a freshly-unzipped download runs the
+      # simulation out of the box (sim-demo is the first-run default).
+      - name: Stage bundle
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item build\blobly_net-msvc.exe dist\blobly_net.exe
+          Copy-Item build\*.dll dist\ -Force
+          Copy-Item projects dist\projects -Recurse
+          Copy-Item dbc dist\dbc -Recurse
+          Copy-Item tests dist\tests -Recurse   # Lua scripts the Script panel's sample buttons run
+          New-Item -ItemType Directory -Force dist\samples | Out-Null
+          Copy-Item samples\*.log,samples\*.mf4 dist\samples\ -Force -ErrorAction SilentlyContinue
+          Copy-Item packaging\README.txt dist\README.txt
+          Copy-Item LICENSE dist\LICENSE.txt
+          Copy-Item packaging\THIRD-PARTY-NOTICES.txt dist\THIRD-PARTY-NOTICES.txt
+          Get-ChildItem -Recurse dist | Select-Object -ExpandProperty FullName
+
+      - name: Upload bundle
         uses: actions/upload-artifact@v4
         with:
           name: blobly_net-msvc-x64
-          path: |
-            build/blobly_net-msvc.exe
-            build/*.dll
+          path: dist
           if-no-files-found: error
 
   # MSYS2 / mingw-w64 gcc build — no vcpkg (pacman provides pango/freetype/…), no
@@ -220,6 +240,8 @@ jobs:
           git -C "$vm\gui"    -c advice.detachedHead=false checkout --quiet 68b9302
           git -c core.autocrlf=false clone --quiet https://github.com/vlang/vglyph.git "$vm\vglyph"
           git -C "$vm\vglyph" -c advice.detachedHead=false checkout --quiet 5685a6d
+          git -c core.autocrlf=false clone --quiet https://github.com/vlang/markdown.git "$vm\markdown"
+          git -C "$vm\markdown" -c advice.detachedHead=false checkout --quiet $env:MARKDOWN_COMMIT
           $patches = @(
             @{ Dir = 'scripts\win_patches'; Repo = 'gui';    File = '01-gui-readback-cobjmacros.patch' },
             @{ Dir = 'scripts\win_patches'; Repo = 'gui';    File = '02-gui-dialog-includes.patch'     },
@@ -268,10 +290,34 @@ jobs:
           /c/v-ct/v.exe -cc gcc -no-parallel -enable-globals -path '@vlib|@vmodules|modules' \
             -cflags "$cflags" -ldflags "$ldflags" -o build/blobly_net-mingw.exe src/main.v
           test -f build/blobly_net-mingw.exe && echo "BUILD OK -> build/blobly_net-mingw.exe"
+          # Copy the exe's mingw64 runtime DLLs (pango/glib/freetype/gcc/…) next to it
+          # via ldd, so the bundled artifact runs outside an MSYS2 shell. ldd resolves
+          # the exact transitive set (not all of /mingw64/bin).
+          ldd build/blobly_net-mingw.exe | awk '/\/mingw64\/bin\// {print $3}' | sort -u \
+            | while read -r d; do cp -f "$d" build/; done
+          echo "bundled $(ls build/*.dll 2>/dev/null | wc -l) mingw64 DLLs"
 
-      - name: Upload exe
+      # Stage the demo projects/DBCs/samples + the ldd-resolved mingw64 runtime DLLs
+      # next to the exe, so this artifact is also runnable on a clean machine (the
+      # MSVC bundle remains the primary download).
+      - name: Stage bundle
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item build\blobly_net-mingw.exe dist\blobly_net.exe
+          Copy-Item build\*.dll dist\ -Force
+          Copy-Item projects dist\projects -Recurse
+          Copy-Item dbc dist\dbc -Recurse
+          Copy-Item tests dist\tests -Recurse
+          New-Item -ItemType Directory -Force dist\samples | Out-Null
+          Copy-Item samples\*.log,samples\*.mf4 dist\samples\ -Force -ErrorAction SilentlyContinue
+          Copy-Item packaging\README.txt dist\README.txt
+          Copy-Item LICENSE dist\LICENSE.txt
+          Copy-Item packaging\THIRD-PARTY-NOTICES.txt dist\THIRD-PARTY-NOTICES.txt
+
+      - name: Upload bundle
         uses: actions/upload-artifact@v4
         with:
           name: blobly_net-mingw-x64
-          path: build/blobly_net-mingw.exe
+          path: dist
           if-no-files-found: error

@@ -366,6 +366,10 @@ Verified: a breakpoint at `main__main` resolves to `src/main.v` and stops there.
   Validated: blobly_net builds with no closure patches; live RSS plateaus ~330 MB. **Windows CI/build
   stays on `68b9302`** — its `de365a1` V can't compile gui#62 (no closure API); the leak is Linux-only
   so Windows is unaffected (bump once a master-built V Windows asset exists).
+- vlang/**markdown** (md4c): pinned **`ef2f101`**, in `~/.vmodules/markdown`. NEW build dependency
+  (2026-06-30) — `src/main.v` uses `markdown.to_html()` to render the Help docs to HTML for the
+  in-browser view. NOT a gui dependency, so all three GUI-build CI jobs (`ci.yml` gui-build +
+  `windows.yml` msvc/mingw) clone it explicitly alongside gui/vglyph.
 - Mesa: **25.2.8** on Ubuntu 24.04.4 (OpenGL 4.5 Compatibility) — hardware GL works under WSLg.
 - **CONFIRMED WORKING**: builds clean, window renders under WSLg with **hardware GL** (sokol backend).
 
@@ -1323,3 +1327,28 @@ prompt for a password.
   build.** `~/v` left at the known-good **c0624b2** (the 5bc4b1a "regression" was unproven — the harness,
   not V); recheck the newer V (cgen-v3 / scalable-GC commits) in ~2 weeks. Also captured
   `docs/blobly_emb_synergies.md` (tester↔ECU synergies; `candb` is the one clear shared-vmodule candidate).
+- 2026-06-30: **Distributable bundle + browser-rendered Help.** Two gaps closed so a freshly-downloaded
+  build runs the sim out of the box. (a) **Bundle:** Windows CI (`windows.yml` msvc + mingw) now uploads
+  a runnable folder — `blobly_net.exe` (+ DLLs on msvc) alongside `projects/`, `dbc/`, `samples/` and a
+  `packaging/README.txt` — instead of a bare exe. The app **resolves resource paths relative to the
+  executable** (chdir to the exe dir at startup if the CWD lacks `projects/` but the exe dir has it), and
+  the **first-run default project is now `projects/sim-demo.yml`** (driver-free in-proc sim) instead of
+  `demo.yml` (vcan0, needs a driver) — so double-click → ▶ Start just works, no hardware/Python. (b)
+  **Help in the browser:** gui is single-window and its in-panel markdown is crude, so the Help panel
+  gained an **"Open in browser"** button — `markdown.to_html()` (vlang/**markdown**, md4c) renders ALL
+  help pages into one styled HTML doc written to a temp file + `os.open_uri()` → a real, nicely-typeset
+  second window. NEW build dep **vlang/markdown `ef2f101`** (not a gui dep) added to all 3 GUI-build CI
+  jobs (clone-pinned like gui/vglyph). Verified: local build clean; `markdown.to_html()` renders the real
+  help docs to well-formed HTML (11 headings / 16 list items / code / links); app launches on the new
+  sim-demo default without crash. Avoided the `↗` glyph in the button label (vglyph no-outline crash
+  rule). **Codex PR #5 review (4×P2, 5×P3 across rounds) addressed:** markdown added to the fresh-setup
+  scripts (pinned `ef2f101`); chdir-to-bundle skips when an explicit project override is given (relative
+  `BLOBLY_PROJECT`/CLI arg keeps resolving against the user CWD); bundle stages `tests/` (Script-panel
+  sample scripts); **mingw bundle ships its ldd-resolved `/mingw64/bin` runtime DLLs** so it too runs on a
+  clean machine; relative help links stripped to text for the browser doc; the browser Help HTML is written to a
+  per-user, 0700 `os.cache_dir()/blobly_net/help.html` (not shared /tmp — no symlink-preplant);
+  Open Example menu gained DoIP + CPU-load entries (both ship in the bundle); the bundle ships LICENSE +
+  THIRD-PARTY notices. **WSL help-open:** `os.open_uri`
+  finds no Linux browser under WSL → route to the Windows browser via `wslview`/`explorer.exe` (wslpath
+  UNC, launched through `os.new_process` so backslashes survive). TODO: Linux/AppImage bundle (the Linux
+  CI job is compile-only today).

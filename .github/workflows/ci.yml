@@ -62,6 +62,10 @@ jobs:
       # the closure API in master V that setup-v check-latest provides.
       GUI_COMMIT: 7a20a6a
       VGLYPH_COMMIT: 5685a6d
+      # vlang/markdown (md4c) — main.v renders the Help docs to HTML via
+      # markdown.to_html() for the in-browser view. Not a gui dependency, so it's
+      # cloned explicitly. Pinned to a known-good commit.
+      MARKDOWN_COMMIT: ef2f101
     steps:
       - uses: actions/checkout@v4
 
@@ -94,6 +98,8 @@ jobs:
           git -C "$VMODULES/gui"    -c advice.detachedHead=false checkout --quiet "$GUI_COMMIT"
           git -c advice.detachedHead=false clone --quiet https://github.com/vlang/vglyph.git "$VMODULES/vglyph"
           git -C "$VMODULES/vglyph" -c advice.detachedHead=false checkout --quiet "$VGLYPH_COMMIT"
+          git -c advice.detachedHead=false clone --quiet https://github.com/vlang/markdown.git "$VMODULES/markdown"
+          git -C "$VMODULES/markdown" -c advice.detachedHead=false checkout --quiet "$MARKDOWN_COMMIT"
           git -C "$VMODULES/gui" apply --ignore-whitespace \
             "$GITHUB_WORKSPACE/docs/v_patches/gui-msaa-sample-count.patch"
           git -C "$VMODULES/gui" apply --ignore-whitespace \
