@@ -167,6 +167,29 @@ pub fn vehicle_announcement(vin string, logical_addr u16, eid []u8, gid []u8) []
 	return encode(pt_vehicle_announcement, payload)
 }
 
+// VehicleInfo is the parsed body of a vehicle announcement (discovery response).
+pub struct VehicleInfo {
+pub:
+	vin             string
+	logical_address u16
+	eid             []u8
+	gid             []u8
+}
+
+// parse_vehicle_announcement decodes a 0x0004 announcement payload:
+// VIN(17) logical-addr(2) EID(6) GID(6) [further-action(1)].
+pub fn parse_vehicle_announcement(payload []u8) !VehicleInfo {
+	if payload.len < 19 {
+		return error('DoIP vehicle announcement too short: ${payload.len} < 19')
+	}
+	return VehicleInfo{
+		vin:             payload[..17].bytestr()
+		logical_address: binary.big_endian_u16_at(payload, 17)
+		eid:             if payload.len >= 25 { payload[19..25].clone() } else { []u8{} }
+		gid:             if payload.len >= 31 { payload[25..31].clone() } else { []u8{} }
+	}
+}
+
 // --- payload parsers --------------------------------------------------------
 
 // DiagMessage is the parsed body of a 0x8001 diagnostic message.

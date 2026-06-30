@@ -52,6 +52,7 @@ const id_scroll_symbols = u32(7600)    // Symbol Browser tree
 const id_scroll_busconfig = u32(7700)  // Bus Config candidate list
 const id_scroll_log = u32(7900)        // Log panel (scrolling event log)
 const id_scroll_script = u32(8000)     // Script panel (Lua test output)
+const id_scroll_doip = u32(8100)       // DoIP discovery panel (entity list)
 
 // UDS request/response CAN ids (classic OBD physical addressing): the tester
 // transmits on 0x7E0, the ECU answers on 0x7E8. The simulated ECU's UDS
@@ -376,6 +377,14 @@ mut:
 	// free-form RDBI read.
 	diag_log []string
 	diag_did string = 'F190'
+	// Diagnostics target override: when set (via the DoIP panel), requests go here
+	// instead of the first running channel. Cleared on Stop / project load.
+	diag_sel      ?DiagTarget
+	diag_sel_name string
+	// DoIP discovery panel: the last scan's discovered entities + the manual
+	// host[:port] to probe in addition to the running DoIP channels.
+	doip_entities  []DiscoveredEntity
+	doip_scan_host string
 	// Script panel: the Lua script to run, its output log (chronological), and a
 	// busy flag while a run is in flight on a worker thread.
 	script_path    string = 'tests/diag_basic.lua'
@@ -1515,6 +1524,10 @@ fn stop_measurement(mut w gui.Window) {
 		}
 	}
 	app.running = false
+	// Discovered entities + any explicit DoIP target are stale once stopped.
+	app.doip_entities = []
+	app.diag_sel = none
+	app.diag_sel_name = ''
 	app.notify(.info, 'stopped')
 }
 
@@ -1724,6 +1737,18 @@ struct DiagTarget {
 	ecu_addr    u16    // DoIP: ECU logical address
 }
 
+// DiscoveredEntity is one DoIP entity found by a discovery scan (its UDP vehicle
+// announcement). ch_idx is the project channel it came from, or -1 for a manually
+// probed host.
+struct DiscoveredEntity {
+	host    string
+	port    int
+	vin     string
+	logical u16
+	eid     []u8
+	ch_idx  int = -1
+}
+
 // open_diag_channel opens the right isotp.Channel for a DiagTarget. DoipClient
 // implements isotp.Channel, so UDS-over-Ethernet needs no client changes.
 fn open_diag_channel(t DiagTarget) !isotp.Channel {
@@ -1737,32 +1762,41 @@ fn open_diag_channel(t DiagTarget) !isotp.Channel {
 // channel on the first running channel (software ISO-TP for CAN, or a DoIP TCP
 // connection for a DoIP channel), runs the request, posts the outcome. For CAN
 // the ISO-TP frames travel the real bus, so the Trace shows them too.
-fn diag_request(req []u8, label string, mut w gui.Window) {
-	app := w.state[App]()
-	mut target := DiagTarget{}
-	mut found := false
-	for i, ch in app.proj.channels {
-		if app.rt[i].running {
-			if ch.is_doip() {
-				host, port := ch.doip_endpoint()
-				target = DiagTarget{
-					is_doip:     true
-					host:        host
-					port:        port
-					tester_addr: ch.tester_addr
-					ecu_addr:    ch.ecu_addr
-				}
-			} else {
-				target = DiagTarget{
-					iface: ch.iface
-				}
-			}
-			found = true
-			break
+// diag_target_for builds a DiagTarget for a channel (DoIP vs CAN software ISO-TP).
+fn diag_target_for(ch project.Channel) DiagTarget {
+	if ch.is_doip() {
+		host, port := ch.doip_endpoint()
+		return DiagTarget{
+			is_doip:     true
+			host:        host
+			port:        port
+			tester_addr: ch.tester_addr
+			ecu_addr:    ch.ecu_addr
 		}
 	}
-	if !found {
-		diag_post('${label}: no running channel — press ▶ Start first', mut w)
+	return DiagTarget{
+		iface: ch.iface
+	}
+}
+
+// resolve_diag_target returns where UDS requests should go: an explicit selection
+// from the DoIP panel (app.diag_sel) wins; otherwise the first running channel.
+fn resolve_diag_target(app &App) ?DiagTarget {
+	if sel := app.diag_sel {
+		return sel
+	}
+	for i, ch in app.proj.channels {
+		if app.rt[i].running {
+			return diag_target_for(ch)
+		}
+	}
+	return none
+}
+
+fn diag_request(req []u8, label string, mut w gui.Window) {
+	app := w.state[App]()
+	target := resolve_diag_target(app) or {
+		diag_post('${label}: no target — press ▶ Start (or pick an entity in DoIP)', mut w)
 		return
 	}
 	spawn fn [req, label, target] (mut w gui.Window) {
@@ -2051,6 +2085,7 @@ fn main_view(mut window gui.Window) gui.View {
 					gui.DockPanelDef{ id: 'send', label: 'Send', content: [send_panel(mut window)] },
 				gui.DockPanelDef{ id: 'generators', label: 'Generators', content: [generators_panel(mut window)] },
 				gui.DockPanelDef{ id: 'diag', label: 'Diagnostics', content: [diag_panel(mut window)] },
+				gui.DockPanelDef{ id: 'doip', label: 'DoIP', content: [doip_panel(mut window)] },
 				gui.DockPanelDef{ id: 'script', label: 'Script', content: [script_panel(mut window)] },
 					gui.DockPanelDef{ id: 'stats', label: 'Statistics', content: [stats_panel(app)] },
 						gui.DockPanelDef{ id: 'log', label: 'Log', content: [log_panel(mut window)] },
@@ -2271,6 +2306,7 @@ const view_panels = [
 	['send', 'Send'],
 	['generators', 'Generators'],
 	['diag', 'Diagnostics'],
+	['doip', 'DoIP Discovery'],
 	['script', 'Script'],
 	['stats', 'Statistics'],
 	['log', 'Log'],
@@ -2422,6 +2458,7 @@ fn activity_bar(app &App) gui.View {
 		'send':       '➤'
 		'generators': '⎍'
 		'diag':       '✚'
+		'doip':       '⊕'
 		'script':     'ƒ'
 		'stats':      'Σ'
 		'log':        '▤'
@@ -2528,6 +2565,9 @@ fn open_project(path string, mut w gui.Window) {
 	app.proj_source = path
 	app.remember_project(path)
 	app.rt = []ChannelRT{len: p.channels.len}
+	app.doip_entities = []
+	app.diag_sel = none
+	app.diag_sel_name = ''
 	app.load_databases()
 	app.build_sim_nodes()
 	set_window_title(p.name)
@@ -5362,6 +5402,171 @@ fn sender_sig_value(s project.Sender, name string) f64 {
 	return 0.0
 }
 
+// split_host_port parses "host", "host:port", or "[ipv6]:port" into (host, port),
+// defaulting the port to the DoIP port (13400). Used by the manual scan field.
+fn split_host_port(s string) (string, int) {
+	t := s.trim_space()
+	if t.starts_with('[') {
+		if end := t.index(']') {
+			host := t[1..end]
+			after := t[end + 1..]
+			if after.starts_with(':') {
+				p := after[1..].int()
+				return host, if p > 0 { p } else { 13400 }
+			}
+			return host, 13400
+		}
+	}
+	if t.count(':') == 1 {
+		i := t.index(':') or { -1 }
+		p := t[i + 1..].int()
+		return t[..i], if p > 0 { p } else { 13400 }
+	}
+	return t, 13400
+}
+
+// doip_discover scans for DoIP entities — every running DoIP channel's endpoint
+// plus an optional manually-typed host[:port] — by sending UDP vehicle-id requests
+// on a worker thread, then posts the announcements to the panel. (Unicast probes,
+// which work on the loopback "subnet" and against a known gateway IP.)
+fn doip_discover(mut w gui.Window) {
+	app := w.state[App]()
+	mut probes := []DiscoveredEntity{}
+	for i, ch in app.proj.channels {
+		if ch.is_doip() && app.rt[i].running {
+			host, port := ch.doip_endpoint()
+			probes << DiscoveredEntity{
+				host:   host
+				port:   port
+				ch_idx: i
+			}
+		}
+	}
+	manual := app.doip_scan_host.trim_space()
+	spawn fn [probes, manual] (mut w gui.Window) {
+		mut targets := probes.clone()
+		if manual != '' {
+			h, p := split_host_port(manual)
+			targets << DiscoveredEntity{
+				host:   h
+				port:   p
+				ch_idx: -1
+			}
+		}
+		mut found := []DiscoveredEntity{}
+		for t in targets {
+			info := doip.discover(t.host, t.port, 800) or { continue }
+			found << DiscoveredEntity{
+				host:    t.host
+				port:    t.port
+				vin:     info.vin
+				logical: info.logical_address
+				eid:     info.eid
+				ch_idx:  t.ch_idx
+			}
+		}
+		w.queue_command(fn [found] (mut w gui.Window) {
+			mut a := w.state[App]()
+			a.doip_entities = found
+			a.notify(.info, 'DoIP discover: ${found.len} entit${if found.len == 1 { 'y' } else { 'ies' }} found')
+			w.update_window()
+		})
+	}(mut w)
+}
+
+// use_doip_entity points the Diagnostics panel at a discovered entity: its
+// announced logical address becomes the ECU target (tester address from the
+// matching channel, or the DoIP default for a manually-probed host).
+fn use_doip_entity(e DiscoveredEntity, mut w gui.Window) {
+	mut a := w.state[App]()
+	tester := if e.ch_idx >= 0 && e.ch_idx < a.proj.channels.len {
+		a.proj.channels[e.ch_idx].tester_addr
+	} else {
+		u16(0x0E80)
+	}
+	a.diag_sel = DiagTarget{
+		is_doip:     true
+		host:        e.host
+		port:        e.port
+		tester_addr: tester
+		ecu_addr:    e.logical
+	}
+	a.diag_sel_name = e.vin
+	a.notify(.info, 'diagnostics target → ${e.vin} @${e.host}:${e.port}')
+	w.update_window()
+}
+
+// doip_panel is the DoIP discovery surface: scan for entities (vehicle-id UDP),
+// list them with VIN / logical address / endpoint, and pick one as the active
+// Diagnostics target. Driver-free; works against the simulated network or real HW.
+fn doip_panel(mut window gui.Window) gui.View {
+	app := window.state[App]()
+	mut rows := []gui.View{}
+	rows << gui.text(text: 'DoIP Discovery', text_style: gui.theme().b3)
+	rows << gui.row(
+		v_align: .middle
+		spacing:  4
+		padding:  gui.padding_none
+		content:  [
+			diag_button(700, 'Discover', fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				doip_discover(mut w)
+			}),
+			gui.input(
+				id_focus:        701
+				text:            app.doip_scan_host
+				width:           sc(160)
+				height:          sc(22)
+				sizing:          gui.fixed_fixed
+				padding:         scpad(2, 6, 2, 6)
+				placeholder:     'host[:port] (optional)'
+				on_text_changed: fn (_ &gui.Layout, s string, mut w gui.Window) {
+					mut a := w.state[App]()
+					a.doip_scan_host = s
+				}
+			),
+		]
+	)
+	// Active diagnostics target + an Auto button to drop an explicit selection.
+	mut tgt := [gui.View(gui.text(text: 'Target: ${diag_target_label(app)}', text_style: trace_text_style()))]
+	if app.diag_sel != none {
+		tgt << diag_button(702, 'Auto', fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+			mut a := w.state[App]()
+			a.diag_sel = none
+			a.diag_sel_name = ''
+			w.update_window()
+		})
+	}
+	rows << gui.row(v_align: .middle, spacing: 6, padding: gui.padding_none, content: tgt)
+	if app.doip_entities.len == 0 {
+		rows << gui.text(text: '(press Discover to scan running DoIP entities)', text_style: gui.theme().n4)
+	}
+	for ei, e in app.doip_entities {
+		label := '${e.vin}  0x${e.logical:04X}  ${e.host}:${e.port}'
+		rows << gui.row(
+			v_align: .middle
+			spacing:  6
+			padding:  gui.padding_none
+			content:  [
+				diag_button(u32(710 + ei), 'Use', fn [e] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					use_doip_entity(e, mut w)
+				}),
+				gui.text(text: label, text_style: trace_text_style()),
+			]
+		)
+	}
+	return gui.column(
+		sizing:          gui.fill_fill
+		padding:         gui.padding_medium
+		spacing:         4
+		id_scroll:       id_scroll_doip
+		scroll_mode:     .vertical_only
+		scrollbar_cfg_y: &gui.ScrollbarCfg{
+			overflow: .visible
+		}
+		content:         rows
+	)
+}
+
 fn diag_panel(mut window gui.Window) gui.View {
 	app := window.state[App]()
 	mut rows := []gui.View{}
@@ -5456,14 +5661,21 @@ fn diag_panel(mut window gui.Window) gui.View {
 // diag_target_label describes where Diagnostics requests will go, based on the
 // first running channel (DoIP entity vs CAN software ISO-TP), so the panel header
 // reflects the active carrier.
+fn diag_label_for(t DiagTarget) string {
+	if t.is_doip {
+		return 'tester 0x${t.tester_addr:04X} → ECU 0x${t.ecu_addr:04X}, DoIP @${t.host}:${t.port}'
+	}
+	return 'tester 0x7E0 → ECU 0x7E8, software ISO-TP'
+}
+
 fn diag_target_label(app &App) string {
+	if sel := app.diag_sel {
+		name := if app.diag_sel_name != '' { '${app.diag_sel_name}: ' } else { '' }
+		return '${name}${diag_label_for(sel)}'
+	}
 	for i, ch in app.proj.channels {
 		if app.rt[i].running {
-			if ch.is_doip() {
-				host, port := ch.doip_endpoint()
-				return 'tester 0x${ch.tester_addr:04X} → ECU 0x${ch.ecu_addr:04X}, DoIP @${host}:${port}'
-			}
-			return 'tester 0x7E0 → ECU 0x7E8, software ISO-TP'
+			return diag_label_for(diag_target_for(ch))
 		}
 	}
 	return 'tester 0x7E0 → ECU 0x7E8, software ISO-TP (press ▶ Start)'
