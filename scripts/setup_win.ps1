@@ -27,21 +27,23 @@ $bash       = "$msys\usr\bin\bash.exe"
 $vdir       = 'C:\dev\v'
 $vexe       = "$vdir\v.exe"
 $vmodules   = 'C:\dev\vmodules-ct'
-$vpin        = 'de365a1'   # V 0.5.1
-$guipin      = '68b9302'   # vlang/gui
+$vpin        = 'de365a1'   # V 0.5.1 — BOOTSTRAP commit only; `v up` below brings it to
+                           # master so the build gets the upstream closure-leak fix (v#27483).
+                           # Without it, the Windows build leaks unboundedly (Boehm GC "Too many
+                           # heap sections") — the leak is the V capturing-closure-context leak,
+                           # fixed in master + gui 7a20a6a. (See CLAUDE.md status log 2026-06-30.)
+$guipin      = '7a20a6a'   # vlang/gui — gui#62 merge (uses the closure.Lifetime API master provides)
 $vglyphpin   = '5685a6d'   # vlang/vglyph (validated for the W1 patch)
 $markdownpin = 'ef2f101'   # vlang/markdown (md4c) — src/main.v renders Help to HTML via markdown.to_html()
 
 function Step($m) { Write-Host "`n==== $m ====" -ForegroundColor Cyan }
 
-# The gui/vglyph patches: (module path under $vmodules, patch file). Order matters
-# only in that all gui patches target the gui clone. 01-04 are the W1 Windows-build
-# fixes; 06 exposes WindowCfg.sample_count (MSAA) and 07 adds Window.resize — both are
-# set by src/main.v, so both are required for the build to compile. (Mirrors of the
-# canonical docs/v_patches/ used on Linux; keep them in sync.)
+# The gui/vglyph patches at gui 7a20a6a. 01+02 (gcc-16 C-bridge) are DROPPED — now
+# upstream in gui's native-Windows work. 03 (titlebar isvalid), 04 (vglyph empty-outline),
+# 06 (WindowCfg.sample_count), 07 (Window.resize) and 08 (dock-tab separator) are still
+# needed (03/06/07/08 set/used by src/main.v; verified to apply on a clean 7a20a6a).
+# (Mirrors of the canonical docs/v_patches/ used on Linux; keep them in sync.)
 $patches = @(
-    @{ Repo = 'gui';    File = '01-gui-readback-cobjmacros.patch' },
-    @{ Repo = 'gui';    File = '02-gui-dialog-includes.patch'     },
     @{ Repo = 'gui';    File = '03-gui-titlebar-isvalid.patch'    },
     @{ Repo = 'vglyph'; File = '04-vglyph-empty-outline.patch'    },
     @{ Repo = 'gui';    File = '06-gui-sample-count.patch'        },
@@ -91,16 +93,21 @@ $pkgs = 'mingw-w64-x86_64-gcc mingw-w64-x86_64-pkgconf mingw-w64-x86_64-freetype
         'mingw-w64-x86_64-gdb git'
 & $bash -lc "pacman -S --needed --noconfirm $pkgs"
 
-# -------- 3. V at the pin (tcc self-build, no MSVC) --------
+# -------- 3. V compiler (tcc cold-bootstrap at $vpin, then `v up` to master) --------
 Step '3/5 V compiler'
-if (Test-Path $vexe) {
-    Write-Host "  $vexe exists — skipping."
-} else {
+if (-not (Test-Path $vexe)) {
     if (-not (Test-Path $vdir)) { & git clone https://github.com/vlang/v.git $vdir }
     & git -C $vdir checkout $vpin
-    cmd /c "$vdir\makev.bat"
+    cmd /c "$vdir\makev.bat"          # known-good cold bootstrap (vlang/vc -> tcc -> v.exe)
     if (-not (Test-Path $vexe)) { throw "makev.bat did not produce $vexe" }
 }
+# Update V to master so the build gets the upstream closure-leak fix (v#27483). `v up`
+# uses the existing v.exe to git-pull + recompile master — robust, no cold bootstrap.
+# REQUIRED on Windows: without master V the GUI leaks memory fast (Boehm "Too many heap
+# sections"); gui 7a20a6a below calls the closure.Lifetime API that only master provides.
+Write-Host "  updating V to master (closure-leak fix)…"
+& $vexe up
+& $vexe version
 
 # -------- 4. gui + vglyph at pins, into the isolated modules dir --------
 Step '4/5 gui + vglyph modules'
