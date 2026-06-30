@@ -4283,8 +4283,6 @@ fn plot_panel(mut window gui.Window) gui.View {
 	// Y-axis labels (left of the canvas), aligned to the gridlines top→bottom. Shared
 	// mode → real values srhi..srlo (+ common unit); fit-each → normalised 100%..0%
 	// (a reminder that each curve is auto-fit to its own range).
-	// Y-axis labels (left of the canvas), aligned to the gridlines top→bottom. Shared
-	// mode → real values srhi..srlo (+ common unit); fit-each → normalised 100%..0%.
 	span := srhi - srlo
 	mut ylabels := []gui.View{}
 	for k in 0 .. 5 {
