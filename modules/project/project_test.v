@@ -275,3 +275,38 @@ fn test_doip_address_u32_overflow() {
 	}
 	assert false, 'expected u32-overflowing tester_address to error'
 }
+
+fn test_doip_entity_identity() {
+	p := parse('project:\n  name: d\nchannels:\n  - name: E\n    type: doip\n    interface: "doip:127.0.0.2:13400"\n    ecu_address: "0x1001"\n    vin: BLOBLYNETENGINE01\n    eid: "02 00 00 00 00 02"\n') or {
+		panic(err)
+	}
+	c := p.channels[0]
+	assert c.is_doip()
+	assert c.vin == 'BLOBLYNETENGINE01'
+	assert c.eid == [u8(0x02), 0x00, 0x00, 0x00, 0x00, 0x02]
+	host, port := c.doip_endpoint()
+	assert host == '127.0.0.2'
+	assert port == 13400
+}
+
+fn test_doip_identity_round_trip() {
+	orig := Project{
+		name:     'net'
+		channels: [
+			Channel{
+				name:        'EngineECU'
+				typ:         'doip'
+				iface:       'doip:127.0.0.2:13400'
+				tester_addr: 0x0E80
+				ecu_addr:    0x1001
+				vin:         'BLOBLYNETENGINE01'
+				eid:         [u8(0x02), 0x00, 0x00, 0x00, 0x00, 0x02]
+			},
+		]
+	}
+	back := parse(orig.to_yaml()) or { panic(err) }
+	c := back.channels[0]
+	assert c.vin == 'BLOBLYNETENGINE01'
+	assert c.eid == [u8(0x02), 0x00, 0x00, 0x00, 0x00, 0x02]
+	assert c.ecu_addr == 0x1001
+}
