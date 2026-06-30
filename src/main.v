@@ -2253,6 +2253,20 @@ fn menu_bar(mut window gui.Window) gui.View {
 								}
 							},
 							gui.MenuItemCfg{
+								id:     'ex.doip'
+								text:   'DoIP diagnostics (Ethernet)'
+								action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {
+									open_project('projects/doip-demo.yml', mut w)
+								}
+							},
+							gui.MenuItemCfg{
+								id:     'ex.cpuload'
+								text:   'CPU-load telemetry (plot demo)'
+								action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {
+									open_project('projects/cpuload-sim.yml', mut w)
+								}
+							},
+							gui.MenuItemCfg{
 								id:     'ex.udp'
 								text:   'UDP software bus'
 								action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {

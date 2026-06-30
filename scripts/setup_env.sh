@@ -43,8 +43,12 @@ echo "==> 3/6 vlang/gui module (pulls vglyph automatically)"
 # Last known-good gui commit: 68b9302 (2026-05-11). If newer gui breaks, pin it:
 #   ( cd ~/.vmodules/gui && git fetch && git checkout 68b9302 )
 # vlang/markdown (md4c) — src/main.v renders the Help docs to HTML via
-# markdown.to_html(). NOT a gui dependency, so install it explicitly.
+# markdown.to_html(). NOT a gui dependency, so install it explicitly, pinned to the
+# same commit CI uses (ef2f101) so a fresh box doesn't build against a drifting VPM
+# revision.
 "$HOME/v/v" install markdown
+( cd "$HOME/.vmodules/markdown" && git fetch --quiet --depth=50 origin && git checkout --quiet ef2f101 ) \
+	|| echo "  (warning: could not pin markdown to ef2f101 — using whatever VPM served)"
 
 echo "==> 4/6 Build + test"
 "$HOME/v/v" -enable-globals -path "@vlib|@vmodules|modules" -o build/blobly_net src/main.v
