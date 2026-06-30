@@ -246,6 +246,15 @@ struct PlotSample {
 	data []u8
 }
 
+// PlotPin is a signal pinned to the Graphics plot from a specific frame, so the
+// plot can show signals from MULTIPLE messages at once (not just the selected
+// one). Identified by (id, signal name); ext distinguishes 29-bit ids.
+struct PlotPin {
+	id     u32
+	ext    bool
+	signal string
+}
+
 // ChannelRT is the live runtime state of one configured channel (bus).
 struct ChannelRT {
 mut:
@@ -308,9 +317,9 @@ mut:
 	// (not reallocated) each render, and only when the data actually changed
 	// (plot_sig). Allocating these fresh every frame was the Graphics stutter.
 	plot_sig    string  // signature of what's currently in the buffers below
-	plot_series [][]f32 // per-signal decoded values over the window
-	plot_times  []f32   // shared sample timeline
-	plot_cur    []f64   // latest value per signal (legend)
+	plot_series [][]f32 // per-plotted-signal decoded values over the window
+	plot_times  [][]f32 // per-plotted-signal sample timeline (cross-frame = different cadences)
+	plot_cur    []f64   // latest value per plotted signal (legend)
 	// Expand-only running y-range per '<id>:<signal>' so a scrolling waveform keeps a
 	// STABLE vertical scale (it only widens for new extremes, never shrinks as samples
 	// leave the window). Without this, the per-window auto-scale made signals "breathe"
@@ -373,6 +382,11 @@ mut:
 	// Graphics panel: signals UNchecked in the legend (key '<id>:<signal>') —
 	// default empty = plot everything, so new selections start fully visible.
 	plot_off map[string]bool
+	// Graphics: signals pinned from OTHER frames (multi-frame plotting). The plot
+	// shows the selected frame's signals (quick watch) plus these. plot_shared
+	// scales all plotted signals to one labelled Y-axis; false = per-signal fit.
+	plot_watch  []PlotPin
+	plot_shared bool = true
 	// Diagnostics panel: response log (newest first) + the typed DID for the
 	// free-form RDBI read.
 	diag_log []string
@@ -3686,8 +3700,49 @@ fn trace_filter_row(app &App, which int) gui.View {
 	)
 }
 
+// is_pinned reports whether (id, signal) is pinned to the Graphics plot.
+fn (app &App) is_pinned(id u32, signal string) bool {
+	return app.plot_watch.any(it.id == id && it.signal == signal)
+}
+
+// toggle_pin adds/removes a signal to/from the Graphics plot's cross-frame watch
+// list (so signals from several messages can be plotted together).
+fn (mut app App) toggle_pin(id u32, ext bool, signal string) {
+	for i, p in app.plot_watch {
+		if p.id == id && p.signal == signal {
+			app.plot_watch.delete(i)
+			return
+		}
+	}
+	app.plot_watch << PlotPin{
+		id:     id
+		ext:    ext
+		signal: signal
+	}
+}
+
+// add_pins adds every named signal of a frame to the graph (skipping any already on).
+fn (mut app App) add_pins(id u32, ext bool, names []string) {
+	for n in names {
+		if !app.is_pinned(id, n) {
+			app.plot_watch << PlotPin{
+				id:     id
+				ext:    ext
+				signal: n
+			}
+		}
+	}
+}
+
+// drop_frame_pins removes all of a frame's signals from the graph.
+fn (mut app App) drop_frame_pins(id u32) {
+	app.plot_watch = app.plot_watch.filter(it.id != id)
+}
+
 // signals_panel decodes the message currently selected in the Trace (any ID),
-// live. Click a row in either trace view to inspect its signals here.
+// live. Click a row in either trace view to inspect its signals here. Each signal
+// has a pin (＋/📌) that adds it to the Graphics plot — so you can build a plot
+// from signals across multiple frames, not just the selected one.
 fn signals_panel(app &App) gui.View {
 	mut lines := []gui.View{}
 	if app.sel_id < 0 {
@@ -3703,13 +3758,62 @@ fn signals_panel(app &App) gui.View {
 		return gui.column(sizing: gui.fill_fill, padding: gui.padding_medium, spacing: 5, content: lines)
 	}
 	data := agg.last
-	lines << gui.text(text: 'Signals — ${hexid(id, agg.ext)} ${msg.name}', text_style: gui.theme().b3)
+	ext := agg.ext
+	add_color := gui.Color{44, 160, 44, 255}  // green = add to graph
+	drop_color := gui.Color{200, 70, 70, 255}  // red = remove from graph
+	// Header: title + a "＋ Plot all" / "✕ Drop all" toggle for the whole frame.
+	active := if data.len > 0 { msg.active_signals(data) } else { []candb.Signal{} }
+	mut names := []string{}
+	for s in active {
+		names << s.name
+	}
+	all_on := names.len > 0 && names.all(app.is_pinned(id, it))
+	mut head := [gui.View(gui.text(text: 'Signals — ${hexid(id, ext)} ${msg.name}',
+		text_style: gui.theme().b3))]
+	if names.len > 0 {
+		head << gui.row(
+			padding:  scpad(1, 6, 1, 6)
+			on_click: fn [id, ext, names, all_on] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				mut a := w.state[App]()
+				if all_on {
+					a.drop_frame_pins(id)
+				} else {
+					a.add_pins(id, ext, names)
+				}
+			}
+			content:  [gui.text(text: if all_on { '✕ Drop all' } else { '＋ Plot all' },
+				text_style: gui.TextStyle{
+				...gui.theme().n4
+				color: if all_on { drop_color } else { add_color }
+			})]
+		)
+	}
+	lines << gui.row(v_align: .middle, spacing: 8, padding: gui.padding_none, content: head)
 	if data.len > 0 {
-		for s in msg.active_signals(data) {
+		for s in active {
 			label := s.label(data)
 			suffix := if label != '' { ' (${label})' } else { '' }
-			lines << gui.text(text: '${s.name}: ${s.physical(data):.1f} ${s.unit}${suffix}',
-				text_style: gui.theme().n4)
+			pinned := app.is_pinned(id, s.name)
+			signame := s.name
+			// Whole row is the add/remove button (a nested clickable child breaks the
+			// row layout). Leading coloured "＋ Plot" / "✕ Drop" reads as an action.
+			lines << gui.row(
+				v_align:  .middle
+				spacing:  6
+				padding:  scpad(1, 2, 1, 2)
+				on_click: fn [id, ext, signame] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					mut a := w.state[App]()
+					a.toggle_pin(id, ext, signame)
+				}
+				content:  [
+					gui.text(text: if pinned { '✕ Drop' } else { '＋ Plot' }, text_style: gui.TextStyle{
+						...gui.theme().n4
+						color: if pinned { drop_color } else { add_color }
+					}),
+					gui.text(text: '${s.name}: ${s.physical(data):.1f} ${s.unit}${suffix}',
+						text_style: gui.theme().n4),
+				]
+			)
 		}
 	} else {
 		lines << gui.text(text: '(waiting for frames…)', text_style: gui.theme().n4)
@@ -3734,6 +3838,28 @@ const plot_colors = [
 	gui.Color{23, 158, 175, 255},  // teal
 	gui.Color{140, 86, 75, 255},   // brown
 ]
+
+// fmt_axis formats a Y-axis tick value with precision suited to the value span.
+fn fmt_axis(v f32, span f32) string {
+	if span >= 100 {
+		return '${v:.0f}'
+	}
+	if span >= 1 {
+		return '${v:.1f}'
+	}
+	return '${v:.3f}'
+}
+
+// PlottedSig is one signal placed on the Graphics plot, with the message it came
+// from (so history/timeline come from the right message) and whether it was pinned
+// from another frame (shown with a remove ✕ in the legend).
+struct PlottedSig {
+	id     u32
+	ext    bool
+	sig    candb.Signal
+	key    string
+	pinned bool
+}
 
 // plot_panel graphs the selected message's signals over the trace history — a
 // conventional Graphics strip chart. The x-axis is a **fixed time window**
@@ -3783,25 +3909,8 @@ fn plot_panel(mut window gui.Window) gui.View {
 			]
 		)
 	}
-	id := u32(app.sel_id)
-	m := app.db.lookup_frame(id, id > 0x7ff) or {
-		return gui.column(
-			id:      'plot_root'
-			sizing:  gui.fill_fill
-			padding: gui.padding_medium
-			spacing: 5
-			content: [
-				gui.text(text: 'Graphics', text_style: gui.theme().b3),
-				gui.text(text: '0x${id:X}: no DBC message', text_style: gui.theme().n4),
-			]
-		)
-	}
-
 	// Measure THIS panel from the previous frame's layout tree so the canvas fills
-	// it exactly — draw_canvas needs explicit px (it can't fill-size), so feeding it
-	// the resolved panel size is what makes the plot stretch with the dock divider
-	// AND stops it overflowing the panel. One-frame lag is imperceptible; on the
-	// first frame the id isn't found yet, so we start from a small safe default.
+	// it exactly — draw_canvas needs explicit px. One-frame lag is imperceptible.
 	mut avail_w := f32(360)
 	mut avail_h := f32(220)
 	if root := window.find_layout_by_id('plot_root') {
@@ -3810,86 +3919,110 @@ fn plot_panel(mut window gui.Window) gui.View {
 			avail_h = root.shape.height - 2 * gui.pad_medium
 		}
 	}
-	// conventional: fixed-width signal list on the LEFT, plot fills the rest. The
-	// canvas needs explicit px, so width = measured panel − legend − spacing; height
-	// is capped to the measured panel so its draw batches (clipped only to the canvas
-	// itself) can never bleed past the dock panel into neighbours below.
-	legend_w := f32(150)
+	legend_w := f32(168)
 	header_h := f32(34)
 	labels_h := f32(18)
-	cw := clampf(avail_w - legend_w - 16, 140, 6000)
+	yaxis_w := f32(58)
+	cw := clampf(avail_w - legend_w - yaxis_w - 18, 140, 6000)
 	ph := clampf(avail_h - header_h - labels_h - 8, 90, avail_h - 44)
 
-	// Collect per-signal series + the shared sample timeline from this message's
-	// DEEP plot history (not the 1000-frame display trace), so the strip chart can
-	// fill the whole window even on a busy bus.
-	// Strip-chart window: [latest − win, latest]. CRUCIAL for perf — decode ONLY the
-	// samples inside the window, not the whole deep history. Decoding + tessellating
-	// every retained sample each frame is what made the Graphics panel stutter (and
-	// stall) the entire UI. hist is time-ordered, so walk back from the end to wstart,
-	// then cap to plot_max_points (keep the most recent).
-	sigs := m.signals
+	// The plot is an explicit WATCH LIST: it shows exactly the signals you've added
+	// (＋ Plot in the Signals panel), accumulated across as many frames as you like,
+	// and stays put as you click around the Trace. Each carries its own message id so
+	// history + timeline come from the right message.
+	mut plotted := []PlottedSig{}
+	mut seen := map[string]bool{}
+	for p in app.plot_watch {
+		k := '${p.id}:${p.signal}'
+		if k in seen {
+			continue
+		}
+		pm := app.db.lookup_frame(p.id, p.ext) or { continue }
+		for s in pm.signals {
+			if s.name == p.signal {
+				plotted << PlottedSig{
+					id:     p.id
+					ext:    p.ext
+					sig:    s
+					key:    k
+					pinned: true
+				}
+				seen[k] = true
+				break
+			}
+		}
+	}
+	if plotted.len == 0 {
+		return gui.column(
+			id:      'plot_root'
+			sizing:  gui.fill_fill
+			padding: gui.padding_medium
+			spacing: 5
+			content: [
+				gui.text(text: 'Graphics', text_style: gui.theme().b3),
+				gui.text(text: 'Empty — add signals with ＋ Plot in the Signals panel (click a Trace row to pick a frame).',
+					text_style: gui.theme().n4),
+			]
+		)
+	}
+
 	win := f32(if app.plot_win > 0 { app.plot_win } else { 10 })
-	hist := app.plot_hist[id] or { []PlotSample{} }
-	last_t := if hist.len > 0 { hist.last().t_s } else { f32(0) }
-	// Right edge of the strip chart: while LIVE, track wall-clock NOW (same clock as the
-	// samples: seconds since app.t0) so the waveform slides continuously and new samples
-	// enter at the right — instead of snapping forward one inter-sample gap per frame
-	// (the stutter). When stopped/loaded, pin to the last sample so the plot holds still.
+	// Right edge of the strip chart = latest recorded time across ALL plotted frames;
+	// while LIVE, track wall-clock NOW so the chart slides smoothly between samples.
+	mut last_t := f32(0)
+	for pl in plotted {
+		h := app.plot_hist[pl.id] or { []PlotSample{} }
+		if h.len > 0 && h.last().t_s > last_t {
+			last_t = h.last().t_s
+		}
+	}
 	t_end := if app.running && !app.paused {
 		now_s := f32(f64(time.ticks() - app.t0) / 1000.0)
 		if now_s > last_t { now_s } else { last_t }
 	} else {
-		last_t // stopped or paused: hold the chart still at the last sample
+		last_t
 	}
-	// Until a full window of history exists, pin the left edge at t=0 so the trace draws
-	// in left→right (scope warm-up) instead of the partial data sliding left every frame
-	// as the window fills (the "drift" seen only in the first seconds). Once t_end > win,
-	// scroll normally ([t_end−win, t_end]).
 	wstart := if t_end > win { t_end - win } else { f32(0) }
-	mut start := hist.len
-	for start > 0 && hist[start - 1].t_s >= wstart {
-		start--
+
+	// Decode each plotted signal's in-window samples from ITS message history into
+	// reused buffers; recompute only when the set / any history length / zoom
+	// changes. Cross-frame signals keep their own timelines, so times is per-series.
+	mut sig := '${app.plot_win}|'
+	for pl in plotted {
+		h := app.plot_hist[pl.id] or { []PlotSample{} }
+		sig += '${pl.key}:${h.len}:${app.plot_off[pl.key]};'
 	}
-	if hist.len - start > plot_max_points {
-		start = hist.len - plot_max_points
-	}
-	// Decode the in-window samples into PERSISTENT, reused App buffers rather than
-	// fresh arrays each render. The strip-chart window is anchored to the last
-	// sample, so it only moves when a new sample arrives — so recompute only when
-	// this message's data (sample count / window start / zoom) actually changed.
-	// Buffers are .clear()'d (capacity kept) and refilled, so steady state allocates
-	// nothing. This — not the polyline drawing — was the per-frame GC churn.
-	mut offsig := []u8{cap: sigs.len}
-	for s in sigs {
-		offsig << if app.plot_off['${id}:${s.name}'] { u8(`0`) } else { u8(`1`) }
-	}
-	sig := '${id}|${hist.len}|${start}|${app.plot_win}|${offsig.bytestr()}'
 	if sig != app.plot_sig {
 		app.plot_sig = sig
-		if app.plot_series.len != sigs.len {
-			app.plot_series = [][]f32{len: sigs.len, init: []f32{}}
-			app.plot_cur = []f64{len: sigs.len}
+		if app.plot_series.len != plotted.len {
+			app.plot_series = [][]f32{len: plotted.len, init: []f32{}}
+			app.plot_times = [][]f32{len: plotted.len, init: []f32{}}
+			app.plot_cur = []f64{len: plotted.len}
 		}
-		app.plot_times.clear()
-		for i := start; i < hist.len; i++ {
-			app.plot_times << hist[i].t_s
-		}
-		for j, s in sigs {
-			mut inner := app.plot_series[j]
-			inner.clear()
-			// Widen (never shrink) this signal's running y-range as we decode, for a
-			// stable scale (see App.plot_range).
-			key := '${id}:${s.name}'
+		for j, pl in plotted {
+			h := app.plot_hist[pl.id] or { []PlotSample{} }
+			mut st := h.len
+			for st > 0 && h[st - 1].t_s >= wstart {
+				st--
+			}
+			if h.len - st > plot_max_points {
+				st = h.len - plot_max_points
+			}
+			mut vals := app.plot_series[j]
+			mut ts := app.plot_times[j]
+			vals.clear()
+			ts.clear()
+			// Widen (never shrink) this signal's running y-range for a stable scale.
 			mut lo := f32(0)
 			mut hi := f32(0)
 			mut have := false
-			if r := app.plot_range[key] {
+			if r := app.plot_range[pl.key] {
 				lo, hi, have = r[0], r[1], true
 			}
-			for i := start; i < hist.len; i++ {
-				v := f32(s.physical(hist[i].data))
-				inner << v
+			for i := st; i < h.len; i++ {
+				v := f32(pl.sig.physical(h[i].data))
+				vals << v
+				ts << h[i].t_s
 				if !have {
 					lo, hi, have = v, v, true
 				} else {
@@ -3902,29 +4035,66 @@ fn plot_panel(mut window gui.Window) gui.View {
 				}
 			}
 			if have {
-				app.plot_range[key] = [lo, hi]!
+				app.plot_range[pl.key] = [lo, hi]!
 			}
-			app.plot_series[j] = inner
-			app.plot_cur[j] = if inner.len > 0 { f64(inner.last()) } else { f64(0) }
+			app.plot_series[j] = vals
+			app.plot_times[j] = ts
+			app.plot_cur[j] = if vals.len > 0 { f64(vals.last()) } else { f64(0) }
 		}
 	}
-	times := app.plot_times
 	series := app.plot_series
+	stimes := app.plot_times
 	cur := app.plot_cur
 
-	// Only legend-checked signals are plotted (colour stays stable per signal
-	// index, so toggling one doesn't recolour the rest).
+	// Visible (legend-checked) signals → parallel draw arrays (own timeline each).
 	mut shown := [][]f32{}
+	mut shown_times := [][]f32{}
 	mut shown_colors := []gui.Color{}
 	mut shown_min := []f32{}
 	mut shown_max := []f32{}
-	for j, s in sigs {
-		if !app.plot_off['${id}:${s.name}'] {
+	mut common_unit := ''
+	mut unit_set := false
+	for j, pl in plotted {
+		if !app.plot_off[pl.key] {
 			shown << series[j]
+			shown_times << stimes[j]
 			shown_colors << plot_colors[j % plot_colors.len]
-			r := app.plot_range['${id}:${s.name}'] or { [f32(0), f32(1)]! }
+			r := app.plot_range[pl.key] or { [f32(0), f32(1)]! }
 			shown_min << r[0]
 			shown_max << r[1]
+			if !unit_set {
+				common_unit = pl.sig.unit
+				unit_set = true
+			} else if pl.sig.unit != common_unit {
+				common_unit = '' // mixed units → no unit on the shared axis
+			}
+		}
+	}
+	// Shared Y-range across all visible signals (the labelled axis). In shared mode
+	// every series is drawn against [srlo, srhi]; in fit-each mode each keeps its own.
+	shared_y := app.plot_shared
+	mut srlo := f32(0)
+	mut srhi := f32(1)
+	if shown_min.len > 0 {
+		srlo, srhi = shown_min[0], shown_max[0]
+		for i in 1 .. shown_min.len {
+			if shown_min[i] < srlo {
+				srlo = shown_min[i]
+			}
+			if shown_max[i] > srhi {
+				srhi = shown_max[i]
+			}
+		}
+	}
+	if srhi <= srlo {
+		srhi = srlo + 1
+	}
+	mut draw_min := shown_min.clone()
+	mut draw_max := shown_max.clone()
+	if shared_y {
+		for i in 0 .. draw_min.len {
+			draw_min[i] = srlo
+			draw_max[i] = srhi
 		}
 	}
 
@@ -3933,27 +4103,21 @@ fn plot_panel(mut window gui.Window) gui.View {
 	// Hover cursor: map the stored fraction to a sample index + time for the
 	// crosshair (on-canvas) and the value readout (left signal list).
 	hf := app.plot_hover_frac
-	mut hover_idx := -1
-	mut hover_time := f32(0)
-	if hf >= 0 && times.len > 0 {
-		hover_time = wstart + hf * win
-		mut bestd := f32(1e30)
-		for i, t in times {
-			d := if t > hover_time { t - hover_time } else { hover_time - t }
-			if d < bestd {
-				bestd = d
-				hover_idx = i
-			}
-		}
-	}
+	hover_time := if hf >= 0 { wstart + hf * win } else { f32(-1) }
 
+	// Title: how many signals are on the watch list, and from how many frames.
+	mut frames := map[u32]bool{}
+	for pl in plotted {
+		frames[pl.id] = true
+	}
+	plot_title := 'Graphics — ${plotted.len} signal${if plotted.len == 1 { '' } else { 's' }} / ${frames.len} frame${if frames.len == 1 { '' } else { 's' }}'
 	// --- Header: title + zoom toolbar ('−' widens the time window, '+' narrows it). ---
 	header := gui.row(
 		v_align: .middle
 		spacing: 6
 		padding: gui.padding_none
 		content: [
-			gui.text(text: '0x${id:X} ${m.name}', text_style: gui.theme().n4),
+			gui.text(text: plot_title, text_style: gui.theme().n4),
 			gui.button(
 				id_focus:  109
 				max_width: sc(34)
@@ -3993,9 +4157,31 @@ fn plot_panel(mut window gui.Window) gui.View {
 					a.plot_step = !a.plot_step
 				}
 			),
+			gui.button(
+				id_focus:  112
+				max_width: sc(90)
+				content:   [gui.text(text: if app.plot_shared { '⊞ Shared' } else { '⊟ Fit each' })]
+				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					mut a := w.state[App]()
+					a.plot_shared = !a.plot_shared
+				}
+			),
+			gui.button(
+				id_focus:  113
+				max_width: sc(70)
+				content:   [gui.text(text: 'Clear')]
+				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+					mut a := w.state[App]()
+					a.plot_watch = []
+				}
+			),
 		]
 	)
 
+	mut total := 0
+	for s in shown {
+		total += s.len
+	}
 	step := app.plot_step
 	// --- Canvas (full panel width) + timeline labels directly under it. ---
 	canvas := gui.draw_canvas(
@@ -4005,19 +4191,19 @@ fn plot_panel(mut window gui.Window) gui.View {
 		// ~30 Hz wall-clock bucket so the strip chart slides smoothly between samples
 		// (the window's right edge tracks real time, not the last sample); when stopped
 		// the bucket is 0, so a static/loaded plot stays cached.
-		version:  plot_version(hist.len, shown.len, step, app.plot_win, hf, cw, ph, if app.running
+		version:  plot_version(total, shown.len, step, app.plot_win, hf, cw, ph, if app.running
 			&& !app.paused {
 			u64(time.ticks() / 33)
 		} else {
 			u64(0)
-		})
+		}) + if shared_y { u64(7) } else { u64(0) }
 		width:    cw
 		height:   ph
 		color:    plot_bg
 		radius:   4
 		padding:  scpad(6, 6, 6, 6)
-		on_draw:  fn [mut app, shown, shown_colors, shown_min, shown_max, times, wstart, win, plot_grid, hf, step] (mut dc gui.DrawContext) {
-			draw_signals(mut dc, mut app, shown, shown_colors, shown_min, shown_max, times,
+		on_draw:  fn [mut app, shown, shown_colors, draw_min, draw_max, shown_times, wstart, win, plot_grid, hf, step] (mut dc gui.DrawContext) {
+			draw_signals(mut dc, mut app, shown, shown_colors, draw_min, draw_max, shown_times,
 				wstart, win, plot_grid, hf, step)
 		}
 		on_hover: fn (mut layout gui.Layout, mut e gui.Event, mut w gui.Window) {
@@ -4030,6 +4216,33 @@ fn plot_panel(mut window gui.Window) gui.View {
 			a.plot_hover_frac = clampf(rel / cwid, 0, 1)
 		}
 	)
+	// Y-axis labels (left of the canvas), aligned to the gridlines top→bottom. Shared
+	// mode → real values srhi..srlo (+ common unit); fit-each → normalised 100%..0%
+	// (a reminder that each curve is auto-fit to its own range).
+	// Y-axis labels (left of the canvas), aligned to the gridlines top→bottom. Shared
+	// mode → real values srhi..srlo (+ common unit); fit-each → normalised 100%..0%.
+	span := srhi - srlo
+	mut ylabels := []gui.View{}
+	for k in 0 .. 5 {
+		txt := if shared_y {
+			v := srhi - span * f32(k) / 4
+			fmt_axis(v, span) + if common_unit != '' { ' ${common_unit}' } else { '' }
+		} else {
+			'${100 - 25 * k}%'
+		}
+		ylabels << gui.text(text: txt, text_style: trace_text_style())
+		if k < 4 {
+			ylabels << gui.row(sizing: gui.fit_fill, padding: gui.padding_none) // vertical spacer
+		}
+	}
+	yaxis := gui.column(
+		width:   yaxis_w
+		height:  ph
+		sizing:  gui.fixed_fixed
+		h_align: .right
+		padding: gui.padding_none
+		content: ylabels
+	)
 	mut tlabels := []gui.View{}
 	for k in 0 .. 5 {
 		tlabels << gui.text(text: '${wstart + win * f32(k) / 4:.1f}s', text_style: trace_text_style())
@@ -4037,34 +4250,52 @@ fn plot_panel(mut window gui.Window) gui.View {
 			tlabels << gui.row(sizing: gui.fill_fit, padding: gui.padding_none) // spacer
 		}
 	}
-	// RIGHT side: the plot canvas + timeline labels under it.
+	// RIGHT side: [Y-axis | canvas] on top, timeline labels under the canvas (offset
+	// past the Y-axis column so they line up with the plot, not the labels).
 	right := gui.column(
 		sizing:  gui.fill_fill
 		spacing: 2
 		padding: gui.padding_none
 		content: [
-			canvas,
-			gui.row(width: cw, sizing: gui.fixed_fit, padding: gui.padding_none, content: tlabels),
+			gui.row(sizing: gui.fit_fit, spacing: 2, padding: gui.padding_none, content: [yaxis, canvas]),
+			gui.row(sizing: gui.fit_fit, padding: gui.padding_none, content: [
+				gui.row(width: yaxis_w + 2, sizing: gui.fixed_fit, padding: gui.padding_none),
+				gui.row(width: cw, sizing: gui.fixed_fit, padding: gui.padding_none, content: tlabels),
+			]),
 		]
 	)
 
 	// LEFT side: the signal list (fixed width, scrolls if long) — each signal a
 	// colour-coded checkbox showing its live/cursor value; cursor time on top.
 	mut legend := []gui.View{}
-	if hover_idx >= 0 {
+	if hf >= 0 {
 		legend << gui.text(text: '⌖ @ ${hover_time:.2f}s', text_style: gui.theme().n4)
 	}
-	// Each signal is a clickable row I fully control (gui.checkbox's label vanishes
-	// in a narrow fixed-width column): [check glyph] [colour-coded name] [value].
-	for j, s in sigs {
-		key := '${id}:${s.name}'
+	// One clickable row per plotted signal: [☑/☐] [colour-coded name] [value]. The
+	// whole row toggles show/hide (single on_click, so names render reliably — a
+	// nested clickable glyph broke the row layout). Pinned (cross-frame) signals are
+	// prefixed with their frame id; unpin them from the Signals panel (✕ there).
+	for j, pl in plotted {
+		key := pl.key
 		c := plot_colors[j % plot_colors.len]
 		on := !app.plot_off[key]
-		val := if hover_idx >= 0 && hover_idx < series[j].len {
-			f64(series[j][hover_idx])
-		} else {
-			cur[j]
+		// Value at the hover cursor (nearest sample in THIS series' own timeline), else latest.
+		mut val := cur[j]
+		if hf >= 0 && stimes[j].len > 0 {
+			mut bestd := f32(1e30)
+			mut bi := -1
+			for i, t in stimes[j] {
+				d := if t > hover_time { t - hover_time } else { hover_time - t }
+				if d < bestd {
+					bestd = d
+					bi = i
+				}
+			}
+			if bi >= 0 && bi < series[j].len {
+				val = f64(series[j][bi])
+			}
 		}
+		name_txt := '0x${pl.id:X} ${pl.sig.name}' // watch list spans frames → always show the source
 		legend << gui.row(
 			v_align:  .middle
 			spacing:  4
@@ -4079,7 +4310,7 @@ fn plot_panel(mut window gui.Window) gui.View {
 			}
 			content:  [
 				gui.text(text: if on { '☑' } else { '☐' }, text_style: trace_text_style()),
-				gui.text(text: s.name, text_style: gui.TextStyle{
+				gui.text(text: name_txt, text_style: gui.TextStyle{
 					...trace_text_style()
 					color: if on { c } else { gui.Color{150, 150, 150, 255} }
 				}),
@@ -4142,7 +4373,7 @@ fn zoom_window(mut w gui.Window, dir int) {
 // draw_signals paints the plot grid (4 horizontal bands + 4 vertical time
 // divisions matching the labels below the canvas) and each visible series.
 fn draw_signals(mut dc gui.DrawContext, mut app App, series [][]f32, colors []gui.Color,
-	mins []f32, maxs []f32, times []f32, wstart f32, win f32, grid gui.Color, hover f32, step bool) {
+	mins []f32, maxs []f32, times [][]f32, wstart f32, win f32, grid gui.Color, hover f32, step bool) {
 	cw := dc.width
 	ch := dc.height
 	for i in 0 .. 5 {
@@ -4157,7 +4388,7 @@ fn draw_signals(mut dc gui.DrawContext, mut app App, series [][]f32, colors []gu
 		dc.line(hx, 0, hx, ch, gui.Color{130, 130, 140, 255}, 1)
 	}
 	for j, s in series {
-		draw_one_series(mut dc, mut app, s, mins[j], maxs[j], times, wstart, win, colors[j % colors.len],
+		draw_one_series(mut dc, mut app, s, mins[j], maxs[j], times[j], wstart, win, colors[j % colors.len],
 			hover, step)
 	}
 }
