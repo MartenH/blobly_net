@@ -29,6 +29,7 @@ import isotp
 import doip
 import uds
 import script
+import markdown
 
 const max_trace = 1000 // ring-buffer cap on retained frames (all are scrollable)
 
@@ -1073,6 +1074,17 @@ fn main() {
 	// WSLg, wedging the UI thread (the file requester opens, then the app hangs
 	// after OK). Real desktops keep the working portal. An explicit GUI_NO_PORTAL
 	// (0 or 1) always wins. See docs/known_issues.md + docs/v_patches/gui-no-portal-fallback.
+	// Packaged build: the demo projects/DBCs/samples ship next to the .exe. They're
+	// loaded by relative path (projects/…, dbc/…), which resolves against the CWD —
+	// fine in a dev checkout, but a downloaded build double-clicked from elsewhere
+	// has a different CWD. If the resources aren't in the CWD but sit beside the
+	// executable, chdir there so everything resolves out of the box.
+	if !os.exists('projects') {
+		exe_dir := os.dir(os.executable())
+		if os.exists(os.join_path(exe_dir, 'projects')) {
+			os.chdir(exe_dir) or {}
+		}
+	}
 	if os.getenv('GUI_NO_PORTAL') == '' && is_wsl() {
 		os.setenv('GUI_NO_PORTAL', '1', true)
 	}
@@ -1096,12 +1108,14 @@ fn main() {
 			app.dock_root = default_layout()
 			// Load the project (bus setup). Precedence: CLI arg (first positional
 			// path, e.g. `blobly_net projects/foo.yml`) > BLOBLY_PROJECT env >
-			// most-recently-opened project > projects/demo.yml > a built-in
-			// single-vcan0 default so the app always runs.
+			// most-recently-opened project > projects/sim-demo.yml > a built-in
+			// single-vcan0 default so the app always runs. The first-run default is
+			// the driver-free SIMULATION (sim-demo), not the vcan0 monitor — so a
+			// freshly-unzipped build runs out of the box with no hardware/driver.
 			app.recents = load_recents()
 			proj_path := cli_project_arg() or {
 				os.getenv_opt('BLOBLY_PROJECT') or {
-					if app.recents.len > 0 { app.recents[0] } else { 'projects/demo.yml' }
+					if app.recents.len > 0 { app.recents[0] } else { 'projects/sim-demo.yml' }
 				}
 			}
 			if p := project.load(proj_path) {
@@ -2395,6 +2409,46 @@ fn help_doc(page string) string {
 	}
 }
 
+// help_html renders ALL Help pages as one standalone, styled HTML document for
+// the system browser. gui's in-panel markdown is intentionally minimal; the
+// browser gives proper typography, code blocks, tables and scrolling. The docs
+// are the same $embed_file markdown, so this stays offline + self-contained.
+fn help_html() string {
+	md := help_doc('quickstart') + '\n\n---\n\n' + help_doc('examples') + '\n\n---\n\n' +
+		about_text()
+	body := markdown.to_html(md)
+	style := 'body{font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;' +
+		'line-height:1.6;color:#1b1b1b;max-width:820px;margin:0 auto;padding:2rem 1.5rem;}' +
+		'h1,h2,h3{line-height:1.25;margin-top:1.6em}' +
+		'h1{border-bottom:2px solid #0078d4;padding-bottom:.2em}' +
+		'h2{border-bottom:1px solid #ddd;padding-bottom:.2em}' +
+		'code{background:#f3f3f3;padding:.1em .35em;border-radius:3px;font-size:.92em}' +
+		'pre{background:#f6f8fa;padding:1em;border-radius:6px;overflow:auto}' +
+		'pre code{background:none;padding:0}a{color:#0078d4}' +
+		'hr{border:0;border-top:1px solid #ddd;margin:2.5em 0}' +
+		'table{border-collapse:collapse}td,th{border:1px solid #ddd;padding:.4em .6em}'
+	return '<!DOCTYPE html>\n<html lang="en"><head><meta charset="utf-8">' +
+		'<meta name="viewport" content="width=device-width, initial-scale=1">' +
+		'<title>Blobly Net — Help</title><style>${style}</style></head><body>\n' +
+		body + '\n</body></html>\n'
+}
+
+// open_help_in_browser writes the rendered Help HTML to a temp file and opens it
+// in the system browser (a real, nicely-rendered second window — gui is
+// single-window, so the browser is how we get a separate help view).
+fn (mut app App) open_help_in_browser() {
+	path := os.join_path(os.temp_dir(), 'blobly_net_help.html')
+	os.write_file(path, help_html()) or {
+		app.status = 'Help: could not write ${path} (${err})'
+		return
+	}
+	os.open_uri(path) or {
+		app.status = 'Help written to ${path} — open it manually (${err})'
+		return
+	}
+	app.status = 'opened Help in browser'
+}
+
 fn help_tab(page string, label string, current string) gui.View {
 	on := page == current
 	return gui.button(
@@ -2428,10 +2482,27 @@ fn help_panel(mut window gui.Window) gui.View {
 		content: [
 			gui.row(
 				spacing: sc(6)
+				v_align: .middle
 				content: [
 					help_tab('quickstart', 'Quick Start', page),
 					help_tab('examples', 'Examples', page),
 					help_tab('about', 'About', page),
+					gui.button(
+						id_focus:     0
+						h_align:      .center
+						min_width:    sc(150)
+						max_width:    sc(200)
+						padding:      scpad(4, 10, 4, 10)
+						color_border: gui.Color{0, 0, 0, 0}
+						content:      [
+							gui.text(text: 'Open in browser', text_style: gui.theme().n3),
+						]
+						on_click:     fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+							mut a := w.state[App]()
+							a.open_help_in_browser()
+							w.update_window()
+						}
+					),
 				]
 			),
 			gui.column(
