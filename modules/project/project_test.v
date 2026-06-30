@@ -310,3 +310,23 @@ fn test_doip_identity_round_trip() {
 	assert c.eid == [u8(0x02), 0x00, 0x00, 0x00, 0x00, 0x02]
 	assert c.ecu_addr == 0x1001
 }
+
+fn test_doip_vin_must_be_17() {
+	parse('project:\n  name: d\nchannels:\n  - name: E\n    type: doip\n    vin: SHORTVIN\n') or {
+		return // expected: VIN length error
+	}
+	assert false, 'expected a non-17-char VIN to error'
+}
+
+fn test_doip_eid_strict() {
+	// `0x`-prefixed is invalid (the 'x' is not hex) — must error, not silently mangle.
+	parse('project:\n  name: d\nchannels:\n  - name: E\n    type: doip\n    eid: "0x020000000002"\n') or {
+		// also reject a wrong byte count.
+		parse('project:\n  name: d\nchannels:\n  - name: E\n    type: doip\n    eid: "02 00 00"\n') or {
+			return
+		}
+		assert false, 'expected a 3-byte EID to error'
+		return
+	}
+	assert false, 'expected a 0x-prefixed EID to error'
+}

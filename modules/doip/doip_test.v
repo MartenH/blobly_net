@@ -101,3 +101,18 @@ fn test_vin_padding() {
 	assert m.payload[3] == 0
 	assert m.payload[16] == 0
 }
+
+fn test_parse_vehicle_announcement_requires_full() {
+	// a truncated payload (VIN + logical only) must be rejected.
+	if _ := parse_vehicle_announcement([]u8{len: 20}) {
+		assert false, 'expected a short announcement to error'
+	}
+	// a full 32-byte payload parses with EID + GID present.
+	full := []u8{len: announcement_len}
+	info := parse_vehicle_announcement(full) or {
+		assert false, 'full announcement should parse: ${err}'
+		return
+	}
+	assert info.eid.len == 6
+	assert info.gid.len == 6
+}

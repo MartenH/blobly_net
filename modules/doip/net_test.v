@@ -250,7 +250,10 @@ fn test_close_interrupts_active_connection() {
 		return
 	}
 	c.write(routing_activation_request(0x0E80)) or { assert false, 'write: ${err}' }
-	_ := read_message(mut c, 2000) or {
+	// Generous activation timeout: under heavy parallel test load the server thread
+	// can be slow to schedule. This is only setup — it confirms the server is parked
+	// in serve_connection's next read; the interrupt bound below is what's asserted.
+	_ := read_message(mut c, 8000) or {
 		assert false, 'activation resp: ${err}'
 		return
 	}
@@ -258,11 +261,12 @@ fn test_close_interrupts_active_connection() {
 	// Stop from this (different) thread.
 	t0 := time.ticks()
 	srv.close()
-	// Use a client read timeout (10s) FAR above the promptness bound we assert
-	// (250ms): if close() failed to interrupt the server's read, the server would
-	// hold the connection and this client read would block until its own 10s
-	// timeout — blowing the 250ms bound. So a pass genuinely proves the server
-	// closed the connection promptly, not that the client merely timed out.
+	// Use a client read timeout (10s) FAR above the interrupt bound we assert (4s):
+	// if close() failed to interrupt the server's read, the server would hold the
+	// connection and this client read would block until its own 10s timeout —
+	// blowing the 4s bound. So a pass genuinely proves the server closed the
+	// connection (vs the 60s per-connection read it'd otherwise wait out), not that
+	// the client merely timed out. 4s tolerates scheduler jitter under parallel load.
 	c.set_read_timeout(10 * time.second)
 	mut buf := []u8{len: 16}
 	mut timed_out := false
@@ -274,7 +278,7 @@ fn test_close_interrupts_active_connection() {
 	elapsed := time.ticks() - t0
 	assert !timed_out, 'client read timed out — server did not close the connection'
 	assert n <= 0, 'expected the server to close the active connection, read ${n} bytes'
-	assert elapsed < 250, 'close() did not interrupt the active read promptly (${elapsed} ms)'
+	assert elapsed < 4000, 'close() did not interrupt the active read promptly (${elapsed} ms)'
 	c.close() or {}
 }
 

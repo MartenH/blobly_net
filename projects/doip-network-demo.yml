@@ -7,9 +7,9 @@
 # the Diagnostics panel can talk to any of them. (127.0.0.0/8 all routes to lo on
 # Linux, so the distinct addresses work with no setup.)
 #
-# Press ▶ Start: all three entities come up (green dots in Buses). The Diagnostics
-# panel currently targets the first running channel; a DoIP Discover panel (next
-# step) will list all three by their announcement VIN and let you pick one.
+# Press ▶ Start: all three entities come up (green dots in Buses). Open the DoIP
+# panel (⊕) and press Discover to list all three by their announcement VIN +
+# logical address; click "Use" on one to point the Diagnostics panel at it.
 project:
   name: DoIP network demo
   version: 1

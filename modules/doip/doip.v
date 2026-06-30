@@ -176,17 +176,22 @@ pub:
 	gid             []u8
 }
 
-// parse_vehicle_announcement decodes a 0x0004 announcement payload:
-// VIN(17) logical-addr(2) EID(6) GID(6) [further-action(1)].
+// announcement_len is the ISO 13400 vehicle announcement payload size:
+// VIN(17) + logical-addr(2) + EID(6) + GID(6) + further-action(1).
+pub const announcement_len = 32
+
+// parse_vehicle_announcement decodes a 0x0004 announcement payload. It requires
+// the full fixed-size payload (a truncated response with only VIN+address is
+// rejected, so discovery never lists a half-parsed entity with empty EID/GID).
 pub fn parse_vehicle_announcement(payload []u8) !VehicleInfo {
-	if payload.len < 19 {
-		return error('DoIP vehicle announcement too short: ${payload.len} < 19')
+	if payload.len < announcement_len {
+		return error('DoIP vehicle announcement too short: ${payload.len} < ${announcement_len}')
 	}
 	return VehicleInfo{
 		vin:             payload[..17].bytestr()
 		logical_address: binary.big_endian_u16_at(payload, 17)
-		eid:             if payload.len >= 25 { payload[19..25].clone() } else { []u8{} }
-		gid:             if payload.len >= 31 { payload[25..31].clone() } else { []u8{} }
+		eid:             payload[19..25].clone()
+		gid:             payload[25..31].clone()
 	}
 }
 
