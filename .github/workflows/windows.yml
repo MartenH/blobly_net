@@ -31,7 +31,14 @@ concurrency:
 
 env:
   V_RELEASE: v-toolchain   # release that stores the prebuilt V + vcpkg-deps assets
-  V_ASSET: v-de365a1-windows.zip   # the prebuilt V that EXISTS on the release (de365a1, has vlib/yaml)
+  # Prebuilt MASTER V (commit c0624b2 — the validated Linux ~/v) on the v-toolchain
+  # release. Master has the closure.Lifetime API (v#27483); gui 7a20a6a calls it →
+  # the closure-leak fix. Built on a Windows box (v self at c0624b2) + uploaded, NOT
+  # compiled on the runner (V self-compile wedges the runner's C compiler). Mint it:
+  #   cd C:\dev\v; git checkout c0624b2; .\v.exe self
+  #   robocopy . ..\v-pkg /E /XD .git /NFL /NDL; Compress-Archive ..\v-pkg\* v-c0624b2-windows.zip
+  #   gh release upload v-toolchain v-c0624b2-windows.zip --repo MartenH/blobly_net --clobber
+  V_ASSET: v-c0624b2-windows.zip
   DEPS_ASSET: vcpkg-pango-x64-windows.zip   # prebuilt vcpkg x64-windows tree (MSVC job self-bootstraps it)
   MARKDOWN_COMMIT: ef2f101   # vlang/markdown (md4c) — main.v renders Help to HTML via markdown.to_html()
 
@@ -51,24 +58,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Build MASTER V from the de365a1 bootstrap. The Windows PACKAGES must use master
-      # V: it has the closure.Lifetime API (v#27483) that fixes the capturing-closure-
-      # context leak. With stock de365a1 the GUI leaks unboundedly at runtime (Boehm GC
-      # "Too many heap sections") — same bug Linux already fixed via master + gui#62.
-      # No prebuilt master V is published for Windows (vlang/v weeklies are stale, the
-      # release is 0.5.1), so: download the prebuilt de365a1 v.exe and compile master
-      # cmd/v with it (V is self-hosting — robust, avoids the cold tcc bootstrap).
-      - name: Build master V (closure-leak fix)
+      # Download the prebuilt MASTER V (c0624b2) from the v-toolchain release. The
+      # Windows PACKAGES must use master V: it has the closure.Lifetime API (v#27483)
+      # that fixes the capturing-closure-context leak (with stock de365a1 the GUI leaks
+      # unboundedly — Boehm GC "Too many heap sections"). NOT compiled on the runner —
+      # V self-compile wedges the runner's C compiler; see the V_ASSET note for how the
+      # asset is minted on a Windows box.
+      - name: Download prebuilt master V (c0624b2)
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release download $env:V_RELEASE --repo "$env:GITHUB_REPOSITORY" --pattern "$env:V_ASSET" --dir "$env:RUNNER_TEMP"
-          Expand-Archive -LiteralPath "$env:RUNNER_TEMP\$env:V_ASSET" -DestinationPath C:\v-boot -Force
-          if (-not (Test-Path C:\v-boot\v.exe)) { throw "bootstrap v.exe not found in $env:V_ASSET" }
-          git -c core.autocrlf=false clone --quiet https://github.com/vlang/v.git C:\v-ct
-          & C:\v-boot\v.exe -o C:\v-ct\v.exe C:\v-ct\cmd\v
-          if (-not (Test-Path C:\v-ct\v.exe)) { throw "failed to compile master v.exe from the bootstrap" }
+          Expand-Archive -LiteralPath "$env:RUNNER_TEMP\$env:V_ASSET" -DestinationPath C:\v-ct -Force
+          if (-not (Test-Path C:\v-ct\v.exe)) { throw "v.exe not found after extracting $env:V_ASSET" }
           "C:\v-ct" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding ascii
           & C:\v-ct\v.exe version
 
@@ -219,19 +222,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Build master V from the de365a1 bootstrap (see the MSVC job for why) — the
-      # Windows packages need master V's closure.Lifetime API so the GUI doesn't leak.
-      - name: Build master V (closure-leak fix)
+      # Download the prebuilt master V (c0624b2) — see the MSVC job. The Windows
+      # packages need master V's closure.Lifetime API so the GUI doesn't leak.
+      - name: Download prebuilt master V (c0624b2)
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release download $env:V_RELEASE --repo "$env:GITHUB_REPOSITORY" --pattern "$env:V_ASSET" --dir "$env:RUNNER_TEMP"
-          Expand-Archive -LiteralPath "$env:RUNNER_TEMP\$env:V_ASSET" -DestinationPath C:\v-boot -Force
-          if (-not (Test-Path C:\v-boot\v.exe)) { throw "bootstrap v.exe not found in $env:V_ASSET" }
-          git -c core.autocrlf=false clone --quiet https://github.com/vlang/v.git C:\v-ct
-          & C:\v-boot\v.exe -o C:\v-ct\v.exe C:\v-ct\cmd\v
-          if (-not (Test-Path C:\v-ct\v.exe)) { throw "failed to compile master v.exe from the bootstrap" }
+          Expand-Archive -LiteralPath "$env:RUNNER_TEMP\$env:V_ASSET" -DestinationPath C:\v-ct -Force
+          if (-not (Test-Path C:\v-ct\v.exe)) { throw "v.exe not found after extracting $env:V_ASSET" }
           & C:\v-ct\v.exe version
 
       # Same gui/vglyph/markdown pins + build patches as the MSVC job: gui 7a20a6a
