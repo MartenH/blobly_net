@@ -2488,9 +2488,16 @@ fn strip_relative_links(md string) string {
 // in the system browser (a real, nicely-rendered second window — gui is
 // single-window, so the browser is how we get a separate help view).
 fn (mut app App) open_help_in_browser() {
-	// Per-process filename: avoids a predictable shared-temp path (a symlink a
-	// hostile local process could pre-plant) and lets two instances not clobber.
-	path := os.join_path(os.temp_dir(), 'blobly_net_help_${os.getpid()}.html')
+	// Write into the per-user app-cache dir (user-owned, NOT the world-writable
+	// shared /tmp), so another local user can't pre-plant a symlink at a predictable
+	// path for os.write_file to follow. Inter-instance clobber is harmless — the
+	// rendered help is identical.
+	dir := os.join_path(os.cache_dir(), 'blobly_net')
+	os.mkdir_all(dir) or {
+		app.status = 'Help: could not create ${dir} (${err})'
+		return
+	}
+	path := os.join_path(dir, 'help.html')
 	os.write_file(path, help_html()) or {
 		app.status = 'Help: could not write ${path} (${err})'
 		return
