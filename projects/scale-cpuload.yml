@@ -4,7 +4,7 @@
 # every 500 ms — one byte per core = load percent (the Loom measures its own
 # handler duty cycle; see blobly_emb/docs/telemetry.md). This project monitors
 # vcan0 and decodes it via dbc/cpuload.dbc, so the Signals/Trace panels show
-# Load_Core0..3 live.
+# Load_Core0..7 live (the DBC defines eight cores; a producer may populate fewer).
 #
 # Run it:
 #   # in blobly_emb:
