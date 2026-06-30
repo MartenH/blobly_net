@@ -1366,9 +1366,14 @@ prompt for a password.
   Linux-only so Windows is unaffected" was **backwards** (it was based on the retracted 2026-06-07 vglyph
   theory): the leak is platform-independent V codegen; only the *fix* was Linux-only. Fix: build Windows
   with **master V** + gui **`7a20a6a`**, mirroring Linux. No prebuilt master V exists for Windows (vlang/v
-  weeklies stale since Feb, release is 0.5.1), so: **CI** compiles master `cmd/v` from the de365a1
-  bootstrap (`windows.yml`, both msvc+mingw jobs); **local** `setup_win.ps1` runs `v up` to master (its V
-  is a git clone). gui `68b9302 → 7a20a6a` in both; **dropped win-patches 01/02** (gcc-16 C-bridge, now
-  upstream at 7a20a6a), kept 03/04/06/07/08 (verified to apply on a clean 7a20a6a). ⚠ NOT yet
-  CI-validated (the master-V bootstrap-compile + gui 7a20a6a Windows build) nor leak-verified on the
-  user's box — pending. Immediate local relief: `v up` + gui 7a20a6a + rebuild.
+  weeklies stale since Feb, release is 0.5.1), so we use a **prebuilt master-V Windows asset**:
+  compiling V on the runner WEDGES the runner's C compiler (the documented makev.bat hang — and the
+  app build with bleeding-edge tip hung too), so we mint `v-c0624b2-windows.zip` (V master pinned to
+  the validated Linux commit `c0624b2`, built on a Windows box via `v self` + uploaded to the
+  `v-toolchain` release) and **CI just downloads it** (`windows.yml`, both msvc+mingw). **Local**
+  `setup_win.ps1` pins V to `c0624b2` (`git checkout c0624b2` + `v self`, NOT `v up` to tip). gui
+  `68b9302 → 7a20a6a` in both; **dropped win-patches 01/02** (gcc-16 C-bridge, now upstream at 7a20a6a),
+  kept 03/04/06/07/08 (verified to apply on a clean 7a20a6a). Why pin `c0624b2` not tip: bleeding-edge
+  master can carry regressions (a tip build hung the app compile); `c0624b2` is the exact commit the
+  Linux build runs leak-free. ⚠ Pending: maintainer mints+uploads the asset, then CI build + on-box
+  leak-verify.
