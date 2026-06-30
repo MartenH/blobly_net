@@ -138,6 +138,11 @@ pub mut:
 	// ISO 13400; they replace the CAN diag pair (0x7E0/0x7E8).
 	tester_addr u16 = 0x0E80 // our (tester) logical address
 	ecu_addr    u16 = 0x1000 // the ECU's logical address
+	// Simulated-entity identity (only used when this DoIP channel hosts a node):
+	// the VIN + entity-id reported in vehicle announcements / discovery, so a
+	// network of simulated entities is distinguishable. Empty = module defaults.
+	vin string
+	eid []u8
 }
 
 // is_doip reports whether this channel is a DoIP (diagnostics-over-Ethernet)
@@ -312,6 +317,10 @@ fn parse_channel(c yaml.Any) !Channel {
 	}
 	if v := c.value_opt('ecu_address') {
 		ch.ecu_addr = parse_addr16(v.str()) or { return error('ecu_address: ${err.msg()}') }
+	}
+	ch.vin = c.value('vin').default_to('').string()
+	if e := c.value_opt('eid') {
+		ch.eid = parse_hex_bytes(e.str())
 	}
 	if dbs := c.value_opt('databases') {
 		ch.databases = dbs.array().as_strings()

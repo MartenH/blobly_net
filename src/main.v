@@ -1652,7 +1652,7 @@ fn doip_server_loop(idx int, mut w gui.Window) {
 	handler := fn [mut us] (req []u8) []u8 {
 		return us.handle(req)
 	}
-	mut srv := doip.new_server(doip.ServerCfg{ logical_address: ch.ecu_addr }, handler)
+	mut srv := doip.new_server(doip.server_cfg(ch.ecu_addr, ch.vin, ch.eid), handler)
 	srv.listen(host, port) or {
 		srv.close() // release any partially-opened socket (listen() is atomic, but be safe)
 		// On the worker thread — bounce the failure status onto the UI thread (the
