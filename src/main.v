@@ -6268,7 +6268,8 @@ fn load_log(path string, mut w gui.Window) {
 	app.expanded = map[string]bool{}
 	app.expanded2 = map[string]bool{}
 	app.plot_hist = map[u64][]PlotSample{}
-	app.plot_range = map[string][2]f32{}
+	app.reset_plot() // drop the graph watch list + decode cache (else a new recording with
+	// the same pinned IDs / sample counts reuses the previous capture's decoded series)
 	app.sel_id = -1
 	app.rx_count = 0
 	app.tx_count = 0
