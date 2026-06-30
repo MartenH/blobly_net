@@ -1266,3 +1266,28 @@ prompt for a password.
   RPC + SD service discovery over UDP multicast; its own sim service + oracle, does NOT reuse UDS).
   Optional E2 polish: per-channel diag target selection in the panel (today it picks the first
   running channel); a GUI screenshot of the DoIP diag flow.
+- 2026-06-30: **DoIP simulated network + Discovery panel DONE & VERIFIED (follow-up to E2, branch
+  `doip-discovery`).** Architecture note settled with the user: there is **no "Eth bus"** analog of
+  `transport.Bus` — Ethernet is switched point-to-point (TCP) + multicast (UDP), not a broadcast wire,
+  and the OS exposes it as **sockets**, not a frame pipe. So we don't write an adapter backend (unlike
+  SocketCAN): `net.dial_tcp/udp` already drive the physical NIC, and reaching a real DoIP ECU is just
+  putting its IP in the channel (`doip:192.168.x.y:13400`) — same code path as the `127.0.0.1` sim. The
+  only place the raw adapter matters is **passive pcap-style capture** (a real candump analog), deferred.
+  (1) **Simulated network:** a `doip` channel now carries a per-entity identity (`vin` + `eid`); a
+  network is just several `doip` channels. `modules/doip` got `default_vin`/`default_eid` + a
+  `server_cfg(logical,vin,eid)` constructor (read-only `ServerCfg` fields stay out of callers' reach);
+  `modules/project` parses+round-trips `vin`/`eid`; `doip_server_loop` builds each entity's cfg from its
+  channel. `projects/doip-network-demo.yml` = 3 entities (Gateway/EngineECU/BodyECU) on 127.0.0.1/2/3
+  :13400 (the 127.0.0.0/8 loopback-as-subnet trick), each a distinct VIN+logical address. (2)
+  **Discovery:** `doip.discover(host,port,timeout)` (+ `VehicleInfo`/`parse_vehicle_announcement`) sends a
+  UDP vehicle-id request and parses the announcement (unicast — works on loopback + a known gateway IP;
+  subnet broadcast can layer later). (3) **DoIP GUI panel** (`⊕` activity-bar icon): **Discover** scans
+  running DoIP channels + an optional manual `host[:port]` on a worker thread, lists entities (VIN /
+  logical / endpoint); **Use** points diagnostics at one (its announced logical addr → ECU target);
+  **Auto** clears it. Diagnostics targeting refactored so an explicit selection (`diag_sel`) wins else
+  first-running (`resolve_diag_target`/`diag_target_for`/`diag_label_for`); selection+entities cleared on
+  Stop/load. **Verified**: `doip.discover()` returns all 3 demo entities with distinct VIN/logical/EID;
+  GUI launches with the network demo (⊕ glyph + panel safe, clean run); full suite **23/23**. NOT
+  screenshot-verified click-through of the panel (blind xdotool coords under WSLg unreliable) — mechanics
+  verified via the module API + the proven diag_button render path. NEXT: subnet-broadcast discovery; then
+  E3 `modules/someip`.

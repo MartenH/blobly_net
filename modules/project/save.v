@@ -42,6 +42,12 @@ pub fn (p Project) to_yaml() string {
 		if ch.is_doip() {
 			b.writeln('    tester_address: "0x${ch.tester_addr:X}"')
 			b.writeln('    ecu_address: "0x${ch.ecu_addr:X}"')
+			if ch.vin != '' {
+				b.writeln('    vin: ${ch.vin}')
+			}
+			if ch.eid.len > 0 {
+				b.writeln('    eid: ${hex_bytes(ch.eid)}')
+			}
 		}
 		if ch.databases.len > 0 {
 			b.writeln('    databases:')
