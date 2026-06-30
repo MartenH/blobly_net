@@ -12,13 +12,30 @@ module doip
 import net
 import time
 
+// Default entity identity (used by ServerCfg defaults and server_cfg()).
+pub const default_vin = 'BLOBLYNETV0SUT001'
+pub const default_eid = [u8(0x02), 0x00, 0x00, 0x00, 0x00, 0x01] // entity id (≈ MAC)
+
 // ServerCfg is the entity's identity (for routing activation + announcements).
 pub struct ServerCfg {
 pub:
 	logical_address u16 = 0x1000 // this entity's DoIP logical address
-	vin             string = 'BLOBLYNETV0SUT001'
-	eid             []u8 = [u8(0x02), 0x00, 0x00, 0x00, 0x00, 0x01] // entity id (≈ MAC)
-	gid             []u8 = [u8(0x02), 0x00, 0x00, 0x00, 0x00, 0x01] // group id
+	vin             string = default_vin
+	eid             []u8 = default_eid // entity id (≈ MAC)
+	gid             []u8 = default_eid // group id
+}
+
+// server_cfg builds a ServerCfg from a logical address + optional VIN/EID, filling
+// in the module defaults for any empty field. Lets callers in other modules set a
+// per-entity identity without reaching the (read-only) struct fields directly.
+pub fn server_cfg(logical_address u16, vin string, eid []u8) ServerCfg {
+	id := if eid.len > 0 { eid } else { default_eid }
+	return ServerCfg{
+		logical_address: logical_address
+		vin:             if vin != '' { vin } else { default_vin }
+		eid:             id
+		gid:             id
+	}
 }
 
 // DiagHandler maps a UDS request PDU to a UDS response PDU (empty = no reply).

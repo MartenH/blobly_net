@@ -1,0 +1,46 @@
+# DoIP network demo — a small simulated Ethernet network of DoIP entities.
+#
+# Three independent DoIP entities, each a driver-free simulated ECU on its own
+# loopback address (127.0.0.x), all on the standard port 13400 — exactly like
+# real DoIP entities on a subnet, where discovery is a UDP broadcast each entity
+# answers with its own VIN + logical address. Each runs the native UDS server, so
+# the Diagnostics panel can talk to any of them. (127.0.0.0/8 all routes to lo on
+# Linux, so the distinct addresses work with no setup.)
+#
+# Press ▶ Start: all three entities come up (green dots in Buses). Open the DoIP
+# panel (⊕) and press Discover to list all three by their announcement VIN +
+# logical address; click "Use" on one to point the Diagnostics panel at it.
+project:
+  name: DoIP network demo
+  version: 1
+
+channels:
+  - name: Gateway
+    type: doip
+    interface: doip:127.0.0.1:13400
+    tester_address: "0x0E80"
+    ecu_address: "0x1000"
+    vin: BLOBLYNETGATEWAY1     # 17 chars — the announcement VIN
+    eid: "02 00 00 00 00 01"
+    simulate:
+      - SUT
+
+  - name: EngineECU
+    type: doip
+    interface: doip:127.0.0.2:13400
+    tester_address: "0x0E80"
+    ecu_address: "0x1001"
+    vin: BLOBLYNETENGINE01
+    eid: "02 00 00 00 00 02"
+    simulate:
+      - SUT
+
+  - name: BodyECU
+    type: doip
+    interface: doip:127.0.0.3:13400
+    tester_address: "0x0E80"
+    ecu_address: "0x1002"
+    vin: BLOBLYNETBODYEC01
+    eid: "02 00 00 00 00 03"
+    simulate:
+      - SUT
