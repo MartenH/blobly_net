@@ -30,6 +30,8 @@ pub struct DoipServer {
 mut:
 	listener &net.TcpListener = unsafe { nil }
 	udp      &net.UdpConn     = unsafe { nil }
+	active   &net.TcpConn     = unsafe { nil } // the in-progress accepted connection (nil between)
+	stopping bool // set by close(): stop accepting/serving and tear down the active conn
 }
 
 // new_server builds an entity with the given identity + UDS handler. Returns a
@@ -41,10 +43,39 @@ pub fn new_server(cfg ServerCfg, handler DiagHandler) &DoipServer {
 	}
 }
 
-// listen opens the TCP listener and UDP discovery socket on host:port.
+// is_stopping reports whether close() has been called. Serve loops driven as
+// `for { srv.accept_and_serve(t) or { continue } }` should break on it, otherwise
+// they hot-spin after close() (the listener is shut so every call errors at once).
+pub fn (s &DoipServer) is_stopping() bool {
+	return s.stopping
+}
+
+// listen opens the TCP listener and UDP discovery socket on host:port. Atomic: if
+// the UDP bind fails after the TCP listener is already open, the TCP listener is
+// closed before returning, so a failed listen() never leaves a socket bound. An
+// IPv6 host literal (one containing ':') is bracketed and bound on the IPv6 family.
 pub fn (mut s DoipServer) listen(host string, port int) ! {
-	s.listener = net.listen_tcp(.ip, '${host}:${port}')!
-	s.udp = net.listen_udp('${host}:${port}')!
+	addr := join_host_port(host, port)
+	s.listener = net.listen_tcp(addr_family(host), addr)!
+	s.udp = net.listen_udp(addr) or {
+		s.listener.close() or {}
+		s.listener = unsafe { nil }
+		return err
+	}
+}
+
+// join_host_port formats host:port for net dial/listen, bracketing an IPv6 literal
+// (a host containing ':', e.g. ::1) as [host]:port. IPv4/hostnames are host:port.
+fn join_host_port(host string, port int) string {
+	if host.contains(':') && !host.starts_with('[') {
+		return '[${host}]:${port}'
+	}
+	return '${host}:${port}'
+}
+
+// addr_family picks the socket family for a host: ip6 for an IPv6 literal, else ip.
+fn addr_family(host string) net.AddrFamily {
+	return if host.contains(':') { net.AddrFamily.ip6 } else { net.AddrFamily.ip }
 }
 
 // accept_and_serve waits up to timeout_ms for a TCP connection, then serves its
@@ -57,9 +88,16 @@ pub fn (mut s DoipServer) listen(host string, port int) ! {
 // thread-per-connection model would need handler synchronisation (uds.Server is
 // not thread-safe).
 pub fn (mut s DoipServer) accept_and_serve(timeout_ms int) ! {
+	if s.stopping {
+		return error('DoIP server stopping')
+	}
 	s.listener.set_accept_timeout(timeout_ms * time.millisecond)
 	mut conn := s.listener.accept()!
+	// Publish the accepted connection so close() can tear it down from another
+	// thread (Stop), interrupting an otherwise-blocking per-connection read.
+	s.active = conn
 	s.serve_connection(mut conn)
+	s.active = unsafe { nil }
 	conn.close() or {}
 }
 
@@ -71,7 +109,10 @@ fn (mut s DoipServer) serve_connection(mut conn net.TcpConn) {
 	mut activated := false
 	mut tester_source := u16(0) // the source address activated on this connection
 	for {
-		msg := read_message(mut conn, 60000) or { return } // peer closed / timeout
+		if s.stopping {
+			return // Stop requested — drop the connection without serving further
+		}
+		msg := read_message(mut conn, 60000) or { return } // peer closed / timeout / closed by Stop
 		match msg.payload_type {
 			pt_routing_activation_request {
 				ra := parse_routing_activation_request(msg.payload) or { continue }
@@ -137,7 +178,15 @@ pub fn (mut s DoipServer) serve_udp_once(timeout_ms int) ! {
 	}
 }
 
+// close stops the entity and releases its sockets. It is safe to call from a
+// different thread than the serving loop (e.g. a GUI Stop): it sets `stopping`
+// and closes the currently-active accepted connection, so a serve loop blocked in
+// a per-connection read is interrupted rather than waiting out the read timeout.
 pub fn (mut s DoipServer) close() {
+	s.stopping = true
+	if !isnil(s.active) {
+		s.active.close() or {}
+	}
 	if !isnil(s.listener) {
 		s.listener.close() or {}
 	}

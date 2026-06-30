@@ -149,3 +149,129 @@ fn test_parse_hex_bytes() {
 	assert parse_hex_bytes('') == []u8{}
 	assert parse_hex_bytes('AABBC') == [u8(0xAA), 0xBB] // odd trailing nibble dropped
 }
+
+fn test_doip_channel() {
+	p := parse('project:\n  name: d\nchannels:\n  - name: DoIP1\n    type: doip\n    interface: "doip:127.0.0.1:13400"\n    tester_address: "0x0E80"\n    ecu_address: "0x1000"\n') or {
+		panic(err)
+	}
+	c := p.channels[0]
+	assert c.is_doip()
+	assert c.tester_addr == 0x0E80
+	assert c.ecu_addr == 0x1000
+	host, port := c.doip_endpoint()
+	assert host == '127.0.0.1'
+	assert port == 13400
+}
+
+fn test_doip_endpoint_defaults() {
+	// `type: doip` with a bare/short interface falls back to 127.0.0.1:13400.
+	bare := Channel{
+		typ:   'doip'
+		iface: 'doip'
+	}
+	assert bare.is_doip()
+	h0, p0 := bare.doip_endpoint()
+	assert h0 == '127.0.0.1'
+	assert p0 == 13400
+	// host-only (no port) keeps the default port.
+	hostonly := Channel{
+		iface: 'doip:192.168.1.5'
+	}
+	assert hostonly.is_doip() // recognised via the iface prefix even without type
+	h1, p1 := hostonly.doip_endpoint()
+	assert h1 == '192.168.1.5'
+	assert p1 == 13400
+	// bare `interface: doip` shorthand (no explicit type) is recognised too.
+	shorthand := Channel{
+		iface: 'doip'
+	}
+	assert shorthand.is_doip()
+	hs, ps := shorthand.doip_endpoint()
+	assert hs == '127.0.0.1'
+	assert ps == 13400
+	// default addresses when unset.
+	assert bare.tester_addr == 0x0E80
+	assert bare.ecu_addr == 0x1000
+	// type: doip but interface omitted -> inherits the CAN default `vcan0`, which
+	// must NOT be treated as the DoIP host: fall back to localhost.
+	inherited := Channel{
+		typ: 'doip'
+		// iface left at its 'vcan0' default
+	}
+	assert inherited.is_doip()
+	h2, p2 := inherited.doip_endpoint()
+	assert h2 == '127.0.0.1'
+	assert p2 == 13400
+}
+
+fn test_doip_endpoint_parsing() {
+	// explicit valid host:port
+	h0, p0 := Channel{
+		iface: 'doip:10.0.0.5:5000'
+	}.doip_endpoint()
+	assert h0 == '10.0.0.5'
+	assert p0 == 5000
+	// typo'd port (non-numeric) → kept whole as host + default port (so it fails
+	// loudly on connect rather than silently dialing 13400 on a truncated host).
+	h1, p1 := Channel{
+		iface: 'doip:ecu.local:1340O'
+	}.doip_endpoint()
+	assert h1 == 'ecu.local:1340O'
+	assert p1 == 13400
+	// out-of-range port → not treated as a port.
+	h2, p2 := Channel{
+		iface: 'doip:host:99999'
+	}.doip_endpoint()
+	assert h2 == 'host:99999'
+	assert p2 == 13400
+	// bracketed IPv6 with + without port.
+	h3, p3 := Channel{
+		iface: 'doip:[fe80::1]:13401'
+	}.doip_endpoint()
+	assert h3 == 'fe80::1'
+	assert p3 == 13401
+	h4, p4 := Channel{
+		iface: 'doip:[::1]'
+	}.doip_endpoint()
+	assert h4 == '::1'
+	assert p4 == 13400
+	// unbracketed IPv6 (multiple colons) → kept whole as host, default port.
+	h5, p5 := Channel{
+		iface: 'doip:fe80::1'
+	}.doip_endpoint()
+	assert h5 == 'fe80::1'
+	assert p5 == 13400
+	// malformed bracketed suffix → kept whole (fails loudly on connect), not
+	// silently defaulted to ::1 + 13400.
+	h6, p6 := Channel{
+		iface: 'doip:[::1]:1340O'
+	}.doip_endpoint()
+	assert h6 == '[::1]:1340O'
+	assert p6 == 13400
+	h7, p7 := Channel{
+		iface: 'doip:[::1]junk'
+	}.doip_endpoint()
+	assert h7 == '[::1]junk'
+	assert p7 == 13400
+}
+
+fn test_doip_address_out_of_range() {
+	// a 16-bit-overflowing logical address must surface as an error, not wrap to 0.
+	parse('project:\n  name: d\nchannels:\n  - name: D\n    type: doip\n    tester_address: "0x10000"\n') or {
+		// expected
+		parse('project:\n  name: d\nchannels:\n  - name: D\n    type: doip\n    ecu_address: "0x20000"\n') or {
+			return
+		}
+		assert false, 'expected ecu_address out-of-range error'
+		return
+	}
+	assert false, 'expected tester_address out-of-range error'
+}
+
+fn test_doip_address_u32_overflow() {
+	// a value larger than u32 must NOT wrap through a narrow type and pass as 0.
+	parse('project:\n  name: d\nchannels:\n  - name: D\n    type: doip\n    tester_address: "0x100000000"\n') or {
+		return
+	}
+	assert false, 'expected u32-overflowing tester_address to error'
+}

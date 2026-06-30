@@ -61,12 +61,22 @@ fn test_client_server_roundtrip() {
 	}
 	spawn fn (mut s DoipServer) {
 		for {
-			s.accept_and_serve(300) or { continue }
+			s.accept_and_serve(300) or {
+				if s.stopping {
+					break
+				}
+				continue
+			}
 		}
 	}(mut srv)
 	spawn fn (mut s DoipServer) {
 		for {
-			s.serve_udp_once(300) or { continue }
+			s.serve_udp_once(300) or {
+				if s.stopping {
+					break
+				}
+				continue
+			}
 		}
 	}(mut srv)
 	time.sleep(150 * time.millisecond)
@@ -209,5 +219,99 @@ fn test_client_server_roundtrip() {
 	assert bgot <= 0, 'server did not reject oversized payload length'
 	big.close() or {}
 
+	srv.close()
+}
+
+// close() must tear down the in-progress accepted connection from another thread
+// (a GUI Stop), interrupting serve_connection's per-connection read PROMPTLY
+// rather than waiting out its 60s timeout.
+fn test_close_interrupts_active_connection() {
+	lport := 13458
+	mut srv := new_server(ServerCfg{ logical_address: 0x1000 }, echo_handler)
+	srv.listen('127.0.0.1', lport) or {
+		assert false, 'listen: ${err}'
+		return
+	}
+	spawn fn (mut srv DoipServer) {
+		for {
+			srv.accept_and_serve(200) or {
+				if srv.stopping {
+					break
+				}
+				continue
+			}
+		}
+	}(mut srv)
+	time.sleep(150 * time.millisecond)
+	// Connect + activate routing, then idle so the server is parked in the
+	// per-connection read (s.active set).
+	mut c := net.dial_tcp('127.0.0.1:${lport}') or {
+		assert false, 'dial: ${err}'
+		return
+	}
+	c.write(routing_activation_request(0x0E80)) or { assert false, 'write: ${err}' }
+	_ := read_message(mut c, 2000) or {
+		assert false, 'activation resp: ${err}'
+		return
+	}
+	time.sleep(150 * time.millisecond)
+	// Stop from this (different) thread.
+	t0 := time.ticks()
+	srv.close()
+	// Use a client read timeout (10s) FAR above the promptness bound we assert
+	// (250ms): if close() failed to interrupt the server's read, the server would
+	// hold the connection and this client read would block until its own 10s
+	// timeout — blowing the 250ms bound. So a pass genuinely proves the server
+	// closed the connection promptly, not that the client merely timed out.
+	c.set_read_timeout(10 * time.second)
+	mut buf := []u8{len: 16}
+	mut timed_out := false
+	n := c.read(mut buf) or {
+		// distinguish a real close (EOF/reset, arrives promptly) from a read timeout
+		timed_out = err.code() == net.err_timed_out_code
+		-1
+	}
+	elapsed := time.ticks() - t0
+	assert !timed_out, 'client read timed out — server did not close the connection'
+	assert n <= 0, 'expected the server to close the active connection, read ${n} bytes'
+	assert elapsed < 250, 'close() did not interrupt the active read promptly (${elapsed} ms)'
+	c.close() or {}
+}
+
+// IPv6 end-to-end: the entity binds an IPv6 literal (bracketed + ip6 family) and
+// DoipClient dials it. Guarded — skips cleanly where IPv6 loopback is unavailable
+// (some CI runners) rather than failing.
+fn test_ipv6_roundtrip() {
+	mut srv := new_server(ServerCfg{ logical_address: 0x1000, vin: 'TESTVIN0000000001' },
+		echo_handler)
+	srv.listen('::1', 13467) or {
+		eprintln('skipping IPv6 roundtrip (no IPv6 loopback here): ${err}')
+		return
+	}
+	spawn fn (mut s DoipServer) {
+		for {
+			s.accept_and_serve(300) or {
+				if s.stopping {
+					break
+				}
+				continue
+			}
+		}
+	}(mut srv)
+	time.sleep(150 * time.millisecond)
+	mut ch := open_doip('::1', 13467, 0x0E80, 0x1000) or {
+		srv.close()
+		assert false, 'IPv6 open_doip: ${err}'
+		return
+	}
+	ch.send([u8(0x10), 0x03]) or { assert false, 'send: ${err}' }
+	resp := ch.recv(2000) or {
+		ch.close()
+		srv.close()
+		assert false, 'recv: ${err}'
+		return
+	}
+	assert resp == [u8(0x11), 0x04] // echo+1 of the request
+	ch.close()
 	srv.close()
 }
