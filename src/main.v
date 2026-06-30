@@ -382,9 +382,10 @@ mut:
 	// Graphics panel: signals UNchecked in the legend (key '<id>:<signal>') —
 	// default empty = plot everything, so new selections start fully visible.
 	plot_off map[string]bool
-	// Graphics: signals pinned from OTHER frames (multi-frame plotting). The plot
-	// shows the selected frame's signals (quick watch) plus these. plot_shared
-	// scales all plotted signals to one labelled Y-axis; false = per-signal fit.
+	// Graphics: the explicit watch list — the plot shows EXACTLY these signals
+	// (added via ＋ Plot in the Signals panel), accumulated across any number of
+	// frames, independent of the Trace selection. plot_shared scales all plotted
+	// signals to one labelled Y-axis; false = per-signal fit.
 	plot_watch  []PlotPin
 	plot_shared bool = true
 	// Diagnostics panel: response log (newest first) + the typed DID for the
@@ -3742,6 +3743,9 @@ fn (app &App) is_pinned(id u32, ext bool, signal string) bool {
 // list (so signals from several messages can be plotted together). On removal it
 // also drops the signal's stale expand-only Y-range so a later re-add auto-fits.
 fn (mut app App) toggle_pin(id u32, ext bool, signal string) {
+	defer {
+		app.plot_sig = '' // force the decode block to re-run (set changed; re-fills ranges)
+	}
 	for i, p in app.plot_watch {
 		if p.id == id && p.ext == ext && p.signal == signal {
 			app.plot_watch.delete(i)
@@ -3760,6 +3764,9 @@ fn (mut app App) toggle_pin(id u32, ext bool, signal string) {
 
 // add_pins adds every named signal of a frame to the graph (skipping any already on).
 fn (mut app App) add_pins(id u32, ext bool, names []string) {
+	defer {
+		app.plot_sig = ''
+	}
 	for n in names {
 		if !app.is_pinned(id, ext, n) {
 			app.plot_watch << PlotPin{
@@ -3781,6 +3788,7 @@ fn (mut app App) drop_frame_pins(id u32, ext bool) {
 		}
 	}
 	app.plot_watch = app.plot_watch.filter(it.id != id || it.ext != ext)
+	app.plot_sig = '' // force re-decode (set changed; re-fills ranges for remaining pins)
 }
 
 // signals_panel decodes the message currently selected in the Trace (any ID),
@@ -3894,15 +3902,13 @@ fn fmt_axis(v f32, span f32) string {
 	return '${v:.3f}'
 }
 
-// PlottedSig is one signal placed on the Graphics plot, with the message it came
-// from (so history/timeline come from the right message) and whether it was pinned
-// from another frame (shown with a remove ✕ in the legend).
+// PlottedSig is one signal on the Graphics plot, with the message it came from (so
+// history/timeline come from the right message) and its canonical key.
 struct PlottedSig {
-	id     u32
-	ext    bool
-	sig    candb.Signal
-	key    string
-	pinned bool
+	id  u32
+	ext bool
+	sig candb.Signal
+	key string
 }
 
 // plot_panel graphs the selected message's signals over the trace history — a
@@ -3990,11 +3996,10 @@ fn plot_panel(mut window gui.Window) gui.View {
 		for s in pm.signals {
 			if s.name == p.signal {
 				plotted << PlottedSig{
-					id:     p.id
-					ext:    p.ext
-					sig:    s
-					key:    k
-					pinned: true
+					id:  p.id
+					ext: p.ext
+					sig: s
+					key: k
 				}
 				seen[k] = true
 				break
@@ -4165,9 +4170,9 @@ fn plot_panel(mut window gui.Window) gui.View {
 	hover_time := if hf >= 0 { wstart + hf * win } else { f32(-1) }
 
 	// Title: how many signals are on the watch list, and from how many frames.
-	mut frames := map[u32]bool{}
+	mut frames := map[u64]bool{}
 	for pl in plotted {
-		frames[pl.id] = true
+		frames[hist_key(pl.id, pl.ext)] = true
 	}
 	plot_title := 'Graphics — ${plotted.len} signal${if plotted.len == 1 { '' } else { 's' }} / ${frames.len} frame${if frames.len == 1 { '' } else { 's' }}'
 	// --- Header: title + zoom toolbar ('−' widens the time window, '+' narrows it). ---
