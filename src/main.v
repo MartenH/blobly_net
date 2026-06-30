@@ -1086,9 +1086,14 @@ fn main() {
 	if _ := cli_project_arg() {
 		has_proj_override = true
 	}
-	if !has_proj_override && !os.exists('projects') {
+	// Probe a SPECIFIC bundle marker (our default project), not just any `projects/`
+	// dir — otherwise being launched from a directory that happens to contain an
+	// unrelated `projects/` would wrongly skip the relocate and resolve the default
+	// against the wrong CWD.
+	bundle_marker := os.join_path('projects', 'sim-demo.yml')
+	if !has_proj_override && !os.exists(bundle_marker) {
 		exe_dir := os.dir(os.executable())
-		if os.exists(os.join_path(exe_dir, 'projects')) {
+		if os.exists(os.join_path(exe_dir, bundle_marker)) {
 			os.chdir(exe_dir) or {}
 		}
 	}
@@ -2493,10 +2498,14 @@ fn (mut app App) open_help_in_browser() {
 	// path for os.write_file to follow. Inter-instance clobber is harmless — the
 	// rendered help is identical.
 	dir := os.join_path(os.cache_dir(), 'blobly_net')
-	os.mkdir_all(dir) or {
+	os.mkdir_all(dir, mode: 0o700) or {
 		app.status = 'Help: could not create ${dir} (${err})'
 		return
 	}
+	// Enforce 0700 even if the dir pre-existed (a permissive umask or a
+	// group/world-writable cache root would otherwise let another local account
+	// pre-plant help.html as a symlink). Best-effort: a no-op on Windows.
+	os.chmod(dir, 0o700) or {}
 	path := os.join_path(dir, 'help.html')
 	os.write_file(path, help_html()) or {
 		app.status = 'Help: could not write ${path} (${err})'

@@ -195,6 +195,8 @@ jobs:
           New-Item -ItemType Directory -Force dist\samples | Out-Null
           Copy-Item samples\*.log,samples\*.mf4 dist\samples\ -Force -ErrorAction SilentlyContinue
           Copy-Item packaging\README.txt dist\README.txt
+          Copy-Item LICENSE dist\LICENSE.txt
+          Copy-Item packaging\THIRD-PARTY-NOTICES.txt dist\THIRD-PARTY-NOTICES.txt
           Get-ChildItem -Recurse dist | Select-Object -ExpandProperty FullName
 
       - name: Upload bundle
@@ -310,6 +312,8 @@ jobs:
           New-Item -ItemType Directory -Force dist\samples | Out-Null
           Copy-Item samples\*.log,samples\*.mf4 dist\samples\ -Force -ErrorAction SilentlyContinue
           Copy-Item packaging\README.txt dist\README.txt
+          Copy-Item LICENSE dist\LICENSE.txt
+          Copy-Item packaging\THIRD-PARTY-NOTICES.txt dist\THIRD-PARTY-NOTICES.txt
 
       - name: Upload bundle
         uses: actions/upload-artifact@v4
