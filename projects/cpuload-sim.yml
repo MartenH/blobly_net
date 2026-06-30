@@ -1,0 +1,42 @@
+# Driver-free CpuLoad demo — simulate blobly_emb's per-core CPU-load telemetry.
+#
+# The blobly_emb `scale` example transmits CpuLoad (id 0x7E0) every 500 ms — one
+# byte per core = load percent. This project SIMULATES that frame natively (no
+# vcan, no Python, no blobly_emb) on an in-process bus, so you can exercise the
+# Graphics panel against a homogeneous, all-"%" frame: select 0x7E0 in the Trace,
+# then "＋ Plot" the cores you want — the shared Y-axis shows 0–100 %.
+#
+# The 500 ms cadence comes from GenMsgCycleTime in dbc/cpuload.dbc; without it the
+# sim has no period and never sends.
+#
+# ⚠ Known quirk of THIS sim demo: CpuLoad's id (0x7E0) is also the UDS tester
+# request id. Simulating an ECU starts blobly_net's built-in UDS server (rx 0x7E0 /
+# tx 0x7E8), which then sees each CpuLoad frame as an ISO-TP request and answers
+# with a 0x7E8 negative response — so the Trace shows extra 0x7E8 rows. It does NOT
+# affect the CpuLoad plot (the point of this demo), but it does add bus noise. The
+# real use — monitoring blobly_emb over vcan0 (projects/scale-cpuload.yml, no
+# simulated node) — has no such collision.
+#
+# Run:  BLOBLY_PROJECT=projects/cpuload-sim.yml ./scripts/run.sh   → ▶ Start
+project:
+  name: cpuload-sim
+  version: 1
+
+channels:
+  - name: CAN1
+    type: can
+    interface: inproc:CAN1
+    mode: monitor
+    databases:
+      - dbc/cpuload.dbc
+    simulation:
+      - name: SUT
+        signals:
+          - { name: Load_Core0, type: sine,     offset: 50, amplitude: 45, freq: 0.8, phase: 0 }
+          - { name: Load_Core1, type: sine,     offset: 50, amplitude: 35, freq: 1.1, phase: 1 }
+          - { name: Load_Core2, type: sawtooth, min: 0,  max: 100, period: 3 }
+          - { name: Load_Core3, type: sine,     offset: 30, amplitude: 25, freq: 1.4, phase: 2 }
+          - { name: Load_Core4, type: sine,     offset: 60, amplitude: 30, freq: 0.6, phase: 0 }
+          - { name: Load_Core5, type: stepmod,  period: 2, count: 5, base: 10 }
+          - { name: Load_Core6, type: counter,  start: 0, step: 7, modulo: 100 }
+          - { name: Load_Core7, type: const,    value: 12 }
