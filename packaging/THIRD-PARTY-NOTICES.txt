@@ -1,0 +1,38 @@
+Blobly Net — third-party notices
+================================
+
+Blobly Net is distributed with third-party components. The application's own
+licence is in LICENSE (shipped alongside this file). The components below retain
+their respective licences; full licence texts are available from each project.
+
+Compiled into the executable
+----------------------------
+  vlang/gui          MIT            https://github.com/vlang/gui
+  vlang/vglyph       MIT            https://github.com/vlang/vglyph
+  vlang/markdown     MIT            https://github.com/vlang/markdown
+  md4c               MIT            https://github.com/mity/md4c   (via vlang/markdown)
+  Lua 5.4            MIT            https://www.lua.org/           (vendored in thirdparty/lua)
+  V standard library MIT            https://github.com/vlang/v
+
+Bundled runtime libraries (the *.dll files next to the executable)
+------------------------------------------------------------------
+These are the GUI/text-shaping stack the executable links at runtime. They are
+DYNAMICALLY linked, so the LGPL components remain replaceable by the recipient.
+
+  Pango              LGPL-2.1+      https://pango.gnome.org/
+  Cairo              LGPL-2.1 / MPL https://www.cairographics.org/
+  GLib / GObject     LGPL-2.1+      https://gitlab.gnome.org/GNOME/glib
+  FreeType           FTL / GPL-2    https://freetype.org/
+  HarfBuzz           MIT            https://harfbuzz.github.io/
+  FriBidi            LGPL-2.1+      https://github.com/fribidi/fribidi
+  Fontconfig         MIT-style      https://www.freedesktop.org/wiki/Software/fontconfig/
+  Pixman             MIT            https://www.pixman.org/
+  libpng             PNG/zlib       http://www.libpng.org/
+  zlib               zlib           https://zlib.net/
+  GNU gettext (intl) LGPL-2.1+      https://www.gnu.org/software/gettext/
+
+On the MSVC build the Microsoft Visual C++ runtime (vcruntime140*.dll, msvcp140.dll)
+is also present; it is redistributable under the Microsoft VC++ redistributable terms.
+
+To obtain the source for any LGPL/GPL component bundled here, see the upstream
+project link above, or contact the distributor.
