@@ -6,9 +6,16 @@
 # Graphics panel against a homogeneous, all-"%" frame: select 0x7E0 in the Trace,
 # then "＋ Plot" the cores you want — the shared Y-axis shows 0–100 %.
 #
-# (The 500 ms cadence comes from GenMsgCycleTime in dbc/cpuload.dbc; without it the
-# sim has no period and never sends. Note 0x7E0 doubles as the UDS tester id, so a
-# stray 0x7E8 ack may appear — harmless for this demo.)
+# The 500 ms cadence comes from GenMsgCycleTime in dbc/cpuload.dbc; without it the
+# sim has no period and never sends.
+#
+# ⚠ Known quirk of THIS sim demo: CpuLoad's id (0x7E0) is also the UDS tester
+# request id. Simulating an ECU starts blobly_net's built-in UDS server (rx 0x7E0 /
+# tx 0x7E8), which then sees each CpuLoad frame as an ISO-TP request and answers
+# with a 0x7E8 negative response — so the Trace shows extra 0x7E8 rows. It does NOT
+# affect the CpuLoad plot (the point of this demo), but it does add bus noise. The
+# real use — monitoring blobly_emb over vcan0 (projects/scale-cpuload.yml, no
+# simulated node) — has no such collision.
 #
 # Run:  BLOBLY_PROJECT=projects/cpuload-sim.yml ./scripts/run.sh   → ▶ Start
 project:

@@ -1533,6 +1533,21 @@ fn (mut app App) reset_diag_discovery() {
 	app.diag_sel_name = ''
 }
 
+// reset_plot clears the Graphics watch list + its derived decode/scale state. Called
+// on project change (Open/New) and the Graphics/Trace Clear buttons, so pins from a
+// previous project (referencing frames that may not exist or mean something else in
+// the new one) and stale expand-only Y-ranges don't leak across. Does NOT touch
+// plot_hist — callers that also wipe history (project load, Trace Clear) do that.
+fn (mut app App) reset_plot() {
+	app.plot_watch = []
+	app.plot_range = map[string][2]f32{}
+	app.plot_off = map[string]bool{}
+	app.plot_sig = ''
+	app.plot_series = [][]f32{}
+	app.plot_times = [][]f32{}
+	app.plot_cur = []f64{}
+}
+
 // stop_measurement signals every running channel's RX thread to exit; each
 // thread closes its own bus on the way out (avoids closing under a blocked recv).
 // For DoIP channels we ALSO close the server here so its bound TCP/UDP sockets are
@@ -2173,6 +2188,8 @@ fn menu_bar(mut window gui.Window) gui.View {
 							a.proj_source = 'new' // not a file yet → Save acts as Save As
 							a.rt = []ChannelRT{}
 							a.reset_diag_discovery()
+							a.reset_plot()
+							a.plot_hist = map[u32][]PlotSample{}
 							a.load_databases()
 							a.build_sim_nodes()
 							set_window_title(a.proj.name)
@@ -2597,6 +2614,8 @@ fn open_project(path string, mut w gui.Window) {
 	app.remember_project(path)
 	app.rt = []ChannelRT{len: p.channels.len}
 	app.reset_diag_discovery()
+	app.reset_plot()
+	app.plot_hist = map[u32][]PlotSample{} // old project's history is meaningless now
 	app.load_databases()
 	app.build_sim_nodes()
 	set_window_title(p.name)
@@ -3223,7 +3242,7 @@ fn toolbar(mut window gui.Window) gui.View {
 					a.expanded = map[string]bool{}
 					a.expanded2 = map[string]bool{}
 					a.plot_hist = map[u32][]PlotSample{}
-					a.plot_range = map[string][2]f32{}
+					a.reset_plot() // also drop the graph watch list (was left dangling over cleared history)
 					a.sel_id = -1
 				}
 			),
@@ -3700,17 +3719,26 @@ fn trace_filter_row(app &App, which int) gui.View {
 	)
 }
 
-// is_pinned reports whether (id, signal) is pinned to the Graphics plot.
-fn (app &App) is_pinned(id u32, signal string) bool {
-	return app.plot_watch.any(it.id == id && it.signal == signal)
+// pin_key is the canonical Graphics key (watch dedup / plot_off / plot_range) for a
+// signal. It includes the frame format (ext) so a standard and an extended frame
+// that share a numeric id AND signal name don't collide into one plot entry.
+fn pin_key(id u32, ext bool, signal string) string {
+	return '${id}:${if ext { 'x' } else { 's' }}:${signal}'
+}
+
+// is_pinned reports whether (id, ext, signal) is pinned to the Graphics plot.
+fn (app &App) is_pinned(id u32, ext bool, signal string) bool {
+	return app.plot_watch.any(it.id == id && it.ext == ext && it.signal == signal)
 }
 
 // toggle_pin adds/removes a signal to/from the Graphics plot's cross-frame watch
-// list (so signals from several messages can be plotted together).
+// list (so signals from several messages can be plotted together). On removal it
+// also drops the signal's stale expand-only Y-range so a later re-add auto-fits.
 fn (mut app App) toggle_pin(id u32, ext bool, signal string) {
 	for i, p in app.plot_watch {
-		if p.id == id && p.signal == signal {
+		if p.id == id && p.ext == ext && p.signal == signal {
 			app.plot_watch.delete(i)
+			app.plot_range.delete(pin_key(id, ext, signal))
 			return
 		}
 	}
@@ -3724,7 +3752,7 @@ fn (mut app App) toggle_pin(id u32, ext bool, signal string) {
 // add_pins adds every named signal of a frame to the graph (skipping any already on).
 fn (mut app App) add_pins(id u32, ext bool, names []string) {
 	for n in names {
-		if !app.is_pinned(id, n) {
+		if !app.is_pinned(id, ext, n) {
 			app.plot_watch << PlotPin{
 				id:     id
 				ext:    ext
@@ -3734,9 +3762,14 @@ fn (mut app App) add_pins(id u32, ext bool, names []string) {
 	}
 }
 
-// drop_frame_pins removes all of a frame's signals from the graph.
-fn (mut app App) drop_frame_pins(id u32) {
-	app.plot_watch = app.plot_watch.filter(it.id != id)
+// drop_frame_pins removes all of a frame's signals from the graph (+ their Y-ranges).
+fn (mut app App) drop_frame_pins(id u32, ext bool) {
+	for p in app.plot_watch {
+		if p.id == id && p.ext == ext {
+			app.plot_range.delete(pin_key(id, ext, p.signal))
+		}
+	}
+	app.plot_watch = app.plot_watch.filter(it.id != id || it.ext != ext)
 }
 
 // signals_panel decodes the message currently selected in the Trace (any ID),
@@ -3767,7 +3800,7 @@ fn signals_panel(app &App) gui.View {
 	for s in active {
 		names << s.name
 	}
-	all_on := names.len > 0 && names.all(app.is_pinned(id, it))
+	all_on := names.len > 0 && names.all(app.is_pinned(id, ext, it))
 	mut head := [gui.View(gui.text(text: 'Signals — ${hexid(id, ext)} ${msg.name}',
 		text_style: gui.theme().b3))]
 	if names.len > 0 {
@@ -3776,7 +3809,7 @@ fn signals_panel(app &App) gui.View {
 			on_click: fn [id, ext, names, all_on] (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 				mut a := w.state[App]()
 				if all_on {
-					a.drop_frame_pins(id)
+					a.drop_frame_pins(id, ext)
 				} else {
 					a.add_pins(id, ext, names)
 				}
@@ -3793,7 +3826,7 @@ fn signals_panel(app &App) gui.View {
 		for s in active {
 			label := s.label(data)
 			suffix := if label != '' { ' (${label})' } else { '' }
-			pinned := app.is_pinned(id, s.name)
+			pinned := app.is_pinned(id, ext, s.name)
 			signame := s.name
 			// Whole row is the add/remove button (a nested clickable child breaks the
 			// row layout). Leading coloured "＋ Plot" / "✕ Drop" reads as an action.
@@ -3896,7 +3929,12 @@ fn plot_version(samples int, shown int, step bool, win int, hover_frac f32, cw f
 
 fn plot_panel(mut window gui.Window) gui.View {
 	mut app := window.state[App]()
-	if app.sel_id < 0 {
+	// The plot is an independent watch list: show the empty-state when nothing is
+	// pinned (NOT when the Trace selection is cleared — that's what made a populated
+	// graph vanish on Trace Clear, which sets sel_id = -1). Keeping the `plot_root`
+	// id here means the node exists in the tree from frame 0, so the measure block's
+	// find_layout_by_id('plot_root') below never runs before the node exists.
+	if app.plot_watch.len == 0 {
 		return gui.column(
 			id:      'plot_root'
 			sizing:  gui.fill_fill
@@ -3904,7 +3942,7 @@ fn plot_panel(mut window gui.Window) gui.View {
 			spacing: 5
 			content: [
 				gui.text(text: 'Graphics', text_style: gui.theme().b3),
-				gui.text(text: '(click a message in the Trace to plot its signals)',
+				gui.text(text: 'Empty — add signals with ＋ Plot in the Signals panel (click a Trace row to pick a frame).',
 					text_style: gui.theme().n4),
 			]
 		)
@@ -3933,7 +3971,7 @@ fn plot_panel(mut window gui.Window) gui.View {
 	mut plotted := []PlottedSig{}
 	mut seen := map[string]bool{}
 	for p in app.plot_watch {
-		k := '${p.id}:${p.signal}'
+		k := pin_key(p.id, p.ext, p.signal)
 		if k in seen {
 			continue
 		}
@@ -3985,12 +4023,22 @@ fn plot_panel(mut window gui.Window) gui.View {
 	wstart := if t_end > win { t_end - win } else { f32(0) }
 
 	// Decode each plotted signal's in-window samples from ITS message history into
-	// reused buffers; recompute only when the set / any history length / zoom
-	// changes. Cross-frame signals keep their own timelines, so times is per-series.
-	mut sig := '${app.plot_win}|'
+	// reused buffers; recompute only when the set / any history length / zoom / the
+	// sliding window changes. The `int(wstart*4)` term (250 ms buckets) makes a sparse
+	// signal's series re-trim as old samples age out of the window even when no new
+	// frame has arrived (h.len unchanged). Cross-frame signals keep their own
+	// timelines, so times is per-series.
+	mut sig := '${app.plot_win}:${int(wstart * 4)}|'
 	for pl in plotted {
 		h := app.plot_hist[pl.id] or { []PlotSample{} }
 		sig += '${pl.key}:${h.len}:${app.plot_off[pl.key]};'
+	}
+	// Hash of `sig` folded into the canvas version below, so the plot re-tessellates
+	// whenever the watch set / data / window changes — even when STOPPED (where the
+	// 30 Hz bucket is 0) and two different watch lists happen to share `total`/`shown.len`.
+	mut sighash := fnv64_offset
+	for b in sig {
+		sighash = fnv64(sighash, u64(b))
 	}
 	if sig != app.plot_sig {
 		app.plot_sig = sig
@@ -4172,7 +4220,7 @@ fn plot_panel(mut window gui.Window) gui.View {
 				content:   [gui.text(text: 'Clear')]
 				on_click:  fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 					mut a := w.state[App]()
-					a.plot_watch = []
+					a.reset_plot() // empty the graph + drop stale Y-ranges (keeps trace history)
 				}
 			),
 		]
@@ -4196,7 +4244,7 @@ fn plot_panel(mut window gui.Window) gui.View {
 			u64(time.ticks() / 33)
 		} else {
 			u64(0)
-		}) + if shared_y { u64(7) } else { u64(0) }
+		}) + sighash + if shared_y { u64(7) } else { u64(0) }
 		width:    cw
 		height:   ph
 		color:    plot_bg
