@@ -16,7 +16,9 @@ param(
     [string]$Target = 'src\main.v',
     [string]$Out    = 'build\blobly_net.exe',
     [switch]$Run,
-    [switch]$Debug
+    [switch]$Debug,
+    [switch]$SkipUnused   # add -skip-unused: prunes unused code -> much smaller generated
+                          # C -> far faster gcc compile (try this if the build seems to hang)
 )
 $ErrorActionPreference = 'Stop'
 $repo  = Split-Path -Parent $PSScriptRoot
@@ -43,6 +45,7 @@ $outPath = Join-Path $repo $Out
 New-Item -ItemType Directory -Force (Split-Path -Parent $outPath) | Out-Null
 
 $vargs = @('-cc','gcc','-enable-globals')  # main.v uses the in-proc bus (__global)
+if ($SkipUnused) { $vargs += '-skip-unused' }
 if ($Debug) { $vargs += '-g' }
 $vargs += @('-path','@vlib|@vmodules|modules','-cflags',$cflags,'-ldflags',$ldflags,'-o',$outPath,(Join-Path $repo $Target))
 
