@@ -1,5 +1,29 @@
 # Windows build hang / memory leak — debug handoff
 
+> ## ✅ RESOLVED (2026-07-01) — it was V issue [#27472], fixed in master `ddc9c99`
+>
+> **Root cause of the CI hang:** master V's `find_module_path` (builder.v) anchors the
+> importer to the *outermost* enclosing `v.mod` by walking up folders. On the GitHub
+> runner's `D:\a\blobly_net\blobly_net` checkout that walk never advanced
+> (`os.real_path`→`GetFinalPathNameByHandleW` returned a non-strict-ancestor folder),
+> so V **spun at 100% CPU in the front-end, before launching any compiler** — which is
+> why *both* the gcc and msvc jobs hung for hours, and why de365a1 (no such loop) was
+> green. Proven on the live runner with gdb: one `v.exe` pegged in
+> `find_module_path → ModFileCacher.get_by_folder → os.real_path → GetFinalPathNameByHandleW`,
+> the parent `v.exe` idle in `ReadFile`. NOT the C compiler, NOT the giant `[32768]u16{}`
+> initializers, NOT gui, NOT core count.
+>
+> **Fix:** PR [#27473] (merged `ddc9c99`, 2026-06-22) adds a progress guard in
+> `vmod.traverse` (`next == cfolder`) + an `is_strict_ancestor` check in
+> `find_module_path`. The prebuilt CI V was `c0624b2` (2026-06-20) — **2 days too old**.
+> Minted `v-ddc9c99-windows.zip` (`v self` at ddc9c99), repointed `windows.yml` `V_ASSET`
+> at it, and restored the **master V + gui 7a20a6a** combo. Windows CI is now **green
+> (~2–4 min) AND leak-free** (master `closure.Lifetime` API) — no de365a1 + closure-patch
+> detour. The de365a1 material below is kept for history.
+>
+> [#27472]: https://github.com/vlang/v/issues/27472
+> [#27473]: https://github.com/vlang/v/pull/27473
+
 Everything the Windows side needs to diagnose the current situation. TL;DR: run
 `bash scripts/win_diag.sh` in the MINGW64 shell and paste `win_diag.log`.
 
