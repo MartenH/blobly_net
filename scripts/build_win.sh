@@ -29,17 +29,13 @@ export PATH="$mingw/bin:$PATH"                  # gcc + pkgconf + runtime DLLs
 target='src/main.v'
 out='build/blobly_net.exe'
 dbg=''
-skip=''
 run=0
 for a in "$@"; do
   case "$a" in
-    -run|--run)                 run=1 ;;
-    -debug|--debug)             dbg='-g' ;;
-    -skip-unused|--skip-unused) skip='-skip-unused' ;;  # prune unused code -> smaller
-                                                        # generated C -> faster gcc (try
-                                                        # if the build seems to hang)
-    *.v)                        target="$a" ;;
-    *)                          echo "unknown arg: $a (want -run, -debug, -skip-unused, or a target .v)"; exit 2 ;;
+    -run|--run)     run=1 ;;
+    -debug|--debug) dbg='-g' ;;
+    *.v)            target="$a" ;;
+    *)              echo "unknown arg: $a (want -run, -debug, or a target .v)"; exit 2 ;;
   esac
 done
 
@@ -55,7 +51,7 @@ ldflags="$(pkgconf --libs $libs) -ld3d11 -ldxgi"
 
 mkdir -p "$(dirname "$out")"
 # -enable-globals: main.v imports the in-proc bus (transport/inproc.v __global).
-/c/dev/v/v.exe -cc gcc -enable-globals $skip $dbg -path '@vlib|@vmodules|modules' \
+/c/dev/v/v.exe -cc gcc -enable-globals $dbg -path '@vlib|@vmodules|modules' \
   -cflags "$cflags" -ldflags "$ldflags" -o "$out" "$target"
 
 echo "BUILD OK -> $out"
