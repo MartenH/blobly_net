@@ -592,9 +592,16 @@ fn fire_sender(si int, mut w gui.Window) {
 		app.notify(.error, 'send failed: ${err}')
 		return
 	}
-	app.rt[idx].tx_count++
-	chname := if idx < app.proj.channels.len { app.proj.channels[idx].name } else { 'CAN${idx + 1}' }
-	app.push('TX', frame, chname)
+	// Route the manual TX through the SAME inbox path as RX/gen/replay so it's recorded
+	// in t_ms order at the sorted drain — not appended immediately ahead of RX frames
+	// still buffered with an older arrival time. (tx_count is bumped by drain_inbox.)
+	app.inbox_push(InboxItem{
+		idx:   idx
+		dir:   'TX'
+		frame: frame
+		t_ms:  f64(time.ticks() - app.t0)
+	})
+	app.request_drain(mut w)
 	app.notify(.info, 'sent "${sr.cfg.name}"')
 }
 
@@ -2048,11 +2055,6 @@ fn drain_inbox(mut w gui.Window) {
 		a.record(it.dir, it.frame, it.t_ms, ch)
 	}
 	w.update_window()
-}
-
-// push records a live frame, stamping it with the current wall-clock offset.
-fn (mut app App) push(dir string, f transport.CanFrame, ch string) {
-	app.record(dir, f, f64(time.ticks() - app.t0), ch)
 }
 
 // record appends a frame to the trace + grouped aggregate at an explicit time
@@ -6441,9 +6443,15 @@ fn do_send(mut w gui.Window) {
 		app.notify(.error, 'send failed: ${err}')
 		return
 	}
-	app.rt[idx].tx_count++
-	ch := if idx < app.proj.channels.len { app.proj.channels[idx].name } else { 'CAN${idx + 1}' }
-	app.push('TX', frame, ch)
+	// Same inbox path as RX/gen/replay (see fire_sender) — record in t_ms order at the
+	// sorted drain, not immediately ahead of buffered RX. (tx_count bumped by drain.)
+	app.inbox_push(InboxItem{
+		idx:   idx
+		dir:   'TX'
+		frame: frame
+		t_ms:  f64(time.ticks() - app.t0)
+	})
+	app.request_drain(mut w)
 }
 
 // toggle_record starts/stops capturing every frame. On stop it writes the
