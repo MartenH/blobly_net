@@ -3058,7 +3058,7 @@ fn save_project_as(mut w gui.Window) {
 fn do_save_project(mut w gui.Window) {
 	app := w.state[App]()
 	src := app.proj_source
-	if src.ends_with('.yml') || src.ends_with('.yaml') {
+	if src.ends_with('.blobnet') || src.ends_with('.yml') || src.ends_with('.yaml') {
 		save_project_to(src, mut w)
 	} else {
 		save_project_as(mut w)
