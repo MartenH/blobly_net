@@ -9,8 +9,8 @@
 # example on vcan0).
 #
 # Wiring: H735G-DK FDCAN1 CANH/CANL <-> USB-CAN adapter, 500 kbit/s classic, 120 Ω at
-# each end. Flash the board first:
-#   (cd blobly_emb/examples/h735_app && make flash)
+# each end. Flash the board first, from a checkout of the sibling blobly_emb repo:
+#   (cd <path-to>/blobly_emb/examples/h735_app && make flash)
 #
 # Run it (pick the channel line that matches where blobly_net runs — see below):
 #   BLOBLY_PROJECT=projects/h735-cpuload.blobnet ./scripts/run.sh   # -> Start
