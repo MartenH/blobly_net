@@ -2021,13 +2021,19 @@ fn (mut app App) request_drain(mut w gui.Window) {
 fn drain_inbox(mut w gui.Window) {
 	mut a := w.state[App]()
 	a.inbox_mu.lock()
-	items := a.inbox.clone()
+	mut items := a.inbox.clone()
 	a.inbox.clear()
 	a.drain_queued = false
 	a.inbox_mu.unlock()
 	if a.paused {
 		return // frames were already dropped from the bounded inbox
 	}
+	// The inbox fills in mutex-acquisition order across producer threads (multiple
+	// channels / replay+monitor / cyclic gens), NOT t_ms order — so sort the batch by
+	// captured time before recording, else the chronological trace + saved recording
+	// could show a later timestamp before an earlier one. Batches drain in time order,
+	// so a per-batch sort yields a fully monotonic stream.
+	items.sort(a.t_ms < b.t_ms)
 	for it in items {
 		ch := if it.idx < a.proj.channels.len { a.proj.channels[it.idx].name } else { 'CAN${it.idx + 1}' }
 		if it.idx < a.rt.len {
