@@ -1351,6 +1351,21 @@ fn (mut app App) notify(level StatusLevel, msg string) {
 	}
 }
 
+// resolve_db_path resolves a channel's (relative) DBC path. It prefers a file
+// sitting NEXT TO the project file — so a portable `.blobnet` opened from anywhere
+// (e.g. double-clicked outside the install bundle) finds its own `dbc/…` — and only
+// falls back to the raw path (resolved against the CWD, i.e. the install bundle) if
+// that doesn't exist. Absolute paths and the built-in default are passed through.
+fn (app &App) resolve_db_path(path string) string {
+	is_project_file := app.proj_source.ends_with('.blobnet') || app.proj_source.ends_with('.yml')
+		|| app.proj_source.ends_with('.yaml')
+	if os.is_abs_path(path) || !is_project_file {
+		return path
+	}
+	near := os.join_path(os.dir(app.proj_source), path)
+	return if os.exists(near) { near } else { path }
+}
+
 fn (mut app App) load_databases() {
 	app.dbs = []candb.Database{len: app.proj.channels.len}
 	mut sources := []string{}
@@ -1361,7 +1376,7 @@ fn (mut app App) load_databases() {
 		mut chan_nodes := []string{}
 		mut chan_seen := map[u32]bool{}
 		for path in ch.databases {
-			db := candb.load_dbc_file(path) or { continue }
+			db := candb.load_dbc_file(app.resolve_db_path(path)) or { continue }
 			sources << path
 			for m in db.messages {
 				if m.id !in chan_seen {
