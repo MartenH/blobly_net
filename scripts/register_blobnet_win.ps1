@@ -25,11 +25,12 @@ if ($Unregister) {
     return
 }
 
-# Locate the exe: -Exe wins; else next to this script's bundle; else on PATH.
+# Locate the exe: -Exe wins; else next to THIS script first (the packaged bundle
+# stages the script alongside blobly_net.exe), then a repo/build checkout, then PATH.
 if (-not $Exe) {
     $repo = Split-Path -Parent $PSScriptRoot
-    foreach ($c in @("$repo\blobly_net.exe", "$repo\build\blobly_net.exe",
-                     "$PSScriptRoot\blobly_net.exe")) {
+    foreach ($c in @("$PSScriptRoot\blobly_net.exe", "$repo\blobly_net.exe",
+                     "$repo\build\blobly_net.exe")) {
         if (Test-Path $c) { $Exe = (Resolve-Path $c).Path; break }
     }
     if (-not $Exe) { $Exe = (Get-Command blobly_net.exe -ErrorAction SilentlyContinue).Source }
