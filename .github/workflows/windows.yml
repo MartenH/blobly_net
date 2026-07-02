@@ -157,7 +157,12 @@ jobs:
           $env:PKG_CONFIG_PATH = "$vcpkg\lib\pkgconfig"   # V's v.pkgconfig reads this
           New-Item -ItemType Directory -Force build | Out-Null
           # -enable-globals: main.v uses the in-proc bus (transport/inproc.v __global).
-          v -cc msvc -no-parallel -enable-globals -path "@vlib|@vmodules|modules" `
+          # -gc boehm: V FORCES `-gc none` for Windows+msvc unless -gc is set explicitly
+          # (pref/default.v normalize_gc_defaults_for_resolved_ccompiler). Without this the
+          # msvc exe ships with NO garbage collector and RSS grows unboundedly (multiple GB
+          # in seconds under the sim). libgc builds fine under MSVC; forcing boehm makes the
+          # msvc build collect and stay bounded (~350 MB), same as mingw (+ the divisor re-exec).
+          v -gc boehm -cc msvc -no-parallel -enable-globals -path "@vlib|@vmodules|modules" `
             -cflags "/I`"$vcpkg\include`"" -ldflags "/LIBPATH:`"$vcpkg\lib`"" `
             -o build\blobly_net-msvc.exe src\main.v
           if ($LASTEXITCODE -ne 0) { throw "build failed" }
@@ -190,10 +195,9 @@ jobs:
       # Stage a runnable bundle: the exe + its DLLs alongside the demo projects,
       # DBCs and sample recordings, so a freshly-unzipped download runs the
       # simulation out of the box (sim-demo is the first-run default).
-      # ⚠ NOT the recommended download: the MSVC build's Boehm GC does not collect at
-      # runtime (RSS grows unboundedly — multiple GB in seconds under load), unlike the
-      # mingw build whose GC works. Prefer the blobly_net-mingw-x64 artifact until the
-      # msvc GC is fixed. Kept for build coverage / comparison.
+      # RSS is now bounded here too: the build step forces -gc boehm (V would otherwise
+      # ship the msvc exe with no GC), and main.v's re-exec sets GC_FREE_SPACE_DIVISOR so
+      # the collector self-paces — verified ~350 MB flat, same as mingw.
       - name: Stage bundle
         shell: pwsh
         run: |
@@ -309,9 +313,9 @@ jobs:
           echo "bundled $(ls build/*.dll 2>/dev/null | wc -l) mingw64 DLLs"
 
       # Stage the demo projects/DBCs/samples + the ldd-resolved mingw64 runtime DLLs
-      # next to the exe, so this artifact runs on a clean machine. This mingw bundle is
-      # the RECOMMENDED Windows download: its Boehm GC works, and main.v's re-exec sets
-      # GC_FREE_SPACE_DIVISOR so RSS stays bounded (the msvc build's GC does not collect).
+      # next to the exe, so this artifact runs on a clean machine. Both Windows bundles are
+      # now GC-bounded (mingw uses Boehm by default; the msvc job forces -gc boehm), with
+      # main.v's re-exec setting GC_FREE_SPACE_DIVISOR so the collector self-paces (~350 MB).
       - name: Stage bundle
         shell: pwsh
         run: |
