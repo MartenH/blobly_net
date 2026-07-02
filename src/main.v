@@ -1351,14 +1351,16 @@ fn (mut app App) notify(level StatusLevel, msg string) {
 	}
 }
 
-// resolve_db_path resolves a channel's (relative) DBC path. It prefers a file
-// sitting NEXT TO the project file — so a portable `.blobnet` opened from anywhere
-// (e.g. double-clicked outside the install bundle) finds its own `dbc/…` — and only
-// falls back to the raw path (resolved against the CWD, i.e. the install bundle) if
-// that doesn't exist. Absolute paths and the built-in default are passed through.
-fn (app &App) resolve_db_path(path string) string {
-	is_project_file := app.proj_source.ends_with('.blobnet') || app.proj_source.ends_with('.yml')
-		|| app.proj_source.ends_with('.yaml')
+// resolve_project_path resolves a channel's (relative) resource path — a DBC or a
+// replay recording. It prefers a file sitting NEXT TO the project file — so a
+// portable `.blobnet` opened from anywhere (e.g. double-clicked outside the install
+// bundle) finds its own `dbc/…` / `samples/…` — and only falls back to the raw path
+// (resolved against the CWD, i.e. the install bundle) if that doesn't exist.
+// Absolute paths and the built-in default are passed through. The extension check is
+// case-insensitive (Explorer/Windows can hand back `MYPROJECT.BLOBNET`).
+fn (app &App) resolve_project_path(path string) string {
+	src := app.proj_source.to_lower()
+	is_project_file := src.ends_with('.blobnet') || src.ends_with('.yml') || src.ends_with('.yaml')
 	if os.is_abs_path(path) || !is_project_file {
 		return path
 	}
@@ -1376,7 +1378,7 @@ fn (mut app App) load_databases() {
 		mut chan_nodes := []string{}
 		mut chan_seen := map[u32]bool{}
 		for path in ch.databases {
-			db := candb.load_dbc_file(app.resolve_db_path(path)) or { continue }
+			db := candb.load_dbc_file(app.resolve_project_path(path)) or { continue }
 			sources << path
 			for m in db.messages {
 				if m.id !in chan_seen {
@@ -1705,8 +1707,9 @@ fn replay_loop(idx int, mut w gui.Window) {
 	ch := app.proj.channels[idx]
 	rcfg := ch.replay or { return } // start_measurement guarantees it
 	mut bus := app.rt[idx].bus or { return }
-	// Load in this thread so Start stays snappy (a big MF4 takes a moment).
-	entries := load_entries(rcfg.source) or {
+	// Load in this thread so Start stays snappy (a big MF4 takes a moment). Resolve
+	// the recording next to the project file first (portable .blobnet), like DBCs.
+	entries := load_entries(app.resolve_project_path(rcfg.source)) or {
 		msg := 'replay: ${err}'
 		w.queue_command(fn [idx, msg] (mut w gui.Window) {
 			mut a := w.state[App]()
