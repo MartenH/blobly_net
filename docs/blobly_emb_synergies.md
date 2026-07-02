@@ -33,7 +33,7 @@ philosophy. They are two halves of one world.
    management states). blobly_net has none; emb is a ready oracle for each. Natural
    future tester capabilities.
 
-5. **Config kinship.** `ecu.toml` (emb) and `project.yml` (net) are both
+5. **Config kinship.** `ecu.toml` (emb) and `project.blobnet` (net) are both
    config-driven; emb already authors blobly_net project files (`test/vcan.yml`).
 
 ## Split modules into shared vmodules?

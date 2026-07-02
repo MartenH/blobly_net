@@ -60,7 +60,7 @@ git clone https://github.com/vlang/vglyph.git C:\dev\vmodules-ct\vglyph
 
 ```powershell
 .\scripts\build_win.ps1                      # -> build\blobly_net.exe   (GL backend)
-$env:BLOBLY_PROJECT='projects\demo-udp.yml'
+$env:BLOBLY_PROJECT='projects\demo-udp.blobnet'
 .\scripts\build_win.ps1 -Run                 # build + run on the UDP project
 # virtual ECU, driver-free (separate shell):
 C:\dev\msys64-ct\mingw64\bin\python.exe sut\can_sut.py udp
@@ -78,7 +78,7 @@ shell instead of PowerShell), for an all-`.sh` workflow consistent with
 ```bash
 bash scripts/build_win.sh                 # -> build/blobly_net.exe
 bash scripts/build_win.sh -run            # build + run
-BLOBLY_PROJECT=projects/demo-udp.yml bash scripts/build_win.sh -run
+BLOBLY_PROJECT=projects/demo-udp.blobnet bash scripts/build_win.sh -run
 ```
 
 It does exactly what the `.ps1` does (same env, same `pkgconf` flags, same

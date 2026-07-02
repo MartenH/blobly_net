@@ -6,7 +6,7 @@
 #   .\scripts\build_win.ps1                 # build build\blobly_net.exe
 #   .\scripts\build_win.ps1 -Run            # build then run
 #   .\scripts\build_win.ps1 -Debug          # build with -g (asserts on) for gdb
-#   $env:BLOBLY_PROJECT='projects\demo-udp.yml'; .\scripts\build_win.ps1 -Run
+#   $env:BLOBLY_PROJECT='projects\demo-udp.blobnet'; .\scripts\build_win.ps1 -Run
 #
 # Prereqs (one-time, see docs/windows_build.md):
 #   - C:\dev\msys64-ct           dedicated MSYS2 + mingw-w64 gcc/pkgconf/pango/...
