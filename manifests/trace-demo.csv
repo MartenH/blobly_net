@@ -1,0 +1,5 @@
+# blobly_emb trace_demo — handler manifest (see blobly_emb/examples/trace_demo)
+# id,partition,core,fb,handler,period_us
+0,demo,1,Light,on_5ms,5000
+1,demo,1,Medium,on_10ms,10000
+2,demo,1,Heavy,on_20ms,20000

@@ -30,6 +30,7 @@ import doip
 import uds
 import script
 import markdown
+import telem
 
 const max_trace = 1000 // ring-buffer cap on retained frames (all are scrollable)
 
@@ -294,6 +295,14 @@ mut:
 	db             candb.Database // merged catalog across all channels' DBCs (decode/lookup)
 	dbs            []candb.Database // per-channel catalog (parallel to proj.channels); drives node list + sim
 	db_source      string
+	// Telemetry (blobly_emb runtime observability, docs telemetry.md): the handler
+	// manifest + decoded HandlerStat (0x7E4, live per-handler stats) and Record (0x7E5,
+	// captured per-invocation trace). Drives the Trace Chart panel.
+	telem_manifest telem.Manifest
+	telem_records  []telem.Record // captured invocations (ring, telem_max_records)
+	telem_stats    map[u8]telem.HandlerStat // latest live stat per handler_id
+	telem_source   string // where the manifest came from (Stats/label)
+	tchart_fb      bool   // Trace Chart: group lanes by FB (else one lane per handler)
 	status         string
 	logs           []StatusMsg // scrolling event log (Log panel); newest appended
 	t0             i64
@@ -1160,6 +1169,7 @@ fn main() {
 			}
 			app.rt = []ChannelRT{len: app.proj.channels.len}
 			app.load_databases()
+			app.load_project_manifest()
 			app.build_sim_nodes()
 			set_window_title(app.proj.name)
 			app.log_path = os.getenv_opt('BLOBLY_LOG') or { '' }
@@ -2138,6 +2148,7 @@ fn (mut app App) record(dir string, f transport.CanFrame, t_ms f64, ch string) {
 	} else {
 		app.tx_count++
 	}
+	app.telem_ingest(f) // decode blobly_emb HandlerStat/Record frames into the trace-chart model
 	if app.recording {
 		app.record_entries << canlog.LogEntry{
 			t_s:   t_ms / 1000.0
@@ -2265,6 +2276,7 @@ fn main_view(mut window gui.Window) gui.View {
 						gui.DockPanelDef{ id: 'simulation', label: 'Simulation', content: [simulation_panel(mut window)] },
 					gui.DockPanelDef{ id: 'signals', label: 'Signals', content: [signals_panel(app)] },
 					gui.DockPanelDef{ id: 'plot', label: 'Graphics', content: [plot_panel(mut window)] },
+					gui.DockPanelDef{ id: 'tchart', label: 'Trace Chart', content: [tchart_panel(mut window)] },
 					gui.DockPanelDef{ id: 'send', label: 'Send', content: [send_panel(mut window)] },
 				gui.DockPanelDef{ id: 'generators', label: 'Generators', content: [generators_panel(mut window)] },
 				gui.DockPanelDef{ id: 'diag', label: 'Diagnostics', content: [diag_panel(mut window)] },
@@ -2503,6 +2515,7 @@ const view_panels = [
 	['symbols', 'Symbol Browser'],
 	['signals', 'Signals'],
 	['plot', 'Graphics'],
+	['tchart', 'Trace Chart'],
 	['send', 'Send'],
 	['generators', 'Generators'],
 	['diag', 'Diagnostics'],
@@ -2785,6 +2798,7 @@ fn activity_bar(app &App) gui.View {
 		'symbols':    '⌗'
 		'signals':    '∿'
 		'plot':       '▦'
+		'tchart':     '≣'
 		'send':       '➤'
 		'generators': '⎍'
 		'diag':       '✚'
@@ -6700,4 +6714,375 @@ fn hex_digit(c u8) ?int {
 		`A`...`F` { int(c - `A` + 10) }
 		else { none }
 	}
+}
+
+// ==== Trace Chart (telemetry viewer) — see docs/telemetry.md P5 ====
+
+// telem_view — the Trace Chart panel: a TRACE32 trace.chart.tasks-style swimlane of
+// blobly_emb handler-runtime records, plus a by-FB grouping. Fed by decode of the
+// target's HandlerStat (0x7E4) / Record (0x7E5) frames (see telem_ingest + modules/telem).
+
+const telem_max_records = 20000 // captured-invocation ring cap (display)
+
+// distinct lane colours, indexed by handler_id (stable per handler).
+const tchart_colors = [
+	gui.Color{ 66, 135, 245, 255}, // blue
+	gui.Color{ 76, 175,  80, 255}, // green
+	gui.Color{245, 166,  35, 255}, // amber
+	gui.Color{233,  80,  80, 255}, // red
+	gui.Color{155, 100, 210, 255}, // purple
+	gui.Color{  0, 172, 193, 255}, // cyan
+	gui.Color{233, 110, 170, 255}, // pink
+	gui.Color{140, 160,  60, 255}, // olive
+	gui.Color{120, 130, 145, 255}, // slate
+	gui.Color{200, 120,  60, 255}, // brown
+]
+
+fn tchart_color(id u8) gui.Color {
+	return tchart_colors[int(id) % tchart_colors.len]
+}
+
+// clickable_label is a flat (borderless) text button.
+fn clickable_label(label string, on_click fn (&gui.Layout, mut gui.Event, mut gui.Window)) gui.View {
+	return gui.button(
+		id_focus:     0
+		padding:      scpad(3, 8, 3, 8)
+		color:        gui.Color{0, 0, 0, 0}
+		color_border: gui.Color{0, 0, 0, 0}
+		content:      [gui.text(text: label, text_style: gui.theme().n3)]
+		on_click:     on_click
+	)
+}
+
+// telem_ingest decodes a frame into the trace-chart model if it's an observability
+// frame (HandlerStat / Record). Called from record() for every frame — cheap id match.
+fn (mut app App) telem_ingest(f transport.CanFrame) {
+	match f.id {
+		telem.id_handlerstat {
+			s := telem.decode_handlerstat(f.data)
+			app.telem_stats[s.handler_id] = s
+		}
+		telem.id_record {
+			app.telem_records << telem.decode_record(f.data)
+			if app.telem_records.len > telem_max_records + telem_max_records / 4 {
+				app.telem_records = app.telem_records[app.telem_records.len - telem_max_records..].clone()
+			}
+		}
+		else {}
+	}
+}
+
+// load_project_manifest resolves the handler manifest from BLOBLY_MANIFEST or the first
+// channel that declares one, and loads it. No-op when none is configured.
+fn (mut app App) load_project_manifest() {
+	mut mfp := os.getenv('BLOBLY_MANIFEST')
+	if mfp == '' {
+		for ch in app.proj.channels {
+			if ch.manifest != '' {
+				mfp = ch.manifest
+				break
+			}
+		}
+	}
+	app.load_telem_manifest(mfp)
+}
+
+// load_telem_manifest loads a handler manifest (CSV) into the app; sets telem_source.
+fn (mut app App) load_telem_manifest(path string) {
+	if path == '' {
+		return
+	}
+	m := telem.load_manifest(path) or {
+		app.notify(.warn, 'manifest ${os.base(path)}: ${err}')
+		return
+	}
+	app.telem_manifest = m
+	app.telem_source = os.base(path)
+}
+
+// send_trace_cmd sends a TraceCmd (0x7E2) on the first running channel — Arm re-captures,
+// Dump makes the target stream its buffer out as Record frames (0x7E5). The TX is
+// recorded through the normal trace path so it shows in order with the reply.
+fn (mut app App) send_trace_cmd(op u8, mut w gui.Window) {
+	mut idx := -1
+	for i in 0 .. app.rt.len {
+		if app.rt[i].running {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		app.notify(.warn, 'not running — press ▶ Start to send a trace command')
+		return
+	}
+	mut bus := app.rt[idx].bus or { return }
+	frame := transport.CanFrame{
+		id:   telem.id_trace_cmd
+		data: telem.encode_trace_cmd(op, telem.filter_all)
+	}
+	ch := if idx < app.proj.channels.len { app.proj.channels[idx].name } else { 'CAN${idx + 1}' }
+	send_ts := f64(time.ticks() - app.t0)
+	send_seq := app.next_seq()
+	bus.send(frame) or {
+		app.notify(.error, 'trace cmd send failed: ${err}')
+		return
+	}
+	record_manual_tx(mut app, idx, frame, ch, send_ts, send_seq, mut w)
+	name := match op {
+		telem.op_arm { 'arm' }
+		telem.op_stop { 'stop' }
+		telem.op_reset { 'reset' }
+		telem.op_dump { 'dump' }
+		else { 'cmd ${op}' }
+	}
+	app.notify(.info, 'trace ${name} sent (0x7E2)')
+}
+
+// TLane is one swimlane: a label + the handler_ids it draws (one per handler, or all of
+// an FB's handlers when grouped by FB).
+struct TLane {
+	label string
+	ids   []u8
+}
+
+// tchart_lanes builds the swimlanes from the records present + the manifest, in the
+// current grouping (per-handler, or grouped by FB).
+fn (app &App) tchart_lanes() []TLane {
+	// which handler_ids actually appear in the captured records
+	mut present := map[u8]bool{}
+	for r in app.telem_records {
+		present[r.handler_id] = true
+	}
+	mut ids := present.keys()
+	ids.sort()
+	if !app.tchart_fb {
+		return ids.map(TLane{ label: app.telem_manifest.label(it), ids: [it] })
+	}
+	// group by FB (manifest fb; unknown handlers fall into their synthetic label)
+	mut order := []string{} // FB names in first-seen order (ids already sorted)
+	mut by_fb := map[string][]u8{}
+	for id in ids {
+		fbname := if h := app.telem_manifest.lookup(id) {
+			if h.fb != '' { h.fb } else { h.name() }
+		} else {
+			app.telem_manifest.label(id)
+		}
+		if fbname !in by_fb {
+			order << fbname
+		}
+		by_fb[fbname] << id
+	}
+	return order.map(TLane{ label: it, ids: by_fb[it] })
+}
+
+// TBar is one drawn record, pre-scaled to time fractions so the on_draw closure stays
+// trivial (just multiply by the canvas size).
+struct TBar {
+	lane  int
+	t0    f32 // start, µs
+	dur   f32 // cpu_us (>= a 1 px floor is applied at draw time)
+	color gui.Color
+	warn  bool // overran / saturated -> red outline
+}
+
+fn tchart_panel(mut window gui.Window) gui.View {
+	mut app := window.state[App]()
+	// The root id must exist from frame 0 (incl. the empty state) so the measure block
+	// below never queries a node that isn't in the tree yet (that segfaults gui).
+	header := tchart_header(app)
+	if app.telem_records.len == 0 {
+		return gui.column(
+			id:      'tchart_root'
+			sizing:  gui.fill_fill
+			padding: scpad(6, 8, 6, 8)
+			spacing: sc(6)
+			content: [
+				header,
+				gui.text(text: 'No handler-trace records yet. Run a blobly_emb target that emits Record frames (0x7E5) — e.g. the trace_demo on vcan0 — and load its manifest.',
+					text_style: gui.theme().n4),
+			]
+		)
+	}
+
+	lanes := app.tchart_lanes()
+	// handler_id -> lane index
+	mut lane_of := map[u8]int{}
+	for li, ln in lanes {
+		for id in ln.ids {
+			lane_of[id] = li
+		}
+	}
+	// time range across all records
+	mut tmin := f32(3.4e38)
+	mut tmax := f32(0)
+	for r in app.telem_records {
+		s := f32(r.start_us)
+		e := s + f32(r.cpu_us)
+		if s < tmin {
+			tmin = s
+		}
+		if e > tmax {
+			tmax = e
+		}
+	}
+	span := if tmax > tmin { tmax - tmin } else { f32(1) }
+	// pre-scale bars
+	mut bars := []TBar{cap: app.telem_records.len}
+	for r in app.telem_records {
+		bars << TBar{
+			lane:  lane_of[r.handler_id] or { 0 }
+			t0:    f32(r.start_us) - tmin
+			dur:   f32(r.cpu_us)
+			color: tchart_color(r.handler_id)
+			warn:  (r.flags & (telem.flag_overran | telem.flag_saturated)) != 0
+		}
+	}
+
+	// Measure the panel so the canvas fills it (draw_canvas needs explicit px).
+	mut avail_w := f32(600)
+	if root := window.find_layout_by_id('tchart_root') {
+		if root.shape.width > 1 {
+			avail_w = root.shape.width - 2 * sc(8)
+		}
+	}
+	label_w := sc(150)
+	cw := f32_max(avail_w - label_w, sc(120))
+	nlanes := if lanes.len > 0 { lanes.len } else { 1 }
+	lane_h := f32_max(sc(18), 0) // fixed lane height; canvas grows with lane count
+	ch := f32(nlanes) * lane_h
+	bg := if app.dark { gui.Color{28, 30, 36, 255} } else { gui.Color{250, 250, 252, 255} }
+
+	// lane label column (aligned to the canvas lanes)
+	mut label_rows := []gui.View{}
+	for ln in lanes {
+		label_rows << gui.row(
+			min_height: lane_h
+			max_height: lane_h
+			v_align:    .middle
+			content:    [
+				gui.text(text: ellipsize(ln.label, 22), text_style: gui.theme().n4),
+			]
+		)
+	}
+
+	canvas := gui.draw_canvas(
+		id:      'tchart_canvas'
+		version: tchart_version(app, bars.len, nlanes, cw, ch)
+		width:   cw
+		height:  ch
+		color:   bg
+		radius:  3
+		on_draw: fn [bars, span, nlanes, lane_h, cw, ch] (mut dc gui.DrawContext) {
+			draw_tchart(mut dc, bars, span, nlanes, lane_h, cw, ch)
+		}
+	)
+
+	// time-axis labels (µs range) under the canvas
+	axis := gui.row(
+		spacing: sc(6)
+		content: [
+			gui.row(min_width: label_w, max_width: label_w, content: []),
+			gui.text(text: '0 µs', text_style: gui.theme().n5),
+			gui.row(sizing: gui.fill_fit, content: []),
+			gui.text(text: '${i64(span)} µs (span ${(f64(span) / 1000.0):.2} ms)', text_style: gui.theme().n5),
+		]
+	)
+
+	return gui.column(
+		id:        'tchart_root'
+		sizing:    gui.fill_fill
+		padding:   scpad(6, 8, 6, 8)
+		spacing:   sc(6)
+		id_scroll: 7600
+		content:   [
+			header,
+			gui.row(
+				spacing: sc(6)
+				content: [
+					gui.column(min_width: label_w, max_width: label_w, spacing: 0, content: label_rows),
+					canvas,
+				]
+			),
+			axis,
+		]
+	)
+}
+
+// tchart_header: title + records/handlers count + a Handlers/By-FB toggle + Clear.
+fn tchart_header(app &App) gui.View {
+	mut nh := map[u8]bool{}
+	for r in app.telem_records {
+		nh[r.handler_id] = true
+	}
+	src := if app.telem_source != '' { ' · ${app.telem_source}' } else { ' · no manifest' }
+	title := 'Trace Chart — ${app.telem_records.len} records / ${nh.len} handlers${src}'
+	mode_label := if app.tchart_fb { '⊟ By FB' } else { '⊞ Handlers' }
+	return gui.row(
+		spacing: sc(8)
+		v_align: .middle
+		content: [
+			gui.text(text: title, text_style: gui.theme().b4),
+			gui.row(sizing: gui.fill_fit, content: []),
+			clickable_label('Arm', fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				mut a := w.state[App]()
+				a.send_trace_cmd(telem.op_arm, mut w)
+			}),
+			clickable_label('Dump', fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				mut a := w.state[App]()
+				a.send_trace_cmd(telem.op_dump, mut w)
+			}),
+			clickable_label(mode_label, fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				mut a := w.state[App]()
+				a.tchart_fb = !a.tchart_fb
+				w.update_window()
+			}),
+			clickable_label('Clear', fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+				mut a := w.state[App]()
+				a.telem_records = []
+				a.telem_stats = map[u8]telem.HandlerStat{}
+				w.update_window()
+			}),
+		]
+	)
+}
+
+// draw_tchart renders the swimlane: one row per lane, each record a filled bar at its
+// start time (× cpu_us width), lane grid lines between rows.
+fn draw_tchart(mut dc gui.DrawContext, bars []TBar, span f32, nlanes int, lane_h f32, cw f32, ch f32) {
+	// faint lane separators
+	grid := gui.Color{128, 128, 128, 60}
+	for i in 1 .. nlanes {
+		y := f32(i) * lane_h
+		dc.line(0, y, cw, y, grid, 1)
+	}
+	warn_col := gui.Color{233, 60, 60, 255}
+	for b in bars {
+		x := (b.t0 / span) * cw
+		mut w := (b.dur / span) * cw
+		if w < 1 {
+			w = 1 // a sub-pixel invocation is still a visible tick
+		}
+		y := f32(b.lane) * lane_h + 1
+		h := lane_h - 2
+		dc.filled_rect(x, y, w, h, b.color)
+		if b.warn {
+			dc.rect(x, y, w, h, warn_col, 1)
+		}
+	}
+}
+
+// tchart_version keys the canvas cache: re-tessellate iff the drawn set changes.
+fn tchart_version(app &App, nbars int, nlanes int, cw f32, ch f32) u64 {
+	mut h := u64(1469598103934665603)
+	h = fnv64(h, u64(nbars))
+	h = fnv64(h, u64(nlanes))
+	h = fnv64(h, if app.tchart_fb { u64(1) } else { u64(0) })
+	h = fnv64(h, u64(int(cw)))
+	h = fnv64(h, u64(int(ch)))
+	return h
+}
+
+// ellipsize truncates a label to n chars with a trailing … (lane labels are narrow).
+fn ellipsize(s string, n int) string {
+	return if s.len <= n { s } else { s[..n - 1] + '…' }
 }
