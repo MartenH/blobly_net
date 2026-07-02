@@ -1097,7 +1097,7 @@ fn main() {
 	// has a different CWD. If the resources aren't in the CWD but sit beside the
 	// executable, chdir there so everything resolves out of the box. ONLY for the
 	// zero-config case: if the user gave an explicit project (a relative
-	// `blobly_net foo.yml` or BLOBLY_PROJECT is resolved against the CURRENT cwd),
+	// `blobly_net foo.blobnet` or BLOBLY_PROJECT is resolved against the CURRENT cwd),
 	// chdir'ing first would break it, so skip the relocate then.
 	mut has_proj_override := os.getenv('BLOBLY_PROJECT') != ''
 	if _ := cli_project_arg() {
@@ -1107,7 +1107,7 @@ fn main() {
 	// dir — otherwise being launched from a directory that happens to contain an
 	// unrelated `projects/` would wrongly skip the relocate and resolve the default
 	// against the wrong CWD.
-	bundle_marker := os.join_path('projects', 'sim-demo.yml')
+	bundle_marker := os.join_path('projects', 'sim-demo.blobnet')
 	if !has_proj_override && !os.exists(bundle_marker) {
 		exe_dir := os.dir(os.executable())
 		if os.exists(os.join_path(exe_dir, bundle_marker)) {
@@ -1136,15 +1136,15 @@ fn main() {
 			app.t0 = time.ticks()
 			app.dock_root = default_layout()
 			// Load the project (bus setup). Precedence: CLI arg (first positional
-			// path, e.g. `blobly_net projects/foo.yml`) > BLOBLY_PROJECT env >
-			// most-recently-opened project > projects/sim-demo.yml > a built-in
+			// path, e.g. `blobly_net projects/foo.blobnet`) > BLOBLY_PROJECT env >
+			// most-recently-opened project > projects/sim-demo.blobnet > a built-in
 			// single-vcan0 default so the app always runs. The first-run default is
 			// the driver-free SIMULATION (sim-demo), not the vcan0 monitor — so a
 			// freshly-unzipped build runs out of the box with no hardware/driver.
 			app.recents = load_recents()
 			proj_path := cli_project_arg() or {
 				os.getenv_opt('BLOBLY_PROJECT') or {
-					if app.recents.len > 0 { app.recents[0] } else { 'projects/sim-demo.yml' }
+					if app.recents.len > 0 { app.recents[0] } else { 'projects/sim-demo.blobnet' }
 				}
 			}
 			if p := project.load(proj_path) {
@@ -2261,8 +2261,8 @@ fn menu_bar(mut window gui.Window) gui.View {
 						text:   'Open Project…'
 						action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {
 							w.native_open_dialog(
-								title:   'Open Project (.yml)'
-								filters: [gui.NativeFileFilter{ name: 'Projects', extensions: ['yml', 'yaml'] }]
+								title:   'Open Project (.blobnet)'
+								filters: [gui.NativeFileFilter{ name: 'Projects', extensions: ['blobnet', 'yml', 'yaml'] }]
 								on_done: fn (r gui.NativeDialogResult, mut w gui.Window) {
 									if r.status == .ok && r.paths.len > 0 {
 										open_project(r.path_strings()[0], mut w)
@@ -2279,42 +2279,42 @@ fn menu_bar(mut window gui.Window) gui.View {
 								id:     'ex.sim'
 								text:   'Simulation (2 networks, multi-ECU)'
 								action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {
-									open_project('projects/sim-demo.yml', mut w)
+									open_project('projects/sim-demo.blobnet', mut w)
 								}
 							},
 							gui.MenuItemCfg{
 								id:     'ex.replay'
 								text:   'Replay (recorded log)'
 								action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {
-									open_project('projects/replay-demo.yml', mut w)
+									open_project('projects/replay-demo.blobnet', mut w)
 								}
 							},
 							gui.MenuItemCfg{
 								id:     'ex.doip'
 								text:   'DoIP diagnostics (Ethernet)'
 								action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {
-									open_project('projects/doip-demo.yml', mut w)
+									open_project('projects/doip-demo.blobnet', mut w)
 								}
 							},
 							gui.MenuItemCfg{
 								id:     'ex.cpuload'
 								text:   'CPU-load telemetry (plot demo)'
 								action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {
-									open_project('projects/cpuload-sim.yml', mut w)
+									open_project('projects/cpuload-sim.blobnet', mut w)
 								}
 							},
 							gui.MenuItemCfg{
 								id:     'ex.udp'
 								text:   'UDP software bus'
 								action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {
-									open_project('projects/demo-udp.yml', mut w)
+									open_project('projects/demo-udp.blobnet', mut w)
 								}
 							},
 							gui.MenuItemCfg{
 								id:     'ex.hw'
 								text:   'Hardware (Kvaser + PCAN, same bus)'
 								action: fn (_ &gui.MenuItemCfg, mut _ gui.Event, mut w gui.Window) {
-									open_project('projects/hw-crossvendor.yml', mut w)
+									open_project('projects/hw-crossvendor.blobnet', mut w)
 								}
 							},
 						]
@@ -2787,15 +2787,15 @@ fn view_submenu(app &App) []gui.MenuItemCfg {
 }
 
 // cli_project_arg returns the first positional CLI argument that looks like a
-// project file (a path ending in .yml/.yaml, or any existing file), so
-// `blobly_net projects/ecu-vcm.yml` loads that project. Flags (leading '-') are
+// project file (a path ending in .blobnet/.yml/.yaml, or any existing file), so
+// `blobly_net projects/ecu-vcm.blobnet` loads that project. Flags (leading '-') are
 // skipped so sokol/gg options don't get mistaken for a path.
 fn cli_project_arg() ?string {
 	for a in os.args[1..] {
 		if a.starts_with('-') {
 			continue
 		}
-		if a.ends_with('.yml') || a.ends_with('.yaml') || os.is_file(a) {
+		if a.ends_with('.blobnet') || a.ends_with('.yml') || a.ends_with('.yaml') || os.is_file(a) {
 			return a
 		}
 	}
@@ -3031,18 +3031,19 @@ fn save_project_to(path string, mut w gui.Window) {
 // save_project_as prompts for a path (native save dialog) then writes.
 fn save_project_as(mut w gui.Window) {
 	app := w.state[App]()
-	dn := if app.proj_source.ends_with('.yml') || app.proj_source.ends_with('.yaml') {
+	dn := if app.proj_source.ends_with('.blobnet') || app.proj_source.ends_with('.yml')
+		|| app.proj_source.ends_with('.yaml') {
 		os.base(app.proj_source)
 	} else {
-		'project.yml'
+		'project.blobnet'
 	}
 	w.native_save_dialog(
 		title:             'Save Project As'
 		default_name:      dn
-		default_extension: 'yml'
+		default_extension: 'blobnet'
 		filters:           [gui.NativeFileFilter{
 			name:       'Projects'
-			extensions: ['yml', 'yaml']
+			extensions: ['blobnet', 'yml', 'yaml']
 		}]
 		on_done:           fn (r gui.NativeDialogResult, mut w gui.Window) {
 			if r.status == .ok && r.paths.len > 0 {
@@ -3394,7 +3395,7 @@ fn recent_submenu(recents []string) []gui.MenuItemCfg {
 }
 
 // recent_label shows the file name plus its parent dir for disambiguation,
-// e.g. .../projects/demo-udp.yml -> "demo-udp.yml — projects".
+// e.g. .../projects/demo-udp.blobnet -> "demo-udp.blobnet — projects".
 fn recent_label(path string) string {
 	base := os.base(path)
 	parent := os.base(os.dir(path))

@@ -10,7 +10,7 @@ import candb
 import sim
 
 fn main() {
-	path := os.args[1] or { 'projects/ecu-vcm.yml' }
+	path := os.args[1] or { 'projects/sim-demo.blobnet' }
 	p := project.load(path) or {
 		eprintln('project.load failed: ${err}')
 		exit(2)

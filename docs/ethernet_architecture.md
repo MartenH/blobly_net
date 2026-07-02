@@ -104,7 +104,7 @@ one-way (`uds → isotp`; `cmd/* → doip + uds`) and `doip` a leaf transport mo
 - **Project config** gained a DoIP channel form: `type: doip` with `interface: doip:<host>[:<port>]`
   plus `tester_address` / `ecu_address` (logical addresses, default 0x0E80 / 0x1000). Bitrate/timing
   are meaningless for Ethernet and ignored. `project.Channel.is_doip()` + `doip_endpoint()` parse it;
-  the addresses round-trip through Save. `projects/doip-demo.yml` runs the entity driver-free.
+  the addresses round-trip through Save. `projects/doip-demo.blobnet` runs the entity driver-free.
 - **NOT wired into `transport.open()`** (a deliberate deviation from the original sketch): that returns
   a `transport.Bus` — a CAN-*frame* pipe — but DoIP is a diagnostics carrier with no frames to monitor.
   The real carrier-swap seam is one level up at `isotp.Channel`, which is where the Diagnostics panel
@@ -118,7 +118,7 @@ one-way (`uds → isotp`; `cmd/* → doip + uds`) and `doip` a leaf transport mo
   `open_diag_channel()` returns the right `isotp.Channel` — `doip.open_doip(...)` for DoIP, else
   software ISO-TP — so `uds.Client` rides either carrier unchanged. The panel header
   (`diag_target_label`) shows the active carrier (DoIP host/port + logical addresses, or 0x7E0/0x7E8
-  software ISO-TP). **Verified** end-to-end: the GUI (autostart + `doip-demo.yml`) serves the entity on
+  software ISO-TP). **Verified** end-to-end: the GUI (autostart + `doip-demo.blobnet`) serves the entity on
   127.0.0.1:13400 and an external UDS client reads VIN `BLOBLYNETV0SUT001` over Ethernet.
 
 ## Known limitations (virtual-first scope)
