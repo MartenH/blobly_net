@@ -1057,6 +1057,23 @@ fn is_wsl() bool {
 }
 
 fn main() {
+	// Windows RSS: gui allocates per-frame closures/layout/strings that ARE
+	// GC-collectable, but Boehm GC on Windows under-triggers so RSS creeps (mingw) or
+	// barely collects (msvc). Boehm reads GC_FREE_SPACE_DIVISOR only at GC init (before
+	// main), so the smooth fix — let it self-pace with small frequent collects instead of
+	// a stop-the-world gc_collect() timer — must have that env set before this process's
+	// GC starts. If it isn't, set it and re-exec ourselves once (guarded against loops).
+	// Tunable via BLOBLY_GC_DIVISOR (default 16); BLOBLY_NO_GC=1 opts out entirely.
+	$if windows {
+		if os.getenv('GC_FREE_SPACE_DIVISOR') == '' && os.getenv('BLOBLY_NO_GC') == '' {
+			os.setenv('GC_FREE_SPACE_DIVISOR', os.getenv_opt('BLOBLY_GC_DIVISOR') or { '16' },
+				true)
+			mut p := os.new_process(os.executable())
+			p.set_args(os.args#[1..])
+			p.wait()
+			exit(p.code)
+		}
+	}
 	// DPI workaround (see g_ui_scale): read the startup UI scale BEFORE building the
 	// window/theme so the initial window size and all theme sizes use it. Accepts a
 	// factor (1.5) or a percentage (150%).
@@ -1195,6 +1212,21 @@ fn main() {
 		}
 	)
 	window.set_theme(make_theme(palette_opus))
+	// Opt-in escape hatch: BLOBLY_GC_MS=<ms> spawns an explicit periodic gc_collect().
+	// The default RSS mitigation is the GC_FREE_SPACE_DIVISOR re-exec at the top of main
+	// (Boehm self-paces, no stop-the-world hitch); this timer is a stop-the-world fallback
+	// for the rare case that still isn't enough. Cross-platform, off unless set.
+	if v := os.getenv_opt('BLOBLY_GC_MS') {
+		ms := v.int()
+		if ms > 0 {
+			spawn fn (m int) {
+				for {
+					time.sleep(m * time.millisecond)
+					gc_collect()
+				}
+			}(ms)
+		}
+	}
 	window.run()
 }
 
