@@ -16,6 +16,13 @@ BO_ 2016 CpuLoad: 8 SUT
  SG_ Load_Core6 : 48|8@1+ (1,0) [0|100] "%" Tester
  SG_ Load_Core7 : 56|8@1+ (1,0) [0|100] "%" Tester
 
+BO_ 2017 LoadDetail: 8 SUT
+ SG_ Load_100ms : 0|8@1+ (1,0) [0|100] "%" Tester
+ SG_ Load_1s : 8|8@1+ (1,0) [0|100] "%" Tester
+ SG_ Load_10s : 16|8@1+ (1,0) [0|100] "%" Tester
+ SG_ Overruns : 24|8@1+ (1,0) [0|255] "" Tester
+
 BA_DEF_ BO_ "GenMsgCycleTime" INT 0 100000;
 BA_DEF_DEF_ "GenMsgCycleTime" 0;
 BA_ "GenMsgCycleTime" BO_ 2016 500;
+BA_ "GenMsgCycleTime" BO_ 2017 500;
