@@ -1096,19 +1096,28 @@ fn main() {
 	// fine in a dev checkout, but a downloaded build double-clicked from elsewhere
 	// has a different CWD. If the resources aren't in the CWD but sit beside the
 	// executable, chdir there so everything resolves out of the box. ONLY for the
-	// zero-config case: if the user gave an explicit project (a relative
-	// `blobly_net foo.blobnet` or BLOBLY_PROJECT is resolved against the CURRENT cwd),
-	// chdir'ing first would break it, so skip the relocate then.
-	mut has_proj_override := os.getenv('BLOBLY_PROJECT') != ''
-	if _ := cli_project_arg() {
-		has_proj_override = true
+	// zero-config case. Only a RELATIVE override blocks the relocate: a relative
+	// `blobly_net foo.blobnet` / BLOBLY_PROJECT resolves against the CURRENT cwd, so
+	// chdir'ing first would break it. An ABSOLUTE override — e.g. a double-clicked
+	// `C:\…\foo.blobnet` via the .blobnet file association — still resolves after the
+	// chdir, so we DO relocate then, which lets the bundle's relative dbc/ paths work.
+	mut rel_override := false
+	if p := cli_project_arg() {
+		if !os.is_abs_path(p) {
+			rel_override = true
+		}
+	}
+	if bp := os.getenv_opt('BLOBLY_PROJECT') {
+		if !os.is_abs_path(bp) {
+			rel_override = true
+		}
 	}
 	// Probe a SPECIFIC bundle marker (our default project), not just any `projects/`
 	// dir — otherwise being launched from a directory that happens to contain an
 	// unrelated `projects/` would wrongly skip the relocate and resolve the default
 	// against the wrong CWD.
 	bundle_marker := os.join_path('projects', 'sim-demo.blobnet')
-	if !has_proj_override && !os.exists(bundle_marker) {
+	if !rel_override && !os.exists(bundle_marker) {
 		exe_dir := os.dir(os.executable())
 		if os.exists(os.join_path(exe_dir, bundle_marker)) {
 			os.chdir(exe_dir) or {}
@@ -1342,6 +1351,23 @@ fn (mut app App) notify(level StatusLevel, msg string) {
 	}
 }
 
+// resolve_project_path resolves a channel's (relative) resource path — a DBC or a
+// replay recording. It prefers a file sitting NEXT TO the project file — so a
+// portable `.blobnet` opened from anywhere (e.g. double-clicked outside the install
+// bundle) finds its own `dbc/…` / `samples/…` — and only falls back to the raw path
+// (resolved against the CWD, i.e. the install bundle) if that doesn't exist.
+// Absolute paths and the built-in default are passed through. The extension check is
+// case-insensitive (Explorer/Windows can hand back `MYPROJECT.BLOBNET`).
+fn (app &App) resolve_project_path(path string) string {
+	src := app.proj_source.to_lower()
+	is_project_file := src.ends_with('.blobnet') || src.ends_with('.yml') || src.ends_with('.yaml')
+	if os.is_abs_path(path) || !is_project_file {
+		return path
+	}
+	near := os.join_path(os.dir(app.proj_source), path)
+	return if os.exists(near) { near } else { path }
+}
+
 fn (mut app App) load_databases() {
 	app.dbs = []candb.Database{len: app.proj.channels.len}
 	mut sources := []string{}
@@ -1352,7 +1378,7 @@ fn (mut app App) load_databases() {
 		mut chan_nodes := []string{}
 		mut chan_seen := map[u32]bool{}
 		for path in ch.databases {
-			db := candb.load_dbc_file(path) or { continue }
+			db := candb.load_dbc_file(app.resolve_project_path(path)) or { continue }
 			sources << path
 			for m in db.messages {
 				if m.id !in chan_seen {
@@ -1681,8 +1707,9 @@ fn replay_loop(idx int, mut w gui.Window) {
 	ch := app.proj.channels[idx]
 	rcfg := ch.replay or { return } // start_measurement guarantees it
 	mut bus := app.rt[idx].bus or { return }
-	// Load in this thread so Start stays snappy (a big MF4 takes a moment).
-	entries := load_entries(rcfg.source) or {
+	// Load in this thread so Start stays snappy (a big MF4 takes a moment). Resolve
+	// the recording next to the project file first (portable .blobnet), like DBCs.
+	entries := load_entries(app.resolve_project_path(rcfg.source)) or {
 		msg := 'replay: ${err}'
 		w.queue_command(fn [idx, msg] (mut w gui.Window) {
 			mut a := w.state[App]()
