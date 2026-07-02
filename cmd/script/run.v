@@ -5,7 +5,7 @@
 // test fails, so it drops straight into CI.
 //
 //   v -enable-globals -path "@vlib|@vmodules|modules" run cmd/script/run.v \
-//       --project projects/sim-demo.yml tests/diag_basic.lua
+//       --project projects/sim-demo.blobnet tests/diag_basic.lua
 //
 // -enable-globals is required for the in-process bus (transport/inproc.v).
 module main
@@ -27,7 +27,7 @@ mut:
 }
 
 fn main() {
-	mut proj_path := 'projects/sim-demo.yml'
+	mut proj_path := 'projects/sim-demo.blobnet'
 	mut scripts := []string{}
 	mut i := 1
 	for i < os.args.len {
@@ -46,7 +46,7 @@ fn main() {
 		i++
 	}
 	if scripts.len == 0 {
-		eprintln('usage: run [--project <file.yml>] <script.lua> [more.lua ...]')
+		eprintln('usage: run [--project <file.blobnet>] <script.lua> [more.lua ...]')
 		exit(2)
 	}
 

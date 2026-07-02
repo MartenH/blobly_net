@@ -7,7 +7,7 @@ module main
 //   project_scaffold scan         # discover bus interfaces -> a `channels:` block (stdout)
 //
 // Discovery summary goes to stderr so stdout can be redirected straight into a project file:
-//   project_scaffold scan > projects/discovered.yml
+//   project_scaffold scan > projects/discovered.blobnet
 import os
 import transport
 

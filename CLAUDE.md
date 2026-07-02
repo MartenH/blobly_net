@@ -257,13 +257,13 @@ turned Off (irreversible). Original handoff notes below (toolchain **mingw-w64 (
    `bus.send()`s frames at cadence, records them as **TX** rows (same batched-repaint scheme as
    rx_loop, respects Pause), shows live progress / loop count in the Buses-panel note, and
    auto-stops with "replay finished" at the end. Monitoring the same iface on another channel shows
-   the replay via the normal RX path — like a real node on the wire. `projects/replay-demo.yml`
+   the replay via the normal RX path — like a real node on the wire. `projects/replay-demo.blobnet`
    loops `samples/demo.log` on an in-proc bus (zero drivers/Python; GUI-verified at exactly the
    recorded 20 frames/s). TODO: transport-control UI (per-channel play/pause/seek/speed — the
    player API supports it; no GUI surface yet). Earlier UI work: trace scrollbar + uncapped history
    (newest-first ordering = inherent "follow"); gui exposes no public scroll-to-bottom, so a
    bottom-anchored autoscroll would need a gui patch.
-9. 🔜 **Project/config files (`.yml`) + menus** — a gui `menubar`; **File** first: New / Open Project /
+9. 🔜 **Project/config files (`.blobnet`, YAML content) + menus** — a gui `menubar`; **File** first: New / Open Project /
    Save / Save As / Open Recording / **Open Recent** / Exit (later: Bus, View, Tools, Help). The project
    file (vlib `yaml`; fall back to vlib `toml` if yaml proves too thin) is the single source of truth
    for the bus setup: `channels[]`, each with name/type(can|canfd)/interface/bitrate (+ fd/
@@ -303,7 +303,7 @@ turned Off (irreversible). Original handoff notes below (toolchain **mingw-w64 (
    plus `run_for` live), and `sut_ecu()` the **native twin of `can_sut.py`** — **verified
    byte-for-byte against Python golden vectors** (the gate passed); (3.5) wired into the GUI:
    `simulate: [SUT]` on a channel spawns the engine on its own in-proc bus instance alongside the
-   monitor, so the tester sees simulated traffic via the normal RX path. `projects/sim-demo.yml`
+   monitor, so the tester sees simulated traffic via the normal RX path. `projects/sim-demo.blobnet`
    runs the SUT ECU with **no Python, no vcan, no drivers** — verified in the GUI (Powertrain+Heartbeat
    @10Hz decoded live, Send 0x101→0x102 answered). **DONE (Phase 5 — diagnostics):**
    `isotp/software.v` — a pure-V ISO-TP state machine (SF + multi-frame FF/CF/FC) over any
@@ -551,7 +551,7 @@ prompt for a password.
 - 2026-06-05: **Phase 9 foundation — project config + Buses panel + Start/Stop + File menu (slice 1).**
   New GUI-free `modules/project` (vlib `yaml`) parses a project `.yml` → `Project{channels[]}` (each
   with interface/bitrate/timing/mode/listen_only/enabled/databases/replay; defaults + built-in
-  fallback; 6 tests). Ships `projects/demo.yml` (CAN1 vcan0 monitor + disabled CAN2 vcan1 replay). The
+  fallback; 6 tests). Ships `projects/demo.blobnet` (CAN1 vcan0 monitor + disabled CAN2 vcan1 replay). The
   app is now **config-driven**: it loads the project at startup (env `BLOBLY_PROJECT`) instead of
   hardcoding vcan0, and DBCs come from the channels (not the old `BLOBLY_DBC`). A global **Start/
   Stop** (top-left, CANoe-style measurement lifecycle) opens/closes enabled *monitor* channels per
@@ -599,10 +599,10 @@ prompt for a password.
   `&SocketCanBus`) and calls `transport.open(ch.iface)` — so a channel's `interface:` selects the
   backend; nothing in `src/main.v` names a Linux type anymore. `sut/can_sut.py` gained a **UDP mode**
   (`SocketCanBus`/`UdpBus` behind one send/recv contract; `udp[:group[:port]]`) matching udpbus's wire
-  format. Shipped `projects/demo-udp.yml`. **Verified on Linux:** `python3 sut/can_sut.py udp` +
+  format. Shipped `projects/demo-udp.blobnet`. **Verified on Linux:** `python3 sut/can_sut.py udp` +
   a V `transport.open('udp')` client interoperate — 0x100/0x700 received and decoded (EngineSpeed
   etc.). This same flow runs on Windows with zero drivers once the GUI builds (W1). Run:
-  `python3 sut/can_sut.py udp` + `BLOBLY_PROJECT=projects/demo-udp.yml ./scripts/run.sh`.
+  `python3 sut/can_sut.py udp` + `BLOBLY_PROJECT=projects/demo-udp.blobnet ./scripts/run.sh`.
 - 2026-06-05: **W1 DONE — GUI builds + RENDERS natively on Windows, virtual-first verified.** Stood up
   the whole toolchain isolated under `C:\dev` (dedicated `msys64-ct` MSYS2 + mingw-w64 gcc 16/pkgconf/
   pango/glib/freetype/harfbuzz/fribidi/fontconfig; V 0.5.1 @ de365a1 via `makev.bat`+tcc; gui@68b9302 +
@@ -677,7 +677,7 @@ prompt for a password.
   `replay_loop` (recording loaded in-thread via the new shared `load_entries()` — also re-used by
   Open Log; frames sent at cadence and recorded as TX rows with rx_loop's batched-repaint scheme;
   live "replay N% / loop N" note in the Buses panel; "replay finished" + channel auto-stop).
-  Shipped `projects/replay-demo.yml` (loops samples/demo.log on `inproc:` — zero drivers).
+  Shipped `projects/replay-demo.blobnet` (loops samples/demo.log on `inproc:` — zero drivers).
   **Verified in the GUI**: 1 channel attached, green dot, trace streaming TX 0x100/0x700 decoded
   via the DBC, and the TX counter advanced 124 frames in 6 s ≈ the recording's exact 20 frames/s.
   Gotcha re-learned: `v ... | head` makes `$?` head's rc — the build had silently not rewritten
@@ -768,7 +768,7 @@ prompt for a password.
   hook (skips when an input is focused via `w.id_focus()`); cyclic senders driven by one `gen_loop`
   thread spawned in `start_measurement` (own bus per iface, TX via the bounded inbox). New **Generators**
   dock panel (one left-aligned button per sender — gui's centered-label-blank bug — showing key + bus +
-  id; cyclic labelled with period) + activity-bar icon + View-menu entry. Demo: `projects/sim-demo.yml`
+  id; cyclic labelled with period) + activity-bar icon + View-menu entry. Demo: `projects/sim-demo.blobnet`
   CAN1 gained 4 senders. **VERIFIED in the GUI** (screenshot): cyclic `0x123 DEADBEEF` auto-fires as TX
   and is seen back as RX (like a real node); hotkey **`p`** sent Request `0x101` (ReqCode=1 encoded) and
   the simulated SUT answered Response `0x102` — full round-trip, status "sent Ping ECU (Request)".
@@ -917,7 +917,7 @@ prompt for a password.
   from C. **Headless runner `cmd/script`** (`scripts/runtests.sh`) loads a project, brings the same
   engine the GUI uses up driver-free (sim ECUs + native `uds.Server` over software ISO-TP on the
   in-proc bus), runs the `.lua` files and reports pass/fail with a **non-zero exit on failure**
-  (CI-ready). VERIFIED **10/10** vs `projects/sim-demo.yml` — `tests/diag_basic.lua` (session, VIN
+  (CI-ready). VERIFIED **10/10** vs `projects/sim-demo.blobnet` — `tests/diag_basic.lua` (session, VIN
   multi-frame, serial, SW ver, tester-present, NRC 0x31) + `tests/bus_signals.lua` (cyclic RX,
   decode-range, encode→send→decode round-trip, 0x101→0x102 request/response). **GUI Script panel**
   (toggle-only, `ƒ` activity-bar icon): file input + ▶ Run + one-click sample buttons; runs against
@@ -977,7 +977,7 @@ prompt for a password.
   headless capture); and the mingw build needed `gui-window-resize.patch` synced into `setup_win.ps1`
   (+ `win_patches/07`) — the WSL side left it `docs/v_patches`-only, so a fresh local Windows build
   failed on `unknown method gui.Window.resize` (CI already applied it). NEXT (optional): GUI smoke via
-  `projects/hw-crossvendor.yml` + python-can oracle; then slcan + Vector.
+  `projects/hw-crossvendor.blobnet` + python-can oracle; then slcan + Vector.
 - 2026-06-19: **Validated GGRei's upstream closure fix (v#27483 + gui#62) as a replacement for our
   local patches.** v#27483 ("builtin: add closure lifetime reclamation") is GGRei's cleaned-up recovery
   of our #27446 work, against master, with a proper **`closure.Lifetime` API** (`new_lifetime()` →
@@ -1270,7 +1270,7 @@ prompt for a password.
   TCP+UDP poll, exits on the running flag). The Diagnostics panel resolves the first running channel
   to a `DiagTarget`; `open_diag_channel()` returns `doip.open_doip(...)` for DoIP else software
   ISO-TP, so `uds.Client` (and every diag button) rides either carrier unchanged; the panel header
-  (`diag_target_label`) shows the live carrier. `projects/doip-demo.yml` (single DoIP channel,
+  (`diag_target_label`) shows the live carrier. `projects/doip-demo.blobnet` (single DoIP channel,
   `simulate: [SUT]`) runs the entity driver-free. **Verified end-to-end**: GUI launched with the demo
   + `BLOBLY_AUTOSTART=1` served the entity on 127.0.0.1:13400 and an external UDS client read VIN
   `BLOBLYNETV0SUT001` over Ethernet (the GUI's own diag buttons use the identical client path); full
@@ -1289,7 +1289,7 @@ prompt for a password.
   network is just several `doip` channels. `modules/doip` got `default_vin`/`default_eid` + a
   `server_cfg(logical,vin,eid)` constructor (read-only `ServerCfg` fields stay out of callers' reach);
   `modules/project` parses+round-trips `vin`/`eid`; `doip_server_loop` builds each entity's cfg from its
-  channel. `projects/doip-network-demo.yml` = 3 entities (Gateway/EngineECU/BodyECU) on 127.0.0.1/2/3
+  channel. `projects/doip-network-demo.blobnet` = 3 entities (Gateway/EngineECU/BodyECU) on 127.0.0.1/2/3
   :13400 (the 127.0.0.0/8 loopback-as-subnet trick), each a distinct VIN+logical address. (2)
   **Discovery:** `doip.discover(host,port,timeout)` (+ `VehicleInfo`/`parse_vehicle_announcement`) sends a
   UDP vehicle-id request and parses the announcement (unicast — works on loopback + a known gateway IP;
@@ -1318,8 +1318,8 @@ prompt for a password.
   0–100 % normalised). Legend = one clickable row per signal (whole row toggles show/hide; a nested
   clickable child broke the row layout — keep it flat); pinned signals show their `0xID` source.
   `dbc/cpuload.dbc` gained **`GenMsgCycleTime` 500 ms** so the native sim actually transmits CpuLoad
-  (cycle_ms 0 = event-driven, never auto-sent → empty trace); shipped `projects/cpuload-sim.yml`
-  (driver-free CpuLoad demo) + `projects/scale-cpuload.yml` (monitor blobly_emb's real CpuLoad on vcan0).
+  (cycle_ms 0 = event-driven, never auto-sent → empty trace); shipped `projects/cpuload-sim.blobnet`
+  (driver-free CpuLoad demo) + `projects/scale-cpuload.blobnet` (monitor blobly_emb's real CpuLoad on vcan0).
   **VERIFIED by screenshot** (sim-demo + cpuload-sim, real click workflow): added EngineSpeed (0x100) +
   BrakePressure (0x301) → both persist across Trace clicks ("2 signals / 2 frames"); CpuLoad cores plot
   with a 0–95 % unit-labelled axis. ⚠️ **Debugging lesson (cost hours):** a throwaway test harness that
@@ -1337,7 +1337,7 @@ prompt for a password.
   a runnable folder — `blobly_net.exe` (+ DLLs on msvc) alongside `projects/`, `dbc/`, `samples/` and a
   `packaging/README.txt` — instead of a bare exe. The app **resolves resource paths relative to the
   executable** (chdir to the exe dir at startup if the CWD lacks `projects/` but the exe dir has it), and
-  the **first-run default project is now `projects/sim-demo.yml`** (driver-free in-proc sim) instead of
+  the **first-run default project is now `projects/sim-demo.blobnet`** (driver-free in-proc sim) instead of
   `demo.yml` (vcan0, needs a driver) — so double-click → ▶ Start just works, no hardware/Python. (b)
   **Help in the browser:** gui is single-window and its in-panel markdown is crude, so the Help panel
   gained an **"Open in browser"** button — `markdown.to_html()` (vlang/**markdown**, md4c) renders ALL
@@ -1377,3 +1377,14 @@ prompt for a password.
   master can carry regressions (a tip build hung the app compile); `c0624b2` is the exact commit the
   Linux build runs leak-free. ⚠ Pending: maintainer mints+uploads the asset, then CI build + on-box
   leak-verify.
+- 2026-07-01: **Project files renamed `.yml` → `.blobnet`** (family scheme: blobly_net projects =
+  `.blobnet`, blobly_emb configs = `.blobemb`; each tool's extension names its owner + implies its
+  format — net is YAML, emb is TOML). The **content is unchanged YAML** — `project.load` reads by
+  content, so `.yml`/`.yaml` still load (back-compat). `git mv`'d all 9 `projects/*.yml` → `*.blobnet`;
+  swept ~45 refs across `src/`, `cmd/`, `scripts/`, `docs/`, CI. App surfaces updated: Open Project
+  dialog + Save As default extension + filters (`blobnet` first, then `yml`/`yaml`), Open Example
+  paths, first-run default + `bundle_marker` (`sim-demo.blobnet`), `cli_project_arg` accepts
+  `.blobnet`. **Verified:** GUI builds, all cmd tools build, module suite 21/21, headless Lua runner
+  **17/17** vs the renamed `sim-demo.blobnet` (loader parses it as YAML). Historical status-log
+  mentions of the old `.yml` names left as-is (accurate history). NOT yet OS-associated on Windows
+  (double-click → app) — a later step (register `.blobnet` → blobly_net.exe).

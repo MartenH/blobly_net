@@ -5,7 +5,7 @@
 #   bash scripts/build_win.sh                 # -> build/blobly_net.exe  (GL backend)
 #   bash scripts/build_win.sh -run            # build then run
 #   bash scripts/build_win.sh -debug          # build with -g (asserts on) for gdb
-#   BLOBLY_PROJECT=projects/demo-udp.yml bash scripts/build_win.sh -run
+#   BLOBLY_PROJECT=projects/demo-udp.blobnet bash scripts/build_win.sh -run
 #
 # Uses the DEDICATED, isolated toolchain under C:\dev (see CLAUDE.md "Windows
 # build (W1)" + docs/windows_build.md). Nothing outside C:\dev is touched.
