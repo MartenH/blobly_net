@@ -1567,6 +1567,7 @@ fn gen_loop(mut w gui.Window) {
 				idx:   sr.ch_idx
 				dir:   'TX'
 				frame: frame
+				t_ms:  f64(time.ticks() - app.t0)
 			})
 			next[si] = now + f64(sr.cfg.cycle_ms)
 			sent_any = true
@@ -1702,7 +1703,12 @@ fn replay_loop(idx int, mut w gui.Window) {
 		now := f64(time.ticks() - t0)
 		for e in pl.due(now) {
 			bus.send(e.frame) or {}
-			app.inbox_push(InboxItem{ idx: idx, dir: 'TX', frame: e.frame })
+			app.inbox_push(InboxItem{
+				idx:   idx
+				dir:   'TX'
+				frame: e.frame
+				t_ms:  f64(time.ticks() - app.t0)
+			})
 		}
 		fin := pl.finished()
 		nticks := time.ticks()
@@ -1941,11 +1947,16 @@ fn diag_render(resp []u8) string {
 	return h
 }
 
-// InboxItem is one received/sent frame queued for the UI thread to record.
+// InboxItem is one received/sent frame queued for the UI thread to record. t_ms is
+// the arrival/emit time captured on the RX/TX thread the instant the frame is seen —
+// NOT when the UI later drains it. Stamping at drain time (the fps-bounded ~200 ms
+// cadence, extra-jittery under WSLg's GL translation) aliased an even stream into a
+// wobbly one; capturing here keeps the trace on real arrival time.
 struct InboxItem {
 	idx   int
 	dir   string
 	frame transport.CanFrame
+	t_ms  f64
 }
 
 const rx_inbox_cap = 8192 // buffered frames before the inbox drops oldest
@@ -1963,7 +1974,14 @@ fn rx_loop(idx int, mut w gui.Window) {
 	for app.rt[idx].running {
 		flush_ms := flush_ms_for(app.fps) // live: reflects the toolbar dropdown
 		if frame := bus.recv(int(flush_ms)) {
-			app.inbox_push(InboxItem{ idx: idx, dir: 'RX', frame: frame })
+			// stamp arrival now, on the RX thread — recv() returns the moment the frame
+			// lands (poll wakes on data), so this is the real arrival time.
+			app.inbox_push(InboxItem{
+				idx:   idx
+				dir:   'RX'
+				frame: frame
+				t_ms:  f64(time.ticks() - app.t0)
+			})
 		}
 		now := time.ticks()
 		if now - last_flush >= flush_ms {
@@ -2019,7 +2037,9 @@ fn drain_inbox(mut w gui.Window) {
 				a.rt[it.idx].tx_count++
 			}
 		}
-		a.push(it.dir, it.frame, ch)
+		// record at the frame's captured arrival/emit time, not "now" — the drain runs
+		// on the fps cadence, so stamping here would reintroduce the jitter.
+		a.record(it.dir, it.frame, it.t_ms, ch)
 	}
 	w.update_window()
 }
