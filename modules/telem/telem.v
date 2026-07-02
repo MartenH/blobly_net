@@ -1,4 +1,4 @@
-// telem — decode blobly_emb's runtime-observability frames (docs/telemetry.md).
+// telem — decode blobly_emb's runtime-observability frames (blobly_emb/docs/telemetry.md).
 //
 // The ECU ships its own per-core load + per-handler runtime timing over CAN, so a
 // running target can be watched live in blobly_net with no probe. This module is the

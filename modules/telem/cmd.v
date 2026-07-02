@@ -1,4 +1,4 @@
-// telem/cmd — the capture control protocol (docs/telemetry.md "Control & read-out").
+// telem/cmd — the capture control protocol (blobly_emb/docs/telemetry.md "Control & read-out").
 //
 // Config-declared cmd/rsp (NOT UDS): the host sends a TraceCmd on cmd_id (0x7E2) to
 // arm/stop/reset/dump; the target acks with a TraceRsp on rsp_id (0x7E3) and, on dump,

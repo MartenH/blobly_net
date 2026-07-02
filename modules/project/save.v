@@ -55,6 +55,9 @@ pub fn (p Project) to_yaml() string {
 				b.writeln('      - ${d}')
 			}
 		}
+		if ch.manifest != '' {
+			b.writeln('    manifest: ${ch.manifest}')
+		}
 		if ch.simulate.len > 0 {
 			b.writeln('    simulate:')
 			for s in ch.simulate {
