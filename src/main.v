@@ -588,6 +588,10 @@ fn fire_sender(si int, mut w gui.Window) {
 	}
 	frame := app.build_sender_frame(sr.cfg)
 	mut bus := app.rt[idx].bus or { return }
+	// Stamp BEFORE send: a fast in-proc responder can enqueue its reply on the RX
+	// thread before we'd otherwise timestamp the TX, and the t_ms sort would then
+	// record the response ahead of the request.
+	send_ts := f64(time.ticks() - app.t0)
 	bus.send(frame) or {
 		app.notify(.error, 'send failed: ${err}')
 		return
@@ -599,7 +603,7 @@ fn fire_sender(si int, mut w gui.Window) {
 		idx:   idx
 		dir:   'TX'
 		frame: frame
-		t_ms:  f64(time.ticks() - app.t0)
+		t_ms:  send_ts
 	})
 	app.request_drain(mut w)
 	app.notify(.info, 'sent "${sr.cfg.name}"')
@@ -1569,12 +1573,13 @@ fn gen_loop(mut w gui.Window) {
 			}
 			mut bus := buses[iface] or { continue }
 			frame := app.build_sender_frame(sr.cfg)
+			send_ts := f64(time.ticks() - app.t0) // stamp before send (fast reply can't out-order)
 			bus.send(frame) or {}
 			app.inbox_push(InboxItem{
 				idx:   sr.ch_idx
 				dir:   'TX'
 				frame: frame
-				t_ms:  f64(time.ticks() - app.t0)
+				t_ms:  send_ts
 			})
 			next[si] = now + f64(sr.cfg.cycle_ms)
 			sent_any = true
@@ -1709,12 +1714,13 @@ fn replay_loop(idx int, mut w gui.Window) {
 	for app.rt[idx].running {
 		now := f64(time.ticks() - t0)
 		for e in pl.due(now) {
+			send_ts := f64(time.ticks() - app.t0) // stamp before send (fast reply can't out-order)
 			bus.send(e.frame) or {}
 			app.inbox_push(InboxItem{
 				idx:   idx
 				dir:   'TX'
 				frame: e.frame
-				t_ms:  f64(time.ticks() - app.t0)
+				t_ms:  send_ts
 			})
 		}
 		fin := pl.finished()
@@ -6439,6 +6445,8 @@ fn do_send(mut w gui.Window) {
 		data:     hex_to_bytes(app.send_data)
 	}
 	mut bus := app.rt[idx].bus or { return }
+	// Stamp BEFORE send (see fire_sender): a fast in-proc reply must not out-order the request.
+	send_ts := f64(time.ticks() - app.t0)
 	bus.send(frame) or {
 		app.notify(.error, 'send failed: ${err}')
 		return
@@ -6449,7 +6457,7 @@ fn do_send(mut w gui.Window) {
 		idx:   idx
 		dir:   'TX'
 		frame: frame
-		t_ms:  f64(time.ticks() - app.t0)
+		t_ms:  send_ts
 	})
 	app.request_drain(mut w)
 }
