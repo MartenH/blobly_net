@@ -1576,9 +1576,13 @@ fn gen_loop(mut w gui.Window) {
 			}
 			mut bus := buses[iface] or { continue }
 			frame := app.build_sender_frame(sr.cfg)
-			send_ts := f64(time.ticks() - app.t0) // stamp before send (fast reply can't out-order)
+			// Enqueue BEFORE send on this background thread: reserving (t_ms, seq) isn't
+			// enough on its own, because pushing only after bus.send leaves a window where
+			// a fast in-proc reply could be enqueued AND drained ahead of this TX, landing
+			// it in a later batch with an older t_ms. Pushing first closes that window.
+			// (gen ignores send errors, so recording unconditionally is fine.)
+			send_ts := f64(time.ticks() - app.t0)
 			send_seq := app.next_seq()
-			bus.send(frame) or {}
 			app.inbox_push(InboxItem{
 				idx:   sr.ch_idx
 				dir:   'TX'
@@ -1586,6 +1590,7 @@ fn gen_loop(mut w gui.Window) {
 				t_ms:  send_ts
 				seq:   send_seq
 			})
+			bus.send(frame) or {}
 			next[si] = now + f64(sr.cfg.cycle_ms)
 			sent_any = true
 		}
@@ -1719,9 +1724,10 @@ fn replay_loop(idx int, mut w gui.Window) {
 	for app.rt[idx].running {
 		now := f64(time.ticks() - t0)
 		for e in pl.due(now) {
-			send_ts := f64(time.ticks() - app.t0) // stamp before send (fast reply can't out-order)
+			// Enqueue BEFORE send on this background thread (see gen_loop) so a fast reply
+			// can't drain ahead of this TX. (replay ignores send errors.)
+			send_ts := f64(time.ticks() - app.t0)
 			send_seq := app.next_seq()
-			bus.send(e.frame) or {}
 			app.inbox_push(InboxItem{
 				idx:   idx
 				dir:   'TX'
@@ -1729,6 +1735,7 @@ fn replay_loop(idx int, mut w gui.Window) {
 				t_ms:  send_ts
 				seq:   send_seq
 			})
+			bus.send(e.frame) or {}
 		}
 		fin := pl.finished()
 		nticks := time.ticks()
