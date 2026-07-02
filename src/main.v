@@ -348,6 +348,7 @@ mut:
 	inbox        []InboxItem
 	inbox_mu     sync.Mutex
 	drain_queued bool
+	seq_ctr      u64 // monotonic tie-breaker for equal-t_ms frames (reserved at stamp time)
 	senders   []SenderRT // interactive generators flattened across channels (Generators panel + hotkeys)
 	sim_nodes []SimNode // simulated ECUs available per channel (Simulation panel)
 	sim_expanded map[int]bool // Simulation tree: channel idx -> expanded (default collapsed)
@@ -588,10 +589,11 @@ fn fire_sender(si int, mut w gui.Window) {
 	}
 	frame := app.build_sender_frame(sr.cfg)
 	mut bus := app.rt[idx].bus or { return }
-	// Stamp BEFORE send: a fast in-proc responder can enqueue its reply on the RX
-	// thread before we'd otherwise timestamp the TX, and the t_ms sort would then
-	// record the response ahead of the request.
+	// Reserve stamp + seq BEFORE send: a fast in-proc responder can enqueue its reply on
+	// the RX thread before we'd otherwise timestamp the TX; reserving now guarantees
+	// send_ts ≤ reply time and send_seq < reply seq, so the sort keeps request→reply.
 	send_ts := f64(time.ticks() - app.t0)
+	send_seq := app.next_seq()
 	bus.send(frame) or {
 		app.notify(.error, 'send failed: ${err}')
 		return
@@ -604,6 +606,7 @@ fn fire_sender(si int, mut w gui.Window) {
 		dir:   'TX'
 		frame: frame
 		t_ms:  send_ts
+		seq:   send_seq
 	})
 	app.request_drain(mut w)
 	app.notify(.info, 'sent "${sr.cfg.name}"')
@@ -1574,12 +1577,14 @@ fn gen_loop(mut w gui.Window) {
 			mut bus := buses[iface] or { continue }
 			frame := app.build_sender_frame(sr.cfg)
 			send_ts := f64(time.ticks() - app.t0) // stamp before send (fast reply can't out-order)
+			send_seq := app.next_seq()
 			bus.send(frame) or {}
 			app.inbox_push(InboxItem{
 				idx:   sr.ch_idx
 				dir:   'TX'
 				frame: frame
 				t_ms:  send_ts
+				seq:   send_seq
 			})
 			next[si] = now + f64(sr.cfg.cycle_ms)
 			sent_any = true
@@ -1715,12 +1720,14 @@ fn replay_loop(idx int, mut w gui.Window) {
 		now := f64(time.ticks() - t0)
 		for e in pl.due(now) {
 			send_ts := f64(time.ticks() - app.t0) // stamp before send (fast reply can't out-order)
+			send_seq := app.next_seq()
 			bus.send(e.frame) or {}
 			app.inbox_push(InboxItem{
 				idx:   idx
 				dir:   'TX'
 				frame: e.frame
 				t_ms:  send_ts
+				seq:   send_seq
 			})
 		}
 		fin := pl.finished()
@@ -1970,6 +1977,8 @@ struct InboxItem {
 	dir   string
 	frame transport.CanFrame
 	t_ms  f64
+	seq   u64 // global reserve order; tie-breaks equal t_ms so a TX (reserved before
+	// send) always sorts before the reply it triggers (reserved at recv, i.e. after).
 }
 
 const rx_inbox_cap = 8192 // buffered frames before the inbox drops oldest
@@ -1994,6 +2003,7 @@ fn rx_loop(idx int, mut w gui.Window) {
 				dir:   'RX'
 				frame: frame
 				t_ms:  f64(time.ticks() - app.t0)
+				seq:   app.next_seq()
 			})
 		}
 		now := time.ticks()
@@ -2003,6 +2013,18 @@ fn rx_loop(idx int, mut w gui.Window) {
 		}
 	}
 	bus.close()
+}
+
+// next_seq reserves a monotonically increasing sequence number (global enqueue order),
+// reserved at STAMP time — before send for TX, at recv for RX — so a TX and the reply
+// it triggers get seq(TX) < seq(reply). Used to tie-break frames with equal t_ms in the
+// drain sort (in-proc request/response commonly lands in the same millisecond).
+fn (mut app App) next_seq() u64 {
+	app.inbox_mu.lock()
+	s := app.seq_ctr
+	app.seq_ctr++
+	app.inbox_mu.unlock()
+	return s
 }
 
 // inbox_push appends one frame to the shared inbox, dropping the oldest on overflow
@@ -2044,9 +2066,19 @@ fn drain_inbox(mut w gui.Window) {
 	// The inbox fills in mutex-acquisition order across producer threads (multiple
 	// channels / replay+monitor / cyclic gens), NOT t_ms order — so sort the batch by
 	// captured time before recording, else the chronological trace + saved recording
-	// could show a later timestamp before an earlier one. Batches drain in time order,
-	// so a per-batch sort yields a fully monotonic stream.
-	items.sort(a.t_ms < b.t_ms)
+	// could show a later timestamp before an earlier one. Ties (equal t_ms, common for
+	// in-proc request/response in the same ms) break by seq = global reserve order, so
+	// a request (seq reserved before send) always precedes its reply. Batches drain in
+	// time order, so a per-batch sort yields a fully monotonic stream.
+	items.sort_with_compare(fn (x &InboxItem, y &InboxItem) int {
+		if x.t_ms < y.t_ms {
+			return -1
+		}
+		if x.t_ms > y.t_ms {
+			return 1
+		}
+		return if x.seq < y.seq { -1 } else if x.seq > y.seq { 1 } else { 0 }
+	})
 	for it in items {
 		ch := if it.idx < a.proj.channels.len { a.proj.channels[it.idx].name } else { 'CAN${it.idx + 1}' }
 		if it.idx < a.rt.len {
@@ -6445,8 +6477,9 @@ fn do_send(mut w gui.Window) {
 		data:     hex_to_bytes(app.send_data)
 	}
 	mut bus := app.rt[idx].bus or { return }
-	// Stamp BEFORE send (see fire_sender): a fast in-proc reply must not out-order the request.
+	// Reserve stamp + seq BEFORE send (see fire_sender): a fast in-proc reply must not out-order the request.
 	send_ts := f64(time.ticks() - app.t0)
+	send_seq := app.next_seq()
 	bus.send(frame) or {
 		app.notify(.error, 'send failed: ${err}')
 		return
@@ -6458,6 +6491,7 @@ fn do_send(mut w gui.Window) {
 		dir:   'TX'
 		frame: frame
 		t_ms:  send_ts
+		seq:   send_seq
 	})
 	app.request_drain(mut w)
 }
