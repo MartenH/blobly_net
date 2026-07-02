@@ -102,7 +102,7 @@ modules/lua/                embedded Lua 5.4: thin typed V facade over the Lua m
 modules/script/             blobly_net scripting runtime: a Lua Env wired to the GUI-free stack
                             (uds/isotp/transport/candb) + a Lua prelude (test()/check/uds:/
                             bus./decode + byte helpers). scripting replacement.    (Tier 4)
-modules/telem/              blobly_emb runtime-observability decode (docs telemetry.md P5):
+modules/telem/              blobly_emb runtime-observability decode (blobly_emb/docs/blobly_emb/docs/telemetry.md P5):
                             HandlerStat 0x7E4 / Record 0x7E5 / LoadDetail 0x7E1 decoders +
                             TraceCmd/Rsp (0x7E2/3) + CSV handler manifest (handler_id ->
                             FB/handler/core/period). Byte-validated vs emb comm/{telem,trace}.
@@ -1336,7 +1336,7 @@ prompt for a password.
   build.** `~/v` left at the known-good **c0624b2** (the 5bc4b1a "regression" was unproven — the harness,
   not V); recheck the newer V (cgen-v3 / scalable-GC commits) in ~2 weeks. Also captured
   `docs/blobly_emb_synergies.md` (tester↔ECU synergies; `candb` is the one clear shared-vmodule candidate).
-- 2026-07-02: **Telemetry trace viewer (blobly_emb runtime observability, telemetry.md P5) — foundation
+- 2026-07-02: **Telemetry trace viewer (blobly_emb runtime observability, blobly_emb/docs/telemetry.md P5) — foundation
   DONE & VERIFIED live.** New GUI-free **`modules/telem`** decodes the ECU's self-observability frames
   byte-for-byte (cross-validated against `blobly_emb/comm/{telem,trace}`'s own encode vectors AND against
   real bytes on the wire): **HandlerStat** (0x7E4, live per-handler last/max/count), **Record** (0x7E5,
@@ -1356,7 +1356,7 @@ prompt for a password.
   resolved via `manifests/trace-demo.csv`. Shipped `projects/trace-demo.blobnet` + `manifests/trace-demo.csv`.
   Module suite 25/25 (telem 2 files). ⚠ `src/` is single-file (`src/main.v`) — every build target is
   `src/main.v`, so the view lives IN main.v, NOT a separate `src/*.v` (a 2nd file needs `v run src`, which
-  none of run.sh/CI/build_win use). NEXT (telemetry.md P5 rest): pan/zoom + hover on the swimlane; live
+  none of run.sh/CI/build_win use). NEXT (blobly_emb/docs/telemetry.md P5 rest): pan/zoom + hover on the swimlane; live
   HandlerStat gauges/sparklines; period/jitter histogram; overrun/deadline markers; load reconstruction;
   ISO-TP bulk dump; ThreadX preemption view — same records/manifest feed them all.
 - 2026-06-30: **Distributable bundle + browser-rendered Help.** Two gaps closed so a freshly-downloaded

@@ -1,4 +1,4 @@
-// telem/manifest — the handler manifest (docs/telemetry.md "Identity").
+// telem/manifest — the handler manifest (blobly_emb/docs/telemetry.md "Identity").
 //
 // loom2v assigns every handler a GLOBALLY-unique handler_id across all partitions and
 // emits this table; blobly_net loads it next to the DBC and resolves the 1-byte id the
@@ -46,6 +46,7 @@ pub fn load_manifest(path string) !Manifest {
 // parse_manifest parses manifest CSV text.
 pub fn parse_manifest(text string) !Manifest {
 	mut handlers := []Handler{}
+	mut seen := map[u8]bool{}
 	for raw in text.split_into_lines() {
 		line := raw.trim_space()
 		if line == '' || line.starts_with('#') {
@@ -58,8 +59,23 @@ pub fn parse_manifest(text string) !Manifest {
 		if cols[0].to_lower() == 'id' {
 			continue // header row
 		}
+		// The wire id is one byte and its uniqueness is the manifest's contract — reject a
+		// non-numeric / out-of-range / duplicate id rather than let u8() silently wrap it
+		// (256 -> 0, -1 -> 255) and mislabel every record of the collided handler.
+		if !is_digits(cols[0]) {
+			return error('manifest handler id is not a number: "${cols[0]}"')
+		}
+		idnum := cols[0].int()
+		if idnum > 255 {
+			return error('manifest handler id out of range 0..255: ${idnum}')
+		}
+		id := u8(idnum)
+		if id in seen {
+			return error('manifest has a duplicate handler id: ${id}')
+		}
+		seen[id] = true
 		handlers << Handler{
-			id:        u8(cols[0].int())
+			id:        id
 			partition: cols[1]
 			core:      cols[2].int()
 			fb:        cols[3]
@@ -75,6 +91,19 @@ pub fn parse_manifest(text string) !Manifest {
 	}
 	m.index()
 	return m
+}
+
+// is_digits reports whether s is a non-empty run of ASCII digits (a valid unsigned id).
+fn is_digits(s string) bool {
+	if s == '' {
+		return false
+	}
+	for c in s {
+		if c < `0` || c > `9` {
+			return false
+		}
+	}
+	return true
 }
 
 // index (re)builds the by_id lookup — call after mutating handlers.

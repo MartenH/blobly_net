@@ -2912,7 +2912,15 @@ fn open_project(path string, mut w gui.Window) {
 	app.reset_diag_discovery()
 	app.reset_plot()
 	app.plot_hist = map[u64][]PlotSample{} // old project's history is meaningless now
+	// The old project's telemetry is meaningless now — drop the captured records/stats
+	// and reload the new project's handler manifest (else the Trace Chart keeps the
+	// previous project's lanes/labels, or none).
+	app.telem_records = []
+	app.telem_stats = map[u8]telem.HandlerStat{}
+	app.telem_manifest = telem.Manifest{}
+	app.telem_source = ''
 	app.load_databases()
+	app.load_project_manifest()
 	app.build_sim_nodes()
 	set_window_title(p.name)
 	note := p.version_note()
@@ -6804,15 +6812,26 @@ fn (mut app App) load_telem_manifest(path string) {
 // Dump makes the target stream its buffer out as Record frames (0x7E5). The TX is
 // recorded through the normal trace path so it shows in order with the reply.
 fn (mut app App) send_trace_cmd(op u8, mut w gui.Window) {
+	// A TraceCmd is a CAN frame, so it needs a running channel WITH a bus — skip a
+	// running DoIP channel (no CAN bus) that might sort first. Prefer the channel that
+	// declares the telemetry manifest (that's the target's bus), else any bus channel.
 	mut idx := -1
 	for i in 0 .. app.rt.len {
-		if app.rt[i].running {
-			idx = i
-			break
+		if !app.rt[i].running {
+			continue
+		}
+		if _ := app.rt[i].bus {
+			if idx < 0 {
+				idx = i // first bus-carrying running channel (fallback)
+			}
+			if i < app.proj.channels.len && app.proj.channels[i].manifest != '' {
+				idx = i // the manifest channel wins
+				break
+			}
 		}
 	}
 	if idx < 0 {
-		app.notify(.warn, 'not running — press ▶ Start to send a trace command')
+		app.notify(.warn, 'no running CAN channel — press ▶ Start on a bus that carries the trace target')
 		return
 	}
 	mut bus := app.rt[idx].bus or { return }

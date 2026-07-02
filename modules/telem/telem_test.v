@@ -74,3 +74,21 @@ fn test_manifest_parse_and_lookup() {
 	assert m.label(1) == 'handler 1'
 	assert m.label(0) == 'SpeedFilter.on_10ms'
 }
+
+fn test_manifest_rejects_bad_ids() {
+	// out of range (256 would wrap to 0)
+	if _ := parse_manifest('256,p,1,F,h,1000') {
+		assert false, 'id 256 should be rejected'
+	}
+	// non-numeric (would silently become 0)
+	if _ := parse_manifest('x,p,1,F,h,1000') {
+		assert false, 'non-numeric id should be rejected'
+	}
+	// duplicate id
+	if _ := parse_manifest('1,p,1,A,a,1000\n1,p,1,B,b,2000') {
+		assert false, 'duplicate id should be rejected'
+	}
+	// a valid boundary id (255) is accepted
+	m := parse_manifest('255,p,1,F,h,1000') or { panic(err) }
+	assert m.handlers[0].id == 255
+}
