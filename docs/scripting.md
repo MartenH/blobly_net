@@ -38,10 +38,10 @@ The runner **exits non-zero if any test fails**, so it drops straight into CI.
 ### Usage
 
 ```sh
-scripts/runtests.sh [--project <file.yml>] <script.lua> [more.lua ...]
+scripts/runtests.sh [--project <file.blobnet>] <script.lua> [more.lua ...]
 ```
 
-- `--project <file.yml>` (or `-p`) — the project that defines the bus setup.
+- `--project <file.blobnet>` (or `-p`) — the project that defines the bus setup.
   Defaults to `projects/sim-demo.blobnet`. See [§4](#4-projects-and-the-simulation).
 - One or more `.lua` scripts, run in order.
 
@@ -87,7 +87,7 @@ scripts/runtests.sh hello.lua
 ```
 
 `"CAN1"` is a **channel name from the project** — it must match a `name:` under
-`channels:` in the `.yml` (see [§4](#4-projects-and-the-simulation)).
+`channels:` in the project file (see [§4](#4-projects-and-the-simulation)).
 
 ---
 
@@ -206,7 +206,7 @@ Plus the full Lua 5.4 standard library (`string`, `table`, `math`, …).
 
 ## 4. Projects and the simulation
 
-Scripts run against a **project** `.yml`, which defines the channels. The shipped
+Scripts run against a **project** file (`.blobnet`, YAML), which defines the channels. The shipped
 `projects/sim-demo.blobnet` declares `CAN1` (and `CAN2`) on a driver-free in-process bus,
 each with the `dbc/blobly_net.dbc` database and simulated ECUs. That's why the example
 scripts can read a VIN and decode `Powertrain` with no hardware.
@@ -283,7 +283,7 @@ scripts/runtests.sh powertrain.lua
 
 - **Payloads are byte strings**, not number arrays — build them with `fromhex` /
   `frombytes`, read them with `string.byte` / `u16be` / `tohex`.
-- **Channel names must match the project** `.yml`; an unknown name is an error.
+- **Channel names must match the project** file (`.blobnet`); an unknown name is an error.
 - **In the GUI, press ▶ Start before Run** — without a running measurement there's no
   bus to talk to ("no running channel").
 - Numbers are Lua numbers (`4.0 == 4` is true), so `check.equal(sig.Gear, 4)` works.
