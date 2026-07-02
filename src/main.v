@@ -1096,19 +1096,28 @@ fn main() {
 	// fine in a dev checkout, but a downloaded build double-clicked from elsewhere
 	// has a different CWD. If the resources aren't in the CWD but sit beside the
 	// executable, chdir there so everything resolves out of the box. ONLY for the
-	// zero-config case: if the user gave an explicit project (a relative
-	// `blobly_net foo.blobnet` or BLOBLY_PROJECT is resolved against the CURRENT cwd),
-	// chdir'ing first would break it, so skip the relocate then.
-	mut has_proj_override := os.getenv('BLOBLY_PROJECT') != ''
-	if _ := cli_project_arg() {
-		has_proj_override = true
+	// zero-config case. Only a RELATIVE override blocks the relocate: a relative
+	// `blobly_net foo.blobnet` / BLOBLY_PROJECT resolves against the CURRENT cwd, so
+	// chdir'ing first would break it. An ABSOLUTE override — e.g. a double-clicked
+	// `C:\…\foo.blobnet` via the .blobnet file association — still resolves after the
+	// chdir, so we DO relocate then, which lets the bundle's relative dbc/ paths work.
+	mut rel_override := false
+	if p := cli_project_arg() {
+		if !os.is_abs_path(p) {
+			rel_override = true
+		}
+	}
+	if bp := os.getenv_opt('BLOBLY_PROJECT') {
+		if !os.is_abs_path(bp) {
+			rel_override = true
+		}
 	}
 	// Probe a SPECIFIC bundle marker (our default project), not just any `projects/`
 	// dir — otherwise being launched from a directory that happens to contain an
 	// unrelated `projects/` would wrongly skip the relocate and resolve the default
 	// against the wrong CWD.
 	bundle_marker := os.join_path('projects', 'sim-demo.blobnet')
-	if !has_proj_override && !os.exists(bundle_marker) {
+	if !rel_override && !os.exists(bundle_marker) {
 		exe_dir := os.dir(os.executable())
 		if os.exists(os.join_path(exe_dir, bundle_marker)) {
 			os.chdir(exe_dir) or {}
