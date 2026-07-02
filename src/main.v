@@ -1365,7 +1365,13 @@ fn (app &App) resolve_project_path(path string) string {
 		return path
 	}
 	near := os.join_path(os.dir(app.proj_source), path)
-	return if os.exists(near) { near } else { path }
+	// NB: a plain if/return, NOT `return if os.exists(near) {…} else {…}` — the
+	// if-expression-as-return miscompiled on the Windows target (V emitted
+	// `os__exists()` with no arg → msvc C2198/C2513), though it's fine on Linux.
+	if os.exists(near) {
+		return near
+	}
+	return path
 }
 
 fn (mut app App) load_databases() {
