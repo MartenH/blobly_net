@@ -348,6 +348,7 @@ mut:
 	inbox        []InboxItem
 	inbox_mu     sync.Mutex
 	drain_queued bool
+	seq_ctr      u64 // monotonic enqueue counter; tie-breaks equal-t_ms frames (guarded by inbox_mu)
 	senders   []SenderRT // interactive generators flattened across channels (Generators panel + hotkeys)
 	sim_nodes []SimNode // simulated ECUs available per channel (Simulation panel)
 	sim_expanded map[int]bool // Simulation tree: channel idx -> expanded (default collapsed)
@@ -589,12 +590,14 @@ fn fire_sender(si int, mut w gui.Window) {
 	frame := app.build_sender_frame(sr.cfg)
 	mut bus := app.rt[idx].bus or { return }
 	ch := if idx < app.proj.channels.len { app.proj.channels[idx].name } else { 'CAN${idx + 1}' }
-	send_ts := f64(time.ticks() - app.t0) // stamp before send; record only if it succeeds
+	// Reserve stamp + seq before send (below any reply's); record only if send succeeds.
+	send_ts := f64(time.ticks() - app.t0)
+	send_seq := app.next_seq()
 	bus.send(frame) or {
 		app.notify(.error, 'send failed: ${err}')
 		return
 	}
-	record_manual_tx(mut app, idx, frame, ch, send_ts, mut w)
+	record_manual_tx(mut app, idx, frame, ch, send_ts, send_seq, mut w)
 	app.notify(.info, 'sent "${sr.cfg.name}"')
 }
 
@@ -1953,7 +1956,10 @@ struct InboxItem {
 	idx   int
 	dir   string
 	frame transport.CanFrame
-	t_ms  f64 // set by inbox_push under the lock (do not set at the call site)
+	t_ms  f64 // arrival/emit offset (ms)
+	seq   u64 // global enqueue order; tie-breaks equal t_ms (ms resolution) so a request
+	// always precedes the reply it triggers and byte-change highlighting sees the right
+	// prior frame. Assigned under the inbox lock — before send for TX, at recv for RX.
 }
 
 const rx_inbox_cap = 8192 // buffered frames before the inbox drops oldest
@@ -1984,32 +1990,48 @@ fn rx_loop(idx int, mut w gui.Window) {
 	bus.close()
 }
 
-// inbox_push appends one frame to the shared inbox, dropping the oldest on overflow
-// (amortised) — so it can never grow unbounded if the UI thread isn't draining. It
-// stamps t_ms UNDER the lock, so for the background producers (rx at recv, gen/replay
-// before send) (timestamp, enqueue) is atomic and no other thread can slot a newer
-// frame between the two.
-fn (mut app App) inbox_push(idx int, dir string, frame transport.CanFrame) {
-	app.inbox_push_at(idx, dir, frame, f64(time.ticks() - app.t0))
-}
-
-// inbox_push_at is inbox_push with an explicit t_ms — used by manual sends, which
-// capture the stamp BEFORE bus.send (so a reply can't get an earlier arrival time)
-// but only enqueue AFTER the send succeeds (so a rejected send leaves no phantom row).
-// The drain sorts by t_ms, so this pre-send stamp lands ahead of the reply regardless
-// of enqueue order.
-fn (mut app App) inbox_push_at(idx int, dir string, frame transport.CanFrame, t_ms f64) {
-	app.inbox_mu.lock()
+// inbox_append_locked appends one frame with a given (t_ms, seq). The caller MUST hold
+// inbox_mu. Drops the oldest on overflow (amortised) so the inbox can't grow unbounded.
+fn (mut app App) inbox_append_locked(idx int, dir string, frame transport.CanFrame, t_ms f64, seq u64) {
 	app.inbox << InboxItem{
 		idx:   idx
 		dir:   dir
 		frame: frame
 		t_ms:  t_ms
+		seq:   seq
 	}
 	if app.inbox.len > rx_inbox_cap + rx_inbox_cap / 4 {
 		app.inbox = app.inbox[app.inbox.len - rx_inbox_cap..].clone()
 	}
+}
+
+// inbox_push stamps t_ms AND seq UNDER the lock, then appends — so (timestamp, order,
+// enqueue) is atomic. For the background producers (rx at recv, gen/replay before send)
+// no other thread can slot a differently-timed frame between the stamp and the append.
+fn (mut app App) inbox_push(idx int, dir string, frame transport.CanFrame) {
+	app.inbox_mu.lock()
+	app.inbox_append_locked(idx, dir, frame, f64(time.ticks() - app.t0), app.seq_ctr)
+	app.seq_ctr++
 	app.inbox_mu.unlock()
+}
+
+// inbox_push_at appends with an explicit (t_ms, seq) reserved earlier — used by manual
+// sends, which reserve BOTH before bus.send (so a reply can't get an earlier time/seq)
+// but only enqueue AFTER the send succeeds (so a rejected send leaves no phantom row).
+fn (mut app App) inbox_push_at(idx int, dir string, frame transport.CanFrame, t_ms f64, seq u64) {
+	app.inbox_mu.lock()
+	app.inbox_append_locked(idx, dir, frame, t_ms, seq)
+	app.inbox_mu.unlock()
+}
+
+// next_seq reserves the next enqueue order number under the lock. Manual sends call it
+// BEFORE bus.send so their seq is below any reply's (which reserves at recv, after send).
+fn (mut app App) next_seq() u64 {
+	app.inbox_mu.lock()
+	s := app.seq_ctr
+	app.seq_ctr++
+	app.inbox_mu.unlock()
+	return s
 }
 
 // request_drain queues a drain_inbox command only if one isn't already pending, so
@@ -2038,15 +2060,20 @@ fn drain_inbox(mut w gui.Window) {
 		return // frozen: RX/gen/replay are dropped from the bounded inbox. Manual Send
 		// still records (directly, see fire_sender/do_send) so an explicit send is kept.
 	}
-	// Order by t_ms. The background producers stamp under the inbox lock, so they're
-	// already FIFO in t_ms order (the sort just leaves them be); manual sends carry a
-	// pre-send t_ms and enqueue only after the send succeeds, so the sort slots them
-	// ahead of any reply they triggered — the reply is stamped later, at recv, so on a
-	// real backend (ms-scale latency) it has a strictly greater t_ms. The only residual
-	// tie is an in-proc request+response landing in the SAME millisecond, where the two
-	// may render in either order (they are simultaneous at ms resolution).
+	// Order by (t_ms, seq). t_ms is ms-resolution, so fast traffic / an in-proc
+	// request+reply commonly share a millisecond; seq (global enqueue order, reserved
+	// before send for TX and at recv for RX) breaks the tie so a request always precedes
+	// its reply and byte-change highlighting sees the right prior frame. Background
+	// producers stamp both under the lock (already ordered); manual sends carry a
+	// reserved-before-send (t_ms, seq), so the sort slots them ahead of any reply.
 	items.sort_with_compare(fn (x &InboxItem, y &InboxItem) int {
-		return if x.t_ms < y.t_ms { -1 } else if x.t_ms > y.t_ms { 1 } else { 0 }
+		if x.t_ms < y.t_ms {
+			return -1
+		}
+		if x.t_ms > y.t_ms {
+			return 1
+		}
+		return if x.seq < y.seq { -1 } else if x.seq > y.seq { 1 } else { 0 }
 	})
 	for it in items {
 		ch := if it.idx < a.proj.channels.len { a.proj.channels[it.idx].name } else { 'CAN${it.idx + 1}' }
@@ -2069,7 +2096,7 @@ fn drain_inbox(mut w gui.Window) {
 // send SUCCEEDS (so a rejected send leaves no phantom row/count). While PAUSED the drain
 // drops queued items, so it records DIRECTLY — an explicit send stays visible even
 // though the passive RX monitor is frozen.
-fn record_manual_tx(mut app App, idx int, frame transport.CanFrame, ch string, t_ms f64, mut w gui.Window) {
+fn record_manual_tx(mut app App, idx int, frame transport.CanFrame, ch string, t_ms f64, seq u64, mut w gui.Window) {
 	if app.paused {
 		if idx < app.rt.len {
 			app.rt[idx].tx_count++
@@ -2077,7 +2104,7 @@ fn record_manual_tx(mut app App, idx int, frame transport.CanFrame, ch string, t
 		app.record('TX', frame, t_ms, ch)
 		return
 	}
-	app.inbox_push_at(idx, 'TX', frame, t_ms)
+	app.inbox_push_at(idx, 'TX', frame, t_ms, seq)
 	app.request_drain(mut w)
 }
 
@@ -6464,12 +6491,14 @@ fn do_send(mut w gui.Window) {
 	}
 	mut bus := app.rt[idx].bus or { return }
 	ch := if idx < app.proj.channels.len { app.proj.channels[idx].name } else { 'CAN${idx + 1}' }
-	send_ts := f64(time.ticks() - app.t0) // stamp before send; record only if it succeeds
+	// Reserve stamp + seq before send (below any reply's); record only if send succeeds.
+	send_ts := f64(time.ticks() - app.t0)
+	send_seq := app.next_seq()
 	bus.send(frame) or {
 		app.notify(.error, 'send failed: ${err}')
 		return
 	}
-	record_manual_tx(mut app, idx, frame, ch, send_ts, mut w)
+	record_manual_tx(mut app, idx, frame, ch, send_ts, send_seq, mut w)
 }
 
 // toggle_record starts/stops capturing every frame. On stop it writes the
