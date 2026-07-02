@@ -210,6 +210,7 @@ jobs:
           New-Item -ItemType Directory -Force dist\samples | Out-Null
           Copy-Item samples\*.log,samples\*.mf4 dist\samples\ -Force -ErrorAction SilentlyContinue
           Copy-Item packaging\README.txt dist\README.txt
+          Copy-Item scripts\register_blobnet_win.ps1 dist\register_blobnet_win.ps1
           Copy-Item LICENSE dist\LICENSE.txt
           Copy-Item packaging\THIRD-PARTY-NOTICES.txt dist\THIRD-PARTY-NOTICES.txt
           Get-ChildItem -Recurse dist | Select-Object -ExpandProperty FullName
@@ -328,6 +329,7 @@ jobs:
           New-Item -ItemType Directory -Force dist\samples | Out-Null
           Copy-Item samples\*.log,samples\*.mf4 dist\samples\ -Force -ErrorAction SilentlyContinue
           Copy-Item packaging\README.txt dist\README.txt
+          Copy-Item scripts\register_blobnet_win.ps1 dist\register_blobnet_win.ps1
           Copy-Item LICENSE dist\LICENSE.txt
           Copy-Item packaging\THIRD-PARTY-NOTICES.txt dist\THIRD-PARTY-NOTICES.txt
 
