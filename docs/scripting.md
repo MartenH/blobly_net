@@ -23,7 +23,7 @@ scripts/runtests.sh tests/diag_basic.lua tests/bus_signals.lua
 You'll see per-test results and a summary:
 
 ```
-project: Simulation demo — CAN1 + CAN2  (projects/sim-demo.yml)
+project: Simulation demo — CAN1 + CAN2  (projects/sim-demo.blobnet)
 channel CAN1 (inproc:CAN1): simulating 2 node(s) + UDS server
 ...
 === tests/diag_basic.lua ===
@@ -42,14 +42,14 @@ scripts/runtests.sh [--project <file.yml>] <script.lua> [more.lua ...]
 ```
 
 - `--project <file.yml>` (or `-p`) — the project that defines the bus setup.
-  Defaults to `projects/sim-demo.yml`. See [§4](#4-projects-and-the-simulation).
+  Defaults to `projects/sim-demo.blobnet`. See [§4](#4-projects-and-the-simulation).
 - One or more `.lua` scripts, run in order.
 
 Raw form (what the wrapper runs):
 
 ```sh
 v -enable-globals -path "@vlib|@vmodules|modules" run cmd/script/run.v \
-    --project projects/sim-demo.yml tests/diag_basic.lua
+    --project projects/sim-demo.blobnet tests/diag_basic.lua
 ```
 
 ### What the runner does for you
@@ -207,7 +207,7 @@ Plus the full Lua 5.4 standard library (`string`, `table`, `math`, …).
 ## 4. Projects and the simulation
 
 Scripts run against a **project** `.yml`, which defines the channels. The shipped
-`projects/sim-demo.yml` declares `CAN1` (and `CAN2`) on a driver-free in-process bus,
+`projects/sim-demo.blobnet` declares `CAN1` (and `CAN2`) on a driver-free in-process bus,
 each with the `dbc/blobly_net.dbc` database and simulated ECUs. That's why the example
 scripts can read a VIN and decode `Powertrain` with no hardware.
 
@@ -240,7 +240,7 @@ the live measurement, the ISO-TP request frames a script sends are visible in th
 ## 6. Worked example
 
 ```lua
--- powertrain.lua — runs against projects/sim-demo.yml (CAN1)
+-- powertrain.lua — runs against projects/sim-demo.blobnet (CAN1)
 
 -- wait up to timeout_ms for a frame with a given id
 local function wait_for(channel, want, timeout_ms)

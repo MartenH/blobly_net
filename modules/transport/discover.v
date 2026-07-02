@@ -3,7 +3,7 @@ module transport
 // Interface discovery — the GUI-free half of the project-scaffolder. `list_interfaces()`
 // (platform-gated in discover_linux.v / discover_windows.v) enumerates the bus interfaces
 // available to scaffold into a project; `channels_yaml()` turns them into a `channels:`
-// block matching the project schema (see projects/demo.yml). A GUI "Bus Configuration"
+// block matching the project schema (see projects/demo.blobnet). A GUI "Bus Configuration"
 // dialog (a Discover button) is the eventual front-end; this module does the actual work.
 
 // Iface is a discovered (or always-available virtual) bus interface. `iface` is the string
