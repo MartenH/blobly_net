@@ -31,7 +31,18 @@ concurrency:
 
 env:
   V_RELEASE: v-toolchain   # release that stores the prebuilt V + vcpkg-deps assets
-  V_ASSET: v-de365a1-windows.zip   # the prebuilt V that EXISTS on the release (de365a1, has vlib/yaml)
+  # Prebuilt MASTER V (commit ddc9c99) on the v-toolchain release. Master has the
+  # closure.Lifetime API (v#27483) that gui 7a20a6a calls → the runtime closure-leak
+  # fix. ddc9c99 (2026-06-22) is the FIRST master commit that also carries the fix for
+  # v#27472 (PR #27473): find_module_path's outermost-v.mod walk infinitely-looped in
+  # os.real_path/GetFinalPathNameByHandleW on the runner's `D:\a\...` checkout path,
+  # spinning V at 100% CPU before any compiler ran — that is why the earlier c0624b2
+  # (2026-06-20, pre-fix) asset hung BOTH the gcc and msvc jobs for hours. Built on a
+  # Windows box (v self at ddc9c99) + uploaded, NOT compiled on the runner. Mint it:
+  #   cd C:\dev\v; git checkout ddc9c99; .\v.exe self
+  #   robocopy . ..\v-pkg /E /XF .git /XD .git; Compress-Archive ..\v-pkg\* v-ddc9c99-windows.zip
+  #   gh release upload v-toolchain v-ddc9c99-windows.zip --repo MartenH/blobly_net --clobber
+  V_ASSET: v-ddc9c99-windows.zip
   DEPS_ASSET: vcpkg-pango-x64-windows.zip   # prebuilt vcpkg x64-windows tree (MSVC job self-bootstraps it)
   MARKDOWN_COMMIT: ef2f101   # vlang/markdown (md4c) — main.v renders Help to HTML via markdown.to_html()
 
@@ -51,12 +62,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Download the prebuilt V (de365a1) from the v-toolchain release. We do NOT
-      # build V here: makev.bat on Windows does a cold bootstrap (clone vlang/vc ->
-      # v_win.c via tcc -> v_stage.exe) that is known-broken — which is exactly why a
-      # prebuilt V is shipped as a release asset. de365a1 has vlib/yaml; the closure
-      # leak fix is a runtime concern this compile/link check doesn't need.
-      - name: Download prebuilt V (de365a1)
+      # Download the prebuilt MASTER V (ddc9c99) from the v-toolchain release. The
+      # Windows PACKAGES must use master V: it has the closure.Lifetime API (v#27483)
+      # that fixes the capturing-closure-context leak (with stock de365a1 the GUI leaks
+      # unboundedly — Boehm GC "Too many heap sections"). NOT compiled on the runner —
+      # V self-compile wedges the runner's C compiler; see the V_ASSET note for how the
+      # asset is minted on a Windows box.
+      - name: Download prebuilt master V (ddc9c99)
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -67,31 +79,26 @@ jobs:
           "C:\v-ct" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding ascii
           & C:\v-ct\v.exe version
 
-      # gui + vglyph pinned, then the patches main.v needs to BUILD with stock
-      # de365a1 V. NOT applied: gui-closure-reclaim (needs a closure-API V — runtime
-      # leak fix, irrelevant to a build check). The gcc-16 C-bridge patches (01/02)
-      # are harmless on MSVC and required by the MSYS2 job.
+      # gui + vglyph + markdown pinned, then the patches main.v needs to BUILD. gui is
+      # at 7a20a6a (the gui#62 closure-fix merge — calls the closure.Lifetime API that
+      # the master V above provides), matching Linux ci.yml. This is what fixes the
+      # runtime leak in the Windows packages.
       - name: Install gui + vglyph (pinned) and apply build patches
         shell: pwsh
         run: |
           $vm = $env:VMODULES
           New-Item -ItemType Directory -Force $vm | Out-Null
-          # gui stays pinned at 68b9302 here (NOT bumped to the gui#62 closure-fix pin
-          # like Linux ci.yml): gui#62 calls the new closure.Lifetime API, which the
-          # prebuilt de365a1 V used by these jobs predates. Bumping would need a
-          # master-built V Windows asset. The closure leak is Linux-only anyway
-          # (verified plateau on native Windows), so Windows loses nothing here.
           # core.autocrlf=false so the working trees stay LF and the LF patches apply.
           git -c core.autocrlf=false clone --quiet https://github.com/vlang/gui.git    "$vm\gui"
-          git -C "$vm\gui"    -c advice.detachedHead=false checkout --quiet 68b9302
+          git -C "$vm\gui"    -c advice.detachedHead=false checkout --quiet 7a20a6a
           git -c core.autocrlf=false clone --quiet https://github.com/vlang/vglyph.git "$vm\vglyph"
           git -C "$vm\vglyph" -c advice.detachedHead=false checkout --quiet 5685a6d
           git -c core.autocrlf=false clone --quiet https://github.com/vlang/markdown.git "$vm\markdown"
           git -C "$vm\markdown" -c advice.detachedHead=false checkout --quiet $env:MARKDOWN_COMMIT
           # (Dir, Repo, File) — patches live in scripts\win_patches and docs\v_patches.
+          # 01/02 (gcc-16 C-bridge) are DROPPED at 7a20a6a — now upstream in gui's
+          # native-Windows work. 03/04/06/07/08 verified to apply on a clean 7a20a6a.
           $patches = @(
-            @{ Dir = 'scripts\win_patches'; Repo = 'gui';    File = '01-gui-readback-cobjmacros.patch' },
-            @{ Dir = 'scripts\win_patches'; Repo = 'gui';    File = '02-gui-dialog-includes.patch'     },
             @{ Dir = 'scripts\win_patches'; Repo = 'gui';    File = '03-gui-titlebar-isvalid.patch'    },
             @{ Dir = 'scripts\win_patches'; Repo = 'vglyph'; File = '04-vglyph-empty-outline.patch'    },
             @{ Dir = 'scripts\win_patches'; Repo = 'gui';    File = '06-gui-sample-count.patch'        },  # WindowCfg.sample_count — main.v sets sample_count: 4
@@ -183,6 +190,10 @@ jobs:
       # Stage a runnable bundle: the exe + its DLLs alongside the demo projects,
       # DBCs and sample recordings, so a freshly-unzipped download runs the
       # simulation out of the box (sim-demo is the first-run default).
+      # ⚠ NOT the recommended download: the MSVC build's Boehm GC does not collect at
+      # runtime (RSS grows unboundedly — multiple GB in seconds under load), unlike the
+      # mingw build whose GC works. Prefer the blobly_net-mingw-x64 artifact until the
+      # msvc GC is fixed. Kept for build coverage / comparison.
       - name: Stage bundle
         shell: pwsh
         run: |
@@ -219,7 +230,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download prebuilt V (de365a1)
+      # Download the prebuilt master V (ddc9c99) — see the MSVC job. The Windows
+      # packages need master V's closure.Lifetime API so the GUI doesn't leak.
+      - name: Download prebuilt master V (ddc9c99)
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -229,22 +242,20 @@ jobs:
           if (-not (Test-Path C:\v-ct\v.exe)) { throw "v.exe not found after extracting $env:V_ASSET" }
           & C:\v-ct\v.exe version
 
-      # Same gui/vglyph pins + build patches as the MSVC job. The gcc-16 C-bridge
-      # patches (01/02) genuinely matter here (mingw gcc); on older gcc they're inert.
+      # Same gui/vglyph/markdown pins + build patches as the MSVC job: gui 7a20a6a
+      # (closure-fix merge) + 03/04/06/07/08. 01/02 dropped — upstream at 7a20a6a.
       - name: Install gui + vglyph (pinned) and apply build patches
         shell: pwsh
         run: |
           $vm = $env:VMODULES
           New-Item -ItemType Directory -Force $vm | Out-Null
           git -c core.autocrlf=false clone --quiet https://github.com/vlang/gui.git    "$vm\gui"
-          git -C "$vm\gui"    -c advice.detachedHead=false checkout --quiet 68b9302
+          git -C "$vm\gui"    -c advice.detachedHead=false checkout --quiet 7a20a6a
           git -c core.autocrlf=false clone --quiet https://github.com/vlang/vglyph.git "$vm\vglyph"
           git -C "$vm\vglyph" -c advice.detachedHead=false checkout --quiet 5685a6d
           git -c core.autocrlf=false clone --quiet https://github.com/vlang/markdown.git "$vm\markdown"
           git -C "$vm\markdown" -c advice.detachedHead=false checkout --quiet $env:MARKDOWN_COMMIT
           $patches = @(
-            @{ Dir = 'scripts\win_patches'; Repo = 'gui';    File = '01-gui-readback-cobjmacros.patch' },
-            @{ Dir = 'scripts\win_patches'; Repo = 'gui';    File = '02-gui-dialog-includes.patch'     },
             @{ Dir = 'scripts\win_patches'; Repo = 'gui';    File = '03-gui-titlebar-isvalid.patch'    },
             @{ Dir = 'scripts\win_patches'; Repo = 'vglyph'; File = '04-vglyph-empty-outline.patch'    },
             @{ Dir = 'scripts\win_patches'; Repo = 'gui';    File = '06-gui-sample-count.patch'        },
@@ -298,8 +309,9 @@ jobs:
           echo "bundled $(ls build/*.dll 2>/dev/null | wc -l) mingw64 DLLs"
 
       # Stage the demo projects/DBCs/samples + the ldd-resolved mingw64 runtime DLLs
-      # next to the exe, so this artifact is also runnable on a clean machine (the
-      # MSVC bundle remains the primary download).
+      # next to the exe, so this artifact runs on a clean machine. This mingw bundle is
+      # the RECOMMENDED Windows download: its Boehm GC works, and main.v's re-exec sets
+      # GC_FREE_SPACE_DIVISOR so RSS stays bounded (the msvc build's GC does not collect).
       - name: Stage bundle
         shell: pwsh
         run: |

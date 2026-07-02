@@ -364,8 +364,13 @@ Verified: a breakpoint at `main__main` resolves to `src/main.v` and stops there.
   `gui-msaa-sample-count`, `gui-window-resize`, `gui-dock-tab-separator`, + vglyph patches. **Dropped** (now upstream at this
   pin): `gui-closure-reclaim` (→ gui#62), the gcc-16 C-bridge `01`/`02` (→ native-Windows work).
   Validated: blobly_net builds with no closure patches; live RSS plateaus ~330 MB. **Windows CI/build
-  stays on `68b9302`** — its `de365a1` V can't compile gui#62 (no closure API); the leak is Linux-only
-  so Windows is unaffected (bump once a master-built V Windows asset exists).
+  bumped 68b9302 → `7a20a6a` (2026-06-30)** — see the status-log entry: the leak is NOT Linux-only (that
+  earlier claim was WRONG). The closure leak is platform-independent V codegen; the *fix* (master V +
+  gui#62) was Linux-only, so Windows — pinned to `de365a1` V + gui `68b9302` — leaked hard (Boehm GC
+  "Too many heap sections"). Windows now builds **master V** (compiled in CI from the de365a1 bootstrap;
+  `v up` to master locally) + gui `7a20a6a`, matching Linux. At LATEST gui/vglyph (`1caebb3`/`75b508d`,
+  2026-06-24) patches 01/02/03/04/06 are ALL upstream — but we pin `7a20a6a` (validated), where 03/04/06
+  still apply; bumping to latest to shed them needs re-porting `07`/`08` (a clean follow-up).
 - vlang/**markdown** (md4c): pinned **`ef2f101`**, in `~/.vmodules/markdown`. NEW build dependency
   (2026-06-30) — `src/main.v` uses `markdown.to_html()` to render the Help docs to HTML for the
   in-browser view. NOT a gui dependency, so all three GUI-build CI jobs (`ci.yml` gui-build +
@@ -1352,3 +1357,23 @@ prompt for a password.
   finds no Linux browser under WSL → route to the Windows browser via `wslview`/`explorer.exe` (wslpath
   UNC, launched through `os.new_process` so backslashes survive). TODO: Linux/AppImage bundle (the Linux
   CI job is compile-only today).
+- 2026-06-30: **Windows memory leak FIXED — the packages were built with pre-closure-fix V.** User hit a
+  fast unbounded leak on BOTH Windows builds (msvc + mingw) → Boehm GC `Too many heap sections`; WSL was
+  fine. Root cause: it's the **V capturing-closure-context leak** (the 2026-06-13 bug), and the *fix*
+  (master V's `closure.Lifetime` API + gui#62 calling it) had only been adopted on **Linux** (gui
+  `7a20a6a` + master `~/v`). **Windows CI/build were still pinned to prebuilt V `de365a1` + gui `68b9302`**
+  — both predate the fix — so every Windows package leaked. The CLAUDE.md note claiming "the leak is
+  Linux-only so Windows is unaffected" was **backwards** (it was based on the retracted 2026-06-07 vglyph
+  theory): the leak is platform-independent V codegen; only the *fix* was Linux-only. Fix: build Windows
+  with **master V** + gui **`7a20a6a`**, mirroring Linux. No prebuilt master V exists for Windows (vlang/v
+  weeklies stale since Feb, release is 0.5.1), so we use a **prebuilt master-V Windows asset**:
+  compiling V on the runner WEDGES the runner's C compiler (the documented makev.bat hang — and the
+  app build with bleeding-edge tip hung too), so we mint `v-c0624b2-windows.zip` (V master pinned to
+  the validated Linux commit `c0624b2`, built on a Windows box via `v self` + uploaded to the
+  `v-toolchain` release) and **CI just downloads it** (`windows.yml`, both msvc+mingw). **Local**
+  `setup_win.ps1` pins V to `c0624b2` (`git checkout c0624b2` + `v self`, NOT `v up` to tip). gui
+  `68b9302 → 7a20a6a` in both; **dropped win-patches 01/02** (gcc-16 C-bridge, now upstream at 7a20a6a),
+  kept 03/04/06/07/08 (verified to apply on a clean 7a20a6a). Why pin `c0624b2` not tip: bleeding-edge
+  master can carry regressions (a tip build hung the app compile); `c0624b2` is the exact commit the
+  Linux build runs leak-free. ⚠ Pending: maintainer mints+uploads the asset, then CI build + on-box
+  leak-verify.
