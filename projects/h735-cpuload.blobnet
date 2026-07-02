@@ -1,0 +1,37 @@
+# Blobly Net project — watch a real STM32H735 report its CPU load over the wire.
+#
+# blobly_emb's `h735_app` example runs several function blocks on the Loom on a real
+# STM32H735G-DK (M7 @ 550 MHz) and transmits a CpuLoad frame (id 0x7E0) on FDCAN1
+# every 500 ms — one byte per core = load percent. The board has a single M7, so only
+# Load_Core0 moves; a Governor FB ramps a synthetic load up and down, so in the
+# Signals/Trace panels Load_Core0 breathes ~0 %..~65 % on a ~12 s triangle. This is
+# the on-silicon sibling of scale-cpuload.blobnet (which watches the host `scale`
+# example on vcan0).
+#
+# Wiring: H735G-DK FDCAN1 CANH/CANL <-> USB-CAN adapter, 500 kbit/s classic, 120 Ω at
+# each end. Flash the board first:
+#   (cd blobly_emb/examples/h735_app && make flash)
+#
+# Run it (pick the channel line that matches where blobly_net runs — see below):
+#   BLOBLY_PROJECT=projects/h735-cpuload.blobnet ./scripts/run.sh   # -> Start
+project:
+  name: h735-cpuload
+  version: 1
+
+channels:
+  - name: CAN1
+    type: can            # classic CAN; CpuLoad is an 8-byte standard frame
+    # Linux / WSL (SocketCAN): bring the adapter up as can0 @ 500k first, e.g.
+    #   sudo ip link set can0 type can bitrate 500000 && sudo ip link set can0 up
+    interface: can0
+    # Windows (PEAK driver) alternative — replace the line above with:
+    #   interface: pcan:PCAN_USBBUS1@500000   # handle from PCAN-View
+    bitrate: 500000
+    mode: monitor        # observe the load frames the board sends
+    listen_only: false   # MUST ACK: a lone H735 transmitter with no ACK goes
+                         # error-passive and its telemetry stalls. Unlike the vcan
+                         # scale project (virtual bus self-ACKs), a real adapter has to
+                         # be a normal node here so the board's frames are acknowledged.
+    enabled: true
+    databases:
+      - dbc/cpuload.dbc
