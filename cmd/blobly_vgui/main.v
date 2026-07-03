@@ -136,6 +136,8 @@ mut:
 	script_path_buf []u8
 	senders         []SenderRT // flattened project senders (Generators)
 	sims            []SimCfg   // per-channel in-process simulation workloads
+	sim_enabled     map[string]bool // '<iface>:<node>' -> enabled (Simulation panel)
+	sim_gen         u64             // bumped when sim_enabled changes -> sim_loop rebuilds
 	// worker-thread outputs (guarded by mu)
 	diag_log    []string
 	diag_busy   bool
@@ -145,7 +147,8 @@ mut:
 
 // SenderRT is a project sender bound to its channel iface (Generators panel).
 struct SenderRT {
-	iface  string
+	iface string
+mut:
 	sender project.Sender
 }
 
@@ -225,6 +228,7 @@ fn (mut app App) start() {
 		spawn sim_loop(app, sc)
 		spawn diag_server_loop(app, sc.iface)
 	}
+	spawn gen_loop(app) // cyclic senders
 }
 
 // stop signals the RX threads to exit (they re-check on the recv timeout).
@@ -440,11 +444,26 @@ fn sim_loop(app &App, sc SimCfg) {
 		return
 	}
 	mut engine := sim.Engine{}
-	for n in sc.nodes {
-		engine.ecus << build_node(sc.db, n)
-	}
+	mut local_gen := u64(0) // rebuild when a.sim_gen changes (ECU enable/disable)
+	mut built := false
 	t0 := time.ticks()
 	for a.running {
+		if !built || a.sim_gen != local_gen {
+			built = true
+			local_gen = a.sim_gen
+			a.mu.lock()
+			mut enabled := map[string]bool{}
+			for k, v in a.sim_enabled {
+				enabled[k] = v
+			}
+			a.mu.unlock()
+			engine = sim.Engine{}
+			for n in sc.nodes {
+				if enabled['${sc.iface}:${n.name}'] or { true } {
+					engine.ecus << build_node(sc.db, n)
+				}
+			}
+		}
 		now_ms := f64(time.ticks() - t0)
 		for f in engine.due_frames(now_ms) {
 			bus.send(f) or {}
@@ -456,6 +475,31 @@ fn sim_loop(app &App, sc SimCfg) {
 		}
 	}
 	bus.close()
+}
+
+// gen_loop fires cyclic senders at their cycle_ms while the measurement runs.
+fn gen_loop(app &App) {
+	mut a := unsafe { app }
+	mut last := map[int]i64{}
+	for a.running {
+		now := time.ticks()
+		mut fire := []SenderRT{}
+		a.mu.lock()
+		for i, sr in a.senders {
+			if sr.sender.trigger == 'cyclic' && sr.sender.cycle_ms > 0 {
+				lf := last[i] or { i64(0) }
+				if now - lf >= i64(sr.sender.cycle_ms) {
+					last[i] = now
+					fire << sr
+				}
+			}
+		}
+		a.mu.unlock()
+		for sr in fire {
+			a.fire_sender(sr)
+		}
+		time.sleep(8 * time.millisecond)
+	}
 }
 
 // diag_server_loop runs the native UDS server (mirror of the tester: rx 0x7E0, tx 0x7E8)
@@ -705,6 +749,7 @@ fn main() {
 
 		vgui.frame_begin()
 		draw_menubar(mut app, rx)
+		draw_toolbar(mut app, rx)
 		draw_activity_bar(mut app)
 		vgui.same_line()
 		vgui.dockspace()
@@ -714,7 +759,7 @@ fn main() {
 			draw_buses(mut app, chans)
 		}
 		if app.show_sim {
-			draw_sim(app)
+			draw_sim(mut app)
 		}
 		if app.show_symbols {
 			draw_symbols(mut app)
@@ -885,45 +930,50 @@ fn draw_menubar(mut app App, rx u64) {
 			}
 			vgui.menu_end()
 		}
-		vgui.text('  ')
-		if app.running {
-			if vgui.small_button('Stop') {
-				app.stop()
-				app.notify('stopped')
-			}
-		} else {
-			if vgui.small_button('Start') {
-				app.start()
-				app.notify('started')
-			}
-		}
-		vgui.same_line()
-		if app.running {
-			vgui.text_colored(90, 200, 120, 'running')
-		} else {
-			vgui.text_colored(210, 120, 120, 'stopped')
-		}
-		vgui.same_line()
-		vgui.text('· RX ${rx} TX ${app.tx_count}')
-		vgui.same_line()
-		if vgui.small_button(if app.paused { 'Resume' } else { 'Pause' }) {
-			app.paused = !app.paused
-		}
-		vgui.same_line()
-		if vgui.small_button('Clear') {
-			app.clear_trace()
-		}
-		vgui.same_line()
-		if vgui.small_button(if app.recording { 'Stop Rec' } else { 'Record' }) {
-			app.toggle_record()
-		}
-		vgui.same_line()
-		if vgui.small_button(if app.dark { 'Light' } else { 'Dark' }) {
-			app.dark = !app.dark
-			vgui.set_theme(app.dark)
-		}
 		vgui.menu_bar_end()
 	}
+}
+
+// draw_toolbar is the button/status strip BELOW the menu bar (Start/Stop, live status,
+// Pause/Clear/Record, theme).
+fn draw_toolbar(mut app App, rx u64) {
+	if app.running {
+		if vgui.button('Stop') {
+			app.stop()
+			app.notify('stopped')
+		}
+	} else {
+		if vgui.button('Start') {
+			app.start()
+			app.notify('started')
+		}
+	}
+	vgui.same_line()
+	if app.running {
+		vgui.text_colored(90, 200, 120, 'running')
+	} else {
+		vgui.text_colored(210, 120, 120, 'stopped')
+	}
+	vgui.same_line()
+	vgui.text('· RX ${rx}  TX ${app.tx_count}  ·  ${app.proj_name}   ')
+	vgui.same_line()
+	if vgui.button(if app.paused { 'Resume' } else { 'Pause' }) {
+		app.paused = !app.paused
+	}
+	vgui.same_line()
+	if vgui.button('Clear') {
+		app.clear_trace()
+	}
+	vgui.same_line()
+	if vgui.button(if app.recording { 'Stop Rec' } else { 'Record' }) {
+		app.toggle_record()
+	}
+	vgui.same_line()
+	if vgui.button(if app.dark { 'Light' } else { 'Dark' }) {
+		app.dark = !app.dark
+		vgui.set_theme(app.dark)
+	}
+	vgui.separator()
 }
 
 // channel state colour + short ASCII label (imgui's default font is ASCII-only):
@@ -940,7 +990,7 @@ fn chan_state(c Chan) (u8, u8, u8, string) {
 
 // draw_sim lists the in-process simulation workload: each channel's simulated ECUs,
 // expandable to their signal generators + request/response rules.
-fn draw_sim(app &App) {
+fn draw_sim(mut app App) {
 	if !vgui.begin('Simulation') {
 		vgui.end()
 		return
@@ -950,10 +1000,21 @@ fn draw_sim(app &App) {
 		vgui.end()
 		return
 	}
+	vgui.text_dim('tick to enable/disable an ECU live')
 	for sc in app.sims {
 		vgui.separator_text(sc.iface)
 		for node in sc.nodes {
-			hdr := '${node.name}  (${node.signals.len} sig / ${node.responses.len} resp)###${sc.iface}:${node.name}'
+			key := '${sc.iface}:${node.name}'
+			en := app.sim_enabled[key] or { true }
+			nen := vgui.checkbox('##simen_${key}', en)
+			if nen != en {
+				app.mu.lock()
+				app.sim_enabled[key] = nen
+				app.sim_gen++
+				app.mu.unlock()
+			}
+			vgui.same_line()
+			hdr := '${node.name}  (${node.signals.len} sig / ${node.responses.len} resp)###${key}'
 			if vgui.tree_node(hdr) {
 				for g in node.signals {
 					vgui.text('    ${g.signal}: ${g.typ}')
@@ -1145,6 +1206,15 @@ fn draw_buses(mut app App, chans []Chan) {
 		return
 	}
 	vgui.text('${app.proj_name} · ${chans.len} channel(s)')
+	if vgui.button('Discover') {
+		// probe DoIP entities on the configured host (results in the DoIP panel)
+		app.mu.lock()
+		app.doip_ents = []
+		app.mu.unlock()
+		spawn doip_worker(app, vgui.buf_str(app.doip_host_buf))
+		app.show_doip = true
+		app.notify('discovering DoIP on ${vgui.buf_str(app.doip_host_buf)}…')
+	}
 	vgui.separator_text('channels')
 	for i, c in chans {
 		new := vgui.checkbox('##en${i}', c.enabled)
@@ -1303,22 +1373,43 @@ fn draw_trace_grouped(app &App, rows []TraceRow, filt string) {
 		}
 		return if a.ch < b.ch { -1 } else if a.ch > b.ch { 1 } else { 0 }
 	})
-	for g in groups {
-		r := g.last
-		// ### makes the tree-node ID depend ONLY on the identity (id/dir/ch), so neither the
-		// live-changing label nor the sort resets the expand state.
-		hdr := '${g.dir}  ${idstr(g.id, g.ext)}  ${r.name}  x${g.count}  ${hex(r.data)}###${g.dir}|${g.ch}|${g.id}|${g.ext}'
-		if vgui.tree_node(hdr) {
-			if m := app.find_message(g.id, g.ext) {
-				for s in m.active_signals(r.data) {
-					lbl := s.label(r.data)
-					extra := if lbl != '' { ' (${lbl})' } else { '' }
-					unit := if s.unit != '' { ' ${s.unit}' } else { '' }
-					vgui.text('    ${s.name} = ${s.physical(r.data):.3}${unit}${extra}')
+	if vgui.table_begin('gtrace', 5) {
+		vgui.table_setup_col('id / name', 210)
+		vgui.table_setup_col('ch', 52)
+		vgui.table_setup_col('dir', 34)
+		vgui.table_setup_col('count', 60)
+		vgui.table_setup_col('data', 0)
+		vgui.table_freeze_top()
+		vgui.table_headers()
+		for g in groups {
+			r := g.last
+			vgui.table_row()
+			vgui.table_next_col()
+			// ### keys the tree id on identity only, so the live label / sort don't reset it.
+			open := vgui.tree_node_table('${idstr(g.id, g.ext)}  ${r.name}###${g.dir}|${g.ch}|${g.id}|${g.ext}')
+			vgui.table_cell(g.ch)
+			vgui.table_cell(g.dir)
+			vgui.table_cell('${g.count}')
+			vgui.table_cell(if r.rtr { 'RTR' } else { hex(r.data) })
+			if open {
+				if m := app.find_message(g.id, g.ext) {
+					for s in m.active_signals(r.data) {
+						lbl := s.label(r.data)
+						extra := if lbl != '' { ' (${lbl})' } else { '' }
+						unit := if s.unit != '' { ' ${s.unit}' } else { '' }
+						vgui.table_row()
+						vgui.table_next_col()
+						vgui.text('    ${s.name}')
+						vgui.table_next_col()
+						vgui.table_next_col()
+						vgui.table_next_col()
+						vgui.table_cell('${s.physical(r.data):.3}${unit}${extra}')
+					}
 				}
+				vgui.tree_pop()
 			}
-			vgui.tree_pop()
 		}
+		vgui.table_end()
 	}
 }
 
@@ -1540,6 +1631,7 @@ fn draw_gen(mut app App) {
 		vgui.end()
 		return
 	}
+	vgui.text_dim('cyclic senders auto-fire while running')
 	for i, sr in app.senders {
 		s := sr.sender
 		if vgui.button('Fire##${i}') {
@@ -1547,9 +1639,54 @@ fn draw_gen(mut app App) {
 		}
 		vgui.same_line()
 		key := if s.key != '' { ' [${s.key}]' } else { '' }
-		vgui.text('${s.name}${key} · ${s.trigger}')
+		vgui.text('${s.name}${key}')
+		// trigger editor: manual | key | cyclic
+		vgui.same_line()
+		if vgui.toggle_button('manual##${i}', s.trigger == 'manual', 0) {
+			app.set_trigger(i, 'manual')
+		}
+		vgui.same_line()
+		if vgui.toggle_button('key##${i}', s.trigger == 'key', 0) {
+			app.set_trigger(i, 'key')
+		}
+		vgui.same_line()
+		if vgui.toggle_button('cyclic##${i}', s.trigger == 'cyclic', 0) {
+			app.set_trigger(i, 'cyclic')
+		}
+		if s.trigger == 'cyclic' {
+			vgui.same_line()
+			cm := if s.cycle_ms > 0 { s.cycle_ms } else { 100 }
+			vgui.text('${cm} ms')
+			vgui.same_line()
+			if vgui.small_button('-##${i}') {
+				app.set_cycle(i, if cm > 60 { cm - 50 } else { 10 })
+			}
+			vgui.same_line()
+			if vgui.small_button('+##${i}') {
+				app.set_cycle(i, cm + 50)
+			}
+		}
 	}
 	vgui.end()
+}
+
+fn (mut app App) set_trigger(i int, t string) {
+	app.mu.lock()
+	if i < app.senders.len {
+		app.senders[i].sender.trigger = t
+		if t == 'cyclic' && app.senders[i].sender.cycle_ms <= 0 {
+			app.senders[i].sender.cycle_ms = 100
+		}
+	}
+	app.mu.unlock()
+}
+
+fn (mut app App) set_cycle(i int, ms int) {
+	app.mu.lock()
+	if i < app.senders.len {
+		app.senders[i].sender.cycle_ms = ms
+	}
+	app.mu.unlock()
 }
 
 fn (mut app App) fire_sender(sr SenderRT) {

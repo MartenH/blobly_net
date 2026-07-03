@@ -53,6 +53,7 @@ fn C.vgui_checkbox(&char, int) int
 fn C.vgui_text_colored(int, int, int, &char)
 fn C.vgui_small_button(&char) int
 fn C.vgui_spacing()
+fn C.vgui_separator()
 fn C.vgui_quit()
 fn C.vgui_plot_begin(&char, f32) int
 fn C.vgui_plot_line(&char, &f32, &f32, int)
@@ -83,6 +84,7 @@ fn C.vgui_table_headers()
 fn C.vgui_table_row()
 fn C.vgui_table_cell(&char)
 fn C.vgui_table_next_col()
+fn C.vgui_tree_node_table(&char) int
 fn C.vgui_table_setup_col(&char, f32)
 fn C.vgui_table_freeze_top()
 fn C.vgui_table_end()
@@ -205,6 +207,10 @@ pub fn small_button(label string) bool {
 
 pub fn spacing() {
 	C.vgui_spacing()
+}
+
+pub fn separator() {
+	C.vgui_separator()
 }
 
 // quit requests the main window to close (ends the run loop).
@@ -368,6 +374,11 @@ pub fn table_end() {
 // table_next_col advances to the next column without emitting text (for arbitrary widgets).
 pub fn table_next_col() {
 	C.vgui_table_next_col()
+}
+
+// tree_node_table is a tree node inside a table cell (spans all columns for the click).
+pub fn tree_node_table(label string) bool {
+	return C.vgui_tree_node_table(label.str) == 1
 }
 
 // table_setup_col declares a column: width > 0 = fixed pixels, width <= 0 = stretch.

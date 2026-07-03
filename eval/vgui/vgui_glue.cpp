@@ -183,6 +183,7 @@ void vgui_text_colored(int r, int g, int b, const char* s) {
 }
 int  vgui_small_button(const char* label) { return ImGui::SmallButton(label) ? 1 : 0; }
 void vgui_spacing() { ImGui::Spacing(); }
+void vgui_separator() { ImGui::Separator(); }
 void vgui_quit() { if (g_win) glfwSetWindowShouldClose(g_win, 1); }
 
 // vgui_dock_3 builds a one-time 3-column docked layout: `a` (left, aw fraction) | `b`
@@ -282,8 +283,13 @@ int  vgui_button(const char* label) { return ImGui::Button(label) ? 1 : 0; }
 void vgui_same_line() { ImGui::SameLine(); }
 void vgui_separator_text(const char* s) { ImGui::SeparatorText(s); }
 int  vgui_table_begin(const char* id, int cols) {
+    // no RowBg (no zebra striping) — borders + scroll + resizable columns only.
     return ImGui::BeginTable(id, cols,
-        ImGuiTableFlags_Borders|ImGuiTableFlags_RowBg|ImGuiTableFlags_ScrollY|ImGuiTableFlags_Resizable) ? 1 : 0;
+        ImGuiTableFlags_Borders|ImGuiTableFlags_ScrollY|ImGuiTableFlags_Resizable) ? 1 : 0;
+}
+// tree node inside a table cell (spans all columns for the click/arrow). Returns open.
+int vgui_tree_node_table(const char* label) {
+    return ImGui::TreeNodeEx(label, ImGuiTreeNodeFlags_SpanAllColumns) ? 1 : 0;
 }
 void vgui_table_col(const char* c) { ImGui::TableSetupColumn(c); }
 void vgui_table_headers() { ImGui::TableHeadersRow(); }
