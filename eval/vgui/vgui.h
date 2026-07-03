@@ -20,6 +20,11 @@ void vgui_swimlane(const char* id, int n_lanes, const char** lane_labels,
                    const VBar* bars, int n_bars, float full_span_us);
 void vgui_set_next_window(float,float,float,float);
 void vgui_set_window_focus(const char*);
+void vgui_indent_x(float w);
+void vgui_indent_y(float h);
+void vgui_push_frame_padding(float x, float y);
+void vgui_push_window_padding(float x, float y);
+void vgui_pop_style_var(int n);
 void vgui_dock_2col(const char* left, const char* right, float ratio);
 int  vgui_menu_bar_begin(void);
 void vgui_menu_bar_end(void);

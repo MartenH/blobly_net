@@ -42,6 +42,11 @@ fn C.vgui_dump_ppm(&char)
 fn C.vgui_swimlane(&char, int, &&char, voidptr, int, f32)
 fn C.vgui_set_next_window(f32, f32, f32, f32)
 fn C.vgui_set_window_focus(&char)
+fn C.vgui_indent_x(f32)
+fn C.vgui_indent_y(f32)
+fn C.vgui_push_frame_padding(f32, f32)
+fn C.vgui_push_window_padding(f32, f32)
+fn C.vgui_pop_style_var(int)
 fn C.vgui_dock_2col(&char, &char, f32)
 fn C.vgui_dock_3(&char, &char, &char, f32, f32)
 fn C.vgui_menu_bar_begin() int
@@ -161,6 +166,29 @@ pub fn set_next_window(x f32, y f32, w f32, h f32) {
 // set_window_focus brings a docked window's tab to the front by name.
 pub fn set_window_focus(name string) {
 	C.vgui_set_window_focus(name.str)
+}
+
+// indent_x advances the cursor horizontally on the current line (left inset / spacer).
+pub fn indent_x(w f32) {
+	C.vgui_indent_x(w)
+}
+
+// indent_y nudges the cursor down (small top gap).
+pub fn indent_y(h f32) {
+	C.vgui_indent_y(h)
+}
+
+// push_frame_padding / push_window_padding + pop_style_var: scoped style overrides.
+pub fn push_frame_padding(x f32, y f32) {
+	C.vgui_push_frame_padding(x, y)
+}
+
+pub fn push_window_padding(x f32, y f32) {
+	C.vgui_push_window_padding(x, y)
+}
+
+pub fn pop_style_var(n int) {
+	C.vgui_pop_style_var(n)
 }
 
 // dock_2col docks `left` and `right` side-by-side in the main window (one-time layout).

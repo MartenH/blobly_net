@@ -121,7 +121,7 @@ mut:
 	sel_id        int = -1 // selected message id (-1 = none)
 	sel_ext       bool
 	watch         []Watch // signals plotted in Graphics
-	trace_grouped bool    // Trace: grouped-by-id (expandable) vs chronological
+	trace_grouped bool = true // Trace: grouped-by-id (expandable) vs chronological
 	// TX bus (Send / Generators) — opened on the first monitor channel at Start
 	send_bus      ?transport.Bus
 	send_iface    string
@@ -855,7 +855,10 @@ fn main() {
 // draw_activity_bar is the VS Code-style vertical strip of panel toggles on the far left.
 // Each button toggles a panel's visibility and is tinted when the panel is shown.
 fn draw_activity_bar(mut app App) {
-	vgui.child_wh('##activity', 56, 0)
+	// narrow strip with a tight inner padding so the 3-char labels aren't clipped
+	vgui.push_window_padding(4 * app.ui_scale, 6 * app.ui_scale)
+	vgui.child_wh('##activity', 60 * app.ui_scale, 0)
+	vgui.push_frame_padding(4 * app.ui_scale, 6 * app.ui_scale)
 	if vgui.toggle_button('Bus', app.show_buses, -1) {
 		app.show_buses = !app.show_buses
 	}
@@ -907,7 +910,9 @@ fn draw_activity_bar(mut app App) {
 	if vgui.toggle_button('Hlp', app.show_help, -1) {
 		app.show_help = !app.show_help
 	}
+	vgui.pop_style_var(1) // frame padding
 	vgui.child_end()
+	vgui.pop_style_var(1) // window padding
 }
 
 fn draw_menubar(mut app App, rx u64) {
@@ -972,6 +977,8 @@ fn draw_menubar(mut app App, rx u64) {
 // draw_toolbar is the button/status strip BELOW the menu bar (Start/Stop, live status,
 // Pause/Clear/Record, theme).
 fn draw_toolbar(mut app App, rx u64) {
+	// inset from the window's left edge (host window has zero padding)
+	vgui.indent_x(8 * app.ui_scale)
 	// primary action — big and colour-coded (started/stopped a lot): green Start / red Stop
 	bw := 110 * app.ui_scale
 	bh := 40 * app.ui_scale

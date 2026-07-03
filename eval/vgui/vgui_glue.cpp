@@ -348,6 +348,14 @@ int vgui_input_double(const char* label, double* v) {
     return ImGui::InputDouble(label, v, 0.0, 0.0, "%.3f") ? 1 : 0;
 }
 void vgui_set_next_item_width(float w) { ImGui::SetNextItemWidth(w); }
+// advance the cursor horizontally on the current line (a left inset / spacer).
+void vgui_indent_x(float w) { ImGui::SetCursorPosX(ImGui::GetCursorPosX() + w); }
+// nudge the cursor down (small top gap).
+void vgui_indent_y(float h) { ImGui::SetCursorPosY(ImGui::GetCursorPosY() + h); }
+// scoped style overrides (e.g. tighter padding for the activity-bar buttons).
+void vgui_push_frame_padding(float x, float y) { ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(x, y)); }
+void vgui_push_window_padding(float x, float y) { ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(x, y)); }
+void vgui_pop_style_var(int n) { ImGui::PopStyleVar(n); }
 
 // collapsible tree node (grouped trace rows). If open, render children then call tree_pop.
 int  vgui_tree_node(const char* label) { return ImGui::TreeNode(label) ? 1 : 0; }
