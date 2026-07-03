@@ -6,6 +6,9 @@
 #include "implot.h"
 #include "backends/imgui_impl_glfw.h"
 #include "backends/imgui_impl_opengl3.h"
+#ifdef IMGUI_ENABLE_FREETYPE
+#include "misc/freetype/imgui_freetype.h"
+#endif
 #include <GLFW/glfw3.h>
 #include <cstdio>
 #include <cstdlib>
@@ -121,6 +124,9 @@ int vgui_init(const char* title, int w, int h, int event_driven) {
     ImPlot::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_ViewportsEnable;
+#ifdef IMGUI_ENABLE_FREETYPE
+    io.Fonts->SetFontLoader(ImGuiFreeType::GetFontLoader()); // crisp text (hinting + AA)
+#endif
     vgui_set_theme(1);
     ImGui_ImplGlfw_InitForOpenGL(g_win, true);
     ImGui_ImplOpenGL3_Init("#version 130");

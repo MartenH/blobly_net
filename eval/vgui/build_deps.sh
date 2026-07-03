@@ -28,15 +28,25 @@ clone_pin "$CIMPLOT_REPO" "$CIMPLOT_REV" "$BLD/cimplot"
 CIMGUI="$BLD/cimgui"; IMGUI="$CIMGUI/imgui"; CIMPLOT="$BLD/cimplot"
 INC="-I$CIMGUI -I$IMGUI -I$IMGUI/backends -I$CIMPLOT -I$CIMPLOT/implot -I$HERE"
 
+# FreeType rasterizer — imgui's built-in stb_truetype looks thin/blurry next to a
+# HarfBuzz/FreeType toolkit (e.g. vlang/gui's vglyph). Enabling FreeType makes UI text
+# crisp (proper hinting + grayscale AA). Needs freetype2 dev headers (already a project
+# dep for vglyph) and imgui's misc/freetype/imgui_freetype.cpp compiled in.
+FT_CFLAGS="$(pkg-config --cflags freetype2 2>/dev/null || echo -I/usr/include/freetype2)"
+
 # CRITICAL: every TU must share the SAME imgui config, or sizeof(ImGuiIO) differs across
 # objects and imgui aborts at startup ("Mismatched struct layout!"). Keep this flag set
 # identical for core, backends, cimplot, AND the glue.
-CFG="-O2 -fno-threadsafe-statics -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS=1 -DIMGUI_DEFINE_MATH_OPERATORS $INC"
+# NOTE: define BOTH freetype AND stb_truetype — defining FREETYPE alone undefines
+# STB_TRUETYPE (imgui_internal.h), which removes the stb loader symbol cimgui.cpp still
+# references (compile error). Keeping both compiles clean; FreeType is the default loader.
+CFG="-O2 -fno-threadsafe-statics -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS=1 -DIMGUI_DEFINE_MATH_OPERATORS -DIMGUI_ENABLE_FREETYPE -DIMGUI_ENABLE_STB_TRUETYPE $FT_CFLAGS $INC"
 
-echo "compiling imgui core + cimgui + cimplot + backends + glue ..."
+echo "compiling imgui core + cimgui + cimplot + backends + freetype + glue ..."
 cd "$BLD"
 g++ $CFG -c \
 	"$IMGUI/imgui.cpp" "$IMGUI/imgui_draw.cpp" "$IMGUI/imgui_tables.cpp" "$IMGUI/imgui_widgets.cpp" \
+	"$IMGUI/misc/freetype/imgui_freetype.cpp" \
 	"$CIMGUI/cimgui.cpp" \
 	"$CIMPLOT/cimplot.cpp" "$CIMPLOT/implot/implot.cpp" "$CIMPLOT/implot/implot_items.cpp" \
 	"$IMGUI/backends/imgui_impl_glfw.cpp" "$IMGUI/backends/imgui_impl_opengl3.cpp" \

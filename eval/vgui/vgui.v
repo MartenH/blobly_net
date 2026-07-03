@@ -7,7 +7,7 @@ module vgui
 #flag -I@VMODROOT
 #flag @VMODROOT/libvgui_c.a
 // Linux/WSL: GLFW (X11) + GL + the C++ runtime the imgui/implot objects need.
-#flag linux -lglfw -lGL -lstdc++ -ldl -lm
+#flag linux -lglfw -lGL -lstdc++ -ldl -lm -lfreetype
 // Windows (mingw): link GLFW3 *statically* (-l:libglfw3.a, so no glfw3.dll/winpthread
 // to ship) + its Win32 deps (gdi32/imm32/shell32/user32) + opengl32; -lstdc++ for the
 // imgui/implot C++ objects, static libstdc++/libgcc so the exe carries no MinGW runtime
