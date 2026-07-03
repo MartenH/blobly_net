@@ -34,6 +34,7 @@ fn C.vgui_frame_end()
 fn C.vgui_shutdown()
 fn C.vgui_time() f64
 fn C.vgui_wake()
+fn C.vgui_add_font(&char, f32) int
 fn C.vgui_dump_ppm(&char)
 fn C.vgui_swimlane(&char, int, &&char, voidptr, int, f32)
 fn C.vgui_set_next_window(f32, f32, f32, f32)
@@ -103,6 +104,12 @@ pub fn shutdown() {
 // wake requests a repaint from another thread (unblocks the event-driven loop). Thread-safe.
 pub fn wake() {
 	C.vgui_wake()
+}
+
+// add_font loads a TTF as the UI font (call after init(), before the first frame). Returns
+// true on success. imgui asserts on a bad path, so the caller must verify the file exists.
+pub fn add_font(path string, size f32) bool {
+	return C.vgui_add_font(path.str, size) == 1
 }
 
 pub fn time() f64 {

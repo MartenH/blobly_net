@@ -104,6 +104,18 @@ void vgui_shutdown() {
     glfwTerminate();
 }
 double vgui_time() { return glfwGetTime(); }
+
+// vgui_add_font loads a TTF as the default UI font (call after vgui_init, before the loop).
+// Returns 1 on success. Caller should verify the file exists first (imgui asserts on a bad
+// path). Rebuilds the atlas so the GL backend re-uploads it.
+int vgui_add_font(const char* path, float size_px) {
+    ImGuiIO& io = ImGui::GetIO();
+    ImFont* f = io.Fonts->AddFontFromFileTTF(path, size_px);
+    if (!f) return 0;
+    io.FontDefault = f;
+    ImGui_ImplOpenGL3_DestroyDeviceObjects(); // force the font texture to rebuild next frame
+    return 1;
+}
 // vgui_wake posts an empty event to unblock glfwWaitEvents from ANOTHER thread — the
 // event-driven equivalent of gui's queue_command. glfwPostEmptyEvent is one of the few
 // thread-safe GLFW calls, so an RX/sim thread can call this to request a repaint.

@@ -11,6 +11,7 @@ void vgui_frame_end(void);
 void vgui_shutdown(void);
 double vgui_time(void);
 void vgui_wake(void);
+int  vgui_add_font(const char* path, float size_px);
 void vgui_dump_ppm(const char* path);
 void vgui_swimlane(const char* id, int n_lanes, const char** lane_labels,
                    const VBar* bars, int n_bars, float full_span_us);

@@ -20,6 +20,7 @@ import candb
 import telem
 import isotp
 import uds
+import sim
 import script
 import vgui
 
@@ -103,6 +104,7 @@ mut:
 	// Script (Lua on a worker thread)
 	script_path_buf []u8
 	senders         []SenderRT // flattened project senders (Generators)
+	sims            []SimCfg   // per-channel in-process simulation workloads
 	// worker-thread outputs (guarded by mu)
 	diag_log    []string
 	diag_busy   bool
@@ -114,6 +116,13 @@ mut:
 struct SenderRT {
 	iface  string
 	sender project.Sender
+}
+
+// SimCfg is one channel's in-process simulation workload (simulated ECUs + its DBC).
+struct SimCfg {
+	iface string
+	db    candb.Database
+	nodes []project.NodeCfg
 }
 
 // Watch identifies one plotted signal.
@@ -180,6 +189,11 @@ fn (mut app App) start() {
 			}
 		}
 	}
+	// spawn the in-process simulation workloads (driver-free sim ECUs + a UDS server)
+	for sc in app.sims {
+		spawn sim_loop(app, sc)
+		spawn diag_server_loop(app, sc.iface)
+	}
 }
 
 // stop signals the RX threads to exit (they re-check on the recv timeout).
@@ -229,6 +243,95 @@ fn parse_hex_bytes(s string) []u8 {
 		i += 2
 	}
 	return out
+}
+
+// merge_dbs loads + concatenates a channel's DBCs into one Database (for the sim engine).
+fn merge_dbs(paths []string) candb.Database {
+	mut msgs := []candb.Message{}
+	mut nodes := []string{}
+	for p in paths {
+		if db := candb.load_dbc_file(p) {
+			msgs << db.messages
+			nodes << db.nodes
+		}
+	}
+	return candb.Database{
+		messages: msgs
+		nodes:    nodes
+	}
+}
+
+fn gen_of(g project.GenCfg) sim.Gen {
+	return match g.typ {
+		'sine' { sim.gen_sine(g.offset, g.amplitude, g.freq, g.phase) }
+		'sawtooth' { sim.gen_sawtooth(g.min, g.max, g.period) }
+		'counter' { sim.gen_counter(g.start, g.step, g.modulo) }
+		'stepmod' { sim.gen_stepmod(g.period, g.count, g.base) }
+		else { sim.gen_const(g.value) }
+	}
+}
+
+fn build_node(db candb.Database, cfg project.NodeCfg) sim.SimEcu {
+	if cfg.signals.len == 0 && cfg.responses.len == 0 {
+		return sim.build_ecu(db, cfg.name)
+	}
+	mut gens := map[string]sim.Gen{}
+	for g in cfg.signals {
+		gens[g.signal] = gen_of(g)
+	}
+	mut rules := []sim.ResponseRule{}
+	for r in cfg.responses {
+		rules << sim.ResponseRule{
+			req_id:     r.request
+			resp_id:    r.response
+			byte_index: r.byte
+			add:        r.add
+		}
+	}
+	return sim.build_configured_ecu(db, cfg.name, gens, rules)
+}
+
+// sim_loop runs a channel's simulated ECUs on its bus: emit cyclic frames + answer
+// request/response rules. Driver-free on inproc:, real on vcan0/can0.
+fn sim_loop(app &App, sc SimCfg) {
+	a := unsafe { app }
+	mut bus := transport.open(sc.iface) or {
+		eprintln('sim ${sc.iface}: ${err}')
+		return
+	}
+	mut engine := sim.Engine{}
+	for n in sc.nodes {
+		engine.ecus << build_node(sc.db, n)
+	}
+	t0 := time.ticks()
+	for a.running {
+		now_ms := f64(time.ticks() - t0)
+		for f in engine.due_frames(now_ms) {
+			bus.send(f) or {}
+		}
+		if frame := bus.recv(5) {
+			for resp in engine.on_frame(frame) {
+				bus.send(resp) or {}
+			}
+		}
+	}
+	bus.close()
+}
+
+// diag_server_loop runs the native UDS server (mirror of the tester: rx 0x7E0, tx 0x7E8)
+// so the Diagnostics panel + Lua scripts work driver-free against simulated channels.
+fn diag_server_loop(app &App, iface string) {
+	a := unsafe { app }
+	mut ch := isotp.open_software(iface, diag_rx_id, diag_tx_id, false) or { return }
+	mut srv := uds.default_server()
+	for a.running {
+		req := ch.recv(50) or { continue }
+		resp := srv.handle(req)
+		if resp.len > 0 {
+			ch.send(resp) or {}
+		}
+	}
+	ch.close()
 }
 
 fn rx_loop(app &App, ci int, iface string) {
@@ -292,6 +395,33 @@ const lane_palette = [
 	[u8(140), 160, 60],
 ]
 
+// load_ui_font replaces imgui's blocky default (ProggyClean) with a real TTF: VGUI_FONT
+// if set, else the first available system monospace (DejaVu Sans Mono / Consolas). Keeping
+// it monospace keeps the hex/data columns aligned.
+fn load_ui_font() {
+	mut candidates := []string{}
+	env := os.getenv('VGUI_FONT')
+	if env != '' {
+		candidates << env
+	}
+	candidates << [
+		'/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
+		'/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+		'/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf',
+		'C:/Windows/Fonts/consola.ttf',
+		'C:/Windows/Fonts/segoeui.ttf',
+	]
+	sz := os.getenv('VGUI_FONT_SIZE').int()
+	size := if sz > 0 { f32(sz) } else { f32(16) }
+	for f in candidates {
+		if f != '' && os.exists(f) {
+			if vgui.add_font(f, size) {
+				return
+			}
+		}
+	}
+}
+
 fn main() {
 	proj_path := os.getenv_opt('BLOBLY_PROJECT') or { 'projects/trace-demo.blobnet' }
 	proj := project.load(proj_path) or {
@@ -335,10 +465,18 @@ fn main() {
 			}
 		}
 	}
-	// flatten project senders (Generators) + seed the input buffers
+	// flatten project senders (Generators) + build the sim workloads + seed input buffers
 	for ch in proj.channels {
 		for s in ch.senders {
 			app.senders << SenderRT{ch.iface, s}
+		}
+		nodes := ch.all_nodes()
+		if ch.enabled && nodes.len > 0 {
+			app.sims << SimCfg{
+				iface: ch.iface
+				db:    merge_dbs(ch.databases)
+				nodes: nodes
+			}
 		}
 	}
 	app.send_id_buf = mkbuf('101', 24)
@@ -359,6 +497,7 @@ fn main() {
 		eprintln('vgui.init failed')
 		return
 	}
+	load_ui_font()
 	if os.getenv('BLOBLY_AUTOSTART') != '' {
 		app.start()
 	}
