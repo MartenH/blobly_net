@@ -306,6 +306,8 @@ mut:
 	telem_source    string                    // manifest source label(s) for the header
 	telem_rev       u64                       // bumped on every ingest/clear -> Trace Chart cache key
 	tchart_fb       bool                      // Trace Chart: group lanes by FB (else per-handler)
+	tchart_start    f32                       // Trace Chart view: left edge, µs relative to tmin (pan)
+	tchart_span     f32                       // Trace Chart view: visible span in µs (0 = full/auto-fit)
 	status         string
 	logs           []StatusMsg // scrolling event log (Log panel); newest appended
 	t0             i64
@@ -7034,8 +7036,25 @@ fn tchart_panel(mut window gui.Window) gui.View {
 			tmax = e
 		}
 	}
-	span := if tmax > tmin { tmax - tmin } else { f32(1) }
-	// pre-scale bars
+	full_span := if tmax > tmin { tmax - tmin } else { f32(1) }
+	// Zoom/pan view window (In/Out/Full + ◀/▶ in the header). tchart_span == 0 means
+	// fit-all; otherwise it's the visible span, clamped to [tchart_min_span, full_span],
+	// and tchart_start is the pan offset clamped so the window stays inside the trace.
+	mut vspan := if app.tchart_span > 0 { app.tchart_span } else { full_span }
+	if vspan > full_span {
+		vspan = full_span
+	}
+	if vspan < tchart_min_span {
+		vspan = f32_min(tchart_min_span, full_span)
+	}
+	mut vstart := app.tchart_start
+	if vstart > full_span - vspan {
+		vstart = full_span - vspan
+	}
+	if vstart < 0 {
+		vstart = 0
+	}
+	// pre-scale bars (t0 relative to tmin; view offset applied in draw_tchart)
 	mut bars := []TBar{cap: app.telem_records.len}
 	for tr in app.telem_records {
 		r := tr.rec
@@ -7077,24 +7096,28 @@ fn tchart_panel(mut window gui.Window) gui.View {
 
 	canvas := gui.draw_canvas(
 		id:      'tchart_canvas'
-		version: tchart_version(app, bars.len, nlanes, cw, ch)
+		version: tchart_version(app, bars.len, nlanes, cw, ch, vstart, vspan)
 		width:   cw
 		height:  ch
 		color:   bg
 		radius:  3
-		on_draw: fn [bars, span, nlanes, lane_h, cw, ch] (mut dc gui.DrawContext) {
-			draw_tchart(mut dc, bars, span, nlanes, lane_h, cw, ch)
+		on_draw: fn [bars, vstart, vspan, nlanes, lane_h, cw, ch] (mut dc gui.DrawContext) {
+			draw_tchart(mut dc, bars, vstart, vspan, nlanes, lane_h, cw, ch)
 		}
 	)
 
-	// time-axis labels (µs range) under the canvas
+	// time-axis labels (view window, in ms) under the canvas. When zoomed the left
+	// edge is no longer 0, so both ends are labelled relative to the trace start.
+	zoomed := app.tchart_span > 0 && vspan < full_span - 0.5
+	span_note := if zoomed { ' · zoom ${(full_span / vspan):.1f}×' } else { '' }
 	axis := gui.row(
 		spacing: sc(6)
 		content: [
 			gui.row(min_width: label_w, max_width: label_w, content: []),
-			gui.text(text: '0 µs', text_style: gui.theme().n5),
+			gui.text(text: '${(f64(vstart) / 1000.0):.2} ms', text_style: gui.theme().n5),
 			gui.row(sizing: gui.fill_fit, content: []),
-			gui.text(text: '${i64(span)} µs (span ${(f64(span) / 1000.0):.2} ms)', text_style: gui.theme().n5),
+			gui.text(text: '${(f64(vstart + vspan) / 1000.0):.2} ms (${(f64(vspan) / 1000.0):.2} ms${span_note})',
+				text_style: gui.theme().n5),
 		]
 	)
 
@@ -7118,7 +7141,69 @@ fn tchart_panel(mut window gui.Window) gui.View {
 	)
 }
 
-// tchart_header: title + records/handlers count + a Handlers/By-FB toggle + Clear.
+// tchart_full_span returns the total trace duration (µs) across all captured records —
+// the reference the zoom/pan window is measured against.
+fn (app &App) tchart_full_span() f32 {
+	mut tmin := f32(3.4e38)
+	mut tmax := f32(0)
+	for tr in app.telem_records {
+		s := f32(tr.rec.start_us)
+		e := s + f32(tr.rec.cpu_us)
+		if s < tmin {
+			tmin = s
+		}
+		if e > tmax {
+			tmax = e
+		}
+	}
+	return if tmax > tmin { tmax - tmin } else { f32(1) }
+}
+
+// tchart_zoom scales the visible span about its centre (factor < 1 = In, > 1 = Out).
+// Zooming out past the full trace snaps back to fit-all (tchart_span = 0).
+fn (mut app App) tchart_zoom(factor f32) {
+	full := app.tchart_full_span()
+	cur := if app.tchart_span > 0 { app.tchart_span } else { full }
+	centre := app.tchart_start + cur / 2
+	mut ns := cur * factor
+	if ns >= full {
+		app.tchart_span = 0 // fit-all
+		app.tchart_start = 0
+		return
+	}
+	if ns < tchart_min_span {
+		ns = tchart_min_span
+	}
+	app.tchart_span = ns
+	mut nstart := centre - ns / 2
+	if nstart > full - ns {
+		nstart = full - ns
+	}
+	if nstart < 0 {
+		nstart = 0
+	}
+	app.tchart_start = nstart
+}
+
+// tchart_pan scrolls the window by a fraction of its own span (± ; no effect when fit-all).
+fn (mut app App) tchart_pan(frac f32) {
+	if app.tchart_span <= 0 {
+		return // full view — nothing to scroll
+	}
+	full := app.tchart_full_span()
+	mut ns := app.tchart_start + app.tchart_span * frac
+	if ns > full - app.tchart_span {
+		ns = full - app.tchart_span
+	}
+	if ns < 0 {
+		ns = 0
+	}
+	app.tchart_start = ns
+}
+
+// tchart_header: a title line + a dedicated toolbar row (capture control, view mode,
+// and the TRACE32-style zoom/pan) below it — the toolbar gets its own row so the buttons
+// stay visible regardless of the title length or panel width.
 fn tchart_header(app &App) gui.View {
 	mut nh := map[u32]bool{}
 	for tr in app.telem_records {
@@ -7127,39 +7212,80 @@ fn tchart_header(app &App) gui.View {
 	src := if app.telem_source != '' { ' · ${app.telem_source}' } else { ' · no manifest' }
 	title := 'Trace Chart — ${app.telem_records.len} records / ${nh.len} handlers${src}'
 	mode_label := if app.tchart_fb { '⊟ By FB' } else { '⊞ Handlers' }
-	return gui.row(
-		spacing: sc(8)
-		v_align: .middle
+	// a thin vertical divider between toolbar groups
+	sep := gui.text(text: '│', text_style: gui.TextStyle{
+		...gui.theme().n3
+		color: gui.Color{140, 140, 145, 255}
+	})
+	return gui.column(
+		spacing: sc(4)
 		content: [
 			gui.text(text: title, text_style: gui.theme().b4),
-			gui.row(sizing: gui.fill_fit, content: []),
-			clickable_label('Arm', fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
-				mut a := w.state[App]()
-				a.send_trace_cmd(telem.op_arm, mut w)
-			}),
-			clickable_label('Dump', fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
-				mut a := w.state[App]()
-				a.send_trace_cmd(telem.op_dump, mut w)
-			}),
-			clickable_label(mode_label, fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
-				mut a := w.state[App]()
-				a.tchart_fb = !a.tchart_fb
-				w.update_window()
-			}),
-			clickable_label('Clear', fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
-				mut a := w.state[App]()
-				a.telem_records = []
-				a.telem_stats = map[u32]telem.HandlerStat{}
-				a.telem_rev++
-				w.update_window()
-			}),
+			gui.row(
+				spacing: sc(6)
+				v_align: .middle
+				content: [
+					clickable_label('Arm', fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+						mut a := w.state[App]()
+						a.send_trace_cmd(telem.op_arm, mut w)
+					}),
+					clickable_label('Dump', fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+						mut a := w.state[App]()
+						a.send_trace_cmd(telem.op_dump, mut w)
+					}),
+					clickable_label(mode_label, fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+						mut a := w.state[App]()
+						a.tchart_fb = !a.tchart_fb
+						w.update_window()
+					}),
+					sep,
+					// Zoom / pan (TRACE32 In / Out / Full + scroll). In/Out scale about the
+					// window centre; ◀/▶ scroll by a quarter-window; Full fits everything.
+					clickable_label('◀', fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+						mut a := w.state[App]()
+						a.tchart_pan(-0.25)
+						w.update_window()
+					}),
+					clickable_label('▶', fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+						mut a := w.state[App]()
+						a.tchart_pan(0.25)
+						w.update_window()
+					}),
+					clickable_label('In', fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+						mut a := w.state[App]()
+						a.tchart_zoom(0.5)
+						w.update_window()
+					}),
+					clickable_label('Out', fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+						mut a := w.state[App]()
+						a.tchart_zoom(2.0)
+						w.update_window()
+					}),
+					clickable_label('Full', fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+						mut a := w.state[App]()
+						a.tchart_span = 0
+						a.tchart_start = 0
+						w.update_window()
+					}),
+					sep,
+					clickable_label('Clear', fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
+						mut a := w.state[App]()
+						a.telem_records = []
+						a.telem_stats = map[u32]telem.HandlerStat{}
+						a.telem_rev++
+						w.update_window()
+					}),
+				]
+			),
 		]
 	)
 }
 
 // draw_tchart renders the swimlane: one row per lane, each record a filled bar at its
 // start time (× cpu_us width), lane grid lines between rows.
-fn draw_tchart(mut dc gui.DrawContext, bars []TBar, span f32, nlanes int, lane_h f32, cw f32, ch f32) {
+// vstart/vspan define the visible time window (µs relative to tmin); bars outside it are
+// clipped, and a bar straddling an edge is trimmed to the canvas.
+fn draw_tchart(mut dc gui.DrawContext, bars []TBar, vstart f32, vspan f32, nlanes int, lane_h f32, cw f32, ch f32) {
 	// faint lane separators
 	grid := gui.Color{128, 128, 128, 60}
 	for i in 1 .. nlanes {
@@ -7168,22 +7294,32 @@ fn draw_tchart(mut dc gui.DrawContext, bars []TBar, span f32, nlanes int, lane_h
 	}
 	warn_col := gui.Color{233, 60, 60, 255}
 	for b in bars {
-		x := (b.t0 / span) * cw
-		mut w := (b.dur / span) * cw
+		mut x0 := ((b.t0 - vstart) / vspan) * cw
+		mut x1 := ((b.t0 + b.dur - vstart) / vspan) * cw
+		if x1 < 0 || x0 > cw {
+			continue // fully outside the view window
+		}
+		if x0 < 0 {
+			x0 = 0
+		}
+		if x1 > cw {
+			x1 = cw
+		}
+		mut w := x1 - x0
 		if w < 1 {
 			w = 1 // a sub-pixel invocation is still a visible tick
 		}
 		y := f32(b.lane) * lane_h + 1
 		h := lane_h - 2
-		dc.filled_rect(x, y, w, h, b.color)
+		dc.filled_rect(x0, y, w, h, b.color)
 		if b.warn {
-			dc.rect(x, y, w, h, warn_col, 1)
+			dc.rect(x0, y, w, h, warn_col, 1)
 		}
 	}
 }
 
 // tchart_version keys the canvas cache: re-tessellate iff the drawn set changes.
-fn tchart_version(app &App, nbars int, nlanes int, cw f32, ch f32) u64 {
+fn tchart_version(app &App, nbars int, nlanes int, cw f32, ch f32, vstart f32, vspan f32) u64 {
 	mut h := u64(1469598103934665603)
 	h = fnv64(h, u64(nbars))
 	h = fnv64(h, u64(nlanes))
@@ -7193,8 +7329,14 @@ fn tchart_version(app &App, nbars int, nlanes int, cw f32, ch f32) u64 {
 	// telem_rev bumps on every ingest/clear, so an equal-sized second capture with
 	// different timings/ids still re-tessellates (bar count alone can't detect it).
 	h = fnv64(h, app.telem_rev)
+	// zoom/pan: re-tessellate when the visible window moves or scales
+	h = fnv64(h, u64(i64(vstart)))
+	h = fnv64(h, u64(i64(vspan)))
 	return h
 }
+
+// tchart_min_span caps how far In can zoom (µs) — one microsecond of trace fills the width.
+const tchart_min_span = f32(1)
 
 // ellipsize truncates a label to n chars with a trailing … (lane labels are narrow).
 fn ellipsize(s string, n int) string {
