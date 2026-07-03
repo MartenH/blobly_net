@@ -13,7 +13,10 @@ module vgui
 // imgui/implot C++ objects, static libstdc++/libgcc so the exe carries no MinGW runtime
 // DLLs (deps end up: kernel32/user32/gdi32/shell32/opengl32/msvcrt only). Multi-viewport
 // is native Win32 (no X11). Verified: mingw-w64 gcc 16.1.0, self-contained exe, GL 4.6.
-#flag windows -static -l:libglfw3.a -lopengl32 -lgdi32 -limm32 -lshell32 -luser32 -lstdc++ -static-libstdc++ -static-libgcc
+// FreeType (NEW — crisp text): needs `pacman -S mingw-w64-x86_64-freetype`. Static freetype
+// pulls transitive deps (harfbuzz/png/brotli/bz2/z/graphite2); if this link chain is wrong
+// on your toolchain, replace the freetype libs below with `pkg-config --static --libs freetype2`.
+#flag windows -static -l:libglfw3.a -lopengl32 -lgdi32 -limm32 -lshell32 -luser32 -lstdc++ -static-libstdc++ -static-libgcc -lfreetype -lharfbuzz -lpng16 -lbrotlidec -lbrotlicommon -lbz2 -lz -lgraphite2 -lrpcrt4
 #include "vgui.h"
 
 // Bar mirrors the C `VBar` (SoA-free struct passed by pointer; C-compatible layout).
