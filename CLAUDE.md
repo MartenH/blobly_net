@@ -1359,6 +1359,26 @@ prompt for a password.
   none of run.sh/CI/build_win use). NEXT (blobly_emb/docs/telemetry.md P5 rest): pan/zoom + hover on the swimlane; live
   HandlerStat gauges/sparklines; period/jitter histogram; overrun/deadline markers; load reconstruction;
   ISO-TP bulk dump; ThreadX preemption view — same records/manifest feed them all.
+- 2026-07-03: **Trace Chart rework — zoom/scroll + honest single-core semantics (PR #14 branch
+  `telemetry-trace-viewer`).** Two rounds on the swimlane. (a) First a zoom/pan toolbar (PR #13, merged);
+  (b) then a rework after user feedback that flat/wide buttons, a missing timeline, and physically-
+  impossible parallel bars looked wrong. Grounded in `blobly_emb/docs/telemetry.md`: on the **cooperative
+  loom a handler runs to completion, never preempted by another FB**, so on ONE core handlers are strictly
+  **sequential** (only different cores run in parallel), and **gaps are idle** (no idle task in this model —
+  the loop polls/sleeps). Changes: **lane grouping is now 3-way — by CORE (default) / FB / handler**
+  (`tchart_group`); by-core is one lane per core so bars can't overlap = exclusivity is visible, resolving
+  the "threads can't run at once" concern (my earlier synthetic demo data had overlaps — unrealistic; a
+  cooperative sim yields sequential records). **Buttons are real chrome-styled `gui.button`** (was flat
+  `clickable_label`). **Proper timeline** — vertical gridline quarters in the canvas + a 5-tick ms label
+  row that scrolls with it (Graphics-panel style). **Horizontal zoom + a native bottom scrollbar**: the
+  canvas is drawn at `view_w × tchart_zoom_f` inside a `scroll_mode: .horizontal_only` column with
+  `scrollbar_cfg_x{overflow: .visible}` (Zoom In/Out/Fit + a %); dropped the old ◀/▶/view-window math
+  (`tchart_start`/`tchart_span`). **Idle** = alternating lane backgrounds make gaps obvious (title says
+  "gaps = idle"). **Preemption**: preempted-flag records get a diagonal hatch — but the 8-byte Record
+  only carries the *flag*, not `response_us`, so the preempted *interval* can't be drawn; that needs the
+  **12-byte preemptive record (telemetry.md P4, not built)**. VERIFIED live vs an injected cooperative
+  capture on vcan0 (24 sequential records): by-core single-lane no-overlap, per-handler 3 lanes, overrun
+  red outline, preempt hatch, Zoom In → 400% + canvas widens, bottom scrollbar drags to pan (0→15.9 ms).
 - 2026-06-30: **Distributable bundle + browser-rendered Help.** Two gaps closed so a freshly-downloaded
   build runs the sim out of the box. (a) **Bundle:** Windows CI (`windows.yml` msvc + mingw) now uploads
   a runnable folder — `blobly_net.exe` (+ DLLs on msvc) alongside `projects/`, `dbc/`, `samples/` and a
