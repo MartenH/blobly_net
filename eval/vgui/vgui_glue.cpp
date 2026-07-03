@@ -31,6 +31,9 @@ extern "C" void vgui_set_theme(int dark) {
     if (dark) ImGui::StyleColorsDark(); else ImGui::StyleColorsLight();
     apply_style_tweaks();
 }
+// scale ALL UI text (1.0 = the loaded font's native size). imgui 1.92 moved this from
+// io.FontGlobalScale to style.FontScaleMain.
+extern "C" void vgui_set_font_scale(float s) { ImGui::GetStyle().FontScaleMain = s; }
 
 int vgui_init(const char* title, int w, int h, int event_driven) {
     g_event_driven = event_driven != 0;

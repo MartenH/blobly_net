@@ -22,6 +22,9 @@ import isotp
 import uds
 import sim
 import script
+import canlog
+import mf4
+import doip
 import vgui
 
 const diag_tx_id = u32(0x7E0)
@@ -48,10 +51,16 @@ struct TRec {
 
 // Chan is one project channel's live state (the Buses panel row + Start/Stop target).
 struct Chan {
-	name  string
-	iface string
-	mode  string
-	doip  bool
+	name         string
+	iface        string
+	mode         string
+	typ          string
+	bitrate      int
+	data_bitrate int
+	listen_only  bool
+	databases    []string
+	manifest     string
+	doip         bool
 mut:
 	enabled bool
 	rx      u64
@@ -79,19 +88,32 @@ mut:
 	last_wake    i64
 	proj_path    string
 	proj_name    string
-	dark bool = true // theme
+	dark      bool = true // theme
+	ui_scale  f32  = 1.0
+	paused    bool
+	recording bool
+	rec       []canlog.LogEntry // captured while recording; written on stop
+	tx_count  u64
+	logs      []string             // Log panel (status/events, newest last)
+	doip_ents []doip.VehicleInfo   // DoIP Discovery results
 	// panel visibility (View menu)
 	show_buses    bool = true
 	show_sim      bool = true
 	show_symbols  bool = true
 	show_trace    bool = true
+	show_ftrace   bool = true
 	show_tchart   bool = true
 	show_signals  bool = true
 	show_graphics bool = true
-	show_send     bool = true
-	show_diag     bool = true
-	show_gen      bool = true
-	show_script   bool = true
+	show_send      bool = true
+	show_diag      bool = true
+	show_gen       bool = true
+	show_script    bool = true
+	show_busconfig bool = true
+	show_doip      bool = true
+	show_stats     bool = true
+	show_log       bool = true
+	show_help      bool = true
 	// Signals selection + Graphics watch list (UI-thread only; RX never touches these)
 	sel_id        int = -1 // selected message id (-1 = none)
 	sel_ext       bool
@@ -103,7 +125,11 @@ mut:
 	send_id_buf   []u8
 	send_data_buf []u8
 	trace_filter_buf  []u8 // Trace substring filter
+	trace_grouped2    bool // second Trace (filter) panel: own view mode
+	trace_filter2_buf []u8 // second Trace (filter) panel: own filter
 	symbol_filter_buf []u8 // Symbol Browser search
+	log_path_buf      []u8 // Open Recording path (.log/.mf4)
+	doip_host_buf     []u8 // DoIP manual discover host[:port]
 	// Diagnostics (UDS on a worker thread)
 	diag_did_buf []u8
 	// Script (Lua on a worker thread)
@@ -214,17 +240,126 @@ fn (mut app App) stop() {
 	app.send_iface = ''
 }
 
+// notify appends a line to the Log panel (thread-safe).
+fn (mut app App) notify(msg string) {
+	app.mu.lock()
+	app.logs << msg
+	if app.logs.len > 500 {
+		app.logs = app.logs[app.logs.len - 500..].clone()
+	}
+	app.mu.unlock()
+	vgui.wake()
+}
+
 // tx sends a frame on the TX bus and records it as a TX trace row.
 fn (mut app App) tx(f transport.CanFrame) bool {
 	mut b := app.send_bus or { return false }
-	b.send(f) or { return false }
+	b.send(f) or {
+		app.notify('TX failed: ${err}')
+		return false
+	}
 	name := app.lookup_name(f.id, f.extended)
+	tms := f64(time.ticks() - app.t0)
 	app.mu.lock()
-	app.trace << TraceRow{f64(time.ticks() - app.t0), app.send_iface, 'TX', f.id, f.extended, f.rtr, name, f.data.clone()}
-	app.rx++ // count TX in the total too
+	if !app.paused {
+		app.trace << TraceRow{tms, app.send_iface, 'TX', f.id, f.extended, f.rtr, name, f.data.clone()}
+		if app.trace.len > trace_cap {
+			app.trace = app.trace[app.trace.len - trace_cap..].clone()
+		}
+	}
+	if app.recording {
+		app.rec << canlog.LogEntry{tms / 1000.0, app.send_iface, f}
+	}
+	app.tx_count++
 	app.mu.unlock()
 	vgui.wake()
 	return true
+}
+
+fn (mut app App) clear_trace() {
+	app.mu.lock()
+	app.trace = []
+	app.trecs = []
+	app.rx = 0
+	app.tx_count = 0
+	for i in 0 .. app.chans.len {
+		app.chans[i].rx = 0
+	}
+	app.mu.unlock()
+}
+
+// toggle_record starts capturing frames, or stops and writes them to a candump .log.
+fn (mut app App) toggle_record() {
+	if app.recording {
+		app.mu.lock()
+		entries := app.rec.clone()
+		app.rec = []
+		app.recording = false
+		app.mu.unlock()
+		mut lines := []string{cap: entries.len}
+		for e in entries {
+			lines << canlog.format_line(e)
+		}
+		os.write_file('recording.log', lines.join('\n') + '\n') or {
+			app.notify('record write failed: ${err}')
+			return
+		}
+		app.notify('recorded ${entries.len} frames -> recording.log')
+	} else {
+		app.mu.lock()
+		app.rec = []
+		app.recording = true
+		app.mu.unlock()
+		app.notify('recording…')
+	}
+}
+
+// load_recording replaces the trace with a candump .log or ASAM .mf4 file.
+fn (mut app App) load_recording(path string) {
+	entries := if path.to_lower().ends_with('.mf4') {
+		mf4.load_file(path) or {
+			app.notify('mf4 ${path}: ${err}')
+			return
+		}
+	} else {
+		canlog.load_file(path) or {
+			app.notify('log ${path}: ${err}')
+			return
+		}
+	}
+	t0 := if entries.len > 0 { entries[0].t_s } else { 0.0 }
+	app.mu.lock()
+	app.trace = []
+	for e in entries {
+		f := e.frame
+		name := app.lookup_name(f.id, f.extended)
+		app.trace << TraceRow{(e.t_s - t0) * 1000.0, e.iface, 'RX', f.id, f.extended, f.rtr, name, f.data.clone()}
+		if app.trace.len > trace_cap {
+			app.trace = app.trace[app.trace.len - trace_cap..].clone()
+		}
+	}
+	app.mu.unlock()
+	app.notify('loaded ${entries.len} frames from ${os.base(path)}')
+}
+
+fn doip_worker(app &App, host string) {
+	mut a := unsafe { app }
+	mut h := host
+	mut port := 13400
+	if host.contains(':') {
+		parts := host.split(':')
+		h = parts[0]
+		port = parts[1].int()
+	}
+	info := doip.discover(h, port, 1200) or {
+		a.notify('DoIP discover ${host}: ${err}')
+		return
+	}
+	a.mu.lock()
+	a.doip_ents << info
+	a.mu.unlock()
+	a.notify('DoIP: found VIN ${info.vin}')
+	vgui.wake()
 }
 
 // mkbuf returns a fixed-size NUL-terminated input buffer seeded with `s`.
@@ -355,16 +490,24 @@ fn rx_loop(app &App, ci int, iface string) {
 		t_ms := f64(time.ticks() - a.t0)
 		name := a.lookup_name(f.id, f.extended)
 		a.mu.lock()
-		a.trace << TraceRow{t_ms, chname, 'RX', f.id, f.extended, f.rtr, name, f.data.clone()}
-		if a.trace.len > trace_cap {
-			a.trace = a.trace[a.trace.len - trace_cap..].clone()
-		}
-		if a.has_manifest && !f.extended && !f.rtr && f.data.len == 8 && f.id == telem.id_record {
-			a.trecs << TRec{ci, telem.decode_record(f.data)}
-			if a.trecs.len > telem_cap {
-				a.trecs = a.trecs[a.trecs.len - telem_cap..].clone()
+		if !a.paused {
+			a.trace << TraceRow{t_ms, chname, 'RX', f.id, f.extended, f.rtr, name, f.data.clone()}
+			if a.trace.len > trace_cap {
+				a.trace = a.trace[a.trace.len - trace_cap..].clone()
 			}
-			a.rev++
+			if a.has_manifest && !f.extended && !f.rtr && f.data.len == 8 && f.id == telem.id_record {
+				a.trecs << TRec{ci, telem.decode_record(f.data)}
+				if a.trecs.len > telem_cap {
+					a.trecs = a.trecs[a.trecs.len - telem_cap..].clone()
+				}
+				a.rev++
+			}
+		}
+		if a.recording {
+			a.rec << canlog.LogEntry{t_ms / 1000.0, chname, f}
+			if a.rec.len > 200000 {
+				a.rec = a.rec[a.rec.len - 200000..].clone()
+			}
 		}
 		a.chans[ci].rx++
 		a.rx++
@@ -455,11 +598,17 @@ fn (mut app App) load_project(path string) {
 	app.mu.unlock()
 	for ch in proj.channels {
 		app.chans << Chan{
-			name:    ch.name
-			iface:   ch.iface
-			mode:    ch.mode.str()
-			doip:    ch.is_doip()
-			enabled: ch.enabled
+			name:         ch.name
+			iface:        ch.iface
+			mode:         ch.mode.str()
+			typ:          ch.typ
+			bitrate:      ch.bitrate
+			data_bitrate: ch.data_bitrate
+			listen_only:  ch.listen_only
+			databases:    ch.databases.clone()
+			manifest:     ch.manifest
+			doip:         ch.is_doip()
+			enabled:      ch.enabled
 		}
 		for dbpath in ch.databases {
 			if db := candb.load_dbc_file(dbpath) {
@@ -523,7 +672,10 @@ fn main() {
 	app.diag_did_buf = mkbuf('F190', 16)
 	app.script_path_buf = mkbuf('tests/diag_basic.lua', 256)
 	app.trace_filter_buf = mkbuf('', 64)
+	app.trace_filter2_buf = mkbuf('', 64)
 	app.symbol_filter_buf = mkbuf('', 64)
+	app.log_path_buf = mkbuf('samples/demo.log', 256)
+	app.doip_host_buf = mkbuf('127.0.0.1', 64)
 	app.load_project(proj_path)
 	println('blobly_vgui: ${app.proj_name} — ${app.chans.len} channel(s), ${app.dbs.len} DBC(s), manifest=${app.has_manifest}. Press Start.')
 
@@ -567,8 +719,20 @@ fn main() {
 		if app.show_symbols {
 			draw_symbols(mut app)
 		}
+		if app.show_busconfig {
+			draw_busconfig(app, chans)
+		}
+		if app.show_stats {
+			draw_stats(app, chans, rx)
+		}
 		if app.show_trace {
 			draw_trace(mut app, rows, rx)
+		}
+		if app.show_ftrace {
+			draw_ftrace(mut app, rows)
+		}
+		if app.show_log {
+			draw_log(app)
 		}
 		if app.show_tchart {
 			draw_tchart(app, trecs)
@@ -585,11 +749,17 @@ fn main() {
 		if app.show_diag {
 			draw_diag(mut app)
 		}
+		if app.show_doip {
+			draw_doip(mut app)
+		}
 		if app.show_gen {
 			draw_gen(mut app)
 		}
 		if app.show_script {
 			draw_script(mut app)
+		}
+		if app.show_help {
+			draw_help(app)
 		}
 
 		vgui.frame_end()
@@ -615,8 +785,14 @@ fn draw_activity_bar(mut app App) {
 	if vgui.toggle_button('Sym', app.show_symbols, -1) {
 		app.show_symbols = !app.show_symbols
 	}
+	if vgui.toggle_button('Cfg', app.show_busconfig, -1) {
+		app.show_busconfig = !app.show_busconfig
+	}
 	if vgui.toggle_button('Trc', app.show_trace, -1) {
 		app.show_trace = !app.show_trace
+	}
+	if vgui.toggle_button('FTr', app.show_ftrace, -1) {
+		app.show_ftrace = !app.show_ftrace
 	}
 	if vgui.toggle_button('Cht', app.show_tchart, -1) {
 		app.show_tchart = !app.show_tchart
@@ -633,11 +809,23 @@ fn draw_activity_bar(mut app App) {
 	if vgui.toggle_button('Dia', app.show_diag, -1) {
 		app.show_diag = !app.show_diag
 	}
+	if vgui.toggle_button('DoI', app.show_doip, -1) {
+		app.show_doip = !app.show_doip
+	}
 	if vgui.toggle_button('Gen', app.show_gen, -1) {
 		app.show_gen = !app.show_gen
 	}
 	if vgui.toggle_button('Lua', app.show_script, -1) {
 		app.show_script = !app.show_script
+	}
+	if vgui.toggle_button('Sta', app.show_stats, -1) {
+		app.show_stats = !app.show_stats
+	}
+	if vgui.toggle_button('Log', app.show_log, -1) {
+		app.show_log = !app.show_log
+	}
+	if vgui.toggle_button('Hlp', app.show_help, -1) {
+		app.show_help = !app.show_help
 	}
 	vgui.child_end()
 }
@@ -665,24 +853,48 @@ fn draw_menubar(mut app App, rx u64) {
 			app.show_buses = vgui.menu_item_check('Buses', app.show_buses)
 			app.show_sim = vgui.menu_item_check('Simulation', app.show_sim)
 			app.show_symbols = vgui.menu_item_check('Symbols', app.show_symbols)
+			app.show_busconfig = vgui.menu_item_check('Bus Config', app.show_busconfig)
 			app.show_trace = vgui.menu_item_check('Trace', app.show_trace)
+			app.show_ftrace = vgui.menu_item_check('Trace (filter)', app.show_ftrace)
 			app.show_tchart = vgui.menu_item_check('Trace Chart', app.show_tchart)
 			app.show_signals = vgui.menu_item_check('Signals', app.show_signals)
 			app.show_graphics = vgui.menu_item_check('Graphics', app.show_graphics)
 			app.show_send = vgui.menu_item_check('Send', app.show_send)
 			app.show_diag = vgui.menu_item_check('Diagnostics', app.show_diag)
+			app.show_doip = vgui.menu_item_check('DoIP Discovery', app.show_doip)
 			app.show_gen = vgui.menu_item_check('Generators', app.show_gen)
 			app.show_script = vgui.menu_item_check('Script', app.show_script)
+			app.show_stats = vgui.menu_item_check('Statistics', app.show_stats)
+			app.show_log = vgui.menu_item_check('Log', app.show_log)
+			app.show_help = vgui.menu_item_check('Help', app.show_help)
 			vgui.menu_end()
 		}
-		vgui.text('   ')
+		if vgui.menu_begin('Settings') {
+			vgui.separator_text('repaint cap')
+			for f in [5, 10, 30, 60] {
+				if vgui.menu_item('${f} fps') {
+					app.wake_ms = i64(1000 / f)
+				}
+			}
+			vgui.separator_text('UI scale')
+			for s in [100, 125, 150, 175] {
+				if vgui.menu_item('${s}%') {
+					app.ui_scale = f32(s) / 100.0
+					vgui.set_font_scale(app.ui_scale)
+				}
+			}
+			vgui.menu_end()
+		}
+		vgui.text('  ')
 		if app.running {
 			if vgui.small_button('Stop') {
 				app.stop()
+				app.notify('stopped')
 			}
 		} else {
 			if vgui.small_button('Start') {
 				app.start()
+				app.notify('started')
 			}
 		}
 		vgui.same_line()
@@ -692,7 +904,19 @@ fn draw_menubar(mut app App, rx u64) {
 			vgui.text_colored(210, 120, 120, 'stopped')
 		}
 		vgui.same_line()
-		vgui.text('· RX ${rx} · ${app.proj_name}')
+		vgui.text('· RX ${rx} TX ${app.tx_count}')
+		vgui.same_line()
+		if vgui.small_button(if app.paused { 'Resume' } else { 'Pause' }) {
+			app.paused = !app.paused
+		}
+		vgui.same_line()
+		if vgui.small_button('Clear') {
+			app.clear_trace()
+		}
+		vgui.same_line()
+		if vgui.small_button(if app.recording { 'Stop Rec' } else { 'Record' }) {
+			app.toggle_record()
+		}
 		vgui.same_line()
 		if vgui.small_button(if app.dark { 'Light' } else { 'Dark' }) {
 			app.dark = !app.dark
@@ -790,6 +1014,131 @@ fn draw_symbols(mut app App) {
 	vgui.end()
 }
 
+// draw_busconfig shows each channel's configuration (type, bitrate/timing, DBCs, manifest).
+fn draw_busconfig(app &App, chans []Chan) {
+	if !vgui.begin('Bus Config') {
+		vgui.end()
+		return
+	}
+	for c in chans {
+		vgui.separator_text('${c.name}  (${c.iface})')
+		vgui.text('type: ${c.typ}    mode: ${c.mode}    enabled: ${c.enabled}')
+		if c.doip {
+			vgui.text('DoIP endpoint (Ethernet diagnostics)')
+		} else {
+			du := if c.data_bitrate > 0 { '  data ${c.data_bitrate}' } else { '' }
+			vgui.text('bitrate: ${c.bitrate}${du}    listen-only: ${c.listen_only}')
+		}
+		if c.databases.len > 0 {
+			vgui.text('dbc: ${c.databases.join(', ')}')
+		}
+		if c.manifest != '' {
+			vgui.text('manifest: ${c.manifest}')
+		}
+	}
+	vgui.end()
+}
+
+// draw_doip: discover DoIP entities on a host (or a running DoIP channel).
+fn draw_doip(mut app App) {
+	if !vgui.begin('DoIP Discovery') {
+		vgui.end()
+		return
+	}
+	vgui.set_next_item_width(160)
+	vgui.input_text('host', mut app.doip_host_buf)
+	vgui.same_line()
+	if vgui.button('Discover') {
+		app.mu.lock()
+		app.doip_ents = []
+		app.mu.unlock()
+		spawn doip_worker(app, vgui.buf_str(app.doip_host_buf))
+	}
+	app.mu.lock()
+	ents := app.doip_ents.clone()
+	app.mu.unlock()
+	vgui.separator_text('entities')
+	if ents.len == 0 {
+		vgui.text_dim('none — Discover a DoIP host (default 127.0.0.1:13400)')
+	}
+	for e in ents {
+		vgui.text('VIN ${e.vin}   logical 0x${e.logical_address:04X}')
+	}
+	vgui.end()
+}
+
+// draw_stats: totals + per-channel RX counters.
+fn draw_stats(app &App, chans []Chan, rx u64) {
+	if !vgui.begin('Statistics') {
+		vgui.end()
+		return
+	}
+	vgui.text('RX ${rx}    TX ${app.tx_count}    ${vgui.fps():.0} fps    trace ${app.trace.len}')
+	vgui.separator_text('per channel')
+	if vgui.table_begin('stats', 4) {
+		vgui.table_setup_col('channel', 90)
+		vgui.table_setup_col('iface', 120)
+		vgui.table_setup_col('state', 56)
+		vgui.table_setup_col('RX', 0)
+		vgui.table_freeze_top()
+		vgui.table_headers()
+		for c in chans {
+			state := if c.running { 'run' } else if c.enabled { 'idle' } else { 'off' }
+			vgui.table_row()
+			vgui.table_cell(c.name)
+			vgui.table_cell(c.iface)
+			vgui.table_cell(state)
+			vgui.table_cell('${c.rx}')
+		}
+		vgui.table_end()
+	}
+	vgui.end()
+}
+
+// draw_log: the scrolling status/event log.
+fn draw_log(app &App) {
+	if !vgui.begin('Log') {
+		vgui.end()
+		return
+	}
+	app.mu.lock()
+	logs := app.logs.clone()
+	app.mu.unlock()
+	vgui.child_begin('##loglines', 0)
+	for l in logs {
+		vgui.text(l)
+	}
+	vgui.child_end()
+	vgui.end()
+}
+
+// draw_help: a short in-app usage reference.
+fn draw_help(app &App) {
+	if !vgui.begin('Help') {
+		vgui.end()
+		return
+	}
+	vgui.separator_text('blobly_vgui — imgui/ImPlot frontend')
+	vgui.text('Start/Stop runs the measurement on the enabled channels.')
+	vgui.text('The activity bar (far left) and the View menu toggle panels.')
+	vgui.text('File > Open Example switches projects; Settings sets fps + UI scale.')
+	vgui.separator_text('panels')
+	vgui.text('Buses / Bus Config   channel enable, state, and configuration')
+	vgui.text('Simulation           in-process simulated ECUs (driver-free)')
+	vgui.text('Symbols              DBC message / signal browser (searchable)')
+	vgui.text('Trace / Trace(filter) live frames — all or grouped, filterable')
+	vgui.text('Signals              decode selected message; tick to plot')
+	vgui.text('Graphics             ImPlot live signal plots')
+	vgui.text('Trace Chart          telemetry handler swimlane')
+	vgui.text('Send / Generators    transmit raw frames / fire project senders')
+	vgui.text('Diagnostics / DoIP   UDS + DoIP discovery')
+	vgui.text('Script               run a Lua test file')
+	vgui.separator_text('toolbar')
+	vgui.text('Pause freezes the trace · Clear empties it · Record writes recording.log')
+	vgui.text('Open loads a candump .log or ASAM .mf4 into the trace.')
+	vgui.end()
+}
+
 fn draw_buses(mut app App, chans []Chan) {
 	if !vgui.begin('Buses') {
 		vgui.end()
@@ -829,15 +1178,48 @@ fn draw_trace(mut app App, rows []TraceRow, rx u64) {
 	vgui.same_line()
 	vgui.text('RX ${rx} · ${vgui.fps():.0}fps')
 	vgui.same_line()
-	vgui.set_next_item_width(220)
+	vgui.set_next_item_width(200)
 	vgui.input_text('filter', mut app.trace_filter_buf)
+	vgui.same_line()
+	if vgui.small_button('Clear') {
+		app.clear_trace()
+	}
+	vgui.set_next_item_width(200)
+	vgui.input_text('.log/.mf4', mut app.log_path_buf)
+	vgui.same_line()
+	if vgui.small_button('Open') {
+		app.load_recording(vgui.buf_str(app.log_path_buf))
+	}
 	filt := vgui.buf_str(app.trace_filter_buf).to_lower()
 	if app.trace_grouped {
 		vgui.separator_text('by id (click to expand signals)')
 		draw_trace_grouped(app, rows, filt)
 	} else {
 		vgui.separator_text('frames (newest first)')
-		draw_trace_all(rows, filt)
+		draw_trace_all('trace', rows, filt)
+	}
+	vgui.end()
+}
+
+// draw_ftrace is a SECOND trace view with its own filter + grouping (like the gui's
+// "Trace (filter)" panel), over the same frame buffer.
+fn draw_ftrace(mut app App, rows []TraceRow) {
+	if !vgui.begin('Trace (filter)') {
+		vgui.end()
+		return
+	}
+	if vgui.small_button(if app.trace_grouped2 { 'View: grouped' } else { 'View: all' }) {
+		app.trace_grouped2 = !app.trace_grouped2
+	}
+	vgui.same_line()
+	vgui.set_next_item_width(220)
+	vgui.input_text('filter', mut app.trace_filter2_buf)
+	filt := vgui.buf_str(app.trace_filter2_buf).to_lower()
+	vgui.separator_text('filtered')
+	if app.trace_grouped2 {
+		draw_trace_grouped(app, rows, filt)
+	} else {
+		draw_trace_all('ftrace', rows, filt)
 	}
 	vgui.end()
 }
@@ -855,8 +1237,8 @@ fn trace_pass(r TraceRow, filt string) bool {
 	return hay.contains(filt)
 }
 
-fn draw_trace_all(rows []TraceRow, filt string) {
-	if vgui.table_begin('trace', 6) {
+fn draw_trace_all(id string, rows []TraceRow, filt string) {
+	if vgui.table_begin(id, 6) {
 		vgui.table_setup_col('t (ms)', 66)
 		vgui.table_setup_col('ch', 52)
 		vgui.table_setup_col('dir', 34)
@@ -951,22 +1333,34 @@ fn build_layout() {
 	buses := vgui.dock_split(root, vgui.dock_left, 0.16, &rest)
 	mut center := u32(0)
 	right := vgui.dock_split(rest, vgui.dock_right, 0.34, &center)
+	// centre column: Trace(s) on top, a Log strip at the bottom
+	mut cbot := u32(0)
+	ctop := vgui.dock_split(center, vgui.dock_up, 0.76, &cbot)
+	// right column: Trace Chart (top) / mid tab group / bottom tab group
 	mut rmid := u32(0)
-	chart := vgui.dock_split(right, vgui.dock_up, 0.28, &rmid)
+	chart := vgui.dock_split(right, vgui.dock_up, 0.26, &rmid)
 	mut bottom := u32(0)
 	midnode := vgui.dock_split(rmid, vgui.dock_up, 0.5, &bottom)
+	// left column tabs
 	vgui.dock_window('Buses', buses)
-	vgui.dock_window('Simulation', buses) // tabbed with Buses in the left column
+	vgui.dock_window('Simulation', buses)
 	vgui.dock_window('Symbols', buses)
-	vgui.dock_window('Trace', center)
+	vgui.dock_window('Bus Config', buses)
+	vgui.dock_window('Statistics', buses)
+	// centre: Trace + Trace (filter) tabs; Log below
+	vgui.dock_window('Trace', ctop)
+	vgui.dock_window('Trace (filter)', ctop)
+	vgui.dock_window('Log', cbot)
+	// right column
 	vgui.dock_window('Trace Chart', chart)
-	// tab groups: [Signals | Send | Diagnostics] over [Graphics | Generators | Script]
 	vgui.dock_window('Signals', midnode)
 	vgui.dock_window('Send', midnode)
 	vgui.dock_window('Diagnostics', midnode)
+	vgui.dock_window('DoIP Discovery', midnode)
 	vgui.dock_window('Graphics', bottom)
 	vgui.dock_window('Generators', bottom)
 	vgui.dock_window('Script', bottom)
+	vgui.dock_window('Help', bottom)
 	vgui.dock_finish(root)
 }
 

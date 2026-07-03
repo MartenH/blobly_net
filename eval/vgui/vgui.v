@@ -37,6 +37,7 @@ fn C.vgui_time() f64
 fn C.vgui_wake()
 fn C.vgui_add_font(&char, f32) int
 fn C.vgui_set_theme(int)
+fn C.vgui_set_font_scale(f32)
 fn C.vgui_dump_ppm(&char)
 fn C.vgui_swimlane(&char, int, &&char, voidptr, int, f32)
 fn C.vgui_set_next_window(f32, f32, f32, f32)
@@ -128,6 +129,11 @@ pub fn add_font(path string, size f32) bool {
 // set_theme switches the palette (true = dark, false = light) and re-applies the style.
 pub fn set_theme(dark bool) {
 	C.vgui_set_theme(if dark { 1 } else { 0 })
+}
+
+// set_font_scale scales all UI text (1.0 = native). Cheap zoom.
+pub fn set_font_scale(s f32) {
+	C.vgui_set_font_scale(s)
 }
 
 pub fn time() f64 {
