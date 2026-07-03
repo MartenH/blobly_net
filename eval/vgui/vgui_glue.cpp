@@ -22,13 +22,84 @@ static const char* g_dump = nullptr;
 // is re-run after every theme switch).
 static void apply_style_tweaks() {
     ImGuiStyle& s = ImGui::GetStyle();
-    s.WindowRounding = 4.0f; s.FrameRounding = 3.0f;
-    s.FramePadding = ImVec2(8.0f, 6.0f);   // taller menu bar / buttons / inputs
-    s.ItemSpacing  = ImVec2(8.0f, 6.0f);
-    s.CellPadding  = ImVec2(6.0f, 3.0f);
+    // imgui defaults are very tight — loosen the whole UI for a desktop-app feel.
+    s.WindowPadding   = ImVec2(10.0f, 8.0f);
+    s.FramePadding    = ImVec2(10.0f, 7.0f);   // taller menu bar / buttons / inputs
+    s.ItemSpacing     = ImVec2(10.0f, 8.0f);   // gap between widgets (rows breathe)
+    s.ItemInnerSpacing= ImVec2(8.0f, 6.0f);
+    s.CellPadding     = ImVec2(8.0f, 4.0f);    // table cell padding
+    s.IndentSpacing   = 20.0f;
+    s.ScrollbarSize   = 14.0f;
+    s.GrabMinSize     = 12.0f;
+    s.WindowRounding  = 5.0f; s.FrameRounding = 4.0f; s.PopupRounding = 4.0f;
+    s.TabRounding     = 4.0f; s.GrabRounding  = 3.0f; s.ScrollbarRounding = 4.0f;
+    s.WindowBorderSize= 1.0f; s.FrameBorderSize = 0.0f;
+}
+// hx() unpacks 0xRRGGBB (+ alpha) into an imgui ImVec4.
+static ImVec4 hx(unsigned int c, float a = 1.0f) {
+    return ImVec4(((c >> 16) & 0xFF) / 255.0f, ((c >> 8) & 0xFF) / 255.0f, (c & 0xFF) / 255.0f, a);
+}
+// VS Code "Dark+" flavoured palette — neutral #1E1E1E greys with a #007ACC blue accent
+// (selection/headers/checks). Seeds every slot from StyleColorsDark first so slots not set
+// below (text links, nav highlights) stay sane, then overlays the visible chrome.
+static void style_vscode_dark() {
+    ImGui::StyleColorsDark();
+    const unsigned int bg0=0x1E1E1E, bg1=0x252526, bg2=0x2D2D2D, bg3=0x333333;
+    const unsigned int input=0x3C3C3C, inputHov=0x464647, border=0x3C3C3C, borderLt=0x303031;
+    const unsigned int text=0xD4D4D4, textDim=0x858585;
+    const unsigned int accent=0x007ACC, accentHov=0x1177BB, sel=0x094771, selText=0x264F78;
+    ImVec4* c = ImGui::GetStyle().Colors;
+    c[ImGuiCol_Text]                 = hx(text);
+    c[ImGuiCol_TextDisabled]         = hx(textDim);
+    c[ImGuiCol_WindowBg]             = hx(bg0);
+    c[ImGuiCol_ChildBg]              = hx(0, 0.0f);
+    c[ImGuiCol_PopupBg]              = hx(bg1);
+    c[ImGuiCol_Border]               = hx(border);
+    c[ImGuiCol_BorderShadow]         = hx(0, 0.0f);
+    c[ImGuiCol_FrameBg]              = hx(input);
+    c[ImGuiCol_FrameBgHovered]       = hx(inputHov);
+    c[ImGuiCol_FrameBgActive]        = hx(sel);
+    c[ImGuiCol_TitleBg]              = hx(bg1);
+    c[ImGuiCol_TitleBgActive]        = hx(bg1);
+    c[ImGuiCol_TitleBgCollapsed]     = hx(bg1);
+    c[ImGuiCol_MenuBarBg]            = hx(bg1);
+    c[ImGuiCol_ScrollbarBg]          = hx(bg0);
+    c[ImGuiCol_ScrollbarGrab]        = hx(0x4E4E4E);
+    c[ImGuiCol_ScrollbarGrabHovered] = hx(0x5A5A5A);
+    c[ImGuiCol_ScrollbarGrabActive]  = hx(0x646464);
+    c[ImGuiCol_CheckMark]            = hx(accent);
+    c[ImGuiCol_SliderGrab]           = hx(accent);
+    c[ImGuiCol_SliderGrabActive]     = hx(accentHov);
+    c[ImGuiCol_Button]               = hx(bg3);
+    c[ImGuiCol_ButtonHovered]        = hx(0x454545);
+    c[ImGuiCol_ButtonActive]         = hx(sel);
+    c[ImGuiCol_Header]               = hx(sel);      // selected rows / tree / menu items
+    c[ImGuiCol_HeaderHovered]        = hx(0x37373D);
+    c[ImGuiCol_HeaderActive]         = hx(sel);
+    c[ImGuiCol_Separator]            = hx(border);
+    c[ImGuiCol_SeparatorHovered]     = hx(accent);
+    c[ImGuiCol_SeparatorActive]      = hx(accent);
+    c[ImGuiCol_ResizeGrip]           = hx(bg3);
+    c[ImGuiCol_ResizeGripHovered]    = hx(accent);
+    c[ImGuiCol_ResizeGripActive]     = hx(accentHov);
+    c[ImGuiCol_PlotLines]            = hx(accent);
+    c[ImGuiCol_PlotLinesHovered]     = hx(accentHov);
+    c[ImGuiCol_PlotHistogram]        = hx(accent);
+    c[ImGuiCol_PlotHistogramHovered] = hx(accentHov);
+    c[ImGuiCol_TextSelectedBg]       = hx(selText);
+    c[ImGuiCol_Tab]                  = hx(bg2);
+    c[ImGuiCol_TabHovered]           = hx(0x3F3F46);
+    c[ImGuiCol_TabSelected]          = hx(bg0);
+    c[ImGuiCol_TabDimmed]            = hx(bg1);
+    c[ImGuiCol_TabDimmedSelected]    = hx(bg0);
+    c[ImGuiCol_DockingPreview]       = hx(accent, 0.4f);
+    c[ImGuiCol_DockingEmptyBg]       = hx(bg0);
+    c[ImGuiCol_TableHeaderBg]        = hx(bg1);
+    c[ImGuiCol_TableBorderStrong]    = hx(border);
+    c[ImGuiCol_TableBorderLight]     = hx(borderLt);
 }
 extern "C" void vgui_set_theme(int dark) {
-    if (dark) ImGui::StyleColorsDark(); else ImGui::StyleColorsLight();
+    if (dark) style_vscode_dark(); else ImGui::StyleColorsLight();
     apply_style_tweaks();
 }
 // scale ALL UI text (1.0 = the loaded font's native size). imgui 1.92 moved this from
