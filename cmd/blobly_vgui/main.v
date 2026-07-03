@@ -81,6 +81,7 @@ mut:
 	proj_name    string
 	// panel visibility (View menu)
 	show_buses    bool = true
+	show_sim      bool = true
 	show_trace    bool = true
 	show_tchart   bool = true
 	show_signals  bool = true
@@ -422,25 +423,32 @@ fn load_ui_font() {
 	}
 }
 
-fn main() {
-	proj_path := os.getenv_opt('BLOBLY_PROJECT') or { 'projects/trace-demo.blobnet' }
-	proj := project.load(proj_path) or {
-		eprintln('load ${proj_path}: ${err}')
+// load_project (re)loads a project into the app: stops any measurement, clears the
+// project-derived state, and rebuilds channels / DBCs / sims / senders. Keeps the input
+// buffers + panel layout. Used at startup and by File > Open Example / Reload.
+fn (mut app App) load_project(path string) {
+	app.stop()
+	proj := project.load(path) or {
+		eprintln('load ${path}: ${err}')
 		return
 	}
-	mut wake_ms := os.getenv('VGUI_WAKE_MS').i64()
-	if wake_ms <= 0 {
-		wake_ms = 33
-	}
-	max_frames := os.getenv('VGUI_FRAMES').int()
-	shot := os.getenv('VGUI_SHOT')
-
-	mut app := &App{
-		t0:        time.ticks()
-		wake_ms:   wake_ms
-		proj_path: proj_path
-		proj_name: proj.name
-	}
+	app.mu.lock()
+	app.chans = []
+	app.dbs = []
+	app.sims = []
+	app.senders = []
+	app.trace = []
+	app.trecs = []
+	app.diag_log = []
+	app.script_log = []
+	app.watch = []
+	app.has_manifest = false
+	app.manifest = telem.Manifest{}
+	app.sel_id = -1
+	app.rx = 0
+	app.proj_path = path
+	app.proj_name = proj.name
+	app.mu.unlock()
 	for ch in proj.channels {
 		app.chans << Chan{
 			name:    ch.name
@@ -460,13 +468,8 @@ fn main() {
 			if m := telem.load_manifest(ch.manifest) {
 				app.manifest = m
 				app.has_manifest = true
-			} else {
-				eprintln('manifest ${ch.manifest}: ${err}')
 			}
 		}
-	}
-	// flatten project senders (Generators) + build the sim workloads + seed input buffers
-	for ch in proj.channels {
 		for s in ch.senders {
 			app.senders << SenderRT{ch.iface, s}
 		}
@@ -479,11 +482,6 @@ fn main() {
 			}
 		}
 	}
-	app.send_id_buf = mkbuf('101', 24)
-	app.send_data_buf = mkbuf('01', 64)
-	app.diag_did_buf = mkbuf('F190', 16)
-	app.script_path_buf = mkbuf('tests/diag_basic.lua', 256)
-	// default the Signals selection to the first DBC message (so it decodes on launch)
 	for db in app.dbs {
 		if db.messages.len > 0 {
 			app.sel_id = int(db.messages[0].id)
@@ -491,9 +489,39 @@ fn main() {
 			break
 		}
 	}
-	println('blobly_vgui: ${proj.name} — ${app.chans.len} channel(s), ${app.dbs.len} DBC(s), manifest=${app.has_manifest}. Press Start.')
+}
 
-	if !vgui.init('blobly_net — ${proj.name} (imgui/ImPlot)', 1500, 850, true) {
+// examples lists the shipped projects for the File > Open Example menu.
+const examples = [
+	['Simulation demo (driver-free)', 'projects/sim-demo.blobnet'],
+	['Virtual bench (vcan0)', 'projects/demo.blobnet'],
+	['Telemetry / Trace Chart (vcan0)', 'projects/trace-demo.blobnet'],
+	['CPU-load sim (driver-free)', 'projects/cpuload-sim.blobnet'],
+	['DoIP diagnostics', 'projects/doip-demo.blobnet'],
+	['Replay demo', 'projects/replay-demo.blobnet'],
+]
+
+fn main() {
+	proj_path := os.getenv_opt('BLOBLY_PROJECT') or { 'projects/trace-demo.blobnet' }
+	mut wake_ms := os.getenv('VGUI_WAKE_MS').i64()
+	if wake_ms <= 0 {
+		wake_ms = 33
+	}
+	max_frames := os.getenv('VGUI_FRAMES').int()
+	shot := os.getenv('VGUI_SHOT')
+
+	mut app := &App{
+		t0:      time.ticks()
+		wake_ms: wake_ms
+	}
+	app.send_id_buf = mkbuf('101', 24)
+	app.send_data_buf = mkbuf('01', 64)
+	app.diag_did_buf = mkbuf('F190', 16)
+	app.script_path_buf = mkbuf('tests/diag_basic.lua', 256)
+	app.load_project(proj_path)
+	println('blobly_vgui: ${app.proj_name} — ${app.chans.len} channel(s), ${app.dbs.len} DBC(s), manifest=${app.has_manifest}. Press Start.')
+
+	if !vgui.init('blobly_net — ${app.proj_name} (imgui/ImPlot)', 1500, 850, true) {
 		eprintln('vgui.init failed')
 		return
 	}
@@ -523,6 +551,9 @@ fn main() {
 
 		if app.show_buses {
 			draw_buses(mut app, chans)
+		}
+		if app.show_sim {
+			draw_sim(app)
 		}
 		if app.show_trace {
 			draw_trace(mut app, rows, rx)
@@ -562,6 +593,17 @@ fn main() {
 fn draw_menubar(mut app App, rx u64) {
 	if vgui.menu_bar_begin() {
 		if vgui.menu_begin('File') {
+			if vgui.menu_begin('Open Example') {
+				for ex in examples {
+					if vgui.menu_item(ex[0]) {
+						app.load_project(ex[1])
+					}
+				}
+				vgui.menu_end()
+			}
+			if vgui.menu_item('Reload project') {
+				app.load_project(app.proj_path)
+			}
 			if vgui.menu_item('Exit') {
 				vgui.quit()
 			}
@@ -569,6 +611,7 @@ fn draw_menubar(mut app App, rx u64) {
 		}
 		if vgui.menu_begin('View') {
 			app.show_buses = vgui.menu_item_check('Buses', app.show_buses)
+			app.show_sim = vgui.menu_item_check('Simulation', app.show_sim)
 			app.show_trace = vgui.menu_item_check('Trace', app.show_trace)
 			app.show_tchart = vgui.menu_item_check('Trace Chart', app.show_tchart)
 			app.show_signals = vgui.menu_item_check('Signals', app.show_signals)
@@ -611,6 +654,36 @@ fn chan_state(c Chan) (u8, u8, u8, string) {
 		return u8(90), u8(200), u8(120), 'run '
 	}
 	return u8(220), u8(170), u8(70), 'idle'
+}
+
+// draw_sim lists the in-process simulation workload: each channel's simulated ECUs,
+// expandable to their signal generators + request/response rules.
+fn draw_sim(app &App) {
+	if !vgui.begin('Simulation') {
+		vgui.end()
+		return
+	}
+	if app.sims.len == 0 {
+		vgui.text_dim('no simulated ECUs in this project')
+		vgui.end()
+		return
+	}
+	for sc in app.sims {
+		vgui.separator_text(sc.iface)
+		for node in sc.nodes {
+			hdr := '${node.name}  (${node.signals.len} sig / ${node.responses.len} resp)###${sc.iface}:${node.name}'
+			if vgui.tree_node(hdr) {
+				for g in node.signals {
+					vgui.text('    ${g.signal}: ${g.typ}')
+				}
+				for r in node.responses {
+					vgui.text('    ${r.request} -> ${r.response}')
+				}
+				vgui.tree_pop()
+			}
+		}
+	}
+	vgui.end()
 }
 
 fn draw_buses(mut app App, chans []Chan) {
@@ -692,24 +765,45 @@ fn draw_trace_all(rows []TraceRow) {
 	}
 }
 
-// grouped: one collapsible row per (dir, ch, id); expand to decode its latest signals.
+struct GAgg {
+mut:
+	dir   string
+	ch    string
+	id    u32
+	ext   bool
+	count int
+	last  TraceRow
+}
+
+// grouped: one collapsible row per (dir, ch, id), expand to decode its latest signals.
+// Rows are sorted by a STABLE key (id, then dir) so they never jump as the ring trims —
+// the order is fixed by identity, not by which frame arrived most recently.
 fn draw_trace_grouped(app &App, rows []TraceRow) {
-	mut order := []string{}
-	mut counts := map[string]int{}
-	mut lasts := map[string]TraceRow{}
+	mut agg := map[string]GAgg{}
 	for r in rows {
 		k := '${r.dir}|${r.ch}|${r.id}|${r.ext}'
-		if k !in counts {
-			order << k
-		}
-		counts[k]++
-		lasts[k] = r
+		mut g := agg[k] or { GAgg{r.dir, r.ch, r.id, r.ext, 0, r} }
+		g.count++
+		g.last = r
+		agg[k] = g
 	}
-	for k in order {
-		r := lasts[k]
-		hdr := '${r.dir}  ${idstr(r.id, r.ext)}  ${r.name}  x${counts[k]}  ${hex(r.data)}##${k}'
+	mut groups := agg.values()
+	groups.sort_with_compare(fn (a &GAgg, b &GAgg) int {
+		if a.id != b.id {
+			return if a.id < b.id { -1 } else { 1 }
+		}
+		if a.dir != b.dir {
+			return if a.dir < b.dir { -1 } else { 1 }
+		}
+		return if a.ch < b.ch { -1 } else if a.ch > b.ch { 1 } else { 0 }
+	})
+	for g in groups {
+		r := g.last
+		// ### makes the tree-node ID depend ONLY on the identity (id/dir/ch), so neither the
+		// live-changing label nor the sort resets the expand state.
+		hdr := '${g.dir}  ${idstr(g.id, g.ext)}  ${r.name}  x${g.count}  ${hex(r.data)}###${g.dir}|${g.ch}|${g.id}|${g.ext}'
 		if vgui.tree_node(hdr) {
-			if m := app.find_message(r.id, r.ext) {
+			if m := app.find_message(g.id, g.ext) {
 				for s in m.active_signals(r.data) {
 					lbl := s.label(r.data)
 					extra := if lbl != '' { ' (${lbl})' } else { '' }
@@ -730,7 +824,7 @@ fn build_layout() {
 		return // already laid out (persisted in imgui.ini)
 	}
 	mut rest := u32(0)
-	buses := vgui.dock_split(root, vgui.dock_left, 0.15, &rest)
+	buses := vgui.dock_split(root, vgui.dock_left, 0.16, &rest)
 	mut center := u32(0)
 	right := vgui.dock_split(rest, vgui.dock_right, 0.34, &center)
 	mut rmid := u32(0)
@@ -738,6 +832,7 @@ fn build_layout() {
 	mut bottom := u32(0)
 	midnode := vgui.dock_split(rmid, vgui.dock_up, 0.5, &bottom)
 	vgui.dock_window('Buses', buses)
+	vgui.dock_window('Simulation', buses) // tabbed with Buses in the left column
 	vgui.dock_window('Trace', center)
 	vgui.dock_window('Trace Chart', chart)
 	// tab groups: [Signals | Send | Diagnostics] over [Graphics | Generators | Script]
@@ -806,17 +901,27 @@ fn draw_signals(mut app App, rows []TraceRow) {
 		return
 	}
 	vgui.text('${m.name}')
-	for s in m.active_signals(data) {
-		watched := app.is_watched(u32(app.sel_id), app.sel_ext, s.name)
-		nw := vgui.checkbox('##w_${m.id}_${s.name}', watched)
-		if nw != watched {
-			app.toggle_watch(u32(app.sel_id), app.sel_ext, s.name)
+	if vgui.table_begin('sigs', 4) {
+		vgui.table_col('') // plot checkbox
+		vgui.table_col('signal')
+		vgui.table_col('value')
+		vgui.table_col('unit')
+		vgui.table_headers()
+		for s in m.active_signals(data) {
+			vgui.table_row()
+			vgui.table_next_col()
+			watched := app.is_watched(u32(app.sel_id), app.sel_ext, s.name)
+			nw := vgui.checkbox('##w_${m.id}_${s.name}', watched)
+			if nw != watched {
+				app.toggle_watch(u32(app.sel_id), app.sel_ext, s.name)
+			}
+			vgui.table_cell(s.name)
+			lbl := s.label(data)
+			valstr := if lbl != '' { '${s.physical(data):.3} (${lbl})' } else { '${s.physical(data):.3}' }
+			vgui.table_cell(valstr)
+			vgui.table_cell(s.unit)
 		}
-		vgui.same_line()
-		lbl := s.label(data)
-		extra := if lbl != '' { ' (${lbl})' } else { '' }
-		unit := if s.unit != '' { ' ${s.unit}' } else { '' }
-		vgui.text('${s.name} = ${s.physical(data):.3}${unit}${extra}')
+		vgui.table_end()
 	}
 	vgui.end()
 }

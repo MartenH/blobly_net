@@ -55,6 +55,7 @@ void vgui_table_col(const char* c);
 void vgui_table_headers(void);
 void vgui_table_row(void);
 void vgui_table_cell(const char* s);
+void vgui_table_next_col(void);
 void vgui_table_end(void);
 float vgui_fps(void);
 #ifdef __cplusplus

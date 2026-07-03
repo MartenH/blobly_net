@@ -77,6 +77,7 @@ fn C.vgui_table_col(&char)
 fn C.vgui_table_headers()
 fn C.vgui_table_row()
 fn C.vgui_table_cell(&char)
+fn C.vgui_table_next_col()
 fn C.vgui_table_end()
 fn C.vgui_fps() f32
 
@@ -329,6 +330,11 @@ pub fn table_cell(s string) {
 
 pub fn table_end() {
 	C.vgui_table_end()
+}
+
+// table_next_col advances to the next column without emitting text (for arbitrary widgets).
+pub fn table_next_col() {
+	C.vgui_table_next_col()
 }
 
 // swimlane draws a handler/task gantt in an ImPlot plot with native pan/zoom/time-axis.

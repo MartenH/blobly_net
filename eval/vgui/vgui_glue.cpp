@@ -240,6 +240,7 @@ void vgui_table_col(const char* c) { ImGui::TableSetupColumn(c); }
 void vgui_table_headers() { ImGui::TableHeadersRow(); }
 void vgui_table_row() { ImGui::TableNextRow(); }
 void vgui_table_cell(const char* s) { ImGui::TableNextColumn(); ImGui::TextUnformatted(s); }
+void vgui_table_next_col() { ImGui::TableNextColumn(); } // advance without text (arbitrary widget)
 void vgui_table_end() { ImGui::EndTable(); }
 float vgui_fps() { return ImGui::GetIO().Framerate; }
 
