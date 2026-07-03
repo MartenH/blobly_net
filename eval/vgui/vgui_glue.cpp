@@ -336,6 +336,9 @@ void vgui_child_wh(const char* id, float w, float h) {
 void vgui_child_begin(const char* id, float height) {
     ImGui::BeginChild(id, ImVec2(0, height), ImGuiChildFlags_Borders);
 }
+// borderless child filling the remaining content region (the right pane next to the
+// full-height activity bar: toolbar on top, dockspace below).
+void vgui_child_fill(const char* id) { ImGui::BeginChild(id, ImVec2(0, 0), ImGuiChildFlags_None); }
 void vgui_child_end() { ImGui::EndChild(); }
 
 // single-line text input editing buf in place (caller owns a persistent NUL-terminated

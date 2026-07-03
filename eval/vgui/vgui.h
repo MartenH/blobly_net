@@ -46,6 +46,7 @@ void vgui_plot_line(const char* name, const float* xs, const float* ys, int n);
 void vgui_plot_end(void);
 int  vgui_selectable(const char* label, int selected);
 void vgui_child_begin(const char* id, float height);
+void vgui_child_fill(const char* id);
 int  vgui_toggle_button(const char* label, int active, float w);
 void vgui_child_wh(const char* id, float w, float h);
 void vgui_child_end(void);

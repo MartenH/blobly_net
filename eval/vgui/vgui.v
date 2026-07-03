@@ -68,6 +68,7 @@ fn C.vgui_plot_line(&char, &f32, &f32, int)
 fn C.vgui_plot_end()
 fn C.vgui_selectable(&char, int) int
 fn C.vgui_child_begin(&char, f32)
+fn C.vgui_child_fill(&char)
 fn C.vgui_toggle_button(&char, int, f32) int
 fn C.vgui_child_wh(&char, f32, f32)
 fn C.vgui_child_end()
@@ -293,6 +294,11 @@ pub fn selectable(label string, selected bool) bool {
 
 // child_begin opens a scrollable bordered sub-region of the given pixel height (0 = fill).
 // ALWAYS pair with child_end.
+// child_fill is a borderless child filling the remaining content region.
+pub fn child_fill(id string) {
+	C.vgui_child_fill(id.str)
+}
+
 pub fn child_begin(id string, height f32) {
 	C.vgui_child_begin(id.str, height)
 }
