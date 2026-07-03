@@ -889,7 +889,9 @@ fn main() {
 // draw_activity_bar is the VS Code-style vertical strip of panel toggles on the far left.
 // Each button toggles a panel's visibility and is tinted when the panel is shown.
 fn draw_activity_bar(mut app App) {
-	// narrow strip with a tight inner padding so the 3-char labels aren't clipped
+	// fixed dark strip (same in light + dark themes, like VS Code) with a tight inner
+	// padding so the 3-char labels aren't clipped
+	vgui.activity_style_push()
 	vgui.push_window_padding(4 * app.ui_scale, 6 * app.ui_scale)
 	vgui.child_wh('##activity', 60 * app.ui_scale, 0)
 	vgui.push_frame_padding(4 * app.ui_scale, 6 * app.ui_scale)
@@ -947,6 +949,7 @@ fn draw_activity_bar(mut app App) {
 	vgui.pop_style_var(1) // frame padding
 	vgui.child_end()
 	vgui.pop_style_var(1) // window padding
+	vgui.activity_style_pop()
 }
 
 fn draw_menubar(mut app App, rx u64) {
@@ -1011,7 +1014,8 @@ fn draw_menubar(mut app App, rx u64) {
 // draw_toolbar is the button/status strip BELOW the menu bar (Start/Stop, live status,
 // Pause/Clear/Record, theme).
 fn draw_toolbar(mut app App, rx u64) {
-	// inset from the window's left edge (host window has zero padding)
+	// breathing room below the menu bar + inset from the left edge (host has zero padding)
+	vgui.indent_y(7 * app.ui_scale)
 	vgui.indent_x(8 * app.ui_scale)
 	// primary action — big and colour-coded (started/stopped a lot): green Start / red Stop
 	bw := 110 * app.ui_scale
@@ -1141,8 +1145,7 @@ fn draw_symbols(mut app App) {
 				continue
 			}
 			// "+flt" adds this message to the Trace (filter) watch list (idempotent)
-			watched := app.is_fwatched(m.id, m.ext)
-			if vgui.small_button((if watched { 'in flt' } else { '+flt' }) + '##fadd${m.id}_${m.ext}') {
+			if vgui.small_button('+flt##fadd${m.id}_${m.ext}') {
 				app.add_fwatch(m.id, m.ext)
 			}
 			vgui.same_line()
@@ -1350,9 +1353,7 @@ fn draw_trace(mut app App, rows []TraceRow, gcount map[string]u64, rx u64) {
 		vgui.same_line()
 		sid := u32(app.sel_id)
 		sext := app.sel_ext
-		if app.is_fwatched(sid, sext) {
-			vgui.text_dim('${idstr(sid, sext)} in filter')
-		} else if vgui.small_button('+ Add ${idstr(sid, sext)} to filter') {
+		if vgui.small_button('+ Add ${idstr(sid, sext)} to filter') {
 			app.add_fwatch(sid, sext)
 		}
 	}

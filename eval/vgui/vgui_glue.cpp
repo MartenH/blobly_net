@@ -356,6 +356,17 @@ void vgui_indent_y(float h) { ImGui::SetCursorPosY(ImGui::GetCursorPosY() + h); 
 void vgui_push_frame_padding(float x, float y) { ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(x, y)); }
 void vgui_push_window_padding(float x, float y) { ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(x, y)); }
 void vgui_pop_style_var(int n) { ImGui::PopStyleVar(n); }
+// Fixed dark colours for the activity bar so it looks identical in light AND dark themes
+// (VS Code keeps its activity bar dark regardless of the editor theme). Push before the
+// child, pop after. Inactive buttons blend into the strip; the active one gets the accent.
+void vgui_activity_style_push() {
+    ImGui::PushStyleColor(ImGuiCol_ChildBg,       ImVec4(0x2b/255.f, 0x2b/255.f, 0x2b/255.f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0x2b/255.f, 0x2b/255.f, 0x2b/255.f, 0.f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0x3a/255.f, 0x3a/255.f, 0x3a/255.f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0x09/255.f, 0x47/255.f, 0x71/255.f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_Text,          ImVec4(0xcf/255.f, 0xcf/255.f, 0xcf/255.f, 1.f));
+}
+void vgui_activity_style_pop() { ImGui::PopStyleColor(5); }
 
 // collapsible tree node (grouped trace rows). If open, render children then call tree_pop.
 int  vgui_tree_node(const char* label) { return ImGui::TreeNode(label) ? 1 : 0; }

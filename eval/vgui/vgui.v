@@ -47,6 +47,8 @@ fn C.vgui_indent_y(f32)
 fn C.vgui_push_frame_padding(f32, f32)
 fn C.vgui_push_window_padding(f32, f32)
 fn C.vgui_pop_style_var(int)
+fn C.vgui_activity_style_push()
+fn C.vgui_activity_style_pop()
 fn C.vgui_dock_2col(&char, &char, f32)
 fn C.vgui_dock_3(&char, &char, &char, f32, f32)
 fn C.vgui_menu_bar_begin() int
@@ -190,6 +192,16 @@ pub fn push_window_padding(x f32, y f32) {
 
 pub fn pop_style_var(n int) {
 	C.vgui_pop_style_var(n)
+}
+
+// activity_style_push/pop wrap the activity bar in fixed dark colours (theme-independent,
+// VS Code style). Push before the child begins, pop after it ends.
+pub fn activity_style_push() {
+	C.vgui_activity_style_push()
+}
+
+pub fn activity_style_pop() {
+	C.vgui_activity_style_pop()
 }
 
 // dock_2col docks `left` and `right` side-by-side in the main window (one-time layout).

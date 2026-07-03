@@ -25,6 +25,8 @@ void vgui_indent_y(float h);
 void vgui_push_frame_padding(float x, float y);
 void vgui_push_window_padding(float x, float y);
 void vgui_pop_style_var(int n);
+void vgui_activity_style_push(void);
+void vgui_activity_style_pop(void);
 void vgui_dock_2col(const char* left, const char* right, float ratio);
 int  vgui_menu_bar_begin(void);
 void vgui_menu_bar_end(void);
