@@ -260,7 +260,10 @@ int  vgui_checkbox(const char* label, int cur) { bool b = cur != 0; ImGui::Check
 void vgui_text_colored(int r, int g, int b, const char* s) {
     ImGui::TextColored(ImVec4(r/255.f, g/255.f, b/255.f, 1.f), "%s", s);
 }
-int  vgui_small_button(const char* label) { return ImGui::SmallButton(label) ? 1 : 0; }
+// NB: a normal-height Button, NOT ImGui::SmallButton — SmallButton zeroes vertical
+// padding, so it sits shorter than the inputs/combos beside it. Uniform frame height
+// (buttons == inputs == selects) matches vlang/gui and reads far cleaner in toolbars.
+int  vgui_small_button(const char* label) { return ImGui::Button(label) ? 1 : 0; }
 void vgui_spacing() { ImGui::Spacing(); }
 void vgui_separator() { ImGui::Separator(); }
 void vgui_quit() { if (g_win) glfwSetWindowShouldClose(g_win, 1); }
