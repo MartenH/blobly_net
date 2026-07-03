@@ -5,7 +5,16 @@
 module vgui
 
 #flag -I@VMODROOT
-#flag @VMODROOT/libvgui_c.a
+// Link the prebuilt C++ archive. LINUX keeps the validated positional path. WINDOWS must pass
+// it as a LINKER input (-l:), NOT a positional file: on Windows V compiles+links in ONE
+// `-x c <src>` command, and a bare `@VMODROOT/libvgui_c.a` path is then swept up by the sticky
+// `-x c` → gcc tries to *compile the archive as C* → a multi-GB "stray byte" error storm that
+// overflows V's output capture and surfaces as a V panic
+// (`array.push_many: new len exceeds max_int` in os__windows_execute_command_line). `-l:` is a
+// linker option, immune to `-x c`. (Linux links separately, so the positional path is fine there.)
+#flag linux @VMODROOT/libvgui_c.a
+#flag windows -L@VMODROOT
+#flag windows -l:libvgui_c.a
 // Linux/WSL: GLFW (X11) + GL + the C++ runtime the imgui/implot objects need.
 #flag linux -lglfw -lGL -lstdc++ -ldl -lm -lfreetype
 // Windows (mingw): link GLFW3 *statically* (-l:libglfw3.a, so no glfw3.dll/winpthread
@@ -13,10 +22,13 @@ module vgui
 // imgui/implot C++ objects, static libstdc++/libgcc so the exe carries no MinGW runtime
 // DLLs (deps end up: kernel32/user32/gdi32/shell32/opengl32/msvcrt only). Multi-viewport
 // is native Win32 (no X11). Verified: mingw-w64 gcc 16.1.0, self-contained exe, GL 4.6.
-// FreeType (NEW — crisp text): needs `pacman -S mingw-w64-x86_64-freetype`. Static freetype
-// pulls transitive deps (harfbuzz/png/brotli/bz2/z/graphite2); if this link chain is wrong
-// on your toolchain, replace the freetype libs below with `pkg-config --static --libs freetype2`.
-#flag windows -static -l:libglfw3.a -lopengl32 -lgdi32 -limm32 -lshell32 -luser32 -lstdc++ -static-libstdc++ -static-libgcc -lfreetype -lharfbuzz -lpng16 -lbrotlidec -lbrotlicommon -lbz2 -lz -lgraphite2 -lrpcrt4
+// FreeType (crisp text): needs `pacman -S mingw-w64-x86_64-freetype`. mingw's libfreetype.a
+// is built WITH HarfBuzz, so a *static* link drags in the full transitive chain — the libs
+// below are `pkg-config --static --libs freetype2` verbatim (harfbuzz→glib/dwrite/usp10/
+// pcre2/intl/graphite2, png→z, brotli, bz2). HarfBuzz + graphite2 are C++, so `-lstdc++`
+// MUST come LAST (after them) or you get `undefined reference to __cxa_*`. If your toolchain
+// differs, regenerate the middle chain with `pkg-config --static --libs freetype2`.
+#flag windows -static -l:libglfw3.a -lopengl32 -lgdi32 -limm32 -lshell32 -luser32 -static-libstdc++ -static-libgcc -lfreetype -lbz2 -lpng16 -lz -lharfbuzz -lusp10 -ldwrite -lglib-2.0 -lintl -lole32 -lwinmm -lshlwapi -luuid -latomic -lpcre2-8 -lgraphite2 -lbrotlidec -lbrotlicommon -lrpcrt4 -lws2_32 -ladvapi32 -lstdc++ -l:libgdi32.a
 #include "vgui.h"
 
 // Bar mirrors the C `VBar` (SoA-free struct passed by pointer; C-compatible layout).
