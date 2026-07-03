@@ -145,6 +145,12 @@ static ImGuiID g_dockspace_id = 0;
 // frame_begin opens a full-work-area HOST window with a menu bar; the app then draws the
 // menu bar, an activity bar (a fixed-width child), and vgui_dockspace() which fills the
 // rest. frame_end closes the host window. This is the VS Code shell layout.
+// Menu-bar vertical padding — the host window's menu-bar height is baked at Begin() from
+// FramePadding.y, so we push a bigger value just around Begin() (and again around the menu
+// items in vgui_menu_bar_begin) to get a tall, easy-to-hit menu bar without inflating every
+// other framed widget.
+static float g_menu_pad_y = 16.0f;
+
 void vgui_frame_begin() {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
@@ -156,11 +162,13 @@ void vgui_frame_begin() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    // taller menu bar: MenuBarHeight = FontSize + 2*FramePadding.y, computed in Begin()
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x, g_menu_pad_y));
     ImGuiWindowFlags f = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking
         | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize
         | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
     ImGui::Begin("##host", nullptr, f);
-    ImGui::PopStyleVar(3);
+    ImGui::PopStyleVar(4);
 }
 
 // dockspace creates the dockspace filling the remaining content region of the host window
@@ -244,8 +252,15 @@ void vgui_set_next_window(float x, float y, float w, float h) {
 // vgui_set_window_focus brings a docked window's tab to the front by name.
 void vgui_set_window_focus(const char* name) { ImGui::SetWindowFocus(name); }
 // --- menu bar (sits above the dockspace) ---
-int  vgui_menu_bar_begin() { return ImGui::BeginMenuBar() ? 1 : 0; } // host-window menu bar
-void vgui_menu_bar_end() { ImGui::EndMenuBar(); }
+// match the item height to the taller bar (pushed in frame_begin) so File/View/Settings
+// fill it and are hit-able across the full height.
+int  vgui_menu_bar_begin() {
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x, g_menu_pad_y));
+    if (ImGui::BeginMenuBar()) return 1;
+    ImGui::PopStyleVar();
+    return 0;
+}
+void vgui_menu_bar_end() { ImGui::EndMenuBar(); ImGui::PopStyleVar(); }
 int  vgui_menu_begin(const char* label) { return ImGui::BeginMenu(label) ? 1 : 0; }
 void vgui_menu_end() { ImGui::EndMenu(); }
 int  vgui_menu_item(const char* label) { return ImGui::MenuItem(label) ? 1 : 0; }
@@ -366,6 +381,20 @@ void vgui_end() { ImGui::End(); }
 void vgui_text(const char* s) { ImGui::TextUnformatted(s); }
 void vgui_text_dim(const char* s) { ImGui::TextDisabled("%s", s); }
 int  vgui_button(const char* label) { return ImGui::Button(label) ? 1 : 0; }
+// a prominent coloured button at an explicit size (for the Start/Stop primary action).
+// r,g,b are 0-255; w/h are pixels (0 = auto for that axis).
+int vgui_button_big(const char* label, int r, int g, int b, float w, float h) {
+    ImVec4 base(r / 255.f, g / 255.f, b / 255.f, 1.f);
+    ImVec4 hov(base.x * 1.18f, base.y * 1.18f, base.z * 1.18f, 1.f);
+    ImVec4 act(base.x * 0.85f, base.y * 0.85f, base.z * 0.85f, 1.f);
+    ImGui::PushStyleColor(ImGuiCol_Button, base);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hov);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, act);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 1.f, 1.f, 1.f));
+    bool c = ImGui::Button(label, ImVec2(w, h));
+    ImGui::PopStyleColor(4);
+    return c ? 1 : 0;
+}
 void vgui_same_line() { ImGui::SameLine(); }
 void vgui_separator_text(const char* s) { ImGui::SeparatorText(s); }
 int  vgui_table_begin(const char* id, int cols) {

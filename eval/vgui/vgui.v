@@ -78,6 +78,7 @@ fn C.vgui_end()
 fn C.vgui_text(&char)
 fn C.vgui_text_dim(&char)
 fn C.vgui_button(&char) int
+fn C.vgui_button_big(&char, int, int, int, f32, f32) int
 fn C.vgui_same_line()
 fn C.vgui_separator_text(&char)
 fn C.vgui_table_begin(&char, int) int
@@ -348,6 +349,12 @@ pub fn text_dim(s string) {
 
 pub fn button(label string) bool {
 	return C.vgui_button(label.str) == 1
+}
+
+// button_big is a prominent coloured button at an explicit pixel size (w/h; 0 = auto),
+// for a primary action like Start/Stop. r,g,b are 0-255.
+pub fn button_big(label string, r int, g int, b int, w f32, h f32) bool {
+	return C.vgui_button_big(label.str, r, g, b, w, h) == 1
 }
 
 pub fn same_line() {

@@ -56,6 +56,7 @@ void vgui_end(void);
 void vgui_text(const char* s);
 void vgui_text_dim(const char* s);
 int  vgui_button(const char* label);
+int  vgui_button_big(const char* label, int r, int g, int b, float w, float h);
 void vgui_same_line(void);
 void vgui_separator_text(const char* s);
 int  vgui_table_begin(const char* id, int cols);

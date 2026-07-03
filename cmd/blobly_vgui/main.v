@@ -972,13 +972,16 @@ fn draw_menubar(mut app App, rx u64) {
 // draw_toolbar is the button/status strip BELOW the menu bar (Start/Stop, live status,
 // Pause/Clear/Record, theme).
 fn draw_toolbar(mut app App, rx u64) {
+	// primary action — big and colour-coded (started/stopped a lot): green Start / red Stop
+	bw := 110 * app.ui_scale
+	bh := 40 * app.ui_scale
 	if app.running {
-		if vgui.button('Stop') {
+		if vgui.button_big('Stop', 190, 70, 70, bw, bh) {
 			app.stop()
 			app.notify('stopped')
 		}
 	} else {
-		if vgui.button('Start') {
+		if vgui.button_big('Start', 45, 150, 90, bw, bh) {
 			app.start()
 			app.notify('started')
 		}
