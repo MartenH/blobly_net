@@ -12,6 +12,7 @@ void vgui_shutdown(void);
 double vgui_time(void);
 void vgui_wake(void);
 int  vgui_add_font(const char* path, float size_px);
+void vgui_set_theme(int dark);
 void vgui_dump_ppm(const char* path);
 void vgui_swimlane(const char* id, int n_lanes, const char** lane_labels,
                    const VBar* bars, int n_bars, float full_span_us);
@@ -56,6 +57,8 @@ void vgui_table_headers(void);
 void vgui_table_row(void);
 void vgui_table_cell(const char* s);
 void vgui_table_next_col(void);
+void vgui_table_setup_col(const char* name, float width);
+void vgui_table_freeze_top(void);
 void vgui_table_end(void);
 float vgui_fps(void);
 #ifdef __cplusplus

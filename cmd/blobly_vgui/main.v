@@ -79,9 +79,11 @@ mut:
 	last_wake    i64
 	proj_path    string
 	proj_name    string
+	dark bool = true // theme
 	// panel visibility (View menu)
 	show_buses    bool = true
 	show_sim      bool = true
+	show_symbols  bool = true
 	show_trace    bool = true
 	show_tchart   bool = true
 	show_signals  bool = true
@@ -100,6 +102,8 @@ mut:
 	send_iface    string
 	send_id_buf   []u8
 	send_data_buf []u8
+	trace_filter_buf  []u8 // Trace substring filter
+	symbol_filter_buf []u8 // Symbol Browser search
 	// Diagnostics (UDS on a worker thread)
 	diag_did_buf []u8
 	// Script (Lua on a worker thread)
@@ -518,6 +522,8 @@ fn main() {
 	app.send_data_buf = mkbuf('01', 64)
 	app.diag_did_buf = mkbuf('F190', 16)
 	app.script_path_buf = mkbuf('tests/diag_basic.lua', 256)
+	app.trace_filter_buf = mkbuf('', 64)
+	app.symbol_filter_buf = mkbuf('', 64)
 	app.load_project(proj_path)
 	println('blobly_vgui: ${app.proj_name} — ${app.chans.len} channel(s), ${app.dbs.len} DBC(s), manifest=${app.has_manifest}. Press Start.')
 
@@ -554,6 +560,9 @@ fn main() {
 		}
 		if app.show_sim {
 			draw_sim(app)
+		}
+		if app.show_symbols {
+			draw_symbols(mut app)
 		}
 		if app.show_trace {
 			draw_trace(mut app, rows, rx)
@@ -612,6 +621,7 @@ fn draw_menubar(mut app App, rx u64) {
 		if vgui.menu_begin('View') {
 			app.show_buses = vgui.menu_item_check('Buses', app.show_buses)
 			app.show_sim = vgui.menu_item_check('Simulation', app.show_sim)
+			app.show_symbols = vgui.menu_item_check('Symbols', app.show_symbols)
 			app.show_trace = vgui.menu_item_check('Trace', app.show_trace)
 			app.show_tchart = vgui.menu_item_check('Trace Chart', app.show_tchart)
 			app.show_signals = vgui.menu_item_check('Signals', app.show_signals)
@@ -640,6 +650,11 @@ fn draw_menubar(mut app App, rx u64) {
 		}
 		vgui.same_line()
 		vgui.text('· RX ${rx} · ${app.proj_name}')
+		vgui.same_line()
+		if vgui.small_button(if app.dark { 'Light' } else { 'Dark' }) {
+			app.dark = !app.dark
+			vgui.set_theme(app.dark)
+		}
 		vgui.menu_bar_end()
 	}
 }
@@ -686,6 +701,52 @@ fn draw_sim(app &App) {
 	vgui.end()
 }
 
+// draw_symbols is the Symbol Browser: a searchable tree of every DBC message and its
+// signals (bit layout, scaling, unit, range).
+fn draw_symbols(mut app App) {
+	if !vgui.begin('Symbols') {
+		vgui.end()
+		return
+	}
+	vgui.set_next_item_width(220)
+	vgui.input_text('search', mut app.symbol_filter_buf)
+	filt := vgui.buf_str(app.symbol_filter_buf).to_lower()
+	vgui.separator_text('messages / signals')
+	mut seen := map[u64]bool{}
+	for db in app.dbs {
+		for m in db.messages {
+			key := (u64(m.id) << 1) | if m.ext { u64(1) } else { u64(0) }
+			if key in seen {
+				continue
+			}
+			seen[key] = true
+			mut hit := filt == '' || m.name.to_lower().contains(filt)
+				|| idstr(m.id, m.ext).to_lower().contains(filt)
+			if !hit {
+				for s in m.signals {
+					if s.name.to_lower().contains(filt) {
+						hit = true
+						break
+					}
+				}
+			}
+			if !hit {
+				continue
+			}
+			hdr := '${idstr(m.id, m.ext)}  ${m.name}  (${m.signals.len} sig)###sym${m.id}_${m.ext}'
+			if vgui.tree_node(hdr) {
+				for s in m.signals {
+					off := if s.offset != 0 { '+${s.offset}' } else { '' }
+					unit := if s.unit != '' { ' ${s.unit}' } else { '' }
+					vgui.text('    ${s.name}  [bit ${s.start_bit}:${s.length}]  ×${s.factor}${off}${unit}  [${s.minimum}..${s.maximum}]')
+				}
+				vgui.tree_pop()
+			}
+		}
+	}
+	vgui.end()
+}
+
 fn draw_buses(mut app App, chans []Chan) {
 	if !vgui.begin('Buses') {
 		vgui.end()
@@ -724,12 +785,16 @@ fn draw_trace(mut app App, rows []TraceRow, rx u64) {
 	}
 	vgui.same_line()
 	vgui.text('RX ${rx} · ${vgui.fps():.0}fps')
+	vgui.same_line()
+	vgui.set_next_item_width(220)
+	vgui.input_text('filter', mut app.trace_filter_buf)
+	filt := vgui.buf_str(app.trace_filter_buf).to_lower()
 	if app.trace_grouped {
 		vgui.separator_text('by id (click to expand signals)')
-		draw_trace_grouped(app, rows)
+		draw_trace_grouped(app, rows, filt)
 	} else {
 		vgui.separator_text('frames (newest first)')
-		draw_trace_all(rows)
+		draw_trace_all(rows, filt)
 	}
 	vgui.end()
 }
@@ -738,19 +803,34 @@ fn idstr(id u32, ext bool) string {
 	return if ext { '0x${id:08X}' } else { '0x${id:03X}' }
 }
 
-fn draw_trace_all(rows []TraceRow) {
+// trace_pass: case-insensitive substring match over id / name / ch / dir / data.
+fn trace_pass(r TraceRow, filt string) bool {
+	if filt == '' {
+		return true
+	}
+	hay := '${idstr(r.id, r.ext)} ${r.name} ${r.ch} ${r.dir} ${hex(r.data)}'.to_lower()
+	return hay.contains(filt)
+}
+
+fn draw_trace_all(rows []TraceRow, filt string) {
 	if vgui.table_begin('trace', 6) {
-		vgui.table_col('t (ms)')
-		vgui.table_col('ch')
-		vgui.table_col('dir')
-		vgui.table_col('id')
-		vgui.table_col('name')
-		vgui.table_col('data')
+		vgui.table_setup_col('t (ms)', 66)
+		vgui.table_setup_col('ch', 52)
+		vgui.table_setup_col('dir', 34)
+		vgui.table_setup_col('id', 82)
+		vgui.table_setup_col('name', 150)
+		vgui.table_setup_col('data', 0) // stretch
+		vgui.table_freeze_top()
 		vgui.table_headers()
 		mut i := rows.len - 1
 		mut shown := 0
-		for i >= 0 && shown < 200 {
+		for i >= 0 && shown < 300 {
 			r := rows[i]
+			i--
+			if !trace_pass(r, filt) {
+				continue
+			}
+			shown++
 			vgui.table_row()
 			vgui.table_cell('${r.t_ms:.1}')
 			vgui.table_cell(r.ch)
@@ -758,8 +838,6 @@ fn draw_trace_all(rows []TraceRow) {
 			vgui.table_cell(idstr(r.id, r.ext))
 			vgui.table_cell(r.name)
 			vgui.table_cell(if r.rtr { 'RTR' } else { hex(r.data) })
-			i--
-			shown++
 		}
 		vgui.table_end()
 	}
@@ -778,9 +856,12 @@ mut:
 // grouped: one collapsible row per (dir, ch, id), expand to decode its latest signals.
 // Rows are sorted by a STABLE key (id, then dir) so they never jump as the ring trims —
 // the order is fixed by identity, not by which frame arrived most recently.
-fn draw_trace_grouped(app &App, rows []TraceRow) {
+fn draw_trace_grouped(app &App, rows []TraceRow, filt string) {
 	mut agg := map[string]GAgg{}
 	for r in rows {
+		if !trace_pass(r, filt) {
+			continue
+		}
 		k := '${r.dir}|${r.ch}|${r.id}|${r.ext}'
 		mut g := agg[k] or { GAgg{r.dir, r.ch, r.id, r.ext, 0, r} }
 		g.count++
@@ -833,6 +914,7 @@ fn build_layout() {
 	midnode := vgui.dock_split(rmid, vgui.dock_up, 0.5, &bottom)
 	vgui.dock_window('Buses', buses)
 	vgui.dock_window('Simulation', buses) // tabbed with Buses in the left column
+	vgui.dock_window('Symbols', buses)
 	vgui.dock_window('Trace', center)
 	vgui.dock_window('Trace Chart', chart)
 	// tab groups: [Signals | Send | Diagnostics] over [Graphics | Generators | Script]

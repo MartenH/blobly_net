@@ -35,6 +35,7 @@ fn C.vgui_shutdown()
 fn C.vgui_time() f64
 fn C.vgui_wake()
 fn C.vgui_add_font(&char, f32) int
+fn C.vgui_set_theme(int)
 fn C.vgui_dump_ppm(&char)
 fn C.vgui_swimlane(&char, int, &&char, voidptr, int, f32)
 fn C.vgui_set_next_window(f32, f32, f32, f32)
@@ -78,6 +79,8 @@ fn C.vgui_table_headers()
 fn C.vgui_table_row()
 fn C.vgui_table_cell(&char)
 fn C.vgui_table_next_col()
+fn C.vgui_table_setup_col(&char, f32)
+fn C.vgui_table_freeze_top()
 fn C.vgui_table_end()
 fn C.vgui_fps() f32
 
@@ -111,6 +114,11 @@ pub fn wake() {
 // true on success. imgui asserts on a bad path, so the caller must verify the file exists.
 pub fn add_font(path string, size f32) bool {
 	return C.vgui_add_font(path.str, size) == 1
+}
+
+// set_theme switches the palette (true = dark, false = light) and re-applies the style.
+pub fn set_theme(dark bool) {
+	C.vgui_set_theme(if dark { 1 } else { 0 })
 }
 
 pub fn time() f64 {
@@ -335,6 +343,17 @@ pub fn table_end() {
 // table_next_col advances to the next column without emitting text (for arbitrary widgets).
 pub fn table_next_col() {
 	C.vgui_table_next_col()
+}
+
+// table_setup_col declares a column: width > 0 = fixed pixels, width <= 0 = stretch.
+// Call for every column (after table_begin, before table_headers), then table_freeze_top.
+pub fn table_setup_col(name string, width f32) {
+	C.vgui_table_setup_col(name.str, width)
+}
+
+// table_freeze_top keeps the header row visible while the table body scrolls.
+pub fn table_freeze_top() {
+	C.vgui_table_freeze_top()
 }
 
 // swimlane draws a handler/task gantt in an ImPlot plot with native pan/zoom/time-axis.

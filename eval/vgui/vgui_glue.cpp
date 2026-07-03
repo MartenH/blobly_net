@@ -18,6 +18,20 @@ static GLFWwindow* g_win = nullptr;
 static bool g_event_driven = true;
 static const char* g_dump = nullptr;
 
+// apply our style tweaks on top of imgui's palette (StyleColors* resets these, so this
+// is re-run after every theme switch).
+static void apply_style_tweaks() {
+    ImGuiStyle& s = ImGui::GetStyle();
+    s.WindowRounding = 4.0f; s.FrameRounding = 3.0f;
+    s.FramePadding = ImVec2(8.0f, 6.0f);   // taller menu bar / buttons / inputs
+    s.ItemSpacing  = ImVec2(8.0f, 6.0f);
+    s.CellPadding  = ImVec2(6.0f, 3.0f);
+}
+extern "C" void vgui_set_theme(int dark) {
+    if (dark) ImGui::StyleColorsDark(); else ImGui::StyleColorsLight();
+    apply_style_tweaks();
+}
+
 int vgui_init(const char* title, int w, int h, int event_driven) {
     g_event_driven = event_driven != 0;
     if (!glfwInit()) return 1;
@@ -33,9 +47,7 @@ int vgui_init(const char* title, int w, int h, int event_driven) {
     ImPlot::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_ViewportsEnable;
-    ImGui::StyleColorsDark();
-    ImGuiStyle& s = ImGui::GetStyle();
-    s.WindowRounding = 4.0f; s.FrameRounding = 3.0f;
+    vgui_set_theme(1);
     ImGui_ImplGlfw_InitForOpenGL(g_win, true);
     ImGui_ImplOpenGL3_Init("#version 130");
     return 0;
@@ -241,6 +253,12 @@ void vgui_table_headers() { ImGui::TableHeadersRow(); }
 void vgui_table_row() { ImGui::TableNextRow(); }
 void vgui_table_cell(const char* s) { ImGui::TableNextColumn(); ImGui::TextUnformatted(s); }
 void vgui_table_next_col() { ImGui::TableNextColumn(); } // advance without text (arbitrary widget)
+// setup a column with a fixed pixel width (width > 0) or stretch (width <= 0).
+void vgui_table_setup_col(const char* name, float width) {
+    ImGui::TableSetupColumn(name, width > 0.0f ? ImGuiTableColumnFlags_WidthFixed
+                                               : ImGuiTableColumnFlags_WidthStretch, width);
+}
+void vgui_table_freeze_top() { ImGui::TableSetupScrollFreeze(0, 1); } // header stays on scroll
 void vgui_table_end() { ImGui::EndTable(); }
 float vgui_fps() { return ImGui::GetIO().Framerate; }
 
