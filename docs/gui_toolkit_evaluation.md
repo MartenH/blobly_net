@@ -103,3 +103,28 @@ VGUI_POLL=1 VGUI_FRAMES=40 VGUI_SHOT=shot.ppm eval/vgui/examples/trace_chart/tra
 ### Not done
 - **MSVC (`cl`)** build — only mingw was exercised. cimgui/implot/glfw all support MSVC; a `cl` pass is
   a nice-to-have, not a blocker (mingw is blobly_net's primary Windows toolchain anyway).
+
+## Live-data integration check — RESULTS (2026-07-03, WSL/vcan0)
+
+The last integration risk: a background CAN **RX thread** driving the **event-driven** render loop,
+the way the migrated app would (gui does this with `queue_command`; imgui with `glfwPostEmptyEvent`).
+`eval/vgui/examples/live_trace/live_trace.v` — a real `transport` bus RX thread appends frames under a
+mutex and calls `vgui.wake()`; the UI thread blocks in `glfwWaitEvents` and repaints on wake. Verified
+live on `vcan0` with `cangen`:
+
+| Check | Result |
+|---|---|
+| **RX thread → wake → render** | ✅ Live frames flow to the table; CPU responds only when traffic arrives (no traffic → stays at idle). |
+| **Coalescing is mandatory** | ⚠️→✅ Waking on **every** frame = the poll trap: a 1000 msg/s bus drove **350 %** of a core. Fix = **coalesce repaint requests** (frames still accumulate every RX; the wake is rate-limited) — the *same* batched-repaint discipline `src/main.v` already uses (`App.fps`). |
+| **CPU bounded, scales with cap** | ✅ Under a saturated 1000 msg/s flood (WSLg): 60fps→120 %, 30fps→80 %, **5fps (app default)→20 %** of a core. CPU tracks the repaint cap, ~independent of traffic — matches the gui app's measured property. Native Windows lacks WSLg's GL tax (idle 0.5 % there), so far lower. |
+| **Memory** | ✅ **No leak.** RSS reaches a working-set plateau (~128 MB) and holds **dead flat for 2 min** under the worst case (1000 msg/s + 60 fps repaint). Unlike the V-closure leak that plagued gui — imgui is immediate-mode (no per-frame retained allocs) and the example builds no per-frame capturing closures. |
+
+**Conclusion:** the live path is de-risked. The mitigation (coalesced wake + an fps cap) is identical to
+what the app already does, just via `glfwPostEmptyEvent`. **Cleared to start the phased migration.**
+
+Reproduce:
+```sh
+eval/vgui/build_deps.sh
+v -enable-globals -cc gcc -path "@vlib|@vmodules|modules|eval" run \
+  eval/vgui/examples/live_trace/live_trace.v vcan0        # then: cangen vcan0   (VGUI_WAKE_MS caps repaint)
+```

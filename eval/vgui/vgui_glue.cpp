@@ -83,6 +83,10 @@ void vgui_shutdown() {
     glfwTerminate();
 }
 double vgui_time() { return glfwGetTime(); }
+// vgui_wake posts an empty event to unblock glfwWaitEvents from ANOTHER thread — the
+// event-driven equivalent of gui's queue_command. glfwPostEmptyEvent is one of the few
+// thread-safe GLFW calls, so an RX/sim thread can call this to request a repaint.
+void vgui_wake() { glfwPostEmptyEvent(); }
 void vgui_dump_ppm(const char* path) { g_dump = path; }
 
 // --- curated widget glue (scalar C ABI over imgui) ---

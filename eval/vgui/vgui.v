@@ -33,6 +33,7 @@ fn C.vgui_frame_begin()
 fn C.vgui_frame_end()
 fn C.vgui_shutdown()
 fn C.vgui_time() f64
+fn C.vgui_wake()
 fn C.vgui_dump_ppm(&char)
 fn C.vgui_swimlane(&char, int, &&char, voidptr, int, f32)
 fn C.vgui_set_next_window(f32, f32, f32, f32)
@@ -70,6 +71,11 @@ pub fn frame_end() {
 
 pub fn shutdown() {
 	C.vgui_shutdown()
+}
+
+// wake requests a repaint from another thread (unblocks the event-driven loop). Thread-safe.
+pub fn wake() {
+	C.vgui_wake()
 }
 
 pub fn time() f64 {

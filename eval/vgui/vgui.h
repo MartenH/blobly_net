@@ -10,6 +10,7 @@ void vgui_frame_begin(void);
 void vgui_frame_end(void);
 void vgui_shutdown(void);
 double vgui_time(void);
+void vgui_wake(void);
 void vgui_dump_ppm(const char* path);
 void vgui_swimlane(const char* id, int n_lanes, const char** lane_labels,
                    const VBar* bars, int n_bars, float full_span_us);
