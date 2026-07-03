@@ -93,6 +93,7 @@ fn C.vgui_table_row()
 fn C.vgui_table_cell(&char)
 fn C.vgui_table_next_col()
 fn C.vgui_tree_node_table(&char) int
+fn C.vgui_is_item_clicked() int
 fn C.vgui_table_setup_col(&char, f32)
 fn C.vgui_table_freeze_top()
 fn C.vgui_table_end()
@@ -426,6 +427,11 @@ pub fn table_next_col() {
 // tree_node_table is a tree node inside a table cell (spans all columns for the click).
 pub fn tree_node_table(label string) bool {
 	return C.vgui_tree_node_table(label.str) == 1
+}
+
+// is_item_clicked reports whether the last-submitted item was clicked this frame.
+pub fn is_item_clicked() bool {
+	return C.vgui_is_item_clicked() == 1
 }
 
 // table_setup_col declares a column: width > 0 = fixed pixels, width <= 0 = stretch.

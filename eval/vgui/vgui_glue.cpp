@@ -414,6 +414,8 @@ int  vgui_table_begin(const char* id, int cols) {
 int vgui_tree_node_table(const char* label) {
     return ImGui::TreeNodeEx(label, ImGuiTreeNodeFlags_SpanAllColumns) ? 1 : 0;
 }
+// true the frame the last-submitted item was clicked (for row selection).
+int vgui_is_item_clicked() { return ImGui::IsItemClicked() ? 1 : 0; }
 void vgui_table_col(const char* c) { ImGui::TableSetupColumn(c); }
 void vgui_table_headers() { ImGui::TableHeadersRow(); }
 void vgui_table_row() { ImGui::TableNextRow(); }

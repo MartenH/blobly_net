@@ -122,6 +122,7 @@ mut:
 	sel_ext       bool
 	watch         []Watch // signals plotted in Graphics
 	trace_grouped bool = true // Trace: grouped-by-id (expandable) vs chronological
+	fwatch        []FrameId   // Trace (filter) watch list — frames added from Trace/Symbols
 	// TX bus (Send / Generators) — opened on the first monitor channel at Start
 	send_bus      ?transport.Bus
 	send_iface    string
@@ -194,6 +195,38 @@ fn (mut app App) toggle_watch(id u32, ext bool, sig string) {
 		}
 	}
 	app.watch << Watch{id, ext, sig}
+}
+
+// FrameId identifies one CAN frame (id + 29-bit flag) for the Trace (filter) watch list.
+struct FrameId {
+	id  u32
+	ext bool
+}
+
+fn (app &App) is_fwatched(id u32, ext bool) bool {
+	for f in app.fwatch {
+		if f.id == id && f.ext == ext {
+			return true
+		}
+	}
+	return false
+}
+
+// add_fwatch adds a frame to the Trace (filter) watch list (no-op if already present).
+fn (mut app App) add_fwatch(id u32, ext bool) {
+	if !app.is_fwatched(id, ext) {
+		app.fwatch << FrameId{id, ext}
+		app.notify('added ${idstr(id, ext)} to Trace (filter)')
+	}
+}
+
+fn (mut app App) remove_fwatch(id u32, ext bool) {
+	for i, f in app.fwatch {
+		if f.id == id && f.ext == ext {
+			app.fwatch.delete(i)
+			return
+		}
+	}
 }
 
 fn (app &App) find_message(id u32, ext bool) ?candb.Message {
@@ -651,6 +684,7 @@ fn (mut app App) load_project(path string) {
 	app.diag_log = []
 	app.script_log = []
 	app.watch = []
+	app.fwatch = []
 	app.has_manifest = false
 	app.manifest = telem.Manifest{}
 	app.sel_id = -1
@@ -1106,6 +1140,12 @@ fn draw_symbols(mut app App) {
 			if !hit {
 				continue
 			}
+			// "+flt" adds this message to the Trace (filter) watch list (idempotent)
+			watched := app.is_fwatched(m.id, m.ext)
+			if vgui.small_button((if watched { 'in flt' } else { '+flt' }) + '##fadd${m.id}_${m.ext}') {
+				app.add_fwatch(m.id, m.ext)
+			}
+			vgui.same_line()
 			hdr := '${idstr(m.id, m.ext)}  ${m.name}  (${m.signals.len} sig)###sym${m.id}_${m.ext}'
 			if vgui.tree_node(hdr) {
 				for s in m.signals {
@@ -1305,10 +1345,21 @@ fn draw_trace(mut app App, rows []TraceRow, gcount map[string]u64, rx u64) {
 	if vgui.small_button('Open') {
 		app.load_recording(vgui.buf_str(app.log_path_buf))
 	}
+	// add the selected frame (click a row) to the Trace (filter) watch list
+	if app.sel_id >= 0 {
+		vgui.same_line()
+		sid := u32(app.sel_id)
+		sext := app.sel_ext
+		if app.is_fwatched(sid, sext) {
+			vgui.text_dim('${idstr(sid, sext)} in filter')
+		} else if vgui.small_button('+ Add ${idstr(sid, sext)} to filter') {
+			app.add_fwatch(sid, sext)
+		}
+	}
 	filt := vgui.buf_str(app.trace_filter_buf).to_lower()
 	if app.trace_grouped {
-		vgui.separator_text('by id (click to expand signals)')
-		draw_trace_grouped(app, rows, gcount, filt)
+		vgui.separator_text('by id (click to expand · click row to select)')
+		draw_trace_grouped(mut app, rows, gcount, filt)
 	} else {
 		vgui.separator_text('frames (newest first)')
 		draw_trace_all('trace', rows, filt)
@@ -1316,8 +1367,8 @@ fn draw_trace(mut app App, rows []TraceRow, gcount map[string]u64, rx u64) {
 	vgui.end()
 }
 
-// draw_ftrace is a SECOND trace view with its own filter + grouping (like the gui's
-// "Trace (filter)" panel), over the same frame buffer.
+// draw_ftrace is the "Trace (filter)" watch list: it shows ONLY the frames you've added
+// (via "+ Add to filter" in the Trace panel, or "+" in Symbols), over the same buffer.
 fn draw_ftrace(mut app App, rows []TraceRow, gcount map[string]u64) {
 	if !vgui.begin('Trace (filter)') {
 		vgui.end()
@@ -1327,14 +1378,37 @@ fn draw_ftrace(mut app App, rows []TraceRow, gcount map[string]u64) {
 		app.trace_grouped2 = !app.trace_grouped2
 	}
 	vgui.same_line()
-	vgui.set_next_item_width(220)
-	vgui.input_text('filter', mut app.trace_filter2_buf)
-	filt := vgui.buf_str(app.trace_filter2_buf).to_lower()
-	vgui.separator_text('filtered')
-	if app.trace_grouped2 {
-		draw_trace_grouped(app, rows, gcount, filt)
+	vgui.set_next_item_width(180)
+	vgui.input_text('find', mut app.trace_filter2_buf)
+	vgui.same_line()
+	if vgui.small_button('Clear watch') {
+		app.fwatch = []
+	}
+	// watched-frame chips (click one to remove it from the list)
+	if app.fwatch.len == 0 {
+		vgui.text_dim('empty — select a frame in Trace and click "+ Add to filter", or "+" in Symbols')
 	} else {
-		draw_trace_all('ftrace', rows, filt)
+		vgui.text('watching:')
+		for f in app.fwatch {
+			nm := app.lookup_name(f.id, f.ext)
+			vgui.same_line()
+			if vgui.small_button('${idstr(f.id, f.ext)} ${nm} x##fw${f.id}_${f.ext}') {
+				app.remove_fwatch(f.id, f.ext)
+			}
+		}
+	}
+	vgui.separator()
+	if app.fwatch.len == 0 {
+		vgui.end()
+		return
+	}
+	// restrict to watched frames, then apply the optional text find
+	frows := rows.filter(app.is_fwatched(it.id, it.ext))
+	filt := vgui.buf_str(app.trace_filter2_buf).to_lower()
+	if app.trace_grouped2 {
+		draw_trace_grouped(mut app, frows, gcount, filt)
+	} else {
+		draw_trace_all('ftrace', frows, filt)
 	}
 	vgui.end()
 }
@@ -1402,7 +1476,7 @@ fn gkey(dir string, ch string, id u32, ext bool) string {
 // grouped: one collapsible row per (dir, ch, id), expand to decode its latest signals.
 // Rows are sorted by a STABLE key (id, then dir) so they never jump as the ring trims —
 // the order is fixed by identity, not by which frame arrived most recently.
-fn draw_trace_grouped(app &App, rows []TraceRow, gcount map[string]u64, filt string) {
+fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt string) {
 	mut agg := map[string]GAgg{}
 	for r in rows {
 		if !trace_pass(r, filt) {
@@ -1438,6 +1512,11 @@ fn draw_trace_grouped(app &App, rows []TraceRow, gcount map[string]u64, filt str
 			vgui.table_next_col()
 			// ### keys the tree id on identity only, so the live label / sort don't reset it.
 			open := vgui.tree_node_table('${idstr(g.id, g.ext)}  ${r.name}###${g.dir}|${g.ch}|${g.id}|${g.ext}')
+			// clicking a row selects that frame (drives Signals/Graphics + "Add to filter")
+			if vgui.is_item_clicked() {
+				app.sel_id = int(g.id)
+				app.sel_ext = g.ext
+			}
 			vgui.table_cell(g.ch)
 			vgui.table_cell(g.dir)
 			// all-time total (survives the ring trim); fall back to the window count.
