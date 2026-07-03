@@ -128,6 +128,7 @@ pub mut:
 	listen_only  bool
 	enabled      bool = true
 	databases    []string
+	manifest     string    // telemetry handler manifest (CSV) — resolves handler_id -> FB/handler/core
 	simulate     []string  // shorthand: ECU node names to simulate with default behaviour
 	nodes        []NodeCfg // fully-configured simulated ECUs (signals + responses)
 	senders      []Sender  // interactive generators: triggerable custom frames
@@ -327,6 +328,9 @@ fn parse_channel(c yaml.Any) !Channel {
 	}
 	if dbs := c.value_opt('databases') {
 		ch.databases = dbs.array().as_strings()
+	}
+	if mf := c.value_opt('manifest') {
+		ch.manifest = mf.string()
 	}
 	if sim := c.value_opt('simulate') {
 		ch.simulate = sim.array().as_strings()
