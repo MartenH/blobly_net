@@ -56,11 +56,15 @@ fn C.vgui_plot_end()
 fn C.vgui_selectable(&char, int) int
 fn C.vgui_child_begin(&char, f32)
 fn C.vgui_child_end()
+fn C.vgui_input_text(&char, &char, int) int
+fn C.vgui_set_next_item_width(f32)
+fn C.vgui_tree_node(&char) int
+fn C.vgui_tree_pop()
 fn C.vgui_dock_root() u32
 fn C.vgui_dock_split(u32, int, f32, &u32) u32
 fn C.vgui_dock_window(&char, u32)
 fn C.vgui_dock_finish(u32)
-fn C.vgui_begin(&char)
+fn C.vgui_begin(&char) int
 fn C.vgui_end()
 fn C.vgui_text(&char)
 fn C.vgui_text_dim(&char)
@@ -211,6 +215,35 @@ pub fn child_end() {
 	C.vgui_child_end()
 }
 
+// input_text edits `buf` (a persistent, NUL-terminated []u8 the caller owns) in place;
+// returns true the frame the text changed. Read the value back with buf_str(buf).
+pub fn input_text(label string, mut buf []u8) bool {
+	return C.vgui_input_text(label.str, unsafe { &char(&buf[0]) }, buf.len) == 1
+}
+
+// buf_str reads a NUL-terminated input buffer as a V string.
+pub fn buf_str(buf []u8) string {
+	mut n := 0
+	for n < buf.len && buf[n] != 0 {
+		n++
+	}
+	return buf[..n].bytestr()
+}
+
+pub fn set_next_item_width(w f32) {
+	C.vgui_set_next_item_width(w)
+}
+
+// tree_node renders a collapsible header; if it returns true, render children and then
+// call tree_pop().
+pub fn tree_node(label string) bool {
+	return C.vgui_tree_node(label.str) == 1
+}
+
+pub fn tree_pop() {
+	C.vgui_tree_pop()
+}
+
 // --- DockBuilder: build a custom N-pane layout (see dock_left/right/up/down consts) ---
 pub const dock_left = 0
 pub const dock_right = 1
@@ -236,8 +269,10 @@ pub fn dock_finish(root u32) {
 	C.vgui_dock_finish(root)
 }
 
-pub fn begin(title string) {
-	C.vgui_begin(title.str)
+// begin opens a window; returns true if it is visible (active dock tab / not collapsed).
+// Skip the content when false, but ALWAYS call end().
+pub fn begin(title string) bool {
+	return C.vgui_begin(title.str) == 1
 }
 
 pub fn end() {

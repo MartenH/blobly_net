@@ -179,6 +179,17 @@ void vgui_child_begin(const char* id, float height) {
 }
 void vgui_child_end() { ImGui::EndChild(); }
 
+// single-line text input editing buf in place (caller owns a persistent NUL-terminated
+// buffer of bufsize). Returns 1 the frame the text changed.
+int vgui_input_text(const char* label, char* buf, int bufsize) {
+    return ImGui::InputText(label, buf, (size_t)bufsize) ? 1 : 0;
+}
+void vgui_set_next_item_width(float w) { ImGui::SetNextItemWidth(w); }
+
+// collapsible tree node (grouped trace rows). If open, render children then call tree_pop.
+int  vgui_tree_node(const char* label) { return ImGui::TreeNode(label) ? 1 : 0; }
+void vgui_tree_pop() { ImGui::TreePop(); }
+
 // --- general DockBuilder (build an N-pane layout from V) ---
 // vgui_dock_root resets the main dockspace and returns its node id (0 if a layout is
 // already persisted, so the caller skips rebuilding). dir: 0=left 1=right 2=up 3=down.
@@ -200,7 +211,9 @@ unsigned int vgui_dock_split(unsigned int node, int dir, float ratio, unsigned i
 void vgui_dock_window(const char* name, unsigned int node) { ImGui::DockBuilderDockWindow(name, node); }
 void vgui_dock_finish(unsigned int root) { ImGui::DockBuilderFinish(root); }
 
-void vgui_begin(const char* title) { ImGui::Begin(title); }
+// Returns 1 if the window is visible (active tab / not collapsed). Callers must skip the
+// content when it returns 0 but ALWAYS call vgui_end (imgui pairs Begin/End unconditionally).
+int vgui_begin(const char* title) { return ImGui::Begin(title) ? 1 : 0; }
 void vgui_end() { ImGui::End(); }
 void vgui_text(const char* s) { ImGui::TextUnformatted(s); }
 void vgui_text_dim(const char* s) { ImGui::TextDisabled("%s", s); }

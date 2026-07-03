@@ -18,7 +18,13 @@ import project
 import transport
 import candb
 import telem
+import isotp
+import uds
+import script
 import vgui
+
+const diag_tx_id = u32(0x7E0)
+const diag_rx_id = u32(0x7E8)
 
 const trace_cap = 2000
 const telem_cap = 20000
@@ -26,6 +32,7 @@ const telem_cap = 20000
 struct TraceRow {
 	t_ms f64
 	ch   string
+	dir  string // 'RX' | 'TX'
 	id   u32
 	ext  bool
 	rtr  bool
@@ -77,10 +84,36 @@ mut:
 	show_tchart   bool = true
 	show_signals  bool = true
 	show_graphics bool = true
+	show_send     bool = true
+	show_diag     bool = true
+	show_gen      bool = true
+	show_script   bool = true
 	// Signals selection + Graphics watch list (UI-thread only; RX never touches these)
-	sel_id  int = -1 // selected message id (-1 = none)
-	sel_ext bool
-	watch   []Watch // signals plotted in Graphics
+	sel_id        int = -1 // selected message id (-1 = none)
+	sel_ext       bool
+	watch         []Watch // signals plotted in Graphics
+	trace_grouped bool    // Trace: grouped-by-id (expandable) vs chronological
+	// TX bus (Send / Generators) — opened on the first monitor channel at Start
+	send_bus      ?transport.Bus
+	send_iface    string
+	send_id_buf   []u8
+	send_data_buf []u8
+	// Diagnostics (UDS on a worker thread)
+	diag_did_buf []u8
+	// Script (Lua on a worker thread)
+	script_path_buf []u8
+	senders         []SenderRT // flattened project senders (Generators)
+	// worker-thread outputs (guarded by mu)
+	diag_log    []string
+	diag_busy   bool
+	script_log  []string
+	script_busy bool
+}
+
+// SenderRT is a project sender bound to its channel iface (Generators panel).
+struct SenderRT {
+	iface  string
+	sender project.Sender
 }
 
 // Watch identifies one plotted signal.
@@ -139,6 +172,13 @@ fn (mut app App) start() {
 		}
 		app.chans[ci].running = true
 		spawn rx_loop(app, ci, ch.iface)
+		// open a TX bus on the first monitor channel (Send / Generators)
+		if app.send_iface == '' {
+			if b := transport.open(ch.iface) {
+				app.send_bus = b
+				app.send_iface = ch.iface
+			}
+		}
 	}
 }
 
@@ -148,6 +188,47 @@ fn (mut app App) stop() {
 	for ci in 0 .. app.chans.len {
 		app.chans[ci].running = false
 	}
+	if mut b := app.send_bus {
+		b.close()
+	}
+	app.send_bus = none
+	app.send_iface = ''
+}
+
+// tx sends a frame on the TX bus and records it as a TX trace row.
+fn (mut app App) tx(f transport.CanFrame) bool {
+	mut b := app.send_bus or { return false }
+	b.send(f) or { return false }
+	name := app.lookup_name(f.id, f.extended)
+	app.mu.lock()
+	app.trace << TraceRow{f64(time.ticks() - app.t0), app.send_iface, 'TX', f.id, f.extended, f.rtr, name, f.data.clone()}
+	app.rx++ // count TX in the total too
+	app.mu.unlock()
+	vgui.wake()
+	return true
+}
+
+// mkbuf returns a fixed-size NUL-terminated input buffer seeded with `s`.
+fn mkbuf(s string, size int) []u8 {
+	mut b := []u8{len: size}
+	for i, c in s {
+		if i < size - 1 {
+			b[i] = c
+		}
+	}
+	return b
+}
+
+// parse_hex_bytes parses "DE AD BE" / "DEADBE" into bytes.
+fn parse_hex_bytes(s string) []u8 {
+	clean := s.replace(' ', '').replace('\t', '')
+	mut out := []u8{}
+	mut i := 0
+	for i + 1 < clean.len + 1 && i + 2 <= clean.len {
+		out << u8(('0x' + clean[i..i + 2]).u64())
+		i += 2
+	}
+	return out
 }
 
 fn rx_loop(app &App, ci int, iface string) {
@@ -166,7 +247,7 @@ fn rx_loop(app &App, ci int, iface string) {
 		t_ms := f64(time.ticks() - a.t0)
 		name := a.lookup_name(f.id, f.extended)
 		a.mu.lock()
-		a.trace << TraceRow{t_ms, chname, f.id, f.extended, f.rtr, name, f.data.clone()}
+		a.trace << TraceRow{t_ms, chname, 'RX', f.id, f.extended, f.rtr, name, f.data.clone()}
 		if a.trace.len > trace_cap {
 			a.trace = a.trace[a.trace.len - trace_cap..].clone()
 		}
@@ -254,6 +335,16 @@ fn main() {
 			}
 		}
 	}
+	// flatten project senders (Generators) + seed the input buffers
+	for ch in proj.channels {
+		for s in ch.senders {
+			app.senders << SenderRT{ch.iface, s}
+		}
+	}
+	app.send_id_buf = mkbuf('101', 24)
+	app.send_data_buf = mkbuf('01', 64)
+	app.diag_did_buf = mkbuf('F190', 16)
+	app.script_path_buf = mkbuf('tests/diag_basic.lua', 256)
 	// default the Signals selection to the first DBC message (so it decodes on launch)
 	for db in app.dbs {
 		if db.messages.len > 0 {
@@ -295,7 +386,7 @@ fn main() {
 			draw_buses(mut app, chans)
 		}
 		if app.show_trace {
-			draw_trace(app, rows, rx)
+			draw_trace(mut app, rows, rx)
 		}
 		if app.show_tchart {
 			draw_tchart(app, trecs)
@@ -305,6 +396,18 @@ fn main() {
 		}
 		if app.show_graphics {
 			draw_graphics(app, rows)
+		}
+		if app.show_send {
+			draw_send(mut app)
+		}
+		if app.show_diag {
+			draw_diag(mut app)
+		}
+		if app.show_gen {
+			draw_gen(mut app)
+		}
+		if app.show_script {
+			draw_script(mut app)
 		}
 
 		vgui.frame_end()
@@ -331,6 +434,10 @@ fn draw_menubar(mut app App, rx u64) {
 			app.show_tchart = vgui.menu_item_check('Trace Chart', app.show_tchart)
 			app.show_signals = vgui.menu_item_check('Signals', app.show_signals)
 			app.show_graphics = vgui.menu_item_check('Graphics', app.show_graphics)
+			app.show_send = vgui.menu_item_check('Send', app.show_send)
+			app.show_diag = vgui.menu_item_check('Diagnostics', app.show_diag)
+			app.show_gen = vgui.menu_item_check('Generators', app.show_gen)
+			app.show_script = vgui.menu_item_check('Script', app.show_script)
 			vgui.menu_end()
 		}
 		vgui.text('   ')
@@ -368,7 +475,10 @@ fn chan_state(c Chan) (u8, u8, u8, string) {
 }
 
 fn draw_buses(mut app App, chans []Chan) {
-	vgui.begin('Buses')
+	if !vgui.begin('Buses') {
+		vgui.end()
+		return
+	}
 	vgui.text('${app.proj_name} · ${chans.len} channel(s)')
 	vgui.separator_text('channels')
 	for i, c in chans {
@@ -392,13 +502,35 @@ fn draw_buses(mut app App, chans []Chan) {
 	vgui.end()
 }
 
-fn draw_trace(app &App, rows []TraceRow, rx u64) {
-	vgui.begin('Trace')
-	vgui.text('RX ${rx} · ${rows.len} shown · ${vgui.fps():.0}fps')
-	vgui.separator_text('frames (newest first)')
-	if vgui.table_begin('trace', 5) {
+fn draw_trace(mut app App, rows []TraceRow, rx u64) {
+	if !vgui.begin('Trace') {
+		vgui.end()
+		return
+	}
+	if vgui.small_button(if app.trace_grouped { 'View: grouped' } else { 'View: all' }) {
+		app.trace_grouped = !app.trace_grouped
+	}
+	vgui.same_line()
+	vgui.text('RX ${rx} · ${vgui.fps():.0}fps')
+	if app.trace_grouped {
+		vgui.separator_text('by id (click to expand signals)')
+		draw_trace_grouped(app, rows)
+	} else {
+		vgui.separator_text('frames (newest first)')
+		draw_trace_all(rows)
+	}
+	vgui.end()
+}
+
+fn idstr(id u32, ext bool) string {
+	return if ext { '0x${id:08X}' } else { '0x${id:03X}' }
+}
+
+fn draw_trace_all(rows []TraceRow) {
+	if vgui.table_begin('trace', 6) {
 		vgui.table_col('t (ms)')
 		vgui.table_col('ch')
+		vgui.table_col('dir')
 		vgui.table_col('id')
 		vgui.table_col('name')
 		vgui.table_col('data')
@@ -407,11 +539,11 @@ fn draw_trace(app &App, rows []TraceRow, rx u64) {
 		mut shown := 0
 		for i >= 0 && shown < 200 {
 			r := rows[i]
-			idw := if r.ext { '0x${r.id:08X}' } else { '0x${r.id:03X}' }
 			vgui.table_row()
 			vgui.table_cell('${r.t_ms:.1}')
 			vgui.table_cell(r.ch)
-			vgui.table_cell(idw)
+			vgui.table_cell(r.dir)
+			vgui.table_cell(idstr(r.id, r.ext))
 			vgui.table_cell(r.name)
 			vgui.table_cell(if r.rtr { 'RTR' } else { hex(r.data) })
 			i--
@@ -419,7 +551,36 @@ fn draw_trace(app &App, rows []TraceRow, rx u64) {
 		}
 		vgui.table_end()
 	}
-	vgui.end()
+}
+
+// grouped: one collapsible row per (dir, ch, id); expand to decode its latest signals.
+fn draw_trace_grouped(app &App, rows []TraceRow) {
+	mut order := []string{}
+	mut counts := map[string]int{}
+	mut lasts := map[string]TraceRow{}
+	for r in rows {
+		k := '${r.dir}|${r.ch}|${r.id}|${r.ext}'
+		if k !in counts {
+			order << k
+		}
+		counts[k]++
+		lasts[k] = r
+	}
+	for k in order {
+		r := lasts[k]
+		hdr := '${r.dir}  ${idstr(r.id, r.ext)}  ${r.name}  x${counts[k]}  ${hex(r.data)}##${k}'
+		if vgui.tree_node(hdr) {
+			if m := app.find_message(r.id, r.ext) {
+				for s in m.active_signals(r.data) {
+					lbl := s.label(r.data)
+					extra := if lbl != '' { ' (${lbl})' } else { '' }
+					unit := if s.unit != '' { ' ${s.unit}' } else { '' }
+					vgui.text('    ${s.name} = ${s.physical(r.data):.3}${unit}${extra}')
+				}
+			}
+			vgui.tree_pop()
+		}
+	}
 }
 
 // build_layout docks the five panels once: Buses (left) | Trace (centre) | a right
@@ -434,14 +595,19 @@ fn build_layout() {
 	mut center := u32(0)
 	right := vgui.dock_split(rest, vgui.dock_right, 0.34, &center)
 	mut rmid := u32(0)
-	chart := vgui.dock_split(right, vgui.dock_up, 0.30, &rmid)
-	mut graphics := u32(0)
-	signals := vgui.dock_split(rmid, vgui.dock_up, 0.58, &graphics)
+	chart := vgui.dock_split(right, vgui.dock_up, 0.28, &rmid)
+	mut bottom := u32(0)
+	midnode := vgui.dock_split(rmid, vgui.dock_up, 0.5, &bottom)
 	vgui.dock_window('Buses', buses)
 	vgui.dock_window('Trace', center)
 	vgui.dock_window('Trace Chart', chart)
-	vgui.dock_window('Signals', signals)
-	vgui.dock_window('Graphics', graphics)
+	// tab groups: [Signals | Send | Diagnostics] over [Graphics | Generators | Script]
+	vgui.dock_window('Signals', midnode)
+	vgui.dock_window('Send', midnode)
+	vgui.dock_window('Diagnostics', midnode)
+	vgui.dock_window('Graphics', bottom)
+	vgui.dock_window('Generators', bottom)
+	vgui.dock_window('Script', bottom)
 	vgui.dock_finish(root)
 }
 
@@ -460,7 +626,10 @@ fn latest_data(rows []TraceRow, id u32, ext bool) []u8 {
 // draw_signals: pick a DBC message; decode its signals from the latest matching frame.
 // A checkbox per signal adds/removes it from the Graphics watch list.
 fn draw_signals(mut app App, rows []TraceRow) {
-	vgui.begin('Signals')
+	if !vgui.begin('Signals') {
+		vgui.end()
+		return
+	}
 	vgui.separator_text('messages')
 	vgui.child_begin('##msglist', 108)
 	mut seen := map[u64]bool{}
@@ -542,7 +711,10 @@ fn (app &App) build_series(rows []TraceRow, w Watch) ([]f32, []f32) {
 // draw_graphics plots the watched signals over the trace history as ImPlot lines
 // (native pan/zoom/legend/tooltip).
 fn draw_graphics(app &App, rows []TraceRow) {
-	vgui.begin('Graphics')
+	if !vgui.begin('Graphics') {
+		vgui.end()
+		return
+	}
 	if app.watch.len == 0 {
 		vgui.text_dim('tick a signal in the Signals panel to plot it')
 		vgui.end()
@@ -561,8 +733,313 @@ fn draw_graphics(app &App, rows []TraceRow) {
 	vgui.end()
 }
 
+// ---- Send ----
+fn draw_send(mut app App) {
+	if !vgui.begin('Send') {
+		vgui.end()
+		return
+	}
+	if !app.running {
+		vgui.text_dim('press Start to enable sending')
+		vgui.end()
+		return
+	}
+	vgui.text('bus ${app.send_iface}')
+	vgui.set_next_item_width(70)
+	vgui.input_text('id (hex)', mut app.send_id_buf)
+	vgui.same_line()
+	vgui.set_next_item_width(220)
+	vgui.input_text('data (hex)', mut app.send_data_buf)
+	if vgui.button('Send') {
+		id := u32(('0x' + vgui.buf_str(app.send_id_buf)).u64())
+		data := parse_hex_bytes(vgui.buf_str(app.send_data_buf))
+		app.tx(transport.CanFrame{
+			id:   id
+			data: data
+		})
+	}
+	vgui.end()
+}
+
+// ---- Generators (project senders) ----
+fn draw_gen(mut app App) {
+	if !vgui.begin('Generators') {
+		vgui.end()
+		return
+	}
+	if app.senders.len == 0 {
+		vgui.text_dim('no senders defined in the project')
+		vgui.end()
+		return
+	}
+	if !app.running {
+		vgui.text_dim('press Start to fire senders')
+		vgui.end()
+		return
+	}
+	for i, sr in app.senders {
+		s := sr.sender
+		if vgui.button('Fire##${i}') {
+			app.fire_sender(sr)
+		}
+		vgui.same_line()
+		key := if s.key != '' { ' [${s.key}]' } else { '' }
+		vgui.text('${s.name}${key} · ${s.trigger}')
+	}
+	vgui.end()
+}
+
+fn (mut app App) fire_sender(sr SenderRT) {
+	s := sr.sender
+	mut id := s.id
+	mut data := s.data.clone()
+	if s.message != '' {
+		mut found := false
+		for db in app.dbs {
+			for m in db.messages {
+				if m.name != s.message {
+					continue
+				}
+				id = m.id
+				if data.len == 0 {
+					data = []u8{len: m.dlc}
+				}
+				for ss in s.signals {
+					for sig in m.signals {
+						if sig.name == ss.name {
+							sig.encode(mut data, ss.value)
+							break
+						}
+					}
+				}
+				found = true
+				break
+			}
+			if found {
+				break
+			}
+		}
+	}
+	app.tx(transport.CanFrame{
+		id:       id
+		extended: s.ext
+		data:     data
+	})
+}
+
+// ---- Diagnostics (UDS over software ISO-TP, on a worker thread) ----
+fn (mut app App) diag_push(line string) {
+	app.mu.lock()
+	app.diag_log << line
+	if app.diag_log.len > 200 {
+		app.diag_log = app.diag_log[app.diag_log.len - 200..].clone()
+	}
+	app.mu.unlock()
+}
+
+fn (app &App) diag_iface() string {
+	for c in app.chans {
+		if c.monitorable() && c.running {
+			return c.iface
+		}
+	}
+	return ''
+}
+
+fn diag_worker(app &App, kind string, did u16) {
+	mut a := unsafe { app }
+	a.mu.lock()
+	if a.diag_busy {
+		a.mu.unlock()
+		return
+	}
+	a.diag_busy = true
+	a.mu.unlock()
+	iface := a.diag_iface()
+	mut ch := isotp.open_software(iface, diag_tx_id, diag_rx_id, false) or {
+		a.diag_push('open ${iface}: ${err}')
+		a.mu.lock()
+		a.diag_busy = false
+		a.mu.unlock()
+		vgui.wake()
+		return
+	}
+	mut c := uds.new_client(ch)
+	match kind {
+		'session' {
+			c.diagnostic_session(0x03) or {
+				a.diag_push('session: ${err}')
+				a.diag_done()
+				return
+			}
+			a.diag_push('session 0x03 OK')
+		}
+		'vin' {
+			r := c.read_data_by_identifier(0xF190) or {
+				a.diag_push('VIN: ${err}')
+				a.diag_done()
+				return
+			}
+			a.diag_push('VIN = ${r.bytestr()}')
+		}
+		'tp' {
+			c.tester_present() or {
+				a.diag_push('tester present: ${err}')
+				a.diag_done()
+				return
+			}
+			a.diag_push('tester present OK')
+		}
+		'did' {
+			r := c.read_data_by_identifier(did) or {
+				a.diag_push('DID ${did:04X}: ${err}')
+				a.diag_done()
+				return
+			}
+			a.diag_push('DID ${did:04X} = ${hex(r)}  "${printable(r)}"')
+		}
+		else {}
+	}
+	a.diag_done()
+}
+
+fn (mut app App) diag_done() {
+	app.mu.lock()
+	app.diag_busy = false
+	app.mu.unlock()
+	vgui.wake()
+}
+
+fn printable(b []u8) string {
+	mut s := ''
+	for c in b {
+		s += if c >= 0x20 && c < 0x7f { c.ascii_str() } else { '.' }
+	}
+	return s
+}
+
+fn draw_diag(mut app App) {
+	if !vgui.begin('Diagnostics') {
+		vgui.end()
+		return
+	}
+	if !app.running {
+		vgui.text_dim('press Start (needs a UDS server on the bus)')
+		vgui.end()
+		return
+	}
+	app.mu.lock()
+	busy := app.diag_busy
+	log := app.diag_log.clone()
+	app.mu.unlock()
+	if vgui.button('Session') && !busy {
+		spawn diag_worker(app, 'session', u16(0))
+	}
+	vgui.same_line()
+	if vgui.button('Read VIN') && !busy {
+		spawn diag_worker(app, 'vin', u16(0))
+	}
+	vgui.same_line()
+	if vgui.button('Tester Present') && !busy {
+		spawn diag_worker(app, 'tp', u16(0))
+	}
+	vgui.set_next_item_width(70)
+	vgui.input_text('DID', mut app.diag_did_buf)
+	vgui.same_line()
+	if vgui.button('Read DID') && !busy {
+		did := u16(('0x' + vgui.buf_str(app.diag_did_buf)).u64())
+		spawn diag_worker(app, 'did', did)
+	}
+	if busy {
+		vgui.same_line()
+		vgui.text_dim('busy…')
+	}
+	vgui.separator_text('responses (newest last)')
+	vgui.child_begin('##diaglog', 0)
+	for line in log {
+		vgui.text(line)
+	}
+	vgui.child_end()
+	vgui.end()
+}
+
+// ---- Script (Lua, on a worker thread) ----
+fn (mut app App) script_push(line string) {
+	app.mu.lock()
+	app.script_log << line
+	app.mu.unlock()
+}
+
+fn script_worker(app &App, path string) {
+	mut a := unsafe { app }
+	a.mu.lock()
+	if a.script_busy {
+		a.mu.unlock()
+		return
+	}
+	a.script_busy = true
+	a.script_log = []
+	a.mu.unlock()
+	mut chans := []script.ChanInfo{}
+	first_db := if a.dbs.len > 0 { a.dbs[0] } else { candb.Database{} }
+	for ch in a.chans {
+		chans << script.ChanInfo{
+			name:  ch.name
+			iface: ch.iface
+			db:    first_db
+		}
+	}
+	mut env := script.new_env(chans) or {
+		a.script_push('env init: ${err}')
+		a.script_done()
+		return
+	}
+	env.run_file(path) or { a.script_push('error: ${err}') }
+	a.script_push('${env.passed()}/${env.total()} passed, ${env.failed()} failed')
+	env.close()
+	a.script_done()
+}
+
+fn (mut app App) script_done() {
+	app.mu.lock()
+	app.script_busy = false
+	app.mu.unlock()
+	vgui.wake()
+}
+
+fn draw_script(mut app App) {
+	if !vgui.begin('Script') {
+		vgui.end()
+		return
+	}
+	app.mu.lock()
+	busy := app.script_busy
+	log := app.script_log.clone()
+	app.mu.unlock()
+	vgui.set_next_item_width(240)
+	vgui.input_text('.lua', mut app.script_path_buf)
+	vgui.same_line()
+	if vgui.button('Run') && !busy {
+		spawn script_worker(app, vgui.buf_str(app.script_path_buf))
+	}
+	if busy {
+		vgui.same_line()
+		vgui.text_dim('running…')
+	}
+	vgui.separator_text('output')
+	vgui.child_begin('##scriptlog', 0)
+	for line in log {
+		vgui.text(line)
+	}
+	vgui.child_end()
+	vgui.end()
+}
+
 fn draw_tchart(app &App, trecs []TRec) {
-	vgui.begin('Trace Chart')
+	if !vgui.begin('Trace Chart') {
+		vgui.end()
+		return
+	}
 	if app.has_manifest {
 		labels, bars, span := build_swimlane(app, trecs)
 		vgui.text('${trecs.len} records · ${labels.len} handlers · gaps = idle')
