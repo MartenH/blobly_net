@@ -35,6 +35,7 @@ fn test_roundtrip() {
 				name:      'CAN1'
 				iface:     'inproc:CAN1'
 				databases: ['dbc/blobly_net.dbc']
+				manifest:  'manifests/trace-demo.csv'
 				nodes:     [
 					NodeCfg{
 						name:      'SUT'
@@ -74,6 +75,7 @@ fn test_roundtrip() {
 	assert c.name == 'CAN1'
 	assert c.iface == 'inproc:CAN1'
 	assert c.databases == ['dbc/blobly_net.dbc']
+	assert c.manifest == 'manifests/trace-demo.csv'
 	assert c.nodes.len == 1
 	assert c.nodes[0].name == 'SUT'
 	assert c.nodes[0].signals.len == 2

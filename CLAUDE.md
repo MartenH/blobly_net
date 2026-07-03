@@ -102,6 +102,10 @@ modules/lua/                embedded Lua 5.4: thin typed V facade over the Lua m
 modules/script/             blobly_net scripting runtime: a Lua Env wired to the GUI-free stack
                             (uds/isotp/transport/candb) + a Lua prelude (test()/check/uds:/
                             bus./decode + byte helpers). scripting replacement.    (Tier 4)
+modules/telem/              blobly_emb runtime-observability decode (blobly_emb/docs/telemetry.md P5):
+                            HandlerStat 0x7E4 / Record 0x7E5 / LoadDetail 0x7E1 decoders +
+                            TraceCmd/Rsp (0x7E2/3) + CSV handler manifest (handler_id ->
+                            FB/handler/core/period). Byte-validated vs emb comm/{telem,trace}.
 thirdparty/lua/             vendored Lua 5.4.7 source (committed) + ct_lua_amalg.c (our 1-TU
                             amalgamation) — see thirdparty/lua/README.md
 tests/                      Lua test scripts (diag_basic.lua, bus_signals.lua)
@@ -1332,6 +1336,29 @@ prompt for a password.
   build.** `~/v` left at the known-good **c0624b2** (the 5bc4b1a "regression" was unproven — the harness,
   not V); recheck the newer V (cgen-v3 / scalable-GC commits) in ~2 weeks. Also captured
   `docs/blobly_emb_synergies.md` (tester↔ECU synergies; `candb` is the one clear shared-vmodule candidate).
+- 2026-07-02: **Telemetry trace viewer (blobly_emb runtime observability, blobly_emb/docs/telemetry.md P5) — foundation
+  DONE & VERIFIED live.** New GUI-free **`modules/telem`** decodes the ECU's self-observability frames
+  byte-for-byte (cross-validated against `blobly_emb/comm/{telem,trace}`'s own encode vectors AND against
+  real bytes on the wire): **HandlerStat** (0x7E4, live per-handler last/max/count), **Record** (0x7E5,
+  captured per-invocation start_us/cpu_us), **LoadDetail** (0x7E1), + the **TraceCmd/Rsp** control
+  (0x7E2/0x7E3, cmd/rsp not UDS) and a **CSV handler manifest** (`id,partition,core,fb,handler,period_us`
+  — resolves the target's 1-byte global handler_id → FB/handler/core/period; loaded next to the DBC via a
+  new project `manifest:` channel field or `BLOBLY_MANIFEST`). CSV not TOML: vlib `toml` rejects
+  `[[array-of-tables]]`, and CSV matches the doc's table + is trivial for loom2v to emit. **GUI: a new
+  Trace Chart dock panel (`≣`)** — a **TRACE32 `trace.chart.tasks`-style swimlane**: one lane per handler
+  (or grouped **by FB**, a header toggle), each Record a coloured bar at `start_us` × width `cpu_us`,
+  faint lane separators, overran/saturated bars red-outlined; **Arm/Dump** buttons send the TraceCmd so
+  the target streams its buffer (records only stream on a host `dump` — the target captures continuously
+  but read-out is host-driven). `telem_ingest` decodes 0x7E4/0x7E5 from the RX stream in `record()`.
+  **VERIFIED live end-to-end** against `blobly_emb/examples/trace_demo` on vcan0 (no HW): built + ran the
+  demo (3 handlers 5/10/20 ms), monitored it in blobly_net, cansent the dump → **384 records streamed and
+  rendered as Light.on_5ms / Medium.on_10ms / Heavy.on_20ms lanes** (screenshot-confirmed), handler_ids
+  resolved via `manifests/trace-demo.csv`. Shipped `projects/trace-demo.blobnet` + `manifests/trace-demo.csv`.
+  Module suite 25/25 (telem 2 files). ⚠ `src/` is single-file (`src/main.v`) — every build target is
+  `src/main.v`, so the view lives IN main.v, NOT a separate `src/*.v` (a 2nd file needs `v run src`, which
+  none of run.sh/CI/build_win use). NEXT (blobly_emb/docs/telemetry.md P5 rest): pan/zoom + hover on the swimlane; live
+  HandlerStat gauges/sparklines; period/jitter histogram; overrun/deadline markers; load reconstruction;
+  ISO-TP bulk dump; ThreadX preemption view — same records/manifest feed them all.
 - 2026-06-30: **Distributable bundle + browser-rendered Help.** Two gaps closed so a freshly-downloaded
   build runs the sim out of the box. (a) **Bundle:** Windows CI (`windows.yml` msvc + mingw) now uploads
   a runnable folder — `blobly_net.exe` (+ DLLs on msvc) alongside `projects/`, `dbc/`, `samples/` and a
