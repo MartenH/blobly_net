@@ -74,13 +74,22 @@ pub fn parse_manifest(text string) !Manifest {
 			return error('manifest has a duplicate handler id: ${id}')
 		}
 		seen[id] = true
+		// core + period_us must be numeric too — a silent conversion would accept
+		// `0,p,x,F,h,oops` as zeros and hide a manifest/codegen mismatch, making the
+		// per-core / jitter views wrong. period_us must be positive.
+		if !is_digits(cols[2]) {
+			return error('manifest core is not a number: "${cols[2]}"')
+		}
+		if !is_digits(cols[5]) || cols[5].u32() == 0 {
+			return error('manifest period_us must be a positive number: "${cols[5]}"')
+		}
 		handlers << Handler{
 			id:        id
 			partition: cols[1]
 			core:      cols[2].int()
 			fb:        cols[3]
 			handler:   cols[4]
-			period_us: u32(cols[5].u32())
+			period_us: cols[5].u32()
 		}
 	}
 	if handlers.len == 0 {
