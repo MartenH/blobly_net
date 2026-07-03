@@ -27,8 +27,81 @@ static void apply_style_tweaks() {
     s.ItemSpacing  = ImVec2(8.0f, 6.0f);
     s.CellPadding  = ImVec2(6.0f, 3.0f);
 }
-extern "C" void vgui_set_theme(int dark) {
+// Adobe Spectrum palette, vendored (no dependency on Adobe's imgui fork — this is just a
+// color table, and ImGuiCol_ slots are stable). Values from adobe/imgui imgui_spectrum.cpp.
+// hx() unpacks 0xRRGGBB (+ alpha) into imgui's linear-ish sRGB ImVec4.
+static ImVec4 hx(unsigned int c, float a = 1.0f) {
+    return ImVec4(((c >> 16) & 0xFF) / 255.0f, ((c >> 8) & 0xFF) / 255.0f, (c & 0xFF) / 255.0f, a);
+}
+// Spectrum theme. Seeds ALL slots from the stock preset first (so modern slots imgui added
+// after Spectrum — table borders, tab overlines, text links — stay sane), then overlays the
+// Spectrum grays + blue accent over the visible chrome.
+static void style_spectrum(bool dark) {
     if (dark) ImGui::StyleColorsDark(); else ImGui::StyleColorsLight();
+    // gray50..gray900 + blue400..700 for the chosen mode
+    unsigned int g50, g75, g100, g200, g300, g400, g500, g600, g700, g800, g900;
+    unsigned int b400, b500, b600, b700;
+    if (dark) {
+        g50=0x252525; g75=0x2F2F2F; g100=0x323232; g200=0x393939; g300=0x3E3E3E; g400=0x4D4D4D;
+        g500=0x5C5C5C; g600=0x7B7B7B; g700=0x999999; g800=0xCDCDCD; g900=0xFFFFFF;
+        b400=0x2680EB; b500=0x378EF0; b600=0x4B9CF5; b700=0x5AA9FA;
+    } else {
+        g50=0xFFFFFF; g75=0xFAFAFA; g100=0xF5F5F5; g200=0xEAEAEA; g300=0xE1E1E1; g400=0xCACACA;
+        g500=0xB3B3B3; g600=0x8E8E8E; g700=0x707070; g800=0x4B4B4B; g900=0x2C2C2C;
+        b400=0x2680EB; b500=0x1473E6; b600=0x0D66D0; b700=0x095ABA;
+    }
+    ImVec4* c = ImGui::GetStyle().Colors;
+    c[ImGuiCol_Text]                 = hx(g800);
+    c[ImGuiCol_TextDisabled]         = hx(g500);
+    c[ImGuiCol_WindowBg]             = hx(g100);
+    c[ImGuiCol_PopupBg]              = hx(g50);
+    c[ImGuiCol_Border]               = hx(g300);
+    c[ImGuiCol_BorderShadow]         = hx(0, 0.0f);
+    c[ImGuiCol_FrameBg]              = hx(g75);
+    c[ImGuiCol_FrameBgHovered]       = hx(g50);
+    c[ImGuiCol_FrameBgActive]        = hx(g200);
+    c[ImGuiCol_TitleBg]              = hx(g300);
+    c[ImGuiCol_TitleBgActive]        = hx(g200);
+    c[ImGuiCol_TitleBgCollapsed]     = hx(g400);
+    c[ImGuiCol_MenuBarBg]            = hx(g100);
+    c[ImGuiCol_ScrollbarBg]          = hx(g100);
+    c[ImGuiCol_ScrollbarGrab]        = hx(g400);
+    c[ImGuiCol_ScrollbarGrabHovered] = hx(g600);
+    c[ImGuiCol_ScrollbarGrabActive]  = hx(g700);
+    c[ImGuiCol_CheckMark]            = hx(b500);
+    c[ImGuiCol_SliderGrab]           = hx(g700);
+    c[ImGuiCol_SliderGrabActive]     = hx(g800);
+    c[ImGuiCol_Button]               = hx(g75);
+    c[ImGuiCol_ButtonHovered]        = hx(g50);
+    c[ImGuiCol_ButtonActive]         = hx(g200);
+    c[ImGuiCol_Header]               = hx(b400);   // selected rows / tree / menu items
+    c[ImGuiCol_HeaderHovered]        = hx(b500);
+    c[ImGuiCol_HeaderActive]         = hx(b600);
+    c[ImGuiCol_Separator]            = hx(g400);
+    c[ImGuiCol_SeparatorHovered]     = hx(g600);
+    c[ImGuiCol_SeparatorActive]      = hx(g700);
+    c[ImGuiCol_ResizeGrip]           = hx(g400);
+    c[ImGuiCol_ResizeGripHovered]    = hx(g600);
+    c[ImGuiCol_ResizeGripActive]     = hx(g700);
+    c[ImGuiCol_PlotLines]            = hx(b400);
+    c[ImGuiCol_PlotLinesHovered]     = hx(b600);
+    c[ImGuiCol_PlotHistogram]        = hx(b400);
+    c[ImGuiCol_PlotHistogramHovered] = hx(b600);
+    c[ImGuiCol_TextSelectedBg]       = hx(b400, 0.33f);
+    c[ImGuiCol_Tab]                  = hx(g300);
+    c[ImGuiCol_TabHovered]           = hx(b500);
+    c[ImGuiCol_TabSelected]          = hx(b500);
+    c[ImGuiCol_TabDimmed]            = hx(g400);
+    c[ImGuiCol_TabDimmedSelected]    = hx(b700);
+    // modern slots Spectrum predates — keep them on-palette for our docked, table-heavy UI
+    c[ImGuiCol_DockingPreview]       = hx(b400, 0.5f);
+    c[ImGuiCol_DockingEmptyBg]       = hx(g200);
+    c[ImGuiCol_TableHeaderBg]        = hx(g200);
+    c[ImGuiCol_TableBorderStrong]    = hx(g400);
+    c[ImGuiCol_TableBorderLight]     = hx(g300);
+}
+extern "C" void vgui_set_theme(int dark) {
+    style_spectrum(dark != 0);
     apply_style_tweaks();
 }
 // scale ALL UI text (1.0 = the loaded font's native size). imgui 1.92 moved this from

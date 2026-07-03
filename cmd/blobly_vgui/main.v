@@ -753,6 +753,10 @@ fn main() {
 		return
 	}
 	load_ui_font()
+	if os.getenv('BLOBLY_THEME') == 'light' {
+		app.dark = false
+		vgui.set_theme(false)
+	}
 	if os.getenv('BLOBLY_AUTOSTART') != '' {
 		app.start()
 	}
