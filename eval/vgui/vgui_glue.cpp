@@ -164,6 +164,8 @@ void vgui_set_next_window(float x, float y, float w, float h) {
     ImGui::SetNextWindowPos(ImVec2(x,y), ImGuiCond_Once);
     ImGui::SetNextWindowSize(ImVec2(w,h), ImGuiCond_Once);
 }
+// vgui_set_window_focus brings a docked window's tab to the front by name.
+void vgui_set_window_focus(const char* name) { ImGui::SetWindowFocus(name); }
 // --- menu bar (sits above the dockspace) ---
 int  vgui_menu_bar_begin() { return ImGui::BeginMenuBar() ? 1 : 0; } // host-window menu bar
 void vgui_menu_bar_end() { ImGui::EndMenuBar(); }
@@ -245,6 +247,10 @@ void vgui_child_end() { ImGui::EndChild(); }
 // buffer of bufsize). Returns 1 the frame the text changed.
 int vgui_input_text(const char* label, char* buf, int bufsize) {
     return ImGui::InputText(label, buf, (size_t)bufsize) ? 1 : 0;
+}
+// numeric input editing *v in place (for signal values). Returns 1 when changed.
+int vgui_input_double(const char* label, double* v) {
+    return ImGui::InputDouble(label, v, 0.0, 0.0, "%.3f") ? 1 : 0;
 }
 void vgui_set_next_item_width(float w) { ImGui::SetNextItemWidth(w); }
 

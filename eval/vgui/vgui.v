@@ -41,6 +41,7 @@ fn C.vgui_set_font_scale(f32)
 fn C.vgui_dump_ppm(&char)
 fn C.vgui_swimlane(&char, int, &&char, voidptr, int, f32)
 fn C.vgui_set_next_window(f32, f32, f32, f32)
+fn C.vgui_set_window_focus(&char)
 fn C.vgui_dock_2col(&char, &char, f32)
 fn C.vgui_dock_3(&char, &char, &char, f32, f32)
 fn C.vgui_menu_bar_begin() int
@@ -64,6 +65,7 @@ fn C.vgui_toggle_button(&char, int, f32) int
 fn C.vgui_child_wh(&char, f32, f32)
 fn C.vgui_child_end()
 fn C.vgui_input_text(&char, &char, int) int
+fn C.vgui_input_double(&char, &f64) int
 fn C.vgui_set_next_item_width(f32)
 fn C.vgui_tree_node(&char) int
 fn C.vgui_tree_pop()
@@ -153,6 +155,11 @@ pub fn fps() f32 {
 // --- widgets ---
 pub fn set_next_window(x f32, y f32, w f32, h f32) {
 	C.vgui_set_next_window(x, y, w, h)
+}
+
+// set_window_focus brings a docked window's tab to the front by name.
+pub fn set_window_focus(name string) {
+	C.vgui_set_window_focus(name.str)
 }
 
 // dock_2col docks `left` and `right` side-by-side in the main window (one-time layout).
@@ -266,6 +273,11 @@ pub fn child_end() {
 // returns true the frame the text changed. Read the value back with buf_str(buf).
 pub fn input_text(label string, mut buf []u8) bool {
 	return C.vgui_input_text(label.str, unsafe { &char(&buf[0]) }, buf.len) == 1
+}
+
+// input_double edits *v in place (numeric input, e.g. a signal value). Returns true on change.
+pub fn input_double(label string, v &f64) bool {
+	return C.vgui_input_double(label.str, v) == 1
 }
 
 // buf_str reads a NUL-terminated input buffer as a V string.

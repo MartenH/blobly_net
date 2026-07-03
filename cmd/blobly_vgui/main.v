@@ -76,6 +76,7 @@ mut:
 	mu           sync.Mutex
 	chans        []Chan
 	trace        []TraceRow
+	gcount       map[string]u64 // persistent per-group frame totals (survive the ring trim)
 	trecs        []TRec
 	rx           u64 // total across channels
 	rev          u64
@@ -97,23 +98,25 @@ mut:
 	logs      []string             // Log panel (status/events, newest last)
 	doip_ents []doip.VehicleInfo   // DoIP Discovery results
 	// panel visibility (View menu)
+	// Default workspace is intentionally minimal: Buses + Trace + Log. Everything else is
+	// off and toggled on via the activity bar / View menu (its dock slot is still reserved).
 	show_buses    bool = true
-	show_sim      bool = true
-	show_symbols  bool = true
+	show_sim      bool
+	show_symbols  bool
 	show_trace    bool = true
-	show_ftrace   bool = true
-	show_tchart   bool = true
-	show_signals  bool = true
-	show_graphics bool = true
-	show_send      bool = true
-	show_diag      bool = true
-	show_gen       bool = true
-	show_script    bool = true
-	show_busconfig bool = true
-	show_doip      bool = true
-	show_stats     bool = true
+	show_ftrace   bool
+	show_tchart   bool
+	show_signals  bool
+	show_graphics bool
+	show_send      bool
+	show_diag      bool
+	show_gen       bool
+	show_script    bool
+	show_busconfig bool
+	show_doip      bool
+	show_stats     bool
 	show_log       bool = true
-	show_help      bool = true
+	show_help      bool
 	// Signals selection + Graphics watch list (UI-thread only; RX never touches these)
 	sel_id        int = -1 // selected message id (-1 = none)
 	sel_ext       bool
@@ -135,6 +138,7 @@ mut:
 	// Script (Lua on a worker thread)
 	script_path_buf []u8
 	senders         []SenderRT // flattened project senders (Generators)
+	gen_bufs        []GenBuf   // per-sender editable id/data (parallel to senders)
 	sims            []SimCfg   // per-channel in-process simulation workloads
 	sim_enabled     map[string]bool // '<iface>:<node>' -> enabled (Simulation panel)
 	sim_gen         u64             // bumped when sim_enabled changes -> sim_loop rebuilds
@@ -150,6 +154,13 @@ struct SenderRT {
 	iface string
 mut:
 	sender project.Sender
+}
+
+// GenBuf holds the editable id/data hex fields for a raw (non-DBC) generator.
+struct GenBuf {
+mut:
+	id_buf   []u8
+	data_buf []u8
 }
 
 // SimCfg is one channel's in-process simulation workload (simulated ECUs + its DBC).
@@ -270,6 +281,7 @@ fn (mut app App) tx(f transport.CanFrame) bool {
 		if app.trace.len > trace_cap {
 			app.trace = app.trace[app.trace.len - trace_cap..].clone()
 		}
+		app.gcount[gkey('TX', app.send_iface, f.id, f.extended)]++
 	}
 	if app.recording {
 		app.rec << canlog.LogEntry{tms / 1000.0, app.send_iface, f}
@@ -283,6 +295,7 @@ fn (mut app App) tx(f transport.CanFrame) bool {
 fn (mut app App) clear_trace() {
 	app.mu.lock()
 	app.trace = []
+	app.gcount = map[string]u64{}
 	app.trecs = []
 	app.rx = 0
 	app.tx_count = 0
@@ -334,6 +347,7 @@ fn (mut app App) load_recording(path string) {
 	t0 := if entries.len > 0 { entries[0].t_s } else { 0.0 }
 	app.mu.lock()
 	app.trace = []
+	app.gcount = map[string]u64{}
 	for e in entries {
 		f := e.frame
 		name := app.lookup_name(f.id, f.extended)
@@ -341,6 +355,7 @@ fn (mut app App) load_recording(path string) {
 		if app.trace.len > trace_cap {
 			app.trace = app.trace[app.trace.len - trace_cap..].clone()
 		}
+		app.gcount[gkey('RX', e.iface, f.id, f.extended)]++
 	}
 	app.mu.unlock()
 	app.notify('loaded ${entries.len} frames from ${os.base(path)}')
@@ -483,20 +498,20 @@ fn gen_loop(app &App) {
 	mut last := map[int]i64{}
 	for a.running {
 		now := time.ticks()
-		mut fire := []SenderRT{}
+		mut fire := []int{}
 		a.mu.lock()
 		for i, sr in a.senders {
 			if sr.sender.trigger == 'cyclic' && sr.sender.cycle_ms > 0 {
 				lf := last[i] or { i64(0) }
 				if now - lf >= i64(sr.sender.cycle_ms) {
 					last[i] = now
-					fire << sr
+					fire << i
 				}
 			}
 		}
 		a.mu.unlock()
-		for sr in fire {
-			a.fire_sender(sr)
+		for i in fire {
+			a.fire_index(i)
 		}
 		time.sleep(8 * time.millisecond)
 	}
@@ -539,6 +554,7 @@ fn rx_loop(app &App, ci int, iface string) {
 			if a.trace.len > trace_cap {
 				a.trace = a.trace[a.trace.len - trace_cap..].clone()
 			}
+			a.gcount[gkey('RX', chname, f.id, f.extended)]++
 			if a.has_manifest && !f.extended && !f.rtr && f.data.len == 8 && f.id == telem.id_record {
 				a.trecs << TRec{ci, telem.decode_record(f.data)}
 				if a.trecs.len > telem_cap {
@@ -628,7 +644,9 @@ fn (mut app App) load_project(path string) {
 	app.dbs = []
 	app.sims = []
 	app.senders = []
+	app.gen_bufs = []
 	app.trace = []
+	app.gcount = map[string]u64{}
 	app.trecs = []
 	app.diag_log = []
 	app.script_log = []
@@ -668,7 +686,14 @@ fn (mut app App) load_project(path string) {
 			}
 		}
 		for s in ch.senders {
-			app.senders << SenderRT{ch.iface, s}
+			app.senders << SenderRT{
+				iface:  ch.iface
+				sender: s
+			}
+			app.gen_bufs << GenBuf{
+				id_buf:   mkbuf('${s.id:X}', 24)
+				data_buf: mkbuf(hex(s.data), 96)
+			}
 		}
 		nodes := ch.all_nodes()
 		if ch.enabled && nodes.len > 0 {
@@ -731,6 +756,8 @@ fn main() {
 	if os.getenv('BLOBLY_AUTOSTART') != '' {
 		app.start()
 	}
+	// BLOBLY_FOCUS=PanelName brings that panel's tab to the front once at startup (test/dev aid).
+	focus_panel := os.getenv('BLOBLY_FOCUS')
 
 	mut frame := 0
 	for vgui.running() {
@@ -743,11 +770,15 @@ fn main() {
 		app.mu.lock()
 		rx := app.rx
 		rows := app.trace.clone()
+		gcount := app.gcount.clone()
 		trecs := app.trecs.clone()
 		chans := app.chans.clone()
 		app.mu.unlock()
 
 		vgui.frame_begin()
+		if focus_panel != '' && frame == 3 {
+			vgui.set_window_focus(focus_panel)
+		}
 		draw_menubar(mut app, rx)
 		draw_toolbar(mut app, rx)
 		draw_activity_bar(mut app)
@@ -771,10 +802,10 @@ fn main() {
 			draw_stats(app, chans, rx)
 		}
 		if app.show_trace {
-			draw_trace(mut app, rows, rx)
+			draw_trace(mut app, rows, gcount, rx)
 		}
 		if app.show_ftrace {
-			draw_ftrace(mut app, rows)
+			draw_ftrace(mut app, rows, gcount)
 		}
 		if app.show_log {
 			draw_log(app)
@@ -1237,7 +1268,7 @@ fn draw_buses(mut app App, chans []Chan) {
 	vgui.end()
 }
 
-fn draw_trace(mut app App, rows []TraceRow, rx u64) {
+fn draw_trace(mut app App, rows []TraceRow, gcount map[string]u64, rx u64) {
 	if !vgui.begin('Trace') {
 		vgui.end()
 		return
@@ -1263,7 +1294,7 @@ fn draw_trace(mut app App, rows []TraceRow, rx u64) {
 	filt := vgui.buf_str(app.trace_filter_buf).to_lower()
 	if app.trace_grouped {
 		vgui.separator_text('by id (click to expand signals)')
-		draw_trace_grouped(app, rows, filt)
+		draw_trace_grouped(app, rows, gcount, filt)
 	} else {
 		vgui.separator_text('frames (newest first)')
 		draw_trace_all('trace', rows, filt)
@@ -1273,7 +1304,7 @@ fn draw_trace(mut app App, rows []TraceRow, rx u64) {
 
 // draw_ftrace is a SECOND trace view with its own filter + grouping (like the gui's
 // "Trace (filter)" panel), over the same frame buffer.
-fn draw_ftrace(mut app App, rows []TraceRow) {
+fn draw_ftrace(mut app App, rows []TraceRow, gcount map[string]u64) {
 	if !vgui.begin('Trace (filter)') {
 		vgui.end()
 		return
@@ -1287,7 +1318,7 @@ fn draw_ftrace(mut app App, rows []TraceRow) {
 	filt := vgui.buf_str(app.trace_filter2_buf).to_lower()
 	vgui.separator_text('filtered')
 	if app.trace_grouped2 {
-		draw_trace_grouped(app, rows, filt)
+		draw_trace_grouped(app, rows, gcount, filt)
 	} else {
 		draw_trace_all('ftrace', rows, filt)
 	}
@@ -1348,10 +1379,16 @@ mut:
 	last  TraceRow
 }
 
+// gkey is the stable per-group identity used for both the grouped-view rows and the
+// persistent all-time frame count (App.gcount). Keep in sync with draw_trace_grouped.
+fn gkey(dir string, ch string, id u32, ext bool) string {
+	return '${dir}|${ch}|${id}|${ext}'
+}
+
 // grouped: one collapsible row per (dir, ch, id), expand to decode its latest signals.
 // Rows are sorted by a STABLE key (id, then dir) so they never jump as the ring trims —
 // the order is fixed by identity, not by which frame arrived most recently.
-fn draw_trace_grouped(app &App, rows []TraceRow, filt string) {
+fn draw_trace_grouped(app &App, rows []TraceRow, gcount map[string]u64, filt string) {
 	mut agg := map[string]GAgg{}
 	for r in rows {
 		if !trace_pass(r, filt) {
@@ -1389,7 +1426,9 @@ fn draw_trace_grouped(app &App, rows []TraceRow, filt string) {
 			open := vgui.tree_node_table('${idstr(g.id, g.ext)}  ${r.name}###${g.dir}|${g.ch}|${g.id}|${g.ext}')
 			vgui.table_cell(g.ch)
 			vgui.table_cell(g.dir)
-			vgui.table_cell('${g.count}')
+			// all-time total (survives the ring trim); fall back to the window count.
+			total := gcount[gkey(g.dir, g.ch, g.id, g.ext)] or { u64(g.count) }
+			vgui.table_cell('${total}')
 			vgui.table_cell(if r.rtr { 'RTR' } else { hex(r.data) })
 			if open {
 				if m := app.find_message(g.id, g.ext) {
@@ -1631,22 +1670,23 @@ fn draw_gen(mut app App) {
 		vgui.end()
 		return
 	}
-	vgui.text_dim('cyclic senders auto-fire while running')
+	vgui.text_dim('edit the frame, choose how it fires, then Send (cyclic auto-repeats)')
 	for i, sr in app.senders {
 		s := sr.sender
-		if vgui.button('Fire##${i}') {
-			app.fire_sender(sr)
+		hdr := if s.key != '' { '${s.name}   (key ${s.key})' } else { s.name }
+		vgui.separator_text(hdr)
+		// Send now = transmit the current frame once (works for any trigger)
+		if vgui.button('Send now##${i}') {
+			app.fire_index(i)
 		}
 		vgui.same_line()
-		key := if s.key != '' { ' [${s.key}]' } else { '' }
-		vgui.text('${s.name}${key}')
-		// trigger editor: manual | key | cyclic
+		vgui.text('fires:')
 		vgui.same_line()
 		if vgui.toggle_button('manual##${i}', s.trigger == 'manual', 0) {
 			app.set_trigger(i, 'manual')
 		}
 		vgui.same_line()
-		if vgui.toggle_button('key##${i}', s.trigger == 'key', 0) {
+		if vgui.toggle_button('on key##${i}', s.trigger == 'key', 0) {
 			app.set_trigger(i, 'key')
 		}
 		vgui.same_line()
@@ -1656,15 +1696,29 @@ fn draw_gen(mut app App) {
 		if s.trigger == 'cyclic' {
 			vgui.same_line()
 			cm := if s.cycle_ms > 0 { s.cycle_ms } else { 100 }
-			vgui.text('${cm} ms')
+			vgui.text('every ${cm} ms')
 			vgui.same_line()
-			if vgui.small_button('-##${i}') {
+			if vgui.small_button('-##c${i}') {
 				app.set_cycle(i, if cm > 60 { cm - 50 } else { 10 })
 			}
 			vgui.same_line()
-			if vgui.small_button('+##${i}') {
+			if vgui.small_button('+##c${i}') {
 				app.set_cycle(i, cm + 50)
 			}
+		}
+		// editable payload: DBC message -> per-signal values; raw -> id + data hex
+		if s.message != '' {
+			vgui.text('message ${s.message} · signal values:')
+			for j, ss in s.signals {
+				vgui.set_next_item_width(150)
+				vgui.input_double('${ss.name}##sig${i}_${j}', unsafe { &app.senders[i].sender.signals[j].value })
+			}
+		} else {
+			vgui.set_next_item_width(70)
+			vgui.input_text('id##id${i}', mut app.gen_bufs[i].id_buf)
+			vgui.same_line()
+			vgui.set_next_item_width(260)
+			vgui.input_text('data (hex)##dt${i}', mut app.gen_bufs[i].data_buf)
 		}
 	}
 	vgui.end()
@@ -1689,10 +1743,16 @@ fn (mut app App) set_cycle(i int, ms int) {
 	app.mu.unlock()
 }
 
-fn (mut app App) fire_sender(sr SenderRT) {
-	s := sr.sender
+// fire_index sends generator `i`'s CURRENT (edited) frame once. DBC-message generators
+// encode the edited signal values; raw generators use the edited id/data hex fields.
+fn (mut app App) fire_index(i int) {
+	if i < 0 || i >= app.senders.len {
+		return
+	}
+	s := app.senders[i].sender
 	mut id := s.id
-	mut data := s.data.clone()
+	mut ext := s.ext
+	mut data := []u8{}
 	if s.message != '' {
 		mut found := false
 		for db in app.dbs {
@@ -1701,9 +1761,8 @@ fn (mut app App) fire_sender(sr SenderRT) {
 					continue
 				}
 				id = m.id
-				if data.len == 0 {
-					data = []u8{len: m.dlc}
-				}
+				ext = m.ext
+				data = []u8{len: m.dlc}
 				for ss in s.signals {
 					for sig in m.signals {
 						if sig.name == ss.name {
@@ -1719,10 +1778,17 @@ fn (mut app App) fire_sender(sr SenderRT) {
 				break
 			}
 		}
+		if !found {
+			app.notify('generator: message "${s.message}" not in any DBC')
+			return
+		}
+	} else if i < app.gen_bufs.len {
+		id = u32(('0x' + vgui.buf_str(app.gen_bufs[i].id_buf)).u64())
+		data = parse_hex_bytes(vgui.buf_str(app.gen_bufs[i].data_buf))
 	}
 	app.tx(transport.CanFrame{
 		id:       id
-		extended: s.ext
+		extended: ext
 		data:     data
 	})
 }

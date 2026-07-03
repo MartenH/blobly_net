@@ -19,6 +19,7 @@ void vgui_dump_ppm(const char* path);
 void vgui_swimlane(const char* id, int n_lanes, const char** lane_labels,
                    const VBar* bars, int n_bars, float full_span_us);
 void vgui_set_next_window(float,float,float,float);
+void vgui_set_window_focus(const char*);
 void vgui_dock_2col(const char* left, const char* right, float ratio);
 int  vgui_menu_bar_begin(void);
 void vgui_menu_bar_end(void);
@@ -42,6 +43,7 @@ int  vgui_toggle_button(const char* label, int active, float w);
 void vgui_child_wh(const char* id, float w, float h);
 void vgui_child_end(void);
 int  vgui_input_text(const char* label, char* buf, int bufsize);
+int  vgui_input_double(const char* label, double* v);
 void vgui_set_next_item_width(float w);
 int  vgui_tree_node(const char* label);
 void vgui_tree_pop(void);
