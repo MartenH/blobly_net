@@ -15,6 +15,7 @@ What's in this folder
   *.dll            runtime libraries — keep them next to the .exe
   projects/        example project .yml files (bus setup + simulation)
   dbc/             CAN databases the examples decode against
+  manifests/       telemetry handler manifests (Trace Chart, e.g. trace-demo)
   samples/         demo recordings (.log / .mf4) for File > Open Recording
 
 Project files use the .blobnet extension. To make double-clicking one open it
