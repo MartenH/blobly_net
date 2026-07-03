@@ -1,16 +1,14 @@
 // blobly_vgui — the Dear ImGui + ImPlot frontend for blobly_net (phased migration off
-// vlang/gui; see docs/gui_toolkit_evaluation.md). Phase 1: load a project, monitor its
-// enabled CAN channels on background RX threads, and render a live decoded **Trace** table
-// + the **Trace Chart** swimlane (telemetry) — reusing the GUI-free engine modules
-// (project / transport / candb / telem) unchanged. gui's src/main.v stays the shipping app
-// until this reaches parity.
+// vlang/gui; see docs/gui_toolkit_evaluation.md).
+//   Phase 1: live decoded Trace + Trace Chart swimlane, docked in one window.
+//   Phase 2: menu bar (File/View) + Start/Stop measurement lifecycle + a Buses panel with
+//            per-channel enable + state colour + RX counts. Channels open on ▶ Start, not
+//            at boot. All engine work reuses the GUI-free modules (project/transport/candb/
+//            telem) unchanged; gui's src/main.v stays the shipping app until parity.
 //
 // Build: eval/vgui/build_deps.sh  then
 //   v -enable-globals -cc gcc -path "@vlib|@vmodules|modules|eval" run cmd/blobly_vgui/main.v
-// Project via BLOBLY_PROJECT (default projects/trace-demo.blobnet — monitors vcan0 + a manifest).
-// Feed it: python3 blobly_emb .../trace_demo vcan0, or cansend/cangen vcan0.
-//
-// Env: VGUI_WAKE_MS=<ms> repaint cap (default 33 ≈ 30fps). VGUI_FRAMES / VGUI_SHOT for headless.
+// Project via BLOBLY_PROJECT (default projects/trace-demo.blobnet). Env: VGUI_WAKE_MS cap.
 module main
 
 import os
@@ -40,23 +38,45 @@ struct TRec {
 	rec telem.Record
 }
 
+// Chan is one project channel's live state (the Buses panel row + Start/Stop target).
+struct Chan {
+	name  string
+	iface string
+	mode  string
+	doip  bool
+mut:
+	enabled bool
+	rx      u64
+	running bool
+}
+
+fn (c Chan) monitorable() bool {
+	return c.enabled && c.mode == 'monitor' && !c.doip
+}
+
 struct App {
 mut:
 	mu           sync.Mutex
+	chans        []Chan
 	trace        []TraceRow
 	trecs        []TRec
-	rx           u64
-	rev          u64 // bumps on telem ingest -> swimlane re-tessellate key
-	stop         bool
+	rx           u64 // total across channels
+	rev          u64
+	running      bool
 	dbs          []candb.Database
 	manifest     telem.Manifest
 	has_manifest bool
 	t0           i64
 	wake_ms      i64
 	last_wake    i64
+	proj_path    string
+	proj_name    string
+	// panel visibility (View menu)
+	show_buses  bool = true
+	show_trace  bool = true
+	show_tchart bool = true
 }
 
-// decode a frame's message name across all loaded DBCs (first hit).
 fn (a &App) lookup_name(id u32, ext bool) string {
 	for db in a.dbs {
 		if m := db.lookup_frame(id, ext) {
@@ -66,34 +86,49 @@ fn (a &App) lookup_name(id u32, ext bool) string {
 	return ''
 }
 
-fn rx_loop(app &App, chname string, ci int, iface string) {
+// start opens every enabled, monitorable channel on its own RX thread.
+fn (mut app App) start() {
+	if app.running {
+		return
+	}
+	app.running = true
+	for ci, ch in app.chans {
+		if !ch.monitorable() {
+			continue
+		}
+		app.chans[ci].running = true
+		spawn rx_loop(app, ci, ch.iface)
+	}
+}
+
+// stop signals the RX threads to exit (they re-check on the recv timeout).
+fn (mut app App) stop() {
+	app.running = false
+	for ci in 0 .. app.chans.len {
+		app.chans[ci].running = false
+	}
+}
+
+fn rx_loop(app &App, ci int, iface string) {
 	mut bus := transport.open(iface) or {
-		eprintln('rx ${chname}: open ${iface} failed: ${err}')
+		eprintln('rx ${iface}: ${err}')
+		mut a := unsafe { app }
+		a.mu.lock()
+		a.chans[ci].running = false
+		a.mu.unlock()
 		return
 	}
 	mut a := unsafe { app }
-	for {
-		if a.stop {
-			break
-		}
+	chname := a.chans[ci].name
+	for a.running && a.chans[ci].enabled {
 		f := bus.recv(200) or { continue }
 		t_ms := f64(time.ticks() - a.t0)
 		name := a.lookup_name(f.id, f.extended)
-
 		a.mu.lock()
-		a.trace << TraceRow{
-			t_ms: t_ms
-			ch:   chname
-			id:   f.id
-			ext:  f.extended
-			rtr:  f.rtr
-			name: name
-			data: f.data.clone()
-		}
+		a.trace << TraceRow{t_ms, chname, f.id, f.extended, f.rtr, name, f.data.clone()}
 		if a.trace.len > trace_cap {
 			a.trace = a.trace[a.trace.len - trace_cap..].clone()
 		}
-		// telemetry ingest (0x7E5 Record) when this channel has a manifest
 		if a.has_manifest && !f.extended && !f.rtr && f.data.len == 8 && f.id == telem.id_record {
 			a.trecs << TRec{ci, telem.decode_record(f.data)}
 			if a.trecs.len > telem_cap {
@@ -101,10 +136,9 @@ fn rx_loop(app &App, chname string, ci int, iface string) {
 			}
 			a.rev++
 		}
+		a.chans[ci].rx++
 		a.rx++
 		a.mu.unlock()
-
-		// coalesced repaint request (best-effort across threads)
 		now := time.ticks()
 		if now - a.last_wake >= a.wake_ms {
 			a.last_wake = now
@@ -112,6 +146,9 @@ fn rx_loop(app &App, chname string, ci int, iface string) {
 		}
 	}
 	bus.close()
+	a.mu.lock()
+	a.chans[ci].running = false
+	a.mu.unlock()
 }
 
 fn hex(b []u8) string {
@@ -147,11 +184,19 @@ fn main() {
 	shot := os.getenv('VGUI_SHOT')
 
 	mut app := &App{
-		t0:      time.ticks()
-		wake_ms: wake_ms
+		t0:        time.ticks()
+		wake_ms:   wake_ms
+		proj_path: proj_path
+		proj_name: proj.name
 	}
-	// load DBCs + a telem manifest from the project channels
 	for ch in proj.channels {
+		app.chans << Chan{
+			name:    ch.name
+			iface:   ch.iface
+			mode:    ch.mode.str()
+			doip:    ch.is_doip()
+			enabled: ch.enabled
+		}
 		for dbpath in ch.databases {
 			if db := candb.load_dbc_file(dbpath) {
 				app.dbs << db
@@ -168,20 +213,14 @@ fn main() {
 			}
 		}
 	}
-	// open enabled monitor CAN channels on their own RX threads
-	mut opened := 0
-	for ci, ch in proj.channels {
-		if !ch.enabled || ch.mode != .monitor || ch.is_doip() {
-			continue
-		}
-		spawn rx_loop(app, ch.name, ci, ch.iface)
-		opened++
-	}
-	println('blobly_vgui: ${proj.name} — ${opened} monitor channel(s), ${app.dbs.len} DBC(s), manifest=${app.has_manifest}')
+	println('blobly_vgui: ${proj.name} — ${app.chans.len} channel(s), ${app.dbs.len} DBC(s), manifest=${app.has_manifest}. Press Start.')
 
-	if !vgui.init('blobly_net — ${proj.name} (imgui/ImPlot)', 1400, 820, true) {
+	if !vgui.init('blobly_net — ${proj.name} (imgui/ImPlot)', 1500, 850, true) {
 		eprintln('vgui.init failed')
 		return
+	}
+	if os.getenv('BLOBLY_AUTOSTART') != '' {
+		app.start()
 	}
 
 	mut frame := 0
@@ -196,57 +235,22 @@ fn main() {
 		rx := app.rx
 		rows := app.trace.clone()
 		trecs := app.trecs.clone()
+		chans := app.chans.clone()
 		app.mu.unlock()
 
 		vgui.frame_begin()
-		// dock the two panels side by side inside the main window (one-time; user can
-		// re-arrange or tear a tab off afterwards).
-		vgui.dock_2col('Trace', 'Trace Chart', 0.6)
+		draw_menubar(mut app, rx)
+		vgui.dock_3('Buses', 'Trace', 'Trace Chart', 0.16, 0.30)
 
-		// --- Trace (live decoded frames) ---
-		vgui.begin('Trace')
-		vgui.text('RX ${rx} · ${rows.len} shown · ${vgui.fps():.0}fps · ${proj_path}')
-		vgui.separator_text('frames (newest first)')
-		if vgui.table_begin('trace', 5) {
-			vgui.table_col('t (ms)')
-			vgui.table_col('ch')
-			vgui.table_col('id')
-			vgui.table_col('name')
-			vgui.table_col('data')
-			vgui.table_headers()
-			mut i := rows.len - 1
-			mut shown := 0
-			for i >= 0 && shown < 200 {
-				r := rows[i]
-				idw := if r.ext { '0x${r.id:08X}' } else { '0x${r.id:03X}' }
-				vgui.table_row()
-				vgui.table_cell('${r.t_ms:.1}')
-				vgui.table_cell(r.ch)
-				vgui.table_cell(idw)
-				vgui.table_cell(r.name)
-				vgui.table_cell(if r.rtr { 'RTR' } else { hex(r.data) })
-				i--
-				shown++
-			}
-			vgui.table_end()
+		if app.show_buses {
+			draw_buses(mut app, chans)
 		}
-		vgui.end()
-
-		// --- Trace Chart (telemetry swimlane, ImPlot) ---
-		vgui.begin('Trace Chart')
-		if app.has_manifest {
-			labels, bars, span := build_swimlane(app, trecs)
-			vgui.text('${trecs.len} records · ${labels.len} handlers · gaps = idle')
-			vgui.text_dim('drag = pan · scroll = zoom · double-click = fit')
-			if bars.len > 0 {
-				vgui.swimlane('##swim', labels, bars, span)
-			} else {
-				vgui.text_dim('waiting for Record frames (0x7E5) — run a trace_demo + dump')
-			}
-		} else {
-			vgui.text_dim('no telemetry manifest on any channel')
+		if app.show_trace {
+			draw_trace(app, rows, rx)
 		}
-		vgui.end()
+		if app.show_tchart {
+			draw_tchart(app, trecs)
+		}
 
 		vgui.frame_end()
 		if last {
@@ -254,12 +258,130 @@ fn main() {
 			break
 		}
 	}
-	app.stop = true
+	app.stop()
 	vgui.shutdown()
 }
 
-// build_swimlane turns telem Records into per-handler lanes + coloured bars (t in µs,
-// relative to the first record).
+fn draw_menubar(mut app App, rx u64) {
+	if vgui.menu_bar_begin() {
+		if vgui.menu_begin('File') {
+			if vgui.menu_item('Exit') {
+				vgui.quit()
+			}
+			vgui.menu_end()
+		}
+		if vgui.menu_begin('View') {
+			app.show_buses = vgui.menu_item_check('Buses', app.show_buses)
+			app.show_trace = vgui.menu_item_check('Trace', app.show_trace)
+			app.show_tchart = vgui.menu_item_check('Trace Chart', app.show_tchart)
+			vgui.menu_end()
+		}
+		vgui.text('   ')
+		if app.running {
+			if vgui.small_button('Stop') {
+				app.stop()
+			}
+		} else {
+			if vgui.small_button('Start') {
+				app.start()
+			}
+		}
+		vgui.same_line()
+		if app.running {
+			vgui.text_colored(90, 200, 120, 'running')
+		} else {
+			vgui.text_colored(210, 120, 120, 'stopped')
+		}
+		vgui.same_line()
+		vgui.text('· RX ${rx} · ${app.proj_name}')
+		vgui.menu_bar_end()
+	}
+}
+
+// channel state colour + short ASCII label (imgui's default font is ASCII-only):
+// green run / amber idle (enabled, not measuring) / grey off (disabled).
+fn chan_state(c Chan) (u8, u8, u8, string) {
+	if !c.enabled {
+		return u8(140), u8(140), u8(145), 'off '
+	}
+	if c.running {
+		return u8(90), u8(200), u8(120), 'run '
+	}
+	return u8(220), u8(170), u8(70), 'idle'
+}
+
+fn draw_buses(mut app App, chans []Chan) {
+	vgui.begin('Buses')
+	vgui.text('${app.proj_name} · ${chans.len} channel(s)')
+	vgui.separator_text('channels')
+	for i, c in chans {
+		new := vgui.checkbox('##en${i}', c.enabled)
+		if new != c.enabled {
+			app.mu.lock()
+			app.chans[i].enabled = new
+			// enabling a channel mid-run spawns its RX thread; disabling lets it exit
+			if new && app.running && c.monitorable() && !app.chans[i].running {
+				app.chans[i].running = true
+				spawn rx_loop(app, i, app.chans[i].iface)
+			}
+			app.mu.unlock()
+		}
+		vgui.same_line()
+		r, g, b, label := chan_state(c)
+		vgui.text_colored(r, g, b, label)
+		vgui.same_line()
+		vgui.text('${c.name}  ${c.iface}  [${c.mode}]  RX ${c.rx}')
+	}
+	vgui.end()
+}
+
+fn draw_trace(app &App, rows []TraceRow, rx u64) {
+	vgui.begin('Trace')
+	vgui.text('RX ${rx} · ${rows.len} shown · ${vgui.fps():.0}fps')
+	vgui.separator_text('frames (newest first)')
+	if vgui.table_begin('trace', 5) {
+		vgui.table_col('t (ms)')
+		vgui.table_col('ch')
+		vgui.table_col('id')
+		vgui.table_col('name')
+		vgui.table_col('data')
+		vgui.table_headers()
+		mut i := rows.len - 1
+		mut shown := 0
+		for i >= 0 && shown < 200 {
+			r := rows[i]
+			idw := if r.ext { '0x${r.id:08X}' } else { '0x${r.id:03X}' }
+			vgui.table_row()
+			vgui.table_cell('${r.t_ms:.1}')
+			vgui.table_cell(r.ch)
+			vgui.table_cell(idw)
+			vgui.table_cell(r.name)
+			vgui.table_cell(if r.rtr { 'RTR' } else { hex(r.data) })
+			i--
+			shown++
+		}
+		vgui.table_end()
+	}
+	vgui.end()
+}
+
+fn draw_tchart(app &App, trecs []TRec) {
+	vgui.begin('Trace Chart')
+	if app.has_manifest {
+		labels, bars, span := build_swimlane(app, trecs)
+		vgui.text('${trecs.len} records · ${labels.len} handlers · gaps = idle')
+		vgui.text_dim('drag = pan · scroll = zoom · double-click = fit')
+		if bars.len > 0 {
+			vgui.swimlane('##swim', labels, bars, span)
+		} else {
+			vgui.text_dim('waiting for Record frames (0x7E5)')
+		}
+	} else {
+		vgui.text_dim('no telemetry manifest on any channel')
+	}
+	vgui.end()
+}
+
 fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
 	if trecs.len == 0 {
 		return []string{}, []vgui.Bar{}, f32(1)

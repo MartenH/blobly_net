@@ -115,6 +115,45 @@ void vgui_set_next_window(float x, float y, float w, float h) {
     ImGui::SetNextWindowPos(ImVec2(x,y), ImGuiCond_Once);
     ImGui::SetNextWindowSize(ImVec2(w,h), ImGuiCond_Once);
 }
+// --- menu bar (sits above the dockspace) ---
+int  vgui_menu_bar_begin() { return ImGui::BeginMainMenuBar() ? 1 : 0; }
+void vgui_menu_bar_end() { ImGui::EndMainMenuBar(); }
+int  vgui_menu_begin(const char* label) { return ImGui::BeginMenu(label) ? 1 : 0; }
+void vgui_menu_end() { ImGui::EndMenu(); }
+int  vgui_menu_item(const char* label) { return ImGui::MenuItem(label) ? 1 : 0; }
+int  vgui_menu_item_check(const char* label, int checked) {
+    bool b = checked != 0;
+    ImGui::MenuItem(label, nullptr, &b);
+    return b ? 1 : 0;
+}
+
+// --- more widgets ---
+int  vgui_checkbox(const char* label, int cur) { bool b = cur != 0; ImGui::Checkbox(label, &b); return b ? 1 : 0; }
+void vgui_text_colored(int r, int g, int b, const char* s) {
+    ImGui::TextColored(ImVec4(r/255.f, g/255.f, b/255.f, 1.f), "%s", s);
+}
+int  vgui_small_button(const char* label) { return ImGui::SmallButton(label) ? 1 : 0; }
+void vgui_spacing() { ImGui::Spacing(); }
+void vgui_quit() { if (g_win) glfwSetWindowShouldClose(g_win, 1); }
+
+// vgui_dock_3 builds a one-time 3-column docked layout: `a` (left, aw fraction) | `b`
+// (middle, rest) | `c` (right, cw fraction). All start docked inside the one main window.
+void vgui_dock_3(const char* a, const char* b, const char* c, float aw, float cw) {
+    if (g_dockspace_id == 0) return;
+    ImGuiDockNode* node = ImGui::DockBuilderGetNode(g_dockspace_id);
+    if (node && node->IsSplitNode()) return;
+    ImGui::DockBuilderRemoveNode(g_dockspace_id);
+    ImGui::DockBuilderAddNode(g_dockspace_id, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(g_dockspace_id, ImGui::GetMainViewport()->WorkSize);
+    ImGuiID rest, mid;
+    ImGuiID left = ImGui::DockBuilderSplitNode(g_dockspace_id, ImGuiDir_Left, aw, NULL, &rest);
+    ImGuiID right = ImGui::DockBuilderSplitNode(rest, ImGuiDir_Right, cw / (1.0f - aw), NULL, &mid);
+    ImGui::DockBuilderDockWindow(a, left);
+    ImGui::DockBuilderDockWindow(b, mid);
+    ImGui::DockBuilderDockWindow(c, right);
+    ImGui::DockBuilderFinish(g_dockspace_id);
+}
+
 void vgui_begin(const char* title) { ImGui::Begin(title); }
 void vgui_end() { ImGui::End(); }
 void vgui_text(const char* s) { ImGui::TextUnformatted(s); }

@@ -38,6 +38,18 @@ fn C.vgui_dump_ppm(&char)
 fn C.vgui_swimlane(&char, int, &&char, voidptr, int, f32)
 fn C.vgui_set_next_window(f32, f32, f32, f32)
 fn C.vgui_dock_2col(&char, &char, f32)
+fn C.vgui_dock_3(&char, &char, &char, f32, f32)
+fn C.vgui_menu_bar_begin() int
+fn C.vgui_menu_bar_end()
+fn C.vgui_menu_begin(&char) int
+fn C.vgui_menu_end()
+fn C.vgui_menu_item(&char) int
+fn C.vgui_menu_item_check(&char, int) int
+fn C.vgui_checkbox(&char, int) int
+fn C.vgui_text_colored(int, int, int, &char)
+fn C.vgui_small_button(&char) int
+fn C.vgui_spacing()
+fn C.vgui_quit()
 fn C.vgui_begin(&char)
 fn C.vgui_end()
 fn C.vgui_text(&char)
@@ -99,6 +111,60 @@ pub fn set_next_window(x f32, y f32, w f32, h f32) {
 // dock_2col docks `left` and `right` side-by-side in the main window (one-time layout).
 pub fn dock_2col(left string, right string, ratio f32) {
 	C.vgui_dock_2col(left.str, right.str, ratio)
+}
+
+// dock_3 docks a | b | c across the main window (a=left aw, c=right cw, b=middle rest).
+pub fn dock_3(a string, b string, c string, aw f32, cw f32) {
+	C.vgui_dock_3(a.str, b.str, c.str, aw, cw)
+}
+
+// --- menu bar (above the dockspace) ---
+pub fn menu_bar_begin() bool {
+	return C.vgui_menu_bar_begin() == 1
+}
+
+pub fn menu_bar_end() {
+	C.vgui_menu_bar_end()
+}
+
+pub fn menu_begin(label string) bool {
+	return C.vgui_menu_begin(label.str) == 1
+}
+
+pub fn menu_end() {
+	C.vgui_menu_end()
+}
+
+// menu_item returns true the frame it is clicked.
+pub fn menu_item(label string) bool {
+	return C.vgui_menu_item(label.str) == 1
+}
+
+// menu_item_check renders a checkable item; returns the new checked state.
+pub fn menu_item_check(label string, checked bool) bool {
+	return C.vgui_menu_item_check(label.str, if checked { 1 } else { 0 }) == 1
+}
+
+// checkbox renders a checkbox with the current state; returns the (possibly toggled) state.
+pub fn checkbox(label string, cur bool) bool {
+	return C.vgui_checkbox(label.str, if cur { 1 } else { 0 }) == 1
+}
+
+pub fn text_colored(r u8, g u8, b u8, s string) {
+	C.vgui_text_colored(int(r), int(g), int(b), s.str)
+}
+
+pub fn small_button(label string) bool {
+	return C.vgui_small_button(label.str) == 1
+}
+
+pub fn spacing() {
+	C.vgui_spacing()
+}
+
+// quit requests the main window to close (ends the run loop).
+pub fn quit() {
+	C.vgui_quit()
 }
 
 pub fn begin(title string) {

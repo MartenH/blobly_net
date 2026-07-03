@@ -16,6 +16,18 @@ void vgui_swimlane(const char* id, int n_lanes, const char** lane_labels,
                    const VBar* bars, int n_bars, float full_span_us);
 void vgui_set_next_window(float,float,float,float);
 void vgui_dock_2col(const char* left, const char* right, float ratio);
+int  vgui_menu_bar_begin(void);
+void vgui_menu_bar_end(void);
+int  vgui_menu_begin(const char* label);
+void vgui_menu_end(void);
+int  vgui_menu_item(const char* label);
+int  vgui_menu_item_check(const char* label, int checked);
+int  vgui_checkbox(const char* label, int cur);
+void vgui_text_colored(int r, int g, int b, const char* s);
+int  vgui_small_button(const char* label);
+void vgui_spacing(void);
+void vgui_quit(void);
+void vgui_dock_3(const char* a, const char* b, const char* c, float aw, float cw);
 void vgui_begin(const char* title);
 void vgui_end(void);
 void vgui_text(const char* s);
