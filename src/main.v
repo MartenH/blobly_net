@@ -51,6 +51,7 @@ const id_scroll_diag = u32(7400)
 const id_scroll_gen = u32(7800) // Generators (interactive senders) panel
 const id_scroll_plot_outer = u32(7500) // Graphics root: clamps the panel measurement
 const id_scroll_symbols = u32(7600)    // Symbol Browser tree
+const id_scroll_tchart = u32(7610)     // Trace Chart panel
 const id_scroll_busconfig = u32(7700)  // Bus Config candidate list
 const id_scroll_log = u32(7900)        // Log panel (scrolling event log)
 const id_scroll_script = u32(8000)     // Script panel (Lua test output)
@@ -6725,7 +6726,7 @@ fn hex_digit(c u8) ?int {
 	}
 }
 
-// ==== Trace Chart (telemetry viewer) — see docs/telemetry.md P5 ====
+// ==== Trace Chart (telemetry viewer) — see blobly_emb/docs/telemetry.md P5 ====
 
 // telem_view — the Trace Chart panel: a TRACE32 trace.chart.tasks-style swimlane of
 // blobly_emb handler-runtime records, plus a by-FB grouping. Fed by decode of the
@@ -6846,11 +6847,16 @@ fn (mut app App) load_project_manifest() {
 		app.telem_manifests[i] = m
 		srcs << os.base(path)
 	}
-	// A telemetry channel with no manifest of its own still gets an empty one, so
-	// telem_ingest's "declares a manifest" gate can admit it (ids show as "handler N").
+	// BLOBLY_MANIFEST with no channel declaring its own: attach it to channel 0. Surface
+	// a read/parse error instead of silently marking the channel telemetry-enabled with an
+	// empty manifest (which would admit records but label every handler "handler N").
 	if env != '' && !used_env && app.proj.channels.len > 0 {
-		app.telem_manifests[0] = telem.load_manifest(env) or { telem.Manifest{} }
-		srcs << os.base(env)
+		if m := telem.load_manifest(env) {
+			app.telem_manifests[0] = m
+			srcs << os.base(env)
+		} else {
+			app.notify(.warn, 'BLOBLY_MANIFEST ${os.base(env)}: ${err}')
+		}
 	}
 	app.telem_source = srcs.join(', ')
 }
@@ -6907,6 +6913,18 @@ fn (mut app App) send_trace_cmd(op u8, mut w gui.Window) {
 		return
 	}
 	record_manual_tx(mut app, idx, frame, ch, send_ts, send_seq, mut w)
+	// Arm/reset starts a fresh capture on the target, so its old records/stats are stale
+	// (a new capture also restarts start_us at 0). Drop THIS channel's records/stats so
+	// the next Dump isn't overlaid on the previous one (other channels are untouched).
+	if op == telem.op_arm || op == telem.op_reset {
+		app.telem_records = app.telem_records.filter(it.ch != idx)
+		for k in app.telem_stats.keys() {
+			if int(k >> 8) == idx {
+				app.telem_stats.delete(k)
+			}
+		}
+		app.telem_rev++
+	}
 	name := match op {
 		telem.op_arm { 'arm' }
 		telem.op_stop { 'stop' }
@@ -7085,7 +7103,7 @@ fn tchart_panel(mut window gui.Window) gui.View {
 		sizing:    gui.fill_fill
 		padding:   scpad(6, 8, 6, 8)
 		spacing:   sc(6)
-		id_scroll: 7600
+		id_scroll: id_scroll_tchart
 		content:   [
 			header,
 			gui.row(

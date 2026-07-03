@@ -207,6 +207,7 @@ jobs:
           Copy-Item projects dist\projects -Recurse
           Copy-Item dbc dist\dbc -Recurse
           Copy-Item tests dist\tests -Recurse   # Lua scripts the Script panel's sample buttons run
+          Copy-Item manifests dist\manifests -Recurse   # telemetry handler manifests (Trace Chart)
           New-Item -ItemType Directory -Force dist\samples | Out-Null
           Copy-Item samples\*.log,samples\*.mf4 dist\samples\ -Force -ErrorAction SilentlyContinue
           Copy-Item packaging\README.txt dist\README.txt
@@ -326,6 +327,7 @@ jobs:
           Copy-Item projects dist\projects -Recurse
           Copy-Item dbc dist\dbc -Recurse
           Copy-Item tests dist\tests -Recurse
+          Copy-Item manifests dist\manifests -Recurse
           New-Item -ItemType Directory -Force dist\samples | Out-Null
           Copy-Item samples\*.log,samples\*.mf4 dist\samples\ -Force -ErrorAction SilentlyContinue
           Copy-Item packaging\README.txt dist\README.txt
