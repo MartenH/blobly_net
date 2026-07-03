@@ -7,6 +7,7 @@ extern "C" {
 int vgui_init(const char* title, int w, int h, int event_driven);
 int vgui_running(void);
 void vgui_frame_begin(void);
+void vgui_dockspace(void);
 void vgui_frame_end(void);
 void vgui_shutdown(void);
 double vgui_time(void);
@@ -35,6 +36,8 @@ void vgui_plot_line(const char* name, const float* xs, const float* ys, int n);
 void vgui_plot_end(void);
 int  vgui_selectable(const char* label, int selected);
 void vgui_child_begin(const char* id, float height);
+int  vgui_toggle_button(const char* label, int active, float w);
+void vgui_child_wh(const char* id, float w, float h);
 void vgui_child_end(void);
 int  vgui_input_text(const char* label, char* buf, int bufsize);
 void vgui_set_next_item_width(float w);

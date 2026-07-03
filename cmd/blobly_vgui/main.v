@@ -553,6 +553,9 @@ fn main() {
 
 		vgui.frame_begin()
 		draw_menubar(mut app, rx)
+		draw_activity_bar(mut app)
+		vgui.same_line()
+		vgui.dockspace()
 		build_layout()
 
 		if app.show_buses {
@@ -597,6 +600,46 @@ fn main() {
 	}
 	app.stop()
 	vgui.shutdown()
+}
+
+// draw_activity_bar is the VS Code-style vertical strip of panel toggles on the far left.
+// Each button toggles a panel's visibility and is tinted when the panel is shown.
+fn draw_activity_bar(mut app App) {
+	vgui.child_wh('##activity', 56, 0)
+	if vgui.toggle_button('Bus', app.show_buses, -1) {
+		app.show_buses = !app.show_buses
+	}
+	if vgui.toggle_button('Sim', app.show_sim, -1) {
+		app.show_sim = !app.show_sim
+	}
+	if vgui.toggle_button('Sym', app.show_symbols, -1) {
+		app.show_symbols = !app.show_symbols
+	}
+	if vgui.toggle_button('Trc', app.show_trace, -1) {
+		app.show_trace = !app.show_trace
+	}
+	if vgui.toggle_button('Cht', app.show_tchart, -1) {
+		app.show_tchart = !app.show_tchart
+	}
+	if vgui.toggle_button('Sig', app.show_signals, -1) {
+		app.show_signals = !app.show_signals
+	}
+	if vgui.toggle_button('Gfx', app.show_graphics, -1) {
+		app.show_graphics = !app.show_graphics
+	}
+	if vgui.toggle_button('Snd', app.show_send, -1) {
+		app.show_send = !app.show_send
+	}
+	if vgui.toggle_button('Dia', app.show_diag, -1) {
+		app.show_diag = !app.show_diag
+	}
+	if vgui.toggle_button('Gen', app.show_gen, -1) {
+		app.show_gen = !app.show_gen
+	}
+	if vgui.toggle_button('Lua', app.show_script, -1) {
+		app.show_script = !app.show_script
+	}
+	vgui.child_end()
 }
 
 fn draw_menubar(mut app App, rx u64) {

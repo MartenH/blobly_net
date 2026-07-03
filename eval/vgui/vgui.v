@@ -30,6 +30,7 @@ pub:
 fn C.vgui_init(&char, int, int, int) int
 fn C.vgui_running() int
 fn C.vgui_frame_begin()
+fn C.vgui_dockspace()
 fn C.vgui_frame_end()
 fn C.vgui_shutdown()
 fn C.vgui_time() f64
@@ -57,6 +58,8 @@ fn C.vgui_plot_line(&char, &f32, &f32, int)
 fn C.vgui_plot_end()
 fn C.vgui_selectable(&char, int) int
 fn C.vgui_child_begin(&char, f32)
+fn C.vgui_toggle_button(&char, int, f32) int
+fn C.vgui_child_wh(&char, f32, f32)
 fn C.vgui_child_end()
 fn C.vgui_input_text(&char, &char, int) int
 fn C.vgui_set_next_item_width(f32)
@@ -95,6 +98,12 @@ pub fn running() bool {
 
 pub fn frame_begin() {
 	C.vgui_frame_begin()
+}
+
+// dockspace fills the host window's remaining region with the dockspace (call it after the
+// menu bar + activity bar, before build_layout / panels).
+pub fn dockspace() {
+	C.vgui_dockspace()
 }
 
 pub fn frame_end() {
@@ -225,6 +234,16 @@ pub fn selectable(label string, selected bool) bool {
 // ALWAYS pair with child_end.
 pub fn child_begin(id string, height f32) {
 	C.vgui_child_begin(id.str, height)
+}
+
+// child_wh opens a fixed-size bordered child (w/h <= 0 = fill that axis). Pair with child_end.
+pub fn child_wh(id string, w f32, h f32) {
+	C.vgui_child_wh(id.str, w, h)
+}
+
+// toggle_button renders a button tinted when active (activity bar). w < 0 = stretch.
+pub fn toggle_button(label string, active bool, w f32) bool {
+	return C.vgui_toggle_button(label.str, if active { 1 } else { 0 }, w) == 1
 }
 
 pub fn child_end() {

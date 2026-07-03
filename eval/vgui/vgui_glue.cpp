@@ -62,11 +62,32 @@ int vgui_running() {
 
 static ImGuiID g_dockspace_id = 0;
 
+// frame_begin opens a full-work-area HOST window with a menu bar; the app then draws the
+// menu bar, an activity bar (a fixed-width child), and vgui_dockspace() which fills the
+// rest. frame_end closes the host window. This is the VS Code shell layout.
 void vgui_frame_begin() {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
-    g_dockspace_id = ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport());
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->WorkPos);
+    ImGui::SetNextWindowSize(vp->WorkSize);
+    ImGui::SetNextWindowViewport(vp->ID);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGuiWindowFlags f = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking
+        | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize
+        | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
+    ImGui::Begin("##host", nullptr, f);
+    ImGui::PopStyleVar(3);
+}
+
+// dockspace creates the dockspace filling the remaining content region of the host window
+// (call it AFTER the activity-bar child + SameLine).
+void vgui_dockspace() {
+    g_dockspace_id = ImGui::GetID("##dockspace");
+    ImGui::DockSpace(g_dockspace_id, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
 }
 
 // vgui_dock_2col builds a one-time 2-column docked layout in the main dockspace: window
@@ -88,6 +109,7 @@ void vgui_dock_2col(const char* left, const char* right, float ratio) {
 }
 
 void vgui_frame_end() {
+    ImGui::End(); // host window (opened in frame_begin)
     ImGui::Render();
     int w,h; glfwGetFramebufferSize(g_win,&w,&h);
     glViewport(0,0,w,h); glClearColor(0.11f,0.12f,0.14f,1); glClear(GL_COLOR_BUFFER_BIT);
@@ -140,8 +162,8 @@ void vgui_set_next_window(float x, float y, float w, float h) {
     ImGui::SetNextWindowSize(ImVec2(w,h), ImGuiCond_Once);
 }
 // --- menu bar (sits above the dockspace) ---
-int  vgui_menu_bar_begin() { return ImGui::BeginMainMenuBar() ? 1 : 0; }
-void vgui_menu_bar_end() { ImGui::EndMainMenuBar(); }
+int  vgui_menu_bar_begin() { return ImGui::BeginMenuBar() ? 1 : 0; } // host-window menu bar
+void vgui_menu_bar_end() { ImGui::EndMenuBar(); }
 int  vgui_menu_begin(const char* label) { return ImGui::BeginMenu(label) ? 1 : 0; }
 void vgui_menu_end() { ImGui::EndMenu(); }
 int  vgui_menu_item(const char* label) { return ImGui::MenuItem(label) ? 1 : 0; }
@@ -198,6 +220,18 @@ int vgui_selectable(const char* label, int selected) {
 
 // scrollable bordered child region of fixed pixel height (0 = fill). ALWAYS pair with
 // vgui_child_end (imgui requires EndChild even when begin returns false/clipped).
+// toggle_button: a button tinted with the active colour when `active` (activity bar).
+// w<0 stretches to the content width.
+int vgui_toggle_button(const char* label, int active, float w) {
+    if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+    bool c = ImGui::Button(label, ImVec2(w, 0.0f));
+    if (active) ImGui::PopStyleColor();
+    return c ? 1 : 0;
+}
+// fixed-size bordered child (for the activity bar). w/h <= 0 = fill that axis.
+void vgui_child_wh(const char* id, float w, float h) {
+    ImGui::BeginChild(id, ImVec2(w, h), ImGuiChildFlags_Borders);
+}
 void vgui_child_begin(const char* id, float height) {
     ImGui::BeginChild(id, ImVec2(0, height), ImGuiChildFlags_Borders);
 }
