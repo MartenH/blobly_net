@@ -295,14 +295,16 @@ mut:
 	db             candb.Database // merged catalog across all channels' DBCs (decode/lookup)
 	dbs            []candb.Database // per-channel catalog (parallel to proj.channels); drives node list + sim
 	db_source      string
-	// Telemetry (blobly_emb runtime observability, docs telemetry.md): the handler
-	// manifest + decoded HandlerStat (0x7E4, live per-handler stats) and Record (0x7E5,
-	// captured per-invocation trace). Drives the Trace Chart panel.
-	telem_manifest telem.Manifest
-	telem_records  []telem.Record // captured invocations (ring, telem_max_records)
-	telem_stats    map[u8]telem.HandlerStat // latest live stat per handler_id
-	telem_source   string // where the manifest came from (Stats/label)
-	tchart_fb      bool   // Trace Chart: group lanes by FB (else one lane per handler)
+	// Telemetry (blobly_emb runtime observability, blobly_emb/docs/telemetry.md): decoded
+	// HandlerStat (0x7E4) + Record (0x7E5), keyed by the CHANNEL they arrived on — a
+	// multi-bus project can watch several targets, each with its own manifest + its own
+	// (per-target) global handler_id space. Drives the Trace Chart panel.
+	telem_manifests map[int]telem.Manifest   // channel idx -> its handler manifest
+	telem_records   []TRec                    // captured invocations (ring, telem_max_records)
+	telem_stats     map[u32]telem.HandlerStat // latest live stat, keyed by telem_stat_key(ch, id)
+	telem_source    string                    // manifest source label(s) for the header
+	telem_rev       u64                       // bumped on every ingest/clear -> Trace Chart cache key
+	tchart_fb       bool                      // Trace Chart: group lanes by FB (else per-handler)
 	status         string
 	logs           []StatusMsg // scrolling event log (Log panel); newest appended
 	t0             i64
@@ -2097,6 +2099,9 @@ fn drain_inbox(mut w gui.Window) {
 		// record at the frame's captured arrival/emit time, not "now" — the drain runs
 		// on the fps cadence, so stamping here would reintroduce the jitter.
 		a.record(it.dir, it.frame, it.t_ms, ch)
+		// decode blobly_emb telemetry frames into the Trace Chart model (idx/dir/format
+		// aware, so only RX standard data frames from a telemetry channel are ingested).
+		a.telem_ingest(it.idx, it.dir, it.frame)
 	}
 	w.update_window()
 }
@@ -2148,7 +2153,6 @@ fn (mut app App) record(dir string, f transport.CanFrame, t_ms f64, ch string) {
 	} else {
 		app.tx_count++
 	}
-	app.telem_ingest(f) // decode blobly_emb HandlerStat/Record frames into the trace-chart model
 	if app.recording {
 		app.record_entries << canlog.LogEntry{
 			t_s:   t_ms / 1000.0
@@ -2340,6 +2344,7 @@ fn menu_bar(mut window gui.Window) gui.View {
 							a.reset_diag_discovery()
 							a.reset_plot()
 							a.plot_hist = map[u64][]PlotSample{}
+							a.reset_telem() // blank project -> drop the old target's records/manifests
 							a.load_databases()
 							a.build_sim_nodes()
 							set_window_title(a.proj.name)
@@ -2913,12 +2918,8 @@ fn open_project(path string, mut w gui.Window) {
 	app.reset_plot()
 	app.plot_hist = map[u64][]PlotSample{} // old project's history is meaningless now
 	// The old project's telemetry is meaningless now — drop the captured records/stats
-	// and reload the new project's handler manifest (else the Trace Chart keeps the
-	// previous project's lanes/labels, or none).
-	app.telem_records = []
-	app.telem_stats = map[u8]telem.HandlerStat{}
-	app.telem_manifest = telem.Manifest{}
-	app.telem_source = ''
+	// + manifests, then reload the new project's (else the Trace Chart keeps stale lanes).
+	app.reset_telem()
 	app.load_databases()
 	app.load_project_manifest()
 	app.build_sim_nodes()
@@ -6762,50 +6763,109 @@ fn clickable_label(label string, on_click fn (&gui.Layout, mut gui.Event, mut gu
 	)
 }
 
-// telem_ingest decodes a frame into the trace-chart model if it's an observability
-// frame (HandlerStat / Record). Called from record() for every frame — cheap id match.
-fn (mut app App) telem_ingest(f transport.CanFrame) {
+// TRec is a captured Record tagged with the channel it arrived on — a multi-bus project
+// can watch several targets, each with its own (per-target) global handler_id space.
+struct TRec {
+	ch  int
+	rec telem.Record
+}
+
+// TKey is a channel-scoped handler (records/lanes/stats are keyed by BOTH, since id 0 on
+// one target is a different handler than id 0 on another).
+struct TKey {
+	ch int
+	id u8
+}
+
+// tkey packs (channel, handler_id) into one map key.
+fn tkey(ch int, id u8) u32 {
+	return (u32(ch) << 8) | u32(id)
+}
+
+// reset_telem drops all captured telemetry + manifests (used by Open/New Project + Clear).
+fn (mut app App) reset_telem() {
+	app.telem_records = []
+	app.telem_stats = map[u32]telem.HandlerStat{}
+	app.telem_manifests = map[int]telem.Manifest{}
+	app.telem_source = ''
+	app.telem_rev++
+}
+
+// telem_ingest decodes a blobly_emb observability frame into the Trace Chart model. It is
+// idx/dir/format-aware: only an RX, standard (non-extended), non-RTR, 8-byte data frame
+// arriving on a CHANNEL configured for telemetry (one that declares a manifest) is
+// ingested — so TX/replay frames, extended/RTR frames, or unrelated 0x7E4/0x7E5 traffic
+// on other buses can't pollute the chart.
+fn (mut app App) telem_ingest(idx int, dir string, f transport.CanFrame) {
+	if dir != 'RX' || f.extended || f.rtr || f.data.len != 8 {
+		return
+	}
+	if idx !in app.telem_manifests {
+		return // not a telemetry channel
+	}
 	match f.id {
 		telem.id_handlerstat {
 			s := telem.decode_handlerstat(f.data)
-			app.telem_stats[s.handler_id] = s
+			app.telem_stats[tkey(idx, s.handler_id)] = s
+			app.telem_rev++
 		}
 		telem.id_record {
-			app.telem_records << telem.decode_record(f.data)
+			app.telem_records << TRec{
+				ch:  idx
+				rec: telem.decode_record(f.data)
+			}
 			if app.telem_records.len > telem_max_records + telem_max_records / 4 {
 				app.telem_records = app.telem_records[app.telem_records.len - telem_max_records..].clone()
 			}
+			app.telem_rev++
 		}
 		else {}
 	}
 }
 
-// load_project_manifest resolves the handler manifest from BLOBLY_MANIFEST or the first
-// channel that declares one, and loads it. No-op when none is configured.
+// load_project_manifest loads the handler manifest of EVERY channel that declares one,
+// keyed by channel idx. BLOBLY_MANIFEST overrides the first telemetry channel's manifest
+// (dev convenience). No-op when no channel declares one.
 fn (mut app App) load_project_manifest() {
-	mut mfp := os.getenv('BLOBLY_MANIFEST')
-	if mfp == '' {
-		for ch in app.proj.channels {
-			if ch.manifest != '' {
-				mfp = ch.manifest
-				break
-			}
+	env := os.getenv('BLOBLY_MANIFEST')
+	mut srcs := []string{}
+	mut used_env := false
+	for i, ch in app.proj.channels {
+		mut path := ch.manifest
+		if env != '' && !used_env && ch.manifest != '' {
+			path = env // override the first declared manifest with the env one
+			used_env = true
 		}
+		if path == '' {
+			continue
+		}
+		m := telem.load_manifest(path) or {
+			app.notify(.warn, 'manifest ${os.base(path)} (${ch.name}): ${err}')
+			continue
+		}
+		app.telem_manifests[i] = m
+		srcs << os.base(path)
 	}
-	app.load_telem_manifest(mfp)
+	// A telemetry channel with no manifest of its own still gets an empty one, so
+	// telem_ingest's "declares a manifest" gate can admit it (ids show as "handler N").
+	if env != '' && !used_env && app.proj.channels.len > 0 {
+		app.telem_manifests[0] = telem.load_manifest(env) or { telem.Manifest{} }
+		srcs << os.base(env)
+	}
+	app.telem_source = srcs.join(', ')
 }
 
-// load_telem_manifest loads a handler manifest (CSV) into the app; sets telem_source.
-fn (mut app App) load_telem_manifest(path string) {
-	if path == '' {
-		return
+// telem_label resolves a channel-scoped handler to a display name, prefixing the channel
+// name only when more than one telemetry channel is active (so ids from different targets
+// are distinguishable).
+fn (app &App) telem_label(ch int, id u8) string {
+	m := app.telem_manifests[ch] or { telem.Manifest{} }
+	base := m.label(id)
+	if app.telem_manifests.len > 1 {
+		cn := if ch < app.proj.channels.len { app.proj.channels[ch].name } else { 'CAN${ch + 1}' }
+		return '${cn}·${base}'
 	}
-	m := telem.load_manifest(path) or {
-		app.notify(.warn, 'manifest ${os.base(path)}: ${err}')
-		return
-	}
-	app.telem_manifest = m
-	app.telem_source = os.base(path)
+	return base
 }
 
 // send_trace_cmd sends a TraceCmd (0x7E2) on the first running channel — Arm re-captures,
@@ -6857,41 +6917,53 @@ fn (mut app App) send_trace_cmd(op u8, mut w gui.Window) {
 	app.notify(.info, 'trace ${name} sent (0x7E2)')
 }
 
-// TLane is one swimlane: a label + the handler_ids it draws (one per handler, or all of
-// an FB's handlers when grouped by FB).
+// TLane is one swimlane: a label + the channel-scoped handlers it draws (one per handler,
+// or all of a Function Block's handlers when grouped by FB).
 struct TLane {
 	label string
-	ids   []u8
+	keys  []TKey
 }
 
-// tchart_lanes builds the swimlanes from the records present + the manifest, in the
-// current grouping (per-handler, or grouped by FB).
+// tchart_lanes builds the swimlanes from the (channel, handler) pairs present in the
+// captured records, in the current grouping (per-handler, or grouped by FB).
 fn (app &App) tchart_lanes() []TLane {
-	// which handler_ids actually appear in the captured records
-	mut present := map[u8]bool{}
-	for r in app.telem_records {
-		present[r.handler_id] = true
+	// present (channel, handler_id) pairs; u32 keys sort by channel then id
+	mut present := map[u32]bool{}
+	for tr in app.telem_records {
+		present[tkey(tr.ch, tr.rec.handler_id)] = true
 	}
-	mut ids := present.keys()
-	ids.sort()
+	mut ks := present.keys()
+	ks.sort()
 	if !app.tchart_fb {
-		return ids.map(TLane{ label: app.telem_manifest.label(it), ids: [it] })
+		return ks.map(fn [app] (k u32) TLane {
+			ch, id := int(k >> 8), u8(k)
+			return TLane{
+				label: app.telem_label(ch, id)
+				keys:  [TKey{ch, id}]
+			}
+		})
 	}
-	// group by FB (manifest fb; unknown handlers fall into their synthetic label)
-	mut order := []string{} // FB names in first-seen order (ids already sorted)
-	mut by_fb := map[string][]u8{}
-	for id in ids {
-		fbname := if h := app.telem_manifest.lookup(id) {
+	// group by (channel, FB); unknown handlers fall into their synthetic label
+	mut order := []string{}
+	mut by_fb := map[string][]TKey{}
+	for k in ks {
+		ch, id := int(k >> 8), u8(k)
+		m := app.telem_manifests[ch] or { telem.Manifest{} }
+		mut fbname := if h := m.lookup(id) {
 			if h.fb != '' { h.fb } else { h.name() }
 		} else {
-			app.telem_manifest.label(id)
+			m.label(id)
+		}
+		if app.telem_manifests.len > 1 {
+			cn := if ch < app.proj.channels.len { app.proj.channels[ch].name } else { 'CAN${ch + 1}' }
+			fbname = '${cn}·${fbname}'
 		}
 		if fbname !in by_fb {
 			order << fbname
 		}
-		by_fb[fbname] << id
+		by_fb[fbname] << TKey{ch, id}
 	}
-	return order.map(TLane{ label: it, ids: by_fb[it] })
+	return order.map(TLane{ label: it, keys: by_fb[it] })
 }
 
 // TBar is one drawn record, pre-scaled to time fractions so the on_draw closure stays
@@ -6924,19 +6996,19 @@ fn tchart_panel(mut window gui.Window) gui.View {
 	}
 
 	lanes := app.tchart_lanes()
-	// handler_id -> lane index
-	mut lane_of := map[u8]int{}
+	// (channel, handler) -> lane index
+	mut lane_of := map[u32]int{}
 	for li, ln in lanes {
-		for id in ln.ids {
-			lane_of[id] = li
+		for k in ln.keys {
+			lane_of[tkey(k.ch, k.id)] = li
 		}
 	}
 	// time range across all records
 	mut tmin := f32(3.4e38)
 	mut tmax := f32(0)
-	for r in app.telem_records {
-		s := f32(r.start_us)
-		e := s + f32(r.cpu_us)
+	for tr in app.telem_records {
+		s := f32(tr.rec.start_us)
+		e := s + f32(tr.rec.cpu_us)
 		if s < tmin {
 			tmin = s
 		}
@@ -6947,9 +7019,10 @@ fn tchart_panel(mut window gui.Window) gui.View {
 	span := if tmax > tmin { tmax - tmin } else { f32(1) }
 	// pre-scale bars
 	mut bars := []TBar{cap: app.telem_records.len}
-	for r in app.telem_records {
+	for tr in app.telem_records {
+		r := tr.rec
 		bars << TBar{
-			lane:  lane_of[r.handler_id] or { 0 }
+			lane:  lane_of[tkey(tr.ch, r.handler_id)] or { 0 }
 			t0:    f32(r.start_us) - tmin
 			dur:   f32(r.cpu_us)
 			color: tchart_color(r.handler_id)
@@ -7029,9 +7102,9 @@ fn tchart_panel(mut window gui.Window) gui.View {
 
 // tchart_header: title + records/handlers count + a Handlers/By-FB toggle + Clear.
 fn tchart_header(app &App) gui.View {
-	mut nh := map[u8]bool{}
-	for r in app.telem_records {
-		nh[r.handler_id] = true
+	mut nh := map[u32]bool{}
+	for tr in app.telem_records {
+		nh[tkey(tr.ch, tr.rec.handler_id)] = true
 	}
 	src := if app.telem_source != '' { ' · ${app.telem_source}' } else { ' · no manifest' }
 	title := 'Trace Chart — ${app.telem_records.len} records / ${nh.len} handlers${src}'
@@ -7058,7 +7131,8 @@ fn tchart_header(app &App) gui.View {
 			clickable_label('Clear', fn (_ &gui.Layout, mut _ gui.Event, mut w gui.Window) {
 				mut a := w.state[App]()
 				a.telem_records = []
-				a.telem_stats = map[u8]telem.HandlerStat{}
+				a.telem_stats = map[u32]telem.HandlerStat{}
+				a.telem_rev++
 				w.update_window()
 			}),
 		]
@@ -7098,6 +7172,9 @@ fn tchart_version(app &App, nbars int, nlanes int, cw f32, ch f32) u64 {
 	h = fnv64(h, if app.tchart_fb { u64(1) } else { u64(0) })
 	h = fnv64(h, u64(int(cw)))
 	h = fnv64(h, u64(int(ch)))
+	// telem_rev bumps on every ingest/clear, so an equal-sized second capture with
+	// different timings/ids still re-tessellates (bar count alone can't detect it).
+	h = fnv64(h, app.telem_rev)
 	return h
 }
 

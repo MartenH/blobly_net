@@ -102,7 +102,7 @@ modules/lua/                embedded Lua 5.4: thin typed V facade over the Lua m
 modules/script/             blobly_net scripting runtime: a Lua Env wired to the GUI-free stack
                             (uds/isotp/transport/candb) + a Lua prelude (test()/check/uds:/
                             bus./decode + byte helpers). scripting replacement.    (Tier 4)
-modules/telem/              blobly_emb runtime-observability decode (blobly_emb/docs/blobly_emb/docs/telemetry.md P5):
+modules/telem/              blobly_emb runtime-observability decode (blobly_emb/docs/telemetry.md P5):
                             HandlerStat 0x7E4 / Record 0x7E5 / LoadDetail 0x7E1 decoders +
                             TraceCmd/Rsp (0x7E2/3) + CSV handler manifest (handler_id ->
                             FB/handler/core/period). Byte-validated vs emb comm/{telem,trace}.
