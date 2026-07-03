@@ -1379,6 +1379,31 @@ prompt for a password.
   **12-byte preemptive record (telemetry.md P4, not built)**. VERIFIED live vs an injected cooperative
   capture on vcan0 (24 sequential records): by-core single-lane no-overlap, per-handler 3 lanes, overrun
   red outline, preempt hatch, Zoom In → 400% + canvas widens, bottom scrollbar drags to pan (0→15.9 ms).
+  (Merged as PR #13 zoom/scroll + PR #14 rework — both user-approved.)
+- 2026-07-03: **GUI toolkit evaluation — Dear ImGui + ImPlot spike (branch `gui-toolkit-eval`; NOT
+  merged).** Motivated by the user's worry that `vlang/gui` is **structurally single-window** (sokol_app
+  owns one OS window) — a ceiling for a CANoe-class multi-monitor tool — plus gui's stagnation/patch
+  burden. Since the engine is GUI-free, a swap is a `src/main.v` rewrite, not a rearchitecture. Spiked
+  **V → Dear ImGui (docking/multi-viewport) + ImPlot** via a new reusable **`eval/vgui`** V module (clean
+  V API over a curated *scalar* C ABI `vgui_glue.cpp` on **cimgui + cimplot** + a GLFW/GL3 backend — same
+  facade pattern as `modules/lua`; learned from but did NOT reuse `nsauzede/vig`, whose hand-mirrored
+  `ImGuiIO` rots on imgui bumps). **Both scary unknowns CLEARED on Linux/WSL:** (1) **multi-window works
+  under WSLg** — 3 simultaneous real X11 windows, the Trace Chart swimlane landing on the user's **second
+  monitor** (gui can't); (2) **CPU is matchable to gui** — event-driven `glfwWaitEvents` ≈ 4 %@1-2fps
+  (→~0 pure-wait) vs the naive-poll **340 %** trap. Ported the **Trace Chart swimlane to imgui+ImPlot**
+  (`eval/vgui/examples/trace_chart`): the swimlane is an ImPlot plot with **native drag-pan / scroll-zoom
+  / double-click-fit / time axis** — replaces the whole hand-rolled zoom-buttons+scrollbar and looks
+  *better* than the gui version. Gotchas: all imgui TUs must share one config (`IMGUI_DISABLE_OBSOLETE_
+  FUNCTIONS` changes `sizeof(ImGuiIO)` → "Mismatched struct layout!" abort); imgui 1.92.8 swapped
+  `AddRect` thickness/flags; `import -window` blanks the main GL window under WSLg (use the `VGUI_SHOT`
+  glReadPixels-GL_BACK dump). Findings + migrate/stay recommendation (lean **migrate**, phased) +
+  the **Windows-build-check next step**: `docs/gui_toolkit_evaluation.md`; module/build/README:
+  `eval/vgui/`. Pinned: cimgui `053280d` (imgui `b61e563` = 1.92.8), cimplot `999ce3e`, GLFW 3.3.10.
+  Screenshots in `eval/vgui/shots/`. Build-verified reproducibly from the repo (`build_deps.sh` +
+  example). **Decision gated on the Windows build** (mingw/msvc: does cimgui/cimplot+GLFW compile, does
+  the `#flag windows` link resolve, do native Win32 viewports spawn, idle CPU) — the user will drive that
+  on the Windows machine. **Feedback captured this session:** do NOT merge PRs without the user's explicit
+  say-so (get green, then ask).
 - 2026-06-30: **Distributable bundle + browser-rendered Help.** Two gaps closed so a freshly-downloaded
   build runs the sim out of the box. (a) **Bundle:** Windows CI (`windows.yml` msvc + mingw) now uploads
   a runnable folder — `blobly_net.exe` (+ DLLs on msvc) alongside `projects/`, `dbc/`, `samples/` and a
