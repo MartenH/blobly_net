@@ -72,9 +72,50 @@ mut:
 	proj_path    string
 	proj_name    string
 	// panel visibility (View menu)
-	show_buses  bool = true
-	show_trace  bool = true
-	show_tchart bool = true
+	show_buses    bool = true
+	show_trace    bool = true
+	show_tchart   bool = true
+	show_signals  bool = true
+	show_graphics bool = true
+	// Signals selection + Graphics watch list (UI-thread only; RX never touches these)
+	sel_id  int = -1 // selected message id (-1 = none)
+	sel_ext bool
+	watch   []Watch // signals plotted in Graphics
+}
+
+// Watch identifies one plotted signal.
+struct Watch {
+	id  u32
+	ext bool
+	sig string
+}
+
+fn (app &App) is_watched(id u32, ext bool, sig string) bool {
+	for w in app.watch {
+		if w.id == id && w.ext == ext && w.sig == sig {
+			return true
+		}
+	}
+	return false
+}
+
+fn (mut app App) toggle_watch(id u32, ext bool, sig string) {
+	for i, w in app.watch {
+		if w.id == id && w.ext == ext && w.sig == sig {
+			app.watch.delete(i)
+			return
+		}
+	}
+	app.watch << Watch{id, ext, sig}
+}
+
+fn (app &App) find_message(id u32, ext bool) ?candb.Message {
+	for db in app.dbs {
+		if m := db.lookup_frame(id, ext) {
+			return m
+		}
+	}
+	return none
 }
 
 fn (a &App) lookup_name(id u32, ext bool) string {
@@ -213,6 +254,14 @@ fn main() {
 			}
 		}
 	}
+	// default the Signals selection to the first DBC message (so it decodes on launch)
+	for db in app.dbs {
+		if db.messages.len > 0 {
+			app.sel_id = int(db.messages[0].id)
+			app.sel_ext = db.messages[0].ext
+			break
+		}
+	}
 	println('blobly_vgui: ${proj.name} — ${app.chans.len} channel(s), ${app.dbs.len} DBC(s), manifest=${app.has_manifest}. Press Start.')
 
 	if !vgui.init('blobly_net — ${proj.name} (imgui/ImPlot)', 1500, 850, true) {
@@ -240,7 +289,7 @@ fn main() {
 
 		vgui.frame_begin()
 		draw_menubar(mut app, rx)
-		vgui.dock_3('Buses', 'Trace', 'Trace Chart', 0.16, 0.30)
+		build_layout()
 
 		if app.show_buses {
 			draw_buses(mut app, chans)
@@ -250,6 +299,12 @@ fn main() {
 		}
 		if app.show_tchart {
 			draw_tchart(app, trecs)
+		}
+		if app.show_signals {
+			draw_signals(mut app, rows)
+		}
+		if app.show_graphics {
+			draw_graphics(app, rows)
 		}
 
 		vgui.frame_end()
@@ -274,6 +329,8 @@ fn draw_menubar(mut app App, rx u64) {
 			app.show_buses = vgui.menu_item_check('Buses', app.show_buses)
 			app.show_trace = vgui.menu_item_check('Trace', app.show_trace)
 			app.show_tchart = vgui.menu_item_check('Trace Chart', app.show_tchart)
+			app.show_signals = vgui.menu_item_check('Signals', app.show_signals)
+			app.show_graphics = vgui.menu_item_check('Graphics', app.show_graphics)
 			vgui.menu_end()
 		}
 		vgui.text('   ')
@@ -361,6 +418,145 @@ fn draw_trace(app &App, rows []TraceRow, rx u64) {
 			shown++
 		}
 		vgui.table_end()
+	}
+	vgui.end()
+}
+
+// build_layout docks the five panels once: Buses (left) | Trace (centre) | a right
+// column stacked Trace Chart / Signals / Graphics.
+fn build_layout() {
+	root := vgui.dock_root()
+	if root == 0 {
+		return // already laid out (persisted in imgui.ini)
+	}
+	mut rest := u32(0)
+	buses := vgui.dock_split(root, vgui.dock_left, 0.15, &rest)
+	mut center := u32(0)
+	right := vgui.dock_split(rest, vgui.dock_right, 0.34, &center)
+	mut rmid := u32(0)
+	chart := vgui.dock_split(right, vgui.dock_up, 0.30, &rmid)
+	mut graphics := u32(0)
+	signals := vgui.dock_split(rmid, vgui.dock_up, 0.58, &graphics)
+	vgui.dock_window('Buses', buses)
+	vgui.dock_window('Trace', center)
+	vgui.dock_window('Trace Chart', chart)
+	vgui.dock_window('Signals', signals)
+	vgui.dock_window('Graphics', graphics)
+	vgui.dock_finish(root)
+}
+
+// latest_data returns the payload of the newest trace row matching (id, ext), or [].
+fn latest_data(rows []TraceRow, id u32, ext bool) []u8 {
+	mut i := rows.len - 1
+	for i >= 0 {
+		if rows[i].id == id && rows[i].ext == ext {
+			return rows[i].data
+		}
+		i--
+	}
+	return []u8{}
+}
+
+// draw_signals: pick a DBC message; decode its signals from the latest matching frame.
+// A checkbox per signal adds/removes it from the Graphics watch list.
+fn draw_signals(mut app App, rows []TraceRow) {
+	vgui.begin('Signals')
+	vgui.separator_text('messages')
+	vgui.child_begin('##msglist', 108)
+	mut seen := map[u64]bool{}
+	for db in app.dbs {
+		for m in db.messages {
+			key := (u64(m.id) << 1) | if m.ext { u64(1) } else { u64(0) }
+			if key in seen {
+				continue // both DBCs may define the same message
+			}
+			seen[key] = true
+			lbl := '0x${m.id:X}  ${m.name}'
+			is_sel := app.sel_id == int(m.id) && app.sel_ext == m.ext
+			if vgui.selectable(lbl, is_sel) {
+				app.sel_id = int(m.id)
+				app.sel_ext = m.ext
+			}
+		}
+	}
+	vgui.child_end()
+	vgui.separator_text('signals')
+	if app.sel_id < 0 {
+		vgui.text_dim('select a message above')
+		vgui.end()
+		return
+	}
+	m := app.find_message(u32(app.sel_id), app.sel_ext) or {
+		vgui.text_dim('message not in DBC')
+		vgui.end()
+		return
+	}
+	data := latest_data(rows, u32(app.sel_id), app.sel_ext)
+	if data.len == 0 {
+		vgui.text('${m.name}: no frame received yet')
+		vgui.end()
+		return
+	}
+	vgui.text('${m.name}')
+	for s in m.active_signals(data) {
+		watched := app.is_watched(u32(app.sel_id), app.sel_ext, s.name)
+		nw := vgui.checkbox('##w_${m.id}_${s.name}', watched)
+		if nw != watched {
+			app.toggle_watch(u32(app.sel_id), app.sel_ext, s.name)
+		}
+		vgui.same_line()
+		lbl := s.label(data)
+		extra := if lbl != '' { ' (${lbl})' } else { '' }
+		unit := if s.unit != '' { ' ${s.unit}' } else { '' }
+		vgui.text('${s.name} = ${s.physical(data):.3}${unit}${extra}')
+	}
+	vgui.end()
+}
+
+// build_series decodes the watched signal across the trace history -> (time ms, value).
+fn (app &App) build_series(rows []TraceRow, w Watch) ([]f32, []f32) {
+	m := app.find_message(w.id, w.ext) or { return []f32{}, []f32{} }
+	mut sig := candb.Signal{}
+	mut found := false
+	for s in m.signals {
+		if s.name == w.sig {
+			sig = s
+			found = true
+			break
+		}
+	}
+	if !found {
+		return []f32{}, []f32{}
+	}
+	mut xs := []f32{}
+	mut ys := []f32{}
+	for r in rows {
+		if r.id == w.id && r.ext == w.ext && r.data.len > 0 {
+			xs << f32(r.t_ms)
+			ys << f32(sig.physical(r.data))
+		}
+	}
+	return xs, ys
+}
+
+// draw_graphics plots the watched signals over the trace history as ImPlot lines
+// (native pan/zoom/legend/tooltip).
+fn draw_graphics(app &App, rows []TraceRow) {
+	vgui.begin('Graphics')
+	if app.watch.len == 0 {
+		vgui.text_dim('tick a signal in the Signals panel to plot it')
+		vgui.end()
+		return
+	}
+	vgui.text('${app.watch.len} signal(s) · drag = pan · scroll = zoom')
+	if vgui.plot_begin('##sigplot', 260) {
+		for w in app.watch {
+			xs, ys := app.build_series(rows, w)
+			if xs.len > 0 {
+				vgui.plot_line('0x${w.id:X}.${w.sig}', xs, ys)
+			}
+		}
+		vgui.plot_end()
 	}
 	vgui.end()
 }

@@ -154,6 +154,52 @@ void vgui_dock_3(const char* a, const char* b, const char* c, float aw, float cw
     ImGui::DockBuilderFinish(g_dockspace_id);
 }
 
+// --- ImPlot line plot (live signal graphs) ---
+int vgui_plot_begin(const char* title, float height) {
+    if (ImPlot::BeginPlot(title, ImVec2(-1, height))) {
+        ImPlot::SetupAxes("t (ms)", NULL, ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
+        return 1;
+    }
+    return 0;
+}
+void vgui_plot_line(const char* name, const float* xs, const float* ys, int n) {
+    ImPlot::PlotLine(name, xs, ys, n);
+}
+void vgui_plot_end() { ImPlot::EndPlot(); }
+
+// selectable row/label; returns 1 the frame it is clicked.
+int vgui_selectable(const char* label, int selected) {
+    return ImGui::Selectable(label, selected != 0) ? 1 : 0;
+}
+
+// scrollable bordered child region of fixed pixel height (0 = fill). ALWAYS pair with
+// vgui_child_end (imgui requires EndChild even when begin returns false/clipped).
+void vgui_child_begin(const char* id, float height) {
+    ImGui::BeginChild(id, ImVec2(0, height), ImGuiChildFlags_Borders);
+}
+void vgui_child_end() { ImGui::EndChild(); }
+
+// --- general DockBuilder (build an N-pane layout from V) ---
+// vgui_dock_root resets the main dockspace and returns its node id (0 if a layout is
+// already persisted, so the caller skips rebuilding). dir: 0=left 1=right 2=up 3=down.
+unsigned int vgui_dock_root() {
+    if (g_dockspace_id == 0) return 0;
+    ImGuiDockNode* node = ImGui::DockBuilderGetNode(g_dockspace_id);
+    if (node && node->IsSplitNode()) return 0;
+    ImGui::DockBuilderRemoveNode(g_dockspace_id);
+    ImGui::DockBuilderAddNode(g_dockspace_id, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(g_dockspace_id, ImGui::GetMainViewport()->WorkSize);
+    return g_dockspace_id;
+}
+unsigned int vgui_dock_split(unsigned int node, int dir, float ratio, unsigned int* remainder) {
+    ImGuiID rem;
+    ImGuiID a = ImGui::DockBuilderSplitNode(node, (ImGuiDir)dir, ratio, NULL, &rem);
+    if (remainder) *remainder = rem;
+    return a;
+}
+void vgui_dock_window(const char* name, unsigned int node) { ImGui::DockBuilderDockWindow(name, node); }
+void vgui_dock_finish(unsigned int root) { ImGui::DockBuilderFinish(root); }
+
 void vgui_begin(const char* title) { ImGui::Begin(title); }
 void vgui_end() { ImGui::End(); }
 void vgui_text(const char* s) { ImGui::TextUnformatted(s); }

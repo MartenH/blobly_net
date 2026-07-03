@@ -50,6 +50,16 @@ fn C.vgui_text_colored(int, int, int, &char)
 fn C.vgui_small_button(&char) int
 fn C.vgui_spacing()
 fn C.vgui_quit()
+fn C.vgui_plot_begin(&char, f32) int
+fn C.vgui_plot_line(&char, &f32, &f32, int)
+fn C.vgui_plot_end()
+fn C.vgui_selectable(&char, int) int
+fn C.vgui_child_begin(&char, f32)
+fn C.vgui_child_end()
+fn C.vgui_dock_root() u32
+fn C.vgui_dock_split(u32, int, f32, &u32) u32
+fn C.vgui_dock_window(&char, u32)
+fn C.vgui_dock_finish(u32)
 fn C.vgui_begin(&char)
 fn C.vgui_end()
 fn C.vgui_text(&char)
@@ -165,6 +175,65 @@ pub fn spacing() {
 // quit requests the main window to close (ends the run loop).
 pub fn quit() {
 	C.vgui_quit()
+}
+
+// --- ImPlot line plots (native pan/zoom/legend; auto-fit axes) ---
+// plot_begin opens a plot of the given pixel height; returns false if not visible.
+pub fn plot_begin(title string, height f32) bool {
+	return C.vgui_plot_begin(title.str, height) == 1
+}
+
+// plot_line adds one series (x = time ms, y = value). Call between plot_begin/plot_end.
+pub fn plot_line(name string, xs []f32, ys []f32) {
+	n := if xs.len < ys.len { xs.len } else { ys.len }
+	if n == 0 {
+		return
+	}
+	C.vgui_plot_line(name.str, unsafe { &xs[0] }, unsafe { &ys[0] }, n)
+}
+
+pub fn plot_end() {
+	C.vgui_plot_end()
+}
+
+// selectable renders a clickable row; returns true the frame it is clicked.
+pub fn selectable(label string, selected bool) bool {
+	return C.vgui_selectable(label.str, if selected { 1 } else { 0 }) == 1
+}
+
+// child_begin opens a scrollable bordered sub-region of the given pixel height (0 = fill).
+// ALWAYS pair with child_end.
+pub fn child_begin(id string, height f32) {
+	C.vgui_child_begin(id.str, height)
+}
+
+pub fn child_end() {
+	C.vgui_child_end()
+}
+
+// --- DockBuilder: build a custom N-pane layout (see dock_left/right/up/down consts) ---
+pub const dock_left = 0
+pub const dock_right = 1
+pub const dock_up = 2
+pub const dock_down = 3
+
+// dock_root resets the main dockspace; returns 0 if a layout is already persisted (skip).
+pub fn dock_root() u32 {
+	return C.vgui_dock_root()
+}
+
+// dock_split splits `node` in `dir`, giving the new pane `ratio` of it; `remainder`
+// receives the opposite pane. Returns the new pane's node id.
+pub fn dock_split(node u32, dir int, ratio f32, remainder &u32) u32 {
+	return C.vgui_dock_split(node, dir, ratio, remainder)
+}
+
+pub fn dock_window(name string, node u32) {
+	C.vgui_dock_window(name.str, node)
+}
+
+pub fn dock_finish(root u32) {
+	C.vgui_dock_finish(root)
 }
 
 pub fn begin(title string) {
