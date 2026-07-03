@@ -1,7 +1,8 @@
 #!/bin/sh
 # build_deps.sh — fetch cimgui + cimplot (pinned) and build libvgui_c.a next to v.mod.
-# Linux/WSL. See README.md for the Windows (mingw/msys2) recipe. Run from anywhere:
-#   eval/vgui/build_deps.sh
+# Runs unmodified on Linux/WSL AND Windows/MSYS2 (verified: plain git + g++). On Windows use
+# the dedicated MSYS2 MINGW64 shell; then build the example with build_win.sh. Run from anywhere:
+#   sh eval/vgui/build_deps.sh
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BLD="$HERE/build"

@@ -1380,6 +1380,33 @@ prompt for a password.
   capture on vcan0 (24 sequential records): by-core single-lane no-overlap, per-handler 3 lanes, overrun
   red outline, preempt hatch, Zoom In → 400% + canvas widens, bottom scrollbar drags to pan (0→15.9 ms).
   (Merged as PR #13 zoom/scroll + PR #14 rework — both user-approved.)
+- 2026-07-03: **GUI toolkit eval — WINDOWS BUILD CHECK: GREEN (the gating step; done on the Windows
+  machine).** Ran the `eval/vgui` spike natively on Windows 11 (dedicated MSYS2 `C:\dev\msys64-ct`,
+  mingw-w64 **gcc 16.1.0**, V 0.5.1 `c0624b2`, Intel Arc / **OpenGL 4.6**). All four open questions
+  answered ✅: (1) **cimgui/cimplot + GLFW compile clean** under mingw — `build_deps.sh` ran unmodified
+  (`pacman -S mingw-w64-x86_64-glfw` gives static `libglfw3.a`), built `libvgui_c.a` (only deprecation
+  warnings); (2) **`#flag windows` resolves to a SELF-CONTAINED exe** — deps are only system DLLs
+  (kernel32/user32/gdi32/shell32/opengl32/msvcrt), no MinGW runtime; flags = static glfw `-l:libglfw3.a`
+  + `-lstdc++ -static -static-libstdc++ -static-libgcc` + win32 libs (verified with both gcc & g++
+  drivers); (3) **multi-viewport spawns real native Win32 windows** — the single process owns 2
+  top-level windows (`EnumWindows`-verified): main GLFW window + a detached **`Trace Chart`** OS window
+  rendering the ImPlot swimlane outside the main rect (drag to 2nd monitor); both render correctly
+  (Trace table + colored swimlane bars/overrun/preemption) — full-desktop capture in
+  `eval/vgui/shots/windows_multiviewport.png`; (4) **idle CPU 0.5 %/core (~0.03 % of 16-core), ~84 MB**
+  event-driven — beats WSLg's ~4 %, on par with gui's ~0.3 %. **The migrate/stay gate is CLEARED →
+  recommendation stands: migrate, phased.** ⚠️ **Two findings fixed/flagged along the way:** (a) the
+  WSL session's `.gitignore` pattern `examples/**/trace_chart` **also matched the `examples/trace_chart/`
+  source dir**, so the example the WSL side thought it committed was silently NEVER added — I
+  reconstructed `examples/trace_chart/trace_chart.v` (Trace table + swimlane, env knobs
+  `VGUI_POLL`/`VGUI_FRAMES`/`VGUI_SHOT`) and scoped the ignore to the binary (`examples/*/trace_chart`
+  + `.exe`); (b) **`v … run` panics on Windows** driving the C compiler (`array.push_many: new len
+  exceeds max_int` in `os__windows_execute_command_line`, from MSYS bash *and* PowerShell) — a V bug,
+  not vgui (blobly_net's own build is fine; the C compile+link are correct when run directly). Added
+  **`eval/vgui/build_win.sh`** (2-step: V→C, then gcc compile + g++ link) as the reproducible Windows
+  recipe; worth a minimal `v bug` report. MSVC (`cl`) not exercised (mingw is primary; nice-to-have).
+  Results written into `docs/gui_toolkit_evaluation.md` + `eval/vgui/README.md`. NOT committed yet
+  (awaiting user's say-so per the no-merge-without-approval feedback). **Windows deps installed this
+  session:** `mingw-w64-x86_64-glfw` + `mingw-w64-x86_64-cmake` + `git` into `C:\dev\msys64-ct`.
 - 2026-07-03: **GUI toolkit evaluation — Dear ImGui + ImPlot spike (branch `gui-toolkit-eval`; NOT
   merged).** Motivated by the user's worry that `vlang/gui` is **structurally single-window** (sokol_app
   owns one OS window) — a ceiling for a CANoe-class multi-monitor tool — plus gui's stagnation/patch

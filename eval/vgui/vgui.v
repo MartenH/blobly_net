@@ -8,8 +8,12 @@ module vgui
 #flag @VMODROOT/libvgui_c.a
 // Linux/WSL: GLFW (X11) + GL + the C++ runtime the imgui/implot objects need.
 #flag linux -lglfw -lGL -lstdc++ -ldl -lm
-// Windows (mingw/msvc): TODO — see README.md. Roughly:
-// #flag windows -lglfw3 -lopengl32 -lgdi32 -limm32 -lstdc++
+// Windows (mingw): link GLFW3 *statically* (-l:libglfw3.a, so no glfw3.dll/winpthread
+// to ship) + its Win32 deps (gdi32/imm32/shell32/user32) + opengl32; -lstdc++ for the
+// imgui/implot C++ objects, static libstdc++/libgcc so the exe carries no MinGW runtime
+// DLLs (deps end up: kernel32/user32/gdi32/shell32/opengl32/msvcrt only). Multi-viewport
+// is native Win32 (no X11). Verified: mingw-w64 gcc 16.1.0, self-contained exe, GL 4.6.
+#flag windows -static -l:libglfw3.a -lopengl32 -lgdi32 -limm32 -lshell32 -luser32 -lstdc++ -static-libstdc++ -static-libgcc
 #include "vgui.h"
 
 // Bar mirrors the C `VBar` (SoA-free struct passed by pointer; C-compatible layout).

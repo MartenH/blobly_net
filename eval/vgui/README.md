@@ -25,9 +25,10 @@ findings and the migrate/stay recommendation.
 | `vgui.v`        | the V module (bindings + clean API) |
 | `vgui.h`        | C-ABI header (glue decls + `VBar`) |
 | `vgui_glue.cpp` | lifecycle (GLFW + multi-viewport) + the ImPlot swimlane, in C++ |
-| `build_deps.sh` | fetch pinned cimgui/cimplot + build `libvgui_c.a` (Linux/WSL) |
+| `build_deps.sh` | fetch pinned cimgui/cimplot + build `libvgui_c.a` (Linux/WSL **and** Windows) |
+| `build_win.sh`  | build the example on Windows/mingw (2-step, works around a V-on-Windows bug) |
 | `examples/trace_chart/` | the Trace Chart swimlane ported to this module |
-| `shots/`        | screenshots from the Linux spike |
+| `shots/`        | screenshots (Linux spike + `windows_multiviewport.png`) |
 
 ## Build & run (Linux / WSL)
 
@@ -40,23 +41,31 @@ v -path "@vlib|@vmodules|eval" run eval/vgui/examples/trace_chart/trace_chart.v
 Drag a panel's title bar out → it becomes its own OS window (drag to another monitor). In the
 swimlane: **drag = pan, scroll = zoom, double-click = fit** (ImPlot native).
 
-## Windows (mingw / MSYS2) — the recipe to verify
+## Windows (mingw / MSYS2) — VERIFIED (2026-07-03)
 
-Not yet built on Windows; this is the plan (mirrors `docs/windows_build.md` for the gui app):
+Built + ran on native Windows 11 (dedicated MSYS2 `C:\dev\msys64-ct`, mingw-w64 gcc 16.1.0, OpenGL
+4.6). Multi-viewport spawns **real native Win32 windows** across monitors; event-driven idle CPU
+**0.5 % of one core** (~0.03 % of a 16-core box); the exe is **self-contained** (only system DLLs).
+Full findings in `docs/gui_toolkit_evaluation.md` → "Windows build check — RESULTS".
 
-1. In the **dedicated** MSYS2 MINGW64 shell (don't pollute the user's personal one):
-   `pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-glfw mingw-w64-x86_64-cmake git`
-2. `build_deps.sh` should work under MSYS2 as-is (it's plain `git` + `g++`), producing
-   `libvgui_c.a`. If `sh` differs, run the same `g++ … -c … && ar rcs …` by hand.
-3. V link flags differ on Windows — GLFW/GL libs are `-lglfw3 -lopengl3`/`-lgdi32` etc. The
-   `#flag` block in `vgui.v` is currently Linux-only (`-lglfw -lGL -lstdc++ -ldl -lm`); add a
-   `#flag windows …` line (see `docs/windows_build.md` for the pattern used by the gui app).
-4. Build the example the same way with `v -cc gcc` (mingw) — or MSVC (`-cc cl`); imgui+glfw
-   builds under both. Multi-viewport uses the Win32 platform backend (native, no X11).
+```sh
+# dedicated MSYS2 MINGW64 shell — don't pollute the user's personal MSYS2
+pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-glfw git
+sh eval/vgui/build_deps.sh      # clones cimgui/cimplot (pinned) + builds libvgui_c.a
+sh eval/vgui/build_win.sh       # builds examples/trace_chart/trace_chart.exe (self-contained)
+eval/vgui/examples/trace_chart/trace_chart.exe   # drag the Trace Chart window to a 2nd monitor
+```
 
-**Open questions the Windows build must answer:** does cimgui/cimplot + GLFW compile clean under
-mingw/msvc; do the V `#flag` link lines resolve; does multi-viewport spawn native Win32 windows;
-idle CPU on native Windows (expected far below WSLg — the gui app idles ~0.3% there).
+**Why `build_win.sh` and not `v … run`:** V 0.5.1 (`c0624b2`) **panics on Windows** while driving the
+C compiler for this target (`array.push_many: new len exceeds max_int` in
+`os__windows_execute_command_line`) — reproducible from MSYS bash *and* PowerShell. The C
+compile/link themselves are correct, so `build_win.sh` drives them in 2 steps (V emits C via `-o …c`,
+then `gcc` compile + `g++` link). Use `-cc gcc` (V's generated C isn't g++-clean — `char**`/named-
+struct casts). Revisit the one-liner on a newer V; it's a V bug, not a vgui one.
+
+The `#flag windows` line in `vgui.v` links static GLFW (`-l:libglfw3.a`) + `-lstdc++`
++ `-static/-static-libstdc++/-static-libgcc` so the exe ships no MinGW runtime DLLs. **MSVC (`cl`)
+not yet exercised** (mingw is the primary Windows toolchain; a `cl` pass is a nice-to-have).
 
 ## Pinned deps
 

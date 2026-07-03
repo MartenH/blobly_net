@@ -1,8 +1,9 @@
 # GUI toolkit evaluation — vlang/gui vs Dear ImGui + ImPlot
 
-**Status (2026-07-03):** spike complete on Linux/WSL; **Windows build check pending**. No decision
-committed. The app still runs on `vlang/gui`. The spike code lives in `eval/vgui/` (a reusable
-`vgui` V module + a Trace Chart example); nothing in the main app depends on it.
+**Status (2026-07-03):** spike complete on Linux/WSL **and Windows** — **both build checks GREEN**.
+No decision committed yet (user's call). The app still runs on `vlang/gui`. The spike code lives in
+`eval/vgui/` (a reusable `vgui` V module + a Trace Chart example); nothing in the main app depends on
+it. See "Windows build check — RESULTS" below.
 
 ## Why we're looking
 
@@ -60,20 +61,45 @@ migrating**, executed as a **phased port** (engine untouched; panel by panel: Tr
 Graphics → Trace Chart → Diagnostics → …). The Trace Chart slice already looks *better* on imgui+ImPlot
 than the hand-rolled gui version.
 
-**Gate the decision on the Windows build check** (below). If cimgui/cimplot + GLFW build clean on
-mingw/msvc, the `#flag windows` link line resolves, and multi-viewport spawns native Win32 windows at
-acceptable idle CPU, then migrate. If Windows fights it, reassess.
+**The Windows build check is now GREEN** (results below) — the gate is cleared. Given multi-window is
+**impossible** in gui, plus the maintenance/stagnation risk and ImPlot's fit, the recommendation stands:
+**migrate, phased**. The remaining friction is a V-side build bug (a one-command `v run` panic on
+Windows, worked around by a 2-step build — see below), not a toolkit problem.
 
-## Next: Windows build check (the remaining Task-A step)
+## Windows build check — RESULTS (2026-07-03, mingw-w64)
 
-Build `eval/vgui` on the Windows machine (dedicated MSYS2, per `docs/windows_build.md`):
+Ran on native Windows 11 (dedicated MSYS2 `C:\dev\msys64-ct`, **mingw-w64 gcc 16.1.0**, V 0.5.1
+`c0624b2`, Intel Arc GPU / **OpenGL 4.6**). All four questions answered — screenshot
+`eval/vgui/shots/windows_multiviewport.png`:
 
-1. `pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-glfw mingw-w64-x86_64-cmake git`
-2. Run `eval/vgui/build_deps.sh` (plain git+g++; should work under MSYS2) → `libvgui_c.a`.
-3. Add a `#flag windows …` link line to `eval/vgui/vgui.v` (GLFW/GL/win32 libs — see the gui app's
-   `docs/windows_build.md` pattern), then `v -cc gcc -path "@vlib|@vmodules|eval" run
-   eval/vgui/examples/trace_chart/trace_chart.v`.
-4. Confirm: clean build (mingw + ideally msvc), multi-viewport spawns native Win32 windows across
-   monitors, and idle CPU (event-driven) — expected well below WSLg (gui idles ~0.3 % on native Win).
+| Question | Result |
+|---|---|
+| **cimgui/cimplot + GLFW compile (mingw)** | ✅ `build_deps.sh` built `libvgui_c.a` clean (imgui 1.92.8 + implot + GLFW 3.x static) — only deprecation warnings. `pacman -S mingw-w64-x86_64-glfw` supplies static `libglfw3.a`. |
+| **`#flag windows` link resolves** | ✅ Links a **self-contained** exe — deps are only system DLLs (kernel32/user32/gdi32/shell32/opengl32/msvcrt), no MinGW runtime. Flags: static glfw (`-l:libglfw3.a`) + `-lstdc++ -static-libstdc++ -static-libgcc -static` + win32 libs. Verified with both the `gcc` and `g++` drivers. |
+| **Multi-viewport → native Win32 windows** | ✅ The single process owns **2 real top-level Win32 windows** (verified via `EnumWindows`): the main GLFW window + a detached **`Trace Chart`** OS window that renders the ImPlot swimlane and sits outside the main window's screen rect (drag to a 2nd monitor). Both render correctly (table + colored swimlane bars/overrun/preemption). |
+| **Idle CPU (event-driven, native)** | ✅ **0.5 % of one core (0.03 % of the 16-core system)** at idle, working set ~84 MB. Beats WSLg's ~4 % and is on par with gui's ~0.3 %. The 340 % naive-poll trap does not apply to the event-driven loop. |
 
-Record results back in this doc + `eval/vgui/README.md`, then make the migrate/stay call.
+### ⚠️ One caveat — a V (not vgui) build bug on Windows
+`v -cc gcc … run eval/vgui/examples/trace_chart/trace_chart.v` **panics inside V** on this Windows V
+(0.5.1 `c0624b2`): `array.push_many: new len exceeds max_int` in `os__windows_execute_command_line`
+while V drives the C compiler. Reproducible from **both** MSYS bash and PowerShell (not a shell
+artifact); blobly_net's own `src/main.v` build is unaffected, so it's target-specific (likely the
+C++ static-archive link invocation). The C compile and link themselves are correct — verified by
+running them directly. **Workaround:** the 2-step **`eval/vgui/build_win.sh`** (V emits C via `-o …c`,
+then gcc compile + g++ link). Revisit the one-liner on a newer V; worth a minimal `v bug` report.
+`-cc g++` is *not* a fix — V's generated C uses `char**`/named-struct pointer casts that g++ rejects
+as errors (gcc treats them as warnings), so `gcc` is the required driver.
+
+### Reproduce
+```sh
+# dedicated MSYS2 MINGW64 shell (C:\dev\msys64-ct)
+pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-glfw git
+sh eval/vgui/build_deps.sh      # -> libvgui_c.a
+sh eval/vgui/build_win.sh       # -> examples/trace_chart/trace_chart.exe (self-contained)
+eval/vgui/examples/trace_chart/trace_chart.exe            # event-driven
+VGUI_POLL=1 VGUI_FRAMES=40 VGUI_SHOT=shot.ppm eval/vgui/examples/trace_chart/trace_chart.exe  # headless
+```
+
+### Not done
+- **MSVC (`cl`)** build — only mingw was exercised. cimgui/implot/glfw all support MSVC; a `cl` pass is
+  a nice-to-have, not a blocker (mingw is blobly_net's primary Windows toolchain anyway).
