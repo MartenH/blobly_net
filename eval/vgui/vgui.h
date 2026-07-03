@@ -15,6 +15,7 @@ void vgui_dump_ppm(const char* path);
 void vgui_swimlane(const char* id, int n_lanes, const char** lane_labels,
                    const VBar* bars, int n_bars, float full_span_us);
 void vgui_set_next_window(float,float,float,float);
+void vgui_dock_2col(const char* left, const char* right, float ratio);
 void vgui_begin(const char* title);
 void vgui_end(void);
 void vgui_text(const char* s);

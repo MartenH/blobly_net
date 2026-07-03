@@ -37,6 +37,7 @@ fn C.vgui_wake()
 fn C.vgui_dump_ppm(&char)
 fn C.vgui_swimlane(&char, int, &&char, voidptr, int, f32)
 fn C.vgui_set_next_window(f32, f32, f32, f32)
+fn C.vgui_dock_2col(&char, &char, f32)
 fn C.vgui_begin(&char)
 fn C.vgui_end()
 fn C.vgui_text(&char)
@@ -93,6 +94,11 @@ pub fn fps() f32 {
 // --- widgets ---
 pub fn set_next_window(x f32, y f32, w f32, h f32) {
 	C.vgui_set_next_window(x, y, w, h)
+}
+
+// dock_2col docks `left` and `right` side-by-side in the main window (one-time layout).
+pub fn dock_2col(left string, right string, ratio f32) {
+	C.vgui_dock_2col(left.str, right.str, ratio)
 }
 
 pub fn begin(title string) {

@@ -2,6 +2,7 @@
 // event-driven) and the higher-level composites (the ImPlot swimlane) live here in C++
 // where the ImGui/ImPlot C++ API is ergonomic; V binds cimgui directly for plain widgets.
 #include "imgui.h"
+#include "imgui_internal.h" // DockBuilder* (initial docked layout)
 #include "implot.h"
 #include "backends/imgui_impl_glfw.h"
 #include "backends/imgui_impl_opengl3.h"
@@ -47,11 +48,31 @@ int vgui_running() {
     return 1;
 }
 
+static ImGuiID g_dockspace_id = 0;
+
 void vgui_frame_begin() {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
-    ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport());
+    g_dockspace_id = ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport());
+}
+
+// vgui_dock_2col builds a one-time 2-column docked layout in the main dockspace: window
+// `left` gets `ratio` of the width, `right` the rest. Both start DOCKED inside the main
+// window (no stray OS windows); the user can still drag a tab out later. Idempotent — only
+// builds when the node has no existing split (first run / fresh imgui.ini).
+void vgui_dock_2col(const char* left, const char* right, float ratio) {
+    if (g_dockspace_id == 0) return;
+    ImGuiDockNode* node = ImGui::DockBuilderGetNode(g_dockspace_id);
+    if (node && node->IsSplitNode()) return; // layout already set (persisted in imgui.ini)
+    ImGui::DockBuilderRemoveNode(g_dockspace_id);
+    ImGui::DockBuilderAddNode(g_dockspace_id, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(g_dockspace_id, ImGui::GetMainViewport()->WorkSize);
+    ImGuiID rightId;
+    ImGuiID leftId = ImGui::DockBuilderSplitNode(g_dockspace_id, ImGuiDir_Left, ratio, NULL, &rightId);
+    ImGui::DockBuilderDockWindow(left, leftId);
+    ImGui::DockBuilderDockWindow(right, rightId);
+    ImGui::DockBuilderFinish(g_dockspace_id);
 }
 
 void vgui_frame_end() {
