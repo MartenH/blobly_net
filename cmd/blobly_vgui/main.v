@@ -791,8 +791,18 @@ fn main() {
 		app.dark = false
 		vgui.set_theme(false)
 	}
-	if os.getenv('BLOBLY_AUTOSTART') != '' {
-		app.start()
+	// Autostart defers the measurement start until the GL context has SETTLED. On Windows the
+	// GPU driver maps/unmaps its own DLL data sections during the first presented frames; if a
+	// worker thread triggers a Boehm GC collection inside that window, the collector faults
+	// scanning a mid-remap driver data root (SIGSEGV in GC_mark_from, thirdparty/libgc). Starting
+	// after ~`autostart_frame` presented frames clears the race. A human pressing Start is always
+	// well past this, so it only matters for BLOBLY_AUTOSTART / automated runs. Override with
+	// BLOBLY_AUTOSTART_FRAME.
+	autostart_frame := if os.getenv('BLOBLY_AUTOSTART') != '' {
+		n := os.getenv('BLOBLY_AUTOSTART_FRAME').int()
+		if n > 0 { n } else { 30 }
+	} else {
+		0
 	}
 	// BLOBLY_FOCUS=PanelName brings that panel's tab to the front once at startup (test/dev aid).
 	focus_panel := os.getenv('BLOBLY_FOCUS')
@@ -800,6 +810,14 @@ fn main() {
 	mut frame := 0
 	for vgui.running() {
 		frame++
+		// During the autostart settle window, wake the loop so those frames render back-to-back
+		// (the event-driven wait would otherwise pace them ~0.5s apart before any RX thread exists).
+		if autostart_frame > 0 && frame < autostart_frame {
+			vgui.wake()
+		}
+		if autostart_frame > 0 && frame == autostart_frame {
+			app.start()
+		}
 		last := max_frames > 0 && frame >= max_frames
 		if last && shot != '' {
 			vgui.dump_ppm(shot)
