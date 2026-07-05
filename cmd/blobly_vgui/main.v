@@ -2083,8 +2083,10 @@ fn (mut app App) draw_bus_editor(i int) bool {
 	addr := if ch.address != '' { ':${ch.address}' } else { '' }
 	net := if ch.network != '' { '  ·  ${ch.network}' } else { '' }
 	dis := if ch.enabled { '' } else { '   — disabled' } // visible feedback for the enable checkbox
-	// header: collapsible tree node + a remove button that works whether expanded or not
-	open := vgui.tree_node('${nm}   [${ch.adapter}${addr}]${net}${dis}##bus${i}')
+	// header: collapsible tree node + a remove button that works whether expanded or not.
+	// Use ### so the imgui ID is fixed to `bus<i>` — the visible label (adapter/address/name)
+	// changes as you edit, and with plain ## that would re-key the node and collapse it.
+	open := vgui.tree_node('${nm}   [${ch.adapter}${addr}]${net}${dis}###bus${i}')
 	vgui.same_line()
 	if vgui.small_button('remove##crm${i}') {
 		if open {
@@ -2450,7 +2452,7 @@ fn draw_network(mut app App, chans []Chan) {
 		r, g, b, st := chan_state(c)
 		vgui.text_colored(r, g, b, '*')
 		vgui.same_line()
-		if vgui.tree_node_open('${c.name}   ${c.iface}   [${c.mode}]   ${st.trim_space()}   RX ${c.rx}##net${ci}') {
+		if vgui.tree_node_open('${c.name}   ${c.iface}   [${c.mode}]   ${st.trim_space()}   RX ${c.rx}###net${ci}') {
 			mut any := false
 			// tester functions this tool runs on the bus
 			mut tf := []string{}
