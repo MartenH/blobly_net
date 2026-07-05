@@ -1515,7 +1515,18 @@ prompt for a password.
   Delta`, `WantTextInput`, `IsAnyItemActive`); if active, set a `g_busy_frames=45` countdown; while it's
   >0, `vgui_running` waits `1/60`s (smooth 60fps), else the cheap `0.5`s idle wait. So interactions +
   animations render at full rate for ~0.75s after the last input, then idle CPU drops back. (Running
-  measurements were already ~30fps via spin_loop's wake.) NOT yet committed.
+  measurements were already ~30fps via spin_loop's wake.) Committed `5ac4f1d`.
+- 2026-07-05: **Channel shows "down" (red) when the CAN iface is actually DOWN.** User: a socketcan
+  channel said "running" (green) while nothing was sent — because SocketCAN lets you `bind()` a DOWN
+  interface, so `transport.open()` + the RX thread succeed and the app marked it `running` even though
+  the link can't tx/rx. Added `iface_link_up(adapter, address)` — reads IFF_UP (bit 0) from
+  `/sys/class/net/<if>/flags` for socketcan/vcan (software backends always true); `Chan.link_down` is set
+  at Start and re-checked each `rx_loop` iteration (~5/s) so it flips green↔red live as the user brings
+  the iface up/down. `chan_state` now returns a red **"down"** when `running && link_down`. Verified vs
+  real hardware: `can0` (flags 0x40080, IFF_UP 0) → down/red; `vcan0` (0x81, IFF_UP 1) → run/green.
+  (Root cause of the user's "nothing sent, no errors": can0/can1 were never `ip link set … up` — both
+  DOWN with no bitrate. Separately noted: TX failures only surface in the Log panel — a follow-up could
+  put them in the always-visible toolbar status.) NOT yet committed.
 - 2026-06-30: **Distributable bundle + browser-rendered Help.** Two gaps closed so a freshly-downloaded
   build runs the sim out of the box. (a) **Bundle:** Windows CI (`windows.yml` msvc + mingw) now uploads
   a runnable folder — `blobly_net.exe` (+ DLLs on msvc) alongside `projects/`, `dbc/`, `samples/` and a

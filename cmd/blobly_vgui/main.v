@@ -65,9 +65,10 @@ struct Chan {
 	manifest     string
 	doip         bool
 mut:
-	enabled bool
-	rx      u64
-	running bool
+	enabled   bool
+	rx        u64
+	running   bool
+	link_down bool // real CAN iface is administratively DOWN (bound but can't tx/rx)
 }
 
 fn (c Chan) monitorable() bool {
@@ -321,6 +322,7 @@ fn (mut app App) start() {
 			continue
 		}
 		app.chans[ci].running = true
+		app.chans[ci].link_down = !iface_link_up(ch.adapter, ch.address)
 		spawn rx_loop(app, ci, ch.iface)
 		// open a TX bus for this channel's iface (each generator fires on its target bus)
 		if ch.iface !in app.tx_buses {
@@ -663,6 +665,15 @@ fn rx_loop(app &App, ci int, iface string) {
 	mut a := unsafe { app }
 	chname := a.chans[ci].name
 	for a.running && a.chans[ci].enabled {
+		// track the real link state so a bound-but-DOWN iface shows "down" (red), not "run",
+		// and flips to green the moment the user brings it up (ip link set … up).
+		down := !iface_link_up(a.chans[ci].adapter, a.chans[ci].address)
+		if down != a.chans[ci].link_down {
+			a.mu.lock()
+			a.chans[ci].link_down = down
+			a.mu.unlock()
+			vgui.wake()
+		}
 		f := bus.recv(200) or { continue }
 		t_ms := f64(time.ticks() - a.t0)
 		name := a.lookup_name(f.id, f.extended)
@@ -1247,12 +1258,15 @@ fn draw_toolbar(mut app App, rx u64) {
 }
 
 // channel state colour + short ASCII label (imgui's default font is ASCII-only):
-// green run / amber idle (enabled, not measuring) / grey off (disabled).
+// grey off (disabled) / red down (attached but the CAN iface is DOWN) / green run / amber idle.
 fn chan_state(c Chan) (u8, u8, u8, string) {
 	if !c.enabled {
 		return u8(140), u8(140), u8(145), 'off '
 	}
 	if c.running {
+		if c.link_down {
+			return u8(215), u8(90), u8(90), 'down' // iface DOWN — bound but can't tx/rx
+		}
 		return u8(90), u8(200), u8(120), 'run '
 	}
 	return u8(220), u8(170), u8(70), 'idle'
@@ -1682,6 +1696,35 @@ fn (app &App) discover_all() []DiscoveredIface {
 		added:   app.iface_added('virtual', 'SIM')
 	}
 	return out
+}
+
+// iface_link_up reports whether a real CAN interface (socketcan/vcan) is administratively
+// UP (IFF_UP in /sys/class/net/<if>/flags). Software backends (inproc/udp/doip) have no
+// kernel interface and are always usable → true. An unreadable flags file → assume up
+// (don't cry wolf on a platform without /sys).
+fn iface_link_up(adapter string, address string) bool {
+	if adapter != 'socketcan' && adapter != 'vcan' {
+		return true
+	}
+	raw := os.read_file('/sys/class/net/${address}/flags') or { return true }
+	mut t := raw.trim_space()
+	if t.starts_with('0x') || t.starts_with('0X') {
+		t = t[2..]
+	}
+	mut v := u64(0)
+	for c in t {
+		d := if c >= `0` && c <= `9` {
+			u64(c - `0`)
+		} else if c >= `a` && c <= `f` {
+			u64(c - `a`) + 10
+		} else if c >= `A` && c <= `F` {
+			u64(c - `A`) + 10
+		} else {
+			continue
+		}
+		v = v * 16 + d
+	}
+	return (v & 0x1) != 0 // IFF_UP
 }
 
 // iface_added reports whether the project already has a bus on this adapter+address.
