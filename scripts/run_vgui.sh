@@ -2,12 +2,14 @@
 # run_vgui.sh — build + run the vgui-migration app (cmd/blobly_vgui) on Linux/WSL AND Windows.
 # This is the Dear ImGui + ImPlot + FreeType port; it does NOT use vlang/gui.
 #
-# ONE script for both platforms. On Windows run it through the dedicated MSYS2 bash:
-#   C:\dev\msys64-ct\usr\bin\bash.exe -c "sh scripts/run_vgui.sh"
-# (the VS Code "vgui: …" tasks do this for you). On Linux/WSL just run it directly.
+# ONE script for both platforms. On Windows run it through the dedicated MSYS2 bash as a
+# LOGIN shell (so coreutils are on PATH), keeping the repo cwd via CHERE_INVOKING:
+#   CHERE_INVOKING=1 MSYSTEM=MSYS <repo>/../msys64-ct/usr/bin/bash.exe --login -c ./scripts/run_vgui.sh
+# (the VS Code "Run VGUI" task does exactly this). On Linux/WSL just run it directly.
 #
 #   scripts/run_vgui.sh                       # build + run (driver-free sim by default)
 #   RUN=0 scripts/run_vgui.sh                 # build only -> build/blobly_vgui[.exe]
+#   DBG=1 RUN=0 scripts/run_vgui.sh           # build with -g (asserts on) for gdb
 #   DEPS=1 scripts/run_vgui.sh                # force-rebuild eval/vgui/libvgui_c.a first
 #   BLOBLY_PROJECT=projects/doip-demo.blobnet scripts/run_vgui.sh
 #
@@ -49,11 +51,14 @@ if [ "${DEPS:-0}" = "1" ] || [ ! -f eval/vgui/libvgui_c.a ]; then
 fi
 
 # 2. build (+ run). V's #flags (eval/vgui/vgui.v) carry the whole link line; in-proc bus
-#    needs -enable-globals.
+#    needs -enable-globals. DBG=1 adds -g (source-level symbols for gdb).
 set -- -cc gcc -enable-globals -path "@vlib|@vmodules|modules|eval"
+[ "${DBG:-0}" = "1" ] && set -- "$@" -g
 if [ "${RUN:-1}" = "0" ]; then
 	mkdir -p build
-	exec "$V" "$@" -o build/blobly_vgui "$target"
+	out="build/blobly_vgui"
+	[ "${DBG:-0}" = "1" ] && out="build/blobly_vgui_dbg"
+	exec "$V" "$@" -o "$out" "$target"
 else
 	export BLOBLY_PROJECT="${BLOBLY_PROJECT:-projects/sim-demo.blobnet}"
 	exec "$V" "$@" run "$target"
