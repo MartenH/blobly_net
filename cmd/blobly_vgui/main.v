@@ -316,6 +316,11 @@ fn (mut app App) start() {
 	if app.running {
 		return
 	}
+	// flush any unsaved editor edits into the model + runtime view first, so the measurement
+	// attaches to exactly what the Configuration editor shows (not stale buffered values).
+	if app.dirty {
+		app.apply_edits()
+	}
 	app.running = true
 	for ci, ch in app.chans {
 		if !ch.monitorable() {
@@ -816,7 +821,7 @@ fn (mut app App) rebuild_from_proj() {
 			network:      ch.network
 			adapter:      ch.adapter
 			address:      ch.address
-			iface:        ch.iface
+			iface:        ch.transport_iface() // pcan/kvaser carry bitrate as @<rate> for the driver
 			mode:         ch.mode.str()
 			typ:          ch.typ
 			bitrate:      ch.bitrate
@@ -2039,8 +2044,12 @@ fn (mut app App) set_manifest(ci int, path string) {
 // buses, pick adapters, attach DBCs. Stopped-only; Save persists to the .blobnet.
 fn draw_config(mut app App) {
 	vgui.set_next_window(120, 90, 720, 620)
+	was_open := app.show_config
 	vis, op := vgui.begin_closable('Configuration', app.show_config)
 	app.show_config = op
+	if was_open && !op && !app.running && app.dirty {
+		app.apply_edits() // closed via the [X] with unsaved edits — fold them into model + runtime
+	}
 	if !vis {
 		vgui.end()
 		return
@@ -2071,6 +2080,9 @@ fn draw_config(mut app App) {
 	vgui.same_line()
 	if vgui.button('Close') {
 		app.show_config = false
+		if app.dirty {
+			app.apply_edits() // fold unsaved edits into the model + runtime view on close
+		}
 	}
 	if app.dirty {
 		vgui.same_line()
@@ -2552,7 +2564,7 @@ fn draw_trace(mut app App, rows []TraceRow, gcount map[string]u64, rx u64) {
 	if app.chans.len > 1 {
 		app.trace_bus = bus_chips(app.chans, app.trace_bus, 't')
 	}
-	brows := filter_bus(rows, app.trace_bus)
+	brows := app.filter_bus(rows, app.trace_bus)
 	filt := vgui.buf_str(app.trace_filter_buf).to_lower()
 	if app.trace_grouped {
 		vgui.separator_text('by id (click to expand · click row to select)')
@@ -2605,7 +2617,7 @@ fn draw_ftrace(mut app App, rows []TraceRow, gcount map[string]u64) {
 		return
 	}
 	// restrict to watched frames + optional bus, then apply the optional text find
-	frows := filter_bus(rows.filter(app.is_fwatched(it.id, it.ext)), app.ftrace_bus)
+	frows := app.filter_bus(rows.filter(app.is_fwatched(it.id, it.ext)), app.ftrace_bus)
 	filt := vgui.buf_str(app.trace_filter2_buf).to_lower()
 	if app.trace_grouped2 {
 		draw_trace_grouped(mut app, frows, gcount, filt)
@@ -2635,12 +2647,26 @@ fn bus_chips(chans []Chan, cur string, key string) string {
 	return sel
 }
 
-// filter_bus keeps only rows whose channel (name) matches `bus`; '' = all.
-fn filter_bus(rows []TraceRow, bus string) []TraceRow {
+// filter_bus keeps only rows on the selected bus (by configured name); '' = all. Live rows
+// carry the bus name in `ch`, but rows from a loaded recording carry the log interface string
+// (e.g. `vcan0`) instead of the bus name (e.g. `CAN0`), so also match the selected bus's
+// iface/address — otherwise a chip would filter every imported row out.
+fn (app &App) filter_bus(rows []TraceRow, bus string) []TraceRow {
 	if bus == '' {
 		return rows
 	}
-	return rows.filter(it.ch == bus)
+	mut aliases := [bus]
+	for c in app.chans {
+		if c.name == bus {
+			if c.iface != '' && c.iface !in aliases {
+				aliases << c.iface
+			}
+			if c.address != '' && c.address !in aliases {
+				aliases << c.address
+			}
+		}
+	}
+	return rows.filter(it.ch in aliases)
 }
 
 fn idstr(id u32, ext bool) string {
@@ -3178,8 +3204,7 @@ fn (mut app App) save_project() {
 		app.open_browser('saveas')
 		return
 	}
-	app.commit_cfg() // flush Configuration-editor buffers (no-op if the editor never opened)
-	app.sync_senders_into_proj()
+	app.apply_edits()
 	app.mu.lock()
 	p := app.proj
 	path := app.proj_path
@@ -3190,6 +3215,16 @@ fn (mut app App) save_project() {
 	}
 	app.dirty = false
 	app.notify('saved -> ${path}')
+}
+
+// apply_edits folds all pending editor state into app.proj and rebuilds the runtime view,
+// so Start/Save act on exactly what the editor shows. Config-editor text fields live in
+// cfg_bufs (flushed by commit_cfg) and session generators live in app.senders (folded in by
+// sync_senders_into_proj BEFORE the rebuild, so rebuild_from_proj doesn't drop unsaved ones).
+fn (mut app App) apply_edits() {
+	app.commit_cfg() // Configuration-editor buffers -> app.proj (no-op if the editor never opened)
+	app.sync_senders_into_proj() // session generators -> app.proj
+	app.rebuild_from_proj() // rebuild app.chans/dbs/sims from the updated model
 }
 
 // save_as sets the path (from the browser) and saves.
