@@ -153,6 +153,10 @@ mut:
 	// Configuration editor (stopped-only) + its per-bus edit buffers (parallel to proj.channels)
 	show_config bool
 	cfg_bufs    []CfgBuf
+	// Discover-interfaces dialog (add buses from detected transports)
+	disc_open bool
+	disc_list []DiscoveredIface
+	disc_tick []bool // parallel to disc_list
 	// File browser (Open / Save As / attach DBC / attach manifest)
 	fb_open     bool   // browser window shown
 	fb_save     bool   // true = save mode (filename input), false = open mode
@@ -1027,6 +1031,9 @@ fn main() {
 		if app.show_config {
 			draw_config(mut app)
 		}
+		if app.disc_open {
+			draw_discover_dialog(mut app)
+		}
 		if app.fb_open {
 			draw_filebrowser(mut app)
 		}
@@ -1392,6 +1399,11 @@ fn selftest_config(mut app App) {
 		ok = selftest_check('c1 address host:port', c1.address == '127.0.0.1:13400') && ok
 	}
 	println(if ok { 'SELFTEST_CONFIG: PASS' } else { 'SELFTEST_CONFIG: FAIL' })
+	println('--- discover_all() ---')
+	for d in app.discover_all() {
+		mark := if d.added { ' [added]' } else { '' }
+		println('  ${d.address}   ${d.adapter} · ${d.desc}${mark}')
+	}
 	println('--- written ${tmp} ---')
 	println(os.read_file(tmp) or { '' })
 }
@@ -1576,6 +1588,100 @@ fn adapter_tip(a string) string {
 	}
 }
 
+// CanIface is one CAN interface found on the machine (Linux /sys/class/net).
+struct CanIface {
+	name    string
+	is_vcan bool
+	desc    string // e.g. "PCAN-USB Pro FD [1-1] · down" (real) or "virtual CAN" (vcan)
+}
+
+// read_can_ifaces enumerates the machine's CAN interfaces with a human description: for
+// real hardware, the USB product name + bus path + link state (so the two channels of a
+// dual PCAN read as "can0 … PCAN-USB Pro FD [1-1]" / "can1 …"). Linux-only (/sys); [] else.
+fn read_can_ifaces() []CanIface {
+	mut out := []CanIface{}
+	names := os.ls('/sys/class/net') or { return out }
+	for name in names {
+		typ := os.read_file('/sys/class/net/${name}/type') or { continue }
+		if typ.trim_space() != '280' { // ARPHRD_CAN
+			continue
+		}
+		is_vcan := name.starts_with('vcan')
+		mut desc := 'virtual CAN'
+		if !is_vcan {
+			base := '/sys/class/net/${name}'
+			product := (os.read_file('${base}/device/../product') or { '' }).trim_space()
+			state := (os.read_file('${base}/operstate') or { '' }).trim_space()
+			busnum := (os.read_file('${base}/device/../busnum') or { '' }).trim_space()
+			devpath := (os.read_file('${base}/device/../devpath') or { '' }).trim_space()
+			mut parts := [if product != '' { product } else { 'CAN' }]
+			if busnum != '' && devpath != '' {
+				parts << '[${busnum}-${devpath}]'
+			}
+			if state != '' {
+				parts << '· ${state}'
+			}
+			desc = parts.join(' ')
+		}
+		out << CanIface{
+			name:    name
+			is_vcan: is_vcan
+			desc:    desc
+		}
+	}
+	out.sort(a.name < b.name)
+	return out
+}
+
+// DiscoveredIface is one transport the Discover dialog offers to add as a bus.
+struct DiscoveredIface {
+	adapter string
+	address string
+	desc    string
+	added   bool // already present in the project
+}
+
+// discover_all builds the Discover list: every CAN interface (real + vcan) plus the
+// cross-platform software transports (a UDP bus and an in-process sim net), marking those
+// already in the project.
+fn (app &App) discover_all() []DiscoveredIface {
+	mut out := []DiscoveredIface{}
+	for ci in read_can_ifaces() {
+		adapter := if ci.is_vcan { 'vcan' } else { 'socketcan' }
+		out << DiscoveredIface{
+			adapter: adapter
+			address: ci.name
+			desc:    ci.desc
+			added:   app.iface_added(adapter, ci.name)
+		}
+	}
+	udp := '${transport.udp_default_group}:${transport.udp_default_port}'
+	out << DiscoveredIface{
+		adapter: 'udp'
+		address: udp
+		desc:    'software bus'
+		added:   app.iface_added('udp', udp)
+	}
+	out << DiscoveredIface{
+		adapter: 'virtual'
+		address: 'SIM'
+		desc:    'in-process simulation'
+		added:   app.iface_added('virtual', 'SIM')
+	}
+	return out
+}
+
+// iface_added reports whether the project already has a bus on this adapter+address.
+fn (app &App) iface_added(adapter string, address string) bool {
+	target := project.compose_iface(adapter, address)
+	for c in app.proj.channels {
+		if c.iface == target {
+			return true
+		}
+	}
+	return false
+}
+
 // discover_addresses returns candidate addresses for an adapter. CAN interfaces (vcan/
 // socketcan) are enumerated from Linux /sys/class/net (ARPHRD_CAN = type 280); virtual
 // suggests a few in-process names; the rest can't be probed from here (returns []).
@@ -1712,19 +1818,119 @@ fn (mut app App) commit_cfg() {
 
 // add_bus appends a default driver-free virtual bus (the from-scratch building block).
 fn (mut app App) add_bus() {
-	app.commit_cfg()
 	n := app.proj.channels.len + 1
+	app.add_bus_spec('virtual', 'CAN${n}')
+}
+
+// add_bus_spec appends a bus for a specific adapter+address (used by + Add bus, the Discover
+// dialog's Add-ticked, and the quick-add buttons). The name defaults to the address.
+fn (mut app App) add_bus_spec(adapter string, address string) {
+	app.commit_cfg()
+	base := if address != '' { address } else { adapter }
 	app.proj.channels << project.Channel{
-		name:    'CAN${n}'
-		adapter: 'virtual'
-		address: 'CAN${n}'
-		iface:   'inproc:CAN${n}'
+		name:    app.unique_bus_name(base)
+		adapter: adapter
+		address: address
+		iface:   project.compose_iface(adapter, address)
 		typ:     'can'
 		mode:    .monitor
 	}
 	app.dirty = true
 	app.sync_cfg_bufs()
 	app.rebuild_from_proj()
+}
+
+// unique_bus_name returns `base`, or base_2/base_3/… if the name is already taken.
+fn (app &App) unique_bus_name(base string) string {
+	mut name := base
+	mut n := 2
+	for {
+		mut taken := false
+		for c in app.proj.channels {
+			if c.name == name {
+				taken = true
+				break
+			}
+		}
+		if !taken {
+			return name
+		}
+		name = '${base}_${n}'
+		n++
+	}
+	return base
+}
+
+// refresh_discovery re-scans the machine's transports for the Discover dialog.
+fn (mut app App) refresh_discovery() {
+	app.disc_list = app.discover_all()
+	app.disc_tick = []bool{len: app.disc_list.len}
+}
+
+// next_free_vcan returns the first vcanN not already in the project (for the + vcan quick-add).
+fn (app &App) next_free_vcan() string {
+	for n in 0 .. 32 {
+		addr := 'vcan${n}'
+		if !app.iface_added('vcan', addr) {
+			return addr
+		}
+	}
+	return 'vcan0'
+}
+
+// draw_discover_dialog is the "Discover interfaces" dialog (mirrors the old app): it lists
+// every detected transport — real CAN hardware (with product/state), vcan, a UDP bus, an
+// in-process sim net — with tick boxes and + Add ticked, plus + vcan / + Sim net quick-adds.
+fn draw_discover_dialog(mut app App) {
+	vgui.set_next_window(200, 130, 640, 460)
+	vis, op := vgui.begin_closable('Discover interfaces', app.disc_open)
+	app.disc_open = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	if vgui.button('Refresh') {
+		app.refresh_discovery()
+	}
+	vgui.same_line()
+	if vgui.button('+ vcan') {
+		app.add_bus_spec('vcan', app.next_free_vcan())
+		app.refresh_discovery()
+	}
+	vgui.same_line()
+	if vgui.button('+ Sim net') {
+		app.add_bus_spec('virtual', app.unique_bus_name('SIM'))
+		app.refresh_discovery()
+	}
+	vgui.same_line()
+	if vgui.button('+ Add ticked') {
+		for k, d in app.disc_list {
+			if k < app.disc_tick.len && app.disc_tick[k] && !d.added {
+				app.add_bus_spec(d.adapter, d.address)
+			}
+		}
+		app.refresh_discovery()
+	}
+	vgui.separator()
+	if app.disc_list.len == 0 {
+		vgui.text_dim('click Refresh to scan for interfaces')
+	}
+	for k, d in app.disc_list {
+		if d.added {
+			vgui.text_dim('   [added]   ${d.address}   ${d.adapter} · ${d.desc}')
+			continue
+		}
+		t := if k < app.disc_tick.len { app.disc_tick[k] } else { false }
+		nt := vgui.checkbox('##dt${k}', t)
+		if nt != t && k < app.disc_tick.len {
+			app.disc_tick[k] = nt
+		}
+		vgui.same_line()
+		vgui.text('${d.address}   ${d.adapter} · ${d.desc}')
+	}
+	vgui.separator()
+	vgui.text_dim('Tip: a PCAN/Kvaser device on Linux/WSL appears here as SocketCAN (canN) — add those, not the pcan/kvaser adapter (Windows-only).')
+	vgui.end()
 }
 
 fn (mut app App) remove_bus(i int) {
@@ -1829,6 +2035,11 @@ fn draw_config(mut app App) {
 		app.add_bus()
 	}
 	vgui.same_line()
+	if vgui.button('Discover...') {
+		app.refresh_discovery()
+		app.disc_open = true
+	}
+	vgui.same_line()
 	if vgui.button('Save') {
 		app.save_project()
 	}
@@ -1871,8 +2082,9 @@ fn (mut app App) draw_bus_editor(i int) bool {
 	nm := vgui.buf_str(app.cfg_bufs[i].name_buf)
 	addr := if ch.address != '' { ':${ch.address}' } else { '' }
 	net := if ch.network != '' { '  ·  ${ch.network}' } else { '' }
+	dis := if ch.enabled { '' } else { '   — disabled' } // visible feedback for the enable checkbox
 	// header: collapsible tree node + a remove button that works whether expanded or not
-	open := vgui.tree_node('${nm}   [${ch.adapter}${addr}]${net}##bus${i}')
+	open := vgui.tree_node('${nm}   [${ch.adapter}${addr}]${net}${dis}##bus${i}')
 	vgui.same_line()
 	if vgui.small_button('remove##crm${i}') {
 		if open {

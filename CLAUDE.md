@@ -1479,7 +1479,27 @@ prompt for a password.
   editor tree renders no-crash. **Learned (from a user save):** Save over a shipped/hand-commented demo
   (e.g. sim-demo.blobnet) is **lossy** — `to_yaml` reformats + drops comments; the user editing an Open
   Example and Saving rewrites that repo file. Restored sim-demo; consider nudging Example edits toward
-  Save As. NOT yet committed.
+  Save As. Committed `c3e40cf` + polish `4d243da` (collapsed tree, header remove, dropped the stray
+  DoIP "Discover" from the Buses panel → "Configure…" button instead).
+- 2026-07-05: **Discover-interfaces dialog (matches the old vlang/gui app's UX) + PCAN-on-WSL insight.**
+  User (real PCAN-USB Pro FD moved to WSL) showed the OLD app's rich bus-discovery dialog and asked why
+  the new per-bus Discover was so weak. **Key hardware fact:** a PEAK/Kvaser device on Linux/WSL is
+  exposed by the kernel SocketCAN driver (`peak_usb`) as **canN interfaces** — the dual-channel PCAN =
+  `can0` + `can1` (dmesg: "PCAN-USB Pro FD … channel 0 → can0, channel 1 → can1"). So on Linux the
+  **`socketcan` adapter** is correct, NOT the Windows-only `pcan`/`kvaser` DLL backends (whose Discover
+  returns [] there — why the user "could only see the USB interface"). Built a proper **Discover dialog**
+  (`draw_discover_dialog`, its own window): `read_can_ifaces()` reads `/sys/class/net` for each CAN iface
+  with a rich label — USB **product** (`device/../product` = "PCAN-USB Pro FD"), bus path
+  (`busnum-devpath` = "1-1"), link **state** (`operstate` = down) — plus vcan, a UDP software bus
+  (`239.63.42.1:20000`, the udpbus default), and an in-process SIM net; `discover_all()` marks entries
+  already in the project. The dialog has per-row **tick boxes + ＋ Add ticked**, **＋ vcan** / **＋ Sim
+  net** quick-adds, Refresh, and a tip that PCAN/Kvaser show as SocketCAN on Linux. `add_bus_spec(adapter,
+  address)` + `unique_bus_name` append a bus (used by ＋ Add bus, Add-ticked, quick-adds). Opened via a
+  **Discover…** button in the config editor. Also: the enable checkbox now shows **"— disabled"** in the
+  bus's tree header (visible feedback; the user thought it "did nothing" — it's the persisted attach-on-
+  Start flag, no live effect while stopped). **Verified**: `discover_all()` on this box lists
+  `can0/can1 · PCAN-USB Pro FD [1-1] · down`, `vcan0 · virtual CAN [added]`, `udp`, `SIM` — byte-matching
+  the old app's screenshot; build clean, config self-test PASS, dialog renders no-crash. NOT yet committed.
 - 2026-06-30: **Distributable bundle + browser-rendered Help.** Two gaps closed so a freshly-downloaded
   build runs the sim out of the box. (a) **Bundle:** Windows CI (`windows.yml` msvc + mingw) now uploads
   a runnable folder — `blobly_net.exe` (+ DLLs on msvc) alongside `projects/`, `dbc/`, `samples/` and a
