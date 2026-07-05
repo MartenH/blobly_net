@@ -210,6 +210,8 @@ mut:
 	// Replay
 	replay_src_buf   []u8
 	replay_speed_buf []u8
+	// Discover results (addresses found for the current adapter); [] until Discover is clicked
+	found []string
 }
 
 // SimCfg is one channel's in-process simulation workload (simulated ECUs + its DBC).
@@ -978,10 +980,10 @@ fn main() {
 			draw_symbols(mut app)
 		}
 		if app.show_busconfig {
-			draw_busconfig(app, chans)
+			draw_busconfig(mut app, chans)
 		}
 		if app.show_stats {
-			draw_stats(app, chans, rx)
+			draw_stats(mut app, chans, rx)
 		}
 		if app.show_trace {
 			draw_trace(mut app, rows, gcount, rx)
@@ -990,16 +992,16 @@ fn main() {
 			draw_ftrace(mut app, rows, gcount)
 		}
 		if app.show_log {
-			draw_log(app)
+			draw_log(mut app)
 		}
 		if app.show_tchart {
-			draw_tchart(app, trecs)
+			draw_tchart(mut app, trecs)
 		}
 		if app.show_signals {
 			draw_signals(mut app, rows)
 		}
 		if app.show_graphics {
-			draw_graphics(app, rows)
+			draw_graphics(mut app, rows)
 		}
 		if app.show_send {
 			draw_send(mut app)
@@ -1011,7 +1013,7 @@ fn main() {
 			draw_doip(mut app)
 		}
 		if app.show_network {
-			draw_network(app, chans)
+			draw_network(mut app, chans)
 		}
 		if app.show_gen {
 			draw_gen(mut app)
@@ -1020,7 +1022,7 @@ fn main() {
 			draw_script(mut app)
 		}
 		if app.show_help {
-			draw_help(app)
+			draw_help(mut app)
 		}
 		if app.show_config {
 			draw_config(mut app)
@@ -1254,7 +1256,9 @@ fn chan_state(c Chan) (u8, u8, u8, string) {
 // draw_sim lists the in-process simulation workload: each channel's simulated ECUs,
 // expandable to their signal generators + request/response rules.
 fn draw_sim(mut app App) {
-	if !vgui.begin('Simulation') {
+	vis, op := vgui.begin_closable('Simulation', app.show_sim)
+	app.show_sim = op
+	if !vis {
 		vgui.end()
 		return
 	}
@@ -1295,7 +1299,9 @@ fn draw_sim(mut app App) {
 // draw_symbols is the Symbol Browser: a searchable tree of every DBC message and its
 // signals (bit layout, scaling, unit, range).
 fn draw_symbols(mut app App) {
-	if !vgui.begin('Symbols') {
+	vis, op := vgui.begin_closable('Symbols', app.show_symbols)
+	app.show_symbols = op
+	if !vis {
 		vgui.end()
 		return
 	}
@@ -1556,6 +1562,50 @@ fn (app &App) match_ext(name string) bool {
 	return false
 }
 
+// adapter_tip is the tooltip text explaining an adapter (shown via the "(?)" help marker).
+fn adapter_tip(a string) string {
+	return match a {
+		'virtual' { 'In-process software bus (driver-free). The address is a bus NAME you invent (CAN1, CAN2…); buses with the same name are the same wire. Runs anywhere, no drivers.' }
+		'vcan' { 'Linux virtual CAN (SocketCAN). The address is a kernel interface like vcan0. Create them with scripts/setup_vcan.sh, then Discover to list them.' }
+		'socketcan' { 'Real Linux CAN hardware (SocketCAN). The address is an interface like can0. Bring it up with: ip link set can0 up type can bitrate 500000.' }
+		'udp' { 'Cross-platform UDP-multicast software bus. The address is group:port (e.g. 239.0.0.1:5000). Lets separate processes/hosts share a virtual wire.' }
+		'pcan' { 'PEAK PCAN hardware (Windows). The address is a channel like PCAN_USBBUS1. Discovery needs the PEAK driver on Windows.' }
+		'kvaser' { 'Kvaser hardware (Windows). The address is a channel index (0, 1…). Discovery needs the Kvaser driver on Windows.' }
+		'doip' { 'Diagnostics over Ethernet (ISO 13400) — NOT a CAN bus. The address is host:port (default 127.0.0.1:13400); set the tester/ECU logical addresses below.' }
+		else { '' }
+	}
+}
+
+// discover_addresses returns candidate addresses for an adapter. CAN interfaces (vcan/
+// socketcan) are enumerated from Linux /sys/class/net (ARPHRD_CAN = type 280); virtual
+// suggests a few in-process names; the rest can't be probed from here (returns []).
+fn discover_addresses(adapter string) []string {
+	match adapter {
+		'vcan', 'socketcan' {
+			mut out := []string{}
+			names := os.ls('/sys/class/net') or { return [] }
+			for name in names {
+				typ := os.read_file('/sys/class/net/${name}/type') or { continue }
+				if typ.trim_space() != '280' { // ARPHRD_CAN
+					continue
+				}
+				is_vcan := name.starts_with('vcan')
+				if (adapter == 'vcan' && is_vcan) || (adapter == 'socketcan' && !is_vcan) {
+					out << name
+				}
+			}
+			out.sort()
+			return out
+		}
+		'virtual' {
+			return ['CAN1', 'CAN2', 'CAN3']
+		}
+		else {
+			return []
+		}
+	}
+}
+
 // adapter_hint is the grey placeholder shown next to a bus's address field.
 fn adapter_hint(a string) string {
 	return match a {
@@ -1701,6 +1751,7 @@ fn (mut app App) set_adapter(i int, a string) {
 		app.proj.channels[i].typ = 'can'
 	}
 	app.proj.channels[i].iface = project.compose_iface(a, vgui.buf_str(app.cfg_bufs[i].address_buf))
+	app.cfg_bufs[i].found = [] // discovery is adapter-specific — drop stale results
 	app.dirty = true
 	app.rebuild_from_proj()
 }
@@ -1757,7 +1808,9 @@ fn (mut app App) set_manifest(ci int, path string) {
 // buses, pick adapters, attach DBCs. Stopped-only; Save persists to the .blobnet.
 fn draw_config(mut app App) {
 	vgui.set_next_window(120, 90, 720, 620)
-	if !vgui.begin('Configuration') {
+	vis, op := vgui.begin_closable('Configuration', app.show_config)
+	app.show_config = op
+	if !vis {
 		vgui.end()
 		return
 	}
@@ -1801,12 +1854,27 @@ fn draw_config(mut app App) {
 	vgui.end()
 }
 
-// draw_bus_editor renders one bus's editable fields. Returns true if the bus was removed
-// (the caller must stop iterating this frame). Enum/checkbox edits apply to app.proj live;
-// text fields are flushed by commit_cfg on Save / structural change.
+// draw_bus_editor renders one bus as a tree node: an enable checkbox + a header summary on
+// the collapsed row, expanding to the editable fields. Returns true if the bus was removed
+// (indices shifted — the caller stops iterating this frame). Enum/checkbox edits apply to
+// app.proj live; text fields are flushed by commit_cfg on Save / structural change.
 fn (mut app App) draw_bus_editor(i int) bool {
 	ch := app.proj.channels[i]
-	vgui.separator_text('${vgui.buf_str(app.cfg_bufs[i].name_buf)}  (${ch.adapter})')
+	// header row: enable checkbox + the tree node (name · adapter:address · network)
+	en := vgui.checkbox('##cfgen${i}', ch.enabled)
+	if en != ch.enabled {
+		app.proj.channels[i].enabled = en
+		app.dirty = true
+	}
+	vgui.same_line()
+	vgui.set_item_tooltip('enable this bus (attached on Start)')
+	nm := vgui.buf_str(app.cfg_bufs[i].name_buf)
+	addr := if ch.address != '' { ':${ch.address}' } else { '' }
+	net := if ch.network != '' { '  ·  ${ch.network}' } else { '' }
+	if !vgui.tree_node_open('${nm}   [${ch.adapter}${addr}]${net}##bus${i}') {
+		return false
+	}
+	// name · network
 	vgui.set_next_item_width(160)
 	if vgui.input_text('name##cn${i}', mut app.cfg_bufs[i].name_buf) {
 		app.dirty = true
@@ -1817,19 +1885,24 @@ fn (mut app App) draw_bus_editor(i int) bool {
 		app.dirty = true
 	}
 	vgui.same_line()
+	vgui.help_marker('Optional label grouping buses of one logical vehicle network. Buses that share a network name are grouped in the Buses tree and the Trace bus chips.')
+	vgui.same_line()
 	if vgui.small_button('remove bus##crm${i}') {
 		app.remove_bus(i)
+		vgui.tree_pop()
 		return true
 	}
-	// adapter picker
+	// adapter picker + tooltip
 	vgui.text('adapter:')
+	vgui.same_line()
+	vgui.help_marker(adapter_tip(ch.adapter))
 	for a in project.adapters {
 		vgui.same_line()
 		if vgui.toggle_button('${a}##ad${i}_${a}', ch.adapter == a, 0) {
 			app.set_adapter(i, a)
 		}
 	}
-	// address
+	// address + Discover
 	vgui.set_next_item_width(220)
 	if vgui.input_text('address##cad${i}', mut app.cfg_bufs[i].address_buf) {
 		app.proj.channels[i].address = vgui.buf_str(app.cfg_bufs[i].address_buf)
@@ -1838,6 +1911,26 @@ fn (mut app App) draw_bus_editor(i int) bool {
 	}
 	vgui.same_line()
 	vgui.text_dim(adapter_hint(ch.adapter))
+	if vgui.small_button('Discover##disc${i}') {
+		app.cfg_bufs[i].found = discover_addresses(ch.adapter)
+		if app.cfg_bufs[i].found.len == 0 {
+			app.notify('no ${ch.adapter} interfaces found (connect/create them, or wrong platform)')
+		}
+	}
+	vgui.same_line()
+	vgui.help_marker('List the ${ch.adapter} interfaces available on this machine, then click one to fill the address. CAN interfaces come from /sys/class/net; vendor hardware (PCAN/Kvaser) is enumerated only on Windows with the driver installed.')
+	if app.cfg_bufs[i].found.len > 0 {
+		vgui.text_dim('found:')
+		for f in app.cfg_bufs[i].found {
+			vgui.same_line()
+			if vgui.small_button('${f}##pick${i}_${f}') {
+				app.cfg_bufs[i].address_buf = mkbuf(f, 64)
+				app.proj.channels[i].address = f
+				app.proj.channels[i].iface = project.compose_iface(ch.adapter, f)
+				app.dirty = true
+			}
+		}
+	}
 
 	if ch.adapter == 'doip' {
 		vgui.set_next_item_width(90)
@@ -1850,10 +1943,13 @@ fn (mut app App) draw_bus_editor(i int) bool {
 			app.dirty = true
 		}
 		vgui.same_line()
+		vgui.help_marker('DoIP logical addresses (ISO 13400): the tester (source) and ECU (target), e.g. 0x0E80 / 0x1000. They replace the CAN diagnostic id pair.')
 		vgui.set_next_item_width(180)
 		if vgui.input_text('vin##cv${i}', mut app.cfg_bufs[i].vin_buf) {
 			app.dirty = true
 		}
+		vgui.same_line()
+		vgui.help_marker('17-character VIN reported by this entity in vehicle announcements (only used when this DoIP bus hosts a simulated entity).')
 	} else {
 		vgui.text('protocol:')
 		for pr in ['can', 'canfd'] {
@@ -1867,7 +1963,11 @@ fn (mut app App) draw_bus_editor(i int) bool {
 		if vgui.input_text('bitrate##cb${i}', mut app.cfg_bufs[i].bitrate_buf) {
 			app.dirty = true
 		}
+		vgui.same_line()
+		vgui.help_marker('Nominal bit rate in bit/s (e.g. 500000). For virtual/vcan buses this is informational; for real hardware it configures the interface.')
 		vgui.text('mode:')
+		vgui.same_line()
+		vgui.help_marker('off = configured but not attached · monitor = observe live traffic · replay = play a recording onto the bus.')
 		for md in ['off', 'monitor', 'replay'] {
 			vgui.same_line()
 			if vgui.toggle_button('${md}##md${i}_${md}', ch.mode.str() == md, 0) {
@@ -1880,6 +1980,8 @@ fn (mut app App) draw_bus_editor(i int) bool {
 			app.proj.channels[i].listen_only = lo
 			app.dirty = true
 		}
+		vgui.same_line()
+		vgui.help_marker('Listen-only: never transmit (no ACKs) — passive monitoring of a live bus.')
 		if ch.mode == .replay {
 			vgui.text('replay:')
 			vgui.same_line()
@@ -1907,19 +2009,16 @@ fn (mut app App) draw_bus_editor(i int) bool {
 			}
 		}
 	}
-	// enabled
-	en := vgui.checkbox('enabled##en${i}', ch.enabled)
-	if en != ch.enabled {
-		app.proj.channels[i].enabled = en
-		app.dirty = true
-	}
 	// databases
 	vgui.text('databases:')
+	vgui.same_line()
+	vgui.help_marker('DBC files describing this bus/network — used to decode frames into signals and to drive the simulated ECUs.')
 	for di, dbp in ch.databases {
 		vgui.text('   ${dbp}')
 		vgui.same_line()
 		if vgui.small_button('x##dbrm${i}_${di}') {
 			app.remove_dbc(i, di)
+			vgui.tree_pop()
 			return true
 		}
 	}
@@ -1936,12 +2035,17 @@ fn (mut app App) draw_bus_editor(i int) bool {
 	if vgui.small_button('...##mfbrowse${i}') {
 		app.open_browser('manifest:${i}')
 	}
+	vgui.same_line()
+	vgui.help_marker('Optional telemetry handler manifest (CSV) — resolves handler ids to FB/handler/core for the Trace Chart.')
+	vgui.tree_pop()
 	return false
 }
 
 // draw_busconfig shows each channel's configuration (type, bitrate/timing, DBCs, manifest).
-fn draw_busconfig(app &App, chans []Chan) {
-	if !vgui.begin('Bus Config') {
+fn draw_busconfig(mut app App, chans []Chan) {
+	vis, op := vgui.begin_closable('Bus Config', app.show_busconfig)
+	app.show_busconfig = op
+	if !vis {
 		vgui.end()
 		return
 	}
@@ -1966,7 +2070,9 @@ fn draw_busconfig(app &App, chans []Chan) {
 
 // draw_doip: discover DoIP entities on a host (or a running DoIP channel).
 fn draw_doip(mut app App) {
-	if !vgui.begin('DoIP Discovery') {
+	vis, op := vgui.begin_closable('DoIP Discovery', app.show_doip)
+	app.show_doip = op
+	if !vis {
 		vgui.end()
 		return
 	}
@@ -1993,8 +2099,10 @@ fn draw_doip(mut app App) {
 }
 
 // draw_stats: totals + per-channel RX counters.
-fn draw_stats(app &App, chans []Chan, rx u64) {
-	if !vgui.begin('Statistics') {
+fn draw_stats(mut app App, chans []Chan, rx u64) {
+	vis, op := vgui.begin_closable('Statistics', app.show_stats)
+	app.show_stats = op
+	if !vis {
 		vgui.end()
 		return
 	}
@@ -2021,8 +2129,10 @@ fn draw_stats(app &App, chans []Chan, rx u64) {
 }
 
 // draw_log: the scrolling status/event log.
-fn draw_log(app &App) {
-	if !vgui.begin('Log') {
+fn draw_log(mut app App) {
+	vis, op := vgui.begin_closable('Log', app.show_log)
+	app.show_log = op
+	if !vis {
 		vgui.end()
 		return
 	}
@@ -2038,8 +2148,10 @@ fn draw_log(app &App) {
 }
 
 // draw_help: a short in-app usage reference.
-fn draw_help(app &App) {
-	if !vgui.begin('Help') {
+fn draw_help(mut app App) {
+	vis, op := vgui.begin_closable('Help', app.show_help)
+	app.show_help = op
+	if !vis {
 		vgui.end()
 		return
 	}
@@ -2065,7 +2177,9 @@ fn draw_help(app &App) {
 }
 
 fn draw_buses(mut app App, chans []Chan) {
-	if !vgui.begin('Buses') {
+	vis, op := vgui.begin_closable('Buses', app.show_buses)
+	app.show_buses = op
+	if !vis {
 		vgui.end()
 		return
 	}
@@ -2104,8 +2218,10 @@ fn draw_buses(mut app App, chans []Chan) {
 // draw_network shows the bus topology: each channel (bus) and everything attached to it —
 // the tester's own functions (Monitor / Send / Diagnostics), simulated ECUs, and generators
 // grouped by the bus they actually transmit on. The CANoe "Simulation Setup" analog.
-fn draw_network(app &App, chans []Chan) {
-	if !vgui.begin('Network') {
+fn draw_network(mut app App, chans []Chan) {
+	vis, op := vgui.begin_closable('Network', app.show_network)
+	app.show_network = op
+	if !vis {
 		vgui.end()
 		return
 	}
@@ -2178,7 +2294,9 @@ fn draw_network(app &App, chans []Chan) {
 }
 
 fn draw_trace(mut app App, rows []TraceRow, gcount map[string]u64, rx u64) {
-	if !vgui.begin('Trace') {
+	vis, op := vgui.begin_closable('Trace', app.show_trace)
+	app.show_trace = op
+	if !vis {
 		vgui.end()
 		return
 	}
@@ -2227,7 +2345,9 @@ fn draw_trace(mut app App, rows []TraceRow, gcount map[string]u64, rx u64) {
 // draw_ftrace is the "Trace (filter)" watch list: it shows ONLY the frames you've added
 // (via "+ Add to filter" in the Trace panel, or "+" in Symbols), over the same buffer.
 fn draw_ftrace(mut app App, rows []TraceRow, gcount map[string]u64) {
-	if !vgui.begin('Trace (filter)') {
+	vis, op := vgui.begin_closable('Trace (filter)', app.show_ftrace)
+	app.show_ftrace = op
+	if !vis {
 		vgui.end()
 		return
 	}
@@ -2491,7 +2611,9 @@ fn latest_data(rows []TraceRow, id u32, ext bool) []u8 {
 // draw_signals: pick a DBC message; decode its signals from the latest matching frame.
 // A checkbox per signal adds/removes it from the Graphics watch list.
 fn draw_signals(mut app App, rows []TraceRow) {
-	if !vgui.begin('Signals') {
+	vis, op := vgui.begin_closable('Signals', app.show_signals)
+	app.show_signals = op
+	if !vis {
 		vgui.end()
 		return
 	}
@@ -2585,8 +2707,10 @@ fn (app &App) build_series(rows []TraceRow, w Watch) ([]f32, []f32) {
 
 // draw_graphics plots the watched signals over the trace history as ImPlot lines
 // (native pan/zoom/legend/tooltip).
-fn draw_graphics(app &App, rows []TraceRow) {
-	if !vgui.begin('Graphics') {
+fn draw_graphics(mut app App, rows []TraceRow) {
+	vis, op := vgui.begin_closable('Graphics', app.show_graphics)
+	app.show_graphics = op
+	if !vis {
 		vgui.end()
 		return
 	}
@@ -2610,7 +2734,9 @@ fn draw_graphics(app &App, rows []TraceRow) {
 
 // ---- Send ----
 fn draw_send(mut app App) {
-	if !vgui.begin('Send') {
+	vis, op := vgui.begin_closable('Send', app.show_send)
+	app.show_send = op
+	if !vis {
 		vgui.end()
 		return
 	}
@@ -2640,7 +2766,9 @@ fn draw_send(mut app App) {
 // Always visible and editable regardless of run state; Start/Stop only gates *firing*.
 // Add / remove / edit happen in the session; Save persists them to the project .blobnet.
 fn draw_gen(mut app App) {
-	if !vgui.begin('Generators') {
+	vis, op := vgui.begin_closable('Generators', app.show_gen)
+	app.show_gen = op
+	if !vis {
 		vgui.end()
 		return
 	}
@@ -3037,7 +3165,9 @@ fn printable(b []u8) string {
 }
 
 fn draw_diag(mut app App) {
-	if !vgui.begin('Diagnostics') {
+	vis, op := vgui.begin_closable('Diagnostics', app.show_diag)
+	app.show_diag = op
+	if !vis {
 		vgui.end()
 		return
 	}
@@ -3126,7 +3256,9 @@ fn (mut app App) script_done() {
 }
 
 fn draw_script(mut app App) {
-	if !vgui.begin('Script') {
+	vis, op := vgui.begin_closable('Script', app.show_script)
+	app.show_script = op
+	if !vis {
 		vgui.end()
 		return
 	}
@@ -3153,8 +3285,10 @@ fn draw_script(mut app App) {
 	vgui.end()
 }
 
-fn draw_tchart(app &App, trecs []TRec) {
-	if !vgui.begin('Trace Chart') {
+fn draw_tchart(mut app App, trecs []TRec) {
+	vis, op := vgui.begin_closable('Trace Chart', app.show_tchart)
+	app.show_tchart = op
+	if !vis {
 		vgui.end()
 		return
 	}

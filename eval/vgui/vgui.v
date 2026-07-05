@@ -98,6 +98,9 @@ fn C.vgui_dock_split(u32, int, f32, &u32) u32
 fn C.vgui_dock_window(&char, u32)
 fn C.vgui_dock_finish(u32)
 fn C.vgui_begin(&char) int
+fn C.vgui_begin_closable(&char, &int) int
+fn C.vgui_set_item_tooltip(&char)
+fn C.vgui_help_marker(&char)
 fn C.vgui_end()
 fn C.vgui_text(&char)
 fn C.vgui_text_dim(&char)
@@ -404,8 +407,27 @@ pub fn begin(title string) bool {
 	return C.vgui_begin(title.str) == 1
 }
 
+// begin_closable is begin() with a close [X] in the title bar. Returns (visible, open):
+// `open` goes false the frame the user clicks the X — the caller stores it back into its
+// show-flag. Skip the content when `visible` is false, but ALWAYS call end().
+pub fn begin_closable(title string, open bool) (bool, bool) {
+	mut o := if open { 1 } else { 0 }
+	vis := C.vgui_begin_closable(title.str, &o) == 1
+	return vis, o != 0
+}
+
 pub fn end() {
 	C.vgui_end()
+}
+
+// set_item_tooltip attaches a hover tooltip to the widget on the previous line.
+pub fn set_item_tooltip(text string) {
+	C.vgui_set_item_tooltip(text.str)
+}
+
+// help_marker draws a dim "(?)" that reveals `text` on hover — inline field help.
+pub fn help_marker(text string) {
+	C.vgui_help_marker(text.str)
 }
 
 pub fn text(s string) {

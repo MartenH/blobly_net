@@ -400,7 +400,29 @@ void vgui_dock_finish(unsigned int root) { ImGui::DockBuilderFinish(root); }
 // Returns 1 if the window is visible (active tab / not collapsed). Callers must skip the
 // content when it returns 0 but ALWAYS call vgui_end (imgui pairs Begin/End unconditionally).
 int vgui_begin(const char* title) { return ImGui::Begin(title) ? 1 : 0; }
+// begin with a close [X] in the title bar. *p_open (1/0) is updated when the user clicks it.
+int vgui_begin_closable(const char* title, int* p_open) {
+    bool open = *p_open != 0;
+    bool vis = ImGui::Begin(title, &open);
+    *p_open = open ? 1 : 0;
+    return vis ? 1 : 0;
+}
 void vgui_end() { ImGui::End(); }
+// set_item_tooltip attaches a hover tooltip to the PREVIOUS item (call right after it).
+void vgui_set_item_tooltip(const char* text) {
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("%s", text);
+}
+// help_marker draws a dim "(?)" that shows `text` (wrapped) on hover — inline field help.
+void vgui_help_marker(const char* text) {
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
+        ImGui::BeginTooltip();
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
+        ImGui::TextUnformatted(text);
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+    }
+}
 void vgui_text(const char* s) { ImGui::TextUnformatted(s); }
 void vgui_text_dim(const char* s) { ImGui::TextDisabled("%s", s); }
 int  vgui_button(const char* label) { return ImGui::Button(label) ? 1 : 0; }

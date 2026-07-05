@@ -1463,7 +1463,23 @@ prompt for a password.
   can't capture, so the self-test covers the logic while screenshots cover the docked Trace chips). Shipped
   **`projects/restbus-2vcan.blobnet`** (v2-schema example: 2 vcan buses, DBC + simulated transmitters each,
   a 0x101→0x102 on-demand reply on vcan0 — the user's real-ECU-with-2-vcans restbus case) + Open Example
-  entry. Dev hook `BLOBLY_SHOW_CONFIG=1` opens the editor at startup. NOT committed (awaiting review).
+  entry. Dev hook `BLOBLY_SHOW_CONFIG=1` opens the editor at startup. Committed `279f002`.
+- 2026-07-05: **Config-editor UX round (user feedback).** (a) **vgui glue additions** (`eval/vgui`,
+  DEPS rebuild): `begin_closable(title, open) (vis, open)` → a close **[X]** in the window title bar;
+  `set_item_tooltip`/`help_marker` (a dim "(?)" with a hover tooltip). (b) **Configuration editor is now
+  a tree** — each bus is a `tree_node_open` with an **enable checkbox on the header row** (toggle without
+  expanding), expanding to the fields; `+ Add bus` adds a node. (c) **Tooltips** (`help_marker`) on
+  adapter/network/mode/bitrate/listen-only/DBC/manifest/DoIP fields explaining each. (d) **Adapter
+  Discover** — a per-bus Discover button enumerates the machine's interfaces for the chosen adapter
+  (`discover_addresses`: vcan/socketcan from `/sys/class/net` ARPHRD_CAN type 280; virtual suggests
+  names; PCAN/Kvaser need the Windows driver) and lists them as click-to-fill chips — answers "which
+  vcans/HW do I have?". (e) **Close [X] on every panel** — all ~19 dockable panels use `begin_closable`
+  storing the open state back into their `show_*` flag (7 read-only `draw_*` fns became `mut app`).
+  Verified: build clean, config self-test still PASS, close-X visible on docked panels (screenshot),
+  editor tree renders no-crash. **Learned (from a user save):** Save over a shipped/hand-commented demo
+  (e.g. sim-demo.blobnet) is **lossy** — `to_yaml` reformats + drops comments; the user editing an Open
+  Example and Saving rewrites that repo file. Restored sim-demo; consider nudging Example edits toward
+  Save As. NOT yet committed.
 - 2026-06-30: **Distributable bundle + browser-rendered Help.** Two gaps closed so a freshly-downloaded
   build runs the sim out of the box. (a) **Bundle:** Windows CI (`windows.yml` msvc + mingw) now uploads
   a runnable folder — `blobly_net.exe` (+ DLLs on msvc) alongside `projects/`, `dbc/`, `samples/` and a

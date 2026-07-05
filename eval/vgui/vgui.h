@@ -61,7 +61,10 @@ unsigned int vgui_dock_split(unsigned int node, int dir, float ratio, unsigned i
 void vgui_dock_window(const char* name, unsigned int node);
 void vgui_dock_finish(unsigned int root);
 int  vgui_begin(const char* title);
+int  vgui_begin_closable(const char* title, int* p_open);
 void vgui_end(void);
+void vgui_set_item_tooltip(const char* text);
+void vgui_help_marker(const char* text);
 void vgui_text(const char* s);
 void vgui_text_dim(const char* s);
 int  vgui_button(const char* label);
