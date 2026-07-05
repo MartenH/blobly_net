@@ -1507,7 +1507,15 @@ prompt for a password.
   redundant — the dialog's tick + Add-ticked IS how you turn can0 into a bus); and made the **adapter
   picker platform-aware** (`available_adapters`: Linux shows virtual/vcan/socketcan/udp/doip, Windows
   virtual/udp/pcan/kvaser/doip, always keeping a bus's current adapter) so `pcan`/`kvaser` no longer
-  appear on WSL where they can't work. NOT yet committed (this refinement).
+  appear on WSL where they can't work. Committed `955bb69`.
+- 2026-07-05: **Fix sluggish UI (window close/reflow took ~1-2s).** The event-driven loop waited
+  `glfwWaitEventsTimeout(0.5)` per idle frame, so imgui's animations (window close, dock reflow, tab/
+  hover fades) — which need CONTINUOUS frames — played at ~2fps and took ~1-2s to settle. Fix
+  (`eval/vgui/vgui_glue.cpp`, DEPS rebuild): after each frame, sample activity (`io.MouseDown/Wheel/
+  Delta`, `WantTextInput`, `IsAnyItemActive`); if active, set a `g_busy_frames=45` countdown; while it's
+  >0, `vgui_running` waits `1/60`s (smooth 60fps), else the cheap `0.5`s idle wait. So interactions +
+  animations render at full rate for ~0.75s after the last input, then idle CPU drops back. (Running
+  measurements were already ~30fps via spin_loop's wake.) NOT yet committed.
 - 2026-06-30: **Distributable bundle + browser-rendered Help.** Two gaps closed so a freshly-downloaded
   build runs the sim out of the box. (a) **Bundle:** Windows CI (`windows.yml` msvc + mingw) now uploads
   a runnable folder — `blobly_net.exe` (+ DLLs on msvc) alongside `projects/`, `dbc/`, `samples/` and a

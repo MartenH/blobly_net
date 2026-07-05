@@ -133,10 +133,20 @@ int vgui_init(const char* title, int w, int h, int event_driven) {
     return 0;
 }
 
+// Frames to keep rendering at full rate after the last UI activity, so imgui animations
+// (window close, dock reflow, tab/hover fades) play smoothly instead of at the idle wait
+// rate. Set in vgui_frame_end when activity is detected; counted down here.
+static int g_busy_frames = 0;
+
 int vgui_running() {
     if (glfwWindowShouldClose(g_win)) return 0;
-    if (g_event_driven) glfwWaitEventsTimeout(0.5);
-    else glfwPollEvents();
+    if (g_event_driven) {
+        // Busy (recent input / active item / animation) → ~60fps; truly idle → 0.5s wait.
+        if (g_busy_frames > 0) glfwWaitEventsTimeout(1.0/60.0);
+        else glfwWaitEventsTimeout(0.5);
+    } else {
+        glfwPollEvents();
+    }
     return 1;
 }
 
@@ -217,6 +227,15 @@ void vgui_frame_end() {
         glfwMakeContextCurrent(b);
     }
     glfwSwapBuffers(g_win);
+    // Keep rendering at full rate for a short burst after any UI activity so imgui's
+    // close/reflow/hover animations settle smoothly (otherwise they play at the 0.5s idle
+    // rate → a window takes ~1-2s to visibly close). True idle falls back to the cheap wait.
+    bool active = io.MouseDown[0] || io.MouseDown[1] || io.MouseDown[2]
+        || io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f
+        || io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f
+        || io.WantTextInput || ImGui::IsAnyItemActive();
+    if (active) g_busy_frames = 45;          // ~0.75s of smooth frames after the last input
+    else if (g_busy_frames > 0) g_busy_frames--;
 }
 
 void vgui_shutdown() {
