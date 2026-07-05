@@ -16,12 +16,28 @@ pub fn (p Project) to_yaml() string {
 	b.writeln('  name: ${p.name}')
 	b.writeln('  version: ${schema_version}') // we always write the current format
 	b.writeln('')
-	b.writeln('channels:')
+	b.writeln('buses:')
 	for ch in p.channels {
+		// Effective adapter/address. The editor keeps adapter+address the source of truth
+		// (iface composed from them); but code that sets `iface` directly (tests, defaults)
+		// leaves adapter/address stale — detect that (compose != iface) and derive from iface.
+		mut adapter := ch.adapter
+		mut address := ch.address
+		if compose_iface(adapter, address) != ch.iface {
+			adapter, address = decompose_iface(ch.iface)
+		}
 		b.writeln('  - name: ${ch.name}')
-		b.writeln('    type: ${ch.typ}')
-		b.writeln('    interface: ${ch.iface}')
-		b.writeln('    bitrate: ${ch.bitrate}')
+		if ch.network != '' {
+			b.writeln('    network: ${ch.network}')
+		}
+		b.writeln('    adapter: ${adapter}')
+		if address != '' {
+			b.writeln('    address: ${address}')
+		}
+		if !ch.is_doip() {
+			b.writeln('    protocol: ${ch.typ}')
+			b.writeln('    bitrate: ${ch.bitrate}')
+		}
 		if ch.fd {
 			b.writeln('    fd: true')
 			if ch.data_bitrate > 0 {
@@ -40,8 +56,8 @@ pub fn (p Project) to_yaml() string {
 			b.writeln('    timing: { brp: ${ch.timing.brp}, tseg1: ${ch.timing.tseg1}, tseg2: ${ch.timing.tseg2}, sjw: ${ch.timing.sjw} }')
 		}
 		if ch.is_doip() {
-			b.writeln('    tester_address: "0x${ch.tester_addr:X}"')
-			b.writeln('    ecu_address: "0x${ch.ecu_addr:X}"')
+			b.writeln('    tester_address: "0x${ch.tester_addr:04X}"')
+			b.writeln('    ecu_address: "0x${ch.ecu_addr:04X}"')
 			if ch.vin != '' {
 				b.writeln('    vin: ${ch.vin}')
 			}

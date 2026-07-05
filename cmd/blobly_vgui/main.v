@@ -52,6 +52,9 @@ struct TRec {
 // Chan is one project channel's live state (the Buses panel row + Start/Stop target).
 struct Chan {
 	name         string
+	network      string // grouping label (v2)
+	adapter      string // transport backend (v2): virtual|vcan|socketcan|udp|pcan|kvaser|doip
+	address      string // adapter-specific address (v2)
 	iface        string
 	mode         string
 	typ          string
@@ -123,6 +126,8 @@ mut:
 	sel_ext       bool
 	watch         []Watch // signals plotted in Graphics
 	trace_grouped bool = true // Trace: grouped-by-id (expandable) vs chronological
+	trace_bus     string      // main Trace: show only this bus (channel name); '' = all
+	ftrace_bus    string      // Trace (filter) panel: show only this bus; '' = all
 	fwatch        []FrameId   // Trace (filter) watch list — frames added from Trace/Symbols
 	// TX buses — one open bus per channel iface, created at Start. Generators fire on their
 	// own target bus (its channel, or a `bus:` override); the Send panel defaults to
@@ -143,8 +148,18 @@ mut:
 	script_path_buf []u8
 	senders         []SenderRT // flattened project senders (Generators)
 	gen_bufs        []GenBuf   // per-sender editable fields (parallel to senders)
-	gen_dirty       bool       // generators changed since load/save (shows ● modified)
+	dirty       bool       // project (config or generators) changed since load/save (● modified)
 	proj            project.Project // the loaded project, kept so Save can persist edits
+	// Configuration editor (stopped-only) + its per-bus edit buffers (parallel to proj.channels)
+	show_config bool
+	cfg_bufs    []CfgBuf
+	// File browser (Open / Save As / attach DBC / attach manifest)
+	fb_open     bool   // browser window shown
+	fb_save     bool   // true = save mode (filename input), false = open mode
+	fb_dir      string // current directory
+	fb_name_buf []u8   // filename (save mode)
+	fb_ext      string // extension filter ('.blobnet' | '.dbc' | '' = recordings)
+	fb_target   string // action on OK: 'open' | 'saveas' | 'dbc:<ci>' | 'manifest:<ci>'
 	sims            []SimCfg   // per-channel in-process simulation workloads
 	sim_enabled     map[string]bool // '<iface>:<node>' -> enabled (Simulation panel)
 	sim_gen         u64             // bumped when sim_enabled changes -> sim_loop rebuilds
@@ -175,6 +190,26 @@ mut:
 	key_buf  []u8
 	id_buf   []u8 // raw (non-DBC) generators: CAN id (hex)
 	data_buf []u8 // raw generators: payload (hex)
+}
+
+// CfgBuf holds one bus's editable text fields in the Configuration editor (parallel to
+// app.proj.channels). Enums (adapter/mode/protocol) and checkboxes edit the model directly;
+// only the free-text fields need a buffer.
+struct CfgBuf {
+mut:
+	name_buf    []u8
+	network_buf []u8
+	address_buf []u8
+	bitrate_buf []u8
+	manifest_buf []u8
+	dbc_buf     []u8 // "+ Add DBC" typed-path fallback
+	// DoIP
+	tester_buf []u8
+	ecu_buf    []u8
+	vin_buf    []u8
+	// Replay
+	replay_src_buf   []u8
+	replay_speed_buf []u8
 }
 
 // SimCfg is one channel's in-process simulation workload (simulated ECUs + its DBC).
@@ -214,6 +249,17 @@ fn (mut app App) toggle_watch(id u32, ext bool, sig string) {
 struct FrameId {
 	id  u32
 	ext bool
+}
+
+// chan_name_for maps a bus iface back to its channel name (the Trace `ch` column value),
+// falling back to the iface if unmatched.
+fn (app &App) chan_name_for(iface string) string {
+	for c in app.chans {
+		if c.iface == iface {
+			return c.name
+		}
+	}
+	return iface
 }
 
 fn (app &App) is_fwatched(id u32, ext bool) bool {
@@ -341,14 +387,15 @@ fn (mut app App) tx_on(iface string, f transport.CanFrame) bool {
 		return false
 	}
 	name := app.lookup_name(f.id, f.extended)
+	chn := app.chan_name_for(iface) // trace `ch` column is the bus NAME (matches RX rows)
 	tms := f64(time.ticks() - app.t0)
 	app.mu.lock()
 	if !app.paused {
-		app.trace << TraceRow{tms, iface, 'TX', f.id, f.extended, f.rtr, name, f.data.clone()}
+		app.trace << TraceRow{tms, chn, 'TX', f.id, f.extended, f.rtr, name, f.data.clone()}
 		if app.trace.len > trace_cap {
 			app.trace = app.trace[app.trace.len - trace_cap..].clone()
 		}
-		app.gcount[gkey('TX', iface, f.id, f.extended)]++
+		app.gcount[gkey('TX', chn, f.id, f.extended)]++
 	}
 	if app.recording {
 		app.rec << canlog.LogEntry{tms / 1000.0, iface, f}
@@ -700,18 +747,23 @@ fn load_ui_font() {
 // load_project (re)loads a project into the app: stops any measurement, clears the
 // project-derived state, and rebuilds channels / DBCs / sims / senders. Keeps the input
 // buffers + panel layout. Used at startup and by File > Open Example / Reload.
+// load_project loads a project file: stop, reset the session buffers, parse into
+// app.proj, then derive the runtime view (rebuild_from_proj). On a parse error the current
+// project is left untouched.
 fn (mut app App) load_project(path string) {
 	app.stop()
 	proj := project.load(path) or {
 		eprintln('load ${path}: ${err}')
+		app.notify('load failed: ${err}')
 		return
 	}
+	app.set_project(proj, path)
+}
+
+// set_project installs a parsed project (from a file, New, or a reload), resetting the
+// session buffers and rebuilding the runtime view. path == '' marks an unsaved project.
+fn (mut app App) set_project(proj project.Project, path string) {
 	app.mu.lock()
-	app.chans = []
-	app.dbs = []
-	app.sims = []
-	app.senders = []
-	app.gen_bufs = []
 	app.trace = []
 	app.gcount = map[string]u64{}
 	app.trecs = []
@@ -719,18 +771,36 @@ fn (mut app App) load_project(path string) {
 	app.script_log = []
 	app.watch = []
 	app.fwatch = []
-	app.has_manifest = false
-	app.manifest = telem.Manifest{}
-	app.sel_id = -1
 	app.rx = 0
 	app.proj_path = path
 	app.proj_name = proj.name
 	app.proj = proj
-	app.gen_dirty = false
+	app.dirty = false
+	app.mu.unlock()
+	app.rebuild_from_proj()
+}
+
+// rebuild_from_proj derives the runtime view (chans, dbs, sims, senders, manifest, default
+// selection) from app.proj. Called after a load and after any config/generator edit, so the
+// live panels reflect the edited model. Must be called while stopped (no RX threads running).
+fn (mut app App) rebuild_from_proj() {
+	proj := app.proj
+	app.mu.lock()
+	app.chans = []
+	app.dbs = []
+	app.sims = []
+	app.senders = []
+	app.gen_bufs = []
+	app.has_manifest = false
+	app.manifest = telem.Manifest{}
+	app.sel_id = -1
 	app.mu.unlock()
 	for ch in proj.channels {
 		app.chans << Chan{
 			name:         ch.name
+			network:      ch.network
+			adapter:      ch.adapter
+			address:      ch.address
 			iface:        ch.iface
 			mode:         ch.mode.str()
 			typ:          ch.typ
@@ -788,6 +858,7 @@ fn (mut app App) load_project(path string) {
 // examples lists the shipped projects for the File > Open Example menu.
 const examples = [
 	['Simulation demo (driver-free)', 'projects/sim-demo.blobnet'],
+	['Restbus — 2x vcan (real ECU)', 'projects/restbus-2vcan.blobnet'],
 	['Virtual bench (vcan0)', 'projects/demo.blobnet'],
 	['Telemetry / Trace Chart (vcan0)', 'projects/trace-demo.blobnet'],
 	['CPU-load sim (driver-free)', 'projects/cpuload-sim.blobnet'],
@@ -820,6 +891,14 @@ fn main() {
 	app.load_project(proj_path)
 	println('blobly_vgui: ${app.proj_name} — ${app.chans.len} channel(s), ${app.dbs.len} DBC(s), manifest=${app.has_manifest}. Press Start.')
 
+	// Headless self-test of the Configuration editor: drive the real methods (New → add bus →
+	// edit fields → add DBC → Save As) and assert the written .blobnet round-trips. Exits after.
+	// The editor's widgets can't be clicked under WSLg, so this smoke covers the logic instead.
+	if os.getenv('BLOBLY_SELFTEST_CONFIG') != '' {
+		selftest_config(mut app)
+		return
+	}
+
 	if !vgui.init('blobly_net — ${app.proj_name} (imgui/ImPlot)', 1500, 850, true) {
 		eprintln('vgui.init failed')
 		return
@@ -828,6 +907,11 @@ fn main() {
 	if os.getenv('BLOBLY_THEME') == 'light' {
 		app.dark = false
 		vgui.set_theme(false)
+	}
+	// Dev hook: open the Configuration editor at startup (it can't be reached via synthetic
+	// typing under WSLg, so this is how it gets screenshot-verified). Mirrors BLOBLY_AUTOSTART.
+	if os.getenv('BLOBLY_SHOW_CONFIG') != '' {
+		app.show_config = true
 	}
 	// Autostart defers the measurement start until the GL context has SETTLED. On Windows the
 	// GPU driver maps/unmaps its own DLL data sections during the first presented frames; if a
@@ -938,6 +1022,12 @@ fn main() {
 		if app.show_help {
 			draw_help(app)
 		}
+		if app.show_config {
+			draw_config(mut app)
+		}
+		if app.fb_open {
+			draw_filebrowser(mut app)
+		}
 
 		vgui.frame_end()
 		if last {
@@ -1021,6 +1111,25 @@ fn draw_activity_bar(mut app App) {
 fn draw_menubar(mut app App, rx u64) {
 	if vgui.menu_bar_begin() {
 		if vgui.menu_begin('File') {
+			if vgui.menu_item('New') {
+				app.new_project()
+			}
+			if vgui.menu_item('Open...') {
+				app.open_browser('open')
+			}
+			if vgui.menu_item('Save') {
+				app.save_project()
+			}
+			if vgui.menu_item('Save As...') {
+				app.open_browser('saveas')
+			}
+			vgui.separator()
+			if app.running {
+				vgui.text_dim('Configure... (stop to edit)')
+			} else if vgui.menu_item('Configure...') {
+				app.show_config = true
+				app.sync_cfg_bufs()
+			}
 			if vgui.menu_begin('Open Example') {
 				for ex in examples {
 					if vgui.menu_item(ex[0]) {
@@ -1030,8 +1139,11 @@ fn draw_menubar(mut app App, rx u64) {
 				vgui.menu_end()
 			}
 			if vgui.menu_item('Reload project') {
-				app.load_project(app.proj_path)
+				if app.proj_path != '' {
+					app.load_project(app.proj_path)
+				}
 			}
+			vgui.separator()
 			if vgui.menu_item('Exit') {
 				vgui.quit()
 			}
@@ -1105,7 +1217,8 @@ fn draw_toolbar(mut app App, rx u64) {
 		vgui.text_colored(210, 120, 120, 'stopped')
 	}
 	vgui.same_line()
-	vgui.text('· RX ${rx}  TX ${app.tx_count}  ·  ${app.proj_name}   ')
+	dirtymark := if app.dirty { ' ●' } else { '' }
+	vgui.text('· RX ${rx}  TX ${app.tx_count}  ·  ${app.proj_name}${dirtymark}   ')
 	vgui.same_line()
 	if vgui.button(if app.paused { 'Resume' } else { 'Pause' }) {
 		app.paused = !app.paused
@@ -1228,6 +1341,602 @@ fn draw_symbols(mut app App) {
 		}
 	}
 	vgui.end()
+}
+
+// selftest_config drives the Configuration editor's real methods headlessly (the widgets
+// can't be clicked under WSLg) and asserts the written .blobnet round-trips. Gated by
+// BLOBLY_SELFTEST_CONFIG; prints PASS/FAIL + the file, then main() returns.
+fn selftest_config(mut app App) {
+	tmp := os.join_path(os.temp_dir(), 'blobly_selftest.blobnet')
+	os.rm(tmp) or {}
+	// New → blank
+	app.new_project()
+	mut ok := selftest_check('new project has 0 buses', app.proj.channels.len == 0)
+	// bus 0: a vcan monitor bus with a DBC
+	app.add_bus()
+	app.cfg_bufs[0].name_buf = mkbuf('CAN0', 48)
+	app.cfg_bufs[0].network_buf = mkbuf('Powertrain', 48)
+	app.cfg_bufs[0].address_buf = mkbuf('vcan0', 64)
+	app.set_adapter(0, 'vcan')
+	app.add_dbc(0, 'dbc/blobly_net.dbc')
+	// bus 1: a DoIP endpoint
+	app.add_bus()
+	app.cfg_bufs[1].name_buf = mkbuf('Diag', 48)
+	app.cfg_bufs[1].address_buf = mkbuf('127.0.0.1:13400', 64)
+	app.set_adapter(1, 'doip')
+	// Save As → write, then reload and verify the round-trip
+	app.save_as(tmp)
+	rp := project.load(tmp) or {
+		println('SELFTEST_CONFIG: FAIL (reload: ${err})')
+		return
+	}
+	ok = selftest_check('2 buses', rp.channels.len == 2) && ok
+	if rp.channels.len == 2 {
+		c0 := rp.channels[0]
+		ok = selftest_check('c0 name CAN0', c0.name == 'CAN0') && ok
+		ok = selftest_check('c0 network Powertrain', c0.network == 'Powertrain') && ok
+		ok = selftest_check('c0 adapter vcan', c0.adapter == 'vcan') && ok
+		ok = selftest_check('c0 address vcan0', c0.address == 'vcan0') && ok
+		ok = selftest_check('c0 iface vcan0', c0.iface == 'vcan0') && ok
+		ok = selftest_check('c0 dbc attached', c0.databases == ['dbc/blobly_net.dbc']) && ok
+		c1 := rp.channels[1]
+		ok = selftest_check('c1 name Diag', c1.name == 'Diag') && ok
+		ok = selftest_check('c1 is doip', c1.is_doip()) && ok
+		ok = selftest_check('c1 adapter doip', c1.adapter == 'doip') && ok
+		ok = selftest_check('c1 address host:port', c1.address == '127.0.0.1:13400') && ok
+	}
+	println(if ok { 'SELFTEST_CONFIG: PASS' } else { 'SELFTEST_CONFIG: FAIL' })
+	println('--- written ${tmp} ---')
+	println(os.read_file(tmp) or { '' })
+}
+
+fn selftest_check(name string, cond bool) bool {
+	if !cond {
+		eprintln('  FAIL: ${name}')
+	}
+	return cond
+}
+
+// rel_path makes an absolute path relative to the cwd when it lives under it, so a saved
+// project references e.g. `dbc/foo.dbc` rather than an absolute machine-specific path.
+fn rel_path(p string) string {
+	cwd := os.getwd()
+	if p.starts_with(cwd + '/') {
+		return p[cwd.len + 1..]
+	}
+	return p
+}
+
+// open_browser opens the file browser for a target action:
+//   'open'          — load a project (.blobnet)
+//   'saveas'        — Save As (.blobnet, filename input)
+//   'dbc:<ci>'      — attach a DBC to bus ci (.dbc)
+//   'manifest:<ci>' — attach a telemetry manifest to bus ci (.csv)
+fn (mut app App) open_browser(target string) {
+	app.fb_target = target
+	app.fb_save = target == 'saveas'
+	app.fb_ext = if target == 'open' || target == 'saveas' {
+		'.blobnet'
+	} else if target.starts_with('dbc') {
+		'.dbc'
+	} else if target.starts_with('manifest') {
+		'.csv'
+	} else {
+		''
+	}
+	mut dir := if app.proj_path != '' { os.dir(app.proj_path) } else { 'projects' }
+	if !os.is_dir(dir) {
+		dir = '.'
+	}
+	app.fb_dir = os.abs_path(dir)
+	initname := if app.fb_save && app.proj_path != '' { os.file_name(app.proj_path) } else { '' }
+	app.fb_name_buf = mkbuf(initname, 128)
+	app.fb_open = true
+}
+
+// browser_confirm runs the pending target action with the chosen path, then closes.
+fn (mut app App) browser_confirm(path string) {
+	t := app.fb_target
+	app.fb_open = false
+	if t == 'open' {
+		app.load_project(path)
+	} else if t == 'saveas' {
+		app.save_as(path)
+	} else if t.starts_with('dbc:') {
+		app.add_dbc(t['dbc:'.len..].int(), path)
+	} else if t.starts_with('manifest:') {
+		app.set_manifest(t['manifest:'.len..].int(), path)
+	}
+}
+
+// draw_filebrowser is a small self-contained file picker (no native dialog — imgui has
+// none, and WSL isn't the primary target). Lists the current directory, navigates on click,
+// filters by extension, and (save mode) takes a filename.
+fn draw_filebrowser(mut app App) {
+	title := if app.fb_target == 'open' {
+		'Open Project'
+	} else if app.fb_target == 'saveas' {
+		'Save Project As'
+	} else if app.fb_target.starts_with('dbc') {
+		'Attach DBC'
+	} else {
+		'Attach Manifest'
+	}
+	vgui.set_next_window(260, 140, 560, 520)
+	if !vgui.begin('${title}##filebrowser') {
+		vgui.end()
+		return
+	}
+	vgui.text('dir: ${app.fb_dir}')
+	if vgui.small_button('.. up') {
+		app.fb_dir = os.dir(app.fb_dir)
+	}
+	vgui.same_line()
+	if vgui.small_button('projects/') {
+		p := os.abs_path('projects')
+		if os.is_dir(p) {
+			app.fb_dir = p
+		}
+	}
+	filt := if app.fb_ext != '' { '(*${app.fb_ext})' } else { '' }
+	vgui.same_line()
+	vgui.text_dim(filt)
+	vgui.separator()
+
+	entries := os.ls(app.fb_dir) or { []string{} }
+	mut dirs := []string{}
+	mut files := []string{}
+	for e in entries {
+		full := os.join_path(app.fb_dir, e)
+		if os.is_dir(full) {
+			dirs << e
+		} else if app.match_ext(e) {
+			files << e
+		}
+	}
+	dirs.sort()
+	files.sort()
+	mut nav := ''
+	mut chosen := ''
+	vgui.child_begin('fb_list', 300)
+	for d in dirs {
+		if vgui.selectable('[dir]  ${d}', false) {
+			nav = os.join_path(app.fb_dir, d)
+		}
+	}
+	for f in files {
+		if vgui.selectable('      ${f}', false) {
+			if app.fb_save {
+				app.fb_name_buf = mkbuf(f, 128)
+			} else {
+				chosen = os.join_path(app.fb_dir, f)
+			}
+		}
+	}
+	vgui.child_end()
+	vgui.separator()
+	if app.fb_save {
+		vgui.set_next_item_width(300)
+		vgui.input_text('name', mut app.fb_name_buf)
+		vgui.same_line()
+		if vgui.button('Save') {
+			name := vgui.buf_str(app.fb_name_buf)
+			if name != '' {
+				chosen = os.join_path(app.fb_dir, name)
+			}
+		}
+		vgui.same_line()
+	}
+	if vgui.button('Cancel') {
+		app.fb_open = false
+	}
+	vgui.end()
+	// apply navigation / selection after end() so the imgui stack stays balanced
+	if nav != '' {
+		app.fb_dir = nav
+	}
+	if chosen != '' {
+		app.browser_confirm(chosen)
+	}
+}
+
+// match_ext reports whether a filename passes the browser's current extension filter.
+// The project filter also accepts legacy `.yml`/`.yaml`; an empty filter accepts anything.
+fn (app &App) match_ext(name string) bool {
+	if app.fb_ext == '' {
+		return true
+	}
+	n := name.to_lower()
+	if n.ends_with(app.fb_ext) {
+		return true
+	}
+	if app.fb_ext == '.blobnet' && (n.ends_with('.yml') || n.ends_with('.yaml')) {
+		return true
+	}
+	return false
+}
+
+// adapter_hint is the grey placeholder shown next to a bus's address field.
+fn adapter_hint(a string) string {
+	return match a {
+		'virtual' { 'CAN1 — in-process bus name (driver-free sim)' }
+		'vcan' { 'vcan0 — Linux virtual CAN' }
+		'socketcan' { 'can0 — real Linux CAN hardware' }
+		'udp' { '239.0.0.1:5000 — group:port software bus' }
+		'pcan' { 'PCAN_USBBUS1 — PEAK channel' }
+		'kvaser' { '0 — Kvaser channel index' }
+		'doip' { '127.0.0.1:13400 — host:port' }
+		else { '' }
+	}
+}
+
+// parse_u16_hex reads a 16-bit address ("0x"-hex or bare hex), returning deflt when empty.
+fn parse_u16_hex(s string, deflt u16) u16 {
+	mut t := s.trim_space().trim('"')
+	if t == '' {
+		return deflt
+	}
+	if t.starts_with('0x') || t.starts_with('0X') {
+		t = t[2..]
+	}
+	mut v := u32(0)
+	for c in t {
+		d := if c >= `0` && c <= `9` {
+			u32(c - `0`)
+		} else if c >= `a` && c <= `f` {
+			u32(c - `a`) + 10
+		} else if c >= `A` && c <= `F` {
+			u32(c - `A`) + 10
+		} else {
+			continue
+		}
+		v = v * 16 + d
+	}
+	return u16(v & 0xFFFF)
+}
+
+// sync_cfg_bufs rebuilds the per-bus edit buffers to parallel app.proj.channels (on open,
+// and after add/remove bus/DBC).
+fn (mut app App) sync_cfg_bufs() {
+	app.cfg_bufs = []
+	for ch in app.proj.channels {
+		mut rsrc := ''
+		mut rspeed := '1'
+		if r := ch.replay {
+			rsrc = r.source
+			rspeed = '${r.speed}'
+		}
+		app.cfg_bufs << CfgBuf{
+			name_buf:         mkbuf(ch.name, 48)
+			network_buf:      mkbuf(ch.network, 48)
+			address_buf:      mkbuf(ch.address, 64)
+			bitrate_buf:      mkbuf('${ch.bitrate}', 12)
+			manifest_buf:     mkbuf(ch.manifest, 128)
+			dbc_buf:          mkbuf('', 128)
+			tester_buf:       mkbuf('0x${ch.tester_addr:X}', 12)
+			ecu_buf:          mkbuf('0x${ch.ecu_addr:X}', 12)
+			vin_buf:          mkbuf(ch.vin, 20)
+			replay_src_buf:   mkbuf(rsrc, 128)
+			replay_speed_buf: mkbuf(rspeed, 12)
+		}
+	}
+}
+
+// commit_cfg flushes all bus edit buffers into app.proj (called before Save and before any
+// structural change so edits aren't lost). No-op if the buffers are out of sync.
+fn (mut app App) commit_cfg() {
+	if app.cfg_bufs.len != app.proj.channels.len {
+		return
+	}
+	for i in 0 .. app.proj.channels.len {
+		b := app.cfg_bufs[i]
+		mut ch := &app.proj.channels[i]
+		ch.name = vgui.buf_str(b.name_buf)
+		ch.network = vgui.buf_str(b.network_buf)
+		ch.address = vgui.buf_str(b.address_buf)
+		ch.iface = project.compose_iface(ch.adapter, ch.address)
+		ch.manifest = vgui.buf_str(b.manifest_buf)
+		br := vgui.buf_str(b.bitrate_buf).int()
+		if br > 0 {
+			ch.bitrate = br
+		}
+		if ch.adapter == 'doip' {
+			ch.tester_addr = parse_u16_hex(vgui.buf_str(b.tester_buf), ch.tester_addr)
+			ch.ecu_addr = parse_u16_hex(vgui.buf_str(b.ecu_buf), ch.ecu_addr)
+			vin := vgui.buf_str(b.vin_buf)
+			if vin == '' || vin.len == 17 {
+				ch.vin = vin
+			}
+		}
+		if ch.mode == .replay {
+			spd := vgui.buf_str(b.replay_speed_buf).f64()
+			repeat := if r := ch.replay { r.repeat } else { false }
+			ch.replay = project.Replay{
+				source: vgui.buf_str(b.replay_src_buf)
+				speed:  if spd > 0 { spd } else { 1.0 }
+				repeat: repeat
+			}
+		}
+	}
+}
+
+// add_bus appends a default driver-free virtual bus (the from-scratch building block).
+fn (mut app App) add_bus() {
+	app.commit_cfg()
+	n := app.proj.channels.len + 1
+	app.proj.channels << project.Channel{
+		name:    'CAN${n}'
+		adapter: 'virtual'
+		address: 'CAN${n}'
+		iface:   'inproc:CAN${n}'
+		typ:     'can'
+		mode:    .monitor
+	}
+	app.dirty = true
+	app.sync_cfg_bufs()
+	app.rebuild_from_proj()
+}
+
+fn (mut app App) remove_bus(i int) {
+	if i < 0 || i >= app.proj.channels.len {
+		return
+	}
+	app.commit_cfg()
+	app.proj.channels.delete(i)
+	app.dirty = true
+	app.sync_cfg_bufs()
+	app.rebuild_from_proj()
+}
+
+// set_adapter changes a bus's transport backend, recomposing its iface and keeping the
+// can/doip protocol coherent.
+fn (mut app App) set_adapter(i int, a string) {
+	if i < 0 || i >= app.proj.channels.len {
+		return
+	}
+	app.proj.channels[i].adapter = a
+	if a == 'doip' {
+		app.proj.channels[i].typ = 'doip'
+	} else if app.proj.channels[i].typ == 'doip' {
+		app.proj.channels[i].typ = 'can'
+	}
+	app.proj.channels[i].iface = project.compose_iface(a, vgui.buf_str(app.cfg_bufs[i].address_buf))
+	app.dirty = true
+	app.rebuild_from_proj()
+}
+
+fn (mut app App) set_protocol(i int, pr string) {
+	app.proj.channels[i].typ = pr
+	app.proj.channels[i].fd = pr == 'canfd'
+	app.dirty = true
+}
+
+fn (mut app App) set_mode(i int, md string) {
+	app.proj.channels[i].mode = project.mode_from(md)
+	app.dirty = true
+	app.rebuild_from_proj()
+}
+
+fn (mut app App) add_dbc(ci int, path string) {
+	if ci < 0 || ci >= app.proj.channels.len {
+		return
+	}
+	app.commit_cfg()
+	app.proj.channels[ci].databases << rel_path(path)
+	app.dirty = true
+	app.sync_cfg_bufs()
+	app.rebuild_from_proj()
+}
+
+fn (mut app App) remove_dbc(ci int, di int) {
+	if ci < 0 || ci >= app.proj.channels.len {
+		return
+	}
+	if di < 0 || di >= app.proj.channels[ci].databases.len {
+		return
+	}
+	app.commit_cfg()
+	app.proj.channels[ci].databases.delete(di)
+	app.dirty = true
+	app.sync_cfg_bufs()
+	app.rebuild_from_proj()
+}
+
+fn (mut app App) set_manifest(ci int, path string) {
+	if ci < 0 || ci >= app.proj.channels.len {
+		return
+	}
+	app.commit_cfg()
+	app.proj.channels[ci].manifest = rel_path(path)
+	app.dirty = true
+	app.sync_cfg_bufs()
+	app.rebuild_from_proj()
+}
+
+// draw_config is the dedicated Configuration editor (File → Configure…): add/edit/remove
+// buses, pick adapters, attach DBCs. Stopped-only; Save persists to the .blobnet.
+fn draw_config(mut app App) {
+	vgui.set_next_window(120, 90, 720, 620)
+	if !vgui.begin('Configuration') {
+		vgui.end()
+		return
+	}
+	if app.running {
+		vgui.text_dim('Measurement running — Stop to edit the configuration.')
+		if vgui.button('Close') {
+			app.show_config = false
+		}
+		vgui.end()
+		return
+	}
+	if app.cfg_bufs.len != app.proj.channels.len {
+		app.sync_cfg_bufs()
+	}
+	if vgui.button('+ Add bus') {
+		app.add_bus()
+	}
+	vgui.same_line()
+	if vgui.button('Save') {
+		app.save_project()
+	}
+	vgui.same_line()
+	if vgui.button('Close') {
+		app.show_config = false
+	}
+	if app.dirty {
+		vgui.same_line()
+		vgui.text_colored(230, 170, 70, '● modified')
+	}
+	vgui.separator()
+	if app.proj.channels.len == 0 {
+		vgui.text_dim('no buses — click "+ Add bus" to start a configuration')
+		vgui.end()
+		return
+	}
+	for i in 0 .. app.proj.channels.len {
+		if app.draw_bus_editor(i) {
+			break // a bus was removed — indices shifted, redraw next frame
+		}
+	}
+	vgui.end()
+}
+
+// draw_bus_editor renders one bus's editable fields. Returns true if the bus was removed
+// (the caller must stop iterating this frame). Enum/checkbox edits apply to app.proj live;
+// text fields are flushed by commit_cfg on Save / structural change.
+fn (mut app App) draw_bus_editor(i int) bool {
+	ch := app.proj.channels[i]
+	vgui.separator_text('${vgui.buf_str(app.cfg_bufs[i].name_buf)}  (${ch.adapter})')
+	vgui.set_next_item_width(160)
+	if vgui.input_text('name##cn${i}', mut app.cfg_bufs[i].name_buf) {
+		app.dirty = true
+	}
+	vgui.same_line()
+	vgui.set_next_item_width(140)
+	if vgui.input_text('network##cnw${i}', mut app.cfg_bufs[i].network_buf) {
+		app.dirty = true
+	}
+	vgui.same_line()
+	if vgui.small_button('remove bus##crm${i}') {
+		app.remove_bus(i)
+		return true
+	}
+	// adapter picker
+	vgui.text('adapter:')
+	for a in project.adapters {
+		vgui.same_line()
+		if vgui.toggle_button('${a}##ad${i}_${a}', ch.adapter == a, 0) {
+			app.set_adapter(i, a)
+		}
+	}
+	// address
+	vgui.set_next_item_width(220)
+	if vgui.input_text('address##cad${i}', mut app.cfg_bufs[i].address_buf) {
+		app.proj.channels[i].address = vgui.buf_str(app.cfg_bufs[i].address_buf)
+		app.proj.channels[i].iface = project.compose_iface(ch.adapter, app.proj.channels[i].address)
+		app.dirty = true
+	}
+	vgui.same_line()
+	vgui.text_dim(adapter_hint(ch.adapter))
+
+	if ch.adapter == 'doip' {
+		vgui.set_next_item_width(90)
+		if vgui.input_text('tester##ct${i}', mut app.cfg_bufs[i].tester_buf) {
+			app.dirty = true
+		}
+		vgui.same_line()
+		vgui.set_next_item_width(90)
+		if vgui.input_text('ecu##ce${i}', mut app.cfg_bufs[i].ecu_buf) {
+			app.dirty = true
+		}
+		vgui.same_line()
+		vgui.set_next_item_width(180)
+		if vgui.input_text('vin##cv${i}', mut app.cfg_bufs[i].vin_buf) {
+			app.dirty = true
+		}
+	} else {
+		vgui.text('protocol:')
+		for pr in ['can', 'canfd'] {
+			vgui.same_line()
+			if vgui.toggle_button('${pr}##pr${i}_${pr}', ch.typ == pr, 0) {
+				app.set_protocol(i, pr)
+			}
+		}
+		vgui.same_line()
+		vgui.set_next_item_width(90)
+		if vgui.input_text('bitrate##cb${i}', mut app.cfg_bufs[i].bitrate_buf) {
+			app.dirty = true
+		}
+		vgui.text('mode:')
+		for md in ['off', 'monitor', 'replay'] {
+			vgui.same_line()
+			if vgui.toggle_button('${md}##md${i}_${md}', ch.mode.str() == md, 0) {
+				app.set_mode(i, md)
+			}
+		}
+		vgui.same_line()
+		lo := vgui.checkbox('listen-only##lo${i}', ch.listen_only)
+		if lo != ch.listen_only {
+			app.proj.channels[i].listen_only = lo
+			app.dirty = true
+		}
+		if ch.mode == .replay {
+			vgui.text('replay:')
+			vgui.same_line()
+			vgui.set_next_item_width(220)
+			if vgui.input_text('source##rs${i}', mut app.cfg_bufs[i].replay_src_buf) {
+				app.dirty = true
+			}
+			vgui.same_line()
+			vgui.set_next_item_width(56)
+			if vgui.input_text('x speed##rsp${i}', mut app.cfg_bufs[i].replay_speed_buf) {
+				app.dirty = true
+			}
+			vgui.same_line()
+			loopv := if r := ch.replay { r.repeat } else { false }
+			nl := vgui.checkbox('loop##rl${i}', loopv)
+			if nl != loopv {
+				src := vgui.buf_str(app.cfg_bufs[i].replay_src_buf)
+				spd := vgui.buf_str(app.cfg_bufs[i].replay_speed_buf).f64()
+				app.proj.channels[i].replay = project.Replay{
+					source: src
+					speed:  if spd > 0 { spd } else { 1.0 }
+					repeat: nl
+				}
+				app.dirty = true
+			}
+		}
+	}
+	// enabled
+	en := vgui.checkbox('enabled##en${i}', ch.enabled)
+	if en != ch.enabled {
+		app.proj.channels[i].enabled = en
+		app.dirty = true
+	}
+	// databases
+	vgui.text('databases:')
+	for di, dbp in ch.databases {
+		vgui.text('   ${dbp}')
+		vgui.same_line()
+		if vgui.small_button('x##dbrm${i}_${di}') {
+			app.remove_dbc(i, di)
+			return true
+		}
+	}
+	if vgui.small_button('+ Add DBC##adddbc${i}') {
+		app.open_browser('dbc:${i}')
+	}
+	// manifest
+	vgui.set_next_item_width(220)
+	if vgui.input_text('manifest##cmf${i}', mut app.cfg_bufs[i].manifest_buf) {
+		app.proj.channels[i].manifest = vgui.buf_str(app.cfg_bufs[i].manifest_buf)
+		app.dirty = true
+	}
+	vgui.same_line()
+	if vgui.small_button('...##mfbrowse${i}') {
+		app.open_browser('manifest:${i}')
+	}
+	return false
 }
 
 // draw_busconfig shows each channel's configuration (type, bitrate/timing, DBCs, manifest).
@@ -1500,13 +2209,17 @@ fn draw_trace(mut app App, rows []TraceRow, gcount map[string]u64, rx u64) {
 			app.add_fwatch(sid, sext)
 		}
 	}
+	if app.chans.len > 1 {
+		app.trace_bus = bus_chips(app.chans, app.trace_bus, 't')
+	}
+	brows := filter_bus(rows, app.trace_bus)
 	filt := vgui.buf_str(app.trace_filter_buf).to_lower()
 	if app.trace_grouped {
 		vgui.separator_text('by id (click to expand · click row to select)')
-		draw_trace_grouped(mut app, rows, gcount, filt)
+		draw_trace_grouped(mut app, brows, gcount, filt)
 	} else {
 		vgui.separator_text('frames (newest first)')
-		draw_trace_all('trace', rows, filt)
+		draw_trace_all('trace', brows, filt)
 	}
 	vgui.end()
 }
@@ -1541,13 +2254,16 @@ fn draw_ftrace(mut app App, rows []TraceRow, gcount map[string]u64) {
 			}
 		}
 	}
+	if app.chans.len > 1 {
+		app.ftrace_bus = bus_chips(app.chans, app.ftrace_bus, 'f')
+	}
 	vgui.separator()
 	if app.fwatch.len == 0 {
 		vgui.end()
 		return
 	}
-	// restrict to watched frames, then apply the optional text find
-	frows := rows.filter(app.is_fwatched(it.id, it.ext))
+	// restrict to watched frames + optional bus, then apply the optional text find
+	frows := filter_bus(rows.filter(app.is_fwatched(it.id, it.ext)), app.ftrace_bus)
 	filt := vgui.buf_str(app.trace_filter2_buf).to_lower()
 	if app.trace_grouped2 {
 		draw_trace_grouped(mut app, frows, gcount, filt)
@@ -1555,6 +2271,34 @@ fn draw_ftrace(mut app App, rows []TraceRow, gcount map[string]u64) {
 		draw_trace_all('ftrace', frows, filt)
 	}
 	vgui.end()
+}
+
+// bus_chips renders "show: [All] [bus…]" toggle-chips from the configured buses (labelled
+// network/name when a network label is set) and returns the selected bus name ('' = all).
+// `key` disambiguates the two Trace panels' widget ids.
+fn bus_chips(chans []Chan, cur string, key string) string {
+	mut sel := cur
+	vgui.text('show:')
+	vgui.same_line()
+	if vgui.toggle_button('All##bc${key}', cur == '', 0) {
+		sel = ''
+	}
+	for c in chans {
+		label := if c.network != '' { '${c.network}/${c.name}' } else { c.name }
+		vgui.same_line()
+		if vgui.toggle_button('${label}##bc${key}_${c.name}', cur == c.name, 0) {
+			sel = if cur == c.name { '' } else { c.name }
+		}
+	}
+	return sel
+}
+
+// filter_bus keeps only rows whose channel (name) matches `bus`; '' = all.
+fn filter_bus(rows []TraceRow, bus string) []TraceRow {
+	if bus == '' {
+		return rows
+	}
+	return rows.filter(it.ch == bus)
 }
 
 fn idstr(id u32, ext bool) string {
@@ -1905,9 +2649,9 @@ fn draw_gen(mut app App) {
 	}
 	vgui.same_line()
 	if vgui.button('Save to project') {
-		app.save_generators()
+		app.save_project()
 	}
-	if app.gen_dirty {
+	if app.dirty {
 		vgui.same_line()
 		vgui.text_colored(230, 170, 70, '● modified')
 	}
@@ -1930,12 +2674,12 @@ fn draw_gen(mut app App) {
 		// name · key · remove
 		vgui.set_next_item_width(200)
 		if vgui.input_text('name##gn${i}', mut app.gen_bufs[i].name_buf) {
-			app.gen_dirty = true
+			app.dirty = true
 		}
 		vgui.same_line()
 		vgui.set_next_item_width(36)
 		if vgui.input_text('key##gk${i}', mut app.gen_bufs[i].key_buf) {
-			app.gen_dirty = true
+			app.dirty = true
 		}
 		vgui.same_line()
 		if vgui.small_button('remove##rm${i}') {
@@ -1994,18 +2738,18 @@ fn draw_gen(mut app App) {
 			for j, ss in s.signals {
 				vgui.set_next_item_width(150)
 				if vgui.input_double('${ss.name}##sig${i}_${j}', unsafe { &app.senders[i].sender.signals[j].value }) {
-					app.gen_dirty = true
+					app.dirty = true
 				}
 			}
 		} else {
 			vgui.set_next_item_width(70)
 			if vgui.input_text('id##id${i}', mut app.gen_bufs[i].id_buf) {
-				app.gen_dirty = true
+				app.dirty = true
 			}
 			vgui.same_line()
 			vgui.set_next_item_width(260)
 			if vgui.input_text('data (hex)##dt${i}', mut app.gen_bufs[i].data_buf) {
-				app.gen_dirty = true
+				app.dirty = true
 			}
 		}
 	}
@@ -2031,7 +2775,7 @@ fn (mut app App) add_generator() {
 		id_buf:   mkbuf('100', 24)
 		data_buf: mkbuf('', 96)
 	}
-	app.gen_dirty = true
+	app.dirty = true
 	app.mu.unlock()
 	if app.running && iface != '' && iface !in app.tx_buses {
 		if b := transport.open(iface) {
@@ -2048,16 +2792,16 @@ fn (mut app App) remove_generator(i int) {
 		if i < app.gen_bufs.len {
 			app.gen_bufs.delete(i)
 		}
-		app.gen_dirty = true
+		app.dirty = true
 	}
 	app.mu.unlock()
 }
 
-// save_generators writes the session generators back into the project file, grouped under
-// each channel (a sender belongs to its channel; its `bus:` override travels as a field).
-// Reformats the .blobnet — comments are not preserved.
-fn (mut app App) save_generators() {
+// sync_senders_into_proj flushes the Generators panel edit buffers into app.proj so a Save
+// persists them (a sender belongs to its channel; its `bus:` override travels as a field).
+fn (mut app App) sync_senders_into_proj() {
 	app.mu.lock()
+	defer { app.mu.unlock() }
 	for i in 0 .. app.senders.len {
 		if app.senders[i].sender.message == '' && i < app.gen_bufs.len {
 			app.senders[i].sender.id = u32(('0x' + vgui.buf_str(app.gen_bufs[i].id_buf)).u64())
@@ -2075,14 +2819,45 @@ fn (mut app App) save_generators() {
 		p.channels[ci].senders = ss
 	}
 	app.proj = p
+}
+
+// save_project writes the whole project to its file (config + generators). An unsaved
+// project (no path) routes to Save As. Reformats the .blobnet — comments are not preserved.
+fn (mut app App) save_project() {
+	if app.proj_path == '' {
+		app.open_browser('saveas')
+		return
+	}
+	app.commit_cfg() // flush Configuration-editor buffers (no-op if the editor never opened)
+	app.sync_senders_into_proj()
+	app.mu.lock()
+	p := app.proj
 	path := app.proj_path
 	app.mu.unlock()
 	p.save(path) or {
 		app.notify('save failed: ${err}')
 		return
 	}
-	app.gen_dirty = false
-	app.notify('saved generators -> ${path}')
+	app.dirty = false
+	app.notify('saved -> ${path}')
+}
+
+// save_as sets the path (from the browser) and saves.
+fn (mut app App) save_as(path string) {
+	mut p := path
+	if !p.ends_with('.blobnet') && !p.ends_with('.yml') && !p.ends_with('.yaml') {
+		p += '.blobnet'
+	}
+	app.proj_path = p
+	app.proj.name = app.proj_name
+	app.save_project()
+}
+
+// new_project resets to a blank, unsaved project (0 buses) — the from-scratch entry point.
+fn (mut app App) new_project() {
+	app.stop()
+	app.set_project(project.Project{ name: 'untitled' }, '')
+	app.notify('new project — add buses in Configure…')
 }
 
 fn (mut app App) set_trigger(i int, t string) {

@@ -8,6 +8,9 @@
 # (the VS Code "Run VGUI" task does exactly this). On Linux/WSL just run it directly.
 #
 #   scripts/run_vgui.sh                       # build + run (driver-free sim by default)
+#   DEPS=1 scripts/run_vgui.sh                # rebuild libvgui_c.a FIRST — REQUIRED after any
+#                                             #   eval/vgui/{vgui.h,vgui_glue.cpp} change, else
+#                                             #   the link fails with 'undefined reference to vgui_*'
 #   RUN=0 scripts/run_vgui.sh                 # build only -> build/blobly_vgui[.exe]
 #   DBG=1 RUN=0 scripts/run_vgui.sh           # build with -g (asserts on) for gdb
 #   DEPS=1 scripts/run_vgui.sh                # force-rebuild eval/vgui/libvgui_c.a first

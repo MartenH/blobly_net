@@ -1431,6 +1431,39 @@ prompt for a password.
   the `#flag windows` link resolve, do native Win32 viewports spawn, idle CPU) — the user will drive that
   on the Windows machine. **Feedback captured this session:** do NOT merge PRs without the user's explicit
   say-so (get green, then ask).
+- 2026-07-05: **Project editing in the GUI — schema v2 + Configuration editor + per-bus Trace (vgui,
+  branch `vgui-migration`).** Verified the Windows-pushed vgui build runs on Linux first (stale
+  `libvgui_c.a` needed `DEPS=1` — the incoming commits added `vgui_tree_node_open` to the C glue; noted
+  in `run_vgui.sh`). Then, per an agreed design (`docs/project_editing.md` + 6 mermaid example configs):
+  a user can now build a `.blobnet` **from a blank project entirely in the GUI**. Concept model agreed
+  with the user: **merged "Bus"** entity (not a 3-tier Network/Channel/Adapter split) with an optional
+  **`network`** grouping label; DBC attaches to the bus; a **dedicated stopped-only Configuration editor**
+  (not inline). (1) **`modules/project` schema v2**: `Channel` gained `adapter`/`address`/`network`/
+  `protocol`; `iface` is now DERIVED via `compose_iface(adapter,address)` (virtual→`inproc:`, vcan/
+  socketcan→raw, udp/pcan/kvaser/doip→`scheme:`). Parser accepts BOTH v2 (`buses:` + adapter/address)
+  and v1 (`channels:` + `interface:`/`type:`, decomposed back) — full back-compat; `schema_version` 1→2
+  so older builds warn. `to_yaml` emits v2. Tests: v2 round-trip + legacy-load + compose/decompose
+  inverse (`v test modules/project/` green). (2) **main.v**: `load_project` split into `set_project` +
+  reusable **`rebuild_from_proj()`** (the editor mutates `app.proj`, the runtime `app.chans` is derived
+  — one source of truth, so Save captures edits); `gen_dirty`→**`dirty`** project-wide (● in toolbar).
+  **File menu**: New / Open… / Save / Save As… / Configure… (Configure disabled while running). (3)
+  **In-imgui file browser** (`draw_filebrowser`, no native dialog — imgui has none; `os.ls` nav +
+  `*.blobnet`/`.dbc`/`.csv` filter + save-name) for Open/Save-As/Add-DBC/Add-manifest. (4) **Configuration
+  editor** (`draw_config`, stopped-only floating window): per-bus name/network/adapter-picker/address/
+  protocol/bitrate/mode/listen-only/enabled + DBC list add-remove + manifest + DoIP addrs/vin + replay
+  block; ＋Add bus / Remove; Save→`.blobnet`. `commit_cfg` flushes edit buffers into the model (called by
+  `save_project`, fixing a latent Save-loses-edits path). (5) **Trace per-bus view**: `show: [All][bus…]`
+  toggle-chips (`bus_chips`, from the configured buses, network-labelled) on BOTH Trace panels
+  (`trace_bus`/`ftrace_bus`), so `Trace→vcan0` + `Trace(filter)→vcan1` show disjoint traffic — the natural
+  2-vcan layout. Made the trace `ch` column coherent (TX rows were `inproc:CAN1`, now the bus NAME like RX)
+  so chips filter correctly. **Verification**: schema is unit-tested; a headless **`BLOBLY_SELFTEST_CONFIG`**
+  smoke drives the real editor methods (New→add 2 buses→edit→add DBC→Save As→reload) and asserts the
+  round-trip = PASS (the editor's widgets can't be clicked under WSLg, and — key finding — with imgui
+  **multi-viewport** ON the floating editor/browser are SEPARATE OS windows that `VGUI_SHOT`'s glReadPixels
+  can't capture, so the self-test covers the logic while screenshots cover the docked Trace chips). Shipped
+  **`projects/restbus-2vcan.blobnet`** (v2-schema example: 2 vcan buses, DBC + simulated transmitters each,
+  a 0x101→0x102 on-demand reply on vcan0 — the user's real-ECU-with-2-vcans restbus case) + Open Example
+  entry. Dev hook `BLOBLY_SHOW_CONFIG=1` opens the editor at startup. NOT committed (awaiting review).
 - 2026-06-30: **Distributable bundle + browser-rendered Help.** Two gaps closed so a freshly-downloaded
   build runs the sim out of the box. (a) **Bundle:** Windows CI (`windows.yml` msvc + mingw) now uploads
   a runnable folder — `blobly_net.exe` (+ DLLs on msvc) alongside `projects/`, `dbc/`, `samples/` and a
