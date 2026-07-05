@@ -2,12 +2,12 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
-			"label": "Run GUI (main window) [vlang/gui, legacy]",
+			"label": "Run GUI (main window)",
 			"type": "shell",
 			"command": "./scripts/run.sh",
 			"problemMatcher": [],
 			"presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
-			"group": "build"
+			"group": { "kind": "build", "isDefault": true }
 		},
 		{
 			"label": "Run demo: dashboard (live table + chart)",
@@ -144,7 +144,7 @@
 			"command": "sh",
 			"args": ["scripts/run_vgui.sh"],
 			"windows": {
-				"command": "C:\\dev\\msys64-ct\\usr\\bin\\bash.exe",
+				"command": "${workspaceFolder}\\..\\msys64-ct\\usr\\bin\\bash.exe",
 				"args": ["-c", "sh scripts/run_vgui.sh"]
 			},
 			"problemMatcher": [],
@@ -158,7 +158,7 @@
 			"args": ["scripts/run_vgui.sh"],
 			"options": { "env": { "RUN": "0" } },
 			"windows": {
-				"command": "C:\\dev\\msys64-ct\\usr\\bin\\bash.exe",
+				"command": "${workspaceFolder}\\..\\msys64-ct\\usr\\bin\\bash.exe",
 				"args": ["-c", "sh scripts/run_vgui.sh"]
 			},
 			"problemMatcher": "$gcc",
@@ -172,7 +172,7 @@
 			"args": ["scripts/run_vgui.sh"],
 			"options": { "env": { "DEPS": "1", "RUN": "0" } },
 			"windows": {
-				"command": "C:\\dev\\msys64-ct\\usr\\bin\\bash.exe",
+				"command": "${workspaceFolder}\\..\\msys64-ct\\usr\\bin\\bash.exe",
 				"args": ["-c", "sh scripts/run_vgui.sh"]
 			},
 			"problemMatcher": [],

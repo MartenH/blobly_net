@@ -24,9 +24,16 @@ target="${1:-cmd/blobly_vgui/main.v}"
 # --- platform: pin the dedicated mingw toolchain + v.exe on Windows/MSYS2 --------------
 case "$(uname -s)" in
 	MINGW* | MSYS* | CYGWIN*)
-		export PATH="/c/dev/msys64-ct/mingw64/bin:$PATH"   # gcc + static glfw/freetype libs
-		export TMP="${TMP:-/tmp}" TEMP="${TEMP:-/tmp}"      # writable temp (not C:\Windows) for gcc
-		V="${V:-/c/dev/v/v.exe}"
+		# Dedicated toolchain lives BESIDE the repo (…/msys64-ct and …/v, per the project's
+		# docs/windows_build.md convention — repo at C:\dev\blobly_net, MSYS2 at C:\dev\msys64-ct).
+		# Derive from the repo's parent so it's not a hard C:\dev assumption; override with
+		# MSYS2_CT= / V= if yours live elsewhere.
+		parent="$(cd "$HERE/.." && pwd)"
+		ct="${MSYS2_CT:-$parent/msys64-ct}"
+		export PATH="$ct/mingw64/bin:$PATH"                # gcc + static glfw/freetype libs
+		export TMP="${TMP:-/tmp}" TEMP="${TEMP:-/tmp}"     # writable temp (not C:\Windows) for gcc
+		V="${V:-$parent/v/v.exe}"
+		[ -x "$V" ] || V=v                                 # fall back to `v` on PATH
 		;;
 	*)
 		V="${V:-v}"
