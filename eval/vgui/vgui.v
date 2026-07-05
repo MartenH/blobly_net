@@ -91,6 +91,7 @@ fn C.vgui_input_text(&char, &char, int) int
 fn C.vgui_input_double(&char, &f64) int
 fn C.vgui_set_next_item_width(f32)
 fn C.vgui_tree_node(&char) int
+fn C.vgui_tree_node_open(&char) int
 fn C.vgui_tree_pop()
 fn C.vgui_dock_root() u32
 fn C.vgui_dock_split(u32, int, f32, &u32) u32
@@ -360,6 +361,12 @@ pub fn set_next_item_width(w f32) {
 // call tree_pop().
 pub fn tree_node(label string) bool {
 	return C.vgui_tree_node(label.str) == 1
+}
+
+// tree_node_open is like tree_node but expanded by default (ImGuiCond_Once — the user can
+// still collapse it). Good for overview trees like the Network panel.
+pub fn tree_node_open(label string) bool {
+	return C.vgui_tree_node_open(label.str) == 1
 }
 
 pub fn tree_pop() {

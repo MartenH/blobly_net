@@ -114,6 +114,7 @@ mut:
 	show_script    bool
 	show_busconfig bool
 	show_doip      bool
+	show_network   bool
 	show_stats     bool
 	show_log       bool = true
 	show_help      bool
@@ -123,8 +124,10 @@ mut:
 	watch         []Watch // signals plotted in Graphics
 	trace_grouped bool = true // Trace: grouped-by-id (expandable) vs chronological
 	fwatch        []FrameId   // Trace (filter) watch list — frames added from Trace/Symbols
-	// TX bus (Send / Generators) — opened on the first monitor channel at Start
-	send_bus      ?transport.Bus
+	// TX buses — one open bus per channel iface, created at Start. Generators fire on their
+	// own target bus (its channel, or a `bus:` override); the Send panel defaults to
+	// send_iface (the first monitor channel).
+	tx_buses      map[string]transport.Bus
 	send_iface    string
 	send_id_buf   []u8
 	send_data_buf []u8
@@ -155,6 +158,12 @@ struct SenderRT {
 	iface string
 mut:
 	sender project.Sender
+}
+
+// target is the bus (channel iface) this generator transmits on: an explicit `bus:`
+// override if set, else the sender's own channel.
+fn (sr SenderRT) target() string {
+	return if sr.sender.bus != '' { sr.sender.bus } else { sr.iface }
 }
 
 // GenBuf holds the editable id/data hex fields for a raw (non-DBC) generator.
@@ -259,11 +268,22 @@ fn (mut app App) start() {
 		}
 		app.chans[ci].running = true
 		spawn rx_loop(app, ci, ch.iface)
-		// open a TX bus on the first monitor channel (Send / Generators)
-		if app.send_iface == '' {
+		// open a TX bus for this channel's iface (each generator fires on its target bus)
+		if ch.iface !in app.tx_buses {
 			if b := transport.open(ch.iface) {
-				app.send_bus = b
-				app.send_iface = ch.iface
+				app.tx_buses[ch.iface] = b
+			}
+		}
+		if app.send_iface == '' {
+			app.send_iface = ch.iface // Send panel default = first monitor channel
+		}
+	}
+	// a generator may target a bus whose channel isn't itself monitored — open those too
+	for sr in app.senders {
+		tgt := sr.target()
+		if tgt != '' && tgt !in app.tx_buses {
+			if b := transport.open(tgt) {
+				app.tx_buses[tgt] = b
 			}
 		}
 	}
@@ -281,10 +301,10 @@ fn (mut app App) stop() {
 	for ci in 0 .. app.chans.len {
 		app.chans[ci].running = false
 	}
-	if mut b := app.send_bus {
+	for _, mut b in app.tx_buses {
 		b.close()
 	}
-	app.send_bus = none
+	app.tx_buses = map[string]transport.Bus{}
 	app.send_iface = ''
 }
 
@@ -299,9 +319,19 @@ fn (mut app App) notify(msg string) {
 	vgui.wake()
 }
 
-// tx sends a frame on the TX bus and records it as a TX trace row.
+// tx sends a frame on the default TX bus (send_iface) and records it as a TX trace row.
 fn (mut app App) tx(f transport.CanFrame) bool {
-	mut b := app.send_bus or { return false }
+	return app.tx_on(app.send_iface, f)
+}
+
+// tx_on sends a frame on the bus `iface` (a channel iface) and records it as a TX row on
+// that bus. Generators use this to fire on their own target bus rather than a single
+// global send bus.
+fn (mut app App) tx_on(iface string, f transport.CanFrame) bool {
+	mut b := app.tx_buses[iface] or {
+		app.notify('TX failed: no open bus for ${iface}')
+		return false
+	}
 	b.send(f) or {
 		app.notify('TX failed: ${err}')
 		return false
@@ -310,14 +340,14 @@ fn (mut app App) tx(f transport.CanFrame) bool {
 	tms := f64(time.ticks() - app.t0)
 	app.mu.lock()
 	if !app.paused {
-		app.trace << TraceRow{tms, app.send_iface, 'TX', f.id, f.extended, f.rtr, name, f.data.clone()}
+		app.trace << TraceRow{tms, iface, 'TX', f.id, f.extended, f.rtr, name, f.data.clone()}
 		if app.trace.len > trace_cap {
 			app.trace = app.trace[app.trace.len - trace_cap..].clone()
 		}
-		app.gcount[gkey('TX', app.send_iface, f.id, f.extended)]++
+		app.gcount[gkey('TX', iface, f.id, f.extended)]++
 	}
 	if app.recording {
-		app.rec << canlog.LogEntry{tms / 1000.0, app.send_iface, f}
+		app.rec << canlog.LogEntry{tms / 1000.0, iface, f}
 	}
 	app.tx_count++
 	app.mu.unlock()
@@ -888,6 +918,9 @@ fn main() {
 		if app.show_doip {
 			draw_doip(mut app)
 		}
+		if app.show_network {
+			draw_network(app, chans)
+		}
 		if app.show_gen {
 			draw_gen(mut app)
 		}
@@ -953,6 +986,9 @@ fn draw_activity_bar(mut app App) {
 	if vgui.toggle_button('DoI', app.show_doip, -1) {
 		app.show_doip = !app.show_doip
 	}
+	if vgui.toggle_button('Net', app.show_network, -1) {
+		app.show_network = !app.show_network
+	}
 	if vgui.toggle_button('Gen', app.show_gen, -1) {
 		app.show_gen = !app.show_gen
 	}
@@ -1006,6 +1042,7 @@ fn draw_menubar(mut app App, rx u64) {
 			app.show_send = vgui.menu_item_check('Send', app.show_send)
 			app.show_diag = vgui.menu_item_check('Diagnostics', app.show_diag)
 			app.show_doip = vgui.menu_item_check('DoIP Discovery', app.show_doip)
+			app.show_network = vgui.menu_item_check('Network', app.show_network)
 			app.show_gen = vgui.menu_item_check('Generators', app.show_gen)
 			app.show_script = vgui.menu_item_check('Script', app.show_script)
 			app.show_stats = vgui.menu_item_check('Statistics', app.show_stats)
@@ -1347,6 +1384,82 @@ fn draw_buses(mut app App, chans []Chan) {
 	vgui.end()
 }
 
+// draw_network shows the bus topology: each channel (bus) and everything attached to it —
+// the tester's own functions (Monitor / Send / Diagnostics), simulated ECUs, and generators
+// grouped by the bus they actually transmit on. The CANoe "Simulation Setup" analog.
+fn draw_network(app &App, chans []Chan) {
+	if !vgui.begin('Network') {
+		vgui.end()
+		return
+	}
+	vgui.text_dim('each bus and what is attached to it')
+	if chans.len == 0 {
+		vgui.text_dim('no channels in this project')
+		vgui.end()
+		return
+	}
+	for ci, c in chans {
+		r, g, b, st := chan_state(c)
+		vgui.text_colored(r, g, b, '*')
+		vgui.same_line()
+		if vgui.tree_node_open('${c.name}   ${c.iface}   [${c.mode}]   ${st.trim_space()}   RX ${c.rx}##net${ci}') {
+			mut any := false
+			// tester functions this tool runs on the bus
+			mut tf := []string{}
+			if c.monitorable() {
+				tf << 'Monitor'
+			}
+			if app.send_iface == c.iface {
+				tf << 'Send'
+			}
+			for sc in app.sims {
+				if sc.iface == c.iface {
+					tf << 'Diagnostics (UDS 0x7E0->0x7E8)'
+					break
+				}
+			}
+			if tf.len > 0 {
+				vgui.text('    Tester:  ${tf.join('  ·  ')}')
+				any = true
+			}
+			// simulated ECUs on this bus
+			for sc in app.sims {
+				if sc.iface != c.iface {
+					continue
+				}
+				for n in sc.nodes {
+					vgui.text('    ECU:     ${n.name}')
+					any = true
+				}
+			}
+			// generators that transmit on this bus (after Part-1 routing they group correctly)
+			for sr in app.senders {
+				if sr.target() != c.iface {
+					continue
+				}
+				s := sr.sender
+				desc := if s.message != '' { s.message } else { 'id 0x${s.id:X}' }
+				trig := match s.trigger {
+					'cyclic' { 'cyclic ${s.cycle_ms}ms' }
+					'key' { 'key ${s.key}' }
+					else { 'manual' }
+				}
+				vgui.text('    Gen:     ${s.name}  (${desc}, ${trig})')
+				any = true
+			}
+			if c.mode == 'replay' {
+				vgui.text('    Replay:  playing recording')
+				any = true
+			}
+			if !any {
+				vgui.text_dim('    (nothing attached)')
+			}
+			vgui.tree_pop()
+		}
+	}
+	vgui.end()
+}
+
 fn draw_trace(mut app App, rows []TraceRow, gcount map[string]u64, rx u64) {
 	if !vgui.begin('Trace') {
 		vgui.end()
@@ -1589,6 +1702,7 @@ fn build_layout() {
 	midnode := vgui.dock_split(rmid, vgui.dock_up, 0.5, &bottom)
 	// left column tabs
 	vgui.dock_window('Buses', buses)
+	vgui.dock_window('Network', buses)
 	vgui.dock_window('Simulation', buses)
 	vgui.dock_window('Symbols', buses)
 	vgui.dock_window('Bus Config', buses)
@@ -1822,6 +1936,17 @@ fn draw_gen(mut app App) {
 				app.set_cycle(i, cm + 50)
 			}
 		}
+		// target bus: which wire this generator transmits on (defaults to its own channel)
+		if app.chans.len > 1 {
+			cur := sr.target()
+			vgui.text('bus:')
+			for ci, c in app.chans {
+				vgui.same_line()
+				if vgui.toggle_button('${c.name}##b${i}_${ci}', c.iface == cur, 0) {
+					app.set_sender_bus(i, if c.iface == sr.iface { '' } else { c.iface })
+				}
+			}
+		}
 		// editable payload: DBC message -> per-signal values; raw -> id + data hex
 		if s.message != '' {
 			vgui.text('message ${s.message} · signal values:')
@@ -1855,6 +1980,22 @@ fn (mut app App) set_cycle(i int, ms int) {
 	app.mu.lock()
 	if i < app.senders.len {
 		app.senders[i].sender.cycle_ms = ms
+	}
+	app.mu.unlock()
+}
+
+// set_sender_bus points generator `i` at a target bus ('' = its own channel). A newly
+// targeted bus is opened if the measurement is running and it isn't open yet.
+fn (mut app App) set_sender_bus(i int, bus string) {
+	app.mu.lock()
+	if i < app.senders.len {
+		app.senders[i].sender.bus = bus
+		tgt := app.senders[i].target()
+		if app.running && tgt != '' && tgt !in app.tx_buses {
+			if b := transport.open(tgt) {
+				app.tx_buses[tgt] = b
+			}
+		}
 	}
 	app.mu.unlock()
 }
@@ -1902,7 +2043,7 @@ fn (mut app App) fire_index(i int) {
 		id = u32(('0x' + vgui.buf_str(app.gen_bufs[i].id_buf)).u64())
 		data = parse_hex_bytes(vgui.buf_str(app.gen_bufs[i].data_buf))
 	}
-	app.tx(transport.CanFrame{
+	app.tx_on(app.senders[i].target(), transport.CanFrame{
 		id:       id
 		extended: ext
 		data:     data

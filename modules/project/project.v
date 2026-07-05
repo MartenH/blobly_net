@@ -109,6 +109,7 @@ pub mut:
 	ext      bool   // 29-bit extended id
 	data     []u8   // explicit raw payload (optional; overrides the zero/dlc default)
 	signals  []SenderSig
+	bus      string // target bus to transmit on (a channel iface); '' = the sender's own channel
 	trigger  string = 'manual' // manual | key | cyclic
 	cycle_ms int    // cyclic period (ms); only used when trigger == cyclic
 }
@@ -422,6 +423,7 @@ fn parse_sender(s yaml.Any) Sender {
 		key:      s.value('key').default_to('').string()
 		message:  s.value('message').default_to('').string()
 		ext:      s.value('extended').default_to(false).bool()
+		bus:      s.value('bus').default_to('').string()
 		trigger:  s.value('trigger').default_to('manual').string().to_lower()
 		cycle_ms: s.value('cycle_ms').int()
 	}

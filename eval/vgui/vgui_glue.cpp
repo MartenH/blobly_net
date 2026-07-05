@@ -373,6 +373,7 @@ void vgui_activity_style_pop() { ImGui::PopStyleColor(5); }
 
 // collapsible tree node (grouped trace rows). If open, render children then call tree_pop.
 int  vgui_tree_node(const char* label) { return ImGui::TreeNode(label) ? 1 : 0; }
+int  vgui_tree_node_open(const char* label) { return ImGui::TreeNodeEx(label, ImGuiTreeNodeFlags_DefaultOpen) ? 1 : 0; }
 void vgui_tree_pop() { ImGui::TreePop(); }
 
 // --- general DockBuilder (build an N-pane layout from V) ---

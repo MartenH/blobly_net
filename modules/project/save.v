@@ -101,6 +101,9 @@ pub fn (p Project) to_yaml() string {
 				if s.data.len > 0 {
 					b.writeln('        data: ${hex_bytes(s.data)}')
 				}
+				if s.bus != '' {
+					b.writeln('        bus: ${s.bus}')
+				}
 				b.writeln('        trigger: ${s.trigger}')
 				if s.trigger == 'cyclic' && s.cycle_ms > 0 {
 					b.writeln('        cycle_ms: ${s.cycle_ms}')

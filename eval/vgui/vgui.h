@@ -54,6 +54,7 @@ int  vgui_input_text(const char* label, char* buf, int bufsize);
 int  vgui_input_double(const char* label, double* v);
 void vgui_set_next_item_width(float w);
 int  vgui_tree_node(const char* label);
+int  vgui_tree_node_open(const char* label);
 void vgui_tree_pop(void);
 unsigned int vgui_dock_root(void);
 unsigned int vgui_dock_split(unsigned int node, int dir, float ratio, unsigned int* remainder);
