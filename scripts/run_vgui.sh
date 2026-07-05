@@ -17,6 +17,8 @@
 #               pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-glfw \
 #                                  mingw-w64-x86_64-freetype git
 set -e
+# On Windows run this from a MSYS2 login/MINGW64 context so coreutils + gcc are on PATH
+# (the VS Code tasks launch `bash -l`; or use the C:\dev\msys64-ct MINGW64 shell directly).
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$HERE"
 target="${1:-cmd/blobly_vgui/main.v}"

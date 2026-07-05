@@ -140,12 +140,13 @@
 		{
 			"label": "vgui: Build + Run",
 			"detail": "Dear ImGui/ImPlot port (cmd/blobly_vgui) — WSL or Windows. Default build: Ctrl+Shift+B.",
-			"type": "shell",
+			"type": "process",
 			"command": "sh",
 			"args": ["scripts/run_vgui.sh"],
+			"options": { "cwd": "${workspaceFolder}" },
 			"windows": {
 				"command": "${workspaceFolder}\\..\\msys64-ct\\usr\\bin\\bash.exe",
-				"args": ["-c", "sh scripts/run_vgui.sh"]
+				"args": ["-lc", "sh \"$(cygpath -u '${workspaceFolder}')/scripts/run_vgui.sh\""]
 			},
 			"problemMatcher": [],
 			"presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
@@ -153,13 +154,13 @@
 		},
 		{
 			"label": "vgui: Build (compile only)",
-			"type": "shell",
+			"type": "process",
 			"command": "sh",
 			"args": ["scripts/run_vgui.sh"],
-			"options": { "env": { "RUN": "0" } },
+			"options": { "cwd": "${workspaceFolder}", "env": { "RUN": "0" } },
 			"windows": {
 				"command": "${workspaceFolder}\\..\\msys64-ct\\usr\\bin\\bash.exe",
-				"args": ["-c", "sh scripts/run_vgui.sh"]
+				"args": ["-lc", "sh \"$(cygpath -u '${workspaceFolder}')/scripts/run_vgui.sh\""]
 			},
 			"problemMatcher": "$gcc",
 			"presentation": { "reveal": "always", "panel": "shared" }
@@ -167,13 +168,13 @@
 		{
 			"label": "vgui: Rebuild C deps (imgui/implot/glfw/freetype)",
 			"detail": "(Re)build eval/vgui/libvgui_c.a. Run once, or after bumping the pinned deps.",
-			"type": "shell",
+			"type": "process",
 			"command": "sh",
 			"args": ["scripts/run_vgui.sh"],
-			"options": { "env": { "DEPS": "1", "RUN": "0" } },
+			"options": { "cwd": "${workspaceFolder}", "env": { "DEPS": "1", "RUN": "0" } },
 			"windows": {
 				"command": "${workspaceFolder}\\..\\msys64-ct\\usr\\bin\\bash.exe",
-				"args": ["-c", "sh scripts/run_vgui.sh"]
+				"args": ["-lc", "sh \"$(cygpath -u '${workspaceFolder}')/scripts/run_vgui.sh\""]
 			},
 			"problemMatcher": [],
 			"presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
