@@ -1499,7 +1499,15 @@ prompt for a password.
   bus's tree header (visible feedback; the user thought it "did nothing" — it's the persisted attach-on-
   Start flag, no live effect while stopped). **Verified**: `discover_all()` on this box lists
   `can0/can1 · PCAN-USB Pro FD [1-1] · down`, `vcan0 · virtual CAN [added]`, `udp`, `SIM` — byte-matching
-  the old app's screenshot; build clean, config self-test PASS, dialog renders no-crash. NOT yet committed.
+  the old app's screenshot; build clean, config self-test PASS. Committed `062aa4d` (+ tree-collapse fix
+  `4b386ea`: `ImGui::TreeNode` hashes the ID from the whole label, so `##` re-keys the node when the
+  visible adapter/address changes → collapses; use `###` for a stable id — also fixed the Network panel
+  node whose label carried live RX). **Follow-up refinement:** removed the weak per-bus "Discover → found
+  chips" (fragile: imgui ignores an external buffer write while the address field is focused, and it's
+  redundant — the dialog's tick + Add-ticked IS how you turn can0 into a bus); and made the **adapter
+  picker platform-aware** (`available_adapters`: Linux shows virtual/vcan/socketcan/udp/doip, Windows
+  virtual/udp/pcan/kvaser/doip, always keeping a bus's current adapter) so `pcan`/`kvaser` no longer
+  appear on WSL where they can't work. NOT yet committed (this refinement).
 - 2026-06-30: **Distributable bundle + browser-rendered Help.** Two gaps closed so a freshly-downloaded
   build runs the sim out of the box. (a) **Bundle:** Windows CI (`windows.yml` msvc + mingw) now uploads
   a runnable folder — `blobly_net.exe` (+ DLLs on msvc) alongside `projects/`, `dbc/`, `samples/` and a

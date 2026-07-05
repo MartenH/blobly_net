@@ -214,8 +214,6 @@ mut:
 	// Replay
 	replay_src_buf   []u8
 	replay_speed_buf []u8
-	// Discover results (addresses found for the current adapter); [] until Discover is clicked
-	found []string
 }
 
 // SimCfg is one channel's in-process simulation workload (simulated ECUs + its DBC).
@@ -1574,6 +1572,21 @@ fn (app &App) match_ext(name string) bool {
 	return false
 }
 
+// available_adapters is the adapter-picker list for THIS platform — only backends that
+// actually work here (SocketCAN/vcan are Linux; PCAN/Kvaser are Windows). `current` is always
+// included so a project authored on another OS still shows (and can keep) its adapter.
+fn available_adapters(current string) []string {
+	mut list := $if windows {
+		['virtual', 'udp', 'pcan', 'kvaser', 'doip']
+	} $else {
+		['virtual', 'vcan', 'socketcan', 'udp', 'doip']
+	}
+	if current !in list {
+		list << current
+	}
+	return list
+}
+
 // adapter_tip is the tooltip text explaining an adapter (shown via the "(?)" help marker).
 fn adapter_tip(a string) string {
 	return match a {
@@ -1680,36 +1693,6 @@ fn (app &App) iface_added(adapter string, address string) bool {
 		}
 	}
 	return false
-}
-
-// discover_addresses returns candidate addresses for an adapter. CAN interfaces (vcan/
-// socketcan) are enumerated from Linux /sys/class/net (ARPHRD_CAN = type 280); virtual
-// suggests a few in-process names; the rest can't be probed from here (returns []).
-fn discover_addresses(adapter string) []string {
-	match adapter {
-		'vcan', 'socketcan' {
-			mut out := []string{}
-			names := os.ls('/sys/class/net') or { return [] }
-			for name in names {
-				typ := os.read_file('/sys/class/net/${name}/type') or { continue }
-				if typ.trim_space() != '280' { // ARPHRD_CAN
-					continue
-				}
-				is_vcan := name.starts_with('vcan')
-				if (adapter == 'vcan' && is_vcan) || (adapter == 'socketcan' && !is_vcan) {
-					out << name
-				}
-			}
-			out.sort()
-			return out
-		}
-		'virtual' {
-			return ['CAN1', 'CAN2', 'CAN3']
-		}
-		else {
-			return []
-		}
-	}
 }
 
 // adapter_hint is the grey placeholder shown next to a bus's address field.
@@ -1957,7 +1940,6 @@ fn (mut app App) set_adapter(i int, a string) {
 		app.proj.channels[i].typ = 'can'
 	}
 	app.proj.channels[i].iface = project.compose_iface(a, vgui.buf_str(app.cfg_bufs[i].address_buf))
-	app.cfg_bufs[i].found = [] // discovery is adapter-specific — drop stale results
 	app.dirty = true
 	app.rebuild_from_proj()
 }
@@ -2110,17 +2092,17 @@ fn (mut app App) draw_bus_editor(i int) bool {
 	}
 	vgui.same_line()
 	vgui.help_marker('Optional label grouping buses of one logical vehicle network. Buses that share a network name are grouped in the Buses tree and the Trace bus chips.')
-	// adapter picker + tooltip
+	// adapter picker + tooltip (only backends usable on this platform)
 	vgui.text('adapter:')
 	vgui.same_line()
 	vgui.help_marker(adapter_tip(ch.adapter))
-	for a in project.adapters {
+	for a in available_adapters(ch.adapter) {
 		vgui.same_line()
 		if vgui.toggle_button('${a}##ad${i}_${a}', ch.adapter == a, 0) {
 			app.set_adapter(i, a)
 		}
 	}
-	// address + Discover
+	// address (type it, or add detected interfaces via the Discover... dialog above)
 	vgui.set_next_item_width(220)
 	if vgui.input_text('address##cad${i}', mut app.cfg_bufs[i].address_buf) {
 		app.proj.channels[i].address = vgui.buf_str(app.cfg_bufs[i].address_buf)
@@ -2129,26 +2111,6 @@ fn (mut app App) draw_bus_editor(i int) bool {
 	}
 	vgui.same_line()
 	vgui.text_dim(adapter_hint(ch.adapter))
-	if vgui.small_button('Discover##disc${i}') {
-		app.cfg_bufs[i].found = discover_addresses(ch.adapter)
-		if app.cfg_bufs[i].found.len == 0 {
-			app.notify('no ${ch.adapter} interfaces found (connect/create them, or wrong platform)')
-		}
-	}
-	vgui.same_line()
-	vgui.help_marker('List the ${ch.adapter} interfaces available on this machine, then click one to fill the address. CAN interfaces come from /sys/class/net; vendor hardware (PCAN/Kvaser) is enumerated only on Windows with the driver installed.')
-	if app.cfg_bufs[i].found.len > 0 {
-		vgui.text_dim('found:')
-		for f in app.cfg_bufs[i].found {
-			vgui.same_line()
-			if vgui.small_button('${f}##pick${i}_${f}') {
-				app.cfg_bufs[i].address_buf = mkbuf(f, 64)
-				app.proj.channels[i].address = f
-				app.proj.channels[i].iface = project.compose_iface(ch.adapter, f)
-				app.dirty = true
-			}
-		}
-	}
 
 	if ch.adapter == 'doip' {
 		vgui.set_next_item_width(90)
