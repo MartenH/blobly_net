@@ -2,12 +2,12 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
-			"label": "Run GUI (main window)",
+			"label": "Run GUI (main window) [vlang/gui, legacy]",
 			"type": "shell",
 			"command": "./scripts/run.sh",
 			"problemMatcher": [],
 			"presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
-			"group": { "kind": "build", "isDefault": true }
+			"group": "build"
 		},
 		{
 			"label": "Run demo: dashboard (live table + chart)",
@@ -135,6 +135,48 @@
 			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/scripts/build_win_msvc.ps1"],
 			"problemMatcher": [],
 			"presentation": { "reveal": "always", "panel": "shared" }
+		},
+
+		{
+			"label": "vgui: Build + Run",
+			"detail": "Dear ImGui/ImPlot port (cmd/blobly_vgui) — WSL or Windows. Default build: Ctrl+Shift+B.",
+			"type": "shell",
+			"command": "sh",
+			"args": ["scripts/run_vgui.sh"],
+			"windows": {
+				"command": "C:\\dev\\msys64-ct\\usr\\bin\\bash.exe",
+				"args": ["-c", "sh scripts/run_vgui.sh"]
+			},
+			"problemMatcher": [],
+			"presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+			"group": { "kind": "build", "isDefault": true }
+		},
+		{
+			"label": "vgui: Build (compile only)",
+			"type": "shell",
+			"command": "sh",
+			"args": ["scripts/run_vgui.sh"],
+			"options": { "env": { "RUN": "0" } },
+			"windows": {
+				"command": "C:\\dev\\msys64-ct\\usr\\bin\\bash.exe",
+				"args": ["-c", "sh scripts/run_vgui.sh"]
+			},
+			"problemMatcher": "$gcc",
+			"presentation": { "reveal": "always", "panel": "shared" }
+		},
+		{
+			"label": "vgui: Rebuild C deps (imgui/implot/glfw/freetype)",
+			"detail": "(Re)build eval/vgui/libvgui_c.a. Run once, or after bumping the pinned deps.",
+			"type": "shell",
+			"command": "sh",
+			"args": ["scripts/run_vgui.sh"],
+			"options": { "env": { "DEPS": "1", "RUN": "0" } },
+			"windows": {
+				"command": "C:\\dev\\msys64-ct\\usr\\bin\\bash.exe",
+				"args": ["-c", "sh scripts/run_vgui.sh"]
+			},
+			"problemMatcher": [],
+			"presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
 		}
 	]
 }
