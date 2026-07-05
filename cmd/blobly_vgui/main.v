@@ -142,7 +142,9 @@ mut:
 	// Script (Lua on a worker thread)
 	script_path_buf []u8
 	senders         []SenderRT // flattened project senders (Generators)
-	gen_bufs        []GenBuf   // per-sender editable id/data (parallel to senders)
+	gen_bufs        []GenBuf   // per-sender editable fields (parallel to senders)
+	gen_dirty       bool       // generators changed since load/save (shows ● modified)
+	proj            project.Project // the loaded project, kept so Save can persist edits
 	sims            []SimCfg   // per-channel in-process simulation workloads
 	sim_enabled     map[string]bool // '<iface>:<node>' -> enabled (Simulation panel)
 	sim_gen         u64             // bumped when sim_enabled changes -> sim_loop rebuilds
@@ -166,11 +168,13 @@ fn (sr SenderRT) target() string {
 	return if sr.sender.bus != '' { sr.sender.bus } else { sr.iface }
 }
 
-// GenBuf holds the editable id/data hex fields for a raw (non-DBC) generator.
+// GenBuf holds a generator's editable text fields (parallel to App.senders).
 struct GenBuf {
 mut:
-	id_buf   []u8
-	data_buf []u8
+	name_buf []u8
+	key_buf  []u8
+	id_buf   []u8 // raw (non-DBC) generators: CAN id (hex)
+	data_buf []u8 // raw generators: payload (hex)
 }
 
 // SimCfg is one channel's in-process simulation workload (simulated ECUs + its DBC).
@@ -721,6 +725,8 @@ fn (mut app App) load_project(path string) {
 	app.rx = 0
 	app.proj_path = path
 	app.proj_name = proj.name
+	app.proj = proj
+	app.gen_dirty = false
 	app.mu.unlock()
 	for ch in proj.channels {
 		app.chans << Chan{
@@ -755,6 +761,8 @@ fn (mut app App) load_project(path string) {
 				sender: s
 			}
 			app.gen_bufs << GenBuf{
+				name_buf: mkbuf(s.name, 48)
+				key_buf:  mkbuf(s.key, 2)
 				id_buf:   mkbuf('${s.id:X}', 24)
 				data_buf: mkbuf(hex(s.data), 96)
 			}
@@ -1884,30 +1892,63 @@ fn draw_send(mut app App) {
 	vgui.end()
 }
 
-// ---- Generators (project senders) ----
+// ---- Generators (interactive send blocks) ----
+// Always visible and editable regardless of run state; Start/Stop only gates *firing*.
+// Add / remove / edit happen in the session; Save persists them to the project .blobnet.
 fn draw_gen(mut app App) {
 	if !vgui.begin('Generators') {
 		vgui.end()
 		return
 	}
+	if vgui.button('+ Add generator') {
+		app.add_generator()
+	}
+	vgui.same_line()
+	if vgui.button('Save to project') {
+		app.save_generators()
+	}
+	if app.gen_dirty {
+		vgui.same_line()
+		vgui.text_colored(230, 170, 70, '● modified')
+	}
+	if app.running {
+		vgui.text_dim('edit freely · Send now fires once · cyclic auto-repeats while running')
+	} else {
+		vgui.text_dim('edit freely · press Start to fire')
+	}
 	if app.senders.len == 0 {
-		vgui.text_dim('no senders defined in the project')
+		vgui.text_dim('no generators — click "+ Add generator"')
 		vgui.end()
 		return
 	}
-	if !app.running {
-		vgui.text_dim('press Start to fire senders')
-		vgui.end()
-		return
-	}
-	vgui.text_dim('edit the frame, choose how it fires, then Send (cyclic auto-repeats)')
 	for i, sr in app.senders {
-		s := sr.sender
-		hdr := if s.key != '' { '${s.name}   (key ${s.key})' } else { s.name }
-		vgui.separator_text(hdr)
-		// Send now = transmit the current frame once (works for any trigger)
-		if vgui.button('Send now##${i}') {
-			app.fire_index(i)
+		vgui.separator()
+		// keep the model in sync with the edit buffers (name/key are UI-thread-only fields)
+		app.senders[i].sender.name = vgui.buf_str(app.gen_bufs[i].name_buf)
+		app.senders[i].sender.key = vgui.buf_str(app.gen_bufs[i].key_buf)
+		s := app.senders[i].sender
+		// name · key · remove
+		vgui.set_next_item_width(200)
+		if vgui.input_text('name##gn${i}', mut app.gen_bufs[i].name_buf) {
+			app.gen_dirty = true
+		}
+		vgui.same_line()
+		vgui.set_next_item_width(36)
+		if vgui.input_text('key##gk${i}', mut app.gen_bufs[i].key_buf) {
+			app.gen_dirty = true
+		}
+		vgui.same_line()
+		if vgui.small_button('remove##rm${i}') {
+			app.remove_generator(i)
+			break // indices shifted — redraw next frame
+		}
+		// fire: Send now only fires while running (stopped = editable, just no TX)
+		if app.running {
+			if vgui.button('Send now##${i}') {
+				app.fire_index(i)
+			}
+		} else {
+			vgui.text_dim('Send now (start to fire)')
 		}
 		vgui.same_line()
 		vgui.text('fires:')
@@ -1938,7 +1979,7 @@ fn draw_gen(mut app App) {
 		}
 		// target bus: which wire this generator transmits on (defaults to its own channel)
 		if app.chans.len > 1 {
-			cur := sr.target()
+			cur := app.senders[i].target()
 			vgui.text('bus:')
 			for ci, c in app.chans {
 				vgui.same_line()
@@ -1947,22 +1988,101 @@ fn draw_gen(mut app App) {
 				}
 			}
 		}
-		// editable payload: DBC message -> per-signal values; raw -> id + data hex
+		// payload: DBC message -> per-signal values; raw -> id + data hex
 		if s.message != '' {
 			vgui.text('message ${s.message} · signal values:')
 			for j, ss in s.signals {
 				vgui.set_next_item_width(150)
-				vgui.input_double('${ss.name}##sig${i}_${j}', unsafe { &app.senders[i].sender.signals[j].value })
+				if vgui.input_double('${ss.name}##sig${i}_${j}', unsafe { &app.senders[i].sender.signals[j].value }) {
+					app.gen_dirty = true
+				}
 			}
 		} else {
 			vgui.set_next_item_width(70)
-			vgui.input_text('id##id${i}', mut app.gen_bufs[i].id_buf)
+			if vgui.input_text('id##id${i}', mut app.gen_bufs[i].id_buf) {
+				app.gen_dirty = true
+			}
 			vgui.same_line()
 			vgui.set_next_item_width(260)
-			vgui.input_text('data (hex)##dt${i}', mut app.gen_bufs[i].data_buf)
+			if vgui.input_text('data (hex)##dt${i}', mut app.gen_bufs[i].data_buf) {
+				app.gen_dirty = true
+			}
 		}
 	}
 	vgui.end()
+}
+
+// add_generator appends a new raw generator to the session, targeting the first channel.
+// Session-only until Save writes it to the project.
+fn (mut app App) add_generator() {
+	iface := if app.chans.len > 0 { app.chans[0].iface } else { '' }
+	app.mu.lock()
+	app.senders << SenderRT{
+		iface:  iface
+		sender: project.Sender{
+			name:    'New generator'
+			id:      0x100
+			trigger: 'manual'
+		}
+	}
+	app.gen_bufs << GenBuf{
+		name_buf: mkbuf('New generator', 48)
+		key_buf:  mkbuf('', 2)
+		id_buf:   mkbuf('100', 24)
+		data_buf: mkbuf('', 96)
+	}
+	app.gen_dirty = true
+	app.mu.unlock()
+	if app.running && iface != '' && iface !in app.tx_buses {
+		if b := transport.open(iface) {
+			app.tx_buses[iface] = b
+		}
+	}
+}
+
+// remove_generator drops generator `i` from the session.
+fn (mut app App) remove_generator(i int) {
+	app.mu.lock()
+	if i >= 0 && i < app.senders.len {
+		app.senders.delete(i)
+		if i < app.gen_bufs.len {
+			app.gen_bufs.delete(i)
+		}
+		app.gen_dirty = true
+	}
+	app.mu.unlock()
+}
+
+// save_generators writes the session generators back into the project file, grouped under
+// each channel (a sender belongs to its channel; its `bus:` override travels as a field).
+// Reformats the .blobnet — comments are not preserved.
+fn (mut app App) save_generators() {
+	app.mu.lock()
+	for i in 0 .. app.senders.len {
+		if app.senders[i].sender.message == '' && i < app.gen_bufs.len {
+			app.senders[i].sender.id = u32(('0x' + vgui.buf_str(app.gen_bufs[i].id_buf)).u64())
+			app.senders[i].sender.data = parse_hex_bytes(vgui.buf_str(app.gen_bufs[i].data_buf))
+		}
+	}
+	mut p := app.proj
+	for ci in 0 .. p.channels.len {
+		mut ss := []project.Sender{}
+		for sr in app.senders {
+			if sr.iface == p.channels[ci].iface {
+				ss << sr.sender
+			}
+		}
+		p.channels[ci].senders = ss
+	}
+	app.proj = p
+	path := app.proj_path
+	app.mu.unlock()
+	p.save(path) or {
+		app.notify('save failed: ${err}')
+		return
+	}
+	app.gen_dirty = false
+	app.notify('saved generators -> ${path}')
 }
 
 fn (mut app App) set_trigger(i int, t string) {
