@@ -1871,7 +1871,17 @@ fn (mut app App) draw_bus_editor(i int) bool {
 	nm := vgui.buf_str(app.cfg_bufs[i].name_buf)
 	addr := if ch.address != '' { ':${ch.address}' } else { '' }
 	net := if ch.network != '' { '  ·  ${ch.network}' } else { '' }
-	if !vgui.tree_node_open('${nm}   [${ch.adapter}${addr}]${net}##bus${i}') {
+	// header: collapsible tree node + a remove button that works whether expanded or not
+	open := vgui.tree_node('${nm}   [${ch.adapter}${addr}]${net}##bus${i}')
+	vgui.same_line()
+	if vgui.small_button('remove##crm${i}') {
+		if open {
+			vgui.tree_pop()
+		}
+		app.remove_bus(i)
+		return true
+	}
+	if !open {
 		return false
 	}
 	// name · network
@@ -1886,12 +1896,6 @@ fn (mut app App) draw_bus_editor(i int) bool {
 	}
 	vgui.same_line()
 	vgui.help_marker('Optional label grouping buses of one logical vehicle network. Buses that share a network name are grouped in the Buses tree and the Trace bus chips.')
-	vgui.same_line()
-	if vgui.small_button('remove bus##crm${i}') {
-		app.remove_bus(i)
-		vgui.tree_pop()
-		return true
-	}
 	// adapter picker + tooltip
 	vgui.text('adapter:')
 	vgui.same_line()
@@ -2184,14 +2188,13 @@ fn draw_buses(mut app App, chans []Chan) {
 		return
 	}
 	vgui.text('${app.proj_name} · ${chans.len} channel(s)')
-	if vgui.button('Discover') {
-		// probe DoIP entities on the configured host (results in the DoIP panel)
-		app.mu.lock()
-		app.doip_ents = []
-		app.mu.unlock()
-		spawn doip_worker(app, vgui.buf_str(app.doip_host_buf))
-		app.show_doip = true
-		app.notify('discovering DoIP on ${vgui.buf_str(app.doip_host_buf)}…')
+	// The Buses panel is the runtime VIEW (enable/state); add/remove/edit a bus lives in the
+	// Configuration editor (stopped-only).
+	if app.running {
+		vgui.text_dim('Stop to configure buses')
+	} else if vgui.button('Configure...') {
+		app.show_config = true
+		app.sync_cfg_bufs()
 	}
 	vgui.separator_text('channels')
 	for i, c in chans {
