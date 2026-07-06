@@ -123,9 +123,7 @@ mut:
 	show_network   bool
 	show_stats     bool
 	show_log       bool = true
-	show_help      bool
 	help_cache     map[string]string = map[string]string{} // markdown file -> contents (read once)
-	help_pos_set   bool            // one-shot: Help window floated on first open
 	// Signals selection + Graphics watch list (UI-thread only; RX never touches these)
 	sel_id        int = -1 // selected message id (-1 = none)
 	sel_ext       bool
@@ -1115,9 +1113,6 @@ fn main() {
 		if app.show_script {
 			draw_script(mut app)
 		}
-		if app.show_help {
-			draw_help(mut app)
-		}
 		if app.show_config {
 			draw_config(mut app)
 		}
@@ -1200,10 +1195,7 @@ fn draw_activity_bar(mut app App) {
 		app.show_network = !app.show_network
 	}
 	vgui.separator()
-	// --- tools ---
-	if vgui.toggle_button('Hlp', app.show_help, -1) {
-		app.show_help = !app.show_help
-	}
+	// --- tools --- (Help is in the menu bar, not here — it's an action, not a panel)
 	if vgui.toggle_button('Log', app.show_log, -1) {
 		app.show_log = !app.show_log
 	}
@@ -1277,7 +1269,6 @@ fn draw_menubar(mut app App, rx u64) {
 			app.show_script = vgui.menu_item_check('Script', app.show_script)
 			app.show_stats = vgui.menu_item_check('Statistics', app.show_stats)
 			app.show_log = vgui.menu_item_check('Log', app.show_log)
-			app.show_help = vgui.menu_item_check('Help', app.show_help)
 			vgui.menu_end()
 		}
 		if vgui.menu_begin('Settings') {
@@ -1293,6 +1284,12 @@ fn draw_menubar(mut app App, rx u64) {
 					app.ui_scale = f32(s) / 100.0
 					vgui.set_font_scale(app.ui_scale)
 				}
+			}
+			vgui.menu_end()
+		}
+		if vgui.menu_begin('Help') {
+			if vgui.menu_item('Documentation (opens in browser)') {
+				app.open_help_in_browser()
 			}
 			vgui.menu_end()
 		}
@@ -2544,7 +2541,6 @@ fn draw_log(mut app App) {
 	vgui.end()
 }
 
-// draw_help: a short in-app usage reference.
 // help_docs lists the Help pages: the built-in quick start (empty path) plus real markdown docs
 // loaded from disk. Paths are resolved relative to the working dir (the app chdir's to its
 // bundle dir at startup, so these resolve in a distributed build too).
@@ -2666,31 +2662,6 @@ fn (mut app App) help_text(path string) string {
 	return txt
 }
 
-fn draw_help(mut app App) {
-	if !app.help_pos_set {
-		vgui.set_next_window(240 * app.ui_scale, 160 * app.ui_scale, 430 * app.ui_scale,
-			190 * app.ui_scale)
-		app.help_pos_set = true
-	}
-	vis, op := vgui.begin_closable('Help', app.show_help)
-	app.show_help = op
-	if !vis {
-		vgui.end()
-		return
-	}
-	// The Help itself is a searchable, multi-page site rendered to HTML — imgui text is too crude
-	// for docs. This panel is just the launcher.
-	vgui.text('Blobly Net documentation')
-	vgui.spacing()
-	if vgui.button('Open Help in browser') {
-		app.open_help_in_browser()
-	}
-	vgui.spacing()
-	vgui.text_dim('${help_docs.len} pages, full-text search — opens in your browser.')
-	vgui.text_dim('It is a local file: no server, works offline.')
-	vgui.end()
-}
-
 // help_html renders the Help docs into ONE self-contained, static HTML page: a sidebar of pages,
 // full-text search across them, and each doc rendered via vlang/markdown (headings, code, tables).
 // Pure client-side JS — no web server. Written once, opened as a file:// URL.
@@ -2717,6 +2688,7 @@ fn (mut app App) help_html() string {
 // open_help_in_browser writes the rendered Help HTML to a per-user cache file and opens it in the
 // system browser (imgui is effectively one desktop app; the browser is the nicely-rendered view).
 fn (mut app App) open_help_in_browser() {
+	app.notify('opening Help in browser')
 	dir := os.join_path(os.cache_dir(), 'blobly_net')
 	os.mkdir_all(dir) or {}
 	os.chmod(dir, 0o700) or {} // not a shared /tmp — avoid a symlink pre-plant
@@ -3278,8 +3250,8 @@ fn build_layout() {
 	vgui.dock_window('Graphics', bottom)
 	vgui.dock_window('Generators', bottom)
 	vgui.dock_window('Script', bottom)
-	// Help is intentionally NOT docked — it opens as its own floating window (draggable out to a
-	// separate OS window via multi-viewport), sized once in draw_help.
+	// Help is not a panel — it's the Help menu's "Documentation" action, which opens the docs in
+	// the system browser.
 	vgui.dock_finish(root)
 }
 
