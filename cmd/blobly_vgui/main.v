@@ -124,7 +124,6 @@ mut:
 	show_stats     bool
 	show_log       bool = true
 	show_help      bool
-	help_doc       int             // selected Help doc index (0 = built-in quick start)
 	help_cache     map[string]string = map[string]string{} // markdown file -> contents (read once)
 	help_pos_set   bool            // one-shot: Help window floated on first open
 	// Signals selection + Graphics watch list (UI-thread only; RX never touches these)
@@ -2557,6 +2556,9 @@ struct HelpDoc {
 const help_docs = [
 	HelpDoc{'Quick start', ''},
 	HelpDoc{'Scripting', 'docs/scripting.md'},
+	HelpDoc{'Project editing', 'docs/project_editing.md'},
+	HelpDoc{'CAN hardware', 'docs/can_hardware.md'},
+	HelpDoc{'Ethernet / DoIP', 'docs/ethernet_architecture.md'},
 	HelpDoc{'Known issues', 'docs/known_issues.md'},
 ]
 
@@ -2591,6 +2593,66 @@ A generator is a reusable send block. Give it a single **key** and set its trigg
 Use **Quick send** at the top for an ad-hoc one-shot without saving a generator.
 '
 
+// help_style + help_script are the Help page CSS/JS. Raw strings (single-quote delimited) so the
+// double quotes inside are literal; kept free of single quotes so they never terminate the string.
+const help_style = r'
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.6;color:#1b1b1b;background:#fff}
+#wrap{display:flex;min-height:100vh}
+nav{width:250px;flex:none;border-right:1px solid #e2e2e2;padding:1rem;height:100vh;position:sticky;top:0;overflow:auto}
+nav h2{font-size:1rem;margin:.2rem 0 .8rem}
+#q{width:100%;padding:.5em .6em;border:1px solid #ccc;border-radius:6px;font-size:.95em;margin-bottom:.8rem}
+ul#nav{list-style:none;margin:0;padding:0}
+.navitem{padding:.4em .6em;border-radius:6px;cursor:pointer;font-size:.95em}
+.navitem:hover{background:#f0f0f0}
+.navitem.active{background:#0078d4;color:#fff}
+#results{margin-top:.6rem}
+.result{padding:.5em .6em;border-radius:6px;cursor:pointer;font-size:.82em;border:1px solid #eee;margin-bottom:.4rem}
+.result:hover{background:#f5f5f5}
+.result .rp{font-weight:600;color:#0078d4;margin-bottom:.2em}
+main{flex:1;max-width:900px;padding:1.5rem 2.5rem;overflow:auto}
+.page.hidden{display:none}
+h1,h2,h3{line-height:1.25;margin-top:1.5em}
+h1{border-bottom:2px solid #0078d4;padding-bottom:.2em;margin-top:.2em}
+h2{border-bottom:1px solid #ddd;padding-bottom:.2em}
+code{background:#f3f3f3;padding:.1em .35em;border-radius:3px;font-size:.92em}
+pre{background:#f6f8fa;padding:1em;border-radius:6px;overflow:auto}
+pre code{background:none;padding:0}
+a{color:#0078d4}
+hr{border:0;border-top:1px solid #ddd;margin:2.5em 0}
+table{border-collapse:collapse}td,th{border:1px solid #ddd;padding:.4em .6em}
+mark{background:#ffe066;color:inherit;border-radius:2px}
+@media(prefers-color-scheme:dark){
+body{color:#d4d4d4;background:#1e1e1e}
+nav{border-color:#333}
+#q{background:#2d2d2d;border-color:#444;color:#d4d4d4}
+.navitem:hover{background:#2a2a2a}
+.result{border-color:#333}.result:hover{background:#2a2a2a}
+code{background:#2d2d2d}pre{background:#252526}
+h2,hr,td,th{border-color:#3a3a3a}a{color:#4ea1ff}
+mark{background:#7a5c00;color:#fff}
+}
+'
+
+const help_script = r'
+(function(){
+var pages=[].slice.call(document.querySelectorAll(".page"));
+var navitems=[].slice.call(document.querySelectorAll(".navitem"));
+var results=document.getElementById("results");
+var q=document.getElementById("q");
+var content=document.getElementById("content");
+function show(idx){
+pages.forEach(function(p,i){p.classList.toggle("hidden",i!==idx);});
+navitems.forEach(function(n,i){n.classList.toggle("active",i===idx);});
+}
+navitems.forEach(function(n){n.addEventListener("click",function(){clearMarks();results.textContent="";q.value="";show(parseInt(n.getAttribute("data-page")));content.scrollTop=0;});});
+function clearMarks(){var ms=[].slice.call(document.querySelectorAll("mark"));ms.forEach(function(m){var t=document.createTextNode(m.textContent);var par=m.parentNode;par.replaceChild(t,m);par.normalize();});}
+function highlight(el,term){var first=null;var low=term.toLowerCase();var nodes=[];var w=document.createTreeWalker(el,NodeFilter.SHOW_TEXT,null);while(w.nextNode())nodes.push(w.currentNode);nodes.forEach(function(node){var txt=node.nodeValue;var lo=txt.toLowerCase();var idx=lo.indexOf(low);if(idx<0)return;var frag=document.createDocumentFragment();var pos=0;while(idx>=0){frag.appendChild(document.createTextNode(txt.slice(pos,idx)));var m=document.createElement("mark");m.textContent=txt.slice(idx,idx+term.length);frag.appendChild(m);if(!first)first=m;pos=idx+term.length;idx=lo.indexOf(low,pos);}frag.appendChild(document.createTextNode(txt.slice(pos)));node.parentNode.replaceChild(frag,node);});return first;}
+function search(term){clearMarks();results.textContent="";if(!term){return;}var low=term.toLowerCase();var any=false;pages.forEach(function(p,i){var txt=p.textContent;var lo=txt.toLowerCase();var idx=lo.indexOf(low);if(idx<0)return;any=true;var c=0,k=idx;while(k>=0){c++;k=lo.indexOf(low,k+term.length);}var st=Math.max(0,idx-30);var snip=(st>0?"…":"")+txt.slice(st,idx+term.length+50).replace(/\s+/g," ").trim()+"…";var div=document.createElement("div");div.className="result";var rp=document.createElement("div");rp.className="rp";rp.textContent=navitems[i].textContent+" ("+c+")";div.appendChild(rp);div.appendChild(document.createTextNode(snip));div.addEventListener("click",function(){results.textContent="";show(i);var m=highlight(p,term);content.scrollTop=0;if(m)m.scrollIntoView({block:"center"});});results.appendChild(div);});if(!any){var d=document.createElement("div");d.className="result";d.textContent="No matches";results.appendChild(d);}}
+q.addEventListener("input",function(){search(q.value.trim());});
+})();
+'
+
 // help_text returns a Help doc body, reading + caching the file on first access.
 fn (mut app App) help_text(path string) string {
 	if path == '' {
@@ -2605,10 +2667,9 @@ fn (mut app App) help_text(path string) string {
 }
 
 fn draw_help(mut app App) {
-	// float on first open (Once cond → user can then move/resize or drag it to its own monitor).
 	if !app.help_pos_set {
-		vgui.set_next_window(220 * app.ui_scale, 120 * app.ui_scale, 760 * app.ui_scale,
-			660 * app.ui_scale)
+		vgui.set_next_window(240 * app.ui_scale, 160 * app.ui_scale, 430 * app.ui_scale,
+			190 * app.ui_scale)
 		app.help_pos_set = true
 	}
 	vis, op := vgui.begin_closable('Help', app.show_help)
@@ -2617,60 +2678,40 @@ fn draw_help(mut app App) {
 		vgui.end()
 		return
 	}
-	// The in-panel view is a lightweight quick reference; "Open in browser" renders the same docs
-	// to properly-typeset HTML (headings, code blocks, tables) via vlang/markdown — the nice view.
-	if vgui.button('Open in browser') {
+	// The Help itself is a searchable, multi-page site rendered to HTML — imgui text is too crude
+	// for docs. This panel is just the launcher.
+	vgui.text('Blobly Net documentation')
+	vgui.spacing()
+	if vgui.button('Open Help in browser') {
 		app.open_help_in_browser()
 	}
-	vgui.same_line()
-	vgui.text_dim('full docs, nicely rendered')
-	vgui.separator()
-	// doc picker
-	for i, d in help_docs {
-		if i > 0 {
-			vgui.same_line()
-		}
-		if vgui.toggle_button('${d.title}##hd${i}', app.help_doc == i, 0) {
-			app.help_doc = i
-		}
-	}
-	vgui.separator()
-	idx := if app.help_doc >= 0 && app.help_doc < help_docs.len { app.help_doc } else { 0 }
-	body := app.help_text(help_docs[idx].path)
-	vgui.child_fill('##helpbody') // scrollable body
-	render_markdown(body)
-	vgui.child_end()
+	vgui.spacing()
+	vgui.text_dim('${help_docs.len} pages, full-text search — opens in your browser.')
+	vgui.text_dim('It is a local file: no server, works offline.')
 	vgui.end()
 }
 
-// help_html renders all Help docs into one standalone, styled HTML document for the system
-// browser — the same markdown the in-panel view uses, but with real typography, code blocks and
-// tables (imgui can't). Self-contained + offline.
+// help_html renders the Help docs into ONE self-contained, static HTML page: a sidebar of pages,
+// full-text search across them, and each doc rendered via vlang/markdown (headings, code, tables).
+// Pure client-side JS — no web server. Written once, opened as a file:// URL.
 fn (mut app App) help_html() string {
-	mut md := ''
+	mut nav := strings.new_builder(1024)
+	mut pages := strings.new_builder(65536)
 	for i, d in help_docs {
-		if i > 0 {
-			md += '\n\n---\n\n'
-		}
-		md += app.help_text(d.path)
+		active := if i == 0 { ' active' } else { '' }
+		hidden := if i == 0 { '' } else { ' hidden' }
+		nav.write_string('<li class="navitem${active}" data-page="${i}">${d.title}</li>')
+		body := markdown.to_html(app.help_text(d.path))
+		pages.write_string('<div class="page${hidden}" id="page-${i}">${body}</div>')
 	}
-	body := markdown.to_html(md)
-	style := 'body{font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;' +
-		'line-height:1.6;color:#1b1b1b;background:#fff;max-width:860px;margin:0 auto;padding:2rem 1.5rem;}' +
-		'h1,h2,h3{line-height:1.25;margin-top:1.6em}' +
-		'h1{border-bottom:2px solid #0078d4;padding-bottom:.2em}' +
-		'h2{border-bottom:1px solid #ddd;padding-bottom:.2em}' +
-		'code{background:#f3f3f3;padding:.1em .35em;border-radius:3px;font-size:.92em}' +
-		'pre{background:#f6f8fa;padding:1em;border-radius:6px;overflow:auto}' +
-		'pre code{background:none;padding:0}a{color:#0078d4}' +
-		'hr{border:0;border-top:1px solid #ddd;margin:2.5em 0}' +
-		'table{border-collapse:collapse}td,th{border:1px solid #ddd;padding:.4em .6em}' +
-		'@media(prefers-color-scheme:dark){body{color:#d4d4d4;background:#1e1e1e}' +
-		'code{background:#2d2d2d}pre{background:#252526}h2,hr,td,th{border-color:#3a3a3a}a{color:#4ea1ff}}'
 	return '<!DOCTYPE html>\n<html lang="en"><head><meta charset="utf-8">' +
 		'<meta name="viewport" content="width=device-width, initial-scale=1">' +
-		'<title>Blobly Net — Help</title><style>${style}</style></head><body>\n' + body +
-		'\n</body></html>\n'
+		'<title>Blobly Net — Help</title><style>${help_style}</style></head><body>' +
+		'<div id="wrap"><nav><h2>Blobly Net Help</h2>' +
+		'<input id="q" type="search" placeholder="Search all pages…" autocomplete="off">' +
+		'<ul id="nav">${nav.str()}</ul><div id="results"></div></nav>' +
+		'<main id="content">${pages.str()}</main></div>' +
+		'<script>${help_script}</script></body></html>\n'
 }
 
 // open_help_in_browser writes the rendered Help HTML to a per-user cache file and opens it in the
@@ -2725,67 +2766,6 @@ fn open_uri_in_browser(path string) (bool, string) {
 	}
 	os.open_uri(path) or { return false, 'open it manually (${err.msg()})' }
 	return true, 'opened Help in browser'
-}
-
-// render_markdown draws a lightweight subset of Markdown with imgui primitives: ATX headings
-// (#..) as section separators, - / * / numbered bullets, fenced ``` code as dim text, and
-// inline **bold** / `code` / [text](link) stripped to plain text. Good enough for our docs.
-fn render_markdown(text string) {
-	mut in_code := false
-	for raw in text.split_into_lines() {
-		line := raw.trim_right('\r')
-		if line.trim_space().starts_with('```') {
-			in_code = !in_code
-			continue
-		}
-		if in_code {
-			vgui.text_dim('    ${line}')
-			continue
-		}
-		t := line.trim_space()
-		if t == '' {
-			vgui.spacing()
-		} else if line.starts_with('#') {
-			mut h := line
-			for h.starts_with('#') {
-				h = h[1..]
-			}
-			vgui.separator_text(md_inline(h.trim_space()))
-		} else if t.starts_with('- ') || t.starts_with('* ') {
-			vgui.text('   •  ${md_inline(t[2..])}')
-		} else {
-			vgui.text(md_inline(line))
-		}
-	}
-}
-
-// md_inline strips inline markdown markers: ** (bold), ` (code), and [text](url) -> text.
-fn md_inline(s string) string {
-	stripped := s.replace('**', '').replace('`', '')
-	mut b := strings.new_builder(stripped.len)
-	mut i := 0
-	for i < stripped.len {
-		if stripped[i] == `[` {
-			mut j := i + 1
-			for j < stripped.len && stripped[j] != `]` {
-				j++
-			}
-			if j + 1 < stripped.len && stripped[j] == `]` && stripped[j + 1] == `(` {
-				mut k := j + 2
-				for k < stripped.len && stripped[k] != `)` {
-					k++
-				}
-				if k < stripped.len {
-					b.write_string(stripped[i + 1..j]) // keep the link text, drop the (url)
-					i = k + 1
-					continue
-				}
-			}
-		}
-		b.write_u8(stripped[i])
-		i++
-	}
-	return b.str()
 }
 
 fn draw_buses(mut app App, chans []Chan) {

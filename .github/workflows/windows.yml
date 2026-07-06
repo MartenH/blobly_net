@@ -116,6 +116,7 @@ jobs:
           Copy-Item dbc dist\dbc -Recurse
           Copy-Item tests dist\tests -Recurse
           Copy-Item manifests dist\manifests -Recurse
+          Copy-Item docs dist\docs -Recurse   # Help panel's browser view reads docs/*.md
           New-Item -ItemType Directory -Force dist\samples | Out-Null
           Copy-Item samples\*.log,samples\*.mf4 dist\samples\ -Force -ErrorAction SilentlyContinue
           Copy-Item LICENSE dist\LICENSE.txt -ErrorAction SilentlyContinue
