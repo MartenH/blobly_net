@@ -357,6 +357,28 @@ int vgui_plot_begin_x(const char* title, float height, double x_min, double x_ma
 void vgui_plot_line(const char* name, const float* xs, const float* ys, int n) {
     ImPlot::PlotLine(name, xs, ys, n);
 }
+// plot with a fixed x-window AND up to 3 real y-axes (each auto-fitting to its own series, so
+// signals of different scale keep real values in ONE view). Crosshairs are on. Bind a series
+// to an axis with vgui_plot_line_axis; query the cursor with vgui_plot_is_hovered/_mouse_x.
+int vgui_plot_begin2(const char* title, float height, double x_min, double x_max, int n_yaxes) {
+    if (ImPlot::BeginPlot(title, ImVec2(-1, height), ImPlotFlags_Crosshairs)) {
+        int xf = (x_max > x_min) ? ImPlotAxisFlags_None : ImPlotAxisFlags_AutoFit;
+        ImPlot::SetupAxis(ImAxis_X1, "t (s)", xf);
+        ImPlot::SetupAxis(ImAxis_Y1, NULL, ImPlotAxisFlags_AutoFit);
+        if (n_yaxes >= 2) ImPlot::SetupAxis(ImAxis_Y2, NULL, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_Opposite);
+        if (n_yaxes >= 3) ImPlot::SetupAxis(ImAxis_Y3, NULL, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_Opposite);
+        if (x_max > x_min) ImPlot::SetupAxisLimits(ImAxis_X1, x_min, x_max, ImPlotCond_Always);
+        return 1;
+    }
+    return 0;
+}
+void vgui_plot_line_axis(const char* name, const float* xs, const float* ys, int n, int axis) {
+    int a = axis < 0 ? 0 : (axis > 2 ? 2 : axis);
+    ImPlot::SetAxis((ImAxis)(ImAxis_Y1 + a));
+    ImPlot::PlotLine(name, xs, ys, n);
+}
+int vgui_plot_is_hovered() { return ImPlot::IsPlotHovered() ? 1 : 0; }
+double vgui_plot_mouse_x() { return ImPlot::GetPlotMousePos().x; }
 void vgui_plot_end() { ImPlot::EndPlot(); }
 
 // selectable row/label; returns 1 the frame it is clicked.

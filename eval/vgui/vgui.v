@@ -89,6 +89,10 @@ fn C.vgui_separator()
 fn C.vgui_quit()
 fn C.vgui_plot_begin(&char, f32) int
 fn C.vgui_plot_line(&char, &f32, &f32, int)
+fn C.vgui_plot_begin2(&char, f32, f64, f64, int) int
+fn C.vgui_plot_line_axis(&char, &f32, &f32, int, int)
+fn C.vgui_plot_is_hovered() int
+fn C.vgui_plot_mouse_x() f64
 fn C.vgui_plot_end()
 fn C.vgui_selectable(&char, int) int
 fn C.vgui_child_begin(&char, f32)
@@ -336,6 +340,31 @@ pub fn plot_line(name string, xs []f32, ys []f32) {
 		return
 	}
 	C.vgui_plot_line(name.str, unsafe { &xs[0] }, unsafe { &ys[0] }, n)
+}
+
+// plot_begin_multi opens a plot with a fixed x-window and up to 3 real y-axes (n_yaxes 1..3),
+// each auto-fitting to its own series, plus crosshairs. Add series with plot_line_axis.
+pub fn plot_begin_multi(title string, height f32, x_min f64, x_max f64, n_yaxes int) bool {
+	return C.vgui_plot_begin2(title.str, height, x_min, x_max, n_yaxes) == 1
+}
+
+// plot_line_axis adds a series bound to y-axis `axis` (0=Y1, 1=Y2, 2=Y3).
+pub fn plot_line_axis(name string, xs []f32, ys []f32, axis int) {
+	n := if xs.len < ys.len { xs.len } else { ys.len }
+	if n == 0 {
+		return
+	}
+	C.vgui_plot_line_axis(name.str, unsafe { &xs[0] }, unsafe { &ys[0] }, n, axis)
+}
+
+// plot_is_hovered reports whether the mouse is over the plot area (call between begin/end).
+pub fn plot_is_hovered() bool {
+	return C.vgui_plot_is_hovered() == 1
+}
+
+// plot_mouse_x returns the mouse position in x-axis (data) coordinates (call between begin/end).
+pub fn plot_mouse_x() f64 {
+	return C.vgui_plot_mouse_x()
 }
 
 pub fn plot_end() {

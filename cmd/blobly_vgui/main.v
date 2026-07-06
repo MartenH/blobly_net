@@ -128,7 +128,7 @@ mut:
 	sel_ext       bool
 	watch         []Watch // signals plotted in Graphics
 	plot_win      f32 = 5 // Graphics x-window in seconds (0 = full history / autofit)
-	plot_fit_each bool = true // Graphics Y: normalize each signal to its own range (vs one shared axis)
+	plot_multi    bool = true // Graphics Y: per-signal real axes (up to 3) vs one shared axis
 	trace_grouped bool = true // Trace: grouped-by-id (expandable) vs chronological
 	trace_bus     string      // main Trace: show only this bus (channel name); '' = all
 	ftrace_bus    string      // Trace (filter) panel: show only this bus; '' = all
@@ -3183,17 +3183,17 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 			app.plot_win = wsec
 		}
 	}
-	// Y-axis: "Fit each" normalizes every signal to its own range so a small-amplitude signal
-	// isn't squashed flat by a large one; "Shared" keeps real values on one common axis.
+	// Y-axis: "Multi" gives each signal its own real-value axis (up to 3, so a small-amplitude
+	// signal keeps real values instead of being squashed by a large one); "Shared" = one axis.
 	vgui.same_line()
 	vgui.text_dim(' · Y:')
 	vgui.same_line()
-	if vgui.toggle_button('Fit each##yfit', app.plot_fit_each, 0) {
-		app.plot_fit_each = true
+	if vgui.toggle_button('Multi##ymulti', app.plot_multi, 0) {
+		app.plot_multi = true
 	}
 	vgui.same_line()
-	if vgui.toggle_button('Shared##yshared', !app.plot_fit_each, 0) {
-		app.plot_fit_each = false
+	if vgui.toggle_button('Shared##yshared', !app.plot_multi, 0) {
+		app.plot_multi = false
 	}
 	// x-window right edge: wall-clock NOW while live, so the strip chart slides on real time
 	// (not only when a sample arrives); the latest sample time when stopped/paused/loaded, so
@@ -3210,38 +3210,56 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 	}
 	xmin := if app.plot_win > 0 { xmax - f64(app.plot_win) } else { f64(0) }
 	xhi := if app.plot_win > 0 { xmax } else { f64(0) } // 0/0 → full autofit
-	if vgui.plot_begin_x('##sigplot', -1, xmin, xhi) { // -1 = fill the panel height
-		for w in app.watch {
+	n_yaxes := if app.plot_multi { imin(3, app.watch.len) } else { 1 }
+	if vgui.plot_begin_multi('##sigplot', -1, xmin, xhi, n_yaxes) { // -1 = fill panel height
+		// crosshair readout: value shown in the legend is at the cursor x when hovering the
+		// plot, else the latest sample — a live per-signal value beside each name.
+		hovered := vgui.plot_is_hovered()
+		mx := if hovered { f32(vgui.plot_mouse_x()) } else { f32(0) }
+		for i, w in app.watch {
 			xs, ys := app.build_series(rows, w)
 			if xs.len == 0 {
 				continue
 			}
-			name := '0x${w.id:X}.${w.sig}'
-			if app.plot_fit_each {
-				// normalize to [0,1] by this series' own min/max → independent per-signal scale
-				mut lo := ys[0]
-				mut hi := ys[0]
-				for v in ys {
-					if v < lo {
-						lo = v
-					}
-					if v > hi {
-						hi = v
-					}
-				}
-				span := if hi > lo { hi - lo } else { f32(1) }
-				mut ny := []f32{cap: ys.len}
-				for v in ys {
-					ny << (v - lo) / span
-				}
-				vgui.plot_line(name, xs, ny)
-			} else {
-				vgui.plot_line(name, xs, ys)
-			}
+			xr := if hovered { mx } else { xs[xs.len - 1] } // cursor x, or latest
+			val := value_at(xs, ys, xr)
+			// display "name = value"; the ###id keeps the ImPlot series identity/colour stable
+			// even though the shown value changes each frame.
+			label := '0x${w.id:X}.${w.sig} = ${val:.2f}###g${w.id}_${w.ext}_${w.sig}'
+			axis := if app.plot_multi { imin(i, 2) } else { 0 } // signal 0/1/2 → Y1/Y2/Y3
+			vgui.plot_line_axis(label, xs, ys, axis)
 		}
 		vgui.plot_end()
 	}
 	vgui.end()
+}
+
+// imin is a small int min helper.
+fn imin(a int, b int) int {
+	return if a < b { a } else { b }
+}
+
+// value_at linearly interpolates the series (xs,ys) at x (clamped to the ends). Used for the
+// Graphics crosshair readout.
+fn value_at(xs []f32, ys []f32, x f32) f32 {
+	n := xs.len
+	if n == 0 {
+		return 0
+	}
+	if x <= xs[0] {
+		return ys[0]
+	}
+	if x >= xs[n - 1] {
+		return ys[n - 1]
+	}
+	for i in 1 .. n {
+		if xs[i] >= x {
+			d := xs[i] - xs[i - 1]
+			t := if d != 0 { (x - xs[i - 1]) / d } else { f32(0) }
+			return ys[i - 1] + t * (ys[i] - ys[i - 1])
+		}
+	}
+	return ys[n - 1]
 }
 
 // is_watched_frame reports whether any plotted signal comes from this frame id.
