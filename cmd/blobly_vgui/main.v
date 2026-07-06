@@ -3723,7 +3723,7 @@ fn trace_dump_worker(app &App, core_mask u16) {
 	}
 	a.trace_busy = true
 	a.mu.unlock()
-	iface := a.diag_iface()
+	iface := a.trace_iface()
 	if iface == '' {
 		a.set_trace_status('dump: no running channel')
 		a.trace_done()
@@ -3797,6 +3797,18 @@ fn mask_popcount(mask u16) int {
 		m >>= 1
 	}
 	return n
+}
+
+// trace_iface picks the channel to command the dump on: the running monitor channel that
+// carries the telemetry manifest (the target being traced), so a multi-channel project sends
+// to the right bus. Falls back to the first running channel when no channel has a manifest.
+fn (app &App) trace_iface() string {
+	for c in app.chans {
+		if c.monitorable() && c.running && c.manifest != '' {
+			return c.iface
+		}
+	}
+	return app.diag_iface()
 }
 
 // trace_core_mask builds a dump mask from the manifest's distinct cores, so "Dump" reads out
@@ -4010,11 +4022,14 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
 	mut tmin := f32(3.4e38)
 	mut tmax := f32(0)
 	for tr in trecs {
-		if tr.rec.is_header() {
+		r := tr.rec
+		if r.is_header() {
 			continue
 		}
-		s := f32(tr.rec.start_us)
-		e := s + f32(tr.rec.cpu_us) // 0 for a switch
+		s := f32(r.start_us)
+		// a switch is an instant: its cpu_us slot holds (reason<<8)|from_thread, NOT a
+		// duration, so it must not extend the time axis — only handler runs have a width.
+		e := if r.is_switch() { s } else { s + f32(r.cpu_us) }
 		if s < tmin {
 			tmin = s
 		}
