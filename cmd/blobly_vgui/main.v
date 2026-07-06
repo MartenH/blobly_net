@@ -80,8 +80,7 @@ mut:
 	mu           sync.Mutex
 	chans        []Chan
 	trace        []TraceRow
-	gcount       map[string]u64  // persistent per-group frame totals (survive the ring trim)
-	byte_prev    map[string][]u8 // grouped Trace: last-rendered payload per group, to dim unchanged bytes
+	gcount       map[string]u64 // persistent per-group frame totals (survive the ring trim)
 	trecs        []TRec
 	rx           u64 // total across channels
 	rev          u64
@@ -488,7 +487,6 @@ fn (mut app App) clear_trace() {
 	app.mu.lock()
 	app.trace = []
 	app.gcount = map[string]u64{}
-	app.byte_prev = map[string][]u8{}
 	app.trecs = []
 	app.rx = 0
 	app.tx_count = 0
@@ -2865,7 +2863,8 @@ mut:
 	id    u32
 	ext   bool
 	count int
-	last  TraceRow
+	last  TraceRow // newest frame of this group in the window
+	prev  TraceRow // the frame before `last` (empty data if only one seen) — for byte-delta dim
 }
 
 // gkey is the stable per-group identity used for both the grouped-view rows and the
@@ -2884,7 +2883,10 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			continue
 		}
 		k := '${r.dir}|${r.ch}|${r.id}|${r.ext}'
-		mut g := agg[k] or { GAgg{r.dir, r.ch, r.id, r.ext, 0, r} }
+		mut g := agg[k] or { GAgg{r.dir, r.ch, r.id, r.ext, 0, r, TraceRow{}} }
+		if g.count > 0 {
+			g.prev = g.last // slide the previous-frame window forward
+		}
 		g.count++
 		g.last = r
 		agg[k] = g
@@ -2938,14 +2940,16 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			// all-time total (survives the ring trim); fall back to the window count.
 			total := gcount[gkey(g.dir, g.ch, g.id, g.ext)] or { u64(g.count) }
 			vgui.table_cell('${total}')
-			// data column: dim bytes unchanged since the last render, normal for changed ones
-			// (CANoe-style change highlight). Keyed per group so each id tracks its own bytes.
+			// data column: dim bytes that match the PREVIOUS frame of this group, normal for
+			// ones that changed (CANoe-style change highlight). Compared against the actual prior
+			// frame in the trace buffer — not the last-rendered payload — so the delta is correct
+			// regardless of repaint timing (a byte that flips and flips back between repaints still
+			// shows against the real previous frame).
 			vgui.table_next_col()
 			if r.rtr {
 				vgui.text('RTR')
 			} else {
-				pkey := '${g.dir}|${g.ch}|${g.id}|${g.ext}'
-				prev := app.byte_prev[pkey] or { []u8{} }
+				prev := g.prev.data
 				for i, b in r.data {
 					if i > 0 {
 						vgui.same_line()
@@ -2957,7 +2961,6 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 						vgui.text_dim(tok) // unchanged → dimmed
 					}
 				}
-				app.byte_prev[pkey] = r.data.clone()
 			}
 			if open {
 				if m := app.find_message(g.id, g.ext) {
