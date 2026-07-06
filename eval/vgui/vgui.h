@@ -5,6 +5,9 @@ typedef struct { float t0, dur; int lane; unsigned int color; int warn; int pree
 extern "C" {
 #endif
 int vgui_init(const char* title, int w, int h, int event_driven);
+void vgui_set_window_icon(int w, int h, const unsigned char* rgba);
+int  vgui_plot_begin_x(const char* title, float height, double x_min, double x_max);
+int  vgui_is_item_clicked_right(void);
 int vgui_running(void);
 void vgui_frame_begin(void);
 void vgui_dockspace(void);
@@ -37,11 +40,17 @@ int  vgui_menu_item_check(const char* label, int checked);
 int  vgui_checkbox(const char* label, int cur);
 void vgui_text_colored(int r, int g, int b, const char* s);
 int  vgui_small_button(const char* label);
+int  vgui_begin_popup_context_item(const char* id);
+void vgui_end_popup(void);
 void vgui_spacing(void);
 void vgui_separator(void);
 void vgui_quit(void);
 void vgui_dock_3(const char* a, const char* b, const char* c, float aw, float cw);
 int  vgui_plot_begin(const char* title, float height);
+int  vgui_plot_begin2(const char* title, float height, double x_min, double x_max, int n_yaxes);
+void vgui_plot_line_axis(const char* name, const float* xs, const float* ys, int n, int axis);
+int  vgui_plot_is_hovered(void);
+double vgui_plot_mouse_x(void);
 void vgui_plot_line(const char* name, const float* xs, const float* ys, int n);
 void vgui_plot_end(void);
 int  vgui_selectable(const char* label, int selected);
