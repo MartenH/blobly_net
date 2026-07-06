@@ -13,12 +13,11 @@ memory (the old `~/.Codex` memory does not transfer); everything needed is in gi
 Bootstrap a fresh box in one shot:
 ```sh
 sudo ./scripts/setup_sudoers.sh   # optional: scoped passwordless sudo (apt-get/ip/modprobe) so the below won't prompt
-./scripts/setup_env.sh            # installs V + gui native deps + can-utils, builds, brings up vcan0, runs tests
+./scripts/setup_env.sh            # installs V + imgui native deps (glfw/freetype) + can-utils, builds cmd/blobly_vgui, brings up vcan0, runs tests
 ```
 Then run the app:
 ```sh
-./scripts/run.sh                       # HARDWARE GL (now the default — works on 24.04 / Mesa 24.x+)
-BLOBLY_SOFTWARE_GL=1 ./scripts/run.sh   # software-GL fallback (always works; for old Mesa)
+./scripts/run_vgui.sh                  # build + run the GUI (Dear ImGui app; the old vlang/gui src/main.v was retired)
 python3 sut/can_sut.py vcan0            # virtual ECU, in another terminal
 ```
 **Context:** we moved off Ubuntu 22.04 → **24.04** specifically to get **Mesa 24.x**, because 22.04's
