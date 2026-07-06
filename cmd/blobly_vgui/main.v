@@ -177,8 +177,8 @@ mut:
 
 // SenderRT is a project sender bound to its channel iface (Generators panel).
 struct SenderRT {
-	iface string
 mut:
+	iface  string // the bus this generator fires on (a channel iface); rebound if the iface changes
 	sender project.Sender
 }
 
@@ -810,6 +810,12 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	app.proj_name = proj.name
 	app.proj = proj
 	app.dirty = false
+	// drop editor state carried over from the previous project — stale cfg_bufs would otherwise
+	// be flushed into the newly loaded project by the next commit_cfg (same channel count = no
+	// resync in draw_config); stale discovery results belong to the old machine view.
+	app.cfg_bufs = []
+	app.disc_list = []
+	app.disc_tick = []
 	app.mu.unlock()
 	app.rebuild_from_proj()
 }
@@ -2029,6 +2035,24 @@ fn (mut app App) set_adapter(i int, a string) {
 	app.rebuild_from_proj()
 }
 
+// rebind_senders repoints a channel's flattened generators from an old iface to a new one, so
+// editing a bus address doesn't orphan them: sync_senders_into_proj groups senders by iface
+// (and firing opens tx_buses[iface]), so a stale SenderRT.iface would drop all of a renamed
+// bus's generators on the next Save/Start. Also follows explicit per-sender bus overrides.
+fn (mut app App) rebind_senders(old_iface string, new_iface string) {
+	if old_iface == new_iface || old_iface == '' {
+		return
+	}
+	for si in 0 .. app.senders.len {
+		if app.senders[si].iface == old_iface {
+			app.senders[si].iface = new_iface
+		}
+		if app.senders[si].sender.bus == old_iface {
+			app.senders[si].sender.bus = new_iface
+		}
+	}
+}
+
 fn (mut app App) set_protocol(i int, pr string) {
 	app.proj.channels[i].typ = pr
 	app.proj.channels[i].fd = pr == 'canfd'
@@ -2197,8 +2221,10 @@ fn (mut app App) draw_bus_editor(i int) bool {
 	// address (type it, or add detected interfaces via the Discover... dialog above)
 	vgui.set_next_item_width(220)
 	if vgui.input_text('address##cad${i}', mut app.cfg_bufs[i].address_buf) {
+		old_iface := app.proj.channels[i].iface
 		app.proj.channels[i].address = vgui.buf_str(app.cfg_bufs[i].address_buf)
 		app.proj.channels[i].iface = project.compose_iface(ch.adapter, app.proj.channels[i].address)
+		app.rebind_senders(old_iface, app.proj.channels[i].iface) // keep this bus's generators bound
 		app.dirty = true
 	}
 	vgui.same_line()
