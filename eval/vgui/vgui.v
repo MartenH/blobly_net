@@ -78,6 +78,8 @@ fn C.vgui_menu_bar_end()
 fn C.vgui_menu_begin(&char) int
 fn C.vgui_menu_end()
 fn C.vgui_menu_item(&char) int
+fn C.vgui_begin_popup_context_item(&char) int
+fn C.vgui_end_popup()
 fn C.vgui_menu_item_check(&char, int) int
 fn C.vgui_checkbox(&char, int) int
 fn C.vgui_text_colored(int, int, int, &char)
@@ -265,6 +267,18 @@ pub fn menu_begin(label string) bool {
 
 pub fn menu_end() {
 	C.vgui_menu_end()
+}
+
+// begin_popup_context_item opens a right-click context menu on the last-submitted item.
+// Returns true while open — render menu_item()s inside, then call end_popup(). `id` keeps
+// each row's menu distinct.
+pub fn begin_popup_context_item(id string) bool {
+	return C.vgui_begin_popup_context_item(id.str) == 1
+}
+
+// end_popup closes a begin_popup_context_item()/popup block.
+pub fn end_popup() {
+	C.vgui_end_popup()
 }
 
 // menu_item returns true the frame it is clicked.

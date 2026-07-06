@@ -40,6 +40,8 @@ int  vgui_menu_item_check(const char* label, int checked);
 int  vgui_checkbox(const char* label, int cur);
 void vgui_text_colored(int r, int g, int b, const char* s);
 int  vgui_small_button(const char* label);
+int  vgui_begin_popup_context_item(const char* id);
+void vgui_end_popup(void);
 void vgui_spacing(void);
 void vgui_separator(void);
 void vgui_quit(void);

@@ -293,6 +293,10 @@ int  vgui_menu_bar_begin() {
 void vgui_menu_bar_end() { ImGui::EndMenuBar(); ImGui::PopStyleVar(); }
 int  vgui_menu_begin(const char* label) { return ImGui::BeginMenu(label) ? 1 : 0; }
 void vgui_menu_end() { ImGui::EndMenu(); }
+// right-click context menu on the LAST-submitted item: returns 1 if open (render menu_items
+// then call vgui_end_popup). `id` keeps each row's menu distinct.
+int  vgui_begin_popup_context_item(const char* id) { return ImGui::BeginPopupContextItem(id) ? 1 : 0; }
+void vgui_end_popup() { ImGui::EndPopup(); }
 int  vgui_menu_item(const char* label) { return ImGui::MenuItem(label) ? 1 : 0; }
 int  vgui_menu_item_check(const char* label, int checked) {
     bool b = checked != 0;

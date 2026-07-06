@@ -2917,16 +2917,20 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				app.sel_id = int(g.id)
 				app.sel_ext = g.ext
 			}
-			// right-click a row → plot all its signals in Graphics
-			if vgui.is_item_clicked_right() {
+			// right-click a row → context menu (plot its signals / add to filter)
+			if vgui.begin_popup_context_item('rowctx##${g.dir}|${g.ch}|${g.id}|${g.ext}') {
 				if m := app.find_message(g.id, g.ext) {
-					sigs := m.active_signals(r.data)
-					for s in sigs {
-						app.add_watch(g.id, g.ext, s.name)
+					if vgui.menu_item('Add all signals to Graphics') {
+						for s in m.active_signals(r.data) {
+							app.add_watch(g.id, g.ext, s.name)
+						}
+						app.show_graphics = true
 					}
-					app.show_graphics = true
-					app.notify('added ${sigs.len} signal(s) of ${idstr(g.id, g.ext)} to Graphics')
 				}
+				if vgui.menu_item('Add to Trace (filter)') {
+					app.add_fwatch(g.id, g.ext)
+				}
+				vgui.end_popup()
 			}
 			vgui.table_cell(g.ch)
 			vgui.table_cell(g.dir)
@@ -2962,7 +2966,15 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 						unit := if s.unit != '' { ' ${s.unit}' } else { '' }
 						vgui.table_row()
 						vgui.table_next_col()
-						vgui.text('    ${s.name}')
+						// selectable spans the cell so the whole row is a right-click target
+						vgui.selectable('    ${s.name}##sigrow${g.id}_${g.ext}_${s.name}', false)
+						if vgui.begin_popup_context_item('sigctx##${g.id}_${g.ext}_${s.name}') {
+							if vgui.menu_item('Add ${s.name} to Graphics') {
+								app.add_watch(g.id, g.ext, s.name)
+								app.show_graphics = true
+							}
+							vgui.end_popup()
+						}
 						vgui.table_next_col()
 						vgui.table_next_col()
 						vgui.table_next_col()
@@ -3170,16 +3182,22 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 			app.plot_win = wsec
 		}
 	}
-	// x-window ends at the latest sample of any watched signal; spans back `plot_win` seconds.
+	// x-window right edge: wall-clock NOW while live, so the strip chart slides on real time
+	// (not only when a sample arrives); the latest sample time when stopped/paused/loaded, so
+	// it holds still. Samples and `now` share app.t0's clock (rx stamps t_ms = ticks - t0).
 	mut xmax := f64(0)
-	for r in rows {
-		if f64(r.t_ms) / 1000.0 > xmax && app.is_watched_frame(r.id, r.ext) {
-			xmax = f64(r.t_ms) / 1000.0
+	if app.running && !app.paused {
+		xmax = f64(time.ticks() - app.t0) / 1000.0
+	} else {
+		for r in rows {
+			if app.is_watched_frame(r.id, r.ext) && f64(r.t_ms) / 1000.0 > xmax {
+				xmax = f64(r.t_ms) / 1000.0
+			}
 		}
 	}
 	xmin := if app.plot_win > 0 { xmax - f64(app.plot_win) } else { f64(0) }
 	xhi := if app.plot_win > 0 { xmax } else { f64(0) } // 0/0 → full autofit
-	if vgui.plot_begin_x('##sigplot', 260, xmin, xhi) {
+	if vgui.plot_begin_x('##sigplot', -1, xmin, xhi) { // -1 = fill the panel height
 		for w in app.watch {
 			xs, ys := app.build_series(rows, w)
 			if xs.len > 0 {
