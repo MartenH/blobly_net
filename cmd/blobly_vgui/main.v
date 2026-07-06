@@ -2012,7 +2012,15 @@ fn (mut app App) remove_bus(i int) {
 		return
 	}
 	app.commit_cfg()
+	removed_iface := app.proj.channels[i].iface
 	app.proj.channels.delete(i)
+	// drop generator bus-overrides that pointed at the removed bus, so start() won't reopen and
+	// transmit on an interface that's no longer configured (they fall back to their own channel).
+	for si in 0 .. app.senders.len {
+		if app.senders[si].sender.bus == removed_iface {
+			app.senders[si].sender.bus = ''
+		}
+	}
 	app.dirty = true
 	app.sync_cfg_bufs()
 	app.rebuild_preserving_senders()

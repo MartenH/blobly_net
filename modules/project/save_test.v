@@ -214,6 +214,29 @@ channels:
 	assert c1.bitrate == 1000000
 }
 
+// A DoIP endpoint on a bracketed IPv6 address must survive the Save round-trip (the address
+// starts with `[`, which YAML would read as flow syntax unless it's quoted).
+fn test_ipv6_address_roundtrip() {
+	orig := Project{
+		name:     'v6'
+		channels: [
+			Channel{
+				name:    'Gateway'
+				adapter: 'doip'
+				address: '[::1]:13400'
+				iface:   'doip:[::1]:13400'
+				typ:     'doip'
+			},
+		]
+	}
+	rp := parse(orig.to_yaml())!
+	assert rp.channels.len == 1
+	c := rp.channels[0]
+	assert c.adapter == 'doip'
+	assert c.address == '[::1]:13400'
+	assert c.is_doip()
+}
+
 // compose_iface / decompose_iface are inverses across every adapter.
 fn test_iface_compose_decompose() {
 	cases := [
