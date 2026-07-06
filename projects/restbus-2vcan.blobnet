@@ -1,0 +1,54 @@
+# Restbus simulation for a real ECU with two CAN interfaces (vcan0 + vcan1).
+#
+# blobly_net plays the REST of each network: a DBC per bus provides the periodic
+# messages, and the tester simulates the transmitter ECUs so the device-under-test's
+# vcan0/vcan1 see live traffic. vcan0 also answers an on-demand request (engine rpm /
+# 0x101 -> 0x102) — that's a request/response rule, NOT a periodic signal.
+#
+# This is the v2 project schema: `buses:` with `adapter` + `address` (+ an optional
+# `network` grouping label). To run it, bring up the two virtual CAN interfaces first:
+#     scripts/setup_vcan.sh          # creates vcan0 and vcan1
+# then Start the measurement. Point the DUT (or sut/can_sut.py vcan0) at vcan0/vcan1.
+# For a fully driver-free variant, switch adapter: vcan -> virtual (in-process bus).
+project:
+  name: Restbus — 2× vcan
+  version: 2
+
+buses:
+  # --- Powertrain network on vcan0: periodic restbus + on-demand rpm reply ---
+  - name: CAN0
+    network: Powertrain
+    adapter: vcan
+    address: vcan0
+    protocol: can
+    bitrate: 500000
+    mode: monitor
+    databases:
+      - dbc/blobly_net.dbc
+    simulation:
+      - name: SUT
+        signals:
+          - { name: EngineSpeed,  type: sine,    offset: 1600, amplitude: 1500, freq: 0.7, phase: 0 }
+          - { name: VehicleSpeed, type: sine,    offset: 70,   amplitude: 60,   freq: 0.9, phase: 1 }
+          - { name: CoolantTemp,  type: sine,    offset: 90,   amplitude: 15,   freq: 1.1, phase: 2 }
+          - { name: Gear,         type: stepmod, period: 1,    count: 6,        base: 1 }
+        responses:
+          # on-demand: a Request (0x101) is answered with a Response (0x102)
+          - { request: "0x101", response: "0x102", byte: 0, add: 1 }
+
+  # --- Body network on vcan1: periodic restbus only ---
+  - name: CAN1
+    network: Body
+    adapter: vcan
+    address: vcan1
+    protocol: can
+    bitrate: 500000
+    mode: monitor
+    databases:
+      - dbc/blobly_net.dbc
+    simulation:
+      - name: BodyECU
+        signals:
+          - { name: InteriorTemp, type: sine,    offset: 22, amplitude: 3, freq: 0.05 }
+          - { name: Headlights,   type: stepmod, period: 5,  count: 4,     base: 0 }
+          - { name: Locked,       type: const,   value: 1 }

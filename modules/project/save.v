@@ -16,12 +16,30 @@ pub fn (p Project) to_yaml() string {
 	b.writeln('  name: ${p.name}')
 	b.writeln('  version: ${schema_version}') // we always write the current format
 	b.writeln('')
-	b.writeln('channels:')
+	b.writeln('buses:')
 	for ch in p.channels {
-		b.writeln('  - name: ${ch.name}')
-		b.writeln('    type: ${ch.typ}')
-		b.writeln('    interface: ${ch.iface}')
-		b.writeln('    bitrate: ${ch.bitrate}')
+		// Effective adapter/address. adapter+address are the v2 source of truth (iface is
+		// derived); but some callers (tests, defaults) instead set `iface` directly and leave
+		// adapter/address at the struct default (vcan/vcan0 → `vcan0`). Only in THAT case does
+		// the raw iface win — otherwise explicit v2 adapter/address stays authoritative (so a
+		// `Channel{adapter:'virtual', address:'CAN1'}` isn't serialized as vcan0).
+		mut adapter := ch.adapter
+		mut address := ch.address
+		if compose_iface(adapter, address) == 'vcan0' && ch.iface != 'vcan0' {
+			adapter, address = decompose_iface(ch.iface)
+		}
+		b.writeln('  - name: ${yaml_scalar(ch.name)}')
+		if ch.network != '' {
+			b.writeln('    network: ${yaml_scalar(ch.network)}')
+		}
+		b.writeln('    adapter: ${adapter}')
+		if address != '' {
+			b.writeln('    address: ${yaml_scalar(address)}')
+		}
+		if !ch.is_doip() {
+			b.writeln('    protocol: ${ch.typ}')
+			b.writeln('    bitrate: ${ch.bitrate}')
+		}
 		if ch.fd {
 			b.writeln('    fd: true')
 			if ch.data_bitrate > 0 {
@@ -40,10 +58,10 @@ pub fn (p Project) to_yaml() string {
 			b.writeln('    timing: { brp: ${ch.timing.brp}, tseg1: ${ch.timing.tseg1}, tseg2: ${ch.timing.tseg2}, sjw: ${ch.timing.sjw} }')
 		}
 		if ch.is_doip() {
-			b.writeln('    tester_address: "0x${ch.tester_addr:X}"')
-			b.writeln('    ecu_address: "0x${ch.ecu_addr:X}"')
+			b.writeln('    tester_address: "0x${ch.tester_addr:04X}"')
+			b.writeln('    ecu_address: "0x${ch.ecu_addr:04X}"')
 			if ch.vin != '' {
-				b.writeln('    vin: ${ch.vin}')
+				b.writeln('    vin: ${yaml_scalar(ch.vin)}')
 			}
 			if ch.eid.len > 0 {
 				b.writeln('    eid: ${hex_bytes(ch.eid)}')
@@ -52,22 +70,22 @@ pub fn (p Project) to_yaml() string {
 		if ch.databases.len > 0 {
 			b.writeln('    databases:')
 			for d in ch.databases {
-				b.writeln('      - ${d}')
+				b.writeln('      - ${yaml_scalar(d)}')
 			}
 		}
 		if ch.manifest != '' {
-			b.writeln('    manifest: ${ch.manifest}')
+			b.writeln('    manifest: ${yaml_scalar(ch.manifest)}')
 		}
 		if ch.simulate.len > 0 {
 			b.writeln('    simulate:')
 			for s in ch.simulate {
-				b.writeln('      - ${s}')
+				b.writeln('      - ${yaml_scalar(s)}')
 			}
 		}
 		if ch.nodes.len > 0 {
 			b.writeln('    simulation:')
 			for node in ch.nodes {
-				b.writeln('      - name: ${node.name}')
+				b.writeln('      - name: ${yaml_scalar(node.name)}')
 				if node.signals.len > 0 {
 					b.writeln('        signals:')
 					for g in node.signals {
@@ -85,12 +103,12 @@ pub fn (p Project) to_yaml() string {
 		if ch.senders.len > 0 {
 			b.writeln('    senders:')
 			for s in ch.senders {
-				b.writeln('      - name: ${s.name}')
+				b.writeln('      - name: ${yaml_scalar(s.name)}')
 				if s.key != '' {
-					b.writeln('        key: ${s.key}')
+					b.writeln('        key: ${yaml_scalar(s.key)}')
 				}
 				if s.message != '' {
-					b.writeln('        message: ${s.message}')
+					b.writeln('        message: ${yaml_scalar(s.message)}')
 				}
 				if s.id != 0 {
 					b.writeln('        id: "0x${s.id:X}"')
@@ -100,6 +118,9 @@ pub fn (p Project) to_yaml() string {
 				}
 				if s.data.len > 0 {
 					b.writeln('        data: ${hex_bytes(s.data)}')
+				}
+				if s.bus != '' {
+					b.writeln('        bus: ${yaml_scalar(s.bus)}')
 				}
 				b.writeln('        trigger: ${s.trigger}')
 				if s.trigger == 'cyclic' && s.cycle_ms > 0 {
@@ -115,7 +136,7 @@ pub fn (p Project) to_yaml() string {
 		}
 		if replay := ch.replay {
 			b.writeln('    replay:')
-			b.writeln('      source: ${replay.source}')
+			b.writeln('      source: ${yaml_scalar(replay.source)}')
 			b.writeln('      speed: ${num(replay.speed)}')
 			b.writeln('      loop: ${replay.repeat}')
 		}
@@ -160,6 +181,23 @@ fn gen_inline(g GenCfg) string {
 		else {}
 	}
 	return '{ ${parts.join(', ')} }'
+}
+
+// yaml_scalar renders a string as a YAML scalar, double-quoting it when a bare value would
+// be misparsed — empty, a leading indicator char (so a bracketed IPv6 address `[::1]:13400`
+// stays a scalar and isn't read as flow syntax), an embedded `: ` / ` #`, a newline, or a
+// trailing space. Plain values (can0, PCAN_USBBUS1, 127.0.0.1:13400, paths) pass through bare.
+fn yaml_scalar(s string) string {
+	if s == '' {
+		return '""'
+	}
+	indicators := '[]{},#&*!|>\'"%@?:- '
+	needs := s[0] in indicators.bytes() || s.contains(': ') || s.contains(' #')
+		|| s.contains('\n') || s[s.len - 1] == ` `
+	if !needs {
+		return s
+	}
+	return '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
 }
 
 // hex_bytes renders a raw payload as space-separated hex (round-trips through

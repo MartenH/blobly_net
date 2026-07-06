@@ -1379,6 +1379,154 @@ prompt for a password.
   **12-byte preemptive record (telemetry.md P4, not built)**. VERIFIED live vs an injected cooperative
   capture on vcan0 (24 sequential records): by-core single-lane no-overlap, per-handler 3 lanes, overrun
   red outline, preempt hatch, Zoom In → 400% + canvas widens, bottom scrollbar drags to pan (0→15.9 ms).
+  (Merged as PR #13 zoom/scroll + PR #14 rework — both user-approved.)
+- 2026-07-03: **GUI toolkit eval — WINDOWS BUILD CHECK: GREEN (the gating step; done on the Windows
+  machine).** Ran the `eval/vgui` spike natively on Windows 11 (dedicated MSYS2 `C:\dev\msys64-ct`,
+  mingw-w64 **gcc 16.1.0**, V 0.5.1 `c0624b2`, Intel Arc / **OpenGL 4.6**). All four open questions
+  answered ✅: (1) **cimgui/cimplot + GLFW compile clean** under mingw — `build_deps.sh` ran unmodified
+  (`pacman -S mingw-w64-x86_64-glfw` gives static `libglfw3.a`), built `libvgui_c.a` (only deprecation
+  warnings); (2) **`#flag windows` resolves to a SELF-CONTAINED exe** — deps are only system DLLs
+  (kernel32/user32/gdi32/shell32/opengl32/msvcrt), no MinGW runtime; flags = static glfw `-l:libglfw3.a`
+  + `-lstdc++ -static -static-libstdc++ -static-libgcc` + win32 libs (verified with both gcc & g++
+  drivers); (3) **multi-viewport spawns real native Win32 windows** — the single process owns 2
+  top-level windows (`EnumWindows`-verified): main GLFW window + a detached **`Trace Chart`** OS window
+  rendering the ImPlot swimlane outside the main rect (drag to 2nd monitor); both render correctly
+  (Trace table + colored swimlane bars/overrun/preemption) — full-desktop capture in
+  `eval/vgui/shots/windows_multiviewport.png`; (4) **idle CPU 0.5 %/core (~0.03 % of 16-core), ~84 MB**
+  event-driven — beats WSLg's ~4 %, on par with gui's ~0.3 %. **The migrate/stay gate is CLEARED →
+  recommendation stands: migrate, phased.** ⚠️ **Two findings fixed/flagged along the way:** (a) the
+  WSL session's `.gitignore` pattern `examples/**/trace_chart` **also matched the `examples/trace_chart/`
+  source dir**, so the example the WSL side thought it committed was silently NEVER added — I
+  reconstructed `examples/trace_chart/trace_chart.v` (Trace table + swimlane, env knobs
+  `VGUI_POLL`/`VGUI_FRAMES`/`VGUI_SHOT`) and scoped the ignore to the binary (`examples/*/trace_chart`
+  + `.exe`); (b) **`v … run` panics on Windows** driving the C compiler (`array.push_many: new len
+  exceeds max_int` in `os__windows_execute_command_line`, from MSYS bash *and* PowerShell) — a V bug,
+  not vgui (blobly_net's own build is fine; the C compile+link are correct when run directly). Added
+  **`eval/vgui/build_win.sh`** (2-step: V→C, then gcc compile + g++ link) as the reproducible Windows
+  recipe; worth a minimal `v bug` report. MSVC (`cl`) not exercised (mingw is primary; nice-to-have).
+  Results written into `docs/gui_toolkit_evaluation.md` + `eval/vgui/README.md`. NOT committed yet
+  (awaiting user's say-so per the no-merge-without-approval feedback). **Windows deps installed this
+  session:** `mingw-w64-x86_64-glfw` + `mingw-w64-x86_64-cmake` + `git` into `C:\dev\msys64-ct`.
+- 2026-07-03: **GUI toolkit evaluation — Dear ImGui + ImPlot spike (branch `gui-toolkit-eval`; NOT
+  merged).** Motivated by the user's worry that `vlang/gui` is **structurally single-window** (sokol_app
+  owns one OS window) — a ceiling for a professional-class multi-monitor tool — plus gui's stagnation/patch
+  burden. Since the engine is GUI-free, a swap is a `src/main.v` rewrite, not a rearchitecture. Spiked
+  **V → Dear ImGui (docking/multi-viewport) + ImPlot** via a new reusable **`eval/vgui`** V module (clean
+  V API over a curated *scalar* C ABI `vgui_glue.cpp` on **cimgui + cimplot** + a GLFW/GL3 backend — same
+  facade pattern as `modules/lua`; learned from but did NOT reuse `nsauzede/vig`, whose hand-mirrored
+  `ImGuiIO` rots on imgui bumps). **Both scary unknowns CLEARED on Linux/WSL:** (1) **multi-window works
+  under WSLg** — 3 simultaneous real X11 windows, the Trace Chart swimlane landing on the user's **second
+  monitor** (gui can't); (2) **CPU is matchable to gui** — event-driven `glfwWaitEvents` ≈ 4 %@1-2fps
+  (→~0 pure-wait) vs the naive-poll **340 %** trap. Ported the **Trace Chart swimlane to imgui+ImPlot**
+  (`eval/vgui/examples/trace_chart`): the swimlane is an ImPlot plot with **native drag-pan / scroll-zoom
+  / double-click-fit / time axis** — replaces the whole hand-rolled zoom-buttons+scrollbar and looks
+  *better* than the gui version. Gotchas: all imgui TUs must share one config (`IMGUI_DISABLE_OBSOLETE_
+  FUNCTIONS` changes `sizeof(ImGuiIO)` → "Mismatched struct layout!" abort); imgui 1.92.8 swapped
+  `AddRect` thickness/flags; `import -window` blanks the main GL window under WSLg (use the `VGUI_SHOT`
+  glReadPixels-GL_BACK dump). Findings + migrate/stay recommendation (lean **migrate**, phased) +
+  the **Windows-build-check next step**: `docs/gui_toolkit_evaluation.md`; module/build/README:
+  `eval/vgui/`. Pinned: cimgui `053280d` (imgui `b61e563` = 1.92.8), cimplot `999ce3e`, GLFW 3.3.10.
+  Screenshots in `eval/vgui/shots/`. Build-verified reproducibly from the repo (`build_deps.sh` +
+  example). **Decision gated on the Windows build** (mingw/msvc: does cimgui/cimplot+GLFW compile, does
+  the `#flag windows` link resolve, do native Win32 viewports spawn, idle CPU) — the user will drive that
+  on the Windows machine. **Feedback captured this session:** do NOT merge PRs without the user's explicit
+  say-so (get green, then ask).
+- 2026-07-05: **Project editing in the GUI — schema v2 + Configuration editor + per-bus Trace (vgui,
+  branch `vgui-migration`).** Verified the Windows-pushed vgui build runs on Linux first (stale
+  `libvgui_c.a` needed `DEPS=1` — the incoming commits added `vgui_tree_node_open` to the C glue; noted
+  in `run_vgui.sh`). Then, per an agreed design (`docs/project_editing.md` + 6 mermaid example configs):
+  a user can now build a `.blobnet` **from a blank project entirely in the GUI**. Concept model agreed
+  with the user: **merged "Bus"** entity (not a 3-tier Network/Channel/Adapter split) with an optional
+  **`network`** grouping label; DBC attaches to the bus; a **dedicated stopped-only Configuration editor**
+  (not inline). (1) **`modules/project` schema v2**: `Channel` gained `adapter`/`address`/`network`/
+  `protocol`; `iface` is now DERIVED via `compose_iface(adapter,address)` (virtual→`inproc:`, vcan/
+  socketcan→raw, udp/pcan/kvaser/doip→`scheme:`). Parser accepts BOTH v2 (`buses:` + adapter/address)
+  and v1 (`channels:` + `interface:`/`type:`, decomposed back) — full back-compat; `schema_version` 1→2
+  so older builds warn. `to_yaml` emits v2. Tests: v2 round-trip + legacy-load + compose/decompose
+  inverse (`v test modules/project/` green). (2) **main.v**: `load_project` split into `set_project` +
+  reusable **`rebuild_from_proj()`** (the editor mutates `app.proj`, the runtime `app.chans` is derived
+  — one source of truth, so Save captures edits); `gen_dirty`→**`dirty`** project-wide (● in toolbar).
+  **File menu**: New / Open… / Save / Save As… / Configure… (Configure disabled while running). (3)
+  **In-imgui file browser** (`draw_filebrowser`, no native dialog — imgui has none; `os.ls` nav +
+  `*.blobnet`/`.dbc`/`.csv` filter + save-name) for Open/Save-As/Add-DBC/Add-manifest. (4) **Configuration
+  editor** (`draw_config`, stopped-only floating window): per-bus name/network/adapter-picker/address/
+  protocol/bitrate/mode/listen-only/enabled + DBC list add-remove + manifest + DoIP addrs/vin + replay
+  block; ＋Add bus / Remove; Save→`.blobnet`. `commit_cfg` flushes edit buffers into the model (called by
+  `save_project`, fixing a latent Save-loses-edits path). (5) **Trace per-bus view**: `show: [All][bus…]`
+  toggle-chips (`bus_chips`, from the configured buses, network-labelled) on BOTH Trace panels
+  (`trace_bus`/`ftrace_bus`), so `Trace→vcan0` + `Trace(filter)→vcan1` show disjoint traffic — the natural
+  2-vcan layout. Made the trace `ch` column coherent (TX rows were `inproc:CAN1`, now the bus NAME like RX)
+  so chips filter correctly. **Verification**: schema is unit-tested; a headless **`BLOBLY_SELFTEST_CONFIG`**
+  smoke drives the real editor methods (New→add 2 buses→edit→add DBC→Save As→reload) and asserts the
+  round-trip = PASS (the editor's widgets can't be clicked under WSLg, and — key finding — with imgui
+  **multi-viewport** ON the floating editor/browser are SEPARATE OS windows that `VGUI_SHOT`'s glReadPixels
+  can't capture, so the self-test covers the logic while screenshots cover the docked Trace chips). Shipped
+  **`projects/restbus-2vcan.blobnet`** (v2-schema example: 2 vcan buses, DBC + simulated transmitters each,
+  a 0x101→0x102 on-demand reply on vcan0 — the user's real-ECU-with-2-vcans restbus case) + Open Example
+  entry. Dev hook `BLOBLY_SHOW_CONFIG=1` opens the editor at startup. Committed `279f002`.
+- 2026-07-05: **Config-editor UX round (user feedback).** (a) **vgui glue additions** (`eval/vgui`,
+  DEPS rebuild): `begin_closable(title, open) (vis, open)` → a close **[X]** in the window title bar;
+  `set_item_tooltip`/`help_marker` (a dim "(?)" with a hover tooltip). (b) **Configuration editor is now
+  a tree** — each bus is a `tree_node_open` with an **enable checkbox on the header row** (toggle without
+  expanding), expanding to the fields; `+ Add bus` adds a node. (c) **Tooltips** (`help_marker`) on
+  adapter/network/mode/bitrate/listen-only/DBC/manifest/DoIP fields explaining each. (d) **Adapter
+  Discover** — a per-bus Discover button enumerates the machine's interfaces for the chosen adapter
+  (`discover_addresses`: vcan/socketcan from `/sys/class/net` ARPHRD_CAN type 280; virtual suggests
+  names; PCAN/Kvaser need the Windows driver) and lists them as click-to-fill chips — answers "which
+  vcans/HW do I have?". (e) **Close [X] on every panel** — all ~19 dockable panels use `begin_closable`
+  storing the open state back into their `show_*` flag (7 read-only `draw_*` fns became `mut app`).
+  Verified: build clean, config self-test still PASS, close-X visible on docked panels (screenshot),
+  editor tree renders no-crash. **Learned (from a user save):** Save over a shipped/hand-commented demo
+  (e.g. sim-demo.blobnet) is **lossy** — `to_yaml` reformats + drops comments; the user editing an Open
+  Example and Saving rewrites that repo file. Restored sim-demo; consider nudging Example edits toward
+  Save As. Committed `c3e40cf` + polish `4d243da` (collapsed tree, header remove, dropped the stray
+  DoIP "Discover" from the Buses panel → "Configure…" button instead).
+- 2026-07-05: **Discover-interfaces dialog (matches the old vlang/gui app's UX) + PCAN-on-WSL insight.**
+  User (real PCAN-USB Pro FD moved to WSL) showed the OLD app's rich bus-discovery dialog and asked why
+  the new per-bus Discover was so weak. **Key hardware fact:** a PEAK/Kvaser device on Linux/WSL is
+  exposed by the kernel SocketCAN driver (`peak_usb`) as **canN interfaces** — the dual-channel PCAN =
+  `can0` + `can1` (dmesg: "PCAN-USB Pro FD … channel 0 → can0, channel 1 → can1"). So on Linux the
+  **`socketcan` adapter** is correct, NOT the Windows-only `pcan`/`kvaser` DLL backends (whose Discover
+  returns [] there — why the user "could only see the USB interface"). Built a proper **Discover dialog**
+  (`draw_discover_dialog`, its own window): `read_can_ifaces()` reads `/sys/class/net` for each CAN iface
+  with a rich label — USB **product** (`device/../product` = "PCAN-USB Pro FD"), bus path
+  (`busnum-devpath` = "1-1"), link **state** (`operstate` = down) — plus vcan, a UDP software bus
+  (`239.63.42.1:20000`, the udpbus default), and an in-process SIM net; `discover_all()` marks entries
+  already in the project. The dialog has per-row **tick boxes + ＋ Add ticked**, **＋ vcan** / **＋ Sim
+  net** quick-adds, Refresh, and a tip that PCAN/Kvaser show as SocketCAN on Linux. `add_bus_spec(adapter,
+  address)` + `unique_bus_name` append a bus (used by ＋ Add bus, Add-ticked, quick-adds). Opened via a
+  **Discover…** button in the config editor. Also: the enable checkbox now shows **"— disabled"** in the
+  bus's tree header (visible feedback; the user thought it "did nothing" — it's the persisted attach-on-
+  Start flag, no live effect while stopped). **Verified**: `discover_all()` on this box lists
+  `can0/can1 · PCAN-USB Pro FD [1-1] · down`, `vcan0 · virtual CAN [added]`, `udp`, `SIM` — byte-matching
+  the old app's screenshot; build clean, config self-test PASS. Committed `062aa4d` (+ tree-collapse fix
+  `4b386ea`: `ImGui::TreeNode` hashes the ID from the whole label, so `##` re-keys the node when the
+  visible adapter/address changes → collapses; use `###` for a stable id — also fixed the Network panel
+  node whose label carried live RX). **Follow-up refinement:** removed the weak per-bus "Discover → found
+  chips" (fragile: imgui ignores an external buffer write while the address field is focused, and it's
+  redundant — the dialog's tick + Add-ticked IS how you turn can0 into a bus); and made the **adapter
+  picker platform-aware** (`available_adapters`: Linux shows virtual/vcan/socketcan/udp/doip, Windows
+  virtual/udp/pcan/kvaser/doip, always keeping a bus's current adapter) so `pcan`/`kvaser` no longer
+  appear on WSL where they can't work. Committed `955bb69`.
+- 2026-07-05: **Fix sluggish UI (window close/reflow took ~1-2s).** The event-driven loop waited
+  `glfwWaitEventsTimeout(0.5)` per idle frame, so imgui's animations (window close, dock reflow, tab/
+  hover fades) — which need CONTINUOUS frames — played at ~2fps and took ~1-2s to settle. Fix
+  (`eval/vgui/vgui_glue.cpp`, DEPS rebuild): after each frame, sample activity (`io.MouseDown/Wheel/
+  Delta`, `WantTextInput`, `IsAnyItemActive`); if active, set a `g_busy_frames=45` countdown; while it's
+  >0, `vgui_running` waits `1/60`s (smooth 60fps), else the cheap `0.5`s idle wait. So interactions +
+  animations render at full rate for ~0.75s after the last input, then idle CPU drops back. (Running
+  measurements were already ~30fps via spin_loop's wake.) Committed `5ac4f1d`.
+- 2026-07-05: **Channel shows "down" (red) when the CAN iface is actually DOWN.** User: a socketcan
+  channel said "running" (green) while nothing was sent — because SocketCAN lets you `bind()` a DOWN
+  interface, so `transport.open()` + the RX thread succeed and the app marked it `running` even though
+  the link can't tx/rx. Added `iface_link_up(adapter, address)` — reads IFF_UP (bit 0) from
+  `/sys/class/net/<if>/flags` for socketcan/vcan (software backends always true); `Chan.link_down` is set
+  at Start and re-checked each `rx_loop` iteration (~5/s) so it flips green↔red live as the user brings
+  the iface up/down. `chan_state` now returns a red **"down"** when `running && link_down`. Verified vs
+  real hardware: `can0` (flags 0x40080, IFF_UP 0) → down/red; `vcan0` (0x81, IFF_UP 1) → run/green.
+  (Root cause of the user's "nothing sent, no errors": can0/can1 were never `ip link set … up` — both
+  DOWN with no bitrate. Separately noted: TX failures only surface in the Log panel — a follow-up could
+  put them in the always-visible toolbar status.) NOT yet committed.
 - 2026-06-30: **Distributable bundle + browser-rendered Help.** Two gaps closed so a freshly-downloaded
   build runs the sim out of the box. (a) **Bundle:** Windows CI (`windows.yml` msvc + mingw) now uploads
   a runnable folder — `blobly_net.exe` (+ DLLs on msvc) alongside `projects/`, `dbc/`, `samples/` and a

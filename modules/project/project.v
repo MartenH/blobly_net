@@ -18,7 +18,7 @@ import yaml
 // schema changes incompatibly. Files carry `version:`; Save writes schema_version,
 // and the loader flags a file whose version is NEWER than the app understands
 // (is_supported / version_note) so opening a future-format file isn't silent.
-pub const schema_version = 1
+pub const schema_version = 2
 
 // Mode is a channel's operating mode within a measurement.
 pub enum Mode {
@@ -109,16 +109,27 @@ pub mut:
 	ext      bool   // 29-bit extended id
 	data     []u8   // explicit raw payload (optional; overrides the zero/dlc default)
 	signals  []SenderSig
+	bus      string // target bus to transmit on (a channel iface); '' = the sender's own channel
 	trigger  string = 'manual' // manual | key | cyclic
 	cycle_ms int    // cyclic period (ms); only used when trigger == cyclic
 }
 
 // Channel is one bus the tester attaches to.
+//
+// Schema v2 introduces `adapter` + `address` (the transport backend and its
+// backend-specific address) and an optional `network` grouping label; `iface` is
+// the derived internal scheme string that `transport.open()` consumes (composed
+// from adapter+address). v1 files (`channels:` with `interface:`/`type:`) still
+// load — the parser decomposes `interface` back into adapter+address so the editor
+// always has them. See compose_iface / decompose_iface.
 pub struct Channel {
 pub mut:
 	name         string = 'CAN'
-	typ          string = 'can' // yaml `type`: can | canfd | doip
-	iface        string = 'vcan0' // yaml `interface` (a V keyword, so the field is `iface`)
+	network      string // v2: optional grouping label (buses of one logical network)
+	adapter      string = 'vcan' // v2: virtual | vcan | socketcan | udp | pcan | kvaser | doip
+	address      string = 'vcan0' // v2: adapter-specific (CAN1 / vcan0 / can0 / grp:port / host:port)
+	typ          string = 'can' // yaml `type`/`protocol`: can | canfd | doip
+	iface        string = 'vcan0' // derived scheme string (composed from adapter+address)
 	bitrate      int    = 500000
 	fd           bool
 	data_bitrate int
@@ -269,7 +280,9 @@ pub fn parse(text string) !Project {
 	pj := doc.value('project')
 	p.name = pj.value('name').default_to('untitled').string()
 	p.version = pj.value('version').default_to(i64(schema_version)).int()
-	if chs := doc.value_opt('channels') {
+	// v2 uses `buses:`; v1 used `channels:`. Accept either (buses wins if both present).
+	chs := doc.value_opt('buses') or { doc.value_opt('channels') or { yaml.Any(yaml.Null{}) } }
+	if chs !is yaml.Null {
 		for c in chs.array() {
 			if c is yaml.Null {
 				continue
@@ -303,8 +316,7 @@ pub fn default_project() Project {
 fn parse_channel(c yaml.Any) !Channel {
 	mut ch := Channel{
 		name:         c.value('name').default_to('CAN').string()
-		typ:          c.value('type').default_to('can').string()
-		iface:        c.value('interface').default_to('vcan0').string()
+		network:      c.value('network').default_to('').string()
 		bitrate:      c.value('bitrate').default_to(i64(500000)).int()
 		fd:           c.value('fd').default_to(false).bool()
 		data_bitrate: c.value('data_bitrate').default_to(i64(0)).int()
@@ -312,6 +324,55 @@ fn parse_channel(c yaml.Any) !Channel {
 		mode:         mode_from(c.value('mode').default_to('monitor').string())
 		listen_only:  c.value('listen_only').default_to(false).bool()
 		enabled:      c.value('enabled').default_to(true).bool()
+	}
+	// protocol/type: v2 `protocol:` (can|canfd), falling back to v1 `type:` (can|canfd|doip).
+	mut proto := c.value('protocol').default_to('').string()
+	if proto == '' {
+		proto = c.value('type').default_to('can').string()
+	}
+	// adapter/address: v2 `adapter:`+`address:` compose the iface; v1 `interface:` is
+	// decomposed back into adapter+address so the editor always has both.
+	if av := c.value_opt('adapter') {
+		ch.adapter = av.string()
+		ch.address = c.value('address').default_to('').string()
+		ch.iface = compose_iface(ch.adapter, ch.address)
+	} else if iv := c.value_opt('interface') {
+		raw := iv.string()
+		ch.adapter, ch.address = decompose_iface(raw)
+		// A legacy vendor iface embeds the bitrate (`pcan:CH@500000`): lift it into the bitrate
+		// field (decompose stripped it from the address) and recompose a clean iface.
+		if (ch.adapter == 'pcan' || ch.adapter == 'kvaser') && raw.contains('@') {
+			br := raw.all_after_last('@').int()
+			if br > 0 {
+				ch.bitrate = br
+			}
+			ch.iface = compose_iface(ch.adapter, ch.address)
+		} else {
+			ch.iface = raw
+		}
+	} else {
+		ch.adapter = 'vcan'
+		ch.address = 'vcan0'
+		ch.iface = 'vcan0'
+	}
+	// coherence: a doip adapter (or v1 `type: doip`) is a DoIP endpoint, not a CAN bus.
+	if ch.adapter == 'doip' || proto == 'doip' {
+		ch.typ = 'doip'
+		if ch.adapter != 'doip' {
+			// v1 `type: doip` — the interface may already carry `doip:<endpoint>`.
+			if ch.iface.starts_with('doip') {
+				ch.adapter, ch.address = decompose_iface(ch.iface)
+			} else {
+				ch.adapter = 'doip'
+				ch.address = ''
+				ch.iface = 'doip'
+			}
+		}
+	} else {
+		ch.typ = proto
+		if proto == 'canfd' {
+			ch.fd = true
+		}
 	}
 	if v := c.value_opt('tester_address') {
 		ch.tester_addr = parse_addr16(v.str()) or { return error('tester_address: ${err.msg()}') }
@@ -422,6 +483,7 @@ fn parse_sender(s yaml.Any) Sender {
 		key:      s.value('key').default_to('').string()
 		message:  s.value('message').default_to('').string()
 		ext:      s.value('extended').default_to(false).bool()
+		bus:      s.value('bus').default_to('').string()
 		trigger:  s.value('trigger').default_to('manual').string().to_lower()
 		cycle_ms: s.value('cycle_ms').int()
 	}
@@ -548,6 +610,71 @@ fn parse_id(s string) u32 {
 		return v
 	}
 	return u32(t.u64())
+}
+
+// adapters is the set of transport backends the editor offers (the `adapter:` value).
+// Order = the picker order. `virtual`/`vcan`/`socketcan`/`udp` are cross-platform or
+// Linux; `pcan`/`kvaser` are Windows CAN hardware; `doip` is an Ethernet diag endpoint.
+pub const adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'pcan', 'kvaser', 'doip']
+
+// compose_iface builds the internal scheme string `transport.open()` consumes from an
+// adapter + its backend-specific address. It is the inverse of decompose_iface.
+//   virtual  CAN1            -> inproc:CAN1   (bare `inproc` if address empty)
+//   vcan     vcan0           -> vcan0         (raw; SocketCAN backend)
+//   socketcan can0           -> can0          (raw; SocketCAN backend)
+//   udp      239.0.0.1:5000  -> udp:239.0.0.1:5000  (bare `udp` if empty)
+//   pcan     PCAN_USBBUS1    -> pcan:PCAN_USBBUS1
+//   kvaser   0               -> kvaser:0
+//   doip     127.0.0.1:13400 -> doip:127.0.0.1:13400 (bare `doip` if empty)
+pub fn compose_iface(adapter string, address string) string {
+	a := address.trim_space()
+	return match adapter {
+		'virtual' { if a == '' { 'inproc' } else { 'inproc:${a}' } }
+		'udp' { if a == '' { 'udp' } else { 'udp:${a}' } }
+		'pcan' { 'pcan:${a}' }
+		'kvaser' { 'kvaser:${a}' }
+		'doip' { if a == '' { 'doip' } else { 'doip:${a}' } }
+		// vcan / socketcan / unknown: the address IS the raw interface name.
+		else { a }
+	}
+}
+
+// decompose_iface splits a scheme string back into (adapter, address) so a v1 file (or
+// any raw `iface`) presents in the editor. Inverse of compose_iface. A bare `vcanN` maps
+// to the `vcan` adapter; anything else raw is treated as `socketcan` (real `canN`).
+pub fn decompose_iface(iface string) (string, string) {
+	s := iface.trim_space()
+	if s == 'inproc' {
+		return 'virtual', ''
+	}
+	if s.starts_with('inproc:') {
+		return 'virtual', s['inproc:'.len..]
+	}
+	if s == 'udp' {
+		return 'udp', ''
+	}
+	if s.starts_with('udp:') {
+		return 'udp', s['udp:'.len..]
+	}
+	// Vendor backends carry the bitrate in the iface as `@<rate>` (a v1 convention). Strip it
+	// from the address so it isn't re-appended at open (`…@500000@250000`) or treated as a
+	// distinct bus; the rate is lifted into the bitrate field by parse_channel.
+	if s.starts_with('pcan:') {
+		return 'pcan', s['pcan:'.len..].all_before('@')
+	}
+	if s.starts_with('kvaser:') {
+		return 'kvaser', s['kvaser:'.len..].all_before('@')
+	}
+	if s == 'doip' {
+		return 'doip', ''
+	}
+	if s.starts_with('doip:') {
+		return 'doip', s['doip:'.len..]
+	}
+	if s.starts_with('vcan') {
+		return 'vcan', s
+	}
+	return 'socketcan', s
 }
 
 // mode_from maps a string to a Mode (unknown → monitor).
