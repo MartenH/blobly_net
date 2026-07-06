@@ -88,7 +88,8 @@ mut:
 	rx           u64 // total across channels
 	rev          u64
 	running      bool
-	dbs          []candb.Database
+	dbs          []candb.Database             // all loaded DBCs (union; trace/symbol decode)
+	dbs_by_iface map[string][]candb.Database  // per-channel DBCs (generator message picker scope)
 	manifest     telem.Manifest
 	has_manifest bool
 	t0           i64
@@ -883,6 +884,7 @@ fn (mut app App) rebuild_from_proj() {
 	app.mu.lock()
 	app.chans = []
 	app.dbs = []
+	app.dbs_by_iface = map[string][]candb.Database{}
 	app.sims = []
 	app.senders = []
 	app.gen_bufs = []
@@ -910,6 +912,7 @@ fn (mut app App) rebuild_from_proj() {
 		for dbpath in ch.databases {
 			if db := candb.load_dbc_file(dbpath) {
 				app.dbs << db
+				app.dbs_by_iface[ch.iface] << db // scoped to this channel (generator picker)
 			} else {
 				eprintln('dbc ${dbpath}: ${err}')
 			}
@@ -3659,8 +3662,9 @@ fn draw_gen(mut app App) {
 				}
 			}
 			// message picker: build the frame from a DBC message (→ per-signal values) or send a
-			// raw id + data. Option 0 = raw; the rest are the DBC message names.
-			msg_names := app.message_names()
+			// raw id + data. Option 0 = raw; the rest are the messages on THIS generator's bus.
+			gen_iface := app.senders[i].target()
+			msg_names := app.message_names_for(gen_iface)
 			mut msg_opts := ['(raw id / data)']
 			msg_opts << msg_names
 			mut cur_msg := 0
@@ -3681,7 +3685,7 @@ fn draw_gen(mut app App) {
 			// payload: DBC message -> per-signal values; raw -> id + data hex
 			if s.message != '' {
 				vgui.text('message ${s.message} · signal values:')
-				cmsg := app.find_message_cdb(s.message) or { candb.Message{} }
+				cmsg := app.find_message_cdb_for(gen_iface, s.message) or { candb.Message{} }
 				for j, ss in s.signals {
 					mut sig := candb.Signal{}
 					mut have := false
@@ -3832,12 +3836,19 @@ fn (mut app App) new_project() {
 	app.notify('new project — add buses in Configure…')
 }
 
-// message_names lists every DBC message name across the loaded databases (deduplicated), in
-// load order — the picker options for a generator's payload.
-fn (app &App) message_names() []string {
+// dbs_for returns the DBCs attached to the channel transmitting on `iface` (a generator's target
+// bus). Scoping the message picker/lookup here — not the global app.dbs — means a generator on
+// bus B never resolves a same-named message from bus A's database.
+fn (app &App) dbs_for(iface string) []candb.Database {
+	return app.dbs_by_iface[iface] or { [] }
+}
+
+// message_names_for lists the DBC message names on `iface` (deduplicated, load order) — the
+// picker options for a generator whose target bus is `iface`.
+fn (app &App) message_names_for(iface string) []string {
 	mut out := []string{}
 	mut seen := map[string]bool{}
-	for db in app.dbs {
+	for db in app.dbs_for(iface) {
 		for m in db.messages {
 			if m.name in seen {
 				continue
@@ -3852,10 +3863,12 @@ fn (app &App) message_names() []string {
 // set_sender_message switches generator `i` between raw (msg == '') and DBC-message mode. When a
 // message is picked, its signals are seeded (values preserved by name across a re-pick) so the
 // editor shows one input per signal; picking raw clears them so the id/data hex inputs return.
+// The message is resolved on the generator's OWN target bus, not globally.
 fn (mut app App) set_sender_message(i int, msg string) {
 	if i < 0 || i >= app.senders.len {
 		return
 	}
+	iface := app.senders[i].target()
 	app.mu.lock()
 	defer {
 		app.mu.unlock()
@@ -3867,7 +3880,7 @@ fn (mut app App) set_sender_message(i int, msg string) {
 		old := app.senders[i].sender.signals.clone()
 		app.senders[i].sender.message = msg
 		mut sigs := []project.SenderSig{}
-		for db in app.dbs {
+		for db in app.dbs_for(iface) {
 			mut found := false
 			for m in db.messages {
 				if m.name != msg {
@@ -3898,10 +3911,10 @@ fn (mut app App) set_sender_message(i int, msg string) {
 	app.dirty = true
 }
 
-// find_message_cdb returns the candb.Message with `name` from the loaded DBCs (for signal
-// metadata: units, value tables, integer-vs-float scaling).
-fn (app &App) find_message_cdb(name string) ?candb.Message {
-	for db in app.dbs {
+// find_message_cdb_for returns the candb.Message `name` from the DBCs on `iface` (signal
+// metadata: units, value tables, integer-vs-float scaling) — scoped to the generator's bus.
+fn (app &App) find_message_cdb_for(iface string, name string) ?candb.Message {
+	for db in app.dbs_for(iface) {
 		for m in db.messages {
 			if m.name == name {
 				return m
@@ -3925,17 +3938,18 @@ fn (mut app App) signal_input(i int, j int, sig candb.Signal, have bool) {
 	unit := if have && sig.unit != '' { ' [${sig.unit}]' } else { '' }
 	lbl := '${ss.name}${unit}##sig${i}_${j}'
 	pv := unsafe { &app.senders[i].sender.signals[j].value }
-	factor := if have && sig.factor != 0 { sig.factor } else { f64(1) }
 	vgui.set_next_item_width(170 * app.ui_scale)
 	if have && sig.values.len > 0 {
-		// enum: dropdown of "raw — name" states; the stored value stays physical
+		// enum: dropdown of "value — name" states. VAL_ keys are stored two's-complement for
+		// signed signals, so map key<->physical through the signal (phys_from_raw / raw_from_phys)
+		// — never a bare f64(rawkey), which would turn -1 into 1.8e19.
 		mut raws := sig.values.keys()
 		raws.sort()
 		mut labels := []string{cap: raws.len}
 		for r in raws {
-			labels << '${r} — ${sig.values[r]}'
+			labels << '${sig.phys_from_raw(r):g} — ${sig.values[r]}'
 		}
-		curraw := u64(math.round((ss.value - sig.offset) / factor))
+		curraw := sig.raw_from_phys(ss.value)
 		mut cur := 0
 		for k, r in raws {
 			if r == curraw {
@@ -3946,7 +3960,7 @@ fn (mut app App) signal_input(i int, j int, sig candb.Signal, have bool) {
 		nsel := vgui.combo(lbl, labels, cur)
 		if nsel != cur && nsel >= 0 && nsel < raws.len {
 			unsafe {
-				*pv = f64(raws[nsel]) * factor + sig.offset
+				*pv = sig.phys_from_raw(raws[nsel])
 			}
 			app.dirty = true
 		}
@@ -4030,7 +4044,8 @@ fn (mut app App) fire_index(i int) {
 	mut data := []u8{}
 	if s.message != '' {
 		mut found := false
-		for db in app.dbs {
+		// resolve the message on the generator's own target bus (not globally)
+		for db in app.dbs_for(app.senders[i].target()) {
 			for m in db.messages {
 				if m.name != s.message {
 					continue
