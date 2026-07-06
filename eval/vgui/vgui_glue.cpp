@@ -364,9 +364,22 @@ int vgui_plot_begin2(const char* title, float height, double x_min, double x_max
     if (ImPlot::BeginPlot(title, ImVec2(-1, height), ImPlotFlags_Crosshairs)) {
         int xf = (x_max > x_min) ? ImPlotAxisFlags_None : ImPlotAxisFlags_AutoFit;
         ImPlot::SetupAxis(ImAxis_X1, "t (s)", xf);
+        // Colour each y-axis's tick labels to match the signal plotted on it. Series auto-take
+        // colormap colours in plot order (item i -> colormap[i]) and signal i is bound to axis i,
+        // so axis i uses colormap[i]. Push ImPlotCol_AxisText AROUND SetupAxis to style per-axis.
+        ImPlot::PushStyleColor(ImPlotCol_AxisText, ImPlot::GetColormapColor(0));
         ImPlot::SetupAxis(ImAxis_Y1, NULL, ImPlotAxisFlags_AutoFit);
-        if (n_yaxes >= 2) ImPlot::SetupAxis(ImAxis_Y2, NULL, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_Opposite);
-        if (n_yaxes >= 3) ImPlot::SetupAxis(ImAxis_Y3, NULL, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_Opposite);
+        ImPlot::PopStyleColor();
+        if (n_yaxes >= 2) {
+            ImPlot::PushStyleColor(ImPlotCol_AxisText, ImPlot::GetColormapColor(1));
+            ImPlot::SetupAxis(ImAxis_Y2, NULL, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_Opposite);
+            ImPlot::PopStyleColor();
+        }
+        if (n_yaxes >= 3) {
+            ImPlot::PushStyleColor(ImPlotCol_AxisText, ImPlot::GetColormapColor(2));
+            ImPlot::SetupAxis(ImAxis_Y3, NULL, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_Opposite);
+            ImPlot::PopStyleColor();
+        }
         if (x_max > x_min) ImPlot::SetupAxisLimits(ImAxis_X1, x_min, x_max, ImPlotCond_Always);
         return 1;
     }
