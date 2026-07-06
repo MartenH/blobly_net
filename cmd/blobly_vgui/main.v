@@ -80,7 +80,8 @@ mut:
 	mu           sync.Mutex
 	chans        []Chan
 	trace        []TraceRow
-	gcount       map[string]u64 // persistent per-group frame totals (survive the ring trim)
+	gcount       map[string]u64  // persistent per-group frame totals (survive the ring trim)
+	byte_prev    map[string][]u8 // grouped Trace: last-rendered payload per group, to dim unchanged bytes
 	trecs        []TRec
 	rx           u64 // total across channels
 	rev          u64
@@ -126,6 +127,7 @@ mut:
 	sel_id        int = -1 // selected message id (-1 = none)
 	sel_ext       bool
 	watch         []Watch // signals plotted in Graphics
+	plot_win      f32 = 5 // Graphics x-window in seconds (0 = full history / autofit)
 	trace_grouped bool = true // Trace: grouped-by-id (expandable) vs chronological
 	trace_bus     string      // main Trace: show only this bus (channel name); '' = all
 	ftrace_bus    string      // Trace (filter) panel: show only this bus; '' = all
@@ -248,6 +250,48 @@ fn (mut app App) toggle_watch(id u32, ext bool, sig string) {
 		}
 	}
 	app.watch << Watch{id, ext, sig}
+}
+
+// add_watch plots a signal (idempotent — no-op if already plotted). Used by the Trace
+// right-click, which adds without removing an already-plotted signal.
+fn (mut app App) add_watch(id u32, ext bool, sig string) {
+	for w in app.watch {
+		if w.id == id && w.ext == ext && w.sig == sig {
+			return
+		}
+	}
+	app.watch << Watch{id, ext, sig}
+}
+
+// app_icon renders the 32×32 RGBA window/taskbar icon: an accent-blue rounded square with
+// three dashed "trace" lines (a bus-monitor motif). Procedural — no image file to embed.
+fn app_icon() []u8 {
+	sz := 32
+	rad := 6
+	mut px := []u8{len: sz * sz * 4}
+	for y in 0 .. sz {
+		for x in 0 .. sz {
+			i := (y * sz + x) * 4
+			// rounded corners: clamp to the nearest corner centre, drop pixels outside the radius
+			cx := if x < rad { rad } else if x >= sz - rad { sz - 1 - rad } else { x }
+			cy := if y < rad { rad } else if y >= sz - rad { sz - 1 - rad } else { y }
+			dx := x - cx
+			dy := y - cy
+			if dx * dx + dy * dy > rad * rad {
+				px[i], px[i + 1], px[i + 2], px[i + 3] = u8(0), 0, 0, 0
+				continue
+			}
+			mut r := u8(0x1e)
+			mut g := u8(0x88)
+			mut b := u8(0xe5)
+			// three light dashed trace lines across the middle
+			if (y == 10 || y == 16 || y == 22) && x > 4 && x < sz - 4 && x % 3 != 0 {
+				r, g, b = u8(0xea), u8(0xf2), u8(0xff)
+			}
+			px[i], px[i + 1], px[i + 2], px[i + 3] = r, g, b, u8(255)
+		}
+	}
+	return px
 }
 
 // FrameId identifies one CAN frame (id + 29-bit flag) for the Trace (filter) watch list.
@@ -443,6 +487,7 @@ fn (mut app App) clear_trace() {
 	app.mu.lock()
 	app.trace = []
 	app.gcount = map[string]u64{}
+	app.byte_prev = map[string][]u8{}
 	app.trecs = []
 	app.rx = 0
 	app.tx_count = 0
@@ -951,6 +996,7 @@ fn main() {
 		eprintln('vgui.init failed')
 		return
 	}
+	vgui.set_window_icon(32, 32, app_icon()) // replace the default placeholder window icon
 	load_ui_font()
 	if os.getenv('BLOBLY_THEME') == 'light' {
 		app.dark = false
@@ -2871,12 +2917,43 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				app.sel_id = int(g.id)
 				app.sel_ext = g.ext
 			}
+			// right-click a row → plot all its signals in Graphics
+			if vgui.is_item_clicked_right() {
+				if m := app.find_message(g.id, g.ext) {
+					sigs := m.active_signals(r.data)
+					for s in sigs {
+						app.add_watch(g.id, g.ext, s.name)
+					}
+					app.show_graphics = true
+					app.notify('added ${sigs.len} signal(s) of ${idstr(g.id, g.ext)} to Graphics')
+				}
+			}
 			vgui.table_cell(g.ch)
 			vgui.table_cell(g.dir)
 			// all-time total (survives the ring trim); fall back to the window count.
 			total := gcount[gkey(g.dir, g.ch, g.id, g.ext)] or { u64(g.count) }
 			vgui.table_cell('${total}')
-			vgui.table_cell(if r.rtr { 'RTR' } else { hex(r.data) })
+			// data column: dim bytes unchanged since the last render, normal for changed ones
+			// (CANoe-style change highlight). Keyed per group so each id tracks its own bytes.
+			vgui.table_next_col()
+			if r.rtr {
+				vgui.text('RTR')
+			} else {
+				pkey := '${g.dir}|${g.ch}|${g.id}|${g.ext}'
+				prev := app.byte_prev[pkey] or { []u8{} }
+				for i, b in r.data {
+					if i > 0 {
+						vgui.same_line()
+					}
+					tok := '${b:02X}'
+					if i >= prev.len || prev[i] != b {
+						vgui.text(tok) // changed → normal colour
+					} else {
+						vgui.text_dim(tok) // unchanged → dimmed
+					}
+				}
+				app.byte_prev[pkey] = r.data.clone()
+			}
 			if open {
 				if m := app.find_message(g.id, g.ext) {
 					for s in m.active_signals(r.data) {
@@ -3044,7 +3121,7 @@ fn (app &App) build_series(rows []TraceRow, w Watch) ([]f32, []f32) {
 	mut ys := []f32{}
 	for r in rows {
 		if r.id == w.id && r.ext == w.ext && r.data.len > 0 {
-			xs << f32(r.t_ms)
+			xs << f32(r.t_ms / 1000.0) // seconds — the plot x-axis is t (s)
 			ys << f32(sig.physical(r.data))
 		}
 	}
@@ -3061,12 +3138,48 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 		return
 	}
 	if app.watch.len == 0 {
-		vgui.text_dim('tick a signal in the Signals panel to plot it')
+		vgui.text_dim('tick a signal in the Signals panel to plot it (or right-click a Trace row)')
 		vgui.end()
 		return
 	}
-	vgui.text('${app.watch.len} signal(s) · drag = pan · scroll = zoom')
-	if vgui.plot_begin('##sigplot', 260) {
+	// plotted signals: each a chip that REMOVES it from the plot on click (a real remove from the
+	// watch set — distinct from clicking the plot legend, which only hides/shows the line).
+	if vgui.small_button('Clear') {
+		app.watch = []
+		vgui.end()
+		return
+	}
+	vgui.same_line()
+	vgui.text_dim('remove:')
+	mut rm := -1
+	for i, w in app.watch {
+		vgui.same_line()
+		if vgui.small_button('${idstr(w.id, w.ext)}.${w.sig} x##rmw${i}') {
+			rm = i
+		}
+	}
+	if rm >= 0 {
+		app.watch.delete(rm)
+	}
+	// time window: a fixed span you watch (a scrolling strip chart), not the whole history.
+	vgui.text_dim('window:')
+	for wsec in [f32(1), 5, 10, 30, 0] {
+		vgui.same_line()
+		lbl := if wsec == 0 { 'full' } else { '${int(wsec)}s' }
+		if vgui.toggle_button('${lbl}##pw${int(wsec)}', app.plot_win == wsec, 0) {
+			app.plot_win = wsec
+		}
+	}
+	// x-window ends at the latest sample of any watched signal; spans back `plot_win` seconds.
+	mut xmax := f64(0)
+	for r in rows {
+		if f64(r.t_ms) / 1000.0 > xmax && app.is_watched_frame(r.id, r.ext) {
+			xmax = f64(r.t_ms) / 1000.0
+		}
+	}
+	xmin := if app.plot_win > 0 { xmax - f64(app.plot_win) } else { f64(0) }
+	xhi := if app.plot_win > 0 { xmax } else { f64(0) } // 0/0 → full autofit
+	if vgui.plot_begin_x('##sigplot', 260, xmin, xhi) {
 		for w in app.watch {
 			xs, ys := app.build_series(rows, w)
 			if xs.len > 0 {
@@ -3076,6 +3189,16 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 		vgui.plot_end()
 	}
 	vgui.end()
+}
+
+// is_watched_frame reports whether any plotted signal comes from this frame id.
+fn (app &App) is_watched_frame(id u32, ext bool) bool {
+	for w in app.watch {
+		if w.id == id && w.ext == ext {
+			return true
+		}
+	}
+	return false
 }
 
 // ---- Send ----

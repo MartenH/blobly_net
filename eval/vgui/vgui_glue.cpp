@@ -133,6 +133,17 @@ int vgui_init(const char* title, int w, int h, int event_driven) {
     return 0;
 }
 
+// vgui_set_window_icon sets the OS window / taskbar icon from a w×h RGBA8 buffer (the caller
+// owns the pixels; GLFW copies them). Call after vgui_init. On macOS GLFW ignores this (uses
+// the .app bundle icon), which is fine.
+void vgui_set_window_icon(int w, int h, const unsigned char* rgba) {
+    if (!g_win || !rgba || w <= 0 || h <= 0) return;
+    GLFWimage img;
+    img.width = w; img.height = h;
+    img.pixels = (unsigned char*)rgba;
+    glfwSetWindowIcon(g_win, 1, &img);
+}
+
 // Frames to keep rendering at full rate after the last UI activity, so imgui animations
 // (window close, dock reflow, tab/hover fades) play smoothly instead of at the idle wait
 // rate. Set in vgui_frame_end when activity is detected; counted down here.
@@ -323,7 +334,18 @@ void vgui_dock_3(const char* a, const char* b, const char* c, float aw, float cw
 // --- ImPlot line plot (live signal graphs) ---
 int vgui_plot_begin(const char* title, float height) {
     if (ImPlot::BeginPlot(title, ImVec2(-1, height))) {
-        ImPlot::SetupAxes("t (ms)", NULL, ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
+        ImPlot::SetupAxes("t (s)", NULL, ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
+        return 1;
+    }
+    return 0;
+}
+// plot with a FIXED x (time) window [x_min,x_max] — a scrolling strip chart you watch, rather
+// than the whole-history autofit. y still autofits. x_max<=x_min falls back to x-autofit (full).
+int vgui_plot_begin_x(const char* title, float height, double x_min, double x_max) {
+    if (ImPlot::BeginPlot(title, ImVec2(-1, height))) {
+        int xflags = (x_max > x_min) ? ImPlotAxisFlags_None : ImPlotAxisFlags_AutoFit;
+        ImPlot::SetupAxes("t (s)", NULL, xflags, ImPlotAxisFlags_AutoFit);
+        if (x_max > x_min) ImPlot::SetupAxisLimits(ImAxis_X1, x_min, x_max, ImPlotCond_Always);
         return 1;
     }
     return 0;
@@ -472,6 +494,7 @@ int vgui_tree_node_table(const char* label) {
 }
 // true the frame the last-submitted item was clicked (for row selection).
 int vgui_is_item_clicked() { return ImGui::IsItemClicked() ? 1 : 0; }
+int vgui_is_item_clicked_right() { return ImGui::IsItemClicked(ImGuiMouseButton_Right) ? 1 : 0; }
 void vgui_table_col(const char* c) { ImGui::TableSetupColumn(c); }
 void vgui_table_headers() { ImGui::TableHeadersRow(); }
 void vgui_table_row() { ImGui::TableNextRow(); }

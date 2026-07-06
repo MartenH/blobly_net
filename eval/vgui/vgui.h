@@ -5,6 +5,9 @@ typedef struct { float t0, dur; int lane; unsigned int color; int warn; int pree
 extern "C" {
 #endif
 int vgui_init(const char* title, int w, int h, int event_driven);
+void vgui_set_window_icon(int w, int h, const unsigned char* rgba);
+int  vgui_plot_begin_x(const char* title, float height, double x_min, double x_max);
+int  vgui_is_item_clicked_right(void);
 int vgui_running(void);
 void vgui_frame_begin(void);
 void vgui_dockspace(void);

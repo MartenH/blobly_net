@@ -47,6 +47,9 @@ pub:
 }
 
 fn C.vgui_init(&char, int, int, int) int
+fn C.vgui_set_window_icon(int, int, &u8)
+fn C.vgui_plot_begin_x(&char, f32, f64, f64) int
+fn C.vgui_is_item_clicked_right() int
 fn C.vgui_running() int
 fn C.vgui_frame_begin()
 fn C.vgui_dockspace()
@@ -128,6 +131,15 @@ fn C.vgui_fps() f32
 // --- lifecycle ---
 pub fn init(title string, w int, h int, event_driven bool) bool {
 	return C.vgui_init(title.str, w, h, if event_driven { 1 } else { 0 }) == 0
+}
+
+// set_window_icon sets the OS window / taskbar icon from a w×h RGBA8 buffer (row-major,
+// top-left origin, 4 bytes/pixel). Call after init(). `rgba.len` must be w*h*4.
+pub fn set_window_icon(w int, h int, rgba []u8) {
+	if rgba.len < w * h * 4 {
+		return
+	}
+	C.vgui_set_window_icon(w, h, &u8(rgba.data))
 }
 
 pub fn running() bool {
@@ -295,6 +307,12 @@ pub fn quit() {
 // plot_begin opens a plot of the given pixel height; returns false if not visible.
 pub fn plot_begin(title string, height f32) bool {
 	return C.vgui_plot_begin(title.str, height) == 1
+}
+
+// plot_begin_x opens a plot with a FIXED x (time) window [x_min,x_max] — a scrolling strip
+// chart rather than the whole-history autofit; y still autofits. x_max<=x_min = x-autofit (full).
+pub fn plot_begin_x(title string, height f32, x_min f64, x_max f64) bool {
+	return C.vgui_plot_begin_x(title.str, height, x_min, x_max) == 1
 }
 
 // plot_line adds one series (x = time ms, y = value). Call between plot_begin/plot_end.
@@ -498,6 +516,11 @@ pub fn tree_node_table(label string) bool {
 // is_item_clicked reports whether the last-submitted item was clicked this frame.
 pub fn is_item_clicked() bool {
 	return C.vgui_is_item_clicked() == 1
+}
+
+// is_item_clicked_right reports whether the last-submitted item was RIGHT-clicked this frame.
+pub fn is_item_clicked_right() bool {
+	return C.vgui_is_item_clicked_right() == 1
 }
 
 // table_setup_col declares a column: width > 0 = fixed pixels, width <= 0 = stretch.
