@@ -548,6 +548,21 @@ void vgui_table_freeze_top() { ImGui::TableSetupScrollFreeze(0, 1); } // header 
 void vgui_table_end() { ImGui::EndTable(); }
 float vgui_fps() { return ImGui::GetIO().Framerate; }
 
+// true while a text field is focused / imgui wants the keyboard — callers use this to suppress
+// their own single-key shortcuts so typing in an input box doesn't trigger them.
+int vgui_want_text_input() { return ImGui::GetIO().WantTextInput ? 1 : 0; }
+
+// vgui_key_pressed reports whether the printable key `ch` (A-Z / a-z / 0-9) went down THIS frame
+// (no auto-repeat). Used for generator hotkeys. Returns 0 for anything it can't map.
+int vgui_key_pressed(int ch) {
+    ImGuiKey k = ImGuiKey_None;
+    if (ch >= 'a' && ch <= 'z')      k = (ImGuiKey)(ImGuiKey_A + (ch - 'a'));
+    else if (ch >= 'A' && ch <= 'Z') k = (ImGuiKey)(ImGuiKey_A + (ch - 'A'));
+    else if (ch >= '0' && ch <= '9') k = (ImGuiKey)(ImGuiKey_0 + (ch - '0'));
+    else return 0;
+    return ImGui::IsKeyPressed(k, false) ? 1 : 0;
+}
+
 // vgui_swimlane draws a handler/task gantt as an ImPlot plot: X = time (µs), Y = lanes.
 // ImPlot gives native pan (drag), zoom (scroll/box), and a time axis for free — replacing
 // the hand-rolled zoom buttons + scrollbar. Bars are drawn into the plot's draw list in

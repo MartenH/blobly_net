@@ -133,6 +133,8 @@ fn C.vgui_table_setup_col(&char, f32)
 fn C.vgui_table_freeze_top()
 fn C.vgui_table_end()
 fn C.vgui_fps() f32
+fn C.vgui_want_text_input() int
+fn C.vgui_key_pressed(int) int
 
 // --- lifecycle ---
 pub fn init(title string, w int, h int, event_driven bool) bool {
@@ -201,6 +203,18 @@ pub fn dump_ppm(path string) {
 
 pub fn fps() f32 {
 	return C.vgui_fps()
+}
+
+// want_text_input is true while a text field is focused (imgui owns the keyboard) — check it
+// before acting on single-key shortcuts so typing doesn't trigger them.
+pub fn want_text_input() bool {
+	return C.vgui_want_text_input() != 0
+}
+
+// key_pressed reports whether the printable key `ch` (A-Z / a-z / 0-9) was pressed this frame
+// (no auto-repeat). Returns false for keys it can't map.
+pub fn key_pressed(ch u8) bool {
+	return C.vgui_key_pressed(int(ch)) != 0
 }
 
 // --- widgets ---

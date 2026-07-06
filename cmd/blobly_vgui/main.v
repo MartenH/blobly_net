@@ -12,6 +12,7 @@
 module main
 
 import os
+import strings
 import sync
 import time
 import project
@@ -112,7 +113,6 @@ mut:
 	show_tchart   bool
 	show_signals  bool
 	show_graphics bool
-	show_send      bool
 	show_diag      bool
 	show_gen       bool
 	show_script    bool
@@ -122,6 +122,9 @@ mut:
 	show_stats     bool
 	show_log       bool = true
 	show_help      bool
+	help_doc       int             // selected Help doc index (0 = built-in quick start)
+	help_cache     map[string]string = map[string]string{} // markdown file -> contents (read once)
+	help_pos_set   bool            // one-shot: Help window floated on first open
 	// Signals selection + Graphics watch list (UI-thread only; RX never touches these)
 	sel_id        int = -1 // selected message id (-1 = none)
 	sel_ext       bool
@@ -1060,6 +1063,7 @@ fn main() {
 		vgui.dockspace()
 		vgui.child_end()
 		build_layout()
+		app.poll_hotkeys()
 
 		if app.show_buses {
 			draw_buses(mut app, chans)
@@ -1093,9 +1097,6 @@ fn main() {
 		}
 		if app.show_graphics {
 			draw_graphics(mut app, rows)
-		}
-		if app.show_send {
-			draw_send(mut app)
 		}
 		if app.show_diag {
 			draw_diag(mut app)
@@ -1144,8 +1145,14 @@ fn draw_activity_bar(mut app App) {
 	vgui.push_window_padding(4 * app.ui_scale, 6 * app.ui_scale)
 	vgui.child_wh('##activity', 60 * app.ui_scale, 0)
 	vgui.push_frame_padding(4 * app.ui_scale, 6 * app.ui_scale)
+	// Grouped into logical sections separated by a rule, alphabetical within each group:
+	// setup · trace · filtered-trace (its own) · signal views · send · diagnostics · tools.
+	// --- setup ---
 	if vgui.toggle_button('Bus', app.show_buses, -1) {
 		app.show_buses = !app.show_buses
+	}
+	if vgui.toggle_button('Cfg', app.show_busconfig, -1) {
+		app.show_busconfig = !app.show_busconfig
 	}
 	if vgui.toggle_button('Sim', app.show_sim, -1) {
 		app.show_sim = !app.show_sim
@@ -1153,27 +1160,34 @@ fn draw_activity_bar(mut app App) {
 	if vgui.toggle_button('Sym', app.show_symbols, -1) {
 		app.show_symbols = !app.show_symbols
 	}
-	if vgui.toggle_button('Cfg', app.show_busconfig, -1) {
-		app.show_busconfig = !app.show_busconfig
+	vgui.separator()
+	// --- trace ---
+	if vgui.toggle_button('Cht', app.show_tchart, -1) {
+		app.show_tchart = !app.show_tchart
 	}
 	if vgui.toggle_button('Trc', app.show_trace, -1) {
 		app.show_trace = !app.show_trace
 	}
+	vgui.separator()
+	// --- filtered trace (on its own) ---
 	if vgui.toggle_button('FTr', app.show_ftrace, -1) {
 		app.show_ftrace = !app.show_ftrace
 	}
-	if vgui.toggle_button('Cht', app.show_tchart, -1) {
-		app.show_tchart = !app.show_tchart
+	vgui.separator()
+	// --- signal views ---
+	if vgui.toggle_button('Gfx', app.show_graphics, -1) {
+		app.show_graphics = !app.show_graphics
 	}
 	if vgui.toggle_button('Sig', app.show_signals, -1) {
 		app.show_signals = !app.show_signals
 	}
-	if vgui.toggle_button('Gfx', app.show_graphics, -1) {
-		app.show_graphics = !app.show_graphics
+	vgui.separator()
+	// --- send ---
+	if vgui.toggle_button('Gen', app.show_gen, -1) {
+		app.show_gen = !app.show_gen
 	}
-	if vgui.toggle_button('Snd', app.show_send, -1) {
-		app.show_send = !app.show_send
-	}
+	vgui.separator()
+	// --- diagnostics ---
 	if vgui.toggle_button('Dia', app.show_diag, -1) {
 		app.show_diag = !app.show_diag
 	}
@@ -1183,20 +1197,19 @@ fn draw_activity_bar(mut app App) {
 	if vgui.toggle_button('Net', app.show_network, -1) {
 		app.show_network = !app.show_network
 	}
-	if vgui.toggle_button('Gen', app.show_gen, -1) {
-		app.show_gen = !app.show_gen
+	vgui.separator()
+	// --- tools ---
+	if vgui.toggle_button('Hlp', app.show_help, -1) {
+		app.show_help = !app.show_help
+	}
+	if vgui.toggle_button('Log', app.show_log, -1) {
+		app.show_log = !app.show_log
 	}
 	if vgui.toggle_button('Lua', app.show_script, -1) {
 		app.show_script = !app.show_script
 	}
 	if vgui.toggle_button('Sta', app.show_stats, -1) {
 		app.show_stats = !app.show_stats
-	}
-	if vgui.toggle_button('Log', app.show_log, -1) {
-		app.show_log = !app.show_log
-	}
-	if vgui.toggle_button('Hlp', app.show_help, -1) {
-		app.show_help = !app.show_help
 	}
 	vgui.pop_style_var(1) // frame padding
 	vgui.child_end()
@@ -1255,7 +1268,6 @@ fn draw_menubar(mut app App, rx u64) {
 			app.show_tchart = vgui.menu_item_check('Trace Chart', app.show_tchart)
 			app.show_signals = vgui.menu_item_check('Signals', app.show_signals)
 			app.show_graphics = vgui.menu_item_check('Graphics', app.show_graphics)
-			app.show_send = vgui.menu_item_check('Send', app.show_send)
 			app.show_diag = vgui.menu_item_check('Diagnostics', app.show_diag)
 			app.show_doip = vgui.menu_item_check('DoIP Discovery', app.show_doip)
 			app.show_network = vgui.menu_item_check('Network', app.show_network)
@@ -2526,32 +2538,154 @@ fn draw_log(mut app App) {
 }
 
 // draw_help: a short in-app usage reference.
+// help_docs lists the Help pages: the built-in quick start (empty path) plus real markdown docs
+// loaded from disk. Paths are resolved relative to the working dir (the app chdir's to its
+// bundle dir at startup, so these resolve in a distributed build too).
+struct HelpDoc {
+	title string
+	path  string // '' = built-in quick_ref_md
+}
+
+const help_docs = [
+	HelpDoc{'Quick start', ''},
+	HelpDoc{'Scripting', 'docs/scripting.md'},
+	HelpDoc{'Known issues', 'docs/known_issues.md'},
+]
+
+const quick_ref_md = '# Blobly Net
+
+An imgui/ImPlot CAN/automotive bus tester. **Start/Stop** runs the measurement on the
+enabled channels; the activity bar (far left) and the **View** menu toggle panels; **Settings**
+sets the frame rate and UI scale.
+
+## Panels
+
+- **Buses / Bus Config** — channel enable, state, and configuration
+- **Simulation** — in-process simulated ECUs (driver-free)
+- **Symbols** — DBC message / signal browser (searchable)
+- **Trace / Trace (filter)** — live frames, all or grouped, filterable, per-bus
+- **Signals** — decode the selected message; add signals to Graphics
+- **Graphics** — live ImPlot signal plots (multi-axis, real values)
+- **Trace Chart** — telemetry handler swimlane
+- **Generators** — quick send + saved senders (manual / on-key / cyclic)
+- **Diagnostics / DoIP** — UDS diagnostics and DoIP discovery
+- **Script** — run a Lua test file
+
+## Toolbar
+
+- **Pause** freezes the trace, **Clear** empties it, **Record** writes `recording.log`
+- **Open** loads a candump `.log` or ASAM `.mf4` into the trace
+
+## Generators
+
+A generator is a reusable send block. Give it a single **key** and set its trigger to
+**on key** to fire it from the keyboard while running. **cyclic** auto-repeats at its period.
+Use **Quick send** at the top for an ad-hoc one-shot without saving a generator.
+'
+
+// help_text returns a Help doc body, reading + caching the file on first access.
+fn (mut app App) help_text(path string) string {
+	if path == '' {
+		return quick_ref_md
+	}
+	if path in app.help_cache {
+		return app.help_cache[path]
+	}
+	txt := os.read_file(path) or { 'Could not load `${path}`.\n\nIt may not ship in this build.' }
+	app.help_cache[path] = txt
+	return txt
+}
+
 fn draw_help(mut app App) {
+	// float on first open (Once cond → user can then move/resize or drag it to its own monitor).
+	if !app.help_pos_set {
+		vgui.set_next_window(220 * app.ui_scale, 120 * app.ui_scale, 760 * app.ui_scale,
+			660 * app.ui_scale)
+		app.help_pos_set = true
+	}
 	vis, op := vgui.begin_closable('Help', app.show_help)
 	app.show_help = op
 	if !vis {
 		vgui.end()
 		return
 	}
-	vgui.separator_text('blobly_vgui — imgui/ImPlot frontend')
-	vgui.text('Start/Stop runs the measurement on the enabled channels.')
-	vgui.text('The activity bar (far left) and the View menu toggle panels.')
-	vgui.text('File > Open Example switches projects; Settings sets fps + UI scale.')
-	vgui.separator_text('panels')
-	vgui.text('Buses / Bus Config   channel enable, state, and configuration')
-	vgui.text('Simulation           in-process simulated ECUs (driver-free)')
-	vgui.text('Symbols              DBC message / signal browser (searchable)')
-	vgui.text('Trace / Trace(filter) live frames — all or grouped, filterable')
-	vgui.text('Signals              decode selected message; tick to plot')
-	vgui.text('Graphics             ImPlot live signal plots')
-	vgui.text('Trace Chart          telemetry handler swimlane')
-	vgui.text('Send / Generators    transmit raw frames / fire project senders')
-	vgui.text('Diagnostics / DoIP   UDS + DoIP discovery')
-	vgui.text('Script               run a Lua test file')
-	vgui.separator_text('toolbar')
-	vgui.text('Pause freezes the trace · Clear empties it · Record writes recording.log')
-	vgui.text('Open loads a candump .log or ASAM .mf4 into the trace.')
+	// doc picker
+	for i, d in help_docs {
+		if i > 0 {
+			vgui.same_line()
+		}
+		if vgui.toggle_button('${d.title}##hd${i}', app.help_doc == i, 0) {
+			app.help_doc = i
+		}
+	}
+	vgui.separator()
+	idx := if app.help_doc >= 0 && app.help_doc < help_docs.len { app.help_doc } else { 0 }
+	body := app.help_text(help_docs[idx].path)
+	vgui.child_fill('##helpbody') // scrollable body
+	render_markdown(body)
+	vgui.child_end()
 	vgui.end()
+}
+
+// render_markdown draws a lightweight subset of Markdown with imgui primitives: ATX headings
+// (#..) as section separators, - / * / numbered bullets, fenced ``` code as dim text, and
+// inline **bold** / `code` / [text](link) stripped to plain text. Good enough for our docs.
+fn render_markdown(text string) {
+	mut in_code := false
+	for raw in text.split_into_lines() {
+		line := raw.trim_right('\r')
+		if line.trim_space().starts_with('```') {
+			in_code = !in_code
+			continue
+		}
+		if in_code {
+			vgui.text_dim('    ${line}')
+			continue
+		}
+		t := line.trim_space()
+		if t == '' {
+			vgui.spacing()
+		} else if line.starts_with('#') {
+			mut h := line
+			for h.starts_with('#') {
+				h = h[1..]
+			}
+			vgui.separator_text(md_inline(h.trim_space()))
+		} else if t.starts_with('- ') || t.starts_with('* ') {
+			vgui.text('   •  ${md_inline(t[2..])}')
+		} else {
+			vgui.text(md_inline(line))
+		}
+	}
+}
+
+// md_inline strips inline markdown markers: ** (bold), ` (code), and [text](url) -> text.
+fn md_inline(s string) string {
+	stripped := s.replace('**', '').replace('`', '')
+	mut b := strings.new_builder(stripped.len)
+	mut i := 0
+	for i < stripped.len {
+		if stripped[i] == `[` {
+			mut j := i + 1
+			for j < stripped.len && stripped[j] != `]` {
+				j++
+			}
+			if j + 1 < stripped.len && stripped[j] == `]` && stripped[j + 1] == `(` {
+				mut k := j + 2
+				for k < stripped.len && stripped[k] != `)` {
+					k++
+				}
+				if k < stripped.len {
+					b.write_string(stripped[i + 1..j]) // keep the link text, drop the (url)
+					i = k + 1
+					continue
+				}
+			}
+		}
+		b.write_u8(stripped[i])
+		i++
+	}
+	return b.str()
 }
 
 fn draw_buses(mut app App, chans []Chan) {
@@ -3025,13 +3159,13 @@ fn build_layout() {
 	// right column
 	vgui.dock_window('Trace Chart', chart)
 	vgui.dock_window('Signals', midnode)
-	vgui.dock_window('Send', midnode)
 	vgui.dock_window('Diagnostics', midnode)
 	vgui.dock_window('DoIP Discovery', midnode)
 	vgui.dock_window('Graphics', bottom)
 	vgui.dock_window('Generators', bottom)
 	vgui.dock_window('Script', bottom)
-	vgui.dock_window('Help', bottom)
+	// Help is intentionally NOT docked — it opens as its own floating window (draggable out to a
+	// separate OS window via multi-viewport), sized once in draw_help.
 	vgui.dock_finish(root)
 }
 
@@ -3276,33 +3410,31 @@ fn (app &App) is_watched_frame(id u32, ext bool) bool {
 }
 
 // ---- Send ----
-fn draw_send(mut app App) {
-	vis, op := vgui.begin_closable('Send', app.show_send)
-	app.show_send = op
-	if !vis {
-		vgui.end()
-		return
-	}
-	if !app.running {
-		vgui.text_dim('press Start to enable sending')
-		vgui.end()
-		return
-	}
-	vgui.text('bus ${app.send_iface}')
-	vgui.set_next_item_width(70)
+// draw_quick_send is the folded-in Send: a one-shot raw id+data transmit at the top of the
+// Generators panel. It fires immediately without creating a saved generator — the fast ad-hoc
+// path. Fields stay editable while stopped; only firing needs a running bus.
+fn draw_quick_send(mut app App) {
+	vgui.separator_text('quick send')
+	vgui.set_next_item_width(70 * app.ui_scale)
 	vgui.input_text('id (hex)', mut app.send_id_buf)
 	vgui.same_line()
-	vgui.set_next_item_width(220)
+	vgui.set_next_item_width(220 * app.ui_scale)
 	vgui.input_text('data (hex)', mut app.send_data_buf)
-	if vgui.button('Send') {
-		id := u32(('0x' + vgui.buf_str(app.send_id_buf)).u64())
-		data := parse_hex_bytes(vgui.buf_str(app.send_data_buf))
-		app.tx(transport.CanFrame{
-			id:   id
-			data: data
-		})
+	vgui.same_line()
+	if app.running {
+		if vgui.button('Send##quicksend') {
+			id := u32(('0x' + vgui.buf_str(app.send_id_buf)).u64())
+			data := parse_hex_bytes(vgui.buf_str(app.send_data_buf))
+			app.tx(transport.CanFrame{
+				id:   id
+				data: data
+			})
+		}
+		vgui.same_line()
+		vgui.text_dim('on ${app.send_iface}')
+	} else {
+		vgui.text_dim('start to send')
 	}
-	vgui.end()
 }
 
 // ---- Generators (interactive send blocks) ----
@@ -3315,6 +3447,9 @@ fn draw_gen(mut app App) {
 		vgui.end()
 		return
 	}
+	// folded-in Send: fast ad-hoc raw transmit
+	draw_quick_send(mut app)
+	vgui.separator_text('generators')
 	if vgui.button('+ Add generator') {
 		app.add_generator()
 	}
@@ -3327,7 +3462,7 @@ fn draw_gen(mut app App) {
 		vgui.text_colored(230, 170, 70, '● modified')
 	}
 	if app.running {
-		vgui.text_dim('edit freely · Send now fires once · cyclic auto-repeats while running')
+		vgui.text_dim('edit freely · Send now fires once · cyclic auto-repeats · on-key fires on its key')
 	} else {
 		vgui.text_dim('edit freely · press Start to fire')
 	}
@@ -3336,93 +3471,107 @@ fn draw_gen(mut app App) {
 		vgui.end()
 		return
 	}
+	// one collapsed tree node per generator; the header summarises name + trigger so the list
+	// stays scannable when everything is folded (start state).
+	mut remove_idx := -1
 	for i, sr in app.senders {
-		vgui.separator()
-		// keep the model in sync with the edit buffers (name/key are UI-thread-only fields)
+		// keep the model in sync with the edit buffers (name/key are UI-thread-only fields);
+		// do it before the header so the collapsed label reflects the latest edit.
 		app.senders[i].sender.name = vgui.buf_str(app.gen_bufs[i].name_buf)
 		app.senders[i].sender.key = vgui.buf_str(app.gen_bufs[i].key_buf)
 		s := app.senders[i].sender
-		// name · key · remove
-		vgui.set_next_item_width(200)
-		if vgui.input_text('name##gn${i}', mut app.gen_bufs[i].name_buf) {
-			app.dirty = true
+		cm := if s.cycle_ms > 0 { s.cycle_ms } else { 100 }
+		trig := match s.trigger {
+			'key' { if s.key != '' { 'key "${s.key}"' } else { 'key (unset)' } }
+			'cyclic' { 'cyclic ${cm} ms' }
+			else { 'manual' }
 		}
-		vgui.same_line()
-		vgui.set_next_item_width(36)
-		if vgui.input_text('key##gk${i}', mut app.gen_bufs[i].key_buf) {
-			app.dirty = true
-		}
-		vgui.same_line()
-		if vgui.small_button('remove##rm${i}') {
-			app.remove_generator(i)
-			break // indices shifted — redraw next frame
-		}
-		// fire: Send now only fires while running (stopped = editable, just no TX)
-		if app.running {
-			if vgui.button('Send now##${i}') {
-				app.fire_index(i)
-			}
-		} else {
-			vgui.text_dim('Send now (start to fire)')
-		}
-		vgui.same_line()
-		vgui.text('fires:')
-		vgui.same_line()
-		if vgui.toggle_button('manual##${i}', s.trigger == 'manual', 0) {
-			app.set_trigger(i, 'manual')
-		}
-		vgui.same_line()
-		if vgui.toggle_button('on key##${i}', s.trigger == 'key', 0) {
-			app.set_trigger(i, 'key')
-		}
-		vgui.same_line()
-		if vgui.toggle_button('cyclic##${i}', s.trigger == 'cyclic', 0) {
-			app.set_trigger(i, 'cyclic')
-		}
-		if s.trigger == 'cyclic' {
-			vgui.same_line()
-			cm := if s.cycle_ms > 0 { s.cycle_ms } else { 100 }
-			vgui.text('every ${cm} ms')
-			vgui.same_line()
-			if vgui.small_button('-##c${i}') {
-				app.set_cycle(i, if cm > 60 { cm - 50 } else { 10 })
+		nm := if s.name != '' { s.name } else { '(unnamed)' }
+		// ### keys the node on the index only, so editing the visible name doesn't collapse it.
+		if vgui.tree_node('${nm}   ·   ${trig}###gennode${i}') {
+			vgui.set_next_item_width(200 * app.ui_scale)
+			if vgui.input_text('name##gn${i}', mut app.gen_bufs[i].name_buf) {
+				app.dirty = true
 			}
 			vgui.same_line()
-			if vgui.small_button('+##c${i}') {
-				app.set_cycle(i, cm + 50)
+			vgui.set_next_item_width(36 * app.ui_scale)
+			if vgui.input_text('key##gk${i}', mut app.gen_bufs[i].key_buf) {
+				app.dirty = true
 			}
-		}
-		// target bus: which wire this generator transmits on (defaults to its own channel)
-		if app.chans.len > 1 {
-			cur := app.senders[i].target()
-			vgui.text('bus:')
-			for ci, c in app.chans {
+			vgui.same_line()
+			if vgui.small_button('remove##rm${i}') {
+				remove_idx = i // indices shift on delete — do it after the loop
+			}
+			// fire: Send now only fires while running (stopped = editable, just no TX)
+			if app.running {
+				if vgui.button('Send now##${i}') {
+					app.fire_index(i)
+				}
+			} else {
+				vgui.text_dim('Send now (start to fire)')
+			}
+			vgui.same_line()
+			vgui.text('fires:')
+			vgui.same_line()
+			if vgui.toggle_button('manual##${i}', s.trigger == 'manual', 0) {
+				app.set_trigger(i, 'manual')
+			}
+			vgui.same_line()
+			if vgui.toggle_button('on key##${i}', s.trigger == 'key', 0) {
+				app.set_trigger(i, 'key')
+			}
+			vgui.same_line()
+			if vgui.toggle_button('cyclic##${i}', s.trigger == 'cyclic', 0) {
+				app.set_trigger(i, 'cyclic')
+			}
+			if s.trigger == 'cyclic' {
 				vgui.same_line()
-				if vgui.toggle_button('${c.name}##b${i}_${ci}', c.iface == cur, 0) {
-					app.set_sender_bus(i, if c.iface == sr.iface { '' } else { c.iface })
+				vgui.text('every ${cm} ms')
+				vgui.same_line()
+				if vgui.small_button('-##c${i}') {
+					app.set_cycle(i, if cm > 60 { cm - 50 } else { 10 })
+				}
+				vgui.same_line()
+				if vgui.small_button('+##c${i}') {
+					app.set_cycle(i, cm + 50)
 				}
 			}
-		}
-		// payload: DBC message -> per-signal values; raw -> id + data hex
-		if s.message != '' {
-			vgui.text('message ${s.message} · signal values:')
-			for j, ss in s.signals {
-				vgui.set_next_item_width(150)
-				if vgui.input_double('${ss.name}##sig${i}_${j}', unsafe { &app.senders[i].sender.signals[j].value }) {
+			// target bus: which wire this generator transmits on (defaults to its own channel)
+			if app.chans.len > 1 {
+				cur := app.senders[i].target()
+				vgui.text('bus:')
+				for ci, c in app.chans {
+					vgui.same_line()
+					if vgui.toggle_button('${c.name}##b${i}_${ci}', c.iface == cur, 0) {
+						app.set_sender_bus(i, if c.iface == sr.iface { '' } else { c.iface })
+					}
+				}
+			}
+			// payload: DBC message -> per-signal values; raw -> id + data hex
+			if s.message != '' {
+				vgui.text('message ${s.message} · signal values:')
+				for j, ss in s.signals {
+					vgui.set_next_item_width(150 * app.ui_scale)
+					if vgui.input_double('${ss.name}##sig${i}_${j}', unsafe { &app.senders[i].sender.signals[j].value }) {
+						app.dirty = true
+					}
+				}
+			} else {
+				vgui.set_next_item_width(70 * app.ui_scale)
+				if vgui.input_text('id##id${i}', mut app.gen_bufs[i].id_buf) {
+					app.dirty = true
+				}
+				vgui.same_line()
+				vgui.set_next_item_width(260 * app.ui_scale)
+				if vgui.input_text('data (hex)##dt${i}', mut app.gen_bufs[i].data_buf) {
 					app.dirty = true
 				}
 			}
-		} else {
-			vgui.set_next_item_width(70)
-			if vgui.input_text('id##id${i}', mut app.gen_bufs[i].id_buf) {
-				app.dirty = true
-			}
-			vgui.same_line()
-			vgui.set_next_item_width(260)
-			if vgui.input_text('data (hex)##dt${i}', mut app.gen_bufs[i].data_buf) {
-				app.dirty = true
-			}
+			vgui.tree_pop()
 		}
+	}
+	if remove_idx >= 0 {
+		app.remove_generator(remove_idx)
 	}
 	vgui.end()
 }
@@ -3582,6 +3731,24 @@ fn (mut app App) set_sender_bus(i int, bus string) {
 
 // fire_index sends generator `i`'s CURRENT (edited) frame once. DBC-message generators
 // encode the edited signal values; raw generators use the edited id/data hex fields.
+// poll_hotkeys fires any 'key'-triggered generator whose key went down this frame. Runs on the
+// UI thread once per frame (fire_index reads UI-thread edit buffers). Suppressed while a text
+// field is focused so typing a key into an input box doesn't also fire a generator.
+fn (mut app App) poll_hotkeys() {
+	if !app.running || vgui.want_text_input() {
+		return
+	}
+	for i, sr in app.senders {
+		s := sr.sender
+		if s.trigger != 'key' || s.key == '' {
+			continue
+		}
+		if vgui.key_pressed(s.key[0]) {
+			app.fire_index(i)
+		}
+	}
+}
+
 fn (mut app App) fire_index(i int) {
 	if i < 0 || i >= app.senders.len {
 		return

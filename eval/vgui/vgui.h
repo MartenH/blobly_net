@@ -92,6 +92,8 @@ void vgui_table_setup_col(const char* name, float width);
 void vgui_table_freeze_top(void);
 void vgui_table_end(void);
 float vgui_fps(void);
+int  vgui_want_text_input(void);
+int  vgui_key_pressed(int ch);
 #ifdef __cplusplus
 }
 #endif

@@ -41,3 +41,4 @@ __pycache__/
 heaptrack.*.gz
 massif.out.*
 imgui.ini
+recording.log
