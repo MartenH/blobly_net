@@ -9,12 +9,14 @@ An automotive bus tester written in [V](https://vlang.io). It tests a System Und
 ## Build & run
 
 ```sh
-scripts/run.sh                 # build + run the GUI
+scripts/run_vgui.sh            # build + run the GUI (Dear ImGui app)
 python3 sut/can_sut.py vcan0   # a virtual ECU on vcan0, in another terminal
 ```
 
-Requires the V compiler and the `gui` module (+ native deps). Full setup, the
-hardware/software-GL notes, and the roadmap are in [CLAUDE.md](CLAUDE.md).
+The GUI is a native Dear ImGui + ImPlot app (`cmd/blobly_vgui`). Requires the V
+compiler, a C/C++ toolchain, and GLFW + FreeType (`sudo apt install libglfw3-dev`
+on Linux; `scripts/setup_env.sh` installs everything). Full setup and the roadmap
+are in [CLAUDE.md](CLAUDE.md).
 
 ## Scripting & testing
 
