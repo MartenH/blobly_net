@@ -31,7 +31,6 @@ const diag_tx_id = u32(0x7E0)
 const diag_rx_id = u32(0x7E8)
 
 const trace_cap = 2000
-const telem_cap = 20000
 
 struct TraceRow {
 	t_ms f64
@@ -171,10 +170,12 @@ mut:
 	sim_enabled     map[string]bool // '<iface>:<node>' -> enabled (Simulation panel)
 	sim_gen         u64             // bumped when sim_enabled changes -> sim_loop rebuilds
 	// worker-thread outputs (guarded by mu)
-	diag_log    []string
-	diag_busy   bool
-	script_log  []string
-	script_busy bool
+	diag_log     []string
+	diag_busy    bool
+	script_log   []string
+	script_busy  bool
+	trace_busy   bool   // a trace-dump transfer is in flight (single-flight guard)
+	trace_status string // last dump status line, shown by the Trace Chart
 }
 
 // SenderRT is a project sender bound to its channel iface (Generators panel).
@@ -755,13 +756,9 @@ fn rx_loop(app &App, ci int, iface string) {
 				a.trace = a.trace[a.trace.len - trace_cap..].clone()
 			}
 			a.gcount[gkey('RX', chname, f.id, f.extended)]++
-			if a.has_manifest && !f.extended && !f.rtr && f.data.len == 8 && f.id == telem.id_record {
-				a.trecs << TRec{ci, telem.decode_record(f.data)}
-				if a.trecs.len > telem_cap {
-					a.trecs = a.trecs[a.trecs.len - telem_cap..].clone()
-				}
-				a.rev++
-			}
+			// The capture dump now arrives as an ISO-TP block on 0x7E5 (not raw per-record
+			// frames): trace_dump_worker reassembles + decodes it on demand. The raw ISO-TP
+			// frames still show in the trace table above.
 		}
 		if a.recording {
 			a.rec << canlog.LogEntry{t_ms / 1000.0, chname, f}
@@ -3713,6 +3710,107 @@ fn (mut app App) diag_done() {
 	vgui.wake()
 }
 
+// trace_dump_worker performs one capture read-out: it freezes the target's ring(s) and dumps
+// the selected cores, reassembling each per-core ISO-TP block on 0x7E5 (sending flow control
+// on 0x7E6) and decoding the records into app.trecs for the swimlane. Mirrors diag_worker: a
+// single-flight busy flag, a short-lived spawn, a blocking transfer, results under mu + wake.
+fn trace_dump_worker(app &App, core_mask u16) {
+	mut a := unsafe { app }
+	a.mu.lock()
+	if a.trace_busy {
+		a.mu.unlock()
+		return
+	}
+	a.trace_busy = true
+	a.mu.unlock()
+	iface := a.diag_iface()
+	if iface == '' {
+		a.set_trace_status('dump: no running channel')
+		a.trace_done()
+		return
+	}
+	// the host is the ISO-TP receiver: it sends flow control on 0x7E6 and receives the dump
+	// data on 0x7E5 (open before commanding, so the socket buffers the target's first frame).
+	mut ch := isotp.open_software(a.bitrate_iface(iface), telem.id_dump_fc, telem.id_record,
+		false) or {
+		a.set_trace_status('dump: open ${iface}: ${err}')
+		a.trace_done()
+		return
+	}
+	defer {
+		ch.close()
+	}
+	// freeze, then dump the selected cores (one TraceCmd each on 0x7E2).
+	a.tx_on(iface, transport.CanFrame{
+		id:   telem.id_trace_cmd
+		data: telem.encode_trace_cmd(telem.op_stop, telem.filter_all, core_mask)
+	})
+	a.tx_on(iface, transport.CanFrame{
+		id:   telem.id_trace_cmd
+		data: telem.encode_trace_cmd(telem.op_dump, telem.filter_all, core_mask)
+	})
+	// a multi-core dump streams one self-describing block per selected core.
+	nblocks := mask_popcount(core_mask)
+	mut recs := []TRec{}
+	mut got := 0
+	for _ in 0 .. nblocks {
+		block := ch.recv(400) or { break } // no more blocks (timed out)
+		got++
+		for off := 0; off + 8 <= block.len; off += 8 {
+			r := telem.decode_record(block[off..off + 8])
+			if r.is_header() {
+				continue // per-core framing, not a timeline record
+			}
+			recs << TRec{0, r}
+		}
+	}
+	a.mu.lock()
+	a.trecs = recs
+	a.rev++
+	a.trace_status = 'dumped ${got}/${nblocks} core block(s) · ${recs.len} records'
+	a.mu.unlock()
+	a.trace_done()
+}
+
+fn (mut app App) trace_done() {
+	app.mu.lock()
+	app.trace_busy = false
+	app.mu.unlock()
+	vgui.wake()
+}
+
+fn (mut app App) set_trace_status(s string) {
+	app.mu.lock()
+	app.trace_status = s
+	app.mu.unlock()
+}
+
+// mask_popcount counts the cores a dump mask selects (a 0 mask means the single core 0).
+fn mask_popcount(mask u16) int {
+	if mask == 0 {
+		return 1
+	}
+	mut m := mask
+	mut n := 0
+	for m != 0 {
+		n += int(m & 1)
+		m >>= 1
+	}
+	return n
+}
+
+// trace_core_mask builds a dump mask from the manifest's distinct cores, so "Dump" reads out
+// every core the target declares; 0 (the single receiving core) when there is no manifest.
+fn (app &App) trace_core_mask() u16 {
+	mut mask := u16(0)
+	for h in app.manifest.handlers {
+		if h.core >= 0 && h.core < 16 {
+			mask |= u16(1) << u16(h.core)
+		}
+	}
+	return mask
+}
+
 fn printable(b []u8) string {
 	mut s := ''
 	for c in b {
@@ -3849,39 +3947,74 @@ fn draw_tchart(mut app App, trecs []TRec) {
 		vgui.end()
 		return
 	}
-	if app.has_manifest {
-		labels, bars, span := build_swimlane(app, trecs)
-		vgui.text('${trecs.len} records · ${labels.len} handlers · gaps = idle')
-		vgui.text_dim('drag = pan · scroll = zoom · double-click = fit')
-		if bars.len > 0 {
-			vgui.swimlane('##swim', labels, bars, span)
-		} else {
-			vgui.text_dim('waiting for Record frames (0x7E5)')
+	// Dump control: freeze the target's capture and read it out over ISO-TP.
+	if app.trace_busy {
+		vgui.text_dim('dumping…')
+	} else if app.running {
+		if vgui.button('Dump##trace') {
+			spawn trace_dump_worker(app, app.trace_core_mask())
 		}
+		vgui.same_line()
+		vgui.text_dim('freeze + read the capture (all cores)')
 	} else {
-		vgui.text_dim('no telemetry manifest on any channel')
+		vgui.text_dim('Start a channel, then Dump to capture')
+	}
+	if app.trace_status != '' {
+		vgui.text_dim(app.trace_status)
+	}
+	labels, bars, span := build_swimlane(app, trecs)
+	vgui.text('${trecs.len} records · ${labels.len} lanes · gaps = idle')
+	vgui.text_dim('drag = pan · scroll = zoom · double-click = fit')
+	if bars.len > 0 {
+		vgui.swimlane('##swim', labels, bars, span)
+	} else {
+		vgui.text_dim('press Dump to capture (handler bars + thread-switch marks appear here)')
 	}
 	vgui.end()
 }
 
+// build_swimlane turns decoded records into swimlane lanes + bars. A dumped stream is not
+// homogeneous: handler-run records become duration bars on a per-handler lane; thread-switch
+// records become thin marker bars on a per-thread lane (coloured by reason); block-header
+// records are framing and skipped. Handler lanes are laid out first, thread lanes below.
 fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
 	if trecs.len == 0 {
 		return []string{}, []vgui.Bar{}, f32(1)
 	}
-	mut lane_of := map[u8]int{}
+	// lanes keyed 'h<id>' (handlers) then 't<id>' (threads), first-seen order within each.
+	mut lane_of := map[string]int{}
 	mut labels := []string{}
-	for tr in trecs {
-		id := tr.rec.handler_id
-		if id !in lane_of {
-			lane_of[id] = labels.len
-			labels << app.manifest.label(id)
+	for tr in trecs { // pass 1: handler lanes
+		r := tr.rec
+		if r.is_header() || r.is_switch() {
+			continue
+		}
+		key := 'h${r.handler_id}'
+		if key !in lane_of {
+			lane_of[key] = labels.len
+			labels << app.manifest.label(r.handler_id)
 		}
 	}
+	for tr in trecs { // pass 2: thread (switch) lanes, below the handlers
+		r := tr.rec
+		if !r.is_switch() {
+			continue
+		}
+		key := 't${r.to_thread()}'
+		if key !in lane_of {
+			lane_of[key] = labels.len
+			labels << 'thread ${r.to_thread()}'
+		}
+	}
+	// time span over every timeline record (headers carry no time).
 	mut tmin := f32(3.4e38)
 	mut tmax := f32(0)
 	for tr in trecs {
+		if tr.rec.is_header() {
+			continue
+		}
 		s := f32(tr.rec.start_us)
-		e := s + f32(tr.rec.cpu_us)
+		e := s + f32(tr.rec.cpu_us) // 0 for a switch
 		if s < tmin {
 			tmin = s
 		}
@@ -3889,20 +4022,52 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
 			tmax = e
 		}
 	}
+	if tmin > tmax { // only header records — nothing to draw
+		return labels, []vgui.Bar{}, f32(1)
+	}
 	span := if tmax > tmin { tmax - tmin } else { f32(1) }
+	mark := if span / 200 > 1 { span / 200 } else { f32(1) } // switch marker width (a tick)
 	mut bars := []vgui.Bar{cap: trecs.len}
 	for tr in trecs {
 		r := tr.rec
-		li := lane_of[r.handler_id]
-		c := lane_palette[li % lane_palette.len]
-		bars << vgui.Bar{
-			t0:        f32(r.start_us) - tmin
-			dur:       f32(r.cpu_us)
-			lane:      li
-			color:     vgui.rgba(c[0], c[1], c[2], 235)
-			warn:      if (r.flags & (telem.flag_overran | telem.flag_saturated)) != 0 { 1 } else { 0 }
-			preempted: if (r.flags & telem.flag_preempted) != 0 { 1 } else { 0 }
+		if r.is_header() {
+			continue
+		}
+		if r.is_switch() {
+			li := lane_of['t${r.to_thread()}']
+			bars << vgui.Bar{
+				t0:    f32(r.start_us) - tmin
+				dur:   mark
+				lane:  li
+				color: switch_color(r.reason())
+			}
+		} else {
+			li := lane_of['h${r.handler_id}']
+			c := lane_palette[li % lane_palette.len]
+			bars << vgui.Bar{
+				t0:        f32(r.start_us) - tmin
+				dur:       f32(r.cpu_us)
+				lane:      li
+				color:     vgui.rgba(c[0], c[1], c[2], 235)
+				warn:      if (r.flags & (telem.flag_overran | telem.flag_saturated)) != 0 { 1 } else { 0 }
+				preempted: if (r.flags & telem.flag_preempted) != 0 { 1 } else { 0 }
+			}
 		}
 	}
 	return labels, bars, span
+}
+
+// switch_color maps a thread-switch reason to a marker colour (red = preempted out, green =
+// resumed, amber = voluntary block/yield, grey = ISR / other).
+fn switch_color(reason u8) u32 {
+	if reason == telem.switch_preempt {
+		return vgui.rgba(230, 80, 80, 235)
+	}
+	if reason == telem.switch_resume {
+		return vgui.rgba(80, 200, 120, 235)
+	}
+	if reason == telem.switch_block {
+		return vgui.rgba(210, 180, 60, 235)
+	}
+	return vgui.rgba(150, 150, 160, 235)
 }
