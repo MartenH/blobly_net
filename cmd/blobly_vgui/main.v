@@ -1462,12 +1462,15 @@ fn selftest_check(name string, cond bool) bool {
 
 // rel_path makes an absolute path relative to the cwd when it lives under it, so a saved
 // project references e.g. `dbc/foo.dbc` rather than an absolute machine-specific path.
+// Separators are normalized to `/` first, so it also works for the file browser's
+// backslash paths on Windows (and the stored `.blobnet` path stays portable).
 fn rel_path(p string) string {
-	cwd := os.getwd()
-	if p.starts_with(cwd + '/') {
-		return p[cwd.len + 1..]
+	np := p.replace('\\', '/')
+	cwd := os.getwd().replace('\\', '/')
+	if np.starts_with(cwd + '/') {
+		return np[cwd.len + 1..]
 	}
-	return p
+	return np
 }
 
 // open_browser opens the file browser for a target action:
@@ -1808,14 +1811,16 @@ fn adapter_hint(a string) string {
 	}
 }
 
-// parse_u16_hex reads a 16-bit address ("0x"-hex or bare hex), returning deflt when empty.
+// parse_u16_hex reads a 16-bit address ("0x"-hex or bare hex). Any malformed input — empty,
+// a bare "0x", a non-hex character, or a value above 16 bits — returns `deflt` (the previous
+// value) rather than silently accepting a wrong address like 0x0000.
 fn parse_u16_hex(s string, deflt u16) u16 {
 	mut t := s.trim_space().trim('"')
-	if t == '' {
-		return deflt
-	}
 	if t.starts_with('0x') || t.starts_with('0X') {
 		t = t[2..]
+	}
+	if t == '' {
+		return deflt
 	}
 	mut v := u32(0)
 	for c in t {
@@ -1826,11 +1831,11 @@ fn parse_u16_hex(s string, deflt u16) u16 {
 		} else if c >= `A` && c <= `F` {
 			u32(c - `A`) + 10
 		} else {
-			continue
+			return deflt // non-hex character — keep the previous value
 		}
 		v = v * 16 + d
 		if v > 0xFFFF {
-			return deflt // out of 16-bit range — reject the edit, keep the previous value
+			return deflt // out of 16-bit range — keep the previous value
 		}
 	}
 	return u16(v)
