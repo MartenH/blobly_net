@@ -135,6 +135,7 @@ fn C.vgui_table_end()
 fn C.vgui_fps() f32
 fn C.vgui_want_text_input() int
 fn C.vgui_key_pressed(int) int
+fn C.vgui_combo(&char, &&char, int, int) int
 
 // --- lifecycle ---
 pub fn init(title string, w int, h int, event_driven bool) bool {
@@ -215,6 +216,18 @@ pub fn want_text_input() bool {
 // (no auto-repeat). Returns false for keys it can't map.
 pub fn key_pressed(ch u8) bool {
 	return C.vgui_key_pressed(int(ch)) != 0
+}
+
+// combo draws a dropdown of `items` and returns the selected index (== current when unchanged).
+pub fn combo(label string, items []string, current int) int {
+	if items.len == 0 {
+		return current
+	}
+	mut ip := []&char{cap: items.len}
+	for it in items {
+		ip << it.str
+	}
+	return C.vgui_combo(label.str, unsafe { &&char(ip.data) }, items.len, current)
 }
 
 // --- widgets ---

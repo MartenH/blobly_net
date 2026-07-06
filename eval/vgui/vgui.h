@@ -94,6 +94,7 @@ void vgui_table_end(void);
 float vgui_fps(void);
 int  vgui_want_text_input(void);
 int  vgui_key_pressed(int ch);
+int  vgui_combo(const char* label, const char** items, int n, int current);
 #ifdef __cplusplus
 }
 #endif

@@ -548,6 +548,22 @@ void vgui_table_freeze_top() { ImGui::TableSetupScrollFreeze(0, 1); } // header 
 void vgui_table_end() { ImGui::EndTable(); }
 float vgui_fps() { return ImGui::GetIO().Framerate; }
 
+// vgui_combo draws a dropdown of `n` items and returns the selected index (== current if the
+// user didn't pick a different one this frame). preview shows the current selection when closed.
+int vgui_combo(const char* label, const char** items, int n, int current) {
+    int sel = current;
+    const char* preview = (current >= 0 && current < n) ? items[current] : "";
+    if (ImGui::BeginCombo(label, preview)) {
+        for (int i = 0; i < n; i++) {
+            bool is_sel = (i == current);
+            if (ImGui::Selectable(items[i], is_sel)) sel = i;
+            if (is_sel) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    return sel;
+}
+
 // true while a text field is focused / imgui wants the keyboard — callers use this to suppress
 // their own single-key shortcuts so typing in an input box doesn't trigger them.
 int vgui_want_text_input() { return ImGui::GetIO().WantTextInput ? 1 : 0; }

@@ -140,6 +140,7 @@ mut:
 	// send_iface (the first monitor channel).
 	tx_buses      map[string]transport.Bus
 	send_iface    string
+	qs_iface      string // Quick send target bus (a channel iface); '' = send_iface default
 	send_id_buf   []u8
 	send_data_buf []u8
 	trace_filter_buf  []u8 // Trace substring filter
@@ -3415,23 +3416,48 @@ fn (app &App) is_watched_frame(id u32, ext bool) bool {
 // path. Fields stay editable while stopped; only firing needs a running bus.
 fn draw_quick_send(mut app App) {
 	vgui.separator_text('quick send')
+	// target bus: validate the stored quick-send iface against the current channels; fall back to
+	// the default send_iface if it was removed/renamed.
+	mut target := app.send_iface
+	mut cur := 0
+	for k, c in app.chans {
+		if c.iface == app.qs_iface {
+			target = app.qs_iface
+			cur = k
+		} else if c.iface == target {
+			cur = k
+		}
+	}
+	if app.chans.len > 1 {
+		mut names := []string{cap: app.chans.len}
+		for c in app.chans {
+			names << c.name
+		}
+		vgui.set_next_item_width(120 * app.ui_scale)
+		nsel := vgui.combo('bus##qsbus', names, cur)
+		if nsel != cur && nsel >= 0 && nsel < app.chans.len {
+			app.qs_iface = app.chans[nsel].iface
+			target = app.qs_iface
+		}
+		vgui.same_line()
+	}
 	vgui.set_next_item_width(70 * app.ui_scale)
 	vgui.input_text('id (hex)', mut app.send_id_buf)
 	vgui.same_line()
-	vgui.set_next_item_width(220 * app.ui_scale)
+	vgui.set_next_item_width(200 * app.ui_scale)
 	vgui.input_text('data (hex)', mut app.send_data_buf)
 	vgui.same_line()
 	if app.running {
 		if vgui.button('Send##quicksend') {
 			id := u32(('0x' + vgui.buf_str(app.send_id_buf)).u64())
 			data := parse_hex_bytes(vgui.buf_str(app.send_data_buf))
-			app.tx(transport.CanFrame{
+			app.tx_on(target, transport.CanFrame{
 				id:   id
 				data: data
 			})
 		}
 		vgui.same_line()
-		vgui.text_dim('on ${app.send_iface}')
+		vgui.text_dim('on ${app.chan_name_for(target)}')
 	} else {
 		vgui.text_dim('start to send')
 	}
@@ -3479,7 +3505,7 @@ fn draw_gen(mut app App) {
 		// do it before the header so the collapsed label reflects the latest edit.
 		app.senders[i].sender.name = vgui.buf_str(app.gen_bufs[i].name_buf)
 		app.senders[i].sender.key = vgui.buf_str(app.gen_bufs[i].key_buf)
-		s := app.senders[i].sender
+		mut s := app.senders[i].sender
 		cm := if s.cycle_ms > 0 { s.cycle_ms } else { 100 }
 		trig := match s.trigger {
 			'key' { if s.key != '' { 'key "${s.key}"' } else { 'key (unset)' } }
@@ -3546,6 +3572,26 @@ fn draw_gen(mut app App) {
 						app.set_sender_bus(i, if c.iface == sr.iface { '' } else { c.iface })
 					}
 				}
+			}
+			// message picker: build the frame from a DBC message (→ per-signal values) or send a
+			// raw id + data. Option 0 = raw; the rest are the DBC message names.
+			msg_names := app.message_names()
+			mut msg_opts := ['(raw id / data)']
+			msg_opts << msg_names
+			mut cur_msg := 0
+			if s.message != '' {
+				for k, mn in msg_names {
+					if mn == s.message {
+						cur_msg = k + 1
+						break
+					}
+				}
+			}
+			vgui.set_next_item_width(220 * app.ui_scale)
+			nsel := vgui.combo('message##msg${i}', msg_opts, cur_msg)
+			if nsel != cur_msg {
+				app.set_sender_message(i, if nsel <= 0 { '' } else { msg_opts[nsel] })
+				s = app.senders[i].sender // reflect the switch in this frame's payload block
 			}
 			// payload: DBC message -> per-signal values; raw -> id + data hex
 			if s.message != '' {
@@ -3692,6 +3738,72 @@ fn (mut app App) new_project() {
 	app.stop()
 	app.set_project(project.Project{ name: 'untitled' }, '')
 	app.notify('new project — add buses in Configure…')
+}
+
+// message_names lists every DBC message name across the loaded databases (deduplicated), in
+// load order — the picker options for a generator's payload.
+fn (app &App) message_names() []string {
+	mut out := []string{}
+	mut seen := map[string]bool{}
+	for db in app.dbs {
+		for m in db.messages {
+			if m.name in seen {
+				continue
+			}
+			seen[m.name] = true
+			out << m.name
+		}
+	}
+	return out
+}
+
+// set_sender_message switches generator `i` between raw (msg == '') and DBC-message mode. When a
+// message is picked, its signals are seeded (values preserved by name across a re-pick) so the
+// editor shows one input per signal; picking raw clears them so the id/data hex inputs return.
+fn (mut app App) set_sender_message(i int, msg string) {
+	if i < 0 || i >= app.senders.len {
+		return
+	}
+	app.mu.lock()
+	defer {
+		app.mu.unlock()
+	}
+	if msg == '' {
+		app.senders[i].sender.message = ''
+		app.senders[i].sender.signals = []
+	} else {
+		old := app.senders[i].sender.signals.clone()
+		app.senders[i].sender.message = msg
+		mut sigs := []project.SenderSig{}
+		for db in app.dbs {
+			mut found := false
+			for m in db.messages {
+				if m.name != msg {
+					continue
+				}
+				for sig in m.signals {
+					mut v := f64(0)
+					for o in old {
+						if o.name == sig.name {
+							v = o.value
+							break
+						}
+					}
+					sigs << project.SenderSig{
+						name:  sig.name
+						value: v
+					}
+				}
+				found = true
+				break
+			}
+			if found {
+				break
+			}
+		}
+		app.senders[i].sender.signals = sigs
+	}
+	app.dirty = true
 }
 
 fn (mut app App) set_trigger(i int, t string) {
