@@ -1380,7 +1380,11 @@ fn draw_sim(mut app App) {
 	}
 	vgui.text_dim('tick to enable/disable an ECU live')
 	for sc in app.sims {
-		vgui.separator_text(sc.iface)
+		// each bus is a collapsible group, collapsed by default (### keeps the id stable if the
+		// label changes)
+		if !vgui.tree_node('${sc.iface}   (${sc.nodes.len})###simbus_${sc.iface}') {
+			continue
+		}
 		for node in sc.nodes {
 			key := '${sc.iface}:${node.name}'
 			en := app.sim_enabled[key] or { true }
@@ -1403,6 +1407,7 @@ fn draw_sim(mut app App) {
 				vgui.tree_pop()
 			}
 		}
+		vgui.tree_pop()
 	}
 	vgui.end()
 }

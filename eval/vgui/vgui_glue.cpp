@@ -305,7 +305,17 @@ int  vgui_menu_item_check(const char* label, int checked) {
 }
 
 // --- more widgets ---
-int  vgui_checkbox(const char* label, int cur) { bool b = cur != 0; ImGui::Checkbox(label, &b); return b ? 1 : 0; }
+// checkbox square side = FontSize + 2*FramePadding.y; our theme padding (7) makes chunky boxes,
+// so shrink just the checkbox's vertical padding for a smaller tick box (keeps the label height).
+int  vgui_checkbox(const char* label, int cur) {
+    bool b = cur != 0;
+    float px = ImGui::GetStyle().FramePadding.x;
+    float py = ImGui::GetStyle().FramePadding.y;
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(px, py * 0.4f));
+    ImGui::Checkbox(label, &b);
+    ImGui::PopStyleVar();
+    return b ? 1 : 0;
+}
 void vgui_text_colored(int r, int g, int b, const char* s) {
     ImGui::TextColored(ImVec4(r/255.f, g/255.f, b/255.f, 1.f), "%s", s);
 }
