@@ -209,32 +209,6 @@ fn test_iface_compose_decompose() {
 	}
 }
 
-// transport_iface appends @<bitrate> for the vendor CAN backends, not for socketcan/vcan.
-fn test_transport_iface_bitrate() {
-	pc := Channel{
-		adapter: 'pcan'
-		address: 'PCAN_USBBUS1'
-		iface:   'pcan:PCAN_USBBUS1'
-		bitrate: 250000
-	}
-	assert pc.transport_iface() == 'pcan:PCAN_USBBUS1@250000'
-	kv := Channel{
-		adapter: 'kvaser'
-		address: '0'
-		iface:   'kvaser:0'
-		bitrate: 1000000
-	}
-	assert kv.transport_iface() == 'kvaser:0@1000000'
-	// socketcan/vcan configure the bitrate via `ip link`, so no suffix
-	vc := Channel{
-		adapter: 'socketcan'
-		address: 'can0'
-		iface:   'can0'
-		bitrate: 250000
-	}
-	assert vc.transport_iface() == 'can0'
-}
-
 // Senders (interactive generators) survive the Save round-trip.
 fn test_roundtrip_senders() {
 	orig := Project{

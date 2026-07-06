@@ -311,6 +311,20 @@ fn (a &App) lookup_name(id u32, ext bool) string {
 	return ''
 }
 
+// open_transport opens `iface`, appending the vendor bitrate (`@<rate>`) for pcan/kvaser
+// buses so the driver uses the configured rate. The logical KEY stays the raw iface —
+// tx_buses, sender targets and channels all key on it consistently — and only the physical
+// open carries the suffix. Non-vendor buses (socketcan/vcan configure bitrate via `ip link`;
+// inproc/udp have none) open unchanged.
+fn (app &App) open_transport(iface string) !transport.Bus {
+	for c in app.chans {
+		if c.iface == iface && (c.adapter == 'pcan' || c.adapter == 'kvaser') && c.bitrate > 0 {
+			return transport.open('${iface}@${c.bitrate}')
+		}
+	}
+	return transport.open(iface)
+}
+
 // start opens every enabled, monitorable channel on its own RX thread.
 fn (mut app App) start() {
 	if app.running {
@@ -331,7 +345,7 @@ fn (mut app App) start() {
 		spawn rx_loop(app, ci, ch.iface)
 		// open a TX bus for this channel's iface (each generator fires on its target bus)
 		if ch.iface !in app.tx_buses {
-			if b := transport.open(ch.iface) {
+			if b := app.open_transport(ch.iface) {
 				app.tx_buses[ch.iface] = b
 			}
 		}
@@ -343,7 +357,7 @@ fn (mut app App) start() {
 	for sr in app.senders {
 		tgt := sr.target()
 		if tgt != '' && tgt !in app.tx_buses {
-			if b := transport.open(tgt) {
+			if b := app.open_transport(tgt) {
 				app.tx_buses[tgt] = b
 			}
 		}
@@ -579,7 +593,7 @@ fn build_node(db candb.Database, cfg project.NodeCfg) sim.SimEcu {
 // request/response rules. Driver-free on inproc:, real on vcan0/can0.
 fn sim_loop(app &App, sc SimCfg) {
 	a := unsafe { app }
-	mut bus := transport.open(sc.iface) or {
+	mut bus := app.open_transport(sc.iface) or {
 		eprintln('sim ${sc.iface}: ${err}')
 		return
 	}
@@ -659,7 +673,7 @@ fn diag_server_loop(app &App, iface string) {
 }
 
 fn rx_loop(app &App, ci int, iface string) {
-	mut bus := transport.open(iface) or {
+	mut bus := app.open_transport(iface) or {
 		eprintln('rx ${iface}: ${err}')
 		mut a := unsafe { app }
 		a.mu.lock()
@@ -821,7 +835,7 @@ fn (mut app App) rebuild_from_proj() {
 			network:      ch.network
 			adapter:      ch.adapter
 			address:      ch.address
-			iface:        ch.transport_iface() // pcan/kvaser carry bitrate as @<rate> for the driver
+			iface:        ch.iface // the stable LOGICAL key (tx_buses/senders); @bitrate is added at open
 			mode:         ch.mode.str()
 			typ:          ch.typ
 			bitrate:      ch.bitrate
@@ -1673,13 +1687,35 @@ struct DiscoveredIface {
 	added   bool // already present in the project
 }
 
-// discover_all builds the Discover list: every CAN interface (real + vcan) plus the
-// cross-platform software transports (a UDP bus and an in-process sim net), marking those
-// already in the project.
+// iface_desc renders a short description for a transport-discovered interface (used for the
+// vendor/virtual entries that don't come with the rich /sys hardware label).
+fn iface_desc(f transport.Iface) string {
+	mut d := match f.kind {
+		'vcan' { 'virtual CAN' }
+		'udp' { 'software bus' }
+		'inproc' { 'in-process simulation' }
+		'can' { if f.name != '' && f.name != f.iface { f.name } else { 'CAN' } }
+		else { f.kind }
+	}
+	if f.bitrate > 0 {
+		d += ' · ${f.bitrate}'
+	}
+	return d
+}
+
+// discover_all builds the Discover list, marking entries already in the project. Two sources
+// are merged and de-duplicated by (adapter,address):
+//   1. Linux /sys CAN interfaces — finds interfaces that are DOWN (which `ip -json`, and thus
+//      transport.list_interfaces on Linux, omits) and enriches them with the USB product /
+//      bus path / link state. Empty off Linux.
+//   2. transport.list_interfaces() — the platform-gated enumerator that adds Windows vendor
+//      hardware (PCAN/Kvaser via their DLLs) plus the driver-free software buses (UDP/SIM).
 fn (app &App) discover_all() []DiscoveredIface {
 	mut out := []DiscoveredIface{}
+	mut seen := map[string]bool{}
 	for ci in read_can_ifaces() {
 		adapter := if ci.is_vcan { 'vcan' } else { 'socketcan' }
+		seen[project.compose_iface(adapter, ci.name)] = true
 		out << DiscoveredIface{
 			adapter: adapter
 			address: ci.name
@@ -1687,18 +1723,19 @@ fn (app &App) discover_all() []DiscoveredIface {
 			added:   app.iface_added(adapter, ci.name)
 		}
 	}
-	udp := '${transport.udp_default_group}:${transport.udp_default_port}'
-	out << DiscoveredIface{
-		adapter: 'udp'
-		address: udp
-		desc:    'software bus'
-		added:   app.iface_added('udp', udp)
-	}
-	out << DiscoveredIface{
-		adapter: 'virtual'
-		address: 'SIM'
-		desc:    'in-process simulation'
-		added:   app.iface_added('virtual', 'SIM')
+	for f in transport.list_interfaces() or { transport.virtual_ifaces() } {
+		adapter, address := project.decompose_iface(f.iface)
+		key := project.compose_iface(adapter, address)
+		if key in seen {
+			continue
+		}
+		seen[key] = true
+		out << DiscoveredIface{
+			adapter: adapter
+			address: address
+			desc:    iface_desc(f)
+			added:   app.iface_added(adapter, address)
+		}
 	}
 	return out
 }
@@ -3154,7 +3191,7 @@ fn (mut app App) add_generator() {
 	app.dirty = true
 	app.mu.unlock()
 	if app.running && iface != '' && iface !in app.tx_buses {
-		if b := transport.open(iface) {
+		if b := app.open_transport(iface) {
 			app.tx_buses[iface] = b
 		}
 	}
@@ -3272,7 +3309,7 @@ fn (mut app App) set_sender_bus(i int, bus string) {
 		app.senders[i].sender.bus = bus
 		tgt := app.senders[i].target()
 		if app.running && tgt != '' && tgt !in app.tx_buses {
-			if b := transport.open(tgt) {
+			if b := app.open_transport(tgt) {
 				app.tx_buses[tgt] = b
 			}
 		}

@@ -628,18 +628,6 @@ pub fn compose_iface(adapter string, address string) string {
 	}
 }
 
-// transport_iface is the interface string to hand to transport.open() at runtime: the
-// composed iface plus, for the vendor CAN backends (pcan/kvaser) whose driver takes the
-// bitrate IN the iface string (`pcan:<ch>[@<bitrate>]`), an `@<bitrate>` suffix — otherwise
-// those backends default to 500000 and a bus configured at another rate can't communicate.
-// (SocketCAN/vcan configure the bitrate via `ip link`, not the iface, so they're unchanged.)
-pub fn (ch Channel) transport_iface() string {
-	if (ch.adapter == 'pcan' || ch.adapter == 'kvaser') && ch.bitrate > 0 {
-		return '${ch.iface}@${ch.bitrate}'
-	}
-	return ch.iface
-}
-
 // decompose_iface splits a scheme string back into (adapter, address) so a v1 file (or
 // any raw `iface`) presents in the editor. Inverse of compose_iface. A bare `vcanN` maps
 // to the `vcan` adapter; anything else raw is treated as `socketcan` (real `canN`).
