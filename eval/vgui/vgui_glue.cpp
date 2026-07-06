@@ -133,6 +133,17 @@ int vgui_init(const char* title, int w, int h, int event_driven) {
     return 0;
 }
 
+// vgui_set_window_icon sets the OS window / taskbar icon from a w×h RGBA8 buffer (the caller
+// owns the pixels; GLFW copies them). Call after vgui_init. On macOS GLFW ignores this (uses
+// the .app bundle icon), which is fine.
+void vgui_set_window_icon(int w, int h, const unsigned char* rgba) {
+    if (!g_win || !rgba || w <= 0 || h <= 0) return;
+    GLFWimage img;
+    img.width = w; img.height = h;
+    img.pixels = (unsigned char*)rgba;
+    glfwSetWindowIcon(g_win, 1, &img);
+}
+
 // Frames to keep rendering at full rate after the last UI activity, so imgui animations
 // (window close, dock reflow, tab/hover fades) play smoothly instead of at the idle wait
 // rate. Set in vgui_frame_end when activity is detected; counted down here.
@@ -282,6 +293,10 @@ int  vgui_menu_bar_begin() {
 void vgui_menu_bar_end() { ImGui::EndMenuBar(); ImGui::PopStyleVar(); }
 int  vgui_menu_begin(const char* label) { return ImGui::BeginMenu(label) ? 1 : 0; }
 void vgui_menu_end() { ImGui::EndMenu(); }
+// right-click context menu on the LAST-submitted item: returns 1 if open (render menu_items
+// then call vgui_end_popup). `id` keeps each row's menu distinct.
+int  vgui_begin_popup_context_item(const char* id) { return ImGui::BeginPopupContextItem(id) ? 1 : 0; }
+void vgui_end_popup() { ImGui::EndPopup(); }
 int  vgui_menu_item(const char* label) { return ImGui::MenuItem(label) ? 1 : 0; }
 int  vgui_menu_item_check(const char* label, int checked) {
     bool b = checked != 0;
@@ -323,7 +338,18 @@ void vgui_dock_3(const char* a, const char* b, const char* c, float aw, float cw
 // --- ImPlot line plot (live signal graphs) ---
 int vgui_plot_begin(const char* title, float height) {
     if (ImPlot::BeginPlot(title, ImVec2(-1, height))) {
-        ImPlot::SetupAxes("t (ms)", NULL, ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
+        ImPlot::SetupAxes("t (s)", NULL, ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
+        return 1;
+    }
+    return 0;
+}
+// plot with a FIXED x (time) window [x_min,x_max] — a scrolling strip chart you watch, rather
+// than the whole-history autofit. y still autofits. x_max<=x_min falls back to x-autofit (full).
+int vgui_plot_begin_x(const char* title, float height, double x_min, double x_max) {
+    if (ImPlot::BeginPlot(title, ImVec2(-1, height))) {
+        int xflags = (x_max > x_min) ? ImPlotAxisFlags_None : ImPlotAxisFlags_AutoFit;
+        ImPlot::SetupAxes("t (s)", NULL, xflags, ImPlotAxisFlags_AutoFit);
+        if (x_max > x_min) ImPlot::SetupAxisLimits(ImAxis_X1, x_min, x_max, ImPlotCond_Always);
         return 1;
     }
     return 0;
@@ -331,6 +357,41 @@ int vgui_plot_begin(const char* title, float height) {
 void vgui_plot_line(const char* name, const float* xs, const float* ys, int n) {
     ImPlot::PlotLine(name, xs, ys, n);
 }
+// plot with a fixed x-window AND up to 3 real y-axes (each auto-fitting to its own series, so
+// signals of different scale keep real values in ONE view). Crosshairs are on. Bind a series
+// to an axis with vgui_plot_line_axis; query the cursor with vgui_plot_is_hovered/_mouse_x.
+int vgui_plot_begin2(const char* title, float height, double x_min, double x_max, int n_yaxes) {
+    if (ImPlot::BeginPlot(title, ImVec2(-1, height), ImPlotFlags_Crosshairs)) {
+        int xf = (x_max > x_min) ? ImPlotAxisFlags_None : ImPlotAxisFlags_AutoFit;
+        ImPlot::SetupAxis(ImAxis_X1, "t (s)", xf);
+        // Colour each y-axis's tick labels to match the signal plotted on it. Series auto-take
+        // colormap colours in plot order (item i -> colormap[i]) and signal i is bound to axis i,
+        // so axis i uses colormap[i]. Push ImPlotCol_AxisText AROUND SetupAxis to style per-axis.
+        ImPlot::PushStyleColor(ImPlotCol_AxisText, ImPlot::GetColormapColor(0));
+        ImPlot::SetupAxis(ImAxis_Y1, NULL, ImPlotAxisFlags_AutoFit);
+        ImPlot::PopStyleColor();
+        if (n_yaxes >= 2) {
+            ImPlot::PushStyleColor(ImPlotCol_AxisText, ImPlot::GetColormapColor(1));
+            ImPlot::SetupAxis(ImAxis_Y2, NULL, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_Opposite);
+            ImPlot::PopStyleColor();
+        }
+        if (n_yaxes >= 3) {
+            ImPlot::PushStyleColor(ImPlotCol_AxisText, ImPlot::GetColormapColor(2));
+            ImPlot::SetupAxis(ImAxis_Y3, NULL, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_Opposite);
+            ImPlot::PopStyleColor();
+        }
+        if (x_max > x_min) ImPlot::SetupAxisLimits(ImAxis_X1, x_min, x_max, ImPlotCond_Always);
+        return 1;
+    }
+    return 0;
+}
+void vgui_plot_line_axis(const char* name, const float* xs, const float* ys, int n, int axis) {
+    int a = axis < 0 ? 0 : (axis > 2 ? 2 : axis);
+    ImPlot::SetAxis((ImAxis)(ImAxis_Y1 + a));
+    ImPlot::PlotLine(name, xs, ys, n);
+}
+int vgui_plot_is_hovered() { return ImPlot::IsPlotHovered() ? 1 : 0; }
+double vgui_plot_mouse_x() { return ImPlot::GetPlotMousePos().x; }
 void vgui_plot_end() { ImPlot::EndPlot(); }
 
 // selectable row/label; returns 1 the frame it is clicked.
@@ -472,6 +533,7 @@ int vgui_tree_node_table(const char* label) {
 }
 // true the frame the last-submitted item was clicked (for row selection).
 int vgui_is_item_clicked() { return ImGui::IsItemClicked() ? 1 : 0; }
+int vgui_is_item_clicked_right() { return ImGui::IsItemClicked(ImGuiMouseButton_Right) ? 1 : 0; }
 void vgui_table_col(const char* c) { ImGui::TableSetupColumn(c); }
 void vgui_table_headers() { ImGui::TableHeadersRow(); }
 void vgui_table_row() { ImGui::TableNextRow(); }
