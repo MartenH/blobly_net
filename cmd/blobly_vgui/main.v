@@ -1829,8 +1829,11 @@ fn parse_u16_hex(s string, deflt u16) u16 {
 			continue
 		}
 		v = v * 16 + d
+		if v > 0xFFFF {
+			return deflt // out of 16-bit range — reject the edit, keep the previous value
+		}
 	}
-	return u16(v & 0xFFFF)
+	return u16(v)
 }
 
 // sync_cfg_bufs rebuilds the per-bus edit buffers to parallel app.proj.channels (on open,
@@ -3307,11 +3310,16 @@ fn (mut app App) save_project() {
 	app.notify('saved -> ${path}')
 }
 
-// apply_edits folds all pending editor state into app.proj and rebuilds the runtime view,
-// so Start/Save act on exactly what the editor shows. Config-editor text fields live in
-// cfg_bufs (flushed by commit_cfg) and session generators live in app.senders (folded in by
-// sync_senders_into_proj BEFORE the rebuild, so rebuild_from_proj doesn't drop unsaved ones).
+// apply_edits folds pending editor state into app.proj so Start/Save act on exactly what the
+// editor shows. While STOPPED it also rebuilds the runtime view; while RUNNING it only folds
+// generator edits into the model for the file write and does NOT rebuild — rebuilding app.chans
+// mid-measurement would reset the running flags / desync the live RX/gen threads and tx_buses
+// (the config editor is stopped-only, so there are no live config edits to apply anyway).
 fn (mut app App) apply_edits() {
+	if app.running {
+		app.sync_senders_into_proj() // generators may be edited live; persist them, don't rebuild
+		return
+	}
 	app.commit_cfg() // Configuration-editor buffers -> app.proj (no-op if the editor never opened)
 	app.sync_senders_into_proj() // session generators -> app.proj
 	app.rebuild_from_proj() // rebuild app.chans/dbs/sims from the updated model
