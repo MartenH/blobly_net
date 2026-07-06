@@ -189,6 +189,31 @@ channels:
 	assert p.channels[2].ecu_addr == 0x1000
 }
 
+// A legacy v1 vendor file embeds the bitrate in the interface (`pcan:CH@250000`): parse must
+// strip it from the address, lift it into the bitrate field, and store a clean iface.
+fn test_legacy_vendor_bitrate() {
+	y := 'project:
+  name: hw
+channels:
+  - name: PCAN1
+    type: can
+    interface: pcan:PCAN_USBBUS1@250000
+  - name: KV0
+    type: can
+    interface: kvaser:0@1000000
+'
+	p := parse(y)!
+	c0 := p.channels[0]
+	assert c0.adapter == 'pcan'
+	assert c0.address == 'PCAN_USBBUS1' // @250000 stripped
+	assert c0.iface == 'pcan:PCAN_USBBUS1' // clean — no doubled bitrate at open
+	assert c0.bitrate == 250000 // lifted from the iface
+	c1 := p.channels[1]
+	assert c1.adapter == 'kvaser'
+	assert c1.address == '0'
+	assert c1.bitrate == 1000000
+}
+
 // compose_iface / decompose_iface are inverses across every adapter.
 fn test_iface_compose_decompose() {
 	cases := [

@@ -337,8 +337,19 @@ fn parse_channel(c yaml.Any) !Channel {
 		ch.address = c.value('address').default_to('').string()
 		ch.iface = compose_iface(ch.adapter, ch.address)
 	} else if iv := c.value_opt('interface') {
-		ch.iface = iv.string()
-		ch.adapter, ch.address = decompose_iface(ch.iface)
+		raw := iv.string()
+		ch.adapter, ch.address = decompose_iface(raw)
+		// A legacy vendor iface embeds the bitrate (`pcan:CH@500000`): lift it into the bitrate
+		// field (decompose stripped it from the address) and recompose a clean iface.
+		if (ch.adapter == 'pcan' || ch.adapter == 'kvaser') && raw.contains('@') {
+			br := raw.all_after_last('@').int()
+			if br > 0 {
+				ch.bitrate = br
+			}
+			ch.iface = compose_iface(ch.adapter, ch.address)
+		} else {
+			ch.iface = raw
+		}
 	} else {
 		ch.adapter = 'vcan'
 		ch.address = 'vcan0'
@@ -645,11 +656,14 @@ pub fn decompose_iface(iface string) (string, string) {
 	if s.starts_with('udp:') {
 		return 'udp', s['udp:'.len..]
 	}
+	// Vendor backends carry the bitrate in the iface as `@<rate>` (a v1 convention). Strip it
+	// from the address so it isn't re-appended at open (`…@500000@250000`) or treated as a
+	// distinct bus; the rate is lifted into the bitrate field by parse_channel.
 	if s.starts_with('pcan:') {
-		return 'pcan', s['pcan:'.len..]
+		return 'pcan', s['pcan:'.len..].all_before('@')
 	}
 	if s.starts_with('kvaser:') {
-		return 'kvaser', s['kvaser:'.len..]
+		return 'kvaser', s['kvaser:'.len..].all_before('@')
 	}
 	if s == 'doip' {
 		return 'doip', ''
