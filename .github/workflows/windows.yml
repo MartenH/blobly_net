@@ -32,6 +32,11 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 60
 
+    # @vmodules resolves here (the Windows v.exe reads $VMODULES); vlang/markdown is cloned into it
+    # below for the Help browser view. A Windows-style path the msys2 steps convert with cygpath.
+    env:
+      VMODULES: ${{ github.workspace }}\vmodules
+
     steps:
       - uses: actions/checkout@v4
 
@@ -69,6 +74,17 @@ jobs:
       - name: Build imgui C deps (eval/vgui/libvgui_c.a)
         shell: msys2 {0}
         run: sh eval/vgui/build_deps.sh
+
+      # vlang/markdown (md4c) — the Help "Open in browser" view. Cloned into $VMODULES (the same
+      # dir the Windows v.exe reads via @vmodules); md4c-lib.o auto-builds from its sibling .c
+      # under mingw gcc. Pinned to a known-good commit.
+      - name: Fetch vlang/markdown (Help browser view)
+        shell: msys2 {0}
+        run: |
+          vm="$(cygpath -u "$VMODULES")"
+          mkdir -p "$vm"
+          git -c advice.detachedHead=false clone --quiet https://github.com/vlang/markdown.git "$vm/markdown"
+          git -C "$vm/markdown" -c advice.detachedHead=false checkout --quiet ef2f101
 
       # Build cmd/blobly_vgui. The prebuilt v.exe drives mingw gcc via -cc gcc; the
       # `#flag windows` line in vgui.v carries the static glfw + freetype/harfbuzz/glib link

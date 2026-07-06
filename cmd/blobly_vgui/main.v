@@ -14,6 +14,7 @@ module main
 import os
 import math
 import strings
+import markdown
 import sync
 import time
 import project
@@ -2616,6 +2617,14 @@ fn draw_help(mut app App) {
 		vgui.end()
 		return
 	}
+	// The in-panel view is a lightweight quick reference; "Open in browser" renders the same docs
+	// to properly-typeset HTML (headings, code blocks, tables) via vlang/markdown — the nice view.
+	if vgui.button('Open in browser') {
+		app.open_help_in_browser()
+	}
+	vgui.same_line()
+	vgui.text_dim('full docs, nicely rendered')
+	vgui.separator()
 	// doc picker
 	for i, d in help_docs {
 		if i > 0 {
@@ -2632,6 +2641,90 @@ fn draw_help(mut app App) {
 	render_markdown(body)
 	vgui.child_end()
 	vgui.end()
+}
+
+// help_html renders all Help docs into one standalone, styled HTML document for the system
+// browser — the same markdown the in-panel view uses, but with real typography, code blocks and
+// tables (imgui can't). Self-contained + offline.
+fn (mut app App) help_html() string {
+	mut md := ''
+	for i, d in help_docs {
+		if i > 0 {
+			md += '\n\n---\n\n'
+		}
+		md += app.help_text(d.path)
+	}
+	body := markdown.to_html(md)
+	style := 'body{font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;' +
+		'line-height:1.6;color:#1b1b1b;background:#fff;max-width:860px;margin:0 auto;padding:2rem 1.5rem;}' +
+		'h1,h2,h3{line-height:1.25;margin-top:1.6em}' +
+		'h1{border-bottom:2px solid #0078d4;padding-bottom:.2em}' +
+		'h2{border-bottom:1px solid #ddd;padding-bottom:.2em}' +
+		'code{background:#f3f3f3;padding:.1em .35em;border-radius:3px;font-size:.92em}' +
+		'pre{background:#f6f8fa;padding:1em;border-radius:6px;overflow:auto}' +
+		'pre code{background:none;padding:0}a{color:#0078d4}' +
+		'hr{border:0;border-top:1px solid #ddd;margin:2.5em 0}' +
+		'table{border-collapse:collapse}td,th{border:1px solid #ddd;padding:.4em .6em}' +
+		'@media(prefers-color-scheme:dark){body{color:#d4d4d4;background:#1e1e1e}' +
+		'code{background:#2d2d2d}pre{background:#252526}h2,hr,td,th{border-color:#3a3a3a}a{color:#4ea1ff}}'
+	return '<!DOCTYPE html>\n<html lang="en"><head><meta charset="utf-8">' +
+		'<meta name="viewport" content="width=device-width, initial-scale=1">' +
+		'<title>Blobly Net — Help</title><style>${style}</style></head><body>\n' + body +
+		'\n</body></html>\n'
+}
+
+// open_help_in_browser writes the rendered Help HTML to a per-user cache file and opens it in the
+// system browser (imgui is effectively one desktop app; the browser is the nicely-rendered view).
+fn (mut app App) open_help_in_browser() {
+	dir := os.join_path(os.cache_dir(), 'blobly_net')
+	os.mkdir_all(dir) or {}
+	os.chmod(dir, 0o700) or {} // not a shared /tmp — avoid a symlink pre-plant
+	path := os.join_path(dir, 'help.html')
+	os.write_file(path, app.help_html()) or {
+		app.notify('Help: could not write ${path} (${err})')
+		return
+	}
+	ok, note := open_uri_in_browser(path)
+	app.notify(if ok { note } else { 'Help written to ${path} — ${note}' })
+}
+
+// is_wsl reports whether we're under WSL, where os.open_uri finds no Linux browser.
+fn is_wsl() bool {
+	if os.getenv('WSL_DISTRO_NAME') != '' || os.getenv('WSL_INTEROP') != '' {
+		return true
+	}
+	rel := os.read_file('/proc/sys/kernel/osrelease') or { return false }
+	low := rel.to_lower()
+	return low.contains('microsoft') || low.contains('wsl')
+}
+
+// open_uri_in_browser opens `path` in the system browser. Under WSL, os.open_uri finds no Linux
+// browser, so route to the Windows browser via wslview (wslu) or explorer.exe with a wslpath UNC.
+fn open_uri_in_browser(path string) (bool, string) {
+	if is_wsl() {
+		if exe := os.find_abs_path_of_executable('wslview') {
+			mut p := os.new_process(exe)
+			p.set_args([path])
+			p.run()
+			p.wait()
+			if p.code == 0 {
+				return true, 'opened Help in the Windows browser'
+			}
+		}
+		if exe := os.find_abs_path_of_executable('explorer.exe') {
+			win := os.execute('wslpath -w ' + os.quoted_path(path))
+			if win.exit_code == 0 {
+				mut p := os.new_process(exe)
+				p.set_args([win.output.trim_space()])
+				p.run()
+				p.wait()
+				return true, 'opening Help in the Windows browser'
+			}
+		}
+		return false, 'open it manually (install wslu for wslview)'
+	}
+	os.open_uri(path) or { return false, 'open it manually (${err.msg()})' }
+	return true, 'opened Help in browser'
 }
 
 // render_markdown draws a lightweight subset of Markdown with imgui primitives: ATX headings
@@ -2711,26 +2804,60 @@ fn draw_buses(mut app App, chans []Chan) {
 		app.show_config = true
 		app.sync_cfg_bufs()
 	}
-	vgui.separator_text('channels')
+	// group channels by adapter type (in-process / SocketCAN / hardware / UDP / DoIP), each a
+	// collapsible group with a count — so a big mixed setup folds into a few headers, and a
+	// single-type project is just one group.
+	mut order := []string{}
+	mut groups := map[string][]int{}
 	for i, c in chans {
-		new := vgui.checkbox('##en${i}', c.enabled)
-		if new != c.enabled {
-			app.mu.lock()
-			app.chans[i].enabled = new
-			// enabling a channel mid-run spawns its RX thread; disabling lets it exit
-			if new && app.running && c.monitorable() && !app.chans[i].running {
-				app.chans[i].running = true
-				spawn rx_loop(app, i, app.chans[i].iface)
-			}
-			app.mu.unlock()
+		k := bus_kind(c.adapter)
+		if k !in groups {
+			order << k
 		}
-		vgui.same_line()
-		r, g, b, label := chan_state(c)
-		vgui.text_colored(r, g, b, label)
-		vgui.same_line()
-		vgui.text('${c.name}  ${c.iface}  [${c.mode}]  RX ${c.rx}')
+		groups[k] << i
+	}
+	for k in order {
+		idxs := groups[k]
+		if !vgui.tree_node_open('${k}   (${idxs.len})###busgrp_${k}') {
+			continue
+		}
+		for i in idxs {
+			c := chans[i]
+			new := vgui.checkbox('##en${i}', c.enabled)
+			if new != c.enabled {
+				app.mu.lock()
+				app.chans[i].enabled = new
+				// enabling a channel mid-run spawns its RX thread; disabling lets it exit
+				if new && app.running && c.monitorable() && !app.chans[i].running {
+					app.chans[i].running = true
+					spawn rx_loop(app, i, app.chans[i].iface)
+				}
+				app.mu.unlock()
+			}
+			vgui.same_line()
+			r, g, b, label := chan_state(c)
+			vgui.text_colored(r, g, b, label)
+			vgui.same_line()
+			vgui.text('${c.name}  ${c.iface}  [${c.mode}]  RX ${c.rx}')
+		}
+		vgui.tree_pop()
 	}
 	vgui.end()
+}
+
+// bus_kind maps a channel adapter to a friendly type-group label for the Buses panel.
+fn bus_kind(adapter string) string {
+	return match adapter {
+		'virtual' { 'Virtual (in-process)' }
+		'vcan' { 'Virtual CAN (vcan)' }
+		'socketcan' { 'SocketCAN' }
+		'pcan' { 'PCAN (hardware)' }
+		'kvaser' { 'Kvaser (hardware)' }
+		'udp' { 'UDP software bus' }
+		'doip' { 'DoIP (Ethernet)' }
+		'' { 'Other' }
+		else { adapter }
+	}
 }
 
 // draw_network shows the bus topology: each channel (bus) and everything attached to it —
