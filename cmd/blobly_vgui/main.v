@@ -12,6 +12,7 @@
 module main
 
 import os
+import math
 import strings
 import sync
 import time
@@ -3596,11 +3597,18 @@ fn draw_gen(mut app App) {
 			// payload: DBC message -> per-signal values; raw -> id + data hex
 			if s.message != '' {
 				vgui.text('message ${s.message} · signal values:')
+				cmsg := app.find_message_cdb(s.message) or { candb.Message{} }
 				for j, ss in s.signals {
-					vgui.set_next_item_width(150 * app.ui_scale)
-					if vgui.input_double('${ss.name}##sig${i}_${j}', unsafe { &app.senders[i].sender.signals[j].value }) {
-						app.dirty = true
+					mut sig := candb.Signal{}
+					mut have := false
+					for cs in cmsg.signals {
+						if cs.name == ss.name {
+							sig = cs
+							have = true
+							break
+						}
 					}
+					app.signal_input(i, j, sig, have)
 				}
 			} else {
 				vgui.set_next_item_width(70 * app.ui_scale)
@@ -3804,6 +3812,73 @@ fn (mut app App) set_sender_message(i int, msg string) {
 		app.senders[i].sender.signals = sigs
 	}
 	app.dirty = true
+}
+
+// find_message_cdb returns the candb.Message with `name` from the loaded DBCs (for signal
+// metadata: units, value tables, integer-vs-float scaling).
+fn (app &App) find_message_cdb(name string) ?candb.Message {
+	for db in app.dbs {
+		for m in db.messages {
+			if m.name == name {
+				return m
+			}
+		}
+	}
+	return none
+}
+
+// signal_is_integer is true when every representable physical value of the signal is a whole
+// number (integer factor + offset) — so it should get an integer input, not a float box.
+fn signal_is_integer(sig candb.Signal) bool {
+	return sig.factor == math.trunc(sig.factor) && sig.offset == math.trunc(sig.offset)
+}
+
+// signal_input renders one generator signal value using its DBC type: an enum dropdown for a
+// signal with a VAL_ table, an integer spinner for integer-scaled signals, else a float box.
+// `sig` is the DBC metadata (valid only when `have`); without it we fall back to a float box.
+fn (mut app App) signal_input(i int, j int, sig candb.Signal, have bool) {
+	ss := app.senders[i].sender.signals[j]
+	unit := if have && sig.unit != '' { ' [${sig.unit}]' } else { '' }
+	lbl := '${ss.name}${unit}##sig${i}_${j}'
+	pv := unsafe { &app.senders[i].sender.signals[j].value }
+	factor := if have && sig.factor != 0 { sig.factor } else { f64(1) }
+	vgui.set_next_item_width(170 * app.ui_scale)
+	if have && sig.values.len > 0 {
+		// enum: dropdown of "raw — name" states; the stored value stays physical
+		mut raws := sig.values.keys()
+		raws.sort()
+		mut labels := []string{cap: raws.len}
+		for r in raws {
+			labels << '${r} — ${sig.values[r]}'
+		}
+		curraw := u64(math.round((ss.value - sig.offset) / factor))
+		mut cur := 0
+		for k, r in raws {
+			if r == curraw {
+				cur = k
+				break
+			}
+		}
+		nsel := vgui.combo(lbl, labels, cur)
+		if nsel != cur && nsel >= 0 && nsel < raws.len {
+			unsafe {
+				*pv = f64(raws[nsel]) * factor + sig.offset
+			}
+			app.dirty = true
+		}
+	} else if have && signal_is_integer(sig) {
+		mut iv := int(math.round(ss.value))
+		if vgui.input_int(lbl, &iv) {
+			unsafe {
+				*pv = f64(iv)
+			}
+			app.dirty = true
+		}
+	} else {
+		if vgui.input_double(lbl, pv) {
+			app.dirty = true
+		}
+	}
 }
 
 fn (mut app App) set_trigger(i int, t string) {

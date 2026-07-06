@@ -430,6 +430,9 @@ int vgui_input_text(const char* label, char* buf, int bufsize) {
 int vgui_input_double(const char* label, double* v) {
     return ImGui::InputDouble(label, v, 0.0, 0.0, "%.3f") ? 1 : 0;
 }
+int vgui_input_int(const char* label, int* v) {
+    return ImGui::InputInt(label, v) ? 1 : 0;
+}
 void vgui_set_next_item_width(float w) { ImGui::SetNextItemWidth(w); }
 // advance the cursor horizontally on the current line (a left inset / spacer).
 void vgui_indent_x(float w) { ImGui::SetCursorPosX(ImGui::GetCursorPosX() + w); }

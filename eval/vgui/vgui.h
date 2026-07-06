@@ -61,6 +61,7 @@ void vgui_child_wh(const char* id, float w, float h);
 void vgui_child_end(void);
 int  vgui_input_text(const char* label, char* buf, int bufsize);
 int  vgui_input_double(const char* label, double* v);
+int  vgui_input_int(const char* label, int* v);
 void vgui_set_next_item_width(float w);
 int  vgui_tree_node(const char* label);
 int  vgui_tree_node_open(const char* label);

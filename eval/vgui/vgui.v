@@ -102,6 +102,7 @@ fn C.vgui_child_wh(&char, f32, f32)
 fn C.vgui_child_end()
 fn C.vgui_input_text(&char, &char, int) int
 fn C.vgui_input_double(&char, &f64) int
+fn C.vgui_input_int(&char, &int) int
 fn C.vgui_set_next_item_width(f32)
 fn C.vgui_tree_node(&char) int
 fn C.vgui_tree_node_open(&char) int
@@ -437,6 +438,11 @@ pub fn input_text(label string, mut buf []u8) bool {
 // input_double edits *v in place (numeric input, e.g. a signal value). Returns true on change.
 pub fn input_double(label string, v &f64) bool {
 	return C.vgui_input_double(label.str, v) == 1
+}
+
+// input_int edits *v in place (integer input with +/- steps). Returns true on change.
+pub fn input_int(label string, v &int) bool {
+	return C.vgui_input_int(label.str, v) == 1
 }
 
 // buf_str reads a NUL-terminated input buffer as a V string.
