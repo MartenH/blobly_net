@@ -91,6 +91,191 @@ fn test_roundtrip() {
 	assert c.nodes[0].responses[0].response == u32(0x102)
 }
 
+// v2 schema: adapter/address/network compose the iface and survive the round-trip, for a
+// mix of a virtual CAN bus, a DoIP endpoint, and a replay bus (built from blank, in code).
+fn test_roundtrip_v2() {
+	orig := Project{
+		name:     'v2'
+		channels: [
+			Channel{
+				name:      'CAN0'
+				network:   'Powertrain'
+				adapter:   'virtual'
+				address:   'CAN1'
+				iface:     'inproc:CAN1'
+				typ:       'can'
+				databases: ['dbc/blobly_net.dbc']
+			},
+			Channel{
+				name:        'Gateway'
+				network:     'Diagnostics'
+				adapter:     'doip'
+				address:     '127.0.0.1:13400'
+				iface:       'doip:127.0.0.1:13400'
+				typ:         'doip'
+				tester_addr: 0x0E80
+				ecu_addr:    0x1000
+			},
+			Channel{
+				name:    'Replay'
+				adapter: 'virtual'
+				address: 'REPLAY'
+				iface:   'inproc:REPLAY'
+				mode:    .replay
+				replay:  Replay{
+					source: 'samples/demo.log'
+					speed:  2.0
+					repeat: true
+				}
+			},
+		]
+	}
+	rp := parse(orig.to_yaml())!
+	assert rp.version == schema_version
+	assert rp.channels.len == 3
+	c0 := rp.channels[0]
+	assert c0.name == 'CAN0'
+	assert c0.network == 'Powertrain'
+	assert c0.adapter == 'virtual'
+	assert c0.address == 'CAN1'
+	assert c0.iface == 'inproc:CAN1'
+	assert c0.typ == 'can'
+	c1 := rp.channels[1]
+	assert c1.adapter == 'doip'
+	assert c1.address == '127.0.0.1:13400'
+	assert c1.is_doip()
+	assert c1.tester_addr == 0x0E80
+	assert c1.ecu_addr == 0x1000
+	c2 := rp.channels[2]
+	assert c2.adapter == 'virtual'
+	assert c2.iface == 'inproc:REPLAY'
+	assert c2.mode == .replay
+	r := c2.replay or { panic('replay missing') }
+	assert r.source == 'samples/demo.log'
+	assert r.speed == 2.0
+	assert r.repeat == true
+}
+
+// v1 files (top-level `channels:`, `interface:`, `type:`) still load, and the parser
+// decomposes `interface` back into adapter+address so the editor has both.
+fn test_legacy_v1_loads() {
+	y := 'project:
+  name: legacy
+channels:
+  - name: CAN1
+    type: can
+    interface: inproc:CAN1
+    databases:
+      - dbc/blobly_net.dbc
+  - name: PT
+    type: can
+    interface: vcan0
+  - name: Diag
+    type: doip
+    interface: doip:127.0.0.1:13400
+    tester_address: "0x0E80"
+    ecu_address: "0x1000"
+'
+	p := parse(y)!
+	assert p.channels.len == 3
+	assert p.channels[0].adapter == 'virtual'
+	assert p.channels[0].address == 'CAN1'
+	assert p.channels[0].iface == 'inproc:CAN1'
+	assert p.channels[1].adapter == 'vcan'
+	assert p.channels[1].address == 'vcan0'
+	assert p.channels[2].adapter == 'doip'
+	assert p.channels[2].address == '127.0.0.1:13400'
+	assert p.channels[2].is_doip()
+	assert p.channels[2].ecu_addr == 0x1000
+}
+
+// A legacy v1 vendor file embeds the bitrate in the interface (`pcan:CH@250000`): parse must
+// strip it from the address, lift it into the bitrate field, and store a clean iface.
+fn test_legacy_vendor_bitrate() {
+	y := 'project:
+  name: hw
+channels:
+  - name: PCAN1
+    type: can
+    interface: pcan:PCAN_USBBUS1@250000
+  - name: KV0
+    type: can
+    interface: kvaser:0@1000000
+'
+	p := parse(y)!
+	c0 := p.channels[0]
+	assert c0.adapter == 'pcan'
+	assert c0.address == 'PCAN_USBBUS1' // @250000 stripped
+	assert c0.iface == 'pcan:PCAN_USBBUS1' // clean — no doubled bitrate at open
+	assert c0.bitrate == 250000 // lifted from the iface
+	c1 := p.channels[1]
+	assert c1.adapter == 'kvaser'
+	assert c1.address == '0'
+	assert c1.bitrate == 1000000
+}
+
+// A v2 Channel that sets adapter/address but leaves iface at the struct default serializes
+// from the explicit v2 fields (not the default vcan0).
+fn test_v2_fields_authoritative_on_save() {
+	orig := Project{
+		name:     'v2auth'
+		channels: [
+			Channel{
+				name:    'CAN1'
+				adapter: 'virtual'
+				address: 'CAN1'
+			}, // iface left at the struct default ('vcan0')
+		]
+	}
+	c := parse(orig.to_yaml())!.channels[0]
+	assert c.adapter == 'virtual'
+	assert c.address == 'CAN1'
+	assert c.iface == 'inproc:CAN1'
+}
+
+// A DoIP endpoint on a bracketed IPv6 address must survive the Save round-trip (the address
+// starts with `[`, which YAML would read as flow syntax unless it's quoted).
+fn test_ipv6_address_roundtrip() {
+	orig := Project{
+		name:     'v6'
+		channels: [
+			Channel{
+				name:    'Gateway'
+				adapter: 'doip'
+				address: '[::1]:13400'
+				iface:   'doip:[::1]:13400'
+				typ:     'doip'
+			},
+		]
+	}
+	rp := parse(orig.to_yaml())!
+	assert rp.channels.len == 1
+	c := rp.channels[0]
+	assert c.adapter == 'doip'
+	assert c.address == '[::1]:13400'
+	assert c.is_doip()
+}
+
+// compose_iface / decompose_iface are inverses across every adapter.
+fn test_iface_compose_decompose() {
+	cases := [
+		['virtual', 'CAN1', 'inproc:CAN1'],
+		['vcan', 'vcan0', 'vcan0'],
+		['socketcan', 'can0', 'can0'],
+		['udp', '239.0.0.1:5000', 'udp:239.0.0.1:5000'],
+		['pcan', 'PCAN_USBBUS1', 'pcan:PCAN_USBBUS1'],
+		['kvaser', '0', 'kvaser:0'],
+		['doip', '127.0.0.1:13400', 'doip:127.0.0.1:13400'],
+	]
+	for cse in cases {
+		adapter, address, iface := cse[0], cse[1], cse[2]
+		assert compose_iface(adapter, address) == iface
+		a, ad := decompose_iface(iface)
+		assert a == adapter
+		assert ad == address
+	}
+}
+
 // Senders (interactive generators) survive the Save round-trip.
 fn test_roundtrip_senders() {
 	orig := Project{

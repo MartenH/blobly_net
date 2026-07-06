@@ -1,140 +1,51 @@
 {
-	"version": "2.0.0",
-	"tasks": [
-		{
-			"label": "Run GUI (main window)",
-			"type": "shell",
-			"command": "./scripts/run.sh",
-			"problemMatcher": [],
-			"presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
-			"group": { "kind": "build", "isDefault": true }
-		},
-		{
-			"label": "Run demo: dashboard (live table + chart)",
-			"type": "shell",
-			"command": "./scripts/run.sh cmd/dashboard/dashboard.v",
-			"problemMatcher": [],
-			"presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
-		},
-		{
-			"label": "Run demo: frame → signals",
-			"type": "shell",
-			"command": "./scripts/run.sh cmd/signal_decode/decode.v",
-			"problemMatcher": [],
-			"presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
-		},
-		{
-			"label": "Run demo: dock spike",
-			"type": "shell",
-			"command": "./scripts/run.sh cmd/dock_demo/dock_demo.v",
-			"problemMatcher": [],
-			"presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
-		},
-		{
-			"label": "Setup: vcan0",
-			"type": "shell",
-			"command": "./scripts/setup_vcan.sh",
-			"problemMatcher": [],
-			"presentation": { "reveal": "always", "panel": "shared" }
-		},
-		{
-			"label": "Run virtual SUT (Python)",
-			"type": "shell",
-			"command": "python3 sut/can_sut.py",
-			"problemMatcher": [],
-			"dependsOn": "Setup: vcan0",
-			"presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
-		},
-		{
-			"label": "CAN: SUT + Tester",
-			"dependsOn": ["Run virtual SUT (Python)", "Run GUI (main window)"],
-			"dependsOrder": "parallel",
-			"problemMatcher": []
-		},
-		{
-			"label": "Build GUI (compile only)",
-			"type": "shell",
-			"command": "${env:HOME}/v/v -path \"@vlib|@vmodules|modules\" -o build/blobly_net src/main.v",
-			"problemMatcher": [],
-			"presentation": { "reveal": "always", "panel": "shared" }
-		},
-		{
-			"label": "Test: candb module",
-			"type": "shell",
-			"command": "${env:HOME}/v/v test modules/candb/",
-			"problemMatcher": [],
-			"presentation": { "reveal": "always", "panel": "shared" },
-			"group": "test"
-		},
-		{
-			"label": "debug-build: main",
-			"type": "shell",
-			"command": "${env:HOME}/v/v -g -path \"@vlib|@vmodules|modules\" -o build/main.dbg src/main.v",
-			"problemMatcher": "$gcc",
-			"presentation": { "reveal": "silent", "panel": "shared" }
-		},
-		{
-			"label": "debug-build: dashboard",
-			"type": "shell",
-			"command": "${env:HOME}/v/v -g -path \"@vlib|@vmodules|modules\" -o build/dashboard.dbg cmd/dashboard/dashboard.v",
-			"problemMatcher": "$gcc",
-			"presentation": { "reveal": "silent", "panel": "shared" }
-		},
-		{
-			"label": "debug-build: decode",
-			"type": "shell",
-			"command": "${env:HOME}/v/v -g -path \"@vlib|@vmodules|modules\" -o build/decode.dbg cmd/signal_decode/decode.v",
-			"problemMatcher": "$gcc",
-			"presentation": { "reveal": "silent", "panel": "shared" }
-		},
-
-		{
-			"label": "Win: Setup toolchain (one-time)",
-			"type": "process",
-			"command": "powershell.exe",
-			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/scripts/setup_win.ps1"],
-			"problemMatcher": [],
-			"presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
-		},
-		{
-			"label": "Win: Build + Run (mingw GL)",
-			"type": "process",
-			"command": "powershell.exe",
-			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/scripts/build_win.ps1", "-Run"],
-			"problemMatcher": [],
-			"presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
-		},
-		{
-			"label": "Win: Build (mingw GL)",
-			"type": "process",
-			"command": "powershell.exe",
-			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/scripts/build_win.ps1"],
-			"problemMatcher": [],
-			"presentation": { "reveal": "always", "panel": "shared" }
-		},
-		{
-			"label": "Win: vcpkg deps — pango/freetype (one-time)",
-			"type": "process",
-			"command": "powershell.exe",
-			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/scripts/build_win_msvc.ps1", "-Deps"],
-			"problemMatcher": [],
-			"presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
-		},
-		{
-			"label": "Win: Build + Run (MSVC + vcpkg)",
-			"type": "process",
-			"command": "powershell.exe",
-			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/scripts/build_win_msvc.ps1", "-Run"],
-			"problemMatcher": [],
-			"presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
-		},
-		{
-			"label": "Win: Build (MSVC + vcpkg)",
-			"type": "process",
-			"command": "powershell.exe",
-			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/scripts/build_win_msvc.ps1"],
-			"problemMatcher": [],
-			"presentation": { "reveal": "always", "panel": "shared" }
-		}
-	]
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Run VGUI",
+      "type": "process",
+      "command": "${workspaceFolder}/../msys64-ct/usr/bin/bash.exe",
+      "args": ["--login", "-c", "./scripts/run_vgui.sh"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "CHERE_INVOKING": "1", "MSYSTEM": "MSYS" }
+      },
+      "group": {
+        "kind": "build",
+      }
+    },
+    {
+      "label": "Build VGUI (no run)",
+      "type": "process",
+      "command": "${workspaceFolder}/../msys64-ct/usr/bin/bash.exe",
+      "args": ["--login", "-c", "./scripts/run_vgui.sh"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "CHERE_INVOKING": "1", "MSYSTEM": "MSYS", "RUN": "0" }
+      },
+      "group": "build"
+    },
+    {
+      "label": "Debug VGUI (gdb build)",
+      "type": "process",
+      "command": "${workspaceFolder}/../msys64-ct/usr/bin/bash.exe",
+      "args": ["--login", "-c", "./scripts/run_vgui.sh"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "CHERE_INVOKING": "1", "MSYSTEM": "MSYS", "DBG": "1", "RUN": "0" }
+      },
+      "group": "build"
+    },
+    {
+      "label": "Rebuild VGUI deps (imgui/implot/glfw/freetype)",
+      "type": "process",
+      "command": "${workspaceFolder}/../msys64-ct/usr/bin/bash.exe",
+      "args": ["--login", "-c", "./scripts/run_vgui.sh"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "CHERE_INVOKING": "1", "MSYSTEM": "MSYS", "DEPS": "1", "RUN": "0" }
+      },
+      "group": "build"
+    }
+  ]
 }
