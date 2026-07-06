@@ -317,12 +317,20 @@ fn (a &App) lookup_name(id u32, ext bool) string {
 // open carries the suffix. Non-vendor buses (socketcan/vcan configure bitrate via `ip link`;
 // inproc/udp have none) open unchanged.
 fn (app &App) open_transport(iface string) !transport.Bus {
+	return transport.open(app.bitrate_iface(iface))
+}
+
+// bitrate_iface returns `iface` with the vendor bitrate suffix (`@<rate>`) for a pcan/kvaser
+// channel configured at a non-default rate, else `iface` unchanged. Used wherever a channel's
+// physical bus is opened — transport.open (via open_transport) AND isotp.open_software (the
+// diagnostics ISO-TP paths) — so UDS reaches the vendor driver at the configured bitrate too.
+fn (app &App) bitrate_iface(iface string) string {
 	for c in app.chans {
 		if c.iface == iface && (c.adapter == 'pcan' || c.adapter == 'kvaser') && c.bitrate > 0 {
-			return transport.open('${iface}@${c.bitrate}')
+			return '${iface}@${c.bitrate}'
 		}
 	}
-	return transport.open(iface)
+	return iface
 }
 
 // start opens every enabled, monitorable channel on its own RX thread.
@@ -660,7 +668,7 @@ fn gen_loop(app &App) {
 // so the Diagnostics panel + Lua scripts work driver-free against simulated channels.
 fn diag_server_loop(app &App, iface string) {
 	a := unsafe { app }
-	mut ch := isotp.open_software(iface, diag_rx_id, diag_tx_id, false) or { return }
+	mut ch := isotp.open_software(a.bitrate_iface(iface), diag_rx_id, diag_tx_id, false) or { return }
 	mut srv := uds.default_server()
 	for a.running {
 		req := ch.recv(50) or { continue }
@@ -3441,7 +3449,7 @@ fn diag_worker(app &App, kind string, did u16) {
 	a.diag_busy = true
 	a.mu.unlock()
 	iface := a.diag_iface()
-	mut ch := isotp.open_software(iface, diag_tx_id, diag_rx_id, false) or {
+	mut ch := isotp.open_software(a.bitrate_iface(iface), diag_tx_id, diag_rx_id, false) or {
 		a.diag_push('open ${iface}: ${err}')
 		a.mu.lock()
 		a.diag_busy = false
