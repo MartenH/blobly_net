@@ -128,6 +128,7 @@ mut:
 	sel_ext       bool
 	watch         []Watch // signals plotted in Graphics
 	plot_win      f32 = 5 // Graphics x-window in seconds (0 = full history / autofit)
+	plot_fit_each bool = true // Graphics Y: normalize each signal to its own range (vs one shared axis)
 	trace_grouped bool = true // Trace: grouped-by-id (expandable) vs chronological
 	trace_bus     string      // main Trace: show only this bus (channel name); '' = all
 	ftrace_bus    string      // Trace (filter) panel: show only this bus; '' = all
@@ -3182,6 +3183,18 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 			app.plot_win = wsec
 		}
 	}
+	// Y-axis: "Fit each" normalizes every signal to its own range so a small-amplitude signal
+	// isn't squashed flat by a large one; "Shared" keeps real values on one common axis.
+	vgui.same_line()
+	vgui.text_dim(' · Y:')
+	vgui.same_line()
+	if vgui.toggle_button('Fit each##yfit', app.plot_fit_each, 0) {
+		app.plot_fit_each = true
+	}
+	vgui.same_line()
+	if vgui.toggle_button('Shared##yshared', !app.plot_fit_each, 0) {
+		app.plot_fit_each = false
+	}
 	// x-window right edge: wall-clock NOW while live, so the strip chart slides on real time
 	// (not only when a sample arrives); the latest sample time when stopped/paused/loaded, so
 	// it holds still. Samples and `now` share app.t0's clock (rx stamps t_ms = ticks - t0).
@@ -3200,8 +3213,30 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 	if vgui.plot_begin_x('##sigplot', -1, xmin, xhi) { // -1 = fill the panel height
 		for w in app.watch {
 			xs, ys := app.build_series(rows, w)
-			if xs.len > 0 {
-				vgui.plot_line('0x${w.id:X}.${w.sig}', xs, ys)
+			if xs.len == 0 {
+				continue
+			}
+			name := '0x${w.id:X}.${w.sig}'
+			if app.plot_fit_each {
+				// normalize to [0,1] by this series' own min/max → independent per-signal scale
+				mut lo := ys[0]
+				mut hi := ys[0]
+				for v in ys {
+					if v < lo {
+						lo = v
+					}
+					if v > hi {
+						hi = v
+					}
+				}
+				span := if hi > lo { hi - lo } else { f32(1) }
+				mut ny := []f32{cap: ys.len}
+				for v in ys {
+					ny << (v - lo) / span
+				}
+				vgui.plot_line(name, xs, ny)
+			} else {
+				vgui.plot_line(name, xs, ys)
 			}
 		}
 		vgui.plot_end()
