@@ -28,7 +28,11 @@ module vgui
 // pcre2/intl/graphite2, png→z, brotli, bz2). HarfBuzz + graphite2 are C++, so `-lstdc++`
 // MUST come LAST (after them) or you get `undefined reference to __cxa_*`. If your toolchain
 // differs, regenerate the middle chain with `pkg-config --static --libs freetype2`.
-#flag windows -static -l:libglfw3.a -lopengl32 -lgdi32 -limm32 -lshell32 -luser32 -static-libstdc++ -static-libgcc -lfreetype -lbz2 -lpng16 -lz -lharfbuzz -lusp10 -ldwrite -lglib-2.0 -lintl -lole32 -lwinmm -lshlwapi -luuid -latomic -lpcre2-8 -lgraphite2 -lbrotlidec -lbrotlicommon -lrpcrt4 -lws2_32 -ladvapi32 -lstdc++ -l:libgdi32.a
+// -mwindows: link as a GUI-subsystem exe so Windows does NOT spawn a console window
+// alongside the app (mingw defaults to the console subsystem; the old MSVC build used the
+// equivalent /SUBSYSTEM:WINDOWS). V's main() is still the entry point (that's -municode, not
+// -mwindows). startup prints just have no console to land in — fine for a shipped GUI app.
+#flag windows -mwindows -static -l:libglfw3.a -lopengl32 -lgdi32 -limm32 -lshell32 -luser32 -static-libstdc++ -static-libgcc -lfreetype -lbz2 -lpng16 -lz -lharfbuzz -lusp10 -ldwrite -lglib-2.0 -lintl -lole32 -lwinmm -lshlwapi -luuid -latomic -lpcre2-8 -lgraphite2 -lbrotlidec -lbrotlicommon -lrpcrt4 -lws2_32 -ladvapi32 -lstdc++ -l:libgdi32.a
 #include "vgui.h"
 
 // Bar mirrors the C `VBar` (SoA-free struct passed by pointer; C-compatible layout).

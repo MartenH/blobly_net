@@ -1,23 +1,16 @@
 name: windows-build
 
-# Native Windows build of Blobly Net in CI. Compiles + links the full GUI app; does
-# NOT run it. Two jobs:
-#   * build-msvc  — MSVC + vcpkg (pango/freetype). Local equiv: scripts\build_win_msvc.ps1
-#   * build-msys2 — MSYS2/mingw gcc + pacman pango/freetype (no vcpkg, no ABI-drift
-#                   caching). Local equiv: scripts\build_win.ps1 / docs\windows_build.md
+# Native Windows build of the Blobly Net GUI (the Dear ImGui app, cmd/blobly_vgui).
+# Compiles + links + bundles it; does NOT run it. One job (mingw); the old vlang/gui app
+# (src/main.v) and its MSVC/vcpkg/pango/vglyph path were retired when the migration landed.
 #
-# V acquisition (both jobs): DOWNLOAD the prebuilt V (de365a1) from this repo's
-# "v-toolchain" release. Why not build V here: V's makev.bat self-compile (leaning on
-# vlang/tccbin's prebuilt tcc) HANGS on the runner (tcc/clang/gcc all wedge — TinyCC's
-# own CI uses MSVC for the same reason). de365a1 already carries vlib/yaml (which
-# modules/project needs); the 0.5.1 *release* predates it. The closure leak fix is a
-# RUNTIME memory optimisation — a compile/link check doesn't need it, so we use the
-# stock de365a1 asset and skip the closure-reclaim patch (it would need a closure-API
-# V anyway). The prebuilt v.exe is backend-agnostic: it drives MSVC or mingw gcc by -cc.
+# ⚠️ BEST-EFFORT / needs on-runner validation: the imgui Windows build (build_deps.sh +
+# the `#flag windows` link line in eval/vgui/vgui.v) has been validated locally on the
+# dedicated MSYS2 toolchain but not yet in CI. If a link lib is missing, add the matching
+# mingw-w64-x86_64-* package to the MSYS2 install list below.
 #
-# RELEASE ASSET (maintainer): the `v-toolchain` release holds `v-de365a1-windows.zip`
-# (v.exe + vlib at the zip root). The MSVC job also self-publishes the vcpkg deps asset
-# on its first run (see that step). MSYS2 needs no prebuilt deps (pacman is fast).
+# V acquisition: DOWNLOAD the prebuilt master V from this repo's "v-toolchain" release
+# (V's makev.bat self-compile hangs on the runner). It just drives mingw gcc via -cc gcc.
 
 on:
   push:
@@ -30,214 +23,18 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  V_RELEASE: v-toolchain   # release that stores the prebuilt V + vcpkg-deps assets
-  # Prebuilt MASTER V (commit ddc9c99) on the v-toolchain release. Master has the
-  # closure.Lifetime API (v#27483) that gui 7a20a6a calls → the runtime closure-leak
-  # fix. ddc9c99 (2026-06-22) is the FIRST master commit that also carries the fix for
-  # v#27472 (PR #27473): find_module_path's outermost-v.mod walk infinitely-looped in
-  # os.real_path/GetFinalPathNameByHandleW on the runner's `D:\a\...` checkout path,
-  # spinning V at 100% CPU before any compiler ran — that is why the earlier c0624b2
-  # (2026-06-20, pre-fix) asset hung BOTH the gcc and msvc jobs for hours. Built on a
-  # Windows box (v self at ddc9c99) + uploaded, NOT compiled on the runner. Mint it:
-  #   cd C:\dev\v; git checkout ddc9c99; .\v.exe self
-  #   robocopy . ..\v-pkg /E /XF .git /XD .git; Compress-Archive ..\v-pkg\* v-ddc9c99-windows.zip
-  #   gh release upload v-toolchain v-ddc9c99-windows.zip --repo MartenH/blobly_net --clobber
-  V_ASSET: v-ddc9c99-windows.zip
-  DEPS_ASSET: vcpkg-pango-x64-windows.zip   # prebuilt vcpkg x64-windows tree (MSVC job self-bootstraps it)
-  MARKDOWN_COMMIT: ef2f101   # vlang/markdown (md4c) — main.v renders Help to HTML via markdown.to_html()
+  V_RELEASE: v-toolchain            # release storing the prebuilt V asset
+  V_ASSET: v-ddc9c99-windows.zip    # prebuilt master V (has vlib/yaml + -enable-globals)
 
 jobs:
-  build-msvc:
-    runs-on: windows-latest
-    # The BOOTSTRAP run (no prebuilt deps asset yet) builds V + pango from source and
-    # must finish to upload the deps asset — the old 60 min ceiling cancelled it mid
-    # vcpkg build, so the asset was never minted. 120 gives the one-time bootstrap room;
-    # every run after downloads the asset and finishes in ~15 min, well under this.
-    timeout-minutes: 120
-    permissions:
-      contents: write   # upload the prebuilt-deps asset to the release on first run
-    env:
-      VMODULES: ${{ github.workspace }}\vmodules
-      VCPKG_DEPS: ${{ github.workspace }}\vcpkg-deps   # extracted x64-windows tree lives here
-    steps:
-      - uses: actions/checkout@v4
-
-      # Download the prebuilt MASTER V (ddc9c99) from the v-toolchain release. The
-      # Windows PACKAGES must use master V: it has the closure.Lifetime API (v#27483)
-      # that fixes the capturing-closure-context leak (with stock de365a1 the GUI leaks
-      # unboundedly — Boehm GC "Too many heap sections"). NOT compiled on the runner —
-      # V self-compile wedges the runner's C compiler; see the V_ASSET note for how the
-      # asset is minted on a Windows box.
-      - name: Download prebuilt master V (ddc9c99)
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release download $env:V_RELEASE --repo "$env:GITHUB_REPOSITORY" --pattern "$env:V_ASSET" --dir "$env:RUNNER_TEMP"
-          Expand-Archive -LiteralPath "$env:RUNNER_TEMP\$env:V_ASSET" -DestinationPath C:\v-ct -Force
-          if (-not (Test-Path C:\v-ct\v.exe)) { throw "v.exe not found after extracting $env:V_ASSET" }
-          "C:\v-ct" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding ascii
-          & C:\v-ct\v.exe version
-
-      # gui + vglyph + markdown pinned, then the patches main.v needs to BUILD. gui is
-      # at 7a20a6a (the gui#62 closure-fix merge — calls the closure.Lifetime API that
-      # the master V above provides), matching Linux ci.yml. This is what fixes the
-      # runtime leak in the Windows packages.
-      - name: Install gui + vglyph (pinned) and apply build patches
-        shell: pwsh
-        run: |
-          $vm = $env:VMODULES
-          New-Item -ItemType Directory -Force $vm | Out-Null
-          # core.autocrlf=false so the working trees stay LF and the LF patches apply.
-          git -c core.autocrlf=false clone --quiet https://github.com/vlang/gui.git    "$vm\gui"
-          git -C "$vm\gui"    -c advice.detachedHead=false checkout --quiet 7a20a6a
-          git -c core.autocrlf=false clone --quiet https://github.com/vlang/vglyph.git "$vm\vglyph"
-          git -C "$vm\vglyph" -c advice.detachedHead=false checkout --quiet 5685a6d
-          git -c core.autocrlf=false clone --quiet https://github.com/vlang/markdown.git "$vm\markdown"
-          git -C "$vm\markdown" -c advice.detachedHead=false checkout --quiet $env:MARKDOWN_COMMIT
-          # (Dir, Repo, File) — patches live in scripts\win_patches and docs\v_patches.
-          # 01/02 (gcc-16 C-bridge) are DROPPED at 7a20a6a — now upstream in gui's
-          # native-Windows work. 03/04/06/07/08 verified to apply on a clean 7a20a6a.
-          $patches = @(
-            @{ Dir = 'scripts\win_patches'; Repo = 'gui';    File = '03-gui-titlebar-isvalid.patch'    },
-            @{ Dir = 'scripts\win_patches'; Repo = 'vglyph'; File = '04-vglyph-empty-outline.patch'    },
-            @{ Dir = 'scripts\win_patches'; Repo = 'gui';    File = '06-gui-sample-count.patch'        },  # WindowCfg.sample_count — main.v sets sample_count: 4
-            @{ Dir = 'docs\v_patches';      Repo = 'gui';    File = 'gui-window-resize.patch'          },  # Window.resize() — main.v calls w.resize()
-            @{ Dir = 'docs\v_patches';      Repo = 'gui';    File = 'gui-dock-tab-separator.patch'    }   # tabbed-group blank-gap fix
-          )
-          foreach ($p in $patches) {
-            $patch = "$env:GITHUB_WORKSPACE\$($p.Dir)\$($p.File)"
-            git -C "$vm\$($p.Repo)" apply --ignore-whitespace $patch
-            if ($LASTEXITCODE -ne 0) { throw "patch $($p.File) failed to apply to $($p.Repo)" }
-            Write-Host "applied $($p.File)"
-          }
-
-      - name: Set up MSVC (cl.exe on PATH)
-        uses: ilammy/msvc-dev-cmd@v1
-
-      # Prebuilt pango/freetype, mirroring how V itself is provided: download a
-      # ready-made vcpkg `x64-windows` tree from the V_RELEASE (~1 min) rather than
-      # building pango from source every run (~30-40 min). SELF-BOOTSTRAPPING: if the
-      # asset is missing (first run, or after a deliberate refresh) it builds once and
-      # uploads it, so every later run is fast.
-      #
-      # Why not actions/cache: vcpkg keys its binary cache on ABI hashes of the
-      # FLOATING windows-latest toolchain (vcpkg/cmake/msvc), so a from-source build
-      # never reused its archive across image updates — it just piled up one ~89 MB
-      # cache per run with zero reuse. A pinned release asset has no ABI drift.
-      - name: Get prebuilt pango/freetype (or build + publish once)
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $zip = "$env:RUNNER_TEMP\$env:DEPS_ASSET"
-          $have = $false
-          gh release download $env:V_RELEASE --repo "$env:GITHUB_REPOSITORY" --pattern "$env:DEPS_ASSET" --dir "$env:RUNNER_TEMP" 2>$null
-          if (Test-Path $zip) {
-            Expand-Archive -LiteralPath $zip -DestinationPath $env:VCPKG_DEPS -Force
-            if (Test-Path "$env:VCPKG_DEPS\x64-windows\lib\pkgconfig") {
-              $have = $true; Write-Host "restored prebuilt deps -> $env:VCPKG_DEPS\x64-windows"
-            }
-          }
-          if (-not $have) {
-            Write-Host "no $env:DEPS_ASSET on release $env:V_RELEASE — building once with vcpkg…"
-            vcpkg install pango freetype --triplet x64-windows
-            if ($LASTEXITCODE -ne 0) { throw "vcpkg install failed" }
-            New-Item -ItemType Directory -Force $env:VCPKG_DEPS | Out-Null
-            Copy-Item "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows" "$env:VCPKG_DEPS\x64-windows" -Recurse -Force
-            Compress-Archive -Path "$env:VCPKG_DEPS\x64-windows" -DestinationPath $zip -Force
-            gh release upload $env:V_RELEASE $zip --repo "$env:GITHUB_REPOSITORY" --clobber
-            Write-Host "published $env:DEPS_ASSET to release $env:V_RELEASE — future runs will be fast"
-          }
-
-      - name: Build (V -cc msvc + vcpkg)
-        shell: pwsh
-        run: |
-          $vcpkg = "$env:VCPKG_DEPS\x64-windows"
-          $env:PKG_CONFIG_PATH = "$vcpkg\lib\pkgconfig"   # V's v.pkgconfig reads this
-          New-Item -ItemType Directory -Force build | Out-Null
-          # -enable-globals: main.v uses the in-proc bus (transport/inproc.v __global).
-          # -gc boehm: V FORCES `-gc none` for Windows+msvc unless -gc is set explicitly
-          # (pref/default.v normalize_gc_defaults_for_resolved_ccompiler). Without this the
-          # msvc exe ships with NO garbage collector and RSS grows unboundedly (multiple GB
-          # in seconds under the sim). libgc builds fine under MSVC; forcing boehm makes the
-          # msvc build collect and stay bounded (~350 MB), same as mingw (+ the divisor re-exec).
-          v -gc boehm -cc msvc -no-parallel -enable-globals -path "@vlib|@vmodules|modules" `
-            -cflags "/I`"$vcpkg\include`"" -ldflags "/LIBPATH:`"$vcpkg\lib`"" `
-            -o build\blobly_net-msvc.exe src\main.v
-          if ($LASTEXITCODE -ne 0) { throw "build failed" }
-          Write-Host "BUILD OK -> build\blobly_net-msvc.exe"
-
-      # The exe dynamically links vcpkg's pango/cairo/glib/freetype/harfbuzz/… DLLs;
-      # without them next to it the artifact won't run. Copy the whole vcpkg runtime
-      # bin (a superset — reliable, avoids resolving the transitive import graph).
-      - name: Bundle runtime DLLs
-        shell: pwsh
-        run: |
-          $vbin = "$env:VCPKG_DEPS\x64-windows\bin"
-          Copy-Item "$vbin\*.dll" -Destination build\ -Force
-          $dlls = Get-ChildItem build\*.dll
-          Write-Host "bundled $($dlls.Count) vcpkg DLLs next to the exe:"
-          $dlls | ForEach-Object { Write-Host "  $($_.Name)" }
-          # MSVC C++ runtime (vcpkg x64-windows links the DYNAMIC CRT, so these are
-          # needed too and don't ship in vcpkg\bin). Best-effort: PATH, then the VC
-          # redist dir. If absent the target just needs the VC++ 2015-2022 redist.
-          foreach ($d in @('vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll')) {
-            $src = (Get-Command $d -ErrorAction SilentlyContinue).Source
-            if (-not $src -and $env:VCToolsRedistDir) {
-              $hit = Get-ChildItem "$env:VCToolsRedistDir\x64\Microsoft.VC*.CRT\$d" -ErrorAction SilentlyContinue | Select-Object -First 1
-              if ($hit) { $src = $hit.FullName }
-            }
-            if ($src) { Copy-Item $src -Destination build\ -Force; Write-Host "  CRT $d" }
-            else { Write-Host "  CRT $d NOT FOUND (target needs the VC++ redist)" }
-          }
-
-      # Stage a runnable bundle: the exe + its DLLs alongside the demo projects,
-      # DBCs and sample recordings, so a freshly-unzipped download runs the
-      # simulation out of the box (sim-demo is the first-run default).
-      # RSS is now bounded here too: the build step forces -gc boehm (V would otherwise
-      # ship the msvc exe with no GC), and main.v's re-exec sets GC_FREE_SPACE_DIVISOR so
-      # the collector self-paces — verified ~350 MB flat, same as mingw.
-      - name: Stage bundle
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item build\blobly_net-msvc.exe dist\blobly_net.exe
-          Copy-Item build\*.dll dist\ -Force
-          Copy-Item projects dist\projects -Recurse
-          Copy-Item dbc dist\dbc -Recurse
-          Copy-Item tests dist\tests -Recurse   # Lua scripts the Script panel's sample buttons run
-          Copy-Item manifests dist\manifests -Recurse   # telemetry handler manifests (Trace Chart)
-          New-Item -ItemType Directory -Force dist\samples | Out-Null
-          Copy-Item samples\*.log,samples\*.mf4 dist\samples\ -Force -ErrorAction SilentlyContinue
-          Copy-Item packaging\README.txt dist\README.txt
-          Copy-Item scripts\register_blobnet_win.ps1 dist\register_blobnet_win.ps1
-          Copy-Item LICENSE dist\LICENSE.txt
-          Copy-Item packaging\THIRD-PARTY-NOTICES.txt dist\THIRD-PARTY-NOTICES.txt
-          Get-ChildItem -Recurse dist | Select-Object -ExpandProperty FullName
-
-      - name: Upload bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: blobly_net-msvc-x64
-          path: dist
-          if-no-files-found: error
-
-  # MSYS2 / mingw-w64 gcc build — no vcpkg (pacman provides pango/freetype/…), no
-  # ABI-drift caching. The bash twin of scripts\build_win.sh / docs\windows_build.md.
-  # Uses the SAME prebuilt de365a1 v.exe (it just drives mingw gcc via -cc gcc).
   build-msys2:
-    name: mingw (MSYS2)
+    name: mingw (MSYS2) • vgui
     runs-on: windows-latest
     timeout-minutes: 60
-    env:
-      VMODULES: ${{ github.workspace }}\vmodules
 
     steps:
       - uses: actions/checkout@v4
 
-      # Download the prebuilt master V (ddc9c99) — see the MSVC job. The Windows
-      # packages need master V's closure.Lifetime API so the GUI doesn't leak.
       - name: Download prebuilt master V (ddc9c99)
         shell: pwsh
         env:
@@ -248,96 +45,69 @@ jobs:
           if (-not (Test-Path C:\v-ct\v.exe)) { throw "v.exe not found after extracting $env:V_ASSET" }
           & C:\v-ct\v.exe version
 
-      # Same gui/vglyph/markdown pins + build patches as the MSVC job: gui 7a20a6a
-      # (closure-fix merge) + 03/04/06/07/08. 01/02 dropped — upstream at 7a20a6a.
-      - name: Install gui + vglyph (pinned) and apply build patches
-        shell: pwsh
-        run: |
-          $vm = $env:VMODULES
-          New-Item -ItemType Directory -Force $vm | Out-Null
-          git -c core.autocrlf=false clone --quiet https://github.com/vlang/gui.git    "$vm\gui"
-          git -C "$vm\gui"    -c advice.detachedHead=false checkout --quiet 7a20a6a
-          git -c core.autocrlf=false clone --quiet https://github.com/vlang/vglyph.git "$vm\vglyph"
-          git -C "$vm\vglyph" -c advice.detachedHead=false checkout --quiet 5685a6d
-          git -c core.autocrlf=false clone --quiet https://github.com/vlang/markdown.git "$vm\markdown"
-          git -C "$vm\markdown" -c advice.detachedHead=false checkout --quiet $env:MARKDOWN_COMMIT
-          $patches = @(
-            @{ Dir = 'scripts\win_patches'; Repo = 'gui';    File = '03-gui-titlebar-isvalid.patch'    },
-            @{ Dir = 'scripts\win_patches'; Repo = 'vglyph'; File = '04-vglyph-empty-outline.patch'    },
-            @{ Dir = 'scripts\win_patches'; Repo = 'gui';    File = '06-gui-sample-count.patch'        },
-            @{ Dir = 'docs\v_patches';      Repo = 'gui';    File = 'gui-window-resize.patch'          },
-            @{ Dir = 'docs\v_patches';      Repo = 'gui';    File = 'gui-dock-tab-separator.patch'    }
-          )
-          foreach ($p in $patches) {
-            $patch = "$env:GITHUB_WORKSPACE\$($p.Dir)\$($p.File)"
-            git -C "$vm\$($p.Repo)" apply --ignore-whitespace $patch
-            if ($LASTEXITCODE -ne 0) { throw "patch $($p.File) failed to apply to $($p.Repo)" }
-            Write-Host "applied $($p.File)"
-          }
-
-      - name: Set up MSYS2 (mingw-w64 gcc + pango/freetype)
+      # mingw toolchain + the imgui link deps (mirror the `#flag windows` line in vgui.v):
+      # gcc/g++ (build_deps.sh), glfw (windowing), freetype/harfbuzz/glib2/fribidi/fontconfig
+      # (glyph rasterizer + text stack), git (build_deps clones cimgui/cimplot).
+      - name: Set up MSYS2 (mingw-w64 gcc + glfw + freetype)
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
           update: true
           install: >-
+            git
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-pkgconf
-            mingw-w64-x86_64-pango
-            mingw-w64-x86_64-glib2
+            mingw-w64-x86_64-glfw
             mingw-w64-x86_64-freetype
             mingw-w64-x86_64-harfbuzz
+            mingw-w64-x86_64-glib2
             mingw-w64-x86_64-fribidi
             mingw-w64-x86_64-fontconfig
 
-      # Build with mingw gcc (the bash twin of scripts\build_win.sh). V's built-in
-      # v.pkgconfig doesn't relocate a .pc prefix=, so feed pkgconf's flags directly.
-      # -ld3d11 -ldxgi: gui's readback_windows.c references D3D11 unconditionally on
-      # Windows (screenshots) even on the GL backend. cygpath -m gives V (a native
-      # Windows exe) forward-slash Windows paths from the MSYS2 shell.
-      - name: Build (V -cc gcc)
+      # imgui + ImPlot + GLFW + FreeType C deps -> eval/vgui/libvgui_c.a (g++). build_deps.sh
+      # runs unmodified on MSYS2 (git + g++). It's gitignored, so always built fresh.
+      - name: Build imgui C deps (eval/vgui/libvgui_c.a)
+        shell: msys2 {0}
+        run: sh eval/vgui/build_deps.sh
+
+      # Build cmd/blobly_vgui. The prebuilt v.exe drives mingw gcc via -cc gcc; the
+      # `#flag windows` line in vgui.v carries the static glfw + freetype/harfbuzz/glib link
+      # line. -path adds `eval` for the `vgui` module. (The old app needed a 2-step V->C->gcc
+      # workaround for a V/os.execute panic; the mingw src/main.v job built with the one-liner
+      # fine, so we use it here too — switch to build_deps.sh's 2-step if it regresses.)
+      - name: Build vgui app (V -cc gcc)
         shell: msys2 {0}
         run: |
-          export VMODULES="$(cygpath -m "$GITHUB_WORKSPACE/vmodules")"
-          export PKG_CONFIG_PATH="/mingw64/lib/pkgconfig"
-          libs='freetype2 harfbuzz fribidi fontconfig pango pangoft2 gobject-2.0 glib-2.0'
-          cflags=$(pkgconf --cflags $libs)
-          ldflags="$(pkgconf --libs $libs) -ld3d11 -ldxgi"
           mkdir -p build
-          /c/v-ct/v.exe -cc gcc -no-parallel -enable-globals -path '@vlib|@vmodules|modules' \
-            -cflags "$cflags" -ldflags "$ldflags" -o build/blobly_net-mingw.exe src/main.v
-          test -f build/blobly_net-mingw.exe && echo "BUILD OK -> build/blobly_net-mingw.exe"
-          # Copy the exe's mingw64 runtime DLLs (pango/glib/freetype/gcc/…) next to it
-          # via ldd, so the bundled artifact runs outside an MSYS2 shell. ldd resolves
-          # the exact transitive set (not all of /mingw64/bin).
-          ldd build/blobly_net-mingw.exe | awk '/\/mingw64\/bin\// {print $3}' | sort -u \
+          /c/v-ct/v.exe -cc gcc -no-parallel -enable-globals -path '@vlib|@vmodules|modules|eval' \
+            -o build/blobly_vgui.exe cmd/blobly_vgui/main.v
+          test -f build/blobly_vgui.exe && echo "BUILD OK -> build/blobly_vgui.exe"
+          # Copy the exe's mingw64 runtime DLLs (freetype/harfbuzz/glib/gcc/…) next to it via
+          # ldd, so the bundled artifact runs outside an MSYS2 shell.
+          ldd build/blobly_vgui.exe | awk '/\/mingw64\/bin\// {print $3}' | sort -u \
             | while read -r d; do cp -f "$d" build/; done
           echo "bundled $(ls build/*.dll 2>/dev/null | wc -l) mingw64 DLLs"
 
-      # Stage the demo projects/DBCs/samples + the ldd-resolved mingw64 runtime DLLs
-      # next to the exe, so this artifact runs on a clean machine. Both Windows bundles are
-      # now GC-bounded (mingw uses Boehm by default; the msvc job forces -gc boehm), with
-      # main.v's re-exec setting GC_FREE_SPACE_DIVISOR so the collector self-paces (~350 MB).
+      # Stage the demo projects/DBCs/samples + the ldd-resolved runtime DLLs next to the exe,
+      # so the artifact runs on a clean machine.
       - name: Stage bundle
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item build\blobly_net-mingw.exe dist\blobly_net.exe
-          Copy-Item build\*.dll dist\ -Force
+          Copy-Item build\blobly_vgui.exe dist\blobly_vgui.exe
+          Copy-Item build\*.dll dist\ -Force -ErrorAction SilentlyContinue
           Copy-Item projects dist\projects -Recurse
           Copy-Item dbc dist\dbc -Recurse
           Copy-Item tests dist\tests -Recurse
           Copy-Item manifests dist\manifests -Recurse
           New-Item -ItemType Directory -Force dist\samples | Out-Null
           Copy-Item samples\*.log,samples\*.mf4 dist\samples\ -Force -ErrorAction SilentlyContinue
-          Copy-Item packaging\README.txt dist\README.txt
-          Copy-Item scripts\register_blobnet_win.ps1 dist\register_blobnet_win.ps1
-          Copy-Item LICENSE dist\LICENSE.txt
-          Copy-Item packaging\THIRD-PARTY-NOTICES.txt dist\THIRD-PARTY-NOTICES.txt
+          Copy-Item LICENSE dist\LICENSE.txt -ErrorAction SilentlyContinue
+          Copy-Item packaging\THIRD-PARTY-NOTICES.txt dist\THIRD-PARTY-NOTICES.txt -ErrorAction SilentlyContinue
 
       - name: Upload bundle
         uses: actions/upload-artifact@v4
         with:
-          name: blobly_net-mingw-x64
+          name: blobly_vgui-mingw-x64
           path: dist
           if-no-files-found: error

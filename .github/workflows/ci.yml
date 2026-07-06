@@ -1,16 +1,20 @@
 name: ci
 
 # Linux CI for Blobly Net. Two jobs:
-#   * test     — the reliable backbone: `v test modules/` (every GUI-free module,
-#                incl. the embedded-Lua `lua`/`script` modules) + the headless Lua
-#                integration tests (scripts/runtests.sh) against the in-process sim.
-#                No GUI, no vcan, no Windows — fast and deterministic.
-#   * gui-build — compile-links the full GUI app (gui + vglyph + the two
-#                build-required patches). It does NOT run the app (no display).
+#   * test       — the reliable backbone: `v test modules/` (every GUI-free module,
+#                  incl. the embedded-Lua `lua`/`script` modules) + the headless Lua
+#                  integration tests (scripts/runtests.sh) against the in-process sim.
+#                  No GUI, no vcan, no Windows — fast and deterministic.
+#   * vgui-build — compile-links the Dear ImGui + ImPlot app (cmd/blobly_vgui): builds
+#                  the imgui/ImPlot/GLFW/FreeType C deps into eval/vgui/libvgui_c.a, then
+#                  compiles the V frontend against it. It does NOT run the app (no display).
 #
-# V acquisition: vlang/setup-v with check-latest — the same approach vlang/gui's
-# own CI uses against this exact gui stack. (V's 0.5.1 *release* predates vlib/yaml
-# which modules/project needs, so we can't use the default pinned release.)
+# The GUI is the imgui frontend (cmd/blobly_vgui) — the old vlang/gui app (src/main.v)
+# was retired when the migration landed, so there's no gui/vglyph/markdown here anymore.
+#
+# V acquisition: vlang/setup-v with check-latest (master V — the in-process bus and the
+# vendored Lua need a current toolchain; the 0.5.1 *release* predates vlib/yaml which
+# modules/project uses).
 
 on:
   push:
@@ -40,7 +44,7 @@ jobs:
 
       # All GUI-free modules. -enable-globals: the in-process bus
       # (transport/inproc.v) uses a process-global hub. The vendored Lua compiles
-      # in here too (modules/lua/modules/script pull it via #flag).
+      # in here too (modules/lua + modules/script pull it via #flag).
       - name: Unit tests (v test modules/)
         run: v -enable-globals test modules/
 
@@ -52,20 +56,9 @@ jobs:
           chmod +x scripts/runtests.sh
           ./scripts/runtests.sh tests/diag_basic.lua tests/bus_signals.lua
 
-  gui-build:
-    name: linux • GUI compile-link
+  vgui-build:
+    name: linux • vgui (imgui) compile-link
     runs-on: ubuntu-latest
-    env:
-      VMODULES: ${{ github.workspace }}/.vmodules
-      # gui/vglyph pins (CLAUDE.md → Pinned versions). gui 7a20a6a is the gui#62
-      # merge (upstream closure-leak fix + native-Windows fixes); compiles against
-      # the closure API in master V that setup-v check-latest provides.
-      GUI_COMMIT: 7a20a6a
-      VGLYPH_COMMIT: 5685a6d
-      # vlang/markdown (md4c) — main.v renders the Help docs to HTML via
-      # markdown.to_html() for the in-browser view. Not a gui dependency, so it's
-      # cloned explicitly. Pinned to a known-good commit.
-      MARKDOWN_COMMIT: ef2f101
     steps:
       - uses: actions/checkout@v4
 
@@ -74,44 +67,21 @@ jobs:
         with:
           check-latest: true
 
-      # vglyph + sokol native deps (text shaping + GL/X11). Compile-only, so no
-      # runtime bits (zenity) needed. Mirrors CLAUDE.md → System dependencies.
+      # cmd/blobly_vgui links against the imgui C deps: g++ builds them, GLFW is the
+      # windowing backend (its X11 deps come in transitively), FreeType is the glyph
+      # rasterizer, mesa provides libGL. No vlang/gui / vglyph / markdown — the imgui
+      # app doesn't use them.
       - name: Native deps (apt)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            pkg-config libfreetype-dev libharfbuzz-dev libfribidi-dev \
-            libfontconfig1-dev libpango1.0-dev libglib2.0-dev libdbus-1-dev \
-            libatk1.0-dev libatk-bridge2.0-dev libatspi2.0-dev libgl1-mesa-dev \
-            libx11-dev libxcursor-dev libxrandr-dev libxinerama-dev libasound2-dev
+            g++ pkg-config libglfw3-dev libfreetype-dev libgl1-mesa-dev
 
-      # Pinned gui + vglyph into VMODULES, then the two BUILD-REQUIRED patches:
-      #   gui-msaa-sample-count  — WindowCfg.sample_count (main.v sets it)
-      #   gui-window-resize      — Window.resize() (main.v calls it)
-      # The closure-leak fix is now UPSTREAM in this gui pin (gui#62) + master V — no
-      # local closure patch needed. vglyph-empty-outline is a runtime glyph-crash
-      # guard, not needed for a compile job.
-      - name: Fetch gui + vglyph (pinned) + apply build-required patches
+      # scripts/run_vgui.sh (RUN=0 = build only) builds eval/vgui/libvgui_c.a from the
+      # pinned cimgui/cimplot (gitignored, so always built fresh) and then compiles
+      # cmd/blobly_vgui with the right flags (-cc gcc -enable-globals -path …|eval). Using
+      # the same script devs use keeps CI and local builds identical.
+      - name: Build vgui app (RUN=0 scripts/run_vgui.sh)
         run: |
-          mkdir -p "$VMODULES"
-          git -c advice.detachedHead=false clone --quiet https://github.com/vlang/gui.git    "$VMODULES/gui"
-          git -C "$VMODULES/gui"    -c advice.detachedHead=false checkout --quiet "$GUI_COMMIT"
-          git -c advice.detachedHead=false clone --quiet https://github.com/vlang/vglyph.git "$VMODULES/vglyph"
-          git -C "$VMODULES/vglyph" -c advice.detachedHead=false checkout --quiet "$VGLYPH_COMMIT"
-          git -c advice.detachedHead=false clone --quiet https://github.com/vlang/markdown.git "$VMODULES/markdown"
-          git -C "$VMODULES/markdown" -c advice.detachedHead=false checkout --quiet "$MARKDOWN_COMMIT"
-          git -C "$VMODULES/gui" apply --ignore-whitespace \
-            "$GITHUB_WORKSPACE/docs/v_patches/gui-msaa-sample-count.patch"
-          git -C "$VMODULES/gui" apply --ignore-whitespace \
-            "$GITHUB_WORKSPACE/docs/v_patches/gui-window-resize.patch"
-          git -C "$VMODULES/gui" apply --ignore-whitespace \
-            "$GITHUB_WORKSPACE/docs/v_patches/gui-dock-tab-separator.patch"
-          echo "applied gui-msaa-sample-count + gui-window-resize + gui-dock-tab-separator"
-
-      # Compile + link only (no run — there's no display). -enable-globals for the
-      # in-proc bus; -path re-lists the defaults because it replaces the lookup order.
-      - name: Build GUI (compile-link src/main.v)
-        run: |
-          mkdir -p build
-          v -enable-globals -path "@vlib|@vmodules|modules" -o build/blobly_net src/main.v
-          test -x build/blobly_net && echo "BUILD OK -> build/blobly_net"
+          RUN=0 sh scripts/run_vgui.sh
+          test -x build/blobly_vgui && echo "BUILD OK -> build/blobly_vgui"
