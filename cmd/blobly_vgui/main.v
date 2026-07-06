@@ -1911,7 +1911,7 @@ fn (mut app App) add_bus_spec(adapter string, address string) {
 	}
 	app.dirty = true
 	app.sync_cfg_bufs()
-	app.rebuild_from_proj()
+	app.rebuild_preserving_senders()
 }
 
 // unique_bus_name returns `base`, or base_2/base_3/… if the name is already taken.
@@ -2015,7 +2015,7 @@ fn (mut app App) remove_bus(i int) {
 	app.proj.channels.delete(i)
 	app.dirty = true
 	app.sync_cfg_bufs()
-	app.rebuild_from_proj()
+	app.rebuild_preserving_senders()
 }
 
 // set_adapter changes a bus's transport backend, recomposing its iface and keeping the
@@ -2024,6 +2024,7 @@ fn (mut app App) set_adapter(i int, a string) {
 	if i < 0 || i >= app.proj.channels.len {
 		return
 	}
+	old_iface := app.proj.channels[i].iface
 	app.proj.channels[i].adapter = a
 	if a == 'doip' {
 		app.proj.channels[i].typ = 'doip'
@@ -2031,7 +2032,17 @@ fn (mut app App) set_adapter(i int, a string) {
 		app.proj.channels[i].typ = 'can'
 	}
 	app.proj.channels[i].iface = project.compose_iface(a, vgui.buf_str(app.cfg_bufs[i].address_buf))
+	app.rebind_senders(old_iface, app.proj.channels[i].iface) // keep this bus's generators bound
 	app.dirty = true
+	app.rebuild_preserving_senders()
+}
+
+// rebuild_preserving_senders folds unsaved Generators-panel edits (gen_bufs id/data) into
+// app.proj before rebuilding the runtime view — so a structural config change (add/remove
+// bus/DBC, adapter/mode) doesn't discard them when rebuild_from_proj repopulates senders from
+// the model. Use this instead of rebuild_from_proj for edits made while the editor is open.
+fn (mut app App) rebuild_preserving_senders() {
+	app.sync_senders_into_proj()
 	app.rebuild_from_proj()
 }
 
@@ -2062,7 +2073,7 @@ fn (mut app App) set_protocol(i int, pr string) {
 fn (mut app App) set_mode(i int, md string) {
 	app.proj.channels[i].mode = project.mode_from(md)
 	app.dirty = true
-	app.rebuild_from_proj()
+	app.rebuild_preserving_senders()
 }
 
 fn (mut app App) add_dbc(ci int, path string) {
@@ -2073,7 +2084,7 @@ fn (mut app App) add_dbc(ci int, path string) {
 	app.proj.channels[ci].databases << rel_path(path)
 	app.dirty = true
 	app.sync_cfg_bufs()
-	app.rebuild_from_proj()
+	app.rebuild_preserving_senders()
 }
 
 fn (mut app App) remove_dbc(ci int, di int) {
@@ -2087,7 +2098,7 @@ fn (mut app App) remove_dbc(ci int, di int) {
 	app.proj.channels[ci].databases.delete(di)
 	app.dirty = true
 	app.sync_cfg_bufs()
-	app.rebuild_from_proj()
+	app.rebuild_preserving_senders()
 }
 
 fn (mut app App) set_manifest(ci int, path string) {
@@ -2098,7 +2109,7 @@ fn (mut app App) set_manifest(ci int, path string) {
 	app.proj.channels[ci].manifest = rel_path(path)
 	app.dirty = true
 	app.sync_cfg_bufs()
-	app.rebuild_from_proj()
+	app.rebuild_preserving_senders()
 }
 
 // draw_config is the dedicated Configuration editor (File → Configure…): add/edit/remove
