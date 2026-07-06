@@ -18,12 +18,14 @@ pub fn (p Project) to_yaml() string {
 	b.writeln('')
 	b.writeln('buses:')
 	for ch in p.channels {
-		// Effective adapter/address. The editor keeps adapter+address the source of truth
-		// (iface composed from them); but code that sets `iface` directly (tests, defaults)
-		// leaves adapter/address stale — detect that (compose != iface) and derive from iface.
+		// Effective adapter/address. adapter+address are the v2 source of truth (iface is
+		// derived); but some callers (tests, defaults) instead set `iface` directly and leave
+		// adapter/address at the struct default (vcan/vcan0 → `vcan0`). Only in THAT case does
+		// the raw iface win — otherwise explicit v2 adapter/address stays authoritative (so a
+		// `Channel{adapter:'virtual', address:'CAN1'}` isn't serialized as vcan0).
 		mut adapter := ch.adapter
 		mut address := ch.address
-		if compose_iface(adapter, address) != ch.iface {
+		if compose_iface(adapter, address) == 'vcan0' && ch.iface != 'vcan0' {
 			adapter, address = decompose_iface(ch.iface)
 		}
 		b.writeln('  - name: ${yaml_scalar(ch.name)}')

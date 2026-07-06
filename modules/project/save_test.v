@@ -214,6 +214,25 @@ channels:
 	assert c1.bitrate == 1000000
 }
 
+// A v2 Channel that sets adapter/address but leaves iface at the struct default serializes
+// from the explicit v2 fields (not the default vcan0).
+fn test_v2_fields_authoritative_on_save() {
+	orig := Project{
+		name:     'v2auth'
+		channels: [
+			Channel{
+				name:    'CAN1'
+				adapter: 'virtual'
+				address: 'CAN1'
+			}, // iface left at the struct default ('vcan0')
+		]
+	}
+	c := parse(orig.to_yaml())!.channels[0]
+	assert c.adapter == 'virtual'
+	assert c.address == 'CAN1'
+	assert c.iface == 'inproc:CAN1'
+}
+
 // A DoIP endpoint on a bracketed IPv6 address must survive the Save round-trip (the address
 // starts with `[`, which YAML would read as flow syntax unless it's quoted).
 fn test_ipv6_address_roundtrip() {

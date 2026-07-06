@@ -3580,7 +3580,7 @@ fn script_worker(app &App, path string) {
 	for ch in a.chans {
 		chans << script.ChanInfo{
 			name:  ch.name
-			iface: ch.iface
+			iface: a.bitrate_iface(ch.iface) // pcan/kvaser: carry @<bitrate> so scripts open at the right rate
 			db:    first_db
 		}
 	}
