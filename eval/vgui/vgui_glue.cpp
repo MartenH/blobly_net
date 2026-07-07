@@ -305,7 +305,17 @@ int  vgui_menu_item_check(const char* label, int checked) {
 }
 
 // --- more widgets ---
-int  vgui_checkbox(const char* label, int cur) { bool b = cur != 0; ImGui::Checkbox(label, &b); return b ? 1 : 0; }
+// checkbox square side = FontSize + 2*FramePadding.y; our theme padding (7) makes chunky boxes,
+// so shrink just the checkbox's vertical padding for a smaller tick box (keeps the label height).
+int  vgui_checkbox(const char* label, int cur) {
+    bool b = cur != 0;
+    float px = ImGui::GetStyle().FramePadding.x;
+    float py = ImGui::GetStyle().FramePadding.y;
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(px, py * 0.4f));
+    ImGui::Checkbox(label, &b);
+    ImGui::PopStyleVar();
+    return b ? 1 : 0;
+}
 void vgui_text_colored(int r, int g, int b, const char* s) {
     ImGui::TextColored(ImVec4(r/255.f, g/255.f, b/255.f, 1.f), "%s", s);
 }
@@ -430,6 +440,9 @@ int vgui_input_text(const char* label, char* buf, int bufsize) {
 int vgui_input_double(const char* label, double* v) {
     return ImGui::InputDouble(label, v, 0.0, 0.0, "%.3f") ? 1 : 0;
 }
+int vgui_input_int(const char* label, int* v) {
+    return ImGui::InputInt(label, v) ? 1 : 0;
+}
 void vgui_set_next_item_width(float w) { ImGui::SetNextItemWidth(w); }
 // advance the cursor horizontally on the current line (a left inset / spacer).
 void vgui_indent_x(float w) { ImGui::SetCursorPosX(ImGui::GetCursorPosX() + w); }
@@ -548,6 +561,37 @@ void vgui_table_freeze_top() { ImGui::TableSetupScrollFreeze(0, 1); } // header 
 void vgui_table_end() { ImGui::EndTable(); }
 float vgui_fps() { return ImGui::GetIO().Framerate; }
 
+// vgui_combo draws a dropdown of `n` items and returns the selected index (== current if the
+// user didn't pick a different one this frame). preview shows the current selection when closed.
+int vgui_combo(const char* label, const char** items, int n, int current) {
+    int sel = current;
+    const char* preview = (current >= 0 && current < n) ? items[current] : "";
+    if (ImGui::BeginCombo(label, preview)) {
+        for (int i = 0; i < n; i++) {
+            bool is_sel = (i == current);
+            if (ImGui::Selectable(items[i], is_sel)) sel = i;
+            if (is_sel) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    return sel;
+}
+
+// true while a text field is focused / imgui wants the keyboard — callers use this to suppress
+// their own single-key shortcuts so typing in an input box doesn't trigger them.
+int vgui_want_text_input() { return ImGui::GetIO().WantTextInput ? 1 : 0; }
+
+// vgui_key_pressed reports whether the printable key `ch` (A-Z / a-z / 0-9) went down THIS frame
+// (no auto-repeat). Used for generator hotkeys. Returns 0 for anything it can't map.
+int vgui_key_pressed(int ch) {
+    ImGuiKey k = ImGuiKey_None;
+    if (ch >= 'a' && ch <= 'z')      k = (ImGuiKey)(ImGuiKey_A + (ch - 'a'));
+    else if (ch >= 'A' && ch <= 'Z') k = (ImGuiKey)(ImGuiKey_A + (ch - 'A'));
+    else if (ch >= '0' && ch <= '9') k = (ImGuiKey)(ImGuiKey_0 + (ch - '0'));
+    else return 0;
+    return ImGui::IsKeyPressed(k, false) ? 1 : 0;
+}
+
 // vgui_swimlane draws a handler/task gantt as an ImPlot plot: X = time (µs), Y = lanes.
 // ImPlot gives native pan (drag), zoom (scroll/box), and a time axis for free — replacing
 // the hand-rolled zoom buttons + scrollbar. Bars are drawn into the plot's draw list in
@@ -557,9 +601,10 @@ void vgui_swimlane(const char* plot_id, int n_lanes, const char** lane_labels,
     ImPlotFlags pf = ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText;
     if (ImPlot::BeginPlot(plot_id, ImVec2(-1, n_lanes * 26.0f + 40.0f), pf)) {
         // X axis in milliseconds (values are µs, scaled by 1e-3 for tick labels via format)
-        ImPlot::SetupAxes("time (ms)", nullptr,
+        ImPlot::SetupAxes("time (us)", nullptr,
             ImPlotAxisFlags_None,
-            ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_Invert); // lane 0 at top
+            // lane 0 at top; Lock so pan/zoom act on TIME (x) only, never the lanes (y)
+            ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_Invert | ImPlotAxisFlags_Lock);
         ImPlot::SetupAxisLimits(ImAxis_X1, 0, full_span_us, ImPlotCond_Once);
         ImPlot::SetupAxisLimits(ImAxis_Y1, n_lanes, 0, ImPlotCond_Once);
         ImPlot::SetupAxisFormat(ImAxis_X1, "%.0f");

@@ -102,6 +102,7 @@ fn C.vgui_child_wh(&char, f32, f32)
 fn C.vgui_child_end()
 fn C.vgui_input_text(&char, &char, int) int
 fn C.vgui_input_double(&char, &f64) int
+fn C.vgui_input_int(&char, &int) int
 fn C.vgui_set_next_item_width(f32)
 fn C.vgui_tree_node(&char) int
 fn C.vgui_tree_node_open(&char) int
@@ -133,6 +134,9 @@ fn C.vgui_table_setup_col(&char, f32)
 fn C.vgui_table_freeze_top()
 fn C.vgui_table_end()
 fn C.vgui_fps() f32
+fn C.vgui_want_text_input() int
+fn C.vgui_key_pressed(int) int
+fn C.vgui_combo(&char, &&char, int, int) int
 
 // --- lifecycle ---
 pub fn init(title string, w int, h int, event_driven bool) bool {
@@ -201,6 +205,30 @@ pub fn dump_ppm(path string) {
 
 pub fn fps() f32 {
 	return C.vgui_fps()
+}
+
+// want_text_input is true while a text field is focused (imgui owns the keyboard) — check it
+// before acting on single-key shortcuts so typing doesn't trigger them.
+pub fn want_text_input() bool {
+	return C.vgui_want_text_input() != 0
+}
+
+// key_pressed reports whether the printable key `ch` (A-Z / a-z / 0-9) was pressed this frame
+// (no auto-repeat). Returns false for keys it can't map.
+pub fn key_pressed(ch u8) bool {
+	return C.vgui_key_pressed(int(ch)) != 0
+}
+
+// combo draws a dropdown of `items` and returns the selected index (== current when unchanged).
+pub fn combo(label string, items []string, current int) int {
+	if items.len == 0 {
+		return current
+	}
+	mut ip := []&char{cap: items.len}
+	for it in items {
+		ip << it.str
+	}
+	return C.vgui_combo(label.str, unsafe { &&char(ip.data) }, items.len, current)
 }
 
 // --- widgets ---
@@ -410,6 +438,11 @@ pub fn input_text(label string, mut buf []u8) bool {
 // input_double edits *v in place (numeric input, e.g. a signal value). Returns true on change.
 pub fn input_double(label string, v &f64) bool {
 	return C.vgui_input_double(label.str, v) == 1
+}
+
+// input_int edits *v in place (integer input with +/- steps). Returns true on change.
+pub fn input_int(label string, v &int) bool {
+	return C.vgui_input_int(label.str, v) == 1
 }
 
 // buf_str reads a NUL-terminated input buffer as a V string.

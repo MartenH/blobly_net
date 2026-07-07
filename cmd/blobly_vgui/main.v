@@ -12,6 +12,9 @@
 module main
 
 import os
+import math
+import strings
+import markdown
 import sync
 import time
 import project
@@ -31,7 +34,6 @@ const diag_tx_id = u32(0x7E0)
 const diag_rx_id = u32(0x7E8)
 
 const trace_cap = 2000
-const telem_cap = 20000
 
 struct TraceRow {
 	t_ms f64
@@ -85,7 +87,8 @@ mut:
 	rx           u64 // total across channels
 	rev          u64
 	running      bool
-	dbs          []candb.Database
+	dbs          []candb.Database             // all loaded DBCs (union; trace/symbol decode)
+	dbs_by_iface map[string][]candb.Database  // per-channel DBCs (generator message picker scope)
 	manifest     telem.Manifest
 	has_manifest bool
 	t0           i64
@@ -112,7 +115,6 @@ mut:
 	show_tchart   bool
 	show_signals  bool
 	show_graphics bool
-	show_send      bool
 	show_diag      bool
 	show_gen       bool
 	show_script    bool
@@ -121,7 +123,7 @@ mut:
 	show_network   bool
 	show_stats     bool
 	show_log       bool = true
-	show_help      bool
+	help_cache     map[string]string = map[string]string{} // markdown file -> contents (read once)
 	// Signals selection + Graphics watch list (UI-thread only; RX never touches these)
 	sel_id        int = -1 // selected message id (-1 = none)
 	sel_ext       bool
@@ -137,6 +139,7 @@ mut:
 	// send_iface (the first monitor channel).
 	tx_buses      map[string]transport.Bus
 	send_iface    string
+	qs_iface      string // Quick send target bus (a channel iface); '' = send_iface default
 	send_id_buf   []u8
 	send_data_buf []u8
 	trace_filter_buf  []u8 // Trace substring filter
@@ -171,10 +174,13 @@ mut:
 	sim_enabled     map[string]bool // '<iface>:<node>' -> enabled (Simulation panel)
 	sim_gen         u64             // bumped when sim_enabled changes -> sim_loop rebuilds
 	// worker-thread outputs (guarded by mu)
-	diag_log    []string
-	diag_busy   bool
-	script_log  []string
-	script_busy bool
+	diag_log     []string
+	diag_busy    bool
+	script_log   []string
+	script_busy  bool
+	trace_busy      bool   // a trace-dump transfer is in flight (single-flight guard)
+	trace_recording bool   // Record toggle: the target's capture is armed (optimistic)
+	trace_status    string // last dump status line, shown by the Trace Chart
 }
 
 // SenderRT is a project sender bound to its channel iface (Generators panel).
@@ -755,13 +761,9 @@ fn rx_loop(app &App, ci int, iface string) {
 				a.trace = a.trace[a.trace.len - trace_cap..].clone()
 			}
 			a.gcount[gkey('RX', chname, f.id, f.extended)]++
-			if a.has_manifest && !f.extended && !f.rtr && f.data.len == 8 && f.id == telem.id_record {
-				a.trecs << TRec{ci, telem.decode_record(f.data)}
-				if a.trecs.len > telem_cap {
-					a.trecs = a.trecs[a.trecs.len - telem_cap..].clone()
-				}
-				a.rev++
-			}
+			// The capture dump now arrives as an ISO-TP block on 0x7E5 (not raw per-record
+			// frames): trace_dump_worker reassembles + decodes it on demand. The raw ISO-TP
+			// frames still show in the trace table above.
 		}
 		if a.recording {
 			a.rec << canlog.LogEntry{t_ms / 1000.0, chname, f}
@@ -848,6 +850,21 @@ fn (mut app App) load_project(path string) {
 
 // set_project installs a parsed project (from a file, New, or a reload), resetting the
 // session buffers and rebuilding the runtime view. path == '' marks an unsaved project.
+// resolve_asset resolves a project-relative asset path (a DBC or manifest) against the
+// project file's directory first, so a .blobnet's relative paths work regardless of the
+// launch directory; it falls back to the path as-given (launch-dir relative) for projects
+// that reference assets relative to the repo root. Absolute paths are used unchanged.
+fn (app &App) resolve_asset(path string) string {
+	if path == '' || os.is_abs_path(path) {
+		return path
+	}
+	near := os.join_path(os.dir(app.proj_path), path)
+	if os.exists(near) {
+		return near
+	}
+	return path
+}
+
 fn (mut app App) set_project(proj project.Project, path string) {
 	app.mu.lock()
 	app.trace = []
@@ -880,6 +897,7 @@ fn (mut app App) rebuild_from_proj() {
 	app.mu.lock()
 	app.chans = []
 	app.dbs = []
+	app.dbs_by_iface = map[string][]candb.Database{}
 	app.sims = []
 	app.senders = []
 	app.gen_bufs = []
@@ -905,14 +923,16 @@ fn (mut app App) rebuild_from_proj() {
 			enabled:      ch.enabled
 		}
 		for dbpath in ch.databases {
-			if db := candb.load_dbc_file(dbpath) {
+			rp := app.resolve_asset(dbpath)
+			if db := candb.load_dbc_file(rp) {
 				app.dbs << db
+				app.dbs_by_iface[ch.iface] << db // scoped to this channel (generator picker)
 			} else {
-				eprintln('dbc ${dbpath}: ${err}')
+				eprintln('dbc ${rp}: ${err}')
 			}
 		}
 		if ch.manifest != '' && !app.has_manifest {
-			if m := telem.load_manifest(ch.manifest) {
+			if m := telem.load_manifest(app.resolve_asset(ch.manifest)) {
 				app.manifest = m
 				app.has_manifest = true
 			}
@@ -1060,6 +1080,7 @@ fn main() {
 		vgui.dockspace()
 		vgui.child_end()
 		build_layout()
+		app.poll_hotkeys()
 
 		if app.show_buses {
 			draw_buses(mut app, chans)
@@ -1094,9 +1115,6 @@ fn main() {
 		if app.show_graphics {
 			draw_graphics(mut app, rows)
 		}
-		if app.show_send {
-			draw_send(mut app)
-		}
 		if app.show_diag {
 			draw_diag(mut app)
 		}
@@ -1111,9 +1129,6 @@ fn main() {
 		}
 		if app.show_script {
 			draw_script(mut app)
-		}
-		if app.show_help {
-			draw_help(mut app)
 		}
 		if app.show_config {
 			draw_config(mut app)
@@ -1144,8 +1159,14 @@ fn draw_activity_bar(mut app App) {
 	vgui.push_window_padding(4 * app.ui_scale, 6 * app.ui_scale)
 	vgui.child_wh('##activity', 60 * app.ui_scale, 0)
 	vgui.push_frame_padding(4 * app.ui_scale, 6 * app.ui_scale)
+	// Grouped into logical sections separated by a rule, alphabetical within each group:
+	// setup · trace · filtered-trace (its own) · signal views · send · diagnostics · tools.
+	// --- setup ---
 	if vgui.toggle_button('Bus', app.show_buses, -1) {
 		app.show_buses = !app.show_buses
+	}
+	if vgui.toggle_button('Cfg', app.show_busconfig, -1) {
+		app.show_busconfig = !app.show_busconfig
 	}
 	if vgui.toggle_button('Sim', app.show_sim, -1) {
 		app.show_sim = !app.show_sim
@@ -1153,27 +1174,34 @@ fn draw_activity_bar(mut app App) {
 	if vgui.toggle_button('Sym', app.show_symbols, -1) {
 		app.show_symbols = !app.show_symbols
 	}
-	if vgui.toggle_button('Cfg', app.show_busconfig, -1) {
-		app.show_busconfig = !app.show_busconfig
+	vgui.separator()
+	// --- trace ---
+	if vgui.toggle_button('Cht', app.show_tchart, -1) {
+		app.show_tchart = !app.show_tchart
 	}
 	if vgui.toggle_button('Trc', app.show_trace, -1) {
 		app.show_trace = !app.show_trace
 	}
+	vgui.separator()
+	// --- filtered trace (on its own) ---
 	if vgui.toggle_button('FTr', app.show_ftrace, -1) {
 		app.show_ftrace = !app.show_ftrace
 	}
-	if vgui.toggle_button('Cht', app.show_tchart, -1) {
-		app.show_tchart = !app.show_tchart
+	vgui.separator()
+	// --- signal views ---
+	if vgui.toggle_button('Gfx', app.show_graphics, -1) {
+		app.show_graphics = !app.show_graphics
 	}
 	if vgui.toggle_button('Sig', app.show_signals, -1) {
 		app.show_signals = !app.show_signals
 	}
-	if vgui.toggle_button('Gfx', app.show_graphics, -1) {
-		app.show_graphics = !app.show_graphics
+	vgui.separator()
+	// --- send ---
+	if vgui.toggle_button('Gen', app.show_gen, -1) {
+		app.show_gen = !app.show_gen
 	}
-	if vgui.toggle_button('Snd', app.show_send, -1) {
-		app.show_send = !app.show_send
-	}
+	vgui.separator()
+	// --- diagnostics ---
 	if vgui.toggle_button('Dia', app.show_diag, -1) {
 		app.show_diag = !app.show_diag
 	}
@@ -1183,20 +1211,16 @@ fn draw_activity_bar(mut app App) {
 	if vgui.toggle_button('Net', app.show_network, -1) {
 		app.show_network = !app.show_network
 	}
-	if vgui.toggle_button('Gen', app.show_gen, -1) {
-		app.show_gen = !app.show_gen
+	vgui.separator()
+	// --- tools --- (Help is in the menu bar, not here — it's an action, not a panel)
+	if vgui.toggle_button('Log', app.show_log, -1) {
+		app.show_log = !app.show_log
 	}
 	if vgui.toggle_button('Lua', app.show_script, -1) {
 		app.show_script = !app.show_script
 	}
 	if vgui.toggle_button('Sta', app.show_stats, -1) {
 		app.show_stats = !app.show_stats
-	}
-	if vgui.toggle_button('Log', app.show_log, -1) {
-		app.show_log = !app.show_log
-	}
-	if vgui.toggle_button('Hlp', app.show_help, -1) {
-		app.show_help = !app.show_help
 	}
 	vgui.pop_style_var(1) // frame padding
 	vgui.child_end()
@@ -1255,7 +1279,6 @@ fn draw_menubar(mut app App, rx u64) {
 			app.show_tchart = vgui.menu_item_check('Trace Chart', app.show_tchart)
 			app.show_signals = vgui.menu_item_check('Signals', app.show_signals)
 			app.show_graphics = vgui.menu_item_check('Graphics', app.show_graphics)
-			app.show_send = vgui.menu_item_check('Send', app.show_send)
 			app.show_diag = vgui.menu_item_check('Diagnostics', app.show_diag)
 			app.show_doip = vgui.menu_item_check('DoIP Discovery', app.show_doip)
 			app.show_network = vgui.menu_item_check('Network', app.show_network)
@@ -1263,7 +1286,6 @@ fn draw_menubar(mut app App, rx u64) {
 			app.show_script = vgui.menu_item_check('Script', app.show_script)
 			app.show_stats = vgui.menu_item_check('Statistics', app.show_stats)
 			app.show_log = vgui.menu_item_check('Log', app.show_log)
-			app.show_help = vgui.menu_item_check('Help', app.show_help)
 			vgui.menu_end()
 		}
 		if vgui.menu_begin('Settings') {
@@ -1279,6 +1301,12 @@ fn draw_menubar(mut app App, rx u64) {
 					app.ui_scale = f32(s) / 100.0
 					vgui.set_font_scale(app.ui_scale)
 				}
+			}
+			vgui.menu_end()
+		}
+		if vgui.menu_begin('Help') {
+			if vgui.menu_item('Documentation (opens in browser)') {
+				app.open_help_in_browser()
 			}
 			vgui.menu_end()
 		}
@@ -1366,7 +1394,11 @@ fn draw_sim(mut app App) {
 	}
 	vgui.text_dim('tick to enable/disable an ECU live')
 	for sc in app.sims {
-		vgui.separator_text(sc.iface)
+		// each bus is a collapsible group, collapsed by default (### keeps the id stable if the
+		// label changes)
+		if !vgui.tree_node('${sc.iface}   (${sc.nodes.len})###simbus_${sc.iface}') {
+			continue
+		}
 		for node in sc.nodes {
 			key := '${sc.iface}:${node.name}'
 			en := app.sim_enabled[key] or { true }
@@ -1389,6 +1421,7 @@ fn draw_sim(mut app App) {
 				vgui.tree_pop()
 			}
 		}
+		vgui.tree_pop()
 	}
 	vgui.end()
 }
@@ -2525,33 +2558,203 @@ fn draw_log(mut app App) {
 	vgui.end()
 }
 
-// draw_help: a short in-app usage reference.
-fn draw_help(mut app App) {
-	vis, op := vgui.begin_closable('Help', app.show_help)
-	app.show_help = op
-	if !vis {
-		vgui.end()
+// help_docs lists the Help pages: the built-in quick start (empty path) plus real markdown docs
+// loaded from disk. Paths are resolved relative to the working dir (the app chdir's to its
+// bundle dir at startup, so these resolve in a distributed build too).
+struct HelpDoc {
+	title string
+	path  string // '' = built-in quick_ref_md
+}
+
+const help_docs = [
+	HelpDoc{'Quick start', ''},
+	HelpDoc{'Scripting', 'docs/scripting.md'},
+	HelpDoc{'Project editing', 'docs/project_editing.md'},
+	HelpDoc{'CAN hardware', 'docs/can_hardware.md'},
+	HelpDoc{'Ethernet / DoIP', 'docs/ethernet_architecture.md'},
+	HelpDoc{'Known issues', 'docs/known_issues.md'},
+]
+
+const quick_ref_md = '# Blobly Net
+
+An imgui/ImPlot CAN/automotive bus tester. **Start/Stop** runs the measurement on the
+enabled channels; the activity bar (far left) and the **View** menu toggle panels; **Settings**
+sets the frame rate and UI scale.
+
+## Panels
+
+- **Buses / Bus Config** — channel enable, state, and configuration
+- **Simulation** — in-process simulated ECUs (driver-free)
+- **Symbols** — DBC message / signal browser (searchable)
+- **Trace / Trace (filter)** — live frames, all or grouped, filterable, per-bus
+- **Signals** — decode the selected message; add signals to Graphics
+- **Graphics** — live ImPlot signal plots (multi-axis, real values)
+- **Trace Chart** — telemetry handler swimlane
+- **Generators** — quick send + saved senders (manual / on-key / cyclic)
+- **Diagnostics / DoIP** — UDS diagnostics and DoIP discovery
+- **Script** — run a Lua test file
+
+## Toolbar
+
+- **Pause** freezes the trace, **Clear** empties it, **Record** writes `recording.log`
+- **Open** loads a candump `.log` or ASAM `.mf4` into the trace
+
+## Generators
+
+A generator is a reusable send block. Give it a single **key** and set its trigger to
+**on key** to fire it from the keyboard while running. **cyclic** auto-repeats at its period.
+Use **Quick send** at the top for an ad-hoc one-shot without saving a generator.
+'
+
+// help_style + help_script are the Help page CSS/JS. Raw strings (single-quote delimited) so the
+// double quotes inside are literal; kept free of single quotes so they never terminate the string.
+const help_style = r'
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.6;color:#1b1b1b;background:#fff}
+#wrap{display:flex;min-height:100vh}
+nav{width:250px;flex:none;border-right:1px solid #e2e2e2;padding:1rem;height:100vh;position:sticky;top:0;overflow:auto}
+nav h2{font-size:1rem;margin:.2rem 0 .8rem}
+#q{width:100%;padding:.5em .6em;border:1px solid #ccc;border-radius:6px;font-size:.95em;margin-bottom:.8rem}
+ul#nav{list-style:none;margin:0;padding:0}
+.navitem{padding:.4em .6em;border-radius:6px;cursor:pointer;font-size:.95em}
+.navitem:hover{background:#f0f0f0}
+.navitem.active{background:#0078d4;color:#fff}
+#results{margin-top:.6rem}
+.result{padding:.5em .6em;border-radius:6px;cursor:pointer;font-size:.82em;border:1px solid #eee;margin-bottom:.4rem}
+.result:hover{background:#f5f5f5}
+.result .rp{font-weight:600;color:#0078d4;margin-bottom:.2em}
+main{flex:1;max-width:900px;padding:1.5rem 2.5rem;overflow:auto}
+.page.hidden{display:none}
+h1,h2,h3{line-height:1.25;margin-top:1.5em}
+h1{border-bottom:2px solid #0078d4;padding-bottom:.2em;margin-top:.2em}
+h2{border-bottom:1px solid #ddd;padding-bottom:.2em}
+code{background:#f3f3f3;padding:.1em .35em;border-radius:3px;font-size:.92em}
+pre{background:#f6f8fa;padding:1em;border-radius:6px;overflow:auto}
+pre code{background:none;padding:0}
+a{color:#0078d4}
+hr{border:0;border-top:1px solid #ddd;margin:2.5em 0}
+table{border-collapse:collapse}td,th{border:1px solid #ddd;padding:.4em .6em}
+mark{background:#ffe066;color:inherit;border-radius:2px}
+@media(prefers-color-scheme:dark){
+body{color:#d4d4d4;background:#1e1e1e}
+nav{border-color:#333}
+#q{background:#2d2d2d;border-color:#444;color:#d4d4d4}
+.navitem:hover{background:#2a2a2a}
+.result{border-color:#333}.result:hover{background:#2a2a2a}
+code{background:#2d2d2d}pre{background:#252526}
+h2,hr,td,th{border-color:#3a3a3a}a{color:#4ea1ff}
+mark{background:#7a5c00;color:#fff}
+}
+'
+
+const help_script = r'
+(function(){
+var pages=[].slice.call(document.querySelectorAll(".page"));
+var navitems=[].slice.call(document.querySelectorAll(".navitem"));
+var results=document.getElementById("results");
+var q=document.getElementById("q");
+var content=document.getElementById("content");
+function show(idx){
+pages.forEach(function(p,i){p.classList.toggle("hidden",i!==idx);});
+navitems.forEach(function(n,i){n.classList.toggle("active",i===idx);});
+}
+navitems.forEach(function(n){n.addEventListener("click",function(){clearMarks();results.textContent="";q.value="";show(parseInt(n.getAttribute("data-page")));content.scrollTop=0;});});
+function clearMarks(){var ms=[].slice.call(document.querySelectorAll("mark"));ms.forEach(function(m){var t=document.createTextNode(m.textContent);var par=m.parentNode;par.replaceChild(t,m);par.normalize();});}
+function highlight(el,term){var first=null;var low=term.toLowerCase();var nodes=[];var w=document.createTreeWalker(el,NodeFilter.SHOW_TEXT,null);while(w.nextNode())nodes.push(w.currentNode);nodes.forEach(function(node){var txt=node.nodeValue;var lo=txt.toLowerCase();var idx=lo.indexOf(low);if(idx<0)return;var frag=document.createDocumentFragment();var pos=0;while(idx>=0){frag.appendChild(document.createTextNode(txt.slice(pos,idx)));var m=document.createElement("mark");m.textContent=txt.slice(idx,idx+term.length);frag.appendChild(m);if(!first)first=m;pos=idx+term.length;idx=lo.indexOf(low,pos);}frag.appendChild(document.createTextNode(txt.slice(pos)));node.parentNode.replaceChild(frag,node);});return first;}
+function search(term){clearMarks();results.textContent="";if(!term){return;}var low=term.toLowerCase();var any=false;pages.forEach(function(p,i){var txt=p.textContent;var lo=txt.toLowerCase();var idx=lo.indexOf(low);if(idx<0)return;any=true;var c=0,k=idx;while(k>=0){c++;k=lo.indexOf(low,k+term.length);}var st=Math.max(0,idx-30);var snip=(st>0?"…":"")+txt.slice(st,idx+term.length+50).replace(/\s+/g," ").trim()+"…";var div=document.createElement("div");div.className="result";var rp=document.createElement("div");rp.className="rp";rp.textContent=navitems[i].textContent+" ("+c+")";div.appendChild(rp);div.appendChild(document.createTextNode(snip));div.addEventListener("click",function(){results.textContent="";show(i);var m=highlight(p,term);content.scrollTop=0;if(m)m.scrollIntoView({block:"center"});});results.appendChild(div);});if(!any){var d=document.createElement("div");d.className="result";d.textContent="No matches";results.appendChild(d);}}
+q.addEventListener("input",function(){search(q.value.trim());});
+})();
+'
+
+// help_text returns a Help doc body, reading + caching the file on first access.
+fn (mut app App) help_text(path string) string {
+	if path == '' {
+		return quick_ref_md
+	}
+	if path in app.help_cache {
+		return app.help_cache[path]
+	}
+	txt := os.read_file(path) or { 'Could not load `${path}`.\n\nIt may not ship in this build.' }
+	app.help_cache[path] = txt
+	return txt
+}
+
+// help_html renders the Help docs into ONE self-contained, static HTML page: a sidebar of pages,
+// full-text search across them, and each doc rendered via vlang/markdown (headings, code, tables).
+// Pure client-side JS — no web server. Written once, opened as a file:// URL.
+fn (mut app App) help_html() string {
+	mut nav := strings.new_builder(1024)
+	mut pages := strings.new_builder(65536)
+	for i, d in help_docs {
+		active := if i == 0 { ' active' } else { '' }
+		hidden := if i == 0 { '' } else { ' hidden' }
+		nav.write_string('<li class="navitem${active}" data-page="${i}">${d.title}</li>')
+		body := markdown.to_html(app.help_text(d.path))
+		pages.write_string('<div class="page${hidden}" id="page-${i}">${body}</div>')
+	}
+	return '<!DOCTYPE html>\n<html lang="en"><head><meta charset="utf-8">' +
+		'<meta name="viewport" content="width=device-width, initial-scale=1">' +
+		'<title>Blobly Net — Help</title><style>${help_style}</style></head><body>' +
+		'<div id="wrap"><nav><h2>Blobly Net Help</h2>' +
+		'<input id="q" type="search" placeholder="Search all pages…" autocomplete="off">' +
+		'<ul id="nav">${nav.str()}</ul><div id="results"></div></nav>' +
+		'<main id="content">${pages.str()}</main></div>' +
+		'<script>${help_script}</script></body></html>\n'
+}
+
+// open_help_in_browser writes the rendered Help HTML to a per-user cache file and opens it in the
+// system browser (imgui is effectively one desktop app; the browser is the nicely-rendered view).
+fn (mut app App) open_help_in_browser() {
+	app.notify('opening Help in browser')
+	dir := os.join_path(os.cache_dir(), 'blobly_net')
+	os.mkdir_all(dir) or {}
+	os.chmod(dir, 0o700) or {} // not a shared /tmp — avoid a symlink pre-plant
+	path := os.join_path(dir, 'help.html')
+	os.write_file(path, app.help_html()) or {
+		app.notify('Help: could not write ${path} (${err})')
 		return
 	}
-	vgui.separator_text('blobly_vgui — imgui/ImPlot frontend')
-	vgui.text('Start/Stop runs the measurement on the enabled channels.')
-	vgui.text('The activity bar (far left) and the View menu toggle panels.')
-	vgui.text('File > Open Example switches projects; Settings sets fps + UI scale.')
-	vgui.separator_text('panels')
-	vgui.text('Buses / Bus Config   channel enable, state, and configuration')
-	vgui.text('Simulation           in-process simulated ECUs (driver-free)')
-	vgui.text('Symbols              DBC message / signal browser (searchable)')
-	vgui.text('Trace / Trace(filter) live frames — all or grouped, filterable')
-	vgui.text('Signals              decode selected message; tick to plot')
-	vgui.text('Graphics             ImPlot live signal plots')
-	vgui.text('Trace Chart          telemetry handler swimlane')
-	vgui.text('Send / Generators    transmit raw frames / fire project senders')
-	vgui.text('Diagnostics / DoIP   UDS + DoIP discovery')
-	vgui.text('Script               run a Lua test file')
-	vgui.separator_text('toolbar')
-	vgui.text('Pause freezes the trace · Clear empties it · Record writes recording.log')
-	vgui.text('Open loads a candump .log or ASAM .mf4 into the trace.')
-	vgui.end()
+	ok, note := open_uri_in_browser(path)
+	app.notify(if ok { note } else { 'Help written to ${path} — ${note}' })
+}
+
+// is_wsl reports whether we're under WSL, where os.open_uri finds no Linux browser.
+fn is_wsl() bool {
+	if os.getenv('WSL_DISTRO_NAME') != '' || os.getenv('WSL_INTEROP') != '' {
+		return true
+	}
+	rel := os.read_file('/proc/sys/kernel/osrelease') or { return false }
+	low := rel.to_lower()
+	return low.contains('microsoft') || low.contains('wsl')
+}
+
+// open_uri_in_browser opens `path` in the system browser. Under WSL, os.open_uri finds no Linux
+// browser, so route to the Windows browser via wslview (wslu) or explorer.exe with a wslpath UNC.
+fn open_uri_in_browser(path string) (bool, string) {
+	if is_wsl() {
+		if exe := os.find_abs_path_of_executable('wslview') {
+			mut p := os.new_process(exe)
+			p.set_args([path])
+			p.run()
+			p.wait()
+			if p.code == 0 {
+				return true, 'opened Help in the Windows browser'
+			}
+		}
+		if exe := os.find_abs_path_of_executable('explorer.exe') {
+			win := os.execute('wslpath -w ' + os.quoted_path(path))
+			if win.exit_code == 0 {
+				mut p := os.new_process(exe)
+				p.set_args([win.output.trim_space()])
+				p.run()
+				p.wait()
+				return true, 'opening Help in the Windows browser'
+			}
+		}
+		return false, 'open it manually (install wslu for wslview)'
+	}
+	os.open_uri(path) or { return false, 'open it manually (${err.msg()})' }
+	return true, 'opened Help in browser'
 }
 
 fn draw_buses(mut app App, chans []Chan) {
@@ -2570,26 +2773,60 @@ fn draw_buses(mut app App, chans []Chan) {
 		app.show_config = true
 		app.sync_cfg_bufs()
 	}
-	vgui.separator_text('channels')
+	// group channels by adapter type (in-process / SocketCAN / hardware / UDP / DoIP), each a
+	// collapsible group with a count — so a big mixed setup folds into a few headers, and a
+	// single-type project is just one group.
+	mut order := []string{}
+	mut groups := map[string][]int{}
 	for i, c in chans {
-		new := vgui.checkbox('##en${i}', c.enabled)
-		if new != c.enabled {
-			app.mu.lock()
-			app.chans[i].enabled = new
-			// enabling a channel mid-run spawns its RX thread; disabling lets it exit
-			if new && app.running && c.monitorable() && !app.chans[i].running {
-				app.chans[i].running = true
-				spawn rx_loop(app, i, app.chans[i].iface)
-			}
-			app.mu.unlock()
+		k := bus_kind(c.adapter)
+		if k !in groups {
+			order << k
 		}
-		vgui.same_line()
-		r, g, b, label := chan_state(c)
-		vgui.text_colored(r, g, b, label)
-		vgui.same_line()
-		vgui.text('${c.name}  ${c.iface}  [${c.mode}]  RX ${c.rx}')
+		groups[k] << i
+	}
+	for k in order {
+		idxs := groups[k]
+		if !vgui.tree_node_open('${k}   (${idxs.len})###busgrp_${k}') {
+			continue
+		}
+		for i in idxs {
+			c := chans[i]
+			new := vgui.checkbox('##en${i}', c.enabled)
+			if new != c.enabled {
+				app.mu.lock()
+				app.chans[i].enabled = new
+				// enabling a channel mid-run spawns its RX thread; disabling lets it exit
+				if new && app.running && c.monitorable() && !app.chans[i].running {
+					app.chans[i].running = true
+					spawn rx_loop(app, i, app.chans[i].iface)
+				}
+				app.mu.unlock()
+			}
+			vgui.same_line()
+			r, g, b, label := chan_state(c)
+			vgui.text_colored(r, g, b, label)
+			vgui.same_line()
+			vgui.text('${c.name}  ${c.iface}  [${c.mode}]  RX ${c.rx}')
+		}
+		vgui.tree_pop()
 	}
 	vgui.end()
+}
+
+// bus_kind maps a channel adapter to a friendly type-group label for the Buses panel.
+fn bus_kind(adapter string) string {
+	return match adapter {
+		'virtual' { 'Virtual (in-process)' }
+		'vcan' { 'Virtual CAN (vcan)' }
+		'socketcan' { 'SocketCAN' }
+		'pcan' { 'PCAN (hardware)' }
+		'kvaser' { 'Kvaser (hardware)' }
+		'udp' { 'UDP software bus' }
+		'doip' { 'DoIP (Ethernet)' }
+		'' { 'Other' }
+		else { adapter }
+	}
 }
 
 // draw_network shows the bus topology: each channel (bus) and everything attached to it —
@@ -3025,13 +3262,13 @@ fn build_layout() {
 	// right column
 	vgui.dock_window('Trace Chart', chart)
 	vgui.dock_window('Signals', midnode)
-	vgui.dock_window('Send', midnode)
 	vgui.dock_window('Diagnostics', midnode)
 	vgui.dock_window('DoIP Discovery', midnode)
 	vgui.dock_window('Graphics', bottom)
 	vgui.dock_window('Generators', bottom)
 	vgui.dock_window('Script', bottom)
-	vgui.dock_window('Help', bottom)
+	// Help is not a panel — it's the Help menu's "Documentation" action, which opens the docs in
+	// the system browser.
 	vgui.dock_finish(root)
 }
 
@@ -3276,33 +3513,56 @@ fn (app &App) is_watched_frame(id u32, ext bool) bool {
 }
 
 // ---- Send ----
-fn draw_send(mut app App) {
-	vis, op := vgui.begin_closable('Send', app.show_send)
-	app.show_send = op
-	if !vis {
-		vgui.end()
-		return
+// draw_quick_send is the folded-in Send: a one-shot raw id+data transmit at the top of the
+// Generators panel. It fires immediately without creating a saved generator — the fast ad-hoc
+// path. Fields stay editable while stopped; only firing needs a running bus.
+fn draw_quick_send(mut app App) {
+	vgui.separator_text('quick send')
+	// target bus: validate the stored quick-send iface against the current channels; fall back to
+	// the default send_iface if it was removed/renamed.
+	mut target := app.send_iface
+	mut cur := 0
+	for k, c in app.chans {
+		if c.iface == app.qs_iface {
+			target = app.qs_iface
+			cur = k
+		} else if c.iface == target {
+			cur = k
+		}
 	}
-	if !app.running {
-		vgui.text_dim('press Start to enable sending')
-		vgui.end()
-		return
+	if app.chans.len > 1 {
+		mut names := []string{cap: app.chans.len}
+		for c in app.chans {
+			names << c.name
+		}
+		vgui.set_next_item_width(120 * app.ui_scale)
+		nsel := vgui.combo('bus##qsbus', names, cur)
+		if nsel != cur && nsel >= 0 && nsel < app.chans.len {
+			app.qs_iface = app.chans[nsel].iface
+			target = app.qs_iface
+		}
+		vgui.same_line()
 	}
-	vgui.text('bus ${app.send_iface}')
-	vgui.set_next_item_width(70)
+	vgui.set_next_item_width(70 * app.ui_scale)
 	vgui.input_text('id (hex)', mut app.send_id_buf)
 	vgui.same_line()
-	vgui.set_next_item_width(220)
+	vgui.set_next_item_width(200 * app.ui_scale)
 	vgui.input_text('data (hex)', mut app.send_data_buf)
-	if vgui.button('Send') {
-		id := u32(('0x' + vgui.buf_str(app.send_id_buf)).u64())
-		data := parse_hex_bytes(vgui.buf_str(app.send_data_buf))
-		app.tx(transport.CanFrame{
-			id:   id
-			data: data
-		})
+	vgui.same_line()
+	if app.running {
+		if vgui.button('Send##quicksend') {
+			id := u32(('0x' + vgui.buf_str(app.send_id_buf)).u64())
+			data := parse_hex_bytes(vgui.buf_str(app.send_data_buf))
+			app.tx_on(target, transport.CanFrame{
+				id:   id
+				data: data
+			})
+		}
+		vgui.same_line()
+		vgui.text_dim('on ${app.chan_name_for(target)}')
+	} else {
+		vgui.text_dim('start to send')
 	}
-	vgui.end()
 }
 
 // ---- Generators (interactive send blocks) ----
@@ -3315,6 +3575,9 @@ fn draw_gen(mut app App) {
 		vgui.end()
 		return
 	}
+	// folded-in Send: fast ad-hoc raw transmit
+	draw_quick_send(mut app)
+	vgui.separator_text('generators')
 	if vgui.button('+ Add generator') {
 		app.add_generator()
 	}
@@ -3327,7 +3590,7 @@ fn draw_gen(mut app App) {
 		vgui.text_colored(230, 170, 70, '● modified')
 	}
 	if app.running {
-		vgui.text_dim('edit freely · Send now fires once · cyclic auto-repeats while running')
+		vgui.text_dim('edit freely · Send now fires once · cyclic auto-repeats · on-key fires on its key')
 	} else {
 		vgui.text_dim('edit freely · press Start to fire')
 	}
@@ -3336,93 +3599,135 @@ fn draw_gen(mut app App) {
 		vgui.end()
 		return
 	}
+	// one collapsed tree node per generator; the header summarises name + trigger so the list
+	// stays scannable when everything is folded (start state).
+	mut remove_idx := -1
 	for i, sr in app.senders {
-		vgui.separator()
-		// keep the model in sync with the edit buffers (name/key are UI-thread-only fields)
+		// keep the model in sync with the edit buffers (name/key are UI-thread-only fields);
+		// do it before the header so the collapsed label reflects the latest edit.
 		app.senders[i].sender.name = vgui.buf_str(app.gen_bufs[i].name_buf)
 		app.senders[i].sender.key = vgui.buf_str(app.gen_bufs[i].key_buf)
-		s := app.senders[i].sender
-		// name · key · remove
-		vgui.set_next_item_width(200)
-		if vgui.input_text('name##gn${i}', mut app.gen_bufs[i].name_buf) {
-			app.dirty = true
+		mut s := app.senders[i].sender
+		cm := if s.cycle_ms > 0 { s.cycle_ms } else { 100 }
+		trig := match s.trigger {
+			'key' { if s.key != '' { 'key "${s.key}"' } else { 'key (unset)' } }
+			'cyclic' { 'cyclic ${cm} ms' }
+			else { 'manual' }
 		}
-		vgui.same_line()
-		vgui.set_next_item_width(36)
-		if vgui.input_text('key##gk${i}', mut app.gen_bufs[i].key_buf) {
-			app.dirty = true
-		}
-		vgui.same_line()
-		if vgui.small_button('remove##rm${i}') {
-			app.remove_generator(i)
-			break // indices shifted — redraw next frame
-		}
-		// fire: Send now only fires while running (stopped = editable, just no TX)
-		if app.running {
-			if vgui.button('Send now##${i}') {
-				app.fire_index(i)
-			}
-		} else {
-			vgui.text_dim('Send now (start to fire)')
-		}
-		vgui.same_line()
-		vgui.text('fires:')
-		vgui.same_line()
-		if vgui.toggle_button('manual##${i}', s.trigger == 'manual', 0) {
-			app.set_trigger(i, 'manual')
-		}
-		vgui.same_line()
-		if vgui.toggle_button('on key##${i}', s.trigger == 'key', 0) {
-			app.set_trigger(i, 'key')
-		}
-		vgui.same_line()
-		if vgui.toggle_button('cyclic##${i}', s.trigger == 'cyclic', 0) {
-			app.set_trigger(i, 'cyclic')
-		}
-		if s.trigger == 'cyclic' {
-			vgui.same_line()
-			cm := if s.cycle_ms > 0 { s.cycle_ms } else { 100 }
-			vgui.text('every ${cm} ms')
-			vgui.same_line()
-			if vgui.small_button('-##c${i}') {
-				app.set_cycle(i, if cm > 60 { cm - 50 } else { 10 })
+		nm := if s.name != '' { s.name } else { '(unnamed)' }
+		// ### keys the node on the index only, so editing the visible name doesn't collapse it.
+		if vgui.tree_node('${nm}   ·   ${trig}###gennode${i}') {
+			vgui.set_next_item_width(200 * app.ui_scale)
+			if vgui.input_text('name##gn${i}', mut app.gen_bufs[i].name_buf) {
+				app.dirty = true
 			}
 			vgui.same_line()
-			if vgui.small_button('+##c${i}') {
-				app.set_cycle(i, cm + 50)
+			vgui.set_next_item_width(36 * app.ui_scale)
+			if vgui.input_text('key##gk${i}', mut app.gen_bufs[i].key_buf) {
+				app.dirty = true
 			}
-		}
-		// target bus: which wire this generator transmits on (defaults to its own channel)
-		if app.chans.len > 1 {
-			cur := app.senders[i].target()
-			vgui.text('bus:')
-			for ci, c in app.chans {
+			vgui.same_line()
+			if vgui.small_button('remove##rm${i}') {
+				remove_idx = i // indices shift on delete — do it after the loop
+			}
+			// fire: Send now only fires while running (stopped = editable, just no TX)
+			if app.running {
+				if vgui.button('Send now##${i}') {
+					app.fire_index(i)
+				}
+			} else {
+				vgui.text_dim('Send now (start to fire)')
+			}
+			vgui.same_line()
+			vgui.text('fires:')
+			vgui.same_line()
+			if vgui.toggle_button('manual##${i}', s.trigger == 'manual', 0) {
+				app.set_trigger(i, 'manual')
+			}
+			vgui.same_line()
+			if vgui.toggle_button('on key##${i}', s.trigger == 'key', 0) {
+				app.set_trigger(i, 'key')
+			}
+			vgui.same_line()
+			if vgui.toggle_button('cyclic##${i}', s.trigger == 'cyclic', 0) {
+				app.set_trigger(i, 'cyclic')
+			}
+			if s.trigger == 'cyclic' {
 				vgui.same_line()
-				if vgui.toggle_button('${c.name}##b${i}_${ci}', c.iface == cur, 0) {
-					app.set_sender_bus(i, if c.iface == sr.iface { '' } else { c.iface })
+				vgui.text('every ${cm} ms')
+				vgui.same_line()
+				if vgui.small_button('-##c${i}') {
+					app.set_cycle(i, if cm > 60 { cm - 50 } else { 10 })
+				}
+				vgui.same_line()
+				if vgui.small_button('+##c${i}') {
+					app.set_cycle(i, cm + 50)
 				}
 			}
-		}
-		// payload: DBC message -> per-signal values; raw -> id + data hex
-		if s.message != '' {
-			vgui.text('message ${s.message} · signal values:')
-			for j, ss in s.signals {
-				vgui.set_next_item_width(150)
-				if vgui.input_double('${ss.name}##sig${i}_${j}', unsafe { &app.senders[i].sender.signals[j].value }) {
+			// target bus: which wire this generator transmits on (defaults to its own channel)
+			if app.chans.len > 1 {
+				cur := app.senders[i].target()
+				vgui.text('bus:')
+				for ci, c in app.chans {
+					vgui.same_line()
+					if vgui.toggle_button('${c.name}##b${i}_${ci}', c.iface == cur, 0) {
+						app.set_sender_bus(i, if c.iface == sr.iface { '' } else { c.iface })
+					}
+				}
+			}
+			// message picker: build the frame from a DBC message (→ per-signal values) or send a
+			// raw id + data. Option 0 = raw; the rest are the messages on THIS generator's bus.
+			gen_iface := app.senders[i].target()
+			msg_names := app.message_names_for(gen_iface)
+			mut msg_opts := ['(raw id / data)']
+			msg_opts << msg_names
+			mut cur_msg := 0
+			if s.message != '' {
+				for k, mn in msg_names {
+					if mn == s.message {
+						cur_msg = k + 1
+						break
+					}
+				}
+			}
+			vgui.set_next_item_width(220 * app.ui_scale)
+			nsel := vgui.combo('message##msg${i}', msg_opts, cur_msg)
+			if nsel != cur_msg {
+				app.set_sender_message(i, if nsel <= 0 { '' } else { msg_opts[nsel] })
+				s = app.senders[i].sender // reflect the switch in this frame's payload block
+			}
+			// payload: DBC message -> per-signal values; raw -> id + data hex
+			if s.message != '' {
+				vgui.text('message ${s.message} · signal values:')
+				cmsg := app.find_message_cdb_for(gen_iface, s.message) or { candb.Message{} }
+				for j, ss in s.signals {
+					mut sig := candb.Signal{}
+					mut have := false
+					for cs in cmsg.signals {
+						if cs.name == ss.name {
+							sig = cs
+							have = true
+							break
+						}
+					}
+					app.signal_input(i, j, sig, have)
+				}
+			} else {
+				vgui.set_next_item_width(70 * app.ui_scale)
+				if vgui.input_text('id##id${i}', mut app.gen_bufs[i].id_buf) {
+					app.dirty = true
+				}
+				vgui.same_line()
+				vgui.set_next_item_width(260 * app.ui_scale)
+				if vgui.input_text('data (hex)##dt${i}', mut app.gen_bufs[i].data_buf) {
 					app.dirty = true
 				}
 			}
-		} else {
-			vgui.set_next_item_width(70)
-			if vgui.input_text('id##id${i}', mut app.gen_bufs[i].id_buf) {
-				app.dirty = true
-			}
-			vgui.same_line()
-			vgui.set_next_item_width(260)
-			if vgui.input_text('data (hex)##dt${i}', mut app.gen_bufs[i].data_buf) {
-				app.dirty = true
-			}
+			vgui.tree_pop()
 		}
+	}
+	if remove_idx >= 0 {
+		app.remove_generator(remove_idx)
 	}
 	vgui.end()
 }
@@ -3545,6 +3850,149 @@ fn (mut app App) new_project() {
 	app.notify('new project — add buses in Configure…')
 }
 
+// dbs_for returns the DBCs attached to the channel transmitting on `iface` (a generator's target
+// bus). Scoping the message picker/lookup here — not the global app.dbs — means a generator on
+// bus B never resolves a same-named message from bus A's database.
+fn (app &App) dbs_for(iface string) []candb.Database {
+	return app.dbs_by_iface[iface] or { [] }
+}
+
+// message_names_for lists the DBC message names on `iface` (deduplicated, load order) — the
+// picker options for a generator whose target bus is `iface`.
+fn (app &App) message_names_for(iface string) []string {
+	mut out := []string{}
+	mut seen := map[string]bool{}
+	for db in app.dbs_for(iface) {
+		for m in db.messages {
+			if m.name in seen {
+				continue
+			}
+			seen[m.name] = true
+			out << m.name
+		}
+	}
+	return out
+}
+
+// set_sender_message switches generator `i` between raw (msg == '') and DBC-message mode. When a
+// message is picked, its signals are seeded (values preserved by name across a re-pick) so the
+// editor shows one input per signal; picking raw clears them so the id/data hex inputs return.
+// The message is resolved on the generator's OWN target bus, not globally.
+fn (mut app App) set_sender_message(i int, msg string) {
+	if i < 0 || i >= app.senders.len {
+		return
+	}
+	iface := app.senders[i].target()
+	app.mu.lock()
+	defer {
+		app.mu.unlock()
+	}
+	if msg == '' {
+		app.senders[i].sender.message = ''
+		app.senders[i].sender.signals = []
+	} else {
+		old := app.senders[i].sender.signals.clone()
+		app.senders[i].sender.message = msg
+		mut sigs := []project.SenderSig{}
+		for db in app.dbs_for(iface) {
+			mut found := false
+			for m in db.messages {
+				if m.name != msg {
+					continue
+				}
+				for sig in m.signals {
+					mut v := f64(0)
+					for o in old {
+						if o.name == sig.name {
+							v = o.value
+							break
+						}
+					}
+					sigs << project.SenderSig{
+						name:  sig.name
+						value: v
+					}
+				}
+				found = true
+				break
+			}
+			if found {
+				break
+			}
+		}
+		app.senders[i].sender.signals = sigs
+	}
+	app.dirty = true
+}
+
+// find_message_cdb_for returns the candb.Message `name` from the DBCs on `iface` (signal
+// metadata: units, value tables, integer-vs-float scaling) — scoped to the generator's bus.
+fn (app &App) find_message_cdb_for(iface string, name string) ?candb.Message {
+	for db in app.dbs_for(iface) {
+		for m in db.messages {
+			if m.name == name {
+				return m
+			}
+		}
+	}
+	return none
+}
+
+// signal_is_integer is true when every representable physical value of the signal is a whole
+// number (integer factor + offset) — so it should get an integer input, not a float box.
+fn signal_is_integer(sig candb.Signal) bool {
+	return sig.factor == math.trunc(sig.factor) && sig.offset == math.trunc(sig.offset)
+}
+
+// signal_input renders one generator signal value using its DBC type: an enum dropdown for a
+// signal with a VAL_ table, an integer spinner for integer-scaled signals, else a float box.
+// `sig` is the DBC metadata (valid only when `have`); without it we fall back to a float box.
+fn (mut app App) signal_input(i int, j int, sig candb.Signal, have bool) {
+	ss := app.senders[i].sender.signals[j]
+	unit := if have && sig.unit != '' { ' [${sig.unit}]' } else { '' }
+	lbl := '${ss.name}${unit}##sig${i}_${j}'
+	pv := unsafe { &app.senders[i].sender.signals[j].value }
+	vgui.set_next_item_width(170 * app.ui_scale)
+	if have && sig.values.len > 0 {
+		// enum: dropdown of "value — name" states. VAL_ keys are stored two's-complement for
+		// signed signals, so map key<->physical through the signal (phys_from_raw / raw_from_phys)
+		// — never a bare f64(rawkey), which would turn -1 into 1.8e19.
+		mut raws := sig.values.keys()
+		raws.sort()
+		mut labels := []string{cap: raws.len}
+		for r in raws {
+			labels << '${sig.phys_from_raw(r):g} — ${sig.values[r]}'
+		}
+		curraw := sig.raw_from_phys(ss.value)
+		mut cur := 0
+		for k, r in raws {
+			if r == curraw {
+				cur = k
+				break
+			}
+		}
+		nsel := vgui.combo(lbl, labels, cur)
+		if nsel != cur && nsel >= 0 && nsel < raws.len {
+			unsafe {
+				*pv = sig.phys_from_raw(raws[nsel])
+			}
+			app.dirty = true
+		}
+	} else if have && signal_is_integer(sig) {
+		mut iv := int(math.round(ss.value))
+		if vgui.input_int(lbl, &iv) {
+			unsafe {
+				*pv = f64(iv)
+			}
+			app.dirty = true
+		}
+	} else {
+		if vgui.input_double(lbl, pv) {
+			app.dirty = true
+		}
+	}
+}
+
 fn (mut app App) set_trigger(i int, t string) {
 	app.mu.lock()
 	if i < app.senders.len {
@@ -3582,6 +4030,24 @@ fn (mut app App) set_sender_bus(i int, bus string) {
 
 // fire_index sends generator `i`'s CURRENT (edited) frame once. DBC-message generators
 // encode the edited signal values; raw generators use the edited id/data hex fields.
+// poll_hotkeys fires any 'key'-triggered generator whose key went down this frame. Runs on the
+// UI thread once per frame (fire_index reads UI-thread edit buffers). Suppressed while a text
+// field is focused so typing a key into an input box doesn't also fire a generator.
+fn (mut app App) poll_hotkeys() {
+	if !app.running || vgui.want_text_input() {
+		return
+	}
+	for i, sr in app.senders {
+		s := sr.sender
+		if s.trigger != 'key' || s.key == '' {
+			continue
+		}
+		if vgui.key_pressed(s.key[0]) {
+			app.fire_index(i)
+		}
+	}
+}
+
 fn (mut app App) fire_index(i int) {
 	if i < 0 || i >= app.senders.len {
 		return
@@ -3592,7 +4058,8 @@ fn (mut app App) fire_index(i int) {
 	mut data := []u8{}
 	if s.message != '' {
 		mut found := false
-		for db in app.dbs {
+		// resolve the message on the generator's own target bus (not globally)
+		for db in app.dbs_for(app.senders[i].target()) {
 			for m in db.messages {
 				if m.name != s.message {
 					continue
@@ -3711,6 +4178,154 @@ fn (mut app App) diag_done() {
 	app.diag_busy = false
 	app.mu.unlock()
 	vgui.wake()
+}
+
+// trace_dump_worker performs one capture read-out: it freezes the target's ring(s) and dumps
+// the selected cores, reassembling each per-core ISO-TP block on 0x7E5 (sending flow control
+// on 0x7E6) and decoding the records into app.trecs for the swimlane. Mirrors diag_worker: a
+// single-flight busy flag, a short-lived spawn, a blocking transfer, results under mu + wake.
+fn trace_dump_worker(app &App, core_mask u16) {
+	mut a := unsafe { app }
+	a.mu.lock()
+	if a.trace_busy {
+		a.mu.unlock()
+		return
+	}
+	a.trace_busy = true
+	a.mu.unlock()
+	iface := a.trace_iface()
+	if iface == '' {
+		a.set_trace_status('dump: no running channel')
+		a.trace_done()
+		return
+	}
+	// the host is the ISO-TP receiver: it sends flow control on 0x7E6 and receives the dump
+	// data on 0x7E5 (open before commanding, so the socket buffers the target's first frame).
+	mut ch := isotp.open_software(a.bitrate_iface(iface), telem.id_dump_fc, telem.id_record,
+		false) or {
+		a.set_trace_status('dump: open ${iface}: ${err}')
+		a.trace_done()
+		return
+	}
+	defer {
+		ch.close()
+	}
+	// Freeze each selected core's capture RING (op_stop) so it can be read out — the target
+	// refuses to dump a buffer that's still being written. This stops recording, NOT the
+	// core: handlers keep running. Then dump (op_dump).
+	a.tx_on(iface, transport.CanFrame{
+		id:   telem.id_trace_cmd
+		data: telem.encode_trace_cmd(telem.op_stop, telem.filter_all, core_mask)
+	})
+	a.tx_on(iface, transport.CanFrame{
+		id:   telem.id_trace_cmd
+		data: telem.encode_trace_cmd(telem.op_dump, telem.filter_all, core_mask)
+	})
+	// a multi-core dump streams one self-describing block per selected core.
+	nblocks := mask_popcount(core_mask)
+	mut recs := []TRec{}
+	mut got := 0
+	for _ in 0 .. nblocks {
+		block := ch.recv(400) or { break } // no more blocks (timed out)
+		got++
+		for off := 0; off + 8 <= block.len; off += 8 {
+			r := telem.decode_record(block[off..off + 8])
+			if r.is_header() {
+				continue // per-core framing, not a timeline record
+			}
+			recs << TRec{0, r}
+		}
+	}
+	a.mu.lock()
+	a.trecs = recs
+	a.rev++
+	a.trace_recording = false // the dump froze the buffer; Record re-arms for a new window
+	a.trace_status = 'dumped ${got}/${nblocks} core block(s) · ${recs.len} records'
+	a.mu.unlock()
+	a.trace_done()
+}
+
+fn (mut app App) trace_done() {
+	app.mu.lock()
+	app.trace_busy = false
+	app.mu.unlock()
+	vgui.wake()
+}
+
+fn (mut app App) set_trace_status(s string) {
+	app.mu.lock()
+	app.trace_status = s
+	app.mu.unlock()
+}
+
+// set_trace_state updates the Record toggle + status under the mutex (shared with the worker).
+fn (mut app App) set_trace_state(recording bool, s string) {
+	app.mu.lock()
+	app.trace_recording = recording
+	app.trace_status = s
+	app.mu.unlock()
+}
+
+// mask_popcount counts the cores a dump mask selects (a 0 mask means the single core 0).
+fn mask_popcount(mask u16) int {
+	if mask == 0 {
+		return 1
+	}
+	mut m := mask
+	mut n := 0
+	for m != 0 {
+		n += int(m & 1)
+		m >>= 1
+	}
+	return n
+}
+
+// send_trace_cmd fires one TraceCmd (arm/stop/reset) on the traced channel with the manifest
+// core mask — a fire-and-forget control frame (no ISO-TP), used by the Record/Stop buttons.
+fn (mut app App) send_trace_cmd(opcode u8) bool {
+	iface := app.trace_iface()
+	if iface == '' {
+		app.trace_status = 'no running channel'
+		return false
+	}
+	return app.tx_on(iface, transport.CanFrame{
+		id:   telem.id_trace_cmd
+		data: telem.encode_trace_cmd(opcode, telem.filter_all, app.trace_core_mask())
+	})
+}
+
+// trace_iface picks the channel to command the dump on: the running monitor channel that
+// carries the telemetry manifest (the target being traced), so a multi-channel project sends
+// to the right bus. Falls back to the first running channel when no channel has a manifest.
+fn (app &App) trace_iface() string {
+	for c in app.chans {
+		if c.monitorable() && c.running && c.manifest != '' {
+			return c.iface
+		}
+	}
+	return app.diag_iface()
+}
+
+// trace_core_mask builds a dump mask from the manifest's distinct cores, so "Dump" reads out
+// every core the target declares. A single-core target uses mask 0 (the receiving/default
+// core in the core_mask contract) regardless of the core *label* the manifest gives it — a
+// single-core manifest that names its core "1" must still dump, not send 0x0002 to a core-0
+// target. Only a genuinely multi-core manifest sets per-core bits (bit i = core i).
+fn (app &App) trace_core_mask() u16 {
+	mut seen := map[int]bool{}
+	for h in app.manifest.handlers {
+		if h.core >= 0 && h.core < 16 {
+			seen[h.core] = true
+		}
+	}
+	if seen.len <= 1 {
+		return 0 // no manifest, or a single core: the default receiving core
+	}
+	mut mask := u16(0)
+	for core, _ in seen {
+		mask |= u16(1) << u16(core)
+	}
+	return mask
 }
 
 fn printable(b []u8) string {
@@ -3849,39 +4464,157 @@ fn draw_tchart(mut app App, trecs []TRec) {
 		vgui.end()
 		return
 	}
-	if app.has_manifest {
-		labels, bars, span := build_swimlane(app, trecs)
-		vgui.text('${trecs.len} records · ${labels.len} handlers · gaps = idle')
-		vgui.text_dim('drag = pan · scroll = zoom · double-click = fit')
-		if bars.len > 0 {
-			vgui.swimlane('##swim', labels, bars, span)
+	// Capture control: Record arms the target's ring (op_arm), Stop freezes it (op_stop),
+	// Dump reads the frozen buffer out over ISO-TP into the swimlane. Snapshot the worker-
+	// shared state under the mutex (trace_dump_worker writes it from its thread).
+	app.mu.lock()
+	busy := app.trace_busy
+	recording := app.trace_recording
+	status := app.trace_status
+	app.mu.unlock()
+	if busy {
+		vgui.text_dim('dumping…')
+	} else if app.running {
+		if recording {
+			if vgui.button('Stop##trace') {
+				app.send_trace_cmd(telem.op_stop)
+				app.set_trace_state(false, 'recording stopped (frozen)')
+			}
 		} else {
-			vgui.text_dim('waiting for Record frames (0x7E5)')
+			if vgui.button('Record##trace') {
+				if app.send_trace_cmd(telem.op_arm) {
+					app.set_trace_state(true, 'recording…')
+				}
+			}
 		}
+		vgui.same_line()
+		if vgui.button('Dump##trace') {
+			spawn trace_dump_worker(app, app.trace_core_mask())
+		}
+		vgui.same_line()
+		vgui.text_dim('Record arms · Stop freezes · Dump reads out (all cores)')
 	} else {
-		vgui.text_dim('no telemetry manifest on any channel')
+		vgui.text_dim('Start a channel, then Record / Dump')
+	}
+	if status != '' {
+		vgui.text_dim(status)
+	}
+	labels, bars, span := build_swimlane(app, trecs)
+	vgui.text('${trecs.len} records · ${labels.len} lanes · gaps = idle')
+	vgui.text_dim('drag = pan · scroll = zoom · double-click = fit')
+	if bars.len > 0 {
+		vgui.swimlane('##swim', labels, bars, span)
+	} else {
+		vgui.text_dim('press Dump to capture (handler bars + thread-switch marks appear here)')
 	}
 	vgui.end()
+}
+
+// build_swimlane turns decoded records into swimlane lanes + bars. A dumped stream is not
+// homogeneous: handler-run records become duration bars on a per-handler lane; thread-switch
+// records become thin marker bars on a per-thread lane (coloured by reason); block-header
+// records are framing and skipped. Handler lanes are laid out first, thread lanes below.
+// handler_core / thread_core resolve the core of a manifest id (-1 = unknown / no manifest).
+fn handler_core(app &App, id u8) int {
+	if h := app.manifest.lookup(id) {
+		return h.core
+	}
+	return -1
+}
+
+fn thread_core(app &App, id u8) int {
+	if id in app.manifest.by_tid {
+		return app.manifest.by_tid[id].core
+	}
+	return -1
+}
+
+// fb_label / thread_lane_label prefix the name with its core (c0/c1…) so a lane shows which
+// core it belongs to.
+fn fb_label(app &App, id u8) string {
+	c := handler_core(app, id)
+	base := app.manifest.label(id)
+	return if c >= 0 { 'c${c}  ${base}' } else { base }
+}
+
+fn thread_lane_label(app &App, id u8) string {
+	c := thread_core(app, id)
+	base := app.manifest.thread_label(id)
+	return if c >= 0 { 'c${c}  ${base}' } else { base }
 }
 
 fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
 	if trecs.len == 0 {
 		return []string{}, []vgui.Bar{}, f32(1)
 	}
-	mut lane_of := map[u8]int{}
-	mut labels := []string{}
+	// distinct handler ids (FB runs) and thread ids (switches), first-seen.
+	mut hids := []u8{}
+	mut tids := []u8{}
+	mut sh := map[u8]bool{}
+	mut st := map[u8]bool{}
 	for tr in trecs {
-		id := tr.rec.handler_id
-		if id !in lane_of {
-			lane_of[id] = labels.len
-			labels << app.manifest.label(id)
+		r := tr.rec
+		if r.is_header() {
+			continue
+		}
+		if r.is_switch() {
+			if r.to_thread() !in st {
+				st[r.to_thread()] = true
+				tids << r.to_thread()
+			}
+		} else if r.handler_id !in sh {
+			sh[r.handler_id] = true
+			hids << r.handler_id
 		}
 	}
+	// lay lanes out grouped by core: FB (handler) lanes first, ordered by core, then a
+	// separator, then thread lanes ordered by core. So you can see which core each is, and
+	// the FB trace is visually split from the thread-switch trace.
+	mut lane_of := map[string]int{}
+	mut labels := []string{}
+	for core in 0 .. 16 {
+		for id in hids {
+			if handler_core(app, id) == core && 'h${id}' !in lane_of {
+				lane_of['h${id}'] = labels.len
+				labels << fb_label(app, id)
+			}
+		}
+	}
+	for id in hids { // unknown-core handlers (no manifest) last
+		if 'h${id}' !in lane_of {
+			lane_of['h${id}'] = labels.len
+			labels << fb_label(app, id)
+		}
+	}
+	if tids.len > 0 {
+		labels << '──  thread switches  ──' // separator lane (no bars)
+		for core in 0 .. 16 {
+			for id in tids {
+				if thread_core(app, id) == core && 't${id}' !in lane_of {
+					lane_of['t${id}'] = labels.len
+					labels << thread_lane_label(app, id)
+				}
+			}
+		}
+		for id in tids {
+			if 't${id}' !in lane_of {
+				lane_of['t${id}'] = labels.len
+				labels << thread_lane_label(app, id)
+			}
+		}
+	}
+	// time span over every timeline record (headers carry no time).
 	mut tmin := f32(3.4e38)
 	mut tmax := f32(0)
 	for tr in trecs {
-		s := f32(tr.rec.start_us)
-		e := s + f32(tr.rec.cpu_us)
+		r := tr.rec
+		if r.is_header() {
+			continue
+		}
+		s := f32(r.start_us)
+		// a switch is an instant: its cpu_us slot holds (reason<<8)|from_thread, NOT a
+		// duration, so it must not extend the time axis — only handler runs have a width.
+		e := if r.is_switch() { s } else { s + f32(r.cpu_us) }
 		if s < tmin {
 			tmin = s
 		}
@@ -3889,20 +4622,56 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
 			tmax = e
 		}
 	}
+	if tmin > tmax { // only header records — nothing to draw
+		return labels, []vgui.Bar{}, f32(1)
+	}
 	span := if tmax > tmin { tmax - tmin } else { f32(1) }
+	mark := if span / 200 > 1 { span / 200 } else { f32(1) } // switch marker width (a tick)
 	mut bars := []vgui.Bar{cap: trecs.len}
 	for tr in trecs {
 		r := tr.rec
-		li := lane_of[r.handler_id]
-		c := lane_palette[li % lane_palette.len]
-		bars << vgui.Bar{
-			t0:        f32(r.start_us) - tmin
-			dur:       f32(r.cpu_us)
-			lane:      li
-			color:     vgui.rgba(c[0], c[1], c[2], 235)
-			warn:      if (r.flags & (telem.flag_overran | telem.flag_saturated)) != 0 { 1 } else { 0 }
-			preempted: if (r.flags & telem.flag_preempted) != 0 { 1 } else { 0 }
+		if r.is_header() {
+			continue
+		}
+		if r.is_switch() {
+			li := lane_of['t${r.to_thread()}']
+			bars << vgui.Bar{
+				t0:    f32(r.start_us) - tmin
+				dur:   mark
+				lane:  li
+				color: switch_color(r.reason())
+			}
+		} else {
+			li := lane_of['h${r.handler_id}']
+			// colour by core (so cores are visually distinct); fall back to per-lane colour
+			// when there's no manifest to group by.
+			core := handler_core(app, r.handler_id)
+			ci := if core >= 0 { core } else { li }
+			c := lane_palette[ci % lane_palette.len]
+			bars << vgui.Bar{
+				t0:        f32(r.start_us) - tmin
+				dur:       f32(r.cpu_us)
+				lane:      li
+				color:     vgui.rgba(c[0], c[1], c[2], 235)
+				warn:      if (r.flags & (telem.flag_overran | telem.flag_saturated)) != 0 { 1 } else { 0 }
+				preempted: if (r.flags & telem.flag_preempted) != 0 { 1 } else { 0 }
+			}
 		}
 	}
 	return labels, bars, span
+}
+
+// switch_color maps a thread-switch reason to a marker colour (red = preempted out, green =
+// resumed, amber = voluntary block/yield, grey = ISR / other).
+fn switch_color(reason u8) u32 {
+	if reason == telem.switch_preempt {
+		return vgui.rgba(230, 80, 80, 235)
+	}
+	if reason == telem.switch_resume {
+		return vgui.rgba(80, 200, 120, 235)
+	}
+	if reason == telem.switch_block {
+		return vgui.rgba(210, 180, 60, 235)
+	}
+	return vgui.rgba(150, 150, 160, 235)
 }

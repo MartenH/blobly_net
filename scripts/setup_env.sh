@@ -24,6 +24,12 @@ ln -sf "$HOME/v/v" "$HOME/.local/bin/v"
 export PATH="$HOME/.local/bin:$PATH"
 "$HOME/v/v" version
 
+echo "==> 2b/5 vlang/markdown (md4c) — Help panel 'Open in browser' renders docs to HTML"
+if [ ! -d "$HOME/.vmodules/markdown" ]; then
+	git clone --quiet https://github.com/vlang/markdown.git "$HOME/.vmodules/markdown"
+	git -C "$HOME/.vmodules/markdown" checkout --quiet ef2f101
+fi
+
 echo "==> 3/5 Build the GUI (imgui C deps -> libvgui_c.a, then cmd/blobly_vgui)"
 # run_vgui.sh (RUN=0 = build only) builds eval/vgui/libvgui_c.a from the pinned cimgui/
 # cimplot (via eval/vgui/build_deps.sh) and compiles cmd/blobly_vgui. No vlang/gui / vglyph

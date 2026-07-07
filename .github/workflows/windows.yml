@@ -32,6 +32,11 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 60
 
+    # @vmodules resolves here (the Windows v.exe reads $VMODULES); vlang/markdown is cloned into it
+    # below for the Help browser view. A Windows-style path the msys2 steps convert with cygpath.
+    env:
+      VMODULES: ${{ github.workspace }}\vmodules
+
     steps:
       - uses: actions/checkout@v4
 
@@ -70,6 +75,17 @@ jobs:
         shell: msys2 {0}
         run: sh eval/vgui/build_deps.sh
 
+      # vlang/markdown (md4c) — the Help "Open in browser" view. Cloned into $VMODULES (the same
+      # dir the Windows v.exe reads via @vmodules); md4c-lib.o auto-builds from its sibling .c
+      # under mingw gcc. Pinned to a known-good commit.
+      - name: Fetch vlang/markdown (Help browser view)
+        shell: msys2 {0}
+        run: |
+          vm="$(cygpath -u "$VMODULES")"
+          mkdir -p "$vm"
+          git -c advice.detachedHead=false clone --quiet https://github.com/vlang/markdown.git "$vm/markdown"
+          git -C "$vm/markdown" -c advice.detachedHead=false checkout --quiet ef2f101
+
       # Build cmd/blobly_vgui. The prebuilt v.exe drives mingw gcc via -cc gcc; the
       # `#flag windows` line in vgui.v carries the static glfw + freetype/harfbuzz/glib link
       # line. -path adds `eval` for the `vgui` module. (The old app needed a 2-step V->C->gcc
@@ -100,6 +116,7 @@ jobs:
           Copy-Item dbc dist\dbc -Recurse
           Copy-Item tests dist\tests -Recurse
           Copy-Item manifests dist\manifests -Recurse
+          Copy-Item docs dist\docs -Recurse   # Help panel's browser view reads docs/*.md
           New-Item -ItemType Directory -Force dist\samples | Out-Null
           Copy-Item samples\*.log,samples\*.mf4 dist\samples\ -Force -ErrorAction SilentlyContinue
           Copy-Item LICENSE dist\LICENSE.txt -ErrorAction SilentlyContinue
