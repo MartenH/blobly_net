@@ -85,9 +85,10 @@ pub fn (s Signal) raw_value(data []u8) u64 {
 	return raw
 }
 
-// physical applies sign-extension, factor and offset: phys = raw * factor + offset.
-pub fn (s Signal) physical(data []u8) f64 {
-	raw := s.raw_value(data)
+// phys_from_raw applies sign-extension, factor and offset to a raw bit value:
+// phys = signed(raw) * factor + offset. Use for raw values not read from a frame,
+// e.g. a VAL_ table key (which is stored two's-complement for signed signals).
+pub fn (s Signal) phys_from_raw(raw u64) f64 {
 	mut v := f64(raw)
 	if s.is_signed && s.length > 0 && s.length < 64 {
 		sign_bit := u64(1) << (s.length - 1)
@@ -96,6 +97,23 @@ pub fn (s Signal) physical(data []u8) f64 {
 		}
 	}
 	return v * s.factor + s.offset
+}
+
+// raw_from_phys is the inverse of phys_from_raw: physical -> raw bits (two's-complement,
+// masked to the signal width for signed signals).
+pub fn (s Signal) raw_from_phys(phys f64) u64 {
+	// round half away from zero; a bare `+ 0.5` truncates negatives wrongly.
+	mut raw := i64(math.round((phys - s.offset) / s.factor))
+	if raw < 0 {
+		raw += i64(1) << s.length
+	}
+	mask := if s.length >= 64 { ~u64(0) } else { (u64(1) << s.length) - 1 }
+	return u64(raw) & mask
+}
+
+// physical applies sign-extension, factor and offset: phys = raw * factor + offset.
+pub fn (s Signal) physical(data []u8) f64 {
+	return s.phys_from_raw(s.raw_value(data))
 }
 
 // set_raw writes `raw` into `data` at the signal's bit position. Mirrors
@@ -131,13 +149,7 @@ pub fn (s Signal) set_raw(mut data []u8, raw u64) {
 
 // encode converts a physical value to raw and writes it into `data`.
 pub fn (s Signal) encode(mut data []u8, phys f64) {
-	// round half away from zero; a bare `+ 0.5` truncates negatives wrongly.
-	mut raw := i64(math.round((phys - s.offset) / s.factor))
-	if raw < 0 {
-		raw += i64(1) << s.length
-	}
-	mask := if s.length >= 64 { ~u64(0) } else { (u64(1) << s.length) - 1 }
-	s.set_raw(mut data, u64(raw) & mask)
+	s.set_raw(mut data, s.raw_from_phys(phys))
 }
 
 // owns reports whether global bit index `g` (LSB-0 numbering) belongs to this

@@ -23,8 +23,10 @@ pub const state_full = u8(2)
 pub const state_frozen = u8(3)
 
 // encode_trace_cmd builds the 8-byte TraceCmd payload:
-// b0 opcode | b1 arg0 | b2-3 period_ms | b4-5 handler_filter | b6-7 reserved (all LE).
-pub fn encode_trace_cmd(opcode u8, handler_filter u16) []u8 {
+// b0 opcode | b1 arg0 | b2-3 period_ms | b4-5 handler_filter | b6-7 core_mask (all LE).
+// core_mask selects which cores the command addresses (bit i = core i); 0 = the receiving
+// core (core 0), so a single-core target is addressed by the default 0.
+pub fn encode_trace_cmd(opcode u8, handler_filter u16, core_mask u16) []u8 {
 	return [
 		opcode,
 		u8(0), // arg0
@@ -32,8 +34,8 @@ pub fn encode_trace_cmd(opcode u8, handler_filter u16) []u8 {
 		u8(0), // period_ms hi
 		u8(handler_filter), // filter lo
 		u8(handler_filter >> 8), // filter hi
-		u8(0),
-		u8(0),
+		u8(core_mask), // core_mask lo
+		u8(core_mask >> 8), // core_mask hi
 	]
 }
 

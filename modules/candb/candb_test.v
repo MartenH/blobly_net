@@ -47,6 +47,34 @@ fn test_signed_negative() {
 	assert s.physical(data) == -5.0
 }
 
+// A signed signal's VAL_ table stores negative keys two's-complement (u64), so a raw enum key of
+// -1 lands in `values` as 0xFF (for width 8). phys_from_raw must sign-extend it back to -1.0 (not
+// 255), and raw_from_phys must round-trip -1.0 -> that same key — the generator enum-picker path.
+fn test_signed_enum_raw_roundtrip() {
+	s := Signal{
+		name:      'gear'
+		start_bit: 0
+		length:    8
+		is_signed: true
+		factor:    1.0
+	}
+	key := u64(i64(-1)) & 0xFF // how apply_val stores VAL_ -1 for an 8-bit signed signal
+	assert key == 0xFF
+	assert s.phys_from_raw(key) == -1.0
+	assert s.raw_from_phys(-1.0) == key
+	// a scaled signed signal: factor 0.5, raw key -2 -> physical -1.0
+	sc := Signal{
+		name:      't'
+		start_bit: 0
+		length:    4
+		is_signed: true
+		factor:    0.5
+	}
+	k2 := u64(i64(-2)) & 0xF
+	assert sc.phys_from_raw(k2) == -1.0
+	assert sc.raw_from_phys(-1.0) == k2
+}
+
 fn test_cross_byte_boundary() {
 	// start bit 12, length 8 spans bytes 1 and 2
 	s := Signal{

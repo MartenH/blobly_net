@@ -13,13 +13,26 @@ pub const id_loaddetail = u32(0x7E1) // one core's load over 100ms/1s/10s + over
 pub const id_trace_cmd = u32(0x7E2) // host -> target: capture control (not UDS)
 pub const id_trace_rsp = u32(0x7E3) // target -> host: ack + status
 pub const id_handlerstat = u32(0x7E4) // unsolicited per-handler live stats
-pub const id_record = u32(0x7E5) // one captured handler-invocation record
+pub const id_record = u32(0x7E5) // captured-trace dump (ISO-TP block: target -> host)
+pub const id_dump_fc = u32(0x7E6) // ISO-TP flow control the host sends for the Record dump
 
 // Frame flags shared by HandlerStat and Record (a superset; Record adds first_run).
 pub const flag_overran = u8(0x01) // the invocation exceeded its period
 pub const flag_preempted = u8(0x02) // the handler/thread was preempted (RTOS)
 pub const flag_saturated = u8(0x04) // a µs field was clamped to the u16 range (HandlerStat)
 pub const flag_first_run = u8(0x08) // Record: first invocation since capture start
+// Record KIND bits (high nibble). A dumped Record stream is not homogeneous: both clear =
+// a handler-run record; bit7 = a thread-switch (swimlane) event; bit6 = a per-core block
+// header leading one core's block in a multi-core dump. See emb comm/trace/trace.v.
+pub const flag_header = u8(0x40)
+pub const flag_switch = u8(0x80)
+
+// Thread-switch reasons (the `reason` byte of a switch record).
+pub const switch_preempt = u8(0)
+pub const switch_block = u8(1)
+pub const switch_resume = u8(2)
+pub const switch_isr_enter = u8(3)
+pub const switch_isr_exit = u8(4)
 
 // HandlerStat is the decoded per-handler live-stats push (id 0x7E4):
 // b0 handler_id | b1 flags | b2-3 last_us | b4-5 max_us | b6-7 count_delta (all u16 LE).
@@ -57,7 +70,9 @@ pub:
 	cpu_us     u16 // execution time (saturating)
 }
 
-// decode_record decodes an 8-byte Record payload.
+// decode_record decodes an 8-byte Record payload. Use is_switch()/is_header() to tell the
+// kind before reading the fields — a dumped stream mixes handler runs, thread switches, and
+// (multi-core) per-core headers in the same 8-byte cell.
 pub fn decode_record(p []u8) Record {
 	return Record{
 		handler_id: u8_at(p, 0)
@@ -65,6 +80,38 @@ pub fn decode_record(p []u8) Record {
 		start_us:   u32le(p, 2)
 		cpu_us:     u16le(p, 6)
 	}
+}
+
+// is_switch / is_header classify a Record by its kind bits (both clear = a handler run).
+pub fn (r Record) is_switch() bool {
+	return r.flags & flag_switch != 0
+}
+
+pub fn (r Record) is_header() bool {
+	return r.flags & flag_header != 0
+}
+
+// Thread-switch fields (valid when is_switch()): the 8-byte cell is reused — handler_id is
+// the thread switched TO, cpu_us's low byte the thread FROM, its high byte the reason.
+pub fn (r Record) to_thread() u8 {
+	return r.handler_id
+}
+
+pub fn (r Record) from_thread() u8 {
+	return u8(r.cpu_us)
+}
+
+pub fn (r Record) reason() u8 {
+	return u8(r.cpu_us >> 8)
+}
+
+// Block-header fields (valid when is_header()): handler_id = core, start_us = record count.
+pub fn (r Record) header_core() u8 {
+	return r.handler_id
+}
+
+pub fn (r Record) header_count() u32 {
+	return r.start_us
 }
 
 // LoadDetail is one core's load over three windows + overrun count (id 0x7E1):
