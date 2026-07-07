@@ -601,9 +601,10 @@ void vgui_swimlane(const char* plot_id, int n_lanes, const char** lane_labels,
     ImPlotFlags pf = ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText;
     if (ImPlot::BeginPlot(plot_id, ImVec2(-1, n_lanes * 26.0f + 40.0f), pf)) {
         // X axis in milliseconds (values are µs, scaled by 1e-3 for tick labels via format)
-        ImPlot::SetupAxes("time (ms)", nullptr,
+        ImPlot::SetupAxes("time (us)", nullptr,
             ImPlotAxisFlags_None,
-            ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_Invert); // lane 0 at top
+            // lane 0 at top; Lock so pan/zoom act on TIME (x) only, never the lanes (y)
+            ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_Invert | ImPlotAxisFlags_Lock);
         ImPlot::SetupAxisLimits(ImAxis_X1, 0, full_span_us, ImPlotCond_Once);
         ImPlot::SetupAxisLimits(ImAxis_Y1, n_lanes, 0, ImPlotCond_Once);
         ImPlot::SetupAxisFormat(ImAxis_X1, "%.0f");

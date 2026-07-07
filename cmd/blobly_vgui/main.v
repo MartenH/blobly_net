@@ -4514,33 +4514,93 @@ fn draw_tchart(mut app App, trecs []TRec) {
 // homogeneous: handler-run records become duration bars on a per-handler lane; thread-switch
 // records become thin marker bars on a per-thread lane (coloured by reason); block-header
 // records are framing and skipped. Handler lanes are laid out first, thread lanes below.
+// handler_core / thread_core resolve the core of a manifest id (-1 = unknown / no manifest).
+fn handler_core(app &App, id u8) int {
+	if h := app.manifest.lookup(id) {
+		return h.core
+	}
+	return -1
+}
+
+fn thread_core(app &App, id u8) int {
+	if id in app.manifest.by_tid {
+		return app.manifest.by_tid[id].core
+	}
+	return -1
+}
+
+// fb_label / thread_lane_label prefix the name with its core (c0/c1…) so a lane shows which
+// core it belongs to.
+fn fb_label(app &App, id u8) string {
+	c := handler_core(app, id)
+	base := app.manifest.label(id)
+	return if c >= 0 { 'c${c}  ${base}' } else { base }
+}
+
+fn thread_lane_label(app &App, id u8) string {
+	c := thread_core(app, id)
+	base := app.manifest.thread_label(id)
+	return if c >= 0 { 'c${c}  ${base}' } else { base }
+}
+
 fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
 	if trecs.len == 0 {
 		return []string{}, []vgui.Bar{}, f32(1)
 	}
-	// lanes keyed 'h<id>' (handlers) then 't<id>' (threads), first-seen order within each.
-	mut lane_of := map[string]int{}
-	mut labels := []string{}
-	for tr in trecs { // pass 1: handler lanes
+	// distinct handler ids (FB runs) and thread ids (switches), first-seen.
+	mut hids := []u8{}
+	mut tids := []u8{}
+	mut sh := map[u8]bool{}
+	mut st := map[u8]bool{}
+	for tr in trecs {
 		r := tr.rec
-		if r.is_header() || r.is_switch() {
+		if r.is_header() {
 			continue
 		}
-		key := 'h${r.handler_id}'
-		if key !in lane_of {
-			lane_of[key] = labels.len
-			labels << app.manifest.label(r.handler_id)
+		if r.is_switch() {
+			if r.to_thread() !in st {
+				st[r.to_thread()] = true
+				tids << r.to_thread()
+			}
+		} else if r.handler_id !in sh {
+			sh[r.handler_id] = true
+			hids << r.handler_id
 		}
 	}
-	for tr in trecs { // pass 2: thread (switch) lanes, below the handlers
-		r := tr.rec
-		if !r.is_switch() {
-			continue
+	// lay lanes out grouped by core: FB (handler) lanes first, ordered by core, then a
+	// separator, then thread lanes ordered by core. So you can see which core each is, and
+	// the FB trace is visually split from the thread-switch trace.
+	mut lane_of := map[string]int{}
+	mut labels := []string{}
+	for core in 0 .. 16 {
+		for id in hids {
+			if handler_core(app, id) == core && 'h${id}' !in lane_of {
+				lane_of['h${id}'] = labels.len
+				labels << fb_label(app, id)
+			}
 		}
-		key := 't${r.to_thread()}'
-		if key !in lane_of {
-			lane_of[key] = labels.len
-			labels << app.manifest.thread_label(r.to_thread())
+	}
+	for id in hids { // unknown-core handlers (no manifest) last
+		if 'h${id}' !in lane_of {
+			lane_of['h${id}'] = labels.len
+			labels << fb_label(app, id)
+		}
+	}
+	if tids.len > 0 {
+		labels << '──  thread switches  ──' // separator lane (no bars)
+		for core in 0 .. 16 {
+			for id in tids {
+				if thread_core(app, id) == core && 't${id}' !in lane_of {
+					lane_of['t${id}'] = labels.len
+					labels << thread_lane_label(app, id)
+				}
+			}
+		}
+		for id in tids {
+			if 't${id}' !in lane_of {
+				lane_of['t${id}'] = labels.len
+				labels << thread_lane_label(app, id)
+			}
 		}
 	}
 	// time span over every timeline record (headers carry no time).
@@ -4583,7 +4643,11 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
 			}
 		} else {
 			li := lane_of['h${r.handler_id}']
-			c := lane_palette[li % lane_palette.len]
+			// colour by core (so cores are visually distinct); fall back to per-lane colour
+			// when there's no manifest to group by.
+			core := handler_core(app, r.handler_id)
+			ci := if core >= 0 { core } else { li }
+			c := lane_palette[ci % lane_palette.len]
 			bars << vgui.Bar{
 				t0:        f32(r.start_us) - tmin
 				dur:       f32(r.cpu_us)
