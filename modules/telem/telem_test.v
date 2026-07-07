@@ -92,3 +92,41 @@ fn test_manifest_rejects_bad_ids() {
 	m := parse_manifest('255,p,1,F,h,1000') or { panic(err) }
 	assert m.handlers[0].id == 255
 }
+
+// Record kinds: a dumped stream mixes handler runs, thread switches, and (multi-core) block
+// headers in the same 8-byte cell — is_switch/is_header + the reinterpreted fields decode
+// back. Byte order matches emb comm/trace/trace.v encode_record.
+fn test_record_kinds() {
+	// handler run: b0 id | b1 flags(0) | b2-5 start | b6-7 cpu
+	run := decode_record([u8(7), 0, 0x10, 0x27, 0, 0, 0x64, 0]) // start 0x2710=10000, cpu 100
+	assert !run.is_switch() && !run.is_header()
+	assert run.handler_id == 7 && run.start_us == 10000 && run.cpu_us == 100
+
+	// thread switch: flags bit7; b0 to_thread | b6 from_thread | b7 reason
+	sw := decode_record([u8(3), flag_switch, 0xD2, 0x04, 0, 0, 1, switch_preempt]) // start 0x4D2=1234
+	assert sw.is_switch() && !sw.is_header()
+	assert sw.to_thread() == 3 && sw.from_thread() == 1 && sw.reason() == switch_preempt
+	assert sw.start_us == 1234
+
+	// block header: flags bit6; b0 core | b2-5 count
+	hd := decode_record([u8(1), flag_header, 32, 0, 0, 0, 0, 0])
+	assert hd.is_header() && !hd.is_switch()
+	assert hd.header_core() == 1 && hd.header_count() == 32
+}
+
+// A manifest may carry thread rows (thread,id,name,core) to label the swimlane thread lanes,
+// alongside the handler rows. thread_label resolves them; unknown ids synthesise "thread N".
+fn test_manifest_threads() {
+	m := parse_manifest('0,app0,0,light,on_5ms,5000\nthread,0,app0,0\nthread,1,isr0,0') or {
+		panic(err)
+	}
+	assert m.handlers.len == 1
+	assert m.threads.len == 2
+	assert m.thread_label(0) == 'app0'
+	assert m.thread_label(1) == 'isr0'
+	assert m.thread_label(9) == 'thread 9' // unknown -> synthetic
+	// a duplicate thread id is rejected
+	if _ := parse_manifest('0,p,0,F,h,1000\nthread,0,a,0\nthread,0,b,0') {
+		assert false, 'duplicate thread id should be rejected'
+	}
+}
