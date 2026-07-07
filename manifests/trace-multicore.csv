@@ -5,3 +5,8 @@
 1,app0,0,heavy,on_20ms,20000
 2,app1,1,light,on_5ms,5000
 3,app1,1,heavy,on_20ms,20000
+# thread lanes for the swimlane (thread-switch from/to ids): thread,id,name,core
+thread,0,app0,0
+thread,1,isr0,0
+thread,2,app1,1
+thread,3,isr1,1

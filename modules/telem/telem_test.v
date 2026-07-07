@@ -113,3 +113,20 @@ fn test_record_kinds() {
 	assert hd.is_header() && !hd.is_switch()
 	assert hd.header_core() == 1 && hd.header_count() == 32
 }
+
+// A manifest may carry thread rows (thread,id,name,core) to label the swimlane thread lanes,
+// alongside the handler rows. thread_label resolves them; unknown ids synthesise "thread N".
+fn test_manifest_threads() {
+	m := parse_manifest('0,app0,0,light,on_5ms,5000\nthread,0,app0,0\nthread,1,isr0,0') or {
+		panic(err)
+	}
+	assert m.handlers.len == 1
+	assert m.threads.len == 2
+	assert m.thread_label(0) == 'app0'
+	assert m.thread_label(1) == 'isr0'
+	assert m.thread_label(9) == 'thread 9' // unknown -> synthetic
+	// a duplicate thread id is rejected
+	if _ := parse_manifest('0,p,0,F,h,1000\nthread,0,a,0\nthread,0,b,0') {
+		assert false, 'duplicate thread id should be rejected'
+	}
+}

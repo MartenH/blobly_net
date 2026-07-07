@@ -4059,7 +4059,7 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
 		key := 't${r.to_thread()}'
 		if key !in lane_of {
 			lane_of[key] = labels.len
-			labels << 'thread ${r.to_thread()}'
+			labels << app.manifest.thread_label(r.to_thread())
 		}
 	}
 	// time span over every timeline record (headers carry no time).
