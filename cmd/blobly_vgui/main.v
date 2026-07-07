@@ -846,6 +846,21 @@ fn (mut app App) load_project(path string) {
 
 // set_project installs a parsed project (from a file, New, or a reload), resetting the
 // session buffers and rebuilding the runtime view. path == '' marks an unsaved project.
+// resolve_asset resolves a project-relative asset path (a DBC or manifest) against the
+// project file's directory first, so a .blobnet's relative paths work regardless of the
+// launch directory; it falls back to the path as-given (launch-dir relative) for projects
+// that reference assets relative to the repo root. Absolute paths are used unchanged.
+fn (app &App) resolve_asset(path string) string {
+	if path == '' || os.is_abs_path(path) {
+		return path
+	}
+	near := os.join_path(os.dir(app.proj_path), path)
+	if os.exists(near) {
+		return near
+	}
+	return path
+}
+
 fn (mut app App) set_project(proj project.Project, path string) {
 	app.mu.lock()
 	app.trace = []
@@ -903,14 +918,15 @@ fn (mut app App) rebuild_from_proj() {
 			enabled:      ch.enabled
 		}
 		for dbpath in ch.databases {
-			if db := candb.load_dbc_file(dbpath) {
+			rp := app.resolve_asset(dbpath)
+			if db := candb.load_dbc_file(rp) {
 				app.dbs << db
 			} else {
-				eprintln('dbc ${dbpath}: ${err}')
+				eprintln('dbc ${rp}: ${err}')
 			}
 		}
 		if ch.manifest != '' && !app.has_manifest {
-			if m := telem.load_manifest(ch.manifest) {
+			if m := telem.load_manifest(app.resolve_asset(ch.manifest)) {
 				app.manifest = m
 				app.has_manifest = true
 			}
@@ -3789,6 +3805,14 @@ fn (mut app App) set_trace_status(s string) {
 	app.mu.unlock()
 }
 
+// set_trace_state updates the Record toggle + status under the mutex (shared with the worker).
+fn (mut app App) set_trace_state(recording bool, s string) {
+	app.mu.lock()
+	app.trace_recording = recording
+	app.trace_status = s
+	app.mu.unlock()
+}
+
 // mask_popcount counts the cores a dump mask selects (a 0 mask means the single core 0).
 fn mask_popcount(mask u16) int {
 	if mask == 0 {
@@ -3988,21 +4012,25 @@ fn draw_tchart(mut app App, trecs []TRec) {
 		return
 	}
 	// Capture control: Record arms the target's ring (op_arm), Stop freezes it (op_stop),
-	// Dump reads the frozen buffer out over ISO-TP into the swimlane.
-	if app.trace_busy {
+	// Dump reads the frozen buffer out over ISO-TP into the swimlane. Snapshot the worker-
+	// shared state under the mutex (trace_dump_worker writes it from its thread).
+	app.mu.lock()
+	busy := app.trace_busy
+	recording := app.trace_recording
+	status := app.trace_status
+	app.mu.unlock()
+	if busy {
 		vgui.text_dim('dumping…')
 	} else if app.running {
-		if app.trace_recording {
+		if recording {
 			if vgui.button('Stop##trace') {
 				app.send_trace_cmd(telem.op_stop)
-				app.trace_recording = false
-				app.trace_status = 'recording stopped (frozen)'
+				app.set_trace_state(false, 'recording stopped (frozen)')
 			}
 		} else {
 			if vgui.button('Record##trace') {
 				if app.send_trace_cmd(telem.op_arm) {
-					app.trace_recording = true
-					app.trace_status = 'recording…'
+					app.set_trace_state(true, 'recording…')
 				}
 			}
 		}
@@ -4015,8 +4043,8 @@ fn draw_tchart(mut app App, trecs []TRec) {
 	} else {
 		vgui.text_dim('Start a channel, then Record / Dump')
 	}
-	if app.trace_status != '' {
-		vgui.text_dim(app.trace_status)
+	if status != '' {
+		vgui.text_dim(status)
 	}
 	labels, bars, span := build_swimlane(app, trecs)
 	vgui.text('${trecs.len} records · ${labels.len} lanes · gaps = idle')
