@@ -3812,13 +3812,23 @@ fn (app &App) trace_iface() string {
 }
 
 // trace_core_mask builds a dump mask from the manifest's distinct cores, so "Dump" reads out
-// every core the target declares; 0 (the single receiving core) when there is no manifest.
+// every core the target declares. A single-core target uses mask 0 (the receiving/default
+// core in the core_mask contract) regardless of the core *label* the manifest gives it — a
+// single-core manifest that names its core "1" must still dump, not send 0x0002 to a core-0
+// target. Only a genuinely multi-core manifest sets per-core bits (bit i = core i).
 fn (app &App) trace_core_mask() u16 {
-	mut mask := u16(0)
+	mut seen := map[int]bool{}
 	for h in app.manifest.handlers {
 		if h.core >= 0 && h.core < 16 {
-			mask |= u16(1) << u16(h.core)
+			seen[h.core] = true
 		}
+	}
+	if seen.len <= 1 {
+		return 0 // no manifest, or a single core: the default receiving core
+	}
+	mut mask := u16(0)
+	for core, _ in seen {
+		mask |= u16(1) << u16(core)
 	}
 	return mask
 }
