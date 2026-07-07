@@ -1,21 +1,27 @@
 # Watch blobly_emb's trace_multicore capture in the Trace Chart swimlane.
 #
 # trace_multicore (blobly_emb/examples/trace_multicore) runs TWO simulated cores, each a
-# Loom scheduler with its own ring buffer, and reads them out on command over ISO-TP. Open
-# this project, Start the channel, then press "Dump" in the Trace Chart (≣): blobly_net
-# freezes both cores and dumps them in one command (core_mask), reassembles each per-core
-# ISO-TP block on 0x7E5 (flow control on 0x7E6), and draws the handler bars + thread-switch
-# marks — a multi-core swimlane. handler_id resolves via the manifest below.
+# Loom scheduler with its own ring buffer. It pushes a live HandlerStat heartbeat on 0x7E4
+# and reads its rings out on command over ISO-TP. Open this project, Start the channel, then
+# in the Trace Chart (≣): press Record to arm capture, Stop to freeze, and Dump to read both
+# cores out in one command (core_mask) — blobly_net reassembles each per-core ISO-TP block on
+# 0x7E5 (flow control on 0x7E6) and draws handler bars + thread-switch marks. Record/Stop/Dump
+# only pause RECORDING; the cores keep running. trace.dbc names the command + status frames.
 #
 # Run:  (in blobly_emb/examples/trace_multicore:  make vcan && make run)
 #       BLOBLY_PROJECT=projects/trace-multicore.blobnet ./scripts/run_vgui.sh
 project:
   name: trace-multicore
-  version: 1
+  version: 2
 
-channels:
+buses:
   - name: CAN1
-    type: can
-    interface: vcan0
+    adapter: vcan
+    address: vcan0
+    protocol: can
+    bitrate: 500000
     mode: monitor
+    enabled: true
     manifest: manifests/trace-multicore.csv
+    databases:
+      - dbc/trace.dbc

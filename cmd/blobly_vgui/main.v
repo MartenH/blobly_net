@@ -174,8 +174,9 @@ mut:
 	diag_busy    bool
 	script_log   []string
 	script_busy  bool
-	trace_busy   bool   // a trace-dump transfer is in flight (single-flight guard)
-	trace_status string // last dump status line, shown by the Trace Chart
+	trace_busy      bool   // a trace-dump transfer is in flight (single-flight guard)
+	trace_recording bool   // Record toggle: the target's capture is armed (optimistic)
+	trace_status    string // last dump status line, shown by the Trace Chart
 }
 
 // SenderRT is a project sender bound to its channel iface (Generators panel).
@@ -3740,7 +3741,9 @@ fn trace_dump_worker(app &App, core_mask u16) {
 	defer {
 		ch.close()
 	}
-	// freeze, then dump the selected cores (one TraceCmd each on 0x7E2).
+	// Freeze each selected core's capture RING (op_stop) so it can be read out — the target
+	// refuses to dump a buffer that's still being written. This stops recording, NOT the
+	// core: handlers keep running. Then dump (op_dump).
 	a.tx_on(iface, transport.CanFrame{
 		id:   telem.id_trace_cmd
 		data: telem.encode_trace_cmd(telem.op_stop, telem.filter_all, core_mask)
@@ -3767,6 +3770,7 @@ fn trace_dump_worker(app &App, core_mask u16) {
 	a.mu.lock()
 	a.trecs = recs
 	a.rev++
+	a.trace_recording = false // the dump froze the buffer; Record re-arms for a new window
 	a.trace_status = 'dumped ${got}/${nblocks} core block(s) · ${recs.len} records'
 	a.mu.unlock()
 	a.trace_done()
@@ -3797,6 +3801,20 @@ fn mask_popcount(mask u16) int {
 		m >>= 1
 	}
 	return n
+}
+
+// send_trace_cmd fires one TraceCmd (arm/stop/reset) on the traced channel with the manifest
+// core mask — a fire-and-forget control frame (no ISO-TP), used by the Record/Stop buttons.
+fn (mut app App) send_trace_cmd(opcode u8) bool {
+	iface := app.trace_iface()
+	if iface == '' {
+		app.trace_status = 'no running channel'
+		return false
+	}
+	return app.tx_on(iface, transport.CanFrame{
+		id:   telem.id_trace_cmd
+		data: telem.encode_trace_cmd(opcode, telem.filter_all, app.trace_core_mask())
+	})
 }
 
 // trace_iface picks the channel to command the dump on: the running monitor channel that
@@ -3969,17 +3987,33 @@ fn draw_tchart(mut app App, trecs []TRec) {
 		vgui.end()
 		return
 	}
-	// Dump control: freeze the target's capture and read it out over ISO-TP.
+	// Capture control: Record arms the target's ring (op_arm), Stop freezes it (op_stop),
+	// Dump reads the frozen buffer out over ISO-TP into the swimlane.
 	if app.trace_busy {
 		vgui.text_dim('dumping…')
 	} else if app.running {
+		if app.trace_recording {
+			if vgui.button('Stop##trace') {
+				app.send_trace_cmd(telem.op_stop)
+				app.trace_recording = false
+				app.trace_status = 'recording stopped (frozen)'
+			}
+		} else {
+			if vgui.button('Record##trace') {
+				if app.send_trace_cmd(telem.op_arm) {
+					app.trace_recording = true
+					app.trace_status = 'recording…'
+				}
+			}
+		}
+		vgui.same_line()
 		if vgui.button('Dump##trace') {
 			spawn trace_dump_worker(app, app.trace_core_mask())
 		}
 		vgui.same_line()
-		vgui.text_dim('freeze + read the capture (all cores)')
+		vgui.text_dim('Record arms · Stop freezes · Dump reads out (all cores)')
 	} else {
-		vgui.text_dim('Start a channel, then Dump to capture')
+		vgui.text_dim('Start a channel, then Record / Dump')
 	}
 	if app.trace_status != '' {
 		vgui.text_dim(app.trace_status)

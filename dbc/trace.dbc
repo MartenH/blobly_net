@@ -1,0 +1,48 @@
+VERSION "blobly_emb runtime-observability control + telemetry (docs/telemetry.md)"
+
+NS_ :
+
+BS_:
+
+BU_: SUT Tester
+
+BO_ 2017 LoadDetail: 8 SUT
+ SG_ load_100ms : 0|8@1+ (1,0) [0|100] "%" Tester
+ SG_ load_1s : 8|8@1+ (1,0) [0|100] "%" Tester
+ SG_ load_10s : 16|8@1+ (1,0) [0|100] "%" Tester
+ SG_ overruns : 24|8@1+ (1,0) [0|255] "" Tester
+
+BO_ 2018 TraceCmd: 8 Tester
+ SG_ opcode : 0|8@1+ (1,0) [0|255] "" SUT
+ SG_ arg0 : 8|8@1+ (1,0) [0|255] "" SUT
+ SG_ period_ms : 16|16@1+ (1,0) [0|65535] "ms" SUT
+ SG_ handler_filter : 32|16@1+ (1,0) [0|65535] "" SUT
+ SG_ core_mask : 48|16@1+ (1,0) [0|65535] "" SUT
+
+BO_ 2019 TraceRsp: 8 SUT
+ SG_ opcode_echo : 0|8@1+ (1,0) [0|255] "" Tester
+ SG_ result : 8|8@1+ (1,0) [0|255] "" Tester
+ SG_ state : 16|8@1+ (1,0) [0|255] "" Tester
+ SG_ records_used : 24|16@1+ (1,0) [0|65535] "" Tester
+ SG_ capacity : 40|16@1+ (1,0) [0|65535] "" Tester
+ SG_ core : 56|8@1+ (1,0) [0|255] "" Tester
+
+BO_ 2020 HandlerStat: 8 SUT
+ SG_ handler_id : 0|8@1+ (1,0) [0|255] "" Tester
+ SG_ flags : 8|8@1+ (1,0) [0|255] "" Tester
+ SG_ last_us : 16|16@1+ (1,0) [0|65535] "us" Tester
+ SG_ max_us : 32|16@1+ (1,0) [0|65535] "us" Tester
+ SG_ count_delta : 48|16@1+ (1,0) [0|65535] "" Tester
+
+CM_ BO_ 2017 "One core's processor load over 100ms/1s/10s windows + per-period overrun count (0x7E1).";
+CM_ BO_ 2018 "Trace capture control, host -> target (0x7E2). Config cmd/rsp, NOT UDS.";
+CM_ BO_ 2019 "Trace capture ack + status, target -> host (0x7E3).";
+CM_ BO_ 2020 "Live per-handler stats push (0x7E4): response time (= CPU on a polled core), us.";
+CM_ SG_ 2018 opcode "1 arm | 2 start | 3 stop | 4 reset | 5 set_push | 6 dump | 7 status";
+CM_ SG_ 2018 core_mask "bit i selects core i; 0 = the receiving/default core (single-core target)";
+CM_ SG_ 2018 handler_filter "0xFFFF = all handlers, else a single handler_id";
+
+VAL_ 2018 opcode 1 "arm" 2 "start" 3 "stop" 4 "reset" 5 "set_push" 6 "dump" 7 "status" ;
+VAL_ 2019 opcode_echo 1 "arm" 2 "start" 3 "stop" 4 "reset" 5 "set_push" 6 "dump" 7 "status" ;
+VAL_ 2019 result 0 "ok" 1 "bad_opcode" 2 "unsupported" 3 "not_ready" 4 "busy" ;
+VAL_ 2019 state 0 "idle" 1 "capturing" 2 "full" 3 "frozen" ;

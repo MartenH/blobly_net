@@ -1,21 +1,27 @@
 # Watch blobly_emb's trace_demo handler-runtime tracing on vcan0.
 #
-# The trace_demo example (blobly_emb/examples/trace_demo) runs 3 handlers on one Loom
-# and emits HandlerStat (0x7E4) live stats + captured Record (0x7E5) frames over CAN.
-# blobly_net decodes them into the Trace Chart panel (≣) — a TRACE32 trace.chart.tasks
-# -style swimlane of who ran when — resolving handler_id via the manifest below.
+# The trace_demo example (blobly_emb/examples/trace_demo) runs 3 handlers on one Loom. It
+# pushes a live HandlerStat heartbeat on 0x7E4 and captures a flight-recorder ring it reads
+# out on command over ISO-TP. Open this project, Start the channel, then in the Trace Chart
+# (≣): press Record to arm capture, Stop to freeze, Dump to read it out — a TRACE32
+# trace.chart.tasks-style swimlane of who ran when, resolving handler_id via the manifest.
+# (Record/Stop/Dump pause RECORDING, not the core — handlers keep running.) trace.dbc names
+# the command + status frames.
 #
 # Run:  (in blobly_emb/examples/trace_demo:  make vcan && make run)
-#       BLOBLY_PROJECT=projects/trace-demo.blobnet ./scripts/run.sh   -> open the ≣ panel
+#       BLOBLY_PROJECT=projects/trace-demo.blobnet ./scripts/run_vgui.sh   -> open the ≣ panel
 project:
   name: trace-demo
-  version: 1
+  version: 2
 
-channels:
+buses:
   - name: CAN1
-    type: can
-    interface: vcan0
+    adapter: vcan
+    address: vcan0
+    protocol: can
+    bitrate: 500000
     mode: monitor
+    enabled: true
     manifest: manifests/trace-demo.csv
     databases:
-      - dbc/cpuload.dbc
+      - dbc/trace.dbc
