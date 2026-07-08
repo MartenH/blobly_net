@@ -13,6 +13,11 @@ module isotp
 import time
 import transport
 
+// Post-error rx flush bounds: after a failed reassembly, drain queued frames until this quiet
+// window elapses (no frame), capped at one over-long transfer's worth of frames. See flush_rx.
+const flush_quiet_ms = 30
+const flush_max_frames = max_pdu / 7 + 2
+
 pub struct SoftChannel {
 pub:
 	iface string
@@ -102,9 +107,11 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 				continue // empty/padding read — ignore
 			}
 			if (cf[0] & 0xF0) != 0x20 {
+				c.flush_rx() // discard the aborted transfer's tail so a reused channel resyncs
 				return error('ISO-TP: expected Consecutive Frame, got PCI 0x${cf[0]:02X} mid-reassembly (a frame was lost)')
 			}
 			if (cf[0] & 0x0F) != sn {
+				c.flush_rx()
 				return error('ISO-TP: CF sequence gap — got SN ${cf[0] & 0x0F}, expected ${sn} (a frame was lost)')
 			}
 			sn = (sn + 1) & 0x0F
@@ -146,4 +153,15 @@ fn (mut c SoftChannel) rx_raw(timeout_ms int) ![]u8 {
 		}
 	}
 	return error('timeout')
+}
+
+// flush_rx drains any rx-id frames still queued after a failed reassembly, so a REUSED channel
+// (e.g. a persistent UDS/script connection) starts the next recv() clean on the next message's
+// First Frame rather than a stale Consecutive Frame left over from the aborted transfer — which
+// would otherwise re-desync the channel with the same "unexpected PCI" the SN check just caught.
+// Bounded: stops after a quiet window (no frame within flush_quiet_ms) or the frame cap.
+fn (mut c SoftChannel) flush_rx() {
+	for _ in 0 .. flush_max_frames {
+		c.rx_raw(flush_quiet_ms) or { return } // nothing more queued within the quiet window
+	}
 }
