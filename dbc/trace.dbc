@@ -22,7 +22,8 @@ BO_ 2018 TraceCmd: 8 Tester
 BO_ 2019 TraceRsp: 8 SUT
  SG_ opcode_echo : 0|8@1+ (1,0) [0|255] "" Tester
  SG_ result : 8|8@1+ (1,0) [0|255] "" Tester
- SG_ state : 16|8@1+ (1,0) [0|255] "" Tester
+ SG_ state : 16|4@1+ (1,0) [0|15] "" Tester
+ SG_ cause : 20|4@1+ (1,0) [0|15] "" Tester
  SG_ records_used : 24|16@1+ (1,0) [0|65535] "" Tester
  SG_ capacity : 40|16@1+ (1,0) [0|65535] "" Tester
  SG_ core : 56|8@1+ (1,0) [0|255] "" Tester
@@ -46,3 +47,4 @@ VAL_ 2018 opcode 1 "arm" 2 "start" 3 "stop" 4 "reset" 5 "set_push" 6 "dump" 7 "s
 VAL_ 2019 opcode_echo 1 "arm" 2 "start" 3 "stop" 4 "reset" 5 "set_push" 6 "dump" 7 "status" ;
 VAL_ 2019 result 0 "ok" 1 "bad_opcode" 2 "unsupported" 3 "not_ready" 4 "busy" ;
 VAL_ 2019 state 0 "idle" 1 "capturing" 2 "full" 3 "frozen" ;
+VAL_ 2019 cause 0 "none" 1 "stop" 2 "trigger" ;

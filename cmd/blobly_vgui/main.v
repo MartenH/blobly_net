@@ -4222,8 +4222,10 @@ fn trace_dump_worker(app &App, core_mask u16) {
 	f := a.manifest.frames.or_defaults()
 	// the host is the ISO-TP receiver: it sends flow control on dump_fc and receives the dump
 	// data on record (open before commanding, so the socket buffers the target's first frame).
+	// ISO-TP addressing must match the frame width — a 29-bit trace id would otherwise be masked
+	// to 11 bits by SocketCAN and the target would never answer.
 	mut ch := isotp.open_software(a.bitrate_iface(iface), f.dump_fc, f.record,
-		false) or {
+		trace_ext(f.record)) or {
 		a.set_trace_status('dump: open ${iface}: ${err}')
 		a.trace_done()
 		return
@@ -4231,16 +4233,19 @@ fn trace_dump_worker(app &App, core_mask u16) {
 	defer {
 		ch.close()
 	}
+	cmd_ext := trace_ext(f.cmd)
 	// Freeze each selected core's capture RING (op_stop) so it can be read out — the target
 	// refuses to dump a buffer that's still being written. This stops recording, NOT the
 	// core: handlers keep running. Then dump (op_dump).
 	a.tx_on(iface, transport.CanFrame{
-		id:   f.cmd
-		data: telem.encode_trace_cmd(telem.op_stop, telem.filter_all, core_mask)
+		id:       f.cmd
+		extended: cmd_ext
+		data:     telem.encode_trace_cmd(telem.op_stop, telem.filter_all, core_mask)
 	})
 	a.tx_on(iface, transport.CanFrame{
-		id:   f.cmd
-		data: telem.encode_trace_cmd(telem.op_dump, telem.filter_all, core_mask)
+		id:       f.cmd
+		extended: cmd_ext
+		data:     telem.encode_trace_cmd(telem.op_dump, telem.filter_all, core_mask)
 	})
 	// a multi-core dump streams one self-describing block per selected core.
 	nblocks := mask_popcount(core_mask)
@@ -4342,9 +4347,17 @@ fn (mut app App) send_trace_cmd(opcode u8) bool {
 	}
 	f := app.manifest.frames.or_defaults() // config-driven cmd id (falls back to the default)
 	return app.tx_on(iface, transport.CanFrame{
-		id:   f.cmd
-		data: telem.encode_trace_cmd(opcode, telem.filter_all, app.trace_core_mask())
+		id:       f.cmd
+		extended: trace_ext(f.cmd) // 29-bit ids must go out extended, else SocketCAN masks them
+		data:     telem.encode_trace_cmd(opcode, telem.filter_all, app.trace_core_mask())
 	})
+}
+
+// trace_ext infers the CAN addressing width of a trace frame id: any id above the 11-bit standard
+// range (0x7FF) must be sent/received as a 29-bit extended id. loom2v writes literal ids to the
+// manifest without an explicit width, so we infer it here (matches how a target opens the bus).
+fn trace_ext(id u32) bool {
+	return id > 0x7ff
 }
 
 // trace_iface picks the channel to command the dump on: the running monitor channel that

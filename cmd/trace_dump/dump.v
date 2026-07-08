@@ -34,8 +34,10 @@ fn main() {
 	}
 
 	// host = ISO-TP receiver: send flow control on dump_fc, receive dump data on record. Open
-	// first so the socket buffers the target's first frame before we command the dump.
-	mut ch := isotp.open_software(iface, f.dump_fc, f.record, false) or {
+	// first so the socket buffers the target's first frame before we command the dump. A 29-bit
+	// trace id (> 0x7FF) must use extended addressing, else SocketCAN masks it to 11 bits.
+	cmd_ext := f.cmd > 0x7ff
+	mut ch := isotp.open_software(iface, f.dump_fc, f.record, f.record > 0x7ff) or {
 		eprintln('open isotp on ${iface}: ${err}')
 		return
 	}
@@ -45,12 +47,14 @@ fn main() {
 	}
 	// freeze then dump the selected cores (one TraceCmd each on the cmd id).
 	bus.send(transport.CanFrame{
-		id:   f.cmd
-		data: telem.encode_trace_cmd(telem.op_stop, telem.filter_all, mask)
+		id:       f.cmd
+		extended: cmd_ext
+		data:     telem.encode_trace_cmd(telem.op_stop, telem.filter_all, mask)
 	}) or {}
 	bus.send(transport.CanFrame{
-		id:   f.cmd
-		data: telem.encode_trace_cmd(telem.op_dump, telem.filter_all, mask)
+		id:       f.cmd
+		extended: cmd_ext
+		data:     telem.encode_trace_cmd(telem.op_dump, telem.filter_all, mask)
 	}) or {}
 
 	nblocks := mask_popcount(mask)
