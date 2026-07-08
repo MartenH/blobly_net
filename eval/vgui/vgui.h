@@ -20,7 +20,8 @@ void vgui_set_theme(int dark);
 void vgui_set_font_scale(float s);
 void vgui_dump_ppm(const char* path);
 void vgui_swimlane(const char* id, int n_lanes, const char** lane_labels,
-                   const VBar* bars, int n_bars, float full_span_us);
+                   const VBar* bars, int n_bars, float full_span_us,
+                   double* cursor_a, double* cursor_b);
 void vgui_set_next_window(float,float,float,float);
 void vgui_set_window_focus(const char*);
 void vgui_indent_x(float w);

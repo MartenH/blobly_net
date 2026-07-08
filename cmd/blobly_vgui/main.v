@@ -184,6 +184,9 @@ mut:
 	trace_recording bool   // Record toggle: the target's capture is armed (optimistic)
 	trace_status    string // last dump status line, shown by the Trace Chart
 	trace_freeze    string // last TraceRsp state/cause (why it froze: trigger vs stop), from rx_loop
+	cursor_a        f64    // Trace Chart measurement markers A/B (µs); the swimlane drags them
+	cursor_b        f64
+	cursor_span     f64 // the span the cursors were placed for — re-seat A/B when a new dump loads
 }
 
 // SenderRT is a project sender bound to its channel iface (Generators panel).
@@ -4548,11 +4551,24 @@ fn draw_tchart(mut app App, trecs []TRec) {
 	}
 	labels, bars, span := build_swimlane(app, trecs)
 	vgui.text('${trecs.len} records · ${labels.len} lanes · gaps = idle')
-	vgui.text_dim('drag = pan · scroll = zoom · double-click = fit')
+	vgui.text_dim('drag = pan · scroll = zoom · double-click = fit · A/B keys or drag the markers to measure')
 	if bars.len > 0 {
-		vgui.swimlane('##swim', labels, bars, span)
+		// re-seat the A/B markers into view whenever a new dump (different span) loads.
+		if app.cursor_span != f64(span) {
+			app.cursor_span = f64(span)
+			app.cursor_a = f64(span) * 0.25
+			app.cursor_b = f64(span) * 0.75
+		}
+		vgui.swimlane('##swim', labels, bars, span, &app.cursor_a, &app.cursor_b)
+		d := if app.cursor_b > app.cursor_a { app.cursor_b - app.cursor_a } else { app.cursor_a - app.cursor_b }
+		vgui.text('A ${app.cursor_a:.0f} us    B ${app.cursor_b:.0f} us    Δ ${d:.0f} us (${d / 1000:.3f} ms)')
+		vgui.same_line()
+		if vgui.button('Clear markers') {
+			app.cursor_a = f64(span) * 0.25
+			app.cursor_b = f64(span) * 0.75
+		}
 	} else {
-		vgui.text_dim('press Dump to capture (handler bars + thread-switch marks appear here)')
+		vgui.text_dim('press Dump to capture (handler bars + thread/idle lanes appear here)')
 	}
 	vgui.end()
 }
