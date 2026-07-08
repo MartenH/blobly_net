@@ -48,6 +48,7 @@ struct TraceRow {
 
 struct TRec {
 	ch     int
+	core   int // the block's core (from its header) — authoritative for lane grouping (esp. idle)
 	abs_us u32 // start_us folded across epoch re-anchors (µs from the first epoch base)
 	rec    telem.Record
 }
@@ -4233,10 +4234,12 @@ fn trace_dump_worker(app &App, core_mask u16) {
 		block := ch.recv(400) or { break } // no more blocks (timed out)
 		got++
 		mut base := u32(0) // current epoch origin; each block re-anchors from its own epoch record
+		mut cur_core := 0  // the block's core, from its leading header (idle/threads carry no core)
 		for off := 0; off + 8 <= block.len; off += 8 {
 			r := telem.decode_record(block[off..off + 8])
 			if r.is_block_header() {
-				continue // per-core framing, not a timeline record
+				cur_core = int(r.header_core()) // tag this block's records with their core
+				continue                        // framing, not a timeline record
 			}
 			if r.is_epoch() {
 				base = r.epoch_base() // subsequent start_us are relative to this base
@@ -4244,6 +4247,7 @@ fn trace_dump_worker(app &App, core_mask u16) {
 			}
 			recs << TRec{
 				ch:     0
+				core:   cur_core
 				abs_us: base + r.start_us
 				rec:    r
 			}
@@ -4536,14 +4540,7 @@ fn handler_core(app &App, id u8) int {
 	return -1
 }
 
-fn thread_core(app &App, id u8) int {
-	if id in app.manifest.by_tid {
-		return app.manifest.by_tid[id].core
-	}
-	return -1
-}
-
-// fb_label / thread_lane_label prefix the name with its core (c0/c1…) so a lane shows which
+// fb_label prefixes the handler name with its core (c0/c1…) so a lane shows which
 // core it belongs to.
 fn fb_label(app &App, id u8) string {
 	c := handler_core(app, id)
@@ -4551,24 +4548,35 @@ fn fb_label(app &App, id u8) string {
 	return if c >= 0 { 'c${c}  ${base}' } else { base }
 }
 
-fn thread_lane_label(app &App, id u8) string {
-	c := thread_core(app, id)
-	base := app.manifest.thread_label(id)
-	return if c >= 0 { 'c${c}  ${base}' } else { base }
+// split_lane_key splits a '<core>:<id>' thread/isr lane key back into its parts.
+fn split_lane_key(k string) (int, u16) {
+	parts := k.split(':')
+	if parts.len != 2 {
+		return 0, 0
+	}
+	return parts[0].int(), u16(parts[1].int())
+}
+
+// thread_core_label labels a THREAD lane, prefixed with its (block) core. id 0 is idle (no
+// manifest row); a real thread resolves its name from the manifest, else "thread N".
+fn thread_core_label(app &App, core int, id u16) string {
+	base := if id == 0 { 'idle' } else { app.manifest.thread_label(u8(id)) }
+	return 'c${core}  ${base}'
 }
 
 fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
 	if trecs.len == 0 {
 		return []string{}, []vgui.Bar{}, f32(1)
 	}
-	// distinct ids per kind, first-seen: FB (handler) runs, THREAD runs, ISR runs. Each kind's
-	// id space is separate (fb=handler id, thread=thread id, isr=vector), so keep three lists.
+	// distinct lanes, first-seen. FB handler ids are globally unique; THREAD and ISR lanes are
+	// keyed by (block core, id) — via TRec.core from the block header — so each core's idle (id 0,
+	// shared across cores) and per-core ISR vectors get their own lane rather than merging.
 	mut hids := []u16{}
-	mut tids := []u16{}
-	mut iids := []u16{}
 	mut sh := map[u16]bool{}
-	mut stt := map[u16]bool{}
-	mut si := map[u16]bool{}
+	mut tkeys := []string{} // '<core>:<id>' for THREAD (incl. idle id 0)
+	mut tseen := map[string]bool{}
+	mut ikeys := []string{} // '<core>:<id>' for ISR
+	mut iseen := map[string]bool{}
 	for tr in trecs {
 		r := tr.rec
 		if r.kind() == telem.kind_fb {
@@ -4577,20 +4585,22 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
 				hids << r.id()
 			}
 		} else if r.kind() == telem.kind_thread {
-			if r.id() !in stt {
-				stt[r.id()] = true
-				tids << r.id()
+			k := '${tr.core}:${r.id()}'
+			if k !in tseen {
+				tseen[k] = true
+				tkeys << k
 			}
 		} else if r.kind() == telem.kind_isr {
-			if r.id() !in si {
-				si[r.id()] = true
-				iids << r.id()
+			k := '${tr.core}:${r.id()}'
+			if k !in iseen {
+				iseen[k] = true
+				ikeys << k
 			}
 		}
 	}
-	// lay lanes out grouped by core: FB (handler) lanes first, ordered by core, then a
-	// separator + thread lanes by core, then a separator + ISR lanes. So you can see which core
-	// each belongs to, and the FB / thread / interrupt traces are visually split.
+	// lay lanes out grouped by core: FB (handler) lanes first (by core), then a separator + thread
+	// lanes (by core; real threads before idle within a core), then a separator + ISR lanes. So
+	// each core's fb / thread / interrupt traces are visually grouped and split.
 	mut lane_of := map[string]int{}
 	mut labels := []string{}
 	for core in 0 .. 16 {
@@ -4607,28 +4617,32 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
 			labels << fb_label(app, u8(id))
 		}
 	}
-	if tids.len > 0 {
+	if tkeys.len > 0 {
 		labels << '──  threads  ──' // separator lane (no bars)
-		for core in 0 .. 16 {
-			for id in tids {
-				if thread_core(app, u8(id)) == core && 't${id}' !in lane_of {
-					lane_of['t${id}'] = labels.len
-					labels << thread_lane_label(app, u8(id))
+		for pass in 0 .. 2 { // pass 0 = real threads, pass 1 = idle (id 0) — idle at each core's foot
+			for core in 0 .. 16 {
+				for k in tkeys {
+					kc, kid := split_lane_key(k)
+					idle := kid == 0
+					if kc == core && ((pass == 0 && !idle) || (pass == 1 && idle))
+						&& 't${k}' !in lane_of {
+						lane_of['t${k}'] = labels.len
+						labels << thread_core_label(app, kc, kid)
+					}
 				}
 			}
 		}
-		for id in tids {
-			if 't${id}' !in lane_of {
-				lane_of['t${id}'] = labels.len
-				labels << thread_lane_label(app, u8(id))
-			}
-		}
 	}
-	if iids.len > 0 {
+	if ikeys.len > 0 {
 		labels << '──  interrupts  ──' // separator lane (no bars)
-		for id in iids {
-			lane_of['i${id}'] = labels.len
-			labels << 'isr ${id}'
+		for core in 0 .. 16 {
+			for k in ikeys {
+				kc, kid := split_lane_key(k)
+				if kc == core && 'i${k}' !in lane_of {
+					lane_of['i${k}'] = labels.len
+					labels << 'c${kc}  isr ${kid}'
+				}
+			}
 		}
 	}
 	// time span over every interval record (abs_us folds epoch re-anchors; every kind has width).
@@ -4652,23 +4666,18 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
 	for tr in trecs {
 		r := tr.rec
 		mut key := ''
-		mut core := -1
 		if r.kind() == telem.kind_fb {
 			key = 'h${r.id()}'
-			core = handler_core(app, u8(r.id()))
 		} else if r.kind() == telem.kind_thread {
-			key = 't${r.id()}'
-			core = thread_core(app, u8(r.id()))
+			key = 't${tr.core}:${r.id()}'
 		} else if r.kind() == telem.kind_isr {
-			key = 'i${r.id()}'
+			key = 'i${tr.core}:${r.id()}'
 		} else {
 			continue // CONTROL framing — no bar
 		}
 		li := lane_of[key]
-		// colour by core (so cores are visually distinct); fall back to per-lane colour when
-		// there's no manifest to group by.
-		ci := if core >= 0 { core } else { li }
-		c := lane_palette[ci % lane_palette.len]
+		// colour by (block) core so cores are visually distinct.
+		c := lane_palette[tr.core % lane_palette.len]
 		// FB warn = overran/saturated; preempted marker = an FB flagged preempted OR a thread
 		// that was preempted out (reason). info means flags for FB, reason for THREAD.
 		warn := if r.kind() == telem.kind_fb && (r.flags() & (telem.flag_overran | telem.flag_saturated)) != 0 {
