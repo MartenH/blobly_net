@@ -4551,7 +4551,7 @@ fn draw_tchart(mut app App, trecs []TRec) {
 	}
 	labels, bars, span := build_swimlane(app, trecs)
 	vgui.text('${trecs.len} records · ${labels.len} lanes · gaps = idle')
-	vgui.text_dim('drag = pan · scroll = zoom · double-click = fit · A/B keys or drag the markers to measure')
+	vgui.text_dim('drag = pan · scroll = zoom · double-click = fit · A/B keys or drag markers (snap to edges; Alt = free) · hover a bar + M = measure it')
 	if bars.len > 0 {
 		// re-seat the A/B markers into view whenever a new dump (different span) loads.
 		if app.cursor_span != f64(span) {

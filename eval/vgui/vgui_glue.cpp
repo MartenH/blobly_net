@@ -592,6 +592,22 @@ int vgui_key_pressed(int ch) {
     return ImGui::IsKeyPressed(k, false) ? 1 : 0;
 }
 
+// snap_to_edge magnetically pulls a marker time `t` to the nearest bar edge (start or end) when
+// it's within `px` screen pixels — so measurements land on exact interval boundaries. Returns `t`
+// unchanged when nothing is close (free positioning away from edges). Must run inside a plot.
+static double snap_to_edge(double t, const VBar* bars, int n_bars, double px) {
+    double best = t, best_px = px;
+    float tx = ImPlot::PlotToPixels(t, 0.0).x;
+    for (int k = 0; k < n_bars; k++) {
+        double edges[2] = { (double)bars[k].t0, (double)(bars[k].t0 + bars[k].dur) };
+        for (int e = 0; e < 2; e++) {
+            double dpx = fabs(ImPlot::PlotToPixels(edges[e], 0.0).x - tx);
+            if (dpx < best_px) { best_px = dpx; best = edges[e]; }
+        }
+    }
+    return best;
+}
+
 // vgui_swimlane draws a handler/task gantt as an ImPlot plot: X = time (µs), Y = lanes.
 // ImPlot gives native pan (drag), zoom (scroll/box), and a time axis for free — replacing
 // the hand-rolled zoom buttons + scrollbar. Bars are drawn into the plot's draw list in
@@ -656,6 +672,12 @@ void vgui_swimlane(const char* plot_id, int n_lanes, const char** lane_labels,
         ImPlot::DragLineX(1001, cursor_a, colA, 1.5f);
         ImPlot::DragLineX(1002, cursor_b, colB, 1.5f);
 
+        // magnetic snap to bar edges (exact interval/period boundaries); hold Alt to place freely.
+        if (!ImGui::GetIO().KeyAlt) {
+            *cursor_a = snap_to_edge(*cursor_a, bars, n_bars, 8.0);
+            *cursor_b = snap_to_edge(*cursor_b, bars, n_bars, 8.0);
+        }
+
         // shade the measured span and tag A, B, and the delta
         double lo = *cursor_a < *cursor_b ? *cursor_a : *cursor_b;
         double hi = *cursor_a < *cursor_b ? *cursor_b : *cursor_a;
@@ -675,11 +697,24 @@ void vgui_swimlane(const char* plot_id, int n_lanes, const char** lane_labels,
                 const VBar& bar = bars[k];
                 if (mp.x >= bar.t0 && mp.x <= bar.t0 + bar.dur &&
                     mp.y >= bar.lane + 0.12 && mp.y <= bar.lane + 0.88) {
+                    // period = start-to-start of the previous bar on this same lane, if any.
+                    double prev_t0 = -1.0;
+                    for (int j = 0; j < n_bars; j++)
+                        if (bars[j].lane == bar.lane && bars[j].t0 < bar.t0 && bars[j].t0 > prev_t0)
+                            prev_t0 = bars[j].t0;
                     ImGui::BeginTooltip();
                     ImGui::TextUnformatted(bar.lane < n_lanes ? lane_labels[bar.lane] : "?");
                     ImGui::Text("start %.0f us   dur %.0f us", (double)bar.t0, (double)bar.dur);
+                    if (prev_t0 >= 0.0)
+                        ImGui::Text("period (since prev on lane): %.0f us", (double)bar.t0 - prev_t0);
                     if (bar.warn) ImGui::TextColored(ImVec4(0.95f, 0.35f, 0.35f, 1.0f), "OVERRAN (trigger)");
+                    ImGui::TextDisabled("m = measure this bar (A=start, B=end)");
                     ImGui::EndTooltip();
+                    // m measures this bar's exact span into the A/B markers.
+                    if (ImGui::IsKeyPressed(ImGuiKey_M, false)) {
+                        *cursor_a = bar.t0;
+                        *cursor_b = bar.t0 + bar.dur;
+                    }
                     break;
                 }
             }
