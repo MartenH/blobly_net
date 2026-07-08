@@ -17,7 +17,7 @@ import os
 // Handler is one row of the manifest.
 pub struct Handler {
 pub:
-	id        u8
+	id        u16 // the record entity id is 14-bit, so handler ids span 0..16383 (not just a byte)
 	partition string
 	core      int
 	fb        string
@@ -34,7 +34,7 @@ pub fn (h Handler) name() string {
 // whose from/to ids reference these. A separate id space from handlers.
 pub struct Thread {
 pub:
-	id   u8
+	id   u16 // 14-bit entity id space, same as handlers
 	name string
 	core int
 }
@@ -72,8 +72,8 @@ pub:
 	threads  []Thread
 	frames   TraceFrames // the `# trace frames` ids (zero-filled -> or_defaults())
 pub mut:
-	by_id  map[u8]Handler // built by index()
-	by_tid map[u8]Thread  // built by index()
+	by_id  map[u16]Handler // built by index()
+	by_tid map[u16]Thread  // built by index()
 }
 
 // load_manifest reads + parses a manifest .csv file.
@@ -86,8 +86,8 @@ pub fn parse_manifest(text string) !Manifest {
 	mut handlers := []Handler{}
 	mut threads := []Thread{}
 	mut frames := TraceFrames{}
-	mut seen := map[u8]bool{}
-	mut seen_tid := map[u8]bool{}
+	mut seen := map[u16]bool{}
+	mut seen_tid := map[u16]bool{}
 	// The manifest is sectioned by `#` header comments (`# fb.handlers:`, `# threads:`,
 	// `# trace frames:`). Handler/thread rows self-identify by shape, but a trace-frame row
 	// (`cmd,0x7e2,can0`) looks like a malformed handler row, so track the section to route it.
@@ -132,10 +132,10 @@ pub fn parse_manifest(text string) !Manifest {
 			if cols.len < 4 {
 				return error('manifest thread row needs 4 columns (thread,id,name,core): "${line}"')
 			}
-			if !is_digits(cols[1]) || cols[1].int() > 255 {
-				return error('manifest thread id is not a 0..255 number: "${cols[1]}"')
+			if !is_digits(cols[1]) || cols[1].int() > 16383 {
+				return error('manifest thread id is not a 0..16383 number: "${cols[1]}"')
 			}
-			tid := u8(cols[1].int())
+			tid := u16(cols[1].int())
 			if tid in seen_tid {
 				return error('manifest has a duplicate thread id: ${tid}')
 			}
@@ -156,17 +156,17 @@ pub fn parse_manifest(text string) !Manifest {
 		if cols[0].to_lower() == 'id' {
 			continue // header row
 		}
-		// The wire id is one byte and its uniqueness is the manifest's contract — reject a
-		// non-numeric / out-of-range / duplicate id rather than let u8() silently wrap it
-		// (256 -> 0, -1 -> 255) and mislabel every record of the collided handler.
+		// The wire id is a 14-bit entity id and its uniqueness is the manifest's contract — reject
+		// a non-numeric / out-of-range / duplicate id rather than let a cast silently wrap it and
+		// mislabel every record of the collided handler.
 		if !is_digits(cols[0]) {
 			return error('manifest handler id is not a number: "${cols[0]}"')
 		}
 		idnum := cols[0].int()
-		if idnum > 255 {
-			return error('manifest handler id out of range 0..255: ${idnum}')
+		if idnum > 16383 {
+			return error('manifest handler id out of range 0..16383: ${idnum}')
 		}
-		id := u8(idnum)
+		id := u16(idnum)
 		if id in seen {
 			return error('manifest has a duplicate handler id: ${id}')
 		}
@@ -243,11 +243,11 @@ fn is_digits(s string) bool {
 
 // index (re)builds the by_id / by_tid lookups — call after mutating handlers/threads.
 pub fn (mut m Manifest) index() {
-	m.by_id = map[u8]Handler{}
+	m.by_id = map[u16]Handler{}
 	for h in m.handlers {
 		m.by_id[h.id] = h
 	}
-	m.by_tid = map[u8]Thread{}
+	m.by_tid = map[u16]Thread{}
 	for t in m.threads {
 		m.by_tid[t.id] = t
 	}
@@ -255,7 +255,7 @@ pub fn (mut m Manifest) index() {
 
 // thread_label resolves a thread_id to a display name, synthesising "thread N" when unknown
 // (so an unlabelled or mismatched thread still gets a lane rather than crashing a view).
-pub fn (m &Manifest) thread_label(id u8) string {
+pub fn (m &Manifest) thread_label(id u16) string {
 	if t := m.by_tid[id] {
 		if t.name != '' {
 			return t.name
@@ -266,12 +266,12 @@ pub fn (m &Manifest) thread_label(id u8) string {
 
 // lookup resolves a handler_id; returns none for ids not in the manifest so the caller
 // can fall back to a synthetic label (a target/manifest mismatch shouldn't crash a view).
-pub fn (m &Manifest) lookup(id u8) ?Handler {
+pub fn (m &Manifest) lookup(id u16) ?Handler {
 	return m.by_id[id] or { return none }
 }
 
 // label resolves a handler_id to a display name, synthesising "handler N" when unknown.
-pub fn (m &Manifest) label(id u8) string {
+pub fn (m &Manifest) label(id u16) string {
 	if h := m.lookup(id) {
 		return h.name()
 	}
