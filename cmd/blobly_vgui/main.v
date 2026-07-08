@@ -49,7 +49,7 @@ struct TraceRow {
 struct TRec {
 	ch     int
 	core   int // the block's core (from its header) — authoritative for lane grouping (esp. idle)
-	abs_us u32 // start_us folded across epoch re-anchors (µs from the first epoch base)
+	abs_us u64 // start_us folded across epoch re-anchors (µs; u64 so a long capture can't wrap)
 	rec    telem.Record
 }
 
@@ -747,6 +747,9 @@ fn rx_loop(app &App, ci int, iface string) {
 	}
 	mut a := unsafe { app }
 	chname := a.chans[ci].name
+	// the TraceRsp id is config-static (the manifest is only mutated while stopped, so it can't
+	// change under a running RX loop) — resolve it once, not per frame in the hot path.
+	rsp_id := a.manifest.frames.or_defaults().rsp
 	for a.running && a.chans[ci].enabled {
 		// track the real link state so a bound-but-DOWN iface shows "down" (red), not "run",
 		// and flips to green the moment the user brings it up (ip link set … up).
@@ -770,11 +773,12 @@ fn rx_loop(app &App, ci int, iface string) {
 			// The capture dump now arrives as an ISO-TP block on 0x7E5 (not raw per-record
 			// frames): trace_dump_worker reassembles + decodes it on demand. The raw ISO-TP
 			// frames still show in the trace table above.
-			// A TraceRsp (per core) reports the capture state + freeze CAUSE — the only way to
-			// tell a trigger-frozen dump from a manual stop (the swimlane can't show that alone).
-			if f.id == a.manifest.frames.or_defaults().rsp && f.data.len >= 8 {
-				a.trace_freeze = trace_rsp_status(telem.decode_trace_rsp(f.data))
-			}
+		}
+		// A TraceRsp (per core) reports the capture state + freeze CAUSE — the only way to tell a
+		// trigger-frozen dump from a manual stop. Update it even while the table is paused: the
+		// freeze status is independent of the row capture, and it's what you watch during a pause.
+		if f.id == rsp_id && f.data.len >= 8 {
+			a.trace_freeze = trace_rsp_status(telem.decode_trace_rsp(f.data))
 		}
 		if a.recording {
 			a.rec << canlog.LogEntry{t_ms / 1000.0, chname, f}
@@ -4257,7 +4261,7 @@ fn trace_dump_worker(app &App, core_mask u16) {
 			recs << TRec{
 				ch:     0
 				core:   cur_core
-				abs_us: base + r.start_us
+				abs_us: u64(base) + u64(r.start_us) // u64: absolute µs across epochs never wraps
 				rec:    r
 			}
 		}
@@ -4563,7 +4567,7 @@ fn draw_tchart(mut app App, trecs []TRec) {
 		d := if app.cursor_b > app.cursor_a { app.cursor_b - app.cursor_a } else { app.cursor_a - app.cursor_b }
 		vgui.text('A ${app.cursor_a:.0f} us    B ${app.cursor_b:.0f} us    Δ ${d:.0f} us (${d / 1000:.3f} ms)')
 		vgui.same_line()
-		if vgui.button('Clear markers') {
+		if vgui.button('Reset markers') { // re-seat A/B to 1/4 and 3/4 of the view
 			app.cursor_a = f64(span) * 0.25
 			app.cursor_b = f64(span) * 0.75
 		}
@@ -4677,6 +4681,13 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
 				}
 			}
 		}
+		for k in tkeys { // cores outside 0..16 (garbage/unexpected header) — never drop a lane
+			if 't${k}' !in lane_of {
+				kc, kid := split_lane_key(k)
+				lane_of['t${k}'] = labels.len
+				labels << thread_core_label(app, kc, kid)
+			}
+		}
 	}
 	if ikeys.len > 0 {
 		labels << '──  interrupts  ──' // separator lane (no bars)
@@ -4689,13 +4700,22 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
 				}
 			}
 		}
+		for k in ikeys { // cores outside 0..16 — same catch-all as threads
+			if 'i${k}' !in lane_of {
+				kc, kid := split_lane_key(k)
+				lane_of['i${k}'] = labels.len
+				labels << 'c${kc}  isr ${kid}'
+			}
+		}
 	}
 	// time span over every interval record (abs_us folds epoch re-anchors; every kind has width).
-	mut tmin := f32(3.4e38)
-	mut tmax := f32(0)
+	// Work in u64 and subtract tmin BEFORE the f32 cast: absolute µs can exceed f32's 24-bit
+	// precision (~16.7 s) on a long capture, but the relative offsets are small and f32-exact.
+	mut tmin := u64(0xffff_ffff_ffff_ffff)
+	mut tmax := u64(0)
 	for tr in trecs {
-		s := f32(tr.abs_us)
-		e := s + f32(tr.rec.cpu_us)
+		s := tr.abs_us
+		e := s + u64(tr.rec.cpu_us)
 		if s < tmin {
 			tmin = s
 		}
@@ -4706,7 +4726,7 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
 	if tmin > tmax { // no interval records — nothing to draw
 		return labels, []vgui.Bar{}, f32(1)
 	}
-	span := if tmax > tmin { tmax - tmin } else { f32(1) }
+	span := if tmax > tmin { f32(tmax - tmin) } else { f32(1) }
 	mut bars := []vgui.Bar{cap: trecs.len}
 	for tr in trecs {
 		r := tr.rec
@@ -4737,7 +4757,7 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
 			0
 		}
 		bars << vgui.Bar{
-			t0:        f32(tr.abs_us) - tmin
+			t0:        f32(tr.abs_us - tmin) // relative µs (f32-exact even for long captures)
 			dur:       f32(r.cpu_us)
 			lane:      li
 			color:     vgui.rgba(c[0], c[1], c[2], 235)
