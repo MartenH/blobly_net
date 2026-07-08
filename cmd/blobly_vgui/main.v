@@ -873,9 +873,12 @@ fn (app &App) resolve_asset(path string) string {
 	if path == '' || os.is_abs_path(path) {
 		return path
 	}
-	near := os.join_path(os.dir(app.proj_path), path)
-	if os.exists(near) {
-		return near
+	// NB: don't name this `near` — <windows.h> (pulled in by the GLFW/imgui link on the mingw
+	// build) #defines `near`/`far` as legacy no-ops, which mangles the generated C. Renamed so the
+	// Windows CI links (the Linux build tolerated it, so it slipped in).
+	proj_rel := os.join_path(os.dir(app.proj_path), path)
+	if os.exists(proj_rel) {
+		return proj_rel
 	}
 	return path
 }
