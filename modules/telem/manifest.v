@@ -39,11 +39,38 @@ pub:
 	core int
 }
 
+// TraceFrames are the five observability CAN ids from the manifest's `# trace frames` section
+// (loom2v emits `frame,id,bus` rows there). The ids are config-driven on the target — a literal
+// CAN id or a bus.dbc message name resolved to its id — so blobly_net must read them from the
+// manifest rather than hardcode the trace_demo defaults. A zero field = "absent from the
+// manifest"; or_defaults() fills those from the built-in id_* constants.
+pub struct TraceFrames {
+pub mut:
+	cmd     u32 // host -> target capture control (id_trace_cmd)
+	rsp     u32 // target -> host ack/status (id_trace_rsp)
+	stat    u32 // unsolicited per-handler stats (id_handlerstat)
+	record  u32 // ISO-TP dump payload (id_record)
+	dump_fc u32 // ISO-TP flow control for the dump (id_dump_fc)
+}
+
+// or_defaults fills any unset (0) id from the built-in defaults, so an older manifest with no
+// `# trace frames` section still yields the trace_demo wire.
+pub fn (f TraceFrames) or_defaults() TraceFrames {
+	return TraceFrames{
+		cmd:     if f.cmd != 0 { f.cmd } else { id_trace_cmd }
+		rsp:     if f.rsp != 0 { f.rsp } else { id_trace_rsp }
+		stat:    if f.stat != 0 { f.stat } else { id_handlerstat }
+		record:  if f.record != 0 { f.record } else { id_record }
+		dump_fc: if f.dump_fc != 0 { f.dump_fc } else { id_dump_fc }
+	}
+}
+
 // Manifest resolves handler_id -> Handler and thread_id -> Thread.
 pub struct Manifest {
 pub:
 	handlers []Handler
 	threads  []Thread
+	frames   TraceFrames // the `# trace frames` ids (zero-filled -> or_defaults())
 pub mut:
 	by_id  map[u8]Handler // built by index()
 	by_tid map[u8]Thread  // built by index()
@@ -58,14 +85,48 @@ pub fn load_manifest(path string) !Manifest {
 pub fn parse_manifest(text string) !Manifest {
 	mut handlers := []Handler{}
 	mut threads := []Thread{}
+	mut frames := TraceFrames{}
 	mut seen := map[u8]bool{}
 	mut seen_tid := map[u8]bool{}
+	// The manifest is sectioned by `#` header comments (`# fb.handlers:`, `# threads:`,
+	// `# trace frames:`). Handler/thread rows self-identify by shape, but a trace-frame row
+	// (`cmd,0x7e2,can0`) looks like a malformed handler row, so track the section to route it.
+	mut section := ''
 	for raw in text.split_into_lines() {
 		line := raw.trim_space()
-		if line == '' || line.starts_with('#') {
+		if line == '' {
+			continue
+		}
+		if line.starts_with('#') {
+			low := line.to_lower()
+			if low.contains('trace frames') {
+				section = 'frames'
+			} else if low.contains('handlers') {
+				section = 'handlers'
+			} else if low.contains('threads') {
+				section = 'threads'
+			}
 			continue
 		}
 		cols := line.split(',').map(it.trim_space())
+		if section == 'frames' {
+			// `frame,id,bus` — id is a literal CAN id (0x-hex or decimal); bus is ignored here.
+			if cols.len < 2 {
+				return error('manifest trace-frame row needs at least frame,id: "${line}"')
+			}
+			id := parse_can_id(cols[1]) or {
+				return error('manifest trace-frame "${cols[0]}": ${err}')
+			}
+			match cols[0] {
+				'cmd' { frames.cmd = id }
+				'rsp' { frames.rsp = id }
+				'stat' { frames.stat = id }
+				'record' { frames.record = id }
+				'dump_fc' { frames.dump_fc = id }
+				else {} // unknown frame name — ignore (forward-compatible with new frames)
+			}
+			continue
+		}
 		// A thread row labels a swimlane thread lane: `thread,<id>,<name>,<core>`.
 		if cols[0].to_lower() == 'thread' {
 			if cols.len < 4 {
@@ -134,9 +195,37 @@ pub fn parse_manifest(text string) !Manifest {
 	mut m := Manifest{
 		handlers: handlers
 		threads:  threads
+		frames:   frames
 	}
 	m.index()
 	return m
+}
+
+// parse_can_id parses a manifest CAN id — `0x7e2` (hex) or decimal — into a u32.
+fn parse_can_id(s string) !u32 {
+	t := s.to_lower()
+	if t.starts_with('0x') {
+		hex := t[2..]
+		if hex == '' {
+			return error('empty hex id "${s}"')
+		}
+		mut v := u32(0)
+		for c in hex {
+			d := if c >= `0` && c <= `9` {
+				u32(c - `0`)
+			} else if c >= `a` && c <= `f` {
+				u32(c - `a` + 10)
+			} else {
+				return error('bad hex digit in id "${s}"')
+			}
+			v = v * 16 + d
+		}
+		return v
+	}
+	if !is_digits(t) {
+		return error('id is not a number: "${s}"')
+	}
+	return u32(t.u64())
 }
 
 // is_digits reports whether s is a non-empty run of ASCII digits (a valid unsigned id).

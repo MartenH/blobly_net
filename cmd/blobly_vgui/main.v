@@ -47,8 +47,10 @@ struct TraceRow {
 }
 
 struct TRec {
-	ch  int
-	rec telem.Record
+	ch     int
+	core   int // the block's core (from its header) — authoritative for lane grouping (esp. idle)
+	abs_us u64 // start_us folded across epoch re-anchors (µs; u64 so a long capture can't wrap)
+	rec    telem.Record
 }
 
 // Chan is one project channel's live state (the Buses panel row + Start/Stop target).
@@ -181,6 +183,10 @@ mut:
 	trace_busy      bool   // a trace-dump transfer is in flight (single-flight guard)
 	trace_recording bool   // Record toggle: the target's capture is armed (optimistic)
 	trace_status    string // last dump status line, shown by the Trace Chart
+	trace_freeze    string // last TraceRsp state/cause (why it froze: trigger vs stop), from rx_loop
+	cursor_a        f64    // Trace Chart measurement markers A/B (µs); the swimlane drags them
+	cursor_b        f64
+	cursor_span     f64 // the span the cursors were placed for — re-seat A/B when a new dump loads
 }
 
 // SenderRT is a project sender bound to its channel iface (Generators panel).
@@ -741,6 +747,9 @@ fn rx_loop(app &App, ci int, iface string) {
 	}
 	mut a := unsafe { app }
 	chname := a.chans[ci].name
+	// the TraceRsp id is config-static (the manifest is only mutated while stopped, so it can't
+	// change under a running RX loop) — resolve it once, not per frame in the hot path.
+	rsp_id := a.manifest.frames.or_defaults().rsp
 	for a.running && a.chans[ci].enabled {
 		// track the real link state so a bound-but-DOWN iface shows "down" (red), not "run",
 		// and flips to green the moment the user brings it up (ip link set … up).
@@ -764,6 +773,12 @@ fn rx_loop(app &App, ci int, iface string) {
 			// The capture dump now arrives as an ISO-TP block on 0x7E5 (not raw per-record
 			// frames): trace_dump_worker reassembles + decodes it on demand. The raw ISO-TP
 			// frames still show in the trace table above.
+		}
+		// A TraceRsp (per core) reports the capture state + freeze CAUSE — the only way to tell a
+		// trigger-frozen dump from a manual stop. Update it even while the table is paused: the
+		// freeze status is independent of the row capture, and it's what you watch during a pause.
+		if f.id == rsp_id && f.data.len >= 8 {
+			a.trace_freeze = trace_rsp_status(telem.decode_trace_rsp(f.data))
 		}
 		if a.recording {
 			a.rec << canlog.LogEntry{t_ms / 1000.0, chname, f}
@@ -858,9 +873,12 @@ fn (app &App) resolve_asset(path string) string {
 	if path == '' || os.is_abs_path(path) {
 		return path
 	}
-	near := os.join_path(os.dir(app.proj_path), path)
-	if os.exists(near) {
-		return near
+	// NB: don't name this `near` — <windows.h> (pulled in by the GLFW/imgui link on the mingw
+	// build) #defines `near`/`far` as legacy no-ops, which mangles the generated C. Renamed so the
+	// Windows CI links (the Linux build tolerated it, so it slipped in).
+	proj_rel := os.join_path(os.dir(app.proj_path), path)
+	if os.exists(proj_rel) {
+		return proj_rel
 	}
 	return path
 }
@@ -4199,10 +4217,15 @@ fn trace_dump_worker(app &App, core_mask u16) {
 		a.trace_done()
 		return
 	}
-	// the host is the ISO-TP receiver: it sends flow control on 0x7E6 and receives the dump
-	// data on 0x7E5 (open before commanding, so the socket buffers the target's first frame).
-	mut ch := isotp.open_software(a.bitrate_iface(iface), telem.id_dump_fc, telem.id_record,
-		false) or {
+	// the trace frame ids are config-driven on the target — read them from the loaded manifest
+	// (or_defaults fills the trace_demo wire when the manifest omits the `# trace frames` block).
+	f := a.manifest.frames.or_defaults()
+	// the host is the ISO-TP receiver: it sends flow control on dump_fc and receives the dump
+	// data on record (open before commanding, so the socket buffers the target's first frame).
+	// ISO-TP addressing must match the frame width — a 29-bit trace id would otherwise be masked
+	// to 11 bits by SocketCAN and the target would never answer.
+	mut ch := isotp.open_software(a.bitrate_iface(iface), f.dump_fc, f.record,
+		trace_ext(f.record)) or {
 		a.set_trace_status('dump: open ${iface}: ${err}')
 		a.trace_done()
 		return
@@ -4210,16 +4233,19 @@ fn trace_dump_worker(app &App, core_mask u16) {
 	defer {
 		ch.close()
 	}
+	cmd_ext := trace_ext(f.cmd)
 	// Freeze each selected core's capture RING (op_stop) so it can be read out — the target
 	// refuses to dump a buffer that's still being written. This stops recording, NOT the
 	// core: handlers keep running. Then dump (op_dump).
 	a.tx_on(iface, transport.CanFrame{
-		id:   telem.id_trace_cmd
-		data: telem.encode_trace_cmd(telem.op_stop, telem.filter_all, core_mask)
+		id:       f.cmd
+		extended: cmd_ext
+		data:     telem.encode_trace_cmd(telem.op_stop, telem.filter_all, core_mask)
 	})
 	a.tx_on(iface, transport.CanFrame{
-		id:   telem.id_trace_cmd
-		data: telem.encode_trace_cmd(telem.op_dump, telem.filter_all, core_mask)
+		id:       f.cmd
+		extended: cmd_ext
+		data:     telem.encode_trace_cmd(telem.op_dump, telem.filter_all, core_mask)
 	})
 	// a multi-core dump streams one self-describing block per selected core.
 	nblocks := mask_popcount(core_mask)
@@ -4228,12 +4254,24 @@ fn trace_dump_worker(app &App, core_mask u16) {
 	for _ in 0 .. nblocks {
 		block := ch.recv(400) or { break } // no more blocks (timed out)
 		got++
+		mut base := u32(0) // current epoch origin; each block re-anchors from its own epoch record
+		mut cur_core := 0  // the block's core, from its leading header (idle/threads carry no core)
 		for off := 0; off + 8 <= block.len; off += 8 {
 			r := telem.decode_record(block[off..off + 8])
-			if r.is_header() {
-				continue // per-core framing, not a timeline record
+			if r.is_block_header() {
+				cur_core = int(r.header_core()) // tag this block's records with their core
+				continue                        // framing, not a timeline record
 			}
-			recs << TRec{0, r}
+			if r.is_epoch() {
+				base = r.epoch_base() // subsequent start_us are relative to this base
+				continue
+			}
+			recs << TRec{
+				ch:     0
+				core:   cur_core
+				abs_us: u64(base) + u64(r.start_us) // u64: absolute µs across epochs never wraps
+				rec:    r
+			}
 		}
 	}
 	a.mu.lock()
@@ -4256,6 +4294,25 @@ fn (mut app App) set_trace_status(s string) {
 	app.mu.lock()
 	app.trace_status = s
 	app.mu.unlock()
+}
+
+// trace_rsp_status formats a TraceRsp for the Trace Chart: the reporting core, its capture state,
+// and — when frozen — WHY (the overrun trigger vs an explicit stop). A cross-core propagated
+// freeze reports "by trigger" on every core, since each core triggers on the shared freeze.
+fn trace_rsp_status(r telem.TraceRsp) string {
+	st := match r.state {
+		telem.state_idle { 'idle' }
+		telem.state_capturing { 'capturing' }
+		telem.state_full { 'full' }
+		telem.state_frozen { 'frozen' }
+		else { 'state ${r.state}' }
+	}
+	cause := match r.cause {
+		telem.freeze_trigger { ' by trigger' }
+		telem.freeze_stop { ' by stop' }
+		else { '' }
+	}
+	return 'core ${r.core}: ${st}${cause} · ${r.records_used}/${r.capacity} rec'
 }
 
 // set_trace_state updates the Record toggle + status under the mutex (shared with the worker).
@@ -4288,10 +4345,19 @@ fn (mut app App) send_trace_cmd(opcode u8) bool {
 		app.trace_status = 'no running channel'
 		return false
 	}
+	f := app.manifest.frames.or_defaults() // config-driven cmd id (falls back to the default)
 	return app.tx_on(iface, transport.CanFrame{
-		id:   telem.id_trace_cmd
-		data: telem.encode_trace_cmd(opcode, telem.filter_all, app.trace_core_mask())
+		id:       f.cmd
+		extended: trace_ext(f.cmd) // 29-bit ids must go out extended, else SocketCAN masks them
+		data:     telem.encode_trace_cmd(opcode, telem.filter_all, app.trace_core_mask())
 	})
+}
+
+// trace_ext infers the CAN addressing width of a trace frame id: any id above the 11-bit standard
+// range (0x7FF) must be sent/received as a 29-bit extended id. loom2v writes literal ids to the
+// manifest without an explicit width, so we infer it here (matches how a target opens the bus).
+fn trace_ext(id u32) bool {
+	return id > 0x7ff
 }
 
 // trace_iface picks the channel to command the dump on: the running monitor channel that
@@ -4471,6 +4537,7 @@ fn draw_tchart(mut app App, trecs []TRec) {
 	busy := app.trace_busy
 	recording := app.trace_recording
 	status := app.trace_status
+	freeze := app.trace_freeze
 	app.mu.unlock()
 	if busy {
 		vgui.text_dim('dumping…')
@@ -4499,21 +4566,37 @@ fn draw_tchart(mut app App, trecs []TRec) {
 	if status != '' {
 		vgui.text_dim(status)
 	}
+	if freeze != '' { // the target's own report: capturing / frozen-by-trigger / frozen-by-stop
+		vgui.text_dim('target: ${freeze}')
+	}
 	labels, bars, span := build_swimlane(app, trecs)
 	vgui.text('${trecs.len} records · ${labels.len} lanes · gaps = idle')
-	vgui.text_dim('drag = pan · scroll = zoom · double-click = fit')
+	vgui.text_dim('drag = pan · scroll = zoom · double-click = fit · A/B keys or drag markers (snap to edges; Alt = free) · hover a bar + M = measure it')
 	if bars.len > 0 {
-		vgui.swimlane('##swim', labels, bars, span)
+		// re-seat the A/B markers into view whenever a new dump (different span) loads.
+		if app.cursor_span != f64(span) {
+			app.cursor_span = f64(span)
+			app.cursor_a = f64(span) * 0.25
+			app.cursor_b = f64(span) * 0.75
+		}
+		vgui.swimlane('##swim', labels, bars, span, &app.cursor_a, &app.cursor_b)
+		d := if app.cursor_b > app.cursor_a { app.cursor_b - app.cursor_a } else { app.cursor_a - app.cursor_b }
+		vgui.text('A ${app.cursor_a:.0f} us    B ${app.cursor_b:.0f} us    Δ ${d:.0f} us (${d / 1000:.3f} ms)')
+		vgui.same_line()
+		if vgui.button('Reset markers') { // re-seat A/B to 1/4 and 3/4 of the view
+			app.cursor_a = f64(span) * 0.25
+			app.cursor_b = f64(span) * 0.75
+		}
 	} else {
-		vgui.text_dim('press Dump to capture (handler bars + thread-switch marks appear here)')
+		vgui.text_dim('press Dump to capture (handler bars + thread/idle lanes appear here)')
 	}
 	vgui.end()
 }
 
-// build_swimlane turns decoded records into swimlane lanes + bars. A dumped stream is not
-// homogeneous: handler-run records become duration bars on a per-handler lane; thread-switch
-// records become thin marker bars on a per-thread lane (coloured by reason); block-header
-// records are framing and skipped. Handler lanes are laid out first, thread lanes below.
+// build_swimlane turns decoded records into swimlane lanes + bars. A dumped stream mixes entity
+// kinds, each an interval [start, start+cpu): FB (handler) runs, THREAD runs, and ISR runs each
+// get a duration bar on their own lane; CONTROL records (block headers / epochs) are framing and
+// were stripped by the dump worker. Lanes are grouped FB → threads → interrupts, by core.
 // handler_core / thread_core resolve the core of a manifest id (-1 = unknown / no manifest).
 fn handler_core(app &App, id u8) int {
 	if h := app.manifest.lookup(id) {
@@ -4522,14 +4605,7 @@ fn handler_core(app &App, id u8) int {
 	return -1
 }
 
-fn thread_core(app &App, id u8) int {
-	if id in app.manifest.by_tid {
-		return app.manifest.by_tid[id].core
-	}
-	return -1
-}
-
-// fb_label / thread_lane_label prefix the name with its core (c0/c1…) so a lane shows which
+// fb_label prefixes the handler name with its core (c0/c1…) so a lane shows which
 // core it belongs to.
 fn fb_label(app &App, id u8) string {
 	c := handler_core(app, id)
@@ -4537,84 +4613,125 @@ fn fb_label(app &App, id u8) string {
 	return if c >= 0 { 'c${c}  ${base}' } else { base }
 }
 
-fn thread_lane_label(app &App, id u8) string {
-	c := thread_core(app, id)
-	base := app.manifest.thread_label(id)
-	return if c >= 0 { 'c${c}  ${base}' } else { base }
+// split_lane_key splits a '<core>:<id>' thread/isr lane key back into its parts.
+fn split_lane_key(k string) (int, u16) {
+	parts := k.split(':')
+	if parts.len != 2 {
+		return 0, 0
+	}
+	return parts[0].int(), u16(parts[1].int())
+}
+
+// thread_core_label labels a THREAD lane, prefixed with its (block) core. id 0 is idle (no
+// manifest row); a real thread resolves its name from the manifest, else "thread N".
+fn thread_core_label(app &App, core int, id u16) string {
+	base := if id == 0 { 'idle' } else { app.manifest.thread_label(u8(id)) }
+	return 'c${core}  ${base}'
 }
 
 fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
 	if trecs.len == 0 {
 		return []string{}, []vgui.Bar{}, f32(1)
 	}
-	// distinct handler ids (FB runs) and thread ids (switches), first-seen.
-	mut hids := []u8{}
-	mut tids := []u8{}
-	mut sh := map[u8]bool{}
-	mut st := map[u8]bool{}
+	// distinct lanes, first-seen. FB handler ids are globally unique; THREAD and ISR lanes are
+	// keyed by (block core, id) — via TRec.core from the block header — so each core's idle (id 0,
+	// shared across cores) and per-core ISR vectors get their own lane rather than merging.
+	mut hids := []u16{}
+	mut sh := map[u16]bool{}
+	mut tkeys := []string{} // '<core>:<id>' for THREAD (incl. idle id 0)
+	mut tseen := map[string]bool{}
+	mut ikeys := []string{} // '<core>:<id>' for ISR
+	mut iseen := map[string]bool{}
 	for tr in trecs {
 		r := tr.rec
-		if r.is_header() {
-			continue
-		}
-		if r.is_switch() {
-			if r.to_thread() !in st {
-				st[r.to_thread()] = true
-				tids << r.to_thread()
+		if r.kind() == telem.kind_fb {
+			if r.id() !in sh {
+				sh[r.id()] = true
+				hids << r.id()
 			}
-		} else if r.handler_id !in sh {
-			sh[r.handler_id] = true
-			hids << r.handler_id
+		} else if r.kind() == telem.kind_thread {
+			k := '${tr.core}:${r.id()}'
+			if k !in tseen {
+				tseen[k] = true
+				tkeys << k
+			}
+		} else if r.kind() == telem.kind_isr {
+			k := '${tr.core}:${r.id()}'
+			if k !in iseen {
+				iseen[k] = true
+				ikeys << k
+			}
 		}
 	}
-	// lay lanes out grouped by core: FB (handler) lanes first, ordered by core, then a
-	// separator, then thread lanes ordered by core. So you can see which core each is, and
-	// the FB trace is visually split from the thread-switch trace.
+	// lay lanes out grouped by core: FB (handler) lanes first (by core), then a separator + thread
+	// lanes (by core; real threads before idle within a core), then a separator + ISR lanes. So
+	// each core's fb / thread / interrupt traces are visually grouped and split.
 	mut lane_of := map[string]int{}
 	mut labels := []string{}
 	for core in 0 .. 16 {
 		for id in hids {
-			if handler_core(app, id) == core && 'h${id}' !in lane_of {
+			if handler_core(app, u8(id)) == core && 'h${id}' !in lane_of {
 				lane_of['h${id}'] = labels.len
-				labels << fb_label(app, id)
+				labels << fb_label(app, u8(id))
 			}
 		}
 	}
 	for id in hids { // unknown-core handlers (no manifest) last
 		if 'h${id}' !in lane_of {
 			lane_of['h${id}'] = labels.len
-			labels << fb_label(app, id)
+			labels << fb_label(app, u8(id))
 		}
 	}
-	if tids.len > 0 {
-		labels << '──  thread switches  ──' // separator lane (no bars)
-		for core in 0 .. 16 {
-			for id in tids {
-				if thread_core(app, id) == core && 't${id}' !in lane_of {
-					lane_of['t${id}'] = labels.len
-					labels << thread_lane_label(app, id)
+	if tkeys.len > 0 {
+		labels << '──  threads  ──' // separator lane (no bars)
+		for pass in 0 .. 2 { // pass 0 = real threads, pass 1 = idle (id 0) — idle at each core's foot
+			for core in 0 .. 16 {
+				for k in tkeys {
+					kc, kid := split_lane_key(k)
+					idle := kid == 0
+					if kc == core && ((pass == 0 && !idle) || (pass == 1 && idle))
+						&& 't${k}' !in lane_of {
+						lane_of['t${k}'] = labels.len
+						labels << thread_core_label(app, kc, kid)
+					}
 				}
 			}
 		}
-		for id in tids {
-			if 't${id}' !in lane_of {
-				lane_of['t${id}'] = labels.len
-				labels << thread_lane_label(app, id)
+		for k in tkeys { // cores outside 0..16 (garbage/unexpected header) — never drop a lane
+			if 't${k}' !in lane_of {
+				kc, kid := split_lane_key(k)
+				lane_of['t${k}'] = labels.len
+				labels << thread_core_label(app, kc, kid)
 			}
 		}
 	}
-	// time span over every timeline record (headers carry no time).
-	mut tmin := f32(3.4e38)
-	mut tmax := f32(0)
-	for tr in trecs {
-		r := tr.rec
-		if r.is_header() {
-			continue
+	if ikeys.len > 0 {
+		labels << '──  interrupts  ──' // separator lane (no bars)
+		for core in 0 .. 16 {
+			for k in ikeys {
+				kc, kid := split_lane_key(k)
+				if kc == core && 'i${k}' !in lane_of {
+					lane_of['i${k}'] = labels.len
+					labels << 'c${kc}  isr ${kid}'
+				}
+			}
 		}
-		s := f32(r.start_us)
-		// a switch is an instant: its cpu_us slot holds (reason<<8)|from_thread, NOT a
-		// duration, so it must not extend the time axis — only handler runs have a width.
-		e := if r.is_switch() { s } else { s + f32(r.cpu_us) }
+		for k in ikeys { // cores outside 0..16 — same catch-all as threads
+			if 'i${k}' !in lane_of {
+				kc, kid := split_lane_key(k)
+				lane_of['i${k}'] = labels.len
+				labels << 'c${kc}  isr ${kid}'
+			}
+		}
+	}
+	// time span over every interval record (abs_us folds epoch re-anchors; every kind has width).
+	// Work in u64 and subtract tmin BEFORE the f32 cast: absolute µs can exceed f32's 24-bit
+	// precision (~16.7 s) on a long capture, but the relative offsets are small and f32-exact.
+	mut tmin := u64(0xffff_ffff_ffff_ffff)
+	mut tmax := u64(0)
+	for tr in trecs {
+		s := tr.abs_us
+		e := s + u64(tr.rec.cpu_us)
 		if s < tmin {
 			tmin = s
 		}
@@ -4622,56 +4739,47 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
 			tmax = e
 		}
 	}
-	if tmin > tmax { // only header records — nothing to draw
+	if tmin > tmax { // no interval records — nothing to draw
 		return labels, []vgui.Bar{}, f32(1)
 	}
-	span := if tmax > tmin { tmax - tmin } else { f32(1) }
-	mark := if span / 200 > 1 { span / 200 } else { f32(1) } // switch marker width (a tick)
+	span := if tmax > tmin { f32(tmax - tmin) } else { f32(1) }
 	mut bars := []vgui.Bar{cap: trecs.len}
 	for tr in trecs {
 		r := tr.rec
-		if r.is_header() {
-			continue
-		}
-		if r.is_switch() {
-			li := lane_of['t${r.to_thread()}']
-			bars << vgui.Bar{
-				t0:    f32(r.start_us) - tmin
-				dur:   mark
-				lane:  li
-				color: switch_color(r.reason())
-			}
+		mut key := ''
+		if r.kind() == telem.kind_fb {
+			key = 'h${r.id()}'
+		} else if r.kind() == telem.kind_thread {
+			key = 't${tr.core}:${r.id()}'
+		} else if r.kind() == telem.kind_isr {
+			key = 'i${tr.core}:${r.id()}'
 		} else {
-			li := lane_of['h${r.handler_id}']
-			// colour by core (so cores are visually distinct); fall back to per-lane colour
-			// when there's no manifest to group by.
-			core := handler_core(app, r.handler_id)
-			ci := if core >= 0 { core } else { li }
-			c := lane_palette[ci % lane_palette.len]
-			bars << vgui.Bar{
-				t0:        f32(r.start_us) - tmin
-				dur:       f32(r.cpu_us)
-				lane:      li
-				color:     vgui.rgba(c[0], c[1], c[2], 235)
-				warn:      if (r.flags & (telem.flag_overran | telem.flag_saturated)) != 0 { 1 } else { 0 }
-				preempted: if (r.flags & telem.flag_preempted) != 0 { 1 } else { 0 }
-			}
+			continue // CONTROL framing — no bar
+		}
+		li := lane_of[key]
+		// colour by (block) core so cores are visually distinct.
+		c := lane_palette[tr.core % lane_palette.len]
+		// FB warn = overran/saturated; preempted marker = an FB flagged preempted OR a thread
+		// that was preempted out (reason). info means flags for FB, reason for THREAD.
+		warn := if r.kind() == telem.kind_fb && (r.flags() & (telem.flag_overran | telem.flag_saturated)) != 0 {
+			1
+		} else {
+			0
+		}
+		preempted := if (r.kind() == telem.kind_fb && (r.flags() & telem.flag_preempted) != 0)
+			|| (r.kind() == telem.kind_thread && r.reason() == telem.reason_preempt) {
+			1
+		} else {
+			0
+		}
+		bars << vgui.Bar{
+			t0:        f32(tr.abs_us - tmin) // relative µs (f32-exact even for long captures)
+			dur:       f32(r.cpu_us)
+			lane:      li
+			color:     vgui.rgba(c[0], c[1], c[2], 235)
+			warn:      warn
+			preempted: preempted
 		}
 	}
 	return labels, bars, span
-}
-
-// switch_color maps a thread-switch reason to a marker colour (red = preempted out, green =
-// resumed, amber = voluntary block/yield, grey = ISR / other).
-fn switch_color(reason u8) u32 {
-	if reason == telem.switch_preempt {
-		return vgui.rgba(230, 80, 80, 235)
-	}
-	if reason == telem.switch_resume {
-		return vgui.rgba(80, 200, 120, 235)
-	}
-	if reason == telem.switch_block {
-		return vgui.rgba(210, 180, 60, 235)
-	}
-	return vgui.rgba(150, 150, 160, 235)
 }

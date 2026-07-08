@@ -592,13 +592,32 @@ int vgui_key_pressed(int ch) {
     return ImGui::IsKeyPressed(k, false) ? 1 : 0;
 }
 
+// snap_to_edge magnetically pulls a marker time `t` to the nearest bar edge (start or end) when
+// it's within `px` screen pixels — so measurements land on exact interval boundaries. Returns `t`
+// unchanged when nothing is close (free positioning away from edges). Must run inside a plot.
+static double snap_to_edge(double t, const VBar* bars, int n_bars, double px) {
+    double best = t, best_px = px;
+    float tx = ImPlot::PlotToPixels(t, 0.0).x;
+    for (int k = 0; k < n_bars; k++) {
+        double edges[2] = { (double)bars[k].t0, (double)(bars[k].t0 + bars[k].dur) };
+        for (int e = 0; e < 2; e++) {
+            double dpx = fabs(ImPlot::PlotToPixels(edges[e], 0.0).x - tx);
+            if (dpx < best_px) { best_px = dpx; best = edges[e]; }
+        }
+    }
+    return best;
+}
+
 // vgui_swimlane draws a handler/task gantt as an ImPlot plot: X = time (µs), Y = lanes.
 // ImPlot gives native pan (drag), zoom (scroll/box), and a time axis for free — replacing
 // the hand-rolled zoom buttons + scrollbar. Bars are drawn into the plot's draw list in
 // pixel space via PlotToPixels, so they track pan/zoom exactly.
 void vgui_swimlane(const char* plot_id, int n_lanes, const char** lane_labels,
-                   const VBar* bars, int n_bars, float full_span_us) {
-    ImPlotFlags pf = ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText;
+                   const VBar* bars, int n_bars, float full_span_us,
+                   double* cursor_a, double* cursor_b) {
+    // Crosshairs: ImPlot draws the follow-the-mouse crosshair; we add a time tag + hover tooltip
+    // and two draggable A/B measurement lines below (all in data space, so pan/zoom-correct).
+    ImPlotFlags pf = ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText | ImPlotFlags_Crosshairs;
     if (ImPlot::BeginPlot(plot_id, ImVec2(-1, n_lanes * 26.0f + 40.0f), pf)) {
         // X axis in milliseconds (values are µs, scaled by 1e-3 for tick labels via format)
         ImPlot::SetupAxes("time (us)", nullptr,
@@ -637,6 +656,69 @@ void vgui_swimlane(const char* plot_id, int n_lanes, const char** lane_labels,
             }
         }
         ImPlot::PopPlotClipRect();
+
+        // --- measurement layer: crosshair time tag, hover tooltip, A/B markers + delta ---
+        bool hovered = ImPlot::IsPlotHovered();
+        ImPlotPoint mp = ImPlot::GetPlotMousePos();
+        ImPlotRect lim = ImPlot::GetPlotLimits();
+
+        // a/b keys drop the respective marker at the crosshair; both are draggable afterwards.
+        if (hovered) {
+            if (ImGui::IsKeyPressed(ImGuiKey_A, false)) *cursor_a = mp.x;
+            if (ImGui::IsKeyPressed(ImGuiKey_B, false)) *cursor_b = mp.x;
+        }
+        ImVec4 colA = ImVec4(0.35f, 0.85f, 0.45f, 1.0f); // green
+        ImVec4 colB = ImVec4(0.35f, 0.72f, 0.98f, 1.0f); // cyan
+        ImPlot::DragLineX(1001, cursor_a, colA, 1.5f);
+        ImPlot::DragLineX(1002, cursor_b, colB, 1.5f);
+
+        // magnetic snap to bar edges (exact interval/period boundaries); hold Alt to place freely.
+        if (!ImGui::GetIO().KeyAlt) {
+            *cursor_a = snap_to_edge(*cursor_a, bars, n_bars, 8.0);
+            *cursor_b = snap_to_edge(*cursor_b, bars, n_bars, 8.0);
+        }
+
+        // shade the measured span and tag A, B, and the delta
+        double lo = *cursor_a < *cursor_b ? *cursor_a : *cursor_b;
+        double hi = *cursor_a < *cursor_b ? *cursor_b : *cursor_a;
+        ImVec2 s0 = ImPlot::PlotToPixels(lo, lim.Y.Min);
+        ImVec2 s1 = ImPlot::PlotToPixels(hi, lim.Y.Max);
+        dl->AddRectFilled(s0, s1, IM_COL32(120, 160, 220, 26));
+        ImPlot::TagX(*cursor_a, colA, "A");
+        ImPlot::TagX(*cursor_b, colB, "B");
+        double d = hi - lo;
+        ImPlot::Annotation((lo + hi) * 0.5, lim.Y.Min, ImVec4(1, 1, 1, 1), ImVec2(0, 2), true,
+                           "%.0f us (%.3f ms)", d, d / 1000.0);
+
+        // crosshair time tag + hover-a-bar tooltip
+        if (hovered) {
+            ImPlot::TagX(mp.x, ImVec4(0.80f, 0.80f, 0.80f, 1.0f), "%.0f", mp.x);
+            for (int k = 0; k < n_bars; k++) {
+                const VBar& bar = bars[k];
+                if (mp.x >= bar.t0 && mp.x <= bar.t0 + bar.dur &&
+                    mp.y >= bar.lane + 0.12 && mp.y <= bar.lane + 0.88) {
+                    // period = start-to-start of the previous bar on this same lane, if any.
+                    double prev_t0 = -1.0;
+                    for (int j = 0; j < n_bars; j++)
+                        if (bars[j].lane == bar.lane && bars[j].t0 < bar.t0 && bars[j].t0 > prev_t0)
+                            prev_t0 = bars[j].t0;
+                    ImGui::BeginTooltip();
+                    ImGui::TextUnformatted(bar.lane < n_lanes ? lane_labels[bar.lane] : "?");
+                    ImGui::Text("start %.0f us   dur %.0f us", (double)bar.t0, (double)bar.dur);
+                    if (prev_t0 >= 0.0)
+                        ImGui::Text("period (since prev on lane): %.0f us", (double)bar.t0 - prev_t0);
+                    if (bar.warn) ImGui::TextColored(ImVec4(0.95f, 0.35f, 0.35f, 1.0f), "OVERRAN (trigger)");
+                    ImGui::TextDisabled("m = measure this bar (A=start, B=end)");
+                    ImGui::EndTooltip();
+                    // m measures this bar's exact span into the A/B markers.
+                    if (ImGui::IsKeyPressed(ImGuiKey_M, false)) {
+                        *cursor_a = bar.t0;
+                        *cursor_b = bar.t0 + bar.dur;
+                    }
+                    break;
+                }
+            }
+        }
         ImPlot::EndPlot();
     }
 }

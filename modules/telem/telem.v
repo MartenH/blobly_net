@@ -21,18 +21,22 @@ pub const flag_overran = u8(0x01) // the invocation exceeded its period
 pub const flag_preempted = u8(0x02) // the handler/thread was preempted (RTOS)
 pub const flag_saturated = u8(0x04) // a µs field was clamped to the u16 range (HandlerStat)
 pub const flag_first_run = u8(0x08) // Record: first invocation since capture start
-// Record KIND bits (high nibble). A dumped Record stream is not homogeneous: both clear =
-// a handler-run record; bit7 = a thread-switch (swimlane) event; bit6 = a per-core block
-// header leading one core's block in a multi-core dump. See emb comm/trace/trace.v.
-pub const flag_header = u8(0x40)
-pub const flag_switch = u8(0x80)
+// Record ENTITY KIND — the top 2 bits of entity_id (matches emb comm/trace/trace.v). A dumped
+// stream mixes kinds in one 8-byte cell; classify with kind() before reading the fields.
+pub const kind_isr = u8(0) // id = raw interrupt vector
+pub const kind_thread = u8(1) // id = thread id (id 0 = idle / no thread)
+pub const kind_fb = u8(2) // id = handler id (the manifest fb.handler id)
+pub const kind_control = u8(3) // id = a CONTROL subtype (block header, epoch)
 
-// Thread-switch reasons (the `reason` byte of a switch record).
-pub const switch_preempt = u8(0)
-pub const switch_block = u8(1)
-pub const switch_resume = u8(2)
-pub const switch_isr_enter = u8(3)
-pub const switch_isr_exit = u8(4)
+// CONTROL subtypes (id when kind == kind_control).
+pub const ctl_block = u16(0) // per-core block header leading one core's block in a multi-core dump
+pub const ctl_epoch = u16(1) // timeline origin: re-anchors the u24 start_us base for long captures
+
+// THREAD `info` — why the core LEFT the outgoing thread (the preemption/exit signal).
+pub const reason_preempt = u8(0) // still ready, resumes later (a higher-priority thread/ISR woke)
+pub const reason_block = u8(1) // voluntarily blocked
+pub const reason_yield = u8(2) // voluntarily yielded
+pub const reason_exit = u8(3) // completed / terminated
 
 // HandlerStat is the decoded per-handler live-stats push (id 0x7E4):
 // b0 handler_id | b1 flags | b2-3 last_us | b4-5 max_us | b6-7 count_delta (all u16 LE).
@@ -58,60 +62,75 @@ pub fn decode_handlerstat(p []u8) HandlerStat {
 	}
 }
 
-// Record is one captured handler invocation (id 0x7E5, 8-byte bare-metal form):
-// b0 handler_id | b1 flags | b2-5 start_us (u32 LE, µs from capture start) | b6-7 cpu_us
-// (u16 LE, = response time on a no-IRQ core). A preemptive target widens this to carry
-// response_us too; the base record stays 8 bytes.
+// Record is one interval in a captured dump (id 0x7E5, 8-byte form, matches emb comm/trace):
+// an entity ran [start_us, start_us + cpu_us). Wire layout:
+//   b0-1 entity_id (LE) — kind:2 (bits 15-14) | id:14 (bits 13-0)
+//   b2   info          — THREAD: the outgoing reason; FB: per-run flags; CONTROL: a payload byte
+//   b3-5 start_us       — u24 LE, µs from the current epoch origin
+//   b6-7 cpu_us         — u16 LE, execution time (saturating)
+// Classify with kind()/is_block_header()/is_epoch() before reading the kind-specific fields.
 pub struct Record {
 pub:
-	handler_id u8
-	flags      u8
-	start_us   u32 // µs relative to capture start
-	cpu_us     u16 // execution time (saturating)
+	entity_id u16
+	info      u8
+	start_us  u32 // u24 (µs from the current epoch)
+	cpu_us    u16
 }
 
-// decode_record decodes an 8-byte Record payload. Use is_switch()/is_header() to tell the
-// kind before reading the fields — a dumped stream mixes handler runs, thread switches, and
-// (multi-core) per-core headers in the same 8-byte cell.
 pub fn decode_record(p []u8) Record {
 	return Record{
-		handler_id: u8_at(p, 0)
-		flags:      u8_at(p, 1)
-		start_us:   u32le(p, 2)
-		cpu_us:     u16le(p, 6)
+		entity_id: u16(u8_at(p, 0)) | (u16(u8_at(p, 1)) << 8)
+		info:      u8_at(p, 2)
+		start_us:  u32(u8_at(p, 3)) | (u32(u8_at(p, 4)) << 8) | (u32(u8_at(p, 5)) << 16)
+		cpu_us:    u16le(p, 6)
 	}
 }
 
-// is_switch / is_header classify a Record by its kind bits (both clear = a handler run).
-pub fn (r Record) is_switch() bool {
-	return r.flags & flag_switch != 0
+// kind / id split entity_id (2 top bits = kind, low 14 = id).
+pub fn (r Record) kind() u8 {
+	return u8(r.entity_id >> 14)
 }
 
-pub fn (r Record) is_header() bool {
-	return r.flags & flag_header != 0
+pub fn (r Record) id() u16 {
+	return r.entity_id & 0x3fff
 }
 
-// Thread-switch fields (valid when is_switch()): the 8-byte cell is reused — handler_id is
-// the thread switched TO, cpu_us's low byte the thread FROM, its high byte the reason.
-pub fn (r Record) to_thread() u8 {
-	return r.handler_id
-}
-
-pub fn (r Record) from_thread() u8 {
-	return u8(r.cpu_us)
+// flags / reason are both the `info` byte, read under the right kind (FB flags vs THREAD reason).
+pub fn (r Record) flags() u8 {
+	return r.info
 }
 
 pub fn (r Record) reason() u8 {
-	return u8(r.cpu_us >> 8)
+	return r.info
 }
 
-// Block-header fields (valid when is_header()): handler_id = core, start_us = record count.
+// is_idle reports the idle "thread" (kind THREAD, id 0 = no thread ready).
+pub fn (r Record) is_idle() bool {
+	return r.kind() == kind_thread && r.id() == 0
+}
+
+// is_block_header / header_* — the per-core dump block header (CONTROL / ctl_block): info = core,
+// start_us + cpu_us<<24 = the count of records that follow.
+pub fn (r Record) is_block_header() bool {
+	return r.kind() == kind_control && r.id() == ctl_block
+}
+
 pub fn (r Record) header_core() u8 {
-	return r.handler_id
+	return r.info
 }
 
 pub fn (r Record) header_count() u32 {
-	return r.start_us
+	return r.start_us | (u32(r.cpu_us) << 24)
+}
+
+// is_epoch / epoch_base — a timeline-origin reset (CONTROL / ctl_epoch): subsequent records'
+// start_us are relative to epoch_base (info<<24 | start_us), so long captures stay ordered.
+pub fn (r Record) is_epoch() bool {
+	return r.kind() == kind_control && r.id() == ctl_epoch
+}
+
+pub fn (r Record) epoch_base() u32 {
+	return r.start_us | (u32(r.info) << 24)
 }
 
 // LoadDetail is one core's load over three windows + overrun count (id 0x7E1):
