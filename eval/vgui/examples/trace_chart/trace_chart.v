@@ -72,6 +72,8 @@ fn main() {
 	full_span_us := f32(11500)
 
 	mut frame := 0
+	mut cur_a := f64(full_span_us) * 0.25 // A/B measurement markers (µs), persisted across frames
+	mut cur_b := f64(full_span_us) * 0.75
 	for vgui.running() {
 		frame++
 		last := max_frames > 0 && frame >= max_frames
@@ -108,8 +110,8 @@ fn main() {
 		// --- Trace Chart swimlane (positioned OFF the main viewport -> own OS window) ---
 		vgui.set_next_window(1420, 120, 720, 340)
 		vgui.begin('Trace Chart')
-		vgui.text_dim('drag = pan · scroll = zoom · double-click = fit (ImPlot native)')
-		vgui.swimlane('swim', labels, bars, full_span_us)
+		vgui.text_dim('drag = pan · scroll = zoom · double-click = fit · A/B markers to measure')
+		vgui.swimlane('swim', labels, bars, full_span_us, &cur_a, &cur_b)
 		vgui.end()
 
 		vgui.frame_end()
