@@ -4598,7 +4598,7 @@ fn draw_tchart(mut app App, trecs []TRec) {
 // get a duration bar on their own lane; CONTROL records (block headers / epochs) are framing and
 // were stripped by the dump worker. Lanes are grouped FB → threads → interrupts, by core.
 // handler_core / thread_core resolve the core of a manifest id (-1 = unknown / no manifest).
-fn handler_core(app &App, id u8) int {
+fn handler_core(app &App, id u16) int {
 	if h := app.manifest.lookup(id) {
 		return h.core
 	}
@@ -4607,7 +4607,7 @@ fn handler_core(app &App, id u8) int {
 
 // fb_label prefixes the handler name with its core (c0/c1…) so a lane shows which
 // core it belongs to.
-fn fb_label(app &App, id u8) string {
+fn fb_label(app &App, id u16) string {
 	c := handler_core(app, id)
 	base := app.manifest.label(id)
 	return if c >= 0 { 'c${c}  ${base}' } else { base }
@@ -4625,7 +4625,7 @@ fn split_lane_key(k string) (int, u16) {
 // thread_core_label labels a THREAD lane, prefixed with its (block) core. id 0 is idle (no
 // manifest row); a real thread resolves its name from the manifest, else "thread N".
 fn thread_core_label(app &App, core int, id u16) string {
-	base := if id == 0 { 'idle' } else { app.manifest.thread_label(u8(id)) }
+	base := if id == 0 { 'idle' } else { app.manifest.thread_label(id) }
 	return 'c${core}  ${base}'
 }
 
@@ -4670,16 +4670,16 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
 	mut labels := []string{}
 	for core in 0 .. 16 {
 		for id in hids {
-			if handler_core(app, u8(id)) == core && 'h${id}' !in lane_of {
+			if handler_core(app, id) == core && 'h${id}' !in lane_of {
 				lane_of['h${id}'] = labels.len
-				labels << fb_label(app, u8(id))
+				labels << fb_label(app, id)
 			}
 		}
 	}
 	for id in hids { // unknown-core handlers (no manifest) last
 		if 'h${id}' !in lane_of {
 			lane_of['h${id}'] = labels.len
-			labels << fb_label(app, u8(id))
+			labels << fb_label(app, id)
 		}
 	}
 	if tkeys.len > 0 {

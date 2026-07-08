@@ -78,9 +78,9 @@ fn test_manifest_parse_and_lookup() {
 }
 
 fn test_manifest_rejects_bad_ids() {
-	// out of range (256 would wrap to 0)
-	if _ := parse_manifest('256,p,1,F,h,1000') {
-		assert false, 'id 256 should be rejected'
+	// out of range: the entity id is 14-bit, so > 16383 is rejected (256 is now a valid id)
+	if _ := parse_manifest('16384,p,1,F,h,1000') {
+		assert false, 'id 16384 should be rejected (14-bit max is 16383)'
 	}
 	// non-numeric (would silently become 0)
 	if _ := parse_manifest('x,p,1,F,h,1000') {
@@ -90,9 +90,10 @@ fn test_manifest_rejects_bad_ids() {
 	if _ := parse_manifest('1,p,1,A,a,1000\n1,p,1,B,b,2000') {
 		assert false, 'duplicate id should be rejected'
 	}
-	// a valid boundary id (255) is accepted
-	m := parse_manifest('255,p,1,F,h,1000') or { panic(err) }
-	assert m.handlers[0].id == 255
+	// the 14-bit boundary id (16383) is accepted, and a >255 id no longer truncates
+	m := parse_manifest('16383,p,1,F,h,1000\n300,p,1,G,g,1000') or { panic(err) }
+	assert m.handlers[0].id == 16383
+	assert m.lookup(300) or { panic('id 300 missing') }.fb == 'G' // not aliased to low byte 44
 }
 
 // Record kinds: a dumped stream mixes FB runs, THREAD intervals, ISR intervals, and (multi-core)
