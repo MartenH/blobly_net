@@ -183,6 +183,7 @@ mut:
 	trace_busy      bool   // a trace-dump transfer is in flight (single-flight guard)
 	trace_recording bool   // Record toggle: the target's capture is armed (optimistic)
 	trace_status    string // last dump status line, shown by the Trace Chart
+	trace_freeze    string // last TraceRsp state/cause (why it froze: trigger vs stop), from rx_loop
 }
 
 // SenderRT is a project sender bound to its channel iface (Generators panel).
@@ -766,6 +767,11 @@ fn rx_loop(app &App, ci int, iface string) {
 			// The capture dump now arrives as an ISO-TP block on 0x7E5 (not raw per-record
 			// frames): trace_dump_worker reassembles + decodes it on demand. The raw ISO-TP
 			// frames still show in the trace table above.
+			// A TraceRsp (per core) reports the capture state + freeze CAUSE — the only way to
+			// tell a trigger-frozen dump from a manual stop (the swimlane can't show that alone).
+			if f.id == a.manifest.frames.or_defaults().rsp && f.data.len >= 8 {
+				a.trace_freeze = trace_rsp_status(telem.decode_trace_rsp(f.data))
+			}
 		}
 		if a.recording {
 			a.rec << canlog.LogEntry{t_ms / 1000.0, chname, f}
@@ -4275,6 +4281,25 @@ fn (mut app App) set_trace_status(s string) {
 	app.mu.unlock()
 }
 
+// trace_rsp_status formats a TraceRsp for the Trace Chart: the reporting core, its capture state,
+// and — when frozen — WHY (the overrun trigger vs an explicit stop). A cross-core propagated
+// freeze reports "by trigger" on every core, since each core triggers on the shared freeze.
+fn trace_rsp_status(r telem.TraceRsp) string {
+	st := match r.state {
+		telem.state_idle { 'idle' }
+		telem.state_capturing { 'capturing' }
+		telem.state_full { 'full' }
+		telem.state_frozen { 'frozen' }
+		else { 'state ${r.state}' }
+	}
+	cause := match r.cause {
+		telem.freeze_trigger { ' by trigger' }
+		telem.freeze_stop { ' by stop' }
+		else { '' }
+	}
+	return 'core ${r.core}: ${st}${cause} · ${r.records_used}/${r.capacity} rec'
+}
+
 // set_trace_state updates the Record toggle + status under the mutex (shared with the worker).
 fn (mut app App) set_trace_state(recording bool, s string) {
 	app.mu.lock()
@@ -4489,6 +4514,7 @@ fn draw_tchart(mut app App, trecs []TRec) {
 	busy := app.trace_busy
 	recording := app.trace_recording
 	status := app.trace_status
+	freeze := app.trace_freeze
 	app.mu.unlock()
 	if busy {
 		vgui.text_dim('dumping…')
@@ -4516,6 +4542,9 @@ fn draw_tchart(mut app App, trecs []TRec) {
 	}
 	if status != '' {
 		vgui.text_dim(status)
+	}
+	if freeze != '' { // the target's own report: capturing / frozen-by-trigger / frozen-by-stop
+		vgui.text_dim('target: ${freeze}')
 	}
 	labels, bars, span := build_swimlane(app, trecs)
 	vgui.text('${trecs.len} records · ${labels.len} lanes · gaps = idle')

@@ -26,4 +26,11 @@ fn test_decode_trace_rsp() {
 	assert r.records_used == 64
 	assert r.capacity == 64
 	assert r.core == 0
+	assert r.cause == freeze_none // no cause bits set in the high nibble
+
+	// frozen by the trigger: b2 = state_frozen (low nibble) | freeze_trigger << 4 (high nibble)
+	t := decode_trace_rsp([op_status, 0, state_frozen | (freeze_trigger << 4), 64, 0, 64, 0, 1])
+	assert t.state == state_frozen
+	assert t.cause == freeze_trigger
+	assert t.core == 1
 }

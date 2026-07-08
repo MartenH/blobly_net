@@ -75,7 +75,8 @@ fn main() {
 				println('  [isr]     v${r.id()}  start ${r.start_us}us  cpu ${r.cpu_us}us')
 				total++
 			} else {
-				println('  handler ${r.id()}  start ${r.start_us}us  cpu ${r.cpu_us}us')
+				over := if r.flags() & telem.flag_overran != 0 { '  <- OVERRAN (trigger)' } else { '' }
+				println('  handler ${r.id()}  start ${r.start_us}us  cpu ${r.cpu_us}us${over}')
 				total++
 			}
 		}
