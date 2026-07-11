@@ -44,6 +44,7 @@ pub:
 	color     u32 // packed IM_COL32 (RGBA, little-endian ABGR in memory)
 	warn      int // overran/saturated -> red outline
 	preempted int // torn-edge mark at the slice's end (an involuntary cut)
+	style     int // 0 = running; 1 = ready-but-waiting (thin + dim)
 }
 
 // Link is one preemption cut: a vertical connector at time x from the victim's lane to the
