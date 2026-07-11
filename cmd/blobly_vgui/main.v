@@ -4672,6 +4672,7 @@ fn idle_recs(core int, start u64, dur u64) []TRec {
 			abs_us: s0
 			rec:    telem.Record{
 				entity_id: u16(telem.kind_thread) << 14 // THREAD id 0 = idle
+				info:      telem.reason_block // idle can't be "preempted" — no hatch
 				cpu_us:    u16(chunk)
 			}
 		}
@@ -4827,6 +4828,20 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
 			tmax = e
 		}
 	}
+	// Real thread slices per '<core>:<tid>' + thread name -> id: an FB record's duration is
+	// RESPONSE time (the hook brackets the dispatch by wall clock, preemptions included), so its
+	// bar is clipped to the slices where its own thread actually ran — the drawn bar is execution,
+	// the chop mirrors the thread lane, and "a function preempting its own thread" can't appear.
+	mut tslices := map[string][]Span{}
+	for tr in trecs {
+		if tr.rec.kind() == telem.kind_thread && tr.rec.id() != 0 {
+			tslices['${tr.core}:${tr.rec.id()}'] << Span{tr.abs_us, tr.abs_us + u64(tr.rec.cpu_us)}
+		}
+	}
+	mut tid_of := map[string]u16{}
+	for t in app.manifest.threads {
+		tid_of[t.name] = t.id
+	}
 	if tmin > tmax { // no interval records — nothing to draw
 		return labels, []vgui.Bar{}, f32(1)
 	}
@@ -4859,6 +4874,40 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
 			1
 		} else {
 			0
+		}
+	if r.kind() == telem.kind_fb {
+			s0 := tr.abs_us
+			e0 := s0 + u64(r.cpu_us)
+			mut hrow_thread := ''
+			if h := app.manifest.by_id[r.id()] {
+				hrow_thread = h.thread
+			}
+			tid := tid_of[hrow_thread] or { u16(0) }
+			if tid != 0 {
+				spans := tslices['${tr.core}:${tid}'] or { []Span{} }
+				mut chunks := []Span{}
+				for sp in spans {
+					cs := if sp.s > s0 { sp.s } else { s0 }
+					ce := if sp.e < e0 { sp.e } else { e0 }
+					if ce > cs {
+						chunks << Span{cs, ce}
+					}
+				}
+				if chunks.len > 0 {
+					hat := if chunks.len > 1 || preempted == 1 { 1 } else { 0 }
+					for ck in chunks {
+						bars << vgui.Bar{
+							t0:        f32(ck.s - tmin)
+							dur:       f32(ck.e - ck.s)
+							lane:      li
+							color:     vgui.rgba(c[0], c[1], c[2], 235)
+							warn:      warn
+							preempted: hat
+						}
+					}
+					continue
+				}
+			}
 		}
 		bars << vgui.Bar{
 			t0:        f32(tr.abs_us - tmin) // relative µs (f32-exact even for long captures)

@@ -23,6 +23,7 @@ pub:
 	fb        string
 	handler   string
 	period_us u32
+	thread    string // the [[partition.thread]] serving this handler (7th column; '' on old manifests)
 }
 
 // name is the FB.handler label used on lanes/legends.
@@ -187,6 +188,7 @@ pub fn parse_manifest(text string) !Manifest {
 			fb:        cols[3]
 			handler:   cols[4]
 			period_us: cols[5].u32()
+			thread:    if cols.len > 6 { cols[6] } else { '' }
 		}
 	}
 	if handlers.len == 0 {
