@@ -43,7 +43,16 @@ pub:
 	lane      int
 	color     u32 // packed IM_COL32 (RGBA, little-endian ABGR in memory)
 	warn      int // overran/saturated -> red outline
-	preempted int // hatch overlay
+	preempted int // torn-edge mark at the slice's end (an involuntary cut)
+}
+
+// Link is one preemption cut: a vertical connector at time x from the victim's lane to the
+// preemptor's lane (the dot end).
+pub struct Link {
+pub mut:
+	x         f32
+	lane_from int
+	lane_to   int
 }
 
 fn C.vgui_init(&char, int, int, int) int
@@ -61,7 +70,7 @@ fn C.vgui_add_font(&char, f32) int
 fn C.vgui_set_theme(int)
 fn C.vgui_set_font_scale(f32)
 fn C.vgui_dump_ppm(&char)
-fn C.vgui_swimlane(&char, int, &&char, voidptr, int, f32, &f64, &f64)
+fn C.vgui_swimlane(&char, int, &&char, voidptr, int, voidptr, int, f32, &f64, &f64)
 fn C.vgui_set_next_window(f32, f32, f32, f32)
 fn C.vgui_set_window_focus(&char)
 fn C.vgui_indent_x(f32)
@@ -613,7 +622,7 @@ pub fn table_freeze_top() {
 // swimlane draws a handler/task gantt in an ImPlot plot with native pan/zoom/time-axis. cursor_a
 // / cursor_b are the two draggable measurement markers (µs); the widget mutates them (drag or the
 // a/b keys) and the caller reads them back for the Δt readout.
-pub fn swimlane(id string, labels []string, bars []Bar, full_span_us f32, cursor_a &f64, cursor_b &f64) {
+pub fn swimlane(id string, labels []string, bars []Bar, links []Link, full_span_us f32, cursor_a &f64, cursor_b &f64) {
 	if bars.len == 0 {
 		return
 	}
@@ -621,8 +630,12 @@ pub fn swimlane(id string, labels []string, bars []Bar, full_span_us f32, cursor
 	for l in labels {
 		lp << l.str
 	}
+	mut lnp := unsafe { voidptr(nil) }
+	if links.len > 0 {
+		lnp = unsafe { voidptr(&links[0]) }
+	}
 	C.vgui_swimlane(id.str, labels.len, unsafe { &&char(lp.data) }, unsafe { &bars[0] },
-		bars.len, full_span_us, cursor_a, cursor_b)
+		bars.len, lnp, links.len, full_span_us, cursor_a, cursor_b)
 }
 
 // rgba packs a colour into IM_COL32 order (ABGR in memory).

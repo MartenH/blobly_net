@@ -111,7 +111,7 @@ fn main() {
 		vgui.set_next_window(1420, 120, 720, 340)
 		vgui.begin('Trace Chart')
 		vgui.text_dim('drag = pan · scroll = zoom · double-click = fit · A/B markers to measure')
-		vgui.swimlane('swim', labels, bars, full_span_us, &cur_a, &cur_b)
+		vgui.swimlane('swim', labels, bars, []vgui.Link{}, full_span_us, &cur_a, &cur_b)
 		vgui.end()
 
 		vgui.frame_end()
