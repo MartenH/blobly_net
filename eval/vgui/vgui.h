@@ -1,6 +1,6 @@
 #ifndef VGUI_H
 #define VGUI_H
-typedef struct { float t0, dur; int lane; unsigned int color; int warn; int preempted; } VBar;
+typedef struct { float t0, dur; int lane; unsigned int color; int warn; int preempted; int style; } VBar;
 typedef struct { float x; int lane_from, lane_to; } VLink; /* a preemption cut: victim -> preemptor */
 #ifdef __cplusplus
 extern "C" {
