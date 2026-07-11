@@ -4715,6 +4715,13 @@ fn split_lane_key(k string) (int, u16) {
 // manifest row); a real thread resolves its name from the manifest, else "thread N".
 fn thread_core_label(app &App, core int, id u16) string {
 	base := if id == 0 { 'idle' } else { app.manifest.thread_label(id) }
+	if id != 0 {
+		if t := app.manifest.by_tid[id] {
+			if t.prio >= 0 {
+				return 'c${core}  ${base} p${t.prio}'
+			}
+		}
+	}
 	return 'c${core}  ${base}'
 }
 

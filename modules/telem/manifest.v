@@ -38,6 +38,7 @@ pub:
 	id   u16 // 14-bit entity id space, same as handlers
 	name string
 	core int
+	prio int = -1 // RTOS priority (5th column; -1 = unknown / no RTOS prio, e.g. host threads)
 }
 
 // TraceFrames are the five observability CAN ids from the manifest's `# trace frames` section
@@ -148,6 +149,7 @@ pub fn parse_manifest(text string) !Manifest {
 				id:   tid
 				name: cols[2]
 				core: cols[3].int()
+				prio: if cols.len > 4 && cols[4] != '-' { cols[4].int() } else { -1 }
 			}
 			continue
 		}
