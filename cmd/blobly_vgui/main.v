@@ -4862,15 +4862,15 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
 		li := lane_of[key]
 		// colour by (block) core so cores are visually distinct.
 		c := lane_palette[tr.core % lane_palette.len]
-		// FB warn = overran/saturated; preempted marker = an FB flagged preempted OR a thread
-		// that was preempted out (reason). info means flags for FB, reason for THREAD.
+		// FB warn = overran/saturated (a deadline concept — belongs to the handler). The preempt
+		// hatch is THREAD-ONLY: preemption happens to threads, never to functions — the FB lane
+		// shows execution chunks and the thread lane below carries the scheduling story.
 		warn := if r.kind() == telem.kind_fb && (r.flags() & (telem.flag_overran | telem.flag_saturated)) != 0 {
 			1
 		} else {
 			0
 		}
-		preempted := if (r.kind() == telem.kind_fb && (r.flags() & telem.flag_preempted) != 0)
-			|| (r.kind() == telem.kind_thread && r.reason() == telem.reason_preempt) {
+		preempted := if r.kind() == telem.kind_thread && r.reason() == telem.reason_preempt {
 			1
 		} else {
 			0
@@ -4894,7 +4894,6 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
 					}
 				}
 				if chunks.len > 0 {
-					hat := if chunks.len > 1 || preempted == 1 { 1 } else { 0 }
 					for ck in chunks {
 						bars << vgui.Bar{
 							t0:        f32(ck.s - tmin)
@@ -4902,7 +4901,7 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
 							lane:      li
 							color:     vgui.rgba(c[0], c[1], c[2], 235)
 							warn:      warn
-							preempted: hat
+							preempted: 0 // functions don't get preempted — threads do (see the thread lane)
 						}
 					}
 					continue
