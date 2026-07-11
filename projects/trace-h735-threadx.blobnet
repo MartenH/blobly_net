@@ -1,0 +1,34 @@
+# Watch blobly_emb's h735_threadx trace on REAL hardware (STM32H735G-DK over PCAN).
+#
+# h735_threadx is the GENERATED ThreadX target: preemptive thread/ISR capture via the
+# exec-change hooks, served by the platform TraceModule over the [trace] endpoint bindings
+# (blobly_emb docs/com-modules.md). Command-driven — the bus is silent on the record id
+# until you ask: in the Trace Chart (≣): Record to arm (clears the recorder), Stop to
+# freeze + import the window, Dump to read it out as one ISO-TP block. The swimlane shows
+# comm (t1), app_main (t2), the ThreadX System Timer Thread (t3), the FDCAN Rx ISR (v35)
+# and SysTick (v15), resolved via the GENERATED manifest (absolute path below, so a
+# `make` in blobly_emb keeps it current — no stale copy).
+#
+# WIRING (this bench): the H735 FDCAN1 is on the PCAN connector silk-screened "can1",
+# which enumerates as SocketCAN `can0`. Bring it up first, classic CAN 500 kbit:
+#     sudo ip link set can0 up type can bitrate 500000
+#
+# Flash + run the target:
+#     (in blobly_emb)  make -C examples/h735_threadx flash
+# Then here:
+#     BLOBLY_PROJECT=projects/trace-h735-threadx.blobnet ./scripts/run_vgui.sh
+project:
+  name: trace-h735-threadx
+  version: 2
+
+buses:
+  - name: CAN1
+    adapter: socketcan
+    address: can0            # PCAN connector "can1" = SocketCAN can0 (see WIRING above)
+    protocol: can
+    bitrate: 500000
+    mode: monitor            # RX + on-demand trace tx; listen_only stays false so it ACKs the board
+    enabled: true
+    manifest: /home/mahi/repos/blobly_emb/examples/h735_threadx/gen/trace-manifest.csv
+    databases:
+      - dbc/trace.dbc

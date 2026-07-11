@@ -4275,7 +4275,7 @@ fn trace_dump_worker(app &App, core_mask u16) {
 		}
 	}
 	a.mu.lock()
-	a.trecs = recs
+	a.trecs = synthesize_idle(recs)
 	a.rev++
 	a.trace_recording = false // the dump froze the buffer; Record re-arms for a new window
 	a.trace_status = 'dumped ${got}/${nblocks} core block(s) · ${recs.len} records'
@@ -4570,7 +4570,7 @@ fn draw_tchart(mut app App, trecs []TRec) {
 		vgui.text_dim('target: ${freeze}')
 	}
 	labels, bars, span := build_swimlane(app, trecs)
-	vgui.text('${trecs.len} records · ${labels.len} lanes · gaps = idle')
+	vgui.text('${trecs.len} records · ${labels.len} lanes · idle lane = derived (gap between thread runs)')
 	vgui.text_dim('drag = pan · scroll = zoom · double-click = fit · A/B keys or drag markers (snap to edges; Alt = free) · hover a bar + M = measure it')
 	if bars.len > 0 {
 		// re-seat the A/B markers into view whenever a new dump (different span) loads.
@@ -4591,6 +4591,94 @@ fn draw_tchart(mut app App, trecs []TRec) {
 		vgui.text_dim('press Dump to capture (handler bars + thread/idle lanes appear here)')
 	}
 	vgui.end()
+}
+
+// A real thread interval, for the idle complement below.
+struct Span {
+	s u64
+	e u64
+}
+
+// synthesize_idle appends DERIVED idle bars (THREAD id 0) covering the gaps where no real thread
+// ran — per core, bounded by that core's captured window. The wire carries only real events (the
+// exec-hook targets emit nothing when nothing runs), so idle is the complement, computed here in
+// the viewer where it can be seen and measured. Cores that already stream REAL idle records (the
+// multicore host path) are left alone. Long gaps chunk at the u16 cpu_us ceiling.
+fn synthesize_idle(recs []TRec) []TRec {
+	mut out := recs.clone()
+	mut cores := []int{}
+	for tr in recs {
+		if tr.core !in cores {
+			cores << tr.core
+		}
+	}
+	for core in cores {
+		mut spans := []Span{}
+		mut lo := u64(0)
+		mut hi := u64(0)
+		mut first := true
+		mut has_real_idle := false
+		for tr in recs {
+			if tr.core != core {
+				continue
+			}
+			s0 := tr.abs_us
+			e0 := s0 + u64(tr.rec.cpu_us)
+			if first || s0 < lo {
+				lo = s0
+			}
+			if first || e0 > hi {
+				hi = e0
+			}
+			first = false
+			if tr.rec.kind() == telem.kind_thread {
+				if tr.rec.id() == 0 {
+					has_real_idle = true
+				} else {
+					spans << Span{s0, e0}
+				}
+			}
+		}
+		if first || has_real_idle || spans.len == 0 {
+			continue // nothing captured, or the target already reports idle itself
+		}
+		spans.sort(a.s < b.s)
+		mut cur := lo
+		for sp in spans {
+			if sp.s > cur {
+				out << idle_recs(core, cur, sp.s - cur)
+			}
+			if sp.e > cur {
+				cur = sp.e
+			}
+		}
+		if hi > cur {
+			out << idle_recs(core, cur, hi - cur)
+		}
+	}
+	return out
+}
+
+// idle_recs emits one derived idle interval as TRec(s), chunked so each fits Record's u16 cpu_us.
+fn idle_recs(core int, start u64, dur u64) []TRec {
+	mut out := []TRec{}
+	mut s0 := start
+	mut left := dur
+	for left > 0 {
+		chunk := if left > 0xFFFF { u64(0xFFFF) } else { left }
+		out << TRec{
+			ch:     0
+			core:   core
+			abs_us: s0
+			rec:    telem.Record{
+				entity_id: u16(telem.kind_thread) << 14 // THREAD id 0 = idle
+				cpu_us:    u16(chunk)
+			}
+		}
+		s0 += chunk
+		left -= chunk
+	}
+	return out
 }
 
 // build_swimlane turns decoded records into swimlane lanes + bars. A dumped stream mixes entity
