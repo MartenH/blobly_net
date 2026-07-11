@@ -1,6 +1,7 @@
 #ifndef VGUI_H
 #define VGUI_H
 typedef struct { float t0, dur; int lane; unsigned int color; int warn; int preempted; } VBar;
+typedef struct { float x; int lane_from, lane_to; } VLink; /* a preemption cut: victim -> preemptor */
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -20,7 +21,8 @@ void vgui_set_theme(int dark);
 void vgui_set_font_scale(float s);
 void vgui_dump_ppm(const char* path);
 void vgui_swimlane(const char* id, int n_lanes, const char** lane_labels,
-                   const VBar* bars, int n_bars, float full_span_us,
+                   const VBar* bars, int n_bars,
+                   const VLink* links, int n_links, float full_span_us,
                    double* cursor_a, double* cursor_b);
 void vgui_set_next_window(float,float,float,float);
 void vgui_set_window_focus(const char*);

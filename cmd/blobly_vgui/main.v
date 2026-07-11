@@ -4569,7 +4569,7 @@ fn draw_tchart(mut app App, trecs []TRec) {
 	if freeze != '' { // the target's own report: capturing / frozen-by-trigger / frozen-by-stop
 		vgui.text_dim('target: ${freeze}')
 	}
-	labels, bars, span := build_swimlane(app, trecs)
+	labels, bars, links, span := build_swimlane(app, trecs)
 	vgui.text('${trecs.len} records · ${labels.len} lanes · idle lane = derived (gap between thread runs)')
 	vgui.text_dim('drag = pan · scroll = zoom · double-click = fit · A/B keys or drag markers (snap to edges; Alt = free) · hover a bar + M = measure it')
 	if bars.len > 0 {
@@ -4579,7 +4579,7 @@ fn draw_tchart(mut app App, trecs []TRec) {
 			app.cursor_a = f64(span) * 0.25
 			app.cursor_b = f64(span) * 0.75
 		}
-		vgui.swimlane('##swim', labels, bars, span, &app.cursor_a, &app.cursor_b)
+		vgui.swimlane('##swim', labels, bars, links, span, &app.cursor_a, &app.cursor_b)
 		d := if app.cursor_b > app.cursor_a { app.cursor_b - app.cursor_a } else { app.cursor_a - app.cursor_b }
 		vgui.text('A ${app.cursor_a:.0f} us    B ${app.cursor_b:.0f} us    Δ ${d:.0f} us (${d / 1000:.3f} ms)')
 		vgui.same_line()
@@ -4725,9 +4725,9 @@ fn thread_core_label(app &App, core int, id u16) string {
 	return 'c${core}  ${base}'
 }
 
-fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
+fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, []vgui.Link, f32) {
 	if trecs.len == 0 {
-		return []string{}, []vgui.Bar{}, f32(1)
+		return []string{}, []vgui.Bar{}, []vgui.Link{}, f32(1)
 	}
 	// distinct lanes, first-seen. FB handler ids are globally unique; THREAD and ISR lanes are
 	// keyed by (block core, id) — via TRec.core from the block header — so each core's idle (id 0,
@@ -4850,7 +4850,7 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
 		tid_of[t.name] = t.id
 	}
 	if tmin > tmax { // no interval records — nothing to draw
-		return labels, []vgui.Bar{}, f32(1)
+		return labels, []vgui.Bar{}, []vgui.Link{}, f32(1)
 	}
 	span := if tmax > tmin { f32(tmax - tmin) } else { f32(1) }
 	mut bars := []vgui.Bar{cap: trecs.len}
@@ -4924,5 +4924,38 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, f32) {
 			preempted: preempted
 		}
 	}
-	return labels, bars, span
+	// preemption cut-links: for each slice that ended involuntarily (reason = preempt), find the
+	// thread that started at that instant (the exec hooks fire exit->enter back to back, so the
+	// preemptor's slice begins within a few µs) and connect victim -> preemptor at the cut.
+	mut links := []vgui.Link{}
+	for tr in trecs {
+		r := tr.rec
+		if r.kind() != telem.kind_thread || r.id() == 0 || r.reason() != telem.reason_preempt {
+			continue
+		}
+		cut := tr.abs_us + u64(r.cpu_us)
+		mut best_dt := u64(200) // preemptor must start within 200 µs of the cut
+		mut best_key := ''
+		for o in trecs {
+			if o.rec.kind() != telem.kind_thread || o.core != tr.core {
+				continue
+			}
+			if o.rec.id() == r.id() || o.rec.id() == 0 {
+				continue
+			}
+			dt := if o.abs_us >= cut { o.abs_us - cut } else { cut - o.abs_us }
+			if dt < best_dt {
+				best_dt = dt
+				best_key = 't${o.core}:${o.rec.id()}'
+			}
+		}
+		if best_key != '' {
+			links << vgui.Link{
+				x:         f32(cut - tmin)
+				lane_from: lane_of['t${tr.core}:${r.id()}']
+				lane_to:   lane_of[best_key]
+			}
+		}
+	}
+	return labels, bars, links, span
 }
