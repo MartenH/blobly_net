@@ -53,6 +53,13 @@ if [ "${DEPS:-0}" = "1" ] || [ ! -f eval/vgui/libvgui_c.a ]; then
 	sh eval/vgui/build_deps.sh
 fi
 
+# 1.5 the C++ glue is linked as a PREBUILT archive — V won't notice when the .cpp changes, and a
+#     stale archive against a changed call signature is an instant segfault. Rebuild when newer.
+if [ eval/vgui/vgui_glue.cpp -nt eval/vgui/libvgui_c.a ] || [ eval/vgui/vgui.h -nt eval/vgui/libvgui_c.a ]; then
+	echo "vgui_glue.cpp/vgui.h newer than libvgui_c.a — rebuilding the archive"
+	bash eval/vgui/build_deps.sh
+fi
+
 # 2. build (+ run). V's #flags (eval/vgui/vgui.v) carry the whole link line; in-proc bus
 #    needs -enable-globals. DBG=1 adds -g (source-level symbols for gdb).
 set -- -cc gcc -enable-globals -path "@vlib|@vmodules|modules|eval"

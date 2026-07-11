@@ -614,7 +614,8 @@ static double snap_to_edge(double t, const VBar* bars, int n_bars, double px) {
 // the hand-rolled zoom buttons + scrollbar. Bars are drawn into the plot's draw list in
 // pixel space via PlotToPixels, so they track pan/zoom exactly.
 void vgui_swimlane(const char* plot_id, int n_lanes, const char** lane_labels,
-                   const VBar* bars, int n_bars, float full_span_us,
+                   const VBar* bars, int n_bars,
+                   const VLink* links, int n_links, float full_span_us,
                    double* cursor_a, double* cursor_b) {
     // Crosshairs: ImPlot draws the follow-the-mouse crosshair; we add a time tag + hover tooltip
     // and two draggable A/B measurement lines below (all in data space, so pan/zoom-correct).
