@@ -15,7 +15,7 @@
 
 extern "C" {
 
-typedef struct { float t0, dur; int lane; unsigned int color; int warn; int preempted; } VBar;
+typedef struct { float t0, dur; int lane; unsigned int color; int warn; int preempted; int style; } VBar;
 typedef struct { float x; int lane_from, lane_to; } VLink;
 
 static GLFWwindow* g_win = nullptr;
@@ -647,10 +647,15 @@ void vgui_swimlane(const char* plot_id, int n_lanes, const char** lane_labels,
         ImPlot::PushPlotClipRect();
         for (int k=0;k<n_bars;k++){
             const VBar& bar = bars[k];
-            ImVec2 p0 = ImPlot::PlotToPixels((double)bar.t0, (double)bar.lane + 0.12);
-            ImVec2 p1 = ImPlot::PlotToPixels((double)(bar.t0+bar.dur), (double)bar.lane + 0.88);
+            /* style 1 = READY (preempted, waiting for the CPU): thin + dim, so the wait is
+             * visible without reading as execution. style 0 = running. */
+            float ytop = bar.style == 1 ? 0.40f : 0.12f;
+            float ybot = bar.style == 1 ? 0.60f : 0.88f;
+            ImVec2 p0 = ImPlot::PlotToPixels((double)bar.t0, (double)bar.lane + ytop);
+            ImVec2 p1 = ImPlot::PlotToPixels((double)(bar.t0+bar.dur), (double)bar.lane + ybot);
             if (p1.x < p0.x + 1) p1.x = p0.x + 1; // 1px floor
-            dl->AddRectFilled(p0, p1, bar.color, 1.5f);
+            unsigned int col = bar.style == 1 ? (bar.color & 0x00FFFFFFu) | 0x50000000u : bar.color;
+            dl->AddRectFilled(p0, p1, col, 1.5f);
             if (bar.warn) dl->AddRect(p0, p1, IM_COL32(233,60,60,255), 1.5f, 1.5f); // rounding, thickness
             if (bar.preempted && (p1.x - p0.x) >= 3) {
                 /* Preemption is an EVENT at the slice's END, not a state of the slice: the thread
