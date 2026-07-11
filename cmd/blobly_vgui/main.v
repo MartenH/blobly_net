@@ -4839,14 +4839,68 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, []vgui.Link, f3
 			tmax = e
 		}
 	}
-	// Real thread slices per '<core>:<tid>' + thread name -> id: an FB record's duration is
-	// RESPONSE time (the hook brackets the dispatch by wall clock, preemptions included), so its
-	// bar is clipped to the slices where its own thread actually ran — the drawn bar is execution,
-	// the chop mirrors the thread lane, and "a function preempting its own thread" can't appear.
-	mut tslices := map[string][]Span{}
+	// TIME-BASE RECONSTRUCTION. A thread record's cpu_us is ISR-SUBTRACTED duration, but bar
+	// positions are wall time — drawn as [start, start+cpu] a slice ends BEFORE reality and
+	// overlaps ISR bars. Re-add the overlapping ISR durations to get the wall extent, then chop
+	// the slice around the ISR spans: what remains is where the thread's code actually ran.
+	// FB bars clip to these chunks (an FB record's duration IS wall — the Loom hook brackets by
+	// clock), so neither a thread nor its FB can ever overlap an ISR again.
+	mut isr_spans := map[int][]Span{}
 	for tr in trecs {
-		if tr.rec.kind() == telem.kind_thread && tr.rec.id() != 0 {
-			tslices['${tr.core}:${tr.rec.id()}'] << Span{tr.abs_us, tr.abs_us + u64(tr.rec.cpu_us)}
+		if tr.rec.kind() == telem.kind_isr {
+			isr_spans[tr.core] << Span{tr.abs_us, tr.abs_us + u64(tr.rec.cpu_us)}
+		}
+	}
+	for c, _ in isr_spans {
+		isr_spans[c].sort(a.s < b.s)
+	}
+	mut tsl_key := []string{} // '<core>:<tid>' per thread slice
+	mut tsl_core := []int{}
+	mut tsl_id := []u16{}
+	mut tsl_s := []u64{} // wall start
+	mut tsl_e := []u64{} // wall END (ISR-extended)
+	mut tsl_pre := []bool{} // ended by preemption
+	mut tsl_chunks := [][]Span{} // run chunks: [s..e] minus ISR spans
+	for tr in trecs {
+		if tr.rec.kind() != telem.kind_thread || tr.rec.id() == 0 {
+			continue
+		}
+		s0 := tr.abs_us
+		mut e0 := s0 + u64(tr.rec.cpu_us)
+		spans := isr_spans[tr.core] or { []Span{} }
+		for isp in spans {
+			if isp.s >= s0 && isp.s < e0 {
+				e0 += isp.e - isp.s // an ISR inside the slice: the wall end moves right
+			}
+		}
+		mut chunks := []Span{}
+		mut cur := s0
+		for isp in spans {
+			if isp.e <= cur || isp.s >= e0 {
+				continue
+			}
+			if isp.s > cur {
+				chunks << Span{cur, isp.s}
+			}
+			if isp.e > cur {
+				cur = isp.e
+			}
+		}
+		if e0 > cur {
+			chunks << Span{cur, e0}
+		}
+		tsl_key << '${tr.core}:${tr.rec.id()}'
+		tsl_core << tr.core
+		tsl_id << tr.rec.id()
+		tsl_s << s0
+		tsl_e << e0
+		tsl_pre << (tr.rec.reason() == telem.reason_preempt)
+		tsl_chunks << chunks
+	}
+	mut tslices := map[string][]Span{}
+	for i, k in tsl_key {
+		for ch in tsl_chunks[i] {
+			tslices[k] << ch
 		}
 	}
 	mut tid_of := map[string]u16{}
@@ -4864,6 +4918,9 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, []vgui.Link, f3
 		if r.kind() == telem.kind_fb {
 			key = 'h${r.id()}'
 		} else if r.kind() == telem.kind_thread {
+			if r.id() != 0 {
+				continue // real thread slices are drawn from the reconstructed chunks below
+			}
 			key = 't${tr.core}:${r.id()}'
 		} else if r.kind() == telem.kind_isr {
 			key = 'i${tr.core}:${r.id()}'
@@ -4928,36 +4985,65 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, []vgui.Link, f3
 			preempted: preempted
 		}
 	}
-	// preemption cut-links: for each slice that ended involuntarily (reason = preempt), find the
-	// thread that started at that instant (the exec hooks fire exit->enter back to back, so the
-	// preemptor's slice begins within a few µs) and connect victim -> preemptor at the cut.
+	// thread execution chunks (ISR-chopped, wall-consistent), the torn edge on the LAST chunk of
+	// a preempted slice, and a thin dim READY bar from the cut to the thread's next slice — the
+	// whole preempted wait is visible, not just the cut instant.
+	for i, k in tsl_key {
+		li := lane_of['t${k}']
+		c := lane_palette[tsl_core[i] % lane_palette.len]
+		nch := tsl_chunks[i].len
+		for j, ch in tsl_chunks[i] {
+			bars << vgui.Bar{
+				t0:        f32(ch.s - tmin)
+				dur:       f32(ch.e - ch.s)
+				lane:      li
+				color:     vgui.rgba(c[0], c[1], c[2], 235)
+				preempted: if tsl_pre[i] && j == nch - 1 { 1 } else { 0 }
+			}
+		}
+		if tsl_pre[i] {
+			// ready-but-waiting: until this thread's next slice starts
+			mut nxt := u64(0)
+			for j2, k2 in tsl_key {
+				if k2 == k && tsl_s[j2] > tsl_e[i] && (nxt == 0 || tsl_s[j2] < nxt) {
+					nxt = tsl_s[j2]
+				}
+			}
+			if nxt > tsl_e[i] {
+				bars << vgui.Bar{
+					t0:    f32(tsl_e[i] - tmin)
+					dur:   f32(nxt - tsl_e[i])
+					lane:  li
+					color: vgui.rgba(c[0], c[1], c[2], 90)
+					style: 1
+				}
+			}
+		}
+	}
+	// preemption cut-links: victim -> the thread whose slice starts at the (wall) cut.
 	mut links := []vgui.Link{}
-	for tr in trecs {
-		r := tr.rec
-		if r.kind() != telem.kind_thread || r.id() == 0 || r.reason() != telem.reason_preempt {
+	for i, k in tsl_key {
+		if !tsl_pre[i] {
 			continue
 		}
-		cut := tr.abs_us + u64(r.cpu_us)
-		mut best_dt := u64(200) // preemptor must start within 200 µs of the cut
+		cut := tsl_e[i]
+		mut best_dt := u64(200)
 		mut best_key := ''
-		for o in trecs {
-			if o.rec.kind() != telem.kind_thread || o.core != tr.core {
+		for j2, k2 in tsl_key {
+			if k2 == k || tsl_core[j2] != tsl_core[i] {
 				continue
 			}
-			if o.rec.id() == r.id() || o.rec.id() == 0 {
-				continue
-			}
-			dt := if o.abs_us >= cut { o.abs_us - cut } else { cut - o.abs_us }
+			dt := if tsl_s[j2] >= cut { tsl_s[j2] - cut } else { cut - tsl_s[j2] }
 			if dt < best_dt {
 				best_dt = dt
-				best_key = 't${o.core}:${o.rec.id()}'
+				best_key = k2
 			}
 		}
 		if best_key != '' {
 			links << vgui.Link{
 				x:         f32(cut - tmin)
-				lane_from: lane_of['t${tr.core}:${r.id()}']
-				lane_to:   lane_of[best_key]
+				lane_from: lane_of['t${k}']
+				lane_to:   lane_of['t${best_key}']
 			}
 		}
 	}
