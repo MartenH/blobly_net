@@ -4736,6 +4736,9 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, []vgui.Link, f3
 	// distinct lanes, first-seen. FB handler ids are globally unique; THREAD and ISR lanes are
 	// keyed by (block core, id) — via TRec.core from the block header — so each core's idle (id 0,
 	// shared across cores) and per-core ISR vectors get their own lane rather than merging.
+	// lanes are laid out in a STABLE order (not first-seen-in-capture, which shuffles every
+	// dump): handlers by manifest id, threads by RTOS priority (p0 at the top — the hierarchy
+	// preemption is read against), unknown-prio threads after, by id.
 	mut hids := []u16{}
 	mut sh := map[u16]bool{}
 	mut tkeys := []string{} // '<core>:<id>' for THREAD (incl. idle id 0)
@@ -4763,6 +4766,28 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, []vgui.Link, f3
 			}
 		}
 	}
+	hids.sort()
+	tkeys.sort_with_compare(fn [app] (a &string, b &string) int {
+		_, aid := split_lane_key(a)
+		_, bid := split_lane_key(b)
+		ap := if t := app.manifest.by_tid[aid] { t.prio } else { -1 }
+		bp := if t := app.manifest.by_tid[bid] { t.prio } else { -1 }
+		// known priorities first (ascending: p0 on top), then unknowns by id
+		if ap >= 0 && bp >= 0 {
+			if ap != bp {
+				return if ap < bp { -1 } else { 1 }
+			}
+			return if aid < bid { -1 } else { if aid > bid { 1 } else { 0 } }
+		}
+		if ap >= 0 {
+			return -1
+		}
+		if bp >= 0 {
+			return 1
+		}
+		return if aid < bid { -1 } else { if aid > bid { 1 } else { 0 } }
+	})
+	ikeys.sort()
 	// lay lanes out grouped by core: FB (handler) lanes first (by core), then a separator + thread
 	// lanes (by core; real threads before idle within a core), then a separator + ISR lanes. So
 	// each core's fb / thread / interrupt traces are visually grouped and split.
