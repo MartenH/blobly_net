@@ -140,6 +140,15 @@ fn (mut c SoftChannel) tx(payload []u8) ! {
 }
 
 // rx_raw returns the data of the next frame addressed to rx_id within the timeout.
+// drain_quiet reads and discards rx-id frames until the bus has been quiet on that id for
+// quiet_ms — used to flush a stale in-flight transfer (e.g. a timed-out dump still streaming)
+// before re-requesting, so the next recv() starts on a fresh First Frame.
+pub fn (mut c SoftChannel) drain_quiet(quiet_ms int) {
+	for {
+		_ := c.rx_raw(quiet_ms) or { return } // quiet window reached — done
+	}
+}
+
 fn (mut c SoftChannel) rx_raw(timeout_ms int) ![]u8 {
 	deadline := time.ticks() + i64(timeout_ms)
 	for {
