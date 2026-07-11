@@ -16,6 +16,7 @@
 extern "C" {
 
 typedef struct { float t0, dur; int lane; unsigned int color; int warn; int preempted; } VBar;
+typedef struct { float x; int lane_from, lane_to; } VLink;
 
 static GLFWwindow* g_win = nullptr;
 static bool g_event_driven = true;
@@ -661,6 +662,16 @@ void vgui_swimlane(const char* plot_id, int n_lanes, const char** lane_labels,
                     dl->AddLine(ImVec2(hx, p0.y), ImVec2(hx - (p1.y - p0.y) * 0.6f, p1.y), IM_COL32(255,255,255,170), 1.0f);
                 dl->AddLine(ImVec2(p1.x, p0.y), ImVec2(p1.x, p1.y), IM_COL32(255,255,255,220), 1.5f);
             }
+        }
+        /* preemption cut-links: a thin vertical connector at the cut instant, from the victim's
+         * lane to the preemptor's — preemption is a RELATION (who took the CPU from whom), and a
+         * mark on the victim alone reads as if the victim did something. Dot = the preemptor. */
+        for (int k = 0; k < n_links; k++) {
+            const VLink& ln = links[k];
+            ImVec2 a = ImPlot::PlotToPixels((double)ln.x, (double)ln.lane_from + 0.5);
+            ImVec2 b = ImPlot::PlotToPixels((double)ln.x, (double)ln.lane_to + 0.5);
+            dl->AddLine(a, b, IM_COL32(255, 200, 90, 140), 1.0f);
+            dl->AddCircleFilled(b, 2.5f, IM_COL32(255, 200, 90, 220));
         }
         ImPlot::PopPlotClipRect();
 
