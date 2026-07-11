@@ -4260,9 +4260,13 @@ fn trace_dump_worker(app &App, core_mask u16) {
 		mut block := []u8{}
 		mut have := false
 		for attempt in 0 .. 3 {
-			block = ch.recv(400) or {
+			block = ch.recv(1000) or {
 				recv_err = err.msg()
 				if attempt < 2 {
+					// a stale stream (a previous timed-out dump still trickling CFs) makes the
+					// next recv join mid-stream ('unexpected PCI 0x2x') — drain until the bus is
+					// quiet on the record id, then re-issue the dump (the frozen ring re-streams).
+					ch.drain_quiet(150)
 					a.tx_on(iface, transport.CanFrame{
 						id:       f.cmd
 						extended: cmd_ext
