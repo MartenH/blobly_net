@@ -4643,16 +4643,20 @@ fn synthesize_idle(recs []TRec) []TRec {
 			continue // nothing captured, or the target already reports idle itself
 		}
 		spans.sort(a.s < b.s)
+		// Gaps below ~20 us are context-switch/kernel/hook overhead between back-to-back slices —
+		// a READY thread is usually waiting through them, so painting them "idle" lies at high
+		// zoom (idle can't run while someone is ready). Only real gaps become idle bars.
+		min_gap := u64(20)
 		mut cur := lo
 		for sp in spans {
-			if sp.s > cur {
+			if sp.s > cur && sp.s - cur >= min_gap {
 				out << idle_recs(core, cur, sp.s - cur)
 			}
 			if sp.e > cur {
 				cur = sp.e
 			}
 		}
-		if hi > cur {
+		if hi > cur && hi - cur >= min_gap {
 			out << idle_recs(core, cur, hi - cur)
 		}
 	}
