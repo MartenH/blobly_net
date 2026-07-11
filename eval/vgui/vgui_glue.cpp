@@ -651,8 +651,15 @@ void vgui_swimlane(const char* plot_id, int n_lanes, const char** lane_labels,
             dl->AddRectFilled(p0, p1, bar.color, 1.5f);
             if (bar.warn) dl->AddRect(p0, p1, IM_COL32(233,60,60,255), 1.5f, 1.5f); // rounding, thickness
             if (bar.preempted && (p1.x - p0.x) >= 3) {
-                for (float hx=p0.x+3; hx<p1.x; hx+=5)
-                    dl->AddLine(ImVec2(hx,p0.y), ImVec2(hx-(p1.y-p0.y),p1.y), IM_COL32(255,255,255,150), 1.0f);
+                /* Preemption is an EVENT at the slice's END, not a state of the slice: the thread
+                 * ran solidly and was then cut. Hatching the whole body read as "spent the slice
+                 * being preempted" (while its FB drew solid above). Mark the CUT instead: a short
+                 * torn-edge hatch on the trailing sliver + a bright edge line where it happened. */
+                float tail = p1.x - p0.x;
+                if (tail > 10.0f) tail = 10.0f;
+                for (float hx = p1.x - tail + 3; hx < p1.x; hx += 4)
+                    dl->AddLine(ImVec2(hx, p0.y), ImVec2(hx - (p1.y - p0.y) * 0.6f, p1.y), IM_COL32(255,255,255,170), 1.0f);
+                dl->AddLine(ImVec2(p1.x, p0.y), ImVec2(p1.x, p1.y), IM_COL32(255,255,255,220), 1.5f);
             }
         }
         ImPlot::PopPlotClipRect();
