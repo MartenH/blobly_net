@@ -4251,8 +4251,32 @@ fn trace_dump_worker(app &App, core_mask u16) {
 	nblocks := mask_popcount(core_mask)
 	mut recs := []TRec{}
 	mut got := 0
+	mut recv_err := ''
 	for _ in 0 .. nblocks {
-		block := ch.recv(400) or { break } // no more blocks (timed out)
+		// Reassembly can fail transiently (a lost/reordered frame -> the SN check errors out
+		// cleanly). The target's ring stays FROZEN after a dump, so re-issuing op_dump simply
+		// re-streams the same block — retry a couple of times and SURFACE the error text
+		// (it names the cause: SN gap vs wrong PCI vs timeout) instead of swallowing it.
+		mut block := []u8{}
+		mut have := false
+		for attempt in 0 .. 3 {
+			block = ch.recv(400) or {
+				recv_err = err.msg()
+				if attempt < 2 {
+					a.tx_on(iface, transport.CanFrame{
+						id:       f.cmd
+						extended: cmd_ext
+						data:     telem.encode_trace_cmd(telem.op_dump, telem.filter_all, core_mask)
+					})
+				}
+				continue
+			}
+			have = true
+			break
+		}
+		if !have {
+			break // no more blocks (or the transfer kept failing — recv_err says why)
+		}
 		got++
 		mut base := u32(0) // current epoch origin; each block re-anchors from its own epoch record
 		mut cur_core := 0  // the block's core, from its leading header (idle/threads carry no core)
@@ -4278,7 +4302,11 @@ fn trace_dump_worker(app &App, core_mask u16) {
 	a.trecs = synthesize_idle(recs)
 	a.rev++
 	a.trace_recording = false // the dump froze the buffer; Record re-arms for a new window
-	a.trace_status = 'dumped ${got}/${nblocks} core block(s) · ${recs.len} records'
+	a.trace_status = if got < nblocks && recv_err != '' {
+		'dumped ${got}/${nblocks} core block(s) · ${recs.len} records · last error: ${recv_err}'
+	} else {
+		'dumped ${got}/${nblocks} core block(s) · ${recs.len} records'
+	}
 	a.mu.unlock()
 	a.trace_done()
 }
