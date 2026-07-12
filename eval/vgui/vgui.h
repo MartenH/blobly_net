@@ -44,6 +44,8 @@ int  vgui_checkbox(const char* label, int cur);
 void vgui_text_colored(int r, int g, int b, const char* s);
 int  vgui_small_button(const char* label);
 int  vgui_begin_popup_context_item(const char* id);
+int  vgui_begin_popup_context_window(void);
+void vgui_clipboard_set(const char* s);
 void vgui_end_popup(void);
 void vgui_spacing(void);
 void vgui_separator(void);
