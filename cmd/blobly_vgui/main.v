@@ -4485,12 +4485,33 @@ fn draw_shell(mut app App) {
 	if follow {
 		vgui.scroll_bottom()
 	}
+	// right-click: copy out of the scrollback (the INPUT line already has native ImGui
+	// clipboard handling — Ctrl+C/V/X and selection work there out of the box).
+	if vgui.begin_popup_context_window() {
+		if vgui.menu_item('Copy last response') {
+			vgui.clipboard_set(shell_last_response(lines))
+		}
+		if vgui.menu_item('Copy all') {
+			vgui.clipboard_set(lines.join('\n'))
+		}
+		if vgui.menu_item('Clear') {
+			app.mu.lock()
+			app.shell_lines.clear()
+			app.mu.unlock()
+		}
+		vgui.end_popup()
+	}
 	vgui.child_end()
 	vgui.set_next_item_width(-40 * app.ui_scale)
 	if vgui.console_input('##shellin', mut app.shell_buf) {
 		line := vgui.buf_str(app.shell_buf).trim_space()
 		app.shell_buf[0] = 0
-		if line != '' {
+		if line == 'clear' {
+			// a terminal's clear is a CLIENT operation — the scrollback is ours, not the target's
+			app.mu.lock()
+			app.shell_lines.clear()
+			app.mu.unlock()
+		} else if line != '' {
 			if busy {
 				app.shell_append('(busy — previous command still running)')
 			} else {
@@ -4503,6 +4524,18 @@ fn draw_shell(mut app App) {
 		vgui.text_dim('…')
 	}
 	vgui.end()
+}
+
+// shell_last_response is the scrollback tail after the last echoed prompt ('> ' line) —
+// what right-click 'Copy last response' puts on the clipboard (e.g. one ps table).
+fn shell_last_response(lines []string) string {
+	mut start := 0
+	for i, l in lines {
+		if l.starts_with('> ') {
+			start = i + 1
+		}
+	}
+	return lines[start..].join('\n')
 }
 
 // shell_append adds one echo/response chunk to the Shell scrollback (thread-safe, capped).

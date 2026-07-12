@@ -298,6 +298,11 @@ void vgui_menu_end() { ImGui::EndMenu(); }
 // right-click context menu on the LAST-submitted item: returns 1 if open (render menu_items
 // then call vgui_end_popup). `id` keeps each row's menu distinct.
 int  vgui_begin_popup_context_item(const char* id) { return ImGui::BeginPopupContextItem(id) ? 1 : 0; }
+// right-click context menu for the CURRENT WINDOW/child (no prior item needed) — the
+// scrollback consoles use it for copy actions. Pair with vgui_end_popup.
+int  vgui_begin_popup_context_window() { return ImGui::BeginPopupContextWindow() ? 1 : 0; }
+// put text on the OS clipboard (GLFW backend bridges it; WSLg bridges to Windows).
+void vgui_clipboard_set(const char* s) { ImGui::SetClipboardText(s); }
 void vgui_end_popup() { ImGui::EndPopup(); }
 int  vgui_menu_item(const char* label) { return ImGui::MenuItem(label) ? 1 : 0; }
 int  vgui_menu_item_check(const char* label, int checked) {
