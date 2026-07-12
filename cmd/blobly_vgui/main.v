@@ -187,6 +187,12 @@ mut:
 	cursor_a        f64    // Trace Chart measurement markers A/B (µs); the swimlane drags them
 	cursor_b        f64
 	cursor_span     f64 // the span the cursors were placed for — re-seat A/B when a new dump loads
+	// Shell (the target's CAN command line; one worker spawn per submitted line)
+	show_shell   bool
+	shell_buf    []u8     // the input line (persistent; edited in place by console_input)
+	shell_lines  []string // scrollback (guarded by mu; the worker appends)
+	shell_busy   bool     // single-flight: one command in flight at a time
+	shell_follow bool     // new output arrived — pin the scrollback to the bottom next frame
 }
 
 // SenderRT is a project sender bound to its channel iface (Generators panel).
@@ -1013,6 +1019,7 @@ fn main() {
 	app.send_data_buf = mkbuf('01', 64)
 	app.diag_did_buf = mkbuf('F190', 16)
 	app.script_path_buf = mkbuf('tests/diag_basic.lua', 256)
+	app.shell_buf = mkbuf('', 128)
 	app.trace_filter_buf = mkbuf('', 64)
 	app.trace_filter2_buf = mkbuf('', 64)
 	app.symbol_filter_buf = mkbuf('', 64)
@@ -1136,6 +1143,9 @@ fn main() {
 		if app.show_diag {
 			draw_diag(mut app)
 		}
+		if app.show_shell {
+			draw_shell(mut app)
+		}
 		if app.show_doip {
 			draw_doip(mut app)
 		}
@@ -1223,6 +1233,9 @@ fn draw_activity_bar(mut app App) {
 	if vgui.toggle_button('Dia', app.show_diag, -1) {
 		app.show_diag = !app.show_diag
 	}
+	if vgui.toggle_button('Shl', app.show_shell, -1) {
+		app.show_shell = !app.show_shell
+	}
 	if vgui.toggle_button('DoI', app.show_doip, -1) {
 		app.show_doip = !app.show_doip
 	}
@@ -1298,6 +1311,7 @@ fn draw_menubar(mut app App, rx u64) {
 			app.show_signals = vgui.menu_item_check('Signals', app.show_signals)
 			app.show_graphics = vgui.menu_item_check('Graphics', app.show_graphics)
 			app.show_diag = vgui.menu_item_check('Diagnostics', app.show_diag)
+			app.show_shell = vgui.menu_item_check('Shell', app.show_shell)
 			app.show_doip = vgui.menu_item_check('DoIP Discovery', app.show_doip)
 			app.show_network = vgui.menu_item_check('Network', app.show_network)
 			app.show_gen = vgui.menu_item_check('Generators', app.show_gen)
@@ -2608,6 +2622,7 @@ sets the frame rate and UI scale.
 - **Signals** — decode the selected message; add signals to Graphics
 - **Graphics** — live ImPlot signal plots (multi-axis, real values)
 - **Trace Chart** — telemetry handler swimlane
+- **Shell** — command line on the target (over CAN; Up/Down = history)
 - **Generators** — quick send + saved senders (manual / on-key / cyclic)
 - **Diagnostics / DoIP** — UDS diagnostics and DoIP discovery
 - **Script** — run a Lua test file
@@ -3281,6 +3296,7 @@ fn build_layout() {
 	vgui.dock_window('Trace Chart', chart)
 	vgui.dock_window('Signals', midnode)
 	vgui.dock_window('Diagnostics', midnode)
+	vgui.dock_window('Shell', midnode)
 	vgui.dock_window('DoIP Discovery', midnode)
 	vgui.dock_window('Graphics', bottom)
 	vgui.dock_window('Generators', bottom)
@@ -4432,6 +4448,128 @@ fn printable(b []u8) string {
 		s += if c >= 0x20 && c < 0x7f { c.ascii_str() } else { '.' }
 	}
 	return s
+}
+
+// draw_shell is the target's CAN shell: a scrollback plus one input line pinned at the bottom.
+// Enter sends the line as ONE raw frame on the manifest's shell `in` id; the response streams
+// back as an ISO-TP block on `out` (host flow-controls on `fc`) — the trace-dump wire, reused.
+// Line editing is entirely client-side: backspace/delete/cursor are native ImGui, Up/Down are
+// console_input's history. The target only ever sees complete lines (<= 8 chars, one frame).
+fn draw_shell(mut app App) {
+	vis, op := vgui.begin_closable('Shell', app.show_shell)
+	app.show_shell = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	if !app.running {
+		vgui.text_dim('press Start (needs a shell-enabled target on the bus)')
+		vgui.end()
+		return
+	}
+	app.mu.lock()
+	lines := app.shell_lines.clone()
+	busy := app.shell_busy
+	follow := app.shell_follow
+	app.shell_follow = false
+	app.mu.unlock()
+	// the scrollback fills the panel minus one input row at the bottom (negative child height)
+	vgui.child_begin('##shellout', -30 * app.ui_scale)
+	for l in lines {
+		if l.starts_with('> ') {
+			vgui.text_dim(l) // the echoed command, dimmed like a prompt
+		} else {
+			vgui.text(l)
+		}
+	}
+	if follow {
+		vgui.scroll_bottom()
+	}
+	vgui.child_end()
+	vgui.set_next_item_width(-40 * app.ui_scale)
+	if vgui.console_input('##shellin', mut app.shell_buf) {
+		line := vgui.buf_str(app.shell_buf).trim_space()
+		app.shell_buf[0] = 0
+		if line != '' {
+			if busy {
+				app.shell_append('(busy — previous command still running)')
+			} else {
+				spawn shell_worker(app, line)
+			}
+		}
+	}
+	if busy {
+		vgui.same_line()
+		vgui.text_dim('…')
+	}
+	vgui.end()
+}
+
+// shell_append adds one echo/response chunk to the Shell scrollback (thread-safe, capped).
+fn (mut app App) shell_append(s string) {
+	app.mu.lock()
+	for l in s.split_into_lines() {
+		app.shell_lines << l
+	}
+	if app.shell_lines.len > 500 {
+		app.shell_lines = app.shell_lines[app.shell_lines.len - 500..].clone()
+	}
+	app.shell_follow = true
+	app.mu.unlock()
+	vgui.wake()
+}
+
+// shell_worker sends one command line and collects the response. Mirrors diag/trace workers:
+// a single-flight busy flag, a short-lived spawn, a blocking ISO-TP recv, results under mu +
+// wake. The shell ids come from the manifest's `# shell frames` section (or loom2v defaults).
+fn shell_worker(app &App, line string) {
+	mut a := unsafe { app }
+	a.mu.lock()
+	if a.shell_busy {
+		a.mu.unlock()
+		return
+	}
+	a.shell_busy = true
+	a.mu.unlock()
+	defer {
+		a.mu.lock()
+		a.shell_busy = false
+		a.mu.unlock()
+		vgui.wake()
+	}
+	a.shell_append('> ' + line)
+	iface := a.trace_iface()
+	if iface == '' {
+		a.shell_append('(no running channel)')
+		return
+	}
+	if line.len > 8 {
+		a.shell_append('(line too long — the target takes one 8-byte frame per command)')
+		return
+	}
+	sh := a.manifest.shell.or_defaults()
+	// the host is the ISO-TP receiver: flow control out on `fc`, the response in on `out`
+	// (opened before the command is sent, so the socket buffers the target's first frame).
+	mut ch := isotp.open_software(a.bitrate_iface(iface), sh.fc, sh.out, trace_ext(sh.out)) or {
+		a.shell_append('(open ${iface}: ${err})')
+		return
+	}
+	defer {
+		ch.close()
+	}
+	if !a.tx_on(iface, transport.CanFrame{
+		id:       sh.input
+		extended: trace_ext(sh.input)
+		data:     line.bytes()
+	}) {
+		a.shell_append('(send failed on ${iface})')
+		return
+	}
+	rsp := ch.recv(1500) or {
+		a.shell_append('(no response: ${err})')
+		return
+	}
+	a.shell_append(rsp.bytestr().trim_right('\n'))
 }
 
 fn draw_diag(mut app App) {
