@@ -111,6 +111,8 @@ fn C.vgui_toggle_button(&char, int, f32) int
 fn C.vgui_child_wh(&char, f32, f32)
 fn C.vgui_child_end()
 fn C.vgui_input_text(&char, &char, int) int
+fn C.vgui_console_input(&char, &char, int) int
+fn C.vgui_scroll_bottom()
 fn C.vgui_input_double(&char, &f64) int
 fn C.vgui_input_int(&char, &int) int
 fn C.vgui_set_next_item_width(f32)
@@ -443,6 +445,18 @@ pub fn child_end() {
 // returns true the frame the text changed. Read the value back with buf_str(buf).
 pub fn input_text(label string, mut buf []u8) bool {
 	return C.vgui_input_text(label.str, unsafe { &char(&buf[0]) }, buf.len) == 1
+}
+
+// console_input is input_text with console semantics: returns true on ENTER (not on change),
+// keeps focus after submit, and Up/Down recall previously submitted lines (history lives in
+// the glue -- imgui requires history edits inside the InputText callback).
+pub fn console_input(label string, mut buf []u8) bool {
+	return C.vgui_console_input(label.str, unsafe { &char(&buf[0]) }, buf.len) == 1
+}
+
+// scroll_bottom pins the current child's scroll to the bottom (console output follows).
+pub fn scroll_bottom() {
+	C.vgui_scroll_bottom()
 }
 
 // input_double edits *v in place (numeric input, e.g. a signal value). Returns true on change.

@@ -156,6 +156,22 @@ dump_fc,0x7e6,can0
 	assert d.cmd == id_trace_cmd && d.record == id_record && d.dump_fc == id_dump_fc
 }
 
+// The `# shell frames` section carries the CAN shell's three ids (in/fc/out). A manifest
+// without the section leaves them zero and or_defaults() fills loom2v's [shell] defaults.
+fn test_manifest_shell_frames() {
+	m := parse_manifest('0,app,0,F,h,5000
+# shell frames: frame,id,bus
+in,0x7f0,can0
+fc,0x7f2,can0
+out,0x7f1,can0
+') or { panic(err) }
+	assert m.shell.input == 0x7F0 && m.shell.fc == 0x7F2 && m.shell.out == 0x7F1
+	m2 := parse_manifest('0,app,0,F,h,5000') or { panic(err) }
+	assert m2.shell.input == 0 // absent
+	d := m2.shell.or_defaults()
+	assert d.input == 0x7F0 && d.fc == 0x7F2 && d.out == 0x7F1
+}
+
 // A manifest may carry thread rows (thread,id,name,core) to label the swimlane thread lanes,
 // alongside the handler rows. thread_label resolves them; unknown ids synthesise "thread N".
 fn test_manifest_threads() {
