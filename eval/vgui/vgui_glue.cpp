@@ -11,6 +11,7 @@
 #endif
 #include <GLFW/glfw3.h>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 
 extern "C" {
@@ -437,6 +438,49 @@ void vgui_child_end() { ImGui::EndChild(); }
 int vgui_input_text(const char* label, char* buf, int bufsize) {
     return ImGui::InputText(label, buf, (size_t)bufsize) ? 1 : 0;
 }
+// console-style input (the Shell panel): Enter submits (returns 1) and refocuses the field so
+// the user keeps typing; Up/Down recall submitted lines (the imgui demo-console pattern --
+// history must be edited INSIDE the InputText callback, so it lives here, not in V). One
+// fixed-size history: the app has a single console.
+#define CONSOLE_HIST 32
+static char s_con_hist[CONSOLE_HIST][128];
+static int  s_con_n = 0;    // lines stored (grows to CONSOLE_HIST, then the oldest is dropped)
+static int  s_con_pos = -1; // -1 = editing a fresh line, else index into s_con_hist
+static int console_cb(ImGuiInputTextCallbackData* d) {
+    if (d->EventFlag != ImGuiInputTextFlags_CallbackHistory || s_con_n == 0) return 0;
+    int prev = s_con_pos;
+    if (d->EventKey == ImGuiKey_UpArrow) {
+        if (s_con_pos == -1) s_con_pos = s_con_n - 1;
+        else if (s_con_pos > 0) s_con_pos--;
+    } else if (d->EventKey == ImGuiKey_DownArrow) {
+        if (s_con_pos != -1 && ++s_con_pos >= s_con_n) s_con_pos = -1;
+    }
+    if (prev != s_con_pos) {
+        d->DeleteChars(0, d->BufTextLen);
+        d->InsertChars(0, s_con_pos == -1 ? "" : s_con_hist[s_con_pos]);
+    }
+    return 0;
+}
+int vgui_console_input(const char* label, char* buf, int bufsize) {
+    bool enter = ImGui::InputText(label, buf, (size_t)bufsize,
+        ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackHistory,
+        console_cb, NULL);
+    if (enter) {
+        if (buf[0] && (s_con_n == 0 || strcmp(s_con_hist[s_con_n - 1], buf) != 0)) {
+            if (s_con_n == CONSOLE_HIST) { // full: drop the oldest line
+                memmove(s_con_hist[0], s_con_hist[1], sizeof(s_con_hist[0]) * (CONSOLE_HIST - 1));
+                s_con_n--;
+            }
+            snprintf(s_con_hist[s_con_n++], sizeof(s_con_hist[0]), "%s", buf);
+        }
+        s_con_pos = -1;
+        ImGui::SetKeyboardFocusHere(-1); // re-grab the field the user just submitted
+    }
+    return enter ? 1 : 0;
+}
+// pin the current child's scroll to the bottom (call after emitting console output lines).
+void vgui_scroll_bottom(void) { ImGui::SetScrollHereY(1.0f); }
+
 // numeric input editing *v in place (for signal values). Returns 1 when changed.
 int vgui_input_double(const char* label, double* v) {
     return ImGui::InputDouble(label, v, 0.0, 0.0, "%.3f") ? 1 : 0;

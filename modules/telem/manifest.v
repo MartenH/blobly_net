@@ -55,6 +55,26 @@ pub mut:
 	dump_fc u32 // ISO-TP flow control for the dump (id_dump_fc)
 }
 
+// ShellFrames are the CAN shell's three ids from the manifest's `# shell frames` section:
+// the host sends one raw frame (the command line) on `input`, receives the ISO-TP response
+// on `out`, and paces it with flow control on `fc`. (`input` because `in` is a keyword.)
+pub struct ShellFrames {
+pub mut:
+	input u32 // host -> target: one raw frame = one command line
+	fc    u32 // host -> target: ISO-TP flow control for the response
+	out   u32 // target -> host: the response text (one ISO-TP block)
+}
+
+// or_defaults fills unset (0) ids with loom2v's [shell] defaults, so a manifest predating the
+// shell section still reaches a default-configured target.
+pub fn (f ShellFrames) or_defaults() ShellFrames {
+	return ShellFrames{
+		input: if f.input != 0 { f.input } else { 0x7f0 }
+		fc:    if f.fc != 0 { f.fc } else { 0x7f2 }
+		out:   if f.out != 0 { f.out } else { 0x7f1 }
+	}
+}
+
 // or_defaults fills any unset (0) id from the built-in defaults, so an older manifest with no
 // `# trace frames` section still yields the trace_demo wire.
 pub fn (f TraceFrames) or_defaults() TraceFrames {
@@ -73,6 +93,7 @@ pub:
 	handlers []Handler
 	threads  []Thread
 	frames   TraceFrames // the `# trace frames` ids (zero-filled -> or_defaults())
+	shell    ShellFrames // the `# shell frames` ids (zero-filled -> or_defaults())
 pub mut:
 	by_id  map[u16]Handler // built by index()
 	by_tid map[u16]Thread  // built by index()
@@ -88,6 +109,7 @@ pub fn parse_manifest(text string) !Manifest {
 	mut handlers := []Handler{}
 	mut threads := []Thread{}
 	mut frames := TraceFrames{}
+	mut shellf := ShellFrames{}
 	mut seen := map[u16]bool{}
 	mut seen_tid := map[u16]bool{}
 	// The manifest is sectioned by `#` header comments (`# fb.handlers:`, `# threads:`,
@@ -103,6 +125,8 @@ pub fn parse_manifest(text string) !Manifest {
 			low := line.to_lower()
 			if low.contains('trace frames') {
 				section = 'frames'
+			} else if low.contains('shell frames') {
+				section = 'shell'
 			} else if low.contains('handlers') {
 				section = 'handlers'
 			} else if low.contains('threads') {
@@ -126,6 +150,22 @@ pub fn parse_manifest(text string) !Manifest {
 				'record' { frames.record = id }
 				'dump_fc' { frames.dump_fc = id }
 				else {} // unknown frame name — ignore (forward-compatible with new frames)
+			}
+			continue
+		}
+		if section == 'shell' {
+			// `frame,id,bus` — same row shape as the trace-frames section.
+			if cols.len < 2 {
+				return error('manifest shell-frame row needs at least frame,id: "${line}"')
+			}
+			id := parse_can_id(cols[1]) or {
+				return error('manifest shell-frame "${cols[0]}": ${err}')
+			}
+			match cols[0] {
+				'in' { shellf.input = id }
+				'fc' { shellf.fc = id }
+				'out' { shellf.out = id }
+				else {} // unknown frame name — ignore (forward-compatible)
 			}
 			continue
 		}
@@ -200,6 +240,7 @@ pub fn parse_manifest(text string) !Manifest {
 		handlers: handlers
 		threads:  threads
 		frames:   frames
+		shell:    shellf
 	}
 	m.index()
 	return m
