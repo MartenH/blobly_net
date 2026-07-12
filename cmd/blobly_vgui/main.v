@@ -132,6 +132,7 @@ mut:
 	watch         []Watch // signals plotted in Graphics
 	plot_win      f32 = 5 // Graphics x-window in seconds (0 = full history / autofit)
 	plot_multi    bool = true // Graphics Y: per-signal real axes (up to 3) vs one shared axis
+	plot_yauto    bool = true // Graphics Y: re-fit to the data every frame vs manual (pan/zoom/right-click limits)
 	trace_grouped bool = true // Trace: grouped-by-id (expandable) vs chronological
 	trace_bus     string      // main Trace: show only this bus (channel name); '' = all
 	ftrace_bus    string      // Trace (filter) panel: show only this bus; '' = all
@@ -3469,6 +3470,13 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 	if vgui.toggle_button('Shared##yshared', !app.plot_multi, 0) {
 		app.plot_multi = false
 	}
+	// auto: continuous y autofit. Off = the axes hold still and are yours: drag to pan,
+	// scroll to zoom, double-click to fit once, right-click to type min/max (e.g. 0..100
+	// for a load signal) — which only sticks when autofit isn't re-fitting every frame.
+	vgui.same_line()
+	if vgui.toggle_button('auto##yauto', app.plot_yauto, 0) {
+		app.plot_yauto = !app.plot_yauto
+	}
 	// x-window right edge: wall-clock NOW while live, so the strip chart slides on real time
 	// (not only when a sample arrives); the latest sample time when stopped/paused/loaded, so
 	// it holds still. Samples and `now` share app.t0's clock (rx stamps t_ms = ticks - t0).
@@ -3485,7 +3493,7 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 	xmin := if app.plot_win > 0 { xmax - f64(app.plot_win) } else { f64(0) }
 	xhi := if app.plot_win > 0 { xmax } else { f64(0) } // 0/0 → full autofit
 	n_yaxes := if app.plot_multi { imin(3, app.watch.len) } else { 1 }
-	if vgui.plot_begin_multi('##sigplot', -1, xmin, xhi, n_yaxes) { // -1 = fill panel height
+	if vgui.plot_begin_multi('##sigplot', -1, xmin, xhi, n_yaxes, app.plot_yauto) { // -1 = fill panel height
 		// crosshair readout: value shown in the legend is at the cursor x when hovering the
 		// plot, else the latest sample — a live per-signal value beside each name.
 		hovered := vgui.plot_is_hovered()
