@@ -52,7 +52,7 @@ void vgui_separator(void);
 void vgui_quit(void);
 void vgui_dock_3(const char* a, const char* b, const char* c, float aw, float cw);
 int  vgui_plot_begin(const char* title, float height);
-int  vgui_plot_begin2(const char* title, float height, double x_min, double x_max, int n_yaxes);
+int  vgui_plot_begin2(const char* title, float height, double x_min, double x_max, int n_yaxes, int y_auto);
 void vgui_plot_line_axis(const char* name, const float* xs, const float* ys, int n, int axis);
 int  vgui_plot_is_hovered(void);
 double vgui_plot_mouse_x(void);

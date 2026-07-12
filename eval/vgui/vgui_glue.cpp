@@ -377,24 +377,31 @@ void vgui_plot_line(const char* name, const float* xs, const float* ys, int n) {
 // plot with a fixed x-window AND up to 3 real y-axes (each auto-fitting to its own series, so
 // signals of different scale keep real values in ONE view). Crosshairs are on. Bind a series
 // to an axis with vgui_plot_line_axis; query the cursor with vgui_plot_is_hovered/_mouse_x.
-int vgui_plot_begin2(const char* title, float height, double x_min, double x_max, int n_yaxes) {
+int vgui_plot_begin2(const char* title, float height, double x_min, double x_max, int n_yaxes,
+                     int y_auto) {
     if (ImPlot::BeginPlot(title, ImVec2(-1, height), ImPlotFlags_Crosshairs)) {
         int xf = (x_max > x_min) ? ImPlotAxisFlags_None : ImPlotAxisFlags_AutoFit;
         ImPlot::SetupAxis(ImAxis_X1, "t (s)", xf);
+        // y_auto: continuous per-frame autofit (live glancing). OFF = fully manual axes with
+        // all the stock ImPlot affordances working: drag to pan, scroll to zoom, double-click
+        // for a one-shot fit, and the right-click min/max + lock menu actually sticks (a
+        // permanent AutoFit flag would clobber typed limits every frame). ImPlot keeps axis
+        // state per plot ID, so flipping auto off simply freezes the current view.
+        int yf = y_auto ? ImPlotAxisFlags_AutoFit : ImPlotAxisFlags_None;
         // Colour each y-axis's tick labels to match the signal plotted on it. Series auto-take
         // colormap colours in plot order (item i -> colormap[i]) and signal i is bound to axis i,
         // so axis i uses colormap[i]. Push ImPlotCol_AxisText AROUND SetupAxis to style per-axis.
         ImPlot::PushStyleColor(ImPlotCol_AxisText, ImPlot::GetColormapColor(0));
-        ImPlot::SetupAxis(ImAxis_Y1, NULL, ImPlotAxisFlags_AutoFit);
+        ImPlot::SetupAxis(ImAxis_Y1, NULL, yf);
         ImPlot::PopStyleColor();
         if (n_yaxes >= 2) {
             ImPlot::PushStyleColor(ImPlotCol_AxisText, ImPlot::GetColormapColor(1));
-            ImPlot::SetupAxis(ImAxis_Y2, NULL, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_Opposite);
+            ImPlot::SetupAxis(ImAxis_Y2, NULL, yf | ImPlotAxisFlags_Opposite);
             ImPlot::PopStyleColor();
         }
         if (n_yaxes >= 3) {
             ImPlot::PushStyleColor(ImPlotCol_AxisText, ImPlot::GetColormapColor(2));
-            ImPlot::SetupAxis(ImAxis_Y3, NULL, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_Opposite);
+            ImPlot::SetupAxis(ImAxis_Y3, NULL, yf | ImPlotAxisFlags_Opposite);
             ImPlot::PopStyleColor();
         }
         if (x_max > x_min) ImPlot::SetupAxisLimits(ImAxis_X1, x_min, x_max, ImPlotCond_Always);
