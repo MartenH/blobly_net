@@ -63,6 +63,8 @@ int  vgui_toggle_button(const char* label, int active, float w);
 void vgui_child_wh(const char* id, float w, float h);
 void vgui_child_end(void);
 int  vgui_input_text(const char* label, char* buf, int bufsize);
+int  vgui_console_input(const char* label, char* buf, int bufsize);
+void vgui_scroll_bottom(void);
 int  vgui_input_double(const char* label, double* v);
 int  vgui_input_int(const char* label, int* v);
 void vgui_set_next_item_width(float w);
