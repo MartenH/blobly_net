@@ -115,6 +115,7 @@ fn C.vgui_child_end()
 fn C.vgui_input_text(&char, &char, int) int
 fn C.vgui_console_input(&char, &char, int) int
 fn C.vgui_scroll_bottom()
+fn C.vgui_console_text(&char, &char, int, int)
 fn C.vgui_input_double(&char, &f64) int
 fn C.vgui_input_int(&char, &int) int
 fn C.vgui_set_next_item_width(f32)
@@ -465,6 +466,12 @@ pub fn input_text(label string, mut buf []u8) bool {
 // the glue -- imgui requires history edits inside the InputText callback).
 pub fn console_input(label string, mut buf []u8) bool {
 	return C.vgui_console_input(label.str, unsafe { &char(&buf[0]) }, buf.len) == 1
+}
+
+// console_text renders s as read-only but SELECTABLE console text (native mouse marking,
+// Ctrl+A/Ctrl+C), sized to content so the enclosing child scrolls it. nlines = line count.
+pub fn console_text(id string, s string, nlines int) {
+	C.vgui_console_text(id.str, s.str, s.len, nlines)
 }
 
 // scroll_bottom pins the current child's scroll to the bottom (console output follows).

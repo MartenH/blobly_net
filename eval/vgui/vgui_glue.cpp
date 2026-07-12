@@ -483,6 +483,18 @@ int vgui_console_input(const char* label, char* buf, int bufsize) {
     }
     return enter ? 1 : 0;
 }
+// read-only, SELECTABLE console text: an InputTextMultiline sized to its content, so the
+// caller's own child does the scrolling (vgui_scroll_bottom keeps working) and the inner
+// widget never grows a scrollbar. Native mouse selection + Ctrl+A / Ctrl+C for free.
+// Transparent frame so it reads as plain console text, not a text box.
+void vgui_console_text(const char* id, const char* text, int len, int nlines) {
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
+    float h = ImGui::GetTextLineHeight() * (float)(nlines + 1)
+            + ImGui::GetStyle().FramePadding.y * 2.0f;
+    ImGui::InputTextMultiline(id, (char*)text, (size_t)len + 1, ImVec2(-FLT_MIN, h),
+                              ImGuiInputTextFlags_ReadOnly);
+    ImGui::PopStyleColor();
+}
 // pin the current child's scroll to the bottom (call after emitting console output lines).
 void vgui_scroll_bottom(void) { ImGui::SetScrollHereY(1.0f); }
 
