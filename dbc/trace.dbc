@@ -6,6 +6,10 @@ BS_:
 
 BU_: SUT Tester
 
+BO_ 513 M4LoadFrame: 8 SUT
+ SG_ M4Count : 0|32@1+ (1,0) [0|4294967295] "" Tester
+ SG_ M4Acc : 32|32@1+ (1,0) [0|4294967295] "" Tester
+
 BO_ 2017 LoadDetail: 8 SUT
  SG_ load_100ms : 0|8@1+ (1,0) [0|100] "%" Tester
  SG_ load_1s : 8|8@1+ (1,0) [0|100] "%" Tester
@@ -35,6 +39,7 @@ BO_ 2020 HandlerStat: 8 SUT
  SG_ max_us : 32|16@1+ (1,0) [0|65535] "us" Tester
  SG_ count_delta : 48|16@1+ (1,0) [0|65535] "" Tester
 
+CM_ BO_ 513 "Cross-core signal (0x201): computed by the M4's Loom FB, carried over shared-SRAM xioc, transmitted by the M7 — the first distributed-ECU frame (blobly_emb [duo]).";
 CM_ BO_ 2017 "One core's processor load over 100ms/1s/10s windows + per-period overrun count (0x7E1).";
 CM_ BO_ 2018 "Trace capture control, host -> target (0x7E2). Config cmd/rsp, NOT UDS.";
 CM_ BO_ 2019 "Trace capture ack + status, target -> host (0x7E3).";
