@@ -56,6 +56,9 @@ pub fn (mut b SocketCanBus) recv(timeout_ms int) !CanFrame {
 	if dlc == -1 {
 		return error('timeout')
 	}
+	if dlc <= -1000 {
+		return error('recv on ${b.iface}: ${cerr(-(dlc + 1000))}') // the errno names the culprit
+	}
 	if dlc < 0 {
 		return error('recv failed on ${b.iface}')
 	}

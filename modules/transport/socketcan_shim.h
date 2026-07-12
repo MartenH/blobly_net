@@ -49,21 +49,34 @@ static inline int ct_can_send(int fd, uint32_t can_id, const uint8_t *data, uint
 // Receive one classic CAN frame. timeout_ms < 0 blocks; >= 0 waits up to that
 // long. Returns dlc (0..8) and fills *can_id + 8 data bytes; -1 on timeout;
 // -2 on error.
+/* Returns the DLC, -1 on timeout, or -(1000+errno) on a real error — EINTR (a signal landing
+ * mid-syscall, routine in a GUI process) is RETRIED, not surfaced: it used to abort a whole
+ * ISO-TP transfer as an opaque "recv failed". */
 static inline int ct_can_recv(int fd, uint32_t *can_id, uint8_t *data, int timeout_ms) {
 	if (timeout_ms >= 0) {
-		struct pollfd p;
-		p.fd = fd;
-		p.events = POLLIN;
-		int r = poll(&p, 1, timeout_ms);
-		if (r == 0) return -1;
-		if (r < 0) return -2;
+		for (;;) {
+			struct pollfd p;
+			p.fd = fd;
+			p.events = POLLIN;
+			int r = poll(&p, 1, timeout_ms);
+			if (r == 0) return -1;
+			if (r > 0) break;
+			if (errno != EINTR) return -(1000 + errno);
+			/* EINTR: retry. (The remaining budget shrinks by the interrupted wait — the caller's
+			 * deadline loop already re-computes its budget per call, so this stays bounded.) */
+		}
 	}
-	struct can_frame f;
-	ssize_t n = read(fd, &f, sizeof(f));
-	if (n != (ssize_t)sizeof(f)) return -2;
-	*can_id = f.can_id;
-	memcpy(data, f.data, 8);
-	return f.can_dlc;
+	for (;;) {
+		struct can_frame f;
+		ssize_t n = read(fd, &f, sizeof(f));
+		if (n == (ssize_t)sizeof(f)) {
+			*can_id = f.can_id;
+			memcpy(data, f.data, 8);
+			return f.can_dlc;
+		}
+		if (n < 0 && errno == EINTR) continue;
+		return n < 0 ? -(1000 + errno) : -(1000 + EIO);
+	}
 }
 
 static inline void ct_can_close(int fd) { if (fd >= 0) close(fd); }
