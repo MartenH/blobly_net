@@ -4268,12 +4268,18 @@ fn trace_dump_worker(app &App, core_mask u16) {
 		extended: cmd_ext
 		data:     telem.encode_trace_cmd(telem.op_dump, telem.filter_all, core_mask)
 	})
-	// a multi-core dump streams one self-describing block per selected core.
-	nblocks := mask_popcount(core_mask)
+	// a dump streams SELF-DESCRIBING blocks: one or more per selected core (multi-block:
+	// deep rings ride many ~payload-sized blocks; the header's more-flag marks continuation,
+	// so end-of-stream lives in the format, not in transport heuristics).
+	ncores := mask_popcount(core_mask)
 	mut recs := []TRec{}
 	mut got := 0
+	mut last_seen := 0 // cores whose final block has arrived
 	mut recv_err := ''
-	for _ in 0 .. nblocks {
+	for _ in 0 .. 256 {
+		if last_seen >= ncores {
+			break
+		}
 		// Reassembly can fail transiently (a lost/reordered frame -> the SN check errors out
 		// cleanly). The target's ring stays FROZEN after a dump, so re-issuing op_dump simply
 		// re-streams the same block — retry a couple of times and SURFACE the error text
@@ -4309,7 +4315,10 @@ fn trace_dump_worker(app &App, core_mask u16) {
 			r := telem.decode_record(block[off..off + 8])
 			if r.is_block_header() {
 				cur_core = int(r.header_core()) // tag this block's records with their core
-				continue                        // framing, not a timeline record
+				if !r.header_more() {
+					last_seen++ // this core's final block
+				}
+				continue // framing, not a timeline record
 			}
 			if r.is_epoch() {
 				base = r.epoch_base() // subsequent start_us are relative to this base
@@ -4327,10 +4336,10 @@ fn trace_dump_worker(app &App, core_mask u16) {
 	a.trecs = synthesize_idle(recs)
 	a.rev++
 	a.trace_recording = false // the dump froze the buffer; Record re-arms for a new window
-	a.trace_status = if got < nblocks && recv_err != '' {
-		'dumped ${got}/${nblocks} core block(s) · ${recs.len} records · last error: ${recv_err}'
+	a.trace_status = if last_seen < ncores && recv_err != '' {
+		'dumped ${got} block(s), ${last_seen}/${ncores} cores complete · ${recs.len} records · last error: ${recv_err}'
 	} else {
-		'dumped ${got}/${nblocks} core block(s) · ${recs.len} records'
+		'dumped ${got} block(s) from ${ncores} core(s) · ${recs.len} records'
 	}
 	a.mu.unlock()
 	a.trace_done()
