@@ -99,12 +99,19 @@ fn main() {
 		ch.close()
 	}
 
-	hdr := make_header(image, sw_version)
-	mut blob := []u8{cap: hdr.len + image.len}
-	blob << hdr
-	blob << image
+	// a pre-wrapped mkimage .img (starts with 'BLBT') transfers as-is — mkimage
+	// owns the target layout (vector padding); raw .bins get the header here.
+	mut blob := []u8{}
+	if image.len > 4 && image[0] == 0x42 && image[1] == 0x4C && image[2] == 0x42 && image[3] == 0x54 {
+		blob = image.clone()
+		println('flash: ${os.args[2]} is a wrapped image (BLBT) — transferring as-is')
+	} else {
+		hdr := make_header(image, sw_version)
+		blob << hdr
+		blob << image
+	}
 	total := u32(blob.len)
-	println('flash: ${os.args[2]} -> ${iface} @0x${base.hex()}: ${image.len} image bytes (+${hdr_size} header), sw_version ${sw_version}')
+	println('flash: ${os.args[2]} -> ${iface} @0x${base.hex()}: ${blob.len} bytes total, sw_version ${sw_version}')
 
 	// 1) programming session
 	ask(mut ch, [u8(0x10), 0x02], 'programming session') or {
