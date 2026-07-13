@@ -116,7 +116,13 @@ pub fn (r Record) is_block_header() bool {
 }
 
 pub fn (r Record) header_core() u8 {
-	return r.info
+	return r.info & 0x7f // bit 7 = header_more
+}
+
+// header_more: further blocks for this core follow (a multi-block dump); the end-of-stream
+// lives IN the format, so the same block sequence rides any transport.
+pub fn (r Record) header_more() bool {
+	return r.info & 0x80 != 0
 }
 
 pub fn (r Record) header_count() u32 {
