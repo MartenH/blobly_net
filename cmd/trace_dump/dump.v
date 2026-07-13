@@ -57,13 +57,22 @@ fn main() {
 		data:     telem.encode_trace_cmd(telem.op_dump, telem.filter_all, mask)
 	}) or {}
 
-	nblocks := mask_popcount(mask)
+	ncores := mask_popcount(mask)
 	mut total := 0
-	for bi in 0 .. nblocks {
+	mut last_seen := 0 // cores whose final block (header_more == false) has arrived
+	mut bi := 0
+	for last_seen < ncores && bi < 256 {
 		block := ch.recv(600) or {
 			eprintln('block ${bi}: ${err}')
 			break
 		}
+		if block.len >= 8 {
+			hd := telem.decode_record(block[0..8])
+			if hd.is_block_header() && !hd.header_more() {
+				last_seen++
+			}
+		}
+		bi++
 		println('--- block ${bi}: ${block.len} bytes (${block.len / 8} records) ---')
 		for off := 0; off + 8 <= block.len; off += 8 {
 			r := telem.decode_record(block[off..off + 8])
