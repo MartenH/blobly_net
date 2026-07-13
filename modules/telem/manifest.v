@@ -96,7 +96,9 @@ pub:
 	shell    ShellFrames // the `# shell frames` ids (zero-filled -> or_defaults())
 pub mut:
 	by_id  map[u16]Handler // built by index()
-	by_tid map[u16]Thread  // built by index()
+	by_tid map[u32]Thread  // built by index(); key = tkey(core, id) — THREAD IDS ARE PER-CORE
+	// (each core's recorder assigns first-sight ids from 1; the manifest mirrors that, so
+	// two cores legitimately both have a t1)
 }
 
 // load_manifest reads + parses a manifest .csv file.
@@ -111,7 +113,7 @@ pub fn parse_manifest(text string) !Manifest {
 	mut frames := TraceFrames{}
 	mut shellf := ShellFrames{}
 	mut seen := map[u16]bool{}
-	mut seen_tid := map[u16]bool{}
+	mut seen_tid := map[u32]bool{}
 	// The manifest is sectioned by `#` header comments (`# fb.handlers:`, `# threads:`,
 	// `# trace frames:`). Handler/thread rows self-identify by shape, but a trace-frame row
 	// (`cmd,0x7e2,can0`) looks like a malformed handler row, so track the section to route it.
@@ -169,7 +171,9 @@ pub fn parse_manifest(text string) !Manifest {
 			}
 			continue
 		}
-		// A thread row labels a swimlane thread lane: `thread,<id>,<name>,<core>`.
+		// A thread row labels a swimlane thread lane: `thread,<id>,<name>,<core>`. Ids are
+		// PER-CORE (the same id on two cores is two threads); duplicates within one core
+		// are still a manifest bug.
 		if cols[0].to_lower() == 'thread' {
 			if cols.len < 4 {
 				return error('manifest thread row needs 4 columns (thread,id,name,core): "${line}"')
@@ -178,13 +182,14 @@ pub fn parse_manifest(text string) !Manifest {
 				return error('manifest thread id is not a 0..16383 number: "${cols[1]}"')
 			}
 			tid := u16(cols[1].int())
-			if tid in seen_tid {
-				return error('manifest has a duplicate thread id: ${tid}')
-			}
-			seen_tid[tid] = true
 			if !is_digits(cols[3]) {
 				return error('manifest thread core is not a number: "${cols[3]}"')
 			}
+			ck := tkey(cols[3].int(), tid)
+			if ck in seen_tid {
+				return error('manifest has a duplicate thread id on core ${cols[3]}: ${tid}')
+			}
+			seen_tid[ck] = true
 			threads << Thread{
 				id:   tid
 				name: cols[2]
@@ -292,16 +297,22 @@ pub fn (mut m Manifest) index() {
 	for h in m.handlers {
 		m.by_id[h.id] = h
 	}
-	m.by_tid = map[u16]Thread{}
+	m.by_tid = map[u32]Thread{}
 	for t in m.threads {
-		m.by_tid[t.id] = t
+		m.by_tid[tkey(t.core, t.id)] = t
 	}
 }
 
-// thread_label resolves a thread_id to a display name, synthesising "thread N" when unknown
-// (so an unlabelled or mismatched thread still gets a lane rather than crashing a view).
-pub fn (m &Manifest) thread_label(id u16) string {
-	if t := m.by_tid[id] {
+// tkey packs (core, per-core thread id) into one lookup key — thread ids are only unique
+// within a core (each core's recorder counts from 1).
+pub fn tkey(core int, id u16) u32 {
+	return (u32(core) << 16) | u32(id)
+}
+
+// thread_label resolves (core, thread_id) to a display name, synthesising "thread N" when
+// unknown (an unlabelled or mismatched thread still gets a lane rather than crashing a view).
+pub fn (m &Manifest) thread_label(core int, id u16) string {
+	if t := m.by_tid[tkey(core, id)] {
 		if t.name != '' {
 			return t.name
 		}

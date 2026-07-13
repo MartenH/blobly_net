@@ -4894,9 +4894,9 @@ fn split_lane_key(k string) (int, u16) {
 // thread_core_label labels a THREAD lane, prefixed with its (block) core. id 0 is idle (no
 // manifest row); a real thread resolves its name from the manifest, else "thread N".
 fn thread_core_label(app &App, core int, id u16) string {
-	base := if id == 0 { 'idle' } else { app.manifest.thread_label(id) }
+	base := if id == 0 { 'idle' } else { app.manifest.thread_label(core, id) }
 	if id != 0 {
-		if t := app.manifest.by_tid[id] {
+		if t := app.manifest.by_tid[telem.tkey(core, id)] {
 			if t.prio >= 0 {
 				return 'c${core}  ${base} p${t.prio}'
 			}
@@ -4944,10 +4944,10 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, []vgui.Link, f3
 	}
 	hids.sort()
 	tkeys.sort_with_compare(fn [app] (a &string, b &string) int {
-		_, aid := split_lane_key(a)
-		_, bid := split_lane_key(b)
-		ap := if t := app.manifest.by_tid[aid] { t.prio } else { -1 }
-		bp := if t := app.manifest.by_tid[bid] { t.prio } else { -1 }
+		acore, aid := split_lane_key(a)
+		bcore, bid := split_lane_key(b)
+		ap := if t := app.manifest.by_tid[telem.tkey(acore, aid)] { t.prio } else { -1 }
+		bp := if t := app.manifest.by_tid[telem.tkey(bcore, bid)] { t.prio } else { -1 }
 		// known priorities first (ascending: p0 on top), then unknowns by id
 		if ap >= 0 && bp >= 0 {
 			if ap != bp {
