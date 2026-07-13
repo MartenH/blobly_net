@@ -180,11 +180,18 @@ fn test_manifest_threads() {
 	}
 	assert m.handlers.len == 1
 	assert m.threads.len == 2
-	assert m.thread_label(0) == 'app0'
-	assert m.thread_label(1) == 'isr0'
-	assert m.thread_label(9) == 'thread 9' // unknown -> synthetic
-	// a duplicate thread id is rejected
+	assert m.thread_label(0, 0) == 'app0'
+	assert m.thread_label(0, 1) == 'isr0'
+	assert m.thread_label(0, 9) == 'thread 9' // unknown -> synthetic
+	// a duplicate thread id ON ONE CORE is rejected
 	if _ := parse_manifest('0,p,0,F,h,1000\nthread,0,a,0\nthread,0,b,0') {
-		assert false, 'duplicate thread id should be rejected'
+		assert false, 'duplicate thread id on one core should be rejected'
 	}
+	// the SAME id on TWO cores is two threads (per-core recorder id spaces): both resolve
+	m2 := parse_manifest('0,p,0,F,h,1000\nthread,1,comm,0,10\nthread,1,m4_app,1,11') or {
+		panic(err)
+	}
+	assert m2.thread_label(0, 1) == 'comm'
+	assert m2.thread_label(1, 1) == 'm4_app'
+	assert m2.by_tid[tkey(1, 1)].prio == 11
 }
