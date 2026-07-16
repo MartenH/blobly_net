@@ -32,16 +32,16 @@ pub mut:
 	auth_seed []u8
 }
 
-// tester_seed resolves the 0x29 signing seed: empty -> the dev seed (00..1f,
-// examples/keys); 64 hex chars -> parsed; anything else (0x-prefix, truncated
-// CI secret) -> an error, so a misconfigured seed fails fast instead of silently
-// signing with the wrong key.
+// tester_seed resolves the 0x29 signing seed (the SESSION key, distinct from the
+// image-signing key): empty -> the dev tester seed (examples/keys/tester.seed);
+// 64 hex chars -> parsed; anything else (0x-prefix, truncated CI secret) -> an
+// error, so a misconfigured seed fails fast instead of silently signing wrong.
 pub fn tester_seed(env_val string) ![]u8 {
 	v := env_val.trim_space()
 	if v == '' {
 		mut s := []u8{len: 32}
 		for i in 0 .. 32 {
-			s[i] = u8(i) // dev seed
+			s[i] = u8(0x20 + i) // dev TESTER seed (examples/keys/tester.seed) — 0x29 auth
 		}
 		return s
 	}
