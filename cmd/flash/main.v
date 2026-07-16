@@ -43,6 +43,11 @@ fn main() {
 	rsp_id := u32('0x${if os.args.len > 5 { os.args[5] } else { '7B8' }}'.u64())
 	sw_version := u32(if os.args.len > 6 { os.args[6].u64() } else { 1 })
 
+	// 0x29 tester private seed: $BLOBLY_FLASH_SEED (64 hex chars) or the dev seed
+	// (00..1f — matches examples/keys/dev.seed). Production sets the env from a
+	// signing service; the seed never lives in a shipped tool.
+	seed := seed_bytes(os.getenv('BLOBLY_FLASH_SEED'))
+
 	mut ch := isotp.open_software(iface, req_id, rsp_id, false) or {
 		eprintln('flash: open ${iface}: ${err}')
 		exit(1)
@@ -52,8 +57,25 @@ fn main() {
 	}
 	println('flash: ${os.args[2]} -> ${iface} @0x${base.hex()}, sw_version ${sw_version}')
 	mut sink := StdoutSink{}
-	flash.program(mut ch, image, flash.Opts{ base: base, sw_version: sw_version }, mut sink) or {
+	flash.program(mut ch, image, flash.Opts{ base: base, sw_version: sw_version, auth_seed: seed }, mut sink) or {
 		eprintln('flash: ${err}')
 		exit(1)
 	}
+}
+
+// seed_bytes parses a 64-hex-char seed, or the dev seed (00..1f) when unset.
+fn seed_bytes(hexs string) []u8 {
+	h := hexs.trim_space()
+	if h.len == 64 {
+		mut s := []u8{len: 32}
+		for i in 0 .. 32 {
+			s[i] = u8(('0x' + h[i * 2..i * 2 + 2]).u8())
+		}
+		return s
+	}
+	mut s := []u8{len: 32}
+	for i in 0 .. 32 {
+		s[i] = u8(i) // dev seed
+	}
+	return s
 }
