@@ -84,9 +84,24 @@ pub fn crc32(data []u8) u32 {
 // challenge, we sign it with the tester private key, the boot verifies with the
 // public key it holds. Replaces the legacy 0x27 seed/key.
 fn authenticate(mut ch isotp.Channel, seed []u8, mut sink Sink) ! {
-	cr := ask(mut ch, [u8(0x29), 0x01], 'request challenge')!
-	if cr.len < 2 + 32 {
-		return error('request challenge: short response')
+	// Probe with the raw request (not ask, which errors on any NRC): a boot with
+	// NO session key baked (a keyless/legacy build) answers requestChallenge with
+	// conditionsNotCorrect / serviceNotSupported — that boot doesn't require 0x29,
+	// so flash without it. If it IS secured, erase/download stay gated, so
+	// proceeding here can never bypass a real gate.
+	cr := isotp.request(mut ch, [u8(0x29), 0x01], 3000) or {
+		return error('request challenge: ${err}')
+	}
+	if cr.len >= 3 && cr[0] == 0x7F {
+		nrc := cr[2]
+		if nrc == 0x22 || nrc == 0x11 { // conditionsNotCorrect / serviceNotSupported
+			sink.note('0x29 not required by this boot — flashing without auth')
+			return
+		}
+		return error('request challenge: NRC 0x${nrc.hex()}')
+	}
+	if cr.len < 2 + 32 || cr[0] != 0x69 {
+		return error('request challenge: unexpected response ${cr.hex()}')
 	}
 	challenge := cr[2..34].clone()
 	priv := ed.new_key_from_seed(seed)
