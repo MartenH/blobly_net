@@ -10,6 +10,7 @@ module flash
 // mark ONLY after its own full-image CRC passes — a cut transfer leaves an
 // image the boot refuses, and a plain re-run recovers (bench-verified).
 import isotp
+import crypto.ed25519 as ed
 
 pub const boot_magic = u32(0x54424C42) // 'BLBT'
 pub const hdr_size = 64
@@ -25,6 +26,46 @@ pub struct Opts {
 pub mut:
 	base       u32 = 0x0802_0000 // the app slot (bootmap.h APP_BASE)
 	sw_version u32 = 1
+	// 0x29 tester private seed (32 bytes). When set, the flasher authenticates
+	// with the boot's challenge/response before erasing. Empty = skip auth (a
+	// boot with no key baked; legacy / unsigned targets).
+	auth_seed []u8
+}
+
+// tester_seed resolves the 0x29 signing seed (the SESSION key, distinct from the
+// image-signing key): empty -> the dev tester seed (examples/keys/tester.seed);
+// 64 hex chars -> parsed; anything else (0x-prefix, truncated CI secret) -> an
+// error, so a misconfigured seed fails fast instead of silently signing wrong.
+pub fn tester_seed(env_val string) ![]u8 {
+	v := env_val.trim_space()
+	if v == '' {
+		mut s := []u8{len: 32}
+		for i in 0 .. 32 {
+			s[i] = u8(0x20 + i) // dev TESTER seed (examples/keys/tester.seed) — 0x29 auth
+		}
+		return s
+	}
+	if v.len != 64 {
+		return error('seed must be 64 hex chars (32 bytes); got ${v.len}')
+	}
+	mut s := []u8{len: 32}
+	for i in 0 .. 32 {
+		hb := v[i * 2..i * 2 + 2]
+		if !is_hex(hb) {
+			return error('seed has non-hex characters')
+		}
+		s[i] = u8(('0x' + hb).u8())
+	}
+	return s
+}
+
+fn is_hex(s string) bool {
+	for c in s {
+		if !((c >= `0` && c <= `9`) || (c >= `a` && c <= `f`) || (c >= `A` && c <= `F`)) {
+			return false
+		}
+	}
+	return true
 }
 
 pub fn crc32(data []u8) u32 {
@@ -39,9 +80,36 @@ pub fn crc32(data []u8) u32 {
 	return crc ^ 0xFFFF_FFFF
 }
 
-// the same placeholder algorithm as boot.expected_key — replaced together (P5)
-pub fn expected_key(seed u32) u32 {
-	return (seed ^ 0xA5A5_A5A5) + (seed << 3 | seed >> 29)
+// authenticate runs the 0x29 challenge/response: the boot sends a random
+// challenge, we sign it with the tester private key, the boot verifies with the
+// public key it holds. Replaces the legacy 0x27 seed/key.
+fn authenticate(mut ch isotp.Channel, seed []u8, mut sink Sink) ! {
+	// Probe with the raw request (not ask, which errors on any NRC): a boot with
+	// NO session key baked (a keyless/legacy build) answers requestChallenge with
+	// conditionsNotCorrect / serviceNotSupported — that boot doesn't require 0x29,
+	// so flash without it. If it IS secured, erase/download stay gated, so
+	// proceeding here can never bypass a real gate.
+	cr := isotp.request(mut ch, [u8(0x29), 0x01], 3000) or {
+		return error('request challenge: ${err}')
+	}
+	if cr.len >= 3 && cr[0] == 0x7F {
+		nrc := cr[2]
+		if nrc == 0x22 || nrc == 0x11 { // conditionsNotCorrect / serviceNotSupported
+			sink.note('0x29 not required by this boot — flashing without auth')
+			return
+		}
+		return error('request challenge: NRC 0x${nrc.hex()}')
+	}
+	if cr.len < 2 + 32 || cr[0] != 0x69 {
+		return error('request challenge: unexpected response ${cr.hex()}')
+	}
+	challenge := cr[2..34].clone()
+	priv := ed.new_key_from_seed(seed)
+	sig := ed.sign(priv, challenge) or { return error('sign challenge: ${err}') }
+	mut proof := [u8(0x29), 0x02]
+	proof << sig
+	ask(mut ch, proof, 'send proof')!
+	sink.note('authenticated (0x29)')
 }
 
 // make_header wraps RAW application bytes: magic, length, CRC, version — the
@@ -106,18 +174,11 @@ pub fn program(mut ch isotp.Channel, image []u8, opts Opts, mut sink Sink) ! {
 	sink.note('${blob.len} bytes -> 0x${opts.base.hex()}')
 
 	ask(mut ch, [u8(0x10), 0x02], 'programming session')!
-	seed_rsp := ask(mut ch, [u8(0x27), 0x01], 'request seed')!
-	if seed_rsp.len < 6 {
-		return error('request seed: short response')
+	if opts.auth_seed.len == 32 {
+		authenticate(mut ch, opts.auth_seed, mut sink)!
+	} else {
+		sink.note('no auth seed — skipping 0x29 (boot must have no key baked)')
 	}
-	seed := (u32(seed_rsp[2]) << 24) | (u32(seed_rsp[3]) << 16) | (u32(seed_rsp[4]) << 8) | u32(seed_rsp[5])
-	if seed != 0 {
-		key := expected_key(seed)
-		mut kr := [u8(0x27), 0x02]
-		kr << be32(key)
-		ask(mut ch, kr, 'send key')!
-	}
-	sink.note('unlocked')
 
 	mut er := [u8(0x31), 0x01, 0xFF, 0x00]
 	er << be32(opts.base)
