@@ -23,6 +23,7 @@ import candb
 import telem
 import isotp
 import uds
+import flash
 import sim
 import script
 import canlog
@@ -193,6 +194,18 @@ mut:
 	shell_lines  []string // scrollback (guarded by mu; the worker appends)
 	shell_busy   bool     // single-flight: one command in flight at a time
 	shell_follow bool     // new output arrived — pin the scrollback to the bottom next frame
+	// Flash (UDS firmware download THROUGH the blobly bootloader — modules/flash;
+	// the bootloader itself is not field-updatable by design, docs/bootloader.md)
+	show_flash    bool
+	flash_img_buf []u8     // image path: a wrapped mkimage .img or a raw .bin
+	flash_base_buf []u8    // app-slot base address, hex (bootmap.h APP_BASE)
+	flash_req_buf []u8     // boot rx id, hex
+	flash_rsp_buf []u8     // boot tx id, hex
+	flash_ver_buf []u8     // sw_version, decimal (raw .bin only — .img carries its own)
+	flash_log     []string // milestones + errors (guarded by mu; the worker appends)
+	flash_busy    bool     // single-flight: one download at a time
+	flash_done    int      // transfer progress, blocks (worker-updated)
+	flash_total   int
 }
 
 // SenderRT is a project sender bound to its channel iface (Generators panel).
@@ -1020,6 +1033,11 @@ fn main() {
 	app.diag_did_buf = mkbuf('F190', 16)
 	app.script_path_buf = mkbuf('tests/diag_basic.lua', 256)
 	app.shell_buf = mkbuf('', 128)
+	app.flash_img_buf = mkbuf('', 256)
+	app.flash_base_buf = mkbuf('08020000', 16)
+	app.flash_req_buf = mkbuf('7B0', 12)
+	app.flash_rsp_buf = mkbuf('7B8', 12)
+	app.flash_ver_buf = mkbuf('1', 12)
 	app.trace_filter_buf = mkbuf('', 64)
 	app.trace_filter2_buf = mkbuf('', 64)
 	app.symbol_filter_buf = mkbuf('', 64)
@@ -1146,6 +1164,9 @@ fn main() {
 		if app.show_shell {
 			draw_shell(mut app)
 		}
+		if app.show_flash {
+			draw_flash(mut app)
+		}
 		if app.show_doip {
 			draw_doip(mut app)
 		}
@@ -1236,6 +1257,9 @@ fn draw_activity_bar(mut app App) {
 	if vgui.toggle_button('Shl', app.show_shell, -1) {
 		app.show_shell = !app.show_shell
 	}
+	if vgui.toggle_button('Fsh', app.show_flash, -1) {
+		app.show_flash = !app.show_flash
+	}
 	if vgui.toggle_button('DoI', app.show_doip, -1) {
 		app.show_doip = !app.show_doip
 	}
@@ -1312,6 +1336,7 @@ fn draw_menubar(mut app App, rx u64) {
 			app.show_graphics = vgui.menu_item_check('Graphics', app.show_graphics)
 			app.show_diag = vgui.menu_item_check('Diagnostics', app.show_diag)
 			app.show_shell = vgui.menu_item_check('Shell', app.show_shell)
+			app.show_flash = vgui.menu_item_check('Flash', app.show_flash)
 			app.show_doip = vgui.menu_item_check('DoIP Discovery', app.show_doip)
 			app.show_network = vgui.menu_item_check('Network', app.show_network)
 			app.show_gen = vgui.menu_item_check('Generators', app.show_gen)
@@ -1597,6 +1622,8 @@ fn (mut app App) open_browser(target string) {
 		'.dbc'
 	} else if target.starts_with('manifest') {
 		'.csv'
+	} else if target == 'flash' {
+		'.img' // match_ext also lets .bin through for this filter
 	} else {
 		''
 	}
@@ -1622,6 +1649,8 @@ fn (mut app App) browser_confirm(path string) {
 		app.add_dbc(t['dbc:'.len..].int(), path)
 	} else if t.starts_with('manifest:') {
 		app.set_manifest(t['manifest:'.len..].int(), path)
+	} else if t == 'flash' {
+		app.flash_img_buf = mkbuf(path, 256)
 	}
 }
 
@@ -1728,6 +1757,9 @@ fn (app &App) match_ext(name string) bool {
 	}
 	if app.fb_ext == '.blobnet' && (n.ends_with('.yml') || n.ends_with('.yaml')) {
 		return true
+	}
+	if app.fb_ext == '.img' && n.ends_with('.bin') {
+		return true // firmware picker: wrapped .img preferred, raw .bin allowed
 	}
 	return false
 }
@@ -3297,6 +3329,7 @@ fn build_layout() {
 	vgui.dock_window('Signals', midnode)
 	vgui.dock_window('Diagnostics', midnode)
 	vgui.dock_window('Shell', midnode)
+	vgui.dock_window('Flash', midnode)
 	vgui.dock_window('DoIP Discovery', midnode)
 	vgui.dock_window('Graphics', bottom)
 	vgui.dock_window('Generators', bottom)
@@ -4585,6 +4618,167 @@ fn shell_worker(app &App, line string) {
 		return
 	}
 	a.shell_append(rsp.bytestr().trim_right('\n'))
+}
+
+// ---- Flash (UDS firmware download through the blobly bootloader) ----
+
+fn (mut app App) flash_append(line string) {
+	app.mu.lock()
+	app.flash_log << line
+	app.mu.unlock()
+	vgui.wake()
+}
+
+// GuiFlashSink adapts modules/flash progress to the panel's log + block counter.
+struct GuiFlashSink {
+mut:
+	app &App = unsafe { nil }
+}
+
+fn (mut s GuiFlashSink) note(msg string) {
+	mut a := unsafe { s.app }
+	a.flash_append(msg)
+}
+
+fn (mut s GuiFlashSink) block(done int, total int) {
+	mut a := unsafe { s.app }
+	a.mu.lock()
+	a.flash_done = done
+	a.flash_total = total
+	a.mu.unlock()
+	vgui.wake()
+}
+
+// flash_worker runs the whole download session off-thread (the trace-dump
+// pattern): open a dedicated ISO-TP channel to the BOOT ids and drive
+// flash.program. The target must already be in its boot manager — the
+// panel's "enter boot" button gets it there (the app's shell `boot` command;
+// no reply, the reset is the ack).
+fn flash_worker(app &App, path string, base u32, req_id u32, rsp_id u32, ver u32) {
+	mut a := unsafe { app }
+	a.mu.lock()
+	if a.flash_busy {
+		a.mu.unlock()
+		return
+	}
+	a.flash_busy = true
+	a.flash_done = 0
+	a.flash_total = 0
+	a.mu.unlock()
+	defer {
+		a.mu.lock()
+		a.flash_busy = false
+		a.mu.unlock()
+		vgui.wake()
+	}
+	iface := a.trace_iface()
+	if iface == '' {
+		a.flash_append('(no running channel)')
+		return
+	}
+	image := os.read_bytes(path) or {
+		a.flash_append('(read ${path}: ${err})')
+		return
+	}
+	a.flash_append('> ${os.file_name(path)} -> ${iface} @0x${base.hex()}')
+	mut ch := isotp.open_software(a.bitrate_iface(iface), req_id, rsp_id, trace_ext(rsp_id)) or {
+		a.flash_append('(open ${iface}: ${err})')
+		return
+	}
+	defer {
+		ch.close()
+	}
+	mut sink := GuiFlashSink{
+		app: a
+	}
+	flash.program(mut ch, image, flash.Opts{ base: base, sw_version: ver }, mut sink) or {
+		a.flash_append('FAILED: ${err}')
+		a.flash_append('(a cut transfer is safe: the boot refuses the torn image — fix and re-run)')
+		return
+	}
+}
+
+fn draw_flash(mut app App) {
+	vis, op := vgui.begin_closable('Flash', app.show_flash)
+	app.show_flash = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	if !app.running {
+		vgui.text_dim('press Start (needs the blobly bootloader on the bus)')
+		vgui.end()
+		return
+	}
+	app.mu.lock()
+	busy := app.flash_busy
+	log := app.flash_log.clone()
+	done := app.flash_done
+	total := app.flash_total
+	app.mu.unlock()
+	vgui.set_next_item_width(340)
+	vgui.input_text('image', mut app.flash_img_buf)
+	vgui.same_line()
+	if vgui.button('Browse…') && !busy {
+		app.open_browser('flash')
+	}
+	vgui.set_next_item_width(90)
+	vgui.input_text('base', mut app.flash_base_buf)
+	vgui.same_line()
+	vgui.set_next_item_width(50)
+	vgui.input_text('req', mut app.flash_req_buf)
+	vgui.same_line()
+	vgui.set_next_item_width(50)
+	vgui.input_text('rsp', mut app.flash_rsp_buf)
+	vgui.same_line()
+	vgui.set_next_item_width(40)
+	vgui.input_text('ver', mut app.flash_ver_buf)
+	// enter boot: the running APP's shell `boot` command (bootcell + reset).
+	// Silence is the ack — the boot manager answers the UDS ids afterwards.
+	if vgui.button('Enter boot mode') && !busy {
+		sh := app.manifest.shell.or_defaults()
+		iface := app.trace_iface()
+		if iface == '' {
+			app.flash_append('(no running channel)')
+		} else if app.tx_on(iface, transport.CanFrame{
+			id:       sh.input
+			extended: trace_ext(sh.input)
+			data:     'boot'.bytes()
+		})
+		{
+			app.flash_append('> boot (no reply expected — the reset IS the ack)')
+		} else {
+			app.flash_append('(send failed on ${iface})')
+		}
+	}
+	vgui.same_line()
+	if vgui.button_big('Flash', 190, 120, 45, 120, 0) && !busy {
+		path := vgui.buf_str(app.flash_img_buf)
+		base := u32(('0x' + vgui.buf_str(app.flash_base_buf)).u64())
+		req := u32(('0x' + vgui.buf_str(app.flash_req_buf)).u64())
+		rsp := u32(('0x' + vgui.buf_str(app.flash_rsp_buf)).u64())
+		ver := u32(vgui.buf_str(app.flash_ver_buf).u64())
+		if path == '' {
+			app.flash_append('(pick an image first)')
+		} else {
+			spawn flash_worker(app, path, base, req, rsp, ver)
+		}
+	}
+	if busy {
+		vgui.same_line()
+		if total > 0 {
+			vgui.text_dim('transferring ${done}/${total} blocks (${done * 100 / total}%)')
+		} else {
+			vgui.text_dim('working…')
+		}
+	}
+	vgui.separator_text('log (newest last)')
+	vgui.child_begin('##flashlog', 0)
+	for line in log {
+		vgui.text(line)
+	}
+	vgui.child_end()
+	vgui.end()
 }
 
 fn draw_diag(mut app App) {
