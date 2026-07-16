@@ -32,6 +32,42 @@ pub mut:
 	auth_seed []u8
 }
 
+// tester_seed resolves the 0x29 signing seed: empty -> the dev seed (00..1f,
+// examples/keys); 64 hex chars -> parsed; anything else (0x-prefix, truncated
+// CI secret) -> an error, so a misconfigured seed fails fast instead of silently
+// signing with the wrong key.
+pub fn tester_seed(env_val string) ![]u8 {
+	v := env_val.trim_space()
+	if v == '' {
+		mut s := []u8{len: 32}
+		for i in 0 .. 32 {
+			s[i] = u8(i) // dev seed
+		}
+		return s
+	}
+	if v.len != 64 {
+		return error('seed must be 64 hex chars (32 bytes); got ${v.len}')
+	}
+	mut s := []u8{len: 32}
+	for i in 0 .. 32 {
+		hb := v[i * 2..i * 2 + 2]
+		if !is_hex(hb) {
+			return error('seed has non-hex characters')
+		}
+		s[i] = u8(('0x' + hb).u8())
+	}
+	return s
+}
+
+fn is_hex(s string) bool {
+	for c in s {
+		if !((c >= `0` && c <= `9`) || (c >= `a` && c <= `f`) || (c >= `A` && c <= `F`)) {
+			return false
+		}
+	}
+	return true
+}
+
 pub fn crc32(data []u8) u32 {
 	mut crc := u32(0xFFFF_FFFF)
 	for b in data {

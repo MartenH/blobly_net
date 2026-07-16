@@ -4691,7 +4691,13 @@ fn flash_worker(app &App, path string, base u32, req_id u32, rsp_id u32, ver u32
 	mut sink := GuiFlashSink{
 		app: a
 	}
-	flash.program(mut ch, image, flash.Opts{ base: base, sw_version: ver }, mut sink) or {
+	// 0x29 tester seed: $BLOBLY_FLASH_SEED or the dev seed — same as cmd/flash, so
+	// the panel authenticates against a secured boot instead of skipping 0x29.
+	seed := flash.tester_seed(os.getenv('BLOBLY_FLASH_SEED')) or {
+		a.flash_append('(BLOBLY_FLASH_SEED: ${err})')
+		return
+	}
+	flash.program(mut ch, image, flash.Opts{ base: base, sw_version: ver, auth_seed: seed }, mut sink) or {
 		a.flash_append('FAILED: ${err}')
 		a.flash_append('(a cut transfer is safe: the boot refuses the torn image — fix and re-run)')
 		return
