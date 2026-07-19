@@ -169,7 +169,7 @@ fn test_notification_nonzero_request_id_rejected() {
 	mut msg := golden_notification.clone()
 	msg[11] = 0x01 // session 0x0001
 	h := parse_header(msg)!
-	if _ := check_notification(h) {
+	if _ := check_fixed_fields(h) {
 		assert false, 'expected a notification with nonzero request id to be rejected'
 	}
 }
@@ -178,16 +178,33 @@ fn test_notification_nonzero_return_code_rejected() {
 	mut msg := golden_notification.clone()
 	msg[15] = rc_not_ok
 	h := parse_header(msg)!
-	if _ := check_notification(h) {
+	if _ := check_fixed_fields(h) {
 		assert false, 'expected a notification with nonzero return code to be rejected'
 	}
 }
 
-fn test_check_notification_ignores_other_types() {
+fn test_check_fixed_fields_ignores_responses() {
 	// The zero-field rule binds notifications only: a response's nonzero
 	// request id must pass untouched.
 	resp := parse(response_for(parse(golden_request)!.header, []))!
-	check_notification(resp.header) or {
-		assert false, 'check_notification must not constrain responses: ${err}'
+	check_fixed_fields(resp.header) or {
+		assert false, 'check_fixed_fields must not constrain responses: ${err}'
 	}
+}
+
+fn test_request_with_nonzero_return_code_rejected() {
+	buf := request(0x0100, 0x0042, 0x00A5, 0x0001, 1, [u8(0xCA)])
+	mut msg := parse(buf) or {
+		assert false, '${err}'
+		return
+	}
+	h := Header{
+		...msg.header
+		return_code: rc_not_ok
+	}
+	if _ := check_fixed_fields(h) {
+		assert false, 'a REQUEST must carry return code ok'
+	}
+	validate(h, 0x0100, 1) or { return }
+	assert false, 'validate must reject it too'
 }

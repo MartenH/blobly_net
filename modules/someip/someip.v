@@ -200,30 +200,38 @@ pub fn check_message_type(h Header) ! {
 	}
 }
 
-// check_notification enforces the notification wire contract: Request ID and
-// Return Code MUST be zero (strict stacks expect it — a nonzero one is
-// malformed, not tolerated). No-op for other message types.
-pub fn check_notification(h Header) ! {
-	if h.msg_type != mt_notification {
-		return
-	}
-	if h.request_id() != 0 {
-		return error('SOME/IP notification with nonzero request id 0x${h.request_id():08X}')
-	}
-	if h.return_code != rc_ok {
-		return error('SOME/IP notification with nonzero return code 0x${h.return_code:02X}')
+// check_fixed_fields enforces the per-type fixed-field contract. Notifications:
+// Request ID and Return Code MUST be zero — this is the BLOBLY deployment
+// contract (emb docs/someip.md), which this oracle mirrors so it predicts the
+// target's gate. (The standard permits session handling on notifications —
+// client 0, session counting — but the blobly target deliberately emits and
+// accepts only zero; leniency here would desync oracle and target. Revisit
+// only with an SD/interop phase.) Requests: the standard fixes Return Code at
+// ok. Responses/errors are unconstrained here (rcode is their payload).
+pub fn check_fixed_fields(h Header) ! {
+	if h.msg_type == mt_notification {
+		if h.request_id() != 0 {
+			return error('SOME/IP notification with nonzero request id 0x${h.request_id():08X}')
+		}
+		if h.return_code != rc_ok {
+			return error('SOME/IP notification with nonzero return code 0x${h.return_code:02X}')
+		}
+	} else if h.msg_type == mt_request {
+		if h.return_code != rc_ok {
+			return error('SOME/IP request with nonzero return code 0x${h.return_code:02X}')
+		}
 	}
 }
 
 // validate runs the full envelope check against the configured service +
 // interface version: protocol version, service, interface version, message-type
-// legality, and the notification zero-field rule.
+// legality, and the per-type fixed-field rules.
 pub fn validate(h Header, expected_service u16, expected_version u8) ! {
 	check_protocol_version(h)!
 	check_service(h, expected_service)!
 	check_interface_version(h, expected_version)!
 	check_message_type(h)!
-	check_notification(h)!
+	check_fixed_fields(h)!
 }
 
 // --- message builders -------------------------------------------------------
