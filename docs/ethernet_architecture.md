@@ -139,3 +139,7 @@ A separate `modules/someip/`: 16-byte SOME-IP header (message/request id, length
 version, message type, return code), request/response RPC, and **SOME-IP-SD** service discovery
 (offer/find/subscribe) over UDP multicast. It does not reuse the UDS stack; it's new middleware with
 its own sim service + oracle. Scoped once DoIP is in the app.
+
+**Status 2026-07-19:** the codec/validation core exists — `modules/someip/` (16-byte header
+encode/decode + envelope validation, hermetic golden-vector tests), the host-side oracle for
+blobly_emb's eth-bus design (its `docs/someip.md`). SOME-IP-SD and the sim service remain deferred.
