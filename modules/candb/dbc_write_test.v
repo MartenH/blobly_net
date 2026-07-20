@@ -1,0 +1,180 @@
+module candb
+
+// The serializer's contract: everything the parser reads survives a
+// write→parse round trip, and the canonical form is a FIXPOINT —
+// to_dbc(parse_dbc(to_dbc(db))) == to_dbc(db) — so an editor's save/load
+// cycle can never drift a file, and git diffs show real changes only.
+
+// a database exercising every serialized feature: extended + standard ids,
+// Intel + Motorola, signed, scaling, ranges, units, value tables, comments,
+// multiplexing (switch + selector), nodes, cycle times
+fn full_db() Database {
+	return Database{
+		nodes:    ['ECU_B', 'ECU_A']
+		messages: [
+			Message{
+				name:     'Engine'
+				id:       0x100
+				dlc:      8
+				sender:   'ECU_A'
+				cycle_ms: 20
+				signals:  [
+					Signal{
+						name:      'Rpm'
+						start_bit: 0
+						length:    16
+						factor:    0.25
+						offset:    0
+						maximum:   16383.75
+						unit:      'rpm'
+						desc:      'crank speed'
+					},
+					Signal{
+						name:      'Temp'
+						start_bit: 16
+						length:    8
+						factor:    1
+						offset:    -40
+						minimum:   -40
+						maximum:   215
+						unit:      'degC'
+						is_signed: true
+					},
+					Signal{
+						name:       'Gear'
+						start_bit:  31
+						length:     4
+						byte_order: .big_endian
+						values:     {
+							u64(0): 'N'
+							u64(1): 'First'
+							u64(2): 'Second'
+						}
+					},
+				]
+			},
+			Message{
+				name:    'Diag'
+				id:      0x18FF1234
+				ext:     true
+				dlc:     8
+				signals: [
+					Signal{
+						name:           'Page'
+						start_bit:      0
+						length:         4
+						is_multiplexor: true
+					},
+					Signal{
+						name:              'Volt'
+						start_bit:         8
+						length:            8
+						factor:            0.1
+						is_multiplexed:    true
+						multiplexor_value: 2
+					},
+				]
+			},
+		]
+	}
+}
+
+fn test_write_parse_roundtrip_preserves_the_model() {
+	db := full_db()
+	text := db.to_dbc()
+	back := parse_dbc(text) or { panic('reparse failed: ${err}') }
+
+	assert back.nodes == ['ECU_A', 'ECU_B'] // canonical: sorted
+	assert back.messages.len == 2
+
+	eng := back.lookup(0x100) or { panic('Engine lost') }
+	assert eng.name == 'Engine' && eng.dlc == 8 && eng.sender == 'ECU_A'
+	assert eng.cycle_ms == 20
+	assert !eng.ext
+	assert eng.signals.len == 3
+	rpm := eng.signals[0]
+	assert rpm.name == 'Rpm' && rpm.length == 16 && rpm.factor == 0.25
+	assert rpm.unit == 'rpm' && rpm.desc == 'crank speed'
+	temp := eng.signals[1]
+	assert temp.is_signed && temp.offset == -40 && temp.minimum == -40
+	gear := eng.signals[2]
+	assert gear.byte_order == .big_endian
+	assert gear.values[u64(1)] == 'First' && gear.values.len == 3
+
+	diag := back.lookup(0x18FF1234) or { panic('Diag lost (ext id / EFF flag)') }
+	assert diag.ext
+	page := diag.signals[0]
+	assert page.is_multiplexor && !page.is_multiplexed
+	volt := diag.signals[1]
+	assert volt.is_multiplexed && volt.multiplexor_value == 2
+	assert volt.factor == 0.1
+}
+
+fn test_canonical_form_is_a_fixpoint() {
+	db := full_db()
+	once := db.to_dbc()
+	twice := (parse_dbc(once) or { panic(err) }).to_dbc()
+	assert once == twice
+}
+
+fn test_message_and_signal_order_is_canonical() {
+	// the same content declared in a different order serializes identically
+	mut msgs := full_db().messages.reverse()
+	shuffled := Database{
+		nodes:    ['ECU_A', 'ECU_B']
+		messages: msgs
+	}
+	assert shuffled.to_dbc() == full_db().to_dbc()
+}
+
+fn test_embedded_quotes_cannot_corrupt_the_file() {
+	db := Database{
+		messages: [
+			Message{
+				name:    'M'
+				id:      1
+				dlc:     1
+				signals: [
+					Signal{
+						name:      'S'
+						start_bit: 0
+						length:    8
+						unit:      'in"ch'
+						desc:      'say "hi"'
+					},
+				]
+			},
+		]
+	}
+	back := parse_dbc(db.to_dbc()) or { panic('quote sanitization failed: ${err}') }
+	assert back.messages[0].signals[0].unit == "in'ch"
+	assert back.messages[0].signals[0].desc == "say 'hi'"
+}
+
+// a realistic hand-written file (the blobly_emb bus.dbc shape) reaches the
+// fixpoint after ONE canonicalization pass
+fn test_external_file_fixpoint() {
+	src := 'VERSION ""
+
+BU_: SENSE CTRL
+
+BO_ 256 Powertrain: 8 SENSE
+ SG_ EngineSpeed : 0|16@1+ (0.25,0) [0|16383.75] "rpm" Vector__XXX
+ SG_ VehicleSpeed : 16|16@1+ (0.01,0) [0|655.35] "km/h" Vector__XXX
+
+BO_ 512 LampFrame: 8 CTRL
+ SG_ WarnLamp : 0|1@1+ (1,0) [0|1] "" Vector__XXX
+
+BA_ "GenMsgCycleTime" BO_ 512 100;
+VAL_ 512 WarnLamp 0 "Off" 1 "On" ;
+'
+	db := parse_dbc(src) or { panic(err) }
+	once := db.to_dbc()
+	twice := (parse_dbc(once) or { panic(err) }).to_dbc()
+	assert once == twice
+	back := parse_dbc(once) or { panic(err) }
+	assert back.messages.len == 2
+	lamp := back.lookup(512) or { panic('LampFrame lost') }
+	assert lamp.cycle_ms == 100
+	assert lamp.signals[0].values[u64(1)] == 'On'
+}
