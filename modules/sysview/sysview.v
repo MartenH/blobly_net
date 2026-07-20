@@ -237,7 +237,9 @@ fn (mut sys System) compute_allocation(bus string) []IdUse {
 			b = sb
 		}
 	}
-	if b.dbc != '' {
+	if b.dbc == '' {
+		sys.errs << 'bus ${bus}: no dbc declared — frame ids absent from the allocation'
+	} else {
 		dbp := os.join_path(os.dir(sys.path), b.dbc)
 		if db := candb.load_dbc_file(dbp) {
 			for m in db.messages {
@@ -258,9 +260,13 @@ fn (mut sys System) compute_allocation(bus string) []IdUse {
 		if bus !in n.buses {
 			continue
 		}
+		// configured ids above 0x7FF are 29-bit extended by convention (the
+		// GUI's trace_ext rule) — the kind is part of collision identity
 		if b.nm_lo != 0 && n.nm != 0 {
+			nid := b.nm_lo + n.nm
 			out << IdUse{
-				id:    b.nm_lo + n.nm
+				id:    nid
+				ext:   nid > 0x7FF
 				kind:  'nm'
 				owner: n.name
 			}
@@ -268,6 +274,7 @@ fn (mut sys System) compute_allocation(bus string) []IdUse {
 		if n.diag_req != 0 {
 			out << IdUse{
 				id:    n.diag_req
+				ext:   n.diag_req > 0x7FF
 				kind:  'diag-req'
 				owner: n.name
 			}
@@ -275,6 +282,7 @@ fn (mut sys System) compute_allocation(bus string) []IdUse {
 		if n.diag_rsp != 0 {
 			out << IdUse{
 				id:    n.diag_rsp
+				ext:   n.diag_rsp > 0x7FF
 				kind:  'diag-rsp'
 				owner: n.name
 			}
