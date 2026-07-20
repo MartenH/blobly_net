@@ -128,8 +128,12 @@ fn test_id_allocation_and_planted_collision() {
 	assert alloc[0].id == 0x100 && alloc[0].kind == 'frame'
 
 	// the planted collision: domain diag req 0x511 == sysnode NM (0x500+0x11)
-	cols := sys.collisions('compute')
-	assert cols == [u32(0x511)], '${cols}'
+	assert sys.collision_count('compute') == 1
+	assert sys.is_collision('compute', 0x511, false)
+	// kind-awareness: a std/ext numeric twin of a clean id is untouched, and
+	// even at the COLLIDING number an ext identity would be innocent
+	assert !sys.is_collision('compute', 0x511, true)
+	assert !sys.is_collision('compute', 0x100, false)
 }
 
 fn test_missing_node_ecu_degrades_not_fails() {
