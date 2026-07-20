@@ -20,6 +20,7 @@ import time
 import project
 import transport
 import candb
+import sysview
 import telem
 import isotp
 import uds
@@ -195,6 +196,10 @@ mut:
 	show_shell   bool
 	show_dbc     bool
 	dbc_ed       DbcEd
+	show_sys     bool
+	sys_path_buf []u8
+	sys          sysview.System
+	sys_loaded   bool
 	shell_buf    []u8     // the input line (persistent; edited in place by console_input)
 	shell_lines  []string // scrollback (guarded by mu; the worker appends)
 	shell_busy   bool     // single-flight: one command in flight at a time
@@ -1247,6 +1252,9 @@ fn main() {
 		if app.show_dbc {
 			draw_dbc_editor(mut app)
 		}
+		if app.show_sys {
+			draw_system(mut app)
+		}
 		if app.show_flash {
 			draw_flash(mut app)
 		}
@@ -1341,6 +1349,10 @@ fn draw_activity_bar(mut app App) {
 		app.show_dbc = !app.show_dbc
 	}
 	vgui.set_item_tooltip('DBC Editor')
+	if vgui.toggle_button('Sys', app.show_sys, -1) {
+		app.show_sys = !app.show_sys
+	}
+	vgui.set_item_tooltip('System viewer')
 	if vgui.toggle_button('Shl', app.show_shell, -1) {
 		app.show_shell = !app.show_shell
 	}
@@ -1424,6 +1436,7 @@ fn draw_menubar(mut app App, rx u64) {
 			app.show_diag = vgui.menu_item_check('Diagnostics', app.show_diag)
 			app.show_shell = vgui.menu_item_check('Shell', app.show_shell)
 			app.show_dbc = vgui.menu_item_check('DBC Editor', app.show_dbc)
+			app.show_sys = vgui.menu_item_check('System', app.show_sys)
 			app.show_flash = vgui.menu_item_check('Flash', app.show_flash)
 			app.show_doip = vgui.menu_item_check('DoIP Discovery', app.show_doip)
 			app.show_network = vgui.menu_item_check('Network', app.show_network)
@@ -3443,6 +3456,7 @@ fn build_layout() {
 	vgui.dock_window('Diagnostics', midnode)
 	vgui.dock_window('Shell', midnode)
 	vgui.dock_window('DBC Editor', midnode) // beside the live Trace: edit, watch re-decode
+	vgui.dock_window('System', midnode)
 	vgui.dock_window('Flash', midnode)
 	vgui.dock_window('DoIP Discovery', midnode)
 	vgui.dock_window('Graphics', bottom)
@@ -6476,6 +6490,134 @@ fn draw_dbc_editor(mut app App) {
 			app.mu.unlock()
 			app.dbc_ed.dirty[app.dbs_paths[di]] = true
 		}
+	}
+	vgui.end()
+}
+
+// ---- System viewer (docs/dbc_editor.md roadmap: viewer, NOT an editor) -----
+// Renders a blobly_emb system.toml — the things text is bad at seeing: the
+// per-bus communication matrix (P producer / C consumer / W undeclared
+// writer), node identities, and the id allocation with collisions. Read-only
+// by design: system/ecu TOML is hand-written and comment-rich, and its
+// validation brain (ecucheck/syscheck) lives in blobly_emb.
+
+fn draw_system(mut app App) {
+	vis, op := vgui.begin_closable('System', app.show_sys)
+	app.show_sys = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	sc := app.ui_scale
+	if app.sys_path_buf.len == 0 {
+		app.sys_path_buf = mkbuf('', 512)
+	}
+	vgui.set_next_item_width(340 * sc)
+	vgui.input_text('system.toml', mut app.sys_path_buf)
+	vgui.same_line()
+	if vgui.small_button('Load##sys') {
+		pth := vgui.buf_str(app.sys_path_buf)
+		if sy := sysview.load(pth) {
+			app.sys = sy
+			app.sys_loaded = true
+			app.notify('system: ${sy.nodes.len} node(s), ${sy.buses.len} bus(es), ${sy.signals.len} cross-node signal(s)')
+		} else {
+			app.notify('system load failed: ${err}')
+		}
+	}
+	if !app.sys_loaded {
+		vgui.text_dim('point at a blobly_emb system.toml (e.g. examples/system_bench/system.toml)')
+		vgui.end()
+		return
+	}
+
+	// nodes + identities
+	vgui.separator_text('nodes')
+	vgui.table_begin('##sysnodes', 6)
+	vgui.table_setup_col('node', 90 * sc)
+	vgui.table_setup_col('ecu', 200 * sc)
+	vgui.table_setup_col('buses', 90 * sc)
+	vgui.table_setup_col('nm', 50 * sc)
+	vgui.table_setup_col('diag', 110 * sc)
+	vgui.table_setup_col('trace', 40 * sc)
+	vgui.table_headers()
+	for n in app.sys.nodes {
+		vgui.table_row()
+		vgui.table_cell(n.name)
+		vgui.table_cell(if n.ecu_err != '' { '${n.ecu} (UNREADABLE)' } else { n.ecu })
+		vgui.table_cell(n.buses.join(','))
+		vgui.table_cell(if n.nm != 0 { '0x${n.nm.hex()}' } else { '-' })
+		vgui.table_cell(if n.diag_req != 0 {
+			'0x${n.diag_req.hex()}/0x${n.diag_rsp.hex()}'
+		} else {
+			'-'
+		})
+		vgui.table_cell('${n.trace}')
+	}
+	vgui.table_end()
+
+	for b in app.sys.buses {
+		vgui.separator_text('bus ${b.name} (${b.iface}${if b.fd { ', FD' } else { '' }}${if b.bitrate > 0 {
+			', ${b.bitrate / 1000} kbit'
+		} else {
+			''
+		}})')
+
+		// the communication matrix: signals x nodes
+		vgui.table_begin('##sysmx_${b.name}', 3 + app.sys.nodes.len)
+		vgui.table_setup_col('signal', 140 * sc)
+		vgui.table_setup_col('frame', 130 * sc)
+		vgui.table_setup_col('cycle', 50 * sc)
+		for n in app.sys.nodes {
+			vgui.table_setup_col(n.name, 70 * sc)
+		}
+		vgui.table_headers()
+		for sg in app.sys.signals {
+			if sg.bus != b.name {
+				continue
+			}
+			vgui.table_row()
+			vgui.table_cell(sg.name)
+			vgui.table_cell(sg.frame)
+			vgui.table_cell(if sg.cycle_ms > 0 { '${sg.cycle_ms}ms' } else { '-' })
+			for n in app.sys.nodes {
+				cell := app.sys.matrix_cell(sg, n)
+				vgui.table_next_col()
+				if cell == 'W' {
+					vgui.text_colored(205, 60, 60, 'W?') // undeclared writer
+				} else if cell == 'P' {
+					vgui.text_colored(120, 190, 120, 'P')
+				} else if cell == 'C' {
+					vgui.text_colored(86, 156, 214, 'C')
+				} else {
+					vgui.text_dim('')
+				}
+			}
+		}
+		vgui.table_end()
+
+		// id allocation with collisions
+		cols := app.sys.collisions(b.name)
+		if cols.len > 0 {
+			vgui.text_colored(205, 60, 60, '${cols.len} id collision(s) on ${b.name}')
+		}
+		vgui.table_begin('##sysid_${b.name}', 3)
+		vgui.table_setup_col('id', 80 * sc)
+		vgui.table_setup_col('kind', 80 * sc)
+		vgui.table_setup_col('owner', 160 * sc)
+		vgui.table_headers()
+		for a in app.sys.id_allocation(b.name) {
+			vgui.table_row()
+			if a.id in cols {
+				vgui.table_next_col()
+				vgui.text_colored(205, 60, 60, '0x${a.id.hex()} !')
+			} else {
+				vgui.table_cell('0x${a.id.hex()}')
+			}
+			vgui.table_cell(a.kind)
+			vgui.table_cell(a.owner)
+		}
+		vgui.table_end()
 	}
 	vgui.end()
 }
