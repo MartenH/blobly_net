@@ -220,6 +220,12 @@ pub fn check_fixed_fields(h Header) ! {
 		if h.return_code != rc_ok {
 			return error('SOME/IP request with nonzero return code 0x${h.return_code:02X}')
 		}
+		// the target's server gate requires a LIVE session (nonzero, wrapping
+		// 1..): a dead session id could not correlate the response. Mirrored
+		// here so the oracle predicts the gate (the net#49 strictness rule).
+		if h.session == 0 {
+			return error('SOME/IP request with a dead session id (0) — the response could not be correlated')
+		}
 	}
 }
 
