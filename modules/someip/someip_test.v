@@ -208,3 +208,36 @@ fn test_request_with_nonzero_return_code_rejected() {
 	validate(h, 0x0100, 1) or { return }
 	assert false, 'validate must reject it too'
 }
+
+// --- cross-repo lock: blobly_emb comm/someip golden request ---------------
+// the EXACT datagram for emb's someip_test.v header vector (service 0x0100,
+// method 0x0001, client 0x0E01, session 7, iface 1) plus its 2-byte zero
+// payload — the FULL message compared, so a payload-encoding divergence
+// cannot hide behind a header-only slice.
+const emb_golden_request = [u8(0x01), 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x0A, 0x0E, 0x01, 0x00,
+	0x07, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00]
+
+fn test_request_matches_emb_golden_vector() {
+	msg := request(0x0100, 0x0001, 0x0E01, 7, 1, [u8(0), 0])
+	assert msg == emb_golden_request
+	h := parse_header(msg)!
+	validate(h, 0x0100, 1)!
+}
+
+fn test_request_with_reserved_client_rejected() {
+	msg := request(0x0100, 0x0001, 0, 7, 1, [])
+	h := parse_header(msg)!
+	if _ := validate(h, 0x0100, 1) {
+		assert false, 'reserved-client request validated'
+	}
+}
+
+fn test_request_with_dead_session_rejected() {
+	// the target's server gate refuses session 0 (no correlation) — the
+	// oracle must predict that, not accept what the board will drop
+	msg := request(0x0100, 0x0001, 0x0E01, 0, 1, [])
+	h := parse_header(msg)!
+	if _ := validate(h, 0x0100, 1) {
+		assert false, 'dead-session request validated'
+	}
+}
