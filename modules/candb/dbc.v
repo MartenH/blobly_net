@@ -18,7 +18,7 @@ import os
 
 // Database is a parsed set of CAN messages with id lookup.
 pub struct Database {
-pub:
+pub mut:
 	messages []Message
 	nodes    []string // ECU nodes declared by the DBC BU_ record
 }
@@ -53,8 +53,13 @@ pub fn j1939_pgn(id u32) u32 {
 // ones) encode prio+PGN+SA in the BO_ id, so live frames from a different
 // source address never match exactly; the PGN is the stable key.
 pub fn (db Database) lookup_frame(id u32, ext bool) ?Message {
-	if m := db.lookup(id) {
-		return m
+	// exact match must respect the frame KIND: a standard and an extended
+	// frame may share the numeric id, and decoding std traffic against the
+	// ext definition (or vice versa) is silent corruption
+	for m in db.messages {
+		if m.id == id && m.ext == ext {
+			return m
+		}
 	}
 	if !ext {
 		return none

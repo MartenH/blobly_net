@@ -151,6 +151,30 @@ fn test_embedded_quotes_cannot_corrupt_the_file() {
 	assert back.messages[0].signals[0].desc == "say 'hi'"
 }
 
+fn test_backslashes_cannot_escape_the_closing_quote() {
+	db := Database{
+		messages: [
+			Message{
+				name:    'M'
+				id:      1
+				dlc:     1
+				signals: [
+					Signal{
+						name:      'S'
+						start_bit: 0
+						length:    8
+						unit:      'V\\'
+						desc:      'path C:\\tmp'
+					},
+				]
+			},
+		]
+	}
+	back := parse_dbc(db.to_dbc()) or { panic('backslash sanitization failed: ${err}') }
+	assert back.messages[0].signals[0].unit == 'V/'
+	assert back.messages[0].signals[0].desc == 'path C:/tmp'
+}
+
 // a realistic hand-written file (the blobly_emb bus.dbc shape) reaches the
 // fixpoint after ONE canonicalization pass
 fn test_external_file_fixpoint() {
@@ -343,6 +367,11 @@ fn test_std_and_ext_frames_sharing_a_number_keep_their_aux_records() {
 	assert std_m.signals[0].desc == 'std side' && ext_m.signals[0].desc == 'ext side'
 	assert std_m.signals[0].values[u64(1)] == 'StdOne'
 	assert ext_m.signals[0].values[u64(2)] == 'ExtTwo'
+	// exact lookup respects the frame kind on the shared numeric id
+	l_std := back.lookup_frame(0x100, false) or { panic('std lookup lost') }
+	l_ext := back.lookup_frame(0x100, true) or { panic('ext lookup lost') }
+	assert !l_std.ext && l_std.name == 'StdFrame'
+	assert l_ext.ext && l_ext.name == 'ExtFrame'
 }
 
 fn test_line_breaks_cannot_split_records() {
