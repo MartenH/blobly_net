@@ -446,6 +446,7 @@ fn (mut app App) start() {
 	for pth, _ in app.dbc_ed.dirty.clone() {
 		if app.dbs_paths.index(pth) < 0 {
 			app.dbc_ed.dirty.delete(pth)
+			app.notify('unsaved DBC edits for detached ${os.file_name(pth)} were discarded')
 		}
 	}
 	for _, d in app.dbc_ed.dirty {
@@ -5761,7 +5762,10 @@ fn draw_dbc_editor(mut app App) {
 	// app.dbs lock-free, and the save path rebuilds runtime state — both are
 	// only safe stopped. (Editing a stopped capture still re-decodes it live:
 	// the trace decodes signal values at draw time.)
-	ro := app.running || app.dbc_readers > 0
+	app.mu.lock()
+	live_readers := app.dbc_readers
+	app.mu.unlock()
+	ro := app.running || live_readers > 0
 	if ro {
 		vgui.text_colored(230, 170, 70,
 			'read-only while measuring — Stop to edit (workers drain briefly after Stop)')
@@ -5772,6 +5776,7 @@ fn draw_dbc_editor(mut app App) {
 	for pth, _ in app.dbc_ed.dirty.clone() {
 		if app.dbs_paths.index(pth) < 0 {
 			app.dbc_ed.dirty.delete(pth)
+			app.notify('unsaved DBC edits for detached ${os.file_name(pth)} were discarded')
 		}
 	}
 	sc := app.ui_scale
@@ -5850,6 +5855,26 @@ fn draw_dbc_editor(mut app App) {
 			app.dbc_ed.loaded_key = ''
 			app.notify('reverted ${app.dbs_paths[di]}')
 			app.dbc_refresh_trace_names()
+			// watches retargeted to now-discarded names would plot flat —
+			// prune the ones that no longer resolve
+			mut kept := []Watch{cap: app.watch.len}
+			for w in app.watch {
+				if m := app.find_message(w.id, w.ext) {
+					mut have := false
+					for sg in m.signals {
+						if sg.name == w.sig {
+							have = true
+						}
+					}
+					if have {
+						kept << w
+					}
+				}
+			}
+			if kept.len != app.watch.len {
+				app.notify('${app.watch.len - kept.len} plotted signal(s) removed: not in the reverted DBC')
+			}
+			app.watch = kept
 			app.dbc_refresh_if_all_clean()
 		} else {
 			app.notify('dbc revert failed: ${err}')
@@ -5992,9 +6017,20 @@ fn draw_dbc_editor(mut app App) {
 			}
 		}
 		if !id_taken {
+			old_id := app.dbs[di].messages[mi].id
+			wext0 := app.dbs[di].messages[mi].ext
 			app.mu.lock()
 			app.dbs[di].messages[mi].id = u32(cl)
 			app.mu.unlock()
+			for wi, w in app.watch {
+				if w.id == old_id && w.ext == wext0 {
+					app.watch[wi] = Watch{
+						id:  u32(cl)
+						ext: w.ext
+						sig: w.sig
+					}
+				}
+			}
 			app.dbc_ed.dirty[app.dbs_paths[di]] = true
 			app.dbc_refresh_trace_names()
 		} else {
@@ -6021,10 +6057,21 @@ fn draw_dbc_editor(mut app App) {
 		if clash {
 			app.notify('cannot flip ext: 0x${nid.hex()} already exists as that frame kind')
 		} else {
+			old_id2 := app.dbs[di].messages[mi].id
+			old_ext2 := app.dbs[di].messages[mi].ext
 			app.mu.lock()
 			app.dbs[di].messages[mi].ext = next
 			app.dbs[di].messages[mi].id = nid
 			app.mu.unlock()
+			for wi, w in app.watch {
+				if w.id == old_id2 && w.ext == old_ext2 {
+					app.watch[wi] = Watch{
+						id:  nid
+						ext: next
+						sig: w.sig
+					}
+				}
+			}
 			app.dbc_ed.dirty[app.dbs_paths[di]] = true
 			app.dbc_refresh_trace_names()
 		}
@@ -6216,8 +6263,8 @@ fn draw_dbc_editor(mut app App) {
 		if !ro && vgui.small_button('- delete signal') {
 			if app.dbs[di].messages[mi].signals[si].is_multiplexor {
 				mut deps := 0
-				for osg in app.dbs[di].messages[mi].signals {
-					if osg.is_multiplexed {
+				for oi, osg in app.dbs[di].messages[mi].signals {
+					if oi != si && osg.is_multiplexed {
 						deps++
 					}
 				}
@@ -6255,10 +6302,23 @@ fn draw_dbc_editor(mut app App) {
 				app.mu.unlock()
 				app.dbc_ed.dirty[app.dbs_paths[di]] = true
 				// Graphics watches key on (id, ext, signal name) — retarget
-				// them or the plot silently goes flat under the old name
+				// them or the plot silently goes flat under the old name.
+				// Only when THIS database resolves the pair: an earlier
+				// loaded DBC defining the same frame shadows this one
 				wid := app.dbs[di].messages[mi].id
 				wext := app.dbs[di].messages[mi].ext
+				mut shadowed := false
+				for odi in 0 .. di {
+					for om in app.dbs[odi].messages {
+						if om.id == wid && om.ext == wext {
+							shadowed = true
+						}
+					}
+				}
 				for wi, w in app.watch {
+					if shadowed {
+						break
+					}
 					if w.id == wid && w.ext == wext && w.sig == old_sig {
 						app.watch[wi] = Watch{
 							id:  w.id
