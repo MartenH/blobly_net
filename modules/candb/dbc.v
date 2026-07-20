@@ -18,7 +18,7 @@ import os
 
 // Database is a parsed set of CAN messages with id lookup.
 pub struct Database {
-pub:
+pub mut:
 	messages []Message
 	nodes    []string // ECU nodes declared by the DBC BU_ record
 }
@@ -53,8 +53,13 @@ pub fn j1939_pgn(id u32) u32 {
 // ones) encode prio+PGN+SA in the BO_ id, so live frames from a different
 // source address never match exactly; the PGN is the stable key.
 pub fn (db Database) lookup_frame(id u32, ext bool) ?Message {
-	if m := db.lookup(id) {
-		return m
+	// exact match must respect the frame KIND: a standard and an extended
+	// frame may share the numeric id, and decoding std traffic against the
+	// ext definition (or vice versa) is silent corruption
+	for m in db.messages {
+		if m.id == id && m.ext == ext {
+			return m
+		}
 	}
 	if !ext {
 		return none
@@ -119,15 +124,20 @@ const can_eff_mask = u32(0x1FFF_FFFF)
 // unit-testable. Returns an error only on a structurally broken BO_/SG_ line.
 pub fn parse_dbc(text string) !Database {
 	mut msgs := []MsgBuilder{}
-	mut by_id := map[u32]int{} // message id -> index into msgs
-	mut cur := -1              // index of the message SG_ lines attach to
+	// keyed by the RAW DBC id (EFF bit intact): auxiliary records (VAL_/CM_/
+	// BA_) carry the same raw id as their BO_, and a standard and an extended
+	// frame may share the numeric id — stripping here would attach one
+	// frame's aux records to the other
+	mut by_id := map[u32]int{} // raw DBC id -> index into msgs
+	mut cur := -1 // index of the message SG_ lines attach to
 	mut nodes := []string{}
 
 	for raw_line in text.split_into_lines() {
 		line := raw_line.trim_space()
 		if line.starts_with('BO_ ') {
 			mb := parse_bo(line)!
-			by_id[mb.id] = msgs.len
+			raw := if mb.ext { mb.id | can_eff_flag } else { mb.id }
+			by_id[raw] = msgs.len
 			cur = msgs.len
 			msgs << mb
 		} else if line.starts_with('SG_ ') {
@@ -195,8 +205,7 @@ fn apply_cycle_time(mut msgs []MsgBuilder, by_id map[u32]int, line string) {
 	if f.len < 5 || f[2] != 'BO_' {
 		return
 	}
-	raw_id := u32(f[3].u64())
-	id := if raw_id & can_eff_flag != 0 { raw_id & can_eff_mask } else { raw_id }
+	id := u32(f[3].u64()) // raw: by_id keys keep the EFF bit
 	if idx := by_id[id] {
 		msgs[idx].cycle_ms = f[4].int()
 	}
@@ -213,11 +222,13 @@ fn parse_bo(line string) !MsgBuilder {
 	ext := raw_id & can_eff_flag != 0
 	id := if ext { raw_id & can_eff_mask } else { raw_id }
 	return MsgBuilder{
-		name:   f[2].trim_right(':')
-		id:     id
-		ext:    ext
-		dlc:    f[3].int()
-		sender: if f.len >= 5 { f[4] } else { '' }
+		name: f[2].trim_right(':')
+		id:   id
+		ext:  ext
+		dlc:  f[3].int()
+		// 'Vector__XXX' is DBC's no-transmitter placeholder — normalize to ''
+		// (the Message doc's representation) so write->parse round-trips
+		sender: if f.len >= 5 && f[4] != 'Vector__XXX' { f[4] } else { '' }
 	}
 }
 
@@ -317,7 +328,7 @@ fn apply_val(mut msgs []MsgBuilder, by_id map[u32]int, line string) {
 	if f.len < 2 {
 		return
 	}
-	id := u32(f[0].u64()) & can_eff_mask
+	id := u32(f[0].u64()) // raw: by_id keys keep the EFF bit
 	sig_name := f[1]
 	mi := by_id[id] or { return }
 	si := signal_index(msgs[mi], sig_name) or { return }
@@ -340,7 +351,14 @@ fn apply_val(mut msgs []MsgBuilder, by_id map[u32]int, line string) {
 		qe := index_byte_from(rest, `"`, q + 1) or { break }
 		label := rest[q + 1..qe]
 		if num.len > 0 {
-			vals[u64(num.i64())] = label
+			// canonical key representation: the WIDTH-SIZED raw pattern (what
+			// raw_value produces and label() looks up) — sign bits masked to
+			// the signal width, and positive values parsed as u64 so 64-bit
+			// keys above i64.max survive
+			w := msgs[mi].sigs[si].length
+			mask := if w >= 64 { ~u64(0) } else { (u64(1) << w) - 1 }
+			raw := if num.starts_with('-') { u64(num.i64()) } else { num.u64() }
+			vals[raw & mask] = label
 		}
 		i = qe + 1
 	}
@@ -355,7 +373,7 @@ fn apply_cm_sg(mut msgs []MsgBuilder, by_id map[u32]int, line string) {
 	if f.len < 2 {
 		return
 	}
-	id := u32(f[0].u64()) & can_eff_mask
+	id := u32(f[0].u64()) // raw: by_id keys keep the EFF bit
 	sig_name := f[1]
 	q1 := index_byte_from(line, `"`, 0) or { return }
 	q2 := index_byte_from(line, `"`, q1 + 1) or { return }

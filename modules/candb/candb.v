@@ -21,17 +21,17 @@ pub:
 	minimum    f64 // physical range from the DBC [min|max] (0,0 if unspecified)
 	maximum    f64
 	unit       string
-	desc       string            // human-readable description / interpretation
-	values     map[u64]string    // DBC VAL_ table: raw value -> named state (enum)
+	desc       string         // human-readable description / interpretation
+	values     map[u64]string // DBC VAL_ table: raw value -> named state (enum)
 	is_signed  bool
 	byte_order ByteOrder = .little_endian
 	// Multiplexing (DBC 'M' / 'm<N>'): a message may have ONE multiplexor switch
 	// signal; multiplexed signals are only present when the switch equals their
 	// selector value. is_multiplexor and is_multiplexed can both be true for
 	// extended multiplexing ('m<N>M').
-	is_multiplexor bool // 'M' — selects which multiplexed signals are present
-	is_multiplexed bool // 'm<N>' — present only when the switch == multiplexor_value
-	multiplexor_value int // the N in 'm<N>'
+	is_multiplexor    bool // 'M' — selects which multiplexed signals are present
+	is_multiplexed    bool // 'm<N>' — present only when the switch == multiplexor_value
+	multiplexor_value int  // the N in 'm<N>'
 }
 
 // label returns the VAL_ table name for the signal's current raw value in
@@ -45,7 +45,7 @@ pub struct Message {
 pub:
 	name     string
 	id       u32
-	ext      bool   // 29-bit extended identifier (DBC EFF high-bit was set)
+	ext      bool // 29-bit extended identifier (DBC EFF high-bit was set)
 	dlc      int
 	sender   string // transmitting node (DBC BO_ transmitter); '' / 'Vector__XXX' = none
 	cycle_ms int    // GenMsgCycleTime attribute if present (0 = not cyclic / unknown)

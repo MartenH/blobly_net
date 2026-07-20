@@ -106,9 +106,7 @@ fn test_multiplexing_parse_and_select() {
 	// A message with a multiplexor switch (Mode) and two multiplexed signals that
 	// share the same bits but only appear for their selector value.
 	text := 'BO_ 400 Mux: 8 SUT\n' +
-		' SG_ Mode M : 0|8@1+ (1,0) [0|255] "" Tester\n' +
-		' SG_ TempA m0 : 8|16@1+ (0.1,0) [0|0] "degC" Tester\n' +
-		' SG_ PressB m1 : 8|16@1+ (0.5,0) [0|0] "kPa" Tester\n'
+		' SG_ Mode M : 0|8@1+ (1,0) [0|255] "" Tester\n' + ' SG_ TempA m0 : 8|16@1+ (0.1,0) [0|0] "degC" Tester\n' + ' SG_ PressB m1 : 8|16@1+ (0.5,0) [0|0] "kPa" Tester\n'
 	m := (parse_dbc(text) or { panic(err) }).lookup(400) or { panic('no msg') }
 	assert m.multiplexor_index() == 0
 	assert m.signals[0].is_multiplexor
@@ -153,8 +151,8 @@ fn test_dbc_decode_roundtrip_and_label() {
 	pt := blobly_net_dbc().lookup(0x100) or { panic('no Powertrain') }
 	mut data := []u8{len: 8}
 	pt.signals[0].encode(mut data, 2000.0) // EngineSpeed
-	pt.signals[1].encode(mut data, 88.0)   // VehicleSpeed
-	pt.signals[4].encode(mut data, 3.0)    // Gear
+	pt.signals[1].encode(mut data, 88.0) // VehicleSpeed
+	pt.signals[4].encode(mut data, 3.0) // Gear
 	assert pt.signals[0].physical(data) == 2000.0
 	assert pt.signals[1].physical(data) == 88.0
 	assert pt.signals[4].label(data) == 'Third'
