@@ -66,11 +66,13 @@ comment-rich, PR-reviewed — and their validation brain (ecucheck/sysmodel)
 lives in blobly_emb. A round-tripping TOML editor would destroy comments and
 duplicate schema knowledge, so:
 
-- **viewer first**: read system.toml + node ecu.tomls + trace-manifests (which
-  now carry the eth/SOME/IP rows) and render what text is bad at — the
-  topology graph (nodes ↔ buses ↔ gateway), the communication matrix
-  (signals × nodes, producer/consumer), id allocation with collision
-  highlights. Read-only; no schema ownership;
+- **viewer first — SHIPPED** (modules/sysview + the System panel): reads
+  system.toml + node ecu.tomls, derives consumers from the FB reads, and
+  renders the communication matrix (P/C, with undeclared writers flagged W?),
+  node identities, and per-bus id allocation (DBC frames via candb + NM alive
+  ids + diag pairs) with collision highlights. Read-only; no schema
+  ownership; degrades gracefully on unreadable node files. Trace-manifest
+  rows and a drawn topology graph await the fill_rect binding;
 - **wizards second**: "add a signal/frame" generators that emit
   correctly-shaped TOML blocks to append — mutations that never rewrite the
   file, so comments survive and diffs stay clean;
