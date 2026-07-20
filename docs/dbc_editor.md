@@ -1,8 +1,8 @@
 # DBC editor — design
 
-> Status: P1 IN PROGRESS (2026-07-20). The candb serializer (this page's core
-> contract) ships with this doc; the editor panel is the next PR. System
-> viewer/wizards are roadmap (§ below), deliberately NOT editors.
+> Status: P1 SHIPPED (2026-07-20): the candb serializer (net#50) and the
+> editor panel (this PR). System viewer/wizards are roadmap (§ below),
+> deliberately NOT editors.
 
 ## The one idea
 

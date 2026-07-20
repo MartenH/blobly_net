@@ -12,7 +12,7 @@ pub enum ByteOrder {
 }
 
 pub struct Signal {
-pub:
+pub mut:
 	name       string
 	start_bit  int // start bit (LSB for Intel, MSB for Motorola) in LSB-0 numbering
 	length     int // width in bits
@@ -42,7 +42,7 @@ pub fn (s Signal) label(data []u8) string {
 }
 
 pub struct Message {
-pub:
+pub mut:
 	name     string
 	id       u32
 	ext      bool // 29-bit extended identifier (DBC EFF high-bit was set)
