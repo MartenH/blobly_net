@@ -111,14 +111,21 @@ pub fn (db Database) to_dbc() string {
 		}
 	}
 	if any_cycle {
-		// declared range must cover every emitted value, or the file
-		// contradicts its own attribute definition — clamp to a generous cap
-		b << 'BA_DEF_ BO_ "GenMsgCycleTime" INT 0 1000000;'
+		// the declared range must cover every emitted value (a file must not
+		// contradict its own attribute definition), and values are emitted
+		// VERBATIM — clamping would silently change message timing and break
+		// the round-trip contract
+		mut max_cyc := 1_000_000
+		for m in msgs {
+			if m.cycle_ms > max_cyc {
+				max_cyc = m.cycle_ms
+			}
+		}
+		b << 'BA_DEF_ BO_ "GenMsgCycleTime" INT 0 ${max_cyc};'
 		b << 'BA_DEF_DEF_ "GenMsgCycleTime" 0;'
 		for m in msgs {
 			if m.cycle_ms > 0 {
-				cyc := if m.cycle_ms > 1_000_000 { 1_000_000 } else { m.cycle_ms }
-				b << 'BA_ "GenMsgCycleTime" BO_ ${raw_dbc_id(m)} ${cyc};'
+				b << 'BA_ "GenMsgCycleTime" BO_ ${raw_dbc_id(m)} ${m.cycle_ms};'
 			}
 		}
 	}

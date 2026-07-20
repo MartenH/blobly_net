@@ -281,8 +281,11 @@ fn test_cycle_time_stays_inside_the_declared_attribute_range() {
 		]
 	}
 	text := db.to_dbc()
-	assert text.contains('BA_DEF_ BO_ "GenMsgCycleTime" INT 0 1000000;')
-	assert text.contains('BA_ "GenMsgCycleTime" BO_ 1 1000000;'), text
+	// the declared range stretches to cover the value; the value is VERBATIM
+	assert text.contains('BA_DEF_ BO_ "GenMsgCycleTime" INT 0 5000000;')
+	assert text.contains('BA_ "GenMsgCycleTime" BO_ 1 5000000;'), text
+	back := parse_dbc(text) or { panic(err) }
+	assert back.messages[0].cycle_ms == 5_000_000 // round-trip preserved
 }
 
 fn test_std_and_ext_frames_sharing_a_number_keep_their_aux_records() {
