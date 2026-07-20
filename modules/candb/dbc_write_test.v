@@ -205,10 +205,84 @@ fn test_signed_value_table_keys_round_trip() {
 	text := db.to_dbc()
 	assert text.contains('VAL_ 1 Temp -40 "Underflow" -1 "SensorFault" 0 "Ok" ;'), text
 	back := parse_dbc(text) or { panic(err) }
+	// canonical keys are WIDTH-SIZED raw patterns: 8-bit -1 is 255, -40 is
+	// 216 — exactly what raw_value produces, so label() actually works on a
+	// parsed database (it did not before the canonicalization)
 	vals := back.messages[0].signals[0].values.clone()
-	assert vals[u64(-1)] == 'SensorFault'
-	assert vals[u64(-40)] == 'Underflow'
+	assert vals[u64(255)] == 'SensorFault'
+	assert vals[u64(216)] == 'Underflow'
 	assert vals[u64(0)] == 'Ok'
+	assert back.messages[0].signals[0].label([u8(255)]) == 'SensorFault'
+}
+
+fn test_unsigned_64bit_keys_above_i64_max_round_trip() {
+	big := u64(0xFFFF_FFFF_FFFF_FFF0)
+	db := Database{
+		messages: [
+			Message{
+				name:    'M'
+				id:      1
+				dlc:     8
+				signals: [
+					Signal{
+						name:      'Wide'
+						start_bit: 0
+						length:    64
+						values:    {
+							big: 'AlmostMax'
+						}
+					},
+				]
+			},
+		]
+	}
+	back := parse_dbc(db.to_dbc()) or { panic(err) }
+	assert back.messages[0].signals[0].values.clone()[big] == 'AlmostMax'
+}
+
+fn test_empty_sender_round_trips() {
+	db := Database{
+		messages: [
+			Message{
+				name:    'M'
+				id:      1
+				dlc:     1
+				signals: [
+					Signal{
+						name:      'S'
+						start_bit: 0
+						length:    8
+					},
+				]
+			},
+		]
+	}
+	back := parse_dbc(db.to_dbc()) or { panic(err) }
+	assert back.messages[0].sender == '' // Vector__XXX normalizes back to none
+	assert db.to_dbc() == back.to_dbc()
+}
+
+fn test_cycle_time_stays_inside_the_declared_attribute_range() {
+	db := Database{
+		messages: [
+			Message{
+				name:     'M'
+				id:       1
+				dlc:      1
+				cycle_ms: 5_000_000 // silly, but the model allows it
+				signals:  [
+					Signal{
+						name:      'S'
+						start_bit: 0
+						length:    8
+					},
+				]
+			},
+		]
+	}
+	text := db.to_dbc()
+	assert text.contains('BA_DEF_ BO_ "GenMsgCycleTime" INT 0 1000000;')
+	assert text.contains('BA_ "GenMsgCycleTime" BO_ 1 1000000;'), text
 }
 
 fn test_std_and_ext_frames_sharing_a_number_keep_their_aux_records() {

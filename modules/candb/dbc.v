@@ -217,11 +217,13 @@ fn parse_bo(line string) !MsgBuilder {
 	ext := raw_id & can_eff_flag != 0
 	id := if ext { raw_id & can_eff_mask } else { raw_id }
 	return MsgBuilder{
-		name:   f[2].trim_right(':')
-		id:     id
-		ext:    ext
-		dlc:    f[3].int()
-		sender: if f.len >= 5 { f[4] } else { '' }
+		name: f[2].trim_right(':')
+		id:   id
+		ext:  ext
+		dlc:  f[3].int()
+		// 'Vector__XXX' is DBC's no-transmitter placeholder — normalize to ''
+		// (the Message doc's representation) so write->parse round-trips
+		sender: if f.len >= 5 && f[4] != 'Vector__XXX' { f[4] } else { '' }
 	}
 }
 
@@ -344,7 +346,14 @@ fn apply_val(mut msgs []MsgBuilder, by_id map[u32]int, line string) {
 		qe := index_byte_from(rest, `"`, q + 1) or { break }
 		label := rest[q + 1..qe]
 		if num.len > 0 {
-			vals[u64(num.i64())] = label
+			// canonical key representation: the WIDTH-SIZED raw pattern (what
+			// raw_value produces and label() looks up) — sign bits masked to
+			// the signal width, and positive values parsed as u64 so 64-bit
+			// keys above i64.max survive
+			w := msgs[mi].sigs[si].length
+			mask := if w >= 64 { ~u64(0) } else { (u64(1) << w) - 1 }
+			raw := if num.starts_with('-') { u64(num.i64()) } else { num.u64() }
+			vals[raw & mask] = label
 		}
 		i = qe + 1
 	}

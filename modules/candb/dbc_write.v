@@ -24,6 +24,15 @@ fn dbc_str(s string) string {
 	return s.replace('"', "'").replace('\r', ' ').replace('\n', ' ')
 }
 
+// sext sign-extends a width-sized raw pattern to i64 (mask/sign_bit derived
+// from the signal width) — the value a signed enum key MEANS.
+fn sext(k u64, mask u64, sign_bit u64) i64 {
+	if k & sign_bit != 0 {
+		return i64(k | ~mask)
+	}
+	return i64(k)
+}
+
 // raw_dbc_id renders the BO_/VAL_/CM_ id: extended (29-bit) ids carry the EFF
 // high bit in DBC files, exactly as the parser strips it.
 fn raw_dbc_id(m Message) u32 {
@@ -102,11 +111,14 @@ pub fn (db Database) to_dbc() string {
 		}
 	}
 	if any_cycle {
-		b << 'BA_DEF_ BO_ "GenMsgCycleTime" INT 0 65535;'
+		// declared range must cover every emitted value, or the file
+		// contradicts its own attribute definition — clamp to a generous cap
+		b << 'BA_DEF_ BO_ "GenMsgCycleTime" INT 0 1000000;'
 		b << 'BA_DEF_DEF_ "GenMsgCycleTime" 0;'
 		for m in msgs {
 			if m.cycle_ms > 0 {
-				b << 'BA_ "GenMsgCycleTime" BO_ ${raw_dbc_id(m)} ${m.cycle_ms};'
+				cyc := if m.cycle_ms > 1_000_000 { 1_000_000 } else { m.cycle_ms }
+				b << 'BA_ "GenMsgCycleTime" BO_ ${raw_dbc_id(m)} ${cyc};'
 			}
 		}
 	}
@@ -121,13 +133,22 @@ pub fn (db Database) to_dbc() string {
 			if s.values.len == 0 {
 				continue
 			}
-			mut keys := s.values.keys()
-			// signed signals: negative enum keys are stored as their u64 bit
-			// pattern — sort AND render them signed, or -1 would serialize as
-			// 18446744073709551615 and corrupt the mapping on reparse
+			// canonical key = the WIDTH-SIZED raw pattern (what raw_value
+			// produces): normalize input keys to the width first — an editor
+			// may hand us full-width u64(-1) — then, for signed signals,
+			// SIGN-EXTEND FROM THE SIGNAL WIDTH to render (an 8-bit 255 IS
+			// -1; a bare i64 cast of 255 would emit 255)
+			mask := if s.length >= 64 { ~u64(0) } else { (u64(1) << s.length) - 1 }
+			sign_bit := u64(1) << (s.length - 1)
+			mut norm := map[u64]string{}
+			for k, v in s.values {
+				norm[k & mask] = v
+			}
+			mut keys := norm.keys()
 			if s.is_signed {
-				keys.sort_with_compare(fn (a &u64, b &u64) int {
-					ia, ib := i64(*a), i64(*b)
+				keys.sort_with_compare(fn [mask, sign_bit] (a &u64, b &u64) int {
+					ia := sext(*a, mask, sign_bit)
+					ib := sext(*b, mask, sign_bit)
 					if ia == ib {
 						return 0
 					}
@@ -138,8 +159,8 @@ pub fn (db Database) to_dbc() string {
 			}
 			mut parts := []string{}
 			for k in keys {
-				kv := if s.is_signed { '${i64(k)}' } else { '${k}' }
-				parts << '${kv} "${dbc_str(s.values[k])}"'
+				kv := if s.is_signed { '${sext(k, mask, sign_bit)}' } else { '${k}' }
+				parts << '${kv} "${dbc_str(norm[k])}"'
 			}
 			b << 'VAL_ ${raw_dbc_id(m)} ${s.name} ${parts.join(' ')} ;'
 		}
