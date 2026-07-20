@@ -383,7 +383,15 @@ fn (mut app App) remove_fwatch(id u32, ext bool) {
 	}
 }
 
+// Both lookups take app.mu internally: the DBC editor mutates app.dbs on the
+// UI thread while rx workers decode — callers must NOT hold app.mu (the rx
+// loops lock only after their lookup; draw paths run outside the frame's
+// snapshot lock).
 fn (app &App) find_message(id u32, ext bool) ?candb.Message {
+	app.mu.lock()
+	defer {
+		app.mu.unlock()
+	}
 	for db in app.dbs {
 		if m := db.lookup_frame(id, ext) {
 			return m
@@ -393,6 +401,10 @@ fn (app &App) find_message(id u32, ext bool) ?candb.Message {
 }
 
 fn (a &App) lookup_name(id u32, ext bool) string {
+	a.mu.lock()
+	defer {
+		a.mu.unlock()
+	}
 	for db in a.dbs {
 		if m := db.lookup_frame(id, ext) {
 			return m.name
@@ -953,6 +965,7 @@ fn (mut app App) rebuild_from_proj() {
 	app.dbs = []
 	app.dbs_paths = []
 	app.dbs_by_iface = map[string][]candb.Database{}
+	app.dbc_ed = DbcEd{} // stale indices/buffers must not survive a project swap
 	app.sims = []
 	app.senders = []
 	app.gen_bufs = []
@@ -979,6 +992,14 @@ fn (mut app App) rebuild_from_proj() {
 		}
 		for dbpath in ch.databases {
 			rp := app.resolve_asset(dbpath)
+			// a DBC attached to several channels loads ONCE — duplicate dbs
+			// entries would let the editor mutate one copy while decode reads
+			// another
+			prev := app.dbs_paths.index(rp)
+			if prev >= 0 {
+				app.dbs_by_iface[ch.iface] << app.dbs[prev]
+				continue
+			}
 			if db := candb.load_dbc_file(rp) {
 				app.dbs << db
 				app.dbs_paths << rp // the editor saves back to this path
@@ -5558,8 +5579,8 @@ mut:
 	db         int = -1 // dbs index
 	msg        int = -1
 	sig        int = -1
-	dirty      bool
-	loaded_key string // which db:msg:sig the string buffers hold
+	dirty      map[int]bool // per-dbs-index unsaved edits (switching DBCs must not lose track)
+	loaded_key string       // which db:msg:sig the string buffers hold
 	mname_buf  []u8
 	sender_buf []u8
 	sname_buf  []u8
@@ -5579,6 +5600,24 @@ fn dbc_ed_color(i int) (int, int, int) {
 		6 { 150, 150, 220 }
 		else { 180, 200, 100 }
 	}
+}
+
+// dbc_ident_ok: message/signal/sender names are UNQUOTED DBC tokens — a space
+// or punctuation would emit a record our own parser rejects.
+fn dbc_ident_ok(sv string) bool {
+	if sv == '' {
+		return false
+	}
+	for i, c in sv {
+		alpha := (c >= `a` && c <= `z`) || (c >= `A` && c <= `Z`) || c == `_`
+		if i == 0 && !alpha {
+			return false
+		}
+		if !(alpha || (c >= `0` && c <= `9`)) {
+			return false
+		}
+	}
+	return true
 }
 
 // dbc_signal_bits lists the global LSB-0 bit positions a signal occupies —
@@ -5615,13 +5654,15 @@ fn (mut app App) dbc_ed_load_bufs() {
 		return
 	}
 	m := app.dbs[di].messages[mi]
-	app.dbc_ed.mname_buf = mkbuf(m.name, 64)
-	app.dbc_ed.sender_buf = mkbuf(m.sender, 64)
+	// buffers sized past the current content: mkbuf's cap includes the NUL, so
+	// a fixed cap would silently truncate long fields on first edit
+	app.dbc_ed.mname_buf = mkbuf(m.name, m.name.len + 96)
+	app.dbc_ed.sender_buf = mkbuf(m.sender, m.sender.len + 96)
 	if si >= 0 && si < m.signals.len {
 		sg := m.signals[si]
-		app.dbc_ed.sname_buf = mkbuf(sg.name, 64)
-		app.dbc_ed.unit_buf = mkbuf(sg.unit, 32)
-		app.dbc_ed.desc_buf = mkbuf(sg.desc, 128)
+		app.dbc_ed.sname_buf = mkbuf(sg.name, sg.name.len + 96)
+		app.dbc_ed.unit_buf = mkbuf(sg.unit, sg.unit.len + 64)
+		app.dbc_ed.desc_buf = mkbuf(sg.desc, sg.desc.len + 256)
 	}
 }
 
@@ -5642,7 +5683,8 @@ fn draw_dbc_editor(mut app App) {
 	// database picker (base names; the path is the save target)
 	mut names := []string{cap: app.dbs.len}
 	for i, pth in app.dbs_paths {
-		names << '${os.file_name(pth)} (${app.dbs[i].messages.len} msgs)'
+		mark := if app.dbc_ed.dirty[i] { '` ' } else { '' }
+		names << '${mark}${os.file_name(pth)} (${app.dbs[i].messages.len} msgs)'
 	}
 	if app.dbc_ed.db < 0 && app.dbs.len > 0 {
 		app.dbc_ed.db = 0
@@ -5660,7 +5702,7 @@ fn draw_dbc_editor(mut app App) {
 	}
 
 	// save / revert row
-	if app.dbc_ed.dirty {
+	if app.dbc_ed.dirty[di] {
 		vgui.text_colored(230, 170, 70, '` modified')
 		vgui.same_line()
 	}
@@ -5668,10 +5710,34 @@ fn draw_dbc_editor(mut app App) {
 		app.mu.lock()
 		text := app.dbs[di].to_dbc()
 		app.mu.unlock()
-		os.write_file(app.dbs_paths[di], text) or { app.notify('dbc save failed: ${err}') }
-		app.dbc_ed.dirty = false
-		app.dbc_ed.loaded_key = ''
-		app.notify('saved ${app.dbs_paths[di]}')
+		mut save_ok := true
+		os.write_file(app.dbs_paths[di], text) or {
+			// a failed write must NOT clear the dirty state — that would hide
+			// unsaved edits and lose them on the next revert/reload
+			app.notify('dbc save failed (edits kept in memory): ${err}')
+			save_ok = false
+		}
+		if save_ok {
+			app.dbc_ed.dirty.delete(di)
+			app.dbc_ed.loaded_key = ''
+			app.notify('saved ${app.dbs_paths[di]}')
+			// sims/generators load their databases independently (merge_dbs):
+			// refresh them from the just-saved files — but only when no OTHER
+			// db holds unsaved edits, since the rebuild re-reads every file
+			mut others_dirty := false
+			for _, d in app.dbc_ed.dirty {
+				if d {
+					others_dirty = true
+				}
+			}
+			if !others_dirty {
+				sel_path := app.dbs_paths[di]
+				app.rebuild_preserving_senders()
+				app.dbc_ed.db = app.dbs_paths.index(sel_path)
+			} else {
+				app.notify('sim/generator databases refresh after ALL DBCs are saved')
+			}
+		}
 	}
 	vgui.same_line()
 	if vgui.small_button('Revert') {
@@ -5679,7 +5745,7 @@ fn draw_dbc_editor(mut app App) {
 			app.mu.lock()
 			app.dbs[di] = db
 			app.mu.unlock()
-			app.dbc_ed.dirty = false
+			app.dbc_ed.dirty.delete(di)
 			app.dbc_ed.msg = -1
 			app.dbc_ed.sig = -1
 			app.dbc_ed.loaded_key = ''
@@ -5716,7 +5782,7 @@ fn draw_dbc_editor(mut app App) {
 		app.mu.unlock()
 		app.dbc_ed.msg = app.dbs[di].messages.len - 1
 		app.dbc_ed.sig = -1
-		app.dbc_ed.dirty = true
+		app.dbc_ed.dirty[di] = true
 	}
 	mi := app.dbc_ed.msg
 	if mi < 0 || mi >= app.dbs[di].messages.len {
@@ -5730,7 +5796,7 @@ fn draw_dbc_editor(mut app App) {
 		app.mu.unlock()
 		app.dbc_ed.msg = -1
 		app.dbc_ed.sig = -1
-		app.dbc_ed.dirty = true
+		app.dbc_ed.dirty[di] = true
 		vgui.end()
 		return
 	}
@@ -5739,18 +5805,35 @@ fn draw_dbc_editor(mut app App) {
 	app.dbc_ed_load_bufs()
 	vgui.set_next_item_width(160 * sc)
 	if vgui.input_text('name##dbcm', mut app.dbc_ed.mname_buf) {
-		app.mu.lock()
-		app.dbs[di].messages[mi].name = vgui.buf_str(app.dbc_ed.mname_buf)
-		app.mu.unlock()
-		app.dbc_ed.dirty = true
+		nv := vgui.buf_str(app.dbc_ed.mname_buf)
+		if dbc_ident_ok(nv) {
+			app.mu.lock()
+			app.dbs[di].messages[mi].name = nv
+			app.mu.unlock()
+			app.dbc_ed.dirty[di] = true
+		}
+	}
+	if !dbc_ident_ok(vgui.buf_str(app.dbc_ed.mname_buf)) {
+		vgui.same_line()
+		vgui.text_colored(205, 60, 60, 'invalid name (A-Za-z0-9_, not applied)')
 	}
 	mut idv := int(app.dbs[di].messages[mi].id)
 	vgui.set_next_item_width(110 * sc)
 	if vgui.input_int('id (dec)', &idv) {
+		// clamp to the selected frame format: std 11-bit, ext 29-bit — a
+		// negative or oversized entry must never wrap through the u32 cast
+		id_max := if app.dbs[di].messages[mi].ext { 0x1FFF_FFFF } else { 0x7FF }
+		cl := if idv < 0 {
+			0
+		} else if idv > id_max {
+			id_max
+		} else {
+			idv
+		}
 		app.mu.lock()
-		app.dbs[di].messages[mi].id = u32(idv)
+		app.dbs[di].messages[mi].id = u32(cl)
 		app.mu.unlock()
-		app.dbc_ed.dirty = true
+		app.dbc_ed.dirty[di] = true
 	}
 	vgui.same_line()
 	vgui.text_dim('= 0x${app.dbs[di].messages[mi].id.hex()}')
@@ -5759,22 +5842,25 @@ fn draw_dbc_editor(mut app App) {
 	if next != app.dbs[di].messages[mi].ext {
 		app.mu.lock()
 		app.dbs[di].messages[mi].ext = next
+		if !next && app.dbs[di].messages[mi].id > 0x7FF {
+			app.dbs[di].messages[mi].id = 0x7FF // leaving extended: 11-bit cap
+		}
 		app.mu.unlock()
-		app.dbc_ed.dirty = true
+		app.dbc_ed.dirty[di] = true
 	}
 	mut dlcv := app.dbs[di].messages[mi].dlc
 	vgui.set_next_item_width(80 * sc)
 	if vgui.input_int('dlc', &dlcv) {
 		app.mu.lock()
-		app.dbs[di].messages[mi].dlc = if dlcv < 1 {
-			1
+		app.dbs[di].messages[mi].dlc = if dlcv < 0 {
+			0 // a zero-length CAN frame is legal
 		} else if dlcv > 64 {
 			64
 		} else {
 			dlcv
 		}
 		app.mu.unlock()
-		app.dbc_ed.dirty = true
+		app.dbc_ed.dirty[di] = true
 	}
 	vgui.same_line()
 	mut cycv := app.dbs[di].messages[mi].cycle_ms
@@ -5783,14 +5869,17 @@ fn draw_dbc_editor(mut app App) {
 		app.mu.lock()
 		app.dbs[di].messages[mi].cycle_ms = if cycv < 0 { 0 } else { cycv }
 		app.mu.unlock()
-		app.dbc_ed.dirty = true
+		app.dbc_ed.dirty[di] = true
 	}
 	vgui.set_next_item_width(120 * sc)
 	if vgui.input_text('sender', mut app.dbc_ed.sender_buf) {
-		app.mu.lock()
-		app.dbs[di].messages[mi].sender = vgui.buf_str(app.dbc_ed.sender_buf)
-		app.mu.unlock()
-		app.dbc_ed.dirty = true
+		sv := vgui.buf_str(app.dbc_ed.sender_buf)
+		if sv == '' || dbc_ident_ok(sv) { // empty = no transmitter
+			app.mu.lock()
+			app.dbs[di].messages[mi].sender = sv
+			app.mu.unlock()
+			app.dbc_ed.dirty[di] = true
+		}
 	}
 
 	// bit-matrix grid: rows = bytes, cells bit7..bit0 (the CANdb++ view).
@@ -5887,7 +5976,7 @@ fn draw_dbc_editor(mut app App) {
 		}
 		app.mu.unlock()
 		app.dbc_ed.sig = app.dbs[di].messages[mi].signals.len - 1
-		app.dbc_ed.dirty = true
+		app.dbc_ed.dirty[di] = true
 	}
 	si := app.dbc_ed.sig
 	if si >= 0 && si < app.dbs[di].messages[mi].signals.len {
@@ -5897,17 +5986,24 @@ fn draw_dbc_editor(mut app App) {
 			app.dbs[di].messages[mi].signals.delete(si)
 			app.mu.unlock()
 			app.dbc_ed.sig = -1
-			app.dbc_ed.dirty = true
+			app.dbc_ed.dirty[di] = true
 			vgui.end()
 			return
 		}
 		app.dbc_ed_load_bufs()
 		vgui.set_next_item_width(160 * sc)
 		if vgui.input_text('name##dbcs', mut app.dbc_ed.sname_buf) {
-			app.mu.lock()
-			app.dbs[di].messages[mi].signals[si].name = vgui.buf_str(app.dbc_ed.sname_buf)
-			app.mu.unlock()
-			app.dbc_ed.dirty = true
+			nv := vgui.buf_str(app.dbc_ed.sname_buf)
+			if dbc_ident_ok(nv) {
+				app.mu.lock()
+				app.dbs[di].messages[mi].signals[si].name = nv
+				app.mu.unlock()
+				app.dbc_ed.dirty[di] = true
+			}
+		}
+		if !dbc_ident_ok(vgui.buf_str(app.dbc_ed.sname_buf)) {
+			vgui.same_line()
+			vgui.text_colored(205, 60, 60, 'invalid name (A-Za-z0-9_, not applied)')
 		}
 		mut sbv := app.dbs[di].messages[mi].signals[si].start_bit
 		vgui.set_next_item_width(80 * sc)
@@ -5915,7 +6011,7 @@ fn draw_dbc_editor(mut app App) {
 			app.mu.lock()
 			app.dbs[di].messages[mi].signals[si].start_bit = if sbv < 0 { 0 } else { sbv }
 			app.mu.unlock()
-			app.dbc_ed.dirty = true
+			app.dbc_ed.dirty[di] = true
 		}
 		vgui.same_line()
 		mut lnv := app.dbs[di].messages[mi].signals[si].length
@@ -5930,7 +6026,7 @@ fn draw_dbc_editor(mut app App) {
 				lnv
 			}
 			app.mu.unlock()
-			app.dbc_ed.dirty = true
+			app.dbc_ed.dirty[di] = true
 		}
 		cur_o := if app.dbs[di].messages[mi].signals[si].byte_order == .little_endian {
 			0
@@ -5946,7 +6042,7 @@ fn draw_dbc_editor(mut app App) {
 				candb.ByteOrder.big_endian
 			}
 			app.mu.unlock()
-			app.dbc_ed.dirty = true
+			app.dbc_ed.dirty[di] = true
 		}
 		vgui.same_line()
 		nsg := vgui.checkbox('signed', app.dbs[di].messages[mi].signals[si].is_signed)
@@ -5954,7 +6050,7 @@ fn draw_dbc_editor(mut app App) {
 			app.mu.lock()
 			app.dbs[di].messages[mi].signals[si].is_signed = nsg
 			app.mu.unlock()
-			app.dbc_ed.dirty = true
+			app.dbc_ed.dirty[di] = true
 		}
 		mut fv := app.dbs[di].messages[mi].signals[si].factor
 		vgui.set_next_item_width(100 * sc)
@@ -5962,7 +6058,7 @@ fn draw_dbc_editor(mut app App) {
 			app.mu.lock()
 			app.dbs[di].messages[mi].signals[si].factor = fv
 			app.mu.unlock()
-			app.dbc_ed.dirty = true
+			app.dbc_ed.dirty[di] = true
 		}
 		vgui.same_line()
 		mut ov := app.dbs[di].messages[mi].signals[si].offset
@@ -5971,7 +6067,7 @@ fn draw_dbc_editor(mut app App) {
 			app.mu.lock()
 			app.dbs[di].messages[mi].signals[si].offset = ov
 			app.mu.unlock()
-			app.dbc_ed.dirty = true
+			app.dbc_ed.dirty[di] = true
 		}
 		mut mnv := app.dbs[di].messages[mi].signals[si].minimum
 		vgui.set_next_item_width(100 * sc)
@@ -5979,7 +6075,7 @@ fn draw_dbc_editor(mut app App) {
 			app.mu.lock()
 			app.dbs[di].messages[mi].signals[si].minimum = mnv
 			app.mu.unlock()
-			app.dbc_ed.dirty = true
+			app.dbc_ed.dirty[di] = true
 		}
 		vgui.same_line()
 		mut mxv := app.dbs[di].messages[mi].signals[si].maximum
@@ -5988,21 +6084,21 @@ fn draw_dbc_editor(mut app App) {
 			app.mu.lock()
 			app.dbs[di].messages[mi].signals[si].maximum = mxv
 			app.mu.unlock()
-			app.dbc_ed.dirty = true
+			app.dbc_ed.dirty[di] = true
 		}
 		vgui.set_next_item_width(80 * sc)
 		if vgui.input_text('unit', mut app.dbc_ed.unit_buf) {
 			app.mu.lock()
 			app.dbs[di].messages[mi].signals[si].unit = vgui.buf_str(app.dbc_ed.unit_buf)
 			app.mu.unlock()
-			app.dbc_ed.dirty = true
+			app.dbc_ed.dirty[di] = true
 		}
 		vgui.set_next_item_width(240 * sc)
 		if vgui.input_text('desc', mut app.dbc_ed.desc_buf) {
 			app.mu.lock()
 			app.dbs[di].messages[mi].signals[si].desc = vgui.buf_str(app.dbc_ed.desc_buf)
 			app.mu.unlock()
-			app.dbc_ed.dirty = true
+			app.dbc_ed.dirty[di] = true
 		}
 	}
 	vgui.end()
