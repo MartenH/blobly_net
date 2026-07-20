@@ -65,9 +65,10 @@ pub mut:
 	nodes   []SysNode
 	errs    []string // load-time problems worth showing (missing DBC etc.)
 	// precomputed at load (id_allocation parses the bus DBC — a per-frame
-	// GUI must never re-read files): bus -> sorted allocation / collisions
+	// GUI must never re-read files): bus -> sorted allocation / collision
+	// keys (id | ext<<32 — the frame KIND is part of identity)
 	alloc map[string][]IdUse
-	cols  map[string][]u32
+	cols  map[string][]u64
 }
 
 fn tstr(m map[string]toml.Any, key string) string {
@@ -215,9 +216,17 @@ pub fn (sys System) id_allocation(bus string) []IdUse {
 	return sys.alloc[bus] or { []IdUse{} }
 }
 
-// collisions returns the precomputed colliding ids for `bus`.
-pub fn (sys System) collisions(bus string) []u32 {
-	return sys.cols[bus] or { []u32{} }
+// collision_count returns how many (id, kind) identities collide on `bus`.
+pub fn (sys System) collision_count(bus string) int {
+	return (sys.cols[bus] or { []u64{} }).len
+}
+
+// is_collision reports whether this exact (id, kind) identity is allocated
+// more than once on `bus` — a std/ext numeric twin of a colliding pair is NOT
+// itself in collision.
+pub fn (sys System) is_collision(bus string, id u32, ext bool) bool {
+	key := u64(id) | (u64(if ext { 1 } else { 0 }) << 32)
+	return key in (sys.cols[bus] or { []u64{} })
 }
 
 fn (mut sys System) compute_allocation(bus string) []IdUse {
@@ -283,22 +292,19 @@ fn (mut sys System) compute_allocation(bus string) []IdUse {
 	return out
 }
 
-// compute_collisions: ids allocated more than once — per (id, KIND) pair, so
-// a std and an ext frame sharing a number are NOT a false duplicate. NM/diag
-// ids are standard-frame identifiers.
-fn compute_collisions(alloc []IdUse) []u32 {
+// compute_collisions: (id, kind) identities allocated more than once — the
+// kind stays IN the key all the way to the highlight, so a std/ext numeric
+// twin of a colliding pair is never flagged itself.
+fn compute_collisions(alloc []IdUse) []u64 {
 	mut seen := map[u64]int{}
 	for a in alloc {
 		key := u64(a.id) | (u64(if a.ext { 1 } else { 0 }) << 32)
 		seen[key]++
 	}
-	mut out := []u32{}
+	mut out := []u64{}
 	for key, c in seen {
 		if c > 1 {
-			id := u32(key & 0xFFFF_FFFF)
-			if id !in out {
-				out << id
-			}
+			out << key
 		}
 	}
 	out.sort()

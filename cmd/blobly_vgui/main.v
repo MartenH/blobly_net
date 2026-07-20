@@ -6610,10 +6610,11 @@ fn draw_system(mut app App) {
 			n0 = n1
 		}
 
-		// id allocation with collisions
-		cols := app.sys.collisions(b.name)
-		if cols.len > 0 {
-			vgui.text_colored(205, 60, 60, '${cols.len} id collision(s) on ${b.name}')
+		// id allocation with collisions (kind-aware: an ext twin of a
+		// colliding std id is not itself flagged)
+		ncols := app.sys.collision_count(b.name)
+		if ncols > 0 {
+			vgui.text_colored(205, 60, 60, '${ncols} id collision(s) on ${b.name}')
 		}
 		if vgui.table_begin('##sysid_${b.name}', 3) {
 			vgui.table_setup_col('id', 90 * sc)
@@ -6623,7 +6624,7 @@ fn draw_system(mut app App) {
 			for a in app.sys.id_allocation(b.name) {
 				vgui.table_row()
 				idtxt := if a.ext { '0x${a.id.hex()}x' } else { '0x${a.id.hex()}' }
-				if a.id in cols {
+				if app.sys.is_collision(b.name, a.id, a.ext) {
 					vgui.table_next_col()
 					vgui.text_colored(205, 60, 60, '${idtxt} !')
 				} else {
