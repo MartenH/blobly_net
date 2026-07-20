@@ -6573,7 +6573,10 @@ fn draw_system(mut app App) {
 		// well under Dear ImGui's hard 64-column table limit
 		chunk := 32
 		mut n0 := 0
-		for n0 < app.sys.nodes.len {
+		// a nodeless (partially authored) system still shows its signals:
+		// the first pass always renders (with zero node columns), and the
+		// explicit break below ends the zero-node case
+		for {
 			n1 := if n0 + chunk < app.sys.nodes.len { n0 + chunk } else { app.sys.nodes.len }
 			if vgui.table_begin('##sysmx_${b.name}_${n0}', 3 + (n1 - n0)) {
 				vgui.table_setup_col('signal', 140 * sc)
@@ -6606,6 +6609,9 @@ fn draw_system(mut app App) {
 					}
 				}
 				vgui.table_end()
+			}
+			if n1 >= app.sys.nodes.len {
+				break
 			}
 			n0 = n1
 		}
