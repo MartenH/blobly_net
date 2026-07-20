@@ -5890,8 +5890,8 @@ fn draw_dbc_editor(mut app App) {
 			nid++
 		}
 		if !id_free {
+			app.mu.unlock() // BEFORE notify(): it takes app.mu itself
 			app.notify('no free standard id in 0x100..0x7FF — delete a message or use extended ids')
-			app.mu.unlock()
 			vgui.end()
 			return
 		}
@@ -5937,6 +5937,7 @@ fn draw_dbc_editor(mut app App) {
 		app.dbc_ed.sig = -1
 		app.dbc_ed.dirty[app.dbs_paths[di]] = true
 		app.dbc_ed.loaded_key = ''
+		app.dbc_refresh_trace_names() // captured rows may show the deleted name
 		vgui.end()
 		return
 	}
@@ -6248,10 +6249,24 @@ fn draw_dbc_editor(mut app App) {
 				}
 			}
 			if dbc_ident_ok(nv) && !name_taken {
+				old_sig := app.dbs[di].messages[mi].signals[si].name
 				app.mu.lock()
 				app.dbs[di].messages[mi].signals[si].name = nv
 				app.mu.unlock()
 				app.dbc_ed.dirty[app.dbs_paths[di]] = true
+				// Graphics watches key on (id, ext, signal name) — retarget
+				// them or the plot silently goes flat under the old name
+				wid := app.dbs[di].messages[mi].id
+				wext := app.dbs[di].messages[mi].ext
+				for wi, w in app.watch {
+					if w.id == wid && w.ext == wext && w.sig == old_sig {
+						app.watch[wi] = Watch{
+							id:  w.id
+							ext: w.ext
+							sig: nv
+						}
+					}
+				}
 			}
 		}
 		if !dbc_ident_ok(vgui.buf_str(app.dbc_ed.sname_buf)) {
@@ -6287,13 +6302,15 @@ fn draw_dbc_editor(mut app App) {
 					val_clash = true // the key itself no longer fits: saving would remap it
 				}
 			}
-			if val_clash {
-				app.notify('width ${nl} cannot hold the existing value-table keys — remove them first')
-			} else {
+			if !val_clash {
 				app.dbs[di].messages[mi].signals[si].length = nl
 				app.dbc_ed.dirty[app.dbs_paths[di]] = true
 			}
 			app.mu.unlock()
+			if val_clash {
+				// AFTER unlock: notify() takes app.mu itself
+				app.notify('width ${nl} cannot hold the existing value-table keys — remove them first')
+			}
 		}
 		cur_o := if app.dbs[di].messages[mi].signals[si].byte_order == .little_endian {
 			0
