@@ -6532,29 +6532,35 @@ fn draw_system(mut app App) {
 	}
 
 	// nodes + identities
-	vgui.separator_text('nodes')
-	vgui.table_begin('##sysnodes', 6)
-	vgui.table_setup_col('node', 90 * sc)
-	vgui.table_setup_col('ecu', 200 * sc)
-	vgui.table_setup_col('buses', 90 * sc)
-	vgui.table_setup_col('nm', 50 * sc)
-	vgui.table_setup_col('diag', 110 * sc)
-	vgui.table_setup_col('trace', 40 * sc)
-	vgui.table_headers()
-	for n in app.sys.nodes {
-		vgui.table_row()
-		vgui.table_cell(n.name)
-		vgui.table_cell(if n.ecu_err != '' { '${n.ecu} (UNREADABLE)' } else { n.ecu })
-		vgui.table_cell(n.buses.join(','))
-		vgui.table_cell(if n.nm != 0 { '0x${n.nm.hex()}' } else { '-' })
-		vgui.table_cell(if n.diag_req != 0 {
-			'0x${n.diag_req.hex()}/0x${n.diag_rsp.hex()}'
-		} else {
-			'-'
-		})
-		vgui.table_cell('${n.trace}')
+	// load-time problems (unreadable DBCs etc.) must stay visible
+	for e in app.sys.errs {
+		vgui.text_colored(205, 60, 60, e)
 	}
-	vgui.table_end()
+	vgui.text_dim('showing: ${app.sys.path}')
+	vgui.separator_text('nodes')
+	if vgui.table_begin('##sysnodes', 6) {
+		vgui.table_setup_col('node', 90 * sc)
+		vgui.table_setup_col('ecu', 200 * sc)
+		vgui.table_setup_col('buses', 90 * sc)
+		vgui.table_setup_col('nm', 50 * sc)
+		vgui.table_setup_col('diag', 110 * sc)
+		vgui.table_setup_col('trace', 40 * sc)
+		vgui.table_headers()
+		for n in app.sys.nodes {
+			vgui.table_row()
+			vgui.table_cell(n.name)
+			vgui.table_cell(if n.ecu_err != '' { '${n.ecu} (UNREADABLE)' } else { n.ecu })
+			vgui.table_cell(n.buses.join(','))
+			vgui.table_cell(if n.nm != 0 { '0x${n.nm.hex()}' } else { '-' })
+			vgui.table_cell(if n.diag_req != 0 {
+				'0x${n.diag_req.hex()}/0x${n.diag_rsp.hex()}'
+			} else {
+				'-'
+			})
+			vgui.table_cell('${n.trace}')
+		}
+		vgui.table_end()
+	}
 
 	for b in app.sys.buses {
 		vgui.separator_text('bus ${b.name} (${b.iface}${if b.fd { ', FD' } else { '' }}${if b.bitrate > 0 {
@@ -6563,61 +6569,71 @@ fn draw_system(mut app App) {
 			''
 		}})')
 
-		// the communication matrix: signals x nodes
-		vgui.table_begin('##sysmx_${b.name}', 3 + app.sys.nodes.len)
-		vgui.table_setup_col('signal', 140 * sc)
-		vgui.table_setup_col('frame', 130 * sc)
-		vgui.table_setup_col('cycle', 50 * sc)
-		for n in app.sys.nodes {
-			vgui.table_setup_col(n.name, 70 * sc)
-		}
-		vgui.table_headers()
-		for sg in app.sys.signals {
-			if sg.bus != b.name {
-				continue
-			}
-			vgui.table_row()
-			vgui.table_cell(sg.name)
-			vgui.table_cell(sg.frame)
-			vgui.table_cell(if sg.cycle_ms > 0 { '${sg.cycle_ms}ms' } else { '-' })
-			for n in app.sys.nodes {
-				cell := app.sys.matrix_cell(sg, n)
-				vgui.table_next_col()
-				if cell == 'W' {
-					vgui.text_colored(205, 60, 60, 'W?') // undeclared writer
-				} else if cell == 'P' {
-					vgui.text_colored(120, 190, 120, 'P')
-				} else if cell == 'C' {
-					vgui.text_colored(86, 156, 214, 'C')
-				} else {
-					vgui.text_dim('')
+		// the communication matrix: signals x nodes, node columns chunked
+		// well under Dear ImGui's hard 64-column table limit
+		chunk := 32
+		mut n0 := 0
+		for n0 < app.sys.nodes.len {
+			n1 := if n0 + chunk < app.sys.nodes.len { n0 + chunk } else { app.sys.nodes.len }
+			if vgui.table_begin('##sysmx_${b.name}_${n0}', 3 + (n1 - n0)) {
+				vgui.table_setup_col('signal', 140 * sc)
+				vgui.table_setup_col('frame', 130 * sc)
+				vgui.table_setup_col('cycle', 50 * sc)
+				for ni in n0 .. n1 {
+					vgui.table_setup_col(app.sys.nodes[ni].name, 70 * sc)
 				}
+				vgui.table_headers()
+				for sg in app.sys.signals {
+					if sg.bus != b.name {
+						continue
+					}
+					vgui.table_row()
+					vgui.table_cell(sg.name)
+					vgui.table_cell(sg.frame)
+					vgui.table_cell(if sg.cycle_ms > 0 { '${sg.cycle_ms}ms' } else { '-' })
+					for ni in n0 .. n1 {
+						cell := app.sys.matrix_cell(sg, app.sys.nodes[ni])
+						vgui.table_next_col()
+						if cell == 'W' {
+							vgui.text_colored(205, 60, 60, 'W?') // undeclared writer
+						} else if cell == 'P' {
+							vgui.text_colored(120, 190, 120, 'P')
+						} else if cell == 'C' {
+							vgui.text_colored(86, 156, 214, 'C')
+						} else {
+							vgui.text_dim('')
+						}
+					}
+				}
+				vgui.table_end()
 			}
+			n0 = n1
 		}
-		vgui.table_end()
 
 		// id allocation with collisions
 		cols := app.sys.collisions(b.name)
 		if cols.len > 0 {
 			vgui.text_colored(205, 60, 60, '${cols.len} id collision(s) on ${b.name}')
 		}
-		vgui.table_begin('##sysid_${b.name}', 3)
-		vgui.table_setup_col('id', 80 * sc)
-		vgui.table_setup_col('kind', 80 * sc)
-		vgui.table_setup_col('owner', 160 * sc)
-		vgui.table_headers()
-		for a in app.sys.id_allocation(b.name) {
-			vgui.table_row()
-			if a.id in cols {
-				vgui.table_next_col()
-				vgui.text_colored(205, 60, 60, '0x${a.id.hex()} !')
-			} else {
-				vgui.table_cell('0x${a.id.hex()}')
+		if vgui.table_begin('##sysid_${b.name}', 3) {
+			vgui.table_setup_col('id', 90 * sc)
+			vgui.table_setup_col('kind', 80 * sc)
+			vgui.table_setup_col('owner', 160 * sc)
+			vgui.table_headers()
+			for a in app.sys.id_allocation(b.name) {
+				vgui.table_row()
+				idtxt := if a.ext { '0x${a.id.hex()}x' } else { '0x${a.id.hex()}' }
+				if a.id in cols {
+					vgui.table_next_col()
+					vgui.text_colored(205, 60, 60, '${idtxt} !')
+				} else {
+					vgui.table_cell(idtxt)
+				}
+				vgui.table_cell(a.kind)
+				vgui.table_cell(a.owner)
 			}
-			vgui.table_cell(a.kind)
-			vgui.table_cell(a.owner)
+			vgui.table_end()
 		}
-		vgui.table_end()
 	}
 	vgui.end()
 }
