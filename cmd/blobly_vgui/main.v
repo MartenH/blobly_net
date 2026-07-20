@@ -82,16 +82,18 @@ fn (c Chan) monitorable() bool {
 
 struct App {
 mut:
-	mu           sync.Mutex
-	chans        []Chan
-	trace        []TraceRow
-	gcount       map[string]u64 // persistent per-group frame totals (survive the ring trim)
-	trecs        []TRec
-	rx           u64 // total across channels
-	rev          u64
-	running      bool
-	dbs          []candb.Database            // all loaded DBCs (union; trace/symbol decode)
-	dbs_paths    []string                    // resolved file path per dbs entry (editor save target)
+	mu          sync.Mutex
+	chans       []Chan
+	trace       []TraceRow
+	gcount      map[string]u64 // persistent per-group frame totals (survive the ring trim)
+	trecs       []TRec
+	rx          u64 // total across channels
+	rev         u64
+	running     bool
+	dbs         []candb.Database // all loaded DBCs (union; trace/symbol decode)
+	dbs_paths   []string         // resolved file path per dbs entry (editor save target)
+	dbc_readers int              // live workers reading app.dbs lock-free (rx loops);
+	// the editor stays read-only until 0 — app.running clears BEFORE workers exit
 	dbs_by_iface map[string][]candb.Database // per-channel DBCs (generator message picker scope)
 	manifest     telem.Manifest
 	has_manifest bool
@@ -435,6 +437,15 @@ fn (mut app App) start() {
 	// attaches to exactly what the Configuration editor shows (not stale buffered values).
 	if app.dirty {
 		app.apply_edits()
+	}
+	// unsaved DBC-editor edits exist only in the app.dbs union — sims and the
+	// per-channel generator databases still hold the on-disk definitions, so a
+	// measurement would encode with one schema and decode with another
+	for _, d in app.dbc_ed.dirty {
+		if d {
+			app.notify('DBC editor has unsaved edits — Save or Revert them before starting')
+			return
+		}
 	}
 	app.running = true
 	for ci, ch in app.chans {
@@ -785,6 +796,14 @@ fn rx_loop(app &App, ci int, iface string) {
 		return
 	}
 	mut a := unsafe { app }
+	a.mu.lock()
+	a.dbc_readers++ // this loop reads app.dbs lock-free (lookup_name per frame)
+	a.mu.unlock()
+	defer {
+		a.mu.lock()
+		a.dbc_readers--
+		a.mu.unlock()
+	}
 	chname := a.chans[ci].name
 	// the TraceRsp id is config-static (the manifest is only mutated while stopped, so it can't
 	// change under a running RX loop) — resolve it once, not per frame in the hot path.
@@ -5712,9 +5731,18 @@ fn draw_dbc_editor(mut app App) {
 	// app.dbs lock-free, and the save path rebuilds runtime state — both are
 	// only safe stopped. (Editing a stopped capture still re-decodes it live:
 	// the trace decodes signal values at draw time.)
-	ro := app.running
+	ro := app.running || app.dbc_readers > 0
 	if ro {
-		vgui.text_colored(230, 170, 70, 'read-only while measuring — Stop to edit')
+		vgui.text_colored(230, 170, 70,
+			'read-only while measuring — Stop to edit (workers drain briefly after Stop)')
+	}
+	// a project swap replaces dbs_paths: dirty entries for paths no longer
+	// attached are unreachable ghosts — drop them (the swap discarded those
+	// databases; keeping the flags would wedge Start forever)
+	for pth, _ in app.dbc_ed.dirty.clone() {
+		if app.dbs_paths.index(pth) < 0 {
+			app.dbc_ed.dirty.delete(pth)
+		}
 	}
 	sc := app.ui_scale
 
@@ -5803,14 +5831,38 @@ fn draw_dbc_editor(mut app App) {
 	vgui.child_end()
 	if !ro && vgui.small_button('+ message') {
 		app.mu.lock()
+		// next free STANDARD id (the new frame is ext:false — extended ids
+		// must not push it past the 11-bit range)
 		mut nid := u32(0x100)
-		for m in app.dbs[di].messages {
-			if m.id >= nid {
-				nid = m.id + 1
+		for {
+			mut taken := false
+			for m in app.dbs[di].messages {
+				if !m.ext && m.id == nid {
+					taken = true
+				}
 			}
+			if !taken || nid >= 0x7FF {
+				break
+			}
+			nid++
+		}
+		mut mname := 'NewMessage'
+		mut mn := 1
+		for {
+			mut taken := false
+			for m in app.dbs[di].messages {
+				if m.name == mname {
+					taken = true
+				}
+			}
+			if !taken {
+				break
+			}
+			mn++
+			mname = 'NewMessage${mn}'
 		}
 		app.dbs[di].messages << candb.Message{
-			name: 'NewMessage'
+			name: mname
 			id:   nid
 			dlc:  8
 		}
@@ -5818,6 +5870,7 @@ fn draw_dbc_editor(mut app App) {
 		app.dbc_ed.msg = app.dbs[di].messages.len - 1
 		app.dbc_ed.sig = -1
 		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		app.dbc_ed.loaded_key = ''
 	}
 	mi := app.dbc_ed.msg
 	if mi < 0 || mi >= app.dbs[di].messages.len {
@@ -5832,6 +5885,7 @@ fn draw_dbc_editor(mut app App) {
 		app.dbc_ed.msg = -1
 		app.dbc_ed.sig = -1
 		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		app.dbc_ed.loaded_key = ''
 		vgui.end()
 		return
 	}
@@ -5841,7 +5895,15 @@ fn draw_dbc_editor(mut app App) {
 	vgui.set_next_item_width(160 * sc)
 	if !ro && vgui.input_text('name##dbcm', mut app.dbc_ed.mname_buf) {
 		nv := vgui.buf_str(app.dbc_ed.mname_buf)
-		if dbc_ident_ok(nv) {
+		// generators resolve messages BY NAME (first match wins) — a
+		// duplicate makes one frame unreachable
+		mut mname_taken := false
+		for oi, om in app.dbs[di].messages {
+			if oi != mi && om.name == nv {
+				mname_taken = true
+			}
+		}
+		if dbc_ident_ok(nv) && !mname_taken {
 			app.mu.lock()
 			app.dbs[di].messages[mi].name = nv
 			app.mu.unlock()
@@ -5886,14 +5948,28 @@ fn draw_dbc_editor(mut app App) {
 	vgui.text_dim('= 0x${app.dbs[di].messages[mi].id.hex()}')
 	vgui.same_line()
 	next := vgui.checkbox('ext##dbcm', app.dbs[di].messages[mi].ext)
-	if next != app.dbs[di].messages[mi].ext {
-		app.mu.lock()
-		app.dbs[di].messages[mi].ext = next
-		if !next && app.dbs[di].messages[mi].id > 0x7FF {
-			app.dbs[di].messages[mi].id = 0x7FF // leaving extended: 11-bit cap
+	if !ro && next != app.dbs[di].messages[mi].ext {
+		// the kind flip changes the frame IDENTITY — recheck (id, ext)
+		// uniqueness and the 11-bit cap before applying
+		mut nid := app.dbs[di].messages[mi].id
+		if !next && nid > 0x7FF {
+			nid = 0x7FF
 		}
-		app.mu.unlock()
-		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		mut clash := false
+		for oi, om in app.dbs[di].messages {
+			if oi != mi && om.id == nid && om.ext == next {
+				clash = true
+			}
+		}
+		if clash {
+			app.notify('cannot flip ext: 0x${nid.hex()} already exists as that frame kind')
+		} else {
+			app.mu.lock()
+			app.dbs[di].messages[mi].ext = next
+			app.dbs[di].messages[mi].id = nid
+			app.mu.unlock()
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		}
 	}
 	mut dlcv := app.dbs[di].messages[mi].dlc
 	vgui.set_next_item_width(80 * sc)
@@ -5924,6 +6000,11 @@ fn draw_dbc_editor(mut app App) {
 		if sv == '' || dbc_ident_ok(sv) { // empty = no transmitter
 			app.mu.lock()
 			app.dbs[di].messages[mi].sender = sv
+			// a transmitter must exist in BU_: sim.validate_node rejects
+			// senders the node list doesn't declare
+			if sv != '' && sv !in app.dbs[di].nodes {
+				app.dbs[di].nodes << sv
+			}
 			app.mu.unlock()
 			app.dbc_ed.dirty[app.dbs_paths[di]] = true
 		}
@@ -5933,6 +6014,12 @@ fn draw_dbc_editor(mut app App) {
 	// Colored per owning signal; overlap = red; click selects the signal.
 	vgui.separator_text('layout')
 	msg := app.dbs[di].messages[mi]
+	if msg.dlc < 0 || msg.dlc > 64 {
+		vgui.text_colored(205, 60, 60,
+			'dlc ${msg.dlc} out of range — fix it above to see the layout')
+		vgui.end()
+		return
+	}
 	nbits := msg.dlc * 8
 	mut owners := [][]int{len: nbits}
 	for six, sg in msg.signals {
@@ -6066,6 +6153,7 @@ fn draw_dbc_editor(mut app App) {
 		app.mu.unlock()
 		app.dbc_ed.sig = app.dbs[di].messages[mi].signals.len - 1
 		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		app.dbc_ed.loaded_key = '' // indices reused after add/delete: refresh buffers
 	}
 	si := app.dbc_ed.sig
 	if si >= 0 && si < app.dbs[di].messages[mi].signals.len {
@@ -6089,6 +6177,7 @@ fn draw_dbc_editor(mut app App) {
 			app.mu.unlock()
 			app.dbc_ed.sig = -1
 			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			app.dbc_ed.loaded_key = '' // deleted index may be reused: refresh buffers
 			vgui.end()
 			return
 		}
@@ -6128,15 +6217,32 @@ fn draw_dbc_editor(mut app App) {
 		vgui.set_next_item_width(80 * sc)
 		if !ro && vgui.input_int('len', &lnv) {
 			app.mu.lock()
-			app.dbs[di].messages[mi].signals[si].length = if lnv < 1 {
+			nl := if lnv < 1 {
 				1
 			} else if lnv > 64 {
 				64
 			} else {
 				lnv
 			}
+			// shrinking the width would mask distinct value-table keys onto
+			// one another at save time — refuse while entries would collide
+			nmask := if nl >= 64 { ~u64(0) } else { (u64(1) << nl) - 1 }
+			mut val_clash := false
+			mut seen_masked := map[u64]bool{}
+			for k, _ in app.dbs[di].messages[mi].signals[si].values {
+				mk := k & nmask
+				if seen_masked[mk] {
+					val_clash = true
+				}
+				seen_masked[mk] = true
+			}
+			if val_clash {
+				app.notify('width ${nl} would collapse distinct value-table entries — remove them first')
+			} else {
+				app.dbs[di].messages[mi].signals[si].length = nl
+				app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			}
 			app.mu.unlock()
-			app.dbc_ed.dirty[app.dbs_paths[di]] = true
 		}
 		cur_o := if app.dbs[di].messages[mi].signals[si].byte_order == .little_endian {
 			0
@@ -6144,7 +6250,7 @@ fn draw_dbc_editor(mut app App) {
 			1
 		}
 		no := vgui.combo('order', ['Intel (LE)', 'Motorola (BE)'], cur_o)
-		if no != cur_o {
+		if !ro && no != cur_o {
 			app.mu.lock()
 			app.dbs[di].messages[mi].signals[si].byte_order = if no == 0 {
 				candb.ByteOrder.little_endian
@@ -6156,7 +6262,7 @@ fn draw_dbc_editor(mut app App) {
 		}
 		vgui.same_line()
 		nsg := vgui.checkbox('signed', app.dbs[di].messages[mi].signals[si].is_signed)
-		if nsg != app.dbs[di].messages[mi].signals[si].is_signed {
+		if !ro && nsg != app.dbs[di].messages[mi].signals[si].is_signed {
 			app.mu.lock()
 			app.dbs[di].messages[mi].signals[si].is_signed = nsg
 			app.mu.unlock()
