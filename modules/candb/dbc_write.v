@@ -21,7 +21,7 @@ fn fmt_num(f f64) string {
 // unescape), so quotes become single quotes and breaks become spaces rather
 // than corrupting the file.
 fn dbc_str(s string) string {
-	return s.replace('"', "'").replace('\r', ' ').replace('\n', ' ')
+	return s.replace('"', "'").replace('\\', '/').replace('\r', ' ').replace('\n', ' ')
 }
 
 // sext sign-extends a width-sized raw pattern to i64 (mask/sign_bit derived
@@ -60,6 +60,11 @@ pub fn (db Database) to_dbc() string {
 	msgs.sort_with_compare(fn (a &Message, mb &Message) int {
 		if a.id != mb.id {
 			return if a.id < mb.id { -1 } else { 1 }
+		}
+		// std before ext on a shared numeric id: the frame KIND is part of
+		// the canonical order (and of identity — see lookup_frame)
+		if a.ext != mb.ext {
+			return if !a.ext { -1 } else { 1 }
 		}
 		return a.name.compare(mb.name)
 	})
