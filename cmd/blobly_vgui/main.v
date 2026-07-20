@@ -82,16 +82,19 @@ fn (c Chan) monitorable() bool {
 
 struct App {
 mut:
-	mu           sync.Mutex
-	chans        []Chan
-	trace        []TraceRow
-	gcount       map[string]u64 // persistent per-group frame totals (survive the ring trim)
-	trecs        []TRec
-	rx           u64 // total across channels
-	rev          u64
-	running      bool
-	dbs          []candb.Database             // all loaded DBCs (union; trace/symbol decode)
-	dbs_by_iface map[string][]candb.Database  // per-channel DBCs (generator message picker scope)
+	mu          sync.Mutex
+	chans       []Chan
+	trace       []TraceRow
+	gcount      map[string]u64 // persistent per-group frame totals (survive the ring trim)
+	trecs       []TRec
+	rx          u64 // total across channels
+	rev         u64
+	running     bool
+	dbs         []candb.Database // all loaded DBCs (union; trace/symbol decode)
+	dbs_paths   []string         // resolved file path per dbs entry (editor save target)
+	dbc_readers int              // live workers reading app.dbs lock-free (rx loops);
+	// the editor stays read-only until 0 — app.running clears BEFORE workers exit
+	dbs_by_iface map[string][]candb.Database // per-channel DBCs (generator message picker scope)
 	manifest     telem.Manifest
 	has_manifest bool
 	t0           i64
@@ -99,25 +102,25 @@ mut:
 	last_wake    i64
 	proj_path    string
 	proj_name    string
-	dark      bool = true // theme
-	ui_scale  f32  = 1.0
-	paused    bool
-	recording bool
-	rec       []canlog.LogEntry // captured while recording; written on stop
-	tx_count  u64
-	logs      []string             // Log panel (status/events, newest last)
-	doip_ents []doip.VehicleInfo   // DoIP Discovery results
+	dark         bool = true // theme
+	ui_scale     f32  = 1.0
+	paused       bool
+	recording    bool
+	rec          []canlog.LogEntry // captured while recording; written on stop
+	tx_count     u64
+	logs         []string           // Log panel (status/events, newest last)
+	doip_ents    []doip.VehicleInfo // DoIP Discovery results
 	// panel visibility (View menu)
 	// Default workspace is intentionally minimal: Buses + Trace + Log. Everything else is
 	// off and toggled on via the activity bar / View menu (its dock slot is still reserved).
-	show_buses    bool = true
-	show_sim      bool
-	show_symbols  bool
-	show_trace    bool = true
-	show_ftrace   bool
-	show_tchart   bool
-	show_signals  bool
-	show_graphics bool
+	show_buses     bool = true
+	show_sim       bool
+	show_symbols   bool
+	show_trace     bool = true
+	show_ftrace    bool
+	show_tchart    bool
+	show_signals   bool
+	show_graphics  bool
 	show_diag      bool
 	show_gen       bool
 	show_script    bool
@@ -125,26 +128,26 @@ mut:
 	show_doip      bool
 	show_network   bool
 	show_stats     bool
-	show_log       bool = true
+	show_log       bool              = true
 	help_cache     map[string]string = map[string]string{} // markdown file -> contents (read once)
 	// Signals selection + Graphics watch list (UI-thread only; RX never touches these)
 	sel_id        int = -1 // selected message id (-1 = none)
 	sel_ext       bool
 	watch         []Watch // signals plotted in Graphics
-	plot_win      f32 = 5 // Graphics x-window in seconds (0 = full history / autofit)
+	plot_win      f32  = 5    // Graphics x-window in seconds (0 = full history / autofit)
 	plot_multi    bool = true // Graphics Y: per-signal real axes (up to 3) vs one shared axis
 	trace_grouped bool = true // Trace: grouped-by-id (expandable) vs chronological
-	trace_bus     string      // main Trace: show only this bus (channel name); '' = all
-	ftrace_bus    string      // Trace (filter) panel: show only this bus; '' = all
-	fwatch        []FrameId   // Trace (filter) watch list — frames added from Trace/Symbols
+	trace_bus     string    // main Trace: show only this bus (channel name); '' = all
+	ftrace_bus    string    // Trace (filter) panel: show only this bus; '' = all
+	fwatch        []FrameId // Trace (filter) watch list — frames added from Trace/Symbols
 	// TX buses — one open bus per channel iface, created at Start. Generators fire on their
 	// own target bus (its channel, or a `bus:` override); the Send panel defaults to
 	// send_iface (the first monitor channel).
-	tx_buses      map[string]transport.Bus
-	send_iface    string
-	qs_iface      string // Quick send target bus (a channel iface); '' = send_iface default
-	send_id_buf   []u8
-	send_data_buf []u8
+	tx_buses          map[string]transport.Bus
+	send_iface        string
+	qs_iface          string // Quick send target bus (a channel iface); '' = send_iface default
+	send_id_buf       []u8
+	send_data_buf     []u8
 	trace_filter_buf  []u8 // Trace substring filter
 	trace_grouped2    bool // second Trace (filter) panel: own view mode
 	trace_filter2_buf []u8 // second Trace (filter) panel: own filter
@@ -155,9 +158,9 @@ mut:
 	diag_did_buf []u8
 	// Script (Lua on a worker thread)
 	script_path_buf []u8
-	senders         []SenderRT // flattened project senders (Generators)
-	gen_bufs        []GenBuf   // per-sender editable fields (parallel to senders)
-	dirty       bool       // project (config or generators) changed since load/save (● modified)
+	senders         []SenderRT      // flattened project senders (Generators)
+	gen_bufs        []GenBuf        // per-sender editable fields (parallel to senders)
+	dirty           bool            // project (config or generators) changed since load/save (● modified)
 	proj            project.Project // the loaded project, kept so Save can persist edits
 	// Configuration editor (stopped-only) + its per-bus edit buffers (parallel to proj.channels)
 	show_config bool
@@ -167,20 +170,20 @@ mut:
 	disc_list []DiscoveredIface
 	disc_tick []bool // parallel to disc_list
 	// File browser (Open / Save As / attach DBC / attach manifest)
-	fb_open     bool   // browser window shown
-	fb_save     bool   // true = save mode (filename input), false = open mode
-	fb_dir      string // current directory
-	fb_name_buf []u8   // filename (save mode)
-	fb_ext      string // extension filter ('.blobnet' | '.dbc' | '' = recordings)
-	fb_target   string // action on OK: 'open' | 'saveas' | 'dbc:<ci>' | 'manifest:<ci>'
-	sims            []SimCfg   // per-channel in-process simulation workloads
-	sim_enabled     map[string]bool // '<iface>:<node>' -> enabled (Simulation panel)
-	sim_gen         u64             // bumped when sim_enabled changes -> sim_loop rebuilds
+	fb_open     bool            // browser window shown
+	fb_save     bool            // true = save mode (filename input), false = open mode
+	fb_dir      string          // current directory
+	fb_name_buf []u8            // filename (save mode)
+	fb_ext      string          // extension filter ('.blobnet' | '.dbc' | '' = recordings)
+	fb_target   string          // action on OK: 'open' | 'saveas' | 'dbc:<ci>' | 'manifest:<ci>'
+	sims        []SimCfg        // per-channel in-process simulation workloads
+	sim_enabled map[string]bool // '<iface>:<node>' -> enabled (Simulation panel)
+	sim_gen     u64             // bumped when sim_enabled changes -> sim_loop rebuilds
 	// worker-thread outputs (guarded by mu)
-	diag_log     []string
-	diag_busy    bool
-	script_log   []string
-	script_busy  bool
+	diag_log        []string
+	diag_busy       bool
+	script_log      []string
+	script_busy     bool
 	trace_busy      bool   // a trace-dump transfer is in flight (single-flight guard)
 	trace_recording bool   // Record toggle: the target's capture is armed (optimistic)
 	trace_status    string // last dump status line, shown by the Trace Chart
@@ -190,22 +193,24 @@ mut:
 	cursor_span     f64 // the span the cursors were placed for — re-seat A/B when a new dump loads
 	// Shell (the target's CAN command line; one worker spawn per submitted line)
 	show_shell   bool
+	show_dbc     bool
+	dbc_ed       DbcEd
 	shell_buf    []u8     // the input line (persistent; edited in place by console_input)
 	shell_lines  []string // scrollback (guarded by mu; the worker appends)
 	shell_busy   bool     // single-flight: one command in flight at a time
 	shell_follow bool     // new output arrived — pin the scrollback to the bottom next frame
 	// Flash (UDS firmware download THROUGH the blobly bootloader — modules/flash;
 	// the bootloader itself is not field-updatable by design, docs/bootloader.md)
-	show_flash    bool
-	flash_img_buf []u8     // image path: a wrapped mkimage .img or a raw .bin
-	flash_base_buf []u8    // app-slot base address, hex (bootmap.h APP_BASE)
-	flash_req_buf []u8     // boot rx id, hex
-	flash_rsp_buf []u8     // boot tx id, hex
-	flash_ver_buf []u8     // sw_version, decimal (raw .bin only — .img carries its own)
-	flash_log     []string // milestones + errors (guarded by mu; the worker appends)
-	flash_busy    bool     // single-flight: one download at a time
-	flash_done    int      // transfer progress, blocks (worker-updated)
-	flash_total   int
+	show_flash     bool
+	flash_img_buf  []u8     // image path: a wrapped mkimage .img or a raw .bin
+	flash_base_buf []u8     // app-slot base address, hex (bootmap.h APP_BASE)
+	flash_req_buf  []u8     // boot rx id, hex
+	flash_rsp_buf  []u8     // boot tx id, hex
+	flash_ver_buf  []u8     // sw_version, decimal (raw .bin only — .img carries its own)
+	flash_log      []string // milestones + errors (guarded by mu; the worker appends)
+	flash_busy     bool     // single-flight: one download at a time
+	flash_done     int      // transfer progress, blocks (worker-updated)
+	flash_total    int
 }
 
 // SenderRT is a project sender bound to its channel iface (Generators panel).
@@ -235,12 +240,12 @@ mut:
 // only the free-text fields need a buffer.
 struct CfgBuf {
 mut:
-	name_buf    []u8
-	network_buf []u8
-	address_buf []u8
-	bitrate_buf []u8
+	name_buf     []u8
+	network_buf  []u8
+	address_buf  []u8
+	bitrate_buf  []u8
 	manifest_buf []u8
-	dbc_buf     []u8 // "+ Add DBC" typed-path fallback
+	dbc_buf      []u8 // "+ Add DBC" typed-path fallback
 	// DoIP
 	tester_buf []u8
 	ecu_buf    []u8
@@ -304,8 +309,20 @@ fn app_icon() []u8 {
 		for x in 0 .. sz {
 			i := (y * sz + x) * 4
 			// rounded corners: clamp to the nearest corner centre, drop pixels outside the radius
-			cx := if x < rad { rad } else if x >= sz - rad { sz - 1 - rad } else { x }
-			cy := if y < rad { rad } else if y >= sz - rad { sz - 1 - rad } else { y }
+			cx := if x < rad {
+				rad
+			} else if x >= sz - rad {
+				sz - 1 - rad
+			} else {
+				x
+			}
+			cy := if y < rad {
+				rad
+			} else if y >= sz - rad {
+				sz - 1 - rad
+			} else {
+				y
+			}
 			dx := x - cx
 			dy := y - cy
 			if dx * dx + dy * dy > rad * rad {
@@ -368,6 +385,9 @@ fn (mut app App) remove_fwatch(id u32, ext bool) {
 	}
 }
 
+// NOTE concurrency: the DBC editor mutates app.dbs ONLY while stopped
+// (read-only during a measurement), so these lock-free reads never race the
+// editor — and load_recording may call them while holding app.mu.
 fn (app &App) find_message(id u32, ext bool) ?candb.Message {
 	for db in app.dbs {
 		if m := db.lookup_frame(id, ext) {
@@ -417,6 +437,23 @@ fn (mut app App) start() {
 	// attaches to exactly what the Configuration editor shows (not stale buffered values).
 	if app.dirty {
 		app.apply_edits()
+	}
+	// unsaved DBC-editor edits exist only in the app.dbs union — sims and the
+	// per-channel generator databases still hold the on-disk definitions, so a
+	// measurement would encode with one schema and decode with another.
+	// (Ghost entries for paths a project swap detached are pruned first —
+	// the panel may be closed, and a ghost would wedge Start forever.)
+	for pth, _ in app.dbc_ed.dirty.clone() {
+		if app.dbs_paths.index(pth) < 0 {
+			app.dbc_ed.dirty.delete(pth)
+			app.notify('unsaved DBC edits for detached ${os.file_name(pth)} were discarded')
+		}
+	}
+	for _, d in app.dbc_ed.dirty {
+		if d {
+			app.notify('DBC editor has unsaved edits — Save or Revert them before starting')
+			return
+		}
 	}
 	app.running = true
 	for ci, ch in app.chans {
@@ -743,7 +780,9 @@ fn gen_loop(app &App) {
 // so the Diagnostics panel + Lua scripts work driver-free against simulated channels.
 fn diag_server_loop(app &App, iface string) {
 	a := unsafe { app }
-	mut ch := isotp.open_software(a.bitrate_iface(iface), diag_rx_id, diag_tx_id, false) or { return }
+	mut ch := isotp.open_software(a.bitrate_iface(iface), diag_rx_id, diag_tx_id, false) or {
+		return
+	}
 	mut srv := uds.default_server()
 	for a.running {
 		req := ch.recv(50) or { continue }
@@ -765,6 +804,14 @@ fn rx_loop(app &App, ci int, iface string) {
 		return
 	}
 	mut a := unsafe { app }
+	a.mu.lock()
+	a.dbc_readers++ // this loop reads app.dbs lock-free (lookup_name per frame)
+	a.mu.unlock()
+	defer {
+		a.mu.lock()
+		a.dbc_readers--
+		a.mu.unlock()
+	}
 	chname := a.chans[ci].name
 	// the TraceRsp id is config-static (the manifest is only mutated while stopped, so it can't
 	// change under a running RX loop) — resolve it once, not per frame in the hot path.
@@ -933,8 +980,21 @@ fn (mut app App) rebuild_from_proj() {
 	proj := app.proj
 	app.mu.lock()
 	app.chans = []
+	// rebuild runs for ordinary config ops too (add bus/DBC, adapter change) —
+	// unsaved editor state must SURVIVE it: capture dirty in-memory databases
+	// by path and restore them after the reload below
+	mut dbc_keep := map[string]candb.Database{}
+	for i, pth in app.dbs_paths {
+		if app.dbc_ed.dirty[pth] {
+			dbc_keep[pth] = app.dbs[i]
+		}
+	}
+	keep_dirty := app.dbc_ed.dirty.clone()
 	app.dbs = []
+	app.dbs_paths = []
 	app.dbs_by_iface = map[string][]candb.Database{}
+	app.dbc_ed = DbcEd{} // selection indices go stale across a rebuild
+	app.dbc_ed.dirty = keep_dirty.clone()
 	app.sims = []
 	app.senders = []
 	app.gen_bufs = []
@@ -960,9 +1020,25 @@ fn (mut app App) rebuild_from_proj() {
 			enabled:      ch.enabled
 		}
 		for dbpath in ch.databases {
-			rp := app.resolve_asset(dbpath)
-			if db := candb.load_dbc_file(rp) {
+			mut rp := app.resolve_asset(dbpath)
+			rp = os.real_path(rp) // canonical: two spellings of one file are ONE db
+			// a DBC attached to several channels loads ONCE — duplicate dbs
+			// entries would let the editor mutate one copy while decode reads
+			// another
+			prev := app.dbs_paths.index(rp)
+			if prev >= 0 {
+				app.dbs_by_iface[ch.iface] << app.dbs[prev]
+				continue
+			}
+			if rp in dbc_keep {
+				// this file has unsaved editor changes: the IN-MEMORY version
+				// is the truth, not the disk copy
+				app.dbs << dbc_keep[rp]
+				app.dbs_paths << rp
+				app.dbs_by_iface[ch.iface] << dbc_keep[rp]
+			} else if db := candb.load_dbc_file(rp) {
 				app.dbs << db
+				app.dbs_paths << rp // the editor saves back to this path
 				app.dbs_by_iface[ch.iface] << db // scoped to this channel (generator picker)
 			} else {
 				eprintln('dbc ${rp}: ${err}')
@@ -1078,7 +1154,11 @@ fn main() {
 	// BLOBLY_AUTOSTART_FRAME.
 	autostart_frame := if os.getenv('BLOBLY_AUTOSTART') != '' {
 		n := os.getenv('BLOBLY_AUTOSTART_FRAME').int()
-		if n > 0 { n } else { 30 }
+		if n > 0 {
+			n
+		} else {
+			30
+		}
 	} else {
 		0
 	}
@@ -1163,6 +1243,9 @@ fn main() {
 		}
 		if app.show_shell {
 			draw_shell(mut app)
+		}
+		if app.show_dbc {
+			draw_dbc_editor(mut app)
 		}
 		if app.show_flash {
 			draw_flash(mut app)
@@ -1254,6 +1337,10 @@ fn draw_activity_bar(mut app App) {
 	if vgui.toggle_button('Dia', app.show_diag, -1) {
 		app.show_diag = !app.show_diag
 	}
+	if vgui.toggle_button('Dbc', app.show_dbc, -1) {
+		app.show_dbc = !app.show_dbc
+	}
+	vgui.set_item_tooltip('DBC Editor')
 	if vgui.toggle_button('Shl', app.show_shell, -1) {
 		app.show_shell = !app.show_shell
 	}
@@ -1336,6 +1423,7 @@ fn draw_menubar(mut app App, rx u64) {
 			app.show_graphics = vgui.menu_item_check('Graphics', app.show_graphics)
 			app.show_diag = vgui.menu_item_check('Diagnostics', app.show_diag)
 			app.show_shell = vgui.menu_item_check('Shell', app.show_shell)
+			app.show_dbc = vgui.menu_item_check('DBC Editor', app.show_dbc)
 			app.show_flash = vgui.menu_item_check('Flash', app.show_flash)
 			app.show_doip = vgui.menu_item_check('DoIP Discovery', app.show_doip)
 			app.show_network = vgui.menu_item_check('Network', app.show_network)
@@ -1850,12 +1938,23 @@ struct DiscoveredIface {
 // vendor/virtual entries that don't come with the rich /sys hardware label).
 fn iface_desc(f transport.Iface) string {
 	mut d := match f.kind {
-		'vcan' { 'virtual CAN' }
-		'udp' { 'software bus' }
-		'inproc' { 'in-process simulation' }
-		'can' { if f.name != '' && f.name != f.iface { f.name } else { 'CAN' } }
-		else { f.kind }
+		'vcan' {
+			'virtual CAN'
+		}
+		'udp' {
+			'software bus'
+		}
+		'inproc' {
+			'in-process simulation'
+		}
+		'can' {
+			if f.name != '' && f.name != f.iface { f.name } else { 'CAN' }
+		}
+		else {
+			f.kind
+		}
 	}
+
 	if f.bitrate > 0 {
 		d += ' · ${f.bitrate}'
 	}
@@ -2591,7 +2690,13 @@ fn draw_stats(mut app App, chans []Chan, rx u64) {
 		vgui.table_freeze_top()
 		vgui.table_headers()
 		for c in chans {
-			state := if c.running { 'run' } else if c.enabled { 'idle' } else { 'off' }
+			state := if c.running {
+				'run'
+			} else if c.enabled {
+				'idle'
+			} else {
+				'off'
+			}
 			vgui.table_row()
 			vgui.table_cell(c.name)
 			vgui.table_cell(c.iface)
@@ -2956,6 +3061,7 @@ fn draw_network(mut app App, chans []Chan) {
 					'key' { 'key ${s.key}' }
 					else { 'manual' }
 				}
+
 				vgui.text('    Gen:     ${s.name}  (${desc}, ${trig})')
 				any = true
 			}
@@ -3201,7 +3307,13 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		if a.dir != b.dir {
 			return if a.dir < b.dir { -1 } else { 1 }
 		}
-		return if a.ch < b.ch { -1 } else if a.ch > b.ch { 1 } else { 0 }
+		return if a.ch < b.ch {
+			-1
+		} else if a.ch > b.ch {
+			1
+		} else {
+			0
+		}
 	})
 	if vgui.table_begin('gtrace', 5) {
 		vgui.table_setup_col('id / name', 210)
@@ -3216,7 +3328,8 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			vgui.table_row()
 			vgui.table_next_col()
 			// ### keys the tree id on identity only, so the live label / sort don't reset it.
-			open := vgui.tree_node_table('${idstr(g.id, g.ext)}  ${r.name}###${g.dir}|${g.ch}|${g.id}|${g.ext}')
+			open :=
+				vgui.tree_node_table('${idstr(g.id, g.ext)}  ${r.name}###${g.dir}|${g.ch}|${g.id}|${g.ext}')
 			// clicking a row selects that frame (drives Signals/Graphics + "Add to filter")
 			if vgui.is_item_clicked() {
 				app.sel_id = int(g.id)
@@ -3299,7 +3412,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 fn build_layout() {
 	root := vgui.dock_root()
 	if root == 0 {
-		return // already laid out (persisted in imgui.ini)
+		return
 	}
 	mut rest := u32(0)
 	buses := vgui.dock_split(root, vgui.dock_left, 0.16, &rest)
@@ -3329,6 +3442,7 @@ fn build_layout() {
 	vgui.dock_window('Signals', midnode)
 	vgui.dock_window('Diagnostics', midnode)
 	vgui.dock_window('Shell', midnode)
+	vgui.dock_window('DBC Editor', midnode) // beside the live Trace: edit, watch re-decode
 	vgui.dock_window('Flash', midnode)
 	vgui.dock_window('DoIP Discovery', midnode)
 	vgui.dock_window('Graphics', bottom)
@@ -3413,7 +3527,11 @@ fn draw_signals(mut app App, rows []TraceRow) {
 			}
 			vgui.table_cell(s.name)
 			lbl := s.label(data)
-			valstr := if lbl != '' { '${s.physical(data):.3} (${lbl})' } else { '${s.physical(data):.3}' }
+			valstr := if lbl != '' {
+				'${s.physical(data):.3} (${lbl})'
+			} else {
+				'${s.physical(data):.3}'
+			}
 			vgui.table_cell(valstr)
 			vgui.table_cell(s.unit)
 		}
@@ -3682,10 +3800,17 @@ fn draw_gen(mut app App) {
 		mut s := app.senders[i].sender
 		cm := if s.cycle_ms > 0 { s.cycle_ms } else { 100 }
 		trig := match s.trigger {
-			'key' { if s.key != '' { 'key "${s.key}"' } else { 'key (unset)' } }
-			'cyclic' { 'cyclic ${cm} ms' }
-			else { 'manual' }
+			'key' {
+				if s.key != '' { 'key "${s.key}"' } else { 'key (unset)' }
+			}
+			'cyclic' {
+				'cyclic ${cm} ms'
+			}
+			else {
+				'manual'
+			}
 		}
+
 		nm := if s.name != '' { s.name } else { '(unnamed)' }
 		// ### keys the node on the index only, so editing the visible name doesn't collapse it.
 		if vgui.tree_node('${nm}   ·   ${trig}###gennode${i}') {
@@ -4242,6 +4367,7 @@ fn diag_worker(app &App, kind string, did u16) {
 		}
 		else {}
 	}
+
 	a.diag_done()
 }
 
@@ -4278,8 +4404,7 @@ fn trace_dump_worker(app &App, core_mask u16) {
 	// data on record (open before commanding, so the socket buffers the target's first frame).
 	// ISO-TP addressing must match the frame width — a 29-bit trace id would otherwise be masked
 	// to 11 bits by SocketCAN and the target would never answer.
-	mut ch := isotp.open_software(a.bitrate_iface(iface), f.dump_fc, f.record,
-		trace_ext(f.record)) or {
+	mut ch := isotp.open_software(a.bitrate_iface(iface), f.dump_fc, f.record, trace_ext(f.record)) or {
 		a.set_trace_status('dump: open ${iface}: ${err}')
 		a.trace_done()
 		return
@@ -4343,7 +4468,7 @@ fn trace_dump_worker(app &App, core_mask u16) {
 		}
 		got++
 		mut base := u32(0) // current epoch origin; each block re-anchors from its own epoch record
-		mut cur_core := 0  // the block's core, from its leading header (idle/threads carry no core)
+		mut cur_core := 0 // the block's core, from its leading header (idle/threads carry no core)
 		for off := 0; off + 8 <= block.len; off += 8 {
 			r := telem.decode_record(block[off..off + 8])
 			if r.is_block_header() {
@@ -4402,11 +4527,13 @@ fn trace_rsp_status(r telem.TraceRsp) string {
 		telem.state_frozen { 'frozen' }
 		else { 'state ${r.state}' }
 	}
+
 	cause := match r.cause {
 		telem.freeze_trigger { ' by trigger' }
 		telem.freeze_stop { ' by stop' }
 		else { '' }
 	}
+
 	return 'core ${r.core}: ${st}${cause} · ${r.records_used}/${r.capacity} rec'
 }
 
@@ -4697,7 +4824,8 @@ fn flash_worker(app &App, path string, base u32, req_id u32, rsp_id u32, ver u32
 		a.flash_append('(BLOBLY_FLASH_SEED: ${err})')
 		return
 	}
-	flash.program(mut ch, image, flash.Opts{ base: base, sw_version: ver, auth_seed: seed }, mut sink) or {
+	flash.program(mut ch, image, flash.Opts{ base: base, sw_version: ver, auth_seed: seed }, mut
+		sink) or {
 		a.flash_append('FAILED: ${err}')
 		a.flash_append('(a cut transfer is safe: the boot refuses the torn image — fix and re-run)')
 		return
@@ -4845,12 +4973,20 @@ fn script_worker(app &App, path string) {
 	mut a := unsafe { app }
 	a.mu.lock()
 	if a.script_busy {
+		a.dbc_readers-- // release the spawn-side reservation: we never read
 		a.mu.unlock()
 		return
 	}
 	a.script_busy = true
 	a.script_log = []
 	a.mu.unlock()
+	// the reader slot was reserved by the SPAWNING thread (TOCTOU: this
+	// worker may not schedule before an edit) — this side only releases it
+	defer {
+		a.mu.lock()
+		a.dbc_readers--
+		a.mu.unlock()
+	}
 	mut chans := []script.ChanInfo{}
 	first_db := if a.dbs.len > 0 { a.dbs[0] } else { candb.Database{} }
 	for ch in a.chans {
@@ -4893,6 +5029,12 @@ fn draw_script(mut app App) {
 	vgui.input_text('.lua', mut app.script_path_buf)
 	vgui.same_line()
 	if vgui.button('Run') && !busy {
+		// reserve the dbs-reader slot HERE, before the spawn: a worker that
+		// hasn't been scheduled yet hasn't registered, and an edit could slip
+		// into that gap (the worker releases it in its defer)
+		app.mu.lock()
+		app.dbc_readers++
+		app.mu.unlock()
 		spawn script_worker(app, vgui.buf_str(app.script_path_buf))
 	}
 	if busy {
@@ -4965,7 +5107,11 @@ fn draw_tchart(mut app App, trecs []TRec) {
 			app.cursor_b = f64(span) * 0.75
 		}
 		vgui.swimlane('##swim', labels, bars, links, span, &app.cursor_a, &app.cursor_b)
-		d := if app.cursor_b > app.cursor_a { app.cursor_b - app.cursor_a } else { app.cursor_a - app.cursor_b }
+		d := if app.cursor_b > app.cursor_a {
+			app.cursor_b - app.cursor_a
+		} else {
+			app.cursor_a - app.cursor_b
+		}
 		vgui.text('A ${app.cursor_a:.0f} us    B ${app.cursor_b:.0f} us    Δ ${d:.0f} us (${d / 1000:.3f} ms)')
 		vgui.same_line()
 		if vgui.button('Reset markers') { // re-seat A/B to 1/4 and 3/4 of the view
@@ -5061,7 +5207,7 @@ fn idle_recs(core int, start u64, dur u64) []TRec {
 			abs_us: s0
 			rec:    telem.Record{
 				entity_id: u16(telem.kind_thread) << 14 // THREAD id 0 = idle
-				info:      telem.reason_block // idle can't be "preempted" — no hatch
+				info:      telem.reason_block           // idle can't be "preempted" — no hatch
 				cpu_us:    u16(chunk)
 			}
 		}
@@ -5162,7 +5308,11 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, []vgui.Link, f3
 			if ap != bp {
 				return if ap < bp { -1 } else { 1 }
 			}
-			return if aid < bid { -1 } else { if aid > bid { 1 } else { 0 } }
+			return if aid < bid {
+				-1
+			} else {
+				if aid > bid { 1 } else { 0 }
+			}
 		}
 		if ap >= 0 {
 			return -1
@@ -5170,7 +5320,11 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, []vgui.Link, f3
 		if bp >= 0 {
 			return 1
 		}
-		return if aid < bid { -1 } else { if aid > bid { 1 } else { 0 } }
+		return if aid < bid {
+			-1
+		} else {
+			if aid > bid { 1 } else { 0 }
+		}
 	})
 	ikeys.sort()
 	// lay lanes out grouped by core: FB (handler) lanes first (by core), then a separator + thread
@@ -5343,7 +5497,8 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, []vgui.Link, f3
 		// FB warn = overran/saturated (a deadline concept — belongs to the handler). The preempt
 		// hatch is THREAD-ONLY: preemption happens to threads, never to functions — the FB lane
 		// shows execution chunks and the thread lane below carries the scheduling story.
-		warn := if r.kind() == telem.kind_fb && (r.flags() & (telem.flag_overran | telem.flag_saturated)) != 0 {
+		warn := if r.kind() == telem.kind_fb
+			&& (r.flags() & (telem.flag_overran | telem.flag_saturated)) != 0 {
 			1
 		} else {
 			0
@@ -5353,7 +5508,7 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, []vgui.Link, f3
 		} else {
 			0
 		}
-	if r.kind() == telem.kind_fb {
+		if r.kind() == telem.kind_fb {
 			s0 := tr.abs_us
 			e0 := s0 + u64(r.cpu_us)
 			mut hrow_thread := ''
@@ -5458,4 +5613,869 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, []vgui.Link, f3
 		}
 	}
 	return labels, bars, links, span
+}
+
+// ---- DBC Editor (docs/dbc_editor.md P1) -------------------------------------
+// Edits the IN-MEMORY app.dbs — the same databases the Trace panel decodes
+// against, so an edit re-decodes live traffic instantly. Save renders the
+// canonical form (candb.to_dbc, fixpoint-tested) back to the loaded path;
+// canonical order keeps the file git-diff-reviewable. All model mutations
+// take app.mu briefly: decode runs on worker threads.
+// NOTE: dbs_by_iface holds value copies (the generator picker) — it refreshes
+// on save/reload, not per keystroke; the Trace union (app.dbs) is live.
+
+struct DbcEd {
+mut:
+	db         int = -1 // dbs index
+	msg        int = -1
+	sig        int = -1
+	dirty      map[string]bool // unsaved edits keyed by dbc PATH (survives rebuilds/index shifts)
+	loaded_key string          // which db:msg:sig the string buffers hold
+	mname_buf  []u8
+	sender_buf []u8
+	sname_buf  []u8
+	unit_buf   []u8
+	desc_buf   []u8
+}
+
+// dbc_ed_color: a deterministic per-signal palette for the bit grid.
+fn dbc_ed_color(i int) (int, int, int) {
+	return match i % 8 {
+		0 { 86, 156, 214 }
+		1 { 220, 170, 80 }
+		2 { 120, 190, 120 }
+		3 { 200, 120, 190 }
+		4 { 100, 200, 200 }
+		5 { 230, 130, 110 }
+		6 { 150, 150, 220 }
+		else { 180, 200, 100 }
+	}
+}
+
+// dbc_ident_ok: message/signal/sender names are UNQUOTED DBC tokens — a space
+// or punctuation would emit a record our own parser rejects.
+fn dbc_ident_ok(sv string) bool {
+	if sv == '' {
+		return false
+	}
+	for i, c in sv {
+		alpha := (c >= `a` && c <= `z`) || (c >= `A` && c <= `Z`) || c == `_`
+		if i == 0 && !alpha {
+			return false
+		}
+		if !(alpha || (c >= `0` && c <= `9`)) {
+			return false
+		}
+	}
+	return true
+}
+
+// dbc_signal_bits lists the global LSB-0 bit positions a signal occupies —
+// the same walk candb.raw_value takes (Intel ascending, Motorola sawtooth).
+fn dbc_signal_bits(s candb.Signal) []int {
+	mut out := []int{cap: s.length}
+	if s.byte_order == .little_endian {
+		for i in 0 .. s.length {
+			out << s.start_bit + i
+		}
+	} else {
+		mut pos := s.start_bit
+		for _ in 0 .. s.length {
+			out << pos
+			if pos % 8 == 0 {
+				pos = pos + 15 // drop to the next byte's bit 7
+			} else {
+				pos--
+			}
+		}
+	}
+	return out
+}
+
+// dbc_ed_load_bufs refreshes the string edit buffers when the selection moves.
+fn (mut app App) dbc_ed_load_bufs() {
+	key := '${app.dbc_ed.db}:${app.dbc_ed.msg}:${app.dbc_ed.sig}'
+	if app.dbc_ed.loaded_key == key {
+		return
+	}
+	app.dbc_ed.loaded_key = key
+	di, mi, si := app.dbc_ed.db, app.dbc_ed.msg, app.dbc_ed.sig
+	if di < 0 || di >= app.dbs.len || mi < 0 || mi >= app.dbs[di].messages.len {
+		return
+	}
+	m := app.dbs[di].messages[mi]
+	// buffers sized past the current content: mkbuf's cap includes the NUL, so
+	// a fixed cap would silently truncate long fields on first edit
+	app.dbc_ed.mname_buf = mkbuf(m.name, m.name.len + 96)
+	app.dbc_ed.sender_buf = mkbuf(m.sender, m.sender.len + 96)
+	if si >= 0 && si < m.signals.len {
+		sg := m.signals[si]
+		app.dbc_ed.sname_buf = mkbuf(sg.name, sg.name.len + 96)
+		app.dbc_ed.unit_buf = mkbuf(sg.unit, sg.unit.len + 64)
+		app.dbc_ed.desc_buf = mkbuf(sg.desc, sg.desc.len + 256)
+	}
+}
+
+// dbc_refresh_if_all_clean re-reads sims/dbs_by_iface/generator caches from
+// disk once NO database holds unsaved edits (the rebuild re-reads every
+// file). Preserves the editor's selected database across the index shuffle.
+fn (mut app App) dbc_refresh_if_all_clean() {
+	for _, d in app.dbc_ed.dirty {
+		if d {
+			app.notify('sim/generator databases refresh after ALL DBCs are saved')
+			return
+		}
+	}
+	sel_path := if app.dbc_ed.db >= 0 && app.dbc_ed.db < app.dbs_paths.len {
+		app.dbs_paths[app.dbc_ed.db]
+	} else {
+		''
+	}
+	app.rebuild_preserving_senders()
+	if sel_path != '' {
+		app.dbc_ed.db = app.dbs_paths.index(sel_path)
+	}
+}
+
+// dbc_refresh_trace_names re-resolves the cached name on captured trace rows
+// after a message rename / id / kind edit — they hold the name captured at
+// arrival and would otherwise display the stale identity.
+fn (mut app App) dbc_refresh_trace_names() {
+	app.mu.lock()
+	for i, r in app.trace {
+		nn := app.lookup_name(r.id, r.ext)
+		if nn != r.name {
+			app.trace[i] = TraceRow{
+				...r
+				name: nn
+			}
+		}
+	}
+	app.mu.unlock()
+}
+
+fn draw_dbc_editor(mut app App) {
+	vis, op := vgui.begin_closable('DBC Editor', app.show_dbc)
+	app.show_dbc = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	if app.dbs.len == 0 {
+		vgui.text_dim('no DBCs loaded — attach one to a channel (Config panel)')
+		vgui.end()
+		return
+	}
+	// READ-ONLY while a measurement runs: rx/sim/generator workers iterate
+	// app.dbs lock-free, and the save path rebuilds runtime state — both are
+	// only safe stopped. (Editing a stopped capture still re-decodes it live:
+	// the trace decodes signal values at draw time.)
+	app.mu.lock()
+	live_readers := app.dbc_readers
+	app.mu.unlock()
+	ro := app.running || live_readers > 0
+	if ro {
+		vgui.text_colored(230, 170, 70,
+			'read-only while measuring — Stop to edit (workers drain briefly after Stop)')
+	}
+	// a project swap replaces dbs_paths: dirty entries for paths no longer
+	// attached are unreachable ghosts — drop them (the swap discarded those
+	// databases; keeping the flags would wedge Start forever)
+	for pth, _ in app.dbc_ed.dirty.clone() {
+		if app.dbs_paths.index(pth) < 0 {
+			app.dbc_ed.dirty.delete(pth)
+			app.notify('unsaved DBC edits for detached ${os.file_name(pth)} were discarded')
+		}
+	}
+	sc := app.ui_scale
+
+	// database picker (base names; the path is the save target)
+	mut names := []string{cap: app.dbs.len}
+	for i, pth in app.dbs_paths {
+		mark := if app.dbc_ed.dirty[pth] { '` ' } else { '' }
+		// dir prefix + index keep same-named files distinguishable
+		names << '${mark}${os.file_name(os.dir(pth))}/${os.file_name(pth)} (${app.dbs[i].messages.len} msgs) ##${i}'
+	}
+	if app.dbc_ed.db < 0 && app.dbs.len > 0 {
+		app.dbc_ed.db = 0
+	}
+	ndb := vgui.combo('database', names, app.dbc_ed.db)
+	if ndb != app.dbc_ed.db {
+		app.dbc_ed.db = ndb
+		app.dbc_ed.msg = -1
+		app.dbc_ed.sig = -1
+	}
+	di := app.dbc_ed.db
+	if di < 0 || di >= app.dbs.len {
+		vgui.end()
+		return
+	}
+
+	// save / revert row
+	if !ro && app.dbc_ed.dirty[app.dbs_paths[di]] {
+		vgui.text_colored(230, 170, 70, '` modified')
+		vgui.same_line()
+	}
+	if !ro && vgui.small_button('Save') {
+		app.mu.lock()
+		// BU_ must declare every transmitter (sim.validate_node) — union the
+		// senders in at save time (not per keystroke)
+		for m in app.dbs[di].messages {
+			if m.sender != '' && m.sender !in app.dbs[di].nodes {
+				app.dbs[di].nodes << m.sender
+			}
+		}
+		text := app.dbs[di].to_dbc()
+		app.mu.unlock()
+		// ATOMIC: write beside the target then rename — a failed/interrupted
+		// write must never leave a truncated DBC where the original was
+		tmp := app.dbs_paths[di] + '.tmp~'
+		mut save_ok := true
+		os.write_file(tmp, text) or {
+			app.notify('dbc save failed (edits kept in memory): ${err}')
+			save_ok = false
+		}
+		if save_ok {
+			os.mv(tmp, app.dbs_paths[di]) or {
+				os.rm(tmp) or {}
+				app.notify('dbc save failed (edits kept in memory): ${err}')
+				save_ok = false
+			}
+		}
+		if save_ok {
+			app.dbc_ed.dirty.delete(app.dbs_paths[di])
+			app.dbc_ed.loaded_key = ''
+			app.notify('saved ${app.dbs_paths[di]}')
+			// sims/generators load their databases independently — refresh
+			// once everything is clean (safe: the editor only runs stopped)
+			app.dbc_refresh_if_all_clean()
+		}
+	}
+	vgui.same_line()
+	if !ro && vgui.small_button('Revert') {
+		if db := candb.load_dbc_file(app.dbs_paths[di]) {
+			app.mu.lock()
+			app.dbs[di] = db
+			app.mu.unlock()
+			app.dbc_ed.dirty.delete(app.dbs_paths[di])
+			app.dbc_ed.msg = -1
+			app.dbc_ed.sig = -1
+			app.dbc_ed.loaded_key = ''
+			app.notify('reverted ${app.dbs_paths[di]}')
+			app.dbc_refresh_trace_names()
+			// watches retargeted to now-discarded names would plot flat —
+			// prune the ones that no longer resolve
+			mut kept := []Watch{cap: app.watch.len}
+			for w in app.watch {
+				if m := app.find_message(w.id, w.ext) {
+					mut have := false
+					for sg in m.signals {
+						if sg.name == w.sig {
+							have = true
+						}
+					}
+					if have {
+						kept << w
+					}
+				}
+			}
+			if kept.len != app.watch.len {
+				app.notify('${app.watch.len - kept.len} plotted signal(s) removed: not in the reverted DBC')
+			}
+			app.watch = kept
+			app.dbc_refresh_if_all_clean()
+		} else {
+			app.notify('dbc revert failed: ${err}')
+		}
+	}
+
+	// message list
+	vgui.separator_text('messages')
+	vgui.child_begin('##dbcmsgs', 110 * sc)
+	for i, m in app.dbs[di].messages {
+		idtxt := if m.ext { '0x${m.id.hex()}x' } else { '0x${m.id.hex()}' }
+		if vgui.selectable('${idtxt}  ${m.name} (dlc ${m.dlc})##dm${i}', app.dbc_ed.msg == i) {
+			app.dbc_ed.msg = i
+			app.dbc_ed.sig = -1
+		}
+	}
+	vgui.child_end()
+	if !ro && vgui.small_button('+ message') {
+		app.mu.lock()
+		// next free STANDARD id (the new frame is ext:false — extended ids
+		// must not push it past the 11-bit range)
+		mut nid := u32(0x100)
+		mut id_free := false
+		for {
+			mut taken := false
+			for m in app.dbs[di].messages {
+				if !m.ext && m.id == nid {
+					taken = true
+				}
+			}
+			if !taken {
+				id_free = true
+				break
+			}
+			if nid >= 0x7FF {
+				break
+			}
+			nid++
+		}
+		if !id_free {
+			app.mu.unlock() // BEFORE notify(): it takes app.mu itself
+			app.notify('no free standard id in 0x100..0x7FF — delete a message or use extended ids')
+			vgui.end()
+			return
+		}
+		mut mname := 'NewMessage'
+		mut mn := 1
+		for {
+			mut taken := false
+			for odb in app.dbs {
+				for m in odb.messages {
+					if m.name == mname {
+						taken = true
+					}
+				}
+			}
+			if !taken {
+				break
+			}
+			mn++
+			mname = 'NewMessage${mn}'
+		}
+		app.dbs[di].messages << candb.Message{
+			name: mname
+			id:   nid
+			dlc:  8
+		}
+		app.mu.unlock()
+		app.dbc_ed.msg = app.dbs[di].messages.len - 1
+		app.dbc_ed.sig = -1
+		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		app.dbc_ed.loaded_key = ''
+	}
+	mi := app.dbc_ed.msg
+	if mi < 0 || mi >= app.dbs[di].messages.len {
+		vgui.end()
+		return
+	}
+	vgui.same_line()
+	if !ro && vgui.small_button('- delete message') {
+		app.mu.lock()
+		app.dbs[di].messages.delete(mi)
+		app.mu.unlock()
+		app.dbc_ed.msg = -1
+		app.dbc_ed.sig = -1
+		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		app.dbc_ed.loaded_key = ''
+		app.dbc_refresh_trace_names() // captured rows may show the deleted name
+		vgui.end()
+		return
+	}
+
+	// message form (all writes under app.mu: workers decode concurrently)
+	app.dbc_ed_load_bufs()
+	vgui.set_next_item_width(160 * sc)
+	if !ro && vgui.input_text('name##dbcm', mut app.dbc_ed.mname_buf) {
+		nv := vgui.buf_str(app.dbc_ed.mname_buf)
+		// generators resolve messages BY NAME across every co-attached DBC
+		// (first match wins) — a duplicate makes one frame unreachable, so
+		// check ALL loaded databases, not just this file
+		mut mname_taken := false
+		for odi, odb in app.dbs {
+			for oi, om in odb.messages {
+				if !(odi == di && oi == mi) && om.name == nv {
+					mname_taken = true
+				}
+			}
+		}
+		if dbc_ident_ok(nv) && !mname_taken {
+			app.mu.lock()
+			app.dbs[di].messages[mi].name = nv
+			app.mu.unlock()
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			app.dbc_refresh_trace_names()
+		}
+	}
+	if !dbc_ident_ok(vgui.buf_str(app.dbc_ed.mname_buf)) {
+		vgui.same_line()
+		vgui.text_colored(205, 60, 60, 'invalid name (A-Za-z0-9_, not applied)')
+	}
+	mut idv := int(app.dbs[di].messages[mi].id)
+	vgui.set_next_item_width(110 * sc)
+	if !ro && vgui.input_int('id (dec)', &idv) {
+		// clamp to the selected frame format: std 11-bit, ext 29-bit — a
+		// negative or oversized entry must never wrap through the u32 cast
+		id_max := if app.dbs[di].messages[mi].ext { 0x1FFF_FFFF } else { 0x7FF }
+		cl := if idv < 0 {
+			0
+		} else if idv > id_max {
+			id_max
+		} else {
+			idv
+		}
+		// (id, ext) identifies the frame everywhere (lookup, aux records) —
+		// a duplicate pair is silent decode corruption, so it is not applied
+		mut id_taken := false
+		for oi, om in app.dbs[di].messages {
+			if oi != mi && om.id == u32(cl) && om.ext == app.dbs[di].messages[mi].ext {
+				id_taken = true
+			}
+		}
+		if !id_taken {
+			old_id := app.dbs[di].messages[mi].id
+			wext0 := app.dbs[di].messages[mi].ext
+			app.mu.lock()
+			app.dbs[di].messages[mi].id = u32(cl)
+			app.mu.unlock()
+			mut id_shadowed := false
+			for odi in 0 .. di {
+				for om in app.dbs[odi].messages {
+					if om.id == old_id && om.ext == wext0 {
+						id_shadowed = true
+					}
+				}
+			}
+			for wi, w in app.watch {
+				if id_shadowed {
+					break
+				}
+				if w.id == old_id && w.ext == wext0 {
+					app.watch[wi] = Watch{
+						id:  u32(cl)
+						ext: w.ext
+						sig: w.sig
+					}
+				}
+			}
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			app.dbc_refresh_trace_names()
+		} else {
+			app.notify('id 0x${u32(cl).hex()} already used by another frame of the same kind — not applied')
+		}
+	}
+	vgui.same_line()
+	vgui.text_dim('= 0x${app.dbs[di].messages[mi].id.hex()}')
+	vgui.same_line()
+	next := vgui.checkbox('ext##dbcm', app.dbs[di].messages[mi].ext)
+	if !ro && next != app.dbs[di].messages[mi].ext {
+		// the kind flip changes the frame IDENTITY — recheck (id, ext)
+		// uniqueness and the 11-bit cap before applying
+		mut nid := app.dbs[di].messages[mi].id
+		if !next && nid > 0x7FF {
+			nid = 0x7FF
+		}
+		mut clash := false
+		for oi, om in app.dbs[di].messages {
+			if oi != mi && om.id == nid && om.ext == next {
+				clash = true
+			}
+		}
+		if clash {
+			app.notify('cannot flip ext: 0x${nid.hex()} already exists as that frame kind')
+		} else {
+			old_id2 := app.dbs[di].messages[mi].id
+			old_ext2 := app.dbs[di].messages[mi].ext
+			app.mu.lock()
+			app.dbs[di].messages[mi].ext = next
+			app.dbs[di].messages[mi].id = nid
+			app.mu.unlock()
+			mut kind_shadowed := false
+			for odi in 0 .. di {
+				for om in app.dbs[odi].messages {
+					if om.id == old_id2 && om.ext == old_ext2 {
+						kind_shadowed = true
+					}
+				}
+			}
+			for wi, w in app.watch {
+				if kind_shadowed {
+					break
+				}
+				if w.id == old_id2 && w.ext == old_ext2 {
+					app.watch[wi] = Watch{
+						id:  nid
+						ext: next
+						sig: w.sig
+					}
+				}
+			}
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			app.dbc_refresh_trace_names()
+		}
+	}
+	mut dlcv := app.dbs[di].messages[mi].dlc
+	vgui.set_next_item_width(80 * sc)
+	if !ro && vgui.input_int('dlc', &dlcv) {
+		app.mu.lock()
+		app.dbs[di].messages[mi].dlc = if dlcv < 0 {
+			0 // a zero-length CAN frame is legal
+		} else if dlcv > 64 {
+			64
+		} else {
+			dlcv
+		}
+		app.mu.unlock()
+		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+	}
+	vgui.same_line()
+	mut cycv := app.dbs[di].messages[mi].cycle_ms
+	vgui.set_next_item_width(80 * sc)
+	if !ro && vgui.input_int('cycle ms', &cycv) {
+		app.mu.lock()
+		app.dbs[di].messages[mi].cycle_ms = if cycv < 0 { 0 } else { cycv }
+		app.mu.unlock()
+		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+	}
+	vgui.set_next_item_width(120 * sc)
+	if !ro && vgui.input_text('sender', mut app.dbc_ed.sender_buf) {
+		sv := vgui.buf_str(app.dbc_ed.sender_buf)
+		if sv == '' || dbc_ident_ok(sv) { // empty = no transmitter
+			app.mu.lock()
+			app.dbs[di].messages[mi].sender = sv
+			app.mu.unlock()
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			// BU_ union happens at SAVE — inserting here would append every
+			// keystroke prefix ('E','EC','ECU'...) as a permanent node
+		}
+	}
+
+	// bit-matrix grid: rows = bytes, cells bit7..bit0 (the CANdb++ view).
+	// Colored per owning signal; overlap = red; click selects the signal.
+	vgui.separator_text('layout')
+	msg := app.dbs[di].messages[mi]
+	if msg.dlc < 0 || msg.dlc > 64 {
+		vgui.text_colored(205, 60, 60,
+			'dlc ${msg.dlc} out of range — fix it above to see the layout')
+		vgui.end()
+		return
+	}
+	nbits := msg.dlc * 8
+	mut owners := [][]int{len: nbits}
+	for six, sg in msg.signals {
+		for g in dbc_signal_bits(sg) {
+			if g >= 0 && g < nbits {
+				owners[g] << six
+			}
+		}
+	}
+	// multiplexed branches with DIFFERENT selectors are mutually exclusive —
+	// sharing bits is the point of multiplexing, not an overlap
+	mut conflict := []bool{len: nbits}
+	for g in 0 .. nbits {
+		for x in 0 .. owners[g].len {
+			for y in x + 1 .. owners[g].len {
+				a := msg.signals[owners[g][x]]
+				bsig := msg.signals[owners[g][y]]
+				coexist := !(a.is_multiplexed && bsig.is_multiplexed
+					&& a.multiplexor_value != bsig.multiplexor_value)
+				if coexist {
+					conflict[g] = true
+				}
+			}
+		}
+	}
+	cell := 21 * sc
+	for byte_i in 0 .. msg.dlc {
+		vgui.text_dim('B${byte_i}')
+		for bit_i := 7; bit_i >= 0; bit_i-- {
+			vgui.same_line()
+			g := byte_i * 8 + bit_i
+			own := owners[g]
+			mut r, mut gg, mut b := 58, 58, 62
+			mut lbl := ' '
+			if own.len == 1 {
+				r, gg, b = dbc_ed_color(own[0])
+				if own[0] == app.dbc_ed.sig {
+					r, gg, b = r + 40, gg + 40, b + 40 // highlight the selection
+				}
+				lbl = '${own[0] % 10}'
+			} else if own.len > 1 {
+				if conflict[g] {
+					r, gg, b = 205, 60, 60
+					lbl = '!'
+				} else {
+					// mux branches sharing the bit: show the first branch dim
+					r, gg, b = dbc_ed_color(own[0])
+					r, gg, b = r / 2 + 20, gg / 2 + 20, b / 2 + 20
+					lbl = 'm'
+				}
+			}
+			if vgui.button_big('${lbl}##g${g}', r, gg, b, cell, cell) {
+				if own.len > 0 {
+					app.dbc_ed.sig = own[0]
+				}
+			}
+			if own.len > 0 {
+				mut tt := 'bit ${g}'
+				for o in own {
+					tt += '\n${msg.signals[o].name}'
+				}
+				vgui.set_item_tooltip(tt)
+			}
+		}
+	}
+	// validation lines: overlaps + out-of-frame
+	mut over := 0
+	for g in 0 .. nbits {
+		if conflict[g] {
+			over++
+		}
+	}
+	if over > 0 {
+		vgui.text_colored(205, 60, 60, '${over} bit(s) claimed by more than one signal')
+	}
+	for sg in msg.signals {
+		for g in dbc_signal_bits(sg) {
+			if g >= nbits || g < 0 {
+				vgui.text_colored(205, 60, 60, '${sg.name} exceeds the ${msg.dlc}-byte frame')
+				break
+			}
+		}
+	}
+
+	// signal list + form
+	vgui.separator_text('signals')
+	for i, sg in msg.signals {
+		or_tag := if sg.byte_order == .little_endian { 'LE' } else { 'BE' }
+		sgn := if sg.is_signed { 'i' } else { 'u' }
+		cr, cg, cb := dbc_ed_color(i)
+		vgui.text_colored(u8(cr), u8(cg), u8(cb), '#')
+		vgui.same_line()
+		if vgui.selectable('${sg.name}  ${sg.start_bit}|${sg.length}@${or_tag} ${sgn}${sg.length} x${sg.factor}+${sg.offset} ${sg.unit}##ds${i}',
+			app.dbc_ed.sig == i)
+		{
+			app.dbc_ed.sig = i
+		}
+	}
+	if !ro && vgui.small_button('+ signal') {
+		app.mu.lock()
+		// place after the highest occupied bit of ANY byte order (the
+		// Motorola sawtooth occupies bits its start_bit alone doesn't show)
+		mut top := 0
+		for sg in msg.signals {
+			for g in dbc_signal_bits(sg) {
+				if g + 1 > top {
+					top = g + 1
+				}
+			}
+		}
+		mut nn := 1
+		mut nname := 'NewSignal'
+		for {
+			mut taken := false
+			for sg in msg.signals {
+				if sg.name == nname {
+					taken = true
+				}
+			}
+			if !taken {
+				break
+			}
+			nn++
+			nname = 'NewSignal${nn}'
+		}
+		app.dbs[di].messages[mi].signals << candb.Signal{
+			name:      nname
+			start_bit: top
+			length:    8
+		}
+		app.mu.unlock()
+		app.dbc_ed.sig = app.dbs[di].messages[mi].signals.len - 1
+		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		app.dbc_ed.loaded_key = '' // indices reused after add/delete: refresh buffers
+	}
+	si := app.dbc_ed.sig
+	if si >= 0 && si < app.dbs[di].messages[mi].signals.len {
+		vgui.same_line()
+		if !ro && vgui.small_button('- delete signal') {
+			if app.dbs[di].messages[mi].signals[si].is_multiplexor {
+				mut deps := 0
+				for oi, osg in app.dbs[di].messages[mi].signals {
+					if oi != si && osg.is_multiplexed {
+						deps++
+					}
+				}
+				if deps > 0 {
+					app.notify('cannot delete the multiplexor switch: ${deps} multiplexed signal(s) depend on it')
+					vgui.end()
+					return
+				}
+			}
+			app.mu.lock()
+			app.dbs[di].messages[mi].signals.delete(si)
+			app.mu.unlock()
+			app.dbc_ed.sig = -1
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			app.dbc_ed.loaded_key = '' // deleted index may be reused: refresh buffers
+			vgui.end()
+			return
+		}
+		app.dbc_ed_load_bufs()
+		vgui.set_next_item_width(160 * sc)
+		if !ro && vgui.input_text('name##dbcs', mut app.dbc_ed.sname_buf) {
+			nv := vgui.buf_str(app.dbc_ed.sname_buf)
+			// VAL_/CM_ records identify signals BY NAME within the message —
+			// a duplicate name scrambles them on reload
+			mut name_taken := false
+			for oi, osg in app.dbs[di].messages[mi].signals {
+				if oi != si && osg.name == nv {
+					name_taken = true
+				}
+			}
+			if dbc_ident_ok(nv) && !name_taken {
+				old_sig := app.dbs[di].messages[mi].signals[si].name
+				app.mu.lock()
+				app.dbs[di].messages[mi].signals[si].name = nv
+				app.mu.unlock()
+				app.dbc_ed.dirty[app.dbs_paths[di]] = true
+				// Graphics watches key on (id, ext, signal name) — retarget
+				// them or the plot silently goes flat under the old name.
+				// Only when THIS database resolves the pair: an earlier
+				// loaded DBC defining the same frame shadows this one
+				wid := app.dbs[di].messages[mi].id
+				wext := app.dbs[di].messages[mi].ext
+				mut shadowed := false
+				for odi in 0 .. di {
+					for om in app.dbs[odi].messages {
+						if om.id == wid && om.ext == wext {
+							shadowed = true
+						}
+					}
+				}
+				for wi, w in app.watch {
+					if shadowed {
+						break
+					}
+					if w.id == wid && w.ext == wext && w.sig == old_sig {
+						app.watch[wi] = Watch{
+							id:  w.id
+							ext: w.ext
+							sig: nv
+						}
+					}
+				}
+			}
+		}
+		if !dbc_ident_ok(vgui.buf_str(app.dbc_ed.sname_buf)) {
+			vgui.same_line()
+			vgui.text_colored(205, 60, 60, 'invalid name (A-Za-z0-9_, not applied)')
+		}
+		mut sbv := app.dbs[di].messages[mi].signals[si].start_bit
+		vgui.set_next_item_width(80 * sc)
+		if !ro && vgui.input_int('start', &sbv) {
+			app.mu.lock()
+			app.dbs[di].messages[mi].signals[si].start_bit = if sbv < 0 { 0 } else { sbv }
+			app.mu.unlock()
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		}
+		vgui.same_line()
+		mut lnv := app.dbs[di].messages[mi].signals[si].length
+		vgui.set_next_item_width(80 * sc)
+		if !ro && vgui.input_int('len', &lnv) {
+			app.mu.lock()
+			nl := if lnv < 1 {
+				1
+			} else if lnv > 64 {
+				64
+			} else {
+				lnv
+			}
+			// shrinking the width would mask distinct value-table keys onto
+			// one another at save time — refuse while entries would collide
+			nmask := if nl >= 64 { ~u64(0) } else { (u64(1) << nl) - 1 }
+			mut val_clash := false
+			for k, _ in app.dbs[di].messages[mi].signals[si].values {
+				if k & ~nmask != 0 {
+					val_clash = true // the key itself no longer fits: saving would remap it
+				}
+			}
+			if !val_clash {
+				app.dbs[di].messages[mi].signals[si].length = nl
+				app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			}
+			app.mu.unlock()
+			if val_clash {
+				// AFTER unlock: notify() takes app.mu itself
+				app.notify('width ${nl} cannot hold the existing value-table keys — remove them first')
+			}
+		}
+		cur_o := if app.dbs[di].messages[mi].signals[si].byte_order == .little_endian {
+			0
+		} else {
+			1
+		}
+		no := vgui.combo('order', ['Intel (LE)', 'Motorola (BE)'], cur_o)
+		if !ro && no != cur_o {
+			app.mu.lock()
+			app.dbs[di].messages[mi].signals[si].byte_order = if no == 0 {
+				candb.ByteOrder.little_endian
+			} else {
+				candb.ByteOrder.big_endian
+			}
+			app.mu.unlock()
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		}
+		vgui.same_line()
+		nsg := vgui.checkbox('signed', app.dbs[di].messages[mi].signals[si].is_signed)
+		if !ro && nsg != app.dbs[di].messages[mi].signals[si].is_signed {
+			app.mu.lock()
+			app.dbs[di].messages[mi].signals[si].is_signed = nsg
+			app.mu.unlock()
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		}
+		mut fv := app.dbs[di].messages[mi].signals[si].factor
+		vgui.set_next_item_width(100 * sc)
+		if !ro && vgui.input_double('factor', &fv) {
+			if fv != 0 { // raw_from_phys divides by factor: zero would NaN/inf
+				app.mu.lock()
+				app.dbs[di].messages[mi].signals[si].factor = fv
+				app.mu.unlock()
+				app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			}
+		}
+		vgui.same_line()
+		mut ov := app.dbs[di].messages[mi].signals[si].offset
+		vgui.set_next_item_width(100 * sc)
+		if !ro && vgui.input_double('offset', &ov) {
+			app.mu.lock()
+			app.dbs[di].messages[mi].signals[si].offset = ov
+			app.mu.unlock()
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		}
+		mut mnv := app.dbs[di].messages[mi].signals[si].minimum
+		vgui.set_next_item_width(100 * sc)
+		if !ro && vgui.input_double('min', &mnv) {
+			app.mu.lock()
+			app.dbs[di].messages[mi].signals[si].minimum = mnv
+			app.mu.unlock()
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		}
+		vgui.same_line()
+		mut mxv := app.dbs[di].messages[mi].signals[si].maximum
+		vgui.set_next_item_width(100 * sc)
+		if !ro && vgui.input_double('max', &mxv) {
+			app.mu.lock()
+			app.dbs[di].messages[mi].signals[si].maximum = mxv
+			app.mu.unlock()
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		}
+		vgui.set_next_item_width(80 * sc)
+		if !ro && vgui.input_text('unit', mut app.dbc_ed.unit_buf) {
+			app.mu.lock()
+			app.dbs[di].messages[mi].signals[si].unit = vgui.buf_str(app.dbc_ed.unit_buf)
+			app.mu.unlock()
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		}
+		vgui.set_next_item_width(240 * sc)
+		if !ro && vgui.input_text('desc', mut app.dbc_ed.desc_buf) {
+			app.mu.lock()
+			app.dbs[di].messages[mi].signals[si].desc = vgui.buf_str(app.dbc_ed.desc_buf)
+			app.mu.unlock()
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		}
+	}
+	vgui.end()
 }
