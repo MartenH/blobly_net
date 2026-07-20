@@ -223,6 +223,14 @@ fn test_request_matches_emb_golden_vector() {
 	validate(h, 0x0100, 1)!
 }
 
+fn test_request_with_reserved_client_rejected() {
+	msg := request(0x0100, 0x0001, 0, 7, 1, [])
+	h := parse_header(msg)!
+	if _ := validate(h, 0x0100, 1) {
+		assert false, 'reserved-client request validated'
+	}
+}
+
 fn test_request_with_dead_session_rejected() {
 	// the target's server gate refuses session 0 (no correlation) — the
 	// oracle must predict that, not accept what the board will drop
