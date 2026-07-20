@@ -119,15 +119,20 @@ const can_eff_mask = u32(0x1FFF_FFFF)
 // unit-testable. Returns an error only on a structurally broken BO_/SG_ line.
 pub fn parse_dbc(text string) !Database {
 	mut msgs := []MsgBuilder{}
-	mut by_id := map[u32]int{} // message id -> index into msgs
-	mut cur := -1              // index of the message SG_ lines attach to
+	// keyed by the RAW DBC id (EFF bit intact): auxiliary records (VAL_/CM_/
+	// BA_) carry the same raw id as their BO_, and a standard and an extended
+	// frame may share the numeric id — stripping here would attach one
+	// frame's aux records to the other
+	mut by_id := map[u32]int{} // raw DBC id -> index into msgs
+	mut cur := -1 // index of the message SG_ lines attach to
 	mut nodes := []string{}
 
 	for raw_line in text.split_into_lines() {
 		line := raw_line.trim_space()
 		if line.starts_with('BO_ ') {
 			mb := parse_bo(line)!
-			by_id[mb.id] = msgs.len
+			raw := if mb.ext { mb.id | can_eff_flag } else { mb.id }
+			by_id[raw] = msgs.len
 			cur = msgs.len
 			msgs << mb
 		} else if line.starts_with('SG_ ') {
@@ -195,8 +200,7 @@ fn apply_cycle_time(mut msgs []MsgBuilder, by_id map[u32]int, line string) {
 	if f.len < 5 || f[2] != 'BO_' {
 		return
 	}
-	raw_id := u32(f[3].u64())
-	id := if raw_id & can_eff_flag != 0 { raw_id & can_eff_mask } else { raw_id }
+	id := u32(f[3].u64()) // raw: by_id keys keep the EFF bit
 	if idx := by_id[id] {
 		msgs[idx].cycle_ms = f[4].int()
 	}
@@ -317,7 +321,7 @@ fn apply_val(mut msgs []MsgBuilder, by_id map[u32]int, line string) {
 	if f.len < 2 {
 		return
 	}
-	id := u32(f[0].u64()) & can_eff_mask
+	id := u32(f[0].u64()) // raw: by_id keys keep the EFF bit
 	sig_name := f[1]
 	mi := by_id[id] or { return }
 	si := signal_index(msgs[mi], sig_name) or { return }
@@ -355,7 +359,7 @@ fn apply_cm_sg(mut msgs []MsgBuilder, by_id map[u32]int, line string) {
 	if f.len < 2 {
 		return
 	}
-	id := u32(f[0].u64()) & can_eff_mask
+	id := u32(f[0].u64()) // raw: by_id keys keep the EFF bit
 	sig_name := f[1]
 	q1 := index_byte_from(line, `"`, 0) or { return }
 	q2 := index_byte_from(line, `"`, q1 + 1) or { return }

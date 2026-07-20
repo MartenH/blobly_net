@@ -16,11 +16,12 @@ fn fmt_num(f f64) string {
 	return '${f}'
 }
 
-// dbc_str sanitizes a quoted DBC string: embedded double quotes would break
-// the record format (the parser does not unescape), so they become single
-// quotes rather than corrupting the file.
+// dbc_str sanitizes a quoted DBC string: embedded double quotes and line
+// breaks would break the single-line record format (the parser does not
+// unescape), so quotes become single quotes and breaks become spaces rather
+// than corrupting the file.
 fn dbc_str(s string) string {
-	return s.replace('"', "'")
+	return s.replace('"', "'").replace('\r', ' ').replace('\n', ' ')
 }
 
 // raw_dbc_id renders the BO_/VAL_/CM_ id: extended (29-bit) ids carry the EFF
@@ -121,10 +122,24 @@ pub fn (db Database) to_dbc() string {
 				continue
 			}
 			mut keys := s.values.keys()
-			keys.sort()
+			// signed signals: negative enum keys are stored as their u64 bit
+			// pattern — sort AND render them signed, or -1 would serialize as
+			// 18446744073709551615 and corrupt the mapping on reparse
+			if s.is_signed {
+				keys.sort_with_compare(fn (a &u64, b &u64) int {
+					ia, ib := i64(*a), i64(*b)
+					if ia == ib {
+						return 0
+					}
+					return if ia < ib { -1 } else { 1 }
+				})
+			} else {
+				keys.sort()
+			}
 			mut parts := []string{}
 			for k in keys {
-				parts << '${k} "${dbc_str(s.values[k])}"'
+				kv := if s.is_signed { '${i64(k)}' } else { '${k}' }
+				parts << '${kv} "${dbc_str(s.values[k])}"'
 			}
 			b << 'VAL_ ${raw_dbc_id(m)} ${s.name} ${parts.join(' ')} ;'
 		}
