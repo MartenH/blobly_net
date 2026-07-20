@@ -178,3 +178,121 @@ VAL_ 512 WarnLamp 0 "Off" 1 "On" ;
 	assert lamp.cycle_ms == 100
 	assert lamp.signals[0].values[u64(1)] == 'On'
 }
+
+fn test_signed_value_table_keys_round_trip() {
+	db := Database{
+		messages: [
+			Message{
+				name:    'M'
+				id:      1
+				dlc:     1
+				signals: [
+					Signal{
+						name:      'Temp'
+						start_bit: 0
+						length:    8
+						is_signed: true
+						values:    {
+							u64(-1):  'SensorFault'
+							u64(0):   'Ok'
+							u64(-40): 'Underflow'
+						}
+					},
+				]
+			},
+		]
+	}
+	text := db.to_dbc()
+	assert text.contains('VAL_ 1 Temp -40 "Underflow" -1 "SensorFault" 0 "Ok" ;'), text
+	back := parse_dbc(text) or { panic(err) }
+	vals := back.messages[0].signals[0].values.clone()
+	assert vals[u64(-1)] == 'SensorFault'
+	assert vals[u64(-40)] == 'Underflow'
+	assert vals[u64(0)] == 'Ok'
+}
+
+fn test_std_and_ext_frames_sharing_a_number_keep_their_aux_records() {
+	db := Database{
+		messages: [
+			Message{
+				name:     'StdFrame'
+				id:       0x100
+				dlc:      8
+				cycle_ms: 10
+				signals:  [
+					Signal{
+						name:      'A'
+						start_bit: 0
+						length:    8
+						desc:      'std side'
+						values:    {
+							u64(1): 'StdOne'
+						}
+					},
+				]
+			},
+			Message{
+				name:     'ExtFrame'
+				id:       0x100
+				ext:      true
+				dlc:      8
+				cycle_ms: 500
+				signals:  [
+					Signal{
+						name:      'B'
+						start_bit: 0
+						length:    8
+						desc:      'ext side'
+						values:    {
+							u64(2): 'ExtTwo'
+						}
+					},
+				]
+			},
+		]
+	}
+	back := parse_dbc(db.to_dbc()) or { panic(err) }
+	assert back.messages.len == 2
+	mut std_m := Message{}
+	mut ext_m := Message{}
+	for m in back.messages {
+		if m.ext {
+			ext_m = m
+		} else {
+			std_m = m
+		}
+	}
+	assert std_m.cycle_ms == 10 && ext_m.cycle_ms == 500, 'cycle times crossed frames'
+	assert std_m.signals[0].desc == 'std side' && ext_m.signals[0].desc == 'ext side'
+	assert std_m.signals[0].values[u64(1)] == 'StdOne'
+	assert ext_m.signals[0].values[u64(2)] == 'ExtTwo'
+}
+
+fn test_line_breaks_cannot_split_records() {
+	db := Database{
+		messages: [
+			Message{
+				name:    'M'
+				id:      1
+				dlc:     1
+				signals: [
+					Signal{
+						name:      'S'
+						start_bit: 0
+						length:    8
+						unit:      'de\ngC'
+						desc:      'line one\r\nline two'
+						values:    {
+							u64(0): 'multi\nline label'
+						}
+					},
+				]
+			},
+		]
+	}
+	back := parse_dbc(db.to_dbc()) or { panic('newline sanitization failed: ${err}') }
+	s := back.messages[0].signals[0]
+	assert s.unit == 'de gC'
+	assert s.desc == 'line one  line two'
+	assert s.values[u64(0)] == 'multi line label'
+}
