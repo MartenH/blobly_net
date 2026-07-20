@@ -440,7 +440,14 @@ fn (mut app App) start() {
 	}
 	// unsaved DBC-editor edits exist only in the app.dbs union — sims and the
 	// per-channel generator databases still hold the on-disk definitions, so a
-	// measurement would encode with one schema and decode with another
+	// measurement would encode with one schema and decode with another.
+	// (Ghost entries for paths a project swap detached are pruned first —
+	// the panel may be closed, and a ghost would wedge Start forever.)
+	for pth, _ in app.dbc_ed.dirty.clone() {
+		if app.dbs_paths.index(pth) < 0 {
+			app.dbc_ed.dirty.delete(pth)
+		}
+	}
 	for _, d in app.dbc_ed.dirty {
 		if d {
 			app.notify('DBC editor has unsaved edits — Save or Revert them before starting')
@@ -4970,7 +4977,13 @@ fn script_worker(app &App, path string) {
 	}
 	a.script_busy = true
 	a.script_log = []
+	a.dbc_readers++ // the script Env retains app.dbs[0] and traverses it for its lifetime
 	a.mu.unlock()
+	defer {
+		a.mu.lock()
+		a.dbc_readers--
+		a.mu.unlock()
+	}
 	mut chans := []script.ChanInfo{}
 	first_db := if a.dbs.len > 0 { a.dbs[0] } else { candb.Database{} }
 	for ch in a.chans {
@@ -5715,6 +5728,23 @@ fn (mut app App) dbc_refresh_if_all_clean() {
 	}
 }
 
+// dbc_refresh_trace_names re-resolves the cached name on captured trace rows
+// after a message rename / id / kind edit — they hold the name captured at
+// arrival and would otherwise display the stale identity.
+fn (mut app App) dbc_refresh_trace_names() {
+	app.mu.lock()
+	for i, r in app.trace {
+		nn := app.lookup_name(r.id, r.ext)
+		if nn != r.name {
+			app.trace[i] = TraceRow{
+				...r
+				name: nn
+			}
+		}
+	}
+	app.mu.unlock()
+}
+
 fn draw_dbc_editor(mut app App) {
 	vis, op := vgui.begin_closable('DBC Editor', app.show_dbc)
 	app.show_dbc = op
@@ -5775,6 +5805,13 @@ fn draw_dbc_editor(mut app App) {
 	}
 	if !ro && vgui.small_button('Save') {
 		app.mu.lock()
+		// BU_ must declare every transmitter (sim.validate_node) — union the
+		// senders in at save time (not per keystroke)
+		for m in app.dbs[di].messages {
+			if m.sender != '' && m.sender !in app.dbs[di].nodes {
+				app.dbs[di].nodes << m.sender
+			}
+		}
 		text := app.dbs[di].to_dbc()
 		app.mu.unlock()
 		// ATOMIC: write beside the target then rename — a failed/interrupted
@@ -5812,6 +5849,7 @@ fn draw_dbc_editor(mut app App) {
 			app.dbc_ed.sig = -1
 			app.dbc_ed.loaded_key = ''
 			app.notify('reverted ${app.dbs_paths[di]}')
+			app.dbc_refresh_trace_names()
 			app.dbc_refresh_if_all_clean()
 		} else {
 			app.notify('dbc revert failed: ${err}')
@@ -5834,6 +5872,7 @@ fn draw_dbc_editor(mut app App) {
 		// next free STANDARD id (the new frame is ext:false — extended ids
 		// must not push it past the 11-bit range)
 		mut nid := u32(0x100)
+		mut id_free := false
 		for {
 			mut taken := false
 			for m in app.dbs[di].messages {
@@ -5841,18 +5880,30 @@ fn draw_dbc_editor(mut app App) {
 					taken = true
 				}
 			}
-			if !taken || nid >= 0x7FF {
+			if !taken {
+				id_free = true
+				break
+			}
+			if nid >= 0x7FF {
 				break
 			}
 			nid++
+		}
+		if !id_free {
+			app.notify('no free standard id in 0x100..0x7FF — delete a message or use extended ids')
+			app.mu.unlock()
+			vgui.end()
+			return
 		}
 		mut mname := 'NewMessage'
 		mut mn := 1
 		for {
 			mut taken := false
-			for m in app.dbs[di].messages {
-				if m.name == mname {
-					taken = true
+			for odb in app.dbs {
+				for m in odb.messages {
+					if m.name == mname {
+						taken = true
+					}
 				}
 			}
 			if !taken {
@@ -5895,12 +5946,15 @@ fn draw_dbc_editor(mut app App) {
 	vgui.set_next_item_width(160 * sc)
 	if !ro && vgui.input_text('name##dbcm', mut app.dbc_ed.mname_buf) {
 		nv := vgui.buf_str(app.dbc_ed.mname_buf)
-		// generators resolve messages BY NAME (first match wins) — a
-		// duplicate makes one frame unreachable
+		// generators resolve messages BY NAME across every co-attached DBC
+		// (first match wins) — a duplicate makes one frame unreachable, so
+		// check ALL loaded databases, not just this file
 		mut mname_taken := false
-		for oi, om in app.dbs[di].messages {
-			if oi != mi && om.name == nv {
-				mname_taken = true
+		for odi, odb in app.dbs {
+			for oi, om in odb.messages {
+				if !(odi == di && oi == mi) && om.name == nv {
+					mname_taken = true
+				}
 			}
 		}
 		if dbc_ident_ok(nv) && !mname_taken {
@@ -5908,6 +5962,7 @@ fn draw_dbc_editor(mut app App) {
 			app.dbs[di].messages[mi].name = nv
 			app.mu.unlock()
 			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			app.dbc_refresh_trace_names()
 		}
 	}
 	if !dbc_ident_ok(vgui.buf_str(app.dbc_ed.mname_buf)) {
@@ -5940,6 +5995,7 @@ fn draw_dbc_editor(mut app App) {
 			app.dbs[di].messages[mi].id = u32(cl)
 			app.mu.unlock()
 			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			app.dbc_refresh_trace_names()
 		} else {
 			app.notify('id 0x${u32(cl).hex()} already used by another frame of the same kind — not applied')
 		}
@@ -5969,6 +6025,7 @@ fn draw_dbc_editor(mut app App) {
 			app.dbs[di].messages[mi].id = nid
 			app.mu.unlock()
 			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			app.dbc_refresh_trace_names()
 		}
 	}
 	mut dlcv := app.dbs[di].messages[mi].dlc
@@ -6000,13 +6057,10 @@ fn draw_dbc_editor(mut app App) {
 		if sv == '' || dbc_ident_ok(sv) { // empty = no transmitter
 			app.mu.lock()
 			app.dbs[di].messages[mi].sender = sv
-			// a transmitter must exist in BU_: sim.validate_node rejects
-			// senders the node list doesn't declare
-			if sv != '' && sv !in app.dbs[di].nodes {
-				app.dbs[di].nodes << sv
-			}
 			app.mu.unlock()
 			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			// BU_ union happens at SAVE — inserting here would append every
+			// keystroke prefix ('E','EC','ECU'...) as a permanent node
 		}
 	}
 
@@ -6228,16 +6282,13 @@ fn draw_dbc_editor(mut app App) {
 			// one another at save time — refuse while entries would collide
 			nmask := if nl >= 64 { ~u64(0) } else { (u64(1) << nl) - 1 }
 			mut val_clash := false
-			mut seen_masked := map[u64]bool{}
 			for k, _ in app.dbs[di].messages[mi].signals[si].values {
-				mk := k & nmask
-				if seen_masked[mk] {
-					val_clash = true
+				if k & ~nmask != 0 {
+					val_clash = true // the key itself no longer fits: saving would remap it
 				}
-				seen_masked[mk] = true
 			}
 			if val_clash {
-				app.notify('width ${nl} would collapse distinct value-table entries — remove them first')
+				app.notify('width ${nl} cannot hold the existing value-table keys — remove them first')
 			} else {
 				app.dbs[di].messages[mi].signals[si].length = nl
 				app.dbc_ed.dirty[app.dbs_paths[di]] = true
