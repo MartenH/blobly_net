@@ -48,9 +48,16 @@ A dockable blobly_vgui panel, the Shell-panel precedent:
   edited database immediately (same in-memory `dbs` — no reload step);
 - unsaved-changes marker + revert; no autosave (the file is git-tracked).
 
+The editor is READ-ONLY while a measurement runs: rx/sim/generator workers
+read the databases lock-free, and saving rebuilds runtime caches — both are
+only safe stopped. Editing a stopped capture still re-decodes it live (the
+trace decodes signal values at draw time), so the live loop survives.
+
 Out of P1 scope: value-table editing UI, multiplexing UI, J1939 attributes,
-creating files from scratch (open-and-edit first) — each lands as its own
-rung when wanted.
+creating files from scratch (open-and-edit first), and RENAME REFACTORING —
+renaming a message/signal does not retarget project generators that reference
+the old name (they fail loud with "message not in any DBC"); a
+rename-aware sweep over the sender model is its own rung.
 
 ## Roadmap: system VIEWER, not a system editor
 
