@@ -52,6 +52,7 @@ pub mut:
 pub struct IdUse {
 pub mut:
 	id    u32
+	ext   bool   // frame kind is part of CAN identity (std/ext share numbers)
 	kind  string // 'frame' | 'nm' | 'diag-req' | 'diag-rsp'
 	owner string // frame name or node name
 }
@@ -63,6 +64,10 @@ pub mut:
 	signals []SysSignal
 	nodes   []SysNode
 	errs    []string // load-time problems worth showing (missing DBC etc.)
+	// precomputed at load (id_allocation parses the bus DBC — a per-frame
+	// GUI must never re-read files): bus -> sorted allocation / collisions
+	alloc map[string][]IdUse
+	cols  map[string][]u32
 }
 
 fn tstr(m map[string]toml.Any, key string) string {
@@ -196,13 +201,26 @@ pub fn load(path string) !System {
 			}
 		}
 	}
+	// precompute the id tables ONCE — the panel renders every frame
+	for b in sys.buses {
+		sys.alloc[b.name] = sys.compute_allocation(b.name)
+		sys.cols[b.name] = compute_collisions(sys.alloc[b.name])
+	}
 	return sys
 }
 
-// id_allocation lists every identifier allocated on `bus` — DBC frame ids
-// (resolved through candb when the DBC loads), NM alive ids (peers.lo + node),
-// and each attached node's diag pair — sorted by id.
+// id_allocation returns the precomputed allocation for `bus` (load-time —
+// the panel calls this per rendered frame and must not touch the filesystem).
 pub fn (sys System) id_allocation(bus string) []IdUse {
+	return sys.alloc[bus] or { []IdUse{} }
+}
+
+// collisions returns the precomputed colliding ids for `bus`.
+pub fn (sys System) collisions(bus string) []u32 {
+	return sys.cols[bus] or { []u32{} }
+}
+
+fn (mut sys System) compute_allocation(bus string) []IdUse {
 	mut out := []IdUse{}
 	mut b := SysBus{}
 	for sb in sys.buses {
@@ -216,10 +234,15 @@ pub fn (sys System) id_allocation(bus string) []IdUse {
 			for m in db.messages {
 				out << IdUse{
 					id:    m.id
+					ext:   m.ext
 					kind:  'frame'
 					owner: m.name
 				}
 			}
+		} else {
+			// an omitted DBC would make the table LOOK valid while missing
+			// every frame id — surface it instead
+			sys.errs << 'bus ${bus}: DBC ${b.dbc} not loaded (${err}) — frame ids missing from the allocation'
 		}
 	}
 	for n in sys.nodes {
@@ -252,23 +275,30 @@ pub fn (sys System) id_allocation(bus string) []IdUse {
 		if a.id != x.id {
 			return if a.id < x.id { -1 } else { 1 }
 		}
+		if a.ext != x.ext {
+			return if !a.ext { -1 } else { 1 }
+		}
 		return a.owner.compare(x.owner)
 	})
 	return out
 }
 
-// collisions returns the ids allocated more than once on `bus` — the thing an
-// id table exists to catch.
-pub fn (sys System) collisions(bus string) []u32 {
-	alloc := sys.id_allocation(bus)
-	mut seen := map[u32]int{}
+// compute_collisions: ids allocated more than once — per (id, KIND) pair, so
+// a std and an ext frame sharing a number are NOT a false duplicate. NM/diag
+// ids are standard-frame identifiers.
+fn compute_collisions(alloc []IdUse) []u32 {
+	mut seen := map[u64]int{}
 	for a in alloc {
-		seen[a.id]++
+		key := u64(a.id) | (u64(if a.ext { 1 } else { 0 }) << 32)
+		seen[key]++
 	}
 	mut out := []u32{}
-	for id, c in seen {
+	for key, c in seen {
 		if c > 1 {
-			out << id
+			id := u32(key & 0xFFFF_FFFF)
+			if id !in out {
+				out << id
+			}
 		}
 	}
 	out.sort()
