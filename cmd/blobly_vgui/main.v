@@ -4973,13 +4973,15 @@ fn script_worker(app &App, path string) {
 	mut a := unsafe { app }
 	a.mu.lock()
 	if a.script_busy {
+		a.dbc_readers-- // release the spawn-side reservation: we never read
 		a.mu.unlock()
 		return
 	}
 	a.script_busy = true
 	a.script_log = []
-	a.dbc_readers++ // the script Env retains app.dbs[0] and traverses it for its lifetime
 	a.mu.unlock()
+	// the reader slot was reserved by the SPAWNING thread (TOCTOU: this
+	// worker may not schedule before an edit) — this side only releases it
 	defer {
 		a.mu.lock()
 		a.dbc_readers--
@@ -5027,6 +5029,12 @@ fn draw_script(mut app App) {
 	vgui.input_text('.lua', mut app.script_path_buf)
 	vgui.same_line()
 	if vgui.button('Run') && !busy {
+		// reserve the dbs-reader slot HERE, before the spawn: a worker that
+		// hasn't been scheduled yet hasn't registered, and an edit could slip
+		// into that gap (the worker releases it in its defer)
+		app.mu.lock()
+		app.dbc_readers++
+		app.mu.unlock()
 		spawn script_worker(app, vgui.buf_str(app.script_path_buf))
 	}
 	if busy {
@@ -6022,7 +6030,18 @@ fn draw_dbc_editor(mut app App) {
 			app.mu.lock()
 			app.dbs[di].messages[mi].id = u32(cl)
 			app.mu.unlock()
+			mut id_shadowed := false
+			for odi in 0 .. di {
+				for om in app.dbs[odi].messages {
+					if om.id == old_id && om.ext == wext0 {
+						id_shadowed = true
+					}
+				}
+			}
 			for wi, w in app.watch {
+				if id_shadowed {
+					break
+				}
 				if w.id == old_id && w.ext == wext0 {
 					app.watch[wi] = Watch{
 						id:  u32(cl)
@@ -6063,7 +6082,18 @@ fn draw_dbc_editor(mut app App) {
 			app.dbs[di].messages[mi].ext = next
 			app.dbs[di].messages[mi].id = nid
 			app.mu.unlock()
+			mut kind_shadowed := false
+			for odi in 0 .. di {
+				for om in app.dbs[odi].messages {
+					if om.id == old_id2 && om.ext == old_ext2 {
+						kind_shadowed = true
+					}
+				}
+			}
 			for wi, w in app.watch {
+				if kind_shadowed {
+					break
+				}
 				if w.id == old_id2 && w.ext == old_ext2 {
 					app.watch[wi] = Watch{
 						id:  nid
