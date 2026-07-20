@@ -210,15 +210,16 @@ fn test_request_with_nonzero_return_code_rejected() {
 }
 
 // --- cross-repo lock: blobly_emb comm/someip golden request ---------------
-// the EXACT bytes emb's someip_test.v pins (service 0x0100, method 0x0001,
-// client 0x0E01, session 7, iface 1, 2-byte payload) — byte-identical
-// builders on both repos, the same pincer the notification vector closes.
+// the EXACT datagram for emb's someip_test.v header vector (service 0x0100,
+// method 0x0001, client 0x0E01, session 7, iface 1) plus its 2-byte zero
+// payload — the FULL message compared, so a payload-encoding divergence
+// cannot hide behind a header-only slice.
 const emb_golden_request = [u8(0x01), 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x0A, 0x0E, 0x01, 0x00,
-	0x07, 0x01, 0x01, 0x00, 0x00]
+	0x07, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00]
 
 fn test_request_matches_emb_golden_vector() {
 	msg := request(0x0100, 0x0001, 0x0E01, 7, 1, [u8(0), 0])
-	assert msg[..header_len] == emb_golden_request
+	assert msg == emb_golden_request
 	h := parse_header(msg)!
 	validate(h, 0x0100, 1)!
 }
