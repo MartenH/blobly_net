@@ -30,6 +30,8 @@ import script
 import canlog
 import mf4
 import doip
+import someip
+import net as vnet
 import vgui
 
 const diag_tx_id = u32(0x7E0)
@@ -201,6 +203,7 @@ mut:
 	sys          sysview.System
 	sys_loaded   bool
 	shell_buf    []u8     // the input line (persistent; edited in place by console_input)
+	eth_target_buf []u8   // the eth shell's board ip (session-only; manifest carries the port)
 	shell_lines  []string // scrollback (guarded by mu; the worker appends)
 	shell_busy   bool     // single-flight: one command in flight at a time
 	shell_follow bool     // new output arrived — pin the scrollback to the bottom next frame
@@ -1114,6 +1117,7 @@ fn main() {
 	app.diag_did_buf = mkbuf('F190', 16)
 	app.script_path_buf = mkbuf('tests/diag_basic.lua', 256)
 	app.shell_buf = mkbuf('', 128)
+	app.eth_target_buf = mkbuf('', 64)
 	app.flash_img_buf = mkbuf('', 256)
 	app.flash_base_buf = mkbuf('08020000', 16)
 	app.flash_req_buf = mkbuf('7B0', 12)
@@ -4650,7 +4654,10 @@ fn draw_shell(mut app App) {
 		vgui.end()
 		return
 	}
-	if !app.running {
+	// the eth RPC shell (manifest `ethmod,shell,method`) needs NO CAN channel:
+	// it dials the board's UDP endpoint directly, Start or not
+	eth := app.manifest.shell_method != 0 && app.manifest.someip.service != 0
+	if !app.running && !eth {
 		vgui.text_dim('press Start (needs a shell-enabled target on the bus)')
 		vgui.end()
 		return
@@ -4670,6 +4677,12 @@ fn draw_shell(mut app App) {
 		vgui.scroll_bottom()
 	}
 	vgui.child_end()
+	if eth {
+		vgui.set_next_item_width(130 * app.ui_scale)
+		vgui.input_text('##ethtarget', mut app.eth_target_buf)
+		vgui.same_line()
+		vgui.text_dim('board ip — SOME/IP method 0x${app.manifest.shell_method.hex()} :${app.manifest.someip.port}')
+	}
 	vgui.set_next_item_width(-40 * app.ui_scale)
 	if vgui.console_input('##shellin', mut app.shell_buf) {
 		line := vgui.buf_str(app.shell_buf).trim_space()
@@ -4682,6 +4695,8 @@ fn draw_shell(mut app App) {
 		} else if line != '' {
 			if busy {
 				app.shell_append('(busy — previous command still running)')
+			} else if eth {
+				spawn shell_worker_eth(app, line)
 			} else {
 				spawn shell_worker(app, line)
 			}
@@ -6643,4 +6658,87 @@ fn draw_system(mut app App) {
 		}
 	}
 	vgui.end()
+}
+
+// shell_worker_eth sends one command line as a SOME/IP REQUEST and renders
+// the correlated response — the client half of the emb P3 RPC design
+// (modules/someip RpcClient: one in flight, deadline, drain). The local
+// socket binds the manifest peer\'s PORT: the board\'s static source filter
+// accepts only its configured peer endpoint, and the WSL->LAN NAT path
+// preserves a bound source port (the emb#158 bench recipe). Single-flight
+// via the same shell_busy latch as the CAN worker.
+fn shell_worker_eth(app &App, line string) {
+	mut a := unsafe { app }
+	a.mu.lock()
+	if a.shell_busy {
+		a.mu.unlock()
+		return
+	}
+	a.shell_busy = true
+	a.mu.unlock()
+	defer {
+		a.mu.lock()
+		a.shell_busy = false
+		a.mu.unlock()
+		vgui.wake()
+	}
+	a.shell_append('> ' + line)
+	target := vgui.buf_str(a.eth_target_buf).trim_space()
+	if target == '' {
+		a.shell_append('(enter the board ip first)')
+		return
+	}
+	man := a.manifest
+	peer_port := man.someip.peer.all_after_last(':').int()
+	bind_port := if peer_port > 0 { peer_port } else { 30491 }
+	mut sock := vnet.listen_udp(':${bind_port}') or {
+		a.shell_append('(bind :${bind_port}: ${err} — the board only answers its configured peer endpoint)')
+		return
+	}
+	defer {
+		sock.close() or {}
+	}
+	sock.set_read_timeout(100 * time.millisecond)
+	addrs := vnet.resolve_addrs('${target}:${man.someip.port}', .ip, .udp) or {
+		a.shell_append('(resolve ${target}: ${err})')
+		return
+	}
+	mut cli := someip.RpcClient{
+		service:    man.someip.service
+		method:     man.shell_method
+		iface:      man.someip.version
+		client_id:  0x0E01
+		timeout_us: 1_500_000
+	}
+	sw := time.new_stopwatch()
+	req := cli.send(line.bytes(), 0) or {
+		a.shell_append('(client busy)')
+		return
+	}
+	sock.write_to(addrs[0], req) or {
+		a.shell_append('(send: ${err})')
+		return
+	}
+	mut buf := []u8{len: 2048}
+	for cli.state == .waiting {
+		n, _ := sock.read(mut buf) or {
+			cli.poll(u64(sw.elapsed().microseconds()))
+			continue
+		}
+		cli.on_datagram(buf[..n])
+		cli.poll(u64(sw.elapsed().microseconds()))
+	}
+	if cli.state == .done {
+		a.shell_append(cli.result.payload.bytestr())
+		return
+	}
+	if cli.result.timed_out {
+		a.shell_append('(no response — board off, wrong ip, or the peer port is not ours after NAT)')
+	} else {
+		match cli.result.rc {
+			0x03 { a.shell_append('(error: unknown method on the target)') }
+			0x20 { a.shell_append('(denied — this build\'s mutate gate is closed)') }
+			else { a.shell_append('(error rc 0x${cli.result.rc.hex()})') }
+		}
+	}
 }

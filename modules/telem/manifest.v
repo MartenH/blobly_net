@@ -88,12 +88,25 @@ pub fn (f TraceFrames) or_defaults() TraceFrames {
 }
 
 // Manifest resolves handler_id -> Handler and thread_id -> Thread.
+// SomeipIdent is the manifest's `# someip:` identity row — the eth service
+// the image binds (service, interface version, its own port, the configured
+// peer endpoint). Present only for eth images; service == 0 means absent.
+pub struct SomeipIdent {
+pub mut:
+	service u16
+	version u8
+	port    u16
+	peer    string
+}
+
 pub struct Manifest {
 pub:
-	handlers []Handler
-	threads  []Thread
-	frames   TraceFrames // the `# trace frames` ids (zero-filled -> or_defaults())
-	shell    ShellFrames // the `# shell frames` ids (zero-filled -> or_defaults())
+	handlers     []Handler
+	threads      []Thread
+	frames       TraceFrames // the `# trace frames` ids (zero-filled -> or_defaults())
+	shell        ShellFrames // the `# shell frames` ids (zero-filled -> or_defaults())
+	someip       SomeipIdent // the `# someip:` identity (eth images; service 0 = none)
+	shell_method u16         // `ethmod,shell,method,<id>` — the eth RPC shell (0 = none)
 pub mut:
 	by_id  map[u16]Handler // built by index()
 	by_tid map[u32]Thread  // built by index(); key = tkey(core, id) — THREAD IDS ARE PER-CORE
@@ -112,6 +125,8 @@ pub fn parse_manifest(text string) !Manifest {
 	mut threads := []Thread{}
 	mut frames := TraceFrames{}
 	mut shellf := ShellFrames{}
+	mut sip := SomeipIdent{}
+	mut shell_method := u16(0)
 	mut seen := map[u16]bool{}
 	mut seen_tid := map[u32]bool{}
 	// The manifest is sectioned by `#` header comments (`# fb.handlers:`, `# threads:`,
@@ -129,6 +144,10 @@ pub fn parse_manifest(text string) !Manifest {
 				section = 'frames'
 			} else if low.contains('shell frames') {
 				section = 'shell'
+			} else if low.contains('someip') {
+				section = 'someip'
+			} else if low.contains('eth modules') {
+				section = 'ethmod'
 			} else if low.contains('handlers') {
 				section = 'handlers'
 			} else if low.contains('threads') {
@@ -168,6 +187,24 @@ pub fn parse_manifest(text string) !Manifest {
 				'fc' { shellf.fc = id }
 				'out' { shellf.out = id }
 				else {} // unknown frame name — ignore (forward-compatible)
+			}
+			continue
+		}
+		if section == 'someip' {
+			// `someip,service,version,port,peer` — the eth service identity.
+			if cols.len >= 5 && cols[0] == 'someip' {
+				sip.service = u16(parse_can_id(cols[1]) or { 0 })
+				sip.version = u8(cols[2].int())
+				sip.port = u16(cols[3].int())
+				sip.peer = cols[4]
+			}
+			continue
+		}
+		if section == 'ethmod' {
+			// `ethmod,<module>,<endpoint>,<id>` — module endpoints on the eth
+			// bus; the shell's method id is the one the RPC client dials.
+			if cols.len >= 4 && cols[0] == 'ethmod' && cols[1] == 'shell' && cols[2] == 'method' {
+				shell_method = u16(parse_can_id(cols[3]) or { 0 })
 			}
 			continue
 		}
@@ -246,6 +283,8 @@ pub fn parse_manifest(text string) !Manifest {
 		threads:  threads
 		frames:   frames
 		shell:    shellf
+		someip:   sip
+		shell_method: shell_method
 	}
 	m.index()
 	return m
