@@ -266,6 +266,7 @@ fn test_iface_compose_decompose() {
 		['pcan', 'PCAN_USBBUS1', 'pcan:PCAN_USBBUS1'],
 		['kvaser', '0', 'kvaser:0'],
 		['doip', '127.0.0.1:13400', 'doip:127.0.0.1:13400'],
+		['someip', '192.168.0.191', 'someip:192.168.0.191'],
 	]
 	for cse in cases {
 		adapter, address, iface := cse[0], cse[1], cse[2]
@@ -274,6 +275,35 @@ fn test_iface_compose_decompose() {
 		assert a == adapter
 		assert ad == address
 	}
+}
+
+// A SOME/IP eth board channel (adapter: someip) survives the Save round-trip:
+// board ip, local bind ip and manifest kept; no CAN protocol/bitrate noise.
+fn test_someip_roundtrip() {
+	orig := Project{
+		name:     'eth'
+		channels: [
+			Channel{
+				name:     'Board'
+				adapter:  'someip'
+				address:  '192.168.0.191'
+				iface:    'someip:192.168.0.191'
+				typ:      'someip'
+				local_ip: '192.168.0.190'
+				manifest: 'gen/trace-manifest.csv'
+			},
+		]
+	}
+	y := orig.to_yaml()
+	assert !y.contains('protocol:')
+	assert !y.contains('bitrate:')
+	c := parse(y)!.channels[0]
+	assert c.is_someip()
+	assert !c.is_doip()
+	assert c.adapter == 'someip'
+	assert c.address == '192.168.0.191'
+	assert c.local_ip == '192.168.0.190'
+	assert c.manifest == 'gen/trace-manifest.csv'
 }
 
 // Senders (interactive generators) survive the Save round-trip.

@@ -36,7 +36,7 @@ pub fn (p Project) to_yaml() string {
 		if address != '' {
 			b.writeln('    address: ${yaml_scalar(address)}')
 		}
-		if !ch.is_doip() {
+		if !ch.is_doip() && !ch.is_someip() {
 			b.writeln('    protocol: ${ch.typ}')
 			b.writeln('    bitrate: ${ch.bitrate}')
 		}
@@ -56,6 +56,9 @@ pub fn (p Project) to_yaml() string {
 		b.writeln('    enabled: ${ch.enabled}')
 		if ch.timing.brp != 0 || ch.timing.tseg1 != 0 || ch.timing.tseg2 != 0 {
 			b.writeln('    timing: { brp: ${ch.timing.brp}, tseg1: ${ch.timing.tseg1}, tseg2: ${ch.timing.tseg2}, sjw: ${ch.timing.sjw} }')
+		}
+		if ch.is_someip() && ch.local_ip != '' {
+			b.writeln('    local_ip: ${yaml_scalar(ch.local_ip)}')
 		}
 		if ch.is_doip() {
 			b.writeln('    tester_address: "0x${ch.tester_addr:04X}"')
