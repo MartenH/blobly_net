@@ -277,8 +277,12 @@ void vgui_wake() { glfwPostEmptyEvent(); }
 void vgui_dump_ppm(const char* path) { g_dump = path; }
 
 // --- curated widget glue (scalar C ABI over imgui) ---
+// x/y are MAIN-WINDOW-relative: with viewports enabled, ImGui window coords are
+// absolute screen coords, so a bare (120,90) lands on the primary monitor even
+// when the app runs on another one.
 void vgui_set_next_window(float x, float y, float w, float h) {
-    ImGui::SetNextWindowPos(ImVec2(x,y), ImGuiCond_Once);
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + x, vp->Pos.y + y), ImGuiCond_Once);
     ImGui::SetNextWindowSize(ImVec2(w,h), ImGuiCond_Once);
 }
 // vgui_set_window_focus brings a docked window's tab to the front by name.
