@@ -145,6 +145,9 @@ mut:
 	sel_id        int = -1 // selected message id (-1 = none)
 	sel_ext       bool
 	watch         []Watch // signals plotted in Graphics
+	eth_watch     []telem.EthWatch // eth event fields plotted in Graphics — a PARALLEL list,
+	// not a Watch kind: the DBC editor's retarget/prune loops key on (id, ext) and an eth
+	// event id can collide numerically with a CAN id, so eth watches must stay out of them
 	plot_win      f32  = 5    // Graphics x-window in seconds (0 = full history / autofit)
 	plot_multi    bool = true // Graphics Y: per-signal real axes (up to 3) vs one shared axis
 	trace_grouped bool = true // Trace: grouped-by-id (expandable) vs chronological
@@ -325,6 +328,17 @@ fn (mut app App) add_watch(id u32, ext bool, sig string) {
 		}
 	}
 	app.watch << Watch{id, ext, sig}
+}
+
+// add_eth_watch plots an eth event field (idempotent — keyed on event id + field name; the
+// layout snapshot travels with the watch). Used by the Trace right-click on eth rows.
+fn (mut app App) add_eth_watch(id u16, ch string, f telem.EthField) {
+	for w in app.eth_watch {
+		if w.id == id && w.fld.field == f.field {
+			return
+		}
+	}
+	app.eth_watch << telem.EthWatch{id, ch, f}
 }
 
 // app_icon renders the 32×32 RGBA window/taskbar icon: an accent-blue rounded square with
@@ -1237,6 +1251,7 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	app.diag_log = []
 	app.script_log = []
 	app.watch = []
+	app.eth_watch = []
 	app.fwatch = []
 	app.rx = 0
 	app.proj_path = path
@@ -1406,6 +1421,18 @@ fn (mut app App) rebuild_from_proj() {
 			break
 		}
 	}
+	// eth watches reference the (re)loaded manifest layout — re-resolve each against the new
+	// manifest and drop the ones that no longer exist. DBC watches survive a rebuild (their
+	// decode fails closed through the live find_message lookup); an eth watch decodes by
+	// snapshot offsets, and a stale layout would decode garbage instead.
+	mut somech := ''
+	for c in app.chans {
+		if c.someip && !c.someip_dup {
+			somech = c.name
+			break
+		}
+	}
+	app.eth_watch = app.eth_manifest.reconcile_eth_watches(app.eth_watch, somech)
 	// prefill the shell's board-ip from the someip channel (session-only
 	// buffer — never clobber a hand-typed target)
 	if eth_board != '' && app.eth_target_buf.len > 0
@@ -3745,6 +3772,16 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 						}
 						app.show_graphics = true
 					}
+				} else {
+					// an eth frame has no DBC — offer its manifest layout fields
+					// instead (same precedence as the expand decode below)
+					eflds := app.eth_layout_fields(g.id, g.ch)
+					if eflds.len > 0 && vgui.menu_item('Add all fields to Graphics') {
+						for f in eflds {
+							app.add_eth_watch(u16(g.id), g.ch, f)
+						}
+						app.show_graphics = true
+					}
 				}
 				if vgui.menu_item('Add to Trace (filter)') {
 					app.add_fwatch(g.id, g.ext)
@@ -3808,7 +3845,16 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 						v := f.format(r.data) or { continue }
 						vgui.table_row()
 						vgui.table_next_col()
-						vgui.text('    ${f.field}')
+						// selectable spans the cell so the whole row is a right-click target
+						vgui.selectable('    ${f.field}##ethrow${g.ch}_${g.id}_${f.field}',
+							false)
+						if vgui.begin_popup_context_item('ethctx##${g.ch}_${g.id}_${f.field}') {
+							if vgui.menu_item('Add ${f.field} to Graphics') {
+								app.add_eth_watch(u16(g.id), g.ch, f)
+								app.show_graphics = true
+							}
+							vgui.end_popup()
+						}
 						vgui.table_next_col()
 						vgui.table_next_col()
 						vgui.table_next_col()
@@ -3982,6 +4028,22 @@ fn (app &App) build_series(rows []TraceRow, w Watch) ([]f32, []f32) {
 	return xs, ys
 }
 
+// build_eth_series decodes the watched eth field across the trace history -> (time s, value).
+// Rows are matched by CHANNEL + id: a CAN frame can collide numerically with an eth event id,
+// and only the someip channel's rows carry this layout.
+fn (app &App) build_eth_series(rows []TraceRow, w telem.EthWatch) ([]f32, []f32) {
+	mut xs := []f32{}
+	mut ys := []f32{}
+	for r in rows {
+		if r.ch == w.ch && r.id == u32(w.id) {
+			v := w.sample(r.data) or { continue }
+			xs << f32(r.t_ms / 1000.0) // seconds — the plot x-axis is t (s)
+			ys << f32(v)
+		}
+	}
+	return xs, ys
+}
+
 // draw_graphics plots the watched signals over the trace history as ImPlot lines
 // (native pan/zoom/legend/tooltip).
 fn draw_graphics(mut app App, rows []TraceRow) {
@@ -3991,7 +4053,7 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 		vgui.end()
 		return
 	}
-	if app.watch.len == 0 {
+	if app.watch.len == 0 && app.eth_watch.len == 0 {
 		vgui.text_dim('tick a signal in the Signals panel to plot it (or right-click a Trace row)')
 		vgui.end()
 		return
@@ -4000,6 +4062,7 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 	// watch set — distinct from clicking the plot legend, which only hides/shows the line).
 	if vgui.small_button('Clear') {
 		app.watch = []
+		app.eth_watch = []
 		vgui.end()
 		return
 	}
@@ -4012,8 +4075,18 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 			rm = i
 		}
 	}
+	mut rme := -1
+	for i, w in app.eth_watch {
+		vgui.same_line()
+		if vgui.small_button('${w.fld.frame}.${w.fld.field} x##rme${i}') {
+			rme = i
+		}
+	}
 	if rm >= 0 {
 		app.watch.delete(rm)
+	}
+	if rme >= 0 {
+		app.eth_watch.delete(rme)
 	}
 	// time window: a fixed span you watch (a scrolling strip chart), not the whole history.
 	vgui.text_dim('window:')
@@ -4049,14 +4122,15 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 		xmax = f64(time.ticks() - app.t0) / 1000.0
 	} else {
 		for r in rows {
-			if app.is_watched_frame(r.id, r.ext) && f64(r.t_ms) / 1000.0 > xmax {
+			if (app.is_watched_frame(r.id, r.ext) || app.is_eth_watched_row(r.id, r.ch))
+				&& f64(r.t_ms) / 1000.0 > xmax {
 				xmax = f64(r.t_ms) / 1000.0
 			}
 		}
 	}
 	xmin := if app.plot_win > 0 { xmax - f64(app.plot_win) } else { f64(0) }
 	xhi := if app.plot_win > 0 { xmax } else { f64(0) } // 0/0 → full autofit
-	n_yaxes := if app.plot_multi { imin(3, app.watch.len) } else { 1 }
+	n_yaxes := if app.plot_multi { imin(3, app.watch.len + app.eth_watch.len) } else { 1 }
 	if vgui.plot_begin_multi('##sigplot', -1, xmin, xhi, n_yaxes) { // -1 = fill panel height
 		// crosshair readout: value shown in the legend is at the cursor x when hovering the
 		// plot, else the latest sample — a live per-signal value beside each name.
@@ -4073,6 +4147,19 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 			// even though the shown value changes each frame.
 			label := '0x${w.id:X}.${w.sig} = ${val:.2f}###g${w.id}_${w.ext}_${w.sig}'
 			axis := if app.plot_multi { imin(i, 2) } else { 0 } // signal 0/1/2 → Y1/Y2/Y3
+			vgui.plot_line_axis(label, xs, ys, axis)
+		}
+		// eth watches plot alongside — same crosshair/legend contract; the axis
+		// index continues after the CAN watches so Multi-Y stays stable
+		for i, w in app.eth_watch {
+			xs, ys := app.build_eth_series(rows, w)
+			if xs.len == 0 {
+				continue
+			}
+			xr := if hovered { mx } else { xs[xs.len - 1] } // cursor x, or latest
+			val := value_at(xs, ys, xr)
+			label := '${w.fld.frame}.${w.fld.field} = ${val:.2f}###ge${w.id}_${w.fld.field}'
+			axis := if app.plot_multi { imin(app.watch.len + i, 2) } else { 0 }
 			vgui.plot_line_axis(label, xs, ys, axis)
 		}
 		vgui.plot_end()
@@ -4112,6 +4199,17 @@ fn value_at(xs []f32, ys []f32, x f32) f32 {
 fn (app &App) is_watched_frame(id u32, ext bool) bool {
 	for w in app.watch {
 		if w.id == id && w.ext == ext {
+			return true
+		}
+	}
+	return false
+}
+
+// is_eth_watched_row reports whether any plotted eth field comes from this trace row
+// (channel + event id — see build_eth_series on the id collision).
+fn (app &App) is_eth_watched_row(id u32, ch string) bool {
+	for w in app.eth_watch {
+		if u32(w.id) == id && w.ch == ch {
 			return true
 		}
 	}
