@@ -188,6 +188,22 @@ ethframe,BenchTelem,0x8002,4,tx,event,100000,-
 	{
 		assert false, 'out-of-range e2e id accepted'
 	}
+	// an explicit 0 is the internal "unprotected" sentinel — it would skip
+	// verification while the manifest reads as protected ('-' is the way)
+	if _ := parse_manifest('ethframe,BenchTelem,0x8001,9,tx,cyclic,300000,0
+# fb.handlers
+0,app,0,Bench,on_100ms,100000
+')
+	{
+		assert false, 'explicit zero e2e id accepted'
+	}
+	if _ := parse_manifest('ethframe,BenchTelem,0x8001,9,tx,cyclic,300000,0x0
+# fb.handlers
+0,app,0,Bench,on_100ms,100000
+')
+	{
+		assert false, 'explicit 0x0 e2e id accepted'
+	}
 	// the layout type set is closed…
 	if _ := parse_manifest('ethframe,BenchTelem,0x8001,9,tx,cyclic,300000,-
 ethlayout,BenchTelem,BenchLoad,load,0,4,f32

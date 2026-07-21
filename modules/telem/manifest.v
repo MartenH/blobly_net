@@ -266,7 +266,12 @@ pub fn parse_manifest(text string) !Manifest {
 				e2e = parse_can_id(cols[7]) or { return error('manifest ethframe e2e id: ${err}') }
 				// the E2E data id is u16 on the wire (folded into the CRC as
 				// lo,hi) — a wider value would silently truncate and verify
-				// against a different identity than declared
+				// against a different identity than declared. An explicit 0 is
+				// the internal "unprotected" sentinel: accepting it would skip
+				// verification while the manifest READS as protected.
+				if e2e == 0 {
+					return error("manifest ethframe \"${cols[1]}\" e2e id 0 is invalid — use '-' for unprotected")
+				}
 				if e2e > 0xFFFF {
 					return error('manifest ethframe e2e id 0x${e2e.hex()} out of range (1..0xFFFF)')
 				}

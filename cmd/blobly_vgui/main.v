@@ -2649,6 +2649,14 @@ fn (mut app App) set_adapter(i int, a string) {
 	}
 	app.proj.channels[i].iface = project.compose_iface(a, vgui.buf_str(app.cfg_bufs[i].address_buf))
 	app.rebind_senders(old_iface, app.proj.channels[i].iface) // keep this bus's generators bound
+	// switching INTO someip resets the mode to monitor: the someip editor only
+	// offers off/monitor and start() gates on monitor, so a channel arriving
+	// with mode 'replay' would otherwise be silently inert (nothing selected,
+	// worker never spawns). Away from someip there is no reverse trap — the
+	// modes someip leaves behind (off/monitor) are valid on every adapter.
+	if a == 'someip' && app.proj.channels[i].mode != .monitor {
+		app.set_mode(i, 'monitor')
+	}
 	app.dirty = true
 	app.rebuild_preserving_senders()
 }
@@ -3413,7 +3421,10 @@ fn draw_network(mut app App, chans []Chan) {
 			mut any := false
 			// tester functions this tool runs on the bus
 			mut tf := []string{}
-			if c.monitorable() {
+			// monitorable() is CAN-transport semantics (excludes someip by
+			// design; don't move that) — but topologically a RUNNING someip
+			// channel IS the tester monitoring the board's events
+			if c.monitorable() || (c.someip && c.running) {
 				tf << 'Monitor'
 			}
 			if app.send_iface == c.iface {
