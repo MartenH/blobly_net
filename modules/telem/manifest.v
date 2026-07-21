@@ -99,6 +99,54 @@ pub mut:
 	peer    string
 }
 
+// EthFrame is one `ethframe` row: a SOME/IP frame the image exchanges on its
+// eth bus. `dir` is the TARGET's perspective (tx = board -> host, the events a
+// host channel receives). The id fixes the frame's identity and `length` its
+// exact payload size — the rx path drops any other length.
+pub struct EthFrame {
+pub:
+	name     string
+	id       u16
+	length   int
+	dir      string // 'tx' | 'rx'
+	mode     string // 'cyclic' | 'event'
+	cycle_us u32
+	e2e      u16 // e2e data id ('-' in the manifest = 0 = unprotected)
+}
+
+// EthField is one `ethlayout` row: a payload field of an eth frame. Fields are
+// LITTLE-endian at byte offsets (the blobly payload contract; the SOME/IP
+// header itself is big-endian).
+pub struct EthField {
+pub:
+	frame  string
+	signal string
+	field  string
+	offset int
+	width  int
+	typ    string // u8/u16/u32/u64 or i8/i16/i32/i64 (i* sign-extend on decode)
+}
+
+// decode reads this field's little-endian value from an event payload; none
+// when the payload is too short for the field (a torn/foreign layout must
+// read as absent, not as garbage).
+pub fn (f EthField) decode(payload []u8) ?i64 {
+	if f.offset < 0 || f.width < 1 || f.offset + f.width > payload.len {
+		return none
+	}
+	mut v := u64(0)
+	for k in 0 .. f.width {
+		v |= u64(payload[f.offset + k]) << (8 * k)
+	}
+	if f.typ.starts_with('i') && f.width < 8 {
+		sign := u64(1) << (8 * f.width - 1)
+		if v & sign != 0 {
+			v |= ~(sign * 2 - 1) // sign-extend from the wire width
+		}
+	}
+	return i64(v)
+}
+
 pub struct Manifest {
 pub:
 	handlers     []Handler
@@ -107,6 +155,8 @@ pub:
 	shell        ShellFrames // the `# shell frames` ids (zero-filled -> or_defaults())
 	someip       SomeipIdent // the `# someip:` identity (eth images; service 0 = none)
 	shell_method u16         // `ethmod,shell,method,<id>` — the eth RPC shell (0 = none)
+	eth_frames   []EthFrame  // `ethframe` rows — the image's eth bus frames
+	eth_layout   []EthField  // `ethlayout` rows — payload fields of those frames
 pub mut:
 	by_id  map[u16]Handler // built by index()
 	by_tid map[u32]Thread  // built by index(); key = tkey(core, id) — THREAD IDS ARE PER-CORE
@@ -127,6 +177,8 @@ pub fn parse_manifest(text string) !Manifest {
 	mut shellf := ShellFrames{}
 	mut sip := SomeipIdent{}
 	mut shell_method := u16(0)
+	mut eth_frames := []EthFrame{}
+	mut eth_layout := []EthField{}
 	mut seen := map[u16]bool{}
 	mut seen_tid := map[u32]bool{}
 	// The manifest is sectioned by `#` header comments (`# fb.handlers:`, `# threads:`,
@@ -156,6 +208,59 @@ pub fn parse_manifest(text string) !Manifest {
 			continue
 		}
 		cols := line.split(',').map(it.trim_space())
+		// ethframe/ethlayout rows self-identify by their first column and are routed
+		// BEFORE the section blocks: their `# eth frames:` / `# eth layout:` headers
+		// match no section, so the someip/ethmod blocks above would otherwise eat them.
+		// Malformed values fail the LOAD (same rule as someip rows): a silently-dropped
+		// frame would just lose the channel's rx with no visible reason.
+		if cols[0] == 'ethframe' {
+			// `ethframe,<name>,<id>,<len>,<dir>,<mode>,<cycle_us>,<e2e_id>`
+			if cols.len < 5 {
+				return error('manifest ethframe row needs name,id,len,dir: "${line}"')
+			}
+			fid := parse_can_id(cols[2]) or { return error('manifest ethframe "${cols[1]}": ${err}') }
+			if fid == 0 || fid > 0xFFFF {
+				return error('manifest ethframe id 0x${fid.hex()} out of range (1..0xFFFF)')
+			}
+			if !is_digits(cols[3]) || cols[3].int() == 0 {
+				return error('manifest ethframe len must be a positive number: "${cols[3]}"')
+			}
+			if cols[4] != 'tx' && cols[4] != 'rx' {
+				return error('manifest ethframe dir must be tx or rx: "${cols[4]}"')
+			}
+			mut e2e := u32(0)
+			if cols.len > 7 && cols[7] != '-' {
+				e2e = parse_can_id(cols[7]) or { return error('manifest ethframe e2e id: ${err}') }
+			}
+			eth_frames << EthFrame{
+				name:     cols[1]
+				id:       u16(fid)
+				length:   cols[3].int()
+				dir:      cols[4]
+				mode:     if cols.len > 5 { cols[5] } else { '' }
+				cycle_us: if cols.len > 6 { cols[6].u32() } else { 0 }
+				e2e:      u16(e2e)
+			}
+			continue
+		}
+		if cols[0] == 'ethlayout' {
+			// `ethlayout,<frame>,<signal>,<field>,<offset>,<width>,<type>`
+			if cols.len < 7 {
+				return error('manifest ethlayout row needs frame,signal,field,offset,width,type: "${line}"')
+			}
+			if !is_digits(cols[4]) || !is_digits(cols[5]) || cols[5].int() < 1 || cols[5].int() > 8 {
+				return error('manifest ethlayout ${cols[1]}.${cols[3]}: offset must be numeric and width 1..8: "${line}"')
+			}
+			eth_layout << EthField{
+				frame:  cols[1]
+				signal: cols[2]
+				field:  cols[3]
+				offset: cols[4].int()
+				width:  cols[5].int()
+				typ:    cols[6]
+			}
+			continue
+		}
 		if section == 'frames' {
 			// `frame,id,bus` — id is a literal CAN id (0x-hex or decimal); bus is ignored here.
 			if cols.len < 2 {
@@ -311,6 +416,8 @@ pub fn parse_manifest(text string) !Manifest {
 		shell:        shellf
 		someip:       sip
 		shell_method: shell_method
+		eth_frames:   eth_frames
+		eth_layout:   eth_layout
 	}
 	m.index()
 	return m
@@ -397,4 +504,19 @@ pub fn (m &Manifest) label(id u16) string {
 		return h.name()
 	}
 	return 'handler ${id}'
+}
+
+// eth_frame_by_id resolves a SOME/IP event/method id to its ethframe row.
+pub fn (m &Manifest) eth_frame_by_id(id u16) ?EthFrame {
+	for f in m.eth_frames {
+		if f.id == id {
+			return f
+		}
+	}
+	return none
+}
+
+// eth_fields returns one eth frame's layout rows in manifest (= wire) order.
+pub fn (m &Manifest) eth_fields(frame string) []EthField {
+	return m.eth_layout.filter(it.frame == frame)
 }
