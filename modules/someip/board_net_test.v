@@ -25,6 +25,24 @@ ethlayout,BenchTelem,BenchTicks,wraps,5,2,u16
 0,app,0,Bench,on_100ms,100000
 '
 
+// srv_next_message reads from the fake board's socket until a parseable
+// SOME/IP datagram arrives, counting and ignoring anything else — the link's
+// 1-byte firewall flow primes land here, and a real board drops them the
+// same way (counted rx drop, no answer, no crash).
+fn srv_next_message(mut srv net.UdpConn) !(Message, int) {
+	mut buf := []u8{len: 2048}
+	mut skipped := 0
+	for _ in 0 .. 8 {
+		n, _ := srv.read(mut buf)!
+		m := parse(buf[..n]) or {
+			skipped++
+			continue
+		}
+		return m, skipped
+	}
+	return error('no parseable datagram within 8 reads')
+}
+
 // event_defs mirrors the GUI's manifest -> link conversion: only tx (board ->
 // host) frames are expected events.
 fn event_defs(m telem.Manifest) []EventDef {
@@ -83,9 +101,9 @@ fn test_board_link_loopback() {
 		return
 	}
 	link.send(req)!
-	mut sbuf := []u8{len: 2048}
-	n, _ := srv.read(mut sbuf)!
-	rm := parse(sbuf[..n])!
+	rm, skipped := srv_next_message(mut srv)!
+	// the open-time flow prime went out BEFORE the first request
+	assert skipped >= 1
 	validate(rm.header, 0x100, 1)! // the board's gate would accept it
 	assert rm.payload.bytestr() == 'uptime'
 	// board answers: event, response, event — from ITS endpoint (peer known)
@@ -160,9 +178,7 @@ fn test_board_link_response_fifo() {
 		return
 	}
 	link.send(req)!
-	mut sbuf := []u8{len: 2048}
-	n, _ := srv.read(mut sbuf)!
-	rm := parse(sbuf[..n])!
+	rm, _ := srv_next_message(mut srv)! // skips this link's open-time prime
 	srv.write_to(peer, response_for(rm.header, 'up 9m'.bytes()))!
 	stale := Header{
 		service:           rm.header.service
