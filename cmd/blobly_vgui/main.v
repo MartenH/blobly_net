@@ -997,8 +997,8 @@ fn eth_rx_loop(app &App, ci int, m telem.Manifest, gen int) {
 		}
 	}
 	peer_port := sip.peer.all_after_last(':').int()
-	mut link := someip.open_board_link('${local}:${peer_port}', '${board_ip}:${sip.port}',
-		sip.service, sip.version, defs) or {
+	mut link := eth_open_retry('${local}:${peer_port}', '${board_ip}:${sip.port}', sip.service,
+		sip.version, defs) or {
 		a.notify('someip ${chname}: bind ${local}:${peer_port}: ${err}')
 		a.eth_worker_done(ci, gen)
 		return
@@ -1057,6 +1057,30 @@ fn eth_rx_loop(app &App, ci int, m telem.Manifest, gen int) {
 	a.mu.unlock()
 	a.eth_worker_done(ci, gen)
 	link.close()
+}
+
+// eth_open_retry opens the BoardLink, retrying an address-in-use bind up to
+// 5 x 100ms (<= 500ms total): stop() returns immediately, but the superseded
+// worker holds the bound port for up to its 100ms poll timeout, so a quick
+// re-Start's bind can transiently collide with the draining generation. A
+// bounded sleep comfortably covers one poll window without cross-thread join
+// machinery. Any other error (or exhaustion) fails through unchanged.
+fn eth_open_retry(local string, board string, service u16, version u8, defs []someip.EventDef) !&someip.BoardLink {
+	for attempt in 0 .. 6 {
+		link := someip.open_board_link(local, board, service, version, defs) or {
+			// EADDRINUSE class: Linux errno 98, Windows WSAEADDRINUSE 10048
+			// (message match as a fallback for wrapped errors)
+			in_use := err.code() == 98 || err.code() == 10048
+				|| err.msg().to_lower().contains('in use')
+			if attempt < 5 && in_use {
+				time.sleep(100 * time.millisecond)
+				continue
+			}
+			return err
+		}
+		return link
+	}
+	return error('bind retry exhausted') // unreachable: attempt 5 returns above
 }
 
 // eth_worker_done clears the channel's running flag — but ONLY for the

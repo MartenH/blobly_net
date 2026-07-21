@@ -191,6 +191,7 @@ pub fn parse_manifest(text string) !Manifest {
 	mut eth_frames := []EthFrame{}
 	mut eth_layout := []EthField{}
 	mut seen_eth := map[u16]bool{}
+	mut seen_eth_name := map[string]bool{}
 	mut seen := map[u16]bool{}
 	mut seen_tid := map[u32]bool{}
 	// The manifest is sectioned by `#` header comments (`# fb.handlers:`, `# threads:`,
@@ -249,13 +250,26 @@ pub fn parse_manifest(text string) !Manifest {
 			}
 			// duplicate ids would split identity between the by-id lookup (first
 			// wins) and a rx map built from the rows (last wins) — reject.
+			// Names must be unique too: layouts bind by NAME, so a duplicate
+			// name would merge two frames' layouts under eth_fields() while
+			// the bounds check validated against whichever came first.
 			if u16(fid) in seen_eth {
 				return error('manifest has a duplicate ethframe id: 0x${fid.hex()}')
 			}
 			seen_eth[u16(fid)] = true
+			if cols[1] in seen_eth_name {
+				return error('manifest has a duplicate ethframe name: "${cols[1]}"')
+			}
+			seen_eth_name[cols[1]] = true
 			mut e2e := u32(0)
 			if cols.len > 7 && cols[7] != '-' {
 				e2e = parse_can_id(cols[7]) or { return error('manifest ethframe e2e id: ${err}') }
+				// the E2E data id is u16 on the wire (folded into the CRC as
+				// lo,hi) — a wider value would silently truncate and verify
+				// against a different identity than declared
+				if e2e > 0xFFFF {
+					return error('manifest ethframe e2e id 0x${e2e.hex()} out of range (1..0xFFFF)')
+				}
 			}
 			eth_frames << EthFrame{
 				name:     cols[1]
@@ -273,8 +287,24 @@ pub fn parse_manifest(text string) !Manifest {
 			if cols.len < 7 {
 				return error('manifest ethlayout row needs frame,signal,field,offset,width,type: "${line}"')
 			}
-			if !is_digits(cols[4]) || !is_digits(cols[5]) || cols[5].int() < 1 || cols[5].int() > 8 {
-				return error('manifest ethlayout ${cols[1]}.${cols[3]}: offset must be numeric and width 1..8: "${line}"')
+			if !is_digits(cols[4]) || !is_digits(cols[5]) {
+				return error('manifest ethlayout ${cols[1]}.${cols[3]}: offset/width must be numeric: "${line}"')
+			}
+			// the type set is closed (what decode/format understand) and the
+			// declared width must match the type's size — a mismatch would
+			// decode the wrong bytes while looking plausible
+			tsize := match cols[6] {
+				'u8', 'i8' { 1 }
+				'u16', 'i16' { 2 }
+				'u32', 'i32' { 4 }
+				'u64', 'i64' { 8 }
+				else { 0 }
+			}
+			if tsize == 0 {
+				return error('manifest ethlayout ${cols[1]}.${cols[3]}: unknown type "${cols[6]}" (u8/i8/u16/i16/u32/i32/u64/i64)')
+			}
+			if cols[5].int() != tsize {
+				return error('manifest ethlayout ${cols[1]}.${cols[3]}: width ${cols[5]} does not match type ${cols[6]} (${tsize})')
 			}
 			eth_layout << EthField{
 				frame:  cols[1]

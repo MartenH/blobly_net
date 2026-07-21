@@ -169,6 +169,43 @@ ethframe,BenchEcho,0x8001,1,tx,event,100000,-
 		return
 	}
 	assert m.eth_frames[0].id == 0x0010
+	// duplicate frame NAMES (distinct ids) would merge layouts under
+	// eth_fields(), which binds by name
+	if _ := parse_manifest('ethframe,BenchTelem,0x8001,9,tx,cyclic,300000,-
+ethframe,BenchTelem,0x8002,4,tx,event,100000,-
+# fb.handlers
+0,app,0,Bench,on_100ms,100000
+')
+	{
+		assert false, 'duplicate ethframe name accepted'
+	}
+	// the E2E data id is u16 on the wire — wider would silently truncate and
+	// verify against a different identity than declared
+	if _ := parse_manifest('ethframe,BenchTelem,0x8001,9,tx,cyclic,300000,0x10021
+# fb.handlers
+0,app,0,Bench,on_100ms,100000
+')
+	{
+		assert false, 'out-of-range e2e id accepted'
+	}
+	// the layout type set is closed…
+	if _ := parse_manifest('ethframe,BenchTelem,0x8001,9,tx,cyclic,300000,-
+ethlayout,BenchTelem,BenchLoad,load,0,4,f32
+# fb.handlers
+0,app,0,Bench,on_100ms,100000
+')
+	{
+		assert false, 'unknown ethlayout type accepted'
+	}
+	// …and the declared width must match the type's size
+	if _ := parse_manifest('ethframe,BenchTelem,0x8001,9,tx,cyclic,300000,-
+ethlayout,BenchTelem,BenchTicks,ticks,1,2,u32
+# fb.handlers
+0,app,0,Bench,on_100ms,100000
+')
+	{
+		assert false, 'width/type mismatch accepted'
+	}
 	// a layout row must reference a DECLARED frame…
 	if _ := parse_manifest('ethframe,BenchTelem,0x8001,9,tx,cyclic,300000,-
 ethlayout,Ghost,BenchLoad,load,0,1,u8
