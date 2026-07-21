@@ -70,4 +70,11 @@ ethmod,shell,method
 	{
 		assert false, 'id-less ethmod shell row accepted'
 	}
+	if _ := parse_manifest('# eth modules
+ethmod,shell
+# fb.handlers
+0,app,0,Bench,on_100ms,100000
+') {
+		assert false, 'two-column ethmod shell row accepted'
+	}
 }

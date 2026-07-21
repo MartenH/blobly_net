@@ -1066,8 +1066,10 @@ fn (mut app App) rebuild_from_proj() {
 			if m := telem.load_manifest(app.resolve_asset(ch.manifest)) {
 				// the global slot serves the CAN consumers (trace/shell-frame/
 				// handler labels): the first NON-eth manifest owns it, and an
-				// eth manifest holds it only until a CAN one shows up
-				if !app.has_manifest || (app.manifest.shell_method != 0 && m.shell_method == 0) {
+				// eth manifest (classified by its SOME/IP identity — an eth
+				// image without a shell endpoint is still an eth image) holds
+				// it only until a CAN one shows up
+				if !app.has_manifest || (app.manifest.someip.service != 0 && m.someip.service == 0) {
 					app.manifest = m
 					app.has_manifest = true
 				}
