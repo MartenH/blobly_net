@@ -60,3 +60,14 @@ someip,0x0100,1,30490
 		assert false, 'four-column someip row accepted'
 	}
 }
+
+fn test_short_ethmod_shell_row_rejected() {
+	if _ := parse_manifest('# eth modules
+ethmod,shell,method
+# fb.handlers
+0,app,0,Bench,on_100ms,100000
+')
+	{
+		assert false, 'id-less ethmod shell row accepted'
+	}
+}

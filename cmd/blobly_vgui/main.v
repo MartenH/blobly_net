@@ -195,22 +195,22 @@ mut:
 	cursor_b        f64
 	cursor_span     f64 // the span the cursors were placed for — re-seat A/B when a new dump loads
 	// Shell (the target's CAN command line; one worker spawn per submitted line)
-	show_shell   bool
-	show_dbc     bool
-	dbc_ed       DbcEd
-	show_sys     bool
-	sys_path_buf []u8
-	sys          sysview.System
-	sys_loaded   bool
-	shell_buf    []u8     // the input line (persistent; edited in place by console_input)
-	eth_target_buf []u8   // the eth shell's board ip (session-only; manifest carries the port)
-	eth_shell_session u16 // persists across commands: a fresh client restarting at session 1
+	show_shell        bool
+	show_dbc          bool
+	dbc_ed            DbcEd
+	show_sys          bool
+	sys_path_buf      []u8
+	sys               sysview.System
+	sys_loaded        bool
+	shell_buf         []u8 // the input line (persistent; edited in place by console_input)
+	eth_target_buf    []u8 // the eth shell's board ip (session-only; manifest carries the port)
+	eth_shell_session u16  // persists across commands: a fresh client restarting at session 1
 	// would let a late reply to a timed-out command complete the NEXT one
-	eth_someip telem.SomeipIdent // the eth shell's identity (its OWN slot — see rebuild)
-	eth_method u16               // the eth shell's method id (0 = no eth shell)
-	shell_lines  []string // scrollback (guarded by mu; the worker appends)
-	shell_busy   bool     // single-flight: one command in flight at a time
-	shell_follow bool     // new output arrived — pin the scrollback to the bottom next frame
+	eth_someip   telem.SomeipIdent // the eth shell's identity (its OWN slot — see rebuild)
+	eth_method   u16               // the eth shell's method id (0 = no eth shell)
+	shell_lines  []string          // scrollback (guarded by mu; the worker appends)
+	shell_busy   bool              // single-flight: one command in flight at a time
+	shell_follow bool              // new output arrived — pin the scrollback to the bottom next frame
 	// Flash (UDS firmware download THROUGH the blobly bootloader — modules/flash;
 	// the bootloader itself is not field-updatable by design, docs/bootloader.md)
 	show_flash     bool
@@ -1064,7 +1064,10 @@ fn (mut app App) rebuild_from_proj() {
 			// OWN slot from whichever channel manifest declares it — the two
 			// roles must never displace each other in a mixed project
 			if m := telem.load_manifest(app.resolve_asset(ch.manifest)) {
-				if !app.has_manifest {
+				// the global slot serves the CAN consumers (trace/shell-frame/
+				// handler labels): the first NON-eth manifest owns it, and an
+				// eth manifest holds it only until a CAN one shows up
+				if !app.has_manifest || (app.manifest.shell_method != 0 && m.shell_method == 0) {
 					app.manifest = m
 					app.has_manifest = true
 				}
@@ -4716,9 +4719,11 @@ fn draw_shell(mut app App) {
 			if busy {
 				app.shell_append('(busy — previous command still running)')
 			} else if eth {
-				// snapshot the target HERE: the worker must not read the UI's
-				// mutable byte buffer while input_text edits it
-				spawn shell_worker_eth(app, line, vgui.buf_str(app.eth_target_buf).trim_space())
+				// snapshot target AND identity HERE: the worker must not read
+				// the UI's mutable buffer, and rebuild_from_proj (a project
+				// switch mid-command) clears eth_someip/eth_method under it
+				spawn shell_worker_eth(app, line, vgui.buf_str(app.eth_target_buf).trim_space(),
+					app.eth_someip, app.eth_method)
 			} else {
 				spawn shell_worker(app, line)
 			}
@@ -6689,7 +6694,7 @@ fn draw_system(mut app App) {
 // accepts only its configured peer endpoint, and the WSL->LAN NAT path
 // preserves a bound source port (the emb#158 bench recipe). Single-flight
 // via the same shell_busy latch as the CAN worker.
-fn shell_worker_eth(app &App, line string, target string) {
+fn shell_worker_eth(app &App, line string, target string, sip telem.SomeipIdent, method u16) {
 	mut a := unsafe { app }
 	a.mu.lock()
 	if a.shell_busy {
@@ -6709,8 +6714,6 @@ fn shell_worker_eth(app &App, line string, target string) {
 		a.shell_append('(enter the board ip first)')
 		return
 	}
-	sip := a.eth_someip
-	method := a.eth_method
 	peer_port := sip.peer.all_after_last(':').int()
 	bind_port := if peer_port > 0 { peer_port } else { 30491 }
 	mut sock := vnet.listen_udp(':${bind_port}') or {
@@ -6772,7 +6775,7 @@ fn shell_worker_eth(app &App, line string, target string) {
 	} else {
 		match cli.result.rc {
 			0x03 { a.shell_append('(error: unknown method on the target)') }
-			0x20 { a.shell_append('(denied — this build\'s mutate gate is closed)') }
+			0x20 { a.shell_append("(denied — this build's mutate gate is closed)") }
 			else { a.shell_append('(error rc 0x${cli.result.rc.hex()})') }
 		}
 	}
