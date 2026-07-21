@@ -372,6 +372,14 @@ pub fn parse_manifest(text string) !Manifest {
 				if prt < 1 || prt > 65535 {
 					return error('manifest someip port "${cols[3]}" is not 1..65535')
 				}
+				// the peer must be host:port with a valid port — the channel
+				// BINDS the peer port; a malformed peer would bind ephemeral
+				// and the board's events would silently never arrive
+				peer_port := cols[4].all_after_last(':')
+				if !cols[4].contains(':') || !is_digits(peer_port) || peer_port.int() < 1
+					|| peer_port.int() > 65535 {
+					return error('manifest someip peer "${cols[4]}" is not host:port (port 1..65535)')
+				}
 				sip.service = u16(svc)
 				sip.version = u8(ver)
 				sip.port = u16(prt)

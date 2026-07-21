@@ -83,7 +83,8 @@ mut:
 	drops     u64  // someip: counted-and-dropped datagrams (foreign/malformed/repeated)
 	e2e_bad   u64  // someip: E2E CRC failures (dropped)
 	e2e_lost  u64  // someip: E2E counter skips (event delivered; a gap preceded it)
-	run_gen   int  // someip: spawn generation — a worker whose gen is stale exits
+	run_gen   int  // someip: this channel's worker generation, assigned from
+	// App.next_run_gen — a worker whose gen no longer matches exits
 }
 
 fn (c Chan) monitorable() bool {
@@ -221,6 +222,7 @@ mut:
 	// and a second socket would split the board's datagrams
 	eth_link     &someip.BoardLink = unsafe { nil }
 	eth_board_ip string // the someip channel's board address (GUI thread only; shell target display when linked)
+	next_run_gen int    // app-global monotonic worker generation (see spawn_eth_rx)
 	shell_lines  []string          // scrollback (guarded by mu; the worker appends)
 	shell_busy   bool              // single-flight: one command in flight at a time
 	shell_follow bool              // new output arrived — pin the scrollback to the bottom next frame
@@ -955,8 +957,15 @@ fn (mut app App) spawn_eth_rx(ci int) {
 	app.eth_manifest = m
 	app.eth_someip = m.someip
 	app.eth_method = m.shell_method
-	app.chans[ci].run_gen++
-	gen := app.chans[ci].run_gen
+	// generations are APP-GLOBAL monotonic, not per-channel: a chans rebuild
+	// resets run_gen to 0, so a per-channel counter would mint gen 1 for the
+	// new project's first Start — the same value a stale pre-rebuild worker
+	// may still hold, letting it pass eth_gen_ok on a same-sized project.
+	// A global counter never reuses a value, so staleness holds by
+	// construction across rebuilds.
+	app.next_run_gen++
+	gen := app.next_run_gen
+	app.chans[ci].run_gen = gen
 	app.chans[ci].running = true
 	app.mu.unlock()
 	spawn eth_rx_loop(app, ci, m, gen)
@@ -1003,6 +1012,8 @@ fn eth_rx_loop(app &App, ci int, m telem.Manifest, gen int) {
 			defs << someip.EventDef{f.id, f.name, f.length, f.e2e}
 		}
 	}
+	// the manifest load validated peer as host:port (1..65535), so this is
+	// always a real port — never 0/ephemeral
 	peer_port := sip.peer.all_after_last(':').int()
 	mut link := eth_open_retry('${local}:${peer_port}', '${board_ip}:${sip.port}', sip.service,
 		sip.version, defs) or {
@@ -1010,7 +1021,17 @@ fn eth_rx_loop(app &App, ci int, m telem.Manifest, gen int) {
 		a.eth_worker_done(ci, gen)
 		return
 	}
+	// the PUBLISH is guarded too — the last unguarded moment: a worker stalled
+	// in auto-detect/resolve/bind-retry can reach here after a Stop/Reload/
+	// newer Start and would otherwise clobber the new channel's link (and
+	// later clear it via pointer identity). Same rule as everywhere: on a
+	// stale generation, exit through the no-teardown path.
 	a.mu.lock()
+	if !a.eth_gen_ok(ci, gen) {
+		a.mu.unlock()
+		link.close()
+		return
+	}
 	a.eth_link = link
 	a.mu.unlock()
 	a.notify('someip ${chname}: ${local}:${peer_port} <- ${board_ip}:${sip.port} (${defs.len} event frame(s))')
@@ -2861,6 +2882,17 @@ fn (mut app App) draw_bus_editor(i int) bool {
 		}
 		vgui.same_line()
 		vgui.help_marker('The LOCAL ip this channel binds to receive the board\'s events — must be bound explicitly (a wildcard bind receives no unsolicited datagrams, e.g. under WSL mirrored networking). Empty = auto-detect the host\'s outbound ip toward the board. The board only answers its configured peer ip:port, so this must match its manifest peer.')
+		// reduced mode control: start() gates on monitor, so a channel loaded
+		// `mode: off` must be startable from the UI; replay doesn't apply here
+		vgui.text('mode:')
+		vgui.same_line()
+		vgui.help_marker('off = configured but not attached · monitor = receive the board\'s events (replay does not apply to an eth board).')
+		for md in ['off', 'monitor'] {
+			vgui.same_line()
+			if vgui.toggle_button('${md}##md${i}_${md}', ch.mode.str() == md, 0) {
+				app.set_mode(i, md)
+			}
+		}
 		// the identity is the manifest's, not typed here — show what it resolves to
 		if ch.manifest == '' {
 			vgui.text_colored(230, 170, 70,
@@ -7081,6 +7113,8 @@ fn shell_worker_eth(app &App, line string, target string, sip telem.SomeipIdent,
 		return
 	}
 	peer_port := sip.peer.all_after_last(':').int()
+	// defensive only: the manifest load validates peer as host:port, so the
+	// fallback branch is unreachable for any manifest that loaded
 	bind_port := if peer_port > 0 { peer_port } else { 30491 }
 	mut sock := vnet.listen_udp(':${bind_port}') or {
 		a.shell_append('(bind :${bind_port}: ${err} — the board only answers its configured peer endpoint)')

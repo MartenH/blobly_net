@@ -302,6 +302,16 @@ pub fn parse(text string) !Project {
 			p.channels << parse_channel(c)!
 		}
 	}
+	// bus names must be unique: they key trace rows, bus chips/filters and
+	// the someip trace decode gate — a duplicate silently merges/misroutes
+	// all of those, so reject it loudly like the other load gates.
+	mut seen_names := map[string]bool{}
+	for ch in p.channels {
+		if ch.name in seen_names {
+			return error('duplicate bus name "${ch.name}" — bus names must be unique')
+		}
+		seen_names[ch.name] = true
+	}
 	return p
 }
 

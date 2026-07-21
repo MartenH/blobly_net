@@ -226,6 +226,35 @@ ethlayout,BenchTelem,BenchTicks,ticks,6,4,u32
 	}
 }
 
+fn test_someip_peer_must_be_host_port() {
+	// the channel BINDS the peer port — a malformed peer would bind an
+	// ephemeral port and the board's events would silently never arrive
+	if _ := parse_manifest('# someip
+someip,0x100,1,30490,192.168.0.190
+# fb.handlers
+0,app,0,Bench,on_100ms,100000
+')
+	{
+		assert false, 'port-less someip peer accepted'
+	}
+	if _ := parse_manifest('# someip
+someip,0x100,1,30490,192.168.0.190:99999
+# fb.handlers
+0,app,0,Bench,on_100ms,100000
+')
+	{
+		assert false, 'out-of-range someip peer port accepted'
+	}
+	if _ := parse_manifest('# someip
+someip,0x100,1,30490,192.168.0.190:oops
+# fb.handlers
+0,app,0,Bench,on_100ms,100000
+')
+	{
+		assert false, 'non-numeric someip peer port accepted'
+	}
+}
+
 fn test_short_someip_row_rejected() {
 	if _ := parse_manifest('# someip
 someip,0x0100,1,30490

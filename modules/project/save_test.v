@@ -306,6 +306,31 @@ fn test_someip_roundtrip() {
 	assert c.manifest == 'gen/trace-manifest.csv'
 }
 
+// Duplicate bus names are rejected at load: names key trace rows, bus chips
+// and the someip trace decode gate, so a duplicate poisons all of them.
+fn test_duplicate_bus_names_rejected() {
+	dup := Project{
+		name:     'dups'
+		channels: [
+			Channel{
+				name:    'CAN1'
+				adapter: 'vcan'
+				address: 'vcan0'
+				iface:   'vcan0'
+			},
+			Channel{
+				name:    'CAN1'
+				adapter: 'vcan'
+				address: 'vcan1'
+				iface:   'vcan1'
+			},
+		]
+	}
+	if _ := parse(dup.to_yaml()) {
+		assert false, 'duplicate bus names accepted'
+	}
+}
+
 // Senders (interactive generators) survive the Save round-trip.
 fn test_roundtrip_senders() {
 	orig := Project{
