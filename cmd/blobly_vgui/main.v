@@ -220,8 +220,11 @@ mut:
 	// the running someip channel's shared socket (nil = none): the shell routes
 	// requests through it instead of binding its own — the peer port is taken,
 	// and a second socket would split the board's datagrams
-	eth_link     &someip.BoardLink = unsafe { nil }
-	eth_board_ip string // the someip channel's board address (GUI thread only; shell target display when linked)
+	eth_link &someip.BoardLink = unsafe { nil }
+	// the Shell's selectable command targets (derived — project.shell_targets;
+	// rebuilt wherever the eth identity is) + the session-only selection
+	shell_targets []project.ShellTarget
+	shell_target  int // combo index; reset to 0 when a rebuild leaves it out of range
 	next_run_gen int    // app-global monotonic worker generation (see spawn_eth_rx)
 	shell_lines  []string          // scrollback (guarded by mu; the worker appends)
 	shell_busy   bool              // single-flight: one command in flight at a time
@@ -957,6 +960,13 @@ fn (mut app App) spawn_eth_rx(ci int) {
 	app.eth_manifest = m
 	app.eth_someip = m.someip
 	app.eth_method = m.shell_method
+	// this load may change the shell identity — the target list carries
+	// per-entry snapshots, so rebuild it with the same version
+	app.shell_targets = project.shell_targets(app.proj.channels, m.someip, m.shell_method,
+		app.manifest.shell)
+	if app.shell_target >= app.shell_targets.len {
+		app.shell_target = 0
+	}
 	// generations are APP-GLOBAL monotonic, not per-channel: a chans rebuild
 	// resets run_gen to 0, so a per-channel counter would mint gen 1 for the
 	// new project's first Start — the same value a stale pre-rebuild worker
@@ -1283,7 +1293,6 @@ fn (mut app App) rebuild_from_proj() {
 	app.eth_method = 0
 	app.manifest = telem.Manifest{}
 	app.eth_manifest = telem.Manifest{}
-	app.eth_board_ip = ''
 	app.sel_id = -1
 	app.mu.unlock()
 	mut eth_board := '' // the first someip channel's board ip (shell prefill)
@@ -1367,7 +1376,6 @@ fn (mut app App) rebuild_from_proj() {
 					app.eth_method = m.shell_method
 					app.eth_manifest = m
 					eth_board = ch.address
-					app.eth_board_ip = ch.address
 				} else if m.shell_method != 0 && app.eth_method == 0 && eth_board == '' {
 					app.eth_someip = m.someip
 					app.eth_method = m.shell_method
@@ -1411,6 +1419,13 @@ fn (mut app App) rebuild_from_proj() {
 	if eth_board != '' && app.eth_target_buf.len > 0
 		&& vgui.buf_str(app.eth_target_buf).trim_space() == '' {
 		app.eth_target_buf = mkbuf(eth_board, 64)
+	}
+	// derive the Shell's target list from the identities settled above; the
+	// selection is index-based and session-only — never keep a stale one
+	app.shell_targets = project.shell_targets(proj.channels, app.eth_someip, app.eth_method,
+		app.manifest.shell)
+	if app.shell_target >= app.shell_targets.len {
+		app.shell_target = 0
 	}
 }
 
@@ -5045,6 +5060,8 @@ fn printable(b []u8) string {
 // back as an ISO-TP block on `out` (host flow-controls on `fc`) — the trace-dump wire, reused.
 // Line editing is entirely client-side: backspace/delete/cursor are native ImGui, Up/Down are
 // console_input's history. The target only ever sees complete lines (<= 8 chars, one frame).
+// A project can expose SEVERAL shells (someip eth RPC and/or the CAN wire) — the footer names
+// the one derived target or offers a combo, and dispatch routes by that selection.
 fn draw_shell(mut app App) {
 	vis, op := vgui.begin_closable('Shell', app.show_shell)
 	app.show_shell = op
@@ -5052,10 +5069,20 @@ fn draw_shell(mut app App) {
 		vgui.end()
 		return
 	}
-	// the eth RPC shell (manifest `ethmod,shell,method`) needs NO CAN channel:
-	// it dials the board's UDP endpoint directly, Start or not
-	eth := app.eth_method != 0 && app.eth_someip.service != 0
-	if !app.running && !eth {
+	// route by the derived target list (project.shell_targets). Zero targets =
+	// legacy: an eth identity from a manifest-on-CAN project with NO someip
+	// channel (standalone-socket path), else the plain CAN worker.
+	targets := app.shell_targets
+	mut has_eth := false
+	for t in targets {
+		if t.eth {
+			has_eth = true
+		}
+	}
+	legacy_eth := targets.len == 0 && app.eth_method != 0 && app.eth_someip.service != 0
+	// an eth RPC shell needs NO CAN channel: it dials the board's UDP endpoint
+	// directly, Start or not
+	if !app.running && !has_eth && !legacy_eth {
 		vgui.text_dim('press Start (needs a shell-enabled target on the bus)')
 		vgui.end()
 		return
@@ -5075,21 +5102,23 @@ fn draw_shell(mut app App) {
 		vgui.scroll_bottom()
 	}
 	vgui.child_end()
-	if eth {
-		app.mu.lock()
-		linked := !isnil(app.eth_link)
-		app.mu.unlock()
-		if linked {
-			// the running someip channel owns target and socket — an editable ip
-			// box here is dead AND reads as the command line (it isn't; that is
-			// the input below)
-			vgui.text_dim('board ${app.eth_board_ip} — SOME/IP method 0x${app.eth_method.hex()} :${app.eth_someip.port}')
-		} else {
-			vgui.set_next_item_width(130 * app.ui_scale)
-			vgui.input_text('##ethtarget', mut app.eth_target_buf)
-			vgui.same_line()
-			vgui.text_dim('board ip — SOME/IP method 0x${app.eth_method.hex()} :${app.eth_someip.port}')
+	if targets.len == 1 {
+		// one target — name it; nothing to choose or type (the someip channel
+		// owns ip + socket, the CAN worker picks its running channel itself)
+		vgui.text_dim(targets[0].label)
+	} else if targets.len > 1 {
+		vgui.set_next_item_width(220 * app.ui_scale)
+		nsel := vgui.combo('target##shelltarget', targets.map(it.label), app.shell_target)
+		if nsel != app.shell_target && nsel >= 0 && nsel < targets.len {
+			app.shell_target = nsel
 		}
+	} else if legacy_eth {
+		// no someip channel exists (else it would be a target), so the
+		// standalone-socket worker needs a hand-typed board ip
+		vgui.set_next_item_width(130 * app.ui_scale)
+		vgui.input_text('##ethtarget', mut app.eth_target_buf)
+		vgui.same_line()
+		vgui.text_dim('board ip — SOME/IP method 0x${app.eth_method.hex()} :${app.eth_someip.port}')
 	}
 	vgui.set_next_item_width(-40 * app.ui_scale)
 	if vgui.console_input('##shellin', mut app.shell_buf) {
@@ -5103,7 +5132,16 @@ fn draw_shell(mut app App) {
 		} else if line != '' {
 			if busy {
 				app.shell_append('(busy — previous command still running)')
-			} else if eth {
+			} else if targets.len > 0 {
+				t := targets[app.shell_target]
+				if t.eth {
+					// the identity snapshot rides IN the entry: the worker must
+					// not read App fields a project switch clears under it
+					spawn shell_worker_eth(app, line, t.board, t.sip, t.method)
+				} else {
+					spawn shell_worker(app, line)
+				}
+			} else if legacy_eth {
 				// snapshot target AND identity HERE: the worker must not read
 				// the UI's mutable buffer, and rebuild_from_proj (a project
 				// switch mid-command) clears eth_someip/eth_method under it
