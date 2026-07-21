@@ -215,7 +215,8 @@ mut:
 	// the running someip channel's shared socket (nil = none): the shell routes
 	// requests through it instead of binding its own — the peer port is taken,
 	// and a second socket would split the board's datagrams
-	eth_link &someip.BoardLink = unsafe { nil }
+	eth_link     &someip.BoardLink = unsafe { nil }
+	eth_board_ip string // the someip channel's board address (GUI thread only; shell target display when linked)
 	shell_lines  []string          // scrollback (guarded by mu; the worker appends)
 	shell_busy   bool              // single-flight: one command in flight at a time
 	shell_follow bool              // new output arrived — pin the scrollback to the bottom next frame
@@ -1147,6 +1148,7 @@ fn (mut app App) rebuild_from_proj() {
 	app.eth_method = 0
 	app.manifest = telem.Manifest{}
 	app.eth_manifest = telem.Manifest{}
+	app.eth_board_ip = ''
 	app.sel_id = -1
 	app.mu.unlock()
 	mut eth_board := '' // the first someip channel's board ip (shell prefill)
@@ -1217,6 +1219,7 @@ fn (mut app App) rebuild_from_proj() {
 					app.eth_method = m.shell_method
 					app.eth_manifest = m
 					eth_board = ch.address
+					app.eth_board_ip = ch.address
 				} else if m.shell_method != 0 && app.eth_method == 0 && eth_board == '' {
 					app.eth_someip = m.someip
 					app.eth_method = m.shell_method
@@ -4897,10 +4900,20 @@ fn draw_shell(mut app App) {
 	}
 	vgui.child_end()
 	if eth {
-		vgui.set_next_item_width(130 * app.ui_scale)
-		vgui.input_text('##ethtarget', mut app.eth_target_buf)
-		vgui.same_line()
-		vgui.text_dim('board ip — SOME/IP method 0x${app.eth_method.hex()} :${app.eth_someip.port}')
+		app.mu.lock()
+		linked := !isnil(app.eth_link)
+		app.mu.unlock()
+		if linked {
+			// the running someip channel owns target and socket — an editable ip
+			// box here is dead AND reads as the command line (it isn't; that is
+			// the input below)
+			vgui.text_dim('board ${app.eth_board_ip} — SOME/IP method 0x${app.eth_method.hex()} :${app.eth_someip.port}')
+		} else {
+			vgui.set_next_item_width(130 * app.ui_scale)
+			vgui.input_text('##ethtarget', mut app.eth_target_buf)
+			vgui.same_line()
+			vgui.text_dim('board ip — SOME/IP method 0x${app.eth_method.hex()} :${app.eth_someip.port}')
+		}
 	}
 	vgui.set_next_item_width(-40 * app.ui_scale)
 	if vgui.console_input('##shellin', mut app.shell_buf) {
