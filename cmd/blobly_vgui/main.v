@@ -971,6 +971,11 @@ fn (mut app App) spawn_eth_rx(ci int) {
 	app.eth_manifest = m
 	app.eth_someip = m.someip
 	app.eth_method = m.shell_method
+	// this fresh load may differ from the rebuild-time manifest (the file
+	// changed on disk since project load) — re-resolve the eth watches against
+	// THE snapshot the worker decodes with, or their stale offset snapshots
+	// would plot garbage (same call as the rebuild_from_proj site)
+	app.eth_watch = m.reconcile_eth_watches(app.eth_watch, ch.name)
 	// generations are APP-GLOBAL monotonic, not per-channel: a chans rebuild
 	// resets run_gen to 0, so a per-channel counter would mint gen 1 for the
 	// new project's first Start — the same value a stale pre-rebuild worker
