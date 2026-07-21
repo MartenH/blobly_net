@@ -72,15 +72,23 @@ struct Chan {
 	databases    []string
 	manifest     string
 	doip         bool
+	someip       bool   // SOME/IP eth board channel (address = board ip; not a CAN bus)
+	someip_dup   bool   // a someip channel beyond the first — forced disabled (one per project)
+	local_ip     string // someip: the ip the rx socket binds ('' = auto-detect)
 mut:
 	enabled   bool
 	rx        u64
 	running   bool
 	link_down bool // real CAN iface is administratively DOWN (bound but can't tx/rx)
+	drops     u64  // someip: counted-and-dropped datagrams (foreign/malformed/repeated)
+	e2e_bad   u64  // someip: E2E CRC failures (dropped)
+	e2e_lost  u64  // someip: E2E counter skips (event delivered; a gap preceded it)
+	run_gen   int  // someip: this channel's worker generation, assigned from
+	// App.next_run_gen — a worker whose gen no longer matches exits
 }
 
 fn (c Chan) monitorable() bool {
-	return c.enabled && c.mode == 'monitor' && !c.doip
+	return c.enabled && c.mode == 'monitor' && !c.doip && !c.someip
 }
 
 struct App {
@@ -208,6 +216,13 @@ mut:
 	// would let a late reply to a timed-out command complete the NEXT one
 	eth_someip   telem.SomeipIdent // the eth shell's identity (its OWN slot — see rebuild)
 	eth_method   u16               // the eth shell's method id (0 = no eth shell)
+	eth_manifest telem.Manifest    // the someip CHANNEL's manifest (frames/layout for its rx)
+	// the running someip channel's shared socket (nil = none): the shell routes
+	// requests through it instead of binding its own — the peer port is taken,
+	// and a second socket would split the board's datagrams
+	eth_link     &someip.BoardLink = unsafe { nil }
+	eth_board_ip string // the someip channel's board address (GUI thread only; shell target display when linked)
+	next_run_gen int    // app-global monotonic worker generation (see spawn_eth_rx)
 	shell_lines  []string          // scrollback (guarded by mu; the worker appends)
 	shell_busy   bool              // single-flight: one command in flight at a time
 	shell_follow bool              // new output arrived — pin the scrollback to the bottom next frame
@@ -257,6 +272,7 @@ mut:
 	address_buf  []u8
 	bitrate_buf  []u8
 	manifest_buf []u8
+	local_buf    []u8 // someip: local bind ip ('' = auto)
 	dbc_buf      []u8 // "+ Add DBC" typed-path fallback
 	// DoIP
 	tester_buf []u8
@@ -409,6 +425,28 @@ fn (app &App) find_message(id u32, ext bool) ?candb.Message {
 	return none
 }
 
+// eth_layout_fields resolves a trace row to the someip channel's payload
+// layout ([] otherwise) — the Trace expand decode. Gated on the row's
+// CHANNEL, not the id alone: in a mixed project an extended CAN frame can
+// collide numerically with an eth frame id and must not decode as eth fields.
+fn (app &App) eth_layout_fields(id u32, ch string) []telem.EthField {
+	if id > 0xFFFF {
+		return []
+	}
+	mut on_someip := false
+	for c in app.chans {
+		if c.someip && !c.someip_dup && c.name == ch {
+			on_someip = true
+			break
+		}
+	}
+	if !on_someip {
+		return []
+	}
+	f := app.eth_manifest.eth_frame_by_id(u16(id)) or { return [] }
+	return app.eth_manifest.eth_fields(f.name)
+}
+
 fn (a &App) lookup_name(id u32, ext bool) string {
 	for db in a.dbs {
 		if m := db.lookup_frame(id, ext) {
@@ -469,6 +507,15 @@ fn (mut app App) start() {
 	}
 	app.running = true
 	for ci, ch in app.chans {
+		// a someip board channel gets its own eth rx worker (no CAN transport);
+		// mode gates it exactly like the CAN workers, and a forced-disabled
+		// duplicate never starts
+		if ch.someip {
+			if ch.enabled && ch.mode == 'monitor' && !ch.someip_dup {
+				app.spawn_eth_rx(ci)
+			}
+			continue
+		}
 		if !ch.monitorable() {
 			continue
 		}
@@ -879,6 +926,227 @@ fn rx_loop(app &App, ci int, iface string) {
 	a.mu.unlock()
 }
 
+// eth_local_ip guesses the host's outbound ip toward the board: a connected
+// UDP socket's local name (no packet is sent). Used when the someip channel
+// doesn't pin `local ip` — the rx socket must bind a SPECIFIC ip (a wildcard
+// bind receives no unsolicited datagrams, e.g. under WSL mirrored networking).
+fn eth_local_ip(board string) ?string {
+	mut probe := vnet.dial_udp(board) or { return none }
+	defer {
+		probe.close() or {}
+	}
+	addr := probe.sock.address() or { return none }
+	return addr.str().all_before_last(':')
+}
+
+// spawn_eth_rx starts a someip channel's rx worker with a freshly loaded
+// manifest. That load becomes THE snapshot: eth_manifest/eth_someip/
+// eth_method are updated with it before the spawn, so worker, shell and
+// grouped-Trace all read ONE version even if the file changed on disk since
+// the rebuild. The per-channel generation counter guards the Stop→quick-Start
+// race: an old worker still inside its poll window could see running==true
+// again and survive next to (or instead of) the new spawn — it must exit the
+// moment its generation is stale.
+fn (mut app App) spawn_eth_rx(ci int) {
+	ch := app.chans[ci]
+	m := telem.load_manifest(app.resolve_asset(ch.manifest)) or {
+		app.notify('someip ${ch.name}: manifest ${ch.manifest}: ${err}')
+		return
+	}
+	app.mu.lock()
+	app.eth_manifest = m
+	app.eth_someip = m.someip
+	app.eth_method = m.shell_method
+	// generations are APP-GLOBAL monotonic, not per-channel: a chans rebuild
+	// resets run_gen to 0, so a per-channel counter would mint gen 1 for the
+	// new project's first Start — the same value a stale pre-rebuild worker
+	// may still hold, letting it pass eth_gen_ok on a same-sized project.
+	// A global counter never reuses a value, so staleness holds by
+	// construction across rebuilds.
+	app.next_run_gen++
+	gen := app.next_run_gen
+	app.chans[ci].run_gen = gen
+	app.chans[ci].running = true
+	app.mu.unlock()
+	spawn eth_rx_loop(app, ci, m, gen)
+}
+
+// eth_rx_loop is a someip board channel's rx worker — the eth mirror of
+// rx_loop. ONE socket for the whole channel, bound to <local-ip>:<manifest
+// peer port> and owned by the BoardLink: the board's static source filter
+// accepts exactly that endpoint, so the shell's requests ride the same socket
+// (registered as app.eth_link). Accepted events feed the same trace store as
+// CAN rx; everything else is counted-and-dropped inside the link. `m` is the
+// channel's OWN manifest, passed at spawn.
+fn eth_rx_loop(app &App, ci int, m telem.Manifest, gen int) {
+	mut a := unsafe { app }
+	// spawn-time snapshot. Normally nothing can have interleaved yet (spawn
+	// and rebuild both run on the GUI thread), but guard anyway: eth_gen_ok
+	// is the single validity rule for EVERY a.chans[ci] access in this worker.
+	a.mu.lock()
+	if !a.eth_gen_ok(ci, gen) {
+		a.mu.unlock()
+		return
+	}
+	board_ip := a.chans[ci].address
+	mut local := a.chans[ci].local_ip
+	chname := a.chans[ci].name
+	a.mu.unlock()
+	sip := m.someip
+	if sip.service == 0 || board_ip == '' {
+		a.notify('someip ${chname}: no board ip / no manifest identity — attach the board\'s manifest and set its ip')
+		a.eth_worker_done(ci, gen)
+		return
+	}
+	if local == '' {
+		local = eth_local_ip('${board_ip}:${sip.port}') or {
+			a.notify('someip ${chname}: could not auto-detect the local ip — set "local ip" on the channel')
+			a.eth_worker_done(ci, gen)
+			return
+		}
+	}
+	// only board->host (tx) frames are expected events on this socket
+	mut defs := []someip.EventDef{}
+	for f in m.eth_frames {
+		if f.dir == 'tx' {
+			defs << someip.EventDef{f.id, f.name, f.length, f.e2e}
+		}
+	}
+	// the manifest load validated peer as host:port (1..65535), so this is
+	// always a real port — never 0/ephemeral
+	peer_port := sip.peer.all_after_last(':').int()
+	mut link := eth_open_retry('${local}:${peer_port}', '${board_ip}:${sip.port}', sip.service,
+		sip.version, defs) or {
+		a.notify('someip ${chname}: bind ${local}:${peer_port}: ${err}')
+		a.eth_worker_done(ci, gen)
+		return
+	}
+	// the PUBLISH is guarded too — the last unguarded moment: a worker stalled
+	// in auto-detect/resolve/bind-retry can reach here after a Stop/Reload/
+	// newer Start and would otherwise clobber the new channel's link (and
+	// later clear it via pointer identity). Same rule as everywhere: on a
+	// stale generation, exit through the no-teardown path.
+	a.mu.lock()
+	if !a.eth_gen_ok(ci, gen) {
+		a.mu.unlock()
+		link.close()
+		return
+	}
+	a.eth_link = link
+	a.mu.unlock()
+	a.notify('someip ${chname}: ${local}:${peer_port} <- ${board_ip}:${sip.port} (${defs.len} event frame(s))')
+	// EVERY a.chans[ci] access below runs under a.mu AND behind eth_gen_ok:
+	// a project New/Open/Reload REPLACES app.chans while we sit blocked in
+	// poll() for up to 100ms, so on return a stale ci may be out of bounds
+	// (fewer channels) or index a different channel of the new project (same
+	// count, run_gen reset). The generation check alone is not enough — the
+	// bounds would blow first. On failure: get out without teardown writes.
+	for {
+		a.mu.lock()
+		alive := a.running && a.eth_gen_ok(ci, gen) && a.chans[ci].enabled
+		a.mu.unlock()
+		if !alive {
+			break
+		}
+		ev := link.poll() or {
+			// keep the drop/e2e counters visible even on an idle wire
+			a.mu.lock()
+			if a.eth_gen_ok(ci, gen) {
+				a.chans[ci].drops = link.drops
+				a.chans[ci].e2e_bad = link.e2e_bad
+				a.chans[ci].e2e_lost = link.e2e_lost
+			}
+			a.mu.unlock()
+			continue
+		}
+		t_ms := f64(time.ticks() - a.t0)
+		a.mu.lock()
+		if !a.eth_gen_ok(ci, gen) {
+			// rebuilt under us mid-event: the row/counters belong to a project
+			// that no longer exists — drop everything and exit
+			a.mu.unlock()
+			break
+		}
+		if !a.paused {
+			a.trace << TraceRow{t_ms, chname, 'RX', u32(ev.def.id), false, false, ev.def.name, ev.payload}
+			if a.trace.len > trace_cap {
+				a.trace = a.trace[a.trace.len - trace_cap..].clone()
+			}
+			a.gcount[gkey('RX', chname, u32(ev.def.id), false)]++
+		}
+		a.chans[ci].rx++
+		a.chans[ci].drops = link.drops
+		a.chans[ci].e2e_bad = link.e2e_bad
+		a.chans[ci].e2e_lost = link.e2e_lost
+		a.rx++
+		a.mu.unlock()
+		now := time.ticks()
+		if now - a.last_wake >= a.wake_ms {
+			a.last_wake = now
+			vgui.wake()
+		}
+	}
+	// unregister BEFORE closing so the shell can't send on a dead socket
+	// (only OUR registration — a second someip channel may have re-claimed it)
+	a.mu.lock()
+	if voidptr(a.eth_link) == voidptr(link) {
+		a.eth_link = unsafe { nil }
+	}
+	if a.eth_gen_ok(ci, gen) {
+		a.chans[ci].drops = link.drops
+		a.chans[ci].e2e_bad = link.e2e_bad
+		a.chans[ci].e2e_lost = link.e2e_lost
+	}
+	a.mu.unlock()
+	a.eth_worker_done(ci, gen)
+	link.close()
+}
+
+// eth_gen_ok reports (call it under a.mu) whether ci/gen still name THIS
+// worker's channel: a rebuild may have replaced app.chans entirely (stale ci
+// out of bounds, or a different channel with run_gen reset to 0), and a
+// re-Start bumps run_gen. Bounds first — the generation compare must never
+// be the thing that indexes out of range.
+fn (a &App) eth_gen_ok(ci int, gen int) bool {
+	return ci >= 0 && ci < a.chans.len && a.chans[ci].run_gen == gen
+}
+
+// eth_open_retry opens the BoardLink, retrying an address-in-use bind up to
+// 5 x 100ms (<= 500ms total): stop() returns immediately, but the superseded
+// worker holds the bound port for up to its 100ms poll timeout, so a quick
+// re-Start's bind can transiently collide with the draining generation. A
+// bounded sleep comfortably covers one poll window without cross-thread join
+// machinery. Any other error (or exhaustion) fails through unchanged.
+fn eth_open_retry(local string, board string, service u16, version u8, defs []someip.EventDef) !&someip.BoardLink {
+	for attempt in 0 .. 6 {
+		link := someip.open_board_link(local, board, service, version, defs) or {
+			// EADDRINUSE class: Linux errno 98, Windows WSAEADDRINUSE 10048
+			// (message match as a fallback for wrapped errors)
+			in_use := err.code() == 98 || err.code() == 10048
+				|| err.msg().to_lower().contains('in use')
+			if attempt < 5 && in_use {
+				time.sleep(100 * time.millisecond)
+				continue
+			}
+			return err
+		}
+		return link
+	}
+	return error('bind retry exhausted') // unreachable: attempt 5 returns above
+}
+
+// eth_worker_done clears the channel's running flag — but ONLY for the
+// generation that owns it (bounds-checked: the channel may be gone entirely
+// after a rebuild): a superseded worker (Stop -> quick re-Start, or a project
+// swap) must not mark the NEW state as stopped — or index out of range.
+fn (mut app App) eth_worker_done(ci int, gen int) {
+	app.mu.lock()
+	if app.eth_gen_ok(ci, gen) {
+		app.chans[ci].running = false
+	}
+	app.mu.unlock()
+}
+
 fn hex(b []u8) string {
 	mut p := []string{cap: b.len}
 	for x in b {
@@ -1014,9 +1282,18 @@ fn (mut app App) rebuild_from_proj() {
 	app.eth_someip = telem.SomeipIdent{}
 	app.eth_method = 0
 	app.manifest = telem.Manifest{}
+	app.eth_manifest = telem.Manifest{}
+	app.eth_board_ip = ''
 	app.sel_id = -1
 	app.mu.unlock()
+	mut eth_board := '' // the first someip channel's board ip (shell prefill)
+	mut someip_seen := false // ONE someip channel per project (mirrors emb's one eth bus
+	// per image); further ones are forced disabled — the multi-board selector is a follow-up
 	for ch in proj.channels {
+		dup := ch.is_someip() && someip_seen
+		if ch.is_someip() {
+			someip_seen = true
+		}
 		app.chans << Chan{
 			name:         ch.name
 			network:      ch.network
@@ -1031,7 +1308,13 @@ fn (mut app App) rebuild_from_proj() {
 			databases:    ch.databases.clone()
 			manifest:     ch.manifest
 			doip:         ch.is_doip()
-			enabled:      ch.enabled
+			someip:       ch.is_someip()
+			someip_dup:   dup
+			local_ip:     ch.local_ip
+			enabled:      ch.enabled && !dup
+		}
+		if dup {
+			app.notify('someip ${ch.name}: one someip channel per project — disabled')
 		}
 		for dbpath in ch.databases {
 			mut rp := app.resolve_asset(dbpath)
@@ -1073,7 +1356,19 @@ fn (mut app App) rebuild_from_proj() {
 					app.manifest = m
 					app.has_manifest = true
 				}
-				if m.shell_method != 0 && app.eth_method == 0 {
+				// a someip CHANNEL is the first-class source of the eth identity
+				// (its manifest IS the board); the any-channel scan below stays
+				// as back-compat but never displaces a someip channel's claim.
+				// Only the FIRST someip channel may claim — a forced-disabled
+				// duplicate must not hijack the identity when the first one's
+				// manifest failed to load.
+				if ch.is_someip() && !dup && eth_board == '' {
+					app.eth_someip = m.someip
+					app.eth_method = m.shell_method
+					app.eth_manifest = m
+					eth_board = ch.address
+					app.eth_board_ip = ch.address
+				} else if m.shell_method != 0 && app.eth_method == 0 && eth_board == '' {
 					app.eth_someip = m.someip
 					app.eth_method = m.shell_method
 				}
@@ -1110,6 +1405,12 @@ fn (mut app App) rebuild_from_proj() {
 			app.sel_ext = db.messages[0].ext
 			break
 		}
+	}
+	// prefill the shell's board-ip from the someip channel (session-only
+	// buffer — never clobber a hand-typed target)
+	if eth_board != '' && app.eth_target_buf.len > 0
+		&& vgui.buf_str(app.eth_target_buf).trim_space() == '' {
+		app.eth_target_buf = mkbuf(eth_board, 64)
 	}
 }
 
@@ -1899,9 +2200,9 @@ fn (app &App) match_ext(name string) bool {
 // included so a project authored on another OS still shows (and can keep) its adapter.
 fn available_adapters(current string) []string {
 	mut list := $if windows {
-		['virtual', 'udp', 'pcan', 'kvaser', 'doip']
+		['virtual', 'udp', 'pcan', 'kvaser', 'doip', 'someip']
 	} $else {
-		['virtual', 'vcan', 'socketcan', 'udp', 'doip']
+		['virtual', 'vcan', 'socketcan', 'udp', 'doip', 'someip']
 	}
 	if current !in list {
 		list << current
@@ -1919,6 +2220,7 @@ fn adapter_tip(a string) string {
 		'pcan' { 'PEAK PCAN hardware (Windows). The address is a channel like PCAN_USBBUS1. Discovery needs the PEAK driver on Windows.' }
 		'kvaser' { 'Kvaser hardware (Windows). The address is a channel index (0, 1…). Discovery needs the Kvaser driver on Windows.' }
 		'doip' { 'Diagnostics over Ethernet (ISO 13400) — NOT a CAN bus. The address is host:port (default 127.0.0.1:13400); set the tester/ECU logical addresses below.' }
+		'someip' { 'SOME/IP eth board — a blobly target on Ethernet, NOT a CAN bus. The address is the board\'s ip; the service identity, ports and frame layouts come from the channel\'s manifest (required). Events feed the Trace; the Shell rides the same socket.' }
 		else { '' }
 	}
 }
@@ -2090,6 +2392,7 @@ fn adapter_hint(a string) string {
 		'pcan' { 'PCAN_USBBUS1 — PEAK channel' }
 		'kvaser' { '0 — Kvaser channel index' }
 		'doip' { '127.0.0.1:13400 — host:port' }
+		'someip' { '192.168.0.191 — board ip (ports come from the manifest)' }
 		else { '' }
 	}
 }
@@ -2141,6 +2444,7 @@ fn (mut app App) sync_cfg_bufs() {
 			address_buf:      mkbuf(ch.address, 64)
 			bitrate_buf:      mkbuf('${ch.bitrate}', 12)
 			manifest_buf:     mkbuf(ch.manifest, 128)
+			local_buf:        mkbuf(ch.local_ip, 48)
 			dbc_buf:          mkbuf('', 128)
 			tester_buf:       mkbuf('0x${ch.tester_addr:X}', 12)
 			ecu_buf:          mkbuf('0x${ch.ecu_addr:X}', 12)
@@ -2168,6 +2472,9 @@ fn (mut app App) commit_cfg() {
 		br := vgui.buf_str(b.bitrate_buf).int()
 		if br > 0 {
 			ch.bitrate = br
+		}
+		if ch.adapter == 'someip' {
+			ch.local_ip = vgui.buf_str(b.local_buf)
 		}
 		if ch.adapter == 'doip' {
 			ch.tester_addr = parse_u16_hex(vgui.buf_str(b.tester_buf), ch.tester_addr)
@@ -2335,11 +2642,21 @@ fn (mut app App) set_adapter(i int, a string) {
 	app.proj.channels[i].adapter = a
 	if a == 'doip' {
 		app.proj.channels[i].typ = 'doip'
-	} else if app.proj.channels[i].typ == 'doip' {
+	} else if a == 'someip' {
+		app.proj.channels[i].typ = 'someip'
+	} else if app.proj.channels[i].typ in ['doip', 'someip'] {
 		app.proj.channels[i].typ = 'can'
 	}
 	app.proj.channels[i].iface = project.compose_iface(a, vgui.buf_str(app.cfg_bufs[i].address_buf))
 	app.rebind_senders(old_iface, app.proj.channels[i].iface) // keep this bus's generators bound
+	// switching INTO someip resets the mode to monitor: the someip editor only
+	// offers off/monitor and start() gates on monitor, so a channel arriving
+	// with mode 'replay' would otherwise be silently inert (nothing selected,
+	// worker never spawns). Away from someip there is no reverse trap — the
+	// modes someip leaves behind (off/monitor) are valid on every adapter.
+	if a == 'someip' && app.proj.channels[i].mode != .monitor {
+		app.set_mode(i, 'monitor')
+	}
 	app.dirty = true
 	app.rebuild_preserving_senders()
 }
@@ -2566,6 +2883,32 @@ fn (mut app App) draw_bus_editor(i int) bool {
 		}
 		vgui.same_line()
 		vgui.help_marker('17-character VIN reported by this entity in vehicle announcements (only used when this DoIP bus hosts a simulated entity).')
+	} else if ch.adapter == 'someip' {
+		vgui.set_next_item_width(160)
+		if vgui.input_text('local ip##cli${i}', mut app.cfg_bufs[i].local_buf) {
+			app.dirty = true
+		}
+		vgui.same_line()
+		vgui.help_marker('The LOCAL ip this channel binds to receive the board\'s events — must be bound explicitly (a wildcard bind receives no unsolicited datagrams, e.g. under WSL mirrored networking). Empty = auto-detect the host\'s outbound ip toward the board. The board only answers its configured peer ip:port, so this must match its manifest peer.')
+		// reduced mode control: start() gates on monitor, so a channel loaded
+		// `mode: off` must be startable from the UI; replay doesn't apply here
+		vgui.text('mode:')
+		vgui.same_line()
+		vgui.help_marker('off = configured but not attached · monitor = receive the board\'s events (replay does not apply to an eth board).')
+		for md in ['off', 'monitor'] {
+			vgui.same_line()
+			if vgui.toggle_button('${md}##md${i}_${md}', ch.mode.str() == md, 0) {
+				app.set_mode(i, md)
+			}
+		}
+		// the identity is the manifest's, not typed here — show what it resolves to
+		if ch.manifest == '' {
+			vgui.text_colored(230, 170, 70,
+				'manifest required — attach the board\'s generated trace-manifest.csv below')
+		} else if app.eth_someip.service != 0 {
+			binds := if ch.local_ip != '' { ch.local_ip } else { 'auto' }
+			vgui.text_dim('SOME/IP 0x${app.eth_someip.service.hex()} v${app.eth_someip.version} — board :${app.eth_someip.port}, binds ${binds}:${app.eth_someip.peer.all_after_last(':')}')
+		}
 	} else {
 		vgui.text('protocol:')
 		for pr in ['can', 'canfd'] {
@@ -2652,7 +2995,7 @@ fn (mut app App) draw_bus_editor(i int) bool {
 		app.open_browser('manifest:${i}')
 	}
 	vgui.same_line()
-	vgui.help_marker('Optional telemetry handler manifest (CSV) — resolves handler ids to FB/handler/core for the Trace Chart.')
+	vgui.help_marker('Telemetry handler manifest (CSV) — resolves handler ids to FB/handler/core for the Trace Chart. Optional for CAN buses; REQUIRED for a someip board (it carries the service identity + frame layouts).')
 	vgui.tree_pop()
 	return false
 }
@@ -2670,6 +3013,12 @@ fn draw_busconfig(mut app App, chans []Chan) {
 		vgui.text('type: ${c.typ}    mode: ${c.mode}    enabled: ${c.enabled}')
 		if c.doip {
 			vgui.text('DoIP endpoint (Ethernet diagnostics)')
+		} else if c.someip {
+			binds := if c.local_ip != '' { c.local_ip } else { 'auto' }
+			vgui.text('SOME/IP eth board    local: ${binds}    rx drops: ${c.drops}    e2e lost: ${c.e2e_lost}  bad: ${c.e2e_bad}')
+			if c.someip_dup {
+				vgui.text_colored(230, 170, 70, 'one someip channel per project — disabled')
+			}
 		} else {
 			du := if c.data_bitrate > 0 { '  data ${c.data_bitrate}' } else { '' }
 			vgui.text('bitrate: ${c.bitrate}${du}    listen-only: ${c.listen_only}')
@@ -3014,6 +3363,12 @@ fn draw_buses(mut app App, chans []Chan) {
 					spawn rx_loop(app, i, app.chans[i].iface)
 				}
 				app.mu.unlock()
+				// someip: outside the lock (spawn_eth_rx notifies on a bad manifest);
+				// same monitor-mode gate as the CAN workers, duplicates never start
+				if new && app.running && c.someip && c.mode == 'monitor' && !c.someip_dup
+					&& !app.chans[i].running {
+					app.spawn_eth_rx(i)
+				}
 			}
 			vgui.same_line()
 			r, g, b, label := chan_state(c)
@@ -3036,6 +3391,7 @@ fn bus_kind(adapter string) string {
 		'kvaser' { 'Kvaser (hardware)' }
 		'udp' { 'UDP software bus' }
 		'doip' { 'DoIP (Ethernet)' }
+		'someip' { 'SOME/IP (eth board)' }
 		'' { 'Other' }
 		else { adapter }
 	}
@@ -3065,7 +3421,10 @@ fn draw_network(mut app App, chans []Chan) {
 			mut any := false
 			// tester functions this tool runs on the bus
 			mut tf := []string{}
-			if c.monitorable() {
+			// monitorable() is CAN-transport semantics (excludes someip by
+			// design; don't move that) — but topologically a RUNNING someip
+			// channel IS the tester monitoring the board's events
+			if c.monitorable() || (c.someip && c.running) {
 				tf << 'Monitor'
 			}
 			if app.send_iface == c.iface {
@@ -3440,6 +3799,20 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 						vgui.table_next_col()
 						vgui.table_next_col()
 						vgui.table_cell('${s.physical(r.data):.3}${unit}${extra}')
+					}
+				} else {
+					// an eth frame has no DBC — decode its LE fields per the
+					// someip channel's manifest layout instead (format keeps
+					// unsigned types unsigned)
+					for f in app.eth_layout_fields(g.id, g.ch) {
+						v := f.format(r.data) or { continue }
+						vgui.table_row()
+						vgui.table_next_col()
+						vgui.text('    ${f.field}')
+						vgui.table_next_col()
+						vgui.table_next_col()
+						vgui.table_next_col()
+						vgui.table_cell(v)
 					}
 				}
 				vgui.tree_pop()
@@ -4703,10 +5076,20 @@ fn draw_shell(mut app App) {
 	}
 	vgui.child_end()
 	if eth {
-		vgui.set_next_item_width(130 * app.ui_scale)
-		vgui.input_text('##ethtarget', mut app.eth_target_buf)
-		vgui.same_line()
-		vgui.text_dim('board ip — SOME/IP method 0x${app.eth_method.hex()} :${app.eth_someip.port}')
+		app.mu.lock()
+		linked := !isnil(app.eth_link)
+		app.mu.unlock()
+		if linked {
+			// the running someip channel owns target and socket — an editable ip
+			// box here is dead AND reads as the command line (it isn't; that is
+			// the input below)
+			vgui.text_dim('board ${app.eth_board_ip} — SOME/IP method 0x${app.eth_method.hex()} :${app.eth_someip.port}')
+		} else {
+			vgui.set_next_item_width(130 * app.ui_scale)
+			vgui.input_text('##ethtarget', mut app.eth_target_buf)
+			vgui.same_line()
+			vgui.text_dim('board ip — SOME/IP method 0x${app.eth_method.hex()} :${app.eth_someip.port}')
+		}
 	}
 	vgui.set_next_item_width(-40 * app.ui_scale)
 	if vgui.console_input('##shellin', mut app.shell_buf) {
@@ -6712,11 +7095,37 @@ fn shell_worker_eth(app &App, line string, target string, sip telem.SomeipIdent,
 		vgui.wake()
 	}
 	a.shell_append('> ' + line)
+	// a running someip channel owns the ONE socket bound to the peer port —
+	// route through its BoardLink (binding a second socket would fail, and the
+	// board's datagrams all arrive on the channel's socket anyway)
+	a.mu.lock()
+	mut link := a.eth_link
+	mut has_someip := false
+	for c in a.chans {
+		if c.someip {
+			has_someip = true
+			break
+		}
+	}
+	a.mu.unlock()
+	if !isnil(link) {
+		shell_eth_via_link(a, line, sip, method, mut link)
+		return
+	}
+	if has_someip {
+		// a configured-but-stopped channel is a deliberate state — the shell
+		// must not bypass it with its own socket; the standalone path below
+		// serves only projects with NO someip channel (legacy manifest-on-CAN)
+		a.shell_append('(someip channel stopped — Start it)')
+		return
+	}
 	if target == '' {
 		a.shell_append('(enter the board ip first)')
 		return
 	}
 	peer_port := sip.peer.all_after_last(':').int()
+	// defensive only: the manifest load validates peer as host:port, so the
+	// fallback branch is unreachable for any manifest that loaded
 	bind_port := if peer_port > 0 { peer_port } else { 30491 }
 	mut sock := vnet.listen_udp(':${bind_port}') or {
 		a.shell_append('(bind :${bind_port}: ${err} — the board only answers its configured peer endpoint)')
@@ -6775,10 +7184,73 @@ fn shell_worker_eth(app &App, line string, target string, sip telem.SomeipIdent,
 	if cli.result.timed_out {
 		a.shell_append('(no response — board off, wrong ip, or the peer port is not ours after NAT)')
 	} else {
-		match cli.result.rc {
-			0x03 { a.shell_append('(error: unknown method on the target)') }
-			0x20 { a.shell_append("(denied — this build's mutate gate is closed)") }
-			else { a.shell_append('(error rc 0x${cli.result.rc.hex()})') }
+		shell_eth_error(mut a, cli.result.rc)
+	}
+}
+
+// shell_eth_via_link runs one shell command over the running someip channel's
+// shared socket: the request goes out on the channel's fd, the worker parks
+// the correlated response in the BoardLink's single slot (events keep flowing
+// to the trace), and the RpcClient here does the correlation/drain as in the
+// standalone path.
+fn shell_eth_via_link(app &App, line string, sip telem.SomeipIdent, method u16, mut link someip.BoardLink) {
+	mut a := unsafe { app }
+	a.mu.lock()
+	last_session := a.eth_shell_session
+	a.mu.unlock()
+	mut cli := someip.RpcClient{
+		service:    sip.service
+		method:     method
+		iface:      sip.version
+		client_id:  0x0E01
+		timeout_us: 1_500_000
+		session:    last_session
+	}
+	sw := time.new_stopwatch()
+	req := cli.send(line.bytes(), 0) or {
+		a.shell_append('(client busy)')
+		return
+	}
+	a.mu.lock()
+	a.eth_shell_session = cli.session // burn it NOW: even a timeout never reuses it
+	a.mu.unlock()
+	link.send(req) or {
+		a.shell_append('(send: ${err})')
+		return
+	}
+	for cli.state == .waiting {
+		if rsp := link.take_response() {
+			cli.on_datagram(rsp)
+		} else {
+			time.sleep(5 * time.millisecond)
 		}
+		cli.poll(u64(sw.elapsed().microseconds()))
+		// the channel stopping mid-command tears the socket down under us
+		a.mu.lock()
+		gone := voidptr(a.eth_link) != voidptr(link)
+		a.mu.unlock()
+		if gone && cli.state == .waiting {
+			a.shell_append('(channel stopped mid-command)')
+			return
+		}
+	}
+	if cli.state == .done {
+		a.shell_append(cli.result.payload.bytestr())
+		return
+	}
+	if cli.result.timed_out {
+		a.shell_append("(no response — board off, or not answering this channel's endpoint)")
+	} else {
+		shell_eth_error(mut a, cli.result.rc)
+	}
+}
+
+// shell_eth_error renders a SOME/IP error reply's return code (shared by the
+// standalone and channel-routed shell paths).
+fn shell_eth_error(mut a App, rc u8) {
+	match rc {
+		0x03 { a.shell_append('(error: unknown method on the target)') }
+		0x20 { a.shell_append("(denied — this build's mutate gate is closed)") }
+		else { a.shell_append('(error rc 0x${rc.hex()})') }
 	}
 }

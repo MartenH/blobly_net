@@ -143,3 +143,7 @@ its own sim service + oracle. Scoped once DoIP is in the app.
 **Status 2026-07-19:** the codec/validation core exists — `modules/someip/` (16-byte header
 encode/decode + envelope validation, hermetic golden-vector tests), the host-side oracle for
 blobly_emb's eth-bus design (its `docs/someip.md`). SOME-IP-SD and the sim service remain deferred.
+
+**Status 2026-07-21:** a first-class `someip` channel kind in the GUI: `someip.BoardLink` owns the
+one socket per board (events -> Trace via the manifest's `ethframe`/`ethlayout` rows, shell RPC
+routed through the same socket), loopback-tested against a fake board. SOME-IP-SD still deferred.

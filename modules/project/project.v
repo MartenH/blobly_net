@@ -126,9 +126,9 @@ pub struct Channel {
 pub mut:
 	name         string = 'CAN'
 	network      string // v2: optional grouping label (buses of one logical network)
-	adapter      string = 'vcan' // v2: virtual | vcan | socketcan | udp | pcan | kvaser | doip
+	adapter      string = 'vcan' // v2: virtual | vcan | socketcan | udp | pcan | kvaser | doip | someip
 	address      string = 'vcan0' // v2: adapter-specific (CAN1 / vcan0 / can0 / grp:port / host:port)
-	typ          string = 'can' // yaml `type`/`protocol`: can | canfd | doip
+	typ          string = 'can' // yaml `type`/`protocol`: can | canfd | doip | someip
 	iface        string = 'vcan0' // derived scheme string (composed from adapter+address)
 	bitrate      int    = 500000
 	fd           bool
@@ -155,6 +155,11 @@ pub mut:
 	// network of simulated entities is distinguishable. Empty = module defaults.
 	vin string
 	eid []u8
+	// SOME/IP eth board (adapter: someip) — `address` is the board's ip; the
+	// service/ports come from the channel's manifest. The channel must bind a
+	// SPECIFIC local ip (a wildcard bind receives no unsolicited datagrams
+	// under WSL mirrored networking); empty = auto-detect the host LAN ip.
+	local_ip string
 }
 
 // is_doip reports whether this channel is a DoIP (diagnostics-over-Ethernet)
@@ -163,6 +168,13 @@ pub mut:
 pub fn (ch Channel) is_doip() bool {
 	t := ch.iface.trim_space()
 	return ch.typ == 'doip' || t == 'doip' || t.starts_with('doip:')
+}
+
+// is_someip reports whether this channel is a SOME/IP eth board (an Ethernet
+// endpoint, not a CAN bus) — recognised like is_doip.
+pub fn (ch Channel) is_someip() bool {
+	t := ch.iface.trim_space()
+	return ch.typ == 'someip' || t == 'someip' || t.starts_with('someip:')
 }
 
 // doip_endpoint parses `iface` ("doip:host:port" / "doip:host" / "doip") into a
@@ -290,6 +302,16 @@ pub fn parse(text string) !Project {
 			p.channels << parse_channel(c)!
 		}
 	}
+	// bus names must be unique: they key trace rows, bus chips/filters and
+	// the someip trace decode gate — a duplicate silently merges/misroutes
+	// all of those, so reject it loudly like the other load gates.
+	mut seen_names := map[string]bool{}
+	for ch in p.channels {
+		if ch.name in seen_names {
+			return error('duplicate bus name "${ch.name}" — bus names must be unique')
+		}
+		seen_names[ch.name] = true
+	}
 	return p
 }
 
@@ -368,6 +390,13 @@ fn parse_channel(c yaml.Any) !Channel {
 				ch.iface = 'doip'
 			}
 		}
+	} else if ch.adapter == 'someip' || proto == 'someip' {
+		// a someip adapter is a SOME/IP eth board endpoint, not a CAN bus
+		ch.typ = 'someip'
+		if ch.adapter != 'someip' {
+			ch.adapter = 'someip'
+			ch.iface = compose_iface('someip', ch.address)
+		}
 	} else {
 		ch.typ = proto
 		if proto == 'canfd' {
@@ -392,6 +421,9 @@ fn parse_channel(c yaml.Any) !Channel {
 	}
 	if mf := c.value_opt('manifest') {
 		ch.manifest = mf.string()
+	}
+	if li := c.value_opt('local_ip') {
+		ch.local_ip = li.string()
 	}
 	if sim := c.value_opt('simulate') {
 		ch.simulate = sim.array().as_strings()
@@ -615,7 +647,7 @@ fn parse_id(s string) u32 {
 // adapters is the set of transport backends the editor offers (the `adapter:` value).
 // Order = the picker order. `virtual`/`vcan`/`socketcan`/`udp` are cross-platform or
 // Linux; `pcan`/`kvaser` are Windows CAN hardware; `doip` is an Ethernet diag endpoint.
-pub const adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'pcan', 'kvaser', 'doip']
+pub const adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'pcan', 'kvaser', 'doip', 'someip']
 
 // compose_iface builds the internal scheme string `transport.open()` consumes from an
 // adapter + its backend-specific address. It is the inverse of decompose_iface.
@@ -626,6 +658,7 @@ pub const adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'pcan', 'kvaser', '
 //   pcan     PCAN_USBBUS1    -> pcan:PCAN_USBBUS1
 //   kvaser   0               -> kvaser:0
 //   doip     127.0.0.1:13400 -> doip:127.0.0.1:13400 (bare `doip` if empty)
+//   someip   192.168.0.191   -> someip:192.168.0.191 (bare `someip` if empty)
 pub fn compose_iface(adapter string, address string) string {
 	a := address.trim_space()
 	return match adapter {
@@ -634,6 +667,7 @@ pub fn compose_iface(adapter string, address string) string {
 		'pcan' { 'pcan:${a}' }
 		'kvaser' { 'kvaser:${a}' }
 		'doip' { if a == '' { 'doip' } else { 'doip:${a}' } }
+		'someip' { if a == '' { 'someip' } else { 'someip:${a}' } }
 		// vcan / socketcan / unknown: the address IS the raw interface name.
 		else { a }
 	}
@@ -670,6 +704,12 @@ pub fn decompose_iface(iface string) (string, string) {
 	}
 	if s.starts_with('doip:') {
 		return 'doip', s['doip:'.len..]
+	}
+	if s == 'someip' {
+		return 'someip', ''
+	}
+	if s.starts_with('someip:') {
+		return 'someip', s['someip:'.len..]
 	}
 	if s.starts_with('vcan') {
 		return 'vcan', s
