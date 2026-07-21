@@ -962,11 +962,7 @@ fn (mut app App) spawn_eth_rx(ci int) {
 	app.eth_method = m.shell_method
 	// this load may change the shell identity — the target list carries
 	// per-entry snapshots, so rebuild it with the same version
-	app.shell_targets = project.shell_targets(app.proj.channels, m.someip, m.shell_method,
-		app.manifest.shell)
-	if app.shell_target >= app.shell_targets.len {
-		app.shell_target = 0
-	}
+	app.rebuild_shell_targets()
 	// generations are APP-GLOBAL monotonic, not per-channel: a chans rebuild
 	// resets run_gen to 0, so a per-channel counter would mint gen 1 for the
 	// new project's first Start — the same value a stale pre-rebuild worker
@@ -1420,10 +1416,17 @@ fn (mut app App) rebuild_from_proj() {
 		&& vgui.buf_str(app.eth_target_buf).trim_space() == '' {
 		app.eth_target_buf = mkbuf(eth_board, 64)
 	}
-	// derive the Shell's target list from the identities settled above; the
-	// selection is index-based and session-only — never keep a stale one
-	app.shell_targets = project.shell_targets(proj.channels, app.eth_someip, app.eth_method,
-		app.manifest.shell)
+	app.rebuild_shell_targets()
+}
+
+// rebuild_shell_targets re-derives the Shell's target list from CURRENT
+// runtime state — the Buses panel toggles app.chans[i].enabled without a
+// project rebuild, so every input-changing site calls this: rebuild_from_proj,
+// the someip Start snapshot and the runtime enable checkbox (all GUI thread).
+// The selection is index-based and session-only — never keep a stale one.
+fn (mut app App) rebuild_shell_targets() {
+	app.shell_targets = project.shell_targets(app.proj.channels, app.chans.map(it.enabled),
+		app.eth_someip, app.eth_method, app.manifest.shell)
 	if app.shell_target >= app.shell_targets.len {
 		app.shell_target = 0
 	}
@@ -3384,6 +3387,7 @@ fn draw_buses(mut app App, chans []Chan) {
 					&& !app.chans[i].running {
 					app.spawn_eth_rx(i)
 				}
+				app.rebuild_shell_targets() // enablement is a target-list input
 			}
 			vgui.same_line()
 			r, g, b, label := chan_state(c)
@@ -5069,9 +5073,8 @@ fn draw_shell(mut app App) {
 		vgui.end()
 		return
 	}
-	// route by the derived target list (project.shell_targets). Zero targets =
-	// legacy: an eth identity from a manifest-on-CAN project with NO someip
-	// channel (standalone-socket path), else the plain CAN worker.
+	// route by the derived target list (project.shell_targets); zero targets =
+	// the plain CAN worker (no manifest-carrying channel, no eth identity)
 	targets := app.shell_targets
 	mut has_eth := false
 	for t in targets {
@@ -5079,10 +5082,9 @@ fn draw_shell(mut app App) {
 			has_eth = true
 		}
 	}
-	legacy_eth := targets.len == 0 && app.eth_method != 0 && app.eth_someip.service != 0
 	// an eth RPC shell needs NO CAN channel: it dials the board's UDP endpoint
 	// directly, Start or not
-	if !app.running && !has_eth && !legacy_eth {
+	if !app.running && !has_eth {
 		vgui.text_dim('press Start (needs a shell-enabled target on the bus)')
 		vgui.end()
 		return
@@ -5103,8 +5105,8 @@ fn draw_shell(mut app App) {
 	}
 	vgui.child_end()
 	if targets.len == 1 {
-		// one target — name it; nothing to choose or type (the someip channel
-		// owns ip + socket, the CAN worker picks its running channel itself)
+		// one target — name it; a someip channel owns ip + socket, the CAN
+		// entry carries its transmit bus
 		vgui.text_dim(targets[0].label)
 	} else if targets.len > 1 {
 		vgui.set_next_item_width(220 * app.ui_scale)
@@ -5112,13 +5114,15 @@ fn draw_shell(mut app App) {
 		if nsel != app.shell_target && nsel >= 0 && nsel < targets.len {
 			app.shell_target = nsel
 		}
-	} else if legacy_eth {
-		// no someip channel exists (else it would be a target), so the
-		// standalone-socket worker needs a hand-typed board ip
+	}
+	if targets.len > 0 && targets[app.shell_target].ci < 0 {
+		// the standalone eth entry's parameter: no someip channel owns a
+		// socket, so its worker dials a hand-typed board ip
+		t := targets[app.shell_target]
 		vgui.set_next_item_width(130 * app.ui_scale)
 		vgui.input_text('##ethtarget', mut app.eth_target_buf)
 		vgui.same_line()
-		vgui.text_dim('board ip — SOME/IP method 0x${app.eth_method.hex()} :${app.eth_someip.port}')
+		vgui.text_dim('board ip — SOME/IP method 0x${t.method.hex()} :${t.sip.port}')
 	}
 	vgui.set_next_item_width(-40 * app.ui_scale)
 	if vgui.console_input('##shellin', mut app.shell_buf) {
@@ -5135,20 +5139,21 @@ fn draw_shell(mut app App) {
 			} else if targets.len > 0 {
 				t := targets[app.shell_target]
 				if t.eth {
-					// the identity snapshot rides IN the entry: the worker must
-					// not read App fields a project switch clears under it
-					spawn shell_worker_eth(app, line, t.board, t.sip, t.method)
+					// the identity snapshot rides IN the entry — the worker
+					// must not read App fields a project switch clears under
+					// it. The standalone (ci -1) entry's board is the typed ip,
+					// snapshotted HERE: never let the worker read the UI buffer.
+					board := if t.ci < 0 {
+						vgui.buf_str(app.eth_target_buf).trim_space()
+					} else {
+						t.board
+					}
+					spawn shell_worker_eth(app, line, board, t.sip, t.method)
 				} else {
-					spawn shell_worker(app, line)
+					spawn shell_worker(app, line, t.iface)
 				}
-			} else if legacy_eth {
-				// snapshot target AND identity HERE: the worker must not read
-				// the UI's mutable buffer, and rebuild_from_proj (a project
-				// switch mid-command) clears eth_someip/eth_method under it
-				spawn shell_worker_eth(app, line, vgui.buf_str(app.eth_target_buf).trim_space(),
-					app.eth_someip, app.eth_method)
 			} else {
-				spawn shell_worker(app, line)
+				spawn shell_worker(app, line, '')
 			}
 		}
 	}
@@ -5176,7 +5181,9 @@ fn (mut app App) shell_append(s string) {
 // shell_worker sends one command line and collects the response. Mirrors diag/trace workers:
 // a single-flight busy flag, a short-lived spawn, a blocking ISO-TP recv, results under mu +
 // wake. The shell ids come from the manifest's `# shell frames` section (or loom2v defaults).
-fn shell_worker(app &App, line string) {
+// `iface_sel` is the selected target's transmit bus; '' (no target list) keeps the legacy
+// pick — the running manifest-carrying channel.
+fn shell_worker(app &App, line string, iface_sel string) {
 	mut a := unsafe { app }
 	a.mu.lock()
 	if a.shell_busy {
@@ -5192,7 +5199,7 @@ fn shell_worker(app &App, line string) {
 		vgui.wake()
 	}
 	a.shell_append('> ' + line)
-	iface := a.trace_iface()
+	iface := if iface_sel != '' { iface_sel } else { a.trace_iface() }
 	if iface == '' {
 		a.shell_append('(no running channel)')
 		return
