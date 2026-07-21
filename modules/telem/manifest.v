@@ -222,7 +222,7 @@ pub fn parse_manifest(text string) !Manifest {
 		if section == 'ethmod' {
 			// `ethmod,<module>,<endpoint>,<id>` — module endpoints on the eth
 			// bus; the shell's method id is the one the RPC client dials.
-			if cols.len < 4 && cols.len >= 3 && cols[0] == 'ethmod' && cols[1] == 'shell' {
+			if cols.len < 4 && cols.len >= 2 && cols[0] == 'ethmod' && cols[1] == 'shell' {
 				return error('manifest ethmod shell row needs its method id: "${line}"')
 			}
 			if cols.len >= 4 && cols[0] == 'ethmod' && cols[1] == 'shell' && cols[2] == 'method' {
