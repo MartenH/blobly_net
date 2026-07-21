@@ -115,3 +115,39 @@ fn test_session_wraps_live() {
 	h := parse_header(req)!
 	assert h.session == 1, 'wraps 1.. — 0 is the dead id the server refuses'
 }
+
+fn test_incompatible_envelope_drains() {
+	mut c := client()
+	req := c.send('x'.bytes(), 0) or {
+		assert false, ''
+		return
+	}
+	h := parse_header(req)!
+	// right correlation, wrong interface version: an incompatible image must
+	// not surface its payload as a valid result
+	wrong_iface := Header{
+		service:           h.service
+		method:            h.method
+		client:            h.client
+		session:           h.session
+		protocol_version:  protocol_version
+		interface_version: h.interface_version + 1
+		msg_type:          mt_response
+	}
+	assert !c.on_datagram(encode(wrong_iface, 'stale image'.bytes()))
+	assert c.state == .waiting
+	// wrong protocol version drains the same way
+	wrong_proto := Header{
+		service:           h.service
+		method:            h.method
+		client:            h.client
+		session:           h.session
+		protocol_version:  protocol_version + 1
+		interface_version: h.interface_version
+		msg_type:          mt_response
+	}
+	assert !c.on_datagram(encode(wrong_proto, 'alien'.bytes()))
+	// the compatible answer still completes
+	assert c.on_datagram(response_for(h, 'ok'.bytes()))
+	assert c.state == .done
+}

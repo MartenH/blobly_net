@@ -36,8 +36,12 @@ pub mut:
 	timeout_us u64      = 1_000_000
 	state      RpcState = .idle
 	result     RpcResult
+	// last USED session id (next send uses the successor). PUBLIC so a caller
+	// constructing a client per invocation can thread the counter through —
+	// restarting at 1 would let a late reply to a timed-out session complete
+	// a later request that legitimately reuses the number.
+	session u16
 mut:
-	session u16 // last USED session id (next send uses the successor)
 	sent_at u64
 }
 
@@ -79,6 +83,11 @@ pub fn (mut c RpcClient) on_datagram(buf []u8) bool {
 	if h.service != c.service || h.method != c.method || h.client != c.client_id
 		|| h.session != c.session {
 		return false // drain: stale/foreign correlation
+	}
+	if h.protocol_version != protocol_version || h.interface_version != c.iface {
+		// drain: an INCOMPATIBLE image answered our correlation — surfacing
+		// its payload as a valid result would mask the version mismatch
+		return false
 	}
 	if h.msg_type == mt_error {
 		c.state = .failed
