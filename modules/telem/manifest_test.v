@@ -169,6 +169,24 @@ ethframe,BenchEcho,0x8001,1,tx,event,100000,-
 		return
 	}
 	assert m.eth_frames[0].id == 0x0010
+	// a layout row must reference a DECLARED frame…
+	if _ := parse_manifest('ethframe,BenchTelem,0x8001,9,tx,cyclic,300000,-
+ethlayout,Ghost,BenchLoad,load,0,1,u8
+# fb.handlers
+0,app,0,Bench,on_100ms,100000
+')
+	{
+		assert false, 'ethlayout with an unknown frame accepted'
+	}
+	// …and fit inside its declared length (offset+width <= len)
+	if _ := parse_manifest('ethframe,BenchTelem,0x8001,9,tx,cyclic,300000,-
+ethlayout,BenchTelem,BenchTicks,ticks,6,4,u32
+# fb.handlers
+0,app,0,Bench,on_100ms,100000
+')
+	{
+		assert false, 'out-of-frame ethlayout field accepted'
+	}
 }
 
 fn test_short_someip_row_rejected() {

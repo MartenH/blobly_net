@@ -26,11 +26,14 @@ import time
 
 // EventDef is one expected board->host event (from the manifest's `ethframe`
 // tx rows): the event id names the frame and fixes its exact payload length.
+// e2e is the E2E data id (0 = unprotected) — a protected frame carries the
+// 2-byte counter+CRC trailer inside its declared length, verified on rx.
 pub struct EventDef {
 pub:
 	id   u16
 	name string
 	len  int
+	e2e  u16
 }
 
 // EventFrame is one accepted event notification.
@@ -46,10 +49,12 @@ pub:
 	version u8
 pub mut:
 	// counted-and-dropped datagrams: foreign source, malformed, foreign
-	// service/version, unknown event id, wrong payload length. Worker-written,
-	// GUI-read (a torn u64 read is cosmetic).
+	// service/version, unknown event id, wrong payload length, repeated E2E
+	// counter. Worker-written, GUI-read (a torn u64 read is cosmetic).
 	drops     u64
 	rx_events u64
+	e2e_bad   u64 // E2E CRC failures (dropped) — each datagram lands in ONE counter
+	e2e_lost  u64 // E2E counter skips (the event is still delivered; a gap preceded it)
 mut:
 	sock      &net.UdpConn
 	board     net.Addr
@@ -59,6 +64,7 @@ mut:
 	rsp       [][]u8 // response handoff FIFO to the waiting shell (cap rsp_cap)
 	buf       []u8
 	last_active i64 // last rx/prime, time.ticks ms (worker thread only) — re-prime clock
+	e2e_rx      map[u16]E2eRx // per-event-id counter tracking (worker thread only)
 }
 
 // rsp_cap bounds the response FIFO: the board answers one single-flight
@@ -165,6 +171,27 @@ pub fn (mut l BoardLink) poll() ?EventFrame {
 	if m.payload.len != def.len {
 		l.drops++
 		return none
+	}
+	if def.e2e != 0 {
+		// the manifest declares E2E protection — verify it, mirroring the
+		// target's rx gate: ok/lost are usable, crc_error/repeated are not
+		mut st := l.e2e_rx[h.method] or { E2eRx{} }
+		res := st.check(m.payload, def.e2e)
+		l.e2e_rx[h.method] = st
+		match res {
+			.crc_error {
+				l.e2e_bad++
+				return none
+			}
+			.repeated {
+				l.drops++ // a duplicate is stale data, not a protection fault
+				return none
+			}
+			.lost {
+				l.e2e_lost++ // frames were lost before this one; it is still fresh
+			}
+			.ok {}
+		}
 	}
 	l.rx_events++
 	return EventFrame{def, m.payload}

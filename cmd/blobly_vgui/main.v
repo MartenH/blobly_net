@@ -80,7 +80,10 @@ mut:
 	rx        u64
 	running   bool
 	link_down bool // real CAN iface is administratively DOWN (bound but can't tx/rx)
-	drops     u64  // someip: counted-and-dropped datagrams (foreign/malformed)
+	drops     u64  // someip: counted-and-dropped datagrams (foreign/malformed/repeated)
+	e2e_bad   u64  // someip: E2E CRC failures (dropped)
+	e2e_lost  u64  // someip: E2E counter skips (event delivered; a gap preceded it)
+	run_gen   int  // someip: spawn generation — a worker whose gen is stale exits
 }
 
 fn (c Chan) monitorable() bool {
@@ -420,10 +423,22 @@ fn (app &App) find_message(id u32, ext bool) ?candb.Message {
 	return none
 }
 
-// eth_layout_fields resolves an id in the someip channel's manifest to its
-// payload layout ([] for CAN ids / unknown frames) — the Trace expand decode.
-fn (app &App) eth_layout_fields(id u32) []telem.EthField {
+// eth_layout_fields resolves a trace row to the someip channel's payload
+// layout ([] otherwise) — the Trace expand decode. Gated on the row's
+// CHANNEL, not the id alone: in a mixed project an extended CAN frame can
+// collide numerically with an eth frame id and must not decode as eth fields.
+fn (app &App) eth_layout_fields(id u32, ch string) []telem.EthField {
 	if id > 0xFFFF {
+		return []
+	}
+	mut on_someip := false
+	for c in app.chans {
+		if c.someip && !c.someip_dup && c.name == ch {
+			on_someip = true
+			break
+		}
+	}
+	if !on_someip {
 		return []
 	}
 	f := app.eth_manifest.eth_frame_by_id(u16(id)) or { return [] }
@@ -922,17 +937,29 @@ fn eth_local_ip(board string) ?string {
 	return addr.str().all_before_last(':')
 }
 
-// spawn_eth_rx starts a someip channel's rx worker with ITS OWN loaded
-// manifest — not the global eth_manifest slot, which belongs to the shell
-// identity and could describe a different channel in a mixed project.
+// spawn_eth_rx starts a someip channel's rx worker with a freshly loaded
+// manifest. That load becomes THE snapshot: eth_manifest/eth_someip/
+// eth_method are updated with it before the spawn, so worker, shell and
+// grouped-Trace all read ONE version even if the file changed on disk since
+// the rebuild. The per-channel generation counter guards the Stop→quick-Start
+// race: an old worker still inside its poll window could see running==true
+// again and survive next to (or instead of) the new spawn — it must exit the
+// moment its generation is stale.
 fn (mut app App) spawn_eth_rx(ci int) {
 	ch := app.chans[ci]
 	m := telem.load_manifest(app.resolve_asset(ch.manifest)) or {
 		app.notify('someip ${ch.name}: manifest ${ch.manifest}: ${err}')
 		return
 	}
+	app.mu.lock()
+	app.eth_manifest = m
+	app.eth_someip = m.someip
+	app.eth_method = m.shell_method
+	app.chans[ci].run_gen++
+	gen := app.chans[ci].run_gen
 	app.chans[ci].running = true
-	spawn eth_rx_loop(app, ci, m)
+	app.mu.unlock()
+	spawn eth_rx_loop(app, ci, m, gen)
 }
 
 // eth_rx_loop is a someip board channel's rx worker — the eth mirror of
@@ -942,7 +969,7 @@ fn (mut app App) spawn_eth_rx(ci int) {
 // (registered as app.eth_link). Accepted events feed the same trace store as
 // CAN rx; everything else is counted-and-dropped inside the link. `m` is the
 // channel's OWN manifest, passed at spawn.
-fn eth_rx_loop(app &App, ci int, m telem.Manifest) {
+fn eth_rx_loop(app &App, ci int, m telem.Manifest, gen int) {
 	mut a := unsafe { app }
 	a.mu.lock()
 	board_ip := a.chans[ci].address
@@ -952,17 +979,13 @@ fn eth_rx_loop(app &App, ci int, m telem.Manifest) {
 	sip := m.someip
 	if sip.service == 0 || board_ip == '' {
 		a.notify('someip ${chname}: no board ip / no manifest identity — attach the board\'s manifest and set its ip')
-		a.mu.lock()
-		a.chans[ci].running = false
-		a.mu.unlock()
+		a.eth_worker_done(ci, gen)
 		return
 	}
 	if local == '' {
 		local = eth_local_ip('${board_ip}:${sip.port}') or {
 			a.notify('someip ${chname}: could not auto-detect the local ip — set "local ip" on the channel')
-			a.mu.lock()
-			a.chans[ci].running = false
-			a.mu.unlock()
+			a.eth_worker_done(ci, gen)
 			return
 		}
 	}
@@ -970,28 +993,31 @@ fn eth_rx_loop(app &App, ci int, m telem.Manifest) {
 	mut defs := []someip.EventDef{}
 	for f in m.eth_frames {
 		if f.dir == 'tx' {
-			defs << someip.EventDef{f.id, f.name, f.length}
+			defs << someip.EventDef{f.id, f.name, f.length, f.e2e}
 		}
 	}
 	peer_port := sip.peer.all_after_last(':').int()
 	mut link := someip.open_board_link('${local}:${peer_port}', '${board_ip}:${sip.port}',
 		sip.service, sip.version, defs) or {
 		a.notify('someip ${chname}: bind ${local}:${peer_port}: ${err}')
-		a.mu.lock()
-		a.chans[ci].running = false
-		a.mu.unlock()
+		a.eth_worker_done(ci, gen)
 		return
 	}
 	a.mu.lock()
 	a.eth_link = link
 	a.mu.unlock()
 	a.notify('someip ${chname}: ${local}:${peer_port} <- ${board_ip}:${sip.port} (${defs.len} event frame(s))')
-	for a.running && a.chans[ci].enabled {
+	// the generation check makes a superseded worker exit even if a quick
+	// re-Start already flipped running back to true within our poll window
+	for a.running && a.chans[ci].enabled && a.chans[ci].run_gen == gen {
 		ev := link.poll() or {
-			// keep the drop counter visible even on an idle wire
-			if link.drops != a.chans[ci].drops {
+			// keep the drop/e2e counters visible even on an idle wire
+			if link.drops != a.chans[ci].drops || link.e2e_bad != a.chans[ci].e2e_bad
+				|| link.e2e_lost != a.chans[ci].e2e_lost {
 				a.mu.lock()
 				a.chans[ci].drops = link.drops
+				a.chans[ci].e2e_bad = link.e2e_bad
+				a.chans[ci].e2e_lost = link.e2e_lost
 				a.mu.unlock()
 			}
 			continue
@@ -1007,6 +1033,8 @@ fn eth_rx_loop(app &App, ci int, m telem.Manifest) {
 		}
 		a.chans[ci].rx++
 		a.chans[ci].drops = link.drops
+		a.chans[ci].e2e_bad = link.e2e_bad
+		a.chans[ci].e2e_lost = link.e2e_lost
 		a.rx++
 		a.mu.unlock()
 		now := time.ticks()
@@ -1021,10 +1049,25 @@ fn eth_rx_loop(app &App, ci int, m telem.Manifest) {
 	if voidptr(a.eth_link) == voidptr(link) {
 		a.eth_link = unsafe { nil }
 	}
-	a.chans[ci].running = false
-	a.chans[ci].drops = link.drops
+	if a.chans[ci].run_gen == gen {
+		a.chans[ci].drops = link.drops
+		a.chans[ci].e2e_bad = link.e2e_bad
+		a.chans[ci].e2e_lost = link.e2e_lost
+	}
 	a.mu.unlock()
+	a.eth_worker_done(ci, gen)
 	link.close()
+}
+
+// eth_worker_done clears the channel's running flag — but ONLY for the
+// generation that owns it: a superseded worker (Stop -> quick re-Start) must
+// not mark the NEW worker's channel as stopped.
+fn (mut app App) eth_worker_done(ci int, gen int) {
+	app.mu.lock()
+	if app.chans[ci].run_gen == gen {
+		app.chans[ci].running = false
+	}
+	app.mu.unlock()
 }
 
 fn hex(b []u8) string {
@@ -2876,7 +2919,7 @@ fn draw_busconfig(mut app App, chans []Chan) {
 			vgui.text('DoIP endpoint (Ethernet diagnostics)')
 		} else if c.someip {
 			binds := if c.local_ip != '' { c.local_ip } else { 'auto' }
-			vgui.text('SOME/IP eth board    local: ${binds}    rx drops: ${c.drops}')
+			vgui.text('SOME/IP eth board    local: ${binds}    rx drops: ${c.drops}    e2e lost: ${c.e2e_lost}  bad: ${c.e2e_bad}')
 			if c.someip_dup {
 				vgui.text_colored(230, 170, 70, 'one someip channel per project — disabled')
 			}
@@ -3662,7 +3705,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 					// an eth frame has no DBC — decode its LE fields per the
 					// someip channel's manifest layout instead (format keeps
 					// unsigned types unsigned)
-					for f in app.eth_layout_fields(g.id) {
+					for f in app.eth_layout_fields(g.id, g.ch) {
 						v := f.format(r.data) or { continue }
 						vgui.table_row()
 						vgui.table_next_col()
@@ -6958,9 +7001,23 @@ fn shell_worker_eth(app &App, line string, target string, sip telem.SomeipIdent,
 	// board's datagrams all arrive on the channel's socket anyway)
 	a.mu.lock()
 	mut link := a.eth_link
+	mut has_someip := false
+	for c in a.chans {
+		if c.someip {
+			has_someip = true
+			break
+		}
+	}
 	a.mu.unlock()
 	if !isnil(link) {
 		shell_eth_via_link(a, line, sip, method, mut link)
+		return
+	}
+	if has_someip {
+		// a configured-but-stopped channel is a deliberate state — the shell
+		// must not bypass it with its own socket; the standalone path below
+		// serves only projects with NO someip channel (legacy manifest-on-CAN)
+		a.shell_append('(someip channel stopped — Start it)')
 		return
 	}
 	if target == '' {

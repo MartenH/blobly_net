@@ -434,6 +434,19 @@ pub fn parse_manifest(text string) !Manifest {
 	if handlers.len == 0 {
 		return error('manifest has no handler rows')
 	}
+	// cross-validate the layouts at the END (row order independent): every
+	// ethlayout row must reference a declared ethframe and fit inside its
+	// declared length — an out-of-frame field would silently decode as absent
+	// on every event, which reads as "signal never changes", not as a bug.
+	for lf in eth_layout {
+		fr := eth_frames.filter(it.name == lf.frame)
+		if fr.len == 0 {
+			return error('manifest ethlayout references unknown frame "${lf.frame}"')
+		}
+		if lf.offset + lf.width > fr[0].length {
+			return error('manifest ethlayout ${lf.frame}.${lf.field}: offset ${lf.offset} + width ${lf.width} exceeds the frame length ${fr[0].length}')
+		}
+	}
 	mut m := Manifest{
 		handlers:     handlers
 		threads:      threads

@@ -49,10 +49,18 @@ fn event_defs(m telem.Manifest) []EventDef {
 	mut defs := []EventDef{}
 	for f in m.eth_frames {
 		if f.dir == 'tx' {
-			defs << EventDef{f.id, f.name, f.length}
+			defs << EventDef{f.id, f.name, f.length, f.e2e}
 		}
 	}
 	return defs
+}
+
+// protected_telem builds one E2E-protected BenchTelem payload (data id 0x21,
+// trailer stamped from `btx`) — what the real board emits.
+fn protected_telem(mut btx E2eTx) []u8 {
+	mut p := [u8(7), 0x44, 0x33, 0x22, 0x11, 0x02, 0x01, 0, 0]
+	btx.protect(mut p, 0x21)
+	return p
 }
 
 fn test_board_link_loopback() {
@@ -71,10 +79,10 @@ fn test_board_link_loopback() {
 		link.close()
 	}
 	peer := link.local_addr()!
+	mut btx := E2eTx{} // the fake board's E2E tx state (BenchTelem is protected)
 
 	// (a) an event arrives and decodes per ethlayout (LE payload fields)
-	payload := [u8(7), 0x44, 0x33, 0x22, 0x11, 0x02, 0x01, 0xAA, 0xBB]
-	srv.write_to(peer, notification(0x100, 0x8001, 1, payload))!
+	srv.write_to(peer, notification(0x100, 0x8001, 1, protected_telem(mut btx)))!
 	ev := link.poll() or {
 		assert false, 'event not accepted'
 		return
@@ -107,9 +115,9 @@ fn test_board_link_loopback() {
 	validate(rm.header, 0x100, 1)! // the board's gate would accept it
 	assert rm.payload.bytestr() == 'uptime'
 	// board answers: event, response, event — from ITS endpoint (peer known)
-	srv.write_to(peer, notification(0x100, 0x8001, 1, payload))!
+	srv.write_to(peer, notification(0x100, 0x8001, 1, protected_telem(mut btx)))!
 	srv.write_to(peer, response_for(rm.header, 'up 9m'.bytes()))!
-	srv.write_to(peer, notification(0x100, 0x8001, 1, payload))!
+	srv.write_to(peer, notification(0x100, 0x8001, 1, protected_telem(mut btx)))!
 	ev1 := link.poll() or {
 		assert false, 'interleaved event 1 lost'
 		return
@@ -132,13 +140,14 @@ fn test_board_link_loopback() {
 	assert link.drops == 0
 
 	// (c) foreign/malformed datagrams: counted + dropped, never surfaced
+	raw := [u8(7), 0x44, 0x33, 0x22, 0x11, 0x02, 0x01, 0xAA, 0xBB]
 	mut stranger := net.listen_udp('127.0.0.1:0')!
 	defer {
 		stranger.close() or {}
 	}
-	stranger.write_to(peer, notification(0x100, 0x8001, 1, payload))! // wrong source
+	stranger.write_to(peer, notification(0x100, 0x8001, 1, raw))! // wrong source
 	srv.write_to(peer, [u8(0xDE), 0xAD])! // not even a header
-	srv.write_to(peer, notification(0x999, 0x8001, 1, payload))! // foreign service
+	srv.write_to(peer, notification(0x999, 0x8001, 1, raw))! // foreign service
 	srv.write_to(peer, notification(0x100, 0x8004, 1, [u8(1)]))! // id not in the manifest
 	srv.write_to(peer, notification(0x100, 0x8001, 1, [u8(1), 2]))! // wrong length
 	for _ in 0 .. 5 {
@@ -156,7 +165,7 @@ fn test_board_link_response_fifo() {
 	srv.set_read_timeout(500 * time.millisecond)
 	board := srv.sock.address()!.str()
 	mut link := open_board_link('127.0.0.1:0', board, 0x100, 1, [
-		EventDef{0x8001, 'BenchTelem', 9},
+		EventDef{0x8001, 'BenchTelem', 9, 0},
 	])!
 	defer {
 		link.close()
@@ -226,4 +235,57 @@ fn test_board_link_response_fifo() {
 	assert got.len == 8
 	assert got[0] == 0x102 // the two oldest were dropped
 	assert got[7] == 0x109
+}
+
+fn test_board_link_e2e() {
+	m := telem.parse_manifest(test_manifest)!
+	mut srv := net.listen_udp('127.0.0.1:0')!
+	defer {
+		srv.close() or {}
+	}
+	srv.set_read_timeout(500 * time.millisecond)
+	board := srv.sock.address()!.str()
+	mut link := open_board_link('127.0.0.1:0', board, m.someip.service, m.someip.version,
+		event_defs(m))!
+	defer {
+		link.close()
+	}
+	peer := link.local_addr()!
+	mut btx := E2eTx{}
+
+	// a valid protected event is accepted
+	srv.write_to(peer, notification(0x100, 0x8001, 1, protected_telem(mut btx)))!
+	e1 := link.poll() or {
+		assert false, 'valid protected event rejected'
+		return
+	}
+	assert e1.def.name == 'BenchTelem'
+	assert link.e2e_bad == 0 && link.e2e_lost == 0
+
+	// a tampered CRC is dropped and counted as e2e_bad
+	mut bad := protected_telem(mut btx) // stamps counter 1
+	bad[bad.len - 1] = bad[bad.len - 1] ^ 0xFF
+	srv.write_to(peer, notification(0x100, 0x8001, 1, bad))!
+	assert link.poll() == none
+	assert link.e2e_bad == 1
+	assert link.rx_events == 1
+
+	// a counter skip is accepted but counted as e2e_lost (frames went missing
+	// BEFORE it; this one is fresh — the target's semantics exactly)
+	btx.counter = 3 // rx last saw 0; delta 3 > 1 = lost
+	skipped := protected_telem(mut btx)
+	srv.write_to(peer, notification(0x100, 0x8001, 1, skipped))!
+	e2 := link.poll() or {
+		assert false, 'counter-skip event rejected'
+		return
+	}
+	assert e2.def.id == 0x8001
+	assert link.e2e_lost == 1
+	assert link.rx_events == 2
+
+	// an exact repeat (stuck/duplicating sender) is stale data — dropped
+	srv.write_to(peer, notification(0x100, 0x8001, 1, skipped))!
+	assert link.poll() == none
+	assert link.drops == 1
+	assert link.rx_events == 2
 }
