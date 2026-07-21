@@ -73,6 +73,7 @@ struct Chan {
 	manifest     string
 	doip         bool
 	someip       bool   // SOME/IP eth board channel (address = board ip; not a CAN bus)
+	someip_dup   bool   // a someip channel beyond the first — forced disabled (one per project)
 	local_ip     string // someip: the ip the rx socket binds ('' = auto-detect)
 mut:
 	enabled   bool
@@ -489,11 +490,12 @@ fn (mut app App) start() {
 	}
 	app.running = true
 	for ci, ch in app.chans {
-		// a someip board channel gets its own eth rx worker (no CAN transport)
+		// a someip board channel gets its own eth rx worker (no CAN transport);
+		// mode gates it exactly like the CAN workers, and a forced-disabled
+		// duplicate never starts
 		if ch.someip {
-			if ch.enabled {
-				app.chans[ci].running = true
-				spawn eth_rx_loop(app, ci)
+			if ch.enabled && ch.mode == 'monitor' && !ch.someip_dup {
+				app.spawn_eth_rx(ci)
 			}
 			continue
 		}
@@ -920,16 +922,29 @@ fn eth_local_ip(board string) ?string {
 	return addr.str().all_before_last(':')
 }
 
+// spawn_eth_rx starts a someip channel's rx worker with ITS OWN loaded
+// manifest — not the global eth_manifest slot, which belongs to the shell
+// identity and could describe a different channel in a mixed project.
+fn (mut app App) spawn_eth_rx(ci int) {
+	ch := app.chans[ci]
+	m := telem.load_manifest(app.resolve_asset(ch.manifest)) or {
+		app.notify('someip ${ch.name}: manifest ${ch.manifest}: ${err}')
+		return
+	}
+	app.chans[ci].running = true
+	spawn eth_rx_loop(app, ci, m)
+}
+
 // eth_rx_loop is a someip board channel's rx worker — the eth mirror of
 // rx_loop. ONE socket for the whole channel, bound to <local-ip>:<manifest
 // peer port> and owned by the BoardLink: the board's static source filter
 // accepts exactly that endpoint, so the shell's requests ride the same socket
 // (registered as app.eth_link). Accepted events feed the same trace store as
-// CAN rx; everything else is counted-and-dropped inside the link.
-fn eth_rx_loop(app &App, ci int) {
+// CAN rx; everything else is counted-and-dropped inside the link. `m` is the
+// channel's OWN manifest, passed at spawn.
+fn eth_rx_loop(app &App, ci int, m telem.Manifest) {
 	mut a := unsafe { app }
 	a.mu.lock()
-	m := a.eth_manifest // snapshot: only mutated while stopped (like app.dbs)
 	board_ip := a.chans[ci].address
 	mut local := a.chans[ci].local_ip
 	chname := a.chans[ci].name
@@ -1152,7 +1167,13 @@ fn (mut app App) rebuild_from_proj() {
 	app.sel_id = -1
 	app.mu.unlock()
 	mut eth_board := '' // the first someip channel's board ip (shell prefill)
+	mut someip_seen := false // ONE someip channel per project (mirrors emb's one eth bus
+	// per image); further ones are forced disabled — the multi-board selector is a follow-up
 	for ch in proj.channels {
+		dup := ch.is_someip() && someip_seen
+		if ch.is_someip() {
+			someip_seen = true
+		}
 		app.chans << Chan{
 			name:         ch.name
 			network:      ch.network
@@ -1168,8 +1189,12 @@ fn (mut app App) rebuild_from_proj() {
 			manifest:     ch.manifest
 			doip:         ch.is_doip()
 			someip:       ch.is_someip()
+			someip_dup:   dup
 			local_ip:     ch.local_ip
-			enabled:      ch.enabled
+			enabled:      ch.enabled && !dup
+		}
+		if dup {
+			app.notify('someip ${ch.name}: one someip channel per project — disabled')
 		}
 		for dbpath in ch.databases {
 			mut rp := app.resolve_asset(dbpath)
@@ -1213,8 +1238,11 @@ fn (mut app App) rebuild_from_proj() {
 				}
 				// a someip CHANNEL is the first-class source of the eth identity
 				// (its manifest IS the board); the any-channel scan below stays
-				// as back-compat but never displaces a someip channel's claim
-				if ch.is_someip() && eth_board == '' {
+				// as back-compat but never displaces a someip channel's claim.
+				// Only the FIRST someip channel may claim — a forced-disabled
+				// duplicate must not hijack the identity when the first one's
+				// manifest failed to load.
+				if ch.is_someip() && !dup && eth_board == '' {
 					app.eth_someip = m.someip
 					app.eth_method = m.shell_method
 					app.eth_manifest = m
@@ -2849,6 +2877,9 @@ fn draw_busconfig(mut app App, chans []Chan) {
 		} else if c.someip {
 			binds := if c.local_ip != '' { c.local_ip } else { 'auto' }
 			vgui.text('SOME/IP eth board    local: ${binds}    rx drops: ${c.drops}')
+			if c.someip_dup {
+				vgui.text_colored(230, 170, 70, 'one someip channel per project — disabled')
+			}
 		} else {
 			du := if c.data_bitrate > 0 { '  data ${c.data_bitrate}' } else { '' }
 			vgui.text('bitrate: ${c.bitrate}${du}    listen-only: ${c.listen_only}')
@@ -3192,11 +3223,13 @@ fn draw_buses(mut app App, chans []Chan) {
 					app.chans[i].running = true
 					spawn rx_loop(app, i, app.chans[i].iface)
 				}
-				if new && app.running && c.someip && !app.chans[i].running {
-					app.chans[i].running = true
-					spawn eth_rx_loop(app, i)
-				}
 				app.mu.unlock()
+				// someip: outside the lock (spawn_eth_rx notifies on a bad manifest);
+				// same monitor-mode gate as the CAN workers, duplicates never start
+				if new && app.running && c.someip && c.mode == 'monitor' && !c.someip_dup
+					&& !app.chans[i].running {
+					app.spawn_eth_rx(i)
+				}
 			}
 			vgui.same_line()
 			r, g, b, label := chan_state(c)
@@ -3627,16 +3660,17 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 					}
 				} else {
 					// an eth frame has no DBC — decode its LE fields per the
-					// someip channel's manifest layout instead
+					// someip channel's manifest layout instead (format keeps
+					// unsigned types unsigned)
 					for f in app.eth_layout_fields(g.id) {
-						v := f.decode(r.data) or { continue }
+						v := f.format(r.data) or { continue }
 						vgui.table_row()
 						vgui.table_next_col()
 						vgui.text('    ${f.field}')
 						vgui.table_next_col()
 						vgui.table_next_col()
 						vgui.table_next_col()
-						vgui.table_cell('${v}')
+						vgui.table_cell(v)
 					}
 				}
 				vgui.tree_pop()

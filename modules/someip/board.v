@@ -15,9 +15,10 @@ module someip
 // Threading: ONE worker thread drives poll() (recv + classify); a shell
 // thread may concurrently send() (sendto on a UDP fd is atomic and safe
 // against a concurrent recv — no queueing latency behind the read timeout)
-// and take_response(). The response handoff is a single mutex-guarded slot:
-// the board answers one request at a time (RpcClient is single-flight and
-// does the correlation/drain), so one slot is the whole protocol.
+// and take_response(). The response handoff is a small mutex-guarded FIFO
+// (not a single slot: a late stale response arriving right after the real
+// one must not clobber it between shell polls); the shell's RpcClient does
+// the correlation and drains the stale ones.
 
 import net
 import sync
@@ -55,9 +56,14 @@ mut:
 	board_str string // the only accepted source (ip:port — the board's endpoint)
 	events    map[u16]EventDef
 	mu        sync.Mutex
-	rsp       []u8 // single-slot response handoff to the waiting shell
+	rsp       [][]u8 // response handoff FIFO to the waiting shell (cap rsp_cap)
 	buf       []u8
 }
+
+// rsp_cap bounds the response FIFO: the board answers one single-flight
+// request at a time, so anything beyond a handful is stale flood — overflow
+// drops the OLDEST and counts it.
+const rsp_cap = 8
 
 // open_board_link binds `local` (ip:port — the board's configured peer
 // endpoint) and resolves `board` (ip:port) as the send target + source filter.
@@ -108,7 +114,11 @@ pub fn (mut l BoardLink) poll() ?EventFrame {
 		// the shell's answer: park the whole datagram (its RpcClient
 		// correlates and drains stale ones)
 		l.mu.lock()
-		l.rsp = l.buf[..n].clone()
+		if l.rsp.len >= rsp_cap {
+			l.rsp.delete(0) // stale flood: drop the oldest, count it
+			l.drops++
+		}
+		l.rsp << l.buf[..n].clone()
 		l.mu.unlock()
 		return none
 	}
@@ -133,15 +143,17 @@ pub fn (mut l BoardLink) poll() ?EventFrame {
 }
 
 // send transmits one request datagram to the board on the shared socket
-// (called from the shell thread) and clears any stale parked response.
+// (called from the shell thread) and clears any responses parked before it
+// (they can only be stale — answers to abandoned sessions).
 pub fn (mut l BoardLink) send(req []u8) ! {
 	l.mu.lock()
-	l.rsp = []
+	l.rsp = [][]u8{}
 	l.mu.unlock()
 	l.sock.write_to(l.board, req)!
 }
 
-// take_response pops the routed response datagram (none while still waiting).
+// take_response pops the oldest routed response datagram, in arrival order
+// (none while still waiting).
 pub fn (mut l BoardLink) take_response() ?[]u8 {
 	l.mu.lock()
 	defer {
@@ -150,8 +162,8 @@ pub fn (mut l BoardLink) take_response() ?[]u8 {
 	if l.rsp.len == 0 {
 		return none
 	}
-	r := l.rsp
-	l.rsp = []
+	r := l.rsp[0]
+	l.rsp.delete(0)
 	return r
 }
 

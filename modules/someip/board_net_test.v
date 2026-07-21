@@ -129,3 +129,85 @@ fn test_board_link_loopback() {
 	assert link.drops == 5
 	assert link.rx_events == 3 // the accepted events above, unchanged
 }
+
+fn test_board_link_response_fifo() {
+	mut srv := net.listen_udp('127.0.0.1:0')!
+	defer {
+		srv.close() or {}
+	}
+	srv.set_read_timeout(500 * time.millisecond)
+	board := srv.sock.address()!.str()
+	mut link := open_board_link('127.0.0.1:0', board, 0x100, 1, [
+		EventDef{0x8001, 'BenchTelem', 9},
+	])!
+	defer {
+		link.close()
+	}
+	peer := link.local_addr()!
+
+	// the real response immediately followed by a stale-session one: both
+	// must reach the taker IN ORDER (a single slot would let the stale
+	// overwrite the real one between shell polls -> timeout)
+	mut cli := RpcClient{
+		service:    0x100
+		method:     0x0001
+		iface:      1
+		client_id:  0x0E01
+		timeout_us: 2_000_000
+	}
+	req := cli.send('uptime'.bytes(), 0) or {
+		assert false, 'send refused'
+		return
+	}
+	link.send(req)!
+	mut sbuf := []u8{len: 2048}
+	n, _ := srv.read(mut sbuf)!
+	rm := parse(sbuf[..n])!
+	srv.write_to(peer, response_for(rm.header, 'up 9m'.bytes()))!
+	stale := Header{
+		service:           rm.header.service
+		method:            rm.header.method
+		client:            rm.header.client
+		session:           0x7777 // an abandoned session's late answer
+		protocol_version:  protocol_version
+		interface_version: rm.header.interface_version
+		msg_type:          mt_response
+	}
+	srv.write_to(peer, encode(stale, 'old'.bytes()))!
+	assert link.poll() == none // both routed to the FIFO
+	assert link.poll() == none
+	first := link.take_response() or {
+		assert false, 'real response lost'
+		return
+	}
+	assert parse(first)!.header.session == rm.header.session // arrival order kept
+	assert cli.on_datagram(first)
+	assert cli.result.payload.bytestr() == 'up 9m'
+	second := link.take_response() or {
+		assert false, 'stale response lost'
+		return
+	}
+	assert parse(second)!.header.session == 0x7777
+	assert !cli.on_datagram(second) // the client drains it
+	assert link.take_response() == none
+	assert link.drops == 0
+
+	// overflow: beyond the cap the OLDEST is dropped and counted
+	for i in 0 .. 10 {
+		mut h := stale
+		srv.write_to(peer, encode(Header{
+			...h
+			session: u16(0x100 + i)
+		}, []u8{}))!
+		assert link.poll() == none
+	}
+	assert link.drops == 2 // 10 parked into a cap of 8
+	mut got := []u16{}
+	for {
+		r := link.take_response() or { break }
+		got << parse(r)!.header.session
+	}
+	assert got.len == 8
+	assert got[0] == 0x102 // the two oldest were dropped
+	assert got[7] == 0x109
+}

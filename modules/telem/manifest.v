@@ -147,6 +147,17 @@ pub fn (f EthField) decode(payload []u8) ?i64 {
 	return i64(v)
 }
 
+// format renders the decoded value for display: unsigned types print the raw
+// bits as u64 (a u64 above i64 max must not show negative — decode carries
+// the bit pattern through i64), signed i* keep the sign extension.
+pub fn (f EthField) format(payload []u8) ?string {
+	v := f.decode(payload)?
+	if f.typ.starts_with('i') {
+		return '${v}'
+	}
+	return '${u64(v)}'
+}
+
 pub struct Manifest {
 pub:
 	handlers     []Handler
@@ -179,6 +190,7 @@ pub fn parse_manifest(text string) !Manifest {
 	mut shell_method := u16(0)
 	mut eth_frames := []EthFrame{}
 	mut eth_layout := []EthField{}
+	mut seen_eth := map[u16]bool{}
 	mut seen := map[u16]bool{}
 	mut seen_tid := map[u32]bool{}
 	// The manifest is sectioned by `#` header comments (`# fb.handlers:`, `# threads:`,
@@ -228,6 +240,19 @@ pub fn parse_manifest(text string) !Manifest {
 			if cols[4] != 'tx' && cols[4] != 'rx' {
 				return error('manifest ethframe dir must be tx or rx: "${cols[4]}"')
 			}
+			// a tx (board->host) frame arrives as a NOTIFICATION, whose id must
+			// carry the event-class bit — without it every datagram would fail
+			// the rx envelope check and the channel would run at 100% drops.
+			// rx frames are the board's business (its own gate governs them).
+			if cols[4] == 'tx' && fid & 0x8000 == 0 {
+				return error('manifest ethframe "${cols[1]}" is tx but id 0x${fid.hex()} lacks the event bit (0x8000)')
+			}
+			// duplicate ids would split identity between the by-id lookup (first
+			// wins) and a rx map built from the rows (last wins) — reject.
+			if u16(fid) in seen_eth {
+				return error('manifest has a duplicate ethframe id: 0x${fid.hex()}')
+			}
+			seen_eth[u16(fid)] = true
 			mut e2e := u32(0)
 			if cols.len > 7 && cols[7] != '-' {
 				e2e = parse_can_id(cols[7]) or { return error('manifest ethframe e2e id: ${err}') }

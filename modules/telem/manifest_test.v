@@ -99,6 +99,23 @@ fn test_ethlayout_signed_decode() {
 	}
 	assert f.decode([u8(0xFE), 0xFF])? == -2 // sign-extends from the wire width
 	assert f.decode([u8(0x02), 0x00])? == 2
+	assert f.format([u8(0xFE), 0xFF])? == '-2'
+}
+
+fn test_ethlayout_u64_format_unsigned() {
+	// decode carries the bit pattern through i64; format must render unsigned
+	// types via the raw bits — a u64 above i64 max must not display negative
+	f := EthField{
+		frame:  'F'
+		signal: 'S'
+		field:  'big'
+		offset: 0
+		width:  8
+		typ:    'u64'
+	}
+	payload := [u8(0xF6), 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF] // 0xFFFF_FFFF_FFFF_FFF6
+	assert f.decode(payload)? == -10 // the i64 view of the bits
+	assert f.format(payload)? == '18446744073709551606'
 }
 
 fn test_ethframe_rows_fail_loud() {
@@ -124,6 +141,34 @@ fn test_ethframe_rows_fail_loud() {
 	{
 		assert false, 'out-of-range ethlayout width accepted'
 	}
+	// duplicate ids would split identity between the by-id lookup (first wins)
+	// and a rx map built from the rows (last wins)
+	if _ := parse_manifest('ethframe,BenchTelem,0x8001,9,tx,cyclic,300000,-
+ethframe,BenchEcho,0x8001,1,tx,event,100000,-
+# fb.handlers
+0,app,0,Bench,on_100ms,100000
+')
+	{
+		assert false, 'duplicate ethframe id accepted'
+	}
+	// a tx frame without the event bit would fail the rx envelope check on
+	// every notification — 100% drops with no visible reason
+	if _ := parse_manifest('ethframe,BenchTelem,0x0001,9,tx,cyclic,300000,-
+# fb.handlers
+0,app,0,Bench,on_100ms,100000
+')
+	{
+		assert false, 'tx ethframe without the event bit accepted'
+	}
+	// an rx frame (host -> board) is a method-class id — bit 15 clear is fine
+	m := parse_manifest('ethframe,BenchCmd,0x0010,1,rx,cyclic,100000,-
+# fb.handlers
+0,app,0,Bench,on_100ms,100000
+') or {
+		assert false, 'method-class rx ethframe rejected'
+		return
+	}
+	assert m.eth_frames[0].id == 0x0010
 }
 
 fn test_short_someip_row_rejected() {
