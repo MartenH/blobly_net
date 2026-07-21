@@ -107,7 +107,9 @@ fn main() {
 		}
 		vgui.end()
 
-		// --- Trace Chart swimlane (positioned OFF the main viewport -> own OS window) ---
+		// --- Trace Chart swimlane: set_next_window coords are main-window-relative,
+		// and +1420 clears the main window's width — so the chart leaves the main
+		// viewport and gets its own OS window on any monitor layout ---
 		vgui.set_next_window(1420, 120, 720, 340)
 		vgui.begin('Trace Chart')
 		vgui.text_dim('drag = pan · scroll = zoom · double-click = fit · A/B markers to measure')
