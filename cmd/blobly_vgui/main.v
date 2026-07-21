@@ -505,7 +505,28 @@ fn (mut app App) start() {
 			return
 		}
 	}
+	// Ordering invariant: mint every starting channel's NEW generation BEFORE
+	// the world says "running". A stale worker draining in its recv window
+	// re-checks (running && gen ok); after a plain Stop the chans array is the
+	// SAME one, so bounds can't catch it — its generation must already be
+	// stale by the time app.running flips back to true, or it survives beside
+	// the new spawn. (For someip channels this pass is the invalidation;
+	// spawn_eth_rx below assigns the worker's final generation — a second
+	// bump, equally unmatchable by any stale worker.)
+	app.mu.lock()
+	for ci, ch in app.chans {
+		will_start := if ch.someip {
+			ch.enabled && ch.mode == 'monitor' && !ch.someip_dup
+		} else {
+			ch.monitorable()
+		}
+		if will_start {
+			app.next_run_gen++
+			app.chans[ci].run_gen = app.next_run_gen
+		}
+	}
 	app.running = true
+	app.mu.unlock()
 	for ci, ch in app.chans {
 		// a someip board channel gets its own eth rx worker (no CAN transport);
 		// mode gates it exactly like the CAN workers, and a forced-disabled
@@ -519,13 +540,9 @@ fn (mut app App) start() {
 		if !ch.monitorable() {
 			continue
 		}
-		// mint the worker generation exactly like spawn_eth_rx: app-global
-		// monotonic, so a stale worker can never match a post-rebuild channel
 		down := !iface_link_up(ch.adapter, ch.address)
 		app.mu.lock()
-		app.next_run_gen++
-		gen := app.next_run_gen
-		app.chans[ci].run_gen = gen
+		gen := app.chans[ci].run_gen // minted in the pass above
 		app.chans[ci].running = true
 		app.chans[ci].link_down = down
 		app.mu.unlock()
@@ -893,10 +910,11 @@ fn rx_loop(app &App, ci int, iface string, gen int) {
 	chname := a.chans[ci].name
 	adapter := a.chans[ci].adapter
 	address := a.chans[ci].address
-	a.mu.unlock()
-	// the TraceRsp id is config-static (the manifest is only mutated while stopped, so it can't
-	// change under a running RX loop) — resolve it once, not per frame in the hot path.
+	// the TraceRsp id is config-static (the manifest only changes with a
+	// project swap, which our generation guard detects) — resolve it once
+	// inside the guarded snapshot, not per frame in the hot path.
 	rsp_id := a.manifest.frames.or_defaults().rsp
+	a.mu.unlock()
 	for {
 		a.mu.lock()
 		alive := a.running && a.chan_gen_ok(ci, gen) && a.chans[ci].enabled
@@ -919,7 +937,6 @@ fn rx_loop(app &App, ci int, iface string, gen int) {
 		}
 		f := bus.recv(200) or { continue }
 		t_ms := f64(time.ticks() - a.t0)
-		name := a.lookup_name(f.id, f.extended)
 		a.mu.lock()
 		if !a.chan_gen_ok(ci, gen) {
 			// rebuilt under us mid-frame: the row/counters belong to a project
@@ -927,6 +944,11 @@ fn rx_loop(app &App, ci int, iface string, gen int) {
 			a.mu.unlock()
 			break
 		}
+		// the dbs lookup runs INSIDE the guarded section: a project swap
+		// clears and repopulates app.dbs under a worker blocked in recv, and
+		// the lock-free read contract only holds while this worker's channel
+		// still exists (gen ok = same project, dbs only mutated while stopped)
+		name := a.lookup_name(f.id, f.extended)
 		if !a.paused {
 			a.trace << TraceRow{t_ms, chname, 'RX', f.id, f.extended, f.rtr, name, f.data.clone()}
 			if a.trace.len > trace_cap {
@@ -2047,8 +2069,9 @@ fn selftest_config(mut app App) {
 		ok = selftest_check('c1 adapter doip', c1.adapter == 'doip') && ok
 		ok = selftest_check('c1 address host:port', c1.address == '127.0.0.1:13400') && ok
 	}
-	// manual rename onto a taken name must be rejected at commit and the field
-	// reverted (the load gate would catch it too, but only after a save->load)
+	// manual rename onto a taken name must be rejected at commit and the name
+	// fields reverted (the load gate would catch it too, but only after a
+	// save->load)
 	app.cfg_bufs[1].name_buf = mkbuf('CAN0', 48)
 	app.commit_cfg()
 	ok = selftest_check('rename collision reverted', app.proj.channels[1].name == 'Diag'
@@ -2057,6 +2080,13 @@ fn selftest_config(mut app App) {
 	app.cfg_bufs[1].name_buf = mkbuf('Diag2', 48)
 	app.commit_cfg()
 	ok = selftest_check('clean rename commits', app.proj.channels[1].name == 'Diag2') && ok
+	// simultaneous renames validate against the FINAL set: CAN0->CANX while
+	// Diag2->CAN0 is legal (no duplicate in the result) and must commit
+	app.cfg_bufs[0].name_buf = mkbuf('CANX', 48)
+	app.cfg_bufs[1].name_buf = mkbuf('CAN0', 48)
+	app.commit_cfg()
+	ok = selftest_check('simultaneous rename swap commits', app.proj.channels[0].name == 'CANX'
+		&& app.proj.channels[1].name == 'CAN0') && ok
 	println(if ok { 'SELFTEST_CONFIG: PASS' } else { 'SELFTEST_CONFIG: FAIL' })
 	println('--- discover_all() ---')
 	for d in app.discover_all() {
@@ -2503,37 +2533,44 @@ fn (mut app App) sync_cfg_bufs() {
 	}
 }
 
-// bus_name_taken reports whether another channel (index != except) already
-// uses this name — the commit-time counterpart of the project-load gate.
-fn (app &App) bus_name_taken(name string, except int) bool {
-	for j, c in app.proj.channels {
-		if j != except && c.name == name {
-			return true
-		}
-	}
-	return false
-}
-
 // commit_cfg flushes all bus edit buffers into app.proj (called before Save and before any
 // structural change so edits aren't lost). No-op if the buffers are out of sync.
 fn (mut app App) commit_cfg() {
 	if app.cfg_bufs.len != app.proj.channels.len {
 		return
 	}
+	// bus names are validated as a SET against the FINAL buffered result —
+	// a per-field check against the half-updated project would wrongly reject
+	// simultaneous renames (A->B while B->C is legal: the final set has no
+	// duplicate). Names key trace rows, bus chips and the someip trace decode
+	// gate, and the project LOAD rejects duplicates — catching a collision
+	// only at the next save->load would let the session run poisoned. On a
+	// collision ALL name fields revert (names are one logical group); every
+	// other field commits as usual — commit_cfg's granularity is per field.
+	mut proposed := []string{cap: app.proj.channels.len}
+	for i in 0 .. app.proj.channels.len {
+		proposed << vgui.buf_str(app.cfg_bufs[i].name_buf)
+	}
+	mut dup := ''
+	mut seen_names := map[string]bool{}
+	for nm in proposed {
+		if nm in seen_names {
+			dup = nm
+			break
+		}
+		seen_names[nm] = true
+	}
+	if dup != '' {
+		app.notify('bus name "${dup}" is duplicated — renames reverted')
+		for i in 0 .. app.proj.channels.len {
+			app.cfg_bufs[i].name_buf = mkbuf(app.proj.channels[i].name, 48)
+		}
+	}
 	for i in 0 .. app.proj.channels.len {
 		b := app.cfg_bufs[i]
 		mut ch := &app.proj.channels[i]
-		// a manual rename must not create a duplicate: names key trace rows,
-		// bus chips and the someip trace decode gate, and the project LOAD
-		// rejects duplicates — catching it only at the next save->load would
-		// let the session run poisoned. Reject visibly and revert the field
-		// (add_bus auto-uniquifies; this is the rename path's guard).
-		nm := vgui.buf_str(b.name_buf)
-		if nm != ch.name && app.bus_name_taken(nm, i) {
-			app.notify('bus name "${nm}" is already taken — rename reverted')
-			app.cfg_bufs[i].name_buf = mkbuf(ch.name, 48)
-		} else {
-			ch.name = nm
+		if dup == '' {
+			ch.name = proposed[i]
 		}
 		ch.network = vgui.buf_str(b.network_buf)
 		ch.address = vgui.buf_str(b.address_buf)
