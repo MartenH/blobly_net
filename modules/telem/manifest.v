@@ -88,12 +88,25 @@ pub fn (f TraceFrames) or_defaults() TraceFrames {
 }
 
 // Manifest resolves handler_id -> Handler and thread_id -> Thread.
+// SomeipIdent is the manifest's `# someip:` identity row — the eth service
+// the image binds (service, interface version, its own port, the configured
+// peer endpoint). Present only for eth images; service == 0 means absent.
+pub struct SomeipIdent {
+pub mut:
+	service u16
+	version u8
+	port    u16
+	peer    string
+}
+
 pub struct Manifest {
 pub:
-	handlers []Handler
-	threads  []Thread
-	frames   TraceFrames // the `# trace frames` ids (zero-filled -> or_defaults())
-	shell    ShellFrames // the `# shell frames` ids (zero-filled -> or_defaults())
+	handlers     []Handler
+	threads      []Thread
+	frames       TraceFrames // the `# trace frames` ids (zero-filled -> or_defaults())
+	shell        ShellFrames // the `# shell frames` ids (zero-filled -> or_defaults())
+	someip       SomeipIdent // the `# someip:` identity (eth images; service 0 = none)
+	shell_method u16         // `ethmod,shell,method,<id>` — the eth RPC shell (0 = none)
 pub mut:
 	by_id  map[u16]Handler // built by index()
 	by_tid map[u32]Thread  // built by index(); key = tkey(core, id) — THREAD IDS ARE PER-CORE
@@ -112,6 +125,8 @@ pub fn parse_manifest(text string) !Manifest {
 	mut threads := []Thread{}
 	mut frames := TraceFrames{}
 	mut shellf := ShellFrames{}
+	mut sip := SomeipIdent{}
+	mut shell_method := u16(0)
 	mut seen := map[u16]bool{}
 	mut seen_tid := map[u32]bool{}
 	// The manifest is sectioned by `#` header comments (`# fb.handlers:`, `# threads:`,
@@ -129,6 +144,10 @@ pub fn parse_manifest(text string) !Manifest {
 				section = 'frames'
 			} else if low.contains('shell frames') {
 				section = 'shell'
+			} else if low.contains('someip') {
+				section = 'someip'
+			} else if low.contains('eth modules') {
+				section = 'ethmod'
 			} else if low.contains('handlers') {
 				section = 'handlers'
 			} else if low.contains('threads') {
@@ -153,6 +172,7 @@ pub fn parse_manifest(text string) !Manifest {
 				'dump_fc' { frames.dump_fc = id }
 				else {} // unknown frame name — ignore (forward-compatible with new frames)
 			}
+
 			continue
 		}
 		if section == 'shell' {
@@ -168,6 +188,49 @@ pub fn parse_manifest(text string) !Manifest {
 				'fc' { shellf.fc = id }
 				'out' { shellf.out = id }
 				else {} // unknown frame name — ignore (forward-compatible)
+			}
+
+			continue
+		}
+		if section == 'someip' {
+			// `someip,service,version,port,peer` — the eth service identity.
+			// Malformed values fail the LOAD: a silently-zero service would
+			// just disable the eth shell with no visible reason.
+			if cols[0] == 'someip' && cols.len < 5 {
+				return error('manifest someip row needs service,version,port,peer: "${line}"')
+			}
+			if cols.len >= 5 && cols[0] == 'someip' {
+				svc := parse_can_id(cols[1]) or { return error('manifest someip service: ${err}') }
+				if svc == 0 || svc > 0xFFFF {
+					return error('manifest someip service 0x${svc.hex()} out of range (1..0xFFFF)')
+				}
+				ver := cols[2].int()
+				if ver < 0 || ver > 255 || (cols[2] != '0' && ver == 0) {
+					return error('manifest someip version "${cols[2]}" is not 0..255')
+				}
+				prt := cols[3].int()
+				if prt < 1 || prt > 65535 {
+					return error('manifest someip port "${cols[3]}" is not 1..65535')
+				}
+				sip.service = u16(svc)
+				sip.version = u8(ver)
+				sip.port = u16(prt)
+				sip.peer = cols[4]
+			}
+			continue
+		}
+		if section == 'ethmod' {
+			// `ethmod,<module>,<endpoint>,<id>` — module endpoints on the eth
+			// bus; the shell's method id is the one the RPC client dials.
+			if cols.len < 4 && cols.len >= 2 && cols[0] == 'ethmod' && cols[1] == 'shell' {
+				return error('manifest ethmod shell row needs its method id: "${line}"')
+			}
+			if cols.len >= 4 && cols[0] == 'ethmod' && cols[1] == 'shell' && cols[2] == 'method' {
+				mid := parse_can_id(cols[3]) or { return error('manifest shell method: ${err}') }
+				if mid == 0 || mid > 0x7FFF {
+					return error('manifest shell method 0x${mid.hex()} is not a method id (1..0x7FFF)')
+				}
+				shell_method = u16(mid)
 			}
 			continue
 		}
@@ -242,10 +305,12 @@ pub fn parse_manifest(text string) !Manifest {
 		return error('manifest has no handler rows')
 	}
 	mut m := Manifest{
-		handlers: handlers
-		threads:  threads
-		frames:   frames
-		shell:    shellf
+		handlers:     handlers
+		threads:      threads
+		frames:       frames
+		shell:        shellf
+		someip:       sip
+		shell_method: shell_method
 	}
 	m.index()
 	return m
