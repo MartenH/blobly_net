@@ -206,6 +206,8 @@ mut:
 	eth_target_buf []u8   // the eth shell's board ip (session-only; manifest carries the port)
 	eth_shell_session u16 // persists across commands: a fresh client restarting at session 1
 	// would let a late reply to a timed-out command complete the NEXT one
+	eth_someip telem.SomeipIdent // the eth shell's identity (its OWN slot — see rebuild)
+	eth_method u16               // the eth shell's method id (0 = no eth shell)
 	shell_lines  []string // scrollback (guarded by mu; the worker appends)
 	shell_busy   bool     // single-flight: one command in flight at a time
 	shell_follow bool     // new output arrived — pin the scrollback to the bottom next frame
@@ -1009,6 +1011,8 @@ fn (mut app App) rebuild_from_proj() {
 	app.senders = []
 	app.gen_bufs = []
 	app.has_manifest = false
+	app.eth_someip = telem.SomeipIdent{}
+	app.eth_method = 0
 	app.manifest = telem.Manifest{}
 	app.sel_id = -1
 	app.mu.unlock()
@@ -1054,15 +1058,24 @@ fn (mut app App) rebuild_from_proj() {
 				eprintln('dbc ${rp}: ${err}')
 			}
 		}
-		if ch.manifest != '' && (!app.has_manifest || app.manifest.shell_method == 0) {
-			// first manifest wins, EXCEPT that one declaring the eth RPC shell
-			// upgrades over one that doesn't — a project listing a CAN/trace
-			// channel first must not hide the eth image's shell
+		if ch.manifest != '' {
+			// the FIRST manifest stays the global telemetry/trace one (its
+			// consumers are CAN-channel-scoped); the eth RPC shell gets its
+			// OWN slot from whichever channel manifest declares it — the two
+			// roles must never displace each other in a mixed project
 			if m := telem.load_manifest(app.resolve_asset(ch.manifest)) {
-				if !app.has_manifest || m.shell_method != 0 {
+				if !app.has_manifest {
 					app.manifest = m
 					app.has_manifest = true
 				}
+				if m.shell_method != 0 && app.eth_method == 0 {
+					app.eth_someip = m.someip
+					app.eth_method = m.shell_method
+				}
+			} else {
+				// a load/validation failure must be SEEN — silently keeping an
+				// earlier manifest reads as "no eth shell" with no reason
+				eprintln('manifest ${ch.manifest}: ${err}')
 			}
 		}
 		for s in ch.senders {
@@ -4663,7 +4676,7 @@ fn draw_shell(mut app App) {
 	}
 	// the eth RPC shell (manifest `ethmod,shell,method`) needs NO CAN channel:
 	// it dials the board's UDP endpoint directly, Start or not
-	eth := app.manifest.shell_method != 0 && app.manifest.someip.service != 0
+	eth := app.eth_method != 0 && app.eth_someip.service != 0
 	if !app.running && !eth {
 		vgui.text_dim('press Start (needs a shell-enabled target on the bus)')
 		vgui.end()
@@ -4688,7 +4701,7 @@ fn draw_shell(mut app App) {
 		vgui.set_next_item_width(130 * app.ui_scale)
 		vgui.input_text('##ethtarget', mut app.eth_target_buf)
 		vgui.same_line()
-		vgui.text_dim('board ip — SOME/IP method 0x${app.manifest.shell_method.hex()} :${app.manifest.someip.port}')
+		vgui.text_dim('board ip — SOME/IP method 0x${app.eth_method.hex()} :${app.eth_someip.port}')
 	}
 	vgui.set_next_item_width(-40 * app.ui_scale)
 	if vgui.console_input('##shellin', mut app.shell_buf) {
@@ -4703,7 +4716,9 @@ fn draw_shell(mut app App) {
 			if busy {
 				app.shell_append('(busy — previous command still running)')
 			} else if eth {
-				spawn shell_worker_eth(app, line)
+				// snapshot the target HERE: the worker must not read the UI's
+				// mutable byte buffer while input_text edits it
+				spawn shell_worker_eth(app, line, vgui.buf_str(app.eth_target_buf).trim_space())
 			} else {
 				spawn shell_worker(app, line)
 			}
@@ -6674,7 +6689,7 @@ fn draw_system(mut app App) {
 // accepts only its configured peer endpoint, and the WSL->LAN NAT path
 // preserves a bound source port (the emb#158 bench recipe). Single-flight
 // via the same shell_busy latch as the CAN worker.
-fn shell_worker_eth(app &App, line string) {
+fn shell_worker_eth(app &App, line string, target string) {
 	mut a := unsafe { app }
 	a.mu.lock()
 	if a.shell_busy {
@@ -6690,13 +6705,13 @@ fn shell_worker_eth(app &App, line string) {
 		vgui.wake()
 	}
 	a.shell_append('> ' + line)
-	target := vgui.buf_str(a.eth_target_buf).trim_space()
 	if target == '' {
 		a.shell_append('(enter the board ip first)')
 		return
 	}
-	man := a.manifest
-	peer_port := man.someip.peer.all_after_last(':').int()
+	sip := a.eth_someip
+	method := a.eth_method
+	peer_port := sip.peer.all_after_last(':').int()
 	bind_port := if peer_port > 0 { peer_port } else { 30491 }
 	mut sock := vnet.listen_udp(':${bind_port}') or {
 		a.shell_append('(bind :${bind_port}: ${err} — the board only answers its configured peer endpoint)')
@@ -6706,7 +6721,7 @@ fn shell_worker_eth(app &App, line string) {
 		sock.close() or {}
 	}
 	sock.set_read_timeout(100 * time.millisecond)
-	addrs := vnet.resolve_addrs('${target}:${man.someip.port}', .ip, .udp) or {
+	addrs := vnet.resolve_addrs('${target}:${sip.port}', .ip, .udp) or {
 		a.shell_append('(resolve ${target}: ${err})')
 		return
 	}
@@ -6714,9 +6729,9 @@ fn shell_worker_eth(app &App, line string) {
 	last_session := a.eth_shell_session
 	a.mu.unlock()
 	mut cli := someip.RpcClient{
-		service:    man.someip.service
-		method:     man.shell_method
-		iface:      man.someip.version
+		service:    sip.service
+		method:     method
+		iface:      sip.version
 		client_id:  0x0E01
 		timeout_us: 1_500_000
 		session:    last_session
@@ -6733,7 +6748,8 @@ fn shell_worker_eth(app &App, line string) {
 		a.shell_append('(send: ${err})')
 		return
 	}
-	mut buf := []u8{len: 2048}
+	mut buf := []u8{len: 65536} // one FULL UDP datagram: a truncated read would
+	// fail the header-length check and read as a timeout, not as truncation
 	want_src := addrs[0].str()
 	for cli.state == .waiting {
 		n, raddr := sock.read(mut buf) or {

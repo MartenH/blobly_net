@@ -49,3 +49,14 @@ ethmod,shell,method,0x8001
 		assert false, 'event-class method id accepted'
 	}
 }
+
+fn test_short_someip_row_rejected() {
+	if _ := parse_manifest('# someip
+someip,0x0100,1,30490
+# fb.handlers
+0,app,0,Bench,on_100ms,100000
+')
+	{
+		assert false, 'four-column someip row accepted'
+	}
+}

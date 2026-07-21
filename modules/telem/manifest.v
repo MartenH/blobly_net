@@ -196,6 +196,9 @@ pub fn parse_manifest(text string) !Manifest {
 			// `someip,service,version,port,peer` — the eth service identity.
 			// Malformed values fail the LOAD: a silently-zero service would
 			// just disable the eth shell with no visible reason.
+			if cols[0] == 'someip' && cols.len < 5 {
+				return error('manifest someip row needs service,version,port,peer: "${line}"')
+			}
 			if cols.len >= 5 && cols[0] == 'someip' {
 				svc := parse_can_id(cols[1]) or { return error('manifest someip service: ${err}') }
 				if svc == 0 || svc > 0xFFFF {
