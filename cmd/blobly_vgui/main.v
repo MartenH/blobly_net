@@ -971,7 +971,14 @@ fn (mut app App) spawn_eth_rx(ci int) {
 // channel's OWN manifest, passed at spawn.
 fn eth_rx_loop(app &App, ci int, m telem.Manifest, gen int) {
 	mut a := unsafe { app }
+	// spawn-time snapshot. Normally nothing can have interleaved yet (spawn
+	// and rebuild both run on the GUI thread), but guard anyway: eth_gen_ok
+	// is the single validity rule for EVERY a.chans[ci] access in this worker.
 	a.mu.lock()
+	if !a.eth_gen_ok(ci, gen) {
+		a.mu.unlock()
+		return
+	}
 	board_ip := a.chans[ci].address
 	mut local := a.chans[ci].local_ip
 	chname := a.chans[ci].name
@@ -1007,23 +1014,38 @@ fn eth_rx_loop(app &App, ci int, m telem.Manifest, gen int) {
 	a.eth_link = link
 	a.mu.unlock()
 	a.notify('someip ${chname}: ${local}:${peer_port} <- ${board_ip}:${sip.port} (${defs.len} event frame(s))')
-	// the generation check makes a superseded worker exit even if a quick
-	// re-Start already flipped running back to true within our poll window
-	for a.running && a.chans[ci].enabled && a.chans[ci].run_gen == gen {
+	// EVERY a.chans[ci] access below runs under a.mu AND behind eth_gen_ok:
+	// a project New/Open/Reload REPLACES app.chans while we sit blocked in
+	// poll() for up to 100ms, so on return a stale ci may be out of bounds
+	// (fewer channels) or index a different channel of the new project (same
+	// count, run_gen reset). The generation check alone is not enough — the
+	// bounds would blow first. On failure: get out without teardown writes.
+	for {
+		a.mu.lock()
+		alive := a.running && a.eth_gen_ok(ci, gen) && a.chans[ci].enabled
+		a.mu.unlock()
+		if !alive {
+			break
+		}
 		ev := link.poll() or {
 			// keep the drop/e2e counters visible even on an idle wire
-			if link.drops != a.chans[ci].drops || link.e2e_bad != a.chans[ci].e2e_bad
-				|| link.e2e_lost != a.chans[ci].e2e_lost {
-				a.mu.lock()
+			a.mu.lock()
+			if a.eth_gen_ok(ci, gen) {
 				a.chans[ci].drops = link.drops
 				a.chans[ci].e2e_bad = link.e2e_bad
 				a.chans[ci].e2e_lost = link.e2e_lost
-				a.mu.unlock()
 			}
+			a.mu.unlock()
 			continue
 		}
 		t_ms := f64(time.ticks() - a.t0)
 		a.mu.lock()
+		if !a.eth_gen_ok(ci, gen) {
+			// rebuilt under us mid-event: the row/counters belong to a project
+			// that no longer exists — drop everything and exit
+			a.mu.unlock()
+			break
+		}
 		if !a.paused {
 			a.trace << TraceRow{t_ms, chname, 'RX', u32(ev.def.id), false, false, ev.def.name, ev.payload}
 			if a.trace.len > trace_cap {
@@ -1049,7 +1071,7 @@ fn eth_rx_loop(app &App, ci int, m telem.Manifest, gen int) {
 	if voidptr(a.eth_link) == voidptr(link) {
 		a.eth_link = unsafe { nil }
 	}
-	if a.chans[ci].run_gen == gen {
+	if a.eth_gen_ok(ci, gen) {
 		a.chans[ci].drops = link.drops
 		a.chans[ci].e2e_bad = link.e2e_bad
 		a.chans[ci].e2e_lost = link.e2e_lost
@@ -1057,6 +1079,15 @@ fn eth_rx_loop(app &App, ci int, m telem.Manifest, gen int) {
 	a.mu.unlock()
 	a.eth_worker_done(ci, gen)
 	link.close()
+}
+
+// eth_gen_ok reports (call it under a.mu) whether ci/gen still name THIS
+// worker's channel: a rebuild may have replaced app.chans entirely (stale ci
+// out of bounds, or a different channel with run_gen reset to 0), and a
+// re-Start bumps run_gen. Bounds first — the generation compare must never
+// be the thing that indexes out of range.
+fn (a &App) eth_gen_ok(ci int, gen int) bool {
+	return ci >= 0 && ci < a.chans.len && a.chans[ci].run_gen == gen
 }
 
 // eth_open_retry opens the BoardLink, retrying an address-in-use bind up to
@@ -1084,11 +1115,12 @@ fn eth_open_retry(local string, board string, service u16, version u8, defs []so
 }
 
 // eth_worker_done clears the channel's running flag — but ONLY for the
-// generation that owns it: a superseded worker (Stop -> quick re-Start) must
-// not mark the NEW worker's channel as stopped.
+// generation that owns it (bounds-checked: the channel may be gone entirely
+// after a rebuild): a superseded worker (Stop -> quick re-Start, or a project
+// swap) must not mark the NEW state as stopped — or index out of range.
 fn (mut app App) eth_worker_done(ci int, gen int) {
 	app.mu.lock()
-	if app.chans[ci].run_gen == gen {
+	if app.eth_gen_ok(ci, gen) {
 		app.chans[ci].running = false
 	}
 	app.mu.unlock()
