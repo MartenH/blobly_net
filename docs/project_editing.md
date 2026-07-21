@@ -38,6 +38,7 @@ replaces the overloaded "channel".
 | PCAN | `pcan` | `PCAN_USBBUS1` | `pcan:PCAN_USBBUS1` |
 | Kvaser | `kvaser` | `0` | `kvaser:0` |
 | DoIP (Ethernet diag) | `doip` | `127.0.0.1:13400` | `doip:127.0.0.1:13400` |
+| SOME/IP eth board | `someip` | `192.168.0.191` | `someip:192.168.0.191` |
 
 The transport layer is untouched: parse composes `adapter`+`address` into the existing
 `iface` scheme string that `transport.open()` already consumes.
@@ -56,7 +57,7 @@ project:
 buses:
   - name: CAN1
     network: Powertrain          # optional grouping label
-    adapter: virtual             # virtual | vcan | socketcan | udp | pcan | kvaser | doip
+    adapter: virtual             # virtual | vcan | socketcan | udp | pcan | kvaser | doip | someip
     address: CAN1                # adapter-specific
     protocol: can                # can | canfd
     bitrate: 500000
