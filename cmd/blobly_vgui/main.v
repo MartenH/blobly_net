@@ -1000,8 +1000,11 @@ fn eth_rx_loop(app &App, ci int) {
 		}
 	}
 	// unregister BEFORE closing so the shell can't send on a dead socket
+	// (only OUR registration — a second someip channel may have re-claimed it)
 	a.mu.lock()
-	a.eth_link = unsafe { nil }
+	if voidptr(a.eth_link) == voidptr(link) {
+		a.eth_link = unsafe { nil }
+	}
 	a.chans[ci].running = false
 	a.chans[ci].drops = link.drops
 	a.mu.unlock()
