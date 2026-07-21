@@ -21,3 +21,31 @@ ethmod,telemetry,cpuload,0x8005
 	assert m2.someip.service == 0
 	assert m2.shell_method == 0
 }
+
+fn test_someip_rows_fail_loud() {
+	// a typo'd service must fail the LOAD, not silently disable the eth shell
+	if _ := parse_manifest('# someip
+someip,0x01G0,1,30490,peer
+# fb.handlers
+0,app,0,Bench,on_100ms,100000
+')
+	{
+		assert false, 'bad service hex accepted'
+	}
+	if _ := parse_manifest('# someip
+someip,0x100,1,99999,peer
+# fb.handlers
+0,app,0,Bench,on_100ms,100000
+')
+	{
+		assert false, 'out-of-range port accepted'
+	}
+	if _ := parse_manifest('# eth modules
+ethmod,shell,method,0x8001
+# fb.handlers
+0,app,0,Bench,on_100ms,100000
+')
+	{
+		assert false, 'event-class method id accepted'
+	}
+}

@@ -204,6 +204,8 @@ mut:
 	sys_loaded   bool
 	shell_buf    []u8     // the input line (persistent; edited in place by console_input)
 	eth_target_buf []u8   // the eth shell's board ip (session-only; manifest carries the port)
+	eth_shell_session u16 // persists across commands: a fresh client restarting at session 1
+	// would let a late reply to a timed-out command complete the NEXT one
 	shell_lines  []string // scrollback (guarded by mu; the worker appends)
 	shell_busy   bool     // single-flight: one command in flight at a time
 	shell_follow bool     // new output arrived — pin the scrollback to the bottom next frame
@@ -1052,10 +1054,15 @@ fn (mut app App) rebuild_from_proj() {
 				eprintln('dbc ${rp}: ${err}')
 			}
 		}
-		if ch.manifest != '' && !app.has_manifest {
+		if ch.manifest != '' && (!app.has_manifest || app.manifest.shell_method == 0) {
+			// first manifest wins, EXCEPT that one declaring the eth RPC shell
+			// upgrades over one that doesn't — a project listing a CAN/trace
+			// channel first must not hide the eth image's shell
 			if m := telem.load_manifest(app.resolve_asset(ch.manifest)) {
-				app.manifest = m
-				app.has_manifest = true
+				if !app.has_manifest || m.shell_method != 0 {
+					app.manifest = m
+					app.has_manifest = true
+				}
 			}
 		}
 		for s in ch.senders {
@@ -6703,29 +6710,41 @@ fn shell_worker_eth(app &App, line string) {
 		a.shell_append('(resolve ${target}: ${err})')
 		return
 	}
+	a.mu.lock()
+	last_session := a.eth_shell_session
+	a.mu.unlock()
 	mut cli := someip.RpcClient{
 		service:    man.someip.service
 		method:     man.shell_method
 		iface:      man.someip.version
 		client_id:  0x0E01
 		timeout_us: 1_500_000
+		session:    last_session
 	}
 	sw := time.new_stopwatch()
 	req := cli.send(line.bytes(), 0) or {
 		a.shell_append('(client busy)')
 		return
 	}
+	a.mu.lock()
+	a.eth_shell_session = cli.session // burn it NOW: even a timeout never reuses it
+	a.mu.unlock()
 	sock.write_to(addrs[0], req) or {
 		a.shell_append('(send: ${err})')
 		return
 	}
 	mut buf := []u8{len: 2048}
+	want_src := addrs[0].str()
 	for cli.state == .waiting {
-		n, _ := sock.read(mut buf) or {
+		n, raddr := sock.read(mut buf) or {
 			cli.poll(u64(sw.elapsed().microseconds()))
 			continue
 		}
-		cli.on_datagram(buf[..n])
+		// only the dialed board may answer — on a shared bench another node
+		// could otherwise forge matching correlation fields
+		if raddr.str() == want_src {
+			cli.on_datagram(buf[..n])
+		}
 		cli.poll(u64(sw.elapsed().microseconds()))
 	}
 	if cli.state == .done {
