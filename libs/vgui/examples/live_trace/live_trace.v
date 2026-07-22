@@ -4,8 +4,8 @@
 // (gui does the same with queue_command). Proves: live frames render, idle CPU stays ~0
 // when there is no traffic, and CPU scales with (not ahead of) the frame rate.
 //
-// Build:  eval/vgui/build_deps.sh  then
-//   v -cc gcc -path "@vlib|@vmodules|modules|eval" run eval/vgui/examples/live_trace/live_trace.v [iface]
+// Build:  libs/vgui/build_deps.sh  then
+//   v -cc gcc -path "@vlib|@vmodules|modules|libs" run libs/vgui/examples/live_trace/live_trace.v [iface]
 // iface defaults to vcan0 (SocketCAN). Feed it:  cansend vcan0 100#DEADBEEF  /  cangen vcan0
 //
 // Env: VGUI_FRAMES=N exit after N rendered frames (headless CI); VGUI_SHOT=path dump last frame.

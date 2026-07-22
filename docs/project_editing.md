@@ -367,7 +367,7 @@ then the GUI surfaces. All GUI work is in the single-file `cmd/blobly_net/main.v
 
 ### Step 4 — imgui file browser (`main.v` + tiny vgui glue)
 - Add `vgui.modal_begin(title) bool` / `vgui.modal_end()` (imgui `OpenPopup`+`BeginPopupModal`)
-  to `eval/vgui/{vgui.v,vgui.h,vgui_glue.cpp}` — the only C change (⇒ `DEPS=1` rebuild).
+  to `libs/vgui/{vgui.v,vgui.h,vgui_glue.cpp}` — the only C change (⇒ `DEPS=1` rebuild).
 - `App` state: `fb_open bool`, `fb_mode` (open|save), `fb_dir string`, `fb_name_buf []u8`,
   `fb_target` (which action runs on OK). `draw_filebrowser(mut app)`: `os.ls(dir)` → parent,
   dirs, files; `*.blobnet`/`*.yml`/`*.yaml` filter in open mode; filename input in save mode;

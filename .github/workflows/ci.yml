@@ -6,7 +6,7 @@ name: ci
 #                  integration tests (scripts/runtests.sh) against the in-process sim.
 #                  No GUI, no vcan, no Windows — fast and deterministic.
 #   * gui-build — compile-links the Dear ImGui + ImPlot app (cmd/blobly_net): builds
-#                  the imgui/ImPlot/GLFW/FreeType C deps into eval/vgui/libvgui_c.a, then
+#                  the imgui/ImPlot/GLFW/FreeType C deps into libs/vgui/libvgui_c.a, then
 #                  compiles the V frontend against it. It does NOT run the app (no display).
 #
 # The GUI is the imgui frontend (cmd/blobly_net) — the old vlang/gui app (src/main.v)
@@ -85,11 +85,21 @@ jobs:
           git -c advice.detachedHead=false clone --quiet https://github.com/vlang/markdown.git "$HOME/.vmodules/markdown"
           git -C "$HOME/.vmodules/markdown" -c advice.detachedHead=false checkout --quiet ef2f101
 
-      # scripts/run_gui.sh (RUN=0 = build only) builds eval/vgui/libvgui_c.a from the
+      # scripts/run_gui.sh (RUN=0 = build only) builds libs/vgui/libvgui_c.a from the
       # pinned cimgui/cimplot (gitignored, so always built fresh) and then compiles
-      # cmd/blobly_net with the right flags (-cc gcc -enable-globals -path …|eval). Using
+      # cmd/blobly_net with the right flags (-cc gcc -enable-globals -path …|libs). Using
       # the same script devs use keeps CI and local builds identical.
       - name: Build GUI app (RUN=0 scripts/run_gui.sh)
         run: |
           RUN=0 sh scripts/run_gui.sh
           test -x build/blobly_net && echo "BUILD OK -> build/blobly_net"
+
+      # libs/vgui is a standalone module, and this is what proves it: trace_chart imports only
+      # `os` + `vgui`, so it compiles WITHOUT modules/ on the path. If the binding ever grows a
+      # dependency on app code, this breaks and the app build does not. Reuses libvgui_c.a from
+      # the step above, so it costs seconds.
+      - name: vgui builds standalone (no app on the path)
+        run: |
+          v -cc gcc -path "@vlib|@vmodules|libs" -o /tmp/vgui_standalone \
+            libs/vgui/examples/trace_chart/trace_chart.v
+          test -x /tmp/vgui_standalone && echo "OK — vgui has no app dependency"

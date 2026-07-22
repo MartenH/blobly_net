@@ -32,7 +32,7 @@ For traffic with no hardware, open `projects/sim-demo.blobnet` — the simulated
 ## Decisions
 
 - **Language:** V (vlang). Beta — expect compiler/runtime rough edges. Pin what works.
-- **GUI:** **Dear ImGui + ImPlot**, wrapped as the native-V `vgui` module (`eval/vgui`); the app
+- **GUI:** **Dear ImGui + ImPlot**, wrapped as the native-V `vgui` module (`libs/vgui`); the app
   is `cmd/blobly_net`. *(Migrated 2026-07-06 from `vlang/gui`; the old `src/main.v` app is
   deleted. Rationale in [`docs/gui_toolkit_evaluation.md`](docs/gui_toolkit_evaluation.md).)*
 - **CAN:** SocketCAN on Linux (`vcan0` virtual, or any adapter); **PCAN** and **Kvaser** on
@@ -47,7 +47,7 @@ For traffic with no hardware, open `projects/sim-demo.blobnet` — the simulated
 ```
 cmd/blobly_net/     the GUI (Dear ImGui + ImPlot)   <- the app
 cmd/*                CLI tools + smoke tests (flash, dbc_decode, mf4_dump, trace_dump, ...)
-eval/vgui/           the V wrapper around Dear ImGui/ImPlot
+libs/vgui/           the V wrapper around Dear ImGui/ImPlot
 modules/             engine (GUI-free, unit-tested)
 scripts/             setup, run, test, packaging
 projects/            example `.blobnet` projects

@@ -5,9 +5,9 @@
 // ImGuiConfigFlags_ViewportsEnable it auto-detaches into its own OS window (drag it to a
 // second monitor). Drag any panel's title bar out for the same effect.
 //
-// Build (Linux/WSL):  eval/vgui/build_deps.sh  then
-//   v -path "@vlib|@vmodules|eval" run eval/vgui/examples/trace_chart/trace_chart.v
-// Build (Windows/mingw): see eval/vgui/README.md — same command with -cc gcc.
+// Build (Linux/WSL):  libs/vgui/build_deps.sh  then
+//   v -path "@vlib|@vmodules|libs" run libs/vgui/examples/trace_chart/trace_chart.v
+// Build (Windows/mingw): see libs/vgui/README.md — same command with -cc gcc.
 //
 // Env knobs (headless / CI verification):
 //   VGUI_POLL=1     — 60fps poll loop instead of event-driven (stress / screenshots)

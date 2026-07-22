@@ -2,7 +2,7 @@
 # build_deps.sh — fetch cimgui + cimplot (pinned) and build libvgui_c.a next to v.mod.
 # Runs unmodified on Linux/WSL AND Windows/MSYS2 (verified: plain git + g++). On Windows use
 # the dedicated MSYS2 MINGW64 shell; then build the example with build_win.sh. Run from anywhere:
-#   sh eval/vgui/build_deps.sh
+#   sh libs/vgui/build_deps.sh
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BLD="$HERE/build"
@@ -53,4 +53,4 @@ g++ $CFG -c \
 	"$HERE/vgui_glue.cpp"
 ar rcs "$HERE/libvgui_c.a" *.o
 echo "built $HERE/libvgui_c.a"
-echo "run: v -path \"@vlib|@vmodules|eval\" run eval/vgui/examples/trace_chart/trace_chart.v"
+echo "run: v -path \"@vlib|@vmodules|eval\" run libs/vgui/examples/trace_chart/trace_chart.v"

@@ -1,7 +1,7 @@
 #!/bin/sh
 # build_win.sh — build the trace_chart example on Windows (mingw / MSYS2 MINGW64).
 # Run from the dedicated MSYS2 MINGW64 shell (gcc + glfw on PATH). Run from anywhere:
-#   sh eval/vgui/build_win.sh
+#   sh libs/vgui/build_win.sh
 #
 # WHY A 2-STEP BUILD (not the one-liner `v -cc gcc run`)? V 0.5.1 (c0624b2) panics on
 # Windows inside os.execute while driving the C compiler for this target
@@ -23,7 +23,7 @@ mkdir -p "$BLD"
 echo "1/3  V -> C ($EXAMPLE)"
 # -gc none keeps the link deps minimal for the spike (no libgc); the app proper would use
 # V's default GC. -cc gcc so the generated C is C (g++ rejects V's char**/named-struct casts).
-"$V" -cc gcc -gc none -path "@vlib|@vmodules|eval" -o "$BLD/trace_chart.c" "$EXAMPLE"
+"$V" -cc gcc -gc none -path "@vlib|@vmodules|libs" -o "$BLD/trace_chart.c" "$EXAMPLE"
 
 echo "2/3  gcc -c (compile the generated C)"
 gcc -c "$BLD/trace_chart.c" -o "$BLD/trace_chart.o" \

@@ -5,7 +5,7 @@ name: windows-build
 # (src/main.v) and its MSVC/vcpkg/pango/vglyph path were retired when the migration landed.
 #
 # Status: VALIDATED ON THE RUNNER. The imgui Windows build (build_deps.sh + the `#flag windows`
-# link line in eval/vgui/vgui.v) is green here and has been for a long run of builds — this job
+# link line in libs/vgui/vgui.v) is green here and has been for a long run of builds — this job
 # is what the README points people at for a prebuilt bundle, so treat a failure as a release
 # blocker, not as an expected flake. (It was marked best-effort/unvalidated while the imgui
 # migration settled; that is no longer true.)
@@ -72,11 +72,11 @@ jobs:
             mingw-w64-x86_64-fribidi
             mingw-w64-x86_64-fontconfig
 
-      # imgui + ImPlot + GLFW + FreeType C deps -> eval/vgui/libvgui_c.a (g++). build_deps.sh
+      # imgui + ImPlot + GLFW + FreeType C deps -> libs/vgui/libvgui_c.a (g++). build_deps.sh
       # runs unmodified on MSYS2 (git + g++). It's gitignored, so always built fresh.
-      - name: Build imgui C deps (eval/vgui/libvgui_c.a)
+      - name: Build imgui C deps (libs/vgui/libvgui_c.a)
         shell: msys2 {0}
-        run: sh eval/vgui/build_deps.sh
+        run: sh libs/vgui/build_deps.sh
 
       # vlang/markdown (md4c) — the Help "Open in browser" view. Cloned into $VMODULES (the same
       # dir the Windows v.exe reads via @vmodules); md4c-lib.o auto-builds from its sibling .c
@@ -91,19 +91,19 @@ jobs:
 
       # Build cmd/blobly_net. The prebuilt v.exe drives mingw gcc via -cc gcc; the
       # `#flag windows` line in vgui.v carries the static glfw + freetype/harfbuzz/glib link
-      # line. -path adds `eval` for the `vgui` module. (The old app needed a 2-step V->C->gcc
+      # line. -path adds `libs` for the `vgui` module. (The old app needed a 2-step V->C->gcc
       # workaround for a V/os.execute panic; the mingw src/main.v job built with the one-liner
       # fine, so we use it here too — switch to build_deps.sh's 2-step if it regresses.)
       # The binary is blobly_net.exe — the product name. It was blobly_vgui.exe until the app
       # was renamed cmd/blobly_vgui -> cmd/blobly_net; "vgui" is the internal ImGui wrapper
-      # (eval/vgui, which keeps that name), not something a user should ever see. That mismatch
+      # (libs/vgui, which keeps that name), not something a user should ever see. That mismatch
       # was a live bug: scripts/register_blobnet_win.ps1 has always searched for blobly_net.exe,
       # so .blobnet file association could never find the executable it was written for.
       - name: Build the GUI app (V -cc gcc)
         shell: msys2 {0}
         run: |
           mkdir -p build
-          /c/v-ct/v.exe -cc gcc -no-parallel -enable-globals -path '@vlib|@vmodules|modules|eval' \
+          /c/v-ct/v.exe -cc gcc -no-parallel -enable-globals -path '@vlib|@vmodules|modules|libs' \
             -o build/blobly_net.exe cmd/blobly_net/main.v
           test -f build/blobly_net.exe && echo "BUILD OK -> build/blobly_net.exe"
           # Copy the exe's mingw64 runtime DLLs (freetype/harfbuzz/glib/gcc/…) next to it via

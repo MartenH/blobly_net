@@ -6,8 +6,8 @@
 //            at boot. All engine work reuses the GUI-free modules (project/transport/candb/
 //            telem) unchanged; gui's src/main.v stays the shipping app until parity.
 //
-// Build: eval/vgui/build_deps.sh  then
-//   v -enable-globals -cc gcc -path "@vlib|@vmodules|modules|eval" run cmd/blobly_net/main.v
+// Build: libs/vgui/build_deps.sh  then
+//   v -enable-globals -cc gcc -path "@vlib|@vmodules|modules|libs" run cmd/blobly_net/main.v
 // Project via BLOBLY_PROJECT (default projects/trace-demo.blobnet). Env: VGUI_WAKE_MS cap.
 module main
 
