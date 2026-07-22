@@ -15,9 +15,20 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
 - ⏭️ **System wizards** ([`docs/dbc_editor.md`](docs/dbc_editor.md)) — "add a signal/frame"
   generators that emit correctly-shaped TOML blocks to **append**. Deliberately *not* a TOML
   editor: mutations must never rewrite the file, so comments survive and diffs stay clean.
-- ⏭️ **UDS server side** (`modules/uds` server, or `modules/diagserver`) — sessions, RDBI/WDBI
-  DIDs, tester-present, security, routines. The native twin of `sut/uds_server.py`, config-driven
-  per node ([`docs/simulation_architecture.md`](docs/simulation_architecture.md)).
+- ⏭️ **UDS server — finish it.** `modules/uds/server.v` already exists and is load-bearing: it
+  backs the Lua test runner, the GUI's simulated diagnostics and `doip_smoke`, and it serves
+  **0x10** session control, **0x22**/**0x2E** RDBI/WDBI, **0x27** security access, **0x19**
+  ReadDTCInformation (sub `0x02` only) and **0x3E** tester present. What is missing:
+  - **Config-driven per node** — the biggest gap. `default_server()` is a hardcoded fixture: one
+    fixed DID table, one fixed seed/key. A node's DIDs, sessions and security ought to come from
+    the project / `system.toml`, so a simulated ECU answers like *that* ECU
+    ([`docs/simulation_architecture.md`](docs/simulation_architecture.md)).
+  - **0x31 RoutineControl** — start/stop/requestResults; nothing today.
+  - **0x11 ECUReset**, **0x14 ClearDiagnosticInformation**, and the remaining **0x19**
+    subfunctions beyond `reportDTCByStatusMask`.
+  - **Session and security state actually gating access** — a session change is acknowledged but
+    does not restrict which services or DIDs are reachable, and `unlocked` is never required.
+  - **Per-connection state** for DoIP (shared with the threading item below).
 
 ## Planned
 

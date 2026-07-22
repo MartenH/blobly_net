@@ -130,6 +130,12 @@ shows is also reachable without it — see [headless](#headless--scripted-no-gui
 
 ## Build & run
 
+**Linux, including WSL2** — Ubuntu 24.04 is what this is developed on. Under WSL2 the GUI
+renders through **WSLg**, so there's no X server to set up, but hardware GL wants a current Mesa
+(25.x is known good; older Mesa crashed the GPU path). **Native Windows is a different
+toolchain** — MSYS2/mingw, not these scripts — see [windows_build.md](docs/windows_build.md), or
+just take the [prebuilt bundle](#get-it). macOS is not built or tested.
+
 ```sh
 scripts/setup_env.sh           # installs toolchain + deps (V, C/C++, GLFW, FreeType)
 scripts/run_vgui.sh            # build + run the GUI
@@ -141,8 +147,7 @@ To reproduce the screenshot above — no hardware, no drivers, nothing else to s
 BLOBLY_PROJECT=projects/sim-demo.blobnet BLOBLY_AUTOSTART=1 scripts/run_vgui.sh
 ```
 
-The simulated ECUs are native (`modules/sim`) and run in-process, so there is no second
-terminal and no Python in the loop.
+The simulated ECUs are native (`modules/sim`) and run in-process.
 
 Needs the V compiler, a C/C++ toolchain, and GLFW + FreeType (on Debian/Ubuntu:
 `sudo apt install libglfw3-dev libfreetype-dev`). See

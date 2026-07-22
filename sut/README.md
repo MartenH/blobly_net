@@ -1,13 +1,28 @@
 # Virtual SUT (System Under Test)
 
-A **Python** stand-in for the ECU the V tester tests. It speaks SocketCAN on `vcan0`, and serves two
-roles:
+**Python reference implementations, kept for one reason: they are not V.**
 
-1. **Virtual ECU** — emits traffic and answers requests, so the tester has something live to test
-   against before real hardware exists.
-2. **Reference oracle** — being an *independent* implementation (different language, hand-written),
-   it cross-validates the V code. Verified: V `candb` decodes the SUT's `0x100` frame to the exact
-   same physical values the SUT encoded.
+> **These are oracles, not the simulator.** Running an ECU for day-to-day use is
+> [`modules/sim`](../modules/sim) — native, in-process, no interpreter, and what `sim-demo` and
+> `scripts/runtests.sh` actually use. You do **not** need Python to build, run or test blobly_net.
+> Nothing here is on that path.
+
+The value of these files is precisely that they are an **independent implementation** in another
+language: checking a V decoder against a V encoder proves only that they agree with each other.
+So each one pins a V module to something written by someone else:
+
+| oracle | pins | how |
+|---|---|---|
+| `can_sut.py` | `modules/sim` | `encode_powertrain()` output is frozen as golden vectors in `sim_test.v`; the native engine must reproduce them byte-for-byte |
+| `dbc_oracle.py` | `modules/candb` | cantools decodes the same frame; physical values must match |
+| `mf4_bridge.py` | `modules/mf4` | asammdf parses the same `.mf4`; frame counts/ids must match |
+| `uds_server.py` | `modules/uds` | the behaviour `modules/uds/server.v` was written to mirror |
+| `doip_server.py` | `modules/doip` | an independent DoIP peer to talk to |
+
+They run **at development time**, by hand, when a decoder changes — not in CI, which is V-only.
+`can_sut.py` is stdlib-only; the rest need [`requirements.txt`](requirements.txt).
+
+The boundary is only the **wire** (CAN frames, sockets, files) — no FFI, fully process-separated.
 
 Python is used here deliberately for its mature automotive stack (python-can, cantools, udsoncan,
 can-isotp, scapy) which we'll lean on as references in later phases. The boundary with the V tester
