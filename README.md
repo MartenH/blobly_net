@@ -6,14 +6,27 @@ Test (SUT) over **CAN**, and over **Ethernet** using the automotive protocols th
 simulate ECUs, and read back logs — **virtual first** (Linux `vcan0`), with real hardware as
 a drop-in.
 
+> ## ⚠ Very early in development
+>
+> This is a single-author project still in its **design phase** — not a product, and not
+> something to rely on yet. Specifically:
+>
+> - **Maturity varies a lot between features.** The protocol engine in `modules/` is unit-tested
+>   and runs in CI on every push; a fair amount of the rest has only ever been exercised on the
+>   author's own bench, against the author's own boards. Some of it is **effectively untested**,
+>   and a feature existing here is not a claim that it is correct.
+> - **Formats and interfaces will change** — `.blobnet` projects, and the wire formats shared
+>   with blobly_emb. No compatibility promise, no tagged release.
+> - **It has had no users but the author**, so expect missing validation, unhandled edge cases
+>   and error paths nobody has walked.
+>
+> It is used daily against real hardware and is genuinely useful — but go in expecting to hit
+> things, and please [open an issue](../../issues) when you do.
+
 **Two ways to drive it, over the same engine:** the **GUI** for interactive work, and
 **[headless](#headless--scripted-no-gui)** — Lua test scripts and CLI tools with no window and
 no display, which is how it runs in CI. The protocol engine lives in `modules/` and imports no
 GUI code, so neither mode is a second-class path.
-
-> Early WIP, but broadly usable. Architecture and decisions are in [CLAUDE.md](CLAUDE.md);
-> what's coming is in [ROADMAP.md](ROADMAP.md); the archived development log is in
-> [docs/history.md](docs/history.md).
 
 ![Blobly Net — live trace, decoded signals and real-time plots](docs/screenshots/overview.png)
 
