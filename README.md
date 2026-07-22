@@ -7,7 +7,8 @@ simulate ECUs, and read back logs — **virtual first** (Linux `vcan0`), with re
 a drop-in.
 
 > Early WIP, but broadly usable. Architecture and decisions are in [CLAUDE.md](CLAUDE.md);
-> the archived development log is in [docs/history.md](docs/history.md).
+> what's coming is in [ROADMAP.md](ROADMAP.md); the archived development log is in
+> [docs/history.md](docs/history.md).
 
 ## What it does
 
