@@ -1,18 +1,20 @@
 # Blobly Net
 
 An automotive bus tester written in [V](https://vlang.io). It exercises a System Under
-Test (SUT) over **CAN** and **automotive Ethernet** — send and observe traffic, run
-diagnostics, script test cases, simulate ECUs, and read back logs — **virtual first**
-(Linux `vcan0`), with real hardware as a drop-in.
+Test (SUT) over **CAN**, and over **Ethernet** using the automotive protocols that run on it
+(**DoIP**, **SOME/IP**) — send and observe traffic, run diagnostics, script test cases,
+simulate ECUs, and read back logs — **virtual first** (Linux `vcan0`), with real hardware as
+a drop-in.
 
-> Early WIP, but broadly usable. Architecture, decisions and the full status log live
-> in [CLAUDE.md](CLAUDE.md).
+> Early WIP, but broadly usable. Architecture and decisions are in [CLAUDE.md](CLAUDE.md);
+> the archived development log is in [docs/history.md](docs/history.md).
 
 ## What it does
 
 **Buses**
 - **CAN / CAN-FD** — SocketCAN on Linux (`vcan0` or real adapters), PCAN on Windows
-- **Ethernet** — **DoIP** (UDS over TCP) and **SOME/IP** (incl. an RPC client)
+- **Ethernet** — **DoIP** (UDS over TCP) and **SOME/IP** (incl. an RPC client), over ordinary
+  TCP/UDP sockets. Automotive *PHYs* (100BASE-T1 and similar) and TSN are out of scope.
 - LIN is on the roadmap, not implemented yet
 
 **Diagnostics** — **UDS** over **ISO-TP** (ISO 15765-2), plus a **flashing** tool that

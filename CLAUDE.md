@@ -8,9 +8,11 @@
 > a long guide rots silently, and a stale guide is worse than none because the next session
 > trusts it.
 
-An automotive bus tester written in **V (vlang)**: exercise a SUT over **CAN** and **automotive
-Ethernet**, run diagnostics, script tests, simulate ECUs, read back logs. **Virtual first**
-(Linux `vcan0`); real hardware is a drop-in. LIN is roadmap, not implemented.
+An automotive bus tester written in **V (vlang)**: exercise a SUT over **CAN**, and over
+**Ethernet** via the automotive protocols on it (**DoIP**, **SOME/IP**) — run diagnostics, script
+tests, simulate ECUs, read back logs. **Virtual first** (Linux `vcan0`); real hardware is a
+drop-in. Ethernet here is ordinary TCP/UDP sockets: automotive PHYs (100BASE-T1) and TSN are NOT
+supported. LIN is roadmap, not implemented.
 
 ## Fresh setup / new session — START HERE
 

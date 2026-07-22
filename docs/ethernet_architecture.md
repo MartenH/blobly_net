@@ -1,6 +1,6 @@
 # Ethernet architecture — DoIP first, SOME-IP later
 
-Agreed 2026-06-29. The plan for bringing **automotive Ethernet** into blobly_net, starting with
+Agreed 2026-06-29. The plan for bringing **automotive Ethernet protocols** into blobly_net, starting with
 **DoIP** (diagnostics over IP, ISO 13400) and deferring **SOME-IP** (service-oriented middleware).
 This mirrors `docs/simulation_architecture.md` — design captured before building, oracle-first.
 
