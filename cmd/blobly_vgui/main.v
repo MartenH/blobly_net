@@ -4526,41 +4526,22 @@ fn trace_dump_worker(app &App, core_mask u16) {
 			break // no more blocks (or the transfer kept failing — recv_err says why)
 		}
 		got++
-		mut base := u32(0) // current epoch origin; each block re-anchors from its own epoch record
-		mut cur_core := 0 // the block's core, from its leading header (idle/threads carry no core)
-		// This block's clock offset to the DUMPING core. Each core stamps from its own origin, so
-		// without this the lanes share no timeline and the swimlane silently implies one it does
-		// not have. Absent = never measured: leave it 0 and report the lane as uncorrelated
-		// rather than assuming the cores agree. Per-block, not per-core: the target re-states the
-		// offset at the head of every block precisely so blocks decode independently.
-		mut skew_us := i64(0)
-		for off := 0; off + 8 <= block.len; off += 8 {
-			r := telem.decode_record(block[off..off + 8])
-			if r.is_block_header() {
-				cur_core = int(r.header_core()) // tag this block's records with their core
-				if !r.header_more() {
-					last_seen++ // this core's final block
-				}
-				continue // framing, not a timeline record
-			}
-			if r.is_epoch() {
-				base = r.epoch_base() // subsequent start_us are relative to this base
-				continue
-			}
-			if r.is_core_offset() {
-				skew_us = i64(r.core_offset_us())
-				skew_bounds[cur_core] = r.core_offset_bound_us()
-				continue // correlation metadata, not a timeline record
-			}
-			// Shift onto the dumping core's timeline. Signed intermediate: a satellite released
-			// later reads LESS than the owner, so the offset is negative and this grows — but
-			// clamp anyway so a positive offset on an early record can't wrap the u64.
-			t := i64(base) + i64(r.start_us) - skew_us
+		// Decoding lives in the engine (telem.decode_block), not here: the epoch re-anchor and the
+		// cross-core clock offset decide what a dump MEANS, so the Trace Chart and the headless
+		// cmd/trace_dump must not each interpret them. It is also where those rules are tested.
+		b := telem.decode_block(block)
+		if !b.more {
+			last_seen++ // this core's final block
+		}
+		if b.skew_known {
+			skew_bounds[b.core] = b.skew_bound_us
+		}
+		for br in b.records {
 			recs << TRec{
 				ch:     0
-				core:   cur_core
-				abs_us: if t > 0 { u64(t) } else { u64(0) }
-				rec:    r
+				core:   b.core
+				abs_us: br.abs_us
+				rec:    br.rec
 			}
 		}
 	}
