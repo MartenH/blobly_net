@@ -95,6 +95,18 @@ release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks.
 ## Conventions
 
 - **Every module GUI-free and unit-tested.** New protocol work starts in `modules/` with tests.
+  This is the one architectural rule, and it cuts both ways: anything that decides what a wire
+  format *means* belongs in `modules/`, not in a front end. If the GUI and a CLI tool would each
+  have to interpret the same bytes, the interpretation is in the wrong place.
+- **Commit identity is enforced, not trusted.** Every commit must be **authored** by
+  `marten.hildell@gmail.com`; the committer may also be `noreply@github.com` (GitHub rewrites it
+  when you squash-merge in the web UI). CI checks this in
+  [`.github/workflows/guard.yml`](.github/workflows/guard.yml) and **fails the build** otherwise —
+  a work address once reached this history and had to be rewritten out of every commit. Install
+  the local hook so it fails in a second instead of after a push:
+  `git config core.hooksPath .githooks`.
+- **External PRs are auto-closed** (design phase — see [`CONTRIBUTING.md`](CONTRIBUTING.md)); the
+  same workflow posts a comment pointing at issues. Nothing to do by hand.
 - **PRs get `@codex review`**; iterate until clean before merging.
 - **Update this file in the PR that lands the work** — especially new modules/panels. The gap
   between 2026-07-06 and 07-21 (~30 PRs) had to be reconstructed from `git log`; don't repeat it.

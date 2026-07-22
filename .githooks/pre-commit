@@ -5,11 +5,19 @@
 set -euo pipefail
 
 ALLOWED="marten.hildell@gmail.com"
-email="$(git config user.email || true)"
 
-if [ "$email" != "$ALLOWED" ]; then
-	echo "pre-commit: refusing to commit as '${email:-<unset>}'." >&2
+# Ask git for the EFFECTIVE author, not `git config user.email`. They differ exactly when it
+# matters: `git commit --author=…`, GIT_AUTHOR_EMAIL in the environment, and cherry-picks or
+# rebases that preserve someone else's authorship all keep a correct-looking config while
+# producing a commit the CI guard will reject. `git var GIT_AUTHOR_IDENT` resolves the same
+# identity the commit will carry.
+#   format: "Name <email> 1690000000 +0200"  ->  take the <…> field
+author="$(git var GIT_AUTHOR_IDENT | sed -n 's/.*<\(.*\)>.*/\1/p')"
+
+if [ "$author" != "$ALLOWED" ]; then
+	echo "pre-commit: refusing to commit authored by '${author:-<unset>}'." >&2
 	echo "            This repo requires: $ALLOWED" >&2
 	echo "            Fix: git config user.email $ALLOWED" >&2
+	echo "            (also check GIT_AUTHOR_EMAIL and any --author= flag)" >&2
 	exit 1
 fi

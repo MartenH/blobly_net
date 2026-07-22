@@ -27,7 +27,8 @@ a drop-in.
 **Two ways to drive it, over the same engine:** the **GUI** for interactive work, and
 **[headless](#headless--scripted-no-gui)** — Lua test scripts and CLI tools with no window and
 no display, which is how it runs in CI. The protocol engine lives in `modules/` and imports no
-GUI code, so neither mode is a second-class path.
+GUI code, so scripted use is a first-class path, not a cut-down one. (The reverse isn't claimed:
+editing a DBC or watching a live plot needs the GUI.)
 
 ![Blobly Net — live trace, decoded signals and real-time plots](docs/screenshots/overview.png)
 
@@ -127,8 +128,10 @@ on-target DWT benchmark: cycles, CPI, stalls).*
 **Scripting** — **Lua** test scripts with a small test framework, runnable headless in
 CI or live in the GUI.
 
-The GUI is a native **Dear ImGui + ImPlot** application (`cmd/blobly_net`); everything it
-shows is also reachable without it — see [headless](#headless--scripted-no-gui) below.
+The GUI is a native **Dear ImGui + ImPlot** application (`cmd/blobly_net`). The **protocol
+engine** underneath it is equally reachable without a display — see
+[headless](#headless--scripted-no-gui) — though the interactive editors (DBC, project/bus
+config) and the live plots exist only in the GUI.
 
 ## Build & run
 

@@ -30,6 +30,10 @@ jobs:
         with:
           script: |
             const n = context.payload.pull_request.number
+            // Absolute URLs, not the "../../" form used inside repo FILES. A comment is rendered
+            // at /owner/repo/pull/<n>, where "../../issues" resolves to /owner/issues — outside
+            // the repository. Every rejected contributor would get broken links.
+            const repo = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}`
             await github.rest.issues.createComment({
               ...context.repo, issue_number: n,
               body: [
@@ -38,8 +42,8 @@ jobs:
                 "It is still in its design phase (architecture, config and wire formats all still moving),",
                 "so a patch is likely to be overtaken before it can land.",
                 "",
-                "Please [open an issue](../../issues) instead — those are very welcome.",
-                "See [CONTRIBUTING.md](../../blob/main/CONTRIBUTING.md).",
+                `Please [open an issue](${repo}/issues) instead — those are very welcome.`,
+                `See [CONTRIBUTING.md](${repo}/blob/main/CONTRIBUTING.md).`,
               ].join("\n"),
             })
             await github.rest.pulls.update({ ...context.repo, pull_number: n, state: "closed" })
@@ -62,15 +66,22 @@ jobs:
       - name: Check author and committer emails
         run: |
           set -euo pipefail
-          # New commits in this push. On a branch's first push `before` is all-zeroes, so fall
-          # back to just the tip rather than walking the whole history.
+          # The commits this push introduces. On a branch's FIRST push `before` is all-zeroes, and
+          # checking only the tip there would be a real hole: a branch pushed with several commits
+          # would have every commit but the last go unchecked, and with a merge workflow those
+          # reach main having passed a green guard. So fall back to everything not already on the
+          # default branch, which is exactly the set under review.
           before='${{ github.event.before }}'
-          if [ -z "$before" ] || [ "$before" = "0000000000000000000000000000000000000000" ] \
-             || ! git cat-file -e "$before^{commit}" 2>/dev/null; then
-            range='${{ github.sha }} -1'
-          else
+          base="origin/${{ github.event.repository.default_branch }}"
+          if [ -n "$before" ] && [ "$before" != "0000000000000000000000000000000000000000" ] \
+             && git cat-file -e "$before^{commit}" 2>/dev/null; then
             range="$before..${{ github.sha }}"
+          elif git rev-parse --verify --quiet "$base" >/dev/null; then
+            range="$base..${{ github.sha }}"          # new branch: all of its own commits
+          else
+            range='${{ github.sha }}'                 # first push of the default branch itself
           fi
+          echo "checking range: $range"
 
           bad=0
           while IFS='|' read -r sha ae ce; do
