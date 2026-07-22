@@ -5,7 +5,7 @@ name: ci
 #                  incl. the embedded-Lua `lua`/`script` modules) + the headless Lua
 #                  integration tests (scripts/runtests.sh) against the in-process sim.
 #                  No GUI, no vcan, no Windows — fast and deterministic.
-#   * vgui-build — compile-links the Dear ImGui + ImPlot app (cmd/blobly_net): builds
+#   * gui-build — compile-links the Dear ImGui + ImPlot app (cmd/blobly_net): builds
 #                  the imgui/ImPlot/GLFW/FreeType C deps into eval/vgui/libvgui_c.a, then
 #                  compiles the V frontend against it. It does NOT run the app (no display).
 #
@@ -56,8 +56,8 @@ jobs:
           chmod +x scripts/runtests.sh
           ./scripts/runtests.sh tests/diag_basic.lua tests/bus_signals.lua
 
-  vgui-build:
-    name: linux • vgui (imgui) compile-link
+  gui-build:
+    name: linux • GUI (imgui) compile-link
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

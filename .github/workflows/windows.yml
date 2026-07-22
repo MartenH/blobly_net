@@ -31,7 +31,7 @@ env:
 
 jobs:
   build-msys2:
-    name: mingw (MSYS2) • vgui
+    name: mingw (MSYS2) • GUI bundle
     runs-on: windows-latest
     timeout-minutes: 60
 
