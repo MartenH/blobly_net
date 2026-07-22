@@ -150,9 +150,29 @@ BLOBLY_PROJECT=projects/sim-demo.blobnet BLOBLY_AUTOSTART=1 scripts/run_vgui.sh
 
 The simulated ECUs are native (`modules/sim`) and run in-process.
 
-Needs the V compiler, a C/C++ toolchain, and GLFW + FreeType (on Debian/Ubuntu:
-`sudo apt install libglfw3-dev libfreetype-dev`). See
-[windows_build.md](docs/windows_build.md) for the native Windows recipe.
+### Dependencies
+
+`setup_env.sh` installs these for you; the lists are here for anyone building by hand. **The CI
+workflows are the source of truth** — they build from nothing on a clean runner every push, so
+if this drifts, believe them.
+
+**Linux** (Debian/Ubuntu) — mirrors [`ci.yml`](.github/workflows/ci.yml):
+
+```sh
+sudo apt install g++ pkg-config libglfw3-dev libfreetype-dev libgl1-mesa-dev
+```
+
+**Native Windows** — MSYS2 `MINGW64`, mirroring
+[`windows.yml`](.github/workflows/windows.yml). More than the Linux set, because the glyph
+rasterizer and text stack are not system libraries there:
+
+```sh
+pacman -S git mingw-w64-x86_64-{gcc,pkgconf,glfw,freetype,harfbuzz,glib2,fribidi,fontconfig}
+```
+
+Plus the V compiler on both. The full Windows walkthrough is
+[windows_build.md](docs/windows_build.md) — or skip it entirely and take the
+[prebuilt bundle](#get-it).
 
 ## Headless / scripted (no GUI)
 

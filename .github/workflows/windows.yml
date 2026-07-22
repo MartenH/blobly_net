@@ -4,10 +4,13 @@ name: windows-build
 # Compiles + links + bundles it; does NOT run it. One job (mingw); the old vlang/gui app
 # (src/main.v) and its MSVC/vcpkg/pango/vglyph path were retired when the migration landed.
 #
-# ⚠️ BEST-EFFORT / needs on-runner validation: the imgui Windows build (build_deps.sh +
-# the `#flag windows` link line in eval/vgui/vgui.v) has been validated locally on the
-# dedicated MSYS2 toolchain but not yet in CI. If a link lib is missing, add the matching
-# mingw-w64-x86_64-* package to the MSYS2 install list below.
+# Status: VALIDATED ON THE RUNNER. The imgui Windows build (build_deps.sh + the `#flag windows`
+# link line in eval/vgui/vgui.v) is green here and has been for a long run of builds — this job
+# is what the README points people at for a prebuilt bundle, so treat a failure as a release
+# blocker, not as an expected flake. (It was marked best-effort/unvalidated while the imgui
+# migration settled; that is no longer true.)
+# If a link lib ever goes missing, add the matching mingw-w64-x86_64-* package to the MSYS2
+# install list below.
 #
 # V acquisition: DOWNLOAD the prebuilt master V from this repo's "v-toolchain" release
 # (V's makev.bat self-compile hangs on the runner). It just drives mingw gcc via -cc gcc.
