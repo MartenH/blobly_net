@@ -39,12 +39,13 @@ ECUs, the grouped trace (decoded via DBC), and live multi-axis plots of `EngineS
 
 There is **no tagged release yet** — nothing to download from a Releases page.
 
-**Windows** — CI builds a self-contained bundle on every push to `main`. Take it from
-**[Actions](../../actions/workflows/windows.yml)** → the latest `windows-build` run →
-the **`blobly_vgui-mingw-x64`** artifact. Unzip and run `blobly_vgui.exe`: the runtime DLLs,
-the demo projects, DBCs and sample logs are all bundled, so it runs on a clean machine with
-nothing installed. Two caveats — downloading an artifact requires being signed in to GitHub,
-and artifacts expire (~90 days), so use a recent run.
+**Windows** — CI builds a self-contained bundle on every push to `main` (and on pull requests).
+Take it from **[Actions](../../actions/workflows/windows.yml)** → the latest `windows-build`
+run → the **`blobly_net-windows-x64`** artifact. Unzip and run **`blobly_net.exe`**: the runtime
+DLLs, demo projects, DBCs, sample logs and the docs the Help panel renders are all bundled, so
+it runs on a clean machine with nothing installed. To make `.blobnet` files open in it, run the
+bundled `register_blobnet_win.ps1`. Two caveats — downloading an artifact requires being signed
+in to GitHub, and artifacts expire (~90 days), so use a recent run.
 
 **Linux / WSL2** — build from source; it's two commands, see
 [Build & run](#build--run) below.

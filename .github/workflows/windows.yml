@@ -94,16 +94,21 @@ jobs:
       # line. -path adds `eval` for the `vgui` module. (The old app needed a 2-step V->C->gcc
       # workaround for a V/os.execute panic; the mingw src/main.v job built with the one-liner
       # fine, so we use it here too — switch to build_deps.sh's 2-step if it regresses.)
+      # The SHIPPED binary is blobly_net.exe, not blobly_vgui.exe: "vgui" is the internal ImGui
+      # wrapper module, which a user unzipping the bundle has no reason to know. The .blobnet
+      # file-association script (scripts/register_blobnet_win.ps1) has always searched for
+      # blobly_net.exe, so while this built blobly_vgui.exe that feature could never find its
+      # own executable. The source dir stays cmd/blobly_vgui — that name is for developers.
       - name: Build vgui app (V -cc gcc)
         shell: msys2 {0}
         run: |
           mkdir -p build
           /c/v-ct/v.exe -cc gcc -no-parallel -enable-globals -path '@vlib|@vmodules|modules|eval' \
-            -o build/blobly_vgui.exe cmd/blobly_vgui/main.v
-          test -f build/blobly_vgui.exe && echo "BUILD OK -> build/blobly_vgui.exe"
+            -o build/blobly_net.exe cmd/blobly_vgui/main.v
+          test -f build/blobly_net.exe && echo "BUILD OK -> build/blobly_net.exe"
           # Copy the exe's mingw64 runtime DLLs (freetype/harfbuzz/glib/gcc/…) next to it via
           # ldd, so the bundled artifact runs outside an MSYS2 shell.
-          ldd build/blobly_vgui.exe | awk '/\/mingw64\/bin\// {print $3}' | sort -u \
+          ldd build/blobly_net.exe | awk '/\/mingw64\/bin\// {print $3}' | sort -u \
             | while read -r d; do cp -f "$d" build/; done
           echo "bundled $(ls build/*.dll 2>/dev/null | wc -l) mingw64 DLLs"
 
@@ -113,8 +118,12 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item build\blobly_vgui.exe dist\blobly_vgui.exe
+          Copy-Item build\blobly_net.exe dist\blobly_net.exe
           Copy-Item build\*.dll dist\ -Force -ErrorAction SilentlyContinue
+          # register_blobnet_win.ps1 resolves the exe "next to THIS script" first, and says the
+          # bundle stages it alongside — it never did, so .blobnet association was unreachable
+          # for exactly the users it was written for. Stage it.
+          Copy-Item scripts\register_blobnet_win.ps1 dist\register_blobnet_win.ps1
           Copy-Item projects dist\projects -Recurse
           Copy-Item dbc dist\dbc -Recurse
           Copy-Item tests dist\tests -Recurse
@@ -128,6 +137,6 @@ jobs:
       - name: Upload bundle
         uses: actions/upload-artifact@v4
         with:
-          name: blobly_vgui-mingw-x64
+          name: blobly_net-windows-x64
           path: dist
           if-no-files-found: error
