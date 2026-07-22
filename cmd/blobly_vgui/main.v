@@ -448,7 +448,17 @@ fn (app &App) eth_layout_fields(id u32, ch string) []telem.EthField {
 }
 
 fn (a &App) lookup_name(id u32, ext bool) string {
-	for db in a.dbs {
+	return lookup_name_in(a.dbs, id, ext)
+}
+
+// lookup_name_in resolves a frame id against a SNAPSHOT of the databases, so
+// the rx worker can run the (linear, per-DBC) scan OUTSIDE app.mu — holding the
+// global lock across every DBC on a high-rate bus would serialize all RX
+// workers and the UI. Safe unlocked because rebuild REPLACES app.dbs (a fresh
+// assignment, not in-place mutation) and the DBC editor mutates it only while
+// stopped, so a snapshot taken under the lock stays valid to read.
+fn lookup_name_in(dbs []candb.Database, id u32, ext bool) string {
+	for db in dbs {
 		if m := db.lookup_frame(id, ext) {
 			return m.name
 		}
@@ -879,13 +889,23 @@ fn diag_server_loop(app &App, iface string) {
 }
 
 fn rx_loop(app &App, ci int, iface string, gen int) {
-	mut bus := app.open_transport(iface) or {
+	mut a := unsafe { app }
+	// validate BEFORE opening the transport: open_transport -> bitrate_iface
+	// iterates app.chans unlocked, so a worker spawned then delayed past a
+	// Stop + Open/New (which REPLACES app.chans) would race the rebuild. Guard
+	// first, then resolve the physical (bitrate-suffixed) iface under the lock.
+	a.mu.lock()
+	if !a.chan_gen_ok(ci, gen) {
+		a.mu.unlock()
+		return // stale before we registered anything — no bus, no dbc_readers
+	}
+	phys := a.bitrate_iface(iface)
+	a.mu.unlock()
+	mut bus := transport.open(phys) or {
 		eprintln('rx ${iface}: ${err}')
-		mut a := unsafe { app }
 		a.chan_worker_done(ci, gen)
 		return
 	}
-	mut a := unsafe { app }
 	a.mu.lock()
 	a.dbc_readers++ // this loop reads app.dbs lock-free (lookup_name per frame)
 	a.mu.unlock()
@@ -937,18 +957,25 @@ fn rx_loop(app &App, ci int, iface string, gen int) {
 		}
 		f := bus.recv(200) or { continue }
 		t_ms := f64(time.ticks() - a.t0)
+		// snapshot the databases under the lock, then run the lookup UNLOCKED
+		// (see lookup_name_in) so a linear DBC scan can't serialize the workers.
 		a.mu.lock()
 		if !a.chan_gen_ok(ci, gen) {
-			// rebuilt under us mid-frame: the row/counters belong to a project
-			// that no longer exists — drop everything and exit
 			a.mu.unlock()
 			break
 		}
-		// the dbs lookup runs INSIDE the guarded section: a project swap
-		// clears and repopulates app.dbs under a worker blocked in recv, and
-		// the lock-free read contract only holds while this worker's channel
-		// still exists (gen ok = same project, dbs only mutated while stopped)
-		name := a.lookup_name(f.id, f.extended)
+		dbs_snap := a.dbs
+		a.mu.unlock()
+		name := lookup_name_in(dbs_snap, f.id, f.extended)
+		a.mu.lock()
+		// re-check AFTER the unlocked lookup. `running` matters as much as the
+		// generation: a Stop that lands while we were blocked in recv leaves the
+		// generation valid (no rebuild) but `running` false — this frame arrived
+		// after Stop and must NOT append. A New/Open/Reload fails chan_gen_ok.
+		if !(a.running && a.chan_gen_ok(ci, gen)) {
+			a.mu.unlock()
+			break
+		}
 		if !a.paused {
 			a.trace << TraceRow{t_ms, chname, 'RX', f.id, f.extended, f.rtr, name, f.data.clone()}
 			if a.trace.len > trace_cap {
@@ -2087,6 +2114,13 @@ fn selftest_config(mut app App) {
 	app.commit_cfg()
 	ok = selftest_check('simultaneous rename swap commits', app.proj.channels[0].name == 'CANX'
 		&& app.proj.channels[1].name == 'CAN0') && ok
+	// two EMPTY names are a real collision (the load gate rejects it) — the
+	// found-flag must catch it where a '' sentinel could not; both revert
+	app.cfg_bufs[0].name_buf = mkbuf('', 48)
+	app.cfg_bufs[1].name_buf = mkbuf('', 48)
+	app.commit_cfg()
+	ok = selftest_check('empty-name duplicate reverted', app.proj.channels[0].name == 'CANX'
+		&& app.proj.channels[1].name == 'CAN0') && ok
 	println(if ok { 'SELFTEST_CONFIG: PASS' } else { 'SELFTEST_CONFIG: FAIL' })
 	println('--- discover_all() ---')
 	for d in app.discover_all() {
@@ -2551,17 +2585,19 @@ fn (mut app App) commit_cfg() {
 	for i in 0 .. app.proj.channels.len {
 		proposed << vgui.buf_str(app.cfg_bufs[i].name_buf)
 	}
-	mut dup := ''
+	mut dup_found := false // explicit flag, not a value sentinel: two EMPTY names
+	mut dup_name := ''     // are a real collision, and '' cannot signal "none found"
 	mut seen_names := map[string]bool{}
 	for nm in proposed {
 		if nm in seen_names {
-			dup = nm
+			dup_found = true
+			dup_name = nm
 			break
 		}
 		seen_names[nm] = true
 	}
-	if dup != '' {
-		app.notify('bus name "${dup}" is duplicated — renames reverted')
+	if dup_found {
+		app.notify('bus name "${dup_name}" is duplicated — renames reverted')
 		for i in 0 .. app.proj.channels.len {
 			app.cfg_bufs[i].name_buf = mkbuf(app.proj.channels[i].name, 48)
 		}
@@ -2569,7 +2605,7 @@ fn (mut app App) commit_cfg() {
 	for i in 0 .. app.proj.channels.len {
 		b := app.cfg_bufs[i]
 		mut ch := &app.proj.channels[i]
-		if dup == '' {
+		if !dup_found {
 			ch.name = proposed[i]
 		}
 		ch.network = vgui.buf_str(b.network_buf)
