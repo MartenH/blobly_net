@@ -80,6 +80,9 @@ fn main() {
 				println('  [header]  core ${r.header_core()}  count ${r.header_count()}')
 			} else if r.is_epoch() {
 				println('  [epoch]   base ${r.epoch_base()}us')
+			} else if r.is_core_offset() {
+				// This core's clock vs the dumping core's: subtract to compare lanes.
+				println('  [skew]    ${r.core_offset_us()}us vs the dumping core (+/-${r.core_offset_bound_us()}us)')
 			} else if r.kind() == telem.kind_thread {
 				lbl := if r.is_idle() { 'idle' } else { 't${r.id()}' }
 				println('  [thread]  ${lbl}  start ${r.start_us}us  cpu ${r.cpu_us}us  reason ${r.reason()}')

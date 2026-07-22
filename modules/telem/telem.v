@@ -31,6 +31,7 @@ pub const kind_control = u8(3) // id = a CONTROL subtype (block header, epoch)
 // CONTROL subtypes (id when kind == kind_control).
 pub const ctl_block = u16(0) // per-core block header leading one core's block in a multi-core dump
 pub const ctl_epoch = u16(1) // timeline origin: re-anchors the u24 start_us base for long captures
+pub const ctl_coreoffset = u16(2) // this block's core clock vs the dumping core's (emb REQ-TRACE-011)
 
 // THREAD `info` — why the core LEFT the outgoing thread (the preemption/exit signal).
 pub const reason_preempt = u8(0) // still ready, resumes later (a higher-priority thread/ISR woke)
@@ -137,6 +138,26 @@ pub fn (r Record) is_epoch() bool {
 
 pub fn (r Record) epoch_base() u32 {
 	return r.start_us | (u32(r.info) << 24)
+}
+
+// is_core_offset / core_offset_* — how this block's core clock relates to the DUMPING core's
+// (CONTROL / ctl_coreoffset). Each core timestamps from its own free-running origin, so blocks
+// are not comparable until this is applied: subtract core_offset_us() from every following
+// record's absolute µs to land on the dumping core's timeline.
+//
+// core_offset_bound_us() is the residual uncertainty of the measurement (half the round trip that
+// produced it) — surface it rather than round it away. An ABSENT record means "never measured":
+// leave the lanes uncorrelated and say so; do not assume zero skew.
+pub fn (r Record) is_core_offset() bool {
+	return r.kind() == kind_control && r.id() == ctl_coreoffset
+}
+
+pub fn (r Record) core_offset_us() i32 {
+	return i32(r.start_us | (u32(r.info) << 24))
+}
+
+pub fn (r Record) core_offset_bound_us() u16 {
+	return r.cpu_us
 }
 
 // LoadDetail is one core's load over three windows + overrun count (id 0x7E1):
