@@ -11,8 +11,9 @@ a drop-in.
 > This is a single-author project still in its **design phase** — not a product, and not
 > something to rely on yet. Specifically:
 >
-> - **Maturity varies a lot between features.** The protocol engine in `modules/` is unit-tested
->   and runs in CI on every push; a fair amount of the rest has only ever been exercised on the
+> - **Maturity varies a lot between features.** The protocol engine in `modules/` is
+>   [unit-tested and runs in CI](#how-its-tested) on every push; a fair amount of the rest has
+>   only ever been exercised on the
 >   author's own bench, against the author's own boards. Some of it is **effectively untested**,
 >   and a feature existing here is not a claim that it is correct.
 > - **Formats and interfaces will change** — `.blobnet` projects, and the wire formats shared
@@ -183,7 +184,33 @@ in the **[scripting & test guide](docs/scripting.md)**.
 † needs a **blobly_emb** target, which is [not released yet](#-this-screenshot-needs-the-other-half--which-isnt-released-yet).
 
 **CI** (`.github/workflows/`) runs `v -enable-globals test modules/` plus
-`scripts/runtests.sh` — no display involved.
+`scripts/runtests.sh` — no display involved. See [How it's tested](#how-its-tested).
+
+## How it's tested
+
+Worth being explicit, since [maturity varies](#-very-early-in-development) — this is the
+evidence behind that warning.
+
+**Automated on every push:**
+
+| layer | what | where |
+|---|---|---|
+| **Unit tests** | 32 test files, ~870 assertions across every module | `v -enable-globals test modules/` |
+| **Golden byte vectors** | wire formats are pinned to exact bytes — SOME/IP headers, trace records, the simulated ECU's frames — and the same vectors exist on the blobly_emb side, so neither repo can drift alone | inside the unit tests |
+| **Headless integration** | 4 Lua suites drive real diagnostics and signal traffic against an in-process bus, simulated ECU and the native UDS server | `scripts/runtests.sh` |
+| **GUI build** | the ImGui app compile-links on Linux and Windows | `ci.yml`, `windows.yml` |
+
+**Not automated — done by hand, and worth knowing about:**
+
+- **Cross-checked against independent implementations.** Decoders are diffed against cantools
+  (DBC), asammdf (MDF4) and a hand-written Python ECU, so a V decoder is never validated only by
+  the matching V encoder. These are the [oracles in `sut/`](sut/README.md); they are not in CI.
+- **Hardware.** PCAN and Kvaser adapters are verified on real buses, and target-facing features
+  against STM32 boards on the author's bench. CI runners have neither, so none of this is gated.
+
+**The gaps, plainly:** there is **no automated GUI testing** — CI proves the app builds, not that
+a panel behaves. The Windows job **builds but runs no tests**. And every hardware and oracle check
+above is manual, so a regression there is caught only when someone next runs it.
 
 ## Docs
 
