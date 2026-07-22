@@ -12,7 +12,7 @@ is read-only and the File menu has no New/Open/Save/Save As.
 
 ## Vocabulary (agreed)
 
-conventional tooling uses a three-tier model; we deliberately **merge it into one first-class entity, the
+Comparable tools use a three-tier model; we deliberately **merge it into one first-class entity, the
 Bus**, with a lightweight `network` label for grouping. One user-facing word — **Bus** —
 replaces the overloaded "channel".
 
@@ -24,7 +24,7 @@ replaces the overloaded "channel".
 | **Database (DBC)** | Describes the messages/signals of the network. Conceptually network-scoped; stored on the bus. | `bus.databases[]` |
 | **Node (ECU)** | A simulated/real participant, defined by a DBC transmitter. | `bus.simulate[]` / `bus.simulation[]` |
 
-**Is a bus a channel?** Yes — 1:1 for us. conventional tooling maps a logical *network* onto a hardware
+**Is a bus a channel?** Yes — 1:1 for us. Comparable tools map a logical *network* onto a hardware
 *channel*; we've never needed the indirection, so Bus = network-on-a-wire.
 
 **Adapters offered** (the picker; `inproc` is renamed for the user, scheme string unchanged):

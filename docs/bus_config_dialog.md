@@ -1,8 +1,8 @@
-# Bus Configuration dialog — design (conventional tooling "Network Hardware Configuration")
+# Bus Configuration dialog — design (network hardware configuration)
 
 A GUI front-end for setting up channels by **discovering** the available interfaces,
 ticking the ones you want, editing them inline, and adding them to the project — the
-same idea as a conventional tool's *Network Hardware Configuration*. The GUI-free seam already
+same idea as a network hardware configuration dialog. The GUI-free seam already
 exists (`transport.list_interfaces()` / `channels_yaml()`, `modules/transport/
 discover*.v`); this is the visual layer on top.
 

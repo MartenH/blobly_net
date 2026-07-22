@@ -253,9 +253,9 @@ turned Off (irreversible). Original handoff notes below (toolchain **mingw-w64 (
    stats (RX/TX/error-frame counts, bus load). It's the live front-end of Start/Stop (Phase 8): the
    checkbox sets `enabled`; the colour reflects measurement state. (CAN error frames come from
    SocketCAN's `CAN_RAW_ERR_FILTER`; vcan rarely emits them, so the wiring lands before real `can0`.)
-10+. Scripting/sequences (conventional test cases), more panels/plotting; then LIN + Ethernet
+10+. Scripting/sequences (automated test cases), more panels/plotting; then LIN + Ethernet
    (DoIP/SOME-IP) backends behind the same `Bus`/`Channel` abstractions (see Platform support).
-11. 🔜 **Simulation (networks + simulated ECUs)** — turn the tester into a conventional sim host:
+11. 🔜 **Simulation (networks + simulated ECUs)** — turn the tester into a simulation host:
    simulated ECUs and the tester's own functions all attach to shared **virtual networks** (the
    database lives on the network, not the ECU), in one process, **driver-free by default** (an
    in-process bus backend), with the Python SUT as the oracle that proves the native protocol stack
@@ -502,7 +502,7 @@ prompt for a password.
   fallback; 6 tests). Ships `projects/demo.yml` (CAN1 vcan0 monitor + disabled CAN2 vcan1 replay). The
   app is now **config-driven**: it loads the project at startup (env `BLOBLY_PROJECT`) instead of
   hardcoding vcan0, and DBCs come from the channels (not the old `BLOBLY_DBC`). A global **Start/
-  Stop** (top-left, conventional measurement lifecycle) opens/closes enabled *monitor* channels per
+  Stop** (top-left, measurement lifecycle) opens/closes enabled *monitor* channels per
   channel (each its own RX thread, closes itself on stop); `do_send` TXes on the first running channel.
   New **Buses** panel (narrow left): per-channel enable checkbox + state-colour dot (green running /
   amber enabled-stopped / grey disabled / red errored). New gui **menubar** — **File**: New / Open

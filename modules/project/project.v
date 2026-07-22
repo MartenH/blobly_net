@@ -93,7 +93,7 @@ pub mut:
 	value f64
 }
 
-// Sender is a declarative "interactive generator" (conventional tooling IG-style): a named,
+// Sender is a declarative "interactive generator" (IG-style): a named,
 // user-triggerable frame. The frame is built either from `message` (a DBC
 // message name → id/dlc, with `signals` encoded onto a zero payload) or from an
 // explicit `id` + raw `data`. `key` is an optional single-character hotkey that

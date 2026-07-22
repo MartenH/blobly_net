@@ -3043,7 +3043,7 @@ fn bus_kind(adapter string) string {
 
 // draw_network shows the bus topology: each channel (bus) and everything attached to it —
 // the tester's own functions (Monitor / Send / Diagnostics), simulated ECUs, and generators
-// grouped by the bus they actually transmit on. The conventional tooling "Simulation Setup" analog.
+// grouped by the bus they actually transmit on. The simulation-setup analog.
 fn draw_network(mut app App, chans []Chan) {
 	vis, op := vgui.begin_closable('Network', app.show_network)
 	app.show_network = op

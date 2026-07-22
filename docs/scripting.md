@@ -163,7 +163,7 @@ CAN/UDS payloads are Lua **byte strings** (8-bit clean). Helpers:
 
 ### Sequences — wait / expect
 
-Linear "wait for an event with a timeout" (conventional tooling `testWaitFor` style). These block
+Linear "wait for an event with a timeout" (a blocking wait-for-event style). These block
 the script until the condition or the timeout, then return or raise.
 
 | Call | Meaning |

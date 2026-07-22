@@ -1,7 +1,7 @@
 # Simulation architecture — networks, nodes, and the verification gate
 
 Status: **design agreed 2026-06-07** (not yet implemented). This is the plan for
-turning the tester into a conventional simulation host: simulated ECUs and the
+turning the tester into a simulation host: simulated ECUs and the
 tester's own functions all attach to shared virtual networks, **inside one
 process**, driver-free by default, with the existing Python SUT as the oracle
 that proves the native stack before we trust it.
