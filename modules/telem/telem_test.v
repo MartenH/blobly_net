@@ -126,6 +126,16 @@ fn test_record_kinds() {
 	ep := decode_record([u8(0x01), 0xC0, 0x01, 0, 0, 0, 0, 0])
 	assert ep.is_epoch() && !ep.is_block_header()
 	assert ep.epoch_base() == u32(0x01) << 24
+
+	// core offset: CONTROL/ctl_coreoffset (0xC002, LE 02 C0); offset = info<<24 | start_us(u24),
+	// read SIGNED, and cpu_us = the measurement bound. A satellite released after the dumping
+	// core reads less at the same instant, so the offset is normally negative — decoding it
+	// unsigned would shift the lane the wrong way and still look plausible.
+	// -1_250_000 = 0xFFECED30 -> info 0xFF, start_us 0xECED30 (LE 30 ED EC); bound 42.
+	off := decode_record([u8(0x02), 0xC0, 0xFF, 0x30, 0xED, 0xEC, 42, 0])
+	assert off.is_core_offset() && !off.is_epoch() && !off.is_block_header()
+	assert off.core_offset_us() == -1_250_000
+	assert off.core_offset_bound_us() == 42
 }
 
 // The `# trace frames` section carries the five observability CAN ids (config-driven on the
