@@ -9,7 +9,7 @@
 The editor's killer feature is the dock it lives in: **edit a signal next to
 the live trace and watch real traffic re-decode instantly**. CANdb++ and the
 free alternatives all make DBC authoring a dead loop (edit → save → restart →
-replay); blobly_vgui already has live decode against loaded `candb.Database`s
+replay); blobly_net already has live decode against loaded `candb.Database`s
 — the editor closes the loop by making those databases writable. Everything
 else (forms, validation, the bit grid) is table stakes.
 
@@ -36,7 +36,7 @@ a file its own parser rejects.
 
 ## P1 — the editor panel (next PR)
 
-A dockable blobly_vgui panel, the Shell-panel precedent:
+A dockable blobly_net panel, the Shell-panel precedent:
 
 - message list → signal table → edit forms (name, id/ext, dlc, sender, cycle;
   start/length/order/sign, factor/offset, min/max, unit, desc);

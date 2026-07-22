@@ -4,7 +4,7 @@
 > to live in `CLAUDE.md`, moved out on 2026-07-22 so the agent guide could be short enough to
 > stay true. Entries are point-in-time notes: many describe tools, files and decisions that have
 > since changed (most visibly the GUI, which moved from `vlang/gui` + `src/main.v` to Dear ImGui
-> + `cmd/blobly_vgui` on 2026-07-06). Read it as history, never as current state.
+> + `cmd/blobly_net` on 2026-07-06). Read it as history, never as current state.
 >
 > For what is true **now**, see [CLAUDE.md](../CLAUDE.md). For what changed and when, `git log`
 > is the real record.
@@ -984,7 +984,7 @@
   red outline, preempt hatch, Zoom In → 400% + canvas widens, bottom scrollbar drags to pan (0→15.9 ms).
   (Merged as PR #13 zoom/scroll + PR #14 rework — both user-approved.)
 - 2026-07-03: **GUI toolkit eval — WINDOWS BUILD CHECK: GREEN (the gating step; done on the Windows
-  machine).** Ran the `eval/vgui` spike natively on Windows 11 (dedicated MSYS2 `C:\dev\msys64-ct`,
+  machine).** Ran the `libs/vgui` spike natively on Windows 11 (dedicated MSYS2 `C:\dev\msys64-ct`,
   mingw-w64 **gcc 16.1.0**, V 0.5.1 `c0624b2`, Intel Arc / **OpenGL 4.6**). All four open questions
   answered ✅: (1) **cimgui/cimplot + GLFW compile clean** under mingw — `build_deps.sh` ran unmodified
   (`pacman -S mingw-w64-x86_64-glfw` gives static `libglfw3.a`), built `libvgui_c.a` (only deprecation
@@ -995,7 +995,7 @@
   top-level windows (`EnumWindows`-verified): main GLFW window + a detached **`Trace Chart`** OS window
   rendering the ImPlot swimlane outside the main rect (drag to 2nd monitor); both render correctly
   (Trace table + colored swimlane bars/overrun/preemption) — full-desktop capture in
-  `eval/vgui/shots/windows_multiviewport.png`; (4) **idle CPU 0.5 %/core (~0.03 % of 16-core), ~84 MB**
+  `libs/vgui/shots/windows_multiviewport.png`; (4) **idle CPU 0.5 %/core (~0.03 % of 16-core), ~84 MB**
   event-driven — beats WSLg's ~4 %, on par with gui's ~0.3 %. **The migrate/stay gate is CLEARED →
   recommendation stands: migrate, phased.** ⚠️ **Two findings fixed/flagged along the way:** (a) the
   WSL session's `.gitignore` pattern `examples/**/trace_chart` **also matched the `examples/trace_chart/`
@@ -1005,31 +1005,31 @@
   + `.exe`); (b) **`v … run` panics on Windows** driving the C compiler (`array.push_many: new len
   exceeds max_int` in `os__windows_execute_command_line`, from MSYS bash *and* PowerShell) — a V bug,
   not vgui (blobly_net's own build is fine; the C compile+link are correct when run directly). Added
-  **`eval/vgui/build_win.sh`** (2-step: V→C, then gcc compile + g++ link) as the reproducible Windows
+  **`libs/vgui/build_win.sh`** (2-step: V→C, then gcc compile + g++ link) as the reproducible Windows
   recipe; worth a minimal `v bug` report. MSVC (`cl`) not exercised (mingw is primary; nice-to-have).
-  Results written into `docs/gui_toolkit_evaluation.md` + `eval/vgui/README.md`. NOT committed yet
+  Results written into `docs/gui_toolkit_evaluation.md` + `libs/vgui/README.md`. NOT committed yet
   (awaiting user's say-so per the no-merge-without-approval feedback). **Windows deps installed this
   session:** `mingw-w64-x86_64-glfw` + `mingw-w64-x86_64-cmake` + `git` into `C:\dev\msys64-ct`.
 - 2026-07-03: **GUI toolkit evaluation — Dear ImGui + ImPlot spike (branch `gui-toolkit-eval`; NOT
   merged).** Motivated by the user's worry that `vlang/gui` is **structurally single-window** (sokol_app
   owns one OS window) — a ceiling for a professional-class multi-monitor tool — plus gui's stagnation/patch
   burden. Since the engine is GUI-free, a swap is a `src/main.v` rewrite, not a rearchitecture. Spiked
-  **V → Dear ImGui (docking/multi-viewport) + ImPlot** via a new reusable **`eval/vgui`** V module (clean
+  **V → Dear ImGui (docking/multi-viewport) + ImPlot** via a new reusable **`libs/vgui`** V module (clean
   V API over a curated *scalar* C ABI `vgui_glue.cpp` on **cimgui + cimplot** + a GLFW/GL3 backend — same
   facade pattern as `modules/lua`; learned from but did NOT reuse `nsauzede/vig`, whose hand-mirrored
   `ImGuiIO` rots on imgui bumps). **Both scary unknowns CLEARED on Linux/WSL:** (1) **multi-window works
   under WSLg** — 3 simultaneous real X11 windows, the Trace Chart swimlane landing on the user's **second
   monitor** (gui can't); (2) **CPU is matchable to gui** — event-driven `glfwWaitEvents` ≈ 4 %@1-2fps
   (→~0 pure-wait) vs the naive-poll **340 %** trap. Ported the **Trace Chart swimlane to imgui+ImPlot**
-  (`eval/vgui/examples/trace_chart`): the swimlane is an ImPlot plot with **native drag-pan / scroll-zoom
+  (`libs/vgui/examples/trace_chart`): the swimlane is an ImPlot plot with **native drag-pan / scroll-zoom
   / double-click-fit / time axis** — replaces the whole hand-rolled zoom-buttons+scrollbar and looks
   *better* than the gui version. Gotchas: all imgui TUs must share one config (`IMGUI_DISABLE_OBSOLETE_
   FUNCTIONS` changes `sizeof(ImGuiIO)` → "Mismatched struct layout!" abort); imgui 1.92.8 swapped
   `AddRect` thickness/flags; `import -window` blanks the main GL window under WSLg (use the `VGUI_SHOT`
   glReadPixels-GL_BACK dump). Findings + migrate/stay recommendation (lean **migrate**, phased) +
   the **Windows-build-check next step**: `docs/gui_toolkit_evaluation.md`; module/build/README:
-  `eval/vgui/`. Pinned: cimgui `053280d` (imgui `b61e563` = 1.92.8), cimplot `999ce3e`, GLFW 3.3.10.
-  Screenshots in `eval/vgui/shots/`. Build-verified reproducibly from the repo (`build_deps.sh` +
+  `libs/vgui/`. Pinned: cimgui `053280d` (imgui `b61e563` = 1.92.8), cimplot `999ce3e`, GLFW 3.3.10.
+  Screenshots in `libs/vgui/shots/`. Build-verified reproducibly from the repo (`build_deps.sh` +
   example). **Decision gated on the Windows build** (mingw/msvc: does cimgui/cimplot+GLFW compile, does
   the `#flag windows` link resolve, do native Win32 viewports spawn, idle CPU) — the user will drive that
   on the Windows machine. **Feedback captured this session:** do NOT merge PRs without the user's explicit
@@ -1037,7 +1037,7 @@
 - 2026-07-05: **Project editing in the GUI — schema v2 + Configuration editor + per-bus Trace (vgui,
   branch `vgui-migration`).** Verified the Windows-pushed vgui build runs on Linux first (stale
   `libvgui_c.a` needed `DEPS=1` — the incoming commits added `vgui_tree_node_open` to the C glue; noted
-  in `run_vgui.sh`). Then, per an agreed design (`docs/project_editing.md` + 6 mermaid example configs):
+  in `run_gui.sh`). Then, per an agreed design (`docs/project_editing.md` + 6 mermaid example configs):
   a user can now build a `.blobnet` **from a blank project entirely in the GUI**. Concept model agreed
   with the user: **merged "Bus"** entity (not a 3-tier Network/Channel/Adapter split) with an optional
   **`network`** grouping label; DBC attaches to the bus; a **dedicated stopped-only Configuration editor**
@@ -1067,7 +1067,7 @@
   **`projects/restbus-2vcan.blobnet`** (v2-schema example: 2 vcan buses, DBC + simulated transmitters each,
   a 0x101→0x102 on-demand reply on vcan0 — the user's real-ECU-with-2-vcans restbus case) + Open Example
   entry. Dev hook `BLOBLY_SHOW_CONFIG=1` opens the editor at startup. Committed `279f002`.
-- 2026-07-05: **Config-editor UX round (user feedback).** (a) **vgui glue additions** (`eval/vgui`,
+- 2026-07-05: **Config-editor UX round (user feedback).** (a) **vgui glue additions** (`libs/vgui`,
   DEPS rebuild): `begin_closable(title, open) (vis, open)` → a close **[X]** in the window title bar;
   `set_item_tooltip`/`help_marker` (a dim "(?)" with a hover tooltip). (b) **Configuration editor is now
   a tree** — each bus is a `tree_node_open` with an **enable checkbox on the header row** (toggle without
@@ -1114,7 +1114,7 @@
 - 2026-07-05: **Fix sluggish UI (window close/reflow took ~1-2s).** The event-driven loop waited
   `glfwWaitEventsTimeout(0.5)` per idle frame, so imgui's animations (window close, dock reflow, tab/
   hover fades) — which need CONTINUOUS frames — played at ~2fps and took ~1-2s to settle. Fix
-  (`eval/vgui/vgui_glue.cpp`, DEPS rebuild): after each frame, sample activity (`io.MouseDown/Wheel/
+  (`libs/vgui/vgui_glue.cpp`, DEPS rebuild): after each frame, sample activity (`io.MouseDown/Wheel/
   Delta`, `WantTextInput`, `IsAnyItemActive`); if active, set a `g_busy_frames=45` countdown; while it's
   >0, `vgui_running` waits `1/60`s (smooth 60fps), else the cheap `0.5`s idle wait. So interactions +
   animations render at full rate for ~0.75s after the last input, then idle CPU drops back. (Running

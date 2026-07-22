@@ -23,15 +23,17 @@ memory such as `~/.claude` does not transfer). Everything needed is in git.
 sudo ./scripts/setup_sudoers.sh   # optional: scoped passwordless sudo (apt-get/ip/modprobe)
 ./scripts/setup_env.sh            # V + native deps (GLFW/FreeType) + can-utils, builds the GUI,
                                   # brings up vcan0, runs the tests
-./scripts/run_vgui.sh             # build + run the GUI
-python3 sut/can_sut.py vcan0      # a virtual ECU, in another terminal
+./scripts/run_gui.sh             # build + run the GUI
 ```
+
+For traffic with no hardware, open `projects/sim-demo.blobnet` — the simulated ECUs are native
+(`modules/sim`) and run in-process. `sut/*.py` is NOT part of this path; see Layout.
 
 ## Decisions
 
 - **Language:** V (vlang). Beta — expect compiler/runtime rough edges. Pin what works.
-- **GUI:** **Dear ImGui + ImPlot**, wrapped as the native-V `vgui` module (`eval/vgui`); the app
-  is `cmd/blobly_vgui`. *(Migrated 2026-07-06 from `vlang/gui`; the old `src/main.v` app is
+- **GUI:** **Dear ImGui + ImPlot**, wrapped as the native-V `vgui` module (`libs/vgui`); the app
+  is `cmd/blobly_net`. *(Migrated 2026-07-06 from `vlang/gui`; the old `src/main.v` app is
   deleted. Rationale in [`docs/gui_toolkit_evaluation.md`](docs/gui_toolkit_evaluation.md).)*
 - **CAN:** SocketCAN on Linux (`vcan0` virtual, or any adapter); **PCAN** and **Kvaser** on
   Windows (vendor DLLs loaded at runtime, both HW-verified). No Vector backend. All behind the
@@ -43,13 +45,15 @@ python3 sut/can_sut.py vcan0      # a virtual ECU, in another terminal
 ## Layout
 
 ```
-cmd/blobly_vgui/     the GUI (Dear ImGui + ImPlot)   <- the app
+cmd/blobly_net/     the GUI (Dear ImGui + ImPlot)   <- the app
 cmd/*                CLI tools + smoke tests (flash, dbc_decode, mf4_dump, trace_dump, ...)
-eval/vgui/           the V wrapper around Dear ImGui/ImPlot
+libs/vgui/           the V wrapper around Dear ImGui/ImPlot
 modules/             engine (GUI-free, unit-tested)
 scripts/             setup, run, test, packaging
 projects/            example `.blobnet` projects
-sut/                 Python virtual ECU (test fixture)
+sut/                 Python VERIFICATION ORACLES (dev-time only, not CI, not the sim path):
+                     cantools/asammdf/udsoncan as INDEPENDENT implementations to diff V against.
+                     Its virtual-ECU role is superseded by modules/sim (native, in-process).
 tests/               Lua test scripts
 docs/                design + platform docs; docs/history.md = archived status log
 ```
@@ -78,7 +82,7 @@ docs/                design + platform docs; docs/history.md = archived status l
 ## Build / run / test
 
 ```sh
-./scripts/run_vgui.sh                       # GUI
+./scripts/run_gui.sh                       # GUI
 v -path "@vlib|@vmodules|modules" run cmd/<tool>/<file>.v   # any other target
 v -enable-globals test modules/             # unit tests — the reliable backbone (32/32)
 ./scripts/runtests.sh tests/diag_basic.lua  # headless Lua integration tests (in-process sim)
@@ -91,6 +95,18 @@ release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks.
 ## Conventions
 
 - **Every module GUI-free and unit-tested.** New protocol work starts in `modules/` with tests.
+  This is the one architectural rule, and it cuts both ways: anything that decides what a wire
+  format *means* belongs in `modules/`, not in a front end. If the GUI and a CLI tool would each
+  have to interpret the same bytes, the interpretation is in the wrong place.
+- **Commit identity is enforced, not trusted.** Every commit must be **authored** by
+  `marten.hildell@gmail.com`; the committer may also be `noreply@github.com` (GitHub rewrites it
+  when you squash-merge in the web UI). CI checks this in
+  [`.github/workflows/guard.yml`](.github/workflows/guard.yml) and **fails the build** otherwise —
+  a work address once reached this history and had to be rewritten out of every commit. Install
+  the local hook so it fails in a second instead of after a push:
+  `git config core.hooksPath .githooks`.
+- **External PRs are auto-closed** (design phase — see [`CONTRIBUTING.md`](CONTRIBUTING.md)); the
+  same workflow posts a comment pointing at issues. Nothing to do by hand.
 - **PRs get `@codex review`**; iterate until clean before merging.
 - **Update this file in the PR that lands the work** — especially new modules/panels. The gap
   between 2026-07-06 and 07-21 (~30 PRs) had to be reconstructed from `git log`; don't repeat it.
@@ -101,10 +117,12 @@ release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks.
 ## Gotchas
 
 **Read [`docs/known_issues.md`](docs/known_issues.md) first when something breaks** — it is the
-categorised list (V / GUI / rendering / env). Two that bite newcomers:
+categorised list (V / GUI / environment / CI). Two that bite newcomers:
 
 - **WSLg + GL:** hardware GL works on Ubuntu 24.04 + Mesa 25.x; older Mesa crashed the GPU path.
-- **Local V patches** may be needed on a fresh box — see [`docs/v_patches/`](docs/v_patches/).
+- **Native Windows** is a separate toolchain (MSYS2/mingw). `.github/workflows/windows.yml` is
+  the reproducible recipe — it builds the shipped bundle on every push; there is no hand-written
+  walkthrough to drift from it.
 
 ## Docs
 
@@ -114,6 +132,6 @@ categorised list (V / GUI / rendering / env). Two that bite newcomers:
   [simulation_architecture.md](docs/simulation_architecture.md) ·
   [blobly_emb_synergies.md](docs/blobly_emb_synergies.md)
 - [can_hardware.md](docs/can_hardware.md) · [windows_can_hardware.md](docs/windows_can_hardware.md) ·
-  [windows_build.md](docs/windows_build.md) · [known_issues.md](docs/known_issues.md)
-- [../ROADMAP.md](ROADMAP.md) — what's shipped and what's next
+  [known_issues.md](docs/known_issues.md)
+- [../ROADMAP.md](ROADMAP.md) — what's next and planned (shipped list kept last)
 - [history.md](docs/history.md) — archived status log (not maintained)

@@ -8,8 +8,8 @@ cmd/mf4_dump/mf4_dump
 /build/
 # compiled binaries left next to sources by `v run` / `-o` (Windows .exe, bare on Linux)
 *.exe
-cmd/blobly_vgui/blobly_vgui
-cmd/blobly_vgui/main
+cmd/blobly_net/blobly_net
+cmd/blobly_net/main
 
 # Editor
 *.swp
