@@ -2,7 +2,7 @@
 
 **Status (2026-07-03):** spike complete on Linux/WSL **and Windows** — **both build checks GREEN**.
 No decision committed yet (user's call). The app still runs on `vlang/gui`. The spike code lives in
-`eval/vgui/` (a reusable `vgui` V module + a Trace Chart example); nothing in the main app depends on
+`libs/vgui/` (a reusable `vgui` V module + a Trace Chart example); nothing in the main app depends on
 it. See "Windows build check — RESULTS" below.
 
 ## Why we're looking
@@ -26,11 +26,11 @@ a swap is a `src/main.v` rewrite against a new toolkit, not a rearchitecture. Th
 | Question | Result |
 |---|---|
 | **Multi-window under WSLg** | ✅ Dear ImGui **docking-branch multi-viewport** creates real, independent OS windows. Verified **3 simultaneous X11 windows** (main + Trace table + Graphics/swimlane); the swimlane window landed on the **second monitor** — the exact thing gui can't do. |
-| **V can drive it** | ✅ A clean V module (`eval/vgui`) over a curated scalar C ABI on **cimgui + cimplot** + GLFW. V owns the loop, timing, and UI (table built from V structs; swimlane fed V `Bar` data). `v -cc gcc` links it. |
+| **V can drive it** | ✅ A clean V module (`libs/vgui`) over a curated scalar C ABI on **cimgui + cimplot** + GLFW. V owns the loop, timing, and UI (table built from V structs; swimlane fed V `Bar` data). `v -cc gcc` links it. |
 | **ImPlot for the swimlane** | ✅ Big win — the swimlane is an ImPlot plot with **native drag-to-pan, scroll-to-zoom, double-click-fit, and a time axis**, replacing the entire hand-rolled zoom-buttons + scrollbar. Overrun bars, preemption hatch, lane bands all draw via the plot draw list. |
 | **CPU (the crux)** | ⚠️→✅ Naive poll loop (60fps) = **~340 % of a core** idle — the trap. **Event-driven** (`glfwWaitEvents`, wake on input or a posted event, like gui's `queue_command`) = **~4 % @1-2fps under WSLg → ~0 % pure-wait**. Matchable to gui, but only with deliberate discipline. RX/sim threads would `glfwPostEmptyEvent()` to wake a repaint. |
 
-Screenshots in `eval/vgui/shots/`:
+Screenshots in `libs/vgui/shots/`:
 - `trace_chart_second_monitor.png` — the ImPlot swimlane in its own OS window (Arm/Dump/Fit, time axis, 3 lanes, overrun bar).
 - `trace_chart_and_table.png`, `v_driven_table_window.png`, `v_driven_plot_window.png` — V-driven windows.
 
@@ -70,7 +70,7 @@ Windows, worked around by a 2-step build — see below), not a toolkit problem.
 
 Ran on native Windows 11 (dedicated MSYS2 `C:\dev\msys64-ct`, **mingw-w64 gcc 16.1.0**, V 0.5.1
 `c0624b2`, Intel Arc GPU / **OpenGL 4.6**). All four questions answered — screenshot
-`eval/vgui/shots/windows_multiviewport.png`:
+`libs/vgui/shots/windows_multiviewport.png`:
 
 | Question | Result |
 |---|---|
@@ -80,12 +80,12 @@ Ran on native Windows 11 (dedicated MSYS2 `C:\dev\msys64-ct`, **mingw-w64 gcc 16
 | **Idle CPU (event-driven, native)** | ✅ **0.5 % of one core (0.03 % of the 16-core system)** at idle, working set ~84 MB. Beats WSLg's ~4 % and is on par with gui's ~0.3 %. The 340 % naive-poll trap does not apply to the event-driven loop. |
 
 ### ⚠️ One caveat — a V (not vgui) build bug on Windows
-`v -cc gcc … run eval/vgui/examples/trace_chart/trace_chart.v` **panics inside V** on this Windows V
+`v -cc gcc … run libs/vgui/examples/trace_chart/trace_chart.v` **panics inside V** on this Windows V
 (0.5.1 `c0624b2`): `array.push_many: new len exceeds max_int` in `os__windows_execute_command_line`
 while V drives the C compiler. Reproducible from **both** MSYS bash and PowerShell (not a shell
 artifact); blobly_net's own `src/main.v` build is unaffected, so it's target-specific (likely the
 C++ static-archive link invocation). The C compile and link themselves are correct — verified by
-running them directly. **Workaround:** the 2-step **`eval/vgui/build_win.sh`** (V emits C via `-o …c`,
+running them directly. **Workaround:** the 2-step **`libs/vgui/build_win.sh`** (V emits C via `-o …c`,
 then gcc compile + g++ link). Revisit the one-liner on a newer V; worth a minimal `v bug` report.
 `-cc g++` is *not* a fix — V's generated C uses `char**`/named-struct pointer casts that g++ rejects
 as errors (gcc treats them as warnings), so `gcc` is the required driver.
@@ -94,10 +94,10 @@ as errors (gcc treats them as warnings), so `gcc` is the required driver.
 ```sh
 # dedicated MSYS2 MINGW64 shell (C:\dev\msys64-ct)
 pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-glfw git
-sh eval/vgui/build_deps.sh      # -> libvgui_c.a
-sh eval/vgui/build_win.sh       # -> examples/trace_chart/trace_chart.exe (self-contained)
-eval/vgui/examples/trace_chart/trace_chart.exe            # event-driven
-VGUI_POLL=1 VGUI_FRAMES=40 VGUI_SHOT=shot.ppm eval/vgui/examples/trace_chart/trace_chart.exe  # headless
+sh libs/vgui/build_deps.sh      # -> libvgui_c.a
+sh libs/vgui/build_win.sh       # -> examples/trace_chart/trace_chart.exe (self-contained)
+libs/vgui/examples/trace_chart/trace_chart.exe            # event-driven
+VGUI_POLL=1 VGUI_FRAMES=40 VGUI_SHOT=shot.ppm libs/vgui/examples/trace_chart/trace_chart.exe  # headless
 ```
 
 ### Not done
@@ -108,7 +108,7 @@ VGUI_POLL=1 VGUI_FRAMES=40 VGUI_SHOT=shot.ppm eval/vgui/examples/trace_chart/tra
 
 The last integration risk: a background CAN **RX thread** driving the **event-driven** render loop,
 the way the migrated app would (gui does this with `queue_command`; imgui with `glfwPostEmptyEvent`).
-`eval/vgui/examples/live_trace/live_trace.v` — a real `transport` bus RX thread appends frames under a
+`libs/vgui/examples/live_trace/live_trace.v` — a real `transport` bus RX thread appends frames under a
 mutex and calls `vgui.wake()`; the UI thread blocks in `glfwWaitEvents` and repaints on wake. Verified
 live on `vcan0` with `cangen`:
 
@@ -124,7 +124,7 @@ what the app already does, just via `glfwPostEmptyEvent`. **Cleared to start the
 
 Reproduce:
 ```sh
-eval/vgui/build_deps.sh
-v -enable-globals -cc gcc -path "@vlib|@vmodules|modules|eval" run \
-  eval/vgui/examples/live_trace/live_trace.v vcan0        # then: cangen vcan0   (VGUI_WAKE_MS caps repaint)
+libs/vgui/build_deps.sh
+v -enable-globals -cc gcc -path "@vlib|@vmodules|modules|libs" run \
+  libs/vgui/examples/live_trace/live_trace.v vcan0        # then: cangen vcan0   (VGUI_WAKE_MS caps repaint)
 ```

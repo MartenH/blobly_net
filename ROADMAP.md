@@ -8,47 +8,6 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
 
 ---
 
-## Shipped
-
-**Buses & transport**
-- ✅ **SocketCAN** (Linux) — `vcan0` virtual and real adapters
-- ✅ **PEAK PCAN** and ✅ **Kvaser** (Windows) — vendor DLLs at runtime, both hardware-verified
-- ✅ UDP software bus (`inproc:`) — driver-free tests and demos
-
-**CAN & databases**
-- ✅ Live trace, send panel, signal decode
-- ✅ **DBC** parse/decode/encode (`candb`), incl. multiplexing and value tables
-- ✅ **DBC editor** — forms, bit-matrix grid, live-loop save, read-only while running, and a
-  **canonical writer** so a save/load cycle never drifts a file (git diffs show real changes only)
-
-**Diagnostics**
-- ✅ **ISO-TP** (ISO 15765-2) · ✅ **UDS client** · ✅ **DoIP** (ISO 13400 — UDS over TCP)
-- ✅ **Flashing** — `cmd/flash` + the GUI Flash panel; UDS firmware download against a
-  blobly_emb bootloader, with **0x29 challenge/response** auth (retired 0x27 seed/key)
-
-**Ethernet services**
-- ✅ **SOME/IP** — 16-byte header codec, envelope validation, golden vectors, and an **RPC client**
-  (with the eth shell in the GUI) cross-checked against blobly_emb by an oracle
-
-**Simulation, logs & replay**
-- ✅ Simulated ECUs (`sim`) — tests need no hardware
-- ✅ `candump -l` logs · ✅ native **ASAM MDF4** (`.mf4`) reader (no Python/asammdf)
-- ✅ **Replay** at the recording's original cadence
-
-**Observability**
-- ✅ **Trace chart** — handler/thread swimlanes, derived idle lane, execution-vs-response bars,
-  preemption cut-links, per-core lanes, RTOS priority labels, multi-block dump
-- ✅ **System panel** (`sysview`) — read-only view of a blobly_emb `system.toml` + node
-  `ecu.toml`s: communication matrix, node identities, per-bus id allocation with collisions
-- ✅ **Shell panel** — interactive console to the target over CAN
-
-**Platform**
-- ✅ **Dear ImGui + ImPlot** GUI (migrated from vlang/gui, 2026-07-06) · ✅ Windows build + CI
-- ✅ **Lua scripting** — test framework, headless runner for CI, Script panel in the GUI
-- ✅ `.blobnet` project files
-
----
-
 ## Next
 
 - ⏭️ **`fill_rect` / drawlist binding in `vgui`** — the blocker for two shipped-adjacent features:
@@ -56,9 +15,20 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
 - ⏭️ **System wizards** ([`docs/dbc_editor.md`](docs/dbc_editor.md)) — "add a signal/frame"
   generators that emit correctly-shaped TOML blocks to **append**. Deliberately *not* a TOML
   editor: mutations must never rewrite the file, so comments survive and diffs stay clean.
-- ⏭️ **UDS server side** (`modules/uds` server, or `modules/diagserver`) — sessions, RDBI/WDBI
-  DIDs, tester-present, security, routines. The native twin of `sut/uds_server.py`, config-driven
-  per node ([`docs/simulation_architecture.md`](docs/simulation_architecture.md)).
+- ⏭️ **UDS server — finish it.** `modules/uds/server.v` already exists and is load-bearing: it
+  backs the Lua test runner, the GUI's simulated diagnostics and `doip_smoke`, and it serves
+  **0x10** session control, **0x22**/**0x2E** RDBI/WDBI, **0x27** security access, **0x19**
+  ReadDTCInformation (sub `0x02` only) and **0x3E** tester present. What is missing:
+  - **Config-driven per node** — the biggest gap. `default_server()` is a hardcoded fixture: one
+    fixed DID table, one fixed seed/key. A node's DIDs, sessions and security ought to come from
+    the project / `system.toml`, so a simulated ECU answers like *that* ECU
+    ([`docs/simulation_architecture.md`](docs/simulation_architecture.md)).
+  - **0x31 RoutineControl** — start/stop/requestResults; nothing today.
+  - **0x11 ECUReset**, **0x14 ClearDiagnosticInformation**, and the remaining **0x19**
+    subfunctions beyond `reportDTCByStatusMask`.
+  - **Session and security state actually gating access** — a session change is acknowledged but
+    does not restrict which services or DIDs are reachable, and `unlocked` is never required.
+  - **Per-connection state** for DoIP (shared with the threading item below).
 
 ## Planned
 
@@ -83,3 +53,48 @@ blobly_net is the **tester**; [blobly_emb](docs/blobly_emb_synergies.md) is the 
 embedded ECU stack). Wire formats — trace records, SOME/IP datagrams, telemetry, the flashing
 protocol — are pinned by **golden vectors on both sides**, so they change together. When emb adds
 a wire-visible feature, the matching host support usually lands here in the same period.
+
+---
+
+## Already shipped
+
+Kept last: this is where the roadmap ends, not where it starts.
+
+**Buses & transport**
+- ✅ **SocketCAN** (Linux) — `vcan0` virtual and real adapters
+- ✅ **PEAK PCAN** and ✅ **Kvaser** (Windows) — vendor DLLs at runtime, both hardware-verified
+- ✅ UDP software bus (`inproc:`) — driver-free tests and demos
+
+**CAN & databases**
+- ✅ Live trace, send panel, signal decode
+- ✅ **DBC** parse/decode/encode (`candb`), incl. multiplexing and value tables
+- ✅ **DBC editor** — forms, bit-matrix grid, live-loop save, read-only while running, and a
+  **canonical writer** so a save/load cycle never drifts a file (git diffs show real changes only)
+
+**Diagnostics**
+- ✅ **ISO-TP** (ISO 15765-2) · ✅ **UDS client** · ✅ **DoIP** (ISO 13400 — UDS over TCP)
+- ✅ **Flashing** — `cmd/flash` + the GUI Flash panel; UDS firmware download against a
+  blobly_emb bootloader, with **0x29 challenge/response** auth (retired 0x27 seed/key)
+
+**Ethernet services**
+- ✅ **SOME/IP** — 16-byte header codec, envelope validation, golden vectors, and an **RPC client**
+  (with the eth shell in the GUI) cross-checked against blobly_emb by an oracle
+
+**Simulation, logs & replay**
+- ✅ Simulated ECUs (`sim`) — tests need no hardware
+- ✅ `candump -l` logs · ✅ native **ASAM MDF4** (`.mf4`) reader
+- ✅ **Replay** at the recording's original cadence
+
+**Observability**
+- ✅ **Trace chart** — handler/thread swimlanes, derived idle lane, execution-vs-response bars,
+  preemption cut-links, per-core lanes, RTOS priority labels, multi-block dump
+- ✅ **Cross-core time correlation** — a satellite core's block carries its measured clock offset
+  and the error bound, so a multi-core swimlane is one timeline instead of several
+- ✅ **System panel** (`sysview`) — read-only view of a blobly_emb `system.toml` + node
+  `ecu.toml`s: communication matrix, node identities, per-bus id allocation with collisions
+- ✅ **Shell panel** — interactive console to the target over CAN
+
+**Platform**
+- ✅ **Dear ImGui + ImPlot** GUI · ✅ Windows build + CI
+- ✅ **Lua scripting** — test framework, headless runner for CI, Script panel in the GUI
+- ✅ `.blobnet` project files

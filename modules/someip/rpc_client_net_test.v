@@ -3,7 +3,7 @@ module someip
 import net
 import time
 
-// The RpcClient over REAL sockets on loopback — the exact shape the vgui
+// The RpcClient over REAL sockets on loopback — the exact shape the GUI
 // shell worker drives (bind the peer port, write_to the service port, pump
 // reads + the clock). Single process: UDP buffers the exchange, so the
 // server side answers sequentially after the client sends.

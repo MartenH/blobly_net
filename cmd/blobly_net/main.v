@@ -1,0 +1,6812 @@
+// blobly_net — the Dear ImGui + ImPlot frontend for blobly_net (phased migration off
+// vlang/gui; see docs/gui_toolkit_evaluation.md).
+//   Phase 1: live decoded Trace + Trace Chart swimlane, docked in one window.
+//   Phase 2: menu bar (File/View) + Start/Stop measurement lifecycle + a Buses panel with
+//            per-channel enable + state colour + RX counts. Channels open on ▶ Start, not
+//            at boot. All engine work reuses the GUI-free modules (project/transport/candb/
+//            telem) unchanged; gui's src/main.v stays the shipping app until parity.
+//
+// Build: libs/vgui/build_deps.sh  then
+//   v -enable-globals -cc gcc -path "@vlib|@vmodules|modules|libs" run cmd/blobly_net/main.v
+// Project via BLOBLY_PROJECT (default projects/trace-demo.blobnet). Env: VGUI_WAKE_MS cap.
+module main
+
+import os
+import math
+import strings
+import markdown
+import sync
+import time
+import project
+import transport
+import candb
+import sysview
+import telem
+import isotp
+import uds
+import flash
+import sim
+import script
+import canlog
+import mf4
+import doip
+import someip
+import net as vnet
+import vgui
+
+const diag_tx_id = u32(0x7E0)
+const diag_rx_id = u32(0x7E8)
+
+const trace_cap = 2000
+
+struct TraceRow {
+	t_ms f64
+	ch   string
+	dir  string // 'RX' | 'TX'
+	id   u32
+	ext  bool
+	rtr  bool
+	name string
+	data []u8
+}
+
+struct TRec {
+	ch     int
+	core   int // the block's core (from its header) — authoritative for lane grouping (esp. idle)
+	abs_us u64 // start_us folded across epoch re-anchors (µs; u64 so a long capture can't wrap)
+	rec    telem.Record
+}
+
+// Chan is one project channel's live state (the Buses panel row + Start/Stop target).
+struct Chan {
+	name         string
+	network      string // grouping label (v2)
+	adapter      string // transport backend (v2): virtual|vcan|socketcan|udp|pcan|kvaser|doip
+	address      string // adapter-specific address (v2)
+	iface        string
+	mode         string
+	typ          string
+	bitrate      int
+	data_bitrate int
+	listen_only  bool
+	databases    []string
+	manifest     string
+	doip         bool
+mut:
+	enabled   bool
+	rx        u64
+	running   bool
+	link_down bool // real CAN iface is administratively DOWN (bound but can't tx/rx)
+}
+
+fn (c Chan) monitorable() bool {
+	return c.enabled && c.mode == 'monitor' && !c.doip
+}
+
+struct App {
+mut:
+	mu          sync.Mutex
+	chans       []Chan
+	trace       []TraceRow
+	gcount      map[string]u64 // persistent per-group frame totals (survive the ring trim)
+	trecs       []TRec
+	rx          u64 // total across channels
+	rev         u64
+	running     bool
+	dbs         []candb.Database // all loaded DBCs (union; trace/symbol decode)
+	dbs_paths   []string         // resolved file path per dbs entry (editor save target)
+	dbc_readers int              // live workers reading app.dbs lock-free (rx loops);
+	// the editor stays read-only until 0 — app.running clears BEFORE workers exit
+	dbs_by_iface map[string][]candb.Database // per-channel DBCs (generator message picker scope)
+	manifest     telem.Manifest
+	has_manifest bool
+	t0           i64
+	wake_ms      i64
+	last_wake    i64
+	proj_path    string
+	proj_name    string
+	dark         bool = true // theme
+	ui_scale     f32  = 1.0
+	paused       bool
+	recording    bool
+	rec          []canlog.LogEntry // captured while recording; written on stop
+	tx_count     u64
+	logs         []string           // Log panel (status/events, newest last)
+	doip_ents    []doip.VehicleInfo // DoIP Discovery results
+	// panel visibility (View menu)
+	// Default workspace is intentionally minimal: Buses + Trace + Log. Everything else is
+	// off and toggled on via the activity bar / View menu (its dock slot is still reserved).
+	show_buses     bool = true
+	show_sim       bool
+	show_symbols   bool
+	show_trace     bool = true
+	show_ftrace    bool
+	show_tchart    bool
+	show_signals   bool
+	show_graphics  bool
+	show_diag      bool
+	show_gen       bool
+	show_script    bool
+	show_busconfig bool
+	show_doip      bool
+	show_network   bool
+	show_stats     bool
+	show_log       bool              = true
+	help_cache     map[string]string = map[string]string{} // markdown file -> contents (read once)
+	// Signals selection + Graphics watch list (UI-thread only; RX never touches these)
+	sel_id        int = -1 // selected message id (-1 = none)
+	sel_ext       bool
+	watch         []Watch // signals plotted in Graphics
+	plot_win      f32  = 5    // Graphics x-window in seconds (0 = full history / autofit)
+	plot_multi    bool = true // Graphics Y: per-signal real axes (up to 3) vs one shared axis
+	trace_grouped bool = true // Trace: grouped-by-id (expandable) vs chronological
+	trace_bus     string    // main Trace: show only this bus (channel name); '' = all
+	ftrace_bus    string    // Trace (filter) panel: show only this bus; '' = all
+	fwatch        []FrameId // Trace (filter) watch list — frames added from Trace/Symbols
+	// TX buses — one open bus per channel iface, created at Start. Generators fire on their
+	// own target bus (its channel, or a `bus:` override); the Send panel defaults to
+	// send_iface (the first monitor channel).
+	tx_buses          map[string]transport.Bus
+	send_iface        string
+	qs_iface          string // Quick send target bus (a channel iface); '' = send_iface default
+	send_id_buf       []u8
+	send_data_buf     []u8
+	trace_filter_buf  []u8 // Trace substring filter
+	trace_grouped2    bool // second Trace (filter) panel: own view mode
+	trace_filter2_buf []u8 // second Trace (filter) panel: own filter
+	symbol_filter_buf []u8 // Symbol Browser search
+	log_path_buf      []u8 // Open Recording path (.log/.mf4)
+	doip_host_buf     []u8 // DoIP manual discover host[:port]
+	// Diagnostics (UDS on a worker thread)
+	diag_did_buf []u8
+	// Script (Lua on a worker thread)
+	script_path_buf []u8
+	senders         []SenderRT      // flattened project senders (Generators)
+	gen_bufs        []GenBuf        // per-sender editable fields (parallel to senders)
+	dirty           bool            // project (config or generators) changed since load/save (● modified)
+	proj            project.Project // the loaded project, kept so Save can persist edits
+	// Configuration editor (stopped-only) + its per-bus edit buffers (parallel to proj.channels)
+	show_config bool
+	cfg_bufs    []CfgBuf
+	// Discover-interfaces dialog (add buses from detected transports)
+	disc_open bool
+	disc_list []DiscoveredIface
+	disc_tick []bool // parallel to disc_list
+	// File browser (Open / Save As / attach DBC / attach manifest)
+	fb_open     bool            // browser window shown
+	fb_save     bool            // true = save mode (filename input), false = open mode
+	fb_dir      string          // current directory
+	fb_name_buf []u8            // filename (save mode)
+	fb_ext      string          // extension filter ('.blobnet' | '.dbc' | '' = recordings)
+	fb_target   string          // action on OK: 'open' | 'saveas' | 'dbc:<ci>' | 'manifest:<ci>'
+	sims        []SimCfg        // per-channel in-process simulation workloads
+	sim_enabled map[string]bool // '<iface>:<node>' -> enabled (Simulation panel)
+	sim_gen     u64             // bumped when sim_enabled changes -> sim_loop rebuilds
+	// worker-thread outputs (guarded by mu)
+	diag_log        []string
+	diag_busy       bool
+	script_log      []string
+	script_busy     bool
+	trace_busy      bool   // a trace-dump transfer is in flight (single-flight guard)
+	trace_recording bool   // Record toggle: the target's capture is armed (optimistic)
+	trace_status    string // last dump status line, shown by the Trace Chart
+	trace_freeze    string // last TraceRsp state/cause (why it froze: trigger vs stop), from rx_loop
+	cursor_a        f64    // Trace Chart measurement markers A/B (µs); the swimlane drags them
+	cursor_b        f64
+	cursor_span     f64 // the span the cursors were placed for — re-seat A/B when a new dump loads
+	// Shell (the target's CAN command line; one worker spawn per submitted line)
+	show_shell        bool
+	show_dbc          bool
+	dbc_ed            DbcEd
+	show_sys          bool
+	sys_path_buf      []u8
+	sys               sysview.System
+	sys_loaded        bool
+	shell_buf         []u8 // the input line (persistent; edited in place by console_input)
+	eth_target_buf    []u8 // the eth shell's board ip (session-only; manifest carries the port)
+	eth_shell_session u16  // persists across commands: a fresh client restarting at session 1
+	// would let a late reply to a timed-out command complete the NEXT one
+	eth_someip   telem.SomeipIdent // the eth shell's identity (its OWN slot — see rebuild)
+	eth_method   u16               // the eth shell's method id (0 = no eth shell)
+	shell_lines  []string          // scrollback (guarded by mu; the worker appends)
+	shell_busy   bool              // single-flight: one command in flight at a time
+	shell_follow bool              // new output arrived — pin the scrollback to the bottom next frame
+	// Flash (UDS firmware download THROUGH the blobly bootloader — modules/flash;
+	// the bootloader itself is not field-updatable by design, docs/bootloader.md)
+	show_flash     bool
+	flash_img_buf  []u8     // image path: a wrapped mkimage .img or a raw .bin
+	flash_base_buf []u8     // app-slot base address, hex (bootmap.h APP_BASE)
+	flash_req_buf  []u8     // boot rx id, hex
+	flash_rsp_buf  []u8     // boot tx id, hex
+	flash_ver_buf  []u8     // sw_version, decimal (raw .bin only — .img carries its own)
+	flash_log      []string // milestones + errors (guarded by mu; the worker appends)
+	flash_busy     bool     // single-flight: one download at a time
+	flash_done     int      // transfer progress, blocks (worker-updated)
+	flash_total    int
+}
+
+// SenderRT is a project sender bound to its channel iface (Generators panel).
+struct SenderRT {
+mut:
+	iface  string // the bus this generator fires on (a channel iface); rebound if the iface changes
+	sender project.Sender
+}
+
+// target is the bus (channel iface) this generator transmits on: an explicit `bus:`
+// override if set, else the sender's own channel.
+fn (sr SenderRT) target() string {
+	return if sr.sender.bus != '' { sr.sender.bus } else { sr.iface }
+}
+
+// GenBuf holds a generator's editable text fields (parallel to App.senders).
+struct GenBuf {
+mut:
+	name_buf []u8
+	key_buf  []u8
+	id_buf   []u8 // raw (non-DBC) generators: CAN id (hex)
+	data_buf []u8 // raw generators: payload (hex)
+}
+
+// CfgBuf holds one bus's editable text fields in the Configuration editor (parallel to
+// app.proj.channels). Enums (adapter/mode/protocol) and checkboxes edit the model directly;
+// only the free-text fields need a buffer.
+struct CfgBuf {
+mut:
+	name_buf     []u8
+	network_buf  []u8
+	address_buf  []u8
+	bitrate_buf  []u8
+	manifest_buf []u8
+	dbc_buf      []u8 // "+ Add DBC" typed-path fallback
+	// DoIP
+	tester_buf []u8
+	ecu_buf    []u8
+	vin_buf    []u8
+	// Replay
+	replay_src_buf   []u8
+	replay_speed_buf []u8
+}
+
+// SimCfg is one channel's in-process simulation workload (simulated ECUs + its DBC).
+struct SimCfg {
+	iface string
+	db    candb.Database
+	nodes []project.NodeCfg
+}
+
+// Watch identifies one plotted signal.
+struct Watch {
+	id  u32
+	ext bool
+	sig string
+}
+
+fn (app &App) is_watched(id u32, ext bool, sig string) bool {
+	for w in app.watch {
+		if w.id == id && w.ext == ext && w.sig == sig {
+			return true
+		}
+	}
+	return false
+}
+
+fn (mut app App) toggle_watch(id u32, ext bool, sig string) {
+	for i, w in app.watch {
+		if w.id == id && w.ext == ext && w.sig == sig {
+			app.watch.delete(i)
+			return
+		}
+	}
+	app.watch << Watch{id, ext, sig}
+}
+
+// add_watch plots a signal (idempotent — no-op if already plotted). Used by the Trace
+// right-click, which adds without removing an already-plotted signal.
+fn (mut app App) add_watch(id u32, ext bool, sig string) {
+	for w in app.watch {
+		if w.id == id && w.ext == ext && w.sig == sig {
+			return
+		}
+	}
+	app.watch << Watch{id, ext, sig}
+}
+
+// app_icon renders the 32×32 RGBA window/taskbar icon: an accent-blue rounded square with
+// three dashed "trace" lines (a bus-monitor motif). Procedural — no image file to embed.
+fn app_icon() []u8 {
+	sz := 32
+	rad := 6
+	mut px := []u8{len: sz * sz * 4}
+	for y in 0 .. sz {
+		for x in 0 .. sz {
+			i := (y * sz + x) * 4
+			// rounded corners: clamp to the nearest corner centre, drop pixels outside the radius
+			cx := if x < rad {
+				rad
+			} else if x >= sz - rad {
+				sz - 1 - rad
+			} else {
+				x
+			}
+			cy := if y < rad {
+				rad
+			} else if y >= sz - rad {
+				sz - 1 - rad
+			} else {
+				y
+			}
+			dx := x - cx
+			dy := y - cy
+			if dx * dx + dy * dy > rad * rad {
+				px[i], px[i + 1], px[i + 2], px[i + 3] = u8(0), 0, 0, 0
+				continue
+			}
+			mut r := u8(0x1e)
+			mut g := u8(0x88)
+			mut b := u8(0xe5)
+			// three light dashed trace lines across the middle
+			if (y == 10 || y == 16 || y == 22) && x > 4 && x < sz - 4 && x % 3 != 0 {
+				r, g, b = u8(0xea), u8(0xf2), u8(0xff)
+			}
+			px[i], px[i + 1], px[i + 2], px[i + 3] = r, g, b, u8(255)
+		}
+	}
+	return px
+}
+
+// FrameId identifies one CAN frame (id + 29-bit flag) for the Trace (filter) watch list.
+struct FrameId {
+	id  u32
+	ext bool
+}
+
+// chan_name_for maps a bus iface back to its channel name (the Trace `ch` column value),
+// falling back to the iface if unmatched.
+fn (app &App) chan_name_for(iface string) string {
+	for c in app.chans {
+		if c.iface == iface {
+			return c.name
+		}
+	}
+	return iface
+}
+
+fn (app &App) is_fwatched(id u32, ext bool) bool {
+	for f in app.fwatch {
+		if f.id == id && f.ext == ext {
+			return true
+		}
+	}
+	return false
+}
+
+// add_fwatch adds a frame to the Trace (filter) watch list (no-op if already present).
+fn (mut app App) add_fwatch(id u32, ext bool) {
+	if !app.is_fwatched(id, ext) {
+		app.fwatch << FrameId{id, ext}
+		app.notify('added ${idstr(id, ext)} to Trace (filter)')
+	}
+}
+
+fn (mut app App) remove_fwatch(id u32, ext bool) {
+	for i, f in app.fwatch {
+		if f.id == id && f.ext == ext {
+			app.fwatch.delete(i)
+			return
+		}
+	}
+}
+
+// NOTE concurrency: the DBC editor mutates app.dbs ONLY while stopped
+// (read-only during a measurement), so these lock-free reads never race the
+// editor — and load_recording may call them while holding app.mu.
+fn (app &App) find_message(id u32, ext bool) ?candb.Message {
+	for db in app.dbs {
+		if m := db.lookup_frame(id, ext) {
+			return m
+		}
+	}
+	return none
+}
+
+fn (a &App) lookup_name(id u32, ext bool) string {
+	for db in a.dbs {
+		if m := db.lookup_frame(id, ext) {
+			return m.name
+		}
+	}
+	return ''
+}
+
+// open_transport opens `iface`, appending the vendor bitrate (`@<rate>`) for pcan/kvaser
+// buses so the driver uses the configured rate. The logical KEY stays the raw iface —
+// tx_buses, sender targets and channels all key on it consistently — and only the physical
+// open carries the suffix. Non-vendor buses (socketcan/vcan configure bitrate via `ip link`;
+// inproc/udp have none) open unchanged.
+fn (app &App) open_transport(iface string) !transport.Bus {
+	return transport.open(app.bitrate_iface(iface))
+}
+
+// bitrate_iface returns `iface` with the vendor bitrate suffix (`@<rate>`) for a pcan/kvaser
+// channel configured at a non-default rate, else `iface` unchanged. Used wherever a channel's
+// physical bus is opened — transport.open (via open_transport) AND isotp.open_software (the
+// diagnostics ISO-TP paths) — so UDS reaches the vendor driver at the configured bitrate too.
+fn (app &App) bitrate_iface(iface string) string {
+	for c in app.chans {
+		if c.iface == iface && (c.adapter == 'pcan' || c.adapter == 'kvaser') && c.bitrate > 0 {
+			return '${iface}@${c.bitrate}'
+		}
+	}
+	return iface
+}
+
+// start opens every enabled, monitorable channel on its own RX thread.
+fn (mut app App) start() {
+	if app.running {
+		return
+	}
+	// flush any unsaved editor edits into the model + runtime view first, so the measurement
+	// attaches to exactly what the Configuration editor shows (not stale buffered values).
+	if app.dirty {
+		app.apply_edits()
+	}
+	// unsaved DBC-editor edits exist only in the app.dbs union — sims and the
+	// per-channel generator databases still hold the on-disk definitions, so a
+	// measurement would encode with one schema and decode with another.
+	// (Ghost entries for paths a project swap detached are pruned first —
+	// the panel may be closed, and a ghost would wedge Start forever.)
+	for pth, _ in app.dbc_ed.dirty.clone() {
+		if app.dbs_paths.index(pth) < 0 {
+			app.dbc_ed.dirty.delete(pth)
+			app.notify('unsaved DBC edits for detached ${os.file_name(pth)} were discarded')
+		}
+	}
+	for _, d in app.dbc_ed.dirty {
+		if d {
+			app.notify('DBC editor has unsaved edits — Save or Revert them before starting')
+			return
+		}
+	}
+	app.running = true
+	for ci, ch in app.chans {
+		if !ch.monitorable() {
+			continue
+		}
+		app.chans[ci].running = true
+		app.chans[ci].link_down = !iface_link_up(ch.adapter, ch.address)
+		spawn rx_loop(app, ci, ch.iface)
+		// open a TX bus for this channel's iface (each generator fires on its target bus)
+		if ch.iface !in app.tx_buses {
+			if b := app.open_transport(ch.iface) {
+				app.tx_buses[ch.iface] = b
+			}
+		}
+		if app.send_iface == '' {
+			app.send_iface = ch.iface // Send panel default = first monitor channel
+		}
+	}
+	// a generator may target a bus whose channel isn't itself monitored — open those too
+	for sr in app.senders {
+		tgt := sr.target()
+		if tgt != '' && tgt !in app.tx_buses {
+			if b := app.open_transport(tgt) {
+				app.tx_buses[tgt] = b
+			}
+		}
+	}
+	// spawn the in-process simulation workloads (driver-free sim ECUs + a UDS server)
+	for sc in app.sims {
+		spawn sim_loop(app, sc)
+		spawn diag_server_loop(app, sc.iface)
+	}
+	spawn gen_loop(app) // cyclic senders
+}
+
+// stop signals the RX threads to exit (they re-check on the recv timeout).
+fn (mut app App) stop() {
+	app.running = false
+	for ci in 0 .. app.chans.len {
+		app.chans[ci].running = false
+	}
+	for _, mut b in app.tx_buses {
+		b.close()
+	}
+	app.tx_buses = map[string]transport.Bus{}
+	app.send_iface = ''
+}
+
+// notify appends a line to the Log panel (thread-safe).
+fn (mut app App) notify(msg string) {
+	app.mu.lock()
+	app.logs << msg
+	if app.logs.len > 500 {
+		app.logs = app.logs[app.logs.len - 500..].clone()
+	}
+	app.mu.unlock()
+	vgui.wake()
+}
+
+// tx sends a frame on the default TX bus (send_iface) and records it as a TX trace row.
+fn (mut app App) tx(f transport.CanFrame) bool {
+	return app.tx_on(app.send_iface, f)
+}
+
+// tx_on sends a frame on the bus `iface` (a channel iface) and records it as a TX row on
+// that bus. Generators use this to fire on their own target bus rather than a single
+// global send bus.
+fn (mut app App) tx_on(iface string, f transport.CanFrame) bool {
+	mut b := app.tx_buses[iface] or {
+		app.notify('TX failed: no open bus for ${iface}')
+		return false
+	}
+	b.send(f) or {
+		app.notify('TX failed: ${err}')
+		return false
+	}
+	name := app.lookup_name(f.id, f.extended)
+	chn := app.chan_name_for(iface) // trace `ch` column is the bus NAME (matches RX rows)
+	tms := f64(time.ticks() - app.t0)
+	app.mu.lock()
+	if !app.paused {
+		app.trace << TraceRow{tms, chn, 'TX', f.id, f.extended, f.rtr, name, f.data.clone()}
+		if app.trace.len > trace_cap {
+			app.trace = app.trace[app.trace.len - trace_cap..].clone()
+		}
+		app.gcount[gkey('TX', chn, f.id, f.extended)]++
+	}
+	if app.recording {
+		app.rec << canlog.LogEntry{tms / 1000.0, iface, f}
+	}
+	app.tx_count++
+	app.mu.unlock()
+	vgui.wake()
+	return true
+}
+
+fn (mut app App) clear_trace() {
+	app.mu.lock()
+	app.trace = []
+	app.gcount = map[string]u64{}
+	app.trecs = []
+	app.rx = 0
+	app.tx_count = 0
+	for i in 0 .. app.chans.len {
+		app.chans[i].rx = 0
+	}
+	app.mu.unlock()
+}
+
+// toggle_record starts capturing frames, or stops and writes them to a candump .log.
+fn (mut app App) toggle_record() {
+	if app.recording {
+		app.mu.lock()
+		entries := app.rec.clone()
+		app.rec = []
+		app.recording = false
+		app.mu.unlock()
+		mut lines := []string{cap: entries.len}
+		for e in entries {
+			lines << canlog.format_line(e)
+		}
+		os.write_file('recording.log', lines.join('\n') + '\n') or {
+			app.notify('record write failed: ${err}')
+			return
+		}
+		app.notify('recorded ${entries.len} frames -> recording.log')
+	} else {
+		app.mu.lock()
+		app.rec = []
+		app.recording = true
+		app.mu.unlock()
+		app.notify('recording…')
+	}
+}
+
+// load_recording replaces the trace with a candump .log or ASAM .mf4 file.
+fn (mut app App) load_recording(path string) {
+	entries := if path.to_lower().ends_with('.mf4') {
+		mf4.load_file(path) or {
+			app.notify('mf4 ${path}: ${err}')
+			return
+		}
+	} else {
+		canlog.load_file(path) or {
+			app.notify('log ${path}: ${err}')
+			return
+		}
+	}
+	t0 := if entries.len > 0 { entries[0].t_s } else { 0.0 }
+	app.mu.lock()
+	app.trace = []
+	app.gcount = map[string]u64{}
+	for e in entries {
+		f := e.frame
+		name := app.lookup_name(f.id, f.extended)
+		app.trace << TraceRow{(e.t_s - t0) * 1000.0, e.iface, 'RX', f.id, f.extended, f.rtr, name, f.data.clone()}
+		if app.trace.len > trace_cap {
+			app.trace = app.trace[app.trace.len - trace_cap..].clone()
+		}
+		app.gcount[gkey('RX', e.iface, f.id, f.extended)]++
+	}
+	app.mu.unlock()
+	app.notify('loaded ${entries.len} frames from ${os.base(path)}')
+}
+
+fn doip_worker(app &App, host string) {
+	mut a := unsafe { app }
+	mut h := host
+	mut port := 13400
+	if host.contains(':') {
+		parts := host.split(':')
+		h = parts[0]
+		port = parts[1].int()
+	}
+	info := doip.discover(h, port, 1200) or {
+		a.notify('DoIP discover ${host}: ${err}')
+		return
+	}
+	a.mu.lock()
+	a.doip_ents << info
+	a.mu.unlock()
+	a.notify('DoIP: found VIN ${info.vin}')
+	vgui.wake()
+}
+
+// mkbuf returns a fixed-size NUL-terminated input buffer seeded with `s`.
+fn mkbuf(s string, size int) []u8 {
+	mut b := []u8{len: size}
+	for i, c in s {
+		if i < size - 1 {
+			b[i] = c
+		}
+	}
+	return b
+}
+
+// parse_hex_bytes parses "DE AD BE" / "DEADBE" into bytes.
+fn parse_hex_bytes(s string) []u8 {
+	clean := s.replace(' ', '').replace('\t', '')
+	mut out := []u8{}
+	mut i := 0
+	for i + 1 < clean.len + 1 && i + 2 <= clean.len {
+		out << u8(('0x' + clean[i..i + 2]).u64())
+		i += 2
+	}
+	return out
+}
+
+// merge_dbs loads + concatenates a channel's DBCs into one Database (for the sim engine).
+fn merge_dbs(paths []string) candb.Database {
+	mut msgs := []candb.Message{}
+	mut nodes := []string{}
+	for p in paths {
+		if db := candb.load_dbc_file(p) {
+			msgs << db.messages
+			nodes << db.nodes
+		}
+	}
+	return candb.Database{
+		messages: msgs
+		nodes:    nodes
+	}
+}
+
+fn gen_of(g project.GenCfg) sim.Gen {
+	return match g.typ {
+		'sine' { sim.gen_sine(g.offset, g.amplitude, g.freq, g.phase) }
+		'sawtooth' { sim.gen_sawtooth(g.min, g.max, g.period) }
+		'counter' { sim.gen_counter(g.start, g.step, g.modulo) }
+		'stepmod' { sim.gen_stepmod(g.period, g.count, g.base) }
+		else { sim.gen_const(g.value) }
+	}
+}
+
+fn build_node(db candb.Database, cfg project.NodeCfg) sim.SimEcu {
+	if cfg.signals.len == 0 && cfg.responses.len == 0 {
+		return sim.build_ecu(db, cfg.name)
+	}
+	mut gens := map[string]sim.Gen{}
+	for g in cfg.signals {
+		gens[g.signal] = gen_of(g)
+	}
+	mut rules := []sim.ResponseRule{}
+	for r in cfg.responses {
+		rules << sim.ResponseRule{
+			req_id:     r.request
+			resp_id:    r.response
+			byte_index: r.byte
+			add:        r.add
+		}
+	}
+	return sim.build_configured_ecu(db, cfg.name, gens, rules)
+}
+
+// sim_loop runs a channel's simulated ECUs on its bus: emit cyclic frames + answer
+// request/response rules. Driver-free on inproc:, real on vcan0/can0.
+fn sim_loop(app &App, sc SimCfg) {
+	a := unsafe { app }
+	mut bus := app.open_transport(sc.iface) or {
+		eprintln('sim ${sc.iface}: ${err}')
+		return
+	}
+	mut engine := sim.Engine{}
+	mut local_gen := u64(0) // rebuild when a.sim_gen changes (ECU enable/disable)
+	mut built := false
+	t0 := time.ticks()
+	for a.running {
+		if !built || a.sim_gen != local_gen {
+			built = true
+			local_gen = a.sim_gen
+			a.mu.lock()
+			mut enabled := map[string]bool{}
+			for k, v in a.sim_enabled {
+				enabled[k] = v
+			}
+			a.mu.unlock()
+			engine = sim.Engine{}
+			for n in sc.nodes {
+				if enabled['${sc.iface}:${n.name}'] or { true } {
+					engine.ecus << build_node(sc.db, n)
+				}
+			}
+		}
+		now_ms := f64(time.ticks() - t0)
+		for f in engine.due_frames(now_ms) {
+			bus.send(f) or {}
+		}
+		if frame := bus.recv(5) {
+			for resp in engine.on_frame(frame) {
+				bus.send(resp) or {}
+			}
+		}
+	}
+	bus.close()
+}
+
+// gen_loop fires cyclic senders at their cycle_ms while the measurement runs.
+fn gen_loop(app &App) {
+	mut a := unsafe { app }
+	mut last := map[int]i64{}
+	for a.running {
+		now := time.ticks()
+		mut fire := []int{}
+		a.mu.lock()
+		for i, sr in a.senders {
+			if sr.sender.trigger == 'cyclic' && sr.sender.cycle_ms > 0 {
+				lf := last[i] or { i64(0) }
+				if now - lf >= i64(sr.sender.cycle_ms) {
+					last[i] = now
+					fire << i
+				}
+			}
+		}
+		a.mu.unlock()
+		for i in fire {
+			a.fire_index(i)
+		}
+		time.sleep(8 * time.millisecond)
+	}
+}
+
+// diag_server_loop runs the native UDS server (mirror of the tester: rx 0x7E0, tx 0x7E8)
+// so the Diagnostics panel + Lua scripts work driver-free against simulated channels.
+fn diag_server_loop(app &App, iface string) {
+	a := unsafe { app }
+	mut ch := isotp.open_software(a.bitrate_iface(iface), diag_rx_id, diag_tx_id, false) or {
+		return
+	}
+	mut srv := uds.default_server()
+	for a.running {
+		req := ch.recv(50) or { continue }
+		resp := srv.handle(req)
+		if resp.len > 0 {
+			ch.send(resp) or {}
+		}
+	}
+	ch.close()
+}
+
+fn rx_loop(app &App, ci int, iface string) {
+	mut bus := app.open_transport(iface) or {
+		eprintln('rx ${iface}: ${err}')
+		mut a := unsafe { app }
+		a.mu.lock()
+		a.chans[ci].running = false
+		a.mu.unlock()
+		return
+	}
+	mut a := unsafe { app }
+	a.mu.lock()
+	a.dbc_readers++ // this loop reads app.dbs lock-free (lookup_name per frame)
+	a.mu.unlock()
+	defer {
+		a.mu.lock()
+		a.dbc_readers--
+		a.mu.unlock()
+	}
+	chname := a.chans[ci].name
+	// the TraceRsp id is config-static (the manifest is only mutated while stopped, so it can't
+	// change under a running RX loop) — resolve it once, not per frame in the hot path.
+	rsp_id := a.manifest.frames.or_defaults().rsp
+	for a.running && a.chans[ci].enabled {
+		// track the real link state so a bound-but-DOWN iface shows "down" (red), not "run",
+		// and flips to green the moment the user brings it up (ip link set … up).
+		down := !iface_link_up(a.chans[ci].adapter, a.chans[ci].address)
+		if down != a.chans[ci].link_down {
+			a.mu.lock()
+			a.chans[ci].link_down = down
+			a.mu.unlock()
+			vgui.wake()
+		}
+		f := bus.recv(200) or { continue }
+		t_ms := f64(time.ticks() - a.t0)
+		name := a.lookup_name(f.id, f.extended)
+		a.mu.lock()
+		if !a.paused {
+			a.trace << TraceRow{t_ms, chname, 'RX', f.id, f.extended, f.rtr, name, f.data.clone()}
+			if a.trace.len > trace_cap {
+				a.trace = a.trace[a.trace.len - trace_cap..].clone()
+			}
+			a.gcount[gkey('RX', chname, f.id, f.extended)]++
+			// The capture dump now arrives as an ISO-TP block on 0x7E5 (not raw per-record
+			// frames): trace_dump_worker reassembles + decodes it on demand. The raw ISO-TP
+			// frames still show in the trace table above.
+		}
+		// A TraceRsp (per core) reports the capture state + freeze CAUSE — the only way to tell a
+		// trigger-frozen dump from a manual stop. Update it even while the table is paused: the
+		// freeze status is independent of the row capture, and it's what you watch during a pause.
+		if f.id == rsp_id && f.data.len >= 8 {
+			a.trace_freeze = trace_rsp_status(telem.decode_trace_rsp(f.data))
+		}
+		if a.recording {
+			a.rec << canlog.LogEntry{t_ms / 1000.0, chname, f}
+			if a.rec.len > 200000 {
+				a.rec = a.rec[a.rec.len - 200000..].clone()
+			}
+		}
+		a.chans[ci].rx++
+		a.rx++
+		a.mu.unlock()
+		now := time.ticks()
+		if now - a.last_wake >= a.wake_ms {
+			a.last_wake = now
+			vgui.wake()
+		}
+	}
+	bus.close()
+	a.mu.lock()
+	a.chans[ci].running = false
+	a.mu.unlock()
+}
+
+fn hex(b []u8) string {
+	mut p := []string{cap: b.len}
+	for x in b {
+		p << '${x:02X}'
+	}
+	return p.join(' ')
+}
+
+const lane_palette = [
+	[u8(66), 135, 245],
+	[u8(76), 175, 80],
+	[u8(245), 166, 35],
+	[u8(233), 80, 80],
+	[u8(155), 100, 210],
+	[u8(0), 172, 193],
+	[u8(233), 110, 170],
+	[u8(140), 160, 60],
+]
+
+// load_ui_font replaces imgui's blocky default (ProggyClean) with a real TTF: VGUI_FONT
+// if set, else the first available system monospace (DejaVu Sans Mono / Consolas). Keeping
+// it monospace keeps the hex/data columns aligned.
+fn load_ui_font() {
+	mut candidates := []string{}
+	env := os.getenv('VGUI_FONT')
+	if env != '' {
+		candidates << env
+	}
+	candidates << [
+		'/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
+		'/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+		'/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf',
+		'C:/Windows/Fonts/consola.ttf',
+		'C:/Windows/Fonts/segoeui.ttf',
+	]
+	sz := os.getenv('VGUI_FONT_SIZE').int()
+	size := if sz > 0 { f32(sz) } else { f32(16) }
+	for f in candidates {
+		if f != '' && os.exists(f) {
+			if vgui.add_font(f, size) {
+				return
+			}
+		}
+	}
+}
+
+// load_project (re)loads a project into the app: stops any measurement, clears the
+// project-derived state, and rebuilds channels / DBCs / sims / senders. Keeps the input
+// buffers + panel layout. Used at startup and by File > Open Example / Reload.
+// load_project loads a project file: stop, reset the session buffers, parse into
+// app.proj, then derive the runtime view (rebuild_from_proj). On a parse error the current
+// project is left untouched.
+fn (mut app App) load_project(path string) {
+	app.stop()
+	proj := project.load(path) or {
+		eprintln('load ${path}: ${err}')
+		app.notify('load failed: ${err}')
+		return
+	}
+	app.set_project(proj, path)
+}
+
+// set_project installs a parsed project (from a file, New, or a reload), resetting the
+// session buffers and rebuilding the runtime view. path == '' marks an unsaved project.
+// resolve_asset resolves a project-relative asset path (a DBC or manifest) against the
+// project file's directory first, so a .blobnet's relative paths work regardless of the
+// launch directory; it falls back to the path as-given (launch-dir relative) for projects
+// that reference assets relative to the repo root. Absolute paths are used unchanged.
+fn (app &App) resolve_asset(path string) string {
+	if path == '' || os.is_abs_path(path) {
+		return path
+	}
+	// NB: don't name this `near` — <windows.h> (pulled in by the GLFW/imgui link on the mingw
+	// build) #defines `near`/`far` as legacy no-ops, which mangles the generated C. Renamed so the
+	// Windows CI links (the Linux build tolerated it, so it slipped in).
+	proj_rel := os.join_path(os.dir(app.proj_path), path)
+	if os.exists(proj_rel) {
+		return proj_rel
+	}
+	return path
+}
+
+fn (mut app App) set_project(proj project.Project, path string) {
+	app.mu.lock()
+	app.trace = []
+	app.gcount = map[string]u64{}
+	app.trecs = []
+	app.diag_log = []
+	app.script_log = []
+	app.watch = []
+	app.fwatch = []
+	app.rx = 0
+	app.proj_path = path
+	app.proj_name = proj.name
+	app.proj = proj
+	app.dirty = false
+	// drop editor state carried over from the previous project — stale cfg_bufs would otherwise
+	// be flushed into the newly loaded project by the next commit_cfg (same channel count = no
+	// resync in draw_config); stale discovery results belong to the old machine view.
+	app.cfg_bufs = []
+	app.disc_list = []
+	app.disc_tick = []
+	app.mu.unlock()
+	app.rebuild_from_proj()
+}
+
+// rebuild_from_proj derives the runtime view (chans, dbs, sims, senders, manifest, default
+// selection) from app.proj. Called after a load and after any config/generator edit, so the
+// live panels reflect the edited model. Must be called while stopped (no RX threads running).
+fn (mut app App) rebuild_from_proj() {
+	proj := app.proj
+	app.mu.lock()
+	app.chans = []
+	// rebuild runs for ordinary config ops too (add bus/DBC, adapter change) —
+	// unsaved editor state must SURVIVE it: capture dirty in-memory databases
+	// by path and restore them after the reload below
+	mut dbc_keep := map[string]candb.Database{}
+	for i, pth in app.dbs_paths {
+		if app.dbc_ed.dirty[pth] {
+			dbc_keep[pth] = app.dbs[i]
+		}
+	}
+	keep_dirty := app.dbc_ed.dirty.clone()
+	app.dbs = []
+	app.dbs_paths = []
+	app.dbs_by_iface = map[string][]candb.Database{}
+	app.dbc_ed = DbcEd{} // selection indices go stale across a rebuild
+	app.dbc_ed.dirty = keep_dirty.clone()
+	app.sims = []
+	app.senders = []
+	app.gen_bufs = []
+	app.has_manifest = false
+	app.eth_someip = telem.SomeipIdent{}
+	app.eth_method = 0
+	app.manifest = telem.Manifest{}
+	app.sel_id = -1
+	app.mu.unlock()
+	for ch in proj.channels {
+		app.chans << Chan{
+			name:         ch.name
+			network:      ch.network
+			adapter:      ch.adapter
+			address:      ch.address
+			iface:        ch.iface // the stable LOGICAL key (tx_buses/senders); @bitrate is added at open
+			mode:         ch.mode.str()
+			typ:          ch.typ
+			bitrate:      ch.bitrate
+			data_bitrate: ch.data_bitrate
+			listen_only:  ch.listen_only
+			databases:    ch.databases.clone()
+			manifest:     ch.manifest
+			doip:         ch.is_doip()
+			enabled:      ch.enabled
+		}
+		for dbpath in ch.databases {
+			mut rp := app.resolve_asset(dbpath)
+			rp = os.real_path(rp) // canonical: two spellings of one file are ONE db
+			// a DBC attached to several channels loads ONCE — duplicate dbs
+			// entries would let the editor mutate one copy while decode reads
+			// another
+			prev := app.dbs_paths.index(rp)
+			if prev >= 0 {
+				app.dbs_by_iface[ch.iface] << app.dbs[prev]
+				continue
+			}
+			if rp in dbc_keep {
+				// this file has unsaved editor changes: the IN-MEMORY version
+				// is the truth, not the disk copy
+				app.dbs << dbc_keep[rp]
+				app.dbs_paths << rp
+				app.dbs_by_iface[ch.iface] << dbc_keep[rp]
+			} else if db := candb.load_dbc_file(rp) {
+				app.dbs << db
+				app.dbs_paths << rp // the editor saves back to this path
+				app.dbs_by_iface[ch.iface] << db // scoped to this channel (generator picker)
+			} else {
+				eprintln('dbc ${rp}: ${err}')
+			}
+		}
+		if ch.manifest != '' {
+			// the FIRST manifest stays the global telemetry/trace one (its
+			// consumers are CAN-channel-scoped); the eth RPC shell gets its
+			// OWN slot from whichever channel manifest declares it — the two
+			// roles must never displace each other in a mixed project
+			if m := telem.load_manifest(app.resolve_asset(ch.manifest)) {
+				// the global slot serves the CAN consumers (trace/shell-frame/
+				// handler labels): the first NON-eth manifest owns it, and an
+				// eth manifest (classified by its SOME/IP identity — an eth
+				// image without a shell endpoint is still an eth image) holds
+				// it only until a CAN one shows up
+				if !app.has_manifest || (app.manifest.someip.service != 0 && m.someip.service == 0) {
+					app.manifest = m
+					app.has_manifest = true
+				}
+				if m.shell_method != 0 && app.eth_method == 0 {
+					app.eth_someip = m.someip
+					app.eth_method = m.shell_method
+				}
+			} else {
+				// a load/validation failure must be SEEN — silently keeping an
+				// earlier manifest reads as "no eth shell" with no reason
+				eprintln('manifest ${ch.manifest}: ${err}')
+			}
+		}
+		for s in ch.senders {
+			app.senders << SenderRT{
+				iface:  ch.iface
+				sender: s
+			}
+			app.gen_bufs << GenBuf{
+				name_buf: mkbuf(s.name, 48)
+				key_buf:  mkbuf(s.key, 2)
+				id_buf:   mkbuf('${s.id:X}', 24)
+				data_buf: mkbuf(hex(s.data), 96)
+			}
+		}
+		nodes := ch.all_nodes()
+		if ch.enabled && nodes.len > 0 {
+			app.sims << SimCfg{
+				iface: ch.iface
+				db:    merge_dbs(ch.databases)
+				nodes: nodes
+			}
+		}
+	}
+	for db in app.dbs {
+		if db.messages.len > 0 {
+			app.sel_id = int(db.messages[0].id)
+			app.sel_ext = db.messages[0].ext
+			break
+		}
+	}
+}
+
+// examples lists the shipped projects for the File > Open Example menu.
+const examples = [
+	['Simulation demo (driver-free)', 'projects/sim-demo.blobnet'],
+	['Restbus — 2x vcan (real ECU)', 'projects/restbus-2vcan.blobnet'],
+	['Virtual bench (vcan0)', 'projects/demo.blobnet'],
+	['Telemetry / Trace Chart (vcan0)', 'projects/trace-demo.blobnet'],
+	['CPU-load sim (driver-free)', 'projects/cpuload-sim.blobnet'],
+	['DoIP diagnostics', 'projects/doip-demo.blobnet'],
+	['Replay demo', 'projects/replay-demo.blobnet'],
+]
+
+fn main() {
+	proj_path := os.getenv_opt('BLOBLY_PROJECT') or { 'projects/trace-demo.blobnet' }
+	mut wake_ms := os.getenv('VGUI_WAKE_MS').i64()
+	if wake_ms <= 0 {
+		wake_ms = 33
+	}
+	max_frames := os.getenv('VGUI_FRAMES').int()
+	shot := os.getenv('VGUI_SHOT')
+
+	mut app := &App{
+		t0:      time.ticks()
+		wake_ms: wake_ms
+	}
+	app.send_id_buf = mkbuf('101', 24)
+	app.send_data_buf = mkbuf('01', 64)
+	app.diag_did_buf = mkbuf('F190', 16)
+	app.script_path_buf = mkbuf('tests/diag_basic.lua', 256)
+	app.shell_buf = mkbuf('', 128)
+	app.eth_target_buf = mkbuf('', 64)
+	app.flash_img_buf = mkbuf('', 256)
+	app.flash_base_buf = mkbuf('08020000', 16)
+	app.flash_req_buf = mkbuf('7B0', 12)
+	app.flash_rsp_buf = mkbuf('7B8', 12)
+	app.flash_ver_buf = mkbuf('1', 12)
+	app.trace_filter_buf = mkbuf('', 64)
+	app.trace_filter2_buf = mkbuf('', 64)
+	app.symbol_filter_buf = mkbuf('', 64)
+	app.log_path_buf = mkbuf('samples/demo.log', 256)
+	app.doip_host_buf = mkbuf('127.0.0.1', 64)
+	app.load_project(proj_path)
+	println('blobly_net: ${app.proj_name} — ${app.chans.len} channel(s), ${app.dbs.len} DBC(s), manifest=${app.has_manifest}. Press Start.')
+
+	// Headless self-test of the Configuration editor: drive the real methods (New → add bus →
+	// edit fields → add DBC → Save As) and assert the written .blobnet round-trips. Exits after.
+	// The editor's widgets can't be clicked under WSLg, so this smoke covers the logic instead.
+	if os.getenv('BLOBLY_SELFTEST_CONFIG') != '' {
+		selftest_config(mut app)
+		return
+	}
+
+	if !vgui.init('blobly_net — ${app.proj_name} (imgui/ImPlot)', 1500, 850, true) {
+		eprintln('vgui.init failed')
+		return
+	}
+	vgui.set_window_icon(32, 32, app_icon()) // replace the default placeholder window icon
+	load_ui_font()
+	if os.getenv('BLOBLY_THEME') == 'light' {
+		app.dark = false
+		vgui.set_theme(false)
+	}
+	// Dev hook: open the Configuration editor at startup (it can't be reached via synthetic
+	// typing under WSLg, so this is how it gets screenshot-verified). Mirrors BLOBLY_AUTOSTART.
+	if os.getenv('BLOBLY_SHOW_CONFIG') != '' {
+		app.show_config = true
+	}
+	// Autostart defers the measurement start until the GL context has SETTLED. On Windows the
+	// GPU driver maps/unmaps its own DLL data sections during the first presented frames; if a
+	// worker thread triggers a Boehm GC collection inside that window, the collector faults
+	// scanning a mid-remap driver data root (SIGSEGV in GC_mark_from, thirdparty/libgc). Starting
+	// after ~`autostart_frame` presented frames clears the race. A human pressing Start is always
+	// well past this, so it only matters for BLOBLY_AUTOSTART / automated runs. Override with
+	// BLOBLY_AUTOSTART_FRAME.
+	autostart_frame := if os.getenv('BLOBLY_AUTOSTART') != '' {
+		n := os.getenv('BLOBLY_AUTOSTART_FRAME').int()
+		if n > 0 {
+			n
+		} else {
+			30
+		}
+	} else {
+		0
+	}
+	// BLOBLY_FOCUS=PanelName brings that panel's tab to the front once at startup (test/dev aid).
+	focus_panel := os.getenv('BLOBLY_FOCUS')
+
+	mut frame := 0
+	for vgui.running() {
+		frame++
+		// During the autostart settle window, wake the loop so those frames render back-to-back
+		// (the event-driven wait would otherwise pace them ~0.5s apart before any RX thread exists).
+		if autostart_frame > 0 && frame < autostart_frame {
+			vgui.wake()
+		}
+		if autostart_frame > 0 && frame == autostart_frame {
+			app.start()
+		}
+		last := max_frames > 0 && frame >= max_frames
+		if last && shot != '' {
+			vgui.dump_ppm(shot)
+		}
+
+		app.mu.lock()
+		rx := app.rx
+		rows := app.trace.clone()
+		gcount := app.gcount.clone()
+		trecs := app.trecs.clone()
+		chans := app.chans.clone()
+		app.mu.unlock()
+
+		vgui.frame_begin()
+		if focus_panel != '' && frame == 3 {
+			vgui.set_window_focus(focus_panel)
+		}
+		draw_menubar(mut app, rx)
+		// activity bar spans the full height on the far left (VS Code style); the toolbar
+		// and dockspace live in a right-hand pane beside it (not above it).
+		draw_activity_bar(mut app)
+		vgui.same_line()
+		vgui.child_fill('##right')
+		draw_toolbar(mut app, rx)
+		vgui.dockspace()
+		vgui.child_end()
+		build_layout()
+		app.poll_hotkeys()
+
+		if app.show_buses {
+			draw_buses(mut app, chans)
+		}
+		if app.show_sim {
+			draw_sim(mut app)
+		}
+		if app.show_symbols {
+			draw_symbols(mut app)
+		}
+		if app.show_busconfig {
+			draw_busconfig(mut app, chans)
+		}
+		if app.show_stats {
+			draw_stats(mut app, chans, rx)
+		}
+		if app.show_trace {
+			draw_trace(mut app, rows, gcount, rx)
+		}
+		if app.show_ftrace {
+			draw_ftrace(mut app, rows, gcount)
+		}
+		if app.show_log {
+			draw_log(mut app)
+		}
+		if app.show_tchart {
+			draw_tchart(mut app, trecs)
+		}
+		if app.show_signals {
+			draw_signals(mut app, rows)
+		}
+		if app.show_graphics {
+			draw_graphics(mut app, rows)
+		}
+		if app.show_diag {
+			draw_diag(mut app)
+		}
+		if app.show_shell {
+			draw_shell(mut app)
+		}
+		if app.show_dbc {
+			draw_dbc_editor(mut app)
+		}
+		if app.show_sys {
+			draw_system(mut app)
+		}
+		if app.show_flash {
+			draw_flash(mut app)
+		}
+		if app.show_doip {
+			draw_doip(mut app)
+		}
+		if app.show_network {
+			draw_network(mut app, chans)
+		}
+		if app.show_gen {
+			draw_gen(mut app)
+		}
+		if app.show_script {
+			draw_script(mut app)
+		}
+		if app.show_config {
+			draw_config(mut app)
+		}
+		if app.disc_open {
+			draw_discover_dialog(mut app)
+		}
+		if app.fb_open {
+			draw_filebrowser(mut app)
+		}
+
+		vgui.frame_end()
+		if last {
+			eprintln('rendered ${frame} frames; RX ${rx}')
+			break
+		}
+	}
+	app.stop()
+	vgui.shutdown()
+}
+
+// draw_activity_bar is the VS Code-style vertical strip of panel toggles on the far left.
+// Each button toggles a panel's visibility and is tinted when the panel is shown.
+fn draw_activity_bar(mut app App) {
+	// fixed dark strip (same in light + dark themes, like VS Code) with a tight inner
+	// padding so the 3-char labels aren't clipped
+	vgui.activity_style_push()
+	vgui.push_window_padding(4 * app.ui_scale, 6 * app.ui_scale)
+	vgui.child_wh('##activity', 60 * app.ui_scale, 0)
+	vgui.push_frame_padding(4 * app.ui_scale, 6 * app.ui_scale)
+	// Grouped into logical sections separated by a rule, alphabetical within each group:
+	// setup · trace · filtered-trace (its own) · signal views · send · diagnostics · tools ·
+	// blobly_emb target (LAST — those panels only work against a blobly_emb SUT, which is not
+	// the common case; keeping them together stops them cluttering the generic CAN workflow).
+	// --- setup ---
+	if vgui.toggle_button('Bus', app.show_buses, -1) {
+		app.show_buses = !app.show_buses
+	}
+	if vgui.toggle_button('Cfg', app.show_busconfig, -1) {
+		app.show_busconfig = !app.show_busconfig
+	}
+	if vgui.toggle_button('Sim', app.show_sim, -1) {
+		app.show_sim = !app.show_sim
+	}
+	if vgui.toggle_button('Sym', app.show_symbols, -1) {
+		app.show_symbols = !app.show_symbols
+	}
+	vgui.separator()
+	// --- trace ---
+	if vgui.toggle_button('Trc', app.show_trace, -1) {
+		app.show_trace = !app.show_trace
+	}
+	vgui.separator()
+	// --- filtered trace (on its own) ---
+	if vgui.toggle_button('FTr', app.show_ftrace, -1) {
+		app.show_ftrace = !app.show_ftrace
+	}
+	vgui.separator()
+	// --- signal views ---
+	if vgui.toggle_button('Gfx', app.show_graphics, -1) {
+		app.show_graphics = !app.show_graphics
+	}
+	if vgui.toggle_button('Sig', app.show_signals, -1) {
+		app.show_signals = !app.show_signals
+	}
+	vgui.separator()
+	// --- send ---
+	if vgui.toggle_button('Gen', app.show_gen, -1) {
+		app.show_gen = !app.show_gen
+	}
+	vgui.separator()
+	// --- diagnostics ---
+	if vgui.toggle_button('Dia', app.show_diag, -1) {
+		app.show_diag = !app.show_diag
+	}
+	if vgui.toggle_button('Dbc', app.show_dbc, -1) {
+		app.show_dbc = !app.show_dbc
+	}
+	vgui.set_item_tooltip('DBC Editor')
+	if vgui.toggle_button('DoI', app.show_doip, -1) {
+		app.show_doip = !app.show_doip
+	}
+	if vgui.toggle_button('Net', app.show_network, -1) {
+		app.show_network = !app.show_network
+	}
+	vgui.separator()
+	// --- tools --- (Help is in the menu bar, not here — it's an action, not a panel)
+	if vgui.toggle_button('Log', app.show_log, -1) {
+		app.show_log = !app.show_log
+	}
+	if vgui.toggle_button('Lua', app.show_script, -1) {
+		app.show_script = !app.show_script
+	}
+	if vgui.toggle_button('Sta', app.show_stats, -1) {
+		app.show_stats = !app.show_stats
+	}
+	vgui.separator()
+	// --- blobly_emb target --- these speak blobly_emb's own protocols (trace records +
+	// manifest, the shell wire, the bootloader), so they are useless against an arbitrary
+	// CAN bus. Grouped last, with tooltips saying so.
+	if vgui.toggle_button('Cht', app.show_tchart, -1) {
+		app.show_tchart = !app.show_tchart
+	}
+	vgui.set_item_tooltip('Trace Chart — blobly_emb handler/thread swimlanes')
+	if vgui.toggle_button('Fsh', app.show_flash, -1) {
+		app.show_flash = !app.show_flash
+	}
+	vgui.set_item_tooltip('Flash — UDS download to a blobly_emb bootloader')
+	if vgui.toggle_button('Shl', app.show_shell, -1) {
+		app.show_shell = !app.show_shell
+	}
+	vgui.set_item_tooltip('Shell — console to a blobly_emb target over CAN')
+	if vgui.toggle_button('Sys', app.show_sys, -1) {
+		app.show_sys = !app.show_sys
+	}
+	vgui.set_item_tooltip('System viewer — blobly_emb system.toml / ecu.toml')
+	vgui.pop_style_var(1) // frame padding
+	vgui.child_end()
+	vgui.pop_style_var(1) // window padding
+	vgui.activity_style_pop()
+}
+
+fn draw_menubar(mut app App, rx u64) {
+	if vgui.menu_bar_begin() {
+		if vgui.menu_begin('File') {
+			if vgui.menu_item('New') {
+				app.new_project()
+			}
+			if vgui.menu_item('Open...') {
+				app.open_browser('open')
+			}
+			if vgui.menu_item('Save') {
+				app.save_project()
+			}
+			if vgui.menu_item('Save As...') {
+				app.open_browser('saveas')
+			}
+			vgui.separator()
+			if app.running {
+				vgui.text_dim('Configure... (stop to edit)')
+			} else if vgui.menu_item('Configure...') {
+				app.show_config = true
+				app.sync_cfg_bufs()
+			}
+			if vgui.menu_begin('Open Example') {
+				for ex in examples {
+					if vgui.menu_item(ex[0]) {
+						app.load_project(ex[1])
+					}
+				}
+				vgui.menu_end()
+			}
+			if vgui.menu_item('Reload project') {
+				if app.proj_path != '' {
+					app.load_project(app.proj_path)
+				}
+			}
+			vgui.separator()
+			if vgui.menu_item('Exit') {
+				vgui.quit()
+			}
+			vgui.menu_end()
+		}
+		if vgui.menu_begin('View') {
+			app.show_buses = vgui.menu_item_check('Buses', app.show_buses)
+			app.show_sim = vgui.menu_item_check('Simulation', app.show_sim)
+			app.show_symbols = vgui.menu_item_check('Symbols', app.show_symbols)
+			app.show_busconfig = vgui.menu_item_check('Bus Config', app.show_busconfig)
+			app.show_trace = vgui.menu_item_check('Trace', app.show_trace)
+			app.show_ftrace = vgui.menu_item_check('Trace (filter)', app.show_ftrace)
+			app.show_signals = vgui.menu_item_check('Signals', app.show_signals)
+			app.show_graphics = vgui.menu_item_check('Graphics', app.show_graphics)
+			app.show_diag = vgui.menu_item_check('Diagnostics', app.show_diag)
+			app.show_dbc = vgui.menu_item_check('DBC Editor', app.show_dbc)
+			app.show_doip = vgui.menu_item_check('DoIP Discovery', app.show_doip)
+			app.show_network = vgui.menu_item_check('Network', app.show_network)
+			app.show_gen = vgui.menu_item_check('Generators', app.show_gen)
+			app.show_script = vgui.menu_item_check('Script', app.show_script)
+			app.show_stats = vgui.menu_item_check('Statistics', app.show_stats)
+			app.show_log = vgui.menu_item_check('Log', app.show_log)
+			// panels that only work against a blobly_emb SUT — grouped so the generic
+			// CAN workflow above stays uncluttered
+			vgui.separator_text('blobly_emb target')
+			app.show_tchart = vgui.menu_item_check('Trace Chart', app.show_tchart)
+			app.show_flash = vgui.menu_item_check('Flash', app.show_flash)
+			app.show_shell = vgui.menu_item_check('Shell', app.show_shell)
+			app.show_sys = vgui.menu_item_check('System', app.show_sys)
+			vgui.menu_end()
+		}
+		if vgui.menu_begin('Settings') {
+			vgui.separator_text('repaint cap')
+			for f in [5, 10, 30, 60] {
+				if vgui.menu_item('${f} fps') {
+					app.wake_ms = i64(1000 / f)
+				}
+			}
+			vgui.separator_text('UI scale')
+			for s in [100, 125, 150, 175] {
+				if vgui.menu_item('${s}%') {
+					app.ui_scale = f32(s) / 100.0
+					vgui.set_font_scale(app.ui_scale)
+				}
+			}
+			vgui.menu_end()
+		}
+		if vgui.menu_begin('Help') {
+			if vgui.menu_item('Documentation (opens in browser)') {
+				app.open_help_in_browser()
+			}
+			vgui.menu_end()
+		}
+		vgui.menu_bar_end()
+	}
+}
+
+// draw_toolbar is the button/status strip BELOW the menu bar (Start/Stop, live status,
+// Pause/Clear/Record, theme).
+fn draw_toolbar(mut app App, rx u64) {
+	// breathing room below the menu bar + inset from the left edge (host has zero padding)
+	vgui.indent_y(7 * app.ui_scale)
+	vgui.indent_x(8 * app.ui_scale)
+	// primary action — big and colour-coded (started/stopped a lot): green Start / red Stop
+	bw := 110 * app.ui_scale
+	bh := 40 * app.ui_scale
+	if app.running {
+		if vgui.button_big('Stop', 190, 70, 70, bw, bh) {
+			app.stop()
+			app.notify('stopped')
+		}
+	} else {
+		if vgui.button_big('Start', 45, 150, 90, bw, bh) {
+			app.start()
+			app.notify('started')
+		}
+	}
+	vgui.same_line()
+	if app.running {
+		vgui.text_colored(90, 200, 120, 'running')
+	} else {
+		vgui.text_colored(210, 120, 120, 'stopped')
+	}
+	vgui.same_line()
+	dirtymark := if app.dirty { ' ●' } else { '' }
+	vgui.text('· RX ${rx}  TX ${app.tx_count}  ·  ${app.proj_name}${dirtymark}   ')
+	vgui.same_line()
+	if vgui.button(if app.paused { 'Resume' } else { 'Pause' }) {
+		app.paused = !app.paused
+	}
+	vgui.same_line()
+	if vgui.button('Clear') {
+		app.clear_trace()
+	}
+	vgui.same_line()
+	if vgui.button(if app.recording { 'Stop Rec' } else { 'Record' }) {
+		app.toggle_record()
+	}
+	vgui.same_line()
+	if vgui.button(if app.dark { 'Light' } else { 'Dark' }) {
+		app.dark = !app.dark
+		vgui.set_theme(app.dark)
+	}
+	vgui.separator()
+}
+
+// channel state colour + short ASCII label (imgui's default font is ASCII-only):
+// grey off (disabled) / red down (attached but the CAN iface is DOWN) / green run / amber idle.
+fn chan_state(c Chan) (u8, u8, u8, string) {
+	if !c.enabled {
+		return u8(140), u8(140), u8(145), 'off '
+	}
+	if c.running {
+		if c.link_down {
+			return u8(215), u8(90), u8(90), 'down' // iface DOWN — bound but can't tx/rx
+		}
+		return u8(90), u8(200), u8(120), 'run '
+	}
+	return u8(220), u8(170), u8(70), 'idle'
+}
+
+// draw_sim lists the in-process simulation workload: each channel's simulated ECUs,
+// expandable to their signal generators + request/response rules.
+fn draw_sim(mut app App) {
+	vis, op := vgui.begin_closable('Simulation', app.show_sim)
+	app.show_sim = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	if app.sims.len == 0 {
+		vgui.text_dim('no simulated ECUs in this project')
+		vgui.end()
+		return
+	}
+	vgui.text_dim('tick to enable/disable an ECU live')
+	for sc in app.sims {
+		// each bus is a collapsible group, collapsed by default (### keeps the id stable if the
+		// label changes)
+		if !vgui.tree_node('${sc.iface}   (${sc.nodes.len})###simbus_${sc.iface}') {
+			continue
+		}
+		for node in sc.nodes {
+			key := '${sc.iface}:${node.name}'
+			en := app.sim_enabled[key] or { true }
+			nen := vgui.checkbox('##simen_${key}', en)
+			if nen != en {
+				app.mu.lock()
+				app.sim_enabled[key] = nen
+				app.sim_gen++
+				app.mu.unlock()
+			}
+			vgui.same_line()
+			hdr := '${node.name}  (${node.signals.len} sig / ${node.responses.len} resp)###${key}'
+			if vgui.tree_node(hdr) {
+				for g in node.signals {
+					vgui.text('    ${g.signal}: ${g.typ}')
+				}
+				for r in node.responses {
+					vgui.text('    ${r.request} -> ${r.response}')
+				}
+				vgui.tree_pop()
+			}
+		}
+		vgui.tree_pop()
+	}
+	vgui.end()
+}
+
+// draw_symbols is the Symbol Browser: a searchable tree of every DBC message and its
+// signals (bit layout, scaling, unit, range).
+fn draw_symbols(mut app App) {
+	vis, op := vgui.begin_closable('Symbols', app.show_symbols)
+	app.show_symbols = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	vgui.set_next_item_width(220)
+	vgui.input_text('search', mut app.symbol_filter_buf)
+	filt := vgui.buf_str(app.symbol_filter_buf).to_lower()
+	vgui.separator_text('messages / signals')
+	mut seen := map[u64]bool{}
+	for db in app.dbs {
+		for m in db.messages {
+			key := (u64(m.id) << 1) | if m.ext { u64(1) } else { u64(0) }
+			if key in seen {
+				continue
+			}
+			seen[key] = true
+			mut hit := filt == '' || m.name.to_lower().contains(filt)
+				|| idstr(m.id, m.ext).to_lower().contains(filt)
+			if !hit {
+				for s in m.signals {
+					if s.name.to_lower().contains(filt) {
+						hit = true
+						break
+					}
+				}
+			}
+			if !hit {
+				continue
+			}
+			// "+flt" adds this message to the Trace (filter) watch list (idempotent)
+			if vgui.small_button('+flt##fadd${m.id}_${m.ext}') {
+				app.add_fwatch(m.id, m.ext)
+			}
+			vgui.same_line()
+			hdr := '${idstr(m.id, m.ext)}  ${m.name}  (${m.signals.len} sig)###sym${m.id}_${m.ext}'
+			if vgui.tree_node(hdr) {
+				for s in m.signals {
+					off := if s.offset != 0 { '+${s.offset}' } else { '' }
+					unit := if s.unit != '' { ' ${s.unit}' } else { '' }
+					vgui.text('    ${s.name}  [bit ${s.start_bit}:${s.length}]  ×${s.factor}${off}${unit}  [${s.minimum}..${s.maximum}]')
+				}
+				vgui.tree_pop()
+			}
+		}
+	}
+	vgui.end()
+}
+
+// selftest_config drives the Configuration editor's real methods headlessly (the widgets
+// can't be clicked under WSLg) and asserts the written .blobnet round-trips. Gated by
+// BLOBLY_SELFTEST_CONFIG; prints PASS/FAIL + the file, then main() returns.
+fn selftest_config(mut app App) {
+	tmp := os.join_path(os.temp_dir(), 'blobly_selftest.blobnet')
+	os.rm(tmp) or {}
+	// New → blank
+	app.new_project()
+	mut ok := selftest_check('new project has 0 buses', app.proj.channels.len == 0)
+	// bus 0: a vcan monitor bus with a DBC
+	app.add_bus()
+	app.cfg_bufs[0].name_buf = mkbuf('CAN0', 48)
+	app.cfg_bufs[0].network_buf = mkbuf('Powertrain', 48)
+	app.cfg_bufs[0].address_buf = mkbuf('vcan0', 64)
+	app.set_adapter(0, 'vcan')
+	app.add_dbc(0, 'dbc/blobly_net.dbc')
+	// bus 1: a DoIP endpoint
+	app.add_bus()
+	app.cfg_bufs[1].name_buf = mkbuf('Diag', 48)
+	app.cfg_bufs[1].address_buf = mkbuf('127.0.0.1:13400', 64)
+	app.set_adapter(1, 'doip')
+	// Save As → write, then reload and verify the round-trip
+	app.save_as(tmp)
+	rp := project.load(tmp) or {
+		println('SELFTEST_CONFIG: FAIL (reload: ${err})')
+		return
+	}
+	ok = selftest_check('2 buses', rp.channels.len == 2) && ok
+	if rp.channels.len == 2 {
+		c0 := rp.channels[0]
+		ok = selftest_check('c0 name CAN0', c0.name == 'CAN0') && ok
+		ok = selftest_check('c0 network Powertrain', c0.network == 'Powertrain') && ok
+		ok = selftest_check('c0 adapter vcan', c0.adapter == 'vcan') && ok
+		ok = selftest_check('c0 address vcan0', c0.address == 'vcan0') && ok
+		ok = selftest_check('c0 iface vcan0', c0.iface == 'vcan0') && ok
+		ok = selftest_check('c0 dbc attached', c0.databases == ['dbc/blobly_net.dbc']) && ok
+		c1 := rp.channels[1]
+		ok = selftest_check('c1 name Diag', c1.name == 'Diag') && ok
+		ok = selftest_check('c1 is doip', c1.is_doip()) && ok
+		ok = selftest_check('c1 adapter doip', c1.adapter == 'doip') && ok
+		ok = selftest_check('c1 address host:port', c1.address == '127.0.0.1:13400') && ok
+	}
+	println(if ok { 'SELFTEST_CONFIG: PASS' } else { 'SELFTEST_CONFIG: FAIL' })
+	println('--- discover_all() ---')
+	for d in app.discover_all() {
+		mark := if d.added { ' [added]' } else { '' }
+		println('  ${d.address}   ${d.adapter} · ${d.desc}${mark}')
+	}
+	println('--- written ${tmp} ---')
+	println(os.read_file(tmp) or { '' })
+}
+
+fn selftest_check(name string, cond bool) bool {
+	if !cond {
+		eprintln('  FAIL: ${name}')
+	}
+	return cond
+}
+
+// rel_path makes an absolute path relative to the cwd when it lives under it, so a saved
+// project references e.g. `dbc/foo.dbc` rather than an absolute machine-specific path.
+// Separators are normalized to `/` first, so it also works for the file browser's
+// backslash paths on Windows (and the stored `.blobnet` path stays portable).
+fn rel_path(p string) string {
+	np := p.replace('\\', '/')
+	cwd := os.getwd().replace('\\', '/')
+	if np.starts_with(cwd + '/') {
+		return np[cwd.len + 1..]
+	}
+	return np
+}
+
+// open_browser opens the file browser for a target action:
+//   'open'          — load a project (.blobnet)
+//   'saveas'        — Save As (.blobnet, filename input)
+//   'dbc:<ci>'      — attach a DBC to bus ci (.dbc)
+//   'manifest:<ci>' — attach a telemetry manifest to bus ci (.csv)
+fn (mut app App) open_browser(target string) {
+	app.fb_target = target
+	app.fb_save = target == 'saveas'
+	app.fb_ext = if target == 'open' || target == 'saveas' {
+		'.blobnet'
+	} else if target.starts_with('dbc') {
+		'.dbc'
+	} else if target.starts_with('manifest') {
+		'.csv'
+	} else if target == 'flash' {
+		'.img' // match_ext also lets .bin through for this filter
+	} else {
+		''
+	}
+	mut dir := if app.proj_path != '' { os.dir(app.proj_path) } else { 'projects' }
+	if !os.is_dir(dir) {
+		dir = '.'
+	}
+	app.fb_dir = os.abs_path(dir)
+	initname := if app.fb_save && app.proj_path != '' { os.file_name(app.proj_path) } else { '' }
+	app.fb_name_buf = mkbuf(initname, 128)
+	app.fb_open = true
+}
+
+// browser_confirm runs the pending target action with the chosen path, then closes.
+fn (mut app App) browser_confirm(path string) {
+	t := app.fb_target
+	app.fb_open = false
+	if t == 'open' {
+		app.load_project(path)
+	} else if t == 'saveas' {
+		app.save_as(path)
+	} else if t.starts_with('dbc:') {
+		app.add_dbc(t['dbc:'.len..].int(), path)
+	} else if t.starts_with('manifest:') {
+		app.set_manifest(t['manifest:'.len..].int(), path)
+	} else if t == 'flash' {
+		app.flash_img_buf = mkbuf(path, 256)
+	}
+}
+
+// draw_filebrowser is a small self-contained file picker (no native dialog — imgui has
+// none, and WSL isn't the primary target). Lists the current directory, navigates on click,
+// filters by extension, and (save mode) takes a filename.
+fn draw_filebrowser(mut app App) {
+	title := if app.fb_target == 'open' {
+		'Open Project'
+	} else if app.fb_target == 'saveas' {
+		'Save Project As'
+	} else if app.fb_target.starts_with('dbc') {
+		'Attach DBC'
+	} else {
+		'Attach Manifest'
+	}
+	vgui.set_next_window(260, 140, 560, 520)
+	if !vgui.begin('${title}##filebrowser') {
+		vgui.end()
+		return
+	}
+	vgui.text('dir: ${app.fb_dir}')
+	if vgui.small_button('.. up') {
+		app.fb_dir = os.dir(app.fb_dir)
+	}
+	vgui.same_line()
+	if vgui.small_button('projects/') {
+		p := os.abs_path('projects')
+		if os.is_dir(p) {
+			app.fb_dir = p
+		}
+	}
+	filt := if app.fb_ext != '' { '(*${app.fb_ext})' } else { '' }
+	vgui.same_line()
+	vgui.text_dim(filt)
+	vgui.separator()
+
+	entries := os.ls(app.fb_dir) or { []string{} }
+	mut dirs := []string{}
+	mut files := []string{}
+	for e in entries {
+		full := os.join_path(app.fb_dir, e)
+		if os.is_dir(full) {
+			dirs << e
+		} else if app.match_ext(e) {
+			files << e
+		}
+	}
+	dirs.sort()
+	files.sort()
+	mut nav := ''
+	mut chosen := ''
+	vgui.child_begin('fb_list', 300)
+	for d in dirs {
+		if vgui.selectable('[dir]  ${d}', false) {
+			nav = os.join_path(app.fb_dir, d)
+		}
+	}
+	for f in files {
+		if vgui.selectable('      ${f}', false) {
+			if app.fb_save {
+				app.fb_name_buf = mkbuf(f, 128)
+			} else {
+				chosen = os.join_path(app.fb_dir, f)
+			}
+		}
+	}
+	vgui.child_end()
+	vgui.separator()
+	if app.fb_save {
+		vgui.set_next_item_width(300)
+		vgui.input_text('name', mut app.fb_name_buf)
+		vgui.same_line()
+		if vgui.button('Save') {
+			name := vgui.buf_str(app.fb_name_buf)
+			if name != '' {
+				chosen = os.join_path(app.fb_dir, name)
+			}
+		}
+		vgui.same_line()
+	}
+	if vgui.button('Cancel') {
+		app.fb_open = false
+	}
+	vgui.end()
+	// apply navigation / selection after end() so the imgui stack stays balanced
+	if nav != '' {
+		app.fb_dir = nav
+	}
+	if chosen != '' {
+		app.browser_confirm(chosen)
+	}
+}
+
+// match_ext reports whether a filename passes the browser's current extension filter.
+// The project filter also accepts legacy `.yml`/`.yaml`; an empty filter accepts anything.
+fn (app &App) match_ext(name string) bool {
+	if app.fb_ext == '' {
+		return true
+	}
+	n := name.to_lower()
+	if n.ends_with(app.fb_ext) {
+		return true
+	}
+	if app.fb_ext == '.blobnet' && (n.ends_with('.yml') || n.ends_with('.yaml')) {
+		return true
+	}
+	if app.fb_ext == '.img' && n.ends_with('.bin') {
+		return true // firmware picker: wrapped .img preferred, raw .bin allowed
+	}
+	return false
+}
+
+// available_adapters is the adapter-picker list for THIS platform — only backends that
+// actually work here (SocketCAN/vcan are Linux; PCAN/Kvaser are Windows). `current` is always
+// included so a project authored on another OS still shows (and can keep) its adapter.
+fn available_adapters(current string) []string {
+	mut list := $if windows {
+		['virtual', 'udp', 'pcan', 'kvaser', 'doip']
+	} $else {
+		['virtual', 'vcan', 'socketcan', 'udp', 'doip']
+	}
+	if current !in list {
+		list << current
+	}
+	return list
+}
+
+// adapter_tip is the tooltip text explaining an adapter (shown via the "(?)" help marker).
+fn adapter_tip(a string) string {
+	return match a {
+		'virtual' { 'In-process software bus (driver-free). The address is a bus NAME you invent (CAN1, CAN2…); buses with the same name are the same wire. Runs anywhere, no drivers.' }
+		'vcan' { 'Linux virtual CAN (SocketCAN). The address is a kernel interface like vcan0. Create them with scripts/setup_vcan.sh, then Discover to list them.' }
+		'socketcan' { 'Real Linux CAN hardware (SocketCAN). The address is an interface like can0. Bring it up with: ip link set can0 up type can bitrate 500000.' }
+		'udp' { 'Cross-platform UDP-multicast software bus. The address is group:port (e.g. 239.0.0.1:5000). Lets separate processes/hosts share a virtual wire.' }
+		'pcan' { 'PEAK PCAN hardware (Windows). The address is a channel like PCAN_USBBUS1. Discovery needs the PEAK driver on Windows.' }
+		'kvaser' { 'Kvaser hardware (Windows). The address is a channel index (0, 1…). Discovery needs the Kvaser driver on Windows.' }
+		'doip' { 'Diagnostics over Ethernet (ISO 13400) — NOT a CAN bus. The address is host:port (default 127.0.0.1:13400); set the tester/ECU logical addresses below.' }
+		else { '' }
+	}
+}
+
+// CanIface is one CAN interface found on the machine (Linux /sys/class/net).
+struct CanIface {
+	name    string
+	is_vcan bool
+	desc    string // e.g. "PCAN-USB Pro FD [1-1] · down" (real) or "virtual CAN" (vcan)
+}
+
+// read_can_ifaces enumerates the machine's CAN interfaces with a human description: for
+// real hardware, the USB product name + bus path + link state (so the two channels of a
+// dual PCAN read as "can0 … PCAN-USB Pro FD [1-1]" / "can1 …"). Linux-only (/sys); [] else.
+fn read_can_ifaces() []CanIface {
+	mut out := []CanIface{}
+	names := os.ls('/sys/class/net') or { return out }
+	for name in names {
+		typ := os.read_file('/sys/class/net/${name}/type') or { continue }
+		if typ.trim_space() != '280' { // ARPHRD_CAN
+			continue
+		}
+		is_vcan := name.starts_with('vcan')
+		mut desc := 'virtual CAN'
+		if !is_vcan {
+			base := '/sys/class/net/${name}'
+			product := (os.read_file('${base}/device/../product') or { '' }).trim_space()
+			state := (os.read_file('${base}/operstate') or { '' }).trim_space()
+			busnum := (os.read_file('${base}/device/../busnum') or { '' }).trim_space()
+			devpath := (os.read_file('${base}/device/../devpath') or { '' }).trim_space()
+			mut parts := [if product != '' { product } else { 'CAN' }]
+			if busnum != '' && devpath != '' {
+				parts << '[${busnum}-${devpath}]'
+			}
+			if state != '' {
+				parts << '· ${state}'
+			}
+			desc = parts.join(' ')
+		}
+		out << CanIface{
+			name:    name
+			is_vcan: is_vcan
+			desc:    desc
+		}
+	}
+	out.sort(a.name < b.name)
+	return out
+}
+
+// DiscoveredIface is one transport the Discover dialog offers to add as a bus.
+struct DiscoveredIface {
+	adapter string
+	address string
+	desc    string
+	added   bool // already present in the project
+}
+
+// iface_desc renders a short description for a transport-discovered interface (used for the
+// vendor/virtual entries that don't come with the rich /sys hardware label).
+fn iface_desc(f transport.Iface) string {
+	mut d := match f.kind {
+		'vcan' {
+			'virtual CAN'
+		}
+		'udp' {
+			'software bus'
+		}
+		'inproc' {
+			'in-process simulation'
+		}
+		'can' {
+			if f.name != '' && f.name != f.iface { f.name } else { 'CAN' }
+		}
+		else {
+			f.kind
+		}
+	}
+
+	if f.bitrate > 0 {
+		d += ' · ${f.bitrate}'
+	}
+	return d
+}
+
+// discover_all builds the Discover list, marking entries already in the project. Two sources
+// are merged and de-duplicated by (adapter,address):
+//   1. Linux /sys CAN interfaces — finds interfaces that are DOWN (which `ip -json`, and thus
+//      transport.list_interfaces on Linux, omits) and enriches them with the USB product /
+//      bus path / link state. Empty off Linux.
+//   2. transport.list_interfaces() — the platform-gated enumerator that adds Windows vendor
+//      hardware (PCAN/Kvaser via their DLLs) plus the driver-free software buses (UDP/SIM).
+fn (app &App) discover_all() []DiscoveredIface {
+	mut out := []DiscoveredIface{}
+	mut seen := map[string]bool{}
+	for ci in read_can_ifaces() {
+		adapter := if ci.is_vcan { 'vcan' } else { 'socketcan' }
+		seen[project.compose_iface(adapter, ci.name)] = true
+		out << DiscoveredIface{
+			adapter: adapter
+			address: ci.name
+			desc:    ci.desc
+			added:   app.iface_added(adapter, ci.name)
+		}
+	}
+	for f in transport.list_interfaces() or { transport.virtual_ifaces() } {
+		adapter, address := project.decompose_iface(f.iface)
+		key := project.compose_iface(adapter, address)
+		if key in seen {
+			continue
+		}
+		seen[key] = true
+		out << DiscoveredIface{
+			adapter: adapter
+			address: address
+			desc:    iface_desc(f)
+			added:   app.iface_added(adapter, address)
+		}
+	}
+	return out
+}
+
+// iface_link_up reports whether a real CAN interface (socketcan/vcan) is administratively
+// UP (IFF_UP in /sys/class/net/<if>/flags). Software backends (inproc/udp/doip) have no
+// kernel interface and are always usable → true. An unreadable flags file → assume up
+// (don't cry wolf on a platform without /sys).
+fn iface_link_up(adapter string, address string) bool {
+	if adapter != 'socketcan' && adapter != 'vcan' {
+		return true
+	}
+	raw := os.read_file('/sys/class/net/${address}/flags') or { return true }
+	mut t := raw.trim_space()
+	if t.starts_with('0x') || t.starts_with('0X') {
+		t = t[2..]
+	}
+	mut v := u64(0)
+	for c in t {
+		d := if c >= `0` && c <= `9` {
+			u64(c - `0`)
+		} else if c >= `a` && c <= `f` {
+			u64(c - `a`) + 10
+		} else if c >= `A` && c <= `F` {
+			u64(c - `A`) + 10
+		} else {
+			continue
+		}
+		v = v * 16 + d
+	}
+	return (v & 0x1) != 0 // IFF_UP
+}
+
+// iface_added reports whether the project already has a bus on this adapter+address.
+fn (app &App) iface_added(adapter string, address string) bool {
+	target := project.compose_iface(adapter, address)
+	for c in app.proj.channels {
+		if c.iface == target {
+			return true
+		}
+	}
+	return false
+}
+
+// adapter_hint is the grey placeholder shown next to a bus's address field.
+fn adapter_hint(a string) string {
+	return match a {
+		'virtual' { 'CAN1 — in-process bus name (driver-free sim)' }
+		'vcan' { 'vcan0 — Linux virtual CAN' }
+		'socketcan' { 'can0 — real Linux CAN hardware' }
+		'udp' { '239.0.0.1:5000 — group:port software bus' }
+		'pcan' { 'PCAN_USBBUS1 — PEAK channel' }
+		'kvaser' { '0 — Kvaser channel index' }
+		'doip' { '127.0.0.1:13400 — host:port' }
+		else { '' }
+	}
+}
+
+// parse_u16_hex reads a 16-bit address ("0x"-hex or bare hex). Any malformed input — empty,
+// a bare "0x", a non-hex character, or a value above 16 bits — returns `deflt` (the previous
+// value) rather than silently accepting a wrong address like 0x0000.
+fn parse_u16_hex(s string, deflt u16) u16 {
+	mut t := s.trim_space().trim('"')
+	if t.starts_with('0x') || t.starts_with('0X') {
+		t = t[2..]
+	}
+	if t == '' {
+		return deflt
+	}
+	mut v := u32(0)
+	for c in t {
+		d := if c >= `0` && c <= `9` {
+			u32(c - `0`)
+		} else if c >= `a` && c <= `f` {
+			u32(c - `a`) + 10
+		} else if c >= `A` && c <= `F` {
+			u32(c - `A`) + 10
+		} else {
+			return deflt // non-hex character — keep the previous value
+		}
+		v = v * 16 + d
+		if v > 0xFFFF {
+			return deflt // out of 16-bit range — keep the previous value
+		}
+	}
+	return u16(v)
+}
+
+// sync_cfg_bufs rebuilds the per-bus edit buffers to parallel app.proj.channels (on open,
+// and after add/remove bus/DBC).
+fn (mut app App) sync_cfg_bufs() {
+	app.cfg_bufs = []
+	for ch in app.proj.channels {
+		mut rsrc := ''
+		mut rspeed := '1'
+		if r := ch.replay {
+			rsrc = r.source
+			rspeed = '${r.speed}'
+		}
+		app.cfg_bufs << CfgBuf{
+			name_buf:         mkbuf(ch.name, 48)
+			network_buf:      mkbuf(ch.network, 48)
+			address_buf:      mkbuf(ch.address, 64)
+			bitrate_buf:      mkbuf('${ch.bitrate}', 12)
+			manifest_buf:     mkbuf(ch.manifest, 128)
+			dbc_buf:          mkbuf('', 128)
+			tester_buf:       mkbuf('0x${ch.tester_addr:X}', 12)
+			ecu_buf:          mkbuf('0x${ch.ecu_addr:X}', 12)
+			vin_buf:          mkbuf(ch.vin, 20)
+			replay_src_buf:   mkbuf(rsrc, 128)
+			replay_speed_buf: mkbuf(rspeed, 12)
+		}
+	}
+}
+
+// commit_cfg flushes all bus edit buffers into app.proj (called before Save and before any
+// structural change so edits aren't lost). No-op if the buffers are out of sync.
+fn (mut app App) commit_cfg() {
+	if app.cfg_bufs.len != app.proj.channels.len {
+		return
+	}
+	for i in 0 .. app.proj.channels.len {
+		b := app.cfg_bufs[i]
+		mut ch := &app.proj.channels[i]
+		ch.name = vgui.buf_str(b.name_buf)
+		ch.network = vgui.buf_str(b.network_buf)
+		ch.address = vgui.buf_str(b.address_buf)
+		ch.iface = project.compose_iface(ch.adapter, ch.address)
+		ch.manifest = vgui.buf_str(b.manifest_buf)
+		br := vgui.buf_str(b.bitrate_buf).int()
+		if br > 0 {
+			ch.bitrate = br
+		}
+		if ch.adapter == 'doip' {
+			ch.tester_addr = parse_u16_hex(vgui.buf_str(b.tester_buf), ch.tester_addr)
+			ch.ecu_addr = parse_u16_hex(vgui.buf_str(b.ecu_buf), ch.ecu_addr)
+			vin := vgui.buf_str(b.vin_buf)
+			if vin == '' || vin.len == 17 {
+				ch.vin = vin
+			}
+		}
+		if ch.mode == .replay {
+			spd := vgui.buf_str(b.replay_speed_buf).f64()
+			repeat := if r := ch.replay { r.repeat } else { false }
+			ch.replay = project.Replay{
+				source: vgui.buf_str(b.replay_src_buf)
+				speed:  if spd > 0 { spd } else { 1.0 }
+				repeat: repeat
+			}
+		}
+	}
+}
+
+// add_bus appends a default driver-free virtual bus (the from-scratch building block).
+fn (mut app App) add_bus() {
+	n := app.proj.channels.len + 1
+	app.add_bus_spec('virtual', 'CAN${n}')
+}
+
+// add_bus_spec appends a bus for a specific adapter+address (used by + Add bus, the Discover
+// dialog's Add-ticked, and the quick-add buttons). The name defaults to the address.
+fn (mut app App) add_bus_spec(adapter string, address string) {
+	app.commit_cfg()
+	base := if address != '' { address } else { adapter }
+	app.proj.channels << project.Channel{
+		name:    app.unique_bus_name(base)
+		adapter: adapter
+		address: address
+		iface:   project.compose_iface(adapter, address)
+		typ:     'can'
+		mode:    .monitor
+	}
+	app.dirty = true
+	app.sync_cfg_bufs()
+	app.rebuild_preserving_senders()
+}
+
+// unique_bus_name returns `base`, or base_2/base_3/… if the name is already taken.
+fn (app &App) unique_bus_name(base string) string {
+	mut name := base
+	mut n := 2
+	for {
+		mut taken := false
+		for c in app.proj.channels {
+			if c.name == name {
+				taken = true
+				break
+			}
+		}
+		if !taken {
+			return name
+		}
+		name = '${base}_${n}'
+		n++
+	}
+	return base
+}
+
+// refresh_discovery re-scans the machine's transports for the Discover dialog.
+fn (mut app App) refresh_discovery() {
+	app.disc_list = app.discover_all()
+	app.disc_tick = []bool{len: app.disc_list.len}
+}
+
+// next_free_vcan returns the first vcanN not already in the project (for the + vcan quick-add).
+fn (app &App) next_free_vcan() string {
+	for n in 0 .. 32 {
+		addr := 'vcan${n}'
+		if !app.iface_added('vcan', addr) {
+			return addr
+		}
+	}
+	return 'vcan0'
+}
+
+// draw_discover_dialog is the "Discover interfaces" dialog (mirrors the old app): it lists
+// every detected transport — real CAN hardware (with product/state), vcan, a UDP bus, an
+// in-process sim net — with tick boxes and + Add ticked, plus + vcan / + Sim net quick-adds.
+fn draw_discover_dialog(mut app App) {
+	vgui.set_next_window(200, 130, 640, 460)
+	vis, op := vgui.begin_closable('Discover interfaces', app.disc_open)
+	app.disc_open = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	if vgui.button('Refresh') {
+		app.refresh_discovery()
+	}
+	vgui.same_line()
+	if vgui.button('+ vcan') {
+		app.add_bus_spec('vcan', app.next_free_vcan())
+		app.refresh_discovery()
+	}
+	vgui.same_line()
+	if vgui.button('+ Sim net') {
+		app.add_bus_spec('virtual', app.unique_bus_name('SIM'))
+		app.refresh_discovery()
+	}
+	vgui.same_line()
+	if vgui.button('+ Add ticked') {
+		for k, d in app.disc_list {
+			if k < app.disc_tick.len && app.disc_tick[k] && !d.added {
+				app.add_bus_spec(d.adapter, d.address)
+			}
+		}
+		app.refresh_discovery()
+	}
+	vgui.separator()
+	if app.disc_list.len == 0 {
+		vgui.text_dim('click Refresh to scan for interfaces')
+	}
+	for k, d in app.disc_list {
+		if d.added {
+			vgui.text_dim('   [added]   ${d.address}   ${d.adapter} · ${d.desc}')
+			continue
+		}
+		t := if k < app.disc_tick.len { app.disc_tick[k] } else { false }
+		nt := vgui.checkbox('##dt${k}', t)
+		if nt != t && k < app.disc_tick.len {
+			app.disc_tick[k] = nt
+		}
+		vgui.same_line()
+		vgui.text('${d.address}   ${d.adapter} · ${d.desc}')
+	}
+	vgui.separator()
+	vgui.text_dim('Tip: a PCAN/Kvaser device on Linux/WSL appears here as SocketCAN (canN) — add those, not the pcan/kvaser adapter (Windows-only).')
+	vgui.end()
+}
+
+fn (mut app App) remove_bus(i int) {
+	if i < 0 || i >= app.proj.channels.len {
+		return
+	}
+	app.commit_cfg()
+	removed_iface := app.proj.channels[i].iface
+	app.proj.channels.delete(i)
+	// drop generator bus-overrides that pointed at the removed bus, so start() won't reopen and
+	// transmit on an interface that's no longer configured (they fall back to their own channel).
+	for si in 0 .. app.senders.len {
+		if app.senders[si].sender.bus == removed_iface {
+			app.senders[si].sender.bus = ''
+		}
+	}
+	app.dirty = true
+	app.sync_cfg_bufs()
+	app.rebuild_preserving_senders()
+}
+
+// set_adapter changes a bus's transport backend, recomposing its iface and keeping the
+// can/doip protocol coherent.
+fn (mut app App) set_adapter(i int, a string) {
+	if i < 0 || i >= app.proj.channels.len {
+		return
+	}
+	old_iface := app.proj.channels[i].iface
+	app.proj.channels[i].adapter = a
+	if a == 'doip' {
+		app.proj.channels[i].typ = 'doip'
+	} else if app.proj.channels[i].typ == 'doip' {
+		app.proj.channels[i].typ = 'can'
+	}
+	app.proj.channels[i].iface = project.compose_iface(a, vgui.buf_str(app.cfg_bufs[i].address_buf))
+	app.rebind_senders(old_iface, app.proj.channels[i].iface) // keep this bus's generators bound
+	app.dirty = true
+	app.rebuild_preserving_senders()
+}
+
+// rebuild_preserving_senders folds unsaved Generators-panel edits (gen_bufs id/data) into
+// app.proj before rebuilding the runtime view — so a structural config change (add/remove
+// bus/DBC, adapter/mode) doesn't discard them when rebuild_from_proj repopulates senders from
+// the model. Use this instead of rebuild_from_proj for edits made while the editor is open.
+fn (mut app App) rebuild_preserving_senders() {
+	app.sync_senders_into_proj()
+	app.rebuild_from_proj()
+}
+
+// rebind_senders repoints a channel's flattened generators from an old iface to a new one, so
+// editing a bus address doesn't orphan them: sync_senders_into_proj groups senders by iface
+// (and firing opens tx_buses[iface]), so a stale SenderRT.iface would drop all of a renamed
+// bus's generators on the next Save/Start. Also follows explicit per-sender bus overrides.
+fn (mut app App) rebind_senders(old_iface string, new_iface string) {
+	if old_iface == new_iface || old_iface == '' {
+		return
+	}
+	for si in 0 .. app.senders.len {
+		if app.senders[si].iface == old_iface {
+			app.senders[si].iface = new_iface
+		}
+		if app.senders[si].sender.bus == old_iface {
+			app.senders[si].sender.bus = new_iface
+		}
+	}
+}
+
+fn (mut app App) set_protocol(i int, pr string) {
+	app.proj.channels[i].typ = pr
+	app.proj.channels[i].fd = pr == 'canfd'
+	app.dirty = true
+}
+
+fn (mut app App) set_mode(i int, md string) {
+	app.proj.channels[i].mode = project.mode_from(md)
+	app.dirty = true
+	app.rebuild_preserving_senders()
+}
+
+fn (mut app App) add_dbc(ci int, path string) {
+	if ci < 0 || ci >= app.proj.channels.len {
+		return
+	}
+	app.commit_cfg()
+	app.proj.channels[ci].databases << rel_path(path)
+	app.dirty = true
+	app.sync_cfg_bufs()
+	app.rebuild_preserving_senders()
+}
+
+fn (mut app App) remove_dbc(ci int, di int) {
+	if ci < 0 || ci >= app.proj.channels.len {
+		return
+	}
+	if di < 0 || di >= app.proj.channels[ci].databases.len {
+		return
+	}
+	app.commit_cfg()
+	app.proj.channels[ci].databases.delete(di)
+	app.dirty = true
+	app.sync_cfg_bufs()
+	app.rebuild_preserving_senders()
+}
+
+fn (mut app App) set_manifest(ci int, path string) {
+	if ci < 0 || ci >= app.proj.channels.len {
+		return
+	}
+	app.commit_cfg()
+	app.proj.channels[ci].manifest = rel_path(path)
+	app.dirty = true
+	app.sync_cfg_bufs()
+	app.rebuild_preserving_senders()
+}
+
+// draw_config is the dedicated Configuration editor (File → Configure…): add/edit/remove
+// buses, pick adapters, attach DBCs. Stopped-only; Save persists to the .blobnet.
+fn draw_config(mut app App) {
+	vgui.set_next_window(120, 90, 720, 620)
+	was_open := app.show_config
+	vis, op := vgui.begin_closable('Configuration', app.show_config)
+	app.show_config = op
+	if was_open && !op && !app.running && app.dirty {
+		app.apply_edits() // closed via the [X] with unsaved edits — fold them into model + runtime
+	}
+	if !vis {
+		vgui.end()
+		return
+	}
+	if app.running {
+		vgui.text_dim('Measurement running — Stop to edit the configuration.')
+		if vgui.button('Close') {
+			app.show_config = false
+		}
+		vgui.end()
+		return
+	}
+	if app.cfg_bufs.len != app.proj.channels.len {
+		app.sync_cfg_bufs()
+	}
+	if vgui.button('+ Add bus') {
+		app.add_bus()
+	}
+	vgui.same_line()
+	if vgui.button('Discover...') {
+		app.refresh_discovery()
+		app.disc_open = true
+	}
+	vgui.same_line()
+	if vgui.button('Save') {
+		app.save_project()
+	}
+	vgui.same_line()
+	if vgui.button('Close') {
+		app.show_config = false
+		if app.dirty {
+			app.apply_edits() // fold unsaved edits into the model + runtime view on close
+		}
+	}
+	if app.dirty {
+		vgui.same_line()
+		vgui.text_colored(230, 170, 70, '● modified')
+	}
+	vgui.separator()
+	if app.proj.channels.len == 0 {
+		vgui.text_dim('no buses — click "+ Add bus" to start a configuration')
+		vgui.end()
+		return
+	}
+	for i in 0 .. app.proj.channels.len {
+		if app.draw_bus_editor(i) {
+			break // a bus was removed — indices shifted, redraw next frame
+		}
+	}
+	vgui.end()
+}
+
+// draw_bus_editor renders one bus as a tree node: an enable checkbox + a header summary on
+// the collapsed row, expanding to the editable fields. Returns true if the bus was removed
+// (indices shifted — the caller stops iterating this frame). Enum/checkbox edits apply to
+// app.proj live; text fields are flushed by commit_cfg on Save / structural change.
+fn (mut app App) draw_bus_editor(i int) bool {
+	ch := app.proj.channels[i]
+	// header row: enable checkbox + the tree node (name · adapter:address · network)
+	en := vgui.checkbox('##cfgen${i}', ch.enabled)
+	if en != ch.enabled {
+		app.proj.channels[i].enabled = en
+		app.dirty = true
+	}
+	vgui.same_line()
+	vgui.set_item_tooltip('enable this bus (attached on Start)')
+	nm := vgui.buf_str(app.cfg_bufs[i].name_buf)
+	addr := if ch.address != '' { ':${ch.address}' } else { '' }
+	net := if ch.network != '' { '  ·  ${ch.network}' } else { '' }
+	dis := if ch.enabled { '' } else { '   — disabled' } // visible feedback for the enable checkbox
+	// header: collapsible tree node + a remove button that works whether expanded or not.
+	// Use ### so the imgui ID is fixed to `bus<i>` — the visible label (adapter/address/name)
+	// changes as you edit, and with plain ## that would re-key the node and collapse it.
+	open := vgui.tree_node('${nm}   [${ch.adapter}${addr}]${net}${dis}###bus${i}')
+	vgui.same_line()
+	if vgui.small_button('remove##crm${i}') {
+		if open {
+			vgui.tree_pop()
+		}
+		app.remove_bus(i)
+		return true
+	}
+	if !open {
+		return false
+	}
+	// name · network
+	vgui.set_next_item_width(160)
+	if vgui.input_text('name##cn${i}', mut app.cfg_bufs[i].name_buf) {
+		app.dirty = true
+	}
+	vgui.same_line()
+	vgui.set_next_item_width(140)
+	if vgui.input_text('network##cnw${i}', mut app.cfg_bufs[i].network_buf) {
+		app.dirty = true
+	}
+	vgui.same_line()
+	vgui.help_marker('Optional label grouping buses of one logical vehicle network. Buses that share a network name are grouped in the Buses tree and the Trace bus chips.')
+	// adapter picker + tooltip (only backends usable on this platform)
+	vgui.text('adapter:')
+	vgui.same_line()
+	vgui.help_marker(adapter_tip(ch.adapter))
+	for a in available_adapters(ch.adapter) {
+		vgui.same_line()
+		if vgui.toggle_button('${a}##ad${i}_${a}', ch.adapter == a, 0) {
+			app.set_adapter(i, a)
+		}
+	}
+	// address (type it, or add detected interfaces via the Discover... dialog above)
+	vgui.set_next_item_width(220)
+	if vgui.input_text('address##cad${i}', mut app.cfg_bufs[i].address_buf) {
+		old_iface := app.proj.channels[i].iface
+		app.proj.channels[i].address = vgui.buf_str(app.cfg_bufs[i].address_buf)
+		app.proj.channels[i].iface = project.compose_iface(ch.adapter, app.proj.channels[i].address)
+		app.rebind_senders(old_iface, app.proj.channels[i].iface) // keep this bus's generators bound
+		app.dirty = true
+	}
+	vgui.same_line()
+	vgui.text_dim(adapter_hint(ch.adapter))
+
+	if ch.adapter == 'doip' {
+		vgui.set_next_item_width(90)
+		if vgui.input_text('tester##ct${i}', mut app.cfg_bufs[i].tester_buf) {
+			app.dirty = true
+		}
+		vgui.same_line()
+		vgui.set_next_item_width(90)
+		if vgui.input_text('ecu##ce${i}', mut app.cfg_bufs[i].ecu_buf) {
+			app.dirty = true
+		}
+		vgui.same_line()
+		vgui.help_marker('DoIP logical addresses (ISO 13400): the tester (source) and ECU (target), e.g. 0x0E80 / 0x1000. They replace the CAN diagnostic id pair.')
+		vgui.set_next_item_width(180)
+		if vgui.input_text('vin##cv${i}', mut app.cfg_bufs[i].vin_buf) {
+			app.dirty = true
+		}
+		vgui.same_line()
+		vgui.help_marker('17-character VIN reported by this entity in vehicle announcements (only used when this DoIP bus hosts a simulated entity).')
+	} else {
+		vgui.text('protocol:')
+		for pr in ['can', 'canfd'] {
+			vgui.same_line()
+			if vgui.toggle_button('${pr}##pr${i}_${pr}', ch.typ == pr, 0) {
+				app.set_protocol(i, pr)
+			}
+		}
+		vgui.same_line()
+		vgui.set_next_item_width(90)
+		if vgui.input_text('bitrate##cb${i}', mut app.cfg_bufs[i].bitrate_buf) {
+			app.dirty = true
+		}
+		vgui.same_line()
+		vgui.help_marker('Nominal bit rate in bit/s (e.g. 500000). For virtual/vcan buses this is informational; for real hardware it configures the interface.')
+		vgui.text('mode:')
+		vgui.same_line()
+		vgui.help_marker('off = configured but not attached · monitor = observe live traffic · replay = play a recording onto the bus.')
+		for md in ['off', 'monitor', 'replay'] {
+			vgui.same_line()
+			if vgui.toggle_button('${md}##md${i}_${md}', ch.mode.str() == md, 0) {
+				app.set_mode(i, md)
+			}
+		}
+		vgui.same_line()
+		lo := vgui.checkbox('listen-only##lo${i}', ch.listen_only)
+		if lo != ch.listen_only {
+			app.proj.channels[i].listen_only = lo
+			app.dirty = true
+		}
+		vgui.same_line()
+		vgui.help_marker('Listen-only: never transmit (no ACKs) — passive monitoring of a live bus.')
+		if ch.mode == .replay {
+			vgui.text('replay:')
+			vgui.same_line()
+			vgui.set_next_item_width(220)
+			if vgui.input_text('source##rs${i}', mut app.cfg_bufs[i].replay_src_buf) {
+				app.dirty = true
+			}
+			vgui.same_line()
+			vgui.set_next_item_width(56)
+			if vgui.input_text('x speed##rsp${i}', mut app.cfg_bufs[i].replay_speed_buf) {
+				app.dirty = true
+			}
+			vgui.same_line()
+			loopv := if r := ch.replay { r.repeat } else { false }
+			nl := vgui.checkbox('loop##rl${i}', loopv)
+			if nl != loopv {
+				src := vgui.buf_str(app.cfg_bufs[i].replay_src_buf)
+				spd := vgui.buf_str(app.cfg_bufs[i].replay_speed_buf).f64()
+				app.proj.channels[i].replay = project.Replay{
+					source: src
+					speed:  if spd > 0 { spd } else { 1.0 }
+					repeat: nl
+				}
+				app.dirty = true
+			}
+		}
+	}
+	// databases
+	vgui.text('databases:')
+	vgui.same_line()
+	vgui.help_marker('DBC files describing this bus/network — used to decode frames into signals and to drive the simulated ECUs.')
+	for di, dbp in ch.databases {
+		vgui.text('   ${dbp}')
+		vgui.same_line()
+		if vgui.small_button('x##dbrm${i}_${di}') {
+			app.remove_dbc(i, di)
+			vgui.tree_pop()
+			return true
+		}
+	}
+	if vgui.small_button('+ Add DBC##adddbc${i}') {
+		app.open_browser('dbc:${i}')
+	}
+	// manifest
+	vgui.set_next_item_width(220)
+	if vgui.input_text('manifest##cmf${i}', mut app.cfg_bufs[i].manifest_buf) {
+		app.proj.channels[i].manifest = vgui.buf_str(app.cfg_bufs[i].manifest_buf)
+		app.dirty = true
+	}
+	vgui.same_line()
+	if vgui.small_button('...##mfbrowse${i}') {
+		app.open_browser('manifest:${i}')
+	}
+	vgui.same_line()
+	vgui.help_marker('Optional telemetry handler manifest (CSV) — resolves handler ids to FB/handler/core for the Trace Chart.')
+	vgui.tree_pop()
+	return false
+}
+
+// draw_busconfig shows each channel's configuration (type, bitrate/timing, DBCs, manifest).
+fn draw_busconfig(mut app App, chans []Chan) {
+	vis, op := vgui.begin_closable('Bus Config', app.show_busconfig)
+	app.show_busconfig = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	for c in chans {
+		vgui.separator_text('${c.name}  (${c.iface})')
+		vgui.text('type: ${c.typ}    mode: ${c.mode}    enabled: ${c.enabled}')
+		if c.doip {
+			vgui.text('DoIP endpoint (Ethernet diagnostics)')
+		} else {
+			du := if c.data_bitrate > 0 { '  data ${c.data_bitrate}' } else { '' }
+			vgui.text('bitrate: ${c.bitrate}${du}    listen-only: ${c.listen_only}')
+		}
+		if c.databases.len > 0 {
+			vgui.text('dbc: ${c.databases.join(', ')}')
+		}
+		if c.manifest != '' {
+			vgui.text('manifest: ${c.manifest}')
+		}
+	}
+	vgui.end()
+}
+
+// draw_doip: discover DoIP entities on a host (or a running DoIP channel).
+fn draw_doip(mut app App) {
+	vis, op := vgui.begin_closable('DoIP Discovery', app.show_doip)
+	app.show_doip = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	vgui.set_next_item_width(160)
+	vgui.input_text('host', mut app.doip_host_buf)
+	vgui.same_line()
+	if vgui.button('Discover') {
+		app.mu.lock()
+		app.doip_ents = []
+		app.mu.unlock()
+		spawn doip_worker(app, vgui.buf_str(app.doip_host_buf))
+	}
+	app.mu.lock()
+	ents := app.doip_ents.clone()
+	app.mu.unlock()
+	vgui.separator_text('entities')
+	if ents.len == 0 {
+		vgui.text_dim('none — Discover a DoIP host (default 127.0.0.1:13400)')
+	}
+	for e in ents {
+		vgui.text('VIN ${e.vin}   logical 0x${e.logical_address:04X}')
+	}
+	vgui.end()
+}
+
+// draw_stats: totals + per-channel RX counters.
+fn draw_stats(mut app App, chans []Chan, rx u64) {
+	vis, op := vgui.begin_closable('Statistics', app.show_stats)
+	app.show_stats = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	vgui.text('RX ${rx}    TX ${app.tx_count}    ${vgui.fps():.0} fps    trace ${app.trace.len}')
+	vgui.separator_text('per channel')
+	if vgui.table_begin('stats', 4) {
+		vgui.table_setup_col('channel', 90)
+		vgui.table_setup_col('iface', 120)
+		vgui.table_setup_col('state', 56)
+		vgui.table_setup_col('RX', 0)
+		vgui.table_freeze_top()
+		vgui.table_headers()
+		for c in chans {
+			state := if c.running {
+				'run'
+			} else if c.enabled {
+				'idle'
+			} else {
+				'off'
+			}
+			vgui.table_row()
+			vgui.table_cell(c.name)
+			vgui.table_cell(c.iface)
+			vgui.table_cell(state)
+			vgui.table_cell('${c.rx}')
+		}
+		vgui.table_end()
+	}
+	vgui.end()
+}
+
+// draw_log: the scrolling status/event log.
+fn draw_log(mut app App) {
+	vis, op := vgui.begin_closable('Log', app.show_log)
+	app.show_log = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	app.mu.lock()
+	logs := app.logs.clone()
+	app.mu.unlock()
+	vgui.child_begin('##loglines', 0)
+	for l in logs {
+		vgui.text(l)
+	}
+	vgui.child_end()
+	vgui.end()
+}
+
+// help_docs lists the Help pages: the built-in quick start (empty path) plus real markdown docs
+// loaded from disk. Paths are resolved relative to the working dir (the app chdir's to its
+// bundle dir at startup, so these resolve in a distributed build too).
+struct HelpDoc {
+	title string
+	path  string // '' = built-in quick_ref_md
+}
+
+const help_docs = [
+	HelpDoc{'Quick start', ''},
+	HelpDoc{'Scripting', 'docs/scripting.md'},
+	HelpDoc{'Project editing', 'docs/project_editing.md'},
+	HelpDoc{'CAN hardware', 'docs/can_hardware.md'},
+	HelpDoc{'Ethernet / DoIP', 'docs/ethernet_architecture.md'},
+	HelpDoc{'Known issues', 'docs/known_issues.md'},
+]
+
+const quick_ref_md = '# Blobly Net
+
+An imgui/ImPlot CAN/automotive bus tester. **Start/Stop** runs the measurement on the
+enabled channels; the activity bar (far left) and the **View** menu toggle panels; **Settings**
+sets the frame rate and UI scale.
+
+## Panels
+
+- **Buses / Bus Config** — channel enable, state, and configuration
+- **Simulation** — in-process simulated ECUs (driver-free)
+- **Symbols** — DBC message / signal browser (searchable)
+- **Trace / Trace (filter)** — live frames, all or grouped, filterable, per-bus
+- **Signals** — decode the selected message; add signals to Graphics
+- **Graphics** — live ImPlot signal plots (multi-axis, real values)
+- **Trace Chart** — telemetry handler swimlane
+- **Shell** — command line on the target (over CAN; Up/Down = history)
+- **Generators** — quick send + saved senders (manual / on-key / cyclic)
+- **Diagnostics / DoIP** — UDS diagnostics and DoIP discovery
+- **Script** — run a Lua test file
+
+## Toolbar
+
+- **Pause** freezes the trace, **Clear** empties it, **Record** writes `recording.log`
+- **Open** loads a candump `.log` or ASAM `.mf4` into the trace
+
+## Generators
+
+A generator is a reusable send block. Give it a single **key** and set its trigger to
+**on key** to fire it from the keyboard while running. **cyclic** auto-repeats at its period.
+Use **Quick send** at the top for an ad-hoc one-shot without saving a generator.
+'
+
+// help_style + help_script are the Help page CSS/JS. Raw strings (single-quote delimited) so the
+// double quotes inside are literal; kept free of single quotes so they never terminate the string.
+const help_style = r'
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.6;color:#1b1b1b;background:#fff}
+#wrap{display:flex;min-height:100vh}
+nav{width:250px;flex:none;border-right:1px solid #e2e2e2;padding:1rem;height:100vh;position:sticky;top:0;overflow:auto}
+nav h2{font-size:1rem;margin:.2rem 0 .8rem}
+#q{width:100%;padding:.5em .6em;border:1px solid #ccc;border-radius:6px;font-size:.95em;margin-bottom:.8rem}
+ul#nav{list-style:none;margin:0;padding:0}
+.navitem{padding:.4em .6em;border-radius:6px;cursor:pointer;font-size:.95em}
+.navitem:hover{background:#f0f0f0}
+.navitem.active{background:#0078d4;color:#fff}
+#results{margin-top:.6rem}
+.result{padding:.5em .6em;border-radius:6px;cursor:pointer;font-size:.82em;border:1px solid #eee;margin-bottom:.4rem}
+.result:hover{background:#f5f5f5}
+.result .rp{font-weight:600;color:#0078d4;margin-bottom:.2em}
+main{flex:1;max-width:900px;padding:1.5rem 2.5rem;overflow:auto}
+.page.hidden{display:none}
+h1,h2,h3{line-height:1.25;margin-top:1.5em}
+h1{border-bottom:2px solid #0078d4;padding-bottom:.2em;margin-top:.2em}
+h2{border-bottom:1px solid #ddd;padding-bottom:.2em}
+code{background:#f3f3f3;padding:.1em .35em;border-radius:3px;font-size:.92em}
+pre{background:#f6f8fa;padding:1em;border-radius:6px;overflow:auto}
+pre code{background:none;padding:0}
+a{color:#0078d4}
+hr{border:0;border-top:1px solid #ddd;margin:2.5em 0}
+table{border-collapse:collapse}td,th{border:1px solid #ddd;padding:.4em .6em}
+mark{background:#ffe066;color:inherit;border-radius:2px}
+@media(prefers-color-scheme:dark){
+body{color:#d4d4d4;background:#1e1e1e}
+nav{border-color:#333}
+#q{background:#2d2d2d;border-color:#444;color:#d4d4d4}
+.navitem:hover{background:#2a2a2a}
+.result{border-color:#333}.result:hover{background:#2a2a2a}
+code{background:#2d2d2d}pre{background:#252526}
+h2,hr,td,th{border-color:#3a3a3a}a{color:#4ea1ff}
+mark{background:#7a5c00;color:#fff}
+}
+'
+
+const help_script = r'
+(function(){
+var pages=[].slice.call(document.querySelectorAll(".page"));
+var navitems=[].slice.call(document.querySelectorAll(".navitem"));
+var results=document.getElementById("results");
+var q=document.getElementById("q");
+var content=document.getElementById("content");
+function show(idx){
+pages.forEach(function(p,i){p.classList.toggle("hidden",i!==idx);});
+navitems.forEach(function(n,i){n.classList.toggle("active",i===idx);});
+}
+navitems.forEach(function(n){n.addEventListener("click",function(){clearMarks();results.textContent="";q.value="";show(parseInt(n.getAttribute("data-page")));content.scrollTop=0;});});
+function clearMarks(){var ms=[].slice.call(document.querySelectorAll("mark"));ms.forEach(function(m){var t=document.createTextNode(m.textContent);var par=m.parentNode;par.replaceChild(t,m);par.normalize();});}
+function highlight(el,term){var first=null;var low=term.toLowerCase();var nodes=[];var w=document.createTreeWalker(el,NodeFilter.SHOW_TEXT,null);while(w.nextNode())nodes.push(w.currentNode);nodes.forEach(function(node){var txt=node.nodeValue;var lo=txt.toLowerCase();var idx=lo.indexOf(low);if(idx<0)return;var frag=document.createDocumentFragment();var pos=0;while(idx>=0){frag.appendChild(document.createTextNode(txt.slice(pos,idx)));var m=document.createElement("mark");m.textContent=txt.slice(idx,idx+term.length);frag.appendChild(m);if(!first)first=m;pos=idx+term.length;idx=lo.indexOf(low,pos);}frag.appendChild(document.createTextNode(txt.slice(pos)));node.parentNode.replaceChild(frag,node);});return first;}
+function search(term){clearMarks();results.textContent="";if(!term){return;}var low=term.toLowerCase();var any=false;pages.forEach(function(p,i){var txt=p.textContent;var lo=txt.toLowerCase();var idx=lo.indexOf(low);if(idx<0)return;any=true;var c=0,k=idx;while(k>=0){c++;k=lo.indexOf(low,k+term.length);}var st=Math.max(0,idx-30);var snip=(st>0?"…":"")+txt.slice(st,idx+term.length+50).replace(/\s+/g," ").trim()+"…";var div=document.createElement("div");div.className="result";var rp=document.createElement("div");rp.className="rp";rp.textContent=navitems[i].textContent+" ("+c+")";div.appendChild(rp);div.appendChild(document.createTextNode(snip));div.addEventListener("click",function(){results.textContent="";show(i);var m=highlight(p,term);content.scrollTop=0;if(m)m.scrollIntoView({block:"center"});});results.appendChild(div);});if(!any){var d=document.createElement("div");d.className="result";d.textContent="No matches";results.appendChild(d);}}
+q.addEventListener("input",function(){search(q.value.trim());});
+})();
+'
+
+// help_text returns a Help doc body, reading + caching the file on first access.
+fn (mut app App) help_text(path string) string {
+	if path == '' {
+		return quick_ref_md
+	}
+	if path in app.help_cache {
+		return app.help_cache[path]
+	}
+	txt := os.read_file(path) or { 'Could not load `${path}`.\n\nIt may not ship in this build.' }
+	app.help_cache[path] = txt
+	return txt
+}
+
+// help_html renders the Help docs into ONE self-contained, static HTML page: a sidebar of pages,
+// full-text search across them, and each doc rendered via vlang/markdown (headings, code, tables).
+// Pure client-side JS — no web server. Written once, opened as a file:// URL.
+fn (mut app App) help_html() string {
+	mut nav := strings.new_builder(1024)
+	mut pages := strings.new_builder(65536)
+	for i, d in help_docs {
+		active := if i == 0 { ' active' } else { '' }
+		hidden := if i == 0 { '' } else { ' hidden' }
+		nav.write_string('<li class="navitem${active}" data-page="${i}">${d.title}</li>')
+		body := markdown.to_html(app.help_text(d.path))
+		pages.write_string('<div class="page${hidden}" id="page-${i}">${body}</div>')
+	}
+	return '<!DOCTYPE html>\n<html lang="en"><head><meta charset="utf-8">' +
+		'<meta name="viewport" content="width=device-width, initial-scale=1">' +
+		'<title>Blobly Net — Help</title><style>${help_style}</style></head><body>' +
+		'<div id="wrap"><nav><h2>Blobly Net Help</h2>' +
+		'<input id="q" type="search" placeholder="Search all pages…" autocomplete="off">' +
+		'<ul id="nav">${nav.str()}</ul><div id="results"></div></nav>' +
+		'<main id="content">${pages.str()}</main></div>' +
+		'<script>${help_script}</script></body></html>\n'
+}
+
+// open_help_in_browser writes the rendered Help HTML to a per-user cache file and opens it in the
+// system browser (imgui is effectively one desktop app; the browser is the nicely-rendered view).
+fn (mut app App) open_help_in_browser() {
+	app.notify('opening Help in browser')
+	dir := os.join_path(os.cache_dir(), 'blobly_net')
+	os.mkdir_all(dir) or {}
+	os.chmod(dir, 0o700) or {} // not a shared /tmp — avoid a symlink pre-plant
+	path := os.join_path(dir, 'help.html')
+	os.write_file(path, app.help_html()) or {
+		app.notify('Help: could not write ${path} (${err})')
+		return
+	}
+	ok, note := open_uri_in_browser(path)
+	app.notify(if ok { note } else { 'Help written to ${path} — ${note}' })
+}
+
+// is_wsl reports whether we're under WSL, where os.open_uri finds no Linux browser.
+fn is_wsl() bool {
+	if os.getenv('WSL_DISTRO_NAME') != '' || os.getenv('WSL_INTEROP') != '' {
+		return true
+	}
+	rel := os.read_file('/proc/sys/kernel/osrelease') or { return false }
+	low := rel.to_lower()
+	return low.contains('microsoft') || low.contains('wsl')
+}
+
+// open_uri_in_browser opens `path` in the system browser. Under WSL, os.open_uri finds no Linux
+// browser, so route to the Windows browser via wslview (wslu) or explorer.exe with a wslpath UNC.
+fn open_uri_in_browser(path string) (bool, string) {
+	if is_wsl() {
+		if exe := os.find_abs_path_of_executable('wslview') {
+			mut p := os.new_process(exe)
+			p.set_args([path])
+			p.run()
+			p.wait()
+			if p.code == 0 {
+				return true, 'opened Help in the Windows browser'
+			}
+		}
+		if exe := os.find_abs_path_of_executable('explorer.exe') {
+			win := os.execute('wslpath -w ' + os.quoted_path(path))
+			if win.exit_code == 0 {
+				mut p := os.new_process(exe)
+				p.set_args([win.output.trim_space()])
+				p.run()
+				p.wait()
+				return true, 'opening Help in the Windows browser'
+			}
+		}
+		return false, 'open it manually (install wslu for wslview)'
+	}
+	os.open_uri(path) or { return false, 'open it manually (${err.msg()})' }
+	return true, 'opened Help in browser'
+}
+
+fn draw_buses(mut app App, chans []Chan) {
+	vis, op := vgui.begin_closable('Buses', app.show_buses)
+	app.show_buses = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	vgui.text('${app.proj_name} · ${chans.len} channel(s)')
+	// The Buses panel is the runtime VIEW (enable/state); add/remove/edit a bus lives in the
+	// Configuration editor (stopped-only).
+	if app.running {
+		vgui.text_dim('Stop to configure buses')
+	} else if vgui.button('Configure...') {
+		app.show_config = true
+		app.sync_cfg_bufs()
+	}
+	// group channels by adapter type (in-process / SocketCAN / hardware / UDP / DoIP), each a
+	// collapsible group with a count — so a big mixed setup folds into a few headers, and a
+	// single-type project is just one group.
+	mut order := []string{}
+	mut groups := map[string][]int{}
+	for i, c in chans {
+		k := bus_kind(c.adapter)
+		if k !in groups {
+			order << k
+		}
+		groups[k] << i
+	}
+	for k in order {
+		idxs := groups[k]
+		if !vgui.tree_node_open('${k}   (${idxs.len})###busgrp_${k}') {
+			continue
+		}
+		for i in idxs {
+			c := chans[i]
+			new := vgui.checkbox('##en${i}', c.enabled)
+			if new != c.enabled {
+				app.mu.lock()
+				app.chans[i].enabled = new
+				// enabling a channel mid-run spawns its RX thread; disabling lets it exit
+				if new && app.running && c.monitorable() && !app.chans[i].running {
+					app.chans[i].running = true
+					spawn rx_loop(app, i, app.chans[i].iface)
+				}
+				app.mu.unlock()
+			}
+			vgui.same_line()
+			r, g, b, label := chan_state(c)
+			vgui.text_colored(r, g, b, label)
+			vgui.same_line()
+			vgui.text('${c.name}  ${c.iface}  [${c.mode}]  RX ${c.rx}')
+		}
+		vgui.tree_pop()
+	}
+	vgui.end()
+}
+
+// bus_kind maps a channel adapter to a friendly type-group label for the Buses panel.
+fn bus_kind(adapter string) string {
+	return match adapter {
+		'virtual' { 'Virtual (in-process)' }
+		'vcan' { 'Virtual CAN (vcan)' }
+		'socketcan' { 'SocketCAN' }
+		'pcan' { 'PCAN (hardware)' }
+		'kvaser' { 'Kvaser (hardware)' }
+		'udp' { 'UDP software bus' }
+		'doip' { 'DoIP (Ethernet)' }
+		'' { 'Other' }
+		else { adapter }
+	}
+}
+
+// draw_network shows the bus topology: each channel (bus) and everything attached to it —
+// the tester's own functions (Monitor / Send / Diagnostics), simulated ECUs, and generators
+// grouped by the bus they actually transmit on. The simulation-setup analog.
+fn draw_network(mut app App, chans []Chan) {
+	vis, op := vgui.begin_closable('Network', app.show_network)
+	app.show_network = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	vgui.text_dim('each bus and what is attached to it')
+	if chans.len == 0 {
+		vgui.text_dim('no channels in this project')
+		vgui.end()
+		return
+	}
+	for ci, c in chans {
+		r, g, b, st := chan_state(c)
+		vgui.text_colored(r, g, b, '*')
+		vgui.same_line()
+		if vgui.tree_node_open('${c.name}   ${c.iface}   [${c.mode}]   ${st.trim_space()}   RX ${c.rx}###net${ci}') {
+			mut any := false
+			// tester functions this tool runs on the bus
+			mut tf := []string{}
+			if c.monitorable() {
+				tf << 'Monitor'
+			}
+			if app.send_iface == c.iface {
+				tf << 'Send'
+			}
+			for sc in app.sims {
+				if sc.iface == c.iface {
+					tf << 'Diagnostics (UDS 0x7E0->0x7E8)'
+					break
+				}
+			}
+			if tf.len > 0 {
+				vgui.text('    Tester:  ${tf.join('  ·  ')}')
+				any = true
+			}
+			// simulated ECUs on this bus
+			for sc in app.sims {
+				if sc.iface != c.iface {
+					continue
+				}
+				for n in sc.nodes {
+					vgui.text('    ECU:     ${n.name}')
+					any = true
+				}
+			}
+			// generators that transmit on this bus (after Part-1 routing they group correctly)
+			for sr in app.senders {
+				if sr.target() != c.iface {
+					continue
+				}
+				s := sr.sender
+				desc := if s.message != '' { s.message } else { 'id 0x${s.id:X}' }
+				trig := match s.trigger {
+					'cyclic' { 'cyclic ${s.cycle_ms}ms' }
+					'key' { 'key ${s.key}' }
+					else { 'manual' }
+				}
+
+				vgui.text('    Gen:     ${s.name}  (${desc}, ${trig})')
+				any = true
+			}
+			if c.mode == 'replay' {
+				vgui.text('    Replay:  playing recording')
+				any = true
+			}
+			if !any {
+				vgui.text_dim('    (nothing attached)')
+			}
+			vgui.tree_pop()
+		}
+	}
+	vgui.end()
+}
+
+fn draw_trace(mut app App, rows []TraceRow, gcount map[string]u64, rx u64) {
+	vis, op := vgui.begin_closable('Trace', app.show_trace)
+	app.show_trace = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	if vgui.small_button(if app.trace_grouped { 'View: grouped' } else { 'View: all' }) {
+		app.trace_grouped = !app.trace_grouped
+	}
+	vgui.same_line()
+	vgui.text('RX ${rx} · ${vgui.fps():.0}fps')
+	vgui.same_line()
+	vgui.set_next_item_width(200)
+	vgui.input_text('filter', mut app.trace_filter_buf)
+	vgui.same_line()
+	if vgui.small_button('Clear') {
+		app.clear_trace()
+	}
+	vgui.set_next_item_width(200)
+	vgui.input_text('.log/.mf4', mut app.log_path_buf)
+	vgui.same_line()
+	if vgui.small_button('Open') {
+		app.load_recording(vgui.buf_str(app.log_path_buf))
+	}
+	// add the selected frame (click a row) to the Trace (filter) watch list
+	if app.sel_id >= 0 {
+		vgui.same_line()
+		sid := u32(app.sel_id)
+		sext := app.sel_ext
+		if vgui.small_button('+ Add ${idstr(sid, sext)} to filter') {
+			app.add_fwatch(sid, sext)
+		}
+	}
+	if app.chans.len > 1 {
+		app.trace_bus = bus_chips(app.chans, app.trace_bus, 't')
+	}
+	brows := app.filter_bus(rows, app.trace_bus)
+	filt := vgui.buf_str(app.trace_filter_buf).to_lower()
+	if app.trace_grouped {
+		vgui.separator_text('by id (click to expand · click row to select)')
+		draw_trace_grouped(mut app, brows, gcount, filt)
+	} else {
+		vgui.separator_text('frames (newest first)')
+		draw_trace_all('trace', brows, filt)
+	}
+	vgui.end()
+}
+
+// draw_ftrace is the "Trace (filter)" watch list: it shows ONLY the frames you've added
+// (via "+ Add to filter" in the Trace panel, or "+" in Symbols), over the same buffer.
+fn draw_ftrace(mut app App, rows []TraceRow, gcount map[string]u64) {
+	vis, op := vgui.begin_closable('Trace (filter)', app.show_ftrace)
+	app.show_ftrace = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	if vgui.small_button(if app.trace_grouped2 { 'View: grouped' } else { 'View: all' }) {
+		app.trace_grouped2 = !app.trace_grouped2
+	}
+	vgui.same_line()
+	vgui.set_next_item_width(180)
+	vgui.input_text('find', mut app.trace_filter2_buf)
+	vgui.same_line()
+	if vgui.small_button('Clear watch') {
+		app.fwatch = []
+	}
+	// watched-frame chips (click one to remove it from the list)
+	if app.fwatch.len == 0 {
+		vgui.text_dim('empty — select a frame in Trace and click "+ Add to filter", or "+" in Symbols')
+	} else {
+		vgui.text('watching:')
+		for f in app.fwatch {
+			nm := app.lookup_name(f.id, f.ext)
+			vgui.same_line()
+			if vgui.small_button('${idstr(f.id, f.ext)} ${nm} x##fw${f.id}_${f.ext}') {
+				app.remove_fwatch(f.id, f.ext)
+			}
+		}
+	}
+	if app.chans.len > 1 {
+		app.ftrace_bus = bus_chips(app.chans, app.ftrace_bus, 'f')
+	}
+	vgui.separator()
+	if app.fwatch.len == 0 {
+		vgui.end()
+		return
+	}
+	// restrict to watched frames + optional bus, then apply the optional text find
+	frows := app.filter_bus(rows.filter(app.is_fwatched(it.id, it.ext)), app.ftrace_bus)
+	filt := vgui.buf_str(app.trace_filter2_buf).to_lower()
+	if app.trace_grouped2 {
+		draw_trace_grouped(mut app, frows, gcount, filt)
+	} else {
+		draw_trace_all('ftrace', frows, filt)
+	}
+	vgui.end()
+}
+
+// bus_chips renders "show: [All] [bus…]" toggle-chips from the configured buses (labelled
+// network/name when a network label is set) and returns the selected bus name ('' = all).
+// `key` disambiguates the two Trace panels' widget ids.
+fn bus_chips(chans []Chan, cur string, key string) string {
+	mut sel := cur
+	vgui.text('show:')
+	vgui.same_line()
+	if vgui.toggle_button('All##bc${key}', cur == '', 0) {
+		sel = ''
+	}
+	for c in chans {
+		label := if c.network != '' { '${c.network}/${c.name}' } else { c.name }
+		vgui.same_line()
+		if vgui.toggle_button('${label}##bc${key}_${c.name}', cur == c.name, 0) {
+			sel = if cur == c.name { '' } else { c.name }
+		}
+	}
+	return sel
+}
+
+// filter_bus keeps only rows on the selected bus (by configured name); '' = all. Live rows
+// carry the bus name in `ch`, but rows from a loaded recording carry the log interface string
+// (e.g. `vcan0`) instead of the bus name (e.g. `CAN0`), so also match the selected bus's
+// iface/address — otherwise a chip would filter every imported row out.
+fn (app &App) filter_bus(rows []TraceRow, bus string) []TraceRow {
+	if bus == '' {
+		return rows
+	}
+	mut aliases := [bus]
+	for c in app.chans {
+		if c.name == bus {
+			if c.iface != '' && c.iface !in aliases {
+				aliases << c.iface
+			}
+			if c.address != '' && c.address !in aliases {
+				aliases << c.address
+			}
+		}
+	}
+	return rows.filter(it.ch in aliases)
+}
+
+fn idstr(id u32, ext bool) string {
+	return if ext { '0x${id:08X}' } else { '0x${id:03X}' }
+}
+
+// trace_pass: case-insensitive substring match over id / name / ch / dir / data.
+fn trace_pass(r TraceRow, filt string) bool {
+	if filt == '' {
+		return true
+	}
+	hay := '${idstr(r.id, r.ext)} ${r.name} ${r.ch} ${r.dir} ${hex(r.data)}'.to_lower()
+	return hay.contains(filt)
+}
+
+fn draw_trace_all(id string, rows []TraceRow, filt string) {
+	if vgui.table_begin(id, 6) {
+		vgui.table_setup_col('t (ms)', 66)
+		vgui.table_setup_col('ch', 52)
+		vgui.table_setup_col('dir', 34)
+		vgui.table_setup_col('id', 82)
+		vgui.table_setup_col('name', 150)
+		vgui.table_setup_col('data', 0) // stretch
+		vgui.table_freeze_top()
+		vgui.table_headers()
+		mut i := rows.len - 1
+		mut shown := 0
+		for i >= 0 && shown < 300 {
+			r := rows[i]
+			i--
+			if !trace_pass(r, filt) {
+				continue
+			}
+			shown++
+			vgui.table_row()
+			vgui.table_cell('${r.t_ms:.1}')
+			vgui.table_cell(r.ch)
+			vgui.table_cell(r.dir)
+			vgui.table_cell(idstr(r.id, r.ext))
+			vgui.table_cell(r.name)
+			vgui.table_cell(if r.rtr { 'RTR' } else { hex(r.data) })
+		}
+		vgui.table_end()
+	}
+}
+
+struct GAgg {
+mut:
+	dir   string
+	ch    string
+	id    u32
+	ext   bool
+	count int
+	last  TraceRow // newest frame of this group in the window
+	prev  TraceRow // the frame before `last` (empty data if only one seen) — for byte-delta dim
+}
+
+// gkey is the stable per-group identity used for both the grouped-view rows and the
+// persistent all-time frame count (App.gcount). Keep in sync with draw_trace_grouped.
+fn gkey(dir string, ch string, id u32, ext bool) string {
+	return '${dir}|${ch}|${id}|${ext}'
+}
+
+// grouped: one collapsible row per (dir, ch, id), expand to decode its latest signals.
+// Rows are sorted by a STABLE key (id, then dir) so they never jump as the ring trims —
+// the order is fixed by identity, not by which frame arrived most recently.
+fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt string) {
+	mut agg := map[string]GAgg{}
+	for r in rows {
+		if !trace_pass(r, filt) {
+			continue
+		}
+		k := '${r.dir}|${r.ch}|${r.id}|${r.ext}'
+		mut g := agg[k] or { GAgg{r.dir, r.ch, r.id, r.ext, 0, r, TraceRow{}} }
+		if g.count > 0 {
+			g.prev = g.last // slide the previous-frame window forward
+		}
+		g.count++
+		g.last = r
+		agg[k] = g
+	}
+	mut groups := agg.values()
+	groups.sort_with_compare(fn (a &GAgg, b &GAgg) int {
+		if a.id != b.id {
+			return if a.id < b.id { -1 } else { 1 }
+		}
+		if a.dir != b.dir {
+			return if a.dir < b.dir { -1 } else { 1 }
+		}
+		return if a.ch < b.ch {
+			-1
+		} else if a.ch > b.ch {
+			1
+		} else {
+			0
+		}
+	})
+	if vgui.table_begin('gtrace', 5) {
+		vgui.table_setup_col('id / name', 210)
+		vgui.table_setup_col('ch', 52)
+		vgui.table_setup_col('dir', 34)
+		vgui.table_setup_col('count', 60)
+		vgui.table_setup_col('data', 0)
+		vgui.table_freeze_top()
+		vgui.table_headers()
+		for g in groups {
+			r := g.last
+			vgui.table_row()
+			vgui.table_next_col()
+			// ### keys the tree id on identity only, so the live label / sort don't reset it.
+			open :=
+				vgui.tree_node_table('${idstr(g.id, g.ext)}  ${r.name}###${g.dir}|${g.ch}|${g.id}|${g.ext}')
+			// clicking a row selects that frame (drives Signals/Graphics + "Add to filter")
+			if vgui.is_item_clicked() {
+				app.sel_id = int(g.id)
+				app.sel_ext = g.ext
+			}
+			// right-click a row → context menu (plot its signals / add to filter)
+			if vgui.begin_popup_context_item('rowctx##${g.dir}|${g.ch}|${g.id}|${g.ext}') {
+				if m := app.find_message(g.id, g.ext) {
+					if vgui.menu_item('Add all signals to Graphics') {
+						for s in m.active_signals(r.data) {
+							app.add_watch(g.id, g.ext, s.name)
+						}
+						app.show_graphics = true
+					}
+				}
+				if vgui.menu_item('Add to Trace (filter)') {
+					app.add_fwatch(g.id, g.ext)
+				}
+				vgui.end_popup()
+			}
+			vgui.table_cell(g.ch)
+			vgui.table_cell(g.dir)
+			// all-time total (survives the ring trim); fall back to the window count.
+			total := gcount[gkey(g.dir, g.ch, g.id, g.ext)] or { u64(g.count) }
+			vgui.table_cell('${total}')
+			// data column: dim bytes that match the PREVIOUS frame of this group, normal for
+			// ones that changed (conventional change highlight). Compared against the actual prior
+			// frame in the trace buffer — not the last-rendered payload — so the delta is correct
+			// regardless of repaint timing (a byte that flips and flips back between repaints still
+			// shows against the real previous frame).
+			vgui.table_next_col()
+			if r.rtr {
+				vgui.text('RTR')
+			} else {
+				prev := g.prev.data
+				for i, b in r.data {
+					if i > 0 {
+						vgui.same_line()
+					}
+					tok := '${b:02X}'
+					if i >= prev.len || prev[i] != b {
+						vgui.text(tok) // changed → normal colour
+					} else {
+						vgui.text_dim(tok) // unchanged → dimmed
+					}
+				}
+			}
+			if open {
+				if m := app.find_message(g.id, g.ext) {
+					for s in m.active_signals(r.data) {
+						lbl := s.label(r.data)
+						extra := if lbl != '' { ' (${lbl})' } else { '' }
+						unit := if s.unit != '' { ' ${s.unit}' } else { '' }
+						vgui.table_row()
+						vgui.table_next_col()
+						// selectable spans the cell so the whole row is a right-click target
+						vgui.selectable('    ${s.name}##sigrow${g.id}_${g.ext}_${s.name}', false)
+						if vgui.begin_popup_context_item('sigctx##${g.id}_${g.ext}_${s.name}') {
+							if vgui.menu_item('Add ${s.name} to Graphics') {
+								app.add_watch(g.id, g.ext, s.name)
+								app.show_graphics = true
+							}
+							vgui.end_popup()
+						}
+						vgui.table_next_col()
+						vgui.table_next_col()
+						vgui.table_next_col()
+						vgui.table_cell('${s.physical(r.data):.3}${unit}${extra}')
+					}
+				}
+				vgui.tree_pop()
+			}
+		}
+		vgui.table_end()
+	}
+}
+
+// build_layout docks the five panels once: Buses (left) | Trace (centre) | a right
+// column stacked Trace Chart / Signals / Graphics.
+fn build_layout() {
+	root := vgui.dock_root()
+	if root == 0 {
+		return
+	}
+	mut rest := u32(0)
+	buses := vgui.dock_split(root, vgui.dock_left, 0.16, &rest)
+	mut center := u32(0)
+	right := vgui.dock_split(rest, vgui.dock_right, 0.34, &center)
+	// centre column: Trace(s) on top, a Log strip at the bottom
+	mut cbot := u32(0)
+	ctop := vgui.dock_split(center, vgui.dock_up, 0.76, &cbot)
+	// right column: Trace Chart (top) / mid tab group / bottom tab group
+	mut rmid := u32(0)
+	chart := vgui.dock_split(right, vgui.dock_up, 0.26, &rmid)
+	mut bottom := u32(0)
+	midnode := vgui.dock_split(rmid, vgui.dock_up, 0.5, &bottom)
+	// left column tabs
+	vgui.dock_window('Buses', buses)
+	vgui.dock_window('Network', buses)
+	vgui.dock_window('Simulation', buses)
+	vgui.dock_window('Symbols', buses)
+	vgui.dock_window('Bus Config', buses)
+	vgui.dock_window('Statistics', buses)
+	// centre: Trace + Trace (filter) tabs; Log below
+	vgui.dock_window('Trace', ctop)
+	vgui.dock_window('Trace (filter)', ctop)
+	vgui.dock_window('Log', cbot)
+	// right column
+	vgui.dock_window('Trace Chart', chart)
+	vgui.dock_window('Signals', midnode)
+	vgui.dock_window('Diagnostics', midnode)
+	vgui.dock_window('Shell', midnode)
+	vgui.dock_window('DBC Editor', midnode) // beside the live Trace: edit, watch re-decode
+	vgui.dock_window('System', midnode)
+	vgui.dock_window('Flash', midnode)
+	vgui.dock_window('DoIP Discovery', midnode)
+	vgui.dock_window('Graphics', bottom)
+	vgui.dock_window('Generators', bottom)
+	vgui.dock_window('Script', bottom)
+	// Help is not a panel — it's the Help menu's "Documentation" action, which opens the docs in
+	// the system browser.
+	vgui.dock_finish(root)
+}
+
+// latest_data returns the payload of the newest trace row matching (id, ext), or [].
+fn latest_data(rows []TraceRow, id u32, ext bool) []u8 {
+	mut i := rows.len - 1
+	for i >= 0 {
+		if rows[i].id == id && rows[i].ext == ext {
+			return rows[i].data
+		}
+		i--
+	}
+	return []u8{}
+}
+
+// draw_signals: pick a DBC message; decode its signals from the latest matching frame.
+// A checkbox per signal adds/removes it from the Graphics watch list.
+fn draw_signals(mut app App, rows []TraceRow) {
+	vis, op := vgui.begin_closable('Signals', app.show_signals)
+	app.show_signals = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	vgui.separator_text('messages')
+	vgui.child_begin('##msglist', 108)
+	mut seen := map[u64]bool{}
+	for db in app.dbs {
+		for m in db.messages {
+			key := (u64(m.id) << 1) | if m.ext { u64(1) } else { u64(0) }
+			if key in seen {
+				continue // both DBCs may define the same message
+			}
+			seen[key] = true
+			lbl := '0x${m.id:X}  ${m.name}'
+			is_sel := app.sel_id == int(m.id) && app.sel_ext == m.ext
+			if vgui.selectable(lbl, is_sel) {
+				app.sel_id = int(m.id)
+				app.sel_ext = m.ext
+			}
+		}
+	}
+	vgui.child_end()
+	vgui.separator_text('signals')
+	if app.sel_id < 0 {
+		vgui.text_dim('select a message above')
+		vgui.end()
+		return
+	}
+	m := app.find_message(u32(app.sel_id), app.sel_ext) or {
+		vgui.text_dim('message not in DBC')
+		vgui.end()
+		return
+	}
+	data := latest_data(rows, u32(app.sel_id), app.sel_ext)
+	if data.len == 0 {
+		vgui.text('${m.name}: no frame received yet')
+		vgui.end()
+		return
+	}
+	vgui.text('${m.name}')
+	if vgui.table_begin('sigs', 4) {
+		vgui.table_col('') // plot checkbox
+		vgui.table_col('signal')
+		vgui.table_col('value')
+		vgui.table_col('unit')
+		vgui.table_headers()
+		for s in m.active_signals(data) {
+			vgui.table_row()
+			vgui.table_next_col()
+			watched := app.is_watched(u32(app.sel_id), app.sel_ext, s.name)
+			nw := vgui.checkbox('##w_${m.id}_${s.name}', watched)
+			if nw != watched {
+				app.toggle_watch(u32(app.sel_id), app.sel_ext, s.name)
+			}
+			vgui.table_cell(s.name)
+			lbl := s.label(data)
+			valstr := if lbl != '' {
+				'${s.physical(data):.3} (${lbl})'
+			} else {
+				'${s.physical(data):.3}'
+			}
+			vgui.table_cell(valstr)
+			vgui.table_cell(s.unit)
+		}
+		vgui.table_end()
+	}
+	vgui.end()
+}
+
+// build_series decodes the watched signal across the trace history -> (time ms, value).
+fn (app &App) build_series(rows []TraceRow, w Watch) ([]f32, []f32) {
+	m := app.find_message(w.id, w.ext) or { return []f32{}, []f32{} }
+	mut sig := candb.Signal{}
+	mut found := false
+	for s in m.signals {
+		if s.name == w.sig {
+			sig = s
+			found = true
+			break
+		}
+	}
+	if !found {
+		return []f32{}, []f32{}
+	}
+	mut xs := []f32{}
+	mut ys := []f32{}
+	for r in rows {
+		if r.id == w.id && r.ext == w.ext && r.data.len > 0 {
+			xs << f32(r.t_ms / 1000.0) // seconds — the plot x-axis is t (s)
+			ys << f32(sig.physical(r.data))
+		}
+	}
+	return xs, ys
+}
+
+// draw_graphics plots the watched signals over the trace history as ImPlot lines
+// (native pan/zoom/legend/tooltip).
+fn draw_graphics(mut app App, rows []TraceRow) {
+	vis, op := vgui.begin_closable('Graphics', app.show_graphics)
+	app.show_graphics = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	if app.watch.len == 0 {
+		vgui.text_dim('tick a signal in the Signals panel to plot it (or right-click a Trace row)')
+		vgui.end()
+		return
+	}
+	// plotted signals: each a chip that REMOVES it from the plot on click (a real remove from the
+	// watch set — distinct from clicking the plot legend, which only hides/shows the line).
+	if vgui.small_button('Clear') {
+		app.watch = []
+		vgui.end()
+		return
+	}
+	vgui.same_line()
+	vgui.text_dim('remove:')
+	mut rm := -1
+	for i, w in app.watch {
+		vgui.same_line()
+		if vgui.small_button('${idstr(w.id, w.ext)}.${w.sig} x##rmw${i}') {
+			rm = i
+		}
+	}
+	if rm >= 0 {
+		app.watch.delete(rm)
+	}
+	// time window: a fixed span you watch (a scrolling strip chart), not the whole history.
+	vgui.text_dim('window:')
+	for wsec in [f32(1), 5, 10, 30, 0] {
+		vgui.same_line()
+		lbl := if wsec == 0 { 'full' } else { '${int(wsec)}s' }
+		if vgui.toggle_button('${lbl}##pw${int(wsec)}', app.plot_win == wsec, 0) {
+			app.plot_win = wsec
+		}
+	}
+	// Y-axis: "Multi" gives each signal its own real-value axis (up to 3, so a small-amplitude
+	// signal keeps real values instead of being squashed by a large one); "Shared" = one axis.
+	vgui.same_line()
+	vgui.text_dim(' · Y:')
+	vgui.same_line()
+	if vgui.toggle_button('Multi##ymulti', app.plot_multi, 0) {
+		app.plot_multi = true
+	}
+	vgui.same_line()
+	if vgui.toggle_button('Shared##yshared', !app.plot_multi, 0) {
+		app.plot_multi = false
+	}
+	// The y-axes are ImPlot-native — the right-click menu owns them and its state persists
+	// (SetupAxis only overrides flags when the program CHANGES them, which we never do).
+	// The one non-obvious step is that Auto-Fit must go off before Min/Max stick.
+	vgui.same_line()
+	vgui.help_marker('Each y-axis is live-fitted by default. To take one over: right-click the axis, untick Auto-Fit, then set Min/Max (e.g. 0/100 for a load %). The small checkboxes lock that end against pan/zoom. Drag axis = pan, scroll = zoom, double-click = fit once.')
+	// x-window right edge: wall-clock NOW while live, so the strip chart slides on real time
+	// (not only when a sample arrives); the latest sample time when stopped/paused/loaded, so
+	// it holds still. Samples and `now` share app.t0's clock (rx stamps t_ms = ticks - t0).
+	mut xmax := f64(0)
+	if app.running && !app.paused {
+		xmax = f64(time.ticks() - app.t0) / 1000.0
+	} else {
+		for r in rows {
+			if app.is_watched_frame(r.id, r.ext) && f64(r.t_ms) / 1000.0 > xmax {
+				xmax = f64(r.t_ms) / 1000.0
+			}
+		}
+	}
+	xmin := if app.plot_win > 0 { xmax - f64(app.plot_win) } else { f64(0) }
+	xhi := if app.plot_win > 0 { xmax } else { f64(0) } // 0/0 → full autofit
+	n_yaxes := if app.plot_multi { imin(3, app.watch.len) } else { 1 }
+	if vgui.plot_begin_multi('##sigplot', -1, xmin, xhi, n_yaxes) { // -1 = fill panel height
+		// crosshair readout: value shown in the legend is at the cursor x when hovering the
+		// plot, else the latest sample — a live per-signal value beside each name.
+		hovered := vgui.plot_is_hovered()
+		mx := if hovered { f32(vgui.plot_mouse_x()) } else { f32(0) }
+		for i, w in app.watch {
+			xs, ys := app.build_series(rows, w)
+			if xs.len == 0 {
+				continue
+			}
+			xr := if hovered { mx } else { xs[xs.len - 1] } // cursor x, or latest
+			val := value_at(xs, ys, xr)
+			// display "name = value"; the ###id keeps the ImPlot series identity/colour stable
+			// even though the shown value changes each frame.
+			label := '0x${w.id:X}.${w.sig} = ${val:.2f}###g${w.id}_${w.ext}_${w.sig}'
+			axis := if app.plot_multi { imin(i, 2) } else { 0 } // signal 0/1/2 → Y1/Y2/Y3
+			vgui.plot_line_axis(label, xs, ys, axis)
+		}
+		vgui.plot_end()
+	}
+	vgui.end()
+}
+
+// imin is a small int min helper.
+fn imin(a int, b int) int {
+	return if a < b { a } else { b }
+}
+
+// value_at linearly interpolates the series (xs,ys) at x (clamped to the ends). Used for the
+// Graphics crosshair readout.
+fn value_at(xs []f32, ys []f32, x f32) f32 {
+	n := xs.len
+	if n == 0 {
+		return 0
+	}
+	if x <= xs[0] {
+		return ys[0]
+	}
+	if x >= xs[n - 1] {
+		return ys[n - 1]
+	}
+	for i in 1 .. n {
+		if xs[i] >= x {
+			d := xs[i] - xs[i - 1]
+			t := if d != 0 { (x - xs[i - 1]) / d } else { f32(0) }
+			return ys[i - 1] + t * (ys[i] - ys[i - 1])
+		}
+	}
+	return ys[n - 1]
+}
+
+// is_watched_frame reports whether any plotted signal comes from this frame id.
+fn (app &App) is_watched_frame(id u32, ext bool) bool {
+	for w in app.watch {
+		if w.id == id && w.ext == ext {
+			return true
+		}
+	}
+	return false
+}
+
+// ---- Send ----
+// draw_quick_send is the folded-in Send: a one-shot raw id+data transmit at the top of the
+// Generators panel. It fires immediately without creating a saved generator — the fast ad-hoc
+// path. Fields stay editable while stopped; only firing needs a running bus.
+fn draw_quick_send(mut app App) {
+	vgui.separator_text('quick send')
+	// target bus: validate the stored quick-send iface against the current channels; fall back to
+	// the default send_iface if it was removed/renamed.
+	mut target := app.send_iface
+	mut cur := 0
+	for k, c in app.chans {
+		if c.iface == app.qs_iface {
+			target = app.qs_iface
+			cur = k
+		} else if c.iface == target {
+			cur = k
+		}
+	}
+	if app.chans.len > 1 {
+		mut names := []string{cap: app.chans.len}
+		for c in app.chans {
+			names << c.name
+		}
+		vgui.set_next_item_width(120 * app.ui_scale)
+		nsel := vgui.combo('bus##qsbus', names, cur)
+		if nsel != cur && nsel >= 0 && nsel < app.chans.len {
+			app.qs_iface = app.chans[nsel].iface
+			target = app.qs_iface
+		}
+		vgui.same_line()
+	}
+	vgui.set_next_item_width(70 * app.ui_scale)
+	vgui.input_text('id (hex)', mut app.send_id_buf)
+	vgui.same_line()
+	vgui.set_next_item_width(200 * app.ui_scale)
+	vgui.input_text('data (hex)', mut app.send_data_buf)
+	vgui.same_line()
+	if app.running {
+		if vgui.button('Send##quicksend') {
+			id := u32(('0x' + vgui.buf_str(app.send_id_buf)).u64())
+			data := parse_hex_bytes(vgui.buf_str(app.send_data_buf))
+			app.tx_on(target, transport.CanFrame{
+				id:   id
+				data: data
+			})
+		}
+		vgui.same_line()
+		vgui.text_dim('on ${app.chan_name_for(target)}')
+	} else {
+		vgui.text_dim('start to send')
+	}
+}
+
+// ---- Generators (interactive send blocks) ----
+// Always visible and editable regardless of run state; Start/Stop only gates *firing*.
+// Add / remove / edit happen in the session; Save persists them to the project .blobnet.
+fn draw_gen(mut app App) {
+	vis, op := vgui.begin_closable('Generators', app.show_gen)
+	app.show_gen = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	// folded-in Send: fast ad-hoc raw transmit
+	draw_quick_send(mut app)
+	vgui.separator_text('generators')
+	if vgui.button('+ Add generator') {
+		app.add_generator()
+	}
+	vgui.same_line()
+	if vgui.button('Save to project') {
+		app.save_project()
+	}
+	if app.dirty {
+		vgui.same_line()
+		vgui.text_colored(230, 170, 70, '● modified')
+	}
+	if app.running {
+		vgui.text_dim('edit freely · Send now fires once · cyclic auto-repeats · on-key fires on its key')
+	} else {
+		vgui.text_dim('edit freely · press Start to fire')
+	}
+	if app.senders.len == 0 {
+		vgui.text_dim('no generators — click "+ Add generator"')
+		vgui.end()
+		return
+	}
+	// one collapsed tree node per generator; the header summarises name + trigger so the list
+	// stays scannable when everything is folded (start state).
+	mut remove_idx := -1
+	for i, sr in app.senders {
+		// keep the model in sync with the edit buffers (name/key are UI-thread-only fields);
+		// do it before the header so the collapsed label reflects the latest edit.
+		app.senders[i].sender.name = vgui.buf_str(app.gen_bufs[i].name_buf)
+		app.senders[i].sender.key = vgui.buf_str(app.gen_bufs[i].key_buf)
+		mut s := app.senders[i].sender
+		cm := if s.cycle_ms > 0 { s.cycle_ms } else { 100 }
+		trig := match s.trigger {
+			'key' {
+				if s.key != '' { 'key "${s.key}"' } else { 'key (unset)' }
+			}
+			'cyclic' {
+				'cyclic ${cm} ms'
+			}
+			else {
+				'manual'
+			}
+		}
+
+		nm := if s.name != '' { s.name } else { '(unnamed)' }
+		// ### keys the node on the index only, so editing the visible name doesn't collapse it.
+		if vgui.tree_node('${nm}   ·   ${trig}###gennode${i}') {
+			vgui.set_next_item_width(200 * app.ui_scale)
+			if vgui.input_text('name##gn${i}', mut app.gen_bufs[i].name_buf) {
+				app.dirty = true
+			}
+			vgui.same_line()
+			vgui.set_next_item_width(36 * app.ui_scale)
+			if vgui.input_text('key##gk${i}', mut app.gen_bufs[i].key_buf) {
+				app.dirty = true
+			}
+			vgui.same_line()
+			if vgui.small_button('remove##rm${i}') {
+				remove_idx = i // indices shift on delete — do it after the loop
+			}
+			// fire: Send now only fires while running (stopped = editable, just no TX)
+			if app.running {
+				if vgui.button('Send now##${i}') {
+					app.fire_index(i)
+				}
+			} else {
+				vgui.text_dim('Send now (start to fire)')
+			}
+			vgui.same_line()
+			vgui.text('fires:')
+			vgui.same_line()
+			if vgui.toggle_button('manual##${i}', s.trigger == 'manual', 0) {
+				app.set_trigger(i, 'manual')
+			}
+			vgui.same_line()
+			if vgui.toggle_button('on key##${i}', s.trigger == 'key', 0) {
+				app.set_trigger(i, 'key')
+			}
+			vgui.same_line()
+			if vgui.toggle_button('cyclic##${i}', s.trigger == 'cyclic', 0) {
+				app.set_trigger(i, 'cyclic')
+			}
+			if s.trigger == 'cyclic' {
+				vgui.same_line()
+				vgui.text('every ${cm} ms')
+				vgui.same_line()
+				if vgui.small_button('-##c${i}') {
+					app.set_cycle(i, if cm > 60 { cm - 50 } else { 10 })
+				}
+				vgui.same_line()
+				if vgui.small_button('+##c${i}') {
+					app.set_cycle(i, cm + 50)
+				}
+			}
+			// target bus: which wire this generator transmits on (defaults to its own channel)
+			if app.chans.len > 1 {
+				cur := app.senders[i].target()
+				vgui.text('bus:')
+				for ci, c in app.chans {
+					vgui.same_line()
+					if vgui.toggle_button('${c.name}##b${i}_${ci}', c.iface == cur, 0) {
+						app.set_sender_bus(i, if c.iface == sr.iface { '' } else { c.iface })
+					}
+				}
+			}
+			// message picker: build the frame from a DBC message (→ per-signal values) or send a
+			// raw id + data. Option 0 = raw; the rest are the messages on THIS generator's bus.
+			gen_iface := app.senders[i].target()
+			msg_names := app.message_names_for(gen_iface)
+			mut msg_opts := ['(raw id / data)']
+			msg_opts << msg_names
+			mut cur_msg := 0
+			if s.message != '' {
+				for k, mn in msg_names {
+					if mn == s.message {
+						cur_msg = k + 1
+						break
+					}
+				}
+			}
+			vgui.set_next_item_width(220 * app.ui_scale)
+			nsel := vgui.combo('message##msg${i}', msg_opts, cur_msg)
+			if nsel != cur_msg {
+				app.set_sender_message(i, if nsel <= 0 { '' } else { msg_opts[nsel] })
+				s = app.senders[i].sender // reflect the switch in this frame's payload block
+			}
+			// payload: DBC message -> per-signal values; raw -> id + data hex
+			if s.message != '' {
+				vgui.text('message ${s.message} · signal values:')
+				cmsg := app.find_message_cdb_for(gen_iface, s.message) or { candb.Message{} }
+				for j, ss in s.signals {
+					mut sig := candb.Signal{}
+					mut have := false
+					for cs in cmsg.signals {
+						if cs.name == ss.name {
+							sig = cs
+							have = true
+							break
+						}
+					}
+					app.signal_input(i, j, sig, have)
+				}
+			} else {
+				vgui.set_next_item_width(70 * app.ui_scale)
+				if vgui.input_text('id##id${i}', mut app.gen_bufs[i].id_buf) {
+					app.dirty = true
+				}
+				vgui.same_line()
+				vgui.set_next_item_width(260 * app.ui_scale)
+				if vgui.input_text('data (hex)##dt${i}', mut app.gen_bufs[i].data_buf) {
+					app.dirty = true
+				}
+			}
+			vgui.tree_pop()
+		}
+	}
+	if remove_idx >= 0 {
+		app.remove_generator(remove_idx)
+	}
+	vgui.end()
+}
+
+// add_generator appends a new raw generator to the session, targeting the first channel.
+// Session-only until Save writes it to the project.
+fn (mut app App) add_generator() {
+	iface := if app.chans.len > 0 { app.chans[0].iface } else { '' }
+	app.mu.lock()
+	app.senders << SenderRT{
+		iface:  iface
+		sender: project.Sender{
+			name:    'New generator'
+			id:      0x100
+			trigger: 'manual'
+		}
+	}
+	app.gen_bufs << GenBuf{
+		name_buf: mkbuf('New generator', 48)
+		key_buf:  mkbuf('', 2)
+		id_buf:   mkbuf('100', 24)
+		data_buf: mkbuf('', 96)
+	}
+	app.dirty = true
+	app.mu.unlock()
+	if app.running && iface != '' && iface !in app.tx_buses {
+		if b := app.open_transport(iface) {
+			app.tx_buses[iface] = b
+		}
+	}
+}
+
+// remove_generator drops generator `i` from the session.
+fn (mut app App) remove_generator(i int) {
+	app.mu.lock()
+	if i >= 0 && i < app.senders.len {
+		app.senders.delete(i)
+		if i < app.gen_bufs.len {
+			app.gen_bufs.delete(i)
+		}
+		app.dirty = true
+	}
+	app.mu.unlock()
+}
+
+// sync_senders_into_proj flushes the Generators panel edit buffers into app.proj so a Save
+// persists them (a sender belongs to its channel; its `bus:` override travels as a field).
+fn (mut app App) sync_senders_into_proj() {
+	app.mu.lock()
+	defer { app.mu.unlock() }
+	for i in 0 .. app.senders.len {
+		if app.senders[i].sender.message == '' && i < app.gen_bufs.len {
+			app.senders[i].sender.id = u32(('0x' + vgui.buf_str(app.gen_bufs[i].id_buf)).u64())
+			app.senders[i].sender.data = parse_hex_bytes(vgui.buf_str(app.gen_bufs[i].data_buf))
+		}
+	}
+	mut p := app.proj
+	for ci in 0 .. p.channels.len {
+		mut ss := []project.Sender{}
+		for sr in app.senders {
+			if sr.iface == p.channels[ci].iface {
+				ss << sr.sender
+			}
+		}
+		p.channels[ci].senders = ss
+	}
+	app.proj = p
+}
+
+// save_project writes the whole project to its file (config + generators). An unsaved
+// project (no path) routes to Save As. Reformats the .blobnet — comments are not preserved.
+fn (mut app App) save_project() {
+	if app.proj_path == '' {
+		app.open_browser('saveas')
+		return
+	}
+	app.apply_edits()
+	app.mu.lock()
+	p := app.proj
+	path := app.proj_path
+	app.mu.unlock()
+	p.save(path) or {
+		app.notify('save failed: ${err}')
+		return
+	}
+	app.dirty = false
+	app.notify('saved -> ${path}')
+}
+
+// apply_edits folds pending editor state into app.proj so Start/Save act on exactly what the
+// editor shows. While STOPPED it also rebuilds the runtime view; while RUNNING it only folds
+// generator edits into the model for the file write and does NOT rebuild — rebuilding app.chans
+// mid-measurement would reset the running flags / desync the live RX/gen threads and tx_buses
+// (the config editor is stopped-only, so there are no live config edits to apply anyway).
+fn (mut app App) apply_edits() {
+	if app.running {
+		app.sync_senders_into_proj() // generators may be edited live; persist them, don't rebuild
+		return
+	}
+	app.commit_cfg() // Configuration-editor buffers -> app.proj (no-op if the editor never opened)
+	app.sync_senders_into_proj() // session generators -> app.proj
+	app.rebuild_from_proj() // rebuild app.chans/dbs/sims from the updated model
+}
+
+// save_as sets the path (from the browser) and saves.
+fn (mut app App) save_as(path string) {
+	mut p := path
+	if !p.ends_with('.blobnet') && !p.ends_with('.yml') && !p.ends_with('.yaml') {
+		p += '.blobnet'
+	}
+	app.proj_path = p
+	app.proj.name = app.proj_name
+	app.save_project()
+}
+
+// new_project resets to a blank, unsaved project (0 buses) — the from-scratch entry point.
+fn (mut app App) new_project() {
+	app.stop()
+	app.set_project(project.Project{ name: 'untitled' }, '')
+	app.notify('new project — add buses in Configure…')
+}
+
+// dbs_for returns the DBCs attached to the channel transmitting on `iface` (a generator's target
+// bus). Scoping the message picker/lookup here — not the global app.dbs — means a generator on
+// bus B never resolves a same-named message from bus A's database.
+fn (app &App) dbs_for(iface string) []candb.Database {
+	return app.dbs_by_iface[iface] or { [] }
+}
+
+// message_names_for lists the DBC message names on `iface` (deduplicated, load order) — the
+// picker options for a generator whose target bus is `iface`.
+fn (app &App) message_names_for(iface string) []string {
+	mut out := []string{}
+	mut seen := map[string]bool{}
+	for db in app.dbs_for(iface) {
+		for m in db.messages {
+			if m.name in seen {
+				continue
+			}
+			seen[m.name] = true
+			out << m.name
+		}
+	}
+	return out
+}
+
+// set_sender_message switches generator `i` between raw (msg == '') and DBC-message mode. When a
+// message is picked, its signals are seeded (values preserved by name across a re-pick) so the
+// editor shows one input per signal; picking raw clears them so the id/data hex inputs return.
+// The message is resolved on the generator's OWN target bus, not globally.
+fn (mut app App) set_sender_message(i int, msg string) {
+	if i < 0 || i >= app.senders.len {
+		return
+	}
+	iface := app.senders[i].target()
+	app.mu.lock()
+	defer {
+		app.mu.unlock()
+	}
+	if msg == '' {
+		app.senders[i].sender.message = ''
+		app.senders[i].sender.signals = []
+	} else {
+		old := app.senders[i].sender.signals.clone()
+		app.senders[i].sender.message = msg
+		mut sigs := []project.SenderSig{}
+		for db in app.dbs_for(iface) {
+			mut found := false
+			for m in db.messages {
+				if m.name != msg {
+					continue
+				}
+				for sig in m.signals {
+					mut v := f64(0)
+					for o in old {
+						if o.name == sig.name {
+							v = o.value
+							break
+						}
+					}
+					sigs << project.SenderSig{
+						name:  sig.name
+						value: v
+					}
+				}
+				found = true
+				break
+			}
+			if found {
+				break
+			}
+		}
+		app.senders[i].sender.signals = sigs
+	}
+	app.dirty = true
+}
+
+// find_message_cdb_for returns the candb.Message `name` from the DBCs on `iface` (signal
+// metadata: units, value tables, integer-vs-float scaling) — scoped to the generator's bus.
+fn (app &App) find_message_cdb_for(iface string, name string) ?candb.Message {
+	for db in app.dbs_for(iface) {
+		for m in db.messages {
+			if m.name == name {
+				return m
+			}
+		}
+	}
+	return none
+}
+
+// signal_is_integer is true when every representable physical value of the signal is a whole
+// number (integer factor + offset) — so it should get an integer input, not a float box.
+fn signal_is_integer(sig candb.Signal) bool {
+	return sig.factor == math.trunc(sig.factor) && sig.offset == math.trunc(sig.offset)
+}
+
+// signal_input renders one generator signal value using its DBC type: an enum dropdown for a
+// signal with a VAL_ table, an integer spinner for integer-scaled signals, else a float box.
+// `sig` is the DBC metadata (valid only when `have`); without it we fall back to a float box.
+fn (mut app App) signal_input(i int, j int, sig candb.Signal, have bool) {
+	ss := app.senders[i].sender.signals[j]
+	unit := if have && sig.unit != '' { ' [${sig.unit}]' } else { '' }
+	lbl := '${ss.name}${unit}##sig${i}_${j}'
+	pv := unsafe { &app.senders[i].sender.signals[j].value }
+	vgui.set_next_item_width(170 * app.ui_scale)
+	if have && sig.values.len > 0 {
+		// enum: dropdown of "value — name" states. VAL_ keys are stored two's-complement for
+		// signed signals, so map key<->physical through the signal (phys_from_raw / raw_from_phys)
+		// — never a bare f64(rawkey), which would turn -1 into 1.8e19.
+		mut raws := sig.values.keys()
+		raws.sort()
+		mut labels := []string{cap: raws.len}
+		for r in raws {
+			labels << '${sig.phys_from_raw(r):g} — ${sig.values[r]}'
+		}
+		curraw := sig.raw_from_phys(ss.value)
+		mut cur := 0
+		for k, r in raws {
+			if r == curraw {
+				cur = k
+				break
+			}
+		}
+		nsel := vgui.combo(lbl, labels, cur)
+		if nsel != cur && nsel >= 0 && nsel < raws.len {
+			unsafe {
+				*pv = sig.phys_from_raw(raws[nsel])
+			}
+			app.dirty = true
+		}
+	} else if have && signal_is_integer(sig) {
+		mut iv := int(math.round(ss.value))
+		if vgui.input_int(lbl, &iv) {
+			unsafe {
+				*pv = f64(iv)
+			}
+			app.dirty = true
+		}
+	} else {
+		if vgui.input_double(lbl, pv) {
+			app.dirty = true
+		}
+	}
+}
+
+fn (mut app App) set_trigger(i int, t string) {
+	app.mu.lock()
+	if i < app.senders.len {
+		app.senders[i].sender.trigger = t
+		if t == 'cyclic' && app.senders[i].sender.cycle_ms <= 0 {
+			app.senders[i].sender.cycle_ms = 100
+		}
+	}
+	app.mu.unlock()
+}
+
+fn (mut app App) set_cycle(i int, ms int) {
+	app.mu.lock()
+	if i < app.senders.len {
+		app.senders[i].sender.cycle_ms = ms
+	}
+	app.mu.unlock()
+}
+
+// set_sender_bus points generator `i` at a target bus ('' = its own channel). A newly
+// targeted bus is opened if the measurement is running and it isn't open yet.
+fn (mut app App) set_sender_bus(i int, bus string) {
+	app.mu.lock()
+	if i < app.senders.len {
+		app.senders[i].sender.bus = bus
+		tgt := app.senders[i].target()
+		if app.running && tgt != '' && tgt !in app.tx_buses {
+			if b := app.open_transport(tgt) {
+				app.tx_buses[tgt] = b
+			}
+		}
+	}
+	app.mu.unlock()
+}
+
+// fire_index sends generator `i`'s CURRENT (edited) frame once. DBC-message generators
+// encode the edited signal values; raw generators use the edited id/data hex fields.
+// poll_hotkeys fires any 'key'-triggered generator whose key went down this frame. Runs on the
+// UI thread once per frame (fire_index reads UI-thread edit buffers). Suppressed while a text
+// field is focused so typing a key into an input box doesn't also fire a generator.
+fn (mut app App) poll_hotkeys() {
+	if !app.running || vgui.want_text_input() {
+		return
+	}
+	for i, sr in app.senders {
+		s := sr.sender
+		if s.trigger != 'key' || s.key == '' {
+			continue
+		}
+		if vgui.key_pressed(s.key[0]) {
+			app.fire_index(i)
+		}
+	}
+}
+
+fn (mut app App) fire_index(i int) {
+	if i < 0 || i >= app.senders.len {
+		return
+	}
+	s := app.senders[i].sender
+	mut id := s.id
+	mut ext := s.ext
+	mut data := []u8{}
+	if s.message != '' {
+		mut found := false
+		// resolve the message on the generator's own target bus (not globally)
+		for db in app.dbs_for(app.senders[i].target()) {
+			for m in db.messages {
+				if m.name != s.message {
+					continue
+				}
+				id = m.id
+				ext = m.ext
+				data = []u8{len: m.dlc}
+				for ss in s.signals {
+					for sig in m.signals {
+						if sig.name == ss.name {
+							sig.encode(mut data, ss.value)
+							break
+						}
+					}
+				}
+				found = true
+				break
+			}
+			if found {
+				break
+			}
+		}
+		if !found {
+			app.notify('generator: message "${s.message}" not in any DBC')
+			return
+		}
+	} else if i < app.gen_bufs.len {
+		id = u32(('0x' + vgui.buf_str(app.gen_bufs[i].id_buf)).u64())
+		data = parse_hex_bytes(vgui.buf_str(app.gen_bufs[i].data_buf))
+	}
+	app.tx_on(app.senders[i].target(), transport.CanFrame{
+		id:       id
+		extended: ext
+		data:     data
+	})
+}
+
+// ---- Diagnostics (UDS over software ISO-TP, on a worker thread) ----
+fn (mut app App) diag_push(line string) {
+	app.mu.lock()
+	app.diag_log << line
+	if app.diag_log.len > 200 {
+		app.diag_log = app.diag_log[app.diag_log.len - 200..].clone()
+	}
+	app.mu.unlock()
+}
+
+fn (app &App) diag_iface() string {
+	for c in app.chans {
+		if c.monitorable() && c.running {
+			return c.iface
+		}
+	}
+	return ''
+}
+
+fn diag_worker(app &App, kind string, did u16) {
+	mut a := unsafe { app }
+	a.mu.lock()
+	if a.diag_busy {
+		a.mu.unlock()
+		return
+	}
+	a.diag_busy = true
+	a.mu.unlock()
+	iface := a.diag_iface()
+	mut ch := isotp.open_software(a.bitrate_iface(iface), diag_tx_id, diag_rx_id, false) or {
+		a.diag_push('open ${iface}: ${err}')
+		a.mu.lock()
+		a.diag_busy = false
+		a.mu.unlock()
+		vgui.wake()
+		return
+	}
+	mut c := uds.new_client(ch)
+	match kind {
+		'session' {
+			c.diagnostic_session(0x03) or {
+				a.diag_push('session: ${err}')
+				a.diag_done()
+				return
+			}
+			a.diag_push('session 0x03 OK')
+		}
+		'vin' {
+			r := c.read_data_by_identifier(0xF190) or {
+				a.diag_push('VIN: ${err}')
+				a.diag_done()
+				return
+			}
+			a.diag_push('VIN = ${r.bytestr()}')
+		}
+		'tp' {
+			c.tester_present() or {
+				a.diag_push('tester present: ${err}')
+				a.diag_done()
+				return
+			}
+			a.diag_push('tester present OK')
+		}
+		'did' {
+			r := c.read_data_by_identifier(did) or {
+				a.diag_push('DID ${did:04X}: ${err}')
+				a.diag_done()
+				return
+			}
+			a.diag_push('DID ${did:04X} = ${hex(r)}  "${printable(r)}"')
+		}
+		else {}
+	}
+
+	a.diag_done()
+}
+
+fn (mut app App) diag_done() {
+	app.mu.lock()
+	app.diag_busy = false
+	app.mu.unlock()
+	vgui.wake()
+}
+
+// trace_dump_worker performs one capture read-out: it freezes the target's ring(s) and dumps
+// the selected cores, reassembling each per-core ISO-TP block on 0x7E5 (sending flow control
+// on 0x7E6) and decoding the records into app.trecs for the swimlane. Mirrors diag_worker: a
+// single-flight busy flag, a short-lived spawn, a blocking transfer, results under mu + wake.
+fn trace_dump_worker(app &App, core_mask u16) {
+	mut a := unsafe { app }
+	a.mu.lock()
+	if a.trace_busy {
+		a.mu.unlock()
+		return
+	}
+	a.trace_busy = true
+	a.mu.unlock()
+	iface := a.trace_iface()
+	if iface == '' {
+		a.set_trace_status('dump: no running channel')
+		a.trace_done()
+		return
+	}
+	// the trace frame ids are config-driven on the target — read them from the loaded manifest
+	// (or_defaults fills the trace_demo wire when the manifest omits the `# trace frames` block).
+	f := a.manifest.frames.or_defaults()
+	// the host is the ISO-TP receiver: it sends flow control on dump_fc and receives the dump
+	// data on record (open before commanding, so the socket buffers the target's first frame).
+	// ISO-TP addressing must match the frame width — a 29-bit trace id would otherwise be masked
+	// to 11 bits by SocketCAN and the target would never answer.
+	mut ch := isotp.open_software(a.bitrate_iface(iface), f.dump_fc, f.record, trace_ext(f.record)) or {
+		a.set_trace_status('dump: open ${iface}: ${err}')
+		a.trace_done()
+		return
+	}
+	defer {
+		ch.close()
+	}
+	cmd_ext := trace_ext(f.cmd)
+	// Freeze each selected core's capture RING (op_stop) so it can be read out — the target
+	// refuses to dump a buffer that's still being written. This stops recording, NOT the
+	// core: handlers keep running. Then dump (op_dump).
+	a.tx_on(iface, transport.CanFrame{
+		id:       f.cmd
+		extended: cmd_ext
+		data:     telem.encode_trace_cmd(telem.op_stop, telem.filter_all, core_mask)
+	})
+	a.tx_on(iface, transport.CanFrame{
+		id:       f.cmd
+		extended: cmd_ext
+		data:     telem.encode_trace_cmd(telem.op_dump, telem.filter_all, core_mask)
+	})
+	// a dump streams SELF-DESCRIBING blocks: one or more per selected core (multi-block:
+	// deep rings ride many ~payload-sized blocks; the header's more-flag marks continuation,
+	// so end-of-stream lives in the format, not in transport heuristics).
+	ncores := mask_popcount(core_mask)
+	mut recs := []TRec{}
+	mut got := 0
+	mut last_seen := 0 // cores whose final block has arrived
+	mut recv_err := ''
+	// Cross-core correlation (emb REQ-TRACE-011), keyed by core: how tight the measured clock
+	// offset was. A core absent here is drawn on its OWN clock — the status has to say so,
+	// because an uncorrelated lane looks exactly like a correlated one.
+	mut skew_bounds := map[int]u16{}
+	for _ in 0 .. 256 {
+		if last_seen >= ncores {
+			break
+		}
+		// Reassembly can fail transiently (a lost/reordered frame -> the SN check errors out
+		// cleanly). The target's ring stays FROZEN after a dump, so re-issuing op_dump simply
+		// re-streams the same block — retry a couple of times and SURFACE the error text
+		// (it names the cause: SN gap vs wrong PCI vs timeout) instead of swallowing it.
+		mut block := []u8{}
+		mut have := false
+		for attempt in 0 .. 3 {
+			block = ch.recv(1000) or {
+				recv_err = err.msg()
+				if attempt < 2 {
+					// a stale stream (a previous timed-out dump still trickling CFs) makes the
+					// next recv join mid-stream ('unexpected PCI 0x2x') — drain until the bus is
+					// quiet on the record id, then re-issue the dump (the frozen ring re-streams).
+					ch.drain_quiet(150)
+					a.tx_on(iface, transport.CanFrame{
+						id:       f.cmd
+						extended: cmd_ext
+						data:     telem.encode_trace_cmd(telem.op_dump, telem.filter_all, core_mask)
+					})
+				}
+				continue
+			}
+			have = true
+			break
+		}
+		if !have {
+			break // no more blocks (or the transfer kept failing — recv_err says why)
+		}
+		got++
+		// Decoding lives in the engine (telem.decode_block), not here: the epoch re-anchor and the
+		// cross-core clock offset decide what a dump MEANS, so the Trace Chart and the headless
+		// cmd/trace_dump must not each interpret them. It is also where those rules are tested.
+		b := telem.decode_block(block)
+		if !b.more {
+			last_seen++ // this core's final block
+		}
+		if b.skew_known {
+			skew_bounds[b.core] = b.skew_bound_us
+		}
+		for br in b.records {
+			recs << TRec{
+				ch:     0
+				core:   b.core
+				abs_us: br.abs_us
+				rec:    br.rec
+			}
+		}
+	}
+	a.mu.lock()
+	a.trecs = synthesize_idle(recs)
+	a.rev++
+	a.trace_recording = false // the dump froze the buffer; Record re-arms for a new window
+	// Say plainly whether the cores share a timeline. With >1 core and no measured offset the
+	// lanes are each on their own clock, and reading across them is meaningless — never let that
+	// pass silently, it renders identically to a correlated dump.
+	sync_note := if ncores < 2 {
+		''
+	} else if skew_bounds.len == 0 {
+		' · ⚠ cores NOT time-correlated (each on its own clock)'
+	} else {
+		mut worst := u16(0)
+		for _, b in skew_bounds {
+			if b > worst {
+				worst = b
+			}
+		}
+		' · ${skew_bounds.len}/${ncores - 1} satellite core(s) time-corrected (±${worst} µs)'
+	}
+	a.trace_status = if last_seen < ncores && recv_err != '' {
+		'dumped ${got} block(s), ${last_seen}/${ncores} cores complete · ${recs.len} records${sync_note} · last error: ${recv_err}'
+	} else {
+		'dumped ${got} block(s) from ${ncores} core(s) · ${recs.len} records${sync_note}'
+	}
+	a.mu.unlock()
+	a.trace_done()
+}
+
+fn (mut app App) trace_done() {
+	app.mu.lock()
+	app.trace_busy = false
+	app.mu.unlock()
+	vgui.wake()
+}
+
+fn (mut app App) set_trace_status(s string) {
+	app.mu.lock()
+	app.trace_status = s
+	app.mu.unlock()
+}
+
+// trace_rsp_status formats a TraceRsp for the Trace Chart: the reporting core, its capture state,
+// and — when frozen — WHY (the overrun trigger vs an explicit stop). A cross-core propagated
+// freeze reports "by trigger" on every core, since each core triggers on the shared freeze.
+fn trace_rsp_status(r telem.TraceRsp) string {
+	st := match r.state {
+		telem.state_idle { 'idle' }
+		telem.state_capturing { 'capturing' }
+		telem.state_full { 'full' }
+		telem.state_frozen { 'frozen' }
+		else { 'state ${r.state}' }
+	}
+
+	cause := match r.cause {
+		telem.freeze_trigger { ' by trigger' }
+		telem.freeze_stop { ' by stop' }
+		else { '' }
+	}
+
+	return 'core ${r.core}: ${st}${cause} · ${r.records_used}/${r.capacity} rec'
+}
+
+// set_trace_state updates the Record toggle + status under the mutex (shared with the worker).
+fn (mut app App) set_trace_state(recording bool, s string) {
+	app.mu.lock()
+	app.trace_recording = recording
+	app.trace_status = s
+	app.mu.unlock()
+}
+
+// mask_popcount counts the cores a dump mask selects (a 0 mask means the single core 0).
+fn mask_popcount(mask u16) int {
+	if mask == 0 {
+		return 1
+	}
+	mut m := mask
+	mut n := 0
+	for m != 0 {
+		n += int(m & 1)
+		m >>= 1
+	}
+	return n
+}
+
+// send_trace_cmd fires one TraceCmd (arm/stop/reset) on the traced channel with the manifest
+// core mask — a fire-and-forget control frame (no ISO-TP), used by the Record/Stop buttons.
+fn (mut app App) send_trace_cmd(opcode u8) bool {
+	iface := app.trace_iface()
+	if iface == '' {
+		app.trace_status = 'no running channel'
+		return false
+	}
+	f := app.manifest.frames.or_defaults() // config-driven cmd id (falls back to the default)
+	return app.tx_on(iface, transport.CanFrame{
+		id:       f.cmd
+		extended: trace_ext(f.cmd) // 29-bit ids must go out extended, else SocketCAN masks them
+		data:     telem.encode_trace_cmd(opcode, telem.filter_all, app.trace_core_mask())
+	})
+}
+
+// trace_ext infers the CAN addressing width of a trace frame id: any id above the 11-bit standard
+// range (0x7FF) must be sent/received as a 29-bit extended id. loom2v writes literal ids to the
+// manifest without an explicit width, so we infer it here (matches how a target opens the bus).
+fn trace_ext(id u32) bool {
+	return id > 0x7ff
+}
+
+// trace_iface picks the channel to command the dump on: the running monitor channel that
+// carries the telemetry manifest (the target being traced), so a multi-channel project sends
+// to the right bus. Falls back to the first running channel when no channel has a manifest.
+fn (app &App) trace_iface() string {
+	for c in app.chans {
+		if c.monitorable() && c.running && c.manifest != '' {
+			return c.iface
+		}
+	}
+	return app.diag_iface()
+}
+
+// trace_core_mask builds a dump mask from the manifest's distinct cores, so "Dump" reads out
+// every core the target declares. A single-core target uses mask 0 (the receiving/default
+// core in the core_mask contract) regardless of the core *label* the manifest gives it — a
+// single-core manifest that names its core "1" must still dump, not send 0x0002 to a core-0
+// target. Only a genuinely multi-core manifest sets per-core bits (bit i = core i).
+fn (app &App) trace_core_mask() u16 {
+	mut seen := map[int]bool{}
+	for h in app.manifest.handlers {
+		if h.core >= 0 && h.core < 16 {
+			seen[h.core] = true
+		}
+	}
+	if seen.len <= 1 {
+		return 0 // no manifest, or a single core: the default receiving core
+	}
+	mut mask := u16(0)
+	for core, _ in seen {
+		mask |= u16(1) << u16(core)
+	}
+	return mask
+}
+
+fn printable(b []u8) string {
+	mut s := ''
+	for c in b {
+		s += if c >= 0x20 && c < 0x7f { c.ascii_str() } else { '.' }
+	}
+	return s
+}
+
+// draw_shell is the target's CAN shell: a scrollback plus one input line pinned at the bottom.
+// Enter sends the line as ONE raw frame on the manifest's shell `in` id; the response streams
+// back as an ISO-TP block on `out` (host flow-controls on `fc`) — the trace-dump wire, reused.
+// Line editing is entirely client-side: backspace/delete/cursor are native ImGui, Up/Down are
+// console_input's history. The target only ever sees complete lines (<= 8 chars, one frame).
+fn draw_shell(mut app App) {
+	vis, op := vgui.begin_closable('Shell', app.show_shell)
+	app.show_shell = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	// the eth RPC shell (manifest `ethmod,shell,method`) needs NO CAN channel:
+	// it dials the board's UDP endpoint directly, Start or not
+	eth := app.eth_method != 0 && app.eth_someip.service != 0
+	if !app.running && !eth {
+		vgui.text_dim('press Start (needs a shell-enabled target on the bus)')
+		vgui.end()
+		return
+	}
+	app.mu.lock()
+	lines := app.shell_lines.clone()
+	busy := app.shell_busy
+	follow := app.shell_follow
+	app.shell_follow = false
+	app.mu.unlock()
+	// the scrollback fills the panel minus one input row at the bottom (negative child height);
+	// the text inside is a read-only InputTextMultiline — real mouse selection + Ctrl+A/Ctrl+C
+	// (the input line below has the same native clipboard handling out of the box).
+	vgui.child_begin('##shellout', -30 * app.ui_scale)
+	vgui.console_text('##shelltext', lines.join('\n'), lines.len)
+	if follow {
+		vgui.scroll_bottom()
+	}
+	vgui.child_end()
+	if eth {
+		vgui.set_next_item_width(130 * app.ui_scale)
+		vgui.input_text('##ethtarget', mut app.eth_target_buf)
+		vgui.same_line()
+		vgui.text_dim('board ip — SOME/IP method 0x${app.eth_method.hex()} :${app.eth_someip.port}')
+	}
+	vgui.set_next_item_width(-40 * app.ui_scale)
+	if vgui.console_input('##shellin', mut app.shell_buf) {
+		line := vgui.buf_str(app.shell_buf).trim_space()
+		app.shell_buf[0] = 0
+		if line == 'clear' {
+			// a terminal's clear is a CLIENT operation — the scrollback is ours, not the target's
+			app.mu.lock()
+			app.shell_lines.clear()
+			app.mu.unlock()
+		} else if line != '' {
+			if busy {
+				app.shell_append('(busy — previous command still running)')
+			} else if eth {
+				// snapshot target AND identity HERE: the worker must not read
+				// the UI's mutable buffer, and rebuild_from_proj (a project
+				// switch mid-command) clears eth_someip/eth_method under it
+				spawn shell_worker_eth(app, line, vgui.buf_str(app.eth_target_buf).trim_space(),
+					app.eth_someip, app.eth_method)
+			} else {
+				spawn shell_worker(app, line)
+			}
+		}
+	}
+	if busy {
+		vgui.same_line()
+		vgui.text_dim('…')
+	}
+	vgui.end()
+}
+
+// shell_append adds one echo/response chunk to the Shell scrollback (thread-safe, capped).
+fn (mut app App) shell_append(s string) {
+	app.mu.lock()
+	for l in s.split_into_lines() {
+		app.shell_lines << l
+	}
+	if app.shell_lines.len > 500 {
+		app.shell_lines = app.shell_lines[app.shell_lines.len - 500..].clone()
+	}
+	app.shell_follow = true
+	app.mu.unlock()
+	vgui.wake()
+}
+
+// shell_worker sends one command line and collects the response. Mirrors diag/trace workers:
+// a single-flight busy flag, a short-lived spawn, a blocking ISO-TP recv, results under mu +
+// wake. The shell ids come from the manifest's `# shell frames` section (or loom2v defaults).
+fn shell_worker(app &App, line string) {
+	mut a := unsafe { app }
+	a.mu.lock()
+	if a.shell_busy {
+		a.mu.unlock()
+		return
+	}
+	a.shell_busy = true
+	a.mu.unlock()
+	defer {
+		a.mu.lock()
+		a.shell_busy = false
+		a.mu.unlock()
+		vgui.wake()
+	}
+	a.shell_append('> ' + line)
+	iface := a.trace_iface()
+	if iface == '' {
+		a.shell_append('(no running channel)')
+		return
+	}
+	if line.len > 8 {
+		a.shell_append('(line too long — the target takes one 8-byte frame per command)')
+		return
+	}
+	sh := a.manifest.shell.or_defaults()
+	// the host is the ISO-TP receiver: flow control out on `fc`, the response in on `out`
+	// (opened before the command is sent, so the socket buffers the target's first frame).
+	mut ch := isotp.open_software(a.bitrate_iface(iface), sh.fc, sh.out, trace_ext(sh.out)) or {
+		a.shell_append('(open ${iface}: ${err})')
+		return
+	}
+	defer {
+		ch.close()
+	}
+	if !a.tx_on(iface, transport.CanFrame{
+		id:       sh.input
+		extended: trace_ext(sh.input)
+		data:     line.bytes()
+	}) {
+		a.shell_append('(send failed on ${iface})')
+		return
+	}
+	rsp := ch.recv(1500) or {
+		a.shell_append('(no response: ${err})')
+		return
+	}
+	a.shell_append(rsp.bytestr().trim_right('\n'))
+}
+
+// ---- Flash (UDS firmware download through the blobly bootloader) ----
+
+fn (mut app App) flash_append(line string) {
+	app.mu.lock()
+	app.flash_log << line
+	app.mu.unlock()
+	vgui.wake()
+}
+
+// GuiFlashSink adapts modules/flash progress to the panel's log + block counter.
+struct GuiFlashSink {
+mut:
+	app &App = unsafe { nil }
+}
+
+fn (mut s GuiFlashSink) note(msg string) {
+	mut a := unsafe { s.app }
+	a.flash_append(msg)
+}
+
+fn (mut s GuiFlashSink) block(done int, total int) {
+	mut a := unsafe { s.app }
+	a.mu.lock()
+	a.flash_done = done
+	a.flash_total = total
+	a.mu.unlock()
+	vgui.wake()
+}
+
+// flash_worker runs the whole download session off-thread (the trace-dump
+// pattern): open a dedicated ISO-TP channel to the BOOT ids and drive
+// flash.program. The target must already be in its boot manager — the
+// panel's "enter boot" button gets it there (the app's shell `boot` command;
+// no reply, the reset is the ack).
+fn flash_worker(app &App, path string, base u32, req_id u32, rsp_id u32, ver u32) {
+	mut a := unsafe { app }
+	a.mu.lock()
+	if a.flash_busy {
+		a.mu.unlock()
+		return
+	}
+	a.flash_busy = true
+	a.flash_done = 0
+	a.flash_total = 0
+	a.mu.unlock()
+	defer {
+		a.mu.lock()
+		a.flash_busy = false
+		a.mu.unlock()
+		vgui.wake()
+	}
+	iface := a.trace_iface()
+	if iface == '' {
+		a.flash_append('(no running channel)')
+		return
+	}
+	image := os.read_bytes(path) or {
+		a.flash_append('(read ${path}: ${err})')
+		return
+	}
+	a.flash_append('> ${os.file_name(path)} -> ${iface} @0x${base.hex()}')
+	mut ch := isotp.open_software(a.bitrate_iface(iface), req_id, rsp_id, trace_ext(rsp_id)) or {
+		a.flash_append('(open ${iface}: ${err})')
+		return
+	}
+	defer {
+		ch.close()
+	}
+	mut sink := GuiFlashSink{
+		app: a
+	}
+	// 0x29 tester seed: $BLOBLY_FLASH_SEED or the dev seed — same as cmd/flash, so
+	// the panel authenticates against a secured boot instead of skipping 0x29.
+	seed := flash.tester_seed(os.getenv('BLOBLY_FLASH_SEED')) or {
+		a.flash_append('(BLOBLY_FLASH_SEED: ${err})')
+		return
+	}
+	flash.program(mut ch, image, flash.Opts{ base: base, sw_version: ver, auth_seed: seed }, mut
+		sink) or {
+		a.flash_append('FAILED: ${err}')
+		a.flash_append('(a cut transfer is safe: the boot refuses the torn image — fix and re-run)')
+		return
+	}
+}
+
+fn draw_flash(mut app App) {
+	vis, op := vgui.begin_closable('Flash', app.show_flash)
+	app.show_flash = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	if !app.running {
+		vgui.text_dim('press Start (needs the blobly bootloader on the bus)')
+		vgui.end()
+		return
+	}
+	app.mu.lock()
+	busy := app.flash_busy
+	log := app.flash_log.clone()
+	done := app.flash_done
+	total := app.flash_total
+	app.mu.unlock()
+	vgui.set_next_item_width(340)
+	vgui.input_text('image', mut app.flash_img_buf)
+	vgui.same_line()
+	if vgui.button('Browse…') && !busy {
+		app.open_browser('flash')
+	}
+	vgui.set_next_item_width(90)
+	vgui.input_text('base', mut app.flash_base_buf)
+	vgui.same_line()
+	vgui.set_next_item_width(50)
+	vgui.input_text('req', mut app.flash_req_buf)
+	vgui.same_line()
+	vgui.set_next_item_width(50)
+	vgui.input_text('rsp', mut app.flash_rsp_buf)
+	vgui.same_line()
+	vgui.set_next_item_width(40)
+	vgui.input_text('ver', mut app.flash_ver_buf)
+	// enter boot: the running APP's shell `boot` command (bootcell + reset).
+	// Silence is the ack — the boot manager answers the UDS ids afterwards.
+	if vgui.button('Enter boot mode') && !busy {
+		sh := app.manifest.shell.or_defaults()
+		iface := app.trace_iface()
+		if iface == '' {
+			app.flash_append('(no running channel)')
+		} else if app.tx_on(iface, transport.CanFrame{
+			id:       sh.input
+			extended: trace_ext(sh.input)
+			data:     'boot'.bytes()
+		})
+		{
+			app.flash_append('> boot (no reply expected — the reset IS the ack)')
+		} else {
+			app.flash_append('(send failed on ${iface})')
+		}
+	}
+	vgui.same_line()
+	if vgui.button_big('Flash', 190, 120, 45, 120, 0) && !busy {
+		path := vgui.buf_str(app.flash_img_buf)
+		base := u32(('0x' + vgui.buf_str(app.flash_base_buf)).u64())
+		req := u32(('0x' + vgui.buf_str(app.flash_req_buf)).u64())
+		rsp := u32(('0x' + vgui.buf_str(app.flash_rsp_buf)).u64())
+		ver := u32(vgui.buf_str(app.flash_ver_buf).u64())
+		if path == '' {
+			app.flash_append('(pick an image first)')
+		} else {
+			spawn flash_worker(app, path, base, req, rsp, ver)
+		}
+	}
+	if busy {
+		vgui.same_line()
+		if total > 0 {
+			vgui.text_dim('transferring ${done}/${total} blocks (${done * 100 / total}%)')
+		} else {
+			vgui.text_dim('working…')
+		}
+	}
+	vgui.separator_text('log (newest last)')
+	vgui.child_begin('##flashlog', 0)
+	for line in log {
+		vgui.text(line)
+	}
+	vgui.child_end()
+	vgui.end()
+}
+
+fn draw_diag(mut app App) {
+	vis, op := vgui.begin_closable('Diagnostics', app.show_diag)
+	app.show_diag = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	if !app.running {
+		vgui.text_dim('press Start (needs a UDS server on the bus)')
+		vgui.end()
+		return
+	}
+	app.mu.lock()
+	busy := app.diag_busy
+	log := app.diag_log.clone()
+	app.mu.unlock()
+	if vgui.button('Session') && !busy {
+		spawn diag_worker(app, 'session', u16(0))
+	}
+	vgui.same_line()
+	if vgui.button('Read VIN') && !busy {
+		spawn diag_worker(app, 'vin', u16(0))
+	}
+	vgui.same_line()
+	if vgui.button('Tester Present') && !busy {
+		spawn diag_worker(app, 'tp', u16(0))
+	}
+	vgui.set_next_item_width(70)
+	vgui.input_text('DID', mut app.diag_did_buf)
+	vgui.same_line()
+	if vgui.button('Read DID') && !busy {
+		did := u16(('0x' + vgui.buf_str(app.diag_did_buf)).u64())
+		spawn diag_worker(app, 'did', did)
+	}
+	if busy {
+		vgui.same_line()
+		vgui.text_dim('busy…')
+	}
+	vgui.separator_text('responses (newest last)')
+	vgui.child_begin('##diaglog', 0)
+	for line in log {
+		vgui.text(line)
+	}
+	vgui.child_end()
+	vgui.end()
+}
+
+// ---- Script (Lua, on a worker thread) ----
+fn (mut app App) script_push(line string) {
+	app.mu.lock()
+	app.script_log << line
+	app.mu.unlock()
+}
+
+fn script_worker(app &App, path string) {
+	mut a := unsafe { app }
+	a.mu.lock()
+	if a.script_busy {
+		a.dbc_readers-- // release the spawn-side reservation: we never read
+		a.mu.unlock()
+		return
+	}
+	a.script_busy = true
+	a.script_log = []
+	a.mu.unlock()
+	// the reader slot was reserved by the SPAWNING thread (TOCTOU: this
+	// worker may not schedule before an edit) — this side only releases it
+	defer {
+		a.mu.lock()
+		a.dbc_readers--
+		a.mu.unlock()
+	}
+	mut chans := []script.ChanInfo{}
+	first_db := if a.dbs.len > 0 { a.dbs[0] } else { candb.Database{} }
+	for ch in a.chans {
+		chans << script.ChanInfo{
+			name:  ch.name
+			iface: a.bitrate_iface(ch.iface) // pcan/kvaser: carry @<bitrate> so scripts open at the right rate
+			db:    first_db
+		}
+	}
+	mut env := script.new_env(chans) or {
+		a.script_push('env init: ${err}')
+		a.script_done()
+		return
+	}
+	env.run_file(path) or { a.script_push('error: ${err}') }
+	a.script_push('${env.passed()}/${env.total()} passed, ${env.failed()} failed')
+	env.close()
+	a.script_done()
+}
+
+fn (mut app App) script_done() {
+	app.mu.lock()
+	app.script_busy = false
+	app.mu.unlock()
+	vgui.wake()
+}
+
+fn draw_script(mut app App) {
+	vis, op := vgui.begin_closable('Script', app.show_script)
+	app.show_script = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	app.mu.lock()
+	busy := app.script_busy
+	log := app.script_log.clone()
+	app.mu.unlock()
+	vgui.set_next_item_width(240)
+	vgui.input_text('.lua', mut app.script_path_buf)
+	vgui.same_line()
+	if vgui.button('Run') && !busy {
+		// reserve the dbs-reader slot HERE, before the spawn: a worker that
+		// hasn't been scheduled yet hasn't registered, and an edit could slip
+		// into that gap (the worker releases it in its defer)
+		app.mu.lock()
+		app.dbc_readers++
+		app.mu.unlock()
+		spawn script_worker(app, vgui.buf_str(app.script_path_buf))
+	}
+	if busy {
+		vgui.same_line()
+		vgui.text_dim('running…')
+	}
+	vgui.separator_text('output')
+	vgui.child_begin('##scriptlog', 0)
+	for line in log {
+		vgui.text(line)
+	}
+	vgui.child_end()
+	vgui.end()
+}
+
+fn draw_tchart(mut app App, trecs []TRec) {
+	vis, op := vgui.begin_closable('Trace Chart', app.show_tchart)
+	app.show_tchart = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	// Capture control: Record arms the target's ring (op_arm), Stop freezes it (op_stop),
+	// Dump reads the frozen buffer out over ISO-TP into the swimlane. Snapshot the worker-
+	// shared state under the mutex (trace_dump_worker writes it from its thread).
+	app.mu.lock()
+	busy := app.trace_busy
+	recording := app.trace_recording
+	status := app.trace_status
+	freeze := app.trace_freeze
+	app.mu.unlock()
+	if busy {
+		vgui.text_dim('dumping…')
+	} else if app.running {
+		if recording {
+			if vgui.button('Stop##trace') {
+				app.send_trace_cmd(telem.op_stop)
+				app.set_trace_state(false, 'recording stopped (frozen)')
+			}
+		} else {
+			if vgui.button('Record##trace') {
+				if app.send_trace_cmd(telem.op_arm) {
+					app.set_trace_state(true, 'recording…')
+				}
+			}
+		}
+		vgui.same_line()
+		if vgui.button('Dump##trace') {
+			spawn trace_dump_worker(app, app.trace_core_mask())
+		}
+		vgui.same_line()
+		vgui.text_dim('Record arms · Stop freezes · Dump reads out (all cores)')
+	} else {
+		vgui.text_dim('Start a channel, then Record / Dump')
+	}
+	if status != '' {
+		vgui.text_dim(status)
+	}
+	if freeze != '' { // the target's own report: capturing / frozen-by-trigger / frozen-by-stop
+		vgui.text_dim('target: ${freeze}')
+	}
+	labels, bars, links, span := build_swimlane(app, trecs)
+	vgui.text('${trecs.len} records · ${labels.len} lanes · idle lane = derived (gap between thread runs)')
+	vgui.text_dim('drag = pan · scroll = zoom · double-click = fit · A/B keys or drag markers (snap to edges; Alt = free) · hover a bar + M = measure it')
+	if bars.len > 0 {
+		// re-seat the A/B markers into view whenever a new dump (different span) loads.
+		if app.cursor_span != f64(span) {
+			app.cursor_span = f64(span)
+			app.cursor_a = f64(span) * 0.25
+			app.cursor_b = f64(span) * 0.75
+		}
+		vgui.swimlane('##swim', labels, bars, links, span, &app.cursor_a, &app.cursor_b)
+		d := if app.cursor_b > app.cursor_a {
+			app.cursor_b - app.cursor_a
+		} else {
+			app.cursor_a - app.cursor_b
+		}
+		vgui.text('A ${app.cursor_a:.0f} us    B ${app.cursor_b:.0f} us    Δ ${d:.0f} us (${d / 1000:.3f} ms)')
+		vgui.same_line()
+		if vgui.button('Reset markers') { // re-seat A/B to 1/4 and 3/4 of the view
+			app.cursor_a = f64(span) * 0.25
+			app.cursor_b = f64(span) * 0.75
+		}
+	} else {
+		vgui.text_dim('press Dump to capture (handler bars + thread/idle lanes appear here)')
+	}
+	vgui.end()
+}
+
+// A real thread interval, for the idle complement below.
+struct Span {
+	s u64
+	e u64
+}
+
+// synthesize_idle appends DERIVED idle bars (THREAD id 0) covering the gaps where no real thread
+// ran — per core, bounded by that core's captured window. The wire carries only real events (the
+// exec-hook targets emit nothing when nothing runs), so idle is the complement, computed here in
+// the viewer where it can be seen and measured. Cores that already stream REAL idle records (the
+// multicore host path) are left alone. Long gaps chunk at the u16 cpu_us ceiling.
+fn synthesize_idle(recs []TRec) []TRec {
+	mut out := recs.clone()
+	mut cores := []int{}
+	for tr in recs {
+		if tr.core !in cores {
+			cores << tr.core
+		}
+	}
+	for core in cores {
+		mut spans := []Span{}
+		mut lo := u64(0)
+		mut hi := u64(0)
+		mut first := true
+		mut has_real_idle := false
+		for tr in recs {
+			if tr.core != core {
+				continue
+			}
+			s0 := tr.abs_us
+			e0 := s0 + u64(tr.rec.cpu_us)
+			if first || s0 < lo {
+				lo = s0
+			}
+			if first || e0 > hi {
+				hi = e0
+			}
+			first = false
+			if tr.rec.kind() == telem.kind_thread {
+				if tr.rec.id() == 0 {
+					has_real_idle = true
+				} else {
+					spans << Span{s0, e0}
+				}
+			}
+		}
+		if first || has_real_idle || spans.len == 0 {
+			continue // nothing captured, or the target already reports idle itself
+		}
+		spans.sort(a.s < b.s)
+		// Gaps below ~20 us are context-switch/kernel/hook overhead between back-to-back slices —
+		// a READY thread is usually waiting through them, so painting them "idle" lies at high
+		// zoom (idle can't run while someone is ready). Only real gaps become idle bars.
+		min_gap := u64(20)
+		mut cur := lo
+		for sp in spans {
+			if sp.s > cur && sp.s - cur >= min_gap {
+				out << idle_recs(core, cur, sp.s - cur)
+			}
+			if sp.e > cur {
+				cur = sp.e
+			}
+		}
+		if hi > cur && hi - cur >= min_gap {
+			out << idle_recs(core, cur, hi - cur)
+		}
+	}
+	return out
+}
+
+// idle_recs emits one derived idle interval as TRec(s), chunked so each fits Record's u16 cpu_us.
+fn idle_recs(core int, start u64, dur u64) []TRec {
+	mut out := []TRec{}
+	mut s0 := start
+	mut left := dur
+	for left > 0 {
+		chunk := if left > 0xFFFF { u64(0xFFFF) } else { left }
+		out << TRec{
+			ch:     0
+			core:   core
+			abs_us: s0
+			rec:    telem.Record{
+				entity_id: u16(telem.kind_thread) << 14 // THREAD id 0 = idle
+				info:      telem.reason_block           // idle can't be "preempted" — no hatch
+				cpu_us:    u16(chunk)
+			}
+		}
+		s0 += chunk
+		left -= chunk
+	}
+	return out
+}
+
+// build_swimlane turns decoded records into swimlane lanes + bars. A dumped stream mixes entity
+// kinds, each an interval [start, start+cpu): FB (handler) runs, THREAD runs, and ISR runs each
+// get a duration bar on their own lane; CONTROL records (block headers / epochs) are framing and
+// were stripped by the dump worker. Lanes are grouped FB → threads → interrupts, by core.
+// handler_core / thread_core resolve the core of a manifest id (-1 = unknown / no manifest).
+fn handler_core(app &App, id u16) int {
+	if h := app.manifest.lookup(id) {
+		return h.core
+	}
+	return -1
+}
+
+// fb_label prefixes the handler name with its core (c0/c1…) so a lane shows which
+// core it belongs to.
+fn fb_label(app &App, id u16) string {
+	c := handler_core(app, id)
+	base := app.manifest.label(id)
+	return if c >= 0 { 'c${c}  ${base}' } else { base }
+}
+
+// split_lane_key splits a '<core>:<id>' thread/isr lane key back into its parts.
+fn split_lane_key(k string) (int, u16) {
+	parts := k.split(':')
+	if parts.len != 2 {
+		return 0, 0
+	}
+	return parts[0].int(), u16(parts[1].int())
+}
+
+// thread_core_label labels a THREAD lane, prefixed with its (block) core. id 0 is idle (no
+// manifest row); a real thread resolves its name from the manifest, else "thread N".
+fn thread_core_label(app &App, core int, id u16) string {
+	base := if id == 0 { 'idle' } else { app.manifest.thread_label(core, id) }
+	if id != 0 {
+		if t := app.manifest.by_tid[telem.tkey(core, id)] {
+			if t.prio >= 0 {
+				return 'c${core}  ${base} p${t.prio}'
+			}
+		}
+	}
+	return 'c${core}  ${base}'
+}
+
+fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, []vgui.Link, f32) {
+	if trecs.len == 0 {
+		return []string{}, []vgui.Bar{}, []vgui.Link{}, f32(1)
+	}
+	// distinct lanes, first-seen. FB handler ids are globally unique; THREAD and ISR lanes are
+	// keyed by (block core, id) — via TRec.core from the block header — so each core's idle (id 0,
+	// shared across cores) and per-core ISR vectors get their own lane rather than merging.
+	// lanes are laid out in a STABLE order (not first-seen-in-capture, which shuffles every
+	// dump): handlers by manifest id, threads by RTOS priority (p0 at the top — the hierarchy
+	// preemption is read against), unknown-prio threads after, by id.
+	mut hids := []u16{}
+	mut sh := map[u16]bool{}
+	mut tkeys := []string{} // '<core>:<id>' for THREAD (incl. idle id 0)
+	mut tseen := map[string]bool{}
+	mut ikeys := []string{} // '<core>:<id>' for ISR
+	mut iseen := map[string]bool{}
+	for tr in trecs {
+		r := tr.rec
+		if r.kind() == telem.kind_fb {
+			if r.id() !in sh {
+				sh[r.id()] = true
+				hids << r.id()
+			}
+		} else if r.kind() == telem.kind_thread {
+			k := '${tr.core}:${r.id()}'
+			if k !in tseen {
+				tseen[k] = true
+				tkeys << k
+			}
+		} else if r.kind() == telem.kind_isr {
+			k := '${tr.core}:${r.id()}'
+			if k !in iseen {
+				iseen[k] = true
+				ikeys << k
+			}
+		}
+	}
+	hids.sort()
+	tkeys.sort_with_compare(fn [app] (a &string, b &string) int {
+		acore, aid := split_lane_key(a)
+		bcore, bid := split_lane_key(b)
+		ap := if t := app.manifest.by_tid[telem.tkey(acore, aid)] { t.prio } else { -1 }
+		bp := if t := app.manifest.by_tid[telem.tkey(bcore, bid)] { t.prio } else { -1 }
+		// known priorities first (ascending: p0 on top), then unknowns by id
+		if ap >= 0 && bp >= 0 {
+			if ap != bp {
+				return if ap < bp { -1 } else { 1 }
+			}
+			return if aid < bid {
+				-1
+			} else {
+				if aid > bid { 1 } else { 0 }
+			}
+		}
+		if ap >= 0 {
+			return -1
+		}
+		if bp >= 0 {
+			return 1
+		}
+		return if aid < bid {
+			-1
+		} else {
+			if aid > bid { 1 } else { 0 }
+		}
+	})
+	ikeys.sort()
+	// lay lanes out grouped by core: FB (handler) lanes first (by core), then a separator + thread
+	// lanes (by core; real threads before idle within a core), then a separator + ISR lanes. So
+	// each core's fb / thread / interrupt traces are visually grouped and split.
+	mut lane_of := map[string]int{}
+	mut labels := []string{}
+	for core in 0 .. 16 {
+		for id in hids {
+			if handler_core(app, id) == core && 'h${id}' !in lane_of {
+				lane_of['h${id}'] = labels.len
+				labels << fb_label(app, id)
+			}
+		}
+	}
+	for id in hids { // unknown-core handlers (no manifest) last
+		if 'h${id}' !in lane_of {
+			lane_of['h${id}'] = labels.len
+			labels << fb_label(app, id)
+		}
+	}
+	if tkeys.len > 0 {
+		labels << '──  threads  ──' // separator lane (no bars)
+		for pass in 0 .. 2 { // pass 0 = real threads, pass 1 = idle (id 0) — idle at each core's foot
+			for core in 0 .. 16 {
+				for k in tkeys {
+					kc, kid := split_lane_key(k)
+					idle := kid == 0
+					if kc == core && ((pass == 0 && !idle) || (pass == 1 && idle))
+						&& 't${k}' !in lane_of {
+						lane_of['t${k}'] = labels.len
+						labels << thread_core_label(app, kc, kid)
+					}
+				}
+			}
+		}
+		for k in tkeys { // cores outside 0..16 (garbage/unexpected header) — never drop a lane
+			if 't${k}' !in lane_of {
+				kc, kid := split_lane_key(k)
+				lane_of['t${k}'] = labels.len
+				labels << thread_core_label(app, kc, kid)
+			}
+		}
+	}
+	if ikeys.len > 0 {
+		labels << '──  interrupts  ──' // separator lane (no bars)
+		for core in 0 .. 16 {
+			for k in ikeys {
+				kc, kid := split_lane_key(k)
+				if kc == core && 'i${k}' !in lane_of {
+					lane_of['i${k}'] = labels.len
+					labels << 'c${kc}  isr ${kid}'
+				}
+			}
+		}
+		for k in ikeys { // cores outside 0..16 — same catch-all as threads
+			if 'i${k}' !in lane_of {
+				kc, kid := split_lane_key(k)
+				lane_of['i${k}'] = labels.len
+				labels << 'c${kc}  isr ${kid}'
+			}
+		}
+	}
+	// time span over every interval record (abs_us folds epoch re-anchors; every kind has width).
+	// Work in u64 and subtract tmin BEFORE the f32 cast: absolute µs can exceed f32's 24-bit
+	// precision (~16.7 s) on a long capture, but the relative offsets are small and f32-exact.
+	mut tmin := u64(0xffff_ffff_ffff_ffff)
+	mut tmax := u64(0)
+	for tr in trecs {
+		s := tr.abs_us
+		e := s + u64(tr.rec.cpu_us)
+		if s < tmin {
+			tmin = s
+		}
+		if e > tmax {
+			tmax = e
+		}
+	}
+	// TIME-BASE RECONSTRUCTION. A thread record's cpu_us is ISR-SUBTRACTED duration, but bar
+	// positions are wall time — drawn as [start, start+cpu] a slice ends BEFORE reality and
+	// overlaps ISR bars. Re-add the overlapping ISR durations to get the wall extent, then chop
+	// the slice around the ISR spans: what remains is where the thread's code actually ran.
+	// FB bars clip to these chunks (an FB record's duration IS wall — the Loom hook brackets by
+	// clock), so neither a thread nor its FB can ever overlap an ISR again.
+	mut isr_spans := map[int][]Span{}
+	for tr in trecs {
+		if tr.rec.kind() == telem.kind_isr {
+			isr_spans[tr.core] << Span{tr.abs_us, tr.abs_us + u64(tr.rec.cpu_us)}
+		}
+	}
+	for c, _ in isr_spans {
+		isr_spans[c].sort(a.s < b.s)
+	}
+	mut tsl_key := []string{} // '<core>:<tid>' per thread slice
+	mut tsl_core := []int{}
+	mut tsl_id := []u16{}
+	mut tsl_s := []u64{} // wall start
+	mut tsl_e := []u64{} // wall END (ISR-extended)
+	mut tsl_pre := []bool{} // ended by preemption
+	mut tsl_chunks := [][]Span{} // run chunks: [s..e] minus ISR spans
+	for tr in trecs {
+		if tr.rec.kind() != telem.kind_thread || tr.rec.id() == 0 {
+			continue
+		}
+		s0 := tr.abs_us
+		mut e0 := s0 + u64(tr.rec.cpu_us)
+		spans := isr_spans[tr.core] or { []Span{} }
+		for isp in spans {
+			if isp.s >= s0 && isp.s < e0 {
+				e0 += isp.e - isp.s // an ISR inside the slice: the wall end moves right
+			}
+		}
+		mut chunks := []Span{}
+		mut cur := s0
+		for isp in spans {
+			if isp.e <= cur || isp.s >= e0 {
+				continue
+			}
+			if isp.s > cur {
+				chunks << Span{cur, isp.s}
+			}
+			if isp.e > cur {
+				cur = isp.e
+			}
+		}
+		if e0 > cur {
+			chunks << Span{cur, e0}
+		}
+		tsl_key << '${tr.core}:${tr.rec.id()}'
+		tsl_core << tr.core
+		tsl_id << tr.rec.id()
+		tsl_s << s0
+		tsl_e << e0
+		tsl_pre << (tr.rec.reason() == telem.reason_preempt)
+		tsl_chunks << chunks
+	}
+	mut tslices := map[string][]Span{}
+	for i, k in tsl_key {
+		for ch in tsl_chunks[i] {
+			tslices[k] << ch
+		}
+	}
+	mut tid_of := map[string]u16{}
+	for t in app.manifest.threads {
+		tid_of[t.name] = t.id
+	}
+	if tmin > tmax { // no interval records — nothing to draw
+		return labels, []vgui.Bar{}, []vgui.Link{}, f32(1)
+	}
+	span := if tmax > tmin { f32(tmax - tmin) } else { f32(1) }
+	mut bars := []vgui.Bar{cap: trecs.len}
+	for tr in trecs {
+		r := tr.rec
+		mut key := ''
+		if r.kind() == telem.kind_fb {
+			key = 'h${r.id()}'
+		} else if r.kind() == telem.kind_thread {
+			if r.id() != 0 {
+				continue // real thread slices are drawn from the reconstructed chunks below
+			}
+			key = 't${tr.core}:${r.id()}'
+		} else if r.kind() == telem.kind_isr {
+			key = 'i${tr.core}:${r.id()}'
+		} else {
+			continue // CONTROL framing — no bar
+		}
+		li := lane_of[key]
+		// colour by (block) core so cores are visually distinct.
+		c := lane_palette[tr.core % lane_palette.len]
+		// FB warn = overran/saturated (a deadline concept — belongs to the handler). The preempt
+		// hatch is THREAD-ONLY: preemption happens to threads, never to functions — the FB lane
+		// shows execution chunks and the thread lane below carries the scheduling story.
+		warn := if r.kind() == telem.kind_fb
+			&& (r.flags() & (telem.flag_overran | telem.flag_saturated)) != 0 {
+			1
+		} else {
+			0
+		}
+		preempted := if r.kind() == telem.kind_thread && r.reason() == telem.reason_preempt {
+			1
+		} else {
+			0
+		}
+		if r.kind() == telem.kind_fb {
+			s0 := tr.abs_us
+			e0 := s0 + u64(r.cpu_us)
+			mut hrow_thread := ''
+			if h := app.manifest.by_id[r.id()] {
+				hrow_thread = h.thread
+			}
+			tid := tid_of[hrow_thread] or { u16(0) }
+			if tid != 0 {
+				spans := tslices['${tr.core}:${tid}'] or { []Span{} }
+				mut chunks := []Span{}
+				for sp in spans {
+					cs := if sp.s > s0 { sp.s } else { s0 }
+					ce := if sp.e < e0 { sp.e } else { e0 }
+					if ce > cs {
+						chunks << Span{cs, ce}
+					}
+				}
+				if chunks.len > 0 {
+					for ck in chunks {
+						bars << vgui.Bar{
+							t0:        f32(ck.s - tmin)
+							dur:       f32(ck.e - ck.s)
+							lane:      li
+							color:     vgui.rgba(c[0], c[1], c[2], 235)
+							warn:      warn
+							preempted: 0 // functions don't get preempted — threads do (see the thread lane)
+						}
+					}
+					continue
+				}
+			}
+		}
+		bars << vgui.Bar{
+			t0:        f32(tr.abs_us - tmin) // relative µs (f32-exact even for long captures)
+			dur:       f32(r.cpu_us)
+			lane:      li
+			color:     vgui.rgba(c[0], c[1], c[2], 235)
+			warn:      warn
+			preempted: preempted
+		}
+	}
+	// thread execution chunks (ISR-chopped, wall-consistent), the torn edge on the LAST chunk of
+	// a preempted slice, and a thin dim READY bar from the cut to the thread's next slice — the
+	// whole preempted wait is visible, not just the cut instant.
+	for i, k in tsl_key {
+		li := lane_of['t${k}']
+		c := lane_palette[tsl_core[i] % lane_palette.len]
+		nch := tsl_chunks[i].len
+		for j, ch in tsl_chunks[i] {
+			bars << vgui.Bar{
+				t0:        f32(ch.s - tmin)
+				dur:       f32(ch.e - ch.s)
+				lane:      li
+				color:     vgui.rgba(c[0], c[1], c[2], 235)
+				preempted: if tsl_pre[i] && j == nch - 1 { 1 } else { 0 }
+			}
+		}
+		if tsl_pre[i] {
+			// ready-but-waiting: until this thread's next slice starts
+			mut nxt := u64(0)
+			for j2, k2 in tsl_key {
+				if k2 == k && tsl_s[j2] > tsl_e[i] && (nxt == 0 || tsl_s[j2] < nxt) {
+					nxt = tsl_s[j2]
+				}
+			}
+			if nxt > tsl_e[i] {
+				bars << vgui.Bar{
+					t0:    f32(tsl_e[i] - tmin)
+					dur:   f32(nxt - tsl_e[i])
+					lane:  li
+					color: vgui.rgba(c[0], c[1], c[2], 90)
+					style: 1
+				}
+			}
+		}
+	}
+	// preemption cut-links: victim -> the thread whose slice starts at the (wall) cut.
+	mut links := []vgui.Link{}
+	for i, k in tsl_key {
+		if !tsl_pre[i] {
+			continue
+		}
+		cut := tsl_e[i]
+		mut best_dt := u64(200)
+		mut best_key := ''
+		for j2, k2 in tsl_key {
+			if k2 == k || tsl_core[j2] != tsl_core[i] {
+				continue
+			}
+			dt := if tsl_s[j2] >= cut { tsl_s[j2] - cut } else { cut - tsl_s[j2] }
+			if dt < best_dt {
+				best_dt = dt
+				best_key = k2
+			}
+		}
+		if best_key != '' {
+			links << vgui.Link{
+				x:         f32(cut - tmin)
+				lane_from: lane_of['t${k}']
+				lane_to:   lane_of['t${best_key}']
+			}
+		}
+	}
+	return labels, bars, links, span
+}
+
+// ---- DBC Editor (docs/dbc_editor.md P1) -------------------------------------
+// Edits the IN-MEMORY app.dbs — the same databases the Trace panel decodes
+// against, so an edit re-decodes live traffic instantly. Save renders the
+// canonical form (candb.to_dbc, fixpoint-tested) back to the loaded path;
+// canonical order keeps the file git-diff-reviewable. All model mutations
+// take app.mu briefly: decode runs on worker threads.
+// NOTE: dbs_by_iface holds value copies (the generator picker) — it refreshes
+// on save/reload, not per keystroke; the Trace union (app.dbs) is live.
+
+struct DbcEd {
+mut:
+	db         int = -1 // dbs index
+	msg        int = -1
+	sig        int = -1
+	dirty      map[string]bool // unsaved edits keyed by dbc PATH (survives rebuilds/index shifts)
+	loaded_key string          // which db:msg:sig the string buffers hold
+	mname_buf  []u8
+	sender_buf []u8
+	sname_buf  []u8
+	unit_buf   []u8
+	desc_buf   []u8
+}
+
+// dbc_ed_color: a deterministic per-signal palette for the bit grid.
+fn dbc_ed_color(i int) (int, int, int) {
+	return match i % 8 {
+		0 { 86, 156, 214 }
+		1 { 220, 170, 80 }
+		2 { 120, 190, 120 }
+		3 { 200, 120, 190 }
+		4 { 100, 200, 200 }
+		5 { 230, 130, 110 }
+		6 { 150, 150, 220 }
+		else { 180, 200, 100 }
+	}
+}
+
+// dbc_ident_ok: message/signal/sender names are UNQUOTED DBC tokens — a space
+// or punctuation would emit a record our own parser rejects.
+fn dbc_ident_ok(sv string) bool {
+	if sv == '' {
+		return false
+	}
+	for i, c in sv {
+		alpha := (c >= `a` && c <= `z`) || (c >= `A` && c <= `Z`) || c == `_`
+		if i == 0 && !alpha {
+			return false
+		}
+		if !(alpha || (c >= `0` && c <= `9`)) {
+			return false
+		}
+	}
+	return true
+}
+
+// dbc_signal_bits lists the global LSB-0 bit positions a signal occupies —
+// the same walk candb.raw_value takes (Intel ascending, Motorola sawtooth).
+fn dbc_signal_bits(s candb.Signal) []int {
+	mut out := []int{cap: s.length}
+	if s.byte_order == .little_endian {
+		for i in 0 .. s.length {
+			out << s.start_bit + i
+		}
+	} else {
+		mut pos := s.start_bit
+		for _ in 0 .. s.length {
+			out << pos
+			if pos % 8 == 0 {
+				pos = pos + 15 // drop to the next byte's bit 7
+			} else {
+				pos--
+			}
+		}
+	}
+	return out
+}
+
+// dbc_ed_load_bufs refreshes the string edit buffers when the selection moves.
+fn (mut app App) dbc_ed_load_bufs() {
+	key := '${app.dbc_ed.db}:${app.dbc_ed.msg}:${app.dbc_ed.sig}'
+	if app.dbc_ed.loaded_key == key {
+		return
+	}
+	app.dbc_ed.loaded_key = key
+	di, mi, si := app.dbc_ed.db, app.dbc_ed.msg, app.dbc_ed.sig
+	if di < 0 || di >= app.dbs.len || mi < 0 || mi >= app.dbs[di].messages.len {
+		return
+	}
+	m := app.dbs[di].messages[mi]
+	// buffers sized past the current content: mkbuf's cap includes the NUL, so
+	// a fixed cap would silently truncate long fields on first edit
+	app.dbc_ed.mname_buf = mkbuf(m.name, m.name.len + 96)
+	app.dbc_ed.sender_buf = mkbuf(m.sender, m.sender.len + 96)
+	if si >= 0 && si < m.signals.len {
+		sg := m.signals[si]
+		app.dbc_ed.sname_buf = mkbuf(sg.name, sg.name.len + 96)
+		app.dbc_ed.unit_buf = mkbuf(sg.unit, sg.unit.len + 64)
+		app.dbc_ed.desc_buf = mkbuf(sg.desc, sg.desc.len + 256)
+	}
+}
+
+// dbc_refresh_if_all_clean re-reads sims/dbs_by_iface/generator caches from
+// disk once NO database holds unsaved edits (the rebuild re-reads every
+// file). Preserves the editor's selected database across the index shuffle.
+fn (mut app App) dbc_refresh_if_all_clean() {
+	for _, d in app.dbc_ed.dirty {
+		if d {
+			app.notify('sim/generator databases refresh after ALL DBCs are saved')
+			return
+		}
+	}
+	sel_path := if app.dbc_ed.db >= 0 && app.dbc_ed.db < app.dbs_paths.len {
+		app.dbs_paths[app.dbc_ed.db]
+	} else {
+		''
+	}
+	app.rebuild_preserving_senders()
+	if sel_path != '' {
+		app.dbc_ed.db = app.dbs_paths.index(sel_path)
+	}
+}
+
+// dbc_refresh_trace_names re-resolves the cached name on captured trace rows
+// after a message rename / id / kind edit — they hold the name captured at
+// arrival and would otherwise display the stale identity.
+fn (mut app App) dbc_refresh_trace_names() {
+	app.mu.lock()
+	for i, r in app.trace {
+		nn := app.lookup_name(r.id, r.ext)
+		if nn != r.name {
+			app.trace[i] = TraceRow{
+				...r
+				name: nn
+			}
+		}
+	}
+	app.mu.unlock()
+}
+
+fn draw_dbc_editor(mut app App) {
+	vis, op := vgui.begin_closable('DBC Editor', app.show_dbc)
+	app.show_dbc = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	if app.dbs.len == 0 {
+		vgui.text_dim('no DBCs loaded — attach one to a channel (Config panel)')
+		vgui.end()
+		return
+	}
+	// READ-ONLY while a measurement runs: rx/sim/generator workers iterate
+	// app.dbs lock-free, and the save path rebuilds runtime state — both are
+	// only safe stopped. (Editing a stopped capture still re-decodes it live:
+	// the trace decodes signal values at draw time.)
+	app.mu.lock()
+	live_readers := app.dbc_readers
+	app.mu.unlock()
+	ro := app.running || live_readers > 0
+	if ro {
+		vgui.text_colored(230, 170, 70,
+			'read-only while measuring — Stop to edit (workers drain briefly after Stop)')
+	}
+	// a project swap replaces dbs_paths: dirty entries for paths no longer
+	// attached are unreachable ghosts — drop them (the swap discarded those
+	// databases; keeping the flags would wedge Start forever)
+	for pth, _ in app.dbc_ed.dirty.clone() {
+		if app.dbs_paths.index(pth) < 0 {
+			app.dbc_ed.dirty.delete(pth)
+			app.notify('unsaved DBC edits for detached ${os.file_name(pth)} were discarded')
+		}
+	}
+	sc := app.ui_scale
+
+	// database picker (base names; the path is the save target)
+	mut names := []string{cap: app.dbs.len}
+	for i, pth in app.dbs_paths {
+		mark := if app.dbc_ed.dirty[pth] { '` ' } else { '' }
+		// dir prefix + index keep same-named files distinguishable
+		names << '${mark}${os.file_name(os.dir(pth))}/${os.file_name(pth)} (${app.dbs[i].messages.len} msgs) ##${i}'
+	}
+	if app.dbc_ed.db < 0 && app.dbs.len > 0 {
+		app.dbc_ed.db = 0
+	}
+	ndb := vgui.combo('database', names, app.dbc_ed.db)
+	if ndb != app.dbc_ed.db {
+		app.dbc_ed.db = ndb
+		app.dbc_ed.msg = -1
+		app.dbc_ed.sig = -1
+	}
+	di := app.dbc_ed.db
+	if di < 0 || di >= app.dbs.len {
+		vgui.end()
+		return
+	}
+
+	// save / revert row
+	if !ro && app.dbc_ed.dirty[app.dbs_paths[di]] {
+		vgui.text_colored(230, 170, 70, '` modified')
+		vgui.same_line()
+	}
+	if !ro && vgui.small_button('Save') {
+		app.mu.lock()
+		// BU_ must declare every transmitter (sim.validate_node) — union the
+		// senders in at save time (not per keystroke)
+		for m in app.dbs[di].messages {
+			if m.sender != '' && m.sender !in app.dbs[di].nodes {
+				app.dbs[di].nodes << m.sender
+			}
+		}
+		text := app.dbs[di].to_dbc()
+		app.mu.unlock()
+		// ATOMIC: write beside the target then rename — a failed/interrupted
+		// write must never leave a truncated DBC where the original was
+		tmp := app.dbs_paths[di] + '.tmp~'
+		mut save_ok := true
+		os.write_file(tmp, text) or {
+			app.notify('dbc save failed (edits kept in memory): ${err}')
+			save_ok = false
+		}
+		if save_ok {
+			os.mv(tmp, app.dbs_paths[di]) or {
+				os.rm(tmp) or {}
+				app.notify('dbc save failed (edits kept in memory): ${err}')
+				save_ok = false
+			}
+		}
+		if save_ok {
+			app.dbc_ed.dirty.delete(app.dbs_paths[di])
+			app.dbc_ed.loaded_key = ''
+			app.notify('saved ${app.dbs_paths[di]}')
+			// sims/generators load their databases independently — refresh
+			// once everything is clean (safe: the editor only runs stopped)
+			app.dbc_refresh_if_all_clean()
+		}
+	}
+	vgui.same_line()
+	if !ro && vgui.small_button('Revert') {
+		if db := candb.load_dbc_file(app.dbs_paths[di]) {
+			app.mu.lock()
+			app.dbs[di] = db
+			app.mu.unlock()
+			app.dbc_ed.dirty.delete(app.dbs_paths[di])
+			app.dbc_ed.msg = -1
+			app.dbc_ed.sig = -1
+			app.dbc_ed.loaded_key = ''
+			app.notify('reverted ${app.dbs_paths[di]}')
+			app.dbc_refresh_trace_names()
+			// watches retargeted to now-discarded names would plot flat —
+			// prune the ones that no longer resolve
+			mut kept := []Watch{cap: app.watch.len}
+			for w in app.watch {
+				if m := app.find_message(w.id, w.ext) {
+					mut have := false
+					for sg in m.signals {
+						if sg.name == w.sig {
+							have = true
+						}
+					}
+					if have {
+						kept << w
+					}
+				}
+			}
+			if kept.len != app.watch.len {
+				app.notify('${app.watch.len - kept.len} plotted signal(s) removed: not in the reverted DBC')
+			}
+			app.watch = kept
+			app.dbc_refresh_if_all_clean()
+		} else {
+			app.notify('dbc revert failed: ${err}')
+		}
+	}
+
+	// message list
+	vgui.separator_text('messages')
+	vgui.child_begin('##dbcmsgs', 110 * sc)
+	for i, m in app.dbs[di].messages {
+		idtxt := if m.ext { '0x${m.id.hex()}x' } else { '0x${m.id.hex()}' }
+		if vgui.selectable('${idtxt}  ${m.name} (dlc ${m.dlc})##dm${i}', app.dbc_ed.msg == i) {
+			app.dbc_ed.msg = i
+			app.dbc_ed.sig = -1
+		}
+	}
+	vgui.child_end()
+	if !ro && vgui.small_button('+ message') {
+		app.mu.lock()
+		// next free STANDARD id (the new frame is ext:false — extended ids
+		// must not push it past the 11-bit range)
+		mut nid := u32(0x100)
+		mut id_free := false
+		for {
+			mut taken := false
+			for m in app.dbs[di].messages {
+				if !m.ext && m.id == nid {
+					taken = true
+				}
+			}
+			if !taken {
+				id_free = true
+				break
+			}
+			if nid >= 0x7FF {
+				break
+			}
+			nid++
+		}
+		if !id_free {
+			app.mu.unlock() // BEFORE notify(): it takes app.mu itself
+			app.notify('no free standard id in 0x100..0x7FF — delete a message or use extended ids')
+			vgui.end()
+			return
+		}
+		mut mname := 'NewMessage'
+		mut mn := 1
+		for {
+			mut taken := false
+			for odb in app.dbs {
+				for m in odb.messages {
+					if m.name == mname {
+						taken = true
+					}
+				}
+			}
+			if !taken {
+				break
+			}
+			mn++
+			mname = 'NewMessage${mn}'
+		}
+		app.dbs[di].messages << candb.Message{
+			name: mname
+			id:   nid
+			dlc:  8
+		}
+		app.mu.unlock()
+		app.dbc_ed.msg = app.dbs[di].messages.len - 1
+		app.dbc_ed.sig = -1
+		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		app.dbc_ed.loaded_key = ''
+	}
+	mi := app.dbc_ed.msg
+	if mi < 0 || mi >= app.dbs[di].messages.len {
+		vgui.end()
+		return
+	}
+	vgui.same_line()
+	if !ro && vgui.small_button('- delete message') {
+		app.mu.lock()
+		app.dbs[di].messages.delete(mi)
+		app.mu.unlock()
+		app.dbc_ed.msg = -1
+		app.dbc_ed.sig = -1
+		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		app.dbc_ed.loaded_key = ''
+		app.dbc_refresh_trace_names() // captured rows may show the deleted name
+		vgui.end()
+		return
+	}
+
+	// message form (all writes under app.mu: workers decode concurrently)
+	app.dbc_ed_load_bufs()
+	vgui.set_next_item_width(160 * sc)
+	if !ro && vgui.input_text('name##dbcm', mut app.dbc_ed.mname_buf) {
+		nv := vgui.buf_str(app.dbc_ed.mname_buf)
+		// generators resolve messages BY NAME across every co-attached DBC
+		// (first match wins) — a duplicate makes one frame unreachable, so
+		// check ALL loaded databases, not just this file
+		mut mname_taken := false
+		for odi, odb in app.dbs {
+			for oi, om in odb.messages {
+				if !(odi == di && oi == mi) && om.name == nv {
+					mname_taken = true
+				}
+			}
+		}
+		if dbc_ident_ok(nv) && !mname_taken {
+			app.mu.lock()
+			app.dbs[di].messages[mi].name = nv
+			app.mu.unlock()
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			app.dbc_refresh_trace_names()
+		}
+	}
+	if !dbc_ident_ok(vgui.buf_str(app.dbc_ed.mname_buf)) {
+		vgui.same_line()
+		vgui.text_colored(205, 60, 60, 'invalid name (A-Za-z0-9_, not applied)')
+	}
+	mut idv := int(app.dbs[di].messages[mi].id)
+	vgui.set_next_item_width(110 * sc)
+	if !ro && vgui.input_int('id (dec)', &idv) {
+		// clamp to the selected frame format: std 11-bit, ext 29-bit — a
+		// negative or oversized entry must never wrap through the u32 cast
+		id_max := if app.dbs[di].messages[mi].ext { 0x1FFF_FFFF } else { 0x7FF }
+		cl := if idv < 0 {
+			0
+		} else if idv > id_max {
+			id_max
+		} else {
+			idv
+		}
+		// (id, ext) identifies the frame everywhere (lookup, aux records) —
+		// a duplicate pair is silent decode corruption, so it is not applied
+		mut id_taken := false
+		for oi, om in app.dbs[di].messages {
+			if oi != mi && om.id == u32(cl) && om.ext == app.dbs[di].messages[mi].ext {
+				id_taken = true
+			}
+		}
+		if !id_taken {
+			old_id := app.dbs[di].messages[mi].id
+			wext0 := app.dbs[di].messages[mi].ext
+			app.mu.lock()
+			app.dbs[di].messages[mi].id = u32(cl)
+			app.mu.unlock()
+			mut id_shadowed := false
+			for odi in 0 .. di {
+				for om in app.dbs[odi].messages {
+					if om.id == old_id && om.ext == wext0 {
+						id_shadowed = true
+					}
+				}
+			}
+			for wi, w in app.watch {
+				if id_shadowed {
+					break
+				}
+				if w.id == old_id && w.ext == wext0 {
+					app.watch[wi] = Watch{
+						id:  u32(cl)
+						ext: w.ext
+						sig: w.sig
+					}
+				}
+			}
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			app.dbc_refresh_trace_names()
+		} else {
+			app.notify('id 0x${u32(cl).hex()} already used by another frame of the same kind — not applied')
+		}
+	}
+	vgui.same_line()
+	vgui.text_dim('= 0x${app.dbs[di].messages[mi].id.hex()}')
+	vgui.same_line()
+	next := vgui.checkbox('ext##dbcm', app.dbs[di].messages[mi].ext)
+	if !ro && next != app.dbs[di].messages[mi].ext {
+		// the kind flip changes the frame IDENTITY — recheck (id, ext)
+		// uniqueness and the 11-bit cap before applying
+		mut nid := app.dbs[di].messages[mi].id
+		if !next && nid > 0x7FF {
+			nid = 0x7FF
+		}
+		mut clash := false
+		for oi, om in app.dbs[di].messages {
+			if oi != mi && om.id == nid && om.ext == next {
+				clash = true
+			}
+		}
+		if clash {
+			app.notify('cannot flip ext: 0x${nid.hex()} already exists as that frame kind')
+		} else {
+			old_id2 := app.dbs[di].messages[mi].id
+			old_ext2 := app.dbs[di].messages[mi].ext
+			app.mu.lock()
+			app.dbs[di].messages[mi].ext = next
+			app.dbs[di].messages[mi].id = nid
+			app.mu.unlock()
+			mut kind_shadowed := false
+			for odi in 0 .. di {
+				for om in app.dbs[odi].messages {
+					if om.id == old_id2 && om.ext == old_ext2 {
+						kind_shadowed = true
+					}
+				}
+			}
+			for wi, w in app.watch {
+				if kind_shadowed {
+					break
+				}
+				if w.id == old_id2 && w.ext == old_ext2 {
+					app.watch[wi] = Watch{
+						id:  nid
+						ext: next
+						sig: w.sig
+					}
+				}
+			}
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			app.dbc_refresh_trace_names()
+		}
+	}
+	mut dlcv := app.dbs[di].messages[mi].dlc
+	vgui.set_next_item_width(80 * sc)
+	if !ro && vgui.input_int('dlc', &dlcv) {
+		app.mu.lock()
+		app.dbs[di].messages[mi].dlc = if dlcv < 0 {
+			0 // a zero-length CAN frame is legal
+		} else if dlcv > 64 {
+			64
+		} else {
+			dlcv
+		}
+		app.mu.unlock()
+		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+	}
+	vgui.same_line()
+	mut cycv := app.dbs[di].messages[mi].cycle_ms
+	vgui.set_next_item_width(80 * sc)
+	if !ro && vgui.input_int('cycle ms', &cycv) {
+		app.mu.lock()
+		app.dbs[di].messages[mi].cycle_ms = if cycv < 0 { 0 } else { cycv }
+		app.mu.unlock()
+		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+	}
+	vgui.set_next_item_width(120 * sc)
+	if !ro && vgui.input_text('sender', mut app.dbc_ed.sender_buf) {
+		sv := vgui.buf_str(app.dbc_ed.sender_buf)
+		if sv == '' || dbc_ident_ok(sv) { // empty = no transmitter
+			app.mu.lock()
+			app.dbs[di].messages[mi].sender = sv
+			app.mu.unlock()
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			// BU_ union happens at SAVE — inserting here would append every
+			// keystroke prefix ('E','EC','ECU'...) as a permanent node
+		}
+	}
+
+	// bit-matrix grid: rows = bytes, cells bit7..bit0 (the CANdb++ view).
+	// Colored per owning signal; overlap = red; click selects the signal.
+	vgui.separator_text('layout')
+	msg := app.dbs[di].messages[mi]
+	if msg.dlc < 0 || msg.dlc > 64 {
+		vgui.text_colored(205, 60, 60,
+			'dlc ${msg.dlc} out of range — fix it above to see the layout')
+		vgui.end()
+		return
+	}
+	nbits := msg.dlc * 8
+	mut owners := [][]int{len: nbits}
+	for six, sg in msg.signals {
+		for g in dbc_signal_bits(sg) {
+			if g >= 0 && g < nbits {
+				owners[g] << six
+			}
+		}
+	}
+	// multiplexed branches with DIFFERENT selectors are mutually exclusive —
+	// sharing bits is the point of multiplexing, not an overlap
+	mut conflict := []bool{len: nbits}
+	for g in 0 .. nbits {
+		for x in 0 .. owners[g].len {
+			for y in x + 1 .. owners[g].len {
+				a := msg.signals[owners[g][x]]
+				bsig := msg.signals[owners[g][y]]
+				coexist := !(a.is_multiplexed && bsig.is_multiplexed
+					&& a.multiplexor_value != bsig.multiplexor_value)
+				if coexist {
+					conflict[g] = true
+				}
+			}
+		}
+	}
+	cell := 21 * sc
+	for byte_i in 0 .. msg.dlc {
+		vgui.text_dim('B${byte_i}')
+		for bit_i := 7; bit_i >= 0; bit_i-- {
+			vgui.same_line()
+			g := byte_i * 8 + bit_i
+			own := owners[g]
+			mut r, mut gg, mut b := 58, 58, 62
+			mut lbl := ' '
+			if own.len == 1 {
+				r, gg, b = dbc_ed_color(own[0])
+				if own[0] == app.dbc_ed.sig {
+					r, gg, b = r + 40, gg + 40, b + 40 // highlight the selection
+				}
+				lbl = '${own[0] % 10}'
+			} else if own.len > 1 {
+				if conflict[g] {
+					r, gg, b = 205, 60, 60
+					lbl = '!'
+				} else {
+					// mux branches sharing the bit: show the first branch dim
+					r, gg, b = dbc_ed_color(own[0])
+					r, gg, b = r / 2 + 20, gg / 2 + 20, b / 2 + 20
+					lbl = 'm'
+				}
+			}
+			if vgui.button_big('${lbl}##g${g}', r, gg, b, cell, cell) {
+				if own.len > 0 {
+					app.dbc_ed.sig = own[0]
+				}
+			}
+			if own.len > 0 {
+				mut tt := 'bit ${g}'
+				for o in own {
+					tt += '\n${msg.signals[o].name}'
+				}
+				vgui.set_item_tooltip(tt)
+			}
+		}
+	}
+	// validation lines: overlaps + out-of-frame
+	mut over := 0
+	for g in 0 .. nbits {
+		if conflict[g] {
+			over++
+		}
+	}
+	if over > 0 {
+		vgui.text_colored(205, 60, 60, '${over} bit(s) claimed by more than one signal')
+	}
+	for sg in msg.signals {
+		for g in dbc_signal_bits(sg) {
+			if g >= nbits || g < 0 {
+				vgui.text_colored(205, 60, 60, '${sg.name} exceeds the ${msg.dlc}-byte frame')
+				break
+			}
+		}
+	}
+
+	// signal list + form
+	vgui.separator_text('signals')
+	for i, sg in msg.signals {
+		or_tag := if sg.byte_order == .little_endian { 'LE' } else { 'BE' }
+		sgn := if sg.is_signed { 'i' } else { 'u' }
+		cr, cg, cb := dbc_ed_color(i)
+		vgui.text_colored(u8(cr), u8(cg), u8(cb), '#')
+		vgui.same_line()
+		if vgui.selectable('${sg.name}  ${sg.start_bit}|${sg.length}@${or_tag} ${sgn}${sg.length} x${sg.factor}+${sg.offset} ${sg.unit}##ds${i}',
+			app.dbc_ed.sig == i)
+		{
+			app.dbc_ed.sig = i
+		}
+	}
+	if !ro && vgui.small_button('+ signal') {
+		app.mu.lock()
+		// place after the highest occupied bit of ANY byte order (the
+		// Motorola sawtooth occupies bits its start_bit alone doesn't show)
+		mut top := 0
+		for sg in msg.signals {
+			for g in dbc_signal_bits(sg) {
+				if g + 1 > top {
+					top = g + 1
+				}
+			}
+		}
+		mut nn := 1
+		mut nname := 'NewSignal'
+		for {
+			mut taken := false
+			for sg in msg.signals {
+				if sg.name == nname {
+					taken = true
+				}
+			}
+			if !taken {
+				break
+			}
+			nn++
+			nname = 'NewSignal${nn}'
+		}
+		app.dbs[di].messages[mi].signals << candb.Signal{
+			name:      nname
+			start_bit: top
+			length:    8
+		}
+		app.mu.unlock()
+		app.dbc_ed.sig = app.dbs[di].messages[mi].signals.len - 1
+		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		app.dbc_ed.loaded_key = '' // indices reused after add/delete: refresh buffers
+	}
+	si := app.dbc_ed.sig
+	if si >= 0 && si < app.dbs[di].messages[mi].signals.len {
+		vgui.same_line()
+		if !ro && vgui.small_button('- delete signal') {
+			if app.dbs[di].messages[mi].signals[si].is_multiplexor {
+				mut deps := 0
+				for oi, osg in app.dbs[di].messages[mi].signals {
+					if oi != si && osg.is_multiplexed {
+						deps++
+					}
+				}
+				if deps > 0 {
+					app.notify('cannot delete the multiplexor switch: ${deps} multiplexed signal(s) depend on it')
+					vgui.end()
+					return
+				}
+			}
+			app.mu.lock()
+			app.dbs[di].messages[mi].signals.delete(si)
+			app.mu.unlock()
+			app.dbc_ed.sig = -1
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			app.dbc_ed.loaded_key = '' // deleted index may be reused: refresh buffers
+			vgui.end()
+			return
+		}
+		app.dbc_ed_load_bufs()
+		vgui.set_next_item_width(160 * sc)
+		if !ro && vgui.input_text('name##dbcs', mut app.dbc_ed.sname_buf) {
+			nv := vgui.buf_str(app.dbc_ed.sname_buf)
+			// VAL_/CM_ records identify signals BY NAME within the message —
+			// a duplicate name scrambles them on reload
+			mut name_taken := false
+			for oi, osg in app.dbs[di].messages[mi].signals {
+				if oi != si && osg.name == nv {
+					name_taken = true
+				}
+			}
+			if dbc_ident_ok(nv) && !name_taken {
+				old_sig := app.dbs[di].messages[mi].signals[si].name
+				app.mu.lock()
+				app.dbs[di].messages[mi].signals[si].name = nv
+				app.mu.unlock()
+				app.dbc_ed.dirty[app.dbs_paths[di]] = true
+				// Graphics watches key on (id, ext, signal name) — retarget
+				// them or the plot silently goes flat under the old name.
+				// Only when THIS database resolves the pair: an earlier
+				// loaded DBC defining the same frame shadows this one
+				wid := app.dbs[di].messages[mi].id
+				wext := app.dbs[di].messages[mi].ext
+				mut shadowed := false
+				for odi in 0 .. di {
+					for om in app.dbs[odi].messages {
+						if om.id == wid && om.ext == wext {
+							shadowed = true
+						}
+					}
+				}
+				for wi, w in app.watch {
+					if shadowed {
+						break
+					}
+					if w.id == wid && w.ext == wext && w.sig == old_sig {
+						app.watch[wi] = Watch{
+							id:  w.id
+							ext: w.ext
+							sig: nv
+						}
+					}
+				}
+			}
+		}
+		if !dbc_ident_ok(vgui.buf_str(app.dbc_ed.sname_buf)) {
+			vgui.same_line()
+			vgui.text_colored(205, 60, 60, 'invalid name (A-Za-z0-9_, not applied)')
+		}
+		mut sbv := app.dbs[di].messages[mi].signals[si].start_bit
+		vgui.set_next_item_width(80 * sc)
+		if !ro && vgui.input_int('start', &sbv) {
+			app.mu.lock()
+			app.dbs[di].messages[mi].signals[si].start_bit = if sbv < 0 { 0 } else { sbv }
+			app.mu.unlock()
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		}
+		vgui.same_line()
+		mut lnv := app.dbs[di].messages[mi].signals[si].length
+		vgui.set_next_item_width(80 * sc)
+		if !ro && vgui.input_int('len', &lnv) {
+			app.mu.lock()
+			nl := if lnv < 1 {
+				1
+			} else if lnv > 64 {
+				64
+			} else {
+				lnv
+			}
+			// shrinking the width would mask distinct value-table keys onto
+			// one another at save time — refuse while entries would collide
+			nmask := if nl >= 64 { ~u64(0) } else { (u64(1) << nl) - 1 }
+			mut val_clash := false
+			for k, _ in app.dbs[di].messages[mi].signals[si].values {
+				if k & ~nmask != 0 {
+					val_clash = true // the key itself no longer fits: saving would remap it
+				}
+			}
+			if !val_clash {
+				app.dbs[di].messages[mi].signals[si].length = nl
+				app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			}
+			app.mu.unlock()
+			if val_clash {
+				// AFTER unlock: notify() takes app.mu itself
+				app.notify('width ${nl} cannot hold the existing value-table keys — remove them first')
+			}
+		}
+		cur_o := if app.dbs[di].messages[mi].signals[si].byte_order == .little_endian {
+			0
+		} else {
+			1
+		}
+		no := vgui.combo('order', ['Intel (LE)', 'Motorola (BE)'], cur_o)
+		if !ro && no != cur_o {
+			app.mu.lock()
+			app.dbs[di].messages[mi].signals[si].byte_order = if no == 0 {
+				candb.ByteOrder.little_endian
+			} else {
+				candb.ByteOrder.big_endian
+			}
+			app.mu.unlock()
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		}
+		vgui.same_line()
+		nsg := vgui.checkbox('signed', app.dbs[di].messages[mi].signals[si].is_signed)
+		if !ro && nsg != app.dbs[di].messages[mi].signals[si].is_signed {
+			app.mu.lock()
+			app.dbs[di].messages[mi].signals[si].is_signed = nsg
+			app.mu.unlock()
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		}
+		mut fv := app.dbs[di].messages[mi].signals[si].factor
+		vgui.set_next_item_width(100 * sc)
+		if !ro && vgui.input_double('factor', &fv) {
+			if fv != 0 { // raw_from_phys divides by factor: zero would NaN/inf
+				app.mu.lock()
+				app.dbs[di].messages[mi].signals[si].factor = fv
+				app.mu.unlock()
+				app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			}
+		}
+		vgui.same_line()
+		mut ov := app.dbs[di].messages[mi].signals[si].offset
+		vgui.set_next_item_width(100 * sc)
+		if !ro && vgui.input_double('offset', &ov) {
+			app.mu.lock()
+			app.dbs[di].messages[mi].signals[si].offset = ov
+			app.mu.unlock()
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		}
+		mut mnv := app.dbs[di].messages[mi].signals[si].minimum
+		vgui.set_next_item_width(100 * sc)
+		if !ro && vgui.input_double('min', &mnv) {
+			app.mu.lock()
+			app.dbs[di].messages[mi].signals[si].minimum = mnv
+			app.mu.unlock()
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		}
+		vgui.same_line()
+		mut mxv := app.dbs[di].messages[mi].signals[si].maximum
+		vgui.set_next_item_width(100 * sc)
+		if !ro && vgui.input_double('max', &mxv) {
+			app.mu.lock()
+			app.dbs[di].messages[mi].signals[si].maximum = mxv
+			app.mu.unlock()
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		}
+		vgui.set_next_item_width(80 * sc)
+		if !ro && vgui.input_text('unit', mut app.dbc_ed.unit_buf) {
+			app.mu.lock()
+			app.dbs[di].messages[mi].signals[si].unit = vgui.buf_str(app.dbc_ed.unit_buf)
+			app.mu.unlock()
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		}
+		vgui.set_next_item_width(240 * sc)
+		if !ro && vgui.input_text('desc', mut app.dbc_ed.desc_buf) {
+			app.mu.lock()
+			app.dbs[di].messages[mi].signals[si].desc = vgui.buf_str(app.dbc_ed.desc_buf)
+			app.mu.unlock()
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		}
+	}
+	vgui.end()
+}
+
+// ---- System viewer (docs/dbc_editor.md roadmap: viewer, NOT an editor) -----
+// Renders a blobly_emb system.toml — the things text is bad at seeing: the
+// per-bus communication matrix (P producer / C consumer / W undeclared
+// writer), node identities, and the id allocation with collisions. Read-only
+// by design: system/ecu TOML is hand-written and comment-rich, and its
+// validation brain (ecucheck/syscheck) lives in blobly_emb.
+
+fn draw_system(mut app App) {
+	vis, op := vgui.begin_closable('System', app.show_sys)
+	app.show_sys = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	sc := app.ui_scale
+	if app.sys_path_buf.len == 0 {
+		app.sys_path_buf = mkbuf('', 512)
+	}
+	vgui.set_next_item_width(340 * sc)
+	vgui.input_text('system.toml', mut app.sys_path_buf)
+	vgui.same_line()
+	if vgui.small_button('Load##sys') {
+		pth := vgui.buf_str(app.sys_path_buf)
+		if sy := sysview.load(pth) {
+			app.sys = sy
+			app.sys_loaded = true
+			app.notify('system: ${sy.nodes.len} node(s), ${sy.buses.len} bus(es), ${sy.signals.len} cross-node signal(s)')
+		} else {
+			app.notify('system load failed: ${err}')
+		}
+	}
+	if !app.sys_loaded {
+		vgui.text_dim('point at a blobly_emb system.toml (e.g. examples/system_bench/system.toml)')
+		vgui.end()
+		return
+	}
+
+	// nodes + identities
+	// load-time problems (unreadable DBCs etc.) must stay visible
+	for e in app.sys.errs {
+		vgui.text_colored(205, 60, 60, e)
+	}
+	vgui.text_dim('showing: ${app.sys.path}')
+	vgui.separator_text('nodes')
+	if vgui.table_begin('##sysnodes', 6) {
+		vgui.table_setup_col('node', 90 * sc)
+		vgui.table_setup_col('ecu', 200 * sc)
+		vgui.table_setup_col('buses', 90 * sc)
+		vgui.table_setup_col('nm', 50 * sc)
+		vgui.table_setup_col('diag', 110 * sc)
+		vgui.table_setup_col('trace', 40 * sc)
+		vgui.table_headers()
+		for n in app.sys.nodes {
+			vgui.table_row()
+			vgui.table_cell(n.name)
+			vgui.table_cell(if n.ecu_err != '' { '${n.ecu} (UNREADABLE)' } else { n.ecu })
+			vgui.table_cell(n.buses.join(','))
+			vgui.table_cell(if n.nm != 0 { '0x${n.nm.hex()}' } else { '-' })
+			vgui.table_cell(if n.diag_req != 0 {
+				'0x${n.diag_req.hex()}/0x${n.diag_rsp.hex()}'
+			} else {
+				'-'
+			})
+			vgui.table_cell('${n.trace}')
+		}
+		vgui.table_end()
+	}
+
+	for b in app.sys.buses {
+		vgui.separator_text('bus ${b.name} (${b.iface}${if b.fd { ', FD' } else { '' }}${if b.bitrate > 0 {
+			', ${b.bitrate / 1000} kbit'
+		} else {
+			''
+		}})')
+
+		// the communication matrix: signals x nodes, node columns chunked
+		// well under Dear ImGui's hard 64-column table limit
+		chunk := 32
+		mut n0 := 0
+		// a nodeless (partially authored) system still shows its signals:
+		// the first pass always renders (with zero node columns), and the
+		// explicit break below ends the zero-node case
+		for {
+			n1 := if n0 + chunk < app.sys.nodes.len { n0 + chunk } else { app.sys.nodes.len }
+			if vgui.table_begin('##sysmx_${b.name}_${n0}', 3 + (n1 - n0)) {
+				vgui.table_setup_col('signal', 140 * sc)
+				vgui.table_setup_col('frame', 130 * sc)
+				vgui.table_setup_col('cycle', 50 * sc)
+				for ni in n0 .. n1 {
+					vgui.table_setup_col(app.sys.nodes[ni].name, 70 * sc)
+				}
+				vgui.table_headers()
+				for sg in app.sys.signals {
+					if sg.bus != b.name {
+						continue
+					}
+					vgui.table_row()
+					vgui.table_cell(sg.name)
+					vgui.table_cell(sg.frame)
+					vgui.table_cell(if sg.cycle_ms > 0 { '${sg.cycle_ms}ms' } else { '-' })
+					for ni in n0 .. n1 {
+						cell := app.sys.matrix_cell(sg, app.sys.nodes[ni])
+						vgui.table_next_col()
+						if cell == 'W' {
+							vgui.text_colored(205, 60, 60, 'W?') // undeclared writer
+						} else if cell == 'P' {
+							vgui.text_colored(120, 190, 120, 'P')
+						} else if cell == 'C' {
+							vgui.text_colored(86, 156, 214, 'C')
+						} else {
+							vgui.text_dim('')
+						}
+					}
+				}
+				vgui.table_end()
+			}
+			if n1 >= app.sys.nodes.len {
+				break
+			}
+			n0 = n1
+		}
+
+		// id allocation with collisions (kind-aware: an ext twin of a
+		// colliding std id is not itself flagged)
+		ncols := app.sys.collision_count(b.name)
+		if ncols > 0 {
+			vgui.text_colored(205, 60, 60, '${ncols} id collision(s) on ${b.name}')
+		}
+		if vgui.table_begin('##sysid_${b.name}', 3) {
+			vgui.table_setup_col('id', 90 * sc)
+			vgui.table_setup_col('kind', 80 * sc)
+			vgui.table_setup_col('owner', 160 * sc)
+			vgui.table_headers()
+			for a in app.sys.id_allocation(b.name) {
+				vgui.table_row()
+				idtxt := if a.ext { '0x${a.id.hex()}x' } else { '0x${a.id.hex()}' }
+				if app.sys.is_collision(b.name, a.id, a.ext) {
+					vgui.table_next_col()
+					vgui.text_colored(205, 60, 60, '${idtxt} !')
+				} else {
+					vgui.table_cell(idtxt)
+				}
+				vgui.table_cell(a.kind)
+				vgui.table_cell(a.owner)
+			}
+			vgui.table_end()
+		}
+	}
+	vgui.end()
+}
+
+// shell_worker_eth sends one command line as a SOME/IP REQUEST and renders
+// the correlated response — the client half of the emb P3 RPC design
+// (modules/someip RpcClient: one in flight, deadline, drain). The local
+// socket binds the manifest peer\'s PORT: the board\'s static source filter
+// accepts only its configured peer endpoint, and the WSL->LAN NAT path
+// preserves a bound source port (the emb#158 bench recipe). Single-flight
+// via the same shell_busy latch as the CAN worker.
+fn shell_worker_eth(app &App, line string, target string, sip telem.SomeipIdent, method u16) {
+	mut a := unsafe { app }
+	a.mu.lock()
+	if a.shell_busy {
+		a.mu.unlock()
+		return
+	}
+	a.shell_busy = true
+	a.mu.unlock()
+	defer {
+		a.mu.lock()
+		a.shell_busy = false
+		a.mu.unlock()
+		vgui.wake()
+	}
+	a.shell_append('> ' + line)
+	if target == '' {
+		a.shell_append('(enter the board ip first)')
+		return
+	}
+	peer_port := sip.peer.all_after_last(':').int()
+	bind_port := if peer_port > 0 { peer_port } else { 30491 }
+	mut sock := vnet.listen_udp(':${bind_port}') or {
+		a.shell_append('(bind :${bind_port}: ${err} — the board only answers its configured peer endpoint)')
+		return
+	}
+	defer {
+		sock.close() or {}
+	}
+	sock.set_read_timeout(100 * time.millisecond)
+	addrs := vnet.resolve_addrs('${target}:${sip.port}', .ip, .udp) or {
+		a.shell_append('(resolve ${target}: ${err})')
+		return
+	}
+	a.mu.lock()
+	last_session := a.eth_shell_session
+	a.mu.unlock()
+	mut cli := someip.RpcClient{
+		service:    sip.service
+		method:     method
+		iface:      sip.version
+		client_id:  0x0E01
+		timeout_us: 1_500_000
+		session:    last_session
+	}
+	sw := time.new_stopwatch()
+	req := cli.send(line.bytes(), 0) or {
+		a.shell_append('(client busy)')
+		return
+	}
+	a.mu.lock()
+	a.eth_shell_session = cli.session // burn it NOW: even a timeout never reuses it
+	a.mu.unlock()
+	sock.write_to(addrs[0], req) or {
+		a.shell_append('(send: ${err})')
+		return
+	}
+	mut buf := []u8{len: 65536} // one FULL UDP datagram: a truncated read would
+	// fail the header-length check and read as a timeout, not as truncation
+	want_src := addrs[0].str()
+	for cli.state == .waiting {
+		n, raddr := sock.read(mut buf) or {
+			cli.poll(u64(sw.elapsed().microseconds()))
+			continue
+		}
+		// only the dialed board may answer — on a shared bench another node
+		// could otherwise forge matching correlation fields
+		if raddr.str() == want_src {
+			cli.on_datagram(buf[..n])
+		}
+		cli.poll(u64(sw.elapsed().microseconds()))
+	}
+	if cli.state == .done {
+		a.shell_append(cli.result.payload.bytestr())
+		return
+	}
+	if cli.result.timed_out {
+		a.shell_append('(no response — board off, wrong ip, or the peer port is not ours after NAT)')
+	} else {
+		match cli.result.rc {
+			0x03 { a.shell_append('(error: unknown method on the target)') }
+			0x20 { a.shell_append("(denied — this build's mutate gate is closed)") }
+			else { a.shell_append('(error rc 0x${cli.result.rc.hex()})') }
+		}
+	}
+}

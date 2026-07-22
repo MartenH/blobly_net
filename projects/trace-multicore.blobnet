@@ -9,7 +9,7 @@
 # only pause RECORDING; the cores keep running. trace.dbc names the command + status frames.
 #
 # Run:  (in blobly_emb/examples/trace_multicore:  make vcan && make run)
-#       BLOBLY_PROJECT=projects/trace-multicore.blobnet ./scripts/run_vgui.sh
+#       BLOBLY_PROJECT=projects/trace-multicore.blobnet ./scripts/run_gui.sh
 project:
   name: trace-multicore
   version: 2

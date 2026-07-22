@@ -2,10 +2,10 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Run VGUI",
+      "label": "Run GUI",
       "type": "process",
       "command": "${workspaceFolder}/../msys64-ct/usr/bin/bash.exe",
-      "args": ["--login", "-c", "./scripts/run_vgui.sh"],
+      "args": ["--login", "-c", "./scripts/run_gui.sh"],
       "options": {
         "cwd": "${workspaceFolder}",
         "env": { "CHERE_INVOKING": "1", "MSYSTEM": "MSYS" }
@@ -15,10 +15,10 @@
       }
     },
     {
-      "label": "Build VGUI (no run)",
+      "label": "Build GUI (no run)",
       "type": "process",
       "command": "${workspaceFolder}/../msys64-ct/usr/bin/bash.exe",
-      "args": ["--login", "-c", "./scripts/run_vgui.sh"],
+      "args": ["--login", "-c", "./scripts/run_gui.sh"],
       "options": {
         "cwd": "${workspaceFolder}",
         "env": { "CHERE_INVOKING": "1", "MSYSTEM": "MSYS", "RUN": "0" }
@@ -26,10 +26,10 @@
       "group": "build"
     },
     {
-      "label": "Debug VGUI (gdb build)",
+      "label": "Debug GUI (gdb build)",
       "type": "process",
       "command": "${workspaceFolder}/../msys64-ct/usr/bin/bash.exe",
-      "args": ["--login", "-c", "./scripts/run_vgui.sh"],
+      "args": ["--login", "-c", "./scripts/run_gui.sh"],
       "options": {
         "cwd": "${workspaceFolder}",
         "env": { "CHERE_INVOKING": "1", "MSYSTEM": "MSYS", "DBG": "1", "RUN": "0" }
@@ -37,10 +37,10 @@
       "group": "build"
     },
     {
-      "label": "Rebuild VGUI deps (imgui/implot/glfw/freetype)",
+      "label": "Rebuild GUI deps (imgui/implot/glfw/freetype)",
       "type": "process",
       "command": "${workspaceFolder}/../msys64-ct/usr/bin/bash.exe",
-      "args": ["--login", "-c", "./scripts/run_vgui.sh"],
+      "args": ["--login", "-c", "./scripts/run_gui.sh"],
       "options": {
         "cwd": "${workspaceFolder}",
         "env": { "CHERE_INVOKING": "1", "MSYSTEM": "MSYS", "DEPS": "1", "RUN": "0" }
