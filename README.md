@@ -10,6 +10,13 @@ a drop-in.
 > what's coming is in [ROADMAP.md](ROADMAP.md); the archived development log is in
 > [docs/history.md](docs/history.md).
 
+![Blobly Net — live trace, decoded signals and real-time plots](docs/screenshots/overview.png)
+
+*The `sim-demo` project running with no hardware: two in-process CAN networks with simulated
+ECUs, the grouped trace (decoded via DBC), and live multi-axis plots of `EngineSpeed`,
+`VehicleSpeed` and `ThrottlePos`. The left activity bar groups blobly_emb-specific panels
+(`Cht`/`Fsh`/`Shl`/`Sys`) separately at the bottom.*
+
 ## What it does
 
 **Buses**
@@ -69,6 +76,12 @@ The GUI is a native **Dear ImGui + ImPlot** application (`cmd/blobly_vgui`).
 scripts/setup_env.sh           # installs toolchain + deps (V, C/C++, GLFW, FreeType)
 scripts/run_vgui.sh            # build + run the GUI
 python3 sut/can_sut.py vcan0   # a virtual ECU on vcan0, in another terminal
+```
+
+To reproduce the screenshot above — no hardware, no drivers:
+
+```sh
+BLOBLY_PROJECT=projects/sim-demo.blobnet BLOBLY_AUTOSTART=1 scripts/run_vgui.sh
 ```
 
 Needs the V compiler, a C/C++ toolchain, and GLFW + FreeType (on Debian/Ubuntu:

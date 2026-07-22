@@ -1329,7 +1329,9 @@ fn draw_activity_bar(mut app App) {
 	vgui.child_wh('##activity', 60 * app.ui_scale, 0)
 	vgui.push_frame_padding(4 * app.ui_scale, 6 * app.ui_scale)
 	// Grouped into logical sections separated by a rule, alphabetical within each group:
-	// setup · trace · filtered-trace (its own) · signal views · send · diagnostics · tools.
+	// setup · trace · filtered-trace (its own) · signal views · send · diagnostics · tools ·
+	// blobly_emb target (LAST — those panels only work against a blobly_emb SUT, which is not
+	// the common case; keeping them together stops them cluttering the generic CAN workflow).
 	// --- setup ---
 	if vgui.toggle_button('Bus', app.show_buses, -1) {
 		app.show_buses = !app.show_buses
@@ -1345,9 +1347,6 @@ fn draw_activity_bar(mut app App) {
 	}
 	vgui.separator()
 	// --- trace ---
-	if vgui.toggle_button('Cht', app.show_tchart, -1) {
-		app.show_tchart = !app.show_tchart
-	}
 	if vgui.toggle_button('Trc', app.show_trace, -1) {
 		app.show_trace = !app.show_trace
 	}
@@ -1378,16 +1377,6 @@ fn draw_activity_bar(mut app App) {
 		app.show_dbc = !app.show_dbc
 	}
 	vgui.set_item_tooltip('DBC Editor')
-	if vgui.toggle_button('Sys', app.show_sys, -1) {
-		app.show_sys = !app.show_sys
-	}
-	vgui.set_item_tooltip('System viewer')
-	if vgui.toggle_button('Shl', app.show_shell, -1) {
-		app.show_shell = !app.show_shell
-	}
-	if vgui.toggle_button('Fsh', app.show_flash, -1) {
-		app.show_flash = !app.show_flash
-	}
 	if vgui.toggle_button('DoI', app.show_doip, -1) {
 		app.show_doip = !app.show_doip
 	}
@@ -1405,6 +1394,26 @@ fn draw_activity_bar(mut app App) {
 	if vgui.toggle_button('Sta', app.show_stats, -1) {
 		app.show_stats = !app.show_stats
 	}
+	vgui.separator()
+	// --- blobly_emb target --- these speak blobly_emb's own protocols (trace records +
+	// manifest, the shell wire, the bootloader), so they are useless against an arbitrary
+	// CAN bus. Grouped last, with tooltips saying so.
+	if vgui.toggle_button('Cht', app.show_tchart, -1) {
+		app.show_tchart = !app.show_tchart
+	}
+	vgui.set_item_tooltip('Trace Chart — blobly_emb handler/thread swimlanes')
+	if vgui.toggle_button('Fsh', app.show_flash, -1) {
+		app.show_flash = !app.show_flash
+	}
+	vgui.set_item_tooltip('Flash — UDS download to a blobly_emb bootloader')
+	if vgui.toggle_button('Shl', app.show_shell, -1) {
+		app.show_shell = !app.show_shell
+	}
+	vgui.set_item_tooltip('Shell — console to a blobly_emb target over CAN')
+	if vgui.toggle_button('Sys', app.show_sys, -1) {
+		app.show_sys = !app.show_sys
+	}
+	vgui.set_item_tooltip('System viewer — blobly_emb system.toml / ecu.toml')
 	vgui.pop_style_var(1) // frame padding
 	vgui.child_end()
 	vgui.pop_style_var(1) // window padding
@@ -1459,20 +1468,23 @@ fn draw_menubar(mut app App, rx u64) {
 			app.show_busconfig = vgui.menu_item_check('Bus Config', app.show_busconfig)
 			app.show_trace = vgui.menu_item_check('Trace', app.show_trace)
 			app.show_ftrace = vgui.menu_item_check('Trace (filter)', app.show_ftrace)
-			app.show_tchart = vgui.menu_item_check('Trace Chart', app.show_tchart)
 			app.show_signals = vgui.menu_item_check('Signals', app.show_signals)
 			app.show_graphics = vgui.menu_item_check('Graphics', app.show_graphics)
 			app.show_diag = vgui.menu_item_check('Diagnostics', app.show_diag)
-			app.show_shell = vgui.menu_item_check('Shell', app.show_shell)
 			app.show_dbc = vgui.menu_item_check('DBC Editor', app.show_dbc)
-			app.show_sys = vgui.menu_item_check('System', app.show_sys)
-			app.show_flash = vgui.menu_item_check('Flash', app.show_flash)
 			app.show_doip = vgui.menu_item_check('DoIP Discovery', app.show_doip)
 			app.show_network = vgui.menu_item_check('Network', app.show_network)
 			app.show_gen = vgui.menu_item_check('Generators', app.show_gen)
 			app.show_script = vgui.menu_item_check('Script', app.show_script)
 			app.show_stats = vgui.menu_item_check('Statistics', app.show_stats)
 			app.show_log = vgui.menu_item_check('Log', app.show_log)
+			// panels that only work against a blobly_emb SUT — grouped so the generic
+			// CAN workflow above stays uncluttered
+			vgui.separator_text('blobly_emb target')
+			app.show_tchart = vgui.menu_item_check('Trace Chart', app.show_tchart)
+			app.show_flash = vgui.menu_item_check('Flash', app.show_flash)
+			app.show_shell = vgui.menu_item_check('Shell', app.show_shell)
+			app.show_sys = vgui.menu_item_check('System', app.show_sys)
 			vgui.menu_end()
 		}
 		if vgui.menu_begin('Settings') {
