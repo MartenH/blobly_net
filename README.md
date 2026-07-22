@@ -19,8 +19,7 @@ GUI code, so neither mode is a second-class path.
 
 *The `sim-demo` project running with no hardware: two in-process CAN networks with simulated
 ECUs, the grouped trace (decoded via DBC), and live multi-axis plots of `EngineSpeed`,
-`VehicleSpeed` and `ThrottlePos`. The left activity bar groups blobly_emb-specific panels
-(`Cht`/`Fsh`/`Shl`/`Sys`) separately at the bottom.*
+`VehicleSpeed` and `ThrottlePos`.*
 
 ## What it does
 
@@ -64,8 +63,8 @@ save/load cycle never drifts a file (git diffs show real changes only).
 
 **Simulation** — simulated ECUs that send and answer frames, so tests need no hardware.
 
-**Logs & replay** — `candump -l` files, native **ASAM MDF4** (`.mf4`) reading with no
-Python/asammdf dependency, and **replay** of a recording at its original cadence.
+**Logs & replay** — `candump -l` files, native **ASAM MDF4** (`.mf4`) reading, and **replay**
+of a recording at its original cadence.
 
 **Observability** — a **trace/telemetry** view of a running SUT (handler and thread
 swimlanes, CPU load), and a read-only **System** panel showing the modelled network.

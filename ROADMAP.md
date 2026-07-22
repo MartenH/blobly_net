@@ -32,7 +32,7 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
 
 **Simulation, logs & replay**
 - ✅ Simulated ECUs (`sim`) — tests need no hardware
-- ✅ `candump -l` logs · ✅ native **ASAM MDF4** (`.mf4`) reader (no Python/asammdf)
+- ✅ `candump -l` logs · ✅ native **ASAM MDF4** (`.mf4`) reader
 - ✅ **Replay** at the recording's original cadence
 
 **Observability**
@@ -43,7 +43,7 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
 - ✅ **Shell panel** — interactive console to the target over CAN
 
 **Platform**
-- ✅ **Dear ImGui + ImPlot** GUI (migrated from vlang/gui, 2026-07-06) · ✅ Windows build + CI
+- ✅ **Dear ImGui + ImPlot** GUI · ✅ Windows build + CI
 - ✅ **Lua scripting** — test framework, headless runner for CI, Script panel in the GUI
 - ✅ `.blobnet` project files
 
