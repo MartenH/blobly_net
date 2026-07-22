@@ -4489,6 +4489,10 @@ fn trace_dump_worker(app &App, core_mask u16) {
 	mut got := 0
 	mut last_seen := 0 // cores whose final block has arrived
 	mut recv_err := ''
+	// Cross-core correlation (emb REQ-TRACE-011), keyed by core: how tight the measured clock
+	// offset was. A core absent here is drawn on its OWN clock — the status has to say so,
+	// because an uncorrelated lane looks exactly like a correlated one.
+	mut skew_bounds := map[int]u16{}
 	for _ in 0 .. 256 {
 		if last_seen >= ncores {
 			break
@@ -4522,26 +4526,22 @@ fn trace_dump_worker(app &App, core_mask u16) {
 			break // no more blocks (or the transfer kept failing — recv_err says why)
 		}
 		got++
-		mut base := u32(0) // current epoch origin; each block re-anchors from its own epoch record
-		mut cur_core := 0 // the block's core, from its leading header (idle/threads carry no core)
-		for off := 0; off + 8 <= block.len; off += 8 {
-			r := telem.decode_record(block[off..off + 8])
-			if r.is_block_header() {
-				cur_core = int(r.header_core()) // tag this block's records with their core
-				if !r.header_more() {
-					last_seen++ // this core's final block
-				}
-				continue // framing, not a timeline record
-			}
-			if r.is_epoch() {
-				base = r.epoch_base() // subsequent start_us are relative to this base
-				continue
-			}
+		// Decoding lives in the engine (telem.decode_block), not here: the epoch re-anchor and the
+		// cross-core clock offset decide what a dump MEANS, so the Trace Chart and the headless
+		// cmd/trace_dump must not each interpret them. It is also where those rules are tested.
+		b := telem.decode_block(block)
+		if !b.more {
+			last_seen++ // this core's final block
+		}
+		if b.skew_known {
+			skew_bounds[b.core] = b.skew_bound_us
+		}
+		for br in b.records {
 			recs << TRec{
 				ch:     0
-				core:   cur_core
-				abs_us: u64(base) + u64(r.start_us) // u64: absolute µs across epochs never wraps
-				rec:    r
+				core:   b.core
+				abs_us: br.abs_us
+				rec:    br.rec
 			}
 		}
 	}
@@ -4549,10 +4549,26 @@ fn trace_dump_worker(app &App, core_mask u16) {
 	a.trecs = synthesize_idle(recs)
 	a.rev++
 	a.trace_recording = false // the dump froze the buffer; Record re-arms for a new window
-	a.trace_status = if last_seen < ncores && recv_err != '' {
-		'dumped ${got} block(s), ${last_seen}/${ncores} cores complete · ${recs.len} records · last error: ${recv_err}'
+	// Say plainly whether the cores share a timeline. With >1 core and no measured offset the
+	// lanes are each on their own clock, and reading across them is meaningless — never let that
+	// pass silently, it renders identically to a correlated dump.
+	sync_note := if ncores < 2 {
+		''
+	} else if skew_bounds.len == 0 {
+		' · ⚠ cores NOT time-correlated (each on its own clock)'
 	} else {
-		'dumped ${got} block(s) from ${ncores} core(s) · ${recs.len} records'
+		mut worst := u16(0)
+		for _, b in skew_bounds {
+			if b > worst {
+				worst = b
+			}
+		}
+		' · ${skew_bounds.len}/${ncores - 1} satellite core(s) time-corrected (±${worst} µs)'
+	}
+	a.trace_status = if last_seen < ncores && recv_err != '' {
+		'dumped ${got} block(s), ${last_seen}/${ncores} cores complete · ${recs.len} records${sync_note} · last error: ${recv_err}'
+	} else {
+		'dumped ${got} block(s) from ${ncores} core(s) · ${recs.len} records${sync_note}'
 	}
 	a.mu.unlock()
 	a.trace_done()

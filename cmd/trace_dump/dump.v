@@ -66,32 +66,37 @@ fn main() {
 			eprintln('block ${bi}: ${err}')
 			break
 		}
-		if block.len >= 8 {
-			hd := telem.decode_record(block[0..8])
-			if hd.is_block_header() && !hd.header_more() {
-				last_seen++
-			}
+		// Same decoder the GUI Trace Chart uses, so this really is the non-GUI twin: timestamps
+		// below are on the DUMPING core's timeline, with the epoch base applied and the
+		// cross-core offset removed. Printing raw per-core start_us here would show a different
+		// picture from the chart for the same dump.
+		b := telem.decode_block(block)
+		if !b.more {
+			last_seen++
 		}
 		bi++
-		println('--- block ${bi}: ${block.len} bytes (${block.len / 8} records) ---')
-		for off := 0; off + 8 <= block.len; off += 8 {
-			r := telem.decode_record(block[off..off + 8])
-			if r.is_block_header() {
-				println('  [header]  core ${r.header_core()}  count ${r.header_count()}')
-			} else if r.is_epoch() {
-				println('  [epoch]   base ${r.epoch_base()}us')
-			} else if r.kind() == telem.kind_thread {
+		println('--- block ${bi}: ${block.len} bytes (${block.len / 8} records) · core ${b.core}${if b.more {
+			' (more follow)'
+		} else {
+			''
+		}} ---')
+		if b.skew_known {
+			println('  [skew]    core ${b.core} clock is ${b.skew_us}us vs the dumping core (+/-${b.skew_bound_us}us) — applied below')
+		} else if b.core != 0 {
+			println('  [skew]    NOT MEASURED for core ${b.core} — times below are on its own clock')
+		}
+		for br in b.records {
+			r := br.rec
+			if r.kind() == telem.kind_thread {
 				lbl := if r.is_idle() { 'idle' } else { 't${r.id()}' }
-				println('  [thread]  ${lbl}  start ${r.start_us}us  cpu ${r.cpu_us}us  reason ${r.reason()}')
-				total++
+				println('  [thread]  ${lbl}  start ${br.abs_us}us  cpu ${r.cpu_us}us  reason ${r.reason()}')
 			} else if r.kind() == telem.kind_isr {
-				println('  [isr]     v${r.id()}  start ${r.start_us}us  cpu ${r.cpu_us}us')
-				total++
+				println('  [isr]     v${r.id()}  start ${br.abs_us}us  cpu ${r.cpu_us}us')
 			} else {
 				over := if r.flags() & telem.flag_overran != 0 { '  <- OVERRAN (trigger)' } else { '' }
-				println('  handler ${r.id()}  start ${r.start_us}us  cpu ${r.cpu_us}us${over}')
-				total++
+				println('  handler ${r.id()}  start ${br.abs_us}us  cpu ${r.cpu_us}us${over}')
 			}
+			total++
 		}
 	}
 	println('total timeline records: ${total}')
