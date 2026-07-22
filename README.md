@@ -81,6 +81,19 @@ reports it —* `1/1 satellite core(s) time-corrected (±608 µs)` *— rather t
 the lanes are comparable. Below, the **Shell** panel talks to the target over CAN (`bmc` is an
 on-target DWT benchmark: cycles, CPI, stalls).*
 
+> ### ⚠ This screenshot needs the other half — which isn't released yet
+>
+> The **trace swimlane**, **Shell**, **Flash** and **System** panels don't test an arbitrary
+> ECU: they speak wire formats implemented by
+> [**blobly_emb**](docs/blobly_emb_synergies.md), the companion embedded stack that runs on the
+> target. They are the group at the bottom of the activity bar (`Cht`/`Fsh`/`Shl`/`Sys`),
+> deliberately separated there for this reason.
+>
+> **blobly_emb is not publicly released yet**, so today those four panels have nothing to talk
+> to. Everything else on this page — CAN and CAN-FD, DBC decode/encode and the editor, ISO-TP,
+> UDS, DoIP, SOME/IP, simulated ECUs, logs, replay and Lua scripting — is standalone and works
+> against any target, or against no hardware at all.
+
 **Scripting** — **Lua** test scripts with a small test framework, runnable headless in
 CI or live in the GUI.
 
@@ -124,13 +137,15 @@ in the **[scripting & test guide](docs/scripting.md)**.
 **CLI tools** — each runs standalone via
 `v -enable-globals -path "@vlib|@vmodules|modules" run cmd/<tool>/<file>.v`:
 
-| tool | what |
-|---|---|
-| `flash` | drive a UDS firmware download against a blobly_emb bootloader |
-| `trace_dump` | freeze + dump a target's trace rings and decode the records |
-| `dbc_decode` | decode one CAN frame to physical signal values |
-| `mf4_dump` | parse an ASAM MDF4 log and summarise its frames |
-| `loadtest` | data-plane benchmark across many concurrent buses |
+| tool | what | |
+|---|---|---|
+| `flash` | drive a UDS firmware download against a blobly_emb bootloader | † |
+| `trace_dump` | freeze + dump a target's trace rings and decode the records | † |
+| `dbc_decode` | decode one CAN frame to physical signal values | |
+| `mf4_dump` | parse an ASAM MDF4 log and summarise its frames | |
+| `loadtest` | data-plane benchmark across many concurrent buses | |
+
+† needs a **blobly_emb** target, which is [not released yet](#-this-screenshot-needs-the-other-half--which-isnt-released-yet).
 
 **CI** (`.github/workflows/`) runs `v -enable-globals test modules/` plus
 `scripts/runtests.sh` — no display involved.
