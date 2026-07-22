@@ -6,6 +6,11 @@ Test (SUT) over **CAN**, and over **Ethernet** using the automotive protocols th
 simulate ECUs, and read back logs — **virtual first** (Linux `vcan0`), with real hardware as
 a drop-in.
 
+**Two ways to drive it, over the same engine:** the **GUI** for interactive work, and
+**[headless](#headless--scripted-no-gui)** — Lua test scripts and CLI tools with no window and
+no display, which is how it runs in CI. The protocol engine lives in `modules/` and imports no
+GUI code, so neither mode is a second-class path.
+
 > Early WIP, but broadly usable. Architecture and decisions are in [CLAUDE.md](CLAUDE.md);
 > what's coming is in [ROADMAP.md](ROADMAP.md); the archived development log is in
 > [docs/history.md](docs/history.md).
@@ -68,7 +73,8 @@ swimlanes, CPU load), and a read-only **System** panel showing the modelled netw
 **Scripting** — **Lua** test scripts with a small test framework, runnable headless in
 CI or live in the GUI.
 
-The GUI is a native **Dear ImGui + ImPlot** application (`cmd/blobly_vgui`).
+The GUI is a native **Dear ImGui + ImPlot** application (`cmd/blobly_vgui`); everything it
+shows is also reachable without it — see [headless](#headless--scripted-no-gui) below.
 
 ## Build & run
 
@@ -88,17 +94,35 @@ Needs the V compiler, a C/C++ toolchain, and GLFW + FreeType (on Debian/Ubuntu:
 `sudo apt install libglfw3-dev libfreetype-dev`). See
 [windows_build.md](docs/windows_build.md) for the native Windows recipe.
 
-## Scripting & testing
+## Headless / scripted (no GUI)
 
-Lua test scripts (diagnostics, raw frames, DBC signals) run headless for CI or live in
-the GUI's **Script** panel. No hardware needed — the runner spins up a simulated bus and
-ECU for you.
+The engine is GUI-free by design, so the whole tool runs without a window — no display, no
+GLFW, nothing to click. This is how it runs in CI.
+
+**Lua test scripts** (diagnostics, raw frames, DBC signals) against a simulated bus and ECU.
+No hardware, no display; non-zero exit if any test fails:
 
 ```sh
 scripts/runtests.sh tests/diag_basic.lua tests/bus_signals.lua
+# => 10 passed, 0 failed, 0 script error(s)
 ```
 
-See the **[scripting & test guide](docs/scripting.md)** for the runner and the full Lua API.
+Point it at a different project with `--project projects/<name>.blobnet`. The full Lua API is
+in the **[scripting & test guide](docs/scripting.md)**.
+
+**CLI tools** — each runs standalone via
+`v -enable-globals -path "@vlib|@vmodules|modules" run cmd/<tool>/<file>.v`:
+
+| tool | what |
+|---|---|
+| `flash` | drive a UDS firmware download against a blobly_emb bootloader |
+| `trace_dump` | freeze + dump a target's trace rings and decode the records |
+| `dbc_decode` | decode one CAN frame to physical signal values |
+| `mf4_dump` | parse an ASAM MDF4 log and summarise its frames |
+| `loadtest` | data-plane benchmark across many concurrent buses |
+
+**CI** (`.github/workflows/`) runs `v -enable-globals test modules/` plus
+`scripts/runtests.sh` — no display involved.
 
 ## Docs
 

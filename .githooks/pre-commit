@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Refuse a commit authored by anything but the maintainer's personal address — the same rule
+# CI enforces (.github/workflows/guard.yml), checked here so it fails in one second instead of
+# after a push. Enable with:  git config core.hooksPath .githooks
+set -euo pipefail
+
+ALLOWED="marten.hildell@gmail.com"
+email="$(git config user.email || true)"
+
+if [ "$email" != "$ALLOWED" ]; then
+	echo "pre-commit: refusing to commit as '${email:-<unset>}'." >&2
+	echo "            This repo requires: $ALLOWED" >&2
+	echo "            Fix: git config user.email $ALLOWED" >&2
+	exit 1
+fi

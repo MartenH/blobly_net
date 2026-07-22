@@ -1,0 +1,92 @@
+# Repository guard: who may contribute, and under which identity.
+#
+# GitHub has NO setting that disables pull requests on a public repo — anyone can fork and
+# open one. So the policy is enforced here instead: external PRs are closed with a pointer to
+# issues, and every commit's author/committer email is checked against the allowlist.
+#
+# This does not (and cannot) replace branch protection. It is the layer that catches what
+# protection rules don't express; see CONTRIBUTING.md.
+name: guard
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  # Close PRs from anyone but the owner. pull_request_target runs in the BASE repo's context,
+  # so it has the token needed to close a fork's PR — and this job never checks out or runs
+  # the PR's code, which is what makes that safe.
+  reject-external-prs:
+    if: github.event_name == 'pull_request_target' && github.event.pull_request.user.login != github.repository_owner
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const n = context.payload.pull_request.number
+            await github.rest.issues.createComment({
+              ...context.repo, issue_number: n,
+              body: [
+                "Thanks for taking the time to write this — but this project is not accepting pull requests yet.",
+                "",
+                "It is still in its design phase (architecture, config and wire formats all still moving),",
+                "so a patch is likely to be overtaken before it can land.",
+                "",
+                "Please [open an issue](../../issues) instead — those are very welcome.",
+                "See [CONTRIBUTING.md](../../blob/main/CONTRIBUTING.md).",
+              ].join("\n"),
+            })
+            await github.rest.pulls.update({ ...context.repo, pull_number: n, state: "closed" })
+
+  # Every commit must carry the maintainer's personal address. A work address in this history
+  # previously had to be rewritten out of all 383 commits; this is the guard against a repeat.
+  commit-identity:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    env:
+      # AUTHOR — who wrote the commit. Strictly the maintainer's personal address.
+      ALLOWED_AUTHORS: marten.hildell@gmail.com
+      # COMMITTER — who applied it. Squash-merging a PR in the GitHub web UI rewrites the
+      # committer to GitHub's own address, so it must be allowed or every merge fails the gate.
+      ALLOWED_COMMITTERS: marten.hildell@gmail.com noreply@github.com
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check author and committer emails
+        run: |
+          set -euo pipefail
+          # New commits in this push. On a branch's first push `before` is all-zeroes, so fall
+          # back to just the tip rather than walking the whole history.
+          before='${{ github.event.before }}'
+          if [ -z "$before" ] || [ "$before" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "$before^{commit}" 2>/dev/null; then
+            range='${{ github.sha }} -1'
+          else
+            range="$before..${{ github.sha }}"
+          fi
+
+          bad=0
+          while IFS='|' read -r sha ae ce; do
+            [ -z "$sha" ] && continue
+            case " $ALLOWED_AUTHORS " in
+              *" $ae "*) ;;
+              *) echo "::error::$sha author '$ae' not allowed (allowed: $ALLOWED_AUTHORS)"; bad=1 ;;
+            esac
+            case " $ALLOWED_COMMITTERS " in
+              *" $ce "*) ;;
+              *) echo "::error::$sha committer '$ce' not allowed (allowed: $ALLOWED_COMMITTERS)"; bad=1 ;;
+            esac
+          done < <(git log --format='%H|%ae|%ce' $range)
+
+          if [ "$bad" -ne 0 ]; then
+            echo "Fix with: git config user.email marten.hildell@gmail.com, then amend or rebase."
+            exit 1
+          fi
+          echo "All commit identities OK."
