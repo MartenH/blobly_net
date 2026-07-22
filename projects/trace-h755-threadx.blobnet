@@ -16,7 +16,7 @@
 # Flash + run the target:
 #     (in blobly_emb)  make -C examples/h755_threadx flash
 # Then here:
-#     BLOBLY_PROJECT=projects/trace-h755-threadx.blobnet ./scripts/run_vgui.sh
+#     BLOBLY_PROJECT=projects/trace-h755-threadx.blobnet ./scripts/run_gui.sh
 project:
   name: trace-h755-threadx
   version: 2

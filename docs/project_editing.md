@@ -400,7 +400,7 @@ then the GUI surfaces. All GUI work is in the single-file `cmd/blobly_net/main.v
 ### Step 7 — demo + docs
 - Ship a `projects/restbus-2vcan.blobnet` (two vcan buses, a DBC + simulated transmitters
   each, a request/response rule on vcan0) as the worked example.
-- Update `docs/` + the status log; note the `DEPS=1`-on-glue-change gotcha in `run_vgui.sh`.
+- Update `docs/` + the status log; note the `DEPS=1`-on-glue-change gotcha in `run_gui.sh`.
 
 ### Verification summary
 - `v test modules/project/` (round-trip + legacy) — Step 1.

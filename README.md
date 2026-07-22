@@ -140,13 +140,13 @@ just take the [prebuilt bundle](#get-it). macOS is not built or tested.
 
 ```sh
 scripts/setup_env.sh           # installs toolchain + deps (V, C/C++, GLFW, FreeType)
-scripts/run_vgui.sh            # build + run the GUI
+scripts/run_gui.sh            # build + run the GUI
 ```
 
 To reproduce the screenshot above — no hardware, no drivers, nothing else to start:
 
 ```sh
-BLOBLY_PROJECT=projects/sim-demo.blobnet BLOBLY_AUTOSTART=1 scripts/run_vgui.sh
+BLOBLY_PROJECT=projects/sim-demo.blobnet BLOBLY_AUTOSTART=1 scripts/run_gui.sh
 ```
 
 The simulated ECUs are native (`modules/sim`) and run in-process.

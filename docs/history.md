@@ -1037,7 +1037,7 @@
 - 2026-07-05: **Project editing in the GUI — schema v2 + Configuration editor + per-bus Trace (vgui,
   branch `vgui-migration`).** Verified the Windows-pushed vgui build runs on Linux first (stale
   `libvgui_c.a` needed `DEPS=1` — the incoming commits added `vgui_tree_node_open` to the C glue; noted
-  in `run_vgui.sh`). Then, per an agreed design (`docs/project_editing.md` + 6 mermaid example configs):
+  in `run_gui.sh`). Then, per an agreed design (`docs/project_editing.md` + 6 mermaid example configs):
   a user can now build a `.blobnet` **from a blank project entirely in the GUI**. Concept model agreed
   with the user: **merged "Bus"** entity (not a 3-tier Network/Channel/Adapter split) with an optional
   **`network`** grouping label; DBC attaches to the bus; a **dedicated stopped-only Configuration editor**

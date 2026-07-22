@@ -1,26 +1,27 @@
 #!/bin/sh
-# run_vgui.sh — build + run the vgui-migration app (cmd/blobly_net) on Linux/WSL AND Windows.
-# This is the Dear ImGui + ImPlot + FreeType port; it does NOT use vlang/gui.
+# run_gui.sh — build + run the GUI app (cmd/blobly_net) on Linux/WSL AND Windows.
+# Dear ImGui + ImPlot + FreeType, via the `vgui` binding in eval/vgui.
 #
 # ONE script for both platforms. On Windows run it through the dedicated MSYS2 bash as a
 # LOGIN shell (so coreutils are on PATH), keeping the repo cwd via CHERE_INVOKING:
-#   CHERE_INVOKING=1 MSYSTEM=MSYS <repo>/../msys64-ct/usr/bin/bash.exe --login -c ./scripts/run_vgui.sh
+#   CHERE_INVOKING=1 MSYSTEM=MSYS <repo>/../msys64-ct/usr/bin/bash.exe --login -c ./scripts/run_gui.sh
 # (the VS Code "Run VGUI" task does exactly this). On Linux/WSL just run it directly.
 #
-#   scripts/run_vgui.sh                       # build + run (driver-free sim by default)
-#   DEPS=1 scripts/run_vgui.sh                # rebuild libvgui_c.a FIRST — REQUIRED after any
+#   scripts/run_gui.sh                       # build + run (driver-free sim by default)
+#   DEPS=1 scripts/run_gui.sh                # rebuild libvgui_c.a FIRST — REQUIRED after any
 #                                             #   eval/vgui/{vgui.h,vgui_glue.cpp} change, else
 #                                             #   the link fails with 'undefined reference to vgui_*'
-#   RUN=0 scripts/run_vgui.sh                 # build only -> build/blobly_net[.exe]
-#   DBG=1 RUN=0 scripts/run_vgui.sh           # build with -g (asserts on) for gdb
-#   DEPS=1 scripts/run_vgui.sh                # force-rebuild eval/vgui/libvgui_c.a first
-#   BLOBLY_PROJECT=projects/doip-demo.blobnet scripts/run_vgui.sh
+#   RUN=0 scripts/run_gui.sh                 # build only -> build/blobly_net[.exe]
+#   DBG=1 RUN=0 scripts/run_gui.sh           # build with -g (asserts on) for gdb
+#   DEPS=1 scripts/run_gui.sh                # force-rebuild eval/vgui/libvgui_c.a first
+#   BLOBLY_PROJECT=projects/doip-demo.blobnet scripts/run_gui.sh
 #
-# Prereqs (one-time):
-#   Linux/WSL : sudo apt install libglfw3-dev   (freetype2 dev is already a project dep)
+# Prereqs (one-time) — these mirror what CI installs on a clean runner; see the README's
+# Dependencies section, and .github/workflows/{ci,windows}.yml as the source of truth:
+#   Linux/WSL : sudo apt install g++ pkg-config libglfw3-dev libfreetype-dev libgl1-mesa-dev
 #   Windows   : the dedicated C:\dev\msys64-ct with
-#               pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-glfw \
-#                                  mingw-w64-x86_64-freetype git
+#               pacman -S --needed git mingw-w64-x86_64-{gcc,pkgconf,glfw,freetype,\
+#                                  harfbuzz,glib2,fribidi,fontconfig}
 set -e
 # On Windows run this from a MSYS2 login/MINGW64 context so coreutils + gcc are on PATH
 # (the VS Code tasks launch `bash -l`; or use the C:\dev\msys64-ct MINGW64 shell directly).

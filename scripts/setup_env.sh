@@ -31,10 +31,10 @@ if [ ! -d "$HOME/.vmodules/markdown" ]; then
 fi
 
 echo "==> 3/5 Build the GUI (imgui C deps -> libvgui_c.a, then cmd/blobly_net)"
-# run_vgui.sh (RUN=0 = build only) builds eval/vgui/libvgui_c.a from the pinned cimgui/
+# run_gui.sh (RUN=0 = build only) builds eval/vgui/libvgui_c.a from the pinned cimgui/
 # cimplot (via eval/vgui/build_deps.sh) and compiles cmd/blobly_net. No vlang/gui / vglyph
 # / markdown — the imgui app doesn't use them (that GUI stack was retired at the migration).
-RUN=0 ./scripts/run_vgui.sh
+RUN=0 ./scripts/run_gui.sh
 
 echo "==> 4/5 Tests"
 "$HOME/v/v" -enable-globals test modules/
@@ -45,7 +45,7 @@ echo "==> 5/5 Virtual CAN bus (vcan0)"
 
 cat <<'EOF'
 ==> Done. Run it:
-  GUI       : ./scripts/run_vgui.sh
+  GUI       : ./scripts/run_gui.sh
   with SUT  : python3 sut/can_sut.py vcan0        (in another terminal)
   headless  : scripts/runtests.sh tests/diag_basic.lua tests/bus_signals.lua
 EOF

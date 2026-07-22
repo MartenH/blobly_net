@@ -23,7 +23,7 @@ memory such as `~/.claude` does not transfer). Everything needed is in git.
 sudo ./scripts/setup_sudoers.sh   # optional: scoped passwordless sudo (apt-get/ip/modprobe)
 ./scripts/setup_env.sh            # V + native deps (GLFW/FreeType) + can-utils, builds the GUI,
                                   # brings up vcan0, runs the tests
-./scripts/run_vgui.sh             # build + run the GUI
+./scripts/run_gui.sh             # build + run the GUI
 ```
 
 For traffic with no hardware, open `projects/sim-demo.blobnet` — the simulated ECUs are native
@@ -82,7 +82,7 @@ docs/                design + platform docs; docs/history.md = archived status l
 ## Build / run / test
 
 ```sh
-./scripts/run_vgui.sh                       # GUI
+./scripts/run_gui.sh                       # GUI
 v -path "@vlib|@vmodules|modules" run cmd/<tool>/<file>.v   # any other target
 v -enable-globals test modules/             # unit tests — the reliable backbone (32/32)
 ./scripts/runtests.sh tests/diag_basic.lua  # headless Lua integration tests (in-process sim)
