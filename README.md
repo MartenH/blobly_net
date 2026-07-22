@@ -21,6 +21,22 @@ GUI code, so neither mode is a second-class path.
 ECUs, the grouped trace (decoded via DBC), and live multi-axis plots of `EngineSpeed`,
 `VehicleSpeed` and `ThrottlePos`.*
 
+## Get it
+
+There is **no tagged release yet** — nothing to download from a Releases page.
+
+**Windows** — CI builds a self-contained bundle on every push to `main`. Take it from
+**[Actions](../../actions/workflows/windows.yml)** → the latest `windows-build` run →
+the **`blobly_vgui-mingw-x64`** artifact. Unzip and run `blobly_vgui.exe`: the runtime DLLs,
+the demo projects, DBCs and sample logs are all bundled, so it runs on a clean machine with
+nothing installed. Two caveats — downloading an artifact requires being signed in to GitHub,
+and artifacts expire (~90 days), so use a recent run.
+
+**Linux / WSL2** — build from source; it's two commands, see
+[Build & run](#build--run) below.
+
+**macOS** — not built or tested.
+
 ## What it does
 
 **Buses**
