@@ -1,7 +1,7 @@
 name: ci
 
 # Linux CI for Blobly Net. Two jobs:
-#   * test       — the reliable backbone: `v test modules/` (every GUI-free module,
+#   * test       — the reliable backbone: `v -enable-globals test modules/` (every GUI-free module,
 #                  incl. the embedded-Lua `lua`/`script` modules) + the headless Lua
 #                  integration tests (scripts/runtests.sh) against the in-process sim.
 #                  No GUI, no vcan, no Windows — fast and deterministic.
