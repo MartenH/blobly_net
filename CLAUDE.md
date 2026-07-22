@@ -1,4 +1,7 @@
-# Blobly Net (V) — project guide for Claude
+# Blobly Net (V) — project guide for coding agents
+
+> `AGENTS.md` is a symlink to this file: it is the single guide for **any** agent
+> (Claude Code reads `CLAUDE.md`, Codex and others read `AGENTS.md`). Edit only this file.
 
 An automotive bus tester written in **V (vlang)**. Long-term goal: test a SUT (System
 Under Test) over **CAN / Ethernet / LIN** and the protocols on them. **Starting with CAN only**, and
@@ -6,8 +9,8 @@ Under Test) over **CAN / Ethernet / LIN** and the protocols on them. **Starting 
 
 ## 🆕 Fresh setup / new session — START HERE
 
-This repo is the **single source of truth** — a new Claude session on a new machine has NO prior
-memory (the old `~/.claude` memory does not transfer); everything needed is in git: this file +
+This repo is the **single source of truth** — a new agent session on a new machine has NO prior
+memory (tool-local memory such as `~/.claude` does not transfer); everything needed is in git: this file +
 `docs/known_issues.md` + the scripts.
 
 Bootstrap a fresh box in one shot:
