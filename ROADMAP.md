@@ -11,7 +11,8 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
 ## Shipped
 
 **Buses & transport**
-- ✅ **SocketCAN** (Linux) — `vcan0` virtual and real adapters · ✅ **PCAN** (Windows)
+- ✅ **SocketCAN** (Linux) — `vcan0` virtual and real adapters
+- ✅ **PEAK PCAN** and ✅ **Kvaser** (Windows) — vendor DLLs at runtime, both hardware-verified
 - ✅ UDP software bus (`inproc:`) — driver-free tests and demos
 
 **CAN & databases**
@@ -64,6 +65,8 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
 - 🧭 **SOME/IP-SD** (service discovery) + the SOME/IP **sim service** — explicitly deferred in
   [`docs/ethernet_architecture.md`](docs/ethernet_architecture.md).
 - 🧭 **DoIP per-connection handler state** — deferred pending the threading change.
+- 🧭 **Vector (XL family) CAN backend** — the notable gap in vendor coverage; PCAN and Kvaser
+  are done, and `transport` is designed for drop-in backends, so it is a shim + bitrate map.
 - 🧭 **LIN** — `modules/lindb` (LDF) + a `LinFrame` type. Kept type-safe alongside `CanFrame` /
   `EthFrame` rather than faked behind a generic frame.
 

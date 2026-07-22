@@ -13,10 +13,34 @@ a drop-in.
 ## What it does
 
 **Buses**
-- **CAN / CAN-FD** — SocketCAN on Linux (`vcan0` or real adapters), PCAN on Windows
+- **CAN / CAN-FD** — see the hardware/OS matrix below
+  - software buses for driver-free tests: in-process (`inproc:`) and UDP multicast
 - **Ethernet** — **DoIP** (UDS over TCP) and **SOME/IP** (incl. an RPC client), over ordinary
   TCP/UDP sockets. Automotive *PHYs* (100BASE-T1 and similar) and TSN are out of scope.
 - LIN is on the roadmap, not implemented yet
+
+### CAN hardware — and why the same adapter is named differently per OS
+
+The **same physical adapter** is reached through a **different software stack** depending on where
+Blobly Net runs, so the interface string differs too:
+
+| | Linux / **WSL2** | native Windows |
+|---|---|---|
+| **PEAK PCAN** | ✅ kernel `peak_usb` → SocketCAN `can0` | ✅ PCAN-Basic DLL → `pcan:PCAN_USBBUS1@500000` |
+| **Kvaser** | ✅ kernel `kvaser_usb` → SocketCAN `can0` | ✅ CANlib DLL → `kvaser:0@500000` |
+| **Vector** (VN16xx…) | ❌ no mainline driver | ❌ no backend here (vendor XL SDK exists) |
+| CAN-FD | PCAN ✅ · Kvaser Leaf Light v2 is classic-only | PCAN ✅ |
+
+- **On Linux and WSL2** the *kernel* owns the adapter and presents it as a **SocketCAN netdev**
+  (`can0`), so Blobly Net just uses SocketCAN — no vendor SDK involved.
+- **On native Windows** there is no SocketCAN, so the adapter is reached through the **vendor's
+  userspace DLL**, loaded at runtime (no SDK to build against; you do need the vendor driver).
+- **WSL2 needs one extra step:** USB isn't exposed by default, so attach the adapter with
+  `usbipd-win` first — `scripts/usbip.sh attach <busid>` — after which the kernel driver creates
+  `can0` exactly as on native Linux.
+
+Full detail, including the WSL kernel requirements:
+[can_hardware.md](docs/can_hardware.md) · [windows_can_hardware.md](docs/windows_can_hardware.md).
 
 **Diagnostics** — **UDS** over **ISO-TP** (ISO 15765-2), plus a **flashing** tool that
 drives a UDS firmware-download session against a [blobly_emb](docs/blobly_emb_synergies.md)
@@ -77,8 +101,8 @@ See the **[scripting & test guide](docs/scripting.md)** for the runner and the f
 - [blobly_emb_synergies.md](docs/blobly_emb_synergies.md) — the SUT-side companion project
 
 **Platform & troubleshooting**
-- [can_hardware.md](docs/can_hardware.md) — real CAN adapters
-- [windows_handoff.md](docs/windows_handoff.md) — start here on Windows (PCAN/Kvaser)
+- [can_hardware.md](docs/can_hardware.md) — real CAN adapters ·
+  [windows_can_hardware.md](docs/windows_can_hardware.md) — PCAN/Kvaser on Windows
 - [windows_build.md](docs/windows_build.md) · [windows_can_hardware.md](docs/windows_can_hardware.md)
 - [known_issues.md](docs/known_issues.md) — gotchas (V / GUI / rendering / env)
 

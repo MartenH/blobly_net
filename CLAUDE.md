@@ -33,8 +33,9 @@ python3 sut/can_sut.py vcan0      # a virtual ECU, in another terminal
 - **GUI:** **Dear ImGui + ImPlot**, wrapped as the native-V `vgui` module (`eval/vgui`); the app
   is `cmd/blobly_vgui`. *(Migrated 2026-07-06 from `vlang/gui`; the old `src/main.v` app is
   deleted. Rationale in [`docs/gui_toolkit_evaluation.md`](docs/gui_toolkit_evaluation.md).)*
-- **CAN:** SocketCAN on Linux (`vcan0` virtual, real adapters too), PCAN on Windows — behind a
-  transport interface so backends are drop-in.
+- **CAN:** SocketCAN on Linux (`vcan0` virtual, or any adapter); **PCAN** and **Kvaser** on
+  Windows (vendor DLLs loaded at runtime, both HW-verified). No Vector backend. All behind the
+  `transport` interface, so backends are drop-in.
 - **Engine stays GUI-free.** CAN/protocol logic lives in `modules/` with no GUI imports, so it is
   independently testable and the GUI stays replaceable. This is the one architectural rule.
 - **Projects** are `.blobnet` files (YAML content) describing buses, channels and databases.
@@ -112,7 +113,7 @@ categorised list (V / GUI / rendering / env). Two that bite newcomers:
 - [ethernet_architecture.md](docs/ethernet_architecture.md) ·
   [simulation_architecture.md](docs/simulation_architecture.md) ·
   [blobly_emb_synergies.md](docs/blobly_emb_synergies.md)
-- [can_hardware.md](docs/can_hardware.md) · [windows_handoff.md](docs/windows_handoff.md) ·
+- [can_hardware.md](docs/can_hardware.md) · [windows_can_hardware.md](docs/windows_can_hardware.md) ·
   [windows_build.md](docs/windows_build.md) · [known_issues.md](docs/known_issues.md)
 - [../ROADMAP.md](ROADMAP.md) — what's shipped and what's next
 - [history.md](docs/history.md) — archived status log (not maintained)
