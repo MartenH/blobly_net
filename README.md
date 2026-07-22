@@ -70,6 +70,17 @@ Python/asammdf dependency, and **replay** of a recording at its original cadence
 **Observability** — a **trace/telemetry** view of a running SUT (handler and thread
 swimlanes, CPU load), and a read-only **System** panel showing the modelled network.
 
+![Two-core trace swimlane from a live STM32H755, with an interactive shell to the target](docs/screenshots/trace-multicore-h755.png)
+
+*A dual-core **STM32H755** traced live over SocketCAN. Handler lanes on top (`c0` = the CM7's
+`LoadFast`/`LoadMid`/`Governor`/`LoadSlow`, `c1` = the CM4's `M4Load`/`M4Churn`), RTOS thread
+lanes below with their priorities, a derived idle lane, and preemption cut-links joining a
+preempted thread to what displaced it. Both cores share **one** timeline: each stamps records
+from its own free-running clock, so the target measures the offset per dump and the header
+reports it —* `1/1 satellite core(s) time-corrected (±608 µs)` *— rather than silently implying
+the lanes are comparable. Below, the **Shell** panel talks to the target over CAN (`bmc` is an
+on-target DWT benchmark: cycles, CPI, stalls).*
+
 **Scripting** — **Lua** test scripts with a small test framework, runnable headless in
 CI or live in the GUI.
 
