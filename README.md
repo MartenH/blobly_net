@@ -135,8 +135,9 @@ shows is also reachable without it — see [headless](#headless--scripted-no-gui
 **Linux, including WSL2** — Ubuntu 24.04 is what this is developed on. Under WSL2 the GUI
 renders through **WSLg**, so there's no X server to set up, but hardware GL wants a current Mesa
 (25.x is known good; older Mesa crashed the GPU path). **Native Windows is a different
-toolchain** — MSYS2/mingw, not these scripts — see [windows_build.md](docs/windows_build.md), or
-just take the [prebuilt bundle](#get-it). macOS is not built or tested.
+toolchain** — MSYS2/mingw, not these scripts. The recipe is
+[`windows.yml`](.github/workflows/windows.yml), which CI runs on every push; or just take the
+[prebuilt bundle](#get-it). macOS is not built or tested.
 
 ```sh
 scripts/setup_env.sh           # installs toolchain + deps (V, C/C++, GLFW, FreeType)
@@ -171,9 +172,9 @@ rasterizer and text stack are not system libraries there:
 pacman -S git mingw-w64-x86_64-{gcc,pkgconf,glfw,freetype,harfbuzz,glib2,fribidi,fontconfig}
 ```
 
-Plus the V compiler on both. The full Windows walkthrough is
-[windows_build.md](docs/windows_build.md) — or skip it entirely and take the
-[prebuilt bundle](#get-it).
+Plus the V compiler on both. For Windows, [`.github/workflows/windows.yml`](.github/workflows/windows.yml)
+is the full recipe — it runs on every push, so unlike a hand-written walkthrough it cannot quietly
+drift. Or skip building entirely and take the [prebuilt bundle](#get-it).
 
 ## Headless / scripted (no GUI)
 
@@ -249,8 +250,7 @@ above is manual, so a regression there is caught only when someone next runs it.
 **Platform & troubleshooting**
 - [can_hardware.md](docs/can_hardware.md) — real CAN adapters ·
   [windows_can_hardware.md](docs/windows_can_hardware.md) — PCAN/Kvaser on Windows
-- [windows_build.md](docs/windows_build.md) · [windows_can_hardware.md](docs/windows_can_hardware.md)
-- [known_issues.md](docs/known_issues.md) — gotchas (V / GUI / rendering / env)
+- [known_issues.md](docs/known_issues.md) — gotchas (V / GUI / environment / CI)
 
 **Project**
 - [CLAUDE.md](CLAUDE.md) — architecture & decisions (the guide for coding agents)

@@ -7,32 +7,34 @@ their respective licences; full licence texts are available from each project.
 
 Compiled into the executable
 ----------------------------
-  vlang/gui          MIT            https://github.com/vlang/gui
-  vlang/vglyph       MIT            https://github.com/vlang/vglyph
-  vlang/markdown     MIT            https://github.com/vlang/markdown
-  md4c               MIT            https://github.com/mity/md4c   (via vlang/markdown)
-  Lua 5.4            MIT            https://www.lua.org/           (vendored in thirdparty/lua)
+  Dear ImGui 1.92.8  MIT            https://github.com/ocornut/imgui   (docking branch)
+  ImPlot             MIT            https://github.com/epezent/implot
+  cimgui             MIT            https://github.com/cimgui/cimgui   (C ABI for Dear ImGui)
+  cimplot            MIT            https://github.com/cimgui/cimplot  (C ABI for ImPlot)
+  GLFW 3.3.10        zlib/libpng    https://www.glfw.org/              (statically linked)
+  FreeType           FTL / GPL-2    https://freetype.org/              (imgui_freetype rasterizer)
+  Lua 5.4            MIT            https://www.lua.org/               (vendored in thirdparty/lua)
+  vlang/markdown     MIT            https://github.com/vlang/markdown  (Help panel)
+  md4c               MIT            https://github.com/mity/md4c       (via vlang/markdown)
   V standard library MIT            https://github.com/vlang/v
+
+The exact upstream revisions are pinned in libs/vgui/build_deps.sh.
 
 Bundled runtime libraries (the *.dll files next to the executable)
 ------------------------------------------------------------------
-These are the GUI/text-shaping stack the executable links at runtime. They are
-DYNAMICALLY linked, so the LGPL components remain replaceable by the recipient.
+The Windows bundle carries the mingw-w64 DLLs the executable links at runtime.
+They are DYNAMICALLY linked, so the LGPL components remain replaceable by the
+recipient. The authoritative list is whatever ldd resolves at build time (see
+.github/workflows/windows.yml); the packages installed for that build are:
 
-  Pango              LGPL-2.1+      https://pango.gnome.org/
-  Cairo              LGPL-2.1 / MPL https://www.cairographics.org/
-  GLib / GObject     LGPL-2.1+      https://gitlab.gnome.org/GNOME/glib
   FreeType           FTL / GPL-2    https://freetype.org/
   HarfBuzz           MIT            https://harfbuzz.github.io/
+  GLib / GObject     LGPL-2.1+      https://gitlab.gnome.org/GNOME/glib
   FriBidi            LGPL-2.1+      https://github.com/fribidi/fribidi
   Fontconfig         MIT-style      https://www.freedesktop.org/wiki/Software/fontconfig/
-  Pixman             MIT            https://www.pixman.org/
-  libpng             PNG/zlib       http://www.libpng.org/
-  zlib               zlib           https://zlib.net/
-  GNU gettext (intl) LGPL-2.1+      https://www.gnu.org/software/gettext/
-
-On the MSVC build the Microsoft Visual C++ runtime (vcruntime140*.dll, msvcp140.dll)
-is also present; it is redistributable under the Microsoft VC++ redistributable terms.
+  libpng             PNG/zlib       http://www.libpng.org/             (via FreeType)
+  zlib               zlib           https://zlib.net/                  (via FreeType/libpng)
+  mingw-w64 runtime  ZPL / MIT-like https://www.mingw-w64.org/         (libgcc/libstdc++/libwinpthread)
 
 To obtain the source for any LGPL/GPL component bundled here, see the upstream
 project link above, or contact the distributor.

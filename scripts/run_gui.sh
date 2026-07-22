@@ -33,7 +33,7 @@ target="${1:-cmd/blobly_net/main.v}"
 case "$(uname -s)" in
 	MINGW* | MSYS* | CYGWIN*)
 		# Dedicated toolchain lives BESIDE the repo (…/msys64-ct and …/v, per the project's
-		# docs/windows_build.md convention — repo at C:\dev\blobly_net, MSYS2 at C:\dev\msys64-ct).
+		# the C:\dev layout convention — repo at C:\dev\blobly_net, MSYS2 at C:\dev\msys64-ct).
 		# Derive from the repo's parent so it's not a hard C:\dev assumption; override with
 		# MSYS2_CT= / V= if yours live elsewhere.
 		parent="$(cd "$HERE/.." && pwd)"

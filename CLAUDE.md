@@ -105,10 +105,12 @@ release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks.
 ## Gotchas
 
 **Read [`docs/known_issues.md`](docs/known_issues.md) first when something breaks** — it is the
-categorised list (V / GUI / rendering / env). Two that bite newcomers:
+categorised list (V / GUI / environment / CI). Two that bite newcomers:
 
 - **WSLg + GL:** hardware GL works on Ubuntu 24.04 + Mesa 25.x; older Mesa crashed the GPU path.
-- **Local V patches** may be needed on a fresh box — see [`docs/v_patches/`](docs/v_patches/).
+- **Native Windows** is a separate toolchain (MSYS2/mingw). `.github/workflows/windows.yml` is
+  the reproducible recipe — it builds the shipped bundle on every push; there is no hand-written
+  walkthrough to drift from it.
 
 ## Docs
 
@@ -118,6 +120,6 @@ categorised list (V / GUI / rendering / env). Two that bite newcomers:
   [simulation_architecture.md](docs/simulation_architecture.md) ·
   [blobly_emb_synergies.md](docs/blobly_emb_synergies.md)
 - [can_hardware.md](docs/can_hardware.md) · [windows_can_hardware.md](docs/windows_can_hardware.md) ·
-  [windows_build.md](docs/windows_build.md) · [known_issues.md](docs/known_issues.md)
+  [known_issues.md](docs/known_issues.md)
 - [../ROADMAP.md](ROADMAP.md) — what's next and planned (shipped list kept last)
 - [history.md](docs/history.md) — archived status log (not maintained)
