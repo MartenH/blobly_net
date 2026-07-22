@@ -44,7 +44,7 @@ and artifacts expire (~90 days), so use a recent run.
   - software buses for driver-free tests: in-process (`inproc:`) and UDP multicast
 - **Ethernet** — **DoIP** (UDS over TCP) and **SOME/IP** (incl. an RPC client), over ordinary
   TCP/UDP sockets. Automotive *PHYs* (100BASE-T1 and similar) and TSN are out of scope.
-- LIN is on the roadmap, not implemented yet
+- **LIN** — 🧭 [planned](ROADMAP.md), not implemented yet
 
 ### CAN hardware — and why the same adapter is named differently per OS
 
@@ -55,7 +55,7 @@ Blobly Net runs, so the interface string differs too:
 |---|---|---|
 | **PEAK PCAN** | ✅ kernel `peak_usb` → SocketCAN `can0` | ✅ PCAN-Basic DLL → `pcan:PCAN_USBBUS1@500000` |
 | **Kvaser** | ✅ kernel `kvaser_usb` → SocketCAN `can0` | ✅ CANlib DLL → `kvaser:0@500000` |
-| **Vector** (VN16xx…) | ❌ no mainline driver | ❌ no backend here (vendor XL SDK exists) |
+| **Vector** (VN16xx…) | ❌ no mainline driver | 🧭 [planned](ROADMAP.md) — XL backend not written yet |
 | CAN-FD | PCAN ✅ · Kvaser Leaf Light v2 is classic-only | PCAN ✅ |
 
 - **On Linux and WSL2** the *kernel* owns the adapter and presents it as a **SocketCAN netdev**
@@ -185,7 +185,9 @@ in the **[scripting & test guide](docs/scripting.md)**.
 - [known_issues.md](docs/known_issues.md) — gotchas (V / GUI / rendering / env)
 
 **Project**
-- [CLAUDE.md](CLAUDE.md) — architecture, decisions, full roadmap & status log
+- [CLAUDE.md](CLAUDE.md) — architecture & decisions (the guide for coding agents)
+- [ROADMAP.md](ROADMAP.md) — what's next, planned, and out of scope
+- [CONTRIBUTING.md](CONTRIBUTING.md) — issues welcome; PRs not yet (design phase)
 
 ## License
 

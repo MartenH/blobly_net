@@ -115,5 +115,5 @@ categorised list (V / GUI / rendering / env). Two that bite newcomers:
   [blobly_emb_synergies.md](docs/blobly_emb_synergies.md)
 - [can_hardware.md](docs/can_hardware.md) · [windows_can_hardware.md](docs/windows_can_hardware.md) ·
   [windows_build.md](docs/windows_build.md) · [known_issues.md](docs/known_issues.md)
-- [../ROADMAP.md](ROADMAP.md) — what's shipped and what's next
+- [../ROADMAP.md](ROADMAP.md) — what's next and planned (shipped list kept last)
 - [history.md](docs/history.md) — archived status log (not maintained)
