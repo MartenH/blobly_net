@@ -223,9 +223,13 @@ mut:
 	// the running someip channel's shared socket (nil = none): the shell routes
 	// requests through it instead of binding its own — the peer port is taken,
 	// and a second socket would split the board's datagrams
-	eth_link     &someip.BoardLink = unsafe { nil }
-	eth_board_ip string // the someip channel's board address (GUI thread only; shell target display when linked)
-	next_run_gen int    // app-global monotonic worker generation (see spawn_eth_rx / start)
+	eth_link &someip.BoardLink = unsafe { nil }
+	// the Shell's selectable command targets (derived — project.shell_targets;
+	// rebuilt wherever the eth identity is) + the session-only selection
+	shell_targets []project.ShellTarget
+	shell_target  int // combo index; kept on the SAME target across a rebuild (by label)
+	chan_shell    map[int]telem.ShellFrames // per-CAN-channel shell frame ids (its own manifest)
+	next_run_gen  int // app-global monotonic worker generation (see spawn_eth_rx / start)
 	shell_lines  []string          // scrollback (guarded by mu; the worker appends)
 	shell_busy   bool              // single-flight: one command in flight at a time
 	shell_follow bool              // new output arrived — pin the scrollback to the bottom next frame
@@ -1056,10 +1060,12 @@ fn (mut app App) spawn_eth_rx(ci int) {
 	app.eth_manifest = m
 	app.eth_someip = m.someip
 	app.eth_method = m.shell_method
-	// this fresh load may differ from the rebuild-time manifest (the file
-	// changed on disk since project load) — re-resolve the eth watches against
-	// THE snapshot the worker decodes with, or their stale offset snapshots
-	// would plot garbage (same call as the rebuild_from_proj site)
+	// this load may change the shell identity — the target list carries
+	// per-entry snapshots, so rebuild it with the same version
+	app.rebuild_shell_targets()
+	// and it may differ from the rebuild-time manifest (file changed on disk
+	// since project load) — re-resolve the eth watches against THE snapshot the
+	// worker decodes with, or their stale offset snapshots would plot garbage
 	app.eth_watch = m.reconcile_eth_watches(app.eth_watch, ch.name)
 	// generations are APP-GLOBAL monotonic, not per-channel: a chans rebuild
 	// resets run_gen to 0, so a per-channel counter would mint gen 1 for the
@@ -1390,13 +1396,13 @@ fn (mut app App) rebuild_from_proj() {
 	app.eth_method = 0
 	app.manifest = telem.Manifest{}
 	app.eth_manifest = telem.Manifest{}
-	app.eth_board_ip = ''
+	app.chan_shell = map[int]telem.ShellFrames{}
 	app.sel_id = -1
 	app.mu.unlock()
 	mut eth_board := '' // the first someip channel's board ip (shell prefill)
 	mut someip_seen := false // ONE someip channel per project (mirrors emb's one eth bus
 	// per image); further ones are forced disabled — the multi-board selector is a follow-up
-	for ch in proj.channels {
+	for i, ch in proj.channels {
 		dup := ch.is_someip() && someip_seen
 		if ch.is_someip() {
 			someip_seen = true
@@ -1474,10 +1480,16 @@ fn (mut app App) rebuild_from_proj() {
 					app.eth_method = m.shell_method
 					app.eth_manifest = m
 					eth_board = ch.address
-					app.eth_board_ip = ch.address
 				} else if m.shell_method != 0 && app.eth_method == 0 && eth_board == '' {
 					app.eth_someip = m.someip
 					app.eth_method = m.shell_method
+				}
+				// a CAN channel's own shell ids — so its Shell target routes to
+				// ITS command, not the global manifest's (the selector's per-
+				// target ids); keyed by channel index (stable until the next
+				// rebuild, which the toggle path reuses without reloading)
+				if !ch.is_someip() {
+					app.chan_shell[i] = m.shell
 				}
 			} else {
 				// a load/validation failure must be SEEN — silently keeping an
@@ -1530,6 +1542,34 @@ fn (mut app App) rebuild_from_proj() {
 	if eth_board != '' && app.eth_target_buf.len > 0
 		&& vgui.buf_str(app.eth_target_buf).trim_space() == '' {
 		app.eth_target_buf = mkbuf(eth_board, 64)
+	}
+	app.rebuild_shell_targets()
+}
+
+// rebuild_shell_targets re-derives the Shell's target list from CURRENT
+// runtime state — the Buses panel toggles app.chans[i].enabled without a
+// project rebuild, so every input-changing site calls this: rebuild_from_proj,
+// the someip Start snapshot and the runtime enable checkbox (all GUI thread).
+// The selection is index-based and session-only — never keep a stale one.
+fn (mut app App) rebuild_shell_targets() {
+	// remember WHICH target was selected (by label — names are unique, kind+id
+	// disambiguate), so a target removed/reordered before it doesn't silently
+	// repoint the numeric index at a different destination
+	prev := if app.shell_target >= 0 && app.shell_target < app.shell_targets.len {
+		app.shell_targets[app.shell_target].label
+	} else {
+		''
+	}
+	app.shell_targets = project.shell_targets(app.proj.channels, app.chans.map(it.enabled),
+		app.eth_someip, app.eth_method, app.chan_shell)
+	app.shell_target = 0
+	if prev != '' {
+		for i, t in app.shell_targets {
+			if t.label == prev {
+				app.shell_target = i
+				break
+			}
+		}
 	}
 }
 
@@ -3547,6 +3587,7 @@ fn draw_buses(mut app App, chans []Chan) {
 					&& !app.chans[i].running {
 					app.spawn_eth_rx(i)
 				}
+				app.rebuild_shell_targets() // enablement is a target-list input
 			}
 			vgui.same_line()
 			r, g, b, label := chan_state(c)
@@ -5294,6 +5335,8 @@ fn printable(b []u8) string {
 // back as an ISO-TP block on `out` (host flow-controls on `fc`) — the trace-dump wire, reused.
 // Line editing is entirely client-side: backspace/delete/cursor are native ImGui, Up/Down are
 // console_input's history. The target only ever sees complete lines (<= 8 chars, one frame).
+// A project can expose SEVERAL shells (someip eth RPC and/or the CAN wire) — the footer names
+// the one derived target or offers a combo, and dispatch routes by that selection.
 fn draw_shell(mut app App) {
 	vis, op := vgui.begin_closable('Shell', app.show_shell)
 	app.show_shell = op
@@ -5301,10 +5344,18 @@ fn draw_shell(mut app App) {
 		vgui.end()
 		return
 	}
-	// the eth RPC shell (manifest `ethmod,shell,method`) needs NO CAN channel:
-	// it dials the board's UDP endpoint directly, Start or not
-	eth := app.eth_method != 0 && app.eth_someip.service != 0
-	if !app.running && !eth {
+	// route by the derived target list (project.shell_targets); zero targets =
+	// the plain CAN worker (no manifest-carrying channel, no eth identity)
+	targets := app.shell_targets
+	mut has_eth := false
+	for t in targets {
+		if t.eth {
+			has_eth = true
+		}
+	}
+	// an eth RPC shell needs NO CAN channel: it dials the board's UDP endpoint
+	// directly, Start or not
+	if !app.running && !has_eth {
 		vgui.text_dim('press Start (needs a shell-enabled target on the bus)')
 		vgui.end()
 		return
@@ -5324,21 +5375,25 @@ fn draw_shell(mut app App) {
 		vgui.scroll_bottom()
 	}
 	vgui.child_end()
-	if eth {
-		app.mu.lock()
-		linked := !isnil(app.eth_link)
-		app.mu.unlock()
-		if linked {
-			// the running someip channel owns target and socket — an editable ip
-			// box here is dead AND reads as the command line (it isn't; that is
-			// the input below)
-			vgui.text_dim('board ${app.eth_board_ip} — SOME/IP method 0x${app.eth_method.hex()} :${app.eth_someip.port}')
-		} else {
-			vgui.set_next_item_width(130 * app.ui_scale)
-			vgui.input_text('##ethtarget', mut app.eth_target_buf)
-			vgui.same_line()
-			vgui.text_dim('board ip — SOME/IP method 0x${app.eth_method.hex()} :${app.eth_someip.port}')
+	if targets.len == 1 {
+		// one target — name it; a someip channel owns ip + socket, the CAN
+		// entry carries its transmit bus
+		vgui.text_dim(targets[0].label)
+	} else if targets.len > 1 {
+		vgui.set_next_item_width(220 * app.ui_scale)
+		nsel := vgui.combo('target##shelltarget', targets.map(it.label), app.shell_target)
+		if nsel != app.shell_target && nsel >= 0 && nsel < targets.len {
+			app.shell_target = nsel
 		}
+	}
+	if targets.len > 0 && targets[app.shell_target].ci < 0 {
+		// the standalone eth entry's parameter: no someip channel owns a
+		// socket, so its worker dials a hand-typed board ip
+		t := targets[app.shell_target]
+		vgui.set_next_item_width(130 * app.ui_scale)
+		vgui.input_text('##ethtarget', mut app.eth_target_buf)
+		vgui.same_line()
+		vgui.text_dim('board ip — SOME/IP method 0x${t.method.hex()} :${t.sip.port}')
 	}
 	vgui.set_next_item_width(-40 * app.ui_scale)
 	if vgui.console_input('##shellin', mut app.shell_buf) {
@@ -5352,14 +5407,29 @@ fn draw_shell(mut app App) {
 		} else if line != '' {
 			if busy {
 				app.shell_append('(busy — previous command still running)')
-			} else if eth {
-				// snapshot target AND identity HERE: the worker must not read
-				// the UI's mutable buffer, and rebuild_from_proj (a project
-				// switch mid-command) clears eth_someip/eth_method under it
-				spawn shell_worker_eth(app, line, vgui.buf_str(app.eth_target_buf).trim_space(),
-					app.eth_someip, app.eth_method)
+			} else if targets.len > 0 {
+				t := targets[app.shell_target]
+				if t.eth {
+					// the identity snapshot rides IN the entry — the worker
+					// must not read App fields a project switch clears under
+					// it. The standalone (ci -1) entry's board is the typed ip,
+					// snapshotted HERE: never let the worker read the UI buffer.
+					board := if t.ci < 0 {
+						vgui.buf_str(app.eth_target_buf).trim_space()
+					} else {
+						t.board
+					}
+					spawn shell_worker_eth(app, line, board, t.sip, t.method)
+				} else if !app.running {
+					// a CAN target needs its bus open — an eth target coexisting
+					// in a stopped project keeps the input visible, but a CAN
+					// command here would open a receive channel then fail at tx
+					app.shell_append('(press Start — the CAN shell needs its bus running)')
+				} else {
+					spawn shell_worker(app, line, t.iface, t.sh)
+				}
 			} else {
-				spawn shell_worker(app, line)
+				spawn shell_worker(app, line, '', app.manifest.shell)
 			}
 		}
 	}
@@ -5387,7 +5457,9 @@ fn (mut app App) shell_append(s string) {
 // shell_worker sends one command line and collects the response. Mirrors diag/trace workers:
 // a single-flight busy flag, a short-lived spawn, a blocking ISO-TP recv, results under mu +
 // wake. The shell ids come from the manifest's `# shell frames` section (or loom2v defaults).
-fn shell_worker(app &App, line string) {
+// `iface_sel` is the selected target's transmit bus; '' (no target list) keeps the legacy
+// pick — the running manifest-carrying channel.
+fn shell_worker(app &App, line string, iface_sel string, sh_sel telem.ShellFrames) {
 	mut a := unsafe { app }
 	a.mu.lock()
 	if a.shell_busy {
@@ -5403,7 +5475,7 @@ fn shell_worker(app &App, line string) {
 		vgui.wake()
 	}
 	a.shell_append('> ' + line)
-	iface := a.trace_iface()
+	iface := if iface_sel != '' { iface_sel } else { a.trace_iface() }
 	if iface == '' {
 		a.shell_append('(no running channel)')
 		return
@@ -5412,7 +5484,7 @@ fn shell_worker(app &App, line string) {
 		a.shell_append('(line too long — the target takes one 8-byte frame per command)')
 		return
 	}
-	sh := a.manifest.shell.or_defaults()
+	sh := sh_sel.or_defaults() // the SELECTED target's ids (per-channel), not the global manifest
 	// the host is the ISO-TP receiver: flow control out on `fc`, the response in on `out`
 	// (opened before the command is sent, so the socket buffers the target's first frame).
 	mut ch := isotp.open_software(a.bitrate_iface(iface), sh.fc, sh.out, trace_ext(sh.out)) or {
