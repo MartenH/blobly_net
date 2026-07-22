@@ -83,8 +83,8 @@ mut:
 	drops     u64  // someip: counted-and-dropped datagrams (foreign/malformed/repeated)
 	e2e_bad   u64  // someip: E2E CRC failures (dropped)
 	e2e_lost  u64  // someip: E2E counter skips (event delivered; a gap preceded it)
-	run_gen   int  // someip: this channel's worker generation, assigned from
-	// App.next_run_gen — a worker whose gen no longer matches exits
+	run_gen   int  // this channel's worker generation (CAN rx_loop AND eth worker),
+	// assigned from App.next_run_gen — a worker whose gen no longer matches exits
 }
 
 fn (c Chan) monitorable() bool {
@@ -222,7 +222,7 @@ mut:
 	// and a second socket would split the board's datagrams
 	eth_link     &someip.BoardLink = unsafe { nil }
 	eth_board_ip string // the someip channel's board address (GUI thread only; shell target display when linked)
-	next_run_gen int    // app-global monotonic worker generation (see spawn_eth_rx)
+	next_run_gen int    // app-global monotonic worker generation (see spawn_eth_rx / start)
 	shell_lines  []string          // scrollback (guarded by mu; the worker appends)
 	shell_busy   bool              // single-flight: one command in flight at a time
 	shell_follow bool              // new output arrived — pin the scrollback to the bottom next frame
@@ -448,7 +448,17 @@ fn (app &App) eth_layout_fields(id u32, ch string) []telem.EthField {
 }
 
 fn (a &App) lookup_name(id u32, ext bool) string {
-	for db in a.dbs {
+	return lookup_name_in(a.dbs, id, ext)
+}
+
+// lookup_name_in resolves a frame id against a SNAPSHOT of the databases, so
+// the rx worker can run the (linear, per-DBC) scan OUTSIDE app.mu — holding the
+// global lock across every DBC on a high-rate bus would serialize all RX
+// workers and the UI. Safe unlocked because rebuild REPLACES app.dbs (a fresh
+// assignment, not in-place mutation) and the DBC editor mutates it only while
+// stopped, so a snapshot taken under the lock stays valid to read.
+fn lookup_name_in(dbs []candb.Database, id u32, ext bool) string {
+	for db in dbs {
 		if m := db.lookup_frame(id, ext) {
 			return m.name
 		}
@@ -505,7 +515,28 @@ fn (mut app App) start() {
 			return
 		}
 	}
+	// Ordering invariant: mint every starting channel's NEW generation BEFORE
+	// the world says "running". A stale worker draining in its recv window
+	// re-checks (running && gen ok); after a plain Stop the chans array is the
+	// SAME one, so bounds can't catch it — its generation must already be
+	// stale by the time app.running flips back to true, or it survives beside
+	// the new spawn. (For someip channels this pass is the invalidation;
+	// spawn_eth_rx below assigns the worker's final generation — a second
+	// bump, equally unmatchable by any stale worker.)
+	app.mu.lock()
+	for ci, ch in app.chans {
+		will_start := if ch.someip {
+			ch.enabled && ch.mode == 'monitor' && !ch.someip_dup
+		} else {
+			ch.monitorable()
+		}
+		if will_start {
+			app.next_run_gen++
+			app.chans[ci].run_gen = app.next_run_gen
+		}
+	}
 	app.running = true
+	app.mu.unlock()
 	for ci, ch in app.chans {
 		// a someip board channel gets its own eth rx worker (no CAN transport);
 		// mode gates it exactly like the CAN workers, and a forced-disabled
@@ -519,9 +550,13 @@ fn (mut app App) start() {
 		if !ch.monitorable() {
 			continue
 		}
+		down := !iface_link_up(ch.adapter, ch.address)
+		app.mu.lock()
+		gen := app.chans[ci].run_gen // minted in the pass above
 		app.chans[ci].running = true
-		app.chans[ci].link_down = !iface_link_up(ch.adapter, ch.address)
-		spawn rx_loop(app, ci, ch.iface)
+		app.chans[ci].link_down = down
+		app.mu.unlock()
+		spawn rx_loop(app, ci, ch.iface, gen)
 		// open a TX bus for this channel's iface (each generator fires on its target bus)
 		if ch.iface !in app.tx_buses {
 			if b := app.open_transport(ch.iface) {
@@ -853,16 +888,24 @@ fn diag_server_loop(app &App, iface string) {
 	ch.close()
 }
 
-fn rx_loop(app &App, ci int, iface string) {
-	mut bus := app.open_transport(iface) or {
-		eprintln('rx ${iface}: ${err}')
-		mut a := unsafe { app }
-		a.mu.lock()
-		a.chans[ci].running = false
+fn rx_loop(app &App, ci int, iface string, gen int) {
+	mut a := unsafe { app }
+	// validate BEFORE opening the transport: open_transport -> bitrate_iface
+	// iterates app.chans unlocked, so a worker spawned then delayed past a
+	// Stop + Open/New (which REPLACES app.chans) would race the rebuild. Guard
+	// first, then resolve the physical (bitrate-suffixed) iface under the lock.
+	a.mu.lock()
+	if !a.chan_gen_ok(ci, gen) {
 		a.mu.unlock()
+		return // stale before we registered anything — no bus, no dbc_readers
+	}
+	phys := a.bitrate_iface(iface)
+	a.mu.unlock()
+	mut bus := transport.open(phys) or {
+		eprintln('rx ${iface}: ${err}')
+		a.chan_worker_done(ci, gen)
 		return
 	}
-	mut a := unsafe { app }
 	a.mu.lock()
 	a.dbc_readers++ // this loop reads app.dbs lock-free (lookup_name per frame)
 	a.mu.unlock()
@@ -871,24 +914,68 @@ fn rx_loop(app &App, ci int, iface string) {
 		a.dbc_readers--
 		a.mu.unlock()
 	}
+	// EVERY a.chans[ci] access in this worker runs under a.mu AND behind
+	// chan_gen_ok — the same rule as the eth worker: a Stop -> quick re-Start
+	// can revive `running` inside our 200ms recv window (a stale worker must
+	// exit, not run beside the new one), and a project New/Open/Reload
+	// REPLACES app.chans (stale ci: out of bounds on a smaller project,
+	// counter cross-talk on a same-sized one). Spawn-time snapshot first —
+	// spawn and rebuild share the GUI thread, but guard anyway.
+	a.mu.lock()
+	if !a.chan_gen_ok(ci, gen) {
+		a.mu.unlock()
+		bus.close()
+		return
+	}
 	chname := a.chans[ci].name
-	// the TraceRsp id is config-static (the manifest is only mutated while stopped, so it can't
-	// change under a running RX loop) — resolve it once, not per frame in the hot path.
+	adapter := a.chans[ci].adapter
+	address := a.chans[ci].address
+	// the TraceRsp id is config-static (the manifest only changes with a
+	// project swap, which our generation guard detects) — resolve it once
+	// inside the guarded snapshot, not per frame in the hot path.
 	rsp_id := a.manifest.frames.or_defaults().rsp
-	for a.running && a.chans[ci].enabled {
+	a.mu.unlock()
+	for {
+		a.mu.lock()
+		alive := a.running && a.chan_gen_ok(ci, gen) && a.chans[ci].enabled
+		a.mu.unlock()
+		if !alive {
+			break
+		}
 		// track the real link state so a bound-but-DOWN iface shows "down" (red), not "run",
 		// and flips to green the moment the user brings it up (ip link set … up).
-		down := !iface_link_up(a.chans[ci].adapter, a.chans[ci].address)
-		if down != a.chans[ci].link_down {
-			a.mu.lock()
+		down := !iface_link_up(adapter, address)
+		mut flipped := false
+		a.mu.lock()
+		if a.chan_gen_ok(ci, gen) && down != a.chans[ci].link_down {
 			a.chans[ci].link_down = down
-			a.mu.unlock()
+			flipped = true
+		}
+		a.mu.unlock()
+		if flipped {
 			vgui.wake()
 		}
 		f := bus.recv(200) or { continue }
 		t_ms := f64(time.ticks() - a.t0)
-		name := a.lookup_name(f.id, f.extended)
+		// snapshot the databases under the lock, then run the lookup UNLOCKED
+		// (see lookup_name_in) so a linear DBC scan can't serialize the workers.
 		a.mu.lock()
+		if !a.chan_gen_ok(ci, gen) {
+			a.mu.unlock()
+			break
+		}
+		dbs_snap := a.dbs
+		a.mu.unlock()
+		name := lookup_name_in(dbs_snap, f.id, f.extended)
+		a.mu.lock()
+		// re-check AFTER the unlocked lookup. `running` matters as much as the
+		// generation: a Stop that lands while we were blocked in recv leaves the
+		// generation valid (no rebuild) but `running` false — this frame arrived
+		// after Stop and must NOT append. A New/Open/Reload fails chan_gen_ok.
+		if !(a.running && a.chan_gen_ok(ci, gen)) {
+			a.mu.unlock()
+			break
+		}
 		if !a.paused {
 			a.trace << TraceRow{t_ms, chname, 'RX', f.id, f.extended, f.rtr, name, f.data.clone()}
 			if a.trace.len > trace_cap {
@@ -921,9 +1008,7 @@ fn rx_loop(app &App, ci int, iface string) {
 		}
 	}
 	bus.close()
-	a.mu.lock()
-	a.chans[ci].running = false
-	a.mu.unlock()
+	a.chan_worker_done(ci, gen)
 }
 
 // eth_local_ip guesses the host's outbound ip toward the board: a connected
@@ -960,7 +1045,7 @@ fn (mut app App) spawn_eth_rx(ci int) {
 	// generations are APP-GLOBAL monotonic, not per-channel: a chans rebuild
 	// resets run_gen to 0, so a per-channel counter would mint gen 1 for the
 	// new project's first Start — the same value a stale pre-rebuild worker
-	// may still hold, letting it pass eth_gen_ok on a same-sized project.
+	// may still hold, letting it pass chan_gen_ok on a same-sized project.
 	// A global counter never reuses a value, so staleness holds by
 	// construction across rebuilds.
 	app.next_run_gen++
@@ -981,10 +1066,10 @@ fn (mut app App) spawn_eth_rx(ci int) {
 fn eth_rx_loop(app &App, ci int, m telem.Manifest, gen int) {
 	mut a := unsafe { app }
 	// spawn-time snapshot. Normally nothing can have interleaved yet (spawn
-	// and rebuild both run on the GUI thread), but guard anyway: eth_gen_ok
+	// and rebuild both run on the GUI thread), but guard anyway: chan_gen_ok
 	// is the single validity rule for EVERY a.chans[ci] access in this worker.
 	a.mu.lock()
-	if !a.eth_gen_ok(ci, gen) {
+	if !a.chan_gen_ok(ci, gen) {
 		a.mu.unlock()
 		return
 	}
@@ -995,13 +1080,13 @@ fn eth_rx_loop(app &App, ci int, m telem.Manifest, gen int) {
 	sip := m.someip
 	if sip.service == 0 || board_ip == '' {
 		a.notify('someip ${chname}: no board ip / no manifest identity — attach the board\'s manifest and set its ip')
-		a.eth_worker_done(ci, gen)
+		a.chan_worker_done(ci, gen)
 		return
 	}
 	if local == '' {
 		local = eth_local_ip('${board_ip}:${sip.port}') or {
 			a.notify('someip ${chname}: could not auto-detect the local ip — set "local ip" on the channel')
-			a.eth_worker_done(ci, gen)
+			a.chan_worker_done(ci, gen)
 			return
 		}
 	}
@@ -1018,7 +1103,7 @@ fn eth_rx_loop(app &App, ci int, m telem.Manifest, gen int) {
 	mut link := eth_open_retry('${local}:${peer_port}', '${board_ip}:${sip.port}', sip.service,
 		sip.version, defs) or {
 		a.notify('someip ${chname}: bind ${local}:${peer_port}: ${err}')
-		a.eth_worker_done(ci, gen)
+		a.chan_worker_done(ci, gen)
 		return
 	}
 	// the PUBLISH is guarded too — the last unguarded moment: a worker stalled
@@ -1027,7 +1112,7 @@ fn eth_rx_loop(app &App, ci int, m telem.Manifest, gen int) {
 	// later clear it via pointer identity). Same rule as everywhere: on a
 	// stale generation, exit through the no-teardown path.
 	a.mu.lock()
-	if !a.eth_gen_ok(ci, gen) {
+	if !a.chan_gen_ok(ci, gen) {
 		a.mu.unlock()
 		link.close()
 		return
@@ -1035,7 +1120,7 @@ fn eth_rx_loop(app &App, ci int, m telem.Manifest, gen int) {
 	a.eth_link = link
 	a.mu.unlock()
 	a.notify('someip ${chname}: ${local}:${peer_port} <- ${board_ip}:${sip.port} (${defs.len} event frame(s))')
-	// EVERY a.chans[ci] access below runs under a.mu AND behind eth_gen_ok:
+	// EVERY a.chans[ci] access below runs under a.mu AND behind chan_gen_ok:
 	// a project New/Open/Reload REPLACES app.chans while we sit blocked in
 	// poll() for up to 100ms, so on return a stale ci may be out of bounds
 	// (fewer channels) or index a different channel of the new project (same
@@ -1043,7 +1128,7 @@ fn eth_rx_loop(app &App, ci int, m telem.Manifest, gen int) {
 	// bounds would blow first. On failure: get out without teardown writes.
 	for {
 		a.mu.lock()
-		alive := a.running && a.eth_gen_ok(ci, gen) && a.chans[ci].enabled
+		alive := a.running && a.chan_gen_ok(ci, gen) && a.chans[ci].enabled
 		a.mu.unlock()
 		if !alive {
 			break
@@ -1051,7 +1136,7 @@ fn eth_rx_loop(app &App, ci int, m telem.Manifest, gen int) {
 		ev := link.poll() or {
 			// keep the drop/e2e counters visible even on an idle wire
 			a.mu.lock()
-			if a.eth_gen_ok(ci, gen) {
+			if a.chan_gen_ok(ci, gen) {
 				a.chans[ci].drops = link.drops
 				a.chans[ci].e2e_bad = link.e2e_bad
 				a.chans[ci].e2e_lost = link.e2e_lost
@@ -1061,7 +1146,7 @@ fn eth_rx_loop(app &App, ci int, m telem.Manifest, gen int) {
 		}
 		t_ms := f64(time.ticks() - a.t0)
 		a.mu.lock()
-		if !a.eth_gen_ok(ci, gen) {
+		if !a.chan_gen_ok(ci, gen) {
 			// rebuilt under us mid-event: the row/counters belong to a project
 			// that no longer exists — drop everything and exit
 			a.mu.unlock()
@@ -1092,22 +1177,23 @@ fn eth_rx_loop(app &App, ci int, m telem.Manifest, gen int) {
 	if voidptr(a.eth_link) == voidptr(link) {
 		a.eth_link = unsafe { nil }
 	}
-	if a.eth_gen_ok(ci, gen) {
+	if a.chan_gen_ok(ci, gen) {
 		a.chans[ci].drops = link.drops
 		a.chans[ci].e2e_bad = link.e2e_bad
 		a.chans[ci].e2e_lost = link.e2e_lost
 	}
 	a.mu.unlock()
-	a.eth_worker_done(ci, gen)
+	a.chan_worker_done(ci, gen)
 	link.close()
 }
 
-// eth_gen_ok reports (call it under a.mu) whether ci/gen still name THIS
-// worker's channel: a rebuild may have replaced app.chans entirely (stale ci
-// out of bounds, or a different channel with run_gen reset to 0), and a
-// re-Start bumps run_gen. Bounds first — the generation compare must never
-// be the thing that indexes out of range.
-fn (a &App) eth_gen_ok(ci int, gen int) bool {
+// chan_gen_ok reports (call it under a.mu) whether ci/gen still name THIS
+// worker's channel — the shared validity rule for BOTH channel workers (the
+// CAN rx_loop and the someip eth_rx_loop): a rebuild may have replaced
+// app.chans entirely (stale ci out of bounds, or a different channel with
+// run_gen reset to 0), and a re-Start mints a fresh generation. Bounds first
+// — the generation compare must never be the thing that indexes out of range.
+fn (a &App) chan_gen_ok(ci int, gen int) bool {
 	return ci >= 0 && ci < a.chans.len && a.chans[ci].run_gen == gen
 }
 
@@ -1135,13 +1221,14 @@ fn eth_open_retry(local string, board string, service u16, version u8, defs []so
 	return error('bind retry exhausted') // unreachable: attempt 5 returns above
 }
 
-// eth_worker_done clears the channel's running flag — but ONLY for the
+// chan_worker_done clears the channel's running flag — but ONLY for the
 // generation that owns it (bounds-checked: the channel may be gone entirely
 // after a rebuild): a superseded worker (Stop -> quick re-Start, or a project
 // swap) must not mark the NEW state as stopped — or index out of range.
-fn (mut app App) eth_worker_done(ci int, gen int) {
+// Shared by the CAN and eth workers.
+fn (mut app App) chan_worker_done(ci int, gen int) {
 	app.mu.lock()
-	if app.eth_gen_ok(ci, gen) {
+	if app.chan_gen_ok(ci, gen) {
 		app.chans[ci].running = false
 	}
 	app.mu.unlock()
@@ -2009,6 +2096,31 @@ fn selftest_config(mut app App) {
 		ok = selftest_check('c1 adapter doip', c1.adapter == 'doip') && ok
 		ok = selftest_check('c1 address host:port', c1.address == '127.0.0.1:13400') && ok
 	}
+	// manual rename onto a taken name must be rejected at commit and the name
+	// fields reverted (the load gate would catch it too, but only after a
+	// save->load)
+	app.cfg_bufs[1].name_buf = mkbuf('CAN0', 48)
+	app.commit_cfg()
+	ok = selftest_check('rename collision reverted', app.proj.channels[1].name == 'Diag'
+		&& vgui.buf_str(app.cfg_bufs[1].name_buf) == 'Diag') && ok
+	// a NON-colliding rename still commits normally
+	app.cfg_bufs[1].name_buf = mkbuf('Diag2', 48)
+	app.commit_cfg()
+	ok = selftest_check('clean rename commits', app.proj.channels[1].name == 'Diag2') && ok
+	// simultaneous renames validate against the FINAL set: CAN0->CANX while
+	// Diag2->CAN0 is legal (no duplicate in the result) and must commit
+	app.cfg_bufs[0].name_buf = mkbuf('CANX', 48)
+	app.cfg_bufs[1].name_buf = mkbuf('CAN0', 48)
+	app.commit_cfg()
+	ok = selftest_check('simultaneous rename swap commits', app.proj.channels[0].name == 'CANX'
+		&& app.proj.channels[1].name == 'CAN0') && ok
+	// two EMPTY names are a real collision (the load gate rejects it) — the
+	// found-flag must catch it where a '' sentinel could not; both revert
+	app.cfg_bufs[0].name_buf = mkbuf('', 48)
+	app.cfg_bufs[1].name_buf = mkbuf('', 48)
+	app.commit_cfg()
+	ok = selftest_check('empty-name duplicate reverted', app.proj.channels[0].name == 'CANX'
+		&& app.proj.channels[1].name == 'CAN0') && ok
 	println(if ok { 'SELFTEST_CONFIG: PASS' } else { 'SELFTEST_CONFIG: FAIL' })
 	println('--- discover_all() ---')
 	for d in app.discover_all() {
@@ -2461,10 +2573,41 @@ fn (mut app App) commit_cfg() {
 	if app.cfg_bufs.len != app.proj.channels.len {
 		return
 	}
+	// bus names are validated as a SET against the FINAL buffered result —
+	// a per-field check against the half-updated project would wrongly reject
+	// simultaneous renames (A->B while B->C is legal: the final set has no
+	// duplicate). Names key trace rows, bus chips and the someip trace decode
+	// gate, and the project LOAD rejects duplicates — catching a collision
+	// only at the next save->load would let the session run poisoned. On a
+	// collision ALL name fields revert (names are one logical group); every
+	// other field commits as usual — commit_cfg's granularity is per field.
+	mut proposed := []string{cap: app.proj.channels.len}
+	for i in 0 .. app.proj.channels.len {
+		proposed << vgui.buf_str(app.cfg_bufs[i].name_buf)
+	}
+	mut dup_found := false // explicit flag, not a value sentinel: two EMPTY names
+	mut dup_name := ''     // are a real collision, and '' cannot signal "none found"
+	mut seen_names := map[string]bool{}
+	for nm in proposed {
+		if nm in seen_names {
+			dup_found = true
+			dup_name = nm
+			break
+		}
+		seen_names[nm] = true
+	}
+	if dup_found {
+		app.notify('bus name "${dup_name}" is duplicated — renames reverted')
+		for i in 0 .. app.proj.channels.len {
+			app.cfg_bufs[i].name_buf = mkbuf(app.proj.channels[i].name, 48)
+		}
+	}
 	for i in 0 .. app.proj.channels.len {
 		b := app.cfg_bufs[i]
 		mut ch := &app.proj.channels[i]
-		ch.name = vgui.buf_str(b.name_buf)
+		if !dup_found {
+			ch.name = proposed[i]
+		}
 		ch.network = vgui.buf_str(b.network_buf)
 		ch.address = vgui.buf_str(b.address_buf)
 		ch.iface = project.compose_iface(ch.adapter, ch.address)
@@ -3359,8 +3502,11 @@ fn draw_buses(mut app App, chans []Chan) {
 				app.chans[i].enabled = new
 				// enabling a channel mid-run spawns its RX thread; disabling lets it exit
 				if new && app.running && c.monitorable() && !app.chans[i].running {
+					// same generation minting as start() — we already hold app.mu here
+					app.next_run_gen++
+					app.chans[i].run_gen = app.next_run_gen
 					app.chans[i].running = true
-					spawn rx_loop(app, i, app.chans[i].iface)
+					spawn rx_loop(app, i, app.chans[i].iface, app.next_run_gen)
 				}
 				app.mu.unlock()
 				// someip: outside the lock (spawn_eth_rx notifies on a bad manifest);
