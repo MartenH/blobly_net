@@ -24,8 +24,10 @@ sudo ./scripts/setup_sudoers.sh   # optional: scoped passwordless sudo (apt-get/
 ./scripts/setup_env.sh            # V + native deps (GLFW/FreeType) + can-utils, builds the GUI,
                                   # brings up vcan0, runs the tests
 ./scripts/run_vgui.sh             # build + run the GUI
-python3 sut/can_sut.py vcan0      # a virtual ECU, in another terminal
 ```
+
+For traffic with no hardware, open `projects/sim-demo.blobnet` — the simulated ECUs are native
+(`modules/sim`) and run in-process. `sut/*.py` is NOT part of this path; see Layout.
 
 ## Decisions
 
@@ -49,7 +51,9 @@ eval/vgui/           the V wrapper around Dear ImGui/ImPlot
 modules/             engine (GUI-free, unit-tested)
 scripts/             setup, run, test, packaging
 projects/            example `.blobnet` projects
-sut/                 Python virtual ECU (test fixture)
+sut/                 Python VERIFICATION ORACLES (dev-time only, not CI, not the sim path):
+                     cantools/asammdf/udsoncan as INDEPENDENT implementations to diff V against.
+                     Its virtual-ECU role is superseded by modules/sim (native, in-process).
 tests/               Lua test scripts
 docs/                design + platform docs; docs/history.md = archived status log
 ```

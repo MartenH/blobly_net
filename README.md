@@ -133,14 +133,16 @@ shows is also reachable without it — see [headless](#headless--scripted-no-gui
 ```sh
 scripts/setup_env.sh           # installs toolchain + deps (V, C/C++, GLFW, FreeType)
 scripts/run_vgui.sh            # build + run the GUI
-python3 sut/can_sut.py vcan0   # a virtual ECU on vcan0, in another terminal
 ```
 
-To reproduce the screenshot above — no hardware, no drivers:
+To reproduce the screenshot above — no hardware, no drivers, nothing else to start:
 
 ```sh
 BLOBLY_PROJECT=projects/sim-demo.blobnet BLOBLY_AUTOSTART=1 scripts/run_vgui.sh
 ```
+
+The simulated ECUs are native (`modules/sim`) and run in-process, so there is no second
+terminal and no Python in the loop.
 
 Needs the V compiler, a C/C++ toolchain, and GLFW + FreeType (on Debian/Ubuntu:
 `sudo apt install libglfw3-dev libfreetype-dev`). See
