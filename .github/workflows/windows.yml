@@ -1,6 +1,6 @@
 name: windows-build
 
-# Native Windows build of the Blobly Net GUI (the Dear ImGui app, cmd/blobly_vgui).
+# Native Windows build of the Blobly Net GUI (the Dear ImGui app, cmd/blobly_net).
 # Compiles + links + bundles it; does NOT run it. One job (mingw); the old vlang/gui app
 # (src/main.v) and its MSVC/vcpkg/pango/vglyph path were retired when the migration landed.
 #
@@ -89,22 +89,22 @@ jobs:
           git -c advice.detachedHead=false clone --quiet https://github.com/vlang/markdown.git "$vm/markdown"
           git -C "$vm/markdown" -c advice.detachedHead=false checkout --quiet ef2f101
 
-      # Build cmd/blobly_vgui. The prebuilt v.exe drives mingw gcc via -cc gcc; the
+      # Build cmd/blobly_net. The prebuilt v.exe drives mingw gcc via -cc gcc; the
       # `#flag windows` line in vgui.v carries the static glfw + freetype/harfbuzz/glib link
       # line. -path adds `eval` for the `vgui` module. (The old app needed a 2-step V->C->gcc
       # workaround for a V/os.execute panic; the mingw src/main.v job built with the one-liner
       # fine, so we use it here too — switch to build_deps.sh's 2-step if it regresses.)
-      # The SHIPPED binary is blobly_net.exe, not blobly_vgui.exe: "vgui" is the internal ImGui
-      # wrapper module, which a user unzipping the bundle has no reason to know. The .blobnet
-      # file-association script (scripts/register_blobnet_win.ps1) has always searched for
-      # blobly_net.exe, so while this built blobly_vgui.exe that feature could never find its
-      # own executable. The source dir stays cmd/blobly_vgui — that name is for developers.
-      - name: Build vgui app (V -cc gcc)
+      # The binary is blobly_net.exe — the product name. It was blobly_vgui.exe until the app
+      # was renamed cmd/blobly_vgui -> cmd/blobly_net; "vgui" is the internal ImGui wrapper
+      # (eval/vgui, which keeps that name), not something a user should ever see. That mismatch
+      # was a live bug: scripts/register_blobnet_win.ps1 has always searched for blobly_net.exe,
+      # so .blobnet file association could never find the executable it was written for.
+      - name: Build the GUI app (V -cc gcc)
         shell: msys2 {0}
         run: |
           mkdir -p build
           /c/v-ct/v.exe -cc gcc -no-parallel -enable-globals -path '@vlib|@vmodules|modules|eval' \
-            -o build/blobly_net.exe cmd/blobly_vgui/main.v
+            -o build/blobly_net.exe cmd/blobly_net/main.v
           test -f build/blobly_net.exe && echo "BUILD OK -> build/blobly_net.exe"
           # Copy the exe's mingw64 runtime DLLs (freetype/harfbuzz/glib/gcc/…) next to it via
           # ldd, so the bundled artifact runs outside an MSYS2 shell.

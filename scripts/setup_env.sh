@@ -30,9 +30,9 @@ if [ ! -d "$HOME/.vmodules/markdown" ]; then
 	git -C "$HOME/.vmodules/markdown" checkout --quiet ef2f101
 fi
 
-echo "==> 3/5 Build the GUI (imgui C deps -> libvgui_c.a, then cmd/blobly_vgui)"
+echo "==> 3/5 Build the GUI (imgui C deps -> libvgui_c.a, then cmd/blobly_net)"
 # run_vgui.sh (RUN=0 = build only) builds eval/vgui/libvgui_c.a from the pinned cimgui/
-# cimplot (via eval/vgui/build_deps.sh) and compiles cmd/blobly_vgui. No vlang/gui / vglyph
+# cimplot (via eval/vgui/build_deps.sh) and compiles cmd/blobly_net. No vlang/gui / vglyph
 # / markdown — the imgui app doesn't use them (that GUI stack was retired at the migration).
 RUN=0 ./scripts/run_vgui.sh
 

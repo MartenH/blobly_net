@@ -1,7 +1,7 @@
 # Project editing — build a `.blobnet` from a blank project in the GUI
 
 Status: **IMPLEMENTED** 2026-07-05 (schema v2 + File lifecycle + file browser + Configuration
-editor + per-bus Trace, all 7 steps). Target: the Dear ImGui app `cmd/blobly_vgui`.
+editor + per-bus Trace, all 7 steps). Target: the Dear ImGui app `cmd/blobly_net`.
 
 ## Goal
 
@@ -328,7 +328,7 @@ makes a new chip appear automatically.
 ## Implementation plan
 
 Ordered so each step builds + runs on its own. Model/persistence first (pure V, testable),
-then the GUI surfaces. All GUI work is in the single-file `cmd/blobly_vgui/main.v`.
+then the GUI surfaces. All GUI work is in the single-file `cmd/blobly_net/main.v`.
 
 ### Step 1 — schema v2 in `modules/project` (pure V, no GUI)
 - `project.v`: add `Channel` fields `adapter string`, `address string`, `network string`,

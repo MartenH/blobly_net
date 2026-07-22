@@ -1,4 +1,4 @@
-// blobly_vgui — the Dear ImGui + ImPlot frontend for blobly_net (phased migration off
+// blobly_net — the Dear ImGui + ImPlot frontend for blobly_net (phased migration off
 // vlang/gui; see docs/gui_toolkit_evaluation.md).
 //   Phase 1: live decoded Trace + Trace Chart swimlane, docked in one window.
 //   Phase 2: menu bar (File/View) + Start/Stop measurement lifecycle + a Buses panel with
@@ -7,7 +7,7 @@
 //            telem) unchanged; gui's src/main.v stays the shipping app until parity.
 //
 // Build: eval/vgui/build_deps.sh  then
-//   v -enable-globals -cc gcc -path "@vlib|@vmodules|modules|eval" run cmd/blobly_vgui/main.v
+//   v -enable-globals -cc gcc -path "@vlib|@vmodules|modules|eval" run cmd/blobly_net/main.v
 // Project via BLOBLY_PROJECT (default projects/trace-demo.blobnet). Env: VGUI_WAKE_MS cap.
 module main
 
@@ -1154,7 +1154,7 @@ fn main() {
 	app.log_path_buf = mkbuf('samples/demo.log', 256)
 	app.doip_host_buf = mkbuf('127.0.0.1', 64)
 	app.load_project(proj_path)
-	println('blobly_vgui: ${app.proj_name} — ${app.chans.len} channel(s), ${app.dbs.len} DBC(s), manifest=${app.has_manifest}. Press Start.')
+	println('blobly_net: ${app.proj_name} — ${app.chans.len} channel(s), ${app.dbs.len} DBC(s), manifest=${app.has_manifest}. Press Start.')
 
 	// Headless self-test of the Configuration editor: drive the real methods (New → add bus →
 	// edit fields → add DBC → Save As) and assert the written .blobnet round-trips. Exits after.

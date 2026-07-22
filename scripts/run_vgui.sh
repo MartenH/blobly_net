@@ -1,5 +1,5 @@
 #!/bin/sh
-# run_vgui.sh — build + run the vgui-migration app (cmd/blobly_vgui) on Linux/WSL AND Windows.
+# run_vgui.sh — build + run the vgui-migration app (cmd/blobly_net) on Linux/WSL AND Windows.
 # This is the Dear ImGui + ImPlot + FreeType port; it does NOT use vlang/gui.
 #
 # ONE script for both platforms. On Windows run it through the dedicated MSYS2 bash as a
@@ -11,7 +11,7 @@
 #   DEPS=1 scripts/run_vgui.sh                # rebuild libvgui_c.a FIRST — REQUIRED after any
 #                                             #   eval/vgui/{vgui.h,vgui_glue.cpp} change, else
 #                                             #   the link fails with 'undefined reference to vgui_*'
-#   RUN=0 scripts/run_vgui.sh                 # build only -> build/blobly_vgui[.exe]
+#   RUN=0 scripts/run_vgui.sh                 # build only -> build/blobly_net[.exe]
 #   DBG=1 RUN=0 scripts/run_vgui.sh           # build with -g (asserts on) for gdb
 #   DEPS=1 scripts/run_vgui.sh                # force-rebuild eval/vgui/libvgui_c.a first
 #   BLOBLY_PROJECT=projects/doip-demo.blobnet scripts/run_vgui.sh
@@ -26,7 +26,7 @@ set -e
 # (the VS Code tasks launch `bash -l`; or use the C:\dev\msys64-ct MINGW64 shell directly).
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$HERE"
-target="${1:-cmd/blobly_vgui/main.v}"
+target="${1:-cmd/blobly_net/main.v}"
 
 # --- platform: pin the dedicated mingw toolchain + v.exe on Windows/MSYS2 --------------
 case "$(uname -s)" in
@@ -66,8 +66,8 @@ set -- -cc gcc -enable-globals -path "@vlib|@vmodules|modules|eval"
 [ "${DBG:-0}" = "1" ] && set -- "$@" -g
 if [ "${RUN:-1}" = "0" ]; then
 	mkdir -p build
-	out="build/blobly_vgui"
-	[ "${DBG:-0}" = "1" ] && out="build/blobly_vgui_dbg"
+	out="build/blobly_net"
+	[ "${DBG:-0}" = "1" ] && out="build/blobly_net_dbg"
 	exec "$V" "$@" -o "$out" "$target"
 else
 	export BLOBLY_PROJECT="${BLOBLY_PROJECT:-projects/sim-demo.blobnet}"

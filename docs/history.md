@@ -4,7 +4,7 @@
 > to live in `CLAUDE.md`, moved out on 2026-07-22 so the agent guide could be short enough to
 > stay true. Entries are point-in-time notes: many describe tools, files and decisions that have
 > since changed (most visibly the GUI, which moved from `vlang/gui` + `src/main.v` to Dear ImGui
-> + `cmd/blobly_vgui` on 2026-07-06). Read it as history, never as current state.
+> + `cmd/blobly_net` on 2026-07-06). Read it as history, never as current state.
 >
 > For what is true **now**, see [CLAUDE.md](../CLAUDE.md). For what changed and when, `git log`
 > is the real record.

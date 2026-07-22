@@ -127,7 +127,7 @@ on-target DWT benchmark: cycles, CPI, stalls).*
 **Scripting** — **Lua** test scripts with a small test framework, runnable headless in
 CI or live in the GUI.
 
-The GUI is a native **Dear ImGui + ImPlot** application (`cmd/blobly_vgui`); everything it
+The GUI is a native **Dear ImGui + ImPlot** application (`cmd/blobly_net`); everything it
 shows is also reachable without it — see [headless](#headless--scripted-no-gui) below.
 
 ## Build & run

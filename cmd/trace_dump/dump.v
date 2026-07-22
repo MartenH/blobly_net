@@ -3,7 +3,7 @@
 // Freezes the target's ring(s) and dumps the selected cores over ISO-TP, reassembling each
 // per-core block on the record id (flow control on the dump_fc id) and decoding the records —
 // FB / thread / ISR intervals, epochs, and per-core block headers. This is the non-GUI twin of
-// the blobly_vgui Trace Chart's dump worker; run it against emb's trace_multicore demo:
+// the blobly_net Trace Chart's dump worker; run it against emb's trace_multicore demo:
 //
 //   (emb)  examples/trace_multicore/bin/trace_multicore vcan0 &
 //   v -path "@vlib|@vmodules|modules" run cmd/trace_dump/dump.v vcan0 0x0003 path/to/trace-manifest.csv
