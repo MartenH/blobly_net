@@ -415,6 +415,11 @@ prompt for a password.
 
 ## Status log
 
+> **Keep this current in the PR that lands the work.** This file is the only memory a new
+> agent session has, so an out-of-date log is worse than none — the next session trusts it.
+> On 2026-07-22 a ~2.5-week gap (#19–#54) had to be reconstructed from `git log`; don't
+> repeat that. Entries are appended **oldest-first** (newest at the bottom).
+
 - 2026-06-03: Plan approved. Repo was empty (LICENSE only).
 - 2026-06-03: Phase 0 — V 0.5.1 built+installed, trivial program runs. gui module installed.
   Skeleton created (v.mod, src/main.v, README, .gitignore). Minimal window written.
@@ -1585,3 +1590,37 @@ prompt for a password.
   **17/17** vs the renamed `sim-demo.blobnet` (loader parses it as YAML). Historical status-log
   mentions of the old `.yml` names left as-is (accurate history). NOT yet OS-associated on Windows
   (double-click → app) — a later step (register `.blobnet` → blobly_net.exe).
+
+- 2026-07-06 → 07-21: **~30 PRs (#19–#54) that this log missed** — recorded retrospectively on
+  2026-07-22. The work below landed without a status-log entry, so a fresh session reading this
+  file had a ~2.5-week-stale picture of the project. Grouped by theme:
+  - **Trace chart** (#21, #24–#35, #44, #45): decode blobly_emb's `entity_id` record format +
+    config-driven frame ids; derived **idle lane**; FB bars show EXECUTION (not the response-time
+    envelope); preempt hatch is **thread-only** and marks the **cut**, not the slice body;
+    thread lanes show RTOS **priority** (manifest 5th column); preemption **cut-links**
+    (victim → preemptor); micro-gaps = switch overhead, not idle; **wall-consistent** thread bars
+    (ISR-chopped chunks + visible READY); stable lane order; dump **retry + drain** with a 1 s
+    budget; **per-core** thread ids ((core,tid) keying for the two-core swimlane); **multi-block**
+    dump (read blocks until the format says stop, transport-neutral).
+  - **Shell panel** (#37–#39): an interactive console to the target over CAN, with copy/paste,
+    clear, and real selectable scrollback.
+  - **Flash** (#46–#48): `cmd/flash` host flasher (UDS programming session over ISO-TP), then a
+    shared `modules/flash` session + the **GUI Flash panel**; **0x29 challenge/response auth**
+    replaces 0x27 seed/key, with an adaptive path that flashes a keyless boot without auth.
+    BLBT passthrough: mkimage-wrapped images transfer as-is.
+  - **SOME/IP** (#49, #53, #54): E3 core — 16-byte header codec + envelope validation with
+    golden vectors; an **oracle** pinning the FULL blobly_emb request datagram (not just the
+    header slice), reserved client-id 0 rejected, request session-liveness rule; then the
+    **RPC client + eth shell** in the GUI — the host half of blobly_emb's P3.
+  - **DBC editor** (#50, #51): P1a — the **canonical `candb` serializer** (`modules/candb/
+    dbc_write.v`) so a save/load cycle never drifts a file and git diffs show real changes only;
+    P1b — the **panel**: forms, bit-matrix grid, live-loop save, read-only while running, with
+    reader locking/quiescence worked out over 7 review rounds. See `docs/dbc_editor.md`.
+  - **System viewer** (#52): `modules/sysview` + the read-only **System panel** — parses a
+    blobly_emb `system.toml` (buses, once-declared cross-node signals with producers, nodes and
+    their identity blocks) plus each node's `ecu.toml`. Deliberately a **viewer, not an editor**.
+  - **Other** (#12, #19, #22, #23, #36, #40–#43): `LoadDetail` (0x7E1) multi-window load +
+    overruns; Generators overhaul + DBC-typed inputs + collapsible trees + searchable browser
+    Help; ISO-TP **CF sequence-number validation**; manifest handler/thread ids widened to u16
+    (14-bit entity-id space); socketcan **EINTR retry** carrying errno up; Graphics y-axes go
+    ImPlot-native; the H755 bench project; `M4LoadFrame` (0x201), the first cross-core signal.
