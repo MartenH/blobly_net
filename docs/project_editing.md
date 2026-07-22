@@ -1,7 +1,7 @@
 # Project editing — build a `.blobnet` from a blank project in the GUI
 
 Status: **IMPLEMENTED** 2026-07-05 (schema v2 + File lifecycle + file browser + Configuration
-editor + per-bus Trace, all 7 steps). Target: the Dear ImGui app `cmd/blobly_vgui`.
+editor + per-bus Trace, all 7 steps). Target: the Dear ImGui app `cmd/blobly_net`.
 
 ## Goal
 
@@ -328,7 +328,7 @@ makes a new chip appear automatically.
 ## Implementation plan
 
 Ordered so each step builds + runs on its own. Model/persistence first (pure V, testable),
-then the GUI surfaces. All GUI work is in the single-file `cmd/blobly_vgui/main.v`.
+then the GUI surfaces. All GUI work is in the single-file `cmd/blobly_net/main.v`.
 
 ### Step 1 — schema v2 in `modules/project` (pure V, no GUI)
 - `project.v`: add `Channel` fields `adapter string`, `address string`, `network string`,
@@ -367,7 +367,7 @@ then the GUI surfaces. All GUI work is in the single-file `cmd/blobly_vgui/main.
 
 ### Step 4 — imgui file browser (`main.v` + tiny vgui glue)
 - Add `vgui.modal_begin(title) bool` / `vgui.modal_end()` (imgui `OpenPopup`+`BeginPopupModal`)
-  to `eval/vgui/{vgui.v,vgui.h,vgui_glue.cpp}` — the only C change (⇒ `DEPS=1` rebuild).
+  to `libs/vgui/{vgui.v,vgui.h,vgui_glue.cpp}` — the only C change (⇒ `DEPS=1` rebuild).
 - `App` state: `fb_open bool`, `fb_mode` (open|save), `fb_dir string`, `fb_name_buf []u8`,
   `fb_target` (which action runs on OK). `draw_filebrowser(mut app)`: `os.ls(dir)` → parent,
   dirs, files; `*.blobnet`/`*.yml`/`*.yaml` filter in open mode; filename input in save mode;
@@ -400,7 +400,7 @@ then the GUI surfaces. All GUI work is in the single-file `cmd/blobly_vgui/main.
 ### Step 7 — demo + docs
 - Ship a `projects/restbus-2vcan.blobnet` (two vcan buses, a DBC + simulated transmitters
   each, a request/response rule on vcan0) as the worked example.
-- Update `docs/` + the status log; note the `DEPS=1`-on-glue-change gotcha in `run_vgui.sh`.
+- Update `docs/` + the status log; note the `DEPS=1`-on-glue-change gotcha in `run_gui.sh`.
 
 ### Verification summary
 - `v test modules/project/` (round-trip + legacy) — Step 1.

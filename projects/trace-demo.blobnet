@@ -9,7 +9,7 @@
 # the command + status frames.
 #
 # Run:  (in blobly_emb/examples/trace_demo:  make vcan && make run)
-#       BLOBLY_PROJECT=projects/trace-demo.blobnet ./scripts/run_vgui.sh   -> open the ≣ panel
+#       BLOBLY_PROJECT=projects/trace-demo.blobnet ./scripts/run_gui.sh   -> open the ≣ panel
 project:
   name: trace-demo
   version: 2

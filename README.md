@@ -6,16 +6,52 @@ Test (SUT) over **CAN**, and over **Ethernet** using the automotive protocols th
 simulate ECUs, and read back logs — **virtual first** (Linux `vcan0`), with real hardware as
 a drop-in.
 
-> Early WIP, but broadly usable. Architecture and decisions are in [CLAUDE.md](CLAUDE.md);
-> what's coming is in [ROADMAP.md](ROADMAP.md); the archived development log is in
-> [docs/history.md](docs/history.md).
+> ## ⚠ Very early in development
+>
+> This is a single-author project still in its **design phase** — not a product, and not
+> something to rely on yet. Specifically:
+>
+> - **Maturity varies a lot between features.** The protocol engine in `modules/` is
+>   [unit-tested and runs in CI](#how-its-tested) on every push; a fair amount of the rest has
+>   only ever been exercised on the
+>   author's own bench, against the author's own boards. Some of it is **effectively untested**,
+>   and a feature existing here is not a claim that it is correct.
+> - **Formats and interfaces will change** — `.blobnet` projects, and the wire formats shared
+>   with blobly_emb. No compatibility promise, no tagged release.
+> - **It has had no users but the author**, so expect missing validation, unhandled edge cases
+>   and error paths nobody has walked.
+>
+> It is used daily against real hardware and is genuinely useful — but go in expecting to hit
+> things, and please [open an issue](../../issues) when you do.
+
+**Two ways to drive it, over the same engine:** the **GUI** for interactive work, and
+**[headless](#headless--scripted-no-gui)** — Lua test scripts and CLI tools with no window and
+no display, which is how it runs in CI. The protocol engine lives in `modules/` and imports no
+GUI code, so scripted use is a first-class path, not a cut-down one. (The reverse isn't claimed:
+editing a DBC or watching a live plot needs the GUI.)
 
 ![Blobly Net — live trace, decoded signals and real-time plots](docs/screenshots/overview.png)
 
 *The `sim-demo` project running with no hardware: two in-process CAN networks with simulated
 ECUs, the grouped trace (decoded via DBC), and live multi-axis plots of `EngineSpeed`,
-`VehicleSpeed` and `ThrottlePos`. The left activity bar groups blobly_emb-specific panels
-(`Cht`/`Fsh`/`Shl`/`Sys`) separately at the bottom.*
+`VehicleSpeed` and `ThrottlePos`.*
+
+## Get it
+
+There is **no tagged release yet** — nothing to download from a Releases page.
+
+**Windows** — CI builds a self-contained bundle on every push to `main` (and on pull requests).
+Take it from **[Actions](../../actions/workflows/windows.yml)** → the latest `windows-build`
+run → the **`blobly_net-windows-x64`** artifact. Unzip and run **`blobly_net.exe`**: the runtime
+DLLs, demo projects, DBCs, sample logs and the docs the Help panel renders are all bundled, so
+it runs on a clean machine with nothing installed. To make `.blobnet` files open in it, run the
+bundled `register_blobnet_win.ps1`. Two caveats — downloading an artifact requires being signed
+in to GitHub, and artifacts expire (~90 days), so use a recent run.
+
+**Linux / WSL2** — build from source; it's two commands, see
+[Build & run](#build--run) below.
+
+**macOS** — not built or tested.
 
 ## What it does
 
@@ -24,7 +60,7 @@ ECUs, the grouped trace (decoded via DBC), and live multi-axis plots of `EngineS
   - software buses for driver-free tests: in-process (`inproc:`) and UDP multicast
 - **Ethernet** — **DoIP** (UDS over TCP) and **SOME/IP** (incl. an RPC client), over ordinary
   TCP/UDP sockets. Automotive *PHYs* (100BASE-T1 and similar) and TSN are out of scope.
-- LIN is on the roadmap, not implemented yet
+- **LIN** — 🧭 [planned](ROADMAP.md), not implemented yet
 
 ### CAN hardware — and why the same adapter is named differently per OS
 
@@ -35,7 +71,7 @@ Blobly Net runs, so the interface string differs too:
 |---|---|---|
 | **PEAK PCAN** | ✅ kernel `peak_usb` → SocketCAN `can0` | ✅ PCAN-Basic DLL → `pcan:PCAN_USBBUS1@500000` |
 | **Kvaser** | ✅ kernel `kvaser_usb` → SocketCAN `can0` | ✅ CANlib DLL → `kvaser:0@500000` |
-| **Vector** (VN16xx…) | ❌ no mainline driver | ❌ no backend here (vendor XL SDK exists) |
+| **Vector** (VN16xx…) | ❌ no mainline driver | 🧭 [planned](ROADMAP.md) — XL backend not written yet |
 | CAN-FD | PCAN ✅ · Kvaser Leaf Light v2 is classic-only | PCAN ✅ |
 
 - **On Linux and WSL2** the *kernel* owns the adapter and presents it as a **SocketCAN netdev**
@@ -59,46 +95,147 @@ save/load cycle never drifts a file (git diffs show real changes only).
 
 **Simulation** — simulated ECUs that send and answer frames, so tests need no hardware.
 
-**Logs & replay** — `candump -l` files, native **ASAM MDF4** (`.mf4`) reading with no
-Python/asammdf dependency, and **replay** of a recording at its original cadence.
+**Logs & replay** — `candump -l` files, native **ASAM MDF4** (`.mf4`) reading, and **replay**
+of a recording at its original cadence.
 
 **Observability** — a **trace/telemetry** view of a running SUT (handler and thread
 swimlanes, CPU load), and a read-only **System** panel showing the modelled network.
 
+![Two-core trace swimlane from a live STM32H755, with an interactive shell to the target](docs/screenshots/trace-multicore-h755.png)
+
+*A dual-core **STM32H755** traced live over SocketCAN. Handler lanes on top (`c0` = the CM7's
+`LoadFast`/`LoadMid`/`Governor`/`LoadSlow`, `c1` = the CM4's `M4Load`/`M4Churn`), RTOS thread
+lanes below with their priorities, a derived idle lane, and preemption cut-links joining a
+preempted thread to what displaced it. Both cores share **one** timeline: each stamps records
+from its own free-running clock, so the target measures the offset per dump and the header
+reports it —* `1/1 satellite core(s) time-corrected (±608 µs)` *— rather than silently implying
+the lanes are comparable. Below, the **Shell** panel talks to the target over CAN (`bmc` is an
+on-target DWT benchmark: cycles, CPI, stalls).*
+
+> ### ⚠ This screenshot needs the other half — which isn't released yet
+>
+> The **trace swimlane**, **Shell**, **Flash** and **System** panels don't test an arbitrary
+> ECU: they speak wire formats implemented by
+> [**blobly_emb**](docs/blobly_emb_synergies.md), the companion embedded stack that runs on the
+> target. They are the group at the bottom of the activity bar (`Cht`/`Fsh`/`Shl`/`Sys`),
+> deliberately separated there for this reason.
+>
+> **blobly_emb is not publicly released yet**, so today those four panels have nothing to talk
+> to. Everything else on this page — CAN and CAN-FD, DBC decode/encode and the editor, ISO-TP,
+> UDS, DoIP, SOME/IP, simulated ECUs, logs, replay and Lua scripting — is standalone and works
+> against any target, or against no hardware at all.
+
 **Scripting** — **Lua** test scripts with a small test framework, runnable headless in
 CI or live in the GUI.
 
-The GUI is a native **Dear ImGui + ImPlot** application (`cmd/blobly_vgui`).
+The GUI is a native **Dear ImGui + ImPlot** application (`cmd/blobly_net`). The **protocol
+engine** underneath it is equally reachable without a display — see
+[headless](#headless--scripted-no-gui) — though the interactive editors (DBC, project/bus
+config) and the live plots exist only in the GUI.
 
 ## Build & run
 
+**Linux, including WSL2** — Ubuntu 24.04 is what this is developed on. Under WSL2 the GUI
+renders through **WSLg**, so there's no X server to set up, but hardware GL wants a current Mesa
+(25.x is known good; older Mesa crashed the GPU path). **Native Windows is a different
+toolchain** — MSYS2/mingw, not these scripts. The recipe is
+[`windows.yml`](.github/workflows/windows.yml), which CI runs on every push; or just take the
+[prebuilt bundle](#get-it). macOS is not built or tested.
+
 ```sh
 scripts/setup_env.sh           # installs toolchain + deps (V, C/C++, GLFW, FreeType)
-scripts/run_vgui.sh            # build + run the GUI
-python3 sut/can_sut.py vcan0   # a virtual ECU on vcan0, in another terminal
+scripts/run_gui.sh            # build + run the GUI
 ```
 
-To reproduce the screenshot above — no hardware, no drivers:
+To reproduce the screenshot above — no hardware, no drivers, nothing else to start:
 
 ```sh
-BLOBLY_PROJECT=projects/sim-demo.blobnet BLOBLY_AUTOSTART=1 scripts/run_vgui.sh
+BLOBLY_PROJECT=projects/sim-demo.blobnet BLOBLY_AUTOSTART=1 scripts/run_gui.sh
 ```
 
-Needs the V compiler, a C/C++ toolchain, and GLFW + FreeType (on Debian/Ubuntu:
-`sudo apt install libglfw3-dev libfreetype-dev`). See
-[windows_build.md](docs/windows_build.md) for the native Windows recipe.
+The simulated ECUs are native (`modules/sim`) and run in-process.
 
-## Scripting & testing
+### Dependencies
 
-Lua test scripts (diagnostics, raw frames, DBC signals) run headless for CI or live in
-the GUI's **Script** panel. No hardware needed — the runner spins up a simulated bus and
-ECU for you.
+`setup_env.sh` installs these for you; the lists are here for anyone building by hand. **The CI
+workflows are the source of truth** — they build from nothing on a clean runner every push, so
+if this drifts, believe them.
+
+**Linux** (Debian/Ubuntu) — mirrors [`ci.yml`](.github/workflows/ci.yml):
+
+```sh
+sudo apt install g++ pkg-config libglfw3-dev libfreetype-dev libgl1-mesa-dev
+```
+
+**Native Windows** — MSYS2 `MINGW64`, mirroring
+[`windows.yml`](.github/workflows/windows.yml). More than the Linux set, because the glyph
+rasterizer and text stack are not system libraries there:
+
+```sh
+pacman -S git mingw-w64-x86_64-{gcc,pkgconf,glfw,freetype,harfbuzz,glib2,fribidi,fontconfig}
+```
+
+Plus the V compiler on both. For Windows, [`.github/workflows/windows.yml`](.github/workflows/windows.yml)
+is the full recipe — it runs on every push, so unlike a hand-written walkthrough it cannot quietly
+drift. Or skip building entirely and take the [prebuilt bundle](#get-it).
+
+## Headless / scripted (no GUI)
+
+The engine is GUI-free by design, so the whole tool runs without a window — no display, no
+GLFW, nothing to click. This is how it runs in CI.
+
+**Lua test scripts** (diagnostics, raw frames, DBC signals) against a simulated bus and ECU.
+No hardware, no display; non-zero exit if any test fails:
 
 ```sh
 scripts/runtests.sh tests/diag_basic.lua tests/bus_signals.lua
+# => 10 passed, 0 failed, 0 script error(s)
 ```
 
-See the **[scripting & test guide](docs/scripting.md)** for the runner and the full Lua API.
+Point it at a different project with `--project projects/<name>.blobnet`. The full Lua API is
+in the **[scripting & test guide](docs/scripting.md)**.
+
+**CLI tools** — each runs standalone via
+`v -enable-globals -path "@vlib|@vmodules|modules" run cmd/<tool>/<file>.v`:
+
+| tool | what | |
+|---|---|---|
+| `flash` | drive a UDS firmware download against a blobly_emb bootloader | † |
+| `trace_dump` | freeze + dump a target's trace rings and decode the records | † |
+| `dbc_decode` | decode one CAN frame to physical signal values | |
+| `mf4_dump` | parse an ASAM MDF4 log and summarise its frames | |
+| `loadtest` | data-plane benchmark across many concurrent buses | |
+
+† needs a **blobly_emb** target, which is [not released yet](#-this-screenshot-needs-the-other-half--which-isnt-released-yet).
+
+**CI** (`.github/workflows/`) runs `v -enable-globals test modules/` plus
+`scripts/runtests.sh` — no display involved. See [How it's tested](#how-its-tested).
+
+## How it's tested
+
+Worth being explicit, since [maturity varies](#-very-early-in-development) — this is the
+evidence behind that warning.
+
+**Automated on every push:**
+
+| layer | what | where |
+|---|---|---|
+| **Unit tests** | 32 test files, ~870 assertions across every module | `v -enable-globals test modules/` |
+| **Golden byte vectors** | wire formats are pinned to exact bytes — SOME/IP headers, trace records, the simulated ECU's frames — and the same vectors exist on the blobly_emb side, so neither repo can drift alone | inside the unit tests |
+| **Headless integration** | 4 Lua suites drive real diagnostics and signal traffic against an in-process bus, simulated ECU and the native UDS server | `scripts/runtests.sh` |
+| **GUI build** | the ImGui app compile-links on Linux and Windows | `ci.yml`, `windows.yml` |
+
+**Not automated — done by hand, and worth knowing about:**
+
+- **Cross-checked against independent implementations.** Decoders are diffed against cantools
+  (DBC), asammdf (MDF4) and a hand-written Python ECU, so a V decoder is never validated only by
+  the matching V encoder. These are the [oracles in `sut/`](sut/README.md); they are not in CI.
+- **Hardware.** PCAN and Kvaser adapters are verified on real buses, and target-facing features
+  against STM32 boards on the author's bench. CI runners have neither, so none of this is gated.
+
+**The gaps, plainly:** there is **no automated GUI testing** — CI proves the app builds, not that
+a panel behaves. The Windows job **builds but runs no tests**. And every hardware and oracle check
+above is manual, so a regression there is caught only when someone next runs it.
 
 ## Docs
 
@@ -116,11 +253,12 @@ See the **[scripting & test guide](docs/scripting.md)** for the runner and the f
 **Platform & troubleshooting**
 - [can_hardware.md](docs/can_hardware.md) — real CAN adapters ·
   [windows_can_hardware.md](docs/windows_can_hardware.md) — PCAN/Kvaser on Windows
-- [windows_build.md](docs/windows_build.md) · [windows_can_hardware.md](docs/windows_can_hardware.md)
-- [known_issues.md](docs/known_issues.md) — gotchas (V / GUI / rendering / env)
+- [known_issues.md](docs/known_issues.md) — gotchas (V / GUI / environment / CI)
 
 **Project**
-- [CLAUDE.md](CLAUDE.md) — architecture, decisions, full roadmap & status log
+- [CLAUDE.md](CLAUDE.md) — architecture & decisions (the guide for coding agents)
+- [ROADMAP.md](ROADMAP.md) — what's next, planned, and out of scope
+- [CONTRIBUTING.md](CONTRIBUTING.md) — issues welcome; PRs not yet (design phase)
 
 ## License
 

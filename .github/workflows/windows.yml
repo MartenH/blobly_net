@@ -1,13 +1,16 @@
 name: windows-build
 
-# Native Windows build of the Blobly Net GUI (the Dear ImGui app, cmd/blobly_vgui).
+# Native Windows build of the Blobly Net GUI (the Dear ImGui app, cmd/blobly_net).
 # Compiles + links + bundles it; does NOT run it. One job (mingw); the old vlang/gui app
 # (src/main.v) and its MSVC/vcpkg/pango/vglyph path were retired when the migration landed.
 #
-# ⚠️ BEST-EFFORT / needs on-runner validation: the imgui Windows build (build_deps.sh +
-# the `#flag windows` link line in eval/vgui/vgui.v) has been validated locally on the
-# dedicated MSYS2 toolchain but not yet in CI. If a link lib is missing, add the matching
-# mingw-w64-x86_64-* package to the MSYS2 install list below.
+# Status: VALIDATED ON THE RUNNER. The imgui Windows build (build_deps.sh + the `#flag windows`
+# link line in libs/vgui/vgui.v) is green here and has been for a long run of builds — this job
+# is what the README points people at for a prebuilt bundle, so treat a failure as a release
+# blocker, not as an expected flake. (It was marked best-effort/unvalidated while the imgui
+# migration settled; that is no longer true.)
+# If a link lib ever goes missing, add the matching mingw-w64-x86_64-* package to the MSYS2
+# install list below.
 #
 # V acquisition: DOWNLOAD the prebuilt master V from this repo's "v-toolchain" release
 # (V's makev.bat self-compile hangs on the runner). It just drives mingw gcc via -cc gcc.
@@ -28,7 +31,7 @@ env:
 
 jobs:
   build-msys2:
-    name: mingw (MSYS2) • vgui
+    name: mingw (MSYS2) • GUI bundle
     runs-on: windows-latest
     timeout-minutes: 60
 
@@ -69,11 +72,11 @@ jobs:
             mingw-w64-x86_64-fribidi
             mingw-w64-x86_64-fontconfig
 
-      # imgui + ImPlot + GLFW + FreeType C deps -> eval/vgui/libvgui_c.a (g++). build_deps.sh
+      # imgui + ImPlot + GLFW + FreeType C deps -> libs/vgui/libvgui_c.a (g++). build_deps.sh
       # runs unmodified on MSYS2 (git + g++). It's gitignored, so always built fresh.
-      - name: Build imgui C deps (eval/vgui/libvgui_c.a)
+      - name: Build imgui C deps (libs/vgui/libvgui_c.a)
         shell: msys2 {0}
-        run: sh eval/vgui/build_deps.sh
+        run: sh libs/vgui/build_deps.sh
 
       # vlang/markdown (md4c) — the Help "Open in browser" view. Cloned into $VMODULES (the same
       # dir the Windows v.exe reads via @vmodules); md4c-lib.o auto-builds from its sibling .c
@@ -86,21 +89,26 @@ jobs:
           git -c advice.detachedHead=false clone --quiet https://github.com/vlang/markdown.git "$vm/markdown"
           git -C "$vm/markdown" -c advice.detachedHead=false checkout --quiet ef2f101
 
-      # Build cmd/blobly_vgui. The prebuilt v.exe drives mingw gcc via -cc gcc; the
+      # Build cmd/blobly_net. The prebuilt v.exe drives mingw gcc via -cc gcc; the
       # `#flag windows` line in vgui.v carries the static glfw + freetype/harfbuzz/glib link
-      # line. -path adds `eval` for the `vgui` module. (The old app needed a 2-step V->C->gcc
+      # line. -path adds `libs` for the `vgui` module. (The old app needed a 2-step V->C->gcc
       # workaround for a V/os.execute panic; the mingw src/main.v job built with the one-liner
       # fine, so we use it here too — switch to build_deps.sh's 2-step if it regresses.)
-      - name: Build vgui app (V -cc gcc)
+      # The binary is blobly_net.exe — the product name. It was blobly_vgui.exe until the app
+      # was renamed cmd/blobly_vgui -> cmd/blobly_net; "vgui" is the internal ImGui wrapper
+      # (libs/vgui, which keeps that name), not something a user should ever see. That mismatch
+      # was a live bug: scripts/register_blobnet_win.ps1 has always searched for blobly_net.exe,
+      # so .blobnet file association could never find the executable it was written for.
+      - name: Build the GUI app (V -cc gcc)
         shell: msys2 {0}
         run: |
           mkdir -p build
-          /c/v-ct/v.exe -cc gcc -no-parallel -enable-globals -path '@vlib|@vmodules|modules|eval' \
-            -o build/blobly_vgui.exe cmd/blobly_vgui/main.v
-          test -f build/blobly_vgui.exe && echo "BUILD OK -> build/blobly_vgui.exe"
+          /c/v-ct/v.exe -cc gcc -no-parallel -enable-globals -path '@vlib|@vmodules|modules|libs' \
+            -o build/blobly_net.exe cmd/blobly_net/main.v
+          test -f build/blobly_net.exe && echo "BUILD OK -> build/blobly_net.exe"
           # Copy the exe's mingw64 runtime DLLs (freetype/harfbuzz/glib/gcc/…) next to it via
           # ldd, so the bundled artifact runs outside an MSYS2 shell.
-          ldd build/blobly_vgui.exe | awk '/\/mingw64\/bin\// {print $3}' | sort -u \
+          ldd build/blobly_net.exe | awk '/\/mingw64\/bin\// {print $3}' | sort -u \
             | while read -r d; do cp -f "$d" build/; done
           echo "bundled $(ls build/*.dll 2>/dev/null | wc -l) mingw64 DLLs"
 
@@ -110,8 +118,12 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item build\blobly_vgui.exe dist\blobly_vgui.exe
+          Copy-Item build\blobly_net.exe dist\blobly_net.exe
           Copy-Item build\*.dll dist\ -Force -ErrorAction SilentlyContinue
+          # register_blobnet_win.ps1 resolves the exe "next to THIS script" first, and says the
+          # bundle stages it alongside — it never did, so .blobnet association was unreachable
+          # for exactly the users it was written for. Stage it.
+          Copy-Item scripts\register_blobnet_win.ps1 dist\register_blobnet_win.ps1
           Copy-Item projects dist\projects -Recurse
           Copy-Item dbc dist\dbc -Recurse
           Copy-Item tests dist\tests -Recurse
@@ -125,6 +137,6 @@ jobs:
       - name: Upload bundle
         uses: actions/upload-artifact@v4
         with:
-          name: blobly_vgui-mingw-x64
+          name: blobly_net-windows-x64
           path: dist
           if-no-files-found: error

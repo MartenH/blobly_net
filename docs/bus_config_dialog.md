@@ -56,7 +56,7 @@ the GUI-free core (`modules/sim` generators + the `Iface`/`channels_yaml` seam).
 
 ## gui reality check
 
-The table + inline-edit + buttons are already validated (`data_grid`, `cmd/dock_demo`).
+The table + inline-edit + buttons are already validated (`data_grid`).
 The one thing to confirm before building is whether gui offers a true **modal overlay**
 or whether we render the dialog as a **floating/centered panel** (gui has no
 MessageBox-style modal). Either is fine; just don't assume a blocking modal exists.
