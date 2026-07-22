@@ -224,7 +224,8 @@ mut:
 	// the Shell's selectable command targets (derived — project.shell_targets;
 	// rebuilt wherever the eth identity is) + the session-only selection
 	shell_targets []project.ShellTarget
-	shell_target  int // combo index; reset to 0 when a rebuild leaves it out of range
+	shell_target  int // combo index; kept on the SAME target across a rebuild (by label)
+	chan_shell    map[int]telem.ShellFrames // per-CAN-channel shell frame ids (its own manifest)
 	next_run_gen int    // app-global monotonic worker generation (see spawn_eth_rx)
 	shell_lines  []string          // scrollback (guarded by mu; the worker appends)
 	shell_busy   bool              // single-flight: one command in flight at a time
@@ -1289,12 +1290,13 @@ fn (mut app App) rebuild_from_proj() {
 	app.eth_method = 0
 	app.manifest = telem.Manifest{}
 	app.eth_manifest = telem.Manifest{}
+	app.chan_shell = map[int]telem.ShellFrames{}
 	app.sel_id = -1
 	app.mu.unlock()
 	mut eth_board := '' // the first someip channel's board ip (shell prefill)
 	mut someip_seen := false // ONE someip channel per project (mirrors emb's one eth bus
 	// per image); further ones are forced disabled — the multi-board selector is a follow-up
-	for ch in proj.channels {
+	for i, ch in proj.channels {
 		dup := ch.is_someip() && someip_seen
 		if ch.is_someip() {
 			someip_seen = true
@@ -1376,6 +1378,13 @@ fn (mut app App) rebuild_from_proj() {
 					app.eth_someip = m.someip
 					app.eth_method = m.shell_method
 				}
+				// a CAN channel's own shell ids — so its Shell target routes to
+				// ITS command, not the global manifest's (the selector's per-
+				// target ids); keyed by channel index (stable until the next
+				// rebuild, which the toggle path reuses without reloading)
+				if !ch.is_someip() {
+					app.chan_shell[i] = m.shell
+				}
 			} else {
 				// a load/validation failure must be SEEN — silently keeping an
 				// earlier manifest reads as "no eth shell" with no reason
@@ -1425,10 +1434,24 @@ fn (mut app App) rebuild_from_proj() {
 // the someip Start snapshot and the runtime enable checkbox (all GUI thread).
 // The selection is index-based and session-only — never keep a stale one.
 fn (mut app App) rebuild_shell_targets() {
+	// remember WHICH target was selected (by label — names are unique, kind+id
+	// disambiguate), so a target removed/reordered before it doesn't silently
+	// repoint the numeric index at a different destination
+	prev := if app.shell_target >= 0 && app.shell_target < app.shell_targets.len {
+		app.shell_targets[app.shell_target].label
+	} else {
+		''
+	}
 	app.shell_targets = project.shell_targets(app.proj.channels, app.chans.map(it.enabled),
-		app.eth_someip, app.eth_method, app.manifest.shell)
-	if app.shell_target >= app.shell_targets.len {
-		app.shell_target = 0
+		app.eth_someip, app.eth_method, app.chan_shell)
+	app.shell_target = 0
+	if prev != '' {
+		for i, t in app.shell_targets {
+			if t.label == prev {
+				app.shell_target = i
+				break
+			}
+		}
 	}
 }
 
@@ -5149,11 +5172,16 @@ fn draw_shell(mut app App) {
 						t.board
 					}
 					spawn shell_worker_eth(app, line, board, t.sip, t.method)
+				} else if !app.running {
+					// a CAN target needs its bus open — an eth target coexisting
+					// in a stopped project keeps the input visible, but a CAN
+					// command here would open a receive channel then fail at tx
+					app.shell_append('(press Start — the CAN shell needs its bus running)')
 				} else {
-					spawn shell_worker(app, line, t.iface)
+					spawn shell_worker(app, line, t.iface, t.sh)
 				}
 			} else {
-				spawn shell_worker(app, line, '')
+				spawn shell_worker(app, line, '', app.manifest.shell)
 			}
 		}
 	}
@@ -5183,7 +5211,7 @@ fn (mut app App) shell_append(s string) {
 // wake. The shell ids come from the manifest's `# shell frames` section (or loom2v defaults).
 // `iface_sel` is the selected target's transmit bus; '' (no target list) keeps the legacy
 // pick — the running manifest-carrying channel.
-fn shell_worker(app &App, line string, iface_sel string) {
+fn shell_worker(app &App, line string, iface_sel string, sh_sel telem.ShellFrames) {
 	mut a := unsafe { app }
 	a.mu.lock()
 	if a.shell_busy {
@@ -5208,7 +5236,7 @@ fn shell_worker(app &App, line string, iface_sel string) {
 		a.shell_append('(line too long — the target takes one 8-byte frame per command)')
 		return
 	}
-	sh := a.manifest.shell.or_defaults()
+	sh := sh_sel.or_defaults() // the SELECTED target's ids (per-channel), not the global manifest
 	// the host is the ISO-TP receiver: flow control out on `fc`, the response in on `out`
 	// (opened before the command is sent, so the socket buffers the target's first frame).
 	mut ch := isotp.open_software(a.bitrate_iface(iface), sh.fc, sh.out, trace_ext(sh.out)) or {

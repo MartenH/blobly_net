@@ -18,6 +18,7 @@ pub:
 	ci     int               // channel index; -1 = standalone eth (no someip channel)
 	label  string            // display: '<chan> · eth <ip>' / '<chan> · CAN 0x<cmd>'
 	iface  string            // CAN: the channel iface the worker transmits on
+	sh     telem.ShellFrames // CAN: THIS channel's own shell frame ids (cmd/fc/rsp)
 	board  string            // eth: the board ip ('' = standalone — typed in the panel)
 	sip    telem.SomeipIdent // eth: identity snapshot for the RPC worker
 	method u16               // eth: the shell method id
@@ -29,13 +30,15 @@ pub:
 // view). `sip`/`method` are the eth identity — the FIRST someip channel's
 // manifest, or the manifest-on-CAN scan when no someip channel exists (then the
 // standalone-socket shell is the target, ci -1, board ip typed in the panel).
-// `sh` may be undeclared: the ids default like the worker's (or_defaults), so
-// an old manifest keeps its CAN shell. A someip channel lists even when
-// stopped/disabled (selecting it must hit the worker's "(someip channel
-// stopped — Start it)" refusal, not silently reroute).
-pub fn shell_targets(chans []Channel, enabled []bool, sip telem.SomeipIdent, method u16, sh telem.ShellFrames) []ShellTarget {
+// `can_sh` maps a channel index to ITS OWN manifest's shell frames — each CAN
+// target carries its channel's ids, so two CAN channels with different
+// manifests route to different commands (a single global `sh` would send the
+// first channel's command id on every bus). A missing/undeclared entry defaults
+// like the worker's (or_defaults), so an old manifest keeps its CAN shell. A
+// someip channel lists even when stopped/disabled (selecting it must hit the
+// worker's "(someip channel stopped — Start it)" refusal, not silently reroute).
+pub fn shell_targets(chans []Channel, enabled []bool, sip telem.SomeipIdent, method u16, can_sh map[int]telem.ShellFrames) []ShellTarget {
 	mut out := []ShellTarget{}
-	ids := sh.or_defaults()
 	mut someip_seen := false
 	for i, ch in chans {
 		if ch.is_someip() {
@@ -58,10 +61,12 @@ pub fn shell_targets(chans []Channel, enabled []bool, sip telem.SomeipIdent, met
 		// (shell_worker's trace_iface() preference, made explicit per entry)
 		en := if i < enabled.len { enabled[i] } else { ch.enabled }
 		if en && ch.mode == .monitor && !ch.is_doip() && ch.manifest != '' {
+			frames := (can_sh[i] or { telem.ShellFrames{} }).or_defaults()
 			out << ShellTarget{
 				ci:    i
-				label: '${ch.name} · CAN 0x${ids.input.hex()}'
+				label: '${ch.name} · CAN 0x${frames.input.hex()}'
 				iface: ch.iface
+				sh:    frames
 			}
 		}
 	}
