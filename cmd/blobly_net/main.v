@@ -1127,10 +1127,19 @@ const examples = [
 ]
 
 fn main() {
+	// A file-association launch keeps the CALLER's working directory, so every
+	// bundle-root-relative asset (projects/, dbc/, tests/, docs/, samples/) would miss.
+	// Re-anchor to the executable's directory — but only when the cwd clearly isn't a
+	// bundle/repo root already, so `v run` from the checkout keeps working unchanged.
+	exe_dir := os.dir(os.executable())
+	if !os.exists('projects') && os.exists(os.join_path(exe_dir, 'projects')) {
+		os.chdir(exe_dir) or {}
+	}
 	mut proj_path := os.getenv_opt('BLOBLY_PROJECT') or { 'projects/sim-demo.blobnet' }
-	if os.args.len > 1 && os.args[1].ends_with('.blobnet') {
+	if os.args.len > 1 && os.args[1].to_lower().ends_with('.blobnet') {
 		// Explorer's `.blobnet` association launches `blobly_net.exe "<file>"` — without
 		// this the association opened the app but silently ignored the chosen project.
+		// to_lower: the Windows association matches extensions case-insensitively.
 		proj_path = os.args[1]
 	}
 	mut wake_ms := os.getenv('VGUI_WAKE_MS').i64()
