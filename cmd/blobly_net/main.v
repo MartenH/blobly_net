@@ -8,7 +8,9 @@
 //
 // Build: libs/vgui/build_deps.sh  then
 //   v -enable-globals -cc gcc -path "@vlib|@vmodules|modules|libs" run cmd/blobly_net/main.v
-// Project via BLOBLY_PROJECT (default projects/trace-demo.blobnet). Env: VGUI_WAKE_MS cap.
+// Project: argv[1] (a .blobnet path — the Windows file association passes it), else
+// BLOBLY_PROJECT, else projects/sim-demo.blobnet (driver-free, runs on a clean machine —
+// the old trace-demo default needed vcan0 + a blobly_emb target). Env: VGUI_WAKE_MS cap.
 module main
 
 import os
@@ -1125,7 +1127,12 @@ const examples = [
 ]
 
 fn main() {
-	proj_path := os.getenv_opt('BLOBLY_PROJECT') or { 'projects/trace-demo.blobnet' }
+	mut proj_path := os.getenv_opt('BLOBLY_PROJECT') or { 'projects/sim-demo.blobnet' }
+	if os.args.len > 1 && os.args[1].ends_with('.blobnet') {
+		// Explorer's `.blobnet` association launches `blobly_net.exe "<file>"` — without
+		// this the association opened the app but silently ignored the chosen project.
+		proj_path = os.args[1]
+	}
 	mut wake_ms := os.getenv('VGUI_WAKE_MS').i64()
 	if wake_ms <= 0 {
 		wake_ms = 33

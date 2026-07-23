@@ -134,7 +134,11 @@ jobs:
           Copy-Item LICENSE dist\LICENSE.txt -ErrorAction SilentlyContinue
           Copy-Item packaging\THIRD-PARTY-NOTICES.txt dist\THIRD-PARTY-NOTICES.txt -ErrorAction SilentlyContinue
 
+      # main-push runs only: PR runs still compile-validate, but publishing a downloadable
+      # bundle from an (auto-closed, untrusted) external PR would hand users an executable
+      # nobody reviewed — the README points at this artifact by name (codex net#62).
       - name: Upload bundle
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: blobly_net-windows-x64
