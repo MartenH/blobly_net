@@ -8,7 +8,9 @@
 //
 // Build: libs/vgui/build_deps.sh  then
 //   v -enable-globals -cc gcc -path "@vlib|@vmodules|modules|libs" run cmd/blobly_net/main.v
-// Project via BLOBLY_PROJECT (default projects/trace-demo.blobnet). Env: VGUI_WAKE_MS cap.
+// Project: argv[1] (a .blobnet path — the Windows file association passes it), else
+// BLOBLY_PROJECT, else projects/sim-demo.blobnet (driver-free, runs on a clean machine —
+// the old trace-demo default needed vcan0 + a blobly_emb target). Env: VGUI_WAKE_MS cap.
 module main
 
 import os
@@ -1097,9 +1099,12 @@ fn (mut app App) rebuild_from_proj() {
 		}
 		nodes := ch.all_nodes()
 		if ch.enabled && nodes.len > 0 {
+			// resolve_asset like the database list above: raw paths here re-based the
+			// simulator's DBCs onto the launch/bundle cwd, so an external project's
+			// relative DBC fed the sim nothing (codex #63 r4)
 			app.sims << SimCfg{
 				iface: ch.iface
-				db:    merge_dbs(ch.databases)
+				db:    merge_dbs(ch.databases.map(app.resolve_asset(it)))
 				nodes: nodes
 			}
 		}
@@ -1125,7 +1130,36 @@ const examples = [
 ]
 
 fn main() {
-	proj_path := os.getenv_opt('BLOBLY_PROJECT') or { 'projects/trace-demo.blobnet' }
+	// Capture any CALLER-supplied project path FIRST, absolutized against the caller's
+	// cwd — the re-anchoring chdir below would otherwise re-base a relative argv/env
+	// path under the bundle directory and fail to open it (codex #63 r3).
+	mut proj_path := ''
+	mut caller_supplied := false
+	if env := os.getenv_opt('BLOBLY_PROJECT') {
+		proj_path = env
+		caller_supplied = true
+	}
+	if os.args.len > 1 && os.args[1].to_lower().ends_with('.blobnet') {
+		// Explorer's `.blobnet` association launches `blobly_net.exe "<file>"` — without
+		// this the association opened the app but silently ignored the chosen project.
+		// to_lower: the Windows association matches extensions case-insensitively.
+		proj_path = os.args[1]
+		caller_supplied = true
+	}
+	if caller_supplied {
+		proj_path = os.abs_path(proj_path)
+	}
+	// A file-association launch keeps the CALLER's working directory, so every
+	// bundle-root-relative asset (projects/, dbc/, tests/, docs/, samples/) would miss.
+	// Re-anchor to the executable's directory — but only when the cwd clearly isn't a
+	// bundle/repo root already, so `v run` from the checkout keeps working unchanged.
+	exe_dir := os.dir(os.executable())
+	if !os.exists('projects') && os.exists(os.join_path(exe_dir, 'projects')) {
+		os.chdir(exe_dir) or {}
+	}
+	if proj_path == '' {
+		proj_path = 'projects/sim-demo.blobnet' // bundle-relative: resolved AFTER the anchor
+	}
 	mut wake_ms := os.getenv('VGUI_WAKE_MS').i64()
 	if wake_ms <= 0 {
 		wake_ms = 33

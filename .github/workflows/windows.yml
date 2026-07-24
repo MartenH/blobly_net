@@ -134,7 +134,12 @@ jobs:
           Copy-Item LICENSE dist\LICENSE.txt -ErrorAction SilentlyContinue
           Copy-Item packaging\THIRD-PARTY-NOTICES.txt dist\THIRD-PARTY-NOTICES.txt -ErrorAction SilentlyContinue
 
+      # main-ref runs only: PR runs (and manual dispatches from feature branches) still
+      # compile-validate, but publishing a downloadable bundle from anything except reviewed
+      # main would hand users an executable nobody reviewed — the README points at this
+      # artifact by name and promises it comes from main (codex net#62/#63).
       - name: Upload bundle
+        if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
           name: blobly_net-windows-x64
