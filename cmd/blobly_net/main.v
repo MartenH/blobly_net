@@ -1127,6 +1127,25 @@ const examples = [
 ]
 
 fn main() {
+	// Capture any CALLER-supplied project path FIRST, absolutized against the caller's
+	// cwd — the re-anchoring chdir below would otherwise re-base a relative argv/env
+	// path under the bundle directory and fail to open it (codex #63 r3).
+	mut proj_path := ''
+	mut caller_supplied := false
+	if env := os.getenv_opt('BLOBLY_PROJECT') {
+		proj_path = env
+		caller_supplied = true
+	}
+	if os.args.len > 1 && os.args[1].to_lower().ends_with('.blobnet') {
+		// Explorer's `.blobnet` association launches `blobly_net.exe "<file>"` — without
+		// this the association opened the app but silently ignored the chosen project.
+		// to_lower: the Windows association matches extensions case-insensitively.
+		proj_path = os.args[1]
+		caller_supplied = true
+	}
+	if caller_supplied {
+		proj_path = os.abs_path(proj_path)
+	}
 	// A file-association launch keeps the CALLER's working directory, so every
 	// bundle-root-relative asset (projects/, dbc/, tests/, docs/, samples/) would miss.
 	// Re-anchor to the executable's directory — but only when the cwd clearly isn't a
@@ -1135,12 +1154,8 @@ fn main() {
 	if !os.exists('projects') && os.exists(os.join_path(exe_dir, 'projects')) {
 		os.chdir(exe_dir) or {}
 	}
-	mut proj_path := os.getenv_opt('BLOBLY_PROJECT') or { 'projects/sim-demo.blobnet' }
-	if os.args.len > 1 && os.args[1].to_lower().ends_with('.blobnet') {
-		// Explorer's `.blobnet` association launches `blobly_net.exe "<file>"` — without
-		// this the association opened the app but silently ignored the chosen project.
-		// to_lower: the Windows association matches extensions case-insensitively.
-		proj_path = os.args[1]
+	if proj_path == '' {
+		proj_path = 'projects/sim-demo.blobnet' // bundle-relative: resolved AFTER the anchor
 	}
 	mut wake_ms := os.getenv('VGUI_WAKE_MS').i64()
 	if wake_ms <= 0 {
