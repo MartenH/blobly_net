@@ -124,8 +124,8 @@ Backends can be **written** here but **not verified against hardware from Linux*
 
 ## Owner verification steps (run on Windows)
 
-Prereq: a Blobly Net Windows build (`scripts\build_win.ps1` mingw, or the
-`build-msvc`/`build-mingw` CI artifacts). Then:
+Prereq: a Blobly Net Windows build — the **`blobly_net-windows-x64`** bundle from the
+latest `windows-build` run on `main` (Actions tab; unzip, it is self-contained). Then:
 
 ### Kvaser — testable with NO hardware connected (virtual channel)
 1. Install the **Kvaser drivers** (Kvaser Drivers for Windows — free). This adds
