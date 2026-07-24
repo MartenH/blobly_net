@@ -53,4 +53,4 @@ g++ $CFG -c \
 	"$HERE/vgui_glue.cpp"
 ar rcs "$HERE/libvgui_c.a" *.o
 echo "built $HERE/libvgui_c.a"
-echo "run: v -path \"@vlib|@vmodules|eval\" run libs/vgui/examples/trace_chart/trace_chart.v"
+echo "run: v -path \"@vlib|@vmodules|libs\" run libs/vgui/examples/trace_chart/trace_chart.v"
