@@ -1099,9 +1099,12 @@ fn (mut app App) rebuild_from_proj() {
 		}
 		nodes := ch.all_nodes()
 		if ch.enabled && nodes.len > 0 {
+			// resolve_asset like the database list above: raw paths here re-based the
+			// simulator's DBCs onto the launch/bundle cwd, so an external project's
+			// relative DBC fed the sim nothing (codex #63 r4)
 			app.sims << SimCfg{
 				iface: ch.iface
-				db:    merge_dbs(ch.databases)
+				db:    merge_dbs(ch.databases.map(app.resolve_asset(it)))
 				nodes: nodes
 			}
 		}
