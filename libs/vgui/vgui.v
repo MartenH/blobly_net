@@ -458,13 +458,16 @@ pub fn child_end() {
 // input_text edits `buf` (a persistent, NUL-terminated []u8 the caller owns) in place;
 // returns true the frame the text changed. Read the value back with buf_str(buf).
 pub fn input_text(label string, mut buf []u8) bool {
+	if buf.len == 0 {
+		return false
+	}
 	return C.vgui_input_text(label.str, unsafe { &char(&buf[0]) }, buf.len) == 1
 }
 
-// console_input is input_text with console semantics: returns true on ENTER (not on change),
-// keeps focus after submit, and Up/Down recall previously submitted lines (history lives in
-// the glue -- imgui requires history edits inside the InputText callback).
 pub fn console_input(label string, mut buf []u8) bool {
+	if buf.len == 0 {
+		return false
+	}
 	return C.vgui_console_input(label.str, unsafe { &char(&buf[0]) }, buf.len) == 1
 }
 
