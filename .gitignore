@@ -1,6 +1,6 @@
 # V build artifacts
 blobly_net
-main
+/main
 cmd/mf4_dump/mf4_dump
 *.tmp.c
 /src/main
