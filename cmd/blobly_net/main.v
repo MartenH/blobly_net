@@ -1198,6 +1198,31 @@ fn main() {
 		return
 	}
 
+	if os.getenv('BLOBLY_SELFTEST_DBC') != '' {
+		app.show_dbc = true
+		if !vgui.init('blobly_net — selftest', 1500, 850, true) {
+			eprintln('vgui.init failed')
+			return
+		}
+		for frame in 0 .. 10 {
+			vgui.frame_begin()
+			if app.dbs.len > 0 {
+				app.dbc_ed.db = 0
+				if frame > 2 && app.dbs[0].messages.len > 0 {
+					app.dbc_ed.msg = 0
+				}
+				if frame > 5 && app.dbs[0].messages.len > 0 && app.dbs[0].messages[0].signals.len > 0 {
+					app.dbc_ed.sig = 0
+				}
+			}
+			draw_dbc_editor(mut app)
+			vgui.frame_end()
+		}
+		vgui.shutdown()
+		println('selftest_dbc: ok')
+		return
+	}
+
 	if !vgui.init('blobly_net — ${app.proj_name} (imgui/ImPlot)', 1500, 850, true) {
 		eprintln('vgui.init failed')
 		return
@@ -5924,6 +5949,7 @@ fn draw_dbc_editor(mut app App) {
 		vgui.end()
 		return
 	}
+	app.dbc_ed_load_bufs()
 	// READ-ONLY while a measurement runs: rx/sim/generator workers iterate
 	// app.dbs lock-free, and the save path rebuilds runtime state — both are
 	// only safe stopped. (Editing a stopped capture still re-decodes it live:
