@@ -5746,16 +5746,22 @@ fn build_swimlane(app &App, trecs []TRec) ([]string, []vgui.Bar, []vgui.Link, f3
 
 struct DbcEd {
 mut:
-	db         int = -1 // dbs index
-	msg        int = -1
-	sig        int = -1
-	dirty      map[string]bool // unsaved edits keyed by dbc PATH (survives rebuilds/index shifts)
-	loaded_key string          // which db:msg:sig the string buffers hold
-	mname_buf  []u8
-	sender_buf []u8
-	sname_buf  []u8
-	unit_buf   []u8
-	desc_buf   []u8
+	db             int = -1 // dbs index
+	msg            int = -1
+	sig            int = -1
+	dirty          map[string]bool // unsaved edits keyed by dbc PATH (survives rebuilds/index shifts)
+	loaded_key     string          // which db:msg:sig the string buffers hold
+	mname_buf      []u8
+	sender_buf     []u8
+	sname_buf      []u8
+	unit_buf       []u8
+	desc_buf       []u8
+	msg_filter_buf []u8
+	sig_filter_buf []u8
+	val_key_buf    []u8
+	val_name_buf   []u8
+	node_buf       []u8
+	view_tree      bool = true // toggle between Tree view and Table view
 }
 
 // dbc_ed_color: a deterministic per-signal palette for the bit grid.
@@ -5815,6 +5821,21 @@ fn dbc_signal_bits(s candb.Signal) []int {
 // dbc_ed_load_bufs refreshes the string edit buffers when the selection moves.
 fn (mut app App) dbc_ed_load_bufs() {
 	key := '${app.dbc_ed.db}:${app.dbc_ed.msg}:${app.dbc_ed.sig}'
+	if app.dbc_ed.msg_filter_buf.len == 0 {
+		app.dbc_ed.msg_filter_buf = mkbuf('', 64)
+	}
+	if app.dbc_ed.sig_filter_buf.len == 0 {
+		app.dbc_ed.sig_filter_buf = mkbuf('', 64)
+	}
+	if app.dbc_ed.val_key_buf.len == 0 {
+		app.dbc_ed.val_key_buf = mkbuf('', 24)
+	}
+	if app.dbc_ed.val_name_buf.len == 0 {
+		app.dbc_ed.val_name_buf = mkbuf('', 96)
+	}
+	if app.dbc_ed.node_buf.len == 0 {
+		app.dbc_ed.node_buf = mkbuf('', 48)
+	}
 	if app.dbc_ed.loaded_key == key {
 		return
 	}
@@ -5909,16 +5930,16 @@ fn draw_dbc_editor(mut app App) {
 	}
 	sc := app.ui_scale
 
-	// database picker (base names; the path is the save target)
+	// ---- TOP CONTROL BAR: Database selector, Save / Revert, ECU Nodes ----
 	mut names := []string{cap: app.dbs.len}
 	for i, pth in app.dbs_paths {
 		mark := if app.dbc_ed.dirty[pth] { '` ' } else { '' }
-		// dir prefix + index keep same-named files distinguishable
 		names << '${mark}${os.file_name(os.dir(pth))}/${os.file_name(pth)} (${app.dbs[i].messages.len} msgs) ##${i}'
 	}
 	if app.dbc_ed.db < 0 && app.dbs.len > 0 {
 		app.dbc_ed.db = 0
 	}
+	vgui.set_next_item_width(280 * sc)
 	ndb := vgui.combo('database', names, app.dbc_ed.db)
 	if ndb != app.dbc_ed.db {
 		app.dbc_ed.db = ndb
@@ -5931,15 +5952,14 @@ fn draw_dbc_editor(mut app App) {
 		return
 	}
 
-	// save / revert row
+	// save / revert controls
+	vgui.same_line()
 	if !ro && app.dbc_ed.dirty[app.dbs_paths[di]] {
 		vgui.text_colored(230, 170, 70, '` modified')
 		vgui.same_line()
 	}
 	if !ro && vgui.small_button('Save') {
 		app.mu.lock()
-		// BU_ must declare every transmitter (sim.validate_node) — union the
-		// senders in at save time (not per keystroke)
 		for m in app.dbs[di].messages {
 			if m.sender != '' && m.sender !in app.dbs[di].nodes {
 				app.dbs[di].nodes << m.sender
@@ -5947,8 +5967,6 @@ fn draw_dbc_editor(mut app App) {
 		}
 		text := app.dbs[di].to_dbc()
 		app.mu.unlock()
-		// ATOMIC: write beside the target then rename — a failed/interrupted
-		// write must never leave a truncated DBC where the original was
 		tmp := app.dbs_paths[di] + '.tmp~'
 		mut save_ok := true
 		os.write_file(tmp, text) or {
@@ -5966,8 +5984,7 @@ fn draw_dbc_editor(mut app App) {
 			app.dbc_ed.dirty.delete(app.dbs_paths[di])
 			app.dbc_ed.loaded_key = ''
 			app.notify('saved ${app.dbs_paths[di]}')
-			// sims/generators load their databases independently — refresh
-			// once everything is clean (safe: the editor only runs stopped)
+			app.dbc_refresh_trace_names()
 			app.dbc_refresh_if_all_clean()
 		}
 	}
@@ -5983,8 +6000,6 @@ fn draw_dbc_editor(mut app App) {
 			app.dbc_ed.loaded_key = ''
 			app.notify('reverted ${app.dbs_paths[di]}')
 			app.dbc_refresh_trace_names()
-			// watches retargeted to now-discarded names would plot flat —
-			// prune the ones that no longer resolve
 			mut kept := []Watch{cap: app.watch.len}
 			for w in app.watch {
 				if m := app.find_message(w.id, w.ext) {
@@ -6009,21 +6024,125 @@ fn draw_dbc_editor(mut app App) {
 		}
 	}
 
-	// message list
-	vgui.separator_text('messages')
-	vgui.child_begin('##dbcmsgs', 110 * sc)
-	for i, m in app.dbs[di].messages {
-		idtxt := if m.ext { '0x${m.id.hex()}x' } else { '0x${m.id.hex()}' }
-		if vgui.selectable('${idtxt}  ${m.name} (dlc ${m.dlc})##dm${i}', app.dbc_ed.msg == i) {
-			app.dbc_ed.msg = i
-			app.dbc_ed.sig = -1
+	// ECU Nodes (BU_) inline section
+	vgui.same_line()
+	if vgui.tree_node('ECU Nodes (BU_) [${app.dbs[di].nodes.len}]##bunodes') {
+		app.dbc_ed_load_bufs()
+		if app.dbs[di].nodes.len > 0 {
+			for ni, nname in app.dbs[di].nodes {
+				vgui.text_colored(120, 190, 120, nname)
+				vgui.same_line()
+				if !ro && vgui.small_button('-##delnode_${ni}') {
+					app.mu.lock()
+					app.dbs[di].nodes.delete(ni)
+					app.mu.unlock()
+					app.dbc_ed.dirty[app.dbs_paths[di]] = true
+				}
+				vgui.same_line()
+			}
+		} else {
+			vgui.text_dim('no ECU nodes declared')
+			vgui.same_line()
+		}
+		if !ro {
+			vgui.set_next_item_width(120 * sc)
+			vgui.input_text('node name##newnode', mut app.dbc_ed.node_buf)
+			vgui.same_line()
+			if vgui.small_button('+ ECU Node') {
+				nname := vgui.buf_str(app.dbc_ed.node_buf).trim_space()
+				if dbc_ident_ok(nname) && nname !in app.dbs[di].nodes {
+					app.mu.lock()
+					app.dbs[di].nodes << nname
+					app.mu.unlock()
+					app.dbc_ed.dirty[app.dbs_paths[di]] = true
+					app.dbc_ed.node_buf = mkbuf('', 48)
+				} else {
+					app.notify('invalid or duplicate ECU node name')
+				}
+			}
+		}
+		vgui.tree_pop()
+	}
+
+	vgui.separator()
+
+	// ---- MAIN SPLIT PANES: Left (Navigation) vs Right (Inspector & Layout) ----
+	left_w := 340 * sc
+	vgui.child_wh('##dbced_left_pane', left_w, 0)
+
+	// --- LEFT PANE: Messages & Signals Browser ---
+	vgui.separator_text('messages & signals')
+	vgui.set_next_item_width(150 * sc)
+	vgui.input_text('filter##mf', mut app.dbc_ed.msg_filter_buf)
+	vgui.same_line()
+	app.dbc_ed.view_tree = vgui.checkbox('Tree##tv', app.dbc_ed.view_tree)
+	mfilter := vgui.buf_str(app.dbc_ed.msg_filter_buf).to_lower()
+
+	// Messages tree/list child
+	vgui.child_begin('##dbcmsgbox', 220 * sc)
+	if app.dbc_ed.view_tree {
+		for i, m in app.dbs[di].messages {
+			idtxt := if m.ext { '0x${m.id.hex()}x' } else { '0x${m.id.hex()}' }
+			if mfilter != '' {
+				name_match := m.name.to_lower().contains(mfilter)
+				id_match := idtxt.to_lower().contains(mfilter) || '${m.id}'.contains(mfilter)
+				sender_match := m.sender.to_lower().contains(mfilter)
+				if !name_match && !id_match && !sender_match {
+					continue
+				}
+			}
+			sender_tag := if m.sender != '' { ' [${m.sender}]' } else { '' }
+			is_msg_open := vgui.tree_node('${idtxt} ${m.name}${sender_tag} (${m.signals.len})###treem_${i}')
+			if vgui.is_item_clicked() {
+				if app.dbc_ed.msg != i {
+					app.dbc_refresh_trace_names()
+				}
+				app.dbc_ed.msg = i
+				app.dbc_ed.sig = -1
+			}
+			if is_msg_open {
+				for si, sg in m.signals {
+					cr, cg, cb := dbc_ed_color(si)
+					vgui.text_colored(u8(cr), u8(cg), u8(cb), ' #')
+					vgui.same_line()
+					or_tag := if sg.byte_order == .little_endian { 'LE' } else { 'BE' }
+					sgn := if sg.is_signed { 'i' } else { 'u' }
+					end_b := sg.start_bit + sg.length - 1
+					if vgui.selectable('${sg.name} [b${sg.start_bit}..${end_b}] @${or_tag} ${sgn}${sg.length}##tsig_${i}_${si}',
+						app.dbc_ed.msg == i && app.dbc_ed.sig == si)
+					{
+						app.dbc_ed.msg = i
+						app.dbc_ed.sig = si
+					}
+				}
+				vgui.tree_pop()
+			}
+		}
+	} else {
+		for i, m in app.dbs[di].messages {
+			idtxt := if m.ext { '0x${m.id.hex()}x' } else { '0x${m.id.hex()}' }
+			if mfilter != '' {
+				name_match := m.name.to_lower().contains(mfilter)
+				id_match := idtxt.to_lower().contains(mfilter) || '${m.id}'.contains(mfilter)
+				sender_match := m.sender.to_lower().contains(mfilter)
+				if !name_match && !id_match && !sender_match {
+					continue
+				}
+			}
+			if vgui.selectable('${idtxt} ${m.name} (dlc ${m.dlc})##dm${i}', app.dbc_ed.msg == i) {
+				if app.dbc_ed.msg != i {
+					app.dbc_refresh_trace_names()
+				}
+				app.dbc_ed.msg = i
+				app.dbc_ed.sig = -1
+			}
 		}
 	}
 	vgui.child_end()
+
+	// Message Action Buttons
 	if !ro && vgui.small_button('+ message') {
 		app.mu.lock()
-		// next free STANDARD id (the new frame is ext:false — extended ids
-		// must not push it past the 11-bit range)
 		mut nid := u32(0x100)
 		mut id_free := false
 		for {
@@ -6043,8 +6162,9 @@ fn draw_dbc_editor(mut app App) {
 			nid++
 		}
 		if !id_free {
-			app.mu.unlock() // BEFORE notify(): it takes app.mu itself
+			app.mu.unlock()
 			app.notify('no free standard id in 0x100..0x7FF — delete a message or use extended ids')
+			vgui.child_end()
 			vgui.end()
 			return
 		}
@@ -6077,32 +6197,150 @@ fn draw_dbc_editor(mut app App) {
 		app.dbc_ed.loaded_key = ''
 	}
 	mi := app.dbc_ed.msg
-	if mi < 0 || mi >= app.dbs[di].messages.len {
-		vgui.end()
-		return
+	if mi >= 0 && mi < app.dbs[di].messages.len {
+		vgui.same_line()
+		if !ro && vgui.small_button('- delete message') {
+			app.mu.lock()
+			app.dbs[di].messages.delete(mi)
+			app.mu.unlock()
+			app.dbc_ed.msg = -1
+			app.dbc_ed.sig = -1
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			app.dbc_ed.loaded_key = ''
+			app.dbc_refresh_trace_names()
+			vgui.child_end()
+			vgui.end()
+			return
+		}
+
+		// Signals List for Selected Message
+		vgui.separator_text('signals (${app.dbs[di].messages[mi].signals.len})')
+		vgui.set_next_item_width(180 * sc)
+		vgui.input_text('filter signals##sf', mut app.dbc_ed.sig_filter_buf)
+		sfilter := vgui.buf_str(app.dbc_ed.sig_filter_buf).to_lower()
+
+		vgui.child_begin('##dbcsigbox', 180 * sc)
+		if vgui.table_begin('##dbcsigtable', 4) {
+			vgui.table_setup_col('#', 18 * sc)
+			vgui.table_setup_col('name', 130 * sc)
+			vgui.table_setup_col('start|len', 65 * sc)
+			vgui.table_setup_col('fmt', 45 * sc)
+			vgui.table_headers()
+			for i, sg in app.dbs[di].messages[mi].signals {
+				if sfilter != '' {
+					name_match := sg.name.to_lower().contains(sfilter)
+					unit_match := sg.unit.to_lower().contains(sfilter)
+					desc_match := sg.desc.to_lower().contains(sfilter)
+					if !name_match && !unit_match && !desc_match {
+						continue
+					}
+				}
+				or_tag := if sg.byte_order == .little_endian { 'LE' } else { 'BE' }
+				sgn := if sg.is_signed { 'i' } else { 'u' }
+				cr, cg, cb := dbc_ed_color(i)
+				vgui.table_row()
+				vgui.table_next_col()
+				vgui.text_colored(u8(cr), u8(cg), u8(cb), '#')
+				vgui.table_next_col()
+				if vgui.selectable('${sg.name}##ds${i}', app.dbc_ed.sig == i) {
+					app.dbc_ed.sig = i
+				}
+				vgui.table_cell('${sg.start_bit}|${sg.length}')
+				vgui.table_cell('@${or_tag}${sgn}')
+			}
+			vgui.table_end()
+		}
+		vgui.child_end()
+
+		if !ro && vgui.small_button('+ signal') {
+			app.mu.lock()
+			mut top := 0
+			for sg in app.dbs[di].messages[mi].signals {
+				for g in dbc_signal_bits(sg) {
+					if g + 1 > top {
+						top = g + 1
+					}
+				}
+			}
+			mut nn := 1
+			mut nname := 'NewSignal'
+			for {
+				mut taken := false
+				for sg in app.dbs[di].messages[mi].signals {
+					if sg.name == nname {
+						taken = true
+					}
+				}
+				if !taken {
+					break
+				}
+				nn++
+				nname = 'NewSignal${nn}'
+			}
+			app.dbs[di].messages[mi].signals << candb.Signal{
+				name:      nname
+				start_bit: top
+				length:    8
+			}
+			app.mu.unlock()
+			app.dbc_ed.sig = app.dbs[di].messages[mi].signals.len - 1
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			app.dbc_ed.loaded_key = ''
+		}
+		si_left := app.dbc_ed.sig
+		if si_left >= 0 && si_left < app.dbs[di].messages[mi].signals.len {
+			vgui.same_line()
+			if !ro && vgui.small_button('- delete signal') {
+				if app.dbs[di].messages[mi].signals[si_left].is_multiplexor {
+					mut deps := 0
+					for oi, osg in app.dbs[di].messages[mi].signals {
+						if oi != si_left && osg.is_multiplexed {
+							deps++
+						}
+					}
+					if deps > 0 {
+						app.notify('cannot delete the multiplexor switch: ${deps} multiplexed signal(s) depend on it')
+						vgui.child_end()
+						vgui.end()
+						return
+					}
+				}
+				app.mu.lock()
+				app.dbs[di].messages[mi].signals.delete(si_left)
+				app.mu.unlock()
+				app.dbc_ed.sig = -1
+				app.dbc_ed.dirty[app.dbs_paths[di]] = true
+				app.dbc_ed.loaded_key = ''
+				vgui.child_end()
+				vgui.end()
+				return
+			}
+		}
 	}
+	vgui.child_end() // end left pane
+
 	vgui.same_line()
-	if !ro && vgui.small_button('- delete message') {
-		app.mu.lock()
-		app.dbs[di].messages.delete(mi)
-		app.mu.unlock()
-		app.dbc_ed.msg = -1
-		app.dbc_ed.sig = -1
-		app.dbc_ed.dirty[app.dbs_paths[di]] = true
-		app.dbc_ed.loaded_key = ''
-		app.dbc_refresh_trace_names() // captured rows may show the deleted name
+
+	// --- RIGHT PANE: Message Properties, Bit Layout Grid, Signal Inspector ---
+	vgui.child_wh('##dbced_right_pane', 0, 0)
+
+	if mi < 0 || mi >= app.dbs[di].messages.len {
+		vgui.text_dim('select a message on the left to edit properties & bit layout')
+		vgui.child_end()
 		vgui.end()
 		return
 	}
 
-	// message form (all writes under app.mu: workers decode concurrently)
+	msg := app.dbs[di].messages[mi]
+
+	// 1. Message Properties Form
+	id_hex_str := if msg.ext { '0x${msg.id.hex()}x' } else { '0x${msg.id.hex()}' }
+	vgui.separator_text('Message Properties: ${msg.name} (${id_hex_str})')
 	app.dbc_ed_load_bufs()
+
 	vgui.set_next_item_width(160 * sc)
 	if !ro && vgui.input_text('name##dbcm', mut app.dbc_ed.mname_buf) {
 		nv := vgui.buf_str(app.dbc_ed.mname_buf)
-		// generators resolve messages BY NAME across every co-attached DBC
-		// (first match wins) — a duplicate makes one frame unreachable, so
-		// check ALL loaded databases, not just this file
 		mut mname_taken := false
 		for odi, odb in app.dbs {
 			for oi, om in odb.messages {
@@ -6116,19 +6354,18 @@ fn draw_dbc_editor(mut app App) {
 			app.dbs[di].messages[mi].name = nv
 			app.mu.unlock()
 			app.dbc_ed.dirty[app.dbs_paths[di]] = true
-			app.dbc_refresh_trace_names()
 		}
 	}
 	if !dbc_ident_ok(vgui.buf_str(app.dbc_ed.mname_buf)) {
 		vgui.same_line()
-		vgui.text_colored(205, 60, 60, 'invalid name (A-Za-z0-9_, not applied)')
+		vgui.text_colored(205, 60, 60, 'invalid name')
 	}
-	mut idv := int(app.dbs[di].messages[mi].id)
-	vgui.set_next_item_width(110 * sc)
+
+	vgui.same_line()
+	mut idv := int(msg.id)
+	vgui.set_next_item_width(100 * sc)
 	if !ro && vgui.input_int('id (dec)', &idv) {
-		// clamp to the selected frame format: std 11-bit, ext 29-bit — a
-		// negative or oversized entry must never wrap through the u32 cast
-		id_max := if app.dbs[di].messages[mi].ext { 0x1FFF_FFFF } else { 0x7FF }
+		id_max := if msg.ext { 0x1FFF_FFFF } else { 0x7FF }
 		cl := if idv < 0 {
 			0
 		} else if idv > id_max {
@@ -6136,17 +6373,15 @@ fn draw_dbc_editor(mut app App) {
 		} else {
 			idv
 		}
-		// (id, ext) identifies the frame everywhere (lookup, aux records) —
-		// a duplicate pair is silent decode corruption, so it is not applied
 		mut id_taken := false
 		for oi, om in app.dbs[di].messages {
-			if oi != mi && om.id == u32(cl) && om.ext == app.dbs[di].messages[mi].ext {
+			if oi != mi && om.id == u32(cl) && om.ext == msg.ext {
 				id_taken = true
 			}
 		}
 		if !id_taken {
-			old_id := app.dbs[di].messages[mi].id
-			wext0 := app.dbs[di].messages[mi].ext
+			old_id := msg.id
+			wext0 := msg.ext
 			app.mu.lock()
 			app.dbs[di].messages[mi].id = u32(cl)
 			app.mu.unlock()
@@ -6171,19 +6406,17 @@ fn draw_dbc_editor(mut app App) {
 				}
 			}
 			app.dbc_ed.dirty[app.dbs_paths[di]] = true
-			app.dbc_refresh_trace_names()
 		} else {
-			app.notify('id 0x${u32(cl).hex()} already used by another frame of the same kind — not applied')
+			app.notify('id 0x${u32(cl).hex()} already used by another frame — not applied')
 		}
 	}
 	vgui.same_line()
-	vgui.text_dim('= 0x${app.dbs[di].messages[mi].id.hex()}')
+	vgui.text_dim('= 0x${msg.id.hex()}')
+
 	vgui.same_line()
-	next := vgui.checkbox('ext##dbcm', app.dbs[di].messages[mi].ext)
-	if !ro && next != app.dbs[di].messages[mi].ext {
-		// the kind flip changes the frame IDENTITY — recheck (id, ext)
-		// uniqueness and the 11-bit cap before applying
-		mut nid := app.dbs[di].messages[mi].id
+	next := vgui.checkbox('ext##dbcm', msg.ext)
+	if !ro && next != msg.ext {
+		mut nid := msg.id
 		if !next && nid > 0x7FF {
 			nid = 0x7FF
 		}
@@ -6196,8 +6429,8 @@ fn draw_dbc_editor(mut app App) {
 		if clash {
 			app.notify('cannot flip ext: 0x${nid.hex()} already exists as that frame kind')
 		} else {
-			old_id2 := app.dbs[di].messages[mi].id
-			old_ext2 := app.dbs[di].messages[mi].ext
+			old_id2 := msg.id
+			old_ext2 := msg.ext
 			app.mu.lock()
 			app.dbs[di].messages[mi].ext = next
 			app.dbs[di].messages[mi].id = nid
@@ -6223,380 +6456,449 @@ fn draw_dbc_editor(mut app App) {
 				}
 			}
 			app.dbc_ed.dirty[app.dbs_paths[di]] = true
-			app.dbc_refresh_trace_names()
 		}
 	}
-	mut dlcv := app.dbs[di].messages[mi].dlc
-	vgui.set_next_item_width(80 * sc)
+
+	vgui.same_line()
+	mut dlcv := msg.dlc
+	vgui.set_next_item_width(70 * sc)
 	if !ro && vgui.input_int('dlc', &dlcv) {
 		app.mu.lock()
-		app.dbs[di].messages[mi].dlc = if dlcv < 0 {
-			0 // a zero-length CAN frame is legal
-		} else if dlcv > 64 {
-			64
-		} else {
-			dlcv
-		}
+		app.dbs[di].messages[mi].dlc = if dlcv < 0 { 0 } else if dlcv > 64 { 64 } else { dlcv }
 		app.mu.unlock()
 		app.dbc_ed.dirty[app.dbs_paths[di]] = true
 	}
+
 	vgui.same_line()
-	mut cycv := app.dbs[di].messages[mi].cycle_ms
-	vgui.set_next_item_width(80 * sc)
+	mut cycv := msg.cycle_ms
+	vgui.set_next_item_width(70 * sc)
 	if !ro && vgui.input_int('cycle ms', &cycv) {
 		app.mu.lock()
 		app.dbs[di].messages[mi].cycle_ms = if cycv < 0 { 0 } else { cycv }
 		app.mu.unlock()
 		app.dbc_ed.dirty[app.dbs_paths[di]] = true
 	}
-	vgui.set_next_item_width(120 * sc)
+
+	vgui.same_line()
+	vgui.set_next_item_width(110 * sc)
 	if !ro && vgui.input_text('sender', mut app.dbc_ed.sender_buf) {
 		sv := vgui.buf_str(app.dbc_ed.sender_buf)
-		if sv == '' || dbc_ident_ok(sv) { // empty = no transmitter
+		if sv == '' || dbc_ident_ok(sv) {
 			app.mu.lock()
 			app.dbs[di].messages[mi].sender = sv
 			app.mu.unlock()
 			app.dbc_ed.dirty[app.dbs_paths[di]] = true
-			// BU_ union happens at SAVE — inserting here would append every
-			// keystroke prefix ('E','EC','ECU'...) as a permanent node
+		}
+	}
+	if app.dbs[di].nodes.len > 0 {
+		vgui.same_line()
+		mut sender_nodes := ['(select ECU)']
+		sender_nodes << app.dbs[di].nodes
+		cur_s := msg.sender
+		sel_idx := if cur_s != '' && cur_s in app.dbs[di].nodes {
+			app.dbs[di].nodes.index(cur_s) + 1
+		} else {
+			0
+		}
+		ns_idx := vgui.combo('ECU Node##sndc', sender_nodes, sel_idx)
+		if !ro && ns_idx != sel_idx {
+			new_snd := if ns_idx > 0 { app.dbs[di].nodes[ns_idx - 1] } else { '' }
+			app.mu.lock()
+			app.dbs[di].messages[mi].sender = new_snd
+			app.mu.unlock()
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			app.dbc_ed.sender_buf = mkbuf(new_snd, new_snd.len + 96)
 		}
 	}
 
-	// bit-matrix grid: rows = bytes, cells bit7..bit0 (the CANdb++ view).
-	// Colored per owning signal; overlap = red; click selects the signal.
-	vgui.separator_text('layout')
-	msg := app.dbs[di].messages[mi]
+	// 2. Bit Layout Matrix Grid
+	vgui.separator_text('Bit Layout Matrix')
 	if msg.dlc < 0 || msg.dlc > 64 {
-		vgui.text_colored(205, 60, 60,
-			'dlc ${msg.dlc} out of range — fix it above to see the layout')
+		vgui.text_colored(205, 60, 60, 'dlc ${msg.dlc} out of range — fix it above to see the layout')
+	} else {
+		nbits := msg.dlc * 8
+		mut owner_cnts := [512]int{}
+		mut owners := [512][4]int{}
+		for six, sg in msg.signals {
+			for g in dbc_signal_bits(sg) {
+				if g >= 0 && g < nbits && g < 512 {
+					if owner_cnts[g] < 4 {
+						owners[g][owner_cnts[g]] = six
+						owner_cnts[g]++
+					}
+				}
+			}
+		}
+		mut conflict := [512]bool{}
+		for g in 0 .. nbits {
+			cnt := owner_cnts[g]
+			for x in 0 .. cnt {
+				for y in x + 1 .. cnt {
+					a := msg.signals[owners[g][x]]
+					bsig := msg.signals[owners[g][y]]
+					coexist := !(a.is_multiplexed && bsig.is_multiplexed
+						&& a.multiplexor_value != bsig.multiplexor_value)
+					if coexist {
+						conflict[g] = true
+					}
+				}
+			}
+		}
+		cell := 21 * sc
+		for byte_i in 0 .. msg.dlc {
+			vgui.text_dim('B${byte_i}')
+			for bit_i := 7; bit_i >= 0; bit_i-- {
+				vgui.same_line()
+				g := byte_i * 8 + bit_i
+				cnt := owner_cnts[g]
+				mut r, mut gg, mut b := 58, 58, 62
+				mut lbl := ' '
+				if cnt == 1 {
+					sidx := owners[g][0]
+					r, gg, b = dbc_ed_color(sidx)
+					if sidx == app.dbc_ed.sig {
+						r, gg, b = r + 40, gg + 40, b + 40
+					}
+					sg := msg.signals[sidx]
+					if sg.is_multiplexor {
+						lbl = 'M'
+					} else if sg.is_multiplexed {
+						lbl = 'm'
+					} else {
+						lbl = '${sidx % 10}'
+					}
+				} else if cnt > 1 {
+					if conflict[g] {
+						r, gg, b = 205, 60, 60
+						lbl = '!'
+					} else {
+						r, gg, b = dbc_ed_color(owners[g][0])
+						r, gg, b = r / 2 + 20, gg / 2 + 20, b / 2 + 20
+						lbl = 'm'
+					}
+				}
+				if vgui.button_big('${lbl}##g${g}', r, gg, b, cell, cell) {
+					if cnt > 0 {
+						app.dbc_ed.sig = owners[g][0]
+					}
+				}
+				if cnt > 0 {
+					mut tt := 'bit ${g} (Byte ${byte_i}, bit ${bit_i})'
+					for o_idx in 0 .. cnt {
+						o := owners[g][o_idx]
+						sg := msg.signals[o]
+						mux_info := if sg.is_multiplexor {
+							' [Mux Switch]'
+						} else if sg.is_multiplexed {
+							' [Mux ${sg.multiplexor_value}]'
+						} else {
+							''
+						}
+						tt += '\n${sg.name}${mux_info}'
+					}
+					vgui.set_item_tooltip(tt)
+				}
+			}
+		}
+		mut over := 0
+		for g in 0 .. nbits {
+			if conflict[g] {
+				over++
+			}
+		}
+		if over > 0 {
+			vgui.text_colored(205, 60, 60, '${over} bit(s) claimed by more than one signal')
+		}
+		for sg in msg.signals {
+			for g in dbc_signal_bits(sg) {
+				if g >= nbits || g < 0 {
+					vgui.text_colored(205, 60, 60, '${sg.name} exceeds the ${msg.dlc}-byte frame')
+					break
+				}
+			}
+		}
+	}
+
+	// 3. Signal Inspector Form (for selected signal)
+	si := app.dbc_ed.sig
+	if si < 0 || si >= msg.signals.len {
+		vgui.separator_text('Signal Inspector')
+		vgui.text_dim('select a signal in the left tree/table or layout grid to inspect properties')
+		vgui.child_end()
 		vgui.end()
 		return
 	}
-	nbits := msg.dlc * 8
-	mut owners := [][]int{len: nbits}
-	for six, sg in msg.signals {
-		for g in dbc_signal_bits(sg) {
-			if g >= 0 && g < nbits {
-				owners[g] << six
+
+	sg := msg.signals[si]
+	cr, cg, cb := dbc_ed_color(si)
+	vgui.separator_text('Signal Inspector: #${si + 1} ')
+	vgui.same_line()
+	vgui.text_colored(u8(cr), u8(cg), u8(cb), sg.name)
+
+	app.dbc_ed_load_bufs()
+	vgui.set_next_item_width(160 * sc)
+	if !ro && vgui.input_text('name##dbcs', mut app.dbc_ed.sname_buf) {
+		nv := vgui.buf_str(app.dbc_ed.sname_buf)
+		mut name_taken := false
+		for oi, osg in msg.signals {
+			if oi != si && osg.name == nv {
+				name_taken = true
 			}
 		}
-	}
-	// multiplexed branches with DIFFERENT selectors are mutually exclusive —
-	// sharing bits is the point of multiplexing, not an overlap
-	mut conflict := []bool{len: nbits}
-	for g in 0 .. nbits {
-		for x in 0 .. owners[g].len {
-			for y in x + 1 .. owners[g].len {
-				a := msg.signals[owners[g][x]]
-				bsig := msg.signals[owners[g][y]]
-				coexist := !(a.is_multiplexed && bsig.is_multiplexed
-					&& a.multiplexor_value != bsig.multiplexor_value)
-				if coexist {
-					conflict[g] = true
+		if dbc_ident_ok(nv) && !name_taken {
+			old_sig := msg.signals[si].name
+			app.mu.lock()
+			app.dbs[di].messages[mi].signals[si].name = nv
+			app.mu.unlock()
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			wid := msg.id
+			wext := msg.ext
+			mut shadowed := false
+			for odi in 0 .. di {
+				for om in app.dbs[odi].messages {
+					if om.id == wid && om.ext == wext {
+						shadowed = true
+					}
+				}
+			}
+			for wi, w in app.watch {
+				if shadowed {
+					break
+				}
+				if w.id == wid && w.ext == wext && w.sig == old_sig {
+					app.watch[wi] = Watch{
+						id:  w.id
+						ext: w.ext
+						sig: nv
+					}
 				}
 			}
 		}
 	}
-	cell := 21 * sc
-	for byte_i in 0 .. msg.dlc {
-		vgui.text_dim('B${byte_i}')
-		for bit_i := 7; bit_i >= 0; bit_i-- {
-			vgui.same_line()
-			g := byte_i * 8 + bit_i
-			own := owners[g]
-			mut r, mut gg, mut b := 58, 58, 62
-			mut lbl := ' '
-			if own.len == 1 {
-				r, gg, b = dbc_ed_color(own[0])
-				if own[0] == app.dbc_ed.sig {
-					r, gg, b = r + 40, gg + 40, b + 40 // highlight the selection
-				}
-				lbl = '${own[0] % 10}'
-			} else if own.len > 1 {
-				if conflict[g] {
-					r, gg, b = 205, 60, 60
-					lbl = '!'
-				} else {
-					// mux branches sharing the bit: show the first branch dim
-					r, gg, b = dbc_ed_color(own[0])
-					r, gg, b = r / 2 + 20, gg / 2 + 20, b / 2 + 20
-					lbl = 'm'
-				}
-			}
-			if vgui.button_big('${lbl}##g${g}', r, gg, b, cell, cell) {
-				if own.len > 0 {
-					app.dbc_ed.sig = own[0]
-				}
-			}
-			if own.len > 0 {
-				mut tt := 'bit ${g}'
-				for o in own {
-					tt += '\n${msg.signals[o].name}'
-				}
-				vgui.set_item_tooltip(tt)
-			}
-		}
-	}
-	// validation lines: overlaps + out-of-frame
-	mut over := 0
-	for g in 0 .. nbits {
-		if conflict[g] {
-			over++
-		}
-	}
-	if over > 0 {
-		vgui.text_colored(205, 60, 60, '${over} bit(s) claimed by more than one signal')
-	}
-	for sg in msg.signals {
-		for g in dbc_signal_bits(sg) {
-			if g >= nbits || g < 0 {
-				vgui.text_colored(205, 60, 60, '${sg.name} exceeds the ${msg.dlc}-byte frame')
-				break
-			}
-		}
+	if !dbc_ident_ok(vgui.buf_str(app.dbc_ed.sname_buf)) {
+		vgui.same_line()
+		vgui.text_colored(205, 60, 60, 'invalid name')
 	}
 
-	// signal list + form
-	vgui.separator_text('signals')
-	for i, sg in msg.signals {
-		or_tag := if sg.byte_order == .little_endian { 'LE' } else { 'BE' }
-		sgn := if sg.is_signed { 'i' } else { 'u' }
-		cr, cg, cb := dbc_ed_color(i)
-		vgui.text_colored(u8(cr), u8(cg), u8(cb), '#')
-		vgui.same_line()
-		if vgui.selectable('${sg.name}  ${sg.start_bit}|${sg.length}@${or_tag} ${sgn}${sg.length} x${sg.factor}+${sg.offset} ${sg.unit}##ds${i}',
-			app.dbc_ed.sig == i)
-		{
-			app.dbc_ed.sig = i
-		}
-	}
-	if !ro && vgui.small_button('+ signal') {
+	mut sbv := sg.start_bit
+	mut lnv := sg.length
+	mut stop_bit := sbv + lnv - 1
+
+	vgui.same_line()
+	vgui.set_next_item_width(65 * sc)
+	if !ro && vgui.input_int('start bit', &sbv) {
 		app.mu.lock()
-		// place after the highest occupied bit of ANY byte order (the
-		// Motorola sawtooth occupies bits its start_bit alone doesn't show)
-		mut top := 0
-		for sg in msg.signals {
-			for g in dbc_signal_bits(sg) {
-				if g + 1 > top {
-					top = g + 1
-				}
+		app.dbs[di].messages[mi].signals[si].start_bit = if sbv < 0 { 0 } else { sbv }
+		app.mu.unlock()
+		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+	}
+	vgui.same_line()
+	vgui.set_next_item_width(65 * sc)
+	if !ro && vgui.input_int('len bits', &lnv) {
+		app.mu.lock()
+		nl := if lnv < 1 { 1 } else if lnv > 64 { 64 } else { lnv }
+		nmask := if nl >= 64 { ~u64(0) } else { (u64(1) << nl) - 1 }
+		mut val_clash := false
+		for k, _ in sg.values {
+			if k & ~nmask != 0 {
+				val_clash = true
 			}
 		}
-		mut nn := 1
-		mut nname := 'NewSignal'
-		for {
-			mut taken := false
-			for sg in msg.signals {
-				if sg.name == nname {
-					taken = true
-				}
-			}
-			if !taken {
-				break
-			}
-			nn++
-			nname = 'NewSignal${nn}'
-		}
-		app.dbs[di].messages[mi].signals << candb.Signal{
-			name:      nname
-			start_bit: top
-			length:    8
+		if !val_clash {
+			app.dbs[di].messages[mi].signals[si].length = nl
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
 		}
 		app.mu.unlock()
-		app.dbc_ed.sig = app.dbs[di].messages[mi].signals.len - 1
-		app.dbc_ed.dirty[app.dbs_paths[di]] = true
-		app.dbc_ed.loaded_key = '' // indices reused after add/delete: refresh buffers
+		if val_clash {
+			app.notify('width ${nl} cannot hold the existing value-table keys — remove them first')
+		}
 	}
-	si := app.dbc_ed.sig
-	if si >= 0 && si < app.dbs[di].messages[mi].signals.len {
-		vgui.same_line()
-		if !ro && vgui.small_button('- delete signal') {
-			if app.dbs[di].messages[mi].signals[si].is_multiplexor {
-				mut deps := 0
-				for oi, osg in app.dbs[di].messages[mi].signals {
-					if oi != si && osg.is_multiplexed {
-						deps++
-					}
-				}
-				if deps > 0 {
-					app.notify('cannot delete the multiplexor switch: ${deps} multiplexed signal(s) depend on it')
-					vgui.end()
-					return
-				}
-			}
+	vgui.same_line()
+	vgui.set_next_item_width(65 * sc)
+	if !ro && vgui.input_int('stop bit', &stop_bit) {
+		if stop_bit >= sbv {
+			nl := stop_bit - sbv + 1
 			app.mu.lock()
-			app.dbs[di].messages[mi].signals.delete(si)
-			app.mu.unlock()
-			app.dbc_ed.sig = -1
-			app.dbc_ed.dirty[app.dbs_paths[di]] = true
-			app.dbc_ed.loaded_key = '' // deleted index may be reused: refresh buffers
-			vgui.end()
-			return
-		}
-		app.dbc_ed_load_bufs()
-		vgui.set_next_item_width(160 * sc)
-		if !ro && vgui.input_text('name##dbcs', mut app.dbc_ed.sname_buf) {
-			nv := vgui.buf_str(app.dbc_ed.sname_buf)
-			// VAL_/CM_ records identify signals BY NAME within the message —
-			// a duplicate name scrambles them on reload
-			mut name_taken := false
-			for oi, osg in app.dbs[di].messages[mi].signals {
-				if oi != si && osg.name == nv {
-					name_taken = true
-				}
-			}
-			if dbc_ident_ok(nv) && !name_taken {
-				old_sig := app.dbs[di].messages[mi].signals[si].name
-				app.mu.lock()
-				app.dbs[di].messages[mi].signals[si].name = nv
-				app.mu.unlock()
-				app.dbc_ed.dirty[app.dbs_paths[di]] = true
-				// Graphics watches key on (id, ext, signal name) — retarget
-				// them or the plot silently goes flat under the old name.
-				// Only when THIS database resolves the pair: an earlier
-				// loaded DBC defining the same frame shadows this one
-				wid := app.dbs[di].messages[mi].id
-				wext := app.dbs[di].messages[mi].ext
-				mut shadowed := false
-				for odi in 0 .. di {
-					for om in app.dbs[odi].messages {
-						if om.id == wid && om.ext == wext {
-							shadowed = true
-						}
-					}
-				}
-				for wi, w in app.watch {
-					if shadowed {
-						break
-					}
-					if w.id == wid && w.ext == wext && w.sig == old_sig {
-						app.watch[wi] = Watch{
-							id:  w.id
-							ext: w.ext
-							sig: nv
-						}
-					}
-				}
-			}
-		}
-		if !dbc_ident_ok(vgui.buf_str(app.dbc_ed.sname_buf)) {
-			vgui.same_line()
-			vgui.text_colored(205, 60, 60, 'invalid name (A-Za-z0-9_, not applied)')
-		}
-		mut sbv := app.dbs[di].messages[mi].signals[si].start_bit
-		vgui.set_next_item_width(80 * sc)
-		if !ro && vgui.input_int('start', &sbv) {
-			app.mu.lock()
-			app.dbs[di].messages[mi].signals[si].start_bit = if sbv < 0 { 0 } else { sbv }
-			app.mu.unlock()
-			app.dbc_ed.dirty[app.dbs_paths[di]] = true
-		}
-		vgui.same_line()
-		mut lnv := app.dbs[di].messages[mi].signals[si].length
-		vgui.set_next_item_width(80 * sc)
-		if !ro && vgui.input_int('len', &lnv) {
-			app.mu.lock()
-			nl := if lnv < 1 {
-				1
-			} else if lnv > 64 {
-				64
-			} else {
-				lnv
-			}
-			// shrinking the width would mask distinct value-table keys onto
-			// one another at save time — refuse while entries would collide
-			nmask := if nl >= 64 { ~u64(0) } else { (u64(1) << nl) - 1 }
-			mut val_clash := false
-			for k, _ in app.dbs[di].messages[mi].signals[si].values {
-				if k & ~nmask != 0 {
-					val_clash = true // the key itself no longer fits: saving would remap it
-				}
-			}
-			if !val_clash {
+			if nl >= 1 && nl <= 64 {
 				app.dbs[di].messages[mi].signals[si].length = nl
 				app.dbc_ed.dirty[app.dbs_paths[di]] = true
 			}
 			app.mu.unlock()
-			if val_clash {
-				// AFTER unlock: notify() takes app.mu itself
-				app.notify('width ${nl} cannot hold the existing value-table keys — remove them first')
-			}
 		}
-		cur_o := if app.dbs[di].messages[mi].signals[si].byte_order == .little_endian {
-			0
+	}
+	vgui.same_line()
+	vgui.text_dim('(range: bit ${sbv} .. ${sbv + lnv - 1})')
+
+	cur_o := if sg.byte_order == .little_endian { 0 } else { 1 }
+	vgui.set_next_item_width(120 * sc)
+	no := vgui.combo('order', ['Intel (LE)', 'Motorola (BE)'], cur_o)
+	if !ro && no != cur_o {
+		app.mu.lock()
+		app.dbs[di].messages[mi].signals[si].byte_order = if no == 0 {
+			candb.ByteOrder.little_endian
 		} else {
-			1
+			candb.ByteOrder.big_endian
 		}
-		no := vgui.combo('order', ['Intel (LE)', 'Motorola (BE)'], cur_o)
-		if !ro && no != cur_o {
+		app.mu.unlock()
+		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+	}
+	vgui.same_line()
+	nsg := vgui.checkbox('signed', sg.is_signed)
+	if !ro && nsg != sg.is_signed {
+		app.mu.lock()
+		app.dbs[di].messages[mi].signals[si].is_signed = nsg
+		app.mu.unlock()
+		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+	}
+
+	mut fv := sg.factor
+	vgui.same_line()
+	vgui.set_next_item_width(90 * sc)
+	if !ro && vgui.input_double('factor', &fv) {
+		if fv != 0 {
 			app.mu.lock()
-			app.dbs[di].messages[mi].signals[si].byte_order = if no == 0 {
-				candb.ByteOrder.little_endian
-			} else {
-				candb.ByteOrder.big_endian
-			}
-			app.mu.unlock()
-			app.dbc_ed.dirty[app.dbs_paths[di]] = true
-		}
-		vgui.same_line()
-		nsg := vgui.checkbox('signed', app.dbs[di].messages[mi].signals[si].is_signed)
-		if !ro && nsg != app.dbs[di].messages[mi].signals[si].is_signed {
-			app.mu.lock()
-			app.dbs[di].messages[mi].signals[si].is_signed = nsg
-			app.mu.unlock()
-			app.dbc_ed.dirty[app.dbs_paths[di]] = true
-		}
-		mut fv := app.dbs[di].messages[mi].signals[si].factor
-		vgui.set_next_item_width(100 * sc)
-		if !ro && vgui.input_double('factor', &fv) {
-			if fv != 0 { // raw_from_phys divides by factor: zero would NaN/inf
-				app.mu.lock()
-				app.dbs[di].messages[mi].signals[si].factor = fv
-				app.mu.unlock()
-				app.dbc_ed.dirty[app.dbs_paths[di]] = true
-			}
-		}
-		vgui.same_line()
-		mut ov := app.dbs[di].messages[mi].signals[si].offset
-		vgui.set_next_item_width(100 * sc)
-		if !ro && vgui.input_double('offset', &ov) {
-			app.mu.lock()
-			app.dbs[di].messages[mi].signals[si].offset = ov
-			app.mu.unlock()
-			app.dbc_ed.dirty[app.dbs_paths[di]] = true
-		}
-		mut mnv := app.dbs[di].messages[mi].signals[si].minimum
-		vgui.set_next_item_width(100 * sc)
-		if !ro && vgui.input_double('min', &mnv) {
-			app.mu.lock()
-			app.dbs[di].messages[mi].signals[si].minimum = mnv
-			app.mu.unlock()
-			app.dbc_ed.dirty[app.dbs_paths[di]] = true
-		}
-		vgui.same_line()
-		mut mxv := app.dbs[di].messages[mi].signals[si].maximum
-		vgui.set_next_item_width(100 * sc)
-		if !ro && vgui.input_double('max', &mxv) {
-			app.mu.lock()
-			app.dbs[di].messages[mi].signals[si].maximum = mxv
-			app.mu.unlock()
-			app.dbc_ed.dirty[app.dbs_paths[di]] = true
-		}
-		vgui.set_next_item_width(80 * sc)
-		if !ro && vgui.input_text('unit', mut app.dbc_ed.unit_buf) {
-			app.mu.lock()
-			app.dbs[di].messages[mi].signals[si].unit = vgui.buf_str(app.dbc_ed.unit_buf)
-			app.mu.unlock()
-			app.dbc_ed.dirty[app.dbs_paths[di]] = true
-		}
-		vgui.set_next_item_width(240 * sc)
-		if !ro && vgui.input_text('desc', mut app.dbc_ed.desc_buf) {
-			app.mu.lock()
-			app.dbs[di].messages[mi].signals[si].desc = vgui.buf_str(app.dbc_ed.desc_buf)
+			app.dbs[di].messages[mi].signals[si].factor = fv
 			app.mu.unlock()
 			app.dbc_ed.dirty[app.dbs_paths[di]] = true
 		}
 	}
+	vgui.same_line()
+	mut ov := sg.offset
+	vgui.set_next_item_width(90 * sc)
+	if !ro && vgui.input_double('offset', &ov) {
+		app.mu.lock()
+		app.dbs[di].messages[mi].signals[si].offset = ov
+		app.mu.unlock()
+		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+	}
+	vgui.same_line()
+	mut mnv := sg.minimum
+	vgui.set_next_item_width(90 * sc)
+	if !ro && vgui.input_double('min', &mnv) {
+		app.mu.lock()
+		app.dbs[di].messages[mi].signals[si].minimum = mnv
+		app.mu.unlock()
+		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+	}
+	vgui.same_line()
+	mut mxv := sg.maximum
+	vgui.set_next_item_width(90 * sc)
+	if !ro && vgui.input_double('max', &mxv) {
+		app.mu.lock()
+		app.dbs[di].messages[mi].signals[si].maximum = mxv
+		app.mu.unlock()
+		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+	}
+
+	vgui.set_next_item_width(80 * sc)
+	if !ro && vgui.input_text('unit', mut app.dbc_ed.unit_buf) {
+		app.mu.lock()
+		app.dbs[di].messages[mi].signals[si].unit = vgui.buf_str(app.dbc_ed.unit_buf)
+		app.mu.unlock()
+		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+	}
+	vgui.same_line()
+	vgui.set_next_item_width(280 * sc)
+	if !ro && vgui.input_text('desc', mut app.dbc_ed.desc_buf) {
+		app.mu.lock()
+		app.dbs[di].messages[mi].signals[si].desc = vgui.buf_str(app.dbc_ed.desc_buf)
+		app.mu.unlock()
+		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+	}
+
+	// Multiplexing
+	vgui.separator_text('multiplexing')
+	mut is_mux := sg.is_multiplexor
+	new_is_mux := vgui.checkbox('Multiplexor Switch (M)##muxm', is_mux)
+	if !ro && new_is_mux != is_mux {
+		app.mu.lock()
+		app.dbs[di].messages[mi].signals[si].is_multiplexor = new_is_mux
+		if new_is_mux {
+			app.dbs[di].messages[mi].signals[si].is_multiplexed = false
+		}
+		app.mu.unlock()
+		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+	}
+	vgui.same_line()
+	mut is_sub := sg.is_multiplexed
+	new_is_sub := vgui.checkbox('Multiplexed Signal (m<N>)##muxsub', is_sub)
+	if !ro && new_is_sub != is_sub {
+		app.mu.lock()
+		app.dbs[di].messages[mi].signals[si].is_multiplexed = new_is_sub
+		if new_is_sub {
+			app.dbs[di].messages[mi].signals[si].is_multiplexor = false
+		}
+		app.mu.unlock()
+		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+	}
+	if app.dbs[di].messages[mi].signals[si].is_multiplexed {
+		vgui.same_line()
+		mut mval := sg.multiplexor_value
+		vgui.set_next_item_width(80 * sc)
+		if !ro && vgui.input_int('Mux Value (N)##muxval', &mval) {
+			app.mu.lock()
+			app.dbs[di].messages[mi].signals[si].multiplexor_value = if mval < 0 { 0 } else { mval }
+			app.mu.unlock()
+			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		}
+	}
+
+	// Value Table (VAL_)
+	vgui.separator_text('value table (VAL_)')
+	sg_vals := sg.values.clone()
+	if sg_vals.len > 0 {
+		vgui.child_begin('##valtablebox', 90 * sc)
+		if vgui.table_begin('##valtable', 3) {
+			vgui.table_setup_col('raw value', 90 * sc)
+			vgui.table_setup_col('label / state', 180 * sc)
+			vgui.table_setup_col('action', 50 * sc)
+			vgui.table_headers()
+			mut keys := sg_vals.keys()
+			keys.sort()
+			for k in keys {
+				vgui.table_row()
+				vgui.table_cell('${k} (0x${k:X})')
+				vgui.table_cell(sg_vals[k])
+				vgui.table_next_col()
+				if !ro && vgui.small_button('-##delval_${k}') {
+					app.mu.lock()
+					app.dbs[di].messages[mi].signals[si].values.delete(k)
+					app.mu.unlock()
+					app.dbc_ed.dirty[app.dbs_paths[di]] = true
+				}
+			}
+			vgui.table_end()
+		}
+		vgui.child_end()
+	} else {
+		vgui.text_dim('no value table mappings defined for this signal')
+	}
+	if !ro {
+		vgui.set_next_item_width(90 * sc)
+		vgui.input_text('raw key##vkey', mut app.dbc_ed.val_key_buf)
+		vgui.same_line()
+		vgui.set_next_item_width(180 * sc)
+		vgui.input_text('state label##vlbl', mut app.dbc_ed.val_name_buf)
+		vgui.same_line()
+		if vgui.small_button('+ value') {
+			kstr := vgui.buf_str(app.dbc_ed.val_key_buf).trim_space()
+			lblstr := vgui.buf_str(app.dbc_ed.val_name_buf).trim_space()
+			if kstr != '' && lblstr != '' {
+				parsed_k := kstr.u64()
+				app.mu.lock()
+				app.dbs[di].messages[mi].signals[si].values[parsed_k] = lblstr
+				app.mu.unlock()
+				app.dbc_ed.dirty[app.dbs_paths[di]] = true
+				app.dbc_ed.val_key_buf = mkbuf('', 24)
+				app.dbc_ed.val_name_buf = mkbuf('', 96)
+			} else {
+				app.notify('enter both a raw value and state label')
+			}
+		}
+	}
+
+	vgui.child_end() // end right pane
+
 	vgui.end()
 }
 
