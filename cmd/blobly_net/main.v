@@ -5895,6 +5895,23 @@ fn (mut app App) dbc_refresh_trace_names() {
 	app.mu.unlock()
 }
 
+fn (app &App) db_path(di int) string {
+	if di >= 0 && di < app.dbs_paths.len {
+		return app.dbs_paths[di]
+	}
+	if di >= 0 && di < app.dbs.len {
+		return 'dbc_${di}'
+	}
+	return ''
+}
+
+fn (mut app App) mark_dirty(di int) {
+	pth := app.db_path(di)
+	if pth != '' {
+		app.dbc_ed.dirty[pth] = true
+	}
+}
+
 fn draw_dbc_editor(mut app App) {
 	vis, op := vgui.begin_closable('DBC Editor', app.show_dbc)
 	app.show_dbc = op
@@ -5932,9 +5949,11 @@ fn draw_dbc_editor(mut app App) {
 
 	// ---- TOP CONTROL BAR: Database selector, Save / Revert, ECU Nodes ----
 	mut names := []string{cap: app.dbs.len}
-	for i, pth in app.dbs_paths {
-		mark := if app.dbc_ed.dirty[pth] { '` ' } else { '' }
-		names << '${mark}${os.file_name(os.dir(pth))}/${os.file_name(pth)} (${app.dbs[i].messages.len} msgs) ##${i}'
+	for i, db in app.dbs {
+		pth := app.db_path(i)
+		mark := if pth != '' && app.dbc_ed.dirty[pth] { '` ' } else { '' }
+		disp := if i < app.dbs_paths.len { '${os.file_name(os.dir(pth))}/${os.file_name(pth)}' } else { 'DBC #${i}' }
+		names << '${mark}${disp} (${db.messages.len} msgs) ##${i}'
 	}
 	if app.dbc_ed.db < 0 && app.dbs.len > 0 {
 		app.dbc_ed.db = 0
@@ -5951,14 +5970,15 @@ fn draw_dbc_editor(mut app App) {
 		vgui.end()
 		return
 	}
+	dbc_path := app.db_path(di)
 
 	// save / revert controls
 	vgui.same_line()
-	if !ro && app.dbc_ed.dirty[app.dbs_paths[di]] {
+	if !ro && dbc_path != '' && app.dbc_ed.dirty[dbc_path] {
 		vgui.text_colored(230, 170, 70, '` modified')
 		vgui.same_line()
 	}
-	if !ro && vgui.small_button('Save') {
+	if !ro && dbc_path != '' && vgui.small_button('Save') {
 		app.mu.lock()
 		for m in app.dbs[di].messages {
 			if m.sender != '' && m.sender !in app.dbs[di].nodes {
@@ -5967,38 +5987,38 @@ fn draw_dbc_editor(mut app App) {
 		}
 		text := app.dbs[di].to_dbc()
 		app.mu.unlock()
-		tmp := app.dbs_paths[di] + '.tmp~'
+		tmp := dbc_path + '.tmp~'
 		mut save_ok := true
 		os.write_file(tmp, text) or {
 			app.notify('dbc save failed (edits kept in memory): ${err}')
 			save_ok = false
 		}
 		if save_ok {
-			os.mv(tmp, app.dbs_paths[di]) or {
+			os.mv(tmp, dbc_path) or {
 				os.rm(tmp) or {}
 				app.notify('dbc save failed (edits kept in memory): ${err}')
 				save_ok = false
 			}
 		}
 		if save_ok {
-			app.dbc_ed.dirty.delete(app.dbs_paths[di])
+			app.dbc_ed.dirty.delete(dbc_path)
 			app.dbc_ed.loaded_key = ''
-			app.notify('saved ${app.dbs_paths[di]}')
+			app.notify('saved ${dbc_path}')
 			app.dbc_refresh_trace_names()
 			app.dbc_refresh_if_all_clean()
 		}
 	}
 	vgui.same_line()
-	if !ro && vgui.small_button('Revert') {
-		if db := candb.load_dbc_file(app.dbs_paths[di]) {
+	if !ro && dbc_path != '' && vgui.small_button('Revert') {
+		if db := candb.load_dbc_file(dbc_path) {
 			app.mu.lock()
 			app.dbs[di] = db
 			app.mu.unlock()
-			app.dbc_ed.dirty.delete(app.dbs_paths[di])
+			app.dbc_ed.dirty.delete(dbc_path)
 			app.dbc_ed.msg = -1
 			app.dbc_ed.sig = -1
 			app.dbc_ed.loaded_key = ''
-			app.notify('reverted ${app.dbs_paths[di]}')
+			app.notify('reverted ${dbc_path}')
 			app.dbc_refresh_trace_names()
 			mut kept := []Watch{cap: app.watch.len}
 			for w in app.watch {
@@ -6036,7 +6056,7 @@ fn draw_dbc_editor(mut app App) {
 					app.mu.lock()
 					app.dbs[di].nodes.delete(ni)
 					app.mu.unlock()
-					app.dbc_ed.dirty[app.dbs_paths[di]] = true
+					app.mark_dirty(di)
 				}
 				vgui.same_line()
 			}
@@ -6054,7 +6074,7 @@ fn draw_dbc_editor(mut app App) {
 					app.mu.lock()
 					app.dbs[di].nodes << nname
 					app.mu.unlock()
-					app.dbc_ed.dirty[app.dbs_paths[di]] = true
+					app.mark_dirty(di)
 					app.dbc_ed.node_buf = mkbuf('', 48)
 				} else {
 					app.notify('invalid or duplicate ECU node name')
@@ -6193,7 +6213,7 @@ fn draw_dbc_editor(mut app App) {
 		app.mu.unlock()
 		app.dbc_ed.msg = app.dbs[di].messages.len - 1
 		app.dbc_ed.sig = -1
-		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		app.mark_dirty(di)
 		app.dbc_ed.loaded_key = ''
 	}
 	mi := app.dbc_ed.msg
@@ -6205,7 +6225,7 @@ fn draw_dbc_editor(mut app App) {
 			app.mu.unlock()
 			app.dbc_ed.msg = -1
 			app.dbc_ed.sig = -1
-			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			app.mark_dirty(di)
 			app.dbc_ed.loaded_key = ''
 			app.dbc_refresh_trace_names()
 			vgui.child_end()
@@ -6284,7 +6304,7 @@ fn draw_dbc_editor(mut app App) {
 			}
 			app.mu.unlock()
 			app.dbc_ed.sig = app.dbs[di].messages[mi].signals.len - 1
-			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			app.mark_dirty(di)
 			app.dbc_ed.loaded_key = ''
 		}
 		si_left := app.dbc_ed.sig
@@ -6309,7 +6329,7 @@ fn draw_dbc_editor(mut app App) {
 				app.dbs[di].messages[mi].signals.delete(si_left)
 				app.mu.unlock()
 				app.dbc_ed.sig = -1
-				app.dbc_ed.dirty[app.dbs_paths[di]] = true
+				app.mark_dirty(di)
 				app.dbc_ed.loaded_key = ''
 				vgui.child_end()
 				vgui.end()
@@ -6353,7 +6373,7 @@ fn draw_dbc_editor(mut app App) {
 			app.mu.lock()
 			app.dbs[di].messages[mi].name = nv
 			app.mu.unlock()
-			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			app.mark_dirty(di)
 		}
 	}
 	if !dbc_ident_ok(vgui.buf_str(app.dbc_ed.mname_buf)) {
@@ -6405,7 +6425,7 @@ fn draw_dbc_editor(mut app App) {
 					}
 				}
 			}
-			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			app.mark_dirty(di)
 		} else {
 			app.notify('id 0x${u32(cl).hex()} already used by another frame — not applied')
 		}
@@ -6455,7 +6475,7 @@ fn draw_dbc_editor(mut app App) {
 					}
 				}
 			}
-			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			app.mark_dirty(di)
 		}
 	}
 
@@ -6466,7 +6486,7 @@ fn draw_dbc_editor(mut app App) {
 		app.mu.lock()
 		app.dbs[di].messages[mi].dlc = if dlcv < 0 { 0 } else if dlcv > 64 { 64 } else { dlcv }
 		app.mu.unlock()
-		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		app.mark_dirty(di)
 	}
 
 	vgui.same_line()
@@ -6476,7 +6496,7 @@ fn draw_dbc_editor(mut app App) {
 		app.mu.lock()
 		app.dbs[di].messages[mi].cycle_ms = if cycv < 0 { 0 } else { cycv }
 		app.mu.unlock()
-		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		app.mark_dirty(di)
 	}
 
 	vgui.same_line()
@@ -6487,7 +6507,7 @@ fn draw_dbc_editor(mut app App) {
 			app.mu.lock()
 			app.dbs[di].messages[mi].sender = sv
 			app.mu.unlock()
-			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			app.mark_dirty(di)
 		}
 	}
 	if app.dbs[di].nodes.len > 0 {
@@ -6506,7 +6526,7 @@ fn draw_dbc_editor(mut app App) {
 			app.mu.lock()
 			app.dbs[di].messages[mi].sender = new_snd
 			app.mu.unlock()
-			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			app.mark_dirty(di)
 			app.dbc_ed.sender_buf = mkbuf(new_snd, new_snd.len + 96)
 		}
 	}
@@ -6650,7 +6670,7 @@ fn draw_dbc_editor(mut app App) {
 			app.mu.lock()
 			app.dbs[di].messages[mi].signals[si].name = nv
 			app.mu.unlock()
-			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			app.mark_dirty(di)
 			wid := msg.id
 			wext := msg.ext
 			mut shadowed := false
@@ -6690,7 +6710,7 @@ fn draw_dbc_editor(mut app App) {
 		app.mu.lock()
 		app.dbs[di].messages[mi].signals[si].start_bit = if sbv < 0 { 0 } else { sbv }
 		app.mu.unlock()
-		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		app.mark_dirty(di)
 	}
 	vgui.same_line()
 	vgui.set_next_item_width(65 * sc)
@@ -6706,7 +6726,7 @@ fn draw_dbc_editor(mut app App) {
 		}
 		if !val_clash {
 			app.dbs[di].messages[mi].signals[si].length = nl
-			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			app.mark_dirty(di)
 		}
 		app.mu.unlock()
 		if val_clash {
@@ -6721,7 +6741,7 @@ fn draw_dbc_editor(mut app App) {
 			app.mu.lock()
 			if nl >= 1 && nl <= 64 {
 				app.dbs[di].messages[mi].signals[si].length = nl
-				app.dbc_ed.dirty[app.dbs_paths[di]] = true
+				app.mark_dirty(di)
 			}
 			app.mu.unlock()
 		}
@@ -6740,7 +6760,7 @@ fn draw_dbc_editor(mut app App) {
 			candb.ByteOrder.big_endian
 		}
 		app.mu.unlock()
-		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		app.mark_dirty(di)
 	}
 	vgui.same_line()
 	nsg := vgui.checkbox('signed', sg.is_signed)
@@ -6748,7 +6768,7 @@ fn draw_dbc_editor(mut app App) {
 		app.mu.lock()
 		app.dbs[di].messages[mi].signals[si].is_signed = nsg
 		app.mu.unlock()
-		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		app.mark_dirty(di)
 	}
 
 	mut fv := sg.factor
@@ -6759,7 +6779,7 @@ fn draw_dbc_editor(mut app App) {
 			app.mu.lock()
 			app.dbs[di].messages[mi].signals[si].factor = fv
 			app.mu.unlock()
-			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			app.mark_dirty(di)
 		}
 	}
 	vgui.same_line()
@@ -6769,7 +6789,7 @@ fn draw_dbc_editor(mut app App) {
 		app.mu.lock()
 		app.dbs[di].messages[mi].signals[si].offset = ov
 		app.mu.unlock()
-		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		app.mark_dirty(di)
 	}
 	vgui.same_line()
 	mut mnv := sg.minimum
@@ -6778,7 +6798,7 @@ fn draw_dbc_editor(mut app App) {
 		app.mu.lock()
 		app.dbs[di].messages[mi].signals[si].minimum = mnv
 		app.mu.unlock()
-		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		app.mark_dirty(di)
 	}
 	vgui.same_line()
 	mut mxv := sg.maximum
@@ -6787,7 +6807,7 @@ fn draw_dbc_editor(mut app App) {
 		app.mu.lock()
 		app.dbs[di].messages[mi].signals[si].maximum = mxv
 		app.mu.unlock()
-		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		app.mark_dirty(di)
 	}
 
 	vgui.set_next_item_width(80 * sc)
@@ -6795,7 +6815,7 @@ fn draw_dbc_editor(mut app App) {
 		app.mu.lock()
 		app.dbs[di].messages[mi].signals[si].unit = vgui.buf_str(app.dbc_ed.unit_buf)
 		app.mu.unlock()
-		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		app.mark_dirty(di)
 	}
 	vgui.same_line()
 	vgui.set_next_item_width(280 * sc)
@@ -6803,7 +6823,7 @@ fn draw_dbc_editor(mut app App) {
 		app.mu.lock()
 		app.dbs[di].messages[mi].signals[si].desc = vgui.buf_str(app.dbc_ed.desc_buf)
 		app.mu.unlock()
-		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		app.mark_dirty(di)
 	}
 
 	// Multiplexing
@@ -6817,7 +6837,7 @@ fn draw_dbc_editor(mut app App) {
 			app.dbs[di].messages[mi].signals[si].is_multiplexed = false
 		}
 		app.mu.unlock()
-		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		app.mark_dirty(di)
 	}
 	vgui.same_line()
 	mut is_sub := sg.is_multiplexed
@@ -6829,7 +6849,7 @@ fn draw_dbc_editor(mut app App) {
 			app.dbs[di].messages[mi].signals[si].is_multiplexor = false
 		}
 		app.mu.unlock()
-		app.dbc_ed.dirty[app.dbs_paths[di]] = true
+		app.mark_dirty(di)
 	}
 	if app.dbs[di].messages[mi].signals[si].is_multiplexed {
 		vgui.same_line()
@@ -6839,7 +6859,7 @@ fn draw_dbc_editor(mut app App) {
 			app.mu.lock()
 			app.dbs[di].messages[mi].signals[si].multiplexor_value = if mval < 0 { 0 } else { mval }
 			app.mu.unlock()
-			app.dbc_ed.dirty[app.dbs_paths[di]] = true
+			app.mark_dirty(di)
 		}
 	}
 
@@ -6864,7 +6884,7 @@ fn draw_dbc_editor(mut app App) {
 					app.mu.lock()
 					app.dbs[di].messages[mi].signals[si].values.delete(k)
 					app.mu.unlock()
-					app.dbc_ed.dirty[app.dbs_paths[di]] = true
+					app.mark_dirty(di)
 				}
 			}
 			vgui.table_end()
@@ -6888,7 +6908,7 @@ fn draw_dbc_editor(mut app App) {
 				app.mu.lock()
 				app.dbs[di].messages[mi].signals[si].values[parsed_k] = lblstr
 				app.mu.unlock()
-				app.dbc_ed.dirty[app.dbs_paths[di]] = true
+				app.mark_dirty(di)
 				app.dbc_ed.val_key_buf = mkbuf('', 24)
 				app.dbc_ed.val_name_buf = mkbuf('', 96)
 			} else {
