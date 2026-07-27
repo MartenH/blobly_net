@@ -204,7 +204,6 @@ mut:
 	sys_path_buf      []u8
 	sys               sysview.System
 	sys_loaded        bool
-	ecu_open          []string // node names with an open per-ECU dashboard window
 	shell_buf         []u8 // the input line (persistent; edited in place by console_input)
 	eth_target_buf    []u8 // the eth shell's board ip (session-only; manifest carries the port)
 	eth_shell_session u16  // persists across commands: a fresh client restarting at session 1
@@ -1354,7 +1353,6 @@ fn main() {
 		if app.show_sys {
 			draw_system(mut app)
 		}
-		draw_ecu_dashboards(mut app) // per-ECU windows manage their own open state
 		if app.show_flash {
 			draw_flash(mut app)
 		}
@@ -7001,66 +6999,6 @@ fn draw_dbc_editor(mut app App) {
 // by design: system/ecu TOML is hand-written and comment-rich, and its
 // validation brain (ecucheck/syscheck) lives in blobly_emb.
 
-// draw_ecu_dashboards renders one self-contained window per open ECU (opened from the
-// System panel's "open <node>" buttons). Each is a per-ECU cockpit: identity, the
-// signals it produces/consumes, and the tools its ecu.toml declares. Driven by sysview,
-// so it covers the system.toml nodes (the CAN ECUs); eth-only nodes (tcu) join once the
-// system model learns eth buses (blobly_emb issue #245).
-fn draw_ecu_dashboards(mut app App) {
-	if app.ecu_open.len == 0 {
-		return
-	}
-	mut still := []string{}
-	mut idx := 0
-	for name in app.ecu_open {
-		mut i := -1
-		for j, n in app.sys.nodes {
-			if n.name == name {
-				i = j
-				break
-			}
-		}
-		if i < 0 {
-			continue // node dropped by a system reload
-		}
-		n := app.sys.nodes[i]
-		vgui.set_next_window(140 + idx * 28, 130 + idx * 28, 400, 360)
-		idx++
-		vis, op := vgui.begin_closable('ECU: ${name}###ecudash_${name}', true)
-		if op {
-			still << name
-		}
-		if !vis {
-			vgui.end()
-			continue
-		}
-		vgui.separator_text('identity')
-		vgui.text_dim('ecu    ${n.ecu}')
-		vgui.text_dim('buses  ${n.buses.join(', ')}')
-		if n.nm != 0 {
-			vgui.text_dim('NM     0x${n.nm.hex()}')
-		}
-		if n.diag_req != 0 {
-			vgui.text_dim('diag   0x${n.diag_req.hex()} / 0x${n.diag_rsp.hex()}')
-		}
-		vgui.separator_text('produces (${n.writes.len})')
-		for s in n.writes {
-			vgui.text('  ${s}')
-		}
-		vgui.separator_text('consumes (${n.reads.len})')
-		for s in n.reads {
-			vgui.text('  ${s}')
-		}
-		vgui.separator_text('tools')
-		vgui.text_dim(if n.trace != 0 { 'trace endpoint present' } else { 'no [trace] endpoint' })
-		if vgui.small_button('Shell panel##dash_${name}') {
-			app.show_shell = true
-		}
-		vgui.end()
-	}
-	app.ecu_open = still
-}
-
 fn draw_system(mut app App) {
 	vis, op := vgui.begin_closable('System', app.show_sys)
 	app.show_sys = op
@@ -7127,18 +7065,6 @@ fn draw_system(mut app App) {
 		}
 		vgui.table_end()
 	}
-
-	// per-ECU dashboards: open a self-contained window per ECU instance
-	vgui.separator_text('dashboards')
-	for n in app.sys.nodes {
-		if n.ecu_err == '' && vgui.small_button('open ${n.name}##dash_${n.name}') {
-			if n.name !in app.ecu_open {
-				app.ecu_open << n.name
-			}
-		}
-		vgui.same_line()
-	}
-	vgui.text_dim('(per-ECU cockpit window)')
 
 	for b in app.sys.buses {
 		vgui.separator_text('bus ${b.name} (${b.iface}${if b.fd { ', FD' } else { '' }}${if b.bitrate > 0 {
