@@ -942,6 +942,16 @@ fn (mut app App) load_project(path string) {
 		return
 	}
 	app.set_project(proj, path)
+	// Convenience: if a system.toml sits next to the project (the system_full layout),
+	// load it into the System panel and open it — so the per-ECU dashboard is one click
+	// away instead of a manual Browse/Load. Non-system projects (sim-demo) are unaffected.
+	if path != '' {
+		sys_cand := os.join_path(os.dir(path), 'system.toml')
+		if os.is_file(sys_cand) {
+			app.load_system(sys_cand)
+			app.show_sys = true
+		}
+	}
 }
 
 // set_project installs a parsed project (from a file, New, or a reload), resetting the
