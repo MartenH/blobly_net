@@ -27,7 +27,16 @@ set -e
 # (the VS Code tasks launch `bash -l`; or use the C:\dev\msys64-ct MINGW64 shell directly).
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$HERE"
+# Convenience: if the first arg is a .blobnet project (not a .v target), open THAT
+# project instead of the sim-demo default. So `run_gui.sh path/to/system_full.blobnet`
+# launches straight into that system. A .v arg still overrides the target as before.
 target="${1:-cmd/blobly_net/main.v}"
+case "$target" in
+	*.blobnet)
+		export BLOBLY_PROJECT="$target"
+		target="cmd/blobly_net/main.v"
+		;;
+esac
 
 # --- platform: pin the dedicated mingw toolchain + v.exe on Windows/MSYS2 --------------
 case "$(uname -s)" in
