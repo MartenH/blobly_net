@@ -278,7 +278,13 @@ void vgui_dump_ppm(const char* path) { g_dump = path; }
 
 // --- curated widget glue (scalar C ABI over imgui) ---
 void vgui_set_next_window(float x, float y, float w, float h) {
-    ImGui::SetNextWindowPos(ImVec2(x,y), ImGuiCond_Once);
+    // x/y are MAIN-WINDOW-relative: with multi-viewport enabled, ImGui window coords are
+    // absolute DESKTOP coords, so a bare (x,y) lands on the primary monitor even when the
+    // app runs on another one. Offset by the main viewport pos. (#55 applied this to
+    // eval/vgui/vgui_glue.cpp; the libs copy this app actually links never got it — so
+    // every floating window regressed to the wrong monitor.)
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + x, vp->Pos.y + y), ImGuiCond_Once);
     ImGui::SetNextWindowSize(ImVec2(w,h), ImGuiCond_Once);
 }
 // vgui_set_window_focus brings a docked window's tab to the front by name.
