@@ -4802,10 +4802,12 @@ fn draw_shell(mut app App) {
 	// the eth RPC shell (manifest `ethmod,shell,method`) needs NO CAN channel:
 	// it dials the board's UDP endpoint directly, Start or not
 	eth := app.eth_method != 0 && app.eth_someip.service != 0
-	// A CAN shell is only real if the manifest DECLARED its frames (0x7F0/0x7F2/0x7F1). Without
-	// that (or an eth method) there's no shell endpoint — commands would fire at the default id
-	// and hear nothing. Say so instead of offering a dead prompt (system_full: pure gateway).
-	shell_declared := app.manifest.shell.input != 0
+	// A CAN shell endpoint is "declared" either explicitly (manifest shell frames) or by the
+	// LEGACY default path: a manifest predating the `# shell frames` section leaves the ids 0
+	// and or_defaults() supplies 0x7F0/0x7F2/0x7F1, which reaches a default-configured target.
+	// So only call it unavailable when a manifest IS attached and still declares no shell —
+	// otherwise a legacy (or manifest-less) but working target would be refused (codex #65).
+	shell_declared := app.manifest.shell.input != 0 || !app.has_manifest
 	if !eth && !shell_declared {
 		vgui.text_colored(230, 170, 70, 'shell not available')
 		vgui.text_dim('this target declares no shell — no shell frames (0x7F0/0x7F2/0x7F1) in its manifest and no eth shell method')
