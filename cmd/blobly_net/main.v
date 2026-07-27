@@ -1823,6 +1823,8 @@ fn (mut app App) open_browser(target string) {
 		'.dbc'
 	} else if target.starts_with('manifest') {
 		'.csv'
+	} else if target == 'system' {
+		'.toml'
 	} else if target == 'flash' {
 		'.img' // match_ext also lets .bin through for this filter
 	} else {
@@ -1850,8 +1852,26 @@ fn (mut app App) browser_confirm(path string) {
 		app.add_dbc(t['dbc:'.len..].int(), path)
 	} else if t.starts_with('manifest:') {
 		app.set_manifest(t['manifest:'.len..].int(), path)
+	} else if t == 'system' {
+		app.load_system(path)
 	} else if t == 'flash' {
 		app.flash_img_buf = mkbuf(path, 256)
+	}
+}
+
+// load_system loads a blobly_emb system.toml into the read-only System view.
+fn (mut app App) load_system(path string) {
+	if path.trim_space() == '' {
+		app.notify('no system.toml path — type one or use Browse')
+		return
+	}
+	if sy := sysview.load(path) {
+		app.sys = sy
+		app.sys_loaded = true
+		app.sys_path_buf = mkbuf(path, path.len + 64)
+		app.notify('system: ${sy.nodes.len} node(s), ${sy.buses.len} bus(es), ${sy.signals.len} cross-node signal(s)')
+	} else {
+		app.notify('system load failed: ${err}')
 	}
 }
 
@@ -1865,6 +1885,8 @@ fn draw_filebrowser(mut app App) {
 		'Save Project As'
 	} else if app.fb_target.starts_with('dbc') {
 		'Attach DBC'
+	} else if app.fb_target == 'system' {
+		'Open system.toml'
 	} else {
 		'Attach Manifest'
 	}
@@ -4769,8 +4791,18 @@ fn draw_shell(mut app App) {
 	// the eth RPC shell (manifest `ethmod,shell,method`) needs NO CAN channel:
 	// it dials the board's UDP endpoint directly, Start or not
 	eth := app.eth_method != 0 && app.eth_someip.service != 0
+	// A CAN shell is only real if the manifest DECLARED its frames (0x7F0/0x7F2/0x7F1). Without
+	// that (or an eth method) there's no shell endpoint — commands would fire at the default id
+	// and hear nothing. Say so instead of offering a dead prompt (system_full: pure gateway).
+	shell_declared := app.manifest.shell.input != 0
+	if !eth && !shell_declared {
+		vgui.text_colored(230, 170, 70, 'shell not available')
+		vgui.text_dim('this target declares no shell — no shell frames (0x7F0/0x7F2/0x7F1) in its manifest and no eth shell method')
+		vgui.end()
+		return
+	}
 	if !app.running && !eth {
-		vgui.text_dim('press Start (needs a shell-enabled target on the bus)')
+		vgui.text_dim('press Start (the shell needs the channel open to reach the target)')
 		vgui.end()
 		return
 	}
@@ -5213,6 +5245,12 @@ fn draw_tchart(mut app App, trecs []TRec) {
 	app.mu.unlock()
 	if busy {
 		vgui.text_dim('dumping…')
+	} else if !app.has_manifest {
+		// No [trace] endpoint on this target (no manifest attached) — Record/Dump would have
+		// nothing to talk to. Say so plainly instead of offering dead buttons. system_full is
+		// exactly this case: a pure gateway with no TraceModule.
+		vgui.text_colored(230, 170, 70, 'trace information is missing')
+		vgui.text_dim('this target has no [trace] endpoint — attach a trace manifest to the channel (Config panel)')
 	} else if app.running {
 		if recording {
 			if vgui.button('Stop##trace') {
@@ -5787,6 +5825,7 @@ mut:
 	val_name_buf   []u8
 	node_buf       []u8
 	view_tree      bool = true // toggle between Tree view and Table view
+	left_w         f32  // draggable width (px) of the messages&signals pane; 0 = use the default
 }
 
 // dbc_ed_color: a deterministic per-signal palette for the bit grid.
@@ -6113,7 +6152,11 @@ fn draw_dbc_editor(mut app App) {
 	vgui.separator()
 
 	// ---- MAIN SPLIT PANES: Left (Navigation) vs Right (Inspector & Layout) ----
-	left_w := 340 * sc
+	// draggable divider (splitter_v below); width persists in dbc_ed.left_w
+	if app.dbc_ed.left_w <= 0 {
+		app.dbc_ed.left_w = 340 * sc
+	}
+	left_w := app.dbc_ed.left_w
 	vgui.child_wh('##dbced_left_pane', left_w, 0)
 
 	// --- LEFT PANE: Messages & Signals Browser ---
@@ -6365,6 +6408,9 @@ fn draw_dbc_editor(mut app App) {
 	}
 	vgui.child_end() // end left pane
 
+	// draggable divider: grow/shrink the left (messages & signals) pane vs the right (inspector)
+	vgui.same_line()
+	app.dbc_ed.left_w = vgui.splitter_v('##dbced_split', app.dbc_ed.left_w, 200 * sc, 760 * sc)
 	vgui.same_line()
 
 	// --- RIGHT PANE: Message Properties, Bit Layout Grid, Signal Inspector ---
@@ -6505,7 +6551,8 @@ fn draw_dbc_editor(mut app App) {
 		}
 	}
 
-	vgui.same_line()
+	// second row: framing (dlc / cycle / sender) — keeps the identity row (name / id / ext)
+	// from running off the right edge.
 	mut dlcv := msg.dlc
 	vgui.set_next_item_width(70 * sc)
 	if !ro && vgui.input_int('dlc', &dlcv) {
@@ -6525,36 +6572,24 @@ fn draw_dbc_editor(mut app App) {
 		app.mark_dirty(di)
 	}
 
+	// sender = the transmitting ECU. PICK it from the declared ECU nodes (BU_) — you can't invent
+	// an arbitrary sender. Add/remove nodes under "ECU Nodes (BU_)" at the top; "(none)" = no
+	// sender. A loaded frame naming a not-yet-declared node still shows it (Save adds it to BU_).
 	vgui.same_line()
-	vgui.set_next_item_width(110 * sc)
-	if !ro && vgui.input_text('sender', mut app.dbc_ed.sender_buf) {
-		sv := vgui.buf_str(app.dbc_ed.sender_buf)
-		if sv == '' || dbc_ident_ok(sv) {
-			app.mu.lock()
-			app.dbs[di].messages[mi].sender = sv
-			app.mu.unlock()
-			app.mark_dirty(di)
-		}
+	mut sender_opts := ['(none)']
+	sender_opts << app.dbs[di].nodes
+	if msg.sender != '' && msg.sender !in app.dbs[di].nodes {
+		sender_opts << msg.sender
 	}
-	if app.dbs[di].nodes.len > 0 {
-		vgui.same_line()
-		mut sender_nodes := ['(select ECU)']
-		sender_nodes << app.dbs[di].nodes
-		cur_s := msg.sender
-		sel_idx := if cur_s != '' && cur_s in app.dbs[di].nodes {
-			app.dbs[di].nodes.index(cur_s) + 1
-		} else {
-			0
-		}
-		ns_idx := vgui.combo('ECU Node##sndc', sender_nodes, sel_idx)
-		if !ro && ns_idx != sel_idx {
-			new_snd := if ns_idx > 0 { app.dbs[di].nodes[ns_idx - 1] } else { '' }
-			app.mu.lock()
-			app.dbs[di].messages[mi].sender = new_snd
-			app.mu.unlock()
-			app.mark_dirty(di)
-			app.dbc_ed.sender_buf = mkbuf(new_snd, new_snd.len + 96)
-		}
+	cur_sel := if msg.sender == '' { 0 } else { sender_opts.index(msg.sender) }
+	vgui.set_next_item_width(130 * sc)
+	nsel := vgui.combo('sender', sender_opts, cur_sel)
+	if !ro && nsel != cur_sel && nsel >= 0 && nsel < sender_opts.len {
+		new_snd := if nsel == 0 { '' } else { sender_opts[nsel] }
+		app.mu.lock()
+		app.dbs[di].messages[mi].sender = new_snd
+		app.mu.unlock()
+		app.mark_dirty(di)
 	}
 
 	// 2. Bit Layout Matrix Grid
@@ -6591,6 +6626,10 @@ fn draw_dbc_editor(mut app App) {
 			}
 		}
 		cell := 21 * sc
+		// scrollable: a large dlc (up to 64 bytes) shouldn't stretch the whole panel — show
+		// ~10 byte rows and scroll for the rest.
+		vis_rows := if msg.dlc < 10 { msg.dlc } else { 10 }
+		vgui.child_begin('##bitmatrix', f32(vis_rows) * (cell + 4 * sc) + 6 * sc)
 		for byte_i in 0 .. msg.dlc {
 			vgui.text_dim('B${byte_i}')
 			for bit_i := 7; bit_i >= 0; bit_i-- {
@@ -6646,6 +6685,7 @@ fn draw_dbc_editor(mut app App) {
 				}
 			}
 		}
+		vgui.child_end()
 		mut over := 0
 		for g in 0 .. nbits {
 			if conflict[g] {
@@ -6726,23 +6766,27 @@ fn draw_dbc_editor(mut app App) {
 		vgui.text_colored(205, 60, 60, 'invalid name')
 	}
 
+	// A signal's bit span is defined by its two endpoints: start bit + stop bit (the width is
+	// derived, stop - start + 1). No separate "len" field and no +/- steppers — you set where
+	// the bits begin and end. (Little-endian contiguous span; big-endian keeps DBC semantics.)
 	mut sbv := sg.start_bit
-	mut lnv := sg.length
+	lnv := sg.length
 	mut stop_bit := sbv + lnv - 1
 
 	vgui.same_line()
 	vgui.set_next_item_width(65 * sc)
 	if !ro && vgui.input_int('start bit', &sbv) {
+		ns := if sbv < 0 { 0 } else { sbv }
 		app.mu.lock()
-		app.dbs[di].messages[mi].signals[si].start_bit = if sbv < 0 { 0 } else { sbv }
+		app.dbs[di].messages[mi].signals[si].start_bit = ns
 		app.mu.unlock()
 		app.mark_dirty(di)
 	}
 	vgui.same_line()
 	vgui.set_next_item_width(65 * sc)
-	if !ro && vgui.input_int('len bits', &lnv) {
-		app.mu.lock()
-		nl := if lnv < 1 { 1 } else if lnv > 64 { 64 } else { lnv }
+	if !ro && vgui.input_int('stop bit', &stop_bit) {
+		// derive the width from start..stop; reject a shrink that would drop value-table keys
+		nl := if stop_bit < sbv { 1 } else if stop_bit - sbv + 1 > 64 { 64 } else { stop_bit - sbv + 1 }
 		nmask := if nl >= 64 { ~u64(0) } else { (u64(1) << nl) - 1 }
 		mut val_clash := false
 		for k, _ in sg.values {
@@ -6750,6 +6794,7 @@ fn draw_dbc_editor(mut app App) {
 				val_clash = true
 			}
 		}
+		app.mu.lock()
 		if !val_clash {
 			app.dbs[di].messages[mi].signals[si].length = nl
 			app.mark_dirty(di)
@@ -6760,18 +6805,7 @@ fn draw_dbc_editor(mut app App) {
 		}
 	}
 	vgui.same_line()
-	vgui.set_next_item_width(65 * sc)
-	if !ro && vgui.input_int('stop bit', &stop_bit) {
-		if stop_bit >= sbv {
-			nl := stop_bit - sbv + 1
-			app.mu.lock()
-			if nl >= 1 && nl <= 64 {
-				app.dbs[di].messages[mi].signals[si].length = nl
-				app.mark_dirty(di)
-			}
-			app.mu.unlock()
-		}
-	}
+	vgui.text_dim('(${lnv} bit${if lnv == 1 { '' } else { 's' }})')
 	vgui.same_line()
 	vgui.text_dim('(range: bit ${sbv} .. ${sbv + lnv - 1})')
 
@@ -6964,23 +6998,29 @@ fn draw_system(mut app App) {
 	}
 	sc := app.ui_scale
 	if app.sys_path_buf.len == 0 {
-		app.sys_path_buf = mkbuf('', 512)
+		// smart default: the project's own dir usually holds the system.toml (a .blobnet lives
+		// next to it), so Load works out of the box instead of starting on an empty box.
+		mut def := ''
+		if app.proj_path != '' {
+			cand := os.join_path(os.dir(app.proj_path), 'system.toml')
+			if os.is_file(cand) {
+				def = cand
+			}
+		}
+		app.sys_path_buf = mkbuf(def, 512)
 	}
 	vgui.set_next_item_width(340 * sc)
 	vgui.input_text('system.toml', mut app.sys_path_buf)
 	vgui.same_line()
+	if vgui.small_button('Browse…##sys') {
+		app.open_browser('system')
+	}
+	vgui.same_line()
 	if vgui.small_button('Load##sys') {
-		pth := vgui.buf_str(app.sys_path_buf)
-		if sy := sysview.load(pth) {
-			app.sys = sy
-			app.sys_loaded = true
-			app.notify('system: ${sy.nodes.len} node(s), ${sy.buses.len} bus(es), ${sy.signals.len} cross-node signal(s)')
-		} else {
-			app.notify('system load failed: ${err}')
-		}
+		app.load_system(vgui.buf_str(app.sys_path_buf))
 	}
 	if !app.sys_loaded {
-		vgui.text_dim('point at a blobly_emb system.toml (e.g. examples/system_bench/system.toml)')
+		vgui.text_dim('pick a blobly_emb system.toml — Browse…, or type a path (e.g. examples/system_full/system.toml)')
 		vgui.end()
 		return
 	}

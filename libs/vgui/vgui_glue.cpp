@@ -507,7 +507,28 @@ int vgui_input_double(const char* label, double* v) {
     return ImGui::InputDouble(label, v, 0.0, 0.0, "%.3f") ? 1 : 0;
 }
 int vgui_input_int(const char* label, int* v) {
-    return ImGui::InputInt(label, v) ? 1 : 0;
+    // step=0, step_fast=0 -> no +/- stepper buttons: they clutter every numeric field
+    // (id / dlc / cycle / bit positions) and add nothing over typing the value.
+    return ImGui::InputInt(label, v, 0, 0) ? 1 : 0;
+}
+// A thin draggable divider between two side-by-side panes. Place it (with same_line) after the
+// left child_end and before the right child. Drag it to grow/shrink the left pane; returns the
+// new width, clamped to [min_w, max_w]. The handle is invisible until hovered/active.
+float vgui_splitter_v(const char* id, float w, float min_w, float max_w) {
+    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0,0,0,0));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4(ImGuiCol_SeparatorHovered));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImGui::GetStyleColorVec4(ImGuiCol_SeparatorActive));
+    float h = ImGui::GetContentRegionAvail().y;
+    if (h < 1.0f) h = 1.0f;
+    ImGui::Button(id, ImVec2(6.0f, h));
+    ImGui::PopStyleColor(3);
+    if (ImGui::IsItemHovered() || ImGui::IsItemActive())
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    if (ImGui::IsItemActive())
+        w += ImGui::GetIO().MouseDelta.x;
+    if (w < min_w) w = min_w;
+    if (w > max_w) w = max_w;
+    return w;
 }
 void vgui_set_next_item_width(float w) { ImGui::SetNextItemWidth(w); }
 // advance the cursor horizontally on the current line (a left inset / spacer).
