@@ -6795,9 +6795,15 @@ fn draw_dbc_editor(mut app App) {
 	}
 	vgui.same_line()
 	vgui.set_next_item_width(65 * sc)
-	if !ro && vgui.input_int('stop bit', &stop_bit) {
-		// derive the width from start..stop; reject a shrink that would drop value-table keys
-		nl := if stop_bit < sbv { 1 } else if stop_bit - sbv + 1 > 64 { 64 } else { stop_bit - sbv + 1 }
+	// Intel: the span is contiguous, so a stop-bit endpoint derives the width. Motorola
+	// (big-endian) bits descend within a byte and jump +15 across bytes (a sawtooth), so
+	// stop - start + 1 is NOT the width — editing an endpoint there would silently corrupt
+	// it (codex #65). Edit the length directly for big-endian.
+	be := sg.byte_order == .big_endian
+	mut widthv := if be { lnv } else { stop_bit }
+	if !ro && vgui.input_int(if be { 'length' } else { 'stop bit' }, &widthv) {
+		nl_raw := if be { widthv } else { widthv - sbv + 1 }
+		nl := if nl_raw < 1 { 1 } else if nl_raw > 64 { 64 } else { nl_raw }
 		nmask := if nl >= 64 { ~u64(0) } else { (u64(1) << nl) - 1 }
 		mut val_clash := false
 		for k, _ in sg.values {
@@ -6818,7 +6824,13 @@ fn draw_dbc_editor(mut app App) {
 	vgui.same_line()
 	vgui.text_dim('(${lnv} bit${if lnv == 1 { '' } else { 's' }})')
 	vgui.same_line()
-	vgui.text_dim('(range: bit ${sbv} .. ${sbv + lnv - 1})')
+	// the contiguous start..stop range only describes an Intel span; a Motorola signal
+	// walks the sawtooth, so show its start + width instead of a misleading range
+	vgui.text_dim(if be {
+		'(Motorola: start ${sbv}, ${lnv} bits)'
+	} else {
+		'(range: bit ${sbv} .. ${sbv + lnv - 1})'
+	})
 
 	cur_o := if sg.byte_order == .little_endian { 0 } else { 1 }
 	vgui.set_next_item_width(120 * sc)
@@ -7044,13 +7056,23 @@ fn draw_system(mut app App) {
 	vgui.text_dim('showing: ${app.sys.path}')
 	// Nodes as a compact master-detail: a small selectable list (left) + the selected
 	// ECU's detail (right). Replaces the wide 6-column table that dominated the panel.
-	if app.sel_ecu == '' && app.sys.nodes.len > 0 {
-		app.sel_ecu = app.sys.nodes[0].name
+	// default/reset the selection: re-default whenever the selected node is absent — after
+	// loading a different system the old name would linger and leave the detail pane blank.
+	mut sel_valid := false
+	for n in app.sys.nodes {
+		if n.name == app.sel_ecu {
+			sel_valid = true
+			break
+		}
+	}
+	if !sel_valid {
+		app.sel_ecu = if app.sys.nodes.len > 0 { app.sys.nodes[0].name } else { '' }
 	}
 	vgui.separator_text('nodes')
 	vgui.child_wh('##ecu_list', 130 * sc, 160 * sc)
 	for n in app.sys.nodes {
-		if vgui.selectable('${n.name}##ecusel_${n.name}', n.name == app.sel_ecu) {
+		lbl := if n.ecu_err != '' { '${n.name}  (!)' } else { n.name }
+		if vgui.selectable('${lbl}##ecusel_${n.name}', n.name == app.sel_ecu) {
 			app.sel_ecu = n.name
 		}
 	}
@@ -7070,6 +7092,9 @@ fn draw_system(mut app App) {
 		if si >= 0 {
 			en := app.sys.nodes[si]
 			vgui.text(en.name)
+			if en.ecu_err != '' {
+				vgui.text_colored(205, 60, 60, 'UNREADABLE: ${en.ecu_err}')
+			}
 			vgui.text_dim('ecu   ${en.ecu}')
 			vgui.text_dim('buses ${en.buses.join(', ')}    NM ${if en.nm != 0 {
 				'0x' + en.nm.hex()
