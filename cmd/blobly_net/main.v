@@ -3124,6 +3124,30 @@ fn draw_buses(mut app App, chans []Chan) {
 			vgui.text_colored(r, g, b, label)
 			vgui.same_line()
 			vgui.text('${c.name}  ${c.iface}  [${c.mode}]  RX ${c.rx}')
+			// system awareness: when a system.toml is loaded, name the ECUs that sit on
+			// this bus — the channel row alone doesn't say WHO is on the wire. The system
+			// bus is matched by its interface (system [bus.x].interface == the channel's).
+			if app.sys_loaded {
+				mut bus_name := ''
+				for sb in app.sys.buses {
+					if sb.iface == c.iface {
+						bus_name = sb.name
+						break
+					}
+				}
+				if bus_name != '' {
+					mut on_bus := []string{}
+					for n in app.sys.nodes {
+						if bus_name in n.buses {
+							on_bus << n.name
+						}
+					}
+					if on_bus.len > 0 {
+						// own line, indented: the channel row is narrow and would clip this
+						vgui.text_dim('        ${bus_name}: ${on_bus.join(', ')}')
+					}
+				}
+			}
 		}
 		vgui.tree_pop()
 	}
