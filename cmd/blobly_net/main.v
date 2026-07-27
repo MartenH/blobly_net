@@ -204,6 +204,7 @@ mut:
 	sys_path_buf      []u8
 	sys               sysview.System
 	sys_loaded        bool
+	sel_ecu           string // selected node in the System panel's ECU master-detail
 	shell_buf         []u8 // the input line (persistent; edited in place by console_input)
 	eth_target_buf    []u8 // the eth shell's board ip (session-only; manifest carries the port)
 	eth_shell_session u16  // persists across commands: a fresh client restarting at session 1
@@ -7041,31 +7042,58 @@ fn draw_system(mut app App) {
 		vgui.text_colored(205, 60, 60, e)
 	}
 	vgui.text_dim('showing: ${app.sys.path}')
+	// Nodes as a compact master-detail: a small selectable list (left) + the selected
+	// ECU's detail (right). Replaces the wide 6-column table that dominated the panel.
+	if app.sel_ecu == '' && app.sys.nodes.len > 0 {
+		app.sel_ecu = app.sys.nodes[0].name
+	}
 	vgui.separator_text('nodes')
-	if vgui.table_begin('##sysnodes', 6) {
-		vgui.table_setup_col('node', 90 * sc)
-		vgui.table_setup_col('ecu', 200 * sc)
-		vgui.table_setup_col('buses', 90 * sc)
-		vgui.table_setup_col('nm', 50 * sc)
-		vgui.table_setup_col('diag', 110 * sc)
-		vgui.table_setup_col('trace', 40 * sc)
-		vgui.table_headers()
-		for n in app.sys.nodes {
-			vgui.table_row()
-			vgui.table_cell(n.name)
-			vgui.table_cell(if n.ecu_err != '' { '${n.ecu} (UNREADABLE)' } else { n.ecu })
-			vgui.table_cell(n.buses.join(','))
-			vgui.table_cell(if n.nm != 0 { '0x${n.nm.hex()}' } else { '-' })
-			vgui.table_cell(if n.diag_req != 0 {
-				'0x${n.diag_req.hex()}/0x${n.diag_rsp.hex()}'
+	vgui.child_wh('##ecu_list', 130 * sc, 160 * sc)
+	for n in app.sys.nodes {
+		if vgui.selectable('${n.name}##ecusel_${n.name}', n.name == app.sel_ecu) {
+			app.sel_ecu = n.name
+		}
+	}
+	vgui.child_end()
+	vgui.same_line()
+	vgui.child_fill('##ecu_detail')
+	if app.sel_ecu == '' {
+		vgui.text_dim('select an ECU on the left')
+	} else {
+		mut si := -1
+		for j, n in app.sys.nodes {
+			if n.name == app.sel_ecu {
+				si = j
+				break
+			}
+		}
+		if si >= 0 {
+			en := app.sys.nodes[si]
+			vgui.text(en.name)
+			vgui.text_dim('ecu   ${en.ecu}')
+			vgui.text_dim('buses ${en.buses.join(', ')}    NM ${if en.nm != 0 {
+				'0x' + en.nm.hex()
 			} else {
 				'-'
-			})
-			vgui.table_cell('${n.trace}')
+			}}    ${if en.trace != 0 { 'trace' } else { 'no-trace' }}')
+			if en.diag_req != 0 {
+				vgui.text_dim('diag  0x${en.diag_req.hex()} / 0x${en.diag_rsp.hex()}')
+			}
+			vgui.separator_text('produces (${en.writes.len})')
+			for s in en.writes {
+				vgui.text('  ${s}')
+			}
+			vgui.separator_text('consumes (${en.reads.len})')
+			for s in en.reads {
+				vgui.text('  ${s}')
+			}
 		}
-		vgui.table_end()
 	}
+	vgui.child_end()
 
+	// buses matrix + id allocation: useful but long, so fold it (closed by default) —
+	// keeps the panel focused on the nodes/ECU detail above.
+	if vgui.tree_node('buses & id allocation###sysbusid') {
 	for b in app.sys.buses {
 		vgui.separator_text('bus ${b.name} (${b.iface}${if b.fd { ', FD' } else { '' }}${if b.bitrate > 0 {
 			', ${b.bitrate / 1000} kbit'
@@ -7145,6 +7173,8 @@ fn draw_system(mut app App) {
 			}
 			vgui.table_end()
 		}
+	}
+	vgui.tree_pop()
 	}
 	vgui.end()
 }
