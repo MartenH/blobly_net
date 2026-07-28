@@ -1879,6 +1879,53 @@ fn (mut app App) browser_confirm(path string) {
 }
 
 // load_system loads a blobly_emb system.toml into the read-only System view.
+// restbus_from_system configures the REST BUS for one ECU under test: every OTHER node that
+// shares a bus with it becomes a simulated ECU on the matching channel. This is the single-ECU
+// bench workflow — you develop one ECU, and the rest of its buses have to be alive or it faults.
+// The system model already knows who sits on which bus, and system.toml node names are the DBC
+// transmitter (BU_) names, so the simulator can derive each node's frames straight from the DBC.
+// Writes into the PROJECT (channel.simulate) so it survives a rebuild and can be saved.
+// Returns (simulated nodes, channels touched).
+fn (mut app App) restbus_from_system(sut string) (int, int) {
+	mut nodes := 0
+	mut chans_hit := 0
+	// the system buses the ECU under test sits on
+	mut sut_buses := []string{}
+	for n in app.sys.nodes {
+		if n.name == sut {
+			sut_buses = n.buses.clone()
+			break
+		}
+	}
+	for sb in app.sys.buses {
+		if sb.name !in sut_buses {
+			continue
+		}
+		mut others := []string{}
+		for n in app.sys.nodes {
+			if n.name != sut && sb.name in n.buses {
+				others << n.name
+			}
+		}
+		if others.len == 0 {
+			continue
+		}
+		for ci, ch in app.proj.channels {
+			if ch.iface != sb.iface {
+				continue
+			}
+			app.proj.channels[ci].simulate = others.clone()
+			chans_hit++
+			nodes += others.len
+		}
+	}
+	if chans_hit > 0 {
+		app.rebuild_from_proj()
+		app.dirty = true
+	}
+	return nodes, chans_hit
+}
+
 fn (mut app App) load_system(path string) {
 	if path.trim_space() == '' {
 		app.notify('no system.toml path — type one or use Browse')
@@ -7139,6 +7186,17 @@ fn draw_system(mut app App) {
 			if en.diag_req != 0 {
 				vgui.text_dim('diag  0x${en.diag_req.hex()} / 0x${en.diag_rsp.hex()}')
 			}
+			// the single-ECU bench action: make everything else on this ECU's buses come alive
+			if vgui.small_button('Simulate the rest##restbus') {
+				n, c := app.restbus_from_system(en.name)
+				if c > 0 {
+					app.notify('restbus for ${en.name}: simulating ${n} node(s) on ${c} channel(s) — enable/disable them in the Simulation panel')
+				} else {
+					app.notify('restbus: no channel matches ${en.name}\'s buses (check the project\'s interfaces)')
+				}
+			}
+			vgui.same_line()
+			vgui.text_dim('← treat as ECU under test; simulate the other nodes on its buses')
 			vgui.separator_text('produces (${en.writes.len})')
 			for s in en.writes {
 				vgui.text('  ${s}')
