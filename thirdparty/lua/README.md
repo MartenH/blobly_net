@@ -6,7 +6,9 @@ into the blobly_net binary — no system `liblua`, no runtime install — so a f
 box builds offline from git alone (the repo's single-source-of-truth principle).
 
 Lua is distributed under the **MIT license**; the copyright notice lives in
-`lua.h` (and `LICENSE` text in the upstream tarball). It is the embedded
+`lua.h`, and the same text is reproduced verbatim in [`LICENSE`](LICENSE) beside
+this file so the terms are findable without reading a header (and so automated
+licence scanners see them). It is the embedded
 scripting engine for `modules/lua` / `modules/script` (scripting replacement —
 see the "custom message sending" tier roadmap).
 
