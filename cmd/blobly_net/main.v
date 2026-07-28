@@ -948,8 +948,16 @@ fn (mut app App) load_project(path string) {
 	if path != '' {
 		sys_cand := os.join_path(os.dir(path), 'system.toml')
 		if os.is_file(sys_cand) {
+			// Drop the OLD project's system model before autoloading this one: on a malformed
+			// sibling, load_system reports the error and leaves app.sys untouched, so opening
+			// the panel would show the PREVIOUS project's nodes/buses as if they were this
+			// project's — misidentifying the system. Clear first, then open only on success
+			// (codex #65).
+			app.sys = sysview.System{}
+			app.sys_loaded = false
+			app.sel_ecu = ''
 			app.load_system(sys_cand)
-			app.show_sys = true
+			app.show_sys = app.sys_loaded
 		}
 	}
 }
@@ -4826,17 +4834,13 @@ fn draw_shell(mut app App) {
 	// the eth RPC shell (manifest `ethmod,shell,method`) needs NO CAN channel:
 	// it dials the board's UDP endpoint directly, Start or not
 	eth := app.eth_method != 0 && app.eth_someip.service != 0
-	// A CAN shell endpoint is "declared" either explicitly (manifest shell frames) or by the
-	// LEGACY default path: a manifest predating the `# shell frames` section leaves the ids 0
-	// and or_defaults() supplies 0x7F0/0x7F2/0x7F1, which reaches a default-configured target.
-	// So only call it unavailable when a manifest IS attached and still declares no shell —
-	// otherwise a legacy (or manifest-less) but working target would be refused (codex #65).
-	shell_declared := app.manifest.shell.input != 0 || !app.has_manifest
-	if !eth && !shell_declared {
-		vgui.text_colored(230, 170, 70, 'shell not available')
-		vgui.text_dim('this target declares no shell — no shell frames (0x7F0/0x7F2/0x7F1) in its manifest and no eth shell method')
-		vgui.end()
-		return
+	// NOTE (codex #65): absence of manifest metadata does NOT mean "no shell endpoint".
+	// ShellFrames.or_defaults() — which the worker itself calls — supplies 0x7F0/0x7F2/0x7F1,
+	// so a legacy manifest (no `# shell frames` section) and a manifest-less project both
+	// reach a default-configured target. The GUI must follow the module's interpretation
+	// instead of redefining zero-valued ids as unavailable, so this is a HINT, not a gate.
+	if !eth && app.manifest.shell.input == 0 {
+		vgui.text_dim('no shell frames declared — using the defaults (0x7F0/0x7F2/0x7F1)')
 	}
 	if !app.running && !eth {
 		vgui.text_dim('press Start (the shell needs the channel open to reach the target)')
@@ -5282,12 +5286,6 @@ fn draw_tchart(mut app App, trecs []TRec) {
 	app.mu.unlock()
 	if busy {
 		vgui.text_dim('dumping…')
-	} else if !app.has_manifest {
-		// No [trace] endpoint on this target (no manifest attached) — Record/Dump would have
-		// nothing to talk to. Say so plainly instead of offering dead buttons. system_full is
-		// exactly this case: a pure gateway with no TraceModule.
-		vgui.text_colored(230, 170, 70, 'trace information is missing')
-		vgui.text_dim('this target has no [trace] endpoint — attach a trace manifest to the channel (Config panel)')
 	} else if app.running {
 		if recording {
 			if vgui.button('Stop##trace') {
@@ -5309,6 +5307,13 @@ fn draw_tchart(mut app App, trecs []TRec) {
 		vgui.text_dim('Record arms · Stop freezes · Dump reads out (all cores)')
 	} else {
 		vgui.text_dim('Start a channel, then Record / Dump')
+	}
+	// A missing manifest does NOT mean a missing endpoint: send_trace_cmd/trace_dump_worker
+	// use TraceFrames.or_defaults(), so a default-configured target answers without one. Keep
+	// the controls live and say what the manifest WOULD add (names) — a hint, not a gate
+	// (codex #65).
+	if !app.has_manifest {
+		vgui.text_dim('no trace manifest attached — using the default ids; records decode without handler/thread names')
 	}
 	if status != '' {
 		vgui.text_dim(status)
@@ -7095,7 +7100,11 @@ fn draw_system(mut app App) {
 		app.sel_ecu = if app.sys.nodes.len > 0 { app.sys.nodes[0].name } else { '' }
 	}
 	vgui.separator_text('nodes')
-	vgui.child_wh('##ecu_list', 130 * sc, 160 * sc)
+	// BOTH panes get the SAME fixed height: a child_fill detail pane would eat all remaining
+	// vertical space, and ImGui advances the parent past the taller same-line child — pushing
+	// the 'buses & id allocation' tree below the visible region (codex #65).
+	ecu_h := 160 * sc
+	vgui.child_wh('##ecu_list', 130 * sc, ecu_h)
 	for n in app.sys.nodes {
 		lbl := if n.ecu_err != '' { '${n.name}  (!)' } else { n.name }
 		if vgui.selectable('${lbl}##ecusel_${n.name}', n.name == app.sel_ecu) {
@@ -7104,7 +7113,7 @@ fn draw_system(mut app App) {
 	}
 	vgui.child_end()
 	vgui.same_line()
-	vgui.child_fill('##ecu_detail')
+	vgui.child_wh('##ecu_detail', 0, ecu_h) // w=0 = remaining width, same height as the list
 	if app.sel_ecu == '' {
 		vgui.text_dim('select an ECU on the left')
 	} else {
