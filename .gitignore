@@ -42,3 +42,16 @@ heaptrack.*.gz
 massif.out.*
 imgui.ini
 recording.log
+
+# Agent working state — sessions, worktrees, scratch. Never published: a stray
+# `git add -A` would otherwise sweep transcripts and worktree checkouts into the repo.
+.claude/
+
+# GUI dependency evaluation tree — vendored C sources + their build objects, fetched
+# by scripts, rebuilt on demand. Not ours to ship and not reproducible from git alone.
+eval/
+
+# Personal editor task wiring: paths are machine-specific (local MSYS2 install), so it
+# is kept out of the repo. .vscode/launch.json IS shared — it uses ${workspaceFolder} only.
+.vscode/tasks.json
+
