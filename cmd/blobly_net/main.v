@@ -946,16 +946,17 @@ fn (mut app App) load_project(path string) {
 	// load it into the System panel and open it — so the per-ECU dashboard is one click
 	// away instead of a manual Browse/Load. Non-system projects (sim-demo) are unaffected.
 	if path != '' {
+		// The old project's system model is stale on EVERY successful switch — not only when
+		// the new project happens to have a sibling. Leaving it set made draw_buses annotate
+		// the new project's interfaces with the PREVIOUS system's ECUs (wrong topology), and
+		// a malformed sibling would show the old nodes as if they were this project's. So
+		// clear unconditionally, then autoload + open only on success (codex #65).
+		app.sys = sysview.System{}
+		app.sys_loaded = false
+		app.sel_ecu = ''
+		app.show_sys = false
 		sys_cand := os.join_path(os.dir(path), 'system.toml')
 		if os.is_file(sys_cand) {
-			// Drop the OLD project's system model before autoloading this one: on a malformed
-			// sibling, load_system reports the error and leaves app.sys untouched, so opening
-			// the panel would show the PREVIOUS project's nodes/buses as if they were this
-			// project's — misidentifying the system. Clear first, then open only on success
-			// (codex #65).
-			app.sys = sysview.System{}
-			app.sys_loaded = false
-			app.sel_ecu = ''
 			app.load_system(sys_cand)
 			app.show_sys = app.sys_loaded
 		}
