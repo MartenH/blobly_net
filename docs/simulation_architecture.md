@@ -52,7 +52,7 @@ a conventional tool's model, which we already half-have (`project.Channel.databa
    used when an external participant (Python SUT, candump) must join — e.g. during
    the verification gate. Keeps the driver-free Windows story intact.
 
-## What we have vs. what's needed
+## What exists vs. what's needed
 
 | Concern | Have | Need |
 |---|---|---|

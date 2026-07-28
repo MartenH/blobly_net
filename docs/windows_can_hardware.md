@@ -7,7 +7,7 @@ via `cmd/can_smoke` (defaults `kvaser:0` / `pcan:PCAN_USBBUS1` worked first try)
 vendor stacks agreeing on the wire is itself the cross-vendor oracle.
 This documents how real CAN adapters (PCAN / Kvaser / Vector) and the vendor-neutral
 `slcan` path slot into Blobly Net on Windows, behind the existing `transport.Bus`
-seam. Owner has PCAN + Kvaser hardware and intermittent access to a Vector machine.
+seam. PCAN and Kvaser are hardware-verified; Vector is unimplemented and untested.
 
 - **Done:** `transport/pcan_windows.v` + `pcan_shim.h`, `transport/kvaser_windows.v`
   + `kvaser_shim.h`, wired into `open_windows.v` (`pcan:` / `kvaser:` prefixes).

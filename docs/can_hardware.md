@@ -1,7 +1,9 @@
 # Real CAN hardware — Kvaser / PEAK / Vector across Linux, WSL, Windows
 
-We have a **Kvaser Leaf Light v2** (classic CAN) and a **PCAN-USB Pro FD** (CAN-FD),
-and possibly **Vector** (VN-series). Support differs sharply by vendor *and* OS.
+Support differs sharply by vendor *and* OS. Two adapters are **verified against real
+hardware** — a **Kvaser Leaf Light v2** (classic CAN) and a **PCAN-USB Pro FD** (CAN-FD),
+tested cross-vendor on one bus. **Vector** is listed for comparison: no backend
+exists today, and the XL one is [planned, not written](../ROADMAP.md).
 
 ## Support matrix
 
@@ -12,8 +14,9 @@ and possibly **Vector** (VN-series). Support differs sharply by vendor *and* OS.
 | **Native Windows** | vendor SDK — Kvaser **CANlib** | vendor SDK — PEAK **PCAN-Basic** | vendor SDK — Vector **XL Driver Library** |
 | **CAN-FD** | classic only | ✅ FD | ✅ FD |
 
-**Takeaway:** Kvaser + PEAK are the two best-supported vendors (in-tree SocketCAN
-drivers); **Vector is Windows-only here** — skip it for any Linux/WSL kernel work.
+**Takeaway:** Kvaser and PEAK are the two best-supported vendors (in-tree SocketCAN
+drivers) and the two this project supports today. Vector has no mainline Linux driver at
+all, so it is Windows-SDK-only by nature — not a candidate for Linux/WSL work either way.
 
 ## Native Linux — zero new code (recommended first bring-up)
 
