@@ -1,9 +1,12 @@
 # GUI toolkit evaluation — vlang/gui vs Dear ImGui + ImPlot
 
-**Status (2026-07-03):** spike complete on Linux/WSL **and Windows** — **both build checks GREEN**.
-No decision committed yet (user's call). The app still runs on `vlang/gui`. The spike code lives in
-`libs/vgui/` (a reusable `vgui` V module + a Trace Chart example); nothing in the main app depends on
-it. See "Windows build check — RESULTS" below.
+**Status: DECIDED — Dear ImGui + ImPlot won, and the migration landed 2026-07-06.**
+`cmd/blobly_net` is built on `libs/vgui` (the spike module, now the app's GUI layer — see
+[`libs/vgui/README.md`](../libs/vgui/README.md)); `vlang/gui` and the old `src/main.v` app are
+retired and are not coming back.
+
+Everything below is the **evaluation as written on 2026-07-03**, kept for the rationale — the
+"no decision yet" framing and the future tense are of that date, not of today.
 
 ## Why we're looking
 

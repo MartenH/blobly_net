@@ -1,6 +1,9 @@
 # Simulation architecture — networks, nodes, and the verification gate
 
-Status: **design agreed 2026-06-07** (not yet implemented). This is the plan for
+Status: **design agreed 2026-06-07; the core is IMPLEMENTED as [`modules/sim`](../modules/sim)** —
+native, in-process, driver-free, and what `sim-demo` and `scripts/runtests.sh` run against. The
+per-node config work this design calls for is still open (tracked in
+[`ROADMAP.md`](../ROADMAP.md), under the UDS server). This is the plan for
 turning the tester into a simulation host: simulated ECUs and the
 tester's own functions all attach to shared virtual networks, **inside one
 process**, driver-free by default, with the existing Python SUT as the oracle
