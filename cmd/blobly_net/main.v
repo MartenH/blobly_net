@@ -1688,7 +1688,15 @@ fn draw_sim(mut app App) {
 				app.mu.unlock()
 			}
 			vgui.same_line()
-			hdr := '${node.name}  (${node.signals.len} sig / ${node.responses.len} resp)###${key}'
+			// A shorthand node (project `simulate:`, e.g. from "Simulate the rest") carries NO
+			// explicit config by design — build_node derives its frames from the DBC by
+			// transmitter name. Printing "0 sig / 0 resp" for it reads as "this ECU sends
+			// nothing", which is wrong and alarming; say where its behaviour comes from.
+			hdr := if node.signals.len == 0 && node.responses.len == 0 {
+				'${node.name}  (frames derived from the DBC)###${key}'
+			} else {
+				'${node.name}  (${node.signals.len} sig / ${node.responses.len} resp)###${key}'
+			}
 			if vgui.tree_node(hdr) {
 				for g in node.signals {
 					vgui.text('    ${g.signal}: ${g.typ}')
