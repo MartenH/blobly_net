@@ -6877,6 +6877,16 @@ fn draw_dbc_editor(mut app App) {
 		ns := if sbv < 0 { 0 } else { sbv }
 		app.mu.lock()
 		app.dbs[di].messages[mi].signals[si].start_bit = ns
+		// Intel edits the span by its two ENDPOINTS, so moving `start` must hold `stop` and
+		// re-derive the width — keeping the old length instead slid the signal's trailing bits
+		// (0..7 given start 2 became 2..9 rather than 2..7), silently moving data (codex #65).
+		// Big-endian keeps its length: its stop bit is a sawtooth walk, not start+len-1.
+		if sg.byte_order != .big_endian {
+			nl := stop_bit - ns + 1
+			if nl >= 1 && nl <= 64 {
+				app.dbs[di].messages[mi].signals[si].length = nl
+			}
+		}
 		app.mu.unlock()
 		app.mark_dirty(di)
 	}
