@@ -57,5 +57,3 @@ disagreeing on what a signal *means*) is worse, so it's worth it. Everything els
 stays in-repo.
 
 **Status:** analysis only — no extraction performed (deferred by decision).
-Minor: emb's `diag.lua` comment still says "cantester's UDS client" (stale after
-the rename) — one-line cleanup in that repo.

@@ -72,13 +72,19 @@ and `can0` appears. (No `CAN_VECTOR` symbol exists — Vector can't ride this pa
 
 No SocketCAN on Windows, so each vendor needs its SDK DLL wrapped via C-interop as a
 `Bus` implementation — exactly what the platform seam (`open_windows.v` /
-`discover_windows.v`) was built for. Sketch:
+`discover_windows.v`) was built for.
 
-| Vendor | SDK | New file | Key calls (open/tx/rx) | Discovery |
+> **Kvaser and PEAK are built and hardware-verified** (cross-vendor send/receive on a
+> shared 500 kbit/s bus, 2026-06-18) — use the `kvaser:` / `pcan:` interface prefixes.
+> **Vector is not implemented**; its row below is the sketch it would follow.
+> [`windows_can_hardware.md`](windows_can_hardware.md) is the current, detailed reference
+> for the Windows path (DLL loading, bitrate mapping, the `slcan` fallback).
+
+| Vendor | SDK | File | Key calls (open/tx/rx) | Discovery |
 |---|---|---|---|---|
 | Kvaser | CANlib (`canlib32.dll`) | `transport/kvaser_windows.v` | `canOpenChannel` / `canWrite` / `canReadWait` | `canGetNumberOfChannels` |
 | PEAK | PCAN-Basic (`PCANBasic.dll`) | `transport/pcan_windows.v` | `CAN_Initialize` / `CAN_Write` / `CAN_Read` | `CAN_GetValue(PCAN_ATTACHED_CHANNELS)` |
-| Vector | XL Driver Library (`vxlapi64.dll`) | `transport/xl_windows.v` | `xlOpenPort` / `xlCanTransmit` / `xlReceive` | `xlGetDriverConfig` |
+| Vector | XL Driver Library (`vxlapi64.dll`) | `transport/xl_windows.v` *(not implemented)* | `xlOpenPort` / `xlCanTransmit` / `xlReceive` | `xlGetDriverConfig` |
 
 Each implements the existing `transport.Bus` interface, so callers don't change.
 `discover_windows.v` grows from "virtual buses only" to also enumerate attached

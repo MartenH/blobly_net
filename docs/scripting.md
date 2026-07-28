@@ -306,4 +306,4 @@ These `cmd/` tools are smaller dev/smoke utilities (run with
 | `cmd/dbc_decode` | load a DBC and decode one frame |
 | `cmd/mf4_dump` | read an ASAM MF4 recording (count / ids / frames) |
 
-The GUI itself is `scripts/run.sh` (see [CLAUDE.md](../CLAUDE.md)).
+The GUI itself is `scripts/run_gui.sh` (see [CLAUDE.md](../CLAUDE.md)).
