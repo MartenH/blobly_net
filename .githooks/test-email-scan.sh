@@ -41,6 +41,8 @@ expect clean "config notation"             'body: cyclic@100ms, ctr@1/crc@2, kva
 expect hit  "foreign addr after junk"      'body: real.person@somecompany.com#x.example.com'
 expect hit  "non-reserved domain literal"  'body: admin@[10.0.0.5]'
 expect hit  "quoted local part"            'body: "local part"@somecompany.com'
+expect hit  "punycode IDN TLD"             'body: real.person@company.xn--p1ai'
+expect hit  "address then ellipsis"        'body: mail real.person@somecompany.com..then reply'
 expect clean "codex bot address"           'body: authored by codex@openai.com'
 # a leading character that is LEGAL in a local part must not be stripped into the allowlist
 expect hit  "leading _ bypass"             'body: _marten.hildell@gmail.com'
@@ -59,6 +61,8 @@ expect clean "bot trailer"                 'Co-Authored-By: Claude <noreply@anth
 expect clean "allowlisted in backticks"    'body: `marten.hildell@gmail.com`'
 expect clean "allowlisted in brackets"     'body: [noreply@anthropic.com]'
 expect clean "allowlisted via mailto link" 'body: [M](mailto:marten.hildell@gmail.com)'
+expect clean "MAILTO uppercase"            'body: [M](MAILTO:marten.hildell@gmail.com)'
+expect clean "markdown emphasis"           'body: *marten.hildell@gmail.com* and _noreply@anthropic.com_'
 expect clean "allowlisted, punctuated"     'body: `marten.hildell@gmail.com`, and more.'
 # RFC 2606 / RFC 5737 reserved names exist to be written down
 expect clean "example.com"                 'body: foreign@example.com'

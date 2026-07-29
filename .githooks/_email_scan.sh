@@ -68,7 +68,9 @@ scan_message_text() {
 	} \
 		| while IFS= read -r cand; do unwrap_candidate "$cand"; done \
 		| sed -E 's/(@[^[:space:]]*)[#/\\|?!$%^&*+={}]+.*/\1/' \
-		| grep -E '^("[^"]+"|[^@[:space:]]+)@(\[[^]]+\]|([^[:space:].]+\.)+[^[:space:].0-9]{2,})$' \
+		| sed -E 's/(@[^[:space:]]+)\.\..*/\1/' \
+		| grep -E '^("[^"]+"|[^@[:space:]]+)@(\[[^]]+\]|([^[:space:].]+\.)+[^[:space:].]{2,})$' \
+		| grep -vE '\.[0-9]+$' \
 		| sort -u \
 		| grep -viE "$ALLOWED_RE" \
 		| grep -viE "$DOC_RE" || true
@@ -88,7 +90,7 @@ scan_message_text() {
 # outright: ':' cannot appear in an unquoted local part, so it is never part of one.
 unwrap_candidate() {
 	local c="$1" prev=""
-	c=${c#mailto:}
+	c=${c#[Mm][Aa][Ii][Ll][Tt][Oo]:}
 	while [ "$c" != "$prev" ]; do
 		prev="$c"
 		# Trailing sentence punctuation FIRST, and again each pass. A wrapped address at the
@@ -102,6 +104,10 @@ unwrap_candidate() {
 			'<'*'>') c=${c#<}; c=${c%>} ;;
 			'('*')') c=${c#(}; c=${c%)} ;;
 			'{'*'}') c=${c#\{}; c=${c%\}} ;;
+			'*'*'*') c=${c#\*}; c=${c%\*} ;;
+			'_'*'_') c=${c#_}; c=${c%_} ;;
+			'~'*'~') c=${c#\~}; c=${c%\~} ;;
+			"'"*"'") c=${c#\'}; c=${c%\'} ;;
 			*) ;;
 		esac
 	done
