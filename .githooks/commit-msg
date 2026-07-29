@@ -11,11 +11,13 @@ set -euo pipefail
 
 . "$(dirname "$0")/_email_scan.sh"
 
-found=$(scan_message_text "$1")
+found=$(scan_message_text "$1" template)
 
 if [ -n "$found" ]; then
+	# Redacted, like every other path: stderr is retained by IDEs and terminal scrollback,
+	# so printing the value would make another durable copy of it (codex #249).
 	echo "commit-msg: refusing — the message contains a non-allowlisted email address:" >&2
-	printf '  %s\n' $found >&2
+	printf '%s\n' "$found" | redact_list >&2
 	echo "" >&2
 	explain_rejection
 	exit 1

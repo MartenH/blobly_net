@@ -114,7 +114,7 @@ jobs:
           msg=$(mktemp)
           for sha in $(git log --format='%H' $range); do
             git log -1 --format='%B' "$sha" > "$msg"
-            hits=$(scan_message_text "$msg")
+            hits=$(scan_message_text "$msg" stored)
             for h in $hits; do
               # NEVER echo the address itself. A CI annotation is a separate, permanent
               # copy — public on this repo — that rewriting the commit does not remove,
