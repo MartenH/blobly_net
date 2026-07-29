@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Re-check every commit about to reach the remote — BOTH its identity and its message.
+#
+# WHY THIS EXISTS ALONGSIDE commit-msg AND pre-commit: git runs those only on the ordinary
+# `git commit` path. A `git cherry-pick`, or a non-interactive `git rebase` replaying an
+# older commit, carries BOTH the author identity and the message through without invoking
+# either hook (codex #66) — which is exactly how an old commit would sneak forward. This is
+# the last local gate before a value becomes permanent on the remote.
+#
+# Enable with:  git config core.hooksPath .githooks
+set -euo pipefail
+
+. "$(dirname "$0")/_email_scan.sh"
+
+# Same allowlists as .github/workflows/guard.yml.
+ALLOWED_AUTHORS="marten.hildell@gmail.com"
+ALLOWED_COMMITTERS="marten.hildell@gmail.com noreply@github.com"
+
+remote_name="${1:-origin}"
+zero='0000000000000000000000000000000000000000'
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+
+bad=0
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+	[ "$local_sha" = "$zero" ] && continue # branch deletion — nothing to scan
+	if [ "$remote_sha" = "$zero" ]; then
+		# New branch on THIS remote. Exclude only the destination remote's DEFAULT branch,
+		# not every remote-tracking ref under it. Two reasons: excluding all remotes would
+		# skip commits living solely on another remote, which this push is what discloses;
+		# and a per-branch tracking ref can be STALE after a server-side delete without a
+		# pruning fetch, so trusting it would skip commits the remote no longer has
+		# (codex #66 r3). Erring toward scanning more is the safe direction here.
+		head_ref="refs/remotes/${remote_name}/HEAD"
+		base_ref=$(git symbolic-ref -q "$head_ref" 2>/dev/null || true)
+		[ -z "$base_ref" ] && base_ref="refs/remotes/${remote_name}/main"
+		if git rev-parse --verify --quiet "$base_ref" >/dev/null; then
+			range=$(git rev-list "$local_sha" --not "$base_ref")
+		else
+			range=$(git rev-list "$local_sha")
+		fi
+	elif git cat-file -e "${remote_sha}^{commit}" 2>/dev/null; then
+		range=$(git rev-list "$remote_sha..$local_sha")
+	else
+		# Forced update whose advertised old tip was never fetched here: `git rev-list`
+		# would fail and `set -e` would abort an otherwise valid push (codex #66 r3).
+		# Fall back to scanning everything the push introduces relative to the remote's
+		# default branch — again, more rather than less.
+		base_ref="refs/remotes/${remote_name}/main"
+		if git rev-parse --verify --quiet "$base_ref" >/dev/null; then
+			range=$(git rev-list "$local_sha" --not "$base_ref")
+		else
+			range=$(git rev-list "$local_sha")
+		fi
+	fi
+	for sha in $range; do
+		# identity — the cherry-pick path skips pre-commit too
+		ae=$(git log -1 --format='%ae' "$sha")
+		ce=$(git log -1 --format='%ce' "$sha")
+		case " $ALLOWED_AUTHORS " in
+			*" $ae "*) ;;
+			*) echo "pre-push: $(git log -1 --format='%h' "$sha") author not allowed ($(redact "$ae"))" >&2; bad=1 ;;
+		esac
+		case " $ALLOWED_COMMITTERS " in
+			*" $ce "*) ;;
+			*) echo "pre-push: $(git log -1 --format='%h' "$sha") committer not allowed ($(redact "$ce"))" >&2; bad=1 ;;
+		esac
+		# message body
+		git log -1 --format='%B' "$sha" > "$tmp"
+		found=$(scan_message_text "$tmp" stored)
+		if [ -n "$found" ]; then
+			# Only the SHA and a redaction: stderr is retained by IDEs, CI wrappers and
+			# terminal scrollback, so printing the value here would make another durable
+			# copy of it (codex #249). The subject is omitted for the same reason.
+			echo "pre-push: $(git log -1 --format='%h' "$sha") message contains a non-allowlisted address:" >&2
+			printf '%s\n' "$found" | redact_list >&2
+			bad=1
+		fi
+	done
+done
+
+if [ "$bad" -ne 0 ]; then
+	echo "" >&2
+	echo "pre-push: refusing to push." >&2
+	explain_rejection
+	echo "  Rewrite the offending commit (git rebase -i / git commit --amend) and retry." >&2
+	exit 1
+fi

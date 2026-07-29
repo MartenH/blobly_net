@@ -63,6 +63,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Scanner self-test
+        # The scanner took three review rounds and every round found a BYPASS. Pinning
+        # them here means the gate cannot silently regress the next time it is touched.
+        run: .githooks/test-email-scan.sh
+
       - name: Check author and committer emails
         run: |
           set -euo pipefail
@@ -76,6 +81,13 @@ jobs:
           if [ -n "$before" ] && [ "$before" != "0000000000000000000000000000000000000000" ] \
              && git cat-file -e "$before^{commit}" 2>/dev/null; then
             range="$before..${{ github.sha }}"
+          elif [ "${{ github.ref }}" = "refs/heads/${{ github.event.repository.default_branch }}" ]; then
+            # The default branch was FORCE-PUSHED and the advertised `before` is gone. The
+            # old fallback compared origin/<default> with the new tip — but origin/<default>
+            # IS the new tip, so it scanned zero commits and approved the whole rewritten
+            # history unseen. That is exactly the scenario this guard exists for, since a
+            # rewrite is how an address gets removed (codex #66 r4). Scan everything.
+            range='${{ github.sha }}'
           elif git rev-parse --verify --quiet "$base" >/dev/null; then
             range="$base..${{ github.sha }}"          # new branch: all of its own commits
           else
@@ -96,8 +108,44 @@ jobs:
             esac
           done < <(git log --format='%H|%ae|%ce' $range)
 
+          # MESSAGE BODIES, not just identities. The gate above says WHO made the commit; it
+          # says nothing about what the message CONTAINS. An address written into a commit
+          # message is permanent — it survives branch deletion, `git log` and code search
+          # index it, and removing it later costs a rewrite of every branch that carries it
+          # (and the PR refs keep it even then, because GitHub will not rewrite those).
+          # This repo is public, so a message body is world-readable the moment it lands.
+          # Allowlist, deliberately: this catches every foreign address rather than one
+          # known-bad string, and naming the offender here would re-leak the very thing a
+          # rewrite was needed to remove.
+          # The scan itself lives in .githooks/_email_scan.sh so the local hooks and this
+          # authoritative gate cannot drift apart. It cuts the `git commit -v` scissors
+          # section, then scans the rest (comment lines included, since --cleanup=verbatim
+          # keeps them), and matches internationalized domains and domain literals, not
+          # just ASCII.
+          . .githooks/_email_scan.sh
+          msg=$(mktemp)
+          for sha in $(git log --format='%H' $range); do
+            git log -1 --format='%B' "$sha" > "$msg"
+            hits=$(scan_message_text "$msg" stored)
+            # read line by line: an address with a QUOTED local part can contain spaces,
+            # and an unquoted `for` would split it into fragments, each redacted
+            # separately and so less redacted than intended (codex #66 r3).
+            while IFS= read -r h; do
+              [ -z "$h" ] && continue
+              # NEVER echo the address itself. A CI annotation is a separate, permanent
+              # copy — public on this repo — that rewriting the commit does not remove,
+              # so logging it would re-disclose the very value this gate contains
+              # (codex #66). The SHA is enough: the author reads the message locally.
+              echo "::error::$sha commit message contains a non-allowlisted email address ($(redact "$h")) — inspect it locally with: git log -1 $sha"
+              bad=1
+            done <<< "$hits"
+          done
+
           if [ "$bad" -ne 0 ]; then
-            echo "Fix with: git config user.email marten.hildell@gmail.com, then amend or rebase."
+            echo "Identity: git config user.email marten.hildell@gmail.com, then amend or rebase."
+            echo "Message:  describe the address instead of quoting it (e.g. 'a non-maintainer"
+            echo "          work address'), then amend or rebase."
+            echo "Install both gates locally with: git config core.hooksPath .githooks"
             exit 1
           fi
-          echo "All commit identities OK."
+          echo "All commit identities and message bodies OK."
