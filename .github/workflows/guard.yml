@@ -96,8 +96,31 @@ jobs:
             esac
           done < <(git log --format='%H|%ae|%ce' $range)
 
+          # MESSAGE BODIES, not just identities. The gate above says WHO made the commit; it
+          # says nothing about what the message CONTAINS. An address written into a commit
+          # message is permanent — it survives branch deletion, `git log` and code search
+          # index it, and removing it later costs a rewrite of every branch that carries it
+          # (and the PR refs keep it even then, because GitHub will not rewrite those).
+          # This repo is public, so a message body is world-readable the moment it lands.
+          # Allowlist, deliberately: this catches every foreign address rather than one
+          # known-bad string, and naming the offender here would re-leak the very thing a
+          # rewrite was needed to remove.
+          allowed_re='^(marten\.hildell@gmail\.com|noreply@anthropic\.com|noreply@github\.com)$'
+          for sha in $(git log --format='%H' $range); do
+            hits=$(git log -1 --format='%B' "$sha" \
+              | grep -oiE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' \
+              | sort -u | grep -viE "$allowed_re" || true)
+            for h in $hits; do
+              echo "::error::$sha commit message contains a non-allowlisted email address: $h"
+              bad=1
+            done
+          done
+
           if [ "$bad" -ne 0 ]; then
-            echo "Fix with: git config user.email marten.hildell@gmail.com, then amend or rebase."
+            echo "Identity: git config user.email marten.hildell@gmail.com, then amend or rebase."
+            echo "Message:  describe the address instead of quoting it (e.g. 'a non-maintainer"
+            echo "          work address'), then amend or rebase."
+            echo "Install both gates locally with: git config core.hooksPath .githooks"
             exit 1
           fi
-          echo "All commit identities OK."
+          echo "All commit identities and message bodies OK."
