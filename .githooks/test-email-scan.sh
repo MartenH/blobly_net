@@ -32,9 +32,16 @@ expect() {
 expect hit  "plain foreign address"        'body: real.person@somecompany.com'
 expect hit  "at end of a sentence"         'body: real.person@somecompany.com.'
 expect hit  "inside backticks"             'body: `real.person@somecompany.com`'
-expect hit  "single-label domain"          'body: user@mailhost'
+# Single-label domains are deliberately NOT flagged. Requiring a real TLD is what keeps
+# the gate quiet on this project's ordinary notation — over 1084 real commit messages the
+# laxer rule flagged 23, all false positives (gui@68b9302, cyclic@100ms, ctr@1/crc@2).
+expect clean "single-label domain"         'body: user@mailhost'
+expect clean "version pin notation"        'body: pinned gui@68b9302 and vlang/setup-v@v1.4'
+expect clean "config notation"             'body: cyclic@100ms, ctr@1/crc@2, kvaser:0@500000'
+expect hit  "foreign addr after junk"      'body: real.person@somecompany.com#x.example.com'
 expect hit  "non-reserved domain literal"  'body: admin@[10.0.0.5]'
 expect hit  "quoted local part"            'body: "local part"@somecompany.com'
+expect clean "codex bot address"           'body: authored by codex@openai.com'
 # a leading character that is LEGAL in a local part must not be stripped into the allowlist
 expect hit  "leading _ bypass"             'body: _marten.hildell@gmail.com'
 expect hit  "leading * bypass"             'body: *marten.hildell@gmail.com'

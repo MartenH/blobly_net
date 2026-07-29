@@ -81,6 +81,13 @@ jobs:
           if [ -n "$before" ] && [ "$before" != "0000000000000000000000000000000000000000" ] \
              && git cat-file -e "$before^{commit}" 2>/dev/null; then
             range="$before..${{ github.sha }}"
+          elif [ "${{ github.ref }}" = "refs/heads/${{ github.event.repository.default_branch }}" ]; then
+            # The default branch was FORCE-PUSHED and the advertised `before` is gone. The
+            # old fallback compared origin/<default> with the new tip — but origin/<default>
+            # IS the new tip, so it scanned zero commits and approved the whole rewritten
+            # history unseen. That is exactly the scenario this guard exists for, since a
+            # rewrite is how an address gets removed (codex #66 r4). Scan everything.
+            range='${{ github.sha }}'
           elif git rev-parse --verify --quiet "$base" >/dev/null; then
             range="$base..${{ github.sha }}"          # new branch: all of its own commits
           else
