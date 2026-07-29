@@ -1,42 +1,22 @@
 #!/usr/bin/env bash
-# Refuse a commit MESSAGE that carries an email address which is not the maintainer's
-# or a known bot trailer — the same rule CI enforces (.github/workflows/guard.yml),
-# checked here so it fails in one second instead of after a push.
+# Refuse a commit MESSAGE carrying an email address that is not the maintainer's or a
+# known bot trailer. Same rule as CI (.github/workflows/guard.yml), checked here so it
+# fails in one second instead of after a push.
 # Enable with:  git config core.hooksPath .githooks
 #
-# WHY THIS EXISTS: the author/committer gate (pre-commit) only checks WHO made the
-# commit. It says nothing about the message BODY, and a work address written into a
-# commit message is permanent — it survives branch deletion, it is what `git log` and
-# GitHub code search index, and removing it later costs a full history rewrite of every
-# branch that contains it. That is not hypothetical: it happened here, and unpicking it
-# meant rewriting 57 branches (and the address still survives in the PR refs, which
-# GitHub will not let anyone rewrite).
-#
-# The rule is an ALLOWLIST, deliberately: it catches every foreign address, not just the
-# one that bit us. Naming the offending address in this file would re-leak the very
-# thing the rewrite removed.
+# This hook covers the ordinary `git commit` path. Git does NOT run it for cherry-pick
+# or a non-interactive rebase, so .githooks/pre-push re-checks the whole pushed range —
+# between them, nothing reaches the remote unscanned (codex #66).
 set -euo pipefail
 
-ALLOWED_RE='^(marten\.hildell@gmail\.com|noreply@anthropic\.com|noreply@github\.com)$'
+. "$(dirname "$0")/_email_scan.sh"
 
-msg_file="$1"
-
-# Strip comment lines — the commit template's "# ..." help text is not part of the message.
-found=$(grep -v '^#' "$msg_file" \
-	| grep -oiE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' \
-	| sort -u \
-	| grep -viE "$ALLOWED_RE" || true)
+found=$(scan_message_text "$1")
 
 if [ -n "$found" ]; then
 	echo "commit-msg: refusing — the message contains a non-allowlisted email address:" >&2
-	printf '            %s\n' $found >&2
+	printf '  %s\n' $found >&2
 	echo "" >&2
-	echo "            A commit message is permanent: it survives branch deletion, and" >&2
-	echo "            removing it later means rewriting every branch that contains it." >&2
-	echo "            Describe the address instead of quoting it, e.g." >&2
-	echo '              "rejects a non-maintainer work address"' >&2
-	echo "" >&2
-	echo "            Allowed: the maintainer address and bot trailers" >&2
-	echo "            (Co-Authored-By: … <noreply@anthropic.com>)." >&2
+	explain_rejection
 	exit 1
 fi

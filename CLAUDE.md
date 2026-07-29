@@ -105,6 +105,14 @@ release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks.
   a work address once reached this history and had to be rewritten out of every commit. Install
   the local hook so it fails in a second instead of after a push:
   `git config core.hooksPath .githooks`.
+- **Commit MESSAGES may not carry email addresses either.** The identity rule above covers
+  who commits; the message body is checked separately, because an address written into one is
+  permanent — it survives branch deletion and removing it costs a rewrite of every branch that
+  carries it. Only the maintainer address and bot trailers (`Co-Authored-By: … <noreply@
+  anthropic.com>`, `noreply@github.com`) are allowed; anything else fails the same guard
+  workflow. Describe an address instead of quoting it ("a non-maintainer work address"). The
+  local hooks cover both the ordinary commit path (`commit-msg`) and cherry-pick/rebase
+  (`pre-push`), which git does not route through `commit-msg`.
 - **External PRs are auto-closed** (design phase — see [`CONTRIBUTING.md`](CONTRIBUTING.md)); the
   same workflow posts a comment pointing at issues. Nothing to do by hand.
 - **PRs get `@codex review`**; iterate until clean before merging.

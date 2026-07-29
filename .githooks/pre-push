@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Re-check every commit message about to reach the remote.
+#
+# WHY THIS EXISTS ALONGSIDE commit-msg: git runs the commit-msg hook only on the ordinary
+# `git commit` path. A `git cherry-pick`, or a non-interactive `git rebase` replaying an
+# older commit, carries its message through WITHOUT invoking it (codex #66) — which is
+# exactly how an old message with an address would sneak forward. This is the last local
+# gate before the value becomes permanent on the remote.
+#
+# Enable with:  git config core.hooksPath .githooks
+set -euo pipefail
+
+. "$(dirname "$0")/_email_scan.sh"
+
+zero='0000000000000000000000000000000000000000'
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+
+bad=0
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+	[ "$local_sha" = "$zero" ] && continue # branch deletion — nothing to scan
+	if [ "$remote_sha" = "$zero" ]; then
+		# new branch: everything on it that is not already on some other remote ref
+		range=$(git rev-list "$local_sha" --not --remotes)
+	else
+		range=$(git rev-list "$remote_sha..$local_sha")
+	fi
+	for sha in $range; do
+		git log -1 --format='%B' "$sha" > "$tmp"
+		found=$(scan_message_text "$tmp")
+		if [ -n "$found" ]; then
+			echo "pre-push: $(git log -1 --format='%h %s' "$sha")" >&2
+			printf '          contains a non-allowlisted email address: %s\n' $found >&2
+			bad=1
+		fi
+	done
+done
+
+if [ "$bad" -ne 0 ]; then
+	echo "" >&2
+	echo "pre-push: refusing to push." >&2
+	explain_rejection
+	echo "  Rewrite the offending message (git rebase -i / git commit --amend) and retry." >&2
+	exit 1
+fi

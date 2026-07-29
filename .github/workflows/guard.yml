@@ -105,13 +105,22 @@ jobs:
           # Allowlist, deliberately: this catches every foreign address rather than one
           # known-bad string, and naming the offender here would re-leak the very thing a
           # rewrite was needed to remove.
-          allowed_re='^(marten\.hildell@gmail\.com|noreply@anthropic\.com|noreply@github\.com)$'
+          # The scan itself lives in .githooks/_email_scan.sh so the local hooks and this
+          # authoritative gate cannot drift apart. It cuts the `git commit -v` scissors
+          # section, then scans the rest (comment lines included, since --cleanup=verbatim
+          # keeps them), and matches internationalized domains and domain literals, not
+          # just ASCII.
+          . .githooks/_email_scan.sh
+          msg=$(mktemp)
           for sha in $(git log --format='%H' $range); do
-            hits=$(git log -1 --format='%B' "$sha" \
-              | grep -oiE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' \
-              | sort -u | grep -viE "$allowed_re" || true)
+            git log -1 --format='%B' "$sha" > "$msg"
+            hits=$(scan_message_text "$msg")
             for h in $hits; do
-              echo "::error::$sha commit message contains a non-allowlisted email address: $h"
+              # NEVER echo the address itself. A CI annotation is a separate, permanent
+              # copy — public on this repo — that rewriting the commit does not remove,
+              # so logging it would re-disclose the very value this gate contains
+              # (codex #66). The SHA is enough: the author reads the message locally.
+              echo "::error::$sha commit message contains a non-allowlisted email address ($(redact "$h")) — inspect it locally with: git log -1 $sha"
               bad=1
             done
           done
