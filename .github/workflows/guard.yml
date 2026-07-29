@@ -63,6 +63,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Scanner self-test
+        # The scanner took three review rounds and every round found a BYPASS. Pinning
+        # them here means the gate cannot silently regress the next time it is touched.
+        run: .githooks/test-email-scan.sh
+
       - name: Check author and committer emails
         run: |
           set -euo pipefail
@@ -115,14 +120,18 @@ jobs:
           for sha in $(git log --format='%H' $range); do
             git log -1 --format='%B' "$sha" > "$msg"
             hits=$(scan_message_text "$msg" stored)
-            for h in $hits; do
+            # read line by line: an address with a QUOTED local part can contain spaces,
+            # and an unquoted `for` would split it into fragments, each redacted
+            # separately and so less redacted than intended (codex #66 r3).
+            while IFS= read -r h; do
+              [ -z "$h" ] && continue
               # NEVER echo the address itself. A CI annotation is a separate, permanent
               # copy — public on this repo — that rewriting the commit does not remove,
               # so logging it would re-disclose the very value this gate contains
               # (codex #66). The SHA is enough: the author reads the message locally.
               echo "::error::$sha commit message contains a non-allowlisted email address ($(redact "$h")) — inspect it locally with: git log -1 $sha"
               bad=1
-            done
+            done <<< "$hits"
           done
 
           if [ "$bad" -ne 0 ]; then

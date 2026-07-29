@@ -11,6 +11,15 @@
 
 ALLOWED_RE='^(marten\.hildell@gmail\.com|noreply@anthropic\.com|noreply@github\.com)$'
 
+# DOCUMENTATION addresses are allowed too. RFC 2606 reserves example.com/.net/.org and the
+# .test / .example / .invalid / .localhost TLDs, and RFC 5737 reserves 192.0.2.0/24,
+# 198.51.100.0/24 and 203.0.113.0/24, precisely so they can be written down without ever
+# belonging to anyone. Excluding them costs nothing in protection — no work address lives
+# there — and buys the ability to describe this gate in its own commit message and docs.
+# Without it the rule is self-defeating: the commit that adds the scanner cannot say what
+# the scanner catches. (.テスト is the IDN form of .test.)
+DOC_RE='@((.+\.)?example\.(com|net|org)|.+\.(test|example|invalid|localhost)|.+\.テスト|\[(192\.0\.2|198\.51\.100|203\.0\.113)\.[0-9]+\])$'
+
 # scan_message_text <file> <template|stored>
 #   template — the file git is about to clean up (commit-msg hook)
 #   stored   — a message already in history, from `git log --format=%B`
@@ -41,17 +50,70 @@ scan_message_text() {
 	#      (user@例え.テスト) and domain literals (user@[192.0.2.1]) are seen;
 	#   2. quoted local parts ("local part"@corp.example), which pattern 1 cannot match
 	#      because it excludes quotes on both sides.
-	# Candidates are then stripped of surrounding markup — `addr`, [addr], <addr> — before
-	# the allowlist compare, or a permitted address in backticks would be rejected.
+	# Candidates are then unwrapped (see unwrap_candidate) and compared to the allowlist.
+	# Single-label domains (user@mailhost) count: internal mail domains are real, and a
+	# work address is exactly the thing this gate exists to stop. The domain must still
+	# look like a host — two or more label characters, or a domain literal — so ordinary
+	# prose ("ping me @home") does not match. A '*' in the domain excludes the candidate:
+	# it is never valid in a domain name, and REDACTIONS printed by this very gate
+	# ("m***@***om") would otherwise be flagged as addresses when quoted in a message.
 	{
 		printf '%s\n' "$text" | grep -oE '[^[:space:]<>(),;"]+@[^[:space:]<>(),;"]+' || true
 		printf '%s\n' "$text" | grep -oE '"[^"]+"@[^[:space:]<>(),;"]+' || true
 	} \
-		| sed -E "s/^[\`'\"([{<*_]+//" \
-		| sed -E "s/[]\`'\"),.;:!?}>*_]+\$//" \
-		| grep -E '@.*[.[]' \
+		| while IFS= read -r cand; do unwrap_candidate "$cand"; done \
+		| grep -E '@(\[.+\]|[^[:space:]*]{2,})$' \
 		| sort -u \
-		| grep -viE "$ALLOWED_RE" || true
+		| grep -viE "$ALLOWED_RE" \
+		| grep -viE "$DOC_RE" || true
+}
+
+# unwrap_candidate <raw> -> the address with surrounding MARKUP removed.
+#
+# This is where a naive strip becomes a bypass. Most punctuation people wrap an address
+# in — backtick, ' * _ { } ~ + - and more — is ALSO legal in an email local part, so
+# stripping it unconditionally maps a foreign address onto an allowlisted one: dropping
+# the leading underscore of an address that is otherwise the maintainer's turns it into
+# the maintainer's and it passes (codex #66 r3, reproduced).
+#
+# So only BALANCED wrappers are removed — an opening delimiter with its matching close.
+# `addr`, [addr], <addr>, "addr", (addr) are unwrapped; a lone leading character is not,
+# because a legal address may genuinely start with it. A `mailto:` prefix is dropped
+# outright: ':' cannot appear in an unquoted local part, so it is never part of one.
+unwrap_candidate() {
+	local c="$1" prev=""
+	c=${c#mailto:}
+	while [ "$c" != "$prev" ]; do
+		prev="$c"
+		# Trailing sentence punctuation FIRST, and again each pass. A wrapped address at the
+		# end of a sentence arrives as `addr`. — the closing delimiter is not last, so the
+		# balanced-wrapper test below would never fire and the whole thing stayed "foreign".
+		c=${c%[.,;:!?]}
+		case "$c" in
+			'`'*'`') c=${c#\`}; c=${c%\`} ;;
+			'['*']') # but NOT a bare domain literal like user@[192.0.2.1]
+				case "$c" in *'@['*']') ;; *) c=${c#[}; c=${c%]} ;; esac ;;
+			'<'*'>') c=${c#<}; c=${c%>} ;;
+			'('*')') c=${c#(}; c=${c%)} ;;
+			'{'*'}') c=${c#\{}; c=${c%\}} ;;
+			*) ;;
+		esac
+	done
+	# TRAILING markup is safe to strip unconditionally, and this is the asymmetry that
+	# matters: a local part may legally contain ` ' * _ { } ~ + and friends, so stripping
+	# those from the FRONT can turn a foreign address into an allowlisted one — that is the
+	# bypass above. A DOMAIN can contain none of them, so anything of that shape hanging off
+	# the end is punctuation, never part of the address. (']' is exempt when the candidate
+	# holds a domain literal, where it is the real final character.)
+	prev=""
+	while [ "$c" != "$prev" ]; do
+		prev="$c"
+		case "$c" in
+			*'@['*']') ;; # domain literal — leave its closing bracket alone
+			*[]\`\'\"\)\}\>*_,\;:!?~+=\|^\&%\$\#/\\.]) c=${c%?} ;;
+		esac
+	done
+	printf '%s\n' "$c"
 }
 
 # redact <address> -> a bounded stand-in, safe to print anywhere.

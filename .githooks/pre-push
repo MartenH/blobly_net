@@ -25,17 +25,33 @@ bad=0
 while read -r _local_ref local_sha _remote_ref remote_sha; do
 	[ "$local_sha" = "$zero" ] && continue # branch deletion — nothing to scan
 	if [ "$remote_sha" = "$zero" ]; then
-		# New branch on THIS remote. Exclude only what that remote already has: excluding
-		# every remote-tracking ref would skip commits that live solely on some other
-		# remote, and this push is precisely what would disclose them (codex #66).
-		mapfile -t exclude < <(git for-each-ref --format='%(refname)' "refs/remotes/${remote_name}/" 2>/dev/null || true)
-		if [ "${#exclude[@]}" -gt 0 ]; then
-			range=$(git rev-list "$local_sha" --not "${exclude[@]}")
+		# New branch on THIS remote. Exclude only the destination remote's DEFAULT branch,
+		# not every remote-tracking ref under it. Two reasons: excluding all remotes would
+		# skip commits living solely on another remote, which this push is what discloses;
+		# and a per-branch tracking ref can be STALE after a server-side delete without a
+		# pruning fetch, so trusting it would skip commits the remote no longer has
+		# (codex #66 r3). Erring toward scanning more is the safe direction here.
+		head_ref="refs/remotes/${remote_name}/HEAD"
+		base_ref=$(git symbolic-ref -q "$head_ref" 2>/dev/null || true)
+		[ -z "$base_ref" ] && base_ref="refs/remotes/${remote_name}/main"
+		if git rev-parse --verify --quiet "$base_ref" >/dev/null; then
+			range=$(git rev-list "$local_sha" --not "$base_ref")
 		else
 			range=$(git rev-list "$local_sha")
 		fi
-	else
+	elif git cat-file -e "${remote_sha}^{commit}" 2>/dev/null; then
 		range=$(git rev-list "$remote_sha..$local_sha")
+	else
+		# Forced update whose advertised old tip was never fetched here: `git rev-list`
+		# would fail and `set -e` would abort an otherwise valid push (codex #66 r3).
+		# Fall back to scanning everything the push introduces relative to the remote's
+		# default branch — again, more rather than less.
+		base_ref="refs/remotes/${remote_name}/main"
+		if git rev-parse --verify --quiet "$base_ref" >/dev/null; then
+			range=$(git rev-list "$local_sha" --not "$base_ref")
+		else
+			range=$(git rev-list "$local_sha")
+		fi
 	fi
 	for sha in $range; do
 		# identity — the cherry-pick path skips pre-commit too
