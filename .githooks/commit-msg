@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Refuse a commit MESSAGE carrying an email address that is not the maintainer's or a
+# known bot trailer. Same rule as CI (.github/workflows/guard.yml), checked here so it
+# fails in one second instead of after a push.
+# Enable with:  git config core.hooksPath .githooks
+#
+# This hook covers the ordinary `git commit` path. Git does NOT run it for cherry-pick
+# or a non-interactive rebase, so .githooks/pre-push re-checks the whole pushed range —
+# between them, nothing reaches the remote unscanned (codex #66).
+set -euo pipefail
+
+. "$(dirname "$0")/_email_scan.sh"
+
+found=$(scan_message_text "$1" template)
+
+if [ -n "$found" ]; then
+	# Redacted, like every other path: stderr is retained by IDEs and terminal scrollback,
+	# so printing the value would make another durable copy of it (codex #249).
+	echo "commit-msg: refusing — the message contains a non-allowlisted email address:" >&2
+	printf '%s\n' "$found" | redact_list >&2
+	echo "" >&2
+	explain_rejection
+	exit 1
+fi

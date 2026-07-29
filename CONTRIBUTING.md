@@ -28,7 +28,15 @@ git config user.email marten.hildell@gmail.com
 git config user.name  "Marten Hildell"
 ```
 
-To catch it before it reaches CI, install the local hook:
+## Commit messages
+
+The same rule applies to what a message **says**, not just who wrote it: a message body may
+not contain an email address other than the maintainer's or a bot trailer
+(`Co-Authored-By: … <noreply@anthropic.com>`). Describe the address instead — "rejects a
+non-maintainer work address". This is enforced for the same reason: a message is permanent,
+it survives branch deletion, and removing one costs a rewrite of every branch that carries it.
+
+To catch both before they reach CI, install the local hooks:
 
 ```sh
 git config core.hooksPath .githooks
