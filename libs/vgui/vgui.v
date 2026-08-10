@@ -135,6 +135,7 @@ fn C.vgui_text(&char)
 fn C.vgui_text_dim(&char)
 fn C.vgui_button(&char) int
 fn C.vgui_button_big(&char, int, int, int, f32, f32) int
+fn C.vgui_splitter_v(&char, f32, f32, f32) f32
 fn C.vgui_same_line()
 fn C.vgui_separator_text(&char)
 fn C.vgui_table_begin(&char, int) int
@@ -591,6 +592,13 @@ pub fn button(label string) bool {
 // for a primary action like Start/Stop. r,g,b are 0-255.
 pub fn button_big(label string, r int, g int, b int, w f32, h f32) bool {
 	return C.vgui_button_big(label.str, r, g, b, w, h) == 1
+}
+
+// splitter_v: a draggable vertical divider between two side-by-side panes. Call it with
+// same_line() after the left child_end and before the right child; pass the current left
+// width and its min/max (px). Returns the updated width to store and reuse next frame.
+pub fn splitter_v(id string, w f32, min_w f32, max_w f32) f32 {
+	return C.vgui_splitter_v(id.str, w, min_w, max_w)
 }
 
 pub fn same_line() {
