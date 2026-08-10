@@ -43,11 +43,18 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   bus tester: on CAN you attach and observe because the medium is broadcast, and on Ethernet
   the same tool sees nothing without an address typed in by hand. The asymmetry is real
   today — blobly_emb **already** broadcasts its vehicle announcement three times at boot and
-  answers identification requests afterwards, precisely so a late tester can find it, and
-  Blobly Net hears neither. Needs a broadcast/subnet-broadcast request that collects **many**
-  responses instead of returning at the first, a passive listener for unsolicited
-  announcements (the case that catches an ECU booting while you are already running), and a
-  Scan action turning results into channels rather than hand-typed `doip:` strings. Core
+  answers identification requests afterwards, precisely so a late tester can find it. Blobly Net
+  hears the answer but not the announcement: `discover()` parses the solicited `0x0004`, and
+  misses the unsolicited boot broadcast entirely. Needs a request that collects **many**
+  responses instead of returning at the first, a passive listener for unsolicited announcements
+  (the case that catches an ECU booting while you are already running), and a Scan action
+  turning results into channels rather than hand-typed `doip:` strings.
+  **Both address families, and they are not the same mechanism:** IPv4 gets subnet broadcast,
+  but IPv6 has no broadcast at all, so it needs link-local multicast. That is not a detail to
+  discover during implementation — this repo already supports IPv6 DoIP endpoints
+  (`modules/doip/server.v`) and round-trips them in `modules/doip/net_test.v`, so a
+  broadcast-only scan would ship "finds any ISO 13400 entity" while leaving a class of entity
+  we deliberately support permanently invisible. Core
   tester behaviour, not blobly_emb integration — any ISO 13400 entity answers, and it is
   recorded as a known limitation in the DoIP manual.
 - 🧭 **LIN** — `modules/lindb` (LDF) + a `LinFrame` type. Kept type-safe alongside `CanFrame` /
@@ -58,7 +65,12 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   numbers into one enormous file; two GUI branches almost always collide there; and the editor
   and language server carry it on every keystroke. The split is per-panel (Trace, Graphics,
   System, DBC editor, Diagnostics, Shell, Generators) plus the app state, which is roughly how
-  the file is already organised internally — so it is a mechanical move rather than a redesign.
+  the file is already organised internally — so the panel bodies are a mechanical move rather
+  than a redesign. **The app state is not.** `App` embeds the optional modules' types directly
+  (`telem.Manifest`, `sysview.System`), so moving panel functions into new files leaves the core
+  importing exactly what the tiering item below says it must not. Extracting or abstracting that
+  state — an interface, or a side table the optional panels own — is part of this work, not a
+  free consequence of it, and it is the part to schedule time for.
   Deliberately **not** urgent: it touches the one file every in-flight branch also touches, so
   it wants a quiet moment with nothing else open, not a slot between features. It is also the
   **lever for the tiering below** — panels cannot be separated while they all live in one file.
@@ -75,8 +87,11 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   a panel appears when its artifact is present (a `system.toml` beside the project, a manifest
   on a channel, a bootloader-capable target) rather than always; and a **module boundary** —
   the core must not import `sysview`/`telem`/`flash`, so "works without emb" is enforced rather
-  than asserted. Grouping the optional panels under one menu section makes the tiering visible
-  without hiding anything from those who want it.
+  than asserted. The **visible** half of this already exists and is the baseline to build on,
+  not remaining work: Trace Chart, Flash, Shell and System are already grouped under a
+  `blobly_emb target` separator in both the View menu and the activity bar (`main.v` ~1477 and
+  ~1562). What is missing is everything behind it — the appearing/disappearing and the import
+  boundary.
 
 ## Out of scope
 
