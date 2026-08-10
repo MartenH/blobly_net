@@ -464,6 +464,10 @@ fn (mut app App) start() {
 			app.notify('unsaved DBC edits for detached ${os.file_name(pth)} were discarded')
 		}
 	}
+	// An edit still in the field is not in the dirty map yet, so it would slip past the check
+	// below AND miss the measurement's schema. The click that starts the run is also the click
+	// that ends the edit, and the toolbar is drawn first — so resolve it here.
+	app.resolve_pending_bit_edit()
 	for _, d in app.dbc_ed.dirty {
 		if d {
 			app.notify('DBC editor has unsaved edits — Save or Revert them before starting')
@@ -1011,6 +1015,9 @@ fn (mut app App) set_project(proj project.Project, path string) {
 // selection) from app.proj. Called after a load and after any config/generator edit, so the
 // live panels reflect the edited model. Must be called while stopped (no RX threads running).
 fn (mut app App) rebuild_from_proj() {
+	// this replaces app.dbs wholesale, so a pending endpoint edit must land first or it is
+	// silently dropped along with the databases it referred to
+	app.resolve_pending_bit_edit()
 	proj := app.proj
 	app.mu.lock()
 	app.chans = []
@@ -5962,6 +5969,142 @@ mut:
 	node_buf       []u8
 	view_tree      bool = true // toggle between Tree view and Table view
 	left_w         f32  // draggable width (px) of the messages&signals pane; 0 = use the default
+	// An in-progress bit-endpoint edit. An input field commits on EVERY keystroke, so a handler
+	// that derives the width from the opposite endpoint would measure each keystroke against an
+	// anchor the previous one already moved — typing a higher start collapsed the span to one
+	// bit (#68). The edit is therefore held here and applied once, on deactivation, against the
+	// anchor captured when it began.
+	bit_edit_key    string // '<field>:<db>:<msg>:<sig>' while that field is being edited
+	bit_edit_val    int    // the in-progress value (the field shows this, not the model)
+	bit_edit_anchor int    // the opposite endpoint, snapshotted when the edit began
+	bit_edit_db     int = -1 // where to apply it, kept apart from the key so resolve need not parse
+	bit_edit_msg    int = -1
+	bit_edit_sig    int = -1
+	bit_edit_name   string // the signal's NAME at edit time — an index can be re-used after a
+	// delete, and applying an edit to whatever now sits at that index would corrupt it
+	bit_edit_msg_name string // and the MESSAGE's name: deleting a message shifts the next one
+	// into the stored index, where a same-named signal (Counter, Status…) would pass a
+	// name-only check and take the edit meant for a different message entirely
+}
+
+// resolve_pending_bit_edit applies a bit-endpoint edit still held in the editor's buffer.
+//
+// WHY A CHOKE POINT: deferring the commit to deactivation (so a per-keystroke commit cannot
+// measure each digit against an anchor the previous one moved) opens a window where the FIELD
+// holds the value and the model does not. Every action that reads or replaces app.dbs during
+// that window would otherwise act on stale data — and the toolbar is drawn BEFORE the editor,
+// so the very click that ends an edit is processed first: Start ran workers against the old
+// schema, and Save serialised the old endpoint and only then committed, leaving the file dirty.
+// Guarding each consumer separately is how that turned into a series of one-off patches; this
+// is the single place the window is closed instead.
+//
+// Safe to call at any time: with no edit pending it does nothing.
+fn (mut app App) resolve_pending_bit_edit() {
+	if app.dbc_ed.bit_edit_key == '' {
+		return
+	}
+	di := app.dbc_ed.bit_edit_db
+	mi := app.dbc_ed.bit_edit_msg
+	si := app.dbc_ed.bit_edit_sig
+	is_start := app.dbc_ed.bit_edit_key.starts_with('start:')
+	anchor := app.dbc_ed.bit_edit_anchor
+	val := app.dbc_ed.bit_edit_val
+	name := app.dbc_ed.bit_edit_name
+	msg_name := app.dbc_ed.bit_edit_msg_name
+	key := app.dbc_ed.bit_edit_key
+	app.dbc_ed.bit_edit_key = '' // clear FIRST: every path below is now a no-op or an apply
+
+	// Has the user moved on? The key names the signal the edit began on; if that is no longer
+	// the selection, the edit was abandoned by clicking away and must not be committed.
+	// This check belongs HERE and not at the top of the editor, because the toolbar is drawn
+	// before the editor (main.v ~1322 vs ~1368): pressing Start after selecting a different
+	// signal reached the resolver first, and the stored names/indices still matched the
+	// original signal — which exists and is unchanged — so an abandoned edit was applied and
+	// the DBC marked dirty, blocking the run. Every caller funnels through here, so one check
+	// covers Start, Save, rebuild and deactivation alike.
+	if !key.ends_with(':${app.dbc_ed.db}:${app.dbc_ed.msg}:${app.dbc_ed.sig}') {
+		return
+	}
+
+	// `warn` is collected under the lock and emitted after it. notify() takes app.mu, which is
+	// not recursive, so notifying from in here deadlocks the app on the value-table path —
+	// reachable from deactivation, Save, Start and rebuild alike.
+	mut warn := '' // refuses the edit outright
+	mut note := '' // the edit is applied, but not exactly as typed
+	mut dirty := -1
+	app.mu.lock()
+	ok := di >= 0 && di < app.dbs.len && mi >= 0 && mi < app.dbs[di].messages.len
+		&& si >= 0 && si < app.dbs[di].messages[mi].signals.len
+	if ok && app.dbs[di].messages[mi].name == msg_name
+		&& app.dbs[di].messages[mi].signals[si].name == name {
+		// Both names must match. An index alone is not identity: deleting a message shifts the
+		// next into its slot, and a same-named signal there would otherwise take this edit.
+		sg := app.dbs[di].messages[mi].signals[si]
+		be := sg.byte_order == .big_endian
+		mut ns := sg.start_bit
+		mut nl := sg.length
+		if is_start {
+			ns = if val < 0 { 0 } else { val }
+			if !be && ns > anchor {
+				ns = anchor // start cannot pass stop: the span may not invert
+			}
+			if !be {
+				// A signal is at most 64 bits, and editing the START must hold the STOP — that
+				// is the whole contract of the two fields. Capping the LENGTH here would keep
+				// the typed start and drag the stop down with it (100..107, start := 0, gives
+				// 0..63: the stop silently moved from 107 to 63 and the signal decodes
+				// completely different bits). Clamp the start instead, so the anchor survives
+				// and the span is the widest legal one that still ends where it did.
+				if anchor - ns + 1 > 64 {
+					ns = anchor - 63
+					note = 'start clamped to ${ns}: a signal is at most 64 bits and the stop bit ${anchor} is held'
+				}
+				nl = anchor - ns + 1
+			}
+		} else {
+			nl = if be { val } else { val - anchor + 1 }
+		}
+		if nl < 1 {
+			nl = 1
+		}
+		if nl > 64 {
+			nl = 64
+		}
+		// the value-table guard both fields enforce: a narrowing that cannot hold the existing
+		// VAL_ keys is refused, or the writer masks them on save and remaps or collides them
+		nmask := if nl >= 64 { ~u64(0) } else { (u64(1) << nl) - 1 }
+		mut clash := false
+		for k, _ in sg.values {
+			if k & ~nmask != 0 {
+				clash = true
+			}
+		}
+		if clash {
+			warn = '${sg.name}: ${nl} bit(s) cannot hold the existing value-table keys — edit discarded'
+		} else {
+			app.dbs[di].messages[mi].signals[si].start_bit = ns
+			app.dbs[di].messages[mi].signals[si].length = nl
+			dirty = di
+		}
+	}
+	app.mu.unlock()
+	if dirty >= 0 {
+		app.mark_dirty(dirty)
+	}
+	if warn != '' {
+		app.notify(warn)
+	}
+	if note != '' {
+		app.notify(note)
+	}
+}
+
+// cancel_pending_bit_edit drops an in-progress endpoint edit without applying it. Used where
+// the database it referred to is about to be replaced by something the user did NOT edit —
+// Revert being the case that matters, since resolving there would write the pending value
+// onto the freshly reloaded file.
+fn (mut app App) cancel_pending_bit_edit() {
+	app.dbc_ed.bit_edit_key = ''
 }
 
 // dbc_ed_color: a deterministic per-signal palette for the bit grid.
@@ -6113,6 +6256,23 @@ fn (mut app App) mark_dirty(di int) {
 }
 
 fn draw_dbc_editor(mut app App) {
+	// Cancel an edit the user walked away from — before ANY early return below, so selecting
+	// the message, reverting the database or deleting the signal cannot leave it pending.
+	//
+	// This is NOT redundant with the identical-looking check in resolve_pending_bit_edit(),
+	// and removing it as a duplicate was wrong. They answer different questions:
+	//   here      — every frame: has the selection moved? then DROP the state, so reselecting
+	//               the original signal cannot resurrect its stale value in the field.
+	//   resolver  — on commit: does the key still name the selection? then REFUSE to apply,
+	//               which is what catches Start, since the toolbar draws before this panel.
+	// Without this one, edit A → select B → reselect A brought the abandoned value back and
+	// let it be committed. Without the other, Start committed it outright. Selection is
+	// assigned in a dozen places, so detecting the change per frame beats asking every
+	// assignment site to remember.
+	if app.dbc_ed.bit_edit_key != ''
+		&& !app.dbc_ed.bit_edit_key.ends_with(':${app.dbc_ed.db}:${app.dbc_ed.msg}:${app.dbc_ed.sig}') {
+		app.dbc_ed.bit_edit_key = ''
+	}
 	vis, op := vgui.begin_closable('DBC Editor', app.show_dbc)
 	app.show_dbc = op
 	if !vis {
@@ -6180,6 +6340,9 @@ fn draw_dbc_editor(mut app App) {
 		vgui.same_line()
 	}
 	if !ro && dbc_path != '' && vgui.small_button('Save') {
+		// resolve first: this button is processed before the inspector, so without it the old
+		// endpoint is serialised and the edit commits afterwards, leaving the file dirty again
+		app.resolve_pending_bit_edit()
 		app.mu.lock()
 		for m in app.dbs[di].messages {
 			if m.sender != '' && m.sender !in app.dbs[di].nodes {
@@ -6212,6 +6375,13 @@ fn draw_dbc_editor(mut app App) {
 	vgui.same_line()
 	if !ro && dbc_path != '' && vgui.small_button('Revert') {
 		if db := candb.load_dbc_file(dbc_path) {
+			// Cancel only on SUCCESS. Revert reloads the file and then refreshes, which reaches
+			// the resolver before the next frame can cancel on selection mismatch, so the
+			// pending value would land on the database the user just discarded. But if the
+			// file has been deleted, made unreadable or become unparsable, the revert does not
+			// happen at all — the database and its other in-memory edits stay — and dropping
+			// the endpoint edit there would lose typing for an operation that failed.
+			app.cancel_pending_bit_edit()
 			app.mu.lock()
 			app.dbs[di] = db
 			app.mu.unlock()
@@ -6546,7 +6716,26 @@ fn draw_dbc_editor(mut app App) {
 
 	// draggable divider: grow/shrink the left (messages & signals) pane vs the right (inspector)
 	vgui.same_line()
-	app.dbc_ed.left_w = vgui.splitter_v('##dbced_split', app.dbc_ed.left_w, 200 * sc, 760 * sc)
+	// Clamp the persisted width against what the panel has NOW: left_w survives docking and
+	// resizing, so a divider dragged wide in a large window could otherwise consume a narrower
+	// one entirely and leave the inspector unreachable (#68). The right pane keeps 200*sc.
+	// content_avail_w() is called AFTER the left child and same_line(), so it reports only the
+	// space to the RIGHT of the left pane. Treating that as the panel total made max_left shrink
+	// as the user widened the pane, dragging the divider back on the next frame (#69). The panel
+	// total is the left pane plus what remains beside it.
+	avail := vgui.content_avail_w()
+	total_w := app.dbc_ed.left_w + avail
+	mut max_left := 760 * sc
+	if total_w > 0 && total_w - 200 * sc < max_left {
+		max_left = total_w - 200 * sc
+	}
+	if max_left < 200 * sc {
+		max_left = 200 * sc
+	}
+	if app.dbc_ed.left_w > max_left {
+		app.dbc_ed.left_w = max_left
+	}
+	app.dbc_ed.left_w = vgui.splitter_v('##dbced_split', app.dbc_ed.left_w, 200 * sc, max_left)
 	vgui.same_line()
 
 	// --- RIGHT PANE: Message Properties, Bit Layout Grid, Signal Inspector ---
@@ -6905,44 +7094,34 @@ fn draw_dbc_editor(mut app App) {
 	// A signal's bit span is defined by its two endpoints: start bit + stop bit (the width is
 	// derived, stop - start + 1). No separate "len" field and no +/- steppers — you set where
 	// the bits begin and end. (Little-endian contiguous span; big-endian keeps DBC semantics.)
-	mut sbv := sg.start_bit
 	lnv := sg.length
-	mut stop_bit := sbv + lnv - 1
+	stop_bit := sg.start_bit + lnv - 1
+	sb_key := 'start:${di}:${mi}:${si}'
+	// While this field is being edited the FIELD owns the value, not the model — otherwise the
+	// next frame resets it to the unchanged model and the edit snaps back mid-typing.
+	mut sbv := if app.dbc_ed.bit_edit_key == sb_key { app.dbc_ed.bit_edit_val } else { sg.start_bit }
 
 	vgui.same_line()
 	vgui.set_next_item_width(65 * sc)
-	// KNOWN LIMITATION (#68): input_int commits on every keystroke, and this handler holds the
-	// stop endpoint and re-derives the width — so typing a HIGHER start applies the intermediate
-	// digits too, each against a stop that already moved, and the span collapses. Lowering start
-	// is safe. Fixing it needs a commit-on-deactivate binding vgui does not have, so the
-	// limitation is accepted and surfaced rather than left silent.
-	if !ro {
-		vgui.text_dim('(raise start via the stop bit — #68)')
-		vgui.same_line()
-	}
 	if !ro && vgui.input_int('start bit', &sbv) {
-		mut ns := if sbv < 0 { 0 } else { sbv }
-		// start and stop are the two ENDPOINTS of one contiguous Intel span, so start can never
-		// pass stop. Writing it anyway left the old width in place (0..7 given start 9 became
-		// 9..16) — the same silent bit-shift the endpoint model exists to prevent, arriving from
-		// the other side. Clamp rather than accept an inverted span (codex #65 r4).
-		if sg.byte_order != .big_endian && ns > stop_bit {
-			ns = stop_bit
+		if app.dbc_ed.bit_edit_key != sb_key {
+			// the edit begins here: snapshot the endpoint we will hold it against, so later
+			// keystrokes are measured against where the span was BEFORE typing started (#68)
+			app.dbc_ed.bit_edit_key = sb_key
+			app.dbc_ed.bit_edit_anchor = stop_bit
+			app.dbc_ed.bit_edit_db = di
+			app.dbc_ed.bit_edit_msg = mi
+			app.dbc_ed.bit_edit_sig = si
+			app.dbc_ed.bit_edit_name = sg.name
+			app.dbc_ed.bit_edit_msg_name = app.dbs[di].messages[mi].name
 		}
-		app.mu.lock()
-		app.dbs[di].messages[mi].signals[si].start_bit = ns
-		// Intel edits the span by its two ENDPOINTS, so moving `start` must hold `stop` and
-		// re-derive the width — keeping the old length instead slid the signal's trailing bits
-		// (0..7 given start 2 became 2..9 rather than 2..7), silently moving data (codex #65).
-		// Big-endian keeps its length: its stop bit is a sawtooth walk, not start+len-1.
-		if sg.byte_order != .big_endian {
-			nl := stop_bit - ns + 1
-			if nl >= 1 && nl <= 64 {
-				app.dbs[di].messages[mi].signals[si].length = nl
-			}
-		}
-		app.mu.unlock()
-		app.mark_dirty(di)
+		app.dbc_ed.bit_edit_val = sbv
+	}
+	// The edit finished. Applying it lives in resolve_pending_bit_edit() and ONLY there — the
+	// same call Start, Save and rebuild make — so the deactivation path and the choke point
+	// cannot drift into disagreeing about clamping or value-table validation.
+	if !ro && app.dbc_ed.bit_edit_key == sb_key && vgui.is_item_deactivated_after_edit() {
+		app.resolve_pending_bit_edit()
 	}
 	vgui.same_line()
 	vgui.set_next_item_width(65 * sc)
@@ -6951,26 +7130,30 @@ fn draw_dbc_editor(mut app App) {
 	// stop - start + 1 is NOT the width — editing an endpoint there would silently corrupt
 	// it (codex #65). Edit the length directly for big-endian.
 	be := sg.byte_order == .big_endian
-	mut widthv := if be { lnv } else { stop_bit }
+	w_key := 'width:${di}:${mi}:${si}'
+	mut widthv := if app.dbc_ed.bit_edit_key == w_key {
+		app.dbc_ed.bit_edit_val
+	} else if be {
+		lnv
+	} else {
+		stop_bit
+	}
 	if !ro && vgui.input_int(if be { 'length' } else { 'stop bit' }, &widthv) {
-		nl_raw := if be { widthv } else { widthv - sbv + 1 }
-		nl := if nl_raw < 1 { 1 } else if nl_raw > 64 { 64 } else { nl_raw }
-		nmask := if nl >= 64 { ~u64(0) } else { (u64(1) << nl) - 1 }
-		mut val_clash := false
-		for k, _ in sg.values {
-			if k & ~nmask != 0 {
-				val_clash = true
-			}
+		if app.dbc_ed.bit_edit_key != w_key {
+			// same reasoning as the start field: hold the START endpoint as it was when typing
+			// began, so intermediate keystrokes are not measured against a moving anchor (#68)
+			app.dbc_ed.bit_edit_key = w_key
+			app.dbc_ed.bit_edit_anchor = sg.start_bit
+			app.dbc_ed.bit_edit_db = di
+			app.dbc_ed.bit_edit_msg = mi
+			app.dbc_ed.bit_edit_sig = si
+			app.dbc_ed.bit_edit_name = sg.name
+			app.dbc_ed.bit_edit_msg_name = app.dbs[di].messages[mi].name
 		}
-		app.mu.lock()
-		if !val_clash {
-			app.dbs[di].messages[mi].signals[si].length = nl
-			app.mark_dirty(di)
-		}
-		app.mu.unlock()
-		if val_clash {
-			app.notify('width ${nl} cannot hold the existing value-table keys — remove them first')
-		}
+		app.dbc_ed.bit_edit_val = widthv
+	}
+	if !ro && app.dbc_ed.bit_edit_key == w_key && vgui.is_item_deactivated_after_edit() {
+		app.resolve_pending_bit_edit()
 	}
 	vgui.same_line()
 	vgui.text_dim('(${lnv} bit${if lnv == 1 { '' } else { 's' }})')
