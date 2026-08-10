@@ -284,13 +284,24 @@ pub fn (mut e Engine) on_frame(f transport.CanFrame) []transport.CanFrame {
 				// worst of both. A longer one makes the checksum cover bytes the receiver never
 				// sees. Only the protected path resizes; an unprotected rule stays the plain
 				// echo of the request that it is documented to be.
-				// Only a PROTECTED response is resized to its DBC dlc; an unprotected rule
-				// stays the plain echo of the request it is documented to be.
-				mut buf := []u8{len: if m.e2e.active() { m.msg.dlc } else { data.len }}
+				// Resized when protection OR a fault needs the message's real layout: an
+				// out_of_range target can sit beyond the echoed request's length, and set_raw
+				// silently skips out-of-bounds bits — so the response went out unchanged while
+				// the fault reported itself armed. An unfaulted, unprotected rule stays the
+				// plain echo of the request it is documented to be.
+				needs_layout := m.e2e.active() || m.fault.active()
+				mut buf := []u8{len: if needs_layout { m.msg.dlc } else { data.len }}
 				for k in 0 .. buf.len {
 					if k < data.len {
 						buf[k] = data[k]
 					}
+				}
+				// Same recovery as the cyclic path: leaving a freeze must step past the value
+				// already transmitted, or the first recovered response repeats it and the
+				// receiver sees one more stall AFTER the fault has ended.
+				if m.was_frozen && m.fault.kind != .freeze_ctr {
+					m.e2e_n++
+					m.was_frozen = false
 				}
 				m.fault.apply_pre(m.msg, mut buf)
 				if m.e2e.active() {
@@ -299,6 +310,8 @@ pub fn (mut e Engine) on_frame(f transport.CanFrame) []transport.CanFrame {
 				m.send_n++
 				if m.fault.kind != .freeze_ctr {
 					m.e2e_n++
+				} else {
+					m.was_frozen = true
 				}
 				if !m.fault.apply_post(m.msg, m.e2e, mut buf) {
 					drop_response = true

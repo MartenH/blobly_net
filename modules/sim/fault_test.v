@@ -1,6 +1,7 @@
 module sim
 
 import candb
+import transport
 
 fn faulted_msg() candb.Message {
 	return candb.Message{
@@ -205,4 +206,55 @@ fn test_counter_resumes_cleanly_after_a_freeze() {
 	e.ecus[0].messages[0].fault = Fault{}
 	f := e.due_frames(30)[0]
 	assert f.data[0] & 0x0F == u8((frozen + 1) % 16), 'the first recovered frame repeated the frozen counter'
+}
+
+// The response path needs the same freeze recovery as the cyclic one: recovery was added to
+// due_frames only, so a protected response repeated the frozen counter once after the fault
+// ended and the receiver saw one more stall.
+fn test_response_counter_resumes_cleanly_after_a_freeze() {
+	mut resp := faulted_msg()
+	resp.id = 0x102
+	mut ecu := SimEcu{
+		name:     'N'
+		messages: [SimMessage{
+			msg:       resp
+			period_ms: 0
+			e2e:       E2e{ counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }
+			fault:     Fault{ kind: .freeze_ctr }
+		}]
+		rules: [ResponseRule{ req_id: 0x101, resp_id: 0x102, byte_index: 0, add: 1 }]
+	}
+	mut e := Engine{ ecus: [ecu] }
+	req := transport.CanFrame{ id: 0x101, data: []u8{len: 8} }
+	e.on_frame(req)
+	e.on_frame(req)
+	frozen := e.ecus[0].messages[0].e2e_n
+
+	e.ecus[0].messages[0].fault = Fault{} // cleared or expired
+	out := e.on_frame(req)
+	assert out.len == 1
+	assert out[0].data[0] & 0x0F == u8((frozen + 1) % 16), 'the recovered response repeated the frozen counter'
+}
+
+// An out_of_range target can sit beyond the echoed request's length. set_raw silently skips
+// out-of-bounds bits, so the response went out unchanged while the fault reported itself armed.
+fn test_faulted_response_is_sized_to_its_message() {
+	mut resp := faulted_msg() // dlc 8, Speed at bits 8..23
+	resp.id = 0x102
+	mut ecu := SimEcu{
+		name:     'N'
+		messages: [SimMessage{
+			msg:       resp
+			period_ms: 0
+			fault:     Fault{ kind: .out_of_range, signal: 'Speed' }
+		}]
+		rules: [ResponseRule{ req_id: 0x101, resp_id: 0x102, byte_index: 0, add: 1 }]
+	}
+	mut e := Engine{ ecus: [ecu] }
+	// a 2-byte request: Speed's bits lie past the echoed length
+	out := e.on_frame(transport.CanFrame{ id: 0x101, data: [u8(0), 0] })
+	assert out.len == 1
+	assert out[0].data.len == 8, 'a faulted response must carry its own layout, got ${out[0].data.len}'
+	raw := u64(out[0].data[1]) | (u64(out[0].data[2]) << 8)
+	assert raw == 0xFFFF, 'the range violation must actually be written'
 }

@@ -345,9 +345,13 @@ fn has_protection(db candb.Database, nodes []project.NodeCfg, node string, msg s
 					continue
 				}
 				for sg in m.signals {
-					if sg.name == want {
-						return true
+					if sg.name != want {
+						continue
 					}
+					// A MULTIPLEXED protection field is only written when its selector is
+					// active, and both the stamper and the fault walk active signals only — so
+					// neither would touch it and the fault would change no transmitted bits.
+					return !sg.is_multiplexed
 				}
 			}
 			return false
