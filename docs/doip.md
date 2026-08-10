@@ -67,8 +67,10 @@ you have not been told about.
 That asymmetry is worth stating because the ECU side is not the missing half. The companion
 firmware (blobly_emb) broadcasts its vehicle announcement three times at boot, per ISO 13400,
 and answers identification requests afterwards — precisely so a tester arriving late can still
-find it. Blobly Net hears neither, because it never listens on a broadcast address and stops at
-the first reply.
+find it. Blobly Net hears the second of those and not the first: it parses the `0x0004` the
+entity sends *in answer to its own request*, which is what makes known-address Discover work at
+all. What it misses is the **unsolicited** boot announcement, because it never listens on a
+broadcast address, and any **further** replies, because it stops at the first.
 
 The practical consequence: **on Ethernet you must know the address before you can see anything.**
 On CAN you attach and observe, because the medium is broadcast. Plan for static addresses or a
@@ -99,8 +101,12 @@ so treat "a version byte followed by its inverse" as the marker rather than `02 
 | `0x8003` | diagnostic message negative ACK | TCP |
 
 A session: **identify** (optional, UDP) → **connect** (TCP) → **activate routing**
-(`0x0005`/`0x0006`) → **exchange UDS** inside `0x8001`, each acknowledged by `0x8002` or
-rejected with `0x8003`.
+(`0x0005`/`0x0006`) → **exchange UDS** inside `0x8001`.
+
+The acknowledgement runs one way. Each **tester → entity** request draws a `0x8002` (or a
+`0x8003` refusing it) from the entity *before* the UDS response follows in its own `0x8001`.
+The entity's response is not acknowledged in return — the tester consumes it directly. So in a
+capture you see ack-then-response per request, not an ack after every `0x8001`.
 
 Routing activation is **mandatory** — a diagnostic message arriving before it is ignored rather
 than answered.
