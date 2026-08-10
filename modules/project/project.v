@@ -152,10 +152,13 @@ pub mut:
 	// formats, and a bench check bound to the wrong one is worse than no check.
 	id       ?u32
 	extended ?bool
-	// Whether the written id was a clean number. A stripped character yields a DIFFERENT VALID
-	// id, so no range check can catch it — `0x2G2` became `0x22` and bound to whatever lives
-	// there, while saving replaced the typo with the sanitized value.
-	id_malformed bool
+	// Whether the written id / data_id were clean numbers. A stripped character yields a
+	// DIFFERENT VALID value, so no range check can catch it — `0x2G2` became `0x22` and bound
+	// to whatever lives there, while saving replaced the typo with the sanitized value. A bad
+	// data_id is worse still: it mixes four unintended bytes into every checksum, so valid
+	// traffic is reported corrupt.
+	id_malformed      bool
+	data_id_malformed bool
 	counter string // signal carrying the alive counter ('' = none)
 	crc     string // signal carrying the checksum ('' = none)
 	profile string = 'crc8_j1850' // crc8_j1850 | crc8_autosar | sum8 | xor8
@@ -531,8 +534,11 @@ fn parse_protect_list(ps yaml.Any) []ProtectCfg {
 		// presence, not value: `data_id: 0` is a legitimate id whose four zero bytes must still
 		// reach the checksum, so it cannot be distinguished from absent by testing 0
 		mut id := ?u32(none)
+		mut idbad := false
 		if v := p.value_opt('data_id') {
-			id = clamp_i64_u32(v.i64()) // present, even when 0 — that is a real id
+			raw := v.i64()
+			idbad = raw < 0 || raw > i64(0xFFFFFFFF) || !hex_id_is_clean(v.str())
+			id = clamp_i64_u32(raw) // present, even when 0 — that is a real id
 		}
 		mut mid := ?u32(none)
 		mut mbad := false
@@ -551,8 +557,9 @@ fn parse_protect_list(ps yaml.Any) []ProtectCfg {
 			id_malformed: mbad
 			counter: p.value('counter').default_to('').string()
 			crc:     p.value('crc').default_to('').string()
-			profile: p.value('profile').default_to('crc8_j1850').string()
-			data_id: id
+			profile:           p.value('profile').default_to('crc8_j1850').string()
+			data_id:           id
+			data_id_malformed: idbad
 		}
 	}
 	return out

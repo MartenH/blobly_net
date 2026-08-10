@@ -334,3 +334,35 @@ fn test_verify_selects_on_frame_format_too() {
 	assert vkey(0x300, true) in set.by_key
 	assert vkey(0x300, false) !in set.by_key
 }
+
+// Validation and construction must agree. They did not: a malformed id was reported as
+// "ignored" while a verifier was built for the repaired value, so the run logged a warning and
+// then checked the wrong frame — worse than either failure alone.
+fn test_validation_and_construction_agree() {
+	mut m := vmsg()
+	m.name = 'Status'
+	m.id = 0x111
+	mut mux := vmsg()
+	mux.name = 'Muxed'
+	mux.id = 0x112
+	mux.signals[0].is_multiplexed = true // AliveCounter only present on one branch
+	db := candb.Database{ messages: [m, mux] }
+
+	cases := [
+		project.ProtectCfg{ message: 'Status', crc: 'CRC', profile: 'crc8_j1850', id_malformed: true },
+		project.ProtectCfg{ message: 'Status', crc: 'CRC', profile: 'crc8_j1850', data_id_malformed: true },
+		project.ProtectCfg{ message: 'Status', counter: 'CRC', crc: 'CRC', profile: 'crc8_j1850' },
+		project.ProtectCfg{ message: 'Status', crc: 'CRC', profile: 'nonsense' },
+		project.ProtectCfg{ message: 'Muxed', counter: 'AliveCounter', profile: 'crc8_j1850' },
+	]
+	for c in cases {
+		assert validate_verify(db, [c]).len > 0, 'must be reported: ${c.message}/${c.profile}'
+		assert verifiers_for(db, [], [c]).by_key.len == 0,
+			'must NOT be built while reported: ${c.message}/${c.profile}'
+	}
+
+	// and a good entry is both silent and built
+	ok := project.ProtectCfg{ message: 'Status', counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }
+	assert validate_verify(db, [ok]).len == 0
+	assert verifiers_for(db, [], [ok]).by_key.len == 1
+}

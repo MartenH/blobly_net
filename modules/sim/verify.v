@@ -201,6 +201,9 @@ pub fn verifiers_for(db candb.Database, nodes []project.NodeCfg, verify []projec
 					continue // one id can exist in BOTH formats; the selector must say which
 				}
 			}
+			if !verify_usable(m, p) {
+				break // reported by validate_verify; building it anyway checks the wrong thing
+			}
 			k := vkey(m.id, m.ext)
 			if k in out.by_key {
 				break // first wins; a duplicate is reported by validate_verify
@@ -243,6 +246,41 @@ pub fn verifiers_for(db candb.Database, nodes []project.NodeCfg, verify []projec
 		}
 	}
 	return out
+}
+
+// verify_usable is the single definition of "this entry will actually check something".
+//
+// The builder and the validator both consult it, because they disagreed: validation reported a
+// malformed id as "ignored" while verifiers_for went ahead and built a verifier for the
+// repaired value — so the measurement logged a warning and then checked the wrong frame, which
+// is worse than either alone. One predicate, no drift.
+pub fn verify_usable(m candb.Message, p project.ProtectCfg) bool {
+	if p.id_malformed || p.data_id_malformed {
+		return false
+	}
+	if p.counter == '' && p.crc == '' {
+		return false
+	}
+	if p.counter != '' && p.counter == p.crc {
+		return false // one field cannot be both; see validate_verify for why
+	}
+	if p.crc != '' && p.profile !in ['crc8_j1850', 'crc8_autosar', 'sum8', 'xor8'] {
+		return false
+	}
+	mut have := map[string]candb.Signal{}
+	for sg in m.signals {
+		have[sg.name] = sg
+	}
+	for name in [p.counter, p.crc] {
+		if name == '' {
+			continue
+		}
+		sg := have[name] or { return false }
+		if sg.is_multiplexed {
+			return false // present only on some frames; the rest would go unchecked
+		}
+	}
+	return true
 }
 
 // validate_verify reports channel-level `verify:` entries that will check nothing.
@@ -303,6 +341,22 @@ pub fn validate_verify(db candb.Database, verify []project.ProtectCfg) []string 
 		mut have := map[string]bool{}
 		for sg in m.signals {
 			have[sg.name] = true
+		}
+		if p.data_id_malformed {
+			warns << 'verify: the data_id on "${p.message}" is not a valid number — entry ignored'
+		}
+		if p.counter != '' && p.counter == p.crc {
+			// check() validates that field as a checksum and then reads the SAME bits as an
+			// alive counter, so ordinary frames are reported stalled or skipped whenever their
+			// checksum does not happen to increment by one
+			warns << 'verify: counter and crc are both "${p.counter}" on ${p.message} — one field cannot be both'
+		}
+		for sg in m.signals {
+			if sg.is_multiplexed && (sg.name == p.counter || sg.name == p.crc) {
+				// active_signals excludes it on every frame selecting another branch, so those
+				// frames return a clean verdict without the configured check ever running
+				warns << 'verify: "${sg.name}" on ${p.message} is multiplexed — frames selecting another branch would go unchecked'
+			}
 		}
 		if p.counter != '' && p.counter !in have {
 			warns << 'verify: counter "${p.counter}" is not a signal of ${p.message}'

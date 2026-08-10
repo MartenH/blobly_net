@@ -355,9 +355,13 @@ ambiguous, since merged databases can carry one name several times:
 the second replaces the first, so half the checks would silently not run; that is reported, and
 the first entry wins so the result is at least deterministic.
 
-Entries that would check nothing are reported when the measurement starts — an unknown message,
-a signal the message does not have, an ambiguous name, or an entry naming neither field. A
-check that silently does nothing is worse than none, because it is trusted.
+Entries that would check nothing are reported when the measurement starts, and **not built** —
+the two decisions share one predicate, so a warning always means the entry really was skipped
+rather than applied to the wrong frame. Reported: an unknown message, a signal the message does
+not have, an ambiguous name, an entry naming neither field or the same signal for both, an
+unrecognised profile, a multiplexed counter or checksum (frames on other branches would go
+unchecked), and a malformed `id`/`data_id`. A check that silently does nothing is worse than
+none, because it is trusted.
 
 Violations appear beside the message name in the trace:
 
