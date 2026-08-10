@@ -318,6 +318,33 @@ Details worth knowing:
 - Leaving a `freeze_counter` steps the counter past the frozen value before the first recovered
   frame, so the receiver does not see one more stall *after* the fault is gone.
 
+### Checking the other side's protection
+
+Protection is verified on **received** frames too, using the same `protect:` entries — a project
+describes each protected message once and both directions follow it. A separate "check this on
+receive" declaration would let the two drift, and the drift would read as a fault in the ECU
+rather than in the configuration.
+
+Violations appear beside the message name in the trace:
+
+```
+ 1240.6  CAN1  RX  0x100  Powertrain  !CRC          11 22 33 ...
+ 1340.6  CAN1  RX  0x100  Powertrain  !CNT stalled  11 22 33 ...
+```
+
+| verdict | meaning |
+|---|---|
+| `!CRC` | the checksum does not match the payload as received |
+| `!CNT stalled` | the alive counter repeated — the sender is stuck |
+| `!CNT skipped` | the counter jumped — frames were lost, or the sender restarted |
+
+They are searchable, so typing `!crc` in the trace filter shows only the bad frames.
+
+The checksum is judged **first and alone**: a frame whose checksum is wrong says nothing
+reliable about its counter, since those bits are as likely to be corrupt as any others. A
+counter wrap is not a skip, and the first frame of a stream is never a violation — a tester
+attaching mid-stream must not see a fault it caused by arriving.
+
 ## Interactive senders
 
 Triggerable frames, for the "now do this" half of bench work:
