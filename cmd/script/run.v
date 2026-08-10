@@ -74,32 +74,35 @@ fn main() {
 		nodes := ch.all_nodes()
 		if nodes.len > 0 {
 			spawn sim_loop(ch.iface, db, nodes, ctl)
-			// grouped by interface, like the GUI: two channels on one bus must not each start
-			// their own set of servers, or overlapping ids compete on the same wire
-			mut peers := []project.NodeCfg{}
-			for other in proj.channels {
-				if other.iface == ch.iface {
-					peers << other.all_nodes()
-				}
-			}
-			for w in sim.validate_uds(peers) {
-				eprintln('${ch.name}: ${w}')
-			}
-			mut servers := if ch.iface in seeded_ifaces {
-				[]sim.UdsNode{}
+			// Diagnostics are per BUS and decided ONCE. Skipping outright after the first
+			// entry on an interface — rather than emptying the server list — is the difference
+			// that matters: the emptied list fell through to the default branch and spawned a
+			// SECOND 0x7E0 responder on a wire that already had one.
+			if ch.iface in seeded_ifaces {
+				println('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s)')
 			} else {
 				seeded_ifaces << ch.iface
-				sim.uds_nodes(peers)
-			}
-			if servers.len == 0 {
-				// nothing configured: the channel-wide default, exactly as before
-				spawn diag_server_loop(ch.iface, ctl)
-				println('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + UDS server')
-			} else {
-				for mut u in servers {
-					spawn uds_node_loop(ch.iface, u.rx, u.tx, u.ext, u.server, ctl)
+				// ENABLED channels only: a disabled entry sharing this interface must not
+				// contribute servers, or a test observes an ECU it explicitly switched off.
+				mut peers := []project.NodeCfg{}
+				for other in proj.channels {
+					if other.enabled && other.iface == ch.iface {
+						peers << other.all_nodes()
+					}
 				}
-				println('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + ${servers.len} UDS target(s)')
+				for w in sim.validate_uds(peers) {
+					eprintln('${ch.name}: ${w}')
+				}
+				mut servers := sim.uds_nodes(peers)
+				if servers.len == 0 {
+					spawn diag_server_loop(ch.iface, ctl)
+					println('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + UDS server')
+				} else {
+					for mut u in servers {
+						spawn uds_node_loop(ch.iface, u.rx, u.tx, u.ext, u.server, ctl)
+					}
+					println('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + ${servers.len} UDS target(s)')
+				}
 			}
 		} else {
 			println('channel ${ch.name} (${ch.iface}): monitor only')

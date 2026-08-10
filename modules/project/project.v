@@ -738,10 +738,14 @@ fn bad_ids(fields map[string]string) []string {
 }
 
 fn clamp_i64_u32(v i64) u32 {
-	if v < 0 {
-		return 0
+	if v < 0 || v > i64(0xFFFFFFFF) {
+		// Both directions saturate to a value the range checks REJECT. Clamping a negative to
+		// 0 made it valid: `session: -1` started session 0, and `status: -1` became status 0,
+		// which vanishes from every nonzero mask query — then saving wrote the repaired zero
+		// and the original mistake was gone.
+		return u32(0xFFFFFFFF)
 	}
-	return if v > i64(0xFFFFFFFF) { u32(0xFFFFFFFF) } else { u32(v) }
+	return u32(v)
 }
 
 // clamp_u32 narrows without WRAPPING: an over-wide value stays out of range so validation can

@@ -310,3 +310,31 @@ fn test_uds_addrs_matches_uds_nodes() {
 	assert a == ['A', 'B']
 	assert uds_addrs(nodes)[1].ext, 'the 29-bit pair must be marked extended'
 }
+
+// A negative byte field must stay INVALID, not be repaired into a working value: session -1
+// clamped to 0 started session 0, and status -1 became 0, which vanishes from every nonzero
+// status-mask query — and saving then wrote the repaired zero.
+fn test_negative_byte_fields_are_rejected_not_zeroed() {
+	y := 'project:
+  name: t
+channels:
+  - name: CAN1
+    interface: inproc:CAN1
+    simulation:
+      - name: Neg
+        uds:
+          rx: "0x7E0"
+          tx: "0x7E8"
+          session: -1
+          dtcs:
+            - { code: "0x123456", status: -1 }
+'
+	pr := project.parse(y) or { panic(err) }
+	nodes := pr.channels[0].nodes
+	cfg := nodes[0].uds or { panic('not parsed') }
+	assert cfg.session > 0xFF, 'a negative session must not become 0, got ${cfg.session}'
+	assert cfg.dtcs[0].status > 0xFF, 'a negative status must not become 0'
+	assert uds_nodes(nodes).len == 0, 'it must not start'
+	w := validate_uds(nodes)
+	assert w.any(it.contains('session')), '${w}'
+}
