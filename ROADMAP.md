@@ -72,17 +72,21 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   recorded as a known limitation in [`docs/doip.md`](docs/doip.md).
 - 🧭 **LIN** — `modules/lindb` (LDF) + a `LinFrame` type. Kept type-safe alongside `CanFrame` /
   `EthFrame` rather than faked behind a generic frame.
-- 🧭 **Split `cmd/blobly_net/main.v`** — it is **7,200 lines / 217 KB**, and essentially every
+- 🧭 **Split `cmd/blobly_net/main.v`** — it is **7,475 lines / 231 KB** (measured 2026-08-10; it only grows), and essentially every
   GUI change touches it. The cost is not aesthetic, it is measurable in four places: GitHub
   renders its diffs slowly enough to be painful on every PR; review findings arrive as line
   numbers into one enormous file; two GUI branches almost always collide there; and the editor
   and language server carry it on every keystroke. The split is per-panel (Trace, Graphics,
-  System, DBC editor, Diagnostics, Shell, Generators) plus the app state, which is roughly how
+  System, DBC editor, Diagnostics, Shell, Generators, and **Flash** — `draw_flash`, its worker
+  and their state, without which the core keeps importing `flash` and the module boundary below
+  cannot hold) plus the app state, which is roughly how
   the file is already organised internally — so the panel bodies are a mechanical move rather
   than a redesign. **Two things around them are not.**
   First, **the build entry point has to move with them.** Every build names the single file:
   `scripts/run_gui.sh` (lines 36 and 89-92) and `.github/workflows/windows.yml` (line 107) all
-  pass `cmd/blobly_net/main.v`. V compiling one file does not pull in its siblings, so the
+  pass `cmd/blobly_net/main.v` — and so does line 45, which *re-assigns* the target after a
+  `.blobnet` argument has been moved into `BLOBLY_PROJECT`, so fixing only the default leaves
+  `run_gui.sh project.blobnet` broken. V compiling one file does not pull in its siblings, so the
   moment a panel leaves `main.v` those builds fail on undefined symbols — locally, in CI and on
   the Windows bundle at once. Switch them to compile the directory, or make the panels imported
   modules; either way it lands in the same commit as the first move, with all three builds
@@ -112,7 +116,9 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   than asserted. The **visible** half of this already exists and is the baseline to build on,
   not remaining work: Trace Chart, Flash, Shell and System are already grouped under a
   `blobly_emb target` separator in both the View menu and the activity bar (`main.v` ~1477 and
-  ~1562). What is missing is everything behind it — the promotion and the import boundary.
+  ~1562). One *promotion* also already ships: `load_project` finds a `system.toml` beside the
+  project and sets `show_sys = sys_loaded` (`main.v` ~961), opening the System panel by itself.
+  So the remaining promotion work is the manifest and bootloader cases, not all three.
   **Discovery must not gate the entry points that create the thing being discovered.** Two in
   particular are circular: the System panel holds the *only* `system.toml` path input
   (`main.v` ~7187), so hiding it until a `system.toml` is found beside the project leaves no
