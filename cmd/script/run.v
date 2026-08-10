@@ -173,33 +173,10 @@ fn diag_server_loop(iface string, ctl &Ctl) {
 	ch.close()
 }
 
-// build_node / gen_of mirror src/main.v: turn a project NodeCfg into a sim.SimEcu.
+// build_node delegates to sim.from_project. This used to be a copy of the GUI's builder
+// ("mirror src/main.v"), which is how end-to-end protection reached the GUI and not this
+// runner — the one CI and runtests.sh use, so a protected project would have been scored
+// against unprotected traffic.
 fn build_node(db candb.Database, cfg project.NodeCfg) sim.SimEcu {
-	if cfg.signals.len == 0 && cfg.responses.len == 0 {
-		return sim.build_ecu(db, cfg.name)
-	}
-	mut gens := map[string]sim.Gen{}
-	for g in cfg.signals {
-		gens[g.signal] = gen_of(g)
-	}
-	mut rules := []sim.ResponseRule{}
-	for r in cfg.responses {
-		rules << sim.ResponseRule{
-			req_id:     r.request
-			resp_id:    r.response
-			byte_index: r.byte
-			add:        r.add
-		}
-	}
-	return sim.build_configured_ecu(db, cfg.name, gens, rules)
-}
-
-fn gen_of(g project.GenCfg) sim.Gen {
-	return match g.typ {
-		'sine' { sim.gen_sine(g.offset, g.amplitude, g.freq, g.phase) }
-		'sawtooth' { sim.gen_sawtooth(g.min, g.max, g.period) }
-		'counter' { sim.gen_counter(g.start, g.step, g.modulo) }
-		'stepmod' { sim.gen_stepmod(g.period, g.count, g.base) }
-		else { sim.gen_const(g.value) }
-	}
+	return sim.from_project(db, cfg)
 }

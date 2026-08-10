@@ -1,6 +1,7 @@
 module sim
 
 import candb
+import transport
 
 // The published check values for these algorithms: the CRC of the ASCII string '123456789'.
 // Pinned because a checksum that is merely self-consistent is worthless — it has to match what
@@ -155,4 +156,71 @@ fn test_scaled_signals_still_carry_raw_values() {
 	mut expect := []u8{len: 8}
 	expect[0] = 7
 	assert d[7] == crc8_j1850(expect), 'the checksum must be the raw value'
+}
+
+// A request-driven response (period 0) is never seen by due_frames, so its counter only
+// advances if on_frame does it. Without that the response repeats counter 0 forever and a
+// receiver checking the sequence rejects every one.
+fn test_responses_are_protected_and_advance() {
+	m := protected_msg()
+	mut resp_msg := m
+	resp_msg.id = 0x102
+	mut ecu := SimEcu{
+		name:     'N'
+		messages: [SimMessage{
+			msg:       resp_msg
+			period_ms: 0 // request-driven: due_frames will never touch it
+			e2e:       E2e{ counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }
+		}]
+		rules: [ResponseRule{ req_id: 0x101, resp_id: 0x102, byte_index: 0, add: 1 }]
+	}
+	mut e := Engine{ ecus: [ecu] }
+	req := transport.CanFrame{ id: 0x101, data: []u8{len: 8} }
+
+	a := e.on_frame(req)
+	b := e.on_frame(req)
+	assert a.len == 1 && b.len == 1
+	assert a[0].data[0] & 0x0F == 0, 'first response should carry counter 0'
+	assert b[0].data[0] & 0x0F == 1, 'the counter must advance on the response path'
+	assert a[0].data[7] != 0, 'the response must carry a checksum'
+	assert a[0].data[7] != b[0].data[7], 'and it must cover the counter'
+}
+
+// Rebuilding the engine (any ECU checkbox toggled) must not restart counters for ECUs the
+// user did not touch.
+fn test_counters_survive_a_rebuild() {
+	mk := fn () Engine {
+		return Engine{
+			ecus: [SimEcu{
+				name:     'BCM'
+				messages: [SimMessage{ msg: protected_msg(), period_ms: 10 }]
+			}]
+		}
+	}
+	mut old := mk()
+	old.ecus[0].messages[0].send_n = 42
+
+	mut fresh := mk()
+	assert fresh.ecus[0].messages[0].send_n == 0
+	fresh.adopt_counters(old)
+	assert fresh.ecus[0].messages[0].send_n == 42, 'the counter restarted on rebuild'
+
+	// a message that did not exist before starts at zero — it genuinely has not been sent
+	mut added := mk()
+	added.ecus[0].messages << SimMessage{ msg: candb.Message{ name: 'New', id: 0x999, dlc: 8 } }
+	added.adopt_counters(old)
+	assert added.ecus[0].messages[1].send_n == 0
+}
+
+// The whole data id must reach the checksum: appending only its low byte made ids that differ
+// above bit 8 produce identical frames, which is precisely what the field exists to prevent.
+fn test_full_data_id_reaches_the_checksum() {
+	m := protected_msg()
+	a := E2e{ crc: 'CRC', profile: 'crc8_j1850', data_id: 0x012A }
+	b := E2e{ crc: 'CRC', profile: 'crc8_j1850', data_id: 0x022A }
+	mut da := []u8{len: 8}
+	mut db_ := []u8{len: 8}
+	a.apply(m, mut da, 0)
+	b.apply(m, mut db_, 0)
+	assert da[7] != db_[7], 'ids differing above the low byte must not collide'
 }

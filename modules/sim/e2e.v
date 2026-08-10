@@ -69,7 +69,7 @@ pub mut:
 	counter string // signal carrying the alive counter ('' = no counter)
 	crc     string // signal carrying the checksum ('' = no checksum)
 	profile string // 'crc8_j1850' | 'crc8_autosar' | 'sum8' | 'xor8'
-	data_id u32    // mixed into the checksum as a trailing byte (E2E "Data ID"); 0 = omit
+	data_id u32    // mixed into the checksum as 4 trailing LE bytes ("Data ID"); 0 = omit
 }
 
 // active reports whether anything is protected — a zero E2e is the common case and must cost
@@ -99,7 +99,8 @@ fn (e E2e) checksum_of(data []u8) u8 {
 //  2. the checksum's own bits are zeroed before it is computed, so the result does not depend
 //     on whatever the previous cycle left there. This is the usual convention and, more
 //     importantly, it is the only one that is self-consistent: a checksum cannot cover itself.
-//  3. `data_id` is appended as a trailing byte of the CHECKSUM INPUT ONLY. It never occupies
+//  3. `data_id` is appended as four little-endian bytes of the CHECKSUM INPUT ONLY, so the
+//     whole configured value contributes and two ids cannot collide. It never occupies
 //     payload space — it exists so two messages with identical bytes produce different
 //     checksums, which is what stops a frame being replayed onto a different id.
 //
@@ -133,7 +134,15 @@ pub fn (e E2e) apply(msg candb.Message, mut data []u8, n int) {
 		sig.set_raw(mut data, 0) // zero it: a checksum cannot cover itself (see above)
 		mut input := data.clone()
 		if e.data_id != 0 {
+			// ALL FOUR bytes, little-endian. Appending only the low byte made 0x012A and
+			// 0x022A produce identical checksums — two messages the data id exists to keep
+			// apart. The full value is appended in a fixed order so the result is
+			// reproducible; see docs/restbus.md, and note this is blobly's own convention,
+			// not AUTOSAR E2E's 16-bit header layout.
 			input << u8(e.data_id & 0xFF)
+			input << u8((e.data_id >> 8) & 0xFF)
+			input << u8((e.data_id >> 16) & 0xFF)
+			input << u8((e.data_id >> 24) & 0xFF)
 		}
 		// raw again — the checksum byte must land in the field bit-for-bit
 		sig.set_raw(mut data, u64(e.checksum_of(input)))

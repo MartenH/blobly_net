@@ -55,7 +55,7 @@ simulation:
 | `counter` | signal carrying the alive counter — omit for none |
 | `crc` | signal carrying the checksum — omit for none |
 | `profile` | `crc8_j1850` (default), `crc8_autosar`, `sum8`, `xor8` |
-| `data_id` | mixed into the checksum only; never occupies payload |
+| `data_id` | mixed into the checksum only; never occupies payload — appended as **four little-endian bytes**, so ids differing above the low byte cannot collide |
 
 Both fields are named by **signal**, so width, bit position and byte order come from the DBC. A
 signal moved in the database moves here too, and nothing has to be restated.
@@ -66,7 +66,9 @@ signal moved in the database moves here too, and nothing has to be restated.
 2. The **counter** is written — `send_index mod 2^width`, so a 4-bit counter wraps at 16
    exactly where the receiver expects, with nothing to configure.
 3. The **checksum field is zeroed**, then computed over the whole payload.
-4. `data_id`, if set, is appended to the checksum **input** only.
+4. `data_id`, if set, is appended to the checksum **input** only, as four little-endian bytes.
+   This is blobly's own convention: AUTOSAR E2E uses a 16-bit Data ID with a profile-specific
+   placement, so a frame protected here will not byte-match an E2E P1 receiver.
 5. The result is encoded into the checksum signal.
 
 The order matters. The counter is written *before* the checksum is computed, so the counter is
@@ -97,6 +99,8 @@ wrong checksum.
 - **Full AUTOSAR E2E profiles** (P1/P2 header layouts, P4/P5/P6 with CRC-16/CRC-32 and their
   length/id fields). What is here is the frame-level mechanism — counter, checksum, coverage
   order — not the complete profile state machines.
+- **Protection on a request-driven response** is applied, and its counter advances on each
+  reply — but the counter is per message, so a response shares no sequence with cyclic frames.
 - **Receive-side validation.** Blobly Net protects what it *sends*; it does not yet verify the
   counter and checksum of frames it receives, so a fault in the ECU under test's own protection
   will not be flagged automatically.

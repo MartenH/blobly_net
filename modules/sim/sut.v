@@ -94,10 +94,8 @@ pub fn build_protected_ecu(db candb.Database, node string, gens map[string]Gen, 
 				}
 			}
 		}
-		if e := prot[m.msg.name] {
-			ecu.messages[i].e2e = e
-		}
 	}
 	ecu.rules = rules
+	attach_protection(mut ecu, prot)
 	return ecu
 }

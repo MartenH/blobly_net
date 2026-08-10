@@ -136,6 +136,33 @@ pub mut:
 	ecus []SimEcu
 }
 
+// adopt_counters carries send counts over from a previous engine, matched by ECU and message
+// name.
+//
+// Toggling ONE ECU's checkbox rebuilds the whole engine. Without this, every other protected
+// message restarts its alive counter at zero at that moment, and a receiver that is checking
+// the sequence rejects the next frame from an ECU the user did not touch — a fault injected
+// by the act of looking at the panel. Messages that are new in this engine keep their fresh
+// zero, which is correct: they have genuinely not been sent yet.
+pub fn (mut e Engine) adopt_counters(prev Engine) {
+	for i := 0; i < e.ecus.len; i++ {
+		for p in prev.ecus {
+			if p.name != e.ecus[i].name {
+				continue
+			}
+			for j := 0; j < e.ecus[i].messages.len; j++ {
+				for pm in p.messages {
+					if pm.msg.name == e.ecus[i].messages[j].msg.name {
+						e.ecus[i].messages[j].send_n = pm.send_n
+						break
+					}
+				}
+			}
+			break
+		}
+	}
+}
+
 // due_frames advances every cyclic message whose period has elapsed by now_ms and
 // returns the frames to transmit (also bumping send counters / next-due times).
 pub fn (mut e Engine) due_frames(now_ms f64) []transport.CanFrame {
@@ -180,20 +207,37 @@ pub fn (mut e Engine) run_for(mut bus transport.Bus, duration_ms int) {
 }
 
 // on_frame returns the response frames triggered by a received frame.
-pub fn (e &Engine) on_frame(f transport.CanFrame) []transport.CanFrame {
+//
+// Takes `mut` because a protected response has to advance its own counter: a request-driven
+// message has period 0, so due_frames never touches it and its send count would otherwise
+// stay at zero forever — a receiver checking the counter would reject every single response.
+pub fn (mut e Engine) on_frame(f transport.CanFrame) []transport.CanFrame {
 	mut out := []transport.CanFrame{}
-	for ecu in e.ecus {
-		for r in ecu.rules {
-			if f.id == r.req_id {
-				mut data := f.data.clone()
-				if r.byte_index < data.len {
-					data[r.byte_index] = data[r.byte_index] + r.add
+	for i := 0; i < e.ecus.len; i++ {
+		for r in e.ecus[i].rules {
+			if f.id != r.req_id {
+				continue
+			}
+			mut data := f.data.clone()
+			if r.byte_index < data.len {
+				data[r.byte_index] = data[r.byte_index] + r.add
+			}
+			// The response is built here rather than through build(), because its payload
+			// comes from the REQUEST, not from generators. Protection still has to be
+			// applied, and it lives on the SimMessage that carries this id.
+			for j := 0; j < e.ecus[i].messages.len; j++ {
+				mut m := &e.ecus[i].messages[j]
+				if m.msg.id != r.resp_id || !m.e2e.active() {
+					continue
 				}
-				out << transport.CanFrame{
-					id:       r.resp_id
-					extended: r.resp_ext
-					data:     data
-				}
+				m.e2e.apply(m.msg, mut data, m.send_n)
+				m.send_n++
+				break
+			}
+			out << transport.CanFrame{
+				id:       r.resp_id
+				extended: r.resp_ext
+				data:     data
 			}
 		}
 	}

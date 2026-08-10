@@ -698,46 +698,11 @@ fn merge_dbs(paths []string) candb.Database {
 	}
 }
 
-fn gen_of(g project.GenCfg) sim.Gen {
-	return match g.typ {
-		'sine' { sim.gen_sine(g.offset, g.amplitude, g.freq, g.phase) }
-		'sawtooth' { sim.gen_sawtooth(g.min, g.max, g.period) }
-		'counter' { sim.gen_counter(g.start, g.step, g.modulo) }
-		'stepmod' { sim.gen_stepmod(g.period, g.count, g.base) }
-		else { sim.gen_const(g.value) }
-	}
-}
-
+// build_node delegates to sim.from_project — the single implementation. This file, cmd/script
+// and cmd/sim_startup_check each carried a byte-identical copy, so a change here (like adding
+// end-to-end protection) reached the GUI and silently skipped the headless runner CI uses.
 fn build_node(db candb.Database, cfg project.NodeCfg) sim.SimEcu {
-	// `protect` counts as configuration. Without it in this test a node that declares ONLY
-	// end-to-end protection takes the shorthand path and silently transmits unprotected —
-	// the one failure mode that looks exactly like working, until the ECU rejects every frame.
-	if cfg.signals.len == 0 && cfg.responses.len == 0 && cfg.protect.len == 0 {
-		return sim.build_ecu(db, cfg.name)
-	}
-	mut gens := map[string]sim.Gen{}
-	for g in cfg.signals {
-		gens[g.signal] = gen_of(g)
-	}
-	mut rules := []sim.ResponseRule{}
-	for r in cfg.responses {
-		rules << sim.ResponseRule{
-			req_id:     r.request
-			resp_id:    r.response
-			byte_index: r.byte
-			add:        r.add
-		}
-	}
-	mut prot := map[string]sim.E2e{}
-	for p in cfg.protect {
-		prot[p.message] = sim.E2e{
-			counter: p.counter
-			crc:     p.crc
-			profile: p.profile
-			data_id: p.data_id
-		}
-	}
-	return sim.build_protected_ecu(db, cfg.name, gens, rules, prot)
+	return sim.from_project(db, cfg)
 }
 
 // sim_loop runs a channel's simulated ECUs on its bus: emit cyclic frames + answer
@@ -762,12 +727,18 @@ fn sim_loop(app &App, sc SimCfg) {
 				enabled[k] = v
 			}
 			a.mu.unlock()
+			prev := engine
 			engine = sim.Engine{}
 			for n in sc.nodes {
 				if enabled['${sc.iface}:${n.name}'] or { true } {
 					engine.ecus << build_node(sc.db, n)
 				}
 			}
+			// Carry the alive counters across. Toggling ONE ECU rebuilds the whole engine, and
+			// without this every other protected message restarts its counter at zero — so
+			// ticking an unrelated box makes a receiver reject the next frame from an ECU the
+			// user never touched. Messages new to this engine keep their zero, correctly.
+			engine.adopt_counters(prev)
 		}
 		now_ms := f64(time.ticks() - t0)
 		for f in engine.due_frames(now_ms) {
@@ -1714,7 +1685,9 @@ fn draw_sim(mut app App) {
 			// Protection is worth its own word in the header. It is invisible on the wire until
 			// the ECU rejects a frame, so "is this node protected?" must be answerable without
 			// opening the project file.
-			prot := if node.protect.len > 0 { '  ⛨${node.protect.len}' } else { '' }
+			// ASCII only: fonts are loaded without expanded glyph ranges, and the fallback
+			// ProggyClean is ASCII-only, so a shield or an arrow renders as a missing-glyph box.
+			prot := if node.protect.len > 0 { '  [P${node.protect.len}]' } else { '' }
 			hdr := if node.signals.len == 0 && node.responses.len == 0 && node.protect.len == 0 {
 				'${node.name}  (frames derived from the DBC)###${key}'
 			} else {
@@ -1733,12 +1706,12 @@ fn draw_sim(mut app App) {
 						what << 'counter ${pr.counter}'
 					}
 					if pr.crc != '' {
-						what << '${pr.profile} → ${pr.crc}'
+						what << '${pr.profile} -> ${pr.crc}'
 					}
 					if pr.data_id != 0 {
 						what << 'id 0x${pr.data_id:02X}'
 					}
-					vgui.text('    ⛨ ${pr.message}: ${what.join(', ')}')
+					vgui.text('    [P] ${pr.message}: ${what.join(', ')}')
 				}
 				vgui.tree_pop()
 			}
