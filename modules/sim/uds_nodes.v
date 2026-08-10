@@ -30,7 +30,7 @@ pub fn uds_nodes(nodes []project.NodeCfg) []UdsNode {
 	// Two passes. `claimed` may only ever hold ids belonging to servers that are actually
 	// going to START: reserving them from a config that is itself rejected poisoned the id for
 	// a valid node, which was then skipped too and the channel default started in its place.
-	mut claimed := map[u32]bool{}
+	mut claimed := map[u64]bool{}
 	for n in nodes {
 		cfg := n.uds or { continue }
 		if !structurally_ok(cfg) {
@@ -54,6 +54,9 @@ pub fn uds_nodes(nodes []project.NodeCfg) []UdsNode {
 			if t.code > 0xFFFFFF || t.status > 0xFF {
 				continue // reported by validate_uds
 			}
+			if srv.dtcs.len >= max_dtcs {
+				break // reported by validate_uds; a longer table cannot be transmitted at all
+			}
 			srv.dtcs << uds.Dtc{
 				code:   t.code
 				status: u8(t.status)
@@ -61,8 +64,8 @@ pub fn uds_nodes(nodes []project.NodeCfg) []UdsNode {
 		}
 		out << UdsNode{
 			name: n.name
-			rx:   cfg.rx
-			tx:   cfg.tx
+			rx:   u32(cfg.rx)
+			tx:   u32(cfg.tx)
 			// 29-bit addressing is inferred, because an id above 0x7FF cannot be anything
 			// else. Opened as standard, SocketCAN masks it to 11 bits and 0x18DAF110 goes out
 			// as 0x110 — a different, probably occupied, address.
@@ -72,6 +75,11 @@ pub fn uds_nodes(nodes []project.NodeCfg) []UdsNode {
 	}
 	return out
 }
+
+// max_dtcs is how many faults a 0x19 sub 0x02 response can carry: the header is 3 bytes and
+// each record 4, against ISO-TP's 4095-byte maximum. Past it `send` refuses the transfer and
+// the error is discarded, so the tester sees only a timeout.
+pub const max_dtcs = (4095 - 3) / 4
 
 // max_did_bytes is the largest DID value that fits one ISO-TP transfer: 4095 bytes minus the
 // three-byte positive-response header (0x62 + the two identifier bytes).
@@ -100,9 +108,9 @@ fn structurally_ok(cfg project.UdsCfg) bool {
 // validate_uds reports diagnostic configurations that cannot work as written.
 pub fn validate_uds(nodes []project.NodeCfg) []string {
 	mut warns := []string{}
-	mut by_rx := map[u32]string{}
-	mut by_tx := map[u32]string{}
-	mut by_tx_dup := map[u32]string{}
+	mut by_rx := map[u64]string{}
+	mut by_tx := map[u64]string{}
+	mut by_tx_dup := map[u64]string{}
 	for n in nodes {
 		if c := n.uds {
 			if c.tx != 0 {
@@ -151,6 +159,15 @@ pub fn validate_uds(nodes []project.NodeCfg) []string {
 				// a different, possibly real, fault code
 				warns << 'uds on "${n.name}": DTC 0x${t.code:X} is above the 24-bit range — ignored'
 			}
+		}
+		mut usable_dtcs := 0
+		for t in cfg.dtcs {
+			if t.code <= 0xFFFFFF && t.status <= 0xFF {
+				usable_dtcs++
+			}
+		}
+		if usable_dtcs > max_dtcs {
+			warns << 'uds on "${n.name}": ${usable_dtcs} DTCs exceed what one 0x19 response can carry (max ${max_dtcs}) — the extra are ignored'
 		}
 		if owner := by_tx[cfg.rx] {
 			if owner != n.name { // rx == its OWN tx is the separate, already-reported case

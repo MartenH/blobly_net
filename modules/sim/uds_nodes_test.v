@@ -222,3 +222,39 @@ fn test_oversized_did_and_bad_dtc_status_are_rejected() {
 	assert w.any(it.contains('over the 4092-byte'))
 	assert w.any(it.contains('status 265 is not a byte'))
 }
+
+// An address wider than 32 bits used to WRAP during parsing, so 0x1000007E0 arrived as a
+// perfectly ordinary 0x7E0 and the range check never saw a problem.
+fn test_over_wide_address_is_not_wrapped_into_a_valid_one() {
+	y := 'project:
+  name: t
+channels:
+  - name: CAN1
+    interface: inproc:CAN1
+    simulation:
+      - name: Bad
+        uds: { rx: "0x1000007E0", tx: "0x1000007E8" }
+'
+	pr := project.parse(y) or { panic(err) }
+	nodes := pr.channels[0].nodes
+	cfg := nodes[0].uds or { panic('not parsed') }
+	assert cfg.rx > 0x1FFFFFFF, 'the value must survive parsing, got 0x${cfg.rx:X}'
+	assert uds_nodes(nodes).len == 0, 'it must not start on a wrapped address'
+	assert validate_uds(nodes).any(it.contains('exceeds the 29-bit'))
+}
+
+// 0x19 sub 0x02 carries 3 header bytes + 4 per fault against ISO-TP's 4095, so a long table
+// cannot be transmitted at all — and the send error is discarded.
+fn test_oversized_dtc_table_is_capped_and_reported() {
+	mut many := []project.DtcCfg{}
+	for i in 0 .. max_dtcs + 5 {
+		many << project.DtcCfg{ code: u32(0x100000 + i), status: 9 }
+	}
+	cfg := project.NodeCfg{
+		name: 'X'
+		uds:  project.UdsCfg{ rx: 0x7E0, tx: 0x7E8, dtcs: many }
+	}
+	built := uds_nodes([cfg])
+	assert built[0].server.dtcs.len == max_dtcs, 'got ${built[0].server.dtcs.len}'
+	assert validate_uds([cfg]).any(it.contains('exceed what one 0x19 response can carry'))
+}

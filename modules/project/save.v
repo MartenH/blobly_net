@@ -115,7 +115,11 @@ pub fn (p Project) to_yaml() string {
 								hex := d.bytes.map('${it:02X}').join(' ')
 								b.writeln('            - { id: "0x${d.id:X}", bytes: "${hex}" }')
 							} else {
-								b.writeln('            - { id: "0x${d.id:X}", text: ${yaml_scalar(d.text)} }')
+								// ALWAYS quoted: yaml_scalar's rules are for block scalars and
+								// only inspect the first character, so "ACME,INC" came out bare
+								// inside { } and the comma started another flow entry — the
+								// project then failed to reopen, or reopened truncated.
+								b.writeln('            - { id: "0x${d.id:X}", text: ${yaml_flow_scalar(d.text)} }')
 							}
 						}
 					}
@@ -236,6 +240,12 @@ fn gen_inline(g GenCfg) string {
 // be misparsed — empty, a leading indicator char (so a bracketed IPv6 address `[::1]:13400`
 // stays a scalar and isn't read as flow syntax), an embedded `: ` / ` #`, a newline, or a
 // trailing space. Plain values (can0, PCAN_USBBUS1, 127.0.0.1:13400, paths) pass through bare.
+// yaml_flow_scalar quotes unconditionally, for values written inside a `{ ... }` flow mapping
+// where a bare comma, brace or bracket would be read as structure rather than text.
+fn yaml_flow_scalar(s string) string {
+	return '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
+}
+
 fn yaml_scalar(s string) string {
 	if s == '' {
 		return '""'

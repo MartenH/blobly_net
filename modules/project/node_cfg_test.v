@@ -147,3 +147,29 @@ channels:
 	assert v.dtcs.len == 2 && v.dtcs[0].code == 0x900101
 	assert again.channels[0].nodes[1].uds == none
 }
+
+// A DID value containing a flow-mapping delimiter must survive save → load. Written bare
+// inside `{ ... }`, "ACME,INC" starts another flow entry: the project then fails to reopen, or
+// reopens with the value truncated.
+fn test_did_text_with_a_comma_round_trips() {
+	y := 'project:
+  name: t
+channels:
+  - name: CAN1
+    interface: inproc:CAN1
+    simulation:
+      - name: BCM
+        uds:
+          rx: "0x7E1"
+          tx: "0x7E9"
+          dids:
+            - { id: "0xF190", text: "ACME,INC" }
+'
+	p := parse(y) or { panic(err) }
+	u := p.channels[0].nodes[0].uds or { panic('not parsed') }
+	assert u.dids[0].text == 'ACME,INC'
+
+	again := parse(p.to_yaml()) or { panic('saved file cannot be reopened: ${err}') }
+	v := again.channels[0].nodes[0].uds or { panic('uds lost on save') }
+	assert v.dids[0].text == 'ACME,INC', 'got "${v.dids[0].text}"'
+}

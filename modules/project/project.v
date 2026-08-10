@@ -96,8 +96,10 @@ pub mut:
 // requests, `tx` is where it answers.
 pub struct UdsCfg {
 pub mut:
-	rx      u32 // request id  (tester -> ECU)
-	tx      u32 // response id (ECU -> tester)
+	// u64 for the same reason DidCfg.id is u32: the value must survive parsing intact so the
+	// range check can see it. Narrowed to a CAN id only once it is known to fit.
+	rx      u64 // request id  (tester -> ECU)
+	tx      u64 // response id (ECU -> tester)
 	dids    []DidCfg
 	dtcs    []DtcCfg
 	session u8 = 1
@@ -529,14 +531,14 @@ fn parse_node(n yaml.Any) NodeCfg {
 	}
 	if u := n.value_opt('uds') {
 		mut ucfg := UdsCfg{
-			rx:      u32(parse_id(u.value('rx').str()))
-			tx:      u32(parse_id(u.value('tx').str()))
+			rx:      parse_id_wide(u.value('rx').str())
+			tx:      parse_id_wide(u.value('tx').str())
 			session: u8(u.value('session').default_to(i64(1)).int())
 		}
 		if ds := u.value_opt('dids') {
 			for d in ds.array() {
 				mut dc := DidCfg{
-					id:   parse_id(d.value('id').str())
+					id:   clamp_u32(parse_id_wide(d.value('id').str()))
 					text: d.value('text').default_to('').string()
 				}
 				if bv := d.value_opt('bytes') {
@@ -548,7 +550,7 @@ fn parse_node(n yaml.Any) NodeCfg {
 		if ts := u.value_opt('dtcs') {
 			for t in ts.array() {
 				ucfg.dtcs << DtcCfg{
-					code:   parse_id(t.value('code').str())
+					code:   clamp_u32(parse_id_wide(t.value('code').str()))
 					status: u32(t.value('status').default_to(i64(0x09)).int())
 				}
 			}
@@ -701,6 +703,39 @@ fn parse_eid(s string) ![]u8 {
 }
 
 // parse_id reads a CAN id written as decimal or `0x`-prefixed hex.
+// parse_id_wide accumulates in u64 so an over-long identifier is still VISIBLE to validation.
+// parse_id itself wraps at 32 bits, which made 0x1000007E0 arrive as a perfectly ordinary
+// 0x7E0: the range check passed and the server started on an address nobody configured.
+// clamp_u32 narrows without WRAPPING: an over-wide value stays out of range so validation can
+// still see and reject it, instead of becoming a different valid identifier.
+fn clamp_u32(v u64) u32 {
+	return if v > u64(0xFFFFFFFF) { u32(0xFFFFFFFF) } else { u32(v) }
+}
+
+pub fn parse_id_wide(s string) u64 {
+	t := s.trim_space().trim('"')
+	if t.starts_with('0x') || t.starts_with('0X') {
+		mut v := u64(0)
+		for ch in t[2..] {
+			d := if ch >= `0` && ch <= `9` {
+				int(ch - `0`)
+			} else if ch >= `a` && ch <= `f` {
+				int(ch - `a`) + 10
+			} else if ch >= `A` && ch <= `F` {
+				int(ch - `A`) + 10
+			} else {
+				continue
+			}
+			if v > (u64(0xFFFFFFFFFFFFFFFF) - u64(d)) / 16 {
+				return u64(0xFFFFFFFFFFFFFFFF) // saturate rather than wrap: still out of range
+			}
+			v = v * 16 + u64(d)
+		}
+		return v
+	}
+	return t.u64()
+}
+
 fn parse_id(s string) u32 {
 	t := s.trim_space().trim('"')
 	if t.starts_with('0x') || t.starts_with('0X') {
