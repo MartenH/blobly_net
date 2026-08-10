@@ -50,6 +50,10 @@ struct TraceRow {
 	rtr  bool
 	name string
 	data []u8
+	// End-to-end violation on a RECEIVED frame ('' = none, or not a protected message).
+	// Carried on the row rather than computed at draw time because it depends on the PREVIOUS
+	// frame's counter — a verdict the trace cannot reconstruct once the frames are just rows.
+	e2e string
 }
 
 struct TRec {
@@ -602,7 +606,7 @@ fn (mut app App) tx_on(iface string, f transport.CanFrame) bool {
 	tms := f64(time.ticks() - app.t0)
 	app.mu.lock()
 	if !app.paused {
-		app.trace << TraceRow{tms, chn, 'TX', f.id, f.extended, f.rtr, name, f.data.clone()}
+		app.trace << TraceRow{tms, chn, 'TX', f.id, f.extended, f.rtr, name, f.data.clone(), ''}
 		if app.trace.len > trace_cap {
 			app.trace = app.trace[app.trace.len - trace_cap..].clone()
 		}
@@ -676,7 +680,7 @@ fn (mut app App) load_recording(path string) {
 	for e in entries {
 		f := e.frame
 		name := app.lookup_name(f.id, f.extended)
-		app.trace << TraceRow{(e.t_s - t0) * 1000.0, e.iface, 'RX', f.id, f.extended, f.rtr, name, f.data.clone()}
+		app.trace << TraceRow{(e.t_s - t0) * 1000.0, e.iface, 'RX', f.id, f.extended, f.rtr, name, f.data.clone(), ''}
 		if app.trace.len > trace_cap {
 			app.trace = app.trace[app.trace.len - trace_cap..].clone()
 		}
@@ -901,6 +905,16 @@ fn rx_loop(app &App, ci int, iface string) {
 		a.mu.unlock()
 	}
 	chname := a.chans[ci].name
+	// Built from the SAME `protect:` entries the simulation stamps with, so a project describes
+	// each protected message once and both directions follow it. A separate "check this on
+	// receive" declaration would let the two drift, and the drift would read as an ECU fault.
+	mut verifiers := sim.VerifySet{}
+	for sc in a.sims {
+		if sc.iface == iface {
+			verifiers = sim.verifiers_for(sc.db, sc.nodes)
+			break
+		}
+	}
 	// the TraceRsp id is config-static (the manifest is only mutated while stopped, so it can't
 	// change under a running RX loop) — resolve it once, not per frame in the hot path.
 	rsp_id := a.manifest.frames.or_defaults().rsp
@@ -917,9 +931,18 @@ fn rx_loop(app &App, ci int, iface string) {
 		f := bus.recv(200) or { continue }
 		t_ms := f64(time.ticks() - a.t0)
 		name := a.lookup_name(f.id, f.extended)
+		// Verify protection on the way in. Done here, on the RX thread that already owns the
+		// frame, because the check is stateful — it needs the previous counter for this id —
+		// and a stateful check spread across draw calls would depend on what the user scrolled.
+		mut viol := ''
+		if mut ver := verifiers.by_id[f.id] {
+			v := ver.check(f.data)
+			verifiers.by_id[f.id] = ver
+			viol = v.str()
+		}
 		a.mu.lock()
 		if !a.paused {
-			a.trace << TraceRow{t_ms, chname, 'RX', f.id, f.extended, f.rtr, name, f.data.clone()}
+			a.trace << TraceRow{t_ms, chname, 'RX', f.id, f.extended, f.rtr, name, f.data.clone(), viol}
 			if a.trace.len > trace_cap {
 				a.trace = a.trace[a.trace.len - trace_cap..].clone()
 			}
@@ -3722,7 +3745,9 @@ fn trace_pass(r TraceRow, filt string) bool {
 	if filt == '' {
 		return true
 	}
-	hay := '${idstr(r.id, r.ext)} ${r.name} ${r.ch} ${r.dir} ${hex(r.data)}'.to_lower()
+	// the violation is searchable, so "!crc" in the filter box shows only bad frames — the
+	// gesture someone reaches for the moment they suspect one
+	hay := '${idstr(r.id, r.ext)} ${r.name} ${r.ch} ${r.dir} ${hex(r.data)} ${r.e2e}'.to_lower()
 	return hay.contains(filt)
 }
 
@@ -3750,7 +3775,9 @@ fn draw_trace_all(id string, rows []TraceRow, filt string) {
 			vgui.table_cell(r.ch)
 			vgui.table_cell(r.dir)
 			vgui.table_cell(idstr(r.id, r.ext))
-			vgui.table_cell(r.name)
+			// A violation is appended to the NAME rather than given a column: it is rare, and
+			// a permanently-empty column costs width on every row for the frames that are fine.
+			vgui.table_cell(if r.e2e == '' { r.name } else { '${r.name}  ${r.e2e}' })
 			vgui.table_cell(if r.rtr { 'RTR' } else { hex(r.data) })
 		}
 		vgui.table_end()
