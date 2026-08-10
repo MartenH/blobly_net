@@ -85,6 +85,7 @@ pub mut:
 	msg       candb.Message
 	period_ms int
 	signals   []SimSignal
+	e2e       E2e // alive counter + checksum, stamped after the generators (see e2e.v)
 	send_n    int // times sent so far (drives counters)
 	next_ms   f64 // next due time
 }
@@ -100,6 +101,9 @@ pub fn (mut m SimMessage) build(t f64) transport.CanFrame {
 			}
 		}
 	}
+	// End-to-end protection goes LAST, over the finished payload — the counter and checksum
+	// have to reflect what is actually on the wire, including every generator's contribution.
+	m.e2e.apply(m.msg, mut data, m.send_n)
 	return transport.CanFrame{
 		id:       m.msg.id
 		extended: m.msg.ext
@@ -130,6 +134,38 @@ pub mut:
 pub struct Engine {
 pub mut:
 	ecus []SimEcu
+}
+
+// save_counters / restore_counters carry alive counters across an engine rebuild, through a
+// cache the caller owns and keeps for the whole run.
+//
+// Toggling ONE ECU's checkbox rebuilds the WHOLE engine. Without this, every other protected
+// message restarts its counter at zero at that moment, and a receiver checking the sequence
+// rejects the next frame from an ECU nobody touched — a fault injected by using the panel.
+//
+// The cache has to outlive the engine, not just the previous one: disabling an ECU removes it
+// from the engine entirely, so carrying state from `prev` alone lost it, and re-enabling
+// restarted the counter at zero — a BACKWARD jump, which is exactly what a sequence check is
+// looking for. A node switched off and on again resumes where it stopped.
+//
+// Keyed by ECU and message NAME, so it survives index shifts. A message with no cached entry
+// keeps its zero, which is correct: it has genuinely not been sent.
+pub fn (e Engine) save_counters(mut into map[string]int) {
+	for ecu in e.ecus {
+		for m in ecu.messages {
+			into['${ecu.name}|${m.msg.name}'] = m.send_n
+		}
+	}
+}
+
+pub fn (mut e Engine) restore_counters(from map[string]int) {
+	for i := 0; i < e.ecus.len; i++ {
+		for j := 0; j < e.ecus[i].messages.len; j++ {
+			if n := from['${e.ecus[i].name}|${e.ecus[i].messages[j].msg.name}'] {
+				e.ecus[i].messages[j].send_n = n
+			}
+		}
+	}
 }
 
 // due_frames advances every cyclic message whose period has elapsed by now_ms and
@@ -176,20 +212,54 @@ pub fn (mut e Engine) run_for(mut bus transport.Bus, duration_ms int) {
 }
 
 // on_frame returns the response frames triggered by a received frame.
-pub fn (e &Engine) on_frame(f transport.CanFrame) []transport.CanFrame {
+//
+// Takes `mut` because a protected response has to advance its own counter: a request-driven
+// message has period 0, so due_frames never touches it and its send count would otherwise
+// stay at zero forever — a receiver checking the counter would reject every single response.
+pub fn (mut e Engine) on_frame(f transport.CanFrame) []transport.CanFrame {
 	mut out := []transport.CanFrame{}
-	for ecu in e.ecus {
-		for r in ecu.rules {
-			if f.id == r.req_id {
-				mut data := f.data.clone()
-				if r.byte_index < data.len {
-					data[r.byte_index] = data[r.byte_index] + r.add
+	for i := 0; i < e.ecus.len; i++ {
+		for r in e.ecus[i].rules {
+			if f.id != r.req_id {
+				continue
+			}
+			mut data := f.data.clone()
+			if r.byte_index < data.len {
+				data[r.byte_index] = data[r.byte_index] + r.add
+			}
+			// The response is built here rather than through build(), because its payload
+			// comes from the REQUEST, not from generators. Protection still has to be
+			// applied, and it lives on the SimMessage that carries this id.
+			for j := 0; j < e.ecus[i].messages.len; j++ {
+				mut m := &e.ecus[i].messages[j]
+				// `ext` as well as the numeric id: a standard and an extended message may share
+				// a number, and matching on the id alone could take the other one's DLC,
+				// protection layout and counter while the frame goes out in this one's format.
+				if m.msg.id != r.resp_id || m.msg.ext != r.resp_ext || !m.e2e.active() {
+					continue
 				}
-				out << transport.CanFrame{
-					id:       r.resp_id
-					extended: r.resp_ext
-					data:     data
+				// Size the payload to the RESPONSE message's DLC first. `data` is the REQUEST
+				// cloned, and the two need not be the same length: a shorter request leaves the
+				// buffer too small, so set_raw silently skips every counter/CRC bit past its
+				// end — the frame goes out unprotected while send_n advances, which is the
+				// worst of both. A longer one makes the checksum cover bytes the receiver never
+				// sees. Only the protected path resizes; an unprotected rule stays the plain
+				// echo of the request that it is documented to be.
+				mut buf := []u8{len: m.msg.dlc}
+				for k in 0 .. buf.len {
+					if k < data.len {
+						buf[k] = data[k]
+					}
 				}
+				m.e2e.apply(m.msg, mut buf, m.send_n)
+				m.send_n++
+				data = buf.clone()
+				break
+			}
+			out << transport.CanFrame{
+				id:       r.resp_id
+				extended: r.resp_ext
+				data:     data
 			}
 		}
 	}

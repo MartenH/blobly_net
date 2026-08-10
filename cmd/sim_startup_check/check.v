@@ -40,32 +40,13 @@ fn main() {
 	println('OK total frames in first 200ms across all buses: ${total_msgs}')
 }
 
+// build_node delegates to sim.from_project — the single implementation shared with the GUI
+// and the headless runner, so a startup check cannot pass on frames the real runs never send.
 fn build_node(db candb.Database, cfg project.NodeCfg) sim.SimEcu {
-	if cfg.signals.len == 0 && cfg.responses.len == 0 {
-		return sim.build_ecu(db, cfg.name)
+	// A protect: entry naming a message or signal that is not there applies nothing, and the
+	// run would otherwise score a protected project against unprotected traffic without a word.
+	for w in sim.validate_protection(db, cfg) {
+		eprintln('${cfg.name}: ${w}')
 	}
-	mut gens := map[string]sim.Gen{}
-	for g in cfg.signals {
-		gens[g.signal] = gen_of(g)
-	}
-	mut rules := []sim.ResponseRule{}
-	for r in cfg.responses {
-		rules << sim.ResponseRule{
-			req_id:     r.request
-			resp_id:    r.response
-			byte_index: r.byte
-			add:        r.add
-		}
-	}
-	return sim.build_configured_ecu(db, cfg.name, gens, rules)
-}
-
-fn gen_of(g project.GenCfg) sim.Gen {
-	return match g.typ {
-		'sine' { sim.gen_sine(g.offset, g.amplitude, g.freq, g.phase) }
-		'sawtooth' { sim.gen_sawtooth(g.min, g.max, g.period) }
-		'counter' { sim.gen_counter(g.start, g.step, g.modulo) }
-		'stepmod' { sim.gen_stepmod(g.period, g.count, g.base) }
-		else { sim.gen_const(g.value) }
-	}
+	return sim.from_project(db, cfg)
 }

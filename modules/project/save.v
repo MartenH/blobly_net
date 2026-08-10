@@ -98,6 +98,27 @@ pub fn (p Project) to_yaml() string {
 						b.writeln('          - { request: "0x${r.request:X}", response: "0x${r.response:X}", byte: ${r.byte}, add: ${r.add} }')
 					}
 				}
+				// Protection MUST be written back. A field the parser reads and the writer drops
+				// is worse than one that was never supported: the project loads protected, saves
+				// unprotected, and the next run transmits frames the ECU rejects — with the
+				// config that would explain it already gone from the file.
+				if node.protect.len > 0 {
+					b.writeln('        protect:')
+					for pr in node.protect {
+						mut parts := ['message: ${yaml_scalar(pr.message)}']
+						if pr.counter != '' {
+							parts << 'counter: ${yaml_scalar(pr.counter)}'
+						}
+						if pr.crc != '' {
+							parts << 'crc: ${yaml_scalar(pr.crc)}'
+							parts << 'profile: ${yaml_scalar(pr.profile)}'
+						}
+						if id := pr.data_id {
+							parts << 'data_id: ${id}' // written even when 0 — it is a real id
+						}
+						b.writeln('          - { ${parts.join(', ')} }')
+					}
+				}
 			}
 		}
 		if ch.senders.len > 0 {

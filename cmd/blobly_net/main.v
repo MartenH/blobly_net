@@ -683,49 +683,17 @@ fn parse_hex_bytes(s string) []u8 {
 }
 
 // merge_dbs loads + concatenates a channel's DBCs into one Database (for the sim engine).
+// merge_dbs delegates to candb.merge_files — the single implementation shared with the
+// headless runner, which used to dedupe differently and so simulated a different catalogue.
 fn merge_dbs(paths []string) candb.Database {
-	mut msgs := []candb.Message{}
-	mut nodes := []string{}
-	for p in paths {
-		if db := candb.load_dbc_file(p) {
-			msgs << db.messages
-			nodes << db.nodes
-		}
-	}
-	return candb.Database{
-		messages: msgs
-		nodes:    nodes
-	}
+	return candb.merge_files(paths)
 }
 
-fn gen_of(g project.GenCfg) sim.Gen {
-	return match g.typ {
-		'sine' { sim.gen_sine(g.offset, g.amplitude, g.freq, g.phase) }
-		'sawtooth' { sim.gen_sawtooth(g.min, g.max, g.period) }
-		'counter' { sim.gen_counter(g.start, g.step, g.modulo) }
-		'stepmod' { sim.gen_stepmod(g.period, g.count, g.base) }
-		else { sim.gen_const(g.value) }
-	}
-}
-
+// build_node delegates to sim.from_project — the single implementation. This file, cmd/script
+// and cmd/sim_startup_check each carried a byte-identical copy, so a change here (like adding
+// end-to-end protection) reached the GUI and silently skipped the headless runner CI uses.
 fn build_node(db candb.Database, cfg project.NodeCfg) sim.SimEcu {
-	if cfg.signals.len == 0 && cfg.responses.len == 0 {
-		return sim.build_ecu(db, cfg.name)
-	}
-	mut gens := map[string]sim.Gen{}
-	for g in cfg.signals {
-		gens[g.signal] = gen_of(g)
-	}
-	mut rules := []sim.ResponseRule{}
-	for r in cfg.responses {
-		rules << sim.ResponseRule{
-			req_id:     r.request
-			resp_id:    r.response
-			byte_index: r.byte
-			add:        r.add
-		}
-	}
-	return sim.build_configured_ecu(db, cfg.name, gens, rules)
+	return sim.from_project(db, cfg)
 }
 
 // sim_loop runs a channel's simulated ECUs on its bus: emit cyclic frames + answer
@@ -737,6 +705,10 @@ fn sim_loop(app &App, sc SimCfg) {
 		return
 	}
 	mut engine := sim.Engine{}
+	// Alive counters for the whole run, not just across one rebuild: an ECU switched OFF leaves
+	// the engine, so state kept only in the previous engine is lost and switching it back on
+	// restarts its counter at zero — a backward jump a checking receiver rejects.
+	mut counters := map[string]int{}
 	mut local_gen := u64(0) // rebuild when a.sim_gen changes (ECU enable/disable)
 	mut built := false
 	t0 := time.ticks()
@@ -750,12 +722,14 @@ fn sim_loop(app &App, sc SimCfg) {
 				enabled[k] = v
 			}
 			a.mu.unlock()
+			engine.save_counters(mut counters) // fold the outgoing engine's counts in first
 			engine = sim.Engine{}
 			for n in sc.nodes {
 				if enabled['${sc.iface}:${n.name}'] or { true } {
 					engine.ecus << build_node(sc.db, n)
 				}
 			}
+			engine.restore_counters(counters)
 		}
 		now_ms := f64(time.ticks() - t0)
 		for f in engine.due_frames(now_ms) {
@@ -1699,10 +1673,20 @@ fn draw_sim(mut app App) {
 			// explicit config by design — build_node derives its frames from the DBC by
 			// transmitter name. Printing "0 sig / 0 resp" for it reads as "this ECU sends
 			// nothing", which is wrong and alarming; say where its behaviour comes from.
+			// Protection is worth its own word in the header. It is invisible on the wire until
+			// the ECU rejects a frame, so "is this node protected?" must be answerable without
+			// opening the project file.
+			// ASCII only: fonts are loaded without expanded glyph ranges, and the fallback
+			// ProggyClean is ASCII-only, so a shield or an arrow renders as a missing-glyph box.
+			prot := if node.protect.len > 0 { '  [P${node.protect.len}]' } else { '' }
+			// Protection is orthogonal to BEHAVIOUR, in the label exactly as in from_project: a
+			// protect-only node still transmits its DBC-derived frames, so calling it
+			// "0 sig / 0 resp" recreates the "this ECU sends nothing" reading the line above
+			// exists to avoid. The protection count is appended to whichever label applies.
 			hdr := if node.signals.len == 0 && node.responses.len == 0 {
-				'${node.name}  (frames derived from the DBC)###${key}'
+				'${node.name}  (frames derived from the DBC)${prot}###${key}'
 			} else {
-				'${node.name}  (${node.signals.len} sig / ${node.responses.len} resp)###${key}'
+				'${node.name}  (${node.signals.len} sig / ${node.responses.len} resp)${prot}###${key}'
 			}
 			if vgui.tree_node(hdr) {
 				for g in node.signals {
@@ -1710,6 +1694,26 @@ fn draw_sim(mut app App) {
 				}
 				for r in node.responses {
 					vgui.text('    ${r.request} -> ${r.response}')
+				}
+				// Protection that matches nothing is applied nowhere while the count above still
+				// claims it is on. Say so here, next to the claim.
+				for w in sim.validate_protection(sc.db, node) {
+					vgui.text_dim('    ! ${w}')
+				}
+				for pr in node.protect {
+					mut what := []string{}
+					if pr.counter != '' {
+						what << 'counter ${pr.counter}'
+					}
+					if pr.crc != '' {
+						what << '${pr.profile} -> ${pr.crc}'
+					}
+					if id := pr.data_id {
+						what << 'id 0x${id:02X}' // shown even when 0: an explicit zero id is
+						// not the same as none, and telling them apart is the whole point when
+						// you are staring at a checksum mismatch
+					}
+					vgui.text('    [P] ${pr.message}: ${what.join(', ')}')
 				}
 				vgui.tree_pop()
 			}

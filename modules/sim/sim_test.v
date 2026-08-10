@@ -71,7 +71,7 @@ fn test_heartbeat_counter_sequence() {
 
 fn test_response_rule() {
 	ecu := sut_ecu(load_db())
-	e := Engine{
+	mut e := Engine{
 		ecus: [ecu]
 	}
 	req := transport.CanFrame{ id: 0x101, data: [u8(0x41), 0x42, 0x43] }

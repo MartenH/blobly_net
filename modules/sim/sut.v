@@ -77,6 +77,13 @@ pub fn build_ecu(db candb.Database, node string) SimEcu {
 // attaches the supplied per-signal generators + response rules — the engine model
 // for a project-file-configured ECU. Signals without a generator stay constant 0.
 pub fn build_configured_ecu(db candb.Database, node string, gens map[string]Gen, rules []ResponseRule) SimEcu {
+	return build_protected_ecu(db, node, gens, rules, map[string]E2e{})
+}
+
+// build_protected_ecu is build_configured_ecu plus per-message end-to-end protection, keyed by
+// DBC message name. Kept as the one builder that takes everything so the two cannot drift;
+// build_configured_ecu is the same call with no protection.
+pub fn build_protected_ecu(db candb.Database, node string, gens map[string]Gen, rules []ResponseRule, prot map[string]E2e) SimEcu {
 	mut ecu := ecu_from_dbc(db, node)
 	for i, m in ecu.messages {
 		for sig in m.msg.signals {
@@ -89,5 +96,6 @@ pub fn build_configured_ecu(db candb.Database, node string, gens map[string]Gen,
 		}
 	}
 	ecu.rules = rules
+	attach_protection(mut ecu, prot)
 	return ecu
 }
