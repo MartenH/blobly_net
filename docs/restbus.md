@@ -76,6 +76,13 @@ covered by it — otherwise a replayed frame with a stale counter would still ch
 The checksum field is zeroed first because a checksum cannot cover itself; without that, the
 result would depend on whatever the previous cycle left in those bits.
 
+### Request-driven responses
+
+A response message (DBC cycle time 0) can be protected too. Its payload comes from the request
+rather than from generators, so it does not pass through the cyclic path — the protection is
+applied where the response is built, and its counter advances once per reply. That counter is
+per message, so a response has its own sequence and shares none with the cyclic frames.
+
 ### Profiles
 
 | profile | algorithm |
@@ -99,8 +106,6 @@ wrong checksum.
 - **Full AUTOSAR E2E profiles** (P1/P2 header layouts, P4/P5/P6 with CRC-16/CRC-32 and their
   length/id fields). What is here is the frame-level mechanism — counter, checksum, coverage
   order — not the complete profile state machines.
-- **Protection on a request-driven response** is applied, and its counter advances on each
-  reply — but the counter is per message, so a response shares no sequence with cyclic frames.
 - **Receive-side validation.** Blobly Net protects what it *sends*; it does not yet verify the
   counter and checksum of frames it receives, so a fault in the ECU under test's own protection
   will not be flagged automatically.
