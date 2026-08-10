@@ -82,6 +82,21 @@ pub mut:
 	name      string
 	signals   []GenCfg
 	responses []ResponseCfg
+	protect   []ProtectCfg
+}
+
+// ProtectCfg — end-to-end protection for one of the node's messages: an alive counter and/or
+// a checksum, named by SIGNAL so their placement and width come from the DBC rather than being
+// re-stated (and re-broken) here. A real ECU rejects frames whose counter has not advanced or
+// whose checksum does not match, so a rest-bus simulation without this can drive a demo bus
+// but not the ECU under test.
+pub struct ProtectCfg {
+pub mut:
+	message string // DBC message name
+	counter string // signal carrying the alive counter ('' = none)
+	crc     string // signal carrying the checksum ('' = none)
+	profile string = 'crc8_j1850' // crc8_j1850 | crc8_autosar | sum8 | xor8
+	data_id u32    // mixed into the checksum only; never occupies payload
 }
 
 // SenderSig is one signal value applied when building a Sender's frame: the
@@ -459,6 +474,17 @@ fn parse_node(n yaml.Any) NodeCfg {
 				modulo:    s.value('modulo').f64()
 				count:     s.value('count').f64()
 				base:      s.value('base').f64()
+			}
+		}
+	}
+	if ps := n.value_opt('protect') {
+		for p in ps.array() {
+			node.protect << ProtectCfg{
+				message: p.value('message').default_to('').string()
+				counter: p.value('counter').default_to('').string()
+				crc:     p.value('crc').default_to('').string()
+				profile: p.value('profile').default_to('crc8_j1850').string()
+				data_id: u32(p.value('data_id').default_to(i64(0)).int())
 			}
 		}
 	}

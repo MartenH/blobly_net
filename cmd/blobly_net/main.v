@@ -709,7 +709,10 @@ fn gen_of(g project.GenCfg) sim.Gen {
 }
 
 fn build_node(db candb.Database, cfg project.NodeCfg) sim.SimEcu {
-	if cfg.signals.len == 0 && cfg.responses.len == 0 {
+	// `protect` counts as configuration. Without it in this test a node that declares ONLY
+	// end-to-end protection takes the shorthand path and silently transmits unprotected —
+	// the one failure mode that looks exactly like working, until the ECU rejects every frame.
+	if cfg.signals.len == 0 && cfg.responses.len == 0 && cfg.protect.len == 0 {
 		return sim.build_ecu(db, cfg.name)
 	}
 	mut gens := map[string]sim.Gen{}
@@ -725,7 +728,16 @@ fn build_node(db candb.Database, cfg project.NodeCfg) sim.SimEcu {
 			add:        r.add
 		}
 	}
-	return sim.build_configured_ecu(db, cfg.name, gens, rules)
+	mut prot := map[string]sim.E2e{}
+	for p in cfg.protect {
+		prot[p.message] = sim.E2e{
+			counter: p.counter
+			crc:     p.crc
+			profile: p.profile
+			data_id: p.data_id
+		}
+	}
+	return sim.build_protected_ecu(db, cfg.name, gens, rules, prot)
 }
 
 // sim_loop runs a channel's simulated ECUs on its bus: emit cyclic frames + answer
@@ -1699,10 +1711,14 @@ fn draw_sim(mut app App) {
 			// explicit config by design — build_node derives its frames from the DBC by
 			// transmitter name. Printing "0 sig / 0 resp" for it reads as "this ECU sends
 			// nothing", which is wrong and alarming; say where its behaviour comes from.
-			hdr := if node.signals.len == 0 && node.responses.len == 0 {
+			// Protection is worth its own word in the header. It is invisible on the wire until
+			// the ECU rejects a frame, so "is this node protected?" must be answerable without
+			// opening the project file.
+			prot := if node.protect.len > 0 { '  ⛨${node.protect.len}' } else { '' }
+			hdr := if node.signals.len == 0 && node.responses.len == 0 && node.protect.len == 0 {
 				'${node.name}  (frames derived from the DBC)###${key}'
 			} else {
-				'${node.name}  (${node.signals.len} sig / ${node.responses.len} resp)###${key}'
+				'${node.name}  (${node.signals.len} sig / ${node.responses.len} resp)${prot}###${key}'
 			}
 			if vgui.tree_node(hdr) {
 				for g in node.signals {
@@ -1710,6 +1726,19 @@ fn draw_sim(mut app App) {
 				}
 				for r in node.responses {
 					vgui.text('    ${r.request} -> ${r.response}')
+				}
+				for pr in node.protect {
+					mut what := []string{}
+					if pr.counter != '' {
+						what << 'counter ${pr.counter}'
+					}
+					if pr.crc != '' {
+						what << '${pr.profile} → ${pr.crc}'
+					}
+					if pr.data_id != 0 {
+						what << 'id 0x${pr.data_id:02X}'
+					}
+					vgui.text('    ⛨ ${pr.message}: ${what.join(', ')}')
 				}
 				vgui.tree_pop()
 			}

@@ -65,3 +65,37 @@ fn test_all_nodes_merges_simulate_shorthand() {
 	gw := all.filter(it.name == 'Gateway')[0]
 	assert gw.signals.len == 0
 }
+
+// End-to-end protection must survive load → save → load. A parser that reads `protect` while
+// the writer drops it would load a protected project and save an unprotected one, so the next
+// session transmits frames the ECU under test rejects — with the evidence already deleted.
+fn test_protect_round_trips() {
+	y := 'project:
+  name: t
+channels:
+  - name: CAN1
+    interface: inproc:CAN1
+    simulation:
+      - name: BCM
+        protect:
+          - { message: Powertrain, counter: AliveCounter, crc: CRC, profile: crc8_j1850, data_id: 42 }
+          - { message: Status, counter: Cnt }
+'
+	p := parse(y) or { panic(err) }
+	n := p.channels[0].nodes[0]
+	assert n.protect.len == 2
+	assert n.protect[0].message == 'Powertrain'
+	assert n.protect[0].counter == 'AliveCounter'
+	assert n.protect[0].crc == 'CRC'
+	assert n.protect[0].profile == 'crc8_j1850'
+	assert n.protect[0].data_id == 42
+	assert n.protect[1].crc == '' // counter-only protection is legitimate
+	assert n.protect[1].profile == 'crc8_j1850' // the default, even when unused
+
+	again := parse(p.to_yaml()) or { panic(err) }
+	m := again.channels[0].nodes[0]
+	assert m.protect.len == 2, 'save() dropped the protection'
+	assert m.protect[0] == n.protect[0]
+	assert m.protect[1].message == 'Status'
+	assert m.protect[1].counter == 'Cnt'
+}

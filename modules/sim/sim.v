@@ -85,6 +85,7 @@ pub mut:
 	msg       candb.Message
 	period_ms int
 	signals   []SimSignal
+	e2e       E2e // alive counter + checksum, stamped after the generators (see e2e.v)
 	send_n    int // times sent so far (drives counters)
 	next_ms   f64 // next due time
 }
@@ -100,6 +101,9 @@ pub fn (mut m SimMessage) build(t f64) transport.CanFrame {
 			}
 		}
 	}
+	// End-to-end protection goes LAST, over the finished payload — the counter and checksum
+	// have to reflect what is actually on the wire, including every generator's contribution.
+	m.e2e.apply(m.msg, mut data, m.send_n)
 	return transport.CanFrame{
 		id:       m.msg.id
 		extended: m.msg.ext
