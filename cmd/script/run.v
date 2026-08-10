@@ -109,28 +109,10 @@ fn main() {
 
 // load_channel_db merges every DBC attached to a channel into one catalog (first
 // definition of an id wins) — a GUI-free slice of src/main.v's load_databases.
+// load_channel_db delegates to candb.merge_files — see the GUI's merge_dbs. Having one merge
+// each is how the same project came to mean two different databases.
 fn load_channel_db(ch project.Channel) candb.Database {
-	mut msgs := []candb.Message{}
-	mut nodes := []string{}
-	mut seen := map[u32]bool{}
-	for path in ch.databases {
-		db := candb.load_dbc_file(path) or { continue }
-		for m in db.messages {
-			if m.id !in seen {
-				seen[m.id] = true
-				msgs << m
-			}
-		}
-		for n in db.nodes {
-			if n !in nodes {
-				nodes << n
-			}
-		}
-	}
-	return candb.Database{
-		messages: msgs
-		nodes:    nodes
-	}
+	return candb.merge_files(ch.databases)
 }
 
 // sim_loop runs the channel's simulated ECUs on a dedicated in-process bus

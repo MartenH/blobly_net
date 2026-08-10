@@ -683,19 +683,10 @@ fn parse_hex_bytes(s string) []u8 {
 }
 
 // merge_dbs loads + concatenates a channel's DBCs into one Database (for the sim engine).
+// merge_dbs delegates to candb.merge_files — the single implementation shared with the
+// headless runner, which used to dedupe differently and so simulated a different catalogue.
 fn merge_dbs(paths []string) candb.Database {
-	mut msgs := []candb.Message{}
-	mut nodes := []string{}
-	for p in paths {
-		if db := candb.load_dbc_file(p) {
-			msgs << db.messages
-			nodes << db.nodes
-		}
-	}
-	return candb.Database{
-		messages: msgs
-		nodes:    nodes
-	}
+	return candb.merge_files(paths)
 }
 
 // build_node delegates to sim.from_project — the single implementation. This file, cmd/script
