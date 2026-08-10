@@ -1,9 +1,18 @@
 # Simulation architecture — networks, nodes, and the verification gate
 
-Status: **design agreed 2026-06-07; the core is IMPLEMENTED as [`modules/sim`](../modules/sim)** —
-native, in-process, driver-free, and what `sim-demo` and `scripts/runtests.sh` run against. The
-per-node config work this design calls for is still open (tracked in
-[`ROADMAP.md`](../ROADMAP.md), under the UDS server). This is the plan for
+> **This is the DESIGN document — the reasoning and the model.** For how to configure and run
+> a simulation, see **[simulation.md](simulation.md)**, the user manual.
+
+Status: **design agreed 2026-06-07; the CAN CORE is IMPLEMENTED as
+[`modules/sim`](../modules/sim)** — native, in-process, driver-free, and what `sim-demo` and
+`scripts/runtests.sh` run against. The per-node configuration this design calls for has since
+shipped: per-signal generators, request/response rules and end-to-end protection are all
+configurable per node.
+
+Still open from this plan: a **UDS server attached to an individual simulated ECU** (a
+channel-wide one at 0x7E0/0x7E8 already runs), and the **LIN and Ethernet** simulation phases
+below — the CAN core landing does not make those disappear. Tracked in
+[`ROADMAP.md`](../ROADMAP.md). This is the plan for
 turning the tester into a simulation host: simulated ECUs and the
 tester's own functions all attach to shared virtual networks, **inside one
 process**, driver-free by default, with the existing Python SUT as the oracle

@@ -162,7 +162,7 @@ fn diag_server_loop(iface string, ctl &Ctl) {
 fn build_node(db candb.Database, cfg project.NodeCfg) sim.SimEcu {
 	// A protect: entry naming a message or signal that is not there applies nothing, and the
 	// run would otherwise score a protected project against unprotected traffic without a word.
-	for w in sim.validate_protection(db, cfg) {
+	for w in sim.validate_cfg(db, cfg) {
 		eprintln('${cfg.name}: ${w}')
 	}
 	return sim.from_project(db, cfg)

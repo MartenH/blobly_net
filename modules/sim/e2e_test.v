@@ -541,3 +541,48 @@ fn test_validate_protection_catches_inert_configurations() {
 	assert n.len == 1, '${n}'
 	assert n[0].contains('is 4 bits')
 }
+
+// validate_cfg must report BOTH halves. validate_node existed for generator typos and had no
+// callers, so a misspelled signal was silent while a misspelled protection entry was not.
+fn test_validate_cfg_covers_generators_and_protection() {
+	db := candb.Database{
+		nodes:    ['SUT']
+		messages: [candb.Message{
+			...protected_msg()
+			sender: 'SUT'
+		}]
+	}
+	cfg := project.NodeCfg{
+		name:    'SUT'
+		signals: [project.GenCfg{ signal: 'NotASignal', typ: 'const' }]
+		protect: [project.ProtectCfg{ message: 'NotAMessage', counter: 'AliveCounter' }]
+	}
+	w := validate_cfg(db, cfg)
+	assert w.len == 2, '${w}'
+	assert w.any(it.contains('NotASignal'))
+	assert w.any(it.contains('NotAMessage'))
+}
+
+// The transmitter check has to satisfy two opposite cases: a BU_ node that owns no messages
+// transmits nothing and must be reported, while a response-only node the DBC has never heard
+// of works exactly as intended and must not be.
+fn test_validate_cfg_transmitter_rule() {
+	db := candb.Database{
+		nodes:    ['Silent', 'BCM'] // Silent is in BU_ and sends nothing
+		messages: [candb.Message{
+			...protected_msg()
+			sender: 'BCM'
+		}]
+	}
+	silent := project.NodeCfg{ name: 'Silent' }
+	w := validate_cfg(db, silent)
+	assert w.len == 1, '${w}'
+	assert w[0].contains('sends no message'), 'a BU_ node with no messages is silent'
+
+	// raw request/response ids, node unknown to the DBC — supported, and not a problem
+	responder := project.NodeCfg{
+		name:      'RawResponder'
+		responses: [project.ResponseCfg{ request: 0x101, response: 0x102, byte: 0, add: 1 }]
+	}
+	assert validate_cfg(db, responder).len == 0, '${validate_cfg(db, responder)}'
+}
