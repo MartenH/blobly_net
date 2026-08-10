@@ -30,7 +30,27 @@ channels:
           - { name: Counter,      type: counter, start: 0,     step: 1,         modulo: 256 }
         responses:
           - { request: "0x101", response: "0x102", byte: 0, add: 1 }
+        # Diagnostics: this ECU answers on its OWN addresses with its own data, so a tester
+        # can tell it from ChassisECU below. Configuring any per-ECU server replaces the
+        # channel-wide 0x7E0/0x7E8 default — see docs/simulation.md.
+        uds:
+          rx: "0x7E0"
+          tx: "0x7E8"
+          dids:
+            - { id: "0xF190", text: "BLOBLYNETV0SUT001" }
+            - { id: "0xF18C", text: "SN-0001" }
+            - { id: "0xF195", bytes: "01 00" }
+          dtcs:
+            - { code: "0x123456", status: 9 }
+            - { code: "0xABCDEF", status: 8 }
       - name: ChassisECU
+        uds:
+          rx: "0x7E1"
+          tx: "0x7E9"
+          dids:
+            - { id: "0xF190", text: "BLOBLY-CHASSIS-01" }
+          dtcs:
+            - { code: "0xC00101", status: 9 }
         signals:
           - { name: WheelFL, type: sine, offset: 60, amplitude: 8, freq: 0.9, phase: 0.0 }
           - { name: WheelFR, type: sine, offset: 60, amplitude: 8, freq: 0.9, phase: 0.1 }

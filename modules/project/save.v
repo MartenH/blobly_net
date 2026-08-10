@@ -98,6 +98,34 @@ pub fn (p Project) to_yaml() string {
 						b.writeln('          - { request: "0x${r.request:X}", response: "0x${r.response:X}", byte: ${r.byte}, add: ${r.add} }')
 					}
 				}
+				// Like `protect` below: a field the parser reads and the writer drops loads
+				// configured and saves empty, so the diagnostic addresses silently revert to
+				// the channel default and the tester talks to a different ECU than yesterday.
+				if u := node.uds {
+					b.writeln('        uds:')
+					b.writeln('          rx: "0x${u.rx:X}"')
+					b.writeln('          tx: "0x${u.tx:X}"')
+					if u.session != 1 {
+						b.writeln('          session: ${u.session}')
+					}
+					if u.dids.len > 0 {
+						b.writeln('          dids:')
+						for d in u.dids {
+							if d.bytes.len > 0 {
+								hex := d.bytes.map('${it:02X}').join(' ')
+								b.writeln('            - { id: "0x${d.id:X}", bytes: "${hex}" }')
+							} else {
+								b.writeln('            - { id: "0x${d.id:X}", text: ${yaml_scalar(d.text)} }')
+							}
+						}
+					}
+					if u.dtcs.len > 0 {
+						b.writeln('          dtcs:')
+						for t in u.dtcs {
+							b.writeln('            - { code: "0x${t.code:06X}", status: ${t.status} }')
+						}
+					}
+				}
 				// Protection MUST be written back. A field the parser reads and the writer drops
 				// is worse than one that was never supported: the project loads protected, saves
 				// unprotected, and the next run transmits frames the ECU rejects — with the

@@ -191,6 +191,47 @@ All of these, plus unknown message/signal names and unrecognised profiles, are *
 under the node in the Simulation panel, and on stderr from the headless runner. Protection that
 matches nothing would otherwise apply nowhere while the panel still displayed its count.
 
+## Diagnostics: a UDS server per ECU
+
+By default each simulated channel runs **one** diagnostic server on `0x7E0` / `0x7E8` with
+built-in content, so every ECU answers as the same target. Give a node its own and it becomes a
+distinguishable one:
+
+```yaml
+    simulation:
+      - name: BCM
+        uds:
+          rx: "0x7E1"          # tester -> ECU (where it listens)
+          tx: "0x7E9"          # ECU -> tester (where it answers)
+          dids:
+            - { id: "0xF190", text: "BLOBLY-BCM-0001" }   # ASCII
+            - { id: "0xF195", bytes: "01 00" }            # raw bytes
+          dtcs:
+            - { code: "0x900101", status: 9 }
+            - { code: "0x900102" }                         # status defaults to 0x09
+      - name: ECM
+        uds:
+          rx: "0x7E0"
+          tx: "0x7E8"
+          dids:
+            - { id: "0xF190", text: "BLOBLY-ECM-0002" }
+```
+
+A DID's value is `text` **or** `bytes`, never guessed from the string — `"0100"` is four
+characters or two bytes depending on which you meant, so you say which.
+
+Supported services are `0x10` session control, `0x22`/`0x2E` read/write by identifier, `0x27`
+security access, `0x19` sub `0x02` read DTCs (filtered by the requested status mask), and
+`0x3E` tester present. Anything else answers `serviceNotSupported`.
+
+**Configure one and you own diagnostics on that channel:** the built-in `0x7E0`/`0x7E8` server
+stops running. Otherwise the two would both answer whenever their ids overlapped, and which
+reply the tester saw would depend on scheduling. A channel with no `uds:` anywhere keeps the
+default, unchanged.
+
+Two servers cannot share a request id, and `rx` may not equal `tx` — both are reported rather
+than left to produce whichever answer arrives first.
+
 ## Interactive senders
 
 Triggerable frames, for the "now do this" half of bench work:
@@ -266,13 +307,10 @@ See [scripting.md](scripting.md) for the test API.
 
 ## What it cannot do yet
 
-- **The UDS server is channel-wide, not per-ECU.** Starting a configured simulation spawns a
-  native UDS server on each simulated channel at **`0x7E0` request / `0x7E8` response**, in both
-  the GUI and the headless runner — so real diagnostic services can be exercised today, and the
-  Lua diagnostic tests rely on it. What is missing is a server *attached to an individual
-  simulated ECU*, with its own addresses and data: two simulated ECUs cannot answer diagnostics
-  as separate targets, and the served content is the built-in default rather than something the
-  project configures.
+- **Diagnostics are stateless between requests beyond session and security state.** A
+  simulated ECU serves the DIDs and DTCs the project gives it; it does not model routines
+  (`0x31`), memory access (`0x23`/`0x3D`), or transfer (`0x34`-`0x37`), and writing a DID does
+  not affect the signals the ECU transmits.
 - **No receive-side validation.** Protection is applied to what is *sent*; the counter and
   checksum of *received* frames are not checked, so a fault in the ECU under test's own
   protection is not flagged automatically.

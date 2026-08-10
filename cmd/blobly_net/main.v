@@ -504,7 +504,20 @@ fn (mut app App) start() {
 	// spawn the in-process simulation workloads (driver-free sim ECUs + a UDS server)
 	for sc in app.sims {
 		spawn sim_loop(app, sc)
-		spawn diag_server_loop(app, sc.iface)
+		mut diag_nodes := sim.uds_nodes(sc.nodes)
+		for w in sim.validate_uds(sc.nodes) {
+			app.notify(w)
+		}
+		if diag_nodes.len == 0 {
+			spawn diag_server_loop(app, sc.iface) // the channel-wide default, as before
+		} else {
+			// Configure a per-ECU server and you own diagnostics on this channel: the default
+			// does NOT also run, or the two would both answer whenever their ids overlapped and
+			// which reply the tester saw would depend on scheduling.
+			for mut u in diag_nodes {
+				spawn uds_node_loop(app, sc.iface, u.rx, u.tx, u.server)
+			}
+		}
 	}
 	spawn gen_loop(app) // cyclic senders
 }
@@ -771,6 +784,21 @@ fn gen_loop(app &App) {
 
 // diag_server_loop runs the native UDS server (mirror of the tester: rx 0x7E0, tx 0x7E8)
 // so the Diagnostics panel + Lua scripts work driver-free against simulated channels.
+// uds_node_loop answers one simulated ECU's diagnostic requests on its own addresses.
+fn uds_node_loop(app &App, iface string, rx u32, tx u32, srv uds.Server) {
+	a := unsafe { app }
+	mut ch := isotp.open_software(a.bitrate_iface(iface), tx, rx, false) or { return }
+	mut s := srv
+	for a.running {
+		req := ch.recv(50) or { continue }
+		resp := s.handle(req)
+		if resp.len > 0 {
+			ch.send(resp) or {}
+		}
+	}
+	ch.close()
+}
+
 fn diag_server_loop(app &App, iface string) {
 	a := unsafe { app }
 	mut ch := isotp.open_software(a.bitrate_iface(iface), diag_rx_id, diag_tx_id, false) or {
@@ -1679,14 +1707,15 @@ fn draw_sim(mut app App) {
 			// ASCII only: fonts are loaded without expanded glyph ranges, and the fallback
 			// ProggyClean is ASCII-only, so a shield or an arrow renders as a missing-glyph box.
 			prot := if node.protect.len > 0 { '  [P${node.protect.len}]' } else { '' }
+			diag := if node.uds != none { '  [UDS]' } else { '' }
 			// Protection is orthogonal to BEHAVIOUR, in the label exactly as in from_project: a
 			// protect-only node still transmits its DBC-derived frames, so calling it
 			// "0 sig / 0 resp" recreates the "this ECU sends nothing" reading the line above
 			// exists to avoid. The protection count is appended to whichever label applies.
 			hdr := if node.signals.len == 0 && node.responses.len == 0 {
-				'${node.name}  (frames derived from the DBC)${prot}###${key}'
+				'${node.name}  (frames derived from the DBC)${prot}${diag}###${key}'
 			} else {
-				'${node.name}  (${node.signals.len} sig / ${node.responses.len} resp)${prot}###${key}'
+				'${node.name}  (${node.signals.len} sig / ${node.responses.len} resp)${prot}${diag}###${key}'
 			}
 			if vgui.tree_node(hdr) {
 				for g in node.signals {
@@ -1697,6 +1726,16 @@ fn draw_sim(mut app App) {
 				}
 				// Protection that matches nothing is applied nowhere while the count above still
 				// claims it is on. Say so here, next to the claim.
+				if u := node.uds {
+					mut what := 'rx 0x${u.rx:X} / tx 0x${u.tx:X}'
+					if u.dids.len > 0 {
+						what += ', ${u.dids.len} DID(s)'
+					}
+					if u.dtcs.len > 0 {
+						what += ', ${u.dtcs.len} DTC(s)'
+					}
+					vgui.text('    [UDS] ${what}')
+				}
 				for w in sim.validate_cfg(sc.db, node) {
 					vgui.text_dim('    ! ${w}')
 				}

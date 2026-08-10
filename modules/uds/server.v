@@ -11,10 +11,29 @@ import isotp
 pub struct Server {
 pub mut:
 	dids     map[u16][]u8 // ReadDataByIdentifier table (0x22/0x2E)
+	dtcs     []Dtc        // ReadDTCInformation table (0x19 sub 0x02)
 	session  u8 = 1
 	sec_seed []u8 // last seed handed out (0x27 request seed)
 	unlocked bool // security access granted (0x27 valid key accepted)
 }
+
+// Dtc is one stored fault: a 3-byte UDS DTC code and its status byte.
+//
+// A table rather than a constant because simulated ECUs have to differ — the point of running
+// several is that a tester can tell them apart, and two ECUs reporting the same fault set is
+// indistinguishable from one.
+pub struct Dtc {
+pub:
+	code   u32 // 24-bit DTC (e.g. 0x123456)
+	status u8 = 0x09 // status-of-DTC byte; 0x09 = confirmed + testFailed
+}
+
+// default_dtcs is what the built-in server has always reported, kept so an unconfigured
+// server behaves exactly as before.
+pub const default_dtcs = [
+	Dtc{0x123456, 0x09},
+	Dtc{0xABCDEF, 0x08},
+]
 
 // server_security_seed is the demo seed the simulated server returns for any
 // level; paired with uds.security_key() (XOR 0xFF) as the shared test secret.
@@ -29,6 +48,7 @@ pub fn default_server() Server {
 			u16(0xF18C): 'SN-0001'.bytes()           // ECU serial number
 			u16(0xF195): [u8(0x01), 0x00]            // software version 1.00
 		}
+		dtcs: default_dtcs.clone()
 	}
 }
 
@@ -89,7 +109,18 @@ pub fn (mut s Server) handle(req []u8) []u8 {
 				return neg(sid, 0x12) // subFunctionNotSupported
 			}
 			// [0x59, 0x02, statusAvailabilityMask, {DTC hi/mid/lo, status}...]
-			return [u8(0x59), 0x02, 0xFF, 0x12, 0x34, 0x56, 0x09, 0xAB, 0xCD, 0xEF, 0x08]
+			mask := if req.len > 2 { req[2] } else { u8(0xFF) }
+			mut resp := [u8(0x59), 0x02, 0xFF]
+			for d in s.dtcs {
+				if d.status & mask == 0 {
+					continue // the tester asked for a status this fault does not have
+				}
+				resp << u8((d.code >> 16) & 0xFF)
+				resp << u8((d.code >> 8) & 0xFF)
+				resp << u8(d.code & 0xFF)
+				resp << d.status
+			}
+			return resp
 		}
 		0x3E { // TesterPresent
 			return [u8(0x7E), 0x00]

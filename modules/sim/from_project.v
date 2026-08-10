@@ -89,6 +89,7 @@ pub fn validate_cfg(db candb.Database, cfg project.NodeCfg) []string {
 		warns << validate_node(db, cfg.name, sigs) // has messages too: signal names still count
 	}
 	warns << validate_protection(db, cfg)
+	warns << validate_uds([cfg])
 	return warns
 }
 

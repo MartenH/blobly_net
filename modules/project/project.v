@@ -83,6 +83,42 @@ pub mut:
 	signals   []GenCfg
 	responses []ResponseCfg
 	protect   []ProtectCfg
+	uds       ?UdsCfg
+}
+
+// UdsCfg is a diagnostic server attached to ONE simulated ECU: its own ISO-TP addresses and
+// its own content.
+//
+// Without this there is a single server per channel on 0x7E0/0x7E8 serving built-in data, so
+// every simulated ECU answers as the same target and a tester cannot tell them apart — which
+// defeats the point of simulating several. Addresses are named from the TESTER's point of
+// view, the way a diagnostic database describes them: `rx` is where the ECU listens for
+// requests, `tx` is where it answers.
+pub struct UdsCfg {
+pub mut:
+	rx      u32 // request id  (tester -> ECU)
+	tx      u32 // response id (ECU -> tester)
+	dids    []DidCfg
+	dtcs    []DtcCfg
+	session u8 = 1
+}
+
+// DidCfg is one ReadDataByIdentifier entry. The value is given either as `text` (ASCII, the
+// common case for VIN and part numbers) or as `bytes` (hex, e.g. "01 00") — never inferred
+// from the string's shape, which would make "0100" ambiguous between four characters and two
+// bytes.
+pub struct DidCfg {
+pub mut:
+	id    u16
+	text  string
+	bytes []u8
+}
+
+// DtcCfg is one stored fault: a 24-bit code and its status byte.
+pub struct DtcCfg {
+pub mut:
+	code   u32
+	status u8 = 0x09 // confirmed + testFailed
 }
 
 // ProtectCfg — end-to-end protection for one of the node's messages: an alive counter and/or
@@ -479,6 +515,34 @@ fn parse_node(n yaml.Any) NodeCfg {
 				base:      s.value('base').f64()
 			}
 		}
+	}
+	if u := n.value_opt('uds') {
+		mut ucfg := UdsCfg{
+			rx:      u32(parse_id(u.value('rx').str()))
+			tx:      u32(parse_id(u.value('tx').str()))
+			session: u8(u.value('session').default_to(i64(1)).int())
+		}
+		if ds := u.value_opt('dids') {
+			for d in ds.array() {
+				mut dc := DidCfg{
+					id:   u16(parse_id(d.value('id').str()))
+					text: d.value('text').default_to('').string()
+				}
+				if bv := d.value_opt('bytes') {
+					dc.bytes = parse_hex_bytes(bv.str())
+				}
+				ucfg.dids << dc
+			}
+		}
+		if ts := u.value_opt('dtcs') {
+			for t in ts.array() {
+				ucfg.dtcs << DtcCfg{
+					code:   parse_id(t.value('code').str())
+					status: u8(t.value('status').default_to(i64(0x09)).int())
+				}
+			}
+		}
+		node.uds = ucfg
 	}
 	if ps := n.value_opt('protect') {
 		for p in ps.array() {
