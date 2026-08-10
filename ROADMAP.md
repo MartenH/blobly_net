@@ -47,7 +47,23 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   System, DBC editor, Diagnostics, Shell, Generators) plus the app state, which is roughly how
   the file is already organised internally — so it is a mechanical move rather than a redesign.
   Deliberately **not** urgent: it touches the one file every in-flight branch also touches, so
-  it wants a quiet moment with nothing else open, not a slot between features.
+  it wants a quiet moment with nothing else open, not a slot between features. It is also the
+  **lever for the tiering below** — panels cannot be separated while they all live in one file.
+- 🧭 **Tier the UI: standard tester vs. blobly_emb integration.** Most people who pick this up
+  want the ordinary thing — trace, DBC decode, send, generators, simulation, diagnostics,
+  scripting, logging. A large part of the GUI is not that: the **Shell** (93 references in
+  `main.v`), **flash** (81), the **trace manifest** and swimlane (84), the **System** panel and
+  `system.toml` (17), and the SOME/IP module bindings (13), plus the `sysview`, `telem` and
+  `flash` modules and the `flash` / `trace_dump` CLI tools. All of it speaks protocols and
+  config formats that only **blobly_emb** produces, so for anyone without that stack it is
+  surface area that cannot do anything — the README already has to explain that several panels
+  "have nothing to talk to".
+  The fix is not a build flag (that fragments testing) but two cheaper moves: **discovery** —
+  a panel appears when its artifact is present (a `system.toml` beside the project, a manifest
+  on a channel, a bootloader-capable target) rather than always; and a **module boundary** —
+  the core must not import `sysview`/`telem`/`flash`, so "works without emb" is enforced rather
+  than asserted. Grouping the optional panels under one menu section makes the tiering visible
+  without hiding anything from those who want it.
 
 ## Out of scope
 
