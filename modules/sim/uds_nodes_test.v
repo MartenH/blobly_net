@@ -162,3 +162,63 @@ fn test_out_of_range_dtc_is_dropped() {
 	assert built[0].server.dtcs[0].code == 0x123456
 	assert validate_uds([cfg]).any(it.contains('above the 24-bit range'))
 }
+
+// A rejected configuration must not reserve ids. Reserving from an entry that is itself thrown
+// away poisoned the id for a valid node, which was skipped too — and the channel default
+// started instead of the ECU the project asked for.
+fn test_rejected_configs_do_not_reserve_ids() {
+	nodes := [
+		project.NodeCfg{ name: 'Broken', uds: project.UdsCfg{ rx: 0, tx: 0x7E1 } },
+		project.NodeCfg{ name: 'Good', uds: project.UdsCfg{ rx: 0x7E1, tx: 0x7E9 } },
+	]
+	built := uds_nodes(nodes)
+	assert built.len == 1 && built[0].name == 'Good', 'got ${built.map(it.name)}'
+}
+
+// Two ECUs answering on ONE response id: a tester holding both handles receives every reply on
+// both, so one ECU's response can be consumed as the other's result.
+fn test_duplicate_response_ids_are_rejected() {
+	nodes := [
+		project.NodeCfg{ name: 'A', uds: project.UdsCfg{ rx: 0x7E1, tx: 0x7E9 } },
+		project.NodeCfg{ name: 'B', uds: project.UdsCfg{ rx: 0x7E2, tx: 0x7E9 } },
+	]
+	assert validate_uds(nodes).any(it.contains('also used by "A"'))
+	assert uds_nodes(nodes).len == 1, 'only one may own a response id'
+}
+
+// Above 29 bits SocketCAN masks on send while the software channel matches unmasked, so the
+// ECU would transmit on a different valid id and never hear its tester.
+fn test_ids_beyond_29_bits_are_rejected() {
+	nodes := [project.NodeCfg{
+		name: 'Huge'
+		uds:  project.UdsCfg{ rx: 0x2FFFFFFF, tx: 0x3FFFFFFF }
+	}]
+	assert uds_nodes(nodes).len == 0
+	assert validate_uds(nodes).any(it.contains('exceeds the 29-bit'))
+}
+
+// A DID value past one ISO-TP transfer cannot be sent, and the send error is discarded — the
+// tester just times out, with the project reporting nothing wrong.
+fn test_oversized_did_and_bad_dtc_status_are_rejected() {
+	cfg := project.NodeCfg{
+		name: 'X'
+		uds:  project.UdsCfg{
+			rx:   0x7E0
+			tx:   0x7E8
+			dids: [
+				project.DidCfg{ id: 0xF190, text: 'ok' },
+				project.DidCfg{ id: 0xF191, bytes: []u8{len: max_did_bytes + 1} },
+			]
+			dtcs: [
+				project.DtcCfg{ code: 0x123456, status: 9 },
+				project.DtcCfg{ code: 0x123457, status: 265 }, // would wrap to 9
+			]
+		}
+	}
+	built := uds_nodes([cfg])
+	assert built[0].server.dids.len == 1, 'the oversized DID must not be installed'
+	assert built[0].server.dtcs.len == 1, 'a non-byte status must not wrap into a valid one'
+	w := validate_uds([cfg])
+	assert w.any(it.contains('over the 4092-byte'))
+	assert w.any(it.contains('status 265 is not a byte'))
+}

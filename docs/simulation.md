@@ -235,14 +235,20 @@ without a separate flag. Mixing an 11-bit and a 29-bit address in one pair is re
 uses one format for both.
 
 A configuration that cannot work is **reported and not started**, so it can never half-run:
-an unset address, `rx` equal to `tx`, two servers sharing a request id, one ECU's request id
-being another's response id (it would eat that ECU's replies and answer them with a negative
-response), a pair mixing 11-bit and 29-bit, a DID above the 16-bit range, or a DTC above the
-24-bit range. Out-of-range identifiers are **dropped, never narrowed** — `0x1F190` would
-otherwise masquerade as `0xF190`, and DTC `0x1123456` as `0x123456`.
+an unset address, `rx` equal to `tx`, an id beyond 29 bits, a pair mixing 11-bit and 29-bit,
+two servers sharing a request *or* a response id, one ECU's request id being another's response
+id (it would eat that ECU's replies and answer them with a negative response), a DID above the
+16-bit range or longer than 4092 bytes (one ISO-TP transfer, minus the response header), a DTC
+above the 24-bit range, or a DTC status that is not a byte.
 
-**Unticking an ECU silences its diagnostics too**, not just its frames — so a test that
-simulates an ECU going offline finds nothing at its address, which is the point.
+Out-of-range values are **dropped, never narrowed**, because narrowing turns a mistake into a
+different *valid* value: `0x1F190` would masquerade as `0xF190`, DTC `0x1123456` as `0x123456`,
+and status `265` as `9`.
+
+**Unticking an ECU silences its diagnostics too**, not just its frames: its ISO-TP channel is
+closed, so it neither answers a multi-frame request's flow control nor queues requests to
+answer late when it comes back. A test that simulates an ECU going offline finds nothing at its
+address, which is the point.
 
 The **Diagnostics panel** picks which target to address when more than one is configured.
 

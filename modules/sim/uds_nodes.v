@@ -27,28 +27,17 @@ pub mut:
 // which reply the tester saw would depend on scheduling.
 pub fn uds_nodes(nodes []project.NodeCfg) []UdsNode {
 	mut out := []UdsNode{}
-	// Every id in play, both directions: a server whose REQUEST id is another's RESPONSE id
-	// eats that server's replies and answers them with a negative response.
+	// Two passes. `claimed` may only ever hold ids belonging to servers that are actually
+	// going to START: reserving them from a config that is itself rejected poisoned the id for
+	// a valid node, which was then skipped too and the channel default started in its place.
 	mut claimed := map[u32]bool{}
 	for n in nodes {
-		if c := n.uds {
-			if c.tx != 0 {
-				claimed[c.tx] = true
-			}
-		}
-	}
-	for n in nodes {
 		cfg := n.uds or { continue }
-		// A configuration validate_uds calls unusable must not be SPAWNED. Warning and starting
-		// it anyway gave the worst of both: duplicate listeners answering each other's
-		// requests, and — because a broken entry still made the list non-empty — the working
-		// channel default suppressed by a server that could never reply.
-		mixed := (cfg.rx > 0x7FF) != (cfg.tx > 0x7FF)
-		if cfg.rx == 0 || cfg.tx == 0 || cfg.rx == cfg.tx || mixed || cfg.rx in claimed {
-			// `mixed` too: ISO-TP opens ONE format for the pair, so an 11-bit id in a 29-bit
-			// pair would go out extended and never reach its peer. Starting it would also
-			// suppress the channel default in favour of a server that cannot communicate.
-			continue
+		if !structurally_ok(cfg) {
+			continue // reported by validate_uds
+		}
+		if cfg.rx in claimed || cfg.tx in claimed {
+			continue // collides with an earlier accepted server, either direction
 		}
 		claimed[cfg.rx] = true
 		claimed[cfg.tx] = true
@@ -56,18 +45,18 @@ pub fn uds_nodes(nodes []project.NodeCfg) []UdsNode {
 			session: cfg.session
 		}
 		for d in cfg.dids {
-			if d.id > 0xFFFF {
-				continue // reported by validate_uds; narrowing it would forge another DID
+			if d.id > 0xFFFF || d.value_len() > max_did_bytes {
+				continue // reported by validate_uds
 			}
 			srv.dids[u16(d.id)] = if d.bytes.len > 0 { d.bytes.clone() } else { d.text.bytes() }
 		}
 		for t in cfg.dtcs {
-			if t.code > 0xFFFFFF {
-				continue // a DTC is 3 bytes on the wire; see validate_uds
+			if t.code > 0xFFFFFF || t.status > 0xFF {
+				continue // reported by validate_uds
 			}
 			srv.dtcs << uds.Dtc{
 				code:   t.code
-				status: t.status
+				status: u8(t.status)
 			}
 		}
 		out << UdsNode{
@@ -84,11 +73,36 @@ pub fn uds_nodes(nodes []project.NodeCfg) []UdsNode {
 	return out
 }
 
+// max_did_bytes is the largest DID value that fits one ISO-TP transfer: 4095 bytes minus the
+// three-byte positive-response header (0x62 + the two identifier bytes).
+pub const max_did_bytes = 4092
+
+// can_id_max is the widest identifier CAN has. Above it SocketCAN masks on transmit while the
+// software channel still matches on the unmasked value, so the ECU talks on a DIFFERENT valid
+// id and hears nothing.
+const can_id_max = u32(0x1FFFFFFF)
+
+// structurally_ok is the single definition of "this pair can be opened at all", used both to
+// decide what starts and to keep rejected configurations from reserving ids.
+fn structurally_ok(cfg project.UdsCfg) bool {
+	if cfg.rx == 0 || cfg.tx == 0 || cfg.rx == cfg.tx {
+		return false
+	}
+	if cfg.rx > can_id_max || cfg.tx > can_id_max {
+		return false
+	}
+	if (cfg.rx > 0x7FF) != (cfg.tx > 0x7FF) {
+		return false // ISO-TP opens ONE format for the pair
+	}
+	return true
+}
+
 // validate_uds reports diagnostic configurations that cannot work as written.
 pub fn validate_uds(nodes []project.NodeCfg) []string {
 	mut warns := []string{}
 	mut by_rx := map[u32]string{}
 	mut by_tx := map[u32]string{}
+	mut by_tx_dup := map[u32]string{}
 	for n in nodes {
 		if c := n.uds {
 			if c.tx != 0 {
@@ -107,6 +121,11 @@ pub fn validate_uds(nodes []project.NodeCfg) []string {
 			// would receive its own responses and answer them
 			warns << 'uds on "${n.name}": rx and tx are both 0x${cfg.rx:X}'
 		}
+		if cfg.rx > can_id_max || cfg.tx > can_id_max {
+			// SocketCAN masks on send while the software channel matches unmasked, so the ECU
+			// would transmit on a different valid id and never hear its tester
+			warns << 'uds on "${n.name}": 0x${cfg.rx:X}/0x${cfg.tx:X} exceeds the 29-bit CAN id range'
+		}
 		if (cfg.rx > 0x7FF) != (cfg.tx > 0x7FF) {
 			// ISO-TP uses one frame format for the pair; a mixed pair cannot be honoured
 			warns << 'uds on "${n.name}": rx 0x${cfg.rx:X} and tx 0x${cfg.tx:X} mix 11-bit and 29-bit addressing'
@@ -116,7 +135,17 @@ pub fn validate_uds(nodes []project.NodeCfg) []string {
 				warns << 'uds on "${n.name}": DID 0x${d.id:X} is above the 16-bit range — ignored'
 			}
 		}
+		for d in cfg.dids {
+			if d.value_len() > max_did_bytes {
+				// handle() prepends a 3-byte header; past 4095 the transfer cannot be sent and
+				// the send error is discarded, so the tester sees only a timeout
+				warns << 'uds on "${n.name}": DID 0x${d.id:X} is ${d.value_len()} bytes — over the ${max_did_bytes}-byte ISO-TP limit'
+			}
+		}
 		for t in cfg.dtcs {
+			if t.status > 0xFF {
+				warns << 'uds on "${n.name}": DTC 0x${t.code:X} status ${t.status} is not a byte — ignored'
+			}
 			if t.code > 0xFFFFFF {
 				// handle() writes the low three bytes, so 0x1123456 goes out as 0x123456 —
 				// a different, possibly real, fault code
@@ -128,6 +157,14 @@ pub fn validate_uds(nodes []project.NodeCfg) []string {
 				warns << 'uds on "${n.name}": request id 0x${cfg.rx:X} is "${owner}"\'s response id — it would consume that ECU\'s replies'
 			}
 		}
+		if prev := by_tx_dup[cfg.tx] {
+			if prev != n.name {
+				// both ECUs answer on one id: a tester holding handles to both receives every
+				// reply on both, and one ECU's response can be consumed as the other's result
+				warns << 'uds on "${n.name}": response id 0x${cfg.tx:X} is also used by "${prev}"'
+			}
+		}
+		by_tx_dup[cfg.tx] = n.name
 		if prev := by_rx[cfg.rx] {
 			// two servers listening on one id both answer, and the tester sees whichever
 			// arrives first — a coin toss, not a configuration

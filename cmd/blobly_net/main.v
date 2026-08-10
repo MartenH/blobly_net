@@ -788,20 +788,38 @@ fn gen_loop(app &App) {
 // uds_node_loop answers one simulated ECU's diagnostic requests on its own addresses.
 fn uds_node_loop(app &App, iface string, name string, rx u32, tx u32, ext bool, srv uds.Server) {
 	a := unsafe { app }
-	mut ch := isotp.open_software(a.bitrate_iface(iface), tx, rx, ext) or { return }
 	mut s := srv
 	key := '${iface}:${name}'
+	mut ch := &isotp.SoftChannel(unsafe { nil })
+	mut open := false
+	defer {
+		if open {
+			ch.close()
+		}
+	}
 	for a.running {
-		// BEFORE recv, not after: SoftChannel.recv answers a First Frame with a Flow Control
-		// frame and consumes the transfer, so a disabled ECU that merely discarded the result
-		// was still visibly alive on the wire — which is exactly what a test simulating an
-		// offline ECU is looking for.
 		a.mu.lock()
 		on := a.sim_enabled[key] or { true }
 		a.mu.unlock()
 		if !on {
+			// CLOSE it, do not merely stop answering. Two things go wrong otherwise, and the
+			// previous two attempts each fixed one: leaving recv running answers a First Frame
+			// with Flow Control, so the "offline" ECU is still visible on the wire; and merely
+			// skipping recv leaves requests queued on the open channel, which are answered
+			// late once the ECU comes back. A closed channel does neither.
+			if open {
+				ch.close()
+				open = false
+			}
 			time.sleep(50 * time.millisecond)
 			continue
+		}
+		if !open {
+			ch = isotp.open_software(a.bitrate_iface(iface), tx, rx, ext) or {
+				time.sleep(200 * time.millisecond)
+				continue
+			}
+			open = true
 		}
 		req := ch.recv(50) or { continue }
 		resp := s.handle(req)
@@ -809,7 +827,6 @@ fn uds_node_loop(app &App, iface string, name string, rx u32, tx u32, ext bool, 
 			ch.send(resp) or {}
 		}
 	}
-	ch.close()
 }
 
 fn diag_server_loop(app &App, iface string) {

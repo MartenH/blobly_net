@@ -117,11 +117,19 @@ pub mut:
 	bytes []u8
 }
 
+// value_len is how many bytes this DID will actually carry on the wire.
+pub fn (d DidCfg) value_len() int {
+	return if d.bytes.len > 0 { d.bytes.len } else { d.text.len }
+}
+
 // DtcCfg is one stored fault: a 24-bit code and its status byte.
 pub struct DtcCfg {
 pub mut:
+	// Both wide, for the same reason DidCfg.id is: narrowing at parse time turns a mistake
+	// into a different VALID value — status 265 silently becomes 9, and the server then
+	// reports bits the project never asked for. Checked before narrowing, never at the cast.
 	code   u32
-	status u8 = 0x09 // confirmed + testFailed
+	status u32 = 0x09 // confirmed + testFailed
 }
 
 // ProtectCfg — end-to-end protection for one of the node's messages: an alive counter and/or
@@ -541,7 +549,7 @@ fn parse_node(n yaml.Any) NodeCfg {
 			for t in ts.array() {
 				ucfg.dtcs << DtcCfg{
 					code:   parse_id(t.value('code').str())
-					status: u8(t.value('status').default_to(i64(0x09)).int())
+					status: u32(t.value('status').default_to(i64(0x09)).int())
 				}
 			}
 		}
