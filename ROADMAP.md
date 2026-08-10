@@ -49,6 +49,19 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   responses instead of returning at the first, a passive listener for unsolicited announcements
   (the case that catches an ECU booting while you are already running), and a Scan action
   turning results into channels rather than hand-typed `doip:` strings.
+  **It is a change to three things, not one — the requester alone gets you nothing.**
+  (a) *Keep the source address.* `discover()` throws it away (`n, _ := u.read`) and
+  `VehicleInfo` carries only VIN, logical address, EID and GID — none of which is an endpoint.
+  A channel needs `doip:<host>[:<port>]`, so without retaining each responder's source (with
+  the IPv6 scope id where there is one) a Scan can list identities it cannot connect to.
+  (b) *Answer on the entity side.* `DoipServer.listen()` binds UDP to its own unicast
+  `host:port` and joins no multicast group, so the simulated entities receive neither an IPv4
+  subnet broadcast nor an IPv6 multicast — change only the requester and the repo's own
+  virtual ECUs stay silent, leaving nothing to test against. The entity-side socket and
+  hermetic tests belong in this item.
+  (c) *Send per interface.* Link-scoped multicast needs an outbound interface, and one send
+  covers one link; a multi-homed host must enumerate eligible interfaces and transmit on each,
+  keeping the scope that replied.
   **Both address families, and they are not the same mechanism:** IPv4 gets subnet broadcast,
   but IPv6 has no broadcast at all, so it needs link-local multicast. That is not a detail to
   discover during implementation — this repo already supports IPv6 DoIP endpoints
