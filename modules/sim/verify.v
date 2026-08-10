@@ -293,8 +293,17 @@ pub fn (mut s VerifySet) merge_into(other VerifySet) []string {
 	mut warns := []string{}
 	for k, v in other.by_key {
 		if existing := s.by_key[k] {
+			// data_id too: it is mixed into the checksum, so two entries agreeing on every
+			// other field but differing here produce DIFFERENT expected checksums. Treating
+			// them as identical retained the first and reported the other's traffic as !CRC
+			// with no conflict warning — the precise outcome merge_into exists to prevent.
+			same_id := match true {
+				existing.e2e.data_id == none && v.e2e.data_id == none { true }
+				else { (existing.e2e.data_id or { u32(0) }) == (v.e2e.data_id or { u32(1) })
+					&& existing.e2e.data_id != none && v.e2e.data_id != none }
+			}
 			if existing.e2e.counter == v.e2e.counter && existing.e2e.crc == v.e2e.crc
-				&& existing.e2e.profile == v.e2e.profile {
+				&& existing.e2e.profile == v.e2e.profile && same_id {
 				continue // the same entry twice: harmless
 			}
 			warns << 'verify: "${v.msg.name}" is configured differently on two channel entries sharing this bus — only the first applies'

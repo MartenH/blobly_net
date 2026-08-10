@@ -414,3 +414,32 @@ fn test_malformed_extended_selector_is_rejected() {
 	assert validate_verify(db, bad).any(it.contains('not true/false'))
 	assert verifiers_for(db, [], bad).by_key.len == 0, 'reported AND not built'
 }
+
+// data_id is mixed into the checksum, so two entries agreeing on every other field but
+// differing here expect DIFFERENT checksums. Treating them as identical kept the first and
+// reported the other's traffic as !CRC with no conflict warning.
+fn test_data_id_is_part_of_verifier_identity() {
+	mut m := vmsg()
+	m.name = 'Status'
+	m.id = 0x111
+	db := candb.Database{ messages: [m] }
+	mk := fn (db candb.Database, id ?u32) VerifySet {
+		return verifiers_for(db, [], [project.ProtectCfg{
+			message: 'Status'
+			crc:     'CRC'
+			profile: 'crc8_j1850'
+			data_id: id
+		}])
+	}
+	mut a := mk(db, u32(7))
+	assert a.merge_into(mk(db, u32(9))).len == 1, 'a different data_id is a conflict'
+
+	mut b := mk(db, u32(7))
+	assert b.merge_into(mk(db, u32(7))).len == 0, 'the same data_id is not'
+
+	mut c := mk(db, none)
+	assert c.merge_into(mk(db, u32(7))).len == 1, 'present vs absent is a conflict'
+
+	mut d := mk(db, none)
+	assert d.merge_into(mk(db, none)).len == 0, 'both absent is not'
+}

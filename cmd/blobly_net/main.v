@@ -285,6 +285,9 @@ struct SimCfg {
 	// Protection to CHECK on this bus, from the channel's `verify:` block. Separate from the
 	// nodes because the ECU under test is the one a rest-bus deliberately does not simulate.
 	verify []project.ProtectCfg
+	// The database PATHS this entry attached, so a recording can rebuild that entry's own view
+	// from the currently-loaded (edited) databases rather than an interface-wide merge.
+	db_paths []string
 }
 
 // Watch identifies one plotted signal.
@@ -699,11 +702,12 @@ fn (mut app App) load_recording(path string) {
 	mut verifiers := map[string]sim.VerifySet{}
 	mut alias := map[string]string{} // recorded label -> project iface
 	for sc in app.sims {
-		// The CURRENT databases, not the SimCfg's on-disk snapshot: with unsaved DBC-editor
-		// changes, app.dbs already drives trace naming and signal decoding, so verifying
-		// against the stale copy produced verdicts that disagreed with the layout shown
-		// everywhere else in the UI.
-		live := merge_dbs_from(app.dbs_for(sc.iface))
+		// Per ENTRY, from the CURRENTLY LOADED databases. Two things have to hold at once: an
+		// entry must see only its own DBCs (an interface-wide merge let a same-named message on
+		// a neighbour's database win, leaving this entry's id unchecked after reopening a
+		// capture that was checked live), and unsaved editor changes must be reflected, since
+		// app.dbs already drives naming and decoding everywhere else in the UI.
+		live := merge_dbs_from(app.loaded_dbs_for(sc.db_paths))
 		mut vs := verifiers[sc.iface] or { sim.VerifySet{} }
 		// `verify:` ONLY — the ECU under test's messages, never our own.
 		//
@@ -1308,8 +1312,9 @@ fn (mut app App) rebuild_from_proj() {
 			app.sims << SimCfg{
 				iface:  ch.iface
 				db:     merge_dbs(ch.databases.map(app.resolve_asset(it)))
-				nodes:  nodes
-				verify: ch.verify
+				nodes:    nodes
+				verify:   ch.verify
+				db_paths: ch.databases.map(app.resolve_asset(it))
 			}
 		}
 	}
@@ -3830,6 +3835,19 @@ fn trace_pass(r TraceRow, filt string) bool {
 	// gesture someone reaches for the moment they suspect one
 	hay := '${idstr(r.id, r.ext)} ${r.name} ${r.ch} ${r.dir} ${hex(r.data)} ${r.e2e}'.to_lower()
 	return hay.contains(filt)
+}
+
+// loaded_dbs_for returns the CURRENT in-memory database for each of these paths — the edited
+// copy where the editor has unsaved changes, skipping any path no longer loaded.
+fn (app &App) loaded_dbs_for(paths []string) []candb.Database {
+	mut out := []candb.Database{}
+	for p in paths {
+		i := app.dbs_paths.index(p)
+		if i >= 0 && i < app.dbs.len {
+			out << app.dbs[i]
+		}
+	}
+	return out
 }
 
 // merge_dbs_from flattens several loaded databases into one, for callers that already hold
