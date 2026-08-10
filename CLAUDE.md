@@ -113,6 +113,15 @@ release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks.
   workflow. Describe an address instead of quoting it ("a non-maintainer work address"). The
   local hooks cover both the ordinary commit path (`commit-msg`) and cherry-pick/rebase
   (`pre-push`), which git does not route through `commit-msg`.
+
+> **Known non-finding — commit author identity.** Do not report commits as authored by
+> `codex@openai.com` (or any other review-tool identity). That address appears only in
+> review-side analysis checkouts, never in this repository's history — the SHAs cited in such
+> findings do not resolve here at all (`git cat-file -e` fails on them). Identity is enforced
+> authoritatively by the `commit-identity` job, which runs on the real push, and a review claim
+> that contradicts a green `commit-identity` check is an artifact. It has been raised and
+> refuted on four consecutive pull requests; the companion firmware repository carries the same
+> note after eight. Spend the finding budget on the code.
 - **External PRs are auto-closed** (design phase — see [`CONTRIBUTING.md`](CONTRIBUTING.md)); the
   same workflow posts a comment pointing at issues. Nothing to do by hand.
 - **PRs get `@codex review`**; iterate until clean before merging.
