@@ -390,3 +390,87 @@ fn test_extended_response_resolves_its_frame_format() {
 	assert out[0].extended, 'the reply must go out extended'
 	assert out[0].data[7] != 0, 'and it must be protected'
 }
+
+// A checksum in an INACTIVE multiplexed branch must not be written: branches may reuse the
+// same payload bits, so stamping the wrong one corrupts the branch that is actually present.
+fn test_protection_ignores_inactive_multiplex_branches() {
+	m := candb.Message{
+		name: 'Muxed'
+		id:   0x200
+		dlc:  8
+		signals: [
+			candb.Signal{
+				name:           'Mux'
+				start_bit:      0
+				length:         8
+				byte_order:     .little_endian
+				factor:         1
+				is_multiplexor: true
+			},
+			candb.Signal{
+				name:              'CrcA'
+				start_bit:         56
+				length:            8
+				byte_order:        .little_endian
+				factor:            1
+				is_multiplexed:    true
+				multiplexor_value: 0
+			},
+			candb.Signal{
+				name:              'CrcB'
+				start_bit:         56 // same bits as CrcA — a legal multiplexed reuse
+				length:            8
+				byte_order:        .little_endian
+				factor:            1
+				is_multiplexed:    true
+				multiplexor_value: 1
+			},
+		]
+	}
+	// payload selects branch 1, but protection names branch 0's checksum
+	mut d := []u8{len: 8}
+	d[0] = 1
+	d[7] = 0x5A // branch B's data, which must survive
+	e := E2e{ crc: 'CrcA', profile: 'crc8_j1850' }
+	e.apply(m, mut d, 0)
+	assert d[7] == 0x5A, 'an inactive branch checksum must not overwrite the active branch'
+
+	// and when its branch IS selected, it is written
+	mut d2 := []u8{len: 8}
+	d2[0] = 0
+	e.apply(m, mut d2, 0)
+	assert d2[7] != 0, 'the active branch checksum must be written'
+}
+
+// Same numeric id as both a standard and an extended message: the one named by protect: is
+// the one meant, and the ambiguity is reported either way.
+fn test_ambiguous_response_id_prefers_the_protected_message() {
+	mut std_msg := protected_msg()
+	std_msg.id = 0x102
+	std_msg.name = 'StdResp'
+	std_msg.sender = 'SUT'
+	mut ext_msg := protected_msg()
+	ext_msg.id = 0x102
+	ext_msg.name = 'ExtResp'
+	ext_msg.ext = true
+	ext_msg.sender = 'SUT'
+	db := candb.Database{
+		nodes:    ['SUT']
+		messages: [std_msg, ext_msg] // standard first, so first-match would pick it
+	}
+	cfg := project.NodeCfg{
+		name:      'SUT'
+		responses: [project.ResponseCfg{ request: 0x101, response: 0x102, byte: 0, add: 1 }]
+		protect:   [project.ProtectCfg{
+			message: 'ExtResp'
+			counter: 'AliveCounter'
+			crc:     'CRC'
+			profile: 'crc8_j1850'
+		}]
+	}
+	ecu := from_project(db, cfg)
+	assert ecu.rules[0].resp_ext, 'the protected message names the intended format'
+
+	w := validate_protection(db, cfg)
+	assert w.any(it.contains('both a standard and an extended')), '${w}'
+}

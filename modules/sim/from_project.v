@@ -60,7 +60,7 @@ pub fn from_project(db candb.Database, cfg project.NodeCfg) SimEcu {
 			// lookup started matching on ext: no protection applied, and the reply emitted as
 			// a standard frame. Unresolved ids keep false, which is the correct default for a
 			// rule that names no DBC message at all.
-			resp_ext: resp_is_extended(db, cfg.name, r.response)
+			resp_ext: resp_is_extended(db, cfg, r.response)
 		}
 	}
 	return build_protected_ecu(db, cfg.name, gens, rules, prot)
@@ -78,6 +78,19 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 	mut msgs := map[string]candb.Message{}
 	for m in db.messages_from(cfg.name) {
 		msgs[m.name] = m
+	}
+	// A rule whose response id matches BOTH a standard and an extended message: the reply's
+	// format, DLC and protection all hinge on which one is chosen.
+	for r in cfg.responses {
+		mut fmts := map[string]bool{}
+		for m in db.messages_from(cfg.name) {
+			if m.id == r.response {
+				fmts['${m.ext}'] = true
+			}
+		}
+		if fmts.len > 1 {
+			warns << 'responses: id 0x${r.response:X} matches both a standard and an extended message — name the intended one in protect: to disambiguate'
+		}
 	}
 	mut seen := map[string]bool{}
 	for p in cfg.protect {
@@ -108,6 +121,13 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 		if p.crc != '' && p.crc !in have {
 			warns << 'protect: checksum "${p.crc}" is not a signal of ${p.message}'
 		}
+		// A multiplexed counter or checksum is only written when its branch is selected, so
+		// protection comes and goes with the payload — legal, but never what someone means.
+		for sg in m.signals {
+			if sg.is_multiplexed && (sg.name == p.counter || sg.name == p.crc) {
+				warns << 'protect: "${sg.name}" on ${p.message} is multiplexed — it is only written when its branch is active'
+			}
+		}
 		if p.counter != '' && p.counter == p.crc {
 			// apply() writes the counter, then zeroes that field to compute the checksum over
 			// it, then writes the checksum there — so the counter is overwritten and the frame
@@ -124,13 +144,30 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 // resp_is_extended reports the frame format the DBC gives the message with this id among the
 // node's own messages. False when nothing matches — a rule may legitimately name an id that is
 // not a DBC message.
-fn resp_is_extended(db candb.Database, node string, id u32) bool {
-	for m in db.messages_from(node) {
-		if m.id == id {
+//
+// A standard and an extended message may share a number, and ResponseCfg has no field to say
+// which is meant. When one of them is named by a `protect:` entry, that is the answer: you do
+// not configure protection for a message you did not intend to send. Otherwise the first match
+// wins and validate_cfg reports the ambiguity, rather than silently picking a format that
+// decides the reply's DLC and whether protection applies at all.
+fn resp_is_extended(db candb.Database, cfg project.NodeCfg, id u32) bool {
+	mut protected_names := map[string]bool{}
+	for p in cfg.protect {
+		protected_names[p.message] = true
+	}
+	mut first := ?bool(none)
+	for m in db.messages_from(cfg.name) {
+		if m.id != id {
+			continue
+		}
+		if m.name in protected_names {
 			return m.ext
 		}
+		if first == none {
+			first = m.ext
+		}
 	}
-	return false
+	return first or { false }
 }
 
 // attach_protection applies per-message protection to an already-built ECU.

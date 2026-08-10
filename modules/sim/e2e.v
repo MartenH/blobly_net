@@ -115,8 +115,12 @@ pub fn (e E2e) apply(msg candb.Message, mut data []u8, n int) {
 	if !e.active() {
 		return
 	}
+	// Only signals ACTUALLY PRESENT in this payload. A multiplexed message's branches may
+	// legally reuse the same bits, so writing a checksum field belonging to an inactive branch
+	// would corrupt the active one. For a non-multiplexed message active_signals returns
+	// everything, so this costs nothing in the ordinary case.
 	if e.counter != '' {
-		for sig in msg.signals {
+		for sig in msg.active_signals(data) {
 			if sig.name == e.counter {
 				span := if sig.length >= 64 { u64(0) } else { u64(1) << sig.length }
 				v := if span == 0 { u64(n) } else { u64(n) % span }
@@ -132,7 +136,9 @@ pub fn (e E2e) apply(msg candb.Message, mut data []u8, n int) {
 	if e.crc == '' {
 		return
 	}
-	for sig in msg.signals {
+	// recomputed after the counter write: if the counter is itself the multiplexor switch,
+	// the active branch has just changed
+	for sig in msg.active_signals(data) {
 		if sig.name != e.crc {
 			continue
 		}
