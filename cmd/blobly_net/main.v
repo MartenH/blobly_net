@@ -5962,6 +5962,14 @@ mut:
 	node_buf       []u8
 	view_tree      bool = true // toggle between Tree view and Table view
 	left_w         f32  // draggable width (px) of the messages&signals pane; 0 = use the default
+	// An in-progress bit-endpoint edit. An input field commits on EVERY keystroke, so a handler
+	// that derives the width from the opposite endpoint would measure each keystroke against an
+	// anchor the previous one already moved — typing a higher start collapsed the span to one
+	// bit (#68). The edit is therefore held here and applied once, on deactivation, against the
+	// anchor captured when it began.
+	bit_edit_key    string // '<field>:<db>:<msg>:<sig>' while that field is being edited
+	bit_edit_val    int    // the in-progress value (the field shows this, not the model)
+	bit_edit_anchor int    // the opposite endpoint, snapshotted when the edit began
 }
 
 // dbc_ed_color: a deterministic per-signal palette for the bit grid.
@@ -6546,7 +6554,21 @@ fn draw_dbc_editor(mut app App) {
 
 	// draggable divider: grow/shrink the left (messages & signals) pane vs the right (inspector)
 	vgui.same_line()
-	app.dbc_ed.left_w = vgui.splitter_v('##dbced_split', app.dbc_ed.left_w, 200 * sc, 760 * sc)
+	// Clamp the persisted width against what the panel has NOW: left_w survives docking and
+	// resizing, so a divider dragged wide in a large window could otherwise consume a narrower
+	// one entirely and leave the inspector unreachable (#68). The right pane keeps 200*sc.
+	avail := vgui.content_avail_w()
+	mut max_left := 760 * sc
+	if avail > 0 && avail - 200 * sc < max_left {
+		max_left = avail - 200 * sc
+	}
+	if max_left < 200 * sc {
+		max_left = 200 * sc
+	}
+	if app.dbc_ed.left_w > max_left {
+		app.dbc_ed.left_w = max_left
+	}
+	app.dbc_ed.left_w = vgui.splitter_v('##dbced_split', app.dbc_ed.left_w, 200 * sc, max_left)
 	vgui.same_line()
 
 	// --- RIGHT PANE: Message Properties, Bit Layout Grid, Signal Inspector ---
@@ -6905,44 +6927,64 @@ fn draw_dbc_editor(mut app App) {
 	// A signal's bit span is defined by its two endpoints: start bit + stop bit (the width is
 	// derived, stop - start + 1). No separate "len" field and no +/- steppers — you set where
 	// the bits begin and end. (Little-endian contiguous span; big-endian keeps DBC semantics.)
-	mut sbv := sg.start_bit
 	lnv := sg.length
-	mut stop_bit := sbv + lnv - 1
+	stop_bit := sg.start_bit + lnv - 1
+	sb_key := 'start:${di}:${mi}:${si}'
+	// While this field is being edited the FIELD owns the value, not the model — otherwise the
+	// next frame resets it to the unchanged model and the edit snaps back mid-typing.
+	mut sbv := if app.dbc_ed.bit_edit_key == sb_key { app.dbc_ed.bit_edit_val } else { sg.start_bit }
 
 	vgui.same_line()
 	vgui.set_next_item_width(65 * sc)
-	// KNOWN LIMITATION (#68): input_int commits on every keystroke, and this handler holds the
-	// stop endpoint and re-derives the width — so typing a HIGHER start applies the intermediate
-	// digits too, each against a stop that already moved, and the span collapses. Lowering start
-	// is safe. Fixing it needs a commit-on-deactivate binding vgui does not have, so the
-	// limitation is accepted and surfaced rather than left silent.
-	if !ro {
-		vgui.text_dim('(raise start via the stop bit — #68)')
-		vgui.same_line()
-	}
 	if !ro && vgui.input_int('start bit', &sbv) {
-		mut ns := if sbv < 0 { 0 } else { sbv }
-		// start and stop are the two ENDPOINTS of one contiguous Intel span, so start can never
-		// pass stop. Writing it anyway left the old width in place (0..7 given start 9 became
-		// 9..16) — the same silent bit-shift the endpoint model exists to prevent, arriving from
-		// the other side. Clamp rather than accept an inverted span (codex #65 r4).
-		if sg.byte_order != .big_endian && ns > stop_bit {
-			ns = stop_bit
+		if app.dbc_ed.bit_edit_key != sb_key {
+			// the edit begins here: snapshot the endpoint we will hold it against, so later
+			// keystrokes are measured against where the span was BEFORE typing started (#68)
+			app.dbc_ed.bit_edit_key = sb_key
+			app.dbc_ed.bit_edit_anchor = stop_bit
 		}
-		app.mu.lock()
-		app.dbs[di].messages[mi].signals[si].start_bit = ns
-		// Intel edits the span by its two ENDPOINTS, so moving `start` must hold `stop` and
-		// re-derive the width — keeping the old length instead slid the signal's trailing bits
-		// (0..7 given start 2 became 2..9 rather than 2..7), silently moving data (codex #65).
-		// Big-endian keeps its length: its stop bit is a sawtooth walk, not start+len-1.
+		app.dbc_ed.bit_edit_val = sbv
+	}
+	if !ro && app.dbc_ed.bit_edit_key == sb_key && vgui.is_item_deactivated_after_edit() {
+		anchor := app.dbc_ed.bit_edit_anchor
+		mut ns := if app.dbc_ed.bit_edit_val < 0 { 0 } else { app.dbc_ed.bit_edit_val }
+		// start and stop are the two ENDPOINTS of one contiguous Intel span, so start cannot
+		// pass stop — clamp rather than accept an inverted span (codex #65 r4).
+		if sg.byte_order != .big_endian && ns > anchor {
+			ns = anchor
+		}
+		// Intel edits the span by its endpoints, so moving start holds stop and re-derives the
+		// width; keeping the old length slid the trailing bits (codex #65 r3). Big-endian keeps
+		// its length — its stop bit is a sawtooth walk, not start + len - 1.
+		mut nl := lnv
 		if sg.byte_order != .big_endian {
-			nl := stop_bit - ns + 1
-			if nl >= 1 && nl <= 64 {
-				app.dbs[di].messages[mi].signals[si].length = nl
+			nl = anchor - ns + 1
+		}
+		if nl < 1 {
+			nl = 1
+		}
+		// The width editor refuses a narrowing that would not hold the existing VAL_ keys; the
+		// start path reached the same outcome without that check, so the writer masked stale
+		// keys on save — remapping or colliding them (#68). Apply the same guard.
+		nmask := if nl >= 64 { ~u64(0) } else { (u64(1) << nl) - 1 }
+		mut val_clash := false
+		for k, _ in sg.values {
+			if k & ~nmask != 0 {
+				val_clash = true
 			}
 		}
-		app.mu.unlock()
-		app.mark_dirty(di)
+		if val_clash {
+			app.notify('start ${ns} would narrow ${sg.name} to ${nl} bit(s), which cannot hold its value-table keys — remove them first')
+		} else {
+			app.mu.lock()
+			app.dbs[di].messages[mi].signals[si].start_bit = ns
+			if sg.byte_order != .big_endian {
+				app.dbs[di].messages[mi].signals[si].length = nl
+			}
+			app.mu.unlock()
+			app.mark_dirty(di)
+		}
+		app.dbc_ed.bit_edit_key = ''
 	}
 	vgui.same_line()
 	vgui.set_next_item_width(65 * sc)
@@ -6951,9 +6993,27 @@ fn draw_dbc_editor(mut app App) {
 	// stop - start + 1 is NOT the width — editing an endpoint there would silently corrupt
 	// it (codex #65). Edit the length directly for big-endian.
 	be := sg.byte_order == .big_endian
-	mut widthv := if be { lnv } else { stop_bit }
+	w_key := 'width:${di}:${mi}:${si}'
+	mut widthv := if app.dbc_ed.bit_edit_key == w_key {
+		app.dbc_ed.bit_edit_val
+	} else if be {
+		lnv
+	} else {
+		stop_bit
+	}
 	if !ro && vgui.input_int(if be { 'length' } else { 'stop bit' }, &widthv) {
-		nl_raw := if be { widthv } else { widthv - sbv + 1 }
+		if app.dbc_ed.bit_edit_key != w_key {
+			// same reasoning as the start field: hold the START endpoint as it was when typing
+			// began, so intermediate keystrokes are not measured against a moving anchor (#68)
+			app.dbc_ed.bit_edit_key = w_key
+			app.dbc_ed.bit_edit_anchor = sg.start_bit
+		}
+		app.dbc_ed.bit_edit_val = widthv
+	}
+	if !ro && app.dbc_ed.bit_edit_key == w_key && vgui.is_item_deactivated_after_edit() {
+		widthv = app.dbc_ed.bit_edit_val
+		app.dbc_ed.bit_edit_key = ''
+		nl_raw := if be { widthv } else { widthv - app.dbc_ed.bit_edit_anchor + 1 }
 		nl := if nl_raw < 1 { 1 } else if nl_raw > 64 { 64 } else { nl_raw }
 		nmask := if nl >= 64 { ~u64(0) } else { (u64(1) << nl) - 1 }
 		mut val_clash := false

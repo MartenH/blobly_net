@@ -89,6 +89,13 @@ int  vgui_button(const char* label);
 int  vgui_button_big(const char* label, int r, int g, int b, float w, float h);
 // vertical splitter handle between two side-by-side panes; returns the updated left width (px).
 float vgui_splitter_v(const char* id, float w, float min_w, float max_w);
+// width still available in the current window/child (px) — for clamping a persisted pane width
+// against a panel that has since been docked or resized narrower.
+float vgui_content_avail_w(void);
+// true on the frame the PREVIOUS item stopped being edited and its value changed. An input
+// field commits on every keystroke, so a handler that derives one value from another must
+// apply on commit, not per keystroke, or intermediate digits mutate the anchor it derives from.
+int  vgui_is_item_deactivated_after_edit(void);
 void vgui_same_line(void);
 void vgui_separator_text(const char* s);
 int  vgui_table_begin(const char* id, int cols);
