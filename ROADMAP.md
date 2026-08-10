@@ -66,7 +66,15 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   and language server carry it on every keystroke. The split is per-panel (Trace, Graphics,
   System, DBC editor, Diagnostics, Shell, Generators) plus the app state, which is roughly how
   the file is already organised internally — so the panel bodies are a mechanical move rather
-  than a redesign. **The app state is not.** `App` embeds the optional modules' types directly
+  than a redesign. **Two things around them are not.**
+  First, **the build entry point has to move with them.** Every build names the single file:
+  `scripts/run_gui.sh` (lines 36 and 89-92) and `.github/workflows/windows.yml` (line 107) all
+  pass `cmd/blobly_net/main.v`. V compiling one file does not pull in its siblings, so the
+  moment a panel leaves `main.v` those builds fail on undefined symbols — locally, in CI and on
+  the Windows bundle at once. Switch them to compile the directory, or make the panels imported
+  modules; either way it lands in the same commit as the first move, with all three builds
+  verified, not afterwards.
+  Second, **the app state.** `App` embeds the optional modules' types directly
   (`telem.Manifest`, `sysview.System`), so moving panel functions into new files leaves the core
   importing exactly what the tiering item below says it must not. Extracting or abstracting that
   state — an interface, or a side table the optional panels own — is part of this work, not a
