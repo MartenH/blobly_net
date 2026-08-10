@@ -16,7 +16,11 @@ fn main() {
 		exit(2)
 	}
 	println('project: ${p.name}, channels=${p.channels.len}')
-	proj_dir := os.dir(os.real_path(path))
+	// os.dir(path), exactly as cmd/script/run.v and the GUI do — NOT real_path, which
+	// dereferences a symlink and would resolve relative DBCs beside the target instead of
+	// beside the link. A symlinked project could then pass this check while the runner it is
+	// meant to predict loaded an empty database.
+	proj_dir := os.dir(path)
 	mut total_msgs := 0
 	mut failed := 0
 	for ch in p.channels {
