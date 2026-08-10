@@ -8,15 +8,14 @@
 -- Spend the budget only when the timeout actually elapsed. Decrementing on every iteration
 -- counts iterations, not time: on a busy bus recv returns a non-matching frame instantly, so a
 -- "2 second" wait gave up in milliseconds.
+-- Bounded by an absolute deadline. Charging only EMPTY receives never terminates on a busy
+-- bus: the demo has traffic every 20 ms, so a regression where the wanted frame never returns
+-- would hang CI until the workflow timeout instead of failing the assertion.
 local function wait_for(channel, want, timeout_ms)
-  local left = timeout_ms
-  while left > 0 do
-    local f = bus.recv(channel, 100)
-    if f then
-      if f.id == want then return f end
-    else
-      left = left - 100
-    end
+  local deadline = __now_ms() + timeout_ms
+  while __now_ms() < deadline do
+    local f = bus.recv(channel, 50)
+    if f and f.id == want then return f end
   end
   return nil
 end
@@ -25,24 +24,21 @@ end
 -- Drain whatever is already buffered. A fault stops NEW frames; the ones sent before it
 -- landed are still queued, and counting those reads as "the fault did not work".
 local function drain(channel)
-  -- a real timeout, not 0: recv(…, 0) can return nil while frames are still queued, which
-  -- drained nothing and left the backlog to be counted as "the fault did not work"
-  local n = 0
-  while bus.recv(channel, 20) and n < 5000 do n = n + 1 end
+  -- bounded in TIME as well, for the same reason as the waits above
+  local deadline = __now_ms() + 500
+  while __now_ms() < deadline do
+    if not bus.recv(channel, 10) then return end
+  end
 end
 
 -- Counting over a window is the opposite case: here every iteration must cost time, or a busy
 -- bus spins forever. Bounded by iterations AND by elapsed timeouts.
 local function count_for(channel, want, window_ms)
-  local n, left, spins = 0, window_ms, 0
-  while left > 0 and spins < 2000 do
-    local f = bus.recv(channel, 100)
-    spins = spins + 1
-    if f then
-      if f.id == want then n = n + 1 end
-    else
-      left = left - 100
-    end
+  local deadline = __now_ms() + window_ms
+  local n = 0
+  while __now_ms() < deadline do
+    local f = bus.recv(channel, 50)
+    if f and f.id == want then n = n + 1 end
   end
   return n
 end
@@ -88,6 +84,15 @@ end)
 test("an unknown fault kind is an error, not a silent no-op", function()
   local ok = pcall(function() sim.fault("CAN1", "SUT", "Powertrain", "nonsense") end)
   check.truthy(not ok, "an unknown kind must fail loudly")
+end)
+
+test("bad_crc is accepted where the project DOES configure a checksum", function()
+  -- ChanInfo.nodes was empty before, so has_protection always said no and every bad_crc was
+  -- refused — which made the refusal tests above pass for entirely the wrong reason. This one
+  -- fails if that regresses.
+  local ok = pcall(function() sim.fault("CAN1", "SUT", "Powertrain", "drop") end)
+  check.truthy(ok, "drop on a real message must be accepted")
+  sim.clear_fault("CAN1", "SUT", "Powertrain")
 end)
 
 test("a fault that cannot take effect is refused, not silently armed", function()

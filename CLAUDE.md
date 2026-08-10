@@ -151,6 +151,12 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
 
 - [scripting.md](docs/scripting.md) · [dbc_editor.md](docs/dbc_editor.md) ·
   [project_editing.md](docs/project_editing.md) · [bus_config_dialog.md](docs/bus_config_dialog.md)
+- **Fault injection** (`modules/sim/fault.v`): drop / bad_crc / freeze_counter / out_of_range
+  per message, from the Simulation panel or `sim.fault(channel, node, message, kind, ms)` in
+  Lua. Applied around protection, not after it — `out_of_range` goes on BEFORE the checksum is
+  stamped (so the receiver reaches its range handling instead of rejecting a CRC error) and
+  `bad_crc` after. One process-wide table (`sim.inject`), keyed by interface+node+message, so
+  the panel and scripts cannot disagree. A fault that cannot take effect is refused loudly.
 - [simulation.md](docs/simulation.md) — the simulation user manual (rest-bus, generators,
   senders, replay, end-to-end protection) ·
   [doip.md](docs/doip.md) — the DoIP user manual (supported vs planned) ·

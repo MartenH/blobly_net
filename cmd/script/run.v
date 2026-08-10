@@ -67,12 +67,14 @@ fn main() {
 			continue
 		}
 		db := load_channel_db(ch)
-		chans << script.ChanInfo{
-			name:  ch.name
-			iface: ch.iface
-			db:    db
-		}
 		nodes := ch.all_nodes()
+		chans << script.ChanInfo{
+			name:      ch.name
+			iface:     ch.iface
+			key_iface: ch.iface
+			db:        db
+			nodes:     nodes // so a fault that cannot take effect can be refused
+		}
 		if nodes.len > 0 {
 			spawn sim_loop(ch.iface, db, nodes, ctl)
 			// Diagnostics are per BUS and decided ONCE. Skipping outright after the first

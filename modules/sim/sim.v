@@ -258,8 +258,14 @@ pub fn (mut e Engine) on_frame(f transport.CanFrame) []transport.CanFrame {
 				// `ext` as well as the numeric id: a standard and an extended message may share
 				// a number, and matching on the id alone could take the other one's DLC,
 				// protection layout and counter while the frame goes out in this one's format.
-				if m.msg.id != r.resp_id || m.msg.ext != r.resp_ext || !m.e2e.active() {
+				// Match the response MESSAGE regardless of whether it is protected: faults
+				// apply to any response, and requiring protection here meant `drop` and
+				// `out_of_range` silently did nothing on an ordinary response rule.
+				if m.msg.id != r.resp_id || m.msg.ext != r.resp_ext {
 					continue
+				}
+				if !m.e2e.active() && !m.fault.active() {
+					continue // nothing to stamp and nothing to break
 				}
 				// Size the payload to the RESPONSE message's DLC first. `data` is the REQUEST
 				// cloned, and the two need not be the same length: a shorter request leaves the
@@ -268,14 +274,18 @@ pub fn (mut e Engine) on_frame(f transport.CanFrame) []transport.CanFrame {
 				// worst of both. A longer one makes the checksum cover bytes the receiver never
 				// sees. Only the protected path resizes; an unprotected rule stays the plain
 				// echo of the request that it is documented to be.
-				mut buf := []u8{len: m.msg.dlc}
+				// Only a PROTECTED response is resized to its DBC dlc; an unprotected rule
+				// stays the plain echo of the request it is documented to be.
+				mut buf := []u8{len: if m.e2e.active() { m.msg.dlc } else { data.len }}
 				for k in 0 .. buf.len {
 					if k < data.len {
 						buf[k] = data[k]
 					}
 				}
 				m.fault.apply_pre(m.msg, mut buf)
-				m.e2e.apply(m.msg, mut buf, m.e2e_n)
+				if m.e2e.active() {
+					m.e2e.apply(m.msg, mut buf, m.e2e_n)
+				}
 				m.send_n++
 				if m.fault.kind != .freeze_ctr {
 					m.e2e_n++

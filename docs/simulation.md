@@ -270,9 +270,11 @@ Per message, from the Simulation panel or from a script:
 From Lua, which is what makes a fault a regression test rather than a demo:
 
 ```lua
+local d = uds.open("CAN1", { tx = 0x7E0, rx = 0x7E8 })
+
 sim.fault("CAN1", "BCM", "Powertrain", "drop", 3000)  -- 3 s, then it clears itself
 sleep_ms(3500)
-check.truthy(dtc_present(0x900101), "no timeout DTC after the message stopped")
+check.truthy(#d:read_dtcs() > 0, "no DTC after the message stopped arriving")
 
 sim.fault("CAN1", "BCM", "Powertrain", "bad_crc")     -- until cleared
 sim.clear_fault("CAN1", "BCM", "Powertrain")

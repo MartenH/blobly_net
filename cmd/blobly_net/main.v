@@ -1826,6 +1826,7 @@ fn draw_sim(mut app App) {
 					// configured checksum changes no bits, and out_of_range needs a signal with
 					// an illegal value — offering either would show a fault the bus never sees.
 					has_crc := node.protect.any(it.message == m.name && it.crc != '')
+					has_ctr := node.protect.any(it.message == m.name && it.counter != '')
 					mut oor_sig := ''
 					for sg in m.signals {
 						if sim.can_force_out_of_range(m, sg.name) {
@@ -1835,9 +1836,14 @@ fn draw_sim(mut app App) {
 					}
 					mut kinds := ['normal', 'drop']
 					mut kind_of := [sim.FaultKind.none_, .drop]
+					// Independently: a counter-only entry can be frozen but has no checksum to
+					// corrupt, and a crc-only entry the reverse. Gating both on the checksum
+					// offered one fault that changes nothing and hid one that works.
 					if has_crc {
 						kinds << 'bad crc'
 						kind_of << .bad_crc
+					}
+					if has_ctr {
 						kinds << 'freeze counter'
 						kind_of << .freeze_ctr
 					}
@@ -5581,10 +5587,18 @@ fn script_worker(app &App, path string) {
 	mut chans := []script.ChanInfo{}
 	first_db := if a.dbs.len > 0 { a.dbs[0] } else { candb.Database{} }
 	for ch in a.chans {
+		mut sim_nodes := []project.NodeCfg{}
+		for sc in a.sims {
+			if sc.iface == ch.iface {
+				sim_nodes << sc.nodes
+			}
+		}
 		chans << script.ChanInfo{
-			name:  ch.name
-			iface: a.bitrate_iface(ch.iface) // pcan/kvaser: carry @<bitrate> so scripts open at the right rate
-			db:    first_db
+			name:      ch.name
+			iface:     a.bitrate_iface(ch.iface) // pcan/kvaser: @<bitrate> so scripts open right
+			key_iface: ch.iface // faults key on the LOGICAL interface, not the opened string
+			db:        first_db
+			nodes:     sim_nodes // so a fault that cannot take effect can be refused
 		}
 	}
 	mut env := script.new_env(chans) or {

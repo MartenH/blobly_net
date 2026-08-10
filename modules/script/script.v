@@ -23,9 +23,14 @@ import project
 // the DBC catalog used for decode/encode on it.
 pub struct ChanInfo {
 pub:
-	name  string
+	name string
+	// The string a transport is OPENED with — it may carry a vendor bitrate suffix.
 	iface string
-	db    candb.Database
+	// The LOGICAL interface, without that suffix. Faults are keyed on this: the GUI opened
+	// with `pcan:…@250000` and the simulation loop looks up `pcan:…`, so a scripted fault on a
+	// vendor channel reported success and was stored under a key nothing would ever read.
+	key_iface string
+	db        candb.Database
 	// The simulated nodes on this channel. Carried so a script can be told that a fault cannot
 	// work — `bad_crc` on a message with no configured checksum changes no bits, and silently
 	// succeeding there is the difference between a test that fails and a test that lies.
@@ -230,7 +235,7 @@ fn l_sim_fault(l lua.State) int {
 	ms := l.arg_int(5)
 	signal := l.arg_str(6)
 	ci := env.find_chan(chan_name) or { return l.fail('unknown channel "${chan_name}"') }
-	iface := env.chans[ci].iface
+	iface := env.chans[ci].fault_iface()
 	k := match kind {
 		'none', 'clear', '' { sim.FaultKind.none_ }
 		'drop' { sim.FaultKind.drop }
@@ -273,6 +278,19 @@ fn l_sim_fault(l lua.State) int {
 			if sg == '' {
 				return l.fail('no signal on "${msg}" has a value outside its declared range')
 			}
+			// Validate a signal the caller NAMED as well. Only the auto-picked case was
+			// checked, so a misspelled or full-width signal was stored happily and then
+			// transmitted an unchanged frame — the exact "armed but does nothing" outcome the
+			// rest of this validation exists to prevent.
+			mut usable := false
+			for m in env.chans[ci].db.messages_from(node) {
+				if m.name == msg && sim.can_force_out_of_range(m, sg) {
+					usable = true
+				}
+			}
+			if !usable {
+				return l.fail('"${sg}" on "${msg}" has no value outside its declared range')
+			}
 			sim.inject(iface, node, msg, sim.Fault{
 				kind:         k
 				signal:       sg
@@ -296,6 +314,12 @@ fn l_sim_fault(l lua.State) int {
 		remaining_ms: int(ms)
 	})
 	return 0
+}
+
+// fault_iface is the key faults are stored under — the logical interface, falling back to the
+// transport string for channels that never had a separate one.
+pub fn (c ChanInfo) fault_iface() string {
+	return if c.key_iface != '' { c.key_iface } else { c.iface }
 }
 
 // has_protection reports whether the project gives this message the E2E field a fault needs.
