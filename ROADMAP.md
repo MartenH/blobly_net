@@ -91,11 +91,18 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   the Windows bundle at once. Switch them to compile the directory, or make the panels imported
   modules; either way it lands in the same commit as the first move, with all three builds
   verified, not afterwards.
-  Second, **the app state.** `App` embeds the optional modules' types directly
+  Second, **the app state — and the core paths that speak telemetry.** `App` embeds the optional modules' types directly
   (`telem.Manifest`, `sysview.System`), so moving panel functions into new files leaves the core
   importing exactly what the tiering item below says it must not. Extracting or abstracting that
   state — an interface, or a side table the optional panels own — is part of this work, not a
   free consequence of it, and it is the part to schedule time for.
+  It reaches past the state, too: `telem` appears **43 times** in `main.v`, and not only in
+  panels. `TRec` — the core trace row — embeds a `telem.Record` (~55-60); the CAN RX path
+  decodes trace responses inline (~862); and project rebuilding loads and classifies manifests
+  (~1083-1101). Those are core responsibilities that happen to speak an optional module's
+  types, so no amount of moving *panels* dislodges them. They go behind a callback the
+  optional panel registers, or into the telemetry-owned file — decided as part of this item,
+  because it is what determines whether `core must not import telem` is achievable at all.
   Deliberately **not** urgent: it touches the one file every in-flight branch also touches, so
   it wants a quiet moment with nothing else open, not a slot between features. It is also the
   **lever for the tiering below** — panels cannot be separated while they all live in one file.
