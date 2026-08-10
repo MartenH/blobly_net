@@ -344,11 +344,16 @@ A channel with only `verify:` and no `simulation:` transmits **nothing at all** 
 no diagnostic server — so it can watch a real bench without putting anything on the wire beside
 the ECU under test.
 
-Add `id:` when a message name is ambiguous (merged databases can carry one name at two ids):
+Add `id:` — and `extended:` where one id exists in both formats — when a message name is
+ambiguous, since merged databases can carry one name several times:
 
 ```yaml
-      - { message: Status, id: "0x222", counter: Cnt, crc: CRC }
+      - { message: Status, id: "0x222", extended: false, counter: Cnt, crc: CRC }
 ```
+
+**One entry per message**, with the counter and the checksum together. Split across two entries
+the second replaces the first, so half the checks would silently not run; that is reported, and
+the first entry wins so the result is at least deterministic.
 
 Entries that would check nothing are reported when the measurement starts — an unknown message,
 a signal the message does not have, an ambiguous name, or an entry naming neither field. A
@@ -372,7 +377,9 @@ They are searchable, so typing `!crc` in the trace filter shows only the bad fra
 appear in both the grouped and flat trace views.
 
 Recordings are checked too: loading a `.log` or `.mf4` capture re-runs the verification, so a
-violation seen live is still there after saving and reopening. A recording labels its channel
+violation seen live is still there after saving and reopening. Only the channel's `verify:`
+entries are applied there — a candump log carries no direction, so a capture made while the tool
+was transmitting would otherwise replay our OWN frames as received and report false failures. A recording labels its channel
 with whatever the writer used — a display name for our own captures, a bare `can` for MF4 —
 so those are matched back to the project's channels; with a single simulated bus an
 unrecognised label resolves to it, and with several it is left unchecked rather than guessed at.

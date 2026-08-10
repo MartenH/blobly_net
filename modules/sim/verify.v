@@ -196,7 +196,16 @@ pub fn verifiers_for(db candb.Database, nodes []project.NodeCfg, verify []projec
 					continue // an explicit id disambiguates a name carried by several messages
 				}
 			}
-			out.by_key[vkey(m.id, m.ext)] = Verifier{
+			if want := p.extended {
+				if m.ext != want {
+					continue // one id can exist in BOTH formats; the selector must say which
+				}
+			}
+			k := vkey(m.id, m.ext)
+			if k in out.by_key {
+				break // first wins; a duplicate is reported by validate_verify
+			}
+			out.by_key[k] = Verifier{
 				msg: m
 				e2e: E2e{
 					counter: p.counter
@@ -244,7 +253,19 @@ pub fn verifiers_for(db candb.Database, nodes []project.NodeCfg, verify []projec
 // worse than no check, because it is trusted.
 pub fn validate_verify(db candb.Database, verify []project.ProtectCfg) []string {
 	mut warns := []string{}
+	mut claimed := map[string]string{}
 	for p in verify {
+		if p.id_malformed {
+			// a stripped character produces a different VALID id, so the entry binds to
+			// whatever lives there and no range check can see the mistake
+			warns << 'verify: the id on "${p.message}" is not a valid number — entry ignored'
+			continue
+		}
+		if p.crc != '' && p.profile !in ['crc8_j1850', 'crc8_autosar', 'sum8', 'xor8'] {
+			// checksum_of falls back to sum8, so real traffic using the intended algorithm is
+			// reported corrupt while the configuration looks fine
+			warns << 'verify: unknown profile "${p.profile}" on ${p.message} — traffic would be reported corrupt'
+		}
 		mut matches := []candb.Message{}
 		for m in db.messages {
 			if m.name != p.message {
@@ -255,6 +276,11 @@ pub fn validate_verify(db candb.Database, verify []project.ProtectCfg) []string 
 					continue
 				}
 			}
+			if want := p.extended {
+				if m.ext != want {
+					continue
+				}
+			}
 			matches << m
 		}
 		if matches.len == 0 {
@@ -262,11 +288,18 @@ pub fn validate_verify(db candb.Database, verify []project.ProtectCfg) []string 
 			continue
 		}
 		if matches.len > 1 {
-			ids := matches.map('0x${it.id:X}').join(', ')
-			warns << 'verify: "${p.message}" matches several messages (${ids}) — add an id: to say which'
+			ids := matches.map('0x${it.id:X}${if it.ext { ' ext' } else { '' }}').join(', ')
+			warns << 'verify: "${p.message}" matches several messages (${ids}) — add an id:/extended: to say which'
 			continue
 		}
 		m := matches[0]
+		// Two entries resolving to ONE message: the second replaced the first, so naming a
+		// counter in one and a checksum in the other silently disabled half the checks.
+		k := '${m.id}|${m.ext}'
+		if prev := claimed[k] {
+			warns << 'verify: "${p.message}" and "${prev}" both describe 0x${m.id:X} — only the first applies; put counter and crc in ONE entry'
+		}
+		claimed[k] = p.message
 		mut have := map[string]bool{}
 		for sg in m.signals {
 			have[sg.name] = true

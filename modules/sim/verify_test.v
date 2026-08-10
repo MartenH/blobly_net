@@ -280,3 +280,57 @@ fn test_ambiguous_verify_names_need_an_id() {
 	assert vkey(0x222, false) in set.by_key, 'the id: must select the intended message'
 	assert vkey(0x111, false) !in set.by_key
 }
+
+// The classes already fixed for protect: and uds: apply here too — a verify: entry was added
+// without carrying them over, so each could silently disable the check it configures.
+fn test_validate_verify_catches_the_familiar_configuration_traps() {
+	mut a := vmsg()
+	a.name = 'Status'
+	a.id = 0x111
+	db := candb.Database{ messages: [a] }
+
+	// an unknown profile: checksum_of falls back to sum8 and real traffic reads as corrupt
+	bad_prof := [project.ProtectCfg{ message: 'Status', crc: 'CRC', profile: 'typo' }]
+	assert validate_verify(db, bad_prof).any(it.contains('unknown profile'))
+
+	// two entries for one message: the second replaced the first, disabling half the checks
+	split := [
+		project.ProtectCfg{ message: 'Status', counter: 'AliveCounter', profile: 'crc8_j1850' },
+		project.ProtectCfg{ message: 'Status', crc: 'CRC', profile: 'crc8_j1850' },
+	]
+	assert validate_verify(db, split).any(it.contains('only the first applies'))
+	set := verifiers_for(db, [], split)
+	assert set.by_key[vkey(0x111, false)] or { panic('none') }.e2e.counter == 'AliveCounter',
+		'the FIRST entry must win, deterministically'
+
+	// a malformed id binds to whatever lives at the repaired value
+	bad_id := [project.ProtectCfg{ message: 'Status', crc: 'CRC', profile: 'crc8_j1850', id_malformed: true }]
+	assert validate_verify(db, bad_id).any(it.contains('not a valid number'))
+}
+
+// One id can exist in BOTH formats, so an id: alone cannot disambiguate it.
+fn test_verify_selects_on_frame_format_too() {
+	mut std_m := vmsg()
+	std_m.name = 'Dual'
+	std_m.id = 0x300
+	mut ext_m := vmsg()
+	ext_m.name = 'Dual'
+	ext_m.id = 0x300
+	ext_m.ext = true
+	db := candb.Database{ messages: [std_m, ext_m] }
+
+	just_id := [project.ProtectCfg{ message: 'Dual', crc: 'CRC', profile: 'crc8_j1850', id: u32(0x300) }]
+	assert validate_verify(db, just_id).any(it.contains('matches several')), 'id alone is ambiguous here'
+
+	pinned := [project.ProtectCfg{
+		message:  'Dual'
+		crc:      'CRC'
+		profile:  'crc8_j1850'
+		id:       u32(0x300)
+		extended: true
+	}]
+	assert validate_verify(db, pinned).len == 0
+	set := verifiers_for(db, [], pinned)
+	assert vkey(0x300, true) in set.by_key
+	assert vkey(0x300, false) !in set.by_key
+}

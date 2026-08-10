@@ -705,7 +705,14 @@ fn (mut app App) load_recording(path string) {
 		// everywhere else in the UI.
 		live := merge_dbs_from(app.dbs_for(sc.iface))
 		mut vs := verifiers[sc.iface] or { sim.VerifySet{} }
-		for k, ver in sim.verifiers_for(live, sc.nodes, sc.verify).by_key {
+		// `verify:` ONLY — the ECU under test's messages, never our own.
+		//
+		// A candump log carries no direction, so a recording made while we were transmitting
+		// replays our TX frames as if received. Checking a message the simulation itself sends
+		// then reports false failures — worse when loopback puts the same frame in twice and
+		// one counter value is checked as though it arrived twice. What the bench is asking
+		// about is the other side's protection, and that is exactly what `verify:` describes.
+		for k, ver in sim.verifiers_for(live, [], sc.verify).by_key {
 			if k !in vs.by_key {
 				vs.by_key[k] = ver
 			}

@@ -247,6 +247,9 @@ fn protect_inline(pr ProtectCfg) string {
 	if mid := pr.id {
 		parts << 'id: "0x${mid:X}"'
 	}
+	if mext := pr.extended {
+		parts << 'extended: ${mext}'
+	}
 	if pr.counter != '' {
 		parts << 'counter: ${yaml_flow_scalar(pr.counter)}'
 	}
