@@ -154,3 +154,42 @@ fn test_wide_counter_wraps_instead_of_reporting_a_skip() {
 	m.signals[0].set_raw(mut c, 0) // the wrap
 	assert v.check(c) == .ok, 'a 31-bit wrap must not be reported as a skip'
 }
+
+// A frame shorter than its DBC message cannot be judged: the missing checksum and counter bits
+// read as zero, and an EMPTY payload computes zero for every supported checksum — which then
+// matches the absent field and passes the first-counter rule as clean. A malformed frame must
+// not be able to look better than a well-formed one.
+fn test_truncated_frames_are_rejected_not_silently_accepted() {
+	m := vmsg() // dlc 8
+	e := E2e{ counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }
+	mut v := Verifier{ msg: m, e2e: e }
+	assert v.check([]u8{len: 0}) == .truncated, 'an empty payload must not read as clean'
+	assert v.check([]u8{len: 4}) == .truncated
+	assert v.bad == 2
+	// and a full-length frame still passes
+	mut ok := []u8{len: 8}
+	e.apply(m, mut ok, 0)
+	assert v.check(ok) == .ok
+}
+
+// The stamping path scopes messages to the configured sender. Verification must do the same, or
+// a merged database with one message name on two transmitters verifies against the wrong id and
+// layout while the configuration validates cleanly.
+fn test_verifier_binds_to_the_configured_senders_message() {
+	mut a := vmsg()
+	a.name = 'Shared'
+	a.id = 0x111
+	a.sender = 'NodeA'
+	mut b := vmsg()
+	b.name = 'Shared'
+	b.id = 0x222
+	b.sender = 'NodeB'
+	db := candb.Database{ nodes: ['NodeA', 'NodeB'], messages: [a, b] }
+	nodes := [project.NodeCfg{
+		name:    'NodeB'
+		protect: [project.ProtectCfg{ message: 'Shared', counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }]
+	}]
+	set := verifiers_for(db, nodes)
+	assert vkey(0x222, false) in set.by_key, 'must bind to NodeB\'s message, not the first match'
+	assert vkey(0x111, false) !in set.by_key
+}

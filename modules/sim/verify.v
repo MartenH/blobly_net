@@ -15,6 +15,7 @@ import project
 // Violation is what is wrong with a received frame, if anything.
 pub enum Violation {
 	ok
+	truncated   // shorter than the DBC message: its protection fields are not all present
 	bad_crc     // the checksum does not match the payload
 	stalled_ctr // the alive counter repeated
 	skipped_ctr // the counter jumped — frames were lost, or the sender restarted
@@ -24,6 +25,7 @@ pub enum Violation {
 pub fn (v Violation) str() string {
 	return match v {
 		.ok { '' }
+		.truncated { '!LEN' }
 		.bad_crc { '!CRC' }
 		.stalled_ctr { '!CNT stalled' }
 		.skipped_ctr { '!CNT skipped' }
@@ -53,6 +55,14 @@ pub mut:
 // likely to be corrupt.
 pub fn (mut v Verifier) check(data []u8) Violation {
 	v.seen++
+	// A short frame cannot be judged: the missing checksum and counter bits read as zero, and
+	// an EMPTY payload computes zero for every supported checksum — which then matches the
+	// absent checksum field and sails through the first-counter rule as clean. A malformed
+	// frame must not be able to look better than a well-formed one.
+	if data.len < v.msg.dlc {
+		v.bad++
+		return .truncated
+	}
 	if v.e2e.crc != '' {
 		for sig in v.msg.active_signals(data) {
 			if sig.name != v.e2e.crc {
@@ -136,7 +146,10 @@ pub fn verifiers_for(db candb.Database, nodes []project.NodeCfg) VerifySet {
 	mut out := VerifySet{}
 	for n in nodes {
 		for p in n.protect {
-			for m in db.messages {
+			// messages_from, not db.messages: the STAMPING path scopes to the sender, so a
+			// merged database with the same message name on two transmitters could otherwise
+			// verify against a different id, layout and field positions than were sent.
+			for m in db.messages_from(n.name) {
 				if m.name != p.message {
 					continue
 				}

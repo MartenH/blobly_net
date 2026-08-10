@@ -678,7 +678,12 @@ fn (mut app App) load_recording(path string) {
 	// supplies the protection configuration, so a recording can be checked exactly as live
 	// traffic is — otherwise a violation visible during a run vanished the moment it was saved
 	// and reopened, and a capture taken elsewhere could not be checked at all.
+	// A recording stores whatever label the writer used — the channel's display NAME for our
+	// own live captures, and a bare 'can' from an MF4 import — never the project's interface
+	// string. Keying the sets by iface alone therefore matched nothing and every imported frame
+	// came back with an empty verdict, which is what the previous attempt at this did.
 	mut verifiers := map[string]sim.VerifySet{}
+	mut alias := map[string]string{} // recorded label -> project iface
 	for sc in app.sims {
 		mut vs := verifiers[sc.iface] or { sim.VerifySet{} }
 		for k, ver in sim.verifiers_for(sc.db, sc.nodes).by_key {
@@ -687,7 +692,17 @@ fn (mut app App) load_recording(path string) {
 			}
 		}
 		verifiers[sc.iface] = vs
+		alias[sc.iface] = sc.iface
+		for c in app.chans {
+			if c.iface == sc.iface {
+				alias[c.name] = sc.iface
+			}
+		}
 	}
+	// A single simulated bus is unambiguous, so an unrecognised label (an MF4's 'can') resolves
+	// to it rather than going unchecked. With several, a label we cannot place is left alone —
+	// guessing which bus a frame came from would attach verdicts to the wrong sender.
+	only := if verifiers.len == 1 { verifiers.keys()[0] } else { '' }
 	app.mu.lock()
 	app.trace = []
 	app.gcount = map[string]u64{}
@@ -696,13 +711,15 @@ fn (mut app App) load_recording(path string) {
 		name := app.lookup_name(f.id, f.extended)
 		mut viol := ''
 		if !f.rtr {
-			k := sim.vkey(f.id, f.extended)
-			if mut vs := verifiers[e.iface] {
-				if mut ver := vs.by_key[k] {
-					viol = ver.check(f.data).str()
-					vs.by_key[k] = ver
-					verifiers[e.iface] = vs
+			ifc := alias[e.iface] or { only }
+			if mut vs := verifiers[ifc] {
+				if k := verifier_for(mut vs, app.dbs_for(ifc), f.id, f.extended) {
+					if mut ver := vs.by_key[k] {
+						viol = ver.check(f.data).str()
+						vs.by_key[k] = ver
+					}
 				}
+				verifiers[ifc] = vs
 			}
 		}
 		app.trace << TraceRow{(e.t_s - t0) * 1000.0, e.iface, 'RX', f.id, f.extended, f.rtr, name, f.data.clone(), viol}
@@ -971,11 +988,12 @@ fn rx_loop(app &App, ci int, iface string) {
 		// zero and a request on a protected id was labelled !CRC — or, repeated, !CNT stalled.
 		// A verdict about bytes that were never sent says nothing about the sender.
 		if !f.rtr {
-			k := sim.vkey(f.id, f.extended)
-			if mut ver := verifiers.by_key[k] {
-				v := ver.check(f.data)
-				verifiers.by_key[k] = ver
-				viol = v.str()
+			if k := verifier_for(mut verifiers, a.dbs_for(iface), f.id, f.extended) {
+				if mut ver := verifiers.by_key[k] {
+					v := ver.check(f.data)
+					verifiers.by_key[k] = ver
+					viol = v.str()
+				}
 			}
 		}
 		a.mu.lock()
@@ -3787,6 +3805,37 @@ fn trace_pass(r TraceRow, filt string) bool {
 	// gesture someone reaches for the moment they suspect one
 	hay := '${idstr(r.id, r.ext)} ${r.name} ${r.ch} ${r.dir} ${hex(r.data)} ${r.e2e}'.to_lower()
 	return hay.contains(filt)
+}
+
+// verifier_for resolves a received frame to its verifier, using the SAME PGN fallback the
+// trace's own lookup uses: a J1939 frame arrives with a different priority or source address
+// than the DBC records, so an exact-id key never matches it. Counter state stays per ACTUAL
+// id, because two source addresses are two senders with two independent sequences.
+fn verifier_for(mut set sim.VerifySet, dbs []candb.Database, id u32, ext bool) ?string {
+	k := sim.vkey(id, ext)
+	if k in set.by_key {
+		return k
+	}
+	mut src := ''
+	for db in dbs {
+		if m := db.lookup_frame(id, ext) {
+			cand := sim.vkey(m.id, m.ext)
+			if cand in set.by_key {
+				src = cand
+				break
+			}
+		}
+	}
+	if src == '' {
+		return none
+	}
+	// clone the layout for this concrete id, so its counter is tracked separately
+	mut v := set.by_key[src] or { return none }
+	set.by_key[k] = sim.Verifier{
+		msg: v.msg
+		e2e: v.e2e
+	}
+	return k
 }
 
 // trace_name_cell is the name column, with any end-to-end verdict appended.

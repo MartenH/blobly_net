@@ -337,13 +337,20 @@ Violations appear beside the message name in the trace:
 | `!CRC` | the checksum does not match the payload as received |
 | `!CNT stalled` | the alive counter repeated — the sender is stuck |
 | `!CNT skipped` | the counter jumped — frames were lost, or the sender restarted |
+| `!LEN` | shorter than the DBC message, so its protection fields are not all present |
 
 They are searchable, so typing `!crc` in the trace filter shows only the bad frames, and they
 appear in both the grouped and flat trace views.
 
 Recordings are checked too: loading a `.log` or `.mf4` capture re-runs the verification, so a
-violation seen live is still there after saving and reopening — and a capture taken elsewhere
-can be checked against the project's protection configuration.
+violation seen live is still there after saving and reopening. A recording labels its channel
+with whatever the writer used — a display name for our own captures, a bare `can` for MF4 —
+so those are matched back to the project's channels; with a single simulated bus an
+unrecognised label resolves to it, and with several it is left unchecked rather than guessed at.
+
+J1939 frames resolve through the same PGN fallback the trace uses, since a live frame carries a
+different priority and source address than the DBC records. Counter state is kept per actual
+id: two source addresses are two senders with two independent sequences.
 
 The checksum is judged **first and alone**: a frame whose checksum is wrong says nothing
 reliable about its counter, since those bits are as likely to be corrupt as any others. A
