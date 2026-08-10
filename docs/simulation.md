@@ -338,12 +338,19 @@ Violations appear beside the message name in the trace:
 | `!CNT stalled` | the alive counter repeated — the sender is stuck |
 | `!CNT skipped` | the counter jumped — frames were lost, or the sender restarted |
 
-They are searchable, so typing `!crc` in the trace filter shows only the bad frames.
+They are searchable, so typing `!crc` in the trace filter shows only the bad frames, and they
+appear in both the grouped and flat trace views.
+
+Recordings are checked too: loading a `.log` or `.mf4` capture re-runs the verification, so a
+violation seen live is still there after saving and reopening — and a capture taken elsewhere
+can be checked against the project's protection configuration.
 
 The checksum is judged **first and alone**: a frame whose checksum is wrong says nothing
 reliable about its counter, since those bits are as likely to be corrupt as any others. A
-counter wrap is not a skip, and the first frame of a stream is never a violation — a tester
-attaching mid-stream must not see a fault it caused by arriving.
+counter wrap is not a skip at any counter width, and the first frame of a stream is never a
+violation — a tester attaching mid-stream must not see a fault it caused by arriving. Remote
+(RTR) frames are skipped entirely: they carry no payload, so any verdict about their bytes
+would be about bytes nobody sent.
 
 ## Interactive senders
 

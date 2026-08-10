@@ -36,9 +36,13 @@ pub:
 	msg candb.Message
 	e2e E2e
 pub mut:
-	last_ctr  int = -1 // -1 = nothing seen yet
-	seen      u64 // frames checked
-	bad       u64 // frames that failed
+	// u64 with an explicit "nothing yet" flag rather than a signed sentinel: a counter may be
+	// wide, and narrowing it into an int made a high-bit value look negative — which read as
+	// "first frame" and skipped the check on every frame after it.
+	last_ctr u64
+	have_ctr bool
+	seen     u64 // frames checked
+	bad      u64 // frames that failed
 }
 
 // check judges one received payload.
@@ -78,11 +82,15 @@ pub fn (mut v Verifier) check(data []u8) Violation {
 		if sig.name != v.e2e.counter {
 			continue
 		}
-		cur := int(sig.raw_value(data))
-		span := if sig.length >= 31 { 0 } else { 1 << sig.length }
+		cur := sig.raw_value(data)
+		// The modulus is the signal's own width, at any width: forcing it to zero past 30 bits
+		// turned a legal 31-bit wrap into a reported skip.
+		span := if sig.length >= 64 { u64(0) } else { u64(1) << sig.length }
 		prev := v.last_ctr
+		had := v.have_ctr
 		v.last_ctr = cur
-		if prev < 0 {
+		v.have_ctr = true
+		if !had {
 			return .ok // first frame: there is nothing to compare against
 		}
 		expect := if span > 0 { (prev + 1) % span } else { prev + 1 }
@@ -102,10 +110,20 @@ pub fn (mut v Verifier) check(data []u8) Violation {
 	return .ok
 }
 
-// VerifySet is the verifiers for one channel, keyed by CAN id.
+// VerifySet is the verifiers for one channel.
+//
+// Keyed by id AND frame format, which is what identifies a CAN message — the database merge
+// already treats them as distinct. Keyed on the number alone, a standard and an extended
+// message sharing a raw id overwrote each other and one verifier judged both formats, merging
+// two independent counter streams into a stream of reported skips.
 pub struct VerifySet {
 pub mut:
-	by_id map[u32]Verifier
+	by_key map[string]Verifier
+}
+
+// vkey identifies a message the way the rest of the codebase does.
+pub fn vkey(id u32, ext bool) string {
+	return '${id}|${ext}'
 }
 
 // verifiers_for builds the set a channel should check, from the same `protect:` configuration
@@ -122,7 +140,7 @@ pub fn verifiers_for(db candb.Database, nodes []project.NodeCfg) VerifySet {
 				if m.name != p.message {
 					continue
 				}
-				out.by_id[m.id] = Verifier{
+				out.by_key[vkey(m.id, m.ext)] = Verifier{
 					msg: m
 					e2e: E2e{
 						counter: p.counter

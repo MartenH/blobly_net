@@ -674,13 +674,38 @@ fn (mut app App) load_recording(path string) {
 		}
 	}
 	t0 := if entries.len > 0 { entries[0].t_s } else { 0.0 }
+	// Verify while building the rows. Entries arrive in time order and the project already
+	// supplies the protection configuration, so a recording can be checked exactly as live
+	// traffic is — otherwise a violation visible during a run vanished the moment it was saved
+	// and reopened, and a capture taken elsewhere could not be checked at all.
+	mut verifiers := map[string]sim.VerifySet{}
+	for sc in app.sims {
+		mut vs := verifiers[sc.iface] or { sim.VerifySet{} }
+		for k, ver in sim.verifiers_for(sc.db, sc.nodes).by_key {
+			if k !in vs.by_key {
+				vs.by_key[k] = ver
+			}
+		}
+		verifiers[sc.iface] = vs
+	}
 	app.mu.lock()
 	app.trace = []
 	app.gcount = map[string]u64{}
 	for e in entries {
 		f := e.frame
 		name := app.lookup_name(f.id, f.extended)
-		app.trace << TraceRow{(e.t_s - t0) * 1000.0, e.iface, 'RX', f.id, f.extended, f.rtr, name, f.data.clone(), ''}
+		mut viol := ''
+		if !f.rtr {
+			k := sim.vkey(f.id, f.extended)
+			if mut vs := verifiers[e.iface] {
+				if mut ver := vs.by_key[k] {
+					viol = ver.check(f.data).str()
+					vs.by_key[k] = ver
+					verifiers[e.iface] = vs
+				}
+			}
+		}
+		app.trace << TraceRow{(e.t_s - t0) * 1000.0, e.iface, 'RX', f.id, f.extended, f.rtr, name, f.data.clone(), viol}
 		if app.trace.len > trace_cap {
 			app.trace = app.trace[app.trace.len - trace_cap..].clone()
 		}
@@ -908,11 +933,18 @@ fn rx_loop(app &App, ci int, iface string) {
 	// Built from the SAME `protect:` entries the simulation stamps with, so a project describes
 	// each protected message once and both directions follow it. A separate "check this on
 	// receive" declaration would let the two drift, and the drift would read as an ECU fault.
+	// EVERY SimCfg on this interface, not the first. Two channel entries may share a bus — the
+	// diagnostics setup already handles that — and stopping at the first meant later entries'
+	// protected messages were never checked, or were checked against the wrong layout.
 	mut verifiers := sim.VerifySet{}
 	for sc in a.sims {
-		if sc.iface == iface {
-			verifiers = sim.verifiers_for(sc.db, sc.nodes)
-			break
+		if sc.iface != iface {
+			continue
+		}
+		for k, ver in sim.verifiers_for(sc.db, sc.nodes).by_key {
+			if k !in verifiers.by_key {
+				verifiers.by_key[k] = ver
+			}
 		}
 	}
 	// the TraceRsp id is config-static (the manifest is only mutated while stopped, so it can't
@@ -935,10 +967,16 @@ fn rx_loop(app &App, ci int, iface string) {
 		// frame, because the check is stateful — it needs the previous counter for this id —
 		// and a stateful check spread across draw calls would depend on what the user scrolled.
 		mut viol := ''
-		if mut ver := verifiers.by_id[f.id] {
-			v := ver.check(f.data)
-			verifiers.by_id[f.id] = ver
-			viol = v.str()
+		// Not remote frames: an RTR request carries NO payload, so the missing bytes read as
+		// zero and a request on a protected id was labelled !CRC — or, repeated, !CNT stalled.
+		// A verdict about bytes that were never sent says nothing about the sender.
+		if !f.rtr {
+			k := sim.vkey(f.id, f.extended)
+			if mut ver := verifiers.by_key[k] {
+				v := ver.check(f.data)
+				verifiers.by_key[k] = ver
+				viol = v.str()
+			}
 		}
 		a.mu.lock()
 		if !a.paused {
@@ -3751,6 +3789,15 @@ fn trace_pass(r TraceRow, filt string) bool {
 	return hay.contains(filt)
 }
 
+// trace_name_cell is the name column, with any end-to-end verdict appended.
+//
+// Shared by the flat and GROUPED views because grouped is the default: a violation rendered
+// only in the flat table is invisible unless the user happens to switch modes, which is the
+// same as not reporting it.
+fn trace_name_cell(r TraceRow) string {
+	return if r.e2e == '' { r.name } else { '${r.name}  ${r.e2e}' }
+}
+
 fn draw_trace_all(id string, rows []TraceRow, filt string) {
 	if vgui.table_begin(id, 6) {
 		vgui.table_setup_col('t (ms)', 66)
@@ -3777,7 +3824,7 @@ fn draw_trace_all(id string, rows []TraceRow, filt string) {
 			vgui.table_cell(idstr(r.id, r.ext))
 			// A violation is appended to the NAME rather than given a column: it is rare, and
 			// a permanently-empty column costs width on every row for the frames that are fine.
-			vgui.table_cell(if r.e2e == '' { r.name } else { '${r.name}  ${r.e2e}' })
+			vgui.table_cell(trace_name_cell(r))
 			vgui.table_cell(if r.rtr { 'RTR' } else { hex(r.data) })
 		}
 		vgui.table_end()
@@ -3849,7 +3896,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			vgui.table_next_col()
 			// ### keys the tree id on identity only, so the live label / sort don't reset it.
 			open :=
-				vgui.tree_node_table('${idstr(g.id, g.ext)}  ${r.name}###${g.dir}|${g.ch}|${g.id}|${g.ext}')
+				vgui.tree_node_table('${idstr(g.id, g.ext)}  ${trace_name_cell(r)}###${g.dir}|${g.ch}|${g.id}|${g.ext}')
 			// clicking a row selects that frame (drives Signals/Graphics + "Add to filter")
 			if vgui.is_item_clicked() {
 				app.sel_id = int(g.id)

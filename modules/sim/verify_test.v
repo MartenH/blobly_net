@@ -1,6 +1,7 @@
 module sim
 
 import candb
+import project
 
 fn vmsg() candb.Message {
 	return candb.Message{
@@ -102,4 +103,54 @@ fn test_first_frame_is_never_a_counter_violation() {
 	e.apply(m, mut d, 7) // arriving mid-stream, counter already at 7
 	assert v.check(d) == .ok
 	assert v.bad == 0
+}
+
+// A standard and an extended message may share a raw id. Keyed on the number alone, one
+// verifier judged both formats and merged two independent counter streams into reported skips.
+fn test_verifiers_are_keyed_by_id_and_format() {
+	mut std_m := vmsg()
+	std_m.name = 'Std'
+	std_m.sender = 'N'
+	mut ext_m := vmsg()
+	ext_m.name = 'Ext'
+	ext_m.ext = true
+	ext_m.sender = 'N'
+	db := candb.Database{ nodes: ['N'], messages: [std_m, ext_m] }
+	nodes := [project.NodeCfg{
+		name:    'N'
+		protect: [
+			project.ProtectCfg{ message: 'Std', counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' },
+			project.ProtectCfg{ message: 'Ext', counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' },
+		]
+	}]
+	set := verifiers_for(db, nodes)
+	assert set.by_key.len == 2, 'both formats must have their own verifier'
+	assert vkey(0x123, false) in set.by_key
+	assert vkey(0x123, true) in set.by_key
+}
+
+// A counter wider than 30 bits must still wrap. Forcing the modulus to zero turned a legal
+// 31-bit wrap into a reported skip, and narrowing the state into a signed int made a high-bit
+// value look like "nothing seen yet".
+fn test_wide_counter_wraps_instead_of_reporting_a_skip() {
+	m := candb.Message{
+		name: 'Wide'
+		id:   0x200
+		dlc:  8
+		signals: [
+			candb.Signal{ name: 'Ctr', start_bit: 0, length: 31, byte_order: .little_endian, factor: 1 },
+		]
+	}
+	e := E2e{ counter: 'Ctr' }
+	mut v := Verifier{ msg: m, e2e: e }
+	span := u64(1) << 31
+	mut a := []u8{len: 8}
+	m.signals[0].set_raw(mut a, span - 2)
+	assert v.check(a) == .ok
+	mut b := []u8{len: 8}
+	m.signals[0].set_raw(mut b, span - 1)
+	assert v.check(b) == .ok
+	mut c := []u8{len: 8}
+	m.signals[0].set_raw(mut c, 0) // the wrap
+	assert v.check(c) == .ok, 'a 31-bit wrap must not be reported as a skip'
 }
