@@ -37,6 +37,19 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
 - 🧭 **DoIP per-connection handler state** — deferred pending the threading change.
 - 🧭 **Vector (XL family) CAN backend** — the notable gap in vendor coverage; PCAN and Kvaser
   are done, and `transport` is designed for drop-in backends, so it is a shim + bitrate map.
+- 🧭 **DoIP discovery — actually discover.** `discover()` sends a **unicast** vehicle
+  identification request to a host you already name, reads one reply and returns. It
+  confirms an identity; it cannot find an ECU nobody told it about. That is backwards for a
+  bus tester: on CAN you attach and observe because the medium is broadcast, and on Ethernet
+  the same tool sees nothing without an address typed in by hand. The asymmetry is real
+  today — blobly_emb **already** broadcasts its vehicle announcement three times at boot and
+  answers identification requests afterwards, precisely so a late tester can find it, and
+  Blobly Net hears neither. Needs a broadcast/subnet-broadcast request that collects **many**
+  responses instead of returning at the first, a passive listener for unsolicited
+  announcements (the case that catches an ECU booting while you are already running), and a
+  Scan action turning results into channels rather than hand-typed `doip:` strings. Core
+  tester behaviour, not blobly_emb integration — any ISO 13400 entity answers. Documented as
+  a known limitation in [`docs/doip.md`](docs/doip.md).
 - 🧭 **LIN** — `modules/lindb` (LDF) + a `LinFrame` type. Kept type-safe alongside `CanFrame` /
   `EthFrame` rather than faked behind a generic frame.
 - 🧭 **Split `cmd/blobly_net/main.v`** — it is **7,200 lines / 217 KB**, and essentially every
