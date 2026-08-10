@@ -83,7 +83,7 @@ fn main() {
 				println('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + UDS server')
 			} else {
 				for mut u in servers {
-					spawn uds_node_loop(ch.iface, u.rx, u.tx, u.server, ctl)
+					spawn uds_node_loop(ch.iface, u.rx, u.tx, u.ext, u.server, ctl)
 				}
 				println('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + ${servers.len} UDS target(s)')
 			}
@@ -153,8 +153,8 @@ fn sim_loop(iface string, db candb.Database, nodes []project.NodeCfg, ctl &Ctl) 
 // diag_server_loop answers UDS requests (rx 0x7E0 / tx 0x7E8) over software
 // ISO-TP on the channel's bus, until stopped.
 // uds_node_loop answers one simulated ECU's diagnostic requests on its own addresses.
-fn uds_node_loop(iface string, rx u32, tx u32, srv uds.Server, ctl &Ctl) {
-	mut ch := isotp.open_software(iface, tx, rx, false) or { return }
+fn uds_node_loop(iface string, rx u32, tx u32, ext bool, srv uds.Server, ctl &Ctl) {
+	mut ch := isotp.open_software(iface, tx, rx, ext) or { return }
 	mut s := srv
 	for ctl.running {
 		req := ch.recv(50) or { continue }

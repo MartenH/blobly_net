@@ -59,3 +59,62 @@ fn test_validate_uds_catches_unusable_addresses() {
 
 	assert validate_uds([project.NodeCfg{ name: 'None' }]).len == 0
 }
+
+// Unusable configurations must not be STARTED, only warned about: a broken entry that still
+// made the list non-empty suppressed the working channel default, and duplicate listeners both
+// answered.
+fn test_uds_nodes_skips_unusable_configurations() {
+	nodes := [
+		project.NodeCfg{ name: 'NoTx', uds: project.UdsCfg{ rx: 0x7E1 } },
+		project.NodeCfg{ name: 'Same', uds: project.UdsCfg{ rx: 0x7E2, tx: 0x7E2 } },
+		project.NodeCfg{ name: 'A', uds: project.UdsCfg{ rx: 0x7E3, tx: 0x7EB } },
+		project.NodeCfg{ name: 'Dup', uds: project.UdsCfg{ rx: 0x7E3, tx: 0x7EC } },
+	]
+	built := uds_nodes(nodes)
+	assert built.len == 1, 'only the usable one starts, got ${built.map(it.name)}'
+	assert built[0].name == 'A'
+	// and every rejection is explained
+	w := validate_uds(nodes)
+	assert w.len == 3, '${w}'
+}
+
+// 29-bit addressing is inferred: opened as standard, SocketCAN masks 0x18DAF110 to 0x110.
+fn test_uds_nodes_infer_extended_addressing() {
+	ext := uds_nodes([project.NodeCfg{
+		name: 'Gw'
+		uds:  project.UdsCfg{ rx: 0x18DA10F1, tx: 0x18DAF110 }
+	}])
+	assert ext.len == 1 && ext[0].ext, '29-bit ids must open an extended channel'
+
+	std := uds_nodes([project.NodeCfg{
+		name: 'Std'
+		uds:  project.UdsCfg{ rx: 0x7E0, tx: 0x7E8 }
+	}])
+	assert std.len == 1 && !std[0].ext
+
+	mixed := validate_uds([project.NodeCfg{
+		name: 'Mix'
+		uds:  project.UdsCfg{ rx: 0x18DA10F1, tx: 0x7E8 }
+	}])
+	assert mixed.any(it.contains('mix 11-bit and 29-bit'))
+}
+
+// A DID above the 16-bit range must be reported and dropped, never narrowed — 0x1F190 would
+// otherwise become 0xF190 and masquerade as the VIN.
+fn test_out_of_range_did_is_dropped_not_truncated() {
+	cfg := project.NodeCfg{
+		name: 'X'
+		uds:  project.UdsCfg{
+			rx:   0x7E0
+			tx:   0x7E8
+			dids: [
+				project.DidCfg{ id: 0xF190, text: 'real' },
+				project.DidCfg{ id: 0x1F190, text: 'forged' },
+			]
+		}
+	}
+	built := uds_nodes([cfg])
+	assert built[0].server.dids[0xF190] == 'real'.bytes(), 'the wide DID must not overwrite'
+	assert built[0].server.dids.len == 1
+	assert validate_uds([cfg]).any(it.contains('above the 16-bit range'))
+}

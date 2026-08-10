@@ -109,7 +109,10 @@ pub mut:
 // bytes.
 pub struct DidCfg {
 pub mut:
-	id    u16
+	// u32, not u16: narrowing at parse time made 0x1F190 silently become 0xF190, which then
+	// masquerades as — or overwrites — a different configured DID. Kept wide so validation can
+	// see the mistake, and narrowed only once it is known to fit.
+	id    u32
 	text  string
 	bytes []u8
 }
@@ -525,7 +528,7 @@ fn parse_node(n yaml.Any) NodeCfg {
 		if ds := u.value_opt('dids') {
 			for d in ds.array() {
 				mut dc := DidCfg{
-					id:   u16(parse_id(d.value('id').str()))
+					id:   parse_id(d.value('id').str())
 					text: d.value('text').default_to('').string()
 				}
 				if bv := d.value_opt('bytes') {

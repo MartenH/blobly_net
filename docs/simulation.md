@@ -229,8 +229,20 @@ stops running. Otherwise the two would both answer whenever their ids overlapped
 reply the tester saw would depend on scheduling. A channel with no `uds:` anywhere keeps the
 default, unchanged.
 
-Two servers cannot share a request id, and `rx` may not equal `tx` — both are reported rather
-than left to produce whichever answer arrives first.
+**29-bit addressing is inferred** from the ids: any address above `0x7FF` opens the ISO-TP
+channel in extended format, so normal fixed addressing (`0x18DA10F1` / `0x18DAF110`) works
+without a separate flag. Mixing an 11-bit and a 29-bit address in one pair is reported — ISO-TP
+uses one format for both.
+
+A configuration that cannot work is **reported and not started**, so it can never half-run:
+two servers sharing a request id, `rx` equal to `tx`, an unset address, or a DID above the
+16-bit range (which is dropped rather than narrowed, since `0x1F190` would otherwise
+masquerade as `0xF190`).
+
+**Unticking an ECU silences its diagnostics too**, not just its frames — so a test that
+simulates an ECU going offline finds nothing at its address, which is the point.
+
+The **Diagnostics panel** picks which target to address when more than one is configured.
 
 ## Interactive senders
 
