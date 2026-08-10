@@ -4,6 +4,11 @@ Agreed 2026-06-29. The plan for bringing **automotive Ethernet protocols** into 
 **DoIP** (diagnostics over IP, ISO 13400) and deferring **SOME-IP** (service-oriented middleware).
 This mirrors `docs/simulation_architecture.md` — design captured before building, oracle-first.
 
+> **Looking for how to use DoIP?** This is the design record — why DoIP came before SOME/IP,
+> how the modules are laid out, and how they are verified. For ports, the message flow, what
+> is and is not broadcast, and how to point the app at an ECU, see
+> [`doip.md`](doip.md).
+
 ## Why DoIP first
 
 DoIP is just **UDS-over-IP**: it carries the same UDS (ISO 14229) diagnostic payloads our
