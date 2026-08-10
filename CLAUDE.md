@@ -136,7 +136,8 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
 
 - [scripting.md](docs/scripting.md) · [dbc_editor.md](docs/dbc_editor.md) ·
   [project_editing.md](docs/project_editing.md) · [bus_config_dialog.md](docs/bus_config_dialog.md)
-- [ethernet_architecture.md](docs/ethernet_architecture.md) ·
+- [doip.md](docs/doip.md) — the DoIP user manual (supported vs planned) ·
+  [ethernet_architecture.md](docs/ethernet_architecture.md) ·
   [simulation_architecture.md](docs/simulation_architecture.md) ·
   [blobly_emb_synergies.md](docs/blobly_emb_synergies.md)
 - [can_hardware.md](docs/can_hardware.md) · [windows_can_hardware.md](docs/windows_can_hardware.md) ·

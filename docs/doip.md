@@ -1,35 +1,78 @@
 # DoIP — diagnostics over Ethernet
 
-How Blobly Net talks to an ECU over Ethernet, what goes on the wire, and — just as
-important — what this implementation deliberately does **not** do.
+How Blobly Net talks to a DoIP entity, what goes on the wire, and what is **supported today**
+versus **planned**. The split matters: DoIP is further along in the modules than in the GUI,
+so a feature you would expect to find in a panel may only exist headless.
 
-This is the user-facing guide. For *why* DoIP was built before SOME/IP, and how the module
-is laid out internally, see [`ethernet_architecture.md`](ethernet_architecture.md).
+For *why* DoIP came before SOME/IP and how the modules are laid out, see the design record in
+`docs/ethernet_architecture.md`.
+
+## What works today
+
+| | Status |
+|---|---|
+| DoIP channel in a project (`doip:<host>:<port>`) | ✅ configuration |
+| Discovery of an entity at a **known** address (DoIP panel) | ✅ |
+| DoIP entity — discovery, routing activation, UDS | ✅ **headless only** (`cmd/doip_smoke`, the `doip` module) |
+| UDS over DoIP end-to-end | ✅ **headless only** |
+| **Starting a simulated DoIP entity from the GUI** | 🧭 planned |
+| **UDS from the Diagnostics panel over a DoIP channel** | 🧭 planned |
+| **Broadcast discovery — finding an entity you were not told about** | 🧭 planned |
+
+Two gaps worth knowing before you plan a bench, both in the **app** rather than the protocol:
+
+- The **Diagnostics panel does not drive a DoIP channel.** It selects a running *monitorable*
+  channel, and DoIP channels are excluded from that set.
+- The **GUI cannot start a DoIP entity.** `transport.open()` has no `doip:` backend, and a
+  project's simulated nodes are driven as CAN, so pressing Start on a DoIP channel does not
+  bring an entity up.
+
+Both are app wiring, not protocol limits: `cmd/doip_smoke` runs the whole path — a V tester
+against a V entity over real localhost TCP/UDP — and demonstrates the point of the design,
+that the same `uds.Client` rides a `DoipClient` unchanged, because only the carrier swapped.
 
 ## The short version
 
 | | |
 |---|---|
-| Port | **13400**, for both TCP and UDP |
-| TCP 13400 | diagnostics — routing activation, then UDS |
-| UDP 13400 | discovery — vehicle identification and announcements |
-| Protocol version | `0x02` (ISO 13400-2:2012) |
+| Port | **13400** by default, for both TCP and UDP — but a channel may use any port |
+| TCP | diagnostics — routing activation, then UDS |
+| UDP | discovery — vehicle identification and announcements |
+| Protocol version | `0x02` (ISO 13400-2:2012) is what we send; `0x03` (2019) also parses |
 | Interface string | `doip:<host>:<port>` — e.g. `doip:192.168.0.51:13400` |
 
-## Connecting to an ECU
+## Configuring a channel
 
-Add a channel with the `doip` adapter and an address:
+Pick the `doip` adapter and put **`host:port`** in the address field — just `192.168.0.51:13400`.
+The scheme is added for you; `doip:192.168.0.51:13400` is what you will see in the saved project
+file and in the channel list, not what you type.
 
-```
-doip:192.168.0.51:13400
-```
+Alongside it, Configure offers the **tester** and **ECU** logical addresses. That pair is what
+actually routes: after routing activation, messages are addressed by logical address, not by IP.
 
-Then set the diagnostic identity in Configure — the **tester** (source) address, the **ECU**
-(target) address, and optionally the expected VIN and EID. The pair of logical addresses is
-what actually routes: everything after routing activation is addressed by them, not by IP.
+The **VIN** field applies to a *simulated* entity hosted on that channel — it is the identity
+your simulated ECU announces. Neither it nor the EID is validated against a real ECU on connect;
+they are not client-side expectations.
 
-Once started, the Diagnostics panel drives UDS over that channel exactly as it does over
-CAN/ISO-TP. DoIP replaces the transport, not the diagnostics.
+## Discovering an entity
+
+The DoIP panel takes a host (default `127.0.0.1:13400`), sends a vehicle identification request,
+and lists what answers — VIN and logical address per entity.
+
+**It is a unicast request to an address you type.** Nothing is broadcast: the request goes to
+that one host, the first reply is taken, and the simulated entity likewise answers only the
+sender. So discovery here **confirms an identity you already know**; it does not find entities
+you have not been told about.
+
+That asymmetry is worth stating because the ECU side is not the missing half. The companion
+firmware (blobly_emb) broadcasts its vehicle announcement three times at boot, per ISO 13400,
+and answers identification requests afterwards — precisely so a tester arriving late can still
+find it. Blobly Net hears neither, because it never listens on a broadcast address and stops at
+the first reply.
+
+The practical consequence: **on Ethernet you must know the address before you can see anything.**
+On CAN you attach and observe, because the medium is broadcast. Plan for static addresses or a
+DHCP lease you can read. Broadcast discovery is on the roadmap.
 
 ## What happens on the wire
 
@@ -41,48 +84,26 @@ Every message is an 8-byte generic header followed by a payload:
 +--------+--------+--------+--------+--------+--------+--------+--------+
 ```
 
-`~ver` is the bitwise inverse of the version — a receiver that sees a header where the two
-do not complement each other rejects it before parsing anything else. Useful when reading a
-capture: if those first two bytes are not `02 FD`, you are not looking at DoIP.
+`~ver` is the bitwise inverse of the version, and the parser rejects a header whose two bytes do
+not complement each other. We send `02 FD` (2012); `03 FC` (2019) is equally valid and parses,
+so treat "a version byte followed by its inverse" as the marker rather than `02 FD` specifically.
 
-The payload types this implementation uses:
+| Type | Name | Transport |
+|---|---|---|
+| `0x0001` | vehicle identification request | UDP |
+| `0x0004` | vehicle announcement / identification response | UDP |
+| `0x0005` | routing activation request | TCP |
+| `0x0006` | routing activation response | TCP |
+| `0x8001` | diagnostic message (carries UDS) | TCP |
+| `0x8002` | diagnostic message positive ACK | TCP |
+| `0x8003` | diagnostic message negative ACK | TCP |
 
-| Type | Name | Transport | Direction |
-|---|---|---|---|
-| `0x0001` | vehicle identification request | UDP | tester → ECU |
-| `0x0004` | vehicle announcement / identification response | UDP | ECU → tester |
-| `0x0005` | routing activation request | TCP | tester → ECU |
-| `0x0006` | routing activation response | TCP | ECU → tester |
-| `0x8001` | diagnostic message (carries UDS) | TCP | both |
+A session: **identify** (optional, UDP) → **connect** (TCP) → **activate routing**
+(`0x0005`/`0x0006`) → **exchange UDS** inside `0x8001`, each acknowledged by `0x8002` or
+rejected with `0x8003`.
 
-A session therefore looks like: **identify** (optional, UDP) → **connect** (TCP) →
-**activate routing** (`0x0005`/`0x0006`) → **exchange UDS** inside `0x8001` messages.
-
-Routing activation is **mandatory**: a diagnostic message that arrives before it is ignored,
-not answered.
-
-## Discovery: what is and is not broadcast
-
-This is the part most likely to surprise you.
-
-**Nothing is broadcast by Blobly Net.** `discover()` sends a vehicle identification request
-as a **unicast UDP datagram to a host you name**, waits for one reply, and returns it. The
-simulated entity likewise answers **only the sender**.
-
-So discovery here **confirms an identity you already know** — it tells you the VIN, logical
-address, EID and GID of the thing at that address. It does **not** find ECUs you have not
-been told about.
-
-That is a real limitation rather than a design principle, and it is asymmetric: a real ECU
-*does* announce itself. The companion firmware (blobly_emb) broadcasts its vehicle
-announcement three times at boot, per ISO 13400, and answers identification requests
-afterwards — precisely so a tester arriving late can still find it. Blobly Net currently
-hears neither, because it never listens on a broadcast address and stops at the first reply.
-
-Until that changes, the practical consequence is: **on Ethernet you must know the address
-before you can see anything.** On CAN you attach and observe, because the bus is broadcast;
-on Ethernet the same tool sees nothing without being pointed at a host. Plan your bench
-accordingly — static addresses, or a DHCP lease you can read.
+Routing activation is **mandatory** — a diagnostic message arriving before it is ignored rather
+than answered.
 
 ## Identity fields
 
@@ -90,43 +111,50 @@ A vehicle announcement carries 32 bytes:
 
 | Field | Size | Notes |
 |---|---|---|
-| VIN | 17 | ASCII, as configured on the ECU |
+| VIN | 17 | ASCII, as configured on the entity |
 | Logical address | 2 | the diagnostic address you target |
 | EID | 6 | entity id — commonly the MAC |
 | GID | 6 | group id — often the same as EID |
 | Further action | 1 | `0x00` = no further action required |
 
-## Multiple entities on one machine
+## Several entities on one machine
 
-`projects/doip-network-demo.blobnet` runs several DoIP entities at once on loopback —
-`127.0.0.1`, `127.0.0.2`, and so on. This works because the whole of `127.0.0.0/8` routes to
-the loopback interface, so each entity gets a distinct address without any network setup,
-and each carries its own VIN and logical address. It is the cheapest way to exercise
-multi-ECU diagnostics, and it needs no hardware.
+`projects/doip-network-demo.blobnet` describes several DoIP entities on loopback —
+`127.0.0.1`, `127.0.0.2`, and so on — each with its own VIN and logical address. The addressing
+trick is worth knowing: all of `127.0.0.0/8` routes to the loopback interface, so every entity
+gets a distinct address with no network setup and no hardware.
+
+**It is a configuration example, not a runnable demo yet.** Opening it and pressing Start does
+not bring those entities up: the GUI has no `doip:` transport backend, so its simulated nodes
+are driven as CAN. Until entity simulation is wired into the app, use `cmd/doip_smoke` to run
+an entity and a tester headless; the project file shows the shape the configuration will take.
 
 ## Limits worth knowing
 
-- **One tester at a time.** A DoIP entity serves one accepted TCP connection to completion
-  before accepting the next, with a 60-second read timeout. A stale or idle peer therefore
-  delays another tester's routing activation. This is deliberate: concurrent connections
-  would drive a shared, non-thread-safe UDS server, so it needs per-connection handler state
-  before it can be lifted.
-- **Routing activation is single-source.** Once activated, a request from a *different*
-  source address is denied rather than replacing the first, and a diagnostic message whose
-  source does not match the activated tester is NACKed rather than dispatched. A second
-  tester cannot quietly take over an active session.
-- **No discovery by broadcast**, as described above.
+- **One tester at a time.** An entity serves one accepted TCP connection to completion before
+  accepting the next, with a 60-second read timeout, so a stale peer delays another tester's
+  routing activation. Deliberate: concurrent connections would drive a shared, non-thread-safe
+  UDS server, so it needs per-connection handler state first.
+- **Routing activation is single-source.** Once activated, a request from a different source is
+  denied rather than replacing the first, and a diagnostic message whose source does not match
+  the activated tester is NACKed rather than dispatched. A second tester cannot quietly take over.
+- **No broadcast discovery**, **no Diagnostics-panel support**, and **no entity simulation from
+  the GUI**, as above — all three planned.
 - **No SOME/IP service discovery** — a separate protocol, tracked separately.
 
 ## Reading a capture
 
-Filter on port 13400. Then:
+Filter on **the port your channel uses** — 13400 unless you configured another; both the client
+and the entity honour whatever you set, so a custom port makes a 13400-only filter show nothing.
 
-- `02 FD 00 01` — someone is asking "who is out there"
-- `02 FD 00 04` — an entity identifying itself
-- `02 FD 00 05` / `00 06` — routing activation and its answer
-- `02 FD 80 01` — diagnostics; the UDS service byte is the first payload byte after the two
-  logical addresses
+Then, by payload type:
 
-If you see `0x8001` traffic with no preceding `0x0006` success, the ECU is discarding it —
-routing was never activated.
+- `0001` — someone asking who is out there
+- `0004` — an entity identifying itself
+- `0005` / `0006` — routing activation and its answer
+- `8001` — diagnostics; the UDS service byte follows the two logical addresses
+- `8002` / `8003` — the per-message ACK / NACK
+
+If you see `8001` traffic with no `0006` before it, check whether your capture simply started
+mid-session: routing activation happens once, at the beginning of the TCP connection, so a
+capture begun later will legitimately show diagnostics without it.
