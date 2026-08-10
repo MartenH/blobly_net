@@ -287,3 +287,33 @@ fn test_validate_protection_catches_names_that_match_nothing() {
 	assert validate_protection(db, bad_profile).len == 1
 	assert validate_protection(db, bad_profile)[0].contains('unknown profile')
 }
+
+// Two entries for one message: the engine keys protection by message name, so the second
+// replaces the first. Splitting counter and crc across entries reads fine and loses one.
+fn test_validate_protection_catches_duplicates_and_empty_entries() {
+	db := candb.Database{
+		nodes:    ['SUT']
+		messages: [candb.Message{
+			...protected_msg()
+			sender: 'SUT'
+		}]
+	}
+	dup := project.NodeCfg{
+		name:    'SUT'
+		protect: [
+			project.ProtectCfg{ message: 'Protected', counter: 'AliveCounter', profile: 'crc8_j1850' },
+			project.ProtectCfg{ message: 'Protected', crc: 'CRC', profile: 'crc8_j1850' },
+		]
+	}
+	w := validate_protection(db, dup)
+	assert w.len == 1, '${w}'
+	assert w[0].contains('more than once')
+
+	empty := project.NodeCfg{
+		name:    'SUT'
+		protect: [project.ProtectCfg{ message: 'Protected', profile: 'crc8_j1850' }]
+	}
+	e := validate_protection(db, empty)
+	assert e.len == 1, '${e}'
+	assert e[0].contains('neither counter nor crc')
+}

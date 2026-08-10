@@ -72,7 +72,21 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 	for m in db.messages_from(cfg.name) {
 		msgs[m.name] = m
 	}
+	mut seen := map[string]bool{}
 	for p in cfg.protect {
+		// Neither field set = nothing to apply. E2e.active() is false, every frame goes out
+		// bare, and the panel still counts the entry as protection — so say it plainly. A
+		// data_id alone is this case too: an id feeds a checksum that was never requested.
+		if p.counter == '' && p.crc == '' {
+			warns << 'protect: "${p.message}" sets neither counter nor crc — nothing is protected'
+		}
+		// The engine keys protection by message, so a second entry for the same message
+		// REPLACES the first. Splitting a counter and a checksum across two entries reads
+		// perfectly and loses one of them, with both still displayed.
+		if p.message in seen {
+			warns << 'protect: "${p.message}" appears more than once — only the last entry applies; put counter and crc in ONE entry'
+		}
+		seen[p.message] = true
 		m := msgs[p.message] or {
 			warns << 'protect: message "${p.message}" is not sent by ${cfg.name} — protection not applied'
 			continue

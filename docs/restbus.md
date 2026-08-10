@@ -60,6 +60,12 @@ simulation:
 Both fields are named by **signal**, so width, bit position and byte order come from the DBC. A
 signal moved in the database moves here too, and nothing has to be restated.
 
+**One entry per message.** Protection is keyed by message name, so a second entry for the same
+message replaces the first — put the counter and the checksum in the *same* entry rather than
+splitting them across two, which reads perfectly and silently loses one. An entry setting
+neither `counter` nor `crc` protects nothing. Both cases are reported (see below) rather than
+left to be discovered on the bench.
+
 ### What actually happens on each send
 
 1. The generators encode their signals.
