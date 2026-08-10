@@ -112,9 +112,13 @@ pub fn (e E2e) apply(msg candb.Message, mut data []u8, n int) {
 	if e.counter != '' {
 		for sig in msg.signals {
 			if sig.name == e.counter {
-				span := if sig.length >= 63 { u64(0) } else { u64(1) << sig.length }
+				span := if sig.length >= 64 { u64(0) } else { u64(1) << sig.length }
 				v := if span == 0 { u64(n) } else { u64(n) % span }
-				sig.encode(mut data, f64(v))
+				// set_raw, NOT encode: a counter is a raw field value, not a physical
+				// quantity. encode() would divide by the signal's factor and subtract its
+				// offset, so a DBC that declares the counter with factor 0.5 — legal, and
+				// nothing stops it — would transmit 2n and fail every receiver check.
+				sig.set_raw(mut data, v)
 				break
 			}
 		}
@@ -126,12 +130,13 @@ pub fn (e E2e) apply(msg candb.Message, mut data []u8, n int) {
 		if sig.name != e.crc {
 			continue
 		}
-		sig.encode(mut data, 0) // zero it: a checksum cannot cover itself (see above)
+		sig.set_raw(mut data, 0) // zero it: a checksum cannot cover itself (see above)
 		mut input := data.clone()
 		if e.data_id != 0 {
 			input << u8(e.data_id & 0xFF)
 		}
-		sig.encode(mut data, f64(e.checksum_of(input)))
+		// raw again — the checksum byte must land in the field bit-for-bit
+		sig.set_raw(mut data, u64(e.checksum_of(input)))
 		break
 	}
 }

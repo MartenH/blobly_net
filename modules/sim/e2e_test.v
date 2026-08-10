@@ -120,3 +120,39 @@ fn test_missing_signal_names_are_ignored() {
 	e.apply(m, mut d, 5) // names that are not in the message must not panic or corrupt
 	assert d == []u8{len: 8}
 }
+
+// A counter or checksum is a RAW field value. If the DBC gives the signal a factor or offset —
+// legal, and nothing prevents it — encoding it as a physical quantity would scale it, and the
+// receiver would reject every frame while the config looked correct.
+fn test_scaled_signals_still_carry_raw_values() {
+	m := candb.Message{
+		name: 'Scaled'
+		id:   0x321
+		dlc:  8
+		signals: [
+			candb.Signal{
+				name:       'Cnt'
+				start_bit:  0
+				length:     8
+				byte_order: .little_endian
+				factor:     0.5 // a physical encode would write 2n
+				offset:     10
+			},
+			candb.Signal{
+				name:       'Chk'
+				start_bit:  56
+				length:     8
+				byte_order: .little_endian
+				factor:     2.0 // and would halve the checksum
+			},
+		]
+	}
+	e := E2e{ counter: 'Cnt', crc: 'Chk', profile: 'crc8_j1850' }
+	mut d := []u8{len: 8}
+	e.apply(m, mut d, 7)
+	assert d[0] == 7, 'the counter must be the raw value, got ${d[0]}'
+
+	mut expect := []u8{len: 8}
+	expect[0] = 7
+	assert d[7] == crc8_j1850(expect), 'the checksum must be the raw value'
+}
