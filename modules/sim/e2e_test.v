@@ -474,3 +474,36 @@ fn test_ambiguous_response_id_prefers_the_protected_message() {
 	w := validate_protection(db, cfg)
 	assert w.any(it.contains('both a standard and an extended')), '${w}'
 }
+
+// Configuration that displays and serializes as protection but reaches the wire as nothing.
+fn test_validate_protection_catches_inert_configurations() {
+	db := candb.Database{
+		nodes:    ['SUT']
+		messages: [candb.Message{
+			...protected_msg()
+			sender: 'SUT'
+		}]
+	}
+	// a data id with no checksum to mix it into
+	id_only := project.NodeCfg{
+		name:    'SUT'
+		protect: [project.ProtectCfg{
+			message: 'Protected'
+			counter: 'AliveCounter'
+			data_id: u32(42)
+			profile: 'crc8_j1850'
+		}]
+	}
+	w := validate_protection(db, id_only)
+	assert w.len == 1, '${w}'
+	assert w[0].contains('data_id but no crc')
+
+	// a checksum field that is not 8 bits: every profile produces a u8
+	narrow := project.NodeCfg{
+		name:    'SUT'
+		protect: [project.ProtectCfg{ message: 'Protected', crc: 'AliveCounter', profile: 'crc8_j1850' }]
+	}
+	n := validate_protection(db, narrow)
+	assert n.len == 1, '${n}'
+	assert n[0].contains('is 4 bits')
+}

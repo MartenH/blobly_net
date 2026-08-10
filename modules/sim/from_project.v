@@ -89,7 +89,25 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 			}
 		}
 		if fmts.len > 1 {
-			warns << 'responses: id 0x${r.response:X} matches both a standard and an extended message — name the intended one in protect: to disambiguate'
+			// How many of the candidates carry protection decides whether the hint resolves it.
+			mut protected_hits := 0
+			for m in db.messages_from(cfg.name) {
+				if m.id != r.response {
+					continue
+				}
+				for p in cfg.protect {
+					if p.message == m.name {
+						protected_hits++
+					}
+				}
+			}
+			warns << if protected_hits == 1 {
+				'responses: id 0x${r.response:X} matches both a standard and an extended message; the protected one is used'
+			} else {
+				// zero protected candidates, or several: nothing distinguishes them, so the
+				// DBC order decides the reply format, DLC, protection layout and counter
+				'responses: id 0x${r.response:X} matches both a standard and an extended message and protect: does not single one out — the DBC order decides which is sent; give exactly one of them a protect: entry'
+			}
 		}
 	}
 	mut seen := map[string]bool{}
@@ -126,6 +144,19 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 		for sg in m.signals {
 			if sg.is_multiplexed && (sg.name == p.counter || sg.name == p.crc) {
 				warns << 'protect: "${sg.name}" on ${p.message} is multiplexed — it is only written when its branch is active'
+			}
+		}
+		if p.crc == '' && p.data_id != none {
+			// apply() returns before the id is ever read: with no checksum there is nothing to
+			// mix it into. It still displays and still serializes, so it reads as configured.
+			warns << 'protect: "${p.message}" sets data_id but no crc — the id is not used'
+		}
+		for sg in m.signals {
+			if sg.name == p.crc && sg.length != 8 {
+				// every profile returns a u8. A wider field carries zeros in its upper bits, a
+				// narrower one truncates the checksum — either way a receiver computing over
+				// the DBC-declared width rejects the frame.
+				warns << 'protect: checksum "${p.crc}" on ${p.message} is ${sg.length} bits — every supported profile produces 8'
 			}
 		}
 		if p.counter != '' && p.counter == p.crc {
