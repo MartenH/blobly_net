@@ -5982,6 +5982,9 @@ mut:
 	bit_edit_sig    int = -1
 	bit_edit_name   string // the signal's NAME at edit time — an index can be re-used after a
 	// delete, and applying an edit to whatever now sits at that index would corrupt it
+	bit_edit_msg_name string // and the MESSAGE's name: deleting a message shifts the next one
+	// into the stored index, where a same-named signal (Counter, Status…) would pass a
+	// name-only check and take the edit meant for a different message entirely
 }
 
 // resolve_pending_bit_edit applies a bit-endpoint edit still held in the editor's buffer.
@@ -6007,54 +6010,74 @@ fn (mut app App) resolve_pending_bit_edit() {
 	anchor := app.dbc_ed.bit_edit_anchor
 	val := app.dbc_ed.bit_edit_val
 	name := app.dbc_ed.bit_edit_name
+	msg_name := app.dbc_ed.bit_edit_msg_name
 	app.dbc_ed.bit_edit_key = '' // clear FIRST: every path below is now a no-op or an apply
 
+	// `warn` is collected under the lock and emitted after it. notify() takes app.mu, which is
+	// not recursive, so notifying from in here deadlocks the app on the value-table path —
+	// reachable from deactivation, Save, Start and rebuild alike.
+	mut warn := ''
+	mut dirty := -1
 	app.mu.lock()
-	defer {
-		app.mu.unlock()
-	}
-	if di < 0 || di >= app.dbs.len || mi < 0 || mi >= app.dbs[di].messages.len {
-		return
-	}
-	if si < 0 || si >= app.dbs[di].messages[mi].signals.len {
-		return
-	}
-	mut sg := app.dbs[di].messages[mi].signals[si]
-	if sg.name != name {
-		return // the index now holds a different signal — drop the edit rather than retarget it
-	}
-	be := sg.byte_order == .big_endian
-	mut ns := sg.start_bit
-	mut nl := sg.length
-	if is_start {
-		ns = if val < 0 { 0 } else { val }
-		if !be && ns > anchor {
-			ns = anchor // start cannot pass stop: the span may not invert
+	ok := di >= 0 && di < app.dbs.len && mi >= 0 && mi < app.dbs[di].messages.len
+		&& si >= 0 && si < app.dbs[di].messages[mi].signals.len
+	if ok && app.dbs[di].messages[mi].name == msg_name
+		&& app.dbs[di].messages[mi].signals[si].name == name {
+		// Both names must match. An index alone is not identity: deleting a message shifts the
+		// next into its slot, and a same-named signal there would otherwise take this edit.
+		sg := app.dbs[di].messages[mi].signals[si]
+		be := sg.byte_order == .big_endian
+		mut ns := sg.start_bit
+		mut nl := sg.length
+		if is_start {
+			ns = if val < 0 { 0 } else { val }
+			if !be && ns > anchor {
+				ns = anchor // start cannot pass stop: the span may not invert
+			}
+			if !be {
+				nl = anchor - ns + 1
+			}
+		} else {
+			nl = if be { val } else { val - anchor + 1 }
 		}
-		if !be {
-			nl = anchor - ns + 1
+		if nl < 1 {
+			nl = 1
 		}
-	} else {
-		nl = if be { val } else { val - anchor + 1 }
-	}
-	if nl < 1 {
-		nl = 1
-	}
-	if nl > 64 {
-		nl = 64
-	}
-	// the same value-table guard both fields enforce: a narrowing that cannot hold the existing
-	// VAL_ keys is refused, or the writer masks them on save and remaps or collides them
-	nmask := if nl >= 64 { ~u64(0) } else { (u64(1) << nl) - 1 }
-	for k, _ in sg.values {
-		if k & ~nmask != 0 {
-			app.notify('${sg.name}: ${nl} bit(s) cannot hold the existing value-table keys — edit discarded')
-			return
+		if nl > 64 {
+			nl = 64
+		}
+		// the value-table guard both fields enforce: a narrowing that cannot hold the existing
+		// VAL_ keys is refused, or the writer masks them on save and remaps or collides them
+		nmask := if nl >= 64 { ~u64(0) } else { (u64(1) << nl) - 1 }
+		mut clash := false
+		for k, _ in sg.values {
+			if k & ~nmask != 0 {
+				clash = true
+			}
+		}
+		if clash {
+			warn = '${sg.name}: ${nl} bit(s) cannot hold the existing value-table keys — edit discarded'
+		} else {
+			app.dbs[di].messages[mi].signals[si].start_bit = ns
+			app.dbs[di].messages[mi].signals[si].length = nl
+			dirty = di
 		}
 	}
-	app.dbs[di].messages[mi].signals[si].start_bit = ns
-	app.dbs[di].messages[mi].signals[si].length = nl
-	app.mark_dirty(di)
+	app.mu.unlock()
+	if dirty >= 0 {
+		app.mark_dirty(dirty)
+	}
+	if warn != '' {
+		app.notify(warn)
+	}
+}
+
+// cancel_pending_bit_edit drops an in-progress endpoint edit without applying it. Used where
+// the database it referred to is about to be replaced by something the user did NOT edit —
+// Revert being the case that matters, since resolving there would write the pending value
+// onto the freshly reloaded file.
+fn (mut app App) cancel_pending_bit_edit() {
+	app.dbc_ed.bit_edit_key = ''
 }
 
 // dbc_ed_color: a deterministic per-signal palette for the bit grid.
@@ -6316,6 +6339,10 @@ fn draw_dbc_editor(mut app App) {
 	}
 	vgui.same_line()
 	if !ro && dbc_path != '' && vgui.small_button('Revert') {
+		// Revert reloads the file and then refreshes, which reaches the resolver before the
+		// next frame can cancel on selection mismatch — applying the pending value to the
+		// database the user just asked to throw away. Drop it here instead.
+		app.cancel_pending_bit_edit()
 		if db := candb.load_dbc_file(dbc_path) {
 			app.mu.lock()
 			app.dbs[di] = db
@@ -7048,6 +7075,7 @@ fn draw_dbc_editor(mut app App) {
 			app.dbc_ed.bit_edit_msg = mi
 			app.dbc_ed.bit_edit_sig = si
 			app.dbc_ed.bit_edit_name = sg.name
+			app.dbc_ed.bit_edit_msg_name = app.dbs[di].messages[mi].name
 		}
 		app.dbc_ed.bit_edit_val = sbv
 	}
@@ -7082,6 +7110,7 @@ fn draw_dbc_editor(mut app App) {
 			app.dbc_ed.bit_edit_msg = mi
 			app.dbc_ed.bit_edit_sig = si
 			app.dbc_ed.bit_edit_name = sg.name
+			app.dbc_ed.bit_edit_msg_name = app.dbs[di].messages[mi].name
 		}
 		app.dbc_ed.bit_edit_val = widthv
 	}
