@@ -56,7 +56,7 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   broadcast-only scan would ship "finds any ISO 13400 entity" while leaving a class of entity
   we deliberately support permanently invisible. Core
   tester behaviour, not blobly_emb integration — any ISO 13400 entity answers, and it is
-  recorded as a known limitation in the DoIP manual.
+  recorded as a known limitation in [`docs/doip.md`](docs/doip.md).
 - 🧭 **LIN** — `modules/lindb` (LDF) + a `LinFrame` type. Kept type-safe alongside `CanFrame` /
   `EthFrame` rather than faked behind a generic frame.
 - 🧭 **Split `cmd/blobly_net/main.v`** — it is **7,200 lines / 217 KB**, and essentially every
@@ -84,14 +84,22 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   surface area that cannot do anything — the README already has to explain that several panels
   "have nothing to talk to".
   The fix is not a build flag (that fragments testing) but two cheaper moves: **discovery** —
-  a panel appears when its artifact is present (a `system.toml` beside the project, a manifest
-  on a channel, a bootloader-capable target) rather than always; and a **module boundary** —
+  a panel is *promoted* when its artifact is present (a `system.toml` beside the project, a
+  manifest on a channel, a bootloader-capable target) rather than being equally prominent
+  always; and a **module boundary** —
   the core must not import `sysview`/`telem`/`flash`, so "works without emb" is enforced rather
   than asserted. The **visible** half of this already exists and is the baseline to build on,
   not remaining work: Trace Chart, Flash, Shell and System are already grouped under a
   `blobly_emb target` separator in both the View menu and the activity bar (`main.v` ~1477 and
-  ~1562). What is missing is everything behind it — the appearing/disappearing and the import
-  boundary.
+  ~1562). What is missing is everything behind it — the promotion and the import boundary.
+  **Discovery must not gate the entry points that create the thing being discovered.** Two in
+  particular are circular: the System panel holds the *only* `system.toml` path input
+  (`main.v` ~7187), so hiding it until a `system.toml` is found beside the project leaves no
+  way to open one from anywhere else; and the Flash panel is where a running application is
+  driven into its bootloader, so hiding it until a bootloader is on the bus means it never
+  will be. The project schema stores neither a system path nor a target capability, so a user
+  cannot configure their way out either. Promotion may reorder, collapse or de-emphasise —
+  it may not be the only route to a panel that is itself the precondition.
 
 ## Out of scope
 
