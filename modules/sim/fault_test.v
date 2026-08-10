@@ -83,7 +83,9 @@ fn test_freeze_counter_stops_the_sequence_without_stopping_traffic() {
 		seen << e.due_frames(t)[0].data[0] & 0x0F
 	}
 	assert seen == [u8(0), 0, 0, 0], 'the counter must not advance, got ${seen}'
-	assert e.ecus[0].messages[0].e2e_n == 0, 'the PROTECTION counter is what is held back'
+	// last_e2e is what the wire saw; e2e_n is the next value, one step past it and untouched by
+	// the freeze — which is exactly why recovery needs no transition flag.
+	assert e.ecus[0].messages[0].last_e2e == 0, 'the TRANSMITTED counter is what is held back'
 	assert e.ecus[0].messages[0].send_n == 4, 'generators keep running — only E2E stalls'
 }
 
@@ -201,7 +203,7 @@ fn test_counter_resumes_cleanly_after_a_freeze() {
 	for t in [f64(0), 10, 20] {
 		e.due_frames(t)
 	}
-	frozen := e.ecus[0].messages[0].e2e_n
+	frozen := e.ecus[0].messages[0].last_e2e
 	// clear the fault, as expiry or a clear_fault would
 	e.ecus[0].messages[0].fault = Fault{}
 	f := e.due_frames(30)[0]
@@ -228,7 +230,7 @@ fn test_response_counter_resumes_cleanly_after_a_freeze() {
 	req := transport.CanFrame{ id: 0x101, data: []u8{len: 8} }
 	e.on_frame(req)
 	e.on_frame(req)
-	frozen := e.ecus[0].messages[0].e2e_n
+	frozen := e.ecus[0].messages[0].last_e2e
 
 	e.ecus[0].messages[0].fault = Fault{} // cleared or expired
 	out := e.on_frame(req)
@@ -257,4 +259,38 @@ fn test_faulted_response_is_sized_to_its_message() {
 	assert out[0].data.len == 8, 'a faulted response must carry its own layout, got ${out[0].data.len}'
 	raw := u64(out[0].data[1]) | (u64(out[0].data[2]) << 8)
 	assert raw == 0xFFFF, 'the range violation must actually be written'
+}
+
+// Freezing must repeat the LAST transmitted value immediately. Advancing once more first meant
+// the receiver saw a valid step before the stall — and a timed freeze spanning a single frame
+// changed nothing at all.
+fn test_freeze_repeats_immediately_after_normal_traffic() {
+	mut e := protected_engine(Fault{})
+	a := e.due_frames(0)[0].data[0] & 0x0F
+	b := e.due_frames(10)[0].data[0] & 0x0F
+	assert b == a + 1, 'normal traffic must advance'
+
+	e.ecus[0].messages[0].fault = Fault{ kind: .freeze_ctr }
+	c := e.due_frames(20)[0].data[0] & 0x0F
+	assert c == b, 'the FIRST frozen frame must repeat the last value, got ${c} after ${b}'
+
+	e.ecus[0].messages[0].fault = Fault{}
+	d := e.due_frames(30)[0].data[0] & 0x0F
+	assert d == b + 1, 'recovery must advance exactly one step'
+}
+
+// A rebuild mid-freeze kept only the NEXT counter, so the frozen value was lost and the frame
+// after recovery repeated it.
+fn test_freeze_survives_an_engine_rebuild() {
+	mut cache := map[string]int{}
+	mut e := protected_engine(Fault{ kind: .freeze_ctr })
+	e.due_frames(0)
+	e.due_frames(10)
+	frozen := e.ecus[0].messages[0].last_e2e
+	e.save_counters(mut cache)
+
+	mut fresh := protected_engine(Fault{})
+	fresh.restore_counters(cache)
+	f := fresh.due_frames(20)[0].data[0] & 0x0F
+	assert f == u8((frozen + 1) % 16), 'after a rebuild, recovery repeated the frozen counter'
 }

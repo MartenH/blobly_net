@@ -92,12 +92,39 @@ pub mut:
 	// PROTECTION counter without also stalling every `counter` generator in the message — a
 	// message can carry both an alive counter and an unrelated application counter, and
 	// freezing the second is behaviour nobody asked for.
-	e2e_n int
-	// Whether the LAST emitted frame was frozen. On the way out of a freeze the counter still
-	// holds the value already transmitted, so the first recovered frame repeated it and the
-	// receiver saw one more stall AFTER the fault was gone.
-	was_frozen bool
+	// `e2e_n` is the NEXT counter value to use; `last_e2e` is the one actually transmitted.
+	//
+	// Keeping both removes the freeze transition state entirely. A frozen frame simply re-sends
+	// last_e2e and leaves e2e_n alone, so:
+	//   - freezing repeats the last value IMMEDIATELY, instead of advancing once more first
+	//     (a one-frame timed freeze used to change nothing at all);
+	//   - recovery needs no flag, because e2e_n was never consumed during the freeze — which
+	//     also means nothing to lose when the engine is rebuilt mid-fault.
+	e2e_n    int
+	last_e2e int
+	has_tx   bool // whether last_e2e means anything yet
 	next_ms   f64 // next due time
+}
+
+// e2e_value is the counter this frame should carry: the last transmitted one while frozen, so
+// the stall begins with the very first faulted frame rather than after one more advance.
+pub fn (m SimMessage) e2e_value() int {
+	if m.fault.kind == .freeze_ctr && m.has_tx {
+		return m.last_e2e
+	}
+	return m.e2e_n
+}
+
+// advance_e2e records what was just sent and moves the counter on — unless frozen, in which
+// case e2e_n is left untouched so recovery resumes exactly one step later with no flag to keep.
+pub fn (mut m SimMessage) advance_e2e() {
+	v := m.e2e_value()
+	m.last_e2e = v
+	m.has_tx = true
+	// ALWAYS one past what was sent. The freeze lives in e2e_value (which re-sends last_e2e),
+	// not here: leaving the pointer unadvanced meant the first recovered frame repeated the
+	// frozen value all over again.
+	m.e2e_n = v + 1
 }
 
 // build encodes the message's signals at time t into a CAN frame.
@@ -116,7 +143,7 @@ pub fn (mut m SimMessage) build(t f64) transport.CanFrame {
 	m.fault.apply_pre(m.msg, mut data)
 	// End-to-end protection goes over the finished payload — the counter and checksum have to
 	// reflect what is actually on the wire, including every generator's contribution.
-	m.e2e.apply(m.msg, mut data, m.e2e_n)
+	m.e2e.apply(m.msg, mut data, m.e2e_value())
 	return transport.CanFrame{
 		id:       m.msg.id
 		extended: m.msg.ext
@@ -168,6 +195,7 @@ pub fn (e Engine) save_counters(mut into map[string]int) {
 		for m in ecu.messages {
 			into['${ecu.name}|${m.msg.name}'] = m.send_n
 			into['e2e|${ecu.name}|${m.msg.name}'] = m.e2e_n
+			into['e2elast|${ecu.name}|${m.msg.name}'] = if m.has_tx { m.last_e2e } else { -1 }
 		}
 	}
 }
@@ -180,6 +208,14 @@ pub fn (mut e Engine) restore_counters(from map[string]int) {
 			}
 			if n := from['e2e|${e.ecus[i].name}|${e.ecus[i].messages[j].msg.name}'] {
 				e.ecus[i].messages[j].e2e_n = n
+			}
+			// the transmitted value too: a rebuild mid-freeze that kept only the NEXT counter
+			// left the frozen value unknown, and the frame after recovery repeated it
+			if n := from['e2elast|${e.ecus[i].name}|${e.ecus[i].messages[j].msg.name}'] {
+				if n >= 0 {
+					e.ecus[i].messages[j].last_e2e = n
+					e.ecus[i].messages[j].has_tx = true
+				}
 			}
 		}
 	}
@@ -196,10 +232,6 @@ pub fn (mut e Engine) due_frames(now_ms f64) []transport.CanFrame {
 				continue
 			}
 			if now_ms + 1e-6 >= m.next_ms {
-				if m.was_frozen && m.fault.kind != .freeze_ctr {
-					m.e2e_n++ // step past the frozen value before building the first recovered frame
-					m.was_frozen = false
-				}
 				mut f := m.build(now_ms / 1000.0)
 				if m.fault.apply_post(m.msg, m.e2e, mut f.data) {
 					out << f
@@ -208,11 +240,7 @@ pub fn (mut e Engine) due_frames(now_ms f64) []transport.CanFrame {
 				// The PROTECTION counter is what freezes. A dropped frame still advances it, so
 				// recovery shows a gap rather than a stall — the difference a receiver uses to
 				// tell a lost frame from a stuck sender.
-				if m.fault.kind != .freeze_ctr {
-					m.e2e_n++
-				} else {
-					m.was_frozen = true
-				}
+				m.advance_e2e()
 				m.next_ms += f64(m.period_ms)
 				if m.next_ms <= now_ms {
 					m.next_ms = now_ms + f64(m.period_ms)
@@ -296,23 +324,12 @@ pub fn (mut e Engine) on_frame(f transport.CanFrame) []transport.CanFrame {
 						buf[k] = data[k]
 					}
 				}
-				// Same recovery as the cyclic path: leaving a freeze must step past the value
-				// already transmitted, or the first recovered response repeats it and the
-				// receiver sees one more stall AFTER the fault has ended.
-				if m.was_frozen && m.fault.kind != .freeze_ctr {
-					m.e2e_n++
-					m.was_frozen = false
-				}
 				m.fault.apply_pre(m.msg, mut buf)
 				if m.e2e.active() {
-					m.e2e.apply(m.msg, mut buf, m.e2e_n)
+					m.e2e.apply(m.msg, mut buf, m.e2e_value())
 				}
 				m.send_n++
-				if m.fault.kind != .freeze_ctr {
-					m.e2e_n++
-				} else {
-					m.was_frozen = true
-				}
+				m.advance_e2e()
 				if !m.fault.apply_post(m.msg, m.e2e, mut buf) {
 					drop_response = true
 				}
