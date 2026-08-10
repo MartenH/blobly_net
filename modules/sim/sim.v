@@ -227,7 +227,10 @@ pub fn (mut e Engine) on_frame(f transport.CanFrame) []transport.CanFrame {
 			// applied, and it lives on the SimMessage that carries this id.
 			for j := 0; j < e.ecus[i].messages.len; j++ {
 				mut m := &e.ecus[i].messages[j]
-				if m.msg.id != r.resp_id || !m.e2e.active() {
+				// `ext` as well as the numeric id: a standard and an extended message may share
+				// a number, and matching on the id alone could take the other one's DLC,
+				// protection layout and counter while the frame goes out in this one's format.
+				if m.msg.id != r.resp_id || m.msg.ext != r.resp_ext || !m.e2e.active() {
 					continue
 				}
 				// Size the payload to the RESPONSE message's DLC first. `data` is the REQUEST

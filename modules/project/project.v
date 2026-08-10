@@ -96,8 +96,10 @@ pub mut:
 	counter string // signal carrying the alive counter ('' = none)
 	crc     string // signal carrying the checksum ('' = none)
 	profile string = 'crc8_j1850' // crc8_j1850 | crc8_autosar | sum8 | xor8
-	data_id     u32  // mixed into the checksum only; never occupies payload
-	has_data_id bool // 0 is a valid id, so presence is tracked rather than inferred
+	// Mixed into the checksum only; never occupies payload. An OPTION rather than a u32 with
+	// 0 meaning unset: 0 is a valid Data ID. Carrying presence as a separate bool left three
+	// places to remember it and the GUI forgot one, showing an explicit zero id as absent.
+	data_id ?u32
 }
 
 // SenderSig is one signal value applied when building a Sender's frame: the
@@ -482,15 +484,16 @@ fn parse_node(n yaml.Any) NodeCfg {
 		for p in ps.array() {
 			// presence, not value: `data_id: 0` is a legitimate id whose four zero bytes must
 			// still reach the checksum, so it cannot be distinguished from absent by testing 0
-			mut has_id := true
-			p.value_opt('data_id') or { has_id = false }
+			mut id := ?u32(none)
+			if v := p.value_opt('data_id') {
+				id = u32(v.int()) // present, even when it is 0 — that is a real id
+			}
 			node.protect << ProtectCfg{
-				message:     p.value('message').default_to('').string()
-				counter:     p.value('counter').default_to('').string()
-				crc:         p.value('crc').default_to('').string()
-				profile:     p.value('profile').default_to('crc8_j1850').string()
-				data_id:     u32(p.value('data_id').default_to(i64(0)).int())
-				has_data_id: has_id
+				message: p.value('message').default_to('').string()
+				counter: p.value('counter').default_to('').string()
+				crc:     p.value('crc').default_to('').string()
+				profile: p.value('profile').default_to('crc8_j1850').string()
+				data_id: id
 			}
 		}
 	}

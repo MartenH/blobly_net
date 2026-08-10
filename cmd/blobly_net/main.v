@@ -1717,8 +1717,10 @@ fn draw_sim(mut app App) {
 					if pr.crc != '' {
 						what << '${pr.profile} -> ${pr.crc}'
 					}
-					if pr.data_id != 0 {
-						what << 'id 0x${pr.data_id:02X}'
+					if id := pr.data_id {
+						what << 'id 0x${id:02X}' // shown even when 0: an explicit zero id is
+						// not the same as none, and telling them apart is the whole point when
+						// you are staring at a checksum mismatch
 					}
 					vgui.text('    [P] ${pr.message}: ${what.join(', ')}')
 				}

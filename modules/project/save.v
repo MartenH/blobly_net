@@ -113,8 +113,8 @@ pub fn (p Project) to_yaml() string {
 							parts << 'crc: ${yaml_scalar(pr.crc)}'
 							parts << 'profile: ${yaml_scalar(pr.profile)}'
 						}
-						if pr.has_data_id {
-							parts << 'data_id: ${pr.data_id}' // written even when 0 — it is a real id
+						if id := pr.data_id {
+							parts << 'data_id: ${id}' // written even when 0 — it is a real id
 						}
 						b.writeln('          - { ${parts.join(', ')} }')
 					}

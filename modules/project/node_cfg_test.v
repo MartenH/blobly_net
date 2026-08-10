@@ -88,14 +88,19 @@ channels:
 	assert n.protect[0].counter == 'AliveCounter'
 	assert n.protect[0].crc == 'CRC'
 	assert n.protect[0].profile == 'crc8_j1850'
-	assert n.protect[0].data_id == 42
+	assert n.protect[0].data_id or { u32(999) } == 42
 	assert n.protect[1].crc == '' // counter-only protection is legitimate
 	assert n.protect[1].profile == 'crc8_j1850' // the default, even when unused
 
 	again := parse(p.to_yaml()) or { panic(err) }
 	m := again.channels[0].nodes[0]
 	assert m.protect.len == 2, 'save() dropped the protection'
-	assert m.protect[0] == n.protect[0]
+	assert m.protect[0].message == n.protect[0].message
+	assert m.protect[0].counter == n.protect[0].counter
+	assert m.protect[0].crc == n.protect[0].crc
+	assert m.protect[0].profile == n.protect[0].profile
+	assert m.protect[0].data_id or { u32(999) } == 42, 'data_id lost on save'
+	assert m.protect[1].data_id == none, 'an omitted data_id must stay omitted'
 	assert m.protect[1].message == 'Status'
 	assert m.protect[1].counter == 'Cnt'
 }

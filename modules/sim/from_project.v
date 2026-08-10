@@ -30,7 +30,7 @@ pub fn from_project(db candb.Database, cfg project.NodeCfg) SimEcu {
 			counter: p.counter
 			crc:     p.crc
 			profile: p.profile
-			data_id: if p.has_data_id { ?u32(p.data_id) } else { none }
+			data_id: p.data_id
 		}
 	}
 	// No generators and no response rules: the node has no explicit BEHAVIOUR, so keep the
@@ -100,6 +100,12 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 		}
 		if p.crc != '' && p.crc !in have {
 			warns << 'protect: checksum "${p.crc}" is not a signal of ${p.message}'
+		}
+		if p.counter != '' && p.counter == p.crc {
+			// apply() writes the counter, then zeroes that field to compute the checksum over
+			// it, then writes the checksum there — so the counter is overwritten and the frame
+			// goes out with none. Both membership checks pass, which is why this needs saying.
+			warns << 'protect: counter and crc are both "${p.counter}" on ${p.message} — the checksum overwrites the counter'
 		}
 		if p.crc != '' && p.profile !in ['crc8_j1850', 'crc8_autosar', 'sum8', 'xor8'] {
 			warns << 'protect: unknown profile "${p.profile}" on ${p.message} — falling back to sum8'

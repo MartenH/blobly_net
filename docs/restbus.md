@@ -60,6 +60,10 @@ simulation:
 Both fields are named by **signal**, so width, bit position and byte order come from the DBC. A
 signal moved in the database moves here too, and nothing has to be restated.
 
+**Use different signals for `counter` and `crc`.** The checksum is computed with its own field
+zeroed, so pointing both at one signal writes the counter and then overwrites it — the frame
+goes out with a checksum and no counter. Reported.
+
 **One entry per message.** Protection is keyed by message name, so a second entry for the same
 message replaces the first — put the counter and the checksum in the *same* entry rather than
 splitting them across two, which reads perfectly and silently loses one. An entry setting

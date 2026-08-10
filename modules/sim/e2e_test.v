@@ -317,3 +317,40 @@ fn test_validate_protection_catches_duplicates_and_empty_entries() {
 	assert e.len == 1, '${e}'
 	assert e[0].contains('neither counter nor crc')
 }
+
+// One signal used for BOTH fields: apply() writes the counter, zeroes that field to compute
+// the checksum, then writes the checksum there. The counter is gone and both name checks pass.
+fn test_validate_protection_catches_counter_and_crc_sharing_a_signal() {
+	db := candb.Database{
+		nodes:    ['SUT']
+		messages: [candb.Message{
+			...protected_msg()
+			sender: 'SUT'
+		}]
+	}
+	same := project.NodeCfg{
+		name:    'SUT'
+		protect: [project.ProtectCfg{
+			message: 'Protected'
+			counter: 'CRC'
+			crc:     'CRC'
+			profile: 'crc8_j1850'
+		}]
+	}
+	w := validate_protection(db, same)
+	assert w.len == 1, '${w}'
+	assert w[0].contains('overwrites the counter')
+}
+
+// An explicitly configured data_id of 0 must round-trip as PRESENT: omitting its four zero
+// bytes gives a different checksum, so "0" and "unset" are different configurations.
+fn test_zero_data_id_is_preserved_and_changes_the_checksum() {
+	m := protected_msg()
+	none_id := E2e{ crc: 'CRC', profile: 'crc8_j1850' }
+	zero_id := E2e{ crc: 'CRC', profile: 'crc8_j1850', data_id: u32(0) }
+	mut a := []u8{len: 8}
+	mut b := []u8{len: 8}
+	none_id.apply(m, mut a, 0)
+	zero_id.apply(m, mut b, 0)
+	assert a[7] != b[7], 'an explicit data_id of 0 must contribute its four zero bytes'
+}
