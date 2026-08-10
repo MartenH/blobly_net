@@ -26,6 +26,7 @@ mut:
 	running bool = true
 }
 
+
 fn main() {
 	mut proj_path := 'projects/sim-demo.blobnet'
 	mut scripts := []string{}
@@ -66,12 +67,14 @@ fn main() {
 			continue
 		}
 		db := load_channel_db(ch)
-		chans << script.ChanInfo{
-			name:  ch.name
-			iface: ch.iface
-			db:    db
-		}
 		nodes := ch.all_nodes()
+		chans << script.ChanInfo{
+			name:      ch.name
+			iface:     ch.iface
+			key_iface: ch.iface
+			db:        db
+			nodes:     nodes // so a fault that cannot take effect can be refused
+		}
 		if nodes.len > 0 {
 			spawn sim_loop(ch.iface, db, nodes, ctl)
 			// Diagnostics are per BUS and decided ONCE. Skipping outright after the first
@@ -154,6 +157,11 @@ fn sim_loop(iface string, db candb.Database, nodes []project.NodeCfg, ctl &Ctl) 
 	}
 	t0 := time.ticks()
 	for ctl.running {
+		// Re-stamped every pass, so a fault a script injects mid-run takes effect on the next
+		// frame rather than at the next rebuild — which for the headless runner never comes.
+		// The elapsed time ages timed faults; without it "drop for 500 ms" drops forever.
+		// The table owns its own clock, so calling this from every bus loop is safe.
+		sim.apply_injected(iface, mut engine)
 		now_ms := f64(time.ticks() - t0)
 		for f in engine.due_frames(now_ms) {
 			bus.send(f) or {}

@@ -252,6 +252,72 @@ address, which is the point.
 
 The **Diagnostics panel** picks which target to address when more than one is configured.
 
+## Fault injection
+
+A rest-bus that only sends correct traffic answers one question: does the ECU work when
+everything else does. The one a bench actually has to answer is the opposite — does it *notice*
+when something is wrong, and does it do the right thing about it.
+
+Per message, from the Simulation panel or from a script:
+
+| fault | what the receiver sees |
+|---|---|
+| `drop` | the message stops arriving — provokes timeout handling and its DTC |
+| `bad_crc` | the checksum no longer matches the payload |
+| `freeze_counter` | traffic continues, but the alive counter stops advancing |
+| `out_of_range` | one signal carries a value beyond its declared maximum |
+
+From Lua, which is what makes a fault a regression test rather than a demo:
+
+```lua
+local d = uds.open("CAN1", { tx = 0x7E0, rx = 0x7E8 })
+
+sim.fault("CAN1", "BCM", "Powertrain", "drop", 3000)  -- 3 s, then it clears itself
+sleep_ms(3500)
+check.truthy(#d:read_dtcs() > 0, "no DTC after the message stopped arriving")
+
+sim.fault("CAN1", "BCM", "Powertrain", "bad_crc")     -- until cleared
+sim.clear_fault("CAN1", "BCM", "Powertrain")
+```
+
+The **channel comes first**: a project may run the same node and message names on two buses, and
+dropping a frame on the wrong one invalidates observations of a network nobody was testing.
+
+A fault that cannot take effect is **refused, loudly** — an unknown node or message, `bad_crc`
+where the project configures no checksum, `freeze_counter` where it configures no E2E counter,
+`out_of_range` on a signal with no illegal value. Arming a fault that changes nothing is the
+difference between a test that fails and a test that lies.
+
+A fault with a lifetime expires on its own; one without stays until cleared. The distinction
+matters because a fault you have to switch off by hand is one you forget to switch off.
+
+**Faults are applied last** — after the generators encode the frame and after protection stamps
+it. That is the only order in which "corrupt the checksum" means what it says: a checksum
+computed over already-corrupted data is simply a valid checksum for different data, which the
+receiver accepts and no test notices.
+
+Details worth knowing:
+
+- `bad_crc` **inverts** the checksum rather than zeroing it, because zero is a legitimate
+  checksum value — a receiver that happened to compute 0 would accept the "corrupted" frame.
+- `out_of_range` is applied **before** protection, so the frame arrives with a *valid* checksum
+  and the receiver reaches its range handling. Applied after, it would be rejected as a
+  checksum error and the fault would test the opposite of what it claims.
+- `freeze_counter` stalls the **E2E counter only**. An ordinary `counter` generator in the same
+  message keeps running — a message may carry both, and freezing the second is behaviour nobody
+  asked for.
+- `drop` still counts as a cycle, so the counter has moved on by the next frame that *does*
+  arrive — a gap, which is how a receiver tells a dropped frame from a stalled sender.
+- `out_of_range` needs a signal that can actually carry the violation onto the wire. Three
+  cannot, and none is offered: a signal using its whole declared range (there is no illegal
+  value), a **multiplexed** signal (only written when its selector is active, so the fault may
+  never reach the bus), and the **counter or checksum field itself** (a violation written there
+  is overwritten moments later when protection is stamped, and the frame goes out valid).
+  Both raw endpoints are considered, so a signal with a negative factor — whose physical
+  maximum sits at raw zero — is handled.
+- Leaving a `freeze_counter` steps the counter past the frozen value before the first recovered
+  frame, so the receiver does not see one more stall *after* the fault is gone.
+
 ## Interactive senders
 
 Triggerable frames, for the "now do this" half of bench work:
@@ -334,9 +400,6 @@ See [scripting.md](scripting.md) for the test API.
 - **No receive-side validation.** Protection is applied to what is *sent*; the counter and
   checksum of *received* frames are not checked, so a fault in the ECU under test's own
   protection is not flagged automatically.
-- **No fault injection** — deliberately corrupting a checksum, freezing a counter, or dropping
-  a message to provoke the receiver's error handling. Switching a whole ECU off in the panel is
-  the only fault available today.
 - **No LIN.** CAN and CAN-FD only; LIN is on the roadmap.
 - **Generators are open-loop.** A signal's value follows its formula and cannot react to what
   the ECU under test sends. Closed-loop behaviour belongs in a Lua script.
