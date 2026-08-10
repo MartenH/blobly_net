@@ -66,17 +66,19 @@ fn main() {
 		if !ch.enabled {
 			continue
 		}
-		db := load_channel_db(ch)
+		db := load_channel_db(ch, os.dir(proj_path))
 		nodes := ch.all_nodes()
 		chans << script.ChanInfo{
-			name:      ch.name
-			iface:     ch.iface
+			name: ch.name
+			// what a script OPENS with — carries the vendor bitrate
+			iface: ch.iface_with_bitrate()
+			// what faults are KEYED on — the logical interface, no suffix
 			key_iface: ch.iface
 			db:        db
 			nodes:     nodes // so a fault that cannot take effect can be refused
 		}
 		if nodes.len > 0 {
-			spawn sim_loop(ch.iface, db, nodes, ctl)
+			spawn sim_loop(ch.iface_with_bitrate(), db, nodes, ctl)
 			// Diagnostics are per BUS and decided ONCE. Skipping outright after the first
 			// entry on an interface — rather than emptying the server list — is the difference
 			// that matters: the emptied list fell through to the default branch and spawned a
@@ -98,11 +100,11 @@ fn main() {
 				}
 				mut servers := sim.uds_nodes(peers)
 				if servers.len == 0 {
-					spawn diag_server_loop(ch.iface, ctl)
+					spawn diag_server_loop(ch.iface_with_bitrate(), ctl)
 					println('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + UDS server')
 				} else {
 					for mut u in servers {
-						spawn uds_node_loop(ch.iface, u.rx, u.tx, u.ext, u.server, ctl)
+						spawn uds_node_loop(ch.iface_with_bitrate(), u.rx, u.tx, u.ext, u.server, ctl)
 					}
 					println('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + ${servers.len} UDS target(s)')
 				}
@@ -143,8 +145,12 @@ fn main() {
 // definition of an id wins) — a GUI-free slice of src/main.v's load_databases.
 // load_channel_db delegates to candb.merge_files — see the GUI's merge_dbs. Having one merge
 // each is how the same project came to mean two different databases.
-fn load_channel_db(ch project.Channel) candb.Database {
-	return candb.merge_files(ch.databases)
+fn load_channel_db(ch project.Channel, proj_dir string) candb.Database {
+	// Resolved against the PROJECT's directory, exactly as the GUI does. runtests.sh changes to
+	// the repository root before running, so a project kept anywhere else had its relative
+	// `databases:` entries opened as written — the load failed, the database came back empty,
+	// and the simulation transmitted nothing with no error anywhere.
+	return candb.merge_files(ch.databases.map(project.resolve_asset(proj_dir, it)))
 }
 
 // sim_loop runs the channel's simulated ECUs on a dedicated in-process bus

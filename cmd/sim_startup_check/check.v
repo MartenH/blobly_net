@@ -16,12 +16,20 @@ fn main() {
 		exit(2)
 	}
 	println('project: ${p.name}, channels=${p.channels.len}')
+	proj_dir := os.dir(os.real_path(path))
 	mut total_msgs := 0
+	mut failed := 0
 	for ch in p.channels {
+		// resolve_asset + merge_files, the same as the GUI and the runner. Reading only
+		// databases[0] as written meant a project kept outside the repository loaded nothing,
+		// and this check then reported OK on a simulation that transmitted nothing at all.
 		mut db := candb.Database{}
 		if ch.databases.len > 0 {
-			db = candb.load_dbc_file(ch.databases[0]) or {
-				eprintln('  ${ch.name}: load_dbc_file(${ch.databases[0]}) failed: ${err}')
+			paths := ch.databases.map(project.resolve_asset(proj_dir, it))
+			db = candb.merge_files(paths)
+			if db.messages.len == 0 {
+				eprintln('  ${ch.name}: no messages loaded from ${paths}')
+				failed++
 				continue
 			}
 		}
@@ -35,7 +43,17 @@ fn main() {
 			count += engine.due_frames(t).len
 		}
 		total_msgs += count
+		if ch.all_nodes().len > 0 && count == 0 {
+			// a channel that simulates ECUs and emits nothing is the failure this tool exists
+			// to catch, so it must not be reported as OK
+			eprintln('  ${ch.name}: ${ch.all_nodes().len} node(s) but NO frames in 200ms')
+			failed++
+		}
 		println('  ${ch.name}: nodes=${ch.all_nodes().len} db_msgs=${db.messages.len} frames_in_200ms=${count}')
+	}
+	if failed > 0 {
+		eprintln('FAILED: ${failed} channel(s) loaded nothing or emitted nothing')
+		exit(1)
 	}
 	println('OK total frames in first 200ms across all buses: ${total_msgs}')
 }

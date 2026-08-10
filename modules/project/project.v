@@ -331,6 +331,36 @@ pub mut:
 	channels []Channel
 }
 
+// iface_with_bitrate is the interface string a transport should actually be opened with.
+//
+// Parsing splits the configured bitrate out of the interface, and the vendor backends default
+// to 500 kbit/s when it is absent — so opening the bare `iface` silently ran a PCAN or Kvaser
+// channel at the wrong rate and produced no traffic against a bus at any other. The GUI
+// re-appended it and the headless runner did not, which is why the same project worked
+// interactively and stayed silent under a script.
+pub fn (c Channel) iface_with_bitrate() string {
+	if (c.adapter == 'pcan' || c.adapter == 'kvaser') && c.bitrate > 0 {
+		return '${c.iface}@${c.bitrate}'
+	}
+	return c.iface
+}
+
+// resolve_asset makes a project-relative path (a DBC, a recording) absolute against the
+// project file's own directory.
+//
+// `dir` is the directory holding the project. A relative path is resolved against it when that
+// resolves to something real, and returned unchanged otherwise so a repo-root-relative path
+// still works. Without this the headless runner opened `databases:` entries as written, after
+// runtests.sh had changed to the repository root — so a project kept anywhere else loaded an
+// EMPTY database and the simulation emitted nothing, silently.
+pub fn resolve_asset(dir string, path string) string {
+	if path == '' || os.is_abs_path(path) {
+		return path
+	}
+	rel := os.join_path(dir, path)
+	return if os.exists(rel) { rel } else { path }
+}
+
 // is_supported reports whether this app understands the file's format version
 // (i.e. it isn't newer than schema_version).
 pub fn (p Project) is_supported() bool {
