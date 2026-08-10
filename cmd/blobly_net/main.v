@@ -2980,7 +2980,7 @@ const help_docs = [
 	HelpDoc{'Scripting', 'docs/scripting.md'},
 	HelpDoc{'Project editing', 'docs/project_editing.md'},
 	HelpDoc{'CAN hardware', 'docs/can_hardware.md'},
-	HelpDoc{'Ethernet / DoIP', 'docs/ethernet_architecture.md'},
+	HelpDoc{'Ethernet / DoIP', 'docs/doip.md'},
 	HelpDoc{'Known issues', 'docs/known_issues.md'},
 ]
 
