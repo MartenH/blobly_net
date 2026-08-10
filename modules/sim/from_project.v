@@ -54,6 +54,13 @@ pub fn from_project(db candb.Database, cfg project.NodeCfg) SimEcu {
 			resp_id:    r.response
 			byte_index: r.byte
 			add:        r.add
+			// The DBC decides whether the response is a standard or an extended frame — it is
+			// a property of the message, not of the rule, and ResponseCfg has nowhere to say
+			// it. Leaving this at false made a protected EXTENDED response unfindable once the
+			// lookup started matching on ext: no protection applied, and the reply emitted as
+			// a standard frame. Unresolved ids keep false, which is the correct default for a
+			// rule that names no DBC message at all.
+			resp_ext: resp_is_extended(db, cfg.name, r.response)
 		}
 	}
 	return build_protected_ecu(db, cfg.name, gens, rules, prot)
@@ -112,6 +119,18 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 		}
 	}
 	return warns
+}
+
+// resp_is_extended reports the frame format the DBC gives the message with this id among the
+// node's own messages. False when nothing matches — a rule may legitimately name an id that is
+// not a DBC message.
+fn resp_is_extended(db candb.Database, node string, id u32) bool {
+	for m in db.messages_from(node) {
+		if m.id == id {
+			return m.ext
+		}
+	}
+	return false
 }
 
 // attach_protection applies per-message protection to an already-built ECU.

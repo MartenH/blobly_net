@@ -354,3 +354,39 @@ fn test_zero_data_id_is_preserved_and_changes_the_checksum() {
 	zero_id.apply(m, mut b, 0)
 	assert a[7] != b[7], 'an explicit data_id of 0 must contribute its four zero bytes'
 }
+
+// An extended response message must be found by the protected-response lookup. ResponseCfg has
+// no format field, so the flag is resolved from the DBC — left false, the reply went out as an
+// unprotected STANDARD frame while validation reported nothing wrong.
+fn test_extended_response_resolves_its_frame_format() {
+	mut ext_msg := protected_msg()
+	ext_msg.id = 0x102
+	ext_msg.ext = true
+	ext_msg.name = 'ExtResponse'
+	db := candb.Database{
+		nodes:    ['SUT']
+		messages: [candb.Message{
+			...ext_msg
+			sender: 'SUT'
+		}]
+	}
+	cfg := project.NodeCfg{
+		name:      'SUT'
+		responses: [project.ResponseCfg{ request: 0x101, response: 0x102, byte: 0, add: 1 }]
+		protect:   [project.ProtectCfg{
+			message: 'ExtResponse'
+			counter: 'AliveCounter'
+			crc:     'CRC'
+			profile: 'crc8_j1850'
+		}]
+	}
+	ecu := from_project(db, cfg)
+	assert ecu.rules.len == 1
+	assert ecu.rules[0].resp_ext, 'the rule must inherit the DBC message format'
+
+	mut e := Engine{ ecus: [ecu] }
+	out := e.on_frame(transport.CanFrame{ id: 0x101, data: []u8{len: 8} })
+	assert out.len == 1
+	assert out[0].extended, 'the reply must go out extended'
+	assert out[0].data[7] != 0, 'and it must be protected'
+}
