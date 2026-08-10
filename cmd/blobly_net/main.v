@@ -6557,10 +6557,15 @@ fn draw_dbc_editor(mut app App) {
 	// Clamp the persisted width against what the panel has NOW: left_w survives docking and
 	// resizing, so a divider dragged wide in a large window could otherwise consume a narrower
 	// one entirely and leave the inspector unreachable (#68). The right pane keeps 200*sc.
+	// content_avail_w() is called AFTER the left child and same_line(), so it reports only the
+	// space to the RIGHT of the left pane. Treating that as the panel total made max_left shrink
+	// as the user widened the pane, dragging the divider back on the next frame (#69). The panel
+	// total is the left pane plus what remains beside it.
 	avail := vgui.content_avail_w()
+	total_w := app.dbc_ed.left_w + avail
 	mut max_left := 760 * sc
-	if avail > 0 && avail - 200 * sc < max_left {
-		max_left = avail - 200 * sc
+	if total_w > 0 && total_w - 200 * sc < max_left {
+		max_left = total_w - 200 * sc
 	}
 	if max_left < 200 * sc {
 		max_left = 200 * sc
@@ -6929,6 +6934,15 @@ fn draw_dbc_editor(mut app App) {
 	// the bits begin and end. (Little-endian contiguous span; big-endian keeps DBC semantics.)
 	lnv := sg.length
 	stop_bit := sg.start_bit + lnv - 1
+	// Clicking another signal changes si BEFORE the inspector is drawn, so the field holding a
+	// pending edit is never submitted and its deactivation never fires. Dropping the edit here
+	// is the safe half of that: keeping it would leave a stale value that reappears when the
+	// same index is selected again — and applying it would write one signal's edit onto
+	// another (#69). An uncommitted endpoint edit is cheap to retype; a misapplied one is not.
+	cur_sig_suffix := ':${di}:${mi}:${si}'
+	if app.dbc_ed.bit_edit_key != '' && !app.dbc_ed.bit_edit_key.ends_with(cur_sig_suffix) {
+		app.dbc_ed.bit_edit_key = ''
+	}
 	sb_key := 'start:${di}:${mi}:${si}'
 	// While this field is being edited the FIELD owns the value, not the model — otherwise the
 	// next frame resets it to the unchanged model and the edit snaps back mid-typing.
@@ -6960,8 +6974,15 @@ fn draw_dbc_editor(mut app App) {
 		if sg.byte_order != .big_endian {
 			nl = anchor - ns + 1
 		}
+		// Bound it at BOTH ends, like the width editor. Only the lower bound was checked, so
+		// lowering the start of a signal that sits far into the frame derived an oversized
+		// width — 100..107 restarted at 0 produced a 108-bit signal, which makes raw_value /
+		// set_raw shift a u64 by 64 or more and writes an invalid signal to the DBC (#69).
 		if nl < 1 {
 			nl = 1
+		}
+		if nl > 64 {
+			nl = 64
 		}
 		// The width editor refuses a narrowing that would not hold the existing VAL_ keys; the
 		// start path reached the same outcome without that check, so the writer masked stale
