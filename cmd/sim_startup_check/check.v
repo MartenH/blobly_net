@@ -84,8 +84,14 @@ fn main() {
 			}
 		}
 		for i, cfg in ch.all_nodes() {
-			mut runnable := cfg.responses.len > 0 || cfg.uds != none
+			// Ask the BUILT ECU, not the config text. from_project gives an unconfigured node
+			// named SUT the built-in reference model, which installs its own 0x101->0x102 rule
+			// — so `simulate: [SUT]` has response behaviour that appears nowhere in
+			// cfg.responses, and reading the config alone failed a project the real runs answer
+			// requests on. Same lesson as the response-only round: check what will RUN.
+			mut runnable := cfg.uds != none
 			if !runnable && i < engine.ecus.len {
+				runnable = engine.ecus[i].rules.len > 0
 				for m in engine.ecus[i].messages {
 					if m.period_ms > 0 {
 						runnable = true
