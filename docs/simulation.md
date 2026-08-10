@@ -340,8 +340,19 @@ checked.
       - name: BCM
 ```
 
-A channel with only `verify:` and no `simulation:` is fine — it transmits nothing and just
-watches.
+A channel with only `verify:` and no `simulation:` transmits **nothing at all** — no frames and
+no diagnostic server — so it can watch a real bench without putting anything on the wire beside
+the ECU under test.
+
+Add `id:` when a message name is ambiguous (merged databases can carry one name at two ids):
+
+```yaml
+      - { message: Status, id: "0x222", counter: Cnt, crc: CRC }
+```
+
+Entries that would check nothing are reported when the measurement starts — an unknown message,
+a signal the message does not have, an ambiguous name, or an entry naming neither field. A
+check that silently does nothing is worse than none, because it is trusted.
 
 Violations appear beside the message name in the trace:
 

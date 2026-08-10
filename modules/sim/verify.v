@@ -191,6 +191,11 @@ pub fn verifiers_for(db candb.Database, nodes []project.NodeCfg, verify []projec
 			if m.name != p.message {
 				continue
 			}
+			if want := p.id {
+				if m.id != want {
+					continue // an explicit id disambiguates a name carried by several messages
+				}
+			}
 			out.by_key[vkey(m.id, m.ext)] = Verifier{
 				msg: m
 				e2e: E2e{
@@ -229,4 +234,52 @@ pub fn verifiers_for(db candb.Database, nodes []project.NodeCfg, verify []projec
 		}
 	}
 	return out
+}
+
+// validate_verify reports channel-level `verify:` entries that will check nothing.
+//
+// Node-level `protect:` goes through validate_protection; these did not, so a misspelled
+// message or signal silently produced no verifier at all and every frame came back clean —
+// disabling the bench check the user believes is running. A check that quietly does nothing is
+// worse than no check, because it is trusted.
+pub fn validate_verify(db candb.Database, verify []project.ProtectCfg) []string {
+	mut warns := []string{}
+	for p in verify {
+		mut matches := []candb.Message{}
+		for m in db.messages {
+			if m.name != p.message {
+				continue
+			}
+			if want := p.id {
+				if m.id != want {
+					continue
+				}
+			}
+			matches << m
+		}
+		if matches.len == 0 {
+			warns << 'verify: no message "${p.message}" in the database — nothing is checked'
+			continue
+		}
+		if matches.len > 1 {
+			ids := matches.map('0x${it.id:X}').join(', ')
+			warns << 'verify: "${p.message}" matches several messages (${ids}) — add an id: to say which'
+			continue
+		}
+		m := matches[0]
+		mut have := map[string]bool{}
+		for sg in m.signals {
+			have[sg.name] = true
+		}
+		if p.counter != '' && p.counter !in have {
+			warns << 'verify: counter "${p.counter}" is not a signal of ${p.message}'
+		}
+		if p.crc != '' && p.crc !in have {
+			warns << 'verify: checksum "${p.crc}" is not a signal of ${p.message}'
+		}
+		if p.counter == '' && p.crc == '' {
+			warns << 'verify: "${p.message}" names neither counter nor crc — nothing is checked'
+		}
+	}
+	return warns
 }

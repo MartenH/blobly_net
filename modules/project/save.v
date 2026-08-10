@@ -244,6 +244,9 @@ fn gen_inline(g GenCfg) string {
 // and a channel's `verify:` — the same shape from opposite ends of the wire, so one writer.
 fn protect_inline(pr ProtectCfg) string {
 	mut parts := ['message: ${yaml_flow_scalar(pr.message)}']
+	if mid := pr.id {
+		parts << 'id: "0x${mid:X}"'
+	}
 	if pr.counter != '' {
 		parts << 'counter: ${yaml_flow_scalar(pr.counter)}'
 	}

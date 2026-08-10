@@ -238,3 +238,45 @@ fn test_checksum_compared_at_the_declared_width() {
 	bad[0] = bad[0] ^ 0x0F
 	assert v.check(bad) == .bad_crc
 }
+
+// A `verify:` entry that checks nothing must SAY so. Node-level protect: goes through
+// validate_protection; these did not, so a misspelled name produced no verifier and every frame
+// came back clean — disabling the bench check the user believes is running.
+fn test_validate_verify_reports_entries_that_check_nothing() {
+	mut m := vmsg()
+	m.name = 'Status'
+	db := candb.Database{ messages: [m] }
+
+	bad_msg := [project.ProtectCfg{ message: 'Nope', crc: 'CRC' }]
+	assert validate_verify(db, bad_msg).any(it.contains('no message "Nope"'))
+
+	bad_sig := [project.ProtectCfg{ message: 'Status', counter: 'NoSuch', crc: 'AlsoNo' }]
+	assert validate_verify(db, bad_sig).len == 2
+
+	empty := [project.ProtectCfg{ message: 'Status' }]
+	assert validate_verify(db, empty).any(it.contains('neither counter nor crc'))
+
+	good := [project.ProtectCfg{ message: 'Status', counter: 'AliveCounter', crc: 'CRC' }]
+	assert validate_verify(db, good).len == 0
+}
+
+// A merged database can carry one message name at two ids. Binding to whichever came first left
+// the intended ECU frame unchecked, so the ambiguity is reported and `id:` resolves it.
+fn test_ambiguous_verify_names_need_an_id() {
+	mut a := vmsg()
+	a.name = 'Status'
+	a.id = 0x111
+	mut b := vmsg()
+	b.name = 'Status'
+	b.id = 0x222
+	db := candb.Database{ messages: [a, b] }
+
+	ambiguous := [project.ProtectCfg{ message: 'Status', crc: 'CRC' }]
+	assert validate_verify(db, ambiguous).any(it.contains('matches several messages'))
+
+	pinned := [project.ProtectCfg{ message: 'Status', crc: 'CRC', id: u32(0x222) }]
+	assert validate_verify(db, pinned).len == 0
+	set := verifiers_for(db, [], pinned)
+	assert vkey(0x222, false) in set.by_key, 'the id: must select the intended message'
+	assert vkey(0x111, false) !in set.by_key
+}

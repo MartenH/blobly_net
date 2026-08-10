@@ -525,6 +525,15 @@ fn (mut app App) start() {
 	app.diag_plan = []
 	mut seeded := []string{}
 	for sc in app.sims {
+		for w in sim.validate_verify(sc.db, sc.verify) {
+			app.notify('${sc.iface}: ${w}')
+		}
+		if sc.nodes.len == 0 {
+			// A verify-only channel WATCHES a real bus. Starting the built-in 0x7E0/0x7E8
+			// server on it would put our diagnostic responses on the wire beside the ECU under
+			// test's — a collision on the bench this configuration exists to observe.
+			continue
+		}
 		if sc.iface in seeded {
 			continue
 		}
@@ -690,8 +699,13 @@ fn (mut app App) load_recording(path string) {
 	mut verifiers := map[string]sim.VerifySet{}
 	mut alias := map[string]string{} // recorded label -> project iface
 	for sc in app.sims {
+		// The CURRENT databases, not the SimCfg's on-disk snapshot: with unsaved DBC-editor
+		// changes, app.dbs already drives trace naming and signal decoding, so verifying
+		// against the stale copy produced verdicts that disagreed with the layout shown
+		// everywhere else in the UI.
+		live := merge_dbs_from(app.dbs_for(sc.iface))
 		mut vs := verifiers[sc.iface] or { sim.VerifySet{} }
-		for k, ver in sim.verifiers_for(sc.db, sc.nodes, sc.verify).by_key {
+		for k, ver in sim.verifiers_for(live, sc.nodes, sc.verify).by_key {
 			if k !in vs.by_key {
 				vs.by_key[k] = ver
 			}
@@ -3814,6 +3828,29 @@ fn trace_pass(r TraceRow, filt string) bool {
 	// gesture someone reaches for the moment they suspect one
 	hay := '${idstr(r.id, r.ext)} ${r.name} ${r.ch} ${r.dir} ${hex(r.data)} ${r.e2e}'.to_lower()
 	return hay.contains(filt)
+}
+
+// merge_dbs_from flattens several loaded databases into one, for callers that already hold
+// Database values rather than paths.
+fn merge_dbs_from(dbs []candb.Database) candb.Database {
+	mut msgs := []candb.Message{}
+	mut nodes := []string{}
+	mut seen := map[string]bool{}
+	for d in dbs {
+		for m in d.messages {
+			k := '${m.id}|${m.ext}'
+			if k in seen {
+				continue
+			}
+			seen[k] = true
+			msgs << m
+		}
+		nodes << d.nodes
+	}
+	return candb.Database{
+		messages: msgs
+		nodes:    nodes
+	}
 }
 
 // trace_name_cell is the name column, with any end-to-end verdict appended.

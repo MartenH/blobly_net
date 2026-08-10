@@ -147,6 +147,10 @@ pub mut:
 pub struct ProtectCfg {
 pub mut:
 	message string // DBC message name
+	// Optional CAN id, for a channel-level `verify:` entry whose message name is ambiguous —
+	// merged databases can carry one name at two ids or from two transmitters, and a bench
+	// check bound to the wrong one is worse than no check.
+	id ?u32
 	counter string // signal carrying the alive counter ('' = none)
 	crc     string // signal carrying the checksum ('' = none)
 	profile string = 'crc8_j1850' // crc8_j1850 | crc8_autosar | sum8 | xor8
@@ -525,8 +529,13 @@ fn parse_protect_list(ps yaml.Any) []ProtectCfg {
 		if v := p.value_opt('data_id') {
 			id = clamp_i64_u32(v.i64()) // present, even when 0 — that is a real id
 		}
+		mut mid := ?u32(none)
+		if v := p.value_opt('id') {
+			mid = clamp_u32(parse_id_wide(v.str()))
+		}
 		out << ProtectCfg{
 			message: p.value('message').default_to('').string()
+			id:      mid
 			counter: p.value('counter').default_to('').string()
 			crc:     p.value('crc').default_to('').string()
 			profile: p.value('profile').default_to('crc8_j1850').string()
