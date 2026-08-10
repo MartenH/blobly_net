@@ -42,11 +42,14 @@ pub fn uds_nodes(nodes []project.NodeCfg) []UdsNode {
 		claimed[cfg.rx] = true
 		claimed[cfg.tx] = true
 		mut srv := uds.Server{
-			session: cfg.session
+			session: u8(cfg.session)
 		}
 		for d in cfg.dids {
 			if d.id > 0xFFFF || d.value_len() > max_did_bytes {
 				continue // reported by validate_uds
+			}
+			if u16(d.id) in srv.dids {
+				continue // duplicate: FIRST wins, so the served value cannot depend on order
 			}
 			srv.dids[u16(d.id)] = if d.bytes.len > 0 { d.bytes.clone() } else { d.text.bytes() }
 		}
@@ -93,6 +96,9 @@ const can_id_max = u32(0x1FFFFFFF)
 // structurally_ok is the single definition of "this pair can be opened at all", used both to
 // decide what starts and to keep rejected configurations from reserving ids.
 fn structurally_ok(cfg project.UdsCfg) bool {
+	if cfg.malformed.len > 0 || cfg.session > 0xFF {
+		return false // an id that was silently repaired, or a session that is not a byte
+	}
 	if cfg.rx == 0 || cfg.tx == 0 || cfg.rx == cfg.tx {
 		return false
 	}
@@ -103,6 +109,41 @@ fn structurally_ok(cfg project.UdsCfg) bool {
 		return false // ISO-TP opens ONE format for the pair
 	}
 	return true
+}
+
+// UdsAddr is a target's identity without its content — names and addresses only.
+pub struct UdsAddr {
+pub:
+	name string
+	rx   u32
+	tx   u32
+	ext  bool
+}
+
+// uds_addrs is uds_nodes without the servers.
+//
+// The Diagnostics panel needs only names and addresses, and it asks every rendered frame.
+// Going through uds_nodes there cloned every DID value and rebuilt every DTC table at frame
+// rate — with 4092-byte values accepted, that is continuous allocation for data the panel
+// never looks at.
+pub fn uds_addrs(nodes []project.NodeCfg) []UdsAddr {
+	mut out := []UdsAddr{}
+	mut claimed := map[u64]bool{}
+	for n in nodes {
+		cfg := n.uds or { continue }
+		if !structurally_ok(cfg) || cfg.rx in claimed || cfg.tx in claimed {
+			continue
+		}
+		claimed[cfg.rx] = true
+		claimed[cfg.tx] = true
+		out << UdsAddr{
+			name: n.name
+			rx:   u32(cfg.rx)
+			tx:   u32(cfg.tx)
+			ext:  cfg.rx > 0x7FF || cfg.tx > 0x7FF
+		}
+	}
+	return out
 }
 
 // validate_uds reports diagnostic configurations that cannot work as written.
@@ -143,7 +184,21 @@ pub fn validate_uds(nodes []project.NodeCfg) []string {
 				warns << 'uds on "${n.name}": DID 0x${d.id:X} is above the 16-bit range — ignored'
 			}
 		}
+		for m in cfg.malformed {
+			// a stripped character yields a different VALID id, so no range check can see it
+			warns << 'uds on "${n.name}": ${m} is not a valid identifier'
+		}
+		if cfg.session > 0xFF {
+			warns << 'uds on "${n.name}": session ${cfg.session} is not a byte'
+		}
+		mut seen_did := map[u32]bool{}
 		for d in cfg.dids {
+			if d.id in seen_did {
+				// the map keeps the last, the panel and the file show both: which value the
+				// wire serves would depend on YAML order
+				warns << 'uds on "${n.name}": DID 0x${d.id:X} is defined more than once'
+			}
+			seen_did[d.id] = true
 			if d.value_len() > max_did_bytes {
 				// handle() prepends a 3-byte header; past 4095 the transfer cannot be sent and
 				// the send error is discarded, so the tester sees only a timeout

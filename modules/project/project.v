@@ -96,13 +96,18 @@ pub mut:
 // requests, `tx` is where it answers.
 pub struct UdsCfg {
 pub mut:
+	// Fields whose written value was not a clean number. Kept so validation can name the typo:
+	// a stripped character produces a DIFFERENT VALID id, which no range check can catch.
+	malformed []string
 	// u64 for the same reason DidCfg.id is u32: the value must survive parsing intact so the
 	// range check can see it. Narrowed to a CAN id only once it is known to fit.
 	rx      u64 // request id  (tester -> ECU)
 	tx      u64 // response id (ECU -> tester)
 	dids    []DidCfg
 	dtcs    []DtcCfg
-	session u8 = 1
+	// u32 for the same reason every other id here is wide: 265 narrowed at the cast becomes 9,
+	// and the server then runs a session the project never asked for.
+	session u32 = 1
 }
 
 // DidCfg is one ReadDataByIdentifier entry. The value is given either as `text` (ASCII, the
@@ -533,7 +538,11 @@ fn parse_node(n yaml.Any) NodeCfg {
 		mut ucfg := UdsCfg{
 			rx:      parse_id_wide(u.value('rx').str())
 			tx:      parse_id_wide(u.value('tx').str())
-			session: u8(u.value('session').default_to(i64(1)).int())
+			malformed: bad_ids({
+				'rx': u.value('rx').str()
+				'tx': u.value('tx').str()
+			})
+			session: clamp_i64_u32(u.value('session').default_to(i64(1)).i64())
 		}
 		if ds := u.value_opt('dids') {
 			for d in ds.array() {
@@ -544,14 +553,20 @@ fn parse_node(n yaml.Any) NodeCfg {
 				if bv := d.value_opt('bytes') {
 					dc.bytes = parse_hex_bytes(bv.str())
 				}
+				if !hex_id_is_clean(d.value('id').str()) {
+					ucfg.malformed << 'did ${d.value('id').str()}'
+				}
 				ucfg.dids << dc
 			}
 		}
 		if ts := u.value_opt('dtcs') {
 			for t in ts.array() {
+				if !hex_id_is_clean(t.value('code').str()) {
+					ucfg.malformed << 'dtc ${t.value('code').str()}'
+				}
 				ucfg.dtcs << DtcCfg{
 					code:   clamp_u32(parse_id_wide(t.value('code').str()))
-					status: u32(t.value('status').default_to(i64(0x09)).int())
+					status: clamp_i64_u32(t.value('status').default_to(i64(0x09)).i64())
 				}
 			}
 		}
@@ -563,7 +578,7 @@ fn parse_node(n yaml.Any) NodeCfg {
 			// still reach the checksum, so it cannot be distinguished from absent by testing 0
 			mut id := ?u32(none)
 			if v := p.value_opt('data_id') {
-				id = u32(v.int()) // present, even when it is 0 — that is a real id
+				id = clamp_i64_u32(v.i64()) // present, even when 0 — that is a real id
 			}
 			node.protect << ProtectCfg{
 				message: p.value('message').default_to('').string()
@@ -706,10 +721,51 @@ fn parse_eid(s string) ![]u8 {
 // parse_id_wide accumulates in u64 so an over-long identifier is still VISIBLE to validation.
 // parse_id itself wraps at 32 bits, which made 0x1000007E0 arrive as a perfectly ordinary
 // 0x7E0: the range check passed and the server started on an address nobody configured.
+// clamp_i64_u32 narrows a parsed integer without WRAPPING, so an out-of-range value stays out
+// of range for validation instead of becoming a different valid one. Every narrowing in the
+// uds/protect parse path goes through this or clamp_u32 — session, DTC status and data_id were
+// each found separately, which is three times too many for one mistake.
+// bad_ids returns the labels of any field whose value is not a clean numeric id.
+fn bad_ids(fields map[string]string) []string {
+	mut out := []string{}
+	for k, v in fields {
+		if !hex_id_is_clean(v) {
+			out << '${k} ${v}'
+		}
+	}
+	out.sort()
+	return out
+}
+
+fn clamp_i64_u32(v i64) u32 {
+	if v < 0 {
+		return 0
+	}
+	return if v > i64(0xFFFFFFFF) { u32(0xFFFFFFFF) } else { u32(v) }
+}
+
 // clamp_u32 narrows without WRAPPING: an over-wide value stays out of range so validation can
 // still see and reject it, instead of becoming a different valid identifier.
 fn clamp_u32(v u64) u32 {
 	return if v > u64(0xFFFFFFFF) { u32(0xFFFFFFFF) } else { u32(v) }
+}
+
+// hex_id_is_clean reports whether every character after the 0x prefix is a hex digit.
+// parse_id_wide SKIPS anything else, so "0x7G1" quietly became 0x71 — a valid, unintended id.
+pub fn hex_id_is_clean(s string) bool {
+	t := s.trim_space().trim('"')
+	body := if t.starts_with('0x') || t.starts_with('0X') { t[2..] } else { return t.u64() > 0
+			|| t.trim_space() == '0' }
+	if body.len == 0 {
+		return false
+	}
+	for ch in body {
+		ok := (ch >= `0` && ch <= `9`) || (ch >= `a` && ch <= `f`) || (ch >= `A` && ch <= `F`)
+		if !ok {
+			return false
+		}
+	}
+	return true
 }
 
 pub fn parse_id_wide(s string) u64 {

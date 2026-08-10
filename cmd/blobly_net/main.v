@@ -503,11 +503,26 @@ fn (mut app App) start() {
 		}
 	}
 	// spawn the in-process simulation workloads (driver-free sim ECUs + a UDS server)
+	mut seeded_ifaces := []string{} // one set of diagnostic servers per physical bus
 	for sc in app.sims {
 		spawn sim_loop(app, sc)
-		mut diag_nodes := sim.uds_nodes(sc.nodes)
-		for w in sim.validate_uds(sc.nodes) {
-			app.notify(w)
+		// Grouped by INTERFACE: two channel entries may share one physical bus, and validating
+		// each separately reset the claimed-id set between them — so overlapping ids on the
+		// same wire started competing responders with nothing reported.
+		mut peers := []project.NodeCfg{}
+		for other in app.sims {
+			if other.iface == sc.iface {
+				peers << other.nodes
+			}
+		}
+		mut diag_nodes := sim.uds_nodes(peers)
+		if sc.iface !in seeded_ifaces {
+			seeded_ifaces << sc.iface
+			for w in sim.validate_uds(peers) {
+				app.notify(w)
+			}
+		} else {
+			diag_nodes = [] // another SimCfg on this iface already started its servers
 		}
 		if diag_nodes.len == 0 {
 			spawn diag_server_loop(app, sc.iface) // the channel-wide default, as before
@@ -4701,6 +4716,12 @@ fn (mut app App) diag_push(line string) {
 	app.mu.unlock()
 }
 
+// diag_iface_opt is diag_iface, but says when there is no running channel at all.
+fn (app &App) diag_iface_opt() ?string {
+	iface := app.diag_iface()
+	return if iface == '' { none } else { iface }
+}
+
 fn (app &App) diag_iface() string {
 	for c in app.chans {
 		if c.monitorable() && c.running {
@@ -4727,18 +4748,31 @@ struct DiagTarget {
 // project's own ChassisECU.
 fn (app &App) diag_targets() []DiagTarget {
 	mut out := []DiagTarget{}
+	// The plain 0x7E0/0x7E8 target ALWAYS stays in the list. It is not only the built-in
+	// simulated server: on a mixed bench it is the PHYSICAL ECU under test, which the panel
+	// could address before per-ECU servers existed. Dropping it as soon as any simulated
+	// channel configured one made the real ECU unreachable from the panel that exists to
+	// reach it — a capability regression, not a tidier list.
+	if hw := app.diag_iface_opt() {
+		out << DiagTarget{
+			label: 'default on ${hw}  (0x${diag_tx_id:X}/0x${diag_rx_id:X})'
+			iface: hw
+			rx:    diag_tx_id
+			tx:    diag_rx_id
+		}
+	}
 	for sc in app.sims {
 		// PER CHANNEL, because the fallback is per channel: start() runs the built-in server on
-		// every simulated channel that configures none. A single global "no targets anywhere"
-		// test hid the default of an unconfigured channel behind another channel's ECUs, so it
-		// was running and unreachable.
-		nodes := sim.uds_nodes(sc.nodes)
+		// every simulated channel that configures none.
+		nodes := sim.uds_addrs(sc.nodes) // addresses only — this runs every frame
 		if nodes.len == 0 {
-			out << DiagTarget{
-				label: 'default on ${sc.iface}  (0x${diag_tx_id:X}/0x${diag_rx_id:X})'
-				iface: sc.iface
-				rx:    diag_tx_id
-				tx:    diag_rx_id
+			if !out.any(it.iface == sc.iface && it.rx == diag_tx_id) {
+				out << DiagTarget{
+					label: 'default on ${sc.iface}  (0x${diag_tx_id:X}/0x${diag_rx_id:X})'
+					iface: sc.iface
+					rx:    diag_tx_id
+					tx:    diag_rx_id
+				}
 			}
 			continue
 		}
@@ -4753,7 +4787,6 @@ fn (app &App) diag_targets() []DiagTarget {
 		}
 	}
 	if out.len == 0 {
-		// nothing simulated at all: the tester's own default channel
 		out << DiagTarget{
 			label: 'default  (0x${diag_tx_id:X}/0x${diag_rx_id:X})'
 			iface: app.diag_iface()

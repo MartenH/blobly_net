@@ -59,6 +59,7 @@ fn main() {
 	// Build per-channel DBC catalogs + bring the simulation up on every enabled
 	// channel that hosts simulated ECUs (exactly like the GUI's Start).
 	mut ctl := &Ctl{}
+	mut seeded_ifaces := []string{} // one set of diagnostic servers per physical bus
 	mut chans := []script.ChanInfo{}
 	for ch in proj.channels {
 		if !ch.enabled {
@@ -73,10 +74,23 @@ fn main() {
 		nodes := ch.all_nodes()
 		if nodes.len > 0 {
 			spawn sim_loop(ch.iface, db, nodes, ctl)
-			for w in sim.validate_uds(nodes) {
+			// grouped by interface, like the GUI: two channels on one bus must not each start
+			// their own set of servers, or overlapping ids compete on the same wire
+			mut peers := []project.NodeCfg{}
+			for other in proj.channels {
+				if other.iface == ch.iface {
+					peers << other.all_nodes()
+				}
+			}
+			for w in sim.validate_uds(peers) {
 				eprintln('${ch.name}: ${w}')
 			}
-			mut servers := sim.uds_nodes(nodes)
+			mut servers := if ch.iface in seeded_ifaces {
+				[]sim.UdsNode{}
+			} else {
+				seeded_ifaces << ch.iface
+				sim.uds_nodes(peers)
+			}
 			if servers.len == 0 {
 				// nothing configured: the channel-wide default, exactly as before
 				spawn diag_server_loop(ch.iface, ctl)

@@ -258,3 +258,55 @@ fn test_oversized_dtc_table_is_capped_and_reported() {
 	assert built[0].server.dtcs.len == max_dtcs, 'got ${built[0].server.dtcs.len}'
 	assert validate_uds([cfg]).any(it.contains('exceed what one 0x19 response can carry'))
 }
+
+// A repeated DID must not let YAML order decide what the wire serves.
+fn test_duplicate_dids_are_reported_and_first_wins() {
+	cfg := project.NodeCfg{
+		name: 'X'
+		uds:  project.UdsCfg{
+			rx:   0x7E0
+			tx:   0x7E8
+			dids: [
+				project.DidCfg{ id: 0xF190, text: 'first' },
+				project.DidCfg{ id: 0xF190, text: 'second' },
+			]
+		}
+	}
+	built := uds_nodes([cfg])
+	assert built[0].server.dids[0xF190] == 'first'.bytes(), 'order must not decide'
+	assert validate_uds([cfg]).any(it.contains('defined more than once'))
+}
+
+// A stripped character yields a different VALID id, so the server would start on an address
+// nobody wrote. Rejected, not repaired.
+fn test_malformed_ids_and_bad_session_do_not_start() {
+	bad := project.NodeCfg{
+		name: 'Typo'
+		uds:  project.UdsCfg{ rx: 0x71, tx: 0x7E9, malformed: ['rx 0x7G1'] }
+	}
+	assert uds_nodes([bad]).len == 0
+	assert validate_uds([bad]).any(it.contains('not a valid identifier'))
+
+	sess := project.NodeCfg{
+		name: 'Sess'
+		uds:  project.UdsCfg{ rx: 0x7E0, tx: 0x7E8, session: 265 }
+	}
+	assert uds_nodes([sess]).len == 0
+	assert validate_uds([sess]).any(it.contains('session 265 is not a byte'))
+}
+
+// uds_addrs must agree with uds_nodes on WHICH targets exist — the panel uses it every frame
+// and must not show something the runtime did not start.
+fn test_uds_addrs_matches_uds_nodes() {
+	nodes := [
+		project.NodeCfg{ name: 'A', uds: project.UdsCfg{ rx: 0x7E1, tx: 0x7E9 } },
+		project.NodeCfg{ name: 'Dup', uds: project.UdsCfg{ rx: 0x7E1, tx: 0x7EC } },
+		project.NodeCfg{ name: 'Bad', uds: project.UdsCfg{ rx: 0, tx: 0x7EA } },
+		project.NodeCfg{ name: 'B', uds: project.UdsCfg{ rx: 0x18DA10F1, tx: 0x18DAF110 } },
+	]
+	a := uds_addrs(nodes).map(it.name)
+	b := uds_nodes(nodes).map(it.name)
+	assert a == b, '${a} != ${b}'
+	assert a == ['A', 'B']
+	assert uds_addrs(nodes)[1].ext, 'the 29-bit pair must be marked extended'
+}
