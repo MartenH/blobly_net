@@ -1898,6 +1898,7 @@ fn (mut app App) browser_confirm(path string) {
 fn (mut app App) restbus_from_system(sut string) (int, int) {
 	mut nodes := 0
 	mut chans_hit := 0
+	mut sut_dropped := 0 // rich `nodes:` entries removed because they configured the SUT itself
 	// the system buses the ECU under test sits on
 	mut sut_buses := []string{}
 	for n in app.sys.nodes {
@@ -1923,6 +1924,19 @@ fn (mut app App) restbus_from_system(sut string) (int, int) {
 			if ch.iface != sb.iface {
 				continue
 			}
+			// A disabled channel gets no SimCfg from rebuild_from_proj, so writing its
+			// simulate list and counting it as configured reports success for something
+			// that will not run (codex #65 r4).
+			if !ch.enabled {
+				continue
+			}
+			// all_nodes() merges the rich `nodes:` configs with the `simulate:` shorthand, so
+			// replacing `simulate` does NOT stop a SUT that is also explicitly configured —
+			// the ECU under test would be simulated against itself, two talkers on one bus.
+			// Drop its config here and say so, rather than silently leaving it live.
+			before := app.proj.channels[ci].nodes.len
+			app.proj.channels[ci].nodes = app.proj.channels[ci].nodes.filter(it.name != sut)
+			sut_dropped += before - app.proj.channels[ci].nodes.len
 			app.proj.channels[ci].simulate = others.clone()
 			chans_hit++
 			nodes += others.len
@@ -1931,6 +1945,9 @@ fn (mut app App) restbus_from_system(sut string) (int, int) {
 	if chans_hit > 0 {
 		app.rebuild_from_proj()
 		app.dirty = true
+	}
+	if sut_dropped > 0 {
+		app.notify('restbus: dropped ${sut_dropped} configured simulation entr(ies) for ${sut} — it is the ECU under test, not a simulated node')
 	}
 	return nodes, chans_hit
 }
@@ -6874,7 +6891,14 @@ fn draw_dbc_editor(mut app App) {
 	vgui.same_line()
 	vgui.set_next_item_width(65 * sc)
 	if !ro && vgui.input_int('start bit', &sbv) {
-		ns := if sbv < 0 { 0 } else { sbv }
+		mut ns := if sbv < 0 { 0 } else { sbv }
+		// start and stop are the two ENDPOINTS of one contiguous Intel span, so start can never
+		// pass stop. Writing it anyway left the old width in place (0..7 given start 9 became
+		// 9..16) — the same silent bit-shift the endpoint model exists to prevent, arriving from
+		// the other side. Clamp rather than accept an inverted span (codex #65 r4).
+		if sg.byte_order != .big_endian && ns > stop_bit {
+			ns = stop_bit
+		}
 		app.mu.lock()
 		app.dbs[di].messages[mi].signals[si].start_bit = ns
 		// Intel edits the span by its two ENDPOINTS, so moving `start` must hold `stop` and
@@ -7205,8 +7229,18 @@ fn draw_system(mut app App) {
 			if en.diag_req != 0 {
 				vgui.text_dim('diag  0x${en.diag_req.hex()} / 0x${en.diag_rsp.hex()}')
 			}
-			// the single-ECU bench action: make everything else on this ECU's buses come alive
-			if vgui.small_button('Simulate the rest##restbus') {
+			// the single-ECU bench action: make everything else on this ECU's buses come alive.
+			// It runs rebuild_from_proj(), which clears app.chans/dbs/sims while rx, sim and
+			// generator workers iterate them lock-free — safe only when stopped AND drained.
+			// stop() clears app.running BEFORE those workers exit, so !running alone leaves a
+			// window where the rebuild frees what a live worker is reading (codex #65 r4). Use
+			// the same gate the DBC editor uses.
+			app.mu.lock()
+			rb_readers := app.dbc_readers
+			app.mu.unlock()
+			if app.running || rb_readers > 0 {
+				vgui.text_dim('Simulate the rest — stop to configure (workers drain briefly after Stop)')
+			} else if vgui.small_button('Simulate the rest##restbus') {
 				n, c := app.restbus_from_system(en.name)
 				if c > 0 {
 					app.notify('restbus for ${en.name}: simulating ${n} node(s) on ${c} channel(s) — enable/disable them in the Simulation panel')
