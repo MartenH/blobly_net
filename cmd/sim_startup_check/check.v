@@ -83,13 +83,21 @@ fn main() {
 				}
 			}
 		}
+		// Which UDS servers will ACTUALLY start on this bus. uds_nodes drops a later config
+		// whose rx or tx is already claimed, so a node with only diagnostics and a colliding
+		// address never transmits — while `cfg.uds != none` said it would. Fourth time in this
+		// file that the config text disagreed with the engine.
+		mut uds_running := map[string]bool{}
+		for u in sim.uds_nodes(ch.all_nodes()) {
+			uds_running[u.name] = true
+		}
 		for i, cfg in ch.all_nodes() {
 			// Ask the BUILT ECU, not the config text. from_project gives an unconfigured node
 			// named SUT the built-in reference model, which installs its own 0x101->0x102 rule
 			// — so `simulate: [SUT]` has response behaviour that appears nowhere in
 			// cfg.responses, and reading the config alone failed a project the real runs answer
 			// requests on. Same lesson as the response-only round: check what will RUN.
-			mut runnable := cfg.uds != none
+			mut runnable := uds_running[cfg.name] or { false }
 			if !runnable && i < engine.ecus.len {
 				runnable = engine.ecus[i].rules.len > 0
 				for m in engine.ecus[i].messages {
@@ -100,7 +108,15 @@ fn main() {
 				}
 			}
 			if !runnable {
-				eprintln('  ${ch.name}: node "${cfg.name}" has no cyclic messages, no response rules and no uds — it will never transmit')
+				// Say WHICH of the two it is: "no uds" would be wrong for a node that
+				// configures one and lost its address to an earlier node, and that is the
+				// case the reader most needs pointed at.
+				why := if cfg.uds != none {
+					'its uds server did not start (its rx/tx is claimed by another node)'
+				} else {
+					'no cyclic messages, no response rules and no uds'
+				}
+				eprintln('  ${ch.name}: node "${cfg.name}" will never transmit — ${why}')
 				failed++
 			}
 		}

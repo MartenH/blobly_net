@@ -377,7 +377,9 @@ GUI uses, so simulated behaviour matches.
 Database paths and vendor bitrates are handled exactly as the GUI handles them — `databases:`
 entries resolve against the project file's own directory, and a PCAN or Kvaser channel is
 opened at its configured rate — so a project kept anywhere on disk, at any bitrate, behaves the
-same either way.
+same either way. Paths you pass on the command line are made absolute before the wrapper
+changes to the repository root, so `--project my.blobnet` works from whatever directory you
+happen to be in.
 
 See [scripting.md](scripting.md) for the test API.
 
