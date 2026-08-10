@@ -6011,7 +6011,20 @@ fn (mut app App) resolve_pending_bit_edit() {
 	val := app.dbc_ed.bit_edit_val
 	name := app.dbc_ed.bit_edit_name
 	msg_name := app.dbc_ed.bit_edit_msg_name
+	key := app.dbc_ed.bit_edit_key
 	app.dbc_ed.bit_edit_key = '' // clear FIRST: every path below is now a no-op or an apply
+
+	// Has the user moved on? The key names the signal the edit began on; if that is no longer
+	// the selection, the edit was abandoned by clicking away and must not be committed.
+	// This check belongs HERE and not at the top of the editor, because the toolbar is drawn
+	// before the editor (main.v ~1322 vs ~1368): pressing Start after selecting a different
+	// signal reached the resolver first, and the stored names/indices still matched the
+	// original signal — which exists and is unchanged — so an abandoned edit was applied and
+	// the DBC marked dirty, blocking the run. Every caller funnels through here, so one check
+	// covers Start, Save, rebuild and deactivation alike.
+	if !key.ends_with(':${app.dbc_ed.db}:${app.dbc_ed.msg}:${app.dbc_ed.sig}') {
+		return
+	}
 
 	// `warn` is collected under the lock and emitted after it. notify() takes app.mu, which is
 	// not recursive, so notifying from in here deadlocks the app on the value-table path —
@@ -6229,15 +6242,9 @@ fn (mut app App) mark_dirty(di int) {
 }
 
 fn draw_dbc_editor(mut app App) {
-	// Before ANY early return below. The previous check sat after the inspector had a valid
-	// signal, so selecting the message, reverting the database or deleting the signal returned
-	// first and left the pending state intact — to be restored, or applied to whatever later
-	// occupied that index (#69). Resolving here would commit an edit the user may have
-	// abandoned by clicking away, so cancel: retyping an endpoint is cheap.
-	if app.dbc_ed.bit_edit_key != ''
-		&& !app.dbc_ed.bit_edit_key.ends_with(':${app.dbc_ed.db}:${app.dbc_ed.msg}:${app.dbc_ed.sig}') {
-		app.dbc_ed.bit_edit_key = ''
-	}
+	// (The selection-mismatch cancellation that used to sit here now lives in
+	// resolve_pending_bit_edit(). Cancelling only at the top of the editor was too late: the
+	// toolbar draws first, so Start resolved an abandoned edit before this ran.)
 	vis, op := vgui.begin_closable('DBC Editor', app.show_dbc)
 	app.show_dbc = op
 	if !vis {
