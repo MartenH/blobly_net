@@ -14,16 +14,27 @@ import time
 import lua
 import transport
 import isotp
+import sim
 import uds
 import candb
+import project
 
 // ChanInfo is one channel a script may address by name: its bus interface and
 // the DBC catalog used for decode/encode on it.
 pub struct ChanInfo {
 pub:
-	name  string
+	name string
+	// The string a transport is OPENED with — it may carry a vendor bitrate suffix.
 	iface string
-	db    candb.Database
+	// The LOGICAL interface, without that suffix. Faults are keyed on this: the GUI opened
+	// with `pcan:…@250000` and the simulation loop looks up `pcan:…`, so a scripted fault on a
+	// vendor channel reported success and was stored under a key nothing would ever read.
+	key_iface string
+	db        candb.Database
+	// The simulated nodes on this channel. Carried so a script can be told that a fault cannot
+	// work — `bad_crc` on a message with no configured checksum changes no bits, and silently
+	// succeeding there is the difference between a test that fails and a test that lies.
+	nodes []project.NodeCfg
 }
 
 // TestResult is one test() outcome collected during a run.
@@ -153,6 +164,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__report', l_report)
 	env.st.register('__log', l_log)
 	env.st.register('__sleep', l_sleep)
+	env.st.register('__sim_fault', l_sim_fault)
 	env.st.register('__uds_open', l_uds_open)
 	env.st.register('__uds_session', l_uds_session)
 	env.st.register('__uds_read_did', l_uds_read_did)
@@ -207,6 +219,166 @@ fn l_sleep(l lua.State) int {
 		time.sleep(ms * time.millisecond)
 	}
 	return 0
+}
+
+// l_sim_fault injects (or clears) a fault: sim_fault(node, message, kind [, ms [, signal]]).
+//
+// Injecting from a script is the point — a fault a human has to click is a demo, while a fault
+// a test can raise and clear is a regression check: drop the frame, assert the DTC appears,
+// clear it, assert it goes away.
+fn l_sim_fault(l lua.State) int {
+	mut env := env_of(l)
+	chan_name := l.arg_str(1)
+	node := l.arg_str(2)
+	msg := l.arg_str(3)
+	kind := l.arg_str(4)
+	ms := l.arg_int(5)
+	signal := l.arg_str(6)
+	ci := env.find_chan(chan_name) or { return l.fail('unknown channel "${chan_name}"') }
+	iface := env.chans[ci].fault_iface()
+	k := match kind {
+		'none', 'clear', '' { sim.FaultKind.none_ }
+		'drop' { sim.FaultKind.drop }
+		'bad_crc' { sim.FaultKind.bad_crc }
+		'freeze_counter' { sim.FaultKind.freeze_ctr }
+		'out_of_range' { sim.FaultKind.out_of_range }
+		else { return l.fail('unknown fault kind "${kind}"') }
+	}
+	// Reject a target nothing will ever read. A misspelled node or message stored under a key
+	// no engine looks at reports success and changes no traffic — which in an automated fault
+	// experiment is indistinguishable from a fault that was armed and had no effect.
+	if k != .none_ {
+		mut known := false
+		for m in env.chans[ci].db.messages_from(node) {
+			if m.name == msg {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return l.fail('"${node}" does not send "${msg}" on ${chan_name}')
+		}
+		if k == .out_of_range {
+			mut sg := signal
+			if sg == '' {
+				// choose one, as the panel does, rather than succeeding and mutating nothing
+				for m in env.chans[ci].db.messages_from(node) {
+					if m.name != msg {
+						continue
+					}
+					for cand in m.signals {
+						if sim.can_force_out_of_range(m, cand.name, prot_of(env.chans[ci].nodes, node, msg)) {
+							sg = cand.name
+							break
+						}
+					}
+					break
+				}
+			}
+			if sg == '' {
+				return l.fail('no signal on "${msg}" has a value outside its declared range')
+			}
+			// Validate a signal the caller NAMED as well. Only the auto-picked case was
+			// checked, so a misspelled or full-width signal was stored happily and then
+			// transmitted an unchanged frame — the exact "armed but does nothing" outcome the
+			// rest of this validation exists to prevent.
+			mut usable := false
+			for m in env.chans[ci].db.messages_from(node) {
+				if m.name == msg && sim.can_force_out_of_range(m, sg, prot_of(env.chans[ci].nodes, node, msg)) {
+					usable = true
+				}
+			}
+			if !usable {
+				return l.fail('"${sg}" on "${msg}" has no value outside its declared range')
+			}
+			sim.inject(iface, node, msg, sim.Fault{
+				kind:         k
+				signal:       sg
+				remaining_ms: int(ms)
+			})
+			return 0
+		}
+		if k == .bad_crc && !has_protection(env.chans[ci].db, env.chans[ci].nodes, node, msg, 'crc') {
+			return l.fail('"${msg}" on "${node}" has no configured checksum — bad_crc would change nothing')
+		}
+		if k == .freeze_ctr && !has_protection(env.chans[ci].db, env.chans[ci].nodes, node, msg, 'counter') {
+			// The E2E counter is what freezes; a `counter` GENERATOR is an ordinary signal and
+			// keeps running by design. Without protection there is nothing to stall, and
+			// arming it would report success and change nothing.
+			return l.fail('"${msg}" on "${node}" has no E2E counter — freeze_counter would change nothing')
+		}
+	}
+	sim.inject(iface, node, msg, sim.Fault{
+		kind:         k
+		signal:       signal
+		remaining_ms: int(ms)
+	})
+	return 0
+}
+
+// fault_iface is the key faults are stored under — the logical interface, falling back to the
+// transport string for channels that never had a separate one.
+pub fn (c ChanInfo) fault_iface() string {
+	return if c.key_iface != '' { c.key_iface } else { c.iface }
+}
+
+// has_protection reports whether this message really has the E2E field a fault needs.
+//
+// The named signal must EXIST in the DBC message, not merely be a non-empty string: the engine
+// attaches a misspelled protection entry happily, and then neither the stamper nor the fault
+// finds the signal — so `bad_crc` was accepted and changed no transmitted bits.
+fn has_protection(db candb.Database, nodes []project.NodeCfg, node string, msg string, field string) bool {
+	for n in nodes {
+		if n.name != node {
+			continue
+		}
+		for p in n.protect {
+			if p.message != msg {
+				continue
+			}
+			want := if field == 'crc' { p.crc } else { p.counter }
+			if want == '' {
+				return false
+			}
+			for m in db.messages_from(node) {
+				if m.name != msg {
+					continue
+				}
+				for sg in m.signals {
+					if sg.name != want {
+						continue
+					}
+					// A MULTIPLEXED protection field is only written when its selector is
+					// active, and both the stamper and the fault walk active signals only — so
+					// neither would touch it and the fault would change no transmitted bits.
+					return !sg.is_multiplexed
+				}
+			}
+			return false
+		}
+	}
+	return false
+}
+
+// prot_of returns the protection configured for one message, so a range fault can be kept off
+// the counter and checksum fields — a violation written there is overwritten when the checksum
+// is stamped, and the frame goes out valid.
+fn prot_of(nodes []project.NodeCfg, node string, msg string) sim.E2e {
+	for n in nodes {
+		if n.name != node {
+			continue
+		}
+		for p in n.protect {
+			if p.message == msg {
+				return sim.E2e{
+					counter: p.counter
+					crc:     p.crc
+					profile: p.profile
+				}
+			}
+		}
+	}
+	return sim.E2e{}
 }
 
 fn l_uds_open(l lua.State) int {
