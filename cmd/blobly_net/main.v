@@ -1898,7 +1898,8 @@ fn (mut app App) browser_confirm(path string) {
 fn (mut app App) restbus_from_system(sut string) (int, int) {
 	mut nodes := 0
 	mut chans_hit := 0
-	mut sut_dropped := 0 // rich `nodes:` entries removed because they configured the SUT itself
+	mut sut_dropped := 0    // rich `nodes:` entries removed because they configured the SUT itself
+	mut chans_disabled := 0 // matching channels skipped because the project has them disabled
 	// the system buses the ECU under test sits on
 	mut sut_buses := []string{}
 	for n in app.sys.nodes {
@@ -1928,6 +1929,10 @@ fn (mut app App) restbus_from_system(sut string) (int, int) {
 			// simulate list and counting it as configured reports success for something
 			// that will not run (codex #65 r4).
 			if !ch.enabled {
+				// Skipping is right — rebuild_from_proj makes no SimCfg for a disabled channel —
+				// but skipping SILENTLY made a partial setup report success and an all-disabled
+				// one claim no interface matched (codex #65 r5). Count it and say so.
+				chans_disabled++
 				continue
 			}
 			// all_nodes() merges the rich `nodes:` configs with the `simulate:` shorthand, so
@@ -1943,11 +1948,19 @@ fn (mut app App) restbus_from_system(sut string) (int, int) {
 		}
 	}
 	if chans_hit > 0 {
+		// Generators are edited live in app.senders/gen_bufs and only reach app.proj through
+		// this sync; rebuilding without it recreates them from the stale project model and
+		// silently drops unsaved edits, while still marking the project dirty. Both other
+		// rebuild_from_proj call sites sync first — this one did not (codex #65 r5).
+		app.sync_senders_into_proj()
 		app.rebuild_from_proj()
 		app.dirty = true
 	}
 	if sut_dropped > 0 {
 		app.notify('restbus: dropped ${sut_dropped} configured simulation entr(ies) for ${sut} — it is the ECU under test, not a simulated node')
+	}
+	if chans_disabled > 0 {
+		app.notify('restbus: ${chans_disabled} matching channel(s) are DISABLED and were skipped — enable them in Configure, or the rest bus stays silent')
 	}
 	return nodes, chans_hit
 }
@@ -4295,6 +4308,14 @@ fn (mut app App) save_as(path string) {
 // new_project resets to a blank, unsaved project (0 buses) — the from-scratch entry point.
 fn (mut app App) new_project() {
 	app.stop()
+	// A blank project inherits nothing: set_project bypasses load_project's reset, so without
+	// this the System panel kept showing the PREVIOUS project's ECUs and annotated any newly
+	// added channel from that stale model (codex #65 r5) — the same staleness fixed for the
+	// load path in r3, in the one entry point it did not cover.
+	app.sys = sysview.System{}
+	app.sys_loaded = false
+	app.sel_ecu = ''
+	app.show_sys = false
 	app.set_project(project.Project{ name: 'untitled' }, '')
 	app.notify('new project — add buses in Configure…')
 }
@@ -6890,6 +6911,15 @@ fn draw_dbc_editor(mut app App) {
 
 	vgui.same_line()
 	vgui.set_next_item_width(65 * sc)
+	// KNOWN LIMITATION (#68): input_int commits on every keystroke, and this handler holds the
+	// stop endpoint and re-derives the width — so typing a HIGHER start applies the intermediate
+	// digits too, each against a stop that already moved, and the span collapses. Lowering start
+	// is safe. Fixing it needs a commit-on-deactivate binding vgui does not have, so the
+	// limitation is accepted and surfaced rather than left silent.
+	if !ro {
+		vgui.text_dim('(raise start via the stop bit — #68)')
+		vgui.same_line()
+	}
 	if !ro && vgui.input_int('start bit', &sbv) {
 		mut ns := if sbv < 0 { 0 } else { sbv }
 		// start and stop are the two ENDPOINTS of one contiguous Intel span, so start can never
