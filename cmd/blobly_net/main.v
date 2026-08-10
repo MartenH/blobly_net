@@ -6242,9 +6242,23 @@ fn (mut app App) mark_dirty(di int) {
 }
 
 fn draw_dbc_editor(mut app App) {
-	// (The selection-mismatch cancellation that used to sit here now lives in
-	// resolve_pending_bit_edit(). Cancelling only at the top of the editor was too late: the
-	// toolbar draws first, so Start resolved an abandoned edit before this ran.)
+	// Cancel an edit the user walked away from — before ANY early return below, so selecting
+	// the message, reverting the database or deleting the signal cannot leave it pending.
+	//
+	// This is NOT redundant with the identical-looking check in resolve_pending_bit_edit(),
+	// and removing it as a duplicate was wrong. They answer different questions:
+	//   here      — every frame: has the selection moved? then DROP the state, so reselecting
+	//               the original signal cannot resurrect its stale value in the field.
+	//   resolver  — on commit: does the key still name the selection? then REFUSE to apply,
+	//               which is what catches Start, since the toolbar draws before this panel.
+	// Without this one, edit A → select B → reselect A brought the abandoned value back and
+	// let it be committed. Without the other, Start committed it outright. Selection is
+	// assigned in a dozen places, so detecting the change per frame beats asking every
+	// assignment site to remember.
+	if app.dbc_ed.bit_edit_key != ''
+		&& !app.dbc_ed.bit_edit_key.ends_with(':${app.dbc_ed.db}:${app.dbc_ed.msg}:${app.dbc_ed.sig}') {
+		app.dbc_ed.bit_edit_key = ''
+	}
 	vis, op := vgui.begin_closable('DBC Editor', app.show_dbc)
 	app.show_dbc = op
 	if !vis {
@@ -6346,11 +6360,14 @@ fn draw_dbc_editor(mut app App) {
 	}
 	vgui.same_line()
 	if !ro && dbc_path != '' && vgui.small_button('Revert') {
-		// Revert reloads the file and then refreshes, which reaches the resolver before the
-		// next frame can cancel on selection mismatch — applying the pending value to the
-		// database the user just asked to throw away. Drop it here instead.
-		app.cancel_pending_bit_edit()
 		if db := candb.load_dbc_file(dbc_path) {
+			// Cancel only on SUCCESS. Revert reloads the file and then refreshes, which reaches
+			// the resolver before the next frame can cancel on selection mismatch, so the
+			// pending value would land on the database the user just discarded. But if the
+			// file has been deleted, made unreadable or become unparsable, the revert does not
+			// happen at all — the database and its other in-memory edits stay — and dropping
+			// the endpoint edit there would lose typing for an operation that failed.
+			app.cancel_pending_bit_edit()
 			app.mu.lock()
 			app.dbs[di] = db
 			app.mu.unlock()
