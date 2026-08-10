@@ -37,8 +37,103 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
 - 🧭 **DoIP per-connection handler state** — deferred pending the threading change.
 - 🧭 **Vector (XL family) CAN backend** — the notable gap in vendor coverage; PCAN and Kvaser
   are done, and `transport` is designed for drop-in backends, so it is a shim + bitrate map.
+- 🧭 **DoIP discovery — actually discover.** `discover()` sends a **unicast** vehicle
+  identification request to a host you already name, reads one reply and returns. It
+  confirms an identity; it cannot find an ECU nobody told it about. That is backwards for a
+  bus tester: on CAN you attach and observe because the medium is broadcast, and on Ethernet
+  the same tool sees nothing without an address typed in by hand. The asymmetry is real
+  today — blobly_emb **already** broadcasts its vehicle announcement three times at boot and
+  answers identification requests afterwards, precisely so a late tester can find it. Blobly Net
+  hears the answer but not the announcement: `discover()` parses the solicited `0x0004`, and
+  misses the unsolicited boot broadcast entirely. Needs a request that collects **many**
+  responses instead of returning at the first, a passive listener for unsolicited announcements
+  (the case that catches an ECU booting while you are already running), and a Scan action
+  turning results into channels rather than hand-typed `doip:` strings.
+  **It is a change to three things, not one — the requester alone gets you nothing.**
+  (a) *Keep the source address.* `discover()` throws it away (`n, _ := u.read`) and
+  `VehicleInfo` carries only VIN, logical address, EID and GID — none of which is an endpoint.
+  A channel needs `doip:<host>[:<port>]`, so without retaining each responder's source (with
+  the IPv6 scope id where there is one) a Scan can list identities it cannot connect to.
+  (b) *Answer on the entity side.* `DoipServer.listen()` binds UDP to its own unicast
+  `host:port` and joins no multicast group, so the simulated entities receive neither an IPv4
+  subnet broadcast nor an IPv6 multicast — change only the requester and the repo's own
+  virtual ECUs stay silent, leaving nothing to test against. The entity-side socket and
+  hermetic tests belong in this item.
+  (c) *Send per interface.* Link-scoped multicast needs an outbound interface, and one send
+  covers one link; a multi-homed host must enumerate eligible interfaces and transmit on each,
+  keeping the scope that replied.
+  **Both address families, and they are not the same mechanism:** IPv4 gets subnet broadcast,
+  but IPv6 has no broadcast at all, so it needs link-local multicast. That is not a detail to
+  discover during implementation — this repo already supports IPv6 DoIP endpoints
+  (`modules/doip/server.v`) and round-trips them in `modules/doip/net_test.v`, so a
+  broadcast-only scan would ship "finds any ISO 13400 entity" while leaving a class of entity
+  we deliberately support permanently invisible. Core
+  tester behaviour, not blobly_emb integration — any ISO 13400 entity answers, and it is
+  recorded as a known limitation in [`docs/doip.md`](docs/doip.md).
 - 🧭 **LIN** — `modules/lindb` (LDF) + a `LinFrame` type. Kept type-safe alongside `CanFrame` /
   `EthFrame` rather than faked behind a generic frame.
+- 🧭 **Split `cmd/blobly_net/main.v`** — it is **7,475 lines / 231 KB** (measured 2026-08-10; it only grows), and essentially every
+  GUI change touches it. The cost is not aesthetic, it is measurable in four places: GitHub
+  renders its diffs slowly enough to be painful on every PR; review findings arrive as line
+  numbers into one enormous file; two GUI branches almost always collide there; and the editor
+  and language server carry it on every keystroke. The split is per-panel (Trace, Graphics,
+  System, DBC editor, Diagnostics, Shell, Generators, and **Flash** — `draw_flash`, its worker
+  and their state, without which the core keeps importing `flash` and the module boundary below
+  cannot hold) plus the app state, which is roughly how
+  the file is already organised internally — so the panel bodies are a mechanical move rather
+  than a redesign. **Two things around them are not.**
+  First, **the build entry point has to move with them.** Every build names the single file:
+  `scripts/run_gui.sh` (lines 36 and 89-92) and `.github/workflows/windows.yml` (line 107) all
+  pass `cmd/blobly_net/main.v` — and so does line 45, which *re-assigns* the target after a
+  `.blobnet` argument has been moved into `BLOBLY_PROJECT`, so fixing only the default leaves
+  `run_gui.sh project.blobnet` broken. V compiling one file does not pull in its siblings, so the
+  moment a panel leaves `main.v` those builds fail on undefined symbols — locally, in CI and on
+  the Windows bundle at once. Switch them to compile the directory, or make the panels imported
+  modules; either way it lands in the same commit as the first move, with all three builds
+  verified, not afterwards.
+  Second, **the app state — and the core paths that speak telemetry.** `App` embeds the optional modules' types directly
+  (`telem.Manifest`, `sysview.System`), so moving panel functions into new files leaves the core
+  importing exactly what the tiering item below says it must not. Extracting or abstracting that
+  state — an interface, or a side table the optional panels own — is part of this work, not a
+  free consequence of it, and it is the part to schedule time for.
+  It reaches past the state, too: `telem` appears **43 times** in `main.v`, and not only in
+  panels. `TRec` — the core trace row — embeds a `telem.Record` (~55-60); the CAN RX path
+  decodes trace responses inline (~862); and project rebuilding loads and classifies manifests
+  (~1083-1101). Those are core responsibilities that happen to speak an optional module's
+  types, so no amount of moving *panels* dislodges them. They go behind a callback the
+  optional panel registers, or into the telemetry-owned file — decided as part of this item,
+  because it is what determines whether `core must not import telem` is achievable at all.
+  Deliberately **not** urgent: it touches the one file every in-flight branch also touches, so
+  it wants a quiet moment with nothing else open, not a slot between features. It is also the
+  **lever for the tiering below** — panels cannot be separated while they all live in one file.
+- 🧭 **Tier the UI: standard tester vs. blobly_emb integration.** Most people who pick this up
+  want the ordinary thing — trace, DBC decode, send, generators, simulation, diagnostics,
+  scripting, logging. A large part of the GUI is not that: the **Shell** (93 references in
+  `main.v`), **flash** (81), the **trace manifest** and swimlane (84), the **System** panel and
+  `system.toml` (17), and the SOME/IP module bindings (13), plus the `sysview`, `telem` and
+  `flash` modules and the `flash` / `trace_dump` CLI tools. All of it speaks protocols and
+  config formats that only **blobly_emb** produces, so for anyone without that stack it is
+  surface area that cannot do anything — the README already has to explain that several panels
+  "have nothing to talk to".
+  The fix is not a build flag (that fragments testing) but two cheaper moves: **discovery** —
+  a panel is *promoted* when its artifact is present (a `system.toml` beside the project, a
+  manifest on a channel, a bootloader-capable target) rather than being equally prominent
+  always; and a **module boundary** —
+  the core must not import `sysview`/`telem`/`flash`, so "works without emb" is enforced rather
+  than asserted. The **visible** half of this already exists and is the baseline to build on,
+  not remaining work: Trace Chart, Flash, Shell and System are already grouped under a
+  `blobly_emb target` separator in both the View menu and the activity bar (`main.v` ~1477 and
+  ~1562). One *promotion* also already ships: `load_project` finds a `system.toml` beside the
+  project and sets `show_sys = sys_loaded` (`main.v` ~961), opening the System panel by itself.
+  So the remaining promotion work is the manifest and bootloader cases, not all three.
+  **Discovery must not gate the entry points that create the thing being discovered.** Two in
+  particular are circular: the System panel holds the *only* `system.toml` path input
+  (`main.v` ~7187), so hiding it until a `system.toml` is found beside the project leaves no
+  way to open one from anywhere else; and the Flash panel is where a running application is
+  driven into its bootloader, so hiding it until a bootloader is on the bus means it never
+  will be. The project schema stores neither a system path nor a target capability, so a user
+  cannot configure their way out either. Promotion may reorder, collapse or de-emphasise —
+  it may not be the only route to a panel that is itself the precondition.
 
 ## Out of scope
 
