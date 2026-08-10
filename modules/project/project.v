@@ -147,6 +147,19 @@ pub mut:
 pub struct ProtectCfg {
 pub mut:
 	message string // DBC message name
+	// Optional CAN id AND frame format, for a channel-level `verify:` entry whose message name
+	// is ambiguous — merged databases can carry one name at two ids, or at one id in both
+	// formats, and a bench check bound to the wrong one is worse than no check.
+	id       ?u32
+	extended ?bool
+	// Whether the written id / data_id were clean numbers. A stripped character yields a
+	// DIFFERENT VALID value, so no range check can catch it — `0x2G2` became `0x22` and bound
+	// to whatever lives there, while saving replaced the typo with the sanitized value. A bad
+	// data_id is worse still: it mixes four unintended bytes into every checksum, so valid
+	// traffic is reported corrupt.
+	id_malformed       bool
+	data_id_malformed  bool
+	extended_malformed bool
 	counter string // signal carrying the alive counter ('' = none)
 	crc     string // signal carrying the checksum ('' = none)
 	profile string = 'crc8_j1850' // crc8_j1850 | crc8_autosar | sum8 | xor8
@@ -212,6 +225,11 @@ pub mut:
 	enabled      bool = true
 	databases    []string
 	manifest     string    // telemetry handler manifest (CSV) — resolves handler_id -> FB/handler/core
+	// Protection to VERIFY on received frames. Independent of `simulation:` on purpose: in a
+	// rest-bus setup the ECU under test is the one node NOT simulated, so its protected messages
+	// can never be described by a simulated node's `protect:` — and it is precisely that ECU's
+	// counter and checksum a bench needs checked.
+	verify       []ProtectCfg
 	simulate     []string  // shorthand: ECU node names to simulate with default behaviour
 	nodes        []NodeCfg // fully-configured simulated ECUs (signals + responses)
 	senders      []Sender  // interactive generators: triggerable custom frames
@@ -468,6 +486,9 @@ fn parse_channel(c yaml.Any) !Channel {
 	if sim := c.value_opt('simulate') {
 		ch.simulate = sim.array().as_strings()
 	}
+	if vs := c.value_opt('verify') {
+		ch.verify = parse_protect_list(vs)
+	}
 	// Simulated ECUs. `simulation:` is the preferred key (separates the simulation
 	// workload from the bus config visually); `nodes:` is the legacy alias. Both
 	// append, so either — or both — work.
@@ -505,6 +526,59 @@ fn parse_channel(c yaml.Any) !Channel {
 }
 
 // parse_node parses one simulated-ECU entry: name + signals[] + responses[].
+// parse_protect_list parses a list of protection entries — shared by a node's `protect:` (what
+// the simulation STAMPS) and a channel's `verify:` (what it CHECKS on receive), because the two
+// describe the same thing from opposite ends of the wire.
+fn parse_protect_list(ps yaml.Any) []ProtectCfg {
+	mut out := []ProtectCfg{}
+	for p in ps.array() {
+		// presence, not value: `data_id: 0` is a legitimate id whose four zero bytes must still
+		// reach the checksum, so it cannot be distinguished from absent by testing 0
+		mut id := ?u32(none)
+		mut idbad := false
+		if v := p.value_opt('data_id') {
+			raw := v.i64()
+			idbad = raw < 0 || raw > i64(0xFFFFFFFF) || !hex_id_is_clean(v.str())
+			id = clamp_i64_u32(raw) // present, even when 0 — that is a real id
+		}
+		mut mid := ?u32(none)
+		mut mbad := false
+		if v := p.value_opt('id') {
+			mid = clamp_u32(parse_id_wide(v.str()))
+			mbad = !hex_id_is_clean(v.str())
+		}
+		mut mext := ?bool(none)
+		mut extbad := false
+		if v := p.value_opt('extended') {
+			// `.bool()` coerces anything it does not understand to FALSE, so a typo silently
+			// became a standard-frame selector — and where a same-named standard message
+			// exists, verification quietly checked the wrong frame while saving replaced the
+			// typo with `extended: false`.
+			t := v.str().trim_space().to_lower()
+			if t in ['true', 'yes', '1'] {
+				mext = true
+			} else if t in ['false', 'no', '0'] {
+				mext = false
+			} else {
+				extbad = true
+			}
+		}
+		out << ProtectCfg{
+			message:      p.value('message').default_to('').string()
+			id:           mid
+			extended:           mext
+			extended_malformed: extbad
+			id_malformed: mbad
+			counter: p.value('counter').default_to('').string()
+			crc:     p.value('crc').default_to('').string()
+			profile:           p.value('profile').default_to('crc8_j1850').string()
+			data_id:           id
+			data_id_malformed: idbad
+		}
+	}
+	return out
+}
+
 fn parse_node(n yaml.Any) NodeCfg {
 	mut nm := n.value('name').default_to('').string()
 	if nm == '' {
@@ -573,21 +647,7 @@ fn parse_node(n yaml.Any) NodeCfg {
 		node.uds = ucfg
 	}
 	if ps := n.value_opt('protect') {
-		for p in ps.array() {
-			// presence, not value: `data_id: 0` is a legitimate id whose four zero bytes must
-			// still reach the checksum, so it cannot be distinguished from absent by testing 0
-			mut id := ?u32(none)
-			if v := p.value_opt('data_id') {
-				id = clamp_i64_u32(v.i64()) // present, even when 0 — that is a real id
-			}
-			node.protect << ProtectCfg{
-				message: p.value('message').default_to('').string()
-				counter: p.value('counter').default_to('').string()
-				crc:     p.value('crc').default_to('').string()
-				profile: p.value('profile').default_to('crc8_j1850').string()
-				data_id: id
-			}
-		}
+		node.protect << parse_protect_list(ps)
 	}
 	if rs := n.value_opt('responses') {
 		for r in rs.array() {

@@ -76,6 +76,15 @@ pub fn (p Project) to_yaml() string {
 		if ch.manifest != '' {
 			b.writeln('    manifest: ${yaml_scalar(ch.manifest)}')
 		}
+		// verify: MUST be written back, like protect: and uds: before it. A field the parser
+		// reads and the writer drops loads configured and saves empty, so the checks on the ECU
+		// under test silently disappear the first time the project is saved.
+		if ch.verify.len > 0 {
+			b.writeln('    verify:')
+			for pr in ch.verify {
+				b.writeln('      - ${protect_inline(pr)}')
+			}
+		}
 		if ch.simulate.len > 0 {
 			b.writeln('    simulate:')
 			for s in ch.simulate {
@@ -137,18 +146,7 @@ pub fn (p Project) to_yaml() string {
 				if node.protect.len > 0 {
 					b.writeln('        protect:')
 					for pr in node.protect {
-						mut parts := ['message: ${yaml_scalar(pr.message)}']
-						if pr.counter != '' {
-							parts << 'counter: ${yaml_scalar(pr.counter)}'
-						}
-						if pr.crc != '' {
-							parts << 'crc: ${yaml_scalar(pr.crc)}'
-							parts << 'profile: ${yaml_scalar(pr.profile)}'
-						}
-						if id := pr.data_id {
-							parts << 'data_id: ${id}' // written even when 0 — it is a real id
-						}
-						b.writeln('          - { ${parts.join(', ')} }')
+						b.writeln('          - ${protect_inline(pr)}')
 					}
 				}
 			}
@@ -242,6 +240,29 @@ fn gen_inline(g GenCfg) string {
 // trailing space. Plain values (can0, PCAN_USBBUS1, 127.0.0.1:13400, paths) pass through bare.
 // yaml_flow_scalar quotes unconditionally, for values written inside a `{ ... }` flow mapping
 // where a bare comma, brace or bracket would be read as structure rather than text.
+// protect_inline renders one protection entry as a flow mapping. Shared by a node's `protect:`
+// and a channel's `verify:` — the same shape from opposite ends of the wire, so one writer.
+fn protect_inline(pr ProtectCfg) string {
+	mut parts := ['message: ${yaml_flow_scalar(pr.message)}']
+	if mid := pr.id {
+		parts << 'id: "0x${mid:X}"'
+	}
+	if mext := pr.extended {
+		parts << 'extended: ${mext}'
+	}
+	if pr.counter != '' {
+		parts << 'counter: ${yaml_flow_scalar(pr.counter)}'
+	}
+	if pr.crc != '' {
+		parts << 'crc: ${yaml_flow_scalar(pr.crc)}'
+		parts << 'profile: ${yaml_flow_scalar(pr.profile)}'
+	}
+	if id := pr.data_id {
+		parts << 'data_id: ${id}' // written even when 0 — it is a real id
+	}
+	return '{ ${parts.join(', ')} }'
+}
+
 fn yaml_flow_scalar(s string) string {
 	return '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
 }

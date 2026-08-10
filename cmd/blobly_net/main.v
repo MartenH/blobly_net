@@ -50,6 +50,10 @@ struct TraceRow {
 	rtr  bool
 	name string
 	data []u8
+	// End-to-end violation on a RECEIVED frame ('' = none, or not a protected message).
+	// Carried on the row rather than computed at draw time because it depends on the PREVIOUS
+	// frame's counter — a verdict the trace cannot reconstruct once the frames are just rows.
+	e2e string
 }
 
 struct TRec {
@@ -278,6 +282,12 @@ struct SimCfg {
 	iface string
 	db    candb.Database
 	nodes []project.NodeCfg
+	// Protection to CHECK on this bus, from the channel's `verify:` block. Separate from the
+	// nodes because the ECU under test is the one a rest-bus deliberately does not simulate.
+	verify []project.ProtectCfg
+	// The database PATHS this entry attached, so a recording can rebuild that entry's own view
+	// from the currently-loaded (edited) databases rather than an interface-wide merge.
+	db_paths []string
 }
 
 // Watch identifies one plotted signal.
@@ -506,7 +516,9 @@ fn (mut app App) start() {
 	}
 	// spawn the in-process simulation workloads (driver-free sim ECUs + a UDS server)
 	for sc in app.sims {
-		spawn sim_loop(app, sc)
+		if sc.nodes.len > 0 {
+			spawn sim_loop(app, sc) // a verify-only channel has nothing to transmit
+		}
 	}
 	// Diagnostics are per BUS, decided ONCE. Two channel entries may share an interface, and
 	// resolving them per entry produced a duplicate default responder on the second pass while
@@ -516,6 +528,15 @@ fn (mut app App) start() {
 	app.diag_plan = []
 	mut seeded := []string{}
 	for sc in app.sims {
+		for w in sim.validate_verify(sc.db, sc.verify) {
+			app.notify('${sc.iface}: ${w}')
+		}
+		if sc.nodes.len == 0 {
+			// A verify-only channel WATCHES a real bus. Starting the built-in 0x7E0/0x7E8
+			// server on it would put our diagnostic responses on the wire beside the ECU under
+			// test's — a collision on the bench this configuration exists to observe.
+			continue
+		}
 		if sc.iface in seeded {
 			continue
 		}
@@ -602,7 +623,7 @@ fn (mut app App) tx_on(iface string, f transport.CanFrame) bool {
 	tms := f64(time.ticks() - app.t0)
 	app.mu.lock()
 	if !app.paused {
-		app.trace << TraceRow{tms, chn, 'TX', f.id, f.extended, f.rtr, name, f.data.clone()}
+		app.trace << TraceRow{tms, chn, 'TX', f.id, f.extended, f.rtr, name, f.data.clone(), ''}
 		if app.trace.len > trace_cap {
 			app.trace = app.trace[app.trace.len - trace_cap..].clone()
 		}
@@ -670,13 +691,65 @@ fn (mut app App) load_recording(path string) {
 		}
 	}
 	t0 := if entries.len > 0 { entries[0].t_s } else { 0.0 }
+	// Verify while building the rows. Entries arrive in time order and the project already
+	// supplies the protection configuration, so a recording can be checked exactly as live
+	// traffic is — otherwise a violation visible during a run vanished the moment it was saved
+	// and reopened, and a capture taken elsewhere could not be checked at all.
+	// A recording stores whatever label the writer used — the channel's display NAME for our
+	// own live captures, and a bare 'can' from an MF4 import — never the project's interface
+	// string. Keying the sets by iface alone therefore matched nothing and every imported frame
+	// came back with an empty verdict, which is what the previous attempt at this did.
+	mut verifiers := map[string]sim.VerifySet{}
+	mut alias := map[string]string{} // recorded label -> project iface
+	for sc in app.sims {
+		// Per ENTRY, from the CURRENTLY LOADED databases. Two things have to hold at once: an
+		// entry must see only its own DBCs (an interface-wide merge let a same-named message on
+		// a neighbour's database win, leaving this entry's id unchecked after reopening a
+		// capture that was checked live), and unsaved editor changes must be reflected, since
+		// app.dbs already drives naming and decoding everywhere else in the UI.
+		live := merge_dbs_from(app.loaded_dbs_for(sc.db_paths))
+		mut vs := verifiers[sc.iface] or { sim.VerifySet{} }
+		// `verify:` ONLY — the ECU under test's messages, never our own.
+		//
+		// A candump log carries no direction, so a recording made while we were transmitting
+		// replays our TX frames as if received. Checking a message the simulation itself sends
+		// then reports false failures — worse when loopback puts the same frame in twice and
+		// one counter value is checked as though it arrived twice. What the bench is asking
+		// about is the other side's protection, and that is exactly what `verify:` describes.
+		vs.merge_into(sim.verifiers_for(live, [], sc.verify)) // conflicts already reported at start
+
+		verifiers[sc.iface] = vs
+		alias[sc.iface] = sc.iface
+		for c in app.chans {
+			if c.iface == sc.iface {
+				alias[c.name] = sc.iface
+			}
+		}
+	}
+	// A single simulated bus is unambiguous, so an unrecognised label (an MF4's 'can') resolves
+	// to it rather than going unchecked. With several, a label we cannot place is left alone —
+	// guessing which bus a frame came from would attach verdicts to the wrong sender.
+	only := if verifiers.len == 1 { verifiers.keys()[0] } else { '' }
 	app.mu.lock()
 	app.trace = []
 	app.gcount = map[string]u64{}
 	for e in entries {
 		f := e.frame
 		name := app.lookup_name(f.id, f.extended)
-		app.trace << TraceRow{(e.t_s - t0) * 1000.0, e.iface, 'RX', f.id, f.extended, f.rtr, name, f.data.clone()}
+		mut viol := ''
+		if !f.rtr {
+			ifc := alias[e.iface] or { only }
+			if mut vs := verifiers[ifc] {
+				if k := vs.resolve(app.dbs_for(ifc), f.id, f.extended) {
+					if mut ver := vs.by_key[k] {
+						viol = ver.check(f.data).str()
+						vs.by_key[k] = ver
+					}
+				}
+				verifiers[ifc] = vs
+			}
+		}
+		app.trace << TraceRow{(e.t_s - t0) * 1000.0, e.iface, 'RX', f.id, f.extended, f.rtr, name, f.data.clone(), viol}
 		if app.trace.len > trace_cap {
 			app.trace = app.trace[app.trace.len - trace_cap..].clone()
 		}
@@ -901,6 +974,21 @@ fn rx_loop(app &App, ci int, iface string) {
 		a.mu.unlock()
 	}
 	chname := a.chans[ci].name
+	// Built from the SAME `protect:` entries the simulation stamps with, so a project describes
+	// each protected message once and both directions follow it. A separate "check this on
+	// receive" declaration would let the two drift, and the drift would read as an ECU fault.
+	// EVERY SimCfg on this interface, not the first. Two channel entries may share a bus — the
+	// diagnostics setup already handles that — and stopping at the first meant later entries'
+	// protected messages were never checked, or were checked against the wrong layout.
+	mut verifiers := sim.VerifySet{}
+	for sc in a.sims {
+		if sc.iface != iface {
+			continue
+		}
+		for w in verifiers.merge_into(sim.verifiers_for(sc.db, sc.nodes, sc.verify)) {
+			a.notify('${iface}: ${w}')
+		}
+	}
 	// the TraceRsp id is config-static (the manifest is only mutated while stopped, so it can't
 	// change under a running RX loop) — resolve it once, not per frame in the hot path.
 	rsp_id := a.manifest.frames.or_defaults().rsp
@@ -917,9 +1005,25 @@ fn rx_loop(app &App, ci int, iface string) {
 		f := bus.recv(200) or { continue }
 		t_ms := f64(time.ticks() - a.t0)
 		name := a.lookup_name(f.id, f.extended)
+		// Verify protection on the way in. Done here, on the RX thread that already owns the
+		// frame, because the check is stateful — it needs the previous counter for this id —
+		// and a stateful check spread across draw calls would depend on what the user scrolled.
+		mut viol := ''
+		// Not remote frames: an RTR request carries NO payload, so the missing bytes read as
+		// zero and a request on a protected id was labelled !CRC — or, repeated, !CNT stalled.
+		// A verdict about bytes that were never sent says nothing about the sender.
+		if !f.rtr {
+			if k := verifiers.resolve(a.dbs_for(iface), f.id, f.extended) {
+				if mut ver := verifiers.by_key[k] {
+					v := ver.check(f.data)
+					verifiers.by_key[k] = ver
+					viol = v.str()
+				}
+			}
+		}
 		a.mu.lock()
 		if !a.paused {
-			a.trace << TraceRow{t_ms, chname, 'RX', f.id, f.extended, f.rtr, name, f.data.clone()}
+			a.trace << TraceRow{t_ms, chname, 'RX', f.id, f.extended, f.rtr, name, f.data.clone(), viol}
 			if a.trace.len > trace_cap {
 				a.trace = a.trace[a.trace.len - trace_cap..].clone()
 			}
@@ -1198,14 +1302,19 @@ fn (mut app App) rebuild_from_proj() {
 			}
 		}
 		nodes := ch.all_nodes()
-		if ch.enabled && nodes.len > 0 {
+		// `verify:` alone is enough: a channel that simulates nothing and only WATCHES a real
+		// bench still needs its verifiers built, which is the whole point of checking the ECU
+		// under test's protection.
+		if ch.enabled && (nodes.len > 0 || ch.verify.len > 0) {
 			// resolve_asset like the database list above: raw paths here re-based the
 			// simulator's DBCs onto the launch/bundle cwd, so an external project's
 			// relative DBC fed the sim nothing (codex #63 r4)
 			app.sims << SimCfg{
-				iface: ch.iface
-				db:    merge_dbs(ch.databases.map(app.resolve_asset(it)))
-				nodes: nodes
+				iface:  ch.iface
+				db:     merge_dbs(ch.databases.map(app.resolve_asset(it)))
+				nodes:    nodes
+				verify:   ch.verify
+				db_paths: ch.databases.map(app.resolve_asset(it))
 			}
 		}
 	}
@@ -3722,8 +3831,55 @@ fn trace_pass(r TraceRow, filt string) bool {
 	if filt == '' {
 		return true
 	}
-	hay := '${idstr(r.id, r.ext)} ${r.name} ${r.ch} ${r.dir} ${hex(r.data)}'.to_lower()
+	// the violation is searchable, so "!crc" in the filter box shows only bad frames — the
+	// gesture someone reaches for the moment they suspect one
+	hay := '${idstr(r.id, r.ext)} ${r.name} ${r.ch} ${r.dir} ${hex(r.data)} ${r.e2e}'.to_lower()
 	return hay.contains(filt)
+}
+
+// loaded_dbs_for returns the CURRENT in-memory database for each of these paths — the edited
+// copy where the editor has unsaved changes, skipping any path no longer loaded.
+fn (app &App) loaded_dbs_for(paths []string) []candb.Database {
+	mut out := []candb.Database{}
+	for p in paths {
+		i := app.dbs_paths.index(p)
+		if i >= 0 && i < app.dbs.len {
+			out << app.dbs[i]
+		}
+	}
+	return out
+}
+
+// merge_dbs_from flattens several loaded databases into one, for callers that already hold
+// Database values rather than paths.
+fn merge_dbs_from(dbs []candb.Database) candb.Database {
+	mut msgs := []candb.Message{}
+	mut nodes := []string{}
+	mut seen := map[string]bool{}
+	for d in dbs {
+		for m in d.messages {
+			k := '${m.id}|${m.ext}'
+			if k in seen {
+				continue
+			}
+			seen[k] = true
+			msgs << m
+		}
+		nodes << d.nodes
+	}
+	return candb.Database{
+		messages: msgs
+		nodes:    nodes
+	}
+}
+
+// trace_name_cell is the name column, with any end-to-end verdict appended.
+//
+// Shared by the flat and GROUPED views because grouped is the default: a violation rendered
+// only in the flat table is invisible unless the user happens to switch modes, which is the
+// same as not reporting it.
+fn trace_name_cell(r TraceRow) string {
+	return if r.e2e == '' { r.name } else { '${r.name}  ${r.e2e}' }
 }
 
 fn draw_trace_all(id string, rows []TraceRow, filt string) {
@@ -3750,7 +3906,9 @@ fn draw_trace_all(id string, rows []TraceRow, filt string) {
 			vgui.table_cell(r.ch)
 			vgui.table_cell(r.dir)
 			vgui.table_cell(idstr(r.id, r.ext))
-			vgui.table_cell(r.name)
+			// A violation is appended to the NAME rather than given a column: it is rare, and
+			// a permanently-empty column costs width on every row for the frames that are fine.
+			vgui.table_cell(trace_name_cell(r))
 			vgui.table_cell(if r.rtr { 'RTR' } else { hex(r.data) })
 		}
 		vgui.table_end()
@@ -3822,7 +3980,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			vgui.table_next_col()
 			// ### keys the tree id on identity only, so the live label / sort don't reset it.
 			open :=
-				vgui.tree_node_table('${idstr(g.id, g.ext)}  ${r.name}###${g.dir}|${g.ch}|${g.id}|${g.ext}')
+				vgui.tree_node_table('${idstr(g.id, g.ext)}  ${trace_name_cell(r)}###${g.dir}|${g.ch}|${g.id}|${g.ext}')
 			// clicking a row selects that frame (drives Signals/Graphics + "Add to filter")
 			if vgui.is_item_clicked() {
 				app.sel_id = int(g.id)
