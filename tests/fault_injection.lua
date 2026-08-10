@@ -52,13 +52,13 @@ test("baseline: Powertrain is on the bus", function()
 end)
 
 test("drop takes a message off the bus, and clearing brings it back", function()
-  sim.fault("SUT", "Powertrain", "drop")
+  sim.fault("CAN1", "SUT", "Powertrain", "drop")
   sleep_ms(300)                       -- let the fault reach the running engine
   drain("CAN1")                       -- discard frames sent before it landed
   local during = count_for("CAN1", 0x100, 600)
   check.equal(during, 0, "Powertrain still arriving while dropped")
 
-  sim.clear_fault("SUT", "Powertrain")
+  sim.clear_fault("CAN1", "SUT", "Powertrain")
   sleep_ms(200)
   check.truthy(wait_for("CAN1", 0x100, 2000) ~= nil, "Powertrain did not come back after clear")
 end)
@@ -67,28 +67,39 @@ test("a timed drop expires by itself", function()
   -- That the drop takes effect is covered above; what this checks is that a fault with a
   -- lifetime comes back OFF without anyone clearing it. Asserting the quiet period again here
   -- would only re-measure a buffered backlog, which is bus depth, not fault behaviour.
-  sim.fault("SUT", "Heartbeat", "drop", 800)
+  sim.fault("CAN1", "SUT", "Heartbeat", "drop", 800)
   sleep_ms(1600)                      -- comfortably past its lifetime
   drain("CAN1")
   check.truthy(wait_for("CAN1", 0x700, 3000) ~= nil,
     "Heartbeat did not resume after the fault's lifetime expired")
   -- and the table has forgotten it, rather than holding an expired entry
-  sim.clear_fault("SUT", "Heartbeat")
+  sim.clear_fault("CAN1", "SUT", "Heartbeat")
 end)
 
-test("a frozen counter stops advancing while traffic continues", function()
-  sim.fault("SUT", "Heartbeat", "freeze_counter")
-  sleep_ms(300)
-  drain("CAN1")
-  local a = wait_for("CAN1", 0x700, 2000)
-  check.truthy(a ~= nil, "Heartbeat stopped entirely — freeze must not silence it")
-  local b = wait_for("CAN1", 0x700, 2000)
-  check.truthy(b ~= nil, "second Heartbeat not seen")
-  check.equal(string.byte(a.data, 1), string.byte(b.data, 1), "the counter advanced while frozen")
-  sim.clear_fault("SUT", "Heartbeat")
+test("freeze_counter is refused where there is no E2E counter to freeze", function()
+  -- sim-demo configures no `protect:` block, so the SUT's Counter signal is an ordinary
+  -- generator. Freezing the E2E counter would change nothing there, and reporting success
+  -- would be the difference between a test that fails and a test that lies. (The freeze
+  -- behaviour itself is covered by the V unit tests, against a protected message.)
+  local ok = pcall(function() sim.fault("CAN1", "SUT", "Heartbeat", "freeze_counter") end)
+  check.truthy(not ok, "freeze_counter without protection must fail loudly")
 end)
 
 test("an unknown fault kind is an error, not a silent no-op", function()
-  local ok = pcall(function() sim.fault("SUT", "Powertrain", "nonsense") end)
+  local ok = pcall(function() sim.fault("CAN1", "SUT", "Powertrain", "nonsense") end)
   check.truthy(not ok, "an unknown kind must fail loudly")
+end)
+
+test("a fault that cannot take effect is refused, not silently armed", function()
+  -- a message this node does not send
+  local ok1 = pcall(function() sim.fault("CAN1", "SUT", "NotAMessage", "drop") end)
+  check.truthy(not ok1, "an unknown message must fail loudly")
+
+  -- a node that is not on this channel
+  local ok2 = pcall(function() sim.fault("CAN1", "NoSuchEcu", "Powertrain", "drop") end)
+  check.truthy(not ok2, "an unknown node must fail loudly")
+
+  -- bad_crc where the project configures no checksum: it would change no bits
+  local ok3 = pcall(function() sim.fault("CAN1", "SUT", "Powertrain", "bad_crc") end)
+  check.truthy(not ok3, "bad_crc without a configured checksum must fail loudly")
 end)

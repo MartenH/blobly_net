@@ -270,13 +270,21 @@ Per message, from the Simulation panel or from a script:
 From Lua, which is what makes a fault a regression test rather than a demo:
 
 ```lua
-sim.fault("BCM", "Powertrain", "drop", 3000)   -- for 3 s, then it clears itself
+sim.fault("CAN1", "BCM", "Powertrain", "drop", 3000)  -- 3 s, then it clears itself
 sleep_ms(3500)
 check.truthy(dtc_present(0x900101), "no timeout DTC after the message stopped")
 
-sim.fault("BCM", "Powertrain", "bad_crc")      -- until cleared
-sim.clear_fault("BCM", "Powertrain")
+sim.fault("CAN1", "BCM", "Powertrain", "bad_crc")     -- until cleared
+sim.clear_fault("CAN1", "BCM", "Powertrain")
 ```
+
+The **channel comes first**: a project may run the same node and message names on two buses, and
+dropping a frame on the wrong one invalidates observations of a network nobody was testing.
+
+A fault that cannot take effect is **refused, loudly** — an unknown node or message, `bad_crc`
+where the project configures no checksum, `freeze_counter` where it configures no E2E counter,
+`out_of_range` on a signal with no illegal value. Arming a fault that changes nothing is the
+difference between a test that fails and a test that lies.
 
 A fault with a lifetime expires on its own; one without stays until cleared. The distinction
 matters because a fault you have to switch off by hand is one you forget to switch off.
@@ -290,8 +298,12 @@ Details worth knowing:
 
 - `bad_crc` **inverts** the checksum rather than zeroing it, because zero is a legitimate
   checksum value — a receiver that happened to compute 0 would accept the "corrupted" frame.
-- `freeze_counter` holds the send count back rather than re-stamping a value, which is what a
-  stuck sender actually looks like. Traffic continues; only the sequence stalls.
+- `out_of_range` is applied **before** protection, so the frame arrives with a *valid* checksum
+  and the receiver reaches its range handling. Applied after, it would be rejected as a
+  checksum error and the fault would test the opposite of what it claims.
+- `freeze_counter` stalls the **E2E counter only**. An ordinary `counter` generator in the same
+  message keeps running — a message may carry both, and freezing the second is behaviour nobody
+  asked for.
 - `drop` still counts as a cycle, so the counter has moved on by the next frame that *does*
   arrive — a gap, which is how a receiver tells a dropped frame from a stalled sender.
 - `out_of_range` needs a signal whose DBC maximum is below its full width. A signal using its

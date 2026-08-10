@@ -86,8 +86,13 @@ pub mut:
 	period_ms int
 	signals   []SimSignal
 	e2e       E2e   // alive counter + checksum, stamped after the generators (see e2e.v)
-	fault     Fault // deliberate misbehaviour, applied last (see fault.v)
-	send_n    int   // times sent so far (drives counters)
+	fault     Fault // deliberate misbehaviour (see fault.v)
+	send_n    int   // times sent so far (drives signal generators)
+	// The E2E alive counter's own index, separate from send_n. freeze_counter must stall the
+	// PROTECTION counter without also stalling every `counter` generator in the message — a
+	// message can carry both an alive counter and an unrelated application counter, and
+	// freezing the second is behaviour nobody asked for.
+	e2e_n int
 	next_ms   f64 // next due time
 }
 
@@ -102,9 +107,12 @@ pub fn (mut m SimMessage) build(t f64) transport.CanFrame {
 			}
 		}
 	}
-	// End-to-end protection goes LAST, over the finished payload — the counter and checksum
-	// have to reflect what is actually on the wire, including every generator's contribution.
-	m.e2e.apply(m.msg, mut data, m.send_n)
+	// An out-of-range value goes in BEFORE protection, so the frame arrives with a valid
+	// checksum and the receiver reaches its range handling instead of rejecting a CRC error.
+	m.fault.apply_pre(m.msg, mut data)
+	// End-to-end protection goes over the finished payload — the counter and checksum have to
+	// reflect what is actually on the wire, including every generator's contribution.
+	m.e2e.apply(m.msg, mut data, m.e2e_n)
 	return transport.CanFrame{
 		id:       m.msg.id
 		extended: m.msg.ext
@@ -155,6 +163,7 @@ pub fn (e Engine) save_counters(mut into map[string]int) {
 	for ecu in e.ecus {
 		for m in ecu.messages {
 			into['${ecu.name}|${m.msg.name}'] = m.send_n
+			into['e2e|${ecu.name}|${m.msg.name}'] = m.e2e_n
 		}
 	}
 }
@@ -164,6 +173,9 @@ pub fn (mut e Engine) restore_counters(from map[string]int) {
 		for j := 0; j < e.ecus[i].messages.len; j++ {
 			if n := from['${e.ecus[i].name}|${e.ecus[i].messages[j].msg.name}'] {
 				e.ecus[i].messages[j].send_n = n
+			}
+			if n := from['e2e|${e.ecus[i].name}|${e.ecus[i].messages[j].msg.name}'] {
+				e.ecus[i].messages[j].e2e_n = n
 			}
 		}
 	}
@@ -181,20 +193,15 @@ pub fn (mut e Engine) due_frames(now_ms f64) []transport.CanFrame {
 			}
 			if now_ms + 1e-6 >= m.next_ms {
 				mut f := m.build(now_ms / 1000.0)
-				// Faults go on LAST — after the generators and after protection. Corrupting a
-				// checksum before it is computed just produces a valid checksum for corrupted
-				// data, which a receiver accepts and no test notices.
-				send := m.fault.apply(m.msg, m.e2e, mut f.data)
-				if send {
+				if m.fault.apply_post(m.msg, m.e2e, mut f.data) {
 					out << f
 				}
-				// A frozen counter is a sender that stopped advancing, so the send count is
-				// held back rather than the value re-stamped. A dropped frame still counts as
-				// a cycle: the ECU is transmitting, this one just never arrives, and its
-				// counter has moved on by the next one — which is what makes a drop detectable
-				// as a gap rather than as a stall.
+				m.send_n++ // generators keep running: a drop is a lost frame, not a stopped ECU
+				// The PROTECTION counter is what freezes. A dropped frame still advances it, so
+				// recovery shows a gap rather than a stall — the difference a receiver uses to
+				// tell a lost frame from a stuck sender.
 				if m.fault.kind != .freeze_ctr {
-					m.send_n++
+					m.e2e_n++
 				}
 				m.next_ms += f64(m.period_ms)
 				if m.next_ms <= now_ms {
@@ -239,6 +246,7 @@ pub fn (mut e Engine) on_frame(f transport.CanFrame) []transport.CanFrame {
 				continue
 			}
 			mut data := f.data.clone()
+			mut drop_response := false
 			if r.byte_index < data.len {
 				data[r.byte_index] = data[r.byte_index] + r.add
 			}
@@ -266,10 +274,20 @@ pub fn (mut e Engine) on_frame(f transport.CanFrame) []transport.CanFrame {
 						buf[k] = data[k]
 					}
 				}
-				m.e2e.apply(m.msg, mut buf, m.send_n)
+				m.fault.apply_pre(m.msg, mut buf)
+				m.e2e.apply(m.msg, mut buf, m.e2e_n)
 				m.send_n++
+				if m.fault.kind != .freeze_ctr {
+					m.e2e_n++
+				}
+				if !m.fault.apply_post(m.msg, m.e2e, mut buf) {
+					drop_response = true
+				}
 				data = buf.clone()
 				break
+			}
+			if drop_response {
+				continue // a fault on this response message: it simply does not answer
 			}
 			out << transport.CanFrame{
 				id:       r.resp_id

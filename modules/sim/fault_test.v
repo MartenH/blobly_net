@@ -59,7 +59,7 @@ fn test_drop_removes_the_frame_but_keeps_the_cycle() {
 	}
 	assert sent == 0, 'a dropped message must not be transmitted'
 	// the ECU is still running: its counter has moved on, so recovery shows a GAP, not a stall
-	assert e.ecus[0].messages[0].send_n == 4
+	assert e.ecus[0].messages[0].e2e_n == 4
 }
 
 // The checksum must be WRONG, and wrong in a way a receiver cannot accept by coincidence.
@@ -82,7 +82,8 @@ fn test_freeze_counter_stops_the_sequence_without_stopping_traffic() {
 		seen << e.due_frames(t)[0].data[0] & 0x0F
 	}
 	assert seen == [u8(0), 0, 0, 0], 'the counter must not advance, got ${seen}'
-	assert e.ecus[0].messages[0].send_n == 0, 'the send count is what is held back'
+	assert e.ecus[0].messages[0].e2e_n == 0, 'the PROTECTION counter is what is held back'
+	assert e.ecus[0].messages[0].send_n == 4, 'generators keep running — only E2E stalls'
 }
 
 // Out of range means outside the DBC's declared maximum, not merely a large number.
@@ -137,7 +138,7 @@ fn test_corruption_happens_after_protection() {
 // so "drop for 500 ms" dropped forever. The ageing belongs on the table.
 fn test_timed_fault_ages_on_the_shared_table() {
 	mut t := FaultTable{}
-	t.set(fault_key('ECU', 'Msg'), Fault{ kind: .drop, remaining_ms: 100 })
+	t.set(fault_key('inproc:B', 'ECU', 'Msg'), Fault{ kind: .drop, remaining_ms: 100 })
 	mut e := Engine{
 		ecus: [SimEcu{
 			name:     'ECU'
@@ -148,16 +149,16 @@ fn test_timed_fault_ages_on_the_shared_table() {
 
 	t.age_to(1000) // establishes the clock
 	t.age_to(1040)
-	t.apply_to(mut e)
+	t.apply_to('inproc:B', mut e)
 	assert e.ecus[0].messages[0].fault.kind == .drop, 'still in force after 40ms'
 
 	t.age_to(1120) // past its 100ms lifetime
-	t.apply_to(mut e)
+	t.apply_to('inproc:B', mut e)
 	assert e.ecus[0].messages[0].fault.kind == .none_, 'must have expired'
-	assert t.get(fault_key('ECU', 'Msg')).kind == .none_, 'and be gone from the table'
+	assert t.get(fault_key('inproc:B', 'ECU', 'Msg')).kind == .none_, 'and be gone from the table'
 
 	// an untimed fault is untouched by ageing
-	t.set(fault_key('ECU', 'Msg'), Fault{ kind: .bad_crc })
+	t.set(fault_key('inproc:B', 'ECU', 'Msg'), Fault{ kind: .bad_crc })
 	t.age_to(20_000)
-	assert t.get(fault_key('ECU', 'Msg')).kind == .bad_crc
+	assert t.get(fault_key('inproc:B', 'ECU', 'Msg')).kind == .bad_crc
 }

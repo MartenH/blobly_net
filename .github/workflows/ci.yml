@@ -54,7 +54,10 @@ jobs:
       - name: Headless Lua tests (scripts/runtests.sh)
         run: |
           chmod +x scripts/runtests.sh
-          ./scripts/runtests.sh tests/diag_basic.lua tests/bus_signals.lua tests/diag_advanced.lua tests/sequences.lua
+          # Every suite is named explicitly — runtests.sh runs only what it is given, so a new
+          # file is invisible to CI until it appears here. tests/fault_injection.lua covers the
+          # script-to-simulation wiring and timed behaviour, which nothing else exercises.
+          ./scripts/runtests.sh tests/diag_basic.lua tests/bus_signals.lua tests/diag_advanced.lua tests/sequences.lua tests/fault_injection.lua
 
   gui-build:
     name: linux • GUI (imgui) compile-link

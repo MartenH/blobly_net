@@ -78,11 +78,16 @@ function sleep_ms(ms) __sleep(ms) end
 -- `ms` (optional) makes it expire by itself; omit for "until cleared".
 --   sim.fault("BCM", "Powertrain", "drop", 3000)
 --   sim.fault("BCM", "Powertrain", "clear")
+-- `channel` first, because a project may run the same node and message names on two buses and
+-- dropping a frame on the wrong one invalidates observations nobody was testing.
+--   sim.fault("CAN1", "SUT", "Powertrain", "drop", 3000)
 sim = {}
-function sim.fault(node, message, kind, ms, signal)
-  __sim_fault(node, message, kind, ms or 0, signal or "")
+function sim.fault(channel, node, message, kind, ms, signal)
+  __sim_fault(channel, node, message, kind, ms or 0, signal or "")
 end
-function sim.clear_fault(node, message) __sim_fault(node, message, "clear", 0, "") end
+function sim.clear_fault(channel, node, message)
+  __sim_fault(channel, node, message, "clear", 0, "")
+end
 
 -- ============================ diagnostics (UDS) ============================
 uds = {}

@@ -17,6 +17,7 @@ import isotp
 import sim
 import uds
 import candb
+import project
 
 // ChanInfo is one channel a script may address by name: its bus interface and
 // the DBC catalog used for decode/encode on it.
@@ -25,6 +26,10 @@ pub:
 	name  string
 	iface string
 	db    candb.Database
+	// The simulated nodes on this channel. Carried so a script can be told that a fault cannot
+	// work — `bad_crc` on a message with no configured checksum changes no bits, and silently
+	// succeeding there is the difference between a test that fails and a test that lies.
+	nodes []project.NodeCfg
 }
 
 // TestResult is one test() outcome collected during a run.
@@ -217,11 +222,15 @@ fn l_sleep(l lua.State) int {
 // a test can raise and clear is a regression check: drop the frame, assert the DTC appears,
 // clear it, assert it goes away.
 fn l_sim_fault(l lua.State) int {
-	node := l.arg_str(1)
-	msg := l.arg_str(2)
-	kind := l.arg_str(3)
-	ms := l.arg_int(4)
-	signal := l.arg_str(5)
+	mut env := env_of(l)
+	chan_name := l.arg_str(1)
+	node := l.arg_str(2)
+	msg := l.arg_str(3)
+	kind := l.arg_str(4)
+	ms := l.arg_int(5)
+	signal := l.arg_str(6)
+	ci := env.find_chan(chan_name) or { return l.fail('unknown channel "${chan_name}"') }
+	iface := env.chans[ci].iface
 	k := match kind {
 		'none', 'clear', '' { sim.FaultKind.none_ }
 		'drop' { sim.FaultKind.drop }
@@ -230,12 +239,79 @@ fn l_sim_fault(l lua.State) int {
 		'out_of_range' { sim.FaultKind.out_of_range }
 		else { return l.fail('unknown fault kind "${kind}"') }
 	}
-	sim.inject(node, msg, sim.Fault{
+	// Reject a target nothing will ever read. A misspelled node or message stored under a key
+	// no engine looks at reports success and changes no traffic — which in an automated fault
+	// experiment is indistinguishable from a fault that was armed and had no effect.
+	if k != .none_ {
+		mut known := false
+		for m in env.chans[ci].db.messages_from(node) {
+			if m.name == msg {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return l.fail('"${node}" does not send "${msg}" on ${chan_name}')
+		}
+		if k == .out_of_range {
+			mut sg := signal
+			if sg == '' {
+				// choose one, as the panel does, rather than succeeding and mutating nothing
+				for m in env.chans[ci].db.messages_from(node) {
+					if m.name != msg {
+						continue
+					}
+					for cand in m.signals {
+						if sim.can_force_out_of_range(m, cand.name) {
+							sg = cand.name
+							break
+						}
+					}
+					break
+				}
+			}
+			if sg == '' {
+				return l.fail('no signal on "${msg}" has a value outside its declared range')
+			}
+			sim.inject(iface, node, msg, sim.Fault{
+				kind:         k
+				signal:       sg
+				remaining_ms: int(ms)
+			})
+			return 0
+		}
+		if k == .bad_crc && !has_protection(env.chans[ci].nodes, node, msg, 'crc') {
+			return l.fail('"${msg}" on "${node}" has no configured checksum — bad_crc would change nothing')
+		}
+		if k == .freeze_ctr && !has_protection(env.chans[ci].nodes, node, msg, 'counter') {
+			// The E2E counter is what freezes; a `counter` GENERATOR is an ordinary signal and
+			// keeps running by design. Without protection there is nothing to stall, and
+			// arming it would report success and change nothing.
+			return l.fail('"${msg}" on "${node}" has no E2E counter — freeze_counter would change nothing')
+		}
+	}
+	sim.inject(iface, node, msg, sim.Fault{
 		kind:         k
 		signal:       signal
 		remaining_ms: int(ms)
 	})
 	return 0
+}
+
+// has_protection reports whether the project gives this message the E2E field a fault needs.
+fn has_protection(nodes []project.NodeCfg, node string, msg string, field string) bool {
+	for n in nodes {
+		if n.name != node {
+			continue
+		}
+		for p in n.protect {
+			if p.message != msg {
+				continue
+			}
+			return if field == 'crc' { p.crc != '' } else { p.counter != '' }
+		}
+	}
+	return false
 }
 
 fn l_uds_open(l lua.State) int {

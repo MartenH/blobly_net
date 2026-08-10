@@ -159,7 +159,7 @@ fn sim_loop(iface string, db candb.Database, nodes []project.NodeCfg, ctl &Ctl) 
 		// frame rather than at the next rebuild — which for the headless runner never comes.
 		// The elapsed time ages timed faults; without it "drop for 500 ms" drops forever.
 		// The table owns its own clock, so calling this from every bus loop is safe.
-		sim.apply_injected(mut engine)
+		sim.apply_injected(iface, mut engine)
 		now_ms := f64(time.ticks() - t0)
 		for f in engine.due_frames(now_ms) {
 			bus.send(f) or {}

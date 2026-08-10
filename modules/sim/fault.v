@@ -62,16 +62,31 @@ pub fn (mut f Fault) tick(elapsed_ms int) bool {
 	return true
 }
 
-// apply mangles an already-built payload. Returns false when the frame should not be sent.
+// apply_pre mutates the payload BEFORE protection is stamped.
 //
-// `e2e` is the message's protection, needed to know WHICH bits carry the checksum and the
-// counter — corrupting a checksum means changing the field the receiver will recompute, not
-// changing arbitrary bytes and hoping.
-pub fn (f Fault) apply(msg candb.Message, e2e E2e, mut data []u8) bool {
-	match f.kind {
-		.none_ {
-			return true
+// Only `out_of_range` belongs here, and the reason is the whole point of the fault: a signal
+// forced past its limit must arrive with a VALID checksum, or the receiver rejects the frame as
+// a checksum error and never reaches its range handling — the fault would test the opposite of
+// what it claims. Corrupting the checksum is a different fault, and it goes after.
+pub fn (f Fault) apply_pre(msg candb.Message, mut data []u8) {
+	if f.kind != .out_of_range {
+		return
+	}
+	for sig in msg.active_signals(data) {
+		if sig.name != f.signal {
+			continue
 		}
+		if v := illegal_raw(sig) {
+			sig.set_raw(mut data, v)
+		}
+		break
+	}
+}
+
+// apply_post mutates the payload AFTER protection. Returns false when the frame must not be
+// sent at all.
+pub fn (f Fault) apply_post(msg candb.Message, e2e E2e, mut data []u8) bool {
+	match f.kind {
 		.drop {
 			return false
 		}
@@ -87,24 +102,9 @@ pub fn (f Fault) apply(msg candb.Message, e2e E2e, mut data []u8) bool {
 			}
 			return true
 		}
-		.freeze_ctr {
-			// Nothing to do here: the caller holds the counter back by not advancing send_n,
-			// which is what a stuck sender actually looks like on the wire. Re-stamping a
-			// frozen value here would fight the protection that has already run.
-			return true
-		}
-		.out_of_range {
-			for sig in msg.active_signals(data) {
-				if sig.name != f.signal {
-					continue
-				}
-				// All ones is out of range for any signal whose DBC maximum is below its full
-				// width, which is the ordinary case. Where a signal genuinely uses its whole
-				// range there is no out-of-range value to send, and the fault is reported as
-				// inapplicable rather than sending something valid and calling it a fault.
-				sig.set_raw(mut data, mask_of(sig.length))
-				break
-			}
+		else {
+			// freeze_ctr is handled by the caller holding the E2E counter back, which is what
+			// a stuck sender looks like; out_of_range has already been applied pre-protection.
 			return true
 		}
 	}
@@ -114,20 +114,38 @@ fn mask_of(bits int) u64 {
 	return if bits >= 64 { ~u64(0) } else { (u64(1) << bits) - 1 }
 }
 
-// can_force_out_of_range reports whether the named signal HAS an out-of-range raw value.
+// illegal_raw returns a raw value that decodes OUTSIDE the signal's declared range, or none.
 //
-// A signal using its full width has none: every encodable value is legal, so the fault would
-// transmit something the receiver must accept. Better to say so than to inject nothing and
-// leave the tester waiting for a reaction that cannot come.
+// Both extremes are considered, because for a SIGNED signal all-ones decodes as -1 — inside
+// almost any range — while the largest positive value sits at 0x7F.., and for a signal
+// declared `[-10|10]` it is the positive extreme that violates. Testing only the maximum
+// rejected signals that plainly do have an illegal endpoint.
+pub fn illegal_raw(sig candb.Signal) ?u64 {
+	if sig.minimum == 0 && sig.maximum == 0 {
+		return none // no declared range to exceed
+	}
+	full := mask_of(sig.length)
+	mut candidates := [full] // all ones
+	if sig.is_signed && sig.length >= 2 {
+		candidates << full >> 1 // largest positive
+		candidates << (full >> 1) + 1 // most negative
+	}
+	for c in candidates {
+		v := sig.phys_from_raw(c)
+		if v > sig.maximum || v < sig.minimum {
+			return c
+		}
+	}
+	return none
+}
+
+// can_force_out_of_range reports whether the named signal has an out-of-range raw value.
 pub fn can_force_out_of_range(msg candb.Message, name string) bool {
 	for sig in msg.signals {
-		if sig.name != name {
-			continue
+		if sig.name == name {
+			illegal_raw(sig) or { return false }
+			return true
 		}
-		if sig.maximum == 0 && sig.minimum == 0 {
-			return false // no declared range to exceed
-		}
-		return sig.phys_from_raw(mask_of(sig.length)) > sig.maximum
 	}
 	return false
 }
@@ -145,12 +163,18 @@ __global injected = &FaultTable{}
 // Functions rather than an exported variable because V does not export globals across modules
 // — and it reads better anyway: the two sides that must agree, the injector and the simulation
 // loop, name the same operation instead of both reaching into shared state.
-pub fn inject(node string, msg string, f Fault) {
-	injected.set(fault_key(node, msg), f)
+pub fn inject(iface string, node string, msg string, f Fault) {
+	injected.set(fault_key(iface, node, msg), f)
 }
 
-pub fn injected_fault(node string, msg string) Fault {
-	return injected.get(fault_key(node, msg))
+pub fn injected_fault(iface string, node string, msg string) Fault {
+	return injected.get(fault_key(iface, node, msg))
+}
+
+// clear_all drops every injected fault — used when a project is replaced, so a fault armed
+// against the old one does not silently apply to a new project that happens to reuse a name.
+pub fn clear_all() {
+	injected.clear()
 }
 
 // apply_injected ages timed faults by `elapsed_ms` and stamps the table onto an engine.
@@ -159,9 +183,9 @@ pub fn injected_fault(node string, msg string) Fault {
 // re-stamped from the table every pass, so a countdown kept on the copy would be overwritten
 // with its original value each time and a timed fault would never expire. That is exactly what
 // happened — `tick` existed and nothing called it, so "drop for 500 ms" dropped forever.
-pub fn apply_injected(mut e Engine) {
+pub fn apply_injected(iface string, mut e Engine) {
 	injected.age_to(time.ticks())
-	injected.apply_to(mut e)
+	injected.apply_to(iface, mut e)
 }
 
 // FaultTable is a fault set shared between whoever injects faults and the loop that applies
@@ -174,9 +198,13 @@ mut:
 	last_ms i64 // wall clock at the last ageing, 0 = not started
 }
 
-// key names one message on one node: 'NodeName:MessageName'.
-pub fn fault_key(node string, msg string) string {
-	return '${node}:${msg}'
+// fault_key names one message on one node ON ONE BUS.
+//
+// The interface is part of the identity because a multi-bus project may run the same node and
+// message names on two channels: without it, dropping `Gateway/Status` dropped it everywhere
+// and invalidated observations on a network nobody was testing.
+pub fn fault_key(iface string, node string, msg string) string {
+	return '${iface}:${node}:${msg}'
 }
 
 pub fn (mut t FaultTable) set(key string, f Fault) {
@@ -234,11 +262,17 @@ pub fn (mut t FaultTable) age_to(now_ms i64) {
 
 // apply_to stamps the current table onto an engine — called after each rebuild, and cheap
 // enough to call every loop iteration.
-pub fn (mut t FaultTable) apply_to(mut e Engine) {
+pub fn (mut t FaultTable) clear() {
+	t.mu.lock()
+	t.faults.clear()
+	t.mu.unlock()
+}
+
+pub fn (mut t FaultTable) apply_to(iface string, mut e Engine) {
 	t.mu.lock()
 	for i := 0; i < e.ecus.len; i++ {
 		for j := 0; j < e.ecus[i].messages.len; j++ {
-			k := '${e.ecus[i].name}:${e.ecus[i].messages[j].msg.name}'
+			k := '${iface}:${e.ecus[i].name}:${e.ecus[i].messages[j].msg.name}'
 			e.ecus[i].messages[j].fault = t.faults[k] or { Fault{} }
 		}
 	}

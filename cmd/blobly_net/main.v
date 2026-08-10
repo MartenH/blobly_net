@@ -163,10 +163,7 @@ mut:
 	diag_did_buf []u8
 	diag_sel     int // which DiagTarget the panel addresses
 	diag_plan    []DiagTarget // what start() actually spawned, per bus
-	// Injected faults, keyed 'iface:node:message'. Held on App rather than in the engine
-	// because the engine is rebuilt whenever an ECU is toggled, and a fault the user switched
-	// on must survive that — the same reason alive counters are cached here.
-	sim_faults map[string]sim.Fault
+
 	// Script (Lua on a worker thread)
 	script_path_buf []u8
 	senders         []SenderRT      // flattened project senders (Generators)
@@ -780,16 +777,11 @@ fn sim_loop(app &App, sc SimCfg) {
 				}
 			}
 			engine.restore_counters(counters)
-			a.mu.lock()
-			faults := a.sim_faults.clone()
-			a.mu.unlock()
-			for i := 0; i < engine.ecus.len; i++ {
-				for j := 0; j < engine.ecus[i].messages.len; j++ {
-					k := '${sc.iface}:${engine.ecus[i].name}:${engine.ecus[i].messages[j].msg.name}'
-					engine.ecus[i].messages[j].fault = faults[k] or { sim.Fault{} }
-				}
-			}
 		}
+		// ONE fault source, the module's table — the same one Lua writes through sim.fault().
+		// The panel used to write a map on App that only the panel read, so a script launched
+		// from the Script panel reported success and changed nothing on the bus.
+		sim.apply_injected(sc.iface, mut engine)
 		now_ms := f64(time.ticks() - t0)
 		for f in engine.due_frames(now_ms) {
 			bus.send(f) or {}
@@ -1065,6 +1057,10 @@ fn (app &App) resolve_asset(path string) string {
 }
 
 fn (mut app App) set_project(proj project.Project, path string) {
+	// A fault armed against the OLD project must not survive into a new one. Keys carry the
+	// interface, node and message name, and a different project reusing all three would
+	// silently start with frames dropped or corrupted — as if the tool were broken.
+	sim.clear_all()
 	app.mu.lock()
 	app.trace = []
 	app.gcount = map[string]u64{}
@@ -1818,8 +1814,7 @@ fn draw_sim(mut app App) {
 				// because a fault on a frame it never transmits does nothing and reads as a
 				// broken feature rather than a misconfiguration.
 				for m in sc.db.messages_from(node.name) {
-					fk := '${sc.iface}:${node.name}:${m.name}'
-					cur := app.sim_faults[fk] or { sim.Fault{} }
+					cur := sim.injected_fault(sc.iface, node.name, m.name)
 					lbl := match cur.kind {
 						.none_ { 'normal' }
 						.drop { 'DROP' }
@@ -1827,40 +1822,44 @@ fn draw_sim(mut app App) {
 						.freeze_ctr { 'FROZEN CTR' }
 						.out_of_range { 'OUT OF RANGE' }
 					}
-					kinds := ['normal', 'drop', 'bad crc', 'freeze counter', 'out of range']
-					sel := match cur.kind {
-						.none_ { 0 }
-						.drop { 1 }
-						.bad_crc { 2 }
-						.freeze_ctr { 3 }
-						.out_of_range { 4 }
+					// Only offer what can take effect on THIS message. bad_crc without a
+					// configured checksum changes no bits, and out_of_range needs a signal with
+					// an illegal value — offering either would show a fault the bus never sees.
+					has_crc := node.protect.any(it.message == m.name && it.crc != '')
+					mut oor_sig := ''
+					for sg in m.signals {
+						if sim.can_force_out_of_range(m, sg.name) {
+							oor_sig = sg.name
+							break
+						}
+					}
+					mut kinds := ['normal', 'drop']
+					mut kind_of := [sim.FaultKind.none_, .drop]
+					if has_crc {
+						kinds << 'bad crc'
+						kind_of << .bad_crc
+						kinds << 'freeze counter'
+						kind_of << .freeze_ctr
+					}
+					if oor_sig != '' {
+						kinds << 'out of range (${oor_sig})'
+						kind_of << .out_of_range
+					}
+					mut sel := 0
+					for ki, kk in kind_of {
+						if kk == cur.kind {
+							sel = ki
+							break
+						}
 					}
 					vgui.text('    ${m.name}: ${lbl}')
 					vgui.same_line()
-					nsel := vgui.combo('##fault_${fk}', kinds, sel)
-					if nsel != sel {
-						mut nf := sim.Fault{}
-						nf.kind = match nsel {
-							1 { .drop }
-							2 { .bad_crc }
-							3 { .freeze_ctr }
-							4 { .out_of_range }
-							else { .none_ }
-						}
-						if nf.kind == .out_of_range {
-							// pick a signal that actually HAS an out-of-range value, rather
-							// than injecting something the receiver must legally accept
-							for sg in m.signals {
-								if sim.can_force_out_of_range(m, sg.name) {
-									nf.signal = sg.name
-									break
-								}
-							}
-						}
-						app.mu.lock()
-						app.sim_faults[fk] = nf
-						app.sim_gen++
-						app.mu.unlock()
+					nsel := vgui.combo('##fault_${sc.iface}_${node.name}_${m.name}', kinds, sel)
+					if nsel != sel && nsel < kind_of.len {
+						sim.inject(sc.iface, node.name, m.name, sim.Fault{
+							kind:   kind_of[nsel]
+							signal: if kind_of[nsel] == .out_of_range { oor_sig } else { '' }
+						})
 					}
 				}
 				for pr in node.protect {
