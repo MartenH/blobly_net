@@ -39,6 +39,15 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   are done, and `transport` is designed for drop-in backends, so it is a shim + bitrate map.
 - 🧭 **LIN** — `modules/lindb` (LDF) + a `LinFrame` type. Kept type-safe alongside `CanFrame` /
   `EthFrame` rather than faked behind a generic frame.
+- 🧭 **Split `cmd/blobly_net/main.v`** — it is **7,200 lines / 217 KB**, and essentially every
+  GUI change touches it. The cost is not aesthetic, it is measurable in four places: GitHub
+  renders its diffs slowly enough to be painful on every PR; review findings arrive as line
+  numbers into one enormous file; two GUI branches almost always collide there; and the editor
+  and language server carry it on every keystroke. The split is per-panel (Trace, Graphics,
+  System, DBC editor, Diagnostics, Shell, Generators) plus the app state, which is roughly how
+  the file is already organised internally — so it is a mechanical move rather than a redesign.
+  Deliberately **not** urgent: it touches the one file every in-flight branch also touches, so
+  it wants a quiet moment with nothing else open, not a slot between features.
 
 ## Out of scope
 
