@@ -255,7 +255,7 @@ pub fn verifiers_for(db candb.Database, nodes []project.NodeCfg, verify []projec
 // repaired value — so the measurement logged a warning and then checked the wrong frame, which
 // is worse than either alone. One predicate, no drift.
 pub fn verify_usable(m candb.Message, p project.ProtectCfg) bool {
-	if p.id_malformed || p.data_id_malformed {
+	if p.id_malformed || p.data_id_malformed || p.extended_malformed {
 		return false
 	}
 	if p.counter == '' && p.crc == '' {
@@ -281,6 +281,28 @@ pub fn verify_usable(m candb.Message, p project.ProtectCfg) bool {
 		}
 	}
 	return true
+}
+
+// merge_into folds another config's verifiers in, reporting any that collide.
+//
+// Two channel entries may share one physical bus, and each validates on its own — so one naming
+// a counter and another naming the CRC for the same frame both passed, and a plain
+// insert-if-absent silently kept the first and dropped the second check. Belongs here rather
+// than in a frontend loop: it decides which checks actually run on the wire.
+pub fn (mut s VerifySet) merge_into(other VerifySet) []string {
+	mut warns := []string{}
+	for k, v in other.by_key {
+		if existing := s.by_key[k] {
+			if existing.e2e.counter == v.e2e.counter && existing.e2e.crc == v.e2e.crc
+				&& existing.e2e.profile == v.e2e.profile {
+				continue // the same entry twice: harmless
+			}
+			warns << 'verify: "${v.msg.name}" is configured differently on two channel entries sharing this bus — only the first applies'
+			continue
+		}
+		s.by_key[k] = v
+	}
+	return warns
 }
 
 // validate_verify reports channel-level `verify:` entries that will check nothing.
@@ -341,6 +363,9 @@ pub fn validate_verify(db candb.Database, verify []project.ProtectCfg) []string 
 		mut have := map[string]bool{}
 		for sg in m.signals {
 			have[sg.name] = true
+		}
+		if p.extended_malformed {
+			warns << 'verify: the extended: selector on "${p.message}" is not true/false — entry ignored'
 		}
 		if p.data_id_malformed {
 			warns << 'verify: the data_id on "${p.message}" is not a valid number — entry ignored'

@@ -712,11 +712,8 @@ fn (mut app App) load_recording(path string) {
 		// then reports false failures — worse when loopback puts the same frame in twice and
 		// one counter value is checked as though it arrived twice. What the bench is asking
 		// about is the other side's protection, and that is exactly what `verify:` describes.
-		for k, ver in sim.verifiers_for(live, [], sc.verify).by_key {
-			if k !in vs.by_key {
-				vs.by_key[k] = ver
-			}
-		}
+		vs.merge_into(sim.verifiers_for(live, [], sc.verify)) // conflicts already reported at start
+
 		verifiers[sc.iface] = vs
 		alias[sc.iface] = sc.iface
 		for c in app.chans {
@@ -984,10 +981,8 @@ fn rx_loop(app &App, ci int, iface string) {
 		if sc.iface != iface {
 			continue
 		}
-		for k, ver in sim.verifiers_for(sc.db, sc.nodes, sc.verify).by_key {
-			if k !in verifiers.by_key {
-				verifiers.by_key[k] = ver
-			}
+		for w in verifiers.merge_into(sim.verifiers_for(sc.db, sc.nodes, sc.verify)) {
+			a.notify('${iface}: ${w}')
 		}
 	}
 	// the TraceRsp id is config-static (the manifest is only mutated while stopped, so it can't

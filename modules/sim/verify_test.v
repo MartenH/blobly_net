@@ -366,3 +366,51 @@ fn test_validation_and_construction_agree() {
 	assert validate_verify(db, [ok]).len == 0
 	assert verifiers_for(db, [], [ok]).by_key.len == 1
 }
+
+// Two channel entries on one bus, each valid on its own, describing the same frame differently:
+// insert-if-absent kept the first and silently dropped the second check.
+fn test_conflicting_verifiers_on_a_shared_bus_are_reported() {
+	mut m := vmsg()
+	m.name = 'Status'
+	m.id = 0x111
+	db := candb.Database{ messages: [m] }
+
+	mut a := verifiers_for(db, [], [project.ProtectCfg{
+		message: 'Status'
+		counter: 'AliveCounter'
+		profile: 'crc8_j1850'
+	}])
+	b := verifiers_for(db, [], [project.ProtectCfg{
+		message: 'Status'
+		crc:     'CRC'
+		profile: 'crc8_j1850'
+	}])
+	w := a.merge_into(b)
+	assert w.len == 1, '${w}'
+	assert w[0].contains('configured differently')
+	assert a.by_key.len == 1
+
+	// the SAME entry twice is not a conflict
+	c := verifiers_for(db, [], [project.ProtectCfg{
+		message: 'Status'
+		counter: 'AliveCounter'
+		profile: 'crc8_j1850'
+	}])
+	assert a.merge_into(c).len == 0
+}
+
+// `.bool()` coerces an unrecognised scalar to false, so a typo became a standard-frame selector
+// and verification quietly checked the wrong frame.
+fn test_malformed_extended_selector_is_rejected() {
+	mut m := vmsg()
+	m.name = 'Dual'
+	db := candb.Database{ messages: [m] }
+	bad := [project.ProtectCfg{
+		message:            'Dual'
+		crc:                'CRC'
+		profile:            'crc8_j1850'
+		extended_malformed: true
+	}]
+	assert validate_verify(db, bad).any(it.contains('not true/false'))
+	assert verifiers_for(db, [], bad).by_key.len == 0, 'reported AND not built'
+}

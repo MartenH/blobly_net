@@ -157,8 +157,9 @@ pub mut:
 	// to whatever lives there, while saving replaced the typo with the sanitized value. A bad
 	// data_id is worse still: it mixes four unintended bytes into every checksum, so valid
 	// traffic is reported corrupt.
-	id_malformed      bool
-	data_id_malformed bool
+	id_malformed       bool
+	data_id_malformed  bool
+	extended_malformed bool
 	counter string // signal carrying the alive counter ('' = none)
 	crc     string // signal carrying the checksum ('' = none)
 	profile string = 'crc8_j1850' // crc8_j1850 | crc8_autosar | sum8 | xor8
@@ -547,13 +548,26 @@ fn parse_protect_list(ps yaml.Any) []ProtectCfg {
 			mbad = !hex_id_is_clean(v.str())
 		}
 		mut mext := ?bool(none)
+		mut extbad := false
 		if v := p.value_opt('extended') {
-			mext = v.bool()
+			// `.bool()` coerces anything it does not understand to FALSE, so a typo silently
+			// became a standard-frame selector — and where a same-named standard message
+			// exists, verification quietly checked the wrong frame while saving replaced the
+			// typo with `extended: false`.
+			t := v.str().trim_space().to_lower()
+			if t in ['true', 'yes', '1'] {
+				mext = true
+			} else if t in ['false', 'no', '0'] {
+				mext = false
+			} else {
+				extbad = true
+			}
 		}
 		out << ProtectCfg{
 			message:      p.value('message').default_to('').string()
 			id:           mid
-			extended:     mext
+			extended:           mext
+			extended_malformed: extbad
 			id_malformed: mbad
 			counter: p.value('counter').default_to('').string()
 			crc:     p.value('crc').default_to('').string()
