@@ -320,10 +320,28 @@ Details worth knowing:
 
 ### Checking the other side's protection
 
-Protection is verified on **received** frames too, using the same `protect:` entries — a project
-describes each protected message once and both directions follow it. A separate "check this on
-receive" declaration would let the two drift, and the drift would read as a fault in the ECU
-rather than in the configuration.
+Protection is verified on **received** frames too.
+
+For messages the simulation itself sends, the same `protect:` entries are reused — a project
+describes those once and both directions follow it.
+
+For the **ECU under test**, use the channel-level `verify:` block. It is separate on purpose: in
+a rest-bus setup that ECU is the one node you deliberately do *not* simulate, so no simulated
+node's `protect:` can describe it — and its counter and checksum are exactly what a bench needs
+checked.
+
+```yaml
+  - name: CAN1
+    interface: can0
+    databases: [dbc/vehicle.dbc]
+    verify:                       # what the ECU on the bench should be sending
+      - { message: EcuStatus, counter: AliveCounter, crc: CRC, profile: crc8_j1850 }
+    simulation:                   # the rest of the bus
+      - name: BCM
+```
+
+A channel with only `verify:` and no `simulation:` is fine — it transmits nothing and just
+watches.
 
 Violations appear beside the message name in the trace:
 

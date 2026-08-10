@@ -68,7 +68,12 @@ pub fn (mut v Verifier) check(data []u8) Violation {
 			if sig.name != v.e2e.crc {
 				continue
 			}
-			got := u8(sig.raw_value(data))
+			// Compare the WHOLE field at its declared width. Narrowing to u8 threw away the
+			// upper bits of a wider checksum — a frame whose low byte happened to match read
+			// as clean — while a narrower field is truncated by the sender when stamped, so
+			// comparing against the full 8-bit value labelled the sender's own frames !CRC.
+			w := mask_of_bits(sig.length)
+			got := sig.raw_value(data) & w
 			mut probe := data.clone()
 			sig.set_raw(mut probe, 0) // the sender computes with this field zeroed
 			mut input := probe.clone()
@@ -78,7 +83,7 @@ pub fn (mut v Verifier) check(data []u8) Violation {
 				input << u8((id >> 16) & 0xFF)
 				input << u8((id >> 24) & 0xFF)
 			}
-			if got != v.e2e.checksum_of(input) {
+			if got != u64(v.e2e.checksum_of(input)) & w {
 				v.bad++
 				return .bad_crc
 			}
@@ -120,6 +125,10 @@ pub fn (mut v Verifier) check(data []u8) Violation {
 	return .ok
 }
 
+fn mask_of_bits(bits int) u64 {
+	return if bits >= 64 { ~u64(0) } else { (u64(1) << bits) - 1 }
+}
+
 // VerifySet is the verifiers for one channel.
 //
 // Keyed by id AND frame format, which is what identifies a CAN message — the database merge
@@ -129,6 +138,35 @@ pub fn (mut v Verifier) check(data []u8) Violation {
 pub struct VerifySet {
 pub mut:
 	by_key map[string]Verifier
+}
+
+// resolve returns the verifier key for a received frame, adopting a J1939 PGN match when the
+// exact id is unknown — a live frame carries a different priority and source address than the
+// DBC records, so an exact key never matches it.
+//
+// Lives here rather than in the GUI because it decides how received wire frames are
+// INTERPRETED, and a frontend-local copy would give every other consumer different semantics.
+// Counter state is kept per ACTUAL id: two source addresses are two senders with two
+// independent sequences.
+pub fn (mut s VerifySet) resolve(dbs []candb.Database, id u32, ext bool) ?string {
+	k := vkey(id, ext)
+	if k in s.by_key {
+		return k
+	}
+	for db in dbs {
+		m := db.lookup_frame(id, ext) or { continue }
+		src := vkey(m.id, m.ext)
+		if src !in s.by_key {
+			continue
+		}
+		proto := s.by_key[src] or { continue }
+		s.by_key[k] = Verifier{
+			msg: proto.msg
+			e2e: proto.e2e
+		}
+		return k
+	}
+	return none
 }
 
 // vkey identifies a message the way the rest of the codebase does.
@@ -142,8 +180,29 @@ pub fn vkey(id u32, ext bool) string {
 // Reusing that configuration is the point: a project describes each protected message once, and
 // both directions follow it. Having to declare "check this on receive" separately would let the
 // two drift, and the drift would look like a bug in the ECU.
-pub fn verifiers_for(db candb.Database, nodes []project.NodeCfg) VerifySet {
+pub fn verifiers_for(db candb.Database, nodes []project.NodeCfg, verify []project.ProtectCfg) VerifySet {
 	mut out := VerifySet{}
+	// Channel-level `verify:` FIRST, because it describes the ECU under test — the one node a
+	// rest-bus setup deliberately does not simulate, and therefore the one whose protection no
+	// simulated node's `protect:` can ever describe. Its messages are found anywhere in the
+	// database, since we are not the sender.
+	for p in verify {
+		for m in db.messages {
+			if m.name != p.message {
+				continue
+			}
+			out.by_key[vkey(m.id, m.ext)] = Verifier{
+				msg: m
+				e2e: E2e{
+					counter: p.counter
+					crc:     p.crc
+					profile: p.profile
+					data_id: p.data_id
+				}
+			}
+			break
+		}
+	}
 	for n in nodes {
 		for p in n.protect {
 			// messages_from, not db.messages: the STAMPING path scopes to the sender, so a
@@ -153,13 +212,16 @@ pub fn verifiers_for(db candb.Database, nodes []project.NodeCfg) VerifySet {
 				if m.name != p.message {
 					continue
 				}
-				out.by_key[vkey(m.id, m.ext)] = Verifier{
-					msg: m
-					e2e: E2e{
-						counter: p.counter
-						crc:     p.crc
-						profile: p.profile
-						data_id: p.data_id
+				k := vkey(m.id, m.ext)
+				if k !in out.by_key {
+					out.by_key[k] = Verifier{
+						msg: m
+						e2e: E2e{
+							counter: p.counter
+							crc:     p.crc
+							profile: p.profile
+							data_id: p.data_id
+						}
 					}
 				}
 				break

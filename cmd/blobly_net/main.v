@@ -282,6 +282,9 @@ struct SimCfg {
 	iface string
 	db    candb.Database
 	nodes []project.NodeCfg
+	// Protection to CHECK on this bus, from the channel's `verify:` block. Separate from the
+	// nodes because the ECU under test is the one a rest-bus deliberately does not simulate.
+	verify []project.ProtectCfg
 }
 
 // Watch identifies one plotted signal.
@@ -510,7 +513,9 @@ fn (mut app App) start() {
 	}
 	// spawn the in-process simulation workloads (driver-free sim ECUs + a UDS server)
 	for sc in app.sims {
-		spawn sim_loop(app, sc)
+		if sc.nodes.len > 0 {
+			spawn sim_loop(app, sc) // a verify-only channel has nothing to transmit
+		}
 	}
 	// Diagnostics are per BUS, decided ONCE. Two channel entries may share an interface, and
 	// resolving them per entry produced a duplicate default responder on the second pass while
@@ -686,7 +691,7 @@ fn (mut app App) load_recording(path string) {
 	mut alias := map[string]string{} // recorded label -> project iface
 	for sc in app.sims {
 		mut vs := verifiers[sc.iface] or { sim.VerifySet{} }
-		for k, ver in sim.verifiers_for(sc.db, sc.nodes).by_key {
+		for k, ver in sim.verifiers_for(sc.db, sc.nodes, sc.verify).by_key {
 			if k !in vs.by_key {
 				vs.by_key[k] = ver
 			}
@@ -713,7 +718,7 @@ fn (mut app App) load_recording(path string) {
 		if !f.rtr {
 			ifc := alias[e.iface] or { only }
 			if mut vs := verifiers[ifc] {
-				if k := verifier_for(mut vs, app.dbs_for(ifc), f.id, f.extended) {
+				if k := vs.resolve(app.dbs_for(ifc), f.id, f.extended) {
 					if mut ver := vs.by_key[k] {
 						viol = ver.check(f.data).str()
 						vs.by_key[k] = ver
@@ -958,7 +963,7 @@ fn rx_loop(app &App, ci int, iface string) {
 		if sc.iface != iface {
 			continue
 		}
-		for k, ver in sim.verifiers_for(sc.db, sc.nodes).by_key {
+		for k, ver in sim.verifiers_for(sc.db, sc.nodes, sc.verify).by_key {
 			if k !in verifiers.by_key {
 				verifiers.by_key[k] = ver
 			}
@@ -988,7 +993,7 @@ fn rx_loop(app &App, ci int, iface string) {
 		// zero and a request on a protected id was labelled !CRC — or, repeated, !CNT stalled.
 		// A verdict about bytes that were never sent says nothing about the sender.
 		if !f.rtr {
-			if k := verifier_for(mut verifiers, a.dbs_for(iface), f.id, f.extended) {
+			if k := verifiers.resolve(a.dbs_for(iface), f.id, f.extended) {
 				if mut ver := verifiers.by_key[k] {
 					v := ver.check(f.data)
 					verifiers.by_key[k] = ver
@@ -1277,14 +1282,18 @@ fn (mut app App) rebuild_from_proj() {
 			}
 		}
 		nodes := ch.all_nodes()
-		if ch.enabled && nodes.len > 0 {
+		// `verify:` alone is enough: a channel that simulates nothing and only WATCHES a real
+		// bench still needs its verifiers built, which is the whole point of checking the ECU
+		// under test's protection.
+		if ch.enabled && (nodes.len > 0 || ch.verify.len > 0) {
 			// resolve_asset like the database list above: raw paths here re-based the
 			// simulator's DBCs onto the launch/bundle cwd, so an external project's
 			// relative DBC fed the sim nothing (codex #63 r4)
 			app.sims << SimCfg{
-				iface: ch.iface
-				db:    merge_dbs(ch.databases.map(app.resolve_asset(it)))
-				nodes: nodes
+				iface:  ch.iface
+				db:     merge_dbs(ch.databases.map(app.resolve_asset(it)))
+				nodes:  nodes
+				verify: ch.verify
 			}
 		}
 	}
@@ -3805,37 +3814,6 @@ fn trace_pass(r TraceRow, filt string) bool {
 	// gesture someone reaches for the moment they suspect one
 	hay := '${idstr(r.id, r.ext)} ${r.name} ${r.ch} ${r.dir} ${hex(r.data)} ${r.e2e}'.to_lower()
 	return hay.contains(filt)
-}
-
-// verifier_for resolves a received frame to its verifier, using the SAME PGN fallback the
-// trace's own lookup uses: a J1939 frame arrives with a different priority or source address
-// than the DBC records, so an exact-id key never matches it. Counter state stays per ACTUAL
-// id, because two source addresses are two senders with two independent sequences.
-fn verifier_for(mut set sim.VerifySet, dbs []candb.Database, id u32, ext bool) ?string {
-	k := sim.vkey(id, ext)
-	if k in set.by_key {
-		return k
-	}
-	mut src := ''
-	for db in dbs {
-		if m := db.lookup_frame(id, ext) {
-			cand := sim.vkey(m.id, m.ext)
-			if cand in set.by_key {
-				src = cand
-				break
-			}
-		}
-	}
-	if src == '' {
-		return none
-	}
-	// clone the layout for this concrete id, so its counter is tracked separately
-	mut v := set.by_key[src] or { return none }
-	set.by_key[k] = sim.Verifier{
-		msg: v.msg
-		e2e: v.e2e
-	}
-	return k
 }
 
 // trace_name_cell is the name column, with any end-to-end verdict appended.

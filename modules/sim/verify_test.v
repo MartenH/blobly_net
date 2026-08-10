@@ -123,7 +123,7 @@ fn test_verifiers_are_keyed_by_id_and_format() {
 			project.ProtectCfg{ message: 'Ext', counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' },
 		]
 	}]
-	set := verifiers_for(db, nodes)
+	set := verifiers_for(db, nodes, [])
 	assert set.by_key.len == 2, 'both formats must have their own verifier'
 	assert vkey(0x123, false) in set.by_key
 	assert vkey(0x123, true) in set.by_key
@@ -189,7 +189,52 @@ fn test_verifier_binds_to_the_configured_senders_message() {
 		name:    'NodeB'
 		protect: [project.ProtectCfg{ message: 'Shared', counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }]
 	}]
-	set := verifiers_for(db, nodes)
+	set := verifiers_for(db, nodes, [])
 	assert vkey(0x222, false) in set.by_key, 'must bind to NodeB\'s message, not the first match'
 	assert vkey(0x111, false) !in set.by_key
+}
+
+// The ECU under test is the one node a rest-bus setup does NOT simulate, so its protection can
+// never be described by a simulated node's protect: — and it is exactly that ECU whose counter
+// and checksum a bench needs checked. Channel-level `verify:` covers it.
+fn test_channel_verify_covers_an_unsimulated_ecu() {
+	mut m := vmsg()
+	m.name = 'BenchEcuStatus'
+	m.id = 0x321
+	m.sender = 'BenchEcu' // a transmitter we do NOT simulate
+	db := candb.Database{ nodes: ['BenchEcu'], messages: [m] }
+	verify := [project.ProtectCfg{
+		message: 'BenchEcuStatus'
+		counter: 'AliveCounter'
+		crc:     'CRC'
+		profile: 'crc8_j1850'
+	}]
+	// no simulated nodes at all — the rest-bus is elsewhere or this is a pure monitor
+	set := verifiers_for(db, [], verify)
+	assert vkey(0x321, false) in set.by_key, 'the bench ECU must be verifiable without simulating it'
+}
+
+// A checksum field narrower or wider than 8 bits must be compared at ITS width: narrowing threw
+// away a wide field's upper bits, and comparing a narrow field against the full byte labelled
+// the sender's own frames as corrupt.
+fn test_checksum_compared_at_the_declared_width() {
+	m := candb.Message{
+		name: 'Narrow'
+		id:   0x400
+		dlc:  8
+		signals: [
+			candb.Signal{ name: 'CRC4', start_bit: 0, length: 4, byte_order: .little_endian, factor: 1 },
+			candb.Signal{ name: 'Data', start_bit: 8, length: 8, byte_order: .little_endian, factor: 1 },
+		]
+	}
+	e := E2e{ crc: 'CRC4', profile: 'crc8_j1850' }
+	mut v := Verifier{ msg: m, e2e: e }
+	// a frame the STAMPER produced must verify, even though the field holds only 4 bits of it
+	mut d := []u8{len: 8}
+	e.apply(m, mut d, 0)
+	assert v.check(d) == .ok, 'the sender\'s own frame must not be reported corrupt'
+	// and corrupting those 4 bits is still caught
+	mut bad := d.clone()
+	bad[0] = bad[0] ^ 0x0F
+	assert v.check(bad) == .bad_crc
 }
