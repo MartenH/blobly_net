@@ -25,9 +25,26 @@
 set -e
 # On Windows run this from a MSYS2 login/MINGW64 context so coreutils + gcc are on PATH
 # (the VS Code tasks launch `bash -l`; or use the C:\dev\msys64-ct MINGW64 shell directly).
+# Capture the CALLER's directory before moving: a project path given on the command line is
+# relative to where the user ran this from, not to the repo root (codex #65 r4).
+CALLER_PWD="$PWD"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$HERE"
+# Convenience: if the first arg is a .blobnet project (not a .v target), open THAT
+# project instead of the sim-demo default. So `run_gui.sh path/to/system_full.blobnet`
+# launches straight into that system. A .v arg still overrides the target as before.
 target="${1:-cmd/blobly_net/main.v}"
+case "$target" in
+	*.blobnet)
+		# resolve against the caller's directory, since we have already cd'd to the repo root
+		case "$target" in
+		/*) ;;
+		*) target="$CALLER_PWD/$target" ;;
+		esac
+		export BLOBLY_PROJECT="$target"
+		target="cmd/blobly_net/main.v"
+		;;
+esac
 
 # --- platform: pin the dedicated mingw toolchain + v.exe on Windows/MSYS2 --------------
 case "$(uname -s)" in

@@ -204,6 +204,7 @@ mut:
 	sys_path_buf      []u8
 	sys               sysview.System
 	sys_loaded        bool
+	sel_ecu           string // selected node in the System panel's ECU master-detail
 	shell_buf         []u8 // the input line (persistent; edited in place by console_input)
 	eth_target_buf    []u8 // the eth shell's board ip (session-only; manifest carries the port)
 	eth_shell_session u16  // persists across commands: a fresh client restarting at session 1
@@ -941,6 +942,25 @@ fn (mut app App) load_project(path string) {
 		return
 	}
 	app.set_project(proj, path)
+	// Convenience: if a system.toml sits next to the project (the system_full layout),
+	// load it into the System panel and open it — so the per-ECU dashboard is one click
+	// away instead of a manual Browse/Load. Non-system projects (sim-demo) are unaffected.
+	if path != '' {
+		// The old project's system model is stale on EVERY successful switch — not only when
+		// the new project happens to have a sibling. Leaving it set made draw_buses annotate
+		// the new project's interfaces with the PREVIOUS system's ECUs (wrong topology), and
+		// a malformed sibling would show the old nodes as if they were this project's. So
+		// clear unconditionally, then autoload + open only on success (codex #65).
+		app.sys = sysview.System{}
+		app.sys_loaded = false
+		app.sel_ecu = ''
+		app.show_sys = false
+		sys_cand := os.join_path(os.dir(path), 'system.toml')
+		if os.is_file(sys_cand) {
+			app.load_system(sys_cand)
+			app.show_sys = app.sys_loaded
+		}
+	}
 }
 
 // set_project installs a parsed project (from a file, New, or a reload), resetting the
@@ -1668,7 +1688,15 @@ fn draw_sim(mut app App) {
 				app.mu.unlock()
 			}
 			vgui.same_line()
-			hdr := '${node.name}  (${node.signals.len} sig / ${node.responses.len} resp)###${key}'
+			// A shorthand node (project `simulate:`, e.g. from "Simulate the rest") carries NO
+			// explicit config by design — build_node derives its frames from the DBC by
+			// transmitter name. Printing "0 sig / 0 resp" for it reads as "this ECU sends
+			// nothing", which is wrong and alarming; say where its behaviour comes from.
+			hdr := if node.signals.len == 0 && node.responses.len == 0 {
+				'${node.name}  (frames derived from the DBC)###${key}'
+			} else {
+				'${node.name}  (${node.signals.len} sig / ${node.responses.len} resp)###${key}'
+			}
 			if vgui.tree_node(hdr) {
 				for g in node.signals {
 					vgui.text('    ${g.signal}: ${g.typ}')
@@ -1823,6 +1851,8 @@ fn (mut app App) open_browser(target string) {
 		'.dbc'
 	} else if target.starts_with('manifest') {
 		'.csv'
+	} else if target == 'system' {
+		'.toml'
 	} else if target == 'flash' {
 		'.img' // match_ext also lets .bin through for this filter
 	} else {
@@ -1850,8 +1880,103 @@ fn (mut app App) browser_confirm(path string) {
 		app.add_dbc(t['dbc:'.len..].int(), path)
 	} else if t.starts_with('manifest:') {
 		app.set_manifest(t['manifest:'.len..].int(), path)
+	} else if t == 'system' {
+		app.load_system(path)
 	} else if t == 'flash' {
 		app.flash_img_buf = mkbuf(path, 256)
+	}
+}
+
+// load_system loads a blobly_emb system.toml into the read-only System view.
+// restbus_from_system configures the REST BUS for one ECU under test: every OTHER node that
+// shares a bus with it becomes a simulated ECU on the matching channel. This is the single-ECU
+// bench workflow — you develop one ECU, and the rest of its buses have to be alive or it faults.
+// The system model already knows who sits on which bus, and system.toml node names are the DBC
+// transmitter (BU_) names, so the simulator can derive each node's frames straight from the DBC.
+// Writes into the PROJECT (channel.simulate) so it survives a rebuild and can be saved.
+// Returns (simulated nodes, channels touched).
+fn (mut app App) restbus_from_system(sut string) (int, int) {
+	mut nodes := 0
+	mut chans_hit := 0
+	mut sut_dropped := 0    // rich `nodes:` entries removed because they configured the SUT itself
+	mut chans_disabled := 0 // matching channels skipped because the project has them disabled
+	// the system buses the ECU under test sits on
+	mut sut_buses := []string{}
+	for n in app.sys.nodes {
+		if n.name == sut {
+			sut_buses = n.buses.clone()
+			break
+		}
+	}
+	for sb in app.sys.buses {
+		if sb.name !in sut_buses {
+			continue
+		}
+		mut others := []string{}
+		for n in app.sys.nodes {
+			if n.name != sut && sb.name in n.buses {
+				others << n.name
+			}
+		}
+		if others.len == 0 {
+			continue
+		}
+		for ci, ch in app.proj.channels {
+			if ch.iface != sb.iface {
+				continue
+			}
+			// A disabled channel gets no SimCfg from rebuild_from_proj, so writing its
+			// simulate list and counting it as configured reports success for something
+			// that will not run (codex #65 r4).
+			if !ch.enabled {
+				// Skipping is right — rebuild_from_proj makes no SimCfg for a disabled channel —
+				// but skipping SILENTLY made a partial setup report success and an all-disabled
+				// one claim no interface matched (codex #65 r5). Count it and say so.
+				chans_disabled++
+				continue
+			}
+			// all_nodes() merges the rich `nodes:` configs with the `simulate:` shorthand, so
+			// replacing `simulate` does NOT stop a SUT that is also explicitly configured —
+			// the ECU under test would be simulated against itself, two talkers on one bus.
+			// Drop its config here and say so, rather than silently leaving it live.
+			before := app.proj.channels[ci].nodes.len
+			app.proj.channels[ci].nodes = app.proj.channels[ci].nodes.filter(it.name != sut)
+			sut_dropped += before - app.proj.channels[ci].nodes.len
+			app.proj.channels[ci].simulate = others.clone()
+			chans_hit++
+			nodes += others.len
+		}
+	}
+	if chans_hit > 0 {
+		// Generators are edited live in app.senders/gen_bufs and only reach app.proj through
+		// this sync; rebuilding without it recreates them from the stale project model and
+		// silently drops unsaved edits, while still marking the project dirty. Both other
+		// rebuild_from_proj call sites sync first — this one did not (codex #65 r5).
+		app.sync_senders_into_proj()
+		app.rebuild_from_proj()
+		app.dirty = true
+	}
+	if sut_dropped > 0 {
+		app.notify('restbus: dropped ${sut_dropped} configured simulation entr(ies) for ${sut} — it is the ECU under test, not a simulated node')
+	}
+	if chans_disabled > 0 {
+		app.notify('restbus: ${chans_disabled} matching channel(s) are DISABLED and were skipped — enable them in Configure, or the rest bus stays silent')
+	}
+	return nodes, chans_hit
+}
+
+fn (mut app App) load_system(path string) {
+	if path.trim_space() == '' {
+		app.notify('no system.toml path — type one or use Browse')
+		return
+	}
+	if sy := sysview.load(path) {
+		app.sys = sy
+		app.sys_loaded = true
+		app.sys_path_buf = mkbuf(path, path.len + 64)
+		app.notify('system: ${sy.nodes.len} node(s), ${sy.buses.len} bus(es), ${sy.signals.len} cross-node signal(s)')
+	} else {
+		app.notify('system load failed: ${err}')
 	}
 }
 
@@ -1865,6 +1990,8 @@ fn draw_filebrowser(mut app App) {
 		'Save Project As'
 	} else if app.fb_target.starts_with('dbc') {
 		'Attach DBC'
+	} else if app.fb_target == 'system' {
+		'Open system.toml'
 	} else {
 		'Attach Manifest'
 	}
@@ -3091,6 +3218,30 @@ fn draw_buses(mut app App, chans []Chan) {
 			vgui.text_colored(r, g, b, label)
 			vgui.same_line()
 			vgui.text('${c.name}  ${c.iface}  [${c.mode}]  RX ${c.rx}')
+			// system awareness: when a system.toml is loaded, name the ECUs that sit on
+			// this bus — the channel row alone doesn't say WHO is on the wire. The system
+			// bus is matched by its interface (system [bus.x].interface == the channel's).
+			if app.sys_loaded {
+				mut bus_name := ''
+				for sb in app.sys.buses {
+					if sb.iface == c.iface {
+						bus_name = sb.name
+						break
+					}
+				}
+				if bus_name != '' {
+					mut on_bus := []string{}
+					for n in app.sys.nodes {
+						if bus_name in n.buses {
+							on_bus << n.name
+						}
+					}
+					if on_bus.len > 0 {
+						// own line, indented: the channel row is narrow and would clip this
+						vgui.text_dim('        ${bus_name}: ${on_bus.join(', ')}')
+					}
+				}
+			}
 		}
 		vgui.tree_pop()
 	}
@@ -4157,6 +4308,14 @@ fn (mut app App) save_as(path string) {
 // new_project resets to a blank, unsaved project (0 buses) — the from-scratch entry point.
 fn (mut app App) new_project() {
 	app.stop()
+	// A blank project inherits nothing: set_project bypasses load_project's reset, so without
+	// this the System panel kept showing the PREVIOUS project's ECUs and annotated any newly
+	// added channel from that stale model (codex #65 r5) — the same staleness fixed for the
+	// load path in r3, in the one entry point it did not cover.
+	app.sys = sysview.System{}
+	app.sys_loaded = false
+	app.sel_ecu = ''
+	app.show_sys = false
 	app.set_project(project.Project{ name: 'untitled' }, '')
 	app.notify('new project — add buses in Configure…')
 }
@@ -4769,8 +4928,16 @@ fn draw_shell(mut app App) {
 	// the eth RPC shell (manifest `ethmod,shell,method`) needs NO CAN channel:
 	// it dials the board's UDP endpoint directly, Start or not
 	eth := app.eth_method != 0 && app.eth_someip.service != 0
+	// NOTE (codex #65): absence of manifest metadata does NOT mean "no shell endpoint".
+	// ShellFrames.or_defaults() — which the worker itself calls — supplies 0x7F0/0x7F2/0x7F1,
+	// so a legacy manifest (no `# shell frames` section) and a manifest-less project both
+	// reach a default-configured target. The GUI must follow the module's interpretation
+	// instead of redefining zero-valued ids as unavailable, so this is a HINT, not a gate.
+	if !eth && app.manifest.shell.input == 0 {
+		vgui.text_dim('no shell frames declared — using the defaults (0x7F0/0x7F2/0x7F1)')
+	}
 	if !app.running && !eth {
-		vgui.text_dim('press Start (needs a shell-enabled target on the bus)')
+		vgui.text_dim('press Start (the shell needs the channel open to reach the target)')
 		vgui.end()
 		return
 	}
@@ -5234,6 +5401,13 @@ fn draw_tchart(mut app App, trecs []TRec) {
 		vgui.text_dim('Record arms · Stop freezes · Dump reads out (all cores)')
 	} else {
 		vgui.text_dim('Start a channel, then Record / Dump')
+	}
+	// A missing manifest does NOT mean a missing endpoint: send_trace_cmd/trace_dump_worker
+	// use TraceFrames.or_defaults(), so a default-configured target answers without one. Keep
+	// the controls live and say what the manifest WOULD add (names) — a hint, not a gate
+	// (codex #65).
+	if !app.has_manifest {
+		vgui.text_dim('no trace manifest attached — using the default ids; records decode without handler/thread names')
 	}
 	if status != '' {
 		vgui.text_dim(status)
@@ -5787,6 +5961,7 @@ mut:
 	val_name_buf   []u8
 	node_buf       []u8
 	view_tree      bool = true // toggle between Tree view and Table view
+	left_w         f32  // draggable width (px) of the messages&signals pane; 0 = use the default
 }
 
 // dbc_ed_color: a deterministic per-signal palette for the bit grid.
@@ -6113,7 +6288,11 @@ fn draw_dbc_editor(mut app App) {
 	vgui.separator()
 
 	// ---- MAIN SPLIT PANES: Left (Navigation) vs Right (Inspector & Layout) ----
-	left_w := 340 * sc
+	// draggable divider (splitter_v below); width persists in dbc_ed.left_w
+	if app.dbc_ed.left_w <= 0 {
+		app.dbc_ed.left_w = 340 * sc
+	}
+	left_w := app.dbc_ed.left_w
 	vgui.child_wh('##dbced_left_pane', left_w, 0)
 
 	// --- LEFT PANE: Messages & Signals Browser ---
@@ -6365,6 +6544,9 @@ fn draw_dbc_editor(mut app App) {
 	}
 	vgui.child_end() // end left pane
 
+	// draggable divider: grow/shrink the left (messages & signals) pane vs the right (inspector)
+	vgui.same_line()
+	app.dbc_ed.left_w = vgui.splitter_v('##dbced_split', app.dbc_ed.left_w, 200 * sc, 760 * sc)
 	vgui.same_line()
 
 	// --- RIGHT PANE: Message Properties, Bit Layout Grid, Signal Inspector ---
@@ -6505,7 +6687,8 @@ fn draw_dbc_editor(mut app App) {
 		}
 	}
 
-	vgui.same_line()
+	// second row: framing (dlc / cycle / sender) — keeps the identity row (name / id / ext)
+	// from running off the right edge.
 	mut dlcv := msg.dlc
 	vgui.set_next_item_width(70 * sc)
 	if !ro && vgui.input_int('dlc', &dlcv) {
@@ -6525,36 +6708,24 @@ fn draw_dbc_editor(mut app App) {
 		app.mark_dirty(di)
 	}
 
+	// sender = the transmitting ECU. PICK it from the declared ECU nodes (BU_) — you can't invent
+	// an arbitrary sender. Add/remove nodes under "ECU Nodes (BU_)" at the top; "(none)" = no
+	// sender. A loaded frame naming a not-yet-declared node still shows it (Save adds it to BU_).
 	vgui.same_line()
-	vgui.set_next_item_width(110 * sc)
-	if !ro && vgui.input_text('sender', mut app.dbc_ed.sender_buf) {
-		sv := vgui.buf_str(app.dbc_ed.sender_buf)
-		if sv == '' || dbc_ident_ok(sv) {
-			app.mu.lock()
-			app.dbs[di].messages[mi].sender = sv
-			app.mu.unlock()
-			app.mark_dirty(di)
-		}
+	mut sender_opts := ['(none)']
+	sender_opts << app.dbs[di].nodes
+	if msg.sender != '' && msg.sender !in app.dbs[di].nodes {
+		sender_opts << msg.sender
 	}
-	if app.dbs[di].nodes.len > 0 {
-		vgui.same_line()
-		mut sender_nodes := ['(select ECU)']
-		sender_nodes << app.dbs[di].nodes
-		cur_s := msg.sender
-		sel_idx := if cur_s != '' && cur_s in app.dbs[di].nodes {
-			app.dbs[di].nodes.index(cur_s) + 1
-		} else {
-			0
-		}
-		ns_idx := vgui.combo('ECU Node##sndc', sender_nodes, sel_idx)
-		if !ro && ns_idx != sel_idx {
-			new_snd := if ns_idx > 0 { app.dbs[di].nodes[ns_idx - 1] } else { '' }
-			app.mu.lock()
-			app.dbs[di].messages[mi].sender = new_snd
-			app.mu.unlock()
-			app.mark_dirty(di)
-			app.dbc_ed.sender_buf = mkbuf(new_snd, new_snd.len + 96)
-		}
+	cur_sel := if msg.sender == '' { 0 } else { sender_opts.index(msg.sender) }
+	vgui.set_next_item_width(130 * sc)
+	nsel := vgui.combo('sender', sender_opts, cur_sel)
+	if !ro && nsel != cur_sel && nsel >= 0 && nsel < sender_opts.len {
+		new_snd := if nsel == 0 { '' } else { sender_opts[nsel] }
+		app.mu.lock()
+		app.dbs[di].messages[mi].sender = new_snd
+		app.mu.unlock()
+		app.mark_dirty(di)
 	}
 
 	// 2. Bit Layout Matrix Grid
@@ -6591,6 +6762,10 @@ fn draw_dbc_editor(mut app App) {
 			}
 		}
 		cell := 21 * sc
+		// scrollable: a large dlc (up to 64 bytes) shouldn't stretch the whole panel — show
+		// ~10 byte rows and scroll for the rest.
+		vis_rows := if msg.dlc < 10 { msg.dlc } else { 10 }
+		vgui.child_begin('##bitmatrix', f32(vis_rows) * (cell + 4 * sc) + 6 * sc)
 		for byte_i in 0 .. msg.dlc {
 			vgui.text_dim('B${byte_i}')
 			for bit_i := 7; bit_i >= 0; bit_i-- {
@@ -6646,6 +6821,7 @@ fn draw_dbc_editor(mut app App) {
 				}
 			}
 		}
+		vgui.child_end()
 		mut over := 0
 		for g in 0 .. nbits {
 			if conflict[g] {
@@ -6726,23 +6902,59 @@ fn draw_dbc_editor(mut app App) {
 		vgui.text_colored(205, 60, 60, 'invalid name')
 	}
 
+	// A signal's bit span is defined by its two endpoints: start bit + stop bit (the width is
+	// derived, stop - start + 1). No separate "len" field and no +/- steppers — you set where
+	// the bits begin and end. (Little-endian contiguous span; big-endian keeps DBC semantics.)
 	mut sbv := sg.start_bit
-	mut lnv := sg.length
+	lnv := sg.length
 	mut stop_bit := sbv + lnv - 1
 
 	vgui.same_line()
 	vgui.set_next_item_width(65 * sc)
+	// KNOWN LIMITATION (#68): input_int commits on every keystroke, and this handler holds the
+	// stop endpoint and re-derives the width — so typing a HIGHER start applies the intermediate
+	// digits too, each against a stop that already moved, and the span collapses. Lowering start
+	// is safe. Fixing it needs a commit-on-deactivate binding vgui does not have, so the
+	// limitation is accepted and surfaced rather than left silent.
+	if !ro {
+		vgui.text_dim('(raise start via the stop bit — #68)')
+		vgui.same_line()
+	}
 	if !ro && vgui.input_int('start bit', &sbv) {
+		mut ns := if sbv < 0 { 0 } else { sbv }
+		// start and stop are the two ENDPOINTS of one contiguous Intel span, so start can never
+		// pass stop. Writing it anyway left the old width in place (0..7 given start 9 became
+		// 9..16) — the same silent bit-shift the endpoint model exists to prevent, arriving from
+		// the other side. Clamp rather than accept an inverted span (codex #65 r4).
+		if sg.byte_order != .big_endian && ns > stop_bit {
+			ns = stop_bit
+		}
 		app.mu.lock()
-		app.dbs[di].messages[mi].signals[si].start_bit = if sbv < 0 { 0 } else { sbv }
+		app.dbs[di].messages[mi].signals[si].start_bit = ns
+		// Intel edits the span by its two ENDPOINTS, so moving `start` must hold `stop` and
+		// re-derive the width — keeping the old length instead slid the signal's trailing bits
+		// (0..7 given start 2 became 2..9 rather than 2..7), silently moving data (codex #65).
+		// Big-endian keeps its length: its stop bit is a sawtooth walk, not start+len-1.
+		if sg.byte_order != .big_endian {
+			nl := stop_bit - ns + 1
+			if nl >= 1 && nl <= 64 {
+				app.dbs[di].messages[mi].signals[si].length = nl
+			}
+		}
 		app.mu.unlock()
 		app.mark_dirty(di)
 	}
 	vgui.same_line()
 	vgui.set_next_item_width(65 * sc)
-	if !ro && vgui.input_int('len bits', &lnv) {
-		app.mu.lock()
-		nl := if lnv < 1 { 1 } else if lnv > 64 { 64 } else { lnv }
+	// Intel: the span is contiguous, so a stop-bit endpoint derives the width. Motorola
+	// (big-endian) bits descend within a byte and jump +15 across bytes (a sawtooth), so
+	// stop - start + 1 is NOT the width — editing an endpoint there would silently corrupt
+	// it (codex #65). Edit the length directly for big-endian.
+	be := sg.byte_order == .big_endian
+	mut widthv := if be { lnv } else { stop_bit }
+	if !ro && vgui.input_int(if be { 'length' } else { 'stop bit' }, &widthv) {
+		nl_raw := if be { widthv } else { widthv - sbv + 1 }
+		nl := if nl_raw < 1 { 1 } else if nl_raw > 64 { 64 } else { nl_raw }
 		nmask := if nl >= 64 { ~u64(0) } else { (u64(1) << nl) - 1 }
 		mut val_clash := false
 		for k, _ in sg.values {
@@ -6750,6 +6962,7 @@ fn draw_dbc_editor(mut app App) {
 				val_clash = true
 			}
 		}
+		app.mu.lock()
 		if !val_clash {
 			app.dbs[di].messages[mi].signals[si].length = nl
 			app.mark_dirty(di)
@@ -6760,20 +6973,15 @@ fn draw_dbc_editor(mut app App) {
 		}
 	}
 	vgui.same_line()
-	vgui.set_next_item_width(65 * sc)
-	if !ro && vgui.input_int('stop bit', &stop_bit) {
-		if stop_bit >= sbv {
-			nl := stop_bit - sbv + 1
-			app.mu.lock()
-			if nl >= 1 && nl <= 64 {
-				app.dbs[di].messages[mi].signals[si].length = nl
-				app.mark_dirty(di)
-			}
-			app.mu.unlock()
-		}
-	}
+	vgui.text_dim('(${lnv} bit${if lnv == 1 { '' } else { 's' }})')
 	vgui.same_line()
-	vgui.text_dim('(range: bit ${sbv} .. ${sbv + lnv - 1})')
+	// the contiguous start..stop range only describes an Intel span; a Motorola signal
+	// walks the sawtooth, so show its start + width instead of a misleading range
+	vgui.text_dim(if be {
+		'(Motorola: start ${sbv}, ${lnv} bits)'
+	} else {
+		'(range: bit ${sbv} .. ${sbv + lnv - 1})'
+	})
 
 	cur_o := if sg.byte_order == .little_endian { 0 } else { 1 }
 	vgui.set_next_item_width(120 * sc)
@@ -6964,23 +7172,29 @@ fn draw_system(mut app App) {
 	}
 	sc := app.ui_scale
 	if app.sys_path_buf.len == 0 {
-		app.sys_path_buf = mkbuf('', 512)
+		// smart default: the project's own dir usually holds the system.toml (a .blobnet lives
+		// next to it), so Load works out of the box instead of starting on an empty box.
+		mut def := ''
+		if app.proj_path != '' {
+			cand := os.join_path(os.dir(app.proj_path), 'system.toml')
+			if os.is_file(cand) {
+				def = cand
+			}
+		}
+		app.sys_path_buf = mkbuf(def, 512)
 	}
 	vgui.set_next_item_width(340 * sc)
 	vgui.input_text('system.toml', mut app.sys_path_buf)
 	vgui.same_line()
+	if vgui.small_button('Browse…##sys') {
+		app.open_browser('system')
+	}
+	vgui.same_line()
 	if vgui.small_button('Load##sys') {
-		pth := vgui.buf_str(app.sys_path_buf)
-		if sy := sysview.load(pth) {
-			app.sys = sy
-			app.sys_loaded = true
-			app.notify('system: ${sy.nodes.len} node(s), ${sy.buses.len} bus(es), ${sy.signals.len} cross-node signal(s)')
-		} else {
-			app.notify('system load failed: ${err}')
-		}
+		app.load_system(vgui.buf_str(app.sys_path_buf))
 	}
 	if !app.sys_loaded {
-		vgui.text_dim('point at a blobly_emb system.toml (e.g. examples/system_bench/system.toml)')
+		vgui.text_dim('pick a blobly_emb system.toml — Browse…, or type a path (e.g. examples/system_full/system.toml)')
 		vgui.end()
 		return
 	}
@@ -6991,31 +7205,96 @@ fn draw_system(mut app App) {
 		vgui.text_colored(205, 60, 60, e)
 	}
 	vgui.text_dim('showing: ${app.sys.path}')
+	// Nodes as a compact master-detail: a small selectable list (left) + the selected
+	// ECU's detail (right). Replaces the wide 6-column table that dominated the panel.
+	// default/reset the selection: re-default whenever the selected node is absent — after
+	// loading a different system the old name would linger and leave the detail pane blank.
+	mut sel_valid := false
+	for n in app.sys.nodes {
+		if n.name == app.sel_ecu {
+			sel_valid = true
+			break
+		}
+	}
+	if !sel_valid {
+		app.sel_ecu = if app.sys.nodes.len > 0 { app.sys.nodes[0].name } else { '' }
+	}
 	vgui.separator_text('nodes')
-	if vgui.table_begin('##sysnodes', 6) {
-		vgui.table_setup_col('node', 90 * sc)
-		vgui.table_setup_col('ecu', 200 * sc)
-		vgui.table_setup_col('buses', 90 * sc)
-		vgui.table_setup_col('nm', 50 * sc)
-		vgui.table_setup_col('diag', 110 * sc)
-		vgui.table_setup_col('trace', 40 * sc)
-		vgui.table_headers()
-		for n in app.sys.nodes {
-			vgui.table_row()
-			vgui.table_cell(n.name)
-			vgui.table_cell(if n.ecu_err != '' { '${n.ecu} (UNREADABLE)' } else { n.ecu })
-			vgui.table_cell(n.buses.join(','))
-			vgui.table_cell(if n.nm != 0 { '0x${n.nm.hex()}' } else { '-' })
-			vgui.table_cell(if n.diag_req != 0 {
-				'0x${n.diag_req.hex()}/0x${n.diag_rsp.hex()}'
+	// BOTH panes get the SAME fixed height: a child_fill detail pane would eat all remaining
+	// vertical space, and ImGui advances the parent past the taller same-line child — pushing
+	// the 'buses & id allocation' tree below the visible region (codex #65).
+	ecu_h := 160 * sc
+	vgui.child_wh('##ecu_list', 130 * sc, ecu_h)
+	for n in app.sys.nodes {
+		lbl := if n.ecu_err != '' { '${n.name}  (!)' } else { n.name }
+		if vgui.selectable('${lbl}##ecusel_${n.name}', n.name == app.sel_ecu) {
+			app.sel_ecu = n.name
+		}
+	}
+	vgui.child_end()
+	vgui.same_line()
+	vgui.child_wh('##ecu_detail', 0, ecu_h) // w=0 = remaining width, same height as the list
+	if app.sel_ecu == '' {
+		vgui.text_dim('select an ECU on the left')
+	} else {
+		mut si := -1
+		for j, n in app.sys.nodes {
+			if n.name == app.sel_ecu {
+				si = j
+				break
+			}
+		}
+		if si >= 0 {
+			en := app.sys.nodes[si]
+			vgui.text(en.name)
+			if en.ecu_err != '' {
+				vgui.text_colored(205, 60, 60, 'UNREADABLE: ${en.ecu_err}')
+			}
+			vgui.text_dim('ecu   ${en.ecu}')
+			vgui.text_dim('buses ${en.buses.join(', ')}    NM ${if en.nm != 0 {
+				'0x' + en.nm.hex()
 			} else {
 				'-'
-			})
-			vgui.table_cell('${n.trace}')
+			}}    ${if en.trace != 0 { 'trace' } else { 'no-trace' }}')
+			if en.diag_req != 0 {
+				vgui.text_dim('diag  0x${en.diag_req.hex()} / 0x${en.diag_rsp.hex()}')
+			}
+			// the single-ECU bench action: make everything else on this ECU's buses come alive.
+			// It runs rebuild_from_proj(), which clears app.chans/dbs/sims while rx, sim and
+			// generator workers iterate them lock-free — safe only when stopped AND drained.
+			// stop() clears app.running BEFORE those workers exit, so !running alone leaves a
+			// window where the rebuild frees what a live worker is reading (codex #65 r4). Use
+			// the same gate the DBC editor uses.
+			app.mu.lock()
+			rb_readers := app.dbc_readers
+			app.mu.unlock()
+			if app.running || rb_readers > 0 {
+				vgui.text_dim('Simulate the rest — stop to configure (workers drain briefly after Stop)')
+			} else if vgui.small_button('Simulate the rest##restbus') {
+				n, c := app.restbus_from_system(en.name)
+				if c > 0 {
+					app.notify('restbus for ${en.name}: simulating ${n} node(s) on ${c} channel(s) — enable/disable them in the Simulation panel')
+				} else {
+					app.notify('restbus: no channel matches ${en.name}\'s buses (check the project\'s interfaces)')
+				}
+			}
+			vgui.same_line()
+			vgui.text_dim('← treat as ECU under test; simulate the other nodes on its buses')
+			vgui.separator_text('produces (${en.writes.len})')
+			for s in en.writes {
+				vgui.text('  ${s}')
+			}
+			vgui.separator_text('consumes (${en.reads.len})')
+			for s in en.reads {
+				vgui.text('  ${s}')
+			}
 		}
-		vgui.table_end()
 	}
+	vgui.child_end()
 
+	// buses matrix + id allocation: useful but long, so fold it (closed by default) —
+	// keeps the panel focused on the nodes/ECU detail above.
+	if vgui.tree_node('buses & id allocation###sysbusid') {
 	for b in app.sys.buses {
 		vgui.separator_text('bus ${b.name} (${b.iface}${if b.fd { ', FD' } else { '' }}${if b.bitrate > 0 {
 			', ${b.bitrate / 1000} kbit'
@@ -7095,6 +7374,8 @@ fn draw_system(mut app App) {
 			}
 			vgui.table_end()
 		}
+	}
+	vgui.tree_pop()
 	}
 	vgui.end()
 }
