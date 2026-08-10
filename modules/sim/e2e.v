@@ -149,7 +149,7 @@ pub fn (e E2e) apply(msg candb.Message, mut data []u8, n int) {
 			// ALL FOUR bytes, little-endian. Appending only the low byte made 0x012A and
 			// 0x022A produce identical checksums — two messages the data id exists to keep
 			// apart. The full value is appended in a fixed order so the result is
-			// reproducible; see docs/restbus.md, and note this is blobly's own convention,
+			// reproducible; see docs/simulation.md, and note this is blobly's own convention,
 			// not AUTOSAR E2E's 16-bit header layout.
 			input << u8(id & 0xFF)
 			input << u8((id >> 8) & 0xFF)

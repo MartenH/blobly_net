@@ -66,6 +66,32 @@ pub fn from_project(db candb.Database, cfg project.NodeCfg) SimEcu {
 	return build_protected_ecu(db, cfg.name, gens, rules, prot)
 }
 
+// validate_cfg reports everything in a node's configuration that will NOT take effect: an
+// unknown node or generator signal, and any protection that matches nothing.
+//
+// ONE entry point, because the two halves were inconsistent: protection typos were reported
+// while generator typos were not — `validate_node` existed for exactly that and had zero
+// callers, so its warnings were computed nowhere. A single function means a consumer cannot
+// wire up half the checking.
+pub fn validate_cfg(db candb.Database, cfg project.NodeCfg) []string {
+	mut sigs := []string{}
+	for g in cfg.signals {
+		sigs << g.signal
+	}
+	mut warns := []string{}
+	// A node with response rules is a legitimate configuration even when the DBC knows nothing
+	// about it: the rules carry raw request/response ids and answer them, which is explicitly
+	// supported. Reporting "transmits nothing" there presents working behaviour as broken, so
+	// the transmitter check only applies when nothing else would make the node do anything.
+	if cfg.responses.len == 0 {
+		warns << validate_node(db, cfg.name, sigs)
+	} else if db.messages_from(cfg.name).len > 0 {
+		warns << validate_node(db, cfg.name, sigs) // has messages too: signal names still count
+	}
+	warns << validate_protection(db, cfg)
+	return warns
+}
+
 // validate_protection reports every `protect:` entry that will NOT take effect.
 //
 // A misspelled or stale message name matches nothing, so attach_protection quietly does
