@@ -10,9 +10,15 @@ import candb
 // of producing a node that quietly sends nothing.
 pub fn validate_node(db candb.Database, node string, gen_signals []string) []string {
 	mut warns := []string{}
-	if node !in db.nodes {
-		warns << 'node "${node}" is not in the DBC (BU_)'
-		return warns // signal checks are meaningless without a valid node
+	// What matters is whether the node OWNS MESSAGES, not whether it is listed in BU_.
+	//   - a DBC may name senders on its BO_ entries and carry no BU_ at all: messages_from()
+	//     finds those and the node transmits, so a BU_-only check called it invalid;
+	//   - and a BU_ entry that sends nothing produces an ECU with no messages, which a
+	//     BU_-only check called fine while it sat silent.
+	// Callers that configure raw response rules suppress this — see validate_cfg.
+	if db.messages_from(node).len == 0 {
+		warns << 'node "${node}" sends no message in the DBC — it will transmit nothing'
+		return warns // signal checks are meaningless without messages
 	}
 	mut sigset := map[string]bool{}
 	for m in db.messages_from(node) {

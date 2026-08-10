@@ -1697,7 +1697,7 @@ fn draw_sim(mut app App) {
 				}
 				// Protection that matches nothing is applied nowhere while the count above still
 				// claims it is on. Say so here, next to the claim.
-				for w in sim.validate_protection(sc.db, node) {
+				for w in sim.validate_cfg(sc.db, node) {
 					vgui.text_dim('    ! ${w}')
 				}
 				for pr in node.protect {
@@ -2988,6 +2988,7 @@ struct HelpDoc {
 
 const help_docs = [
 	HelpDoc{'Quick start', ''},
+	HelpDoc{'Simulation', 'docs/simulation.md'},
 	HelpDoc{'Scripting', 'docs/scripting.md'},
 	HelpDoc{'Project editing', 'docs/project_editing.md'},
 	HelpDoc{'CAN hardware', 'docs/can_hardware.md'},
@@ -3039,6 +3040,7 @@ nav h2{font-size:1rem;margin:.2rem 0 .8rem}
 ul#nav{list-style:none;margin:0;padding:0}
 .navitem{padding:.4em .6em;border-radius:6px;cursor:pointer;font-size:.95em}
 .navitem:hover{background:#f0f0f0}
+.xref{color:#0078d4;cursor:pointer;text-decoration:underline}
 .navitem.active{background:#0078d4;color:#fff}
 #results{margin-top:.6rem}
 .result{padding:.5em .6em;border-radius:6px;cursor:pointer;font-size:.82em;border:1px solid #eee;margin-bottom:.4rem}
@@ -3079,6 +3081,7 @@ function show(idx){
 pages.forEach(function(p,i){p.classList.toggle("hidden",i!==idx);});
 navitems.forEach(function(n,i){n.classList.toggle("active",i===idx);});
 }
+document.addEventListener("click",function(e){var x=e.target.closest?e.target.closest("[data-goto]"):null;if(!x)return;e.preventDefault();clearMarks();results.textContent="";q.value="";show(parseInt(x.getAttribute("data-goto")));content.scrollTop=0;});
 navitems.forEach(function(n){n.addEventListener("click",function(){clearMarks();results.textContent="";q.value="";show(parseInt(n.getAttribute("data-page")));content.scrollTop=0;});});
 function clearMarks(){var ms=[].slice.call(document.querySelectorAll("mark"));ms.forEach(function(m){var t=document.createTextNode(m.textContent);var par=m.parentNode;par.replaceChild(t,m);par.normalize();});}
 function highlight(el,term){var first=null;var low=term.toLowerCase();var nodes=[];var w=document.createTreeWalker(el,NodeFilter.SHOW_TEXT,null);while(w.nextNode())nodes.push(w.currentNode);nodes.forEach(function(node){var txt=node.nodeValue;var lo=txt.toLowerCase();var idx=lo.indexOf(low);if(idx<0)return;var frag=document.createDocumentFragment();var pos=0;while(idx>=0){frag.appendChild(document.createTextNode(txt.slice(pos,idx)));var m=document.createElement("mark");m.textContent=txt.slice(idx,idx+term.length);frag.appendChild(m);if(!first)first=m;pos=idx+term.length;idx=lo.indexOf(low,pos);}frag.appendChild(document.createTextNode(txt.slice(pos)));node.parentNode.replaceChild(frag,node);});return first;}
@@ -3100,6 +3103,47 @@ fn (mut app App) help_text(path string) string {
 	return txt
 }
 
+// rewrite_help_links makes relative `*.md` links usable inside the single-file Help page.
+//
+// Help renders every page into ONE html file written to a cache directory, so a link like
+// `scripting.md` resolves beside that cached file and opens nothing. Three shipped pages
+// already carried such links before the Simulation manual added more.
+//
+//   - target IS a Help page  -> an in-page jump (`data-goto`), handled by the nav script
+//   - target is NOT          -> the link is dropped and its text kept, because a dead link
+//                               that looks live is worse than plain text
+fn rewrite_help_links(html string) string {
+	mut base_to_idx := map[string]int{}
+	for i, d in help_docs {
+		if d.path != '' {
+			base_to_idx[d.path.all_after_last('/')] = i
+		}
+	}
+	mut out := html
+	for _ in 0 .. 64 { // bounded: each pass rewrites one link, and pages have few
+		start := out.index('<a href="') or { break }
+		qs := start + '<a href="'.len
+		qe := out.index_after('"', qs) or { break }
+		href := out[qs..qe]
+		gt := out.index_after('>', qe) or { break }
+		close := out.index_after('</a>', gt) or { break }
+		text := out[gt + 1..close]
+		mut repl := ''
+		if href.ends_with('.md') && !href.starts_with('http') {
+			if idx := base_to_idx[href.all_after_last('/')] {
+				repl = '<span class="xref" data-goto="${idx}">${text}</span>'
+			} else {
+				repl = text // not a Help page: keep the words, drop the dead link
+			}
+		} else {
+			// leave it alone, but mark it so the scan moves past it
+			repl = '<a data-ok href="${href}"' + out[qe + 1..close] + '</a>'
+		}
+		out = out[..start] + repl + out[close + '</a>'.len..]
+	}
+	return out.replace('<a data-ok ', '<a ')
+}
+
 // help_html renders the Help docs into ONE self-contained, static HTML page: a sidebar of pages,
 // full-text search across them, and each doc rendered via vlang/markdown (headings, code, tables).
 // Pure client-side JS — no web server. Written once, opened as a file:// URL.
@@ -3110,7 +3154,7 @@ fn (mut app App) help_html() string {
 		active := if i == 0 { ' active' } else { '' }
 		hidden := if i == 0 { '' } else { ' hidden' }
 		nav.write_string('<li class="navitem${active}" data-page="${i}">${d.title}</li>')
-		body := markdown.to_html(app.help_text(d.path))
+		body := rewrite_help_links(markdown.to_html(app.help_text(d.path)))
 		pages.write_string('<div class="page${hidden}" id="page-${i}">${body}</div>')
 	}
 	return '<!DOCTYPE html>\n<html lang="en"><head><meta charset="utf-8">' +

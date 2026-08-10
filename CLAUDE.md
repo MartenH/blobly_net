@@ -151,7 +151,8 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
 
 - [scripting.md](docs/scripting.md) · [dbc_editor.md](docs/dbc_editor.md) ·
   [project_editing.md](docs/project_editing.md) · [bus_config_dialog.md](docs/bus_config_dialog.md)
-- [restbus.md](docs/restbus.md) — rest-bus simulation + end-to-end protection (counter/CRC) ·
+- [simulation.md](docs/simulation.md) — the simulation user manual (rest-bus, generators,
+  senders, replay, end-to-end protection) ·
   [doip.md](docs/doip.md) — the DoIP user manual (supported vs planned) ·
   [ethernet_architecture.md](docs/ethernet_architecture.md) ·
   [simulation_architecture.md](docs/simulation_architecture.md) ·
