@@ -73,6 +73,17 @@ end
 print = function(...) log(...) end   -- route print() through the host sink too
 function sleep_ms(ms) __sleep(ms) end
 
+-- Fault injection on a simulated ECU. `kind` is one of
+--   "drop" | "bad_crc" | "freeze_counter" | "out_of_range" | "clear"
+-- `ms` (optional) makes it expire by itself; omit for "until cleared".
+--   sim.fault("BCM", "Powertrain", "drop", 3000)
+--   sim.fault("BCM", "Powertrain", "clear")
+sim = {}
+function sim.fault(node, message, kind, ms, signal)
+  __sim_fault(node, message, kind, ms or 0, signal or "")
+end
+function sim.clear_fault(node, message) __sim_fault(node, message, "clear", 0, "") end
+
 -- ============================ diagnostics (UDS) ============================
 uds = {}
 function uds.open(channel, opts)

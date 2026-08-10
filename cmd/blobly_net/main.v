@@ -163,6 +163,10 @@ mut:
 	diag_did_buf []u8
 	diag_sel     int // which DiagTarget the panel addresses
 	diag_plan    []DiagTarget // what start() actually spawned, per bus
+	// Injected faults, keyed 'iface:node:message'. Held on App rather than in the engine
+	// because the engine is rebuilt whenever an ECU is toggled, and a fault the user switched
+	// on must survive that — the same reason alive counters are cached here.
+	sim_faults map[string]sim.Fault
 	// Script (Lua on a worker thread)
 	script_path_buf []u8
 	senders         []SenderRT      // flattened project senders (Generators)
@@ -776,6 +780,15 @@ fn sim_loop(app &App, sc SimCfg) {
 				}
 			}
 			engine.restore_counters(counters)
+			a.mu.lock()
+			faults := a.sim_faults.clone()
+			a.mu.unlock()
+			for i := 0; i < engine.ecus.len; i++ {
+				for j := 0; j < engine.ecus[i].messages.len; j++ {
+					k := '${sc.iface}:${engine.ecus[i].name}:${engine.ecus[i].messages[j].msg.name}'
+					engine.ecus[i].messages[j].fault = faults[k] or { sim.Fault{} }
+				}
+			}
 		}
 		now_ms := f64(time.ticks() - t0)
 		for f in engine.due_frames(now_ms) {
@@ -1800,6 +1813,55 @@ fn draw_sim(mut app App) {
 				}
 				for w in sim.validate_cfg(sc.db, node) {
 					vgui.text_dim('    ! ${w}')
+				}
+				// Fault injection, per message. Only messages the DBC says this node sends,
+				// because a fault on a frame it never transmits does nothing and reads as a
+				// broken feature rather than a misconfiguration.
+				for m in sc.db.messages_from(node.name) {
+					fk := '${sc.iface}:${node.name}:${m.name}'
+					cur := app.sim_faults[fk] or { sim.Fault{} }
+					lbl := match cur.kind {
+						.none_ { 'normal' }
+						.drop { 'DROP' }
+						.bad_crc { 'BAD CRC' }
+						.freeze_ctr { 'FROZEN CTR' }
+						.out_of_range { 'OUT OF RANGE' }
+					}
+					kinds := ['normal', 'drop', 'bad crc', 'freeze counter', 'out of range']
+					sel := match cur.kind {
+						.none_ { 0 }
+						.drop { 1 }
+						.bad_crc { 2 }
+						.freeze_ctr { 3 }
+						.out_of_range { 4 }
+					}
+					vgui.text('    ${m.name}: ${lbl}')
+					vgui.same_line()
+					nsel := vgui.combo('##fault_${fk}', kinds, sel)
+					if nsel != sel {
+						mut nf := sim.Fault{}
+						nf.kind = match nsel {
+							1 { .drop }
+							2 { .bad_crc }
+							3 { .freeze_ctr }
+							4 { .out_of_range }
+							else { .none_ }
+						}
+						if nf.kind == .out_of_range {
+							// pick a signal that actually HAS an out-of-range value, rather
+							// than injecting something the receiver must legally accept
+							for sg in m.signals {
+								if sim.can_force_out_of_range(m, sg.name) {
+									nf.signal = sg.name
+									break
+								}
+							}
+						}
+						app.mu.lock()
+						app.sim_faults[fk] = nf
+						app.sim_gen++
+						app.mu.unlock()
+					}
 				}
 				for pr in node.protect {
 					mut what := []string{}

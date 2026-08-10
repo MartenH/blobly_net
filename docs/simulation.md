@@ -252,6 +252,52 @@ address, which is the point.
 
 The **Diagnostics panel** picks which target to address when more than one is configured.
 
+## Fault injection
+
+A rest-bus that only sends correct traffic answers one question: does the ECU work when
+everything else does. The one a bench actually has to answer is the opposite — does it *notice*
+when something is wrong, and does it do the right thing about it.
+
+Per message, from the Simulation panel or from a script:
+
+| fault | what the receiver sees |
+|---|---|
+| `drop` | the message stops arriving — provokes timeout handling and its DTC |
+| `bad_crc` | the checksum no longer matches the payload |
+| `freeze_counter` | traffic continues, but the alive counter stops advancing |
+| `out_of_range` | one signal carries a value beyond its declared maximum |
+
+From Lua, which is what makes a fault a regression test rather than a demo:
+
+```lua
+sim.fault("BCM", "Powertrain", "drop", 3000)   -- for 3 s, then it clears itself
+sleep_ms(3500)
+check.truthy(dtc_present(0x900101), "no timeout DTC after the message stopped")
+
+sim.fault("BCM", "Powertrain", "bad_crc")      -- until cleared
+sim.clear_fault("BCM", "Powertrain")
+```
+
+A fault with a lifetime expires on its own; one without stays until cleared. The distinction
+matters because a fault you have to switch off by hand is one you forget to switch off.
+
+**Faults are applied last** — after the generators encode the frame and after protection stamps
+it. That is the only order in which "corrupt the checksum" means what it says: a checksum
+computed over already-corrupted data is simply a valid checksum for different data, which the
+receiver accepts and no test notices.
+
+Details worth knowing:
+
+- `bad_crc` **inverts** the checksum rather than zeroing it, because zero is a legitimate
+  checksum value — a receiver that happened to compute 0 would accept the "corrupted" frame.
+- `freeze_counter` holds the send count back rather than re-stamping a value, which is what a
+  stuck sender actually looks like. Traffic continues; only the sequence stalls.
+- `drop` still counts as a cycle, so the counter has moved on by the next frame that *does*
+  arrive — a gap, which is how a receiver tells a dropped frame from a stalled sender.
+- `out_of_range` needs a signal whose DBC maximum is below its full width. A signal using its
+  whole range has no illegal value to send, and the panel will not offer it rather than
+  transmitting something the receiver must legally accept.
+
 ## Interactive senders
 
 Triggerable frames, for the "now do this" half of bench work:
@@ -334,9 +380,6 @@ See [scripting.md](scripting.md) for the test API.
 - **No receive-side validation.** Protection is applied to what is *sent*; the counter and
   checksum of *received* frames are not checked, so a fault in the ECU under test's own
   protection is not flagged automatically.
-- **No fault injection** — deliberately corrupting a checksum, freezing a counter, or dropping
-  a message to provoke the receiver's error handling. Switching a whole ECU off in the panel is
-  the only fault available today.
 - **No LIN.** CAN and CAN-FD only; LIN is on the roadmap.
 - **Generators are open-loop.** A signal's value follows its formula and cannot react to what
   the ECU under test sends. Closed-loop behaviour belongs in a Lua script.

@@ -14,6 +14,7 @@ import time
 import lua
 import transport
 import isotp
+import sim
 import uds
 import candb
 
@@ -153,6 +154,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__report', l_report)
 	env.st.register('__log', l_log)
 	env.st.register('__sleep', l_sleep)
+	env.st.register('__sim_fault', l_sim_fault)
 	env.st.register('__uds_open', l_uds_open)
 	env.st.register('__uds_session', l_uds_session)
 	env.st.register('__uds_read_did', l_uds_read_did)
@@ -206,6 +208,33 @@ fn l_sleep(l lua.State) int {
 	if ms > 0 {
 		time.sleep(ms * time.millisecond)
 	}
+	return 0
+}
+
+// l_sim_fault injects (or clears) a fault: sim_fault(node, message, kind [, ms [, signal]]).
+//
+// Injecting from a script is the point — a fault a human has to click is a demo, while a fault
+// a test can raise and clear is a regression check: drop the frame, assert the DTC appears,
+// clear it, assert it goes away.
+fn l_sim_fault(l lua.State) int {
+	node := l.arg_str(1)
+	msg := l.arg_str(2)
+	kind := l.arg_str(3)
+	ms := l.arg_int(4)
+	signal := l.arg_str(5)
+	k := match kind {
+		'none', 'clear', '' { sim.FaultKind.none_ }
+		'drop' { sim.FaultKind.drop }
+		'bad_crc' { sim.FaultKind.bad_crc }
+		'freeze_counter' { sim.FaultKind.freeze_ctr }
+		'out_of_range' { sim.FaultKind.out_of_range }
+		else { return l.fail('unknown fault kind "${kind}"') }
+	}
+	sim.inject(node, msg, sim.Fault{
+		kind:         k
+		signal:       signal
+		remaining_ms: int(ms)
+	})
 	return 0
 }
 

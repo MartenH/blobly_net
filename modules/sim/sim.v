@@ -85,8 +85,9 @@ pub mut:
 	msg       candb.Message
 	period_ms int
 	signals   []SimSignal
-	e2e       E2e // alive counter + checksum, stamped after the generators (see e2e.v)
-	send_n    int // times sent so far (drives counters)
+	e2e       E2e   // alive counter + checksum, stamped after the generators (see e2e.v)
+	fault     Fault // deliberate misbehaviour, applied last (see fault.v)
+	send_n    int   // times sent so far (drives counters)
 	next_ms   f64 // next due time
 }
 
@@ -179,8 +180,22 @@ pub fn (mut e Engine) due_frames(now_ms f64) []transport.CanFrame {
 				continue
 			}
 			if now_ms + 1e-6 >= m.next_ms {
-				out << m.build(now_ms / 1000.0)
-				m.send_n++
+				mut f := m.build(now_ms / 1000.0)
+				// Faults go on LAST — after the generators and after protection. Corrupting a
+				// checksum before it is computed just produces a valid checksum for corrupted
+				// data, which a receiver accepts and no test notices.
+				send := m.fault.apply(m.msg, m.e2e, mut f.data)
+				if send {
+					out << f
+				}
+				// A frozen counter is a sender that stopped advancing, so the send count is
+				// held back rather than the value re-stamped. A dropped frame still counts as
+				// a cycle: the ECU is transmitting, this one just never arrives, and its
+				// counter has moved on by the next one — which is what makes a drop detectable
+				// as a gap rather than as a stall.
+				if m.fault.kind != .freeze_ctr {
+					m.send_n++
+				}
 				m.next_ms += f64(m.period_ms)
 				if m.next_ms <= now_ms {
 					m.next_ms = now_ms + f64(m.period_ms)
