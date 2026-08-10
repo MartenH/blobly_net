@@ -224,3 +224,27 @@ fn test_full_data_id_reaches_the_checksum() {
 	b.apply(m, mut db_, 0)
 	assert da[7] != db_[7], 'ids differing above the low byte must not collide'
 }
+
+// A request shorter than its response must not truncate the protected reply: set_raw silently
+// skips bits past the buffer end, so the frame would go out with no CRC at all while its
+// counter advanced — unprotected traffic that looks protected from the sender's side.
+fn test_protected_response_uses_the_response_dlc() {
+	mut resp_msg := protected_msg() // 8 bytes, CRC in byte 7
+	resp_msg.id = 0x102
+	mut ecu := SimEcu{
+		name:     'N'
+		messages: [SimMessage{
+			msg:       resp_msg
+			period_ms: 0
+			e2e:       E2e{ counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }
+		}]
+		rules: [ResponseRule{ req_id: 0x101, resp_id: 0x102, byte_index: 0, add: 1 }]
+	}
+	mut e := Engine{ ecus: [ecu] }
+	// a 3-byte request against an 8-byte response
+	out := e.on_frame(transport.CanFrame{ id: 0x101, data: [u8(0x41), 0x42, 0x43] })
+	assert out.len == 1
+	assert out[0].data.len == 8, 'the reply must carry the response DLC, got ${out[0].data.len}'
+	assert out[0].data[7] != 0, 'the CRC byte is beyond the request length and was skipped'
+	assert out[0].data[1] == 0x42 && out[0].data[2] == 0x43, 'request bytes should carry over'
+}

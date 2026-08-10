@@ -230,8 +230,22 @@ pub fn (mut e Engine) on_frame(f transport.CanFrame) []transport.CanFrame {
 				if m.msg.id != r.resp_id || !m.e2e.active() {
 					continue
 				}
-				m.e2e.apply(m.msg, mut data, m.send_n)
+				// Size the payload to the RESPONSE message's DLC first. `data` is the REQUEST
+				// cloned, and the two need not be the same length: a shorter request leaves the
+				// buffer too small, so set_raw silently skips every counter/CRC bit past its
+				// end — the frame goes out unprotected while send_n advances, which is the
+				// worst of both. A longer one makes the checksum cover bytes the receiver never
+				// sees. Only the protected path resizes; an unprotected rule stays the plain
+				// echo of the request that it is documented to be.
+				mut buf := []u8{len: m.msg.dlc}
+				for k in 0 .. buf.len {
+					if k < data.len {
+						buf[k] = data[k]
+					}
+				}
+				m.e2e.apply(m.msg, mut buf, m.send_n)
 				m.send_n++
+				data = buf.clone()
 				break
 			}
 			out << transport.CanFrame{

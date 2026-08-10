@@ -1688,8 +1688,12 @@ fn draw_sim(mut app App) {
 			// ASCII only: fonts are loaded without expanded glyph ranges, and the fallback
 			// ProggyClean is ASCII-only, so a shield or an arrow renders as a missing-glyph box.
 			prot := if node.protect.len > 0 { '  [P${node.protect.len}]' } else { '' }
-			hdr := if node.signals.len == 0 && node.responses.len == 0 && node.protect.len == 0 {
-				'${node.name}  (frames derived from the DBC)###${key}'
+			// Protection is orthogonal to BEHAVIOUR, in the label exactly as in from_project: a
+			// protect-only node still transmits its DBC-derived frames, so calling it
+			// "0 sig / 0 resp" recreates the "this ECU sends nothing" reading the line above
+			// exists to avoid. The protection count is appended to whichever label applies.
+			hdr := if node.signals.len == 0 && node.responses.len == 0 {
+				'${node.name}  (frames derived from the DBC)${prot}###${key}'
 			} else {
 				'${node.name}  (${node.signals.len} sig / ${node.responses.len} resp)${prot}###${key}'
 			}
