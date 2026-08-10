@@ -83,6 +83,60 @@ pub mut:
 	signals   []GenCfg
 	responses []ResponseCfg
 	protect   []ProtectCfg
+	uds       ?UdsCfg
+}
+
+// UdsCfg is a diagnostic server attached to ONE simulated ECU: its own ISO-TP addresses and
+// its own content.
+//
+// Without this there is a single server per channel on 0x7E0/0x7E8 serving built-in data, so
+// every simulated ECU answers as the same target and a tester cannot tell them apart — which
+// defeats the point of simulating several. Addresses are named from the TESTER's point of
+// view, the way a diagnostic database describes them: `rx` is where the ECU listens for
+// requests, `tx` is where it answers.
+pub struct UdsCfg {
+pub mut:
+	// Fields whose written value was not a clean number. Kept so validation can name the typo:
+	// a stripped character produces a DIFFERENT VALID id, which no range check can catch.
+	malformed []string
+	// u64 for the same reason DidCfg.id is u32: the value must survive parsing intact so the
+	// range check can see it. Narrowed to a CAN id only once it is known to fit.
+	rx      u64 // request id  (tester -> ECU)
+	tx      u64 // response id (ECU -> tester)
+	dids    []DidCfg
+	dtcs    []DtcCfg
+	// u32 for the same reason every other id here is wide: 265 narrowed at the cast becomes 9,
+	// and the server then runs a session the project never asked for.
+	session u32 = 1
+}
+
+// DidCfg is one ReadDataByIdentifier entry. The value is given either as `text` (ASCII, the
+// common case for VIN and part numbers) or as `bytes` (hex, e.g. "01 00") — never inferred
+// from the string's shape, which would make "0100" ambiguous between four characters and two
+// bytes.
+pub struct DidCfg {
+pub mut:
+	// u32, not u16: narrowing at parse time made 0x1F190 silently become 0xF190, which then
+	// masquerades as — or overwrites — a different configured DID. Kept wide so validation can
+	// see the mistake, and narrowed only once it is known to fit.
+	id    u32
+	text  string
+	bytes []u8
+}
+
+// value_len is how many bytes this DID will actually carry on the wire.
+pub fn (d DidCfg) value_len() int {
+	return if d.bytes.len > 0 { d.bytes.len } else { d.text.len }
+}
+
+// DtcCfg is one stored fault: a 24-bit code and its status byte.
+pub struct DtcCfg {
+pub mut:
+	// Both wide, for the same reason DidCfg.id is: narrowing at parse time turns a mistake
+	// into a different VALID value — status 265 silently becomes 9, and the server then
+	// reports bits the project never asked for. Checked before narrowing, never at the cast.
+	code   u32
+	status u32 = 0x09 // confirmed + testFailed
 }
 
 // ProtectCfg — end-to-end protection for one of the node's messages: an alive counter and/or
@@ -480,13 +534,51 @@ fn parse_node(n yaml.Any) NodeCfg {
 			}
 		}
 	}
+	if u := n.value_opt('uds') {
+		mut ucfg := UdsCfg{
+			rx:      parse_id_wide(u.value('rx').str())
+			tx:      parse_id_wide(u.value('tx').str())
+			malformed: bad_ids({
+				'rx': u.value('rx').str()
+				'tx': u.value('tx').str()
+			})
+			session: clamp_i64_u32(u.value('session').default_to(i64(1)).i64())
+		}
+		if ds := u.value_opt('dids') {
+			for d in ds.array() {
+				mut dc := DidCfg{
+					id:   clamp_u32(parse_id_wide(d.value('id').str()))
+					text: d.value('text').default_to('').string()
+				}
+				if bv := d.value_opt('bytes') {
+					dc.bytes = parse_hex_bytes(bv.str())
+				}
+				if !hex_id_is_clean(d.value('id').str()) {
+					ucfg.malformed << 'did ${d.value('id').str()}'
+				}
+				ucfg.dids << dc
+			}
+		}
+		if ts := u.value_opt('dtcs') {
+			for t in ts.array() {
+				if !hex_id_is_clean(t.value('code').str()) {
+					ucfg.malformed << 'dtc ${t.value('code').str()}'
+				}
+				ucfg.dtcs << DtcCfg{
+					code:   clamp_u32(parse_id_wide(t.value('code').str()))
+					status: clamp_i64_u32(t.value('status').default_to(i64(0x09)).i64())
+				}
+			}
+		}
+		node.uds = ucfg
+	}
 	if ps := n.value_opt('protect') {
 		for p in ps.array() {
 			// presence, not value: `data_id: 0` is a legitimate id whose four zero bytes must
 			// still reach the checksum, so it cannot be distinguished from absent by testing 0
 			mut id := ?u32(none)
 			if v := p.value_opt('data_id') {
-				id = u32(v.int()) // present, even when it is 0 — that is a real id
+				id = clamp_i64_u32(v.i64()) // present, even when 0 — that is a real id
 			}
 			node.protect << ProtectCfg{
 				message: p.value('message').default_to('').string()
@@ -626,6 +718,84 @@ fn parse_eid(s string) ![]u8 {
 }
 
 // parse_id reads a CAN id written as decimal or `0x`-prefixed hex.
+// parse_id_wide accumulates in u64 so an over-long identifier is still VISIBLE to validation.
+// parse_id itself wraps at 32 bits, which made 0x1000007E0 arrive as a perfectly ordinary
+// 0x7E0: the range check passed and the server started on an address nobody configured.
+// clamp_i64_u32 narrows a parsed integer without WRAPPING, so an out-of-range value stays out
+// of range for validation instead of becoming a different valid one. Every narrowing in the
+// uds/protect parse path goes through this or clamp_u32 — session, DTC status and data_id were
+// each found separately, which is three times too many for one mistake.
+// bad_ids returns the labels of any field whose value is not a clean numeric id.
+fn bad_ids(fields map[string]string) []string {
+	mut out := []string{}
+	for k, v in fields {
+		if !hex_id_is_clean(v) {
+			out << '${k} ${v}'
+		}
+	}
+	out.sort()
+	return out
+}
+
+fn clamp_i64_u32(v i64) u32 {
+	if v < 0 || v > i64(0xFFFFFFFF) {
+		// Both directions saturate to a value the range checks REJECT. Clamping a negative to
+		// 0 made it valid: `session: -1` started session 0, and `status: -1` became status 0,
+		// which vanishes from every nonzero mask query — then saving wrote the repaired zero
+		// and the original mistake was gone.
+		return u32(0xFFFFFFFF)
+	}
+	return u32(v)
+}
+
+// clamp_u32 narrows without WRAPPING: an over-wide value stays out of range so validation can
+// still see and reject it, instead of becoming a different valid identifier.
+fn clamp_u32(v u64) u32 {
+	return if v > u64(0xFFFFFFFF) { u32(0xFFFFFFFF) } else { u32(v) }
+}
+
+// hex_id_is_clean reports whether every character after the 0x prefix is a hex digit.
+// parse_id_wide SKIPS anything else, so "0x7G1" quietly became 0x71 — a valid, unintended id.
+pub fn hex_id_is_clean(s string) bool {
+	t := s.trim_space().trim('"')
+	body := if t.starts_with('0x') || t.starts_with('0X') { t[2..] } else { return t.u64() > 0
+			|| t.trim_space() == '0' }
+	if body.len == 0 {
+		return false
+	}
+	for ch in body {
+		ok := (ch >= `0` && ch <= `9`) || (ch >= `a` && ch <= `f`) || (ch >= `A` && ch <= `F`)
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+pub fn parse_id_wide(s string) u64 {
+	t := s.trim_space().trim('"')
+	if t.starts_with('0x') || t.starts_with('0X') {
+		mut v := u64(0)
+		for ch in t[2..] {
+			d := if ch >= `0` && ch <= `9` {
+				int(ch - `0`)
+			} else if ch >= `a` && ch <= `f` {
+				int(ch - `a`) + 10
+			} else if ch >= `A` && ch <= `F` {
+				int(ch - `A`) + 10
+			} else {
+				continue
+			}
+			if v > (u64(0xFFFFFFFFFFFFFFFF) - u64(d)) / 16 {
+				return u64(0xFFFFFFFFFFFFFFFF) // saturate rather than wrap: still out of range
+			}
+			v = v * 16 + u64(d)
+		}
+		return v
+	}
+	return t.u64()
+}
+
 fn parse_id(s string) u32 {
 	t := s.trim_space().trim('"')
 	if t.starts_with('0x') || t.starts_with('0X') {
