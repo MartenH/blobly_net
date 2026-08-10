@@ -464,6 +464,10 @@ fn (mut app App) start() {
 			app.notify('unsaved DBC edits for detached ${os.file_name(pth)} were discarded')
 		}
 	}
+	// An edit still in the field is not in the dirty map yet, so it would slip past the check
+	// below AND miss the measurement's schema. The click that starts the run is also the click
+	// that ends the edit, and the toolbar is drawn first — so resolve it here.
+	app.resolve_pending_bit_edit()
 	for _, d in app.dbc_ed.dirty {
 		if d {
 			app.notify('DBC editor has unsaved edits — Save or Revert them before starting')
@@ -1011,6 +1015,9 @@ fn (mut app App) set_project(proj project.Project, path string) {
 // selection) from app.proj. Called after a load and after any config/generator edit, so the
 // live panels reflect the edited model. Must be called while stopped (no RX threads running).
 fn (mut app App) rebuild_from_proj() {
+	// this replaces app.dbs wholesale, so a pending endpoint edit must land first or it is
+	// silently dropped along with the databases it referred to
+	app.resolve_pending_bit_edit()
 	proj := app.proj
 	app.mu.lock()
 	app.chans = []
@@ -5970,6 +5977,84 @@ mut:
 	bit_edit_key    string // '<field>:<db>:<msg>:<sig>' while that field is being edited
 	bit_edit_val    int    // the in-progress value (the field shows this, not the model)
 	bit_edit_anchor int    // the opposite endpoint, snapshotted when the edit began
+	bit_edit_db     int = -1 // where to apply it, kept apart from the key so resolve need not parse
+	bit_edit_msg    int = -1
+	bit_edit_sig    int = -1
+	bit_edit_name   string // the signal's NAME at edit time — an index can be re-used after a
+	// delete, and applying an edit to whatever now sits at that index would corrupt it
+}
+
+// resolve_pending_bit_edit applies a bit-endpoint edit still held in the editor's buffer.
+//
+// WHY A CHOKE POINT: deferring the commit to deactivation (so a per-keystroke commit cannot
+// measure each digit against an anchor the previous one moved) opens a window where the FIELD
+// holds the value and the model does not. Every action that reads or replaces app.dbs during
+// that window would otherwise act on stale data — and the toolbar is drawn BEFORE the editor,
+// so the very click that ends an edit is processed first: Start ran workers against the old
+// schema, and Save serialised the old endpoint and only then committed, leaving the file dirty.
+// Guarding each consumer separately is how that turned into a series of one-off patches; this
+// is the single place the window is closed instead.
+//
+// Safe to call at any time: with no edit pending it does nothing.
+fn (mut app App) resolve_pending_bit_edit() {
+	if app.dbc_ed.bit_edit_key == '' {
+		return
+	}
+	di := app.dbc_ed.bit_edit_db
+	mi := app.dbc_ed.bit_edit_msg
+	si := app.dbc_ed.bit_edit_sig
+	is_start := app.dbc_ed.bit_edit_key.starts_with('start:')
+	anchor := app.dbc_ed.bit_edit_anchor
+	val := app.dbc_ed.bit_edit_val
+	name := app.dbc_ed.bit_edit_name
+	app.dbc_ed.bit_edit_key = '' // clear FIRST: every path below is now a no-op or an apply
+
+	app.mu.lock()
+	defer {
+		app.mu.unlock()
+	}
+	if di < 0 || di >= app.dbs.len || mi < 0 || mi >= app.dbs[di].messages.len {
+		return
+	}
+	if si < 0 || si >= app.dbs[di].messages[mi].signals.len {
+		return
+	}
+	mut sg := app.dbs[di].messages[mi].signals[si]
+	if sg.name != name {
+		return // the index now holds a different signal — drop the edit rather than retarget it
+	}
+	be := sg.byte_order == .big_endian
+	mut ns := sg.start_bit
+	mut nl := sg.length
+	if is_start {
+		ns = if val < 0 { 0 } else { val }
+		if !be && ns > anchor {
+			ns = anchor // start cannot pass stop: the span may not invert
+		}
+		if !be {
+			nl = anchor - ns + 1
+		}
+	} else {
+		nl = if be { val } else { val - anchor + 1 }
+	}
+	if nl < 1 {
+		nl = 1
+	}
+	if nl > 64 {
+		nl = 64
+	}
+	// the same value-table guard both fields enforce: a narrowing that cannot hold the existing
+	// VAL_ keys is refused, or the writer masks them on save and remaps or collides them
+	nmask := if nl >= 64 { ~u64(0) } else { (u64(1) << nl) - 1 }
+	for k, _ in sg.values {
+		if k & ~nmask != 0 {
+			app.notify('${sg.name}: ${nl} bit(s) cannot hold the existing value-table keys — edit discarded')
+			return
+		}
+	}
+	app.dbs[di].messages[mi].signals[si].start_bit = ns
+	app.dbs[di].messages[mi].signals[si].length = nl
+	app.mark_dirty(di)
 }
 
 // dbc_ed_color: a deterministic per-signal palette for the bit grid.
@@ -6121,6 +6206,15 @@ fn (mut app App) mark_dirty(di int) {
 }
 
 fn draw_dbc_editor(mut app App) {
+	// Before ANY early return below. The previous check sat after the inspector had a valid
+	// signal, so selecting the message, reverting the database or deleting the signal returned
+	// first and left the pending state intact — to be restored, or applied to whatever later
+	// occupied that index (#69). Resolving here would commit an edit the user may have
+	// abandoned by clicking away, so cancel: retyping an endpoint is cheap.
+	if app.dbc_ed.bit_edit_key != ''
+		&& !app.dbc_ed.bit_edit_key.ends_with(':${app.dbc_ed.db}:${app.dbc_ed.msg}:${app.dbc_ed.sig}') {
+		app.dbc_ed.bit_edit_key = ''
+	}
 	vis, op := vgui.begin_closable('DBC Editor', app.show_dbc)
 	app.show_dbc = op
 	if !vis {
@@ -6188,6 +6282,9 @@ fn draw_dbc_editor(mut app App) {
 		vgui.same_line()
 	}
 	if !ro && dbc_path != '' && vgui.small_button('Save') {
+		// resolve first: this button is processed before the inspector, so without it the old
+		// endpoint is serialised and the edit commits afterwards, leaving the file dirty again
+		app.resolve_pending_bit_edit()
 		app.mu.lock()
 		for m in app.dbs[di].messages {
 			if m.sender != '' && m.sender !in app.dbs[di].nodes {
@@ -6934,15 +7031,6 @@ fn draw_dbc_editor(mut app App) {
 	// the bits begin and end. (Little-endian contiguous span; big-endian keeps DBC semantics.)
 	lnv := sg.length
 	stop_bit := sg.start_bit + lnv - 1
-	// Clicking another signal changes si BEFORE the inspector is drawn, so the field holding a
-	// pending edit is never submitted and its deactivation never fires. Dropping the edit here
-	// is the safe half of that: keeping it would leave a stale value that reappears when the
-	// same index is selected again — and applying it would write one signal's edit onto
-	// another (#69). An uncommitted endpoint edit is cheap to retype; a misapplied one is not.
-	cur_sig_suffix := ':${di}:${mi}:${si}'
-	if app.dbc_ed.bit_edit_key != '' && !app.dbc_ed.bit_edit_key.ends_with(cur_sig_suffix) {
-		app.dbc_ed.bit_edit_key = ''
-	}
 	sb_key := 'start:${di}:${mi}:${si}'
 	// While this field is being edited the FIELD owns the value, not the model — otherwise the
 	// next frame resets it to the unchanged model and the edit snaps back mid-typing.
@@ -6956,56 +7044,18 @@ fn draw_dbc_editor(mut app App) {
 			// keystrokes are measured against where the span was BEFORE typing started (#68)
 			app.dbc_ed.bit_edit_key = sb_key
 			app.dbc_ed.bit_edit_anchor = stop_bit
+			app.dbc_ed.bit_edit_db = di
+			app.dbc_ed.bit_edit_msg = mi
+			app.dbc_ed.bit_edit_sig = si
+			app.dbc_ed.bit_edit_name = sg.name
 		}
 		app.dbc_ed.bit_edit_val = sbv
 	}
+	// The edit finished. Applying it lives in resolve_pending_bit_edit() and ONLY there — the
+	// same call Start, Save and rebuild make — so the deactivation path and the choke point
+	// cannot drift into disagreeing about clamping or value-table validation.
 	if !ro && app.dbc_ed.bit_edit_key == sb_key && vgui.is_item_deactivated_after_edit() {
-		anchor := app.dbc_ed.bit_edit_anchor
-		mut ns := if app.dbc_ed.bit_edit_val < 0 { 0 } else { app.dbc_ed.bit_edit_val }
-		// start and stop are the two ENDPOINTS of one contiguous Intel span, so start cannot
-		// pass stop — clamp rather than accept an inverted span (codex #65 r4).
-		if sg.byte_order != .big_endian && ns > anchor {
-			ns = anchor
-		}
-		// Intel edits the span by its endpoints, so moving start holds stop and re-derives the
-		// width; keeping the old length slid the trailing bits (codex #65 r3). Big-endian keeps
-		// its length — its stop bit is a sawtooth walk, not start + len - 1.
-		mut nl := lnv
-		if sg.byte_order != .big_endian {
-			nl = anchor - ns + 1
-		}
-		// Bound it at BOTH ends, like the width editor. Only the lower bound was checked, so
-		// lowering the start of a signal that sits far into the frame derived an oversized
-		// width — 100..107 restarted at 0 produced a 108-bit signal, which makes raw_value /
-		// set_raw shift a u64 by 64 or more and writes an invalid signal to the DBC (#69).
-		if nl < 1 {
-			nl = 1
-		}
-		if nl > 64 {
-			nl = 64
-		}
-		// The width editor refuses a narrowing that would not hold the existing VAL_ keys; the
-		// start path reached the same outcome without that check, so the writer masked stale
-		// keys on save — remapping or colliding them (#68). Apply the same guard.
-		nmask := if nl >= 64 { ~u64(0) } else { (u64(1) << nl) - 1 }
-		mut val_clash := false
-		for k, _ in sg.values {
-			if k & ~nmask != 0 {
-				val_clash = true
-			}
-		}
-		if val_clash {
-			app.notify('start ${ns} would narrow ${sg.name} to ${nl} bit(s), which cannot hold its value-table keys — remove them first')
-		} else {
-			app.mu.lock()
-			app.dbs[di].messages[mi].signals[si].start_bit = ns
-			if sg.byte_order != .big_endian {
-				app.dbs[di].messages[mi].signals[si].length = nl
-			}
-			app.mu.unlock()
-			app.mark_dirty(di)
-		}
-		app.dbc_ed.bit_edit_key = ''
+		app.resolve_pending_bit_edit()
 	}
 	vgui.same_line()
 	vgui.set_next_item_width(65 * sc)
@@ -7028,30 +7078,15 @@ fn draw_dbc_editor(mut app App) {
 			// began, so intermediate keystrokes are not measured against a moving anchor (#68)
 			app.dbc_ed.bit_edit_key = w_key
 			app.dbc_ed.bit_edit_anchor = sg.start_bit
+			app.dbc_ed.bit_edit_db = di
+			app.dbc_ed.bit_edit_msg = mi
+			app.dbc_ed.bit_edit_sig = si
+			app.dbc_ed.bit_edit_name = sg.name
 		}
 		app.dbc_ed.bit_edit_val = widthv
 	}
 	if !ro && app.dbc_ed.bit_edit_key == w_key && vgui.is_item_deactivated_after_edit() {
-		widthv = app.dbc_ed.bit_edit_val
-		app.dbc_ed.bit_edit_key = ''
-		nl_raw := if be { widthv } else { widthv - app.dbc_ed.bit_edit_anchor + 1 }
-		nl := if nl_raw < 1 { 1 } else if nl_raw > 64 { 64 } else { nl_raw }
-		nmask := if nl >= 64 { ~u64(0) } else { (u64(1) << nl) - 1 }
-		mut val_clash := false
-		for k, _ in sg.values {
-			if k & ~nmask != 0 {
-				val_clash = true
-			}
-		}
-		app.mu.lock()
-		if !val_clash {
-			app.dbs[di].messages[mi].signals[si].length = nl
-			app.mark_dirty(di)
-		}
-		app.mu.unlock()
-		if val_clash {
-			app.notify('width ${nl} cannot hold the existing value-table keys — remove them first')
-		}
+		app.resolve_pending_bit_edit()
 	}
 	vgui.same_line()
 	vgui.text_dim('(${lnv} bit${if lnv == 1 { '' } else { 's' }})')
