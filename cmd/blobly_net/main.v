@@ -1704,6 +1704,11 @@ fn draw_sim(mut app App) {
 				for r in node.responses {
 					vgui.text('    ${r.request} -> ${r.response}')
 				}
+				// Protection that matches nothing is applied nowhere while the count above still
+				// claims it is on. Say so here, next to the claim.
+				for w in sim.validate_protection(sc.db, node) {
+					vgui.text_dim('    ! ${w}')
+				}
 				for pr in node.protect {
 					mut what := []string{}
 					if pr.counter != '' {

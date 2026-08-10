@@ -43,5 +43,10 @@ fn main() {
 // build_node delegates to sim.from_project — the single implementation shared with the GUI
 // and the headless runner, so a startup check cannot pass on frames the real runs never send.
 fn build_node(db candb.Database, cfg project.NodeCfg) sim.SimEcu {
+	// A protect: entry naming a message or signal that is not there applies nothing, and the
+	// run would otherwise score a protected project against unprotected traffic without a word.
+	for w in sim.validate_protection(db, cfg) {
+		eprintln('${cfg.name}: ${w}')
+	}
 	return sim.from_project(db, cfg)
 }

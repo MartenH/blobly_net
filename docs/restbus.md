@@ -55,7 +55,7 @@ simulation:
 | `counter` | signal carrying the alive counter — omit for none |
 | `crc` | signal carrying the checksum — omit for none |
 | `profile` | `crc8_j1850` (default), `crc8_autosar`, `sum8`, `xor8` |
-| `data_id` | mixed into the checksum only; never occupies payload — appended as **four little-endian bytes**, so ids differing above the low byte cannot collide |
+| `data_id` | mixed into the checksum only; never occupies payload — appended as **four little-endian bytes**, so ids differing above the low byte cannot collide. `0` is a real id: written explicitly it contributes four zero bytes, omitted it contributes nothing, and the two give different checksums |
 
 Both fields are named by **signal**, so width, bit position and byte order come from the DBC. A
 signal moved in the database moves here too, and nothing has to be restated.
@@ -87,8 +87,8 @@ per message, so a response has its own sequence and shares none with the cyclic 
 
 | profile | algorithm |
 |---|---|
-| `crc8_j1850` | CRC-8/SAE-J1850 — poly `0x1D`, init `0xFF`, final xor `0xFF`. What AUTOSAR E2E profiles 1 and 2 are built on. |
-| `crc8_autosar` | CRC-8/AUTOSAR — poly `0x2F`, otherwise identical. Better detection over short payloads. |
+| `crc8_j1850` | CRC-8/SAE-J1850 — poly `0x1D`, init `0xFF`, final xor `0xFF`. What **AUTOSAR E2E profile 1** uses. |
+| `crc8_autosar` | CRC-8/AUTOSAR, a.k.a. **CRC8H2F** — poly `0x2F`, otherwise identical. What **AUTOSAR E2E profile 2** uses, and better at detecting errors in short payloads. |
 | `sum8` | low byte of the arithmetic sum. Not a CRC — named honestly, because many OEM "checksum" signals are exactly this. |
 | `xor8` | all bytes XORed. As above. |
 
@@ -97,9 +97,16 @@ The two CRCs are pinned in `modules/sim/e2e_test.v` against their published chec
 self-consistent is worthless — it has to match what the ECU computes, and those constants are
 how that is verified without one on the desk.
 
-An unrecognised `profile` falls back to `sum8` rather than refusing to build the frame: a
+Picking the wrong one is a real bench trap: a profile-2 receiver fed `crc8_j1850` computes a
+different checksum and rejects every frame, with nothing to distinguish that from a wiring
+fault.
+
+An unrecognised `profile` falls back to `sum8` rather than refusing to build the frame — a
 config typo that silently stops transmission is harder to diagnose on a bench than a visibly
-wrong checksum.
+wrong checksum — but it is **reported**, along with any `protect:` entry naming a message the
+node does not send or a signal the message does not have. Those appear under the node in the
+Simulation panel and on stderr from the headless runner. Protection that matches nothing would
+otherwise apply nowhere while the panel still displayed its count.
 
 ### Not yet supported
 

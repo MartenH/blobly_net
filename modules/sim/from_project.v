@@ -30,7 +30,7 @@ pub fn from_project(db candb.Database, cfg project.NodeCfg) SimEcu {
 			counter: p.counter
 			crc:     p.crc
 			profile: p.profile
-			data_id: p.data_id
+			data_id: if p.has_data_id { ?u32(p.data_id) } else { none }
 		}
 	}
 	// No generators and no response rules: the node has no explicit BEHAVIOUR, so keep the
@@ -57,6 +57,41 @@ pub fn from_project(db candb.Database, cfg project.NodeCfg) SimEcu {
 		}
 	}
 	return build_protected_ecu(db, cfg.name, gens, rules, prot)
+}
+
+// validate_protection reports every `protect:` entry that will NOT take effect.
+//
+// A misspelled or stale message name matches nothing, so attach_protection quietly does
+// nothing while the panel still shows the configured count — the simulation then transmits
+// ordinary frames that a protected receiver rejects, and the UI insists protection is on.
+// That is the worst kind of failure this feature can have: silent, and contradicted by the
+// display. Same for a counter or checksum signal that is not in the named message.
+pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
+	mut warns := []string{}
+	mut msgs := map[string]candb.Message{}
+	for m in db.messages_from(cfg.name) {
+		msgs[m.name] = m
+	}
+	for p in cfg.protect {
+		m := msgs[p.message] or {
+			warns << 'protect: message "${p.message}" is not sent by ${cfg.name} — protection not applied'
+			continue
+		}
+		mut have := map[string]bool{}
+		for sg in m.signals {
+			have[sg.name] = true
+		}
+		if p.counter != '' && p.counter !in have {
+			warns << 'protect: counter "${p.counter}" is not a signal of ${p.message}'
+		}
+		if p.crc != '' && p.crc !in have {
+			warns << 'protect: checksum "${p.crc}" is not a signal of ${p.message}'
+		}
+		if p.crc != '' && p.profile !in ['crc8_j1850', 'crc8_autosar', 'sum8', 'xor8'] {
+			warns << 'protect: unknown profile "${p.profile}" on ${p.message} — falling back to sum8'
+		}
+	}
+	return warns
 }
 
 // attach_protection applies per-message protection to an already-built ECU.

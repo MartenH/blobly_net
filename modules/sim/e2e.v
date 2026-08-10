@@ -15,14 +15,15 @@ module sim
 import candb
 
 // crc8_j1850 — CRC-8/SAE-J1850: poly 0x1D, init 0xFF, final xor 0xFF, no reflection.
-// The checksum AUTOSAR E2E profiles 1 and 2 are built on. Check value: crc8_j1850('123456789')
-// == 0x4B, pinned in e2e_test.v.
+// The checksum AUTOSAR E2E profile 1 is built on (profile 2 uses CRC8H2F — see crc8_autosar).
+// Check value: crc8_j1850('123456789') == 0x4B, pinned in e2e_test.v.
 pub fn crc8_j1850(data []u8) u8 {
 	return crc8_with(data, 0x1D)
 }
 
-// crc8_autosar — CRC-8/AUTOSAR: poly 0x2F, otherwise as above. A different polynomial with
-// better error detection over short payloads; used where a profile calls for "CRC8H2F".
+// crc8_autosar — CRC-8/AUTOSAR ("CRC8H2F"): poly 0x2F, otherwise as above. Better error
+// detection over short payloads, and what AUTOSAR E2E profile 2 uses — picking crc8_j1850 for
+// a profile-2 receiver produces a different checksum and it rejects every frame.
 // Check value: 0xDF.
 pub fn crc8_autosar(data []u8) u8 {
 	return crc8_with(data, 0x2F)
@@ -69,7 +70,11 @@ pub mut:
 	counter string // signal carrying the alive counter ('' = no counter)
 	crc     string // signal carrying the checksum ('' = no checksum)
 	profile string // 'crc8_j1850' | 'crc8_autosar' | 'sum8' | 'xor8'
-	data_id u32    // mixed into the checksum as 4 trailing LE bytes ("Data ID"); 0 = omit
+	// Mixed into the checksum as four trailing little-endian bytes. An OPTION, not a plain
+	// u32 with 0 meaning "unset": 0 is a legitimate Data ID, and a receiver using it expects
+	// those four zero bytes in the checksum input — omitting them yields a different CRC and
+	// rejects every frame. Presence and value are separate facts, so the type says so.
+	data_id ?u32
 }
 
 // active reports whether anything is protected — a zero E2e is the common case and must cost
@@ -133,16 +138,16 @@ pub fn (e E2e) apply(msg candb.Message, mut data []u8, n int) {
 		}
 		sig.set_raw(mut data, 0) // zero it: a checksum cannot cover itself (see above)
 		mut input := data.clone()
-		if e.data_id != 0 {
+		if id := e.data_id {
 			// ALL FOUR bytes, little-endian. Appending only the low byte made 0x012A and
 			// 0x022A produce identical checksums — two messages the data id exists to keep
 			// apart. The full value is appended in a fixed order so the result is
 			// reproducible; see docs/restbus.md, and note this is blobly's own convention,
 			// not AUTOSAR E2E's 16-bit header layout.
-			input << u8(e.data_id & 0xFF)
-			input << u8((e.data_id >> 8) & 0xFF)
-			input << u8((e.data_id >> 16) & 0xFF)
-			input << u8((e.data_id >> 24) & 0xFF)
+			input << u8(id & 0xFF)
+			input << u8((id >> 8) & 0xFF)
+			input << u8((id >> 16) & 0xFF)
+			input << u8((id >> 24) & 0xFF)
 		}
 		// raw again — the checksum byte must land in the field bit-for-bit
 		sig.set_raw(mut data, u64(e.checksum_of(input)))

@@ -2,6 +2,7 @@ module sim
 
 import candb
 import transport
+import project
 
 // The published check values for these algorithms: the CRC of the ASCII string '123456789'.
 // Pinned because a checksum that is merely self-consistent is worthless — it has to match what
@@ -85,7 +86,7 @@ fn test_crc_is_independent_of_its_previous_value() {
 fn test_data_id_changes_the_checksum_without_using_payload() {
 	m := protected_msg()
 	plain := E2e{ crc: 'CRC', profile: 'crc8_j1850' }
-	ided := E2e{ crc: 'CRC', profile: 'crc8_j1850', data_id: 0x2A }
+	ided := E2e{ crc: 'CRC', profile: 'crc8_j1850', data_id: u32(0x2A) }
 	mut a := []u8{len: 8}
 	mut b := []u8{len: 8}
 	plain.apply(m, mut a, 0)
@@ -216,8 +217,8 @@ fn test_counters_survive_a_rebuild() {
 // above bit 8 produce identical frames, which is precisely what the field exists to prevent.
 fn test_full_data_id_reaches_the_checksum() {
 	m := protected_msg()
-	a := E2e{ crc: 'CRC', profile: 'crc8_j1850', data_id: 0x012A }
-	b := E2e{ crc: 'CRC', profile: 'crc8_j1850', data_id: 0x022A }
+	a := E2e{ crc: 'CRC', profile: 'crc8_j1850', data_id: u32(0x012A) }
+	b := E2e{ crc: 'CRC', profile: 'crc8_j1850', data_id: u32(0x022A) }
 	mut da := []u8{len: 8}
 	mut db_ := []u8{len: 8}
 	a.apply(m, mut da, 0)
@@ -247,4 +248,42 @@ fn test_protected_response_uses_the_response_dlc() {
 	assert out[0].data.len == 8, 'the reply must carry the response DLC, got ${out[0].data.len}'
 	assert out[0].data[7] != 0, 'the CRC byte is beyond the request length and was skipped'
 	assert out[0].data[1] == 0x42 && out[0].data[2] == 0x43, 'request bytes should carry over'
+}
+
+// A protect: entry that matches nothing must be REPORTED. Silently doing nothing while the
+// panel shows a protection count is the failure mode this feature can least afford.
+fn test_validate_protection_catches_names_that_match_nothing() {
+	// a synthetic one-node database: SUT sends Protected(0x123) with AliveCounter/Payload/CRC
+	db := candb.Database{
+		nodes:    ['SUT']
+		messages: [candb.Message{
+			...protected_msg()
+			sender: 'SUT'
+		}]
+	}
+	ok := project.NodeCfg{
+		name:    'SUT'
+		protect: [project.ProtectCfg{ message: 'Protected', counter: 'AliveCounter', profile: 'crc8_j1850' }]
+	}
+	assert validate_protection(db, ok).len == 0, '${validate_protection(db, ok)}'
+
+	bad_msg := project.NodeCfg{
+		name:    'SUT'
+		protect: [project.ProtectCfg{ message: 'Nonexistent', counter: 'Counter' }]
+	}
+	assert validate_protection(db, bad_msg).len == 1
+	assert validate_protection(db, bad_msg)[0].contains('not sent by SUT')
+
+	bad_sig := project.NodeCfg{
+		name:    'SUT'
+		protect: [project.ProtectCfg{ message: 'Protected', counter: 'NoSuch', crc: 'AlsoNoSuch', profile: 'crc8_j1850' }]
+	}
+	assert validate_protection(db, bad_sig).len == 2
+
+	bad_profile := project.NodeCfg{
+		name:    'SUT'
+		protect: [project.ProtectCfg{ message: 'Protected', crc: 'CRC', profile: 'typo' }]
+	}
+	assert validate_protection(db, bad_profile).len == 1
+	assert validate_protection(db, bad_profile)[0].contains('unknown profile')
 }
