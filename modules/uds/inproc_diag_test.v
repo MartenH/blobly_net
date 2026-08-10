@@ -73,3 +73,53 @@ fn test_inproc_uds_roundtrip() {
 		assert nr.code() == 0x31
 	}
 }
+
+// Two simulated ECUs on one bus, each with its own addresses and content. This is the whole
+// point of per-ECU servers: a single channel-wide server means every target answers with the
+// same data, so a tester cannot tell one ECU from another.
+fn test_two_ecus_answer_as_separate_targets() {
+	iface := 'inproc:udsmulti'
+	bcm := Server{
+		dids: {
+			u16(0xF190): 'BCM-0001'.bytes()
+		}
+		dtcs: [Dtc{0x900101, 0x09}]
+	}
+	ecm := Server{
+		dids: {
+			u16(0xF190): 'ECM-0002'.bytes()
+		}
+		dtcs: [Dtc{0x700205, 0x08}]
+	}
+	// each on its own request/response pair
+	mut bch := isotp.open_software(iface, 0x7E9, 0x7E1, false) or { panic(err) }
+	mut ech := isotp.open_software(iface, 0x7EA, 0x7E2, false) or { panic(err) }
+	spawn serve_one(mut bch, bcm)
+	spawn serve_one(mut ech, ecm)
+	time.sleep(50 * time.millisecond)
+
+	// the tester addresses each ECU in turn
+	mut t_bcm := isotp.open_software(iface, 0x7E1, 0x7E9, false) or { panic(err) }
+	mut t_ecm := isotp.open_software(iface, 0x7E2, 0x7EA, false) or { panic(err) }
+	t_bcm.send([u8(0x22), 0xF1, 0x90]) or { panic(err) }
+	rb := t_bcm.recv(1000) or { panic('BCM did not answer: ${err}') }
+	t_ecm.send([u8(0x22), 0xF1, 0x90]) or { panic(err) }
+	re := t_ecm.recv(1000) or { panic('ECM did not answer: ${err}') }
+	t_bcm.close()
+	t_ecm.close()
+
+	assert rb[3..] == 'BCM-0001'.bytes(), 'BCM answered ${rb[3..].bytestr()}'
+	assert re[3..] == 'ECM-0002'.bytes(), 'ECM answered ${re[3..].bytestr()}'
+	assert rb != re, 'the two ECUs must be distinguishable'
+}
+
+// serve_one answers a few requests on one channel, then closes. A named function because V
+// will not spawn a closure taking mutable non-reference arguments.
+fn serve_one(mut ch isotp.SoftChannel, srv Server) {
+	mut s := srv // V will not spawn with a mutable non-reference argument
+	for _ in 0 .. 4 {
+		req := ch.recv(500) or { continue }
+		ch.send(s.handle(req)) or {}
+	}
+	ch.close()
+}

@@ -215,7 +215,11 @@ fn l_uds_open(l lua.State) int {
 	tx := u32(l.arg_int(2))
 	rx := u32(l.arg_int(3))
 	ci := env.find_chan(name) or { return l.fail('unknown channel "${name}"') }
-	ch := isotp.open_software(env.chans[ci].iface, tx, rx, false) or {
+	// 29-bit addressing is inferred from the ids, exactly as the server side infers it: an
+	// address above 0x7FF cannot be 11-bit. Opened standard, SocketCAN masks 0x18DA10F1 to
+	// 0x0F1, so a script could not reach a 29-bit server the runner had correctly started.
+	ext := tx > 0x7FF || rx > 0x7FF
+	ch := isotp.open_software(env.chans[ci].iface, tx, rx, ext) or {
 		return l.fail('isotp open failed on ${name}: ${err}')
 	}
 	env.conns << UdsConn{

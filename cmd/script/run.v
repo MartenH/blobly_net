@@ -59,6 +59,7 @@ fn main() {
 	// Build per-channel DBC catalogs + bring the simulation up on every enabled
 	// channel that hosts simulated ECUs (exactly like the GUI's Start).
 	mut ctl := &Ctl{}
+	mut seeded_ifaces := []string{} // one set of diagnostic servers per physical bus
 	mut chans := []script.ChanInfo{}
 	for ch in proj.channels {
 		if !ch.enabled {
@@ -73,8 +74,36 @@ fn main() {
 		nodes := ch.all_nodes()
 		if nodes.len > 0 {
 			spawn sim_loop(ch.iface, db, nodes, ctl)
-			spawn diag_server_loop(ch.iface, ctl)
-			println('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + UDS server')
+			// Diagnostics are per BUS and decided ONCE. Skipping outright after the first
+			// entry on an interface — rather than emptying the server list — is the difference
+			// that matters: the emptied list fell through to the default branch and spawned a
+			// SECOND 0x7E0 responder on a wire that already had one.
+			if ch.iface in seeded_ifaces {
+				println('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s)')
+			} else {
+				seeded_ifaces << ch.iface
+				// ENABLED channels only: a disabled entry sharing this interface must not
+				// contribute servers, or a test observes an ECU it explicitly switched off.
+				mut peers := []project.NodeCfg{}
+				for other in proj.channels {
+					if other.enabled && other.iface == ch.iface {
+						peers << other.all_nodes()
+					}
+				}
+				for w in sim.validate_uds(peers) {
+					eprintln('${ch.name}: ${w}')
+				}
+				mut servers := sim.uds_nodes(peers)
+				if servers.len == 0 {
+					spawn diag_server_loop(ch.iface, ctl)
+					println('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + UDS server')
+				} else {
+					for mut u in servers {
+						spawn uds_node_loop(ch.iface, u.rx, u.tx, u.ext, u.server, ctl)
+					}
+					println('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + ${servers.len} UDS target(s)')
+				}
+			}
 		} else {
 			println('channel ${ch.name} (${ch.iface}): monitor only')
 		}
@@ -140,6 +169,20 @@ fn sim_loop(iface string, db candb.Database, nodes []project.NodeCfg, ctl &Ctl) 
 
 // diag_server_loop answers UDS requests (rx 0x7E0 / tx 0x7E8) over software
 // ISO-TP on the channel's bus, until stopped.
+// uds_node_loop answers one simulated ECU's diagnostic requests on its own addresses.
+fn uds_node_loop(iface string, rx u32, tx u32, ext bool, srv uds.Server, ctl &Ctl) {
+	mut ch := isotp.open_software(iface, tx, rx, ext) or { return }
+	mut s := srv
+	for ctl.running {
+		req := ch.recv(50) or { continue }
+		resp := s.handle(req)
+		if resp.len > 0 {
+			ch.send(resp) or {}
+		}
+	}
+	ch.close()
+}
+
 fn diag_server_loop(iface string, ctl &Ctl) {
 	// Server side: transmit responses on 0x7E8, receive requests on 0x7E0
 	// (the mirror of the tester's tx 0x7E0 / rx 0x7E8).

@@ -161,6 +161,8 @@ mut:
 	doip_host_buf     []u8 // DoIP manual discover host[:port]
 	// Diagnostics (UDS on a worker thread)
 	diag_did_buf []u8
+	diag_sel     int // which DiagTarget the panel addresses
+	diag_plan    []DiagTarget // what start() actually spawned, per bus
 	// Script (Lua on a worker thread)
 	script_path_buf []u8
 	senders         []SenderRT      // flattened project senders (Generators)
@@ -504,7 +506,51 @@ fn (mut app App) start() {
 	// spawn the in-process simulation workloads (driver-free sim ECUs + a UDS server)
 	for sc in app.sims {
 		spawn sim_loop(app, sc)
-		spawn diag_server_loop(app, sc.iface)
+	}
+	// Diagnostics are per BUS, decided ONCE. Two channel entries may share an interface, and
+	// resolving them per entry produced a duplicate default responder on the second pass while
+	// the panel independently re-resolved and listed targets startup had rejected. The plan is
+	// computed here, spawned from here, and stored for the panel to read — one answer to "what
+	// is running on this wire".
+	app.diag_plan = []
+	mut seeded := []string{}
+	for sc in app.sims {
+		if sc.iface in seeded {
+			continue
+		}
+		seeded << sc.iface
+		mut peers := []project.NodeCfg{}
+		for other in app.sims {
+			if other.iface == sc.iface {
+				peers << other.nodes
+			}
+		}
+		for w in sim.validate_uds(peers) {
+			app.notify(w)
+		}
+		mut diag_nodes := sim.uds_nodes(peers)
+		if diag_nodes.len == 0 {
+			spawn diag_server_loop(app, sc.iface) // the built-in default for this bus
+			app.diag_plan << DiagTarget{
+				label: 'default on ${sc.iface}  (0x${diag_tx_id:X}/0x${diag_rx_id:X})'
+				iface: sc.iface
+				rx:    diag_tx_id
+				tx:    diag_rx_id
+			}
+			continue
+		}
+		// Configure a per-ECU server and you own diagnostics on this bus: the default does NOT
+		// also run, or the two would both answer whenever their ids overlapped.
+		for mut u in diag_nodes {
+			spawn uds_node_loop(app, sc.iface, u.name, u.rx, u.tx, u.ext, u.server)
+			app.diag_plan << DiagTarget{
+				label: '${u.name}  (0x${u.rx:X}/0x${u.tx:X})'
+				iface: sc.iface
+				rx:    u.rx
+				tx:    u.tx
+				ext:   u.ext
+			}
+		}
 	}
 	spawn gen_loop(app) // cyclic senders
 }
@@ -771,6 +817,50 @@ fn gen_loop(app &App) {
 
 // diag_server_loop runs the native UDS server (mirror of the tester: rx 0x7E0, tx 0x7E8)
 // so the Diagnostics panel + Lua scripts work driver-free against simulated channels.
+// uds_node_loop answers one simulated ECU's diagnostic requests on its own addresses.
+fn uds_node_loop(app &App, iface string, name string, rx u32, tx u32, ext bool, srv uds.Server) {
+	a := unsafe { app }
+	mut s := srv
+	key := '${iface}:${name}'
+	mut ch := &isotp.SoftChannel(unsafe { nil })
+	mut open := false
+	defer {
+		if open {
+			ch.close()
+		}
+	}
+	for a.running {
+		a.mu.lock()
+		on := a.sim_enabled[key] or { true }
+		a.mu.unlock()
+		if !on {
+			// CLOSE it, do not merely stop answering. Two things go wrong otherwise, and the
+			// previous two attempts each fixed one: leaving recv running answers a First Frame
+			// with Flow Control, so the "offline" ECU is still visible on the wire; and merely
+			// skipping recv leaves requests queued on the open channel, which are answered
+			// late once the ECU comes back. A closed channel does neither.
+			if open {
+				ch.close()
+				open = false
+			}
+			time.sleep(50 * time.millisecond)
+			continue
+		}
+		if !open {
+			ch = isotp.open_software(a.bitrate_iface(iface), tx, rx, ext) or {
+				time.sleep(200 * time.millisecond)
+				continue
+			}
+			open = true
+		}
+		req := ch.recv(50) or { continue }
+		resp := s.handle(req)
+		if resp.len > 0 {
+			ch.send(resp) or {}
+		}
+	}
+}
+
 fn diag_server_loop(app &App, iface string) {
 	a := unsafe { app }
 	mut ch := isotp.open_software(a.bitrate_iface(iface), diag_rx_id, diag_tx_id, false) or {
@@ -1679,14 +1769,15 @@ fn draw_sim(mut app App) {
 			// ASCII only: fonts are loaded without expanded glyph ranges, and the fallback
 			// ProggyClean is ASCII-only, so a shield or an arrow renders as a missing-glyph box.
 			prot := if node.protect.len > 0 { '  [P${node.protect.len}]' } else { '' }
+			diag := if node.uds != none { '  [UDS]' } else { '' }
 			// Protection is orthogonal to BEHAVIOUR, in the label exactly as in from_project: a
 			// protect-only node still transmits its DBC-derived frames, so calling it
 			// "0 sig / 0 resp" recreates the "this ECU sends nothing" reading the line above
 			// exists to avoid. The protection count is appended to whichever label applies.
 			hdr := if node.signals.len == 0 && node.responses.len == 0 {
-				'${node.name}  (frames derived from the DBC)${prot}###${key}'
+				'${node.name}  (frames derived from the DBC)${prot}${diag}###${key}'
 			} else {
-				'${node.name}  (${node.signals.len} sig / ${node.responses.len} resp)${prot}###${key}'
+				'${node.name}  (${node.signals.len} sig / ${node.responses.len} resp)${prot}${diag}###${key}'
 			}
 			if vgui.tree_node(hdr) {
 				for g in node.signals {
@@ -1697,6 +1788,16 @@ fn draw_sim(mut app App) {
 				}
 				// Protection that matches nothing is applied nowhere while the count above still
 				// claims it is on. Say so here, next to the claim.
+				if u := node.uds {
+					mut what := 'rx 0x${u.rx:X} / tx 0x${u.tx:X}'
+					if u.dids.len > 0 {
+						what += ', ${u.dids.len} DID(s)'
+					}
+					if u.dtcs.len > 0 {
+						what += ', ${u.dtcs.len} DTC(s)'
+					}
+					vgui.text('    [UDS] ${what}')
+				}
 				for w in sim.validate_cfg(sc.db, node) {
 					vgui.text_dim('    ! ${w}')
 				}
@@ -4632,6 +4733,12 @@ fn (mut app App) diag_push(line string) {
 	app.mu.unlock()
 }
 
+// diag_iface_opt is diag_iface, but says when there is no running channel at all.
+fn (app &App) diag_iface_opt() ?string {
+	iface := app.diag_iface()
+	return if iface == '' { none } else { iface }
+}
+
 fn (app &App) diag_iface() string {
 	for c in app.chans {
 		if c.monitorable() && c.running {
@@ -4639,6 +4746,48 @@ fn (app &App) diag_iface() string {
 		}
 	}
 	return ''
+}
+
+// DiagTarget is one addressable diagnostic server: the built-in channel default, or a
+// simulated ECU that configured its own addresses.
+struct DiagTarget {
+	label string
+	iface string
+	rx    u32 // the ECU listens here — the tester TRANSMITS to it
+	tx    u32 // the ECU answers here — the tester RECEIVES from it
+	ext   bool
+}
+
+// diag_targets lists what the Diagnostics panel can talk to.
+//
+// Without this the panel opened diag_tx_id/diag_rx_id unconditionally, so an ECU configured on
+// any other pair was unreachable from the UI that exists to reach it — including the demo
+// project's own ChassisECU.
+fn (app &App) diag_targets() []DiagTarget {
+	// Whatever start() actually spawned, plus the plain 0x7E0/0x7E8 entry — which on a mixed
+	// bench is the PHYSICAL ECU under test, not the built-in simulated server, and was
+	// addressable long before per-ECU servers existed.
+	mut out := []DiagTarget{}
+	if hw := app.diag_iface_opt() {
+		if !app.diag_plan.any(it.iface == hw && it.rx == diag_tx_id) {
+			out << DiagTarget{
+				label: 'default on ${hw}  (0x${diag_tx_id:X}/0x${diag_rx_id:X})'
+				iface: hw
+				rx:    diag_tx_id
+				tx:    diag_rx_id
+			}
+		}
+	}
+	out << app.diag_plan
+	if out.len == 0 {
+		out << DiagTarget{
+			label: 'default  (0x${diag_tx_id:X}/0x${diag_rx_id:X})'
+			iface: app.diag_iface()
+			rx:    diag_tx_id
+			tx:    diag_rx_id
+		}
+	}
+	return out
 }
 
 fn diag_worker(app &App, kind string, did u16) {
@@ -4650,8 +4799,10 @@ fn diag_worker(app &App, kind string, did u16) {
 	}
 	a.diag_busy = true
 	a.mu.unlock()
-	iface := a.diag_iface()
-	mut ch := isotp.open_software(a.bitrate_iface(iface), diag_tx_id, diag_rx_id, false) or {
+	targets := a.diag_targets()
+	t := targets[if a.diag_sel >= 0 && a.diag_sel < targets.len { a.diag_sel } else { 0 }]
+	iface := if t.iface != '' { t.iface } else { a.diag_iface() }
+	mut ch := isotp.open_software(a.bitrate_iface(iface), t.rx, t.tx, t.ext) or {
 		a.diag_push('open ${iface}: ${err}')
 		a.mu.lock()
 		a.diag_busy = false
@@ -5298,6 +5449,18 @@ fn draw_diag(mut app App) {
 	busy := app.diag_busy
 	log := app.diag_log.clone()
 	app.mu.unlock()
+	// Which ECU are we talking to? With per-ECU servers there is no longer one answer, and the
+	// panel used to assume 0x7E0/0x7E8 — unreachable for every other configured target.
+	targets := app.diag_targets()
+	if app.diag_sel >= targets.len {
+		app.diag_sel = 0
+	}
+	if targets.len > 1 {
+		app.diag_sel = vgui.combo('target', targets.map(it.label), app.diag_sel)
+	} else if targets.len == 1 {
+		vgui.text_dim('target: ${targets[0].label}')
+	}
+	vgui.separator()
 	if vgui.button('Session') && !busy {
 		spawn diag_worker(app, 'session', u16(0))
 	}
