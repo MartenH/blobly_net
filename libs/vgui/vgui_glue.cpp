@@ -520,6 +520,12 @@ int vgui_input_int(const char* label, int* v) {
 // A thin draggable divider between two side-by-side panes. Place it (with same_line) after the
 // left child_end and before the right child. Drag it to grow/shrink the left pane; returns the
 // new width, clamped to [min_w, max_w]. The handle is invisible until hovered/active.
+float vgui_content_avail_w(void) { return ImGui::GetContentRegionAvail().x; }
+
+int vgui_is_item_deactivated_after_edit(void) {
+    return ImGui::IsItemDeactivatedAfterEdit() ? 1 : 0;
+}
+
 float vgui_splitter_v(const char* id, float w, float min_w, float max_w) {
     ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0,0,0,0));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4(ImGuiCol_SeparatorHovered));
