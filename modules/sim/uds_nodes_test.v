@@ -118,3 +118,47 @@ fn test_out_of_range_did_is_dropped_not_truncated() {
 	assert built[0].server.dids.len == 1
 	assert validate_uds([cfg]).any(it.contains('above the 16-bit range'))
 }
+
+// A's response id used as B's request id: B's channel receives every reply A sends, treats the
+// positive-response SID as an unknown service, and answers it with a negative response.
+fn test_cross_addressed_servers_are_rejected() {
+	nodes := [
+		project.NodeCfg{ name: 'A', uds: project.UdsCfg{ rx: 0x7E1, tx: 0x7E9 } },
+		project.NodeCfg{ name: 'B', uds: project.UdsCfg{ rx: 0x7E9, tx: 0x7EA } },
+	]
+	w := validate_uds(nodes)
+	assert w.any(it.contains("is \"A\"'s response id")), '${w}'
+	built := uds_nodes(nodes)
+	assert built.len == 1 && built[0].name == 'A', 'only A may start, got ${built.map(it.name)}'
+}
+
+// A pair mixing 11-bit and 29-bit cannot be opened: ISO-TP uses one format for both, so the
+// 11-bit side would go out extended and never reach its peer.
+fn test_mixed_format_pair_does_not_start() {
+	nodes := [project.NodeCfg{
+		name: 'Mix'
+		uds:  project.UdsCfg{ rx: 0x18DA10F1, tx: 0x7E8 }
+	}]
+	assert uds_nodes(nodes).len == 0, 'a mixed pair must not start'
+	assert validate_uds(nodes).any(it.contains('mix 11-bit and 29-bit'))
+}
+
+// A DTC is three bytes on the wire, so 0x1123456 would be reported as 0x123456 — a different
+// and possibly real fault code.
+fn test_out_of_range_dtc_is_dropped() {
+	cfg := project.NodeCfg{
+		name: 'X'
+		uds:  project.UdsCfg{
+			rx:   0x7E0
+			tx:   0x7E8
+			dtcs: [
+				project.DtcCfg{ code: 0x123456, status: 9 },
+				project.DtcCfg{ code: 0x1123456, status: 9 },
+			]
+		}
+	}
+	built := uds_nodes([cfg])
+	assert built[0].server.dtcs.len == 1, 'the wide DTC must be dropped'
+	assert built[0].server.dtcs[0].code == 0x123456
+	assert validate_uds([cfg]).any(it.contains('above the 24-bit range'))
+}

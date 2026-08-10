@@ -792,16 +792,18 @@ fn uds_node_loop(app &App, iface string, name string, rx u32, tx u32, ext bool, 
 	mut s := srv
 	key := '${iface}:${name}'
 	for a.running {
-		req := ch.recv(50) or { continue }
-		// Unticking the ECU has to silence its DIAGNOSTICS as well as its frames. Following
-		// only app.running left a "disabled" ECU still answering UDS, so a test simulating an
-		// offline ECU still found one — and the panel said it was off.
+		// BEFORE recv, not after: SoftChannel.recv answers a First Frame with a Flow Control
+		// frame and consumes the transfer, so a disabled ECU that merely discarded the result
+		// was still visibly alive on the wire — which is exactly what a test simulating an
+		// offline ECU is looking for.
 		a.mu.lock()
 		on := a.sim_enabled[key] or { true }
 		a.mu.unlock()
 		if !on {
+			time.sleep(50 * time.millisecond)
 			continue
 		}
+		req := ch.recv(50) or { continue }
 		resp := s.handle(req)
 		if resp.len > 0 {
 			ch.send(resp) or {}
@@ -4709,7 +4711,21 @@ struct DiagTarget {
 fn (app &App) diag_targets() []DiagTarget {
 	mut out := []DiagTarget{}
 	for sc in app.sims {
-		for u in sim.uds_nodes(sc.nodes) {
+		// PER CHANNEL, because the fallback is per channel: start() runs the built-in server on
+		// every simulated channel that configures none. A single global "no targets anywhere"
+		// test hid the default of an unconfigured channel behind another channel's ECUs, so it
+		// was running and unreachable.
+		nodes := sim.uds_nodes(sc.nodes)
+		if nodes.len == 0 {
+			out << DiagTarget{
+				label: 'default on ${sc.iface}  (0x${diag_tx_id:X}/0x${diag_rx_id:X})'
+				iface: sc.iface
+				rx:    diag_tx_id
+				tx:    diag_rx_id
+			}
+			continue
+		}
+		for u in nodes {
 			out << DiagTarget{
 				label: '${u.name}  (0x${u.rx:X}/0x${u.tx:X})'
 				iface: sc.iface
@@ -4720,11 +4736,10 @@ fn (app &App) diag_targets() []DiagTarget {
 		}
 	}
 	if out.len == 0 {
-		// no per-ECU server: the channel-wide default is what is running
-		iface := app.diag_iface()
+		// nothing simulated at all: the tester's own default channel
 		out << DiagTarget{
 			label: 'default  (0x${diag_tx_id:X}/0x${diag_rx_id:X})'
-			iface: iface
+			iface: app.diag_iface()
 			rx:    diag_tx_id
 			tx:    diag_rx_id
 		}

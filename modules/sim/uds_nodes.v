@@ -27,17 +27,31 @@ pub mut:
 // which reply the tester saw would depend on scheduling.
 pub fn uds_nodes(nodes []project.NodeCfg) []UdsNode {
 	mut out := []UdsNode{}
+	// Every id in play, both directions: a server whose REQUEST id is another's RESPONSE id
+	// eats that server's replies and answers them with a negative response.
 	mut claimed := map[u32]bool{}
+	for n in nodes {
+		if c := n.uds {
+			if c.tx != 0 {
+				claimed[c.tx] = true
+			}
+		}
+	}
 	for n in nodes {
 		cfg := n.uds or { continue }
 		// A configuration validate_uds calls unusable must not be SPAWNED. Warning and starting
 		// it anyway gave the worst of both: duplicate listeners answering each other's
 		// requests, and — because a broken entry still made the list non-empty — the working
 		// channel default suppressed by a server that could never reply.
-		if cfg.rx == 0 || cfg.tx == 0 || cfg.rx == cfg.tx || cfg.rx in claimed {
+		mixed := (cfg.rx > 0x7FF) != (cfg.tx > 0x7FF)
+		if cfg.rx == 0 || cfg.tx == 0 || cfg.rx == cfg.tx || mixed || cfg.rx in claimed {
+			// `mixed` too: ISO-TP opens ONE format for the pair, so an 11-bit id in a 29-bit
+			// pair would go out extended and never reach its peer. Starting it would also
+			// suppress the channel default in favour of a server that cannot communicate.
 			continue
 		}
 		claimed[cfg.rx] = true
+		claimed[cfg.tx] = true
 		mut srv := uds.Server{
 			session: cfg.session
 		}
@@ -48,6 +62,9 @@ pub fn uds_nodes(nodes []project.NodeCfg) []UdsNode {
 			srv.dids[u16(d.id)] = if d.bytes.len > 0 { d.bytes.clone() } else { d.text.bytes() }
 		}
 		for t in cfg.dtcs {
+			if t.code > 0xFFFFFF {
+				continue // a DTC is 3 bytes on the wire; see validate_uds
+			}
 			srv.dtcs << uds.Dtc{
 				code:   t.code
 				status: t.status
@@ -71,6 +88,14 @@ pub fn uds_nodes(nodes []project.NodeCfg) []UdsNode {
 pub fn validate_uds(nodes []project.NodeCfg) []string {
 	mut warns := []string{}
 	mut by_rx := map[u32]string{}
+	mut by_tx := map[u32]string{}
+	for n in nodes {
+		if c := n.uds {
+			if c.tx != 0 {
+				by_tx[c.tx] = n.name
+			}
+		}
+	}
 	for n in nodes {
 		cfg := n.uds or { continue }
 		if cfg.rx == 0 || cfg.tx == 0 {
@@ -89,6 +114,18 @@ pub fn validate_uds(nodes []project.NodeCfg) []string {
 		for d in cfg.dids {
 			if d.id > 0xFFFF {
 				warns << 'uds on "${n.name}": DID 0x${d.id:X} is above the 16-bit range — ignored'
+			}
+		}
+		for t in cfg.dtcs {
+			if t.code > 0xFFFFFF {
+				// handle() writes the low three bytes, so 0x1123456 goes out as 0x123456 —
+				// a different, possibly real, fault code
+				warns << 'uds on "${n.name}": DTC 0x${t.code:X} is above the 24-bit range — ignored'
+			}
+		}
+		if owner := by_tx[cfg.rx] {
+			if owner != n.name { // rx == its OWN tx is the separate, already-reported case
+				warns << 'uds on "${n.name}": request id 0x${cfg.rx:X} is "${owner}"\'s response id — it would consume that ECU\'s replies'
 			}
 		}
 		if prev := by_rx[cfg.rx] {

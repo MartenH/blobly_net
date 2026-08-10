@@ -235,9 +235,11 @@ without a separate flag. Mixing an 11-bit and a 29-bit address in one pair is re
 uses one format for both.
 
 A configuration that cannot work is **reported and not started**, so it can never half-run:
-two servers sharing a request id, `rx` equal to `tx`, an unset address, or a DID above the
-16-bit range (which is dropped rather than narrowed, since `0x1F190` would otherwise
-masquerade as `0xF190`).
+an unset address, `rx` equal to `tx`, two servers sharing a request id, one ECU's request id
+being another's response id (it would eat that ECU's replies and answer them with a negative
+response), a pair mixing 11-bit and 29-bit, a DID above the 16-bit range, or a DTC above the
+24-bit range. Out-of-range identifiers are **dropped, never narrowed** — `0x1F190` would
+otherwise masquerade as `0xF190`, and DTC `0x1123456` as `0x123456`.
 
 **Unticking an ECU silences its diagnostics too**, not just its frames — so a test that
 simulates an ECU going offline finds nothing at its address, which is the point.
