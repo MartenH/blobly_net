@@ -6029,7 +6029,8 @@ fn (mut app App) resolve_pending_bit_edit() {
 	// `warn` is collected under the lock and emitted after it. notify() takes app.mu, which is
 	// not recursive, so notifying from in here deadlocks the app on the value-table path —
 	// reachable from deactivation, Save, Start and rebuild alike.
-	mut warn := ''
+	mut warn := '' // refuses the edit outright
+	mut note := '' // the edit is applied, but not exactly as typed
 	mut dirty := -1
 	app.mu.lock()
 	ok := di >= 0 && di < app.dbs.len && mi >= 0 && mi < app.dbs[di].messages.len
@@ -6048,6 +6049,16 @@ fn (mut app App) resolve_pending_bit_edit() {
 				ns = anchor // start cannot pass stop: the span may not invert
 			}
 			if !be {
+				// A signal is at most 64 bits, and editing the START must hold the STOP — that
+				// is the whole contract of the two fields. Capping the LENGTH here would keep
+				// the typed start and drag the stop down with it (100..107, start := 0, gives
+				// 0..63: the stop silently moved from 107 to 63 and the signal decodes
+				// completely different bits). Clamp the start instead, so the anchor survives
+				// and the span is the widest legal one that still ends where it did.
+				if anchor - ns + 1 > 64 {
+					ns = anchor - 63
+					note = 'start clamped to ${ns}: a signal is at most 64 bits and the stop bit ${anchor} is held'
+				}
 				nl = anchor - ns + 1
 			}
 		} else {
@@ -6082,6 +6093,9 @@ fn (mut app App) resolve_pending_bit_edit() {
 	}
 	if warn != '' {
 		app.notify(warn)
+	}
+	if note != '' {
+		app.notify(note)
 	}
 }
 
