@@ -48,8 +48,8 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   responses instead of returning at the first, a passive listener for unsolicited
   announcements (the case that catches an ECU booting while you are already running), and a
   Scan action turning results into channels rather than hand-typed `doip:` strings. Core
-  tester behaviour, not blobly_emb integration — any ISO 13400 entity answers. Documented as
-  a known limitation in [`docs/doip.md`](docs/doip.md).
+  tester behaviour, not blobly_emb integration — any ISO 13400 entity answers, and it is
+  recorded as a known limitation in the DoIP manual.
 - 🧭 **LIN** — `modules/lindb` (LDF) + a `LinFrame` type. Kept type-safe alongside `CanFrame` /
   `EthFrame` rather than faked behind a generic frame.
 - 🧭 **Split `cmd/blobly_net/main.v`** — it is **7,200 lines / 217 KB**, and essentially every
