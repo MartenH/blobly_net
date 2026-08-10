@@ -26,9 +26,23 @@ fn main() {
 		mut db := candb.Database{}
 		if ch.databases.len > 0 {
 			paths := ch.databases.map(project.resolve_asset(proj_dir, it))
+			// EACH file, not just the aggregate. merge_files skips one it cannot read, so a
+			// channel listing a good DBC beside a missing or malformed one still returned
+			// messages and passed — with part of the catalogue, and the frames it defines,
+			// quietly absent. That is the shape of failure this tool exists to catch.
+			mut lost := 0
+			for pth in paths {
+				candb.load_dbc_file(pth) or {
+					eprintln('  ${ch.name}: cannot load ${pth}: ${err}')
+					lost++
+					continue
+				}
+			}
 			db = candb.merge_files(paths)
-			if db.messages.len == 0 {
-				eprintln('  ${ch.name}: no messages loaded from ${paths}')
+			if lost > 0 || db.messages.len == 0 {
+				if db.messages.len == 0 {
+					eprintln('  ${ch.name}: no messages loaded from ${paths}')
+				}
 				failed++
 				continue
 			}

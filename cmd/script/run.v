@@ -78,7 +78,11 @@ fn main() {
 			nodes:     nodes // so a fault that cannot take effect can be refused
 		}
 		if nodes.len > 0 {
-			spawn sim_loop(ch.iface_with_bitrate(), db, nodes, ctl)
+			// BOTH: the suffixed string opens the transport, the logical one keys faults.
+			// Passing only the suffixed form meant sim.apply_injected looked up
+			// `pcan:…@250000` while sim.fault() had stored under `pcan:…`, so a scripted
+			// fault on vendor hardware reported success and never reached the wire.
+			spawn sim_loop(ch.iface_with_bitrate(), ch.iface, db, nodes, ctl)
 			// Diagnostics are per BUS and decided ONCE. Skipping outright after the first
 			// entry on an interface — rather than emptying the server list — is the difference
 			// that matters: the emptied list fell through to the default branch and spawned a
@@ -155,8 +159,8 @@ fn load_channel_db(ch project.Channel, proj_dir string) candb.Database {
 
 // sim_loop runs the channel's simulated ECUs on a dedicated in-process bus
 // instance (driver-free twin of src/main.v's sim_loop, minus the GUI).
-fn sim_loop(iface string, db candb.Database, nodes []project.NodeCfg, ctl &Ctl) {
-	mut bus := transport.open(iface) or { return }
+fn sim_loop(open_iface string, fault_iface string, db candb.Database, nodes []project.NodeCfg, ctl &Ctl) {
+	mut bus := transport.open(open_iface) or { return }
 	mut engine := sim.Engine{}
 	for n in nodes {
 		engine.ecus << build_node(db, n)
@@ -167,7 +171,7 @@ fn sim_loop(iface string, db candb.Database, nodes []project.NodeCfg, ctl &Ctl) 
 		// frame rather than at the next rebuild — which for the headless runner never comes.
 		// The elapsed time ages timed faults; without it "drop for 500 ms" drops forever.
 		// The table owns its own clock, so calling this from every bus loop is safe.
-		sim.apply_injected(iface, mut engine)
+		sim.apply_injected(fault_iface, mut engine)
 		now_ms := f64(time.ticks() - t0)
 		for f in engine.due_frames(now_ms) {
 			bus.send(f) or {}
