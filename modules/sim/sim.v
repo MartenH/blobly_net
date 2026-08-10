@@ -136,29 +136,34 @@ pub mut:
 	ecus []SimEcu
 }
 
-// adopt_counters carries send counts over from a previous engine, matched by ECU and message
-// name.
+// save_counters / restore_counters carry alive counters across an engine rebuild, through a
+// cache the caller owns and keeps for the whole run.
 //
-// Toggling ONE ECU's checkbox rebuilds the whole engine. Without this, every other protected
-// message restarts its alive counter at zero at that moment, and a receiver that is checking
-// the sequence rejects the next frame from an ECU the user did not touch — a fault injected
-// by the act of looking at the panel. Messages that are new in this engine keep their fresh
-// zero, which is correct: they have genuinely not been sent yet.
-pub fn (mut e Engine) adopt_counters(prev Engine) {
+// Toggling ONE ECU's checkbox rebuilds the WHOLE engine. Without this, every other protected
+// message restarts its counter at zero at that moment, and a receiver checking the sequence
+// rejects the next frame from an ECU nobody touched — a fault injected by using the panel.
+//
+// The cache has to outlive the engine, not just the previous one: disabling an ECU removes it
+// from the engine entirely, so carrying state from `prev` alone lost it, and re-enabling
+// restarted the counter at zero — a BACKWARD jump, which is exactly what a sequence check is
+// looking for. A node switched off and on again resumes where it stopped.
+//
+// Keyed by ECU and message NAME, so it survives index shifts. A message with no cached entry
+// keeps its zero, which is correct: it has genuinely not been sent.
+pub fn (e Engine) save_counters(mut into map[string]int) {
+	for ecu in e.ecus {
+		for m in ecu.messages {
+			into['${ecu.name}|${m.msg.name}'] = m.send_n
+		}
+	}
+}
+
+pub fn (mut e Engine) restore_counters(from map[string]int) {
 	for i := 0; i < e.ecus.len; i++ {
-		for p in prev.ecus {
-			if p.name != e.ecus[i].name {
-				continue
+		for j := 0; j < e.ecus[i].messages.len; j++ {
+			if n := from['${e.ecus[i].name}|${e.ecus[i].messages[j].msg.name}'] {
+				e.ecus[i].messages[j].send_n = n
 			}
-			for j := 0; j < e.ecus[i].messages.len; j++ {
-				for pm in p.messages {
-					if pm.msg.name == e.ecus[i].messages[j].msg.name {
-						e.ecus[i].messages[j].send_n = pm.send_n
-						break
-					}
-				}
-			}
-			break
 		}
 	}
 }

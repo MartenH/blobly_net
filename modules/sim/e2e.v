@@ -105,7 +105,8 @@ fn (e E2e) checksum_of(data []u8) u8 {
 //     on whatever the previous cycle left there. This is the usual convention and, more
 //     importantly, it is the only one that is self-consistent: a checksum cannot cover itself.
 //  3. `data_id` is appended as four little-endian bytes of the CHECKSUM INPUT ONLY, so the
-//     whole configured value contributes and two ids cannot collide. It never occupies
+//     whole configured value contributes — not that ids cannot collide, which an 8-bit result
+//     obviously cannot promise. It never occupies
 //     payload space — it exists so two messages with identical bytes produce different
 //     checksums, which is what stops a frame being replayed onto a different id.
 //

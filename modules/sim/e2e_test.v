@@ -198,19 +198,53 @@ fn test_counters_survive_a_rebuild() {
 			}]
 		}
 	}
+	mut cache := map[string]int{}
 	mut old := mk()
 	old.ecus[0].messages[0].send_n = 42
+	old.save_counters(mut cache)
 
 	mut fresh := mk()
 	assert fresh.ecus[0].messages[0].send_n == 0
-	fresh.adopt_counters(old)
+	fresh.restore_counters(cache)
 	assert fresh.ecus[0].messages[0].send_n == 42, 'the counter restarted on rebuild'
 
 	// a message that did not exist before starts at zero — it genuinely has not been sent
 	mut added := mk()
 	added.ecus[0].messages << SimMessage{ msg: candb.Message{ name: 'New', id: 0x999, dlc: 8 } }
-	added.adopt_counters(old)
+	added.restore_counters(cache)
 	assert added.ecus[0].messages[1].send_n == 0
+}
+
+// The cache must outlive the ECU. Disabling a node removes it from the engine, so state kept
+// only in the previous engine is lost — and re-enabling then restarts its counter at zero, a
+// BACKWARD jump, which is precisely what a receiver's sequence check rejects.
+fn test_counters_survive_disable_and_re_enable() {
+	mk := fn (with_bcm bool) Engine {
+		mut e := Engine{}
+		if with_bcm {
+			e.ecus << SimEcu{
+				name:     'BCM'
+				messages: [SimMessage{ msg: protected_msg(), period_ms: 10 }]
+			}
+		}
+		return e
+	}
+	mut cache := map[string]int{}
+
+	mut running := mk(true)
+	running.ecus[0].messages[0].send_n = 77
+
+	// unchecked: BCM leaves the engine entirely
+	running.save_counters(mut cache)
+	mut without := mk(false)
+	without.restore_counters(cache)
+	assert without.ecus.len == 0
+
+	// rechecked, some rebuilds later — the count must resume, not restart
+	without.save_counters(mut cache)
+	mut back := mk(true)
+	back.restore_counters(cache)
+	assert back.ecus[0].messages[0].send_n == 77, 'the counter jumped backwards on re-enable'
 }
 
 // The whole data id must reach the checksum: appending only its low byte made ids that differ

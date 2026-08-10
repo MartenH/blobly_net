@@ -714,6 +714,10 @@ fn sim_loop(app &App, sc SimCfg) {
 		return
 	}
 	mut engine := sim.Engine{}
+	// Alive counters for the whole run, not just across one rebuild: an ECU switched OFF leaves
+	// the engine, so state kept only in the previous engine is lost and switching it back on
+	// restarts its counter at zero — a backward jump a checking receiver rejects.
+	mut counters := map[string]int{}
 	mut local_gen := u64(0) // rebuild when a.sim_gen changes (ECU enable/disable)
 	mut built := false
 	t0 := time.ticks()
@@ -727,18 +731,14 @@ fn sim_loop(app &App, sc SimCfg) {
 				enabled[k] = v
 			}
 			a.mu.unlock()
-			prev := engine
+			engine.save_counters(mut counters) // fold the outgoing engine's counts in first
 			engine = sim.Engine{}
 			for n in sc.nodes {
 				if enabled['${sc.iface}:${n.name}'] or { true } {
 					engine.ecus << build_node(sc.db, n)
 				}
 			}
-			// Carry the alive counters across. Toggling ONE ECU rebuilds the whole engine, and
-			// without this every other protected message restarts its counter at zero — so
-			// ticking an unrelated box makes a receiver reject the next frame from an ECU the
-			// user never touched. Messages new to this engine keep their zero, correctly.
-			engine.adopt_counters(prev)
+			engine.restore_counters(counters)
 		}
 		now_ms := f64(time.ticks() - t0)
 		for f in engine.due_frames(now_ms) {

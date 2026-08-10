@@ -55,7 +55,7 @@ simulation:
 | `counter` | signal carrying the alive counter — omit for none |
 | `crc` | signal carrying the checksum — omit for none |
 | `profile` | `crc8_j1850` (default), `crc8_autosar`, `sum8`, `xor8` |
-| `data_id` | mixed into the checksum only; never occupies payload — appended as **four little-endian bytes**, so ids differing above the low byte cannot collide. `0` is a real id: written explicitly it contributes four zero bytes, omitted it contributes nothing, and the two give different checksums |
+| `data_id` | mixed into the checksum only; never occupies payload — appended as **four little-endian bytes**, so the whole value contributes rather than only its low byte. It does not make collisions impossible — the checksum is 8 bits, so distinct ids can still produce the same result. `0` is a real id: written explicitly it contributes four zero bytes, omitted it contributes nothing, and the two give different checksums |
 
 Both fields are named by **signal**, so width, bit position and byte order come from the DBC. A
 signal moved in the database moves here too, and nothing has to be restated.
