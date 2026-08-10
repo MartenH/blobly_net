@@ -43,10 +43,20 @@ fn main() {
 			count += engine.due_frames(t).len
 		}
 		total_msgs += count
-		if ch.all_nodes().len > 0 && count == 0 {
-			// a channel that simulates ECUs and emits nothing is the failure this tool exists
-			// to catch, so it must not be reported as OK
-			eprintln('  ${ch.name}: ${ch.all_nodes().len} node(s) but NO frames in 200ms')
+		// Only a node that SHOULD transmit unsolicited counts as a failure. due_frames skips
+		// messages with no cycle time by design, so an ECU whose behaviour is purely
+		// request/response emits nothing here and is perfectly valid — failing it would reject
+		// a working project.
+		mut cyclic := 0
+		for ecu in engine.ecus {
+			for m in ecu.messages {
+				if m.period_ms > 0 {
+					cyclic++
+				}
+			}
+		}
+		if cyclic > 0 && count == 0 {
+			eprintln('  ${ch.name}: ${cyclic} cyclic message(s) but NO frames in 200ms')
 			failed++
 		}
 		println('  ${ch.name}: nodes=${ch.all_nodes().len} db_msgs=${db.messages.len} frames_in_200ms=${count}')
