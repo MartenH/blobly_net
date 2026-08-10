@@ -20,6 +20,13 @@ fn main() {
 	mut total_msgs := 0
 	mut failed := 0
 	for ch in p.channels {
+		if !ch.enabled {
+			// Neither real path starts a disabled channel — the runner skips it and the GUI
+			// builds no SimCfg for it — so validating its assets could fail a project that
+			// runs perfectly well. A deliberately parked channel is not a defect.
+			println('  ${ch.name}: disabled, skipped')
+			continue
+		}
 		// resolve_asset + merge_files, the same as the GUI and the runner. Reading only
 		// databases[0] as written meant a project kept outside the repository loaded nothing,
 		// and this check then reported OK on a simulation that transmitted nothing at all.
