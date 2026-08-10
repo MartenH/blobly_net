@@ -68,16 +68,34 @@ fn main() {
 			count += engine.due_frames(t).len
 		}
 		total_msgs += count
-		// Only a node that SHOULD transmit unsolicited counts as a failure. due_frames skips
-		// messages with no cycle time by design, so an ECU whose behaviour is purely
-		// request/response emits nothing here and is perfectly valid — failing it would reject
-		// a working project.
+		// Two distinct failures, and the earlier rounds each caught only one of them.
+		//
+		// A node whose behaviour is purely request/response emits nothing here and is VALID —
+		// due_frames skips period-0 messages by design, so failing it would reject a working
+		// project. But a node with no cyclic messages AND no response rules AND no diagnostic
+		// server can do nothing at all, and reporting OK for that is the blind spot on the
+		// other side: the configuration names an ECU that will never appear on the bus.
 		mut cyclic := 0
 		for ecu in engine.ecus {
 			for m in ecu.messages {
 				if m.period_ms > 0 {
 					cyclic++
 				}
+			}
+		}
+		for i, cfg in ch.all_nodes() {
+			mut runnable := cfg.responses.len > 0 || cfg.uds != none
+			if !runnable && i < engine.ecus.len {
+				for m in engine.ecus[i].messages {
+					if m.period_ms > 0 {
+						runnable = true
+						break
+					}
+				}
+			}
+			if !runnable {
+				eprintln('  ${ch.name}: node "${cfg.name}" has no cyclic messages, no response rules and no uds — it will never transmit')
+				failed++
 			}
 		}
 		if cyclic > 0 && count == 0 {
