@@ -93,6 +93,10 @@ pub mut:
 	// message can carry both an alive counter and an unrelated application counter, and
 	// freezing the second is behaviour nobody asked for.
 	e2e_n int
+	// Whether the LAST emitted frame was frozen. On the way out of a freeze the counter still
+	// holds the value already transmitted, so the first recovered frame repeated it and the
+	// receiver saw one more stall AFTER the fault was gone.
+	was_frozen bool
 	next_ms   f64 // next due time
 }
 
@@ -192,6 +196,10 @@ pub fn (mut e Engine) due_frames(now_ms f64) []transport.CanFrame {
 				continue
 			}
 			if now_ms + 1e-6 >= m.next_ms {
+				if m.was_frozen && m.fault.kind != .freeze_ctr {
+					m.e2e_n++ // step past the frozen value before building the first recovered frame
+					m.was_frozen = false
+				}
 				mut f := m.build(now_ms / 1000.0)
 				if m.fault.apply_post(m.msg, m.e2e, mut f.data) {
 					out << f
@@ -202,6 +210,8 @@ pub fn (mut e Engine) due_frames(now_ms f64) []transport.CanFrame {
 				// tell a lost frame from a stuck sender.
 				if m.fault.kind != .freeze_ctr {
 					m.e2e_n++
+				} else {
+					m.was_frozen = true
 				}
 				m.next_ms += f64(m.period_ms)
 				if m.next_ms <= now_ms {

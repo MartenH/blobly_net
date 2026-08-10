@@ -267,7 +267,7 @@ fn l_sim_fault(l lua.State) int {
 						continue
 					}
 					for cand in m.signals {
-						if sim.can_force_out_of_range(m, cand.name) {
+						if sim.can_force_out_of_range(m, cand.name, prot_of(env.chans[ci].nodes, node, msg)) {
 							sg = cand.name
 							break
 						}
@@ -284,7 +284,7 @@ fn l_sim_fault(l lua.State) int {
 			// rest of this validation exists to prevent.
 			mut usable := false
 			for m in env.chans[ci].db.messages_from(node) {
-				if m.name == msg && sim.can_force_out_of_range(m, sg) {
+				if m.name == msg && sim.can_force_out_of_range(m, sg, prot_of(env.chans[ci].nodes, node, msg)) {
 					usable = true
 				}
 			}
@@ -298,10 +298,10 @@ fn l_sim_fault(l lua.State) int {
 			})
 			return 0
 		}
-		if k == .bad_crc && !has_protection(env.chans[ci].nodes, node, msg, 'crc') {
+		if k == .bad_crc && !has_protection(env.chans[ci].db, env.chans[ci].nodes, node, msg, 'crc') {
 			return l.fail('"${msg}" on "${node}" has no configured checksum — bad_crc would change nothing')
 		}
-		if k == .freeze_ctr && !has_protection(env.chans[ci].nodes, node, msg, 'counter') {
+		if k == .freeze_ctr && !has_protection(env.chans[ci].db, env.chans[ci].nodes, node, msg, 'counter') {
 			// The E2E counter is what freezes; a `counter` GENERATOR is an ordinary signal and
 			// keeps running by design. Without protection there is nothing to stall, and
 			// arming it would report success and change nothing.
@@ -322,8 +322,12 @@ pub fn (c ChanInfo) fault_iface() string {
 	return if c.key_iface != '' { c.key_iface } else { c.iface }
 }
 
-// has_protection reports whether the project gives this message the E2E field a fault needs.
-fn has_protection(nodes []project.NodeCfg, node string, msg string, field string) bool {
+// has_protection reports whether this message really has the E2E field a fault needs.
+//
+// The named signal must EXIST in the DBC message, not merely be a non-empty string: the engine
+// attaches a misspelled protection entry happily, and then neither the stamper nor the fault
+// finds the signal — so `bad_crc` was accepted and changed no transmitted bits.
+fn has_protection(db candb.Database, nodes []project.NodeCfg, node string, msg string, field string) bool {
 	for n in nodes {
 		if n.name != node {
 			continue
@@ -332,10 +336,45 @@ fn has_protection(nodes []project.NodeCfg, node string, msg string, field string
 			if p.message != msg {
 				continue
 			}
-			return if field == 'crc' { p.crc != '' } else { p.counter != '' }
+			want := if field == 'crc' { p.crc } else { p.counter }
+			if want == '' {
+				return false
+			}
+			for m in db.messages_from(node) {
+				if m.name != msg {
+					continue
+				}
+				for sg in m.signals {
+					if sg.name == want {
+						return true
+					}
+				}
+			}
+			return false
 		}
 	}
 	return false
+}
+
+// prot_of returns the protection configured for one message, so a range fault can be kept off
+// the counter and checksum fields — a violation written there is overwritten when the checksum
+// is stamped, and the frame goes out valid.
+fn prot_of(nodes []project.NodeCfg, node string, msg string) sim.E2e {
+	for n in nodes {
+		if n.name != node {
+			continue
+		}
+		for p in n.protect {
+			if p.message == msg {
+				return sim.E2e{
+					counter: p.counter
+					crc:     p.crc
+					profile: p.profile
+				}
+			}
+		}
+	}
+	return sim.E2e{}
 }
 
 fn l_uds_open(l lua.State) int {

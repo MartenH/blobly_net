@@ -93,9 +93,10 @@ fn test_out_of_range_exceeds_the_declared_maximum() {
 	raw := u64(f.data[1]) | (u64(f.data[2]) << 8)
 	assert raw == 0xFFFF, 'the signal must carry its maximum encodable value'
 	assert f64(raw) > 250, 'and that must exceed the declared maximum'
-	assert can_force_out_of_range(faulted_msg(), 'Speed')
+	prot := E2e{ counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }
+	assert can_force_out_of_range(faulted_msg(), 'Speed', prot)
 	// a signal with no declared range has no out-of-range value to send
-	assert !can_force_out_of_range(faulted_msg(), 'AliveCounter')
+	assert !can_force_out_of_range(faulted_msg(), 'AliveCounter', prot)
 }
 
 // A timed fault expires by itself: "drop for three seconds and watch the DTC" is the gesture,
@@ -161,4 +162,47 @@ fn test_timed_fault_ages_on_the_shared_table() {
 	t.set(fault_key('inproc:B', 'ECU', 'Msg'), Fault{ kind: .bad_crc })
 	t.age_to(20_000)
 	assert t.get(fault_key('inproc:B', 'ECU', 'Msg')).kind == .bad_crc
+}
+
+// A violation written into a protection field is overwritten when the checksum is stamped, so
+// the frame goes out perfectly valid and the fault tests nothing. Those fields are not offered.
+fn test_protection_fields_are_not_offered_for_range_faults() {
+	m := faulted_msg()
+	prot := E2e{ counter: 'AliveCounter', crc: 'CRC', profile: 'crc8_j1850' }
+	assert !can_force_out_of_range(m, 'CRC', prot), 'the checksum field cannot carry it'
+	assert !can_force_out_of_range(m, 'AliveCounter', prot), 'nor the counter field'
+	assert can_force_out_of_range(m, 'Speed', prot)
+	// with no protection configured, the same signals are judged on their own merits
+	bare := E2e{}
+	assert !can_force_out_of_range(m, 'AliveCounter', bare), 'no declared range'
+}
+
+// A negative factor puts the physical maximum at raw ZERO, so testing all-ones alone reported
+// "no illegal value" for a signal that plainly has one.
+fn test_negative_factor_finds_its_endpoint() {
+	sig := candb.Signal{
+		name:       'Inverted'
+		start_bit:  0
+		length:     8
+		byte_order: .little_endian
+		factor:     -1
+		offset:     255
+		minimum:    0
+		maximum:    200
+	}
+	v := illegal_raw(sig) or { panic('no illegal value found for a signal that has one') }
+	assert sig.phys_from_raw(v) > 200, 'the chosen endpoint must actually violate'
+}
+
+// Leaving a freeze must not repeat the frozen value once more.
+fn test_counter_resumes_cleanly_after_a_freeze() {
+	mut e := protected_engine(Fault{ kind: .freeze_ctr })
+	for t in [f64(0), 10, 20] {
+		e.due_frames(t)
+	}
+	frozen := e.ecus[0].messages[0].e2e_n
+	// clear the fault, as expiry or a clear_fault would
+	e.ecus[0].messages[0].fault = Fault{}
+	f := e.due_frames(30)[0]
+	assert f.data[0] & 0x0F == u8((frozen + 1) % 16), 'the first recovered frame repeated the frozen counter'
 }

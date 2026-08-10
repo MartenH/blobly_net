@@ -308,9 +308,15 @@ Details worth knowing:
   asked for.
 - `drop` still counts as a cycle, so the counter has moved on by the next frame that *does*
   arrive — a gap, which is how a receiver tells a dropped frame from a stalled sender.
-- `out_of_range` needs a signal whose DBC maximum is below its full width. A signal using its
-  whole range has no illegal value to send, and the panel will not offer it rather than
-  transmitting something the receiver must legally accept.
+- `out_of_range` needs a signal that can actually carry the violation onto the wire. Three
+  cannot, and none is offered: a signal using its whole declared range (there is no illegal
+  value), a **multiplexed** signal (only written when its selector is active, so the fault may
+  never reach the bus), and the **counter or checksum field itself** (a violation written there
+  is overwritten moments later when protection is stamped, and the frame goes out valid).
+  Both raw endpoints are considered, so a signal with a negative factor — whose physical
+  maximum sits at raw zero — is handled.
+- Leaving a `freeze_counter` steps the counter past the frozen value before the first recovered
+  frame, so the receiver does not see one more stall *after* the fault is gone.
 
 ## Interactive senders
 

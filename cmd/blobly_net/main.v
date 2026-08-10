@@ -1828,8 +1828,14 @@ fn draw_sim(mut app App) {
 					has_crc := node.protect.any(it.message == m.name && it.crc != '')
 					has_ctr := node.protect.any(it.message == m.name && it.counter != '')
 					mut oor_sig := ''
+					mut mprot := sim.E2e{}
+					for pr in node.protect {
+						if pr.message == m.name {
+							mprot = sim.E2e{ counter: pr.counter, crc: pr.crc, profile: pr.profile }
+						}
+					}
 					for sg in m.signals {
-						if sim.can_force_out_of_range(m, sg.name) {
+						if sim.can_force_out_of_range(m, sg.name, mprot) {
 							oor_sig = sg.name
 							break
 						}
@@ -5585,7 +5591,6 @@ fn script_worker(app &App, path string) {
 		a.mu.unlock()
 	}
 	mut chans := []script.ChanInfo{}
-	first_db := if a.dbs.len > 0 { a.dbs[0] } else { candb.Database{} }
 	for ch in a.chans {
 		mut sim_nodes := []project.NodeCfg{}
 		for sc in a.sims {
@@ -5597,7 +5602,10 @@ fn script_worker(app &App, path string) {
 			name:      ch.name
 			iface:     a.bitrate_iface(ch.iface) // pcan/kvaser: @<bitrate> so scripts open right
 			key_iface: ch.iface // faults key on the LOGICAL interface, not the opened string
-			db:        first_db
+			// This channel's OWN merged database. Handing every channel the first one meant a
+			// real message on any other DBC was rejected as unknown, or a coincidentally named
+			// message was accepted with the wrong signal metadata.
+			db:        merge_dbs(ch.databases)
 			nodes:     sim_nodes // so a fault that cannot take effect can be refused
 		}
 	}

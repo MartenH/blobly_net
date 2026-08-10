@@ -125,7 +125,11 @@ pub fn illegal_raw(sig candb.Signal) ?u64 {
 		return none // no declared range to exceed
 	}
 	full := mask_of(sig.length)
-	mut candidates := [full] // all ones
+	// BOTH raw endpoints, whatever the signedness. A negative factor puts the physical maximum
+	// at raw ZERO — an 8-bit unsigned signal with factor -1, offset 255 and range [0|200] has
+	// its illegal value at raw 0, not at 0xFF — so testing all-ones alone reported "no illegal
+	// value" for a signal that plainly has one.
+	mut candidates := [full, u64(0)]
 	if sig.is_signed && sig.length >= 2 {
 		candidates << full >> 1 // largest positive
 		candidates << (full >> 1) + 1 // most negative
@@ -139,13 +143,27 @@ pub fn illegal_raw(sig candb.Signal) ?u64 {
 	return none
 }
 
-// can_force_out_of_range reports whether the named signal has an out-of-range raw value.
-pub fn can_force_out_of_range(msg candb.Message, name string) bool {
+// can_force_out_of_range reports whether this signal can actually carry a range violation onto
+// the wire — which is more than "an illegal value exists for it".
+//
+// `e2e` is the message's protection, because a violation written into the counter or checksum
+// field is overwritten moments later when protection is stamped: the frame goes out perfectly
+// valid and the fault silently tests nothing.
+pub fn can_force_out_of_range(msg candb.Message, name string, e2e E2e) bool {
+	if name == '' || name == e2e.counter || name == e2e.crc {
+		return false
+	}
 	for sig in msg.signals {
-		if sig.name == name {
-			illegal_raw(sig) or { return false }
-			return true
+		if sig.name != name {
+			continue
 		}
+		if sig.is_multiplexed {
+			// only present when its selector is active, and apply_pre writes only active
+			// signals — so this may never reach the wire at all
+			return false
+		}
+		illegal_raw(sig) or { return false }
+		return true
 	}
 	return false
 }
