@@ -486,6 +486,12 @@ fn (mut app App) start() {
 	if app.dirty {
 		app.apply_edits()
 	}
+	if app.cfg_text_dirty {
+		// Text edits are NOT folded in automatically: the file is the authority for everything
+		// the structured editor cannot express, and guessing that a half-typed YAML buffer
+		// should become the running configuration is the wrong default. Say so instead.
+		app.notify('note: the Configuration ▸ File tab has unsaved text — it is not part of this run')
+	}
 	// unsaved DBC-editor edits exist only in the app.dbs union — sims and the
 	// per-channel generator databases still hold the on-disk definitions, so a
 	// measurement would encode with one schema and decode with another.
@@ -1132,6 +1138,12 @@ fn load_ui_font() {
 // app.proj, then derive the runtime view (rebuild_from_proj). On a parse error the current
 // project is left untouched.
 fn (mut app App) load_project(path string) {
+	// Opening another project abandons whatever is in the File tab's buffer. That used to
+	// happen in silence; set_project's cfg_invalidate does the abandoning, so the warning has
+	// to be issued here, before it.
+	if app.cfg_text_dirty {
+		app.notify('discarded unsaved Configuration ▸ File text from ${os.base(app.proj_path)}')
+	}
 	app.stop()
 	proj := project.load(path) or {
 		eprintln('load ${path}: ${err}')
@@ -1178,6 +1190,7 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	// interface, node and message name, and a different project reusing all three would
 	// silently start with frames dropped or corrupted — as if the tool were broken.
 	sim.clear_all()
+	app.cfg_invalidate() // a different project: the File tab must not keep the old one's text
 	app.mu.lock()
 	app.trace = []
 	app.gcount = map[string]u64{}
@@ -1618,8 +1631,17 @@ fn draw_activity_bar(mut app App) {
 	// Buses ▸ "Configure…", which is the actual editor — two near-identical names, only one of
 	// which could change anything.
 	if vgui.toggle_button('Cfg', app.show_config, -1) {
-		app.show_config = !app.show_config
 		if app.show_config {
+			// HIDING it: draw_config's close-time apply never runs, because the window is not
+			// drawn again — so a half-typed bus name or bitrate would be resynced away from
+			// the old model when the window is next opened, while app.dirty still claimed
+			// there were changes.
+			if !app.running && app.dirty {
+				app.apply_edits()
+			}
+			app.show_config = false
+		} else {
+			app.show_config = true
 			app.sync_cfg_bufs()
 		}
 	}
@@ -1824,7 +1846,9 @@ fn draw_toolbar(mut app App, rx u64) {
 		vgui.text_colored(210, 120, 120, 'stopped')
 	}
 	vgui.same_line()
-	dirtymark := if app.dirty { ' ●' } else { '' }
+	// Unsaved FILE-tab text counts as modified too. It lives in its own buffer, so without this
+	// the toolbar read clean while an edit sat waiting in a closed window.
+	dirtymark := if app.dirty || app.cfg_text_dirty { ' ●' } else { '' }
 	vgui.text('· RX ${rx}  TX ${app.tx_count}  ·  ${app.proj_name}${dirtymark}   ')
 	vgui.same_line()
 	if vgui.button(if app.paused { 'Resume' } else { 'Pause' }) {
@@ -2990,7 +3014,7 @@ fn draw_config(mut app App) {
 			app.apply_edits() // fold unsaved edits into the model + runtime view on close
 		}
 	}
-	if app.dirty {
+	if app.dirty || app.cfg_text_dirty {
 		vgui.same_line()
 		vgui.text_colored(230, 170, 70, '● modified')
 	}
@@ -4660,10 +4684,12 @@ fn (mut app App) sync_senders_into_proj() {
 // Only when the buffer does not already hold this path: re-reading on every frame — or every
 // tab switch — would throw away whatever the user had typed.
 fn (mut app App) load_cfg_text() {
-	// Keep ONLY the user's own unsaved typing. Anything else — a different project opened, a
-	// structured Save that rewrote this same path — must be re-read, or the box shows one
-	// project's YAML while the header names another and Save writes the wrong file.
-	if app.cfg_text_dirty && app.cfg_loaded == app.proj_path {
+	// Cached. The File tab calls this every render, so re-reading whenever the buffer was
+	// clean meant a synchronous file read and a 64 KiB allocation at frame rate. Freshness
+	// comes from EXPLICIT invalidation instead — cfg_invalidate() at every path that rewrites
+	// or replaces the project — which is also the only way to be right about a file changed
+	// by something other than us.
+	if app.cfg_loaded == app.proj_path && app.proj_path != '' {
 		return
 	}
 	if app.proj_path == '' {
@@ -4690,6 +4716,13 @@ fn (mut app App) load_cfg_text() {
 	app.cfg_loaded = app.proj_path
 	app.cfg_text_dirty = false
 	app.cfg_err = ''
+}
+
+// cfg_invalidate drops the cached project text, so the File tab re-reads it next render.
+// Called wherever the file or the active project changes underneath the editor.
+fn (mut app App) cfg_invalidate() {
+	app.cfg_loaded = ''
+	app.cfg_text_dirty = false
 }
 
 // draw_config_text is the File tab: edit the project as text, validate, write it back.
@@ -4789,6 +4822,13 @@ fn cfg_text_channels(txt string) int {
 // The TEXT is written, not a re-serialisation of the parsed model: the model does not carry
 // comments, and this file is where a bench setup explains itself.
 fn (mut app App) save_cfg_text() {
+	if app.dirty {
+		// The mirror of the guard in save_project: applying this text would replace a model
+		// that holds unsaved bus or generator edits.
+		app.cfg_err = 'unsaved bus edits would be lost — save or discard them above first'
+		app.notify('not saved — resolve the unsaved bus edits first')
+		return
+	}
 	txt := vgui.buf_str(app.cfg_text)
 	if e := non_empty(cfg_text_error(txt)) {
 		app.cfg_err = e
@@ -4821,8 +4861,11 @@ fn (mut app App) save_cfg_text() {
 
 // apply_parsed_text folds already-validated project text into the model and rebuilds the
 // runtime view, leaving the captured session alone.
-fn (mut app App) apply_parsed_text(txt string) {
-	p := project.parse(txt) or { return } // validated by the caller
+fn (mut app App) apply_parsed_text(txt string) bool {
+	p := project.parse(txt) or { return false }
+	if !p.is_supported() {
+		return false
+	}
 	// Injected faults are keyed by interface/node/message; a config edit can rename or remove
 	// any of those, and a fault left pointing at the old names would apply to whatever now
 	// occupies them.
@@ -4833,6 +4876,7 @@ fn (mut app App) apply_parsed_text(txt string) {
 	app.mu.unlock()
 	app.cfg_bufs = [] // re-derived from the new channel list on the next Buses render
 	app.rebuild_from_proj()
+	return true
 }
 
 // revert_proj_from_disk throws away unsaved STRUCTURED edits by re-reading the file, without
@@ -4842,9 +4886,15 @@ fn (mut app App) revert_proj_from_disk() {
 		app.notify('cannot re-read ${app.proj_path}: ${err}')
 		return
 	}
-	app.apply_parsed_text(txt)
+	// Clear the flags only if the file actually replaced the model. Clearing them regardless
+	// left the edited model live and looking clean, so a later save would persist changes the
+	// user had been told were discarded.
+	if !app.apply_parsed_text(txt) {
+		app.notify('nothing discarded — ${app.proj_path} does not parse; fix it on the File tab')
+		return
+	}
 	app.dirty = false
-	app.cfg_text_dirty = false
+	app.cfg_invalidate()
 	app.load_cfg_text()
 	app.notify('bus edits discarded')
 }
@@ -4859,6 +4909,16 @@ fn (mut app App) save_project() {
 		app.open_browser('saveas')
 		return
 	}
+	// The model and the file text are two representations of one project, and writing either
+	// over the other loses work. Only one may be modified at a time, and that is enforced HERE
+	// rather than in the File tab alone — the Buses Save button and File ▸ Save reach this
+	// function without passing through any of that tab's controls.
+	if app.cfg_text_dirty {
+		app.notify('not saved — the Configuration ▸ File tab has unsaved text; save or revert it there first')
+		app.show_config = true
+		app.cfg_tab = 1
+		return
+	}
 	app.apply_edits()
 	app.mu.lock()
 	p := app.proj
@@ -4869,6 +4929,7 @@ fn (mut app App) save_project() {
 		return
 	}
 	app.dirty = false
+	app.cfg_invalidate() // the file just changed under the File tab
 	app.notify('saved -> ${path}')
 }
 
