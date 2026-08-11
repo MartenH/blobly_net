@@ -420,12 +420,19 @@ fn prot_of(nodes []project.NodeCfg, node string, msg string) sim.E2e {
 fn l_uds_open(l lua.State) int {
 	mut env := env_of(l)
 	name := l.arg_str(1)
-	// Negative = the caller omitted it (see the prelude): 0 is a valid arbitration id and must
-	// not be read as "unset".
+	// Presence is carried by nil, not by a magic value: 0 is a valid arbitration id, and a
+	// negative one is a caller mistake — treating either as "omitted" silently redirects the
+	// request to 0x7E0/0x7E8 and reports a result from an ECU the script never addressed.
+	has_tx := !l.arg_is_nil(2)
+	has_rx := !l.arg_is_nil(3)
 	txi := l.arg_int(2)
 	rxi := l.arg_int(3)
-	has_tx := txi >= 0
-	has_rx := rxi >= 0
+	if has_tx && (txi < 0 || txi > 0x1FFF_FFFF) {
+		return l.fail('uds.open("${name}"): tx = ${txi} is not a CAN identifier (0..0x1FFFFFFF)')
+	}
+	if has_rx && (rxi < 0 || rxi > 0x1FFF_FFFF) {
+		return l.fail('uds.open("${name}"): rx = ${rxi} is not a CAN identifier (0..0x1FFFFFFF)')
+	}
 	tx := u32(txi)
 	rx := u32(rxi)
 	ci := env.find_chan(name) or { return l.fail('unknown channel "${name}"') }
