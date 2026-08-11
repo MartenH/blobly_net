@@ -108,8 +108,12 @@ fn main() {
 				// Refuse rather than substitute: answering with built-in data the project did
 				// not configure turns a broken config into a passing test.
 				eprintln('${ch.name}: all ${declared} configured UDS node(s) rejected — not starting a DoIP entity')
-				println('channel ${ch.name} (${ch.iface}): DoIP entity NOT started (bad uds config)')
-				continue
+				// ABORT, not continue. Leaving the channel in place let scripts dial the
+				// endpoint anyway, and if another DoIP process holds it the suite passes
+				// against that one — the same wrong-ECU failure the bind check below exists
+				// to prevent, reached by skipping the bind entirely.
+				eprintln('refusing to run: scripts would dial ${ch.name} and reach whatever else is there')
+				exit(1)
 			}
 			// One channel is one entity with one logical address, so extra UDS nodes have no
 			// address to answer on. Say which one won rather than silently serving the first.
@@ -117,23 +121,36 @@ fn main() {
 				eprintln('${ch.name}: ${dsrv.len} UDS nodes on one DoIP entity; serving "${dsrv[0].name}" (0x${ch.ecu_addr:04X})')
 			}
 			mut srv := if dsrv.len > 0 { dsrv[0].server } else { uds.default_server() }
-			// Discovery announces ch.vin; DID 0xF190 must agree, or a tester finds
-			// "BLOBLYNETGATEWAY1" on the network and then reads BLOBLYNETV0SUT001 out of the
-			// same entity — two identities for one ECU, and no way to tell which is the lie.
-			if ch.vin != '' {
-				if dsrv.len == 0 {
-					srv.dids[0xF190] = ch.vin.bytes()
-				} else if existing := srv.dids[u16(0xF190)] {
-					if existing.bytestr() != ch.vin {
-						eprintln('${ch.name}: announced VIN "${ch.vin}" differs from the node\'s DID 0xF190 "${existing.bytestr()}" — serving the node\'s')
+			// ONE identity. Discovery announces a VIN and DID 0xF190 serves one; if they can
+			// differ, a tester finds "BLOBLYNETGATEWAY1" on the network and reads something
+			// else out of the same entity, with nothing to say which is the lie. So the two
+			// are resolved to a single string here, and a genuine disagreement is refused
+			// rather than silently resolved in either direction.
+			mut announce := ch.vin
+			if dsrv.len > 0 {
+				// A CONFIGURED node: its DID is the identity. (The fallback server's 0xF190 is
+				// a module default, not a configuration, so it must not win the same way.)
+				if v := srv.dids[u16(0xF190)] {
+					node_vin := v.bytestr()
+					if ch.vin != '' && node_vin != ch.vin {
+						eprintln('${ch.name}: vin "${ch.vin}" and node "${dsrv[0].name}" DID 0xF190 "${node_vin}" are two identities for one entity')
+						eprintln('refusing to run: discovery and diagnostics would name different ECUs')
+						exit(1)
 					}
+					announce = node_vin
+				} else if ch.vin != '' {
+					// Announced but not served: reading 0xF190 would answer NRC while
+					// discovery advertised a VIN. Serve what is announced.
+					srv.dids[0xF190] = ch.vin.bytes()
 				}
+			} else if ch.vin != '' {
+				srv.dids[0xF190] = ch.vin.bytes()
 			}
 			// Bind HERE, not inside the spawned worker. Reported only to stderr, a failed bind
 			// left the run announcing an entity and carrying on — and if the port was held by
 			// another DoIP process serving the same built-in defaults, uds.open would connect
 			// to THAT and the suite would pass against the wrong ECU.
-			mut ent := doip_listen(host, port, doip.server_cfg(ch.ecu_addr, ch.vin, ch.eid),
+			mut ent := doip_listen(host, port, doip.server_cfg(ch.ecu_addr, announce, ch.eid),
 				srv) or {
 				eprintln('${ch.name}: ${err}')
 				eprintln('refusing to run: a suite would connect to whatever else is on ${host}:${port}')

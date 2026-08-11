@@ -6061,6 +6061,14 @@ fn script_worker(app &App, path string) {
 	}
 	mut chans := []script.ChanInfo{}
 	for ch in a.chans {
+		// Disabled channels are NOT scriptable. The headless runner skips them when building
+		// its channel list, so leaving them here meant the same script could reach an ECU the
+		// project had explicitly switched off from the GUI, and report "unknown channel" for
+		// it headlessly. For a DoIP channel that means dialing a TCP endpoint the user turned
+		// off — and connecting to whatever else is listening there.
+		if !ch.enabled {
+			continue
+		}
 		mut sim_nodes := []project.NodeCfg{}
 		for sc in a.sims {
 			if sc.iface == ch.iface {
