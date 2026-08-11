@@ -39,8 +39,10 @@ them silently would lose one side.
 
 Let a user start from nothing and, entirely in the GUI, **add buses, pick an adapter,
 attach DBCs, set each bus's config, and save it to a `.blobnet` file** — then reopen it
-and get the same setup back. Today the app can only *load* a project; the Bus Config panel
-is read-only and the File menu has no New/Open/Save/Save As.
+and get the same setup back. (As written in 2026-07-05: the app could only *load* a project,
+the Bus Config panel was read-only and the File menu had no New/Open/Save/Save As. All of that
+has since shipped, and the read-only panel has been folded into the Configuration window — see
+the two tabs above.)
 
 ## Vocabulary (agreed)
 
@@ -254,7 +256,9 @@ The normal measurement view is **read-only**; editing is a distinct **Configurat
 editor** you open, use, and close — only when stopped (a conventional tool's measurement view vs. its
 Configuration dialog).
 
-- **Buses panel + Bus Config** = always-on read-only view; shows live state when running.
+- **Buses panel** = always-on read-only view; shows live state when running. (The separate
+  read-only *Bus Config* panel this line used to name is gone — its content is the
+  Configuration window's Buses tab, which can also edit.)
 - **Configuration editor** = opened from File → Configure… (or a toolbar button), enabled
   only when `!app.running`. Add/edit/remove buses, pick adapters, attach DBCs; **Save**
   writes `.blobnet`; **Close** returns to the view. Not an always-editable inline panel.

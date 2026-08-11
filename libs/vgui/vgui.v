@@ -476,9 +476,15 @@ pub fn console_input(label string, mut buf []u8) bool {
 }
 
 // text_edit renders an EDITABLE multiline box `h` pixels high, writing into `buf` in place.
-// Tab inserts a tab rather than moving focus, since the content is indented YAML. Returns true
-// on the frames where the text changed.
+// Returns true on the frames where the text changed; false for an empty buffer, which ImGui
+// cannot be handed.
 pub fn text_edit(id string, mut buf []u8, h f32) bool {
+	if buf.len == 0 {
+		// InputTextMultiline writes into the caller's storage and requires a writable,
+		// NUL-terminated buffer; a zero-length slice is a null pointer with no room, which
+		// asserts inside ImGui rather than doing nothing.
+		return false
+	}
 	return C.vgui_text_edit(id.str, &char(buf.data), buf.len, h) == 1
 }
 

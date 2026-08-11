@@ -176,6 +176,11 @@ mut:
 	cfg_text_len int    // bytes loaded, to notice when the box is nearly full
 	cfg_err      string // parse error holding back a save ('' = the text parses)
 	cfg_loaded   string // which path cfg_text holds ('' = nothing loaded)
+	// Whether the text has been TYPED IN since it was loaded. Without it there was no way to
+	// tell "showing the file" from "showing edits", so every staleness question had the wrong
+	// answer: a project switch or a structured Save left old YAML on screen that Save would
+	// then write over the new file.
+	cfg_text_dirty bool
 
 	// Script (Lua on a worker thread)
 	script_path_buf []u8
@@ -2961,6 +2966,7 @@ fn draw_config(mut app App) {
 	}
 	vgui.separator()
 	if app.cfg_tab == 1 {
+		app.load_cfg_text() // every frame: a no-op while typing, and correct after a switch
 		app.draw_config_text()
 		vgui.end()
 		return
@@ -3288,7 +3294,8 @@ sets the frame rate and UI scale.
 
 ## Panels
 
-- **Buses / Bus Config** — channel enable, state, and configuration
+- **Buses** — channel enable and live state
+- **Cfg / Configuration** — edit the project: buses in a form, or the `.blobnet` as text
 - **Simulation** — in-process simulated ECUs (driver-free)
 - **Symbols** — DBC message / signal browser (searchable)
 - **Trace / Trace (filter)** — live frames, all or grouped, filterable, per-bus
@@ -4083,7 +4090,6 @@ fn build_layout() {
 	vgui.dock_window('Network', buses)
 	vgui.dock_window('Simulation', buses)
 	vgui.dock_window('Symbols', buses)
-	vgui.dock_window('Bus Config', buses)
 	vgui.dock_window('Statistics', buses)
 	// centre: Trace + Trace (filter) tabs; Log below
 	vgui.dock_window('Trace', ctop)
@@ -4654,16 +4660,25 @@ fn (mut app App) sync_senders_into_proj() {
 // Only when the buffer does not already hold this path: re-reading on every frame — or every
 // tab switch — would throw away whatever the user had typed.
 fn (mut app App) load_cfg_text() {
-	if app.cfg_loaded == app.proj_path && app.proj_path != '' {
+	// Keep ONLY the user's own unsaved typing. Anything else — a different project opened, a
+	// structured Save that rewrote this same path — must be re-read, or the box shows one
+	// project's YAML while the header names another and Save writes the wrong file.
+	if app.cfg_text_dirty && app.cfg_loaded == app.proj_path {
 		return
 	}
 	if app.proj_path == '' {
 		app.cfg_text = mkbuf('', 4096)
 		app.cfg_loaded = ''
-		app.cfg_err = 'no file yet — save the project once, then it can be edited here'
+		app.cfg_text_dirty = false
+		app.cfg_err = 'no file yet — save the project once (File ▸ Save As), then edit it here'
 		return
 	}
 	txt := os.read_file(app.proj_path) or {
+		// Still allocate: draw_config_text renders the box regardless, and ImGui cannot be
+		// handed a zero-capacity buffer.
+		app.cfg_text = mkbuf('', 4096)
+		app.cfg_loaded = ''
+		app.cfg_text_dirty = false
 		app.cfg_err = 'cannot read ${app.proj_path}: ${err}'
 		return
 	}
@@ -4673,35 +4688,54 @@ fn (mut app App) load_cfg_text() {
 	app.cfg_text = mkbuf(txt, cap)
 	app.cfg_text_len = txt.len
 	app.cfg_loaded = app.proj_path
+	app.cfg_text_dirty = false
 	app.cfg_err = ''
 }
 
 // draw_config_text is the File tab: edit the project as text, validate, write it back.
 fn (mut app App) draw_config_text() {
 	if app.dirty {
-		// The two tabs edit different things — app.proj versus the file on disk — and merging
-		// them silently would lose one side. Say which, and offer the way out.
+		// The two tabs edit different things — app.proj versus the file on disk — and either
+		// action below overwrites one side, so say which is at risk before offering it.
 		vgui.text_colored(230, 170, 70, '● unsaved bus edits are not in this text')
-		if vgui.small_button('Save them first') {
-			app.save_project()
-			app.cfg_loaded = '' // re-read what was just written
-			app.load_cfg_text()
-		}
-		vgui.same_line()
-		if vgui.small_button('Discard them and reload the file') {
-			app.cfg_loaded = ''
-			app.load_cfg_text()
-			app.dirty = false
+		if app.cfg_text_dirty {
+			// Both sides modified: writing the model would overwrite the typing, so that
+			// action is withheld rather than offered and silently destructive.
+			vgui.text_colored(230, 120, 120, '  …and this text has unsaved edits too — Save the text, or Revert it, before folding bus edits in')
+			if vgui.small_button('Revert the text') {
+				app.cfg_text_dirty = false
+				app.load_cfg_text()
+			}
+		} else {
+			if vgui.small_button('Save bus edits into the file') {
+				app.save_project()
+				app.load_cfg_text() // re-read what was just written
+			}
+			vgui.same_line()
+			if vgui.small_button('Discard bus edits') {
+				app.revert_proj_from_disk()
+			}
 		}
 		vgui.separator()
 	}
-	if vgui.button('Save') && app.cfg_err == '' {
-		app.save_cfg_text()
+	// Gated, not merely ignored on click: os.write_file('') fails, and Save As serialises the
+	// MODEL, which would throw away the text the user is looking at.
+	can_save := app.cfg_err == '' && app.proj_path != ''
+	if can_save {
+		if vgui.button('Save') {
+			app.save_cfg_text()
+		}
+	} else {
+		vgui.text_dim('[ Save ]')
 	}
 	vgui.same_line()
 	if vgui.button('Reload') {
-		app.cfg_loaded = ''
+		app.cfg_text_dirty = false
 		app.load_cfg_text()
+	}
+	if app.cfg_text_dirty {
+		vgui.same_line()
+		vgui.text_colored(230, 170, 70, '● modified')
 	}
 	vgui.same_line()
 	vgui.text_dim(if app.proj_path == '' { '(unsaved project)' } else { app.proj_path })
@@ -4723,6 +4757,7 @@ fn (mut app App) draw_config_text() {
 	}
 	if vgui.text_edit('##cfgtext', mut app.cfg_text, 460) {
 		// Validate as you type, so a mistake is visible where it was made rather than at Save.
+		app.cfg_text_dirty = true
 		app.cfg_err = cfg_text_error(vgui.buf_str(app.cfg_text))
 	}
 }
@@ -4775,9 +4810,43 @@ fn (mut app App) save_cfg_text() {
 	}
 	app.notify('saved -> ${path}')
 	app.dirty = false
-	app.cfg_loaded = '' // the file is the truth now; re-read it after the reload
-	app.load_project(path) // rebuild channels, sims, senders — everything the text may have changed
+	app.cfg_text_dirty = false
+	// rebuild_from_proj, NOT load_project: the full open path calls set_project, which clears
+	// the trace rows, grouped counts, telemetry records, diagnostic and script logs and signal
+	// watches. Editing one config line while stopped must not throw away a captured session —
+	// the structured Buses Save does not, and neither should this.
+	app.apply_parsed_text(txt)
 	app.load_cfg_text()
+}
+
+// apply_parsed_text folds already-validated project text into the model and rebuilds the
+// runtime view, leaving the captured session alone.
+fn (mut app App) apply_parsed_text(txt string) {
+	p := project.parse(txt) or { return } // validated by the caller
+	// Injected faults are keyed by interface/node/message; a config edit can rename or remove
+	// any of those, and a fault left pointing at the old names would apply to whatever now
+	// occupies them.
+	sim.clear_all()
+	app.mu.lock()
+	app.proj = p
+	app.proj_name = p.name
+	app.mu.unlock()
+	app.cfg_bufs = [] // re-derived from the new channel list on the next Buses render
+	app.rebuild_from_proj()
+}
+
+// revert_proj_from_disk throws away unsaved STRUCTURED edits by re-reading the file, without
+// the session reset that load_project performs.
+fn (mut app App) revert_proj_from_disk() {
+	txt := os.read_file(app.proj_path) or {
+		app.notify('cannot re-read ${app.proj_path}: ${err}')
+		return
+	}
+	app.apply_parsed_text(txt)
+	app.dirty = false
+	app.cfg_text_dirty = false
+	app.load_cfg_text()
+	app.notify('bus edits discarded')
 }
 
 // non_empty is `?string` sugar: Some(s) when s is not empty.
