@@ -94,7 +94,7 @@ fn main() {
 			// malformed `uds:` block was dropped by uds_nodes() in silence and the built-in
 			// default served in its place, so a suite could pass against the stock VIN while
 			// believing it had read the configured ECU.
-			for w in sim.validate_uds(nodes) {
+			for w in sim.validate_uds_doip(nodes) {
 				eprintln('${ch.name}: ${w}')
 			}
 			mut declared := 0
@@ -103,7 +103,7 @@ fn main() {
 					declared++
 				}
 			}
-			mut dsrv := sim.uds_nodes(nodes)
+			mut dsrv := sim.uds_nodes_doip(nodes)
 			if dsrv.len == 0 && declared > 0 {
 				// Refuse rather than substitute: answering with built-in data the project did
 				// not configure turns a broken config into a passing test.

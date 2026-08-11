@@ -30,3 +30,15 @@ test("the entities are independent -- each answers for itself", function()
   local b = uds.open("EngineECU"):read_did(0xF190)
   check.truthy(a ~= b, "two entities must not report the same VIN")
 end)
+
+-- The announcement is a SEPARATE value from DID 0xF190 — server_cfg carries one, the UDS
+-- handler the other — so "they agree" has to be observed, not assumed. These VINs differ from
+-- the module default, which is what makes the check able to fail.
+test("discovery announces the same VIN the entity serves", function()
+  for _, chan in ipairs({"Gateway", "EngineECU", "BodyECU"}) do
+    local ann = doip.discover(chan)
+    local served = uds.open(chan):read_did(0xF190)
+    check.equal(ann.vin, served)
+    log(chan, "announced", ann.vin, "at", string.format("0x%X", ann.logical_address))
+  end
+end)

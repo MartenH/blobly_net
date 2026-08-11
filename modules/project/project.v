@@ -639,13 +639,21 @@ fn parse_node(n yaml.Any) NodeCfg {
 		}
 	}
 	if u := n.value_opt('uds') {
+		// PRESENT-but-invalid only. An absent rx/tx reads back as an empty string, which
+		// hex_id_is_clean rightly calls unclean — so omitting them was recorded as a malformed
+		// identifier. On CAN that was masked (validate_uds reports the missing pair anyway); on
+		// a DoIP node, where there are no CAN ids to give, it rejected every valid config.
+		mut idfields := map[string]string{}
+		if v := u.value_opt('rx') {
+			idfields['rx'] = v.str()
+		}
+		if v := u.value_opt('tx') {
+			idfields['tx'] = v.str()
+		}
 		mut ucfg := UdsCfg{
 			rx:      parse_id_wide(u.value('rx').str())
 			tx:      parse_id_wide(u.value('tx').str())
-			malformed: bad_ids({
-				'rx': u.value('rx').str()
-				'tx': u.value('tx').str()
-			})
+			malformed: bad_ids(idfields)
 			session: clamp_i64_u32(u.value('session').default_to(i64(1)).i64())
 		}
 		if ds := u.value_opt('dids') {
