@@ -90,7 +90,27 @@ fn main() {
 				continue
 			}
 			host, port := ch.doip_endpoint()
+			// Validate before serving, exactly as the CAN branch does. Without this a
+			// malformed `uds:` block was dropped by uds_nodes() in silence and the built-in
+			// default served in its place, so a suite could pass against the stock VIN while
+			// believing it had read the configured ECU.
+			for w in sim.validate_uds(nodes) {
+				eprintln('${ch.name}: ${w}')
+			}
+			mut declared := 0
+			for n in nodes {
+				if _ := n.uds {
+					declared++
+				}
+			}
 			mut dsrv := sim.uds_nodes(nodes)
+			if dsrv.len == 0 && declared > 0 {
+				// Refuse rather than substitute: answering with built-in data the project did
+				// not configure turns a broken config into a passing test.
+				eprintln('${ch.name}: all ${declared} configured UDS node(s) rejected — not starting a DoIP entity')
+				println('channel ${ch.name} (${ch.iface}): DoIP entity NOT started (bad uds config)')
+				continue
+			}
 			// One channel is one entity with one logical address, so extra UDS nodes have no
 			// address to answer on. Say which one won rather than silently serving the first.
 			if dsrv.len > 1 {
@@ -128,6 +148,20 @@ fn main() {
 					eprintln('${ch.name}: ${w}')
 				}
 				mut servers := sim.uds_nodes(peers)
+				// Same hazard as the DoIP branch: falling back to the built-in server when
+				// every CONFIGURED one was rejected makes a broken project look like a working
+				// ECU. Only an absence of `uds:` blocks earns the default.
+				mut declared := 0
+				for p in peers {
+					if _ := p.uds {
+						declared++
+					}
+				}
+				if servers.len == 0 && declared > 0 {
+					eprintln('${ch.name}: all ${declared} configured UDS node(s) rejected — not starting the default server in their place')
+					println('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s), NO UDS server (bad uds config)')
+					continue
+				}
 				if servers.len == 0 {
 					spawn diag_server_loop(ch.iface_with_bitrate(), ctl)
 					println('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + UDS server')

@@ -82,8 +82,9 @@ struct UdsConn {
 mut:
 	// The INTERFACE, not the CAN implementation: a connection may ride ISO-TP or DoIP, and
 	// uds.Client already accepts either (cmd/doip_smoke hands it a DoipClient directly).
-	ch  isotp.Channel
-	cli uds.Client
+	ch   isotp.Channel
+	cli  uds.Client
+	chan string // the channel this connection belongs to (DoIP reuse; see l_uds_open)
 }
 
 // Env is one scripting session: a Lua state plus the channels/connections it can
@@ -419,36 +420,58 @@ fn prot_of(nodes []project.NodeCfg, node string, msg string) sim.E2e {
 fn l_uds_open(l lua.State) int {
 	mut env := env_of(l)
 	name := l.arg_str(1)
-	tx := u32(l.arg_int(2))
-	rx := u32(l.arg_int(3))
+	// Negative = the caller omitted it (see the prelude): 0 is a valid arbitration id and must
+	// not be read as "unset".
+	txi := l.arg_int(2)
+	rxi := l.arg_int(3)
+	has_tx := txi >= 0
+	has_rx := rxi >= 0
+	tx := u32(txi)
+	rx := u32(rxi)
 	ci := env.find_chan(name) or { return l.fail('unknown channel "${name}"') }
 	// 29-bit addressing is inferred from the ids, exactly as the server side infers it: an
 	// address above 0x7FF cannot be 11-bit. Opened standard, SocketCAN masks 0x18DA10F1 to
 	// 0x0F1, so a script could not reach a 29-bit server the runner had correctly started.
 	info := env.chans[ci]
+	// A DoIP entity serves ONE TCP connection at a time — accept_and_serve stays inside the
+	// accepted connection until the peer disconnects, and nothing here closes a connection
+	// before the session ends. A second uds.open() on the same channel therefore connected and
+	// then timed out waiting for a routing activation that would never come. Hand back the
+	// live connection instead: it addresses the same entity, from the same tester address.
+	if info.carrier.doip {
+		// Argument check FIRST. Reusing before validating handed a bad call a good connection,
+		// so the refusal below silently stopped applying to every open after the first.
+		if has_tx || has_rx {
+			return l.fail('uds.open("${name}"): DoIP addressing comes from the channel (tester_address/ecu_address); drop tx/rx')
+		}
+		for i, c in env.conns {
+			if c.chan == name {
+				l.push_int(i)
+				return 1
+			}
+		}
+	}
 	// DoIP carries UDS over TCP with logical addresses, not over ISO-TP with CAN ids, so the
 	// tx/rx arguments do not apply — the addresses come from the channel's configuration and
 	// passing ids here is a mistake worth naming rather than ignoring.
 	ch := if info.carrier.doip {
-		if tx != 0 || rx != 0 {
-			return l.fail('uds.open("${name}"): DoIP addressing comes from the channel (tester_address/ecu_address); drop tx/rx')
-		}
 		isotp.Channel(doip.open_doip(info.carrier.host, info.carrier.port, info.carrier.tester,
 			info.carrier.ecu) or {
 			return l.fail('doip open failed on ${name} (${info.carrier.host}:${info.carrier.port}): ${err}')
 		})
 	} else {
-		// 0 = the caller omitted it; the standard physical pair is the CAN default.
-		ctx := if tx == 0 { u32(0x7E0) } else { tx }
-		crx := if rx == 0 { u32(0x7E8) } else { rx }
+		// Omitted, not zero: the standard physical pair is the CAN default.
+		ctx := if has_tx { tx } else { u32(0x7E0) }
+		crx := if has_rx { rx } else { u32(0x7E8) }
 		ext := ctx > 0x7FF || crx > 0x7FF
 		isotp.Channel(isotp.open_software(info.iface, ctx, crx, ext) or {
 			return l.fail('isotp open failed on ${name}: ${err}')
 		})
 	}
 	env.conns << UdsConn{
-		ch:  ch
-		cli: uds.new_client(ch)
+		ch:   ch
+		cli:  uds.new_client(ch)
+		chan: name
 	}
 	l.push_int(env.conns.len - 1)
 	return 1

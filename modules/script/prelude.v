@@ -93,10 +93,12 @@ end
 uds = {}
 function uds.open(channel, opts)
   opts = opts or {}
-  -- 0 means "not given": the CAN default (0x7E0/0x7E8) is applied on the V side, once the
-  -- carrier of the channel is known. Defaulting here would hand every DoIP open a pair of CAN
+  -- -1 means "not given". The CAN default (0x7E0/0x7E8) is applied on the V side, once the
+  -- carrier of the channel is known: defaulting here would hand every DoIP open a pair of CAN
   -- ids that DoIP has no use for, making an omitted option look identical to a wrong one.
-  local h = __uds_open(channel, opts.tx or 0, opts.rx or 0)
+  -- The sentinel is negative rather than 0 because 0 is a VALID arbitration id, and a script
+  -- that asks for it must reach id 0 rather than be quietly redirected to 0x7E0.
+  local h = __uds_open(channel, opts.tx or -1, opts.rx or -1)
   local self = { handle = h, channel = channel }
   function self:session(sub) return __uds_session(self.handle, sub or 0x01) end
   function self:read_did(did) return __uds_read_did(self.handle, did) end

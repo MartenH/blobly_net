@@ -109,10 +109,24 @@ outside a `test` aborts the script (and the runner reports it).
 ### Diagnostics — UDS
 
 ```lua
-local diag = uds.open(channel [, { tx = 0x7E0, rx = 0x7E8 }])
+local diag = uds.open(channel [, { tx = 0x7E0, rx = 0x7E8 }])   -- CAN / CAN-FD
+local diag = uds.open(channel)                                   -- DoIP
 ```
 
-Opens a UDS tester on `channel`. `tx`/`rx` are the ISO-TP CAN ids (defaults shown).
+Opens a UDS tester on `channel`. **The carrier follows the channel**, so the same
+script body works over either.
+
+On a **CAN** channel, `tx`/`rx` are the ISO-TP ids (defaults shown). `0` is a valid
+arbitration id and is honoured as one — omit the option to get the default, don't
+pass zero.
+
+On a **DoIP** channel there are no CAN ids: addressing is the logical pair
+configured on the channel (`tester_address` / `ecu_address`). Passing `tx`/`rx`
+there is an **error**, not an ignored argument — they cannot be honoured, and
+silently dropping them would let a test believe it had addressed something it had
+not. A second `uds.open` on the same DoIP channel returns the live connection: an
+entity serves one tester connection at a time.
+
 The returned object has:
 
 | Method | UDS service | Returns |
