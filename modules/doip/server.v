@@ -11,6 +11,7 @@ module doip
 
 import net
 import time
+import sync
 
 // Default entity identity (used by ServerCfg defaults and server_cfg()).
 pub const default_vin = 'BLOBLYNETV0SUT001'
@@ -45,6 +46,14 @@ pub struct DoipServer {
 	cfg     ServerCfg
 	handler DiagHandler @[required]
 mut:
+	// The ANNOUNCED VIN, which has to be able to follow the SERVED one: a UDS write to DID
+	// 0xF190 changes what the entity reports over TCP, and a fixed announcement would go on
+	// advertising the VIN it had at startup. Guarded because the write arrives on the TCP
+	// thread while the UDP loop reads it to answer discovery — replacing a string header
+	// unsynchronised lets an announcement observe a torn value. Only this field is mutable;
+	// the logical address, EID and GID never change, so they stay lock-free in cfg.
+	vin_mu sync.Mutex
+	vin    string
 	listener &net.TcpListener = unsafe { nil }
 	udp      &net.UdpConn     = unsafe { nil }
 	active   &net.TcpConn     = unsafe { nil } // the in-progress accepted connection (nil between)
@@ -53,10 +62,20 @@ mut:
 
 // new_server builds an entity with the given identity + UDS handler. Returns a
 // heap pointer so it can be shared with serving threads (spawn needs a reference).
+// announced_vin returns the VIN discovery should advertise right now.
+fn (mut s DoipServer) announced_vin() string {
+	s.vin_mu.lock()
+	v := s.vin
+	s.vin_mu.unlock()
+	return v
+}
+
 pub fn new_server(cfg ServerCfg, handler DiagHandler) &DoipServer {
+	// the announced VIN starts as the configured one and only moves if set_vin is called
 	return &DoipServer{
 		cfg:     cfg
 		handler: handler
+		vin:     cfg.vin
 	}
 }
 
@@ -190,9 +209,18 @@ pub fn (mut s DoipServer) serve_udp_once(timeout_ms int) ! {
 	}
 	msg := parse(buf[..n]) or { return }
 	if msg.payload_type == pt_vehicle_id_request {
-		ann := vehicle_announcement(s.cfg.vin, s.cfg.logical_address, s.cfg.eid, s.cfg.gid)
+		ann := vehicle_announcement(s.announced_vin(), s.cfg.logical_address, s.cfg.eid,
+			s.cfg.gid)
 		s.udp.write_to(addr, ann) or {}
 	}
+}
+
+// set_vin updates the VIN this entity ANNOUNCES, so discovery keeps naming the same ECU the
+// UDS server serves. Callers are responsible for the two agreeing; see cmd/script/run.v.
+pub fn (mut s DoipServer) set_vin(vin string) {
+	s.vin_mu.lock()
+	s.vin = vin
+	s.vin_mu.unlock()
 }
 
 // close stops the entity and releases its sockets. It is safe to call from a

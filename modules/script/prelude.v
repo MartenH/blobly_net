@@ -89,11 +89,28 @@ function sim.clear_fault(channel, node, message)
   __sim_fault(channel, node, message, "clear", 0, "")
 end
 
+-- ============================ discovery (DoIP) =============================
+doip = {}
+
+-- doip.discover(channel) -> { vin = "...", logical_address = 0x1000 }
+-- The identity the entity ANNOUNCES, which is not automatically the one it serves at
+-- DID 0xF190: a tester that finds one ECU on the network and reads another out of it has
+-- no way to tell which is the lie, so both are observable from a script.
+function doip.discover(channel)
+  local vin, addr = __doip_discover(channel)
+  return { vin = vin, logical_address = addr }
+end
+
 -- ============================ diagnostics (UDS) ============================
 uds = {}
 function uds.open(channel, opts)
   opts = opts or {}
-  local h = __uds_open(channel, opts.tx or 0x7E0, opts.rx or 0x7E8)
+  -- Passed through AS GIVEN, nil included. The CAN default (0x7E0/0x7E8) is applied on the V
+  -- side, once the carrier of the channel is known: defaulting here would hand every DoIP open
+  -- a pair of CAN ids that DoIP has no use for. No sentinel value is used, because every
+  -- sentinel is also a number a script might mean -- 0 is a valid arbitration id, and a
+  -- negative one is a mistake that must be reported rather than read as "omitted".
+  local h = __uds_open(channel, opts.tx, opts.rx)
   local self = { handle = h, channel = channel }
   function self:session(sub) return __uds_session(self.handle, sub or 0x01) end
   function self:read_did(did) return __uds_read_did(self.handle, did) end

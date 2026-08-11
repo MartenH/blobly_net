@@ -18,6 +18,7 @@ import transport
 import isotp
 import uds
 import sim
+import doip
 import script
 
 // Ctl is the shared run flag the simulation threads poll; set false to stop them.
@@ -76,6 +77,102 @@ fn main() {
 			key_iface: ch.iface
 			db:        db
 			nodes:     nodes // so a fault that cannot take effect can be refused
+			carrier:   script.carrier_of(ch)
+		}
+		// DoIP is a different carrier, not a CAN bus: no frames, no ISO-TP, and the entity is
+		// reached by logical address over TCP. Nothing outside modules/doip ever started one,
+		// so a `type: doip` channel printed "+ UDS server" while spawning a CAN responder on an
+		// interface no CAN transport can open — the project documented an entity that was never
+		// listening. Start the real thing here.
+		if ch.is_doip() {
+			if nodes.len == 0 {
+				println('channel ${ch.name} (${ch.iface}): DoIP tester only (no simulated entity)')
+				continue
+			}
+			host, port := ch.doip_endpoint()
+			// Validate before serving, exactly as the CAN branch does. Without this a
+			// malformed `uds:` block was dropped by uds_nodes() in silence and the built-in
+			// default served in its place, so a suite could pass against the stock VIN while
+			// believing it had read the configured ECU.
+			for w in sim.validate_uds(nodes) {
+				eprintln('${ch.name}: ${w}')
+			}
+			mut declared := 0
+			for n in nodes {
+				if _ := n.uds {
+					declared++
+				}
+			}
+			mut dsrv := sim.uds_nodes(nodes)
+			if dsrv.len == 0 && declared > 0 {
+				// Refuse rather than substitute: answering with built-in data the project did
+				// not configure turns a broken config into a passing test.
+				eprintln('${ch.name}: all ${declared} configured UDS node(s) rejected — not starting a DoIP entity')
+				// ABORT, not continue. Leaving the channel in place let scripts dial the
+				// endpoint anyway, and if another DoIP process holds it the suite passes
+				// against that one — the same wrong-ECU failure the bind check below exists
+				// to prevent, reached by skipping the bind entirely.
+				eprintln('refusing to run: scripts would dial ${ch.name} and reach whatever else is there')
+				exit(1)
+			}
+			// One channel is one entity with one logical address, so extra UDS nodes have no
+			// address to answer on. Say which one won rather than silently serving the first.
+			if dsrv.len > 1 {
+				eprintln('${ch.name}: ${dsrv.len} UDS nodes on one DoIP entity; serving "${dsrv[0].name}" (0x${ch.ecu_addr:04X})')
+			}
+			mut srv := if dsrv.len > 0 { dsrv[0].server } else { uds.default_server() }
+			// ONE identity. Discovery announces a VIN and DID 0xF190 serves one; if they can
+			// differ, a tester finds "BLOBLYNETGATEWAY1" on the network and reads something
+			// else out of the same entity, with nothing to say which is the lie. So the two
+			// are resolved to a single string here, and a genuine disagreement is refused
+			// rather than silently resolved in either direction.
+			mut announce := ch.vin
+			if dsrv.len > 0 {
+				// A CONFIGURED node: its DID is the identity. (The fallback server's 0xF190 is
+				// a module default, not a configuration, so it must not win the same way.)
+				if v := srv.dids[u16(0xF190)] {
+					node_vin := v.bytestr()
+					if ch.vin != '' && node_vin != ch.vin {
+						eprintln('${ch.name}: vin "${ch.vin}" and node "${dsrv[0].name}" DID 0xF190 "${node_vin}" are two identities for one entity')
+						eprintln('refusing to run: discovery and diagnostics would name different ECUs')
+						exit(1)
+					}
+					announce = node_vin
+				} else if ch.vin != '' {
+					// Announced but not served: reading 0xF190 would answer NRC while
+					// discovery advertised a VIN. Serve what is announced.
+					srv.dids[0xF190] = ch.vin.bytes()
+				}
+			} else if ch.vin != '' {
+				srv.dids[0xF190] = ch.vin.bytes()
+			}
+			if announce == '' {
+				// Nothing configured either way. server_cfg advertises its built-in default,
+				// so serve that same string — otherwise discovery names a VIN and reading the
+				// DID it just advertised answers NRC 0x31.
+				announce = doip.default_vin
+				srv.dids[0xF190] = announce.bytes()
+			}
+			if announce.len != 17 {
+				// vehicle_announcement zero-pads or truncates to 17 while the server returns
+				// the bytes as configured, so anything else advertises a different string than
+				// it serves. `vin:` is already forced to 17 by the parser; a node's DID is not.
+				eprintln('${ch.name}: VIN "${announce}" is ${announce.len} bytes, not 17 — discovery would advertise a padded or truncated string while 0xF190 serves this one')
+				exit(1)
+			}
+			// Bind HERE, not inside the spawned worker. Reported only to stderr, a failed bind
+			// left the run announcing an entity and carrying on — and if the port was held by
+			// another DoIP process serving the same built-in defaults, uds.open would connect
+			// to THAT and the suite would pass against the wrong ECU.
+			mut ent := doip_listen(host, port, doip.server_cfg(ch.ecu_addr, announce, ch.eid),
+				srv) or {
+				eprintln('${ch.name}: ${err}')
+				eprintln('refusing to run: a suite would connect to whatever else is on ${host}:${port}')
+				exit(1)
+			}
+			spawn doip_serve_loop(mut ent, ctl)
+			println('channel ${ch.name} (doip:${host}:${port}): DoIP entity, logical address 0x${ch.ecu_addr:04X}')
+			continue
 		}
 		if nodes.len > 0 {
 			// BOTH: the suffixed string opens the transport, the logical one keys faults.
@@ -103,6 +200,20 @@ fn main() {
 					eprintln('${ch.name}: ${w}')
 				}
 				mut servers := sim.uds_nodes(peers)
+				// Same hazard as the DoIP branch: falling back to the built-in server when
+				// every CONFIGURED one was rejected makes a broken project look like a working
+				// ECU. Only an absence of `uds:` blocks earns the default.
+				mut declared := 0
+				for p in peers {
+					if _ := p.uds {
+						declared++
+					}
+				}
+				if servers.len == 0 && declared > 0 {
+					eprintln('${ch.name}: all ${declared} configured UDS node(s) rejected — not starting the default server in their place')
+					println('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s), NO UDS server (bad uds config)')
+					continue
+				}
 				if servers.len == 0 {
 					spawn diag_server_loop(ch.iface_with_bitrate(), ctl)
 					println('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + UDS server')
@@ -199,6 +310,69 @@ fn uds_node_loop(iface string, rx u32, tx u32, ext bool, srv uds.Server, ctl &Ct
 		}
 	}
 	ch.close()
+}
+
+// VinSync lets the UDS handler reach the entity it is serving for. The handler must exist
+// before new_server() and the server before the handler can update it, so the link is made
+// after construction rather than captured at it.
+struct VinSync {
+mut:
+	srv &doip.DoipServer = unsafe { nil }
+}
+
+// doip_listen binds one simulated DoIP entity: the same uds.Server the CAN path serves,
+// behind a real TCP listener plus the UDP socket that answers discovery. Synchronous, so the
+// caller learns about a bind failure before any test runs.
+fn doip_listen(host string, port int, cfg doip.ServerCfg, srv uds.Server) !&doip.DoipServer {
+	mut us := srv
+	mut sync := &VinSync{}
+	handler := fn [mut us, mut sync] (req []u8) []u8 {
+		// A write to DID 0xF190 changes the entity's identity. Discovery builds announcements
+		// from the server's own VIN, so without this the entity serves the new one over TCP
+		// for the rest of the run while still ANNOUNCING the old.
+		//
+		// Decode the IDENTIFIER first and judge the data after. Requiring a payload to notice
+		// the write at all meant `2E F1 90` with no data — a well-formed request that clears
+		// the record — slipped past the guard entirely: the server cleared the VIN, answered
+		// positively, and discovery went on advertising the old one.
+		if w := uds.written_did(req) {
+			if w.did == 0xF190 {
+				if w.data.len != 17 {
+					// Any other length is zero-padded or truncated by the announcement while
+					// the server returns it whole — the same two-identity split, created at
+					// runtime. Refuse rather than accept what cannot be announced faithfully.
+					return [u8(0x7F), uds.sid_write_data_by_identifier, 0x31] // requestOutOfRange
+				}
+				resp := us.handle(req)
+				if resp.len > 0 && resp[0] == 0x6E {
+					sync.srv.set_vin(w.data.bytestr())
+				}
+				return resp
+			}
+		}
+		return us.handle(req)
+	}
+	mut s := doip.new_server(cfg, handler)
+	sync.srv = s
+	s.listen(host, port) or { return error('DoIP listen ${host}:${port} failed: ${err}') }
+	return s
+}
+
+// doip_serve_loop runs an already-bound entity until Stop.
+fn doip_serve_loop(mut s doip.DoipServer, ctl &Ctl) {
+	spawn doip_udp_loop(mut s, ctl)
+	for ctl.running {
+		// A timeout is the normal case (no tester connected), not a failure.
+		s.accept_and_serve(200) or { continue }
+	}
+	s.close()
+}
+
+// doip_udp_loop answers vehicle-identification requests, so Discover finds the entity.
+fn doip_udp_loop(mut s doip.DoipServer, ctl &Ctl) {
+	for ctl.running {
+		s.serve_udp_once(200) or { continue }
+	}
 }
 
 fn diag_server_loop(iface string, ctl &Ctl) {

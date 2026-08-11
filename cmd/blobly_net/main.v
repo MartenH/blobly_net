@@ -6061,10 +6061,28 @@ fn script_worker(app &App, path string) {
 	}
 	mut chans := []script.ChanInfo{}
 	for ch in a.chans {
+		// Disabled channels are NOT scriptable. The headless runner skips them when building
+		// its channel list, so leaving them here meant the same script could reach an ECU the
+		// project had explicitly switched off from the GUI, and report "unknown channel" for
+		// it headlessly. For a DoIP channel that means dialing a TCP endpoint the user turned
+		// off — and connecting to whatever else is listening there.
+		if !ch.enabled {
+			continue
+		}
 		mut sim_nodes := []project.NodeCfg{}
 		for sc in a.sims {
 			if sc.iface == ch.iface {
 				sim_nodes << sc.nodes
+			}
+		}
+		// The carrier comes from the PROJECT channel: the runtime Chan above carries a `doip`
+		// flag but not the logical addresses, and a DoIP open needs both. Matched by name, the
+		// same key the rest of the config editor uses.
+		mut pch := project.Channel{}
+		for c in a.proj.channels {
+			if c.name == ch.name {
+				pch = c
+				break
 			}
 		}
 		chans << script.ChanInfo{
@@ -6076,6 +6094,7 @@ fn script_worker(app &App, path string) {
 			// message was accepted with the wrong signal metadata.
 			db:        merge_dbs(ch.databases)
 			nodes:     sim_nodes // so a fault that cannot take effect can be refused
+			carrier:   script.carrier_of(pch)
 		}
 	}
 	mut env := script.new_env(chans) or {
