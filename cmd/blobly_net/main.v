@@ -6067,6 +6067,16 @@ fn script_worker(app &App, path string) {
 				sim_nodes << sc.nodes
 			}
 		}
+		// The carrier comes from the PROJECT channel: the runtime Chan above carries a `doip`
+		// flag but not the logical addresses, and a DoIP open needs both. Matched by name, the
+		// same key the rest of the config editor uses.
+		mut pch := project.Channel{}
+		for c in a.proj.channels {
+			if c.name == ch.name {
+				pch = c
+				break
+			}
+		}
 		chans << script.ChanInfo{
 			name:      ch.name
 			iface:     a.bitrate_iface(ch.iface) // pcan/kvaser: @<bitrate> so scripts open right
@@ -6076,6 +6086,7 @@ fn script_worker(app &App, path string) {
 			// message was accepted with the wrong signal metadata.
 			db:        merge_dbs(ch.databases)
 			nodes:     sim_nodes // so a fault that cannot take effect can be refused
+			carrier:   script.carrier_of(pch)
 		}
 	}
 	mut env := script.new_env(chans) or {

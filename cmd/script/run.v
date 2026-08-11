@@ -18,6 +18,7 @@ import transport
 import isotp
 import uds
 import sim
+import doip
 import script
 
 // Ctl is the shared run flag the simulation threads poll; set false to stop them.
@@ -76,6 +77,30 @@ fn main() {
 			key_iface: ch.iface
 			db:        db
 			nodes:     nodes // so a fault that cannot take effect can be refused
+			carrier:   script.carrier_of(ch)
+		}
+		// DoIP is a different carrier, not a CAN bus: no frames, no ISO-TP, and the entity is
+		// reached by logical address over TCP. Nothing outside modules/doip ever started one,
+		// so a `type: doip` channel printed "+ UDS server" while spawning a CAN responder on an
+		// interface no CAN transport can open — the project documented an entity that was never
+		// listening. Start the real thing here.
+		if ch.is_doip() {
+			if nodes.len == 0 {
+				println('channel ${ch.name} (${ch.iface}): DoIP tester only (no simulated entity)')
+				continue
+			}
+			host, port := ch.doip_endpoint()
+			mut dsrv := sim.uds_nodes(nodes)
+			// One channel is one entity with one logical address, so extra UDS nodes have no
+			// address to answer on. Say which one won rather than silently serving the first.
+			if dsrv.len > 1 {
+				eprintln('${ch.name}: ${dsrv.len} UDS nodes on one DoIP entity; serving "${dsrv[0].name}" (0x${ch.ecu_addr:04X})')
+			}
+			srv := if dsrv.len > 0 { dsrv[0].server } else { uds.default_server() }
+			spawn doip_entity_loop(host, port, doip.server_cfg(ch.ecu_addr, ch.vin, ch.eid),
+				srv, ctl)
+			println('channel ${ch.name} (doip:${host}:${port}): DoIP entity, logical address 0x${ch.ecu_addr:04X}')
+			continue
 		}
 		if nodes.len > 0 {
 			// BOTH: the suffixed string opens the transport, the logical one keys faults.
@@ -199,6 +224,33 @@ fn uds_node_loop(iface string, rx u32, tx u32, ext bool, srv uds.Server, ctl &Ct
 		}
 	}
 	ch.close()
+}
+
+// doip_entity_loop hosts one simulated DoIP entity: the same uds.Server the CAN path serves,
+// behind a real TCP listener plus the UDP socket that answers discovery.
+fn doip_entity_loop(host string, port int, cfg doip.ServerCfg, srv uds.Server, ctl &Ctl) {
+	mut us := srv
+	handler := fn [mut us] (req []u8) []u8 {
+		return us.handle(req)
+	}
+	mut s := doip.new_server(cfg, handler)
+	s.listen(host, port) or {
+		eprintln('doip listen ${host}:${port}: ${err}')
+		return
+	}
+	spawn doip_udp_loop(mut s, ctl)
+	for ctl.running {
+		// A timeout is the normal case (no tester connected), not a failure.
+		s.accept_and_serve(200) or { continue }
+	}
+	s.close()
+}
+
+// doip_udp_loop answers vehicle-identification requests, so Discover finds the entity.
+fn doip_udp_loop(mut s doip.DoipServer, ctl &Ctl) {
+	for ctl.running {
+		s.serve_udp_once(200) or { continue }
+	}
 }
 
 fn diag_server_loop(iface string, ctl &Ctl) {

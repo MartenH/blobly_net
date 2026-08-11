@@ -14,6 +14,7 @@ import time
 import lua
 import transport
 import isotp
+import doip
 import sim
 import uds
 import candb
@@ -35,6 +36,38 @@ pub:
 	// work — `bad_crc` on a message with no configured checksum changes no bits, and silently
 	// succeeding there is the difference between a test that fails and a test that lies.
 	nodes []project.NodeCfg
+	// How UDS reaches this channel. uds.open() built an ISO-TP-over-CAN transport for every
+	// channel whatever its type, so a DoIP channel failed with "No such device" from the CAN
+	// layer: the tool could simulate a DoIP ECU it could not then test.
+	carrier Carrier
+}
+
+// Carrier is the transport UDS rides on this channel. Derived from the project channel by
+// carrier_of() rather than assembled by each caller — the runner and the GUI build ChanInfo
+// separately, and a carrier only one of them filled in would make scripts behave differently
+// depending on which one launched them.
+pub struct Carrier {
+pub:
+	doip   bool
+	host   string
+	port   int
+	tester u16
+	ecu    u16
+}
+
+// carrier_of derives the UDS carrier from a project channel.
+pub fn carrier_of(ch project.Channel) Carrier {
+	if !ch.is_doip() {
+		return Carrier{}
+	}
+	host, port := ch.doip_endpoint()
+	return Carrier{
+		doip:   true
+		host:   host
+		port:   port
+		tester: ch.tester_addr
+		ecu:    ch.ecu_addr
+	}
 }
 
 // TestResult is one test() outcome collected during a run.
@@ -47,7 +80,9 @@ pub:
 
 struct UdsConn {
 mut:
-	ch  &isotp.SoftChannel
+	// The INTERFACE, not the CAN implementation: a connection may ride ISO-TP or DoIP, and
+	// uds.Client already accepts either (cmd/doip_smoke hands it a DoipClient directly).
+	ch  isotp.Channel
 	cli uds.Client
 }
 
@@ -390,9 +425,26 @@ fn l_uds_open(l lua.State) int {
 	// 29-bit addressing is inferred from the ids, exactly as the server side infers it: an
 	// address above 0x7FF cannot be 11-bit. Opened standard, SocketCAN masks 0x18DA10F1 to
 	// 0x0F1, so a script could not reach a 29-bit server the runner had correctly started.
-	ext := tx > 0x7FF || rx > 0x7FF
-	ch := isotp.open_software(env.chans[ci].iface, tx, rx, ext) or {
-		return l.fail('isotp open failed on ${name}: ${err}')
+	info := env.chans[ci]
+	// DoIP carries UDS over TCP with logical addresses, not over ISO-TP with CAN ids, so the
+	// tx/rx arguments do not apply — the addresses come from the channel's configuration and
+	// passing ids here is a mistake worth naming rather than ignoring.
+	ch := if info.carrier.doip {
+		if tx != 0 || rx != 0 {
+			return l.fail('uds.open("${name}"): DoIP addressing comes from the channel (tester_address/ecu_address); drop tx/rx')
+		}
+		isotp.Channel(doip.open_doip(info.carrier.host, info.carrier.port, info.carrier.tester,
+			info.carrier.ecu) or {
+			return l.fail('doip open failed on ${name} (${info.carrier.host}:${info.carrier.port}): ${err}')
+		})
+	} else {
+		// 0 = the caller omitted it; the standard physical pair is the CAN default.
+		ctx := if tx == 0 { u32(0x7E0) } else { tx }
+		crx := if rx == 0 { u32(0x7E8) } else { rx }
+		ext := ctx > 0x7FF || crx > 0x7FF
+		isotp.Channel(isotp.open_software(info.iface, ctx, crx, ext) or {
+			return l.fail('isotp open failed on ${name}: ${err}')
+		})
 	}
 	env.conns << UdsConn{
 		ch:  ch
