@@ -1631,19 +1631,7 @@ fn draw_activity_bar(mut app App) {
 	// Buses ▸ "Configure…", which is the actual editor — two near-identical names, only one of
 	// which could change anything.
 	if vgui.toggle_button('Cfg', app.show_config, -1) {
-		if app.show_config {
-			// HIDING it: draw_config's close-time apply never runs, because the window is not
-			// drawn again — so a half-typed bus name or bitrate would be resynced away from
-			// the old model when the window is next opened, while app.dirty still claimed
-			// there were changes.
-			if !app.running && app.dirty {
-				app.apply_edits()
-			}
-			app.show_config = false
-		} else {
-			app.show_config = true
-			app.sync_cfg_bufs()
-		}
+		app.set_config_open(!app.show_config)
 	}
 	if vgui.toggle_button('Sim', app.show_sim, -1) {
 		app.show_sim = !app.show_sim
@@ -1771,7 +1759,12 @@ fn draw_menubar(mut app App, rx u64) {
 			app.show_buses = vgui.menu_item_check('Buses', app.show_buses)
 			app.show_sim = vgui.menu_item_check('Simulation', app.show_sim)
 			app.show_symbols = vgui.menu_item_check('Symbols', app.show_symbols)
-			app.show_config = vgui.menu_item_check('Configuration', app.show_config)
+			// through the same helper: hiding it from HERE also skips draw_config's close-time
+			// apply, and this path was missed when the activity-bar one was fixed
+			cfg_on := vgui.menu_item_check('Configuration', app.show_config)
+			if cfg_on != app.show_config {
+				app.set_config_open(cfg_on)
+			}
 			app.show_trace = vgui.menu_item_check('Trace', app.show_trace)
 			app.show_ftrace = vgui.menu_item_check('Trace (filter)', app.show_ftrace)
 			app.show_signals = vgui.menu_item_check('Signals', app.show_signals)
@@ -4718,6 +4711,27 @@ fn (mut app App) load_cfg_text() {
 	app.cfg_err = ''
 }
 
+// set_config_open is the ONE way the Configuration window is shown or hidden.
+//
+// Hiding it by any route that is not its own [X] means draw_config never runs again, so its
+// close-time apply_edits() never fires and a half-typed bus field is resynced away from the old
+// model when the window reopens. There were three such routes and the fix reached one of them,
+// so they now share this.
+fn (mut app App) set_config_open(open bool) {
+	if open == app.show_config {
+		return
+	}
+	if !open {
+		if !app.running && app.dirty {
+			app.apply_edits()
+		}
+		app.show_config = false
+		return
+	}
+	app.show_config = true
+	app.sync_cfg_bufs()
+}
+
 // cfg_invalidate drops the cached project text, so the File tab re-reads it next render.
 // Called wherever the file or the active project changes underneath the editor.
 fn (mut app App) cfg_invalidate() {
@@ -4736,7 +4750,7 @@ fn (mut app App) draw_config_text() {
 			// action is withheld rather than offered and silently destructive.
 			vgui.text_colored(230, 120, 120, '  …and this text has unsaved edits too — Save the text, or Revert it, before folding bus edits in')
 			if vgui.small_button('Revert the text') {
-				app.cfg_text_dirty = false
+				app.cfg_invalidate() // clearing the flag alone leaves the cache holding the edits
 				app.load_cfg_text()
 			}
 		} else {
@@ -4763,7 +4777,10 @@ fn (mut app App) draw_config_text() {
 	}
 	vgui.same_line()
 	if vgui.button('Reload') {
-		app.cfg_text_dirty = false
+		// invalidate, not just un-dirty: load_cfg_text returns early while cfg_loaded still
+		// matches the path, so the edited buffer would stay on screen with its marker cleared
+		// and a later Save would write text the user believed was discarded
+		app.cfg_invalidate()
 		app.load_cfg_text()
 	}
 	if app.cfg_text_dirty {
@@ -4950,6 +4967,16 @@ fn (mut app App) apply_edits() {
 
 // save_as sets the path (from the browser) and saves.
 fn (mut app App) save_as(path string) {
+	// BEFORE the path moves. The centralised guard in save_project refuses the write, but by
+	// then proj_path already names the new destination — so the next File render sees a cache
+	// miss and replaces the unsaved buffer with that file's contents, or an empty error buffer
+	// for a file that does not exist yet.
+	if app.cfg_text_dirty {
+		app.notify('not saved — the Configuration ▸ File tab has unsaved text; save or revert it there first')
+		app.show_config = true
+		app.cfg_tab = 1
+		return
+	}
 	mut p := path
 	if !p.ends_with('.blobnet') && !p.ends_with('.yml') && !p.ends_with('.yaml') {
 		p += '.blobnet'
