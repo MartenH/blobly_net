@@ -116,7 +116,19 @@ fn main() {
 			if dsrv.len > 1 {
 				eprintln('${ch.name}: ${dsrv.len} UDS nodes on one DoIP entity; serving "${dsrv[0].name}" (0x${ch.ecu_addr:04X})')
 			}
-			srv := if dsrv.len > 0 { dsrv[0].server } else { uds.default_server() }
+			mut srv := if dsrv.len > 0 { dsrv[0].server } else { uds.default_server() }
+			// Discovery announces ch.vin; DID 0xF190 must agree, or a tester finds
+			// "BLOBLYNETGATEWAY1" on the network and then reads BLOBLYNETV0SUT001 out of the
+			// same entity — two identities for one ECU, and no way to tell which is the lie.
+			if ch.vin != '' {
+				if dsrv.len == 0 {
+					srv.dids[0xF190] = ch.vin.bytes()
+				} else if existing := srv.dids[u16(0xF190)] {
+					if existing.bytestr() != ch.vin {
+						eprintln('${ch.name}: announced VIN "${ch.vin}" differs from the node\'s DID 0xF190 "${existing.bytestr()}" — serving the node\'s')
+					}
+				}
+			}
 			// Bind HERE, not inside the spawned worker. Reported only to stderr, a failed bind
 			// left the run announcing an entity and carrying on — and if the port was held by
 			// another DoIP process serving the same built-in defaults, uds.open would connect

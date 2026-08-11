@@ -61,6 +61,8 @@ jobs:
           # DoIP needs its own project: the entity is an Ethernet endpoint, not a bus on
           # sim-demo, and it binds real localhost TCP/UDP 13400 while it runs.
           ./scripts/runtests.sh --project projects/doip-demo.blobnet tests/diag_doip.lua
+          # Three entities on 127.0.0.1/.2/.3: announced identity must match served identity.
+          ./scripts/runtests.sh --project projects/doip-network-demo.blobnet tests/doip_network.lua
 
   gui-build:
     name: linux • GUI (imgui) compile-link
