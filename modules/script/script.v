@@ -202,6 +202,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__sleep', l_sleep)
 	env.st.register('__sim_fault', l_sim_fault)
 	env.st.register('__uds_open', l_uds_open)
+	env.st.register('__doip_discover', l_doip_discover)
 	env.st.register('__uds_session', l_uds_session)
 	env.st.register('__uds_read_did', l_uds_read_did)
 	env.st.register('__uds_tester_present', l_uds_tester_present)
@@ -459,15 +460,6 @@ fn l_uds_open(l lua.State) int {
 			// (server.v read_message), and handing back a dead socket would fail the next
 			// request on a channel that is in fact accepting connections again.
 			c.cli.tester_present() or {
-				// A NEGATIVE RESPONSE is proof of life: the ECU received the request and
-				// refused it (wrong session, service unavailable). Reconnecting on that would
-				// tear down a healthy connection and reset the session and security state of
-				// every handle sharing this slot — turning a legitimate refusal into a
-				// silently unauthenticated retry. Only a transport failure means death.
-				if err is uds.NegativeResponse {
-					l.push_int(i)
-					return 1
-				}
 				// Stale: reconnect INTO THE SAME SLOT, so the handle a script is already
 				// holding keeps working rather than being orphaned by the repair.
 				c.ch.close()
@@ -534,6 +526,26 @@ fn l_uds_read_did(l lua.State) int {
 	data := c.cli.read_data_by_identifier(u16(l.arg_int(2))) or { return l.fail(err.msg()) }
 	l.push_bytes(data)
 	return 1
+}
+
+// l_doip_discover asks a DoIP channel's endpoint to identify itself (ISO 13400 vehicle
+// identification). Scriptable because the ANNOUNCED identity and the SERVED identity are
+// separate values that can disagree — and a test that can only read DID 0xF190 cannot see
+// half of that.
+fn l_doip_discover(l lua.State) int {
+	mut env := env_of(l)
+	name := l.arg_str(1)
+	ci := env.find_chan(name) or { return l.fail('unknown channel "${name}"') }
+	info := env.chans[ci]
+	if !info.carrier.doip {
+		return l.fail('doip.discover("${name}"): not a DoIP channel')
+	}
+	v := doip.discover(info.carrier.host, info.carrier.port, 1200) or {
+		return l.fail('doip.discover("${name}") on ${info.carrier.host}:${info.carrier.port}: ${err}')
+	}
+	l.push_str(v.vin)
+	l.push_int(i64(v.logical_address))
+	return 2
 }
 
 fn l_uds_tester_present(l lua.State) int {

@@ -312,15 +312,39 @@ fn uds_node_loop(iface string, rx u32, tx u32, ext bool, srv uds.Server, ctl &Ct
 	ch.close()
 }
 
+// VinSync lets the UDS handler reach the entity it is serving for. The handler must exist
+// before new_server() and the server before the handler can update it, so the link is made
+// after construction rather than captured at it.
+struct VinSync {
+mut:
+	srv &doip.DoipServer = unsafe { nil }
+}
+
 // doip_listen binds one simulated DoIP entity: the same uds.Server the CAN path serves,
 // behind a real TCP listener plus the UDP socket that answers discovery. Synchronous, so the
 // caller learns about a bind failure before any test runs.
 fn doip_listen(host string, port int, cfg doip.ServerCfg, srv uds.Server) !&doip.DoipServer {
 	mut us := srv
-	handler := fn [mut us] (req []u8) []u8 {
-		return us.handle(req)
+	mut sync := &VinSync{}
+	handler := fn [mut us, mut sync] (req []u8) []u8 {
+		// A write to DID 0xF190 changes the entity's identity. Discovery reads its VIN from
+		// the server's config at request time, so without this the entity serves the new VIN
+		// over TCP for the rest of the run while still ANNOUNCING the old one.
+		writes_vin := req.len > 3 && req[0] == 0x2E && req[1] == 0xF1 && req[2] == 0x90
+		if writes_vin && req.len - 3 != 17 {
+			// A VIN of any other length is zero-padded or truncated by the announcement while
+			// the server would return it whole — the same two-identity split, created at
+			// runtime. Refuse rather than accept a value that cannot be announced faithfully.
+			return [u8(0x7F), 0x2E, 0x31] // requestOutOfRange
+		}
+		resp := us.handle(req)
+		if writes_vin && resp.len > 0 && resp[0] == 0x6E {
+			sync.srv.set_vin(req[3..].bytestr())
+		}
+		return resp
 	}
 	mut s := doip.new_server(cfg, handler)
+	sync.srv = s
 	s.listen(host, port) or { return error('DoIP listen ${host}:${port} failed: ${err}') }
 	return s
 }

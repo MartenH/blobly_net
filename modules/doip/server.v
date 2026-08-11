@@ -42,9 +42,12 @@ pub fn server_cfg(logical_address u16, vin string, eid []u8) ServerCfg {
 pub type DiagHandler = fn (req []u8) []u8
 
 pub struct DoipServer {
-	cfg     ServerCfg
 	handler DiagHandler @[required]
 mut:
+	// Mutable because the ANNOUNCED identity has to be able to follow the SERVED one: a
+	// UDS write to DID 0xF190 changes what the entity reports over TCP, and an immutable
+	// announcement would go on advertising the VIN it had at startup.
+	cfg ServerCfg
 	listener &net.TcpListener = unsafe { nil }
 	udp      &net.UdpConn     = unsafe { nil }
 	active   &net.TcpConn     = unsafe { nil } // the in-progress accepted connection (nil between)
@@ -192,6 +195,17 @@ pub fn (mut s DoipServer) serve_udp_once(timeout_ms int) ! {
 	if msg.payload_type == pt_vehicle_id_request {
 		ann := vehicle_announcement(s.cfg.vin, s.cfg.logical_address, s.cfg.eid, s.cfg.gid)
 		s.udp.write_to(addr, ann) or {}
+	}
+}
+
+// set_vin updates the VIN this entity ANNOUNCES, so discovery keeps naming the same ECU the
+// UDS server serves. Callers are responsible for the two agreeing; see cmd/script/run.v.
+pub fn (mut s DoipServer) set_vin(vin string) {
+	s.cfg = ServerCfg{
+		logical_address: s.cfg.logical_address
+		vin:             vin
+		eid:             s.cfg.eid
+		gid:             s.cfg.gid
 	}
 }
 

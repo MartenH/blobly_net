@@ -89,6 +89,18 @@ function sim.clear_fault(channel, node, message)
   __sim_fault(channel, node, message, "clear", 0, "")
 end
 
+-- ============================ discovery (DoIP) =============================
+doip = {}
+
+-- doip.discover(channel) -> { vin = "...", logical_address = 0x1000 }
+-- The identity the entity ANNOUNCES, which is not automatically the one it serves at
+-- DID 0xF190: a tester that finds one ECU on the network and reads another out of it has
+-- no way to tell which is the lie, so both are observable from a script.
+function doip.discover(channel)
+  local vin, addr = __doip_discover(channel)
+  return { vin = vin, logical_address = addr }
+end
+
 -- ============================ diagnostics (UDS) ============================
 uds = {}
 function uds.open(channel, opts)

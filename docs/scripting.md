@@ -127,6 +127,16 @@ silently dropping them would let a test believe it had addressed something it ha
 not. A second `uds.open` on the same DoIP channel returns the live connection: an
 entity serves one tester connection at a time.
 
+On a DoIP channel the entity's ANNOUNCED identity is a separate value from the one
+it serves at DID 0xF190, so both are observable:
+
+```lua
+local ann = doip.discover(channel)   -- { vin = "...", logical_address = 0x1000 }
+```
+
+A tester that discovers one ECU and reads a different VIN out of it has no way to
+tell which is the lie, so a suite should check they agree.
+
 The returned object has:
 
 | Method | UDS service | Returns |

@@ -45,3 +45,21 @@ test("CAN ids are refused on a DoIP channel", function()
   check.truthy(not ok, "expected uds.open to reject tx/rx on a DoIP channel")
   log("refused with:", tostring(err))
 end)
+
+-- The entity has TWO identity surfaces: what discovery announces and what DID 0xF190 serves.
+-- A write to that DID changes one of them, so the other has to move with it — otherwise the
+-- entity spends the rest of the run advertising a VIN it no longer reports.
+test("writing the VIN moves the announcement with it", function()
+  local d = uds.open("DoIP1")
+  check.equal(doip.discover("DoIP1").vin, d:read_did(0xF190))
+  d:write_did(0xF190, "REWRITTENVIN00001")
+  check.equal(d:read_did(0xF190), "REWRITTENVIN00001")
+  check.equal(doip.discover("DoIP1").vin, "REWRITTENVIN00001")
+end)
+
+test("a VIN the announcement could not carry is refused", function()
+  local d = uds.open("DoIP1")
+  local before = d:read_did(0xF190)
+  check.nrc(0x31, function() d:write_did(0xF190, "TOOSHORT") end)
+  check.equal(d:read_did(0xF190), before)   -- and nothing changed
+end)
