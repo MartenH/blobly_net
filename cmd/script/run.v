@@ -146,6 +146,20 @@ fn main() {
 			} else if ch.vin != '' {
 				srv.dids[0xF190] = ch.vin.bytes()
 			}
+			if announce == '' {
+				// Nothing configured either way. server_cfg advertises its built-in default,
+				// so serve that same string — otherwise discovery names a VIN and reading the
+				// DID it just advertised answers NRC 0x31.
+				announce = doip.default_vin
+				srv.dids[0xF190] = announce.bytes()
+			}
+			if announce.len != 17 {
+				// vehicle_announcement zero-pads or truncates to 17 while the server returns
+				// the bytes as configured, so anything else advertises a different string than
+				// it serves. `vin:` is already forced to 17 by the parser; a node's DID is not.
+				eprintln('${ch.name}: VIN "${announce}" is ${announce.len} bytes, not 17 — discovery would advertise a padded or truncated string while 0xF190 serves this one')
+				exit(1)
+			}
 			// Bind HERE, not inside the spawned worker. Reported only to stderr, a failed bind
 			// left the run announcing an entity and carrying on — and if the port was held by
 			// another DoIP process serving the same built-in defaults, uds.open would connect

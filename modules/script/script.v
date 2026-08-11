@@ -459,6 +459,15 @@ fn l_uds_open(l lua.State) int {
 			// (server.v read_message), and handing back a dead socket would fail the next
 			// request on a channel that is in fact accepting connections again.
 			c.cli.tester_present() or {
+				// A NEGATIVE RESPONSE is proof of life: the ECU received the request and
+				// refused it (wrong session, service unavailable). Reconnecting on that would
+				// tear down a healthy connection and reset the session and security state of
+				// every handle sharing this slot — turning a legitimate refusal into a
+				// silently unauthenticated retry. Only a transport failure means death.
+				if err is uds.NegativeResponse {
+					l.push_int(i)
+					return 1
+				}
 				// Stale: reconnect INTO THE SAME SLOT, so the handle a script is already
 				// holding keeps working rather than being orphaned by the repair.
 				c.ch.close()
