@@ -505,6 +505,15 @@ void vgui_console_text(const char* id, const char* text, int len, int nlines) {
                               ImGuiInputTextFlags_ReadOnly);
     ImGui::PopStyleColor();
 }
+// EDITABLE multiline text — the project-file editor. Fixed capacity, because ImGui writes
+// into the caller's buffer: the caller sizes it with headroom and is told when it is nearly
+// full, rather than silently truncating what someone typed.
+int vgui_text_edit(const char* id, char* buf, int cap, float h) {
+    // NO AllowTabInput: the only caller edits YAML, and a literal tab is rejected outright by
+    // the parser ("tabs are not supported for indentation") — so the shortcut guaranteed the
+    // very error the editor reports. Tab keeps its normal focus behaviour.
+    return ImGui::InputTextMultiline(id, buf, (size_t)cap, ImVec2(-FLT_MIN, h)) ? 1 : 0;
+}
 // pin the current child's scroll to the bottom (call after emitting console output lines).
 void vgui_scroll_bottom(void) { ImGui::SetScrollHereY(1.0f); }
 
