@@ -8,14 +8,20 @@
 
 test("each entity serves the VIN it announces", function()
   local expect = {
-    Gateway   = "BLOBLYNETGATEWAY1",
-    EngineECU = "BLOBLYNETENGINE01",
-    BodyECU   = "BLOBLYNETBODYEC01",
+    Gateway   = { vin = "BLOBLYNETGATEWAY1", addr = 0x1000 },
+    EngineECU = { vin = "BLOBLYNETENGINE01", addr = 0x1001 },
+    BodyECU   = { vin = "BLOBLYNETBODYEC01", addr = 0x1002 },
   }
-  for chan, vin in pairs(expect) do
-    local d = uds.open(chan)
-    check.equal(d:read_did(0xF190), vin)
-    log(chan, "->", vin)
+  for chan, want in pairs(expect) do
+    -- BOTH surfaces. Reading only the DID left every entity free to advertise the default,
+    -- or another entity's VIN and logical address, with this suite still green — the test
+    -- named the property it was not checking.
+    local served = uds.open(chan):read_did(0xF190)
+    local ann = doip.discover(chan)
+    check.equal(served, want.vin)
+    check.equal(ann.vin, want.vin)
+    check.equal(ann.logical_address, want.addr)
+    log(chan, "announced", ann.vin, string.format("0x%X", ann.logical_address))
   end
 end)
 

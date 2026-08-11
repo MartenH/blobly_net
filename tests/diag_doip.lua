@@ -63,3 +63,14 @@ test("a VIN the announcement could not carry is refused", function()
   check.nrc(0x31, function() d:write_did(0xF190, "TOOSHORT") end)
   check.equal(d:read_did(0xF190), before)   -- and nothing changed
 end)
+
+-- `2E F1 90` with no payload is a well-formed request that clears the record. Checking the
+-- data length before the identifier missed it entirely: the server cleared the VIN, answered
+-- positively, and discovery kept advertising the old one.
+test("a zero-length VIN write is refused, not silently applied", function()
+  local d = uds.open("DoIP1")
+  local before = d:read_did(0xF190)
+  check.nrc(0x31, function() d:raw(string.char(0x2E, 0xF1, 0x90)) end)
+  check.equal(d:read_did(0xF190), before)
+  check.equal(doip.discover("DoIP1").vin, before)
+end)

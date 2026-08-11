@@ -327,21 +327,30 @@ fn doip_listen(host string, port int, cfg doip.ServerCfg, srv uds.Server) !&doip
 	mut us := srv
 	mut sync := &VinSync{}
 	handler := fn [mut us, mut sync] (req []u8) []u8 {
-		// A write to DID 0xF190 changes the entity's identity. Discovery reads its VIN from
-		// the server's config at request time, so without this the entity serves the new VIN
-		// over TCP for the rest of the run while still ANNOUNCING the old one.
-		writes_vin := req.len > 3 && req[0] == 0x2E && req[1] == 0xF1 && req[2] == 0x90
-		if writes_vin && req.len - 3 != 17 {
-			// A VIN of any other length is zero-padded or truncated by the announcement while
-			// the server would return it whole — the same two-identity split, created at
-			// runtime. Refuse rather than accept a value that cannot be announced faithfully.
-			return [u8(0x7F), 0x2E, 0x31] // requestOutOfRange
+		// A write to DID 0xF190 changes the entity's identity. Discovery builds announcements
+		// from the server's own VIN, so without this the entity serves the new one over TCP
+		// for the rest of the run while still ANNOUNCING the old.
+		//
+		// Decode the IDENTIFIER first and judge the data after. Requiring a payload to notice
+		// the write at all meant `2E F1 90` with no data — a well-formed request that clears
+		// the record — slipped past the guard entirely: the server cleared the VIN, answered
+		// positively, and discovery went on advertising the old one.
+		if w := uds.written_did(req) {
+			if w.did == 0xF190 {
+				if w.data.len != 17 {
+					// Any other length is zero-padded or truncated by the announcement while
+					// the server returns it whole — the same two-identity split, created at
+					// runtime. Refuse rather than accept what cannot be announced faithfully.
+					return [u8(0x7F), uds.sid_write_data_by_identifier, 0x31] // requestOutOfRange
+				}
+				resp := us.handle(req)
+				if resp.len > 0 && resp[0] == 0x6E {
+					sync.srv.set_vin(w.data.bytestr())
+				}
+				return resp
+			}
 		}
-		resp := us.handle(req)
-		if writes_vin && resp.len > 0 && resp[0] == 0x6E {
-			sync.srv.set_vin(req[3..].bytestr())
-		}
-		return resp
+		return us.handle(req)
 	}
 	mut s := doip.new_server(cfg, handler)
 	sync.srv = s
