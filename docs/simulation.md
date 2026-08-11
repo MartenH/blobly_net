@@ -252,6 +252,54 @@ address, which is the point.
 
 The **Diagnostics panel** picks which target to address when more than one is configured.
 
+## The same ECU over Ethernet (DoIP)
+
+A `type: doip` channel is diagnostics over TCP, not a bus: no frames, no database, no
+generators. It is addressed by a **logical pair** rather than CAN ids, so a node on it needs no
+`rx`/`tx` — supplying them is reported as ignored:
+
+```yaml
+  - name: DoIP1
+    type: doip
+    interface: doip:127.0.0.1:13400
+    tester_address: "0x0E80"      # us
+    ecu_address: "0x1000"         # the entity
+    simulation:
+      - name: SUT
+        uds:                      # no rx/tx: addressing is the pair above
+          dids:
+            - { id: "0xF190", text: "BLOBLYNETV0SUT001" }
+```
+
+`sim-demo` ships this alongside CAN1 and CAN2, serving the **same identity** as its `SUT`. A
+script reads either carrier with the same body, because the carrier follows the channel:
+
+```lua
+local can = uds.open("CAN1", { tx = 0x7E0, rx = 0x7E8 })
+local eth = uds.open("DoIP1")                    -- no ids: they cannot be honoured here
+check.equal(eth:read_did(0xF190), can:read_did(0xF190))
+```
+
+**One channel is one entity at one logical address.** Extra UDS nodes on it have no address to
+answer on — the first is served and the rest are reported. Several ECUs means several channels,
+as `doip-network-demo.blobnet` does on `127.0.0.1/.2/.3`.
+
+An entity has **two identity surfaces**: what discovery announces and what DID `0xF190` serves.
+They are resolved to one string at startup — a disagreement between `vin:` and a node's DID is
+refused rather than picked — and a write to `0xF190` moves the announcement with it. Both are
+observable:
+
+```lua
+check.equal(doip.discover("DoIP1").vin, uds.open("DoIP1"):read_did(0xF190))
+```
+
+Payload limits follow the carrier, not the ECU: DoIP carries a 64 KiB diagnostic message, so a
+DID too large for one ISO-TP transfer is served here and reported there.
+
+> **Headless only for now.** `scripts/runtests.sh` brings the entity up and binds port 13400
+> while it runs. Pressing ▶ Start in the GUI does **not** host one — the channel stays `idle`
+> and the Diagnostics panel cannot reach it. See [doip.md](doip.md).
+
 ## Fault injection
 
 A rest-bus that only sends correct traffic answers one question: does the ECU work when
@@ -470,9 +518,7 @@ See [scripting.md](scripting.md) for the test API.
   simulated ECU serves the DIDs and DTCs the project gives it; it does not model routines
   (`0x31`), memory access (`0x23`/`0x3D`), or transfer (`0x34`-`0x37`), and writing a DID does
   not affect the signals the ECU transmits.
-- **No receive-side validation.** Protection is applied to what is *sent*; the counter and
-  checksum of *received* frames are not checked, so a fault in the ECU under test's own
-  protection is not flagged automatically.
-- **No LIN.** CAN and CAN-FD only; LIN is on the roadmap.
+- **No DoIP entity from the GUI.** Headless only today; see the DoIP section above.
+- **No LIN.** CAN, CAN-FD and DoIP; LIN is on the roadmap.
 - **Generators are open-loop.** A signal's value follows its formula and cannot react to what
   the ECU under test sends. Closed-loop behaviour belongs in a Lua script.
