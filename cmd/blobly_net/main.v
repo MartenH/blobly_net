@@ -181,6 +181,7 @@ mut:
 	// answer: a project switch or a structured Save left old YAML on screen that Save would
 	// then write over the new file.
 	cfg_text_dirty bool
+	cfg_chans      int // channels the text yields; cached, because parsing per frame is not free
 
 	// Script (Lua on a worker thread)
 	script_path_buf []u8
@@ -1138,12 +1139,6 @@ fn load_ui_font() {
 // app.proj, then derive the runtime view (rebuild_from_proj). On a parse error the current
 // project is left untouched.
 fn (mut app App) load_project(path string) {
-	// Opening another project abandons whatever is in the File tab's buffer. That used to
-	// happen in silence; set_project's cfg_invalidate does the abandoning, so the warning has
-	// to be issued here, before it.
-	if app.cfg_text_dirty {
-		app.notify('discarded unsaved Configuration ▸ File text from ${os.base(app.proj_path)}')
-	}
 	app.stop()
 	proj := project.load(path) or {
 		eprintln('load ${path}: ${err}')
@@ -1186,6 +1181,13 @@ fn (app &App) resolve_asset(path string) string {
 }
 
 fn (mut app App) set_project(proj project.Project, path string) {
+	// Warn HERE, not in load_project: this is the function that abandons the File tab's buffer
+	// (via cfg_invalidate below), so every caller is covered — File ▸ New bypassed a warning
+	// placed in load_project — and load_project's error path returns before reaching this, so
+	// the log no longer claims text was discarded by a load that then failed.
+	if app.cfg_text_dirty {
+		app.notify('discarded unsaved Configuration ▸ File text from ${os.base(app.proj_path)}')
+	}
 	// A fault armed against the OLD project must not survive into a new one. Keys carry the
 	// interface, node and message name, and a different project reusing all three would
 	// silently start with frames dropped or corrupted — as if the tool were broken.
@@ -4696,8 +4698,12 @@ fn (mut app App) load_cfg_text() {
 		// Still allocate: draw_config_text renders the box regardless, and ImGui cannot be
 		// handed a zero-capacity buffer.
 		app.cfg_text = mkbuf('', 4096)
-		app.cfg_loaded = ''
+		// Mark it LOADED even though it failed: the tab calls this every frame, and leaving the
+		// marker empty meant re-attempting the read and reallocating the buffer at frame rate
+		// for as long as the file stayed missing. Reload and invalidation still retry.
+		app.cfg_loaded = app.proj_path
 		app.cfg_text_dirty = false
+		app.cfg_chans = -1
 		app.cfg_err = 'cannot read ${app.proj_path}: ${err}'
 		return
 	}
@@ -4708,7 +4714,11 @@ fn (mut app App) load_cfg_text() {
 	app.cfg_text_len = txt.len
 	app.cfg_loaded = app.proj_path
 	app.cfg_text_dirty = false
-	app.cfg_err = ''
+	// Validate what was just READ. Assuming a file on disk is well-formed made the status claim
+	// "YAML well-formed · -1 channel(s)" for a file the very next Save would reject — the tool
+	// disagreeing with itself about the bytes on screen.
+	app.cfg_err = cfg_text_error(txt)
+	app.cfg_chans = cfg_text_channels(txt)
 }
 
 // set_config_open is the ONE way the Configuration window is shown or hidden.
@@ -4744,7 +4754,7 @@ fn (mut app App) draw_config_text() {
 	if app.dirty {
 		// The two tabs edit different things — app.proj versus the file on disk — and either
 		// action below overwrites one side, so say which is at risk before offering it.
-		vgui.text_colored(230, 170, 70, '● unsaved bus edits are not in this text')
+		vgui.text_colored(230, 170, 70, '● unsaved edits in the model (buses/generators) are not in this text')
 		if app.cfg_text_dirty {
 			// Both sides modified: writing the model would overwrite the typing, so that
 			// action is withheld rather than offered and silently destructive.
@@ -4754,12 +4764,15 @@ fn (mut app App) draw_config_text() {
 				app.load_cfg_text()
 			}
 		} else {
-			if vgui.small_button('Save bus edits into the file') {
+			if vgui.small_button('Save those edits into the file') {
 				app.save_project()
 				app.load_cfg_text() // re-read what was just written
 			}
 			vgui.same_line()
-			if vgui.small_button('Discard bus edits') {
+			// "bus edits" was too narrow: app.dirty is also set by the Generators panel, and
+			// revert re-reads the whole project, so a generator edit went with it under a label
+			// that did not mention it.
+			if vgui.small_button('Discard ALL unsaved edits (buses + generators)') {
 				app.revert_proj_from_disk()
 			}
 		}
@@ -4798,7 +4811,9 @@ fn (mut app App) draw_config_text() {
 	} else {
 		// The channel count, not just "OK": an empty file parses perfectly and yields zero
 		// channels, so "OK" alone would reassure someone whose edit had emptied the project.
-		n := cfg_text_channels(vgui.buf_str(app.cfg_text))
+		// Cached — recomputing it per frame reparsed the whole document at frame rate, and a
+		// typing frame parsed it twice.
+		n := app.cfg_chans
 		if n == 0 && app.proj.channels.len > 0 {
 			vgui.text_colored(230, 170, 70, 'YAML is well-formed but yields NO channels — saving would empty this project')
 		} else {
@@ -4808,7 +4823,9 @@ fn (mut app App) draw_config_text() {
 	if vgui.text_edit('##cfgtext', mut app.cfg_text, 460) {
 		// Validate as you type, so a mistake is visible where it was made rather than at Save.
 		app.cfg_text_dirty = true
-		app.cfg_err = cfg_text_error(vgui.buf_str(app.cfg_text))
+		t := vgui.buf_str(app.cfg_text)
+		app.cfg_err = cfg_text_error(t)
+		app.cfg_chans = cfg_text_channels(t)
 	}
 }
 
@@ -4913,7 +4930,7 @@ fn (mut app App) revert_proj_from_disk() {
 	app.dirty = false
 	app.cfg_invalidate()
 	app.load_cfg_text()
-	app.notify('bus edits discarded')
+	app.notify('unsaved model edits discarded (buses + generators)')
 }
 
 // non_empty is `?string` sugar: Some(s) when s is not empty.
