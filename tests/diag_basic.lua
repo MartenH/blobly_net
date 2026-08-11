@@ -35,3 +35,20 @@ end)
 test("unknown DID -> negative response (NRC 0x31 requestOutOfRange)", function()
   check.nrc(0x31, function() diag:read_did(0xABCD) end)
 end)
+
+-- Arbitration id 0 is valid. It must reach id 0 — where nothing answers — rather than
+-- being read as "unset" and quietly redirected to the 0x7E0 server, which would make this
+-- read succeed against an ECU the script never asked for.
+test("explicit CAN id 0 is not silently replaced by the default", function()
+  local zero = uds.open("CAN1", { tx = 0, rx = 0 })
+  local ok, got = pcall(function() return zero:read_did(0xF190) end)
+  check.truthy(not ok, "expected no responder at id 0, got: " .. tostring(got))
+end)
+
+-- A negative id is a caller mistake (a typo, a bad computation), not an omission. Reading it
+-- as "unset" would answer from the default ECU and report a pass for a request that was never
+-- valid — the same false positive as the id-0 case above, from the opposite direction.
+test("a negative CAN id is rejected, not treated as omitted", function()
+  local ok = pcall(function() uds.open("CAN1", { tx = -2 }) end)
+  check.truthy(not ok, "expected uds.open to reject tx = -2")
+end)

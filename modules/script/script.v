@@ -14,6 +14,7 @@ import time
 import lua
 import transport
 import isotp
+import doip
 import sim
 import uds
 import candb
@@ -35,6 +36,38 @@ pub:
 	// work — `bad_crc` on a message with no configured checksum changes no bits, and silently
 	// succeeding there is the difference between a test that fails and a test that lies.
 	nodes []project.NodeCfg
+	// How UDS reaches this channel. uds.open() built an ISO-TP-over-CAN transport for every
+	// channel whatever its type, so a DoIP channel failed with "No such device" from the CAN
+	// layer: the tool could simulate a DoIP ECU it could not then test.
+	carrier Carrier
+}
+
+// Carrier is the transport UDS rides on this channel. Derived from the project channel by
+// carrier_of() rather than assembled by each caller — the runner and the GUI build ChanInfo
+// separately, and a carrier only one of them filled in would make scripts behave differently
+// depending on which one launched them.
+pub struct Carrier {
+pub:
+	doip   bool
+	host   string
+	port   int
+	tester u16
+	ecu    u16
+}
+
+// carrier_of derives the UDS carrier from a project channel.
+pub fn carrier_of(ch project.Channel) Carrier {
+	if !ch.is_doip() {
+		return Carrier{}
+	}
+	host, port := ch.doip_endpoint()
+	return Carrier{
+		doip:   true
+		host:   host
+		port:   port
+		tester: ch.tester_addr
+		ecu:    ch.ecu_addr
+	}
 }
 
 // TestResult is one test() outcome collected during a run.
@@ -47,8 +80,11 @@ pub:
 
 struct UdsConn {
 mut:
-	ch  &isotp.SoftChannel
-	cli uds.Client
+	// The INTERFACE, not the CAN implementation: a connection may ride ISO-TP or DoIP, and
+	// uds.Client already accepts either (cmd/doip_smoke hands it a DoipClient directly).
+	ch   isotp.Channel
+	cli  uds.Client
+	chan string // the channel this connection belongs to (DoIP reuse; see l_uds_open)
 }
 
 // Env is one scripting session: a Lua state plus the channels/connections it can
@@ -166,6 +202,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__sleep', l_sleep)
 	env.st.register('__sim_fault', l_sim_fault)
 	env.st.register('__uds_open', l_uds_open)
+	env.st.register('__doip_discover', l_doip_discover)
 	env.st.register('__uds_session', l_uds_session)
 	env.st.register('__uds_read_did', l_uds_read_did)
 	env.st.register('__uds_tester_present', l_uds_tester_present)
@@ -384,19 +421,94 @@ fn prot_of(nodes []project.NodeCfg, node string, msg string) sim.E2e {
 fn l_uds_open(l lua.State) int {
 	mut env := env_of(l)
 	name := l.arg_str(1)
-	tx := u32(l.arg_int(2))
-	rx := u32(l.arg_int(3))
+	// Presence is carried by nil, not by a magic value: 0 is a valid arbitration id, and a
+	// negative one is a caller mistake — treating either as "omitted" silently redirects the
+	// request to 0x7E0/0x7E8 and reports a result from an ECU the script never addressed.
+	has_tx := !l.arg_is_nil(2)
+	has_rx := !l.arg_is_nil(3)
+	txi := l.arg_int(2)
+	rxi := l.arg_int(3)
+	if has_tx && (txi < 0 || txi > 0x1FFF_FFFF) {
+		return l.fail('uds.open("${name}"): tx = ${txi} is not a CAN identifier (0..0x1FFFFFFF)')
+	}
+	if has_rx && (rxi < 0 || rxi > 0x1FFF_FFFF) {
+		return l.fail('uds.open("${name}"): rx = ${rxi} is not a CAN identifier (0..0x1FFFFFFF)')
+	}
+	tx := u32(txi)
+	rx := u32(rxi)
 	ci := env.find_chan(name) or { return l.fail('unknown channel "${name}"') }
 	// 29-bit addressing is inferred from the ids, exactly as the server side infers it: an
 	// address above 0x7FF cannot be 11-bit. Opened standard, SocketCAN masks 0x18DA10F1 to
 	// 0x0F1, so a script could not reach a 29-bit server the runner had correctly started.
-	ext := tx > 0x7FF || rx > 0x7FF
-	ch := isotp.open_software(env.chans[ci].iface, tx, rx, ext) or {
-		return l.fail('isotp open failed on ${name}: ${err}')
+	info := env.chans[ci]
+	// A DoIP entity serves ONE TCP connection at a time — accept_and_serve stays inside the
+	// accepted connection until the peer disconnects, and nothing here closes a connection
+	// before the session ends. A second uds.open() on the same channel therefore connected and
+	// then timed out waiting for a routing activation that would never come. Hand back the
+	// live connection instead: it addresses the same entity, from the same tester address.
+	if info.carrier.doip {
+		// Argument check FIRST. Reusing before validating handed a bad call a good connection,
+		// so the refusal below silently stopped applying to every open after the first.
+		if has_tx || has_rx {
+			return l.fail('uds.open("${name}"): DoIP addressing comes from the channel (tester_address/ecu_address); drop tx/rx')
+		}
+		for i, mut c in env.conns {
+			if c.chan != name {
+				continue
+			}
+			// Prove it is still there. The entity closes an idle connection after 60s
+			// (server.v read_message), and handing back a dead socket would fail the next
+			// request on a channel that is in fact accepting connections again.
+			c.cli.tester_present() or {
+				// A NEGATIVE RESPONSE is proof of life: the ECU received the request and
+				// refused it (wrong session, service unavailable). Reconnecting on that would
+				// tear down a healthy connection and reset the session and security state of
+				// every handle sharing this slot, turning a legitimate refusal into a silently
+				// unauthenticated retry. ONLY a transport failure means death.
+				if !probe_says_dead(err) {
+					l.push_int(i)
+					return 1
+				}
+				// Stale: reconnect INTO THE SAME SLOT, so the handle a script is already
+				// holding keeps working rather than being orphaned by the repair.
+				c.ch.close()
+				fresh := doip.open_doip(info.carrier.host, info.carrier.port, info.carrier.tester,
+					info.carrier.ecu) or {
+					return l.fail('doip reconnect failed on ${name} (${info.carrier.host}:${info.carrier.port}): ${err}')
+				}
+				env.conns[i] = UdsConn{
+					ch:   fresh
+					cli:  uds.new_client(fresh)
+					chan: name
+				}
+				l.push_int(i)
+				return 1
+			}
+			l.push_int(i)
+			return 1
+		}
+	}
+	// DoIP carries UDS over TCP with logical addresses, not over ISO-TP with CAN ids, so the
+	// tx/rx arguments do not apply — the addresses come from the channel's configuration and
+	// passing ids here is a mistake worth naming rather than ignoring.
+	ch := if info.carrier.doip {
+		isotp.Channel(doip.open_doip(info.carrier.host, info.carrier.port, info.carrier.tester,
+			info.carrier.ecu) or {
+			return l.fail('doip open failed on ${name} (${info.carrier.host}:${info.carrier.port}): ${err}')
+		})
+	} else {
+		// Omitted, not zero: the standard physical pair is the CAN default.
+		ctx := if has_tx { tx } else { u32(0x7E0) }
+		crx := if has_rx { rx } else { u32(0x7E8) }
+		ext := ctx > 0x7FF || crx > 0x7FF
+		isotp.Channel(isotp.open_software(info.iface, ctx, crx, ext) or {
+			return l.fail('isotp open failed on ${name}: ${err}')
+		})
 	}
 	env.conns << UdsConn{
-		ch:  ch
-		cli: uds.new_client(ch)
+		ch:   ch
+		cli:  uds.new_client(ch)
+		chan: name
 	}
 	l.push_int(env.conns.len - 1)
 	return 1
@@ -423,6 +535,40 @@ fn l_uds_read_did(l lua.State) int {
 	data := c.cli.read_data_by_identifier(u16(l.arg_int(2))) or { return l.fail(err.msg()) }
 	l.push_bytes(data)
 	return 1
+}
+
+// l_doip_discover asks a DoIP channel's endpoint to identify itself (ISO 13400 vehicle
+// identification). Scriptable because the ANNOUNCED identity and the SERVED identity are
+// separate values that can disagree — and a test that can only read DID 0xF190 cannot see
+// half of that.
+fn l_doip_discover(l lua.State) int {
+	mut env := env_of(l)
+	name := l.arg_str(1)
+	ci := env.find_chan(name) or { return l.fail('unknown channel "${name}"') }
+	info := env.chans[ci]
+	if !info.carrier.doip {
+		return l.fail('doip.discover("${name}"): not a DoIP channel')
+	}
+	v := doip.discover(info.carrier.host, info.carrier.port, 1200) or {
+		return l.fail('doip.discover("${name}") on ${info.carrier.host}:${info.carrier.port}: ${err}')
+	}
+	l.push_str(v.vin)
+	l.push_int(i64(v.logical_address))
+	return 2
+}
+
+// probe_says_dead decides whether a failed liveness probe means the connection is gone.
+//
+// A NEGATIVE RESPONSE is proof of life: the ECU received the request and refused it (wrong
+// session, service unavailable). Reconnecting on that tears down a healthy connection and
+// resets the session and security state of every handle sharing the slot — turning a
+// legitimate refusal into a silently unauthenticated retry. Only a TRANSPORT failure is death.
+//
+// A named predicate because the simulated server always answers 0x3E positively, so no project
+// can reach this from a Lua suite: it fires against a real ECU on a bench, where it cannot be
+// caught by CI. The distinction is at least pinned by a unit test.
+fn probe_says_dead(err IError) bool {
+	return err !is uds.NegativeResponse
 }
 
 fn l_uds_tester_present(l lua.State) int {

@@ -85,6 +85,29 @@ pub fn (mut c Client) raw(req []u8) ![]u8 {
 	return error('UDS: too many "response pending" replies')
 }
 
+// DidWrite is a decoded WriteDataByIdentifier request: which identifier it targets and the
+// value it carries. `data` may be EMPTY — `2E F1 90` with no payload is a well-formed request
+// that clears the record, and a caller checking the length before the identifier would not
+// see it at all.
+pub struct DidWrite {
+pub:
+	did  u16
+	data []u8
+}
+
+// written_did decodes a 0x2E request. Lives here rather than in a caller because reading UDS
+// off the wire is this module's job: a second interpretation elsewhere is a second thing to
+// get wrong, and the length-before-identifier version already was.
+pub fn written_did(req []u8) ?DidWrite {
+	if req.len < 3 || req[0] != sid_write_data_by_identifier {
+		return none
+	}
+	return DidWrite{
+		did:  u16(req[1]) << 8 | u16(req[2])
+		data: req[3..].clone()
+	}
+}
+
 // read_data_by_identifier (0x22) returns just the data record for `did`.
 pub fn (mut c Client) read_data_by_identifier(did u16) ![]u8 {
 	resp := c.raw([sid_read_data_by_identifier, u8(did >> 8), u8(did)])!
