@@ -116,6 +116,7 @@ fn C.vgui_input_text(&char, &char, int) int
 fn C.vgui_console_input(&char, &char, int) int
 fn C.vgui_scroll_bottom()
 fn C.vgui_console_text(&char, &char, int, int)
+fn C.vgui_text_edit(&char, &char, int, f32) int
 fn C.vgui_input_double(&char, &f64) int
 fn C.vgui_input_int(&char, &int) int
 fn C.vgui_set_next_item_width(f32)
@@ -472,6 +473,13 @@ pub fn console_input(label string, mut buf []u8) bool {
 		return false
 	}
 	return C.vgui_console_input(label.str, unsafe { &char(&buf[0]) }, buf.len) == 1
+}
+
+// text_edit renders an EDITABLE multiline box `h` pixels high, writing into `buf` in place.
+// Tab inserts a tab rather than moving focus, since the content is indented YAML. Returns true
+// on the frames where the text changed.
+pub fn text_edit(id string, mut buf []u8, h f32) bool {
+	return C.vgui_text_edit(id.str, &char(buf.data), buf.len, h) == 1
 }
 
 // console_text renders s as read-only but SELECTABLE console text (native mouse marking,

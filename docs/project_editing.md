@@ -3,6 +3,38 @@
 Status: **IMPLEMENTED** 2026-07-05 (schema v2 + File lifecycle + file browser + Configuration
 editor + per-bus Trace, all 7 steps). Target: the Dear ImGui app `cmd/blobly_net`.
 
+## Two tabs: Buses and File
+
+The **Configuration** window (activity bar ▸ **Cfg**, or View ▸ Configuration, or
+Buses ▸ Configure…) has two views of the same project:
+
+- **Buses** — the structured editor: add, remove, enable, adapter, address, bitrate, DBCs,
+  DoIP addresses, replay source. What the rest of this document describes.
+- **File** — the `.blobnet` itself, edited as text.
+
+The File tab exists because the structured editor covers **buses only**, while most of what a
+project says has no form at all: simulated ECUs and their signal generators, response rules,
+`protect:`, per-ECU `uds:`, channel-level `verify:`, and interactive senders. Without it those
+are reachable only by leaving the application.
+
+It edits the **text**, and saves the text — `to_yaml()` does not preserve comments, and a
+`.blobnet` is where a bench setup explains itself to the next person. Round-tripping through the
+model would silently strip every comment in the file.
+
+**What the check does and does not tell you.** The status line reads *"YAML well-formed · N
+channel(s) — syntax only, not a config check"*, and that wording is deliberate: `project.parse`
+rejects malformed YAML (unterminated flow collections, tab indentation) and little else. A file
+with no `project:` key, an unknown key, a channel with no name or a non-numeric bitrate all parse
+happily — defaulted or ignored. The channel count is shown because it is the number that reveals
+an edit which quietly emptied something.
+
+One save is refused outright: text that is well-formed but yields **no channels** over a project
+that had some. That is a truncated buffer or a mangled top level, never an intended edit.
+
+Switching to File with unsaved bus edits says so, and offers to save them first or discard them
+— the two tabs edit different things (the in-memory project versus the file on disk) and merging
+them silently would lose one side.
+
 ## Goal
 
 Let a user start from nothing and, entirely in the GUI, **add buses, pick an adapter,

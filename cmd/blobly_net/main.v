@@ -133,7 +133,6 @@ mut:
 	show_diag      bool
 	show_gen       bool
 	show_script    bool
-	show_busconfig bool
 	show_doip      bool
 	show_network   bool
 	show_stats     bool
@@ -167,6 +166,16 @@ mut:
 	diag_did_buf []u8
 	diag_sel     int // which DiagTarget the panel addresses
 	diag_plan    []DiagTarget // what start() actually spawned, per bus
+	// The Configuration window's File tab: the project's own TEXT, edited in place.
+	//
+	// Text and not a re-serialisation, because `to_yaml()` does not preserve comments and this
+	// file is where a bench setup is explained to the next person. Saving re-writes exactly
+	// what is in the box; `parse()` is used only to refuse a file that would not load.
+	cfg_tab      int // 0 = buses, 1 = file
+	cfg_text     []u8
+	cfg_text_len int    // bytes loaded, to notice when the box is nearly full
+	cfg_err      string // parse error holding back a save ('' = the text parses)
+	cfg_loaded   string // which path cfg_text holds ('' = nothing loaded)
 
 	// Script (Lua on a worker thread)
 	script_path_buf []u8
@@ -1515,9 +1524,6 @@ fn main() {
 		if app.show_symbols {
 			draw_symbols(mut app)
 		}
-		if app.show_busconfig {
-			draw_busconfig(mut app, chans)
-		}
 		if app.show_stats {
 			draw_stats(mut app, chans, rx)
 		}
@@ -1603,8 +1609,14 @@ fn draw_activity_bar(mut app App) {
 	if vgui.toggle_button('Bus', app.show_buses, -1) {
 		app.show_buses = !app.show_buses
 	}
-	if vgui.toggle_button('Cfg', app.show_busconfig, -1) {
-		app.show_busconfig = !app.show_busconfig
+	// One way in. This used to open a READ-ONLY summary sitting one click from
+	// Buses ▸ "Configure…", which is the actual editor — two near-identical names, only one of
+	// which could change anything.
+	if vgui.toggle_button('Cfg', app.show_config, -1) {
+		app.show_config = !app.show_config
+		if app.show_config {
+			app.sync_cfg_bufs()
+		}
 	}
 	if vgui.toggle_button('Sim', app.show_sim, -1) {
 		app.show_sim = !app.show_sim
@@ -1732,7 +1744,7 @@ fn draw_menubar(mut app App, rx u64) {
 			app.show_buses = vgui.menu_item_check('Buses', app.show_buses)
 			app.show_sim = vgui.menu_item_check('Simulation', app.show_sim)
 			app.show_symbols = vgui.menu_item_check('Symbols', app.show_symbols)
-			app.show_busconfig = vgui.menu_item_check('Bus Config', app.show_busconfig)
+			app.show_config = vgui.menu_item_check('Configuration', app.show_config)
 			app.show_trace = vgui.menu_item_check('Trace', app.show_trace)
 			app.show_ftrace = vgui.menu_item_check('Trace (filter)', app.show_ftrace)
 			app.show_signals = vgui.menu_item_check('Signals', app.show_signals)
@@ -2935,6 +2947,24 @@ fn draw_config(mut app App) {
 	if app.cfg_bufs.len != app.proj.channels.len {
 		app.sync_cfg_bufs()
 	}
+	// Two views of one configuration: the structured bus editor, and the file itself. The file
+	// tab exists because most of what a project says — simulated ECUs, generators, responses,
+	// protection, per-ECU UDS, verification, senders — has no structured editor at all, so
+	// without it those are only reachable by leaving the app.
+	if vgui.small_button(if app.cfg_tab == 0 { '[ Buses ]' } else { '  Buses  ' }) {
+		app.cfg_tab = 0
+	}
+	vgui.same_line()
+	if vgui.small_button(if app.cfg_tab == 1 { '[ File ]' } else { '  File  ' }) {
+		app.cfg_tab = 1
+		app.load_cfg_text()
+	}
+	vgui.separator()
+	if app.cfg_tab == 1 {
+		app.draw_config_text()
+		vgui.end()
+		return
+	}
 	if vgui.button('+ Add bus') {
 		app.add_bus()
 	}
@@ -3148,34 +3178,6 @@ fn (mut app App) draw_bus_editor(i int) bool {
 	return false
 }
 
-// draw_busconfig shows each channel's configuration (type, bitrate/timing, DBCs, manifest).
-fn draw_busconfig(mut app App, chans []Chan) {
-	vis, op := vgui.begin_closable('Bus Config', app.show_busconfig)
-	app.show_busconfig = op
-	if !vis {
-		vgui.end()
-		return
-	}
-	for c in chans {
-		vgui.separator_text('${c.name}  (${c.iface})')
-		vgui.text('type: ${c.typ}    mode: ${c.mode}    enabled: ${c.enabled}')
-		if c.doip {
-			vgui.text('DoIP endpoint (Ethernet diagnostics)')
-		} else {
-			du := if c.data_bitrate > 0 { '  data ${c.data_bitrate}' } else { '' }
-			vgui.text('bitrate: ${c.bitrate}${du}    listen-only: ${c.listen_only}')
-		}
-		if c.databases.len > 0 {
-			vgui.text('dbc: ${c.databases.join(', ')}')
-		}
-		if c.manifest != '' {
-			vgui.text('manifest: ${c.manifest}')
-		}
-	}
-	vgui.end()
-}
-
-// draw_doip: discover DoIP entities on a host (or a running DoIP channel).
 fn draw_doip(mut app App) {
 	vis, op := vgui.begin_closable('DoIP Discovery', app.show_doip)
 	app.show_doip = op
@@ -4647,6 +4649,142 @@ fn (mut app App) sync_senders_into_proj() {
 
 // save_project writes the whole project to its file (config + generators). An unsaved
 // project (no path) routes to Save As. Reformats the .blobnet — comments are not preserved.
+// load_cfg_text reads the project file into the edit buffer.
+//
+// Only when the buffer does not already hold this path: re-reading on every frame — or every
+// tab switch — would throw away whatever the user had typed.
+fn (mut app App) load_cfg_text() {
+	if app.cfg_loaded == app.proj_path && app.proj_path != '' {
+		return
+	}
+	if app.proj_path == '' {
+		app.cfg_text = mkbuf('', 4096)
+		app.cfg_loaded = ''
+		app.cfg_err = 'no file yet — save the project once, then it can be edited here'
+		return
+	}
+	txt := os.read_file(app.proj_path) or {
+		app.cfg_err = 'cannot read ${app.proj_path}: ${err}'
+		return
+	}
+	// Generous headroom: ImGui writes into this buffer and cannot grow it, so the room to type
+	// has to be reserved up front. The fill level is shown once it gets close.
+	cap := if txt.len * 3 > 65536 { txt.len * 3 } else { 65536 }
+	app.cfg_text = mkbuf(txt, cap)
+	app.cfg_text_len = txt.len
+	app.cfg_loaded = app.proj_path
+	app.cfg_err = ''
+}
+
+// draw_config_text is the File tab: edit the project as text, validate, write it back.
+fn (mut app App) draw_config_text() {
+	if app.dirty {
+		// The two tabs edit different things — app.proj versus the file on disk — and merging
+		// them silently would lose one side. Say which, and offer the way out.
+		vgui.text_colored(230, 170, 70, '● unsaved bus edits are not in this text')
+		if vgui.small_button('Save them first') {
+			app.save_project()
+			app.cfg_loaded = '' // re-read what was just written
+			app.load_cfg_text()
+		}
+		vgui.same_line()
+		if vgui.small_button('Discard them and reload the file') {
+			app.cfg_loaded = ''
+			app.load_cfg_text()
+			app.dirty = false
+		}
+		vgui.separator()
+	}
+	if vgui.button('Save') && app.cfg_err == '' {
+		app.save_cfg_text()
+	}
+	vgui.same_line()
+	if vgui.button('Reload') {
+		app.cfg_loaded = ''
+		app.load_cfg_text()
+	}
+	vgui.same_line()
+	vgui.text_dim(if app.proj_path == '' { '(unsaved project)' } else { app.proj_path })
+	used := vgui.buf_str(app.cfg_text).len
+	if used > app.cfg_text.len - 1024 {
+		vgui.text_colored(230, 120, 120, 'buffer nearly full (${used}/${app.cfg_text.len}) — Save, then Reload for more room')
+	}
+	if app.cfg_err != '' {
+		vgui.text_colored(230, 120, 120, app.cfg_err)
+	} else {
+		// The channel count, not just "OK": an empty file parses perfectly and yields zero
+		// channels, so "OK" alone would reassure someone whose edit had emptied the project.
+		n := cfg_text_channels(vgui.buf_str(app.cfg_text))
+		if n == 0 && app.proj.channels.len > 0 {
+			vgui.text_colored(230, 170, 70, 'YAML is well-formed but yields NO channels — saving would empty this project')
+		} else {
+			vgui.text_dim('YAML well-formed · ${n} channel(s) — syntax only, not a config check')
+		}
+	}
+	if vgui.text_edit('##cfgtext', mut app.cfg_text, 460) {
+		// Validate as you type, so a mistake is visible where it was made rather than at Save.
+		app.cfg_err = cfg_text_error(vgui.buf_str(app.cfg_text))
+	}
+}
+
+// cfg_text_error returns why this text would not load, or '' if it parses.
+//
+// What this can and cannot promise, measured rather than assumed: `parse` rejects malformed
+// YAML — unterminated flow collections, tab indentation — and nothing else. A file with no
+// `project:` key, an unknown key, a channel with no name, or a non-numeric bitrate all parse
+// happily, defaulting or ignoring. So this is a SYNTAX check, and the UI says so instead of
+// claiming the configuration is valid.
+fn cfg_text_error(txt string) string {
+	p := project.parse(txt) or { return '${err}' }
+	if !p.is_supported() {
+		return p.version_note()
+	}
+	return ''
+}
+
+// cfg_text_channels reports how many channels the text yields — the number that tells a reader
+// whether an edit did what they meant, and the one that catches the destructive case below.
+fn cfg_text_channels(txt string) int {
+	p := project.parse(txt) or { return -1 }
+	return p.channels.len
+}
+
+// save_cfg_text writes the edit buffer back to the project file and reloads from it.
+//
+// The TEXT is written, not a re-serialisation of the parsed model: the model does not carry
+// comments, and this file is where a bench setup explains itself.
+fn (mut app App) save_cfg_text() {
+	txt := vgui.buf_str(app.cfg_text)
+	if e := non_empty(cfg_text_error(txt)) {
+		app.cfg_err = e
+		app.notify('not saved — ${e}')
+		return
+	}
+	// Refuse the one edit that silently destroys work: a well-formed file that parses to no
+	// channels at all, over a project that had some. Almost always a truncated buffer or a
+	// mangled top level, never a thing anyone means to save.
+	if cfg_text_channels(txt) == 0 && app.proj.channels.len > 0 {
+		app.cfg_err = 'refused: this text yields no channels, which would empty the project — use Reload to get the file back'
+		app.notify('not saved — it would empty the project')
+		return
+	}
+	path := app.proj_path
+	os.write_file(path, txt) or {
+		app.notify('save failed: ${err}')
+		return
+	}
+	app.notify('saved -> ${path}')
+	app.dirty = false
+	app.cfg_loaded = '' // the file is the truth now; re-read it after the reload
+	app.load_project(path) // rebuild channels, sims, senders — everything the text may have changed
+	app.load_cfg_text()
+}
+
+// non_empty is `?string` sugar: Some(s) when s is not empty.
+fn non_empty(s string) ?string {
+	return if s == '' { none } else { s }
+}
+
 fn (mut app App) save_project() {
 	if app.proj_path == '' {
 		app.open_browser('saveas')
