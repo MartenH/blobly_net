@@ -444,11 +444,31 @@ fn l_uds_open(l lua.State) int {
 		if has_tx || has_rx {
 			return l.fail('uds.open("${name}"): DoIP addressing comes from the channel (tester_address/ecu_address); drop tx/rx')
 		}
-		for i, c in env.conns {
-			if c.chan == name {
+		for i, mut c in env.conns {
+			if c.chan != name {
+				continue
+			}
+			// Prove it is still there. The entity closes an idle connection after 60s
+			// (server.v read_message), and handing back a dead socket would fail the next
+			// request on a channel that is in fact accepting connections again.
+			c.cli.tester_present() or {
+				// Stale: reconnect INTO THE SAME SLOT, so the handle a script is already
+				// holding keeps working rather than being orphaned by the repair.
+				c.ch.close()
+				fresh := doip.open_doip(info.carrier.host, info.carrier.port, info.carrier.tester,
+					info.carrier.ecu) or {
+					return l.fail('doip reconnect failed on ${name} (${info.carrier.host}:${info.carrier.port}): ${err}')
+				}
+				env.conns[i] = UdsConn{
+					ch:   fresh
+					cli:  uds.new_client(fresh)
+					chan: name
+				}
 				l.push_int(i)
 				return 1
 			}
+			l.push_int(i)
+			return 1
 		}
 	}
 	// DoIP carries UDS over TCP with logical addresses, not over ISO-TP with CAN ids, so the

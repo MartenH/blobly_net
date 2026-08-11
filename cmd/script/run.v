@@ -117,8 +117,17 @@ fn main() {
 				eprintln('${ch.name}: ${dsrv.len} UDS nodes on one DoIP entity; serving "${dsrv[0].name}" (0x${ch.ecu_addr:04X})')
 			}
 			srv := if dsrv.len > 0 { dsrv[0].server } else { uds.default_server() }
-			spawn doip_entity_loop(host, port, doip.server_cfg(ch.ecu_addr, ch.vin, ch.eid),
-				srv, ctl)
+			// Bind HERE, not inside the spawned worker. Reported only to stderr, a failed bind
+			// left the run announcing an entity and carrying on — and if the port was held by
+			// another DoIP process serving the same built-in defaults, uds.open would connect
+			// to THAT and the suite would pass against the wrong ECU.
+			mut ent := doip_listen(host, port, doip.server_cfg(ch.ecu_addr, ch.vin, ch.eid),
+				srv) or {
+				eprintln('${ch.name}: ${err}')
+				eprintln('refusing to run: a suite would connect to whatever else is on ${host}:${port}')
+				exit(1)
+			}
+			spawn doip_serve_loop(mut ent, ctl)
 			println('channel ${ch.name} (doip:${host}:${port}): DoIP entity, logical address 0x${ch.ecu_addr:04X}')
 			continue
 		}
@@ -260,18 +269,21 @@ fn uds_node_loop(iface string, rx u32, tx u32, ext bool, srv uds.Server, ctl &Ct
 	ch.close()
 }
 
-// doip_entity_loop hosts one simulated DoIP entity: the same uds.Server the CAN path serves,
-// behind a real TCP listener plus the UDP socket that answers discovery.
-fn doip_entity_loop(host string, port int, cfg doip.ServerCfg, srv uds.Server, ctl &Ctl) {
+// doip_listen binds one simulated DoIP entity: the same uds.Server the CAN path serves,
+// behind a real TCP listener plus the UDP socket that answers discovery. Synchronous, so the
+// caller learns about a bind failure before any test runs.
+fn doip_listen(host string, port int, cfg doip.ServerCfg, srv uds.Server) !&doip.DoipServer {
 	mut us := srv
 	handler := fn [mut us] (req []u8) []u8 {
 		return us.handle(req)
 	}
 	mut s := doip.new_server(cfg, handler)
-	s.listen(host, port) or {
-		eprintln('doip listen ${host}:${port}: ${err}')
-		return
-	}
+	s.listen(host, port) or { return error('DoIP listen ${host}:${port} failed: ${err}') }
+	return s
+}
+
+// doip_serve_loop runs an already-bound entity until Stop.
+fn doip_serve_loop(mut s doip.DoipServer, ctl &Ctl) {
 	spawn doip_udp_loop(mut s, ctl)
 	for ctl.running {
 		// A timeout is the normal case (no tester connected), not a failure.
