@@ -447,10 +447,16 @@ fn (app &App) open_transport(iface string) !transport.Bus {
 // channel configured at a non-default rate, else `iface` unchanged. Used wherever a channel's
 // physical bus is opened — transport.open (via open_transport) AND isotp.open_software (the
 // diagnostics ISO-TP paths) — so UDS reaches the vendor driver at the configured bitrate too.
+// bitrate_iface finds the channel owning this interface and applies its configured rate.
+// The per-channel rule lives in project.Channel.iface_with_bitrate, shared with the runner.
 fn (app &App) bitrate_iface(iface string) string {
 	for c in app.chans {
-		if c.iface == iface && (c.adapter == 'pcan' || c.adapter == 'kvaser') && c.bitrate > 0 {
-			return '${iface}@${c.bitrate}'
+		if c.iface == iface {
+			return project.Channel{
+				iface:   c.iface
+				adapter: c.adapter
+				bitrate: c.bitrate
+			}.iface_with_bitrate()
 		}
 	}
 	return iface
@@ -1146,18 +1152,11 @@ fn (mut app App) load_project(path string) {
 // project file's directory first, so a .blobnet's relative paths work regardless of the
 // launch directory; it falls back to the path as-given (launch-dir relative) for projects
 // that reference assets relative to the repo root. Absolute paths are used unchanged.
+// resolve_asset delegates to project.resolve_asset — one implementation, shared with the
+// headless runner, which had none and so loaded an empty database for any project kept outside
+// the repository.
 fn (app &App) resolve_asset(path string) string {
-	if path == '' || os.is_abs_path(path) {
-		return path
-	}
-	// NB: don't name this `near` — <windows.h> (pulled in by the GLFW/imgui link on the mingw
-	// build) #defines `near`/`far` as legacy no-ops, which mangles the generated C. Renamed so the
-	// Windows CI links (the Linux build tolerated it, so it slipped in).
-	proj_rel := os.join_path(os.dir(app.proj_path), path)
-	if os.exists(proj_rel) {
-		return proj_rel
-	}
-	return path
+	return project.resolve_asset(os.dir(app.proj_path), path)
 }
 
 fn (mut app App) set_project(proj project.Project, path string) {

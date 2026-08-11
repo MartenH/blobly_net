@@ -16,12 +16,45 @@ fn main() {
 		exit(2)
 	}
 	println('project: ${p.name}, channels=${p.channels.len}')
+	// os.dir(path), exactly as cmd/script/run.v and the GUI do — NOT real_path, which
+	// dereferences a symlink and would resolve relative DBCs beside the target instead of
+	// beside the link. A symlinked project could then pass this check while the runner it is
+	// meant to predict loaded an empty database.
+	proj_dir := os.dir(path)
 	mut total_msgs := 0
+	mut failed := 0
 	for ch in p.channels {
+		if !ch.enabled {
+			// Neither real path starts a disabled channel — the runner skips it and the GUI
+			// builds no SimCfg for it — so validating its assets could fail a project that
+			// runs perfectly well. A deliberately parked channel is not a defect.
+			println('  ${ch.name}: disabled, skipped')
+			continue
+		}
+		// resolve_asset + merge_files, the same as the GUI and the runner. Reading only
+		// databases[0] as written meant a project kept outside the repository loaded nothing,
+		// and this check then reported OK on a simulation that transmitted nothing at all.
 		mut db := candb.Database{}
 		if ch.databases.len > 0 {
-			db = candb.load_dbc_file(ch.databases[0]) or {
-				eprintln('  ${ch.name}: load_dbc_file(${ch.databases[0]}) failed: ${err}')
+			paths := ch.databases.map(project.resolve_asset(proj_dir, it))
+			// EACH file, not just the aggregate. merge_files skips one it cannot read, so a
+			// channel listing a good DBC beside a missing or malformed one still returned
+			// messages and passed — with part of the catalogue, and the frames it defines,
+			// quietly absent. That is the shape of failure this tool exists to catch.
+			mut lost := 0
+			for pth in paths {
+				candb.load_dbc_file(pth) or {
+					eprintln('  ${ch.name}: cannot load ${pth}: ${err}')
+					lost++
+					continue
+				}
+			}
+			db = candb.merge_files(paths)
+			if lost > 0 || db.messages.len == 0 {
+				if db.messages.len == 0 {
+					eprintln('  ${ch.name}: no messages loaded from ${paths}')
+				}
+				failed++
 				continue
 			}
 		}
@@ -35,7 +68,67 @@ fn main() {
 			count += engine.due_frames(t).len
 		}
 		total_msgs += count
+		// Two distinct failures, and the earlier rounds each caught only one of them.
+		//
+		// A node whose behaviour is purely request/response emits nothing here and is VALID —
+		// due_frames skips period-0 messages by design, so failing it would reject a working
+		// project. But a node with no cyclic messages AND no response rules AND no diagnostic
+		// server can do nothing at all, and reporting OK for that is the blind spot on the
+		// other side: the configuration names an ECU that will never appear on the bus.
+		mut cyclic := 0
+		for ecu in engine.ecus {
+			for m in ecu.messages {
+				if m.period_ms > 0 {
+					cyclic++
+				}
+			}
+		}
+		// Which UDS servers will ACTUALLY start on this bus. uds_nodes drops a later config
+		// whose rx or tx is already claimed, so a node with only diagnostics and a colliding
+		// address never transmits — while `cfg.uds != none` said it would. Fourth time in this
+		// file that the config text disagreed with the engine.
+		mut uds_running := map[string]bool{}
+		for u in sim.uds_nodes(ch.all_nodes()) {
+			uds_running[u.name] = true
+		}
+		for i, cfg in ch.all_nodes() {
+			// Ask the BUILT ECU, not the config text. from_project gives an unconfigured node
+			// named SUT the built-in reference model, which installs its own 0x101->0x102 rule
+			// — so `simulate: [SUT]` has response behaviour that appears nowhere in
+			// cfg.responses, and reading the config alone failed a project the real runs answer
+			// requests on. Same lesson as the response-only round: check what will RUN.
+			mut runnable := uds_running[cfg.name] or { false }
+			if !runnable && i < engine.ecus.len {
+				runnable = engine.ecus[i].rules.len > 0
+				for m in engine.ecus[i].messages {
+					if m.period_ms > 0 {
+						runnable = true
+						break
+					}
+				}
+			}
+			if !runnable {
+				// Say WHICH of the two it is: "no uds" would be wrong for a node that
+				// configures one and lost its address to an earlier node, and that is the
+				// case the reader most needs pointed at.
+				why := if cfg.uds != none {
+					'its uds server did not start (its rx/tx is claimed by another node)'
+				} else {
+					'no cyclic messages, no response rules and no uds'
+				}
+				eprintln('  ${ch.name}: node "${cfg.name}" will never transmit — ${why}')
+				failed++
+			}
+		}
+		if cyclic > 0 && count == 0 {
+			eprintln('  ${ch.name}: ${cyclic} cyclic message(s) but NO frames in 200ms')
+			failed++
+		}
 		println('  ${ch.name}: nodes=${ch.all_nodes().len} db_msgs=${db.messages.len} frames_in_200ms=${count}')
+	}
+	if failed > 0 {
+		eprintln('FAILED: ${failed} channel(s) loaded nothing or emitted nothing')
+		exit(1)
 	}
 	println('OK total frames in first 200ms across all buses: ${total_msgs}')
 }
