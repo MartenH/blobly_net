@@ -112,8 +112,14 @@ pub fn (p Project) to_yaml() string {
 				// the channel default and the tester talks to a different ECU than yesterday.
 				if u := node.uds {
 					b.writeln('        uds:')
-					b.writeln('          rx: "0x${u.rx:X}"')
-					b.writeln('          tx: "0x${u.tx:X}"')
+					// A DoIP node has no CAN identifiers — it is addressed by the channel's
+					// logical pair. Writing them unconditionally turned a deliberately absent
+					// pair into `rx: "0x0"` / `tx: "0x0"` on the first save, so the tool's own
+					// output then tripped its own "rx/tx are ignored here" warning.
+					if !ch.is_doip() {
+						b.writeln('          rx: "0x${u.rx:X}"')
+						b.writeln('          tx: "0x${u.tx:X}"')
+					}
 					if u.session != 1 {
 						b.writeln('          session: ${u.session}')
 					}

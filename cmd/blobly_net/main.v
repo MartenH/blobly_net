@@ -295,6 +295,10 @@ mut:
 // SimCfg is one channel's in-process simulation workload (simulated ECUs + its DBC).
 struct SimCfg {
 	iface string
+	// The CARRIER of the channel this entry came from. Carried here rather than recovered from
+	// the interface string: `type: doip` with no `interface:` keeps the CAN default `vcan0`,
+	// so a name-based map marked a real CAN bus on vcan0 as DoIP and skipped its UDS servers.
+	doip bool
 	db    candb.Database
 	nodes []project.NodeCfg
 	// Protection to CHECK on this bus, from the channel's `verify:` block. Separate from the
@@ -543,6 +547,12 @@ fn (mut app App) start() {
 	}
 	// spawn the in-process simulation workloads (driver-free sim ECUs + a UDS server)
 	for sc in app.sims {
+		// DoIP carries diagnostics, not frames. sim_loop would call transport.open('doip:…'),
+		// which on Linux falls through to SocketCAN, logs a failure and exits the thread — the
+		// no-hardware demo trying to open its Ethernet endpoint as a CAN interface.
+		if sc.doip {
+			continue
+		}
 		if sc.nodes.len > 0 {
 			spawn sim_loop(app, sc) // a verify-only channel has nothing to transmit
 		}
@@ -557,6 +567,17 @@ fn (mut app App) start() {
 	for sc in app.sims {
 		for w in sim.validate_verify(sc.db, sc.verify) {
 			app.notify('${sc.iface}: ${w}')
+		}
+		// A DoIP channel is diagnostics over TCP at a logical address: validating its nodes as
+		// CAN reported "rx and tx must both be set" for a correct config, and seeding CAN
+		// servers on it listed a diagnostic target the panel could never reach.
+		if sc.doip {
+			// Report the node's real problems, then stop: hosting a DoIP entity from the GUI
+			// is not implemented (#82), and the headless runner is where one comes up today.
+			for w in sim.validate_uds_doip(sc.nodes) {
+				app.notify(w)
+			}
+			continue
 		}
 		if sc.nodes.len == 0 {
 			// A verify-only channel WATCHES a real bus. Starting the built-in 0x7E0/0x7E8
@@ -1339,6 +1360,7 @@ fn (mut app App) rebuild_from_proj() {
 			// relative DBC fed the sim nothing (codex #63 r4)
 			app.sims << SimCfg{
 				iface:  ch.iface
+				doip:   ch.is_doip()
 				db:     merge_dbs(ch.databases.map(app.resolve_asset(it)))
 				nodes:    nodes
 				verify:   ch.verify

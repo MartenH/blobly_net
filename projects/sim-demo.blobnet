@@ -1,10 +1,20 @@
-# Native simulation demo — two networks, ECUs distributed across them.
+# Native simulation demo — three networks, ECUs distributed across them.
 #
 # CAN1 (powertrain/chassis) and CAN2 (body/energy) are independent driver-free
 # in-process buses. The tester monitors BOTH and simulates the ECUs configured on
 # each. The Buses + Simulation panels show both networks; the trace's Ch column
 # tells CAN1 frames from CAN2. Press ▶ Start and toggle nodes per network. Runs
 # identically on Linux and Windows, no drivers.
+#
+# DoIP1 is diagnostics over Ethernet (ISO 13400) on the same vehicle: no frames,
+# no bus — a logical-address endpoint on localhost TCP/UDP 13400. It serves the
+# SAME identity as SUT on CAN1, which is the point of having it here: one ECU,
+# two carriers, and a script that reads the VIN over either. See tests/mixed_carriers.lua.
+#
+# HEADLESS ONLY for now: the entity is brought up by scripts/runtests.sh, which
+# binds port 13400 while it runs. Pressing Start in the GUI does NOT host it —
+# DoIP1 stays idle and the Diagnostics panel cannot reach it (see docs/doip.md).
+# The CAN buses are driver-free either way; the DoIP endpoint is a real socket.
 project:
   name: Simulation demo — CAN1 + CAN2
   version: 1
@@ -84,6 +94,26 @@ channels:
         data: DE AD BE EF
         trigger: cyclic
         cycle_ms: 500
+
+  # --- DoIP: the same SUT, reached over Ethernet instead of CAN ---
+  # No `databases:` and no signals: a DoIP channel carries diagnostics, not frames.
+  # rx/tx are deliberately absent — addressing here is the logical pair below, and
+  # configuring CAN ids on a DoIP node is reported as ignored rather than obeyed.
+  - name: DoIP1
+    type: doip
+    interface: doip:127.0.0.1:13400
+    tester_address: "0x0E80"      # our (tester) logical address
+    ecu_address: "0x1000"         # the entity's logical address
+    simulation:
+      - name: SUT
+        uds:
+          dids:
+            - { id: "0xF190", text: "BLOBLYNETV0SUT001" }   # same VIN as SUT on CAN1
+            - { id: "0xF18C", text: "SN-0001" }
+            - { id: "0xF195", bytes: "01 00" }
+          dtcs:
+            - { code: "0x123456", status: 9 }
+            - { code: "0xABCDEF", status: 8 }
 
   # --- CAN2: body + energy ---
   - name: CAN2
