@@ -455,20 +455,12 @@ The headless runner brings up the same simulation and executes Lua test scripts 
 exiting non-zero if any fail — which is what CI uses. The ECUs are built by the same code the
 GUI uses, so simulated behaviour matches.
 
-**Two differences to plan around.**
-
-*Vendor bitrates.* Project parsing splits the bitrate out of the interface string, and the
-headless runner opens the clean interface — so a PCAN or Kvaser channel configured for anything
-other than 500 kbit/s falls back to 500 k and produces no traffic against a bus running at the
-configured rate. It works in the GUI, which re-appends the rate. In-process and SocketCAN
-channels are unaffected.
-
-*Database paths.* The GUI resolves `databases:` entries
-relative to the project file; the headless runner opens them as given, after `runtests.sh` has
-changed to the repository root. A project kept outside the repo with relative DBC paths
-therefore loads an empty database headlessly — and an empty database means no configured frames,
-silently. Use paths that resolve from the repository root, or absolute ones, until the runner
-resolves them the same way.
+Database paths and vendor bitrates are handled exactly as the GUI handles them — `databases:`
+entries resolve against the project file's own directory, and a PCAN or Kvaser channel is
+opened at its configured rate — so a project kept anywhere on disk, at any bitrate, behaves the
+same either way. Paths you pass on the command line are made absolute before the wrapper
+changes to the repository root, so `--project my.blobnet` works from whatever directory you
+happen to be in.
 
 See [scripting.md](scripting.md) for the test API.
 
