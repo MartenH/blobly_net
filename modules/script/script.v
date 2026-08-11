@@ -460,6 +460,15 @@ fn l_uds_open(l lua.State) int {
 			// (server.v read_message), and handing back a dead socket would fail the next
 			// request on a channel that is in fact accepting connections again.
 			c.cli.tester_present() or {
+				// A NEGATIVE RESPONSE is proof of life: the ECU received the request and
+				// refused it (wrong session, service unavailable). Reconnecting on that would
+				// tear down a healthy connection and reset the session and security state of
+				// every handle sharing this slot, turning a legitimate refusal into a silently
+				// unauthenticated retry. ONLY a transport failure means death.
+				if !probe_says_dead(err) {
+					l.push_int(i)
+					return 1
+				}
 				// Stale: reconnect INTO THE SAME SLOT, so the handle a script is already
 				// holding keeps working rather than being orphaned by the repair.
 				c.ch.close()
@@ -546,6 +555,20 @@ fn l_doip_discover(l lua.State) int {
 	l.push_str(v.vin)
 	l.push_int(i64(v.logical_address))
 	return 2
+}
+
+// probe_says_dead decides whether a failed liveness probe means the connection is gone.
+//
+// A NEGATIVE RESPONSE is proof of life: the ECU received the request and refused it (wrong
+// session, service unavailable). Reconnecting on that tears down a healthy connection and
+// resets the session and security state of every handle sharing the slot — turning a
+// legitimate refusal into a silently unauthenticated retry. Only a TRANSPORT failure is death.
+//
+// A named predicate because the simulated server always answers 0x3E positively, so no project
+// can reach this from a Lua suite: it fires against a real ECU on a bench, where it cannot be
+// caught by CI. The distinction is at least pinned by a unit test.
+fn probe_says_dead(err IError) bool {
+	return err !is uds.NegativeResponse
 }
 
 fn l_uds_tester_present(l lua.State) int {
