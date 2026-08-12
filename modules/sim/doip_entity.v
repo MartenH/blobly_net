@@ -56,6 +56,13 @@ pub fn doip_entity(ch project.Channel, nodes []project.NodeCfg) !DoipEntity {
 	if built.len > 0 {
 		if v := srv.dids[u16(0xF190)] {
 			node_vin := v.bytestr()
+			if node_vin == '' {
+				// PRESENT and empty is not the same as absent. Falling through to the default
+				// below would overwrite a configured DID with the stock VIN and skip the
+				// 17-byte check entirely, so a broken project would come up as a plausible
+				// entity and let tests pass against data it never configured.
+				return error('node "${name}" defines DID 0xF190 with no value — an entity cannot announce an empty VIN')
+			}
 			if ch.vin != '' && node_vin != ch.vin {
 				return error('vin "${ch.vin}" and node "${name}" DID 0xF190 "${node_vin}" are two identities for one entity')
 			}

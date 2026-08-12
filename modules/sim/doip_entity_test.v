@@ -125,3 +125,23 @@ fn test_extra_nodes_are_counted_so_the_caller_can_say_so() {
 	assert e.extra == 1
 	assert e.announce == 'AAAAAAAAAAAAAAAAA'
 }
+
+fn test_a_present_but_empty_vin_did_is_refused() {
+	// Present-and-empty is not absent. Falling through to the default would overwrite a
+	// configured DID with the stock VIN and skip the 17-byte check, so a broken project would
+	// come up as a plausible entity serving data it never configured.
+	empty := project.NodeCfg{
+		name: 'SUT'
+		uds:  project.UdsCfg{
+			dids: [project.DidCfg{
+				id:   0xF190
+				text: ''
+			}]
+		}
+	}
+	doip_entity(ch_with(''), [empty]) or {
+		assert err.msg().contains('no value')
+		return
+	}
+	assert false, 'expected a refusal, not the stock VIN in its place'
+}
