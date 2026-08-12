@@ -21,6 +21,7 @@ import sync
 import time
 import project
 import transport
+import wiretap
 import candb
 import sysview
 import telem
@@ -41,20 +42,47 @@ const diag_rx_id = u32(0x7E8)
 
 const trace_cap = 2000
 
+// Where a frame came from, OBSERVED rather than declared. On a normal bench three parties put
+// frames on one wire — us as tester, us as the simulated surroundings, and the real ECU — and
+// they all arrive at the monitor identically. Deriving the label from the project ("this id
+// belongs to a sim node") would paint a real ECU's frame as simulated the moment it shares an
+// id with one of ours, which is the single collision most worth catching.
+// The labels and the matching live in modules/wiretap, where they can be tested: this file is
+// compile-linked by CI but never run by it.
+const org_tst = wiretap.tst
+const org_sim = wiretap.sim
+const org_rep = wiretap.rep
+const org_bus = wiretap.bus
+
 struct TraceRow {
 	t_ms f64
 	ch   string
-	dir  string // 'RX' | 'TX'
-	id   u32
-	ext  bool
-	rtr  bool
-	name string
-	data []u8
+	// TST | SIM | REP | BUS. Replaces the old RX/TX: direction is a FUNCTION of origin (the
+	// first three are outbound, BUS is inbound), so a separate column carried no information —
+	// while `dir` answered "did I press send", never "whose frame is this".
+	origin string
+	id     u32
+	ext    bool
+	rtr    bool
+	name   string
+	data   []u8
 	// End-to-end violation on a RECEIVED frame ('' = none, or not a protected message).
 	// Carried on the row rather than computed at draw time because it depends on the PREVIOUS
 	// frame's counter — a verdict the trace cannot reconstruct once the frames are just rows.
 	e2e string
+mut:
+	// Stable identity, so an echo arriving later can confirm THIS row: the trace is a ring
+	// trimmed by re-slicing, which moves every index.
+	seq u64
+	// An outbound row is written at emit, so it states intent. `confirmed` means the frame came
+	// back off the wire; `missed` means its window closed without it. Those disagree in every
+	// bench failure worth catching — CAN needs an ACK from at least one other node, so a lone
+	// node's frames never reach the wire at all, and the same goes for a wrong bitrate, swapped
+	// CANH/CANL or a down link.
+	confirmed bool
+	missed    bool
 }
+
 
 struct TRec {
 	ch     int
@@ -94,6 +122,11 @@ mut:
 	mu          sync.Mutex
 	chans       []Chan
 	trace       []TraceRow
+	// Emissions still waiting for their echo, and the bookkeeping that lets one confirm its own
+	// row: `trace_seq` is the next row's identity, `trace_base` the identity of trace[0].
+	taps        wiretap.Ring
+	trace_seq   u64
+	trace_base  u64
 	gcount      map[string]u64 // persistent per-group frame totals (survive the ring trim)
 	trecs       []TRec
 	rx          u64 // total across channels
@@ -474,6 +507,8 @@ fn (a &App) lookup_name(id u32, ext bool) string {
 // tx_buses, sender targets and channels all key on it consistently — and only the physical
 // open carries the suffix. Non-vendor buses (socketcan/vcan configure bitrate via `ip link`;
 // inproc/udp have none) open unchanged.
+// Untapped: the only caller is the monitor loop, which never emits. Everything that DOES emit
+// goes through open_tap so the trace can say whose frame it is.
 fn (app &App) open_transport(iface string) !transport.Bus {
 	return transport.open(app.bitrate_iface(iface))
 }
@@ -545,7 +580,7 @@ fn (mut app App) start() {
 		spawn rx_loop(app, ci, ch.iface)
 		// open a TX bus for this channel's iface (each generator fires on its target bus)
 		if ch.iface !in app.tx_buses {
-			if b := app.open_transport(ch.iface) {
+			if b := app.open_tap(ch.iface, org_tst) {
 				app.tx_buses[ch.iface] = b
 			}
 		}
@@ -557,7 +592,7 @@ fn (mut app App) start() {
 	for sr in app.senders {
 		tgt := sr.target()
 		if tgt != '' && tgt !in app.tx_buses {
-			if b := app.open_transport(tgt) {
+			if b := app.open_tap(tgt, org_tst) {
 				app.tx_buses[tgt] = b
 			}
 		}
@@ -1057,6 +1092,130 @@ fn (mut app App) notify(msg string) {
 	vgui.wake()
 }
 
+// reset_trace_locked empties the trace and everything keyed to it. Caller holds app.mu.
+fn (mut app App) reset_trace_locked() {
+	app.trace = []
+	app.gcount = map[string]u64{}
+	// The outstanding echoes belong to rows that no longer exist. Kept, they would let a frame
+	// arriving after the Clear confirm whatever row later took that sequence number.
+	app.taps.clear()
+	app.trace_base = app.trace_seq
+}
+
+// push_row_locked appends a row, stamps its identity and trims the ring. Caller holds app.mu.
+fn (mut app App) push_row_locked(row TraceRow) u64 {
+	seq := app.trace_seq
+	app.trace_seq++
+	mut r := row
+	r.seq = seq
+	app.trace << r
+	if app.trace.len > trace_cap {
+		drop := app.trace.len - trace_cap
+		app.trace = app.trace[drop..].clone()
+		app.trace_base += u64(drop)
+	}
+	return seq
+}
+
+// row_index_locked maps a row identity to its current position, or -1 once the ring has trimmed
+// it away. Caller holds app.mu.
+fn (app &App) row_index_locked(seq u64) int {
+	if seq < app.trace_base {
+		return -1
+	}
+	i := int(seq - app.trace_base)
+	return if i < app.trace.len { i } else { -1 }
+}
+
+// expire_pending_locked marks the rows whose frame never came back off the wire.
+fn (mut app App) expire_pending_locked(now_ms f64) {
+	for seq in app.taps.expire(now_ms) {
+		i := app.row_index_locked(seq)
+		if i >= 0 {
+			app.trace[i].missed = true
+		}
+	}
+}
+
+// note_emit records a frame we are about to put on the wire: one row stating intent, and one
+// pending echo. Called BEFORE the send — the RX thread can see the frame the instant the driver
+// takes it, and a pending entry added afterwards would arrive too late to claim its own echo.
+fn (mut app App) note_emit(iface string, origin string, f transport.CanFrame) {
+	chn := app.chan_name_for(iface)
+	name := app.lookup_name(f.id, f.extended)
+	t_ms := f64(time.ticks() - app.t0)
+	app.mu.lock()
+	app.expire_pending_locked(t_ms)
+	if !app.paused {
+		seq := app.push_row_locked(TraceRow{
+			t_ms:   t_ms
+			ch:     chn
+			origin: origin
+			id:     f.id
+			ext:    f.extended
+			rtr:    f.rtr
+			name:   name
+			data:   f.data.clone()
+		})
+		app.gcount[gkey(origin, chn, f.id, f.extended)]++
+		app.taps.note(seq, iface, f, t_ms)
+	}
+	if app.recording {
+		app.rec << canlog.LogEntry{t_ms / 1000.0, iface, f}
+	}
+	app.mu.unlock()
+	vgui.wake()
+}
+
+// claim_echo_locked confirms the emission this frame is the echo of, and reports whether it
+// found one. The matching rules (one-shot, oldest first, width-exact) and why they are what they
+// are live in modules/wiretap. Caller holds app.mu.
+fn (mut app App) claim_echo_locked(iface string, f transport.CanFrame, t_ms f64) bool {
+	app.expire_pending_locked(t_ms)
+	seq := app.taps.claim(iface, f, t_ms) or { return false }
+	i := app.row_index_locked(seq)
+	if i >= 0 {
+		app.trace[i].confirmed = true
+	}
+	return true
+}
+
+// TapBus wraps a bus we EMIT on, so every frame leaving the app is attributed exactly once,
+// wherever it was sent from. Stamping at the transport seam rather than at each call site means
+// a new emitter cannot forget: simulated ECUs, the ISO-TP diagnostic servers, the tester's own
+// sends and anything added later all pass through here.
+struct TapBus {
+mut:
+	inner  transport.Bus
+	app    &App
+	iface  string
+	origin string
+}
+
+fn (mut t TapBus) send(frame transport.CanFrame) ! {
+	t.app.note_emit(t.iface, t.origin, frame)
+	return t.inner.send(frame)
+}
+
+fn (mut t TapBus) recv(timeout_ms int) !transport.CanFrame {
+	return t.inner.recv(timeout_ms)
+}
+
+fn (mut t TapBus) close() {
+	t.inner.close()
+}
+
+// open_tap opens a bus whose sends are attributed to `origin`.
+fn (app &App) open_tap(iface string, origin string) !transport.Bus {
+	inner := transport.open(app.bitrate_iface(iface))!
+	return &TapBus{
+		inner:  inner
+		app:    unsafe { app }
+		iface:  iface
+		origin: origin
+	}
+}
+
 // tx sends a frame on the default TX bus (send_iface) and records it as a TX trace row.
 fn (mut app App) tx(f transport.CanFrame) bool {
 	return app.tx_on(app.send_iface, f)
@@ -1070,34 +1229,21 @@ fn (mut app App) tx_on(iface string, f transport.CanFrame) bool {
 		app.notify('TX failed: no open bus for ${iface}')
 		return false
 	}
+	// The row, the recording and the pending echo are the tap's job (open_tap), so they happen
+	// for every emitter rather than only for the ones that remember to log.
 	b.send(f) or {
 		app.notify('TX failed: ${err}')
 		return false
 	}
-	name := app.lookup_name(f.id, f.extended)
-	chn := app.chan_name_for(iface) // trace `ch` column is the bus NAME (matches RX rows)
-	tms := f64(time.ticks() - app.t0)
 	app.mu.lock()
-	if !app.paused {
-		app.trace << TraceRow{tms, chn, 'TX', f.id, f.extended, f.rtr, name, f.data.clone(), ''}
-		if app.trace.len > trace_cap {
-			app.trace = app.trace[app.trace.len - trace_cap..].clone()
-		}
-		app.gcount[gkey('TX', chn, f.id, f.extended)]++
-	}
-	if app.recording {
-		app.rec << canlog.LogEntry{tms / 1000.0, iface, f}
-	}
 	app.tx_count++
 	app.mu.unlock()
-	vgui.wake()
 	return true
 }
 
 fn (mut app App) clear_trace() {
 	app.mu.lock()
-	app.trace = []
-	app.gcount = map[string]u64{}
+	app.reset_trace_locked()
 	app.trecs = []
 	app.rx = 0
 	app.tx_count = 0
@@ -1193,8 +1339,7 @@ fn (mut app App) load_recording(path string) {
 	// guessing which bus a frame came from would attach verdicts to the wrong sender.
 	only := if verifiers.len == 1 { verifiers.keys()[0] } else { '' }
 	app.mu.lock()
-	app.trace = []
-	app.gcount = map[string]u64{}
+	app.reset_trace_locked()
 	for e in entries {
 		f := e.frame
 		name := app.lookup_name(f.id, f.extended)
@@ -1211,11 +1356,21 @@ fn (mut app App) load_recording(path string) {
 				verifiers[ifc] = vs
 			}
 		}
-		app.trace << TraceRow{(e.t_s - t0) * 1000.0, e.iface, 'RX', f.id, f.extended, f.rtr, name, f.data.clone(), viol}
-		if app.trace.len > trace_cap {
-			app.trace = app.trace[app.trace.len - trace_cap..].clone()
-		}
-		app.gcount[gkey('RX', e.iface, f.id, f.extended)]++
+		// REP, not BUS: these frames were never on this bench's wire. A candump log carries no
+		// origin at all, so we cannot say whether a given line was the recorder's tester, its
+		// simulation or the ECU — and claiming one would be a guess dressed as a fact.
+		app.push_row_locked(TraceRow{
+			t_ms:   (e.t_s - t0) * 1000.0
+			ch:     e.iface
+			origin: org_rep
+			id:     f.id
+			ext:    f.extended
+			rtr:    f.rtr
+			name:   name
+			data:   f.data.clone()
+			e2e:    viol
+		})
+		app.gcount[gkey(org_rep, e.iface, f.id, f.extended)]++
 	}
 	app.mu.unlock()
 	app.notify('loaded ${entries.len} frames from ${os.base(path)}')
@@ -1282,7 +1437,7 @@ fn build_node(db candb.Database, cfg project.NodeCfg) sim.SimEcu {
 // request/response rules. Driver-free on inproc:, real on vcan0/can0.
 fn sim_loop(app &App, sc SimCfg) {
 	a := unsafe { app }
-	mut bus := app.open_transport(sc.iface) or {
+	mut bus := app.open_tap(sc.iface, org_sim) or {
 		eprintln('sim ${sc.iface}: ${err}')
 		return
 	}
@@ -1387,7 +1542,13 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 			continue
 		}
 		if !open {
-			ch = isotp.open_software(a.bitrate_iface(iface), tx, rx, ext) or {
+			// on a TAPPED bus: an ISO-TP response is several CAN frames, and a simulated ECU
+			// answering diagnostics must be attributed like any other thing we transmit.
+			tapped := a.open_tap(iface, org_sim) or {
+				time.sleep(200 * time.millisecond)
+				continue
+			}
+			ch = isotp.on_bus(tapped, a.bitrate_iface(iface), tx, rx, ext) or {
 				time.sleep(200 * time.millisecond)
 				continue
 			}
@@ -1403,7 +1564,8 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 
 fn diag_server_loop(app &App, iface string) {
 	a := unsafe { app }
-	mut ch := isotp.open_software(a.bitrate_iface(iface), diag_rx_id, diag_tx_id, false) or {
+	tapped := a.open_tap(iface, org_sim) or { return }
+	mut ch := isotp.on_bus(tapped, a.bitrate_iface(iface), diag_rx_id, diag_tx_id, false) or {
 		return
 	}
 	mut srv := uds.default_server()
@@ -1466,15 +1628,25 @@ fn rx_loop(app &App, ci int, iface string) {
 		}
 		f := bus.recv(200) or { continue }
 		t_ms := f64(time.ticks() - a.t0)
+		// Is this the echo of something WE just put on the wire? Every backend delivers our own
+		// sends to the monitor's separate bus instance (transport.test_inproc_cross_delivery
+		// pins it), so without this the tester and our simulated ECUs arrive here looking
+		// exactly like the device under test. Claiming the echo CONFIRMS the row written at
+		// emit instead of adding a second one, and keeps our own frames out of both the
+		// recording and the E2E verifier — whose per-message counter would otherwise see one
+		// message twice and report a jump the ECU never made.
+		a.mu.lock()
+		ours := a.claim_echo_locked(iface, f, t_ms)
+		a.mu.unlock()
 		name := a.lookup_name(f.id, f.extended)
 		// Verify protection on the way in. Done here, on the RX thread that already owns the
 		// frame, because the check is stateful — it needs the previous counter for this id —
 		// and a stateful check spread across draw calls would depend on what the user scrolled.
 		mut viol := ''
-		// Not remote frames: an RTR request carries NO payload, so the missing bytes read as
+		// Not our own echo (see above), and not remote frames: an RTR request carries NO payload, so the missing bytes read as
 		// zero and a request on a protected id was labelled !CRC — or, repeated, !CNT stalled.
 		// A verdict about bytes that were never sent says nothing about the sender.
-		if !f.rtr {
+		if !f.rtr && !ours {
 			if k := verifiers.resolve(a.dbs_for(iface), f.id, f.extended) {
 				if mut ver := verifiers.by_key[k] {
 					v := ver.check(f.data)
@@ -1484,12 +1656,19 @@ fn rx_loop(app &App, ci int, iface string) {
 			}
 		}
 		a.mu.lock()
-		if !a.paused {
-			a.trace << TraceRow{t_ms, chname, 'RX', f.id, f.extended, f.rtr, name, f.data.clone(), viol}
-			if a.trace.len > trace_cap {
-				a.trace = a.trace[a.trace.len - trace_cap..].clone()
-			}
-			a.gcount[gkey('RX', chname, f.id, f.extended)]++
+		if !a.paused && !ours {
+			a.push_row_locked(TraceRow{
+				t_ms:   t_ms
+				ch:     chname
+				origin: org_bus
+				id:     f.id
+				ext:    f.extended
+				rtr:    f.rtr
+				name:   name
+				data:   f.data.clone()
+				e2e:    viol
+			})
+			a.gcount[gkey(org_bus, chname, f.id, f.extended)]++
 			// The capture dump now arrives as an ISO-TP block on 0x7E5 (not raw per-record
 			// frames): trace_dump_worker reassembles + decodes it on demand. The raw ISO-TP
 			// frames still show in the trace table above.
@@ -1500,7 +1679,7 @@ fn rx_loop(app &App, ci int, iface string) {
 		if f.id == rsp_id && f.data.len >= 8 {
 			a.trace_freeze = trace_rsp_status(telem.decode_trace_rsp(f.data))
 		}
-		if a.recording {
+		if a.recording && !ours {
 			a.rec << canlog.LogEntry{t_ms / 1000.0, chname, f}
 			if a.rec.len > 200000 {
 				a.rec = a.rec[a.rec.len - 200000..].clone()
@@ -1629,8 +1808,7 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	sim.clear_all()
 	app.cfg_invalidate() // a different project: the File tab must not keep the old one's text
 	app.mu.lock()
-	app.trace = []
-	app.gcount = map[string]u64{}
+	app.reset_trace_locked()
 	app.trecs = []
 	app.diag_log = []
 	app.script_log = []
@@ -4311,7 +4489,9 @@ fn trace_pass(r TraceRow, filt string) bool {
 	}
 	// the violation is searchable, so "!crc" in the filter box shows only bad frames — the
 	// gesture someone reaches for the moment they suspect one
-	hay := '${idstr(r.id, r.ext)} ${r.name} ${r.ch} ${r.dir} ${hex(r.data)} ${r.e2e}'.to_lower()
+	// the origin is searchable, so "sim" shows only our simulated ECUs and "bus" only what the
+	// device under test actually put on the wire — the two views a bench asks for
+	hay := '${idstr(r.id, r.ext)} ${r.name} ${r.ch} ${r.origin} ${origin_mark(r)} ${hex(r.data)} ${r.e2e}'.to_lower()
 	return hay.contains(filt)
 }
 
@@ -4364,7 +4544,7 @@ fn draw_trace_all(id string, rows []TraceRow, filt string) {
 	if vgui.table_begin(id, 6) {
 		vgui.table_setup_col('t (ms)', 66)
 		vgui.table_setup_col('ch', 52)
-		vgui.table_setup_col('dir', 34)
+		vgui.table_setup_col('origin', 52)
 		vgui.table_setup_col('id', 82)
 		vgui.table_setup_col('name', 150)
 		vgui.table_setup_col('data', 0) // stretch
@@ -4382,7 +4562,7 @@ fn draw_trace_all(id string, rows []TraceRow, filt string) {
 			vgui.table_row()
 			vgui.table_cell('${r.t_ms:.1}')
 			vgui.table_cell(r.ch)
-			vgui.table_cell(r.dir)
+			vgui.table_cell('${r.origin}${origin_mark(r)}')
 			vgui.table_cell(idstr(r.id, r.ext))
 			// A violation is appended to the NAME rather than given a column: it is rare, and
 			// a permanently-empty column costs width on every row for the frames that are fine.
@@ -4395,19 +4575,30 @@ fn draw_trace_all(id string, rows []TraceRow, filt string) {
 
 struct GAgg {
 mut:
-	dir   string
-	ch    string
-	id    u32
-	ext   bool
-	count int
+	origin string
+	ch     string
+	id     u32
+	ext    bool
+	count  int
+	// Any frame in this group that never reached the wire. Taken across the whole group, not
+	// from `last`: the newest row is the one whose echo window has had least time to close, so
+	// reading the flag off it would hide every miss but the stalest.
+	missed bool
 	last  TraceRow // newest frame of this group in the window
 	prev  TraceRow // the frame before `last` (empty data if only one seen) — for byte-delta dim
 }
 
 // gkey is the stable per-group identity used for both the grouped-view rows and the
 // persistent all-time frame count (App.gcount). Keep in sync with draw_trace_grouped.
-fn gkey(dir string, ch string, id u32, ext bool) string {
-	return '${dir}|${ch}|${id}|${ext}'
+fn gkey(origin string, ch string, id u32, ext bool) string {
+	return '${origin}|${ch}|${id}|${ext}'
+}
+
+// origin_mark renders the wire verdict for a frame we emitted: '!' once its echo window closed
+// with nothing coming back. A bus that never echoes is a bus nothing reached — no ACK from any
+// other node, wrong bitrate, swapped CANH/CANL, or a down link — and today that is invisible.
+fn origin_mark(r TraceRow) string {
+	return if r.missed { '!' } else { '' }
 }
 
 // grouped: one collapsible row per (dir, ch, id), expand to decode its latest signals.
@@ -4419,8 +4610,13 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		if !trace_pass(r, filt) {
 			continue
 		}
-		k := '${r.dir}|${r.ch}|${r.id}|${r.ext}'
-		mut g := agg[k] or { GAgg{r.dir, r.ch, r.id, r.ext, 0, r, TraceRow{}} }
+		// Grouping by ORIGIN as well as id means our simulated 0x120 and a real ECU's 0x120 are
+		// two rows, not one row with a count that quietly adds them together.
+		k := gkey(r.origin, r.ch, r.id, r.ext)
+		mut g := agg[k] or { GAgg{r.origin, r.ch, r.id, r.ext, 0, false, r, TraceRow{}} }
+		if r.missed {
+			g.missed = true
+		}
 		if g.count > 0 {
 			g.prev = g.last // slide the previous-frame window forward
 		}
@@ -4433,8 +4629,8 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		if a.id != b.id {
 			return if a.id < b.id { -1 } else { 1 }
 		}
-		if a.dir != b.dir {
-			return if a.dir < b.dir { -1 } else { 1 }
+		if a.origin != b.origin {
+			return if a.origin < b.origin { -1 } else { 1 }
 		}
 		return if a.ch < b.ch {
 			-1
@@ -4447,7 +4643,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 	if vgui.table_begin('gtrace', 5) {
 		vgui.table_setup_col('id / name', 210)
 		vgui.table_setup_col('ch', 52)
-		vgui.table_setup_col('dir', 34)
+		vgui.table_setup_col('origin', 52)
 		vgui.table_setup_col('count', 60)
 		vgui.table_setup_col('data', 0)
 		vgui.table_freeze_top()
@@ -4458,14 +4654,15 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			vgui.table_next_col()
 			// ### keys the tree id on identity only, so the live label / sort don't reset it.
 			open :=
-				vgui.tree_node_table('${idstr(g.id, g.ext)}  ${trace_name_cell(r)}###${g.dir}|${g.ch}|${g.id}|${g.ext}')
+				vgui.tree_node_table('${idstr(g.id, g.ext)}  ${trace_name_cell(r)}###${gkey(g.origin,
+				g.ch, g.id, g.ext)}')
 			// clicking a row selects that frame (drives Signals/Graphics + "Add to filter")
 			if vgui.is_item_clicked() {
 				app.sel_id = int(g.id)
 				app.sel_ext = g.ext
 			}
 			// right-click a row → context menu (plot its signals / add to filter)
-			if vgui.begin_popup_context_item('rowctx##${g.dir}|${g.ch}|${g.id}|${g.ext}') {
+			if vgui.begin_popup_context_item('rowctx##${gkey(g.origin, g.ch, g.id, g.ext)}') {
 				if m := app.find_message(g.id, g.ext) {
 					if vgui.menu_item('Add all signals to Graphics') {
 						for s in m.active_signals(r.data) {
@@ -4480,9 +4677,9 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				vgui.end_popup()
 			}
 			vgui.table_cell(g.ch)
-			vgui.table_cell(g.dir)
+			vgui.table_cell('${g.origin}${if g.missed { '!' } else { '' }}')
 			// all-time total (survives the ring trim); fall back to the window count.
-			total := gcount[gkey(g.dir, g.ch, g.id, g.ext)] or { u64(g.count) }
+			total := gcount[gkey(g.origin, g.ch, g.id, g.ext)] or { u64(g.count) }
 			vgui.table_cell('${total}')
 			// data column: dim bytes that match the PREVIOUS frame of this group, normal for
 			// ones that changed (conventional change highlight). Compared against the actual prior
@@ -5080,7 +5277,7 @@ fn (mut app App) add_generator() {
 	app.dirty = true
 	app.mu.unlock()
 	if app.running && iface != '' && iface !in app.tx_buses {
-		if b := app.open_transport(iface) {
+		if b := app.open_tap(iface, org_tst) {
 			app.tx_buses[iface] = b
 		}
 	}
@@ -5639,7 +5836,7 @@ fn (mut app App) set_sender_bus(i int, bus string) {
 		app.senders[i].sender.bus = bus
 		tgt := app.senders[i].target()
 		if app.running && tgt != '' && tgt !in app.tx_buses {
-			if b := app.open_transport(tgt) {
+			if b := app.open_tap(tgt, org_tst) {
 				app.tx_buses[tgt] = b
 			}
 		}
@@ -5882,7 +6079,14 @@ fn diag_worker(app &App, kind string, did u16, want_key string) {
 			return
 		})
 	} else {
-		isotp.Channel(isotp.open_software(a.bitrate_iface(iface), t.rx, t.tx, t.ext) or {
+		isotp.Channel(isotp.on_bus(a.open_tap(iface, org_tst) or {
+			a.diag_push('open ${iface}: ${err}')
+			a.mu.lock()
+			a.diag_busy = false
+			a.mu.unlock()
+			vgui.wake()
+			return
+		}, a.bitrate_iface(iface), t.rx, t.tx, t.ext) or {
 			a.diag_push('open ${iface}: ${err}')
 			a.mu.lock()
 			a.diag_busy = false
@@ -5970,7 +6174,12 @@ fn trace_dump_worker(app &App, core_mask u16) {
 	// data on record (open before commanding, so the socket buffers the target's first frame).
 	// ISO-TP addressing must match the frame width — a 29-bit trace id would otherwise be masked
 	// to 11 bits by SocketCAN and the target would never answer.
-	mut ch := isotp.open_software(a.bitrate_iface(iface), f.dump_fc, f.record, trace_ext(f.record)) or {
+	tapped := a.open_tap(iface, org_tst) or {
+		a.set_trace_status('dump: open ${iface}: ${err}')
+		a.trace_done()
+		return
+	}
+	mut ch := isotp.on_bus(tapped, a.bitrate_iface(iface), f.dump_fc, f.record, trace_ext(f.record)) or {
 		a.set_trace_status('dump: open ${iface}: ${err}')
 		a.trace_done()
 		return
@@ -6330,7 +6539,11 @@ fn shell_worker(app &App, line string) {
 	sh := a.manifest.shell.or_defaults()
 	// the host is the ISO-TP receiver: flow control out on `fc`, the response in on `out`
 	// (opened before the command is sent, so the socket buffers the target's first frame).
-	mut ch := isotp.open_software(a.bitrate_iface(iface), sh.fc, sh.out, trace_ext(sh.out)) or {
+	tapped := a.open_tap(iface, org_tst) or {
+		a.shell_append('(open ${iface}: ${err})')
+		return
+	}
+	mut ch := isotp.on_bus(tapped, a.bitrate_iface(iface), sh.fc, sh.out, trace_ext(sh.out)) or {
 		a.shell_append('(open ${iface}: ${err})')
 		return
 	}
@@ -6413,7 +6626,11 @@ fn flash_worker(app &App, path string, base u32, req_id u32, rsp_id u32, ver u32
 		return
 	}
 	a.flash_append('> ${os.file_name(path)} -> ${iface} @0x${base.hex()}')
-	mut ch := isotp.open_software(a.bitrate_iface(iface), req_id, rsp_id, trace_ext(rsp_id)) or {
+	tapped := a.open_tap(iface, org_tst) or {
+		a.flash_append('(open ${iface}: ${err})')
+		return
+	}
+	mut ch := isotp.on_bus(tapped, a.bitrate_iface(iface), req_id, rsp_id, trace_ext(rsp_id)) or {
 		a.flash_append('(open ${iface}: ${err})')
 		return
 	}
