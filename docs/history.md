@@ -1236,7 +1236,7 @@
   disabled the channel it was meant to read. Fixes and the resulting invariants are in
   CLAUDE.md ("Polling a codex review"); the diagnosis was wrong twice before pagination was
   found, having first blamed the reviews channel and then the time-scoping.
-- 2026-08-12: **Watcher postmortem, part 2 — the clean verdict is a REACTION.** After the five
+- 2026-08-12: **Watcher postmortem, part 2 — the reaction was a red herring; the verdict is the comment.** After the five
   silent failures above, two more hid a green review on net#84 for 38 minutes. (6) The verdict was believed to be
   deliverable ONLY as a 👍 reaction, which the watcher never polled. That turned out to be a red
   herring: the reaction cannot be used at all — it carries no reviewed SHA, and GitHub will not
