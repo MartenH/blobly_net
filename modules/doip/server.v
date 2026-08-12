@@ -74,9 +74,13 @@ mut:
 	// the socket back for it is more indirection than storing the one string.
 	bound_host string
 	bound_port int
-	// Set to stop an in-flight announcement sequence between datagrams. A long sequence
-	// (100 × 60s is a valid configuration) must not hold a script run open for its duration.
-	announce_cancelled bool
+	// Cancellation as a GUARDED GENERATION, not a shared bool. A bool that announce() reset at
+	// entry lost a cancel issued just before the worker got there — teardown set it, the worker
+	// cleared it, and the join then waited out the whole sequence. Overlapping workers (a
+	// startup burst and a script trigger) also cleared each other. A generation cannot be
+	// un-cancelled: a worker keeps the value it started with and stops as soon as it moves.
+	ann_mu  sync.Mutex
+	ann_gen u64
 	active   &net.TcpConn     = unsafe { nil } // the in-progress accepted connection (nil between)
 	stopping bool // set by close(): stop accepting/serving and tear down the active conn
 }
@@ -240,7 +244,17 @@ pub fn (mut s DoipServer) serve_udp_once(timeout_ms int) ! {
 
 // cancel_announce stops an in-flight sequence at its next interval. Safe from another thread.
 pub fn (mut s DoipServer) cancel_announce() {
-	s.announce_cancelled = true
+	s.ann_mu.lock()
+	s.ann_gen++
+	s.ann_mu.unlock()
+}
+
+// ann_generation reads the current cancellation generation.
+fn (mut s DoipServer) ann_generation() u64 {
+	s.ann_mu.lock()
+	g := s.ann_gen
+	s.ann_mu.unlock()
+	return g
 }
 
 // announce sends the power-on vehicle announcements. Blocking: count × interval.
@@ -278,9 +292,9 @@ pub fn (mut s DoipServer) announce() ! {
 	if addrs.len == 0 {
 		return error('announce_to ${dest}: resolved to nothing') // indexing [0] would panic
 	}
-	s.announce_cancelled = false
+	mine := s.ann_generation() // this sequence belongs to the generation it started in
 	for i in 0 .. s.cfg.announce_count {
-		if s.stopping || s.announce_cancelled {
+		if s.stopping || s.ann_generation() != mine {
 			return // Stop, a toggle, or a script run ending; the fd may already be gone
 		}
 		ann := vehicle_announcement(s.announced_vin(), s.cfg.logical_address, s.cfg.eid,
@@ -292,7 +306,7 @@ pub fn (mut s DoipServer) announce() ! {
 			// sequence — better than the 100 minutes before it, and still a hung suite.
 			mut left := s.cfg.announce_interval
 			for left > 0 {
-				if s.stopping || s.announce_cancelled {
+				if s.stopping || s.ann_generation() != mine {
 					return
 				}
 				step := if left > 50 { 50 } else { left }

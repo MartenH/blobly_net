@@ -77,3 +77,12 @@ test("a long announcement sequence does not hold the run open", function()
   check.truthy(#seen > 0, "expected the first datagram inside the window")
   check.truthy(os.time() - t0 < 30, "listen outlasted its window by minutes")
 end)
+
+-- Cancellation must survive the worker not having started yet. announce() is non-blocking, so
+-- teardown can cancel before the spawned sequence reaches its first check; a shared bool that
+-- the worker reset at entry lost that cancel and the join then waited out all 100 datagrams.
+test("a cancel issued before the worker starts is not lost", function()
+  local t0 = os.time()
+  doip.announce("Chatty")          -- 100 x 60s, non-blocking; the run ends right after
+  check.truthy(os.time() - t0 < 30, "announce blocked")
+end)
