@@ -723,14 +723,15 @@ fn doip_watch(app &App, pch project.Channel, ent sim.DoipEntity, key string, gen
 					srv = s
 					bound = true
 					warned = false
-					// Recheck AFTER binding. Stop may have cleared `running` and snapshotted an
-					// empty host map while this bind was in flight; inserting unconditionally
-					// would leak a listener past Stop and fail the next Start against itself.
-					if !a.running || a.run_gen != gen || !a.doip_should_host(pch, key) {
+					// Decide and publish ATOMICALLY. Checking first and publishing after leaves a
+					// window: Stop can run between them, snapshot an empty host map, and this
+					// socket is then inserted behind it — leaking past Stop and failing the
+					// next Start against itself. doip_publish_if_current does both under the
+					// same mutex Stop takes.
+					if !a.doip_publish_if_current(pch, ent, srv, gen, key) {
 						srv.close()
 						bound = false
 					} else {
-						a.doip_publish(pch, ent, srv)
 						spawn doip_serve(app, mut srv)
 						spawn doip_udp_worker(app, mut srv)
 						// cur.vin, not ent.announce: a tester may have written 0xF190 since
@@ -782,9 +783,28 @@ fn doip_udp_worker(app &App, mut s doip.DoipServer) {
 	}
 }
 
-// doip_publish registers a bound entity: the panel can address it and Buses shows it live.
-fn (mut app App) doip_publish(pch project.Channel, ent sim.DoipEntity, srv &doip.DoipServer) {
+// doip_publish_if_current publishes a freshly bound entity, but ONLY if this run still wants
+// it — the test and the publication happen under one lock, so Stop cannot interleave between
+// them and leave a listener behind its own snapshot. Returns false when the caller should close
+// what it just bound.
+fn (mut app App) doip_publish_if_current(pch project.Channel, ent sim.DoipEntity, srv &doip.DoipServer, gen u64, key string) bool {
 	app.mu.lock()
+	defer {
+		app.mu.unlock()
+	}
+	if !app.running || app.run_gen != gen {
+		return false
+	}
+	if ci := app.chan_index_locked(pch) {
+		if !app.chans[ci].enabled {
+			return false
+		}
+	}
+	if key != '' {
+		if !(app.sim_enabled['${pch.iface}:${key}'] or { true }) {
+			return false
+		}
+	}
 	app.doip_hosts['${pch.name}|${pch.iface}'] = srv
 	if ci := app.chan_index_locked(pch) {
 		app.chans[ci].running = true
@@ -797,7 +817,29 @@ fn (mut app App) doip_publish(pch project.Channel, ent sim.DoipEntity, srv &doip
 	if !app.diag_plan.any(it.label == tgt.label) {
 		app.diag_plan << tgt
 	}
-	app.mu.unlock()
+	return true
+}
+
+// doip_is_hosted reports whether THIS application currently has the entity listening.
+fn (app &App) doip_is_hosted(name string, iface string) bool {
+	a := unsafe { app }
+	a.mu.lock()
+	defer {
+		a.mu.unlock()
+	}
+	return '${name}|${iface}' in a.doip_hosts
+}
+
+// doip_simulated reports whether the project asks us to host an entity on this interface, as
+// opposed to a tester-only channel pointed at somebody else's ECU (which IS scriptable).
+fn (app &App) doip_simulated(iface string) bool {
+	a := unsafe { app }
+	for c in a.proj.channels {
+		if c.iface == iface && c.is_doip() && c.all_nodes().len > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // doip_forget deregisters an entity that is no longer listening, so nothing offers it.
@@ -1622,7 +1664,11 @@ fn (mut app App) rebuild_from_proj() {
 		// `verify:` alone is enough: a channel that simulates nothing and only WATCHES a real
 		// bench still needs its verifiers built, which is the whole point of checking the ECU
 		// under test's protection.
-		if ch.enabled && (nodes.len > 0 || ch.verify.len > 0) {
+		// A DISABLED DoIP channel still gets an entry. Its supervisor exists whatever the tick
+		// (start_doip_hosts runs over the project), so enabling it live brings the entity up —
+		// and draw_sim renders app.sims only, so without this the ECU is running with no way to
+		// switch it off. CAN keeps the old rule: nothing runs for it while it is disabled.
+		if (ch.enabled || (ch.is_doip() && nodes.len > 0)) && (nodes.len > 0 || ch.verify.len > 0) {
 			// resolve_asset like the database list above: raw paths here re-based the
 			// simulator's DBCs onto the launch/bundle cwd, so an external project's
 			// relative DBC fed the sim nothing (codex #63 r4)
@@ -6453,6 +6499,13 @@ fn script_worker(app &App, path string) {
 		// it headlessly. For a DoIP channel that means dialing a TCP endpoint the user turned
 		// off — and connecting to whatever else is listening there.
 		if !ch.enabled {
+			continue
+		}
+		// A DoIP channel we are SUPPOSED to host but could not is not scriptable either. The
+		// bind failed because something else owns that endpoint, so uds.open() would dial that
+		// process and a GUI script would pass against the wrong ECU — the failure the
+		// synchronous bind exists to prevent, reached through the scripting side instead.
+		if ch.doip && a.doip_simulated(ch.iface) && !a.doip_is_hosted(ch.name, ch.iface) {
 			continue
 		}
 		mut sim_nodes := []project.NodeCfg{}
