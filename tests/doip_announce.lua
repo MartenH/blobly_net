@@ -67,3 +67,13 @@ test("the listener port follows the triggered channel", function()
   end
   check.truthy(found, "heard nothing — listened on the wrong port")
 end)
+
+-- Chatty is configured 100 x 60s: nothing may wait that out. The listener window is bounded and
+-- run teardown CANCELS in-flight sequences, so this suite finishes in seconds. It hung for 99
+-- minutes, then for 60s, before those two fixes — hence a permanent test rather than a comment.
+test("a long announcement sequence does not hold the run open", function()
+  local t0 = os.time()
+  local seen = doip.listen(600, { from = "Chatty" })
+  check.truthy(#seen > 0, "expected the first datagram inside the window")
+  check.truthy(os.time() - t0 < 30, "listen outlasted its window by minutes")
+end)

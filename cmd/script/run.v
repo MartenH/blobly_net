@@ -215,6 +215,8 @@ fn main() {
 		mut sv := a.srv
 		env.register_announcer(nm, fn [mut sv] () ! {
 			sv.announce()!
+		}, fn [mut sv] () {
+			sv.cancel_announce()
 		})
 	}
 

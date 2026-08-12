@@ -97,6 +97,9 @@ mut:
 // pretend otherwise, a script can ask for one: listen first, then trigger, then assert.
 pub type Announcer = fn () !
 
+// Canceller stops an in-flight sequence so a run can end without waiting it out.
+pub type Canceller = fn ()
+
 pub struct Env {
 mut:
 	st    lua.State
@@ -105,7 +108,8 @@ mut:
 	buses map[string]transport.Bus
 	// Entities this process hosts, by channel name, so a script can trigger their announcement
 	// sequence rather than racing the startup burst.
-	announcers map[string]Announcer
+	announcers  map[string]Announcer
+	cancellers  map[string]Canceller
 	mu         sync.Mutex
 	async_errs []string // failures from spawned work, surfaced instead of dropped
 	// Announcement workers started by doip.announce(). Joined before a run ends: otherwise the
@@ -147,6 +151,14 @@ pub fn (mut env Env) run_file(path string) ! {
 
 // join_announcers waits for announcement workers a script started and did not wait for.
 pub fn (mut env Env) join_announcers() {
+	// CANCEL, then join. Joining alone held a run open for the sequence's whole duration —
+	// 100 datagrams at 60s is a valid configuration and would have hung a suite for 99 minutes
+	// at teardown, which is the same stall the bounded wait removed from the listener.
+	// Cancelling first means the workers return at their next interval and their failures are
+	// still recorded, so the join stays complete as well as quick.
+	for _, c in env.cancellers {
+		c()
+	}
 	ts := env.announce_threads.clone()
 	env.announce_threads = []
 	for t in ts {
@@ -199,8 +211,9 @@ pub fn (mut env Env) flush_async_errs() {
 	}
 }
 
-pub fn (mut env Env) register_announcer(chan_name string, f Announcer) {
+pub fn (mut env Env) register_announcer(chan_name string, f Announcer, c Canceller) {
 	env.announcers[chan_name] = f
+	env.cancellers[chan_name] = c
 }
 
 pub fn (mut env Env) close() {

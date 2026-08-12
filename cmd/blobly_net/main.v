@@ -6682,6 +6682,8 @@ fn script_worker(app &App, path string) {
 			mut sv := srv
 			env.register_announcer(c.name, fn [mut sv] () ! {
 				sv.announce()!
+			}, fn [mut sv] () {
+				sv.cancel_announce()
 			})
 		}
 	}

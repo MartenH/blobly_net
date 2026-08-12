@@ -74,6 +74,9 @@ mut:
 	// the socket back for it is more indirection than storing the one string.
 	bound_host string
 	bound_port int
+	// Set to stop an in-flight announcement sequence between datagrams. A long sequence
+	// (100 × 60s is a valid configuration) must not hold a script run open for its duration.
+	announce_cancelled bool
 	active   &net.TcpConn     = unsafe { nil } // the in-progress accepted connection (nil between)
 	stopping bool // set by close(): stop accepting/serving and tear down the active conn
 }
@@ -235,6 +238,11 @@ pub fn (mut s DoipServer) serve_udp_once(timeout_ms int) ! {
 	}
 }
 
+// cancel_announce stops an in-flight sequence at its next interval. Safe from another thread.
+pub fn (mut s DoipServer) cancel_announce() {
+	s.announce_cancelled = true
+}
+
 // announce sends the power-on vehicle announcements. Blocking: count × interval.
 //
 // Sent from the entity's OWN socket, so the source address is the one a tester will dial back.
@@ -270,15 +278,27 @@ pub fn (mut s DoipServer) announce() ! {
 	if addrs.len == 0 {
 		return error('announce_to ${dest}: resolved to nothing') // indexing [0] would panic
 	}
+	s.announce_cancelled = false
 	for i in 0 .. s.cfg.announce_count {
-		if s.stopping {
-			return // (6) Stop or a toggle closed us mid-sequence; the fd may already be gone
+		if s.stopping || s.announce_cancelled {
+			return // Stop, a toggle, or a script run ending; the fd may already be gone
 		}
 		ann := vehicle_announcement(s.announced_vin(), s.cfg.logical_address, s.cfg.eid,
 			s.cfg.gid)
 		s.udp.write_to(addrs[0], ann) or { return error('announce to ${dest}: ${err}') }
 		if i + 1 < s.cfg.announce_count {
-			time.sleep(s.cfg.announce_interval * time.millisecond)
+			// SLICED, so a cancel lands within ~50ms instead of at the end of the interval.
+			// One sleep(60s) meant teardown still waited a full minute for a 100 × 60s
+			// sequence — better than the 100 minutes before it, and still a hung suite.
+			mut left := s.cfg.announce_interval
+			for left > 0 {
+				if s.stopping || s.announce_cancelled {
+					return
+				}
+				step := if left > 50 { 50 } else { left }
+				time.sleep(step * time.millisecond)
+				left -= step
+			}
 		}
 	}
 }
