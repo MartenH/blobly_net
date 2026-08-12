@@ -1236,3 +1236,14 @@
   disabled the channel it was meant to read. Fixes and the resulting invariants are in
   CLAUDE.md ("Polling a codex review"); the diagnosis was wrong twice before pagination was
   found, having first blamed the reviews channel and then the time-scoping.
+- 2026-08-12: **Watcher postmortem, part 2 — the clean verdict is a REACTION.** After the five
+  silent failures above, two more hid a green review on net#84 for 38 minutes. (6) Codex's own
+  footer states "If Codex has suggestions, it will comment; otherwise it will react with 👍" —
+  so a clean result can arrive with NO comment and NO review body, and the watcher polled only
+  comments and reviews. (7) The verdict comment that does exist is multi-line with
+  `Reviewed commit:` in the MIDDLE, and the matcher piped it through `tail -1`, comparing the
+  head SHA against the footer — it could never have matched, so every comment-delivered verdict
+  would have been missed too. Both fixed and self-tested against the known-clean PR, which now
+  reports in seconds. The lesson underneath all seven: the watcher was only ever tested against
+  "did it stay quiet", never against "can it detect what it exists to detect" — a ten-second
+  self-test against a state with a known answer would have caught most of them.

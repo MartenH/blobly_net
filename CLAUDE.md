@@ -183,7 +183,17 @@ here exists because a silent version of it lost a review; the incidents are in
   environments), and not `--slurp` (gh refuses it alongside `--jq`).
 - **`gh api --jq` takes exactly one argument.** jq's own flags (`--arg`) make it exit 1 with no
   stdout, so the filter returns nothing and the channel looks empty. Interpolate instead.
-- **Three channels**, and the first already contains the second:
+- **A 👍 REACTION on the PR is a verdict.** Codex's own footer says it: "If Codex has
+  suggestions, it will comment; otherwise it will react with 👍". A clean review can therefore
+  arrive with no comment at all — check `issues/N/reactions` for `+1` from the bot, or a green
+  PR looks like silence forever.
+- **Flatten a comment body before matching it.** `Reviewed commit:` sits in the MIDDLE of a
+  multi-line body, so piping it through `tail -1` matches against the footer and never fires.
+  `gsub("\n";" ")` it into one line, id-prefixed, and take the highest id.
+- **Never edit a watcher script while an instance is running.** bash reads a script
+  incrementally, so the running copy executes half of the new file and dies on a comment.
+  Write a new file instead.
+- **Four channels**, and the first already contains the second:
   `pulls/N/comments` (source of truth — review-attached comments appear here too, so summing
   both double-counts) · `pulls/N/reviews/<id>/comments` (fallback; narrowing to the latest
   review hides earlier unhandled findings) · `issues/N/comments` (the verdict, or "Something
