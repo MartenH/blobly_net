@@ -197,9 +197,16 @@ nothing looks exactly like no news.
      wrong", which means the review FAILED and must be re-requested rather than waited on.
 - **Codex names a 10-char abbreviated SHA** (`b733417c2a`). Match by **prefix** — a full 40-char
   comparison never fires, and matching the wording instead misses "Didn't find any major
-  issues". Prefix-match the SHA; do not fall back to phrases.
-- **Check CI by SHA**: `gh api repos/:owner/:repo/commits/<sha>/check-runs`. `gh pr checks`
-  reports the latest run per check *name*, which can show a pass belonging to an older commit.
+  issues". But the SHA alone is not enough: when a review FAILS and is re-requested without a
+  new commit — the recovery this section prescribes — the old failure and the retry name the
+  same SHA, so a watcher keyed only on it rediscovers the old comment and reports completion
+  while the retry is still running. Record the highest comment/review id before triggering a
+  review and require the match to be **newer than that baseline as well as** naming the head.
+- **Check CI with `gh api --paginate repos/:owner/:repo/commits/<sha>/check-runs`** — 30 per
+  page here too, so a pending or failed run past the first page is invisible and reproduces the
+  false green this section exists to prevent. (`gh pr checks` is *also* head-scoped — it queries
+  `commits(last: 1)` — so it is fine; the earlier claim here that it could show a stale pass from
+  an older commit was wrong.)
 - **Test the watcher against a state whose answer you already know** before trusting it, and
   make it print its counts per channel. Every bug above was invisible from the outside; a
   watcher that has never been shown to detect something is not evidence of anything.
