@@ -11,6 +11,11 @@ import doip
 // UdsNode is one simulated ECU's diagnostic server, with the addresses it answers on.
 pub struct UdsNode {
 pub:
+	// Index of the node in the slice passed to uds_nodes(). The caller needs to know which
+	// CONFIGURED node a server came from, and node NAMES are not unique across a bus: two
+	// channel entries sharing an interface can each define "SUT", and a name-keyed lookup on
+	// the caller's side then attributed both servers to one channel.
+	src  int
 	name string
 	rx   u32  // request id  (tester -> ECU)
 	tx   u32  // response id (ECU -> tester)
@@ -32,7 +37,7 @@ pub fn uds_nodes(nodes []project.NodeCfg) []UdsNode {
 	// going to START: reserving them from a config that is itself rejected poisoned the id for
 	// a valid node, which was then skipped too and the channel default started in its place.
 	mut claimed := map[u64]bool{}
-	for n in nodes {
+	for ni, n in nodes {
 		cfg := n.uds or { continue }
 		if !structurally_ok(cfg) {
 			continue // reported by validate_uds
@@ -43,6 +48,7 @@ pub fn uds_nodes(nodes []project.NodeCfg) []UdsNode {
 		claimed[cfg.rx] = true
 		claimed[cfg.tx] = true
 		out << UdsNode{
+			src:  ni
 			name: n.name
 			rx:   u32(cfg.rx)
 			tx:   u32(cfg.tx)
@@ -98,12 +104,13 @@ fn build_server(cfg project.UdsCfg, max_did int, max_dtc int) uds.Server {
 // carrier; widening it is a change to make when something actually needs it.
 pub fn uds_nodes_doip(nodes []project.NodeCfg) []UdsNode {
 	mut out := []UdsNode{}
-	for n in nodes {
+	for ni, n in nodes {
 		cfg := n.uds or { continue }
 		if cfg.malformed.len > 0 || cfg.session > 0xFF {
 			continue // reported by validate_uds_doip
 		}
 		out << UdsNode{
+			src:    ni
 			name:   n.name
 			server: build_server(cfg, max_did_bytes_doip, max_dtcs_doip)
 		}

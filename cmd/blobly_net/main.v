@@ -600,17 +600,24 @@ fn (mut app App) start() {
 		}
 		seeded << sc.iface
 		mut peers := []project.NodeCfg{}
-		// Remember which CHANNEL each node came from. Diagnostics are seeded once per bus, but
-		// two channel entries can share that bus, and sim_key() puts the channel in the key —
-		// so keying every server on the first entry's channel meant a tick on a node owned by
-		// the second one wrote a key its server never read, and unticking it stopped silencing
-		// the ECU. Worked before sim_key only because both sides were equally wrong.
-		mut owner := map[string]project.Channel{}
+		// Which CHANNEL each node came from, BY POSITION. Diagnostics are seeded once per bus,
+		// but two entries can share that bus and sim_key() puts the channel in the key, so a
+		// server keyed on the wrong entry's channel reads a key the panel never writes. Keyed
+		// by node NAME this went wrong again: names are not unique across a bus, so two "SUT"s
+		// collapsed onto one owner. UdsNode.src indexes back into `peers`, which is exact.
+		mut owners := []project.Channel{}
 		for other in app.sims {
+			// A DoIP entry is here only so the Simulation panel can show its ECU. Its nodes are
+			// not CAN peers: a disabled `type: doip` channel with no `interface:` inherits
+			// vcan0, and copied rx/tx on its node would then start a CAN responder for a
+			// channel that is switched off.
+			if other.pch.is_doip() {
+				continue
+			}
 			if other.iface == sc.iface {
 				peers << other.nodes
-				for n in other.nodes {
-					owner[n.name] = other.pch
+				for _ in other.nodes {
+					owners << other.pch
 				}
 			}
 		}
@@ -632,8 +639,8 @@ fn (mut app App) start() {
 		// Configure a per-ECU server and you own diagnostics on this bus: the default does NOT
 		// also run, or the two would both answer whenever their ids overlapped.
 		for mut u in diag_nodes {
-			spawn uds_node_loop(app, owner[u.name] or { sc.pch }, sc.iface, u.name, u.rx, u.tx,
-				u.ext, u.server)
+			own := if u.src >= 0 && u.src < owners.len { owners[u.src] } else { sc.pch }
+			spawn uds_node_loop(app, own, sc.iface, u.name, u.rx, u.tx, u.ext, u.server)
 			app.diag_plan << DiagTarget{
 				key:   diag_key_can(sc.iface, u.rx, u.tx)
 				label: '${u.name}  (0x${u.rx:X}/0x${u.tx:X})'
