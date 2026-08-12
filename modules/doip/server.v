@@ -24,7 +24,21 @@ pub:
 	vin             string = default_vin
 	eid             []u8 = default_eid // entity id (≈ MAC)
 	gid             []u8 = default_eid // group id
+	// Power-on announcement (ISO 13400 A_DoIP_Announce_Num / A_DoIP_Announce_Interval). A real
+	// entity announces itself when it gets its IP, three times, 500ms apart — that is how a
+	// tester discovers ECUs it was never told about, by listening rather than asking. 0 = say
+	// nothing, which is a legitimate ECU to simulate and a useful fault to inject.
+	announce_count    int = announce_num_default
+	announce_interval int = announce_interval_default // ms
+	// Where announcements go. Empty derives it from the entity's own address: a loopback entity
+	// broadcasts to 127.255.255.255 and never leaves the machine; anything else uses the
+	// limited broadcast, which DOES go on the wire, exactly like a real ECU would.
+	announce_to string
 }
+
+// ISO 13400 defaults: three announcements, 500ms apart.
+pub const announce_num_default = 3
+pub const announce_interval_default = 500
 
 // server_cfg builds a ServerCfg from a logical address + optional VIN/EID, filling
 // in the module defaults for any empty field. Lets callers in other modules set a
@@ -56,6 +70,9 @@ mut:
 	vin    string
 	listener &net.TcpListener = unsafe { nil }
 	udp      &net.UdpConn     = unsafe { nil }
+	// The host this entity bound to. announce() needs it to choose a destination, and asking
+	// the socket back for it is more indirection than storing the one string.
+	bound_host string
 	active   &net.TcpConn     = unsafe { nil } // the in-progress accepted connection (nil between)
 	stopping bool // set by close(): stop accepting/serving and tear down the active conn
 }
@@ -91,6 +108,7 @@ pub fn (s &DoipServer) is_stopping() bool {
 // closed before returning, so a failed listen() never leaves a socket bound. An
 // IPv6 host literal (one containing ':') is bracketed and bound on the IPv6 family.
 pub fn (mut s DoipServer) listen(host string, port int) ! {
+	s.bound_host = host
 	addr := join_host_port(host, port)
 	s.listener = net.listen_tcp(addr_family(host), addr)!
 	s.udp = net.listen_udp(addr) or {
@@ -213,6 +231,43 @@ pub fn (mut s DoipServer) serve_udp_once(timeout_ms int) ! {
 			s.cfg.gid)
 		s.udp.write_to(addr, ann) or {}
 	}
+}
+
+// announce sends the power-on vehicle announcements. Blocking: count × interval.
+//
+// Sent from the entity's OWN socket, so the source address is the one a tester will dial back.
+// SO_BROADCAST has to be set explicitly or the send fails with EACCES.
+pub fn (mut s DoipServer) announce() ! {
+	if s.cfg.announce_count <= 0 {
+		return // deliberately silent
+	}
+	if isnil(s.udp) {
+		return error('announce before listen')
+	}
+	dest := if s.cfg.announce_to != '' { s.cfg.announce_to } else { broadcast_for(s.bound_host) }
+	s.udp.sock.set_option_bool(.broadcast, true) or {
+		return error('cannot enable broadcast: ${err}')
+	}
+	addrs := net.resolve_addrs(dest, .ip, .udp) or { return error('announce_to ${dest}: ${err}') }
+	for i in 0 .. s.cfg.announce_count {
+		ann := vehicle_announcement(s.announced_vin(), s.cfg.logical_address, s.cfg.eid,
+			s.cfg.gid)
+		s.udp.write_to(addrs[0], ann) or { return error('announce to ${dest}: ${err}') }
+		if i + 1 < s.cfg.announce_count {
+			time.sleep(s.cfg.announce_interval * time.millisecond)
+		}
+	}
+}
+
+// broadcast_for picks the destination for an entity bound to `host`. A loopback entity stays on
+// the machine (127.255.255.255); anything else uses the limited broadcast and reaches the
+// network the bench is on.
+pub fn broadcast_for(host string) string {
+	h := host.trim_space()
+	if h.starts_with('127.') || h == 'localhost' {
+		return '127.255.255.255:${port}'
+	}
+	return '255.255.255.255:${port}'
 }
 
 // set_vin updates the VIN this entity ANNOUNCES, so discovery keeps naming the same ECU the

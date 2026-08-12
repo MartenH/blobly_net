@@ -293,6 +293,34 @@ observable:
 check.equal(doip.discover("DoIP1").vin, uds.open("DoIP1"):read_did(0xF190))
 ```
 
+**The entity announces itself at Start.** ISO 13400 says a DoIP ECU broadcasts a vehicle
+announcement when it comes up — three times, 500 ms apart — and that is how a tester discovers
+ECUs nobody told it about. Ours does the same, per ECU:
+
+```yaml
+    announce_count: 3          # ISO default; 0 = a silent ECU
+    announce_interval_ms: 500
+    announce_to: ""            # blank = derive (see below)
+```
+
+`announce_count: 0` is worth having on purpose: it simulates an ECU that never announces itself,
+which is exactly the fault a tester relying on discovery should be tested against.
+
+Where they go is derived from the entity's own address unless `announce_to` says otherwise. A
+**loopback** entity broadcasts to `127.255.255.255` and never leaves the machine; anything else
+uses the limited broadcast and **does go out on the network the bench is on** — like a real ECU,
+and worth knowing before plugging into a shared lab LAN.
+
+From a script, listen for them the way a real tester would:
+
+```lua
+local seen = doip.listen(1200)          -- window in ms, port defaults to 13400
+-- seen = { { vin = "BLOBLYNETGATEWAY1", logical_address = 0x1000 }, ... }
+```
+
+Start listening BEFORE the entities announce — nothing is queued for a listener that is not
+there yet. `doip.discover(channel)` remains the ask-and-answer half.
+
 Payload limits follow the carrier, not the ECU: DoIP carries a 64 KiB diagnostic message, so a
 DID too large for one ISO-TP transfer is served here and reported there.
 

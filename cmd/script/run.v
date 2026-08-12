@@ -121,13 +121,16 @@ fn main() {
 			// left the run announcing an entity and carrying on — and if the port was held by
 			// another DoIP process serving the same built-in defaults, uds.open would connect
 			// to THAT and the suite would pass against the wrong ECU.
-			mut entity := doip_listen(host, port, doip.server_cfg(ch.ecu_addr, announce, ch.eid),
-				srv) or {
+			mut entity := doip_listen(host, port, ent.cfg, srv) or {
 				eprintln('${ch.name}: ${err}')
 				eprintln('refusing to run: a suite would connect to whatever else is on ${host}:${port}')
 				exit(1)
 			}
 			spawn doip_serve_loop(mut entity, ctl)
+			// Announce AFTER the listener is up, in the background: count × interval is
+			// 1.5s by default and a suite should not wait for it. A tester that discovers by
+			// listening needs this; one that asks does not care.
+			spawn doip_announce(mut entity, ch.name)
 			println('channel ${ch.name} (doip:${host}:${port}): DoIP entity, logical address 0x${ch.ecu_addr:04X}')
 			continue
 		}
@@ -284,6 +287,11 @@ fn doip_listen(host string, port int, cfg doip.ServerCfg, srv uds.Server) !&doip
 	hst.entity = s
 	s.listen(host, port) or { return error('DoIP listen ${host}:${port} failed: ${err}') }
 	return s
+}
+
+// doip_announce sends the power-on announcements, reporting a failure rather than dropping it.
+fn doip_announce(mut s doip.DoipServer, name string) {
+	s.announce() or { eprintln('${name}: announce failed: ${err}') }
 }
 
 // doip_serve_loop runs an already-bound entity until Stop.

@@ -203,6 +203,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__sim_fault', l_sim_fault)
 	env.st.register('__uds_open', l_uds_open)
 	env.st.register('__doip_discover', l_doip_discover)
+	env.st.register('__doip_listen', l_doip_listen)
 	env.st.register('__uds_session', l_uds_session)
 	env.st.register('__uds_read_did', l_uds_read_did)
 	env.st.register('__uds_tester_present', l_uds_tester_present)
@@ -569,6 +570,22 @@ fn l_doip_discover(l lua.State) int {
 // caught by CI. The distinction is at least pinned by a unit test.
 fn probe_says_dead(err IError) bool {
 	return err !is uds.NegativeResponse
+}
+
+// l_doip_listen collects UNSOLICITED announcements — discovery the way a real tester does it,
+// by listening rather than asking. Returns "vin|0xADDR" lines; the prelude shapes them.
+fn l_doip_listen(l lua.State) int {
+	port := int(l.arg_int(1))
+	window := int(l.arg_int(2))
+	found := doip.collect_announcements(port, window) or {
+		return l.fail('doip.listen(${port}): ${err}')
+	}
+	mut out := []string{}
+	for f in found {
+		out << '${f.vin}|0x${f.logical_address:04X}'
+	}
+	l.push_str(out.join('\n'))
+	return 1
 }
 
 fn l_uds_tester_present(l lua.State) int {

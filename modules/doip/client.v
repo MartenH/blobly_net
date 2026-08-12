@@ -46,6 +46,41 @@ mut:
 
 // open_doip connects to a DoIP entity, performs routing activation, and returns a
 // ready tester channel. `source` is our logical address, `target` the ECU's.
+// collect_announcements listens for unsolicited vehicle announcements for `window_ms`.
+//
+// The counterpart to DoipServer.announce(): a tester that discovers ECUs by LISTENING rather
+// than asking. Binds the wildcard address so it hears broadcasts — which coexists with entities
+// bound to specific addresses on the same port (verified; they do not conflict).
+pub fn collect_announcements(port_ int, window_ms int) ![]VehicleInfo {
+	mut c := net.listen_udp('0.0.0.0:${port_}') or {
+		return error('cannot listen for announcements on ${port_}: ${err}')
+	}
+	defer {
+		c.close() or {}
+	}
+	mut out := []VehicleInfo{}
+	deadline := time.now().add(window_ms * time.millisecond)
+	for time.now() < deadline {
+		left := deadline - time.now()
+		if left <= 0 {
+			break
+		}
+		c.set_read_timeout(left)
+		mut buf := []u8{len: 128}
+		n, _ := c.read(mut buf) or { break } // timeout ends the window
+		if n < header_len {
+			continue
+		}
+		msg := parse(buf[..n]) or { continue }
+		if msg.payload_type != pt_vehicle_announcement {
+			continue
+		}
+		info := parse_vehicle_announcement(msg.payload) or { continue }
+		out << info
+	}
+	return out
+}
+
 pub fn open_doip(host string, port int, source u16, target u16) !&DoipClient {
 	addr := join_host_port(host, port) // brackets an IPv6 literal for dial_tcp
 	conn := net.dial_tcp(addr)!

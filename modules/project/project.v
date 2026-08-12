@@ -13,6 +13,7 @@ module project
 
 import os
 import yaml
+import doip
 
 // schema_version is the current project-file format version. Bump it when the `.yml`
 // schema changes incompatibly. Files carry `version:`; Save writes schema_version,
@@ -245,6 +246,12 @@ pub mut:
 	// network of simulated entities is distinguishable. Empty = module defaults.
 	vin string
 	eid []u8
+	// Power-on announcement, per ECU. Defaults are ISO 13400's (three, 500ms apart);
+	// `announce_count: 0` is a silent ECU — a legitimate thing to simulate, and a fault worth
+	// injecting deliberately at a tester that relies on discovery.
+	announce_count    int = doip.announce_num_default
+	announce_interval int = doip.announce_interval_default
+	announce_to       string // '' = derive from the entity's own address
 }
 
 // is_doip reports whether this channel is a DoIP (diagnostics-over-Ethernet)
@@ -494,6 +501,13 @@ fn parse_channel(c yaml.Any) !Channel {
 			ch.fd = true
 		}
 	}
+	if v := c.value_opt('announce_count') {
+		ch.announce_count = int(clamp_i64_u32(v.i64()))
+	}
+	if v := c.value_opt('announce_interval_ms') {
+		ch.announce_interval = int(clamp_i64_u32(v.i64()))
+	}
+	ch.announce_to = c.value('announce_to').default_to('').string()
 	if v := c.value_opt('tester_address') {
 		ch.tester_addr = parse_addr16(v.str()) or { return error('tester_address: ${err.msg()}') }
 	}

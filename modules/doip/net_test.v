@@ -348,3 +348,65 @@ fn test_discover() {
 	assert info.logical_address == 0x1234
 	srv.close()
 }
+
+// The power-on announcement, end to end: an entity announces unasked and a LISTENING tester
+// hears it. This is the half of discovery a real vehicle performs and the simulator did not —
+// a tester that waits for announcements saw nothing at all before this.
+fn test_entity_announces_itself_unasked() {
+	handler := fn (req []u8) []u8 {
+		return []
+	}
+	mut srv := new_server(ServerCfg{
+		logical_address:   0x1234
+		vin:               'ANNOUNCEDVIN00001'
+		announce_count:    2
+		announce_interval: 50
+	}, handler)
+	srv.listen('127.0.0.1', 13411) or {
+		assert false, 'listen: ${err}'
+		return
+	}
+	defer {
+		srv.close()
+	}
+	// listener first: announcements are not queued for a tester that is not there yet
+	mut got := []VehicleInfo{}
+	t := spawn fn () []VehicleInfo {
+		return collect_announcements(13400, 900) or { []VehicleInfo{} }
+	}()
+	time.sleep(150 * time.millisecond)
+	srv.announce() or {
+		assert false, 'announce: ${err}'
+		return
+	}
+	got = t.wait()
+	assert got.len >= 1, 'expected at least one announcement, got ${got.len}'
+	assert got[0].vin == 'ANNOUNCEDVIN00001'
+	assert got[0].logical_address == 0x1234
+}
+
+fn test_announce_count_zero_says_nothing() {
+	handler := fn (req []u8) []u8 {
+		return []
+	}
+	mut srv := new_server(ServerCfg{
+		announce_count: 0
+	}, handler)
+	srv.listen('127.0.0.1', 13412) or {
+		assert false, 'listen: ${err}'
+		return
+	}
+	defer {
+		srv.close()
+	}
+	t := spawn fn () []VehicleInfo {
+		return collect_announcements(13400, 400) or { []VehicleInfo{} }
+	}()
+	time.sleep(100 * time.millisecond)
+	srv.announce() or {
+		assert false, 'announce with count 0 should be a no-op, got: ${err}'
+		return
+	}
+	got := t.wait()
+	assert got.len == 0, 'a silent ECU announced ${got.len} time(s)'
+}
