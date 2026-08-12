@@ -569,27 +569,14 @@ fn (mut app App) start() {
 	// computed here, spawned from here, and stored for the panel to read — one answer to "what
 	// is running on this wire".
 	app.diag_plan = []
+	app.start_doip_hosts()
 	mut seeded := []string{}
 	for sc in app.sims {
 		for w in sim.validate_verify(sc.db, sc.verify) {
 			app.notify('${sc.iface}: ${w}')
 		}
-		// A DoIP channel is diagnostics over TCP at a logical address: validating its nodes as
-		// CAN reported "rx and tx must both be set" for a correct config, and seeding CAN
-		// servers on it listed a diagnostic target the panel could never reach.
+		// DoIP is hosted from the project, not from here — see start_doip_hosts().
 		if sc.pch.is_doip() {
-			for w in sim.validate_uds_doip(sc.nodes) {
-				app.notify(w)
-			}
-			if sc.nodes.len == 0 {
-				// Tester-only, exactly as the headless runner treats it. A channel with only
-				// `verify:` entries simulates no ECU and exists to talk to an EXTERNAL entity;
-				// hosting here would bind the endpoint and answer with stock diagnostic data,
-				// so a bench would read results from an ECU the project never asked for.
-				app.notify('${sc.pch.name}: DoIP tester only (no simulated entity)')
-				continue
-			}
-			app.start_doip_entity(sc)
 			continue
 		}
 		if sc.nodes.len == 0 {
@@ -646,58 +633,181 @@ fn (mut app App) start() {
 // Binds synchronously. A bind failure reported from inside the worker would leave the channel
 // showing "running" while nothing listened, and if another process held the port the
 // Diagnostics panel would quietly talk to THAT entity instead.
-fn (mut app App) start_doip_entity(sc SimCfg) {
-	pch := sc.pch
-	ent := sim.doip_entity(pch, sc.nodes) or {
-		app.notify('${pch.name}: ${err}')
-		app.notify('${pch.name}: DoIP entity NOT started')
-		return
+// start_doip_hosts supervises every DoIP channel that simulates an ECU — enabled or not.
+//
+// Driven from the PROJECT rather than app.sims, because a channel disabled when the project
+// loaded is excluded from app.sims entirely: there would be no supervisor, and enabling it
+// later would leave the entity permanently idle with no worker to notice.
+fn (mut app App) start_doip_hosts() {
+	for c in app.proj.channels {
+		if !c.is_doip() {
+			continue
+		}
+		nodes := c.all_nodes()
+		for w in sim.validate_uds_doip(nodes) {
+			app.notify('${c.name}: ${w}')
+		}
+		if nodes.len == 0 {
+			// Tester-only, as the headless runner treats it: a channel that simulates no ECU
+			// exists to address an EXTERNAL one. Hosting would bind the endpoint and answer
+			// with stock data, so a bench would read results from an ECU nobody asked for.
+			app.notify('${c.name}: DoIP tester only (no simulated entity)')
+			continue
+		}
+		ent := sim.doip_entity(c, nodes) or {
+			app.notify('${c.name}: ${err}')
+			app.notify('${c.name}: DoIP entity NOT started')
+			continue
+		}
+		if ent.extra > 0 {
+			app.notify('${c.name}: ${ent.extra + 1} UDS nodes on one DoIP entity; serving "${ent.node}" (0x${c.ecu_addr:04X})')
+		}
+		// Which node's tick in the Simulation panel switches this entity on and off. The
+		// shorthand `simulate: [SUT]` configures no `uds:` block, so doip_entity() serves the
+		// built-in server and returns an empty node name — keying enablement on that alone
+		// meant unticking SUT in the shipped demos did nothing at all.
+		key := if ent.node != '' { ent.node } else { nodes[0].name }
+		spawn doip_watch(app, c, ent, key)
 	}
-	if ent.extra > 0 {
-		app.notify('${pch.name}: ${ent.extra + 1} UDS nodes on one DoIP entity; serving "${ent.node}" (0x${pch.ecu_addr:04X})')
-	}
+}
+
+// doip_watch owns one entity's socket for the life of a run: it binds while the channel and
+// its ECU are ticked, and closes when either is not.
+//
+// It never blocks on accept. accept_and_serve() applies its timeout to ACCEPTING and then
+// serves the connection until the peer disconnects or the 60-second idle timeout, so a
+// supervisor that also served could not observe a toggle while a tester held the session open —
+// the "offline" ECU went on answering. Serving happens in doip_serve(); close() from here
+// interrupts it, which is what makes switching an ECU off actually take effect.
+fn doip_watch(app &App, pch project.Channel, ent sim.DoipEntity, key string) {
+	mut a := unsafe { app }
 	host, port := pch.doip_endpoint()
 	cfg := doip.server_cfg(pch.ecu_addr, ent.announce, pch.eid)
 	mut hst := &sim.DoipHost{
 		server: ent.server
 	}
-	// Bind SYNCHRONOUSLY, here, so a port conflict is reported at Start rather than from
-	// inside a worker: a channel showing green beside a port held by someone else is exactly
-	// the failure this whole change exists to end.
-	mut srv := app.doip_bind(cfg, host, port, mut hst) or {
-		app.notify('${pch.name}: cannot bind ${host}:${port} — ${err}')
-		app.notify('${pch.name}: NOT hosting; anything already on that port is not ours')
-		return
+	mut srv := &doip.DoipServer(unsafe { nil })
+	mut bound := false
+	mut warned := false
+	for a.running {
+		want := a.doip_should_host(pch, key)
+		if bound && !want {
+			srv.close() // interrupts an in-progress session, not just the accept
+			bound = false
+			a.doip_forget(pch, host, port)
+			a.notify('${pch.name}: DoIP entity stopped — ${host}:${port} released')
+		} else if !want || !bound {
+			if want && !bound {
+				// Rebuild the announcement from what the server SERVES now: a tester may have
+				// written 0xF190 since the last bind, and the startup cfg would advertise the
+				// original while the server returned the new one.
+				mut cur := cfg
+				if v := hst.server.dids[u16(0xF190)] {
+					cur = doip.server_cfg(cfg.logical_address, v.bytestr(), cfg.eid)
+				}
+				if s := a.doip_bind(cur, host, port, mut hst) {
+					srv = s
+					bound = true
+					warned = false
+					// Recheck AFTER binding. Stop may have cleared `running` and snapshotted an
+					// empty host map while this bind was in flight; inserting unconditionally
+					// would leak a listener past Stop and fail the next Start against itself.
+					if !a.running || !a.doip_should_host(pch, key) {
+						srv.close()
+						bound = false
+					} else {
+						a.doip_publish(pch, ent, srv)
+						spawn doip_serve(app, mut srv)
+						spawn doip_udp_worker(app, mut srv)
+						a.notify('${pch.name}: DoIP entity on ${host}:${port}, logical address 0x${pch.ecu_addr:04X}, VIN ${ent.announce}')
+					}
+				} else {
+					if !warned {
+						// Once, not every tick. And DROP the target: a bind that fails means
+						// someone else owns this endpoint, so leaving it selectable would point
+						// the panel at that process and report results from the wrong ECU.
+						a.notify('${pch.name}: cannot bind ${host}:${port} — someone else owns it')
+						a.doip_forget(pch, host, port)
+						warned = true
+					}
+				}
+			}
+			time.sleep(200 * time.millisecond)
+			continue
+		}
+		time.sleep(200 * time.millisecond)
 	}
-	app.doip_hosts[sc.iface] = srv
-	app.set_chan_running(sc.pch, true)
-	app.diag_plan << DiagTarget{
+	if bound {
+		srv.close()
+	}
+}
+
+// doip_serve runs one bound entity's TCP side until it is closed.
+fn doip_serve(app &App, mut s doip.DoipServer) {
+	mut a := unsafe { app }
+	for a.running && !s.is_stopping() {
+		s.accept_and_serve(200) or { continue } // a timeout is the normal case
+	}
+}
+
+// doip_udp_worker answers vehicle-identification requests, so Discover finds the entity.
+// Exits on is_stopping() as well as app.running, which the next Start REUSES: a worker that had
+// not yet observed the brief false would otherwise hot-spin against its own closed sockets.
+fn doip_udp_worker(app &App, mut s doip.DoipServer) {
+	mut a := unsafe { app }
+	for a.running && !s.is_stopping() {
+		s.serve_udp_once(200) or { continue }
+	}
+}
+
+// doip_publish registers a bound entity: the panel can address it and Buses shows it live.
+fn (mut app App) doip_publish(pch project.Channel, ent sim.DoipEntity, srv &doip.DoipServer) {
+	app.mu.lock()
+	app.doip_hosts['${pch.name}|${pch.iface}'] = srv
+	if ci := app.chan_index_locked(pch) {
+		app.chans[ci].running = true
+	}
+	tgt := DiagTarget{
 		label:   '${ent.node_label()} on ${pch.name}  (DoIP 0x${pch.ecu_addr:04X})'
-		iface:   sc.iface
+		iface:   pch.iface
 		carrier: script.carrier_of(pch)
 	}
-	app.notify('${pch.name}: DoIP entity on ${host}:${port}, logical address 0x${pch.ecu_addr:04X}, VIN ${ent.announce}')
-	spawn doip_supervise(app, sc, ent.node, cfg, host, port, mut hst, mut srv)
+	if !app.diag_plan.any(it.label == tgt.label) {
+		app.diag_plan << tgt
+	}
+	app.mu.unlock()
+}
+
+// doip_forget deregisters an entity that is no longer listening, so nothing offers it.
+fn (mut app App) doip_forget(pch project.Channel, host string, port int) {
+	app.mu.lock()
+	app.doip_hosts.delete('${pch.name}|${pch.iface}')
+	if ci := app.chan_index_locked(pch) {
+		app.chans[ci].running = false
+	}
+	app.diag_plan = app.diag_plan.filter(!(it.carrier.doip && it.carrier.host == host
+		&& it.carrier.port == port && it.carrier.ecu == pch.ecu_addr))
+	app.mu.unlock()
 }
 
 // doip_bind opens one entity and links it to its handler. The handler must exist before
 // new_server() and the server before the handler can reach it, so the link is made after.
-fn (mut app App) doip_bind(cfg doip.ServerCfg, host string, port int, mut hst sim.DoipHost) !&doip.DoipServer {
+fn (mut app App) doip_bind(cfg doip.ServerCfg, host string, port int, mut hst sim.DoipHost) ?&doip.DoipServer {
 	handler := fn [mut hst] (req []u8) []u8 {
 		return hst.handle(req)
 	}
 	mut s := doip.new_server(cfg, handler)
 	hst.entity = s
-	s.listen(host, port)!
+	s.listen(host, port) or { return none }
 	return s
 }
 
-// chan_index finds the runtime channel a project channel refers to.
+// chan_index_locked finds the runtime channel a project channel refers to.
 //
 // Identity is name AND interface. The interface string alone is NOT an identity — `type: doip`
 // with no `interface:` keeps the CAN default `vcan0`, so two unrelated channels can share it —
-// and substituting one for the other has now produced four separate defects in this change.
-// One definition, so there is one place left to get it wrong. Caller holds app.mu.
+// and substituting one for the other produced four separate defects in this change. One
+// definition, so there is one place left to get it wrong. Caller holds app.mu.
 fn (app &App) chan_index_locked(pch project.Channel) ?int {
 	for ci in 0 .. app.chans.len {
 		if app.chans[ci].name == pch.name && app.chans[ci].iface == pch.iface {
@@ -707,110 +817,36 @@ fn (app &App) chan_index_locked(pch project.Channel) ?int {
 	return none
 }
 
-fn (mut app App) set_chan_running(pch project.Channel, on bool) {
-	app.mu.lock()
-	if ci := app.chan_index_locked(pch) {
-		app.chans[ci].running = on
-	}
-	app.mu.unlock()
-}
-
 // doip_should_host reports whether this entity should be listening right now: its channel
 // ticked in Buses AND its ECU ticked in Simulation.
-fn (app &App) doip_should_host(pch project.Channel, node string) bool {
+// chan_enabled reports a channel's LIVE tick from the Buses panel.
+fn (app &App) chan_enabled(pch project.Channel) bool {
 	a := unsafe { app }
 	a.mu.lock()
 	defer {
 		a.mu.unlock()
 	}
-	// THIS channel, by identity. Rejecting on any disabled peer that shares the interface
-	// string meant disabling a CAN channel on vcan0 stopped a still-enabled DoIP entity that
-	// happened to derive the same default interface.
+	if ci := a.chan_index_locked(pch) {
+		return a.chans[ci].enabled
+	}
+	return pch.enabled // not started yet: the project's own value is all there is
+}
+
+fn (app &App) doip_should_host(pch project.Channel, key string) bool {
+	a := unsafe { app }
+	a.mu.lock()
+	defer {
+		a.mu.unlock()
+	}
 	if ci := a.chan_index_locked(pch) {
 		if !a.chans[ci].enabled {
 			return false
 		}
 	}
-	if node != '' {
-		return a.sim_enabled['${pch.iface}:${node}'] or { true }
+	if key != '' {
+		return a.sim_enabled['${pch.iface}:${key}'] or { true }
 	}
 	return true
-}
-
-// doip_supervise serves the entity, and CLOSES it while the channel or its ECU is switched off.
-//
-// Closing rather than merely declining to answer, for the same reason uds_node_loop closes its
-// ISO-TP channel: an entity that keeps listening is still discoverable and still completes
-// routing activation, so an ECU the operator explicitly switched off stays visible to a tester
-// and answers its requests. A closed socket does neither.
-fn doip_supervise(app &App, sc SimCfg, node string, cfg doip.ServerCfg, host string, port int, mut hst sim.DoipHost, mut srv doip.DoipServer) {
-	mut a := unsafe { app }
-	mut bound := true
-	mut warned := false
-	spawn doip_udp_worker(app, mut srv)
-	for a.running {
-		want := a.doip_should_host(sc.pch, node)
-		if bound && !want {
-			srv.close()
-			bound = false
-			a.mu.lock()
-			a.doip_hosts.delete(sc.iface)
-			a.mu.unlock()
-			a.set_chan_running(sc.pch, false)
-			a.notify('${sc.pch.name}: DoIP entity stopped — ${host}:${port} released')
-			continue
-		}
-		if !bound && want {
-			// From the CURRENT served VIN, not the startup one: a tester may have written
-			// 0xF190 since, and rebuilding from `cfg` would announce the original while the
-			// server went on serving the new one.
-			mut cur := cfg
-			if v := hst.server.dids[u16(0xF190)] {
-				cur = doip.server_cfg(cfg.logical_address, v.bytestr(), cfg.eid)
-			}
-			srv = a.doip_bind(cur, host, port, mut hst) or {
-				if !warned {
-					// Once, not every 200ms: a port held by something else would otherwise
-					// bury the Log under a line per tick.
-					a.notify('${sc.pch.name}: cannot re-bind ${host}:${port} — ${err}')
-					warned = true
-				}
-				time.sleep(200 * time.millisecond)
-				continue
-			}
-			warned = false
-			bound = true
-			a.mu.lock()
-			a.doip_hosts[sc.iface] = srv
-			a.mu.unlock()
-			a.set_chan_running(sc.pch, true)
-			spawn doip_udp_worker(app, mut srv)
-			a.notify('${sc.pch.name}: DoIP entity back on ${host}:${port}')
-			continue
-		}
-		if !bound {
-			time.sleep(200 * time.millisecond)
-			continue
-		}
-		if srv.is_stopping() {
-			break // Stop closed it from another thread
-		}
-		srv.accept_and_serve(200) or { continue } // a timeout is the normal case
-	}
-	if bound {
-		srv.close()
-	}
-}
-
-// doip_udp_worker answers vehicle-identification requests, so Discover finds the entity. Exits
-// on is_stopping() as well as app.running: close() makes every call return at once and forever,
-// and app.running is REUSED by the next Start, so a worker that had not yet observed the brief
-// false would survive it and hot-spin against its own closed sockets.
-fn doip_udp_worker(app &App, mut s doip.DoipServer) {
-	mut a := unsafe { app }
-	for a.running && !s.is_stopping() {
-		s.serve_udp_once(200) or { continue }
-	}
 }
 
 fn (mut app App) stop() {
@@ -5557,7 +5593,13 @@ fn (app &App) diag_targets() []DiagTarget {
 	// tester-only case, a DoIP channel pointed at a REAL ECU, has no simulated nodes, is not
 	// hosted, and never reaches diag_plan at all. That is the case a bench actually uses.
 	for c in app.proj.channels {
-		if !c.enabled || !c.is_doip() {
+		if !c.is_doip() {
+			continue
+		}
+		// The LIVE tick, not the load-time value. The Buses checkbox writes app.chans, so a
+		// channel switched off stayed selectable and the panel could still reach the external
+		// ECU — and one switched on after starting disabled never appeared at all.
+		if !app.chan_enabled(c) {
 			continue
 		}
 		if c.all_nodes().len > 0 {
@@ -5571,8 +5613,11 @@ fn (app &App) diag_targets() []DiagTarget {
 		// Deduplicate by LOGICAL identity, not endpoint: several tester-only channels may
 		// address different ECUs through one gateway, and matching on the interface alone
 		// suppressed every channel after the first — leaving the others unaddressable.
+		// Identity includes the TESTER address: it is sent during routing activation and can
+		// select a different role or authorisation at the external ECU, so two channels
+		// addressing one ECU as different testers are two distinct things to exercise.
 		if out.any(it.carrier.doip && it.carrier.host == car.host && it.carrier.port == car.port
-			&& it.carrier.ecu == car.ecu) {
+			&& it.carrier.ecu == car.ecu && it.carrier.tester == car.tester) {
 			continue
 		}
 		out << DiagTarget{
