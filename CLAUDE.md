@@ -183,6 +183,19 @@ here exists because a silent version of it lost a review; the incidents are in
   environments), and not `--slurp` (gh refuses it alongside `--jq`).
 - **`gh api --jq` takes exactly one argument.** jq's own flags (`--arg`) make it exit 1 with no
   stdout, so the filter returns nothing and the channel looks empty. Interpolate instead.
+- **Do NOT use the 👍 reaction as the verdict**, despite codex's footer saying "otherwise it
+  will react with 👍". It cannot be made reliable: the reaction payload carries **no reviewed
+  SHA**, so a fresh `+1` may belong to the previous head if the head moved while the review ran;
+  and GitHub will not create a second identical reaction from the same actor, so on a later
+  clean round the existing one keeps its ORIGINAL timestamp and no freshness test can ever pass.
+  Both directions are broken, in opposite ways. Observed on net#84: the clean result arrived as
+  a 👍 **and** as a comment naming the head, one second apart — the comment is the signal.
+- **Flatten a comment body before matching it.** `Reviewed commit:` sits in the MIDDLE of a
+  multi-line body, so piping it through `tail -1` matches against the footer and never fires.
+  `gsub("\n";" ")` it into one line, id-prefixed, and take the highest id.
+- **Never edit a watcher script while an instance is running.** bash reads a script
+  incrementally, so the running copy executes half of the new file and dies on a comment.
+  Write a new file instead.
 - **Three channels**, and the first already contains the second:
   `pulls/N/comments` (source of truth — review-attached comments appear here too, so summing
   both double-counts) · `pulls/N/reviews/<id>/comments` (fallback; narrowing to the latest
