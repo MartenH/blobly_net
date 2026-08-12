@@ -49,6 +49,10 @@ const trace_cap = 2000
 // id with one of ours, which is the single collision most worth catching.
 // The labels and the matching live in modules/wiretap, where they can be tested: this file is
 // compile-linked by CI but never run by it.
+// No row: an emission made while the trace is paused is still tracked, but has nothing to mark.
+// row_index_locked already maps it to -1, so it needs no special case downstream.
+const row_none = u64(0xFFFF_FFFF_FFFF_FFFF)
+
 const org_tst = wiretap.tst
 const org_sim = wiretap.sim
 const org_rep = wiretap.rep
@@ -1140,14 +1144,18 @@ fn (mut app App) expire_pending_locked(now_ms f64) {
 // note_emit records a frame we are about to put on the wire: one row stating intent, and one
 // pending echo. Called BEFORE the send — the RX thread can see the frame the instant the driver
 // takes it, and a pending entry added afterwards would arrive too late to claim its own echo.
-fn (mut app App) note_emit(iface string, origin string, f transport.CanFrame) {
+fn (mut app App) note_emit(iface string, origin string, f transport.CanFrame, watched bool) u64 {
 	chn := app.chan_name_for(iface)
 	name := app.lookup_name(f.id, f.extended)
 	t_ms := f64(time.ticks() - app.t0)
 	app.mu.lock()
 	app.expire_pending_locked(t_ms)
+	// row_none while paused: the emission is STILL recorded so its echo is recognised as ours —
+	// otherwise a paused trace would feed our own frames to the E2E verifier as the ECU's and
+	// log them to the recording twice — it simply has no row to confirm.
+	mut seq := row_none
 	if !app.paused {
-		seq := app.push_row_locked(TraceRow{
+		seq = app.push_row_locked(TraceRow{
 			t_ms:   t_ms
 			ch:     chn
 			origin: origin
@@ -1158,25 +1166,52 @@ fn (mut app App) note_emit(iface string, origin string, f transport.CanFrame) {
 			data:   f.data.clone()
 		})
 		app.gcount[gkey(origin, chn, f.id, f.extended)]++
-		app.taps.note(seq, iface, f, t_ms)
 	}
-	if app.recording {
-		app.rec << canlog.LogEntry{t_ms / 1000.0, iface, f}
+	// Only where somebody is actually watching for the echo. With no monitor on this interface
+	// — a generator firing at an unmonitored bus — or a driver that never hands our own frames
+	// back, nothing could ever confirm it, and every row would carry a '!' on a healthy bench.
+	if watched {
+		for missed in app.taps.note(seq, iface, f, t_ms) {
+			i := app.row_index_locked(missed)
+			if i >= 0 {
+				app.trace[i].missed = true
+			}
+		}
 	}
 	app.mu.unlock()
 	vgui.wake()
+	return seq
+}
+
+// note_sent records a frame that actually reached the driver. Separate from note_emit so a send
+// that FAILED never appears in a recording as though it had gone out.
+fn (mut app App) note_sent(iface string, f transport.CanFrame) {
+	app.mu.lock()
+	if app.recording {
+		app.rec << canlog.LogEntry{f64(time.ticks() - app.t0) / 1000.0, iface, f}
+	}
+	app.mu.unlock()
+}
+
+// retract_emit takes back an emission the driver refused. The row stays and is marked: the frame
+// did not reach the wire, which is exactly what the mark says — but the pending record goes, so
+// expiry does not report it a second time.
+fn (mut app App) retract_emit(seq u64) {
+	app.mu.lock()
+	app.taps.forget(seq)
+	i := app.row_index_locked(seq)
+	if i >= 0 {
+		app.trace[i].missed = true
+	}
+	app.mu.unlock()
 }
 
 // claim_echo_locked confirms the emission this frame is the echo of, and reports whether it
 // found one. The matching rules (one-shot, oldest first, width-exact) and why they are what they
 // are live in modules/wiretap. Caller holds app.mu.
-fn (mut app App) claim_echo_locked(iface string, f transport.CanFrame, t_ms f64) bool {
+fn (mut app App) claim_echo_locked(monitor int, iface string, f transport.CanFrame, t_ms f64) bool {
 	app.expire_pending_locked(t_ms)
-	seq := app.taps.claim(iface, f, t_ms) or { return false }
-	i := app.row_index_locked(seq)
-	if i >= 0 {
-		app.trace[i].confirmed = true
-	}
+	app.taps.claim(monitor, iface, f, t_ms) or { return false }
 	return true
 }
 
@@ -1190,11 +1225,19 @@ mut:
 	app    &App
 	iface  string
 	origin string
+	// whether an echo can be expected at all — see note_emit
+	watched bool
 }
 
 fn (mut t TapBus) send(frame transport.CanFrame) ! {
-	t.app.note_emit(t.iface, t.origin, frame)
-	return t.inner.send(frame)
+	// BEFORE the send: a monitor thread can see the frame the instant the driver takes it, and a
+	// record added afterwards arrives too late to claim its own echo.
+	seq := t.app.note_emit(t.iface, t.origin, frame, t.watched)
+	t.inner.send(frame) or {
+		t.app.retract_emit(seq)
+		return err
+	}
+	t.app.note_sent(t.iface, frame)
 }
 
 fn (mut t TapBus) recv(timeout_ms int) !transport.CanFrame {
@@ -1209,11 +1252,23 @@ fn (mut t TapBus) close() {
 fn (app &App) open_tap(iface string, origin string) !transport.Bus {
 	inner := transport.open(app.bitrate_iface(iface))!
 	return &TapBus{
-		inner:  inner
-		app:    unsafe { app }
-		iface:  iface
-		origin: origin
+		inner:   inner
+		app:     unsafe { app }
+		iface:   iface
+		origin:  origin
+		watched: transport.echoes_own_sends(iface) && app.monitors(iface)
 	}
+}
+
+// monitors reports whether any enabled channel watches this interface, i.e. whether an echo has
+// anywhere to arrive.
+fn (app &App) monitors(iface string) bool {
+	for c in app.chans {
+		if c.iface == iface && c.enabled {
+			return true
+		}
+	}
+	return false
 }
 
 // tx sends a frame on the default TX bus (send_iface) and records it as a TX trace row.
@@ -1636,7 +1691,7 @@ fn rx_loop(app &App, ci int, iface string) {
 		// recording and the E2E verifier — whose per-message counter would otherwise see one
 		// message twice and report a jump the ECU never made.
 		a.mu.lock()
-		ours := a.claim_echo_locked(iface, f, t_ms)
+		ours := a.claim_echo_locked(ci, iface, f, t_ms)
 		a.mu.unlock()
 		name := a.lookup_name(f.id, f.extended)
 		// Verify protection on the way in. Done here, on the RX thread that already owns the
@@ -4491,7 +4546,7 @@ fn trace_pass(r TraceRow, filt string) bool {
 	// gesture someone reaches for the moment they suspect one
 	// the origin is searchable, so "sim" shows only our simulated ECUs and "bus" only what the
 	// device under test actually put on the wire — the two views a bench asks for
-	hay := '${idstr(r.id, r.ext)} ${r.name} ${r.ch} ${r.origin} ${origin_mark(r)} ${hex(r.data)} ${r.e2e}'.to_lower()
+	hay := '${idstr(r.id, r.ext)} ${r.name} ${r.ch} ${r.origin}${origin_mark(r)} ${hex(r.data)} ${r.e2e}'.to_lower()
 	return hay.contains(filt)
 }
 
@@ -6880,6 +6935,11 @@ fn script_worker(app &App, path string) {
 		a.script_push('env init: ${err}')
 		a.script_done()
 		return
+	}
+	// A script IS the tester. Left on the default opener it would be the one emitter the trace
+	// could not account for, and its frames would come back labelled as the device under test's.
+	env.opener = fn [a] (iface string) !transport.Bus {
+		return a.open_tap(iface, org_tst)
 	}
 	env.run_file(path) or { a.script_push('error: ${err}') }
 	a.script_push('${env.passed()}/${env.total()} passed, ${env.failed()} failed')

@@ -47,6 +47,14 @@ struct Pending {
 	rtr   bool
 	data  []u8
 	t_ms  f64
+mut:
+	// Which monitors have already accounted for this emission. Several monitors may watch one
+	// interface (two channel entries can share a bus), and each gets its own copy of every
+	// frame — so a record consumed outright by the first would make our own frame look foreign
+	// to the second. Claimed once PER MONITOR keeps both honest while still exposing a second
+	// transmitter: a repeat arriving at a monitor that already claimed this record finds
+	// nothing left for it.
+	claimed []int
 }
 
 // Ring holds the emissions not yet accounted for. Not thread-safe: the caller serialises it
@@ -62,7 +70,11 @@ mut:
 // note records a frame we are about to put on the wire. Call it BEFORE the send: a monitor
 // thread can see the frame the instant the driver takes it, and a record added afterwards
 // arrives too late to claim its own echo.
-pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64) {
+// Returns the row identities evicted to stay within `cap` without ever having been accounted
+// for — reported, not dropped in silence, because the whole point of the record is that every
+// emission ends with a verdict. Silent eviction would go quiet in exactly the sustained-traffic
+// case where a dead bus matters most.
+pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64) []u64 {
 	r.items << Pending{
 		seq:   seq
 		iface: iface
@@ -72,9 +84,17 @@ pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64) 
 		data:  f.data.clone()
 		t_ms:  t_ms
 	}
+	mut evicted := []u64{}
 	if r.cap > 0 && r.items.len > r.cap {
-		r.items = r.items[r.items.len - r.cap..].clone()
+		drop := r.items.len - r.cap
+		for pd in r.items[..drop] {
+			if pd.claimed.len == 0 {
+				evicted << pd.seq
+			}
+		}
+		r.items = r.items[drop..].clone()
 	}
+	return evicted
 }
 
 // claim reports which emission this frame is the echo of, consuming it, or none if the frame
@@ -84,17 +104,19 @@ pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64) 
 // when a simulated ECU and the real one both send the same id, the first frame claims our
 // record and the second finds nothing left, so it is attributed to the bus. Matching without
 // consuming would attribute both to us and hide the collision this exists to surface.
-pub fn (mut r Ring) claim(iface string, f transport.CanFrame, t_ms f64) ?u64 {
+pub fn (mut r Ring) claim(monitor int, iface string, f transport.CanFrame, t_ms f64) ?u64 {
 	r.drop_expired(t_ms)
 	for i, p in r.items {
+		if monitor in p.claimed {
+			continue // this monitor already accounted for that emission
+		}
 		// Width- and kind-exact. An extended frame is NOT the echo of a standard one that
 		// happens to share the low 11 bits, and an RTR request is not the echo of the data
 		// frame answering it — either shortcut would attribute a real ECU's frame to us.
 		if p.iface == iface && p.id == f.id && p.ext == f.extended && p.rtr == f.rtr
 			&& p.data == f.data {
-			seq := p.seq
-			r.items.delete(i)
-			return seq
+			r.items[i].claimed << monitor
+			return p.seq
 		}
 	}
 	return none
@@ -112,10 +134,26 @@ pub fn (mut r Ring) expire(now_ms f64) []u64 {
 			keep << p
 			continue
 		}
-		missed << p.seq
+		// Only what NO monitor ever saw. A record kept around to serve a second monitor has
+		// already been accounted for once, and reporting it again would accuse a bus that
+		// carried the frame perfectly well.
+		if p.claimed.len == 0 {
+			missed << p.seq
+		}
 	}
 	r.items = keep
 	return missed
+}
+
+// forget discards the record for one emission without a verdict — for a send that FAILED, where
+// the frame never went out and the caller has already said so on the row itself.
+pub fn (mut r Ring) forget(seq u64) {
+	for i, p in r.items {
+		if p.seq == seq {
+			r.items.delete(i)
+			return
+		}
+	}
 }
 
 // drop_expired discards timed-out records without reporting them — used on the claim path,

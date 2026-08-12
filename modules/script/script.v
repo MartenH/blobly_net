@@ -97,16 +97,25 @@ mut:
 	chans []ChanInfo
 	conns []UdsConn
 	buses map[string]transport.Bus
-	// Entities this process hosts, by channel name, so a script can trigger their announcement
-	// sequence rather than racing the startup burst.
 	mu         sync.Mutex
 	async_errs []string // failures from spawned work, surfaced instead of dropped
 pub mut:
+	// How every bus this engine touches is opened. See BusOpener.
+	opener BusOpener = default_opener
 	results   []TestResult
 	log_lines []string // every emitted line, buffered (the GUI reads this post-run)
 	on_output fn (string) = fn (s string) {
 		println(s)
 	}
+}
+
+// open_bus is how the engine reaches a bus. The default is transport.open; a host that has to
+// account for every frame it puts on the wire (the GUI attributes traffic by origin in its
+// trace) supplies its own, so script sends are not the one emitter it cannot see.
+pub type BusOpener = fn (iface string) !transport.Bus
+
+fn default_opener(iface string) !transport.Bus {
+	return transport.open(iface)
 }
 
 // new_env creates a scripting session over the given channels, loads the prelude
@@ -195,7 +204,7 @@ fn (mut env Env) bus_for(name string) !transport.Bus {
 	if b := env.buses[name] {
 		return b
 	}
-	b := transport.open(env.chans[ci].iface)!
+	b := env.opener(env.chans[ci].iface)!
 	env.buses[name] = b
 	return b
 }
@@ -525,7 +534,9 @@ fn l_uds_open(l lua.State) int {
 		ctx := if has_tx { tx } else { u32(0x7E0) }
 		crx := if has_rx { rx } else { u32(0x7E8) }
 		ext := ctx > 0x7FF || crx > 0x7FF
-		isotp.Channel(isotp.open_software(info.iface, ctx, crx, ext) or {
+		isotp.Channel(isotp.on_bus(env.opener(info.iface) or {
+			return l.fail('isotp open failed on ${name}: ${err}')
+		}, info.iface, ctx, crx, ext) or {
 			return l.fail('isotp open failed on ${name}: ${err}')
 		})
 	}

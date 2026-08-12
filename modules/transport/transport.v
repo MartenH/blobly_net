@@ -22,6 +22,16 @@ mut:
 	close()
 }
 
+// echoes_own_sends reports whether frames written to this interface come back to another bus
+// instance on the same host. The virtual backends and SocketCAN do (SocketCAN loops transmitted
+// frames back to every other socket by default); the vendor drivers do NOT hand our own
+// transmissions back, so on those a caller waiting for its own frame waits forever — and must
+// not read that silence as the bus having dropped it.
+pub fn echoes_own_sends(iface string) bool {
+	i := iface.to_lower()
+	return !(i.starts_with('pcan') || i.starts_with('kvaser'))
+}
+
 // str renders a frame like `0x123 [3] DE AD BF` for logs/trace.
 pub fn (f CanFrame) str() string {
 	mut s := if f.extended { '0x${f.id:08X}' } else { '0x${f.id:03X}' }
