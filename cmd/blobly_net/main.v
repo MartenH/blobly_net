@@ -640,14 +640,7 @@ fn (mut app App) start() {
 	spawn gen_loop(app) // cyclic senders
 }
 
-// stop signals the RX threads to exit (they re-check on the recv timeout).
-// start_doip_entity hosts one simulated DoIP entity for a channel, the same way the headless
-// runner does — sim.doip_entity decides WHAT is served so the two cannot diverge, and this
-// function only deals with the socket and the UI.
-//
-// Binds synchronously. A bind failure reported from inside the worker would leave the channel
-// showing "running" while nothing listened, and if another process held the port the
-// Diagnostics panel would quietly talk to THAT entity instead.
+// start_doip_hosts supervises every DoIP channel that simulates an ECU — enabled or not.
 // start_doip_hosts supervises every DoIP channel that simulates an ECU — enabled or not.
 //
 // Driven from the PROJECT rather than app.sims, because a channel disabled when the project
@@ -711,6 +704,10 @@ fn doip_watch(app &App, pch project.Channel, ent sim.DoipEntity, key string, gen
 		if bound && !want {
 			srv.close() // interrupts an in-progress session, not just the accept
 			bound = false
+			// Let a later failure speak again: cleared only on a successful bind, toggling off
+			// and on to retry a held port produced no Log line at all, leaving the channel idle
+			// and silent — which is what this PR set out to stop.
+			warned = false
 			a.doip_forget(pch, host, port)
 			a.notify('${pch.name}: DoIP entity stopped — ${host}:${port} released')
 		} else if !want || !bound {
@@ -736,7 +733,11 @@ fn doip_watch(app &App, pch project.Channel, ent sim.DoipEntity, key string, gen
 						a.doip_publish(pch, ent, srv)
 						spawn doip_serve(app, mut srv)
 						spawn doip_udp_worker(app, mut srv)
-						a.notify('${pch.name}: DoIP entity on ${host}:${port}, logical address 0x${pch.ecu_addr:04X}, VIN ${ent.announce}')
+						// cur.vin, not ent.announce: a tester may have written 0xF190 since
+						// Start, and naming the startup VIN here would report an identity the
+						// entity neither announces nor serves — the split this PR exists to
+						// prevent, in the surface an operator actually reads.
+						a.notify('${pch.name}: DoIP entity on ${host}:${port}, logical address 0x${pch.ecu_addr:04X}, VIN ${cur.vin}')
 					}
 				} else {
 					// The generation again — an old supervisor that lost the bind race to a
@@ -873,6 +874,8 @@ fn (app &App) doip_should_host(pch project.Channel, key string) bool {
 	return true
 }
 
+// stop signals the RX threads to exit (they re-check on the recv timeout) and tears down the
+// hosted DoIP entities, whose sockets must be released before another Start can bind them.
 fn (mut app App) stop() {
 	// The run flag FIRST. A supervisor that is unbound and has just decided to rebind would
 	// otherwise insert a fresh listener AFTER the snapshot below, escape this close, and
