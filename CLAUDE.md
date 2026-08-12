@@ -171,6 +171,37 @@ release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks.
   [`docs/blobly_emb_synergies.md`](docs/blobly_emb_synergies.md). Wire formats (trace records,
   SOME/IP datagrams, telemetry) are pinned by golden vectors on both sides; change them together.
 
+### Polling a codex review — the traps
+
+Every one of these cost a missed review; four of them in a single session, the worst hiding a
+review for 26 minutes while a watcher reported "no response".
+
+- **Poll all THREE channels.** Findings arrive in any of them, and one is invisible from the
+  others:
+  1. `gh api repos/:owner/:repo/pulls/N/comments` — standalone inline findings
+  2. `gh api repos/:owner/:repo/pulls/N/reviews` → take the latest codex review id →
+     `.../pulls/N/reviews/<id>/comments` — findings attached to a **review object**. These do
+     **not** appear in channel 1.
+  3. `gh api repos/:owner/:repo/issues/N/comments` — the verdict, or "Something went wrong",
+     which means the review FAILED and must be re-requested rather than waited on.
+- **`gh api --jq` takes exactly one argument.** Passing jq's own flags (`--arg`, `--argjson`)
+  makes gh print `accepts 1 arg(s), received 4` and **exit 0 with no output** — so a filter
+  written that way silently returns nothing and the channel it was reading looks empty forever.
+  Interpolate the value into the expression instead.
+- **A review counts if it names the CURRENT HEAD**, whenever it arrived. Scoping to "newer than
+  my last request" skips a review that already covers the head, and re-requesting will not
+  produce another one.
+- **Match a verdict by the head SHA it names, never by wording.** Phrase-matching missed
+  "Didn't find any major issues" repeatedly.
+- **Check CI by SHA**: `gh api repos/:owner/:repo/commits/<sha>/check-runs`. `gh pr checks`
+  reports the latest run per check *name*, which can show a pass belonging to an older commit.
+- **Test the watcher against a state whose answer you already know** before trusting it. Every
+  bug above was silent — a command that succeeds and returns nothing looks exactly like "no
+  news". A watcher that has never been shown to detect something is not evidence of anything.
+- Run it as a **tracked** background job, never a detached shell (`( ... & )`), or it fires into
+  nothing. A cron sweep that re-checks every open PR is a good backstop for the case where the
+  watcher itself is wrong.
+
 ## Gotchas
 
 **Read [`docs/known_issues.md`](docs/known_issues.md) first when something breaks** — it is the
