@@ -164,7 +164,12 @@ mut:
 	doip_host_buf     []u8 // DoIP manual discover host[:port]
 	// Diagnostics (UDS on a worker thread)
 	diag_did_buf []u8
-	diag_sel     int // which DiagTarget the panel addresses
+	diag_sel     int // which DiagTarget the panel addresses (index into the CURRENT list)
+	// The selected target's LABEL, which is what the worker resolves by. An index is not an
+	// identity: a hosted entity can lose its listener between the click and the worker running,
+	// the list is rebuilt without it, and the same index then addresses a DIFFERENT ECU whose
+	// answers are reported as the selected one's.
+	diag_sel_key string
 	diag_plan    []DiagTarget // what start() actually spawned, per bus
 	// Hosted DoIP entities, by interface. Held so Stop can close the listeners: an entity that
 	// outlived Stop would keep port 13400 bound, and the next Start would fail to bind against
@@ -5673,7 +5678,26 @@ fn diag_worker(app &App, kind string, did u16) {
 	a.diag_busy = true
 	a.mu.unlock()
 	targets := a.diag_targets()
-	t := targets[if a.diag_sel >= 0 && a.diag_sel < targets.len { a.diag_sel } else { 0 }]
+	// Resolve by IDENTITY. Falling back to another index when the chosen target has gone would
+	// send this request to a different ECU and report the answers under the selected one's
+	// name — the wrong-ECU failure, arriving through the UI instead of the wire.
+	key := a.diag_sel_key
+	mut t := DiagTarget{}
+	mut found := false
+	for cand in targets {
+		if cand.label == key || (key == '' && !found) {
+			t = cand
+			found = true
+			if cand.label == key {
+				break
+			}
+		}
+	}
+	if !found {
+		a.diag_push('target "${key}" is no longer available')
+		a.diag_done()
+		return
+	}
 	iface := if t.iface != '' { t.iface } else { a.diag_iface() }
 	// The transport follows the TARGET, not the panel. Opening ISO-TP for a DoIP entry would
 	// try to open `doip:127.0.0.1:13400` as a CAN interface, which on Linux falls through to
@@ -6343,13 +6367,23 @@ fn draw_diag(mut app App) {
 	// Which ECU are we talking to? With per-ECU servers there is no longer one answer, and the
 	// panel used to assume 0x7E0/0x7E8 — unreachable for every other configured target.
 	targets := app.diag_targets()
-	if app.diag_sel >= targets.len {
+	// Follow the SELECTION, not the position: if the list changed under us, find where the
+	// chosen target went rather than keeping an index that now names something else.
+	if app.diag_sel_key != '' {
+		app.diag_sel = targets.index(targets.filter(it.label == app.diag_sel_key)[0] or {
+			DiagTarget{}
+		})
+	}
+	if app.diag_sel < 0 || app.diag_sel >= targets.len {
 		app.diag_sel = 0
 	}
 	if targets.len > 1 {
 		app.diag_sel = vgui.combo('target', targets.map(it.label), app.diag_sel)
 	} else if targets.len == 1 {
 		vgui.text_dim('target: ${targets[0].label}')
+	}
+	if app.diag_sel >= 0 && app.diag_sel < targets.len {
+		app.diag_sel_key = targets[app.diag_sel].label
 	}
 	vgui.separator()
 	if vgui.button('Session') && !busy {
