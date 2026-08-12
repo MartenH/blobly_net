@@ -575,7 +575,6 @@ fn (mut app App) start() {
 	// computed here, spawned from here, and stored for the panel to read — one answer to "what
 	// is running on this wire".
 	app.diag_plan = []
-	app.start_doip_hosts()
 	mut seeded := []string{}
 	for sc in app.sims {
 		for w in sim.validate_verify(sc.db, sc.verify) {
@@ -628,6 +627,11 @@ fn (mut app App) start() {
 			}
 		}
 	}
+	// DoIP hosts start LAST. Their supervisors publish targets from their own threads as soon
+	// as a bind succeeds — a localhost bind is fast enough to land mid-loop — and the CAN plan
+	// above appends to the same array without the lock. Finishing that construction first is
+	// what makes the unlocked appends safe, rather than adding a lock to every one of them.
+	app.start_doip_hosts()
 	spawn gen_loop(app) // cyclic senders
 }
 
@@ -720,7 +724,7 @@ fn doip_watch(app &App, pch project.Channel, ent sim.DoipEntity, key string, gen
 					// Recheck AFTER binding. Stop may have cleared `running` and snapshotted an
 					// empty host map while this bind was in flight; inserting unconditionally
 					// would leak a listener past Stop and fail the next Start against itself.
-					if !a.running || !a.doip_should_host(pch, key) {
+					if !a.running || a.run_gen != gen || !a.doip_should_host(pch, key) {
 						srv.close()
 						bound = false
 					} else {
@@ -730,7 +734,11 @@ fn doip_watch(app &App, pch project.Channel, ent sim.DoipEntity, key string, gen
 						a.notify('${pch.name}: DoIP entity on ${host}:${port}, logical address 0x${pch.ecu_addr:04X}, VIN ${ent.announce}')
 					}
 				} else {
-					if !warned {
+					// The generation again — an old supervisor that lost the bind race to a
+					// new run would otherwise run this path and deregister the NEW run's live
+					// listener, target and channel state. Checked inside the bare `else` so
+					// `err` stays in scope.
+					if a.running && a.run_gen == gen && !warned {
 						// Once, not every tick. And DROP the target: whatever the cause, we are
 						// not listening — leaving it selectable would point the panel at
 						// whatever else owns that endpoint and report the wrong ECU's answers.
