@@ -259,13 +259,13 @@ pub fn (mut s DoipServer) announce() ! {
 	s.udp.sock.set_option_bool(.broadcast, true) or {
 		return error('cannot enable broadcast: ${err}')
 	}
-	// The family the DESTINATION is, not always IPv4: an IPv6 entity announces to [ff02::1],
-	// and forcing .ip made resolution fail before a datagram was ever sent.
-	fam := if dest.starts_with('[') || dest.trim('[]').count(':') > 1 {
-		net.AddrFamily.ip6
-	} else {
-		net.AddrFamily.ip
-	}
+	// The family of the SOCKET, unless the destination is an explicit literal of the other
+	// kind. Choosing by punctuation alone classified every hostname as IPv4, so an IPv6 entity
+	// with `announce_to: localhost` (or an AAAA-only alias) resolved to a sockaddr its socket
+	// cannot send to.
+	bound_v6 := s.bound_host.contains(':')
+	literal_v6 := dest.starts_with('[') || dest.trim('[]').count(':') > 1
+	fam := if literal_v6 || bound_v6 { net.AddrFamily.ip6 } else { net.AddrFamily.ip }
 	addrs := net.resolve_addrs(dest, fam, .udp) or { return error('announce_to ${dest}: ${err}') }
 	if addrs.len == 0 {
 		return error('announce_to ${dest}: resolved to nothing') // indexing [0] would panic

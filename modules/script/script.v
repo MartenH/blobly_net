@@ -132,6 +132,10 @@ pub fn new_env(chans []ChanInfo) !&Env {
 
 // run_file loads and executes a Lua script file (after the prelude).
 pub fn (mut env Env) run_file(path string) ! {
+	defer {
+		// A trigger that failed after the last announce call would otherwise never be seen.
+		env.flush_async_errs()
+	}
 	env.st.do_file(path)!
 }
 
@@ -158,15 +162,19 @@ pub fn (env &Env) total() int {
 // note_async_err records a failure from work a script started but did not wait for, so it
 // surfaces in the output instead of vanishing into a spawned thread.
 pub fn (mut env Env) note_async_err(msg string) {
+	// RECORD ONLY. emit() appends to log_lines and calls on_output, both of which the
+	// interpreter thread is using — emitting from a spawned trigger races the buffer it grows.
+	// The script thread flushes these (flush_async_errs) at the next announce and at the end
+	// of a run, so nothing is lost and nothing is written from two threads.
 	env.mu.lock()
 	env.async_errs << msg
 	env.mu.unlock()
-	env.emit('!! ${msg}')
 }
 
 // emit_async_err flushes anything a previous async trigger reported, so it lands in the output
 // near the test that caused it rather than at some arbitrary later point.
-fn (mut env Env) emit_async_err(ctx string) {
+// flush_async_errs emits anything a spawned trigger reported. Script thread only.
+pub fn (mut env Env) flush_async_errs() {
 	env.mu.lock()
 	pending := env.async_errs.clone()
 	env.async_errs = []
@@ -628,7 +636,7 @@ fn l_doip_announce(l lua.State) int {
 	//
 	// A failure is REPORTED, not swallowed. This API exists to drive an external listening
 	// tester, so a send that never happened would otherwise be blamed on that tester.
-	env.emit_async_err(name)
+	env.flush_async_errs()
 	spawn fn (g Announcer, mut e Env, nm string) {
 		g() or { e.note_async_err('doip.announce("${nm}"): ${err}') }
 	}(f, mut env, name)
