@@ -596,7 +596,7 @@ fn (mut app App) start() {
 		// which broadcasts only to already-attached subscribers — those frames genuinely had no
 		// listener, yet were tracked as if one existed and later marked as never sent.
 		app.chans[ci].link_down = !iface_link_up(ch.adapter, ch.address)
-		spawn rx_loop(app, ci, ch.iface)
+		spawn rx_loop(app, ci, ch.iface, app.run_gen)
 		// open a TX bus for this channel's iface (each generator fires on its target bus)
 		if ch.iface !in app.tx_buses {
 			if b := app.open_tap(ch.iface, org_tst) {
@@ -1192,8 +1192,9 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 	// would then mark healthy traffic as never having reached the wire. With no monitor — a
 	// generator firing at an unmonitored bus — or a driver that never hands our own frames back,
 	// nothing could confirm it, and silence is not evidence.
-	if transport.echoes_own_sends(iface) && app.monitors_locked(iface) {
-		for missed in app.taps.note(seq, iface, f, t_ms) {
+	watchers := app.monitors_locked(iface)
+	if transport.echoes_own_sends(iface) && watchers.len > 0 {
+		for missed in app.taps.note(seq, iface, f, t_ms, watchers) {
 			i := app.row_index_locked(missed)
 			if i >= 0 {
 				app.trace[i].missed = true
@@ -1264,14 +1265,18 @@ mut:
 }
 
 fn (mut t TapBus) send(frame transport.CanFrame) ! {
+	// What the WIRE will carry, not what the caller asked for: classic CAN takes 8 bytes and the
+	// backends truncate silently, so a 12-byte Quick Send would be recorded whole, never match
+	// its own 8-byte echo, and show up as a false BUS row plus an unconfirmed TST one.
+	wire := transport.wire_frame(t.iface, frame)
 	// BEFORE the send: a monitor thread can see the frame the instant the driver takes it, and a
 	// record added afterwards arrives too late to claim its own echo.
-	seq := t.app.note_emit(t.iface, t.chan_name, t.origin, frame)
+	seq := t.app.note_emit(t.iface, t.chan_name, t.origin, wire)
 	t.inner.send(frame) or {
 		t.app.retract_emit(seq)
 		return err
 	}
-	t.app.note_sent(t.iface, frame)
+	t.app.note_sent(t.iface, wire)
 }
 
 fn (mut t TapBus) recv(timeout_ms int) !transport.CanFrame {
@@ -1288,12 +1293,13 @@ fn (mut t TapBus) close() {
 // channel's simulated nodes would show up attributed to its neighbour. '' = derive (the tester
 // paths — generators, diagnostics, shell, flash, scripts — are not per-channel).
 fn (app &App) open_tap_on(iface string, origin string, chan_name string) !transport.Bus {
-	// The bitrate suffix is an OPEN-time detail of the vendor backends, not part of a bus's
+	// The bitrate suffix is an OPEN-time detail of the VENDOR backends, not part of a bus's
 	// identity: chan_name_for and the pending records both key on the logical name, so a caller
 	// that already carries `pcan:…@250000` (the script engine's ChanInfo does) would otherwise
 	// label its rows with the physical open string and split them from every other row on the
-	// same bus.
-	logical := iface.all_before('@')
+	// same bus. Only there: nothing else uses `@` as syntax, and `inproc:bench@A` is a bus NAME
+	// — stripping it universally sent every emitter to a different hub than the monitor.
+	logical := if transport.vendor_iface(iface) { iface.all_before('@') } else { iface }
 	inner := transport.open(app.bitrate_iface(logical))!
 	return &TapBus{
 		inner:  inner
@@ -1308,17 +1314,18 @@ fn (app &App) open_tap(iface string, origin string) !transport.Bus {
 	return app.open_tap_on(iface, origin, '')
 }
 
-// monitors_locked reports whether an rx_loop is actually reading this interface, i.e. whether an
-// echo has anywhere to arrive. The SAME predicate that decides which channels get an rx_loop —
+// monitors_locked lists the rx_loops actually reading this interface — the sockets an echo could
+// arrive at. The SAME predicate that decides which channels get an rx_loop —
 // `enabled` alone counts an `off` or `replay` channel a generator may target, whose sends nothing
 // could ever confirm. Caller holds app.mu.
-fn (app &App) monitors_locked(iface string) bool {
-	for c in app.chans {
+fn (app &App) monitors_locked(iface string) []int {
+	mut out := []int{}
+	for i, c in app.chans {
 		if c.iface == iface && c.monitorable() && c.running {
-			return true
+			out << i
 		}
 	}
-	return false
+	return out
 }
 
 // tx sends a frame on the default TX bus (send_iface) and records it as a TX trace row.
@@ -1686,7 +1693,11 @@ fn diag_server_loop(app &App, iface string) {
 	ch.close()
 }
 
-fn rx_loop(app &App, ci int, iface string) {
+// `gen` is the measurement run this loop belongs to. Without it, a Stop→Start inside the 200 ms
+// receive timeout leaves the OLD loop running beside the new one on the same channel index: both
+// see every frame, the first claims our emission for that index, and the second's copy is then
+// classified as the device under test's — logged, recorded and verified as external traffic.
+fn rx_loop(app &App, ci int, iface string, gen u64) {
 	mut bus := app.open_transport(iface) or {
 		eprintln('rx ${iface}: ${err}')
 		mut a := unsafe { app }
@@ -1726,7 +1737,7 @@ fn rx_loop(app &App, ci int, iface string) {
 	// the TraceRsp id is config-static (the manifest is only mutated while stopped, so it can't
 	// change under a running RX loop) — resolve it once, not per frame in the hot path.
 	rsp_id := a.manifest.frames.or_defaults().rsp
-	for a.running && a.chans[ci].enabled {
+	for a.running && a.run_gen == gen && a.chans[ci].enabled {
 		// track the real link state so a bound-but-DOWN iface shows "down" (red), not "run",
 		// and flips to green the moment the user brings it up (ip link set … up).
 		down := !iface_link_up(a.chans[ci].adapter, a.chans[ci].address)
@@ -4317,7 +4328,7 @@ fn draw_buses(mut app App, chans []Chan) {
 				// sets it again when the bus is actually up.
 				if new && app.running && c.monitorable() && !app.chans[i].running {
 					app.chans[i].running = true
-					spawn rx_loop(app, i, app.chans[i].iface)
+					spawn rx_loop(app, i, app.chans[i].iface, app.run_gen)
 				}
 				app.mu.unlock()
 			}

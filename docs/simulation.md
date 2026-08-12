@@ -194,9 +194,10 @@ matches nothing would otherwise apply nowhere while the panel still displayed it
 ## Whose frame is this? The trace's `origin` column
 
 The moment you simulate, three parties transmit on one bus: **you as tester**, **you as the
-ECUs around the device under test**, and **the device under test itself**. Every backend
-delivers our own sends back to the monitor, so all three used to arrive looking identical — the
-trace showed `RX`/`TX`, which answered "did I press send", never "whose frame is this".
+ECUs around the device under test**, and **the device under test itself**. All three used to
+arrive looking identical — the trace showed `RX`/`TX`, which answered "did I press send", never
+"whose frame is this". (On the virtual buses and SocketCAN our own sends also come back to the
+monitor, so they landed in the same `RX` pile as the real ECU's.)
 
 The `origin` column answers it, with four values that each state only what is actually known:
 
@@ -215,6 +216,10 @@ only what the real ECU put on the wire, or `sim` for only your simulation.
 records what it is about to send, and a received frame is matched against those records —
 one-shot, oldest first, exact on id width, RTR and payload. What matches nothing of ours is the
 other side.
+
+On **PCAN and Kvaser** the driver never hands your own transmissions back, so there is nothing to
+match: `TST`/`SIM` there come from the tap alone (still accurate — we know what we sent), while
+`BUS` is everything the driver delivered, and no row can be wire-confirmed or marked `!`.
 
 That one-shot rule is what makes the case below visible. Leave a simulated ECU running while the
 real one it stands in for is on the bench and both transmit `0x700`:

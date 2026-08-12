@@ -27,12 +27,33 @@ mut:
 // frames back to every other socket by default); the vendor drivers do NOT hand our own
 // transmissions back, so on those a caller waiting for its own frame waits forever — and must
 // not read that silence as the bus having dropped it.
-pub fn echoes_own_sends(iface string) bool {
-	// The DISPATCHER prefix, separator included. On Linux anything without one is opened as
-	// SocketCAN, which does echo — so a plain interface a user happened to name `pcan0` must
-	// not be mistaken for the Windows vendor backend and have its echo matching switched off.
+// vendor_iface reports the Windows vendor backends, whose address may carry an `@<bitrate>`
+// suffix. Nothing else uses `@` as syntax — `inproc:bench@A` is a perfectly good bus NAME, and
+// treating the suffix as universal sent the emitters to a different hub than the monitor.
+pub fn vendor_iface(iface string) bool {
 	i := iface.to_lower()
-	return !(i.starts_with('pcan:') || i.starts_with('kvaser:'))
+	return i.starts_with('pcan:') || i.starts_with('kvaser:')
+}
+
+pub fn echoes_own_sends(iface string) bool {
+	// The vendor backends do not hand our own transmissions back. Matched by DISPATCHER prefix,
+	// separator included: on Linux anything without one is opened as SocketCAN, which does echo,
+	// so a plain interface a user happened to name `pcan0` must not be mistaken for one.
+	return !vendor_iface(iface)
+}
+
+// wire_frame is the frame this interface will ACTUALLY put on the bus. Classic CAN carries at
+// most 8 bytes and the backends truncate silently (ct_can_send clamps len), so a caller that
+// records what it asked for records something that never existed — and, for the echo matching,
+// can never match what comes back.
+pub fn wire_frame(iface string, f CanFrame) CanFrame {
+	if f.data.len <= 8 {
+		return f
+	}
+	return CanFrame{
+		...f
+		data: f.data[..8].clone()
+	}
 }
 
 // str renders a frame like `0x123 [3] DE AD BF` for logs/trace.

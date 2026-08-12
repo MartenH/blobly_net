@@ -47,6 +47,10 @@ struct Pending {
 	rtr   bool
 	data  []u8
 	t_ms  f64
+	// The monitors that existed WHEN THIS WAS SENT. A monitor that opened afterwards never saw
+	// the frame, so letting it claim the record would suppress a real frame that merely looks
+	// identical — the record must not outlive the set of sockets that could have received it.
+	allowed []int
 mut:
 	// Which monitors have already accounted for this emission. Several monitors may watch one
 	// interface (two channel entries can share a bus), and each gets its own copy of every
@@ -74,10 +78,11 @@ mut:
 // for — reported, not dropped in silence, because the whole point of the record is that every
 // emission ends with a verdict. Silent eviction would go quiet in exactly the sustained-traffic
 // case where a dead bus matters most.
-pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64) []u64 {
+pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, monitors []int) []u64 {
 	r.items << Pending{
-		seq:   seq
-		iface: iface
+		seq:     seq
+		allowed: monitors.clone()
+		iface:   iface
 		id:    f.id
 		ext:   f.extended
 		rtr:   f.rtr
@@ -109,6 +114,9 @@ pub fn (mut r Ring) claim(monitor int, iface string, f transport.CanFrame, t_ms 
 	for i, p in r.items {
 		if monitor in p.claimed {
 			continue // this monitor already accounted for that emission
+		}
+		if p.allowed.len > 0 && monitor !in p.allowed {
+			continue // this socket did not exist when the frame went out
 		}
 		// Width- and kind-exact. An extended frame is NOT the echo of a standard one that
 		// happens to share the low 11 bits, and an RTR request is not the echo of the data
