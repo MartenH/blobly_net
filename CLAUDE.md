@@ -186,7 +186,9 @@ here exists because a silent version of it lost a review; the incidents are in
 - **A 👍 REACTION on the PR is a verdict.** Codex's own footer says it: "If Codex has
   suggestions, it will comment; otherwise it will react with 👍". A clean review can therefore
   arrive with no comment at all — check `issues/N/reactions` for `+1` from the bot, or a green
-  PR looks like silence forever.
+  PR looks like silence forever. It needs a freshness baseline like every other channel: a
+  PR-level reaction PERSISTS across rounds, so matching any `+1` reports CLEAN in seconds on the
+  next round while codex is still running. Record the newest reaction `created_at` first.
 - **Flatten a comment body before matching it.** `Reviewed commit:` sits in the MIDDLE of a
   multi-line body, so piping it through `tail -1` matches against the footer and never fires.
   `gsub("\n";" ")` it into one line, id-prefixed, and take the highest id.
@@ -197,7 +199,9 @@ here exists because a silent version of it lost a review; the incidents are in
   `pulls/N/comments` (source of truth — review-attached comments appear here too, so summing
   both double-counts) · `pulls/N/reviews/<id>/comments` (fallback; narrowing to the latest
   review hides earlier unhandled findings) · `issues/N/comments` (the verdict, or "Something
-  went wrong" = the review FAILED and must be re-requested, not waited on).
+  went wrong" = the review FAILED and must be re-requested, not waited on) · **`issues/N/reactions`**
+  (the 👍 above — the channel used when there is nothing to say, and the one that gets forgotten
+  because a clean run produces no text anywhere).
 - **Identify a result by head SHA prefix AND a freshness baseline.** Codex names a 10-char
   abbreviated SHA, so a 40-char compare never matches; but a retry after a failed review names
   the *same* SHA as the failure, so record the highest comment/review id first and require the
