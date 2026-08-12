@@ -657,76 +657,132 @@ fn (mut app App) start_doip_entity(sc SimCfg) {
 		app.notify('${pch.name}: ${ent.extra + 1} UDS nodes on one DoIP entity; serving "${ent.node}" (0x${pch.ecu_addr:04X})')
 	}
 	host, port := pch.doip_endpoint()
-	mut srv := ent.server
-	mut sync_box := &VinSync{}
-	handler := fn [mut srv, mut sync_box] (req []u8) []u8 {
-		// Identical to the runner's: a write to DID 0xF190 changes the served identity, so the
-		// announcement has to move with it, and a VIN the announcement cannot carry faithfully
-		// is refused rather than accepted.
-		if w := uds.written_did(req) {
-			if w.did == 0xF190 {
-				if w.data.len != 17 {
-					return [u8(0x7F), uds.sid_write_data_by_identifier, 0x31]
-				}
-				resp := srv.handle(req)
-				if resp.len > 0 && resp[0] == 0x6E {
-					sync_box.srv.set_vin(w.data.bytestr())
-				}
-				return resp
-			}
-		}
-		return srv.handle(req)
+	cfg := doip.server_cfg(pch.ecu_addr, ent.announce, pch.eid)
+	mut hst := &sim.DoipHost{
+		server: ent.server
 	}
-	mut ds := doip.new_server(doip.server_cfg(pch.ecu_addr, ent.announce, pch.eid), handler)
-	ds.listen(host, port) or {
-		// Say what is at stake. A port already held by another DoIP process would otherwise
-		// look like a working entity to anyone reading the Buses panel.
+	// Bind SYNCHRONOUSLY, here, so a port conflict is reported at Start rather than from
+	// inside a worker: a channel showing green beside a port held by someone else is exactly
+	// the failure this whole change exists to end.
+	mut srv := app.doip_bind(cfg, host, port, mut hst) or {
 		app.notify('${pch.name}: cannot bind ${host}:${port} — ${err}')
 		app.notify('${pch.name}: NOT hosting; anything already on that port is not ours')
 		return
 	}
-	sync_box.srv = ds
-	app.doip_hosts[sc.iface] = ds
-	spawn doip_entity_worker(app, sc.iface, mut ds)
-	// The channel is live only NOW, with the listener actually up — a dot driven by "we
-	// spawned something" rather than "a tester can connect" is how #82 went unnoticed.
-	app.mu.lock()
-	for ci in 0 .. app.chans.len {
-		if app.chans[ci].iface == sc.iface {
-			app.chans[ci].running = true
-		}
-	}
-	app.mu.unlock()
+	app.doip_hosts[sc.iface] = srv
+	app.set_chan_running(sc.iface, true)
 	app.diag_plan << DiagTarget{
 		label:   '${ent.node_label()} on ${pch.name}  (DoIP 0x${pch.ecu_addr:04X})'
 		iface:   sc.iface
 		carrier: script.carrier_of(pch)
 	}
 	app.notify('${pch.name}: DoIP entity on ${host}:${port}, logical address 0x${pch.ecu_addr:04X}, VIN ${ent.announce}')
+	spawn doip_supervise(app, sc, ent.node, cfg, host, port, mut hst, mut srv)
 }
 
-// VinSync links the UDS handler to the entity it serves for: the handler must exist before
-// new_server() and the server before the handler can update it.
-struct VinSync {
-mut:
-	srv &doip.DoipServer = unsafe { nil }
-}
-
-// doip_entity_worker serves one hosted entity until Stop.
-fn doip_entity_worker(app &App, iface string, mut s doip.DoipServer) {
-	mut a := unsafe { app }
-	spawn doip_udp_worker(app, mut s)
-	// is_stopping(), not just app.running: close() makes accept return immediately and forever,
-	// and app.running is REUSED by the next Start. A worker that had not yet observed the brief
-	// false would survive it and hot-spin against its own closed sockets for the rest of the
-	// session — invisible, because every error here is discarded as a timeout.
-	for a.running && !s.is_stopping() {
-		s.accept_and_serve(200) or { continue } // a timeout is the normal case
+// doip_bind opens one entity and links it to its handler. The handler must exist before
+// new_server() and the server before the handler can reach it, so the link is made after.
+fn (mut app App) doip_bind(cfg doip.ServerCfg, host string, port int, mut hst sim.DoipHost) !&doip.DoipServer {
+	handler := fn [mut hst] (req []u8) []u8 {
+		return hst.handle(req)
 	}
-	s.close()
+	mut s := doip.new_server(cfg, handler)
+	hst.entity = s
+	s.listen(host, port)!
+	return s
 }
 
-// doip_udp_worker answers vehicle-identification requests, so Discover finds the entity.
+fn (mut app App) set_chan_running(iface string, on bool) {
+	app.mu.lock()
+	for ci in 0 .. app.chans.len {
+		if app.chans[ci].iface == iface {
+			app.chans[ci].running = on
+		}
+	}
+	app.mu.unlock()
+}
+
+// doip_should_host reports whether this entity should be listening right now: its channel
+// ticked in Buses AND its ECU ticked in Simulation.
+fn (app &App) doip_should_host(iface string, node string) bool {
+	a := unsafe { app }
+	a.mu.lock()
+	defer {
+		a.mu.unlock()
+	}
+	for c in a.chans {
+		if c.iface == iface && !c.enabled {
+			return false
+		}
+	}
+	if node != '' {
+		return a.sim_enabled['${iface}:${node}'] or { true }
+	}
+	return true
+}
+
+// doip_supervise serves the entity, and CLOSES it while the channel or its ECU is switched off.
+//
+// Closing rather than merely declining to answer, for the same reason uds_node_loop closes its
+// ISO-TP channel: an entity that keeps listening is still discoverable and still completes
+// routing activation, so an ECU the operator explicitly switched off stays visible to a tester
+// and answers its requests. A closed socket does neither.
+fn doip_supervise(app &App, sc SimCfg, node string, cfg doip.ServerCfg, host string, port int, mut hst sim.DoipHost, mut srv doip.DoipServer) {
+	mut a := unsafe { app }
+	mut bound := true
+	mut warned := false
+	spawn doip_udp_worker(app, mut srv)
+	for a.running {
+		want := a.doip_should_host(sc.iface, node)
+		if bound && !want {
+			srv.close()
+			bound = false
+			a.mu.lock()
+			a.doip_hosts.delete(sc.iface)
+			a.mu.unlock()
+			a.set_chan_running(sc.iface, false)
+			a.notify('${sc.pch.name}: DoIP entity stopped — ${host}:${port} released')
+			continue
+		}
+		if !bound && want {
+			srv = a.doip_bind(cfg, host, port, mut hst) or {
+				if !warned {
+					// Once, not every 200ms: a port held by something else would otherwise
+					// bury the Log under a line per tick.
+					a.notify('${sc.pch.name}: cannot re-bind ${host}:${port} — ${err}')
+					warned = true
+				}
+				time.sleep(200 * time.millisecond)
+				continue
+			}
+			warned = false
+			bound = true
+			a.mu.lock()
+			a.doip_hosts[sc.iface] = srv
+			a.mu.unlock()
+			a.set_chan_running(sc.iface, true)
+			spawn doip_udp_worker(app, mut srv)
+			a.notify('${sc.pch.name}: DoIP entity back on ${host}:${port}')
+			continue
+		}
+		if !bound {
+			time.sleep(200 * time.millisecond)
+			continue
+		}
+		if srv.is_stopping() {
+			break // Stop closed it from another thread
+		}
+		srv.accept_and_serve(200) or { continue } // a timeout is the normal case
+	}
+	if bound {
+		srv.close()
+	}
+}
+
+// doip_udp_worker answers vehicle-identification requests, so Discover finds the entity. Exits
+// on is_stopping() as well as app.running: close() makes every call return at once and forever,
+// and app.running is REUSED by the next Start, so a worker that had not yet observed the brief
+// false would survive it and hot-spin against its own closed sockets.
 fn doip_udp_worker(app &App, mut s doip.DoipServer) {
 	mut a := unsafe { app }
 	for a.running && !s.is_stopping() {

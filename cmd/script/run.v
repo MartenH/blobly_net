@@ -269,48 +269,19 @@ fn uds_node_loop(iface string, rx u32, tx u32, ext bool, srv uds.Server, ctl &Ct
 	ch.close()
 }
 
-// VinSync lets the UDS handler reach the entity it is serving for. The handler must exist
-// before new_server() and the server before the handler can update it, so the link is made
-// after construction rather than captured at it.
-struct VinSync {
-mut:
-	srv &doip.DoipServer = unsafe { nil }
-}
-
 // doip_listen binds one simulated DoIP entity: the same uds.Server the CAN path serves,
 // behind a real TCP listener plus the UDP socket that answers discovery. Synchronous, so the
 // caller learns about a bind failure before any test runs.
 fn doip_listen(host string, port int, cfg doip.ServerCfg, srv uds.Server) !&doip.DoipServer {
-	mut us := srv
-	mut sync := &VinSync{}
-	handler := fn [mut us, mut sync] (req []u8) []u8 {
-		// A write to DID 0xF190 changes the entity's identity. Discovery builds announcements
-		// from the server's own VIN, so without this the entity serves the new one over TCP
-		// for the rest of the run while still ANNOUNCING the old.
-		//
-		// Decode the IDENTIFIER first and judge the data after. Requiring a payload to notice
-		// the write at all meant `2E F1 90` with no data — a well-formed request that clears
-		// the record — slipped past the guard entirely: the server cleared the VIN, answered
-		// positively, and discovery went on advertising the old one.
-		if w := uds.written_did(req) {
-			if w.did == 0xF190 {
-				if w.data.len != 17 {
-					// Any other length is zero-padded or truncated by the announcement while
-					// the server returns it whole — the same two-identity split, created at
-					// runtime. Refuse rather than accept what cannot be announced faithfully.
-					return [u8(0x7F), uds.sid_write_data_by_identifier, 0x31] // requestOutOfRange
-				}
-				resp := us.handle(req)
-				if resp.len > 0 && resp[0] == 0x6E {
-					sync.srv.set_vin(w.data.bytestr())
-				}
-				return resp
-			}
-		}
-		return us.handle(req)
+	// sim.DoipHost owns the wire policy, so the GUI cannot drift from it.
+	mut hst := &sim.DoipHost{
+		server: srv
+	}
+	handler := fn [mut hst] (req []u8) []u8 {
+		return hst.handle(req)
 	}
 	mut s := doip.new_server(cfg, handler)
-	sync.srv = s
+	hst.entity = s
 	s.listen(host, port) or { return error('DoIP listen ${host}:${port} failed: ${err}') }
 	return s
 }
