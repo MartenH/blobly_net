@@ -1,7 +1,9 @@
 # Blobly Net (V) — project guide for coding agents
 
-> `AGENTS.md` is a symlink to this file: one guide for **any** agent (Claude Code reads
-> `CLAUDE.md`, Codex and others read `AGENTS.md`). Edit only this file.
+> **This is the guide.** `AGENTS.md` is a pointer FILE here, real rather than a
+> symlink: two agents look for two names — Claude Code reads `CLAUDE.md` and nothing else, Codex
+> and others read `AGENTS.md` — and a symlink either way round becomes a 9-byte text file on a
+> checkout without symlink support, so whichever tool follows it silently gets a one-word guide.
 >
 > **Keep this short and true.** Every claim here should be checkable against the repo in
 > seconds. Historical narrative belongs in [`docs/history.md`](docs/history.md), not here —
@@ -67,10 +69,10 @@ docs/                design + platform docs; docs/history.md = archived status l
 | `candb` | DBC parse/decode/encode + canonical writer (`dbc_write.v`) |
 | `isotp` | ISO-TP (ISO 15765-2) transport |
 | `uds` | UDS diagnostic client over ISO-TP |
-| `doip` | DoIP (ISO 13400) — UDS over TCP; same shape as `isotp.Channel` |
+| `doip` | DoIP (ISO 13400) — UDS over TCP; same shape as `isotp.Channel`. Entity (server) side too: ▶ Start hosts one per channel that configures **simulated nodes**, in the GUI and headless. A channel without them is tester-only — it addresses somebody else's ECU and nothing is hosted for it |
 | `someip` | SOME/IP header codec, envelope validation, `RpcClient` |
 | `flash` | UDS firmware-download session against a blobly_emb bootloader (0x29 auth) |
-| `sim` | simulated ECUs — tests need no hardware |
+| `sim` | simulated ECUs — tests need no hardware; `doip_entity.v` decides what a DoIP channel hosts and `doip_host.v` is the served-side handler, both shared by the GUI and the headless runner |
 | `player` | replay a recording at its recorded cadence |
 | `canlog`, `mf4` | `candump -l` files; native ASAM MDF4 (`.mf4`) reader |
 | `telem` | trace + telemetry capture control |
@@ -130,12 +132,71 @@ release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks.
 > the guard exists for, and this note must never talk you out of it.
 - **External PRs are auto-closed** (design phase — see [`CONTRIBUTING.md`](CONTRIBUTING.md)); the
   same workflow posts a comment pointing at issues. Nothing to do by hand.
-- **PRs get `@codex review`**; iterate until clean before merging.
+- **Work in a worktree, never the main checkout.** `git worktree add .claude/worktrees/<name> -b
+  <branch> origin/main` — **fetch first** (`git fetch -q origin`): naming a remote-tracking ref
+  does not contact the remote, so a checkout that has not fetched since `main` advanced branches
+  from a stale local value and silently omits landed work. And WITH the start point, or it
+  branches from whatever the shared checkout happens to be on — the state this rule exists to
+  avoid. Sessions run concurrently, and a second one that finds the shared checkout on a
+  foreign branch, or mid-rebase, loses work that was not its own. The main checkout stays on
+  `main`, clean, for reading and for merges.
+- **The order is: build → `/code-review high` → `@codex review`.** Not two of the three, and not
+  a different order. Each codex round is a ~10-minute wait, so anything the self-review can find
+  is found for free; codex then sees a branch that has already had its obvious problems removed.
+  Every round is watched by a *tracked* background timer — see the note on watchers below.
+- **Run `/code-review high` on the branch BEFORE asking codex.** Self-run, high effort; not the
+  billed cloud `/code-review ultra`, which only the maintainer triggers. Precedent:
+  `docs/history.md` 2026-06-21, where a self-run high review of gui#65 found a real bug the
+  change had introduced and led to a rework — that is the standard this repo already set.
+  Codex is a second opinion, not the first one. A round trip costs ~10 minutes and the same
+  defect found late costs a rewrite: #84 ran to nine rounds and 34 findings, and its repeats —
+  an interface string standing in for a channel identity, four separate times; a handler moved
+  into a shared module and then duplicated in the GUI a round later; an unlocked read of an
+  array another thread replaces — were all visible in the diff without running anything.
+  Look for exactly those: shared state touched from more than one thread, a lookup substituting
+  for an identity, a policy that now lives in two places, and a claim in a doc the change just
+  made false.
+- **This file is not loaded for you automatically.** Sessions usually start in `blobly_emb`,
+  which makes this repo an *additional* working directory — its `CLAUDE.md` never enters context
+  on its own. Read it before the first change here. An entire session (PRs #79–#84) ran without
+  it and broke two of the rules below in silence.
+- **PRs get `@codex review`**; iterate until clean before merging. Watch each round with a
+  **tracked** background job, never a detached shell (`( ... & )`) — a detached watcher fires
+  into nothing and the round sits unread. Two reviews were missed that way in one session, one
+  of them for over an hour. Match the verdict by the head SHA codex names, not by its wording:
+  phrase-matching missed "Didn't find any major issues" more than once.
 - **Update this file in the PR that lands the work** — especially new modules/panels. The gap
   between 2026-07-06 and 07-21 (~30 PRs) had to be reconstructed from `git log`; don't repeat it.
 - **Cross-repo:** the SUT side is **blobly_emb** — see
   [`docs/blobly_emb_synergies.md`](docs/blobly_emb_synergies.md). Wire formats (trace records,
   SOME/IP datagrams, telemetry) are pinned by golden vectors on both sides; change them together.
+
+### Polling a codex review
+
+A watcher that reports "nothing" when something is waiting is worse than no watcher. Every rule
+here exists because a silent version of it lost a review; the incidents are in
+[`docs/history.md`](docs/history.md).
+
+- **`--paginate` everything.** 30 per page, ascending, so an un-paginated read drops the
+  **newest** items. Applies to comments AND `commits/<sha>/check-runs`. `--paginate` emits one
+  array per page, so sum with `| awk '{s+=$1} END{print s+0}'` — not `bc` (absent in some agent
+  environments), and not `--slurp` (gh refuses it alongside `--jq`).
+- **`gh api --jq` takes exactly one argument.** jq's own flags (`--arg`) make it exit 1 with no
+  stdout, so the filter returns nothing and the channel looks empty. Interpolate instead.
+- **Three channels**, and the first already contains the second:
+  `pulls/N/comments` (source of truth — review-attached comments appear here too, so summing
+  both double-counts) · `pulls/N/reviews/<id>/comments` (fallback; narrowing to the latest
+  review hides earlier unhandled findings) · `issues/N/comments` (the verdict, or "Something
+  went wrong" = the review FAILED and must be re-requested, not waited on).
+- **Identify a result by head SHA prefix AND a freshness baseline.** Codex names a 10-char
+  abbreviated SHA, so a 40-char compare never matches; but a retry after a failed review names
+  the *same* SHA as the failure, so record the highest comment/review id first and require the
+  match to beat it. Never match on wording.
+- **Test the watcher against a state whose answer you already know**, and print per-channel
+  counts. These failures are invisible from the outside — a command that succeeds and returns
+  nothing looks exactly like no news.
+- Run it as a **tracked** background job, never a detached shell (`( ... & )`). A cron sweep
+  over every open PR is the backstop for when the watcher itself is wrong.
 
 ## Gotchas
 
