@@ -71,6 +71,11 @@ pub fn collect_announcements_af(port_ int, window_ms int, ip6 bool) ![]Announcem
 	mut c := net.listen_udp(addr) or {
 		return error('cannot listen for announcements on ${addr}: ${err}')
 	}
+	// BEFORE the join: an early return past this point leaks the descriptor and holds the port,
+	// and doip.listen is called in a loop by suites that retry.
+	defer {
+		c.close() or {}
+	}
 	if ip6 {
 		// JOIN the group. Binding the wildcard receives unicast, but an entity announcing to
 		// the derived ff02::1 is multicast — without a join this socket never sees it and the
@@ -84,9 +89,6 @@ pub fn collect_announcements_af(port_ int, window_ms int, ip6 bool) ![]Announcem
 		c.join_multicast_group('ff02::1', '0') or {
 			return error('cannot join ff02::1 on ${addr}: ${err}')
 		}
-	}
-	defer {
-		c.close() or {}
 	}
 	return collect_on(mut c, window_ms)
 }

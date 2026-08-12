@@ -314,17 +314,9 @@ and worth knowing before plugging into a shared lab LAN.
 From a script, listen for them the way a real tester would:
 
 ```lua
-local seen = doip.listen(1200)          -- window in ms, port defaults to 13400
--- seen = { { vin = "BLOBLYNETGATEWAY1", logical_address = 0x1000 }, ... }
-```
-
-Nothing is queued for a listener that is not there yet, and the startup burst is **finite** —
-three datagrams, 500 ms apart — so a suite starting afterwards can miss the whole sequence
-however the runner is ordered. Do not race it: trigger one.
-
-```lua
-local seen = doip.listen(1500)                 -- window in ms
-local seen = doip.listen(1500, { port = 13555 })   -- an entity on another port
+local seen = doip.listen(1200)                     -- window in ms, port defaults to 13400
+local seen = doip.listen(1200, { port = 13555 })   -- an entity bound elsewhere
+-- seen = { { vin = "BLOBLYNETGATEWAY1", logical_address = 0x1000, from = "127.0.0.1:13400" }, ... }
 ```
 
 Nothing is queued for a listener that is not there, so **start listening before the entity
