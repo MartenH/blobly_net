@@ -670,7 +670,7 @@ fn (mut app App) start_doip_entity(sc SimCfg) {
 		return
 	}
 	app.doip_hosts[sc.iface] = srv
-	app.set_chan_running(sc.iface, true)
+	app.set_chan_running(sc.pch, true)
 	app.diag_plan << DiagTarget{
 		label:   '${ent.node_label()} on ${pch.name}  (DoIP 0x${pch.ecu_addr:04X})'
 		iface:   sc.iface
@@ -692,12 +692,25 @@ fn (mut app App) doip_bind(cfg doip.ServerCfg, host string, port int, mut hst si
 	return s
 }
 
-fn (mut app App) set_chan_running(iface string, on bool) {
-	app.mu.lock()
+// chan_index finds the runtime channel a project channel refers to.
+//
+// Identity is name AND interface. The interface string alone is NOT an identity — `type: doip`
+// with no `interface:` keeps the CAN default `vcan0`, so two unrelated channels can share it —
+// and substituting one for the other has now produced four separate defects in this change.
+// One definition, so there is one place left to get it wrong. Caller holds app.mu.
+fn (app &App) chan_index_locked(pch project.Channel) ?int {
 	for ci in 0 .. app.chans.len {
-		if app.chans[ci].iface == iface {
-			app.chans[ci].running = on
+		if app.chans[ci].name == pch.name && app.chans[ci].iface == pch.iface {
+			return ci
 		}
+	}
+	return none
+}
+
+fn (mut app App) set_chan_running(pch project.Channel, on bool) {
+	app.mu.lock()
+	if ci := app.chan_index_locked(pch) {
+		app.chans[ci].running = on
 	}
 	app.mu.unlock()
 }
@@ -713,12 +726,9 @@ fn (app &App) doip_should_host(pch project.Channel, node string) bool {
 	// THIS channel, by identity. Rejecting on any disabled peer that shares the interface
 	// string meant disabling a CAN channel on vcan0 stopped a still-enabled DoIP entity that
 	// happened to derive the same default interface.
-	for c in a.chans {
-		if c.name == pch.name && c.iface == pch.iface {
-			if !c.enabled {
-				return false
-			}
-			break
+	if ci := a.chan_index_locked(pch) {
+		if !a.chans[ci].enabled {
+			return false
 		}
 	}
 	if node != '' {
@@ -746,7 +756,7 @@ fn doip_supervise(app &App, sc SimCfg, node string, cfg doip.ServerCfg, host str
 			a.mu.lock()
 			a.doip_hosts.delete(sc.iface)
 			a.mu.unlock()
-			a.set_chan_running(sc.iface, false)
+			a.set_chan_running(sc.pch, false)
 			a.notify('${sc.pch.name}: DoIP entity stopped — ${host}:${port} released')
 			continue
 		}
@@ -773,7 +783,7 @@ fn doip_supervise(app &App, sc SimCfg, node string, cfg doip.ServerCfg, host str
 			a.mu.lock()
 			a.doip_hosts[sc.iface] = srv
 			a.mu.unlock()
-			a.set_chan_running(sc.iface, true)
+			a.set_chan_running(sc.pch, true)
 			spawn doip_udp_worker(app, mut srv)
 			a.notify('${sc.pch.name}: DoIP entity back on ${host}:${port}')
 			continue
@@ -804,9 +814,12 @@ fn doip_udp_worker(app &App, mut s doip.DoipServer) {
 }
 
 fn (mut app App) stop() {
-	// Close the entities BEFORE clearing `running`: the serve loops block in accept for up to
-	// 200ms, and close() interrupts them so the port is released now rather than whenever the
-	// last worker happens to notice. A Start that follows immediately must be able to bind.
+	// The run flag FIRST. A supervisor that is unbound and has just decided to rebind would
+	// otherwise insert a fresh listener AFTER the snapshot below, escape this close, and
+	// survive into the next Start — whose own bind would then fail against it.
+	app.running = false
+	// Then close: the serve loops block in accept for up to 200ms, and close() interrupts them
+	// so the port is released now rather than whenever the last worker notices.
 	// Snapshot under the lock the supervisor uses: it inserts and deletes entries as channels
 	// are toggled, so iterating this map unlocked can race a concurrent write — and a listener
 	// rebound between the read and the reset would escape the close entirely.
@@ -820,7 +833,6 @@ fn (mut app App) stop() {
 	for mut ds in hosted {
 		ds.close()
 	}
-	app.running = false
 	for ci in 0 .. app.chans.len {
 		app.chans[ci].running = false
 	}
@@ -5548,13 +5560,25 @@ fn (app &App) diag_targets() []DiagTarget {
 		if !c.enabled || !c.is_doip() {
 			continue
 		}
-		if out.any(it.iface == c.iface && it.carrier.doip) {
-			continue // already listed by what start() spawned
+		if c.all_nodes().len > 0 {
+			// This channel SIMULATES an ECU. If it is not in diag_plan, hosting it failed —
+			// and the bind failure means someone else owns that endpoint. Offering it anyway
+			// would let the panel report results from that other process, which is the exact
+			// wrong-ECU failure the synchronous bind check exists to prevent.
+			continue
+		}
+		car := script.carrier_of(c)
+		// Deduplicate by LOGICAL identity, not endpoint: several tester-only channels may
+		// address different ECUs through one gateway, and matching on the interface alone
+		// suppressed every channel after the first — leaving the others unaddressable.
+		if out.any(it.carrier.doip && it.carrier.host == car.host && it.carrier.port == car.port
+			&& it.carrier.ecu == car.ecu) {
+			continue
 		}
 		out << DiagTarget{
 			label:   '${c.name}  (DoIP 0x${c.ecu_addr:04X})'
 			iface:   c.iface
-			carrier: script.carrier_of(c)
+			carrier: car
 		}
 	}
 	if out.len == 0 {
