@@ -1237,10 +1237,11 @@
   CLAUDE.md ("Polling a codex review"); the diagnosis was wrong twice before pagination was
   found, having first blamed the reviews channel and then the time-scoping.
 - 2026-08-12: **Watcher postmortem, part 2 — the clean verdict is a REACTION.** After the five
-  silent failures above, two more hid a green review on net#84 for 38 minutes. (6) Codex's own
-  footer states "If Codex has suggestions, it will comment; otherwise it will react with 👍" —
-  so a clean result can arrive with NO comment and NO review body, and the watcher polled only
-  comments and reviews. (7) The verdict comment that does exist is multi-line with
+  silent failures above, two more hid a green review on net#84 for 38 minutes. (6) The verdict was believed to be
+  deliverable ONLY as a 👍 reaction, which the watcher never polled. That turned out to be a red
+  herring: the reaction cannot be used at all — it carries no reviewed SHA, and GitHub will not
+  re-create an identical reaction, so no freshness test can ever pass on a later round. The
+  clean result arrived as a reaction AND as a comment naming the head, one second apart. (7) The verdict comment that does exist is multi-line with
   `Reviewed commit:` in the MIDDLE, and the matcher piped it through `tail -1`, comparing the
   head SHA against the footer — it could never have matched, so every comment-delivered verdict
   would have been missed too. Both fixed and self-tested against the known-clean PR, which now

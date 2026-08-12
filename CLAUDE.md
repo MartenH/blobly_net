@@ -183,25 +183,24 @@ here exists because a silent version of it lost a review; the incidents are in
   environments), and not `--slurp` (gh refuses it alongside `--jq`).
 - **`gh api --jq` takes exactly one argument.** jq's own flags (`--arg`) make it exit 1 with no
   stdout, so the filter returns nothing and the channel looks empty. Interpolate instead.
-- **A 👍 REACTION on the PR is a verdict.** Codex's own footer says it: "If Codex has
-  suggestions, it will comment; otherwise it will react with 👍". A clean review can therefore
-  arrive with no comment at all — check `issues/N/reactions` for `+1` from the bot, or a green
-  PR looks like silence forever. It needs a freshness baseline like every other channel: a
-  PR-level reaction PERSISTS across rounds, so matching any `+1` reports CLEAN in seconds on the
-  next round while codex is still running. Record the newest reaction `created_at` first.
+- **Do NOT use the 👍 reaction as the verdict**, despite codex's footer saying "otherwise it
+  will react with 👍". It cannot be made reliable: the reaction payload carries **no reviewed
+  SHA**, so a fresh `+1` may belong to the previous head if the head moved while the review ran;
+  and GitHub will not create a second identical reaction from the same actor, so on a later
+  clean round the existing one keeps its ORIGINAL timestamp and no freshness test can ever pass.
+  Both directions are broken, in opposite ways. Observed on net#84: the clean result arrived as
+  a 👍 **and** as a comment naming the head, one second apart — the comment is the signal.
 - **Flatten a comment body before matching it.** `Reviewed commit:` sits in the MIDDLE of a
   multi-line body, so piping it through `tail -1` matches against the footer and never fires.
   `gsub("\n";" ")` it into one line, id-prefixed, and take the highest id.
 - **Never edit a watcher script while an instance is running.** bash reads a script
   incrementally, so the running copy executes half of the new file and dies on a comment.
   Write a new file instead.
-- **Four channels**, and the first already contains the second:
+- **Three channels**, and the first already contains the second:
   `pulls/N/comments` (source of truth — review-attached comments appear here too, so summing
   both double-counts) · `pulls/N/reviews/<id>/comments` (fallback; narrowing to the latest
   review hides earlier unhandled findings) · `issues/N/comments` (the verdict, or "Something
-  went wrong" = the review FAILED and must be re-requested, not waited on) · **`issues/N/reactions`**
-  (the 👍 above — the channel used when there is nothing to say, and the one that gets forgotten
-  because a clean run produces no text anywhere).
+  went wrong" = the review FAILED and must be re-requested, not waited on).
 - **Identify a result by head SHA prefix AND a freshness baseline.** Codex names a 10-char
   abbreviated SHA, so a 40-char compare never matches; but a retry after a failed review names
   the *same* SHA as the failure, so record the highest comment/review id first and require the
