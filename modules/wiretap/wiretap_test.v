@@ -251,3 +251,14 @@ fn test_an_unwatched_emission_is_never_reported_missing() {
 	r.note(1, 'vcan0', frame(0x120, [u8(1)]), 0, [])
 	assert r.expire(default_window_ms + 1) == []u64{}, 'silence with no listener is not a fault'
 }
+
+// Eviction for room is not a verdict either: an unmonitored generator running flat out would
+// otherwise mark its own healthy traffic as never having reached the wire.
+fn test_eviction_reports_nothing_when_nobody_was_watching() {
+	mut r := Ring{
+		cap: 2
+	}
+	r.note(1, 'vcan0', frame(0x101, [u8(1)]), 0, [])
+	r.note(2, 'vcan0', frame(0x102, [u8(2)]), 0, [])
+	assert r.note(3, 'vcan0', frame(0x103, [u8(3)]), 0, []) == []u64{}
+}

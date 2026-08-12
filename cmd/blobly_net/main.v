@@ -1224,10 +1224,13 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 
 // note_sent records a frame that actually reached the driver. Separate from note_emit so a send
 // that FAILED never appears in a recording as though it had gone out.
-fn (mut app App) note_sent(iface string, f transport.CanFrame) {
+fn (mut app App) note_sent(iface string, chan_name string, f transport.CanFrame) {
 	app.mu.lock()
 	if app.recording {
-		app.rec << canlog.LogEntry{f64(time.ticks() - app.t0) / 1000.0, iface, f}
+		// the LOGICAL channel, like the trace row: two channels can share one interface, and a
+		// recording that says `vcan0` cannot be replayed back into the one that sent it
+		chn := if chan_name != '' { chan_name } else { app.chan_name_for(iface) }
+		app.rec << canlog.LogEntry{f64(time.ticks() - app.t0) / 1000.0, chn, f}
 		// the same bounded window rx_loop keeps: with the echo now suppressed, a simulation's
 		// own traffic arrives HERE, and this is the path a long recording actually grows on
 		if app.rec.len > 200000 {
@@ -1280,11 +1283,13 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	// BEFORE the send: a monitor thread can see the frame the instant the driver takes it, and a
 	// record added afterwards arrives too late to claim its own echo.
 	seq := t.app.note_emit(t.iface, t.chan_name, t.origin, wire)
-	t.inner.send(frame) or {
+	// `wire`, not `frame`: on a backend that would carry the extra bytes (inproc, udp) sending
+	// the original makes the echo disagree with the record in the other direction.
+	t.inner.send(wire) or {
 		t.app.retract_emit(seq)
 		return err
 	}
-	t.app.note_sent(t.iface, wire)
+	t.app.note_sent(t.iface, t.chan_name, wire)
 }
 
 fn (mut t TapBus) recv(timeout_ms int) !transport.CanFrame {

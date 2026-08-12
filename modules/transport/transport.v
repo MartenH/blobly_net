@@ -42,10 +42,14 @@ pub fn echoes_own_sends(iface string) bool {
 	return !vendor_iface(iface)
 }
 
-// wire_frame is the frame this interface will ACTUALLY put on the bus. Classic CAN carries at
-// most 8 bytes and the backends truncate silently (ct_can_send clamps len), so a caller that
-// records what it asked for records something that never existed — and, for the echo matching,
-// can never match what comes back.
+// wire_frame is the frame this interface will ACTUALLY put on the bus: a classic CAN id masked to
+// its declared width and a payload of at most 8 bytes, which is what the drivers transmit
+// (ct_can_send clamps both). A caller that records what it ASKED for records something that never
+// existed — and, for echo matching, something that can never come back.
+//
+// SEND this, do not merely record it. The software buses (inproc, udp) carry whatever they are
+// given, so normalising the record while transmitting the original would make the two disagree in
+// the opposite direction: a full-payload echo that no truncated record can match.
 pub fn wire_frame(iface string, f CanFrame) CanFrame {
 	// The ID too, and to its DECLARED width: SocketCAN masks a standard id with can_sff_mask, so
 	// `extended: false` with 0x800 goes out as 0x000 while the caller recorded 0x800 — a record

@@ -100,7 +100,11 @@ pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, 
 	if r.cap > 0 && r.items.len > r.cap {
 		drop := r.items.len - r.cap
 		for pd in r.items[..drop] {
-			if pd.claimed.len == 0 {
+			// Same rule as expire(): never seen, AND somebody could have seen it. An emission
+			// made while nothing was watching has no evidence either way, so dropping it for
+			// room must not turn into a verdict — an unmonitored generator running flat out
+			// would otherwise mark its own healthy traffic.
+			if pd.claimed.len == 0 && pd.allowed.len > 0 {
 				evicted << pd.seq
 			}
 		}
