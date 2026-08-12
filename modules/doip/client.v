@@ -44,13 +44,6 @@ mut:
 	target u16
 }
 
-// open_doip connects to a DoIP entity, performs routing activation, and returns a
-// ready tester channel. `source` is our logical address, `target` the ECU's.
-// collect_announcements listens for unsolicited vehicle announcements for `window_ms`.
-//
-// The counterpart to DoipServer.announce(): a tester that discovers ECUs by LISTENING rather
-// than asking. Binds the wildcard address so it hears broadcasts — which coexists with entities
-// bound to specific addresses on the same port (verified; they do not conflict).
 // Announcement is one heard announcement AND where it came from.
 //
 // VIN and logical address are not routable: a tester that discovers an ECU passively still has
