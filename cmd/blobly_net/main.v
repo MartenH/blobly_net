@@ -218,7 +218,7 @@ mut:
 	fb_ext      string          // extension filter ('.blobnet' | '.dbc' | '' = recordings)
 	fb_target   string          // action on OK: 'open' | 'saveas' | 'dbc:<ci>' | 'manifest:<ci>'
 	sims        []SimCfg        // per-channel in-process simulation workloads
-	sim_enabled map[string]bool // '<iface>:<node>' -> enabled (Simulation panel)
+	sim_enabled map[string]bool // sim_key(channel, node) -> enabled (Simulation panel)
 	sim_gen     u64             // bumped when sim_enabled changes -> sim_loop rebuilds
 	// worker-thread outputs (guarded by mu)
 	diag_log        []string
@@ -600,9 +600,18 @@ fn (mut app App) start() {
 		}
 		seeded << sc.iface
 		mut peers := []project.NodeCfg{}
+		// Remember which CHANNEL each node came from. Diagnostics are seeded once per bus, but
+		// two channel entries can share that bus, and sim_key() puts the channel in the key —
+		// so keying every server on the first entry's channel meant a tick on a node owned by
+		// the second one wrote a key its server never read, and unticking it stopped silencing
+		// the ECU. Worked before sim_key only because both sides were equally wrong.
+		mut owner := map[string]project.Channel{}
 		for other in app.sims {
 			if other.iface == sc.iface {
 				peers << other.nodes
+				for n in other.nodes {
+					owner[n.name] = other.pch
+				}
 			}
 		}
 		for w in sim.validate_uds(peers) {
@@ -622,7 +631,8 @@ fn (mut app App) start() {
 		// Configure a per-ECU server and you own diagnostics on this bus: the default does NOT
 		// also run, or the two would both answer whenever their ids overlapped.
 		for mut u in diag_nodes {
-			spawn uds_node_loop(app, sc.pch, sc.iface, u.name, u.rx, u.tx, u.ext, u.server)
+			spawn uds_node_loop(app, owner[u.name] or { sc.pch }, sc.iface, u.name, u.rx, u.tx,
+				u.ext, u.server)
 			app.diag_plan << DiagTarget{
 				label: '${u.name}  (0x${u.rx:X}/0x${u.tx:X})'
 				iface: sc.iface
@@ -640,7 +650,6 @@ fn (mut app App) start() {
 	spawn gen_loop(app) // cyclic senders
 }
 
-// start_doip_hosts supervises every DoIP channel that simulates an ECU — enabled or not.
 // start_doip_hosts supervises every DoIP channel that simulates an ECU — enabled or not.
 //
 // Driven from the PROJECT rather than app.sims, because a channel disabled when the project
@@ -750,7 +759,7 @@ fn doip_watch(app &App, pch project.Channel, ent sim.DoipEntity, key string, gen
 						// not listening — leaving it selectable would point the panel at
 						// whatever else owns that endpoint and report the wrong ECU's answers.
 						a.notify('${pch.name}: cannot bind ${host}:${port} — ${err}')
-						a.doip_forget(pch, ent)
+						a.doip_forget_if_current(pch, ent, gen)
 						warned = true
 					}
 				}
@@ -849,6 +858,12 @@ fn (app &App) doip_host_failed(name string, iface string) bool {
 	if !simulated {
 		return false // tester-only: nothing for us to host, so nothing can have failed
 	}
+	if !a.running {
+		// Nothing is hosted when nothing is running. Calling that "failed" made a script run
+		// before Start stall 750ms per DoIP channel and then drop every one of them, reporting
+		// "unknown channel" with nothing in the Log to explain it.
+		return false
+	}
 	// PENDING is not FAILED. A supervisor polls every 200ms, so a channel enabled live — or a
 	// script started immediately after Start — can be legitimately mid-bind. Treating that as
 	// failure removed the channel from the script environment PERMANENTLY, and uds.open()
@@ -863,6 +878,18 @@ fn (app &App) doip_host_failed(name string, iface string) bool {
 }
 
 // doip_forget deregisters an entity that is no longer listening, so nothing offers it.
+// gen is checked INSIDE the lock, like doip_publish_if_current: evaluated outside it, a Stop
+// and Start landing in the window let a stale supervisor deregister the live run's listener.
+fn (mut app App) doip_forget_if_current(pch project.Channel, ent sim.DoipEntity, gen u64) {
+	app.mu.lock()
+	if !app.running || app.run_gen != gen {
+		app.mu.unlock()
+		return
+	}
+	app.mu.unlock()
+	app.doip_forget(pch, ent)
+}
+
 fn (mut app App) doip_forget(pch project.Channel, ent sim.DoipEntity) {
 	app.mu.lock()
 	app.doip_hosts.delete('${pch.name}|${pch.iface}')
@@ -1092,6 +1119,12 @@ fn (mut app App) load_recording(path string) {
 	mut verifiers := map[string]sim.VerifySet{}
 	mut alias := map[string]string{} // recorded label -> project iface
 	for sc in app.sims {
+		// A DoIP entry carries no frames and no `verify:`, so it must not create a verifier set
+		// for its interface: an empty one made `verifiers.len == 1` false and an unlabelled MF4
+		// import stopped resolving to the single simulated bus.
+		if sc.pch.is_doip() {
+			continue
+		}
 		// Per ENTRY, from the CURRENTLY LOADED databases. Two things have to hold at once: an
 		// entry must see only its own DBCs (an interface-wide merge let a same-named message on
 		// a neighbour's database win, leaving this entry's id unchecked after reopening a
@@ -1700,7 +1733,12 @@ fn (mut app App) rebuild_from_proj() {
 		// (start_doip_hosts runs over the project), so enabling it live brings the entity up —
 		// and draw_sim renders app.sims only, so without this the ECU is running with no way to
 		// switch it off. CAN keeps the old rule: nothing runs for it while it is disabled.
-		if (ch.enabled || (ch.is_doip() && nodes.len > 0)) && (nodes.len > 0 || ch.verify.len > 0) {
+		// A disabled DoIP channel is kept ONLY so the Simulation panel can show its ECU (its
+		// supervisor exists whatever the tick). It must not contribute a verifier entry: an
+		// empty one made `verifiers.len == 1` false, and an unlabelled MF4 import stopped
+		// resolving to the single simulated bus.
+		keep_for_panel := ch.is_doip() && nodes.len > 0 && !ch.enabled
+		if (ch.enabled || keep_for_panel) && (nodes.len > 0 || ch.verify.len > 0) {
 			// resolve_asset like the database list above: raw paths here re-based the
 			// simulator's DBCs onto the launch/bundle cwd, so an external project's
 			// relative DBC fed the sim nothing (codex #63 r4)
@@ -2266,7 +2304,9 @@ fn draw_sim(mut app App) {
 	for sc in app.sims {
 		// each bus is a collapsible group, collapsed by default (### keeps the id stable if the
 		// label changes)
-		if !vgui.tree_node('${sc.iface}   (${sc.nodes.len})###simbus_${sc.iface}') {
+		// id by channel, not interface: two channels on one interface collapsed into a single
+		// imgui id, so expanding one expanded the other. Same substitution as sim_key.
+		if !vgui.tree_node('${sc.iface}   (${sc.nodes.len})###simbus_${sc.pch.name}|${sc.iface}') {
 			continue
 		}
 		for node in sc.nodes {
