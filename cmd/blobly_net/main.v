@@ -1061,6 +1061,14 @@ fn sim_key(pch project.Channel, node string) string {
 // stop signals the RX threads to exit (they re-check on the recv timeout) and tears down the
 // hosted DoIP entities, whose sockets must be released before another Start can bind them.
 fn (mut app App) stop() {
+	// Pending echoes belong to the run that is ending. Kept, an emission from just before Stop
+	// sits at the front of the ring into the next Start, where the restarted simulation's
+	// identical frame claims it — and the new run's own record then expires and marks a healthy
+	// row as never sent. (A trace Clear is different: same run, so those records stay.)
+	app.mu.lock()
+	app.taps = wiretap.Ring{}
+	app.mu.unlock()
+
 	// The run flag FIRST. A supervisor that is unbound and has just decided to rebind would
 	// otherwise insert a fresh listener AFTER the snapshot below, escape this close, and
 	// survive into the next Start — whose own bind would then fail against it.
@@ -1130,11 +1138,14 @@ fn (mut app App) push_row_locked(row TraceRow) u64 {
 // row_index_locked maps a row identity to its current position, or -1 once the ring has trimmed
 // it away. Caller holds app.mu.
 fn (app &App) row_index_locked(seq u64) int {
-	if seq < app.trace_base {
+	// Every comparison in u64, and the ghost range rejected BEFORE any narrowing: V's int is
+	// 32 bits, so int(ghost_base - 0) wraps to a small number — the first paused emissions were
+	// resolving to rows 0, 1, 2 and marking healthy pre-pause traffic as never sent.
+	if seq >= ghost_base || seq < app.trace_base {
 		return -1
 	}
-	i := int(seq - app.trace_base)
-	return if i < app.trace.len { i } else { -1 }
+	off := seq - app.trace_base
+	return if off < u64(app.trace.len) { int(off) } else { -1 }
 }
 
 // expire_pending_locked marks the rows whose frame never came back off the wire.
@@ -1150,8 +1161,8 @@ fn (mut app App) expire_pending_locked(now_ms f64) {
 // note_emit records a frame we are about to put on the wire: one row stating intent, and one
 // pending echo. Called BEFORE the send — the RX thread can see the frame the instant the driver
 // takes it, and a pending entry added afterwards would arrive too late to claim its own echo.
-fn (mut app App) note_emit(iface string, origin string, f transport.CanFrame) u64 {
-	chn := app.chan_name_for(iface)
+fn (mut app App) note_emit(iface string, chan_name string, origin string, f transport.CanFrame) u64 {
+	chn := if chan_name != '' { chan_name } else { app.chan_name_for(iface) }
 	name := app.lookup_name(f.id, f.extended)
 	t_ms := f64(time.ticks() - app.t0)
 	app.mu.lock()
@@ -1187,8 +1198,16 @@ fn (mut app App) note_emit(iface string, origin string, f transport.CanFrame) u6
 			}
 		}
 	}
-	app.mu.unlock()
-	vgui.wake()
+	// Rate-limited exactly like the rx path: a simulation emitting hundreds of frames a second
+	// would otherwise post an event per frame and hold the UI at the traffic rate.
+	now := time.ticks()
+	if now - app.last_wake >= app.wake_ms {
+		app.last_wake = now
+		app.mu.unlock()
+		vgui.wake()
+	} else {
+		app.mu.unlock()
+	}
 	return seq
 }
 
@@ -1238,13 +1257,14 @@ mut:
 	inner  transport.Bus
 	app    &App
 	iface  string
+	chan_name string // logical channel, '' = derive from the interface
 	origin string
 }
 
 fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	// BEFORE the send: a monitor thread can see the frame the instant the driver takes it, and a
 	// record added afterwards arrives too late to claim its own echo.
-	seq := t.app.note_emit(t.iface, t.origin, frame)
+	seq := t.app.note_emit(t.iface, t.chan_name, t.origin, frame)
 	t.inner.send(frame) or {
 		t.app.retract_emit(seq)
 		return err
@@ -1261,7 +1281,11 @@ fn (mut t TapBus) close() {
 }
 
 // open_tap opens a bus whose sends are attributed to `origin`.
-fn (app &App) open_tap(iface string, origin string) !transport.Bus {
+// `chan_name` names the LOGICAL channel emitting, for the case where two channel entries share one
+// physical interface: deriving it from the interface always picks the first, so the second
+// channel's simulated nodes would show up attributed to its neighbour. '' = derive (the tester
+// paths — generators, diagnostics, shell, flash, scripts — are not per-channel).
+fn (app &App) open_tap_on(iface string, origin string, chan_name string) !transport.Bus {
 	// The bitrate suffix is an OPEN-time detail of the vendor backends, not part of a bus's
 	// identity: chan_name_for and the pending records both key on the logical name, so a caller
 	// that already carries `pcan:…@250000` (the script engine's ChanInfo does) would otherwise
@@ -1272,16 +1296,23 @@ fn (app &App) open_tap(iface string, origin string) !transport.Bus {
 	return &TapBus{
 		inner:  inner
 		app:    unsafe { app }
-		iface:  logical
-		origin: origin
+		iface:     logical
+		chan_name: chan_name
+		origin:    origin
 	}
 }
 
-// monitors_locked reports whether any enabled channel watches this interface, i.e. whether an
-// echo has anywhere to arrive. Caller holds app.mu.
+fn (app &App) open_tap(iface string, origin string) !transport.Bus {
+	return app.open_tap_on(iface, origin, '')
+}
+
+// monitors_locked reports whether an rx_loop is actually reading this interface, i.e. whether an
+// echo has anywhere to arrive. The SAME predicate that decides which channels get an rx_loop —
+// `enabled` alone counts an `off` or `replay` channel a generator may target, whose sends nothing
+// could ever confirm. Caller holds app.mu.
 fn (app &App) monitors_locked(iface string) bool {
 	for c in app.chans {
-		if c.iface == iface && c.enabled {
+		if c.iface == iface && c.monitorable() && c.running {
 			return true
 		}
 	}
@@ -1509,7 +1540,7 @@ fn build_node(db candb.Database, cfg project.NodeCfg) sim.SimEcu {
 // request/response rules. Driver-free on inproc:, real on vcan0/can0.
 fn sim_loop(app &App, sc SimCfg) {
 	a := unsafe { app }
-	mut bus := app.open_tap(sc.iface, org_sim) or {
+	mut bus := app.open_tap_on(sc.iface, org_sim, sc.pch.name) or {
 		eprintln('sim ${sc.iface}: ${err}')
 		return
 	}
@@ -1616,7 +1647,9 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 		if !open {
 			// on a TAPPED bus: an ISO-TP response is several CAN frames, and a simulated ECU
 			// answering diagnostics must be attributed like any other thing we transmit.
-			tapped := a.open_tap(iface, org_sim) or {
+			// pch: this node's OWN channel — two entries can share one interface, and the
+			// simulated ECUs of the second must not be attributed to the first.
+			tapped := a.open_tap_on(iface, org_sim, pch.name) or {
 				time.sleep(200 * time.millisecond)
 				continue
 			}
