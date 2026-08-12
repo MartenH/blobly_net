@@ -177,9 +177,12 @@ A watcher that reports "nothing" when something is waiting is worse than no watc
 here exists because a silent version of it lost a review; the incidents are in
 [`docs/history.md`](docs/history.md).
 
-- **`--paginate` everything.** 30 per page, ascending, so an un-paginated read drops the
-  **newest** items. Applies to comments AND `commits/<sha>/check-runs`. `--paginate` emits one
-  array per page, so sum with `| awk '{s+=$1} END{print s+0}'` — not `bc` (absent in some agent
+- **`--paginate` everything**, but for two different reasons. Comments come back **ascending**,
+  30 per page, so an un-paginated read drops the **newest** — the ones you are waiting for.
+  `commits/<sha>/check-runs` is ordered by id **descending**, so there an un-paginated read keeps
+  the newest page and drops **older** runs — a long-running job from an earlier workflow can be
+  the one still pending. Either way the first page is not the answer. `--paginate` emits one
+  page per line, so sum with `| awk '{s+=$1} END{print s+0}'` — not `bc` (absent in some agent
   environments), and not `--slurp` (gh refuses it alongside `--jq`). **Capture gh's exit status
   before the pipe**: on an auth or API failure gh returns 1 or 4 and prints nothing, `awk` then
   prints `0` and exits 0, and the result reads exactly like "nothing is waiting". Assign first,
@@ -210,6 +213,11 @@ here exists because a silent version of it lost a review; the incidents are in
   abbreviated SHA, so a 40-char compare never matches; but a retry after a failed review names
   the *same* SHA as the failure, so record the highest comment/review id first and require the
   match to beat it. Never match on wording.
+- **A force-push during a pending review gets you a verdict for the OLD commit.** Codex answers
+  for the SHA it started on, so after an amend or rebase its "no major issues" names a commit
+  that is no longer on the branch. Observed on emb#255: clean on `a1d3c667` while the head was
+  `d052f77`. This is exactly why the verdict is matched by head SHA — re-request after any push
+  rather than accepting it.
 - **Test the watcher against a state whose answer you already know**, and print per-channel
   counts. These failures are invisible from the outside — a command that succeeds and returns
   nothing looks exactly like no news.
