@@ -830,16 +830,26 @@ fn (app &App) doip_is_hosted(name string, iface string) bool {
 	return '${name}|${iface}' in a.doip_hosts
 }
 
-// doip_simulated reports whether the project asks us to host an entity on this interface, as
-// opposed to a tester-only channel pointed at somebody else's ECU (which IS scriptable).
-fn (app &App) doip_simulated(iface string) bool {
+// doip_host_failed reports whether THIS channel is one we are meant to host and are not.
+//
+// By channel identity, not by interface: an interface-wide lookup answered "simulated" for a
+// TESTER-ONLY channel that merely shares an endpoint with a hosted peer — an alias using a
+// different tester_address to exercise another role — so scripts lost a perfectly good channel
+// that the Diagnostics panel and the headless runner both expose. Sixth defect in this change
+// from an interface string standing in for a channel; see chan_index_locked.
+fn (app &App) doip_host_failed(name string, iface string) bool {
 	a := unsafe { app }
+	mut simulated := false
 	for c in a.proj.channels {
-		if c.iface == iface && c.is_doip() && c.all_nodes().len > 0 {
-			return true
+		if c.name == name && c.iface == iface && c.is_doip() {
+			simulated = c.all_nodes().len > 0
+			break
 		}
 	}
-	return false
+	if !simulated {
+		return false // tester-only: nothing for us to host, so nothing can have failed
+	}
+	return !a.doip_is_hosted(name, iface)
 }
 
 // doip_forget deregisters an entity that is no longer listening, so nothing offers it.
@@ -6505,7 +6515,7 @@ fn script_worker(app &App, path string) {
 		// bind failed because something else owns that endpoint, so uds.open() would dial that
 		// process and a GUI script would pass against the wrong ECU — the failure the
 		// synchronous bind exists to prevent, reached through the scripting side instead.
-		if ch.doip && a.doip_simulated(ch.iface) && !a.doip_is_hosted(ch.name, ch.iface) {
+		if ch.doip && a.doip_host_failed(ch.name, ch.iface) {
 			continue
 		}
 		mut sim_nodes := []project.NodeCfg{}
