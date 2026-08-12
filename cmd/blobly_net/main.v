@@ -170,6 +170,11 @@ mut:
 	// outlived Stop would keep port 13400 bound, and the next Start would fail to bind against
 	// the previous run of the same application.
 	doip_hosts map[string]&doip.DoipServer
+	// Which RUN a worker belongs to. app.running alone is not enough: Stop and Start inside a
+	// supervisor's sleep leave it observing `true` throughout, so it survives into the next run
+	// holding a server Stop already closed — and then deregisters the LIVE supervisor's target
+	// and competes with it to bind. Incremented by every Start; a worker exits when it differs.
+	run_gen u64
 	// The Configuration window's File tab: the project's own TEXT, edited in place.
 	//
 	// Text and not a re-serialisation, because `to_yaml()` does not preserve comments and this
@@ -525,6 +530,7 @@ fn (mut app App) start() {
 		}
 	}
 	app.running = true
+	app.run_gen++
 	for ci, ch in app.chans {
 		if !ch.monitorable() {
 			continue
@@ -667,7 +673,7 @@ fn (mut app App) start_doip_hosts() {
 		// built-in server and returns an empty node name — keying enablement on that alone
 		// meant unticking SUT in the shipped demos did nothing at all.
 		key := if ent.node != '' { ent.node } else { nodes[0].name }
-		spawn doip_watch(app, c, ent, key)
+		spawn doip_watch(app, c, ent, key, app.run_gen)
 	}
 }
 
@@ -679,7 +685,7 @@ fn (mut app App) start_doip_hosts() {
 // supervisor that also served could not observe a toggle while a tester held the session open —
 // the "offline" ECU went on answering. Serving happens in doip_serve(); close() from here
 // interrupts it, which is what makes switching an ECU off actually take effect.
-fn doip_watch(app &App, pch project.Channel, ent sim.DoipEntity, key string) {
+fn doip_watch(app &App, pch project.Channel, ent sim.DoipEntity, key string, gen u64) {
 	mut a := unsafe { app }
 	host, port := pch.doip_endpoint()
 	cfg := doip.server_cfg(pch.ecu_addr, ent.announce, pch.eid)
@@ -689,7 +695,9 @@ fn doip_watch(app &App, pch project.Channel, ent sim.DoipEntity, key string) {
 	mut srv := &doip.DoipServer(unsafe { nil })
 	mut bound := false
 	mut warned := false
-	for a.running {
+	// This RUN only. Checked with running, so a supervisor that slept through a Stop/Start pair
+	// exits instead of acting on a run that is not its own.
+	for a.running && a.run_gen == gen {
 		want := a.doip_should_host(pch, key)
 		if bound && !want {
 			srv.close() // interrupts an in-progress session, not just the accept
@@ -723,10 +731,10 @@ fn doip_watch(app &App, pch project.Channel, ent sim.DoipEntity, key string) {
 					}
 				} else {
 					if !warned {
-						// Once, not every tick. And DROP the target: a bind that fails means
-						// someone else owns this endpoint, so leaving it selectable would point
-						// the panel at that process and report results from the wrong ECU.
-						a.notify('${pch.name}: cannot bind ${host}:${port} — someone else owns it')
+						// Once, not every tick. And DROP the target: whatever the cause, we are
+						// not listening — leaving it selectable would point the panel at
+						// whatever else owns that endpoint and report the wrong ECU's answers.
+						a.notify('${pch.name}: cannot bind ${host}:${port} — ${err}')
 						a.doip_forget(pch, host, port)
 						warned = true
 					}
@@ -792,13 +800,16 @@ fn (mut app App) doip_forget(pch project.Channel, host string, port int) {
 
 // doip_bind opens one entity and links it to its handler. The handler must exist before
 // new_server() and the server before the handler can reach it, so the link is made after.
-fn (mut app App) doip_bind(cfg doip.ServerCfg, host string, port int, mut hst sim.DoipHost) ?&doip.DoipServer {
+fn (mut app App) doip_bind(cfg doip.ServerCfg, host string, port int, mut hst sim.DoipHost) !&doip.DoipServer {
 	handler := fn [mut hst] (req []u8) []u8 {
 		return hst.handle(req)
 	}
 	mut s := doip.new_server(cfg, handler)
 	hst.entity = s
-	s.listen(host, port) or { return none }
+	// The REAL error. Flattening it to "someone else owns it" sent people looking for a port
+	// conflict when the host was not a local address, the family was unavailable, or the
+	// address was malformed — none of which clear by waiting.
+	s.listen(host, port)!
 	return s
 }
 
@@ -5576,9 +5587,16 @@ fn (app &App) diag_targets() []DiagTarget {
 	// Whatever start() actually spawned, plus the plain 0x7E0/0x7E8 entry — which on a mixed
 	// bench is the PHYSICAL ECU under test, not the built-in simulated server, and was
 	// addressable long before per-ECU servers existed.
+	// Snapshot under the lock. doip_publish/doip_forget replace this array from a supervisor
+	// thread whenever a channel or ECU is toggled, so iterating it here — during a redraw or at
+	// the start of a request — can read it while it is being reallocated.
+	a := unsafe { app }
+	a.mu.lock()
+	plan := app.diag_plan.clone()
+	a.mu.unlock()
 	mut out := []DiagTarget{}
 	if hw := app.diag_iface_opt() {
-		if !app.diag_plan.any(it.iface == hw && it.rx == diag_tx_id) {
+		if !plan.any(it.iface == hw && it.rx == diag_tx_id) {
 			out << DiagTarget{
 				label: 'default on ${hw}  (0x${diag_tx_id:X}/0x${diag_rx_id:X})'
 				iface: hw
@@ -5587,7 +5605,7 @@ fn (app &App) diag_targets() []DiagTarget {
 			}
 		}
 	}
-	out << app.diag_plan
+	out << plan
 	// Every enabled DoIP channel is addressable, hosted by us or not. The panel's DoIP support
 	// would otherwise reach only entities this application started — while the normal
 	// tester-only case, a DoIP channel pointed at a REAL ECU, has no simulated nodes, is not
