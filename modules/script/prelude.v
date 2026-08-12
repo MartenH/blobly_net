@@ -101,7 +101,7 @@ function doip.discover(channel)
   return { vin = vin, logical_address = addr }
 end
 
--- doip.listen(window_ms [, port]) -> { {vin=..., logical_address=...}, ... }
+-- doip.listen(window_ms [, port]) -> { {vin=..., logical_address=..., from="host:port"}, ... }
 --
 -- Unsolicited announcements, the way a real tester discovers ECUs it was never told about.
 -- Start this BEFORE the entities announce: nothing is queued for a listener that is not there.
@@ -109,8 +109,10 @@ function doip.listen(window_ms, port)
   local raw = __doip_listen(port or 13400, window_ms or 1000)
   local out = {}
   for line in tostring(raw):gmatch("[^\n]+") do
-    local vin, addr = line:match("^(.-)|0x(%x+)$")
-    if vin then out[#out+1] = { vin = vin, logical_address = tonumber(addr, 16) } end
+    local vin, addr, from = line:match("^(.-)|0x(%x+)|(.+)$")
+    if vin then
+      out[#out+1] = { vin = vin, logical_address = tonumber(addr, 16), from = from }
+    end
   end
   return out
 end

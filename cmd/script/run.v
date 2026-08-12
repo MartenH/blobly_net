@@ -62,6 +62,8 @@ fn main() {
 	// channel that hosts simulated ECUs (exactly like the GUI's Start).
 	mut ctl := &Ctl{}
 	mut seeded_ifaces := []string{} // one set of diagnostic servers per physical bus
+	// Entities to announce once the environment is ready — see below.
+	mut announcers := []Announcer{}
 	mut chans := []script.ChanInfo{}
 	for ch in proj.channels {
 		if !ch.enabled {
@@ -126,10 +128,15 @@ fn main() {
 				exit(1)
 			}
 			spawn doip_serve_loop(mut entity, ctl)
-			// Announce AFTER the listener is up, in the background: count × interval is
-			// 1.5s by default and a suite should not wait for it. A tester that discovers by
-			// listening needs this; one that asks does not care.
-			spawn doip_announce(mut entity, ch.name)
+			// NOT announced here. The default sequence is 3 × 500ms and would be finished
+			// before the Lua environment exists, so a suite could never observe it — the
+			// documented "listen before they announce" was unachievable with the defaults, and
+			// the announce fixture was only passing because it announces for four seconds.
+			// Collected and fired once the environment is ready, below.
+			announcers << Announcer{
+				srv:  entity
+				name: ch.name
+			}
 			println('channel ${ch.name} (doip:${host}:${port}): DoIP entity, logical address 0x${ch.ecu_addr:04X}')
 			continue
 		}
@@ -189,6 +196,12 @@ fn main() {
 	}
 	// Let the sims start emitting / the UDS server start polling before scripts run.
 	time.sleep(150 * time.millisecond)
+	// NOW announce: the entities have been listening since bind, and a suite that starts a
+	// doip.listen() in its first lines can actually catch the sequence. A real ECU announces
+	// when it comes up; from outside this process that is still what this looks like.
+	for mut a in announcers {
+		spawn doip_announce(mut a.srv, a.name)
+	}
 
 	mut env := script.new_env(chans) or {
 		eprintln('script env init failed: ${err}')
@@ -286,6 +299,13 @@ fn doip_listen(host string, port int, cfg doip.ServerCfg, srv uds.Server) !&doip
 	hst.entity = s
 	s.listen(host, port) or { return error('DoIP listen ${host}:${port} failed: ${err}') }
 	return s
+}
+
+// Announcer is one bound entity waiting to announce, held until the script environment exists.
+struct Announcer {
+mut:
+	srv  &doip.DoipServer
+	name string
 }
 
 // doip_announce sends the power-on announcements, reporting a failure rather than dropping it.

@@ -51,14 +51,30 @@ mut:
 // The counterpart to DoipServer.announce(): a tester that discovers ECUs by LISTENING rather
 // than asking. Binds the wildcard address so it hears broadcasts — which coexists with entities
 // bound to specific addresses on the same port (verified; they do not conflict).
-pub fn collect_announcements(port_ int, window_ms int) ![]VehicleInfo {
-	mut c := net.listen_udp('0.0.0.0:${port_}') or {
-		return error('cannot listen for announcements on ${port_}: ${err}')
+// Announcement is one heard announcement AND where it came from.
+//
+// VIN and logical address are not routable: a tester that discovers an ECU passively still has
+// to dial it, and `doip:<host>:<port>` needs the peer. Dropping it made passive discovery
+// unable to reach what it had just found.
+pub struct Announcement {
+pub:
+	info VehicleInfo
+	from string // the sender's host:port, ready for open_doip / a channel interface
+}
+
+// collect_announcements listens for unsolicited announcements for `window_ms`.
+//
+// Binds the IPv6 wildcard when asked for v6 (`ip6: true`), which on a dual-stack host also
+// receives IPv4 senders; an IPv4-only bind cannot see IPv6 announcements at all.
+pub fn collect_announcements_af(port_ int, window_ms int, ip6 bool) ![]Announcement {
+	addr := if ip6 { '[::]:${port_}' } else { '0.0.0.0:${port_}' }
+	mut c := net.listen_udp(addr) or {
+		return error('cannot listen for announcements on ${addr}: ${err}')
 	}
 	defer {
 		c.close() or {}
 	}
-	mut out := []VehicleInfo{}
+	mut out := []Announcement{}
 	deadline := time.now().add(window_ms * time.millisecond)
 	for time.now() < deadline {
 		left := deadline - time.now()
@@ -67,7 +83,7 @@ pub fn collect_announcements(port_ int, window_ms int) ![]VehicleInfo {
 		}
 		c.set_read_timeout(left)
 		mut buf := []u8{len: 128}
-		n, _ := c.read(mut buf) or { break } // timeout ends the window
+		n, peer := c.read(mut buf) or { break } // timeout ends the window
 		if n < header_len {
 			continue
 		}
@@ -76,9 +92,17 @@ pub fn collect_announcements(port_ int, window_ms int) ![]VehicleInfo {
 			continue
 		}
 		info := parse_vehicle_announcement(msg.payload) or { continue }
-		out << info
+		out << Announcement{
+			info: info
+			from: peer.str()
+		}
 	}
 	return out
+}
+
+// collect_announcements is the IPv4 form, kept for callers that do not care.
+pub fn collect_announcements(port_ int, window_ms int) ![]Announcement {
+	return collect_announcements_af(port_, window_ms, false)
 }
 
 pub fn open_doip(host string, port int, source u16, target u16) !&DoipClient {

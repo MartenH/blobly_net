@@ -5,7 +5,9 @@
 -- a Vehicle Identification Request, so such a tester saw nothing at all from it.
 --   scripts/runtests.sh --project projects/doip-announce-demo.blobnet tests/doip_announce.lua
 --
--- The project announces for ~4s deliberately, so this does not race the runner's start-up.
+-- Talker uses the ISO defaults (3 x 500ms). The runner fires announcements once the script
+-- environment exists, so those defaults are observable — the earlier version of this test
+-- needed a 4-second sequence to pass, which hid that a normal project could not be tested.
 
 test("a listening tester hears an entity announce itself", function()
   local seen = doip.listen(1500)
@@ -13,7 +15,14 @@ test("a listening tester hears an entity announce itself", function()
   local by_vin = {}
   for _, a in ipairs(seen) do by_vin[a.vin] = a.logical_address end
   check.equal(by_vin["ANNOUNCERVIN00001"], 0x1000)
-  log("heard", #seen, "announcement(s); Talker at 0x1000")
+  -- the sender endpoint travels with it: vin+address are not routable, and a tester that
+  -- discovers an ECU passively still has to dial it
+  for _, a in ipairs(seen) do
+    if a.vin == "ANNOUNCERVIN00001" then
+      check.truthy(a.from and a.from:match("127%.0%.0%.1"), "lost the sender: " .. tostring(a.from))
+    end
+  end
+  log("heard", #seen, "with ISO defaults; Talker at 0x1000")
 end)
 
 -- announce_count 0 is a legitimate ECU to simulate, and the fault worth injecting at a tester

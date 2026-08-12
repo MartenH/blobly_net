@@ -582,7 +582,9 @@ fn l_doip_listen(l lua.State) int {
 	}
 	mut out := []string{}
 	for f in found {
-		out << '${f.vin}|0x${f.logical_address:04X}'
+		// the sender endpoint travels with it: a tester that discovers an ECU passively still
+		// has to dial it, and vin+address are not routable
+		out << '${f.info.vin}|0x${f.info.logical_address:04X}|${f.from}'
 	}
 	l.push_str(out.join('\n'))
 	return 1

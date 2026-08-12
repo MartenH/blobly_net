@@ -370,9 +370,9 @@ fn test_entity_announces_itself_unasked() {
 		srv.close()
 	}
 	// listener first: announcements are not queued for a tester that is not there yet
-	mut got := []VehicleInfo{}
-	t := spawn fn () []VehicleInfo {
-		return collect_announcements(13400, 900) or { []VehicleInfo{} }
+	mut got := []Announcement{}
+	t := spawn fn () []Announcement {
+		return collect_announcements(13400, 900) or { []Announcement{} }
 	}()
 	time.sleep(150 * time.millisecond)
 	srv.announce() or {
@@ -381,8 +381,10 @@ fn test_entity_announces_itself_unasked() {
 	}
 	got = t.wait()
 	assert got.len >= 1, 'expected at least one announcement, got ${got.len}'
-	assert got[0].vin == 'ANNOUNCEDVIN00001'
-	assert got[0].logical_address == 0x1234
+	assert got[0].info.vin == 'ANNOUNCEDVIN00001'
+	assert got[0].info.logical_address == 0x1234
+	// the sender endpoint is kept: passive discovery has to be able to dial back
+	assert got[0].from.contains('127.0.0.1'), 'lost the sender endpoint: ${got[0].from}'
 }
 
 fn test_announce_count_zero_says_nothing() {
@@ -399,8 +401,8 @@ fn test_announce_count_zero_says_nothing() {
 	defer {
 		srv.close()
 	}
-	t := spawn fn () []VehicleInfo {
-		return collect_announcements(13400, 400) or { []VehicleInfo{} }
+	t := spawn fn () []Announcement {
+		return collect_announcements(13400, 400) or { []Announcement{} }
 	}()
 	time.sleep(100 * time.millisecond)
 	srv.announce() or {

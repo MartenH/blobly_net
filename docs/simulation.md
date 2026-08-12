@@ -318,8 +318,10 @@ local seen = doip.listen(1200)          -- window in ms, port defaults to 13400
 -- seen = { { vin = "BLOBLYNETGATEWAY1", logical_address = 0x1000 }, ... }
 ```
 
-Start listening BEFORE the entities announce — nothing is queued for a listener that is not
-there yet. `doip.discover(channel)` remains the ask-and-answer half.
+Nothing is queued for a listener that is not there yet, so the headless runner fires the
+announcements once the script environment is up — a suite that calls `doip.listen()` in its
+first lines catches the standard 3 × 500 ms sequence. `doip.discover(channel)` remains the
+ask-and-answer half.
 
 Payload limits follow the carrier, not the ECU: DoIP carries a 64 KiB diagnostic message, so a
 DID too large for one ISO-TP transfer is served here and reported there.
