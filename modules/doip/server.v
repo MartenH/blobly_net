@@ -265,6 +265,14 @@ pub fn (mut s DoipServer) announce() ! {
 	// cannot send to.
 	bound_v6 := s.bound_host.contains(':')
 	literal_v6 := dest.starts_with('[') || dest.trim('[]').count(':') > 1
+	literal_v4 := !literal_v6 && dest.all_before_last(':').split('.').len == 4
+		&& dest.all_before_last(':').split('.').all(it.int().str() == it)
+	// An IPv4 destination from an IPv6 socket is not a family-selection problem — the send
+	// itself is impossible (ENETUNREACH; a broadcast address has no v4-mapped form). Say which
+	// two settings disagree, once, instead of logging a bare socket errno at every Start.
+	if literal_v4 && bound_v6 {
+		return error('announce_to ${dest} is IPv4 but the entity is bound to ${s.bound_host}: an IPv6 socket cannot reach it — use an IPv6 destination (or bind the entity to IPv4)')
+	}
 	fam := if literal_v6 || bound_v6 { net.AddrFamily.ip6 } else { net.AddrFamily.ip }
 	addrs := net.resolve_addrs(dest, fam, .udp) or { return error('announce_to ${dest}: ${err}') }
 	if addrs.len == 0 {
@@ -294,14 +302,12 @@ pub fn (mut s DoipServer) announce() ! {
 	}
 }
 
-// broadcast_for picks the destination for an entity bound to `host`. A loopback entity stays on
-// the machine (127.255.255.255); anything else uses the limited broadcast and reaches the
-// network the bench is on.
-pub fn broadcast_for(host string) string {
-	return broadcast_for_port(host, port)
-}
-
-// broadcast_for_port is broadcast_for with the port the entity is actually on.
+// broadcast_for_port picks the destination for an entity bound to `host` on `port_`. A loopback
+// entity stays on the machine (127.255.255.255); anything else uses the limited broadcast and
+// reaches the network the bench is on.
+//
+// (No port-less variant: one existed, had no callers, and hard-coded the module default — the
+// custom-port bug this signature exists to prevent.)
 pub fn broadcast_for_port(host string, port_ int) string {
 	h := host.trim_space().trim('[]')
 	if h.contains(':') {
