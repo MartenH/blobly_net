@@ -466,10 +466,22 @@ appear in both the grouped and flat trace views.
 Recordings are checked too: loading a `.log` or `.mf4` capture re-runs the verification, so a
 violation seen live is still there after saving and reopening. Only the channel's `verify:`
 entries are applied there — a candump log carries no direction, so a capture made while the tool
-was transmitting would otherwise replay our OWN frames as received and report false failures. A recording labels its channel
-with whatever the writer used — a display name for our own captures, a bare `can` for MF4 —
-so those are matched back to the project's channels; with a single simulated bus an
-unrecognised label resolves to it, and with several it is left unchecked rather than guessed at.
+was transmitting would otherwise replay our OWN frames as received and report false failures.
+
+How the frames are matched back to a channel depends on where the labels came from:
+
+- a **candump `.log`** names an interface that somebody configured, so its labels are matched
+  against the project's channels;
+- an **`.mf4`** names buses in the RECORDING's own numbering — `CAN_DataFrame.BusChannel`, which
+  some writers count from 0 and others from 1 — so its labels arrive as `mf4:bus0`, `mf4:bus2`
+  and so on (`mf4:group<N>` for a file that carries no BusChannel at all), and they **never**
+  go through that matching. They are not names in your project's namespace, and a channel could
+  legitimately be called anything, `mf4:bus1` included.
+
+Either way, with a single simulated bus an unrecognised label resolves to it, and with several it
+is left unchecked rather than guessed at — attaching one bus's verdicts to another's frames would
+be worse than not checking. This is also why the buses stay separate in the trace: before, every
+MF4 frame was labelled `can`, so the same id on two buses merged into one row.
 
 J1939 frames resolve through the same PGN fallback the trace uses, since a live frame carries a
 different priority and source address than the DBC records. Counter state is kept per actual
