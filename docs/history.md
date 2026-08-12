@@ -1248,3 +1248,12 @@
   reports in seconds. The lesson underneath all seven: the watcher was only ever tested against
   "did it stay quiet", never against "can it detect what it exists to detect" — a ten-second
   self-test against a state with a known answer would have caught most of them.
+- 2026-08-12: **Watcher postmortem, part 3 — a failing `gh` read as "nothing waiting".** The
+  count pipeline `gh api ... | awk` yields AWK's exit status, so an auth or API failure (gh
+  returns 1 or 4 and prints nothing) made awk print `0` and succeed — indistinguishable from
+  "no findings", which is the precise false-negative the whole section exists to prevent. Found
+  by codex on the blobly_emb twin, fixed in the watcher, and verified by running it with a
+  broken token: it now reports GH FAILED rather than clean. Two smaller ones alongside:
+  `commits/<sha>/check-runs` pages are OBJECTS, not arrays, so the array-count recipe counts an
+  object's keys; and the section as copied into blobly_emb linked a `docs/history.md` that does
+  not exist there.
