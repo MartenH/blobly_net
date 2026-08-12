@@ -131,7 +131,8 @@ release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks.
 - **External PRs are auto-closed** (design phase — see [`CONTRIBUTING.md`](CONTRIBUTING.md)); the
   same workflow posts a comment pointing at issues. Nothing to do by hand.
 - **Work in a worktree, never the main checkout.** `git worktree add .claude/worktrees/<name> -b
-  <branch>` — sessions run concurrently, and a second one that finds the shared checkout on a
+  <branch> origin/main` — WITH the start point, or it branches from whatever the shared checkout
+  happens to be on, which is the state this rule exists to avoid. Sessions run concurrently, and a second one that finds the shared checkout on a
   foreign branch, or mid-rebase, loses work that was not its own. The main checkout stays on
   `main`, clean, for reading and for merges.
 - **The order is: build → `/code-review high` → `@codex review`.** Not two of the three, and not
