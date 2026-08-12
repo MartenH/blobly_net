@@ -88,11 +88,11 @@ pub fn doip_entity(ch project.Channel, nodes []project.NodeCfg) !DoipEntity {
 		return error('VIN "${announce}" is ${announce.len} bytes, not 17 — discovery would advertise a padded or truncated string while 0xF190 serves this one')
 	}
 	return DoipEntity{
+		// server_cfg() fills the module defaults for an absent eid; passing ch.eid straight
+		// into the struct suppressed them, so a channel without `eid:` advertised
+		// 00:00:00:00:00:01 as all zeros in every announcement and discovery reply.
 		cfg:      doip.ServerCfg{
-			logical_address:   ch.ecu_addr
-			vin:               announce
-			eid:               ch.eid
-			gid:               ch.eid
+			...doip.server_cfg(ch.ecu_addr, announce, ch.eid)
 			announce_count:    ch.announce_count
 			announce_interval: ch.announce_interval
 			announce_to:       ch.announce_to

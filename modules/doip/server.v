@@ -244,12 +244,22 @@ pub fn (mut s DoipServer) announce() ! {
 	if isnil(s.udp) {
 		return error('announce before listen')
 	}
-	dest := if s.cfg.announce_to != '' { s.cfg.announce_to } else { broadcast_for(s.bound_host) }
+	dest := if s.cfg.announce_to != '' {
+		with_port(s.cfg.announce_to)
+	} else {
+		broadcast_for(s.bound_host)
+	}
 	s.udp.sock.set_option_bool(.broadcast, true) or {
 		return error('cannot enable broadcast: ${err}')
 	}
 	addrs := net.resolve_addrs(dest, .ip, .udp) or { return error('announce_to ${dest}: ${err}') }
+	if addrs.len == 0 {
+		return error('announce_to ${dest}: resolved to nothing') // indexing [0] would panic
+	}
 	for i in 0 .. s.cfg.announce_count {
+		if s.stopping {
+			return // (6) Stop or a toggle closed us mid-sequence; the fd may already be gone
+		}
 		ann := vehicle_announcement(s.announced_vin(), s.cfg.logical_address, s.cfg.eid,
 			s.cfg.gid)
 		s.udp.write_to(addrs[0], ann) or { return error('announce to ${dest}: ${err}') }
@@ -263,11 +273,27 @@ pub fn (mut s DoipServer) announce() ! {
 // the machine (127.255.255.255); anything else uses the limited broadcast and reaches the
 // network the bench is on.
 pub fn broadcast_for(host string) string {
-	h := host.trim_space()
+	h := host.trim_space().trim('[]')
+	if h.contains(':') {
+		// IPv6 has no broadcast; the equivalent reach is the link-local all-nodes multicast.
+		// Sending 255.255.255.255 from an IPv6 socket fails ENETUNREACH, so every IPv6 entity
+		// logged "announce failed" at each Start and never announced.
+		return '[ff02::1]:${port}'
+	}
 	if h.starts_with('127.') || h == 'localhost' {
 		return '127.255.255.255:${port}'
 	}
 	return '255.255.255.255:${port}'
+}
+
+// with_port appends the DoIP port when a destination carries none. resolve_addrs needs
+// host:port and silently resolves a bare address to port 0, which then fails EINVAL.
+fn with_port(dest string) string {
+	d := dest.trim_space()
+	if d.starts_with('[') {
+		return if d.contains(']:') { d } else { '${d}:${port}' }
+	}
+	return if d.count(':') == 1 { d } else if d.contains(':') { '[${d}]:${port}' } else { '${d}:${port}' }
 }
 
 // set_vin updates the VIN this entity ANNOUNCES, so discovery keeps naming the same ECU the

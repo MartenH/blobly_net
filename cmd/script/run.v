@@ -116,7 +116,6 @@ fn main() {
 				eprintln('${ch.name}: ${ent.extra + 1} UDS nodes on one DoIP entity; serving "${ent.node}" (0x${ch.ecu_addr:04X})')
 			}
 			mut srv := ent.server
-			announce := ent.announce
 			// Bind HERE, not inside the spawned worker. Reported only to stderr, a failed bind
 			// left the run announcing an entity and carrying on — and if the port was held by
 			// another DoIP process serving the same built-in defaults, uds.open would connect

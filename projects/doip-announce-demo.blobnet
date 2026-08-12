@@ -1,0 +1,42 @@
+# DoIP announcement demo — the half of discovery a real vehicle performs.
+#
+# ISO 13400: an entity broadcasts a vehicle announcement when it comes up, so a
+# tester finds ECUs nobody told it about by LISTENING rather than asking. These
+# two announce for ~4s (20 × 200ms) instead of the standard 3 × 500ms, so a
+# script that starts after them still hears the sequence — the shipped default is
+# in doip-network-demo.blobnet.
+#
+# SILENT is the third ECU on purpose: announce_count 0 simulates an ECU that never
+# announces itself, which is the fault to inject at a tester that relies on
+# discovery. It still answers a Vehicle Identification Request, like a real one.
+project:
+  name: DoIP announcement demo
+  version: 1
+
+channels:
+  - name: Talker
+    type: doip
+    interface: doip:127.0.0.1:13400
+    tester_address: "0x0E80"
+    ecu_address: "0x1000"
+    vin: ANNOUNCERVIN00001
+    announce_count: 20
+    announce_interval_ms: 200
+    simulation:
+      - name: SUT
+        uds:
+          dids:
+            - { id: "0xF190", text: "ANNOUNCERVIN00001" }
+
+  - name: Silent
+    type: doip
+    interface: doip:127.0.0.2:13400
+    tester_address: "0x0E80"
+    ecu_address: "0x2000"
+    vin: SILENTECUVIN00001
+    announce_count: 0
+    simulation:
+      - name: SUT
+        uds:
+          dids:
+            - { id: "0xF190", text: "SILENTECUVIN00001" }

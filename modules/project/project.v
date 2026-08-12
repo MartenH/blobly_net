@@ -502,10 +502,18 @@ fn parse_channel(c yaml.Any) !Channel {
 		}
 	}
 	if v := c.value_opt('announce_count') {
-		ch.announce_count = int(clamp_i64_u32(v.i64()))
+		n := v.i64()
+		if n < 0 || n > 100 {
+			return error('announce_count must be 0..100, got ${n}')
+		}
+		ch.announce_count = int(n)
 	}
 	if v := c.value_opt('announce_interval_ms') {
-		ch.announce_interval = int(clamp_i64_u32(v.i64()))
+		n := v.i64()
+		if n < 0 || n > 60000 {
+			return error('announce_interval_ms must be 0..60000, got ${n}')
+		}
+		ch.announce_interval = int(n)
 	}
 	ch.announce_to = c.value('announce_to').default_to('').string()
 	if v := c.value_opt('tester_address') {

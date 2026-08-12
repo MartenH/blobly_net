@@ -6,6 +6,7 @@
 // and the output round-trips through parse() — see save_test.v.
 module project
 
+import doip
 import os
 import strings
 
@@ -65,6 +66,18 @@ pub fn (p Project) to_yaml() string {
 			}
 			if ch.eid.len > 0 {
 				b.writeln('    eid: ${hex_bytes(ch.eid)}')
+			}
+			// Written because they are READ. A field the parser takes and the writer drops is
+			// deleted by the first save — an ECU configured `announce_count: 0` would come
+			// back announcing three times, which is the opposite of what it was set to.
+			if ch.announce_count != doip.announce_num_default {
+				b.writeln('    announce_count: ${ch.announce_count}')
+			}
+			if ch.announce_interval != doip.announce_interval_default {
+				b.writeln('    announce_interval_ms: ${ch.announce_interval}')
+			}
+			if ch.announce_to != '' {
+				b.writeln('    announce_to: ${yaml_scalar(ch.announce_to)}')
 			}
 		}
 		if ch.databases.len > 0 {

@@ -64,7 +64,7 @@ jobs:
           # Three entities on 127.0.0.1/.2/.3: announced identity must match served identity.
           ./scripts/runtests.sh --project projects/doip-network-demo.blobnet tests/doip_network.lua
           # Unsolicited announcements: a tester that discovers by LISTENING, not asking.
-          ./scripts/runtests.sh --project projects/doip-network-demo.blobnet tests/doip_announce.lua
+          ./scripts/runtests.sh --project projects/doip-announce-demo.blobnet tests/doip_announce.lua
 
   gui-build:
     name: linux • GUI (imgui) compile-link
