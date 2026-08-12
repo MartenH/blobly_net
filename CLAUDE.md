@@ -180,8 +180,10 @@ nothing looks exactly like no news.
 - **`--paginate`, always.** The API returns **30 items per page in ASCENDING order**, so an
   un-paginated read silently drops the **newest** comments — the ones you are waiting for. On a
   PR with 38 review comments, the 8 most recent were invisible, which is how six findings sat
-  unread while a watcher reported zero. `--paginate` emits one array per page, so counts need
-  summing (`| paste -sd+ | bc`) rather than a bare `length`.
+  unread while a watcher reported zero. `--paginate` emits **one array per page**, so a bare
+  `length` gives a per-page count: sum them with `| awk '{s+=$1} END{print s+0}'`. Not `bc`,
+  which is absent from some agent environments, and not `--slurp`, which `gh` rejects when
+  `--jq` is also given.
 - **`gh api --jq` takes exactly one argument.** Passing jq's own flags (`--arg`, `--argjson`)
   makes gh print `accepts 1 arg(s), received 4` on stderr and **exit 1** with no stdout — so a
   filter written that way returns nothing and the channel looks empty. Interpolate the value
