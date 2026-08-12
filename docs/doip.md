@@ -17,7 +17,9 @@ For *why* DoIP came before SOME/IP and how the modules are laid out, see the des
 | Starting a simulated DoIP entity from a **project**, headless | ✅ `scripts/runtests.sh --project <p.blobnet>` |
 | **Starting a simulated DoIP entity from the GUI** | ✅ ▶ Start hosts it; the channel goes green only once the listener is up |
 | **UDS from the Diagnostics panel over a DoIP channel** | ✅ listed as a target, addressed by logical address |
-| **Broadcast discovery — finding an entity you were not told about** | 🧭 planned |
+| Passive discovery — hearing an entity announce itself | ✅ `doip.listen(window_ms)` / `collect_announcements` |
+| A simulated entity announcing itself at Start | ✅ per ECU: `announce_count` (0 = silent), `announce_interval_ms`, `announce_to` |
+| **Subnet scan — finding an entity that neither announced nor sits at a known address** | 🧭 planned |
 
 One thing worth knowing before you plan a bench: an entity **binds a real socket** on its
 configured port for as long as it runs. If the port is already held — a second instance, or
@@ -65,17 +67,23 @@ that one host, the first reply is taken, and the simulated entity likewise answe
 sender. So discovery here **confirms an identity you already know**; it does not find entities
 you have not been told about.
 
-That asymmetry is worth stating because the ECU side is not the missing half. The companion
-firmware (blobly_emb) broadcasts its vehicle announcement three times at boot, per ISO 13400,
-and answers identification requests afterwards — precisely so a tester arriving late can still
-find it. Blobly Net hears the second of those and not the first: it parses the `0x0004` the
-entity sends *in answer to its own request*, which is what makes known-address Discover work at
-all. What it misses is the **unsolicited** boot announcement, because it never listens on a
-broadcast address, and any **further** replies, because it stops at the first.
+Both halves exist now. The companion firmware (blobly_emb) broadcasts its vehicle announcement
+three times at boot, per ISO 13400, and answers identification requests afterwards — so a tester
+arriving late can still find it. Blobly Net does both sides of that:
 
-The practical consequence: **on Ethernet you must know the address before you can see anything.**
-On CAN you attach and observe, because the medium is broadcast. Plan for static addresses or a
-DHCP lease you can read. Broadcast discovery is on the roadmap.
+- **Passive**: `doip.collect_announcements()` (Lua: `doip.listen(window_ms)`) binds the wildcard
+  address and collects **unsolicited** announcements, each carrying the sender's `host:port` so
+  you can dial what you just found. Start listening BEFORE the entity comes up — nothing is
+  queued for a listener that is not there.
+- **Active**: `doip.discover(host, port)` sends an identification request to an address you name
+  and reads the reply. This is what the DoIP panel's Discover uses.
+- **As an entity**: a simulated ECU announces itself at Start, three times 500 ms apart by
+  default, per ECU (`announce_count`, `announce_interval_ms`, `announce_to`); `announce_count: 0`
+  is a silent ECU, which is a fault worth injecting at a tester that relies on discovery.
+
+What is still missing is a **scan**: sweeping a subnet for entities that neither announced while
+you were listening nor sit at an address you know. For that you still need a static address or a
+DHCP lease you can read.
 
 ## What happens on the wire
 
@@ -153,8 +161,14 @@ long as the project runs.
 - **Routing activation is single-source.** Once activated, a request from a different source is
   denied rather than replacing the first, and a diagnostic message whose source does not match
   the activated tester is NACKed rather than dispatched. A second tester cannot quietly take over.
-- **No broadcast discovery** — an entity is found at an address you name, not by sweeping the
-  subnet. Planned.
+- **No subnet scan** — an entity is found by hearing it announce, or at an address you name;
+  there is no sweep for one that did neither. Planned.
+- **Passive discovery is verified on IPv4 only.** The IPv6 path resolves in the right family,
+  joins `ff02::1` and reports a failed join, but an announcement sent to that group is **not
+  received** by a wildcard listener on loopback here, so IPv6 passive collection is implemented
+  and unproven rather than working. Use `doip.discover(host, port)` for IPv6 entities, which is
+  unicast and tested. Tracked separately; do not read the passive-listening row above as
+  covering IPv6.
 - **No SOME/IP service discovery** — a separate protocol, tracked separately.
 
 ## Reading a capture

@@ -1,0 +1,56 @@
+# DoIP announcement demo — the half of discovery a real vehicle performs.
+#
+# ISO 13400: an entity broadcasts a vehicle announcement when it comes up, so a
+# tester finds ECUs nobody told it about by LISTENING rather than asking. Talker
+# uses the STANDARD 3 × 500ms — the headless runner fires announcements once the
+# script environment is up, so a suite can observe the real defaults rather than
+# an inflated sequence invented to make the test pass.
+#
+# SILENT is the third ECU on purpose: announce_count 0 simulates an ECU that never
+# announces itself, which is the fault to inject at a tester that relies on
+# discovery. It still answers a Vehicle Identification Request, like a real one.
+project:
+  name: DoIP announcement demo
+  version: 1
+
+channels:
+  - name: Talker
+    type: doip
+    interface: doip:127.0.0.1:13400
+    tester_address: "0x0E80"
+    ecu_address: "0x1000"
+    vin: ANNOUNCERVIN00001
+    announce_count: 20          # ~4s of announcements, so a suite that starts after
+    announce_interval_ms: 200   # Start still hears the sequence in progress
+    simulation:
+      - name: SUT
+        uds:
+          dids:
+            - { id: "0xF190", text: "ANNOUNCERVIN00001" }
+
+  - name: AltPort
+    type: doip
+    interface: doip:127.0.0.4:13555   # NOT the default port
+    tester_address: "0x0E80"
+    ecu_address: "0x4000"
+    vin: ALTPORTVIN0000001
+    announce_count: 20          # like Talker: still announcing when a suite starts
+    announce_interval_ms: 200
+    simulation:
+      - name: SUT
+        uds:
+          dids:
+            - { id: "0xF190", text: "ALTPORTVIN0000001" }
+
+  - name: Silent
+    type: doip
+    interface: doip:127.0.0.2:13400
+    tester_address: "0x0E80"
+    ecu_address: "0x2000"
+    vin: SILENTECUVIN00001
+    announce_count: 0
+    simulation:
+      - name: SUT
+        uds:
+          dids:
+            - { id: "0xF190", text: "SILENTECUVIN00001" }

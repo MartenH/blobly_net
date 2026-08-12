@@ -708,7 +708,7 @@ fn (mut app App) start_doip_hosts() {
 fn doip_watch(app &App, pch project.Channel, ent sim.DoipEntity, key string, gen u64) {
 	mut a := unsafe { app }
 	host, port := pch.doip_endpoint()
-	cfg := doip.server_cfg(pch.ecu_addr, ent.announce, pch.eid)
+	cfg := ent.cfg // built by sim.doip_entity, so the GUI announces exactly as headless does
 	mut hst := &sim.DoipHost{
 		server: ent.server
 	}
@@ -738,7 +738,13 @@ fn doip_watch(app &App, pch project.Channel, ent sim.DoipEntity, key string, gen
 				// original while the server returned the new one.
 				mut cur := cfg
 				if v := hst.server.dids[u16(0xF190)] {
-					cur = doip.server_cfg(cfg.logical_address, v.bytestr(), cfg.eid)
+					// Rebuild only the VIN. server_cfg() carries identity alone, so using it
+					// here silently reset announce_count/interval/to to their defaults — an
+					// ECU configured silent would start announcing after a toggle.
+					cur = doip.ServerCfg{
+						...cfg
+						vin: v.bytestr()
+					}
 				}
 				if s := a.doip_bind(cur, host, port, mut hst) {
 					srv = s
@@ -755,6 +761,9 @@ fn doip_watch(app &App, pch project.Channel, ent sim.DoipEntity, key string, gen
 					} else {
 						spawn doip_serve(app, mut srv)
 						spawn doip_udp_worker(app, mut srv)
+						// Power-on announcements, in the background: count × interval is 1.5s
+						// by default and Start must not block on it.
+						spawn doip_announce_worker(app, mut srv, pch.name)
 						// cur.vin, not ent.announce: a tester may have written 0xF190 since
 						// Start, and naming the startup VIN here would report an identity the
 						// entity neither announces nor serves — the split this PR exists to
@@ -784,6 +793,14 @@ fn doip_watch(app &App, pch project.Channel, ent sim.DoipEntity, key string, gen
 	if bound {
 		srv.close()
 	}
+}
+
+// doip_announce_worker sends the power-on announcements, reporting a failure to the Log rather
+// than dropping it — a silent ECU that was supposed to announce is exactly the thing a bench
+// would waste an hour on.
+fn doip_announce_worker(app &App, mut s doip.DoipServer, name string) {
+	mut a := unsafe { app }
+	s.announce() or { a.notify('${name}: announce failed: ${err}') }
 }
 
 // doip_serve runs one bound entity's TCP side until it is closed.

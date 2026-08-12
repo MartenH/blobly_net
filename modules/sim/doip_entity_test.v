@@ -44,6 +44,30 @@ fn test_nothing_configured_serves_and_announces_the_default() {
 	assert e.node == ''
 }
 
+// The shipped default sequence, pinned where it can be asserted without a race: a suite cannot
+// observe 3 x 500ms from a process that announced before the script was parsed, so the default
+// is verified as CONFIGURATION here and as behaviour in doip.net_test (listener bound first).
+fn test_the_iso_default_sequence_reaches_the_entity() {
+	e := doip_entity(ch_with(''), []) or {
+		assert false, '${err}'
+		return
+	}
+	assert e.cfg.announce_count == doip.announce_num_default
+	assert e.cfg.announce_interval == doip.announce_interval_default
+	assert e.cfg.announce_to == ''
+}
+
+// 0 is a value, not an absent field: an entity configured silent must not be handed the default.
+fn test_a_silent_ecu_is_not_given_the_default_count() {
+	mut ch := ch_with('')
+	ch.announce_count = 0
+	e := doip_entity(ch, []) or {
+		assert false, '${err}'
+		return
+	}
+	assert e.cfg.announce_count == 0
+}
+
 fn test_a_channel_vin_is_served_as_well_as_announced() {
 	e := doip_entity(ch_with('CHANNELVIN0000001'), []) or {
 		assert false, '${err}'

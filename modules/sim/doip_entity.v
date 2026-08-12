@@ -14,6 +14,9 @@ import doip
 // network and reads another out of it has no way to tell which is the lie.
 pub struct DoipEntity {
 pub:
+	// The server config to bind with, built HERE so the GUI and the runner cannot announce
+	// differently — the same reason the identity decision lives here.
+	cfg      doip.ServerCfg
 	node     string // the UDS node being served; '' = the built-in default server
 	announce string // the announced VIN, always == the served DID 0xF190
 	extra    int    // configured UDS nodes beyond the one served
@@ -85,6 +88,15 @@ pub fn doip_entity(ch project.Channel, nodes []project.NodeCfg) !DoipEntity {
 		return error('VIN "${announce}" is ${announce.len} bytes, not 17 — discovery would advertise a padded or truncated string while 0xF190 serves this one')
 	}
 	return DoipEntity{
+		// server_cfg() fills the module defaults for an absent eid; passing ch.eid straight
+		// into the struct suppressed them, so a channel without `eid:` advertised
+		// 00:00:00:00:00:01 as all zeros in every announcement and discovery reply.
+		cfg:      doip.ServerCfg{
+			...doip.server_cfg(ch.ecu_addr, announce, ch.eid)
+			announce_count:    ch.announce_count
+			announce_interval: ch.announce_interval
+			announce_to:       ch.announce_to
+		}
 		node:     name
 		announce: announce
 		extra:    if built.len > 1 { built.len - 1 } else { 0 }

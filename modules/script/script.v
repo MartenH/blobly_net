@@ -10,6 +10,7 @@
 // (stdout vs a log panel), and run a file. The same script behaves identically.
 module script
 
+import sync
 import time
 import lua
 import transport
@@ -89,12 +90,17 @@ mut:
 
 // Env is one scripting session: a Lua state plus the channels/connections it can
 // reach. Construct with new_env, optionally set `on_output`, then run a script.
+
 pub struct Env {
 mut:
 	st    lua.State
 	chans []ChanInfo
 	conns []UdsConn
 	buses map[string]transport.Bus
+	// Entities this process hosts, by channel name, so a script can trigger their announcement
+	// sequence rather than racing the startup burst.
+	mu         sync.Mutex
+	async_errs []string // failures from spawned work, surfaced instead of dropped
 pub mut:
 	results   []TestResult
 	log_lines []string // every emitted line, buffered (the GUI reads this post-run)
@@ -119,6 +125,10 @@ pub fn new_env(chans []ChanInfo) !&Env {
 
 // run_file loads and executes a Lua script file (after the prelude).
 pub fn (mut env Env) run_file(path string) ! {
+	defer {
+		// A failure from work a script started but did not wait for still reaches the output.
+		env.flush_async_errs()
+	}
 	env.st.do_file(path)!
 }
 
@@ -141,6 +151,19 @@ pub fn (env &Env) total() int {
 }
 
 // close tears down the ISO-TP connections, buses and the interpreter.
+// emit_async_err flushes anything a previous async trigger reported, so it lands in the output
+// near the test that caused it rather than at some arbitrary later point.
+// flush_async_errs emits anything a spawned trigger reported. Script thread only.
+pub fn (mut env Env) flush_async_errs() {
+	env.mu.lock()
+	pending := env.async_errs.clone()
+	env.async_errs = []
+	env.mu.unlock()
+	for p in pending {
+		env.emit('!! ${p}')
+	}
+}
+
 pub fn (mut env Env) close() {
 	for mut c in env.conns {
 		c.ch.close()
@@ -203,6 +226,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__sim_fault', l_sim_fault)
 	env.st.register('__uds_open', l_uds_open)
 	env.st.register('__doip_discover', l_doip_discover)
+	env.st.register('__doip_listen', l_doip_listen)
 	env.st.register('__uds_session', l_uds_session)
 	env.st.register('__uds_read_did', l_uds_read_did)
 	env.st.register('__uds_tester_present', l_uds_tester_present)
@@ -569,6 +593,34 @@ fn l_doip_discover(l lua.State) int {
 // caught by CI. The distinction is at least pinned by a unit test.
 fn probe_says_dead(err IError) bool {
 	return err !is uds.NegativeResponse
+}
+
+// l_doip_listen collects UNSOLICITED announcements — discovery the way a real tester does it,
+// by listening rather than asking. Returns "vin|0xADDR" lines; the prelude shapes them.
+fn l_doip_listen(l lua.State) int {
+	mut env := env_of(l)
+	port := int(l.arg_int(1))
+	window := int(l.arg_int(2))
+	ip6 := l.arg_bool(3)
+	mut use_port := port
+	mut use_ip6 := ip6
+	if use_port == 0 {
+		use_port = 13400
+	}
+	// With a channel named, BIND FIRST and trigger that entity from inside — a script that
+	// triggers and then listens cannot close the race when announce_count is 1 or the interval
+	// is 0: the whole sequence can be gone before the socket exists.
+	found := doip.collect_announcements_af(use_port, window, use_ip6) or {
+		return l.fail('doip.listen(${use_port}): ${err}')
+	}
+	mut out := []string{}
+	for f in found {
+		// the sender endpoint travels with it: a tester that discovers an ECU passively still
+		// has to dial it, and vin+address are not routable
+		out << '${f.info.vin}|0x${f.info.logical_address:04X}|${f.from}'
+	}
+	l.push_str(out.join('\n'))
+	return 1
 }
 
 fn l_uds_tester_present(l lua.State) int {

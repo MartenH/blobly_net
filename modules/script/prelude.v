@@ -101,6 +101,31 @@ function doip.discover(channel)
   return { vin = vin, logical_address = addr }
 end
 
+-- doip.listen(window_ms [, port]) -> { {vin=..., logical_address=..., from="host:port"}, ... }
+--
+-- Unsolicited announcements, the way a real tester discovers ECUs it was never told about.
+-- Start this BEFORE the entities announce: nothing is queued for a listener that is not there.
+-- doip.listen(window_ms [, opts]) -> { {vin=..., logical_address=..., from=...}, ... }
+--
+-- opts = { port = 13400, ip6 = false }. Nothing is queued for a listener that is not there, so
+-- start listening before the entity announces — or give it a long enough sequence to still be
+-- in progress. IPv4 is the verified path; see docs/doip.md for the IPv6 caveat.
+function doip.listen(window_ms, opts)
+  opts = opts or {}
+  if type(opts) == "number" then opts = { port = opts } end   -- back-compat: listen(ms, port)
+  -- port 0 = "derive": with `from`, that channel own port; otherwise 13400.
+  local raw = __doip_listen(opts.port or 0, window_ms or 1000,
+                            opts.ip6 and true or false, opts.from or "")
+  local out = {}
+  for line in tostring(raw):gmatch("[^\n]+") do
+    local vin, addr, from = line:match("^(.-)|0x(%x+)|(.+)$")
+    if vin then
+      out[#out+1] = { vin = vin, logical_address = tonumber(addr, 16), from = from }
+    end
+  end
+  return out
+end
+
 -- ============================ diagnostics (UDS) ============================
 uds = {}
 function uds.open(channel, opts)

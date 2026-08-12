@@ -293,6 +293,40 @@ observable:
 check.equal(doip.discover("DoIP1").vin, uds.open("DoIP1"):read_did(0xF190))
 ```
 
+**The entity announces itself at Start.** ISO 13400 says a DoIP ECU broadcasts a vehicle
+announcement when it comes up — three times, 500 ms apart — and that is how a tester discovers
+ECUs nobody told it about. Ours does the same, per ECU:
+
+```yaml
+    announce_count: 3          # ISO default; 0 = a silent ECU
+    announce_interval_ms: 500
+    announce_to: ""            # blank = derive (see below)
+```
+
+`announce_count: 0` is worth having on purpose: it simulates an ECU that never announces itself,
+which is exactly the fault a tester relying on discovery should be tested against.
+
+Where they go is derived from the entity's own address unless `announce_to` says otherwise. A
+**loopback** entity broadcasts to `127.255.255.255` and never leaves the machine; anything else
+uses the limited broadcast and **does go out on the network the bench is on** — like a real ECU,
+and worth knowing before plugging into a shared lab LAN.
+
+From a script, listen for them the way a real tester would:
+
+```lua
+local seen = doip.listen(1200)                     -- window in ms, port defaults to 13400
+local seen = doip.listen(1200, { port = 13555 })   -- an entity bound elsewhere
+-- seen = { { vin = "BLOBLYNETGATEWAY1", logical_address = 0x1000, from = "127.0.0.1:13400" }, ... }
+```
+
+Nothing is queued for a listener that is not there, and **a script cannot get there first**: the
+entities come up before the suite is parsed, the same way an ECU is powered long before a tester
+is plugged in. So a short burst is unobservable from Lua by construction — to test passive
+discovery, configure a sequence long enough to still be running when the script starts, as
+`projects/doip-announce-demo.blobnet` does. For an entity on the ISO default (three, 500 ms
+apart), use `doip.discover()`: asking is what a tester that arrived late has to do anyway. **IPv4 is the verified path**; see the IPv6 caveat in [doip.md](doip.md). `doip.discover(channel)` remains the
+ask-and-answer half.
+
 Payload limits follow the carrier, not the ECU: DoIP carries a 64 KiB diagnostic message, so a
 DID too large for one ISO-TP transfer is served here and reported there.
 

@@ -24,7 +24,21 @@ pub:
 	vin             string = default_vin
 	eid             []u8 = default_eid // entity id (≈ MAC)
 	gid             []u8 = default_eid // group id
+	// Power-on announcement (ISO 13400 A_DoIP_Announce_Num / A_DoIP_Announce_Interval). A real
+	// entity announces itself when it gets its IP, three times, 500ms apart — that is how a
+	// tester discovers ECUs it was never told about, by listening rather than asking. 0 = say
+	// nothing, which is a legitimate ECU to simulate and a useful fault to inject.
+	announce_count    int = announce_num_default
+	announce_interval int = announce_interval_default // ms
+	// Where announcements go. Empty derives it from the entity's own address: a loopback entity
+	// broadcasts to 127.255.255.255 and never leaves the machine; anything else uses the
+	// limited broadcast, which DOES go on the wire, exactly like a real ECU would.
+	announce_to string
 }
+
+// ISO 13400 defaults: three announcements, 500ms apart.
+pub const announce_num_default = 3
+pub const announce_interval_default = 500
 
 // server_cfg builds a ServerCfg from a logical address + optional VIN/EID, filling
 // in the module defaults for any empty field. Lets callers in other modules set a
@@ -56,6 +70,10 @@ mut:
 	vin    string
 	listener &net.TcpListener = unsafe { nil }
 	udp      &net.UdpConn     = unsafe { nil }
+	// The host this entity bound to. announce() needs it to choose a destination, and asking
+	// the socket back for it is more indirection than storing the one string.
+	bound_host string
+	bound_port int
 	active   &net.TcpConn     = unsafe { nil } // the in-progress accepted connection (nil between)
 	stopping bool // set by close(): stop accepting/serving and tear down the active conn
 }
@@ -91,6 +109,8 @@ pub fn (s &DoipServer) is_stopping() bool {
 // closed before returning, so a failed listen() never leaves a socket bound. An
 // IPv6 host literal (one containing ':') is bracketed and bound on the IPv6 family.
 pub fn (mut s DoipServer) listen(host string, port int) ! {
+	s.bound_host = host
+	s.bound_port = port
 	addr := join_host_port(host, port)
 	s.listener = net.listen_tcp(addr_family(host), addr)!
 	s.udp = net.listen_udp(addr) or {
@@ -213,6 +233,106 @@ pub fn (mut s DoipServer) serve_udp_once(timeout_ms int) ! {
 			s.cfg.gid)
 		s.udp.write_to(addr, ann) or {}
 	}
+}
+
+// announce sends the power-on vehicle announcements. Blocking: count × interval.
+//
+// Sent from the entity's OWN socket, so the source address is the one a tester will dial back.
+// SO_BROADCAST has to be set explicitly or the send fails with EACCES.
+pub fn (mut s DoipServer) announce() ! {
+	if s.cfg.announce_count <= 0 {
+		return // deliberately silent
+	}
+	if isnil(s.udp) {
+		return error('announce before listen')
+	}
+	dest := if s.cfg.announce_to != '' {
+		// the bound port here as well: fixing only the derived branch left an explicit
+		// host-only announce_to (e.g. "127.255.255.255") going to 13400 on a custom-port entity
+		with_port(s.cfg.announce_to, s.bound_port)
+	} else {
+		// The port this entity BOUND, not the module default: an entity on a custom port
+		// announced to 13400, so a listener on the configured port heard nothing while direct
+		// discovery and TCP both worked — a mismatch only an explicit announce_to could avoid.
+		broadcast_for_port(s.bound_host, s.bound_port)
+	}
+	s.udp.sock.set_option_bool(.broadcast, true) or {
+		return error('cannot enable broadcast: ${err}')
+	}
+	// The family of the SOCKET, unless the destination is an explicit literal of the other
+	// kind. Choosing by punctuation alone classified every hostname as IPv4, so an IPv6 entity
+	// with `announce_to: localhost` (or an AAAA-only alias) resolved to a sockaddr its socket
+	// cannot send to.
+	bound_v6 := s.bound_host.contains(':')
+	literal_v6 := dest.starts_with('[') || dest.trim('[]').count(':') > 1
+	fam := if literal_v6 || bound_v6 { net.AddrFamily.ip6 } else { net.AddrFamily.ip }
+	addrs := net.resolve_addrs(dest, fam, .udp) or { return error('announce_to ${dest}: ${err}') }
+	if addrs.len == 0 {
+		return error('announce_to ${dest}: resolved to nothing') // indexing [0] would panic
+	}
+	for i in 0 .. s.cfg.announce_count {
+		if s.stopping {
+			return // Stop, a toggle, or a script run ending; the fd may already be gone
+		}
+		ann := vehicle_announcement(s.announced_vin(), s.cfg.logical_address, s.cfg.eid,
+			s.cfg.gid)
+		s.udp.write_to(addrs[0], ann) or { return error('announce to ${dest}: ${err}') }
+		if i + 1 < s.cfg.announce_count {
+			// SLICED, so a cancel lands within ~50ms instead of at the end of the interval.
+			// One sleep(60s) meant teardown still waited a full minute for a 100 × 60s
+			// sequence — better than the 100 minutes before it, and still a hung suite.
+			mut left := s.cfg.announce_interval
+			for left > 0 {
+				if s.stopping {
+					return
+				}
+				step := if left > 50 { 50 } else { left }
+				time.sleep(step * time.millisecond)
+				left -= step
+			}
+		}
+	}
+}
+
+// broadcast_for picks the destination for an entity bound to `host`. A loopback entity stays on
+// the machine (127.255.255.255); anything else uses the limited broadcast and reaches the
+// network the bench is on.
+pub fn broadcast_for(host string) string {
+	return broadcast_for_port(host, port)
+}
+
+// broadcast_for_port is broadcast_for with the port the entity is actually on.
+pub fn broadcast_for_port(host string, port_ int) string {
+	h := host.trim_space().trim('[]')
+	if h.contains(':') {
+		// IPv6 has no broadcast; the equivalent reach is the link-local all-nodes multicast.
+		// Sending 255.255.255.255 from an IPv6 socket fails ENETUNREACH, so every IPv6 entity
+		// logged "announce failed" at each Start and never announced.
+		//
+		// KEEP THE ZONE. Link-local multicast needs an interface scope, so an entity bound to
+		// fe80::1%eth0 must announce to ff02::1%eth0 — dropping it leaves a multihomed host to
+		// guess the outgoing interface, which is how an announcement goes out the wrong one.
+		if zone := h.split('%')[1] or { '' } {
+			if zone != '' {
+				return '[ff02::1%${zone}]:${port_}'
+			}
+		}
+		return '[ff02::1]:${port_}'
+	}
+	if h.starts_with('127.') || h == 'localhost' {
+		return '127.255.255.255:${port_}'
+	}
+	return '255.255.255.255:${port_}'
+}
+
+// with_port appends the DoIP port when a destination carries none. resolve_addrs needs
+// host:port and silently resolves a bare address to port 0, which then fails EINVAL.
+fn with_port(dest string, port_ int) string {
+	d := dest.trim_space()
+	if d.starts_with('[') {
+		return if d.contains(']:') { d } else { '${d}:${port_}' }
+	}
+	return if d.count(':') == 1 { d } else if d.contains(':') { '[${d}]:${port_}' } else { '${d}:${port_}' }
 }
 
 // set_vin updates the VIN this entity ANNOUNCES, so discovery keeps naming the same ECU the

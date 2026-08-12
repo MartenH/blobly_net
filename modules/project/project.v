@@ -13,6 +13,7 @@ module project
 
 import os
 import yaml
+import doip
 
 // schema_version is the current project-file format version. Bump it when the `.yml`
 // schema changes incompatibly. Files carry `version:`; Save writes schema_version,
@@ -245,6 +246,12 @@ pub mut:
 	// network of simulated entities is distinguishable. Empty = module defaults.
 	vin string
 	eid []u8
+	// Power-on announcement, per ECU. Defaults are ISO 13400's (three, 500ms apart);
+	// `announce_count: 0` is a silent ECU — a legitimate thing to simulate, and a fault worth
+	// injecting deliberately at a tester that relies on discovery.
+	announce_count    int = doip.announce_num_default
+	announce_interval int = doip.announce_interval_default
+	announce_to       string // '' = derive from the entity's own address
 }
 
 // is_doip reports whether this channel is a DoIP (diagnostics-over-Ethernet)
@@ -494,6 +501,16 @@ fn parse_channel(c yaml.Any) !Channel {
 			ch.fd = true
 		}
 	}
+	// CHECKED parse. yaml's i64() coerces a malformed scalar to 0, so `announce_count: three`
+	// would have turned the ECU deliberately silent, and a bad interval would have fired the
+	// whole sequence as a burst — a typo quietly changing behaviour instead of failing.
+	if v := c.value_opt('announce_count') {
+		ch.announce_count = int(checked_int(v.str(), 'announce_count', 0, 100)!)
+	}
+	if v := c.value_opt('announce_interval_ms') {
+		ch.announce_interval = int(checked_int(v.str(), 'announce_interval_ms', 0, 60000)!)
+	}
+	ch.announce_to = c.value('announce_to').default_to('').string()
 	if v := c.value_opt('tester_address') {
 		ch.tester_addr = parse_addr16(v.str()) or { return error('tester_address: ${err.msg()}') }
 	}
@@ -824,6 +841,25 @@ fn parse_eid(s string) ![]u8 {
 // uds/protect parse path goes through this or clamp_u32 — session, DTC status and data_id were
 // each found separately, which is three times too many for one mistake.
 // bad_ids returns the labels of any field whose value is not a clean numeric id.
+// checked_int parses a plain decimal in [lo, hi], refusing anything else by name. Not i64(),
+// which turns a typo into 0 and changes what the ECU does without saying so.
+fn checked_int(raw string, field string, lo i64, hi i64) !i64 {
+	t := raw.trim_space().trim('"')
+	if t == '' {
+		return error('${field}: empty')
+	}
+	for ch in t {
+		if ch < `0` || ch > `9` {
+			return error('${field}: "${t}" is not a whole number')
+		}
+	}
+	n := t.i64()
+	if n < lo || n > hi {
+		return error('${field} must be ${lo}..${hi}, got ${n}')
+	}
+	return n
+}
+
 fn bad_ids(fields map[string]string) []string {
 	mut out := []string{}
 	for k, v in fields {
