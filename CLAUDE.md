@@ -180,7 +180,12 @@ here exists because a silent version of it lost a review; the incidents are in
 - **`--paginate` everything.** 30 per page, ascending, so an un-paginated read drops the
   **newest** items. Applies to comments AND `commits/<sha>/check-runs`. `--paginate` emits one
   array per page, so sum with `| awk '{s+=$1} END{print s+0}'` — not `bc` (absent in some agent
-  environments), and not `--slurp` (gh refuses it alongside `--jq`).
+  environments), and not `--slurp` (gh refuses it alongside `--jq`). **Capture gh's exit status
+  before the pipe**: on an auth or API failure gh returns 1 or 4 and prints nothing, `awk` then
+  prints `0` and exits 0, and the result reads exactly like "nothing is waiting". Assign first,
+  check `$?`, report the failure instead of a count. And `commits/<sha>/check-runs` pages are
+  **objects**, not arrays — use `.check_runs | length` (or `.check_runs[]` to list); the array
+  recipe would count an object's keys.
 - **`gh api --jq` takes exactly one argument.** jq's own flags (`--arg`) make it exit 1 with no
   stdout, so the filter returns nothing and the channel looks empty. Interpolate instead.
 - **Do NOT use the 👍 reaction as the verdict**, despite codex's footer saying "otherwise it
