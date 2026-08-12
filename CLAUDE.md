@@ -1,7 +1,9 @@
 # Blobly Net (V) — project guide for coding agents
 
-> `AGENTS.md` is a symlink to this file: one guide for **any** agent (Claude Code reads
-> `CLAUDE.md`, Codex and others read `AGENTS.md`). Edit only this file.
+> **This is the guide.** `AGENTS.md` is a one-line pointer here, and a real file rather than a
+> symlink: two agents look for two names — Claude Code reads `CLAUDE.md` and nothing else, Codex
+> and others read `AGENTS.md` — and a symlink either way round becomes a 9-byte text file on a
+> checkout without symlink support, so whichever tool follows it silently gets a one-word guide.
 >
 > **Keep this short and true.** Every claim here should be checkable against the repo in
 > seconds. Historical narrative belongs in [`docs/history.md`](docs/history.md), not here —
@@ -131,8 +133,11 @@ release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks.
 - **External PRs are auto-closed** (design phase — see [`CONTRIBUTING.md`](CONTRIBUTING.md)); the
   same workflow posts a comment pointing at issues. Nothing to do by hand.
 - **Work in a worktree, never the main checkout.** `git worktree add .claude/worktrees/<name> -b
-  <branch> origin/main` — WITH the start point, or it branches from whatever the shared checkout
-  happens to be on, which is the state this rule exists to avoid. Sessions run concurrently, and a second one that finds the shared checkout on a
+  <branch> origin/main` — **fetch first** (`git fetch -q origin`): naming a remote-tracking ref
+  does not contact the remote, so a checkout that has not fetched since `main` advanced branches
+  from a stale local value and silently omits landed work. And WITH the start point, or it
+  branches from whatever the shared checkout happens to be on — the state this rule exists to
+  avoid. Sessions run concurrently, and a second one that finds the shared checkout on a
   foreign branch, or mid-rebase, loses work that was not its own. The main checkout stays on
   `main`, clean, for reading and for merges.
 - **The order is: build → `/code-review high` → `@codex review`.** Not two of the three, and not
