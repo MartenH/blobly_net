@@ -1135,7 +1135,11 @@ fn (mut app App) toggle_record() {
 
 // load_recording replaces the trace with a candump .log or ASAM .mf4 file.
 fn (mut app App) load_recording(path string) {
-	entries := if path.to_lower().ends_with('.mf4') {
+	// Whether these labels are the FILE's or this project's. An MF4 names its buses by the
+	// recording's own BusChannel numbering; a candump line names an interface the user actually
+	// configured. That distinction decides whether the alias table applies at all — see below.
+	from_mf4 := path.to_lower().ends_with('.mf4')
+	entries := if from_mf4 {
 		mf4.load_file(path) or {
 			app.notify('mf4 ${path}: ${err}')
 			return
@@ -1202,7 +1206,12 @@ fn (mut app App) load_recording(path string) {
 		name := app.lookup_name(f.id, f.extended)
 		mut viol := ''
 		if !f.rtr {
-			ifc := alias[e.iface] or { only }
+			// An imported MF4 label NEVER goes through the alias table. `mf4:` makes an accidental
+			// match unlikely, but a project channel may be named anything at all — including
+			// `mf4:bus1` — and a convention is not a guarantee. Structurally: these labels are
+			// not in this project's namespace, so the only resolution they may take is the
+			// single-bus fallback, where there is nothing to get wrong.
+			ifc := if from_mf4 { only } else { alias[e.iface] or { only } }
 			if mut vs := verifiers[ifc] {
 				if k := vs.resolve(app.dbs_for(ifc), f.id, f.extended) {
 					if mut ver := vs.by_key[k] {
