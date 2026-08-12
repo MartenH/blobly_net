@@ -55,6 +55,7 @@ pub fn parse(buf []u8) ![]canlog.LogEntry {
 	// HDBLOCK is at the fixed offset 64; its first link is the first DGBLOCK.
 	hd := block_links(buf, 64)
 	mut dg := if hd.len > 0 { hd[0] } else { u64(0) }
+	mut group := 0 // ordinal of the CAN_DataFrame group, for files without a BusChannel
 	for dg != 0 {
 		dgl := block_links(buf, dg)
 		dg_data_off := data_off(buf, dg)
@@ -65,9 +66,11 @@ pub fn parse(buf []u8) ![]canlog.LogEntry {
 			raw := read_data_block(buf, data_link, unfin)!
 			if rec_id_size == 0 {
 				// Sorted: one CG per DG, the data block is its record stream.
-				parse_cg(buf, cg_first, raw, unfin, map[u64][]u8{}, mut out)!
+				parse_cg(buf, cg_first, raw, unfin, map[u64][]u8{}, group, mut out)!
+				group++
 			} else {
-				demux_unsorted(buf, cg_first, raw, int(rec_id_size), unfin, mut out)!
+				group = demux_unsorted(buf, cg_first, raw, int(rec_id_size), unfin, group, mut
+					out)!
 			}
 		}
 		dg = if dgl.len > 0 { dgl[0] } else { u64(0) }
@@ -91,8 +94,9 @@ struct CgInfo {
 // other groups' VLSD channels carry byte offsets into exactly that
 // concatenation, and their cn_data link names the VLSD CG block (this is how
 // CANedge stores classic-CAN DataBytes).
-fn demux_unsorted(buf []u8, cg_first u64, raw []u8, rec_id_size int, unfin bool,
-	mut out []canlog.LogEntry) ! {
+// Returns the next free group ordinal, so numbering stays unique across data groups.
+fn demux_unsorted(buf []u8, cg_first u64, raw []u8, rec_id_size int, unfin bool, group int,
+	mut out []canlog.LogEntry) !int {
 	mut cgs := []CgInfo{}
 	mut cgi := cg_first
 	for cgi != 0 {
@@ -142,12 +146,15 @@ fn demux_unsorted(buf []u8, cg_first u64, raw []u8, rec_id_size int, unfin bool,
 			break // unknown record id — corrupt tail (common in unfinalized files)
 		}
 	}
+	mut g := group
 	for c in cgs {
 		if !c.vlsd {
-			parse_cg(buf, c.link, streams[c.rec_id] or { []u8{} }, unfin, vlsd_streams, mut
+			parse_cg(buf, c.link, streams[c.rec_id] or { []u8{} }, unfin, vlsd_streams, g, mut
 				out)!
+			g++
 		}
 	}
+	return g
 }
 
 // chan holds the record-layout facts we need for one leaf channel.
@@ -162,7 +169,9 @@ struct Chan {
 	cc_link   u64   // cn_cc_conversion (CCBLOCK), for the master-time scale
 }
 
-fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8,
+// `group` distinguishes this channel group from the file's others when the records carry no
+// BusChannel of their own — better a stable synthetic name per group than one shared label.
+fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, group int,
 	mut out []canlog.LogEntry) ! {
 	cgl := block_links(buf, cg)
 	cg_d := data_off(buf, cg)
@@ -185,6 +194,11 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8,
 	// Vector packs the IDE flag into ID bit 31; CANedge gives it its own 1-bit
 	// channel (the 29-bit ID is masked to its declared bit count, so bit 31 is 0).
 	c_ide := find_chan(chans, 'CAN_DataFrame.IDE') or { Chan{} }
+	// WHICH BUS. A recording carries several buses — each CAN_DataFrame group is one, and the
+	// standard BusChannel field names it per record. Labelling every frame 'can' merged them:
+	// 0x100 from CAN1 and 0x100 from CAN3 became one interleaved stream, and one row in the
+	// grouped view whose count was two different messages added together.
+	c_bus := find_chan(chans, 'CAN_DataFrame.BusChannel') or { Chan{} }
 
 	stride := data_bytes + inval_bytes
 	if stride <= 0 {
@@ -254,9 +268,14 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8,
 			}
 			data = raw[dstart..dend].clone()
 		}
+		bus_no := if c_bus.bit_count > 0 {
+			int(read_uint(raw, base + c_bus.byte_off, int(c_bus.bit_off), int(c_bus.bit_count)))
+		} else {
+			-1
+		}
 		out << canlog.LogEntry{
 			t_s:   ts
-			iface: 'can'
+			iface: bus_iface(bus_no, group)
 			frame: transport.CanFrame{
 				id:       u32(rid) & 0x1FFFFFFF
 				extended: ide
@@ -264,6 +283,20 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8,
 			}
 		}
 	}
+}
+
+// bus_iface names the bus a frame came from — as the FILE states it, not as we would prefer it.
+// The number is BusChannel verbatim: writers disagree about whether it counts from 0 (python-can)
+// or 1 (Vector, CANedge), and there is nothing in the file that says which. Re-basing it would be
+// a guess presented as a fact — the exact habit that made everything 'can' in the first place.
+// What matters here is that two buses stay two buses.
+//
+// Without a BusChannel, the channel group's position is the only distinction the file offers.
+fn bus_iface(bus_no int, group int) string {
+	if bus_no >= 0 {
+		return 'can${bus_no}'
+	}
+	return if group <= 0 { 'can' } else { 'can${group}' }
 }
 
 // collect_channels walks a cn_next chain, recursing into struct compositions

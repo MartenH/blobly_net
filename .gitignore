@@ -31,9 +31,11 @@ projects/ecu-vcm.yml
 # re-included (git can't un-ignore a file whose parent dir is excluded).
 samples/*
 # …but ship the tiny candump demo log + its MF4 twin so "Open Log" (and the
-# MF4-aware open) work out of the box.
+# MF4-aware open) work out of the box, plus the 8 KB two-bus fixture: a
+# single-bus file cannot catch a reader that merges buses (#90).
 !samples/demo.log
 !samples/demo.mf4
+!samples/two_buses.mf4
 
 # Python bytecode cache
 __pycache__/
