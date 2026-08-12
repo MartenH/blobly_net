@@ -130,6 +130,10 @@ release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks.
 > the guard exists for, and this note must never talk you out of it.
 - **External PRs are auto-closed** (design phase — see [`CONTRIBUTING.md`](CONTRIBUTING.md)); the
   same workflow posts a comment pointing at issues. Nothing to do by hand.
+- **The order is: build → `/code-review high` → `@codex review`.** Not two of the three, and not
+  a different order. Each codex round is a ~10-minute wait, so anything the self-review can find
+  is found for free; codex then sees a branch that has already had its obvious problems removed.
+  Every round is watched by a *tracked* background timer — see the note on watchers below.
 - **Run `/code-review high` on the branch BEFORE asking codex.** Self-run, high effort; not the
   billed cloud `/code-review ultra`, which only the maintainer triggers. Precedent:
   `docs/history.md` 2026-06-21, where a self-run high review of gui#65 found a real bug the
@@ -146,7 +150,11 @@ release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks.
   which makes this repo an *additional* working directory — its `CLAUDE.md` never enters context
   on its own. Read it before the first change here. An entire session (PRs #79–#84) ran without
   it and broke two of the rules below in silence.
-- **PRs get `@codex review`**; iterate until clean before merging.
+- **PRs get `@codex review`**; iterate until clean before merging. Watch each round with a
+  **tracked** background job, never a detached shell (`( ... & )`) — a detached watcher fires
+  into nothing and the round sits unread. Two reviews were missed that way in one session, one
+  of them for over an hour. Match the verdict by the head SHA codex names, not by its wording:
+  phrase-matching missed "Didn't find any major issues" more than once.
 - **Update this file in the PR that lands the work** — especially new modules/panels. The gap
   between 2026-07-06 and 07-21 (~30 PRs) had to be reconstructed from `git log`; don't repeat it.
 - **Cross-repo:** the SUT side is **blobly_emb** — see
