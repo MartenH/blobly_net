@@ -39,6 +39,19 @@ channels:
           dids:
             - { id: "0xF190", text: "ONESHOTVIN0000001" }
 
+  - name: AltPort
+    type: doip
+    interface: doip:127.0.0.4:13555   # NOT the default port
+    tester_address: "0x0E80"
+    ecu_address: "0x4000"
+    vin: ALTPORTVIN0000001
+    announce_count: 1
+    simulation:
+      - name: SUT
+        uds:
+          dids:
+            - { id: "0xF190", text: "ALTPORTVIN0000001" }
+
   - name: Silent
     type: doip
     interface: doip:127.0.0.2:13400

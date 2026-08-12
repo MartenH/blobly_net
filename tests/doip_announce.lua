@@ -53,3 +53,17 @@ test("a single announcement is caught when the listener binds first", function()
   end
   check.truthy(found, "missed a one-shot announcement — the listener was not bound in time")
 end)
+
+-- An entity announces where it is BOUND, so a listener must follow the channel rather than the
+-- module default. With `from` and no explicit port, doip.listen derives it.
+test("the listener port follows the triggered channel", function()
+  local seen = doip.listen(800, { from = "AltPort" })     -- AltPort is on 13555
+  local found = false
+  for _, a in ipairs(seen) do
+    if a.vin == "ALTPORTVIN0000001" then
+      found = true
+      check.equal(a.logical_address, 0x4000)
+    end
+  end
+  check.truthy(found, "heard nothing — listened on the wrong port")
+end)

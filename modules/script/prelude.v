@@ -121,7 +121,8 @@ end
 function doip.listen(window_ms, opts)
   opts = opts or {}
   if type(opts) == "number" then opts = { port = opts } end   -- back-compat: listen(ms, port)
-  local raw = __doip_listen(opts.port or 13400, window_ms or 1000,
+  -- port 0 = "derive": with `from`, that channel own port; otherwise 13400.
+  local raw = __doip_listen(opts.port or 0, window_ms or 1000,
                             opts.ip6 and true or false, opts.from or "")
   local out = {}
   for line in tostring(raw):gmatch("[^\n]+") do

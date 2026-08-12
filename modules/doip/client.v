@@ -137,7 +137,19 @@ pub fn collect_announcements_triggered(port_ int, window_ms int, ip6 bool, trigg
 		res <- ''
 	}(trigger, res)
 	out := collect_on(mut c, window_ms)!
-	msg := <-res // the sequence may outlast the window; its verdict is worth waiting for
+	// BOUNDED. Waiting unconditionally meant a long sequence outlasted the caller's window by
+	// its whole duration — announce_count 100 at 60s would block ~99 minutes on a 1s listen,
+	// which is not a listener any more. Take the verdict if it is ready, otherwise report what
+	// was heard: a trigger still in flight has not failed.
+	mut msg := ''
+	select {
+		m := <-res {
+			msg = m
+		}
+		> 250 * time.millisecond {
+			// still sending; its failure (if any) surfaces through the script's async errors
+		}
+	}
 	if msg != '' {
 		return error('announcement trigger failed: ${msg}')
 	}

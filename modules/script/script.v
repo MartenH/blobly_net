@@ -108,6 +108,10 @@ mut:
 	announcers map[string]Announcer
 	mu         sync.Mutex
 	async_errs []string // failures from spawned work, surfaced instead of dropped
+	// Announcement workers started by doip.announce(). Joined before a run ends: otherwise the
+	// runner tears the process down mid-sequence, and a failure recorded after the last flush
+	// is never reported at all.
+	announce_threads []thread
 pub mut:
 	results   []TestResult
 	log_lines []string // every emitted line, buffered (the GUI reads this post-run)
@@ -133,10 +137,21 @@ pub fn new_env(chans []ChanInfo) !&Env {
 // run_file loads and executes a Lua script file (after the prelude).
 pub fn (mut env Env) run_file(path string) ! {
 	defer {
-		// A trigger that failed after the last announce call would otherwise never be seen.
+		// JOIN first, THEN flush: a worker still sleeping between datagrams would otherwise be
+		// truncated by teardown, and a failure it recorded after the flush never reported.
+		env.join_announcers()
 		env.flush_async_errs()
 	}
 	env.st.do_file(path)!
+}
+
+// join_announcers waits for announcement workers a script started and did not wait for.
+pub fn (mut env Env) join_announcers() {
+	ts := env.announce_threads.clone()
+	env.announce_threads = []
+	for t in ts {
+		t.wait()
+	}
 }
 
 // run_source loads and executes Lua source text (after the prelude).
@@ -637,7 +652,7 @@ fn l_doip_announce(l lua.State) int {
 	// A failure is REPORTED, not swallowed. This API exists to drive an external listening
 	// tester, so a send that never happened would otherwise be blamed on that tester.
 	env.flush_async_errs()
-	spawn fn (g Announcer, mut e Env, nm string) {
+	env.announce_threads << spawn fn (g Announcer, mut e Env, nm string) {
 		g() or { e.note_async_err('doip.announce("${nm}"): ${err}') }
 	}(f, mut env, name)
 	return 0
@@ -648,7 +663,19 @@ fn l_doip_listen(l lua.State) int {
 	port := int(l.arg_int(1))
 	window := int(l.arg_int(2))
 	ip6 := l.arg_bool(3)
-	from_chan := l.arg_str(4)
+	mut from_chan := l.arg_str(4)
+	mut use_port := port
+	if from_chan != '' && use_port == 0 {
+		// The triggered channel's OWN port. Defaulting to 13400 meant listening on the wrong
+		// port for a custom-port entity, which now correctly announces where it is bound — the
+		// caller would hear nothing and have no idea why.
+		if ci := env.find_chan(from_chan) {
+			use_port = env.chans[ci].carrier.port
+		}
+	}
+	if use_port == 0 {
+		use_port = 13400
+	}
 	// With a channel named, BIND FIRST and trigger that entity from inside — a script that
 	// triggers and then listens cannot close the race when announce_count is 1 or the interval
 	// is 0: the whole sequence can be gone before the socket exists.
@@ -656,11 +683,11 @@ fn l_doip_listen(l lua.State) int {
 		f := env.announcers[from_chan] or {
 			return l.fail('doip.listen(from: "${from_chan}"): not an entity this process hosts')
 		}
-		doip.collect_announcements_triggered(port, window, ip6, f) or {
+		doip.collect_announcements_triggered(use_port, window, ip6, f) or {
 			return l.fail('doip.listen(${port}): ${err}')
 		}
 	} else {
-		doip.collect_announcements_af(port, window, ip6) or {
+		doip.collect_announcements_af(use_port, window, ip6) or {
 			return l.fail('doip.listen(${port}): ${err}')
 		}
 	}
