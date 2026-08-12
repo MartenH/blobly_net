@@ -131,10 +131,18 @@ A vehicle announcement carries 32 bytes:
 trick is worth knowing: all of `127.0.0.0/8` routes to the loopback interface, so every entity
 gets a distinct address with no network setup and no hardware.
 
-**It is a configuration example, not a runnable demo yet.** Opening it and pressing Start does
-not bring those entities up: the GUI has no `doip:` transport backend, so its simulated nodes
-are driven as CAN. Until entity simulation is wired into the app, use `cmd/doip_smoke` to run
-an entity and a tester headless; the project file shows the shape the configuration will take.
+Open it and press ▶ Start: all three come up, each on its own address, and each appears in the
+Diagnostics panel as its own target. Headless, the same project runs under
+
+```bash
+scripts/runtests.sh --project projects/doip-network-demo.blobnet tests/doip_network.lua
+```
+
+which checks the thing worth checking about a network of entities — that each one **serves the
+VIN it announces**, so a tester cannot discover one ECU and read another out of it.
+
+Each entity binds its own socket, so three of them hold three addresses on port 13400 for as
+long as the project runs.
 
 ## Limits worth knowing
 

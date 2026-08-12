@@ -299,10 +299,12 @@ mut:
 // SimCfg is one channel's in-process simulation workload (simulated ECUs + its DBC).
 struct SimCfg {
 	iface string
-	// The CARRIER of the channel this entry came from. Carried here rather than recovered from
-	// the interface string: `type: doip` with no `interface:` keeps the CAN default `vcan0`,
-	// so a name-based map marked a real CAN bus on vcan0 as DoIP and skipped its UDS servers.
-	doip bool
+	// The channel this entry came FROM, whole. Recovering it by interface picks the first
+	// match, and two channels can share one interface string — a `type: doip` channel with no
+	// `interface:` keeps the CAN default `vcan0`, so a lookup could hand the DoIP entity a CAN
+	// channel's identity and mark its diagnostic target as CAN, leaving the hosted entity
+	// unreachable. The carrier is read from here, never re-derived.
+	pch project.Channel
 	db    candb.Database
 	nodes []project.NodeCfg
 	// Protection to CHECK on this bus, from the channel's `verify:` block. Separate from the
@@ -554,7 +556,7 @@ fn (mut app App) start() {
 		// DoIP carries diagnostics, not frames. sim_loop would call transport.open('doip:…'),
 		// which on Linux falls through to SocketCAN, logs a failure and exits the thread — the
 		// no-hardware demo trying to open its Ethernet endpoint as a CAN interface.
-		if sc.doip {
+		if sc.pch.is_doip() {
 			continue
 		}
 		if sc.nodes.len > 0 {
@@ -575,9 +577,17 @@ fn (mut app App) start() {
 		// A DoIP channel is diagnostics over TCP at a logical address: validating its nodes as
 		// CAN reported "rx and tx must both be set" for a correct config, and seeding CAN
 		// servers on it listed a diagnostic target the panel could never reach.
-		if sc.doip {
+		if sc.pch.is_doip() {
 			for w in sim.validate_uds_doip(sc.nodes) {
 				app.notify(w)
+			}
+			if sc.nodes.len == 0 {
+				// Tester-only, exactly as the headless runner treats it. A channel with only
+				// `verify:` entries simulates no ECU and exists to talk to an EXTERNAL entity;
+				// hosting here would bind the endpoint and answer with stock diagnostic data,
+				// so a bench would read results from an ECU the project never asked for.
+				app.notify('${sc.pch.name}: DoIP tester only (no simulated entity)')
+				continue
 			}
 			app.start_doip_entity(sc)
 			continue
@@ -637,13 +647,7 @@ fn (mut app App) start() {
 // showing "running" while nothing listened, and if another process held the port the
 // Diagnostics panel would quietly talk to THAT entity instead.
 fn (mut app App) start_doip_entity(sc SimCfg) {
-	mut pch := project.Channel{}
-	for c in app.proj.channels {
-		if c.iface == sc.iface {
-			pch = c
-			break
-		}
-	}
+	pch := sc.pch
 	ent := sim.doip_entity(pch, sc.nodes) or {
 		app.notify('${pch.name}: ${err}')
 		app.notify('${pch.name}: DoIP entity NOT started')
@@ -712,7 +716,11 @@ mut:
 fn doip_entity_worker(app &App, iface string, mut s doip.DoipServer) {
 	mut a := unsafe { app }
 	spawn doip_udp_worker(app, mut s)
-	for a.running {
+	// is_stopping(), not just app.running: close() makes accept return immediately and forever,
+	// and app.running is REUSED by the next Start. A worker that had not yet observed the brief
+	// false would survive it and hot-spin against its own closed sockets for the rest of the
+	// session — invisible, because every error here is discarded as a timeout.
+	for a.running && !s.is_stopping() {
 		s.accept_and_serve(200) or { continue } // a timeout is the normal case
 	}
 	s.close()
@@ -721,7 +729,7 @@ fn doip_entity_worker(app &App, iface string, mut s doip.DoipServer) {
 // doip_udp_worker answers vehicle-identification requests, so Discover finds the entity.
 fn doip_udp_worker(app &App, mut s doip.DoipServer) {
 	mut a := unsafe { app }
-	for a.running {
+	for a.running && !s.is_stopping() {
 		s.serve_udp_once(200) or { continue }
 	}
 }
@@ -1467,7 +1475,7 @@ fn (mut app App) rebuild_from_proj() {
 			// relative DBC fed the sim nothing (codex #63 r4)
 			app.sims << SimCfg{
 				iface:  ch.iface
-				doip:   ch.is_doip()
+				pch:    ch
 				db:     merge_dbs(ch.databases.map(app.resolve_asset(it)))
 				nodes:    nodes
 				verify:   ch.verify
@@ -5496,6 +5504,12 @@ fn diag_worker(app &App, kind string, did u16) {
 			vgui.wake()
 			return
 		})
+	}
+	// Close it when this request is done. A DoIP entity serves ONE connection at a time and
+	// stays inside it until the peer disconnects, so a leaked connection from the first button
+	// press blocked every later one until the server's 60-second idle timeout.
+	defer {
+		ch.close()
 	}
 	mut c := uds.new_client(ch)
 	match kind {
