@@ -719,7 +719,10 @@ fn doip_watch(app &App, pch project.Channel, ent sim.DoipEntity, key string, gen
 			// and on to retry a held port produced no Log line at all, leaving the channel idle
 			// and silent — which is what this PR set out to stop.
 			warned = false
-			a.doip_forget(pch, ent)
+			// Generation-checked here TOO. Guarding only the bind-failure path left this one:
+			// an old watcher between its close() and this call, while a Stop/Start/re-enable
+			// published a replacement, would deregister the NEW run's live listener.
+			a.doip_forget_if_current(pch, ent, gen)
 			a.notify('${pch.name}: DoIP entity stopped — ${host}:${port} released')
 		} else if !want || !bound {
 			if want && !bound {
@@ -900,12 +903,6 @@ fn (mut app App) doip_forget_if_current(pch project.Channel, ent sim.DoipEntity,
 	if app.running && app.run_gen == gen {
 		app.forget_locked(pch, ent)
 	}
-	app.mu.unlock()
-}
-
-fn (mut app App) doip_forget(pch project.Channel, ent sim.DoipEntity) {
-	app.mu.lock()
-	app.forget_locked(pch, ent)
 	app.mu.unlock()
 }
 

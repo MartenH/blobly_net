@@ -9,4 +9,4 @@ symlink either way round becomes a 9-byte text file on a checkout without symlin
 silently gets a one-word guide. A pointer survives that: readable everywhere, and it names
 where to go.
 
-Edit `CLAUDE.md`. Nothing here should ever grow beyond this pointer.
+Edit `CLAUDE.md`. Nothing here should grow beyond pointing at it.

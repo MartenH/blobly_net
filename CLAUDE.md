@@ -1,6 +1,6 @@
 # Blobly Net (V) — project guide for coding agents
 
-> **This is the guide.** `AGENTS.md` is a one-line pointer here, and a real file rather than a
+> **This is the guide.** `AGENTS.md` is a pointer FILE here, real rather than a
 > symlink: two agents look for two names — Claude Code reads `CLAUDE.md` and nothing else, Codex
 > and others read `AGENTS.md` — and a symlink either way round becomes a 9-byte text file on a
 > checkout without symlink support, so whichever tool follows it silently gets a one-word guide.
