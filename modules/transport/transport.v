@@ -28,8 +28,11 @@ mut:
 // transmissions back, so on those a caller waiting for its own frame waits forever — and must
 // not read that silence as the bus having dropped it.
 pub fn echoes_own_sends(iface string) bool {
+	// The DISPATCHER prefix, separator included. On Linux anything without one is opened as
+	// SocketCAN, which does echo — so a plain interface a user happened to name `pcan0` must
+	// not be mistaken for the Windows vendor backend and have its echo matching switched off.
 	i := iface.to_lower()
-	return !(i.starts_with('pcan') || i.starts_with('kvaser'))
+	return !(i.starts_with('pcan:') || i.starts_with('kvaser:'))
 }
 
 // str renders a frame like `0x123 [3] DE AD BF` for logs/trace.

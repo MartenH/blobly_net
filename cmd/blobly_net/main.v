@@ -49,9 +49,13 @@ const trace_cap = 2000
 // id with one of ours, which is the single collision most worth catching.
 // The labels and the matching live in modules/wiretap, where they can be tested: this file is
 // compile-linked by CI but never run by it.
-// No row: an emission made while the trace is paused is still tracked, but has nothing to mark.
-// row_index_locked already maps it to -1, so it needs no special case downstream.
-const row_none = u64(0xFFFF_FFFF_FFFF_FFFF)
+// Identities for emissions made while the trace is paused: tracked (so their echoes are still
+// recognised as ours) but with no row to mark. They come from the TOP of the range, which the
+// row counter — one increment per appended row — can never reach, so the two can never collide
+// and row_index_locked maps them to -1 without a special case. They must still be UNIQUE: with
+// one shared value, retracting a failed send would forget an unrelated emission that was still
+// waiting for its echo.
+const ghost_base = u64(1) << 63
 
 const org_tst = wiretap.tst
 const org_sim = wiretap.sim
@@ -131,6 +135,7 @@ mut:
 	taps        wiretap.Ring
 	trace_seq   u64
 	trace_base  u64
+	ghost_seq   u64 // identities for emissions made while paused (see ghost_base)
 	gcount      map[string]u64 // persistent per-group frame totals (survive the ring trim)
 	trecs       []TRec
 	rx          u64 // total across channels
@@ -1100,9 +1105,10 @@ fn (mut app App) notify(msg string) {
 fn (mut app App) reset_trace_locked() {
 	app.trace = []
 	app.gcount = map[string]u64{}
-	// The outstanding echoes belong to rows that no longer exist. Kept, they would let a frame
-	// arriving after the Clear confirm whatever row later took that sequence number.
-	app.taps.clear()
+	// The pending records STAY. An echo already in flight is still ours, and dropping the record
+	// would turn the next few of our own frames into BUS rows, recording entries and verifier
+	// input. Row identities are monotonic and trace_base makes the old ones unresolvable, so a
+	// surviving record suppresses its echo without confirming a row that came later.
 	app.trace_base = app.trace_seq
 }
 
@@ -1144,16 +1150,17 @@ fn (mut app App) expire_pending_locked(now_ms f64) {
 // note_emit records a frame we are about to put on the wire: one row stating intent, and one
 // pending echo. Called BEFORE the send — the RX thread can see the frame the instant the driver
 // takes it, and a pending entry added afterwards would arrive too late to claim its own echo.
-fn (mut app App) note_emit(iface string, origin string, f transport.CanFrame, watched bool) u64 {
+fn (mut app App) note_emit(iface string, origin string, f transport.CanFrame) u64 {
 	chn := app.chan_name_for(iface)
 	name := app.lookup_name(f.id, f.extended)
 	t_ms := f64(time.ticks() - app.t0)
 	app.mu.lock()
 	app.expire_pending_locked(t_ms)
-	// row_none while paused: the emission is STILL recorded so its echo is recognised as ours —
-	// otherwise a paused trace would feed our own frames to the E2E verifier as the ECU's and
-	// log them to the recording twice — it simply has no row to confirm.
-	mut seq := row_none
+	// Paused: the emission is STILL tracked so its echo is recognised as ours — otherwise a
+	// paused trace would feed our own frames to the E2E verifier as the ECU's and log them to
+	// the recording twice — it simply has no row to confirm.
+	mut seq := ghost_base + app.ghost_seq
+	app.ghost_seq++
 	if !app.paused {
 		seq = app.push_row_locked(TraceRow{
 			t_ms:   t_ms
@@ -1167,10 +1174,12 @@ fn (mut app App) note_emit(iface string, origin string, f transport.CanFrame, wa
 		})
 		app.gcount[gkey(origin, chn, f.id, f.extended)]++
 	}
-	// Only where somebody is actually watching for the echo. With no monitor on this interface
-	// — a generator firing at an unmonitored bus — or a driver that never hands our own frames
-	// back, nothing could ever confirm it, and every row would carry a '!' on a healthy bench.
-	if watched {
+	// Only where somebody is actually watching for the echo, asked NOW rather than when the bus
+	// was opened: a channel disabled mid-run takes its monitor with it, and a cached answer
+	// would then mark healthy traffic as never having reached the wire. With no monitor — a
+	// generator firing at an unmonitored bus — or a driver that never hands our own frames back,
+	// nothing could confirm it, and silence is not evidence.
+	if transport.echoes_own_sends(iface) && app.monitors_locked(iface) {
 		for missed in app.taps.note(seq, iface, f, t_ms) {
 			i := app.row_index_locked(missed)
 			if i >= 0 {
@@ -1189,6 +1198,11 @@ fn (mut app App) note_sent(iface string, f transport.CanFrame) {
 	app.mu.lock()
 	if app.recording {
 		app.rec << canlog.LogEntry{f64(time.ticks() - app.t0) / 1000.0, iface, f}
+		// the same bounded window rx_loop keeps: with the echo now suppressed, a simulation's
+		// own traffic arrives HERE, and this is the path a long recording actually grows on
+		if app.rec.len > 200000 {
+			app.rec = app.rec[app.rec.len - 200000..].clone()
+		}
 	}
 	app.mu.unlock()
 }
@@ -1225,14 +1239,12 @@ mut:
 	app    &App
 	iface  string
 	origin string
-	// whether an echo can be expected at all — see note_emit
-	watched bool
 }
 
 fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	// BEFORE the send: a monitor thread can see the frame the instant the driver takes it, and a
 	// record added afterwards arrives too late to claim its own echo.
-	seq := t.app.note_emit(t.iface, t.origin, frame, t.watched)
+	seq := t.app.note_emit(t.iface, t.origin, frame)
 	t.inner.send(frame) or {
 		t.app.retract_emit(seq)
 		return err
@@ -1250,19 +1262,24 @@ fn (mut t TapBus) close() {
 
 // open_tap opens a bus whose sends are attributed to `origin`.
 fn (app &App) open_tap(iface string, origin string) !transport.Bus {
-	inner := transport.open(app.bitrate_iface(iface))!
+	// The bitrate suffix is an OPEN-time detail of the vendor backends, not part of a bus's
+	// identity: chan_name_for and the pending records both key on the logical name, so a caller
+	// that already carries `pcan:…@250000` (the script engine's ChanInfo does) would otherwise
+	// label its rows with the physical open string and split them from every other row on the
+	// same bus.
+	logical := iface.all_before('@')
+	inner := transport.open(app.bitrate_iface(logical))!
 	return &TapBus{
-		inner:   inner
-		app:     unsafe { app }
-		iface:   iface
-		origin:  origin
-		watched: transport.echoes_own_sends(iface) && app.monitors(iface)
+		inner:  inner
+		app:    unsafe { app }
+		iface:  logical
+		origin: origin
 	}
 }
 
-// monitors reports whether any enabled channel watches this interface, i.e. whether an echo has
-// anywhere to arrive.
-fn (app &App) monitors(iface string) bool {
+// monitors_locked reports whether any enabled channel watches this interface, i.e. whether an
+// echo has anywhere to arrive. Caller holds app.mu.
+fn (app &App) monitors_locked(iface string) bool {
 	for c in app.chans {
 		if c.iface == iface && c.enabled {
 			return true

@@ -231,7 +231,8 @@ row — it would have called every `0x700` simulated, because the project says `
 ### `SIM!` — sent, but never seen on the wire
 
 An outbound row is written when we hand the frame to the driver, so it states *intent*. If the
-frame never comes back within a couple of seconds the row is marked `!`:
+frame never comes back within a couple of seconds — on a bus where an echo could have arrived —
+the row is marked `!`:
 
 ```
 0x100  Powertrain  CAN1  SIM!  82   44 01 00 …
@@ -243,6 +244,11 @@ bitrate, CANH/CANL swapped, or a link that is down. Those all used to look like 
 
 In the grouped view the mark applies to the **group**: it appears if any frame in the window went
 unanswered, not just the newest one — whose echo window has had the least time to close.
+
+**Silence is not evidence.** The mark is only ever applied where an echo could have arrived: no
+monitor on that bus (a generator firing at a channel you are not watching), a channel disabled
+mid-run, or a driver that never hands your own transmissions back (PCAN and Kvaser do not) all
+mean nobody was looking — so nothing is marked, rather than a healthy bus being accused.
 
 ## Diagnostics: a UDS server per ECU
 

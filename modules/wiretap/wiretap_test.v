@@ -201,12 +201,15 @@ fn test_the_ring_is_bounded() {
 	assert seq == 9
 }
 
-fn test_clear_forgets_everything() {
+// A row identity the trace has already discarded must still suppress its echo: the frame is
+// ours whether or not a row is left to mark.
+fn test_a_record_outlives_its_row() {
 	mut r := Ring{}
 	f := frame(0x120, [u8(1)])
 	r.note(1, 'vcan0', f, 0)
-	r.clear()
-	if _ := r.claim(0, 'vcan0', f, 1) {
-		assert false, 'a record survived the clear and confirmed a row that no longer exists'
+	seq := r.claim(0, 'vcan0', f, 1) or {
+		assert false, 'our own frame became foreign once its row was gone'
+		return
 	}
+	assert seq == 1
 }

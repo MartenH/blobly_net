@@ -176,9 +176,8 @@ pub fn (r Ring) outstanding() int {
 	return r.items.len
 }
 
-// clear forgets everything. Used when the trace is cleared: the records point at rows that no
-// longer exist, and a frame arriving afterwards would otherwise confirm whatever row later took
-// that identity.
-pub fn (mut r Ring) clear() {
-	r.items = []
-}
+// No clear(): a trace Clear must NOT drop these. The records are what makes an echo still in
+// flight recognisable as ours; forgetting them turns the next few of our own frames into BUS
+// rows, recording entries and E2E-verifier input. Row identities are monotonic and the trace
+// base already makes old ones unresolvable, so a stale record can suppress its echo without
+// ever confirming a row that came later.
