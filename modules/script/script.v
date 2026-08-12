@@ -683,9 +683,22 @@ fn l_doip_listen(l lua.State) int {
 		f := env.announcers[from_chan] or {
 			return l.fail('doip.listen(from: "${from_chan}"): not an entity this process hosts')
 		}
-		doip.collect_announcements_triggered(use_port, window, ip6, f) or {
-			return l.fail('doip.listen(${port}): ${err}')
+		// Wrapped so a failure ARRIVING LATE — after the grace window — is still recorded; the
+		// channel inside doip only carries what is ready in time. The thread is kept so
+		// run_file joins it before the final flush.
+		nm := from_chan
+		mut e := env
+		wrapped := fn [f, mut e, nm] () ! {
+			f() or {
+				e.note_async_err('doip.listen(from: "${nm}"): ${err}')
+				return err
+			}
 		}
+		got, th := doip.collect_announcements_triggered(use_port, window, ip6, wrapped) or {
+			return l.fail('doip.listen(${use_port}): ${err}')
+		}
+		env.announce_threads << th
+		got
 	} else {
 		doip.collect_announcements_af(use_port, window, ip6) or {
 			return l.fail('doip.listen(${port}): ${err}')

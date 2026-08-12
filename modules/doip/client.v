@@ -113,7 +113,11 @@ fn collect_on(mut c net.UdpConn, window_ms int) ![]Announcement {
 // A caller that triggers and then listens has a race it cannot close: with announce_count 1, or
 // interval 0, the whole sequence can be sent before the socket is bound and the result is a
 // false empty discovery. Doing both here removes the ordering from the caller entirely.
-pub fn collect_announcements_triggered(port_ int, window_ms int, ip6 bool, trigger fn () !) ![]Announcement {
+// Returns the results AND the trigger's thread: a sequence can outlast the listening window,
+// and its failure arrives after this returns. The caller joins the thread when its own run
+// ends, which is the only place that can still report it. Not doing so lost late failures
+// entirely while a comment here claimed otherwise.
+pub fn collect_announcements_triggered(port_ int, window_ms int, ip6 bool, trigger fn () !) !([]Announcement, thread) {
 	addr := if ip6 { '[::]:${port_}' } else { '0.0.0.0:${port_}' }
 	mut c := net.listen_udp(addr) or {
 		return error('cannot listen for announcements on ${addr}: ${err}')
@@ -129,7 +133,7 @@ pub fn collect_announcements_triggered(port_ int, window_ms int, ip6 bool, trigg
 	// both a data race and a lie waiting to happen: the collector could read it before the
 	// trigger wrote it and report success for a send that had already failed.
 	res := chan string{cap: 1}
-	spawn fn (g fn () !, res chan string) {
+	t := spawn fn (g fn () !, res chan string) {
 		g() or {
 			res <- err.msg()
 			return
@@ -147,13 +151,13 @@ pub fn collect_announcements_triggered(port_ int, window_ms int, ip6 bool, trigg
 			msg = m
 		}
 		> 250 * time.millisecond {
-			// still sending; its failure (if any) surfaces through the script's async errors
+			// still sending — the caller owns the thread and reports whatever it ends with
 		}
 	}
 	if msg != '' {
 		return error('announcement trigger failed: ${msg}')
 	}
-	return out
+	return out, t
 }
 
 // collect_announcements is the IPv4 form, kept for callers that do not care.
