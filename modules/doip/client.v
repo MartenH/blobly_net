@@ -46,6 +46,89 @@ mut:
 
 // open_doip connects to a DoIP entity, performs routing activation, and returns a
 // ready tester channel. `source` is our logical address, `target` the ECU's.
+// collect_announcements listens for unsolicited vehicle announcements for `window_ms`.
+//
+// The counterpart to DoipServer.announce(): a tester that discovers ECUs by LISTENING rather
+// than asking. Binds the wildcard address so it hears broadcasts — which coexists with entities
+// bound to specific addresses on the same port (verified; they do not conflict).
+// Announcement is one heard announcement AND where it came from.
+//
+// VIN and logical address are not routable: a tester that discovers an ECU passively still has
+// to dial it, and `doip:<host>:<port>` needs the peer. Dropping it made passive discovery
+// unable to reach what it had just found.
+pub struct Announcement {
+pub:
+	info VehicleInfo
+	from string // the sender's host:port, ready for open_doip / a channel interface
+}
+
+// collect_announcements listens for unsolicited announcements for `window_ms`.
+//
+// Binds the IPv6 wildcard when asked for v6 (`ip6: true`), which on a dual-stack host also
+// receives IPv4 senders; an IPv4-only bind cannot see IPv6 announcements at all.
+pub fn collect_announcements_af(port_ int, window_ms int, ip6 bool) ![]Announcement {
+	addr := if ip6 { '[::]:${port_}' } else { '0.0.0.0:${port_}' }
+	mut c := net.listen_udp(addr) or {
+		return error('cannot listen for announcements on ${addr}: ${err}')
+	}
+	// BEFORE the join: an early return past this point leaks the descriptor and holds the port,
+	// and doip.listen is called in a loop by suites that retry.
+	defer {
+		c.close() or {}
+	}
+	if ip6 {
+		// JOIN the group. Binding the wildcard receives unicast, but an entity announcing to
+		// the derived ff02::1 is multicast — without a join this socket never sees it and the
+		// window simply times out. modules/transport/udpbus.v does the same after its bind.
+		// The failure is RETURNED, not dropped: a join that fails (no suitable IPv6 interface)
+		// would otherwise wait out the window and return an empty success — indistinguishable
+		// from an entity that legitimately stayed silent, which is what this API is asked.
+		// "0" = any interface: V parses the IPv6 argument as a numeric INDEX, not an address,
+		// so '::' failed with "must be a numeric interface index". With the error dropped that
+		// failure was invisible and IPv6 collection could never have worked.
+		c.join_multicast_group('ff02::1', '0') or {
+			return error('cannot join ff02::1 on ${addr}: ${err}')
+		}
+	}
+	return collect_on(mut c, window_ms)
+}
+
+// collect_on reads announcements from an already-bound socket for window_ms.
+fn collect_on(mut c net.UdpConn, window_ms int) ![]Announcement {
+	mut out := []Announcement{}
+	// MONOTONIC. A wall-clock deadline moves under NTP or a VM time correction, which either
+	// ends the window early and loses announcements or stretches the next socket timeout far
+	// past window_ms. The rest of this module uses ticks() for the same reason.
+	deadline := time.ticks() + i64(window_ms)
+	for {
+		left := deadline - time.ticks()
+		if left <= 0 {
+			break
+		}
+		c.set_read_timeout(left * time.millisecond)
+		mut buf := []u8{len: 128}
+		n, peer := c.read(mut buf) or { break } // timeout ends the window
+		if n < header_len {
+			continue
+		}
+		msg := parse(buf[..n]) or { continue }
+		if msg.payload_type != pt_vehicle_announcement {
+			continue
+		}
+		info := parse_vehicle_announcement(msg.payload) or { continue }
+		out << Announcement{
+			info: info
+			from: peer.str()
+		}
+	}
+	return out
+}
+
+// collect_announcements is the IPv4 form, kept for callers that do not care.
+pub fn collect_announcements(port_ int, window_ms int) ![]Announcement {
+	return collect_announcements_af(port_, window_ms, false)
+}
+
 pub fn open_doip(host string, port int, source u16, target u16) !&DoipClient {
 	addr := join_host_port(host, port) // brackets an IPv6 literal for dial_tcp
 	conn := net.dial_tcp(addr)!

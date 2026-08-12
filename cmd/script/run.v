@@ -62,6 +62,8 @@ fn main() {
 	// channel that hosts simulated ECUs (exactly like the GUI's Start).
 	mut ctl := &Ctl{}
 	mut seeded_ifaces := []string{} // one set of diagnostic servers per physical bus
+	// Entities to announce once the environment is ready — see below.
+	mut announcers := []Announcer{}
 	mut chans := []script.ChanInfo{}
 	for ch in proj.channels {
 		if !ch.enabled {
@@ -116,18 +118,25 @@ fn main() {
 				eprintln('${ch.name}: ${ent.extra + 1} UDS nodes on one DoIP entity; serving "${ent.node}" (0x${ch.ecu_addr:04X})')
 			}
 			mut srv := ent.server
-			announce := ent.announce
 			// Bind HERE, not inside the spawned worker. Reported only to stderr, a failed bind
 			// left the run announcing an entity and carrying on — and if the port was held by
 			// another DoIP process serving the same built-in defaults, uds.open would connect
 			// to THAT and the suite would pass against the wrong ECU.
-			mut entity := doip_listen(host, port, doip.server_cfg(ch.ecu_addr, announce, ch.eid),
-				srv) or {
+			mut entity := doip_listen(host, port, ent.cfg, srv) or {
 				eprintln('${ch.name}: ${err}')
 				eprintln('refusing to run: a suite would connect to whatever else is on ${host}:${port}')
 				exit(1)
 			}
 			spawn doip_serve_loop(mut entity, ctl)
+			// NOT announced here. The default sequence is 3 × 500ms and would be finished
+			// before the Lua environment exists, so a suite could never observe it — the
+			// documented "listen before they announce" was unachievable with the defaults, and
+			// the announce fixture was only passing because it announces for four seconds.
+			// Collected and fired once the environment is ready, below.
+			announcers << Announcer{
+				srv:  entity
+				name: ch.name
+			}
 			println('channel ${ch.name} (doip:${host}:${port}): DoIP entity, logical address 0x${ch.ecu_addr:04X}')
 			continue
 		}
@@ -187,6 +196,12 @@ fn main() {
 	}
 	// Let the sims start emitting / the UDS server start polling before scripts run.
 	time.sleep(150 * time.millisecond)
+	// NOW announce: the entities have been listening since bind, and a suite that starts a
+	// doip.listen() in its first lines can actually catch the sequence. A real ECU announces
+	// when it comes up; from outside this process that is still what this looks like.
+	for mut a in announcers {
+		spawn doip_announce(mut a.srv, a.name)
+	}
 
 	mut env := script.new_env(chans) or {
 		eprintln('script env init failed: ${err}')
@@ -284,6 +299,18 @@ fn doip_listen(host string, port int, cfg doip.ServerCfg, srv uds.Server) !&doip
 	hst.entity = s
 	s.listen(host, port) or { return error('DoIP listen ${host}:${port} failed: ${err}') }
 	return s
+}
+
+// Announcer is one bound entity waiting to announce, held until the script environment exists.
+struct Announcer {
+mut:
+	srv  &doip.DoipServer
+	name string
+}
+
+// doip_announce sends the power-on announcements, reporting a failure rather than dropping it.
+fn doip_announce(mut s doip.DoipServer, name string) {
+	s.announce() or { eprintln('${name}: announce failed: ${err}') }
 }
 
 // doip_serve_loop runs an already-bound entity until Stop.
