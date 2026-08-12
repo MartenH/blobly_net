@@ -318,9 +318,16 @@ local seen = doip.listen(1200)          -- window in ms, port defaults to 13400
 -- seen = { { vin = "BLOBLYNETGATEWAY1", logical_address = 0x1000 }, ... }
 ```
 
-Nothing is queued for a listener that is not there yet, so the headless runner fires the
-announcements once the script environment is up — a suite that calls `doip.listen()` in its
-first lines catches the standard 3 × 500 ms sequence. `doip.discover(channel)` remains the
+Nothing is queued for a listener that is not there yet, and the startup burst is **finite** —
+three datagrams, 500 ms apart — so a suite starting afterwards can miss the whole sequence
+however the runner is ordered. Do not race it: trigger one.
+
+```lua
+doip.announce("Talker")             -- fires the sequence in the background, returns at once
+local seen = doip.listen(1500)      -- ...so the window covers it
+```
+
+That is also how you would drive a tester under test. `doip.discover(channel)` remains the
 ask-and-answer half.
 
 Payload limits follow the carrier, not the ECU: DoIP carries a 64 KiB diagnostic message, so a

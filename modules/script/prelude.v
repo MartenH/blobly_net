@@ -105,8 +105,17 @@ end
 --
 -- Unsolicited announcements, the way a real tester discovers ECUs it was never told about.
 -- Start this BEFORE the entities announce: nothing is queued for a listener that is not there.
-function doip.listen(window_ms, port)
-  local raw = __doip_listen(port or 13400, window_ms or 1000)
+-- doip.announce(channel) — fire a hosted entity announcement sequence NOW.
+--
+-- The startup burst is finite (3 x 500ms by default), so a suite that starts afterwards can
+-- miss it however the runner is sequenced. Listen first, then trigger, then assert.
+function doip.announce(channel)
+  return __doip_announce(channel)
+end
+
+-- doip.listen(window_ms [, port [, ip6]]) -> { {vin=..., logical_address=..., from=...}, ... }
+function doip.listen(window_ms, port, ip6)
+  local raw = __doip_listen(port or 13400, window_ms or 1000, ip6 and true or false)
   local out = {}
   for line in tostring(raw):gmatch("[^\n]+") do
     local vin, addr, from = line:match("^(.-)|0x(%x+)|(.+)$")

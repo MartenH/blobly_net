@@ -75,13 +75,16 @@ pub fn collect_announcements_af(port_ int, window_ms int, ip6 bool) ![]Announcem
 		c.close() or {}
 	}
 	mut out := []Announcement{}
-	deadline := time.now().add(window_ms * time.millisecond)
-	for time.now() < deadline {
-		left := deadline - time.now()
+	// MONOTONIC. A wall-clock deadline moves under NTP or a VM time correction, which either
+	// ends the window early and loses announcements or stretches the next socket timeout far
+	// past window_ms. The rest of this module uses ticks() for the same reason.
+	deadline := time.ticks() + i64(window_ms)
+	for {
+		left := deadline - time.ticks()
 		if left <= 0 {
 			break
 		}
-		c.set_read_timeout(left)
+		c.set_read_timeout(left * time.millisecond)
 		mut buf := []u8{len: 128}
 		n, peer := c.read(mut buf) or { break } // timeout ends the window
 		if n < header_len {

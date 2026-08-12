@@ -89,12 +89,22 @@ mut:
 
 // Env is one scripting session: a Lua state plus the channels/connections it can
 // reach. Construct with new_env, optionally set `on_output`, then run a script.
+// Announcer fires one entity's announcement sequence. Registered by whoever hosts the entity.
+//
+// A startup burst is finite — three datagrams 500ms apart by default — so a suite that starts
+// afterwards can miss it entirely however carefully the runner is sequenced. Rather than
+// pretend otherwise, a script can ask for one: listen first, then trigger, then assert.
+pub type Announcer = fn () !
+
 pub struct Env {
 mut:
 	st    lua.State
 	chans []ChanInfo
 	conns []UdsConn
 	buses map[string]transport.Bus
+	// Entities this process hosts, by channel name, so a script can trigger their announcement
+	// sequence rather than racing the startup burst.
+	announcers map[string]Announcer
 pub mut:
 	results   []TestResult
 	log_lines []string // every emitted line, buffered (the GUI reads this post-run)
@@ -141,6 +151,11 @@ pub fn (env &Env) total() int {
 }
 
 // close tears down the ISO-TP connections, buses and the interpreter.
+// register_announcer lets the host offer a channel announcement sequence to scripts.
+pub fn (mut env Env) register_announcer(chan_name string, f Announcer) {
+	env.announcers[chan_name] = f
+}
+
 pub fn (mut env Env) close() {
 	for mut c in env.conns {
 		c.ch.close()
@@ -204,6 +219,7 @@ fn (mut env Env) register_all() {
 	env.st.register('__uds_open', l_uds_open)
 	env.st.register('__doip_discover', l_doip_discover)
 	env.st.register('__doip_listen', l_doip_listen)
+	env.st.register('__doip_announce', l_doip_announce)
 	env.st.register('__uds_session', l_uds_session)
 	env.st.register('__uds_read_did', l_uds_read_did)
 	env.st.register('__uds_tester_present', l_uds_tester_present)
@@ -574,10 +590,28 @@ fn probe_says_dead(err IError) bool {
 
 // l_doip_listen collects UNSOLICITED announcements — discovery the way a real tester does it,
 // by listening rather than asking. Returns "vin|0xADDR" lines; the prelude shapes them.
+// l_doip_announce triggers a hosted entity's announcement sequence on demand.
+fn l_doip_announce(l lua.State) int {
+	mut env := env_of(l)
+	name := l.arg_str(1)
+	f := env.announcers[name] or {
+		return l.fail('doip.announce("${name}"): not an entity this process hosts')
+	}
+	// NON-BLOCKING. The sequence takes count × interval (1.5s by default); returning only when
+	// it finished meant a script could never listen for its own trigger — every datagram was
+	// already sent by the time doip.listen() bound its socket, and the test passed having
+	// heard nothing at all.
+	spawn fn (g Announcer) {
+		g() or {}
+	}(f)
+	return 0
+}
+
 fn l_doip_listen(l lua.State) int {
 	port := int(l.arg_int(1))
 	window := int(l.arg_int(2))
-	found := doip.collect_announcements(port, window) or {
+	ip6 := l.arg_bool(3)
+	found := doip.collect_announcements_af(port, window, ip6) or {
 		return l.fail('doip.listen(${port}): ${err}')
 	}
 	mut out := []string{}

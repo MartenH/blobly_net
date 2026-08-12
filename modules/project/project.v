@@ -501,19 +501,14 @@ fn parse_channel(c yaml.Any) !Channel {
 			ch.fd = true
 		}
 	}
+	// CHECKED parse. yaml's i64() coerces a malformed scalar to 0, so `announce_count: three`
+	// would have turned the ECU deliberately silent, and a bad interval would have fired the
+	// whole sequence as a burst — a typo quietly changing behaviour instead of failing.
 	if v := c.value_opt('announce_count') {
-		n := v.i64()
-		if n < 0 || n > 100 {
-			return error('announce_count must be 0..100, got ${n}')
-		}
-		ch.announce_count = int(n)
+		ch.announce_count = int(checked_int(v.str(), 'announce_count', 0, 100)!)
 	}
 	if v := c.value_opt('announce_interval_ms') {
-		n := v.i64()
-		if n < 0 || n > 60000 {
-			return error('announce_interval_ms must be 0..60000, got ${n}')
-		}
-		ch.announce_interval = int(n)
+		ch.announce_interval = int(checked_int(v.str(), 'announce_interval_ms', 0, 60000)!)
 	}
 	ch.announce_to = c.value('announce_to').default_to('').string()
 	if v := c.value_opt('tester_address') {
@@ -846,6 +841,25 @@ fn parse_eid(s string) ![]u8 {
 // uds/protect parse path goes through this or clamp_u32 — session, DTC status and data_id were
 // each found separately, which is three times too many for one mistake.
 // bad_ids returns the labels of any field whose value is not a clean numeric id.
+// checked_int parses a plain decimal in [lo, hi], refusing anything else by name. Not i64(),
+// which turns a typo into 0 and changes what the ECU does without saying so.
+fn checked_int(raw string, field string, lo i64, hi i64) !i64 {
+	t := raw.trim_space().trim('"')
+	if t == '' {
+		return error('${field}: empty')
+	}
+	for ch in t {
+		if ch < `0` || ch > `9` {
+			return error('${field}: "${t}" is not a whole number')
+		}
+	}
+	n := t.i64()
+	if n < lo || n > hi {
+		return error('${field} must be ${lo}..${hi}, got ${n}')
+	}
+	return n
+}
+
 fn bad_ids(fields map[string]string) []string {
 	mut out := []string{}
 	for k, v in fields {
