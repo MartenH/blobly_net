@@ -207,20 +207,6 @@ fn main() {
 		eprintln('script env init failed: ${err}')
 		exit(2)
 	}
-	// Offer each hosted entity to scripts. The startup burst below is finite and a suite that
-	// starts after it can miss the whole sequence however this is ordered, so a test that wants
-	// to observe announcements listens first and calls doip.announce(channel) itself.
-	for a in announcers {
-		nm := a.name
-		mut sv := a.srv
-		env.register_announcer(nm, fn [mut sv] (g u64) ! {
-			sv.announce_from(g)!
-		}, fn [mut sv] () u64 {
-			return sv.ann_generation()
-		}, fn [mut sv] () {
-			sv.cancel_announce()
-		})
-	}
 
 	mut errored := 0
 	for s in scripts {

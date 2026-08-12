@@ -105,19 +105,11 @@ end
 --
 -- Unsolicited announcements, the way a real tester discovers ECUs it was never told about.
 -- Start this BEFORE the entities announce: nothing is queued for a listener that is not there.
--- doip.announce(channel) — fire a hosted entity announcement sequence NOW.
---
--- The startup burst is finite (3 x 500ms by default), so a suite that starts afterwards can
--- miss it however the runner is sequenced. Listen first, then trigger, then assert.
-function doip.announce(channel)
-  return __doip_announce(channel)
-end
-
 -- doip.listen(window_ms [, opts]) -> { {vin=..., logical_address=..., from=...}, ... }
 --
--- opts = { port = 13400, ip6 = false, from = "<channel>" }. With `from`, the socket is bound
--- BEFORE that entity is triggered, which is the only way to be sure of catching a short
--- sequence (announce_count 1, or interval 0) — triggering yourself and then listening races it.
+-- opts = { port = 13400, ip6 = false }. Nothing is queued for a listener that is not there, so
+-- start listening before the entity announces — or give it a long enough sequence to still be
+-- in progress. IPv4 is the verified path; see docs/doip.md for the IPv6 caveat.
 function doip.listen(window_ms, opts)
   opts = opts or {}
   if type(opts) == "number" then opts = { port = opts } end   -- back-compat: listen(ms, port)

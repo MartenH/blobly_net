@@ -323,15 +323,14 @@ three datagrams, 500 ms apart — so a suite starting afterwards can miss the wh
 however the runner is ordered. Do not race it: trigger one.
 
 ```lua
-local seen = doip.listen(1500, { from = "Talker" })   -- binds FIRST, then triggers Talker
+local seen = doip.listen(1500)                 -- window in ms
+local seen = doip.listen(1500, { port = 13555 })   -- an entity on another port
 ```
 
-`from` matters: triggering yourself and then listening races the sequence, and with
-`announce_count: 1` or a zero interval the single datagram is gone before the socket exists.
-It also derives the listener's port and address family from that channel. **IPv4 only in
-practice** — see the IPv6 caveat in [doip.md](doip.md).
-`doip.announce(channel)` on its own is still there for driving a tester under test, where the
-listener is somebody else's. `doip.discover(channel)` remains the
+Nothing is queued for a listener that is not there, so **start listening before the entity
+announces**, or give it a sequence long enough to still be in progress — a suite cannot catch a
+burst that finished during start-up. `projects/doip-announce-demo.blobnet` does the latter
+deliberately. **IPv4 is the verified path**; see the IPv6 caveat in [doip.md](doip.md). `doip.discover(channel)` remains the
 ask-and-answer half.
 
 Payload limits follow the carrier, not the ECU: DoIP carries a 64 KiB diagnostic message, so a

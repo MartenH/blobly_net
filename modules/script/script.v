@@ -90,21 +90,6 @@ mut:
 
 // Env is one scripting session: a Lua state plus the channels/connections it can
 // reach. Construct with new_env, optionally set `on_output`, then run a script.
-// Announcer fires one entity's announcement sequence. Registered by whoever hosts the entity.
-//
-// A startup burst is finite — three datagrams 500ms apart by default — so a suite that starts
-// afterwards can miss it entirely however carefully the runner is sequenced. Rather than
-// pretend otherwise, a script can ask for one: listen first, then trigger, then assert.
-// Announcer runs a sequence that belongs to the cancellation generation given to it. The
-// generation is read by the CALLER before spawning: read inside the worker, a cancel issued
-// while it was still being scheduled was already folded into the value it saw.
-pub type Announcer = fn (u64) !
-
-// GenReader reads the current cancellation generation, before a worker is spawned.
-pub type GenReader = fn () u64
-
-// Canceller stops an in-flight sequence so a run can end without waiting it out.
-pub type Canceller = fn ()
 
 pub struct Env {
 mut:
@@ -114,19 +99,8 @@ mut:
 	buses map[string]transport.Bus
 	// Entities this process hosts, by channel name, so a script can trigger their announcement
 	// sequence rather than racing the startup burst.
-	announcers map[string]Announcer
-	gen_of     map[string]GenReader
-	cancellers map[string]Canceller
-	// Only the channels THIS run triggered are cancelled at teardown. Cancelling every
-	// registered server truncated a power-on burst that had nothing to do with the script —
-	// externally visible entity behaviour changed by an unrelated Lua file finishing.
-	triggered map[string]bool
 	mu         sync.Mutex
 	async_errs []string // failures from spawned work, surfaced instead of dropped
-	// Announcement workers started by doip.announce(). Joined before a run ends: otherwise the
-	// runner tears the process down mid-sequence, and a failure recorded after the last flush
-	// is never reported at all.
-	announce_threads []thread
 pub mut:
 	results   []TestResult
 	log_lines []string // every emitted line, buffered (the GUI reads this post-run)
@@ -152,32 +126,10 @@ pub fn new_env(chans []ChanInfo) !&Env {
 // run_file loads and executes a Lua script file (after the prelude).
 pub fn (mut env Env) run_file(path string) ! {
 	defer {
-		// JOIN first, THEN flush: a worker still sleeping between datagrams would otherwise be
-		// truncated by teardown, and a failure it recorded after the flush never reported.
-		env.join_announcers()
+		// A failure from work a script started but did not wait for still reaches the output.
 		env.flush_async_errs()
 	}
 	env.st.do_file(path)!
-}
-
-// join_announcers waits for announcement workers a script started and did not wait for.
-pub fn (mut env Env) join_announcers() {
-	// CANCEL, then join. Joining alone held a run open for the sequence's whole duration —
-	// 100 datagrams at 60s is a valid configuration and would have hung a suite for 99 minutes
-	// at teardown, which is the same stall the bounded wait removed from the listener.
-	// Cancelling first means the workers return at their next interval and their failures are
-	// still recorded, so the join stays complete as well as quick.
-	for name, _ in env.triggered {
-		if c := env.cancellers[name] {
-			c()
-		}
-	}
-	env.triggered = map[string]bool{}
-	ts := env.announce_threads.clone()
-	env.announce_threads = []
-	for t in ts {
-		t.wait()
-	}
 }
 
 // run_source loads and executes Lua source text (after the prelude).
@@ -199,19 +151,6 @@ pub fn (env &Env) total() int {
 }
 
 // close tears down the ISO-TP connections, buses and the interpreter.
-// register_announcer lets the host offer a channel announcement sequence to scripts.
-// note_async_err records a failure from work a script started but did not wait for, so it
-// surfaces in the output instead of vanishing into a spawned thread.
-pub fn (mut env Env) note_async_err(msg string) {
-	// RECORD ONLY. emit() appends to log_lines and calls on_output, both of which the
-	// interpreter thread is using — emitting from a spawned trigger races the buffer it grows.
-	// The script thread flushes these (flush_async_errs) at the next announce and at the end
-	// of a run, so nothing is lost and nothing is written from two threads.
-	env.mu.lock()
-	env.async_errs << msg
-	env.mu.unlock()
-}
-
 // emit_async_err flushes anything a previous async trigger reported, so it lands in the output
 // near the test that caused it rather than at some arbitrary later point.
 // flush_async_errs emits anything a spawned trigger reported. Script thread only.
@@ -223,12 +162,6 @@ pub fn (mut env Env) flush_async_errs() {
 	for p in pending {
 		env.emit('!! ${p}')
 	}
-}
-
-pub fn (mut env Env) register_announcer(chan_name string, f Announcer, g GenReader, c Canceller) {
-	env.announcers[chan_name] = f
-	env.gen_of[chan_name] = g
-	env.cancellers[chan_name] = c
 }
 
 pub fn (mut env Env) close() {
@@ -294,7 +227,6 @@ fn (mut env Env) register_all() {
 	env.st.register('__uds_open', l_uds_open)
 	env.st.register('__doip_discover', l_doip_discover)
 	env.st.register('__doip_listen', l_doip_listen)
-	env.st.register('__doip_announce', l_doip_announce)
 	env.st.register('__uds_session', l_uds_session)
 	env.st.register('__uds_read_did', l_uds_read_did)
 	env.st.register('__uds_tester_present', l_uds_tester_present)
@@ -665,84 +597,21 @@ fn probe_says_dead(err IError) bool {
 
 // l_doip_listen collects UNSOLICITED announcements — discovery the way a real tester does it,
 // by listening rather than asking. Returns "vin|0xADDR" lines; the prelude shapes them.
-// l_doip_announce triggers a hosted entity's announcement sequence on demand.
-fn l_doip_announce(l lua.State) int {
-	mut env := env_of(l)
-	name := l.arg_str(1)
-	f := env.announcers[name] or {
-		return l.fail('doip.announce("${name}"): not an entity this process hosts')
-	}
-	// NON-BLOCKING. The sequence takes count × interval (1.5s by default); returning only when
-	// it finished meant a script could never listen for its own trigger — every datagram was
-	// already sent by the time doip.listen() bound its socket, and the test passed having
-	// heard nothing at all.
-	//
-	// A failure is REPORTED, not swallowed. This API exists to drive an external listening
-	// tester, so a send that never happened would otherwise be blamed on that tester.
-	env.flush_async_errs()
-	// Generation BEFORE the spawn, and mark the channel as ours so teardown cancels this one
-	// and not somebody else's startup burst.
-	gen := if r := env.gen_of[name] { r() } else { u64(0) }
-	env.triggered[name] = true
-	env.announce_threads << spawn fn (g Announcer, gn u64, mut e Env, nm string) {
-		g(gn) or { e.note_async_err('doip.announce("${nm}"): ${err}') }
-	}(f, gen, mut env, name)
-	return 0
-}
-
 fn l_doip_listen(l lua.State) int {
 	mut env := env_of(l)
 	port := int(l.arg_int(1))
 	window := int(l.arg_int(2))
 	ip6 := l.arg_bool(3)
-	mut from_chan := l.arg_str(4)
 	mut use_port := port
 	mut use_ip6 := ip6
-	if from_chan != '' {
-		if ci := env.find_chan(from_chan) {
-			// The triggered channel's OWN port AND family. Deriving the port but not the family
-			// left an IPv6 entity listened for on 0.0.0.0 while it announced over IPv6 —
-			// an empty result unless the caller happened to pass ip6 = true as well.
-			if use_port == 0 {
-				use_port = env.chans[ci].carrier.port
-			}
-			if env.chans[ci].carrier.host.contains(':') {
-				use_ip6 = true
-			}
-		}
-	}
 	if use_port == 0 {
 		use_port = 13400
 	}
 	// With a channel named, BIND FIRST and trigger that entity from inside — a script that
 	// triggers and then listens cannot close the race when announce_count is 1 or the interval
 	// is 0: the whole sequence can be gone before the socket exists.
-	found := if from_chan != '' {
-		f := env.announcers[from_chan] or {
-			return l.fail('doip.listen(from: "${from_chan}"): not an entity this process hosts')
-		}
-		// Wrapped so a failure ARRIVING LATE — after the grace window — is still recorded; the
-		// channel inside doip only carries what is ready in time. The thread is kept so
-		// run_file joins it before the final flush.
-		nm := from_chan
-		mut e := env
-		gen := if r := env.gen_of[nm] { r() } else { u64(0) } // before the spawn inside doip
-		env.triggered[nm] = true
-		wrapped := fn [f, gen, mut e, nm] () ! {
-			f(gen) or {
-				e.note_async_err('doip.listen(from: "${nm}"): ${err}')
-				return err
-			}
-		}
-		got, th := doip.collect_announcements_triggered(use_port, window, use_ip6, wrapped) or {
-			return l.fail('doip.listen(${use_port}): ${err}')
-		}
-		env.announce_threads << th
-		got
-	} else {
-		doip.collect_announcements_af(use_port, window, use_ip6) or {
-			return l.fail('doip.listen(${port}): ${err}')
-		}
+	found := doip.collect_announcements_af(use_port, window, use_ip6) or {
+		return l.fail('doip.listen(${use_port}): ${err}')
 	}
 	mut out := []string{}
 	for f in found {

@@ -74,13 +74,6 @@ mut:
 	// the socket back for it is more indirection than storing the one string.
 	bound_host string
 	bound_port int
-	// Cancellation as a GUARDED GENERATION, not a shared bool. A bool that announce() reset at
-	// entry lost a cancel issued just before the worker got there — teardown set it, the worker
-	// cleared it, and the join then waited out the whole sequence. Overlapping workers (a
-	// startup burst and a script trigger) also cleared each other. A generation cannot be
-	// un-cancelled: a worker keeps the value it started with and stops as soon as it moves.
-	ann_mu  sync.Mutex
-	ann_gen u64
 	active   &net.TcpConn     = unsafe { nil } // the in-progress accepted connection (nil between)
 	stopping bool // set by close(): stop accepting/serving and tear down the active conn
 }
@@ -242,35 +235,11 @@ pub fn (mut s DoipServer) serve_udp_once(timeout_ms int) ! {
 	}
 }
 
-// cancel_announce stops an in-flight sequence at its next interval. Safe from another thread.
-pub fn (mut s DoipServer) cancel_announce() {
-	s.ann_mu.lock()
-	s.ann_gen++
-	s.ann_mu.unlock()
-}
-
-// ann_generation reads the current cancellation generation. Callers take this BEFORE spawning
-// a sequence and pass it to announce_from(): read inside the worker instead, a cancel issued
-// while the worker was still being scheduled was already reflected in the value it read, so it
-// considered itself uncancelled and ran to completion.
-pub fn (mut s DoipServer) ann_generation() u64 {
-	s.ann_mu.lock()
-	g := s.ann_gen
-	s.ann_mu.unlock()
-	return g
-}
-
 // announce sends the power-on vehicle announcements. Blocking: count × interval.
 //
 // Sent from the entity's OWN socket, so the source address is the one a tester will dial back.
 // SO_BROADCAST has to be set explicitly or the send fails with EACCES.
 pub fn (mut s DoipServer) announce() ! {
-	g := s.ann_generation()
-	return s.announce_from(g)
-}
-
-// announce_from runs the sequence, stopping if cancellation has moved past `mine`.
-pub fn (mut s DoipServer) announce_from(mine u64) ! {
 	if s.cfg.announce_count <= 0 {
 		return // deliberately silent
 	}
@@ -302,7 +271,7 @@ pub fn (mut s DoipServer) announce_from(mine u64) ! {
 		return error('announce_to ${dest}: resolved to nothing') // indexing [0] would panic
 	}
 	for i in 0 .. s.cfg.announce_count {
-		if s.stopping || s.ann_generation() != mine {
+		if s.stopping {
 			return // Stop, a toggle, or a script run ending; the fd may already be gone
 		}
 		ann := vehicle_announcement(s.announced_vin(), s.cfg.logical_address, s.cfg.eid,
@@ -314,7 +283,7 @@ pub fn (mut s DoipServer) announce_from(mine u64) ! {
 			// sequence — better than the 100 minutes before it, and still a hung suite.
 			mut left := s.cfg.announce_interval
 			for left > 0 {
-				if s.stopping || s.ann_generation() != mine {
+				if s.stopping {
 					return
 				}
 				step := if left > 50 { 50 } else { left }

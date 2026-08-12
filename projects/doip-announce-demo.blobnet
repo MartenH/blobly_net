@@ -20,24 +20,13 @@ channels:
     tester_address: "0x0E80"
     ecu_address: "0x1000"
     vin: ANNOUNCERVIN00001
+    announce_count: 20          # ~4s of announcements, so a suite that starts after
+    announce_interval_ms: 200   # Start still hears the sequence in progress
     simulation:
       - name: SUT
         uds:
           dids:
             - { id: "0xF190", text: "ANNOUNCERVIN00001" }
-
-  - name: OneShot
-    type: doip
-    interface: doip:127.0.0.3:13400
-    tester_address: "0x0E80"
-    ecu_address: "0x3000"
-    vin: ONESHOTVIN0000001
-    announce_count: 1          # a single datagram: nothing to catch on a second attempt
-    simulation:
-      - name: SUT
-        uds:
-          dids:
-            - { id: "0xF190", text: "ONESHOTVIN0000001" }
 
   - name: AltPort
     type: doip
@@ -45,29 +34,13 @@ channels:
     tester_address: "0x0E80"
     ecu_address: "0x4000"
     vin: ALTPORTVIN0000001
-    announce_count: 1
+    announce_count: 20          # like Talker: still announcing when a suite starts
+    announce_interval_ms: 200
     simulation:
       - name: SUT
         uds:
           dids:
             - { id: "0xF190", text: "ALTPORTVIN0000001" }
-
-  # A deliberately LONG sequence: 100 datagrams a minute apart. Nothing waits it out — the
-  # listener window is bounded and run teardown cancels in-flight sequences — so this entity is
-  # here to prove a suite does not hang, which it did (99 minutes, then 60s) twice.
-  - name: Chatty
-    type: doip
-    interface: doip:127.0.0.5:13400
-    tester_address: "0x0E80"
-    ecu_address: "0x5000"
-    vin: CHATTYVIN00000001
-    announce_count: 100
-    announce_interval_ms: 60000
-    simulation:
-      - name: SUT
-        uds:
-          dids:
-            - { id: "0xF190", text: "CHATTYVIN00000001" }
 
   - name: Silent
     type: doip

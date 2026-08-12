@@ -6664,31 +6664,6 @@ fn script_worker(app &App, path string) {
 		a.script_done()
 		return
 	}
-	// The same suite must behave the same from the Lua panel as it does headless. Without this,
-	// doip.announce(channel) and doip.listen(..., { from = ... }) reported "not an entity this
-	// process hosts" in the GUI while ▶ Start had a live entity — a script that passes headless
-	// and fails here for no reason the user can see.
-	// By the channel's OWN name, taken from the project — not parsed back out of the composite
-	// '<name>|<iface>' key, which truncates any name containing a '|' and then rejects the
-	// entity the user can plainly see running.
-	a.mu.lock()
-	hosted := a.doip_hosts.clone()
-	a.mu.unlock()
-	for c in a.proj.channels {
-		if !c.is_doip() {
-			continue
-		}
-		if srv := hosted['${c.name}|${c.iface}'] {
-			mut sv := srv
-			env.register_announcer(c.name, fn [mut sv] (g u64) ! {
-				sv.announce_from(g)!
-			}, fn [mut sv] () u64 {
-				return sv.ann_generation()
-			}, fn [mut sv] () {
-				sv.cancel_announce()
-			})
-		}
-	}
 	env.run_file(path) or { a.script_push('error: ${err}') }
 	a.script_push('${env.passed()}/${env.total()} passed, ${env.failed()} failed')
 	env.close()
