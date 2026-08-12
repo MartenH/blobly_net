@@ -621,6 +621,7 @@ fn (mut app App) start() {
 		if diag_nodes.len == 0 {
 			spawn diag_server_loop(app, sc.iface) // the built-in default for this bus
 			app.diag_plan << DiagTarget{
+				key:   diag_key_can(sc.iface, diag_tx_id, diag_rx_id)
 				label: 'default on ${sc.iface}  (0x${diag_tx_id:X}/0x${diag_rx_id:X})'
 				iface: sc.iface
 				rx:    diag_tx_id
@@ -634,6 +635,7 @@ fn (mut app App) start() {
 			spawn uds_node_loop(app, owner[u.name] or { sc.pch }, sc.iface, u.name, u.rx, u.tx,
 				u.ext, u.server)
 			app.diag_plan << DiagTarget{
+				key:   diag_key_can(sc.iface, u.rx, u.tx)
 				label: '${u.name}  (0x${u.rx:X}/0x${u.tx:X})'
 				iface: sc.iface
 				rx:    u.rx
@@ -819,11 +821,12 @@ fn (mut app App) doip_publish_if_current(pch project.Channel, ent sim.DoipEntity
 		app.chans[ci].running = true
 	}
 	tgt := DiagTarget{
+		key:     diag_key_doip(pch)
 		label:   '${ent.node_label()} on ${pch.name}  (DoIP 0x${pch.ecu_addr:04X})'
 		iface:   pch.iface
 		carrier: script.carrier_of(pch)
 	}
-	if !app.diag_plan.any(it.label == tgt.label) {
+	if !app.diag_plan.any(it.key == tgt.key) {
 		app.diag_plan << tgt
 	}
 	return true
@@ -878,20 +881,36 @@ fn (app &App) doip_host_failed(name string, iface string) bool {
 }
 
 // doip_forget deregisters an entity that is no longer listening, so nothing offers it.
-// gen is checked INSIDE the lock, like doip_publish_if_current: evaluated outside it, a Stop
-// and Start landing in the window let a stale supervisor deregister the live run's listener.
+// doip_forget_if_current deregisters ONLY if this run still owns the entry, checking and
+// mutating under ONE lock. The previous version checked, unlocked, then called doip_forget
+// which re-locked — so a Stop and Start landing in that gap let a stale supervisor delete the
+// NEW run's host entry and target. A function named "_if_current" that releases the lock
+// before acting is not atomic; it just looks it.
+// diag_key_doip / diag_key_can name a target uniquely. Interface + address, never the label.
+fn diag_key_doip(pch project.Channel) string {
+	return 'doip|${pch.iface}|${pch.name}|0x${pch.ecu_addr:04X}'
+}
+
+fn diag_key_can(iface string, rx u32, tx u32) string {
+	return 'can|${iface}|0x${rx:X}/0x${tx:X}'
+}
+
 fn (mut app App) doip_forget_if_current(pch project.Channel, ent sim.DoipEntity, gen u64) {
 	app.mu.lock()
-	if !app.running || app.run_gen != gen {
-		app.mu.unlock()
-		return
+	if app.running && app.run_gen == gen {
+		app.forget_locked(pch, ent)
 	}
 	app.mu.unlock()
-	app.doip_forget(pch, ent)
 }
 
 fn (mut app App) doip_forget(pch project.Channel, ent sim.DoipEntity) {
 	app.mu.lock()
+	app.forget_locked(pch, ent)
+	app.mu.unlock()
+}
+
+// forget_locked is the mutation itself. Caller holds app.mu.
+fn (mut app App) forget_locked(pch project.Channel, ent sim.DoipEntity) {
 	app.doip_hosts.delete('${pch.name}|${pch.iface}')
 	if ci := app.chan_index_locked(pch) {
 		app.chans[ci].running = false
@@ -900,9 +919,8 @@ fn (mut app App) doip_forget(pch project.Channel, ent sim.DoipEntity) {
 	// and ECU address — two shorthand channels on the defaults — and exactly one of them binds.
 	// An endpoint predicate then let the FAILING supervisor delete the successful channel's
 	// target while its server stayed live: the panel loses an entity that is answering.
-	mine := '${ent.node_label()} on ${pch.name}  (DoIP 0x${pch.ecu_addr:04X})'
-	app.diag_plan = app.diag_plan.filter(it.label != mine)
-	app.mu.unlock()
+	mine := diag_key_doip(pch)
+	app.diag_plan = app.diag_plan.filter(it.key != mine)
 }
 
 // doip_bind opens one entity and links it to its handler. The handler must exist before
@@ -5705,6 +5723,11 @@ fn (app &App) diag_iface() string {
 // DiagTarget is one addressable diagnostic server: the built-in channel default, or a
 // simulated ECU that configured its own addresses.
 struct DiagTarget {
+	// The identity the panel and worker resolve by. The LABEL is a display string and is not
+	// unique: two buses configuring the same node name and UDS id pair produce identical ones,
+	// so selecting the second silently reset to the first and requests went to the wrong bus.
+	// Eighth instance in this change of a convenient string standing in for an identity.
+	key   string
 	label string
 	iface string
 	rx    u32 // the ECU listens here — the tester TRANSMITS to it
@@ -5734,8 +5757,9 @@ fn (app &App) diag_targets() []DiagTarget {
 	a.mu.unlock()
 	mut out := []DiagTarget{}
 	if hw := app.diag_iface_opt() {
-		if !plan.any(it.iface == hw && it.rx == diag_tx_id) {
+		if !plan.any(it.key == diag_key_can(hw, diag_tx_id, diag_rx_id)) {
 			out << DiagTarget{
+				key:   diag_key_can(hw, diag_tx_id, diag_rx_id)
 				label: 'default on ${hw}  (0x${diag_tx_id:X}/0x${diag_rx_id:X})'
 				iface: hw
 				rx:    diag_tx_id
@@ -5772,11 +5796,11 @@ fn (app &App) diag_targets() []DiagTarget {
 		// Identity includes the TESTER address: it is sent during routing activation and can
 		// select a different role or authorisation at the external ECU, so two channels
 		// addressing one ECU as different testers are two distinct things to exercise.
-		if out.any(it.carrier.doip && it.carrier.host == car.host && it.carrier.port == car.port
-			&& it.carrier.ecu == car.ecu && it.carrier.tester == car.tester) {
+		if out.any(it.key == diag_key_doip(c)) {
 			continue
 		}
 		out << DiagTarget{
+			key:     diag_key_doip(c)
 			label:   '${c.name}  (DoIP 0x${c.ecu_addr:04X})'
 			iface:   c.iface
 			carrier: car
@@ -5784,6 +5808,7 @@ fn (app &App) diag_targets() []DiagTarget {
 	}
 	if out.len == 0 {
 		out << DiagTarget{
+			key:   diag_key_can(app.diag_iface(), diag_tx_id, diag_rx_id)
 			label: 'default  (0x${diag_tx_id:X}/0x${diag_rx_id:X})'
 			iface: app.diag_iface()
 			rx:    diag_tx_id
@@ -5811,10 +5836,10 @@ fn diag_worker(app &App, kind string, did u16, want_key string) {
 	mut t := DiagTarget{}
 	mut found := false
 	for cand in targets {
-		if cand.label == key || (key == '' && !found) {
+		if cand.key == key || (key == '' && !found) {
 			t = cand
 			found = true
-			if cand.label == key {
+			if cand.key == key {
 				break
 			}
 		}
@@ -6496,7 +6521,7 @@ fn draw_diag(mut app App) {
 	// Follow the SELECTION, not the position: if the list changed under us, find where the
 	// chosen target went rather than keeping an index that now names something else.
 	if app.diag_sel_key != '' {
-		app.diag_sel = targets.index(targets.filter(it.label == app.diag_sel_key)[0] or {
+		app.diag_sel = targets.index(targets.filter(it.key == app.diag_sel_key)[0] or {
 			DiagTarget{}
 		})
 	}
@@ -6509,7 +6534,7 @@ fn draw_diag(mut app App) {
 		vgui.text_dim('target: ${targets[0].label}')
 	}
 	if app.diag_sel >= 0 && app.diag_sel < targets.len {
-		app.diag_sel_key = targets[app.diag_sel].label
+		app.diag_sel_key = targets[app.diag_sel].key
 	}
 	vgui.separator()
 	if vgui.button('Session') && !busy {
