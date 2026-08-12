@@ -428,7 +428,8 @@ fn test_an_ipv4_announce_to_on_an_ipv6_entity_says_which_settings_disagree() {
 		announce_to:     '127.255.255.255'
 	}, handler)
 	srv.listen('::1', 13461) or {
-		assert false, 'listen: ${err}'
+		// the same environment skip test_ipv6_roundtrip uses: some runners have no IPv6 loopback
+		eprintln('skipping IPv4-announce_to-on-IPv6 (no IPv6 loopback here): ${err}')
 		return
 	}
 	defer {
