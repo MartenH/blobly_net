@@ -9,8 +9,9 @@
 #
 # Press ▶ Start: all three entities come up (green in Buses) and each appears in
 # the Diagnostics panel as its own target — pick one there and read its VIN. The
-# DoIP panel's Discover lists them by announcement VIN + logical address, which is
-# how you check that what an entity ANNOUNCES matches what it serves.
+# DoIP panel's Discover queries ONE address at a time: type 127.0.0.1, then .2,
+# then .3, each click replacing the previous result. That is how you check that
+# what an entity ANNOUNCES matches the VIN it serves.
 project:
   name: DoIP network demo
   version: 1

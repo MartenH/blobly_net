@@ -622,7 +622,7 @@ fn (mut app App) start() {
 		// Configure a per-ECU server and you own diagnostics on this bus: the default does NOT
 		// also run, or the two would both answer whenever their ids overlapped.
 		for mut u in diag_nodes {
-			spawn uds_node_loop(app, sc.iface, u.name, u.rx, u.tx, u.ext, u.server)
+			spawn uds_node_loop(app, sc.pch, sc.iface, u.name, u.rx, u.tx, u.ext, u.server)
 			app.diag_plan << DiagTarget{
 				label: '${u.name}  (0x${u.rx:X}/0x${u.tx:X})'
 				iface: sc.iface
@@ -708,7 +708,7 @@ fn doip_watch(app &App, pch project.Channel, ent sim.DoipEntity, key string, gen
 			// and on to retry a held port produced no Log line at all, leaving the channel idle
 			// and silent — which is what this PR set out to stop.
 			warned = false
-			a.doip_forget(pch, host, port)
+			a.doip_forget(pch, ent)
 			a.notify('${pch.name}: DoIP entity stopped — ${host}:${port} released')
 		} else if !want || !bound {
 			if want && !bound {
@@ -750,7 +750,7 @@ fn doip_watch(app &App, pch project.Channel, ent sim.DoipEntity, key string, gen
 						// not listening — leaving it selectable would point the panel at
 						// whatever else owns that endpoint and report the wrong ECU's answers.
 						a.notify('${pch.name}: cannot bind ${host}:${port} — ${err}')
-						a.doip_forget(pch, host, port)
+						a.doip_forget(pch, ent)
 						warned = true
 					}
 				}
@@ -801,7 +801,7 @@ fn (mut app App) doip_publish_if_current(pch project.Channel, ent sim.DoipEntity
 		}
 	}
 	if key != '' {
-		if !(app.sim_enabled['${pch.iface}:${key}'] or { true }) {
+		if !(app.sim_enabled[sim_key(pch, key)] or { true }) {
 			return false
 		}
 	}
@@ -838,7 +838,7 @@ fn (app &App) doip_is_hosted(name string, iface string) bool {
 // that the Diagnostics panel and the headless runner both expose. Sixth defect in this change
 // from an interface string standing in for a channel; see chan_index_locked.
 fn (app &App) doip_host_failed(name string, iface string) bool {
-	a := unsafe { app }
+	mut a := unsafe { app }
 	mut simulated := false
 	for c in a.proj.channels {
 		if c.name == name && c.iface == iface && c.is_doip() {
@@ -849,18 +849,32 @@ fn (app &App) doip_host_failed(name string, iface string) bool {
 	if !simulated {
 		return false // tester-only: nothing for us to host, so nothing can have failed
 	}
-	return !a.doip_is_hosted(name, iface)
+	// PENDING is not FAILED. A supervisor polls every 200ms, so a channel enabled live — or a
+	// script started immediately after Start — can be legitimately mid-bind. Treating that as
+	// failure removed the channel from the script environment PERMANENTLY, and uds.open()
+	// reported it unknown while the listener appeared a moment later. Give the bind its window.
+	for _ in 0 .. 15 {
+		if a.doip_is_hosted(name, iface) {
+			return false
+		}
+		time.sleep(50 * time.millisecond)
+	}
+	return true
 }
 
 // doip_forget deregisters an entity that is no longer listening, so nothing offers it.
-fn (mut app App) doip_forget(pch project.Channel, host string, port int) {
+fn (mut app App) doip_forget(pch project.Channel, ent sim.DoipEntity) {
 	app.mu.lock()
 	app.doip_hosts.delete('${pch.name}|${pch.iface}')
 	if ci := app.chan_index_locked(pch) {
 		app.chans[ci].running = false
 	}
-	app.diag_plan = app.diag_plan.filter(!(it.carrier.doip && it.carrier.host == host
-		&& it.carrier.port == port && it.carrier.ecu == pch.ecu_addr))
+	// By the target's OWN label, not by endpoint. Two simulated channels can share an endpoint
+	// and ECU address — two shorthand channels on the defaults — and exactly one of them binds.
+	// An endpoint predicate then let the FAILING supervisor delete the successful channel's
+	// target while its server stayed live: the panel loses an entity that is answering.
+	mine := '${ent.node_label()} on ${pch.name}  (DoIP 0x${pch.ecu_addr:04X})'
+	app.diag_plan = app.diag_plan.filter(it.label != mine)
 	app.mu.unlock()
 }
 
@@ -921,9 +935,17 @@ fn (app &App) doip_should_host(pch project.Channel, key string) bool {
 		}
 	}
 	if key != '' {
-		return a.sim_enabled['${pch.iface}:${key}'] or { true }
+		return a.sim_enabled[sim_key(pch, key)] or { true }
 	}
 	return true
+}
+
+// sim_key names one simulated ECU. The interface alone is not an identity — a CAN channel and a
+// `type: doip` channel can resolve to the same string and simulate the same node name, and the
+// shared `<iface>:<node>` entry then made unticking one close the other. Seventh defect in this
+// change from that substitution.
+fn sim_key(pch project.Channel, node string) string {
+	return '${pch.name}|${pch.iface}:${node}'
 }
 
 // stop signals the RX threads to exit (they re-check on the recv timeout) and tears down the
@@ -1213,7 +1235,7 @@ fn sim_loop(app &App, sc SimCfg) {
 			engine.save_counters(mut counters) // fold the outgoing engine's counts in first
 			engine = sim.Engine{}
 			for n in sc.nodes {
-				if enabled['${sc.iface}:${n.name}'] or { true } {
+				if enabled[sim_key(sc.pch, n.name)] or { true } {
 					engine.ecus << build_node(sc.db, n)
 				}
 			}
@@ -1264,10 +1286,10 @@ fn gen_loop(app &App) {
 // diag_server_loop runs the native UDS server (mirror of the tester: rx 0x7E0, tx 0x7E8)
 // so the Diagnostics panel + Lua scripts work driver-free against simulated channels.
 // uds_node_loop answers one simulated ECU's diagnostic requests on its own addresses.
-fn uds_node_loop(app &App, iface string, name string, rx u32, tx u32, ext bool, srv uds.Server) {
+fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u32, tx u32, ext bool, srv uds.Server) {
 	a := unsafe { app }
 	mut s := srv
-	key := '${iface}:${name}'
+	key := sim_key(pch, name)
 	mut ch := &isotp.SoftChannel(unsafe { nil })
 	mut open := false
 	defer {
@@ -2248,7 +2270,11 @@ fn draw_sim(mut app App) {
 			continue
 		}
 		for node in sc.nodes {
-			key := '${sc.iface}:${node.name}'
+			// sim_key, not '<iface>:<node>': the panel writes what the CAN loop and the DoIP
+			// supervisor read, so all three move together or a tick lands on a key nobody
+			// consults. Channel identity is in the key because two channels can share an
+			// interface string and a node name.
+			key := sim_key(sc.pch, node.name)
 			en := app.sim_enabled[key] or { true }
 			nen := vgui.checkbox('##simen_${key}', en)
 			if nen != en {
@@ -5727,7 +5753,7 @@ fn (app &App) diag_targets() []DiagTarget {
 	return out
 }
 
-fn diag_worker(app &App, kind string, did u16) {
+fn diag_worker(app &App, kind string, did u16, want_key string) {
 	mut a := unsafe { app }
 	a.mu.lock()
 	if a.diag_busy {
@@ -5737,10 +5763,11 @@ fn diag_worker(app &App, kind string, did u16) {
 	a.diag_busy = true
 	a.mu.unlock()
 	targets := a.diag_targets()
-	// Resolve by IDENTITY. Falling back to another index when the chosen target has gone would
-	// send this request to a different ECU and report the answers under the selected one's
-	// name — the wrong-ECU failure, arriving through the UI instead of the wire.
-	key := a.diag_sel_key
+	// Resolve by the identity captured AT CLICK TIME, passed in rather than read here: the
+	// combo stays enabled while a request is busy, so a worker that read the live field could
+	// address whichever ECU the user selected after clicking. Falling back to another entry
+	// when the chosen one has gone would do the same thing more quietly.
+	key := want_key
 	mut t := DiagTarget{}
 	mut found := false
 	for cand in targets {
@@ -6446,22 +6473,22 @@ fn draw_diag(mut app App) {
 	}
 	vgui.separator()
 	if vgui.button('Session') && !busy {
-		spawn diag_worker(app, 'session', u16(0))
+		spawn diag_worker(app, 'session', u16(0), app.diag_sel_key)
 	}
 	vgui.same_line()
 	if vgui.button('Read VIN') && !busy {
-		spawn diag_worker(app, 'vin', u16(0))
+		spawn diag_worker(app, 'vin', u16(0), app.diag_sel_key)
 	}
 	vgui.same_line()
 	if vgui.button('Tester Present') && !busy {
-		spawn diag_worker(app, 'tp', u16(0))
+		spawn diag_worker(app, 'tp', u16(0), app.diag_sel_key)
 	}
 	vgui.set_next_item_width(70)
 	vgui.input_text('DID', mut app.diag_did_buf)
 	vgui.same_line()
 	if vgui.button('Read DID') && !busy {
 		did := u16(('0x' + vgui.buf_str(app.diag_did_buf)).u64())
-		spawn diag_worker(app, 'did', did)
+		spawn diag_worker(app, 'did', did, app.diag_sel_key)
 	}
 	if busy {
 		vgui.same_line()
