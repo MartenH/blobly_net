@@ -5,8 +5,12 @@
 -- a Vehicle Identification Request, so such a tester saw nothing at all from it.
 --   scripts/runtests.sh --project projects/doip-announce-demo.blobnet tests/doip_announce.lua
 --
--- Talker announces for ~4s so a suite starting after Start still hears it in progress. The
--- shipped 3 x 500ms default is covered by tests/doip_network.lua against doip-network-demo.
+-- Talker and AltPort announce for ~4s, because a script CANNOT listen first: the runner brings
+-- entities up before it parses the suite, exactly as an ECU is powered before a tester arrives.
+-- A one-shot sequence is therefore unobservable from Lua by construction, and no fixture here
+-- pretends otherwise. The shipped 3 x 500ms default is verified where the ordering can be
+-- controlled: modules/sim (the config reaches the entity) and modules/doip net_test
+-- (listener bound, then announce). This suite covers what a script can actually see.
 
 test("a listening tester hears an entity announce itself", function()
   local seen = doip.listen(1200)

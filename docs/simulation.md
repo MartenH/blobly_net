@@ -319,10 +319,12 @@ local seen = doip.listen(1200, { port = 13555 })   -- an entity bound elsewhere
 -- seen = { { vin = "BLOBLYNETGATEWAY1", logical_address = 0x1000, from = "127.0.0.1:13400" }, ... }
 ```
 
-Nothing is queued for a listener that is not there, so **start listening before the entity
-announces**, or give it a sequence long enough to still be in progress — a suite cannot catch a
-burst that finished during start-up. `projects/doip-announce-demo.blobnet` does the latter
-deliberately. **IPv4 is the verified path**; see the IPv6 caveat in [doip.md](doip.md). `doip.discover(channel)` remains the
+Nothing is queued for a listener that is not there, and **a script cannot get there first**: the
+entities come up before the suite is parsed, the same way an ECU is powered long before a tester
+is plugged in. So a short burst is unobservable from Lua by construction — to test passive
+discovery, configure a sequence long enough to still be running when the script starts, as
+`projects/doip-announce-demo.blobnet` does. For an entity on the ISO default (three, 500 ms
+apart), use `doip.discover()`: asking is what a tester that arrived late has to do anyway. **IPv4 is the verified path**; see the IPv6 caveat in [doip.md](doip.md). `doip.discover(channel)` remains the
 ask-and-answer half.
 
 Payload limits follow the carrier, not the ECU: DoIP carries a 64 KiB diagnostic message, so a
