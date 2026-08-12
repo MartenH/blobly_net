@@ -10,7 +10,6 @@
 // (stdout vs a log panel), and run a file. The same script behaves identically.
 module script
 
-import sync
 import time
 import lua
 import transport
@@ -99,8 +98,6 @@ mut:
 	buses map[string]transport.Bus
 	// Entities this process hosts, by channel name, so a script can trigger their announcement
 	// sequence rather than racing the startup burst.
-	mu         sync.Mutex
-	async_errs []string // failures from spawned work, surfaced instead of dropped
 pub mut:
 	results   []TestResult
 	log_lines []string // every emitted line, buffered (the GUI reads this post-run)
@@ -125,10 +122,6 @@ pub fn new_env(chans []ChanInfo) !&Env {
 
 // run_file loads and executes a Lua script file (after the prelude).
 pub fn (mut env Env) run_file(path string) ! {
-	defer {
-		// A failure from work a script started but did not wait for still reaches the output.
-		env.flush_async_errs()
-	}
 	env.st.do_file(path)!
 }
 
@@ -151,19 +144,6 @@ pub fn (env &Env) total() int {
 }
 
 // close tears down the ISO-TP connections, buses and the interpreter.
-// emit_async_err flushes anything a previous async trigger reported, so it lands in the output
-// near the test that caused it rather than at some arbitrary later point.
-// flush_async_errs emits anything a spawned trigger reported. Script thread only.
-pub fn (mut env Env) flush_async_errs() {
-	env.mu.lock()
-	pending := env.async_errs.clone()
-	env.async_errs = []
-	env.mu.unlock()
-	for p in pending {
-		env.emit('!! ${p}')
-	}
-}
-
 pub fn (mut env Env) close() {
 	for mut c in env.conns {
 		c.ch.close()
@@ -598,18 +578,10 @@ fn probe_says_dead(err IError) bool {
 // l_doip_listen collects UNSOLICITED announcements — discovery the way a real tester does it,
 // by listening rather than asking. Returns "vin|0xADDR" lines; the prelude shapes them.
 fn l_doip_listen(l lua.State) int {
-	mut env := env_of(l)
 	port := int(l.arg_int(1))
 	window := int(l.arg_int(2))
-	ip6 := l.arg_bool(3)
-	mut use_port := port
-	mut use_ip6 := ip6
-	if use_port == 0 {
-		use_port = 13400
-	}
-	// With a channel named, BIND FIRST and trigger that entity from inside — a script that
-	// triggers and then listens cannot close the race when announce_count is 1 or the interval
-	// is 0: the whole sequence can be gone before the socket exists.
+	use_ip6 := l.arg_bool(3)
+	use_port := if port == 0 { 13400 } else { port }
 	found := doip.collect_announcements_af(use_port, window, use_ip6) or {
 		return l.fail('doip.listen(${use_port}): ${err}')
 	}

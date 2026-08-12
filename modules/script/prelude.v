@@ -101,11 +101,9 @@ function doip.discover(channel)
   return { vin = vin, logical_address = addr }
 end
 
--- doip.listen(window_ms [, port]) -> { {vin=..., logical_address=..., from="host:port"}, ... }
+-- doip.listen(window_ms [, opts]) -> { {vin=..., logical_address=..., from="host:port"}, ... }
 --
 -- Unsolicited announcements, the way a real tester discovers ECUs it was never told about.
--- Start this BEFORE the entities announce: nothing is queued for a listener that is not there.
--- doip.listen(window_ms [, opts]) -> { {vin=..., logical_address=..., from=...}, ... }
 --
 -- opts = { port = 13400, ip6 = false }. Nothing is queued for a listener that is not there, so
 -- start listening before the entity announces — or give it a long enough sequence to still be
