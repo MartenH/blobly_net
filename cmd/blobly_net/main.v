@@ -6680,8 +6680,10 @@ fn script_worker(app &App, path string) {
 		}
 		if srv := hosted['${c.name}|${c.iface}'] {
 			mut sv := srv
-			env.register_announcer(c.name, fn [mut sv] () ! {
-				sv.announce()!
+			env.register_announcer(c.name, fn [mut sv] (g u64) ! {
+				sv.announce_from(g)!
+			}, fn [mut sv] () u64 {
+				return sv.ann_generation()
 			}, fn [mut sv] () {
 				sv.cancel_announce()
 			})

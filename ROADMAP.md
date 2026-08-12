@@ -44,12 +44,13 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   the same tool sees nothing without an address typed in by hand. The asymmetry is real
   today — blobly_emb **already** broadcasts its vehicle announcement three times at boot and
   answers identification requests afterwards, precisely so a late tester can find it. Blobly Net
-  hears the answer but not the announcement: `discover()` parses the solicited `0x0004`, and
-  misses the unsolicited boot broadcast entirely. Needs a request that collects **many**
-  responses instead of returning at the first, a passive listener for unsolicited announcements
-  (the case that catches an ECU booting while you are already running), and a Scan action
-  turning results into channels rather than hand-typed `doip:` strings.
-  **It is a change to three things, not one — the requester alone gets you nothing.**
+  The **passive listener has shipped**: `doip.collect_announcements()` (Lua
+  `doip.listen(window_ms)`) hears unsolicited announcements and returns each sender's endpoint,
+  and a simulated entity announces itself at Start — so the ECU-booting-while-you-watch case is
+  covered in both directions. What remains is a request that collects **many** responses instead
+  of returning at the first, and a **Scan** action turning results into channels rather than
+  hand-typed `doip:` strings — for the ECU that neither announced while you were listening nor
+  sits at an address you know.
   (a) *Keep the source address.* `discover()` throws it away (`n, _ := u.read`) and
   `VehicleInfo` carries only VIN, logical address, EID and GID — none of which is an endpoint.
   A channel needs `doip:<host>[:<port>]`, so without retaining each responder's source (with

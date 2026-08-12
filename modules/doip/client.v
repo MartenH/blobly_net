@@ -71,6 +71,12 @@ pub fn collect_announcements_af(port_ int, window_ms int, ip6 bool) ![]Announcem
 	mut c := net.listen_udp(addr) or {
 		return error('cannot listen for announcements on ${addr}: ${err}')
 	}
+	if ip6 {
+		// JOIN the group. Binding the wildcard receives unicast, but an entity announcing to
+		// the derived ff02::1 is multicast — without a join this socket never sees it and the
+		// window simply times out. modules/transport/udpbus.v does the same after its bind.
+		c.join_multicast_group('ff02::1', '::') or {}
+	}
 	defer {
 		c.close() or {}
 	}
@@ -121,6 +127,12 @@ pub fn collect_announcements_triggered(port_ int, window_ms int, ip6 bool, trigg
 	addr := if ip6 { '[::]:${port_}' } else { '0.0.0.0:${port_}' }
 	mut c := net.listen_udp(addr) or {
 		return error('cannot listen for announcements on ${addr}: ${err}')
+	}
+	if ip6 {
+		// JOIN the group. Binding the wildcard receives unicast, but an entity announcing to
+		// the derived ff02::1 is multicast — without a join this socket never sees it and the
+		// window simply times out. modules/transport/udpbus.v does the same after its bind.
+		c.join_multicast_group('ff02::1', '::') or {}
 	}
 	defer {
 		c.close() or {}

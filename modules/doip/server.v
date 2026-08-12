@@ -249,8 +249,11 @@ pub fn (mut s DoipServer) cancel_announce() {
 	s.ann_mu.unlock()
 }
 
-// ann_generation reads the current cancellation generation.
-fn (mut s DoipServer) ann_generation() u64 {
+// ann_generation reads the current cancellation generation. Callers take this BEFORE spawning
+// a sequence and pass it to announce_from(): read inside the worker instead, a cancel issued
+// while the worker was still being scheduled was already reflected in the value it read, so it
+// considered itself uncancelled and ran to completion.
+pub fn (mut s DoipServer) ann_generation() u64 {
 	s.ann_mu.lock()
 	g := s.ann_gen
 	s.ann_mu.unlock()
@@ -262,6 +265,12 @@ fn (mut s DoipServer) ann_generation() u64 {
 // Sent from the entity's OWN socket, so the source address is the one a tester will dial back.
 // SO_BROADCAST has to be set explicitly or the send fails with EACCES.
 pub fn (mut s DoipServer) announce() ! {
+	g := s.ann_generation()
+	return s.announce_from(g)
+}
+
+// announce_from runs the sequence, stopping if cancellation has moved past `mine`.
+pub fn (mut s DoipServer) announce_from(mine u64) ! {
 	if s.cfg.announce_count <= 0 {
 		return // deliberately silent
 	}
@@ -292,7 +301,6 @@ pub fn (mut s DoipServer) announce() ! {
 	if addrs.len == 0 {
 		return error('announce_to ${dest}: resolved to nothing') // indexing [0] would panic
 	}
-	mine := s.ann_generation() // this sequence belongs to the generation it started in
 	for i in 0 .. s.cfg.announce_count {
 		if s.stopping || s.ann_generation() != mine {
 			return // Stop, a toggle, or a script run ending; the fd may already be gone

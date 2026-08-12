@@ -213,8 +213,10 @@ fn main() {
 	for a in announcers {
 		nm := a.name
 		mut sv := a.srv
-		env.register_announcer(nm, fn [mut sv] () ! {
-			sv.announce()!
+		env.register_announcer(nm, fn [mut sv] (g u64) ! {
+			sv.announce_from(g)!
+		}, fn [mut sv] () u64 {
+			return sv.ann_generation()
 		}, fn [mut sv] () {
 			sv.cancel_announce()
 		})
