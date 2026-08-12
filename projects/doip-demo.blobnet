@@ -2,7 +2,7 @@
 #
 # A single DoIP channel: a diagnostics-over-Ethernet endpoint, NOT a CAN bus, so
 # there are no frames to monitor and no vcan/drivers involved. Because it lists a
-# simulated ECU (`simulate: [SUT]`), pressing ▶ Start spawns a native DoIP entity
+# simulated ECU (`simulate: [SUT]`), pressing ▶ Start hosts a native DoIP entity
 # on real localhost TCP/UDP (port 13400) wrapping the same UDS server the CAN demo
 # uses. The Diagnostics panel then connects to it as a DoIP client over the
 # logical-address pair below — Session / Read VIN / Serial / SW ver / Tester

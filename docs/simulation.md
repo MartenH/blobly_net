@@ -296,9 +296,10 @@ check.equal(doip.discover("DoIP1").vin, uds.open("DoIP1"):read_did(0xF190))
 Payload limits follow the carrier, not the ECU: DoIP carries a 64 KiB diagnostic message, so a
 DID too large for one ISO-TP transfer is served here and reported there.
 
-> **Headless only for now.** `scripts/runtests.sh` brings the entity up and binds port 13400
-> while it runs. Pressing ▶ Start in the GUI does **not** host one — the channel stays `idle`
-> and the Diagnostics panel cannot reach it. See [doip.md](doip.md).
+> **A real socket.** ▶ Start in the GUI, and `scripts/runtests.sh` headless, both host the
+> entity and bind port 13400 while it runs. The channel goes green only once the listener is
+> actually up: if the port is taken it stays `idle` and the Log says why, rather than showing
+> green beside an entity that is not ours. See [doip.md](doip.md).
 
 ## Fault injection
 
@@ -518,7 +519,8 @@ See [scripting.md](scripting.md) for the test API.
   simulated ECU serves the DIDs and DTCs the project gives it; it does not model routines
   (`0x31`), memory access (`0x23`/`0x3D`), or transfer (`0x34`-`0x37`), and writing a DID does
   not affect the signals the ECU transmits.
-- **No DoIP entity from the GUI.** Headless only today; see the DoIP section above.
+- **One logical address per DoIP channel.** An entity answers for itself; several ECUs over
+  Ethernet means several channels.
 - **No LIN.** CAN, CAN-FD and DoIP; LIN is on the roadmap.
 - **Generators are open-loop.** A signal's value follows its formula and cannot react to what
   the ECU under test sends. Closed-loop behaviour belongs in a Lua script.

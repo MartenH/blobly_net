@@ -1220,3 +1220,19 @@
     Help; ISO-TP **CF sequence-number validation**; manifest handler/thread ids widened to u16
     (14-bit entity-id space); socketcan **EINTR retry** carrying errno up; Graphics y-axes go
     ImPlot-native; the H755 bench project; `M4LoadFrame` (0x201), the first cross-core signal.
+- 2026-08-12: **Watcher postmortem — five silent ways to miss a codex review (net#84).** Over one
+  session a review sat unread for 26 minutes and six findings sat unhandled while a watcher
+  reported zero. None of the causes were visible from the outside; each command succeeded and
+  returned nothing. (1) A detached shell job (`( ... & )`) fires into nothing, so the harness
+  never wakes — twice, once for over an hour. (2) A hardcoded repo path made a waiter poll a PR
+  number in the WRONG repository: `gh` returns nothing, "no pending checks" passes trivially,
+  and it reports CI DONE on an empty result. (3) No notion of codex ERRORING ("Something went
+  wrong") — the watcher waited out a 33-minute timeout for a review that was never coming.
+  (4) No notion of comment AGE, so a 90-minute-old failure was replayed as fresh, twice.
+  (5) THE ROOT CAUSE of the 26-minute miss: **pagination**. The API returns 30 items per page
+  ASCENDING, so an un-paginated read drops the NEWEST comments — 38 existed, 30 came back, and
+  the missing 8 were the ones being waited for. A `--arg` "fix" written in between made it worse:
+  `gh api --jq` takes one argument, so passing jq's own flag exits 1 with no stdout and silently
+  disabled the channel it was meant to read. Fixes and the resulting invariants are in
+  CLAUDE.md ("Polling a codex review"); the diagnosis was wrong twice before pagination was
+  found, having first blamed the reviews channel and then the time-scoping.
