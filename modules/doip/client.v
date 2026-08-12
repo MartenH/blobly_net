@@ -121,11 +121,25 @@ pub fn collect_announcements_triggered(port_ int, window_ms int, ip6 bool, trigg
 	defer {
 		c.close() or {}
 	}
-	// bound now — safe to let the sequence go
-	spawn fn (g fn () !) {
-		g() or {}
-	}(trigger)
-	return collect_on(mut c, window_ms)
+	// bound now — safe to let the sequence go. The failure is CAPTURED, not dropped: a send
+	// that fails (unresolvable announce_to, no IPv6 route, socket closed) would otherwise wait
+	// out the window and return an empty success, indistinguishable from an ECU that
+	// legitimately said nothing — which is exactly what a negative discovery test asserts.
+	mut cell := &TriggerErr{}
+	spawn fn (g fn () !, mut e TriggerErr) {
+		g() or { e.msg = err.msg() }
+	}(trigger, mut cell)
+	out := collect_on(mut c, window_ms)!
+	if cell.msg != '' {
+		return error('announcement trigger failed: ${cell.msg}')
+	}
+	return out
+}
+
+// TriggerErr carries a spawned trigger's failure back to the collector.
+struct TriggerErr {
+mut:
+	msg string
 }
 
 // collect_announcements is the IPv4 form, kept for callers that do not care.

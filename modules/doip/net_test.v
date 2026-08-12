@@ -362,7 +362,7 @@ fn test_entity_announces_itself_unasked() {
 		announce_count:    2
 		announce_interval: 50
 	}, handler)
-	srv.listen('127.0.0.1', 13411) or {
+	srv.listen('127.0.0.1', 13413) or {
 		assert false, 'listen: ${err}'
 		return
 	}
@@ -372,7 +372,8 @@ fn test_entity_announces_itself_unasked() {
 	// listener first: announcements are not queued for a tester that is not there yet
 	mut got := []Announcement{}
 	t := spawn fn () []Announcement {
-		return collect_announcements(13400, 900) or { []Announcement{} }
+		// the entity's OWN port: announcements go where it is bound, not to the module default
+		return collect_announcements(13413, 900) or { []Announcement{} }
 	}()
 	time.sleep(150 * time.millisecond)
 	srv.announce() or {
@@ -394,7 +395,7 @@ fn test_announce_count_zero_says_nothing() {
 	mut srv := new_server(ServerCfg{
 		announce_count: 0
 	}, handler)
-	srv.listen('127.0.0.1', 13412) or {
+	srv.listen('127.0.0.1', 13414) or {
 		assert false, 'listen: ${err}'
 		return
 	}
@@ -402,7 +403,7 @@ fn test_announce_count_zero_says_nothing() {
 		srv.close()
 	}
 	t := spawn fn () []Announcement {
-		return collect_announcements(13400, 400) or { []Announcement{} }
+		return collect_announcements(13414, 400) or { []Announcement{} }
 	}()
 	time.sleep(100 * time.millisecond)
 	srv.announce() or {

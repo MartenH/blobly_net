@@ -73,6 +73,7 @@ mut:
 	// The host this entity bound to. announce() needs it to choose a destination, and asking
 	// the socket back for it is more indirection than storing the one string.
 	bound_host string
+	bound_port int
 	active   &net.TcpConn     = unsafe { nil } // the in-progress accepted connection (nil between)
 	stopping bool // set by close(): stop accepting/serving and tear down the active conn
 }
@@ -109,6 +110,7 @@ pub fn (s &DoipServer) is_stopping() bool {
 // IPv6 host literal (one containing ':') is bracketed and bound on the IPv6 family.
 pub fn (mut s DoipServer) listen(host string, port int) ! {
 	s.bound_host = host
+	s.bound_port = port
 	addr := join_host_port(host, port)
 	s.listener = net.listen_tcp(addr_family(host), addr)!
 	s.udp = net.listen_udp(addr) or {
@@ -247,7 +249,10 @@ pub fn (mut s DoipServer) announce() ! {
 	dest := if s.cfg.announce_to != '' {
 		with_port(s.cfg.announce_to)
 	} else {
-		broadcast_for(s.bound_host)
+		// The port this entity BOUND, not the module default: an entity on a custom port
+		// announced to 13400, so a listener on the configured port heard nothing while direct
+		// discovery and TCP both worked — a mismatch only an explicit announce_to could avoid.
+		broadcast_for_port(s.bound_host, s.bound_port)
 	}
 	s.udp.sock.set_option_bool(.broadcast, true) or {
 		return error('cannot enable broadcast: ${err}')
@@ -280,6 +285,11 @@ pub fn (mut s DoipServer) announce() ! {
 // the machine (127.255.255.255); anything else uses the limited broadcast and reaches the
 // network the bench is on.
 pub fn broadcast_for(host string) string {
+	return broadcast_for_port(host, port)
+}
+
+// broadcast_for_port is broadcast_for with the port the entity is actually on.
+pub fn broadcast_for_port(host string, port_ int) string {
 	h := host.trim_space().trim('[]')
 	if h.contains(':') {
 		// IPv6 has no broadcast; the equivalent reach is the link-local all-nodes multicast.
@@ -291,15 +301,15 @@ pub fn broadcast_for(host string) string {
 		// guess the outgoing interface, which is how an announcement goes out the wrong one.
 		if zone := h.split('%')[1] or { '' } {
 			if zone != '' {
-				return '[ff02::1%${zone}]:${port}'
+				return '[ff02::1%${zone}]:${port_}'
 			}
 		}
-		return '[ff02::1]:${port}'
+		return '[ff02::1]:${port_}'
 	}
 	if h.starts_with('127.') || h == 'localhost' {
-		return '127.255.255.255:${port}'
+		return '127.255.255.255:${port_}'
 	}
-	return '255.255.255.255:${port}'
+	return '255.255.255.255:${port_}'
 }
 
 // with_port appends the DoIP port when a destination carries none. resolve_addrs needs
