@@ -67,10 +67,10 @@ docs/                design + platform docs; docs/history.md = archived status l
 | `candb` | DBC parse/decode/encode + canonical writer (`dbc_write.v`) |
 | `isotp` | ISO-TP (ISO 15765-2) transport |
 | `uds` | UDS diagnostic client over ISO-TP |
-| `doip` | DoIP (ISO 13400) — UDS over TCP; same shape as `isotp.Channel` |
+| `doip` | DoIP (ISO 13400) — UDS over TCP; same shape as `isotp.Channel`. Entity (server) side too: ▶ Start hosts one per configured channel, in the GUI and headless |
 | `someip` | SOME/IP header codec, envelope validation, `RpcClient` |
 | `flash` | UDS firmware-download session against a blobly_emb bootloader (0x29 auth) |
-| `sim` | simulated ECUs — tests need no hardware |
+| `sim` | simulated ECUs — tests need no hardware; `doip_entity.v` decides what a DoIP channel hosts and `doip_host.v` is the served-side handler, both shared by the GUI and the headless runner |
 | `player` | replay a recording at its recorded cadence |
 | `canlog`, `mf4` | `candump -l` files; native ASAM MDF4 (`.mf4`) reader |
 | `telem` | trace + telemetry capture control |
@@ -130,6 +130,22 @@ release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks.
 > the guard exists for, and this note must never talk you out of it.
 - **External PRs are auto-closed** (design phase — see [`CONTRIBUTING.md`](CONTRIBUTING.md)); the
   same workflow posts a comment pointing at issues. Nothing to do by hand.
+- **Run `/code-review high` on the branch BEFORE asking codex.** Self-run, high effort; not the
+  billed cloud `/code-review ultra`, which only the maintainer triggers. Precedent:
+  `docs/history.md` 2026-06-21, where a self-run high review of gui#65 found a real bug the
+  change had introduced and led to a rework — that is the standard this repo already set.
+  Codex is a second opinion, not the first one. A round trip costs ~10 minutes and the same
+  defect found late costs a rewrite: #84 ran to nine rounds and 34 findings, and its repeats —
+  an interface string standing in for a channel identity, four separate times; a handler moved
+  into a shared module and then duplicated in the GUI a round later; an unlocked read of an
+  array another thread replaces — were all visible in the diff without running anything.
+  Look for exactly those: shared state touched from more than one thread, a lookup substituting
+  for an identity, a policy that now lives in two places, and a claim in a doc the change just
+  made false.
+- **This file is not loaded for you automatically.** Sessions usually start in `blobly_emb`,
+  which makes this repo an *additional* working directory — its `CLAUDE.md` never enters context
+  on its own. Read it before the first change here. An entire session (PRs #79–#84) ran without
+  it and broke two of the rules below in silence.
 - **PRs get `@codex review`**; iterate until clean before merging.
 - **Update this file in the PR that lands the work** — especially new modules/panels. The gap
   between 2026-07-06 and 07-21 (~30 PRs) had to be reconstructed from `git log`; don't repeat it.
