@@ -578,13 +578,23 @@ fn (mut app App) start() {
 			return
 		}
 	}
+	// Pending echoes belong to the run that is ending: an emission from just before the last
+	// Stop would otherwise sit at the front of this run's ring, where an identical healthy frame
+	// claims it and the new run's own record then expires as never sent. Done HERE, not in
+	// stop(), because stop() runs while the emitters are still winding down — a worker mid
+	// -iteration can append after the reset and put the stale record back. Nothing of ours is
+	// emitting yet at this point. (A trace Clear is different: same run, so those records stay.)
+	app.taps = wiretap.Ring{}
 	app.running = true
 	app.run_gen++
 	for ci, ch in app.chans {
 		if !ch.monitorable() {
 			continue
 		}
-		app.chans[ci].running = true
+		// running is set by rx_loop once its bus is OPEN. Setting it here made it mean "about to
+		// start": the simulation emits its first cyclic frames immediately, and with inproc —
+		// which broadcasts only to already-attached subscribers — those frames genuinely had no
+		// listener, yet were tracked as if one existed and later marked as never sent.
 		app.chans[ci].link_down = !iface_link_up(ch.adapter, ch.address)
 		spawn rx_loop(app, ci, ch.iface)
 		// open a TX bus for this channel's iface (each generator fires on its target bus)
@@ -1061,14 +1071,6 @@ fn sim_key(pch project.Channel, node string) string {
 // stop signals the RX threads to exit (they re-check on the recv timeout) and tears down the
 // hosted DoIP entities, whose sockets must be released before another Start can bind them.
 fn (mut app App) stop() {
-	// Pending echoes belong to the run that is ending. Kept, an emission from just before Stop
-	// sits at the front of the ring into the next Start, where the restarted simulation's
-	// identical frame claims it — and the new run's own record then expires and marks a healthy
-	// row as never sent. (A trace Clear is different: same run, so those records stay.)
-	app.mu.lock()
-	app.taps = wiretap.Ring{}
-	app.mu.unlock()
-
 	// The run flag FIRST. A supervisor that is unbound and has just decided to rebind would
 	// otherwise insert a fresh listener AFTER the snapshot below, escape this close, and
 	// survive into the next Start — whose own bind would then fail against it.
@@ -1695,6 +1697,9 @@ fn rx_loop(app &App, ci int, iface string) {
 	}
 	mut a := unsafe { app }
 	a.mu.lock()
+	// The bus is open: from here a frame we emit can actually come back to us, which is what
+	// `running` promises to note_emit's "is anyone watching?" check.
+	a.chans[ci].running = true
 	a.dbc_readers++ // this loop reads app.dbs lock-free (lookup_name per frame)
 	a.mu.unlock()
 	defer {
@@ -4305,7 +4310,11 @@ fn draw_buses(mut app App, chans []Chan) {
 			if new != c.enabled {
 				app.mu.lock()
 				app.chans[i].enabled = new
-				// enabling a channel mid-run spawns its RX thread; disabling lets it exit
+				// enabling a channel mid-run spawns its RX thread; disabling lets it exit.
+				// Here `running` doubles as the spawn guard — without it a second click inside
+				// the open window starts a second rx_loop and every frame is logged twice —
+				// so this one path can briefly claim a monitor that is still opening. rx_loop
+				// sets it again when the bus is actually up.
 				if new && app.running && c.monitorable() && !app.chans[i].running {
 					app.chans[i].running = true
 					spawn rx_loop(app, i, app.chans[i].iface)
