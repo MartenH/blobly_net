@@ -584,7 +584,11 @@ fn (mut app App) start() {
 	// stop(), because stop() runs while the emitters are still winding down — a worker mid
 	// -iteration can append after the reset and put the stale record back. Nothing of ours is
 	// emitting yet at this point. (A trace Clear is different: same run, so those records stay.)
+	// Under the mutex: a worker from the previous run can still be inside note_emit or
+	// claim_echo_locked, and an unsynchronised assignment would race the ring's backing array.
+	app.mu.lock()
 	app.taps = wiretap.Ring{}
+	app.mu.unlock()
 	app.running = true
 	app.run_gen++
 	for ci, ch in app.chans {
@@ -1187,13 +1191,17 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 		})
 		app.gcount[gkey(origin, chn, f.id, f.extended)]++
 	}
-	// Only where somebody is actually watching for the echo, asked NOW rather than when the bus
-	// was opened: a channel disabled mid-run takes its monitor with it, and a cached answer
-	// would then mark healthy traffic as never having reached the wire. With no monitor — a
-	// generator firing at an unmonitored bus — or a driver that never hands our own frames back,
-	// nothing could confirm it, and silence is not evidence.
-	watchers := app.monitors_locked(iface)
-	if transport.echoes_own_sends(iface) && watchers.len > 0 {
+	// ALWAYS record what we sent, on any backend that could echo — the emission is ours whether
+	// or not a monitor happens to be open at this instant, and the sim emits its first frames
+	// while the rx loops are still opening. Attributing those to the device under test breaks
+	// the one promise this column makes.
+	//
+	// The monitor list rides along instead of gating: it says who could have seen this frame,
+	// which decides who may claim it and whether "never came back" is evidence of anything. Asked
+	// NOW rather than when the bus was opened, since a channel disabled mid-run takes its monitor
+	// with it.
+	if transport.echoes_own_sends(iface) {
+		watchers := app.monitors_locked(iface)
 		for missed in app.taps.note(seq, iface, f, t_ms, watchers) {
 			i := app.row_index_locked(missed)
 			if i >= 0 {
@@ -1618,6 +1626,12 @@ fn gen_loop(app &App) {
 		for i in fire {
 			a.fire_index(i)
 		}
+		// Resolve emissions whose echo never came. Expiry is otherwise driven only by the next
+		// emission or the next received frame, so on a bus that falls silent — a disconnected
+		// bench, the very case the mark is for — the last rows stayed unresolved forever.
+		a.mu.lock()
+		a.expire_pending_locked(f64(time.ticks() - a.t0))
+		a.mu.unlock()
 		time.sleep(8 * time.millisecond)
 	}
 }
@@ -1817,7 +1831,13 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	}
 	bus.close()
 	a.mu.lock()
-	a.chans[ci].running = false
+	// Only if this run is still the current one. A loop that exited because the generation moved
+	// on would otherwise clear a flag the NEW loop just set, and every emission after that would
+	// see no watcher: its echo classified as the device under test's, recorded twice and fed to
+	// the verifier, while the monitor was in fact running the whole time.
+	if a.run_gen == gen {
+		a.chans[ci].running = false
+	}
 	a.mu.unlock()
 }
 

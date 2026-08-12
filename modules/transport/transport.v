@@ -47,12 +47,17 @@ pub fn echoes_own_sends(iface string) bool {
 // records what it asked for records something that never existed — and, for the echo matching,
 // can never match what comes back.
 pub fn wire_frame(iface string, f CanFrame) CanFrame {
-	if f.data.len <= 8 {
+	// The ID too, and to its DECLARED width: SocketCAN masks a standard id with can_sff_mask, so
+	// `extended: false` with 0x800 goes out as 0x000 while the caller recorded 0x800 — a record
+	// that can never match its own echo, hence a false BUS row and an unconfirmed one of ours.
+	id := if f.extended { f.id & 0x1FFF_FFFF } else { f.id & 0x7FF }
+	if id == f.id && f.data.len <= 8 {
 		return f
 	}
 	return CanFrame{
 		...f
-		data: f.data[..8].clone()
+		id:   id
+		data: if f.data.len > 8 { f.data[..8].clone() } else { f.data }
 	}
 }
 

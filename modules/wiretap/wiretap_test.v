@@ -230,3 +230,24 @@ fn test_a_monitor_that_arrived_late_cannot_claim() {
 	}
 	assert seq == 1
 }
+
+// Emissions made while nothing was watching — the sim's first frames, before the rx loops finish
+// opening — are still OURS. Any monitor may claim them, because labelling our own traffic as the
+// device under test's breaks the one promise the column makes.
+fn test_an_emission_made_before_any_monitor_opened_is_still_ours() {
+	mut r := Ring{}
+	f := frame(0x120, [u8(1)])
+	r.note(1, 'vcan0', f, 0, []) // nobody watching yet
+	seq := r.claim(0, 'vcan0', f, 1) or {
+		assert false, 'our own frame was attributed to the device under test'
+		return
+	}
+	assert seq == 1
+}
+
+// …but nobody was watching, so nothing can be called missing either.
+fn test_an_unwatched_emission_is_never_reported_missing() {
+	mut r := Ring{}
+	r.note(1, 'vcan0', frame(0x120, [u8(1)]), 0, [])
+	assert r.expire(default_window_ms + 1) == []u64{}, 'silence with no listener is not a fault'
+}

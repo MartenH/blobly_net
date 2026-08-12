@@ -49,7 +49,14 @@ struct Pending {
 	t_ms  f64
 	// The monitors that existed WHEN THIS WAS SENT. A monitor that opened afterwards never saw
 	// the frame, so letting it claim the record would suppress a real frame that merely looks
-	// identical — the record must not outlive the set of sockets that could have received it.
+	// identical.
+	//
+	// EMPTY means nobody was known to be watching — the sim emits its first frames before the
+	// rx loops finish opening, and the same window exists as one shuts down. Those are still our
+	// frames, so any monitor may claim them: mislabelling our own traffic as the device under
+	// test's breaks the one promise this column makes, and it is the worse trade against
+	// possibly swallowing a byte-identical real frame inside that startup window. What an empty
+	// set does NOT buy is a verdict: nobody was watching, so nothing can be called missing.
 	allowed []int
 mut:
 	// Which monitors have already accounted for this emission. Several monitors may watch one
@@ -142,10 +149,11 @@ pub fn (mut r Ring) expire(now_ms f64) []u64 {
 			keep << p
 			continue
 		}
-		// Only what NO monitor ever saw. A record kept around to serve a second monitor has
-		// already been accounted for once, and reporting it again would accuse a bus that
-		// carried the frame perfectly well.
-		if p.claimed.len == 0 {
+		// Only what NO monitor ever saw, and only where one COULD have: a record kept for a
+		// second monitor has already been accounted for once (reporting it again would accuse a
+		// bus that carried the frame perfectly well), and an emission made while nothing was
+		// watching has no evidence either way — silence is not a fault.
+		if p.claimed.len == 0 && p.allowed.len > 0 {
 			missed << p.seq
 		}
 	}

@@ -208,8 +208,11 @@ The `origin` column answers it, with four values that each state only what is ac
 | `REP` | it came from a recording you opened, so it was never on this bench's wire |
 | `BUS` | **not ours** — the device under test, or anything else real |
 
-Direction is a *function* of origin (the first three are outbound, `BUS` inbound), so nothing was
-lost by replacing the old column. `origin` is searchable: type `bus` in the trace filter to see
+`TST` and `SIM` are outbound and `BUS` is inbound, so for live traffic the old direction column
+told you nothing this one does not. `REP` is the exception and an honest one: a candump recording
+does not say whether the recorder transmitted or received each line, so a replayed row's
+direction is simply **unknown** — which is more than the old column ever admitted, since it
+labelled every imported frame `RX`. `origin` is searchable: type `bus` in the trace filter to see
 only what the real ECU put on the wire, or `sim` for only your simulation.
 
 **It is observed, never declared.** The label does not come from your project file. Each emitter
