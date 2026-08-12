@@ -292,11 +292,20 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 // What matters here is that two buses stay two buses.
 //
 // Without a BusChannel, the channel group's position is the only distinction the file offers.
+//
+// NAMESPACED, for the same reason the number is left alone. A recording's bus numbers are not
+// this project's interface names, and a bare `can1` would match a project channel called can1
+// exactly — the imported frames would silently adopt that channel's protection rules, and a
+// Vector file (1-based) would hand bus #1's frames the verdicts meant for the second bus. `mf4:`
+// cannot collide, so an imported label stays unresolved unless the project has exactly one bus
+// to resolve it to. The two sources stay apart too: `bus` is what the file recorded, `group` is
+// only this decoder's ordinal for a group carrying no BusChannel — one name for both would merge
+// a BusChannel-less group 1 with another group's BusChannel 1, the same collapse one level down.
 fn bus_iface(bus_no int, group int) string {
 	if bus_no >= 0 {
-		return 'can${bus_no}'
+		return 'mf4:bus${bus_no}'
 	}
-	return if group <= 0 { 'can' } else { 'can${group}' }
+	return if group <= 0 { 'mf4:can' } else { 'mf4:group${group}' }
 }
 
 // collect_channels walks a cn_next chain, recursing into struct compositions

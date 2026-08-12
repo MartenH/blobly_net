@@ -1188,11 +1188,11 @@ fn (mut app App) load_recording(path string) {
 			}
 		}
 	}
-	// A single simulated bus is unambiguous, so an unrecognised label (an MF4's 'can0', or the
-	// bare 'can' of a file with no BusChannel) resolves to it rather than going unchecked. With
-	// several, a label we cannot place is left alone — guessing which bus a frame came from
-	// would attach verdicts to the wrong sender. An MF4 label is the file's BusChannel, which
-	// is not the same namespace as this project's interfaces, so it usually IS unrecognised.
+	// A single simulated bus is unambiguous, so an unrecognised label (an MF4's `mf4:bus0`)
+	// resolves to it rather than going unchecked. With several, a label we cannot place is left
+	// alone — guessing which bus a frame came from would attach verdicts to the wrong sender.
+	// An imported label is deliberately namespaced (`mf4:`) so it can never match a project
+	// interface by accident: BusChannel is the file's numbering, not this project's.
 	only := if verifiers.len == 1 { verifiers.keys()[0] } else { '' }
 	app.mu.lock()
 	app.trace = []

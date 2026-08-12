@@ -107,8 +107,10 @@ fn test_two_buses_stay_two_buses() {
 		per_iface[e.iface]++
 	}
 	assert per_iface.len == 2, 'the buses were merged: ${per_iface}'
-	assert per_iface['can0'] == 6
-	assert per_iface['can2'] == 6
+	// `mf4:` because a recording's bus numbers are NOT this project's interface names: a bare
+	// `can1` would match a project channel called can1 and silently adopt its protection rules.
+	assert per_iface['mf4:bus0'] == 6
+	assert per_iface['mf4:bus2'] == 6
 }
 
 // The payloads must travel with the right bus, not merely be counted separately.
@@ -120,8 +122,8 @@ fn test_each_bus_keeps_its_own_frames() {
 	for e in entries {
 		assert e.frame.id == 0x100
 		match e.iface {
-			'can0' { assert e.frame.data[0] == 1, 'a can2 frame was filed under can0' }
-			'can2' { assert e.frame.data[0] == 2, 'a can0 frame was filed under can2' }
+			'mf4:bus0' { assert e.frame.data[0] == 1, 'a bus2 frame was filed under bus0' }
+			'mf4:bus2' { assert e.frame.data[0] == 2, 'a bus0 frame was filed under bus2' }
 			else { assert false, 'unexpected bus ${e.iface}' }
 		}
 	}
@@ -139,4 +141,20 @@ fn test_a_single_bus_file_stays_one_bus() {
 		ifaces[e.iface] = true
 	}
 	assert ifaces.len == 1, 'one bus became several: ${ifaces.keys()}'
+}
+
+// A recorded BusChannel and this decoder's fallback ordinal are different things, so they must
+// not share a name: a BusChannel-less group #1 and another group's BusChannel 1 would otherwise
+// merge again — the same collapse, one level down.
+fn test_a_recorded_bus_and_a_fallback_ordinal_cannot_collide() {
+	assert bus_iface(1, 0) != bus_iface(-1, 1)
+	assert bus_iface(1, 0) == 'mf4:bus1'
+	assert bus_iface(-1, 1) == 'mf4:group1'
+}
+
+// And neither can be mistaken for a project interface.
+fn test_an_imported_label_is_not_a_project_interface() {
+	for label in [bus_iface(0, 0), bus_iface(3, 0), bus_iface(-1, 0), bus_iface(-1, 2)] {
+		assert label.starts_with('mf4:'), '${label} could match a project channel by that name'
+	}
 }
