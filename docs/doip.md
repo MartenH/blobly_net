@@ -163,6 +163,12 @@ long as the project runs.
   the activated tester is NACKed rather than dispatched. A second tester cannot quietly take over.
 - **No subnet scan** — an entity is found by hearing it announce, or at an address you name;
   there is no sweep for one that did neither. Planned.
+- **Passive discovery is verified on IPv4 only.** The IPv6 path resolves in the right family,
+  joins `ff02::1` and reports a failed join, but an announcement sent to that group is **not
+  received** by a wildcard listener on loopback here, so IPv6 passive collection is implemented
+  and unproven rather than working. Use `doip.discover(host, port)` for IPv6 entities, which is
+  unicast and tested. Tracked separately; do not read the passive-listening row above as
+  covering IPv6.
 - **No SOME/IP service discovery** — a separate protocol, tracked separately.
 
 ## Reading a capture

@@ -697,12 +697,18 @@ fn l_doip_listen(l lua.State) int {
 	ip6 := l.arg_bool(3)
 	mut from_chan := l.arg_str(4)
 	mut use_port := port
-	if from_chan != '' && use_port == 0 {
-		// The triggered channel's OWN port. Defaulting to 13400 meant listening on the wrong
-		// port for a custom-port entity, which now correctly announces where it is bound — the
-		// caller would hear nothing and have no idea why.
+	mut use_ip6 := ip6
+	if from_chan != '' {
 		if ci := env.find_chan(from_chan) {
-			use_port = env.chans[ci].carrier.port
+			// The triggered channel's OWN port AND family. Deriving the port but not the family
+			// left an IPv6 entity listened for on 0.0.0.0 while it announced over IPv6 —
+			// an empty result unless the caller happened to pass ip6 = true as well.
+			if use_port == 0 {
+				use_port = env.chans[ci].carrier.port
+			}
+			if env.chans[ci].carrier.host.contains(':') {
+				use_ip6 = true
+			}
 		}
 	}
 	if use_port == 0 {
@@ -728,13 +734,13 @@ fn l_doip_listen(l lua.State) int {
 				return err
 			}
 		}
-		got, th := doip.collect_announcements_triggered(use_port, window, ip6, wrapped) or {
+		got, th := doip.collect_announcements_triggered(use_port, window, use_ip6, wrapped) or {
 			return l.fail('doip.listen(${use_port}): ${err}')
 		}
 		env.announce_threads << th
 		got
 	} else {
-		doip.collect_announcements_af(use_port, window, ip6) or {
+		doip.collect_announcements_af(use_port, window, use_ip6) or {
 			return l.fail('doip.listen(${port}): ${err}')
 		}
 	}

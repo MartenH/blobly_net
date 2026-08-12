@@ -75,7 +75,15 @@ pub fn collect_announcements_af(port_ int, window_ms int, ip6 bool) ![]Announcem
 		// JOIN the group. Binding the wildcard receives unicast, but an entity announcing to
 		// the derived ff02::1 is multicast — without a join this socket never sees it and the
 		// window simply times out. modules/transport/udpbus.v does the same after its bind.
-		c.join_multicast_group('ff02::1', '::') or {}
+		// The failure is RETURNED, not dropped: a join that fails (no suitable IPv6 interface)
+		// would otherwise wait out the window and return an empty success — indistinguishable
+		// from an entity that legitimately stayed silent, which is what this API is asked.
+		// "0" = any interface: V parses the IPv6 argument as a numeric INDEX, not an address,
+		// so '::' failed with "must be a numeric interface index". With the error dropped that
+		// failure was invisible and IPv6 collection could never have worked.
+		c.join_multicast_group('ff02::1', '0') or {
+			return error('cannot join ff02::1 on ${addr}: ${err}')
+		}
 	}
 	defer {
 		c.close() or {}
@@ -132,7 +140,15 @@ pub fn collect_announcements_triggered(port_ int, window_ms int, ip6 bool, trigg
 		// JOIN the group. Binding the wildcard receives unicast, but an entity announcing to
 		// the derived ff02::1 is multicast — without a join this socket never sees it and the
 		// window simply times out. modules/transport/udpbus.v does the same after its bind.
-		c.join_multicast_group('ff02::1', '::') or {}
+		// The failure is RETURNED, not dropped: a join that fails (no suitable IPv6 interface)
+		// would otherwise wait out the window and return an empty success — indistinguishable
+		// from an entity that legitimately stayed silent, which is what this API is asked.
+		// "0" = any interface: V parses the IPv6 argument as a numeric INDEX, not an address,
+		// so '::' failed with "must be a numeric interface index". With the error dropped that
+		// failure was invisible and IPv6 collection could never have worked.
+		c.join_multicast_group('ff02::1', '0') or {
+			return error('cannot join ff02::1 on ${addr}: ${err}')
+		}
 	}
 	defer {
 		c.close() or {}

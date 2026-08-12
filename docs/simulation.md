@@ -328,6 +328,8 @@ local seen = doip.listen(1500, { from = "Talker" })   -- binds FIRST, then trigg
 
 `from` matters: triggering yourself and then listening races the sequence, and with
 `announce_count: 1` or a zero interval the single datagram is gone before the socket exists.
+It also derives the listener's port and address family from that channel. **IPv4 only in
+practice** — see the IPv6 caveat in [doip.md](doip.md).
 `doip.announce(channel)` on its own is still there for driving a tester under test, where the
 listener is somebody else's. `doip.discover(channel)` remains the
 ask-and-answer half.
