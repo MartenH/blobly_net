@@ -323,11 +323,13 @@ three datagrams, 500 ms apart — so a suite starting afterwards can miss the wh
 however the runner is ordered. Do not race it: trigger one.
 
 ```lua
-doip.announce("Talker")             -- fires the sequence in the background, returns at once
-local seen = doip.listen(1500)      -- ...so the window covers it
+local seen = doip.listen(1500, { from = "Talker" })   -- binds FIRST, then triggers Talker
 ```
 
-That is also how you would drive a tester under test. `doip.discover(channel)` remains the
+`from` matters: triggering yourself and then listening races the sequence, and with
+`announce_count: 1` or a zero interval the single datagram is gone before the socket exists.
+`doip.announce(channel)` on its own is still there for driving a tester under test, where the
+listener is somebody else's. `doip.discover(channel)` remains the
 ask-and-answer half.
 
 Payload limits follow the carrier, not the ECU: DoIP carries a 64 KiB diagnostic message, so a

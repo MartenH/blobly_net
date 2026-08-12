@@ -26,6 +26,19 @@ channels:
           dids:
             - { id: "0xF190", text: "ANNOUNCERVIN00001" }
 
+  - name: OneShot
+    type: doip
+    interface: doip:127.0.0.3:13400
+    tester_address: "0x0E80"
+    ecu_address: "0x3000"
+    vin: ONESHOTVIN0000001
+    announce_count: 1          # a single datagram: nothing to catch on a second attempt
+    simulation:
+      - name: SUT
+        uds:
+          dids:
+            - { id: "0xF190", text: "ONESHOTVIN0000001" }
+
   - name: Silent
     type: doip
     interface: doip:127.0.0.2:13400

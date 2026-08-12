@@ -39,3 +39,17 @@ test("a silent ECU never announces but still answers a direct query", function()
   check.equal(doip.discover("Silent").vin, "SILENTECUVIN00001")
   check.equal(uds.open("Silent"):read_did(0xF190), "SILENTECUVIN00001")
 end)
+
+-- A ONE-SHOT entity (announce_count 1) is the case a trigger-then-listen script cannot catch:
+-- the single datagram is gone before the socket binds. `from` binds first and triggers after.
+test("a single announcement is caught when the listener binds first", function()
+  local seen = doip.listen(1000, { from = "OneShot" })
+  local found = false
+  for _, a in ipairs(seen) do
+    if a.vin == "ONESHOTVIN0000001" then
+      found = true
+      check.equal(a.logical_address, 0x3000)
+    end
+  end
+  check.truthy(found, "missed a one-shot announcement — the listener was not bound in time")
+end)

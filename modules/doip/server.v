@@ -285,6 +285,15 @@ pub fn broadcast_for(host string) string {
 		// IPv6 has no broadcast; the equivalent reach is the link-local all-nodes multicast.
 		// Sending 255.255.255.255 from an IPv6 socket fails ENETUNREACH, so every IPv6 entity
 		// logged "announce failed" at each Start and never announced.
+		//
+		// KEEP THE ZONE. Link-local multicast needs an interface scope, so an entity bound to
+		// fe80::1%eth0 must announce to ff02::1%eth0 — dropping it leaves a multihomed host to
+		// guess the outgoing interface, which is how an announcement goes out the wrong one.
+		if zone := h.split('%')[1] or { '' } {
+			if zone != '' {
+				return '[ff02::1%${zone}]:${port}'
+			}
+		}
 		return '[ff02::1]:${port}'
 	}
 	if h.starts_with('127.') || h == 'localhost' {

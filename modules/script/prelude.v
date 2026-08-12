@@ -113,9 +113,16 @@ function doip.announce(channel)
   return __doip_announce(channel)
 end
 
--- doip.listen(window_ms [, port [, ip6]]) -> { {vin=..., logical_address=..., from=...}, ... }
-function doip.listen(window_ms, port, ip6)
-  local raw = __doip_listen(port or 13400, window_ms or 1000, ip6 and true or false)
+-- doip.listen(window_ms [, opts]) -> { {vin=..., logical_address=..., from=...}, ... }
+--
+-- opts = { port = 13400, ip6 = false, from = "<channel>" }. With `from`, the socket is bound
+-- BEFORE that entity is triggered, which is the only way to be sure of catching a short
+-- sequence (announce_count 1, or interval 0) — triggering yourself and then listening races it.
+function doip.listen(window_ms, opts)
+  opts = opts or {}
+  if type(opts) == "number" then opts = { port = opts } end   -- back-compat: listen(ms, port)
+  local raw = __doip_listen(opts.port or 13400, window_ms or 1000,
+                            opts.ip6 and true or false, opts.from or "")
   local out = {}
   for line in tostring(raw):gmatch("[^\n]+") do
     local vin, addr, from = line:match("^(.-)|0x(%x+)|(.+)$")

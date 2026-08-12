@@ -74,6 +74,11 @@ pub fn collect_announcements_af(port_ int, window_ms int, ip6 bool) ![]Announcem
 	defer {
 		c.close() or {}
 	}
+	return collect_on(mut c, window_ms)
+}
+
+// collect_on reads announcements from an already-bound socket for window_ms.
+fn collect_on(mut c net.UdpConn, window_ms int) ![]Announcement {
 	mut out := []Announcement{}
 	// MONOTONIC. A wall-clock deadline moves under NTP or a VM time correction, which either
 	// ends the window early and loses announcements or stretches the next socket timeout far
@@ -101,6 +106,26 @@ pub fn collect_announcements_af(port_ int, window_ms int, ip6 bool) ![]Announcem
 		}
 	}
 	return out
+}
+
+// collect_announcements_triggered binds the listener, THEN fires `trigger`, then collects.
+//
+// A caller that triggers and then listens has a race it cannot close: with announce_count 1, or
+// interval 0, the whole sequence can be sent before the socket is bound and the result is a
+// false empty discovery. Doing both here removes the ordering from the caller entirely.
+pub fn collect_announcements_triggered(port_ int, window_ms int, ip6 bool, trigger fn () !) ![]Announcement {
+	addr := if ip6 { '[::]:${port_}' } else { '0.0.0.0:${port_}' }
+	mut c := net.listen_udp(addr) or {
+		return error('cannot listen for announcements on ${addr}: ${err}')
+	}
+	defer {
+		c.close() or {}
+	}
+	// bound now — safe to let the sequence go
+	spawn fn (g fn () !) {
+		g() or {}
+	}(trigger)
+	return collect_on(mut c, window_ms)
 }
 
 // collect_announcements is the IPv4 form, kept for callers that do not care.

@@ -608,11 +608,25 @@ fn l_doip_announce(l lua.State) int {
 }
 
 fn l_doip_listen(l lua.State) int {
+	mut env := env_of(l)
 	port := int(l.arg_int(1))
 	window := int(l.arg_int(2))
 	ip6 := l.arg_bool(3)
-	found := doip.collect_announcements_af(port, window, ip6) or {
-		return l.fail('doip.listen(${port}): ${err}')
+	from_chan := l.arg_str(4)
+	// With a channel named, BIND FIRST and trigger that entity from inside — a script that
+	// triggers and then listens cannot close the race when announce_count is 1 or the interval
+	// is 0: the whole sequence can be gone before the socket exists.
+	found := if from_chan != '' {
+		f := env.announcers[from_chan] or {
+			return l.fail('doip.listen(from: "${from_chan}"): not an entity this process hosts')
+		}
+		doip.collect_announcements_triggered(port, window, ip6, f) or {
+			return l.fail('doip.listen(${port}): ${err}')
+		}
+	} else {
+		doip.collect_announcements_af(port, window, ip6) or {
+			return l.fail('doip.listen(${port}): ${err}')
+		}
 	}
 	mut out := []string{}
 	for f in found {
