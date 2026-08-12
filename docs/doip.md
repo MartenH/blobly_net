@@ -1,8 +1,7 @@
 # DoIP — diagnostics over Ethernet
 
 How Blobly Net talks to a DoIP entity, what goes on the wire, and what is **supported today**
-versus **planned**. The split matters: DoIP is further along in the modules than in the GUI,
-so a feature you would expect to find in a panel may only exist headless.
+versus **planned**.
 
 For *why* DoIP came before SOME/IP and how the modules are laid out, see the design record in
 `docs/ethernet_architecture.md`.
@@ -13,29 +12,25 @@ For *why* DoIP came before SOME/IP and how the modules are laid out, see the des
 |---|---|
 | DoIP channel in a project (`doip:<host>:<port>`) | ✅ configuration |
 | Discovery of an entity at a **known** address (DoIP panel) | ✅ |
-| DoIP entity — discovery, routing activation, UDS | ✅ **headless only** (`cmd/script` from a project, `cmd/doip_smoke`, the `doip` module) |
-| UDS over DoIP end-to-end | ✅ **headless only** — including from Lua: `uds.open` on a DoIP channel |
+| DoIP entity — discovery, routing activation, UDS | ✅ (`cmd/script` from a project, the GUI, `cmd/doip_smoke`) |
+| UDS over DoIP end-to-end | ✅ headless and in the GUI — from Lua via `uds.open` on a DoIP channel |
 | Starting a simulated DoIP entity from a **project**, headless | ✅ `scripts/runtests.sh --project <p.blobnet>` |
-| **Starting a simulated DoIP entity from the GUI** | 🧭 planned |
-| **UDS from the Diagnostics panel over a DoIP channel** | 🧭 planned |
+| **Starting a simulated DoIP entity from the GUI** | ✅ ▶ Start hosts it; the channel goes green only once the listener is up |
+| **UDS from the Diagnostics panel over a DoIP channel** | ✅ listed as a target, addressed by logical address |
 | **Broadcast discovery — finding an entity you were not told about** | 🧭 planned |
 
-Two gaps worth knowing before you plan a bench, both in the **app** rather than the protocol:
+One thing worth knowing before you plan a bench: an entity **binds a real socket** on its
+configured port for as long as it runs. If the port is already held — a second instance, or
+anything else on 13400 — the channel stays `idle` and the Log says so, rather than showing
+green beside something that is not ours.
 
-- The **Diagnostics panel does not drive a DoIP channel.** It selects a running *monitorable*
-  channel, and DoIP channels are excluded from that set.
-- The **GUI cannot start a DoIP entity.** `transport.open()` has no `doip:` backend, and a
-  project's simulated nodes are driven as CAN, so pressing Start on a DoIP channel does not
-  bring an entity up.
-
-Both are app wiring, not protocol limits. Headless, the whole path runs from a project:
+The whole path runs from a project, headless:
 `scripts/runtests.sh --project projects/doip-demo.blobnet tests/diag_doip.lua` starts the
 entity described by the project and tests it over real localhost TCP/UDP. `cmd/doip_smoke`
 does the same without a project. Either way the point of the design holds — the same
 `uds.Client` rides a `DoipClient` unchanged, because only the carrier swapped.
 
-Note that the demo projects' own header comments still describe the GUI starting an entity on
-▶ Start. That does not happen yet; headless is the way to run one today.
+The GUI does the same on ▶ Start, and the Diagnostics panel talks to it as another target.
 
 ## The short version
 
@@ -150,8 +145,8 @@ an entity and a tester headless; the project file shows the shape the configurat
 - **Routing activation is single-source.** Once activated, a request from a different source is
   denied rather than replacing the first, and a diagnostic message whose source does not match
   the activated tester is NACKed rather than dispatched. A second tester cannot quietly take over.
-- **No broadcast discovery**, **no Diagnostics-panel support**, and **no entity simulation from
-  the GUI**, as above — all three planned.
+- **No broadcast discovery** — an entity is found at an address you name, not by sweeping the
+  subnet. Planned.
 - **No SOME/IP service discovery** — a separate protocol, tracked separately.
 
 ## Reading a capture

@@ -166,6 +166,10 @@ mut:
 	diag_did_buf []u8
 	diag_sel     int // which DiagTarget the panel addresses
 	diag_plan    []DiagTarget // what start() actually spawned, per bus
+	// Hosted DoIP entities, by interface. Held so Stop can close the listeners: an entity that
+	// outlived Stop would keep port 13400 bound, and the next Start would fail to bind against
+	// the previous run of the same application.
+	doip_hosts map[string]&doip.DoipServer
 	// The Configuration window's File tab: the project's own TEXT, edited in place.
 	//
 	// Text and not a re-serialisation, because `to_yaml()` does not preserve comments and this
@@ -572,11 +576,10 @@ fn (mut app App) start() {
 		// CAN reported "rx and tx must both be set" for a correct config, and seeding CAN
 		// servers on it listed a diagnostic target the panel could never reach.
 		if sc.doip {
-			// Report the node's real problems, then stop: hosting a DoIP entity from the GUI
-			// is not implemented (#82), and the headless runner is where one comes up today.
 			for w in sim.validate_uds_doip(sc.nodes) {
 				app.notify(w)
 			}
+			app.start_doip_entity(sc)
 			continue
 		}
 		if sc.nodes.len == 0 {
@@ -626,7 +629,111 @@ fn (mut app App) start() {
 }
 
 // stop signals the RX threads to exit (they re-check on the recv timeout).
+// start_doip_entity hosts one simulated DoIP entity for a channel, the same way the headless
+// runner does — sim.doip_entity decides WHAT is served so the two cannot diverge, and this
+// function only deals with the socket and the UI.
+//
+// Binds synchronously. A bind failure reported from inside the worker would leave the channel
+// showing "running" while nothing listened, and if another process held the port the
+// Diagnostics panel would quietly talk to THAT entity instead.
+fn (mut app App) start_doip_entity(sc SimCfg) {
+	mut pch := project.Channel{}
+	for c in app.proj.channels {
+		if c.iface == sc.iface {
+			pch = c
+			break
+		}
+	}
+	ent := sim.doip_entity(pch, sc.nodes) or {
+		app.notify('${pch.name}: ${err}')
+		app.notify('${pch.name}: DoIP entity NOT started')
+		return
+	}
+	if ent.extra > 0 {
+		app.notify('${pch.name}: ${ent.extra + 1} UDS nodes on one DoIP entity; serving "${ent.node}" (0x${pch.ecu_addr:04X})')
+	}
+	host, port := pch.doip_endpoint()
+	mut srv := ent.server
+	mut sync_box := &VinSync{}
+	handler := fn [mut srv, mut sync_box] (req []u8) []u8 {
+		// Identical to the runner's: a write to DID 0xF190 changes the served identity, so the
+		// announcement has to move with it, and a VIN the announcement cannot carry faithfully
+		// is refused rather than accepted.
+		if w := uds.written_did(req) {
+			if w.did == 0xF190 {
+				if w.data.len != 17 {
+					return [u8(0x7F), uds.sid_write_data_by_identifier, 0x31]
+				}
+				resp := srv.handle(req)
+				if resp.len > 0 && resp[0] == 0x6E {
+					sync_box.srv.set_vin(w.data.bytestr())
+				}
+				return resp
+			}
+		}
+		return srv.handle(req)
+	}
+	mut ds := doip.new_server(doip.server_cfg(pch.ecu_addr, ent.announce, pch.eid), handler)
+	ds.listen(host, port) or {
+		// Say what is at stake. A port already held by another DoIP process would otherwise
+		// look like a working entity to anyone reading the Buses panel.
+		app.notify('${pch.name}: cannot bind ${host}:${port} — ${err}')
+		app.notify('${pch.name}: NOT hosting; anything already on that port is not ours')
+		return
+	}
+	sync_box.srv = ds
+	app.doip_hosts[sc.iface] = ds
+	spawn doip_entity_worker(app, sc.iface, mut ds)
+	// The channel is live only NOW, with the listener actually up — a dot driven by "we
+	// spawned something" rather than "a tester can connect" is how #82 went unnoticed.
+	app.mu.lock()
+	for ci in 0 .. app.chans.len {
+		if app.chans[ci].iface == sc.iface {
+			app.chans[ci].running = true
+		}
+	}
+	app.mu.unlock()
+	app.diag_plan << DiagTarget{
+		label:   '${ent.node_label()} on ${pch.name}  (DoIP 0x${pch.ecu_addr:04X})'
+		iface:   sc.iface
+		carrier: script.carrier_of(pch)
+	}
+	app.notify('${pch.name}: DoIP entity on ${host}:${port}, logical address 0x${pch.ecu_addr:04X}, VIN ${ent.announce}')
+}
+
+// VinSync links the UDS handler to the entity it serves for: the handler must exist before
+// new_server() and the server before the handler can update it.
+struct VinSync {
+mut:
+	srv &doip.DoipServer = unsafe { nil }
+}
+
+// doip_entity_worker serves one hosted entity until Stop.
+fn doip_entity_worker(app &App, iface string, mut s doip.DoipServer) {
+	mut a := unsafe { app }
+	spawn doip_udp_worker(app, mut s)
+	for a.running {
+		s.accept_and_serve(200) or { continue } // a timeout is the normal case
+	}
+	s.close()
+}
+
+// doip_udp_worker answers vehicle-identification requests, so Discover finds the entity.
+fn doip_udp_worker(app &App, mut s doip.DoipServer) {
+	mut a := unsafe { app }
+	for a.running {
+		s.serve_udp_once(200) or { continue }
+	}
+}
+
 fn (mut app App) stop() {
+	// Close the entities BEFORE clearing `running`: the serve loops block in accept for up to
+	// 200ms, and close() interrupts them so the port is released now rather than whenever the
+	// last worker happens to notice. A Start that follows immediately must be able to bind.
+	for _, mut ds in app.doip_hosts {
+		ds.close()
+	}
+	app.doip_hosts = map[string]&doip.DoipServer{}
 	app.running = false
 	for ci in 0 .. app.chans.len {
 		app.chans[ci].running = false
@@ -5320,6 +5427,10 @@ struct DiagTarget {
 	rx    u32 // the ECU listens here — the tester TRANSMITS to it
 	tx    u32 // the ECU answers here — the tester RECEIVES from it
 	ext   bool
+	// How to reach it. A DoIP target has no CAN ids at all — it is addressed by the channel's
+	// logical pair — so rx/tx above are meaningless for one and the panel must not open an
+	// ISO-TP channel for it. Derived by the same carrier_of() the scripting side uses.
+	carrier script.Carrier
 }
 
 // diag_targets lists what the Diagnostics panel can talk to.
@@ -5366,13 +5477,25 @@ fn diag_worker(app &App, kind string, did u16) {
 	targets := a.diag_targets()
 	t := targets[if a.diag_sel >= 0 && a.diag_sel < targets.len { a.diag_sel } else { 0 }]
 	iface := if t.iface != '' { t.iface } else { a.diag_iface() }
-	mut ch := isotp.open_software(a.bitrate_iface(iface), t.rx, t.tx, t.ext) or {
-		a.diag_push('open ${iface}: ${err}')
-		a.mu.lock()
-		a.diag_busy = false
-		a.mu.unlock()
-		vgui.wake()
-		return
+	// The transport follows the TARGET, not the panel. Opening ISO-TP for a DoIP entry would
+	// try to open `doip:127.0.0.1:13400` as a CAN interface, which on Linux falls through to
+	// SocketCAN and fails — the panel would report the entity unreachable while it was serving.
+	mut ch := if t.carrier.doip {
+		isotp.Channel(doip.open_doip(t.carrier.host, t.carrier.port, t.carrier.tester,
+			t.carrier.ecu) or {
+			a.diag_push('doip ${t.carrier.host}:${t.carrier.port}: ${err}')
+			a.diag_done()
+			return
+		})
+	} else {
+		isotp.Channel(isotp.open_software(a.bitrate_iface(iface), t.rx, t.tx, t.ext) or {
+			a.diag_push('open ${iface}: ${err}')
+			a.mu.lock()
+			a.diag_busy = false
+			a.mu.unlock()
+			vgui.wake()
+			return
+		})
 	}
 	mut c := uds.new_client(ch)
 	match kind {
