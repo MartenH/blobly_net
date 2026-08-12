@@ -125,21 +125,23 @@ pub fn collect_announcements_triggered(port_ int, window_ms int, ip6 bool, trigg
 	// that fails (unresolvable announce_to, no IPv6 route, socket closed) would otherwise wait
 	// out the window and return an empty success, indistinguishable from an ECU that
 	// legitimately said nothing — which is exactly what a negative discovery test asserts.
-	mut cell := &TriggerErr{}
-	spawn fn (g fn () !, mut e TriggerErr) {
-		g() or { e.msg = err.msg() }
-	}(trigger, mut cell)
+	// The result comes back over a CHANNEL and is JOINED before deciding. A shared string was
+	// both a data race and a lie waiting to happen: the collector could read it before the
+	// trigger wrote it and report success for a send that had already failed.
+	res := chan string{cap: 1}
+	spawn fn (g fn () !, res chan string) {
+		g() or {
+			res <- err.msg()
+			return
+		}
+		res <- ''
+	}(trigger, res)
 	out := collect_on(mut c, window_ms)!
-	if cell.msg != '' {
-		return error('announcement trigger failed: ${cell.msg}')
+	msg := <-res // the sequence may outlast the window; its verdict is worth waiting for
+	if msg != '' {
+		return error('announcement trigger failed: ${msg}')
 	}
 	return out
-}
-
-// TriggerErr carries a spawned trigger's failure back to the collector.
-struct TriggerErr {
-mut:
-	msg string
 }
 
 // collect_announcements is the IPv4 form, kept for callers that do not care.

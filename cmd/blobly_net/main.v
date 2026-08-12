@@ -6668,15 +6668,22 @@ fn script_worker(app &App, path string) {
 	// doip.announce(channel) and doip.listen(..., { from = ... }) reported "not an entity this
 	// process hosts" in the GUI while ▶ Start had a live entity — a script that passes headless
 	// and fails here for no reason the user can see.
+	// By the channel's OWN name, taken from the project — not parsed back out of the composite
+	// '<name>|<iface>' key, which truncates any name containing a '|' and then rejects the
+	// entity the user can plainly see running.
 	a.mu.lock()
 	hosted := a.doip_hosts.clone()
 	a.mu.unlock()
-	for k, srv in hosted {
-		name := k.all_before('|') // key is '<name>|<iface>'
-		mut sv := srv
-		env.register_announcer(name, fn [mut sv] () ! {
-			sv.announce()!
-		})
+	for c in a.proj.channels {
+		if !c.is_doip() {
+			continue
+		}
+		if srv := hosted['${c.name}|${c.iface}'] {
+			mut sv := srv
+			env.register_announcer(c.name, fn [mut sv] () ! {
+				sv.announce()!
+			})
+		}
 	}
 	env.run_file(path) or { a.script_push('error: ${err}') }
 	a.script_push('${env.passed()}/${env.total()} passed, ${env.failed()} failed')

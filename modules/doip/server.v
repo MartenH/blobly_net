@@ -247,7 +247,9 @@ pub fn (mut s DoipServer) announce() ! {
 		return error('announce before listen')
 	}
 	dest := if s.cfg.announce_to != '' {
-		with_port(s.cfg.announce_to)
+		// the bound port here as well: fixing only the derived branch left an explicit
+		// host-only announce_to (e.g. "127.255.255.255") going to 13400 on a custom-port entity
+		with_port(s.cfg.announce_to, s.bound_port)
 	} else {
 		// The port this entity BOUND, not the module default: an entity on a custom port
 		// announced to 13400, so a listener on the configured port heard nothing while direct
@@ -314,12 +316,12 @@ pub fn broadcast_for_port(host string, port_ int) string {
 
 // with_port appends the DoIP port when a destination carries none. resolve_addrs needs
 // host:port and silently resolves a bare address to port 0, which then fails EINVAL.
-fn with_port(dest string) string {
+fn with_port(dest string, port_ int) string {
 	d := dest.trim_space()
 	if d.starts_with('[') {
-		return if d.contains(']:') { d } else { '${d}:${port}' }
+		return if d.contains(']:') { d } else { '${d}:${port_}' }
 	}
-	return if d.count(':') == 1 { d } else if d.contains(':') { '[${d}]:${port}' } else { '${d}:${port}' }
+	return if d.count(':') == 1 { d } else if d.contains(':') { '[${d}]:${port_}' } else { '${d}:${port_}' }
 }
 
 // set_vin updates the VIN this entity ANNOUNCES, so discovery keeps naming the same ECU the

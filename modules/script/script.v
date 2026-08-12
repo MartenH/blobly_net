@@ -10,6 +10,7 @@
 // (stdout vs a log panel), and run a file. The same script behaves identically.
 module script
 
+import sync
 import time
 import lua
 import transport
@@ -105,6 +106,8 @@ mut:
 	// Entities this process hosts, by channel name, so a script can trigger their announcement
 	// sequence rather than racing the startup burst.
 	announcers map[string]Announcer
+	mu         sync.Mutex
+	async_errs []string // failures from spawned work, surfaced instead of dropped
 pub mut:
 	results   []TestResult
 	log_lines []string // every emitted line, buffered (the GUI reads this post-run)
@@ -152,6 +155,27 @@ pub fn (env &Env) total() int {
 
 // close tears down the ISO-TP connections, buses and the interpreter.
 // register_announcer lets the host offer a channel announcement sequence to scripts.
+// note_async_err records a failure from work a script started but did not wait for, so it
+// surfaces in the output instead of vanishing into a spawned thread.
+pub fn (mut env Env) note_async_err(msg string) {
+	env.mu.lock()
+	env.async_errs << msg
+	env.mu.unlock()
+	env.emit('!! ${msg}')
+}
+
+// emit_async_err flushes anything a previous async trigger reported, so it lands in the output
+// near the test that caused it rather than at some arbitrary later point.
+fn (mut env Env) emit_async_err(ctx string) {
+	env.mu.lock()
+	pending := env.async_errs.clone()
+	env.async_errs = []
+	env.mu.unlock()
+	for p in pending {
+		env.emit('!! ${p}')
+	}
+}
+
 pub fn (mut env Env) register_announcer(chan_name string, f Announcer) {
 	env.announcers[chan_name] = f
 }
@@ -601,9 +625,13 @@ fn l_doip_announce(l lua.State) int {
 	// it finished meant a script could never listen for its own trigger — every datagram was
 	// already sent by the time doip.listen() bound its socket, and the test passed having
 	// heard nothing at all.
-	spawn fn (g Announcer) {
-		g() or {}
-	}(f)
+	//
+	// A failure is REPORTED, not swallowed. This API exists to drive an external listening
+	// tester, so a send that never happened would otherwise be blamed on that tester.
+	env.emit_async_err(name)
+	spawn fn (g Announcer, mut e Env, nm string) {
+		g() or { e.note_async_err('doip.announce("${nm}"): ${err}') }
+	}(f, mut env, name)
 	return 0
 }
 
