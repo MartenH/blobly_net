@@ -627,9 +627,11 @@ documentation rather than a feature.
 
 **It is tracked, not forgotten: [#98](https://github.com/MartenH/blobly_net/issues/98).** The
 point of finishing it is a rest bus driven by *a real capture from the car* rather than by
-signal generators somebody typed — the SUT hears its actual environment. The plumbing is small
-(a worker pumping `player.due()` onto the bus, plus `monitorable()` accepting replay channels —
-`canlog`/`mf4` already read the files and `player` already paces them);
+signal generators somebody typed — the SUT hears its actual environment. The plumbing is small but not one line
+(a worker pumping `player.due()` onto the bus, `monitorable()` accepting replay channels, and
+**source-bus selection** — a multi-bus `.mf4` loads every bus into one entry list, so the config
+has to say which recorded bus feeds which channel; `canlog`/`mf4` already read the files and
+`player` already paces them);
 the part that needs deciding is what to **leave out**, because a capture contains the ECU under
 test too, and replaying its own messages back at it puts two transmitters on every one of its
 ids. The DBC already names each message's sender, which is most of what makes the subtraction
