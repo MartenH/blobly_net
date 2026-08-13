@@ -1209,7 +1209,15 @@ fn (mut app App) load_recording(path string) {
 			can_buses[c.iface] = true
 		}
 	}
-	mf4_only := if can_buses.len == 1 { only } else { '' }
+	// BOTH sides must be unambiguous. A one-bus project importing a TWO-bus recording is still a
+	// guess: routing every mf4:busN through one stateful VerifySet interleaves counters from
+	// different source buses, which is a fabricated verdict either way it lands. The recording's
+	// own distinct labels are the file saying it spans several buses — believe it.
+	mut rec_buses := map[string]bool{}
+	for e in entries {
+		rec_buses[e.iface] = true
+	}
+	mf4_only := if can_buses.len == 1 && rec_buses.len == 1 { only } else { '' }
 	app.mu.lock()
 	app.trace = []
 	app.gcount = map[string]u64{}

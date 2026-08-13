@@ -195,3 +195,18 @@ fn test_an_out_of_range_invalidation_bit_reads_as_valid() {
 	}
 	assert !chan_invalid([u8(0), 0, 0, 0, 0], 0, 4, 1, c)
 }
+
+// CN flag bit 0 says every sample of the channel is invalid, whatever the per-record bits hold.
+// Missing it merged those frames into an unrelated bus, or invented one.
+fn test_a_channel_wide_invalid_flag_wins() {
+	c := Chan{
+		flags: 0x01 // all values invalid
+	}
+	assert chan_invalid([u8(0), 0, 0, 0, 0], 0, 4, 1, c)
+	// and it wins even where a per-record bit exists and is clear
+	both := Chan{
+		flags:     0x03
+		inval_bit: 3
+	}
+	assert chan_invalid([u8(0), 0, 0, 0, 0b0000_0000], 0, 4, 1, both)
+}

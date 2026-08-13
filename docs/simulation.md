@@ -479,10 +479,12 @@ How the frames are matched back to a channel depends on where the labels came fr
   go through that matching. They are not names in your project's namespace, and a channel could
   legitimately be called anything, `mf4:bus1` included.
 
-Either way, an unrecognised label resolves to the project's bus only when there is exactly ONE
-CAN bus configured — for an import, that is the project's bus count, not the number of buses that
-happen to carry `simulation:` or `verify:` entries. With more than one it is left unchecked rather
-than guessed at — attaching one bus's verdicts to another's frames would
+Either way, an unrecognised label resolves to the project's bus only when **both sides** are
+unambiguous: exactly one CAN bus configured (the project's bus count, not the number of buses that
+happen to carry `simulation:` or `verify:` entries) **and** exactly one bus in the recording. A
+one-bus project importing a two-bus capture is still a guess — running both through one stateful
+verifier interleaves counters from different buses. Otherwise it is left unchecked rather than
+guessed at — attaching one bus's verdicts to another's frames would
 be worse than not checking. This is also why the buses stay separate in the trace: before, every
 MF4 frame was labelled `can`, so the same id on two buses merged into one row.
 

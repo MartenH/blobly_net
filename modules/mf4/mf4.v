@@ -167,9 +167,10 @@ struct Chan {
 	bit_count u32
 	data_link u64   // cn_data: VLSD signal-data block (type 1) or length channel (type 5)
 	cc_link   u64   // cn_cc_conversion (CCBLOCK), for the master-time scale
-	// cn_flags bit 1 = this channel has an invalidation bit, whose position in the record's
-	// invalidation area is cn_inval_bit_pos. A record may mark a channel INVALID, and its raw
-	// bits are then undefined — reading them anyway invents a value.
+	// cn_flags bit 0 = EVERY sample of this channel is invalid; bit 1 = it has a per-record
+	// invalidation bit, whose position in the record's invalidation area is cn_inval_bit_pos.
+	// Either way the raw bits are undefined where the flag applies — reading them anyway
+	// invents a value.
 	flags     u32
 	inval_bit u32
 }
@@ -346,6 +347,9 @@ fn collect_channels(buf []u8, cn_first u64, mut chans []Chan) {
 // not defined. Without this check a stale or zero BusChannel reads as a real bus number, which
 // either merges those frames into a genuine mf4:busN stream or invents a bus that never existed.
 fn chan_invalid(raw []u8, base int, data_bytes int, inval_bytes int, c Chan) bool {
+	if c.flags & 0x01 != 0 {
+		return true // channel-wide: EVERY sample is invalid, so there is no per-record bit to read
+	}
 	if c.flags & 0x02 == 0 || inval_bytes == 0 {
 		return false // no invalidation bit for this channel
 	}
