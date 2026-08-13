@@ -59,7 +59,7 @@ pub fn parse_line(line string) ?LogEntry {
 	}
 	return LogEntry{
 		t_s:   t_s
-		iface: iface
+		iface: iface_from_token(iface) // reverses the writer's escaping; a plain name is unchanged
 		frame: transport.CanFrame{
 			id:       id
 			extended: extended
@@ -93,23 +93,59 @@ pub fn format_line(e LogEntry) string {
 	return '(${e.t_s:.6f}) ${iface_token(e.iface)} ${idhex}#${body}'
 }
 
-// iface_token makes a candump-safe interface field. The format is whitespace-delimited with the
-// payload after a '#', so a label carrying either breaks the LINE, not just its own field: a
-// channel named "Powertrain CAN" writes `(t) Powertrain CAN 100#…`, which parse_line reads as
-// interface "Powertrain", token "CAN" — no '#', so it drops the line silently. The recorder
-// stores a LOGICAL channel name (two channels can share one interface), and the project editor
-// accepts any name, so the writer has to guarantee this rather than trust its callers.
+// iface_token makes a candump-safe interface field, REVERSIBLY. The format is whitespace-
+// delimited with the payload after a '#', so a label carrying either breaks the LINE, not just
+// its own field: a channel named "Powertrain CAN" writes `(t) Powertrain CAN 100#…`, which
+// parse_line reads as interface "Powertrain", token "CAN" — no '#', so it drops the line
+// silently. The recorder stores a LOGICAL channel name (two channels can share one interface)
+// and the project editor accepts any name, so the writer has to guarantee this.
 //
-// Substitution, not rejection: losing every frame from a channel because of a space in its name
-// is a far worse outcome than a label that reads `Powertrain_CAN` on the way back.
+// Percent-encoded rather than substituted. Replacing the space with '_' kept the file parseable
+// but threw the identity away: reopening gives "Powertrain_CAN", which matches no configured
+// channel, so the channel filter hides its own rows and the verifier cannot place them — and
+// "Powertrain CAN" and "Powertrain_CAN" become the same channel. parse_line decodes, so a
+// round trip returns exactly the name that went in.
 pub fn iface_token(s string) string {
-	mut out := []u8{cap: s.len}
+	mut out := ''
 	for c in s {
-		out << if c == ` ` || c == `\t` || c == `#` || c == `(` || c == `)` { u8(`_`) } else { c }
+		out += match c {
+			` `, `\t`, `#`, `(`, `)`, `%` { '%${c:02X}' }
+			else { c.ascii_str() }
+		}
 	}
-	t := out.bytestr()
-	return if t == '' { 'can' } else { t }
+	return if out == '' { 'can' } else { out }
 }
+
+// iface_from_token reverses iface_token. A label with no escapes — every ordinary interface name
+// — comes back unchanged, so foreign candump files are unaffected.
+pub fn iface_from_token(s string) string {
+	if !s.contains('%') {
+		return s
+	}
+	mut out := []u8{cap: s.len}
+	mut i := 0
+	for i < s.len {
+		if s[i] == `%` && i + 2 < s.len {
+			hi := hex_nibble(s[i + 1]) or {
+				out << s[i]
+				i++
+				continue
+			}
+			lo := hex_nibble(s[i + 2]) or {
+				out << s[i]
+				i++
+				continue
+			}
+			out << u8(hi * 16 + lo)
+			i += 3
+			continue
+		}
+		out << s[i]
+		i++
+	}
+	return out.bytestr()
+}
+
 
 fn bytes_hex(data []u8) string {
 	mut s := ''

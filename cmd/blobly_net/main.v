@@ -118,6 +118,7 @@ mut:
 	enabled   bool
 	rx        u64
 	running   bool
+	spawning  bool // rx_loop spawned but its bus not open yet (double-click guard)
 	link_down bool // real CAN iface is administratively DOWN (bound but can't tx/rx)
 }
 
@@ -1766,6 +1767,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		// after it recorded as having no watcher, and its echo read as the ECU's.
 		if a.run_gen == gen {
 			a.chans[ci].running = false
+			a.chans[ci].spawning = false // release the guard, or it can never be re-enabled
 		}
 		a.mu.unlock()
 		return
@@ -1784,6 +1786,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	// The bus is open: from here a frame we emit can actually come back to us, which is what
 	// `running` promises to note_emit's "is anyone watching?" check.
 	a.chans[ci].running = true
+	a.chans[ci].spawning = false
 	a.dbc_readers++ // this loop reads app.dbs lock-free (lookup_name per frame)
 	a.mu.unlock()
 	defer {
@@ -1896,6 +1899,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	// the verifier, while the monitor was in fact running the whole time.
 	if a.run_gen == gen {
 		a.chans[ci].running = false
+		a.chans[ci].spawning = false
 	}
 	a.mu.unlock()
 }
@@ -4401,12 +4405,15 @@ fn draw_buses(mut app App, chans []Chan) {
 				app.mu.lock()
 				app.chans[i].enabled = new
 				// enabling a channel mid-run spawns its RX thread; disabling lets it exit.
-				// Here `running` doubles as the spawn guard — without it a second click inside
-				// the open window starts a second rx_loop and every frame is logged twice —
-				// so this one path can briefly claim a monitor that is still opening. rx_loop
-				// sets it again when the bus is actually up.
-				if new && app.running && c.monitorable() && !app.chans[i].running {
-					app.chans[i].running = true
+				// `spawning` is the double-click guard — without one, a second click inside the
+				// open window starts a second rx_loop and every frame is logged twice. It is
+				// SEPARATE from `running` on purpose: running means "a monitor is reading", and
+				// an inproc bus broadcasts only to subscribers already attached, so a frame sent
+				// while the socket is still opening cannot echo. Claiming a watcher that early
+				// marked healthy traffic as never having reached the wire.
+				if new && app.running && c.monitorable() && !app.chans[i].running
+					&& !app.chans[i].spawning {
+					app.chans[i].spawning = true
 					spawn rx_loop(app, i, app.chans[i].iface, app.run_gen)
 				}
 				app.mu.unlock()

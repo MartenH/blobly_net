@@ -42,15 +42,26 @@ pub fn echoes_own_sends(iface string) bool {
 	return !vendor_iface(iface)
 }
 
-// wire_frame is the frame this interface will ACTUALLY put on the bus: a classic CAN id masked to
-// its declared width and a payload of at most 8 bytes, which is what the drivers transmit
-// (ct_can_send clamps both). A caller that records what it ASKED for records something that never
-// existed — and, for echo matching, something that can never come back.
+// clamps_to_classic reports whether this backend rewrites a frame on the way out. The kernel and
+// vendor drivers take a classic CAN frame — 11/29-bit id, at most 8 bytes — and silently clamp
+// both (ct_can_send). The SOFTWARE buses carry whatever they are handed, which is what makes
+// in-process CAN-FD payloads work (docs/simulation.md), so normalising there would not describe
+// the wire, it would damage it.
+pub fn clamps_to_classic(iface string) bool {
+	i := iface.to_lower()
+	return !(i.starts_with('inproc') || i.starts_with('udp'))
+}
+
+// wire_frame is the frame this interface will ACTUALLY put on the bus. Where the backend clamps,
+// that means a classic id masked to its declared width and at most 8 bytes: a caller that records
+// what it ASKED for records something that never existed — and, for echo matching, something that
+// can never come back. Where the backend does not clamp, the frame is already what goes out.
 //
-// SEND this, do not merely record it. The software buses (inproc, udp) carry whatever they are
-// given, so normalising the record while transmitting the original would make the two disagree in
-// the opposite direction: a full-payload echo that no truncated record can match.
+// SEND this, do not merely record it, or the record and the echo disagree the other way round.
 pub fn wire_frame(iface string, f CanFrame) CanFrame {
+	if !clamps_to_classic(iface) {
+		return f
+	}
 	// The ID too, and to its DECLARED width: SocketCAN masks a standard id with can_sff_mask, so
 	// `extended: false` with 0x800 goes out as 0x000 while the caller recorded 0x800 — a record
 	// that can never match its own echo, hence a false BUS row and an unconfirmed one of ours.

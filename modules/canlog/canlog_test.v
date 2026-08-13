@@ -84,19 +84,40 @@ fn test_a_channel_name_with_a_space_still_round_trips() {
 		}
 	}
 	line := format_line(e)
-	assert line.contains('Powertrain_CAN'), 'unsafe interface field: ${line}'
+	assert line.contains('Powertrain%20CAN'), 'unsafe interface field: ${line}'
+	assert line.split(' ').len == 3, 'the line must still have exactly three fields: ${line}'
 	back := parse_line(line) or {
 		assert false, 'the line we wrote does not parse: ${line}'
 		return
 	}
 	assert back.frame.id == 0x100
 	assert back.frame.data == [u8(1), 2]
-	assert back.iface == 'Powertrain_CAN'
+	// the identity SURVIVES: a lossy token would match no configured channel, so the channel
+	// filter would hide its own rows and the verifier could not place them
+	assert back.iface == 'Powertrain CAN'
+}
+
+// Distinct names must stay distinct — substitution collapsed these two into one channel.
+fn test_two_names_that_differ_only_by_the_escape_stay_distinct() {
+	a := iface_token('Powertrain CAN')
+	b := iface_token('Powertrain_CAN')
+	assert a != b
+	assert iface_from_token(a) == 'Powertrain CAN'
+	assert iface_from_token(b) == 'Powertrain_CAN'
+}
+
+// An ordinary candump file has nothing to decode, so foreign logs are untouched.
+fn test_a_plain_interface_name_is_left_alone() {
+	assert iface_token('vcan0') == 'vcan0'
+	assert iface_from_token('vcan0') == 'vcan0'
+	assert iface_from_token('can1') == 'can1'
 }
 
 fn test_the_payload_separator_cannot_leak_into_the_interface() {
-	assert iface_token('a#b') == 'a_b'
-	assert iface_token('(x)') == '_x_'
+	assert iface_token('a#b') == 'a%23b'
+	assert iface_from_token('a%23b') == 'a#b'
+	assert iface_token('(x)') == '%28x%29'
 	assert iface_token('') == 'can'
-	assert iface_token('vcan0') == 'vcan0'
+	// a literal % is escaped too, or decoding would invent a character
+	assert iface_from_token(iface_token('100% sure')) == '100% sure'
 }

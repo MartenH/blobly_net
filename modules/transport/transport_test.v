@@ -59,3 +59,29 @@ fn test_the_vendor_backends_do_not_echo_our_sends() {
 	assert !echoes_own_sends('kvaser:0')
 	assert echoes_own_sends('pcan0'), 'SocketCAN echoes, whatever the interface happens to be called'
 }
+
+// The software buses carry what they are handed — that is what makes in-process CAN-FD payloads
+// work — so "what the wire will carry" is the frame itself. Normalising there would not describe
+// the transmission, it would damage it.
+fn test_a_software_bus_is_not_clamped() {
+	long := CanFrame{
+		id:   0x100
+		data: []u8{len: 24, init: u8(index)}
+	}
+	f := wire_frame('inproc:CAN1', long)
+	assert f.data.len == 24, 'an in-process CAN-FD payload was truncated'
+	u := wire_frame('udp:239.0.0.1:5000', long)
+	assert u.data.len == 24
+	assert !clamps_to_classic('inproc:CAN1')
+	assert clamps_to_classic('vcan0')
+	assert clamps_to_classic('pcan:PCAN_USBBUS1@500000')
+}
+
+// …and an id the software bus would carry verbatim is left alone too.
+fn test_a_software_bus_keeps_an_over_wide_id() {
+	f := wire_frame('inproc:CAN1', CanFrame{
+		id:   0x800
+		data: [u8(1)]
+	})
+	assert f.id == 0x800
+}
