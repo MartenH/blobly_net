@@ -32,6 +32,18 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
 
 ## Planned
 
+- 🧭 **Rest bus from a real recording** ([#98](https://github.com/MartenH/blobly_net/issues/98)) —
+  drive the surrounding ECUs from a capture of the actual vehicle instead of hand-written signal
+  generators, so the SUT hears its real environment. `canlog` and `mf4` already read the files and
+  `modules/player` already paces the decoded entries (play/seek/loop, tested), and `replay:` is
+  already in the project schema; what is missing is a worker, `monitorable()` accepting those
+  channels, and **source-bus selection** — a multi-bus `.mf4` loads every bus into one entry list
+  (`mf4:bus0`, `mf4:bus2`, …) while `replay:` names a single channel, so the config has to say
+  which recorded bus feeds which channel. The design question is the
+  **subtraction** — a capture contains the ECU under test, so replaying it verbatim puts two
+  transmitters on every one of its ids (exactly the collision the trace's `origin` column now
+  makes visible). The DBC names each message's sender, which is what makes that solvable.
+
 - 🧭 **SOME/IP-SD** (service discovery) + the SOME/IP **sim service** — explicitly deferred in
   [`docs/ethernet_architecture.md`](docs/ethernet_architecture.md).
 - 🧭 **DoIP per-connection handler state** — deferred pending the threading change.
@@ -179,7 +191,10 @@ Kept last: this is where the roadmap ends, not where it starts.
 **Simulation, logs & replay**
 - ✅ Simulated ECUs (`sim`) — tests need no hardware
 - ✅ `candump -l` logs · ✅ native **ASAM MDF4** (`.mf4`) reader
-- ✅ **Replay** at the recording's original cadence
+- ⚠️ **Replay** — `modules/player` paces a decoded recording at its original cadence (play, pause,
+  seek, loop) and is tested, but **nothing drives it**: no worker feeds the bus and `monitorable()`
+  does not open a replay channel, so configuring one produces silence. Listed here for years as
+  shipped, which it is not end to end — see [#98](https://github.com/MartenH/blobly_net/issues/98)
 
 **Observability**
 - ✅ **Trace chart** — handler/thread swimlanes, derived idle lane, execution-vs-response bars,
