@@ -20,12 +20,17 @@ module wiretap
 
 import transport
 
-// Origins. Direction is a FUNCTION of these — the first three are outbound, `bus` is inbound —
-// so a separate direction column would carry no information.
-pub const tst = 'TST' // we emitted it as a tester
-pub const sim = 'SIM' // our simulated rest-of-bus emitted it
-pub const rep = 'REP' // from a recording: candump carries no origin, so this is the honest ceiling
-pub const bus = 'BUS' // not ours — the device under test, or anything else real on the wire
+// Origins, in the vocabulary CAN tooling already uses: TX is us, RX is somebody else. The
+// simulation is still us, so it is a TX with a marker rather than a category of its own.
+//
+// REP is the one that is not a direction. A recording opened in the viewer was never transmitted
+// by anyone here — and a candump line does not say whether its recorder sent or received it — so
+// calling it TX or RX would claim something the file cannot support. (If replay-onto-the-bus
+// lands, see #98, those frames ARE ours and become tx_sim; REP keeps meaning "a file on screen".)
+pub const tx = 'TX' // we emitted it, as tester
+pub const tx_sim = 'TX-S' // our simulated rest-of-bus emitted it
+pub const rep = 'REP' // from a recording open in the viewer; nothing was transmitted
+pub const rx = 'RX' // not ours — the device under test, or anything else real on the wire
 
 // How long an emission may take to come back before it counts as missing. Generous on purpose:
 // an echo is normally there in microseconds, and calling a slow one missing would accuse a
@@ -311,7 +316,7 @@ pub fn (r Ring) outstanding() int {
 }
 
 // No clear(): a trace Clear must NOT drop these. The records are what makes an echo still in
-// flight recognisable as ours; forgetting them turns the next few of our own frames into BUS
+// flight recognisable as ours; forgetting them turns the next few of our own frames into RX
 // rows, recording entries and E2E-verifier input. Row identities are monotonic and the trace
 // base already makes old ones unresolvable, so a stale record can suppress its echo without
 // ever confirming a row that came later.
