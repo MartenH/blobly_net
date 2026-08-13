@@ -1285,15 +1285,8 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 	if app.recording && !watching {
 		// Stamped INSIDE the lock, like the rx path: a time taken before acquiring it can be
 		// older than a line already written, and the file would then disagree with itself.
-		app.rec << canlog.LogEntry{f64(time.ticks() - app.t0) / 1000.0, chn, f}
-		rec_id = app.rec_seq
-		app.rec_seq++
+		rec_id = app.rec_append_locked(canlog.LogEntry{f64(time.ticks() - app.t0) / 1000.0, chn, f})
 		recorded_here = true
-		// the same bounded window the rx path keeps — with the echo suppressed, our own traffic
-		// arrives through here, so this is the path a long recording actually grows on
-		if app.rec.len > 200000 {
-			app.rec = app.rec[app.rec.len - 200000..].clone()
-		}
 	}
 	if transport.echoes_own_sends(iface) {
 		watchers := app.monitors_locked(iface)
@@ -1324,6 +1317,23 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 // single channel when it has none.
 fn (app &App) tap_chan(iface string, chan_name string) string {
 	return if chan_name != '' { chan_name } else { app.chan_name_for(iface) }
+}
+
+// rec_append_locked appends to the recording and returns that entry's stable identity. EVERY
+// append goes through here: the identity is rec_seq counted against rec_base, so a path that
+// appended without bumping the counter — the received frames and the echoes both do — would make
+// every later id point at the wrong entry, and a retraction would delete somebody else's frame.
+// Caller holds app.mu.
+fn (mut app App) rec_append_locked(e canlog.LogEntry) u64 {
+	id := app.rec_seq
+	app.rec_seq++
+	app.rec << e
+	if app.rec.len > 200000 {
+		drop := app.rec.len - 200000
+		app.rec = app.rec[drop..].clone()
+		app.rec_base += u64(drop)
+	}
+	return id
 }
 
 // unrecord drops a frame we recorded at emit but never managed to send, BY IDENTITY. The
@@ -2003,10 +2013,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				// listed first.
 				if c.first && !c.done {
 					ch_own := if c.tag != '' { c.tag } else { a.chan_name_for(iface) }
-					a.rec << canlog.LogEntry{f64(time.ticks() - a.t0) / 1000.0, ch_own, f}
-					if a.rec.len > 200000 {
-						a.rec = a.rec[a.rec.len - 200000..].clone()
-					}
+					a.rec_append_locked(canlog.LogEntry{f64(time.ticks() - a.t0) / 1000.0, ch_own, f})
 				}
 			}
 		}
@@ -2029,6 +2036,13 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			}
 		}
 		a.mu.lock()
+		// The run again: this iteration released the lock after claiming, and a Stop→Start in
+		// that gap resets the ring and moves the generation — publishing here would put the old
+		// run's frame into the new run's trace, recording and verifier.
+		if a.run_gen != gen {
+			a.mu.unlock()
+			break
+		}
 		if !a.paused && !ours {
 			a.push_row_locked(TraceRow{
 				t_ms:   t_ms
@@ -2053,10 +2067,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			a.trace_freeze = trace_rsp_status(telem.decode_trace_rsp(f.data))
 		}
 		if a.recording && !ours {
-			a.rec << canlog.LogEntry{f64(time.ticks() - a.t0) / 1000.0, chname, f}
-			if a.rec.len > 200000 {
-				a.rec = a.rec[a.rec.len - 200000..].clone()
-			}
+			a.rec_append_locked(canlog.LogEntry{f64(time.ticks() - a.t0) / 1000.0, chname, f})
 		}
 		a.chans[ci].rx++
 		a.rx++

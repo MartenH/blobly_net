@@ -121,3 +121,14 @@ fn test_the_payload_separator_cannot_leak_into_the_interface() {
 	// a literal % is escaped too, or decoding would invent a character
 	assert iface_from_token(iface_token('100% sure')) == '100% sure'
 }
+
+// A foreign log may legally hold a percent triplet that was never our escaping: decoding it
+// would silently rename that channel, and every consumer keys on the name.
+fn test_a_foreign_percent_sequence_is_left_alone() {
+	assert iface_from_token('CAN%31') == 'CAN%31'
+	assert iface_from_token('can%41x') == 'can%41x'
+	// …while the ones we actually emit still round-trip
+	assert iface_from_token(iface_token('Powertrain CAN')) == 'Powertrain CAN'
+	assert iface_from_token(iface_token('a#b')) == 'a#b'
+	assert iface_from_token(iface_token('100% sure')) == '100% sure'
+}

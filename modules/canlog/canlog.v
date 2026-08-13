@@ -136,7 +136,17 @@ pub fn iface_from_token(s string) string {
 				i++
 				continue
 			}
-			out << u8(hi * 16 + lo)
+			c := u8(hi * 16 + lo)
+			// ONLY the characters iface_token escapes. A foreign candump file may legally hold
+			// `CAN%31`, and decoding that to `CAN1` would silently rename somebody else's
+			// channel — while `%20` cannot appear in a real interface name, because the token
+			// it decodes to (a space) is not allowed in one.
+			if c !in [u8(` `), `\t`, `#`, `(`, `)`, `%`] {
+				out << s[i]
+				i++
+				continue
+			}
+			out << c
 			i += 3
 			continue
 		}
