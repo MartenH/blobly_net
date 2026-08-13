@@ -85,3 +85,16 @@ fn test_a_software_bus_keeps_an_over_wide_id() {
 	})
 	assert f.id == 0x800
 }
+
+// `udp0` and `inproc0` are valid SocketCAN interface names on Linux and open as SocketCAN, so a
+// loose prefix test would leave their frames un-normalised while the kernel clamped them — the
+// record and the echo then disagree.
+fn test_a_socketcan_interface_named_like_a_software_bus() {
+	assert !software_iface('udp0')
+	assert !software_iface('inproc0')
+	assert clamps_to_classic('udp0')
+	assert clamps_to_classic('inproc0')
+	assert software_iface('inproc')
+	assert software_iface('inproc:CAN1')
+	assert software_iface('udp:239.0.0.1:5000')
+}

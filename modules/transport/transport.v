@@ -48,8 +48,16 @@ pub fn echoes_own_sends(iface string) bool {
 // in-process CAN-FD payloads work (docs/simulation.md), so normalising there would not describe
 // the wire, it would damage it.
 pub fn clamps_to_classic(iface string) bool {
+	return !software_iface(iface)
+}
+
+// software_iface recognises the in-process and UDP buses the SAME way the dispatcher does:
+// the bare word or the word plus ':'. A loose prefix test would claim a perfectly ordinary
+// SocketCAN interface named `udp0` or `inproc0`, which on Linux opens as SocketCAN — and then
+// the frame we recorded would differ from the one the kernel actually clamped and sent.
+pub fn software_iface(iface string) bool {
 	i := iface.to_lower()
-	return !(i.starts_with('inproc') || i.starts_with('udp'))
+	return i == 'inproc' || i.starts_with('inproc:') || i == 'udp' || i.starts_with('udp:')
 }
 
 // wire_frame is the frame this interface will ACTUALLY put on the bus. Where the backend clamps,

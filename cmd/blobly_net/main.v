@@ -316,6 +316,8 @@ mut:
 struct SenderRT {
 mut:
 	iface  string // the bus this generator fires on (a channel iface); rebound if the iface changes
+	chan   string // the CHANNEL that owns it — two channels can share one iface, and only the
+	              // name says which of them a generator's frames belong to
 	sender project.Sender
 }
 
@@ -607,10 +609,16 @@ fn (mut app App) start() {
 		// listener, yet were tracked as if one existed and later marked as never sent.
 		app.chans[ci].link_down = !iface_link_up(ch.adapter, ch.address)
 		spawn rx_loop(app, ci, ch.iface, app.run_gen)
-		// open a TX bus for this channel's iface (each generator fires on its target bus)
-		if ch.iface !in app.tx_buses {
+		// A TX bus per CHANNEL (each generator fires on its target bus), plus one anonymous tap
+		// per wire for the paths with no particular channel — Quick Send, diagnostics, shell.
+		if tx_bus_key(ch.name, ch.iface) !in app.tx_buses {
+			if b := app.open_tap_on(ch.iface, org_tst, ch.name) {
+				app.tx_buses[tx_bus_key(ch.name, ch.iface)] = b
+			}
+		}
+		if tx_bus_key('', ch.iface) !in app.tx_buses {
 			if b := app.open_tap(ch.iface, org_tst) {
-				app.tx_buses[ch.iface] = b
+				app.tx_buses[tx_bus_key('', ch.iface)] = b
 			}
 		}
 		if app.send_iface == '' {
@@ -620,9 +628,9 @@ fn (mut app App) start() {
 	// a generator may target a bus whose channel isn't itself monitored — open those too
 	for sr in app.senders {
 		tgt := sr.target()
-		if tgt != '' && tgt !in app.tx_buses {
-			if b := app.open_tap(tgt, org_tst) {
-				app.tx_buses[tgt] = b
+		if tgt != '' && tx_bus_key(sr.chan, tgt) !in app.tx_buses {
+			if b := app.open_tap_on(tgt, org_tst, sr.chan) {
+				app.tx_buses[tx_bus_key(sr.chan, tgt)] = b
 			}
 		}
 	}
@@ -1386,13 +1394,28 @@ fn (mut app App) tx(f transport.CanFrame) bool {
 	return app.tx_on(app.send_iface, f)
 }
 
+// tx_bus_key identifies a tester bus by the CHANNEL that owns it as well as its interface: two
+// channels can share one wire, and a tap opened without the name attributes every frame to
+// whichever channel happens to be listed first.
+fn tx_bus_key(chan_name string, iface string) string {
+	return '${chan_name}|${iface}'
+}
+
 // tx_on sends a frame on the bus `iface` (a channel iface) and records it as a TX row on
 // that bus. Generators use this to fire on their own target bus rather than a single
-// global send bus.
+// global send bus; `chan_name` is the owning channel, '' where the caller has no particular one.
 fn (mut app App) tx_on(iface string, f transport.CanFrame) bool {
-	mut b := app.tx_buses[iface] or {
-		app.notify('TX failed: no open bus for ${iface}')
-		return false
+	return app.tx_on_chan('', iface, f)
+}
+
+fn (mut app App) tx_on_chan(chan_name string, iface string, f transport.CanFrame) bool {
+	mut b := app.tx_buses[tx_bus_key(chan_name, iface)] or {
+		// fall back to the anonymous tap for this wire — a Quick Send or a diagnostic path has
+		// no owning channel, and a generator whose channel was renamed mid-run still transmits
+		app.tx_buses[tx_bus_key('', iface)] or {
+			app.notify('TX failed: no open bus for ${iface}')
+			return false
+		}
 	}
 	// The row, the recording and the pending echo are the tap's job (open_tap), so they happen
 	// for every emitter rather than only for the ones that remember to log.
@@ -2137,6 +2160,7 @@ fn (mut app App) rebuild_from_proj() {
 		for s in ch.senders {
 			app.senders << SenderRT{
 				iface:  ch.iface
+				chan:   ch.name
 				sender: s
 			}
 			app.gen_bufs << GenBuf{
@@ -5404,8 +5428,12 @@ fn draw_gen(mut app App) {
 				vgui.text('bus:')
 				for ci, c in app.chans {
 					vgui.same_line()
-					if vgui.toggle_button('${c.name}##b${i}_${ci}', c.iface == cur, 0) {
-						app.set_sender_bus(i, if c.iface == sr.iface { '' } else { c.iface })
+					// selected by NAME, not by interface: with two channels on one wire an
+					// interface comparison lights BOTH buttons and cannot say which is current
+					if vgui.toggle_button('${c.name}##b${i}_${ci}', c.name == sr.chan
+						&& c.iface == cur, 0) {
+						app.set_sender_bus(i, if c.iface == sr.iface { '' } else { c.iface },
+							c.name)
 					}
 				}
 			}
@@ -5470,9 +5498,11 @@ fn draw_gen(mut app App) {
 // Session-only until Save writes it to the project.
 fn (mut app App) add_generator() {
 	iface := if app.chans.len > 0 { app.chans[0].iface } else { '' }
+	cname := if app.chans.len > 0 { app.chans[0].name } else { '' }
 	app.mu.lock()
 	app.senders << SenderRT{
 		iface:  iface
+		chan:   cname
 		sender: project.Sender{
 			name:    'New generator'
 			id:      0x100
@@ -5487,9 +5517,9 @@ fn (mut app App) add_generator() {
 	}
 	app.dirty = true
 	app.mu.unlock()
-	if app.running && iface != '' && iface !in app.tx_buses {
-		if b := app.open_tap(iface, org_tst) {
-			app.tx_buses[iface] = b
+	if app.running && iface != '' && tx_bus_key(cname, iface) !in app.tx_buses {
+		if b := app.open_tap_on(iface, org_tst, cname) {
+			app.tx_buses[tx_bus_key(cname, iface)] = b
 		}
 	}
 }
@@ -6041,14 +6071,22 @@ fn (mut app App) set_cycle(i int, ms int) {
 
 // set_sender_bus points generator `i` at a target bus ('' = its own channel). A newly
 // targeted bus is opened if the measurement is running and it isn't open yet.
-fn (mut app App) set_sender_bus(i int, bus string) {
+// `bus` is an INTERFACE (project.Sender.bus is documented as one, and '' means the sender's own
+// channel); `chan_name` is the channel the user actually picked. They are different facts, and
+// only the second one survives two channels sharing a wire — an interface cannot say which of
+// them the generator now belongs to.
+fn (mut app App) set_sender_bus(i int, bus string, chan_name string) {
 	app.mu.lock()
 	if i < app.senders.len {
 		app.senders[i].sender.bus = bus
 		tgt := app.senders[i].target()
-		if app.running && tgt != '' && tgt !in app.tx_buses {
-			if b := app.open_tap(tgt, org_tst) {
-				app.tx_buses[tgt] = b
+		if chan_name != '' {
+			app.senders[i].chan = chan_name
+		}
+		own := app.senders[i].chan
+		if app.running && tgt != '' && tx_bus_key(own, tgt) !in app.tx_buses {
+			if b := app.open_tap_on(tgt, org_tst, own) {
+				app.tx_buses[tx_bus_key(own, tgt)] = b
 			}
 		}
 	}
@@ -6117,7 +6155,7 @@ fn (mut app App) fire_index(i int) {
 		id = u32(('0x' + vgui.buf_str(app.gen_bufs[i].id_buf)).u64())
 		data = parse_hex_bytes(vgui.buf_str(app.gen_bufs[i].data_buf))
 	}
-	app.tx_on(app.senders[i].target(), transport.CanFrame{
+	app.tx_on_chan(app.senders[i].chan, app.senders[i].target(), transport.CanFrame{
 		id:       id
 		extended: ext
 		data:     data
