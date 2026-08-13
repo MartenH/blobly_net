@@ -90,7 +90,25 @@ pub fn load_file(path string) ![]LogEntry {
 pub fn format_line(e LogEntry) string {
 	idhex := if e.frame.extended { '${e.frame.id:08X}' } else { '${e.frame.id:03X}' }
 	body := if e.frame.rtr { 'R' } else { bytes_hex(e.frame.data) }
-	return '(${e.t_s:.6f}) ${e.iface} ${idhex}#${body}'
+	return '(${e.t_s:.6f}) ${iface_token(e.iface)} ${idhex}#${body}'
+}
+
+// iface_token makes a candump-safe interface field. The format is whitespace-delimited with the
+// payload after a '#', so a label carrying either breaks the LINE, not just its own field: a
+// channel named "Powertrain CAN" writes `(t) Powertrain CAN 100#…`, which parse_line reads as
+// interface "Powertrain", token "CAN" — no '#', so it drops the line silently. The recorder
+// stores a LOGICAL channel name (two channels can share one interface), and the project editor
+// accepts any name, so the writer has to guarantee this rather than trust its callers.
+//
+// Substitution, not rejection: losing every frame from a channel because of a space in its name
+// is a far worse outcome than a label that reads `Powertrain_CAN` on the way back.
+pub fn iface_token(s string) string {
+	mut out := []u8{cap: s.len}
+	for c in s {
+		out << if c == ` ` || c == `\t` || c == `#` || c == `(` || c == `)` { u8(`_`) } else { c }
+	}
+	t := out.bytestr()
+	return if t == '' { 'can' } else { t }
 }
 
 fn bytes_hex(data []u8) string {

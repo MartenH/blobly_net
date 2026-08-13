@@ -1760,7 +1760,13 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		eprintln('rx ${iface}: ${err}')
 		mut a := unsafe { app }
 		a.mu.lock()
-		a.chans[ci].running = false
+		// Same generation guard as the teardown below: opening can fail slowly, so a PREVIOUS
+		// run's failure can land after the new loop has opened and published readiness. Clearing
+		// the flag then would leave the current run with a monitor nobody counts — every emission
+		// after it recorded as having no watcher, and its echo read as the ECU's.
+		if a.run_gen == gen {
+			a.chans[ci].running = false
+		}
 		a.mu.unlock()
 		return
 	}

@@ -1,5 +1,7 @@
 module canlog
 
+import transport
+
 fn test_parse_standard() {
 	e := parse_line('(1.234567) vcan0 100#AABBCCDD') or { panic('parse failed') }
 	assert e.t_s == 1.234567
@@ -67,4 +69,34 @@ fn test_round_trip_rtr() {
 	line := '(0.000000) vcan0 200#R'
 	e := parse_line(line) or { panic('parse failed') }
 	assert format_line(e) == line
+}
+
+// The interface field is whitespace-delimited and the payload follows a '#', so a label carrying
+// either breaks the whole LINE. The recorder stores a logical channel name and the project editor
+// accepts any name, so the writer guarantees the token.
+fn test_a_channel_name_with_a_space_still_round_trips() {
+	e := LogEntry{
+		t_s:   1.5
+		iface: 'Powertrain CAN'
+		frame: transport.CanFrame{
+			id:   0x100
+			data: [u8(1), 2]
+		}
+	}
+	line := format_line(e)
+	assert line.contains('Powertrain_CAN'), 'unsafe interface field: ${line}'
+	back := parse_line(line) or {
+		assert false, 'the line we wrote does not parse: ${line}'
+		return
+	}
+	assert back.frame.id == 0x100
+	assert back.frame.data == [u8(1), 2]
+	assert back.iface == 'Powertrain_CAN'
+}
+
+fn test_the_payload_separator_cannot_leak_into_the_interface() {
+	assert iface_token('a#b') == 'a_b'
+	assert iface_token('(x)') == '_x_'
+	assert iface_token('') == 'can'
+	assert iface_token('vcan0') == 'vcan0'
 }
