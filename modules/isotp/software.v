@@ -32,6 +32,13 @@ mut:
 // sends on tx_id and receives on rx_id.
 pub fn open_software(iface string, tx_id u32, rx_id u32, ext bool) !&SoftChannel {
 	bus := transport.open(iface)!
+	return on_bus(bus, iface, tx_id, rx_id, ext)
+}
+
+// on_bus wraps an ALREADY-OPEN bus, for a caller that needs to see the CAN frames this channel
+// puts on the wire — the GUI attributes every frame it emits, and a diagnostic server that
+// opened its own bus privately would be the one emitter it could not account for.
+pub fn on_bus(bus transport.Bus, iface string, tx_id u32, rx_id u32, ext bool) !&SoftChannel {
 	return &SoftChannel{
 		iface: iface
 		tx_id: tx_id

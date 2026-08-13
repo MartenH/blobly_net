@@ -191,6 +191,83 @@ All of these, plus unknown message/signal names and unrecognised profiles, are *
 under the node in the Simulation panel, and on stderr from the headless runner. Protection that
 matches nothing would otherwise apply nowhere while the panel still displayed its count.
 
+## Whose frame is this? The trace's `origin` column
+
+The moment you simulate, three parties transmit on one bus: **you as tester**, **you as the
+ECUs around the device under test**, and **the device under test itself**. All three used to
+arrive looking identical — the trace showed `RX`/`TX`, which answered "did I press send", never
+"whose frame is this". (On the virtual buses and SocketCAN our own sends also come back to the
+monitor, so they landed in the same `RX` pile as the real ECU's.)
+
+The `origin` column answers it, with four values that each state only what is actually known:
+
+| origin | meaning |
+|---|---|
+| `TST` | we emitted it as a tester — the Diagnostics panel, generators, Shell, Flash, trace dump |
+| `SIM` | our simulated rest-of-bus emitted it, including its UDS responses |
+| `REP` | it came from a recording you opened, so it was never on this bench's wire |
+| `BUS` | **not ours** — the device under test, or anything else real |
+
+`TST` and `SIM` are outbound and `BUS` is inbound, so for live traffic the old direction column
+told you nothing this one does not. `REP` is the exception and an honest one: a candump recording
+does not say whether the recorder transmitted or received each line, so a replayed row's
+direction is simply **unknown** — which is more than the old column ever admitted, since it
+labelled every imported frame `RX`. `origin` is searchable: type `bus` in the trace filter to see
+only what the real ECU put on the wire, or `sim` for only your simulation.
+
+**It is observed, never declared.** The label does not come from your project file. Each emitter
+records what it is about to send, and a received frame is matched against those records —
+one-shot, oldest first, exact on id width, RTR and payload. What matches nothing of ours is the
+other side.
+
+On **PCAN and Kvaser** (Windows only — on Linux those names are ordinary SocketCAN interfaces) the driver never hands your own transmissions back, so there is nothing to
+match: `TST`/`SIM` there come from the tap alone (still accurate — we know what we sent) and
+`BUS` is everything the driver delivered. No row can be wire-*confirmed* there, and none is
+marked for silence — but a row is still marked `!` when the driver **refuses** the send outright,
+which is the one wire verdict those backends can give you.
+
+That one-shot rule is what makes the case below visible. Leave a simulated ECU running while the
+real one it stands in for is on the bench and both transmit `0x700`:
+
+```
+0x700  Heartbeat  CAN1  BUS    8   00
+0x700  Heartbeat  CAN1  SIM  290   00
+```
+
+Byte-identical frames, two transmitters, two rows. Before this the trace showed one row of 298
+and nothing looked wrong. A label derived from configuration would have shown the same single
+row — it would have called every `0x700` simulated, because the project says `0x700` is ours.
+
+### `SIM!` — sent, but never seen on the wire
+
+An outbound row is written when we hand the frame to the driver, so it states *intent*. If the
+frame never comes back within a couple of seconds — on a bus where an echo could have arrived —
+the row is marked `!`:
+
+```
+0x100  Powertrain  CAN1  SIM!  82   44 01 00 …
+```
+
+Intent and wire disagree in every bench failure worth catching. CAN needs an ACK from **at least
+one other node**, so a lone node's frames never reach the wire at all — the same goes for a wrong
+bitrate, CANH/CANL swapped, or a link that is down. Those all used to look like a working bus.
+
+In the grouped view the mark applies to the **group**: it appears if any frame in the window went
+unanswered, not just the newest one — whose echo window has had the least time to close.
+
+**Recordings follow the wire.** A frame we transmit is written to the `.log` when it comes back
+off the bus, not when we hand it to the driver — so the file is in observation order. Recording
+at emit put a fast responder's answer ahead of the request that caused it, because the simulation
+and the monitor are different threads on different sockets and neither waits for the other. Two
+consequences worth knowing: a frame that never reaches the wire is not in the recording (it is in
+the trace, marked), and on **PCAN/Kvaser**, where the driver never returns our own frames, we
+record at emit instead — there is nothing else to record from.
+
+**Silence is not evidence.** The mark is only ever applied where an echo could have arrived: no
+monitor on that bus (a generator firing at a channel you are not watching), a channel disabled
+mid-run, or a driver that never hands your own transmissions back (PCAN and Kvaser do not) all
+mean nobody was looking — so nothing is marked, rather than a healthy bus being accused.
+
 ## Diagnostics: a UDS server per ECU
 
 By default each simulated channel runs **one** diagnostic server on `0x7E0` / `0x7E8` with
