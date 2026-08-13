@@ -60,17 +60,18 @@ const ghost_base = u64(1) << 63
 // No recording entry was written for this emission (see note_emit's second return value).
 const rec_none = u64(0xFFFF_FFFF_FFFF_FFFF)
 
-const org_tst = wiretap.tst
-const org_sim = wiretap.sim
+const org_tx = wiretap.tx
+const org_tx_sim = wiretap.tx_sim
 const org_rep = wiretap.rep
-const org_bus = wiretap.bus
+const org_rx = wiretap.rx
 
 struct TraceRow {
 	t_ms f64
 	ch   string
-	// TST | SIM | REP | BUS. Replaces the old RX/TX: direction is a FUNCTION of origin (the
-	// first three are outbound, BUS is inbound), so a separate column carried no information —
-	// while `dir` answered "did I press send", never "whose frame is this".
+	// TX | TX-S | REP | RX. The old `dir` answered "did I press send", never "whose frame is
+	// this" — and our own sends come back to the monitor, so they landed in the same RX pile as
+	// the device under test's. TX-S is still a TX: the simulation is us. REP is the one that is
+	// not a direction, because a recording does not say who transmitted its lines.
 	origin string
 	id     u32
 	ext    bool
@@ -655,12 +656,12 @@ fn (mut app App) start() {
 		// A TX bus per CHANNEL (each generator fires on its target bus), plus one anonymous tap
 		// per wire for the paths with no particular channel — Quick Send, diagnostics, shell.
 		if tx_bus_key(ch.name, ch.iface) !in app.tx_buses {
-			if b := app.open_tap_on(ch.iface, org_tst, ch.name) {
+			if b := app.open_tap_on(ch.iface, org_tx, ch.name) {
 				app.tx_buses[tx_bus_key(ch.name, ch.iface)] = b
 			}
 		}
 		if tx_bus_key('', ch.iface) !in app.tx_buses {
-			if b := app.open_tap(ch.iface, org_tst) {
+			if b := app.open_tap(ch.iface, org_tx) {
 				app.tx_buses[tx_bus_key('', ch.iface)] = b
 			}
 		}
@@ -672,7 +673,7 @@ fn (mut app App) start() {
 	for sr in app.senders {
 		tgt := sr.target()
 		if tgt != '' && tx_bus_key(sr.chan, tgt) !in app.tx_buses {
-			if b := app.open_tap_on(tgt, org_tst, sr.chan) {
+			if b := app.open_tap_on(tgt, org_tx, sr.chan) {
 				app.tx_buses[tx_bus_key(sr.chan, tgt)] = b
 			}
 		}
@@ -1179,7 +1180,7 @@ fn (mut app App) reset_trace_locked() {
 	app.trace = []
 	app.gcount = map[string]u64{}
 	// The pending records STAY. An echo already in flight is still ours, and dropping the record
-	// would turn the next few of our own frames into BUS rows, recording entries and verifier
+	// would turn the next few of our own frames into RX rows, recording entries and verifier
 	// input. Row identities are monotonic and trace_base makes the old ones unresolvable, so a
 	// surviving record suppresses its echo without confirming a row that came later.
 	app.trace_base = app.trace_seq
@@ -1417,7 +1418,7 @@ mut:
 fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	// What the WIRE will carry, not what the caller asked for: classic CAN takes 8 bytes and the
 	// backends truncate silently, so a 12-byte Quick Send would be recorded whole, never match
-	// its own 8-byte echo, and show up as a false BUS row plus an unconfirmed TST one.
+	// its own 8-byte echo, and show up as a false RX row plus an unconfirmed TX one.
 	wire := transport.wire_frame(t.iface, frame)
 	t.tx_mu.lock()
 	defer {
@@ -1794,7 +1795,7 @@ fn build_node(db candb.Database, cfg project.NodeCfg) sim.SimEcu {
 // request/response rules. Driver-free on inproc:, real on vcan0/can0.
 fn sim_loop(app &App, sc SimCfg) {
 	a := unsafe { app }
-	mut bus := app.open_tap_on(sc.iface, org_sim, sc.pch.name) or {
+	mut bus := app.open_tap_on(sc.iface, org_tx_sim, sc.pch.name) or {
 		eprintln('sim ${sc.iface}: ${err}')
 		return
 	}
@@ -1909,7 +1910,7 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 			// answering diagnostics must be attributed like any other thing we transmit.
 			// pch: this node's OWN channel — two entries can share one interface, and the
 			// simulated ECUs of the second must not be attributed to the first.
-			tapped := a.open_tap_on(iface, org_sim, pch.name) or {
+			tapped := a.open_tap_on(iface, org_tx_sim, pch.name) or {
 				time.sleep(200 * time.millisecond)
 				continue
 			}
@@ -1932,7 +1933,7 @@ fn diag_server_loop(app &App, iface string, chan_name string) {
 	// its OWN channel: two channels can share a wire, and resolving the name from the interface
 	// picks whichever is listed first — so a default server created for the second one had every
 	// response attributed to its neighbour
-	tapped := a.open_tap_on(iface, org_sim, chan_name) or { return }
+	tapped := a.open_tap_on(iface, org_tx_sim, chan_name) or { return }
 	mut ch := isotp.on_bus(tapped, a.bitrate_iface(iface), diag_rx_id, diag_tx_id, false) or {
 		return
 	}
@@ -2094,7 +2095,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			a.push_row_locked(TraceRow{
 				t_ms:   t_ms
 				ch:     chname
-				origin: org_bus
+				origin: org_rx
 				id:     f.id
 				ext:    f.extended
 				rtr:    f.rtr
@@ -2102,7 +2103,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				data:   f.data.clone()
 				e2e:    viol
 			})
-			a.gcount[gkey(org_bus, chname, f.id, f.extended)]++
+			a.gcount[gkey(org_rx, chname, f.id, f.extended)]++
 			// The capture dump now arrives as an ISO-TP block on 0x7E5 (not raw per-record
 			// frames): trace_dump_worker reassembles + decodes it on demand. The raw ISO-TP
 			// frames still show in the trace table above.
@@ -4963,8 +4964,14 @@ fn trace_pass(r TraceRow, filt string) bool {
 	// called BusStatus or a channel named SimBus would otherwise satisfy "bus" and "sim" for
 	// every row, while the docs promise those two show only the real ECU and only the
 	// simulation. Anything else searches the row as before.
-	if filt in [org_tst, org_sim, org_rep, org_bus].map(it.to_lower()) {
-		return r.origin.to_lower() == filt
+	// `tx-s` is awkward to type, so `s` and `sim` reach the simulation too; `tx`, `rx` and `rep`
+	// are already short. An alias only ever selects an origin — it never widens the search.
+	origin_filter := match filt {
+		's', 'sim' { org_tx_sim }
+		else { if filt in [org_tx, org_tx_sim, org_rep, org_rx].map(it.to_lower()) { filt } else { '' } }
+	}
+	if origin_filter != '' {
+		return r.origin.to_lower() == origin_filter.to_lower()
 	}
 	hay := '${idstr(r.id, r.ext)} ${r.name} ${r.ch} ${r.origin}${origin_mark(r)} ${hex(r.data)} ${r.e2e}'.to_lower()
 	return hay.contains(filt)
@@ -5762,7 +5769,7 @@ fn (mut app App) add_generator() {
 	app.dirty = true
 	app.mu.unlock()
 	if app.running && iface != '' && tx_bus_key(cname, iface) !in app.tx_buses {
-		if b := app.open_tap_on(iface, org_tst, cname) {
+		if b := app.open_tap_on(iface, org_tx, cname) {
 			app.tx_buses[tx_bus_key(cname, iface)] = b
 		}
 	}
@@ -6329,7 +6336,7 @@ fn (mut app App) set_sender_bus(i int, bus string, chan_name string) {
 		}
 		own := app.senders[i].chan
 		if app.running && tgt != '' && tx_bus_key(own, tgt) !in app.tx_buses {
-			if b := app.open_tap_on(tgt, org_tst, own) {
+			if b := app.open_tap_on(tgt, org_tx, own) {
 				app.tx_buses[tx_bus_key(own, tgt)] = b
 			}
 		}
@@ -6573,7 +6580,7 @@ fn diag_worker(app &App, kind string, did u16, want_key string) {
 			return
 		})
 	} else {
-		isotp.Channel(isotp.on_bus(a.open_tap_on(iface, org_tst, t.chan) or {
+		isotp.Channel(isotp.on_bus(a.open_tap_on(iface, org_tx, t.chan) or {
 			a.diag_push('open ${iface}: ${err}')
 			a.mu.lock()
 			a.diag_busy = false
@@ -6668,7 +6675,7 @@ fn trace_dump_worker(app &App, core_mask u16) {
 	// data on record (open before commanding, so the socket buffers the target's first frame).
 	// ISO-TP addressing must match the frame width — a 29-bit trace id would otherwise be masked
 	// to 11 bits by SocketCAN and the target would never answer.
-	tapped := a.open_tap(iface, org_tst) or {
+	tapped := a.open_tap(iface, org_tx) or {
 		a.set_trace_status('dump: open ${iface}: ${err}')
 		a.trace_done()
 		return
@@ -7033,7 +7040,7 @@ fn shell_worker(app &App, line string) {
 	sh := a.manifest.shell.or_defaults()
 	// the host is the ISO-TP receiver: flow control out on `fc`, the response in on `out`
 	// (opened before the command is sent, so the socket buffers the target's first frame).
-	tapped := a.open_tap(iface, org_tst) or {
+	tapped := a.open_tap(iface, org_tx) or {
 		a.shell_append('(open ${iface}: ${err})')
 		return
 	}
@@ -7120,7 +7127,7 @@ fn flash_worker(app &App, path string, base u32, req_id u32, rsp_id u32, ver u32
 		return
 	}
 	a.flash_append('> ${os.file_name(path)} -> ${iface} @0x${base.hex()}')
-	tapped := a.open_tap(iface, org_tst) or {
+	tapped := a.open_tap(iface, org_tx) or {
 		a.flash_append('(open ${iface}: ${err})')
 		return
 	}
@@ -7381,7 +7388,7 @@ fn script_worker(app &App, path string) {
 		// open_tap_on, not open_tap: the script picked a CHANNEL, and two channels can share one
 		// interface — resolving it back from the interface would attribute the second's traffic
 		// to the first.
-		return a.open_tap_on(iface, org_tst, chan_name)
+		return a.open_tap_on(iface, org_tx, chan_name)
 	}
 	env.run_file(path) or { a.script_push('error: ${err}') }
 	a.script_push('${env.passed()}/${env.total()} passed, ${env.failed()} failed')
