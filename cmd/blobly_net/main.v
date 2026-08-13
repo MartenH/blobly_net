@@ -136,6 +136,7 @@ mut:
 	trace_seq   u64
 	trace_base  u64
 	ghost_seq   u64 // identities for emissions made while paused (see ghost_base)
+	tx_mutexes  map[string]&sync.Mutex // per-interface send order (see TapBus.tx_mu)
 	gcount      map[string]u64 // persistent per-group frame totals (survive the ring trim)
 	trecs       []TRec
 	rx          u64 // total across channels
@@ -1168,10 +1169,14 @@ fn (mut app App) expire_pending_locked(now_ms f64) {
 // pending echo. Called BEFORE the send — the RX thread can see the frame the instant the driver
 // takes it, and a pending entry added afterwards would arrive too late to claim its own echo.
 fn (mut app App) note_emit(iface string, chan_name string, origin string, f transport.CanFrame) u64 {
-	chn := if chan_name != '' { chan_name } else { app.chan_name_for(iface) }
-	name := app.lookup_name(f.id, f.extended)
 	t_ms := f64(time.ticks() - app.t0)
 	app.mu.lock()
+	// Under the lock, not before it. The dbc_readers drain covers the RX loops, which register
+	// as lock-free readers; a tapped emitter — a simulated ECU, a diagnostic or flash worker
+	// still draining after Stop — is not in that lifecycle, so resolving a name outside the
+	// mutex could read app.dbs while a configuration edit replaces it.
+	chn := if chan_name != '' { chan_name } else { app.chan_name_for(iface) }
+	name := app.lookup_name(f.id, f.extended)
 	app.expire_pending_locked(t_ms)
 	// Paused: the emission is STILL tracked so its echo is recognised as ours — otherwise a
 	// paused trace would feed our own frames to the E2E verifier as the ECU's and log them to
@@ -1268,6 +1273,12 @@ fn (mut app App) claim_echo_locked(monitor int, iface string, f transport.CanFra
 // sends and anything added later all pass through here.
 struct TapBus {
 mut:
+	// Serialises note+send for ONE interface across every tapped bus on it. Registration order
+	// has to be wire order: the matcher claims oldest-first, so if a thread is descheduled
+	// between registering and transmitting, another thread's byte-identical frame can go out
+	// first and have its echo credited to the wrong row — and then a failed or unechoed send
+	// marks the successful row instead. A bus is serial anyway, so this costs nothing real.
+	tx_mu  &sync.Mutex
 	inner  transport.Bus
 	app    &App
 	iface  string
@@ -1280,6 +1291,10 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	// backends truncate silently, so a 12-byte Quick Send would be recorded whole, never match
 	// its own 8-byte echo, and show up as a false BUS row plus an unconfirmed TST one.
 	wire := transport.wire_frame(t.iface, frame)
+	t.tx_mu.lock()
+	defer {
+		t.tx_mu.unlock()
+	}
 	// BEFORE the send: a monitor thread can see the frame the instant the driver takes it, and a
 	// record added afterwards arrives too late to claim its own echo.
 	seq := t.app.note_emit(t.iface, t.chan_name, t.origin, wire)
@@ -1315,6 +1330,7 @@ fn (app &App) open_tap_on(iface string, origin string, chan_name string) !transp
 	logical := if transport.vendor_iface(iface) { iface.all_before('@') } else { iface }
 	inner := transport.open(app.bitrate_iface(logical))!
 	return &TapBus{
+		tx_mu:  app.tx_mutex(logical)
 		inner:  inner
 		app:    unsafe { app }
 		iface:     logical
@@ -1325,6 +1341,24 @@ fn (app &App) open_tap_on(iface string, origin string, chan_name string) !transp
 
 fn (app &App) open_tap(iface string, origin string) !transport.Bus {
 	return app.open_tap_on(iface, origin, '')
+}
+
+// tx_mutex returns the send lock for an interface, creating it on first use. One per interface:
+// every tapped bus on the same wire shares it, so note+send stay in order relative to each other
+// without coupling unrelated buses.
+fn (app &App) tx_mutex(iface string) &sync.Mutex {
+	mut a := unsafe { app }
+	a.mu.lock()
+	defer {
+		a.mu.unlock()
+	}
+	if m := a.tx_mutexes[iface] {
+		return m
+	}
+	m := &sync.Mutex{}
+	m.init()
+	a.tx_mutexes[iface] = m
+	return m
 }
 
 // monitors_locked lists the rx_loops actually reading this interface — the sockets an echo could
@@ -1727,6 +1761,15 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	}
 	mut a := unsafe { app }
 	a.mu.lock()
+	// Only for the run we belong to. Opening a bus takes time, so a loop from the PREVIOUS run
+	// can arrive here after a restart — and since the teardown below is generation-guarded, the
+	// flag it set would stay true with nobody reading: note_emit would then count a watcher that
+	// does not exist and mark healthy traffic as never having reached the wire.
+	if a.run_gen != gen {
+		a.mu.unlock()
+		bus.close()
+		return
+	}
 	// The bus is open: from here a frame we emit can actually come back to us, which is what
 	// `running` promises to note_emit's "is anyone watching?" check.
 	a.chans[ci].running = true
