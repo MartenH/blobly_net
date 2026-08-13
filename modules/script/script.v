@@ -112,9 +112,13 @@ pub mut:
 // open_bus is how the engine reaches a bus. The default is transport.open; a host that has to
 // account for every frame it puts on the wire (the GUI attributes traffic by origin in its
 // trace) supplies its own, so script sends are not the one emitter it cannot see.
-pub type BusOpener = fn (iface string) !transport.Bus
+//
+// `chan_name` rides along because two configured channels may share one physical interface: the
+// interface alone cannot say which of them a script selected, and a host resolving it back from
+// the interface would pick the first and attribute the second channel's traffic to its neighbour.
+pub type BusOpener = fn (iface string, chan_name string) !transport.Bus
 
-fn default_opener(iface string) !transport.Bus {
+fn default_opener(iface string, chan_name string) !transport.Bus {
 	return transport.open(iface)
 }
 
@@ -204,7 +208,7 @@ fn (mut env Env) bus_for(name string) !transport.Bus {
 	if b := env.buses[name] {
 		return b
 	}
-	b := env.opener(env.chans[ci].iface)!
+	b := env.opener(env.chans[ci].iface, name)!
 	env.buses[name] = b
 	return b
 }
@@ -534,7 +538,7 @@ fn l_uds_open(l lua.State) int {
 		ctx := if has_tx { tx } else { u32(0x7E0) }
 		crx := if has_rx { rx } else { u32(0x7E8) }
 		ext := ctx > 0x7FF || crx > 0x7FF
-		isotp.Channel(isotp.on_bus(env.opener(info.iface) or {
+		isotp.Channel(isotp.on_bus(env.opener(info.iface, name) or {
 			return l.fail('isotp open failed on ${name}: ${err}')
 		}, info.iface, ctx, crx, ext) or {
 			return l.fail('isotp open failed on ${name}: ${err}')

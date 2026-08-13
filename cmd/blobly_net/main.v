@@ -7033,8 +7033,11 @@ fn script_worker(app &App, path string) {
 	}
 	// A script IS the tester. Left on the default opener it would be the one emitter the trace
 	// could not account for, and its frames would come back labelled as the device under test's.
-	env.opener = fn [a] (iface string) !transport.Bus {
-		return a.open_tap(iface, org_tst)
+	env.opener = fn [a] (iface string, chan_name string) !transport.Bus {
+		// open_tap_on, not open_tap: the script picked a CHANNEL, and two channels can share one
+		// interface — resolving it back from the interface would attribute the second's traffic
+		// to the first.
+		return a.open_tap_on(iface, org_tst, chan_name)
 	}
 	env.run_file(path) or { a.script_push('error: ${err}') }
 	a.script_push('${env.passed()}/${env.total()} passed, ${env.failed()} failed')
