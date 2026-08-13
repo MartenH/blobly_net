@@ -1398,7 +1398,12 @@ fn (mut app App) tx(f transport.CanFrame) bool {
 // channels can share one wire, and a tap opened without the name attributes every frame to
 // whichever channel happens to be listed first.
 fn tx_bus_key(chan_name string, iface string) string {
-	return '${chan_name}|${iface}'
+	// LENGTH-PREFIXED, so the key is injective. A plain 'a|b' is not: a channel named
+	// 'A|inproc:X' on 'inproc:Y' and a channel 'A' on 'inproc:X|inproc:Y' produce the same
+	// string, and the second would then transmit through the first one's tap — onto the wrong
+	// virtual bus, attributed to the wrong channel. Both values are accepted by the project
+	// editor and the inproc parser, so nothing upstream rules this out.
+	return '${chan_name.len}:${chan_name}|${iface}'
 }
 
 // tx_on sends a frame on the bus `iface` (a channel iface) and records it as a TX row on
@@ -4826,7 +4831,11 @@ mut:
 // gkey is the stable per-group identity used for both the grouped-view rows and the
 // persistent all-time frame count (App.gcount). Keep in sync with draw_trace_grouped.
 fn gkey(origin string, ch string, id u32, ext bool) string {
-	return '${origin}|${ch}|${id}|${ext}'
+	// Length-prefixed for the same reason as tx_bus_key: a channel name may contain '|', and a
+	// key that two different channels can produce merges their rows in the grouped view — with
+	// a count that silently adds them together, which is the very thing this column exists to
+	// stop. (origin is one of four fixed labels, and id/ext cannot contain a separator.)
+	return '${origin}|${ch.len}:${ch}|${id}|${ext}'
 }
 
 // origin_mark renders the wire verdict for a frame we emitted: '!' once its echo window closed
