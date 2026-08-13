@@ -32,6 +32,15 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
 
 ## Planned
 
+- 🧭 **Rest bus from a real recording** ([#98](https://github.com/MartenH/blobly_net/issues/98)) —
+  drive the surrounding ECUs from a capture of the actual vehicle instead of hand-written signal
+  generators, so the SUT hears its real environment. `modules/player` already decodes `.log` and
+  `.mf4` with play/seek/loop, and `replay:` is already in the project schema; what is missing is
+  a worker and `monitorable()` accepting those channels. The design question is the
+  **subtraction** — a capture contains the ECU under test, so replaying it verbatim puts two
+  transmitters on every one of its ids (exactly the collision the trace's `origin` column now
+  makes visible). The DBC names each message's sender, which is what makes that solvable.
+
 - 🧭 **SOME/IP-SD** (service discovery) + the SOME/IP **sim service** — explicitly deferred in
   [`docs/ethernet_architecture.md`](docs/ethernet_architecture.md).
 - 🧭 **DoIP per-connection handler state** — deferred pending the threading change.

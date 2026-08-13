@@ -619,8 +619,17 @@ The project format accepts a replay channel:
 **It does nothing today.** `modules/player` can decode `.log` and `.mf4`, but nothing in the app
 drives it: there is no replay worker, and `monitorable()` — which decides what gets opened when
 you press Start — accepts only `monitor` channels, so a replay channel is not even attached.
-Configuring one produces silence, not an error. Reconnecting the player to the GUI is open
-work; until then, treat this section as schema documentation rather than a feature.
+Configuring one produces silence, not an error. Until then, treat this section as schema
+documentation rather than a feature.
+
+**It is tracked, not forgotten: [#98](https://github.com/MartenH/blobly_net/issues/98).** The
+point of finishing it is a rest bus driven by *a real capture from the car* rather than by
+signal generators somebody typed — the SUT hears its actual environment. The plumbing is small
+(a worker pumping `player.due()` onto the bus, plus `monitorable()` accepting replay channels);
+the part that needs deciding is what to **leave out**, because a capture contains the ECU under
+test too, and replaying its own messages back at it puts two transmitters on every one of its
+ids. The DBC already names each message's sender, which is what makes the subtraction possible.
+Those frames would be `TX-S` in the trace — they are our simulation, sourced from a file.
 
 ## Running it without the GUI
 
