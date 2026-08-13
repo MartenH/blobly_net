@@ -199,21 +199,24 @@ arrive looking identical — the trace showed `RX`/`TX`, which answered "did I p
 "whose frame is this". (On the virtual buses and SocketCAN our own sends also come back to the
 monitor, so they landed in the same `RX` pile as the real ECU's.)
 
-The `origin` column answers it, with four values that each state only what is actually known:
+The `origin` column answers it, in the vocabulary CAN tooling already uses — `TX` is us, `RX` is
+somebody else — with one marker for the half of "us" that is the simulation:
 
 | origin | meaning |
 |---|---|
-| `TST` | we emitted it as a tester — the Diagnostics panel, generators, Shell, Flash, trace dump |
-| `SIM` | our simulated rest-of-bus emitted it, including its UDS responses |
-| `REP` | it came from a recording you opened, so it was never on this bench's wire |
-| `BUS` | **not ours** — the device under test, or anything else real |
+| `TX` | we emitted it as a tester — the Diagnostics panel, generators, Shell, Flash, trace dump |
+| `TX-S` | our simulated rest-of-bus emitted it, including its UDS responses |
+| `RX` | **not ours** — the device under test, or anything else real |
+| `REP` | a recording you opened in the viewer; nothing was transmitted |
 
-`TST` and `SIM` are outbound and `BUS` is inbound, so for live traffic the old direction column
-told you nothing this one does not. `REP` is the exception and an honest one: a candump recording
-does not say whether the recorder transmitted or received each line, so a replayed row's
-direction is simply **unknown** — which is more than the old column ever admitted, since it
-labelled every imported frame `RX`. `origin` is searchable: type `bus` in the trace filter to see
-only what the real ECU put on the wire, or `sim` for only your simulation.
+`REP` is the one that is not a direction, and deliberately so: a candump line does not say whether
+its recorder sent or received it, so calling an imported frame `RX` — as the old column did —
+claims something the file cannot support. (When a recording can be *played onto the bus* as the
+rest-bus simulation, those frames are ours and become `TX-S`; see #98. `REP` keeps meaning "a file
+on screen".)
+
+`origin` is searchable: type `rx` in the trace filter to see only what the real ECU put on the
+wire, or `s` (or `sim`, or the full `tx-s`) for only your simulation.
 
 **It is observed, never declared.** The label does not come from your project file. Each emitter
 records what it is about to send, and a received frame is matched against those records —
@@ -221,8 +224,8 @@ one-shot, oldest first, exact on id width, RTR and payload. What matches nothing
 other side.
 
 On **PCAN and Kvaser** (Windows only — on Linux those names are ordinary SocketCAN interfaces) the driver never hands your own transmissions back, so there is nothing to
-match: `TST`/`SIM` there come from the tap alone (still accurate — we know what we sent) and
-`BUS` is everything the driver delivered. No row can be wire-*confirmed* there, and none is
+match: `TX`/`TX-S` there come from the tap alone (still accurate — we know what we sent) and
+`RX` is everything the driver delivered. No row can be wire-*confirmed* there, and none is
 marked for silence — but a row is still marked `!` when the driver **refuses** the send outright,
 which is the one wire verdict those backends can give you.
 
@@ -230,22 +233,22 @@ That one-shot rule is what makes the case below visible. Leave a simulated ECU r
 real one it stands in for is on the bench and both transmit `0x700`:
 
 ```
-0x700  Heartbeat  CAN1  BUS    8   00
-0x700  Heartbeat  CAN1  SIM  290   00
+0x700  Heartbeat  CAN1  RX      8   00
+0x700  Heartbeat  CAN1  TX-S  290   00
 ```
 
 Byte-identical frames, two transmitters, two rows. Before this the trace showed one row of 298
 and nothing looked wrong. A label derived from configuration would have shown the same single
 row — it would have called every `0x700` simulated, because the project says `0x700` is ours.
 
-### `SIM!` — sent, but never seen on the wire
+### `TX-S!` — sent, but never seen on the wire
 
 An outbound row is written when we hand the frame to the driver, so it states *intent*. If the
 frame never comes back within a couple of seconds — on a bus where an echo could have arrived —
 the row is marked `!`:
 
 ```
-0x100  Powertrain  CAN1  SIM!  82   44 01 00 …
+0x100  Powertrain  CAN1  TX-S!  82   44 01 00 …
 ```
 
 Intent and wire disagree in every bench failure worth catching. CAN needs an ACK from **at least
