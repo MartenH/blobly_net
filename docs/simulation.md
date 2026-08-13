@@ -549,6 +549,11 @@ How the frames are matched back to a channel depends on where the labels came fr
 
 - a **candump `.log`** names an interface that somebody configured, so its labels are matched
   against the project's channels;
+- an **`.mf4`** also carries `CAN_DataFrame.Dir` per frame, which says whether **the recording
+  device** transmitted it. That device is not you: in a capture from somebody else's bench, `tx`
+  marks *their* tester's traffic. It is the only provenance a recording can hold — a candump line
+  has none, so every one reads `unknown` — and it is a hint for #98's subtraction rule, not a
+  substitute for the DBC's per-message sender;
 - an **`.mf4`** names buses in the RECORDING's own numbering — `CAN_DataFrame.BusChannel`, which
   some writers count from 0 and others from 1 — so its labels arrive as `mf4:bus0`, `mf4:bus2`
   and so on (`mf4:group0`, `mf4:group1`, … for a file that carries no BusChannel at all), and

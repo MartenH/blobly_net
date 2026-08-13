@@ -22,11 +22,23 @@ import transport
 // LogEntry is one parsed candump line: the frame plus its recorded timestamp
 // (seconds, as written — candump uses an absolute or relative epoch) and the
 // originating interface name.
+// Dir is what the RECORDING says about a frame's direction — that is, whether the device that
+// made the file transmitted it. That device is not us: in a foreign capture, `tx` marks the
+// recorder's own traffic, which is somebody else's tester or gateway. It is the one piece of
+// provenance a file can carry, and candump carries none at all, which is why `unknown` is the
+// default and by far the common case.
+pub enum Dir {
+	unknown // no direction in the file (every candump line), or the field was invalidated
+	rx
+	tx
+}
+
 pub struct LogEntry {
 pub:
 	t_s   f64
 	iface string
 	frame transport.CanFrame
+	dir   Dir // see Dir: the RECORDER's direction, not ours
 }
 
 // parse_line parses a single candump `.log` line. Returns none for blank lines,
