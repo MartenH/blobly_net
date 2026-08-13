@@ -208,8 +208,10 @@ pub fn (mut r Ring) expire(now_ms f64) []u64 {
 // bus of a fault the user caused by unticking a box.
 pub fn (mut r Ring) drop_monitor(monitor int) {
 	for i in 0 .. r.items.len {
+		// ELIGIBILITY only. A claim this monitor already made is EVIDENCE — it saw the frame on
+		// the wire — and deleting it would let a record with a live second monitor that never
+		// received its copy retire as missing, contradicting the one observation we have.
 		r.items[i].allowed = r.items[i].allowed.filter(it != monitor)
-		r.items[i].claimed = r.items[i].claimed.filter(it != monitor)
 		// allowed was non-empty and is now empty: it becomes an unwatched emission, which
 		// expire() already retires silently.
 		if r.items[i].allowed.len == 0 {

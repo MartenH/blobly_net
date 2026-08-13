@@ -464,8 +464,13 @@ struct FrameId {
 // chan_name_for maps a bus iface back to its channel name (the Trace `ch` column value),
 // falling back to the iface if unmatched.
 fn (app &App) chan_name_for(iface string) string {
+	// CANONICAL on both sides. A tap keys on the canonical address (`inproc` and `inproc:CAN`
+	// are one hub), so an exact comparison against the configured string failed for a channel
+	// written the short way: its Quick Send, Shell, Flash and dump rows were labelled with the
+	// expanded interface, and selecting that channel filtered them straight out again.
+	want := transport.canonical_iface(iface)
 	for c in app.chans {
-		if c.iface == iface {
+		if transport.canonical_iface(c.iface) == want {
 			return c.name
 		}
 	}
@@ -1947,11 +1952,15 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	if a.run_gen == gen {
 		a.chans[ci].running = false
 		a.chans[ci].spawning = false
+		// Whatever we emitted while this loop was the observer can no longer be answered by it.
+		// Its records stay claimable (an echo may already be queued in the socket) but earn no
+		// verdict: the watcher was removed, so silence proves nothing.
+		//
+		// Inside the generation guard: a stale loop exiting after a restart would otherwise
+		// strip the CURRENT run's records for the same channel index — whose monitor is alive
+		// and watching — and a genuinely missing frame would then retire without a mark.
+		a.taps.drop_monitor(ci)
 	}
-	// Whatever we emitted while this loop was the observer can no longer be answered by it. Its
-	// records stay claimable (an echo may already be queued in the socket) but earn no verdict:
-	// the watcher was removed, so silence proves nothing.
-	a.taps.drop_monitor(ci)
 	a.mu.unlock()
 }
 

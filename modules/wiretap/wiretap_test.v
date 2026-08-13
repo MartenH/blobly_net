@@ -309,3 +309,18 @@ fn test_capping_gives_up_settled_records_before_pending_ones() {
 	}
 	assert seq == 2
 }
+
+// A claim is evidence the frame reached the wire. Removing the monitor that made it must not
+// delete that — otherwise a second, still-live monitor that never got its copy would let the
+// record retire as missing, contradicting the one observation we actually have.
+fn test_a_departing_monitor_leaves_its_evidence_behind() {
+	mut r := Ring{}
+	f := frame(0x120, [u8(1)])
+	r.note(1, 'vcan0', f, 0, [0, 1])
+	r.claim(0, 'vcan0', f, 1) or {
+		assert false, '${err}'
+		return
+	}
+	r.drop_monitor(0) // that observer goes away, its claim stands
+	assert r.expire(default_window_ms + 1) == []u64{}, 'a frame proven on the wire was called missing'
+}
