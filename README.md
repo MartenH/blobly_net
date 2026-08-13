@@ -32,9 +32,11 @@ editing a DBC or watching a live plot needs the GUI.)
 
 ![Blobly Net — live trace, decoded signals and real-time plots](docs/screenshots/overview.png)
 
-*The `sim-demo` project running with no hardware: two in-process CAN networks with simulated
-ECUs, the grouped trace (decoded via DBC), and live multi-axis plots of `EngineSpeed`,
-`VehicleSpeed` and `ThrottlePos`.*
+*The `restbus-2vcan` project on two virtual CAN networks. The **origin** column says who put
+each frame on the wire: `TX-S` is our own rest-of-bus simulation (Powertrain, BodyStatus,
+Heartbeat, and the Response it answered with), `RX` is a real ECU nobody here is playing
+(WheelSpeeds, BrakeStatus), and `TX` is the tester's own Request. The plots mix both — the
+simulated engine signals and the real wheel speeds on one timeline.*
 
 ## Get it
 
