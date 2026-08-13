@@ -34,9 +34,11 @@ editing a DBC or watching a live plot needs the GUI.)
 
 *The `restbus-2vcan` project on two virtual CAN networks. The **origin** column says who put
 each frame on the wire: `TX-S` is our own rest-of-bus simulation (Powertrain, BodyStatus,
-Heartbeat, and the Response it answered with), `RX` is a real ECU nobody here is playing
-(WheelSpeeds, BrakeStatus), and `TX` is the tester's own Request. The plots mix both — the
-simulated engine signals and the real wheel speeds on one timeline.*
+Heartbeat, and the Response it answered with), `TX` is the tester's own Request, and `RX` is
+everything Blobly Net did not send — here a stand-in chassis ECU running as a separate process
+on `vcan0` (WheelSpeeds, BrakeStatus). On a bench that same `RX` is the device under test; the
+label means "not ours", and cannot tell a stand-in from silicon. The plots mix the two sources
+on one timeline.*
 
 ## Get it
 
