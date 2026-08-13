@@ -58,6 +58,12 @@ pub:
 // returned when the echo arrives so the caller can mark the right row.
 struct Pending {
 	seq   u64
+	// Cheap discriminator, computed once at note(). The scan walks every outstanding record for
+	// each received frame, and comparing an interface STRING plus a payload ARRAY 1024 times cost
+	// ~200us per frame — three times the gap between frames on a saturated 1 Mbit bus. Comparing
+	// a u64 first turns that into a rounding error; the exact comparison still runs on a match,
+	// so a hash collision cannot attribute somebody else's frame to us.
+	key   u64
 	tag   string // caller-owned label, returned with the claim (see Claim.tag)
 	// The caller already accounted for this emission itself (wrote it to a recording, say), so
 	// whoever claims the echo must not do it again.
@@ -129,6 +135,7 @@ mut:
 pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, monitors []int, tag string, done bool) []u64 {
 	r.items << Pending{
 		seq:     seq
+		key:     frame_key(iface, f)
 		tag:     tag
 		done:    done
 		allowed: monitors.clone()
@@ -194,6 +201,24 @@ pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, 
 	return evicted
 }
 
+// frame_key is a cheap discriminator over everything the exact comparison checks: the interface,
+// the id, its width, the RTR flag and the payload. FNV-1a — it only has to spread, not to resist
+// anything, because a collision costs one exact comparison and never a wrong answer.
+fn frame_key(iface string, f transport.CanFrame) u64 {
+	mut h := u64(0xcbf2_9ce4_8422_2325)
+	for c in iface {
+		h = (h ^ u64(c)) * 0x0000_0100_0000_01b3
+	}
+	h = (h ^ u64(f.id)) * 0x0000_0100_0000_01b3
+	h = (h ^ u64(if f.extended { 1 } else { 0 })) * 0x0000_0100_0000_01b3
+	h = (h ^ u64(if f.rtr { 1 } else { 0 })) * 0x0000_0100_0000_01b3
+	h = (h ^ u64(f.data.len)) * 0x0000_0100_0000_01b3
+	for b in f.data {
+		h = (h ^ u64(b)) * 0x0000_0100_0000_01b3
+	}
+	return h
+}
+
 // claim reports which emission this frame is the echo of, consuming it, or none if the frame
 // is somebody else's.
 //
@@ -203,7 +228,15 @@ pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, 
 // consuming would attribute both to us and hide the collision this exists to surface.
 pub fn (mut r Ring) claim(monitor int, iface string, f transport.CanFrame, t_ms f64) ?Claim {
 	r.drop_expired(t_ms)
-	for i, p in r.items {
+	want := frame_key(iface, f)
+	// BY INDEX, not `for i, p in`. That form copies each Pending — strings, payload, monitor
+	// lists and all — for every candidate, which cost ~200us per received frame at a full ring:
+	// three times the gap between frames on a saturated 1 Mbit bus. Nothing here needs a copy.
+	for i in 0 .. r.items.len {
+		if r.items[i].key != want {
+			continue // cheap reject before touching anything heap-allocated
+		}
+		p := r.items[i]
 		if monitor in p.claimed {
 			continue // this monitor already accounted for that emission
 		}
@@ -242,12 +275,18 @@ pub fn (mut r Ring) claim(monitor int, iface string, f transport.CanFrame, t_ms 
 // "still nothing", which is a worse trade than a late verdict.
 pub fn (mut r Ring) expire(now_ms f64) []u64 {
 	mut missed := []u64{}
-	mut keep := []Pending{cap: r.items.len}
-	for p in r.items {
-		if now_ms - p.t_ms <= r.window_ms {
-			keep << p
-			continue
-		}
+	// Same prefix property as drop_expired: walk only what has actually aged out, and leave the
+	// rest in place instead of rebuilding the array every time this is called.
+	mut cut := 0
+	for cut < r.items.len && now_ms - r.items[cut].t_ms > r.window_ms {
+		cut++
+	}
+	if cut == 0 {
+		return missed
+	}
+	for i in 0 .. cut {
+		p := r.items[i]
+		{
 		// Only what NO monitor ever saw, and only where one COULD have: a record kept for a
 		// second monitor has already been accounted for once (reporting it again would accuse a
 		// bus that carried the frame perfectly well), and an emission made while nothing was
@@ -255,8 +294,9 @@ pub fn (mut r Ring) expire(now_ms f64) []u64 {
 		if p.claimed.len == 0 && p.allowed.len > 0 && !p.watched_gone {
 			missed << p.seq
 		}
+		}
 	}
-	r.items = keep
+	r.items = r.items[cut..].clone()
 	return missed
 }
 
@@ -298,16 +338,17 @@ pub fn (mut r Ring) forget(seq u64) {
 // drop_expired discards timed-out records without reporting them — used on the claim path,
 // where the caller is asking a different question and expire() drives the verdicts.
 fn (mut r Ring) drop_expired(now_ms f64) {
-	if r.items.len == 0 {
-		return
+	// A PREFIX, not a rebuild. Records are appended in time order, so everything expired sits at
+	// the front — and the old version copied all 1024 items (strings, payloads, monitor lists)
+	// into a fresh array on EVERY claim, which is where ~170us per received frame was going.
+	// Usually nothing has expired and this costs one comparison.
+	mut cut := 0
+	for cut < r.items.len && now_ms - r.items[cut].t_ms > r.window_ms {
+		cut++
 	}
-	mut keep := []Pending{cap: r.items.len}
-	for p in r.items {
-		if now_ms - p.t_ms <= r.window_ms {
-			keep << p
-		}
+	if cut > 0 {
+		r.items = r.items[cut..].clone()
 	}
-	r.items = keep
 }
 
 // outstanding is how many emissions are still unaccounted for.
