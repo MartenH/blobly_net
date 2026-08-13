@@ -4686,6 +4686,26 @@ fn draw_buses(mut app App, chans []Chan) {
 					&& !app.chans[i].spawning {
 					app.chans[i].spawning = true
 					spawn rx_loop(app, i, app.chans[i].iface, app.run_gen)
+					// …and the TRANSMIT side, exactly as start() sets it up. Only the reader was
+					// started here, so a channel enabled after Start had no tap: Quick Send and
+					// the diagnostic paths reported "no open bus", and with no send_iface yet the
+					// Send panel had nothing selected. (Nobody hit it while the branch was
+					// unreachable — fixing that exposed the other half.)
+					iface := app.chans[i].iface
+					name := app.chans[i].name
+					if tx_bus_key(name, iface) !in app.tx_buses {
+						if b := app.open_tap_on(iface, org_tx, name) {
+							app.tx_buses[tx_bus_key(name, iface)] = b
+						}
+					}
+					if tx_bus_key('', iface) !in app.tx_buses {
+						if b := app.open_tap(iface, org_tx) {
+							app.tx_buses[tx_bus_key('', iface)] = b
+						}
+					}
+					if app.send_iface == '' {
+						app.send_iface = iface
+					}
 				}
 				app.mu.unlock()
 			}
