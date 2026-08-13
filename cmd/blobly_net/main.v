@@ -608,6 +608,11 @@ fn (mut app App) start() {
 		// which broadcasts only to already-attached subscribers — those frames genuinely had no
 		// listener, yet were tracked as if one existed and later marked as never sent.
 		app.chans[ci].link_down = !iface_link_up(ch.adapter, ch.address)
+		// the same guard the mid-run toggle uses: disabling and re-enabling while this open is
+		// still pending would otherwise start a SECOND loop for one channel, and both would
+		// claim against the same monitor index — one gets the echo, the other files its copy
+		// under the device under test
+		app.chans[ci].spawning = true
 		spawn rx_loop(app, ci, ch.iface, app.run_gen)
 		// A TX bus per CHANNEL (each generator fires on its target bus), plus one anonymous tap
 		// per wire for the paths with no particular channel — Quick Send, diagnostics, shell.
@@ -703,6 +708,7 @@ fn (mut app App) start() {
 				key:   diag_key_can(sc.iface, diag_tx_id, diag_rx_id)
 				label: 'default on ${sc.iface}  (0x${diag_tx_id:X}/0x${diag_rx_id:X})'
 				iface: sc.iface
+				chan:  sc.pch.name
 				rx:    diag_tx_id
 				tx:    diag_rx_id
 			}
@@ -717,6 +723,7 @@ fn (mut app App) start() {
 				key:   diag_key_can(sc.iface, u.rx, u.tx)
 				label: '${u.name}  (0x${u.rx:X}/0x${u.tx:X})'
 				iface: sc.iface
+				chan:  own.name // this node's OWN channel, not the first one on the wire
 				rx:    u.rx
 				tx:    u.tx
 				ext:   u.ext
@@ -1340,8 +1347,19 @@ fn (app &App) open_tap_on(iface string, origin string, chan_name string) !transp
 	// label its rows with the physical open string and split them from every other row on the
 	// same bus. Only there: nothing else uses `@` as syntax, and `inproc:bench@A` is a bus NAME
 	// — stripping it universally sent every emitter to a different hub than the monitor.
-	logical := if transport.vendor_iface(iface) { iface.all_before('@') } else { iface }
-	inner := transport.open(app.bitrate_iface(logical))!
+	// Identity is the CANONICAL address: `inproc` and `inproc:CAN` are one hub, and keying them
+	// separately means a frame reaches the monitor but cannot claim its own record. The physical
+	// open still takes the caller's spelling.
+	logical := transport.canonical_iface(if transport.vendor_iface(iface) {
+		iface.all_before('@')
+	} else {
+		iface
+	})
+	inner := transport.open(app.bitrate_iface(if transport.vendor_iface(iface) {
+		iface.all_before('@')
+	} else {
+		iface
+	}))!
 	return &TapBus{
 		tx_mu:  app.tx_mutex(logical)
 		inner:  inner
@@ -1381,8 +1399,9 @@ fn (app &App) tx_mutex(iface string) &sync.Mutex {
 // could ever confirm. Caller holds app.mu.
 fn (app &App) monitors_locked(iface string) []int {
 	mut out := []int{}
+	want := transport.canonical_iface(iface)
 	for i, c in app.chans {
-		if c.iface == iface && c.monitorable() && c.running {
+		if transport.canonical_iface(c.iface) == want && c.monitorable() && c.running {
 			out << i
 		}
 	}
@@ -1861,7 +1880,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		// recording and the E2E verifier — whose per-message counter would otherwise see one
 		// message twice and report a jump the ECU never made.
 		a.mu.lock()
-		ours := a.claim_echo_locked(ci, iface, f, t_ms)
+		ours := a.claim_echo_locked(ci, transport.canonical_iface(iface), f, t_ms)
 		a.mu.unlock()
 		name := a.lookup_name(f.id, f.extended)
 		// Verify protection on the way in. Done here, on the RX thread that already owns the
@@ -1929,6 +1948,10 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		a.chans[ci].running = false
 		a.chans[ci].spawning = false
 	}
+	// Whatever we emitted while this loop was the observer can no longer be answered by it. Its
+	// records stay claimable (an echo may already be queued in the socket) but earn no verdict:
+	// the watcher was removed, so silence proves nothing.
+	a.taps.drop_monitor(ci)
 	a.mu.unlock()
 }
 
@@ -6206,6 +6229,7 @@ struct DiagTarget {
 	key   string
 	label string
 	iface string
+	chan  string // the CHANNEL that owns it — an interface cannot say which, when two share one
 	rx    u32 // the ECU listens here — the tester TRANSMITS to it
 	tx    u32 // the ECU answers here — the tester RECEIVES from it
 	ext   bool
@@ -6337,7 +6361,7 @@ fn diag_worker(app &App, kind string, did u16, want_key string) {
 			return
 		})
 	} else {
-		isotp.Channel(isotp.on_bus(a.open_tap(iface, org_tst) or {
+		isotp.Channel(isotp.on_bus(a.open_tap_on(iface, org_tst, t.chan) or {
 			a.diag_push('open ${iface}: ${err}')
 			a.mu.lock()
 			a.diag_busy = false

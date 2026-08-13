@@ -60,6 +60,25 @@ pub fn software_iface(iface string) bool {
 	return i == 'inproc' || i.starts_with('inproc:') || i == 'udp' || i.starts_with('udp:')
 }
 
+// canonical_iface collapses the spellings of one bus to a single identity. `inproc` and
+// `inproc:CAN` open the same hub, as do `udp` and `udp:239.63.42.1:20000` — the parsers fill the
+// defaults. As STRINGS they differ, so a monitor opened one way and a generator override written
+// the other way would key their pending records, watcher lists and send locks separately: the
+// frame reaches the monitor, cannot claim its own record, and lands in the trace as the device
+// under test's. Physical opens still take the caller's spelling; this is for identity only.
+pub fn canonical_iface(iface string) string {
+	i := iface.trim_space()
+	if i == 'inproc' {
+		return 'inproc:CAN' // parse_inproc_iface's default name
+	}
+	if i == 'udp' || i.starts_with('udp:') {
+		if t := parse_udp_iface(i) {
+			return 'udp:${t.group}:${t.port}'
+		}
+	}
+	return i
+}
+
 // wire_frame is the frame this interface will ACTUALLY put on the bus. Where the backend clamps,
 // that means a classic id masked to its declared width and at most 8 bytes: a caller that records
 // what it ASKED for records something that never existed — and, for echo matching, something that

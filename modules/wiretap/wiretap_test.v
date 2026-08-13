@@ -262,3 +262,50 @@ fn test_eviction_reports_nothing_when_nobody_was_watching() {
 	r.note(2, 'vcan0', frame(0x102, [u8(2)]), 0, [])
 	assert r.note(3, 'vcan0', frame(0x103, [u8(3)]), 0, []) == []u64{}
 }
+
+// Disabling a channel mid-run removes the only thing that could have confirmed our emissions.
+// Marking them missing would accuse the bus of a fault the user caused by unticking a box.
+fn test_removing_the_watcher_cancels_its_verdict() {
+	mut r := Ring{}
+	f := frame(0x120, [u8(1)])
+	r.note(1, 'vcan0', f, 0, [0])
+	r.drop_monitor(0)
+	assert r.expire(default_window_ms + 1) == []u64{}, 'a removed observer still produced a verdict'
+}
+
+// …but an echo already queued in that socket is still OURS, so it must still be claimable.
+fn test_a_straggling_echo_is_still_ours_after_the_watcher_goes() {
+	mut r := Ring{}
+	f := frame(0x120, [u8(1)])
+	r.note(2, 'vcan0', f, 0, [0])
+	r.drop_monitor(0)
+	seq := r.claim(0, 'vcan0', f, 1) or {
+		assert false, 'our own frame became the ECU when its monitor was removed'
+		return
+	}
+	assert seq == 2
+}
+
+// With two monitors on one wire, one draining slower, capping the ring must not throw away a
+// record the slow one has not reached — its copy of our own frame would arrive with nothing to
+// match and be filed as the device under test's. Records everyone has answered go first.
+fn test_capping_gives_up_settled_records_before_pending_ones() {
+	mut r := Ring{
+		cap: 2
+	}
+	a := frame(0x101, [u8(1)])
+	b := frame(0x102, [u8(2)])
+	r.note(1, 'vcan0', a, 0, [0, 1])
+	r.note(2, 'vcan0', b, 0, [0, 1])
+	// record 1 is fully accounted for; record 2 is still waiting on monitor 1
+	r.claim(0, 'vcan0', a, 1) or { assert false, '${err}' }
+	r.claim(1, 'vcan0', a, 1) or { assert false, '${err}' }
+	r.claim(0, 'vcan0', b, 1) or { assert false, '${err}' }
+	r.note(3, 'vcan0', frame(0x103, [u8(3)]), 1, [0, 1])
+	// the settled one was dropped, so monitor 1's late copy of b can still be claimed
+	seq := r.claim(1, 'vcan0', b, 2) or {
+		assert false, 'the slow monitor lost our frame to the cap'
+		return
+	}
+	assert seq == 2
+}

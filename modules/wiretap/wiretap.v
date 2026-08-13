@@ -57,8 +57,13 @@ struct Pending {
 	// test's breaks the one promise this column makes, and it is the worse trade against
 	// possibly swallowing a byte-identical real frame inside that startup window. What an empty
 	// set does NOT buy is a verdict: nobody was watching, so nothing can be called missing.
-	allowed []int
 mut:
+	allowed []int
+	// Every observer that could have seen this went away before it could answer. Distinguishes
+	// "nobody was watching when it was sent" (allowed empty from the start) from "the watcher
+	// was removed afterwards" — both earn no verdict, but only the second can still be claimed
+	// by a straggling echo already in that socket's queue.
+	watched_gone bool
 	// Which monitors have already accounted for this emission. Several monitors may watch one
 	// interface (two channel entries can share a bus), and each gets its own copy of every
 	// frame — so a record consumed outright by the first would make our own frame look foreign
@@ -66,6 +71,21 @@ mut:
 	// transmitter: a repeat arriving at a monitor that already claimed this record finds
 	// nothing left for it.
 	claimed []int
+}
+
+// settled: every monitor that could have seen this emission has accounted for it, so no future
+// frame can match it. Nothing is lost by dropping it, which makes it the first thing to give up
+// when the ring is full.
+fn (p Pending) settled() bool {
+	if p.allowed.len == 0 {
+		return false // nobody named: any monitor may still claim it (see `allowed`)
+	}
+	for m in p.allowed {
+		if m !in p.claimed {
+			return false
+		}
+	}
+	return true
 }
 
 // Ring holds the emissions not yet accounted for. Not thread-safe: the caller serialises it
@@ -98,17 +118,33 @@ pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, 
 	}
 	mut evicted := []u64{}
 	if r.cap > 0 && r.items.len > r.cap {
-		drop := r.items.len - r.cap
-		for pd in r.items[..drop] {
-			// Same rule as expire(): never seen, AND somebody could have seen it. An emission
-			// made while nothing was watching has no evidence either way, so dropping it for
-			// room must not turn into a verdict — an unmonitored generator running flat out
-			// would otherwise mark its own healthy traffic.
-			if pd.claimed.len == 0 && pd.allowed.len > 0 {
-				evicted << pd.seq
+		// SETTLED FIRST. A record every allowed monitor has already accounted for is finished —
+		// nothing will ever ask about it again — so it is the right thing to drop for room.
+		// Dropping in plain arrival order instead threw away records a SECOND monitor had not
+		// reached yet (two channels on one wire, one draining slower), and its copy of our own
+		// frame then arrived with nothing to match and was filed as the device under test's.
+		mut keep := []Pending{cap: r.items.len}
+		mut need := r.items.len - r.cap
+		for pd in r.items {
+			if need > 0 && pd.settled() {
+				need--
+				continue
 			}
+			keep << pd
 		}
-		r.items = r.items[drop..].clone()
+		// Still over: the oldest go, and those that never got an answer are reported rather
+		// than dropped in silence — going quiet here would go quiet in exactly the busy-bus
+		// case where a dead link matters most.
+		if need > 0 {
+			for pd in keep[..need] {
+				// same rule as expire(): never seen, and somebody could have seen it
+				if pd.claimed.len == 0 && pd.allowed.len > 0 && !pd.watched_gone {
+					evicted << pd.seq
+				}
+			}
+			keep = keep[need..].clone()
+		}
+		r.items = keep
 	}
 	return evicted
 }
@@ -157,12 +193,29 @@ pub fn (mut r Ring) expire(now_ms f64) []u64 {
 		// second monitor has already been accounted for once (reporting it again would accuse a
 		// bus that carried the frame perfectly well), and an emission made while nothing was
 		// watching has no evidence either way — silence is not a fault.
-		if p.claimed.len == 0 && p.allowed.len > 0 {
+		if p.claimed.len == 0 && p.allowed.len > 0 && !p.watched_gone {
 			missed << p.seq
 		}
 	}
 	r.items = keep
 	return missed
+}
+
+// drop_monitor retires an observer that has gone away — a channel disabled mid-run, or an rx
+// loop that exited. Its id leaves every outstanding record, and a record left with NO eligible
+// observer can no longer earn a verdict: the frame may well have reached the wire, and the only
+// thing that could have said so was deliberately removed. Marking it missing would accuse the
+// bus of a fault the user caused by unticking a box.
+pub fn (mut r Ring) drop_monitor(monitor int) {
+	for i in 0 .. r.items.len {
+		r.items[i].allowed = r.items[i].allowed.filter(it != monitor)
+		r.items[i].claimed = r.items[i].claimed.filter(it != monitor)
+		// allowed was non-empty and is now empty: it becomes an unwatched emission, which
+		// expire() already retires silently.
+		if r.items[i].allowed.len == 0 {
+			r.items[i].watched_gone = true
+		}
+	}
 }
 
 // forget discards the record for one emission without a verdict — for a send that FAILED, where

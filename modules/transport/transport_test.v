@@ -98,3 +98,16 @@ fn test_a_socketcan_interface_named_like_a_software_bus() {
 	assert software_iface('inproc:CAN1')
 	assert software_iface('udp:239.0.0.1:5000')
 }
+
+// One bus, several spellings. Keyed by the raw string, a monitor opened as `inproc` and a
+// generator override written `inproc:CAN` would not recognise each other's frames — the echo
+// arrives and is filed as the device under test's.
+fn test_equivalent_bus_spellings_share_one_identity() {
+	assert canonical_iface('inproc') == canonical_iface('inproc:CAN')
+	assert canonical_iface('udp') == canonical_iface('udp:239.63.42.1:20000')
+	assert canonical_iface('udp:239.63.42.1') == canonical_iface('udp')
+	// …and genuinely different buses stay different
+	assert canonical_iface('inproc:CAN1') != canonical_iface('inproc:CAN2')
+	assert canonical_iface('udp:239.0.0.9:20000') != canonical_iface('udp')
+	assert canonical_iface('vcan0') == 'vcan0'
+}
