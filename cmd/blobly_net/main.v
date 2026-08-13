@@ -1256,6 +1256,23 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 			}
 		}
 	}
+	// Recording at EMIT only where nothing will observe the frame for us: PCAN and Kvaser never
+	// hand our own transmissions back, so the wire path below can never write them. Everywhere
+	// else the echo does it, in observation order — see rx_loop. Recording here as well would
+	// both duplicate the frame and let a fast responder's answer land in the file ahead of the
+	// request that caused it.
+	//
+	// Not gated on `paused`: pausing freezes the TABLE, not the recording.
+	if app.recording && !transport.echoes_own_sends(iface) {
+		// Stamped INSIDE the lock, like the rx path: a time taken before acquiring it can be
+		// older than a line already written, and the file would then disagree with itself.
+		app.rec << canlog.LogEntry{f64(time.ticks() - app.t0) / 1000.0, chn, f}
+		// the same bounded window the rx path keeps — with the echo suppressed, our own traffic
+		// arrives through here, so this is the path a long recording actually grows on
+		if app.rec.len > 200000 {
+			app.rec = app.rec[app.rec.len - 200000..].clone()
+		}
+	}
 	// Rate-limited exactly like the rx path: a simulation emitting hundreds of frames a second
 	// would otherwise post an event per frame and hold the UI at the traffic rate.
 	now := time.ticks()
@@ -1269,22 +1286,27 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 	return seq
 }
 
-// note_sent records a frame that actually reached the driver. Separate from note_emit so a send
-// that FAILED never appears in a recording as though it had gone out.
-fn (mut app App) note_sent(iface string, chan_name string, f transport.CanFrame) {
+// unrecord_last drops a frame we recorded at emit but never managed to send. Bounded backward
+// scan: the interface's send lock keeps another emitter on this wire out of the interval, but
+// the rx thread and other interfaces may have appended, so the entry need not be last.
+fn (mut app App) unrecord_last(iface string, f transport.CanFrame) {
 	app.mu.lock()
-	if app.recording {
-		// the LOGICAL channel, like the trace row: two channels can share one interface, and a
-		// recording that says `vcan0` cannot be replayed back into the one that sent it
-		chn := if chan_name != '' { chan_name } else { app.chan_name_for(iface) }
-		app.rec << canlog.LogEntry{f64(time.ticks() - app.t0) / 1000.0, chn, f}
-		// the same bounded window rx_loop keeps: with the echo now suppressed, a simulation's
-		// own traffic arrives HERE, and this is the path a long recording actually grows on
-		if app.rec.len > 200000 {
-			app.rec = app.rec[app.rec.len - 200000..].clone()
-		}
+	defer {
+		app.mu.unlock()
 	}
-	app.mu.unlock()
+	if !app.recording || app.rec.len == 0 {
+		return
+	}
+	mut i := app.rec.len - 1
+	for i >= 0 && i > app.rec.len - 9 {
+		e := app.rec[i]
+		if e.frame.id == f.id && e.frame.extended == f.extended && e.frame.rtr == f.rtr
+			&& e.frame.data == f.data {
+			app.rec.delete(i)
+			return
+		}
+		i--
+	}
 }
 
 // retract_emit takes back an emission the driver refused. The row stays and is marked: the frame
@@ -1303,10 +1325,9 @@ fn (mut app App) retract_emit(seq u64) {
 // claim_echo_locked confirms the emission this frame is the echo of, and reports whether it
 // found one. The matching rules (one-shot, oldest first, width-exact) and why they are what they
 // are live in modules/wiretap. Caller holds app.mu.
-fn (mut app App) claim_echo_locked(monitor int, iface string, f transport.CanFrame, t_ms f64) bool {
+fn (mut app App) claim_echo_locked(monitor int, iface string, f transport.CanFrame, t_ms f64) ?u64 {
 	app.expire_pending_locked(t_ms)
-	app.taps.claim(monitor, iface, f, t_ms) or { return false }
-	return true
+	return app.taps.claim(monitor, iface, f, t_ms)
 }
 
 // TapBus wraps a bus we EMIT on, so every frame leaving the app is attributed exactly once,
@@ -1344,9 +1365,12 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	// the original makes the echo disagree with the record in the other direction.
 	t.inner.send(wire) or {
 		t.app.retract_emit(seq)
+		// only the non-echoing backends record at emit; elsewhere nothing was written yet
+		if !transport.echoes_own_sends(t.iface) {
+			t.app.unrecord_last(t.iface, wire)
+		}
 		return err
 	}
-	t.app.note_sent(t.iface, t.chan_name, wire)
 }
 
 fn (mut t TapBus) recv(timeout_ms int) !transport.CanFrame {
@@ -1893,6 +1917,12 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			vgui.wake()
 		}
 		f := bus.recv(200) or { continue }
+		// A blocked recv can be woken by the previous run's echo after Start has already reset
+		// the ring: this loop would then find no record and file that frame as the CURRENT
+		// run's bus traffic — into the trace, the recording and the verifier.
+		if a.run_gen != gen {
+			break
+		}
 		t_ms := f64(time.ticks() - a.t0)
 		// Is this the echo of something WE just put on the wire? Every backend delivers our own
 		// sends to the monitor's separate bus instance (transport.test_inproc_cross_delivery
@@ -1902,7 +1932,23 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		// recording and the E2E verifier — whose per-message counter would otherwise see one
 		// message twice and report a jump the ECU never made.
 		a.mu.lock()
-		ours := a.claim_echo_locked(ci, transport.canonical_iface(iface), f, t_ms)
+		claimed := a.claim_echo_locked(ci, transport.canonical_iface(iface), f, t_ms)
+		ours := claimed != none
+		// The recording follows the WIRE, so its order is observation order — the only order
+		// that is actually true. Our own frame is written HERE, when it comes back, under the
+		// channel of the row it confirmed: recording at emit instead let a fast responder's
+		// answer reach the file before the request, because the simulation and the monitor are
+		// different threads on different sockets and neither waits for the other.
+		if a.recording {
+			if seq := claimed {
+				i := a.row_index_locked(seq)
+				ch_own := if i >= 0 { a.trace[i].ch } else { a.chan_name_for(iface) }
+				a.rec << canlog.LogEntry{f64(time.ticks() - a.t0) / 1000.0, ch_own, f}
+				if a.rec.len > 200000 {
+					a.rec = a.rec[a.rec.len - 200000..].clone()
+				}
+			}
+		}
 		a.mu.unlock()
 		name := a.lookup_name(f.id, f.extended)
 		// Verify protection on the way in. Done here, on the RX thread that already owns the
@@ -1946,7 +1992,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			a.trace_freeze = trace_rsp_status(telem.decode_trace_rsp(f.data))
 		}
 		if a.recording && !ours {
-			a.rec << canlog.LogEntry{t_ms / 1000.0, chname, f}
+			a.rec << canlog.LogEntry{f64(time.ticks() - a.t0) / 1000.0, chname, f}
 			if a.rec.len > 200000 {
 				a.rec = a.rec[a.rec.len - 200000..].clone()
 			}
@@ -4778,8 +4824,13 @@ fn trace_pass(r TraceRow, filt string) bool {
 	}
 	// the violation is searchable, so "!crc" in the filter box shows only bad frames — the
 	// gesture someone reaches for the moment they suspect one
-	// the origin is searchable, so "sim" shows only our simulated ECUs and "bus" only what the
-	// device under test actually put on the wire — the two views a bench asks for
+	// An origin on its own means the ORIGIN FIELD, not a substring of everything: a message
+	// called BusStatus or a channel named SimBus would otherwise satisfy "bus" and "sim" for
+	// every row, while the docs promise those two show only the real ECU and only the
+	// simulation. Anything else searches the row as before.
+	if filt in [org_tst, org_sim, org_rep, org_bus].map(it.to_lower()) {
+		return r.origin.to_lower() == filt
+	}
 	hay := '${idstr(r.id, r.ext)} ${r.name} ${r.ch} ${r.origin}${origin_mark(r)} ${hex(r.data)} ${r.e2e}'.to_lower()
 	return hay.contains(filt)
 }

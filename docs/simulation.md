@@ -253,6 +253,14 @@ bitrate, CANH/CANL swapped, or a link that is down. Those all used to look like 
 In the grouped view the mark applies to the **group**: it appears if any frame in the window went
 unanswered, not just the newest one — whose echo window has had the least time to close.
 
+**Recordings follow the wire.** A frame we transmit is written to the `.log` when it comes back
+off the bus, not when we hand it to the driver — so the file is in observation order. Recording
+at emit put a fast responder's answer ahead of the request that caused it, because the simulation
+and the monitor are different threads on different sockets and neither waits for the other. Two
+consequences worth knowing: a frame that never reaches the wire is not in the recording (it is in
+the trace, marked), and on **PCAN/Kvaser**, where the driver never returns our own frames, we
+record at emit instead — there is nothing else to record from.
+
 **Silence is not evidence.** The mark is only ever applied where an echo could have arrived: no
 monitor on that bus (a generator firing at a channel you are not watching), a channel disabled
 mid-run, or a driver that never hands your own transmissions back (PCAN and Kvaser do not) all
