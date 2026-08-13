@@ -604,12 +604,17 @@ fn (mut app App) start() {
 	// so the echo comes back with nothing to match and is filed as the device under test's.
 	// Taking each send lock waits for those to finish; taking them BEFORE app.mu keeps the same
 	// order the emitters use (send lock, then app.mu), so the two cannot deadlock.
-	mut held := []&sync.Mutex{}
+	// tx_map_mu is held ACROSS the whole reset, not just the snapshot. A script from the previous
+	// run is not cancelled by Stop, and its BusOpener can lazily open a tap for an interface
+	// nobody used before — creating a send lock this drain never took, so that emitter could
+	// note, be descheduled, and physically send after the ring was cleared. Holding the map lock
+	// makes a new tap wait instead. Order is map lock, send locks, app.mu, the same order an
+	// emitter acquires them in (open, then send, then note), so the two cannot deadlock.
 	app.tx_map_mu.lock()
+	mut held := []&sync.Mutex{}
 	for _, m in app.tx_mutexes {
 		held << m
 	}
-	app.tx_map_mu.unlock()
 	for m in held {
 		m.lock()
 	}
@@ -619,6 +624,7 @@ fn (mut app App) start() {
 	for m in held {
 		m.unlock()
 	}
+	app.tx_map_mu.unlock()
 	app.running = true
 	app.run_gen++
 	for ci, ch in app.chans {
