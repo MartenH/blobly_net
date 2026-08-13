@@ -1210,7 +1210,10 @@ fn (mut app App) expire_pending_locked(now_ms f64) {
 // note_emit records a frame we are about to put on the wire: one row stating intent, and one
 // pending echo. Called BEFORE the send — the RX thread can see the frame the instant the driver
 // takes it, and a pending entry added afterwards would arrive too late to claim its own echo.
-fn (mut app App) note_emit(iface string, chan_name string, origin string, f transport.CanFrame) u64 {
+// Returns the row identity and whether THIS call wrote the frame to the recording — the retract
+// path must not guess that from the backend, because a bus that normally echoes also records at
+// emit whenever no monitor is running.
+fn (mut app App) note_emit(iface string, chan_name string, origin string, f transport.CanFrame) (u64, bool) {
 	t_ms := f64(time.ticks() - app.t0)
 	app.mu.lock()
 	// Under the lock, not before it. The dbc_readers drain covers the RX loops, which register
@@ -1290,7 +1293,7 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 	} else {
 		app.mu.unlock()
 	}
-	return seq
+	return seq, recorded_here
 }
 
 // tap_chan resolves the logical channel a tap writes under: its own name, or the interface's
@@ -1379,13 +1382,15 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	}
 	// BEFORE the send: a monitor thread can see the frame the instant the driver takes it, and a
 	// record added afterwards arrives too late to claim its own echo.
-	seq := t.app.note_emit(t.iface, t.chan_name, t.origin, wire)
+	seq, recorded := t.app.note_emit(t.iface, t.chan_name, t.origin, wire)
 	// `wire`, not `frame`: on a backend that would carry the extra bytes (inproc, udp) sending
 	// the original makes the echo disagree with the record in the other direction.
 	t.inner.send(wire) or {
 		t.app.retract_emit(seq)
-		// only the non-echoing backends record at emit; elsewhere nothing was written yet
-		if !transport.echoes_own_sends(t.iface) {
+		// what note_emit ACTUALLY did, not what the backend usually implies: an echoing bus with
+		// no monitor running records at emit too, and guessing from the backend left a frame
+		// that never reached the wire in the file
+		if recorded {
 			t.app.unrecord_last(t.app.tap_chan(t.iface, t.chan_name), wire)
 		}
 		return err
