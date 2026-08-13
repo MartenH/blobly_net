@@ -1198,6 +1198,18 @@ fn (mut app App) load_recording(path string) {
 	// An imported label is deliberately namespaced (`mf4:`) so it can never match a project
 	// interface by accident: BusChannel is the file's numbering, not this project's.
 	only := if verifiers.len == 1 { verifiers.keys()[0] } else { '' }
+	// For an MF4 the fallback needs a stronger question: `verifiers` counts buses that HAVE
+	// simulation or verify: entries, not buses the project has. A project with three CAN buses
+	// where only one is simulated would otherwise apply that one's rules to every `mf4:busN` —
+	// and the distinct labels are the file telling us the recording spans several buses. So the
+	// import may only fall back when the PROJECT itself has a single CAN bus to fall back to.
+	mut can_buses := map[string]bool{}
+	for c in app.chans {
+		if !c.doip {
+			can_buses[c.iface] = true
+		}
+	}
+	mf4_only := if can_buses.len == 1 { only } else { '' }
 	app.mu.lock()
 	app.trace = []
 	app.gcount = map[string]u64{}
@@ -1211,7 +1223,7 @@ fn (mut app App) load_recording(path string) {
 			// `mf4:bus1` — and a convention is not a guarantee. Structurally: these labels are
 			// not in this project's namespace, so the only resolution they may take is the
 			// single-bus fallback, where there is nothing to get wrong.
-			ifc := if from_mf4 { only } else { alias[e.iface] or { only } }
+			ifc := if from_mf4 { mf4_only } else { alias[e.iface] or { only } }
 			if mut vs := verifiers[ifc] {
 				if k := vs.resolve(app.dbs_for(ifc), f.id, f.extended) {
 					if mut ver := vs.by_key[k] {

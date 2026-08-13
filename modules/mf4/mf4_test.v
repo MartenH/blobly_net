@@ -161,3 +161,37 @@ fn test_an_imported_label_is_not_a_project_interface() {
 		assert label.starts_with('mf4:'), '${label} could match a project channel by that name'
 	}
 }
+
+// A record may declare a channel INVALID in its invalidation area, and the raw bits are then
+// undefined. Reading them anyway invents a bus number — which either merges those frames into a
+// genuine mf4:busN stream or conjures a bus the recording never had.
+fn test_an_invalidated_field_is_not_read() {
+	c := Chan{
+		flags:     0x02 // has an invalidation bit
+		inval_bit: 3
+	}
+	// record layout: 4 data bytes then 1 invalidation byte; bit 3 set = invalid
+	raw := [u8(0), 0, 0, 0, 0b0000_1000]
+	assert chan_invalid(raw, 0, 4, 1, c)
+	clear := [u8(0), 0, 0, 0, 0b0000_0000]
+	assert !chan_invalid(clear, 0, 4, 1, c)
+}
+
+fn test_a_channel_without_an_invalidation_bit_is_always_valid() {
+	c := Chan{
+		flags:     0 // the bit is not in use
+		inval_bit: 3
+	}
+	raw := [u8(0), 0, 0, 0, 0b0000_1000] // set, but it does not belong to this channel
+	assert !chan_invalid(raw, 0, 4, 1, c)
+}
+
+// A malformed file must not take the frame with it: out-of-range means "cannot tell", and the
+// value is used, not the record dropped.
+fn test_an_out_of_range_invalidation_bit_reads_as_valid() {
+	c := Chan{
+		flags:     0x02
+		inval_bit: 999
+	}
+	assert !chan_invalid([u8(0), 0, 0, 0, 0], 0, 4, 1, c)
+}

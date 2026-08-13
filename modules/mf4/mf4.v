@@ -167,6 +167,11 @@ struct Chan {
 	bit_count u32
 	data_link u64   // cn_data: VLSD signal-data block (type 1) or length channel (type 5)
 	cc_link   u64   // cn_cc_conversion (CCBLOCK), for the master-time scale
+	// cn_flags bit 1 = this channel has an invalidation bit, whose position in the record's
+	// invalidation area is cn_inval_bit_pos. A record may mark a channel INVALID, and its raw
+	// bits are then undefined — reading them anyway invents a value.
+	flags     u32
+	inval_bit u32
 }
 
 // `group` distinguishes this channel group from the file's others when the records carry no
@@ -268,10 +273,10 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 			}
 			data = raw[dstart..dend].clone()
 		}
-		bus_no := if c_bus.bit_count > 0 {
+		bus_no := if c_bus.bit_count > 0 && !chan_invalid(raw, base, data_bytes, inval_bytes, c_bus) {
 			int(read_uint(raw, base + c_bus.byte_off, int(c_bus.bit_off), int(c_bus.bit_count)))
 		} else {
-			-1
+			-1 // absent, or this record says the field is not defined: fall back to the group
 		}
 		out << canlog.LogEntry{
 			t_s:   ts
@@ -325,6 +330,8 @@ fn collect_channels(buf []u8, cn_first u64, mut chans []Chan) {
 			bit_count: binary.little_endian_u32_at(buf, d + 8)
 			data_link: if cnl.len > 5 { cnl[5] } else { u64(0) }
 			cc_link:   if cnl.len > 4 { cnl[4] } else { u64(0) }
+			flags:     binary.little_endian_u32_at(buf, d + 12)
+			inval_bit: binary.little_endian_u32_at(buf, d + 16)
 		}
 		comp := if cnl.len > 1 { cnl[1] } else { u64(0) }
 		if comp != 0 && block_id(buf, comp) == '##CN' {
@@ -332,6 +339,21 @@ fn collect_channels(buf []u8, cn_first u64, mut chans []Chan) {
 		}
 		cn = if cnl.len > 0 { cnl[0] } else { u64(0) }
 	}
+}
+
+// chan_invalid reports whether this record marks the channel invalid. The invalidation area sits
+// after the data bytes of each record, one bit per flagged channel; a SET bit means the value is
+// not defined. Without this check a stale or zero BusChannel reads as a real bus number, which
+// either merges those frames into a genuine mf4:busN stream or invents a bus that never existed.
+fn chan_invalid(raw []u8, base int, data_bytes int, inval_bytes int, c Chan) bool {
+	if c.flags & 0x02 == 0 || inval_bytes == 0 {
+		return false // no invalidation bit for this channel
+	}
+	byte_i := base + data_bytes + int(c.inval_bit / 8)
+	if byte_i >= raw.len || int(c.inval_bit / 8) >= inval_bytes {
+		return false // malformed: treat as valid rather than dropping the whole record
+	}
+	return raw[byte_i] & (u8(1) << u8(c.inval_bit % 8)) != 0
 }
 
 // cc_linear returns (offset, factor) of a linear CCBLOCK (cc_type 1), so that
