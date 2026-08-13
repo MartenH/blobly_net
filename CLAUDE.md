@@ -72,7 +72,7 @@ docs/                design + platform docs; docs/history.md = archived status l
 | `doip` | DoIP (ISO 13400) — UDS over TCP; same shape as `isotp.Channel`. Entity (server) side too: ▶ Start hosts one per channel that configures **simulated nodes**, in the GUI and headless. A channel without them is tester-only — it addresses somebody else's ECU and nothing is hosted for it |
 | `someip` | SOME/IP header codec, envelope validation, `RpcClient` |
 | `flash` | UDS firmware-download session against a blobly_emb bootloader (0x29 auth) |
-| `wiretap` | whose frame is this? — the record of what we put on the wire, matched against what comes back, so the trace can separate our tester and our simulation from the real ECU (`origin` column) |
+| `wiretap` | whose frame is this? — the record of what we put on the wire, matched against what comes back, so the trace's `origin` column can separate our tester (`TX`) and our simulation (`TX-S`) from the real ECU (`RX`) |
 | `sim` | simulated ECUs — tests need no hardware; `doip_entity.v` decides what a DoIP channel hosts and `doip_host.v` is the served-side handler, both shared by the GUI and the headless runner |
 | `player` | replay a recording at its recorded cadence |
 | `canlog`, `mf4` | `candump -l` files; native ASAM MDF4 (`.mf4`) reader |
