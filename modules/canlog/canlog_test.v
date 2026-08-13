@@ -1,5 +1,7 @@
 module canlog
 
+import transport
+
 fn test_parse_standard() {
 	e := parse_line('(1.234567) vcan0 100#AABBCCDD') or { panic('parse failed') }
 	assert e.t_s == 1.234567
@@ -67,4 +69,66 @@ fn test_round_trip_rtr() {
 	line := '(0.000000) vcan0 200#R'
 	e := parse_line(line) or { panic('parse failed') }
 	assert format_line(e) == line
+}
+
+// The interface field is whitespace-delimited and the payload follows a '#', so a label carrying
+// either breaks the whole LINE. The recorder stores a logical channel name and the project editor
+// accepts any name, so the writer guarantees the token.
+fn test_a_channel_name_with_a_space_still_round_trips() {
+	e := LogEntry{
+		t_s:   1.5
+		iface: 'Powertrain CAN'
+		frame: transport.CanFrame{
+			id:   0x100
+			data: [u8(1), 2]
+		}
+	}
+	line := format_line(e)
+	assert line.contains('Powertrain%20CAN'), 'unsafe interface field: ${line}'
+	assert line.split(' ').len == 3, 'the line must still have exactly three fields: ${line}'
+	back := parse_line(line) or {
+		assert false, 'the line we wrote does not parse: ${line}'
+		return
+	}
+	assert back.frame.id == 0x100
+	assert back.frame.data == [u8(1), 2]
+	// the identity SURVIVES: a lossy token would match no configured channel, so the channel
+	// filter would hide its own rows and the verifier could not place them
+	assert back.iface == 'Powertrain CAN'
+}
+
+// Distinct names must stay distinct — substitution collapsed these two into one channel.
+fn test_two_names_that_differ_only_by_the_escape_stay_distinct() {
+	a := iface_token('Powertrain CAN')
+	b := iface_token('Powertrain_CAN')
+	assert a != b
+	assert iface_from_token(a) == 'Powertrain CAN'
+	assert iface_from_token(b) == 'Powertrain_CAN'
+}
+
+// An ordinary candump file has nothing to decode, so foreign logs are untouched.
+fn test_a_plain_interface_name_is_left_alone() {
+	assert iface_token('vcan0') == 'vcan0'
+	assert iface_from_token('vcan0') == 'vcan0'
+	assert iface_from_token('can1') == 'can1'
+}
+
+fn test_the_payload_separator_cannot_leak_into_the_interface() {
+	assert iface_token('a#b') == 'a%23b'
+	assert iface_from_token('a%23b') == 'a#b'
+	assert iface_token('(x)') == '%28x%29'
+	assert iface_token('') == 'can'
+	// a literal % is escaped too, or decoding would invent a character
+	assert iface_from_token(iface_token('100% sure')) == '100% sure'
+}
+
+// A foreign log may legally hold a percent triplet that was never our escaping: decoding it
+// would silently rename that channel, and every consumer keys on the name.
+fn test_a_foreign_percent_sequence_is_left_alone() {
+	assert iface_from_token('CAN%31') == 'CAN%31'
+	assert iface_from_token('can%41x') == 'can%41x'
+	// …while the ones we actually emit still round-trip
+	assert iface_from_token(iface_token('Powertrain CAN')) == 'Powertrain CAN'
+	assert iface_from_token(iface_token('a#b')) == 'a#b'
+	assert iface_from_token(iface_token('100% sure')) == '100% sure'
 }

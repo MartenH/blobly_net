@@ -21,7 +21,7 @@ pub const udp_default_group = '239.63.42.1'
 pub const udp_default_port = 20000
 
 // UdpTarget is a parsed `udp[:group[:port]]` software-bus interface spec.
-struct UdpTarget {
+pub struct UdpTarget {
 	group string
 	port  int
 }
