@@ -165,6 +165,14 @@ pub fn (mut r Ring) claim(monitor int, iface string, f transport.CanFrame, t_ms 
 		if p.allowed.len > 0 && monitor !in p.allowed {
 			continue // this socket did not exist when the frame went out
 		}
+		if p.allowed.len == 0 && p.watched_gone {
+			// Its watchers DEPARTED — their sockets are closed, so nothing will read the frame
+			// they might have received. An empty allowed set otherwise means "nobody was named,
+			// so anyone may claim", and a channel disabled and re-enabled inside the window
+			// reuses its index: that new socket never saw this emission, and letting it claim
+			// would credit our echo to the wrong row and suppress a real frame as ours.
+			continue
+		}
 		// Width- and kind-exact. An extended frame is NOT the echo of a standard one that
 		// happens to share the low 11 bits, and an RTR request is not the echo of the data
 		// frame answering it — either shortcut would attribute a real ECU's frame to us.

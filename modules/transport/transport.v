@@ -68,8 +68,8 @@ pub fn software_iface(iface string) bool {
 // under test's. Physical opens still take the caller's spelling; this is for identity only.
 pub fn canonical_iface(iface string) string {
 	i := iface.trim_space()
-	if i == 'inproc' {
-		return 'inproc:CAN' // parse_inproc_iface's default name
+	if i == 'inproc' || i == 'inproc:' {
+		return 'inproc:CAN' // parse_inproc_iface's default name, for both empty spellings
 	}
 	if i == 'udp' || i.starts_with('udp:') {
 		if t := parse_udp_iface(i) {

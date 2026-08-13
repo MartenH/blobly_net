@@ -597,11 +597,28 @@ fn (mut app App) start() {
 	// stop(), because stop() runs while the emitters are still winding down — a worker mid
 	// -iteration can append after the reset and put the stale record back. Nothing of ours is
 	// emitting yet at this point. (A trace Clear is different: same run, so those records stay.)
-	// Under the mutex: a worker from the previous run can still be inside note_emit or
-	// claim_echo_locked, and an unsynchronised assignment would race the ring's backing array.
+	//
+	// Every SEND LOCK first, then app.mu. A worker from the previous run can be between its
+	// note_emit and its physical send — it holds the interface's send lock across exactly that
+	// interval — and resetting in the gap removes its record moments before the frame goes out,
+	// so the echo comes back with nothing to match and is filed as the device under test's.
+	// Taking each send lock waits for those to finish; taking them BEFORE app.mu keeps the same
+	// order the emitters use (send lock, then app.mu), so the two cannot deadlock.
+	mut held := []&sync.Mutex{}
+	app.tx_map_mu.lock()
+	for _, m in app.tx_mutexes {
+		held << m
+	}
+	app.tx_map_mu.unlock()
+	for m in held {
+		m.lock()
+	}
 	app.mu.lock()
 	app.taps = wiretap.Ring{}
 	app.mu.unlock()
+	for m in held {
+		m.unlock()
+	}
 	app.running = true
 	app.run_gen++
 	for ci, ch in app.chans {

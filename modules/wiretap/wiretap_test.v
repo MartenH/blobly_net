@@ -273,17 +273,31 @@ fn test_removing_the_watcher_cancels_its_verdict() {
 	assert r.expire(default_window_ms + 1) == []u64{}, 'a removed observer still produced a verdict'
 }
 
-// …but an echo already queued in that socket is still OURS, so it must still be claimable.
-fn test_a_straggling_echo_is_still_ours_after_the_watcher_goes() {
+// …and its record must not be claimable afterwards either. The socket is closed when the loop
+// exits, so nothing will ever read that frame — while a channel disabled and re-enabled inside
+// the window REUSES its monitor index, and that new socket never saw the emission. Letting it
+// claim would credit a later echo to the old row and suppress a real frame as ours.
+fn test_a_reused_monitor_index_cannot_claim_what_it_never_saw() {
 	mut r := Ring{}
 	f := frame(0x120, [u8(1)])
 	r.note(2, 'vcan0', f, 0, [0])
 	r.drop_monitor(0)
+	if _ := r.claim(0, 'vcan0', f, 1) {
+		assert false, 'a re-enabled monitor claimed an emission from before it existed'
+	}
+}
+
+// An emission nobody was watching is different: no observer was ever named, so the first one to
+// arrive may account for it — that is the startup window, and it is still OUR frame.
+fn test_an_unwatched_emission_is_still_claimable() {
+	mut r := Ring{}
+	f := frame(0x121, [u8(1)])
+	r.note(3, 'vcan0', f, 0, [])
 	seq := r.claim(0, 'vcan0', f, 1) or {
-		assert false, 'our own frame became the ECU when its monitor was removed'
+		assert false, 'our own frame was attributed to the device under test'
 		return
 	}
-	assert seq == 2
+	assert seq == 3
 }
 
 // With two monitors on one wire, one draining slower, capping the ring must not throw away a
