@@ -1302,7 +1302,11 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 	if app.recording && !watching {
 		// Stamped INSIDE the lock, like the rx path: a time taken before acquiring it can be
 		// older than a line already written, and the file would then disagree with itself.
-		rec_id = app.rec_append_locked(canlog.LogEntry{f64(time.ticks() - app.t0) / 1000.0, chn, f})
+		rec_id = app.rec_append_locked(canlog.LogEntry{
+			t_s:   f64(time.ticks() - app.t0) / 1000.0
+			iface: chn
+			frame: f
+		})
 		recorded_here = true
 	}
 	if transport.echoes_own_sends(iface) {
@@ -2079,7 +2083,11 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				// listed first.
 				if c.first && !c.done {
 					ch_own := if c.tag != '' { c.tag } else { a.chan_name_for(iface) }
-					a.rec_append_locked(canlog.LogEntry{f64(time.ticks() - a.t0) / 1000.0, ch_own, f})
+					a.rec_append_locked(canlog.LogEntry{
+						t_s:   f64(time.ticks() - a.t0) / 1000.0
+						iface: ch_own
+						frame: f
+					})
 				}
 			}
 		}
@@ -2133,7 +2141,11 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			a.trace_freeze = trace_rsp_status(telem.decode_trace_rsp(f.data))
 		}
 		if a.recording && !ours {
-			a.rec_append_locked(canlog.LogEntry{f64(time.ticks() - a.t0) / 1000.0, chname, f})
+			a.rec_append_locked(canlog.LogEntry{
+				t_s:   f64(time.ticks() - a.t0) / 1000.0
+				iface: chname
+				frame: f
+			})
 		}
 		a.chans[ci].rx++
 		a.rx++
