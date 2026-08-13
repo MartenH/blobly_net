@@ -46,6 +46,7 @@ pub:
 	seq   u64
 	first bool
 	tag   string // whatever the caller attached at note(): the logical channel, here
+	done  bool   // the caller already accounted for this emission at note() time
 }
 
 // Pending is one emission still waiting for its echo. `seq` is the caller's row identity,
@@ -53,6 +54,9 @@ pub:
 struct Pending {
 	seq   u64
 	tag   string // caller-owned label, returned with the claim (see Claim.tag)
+	// The caller already accounted for this emission itself (wrote it to a recording, say), so
+	// whoever claims the echo must not do it again.
+	done bool
 	iface string
 	id    u32
 	ext   bool
@@ -117,10 +121,11 @@ mut:
 // for — reported, not dropped in silence, because the whole point of the record is that every
 // emission ends with a verdict. Silent eviction would go quiet in exactly the sustained-traffic
 // case where a dead bus matters most.
-pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, monitors []int, tag string) []u64 {
+pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, monitors []int, tag string, done bool) []u64 {
 	r.items << Pending{
 		seq:     seq
 		tag:     tag
+		done:    done
 		allowed: monitors.clone()
 		iface:   iface
 		id:    f.id
@@ -197,6 +202,7 @@ pub fn (mut r Ring) claim(monitor int, iface string, f transport.CanFrame, t_ms 
 				seq:   p.seq
 				first: first
 				tag:   p.tag
+				done:  p.done
 			}
 		}
 	}

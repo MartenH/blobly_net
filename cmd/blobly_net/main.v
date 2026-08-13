@@ -1247,15 +1247,6 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 	// which decides who may claim it and whether "never came back" is evidence of anything. Asked
 	// NOW rather than when the bus was opened, since a channel disabled mid-run takes its monitor
 	// with it.
-	if transport.echoes_own_sends(iface) {
-		watchers := app.monitors_locked(iface)
-		for missed in app.taps.note(seq, iface, f, t_ms, watchers, chn) {
-			i := app.row_index_locked(missed)
-			if i >= 0 {
-				app.trace[i].missed = true
-			}
-		}
-	}
 	// Recording at EMIT only where nothing will observe the frame FOR us: PCAN and Kvaser never
 	// hand our own transmissions back, and a bus with no monitor running has nobody to write it
 	// — a generator aimed at an off channel, or the simulation's first frames before the rx
@@ -1265,14 +1256,28 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 	//
 	// Not gated on `paused`: pausing freezes the TABLE, not the recording.
 	watching := transport.echoes_own_sends(iface) && app.monitors_locked(iface).len > 0
+	mut recorded_here := false
 	if app.recording && !watching {
 		// Stamped INSIDE the lock, like the rx path: a time taken before acquiring it can be
 		// older than a line already written, and the file would then disagree with itself.
 		app.rec << canlog.LogEntry{f64(time.ticks() - app.t0) / 1000.0, chn, f}
+		recorded_here = true
 		// the same bounded window the rx path keeps — with the echo suppressed, our own traffic
 		// arrives through here, so this is the path a long recording actually grows on
 		if app.rec.len > 200000 {
 			app.rec = app.rec[app.rec.len - 200000..].clone()
+		}
+	}
+	if transport.echoes_own_sends(iface) {
+		watchers := app.monitors_locked(iface)
+		// `recorded_here` travels with the emission: a monitor whose bus is OPEN but which has
+		// not published readiness yet is invisible to the check above, so we record at emit and
+		// its echo would then record the same frame again.
+		for missed in app.taps.note(seq, iface, f, t_ms, watchers, chn, recorded_here) {
+			i := app.row_index_locked(missed)
+			if i >= 0 {
+				app.trace[i].missed = true
+			}
 		}
 	}
 	// Rate-limited exactly like the rx path: a simulation emitting hundreds of frames a second
@@ -1302,7 +1307,11 @@ fn (mut app App) unrecord_last(chan_name string, f transport.CanFrame) {
 	defer {
 		app.mu.unlock()
 	}
-	if !app.recording || app.rec.len == 0 {
+	// NOT gated on app.recording: the user may have stopped recording between the emit-append
+	// and the driver's refusal, and the entry is still in the buffer. (If Stop already WROTE the
+	// file, the frame is in it — nothing here can reach that, and a stopped recording is not
+	// rewritten.)
+	if app.rec.len == 0 {
 		return
 	}
 	mut i := app.rec.len - 1
@@ -1959,7 +1968,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				// from the interface: an emission made while the trace was paused has no row to
 				// read it from, and deriving it from the interface picks whichever channel is
 				// listed first.
-				if c.first {
+				if c.first && !c.done {
 					ch_own := if c.tag != '' { c.tag } else { a.chan_name_for(iface) }
 					a.rec << canlog.LogEntry{f64(time.ticks() - a.t0) / 1000.0, ch_own, f}
 					if a.rec.len > 200000 {
