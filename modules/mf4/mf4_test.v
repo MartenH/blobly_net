@@ -1,6 +1,7 @@
 module mf4
 
 import os
+import canlog
 
 // Hermetic test against the committed samples/demo.mf4 (a python-can MF4Writer
 // file: master named 'time' as float64 seconds, DataBytes as a fixed inline
@@ -209,4 +210,45 @@ fn test_a_channel_wide_invalid_flag_wins() {
 		inval_bit: 3
 	}
 	assert chan_invalid([u8(0), 0, 0, 0, 0b0000_0000], 0, 4, 1, both)
+}
+
+// samples/both_dirs.mf4 carries CAN_DataFrame.Dir with both values: 0x200 was TRANSMITTED by the
+// recording device, 0x201 was received by it. That field is the only provenance a recording can
+// hold — a candump line has none — and it says what the RECORDER did, not what we would have.
+const both_dirs_path = @VMODROOT + '/samples/both_dirs.mf4'
+
+fn test_the_recorders_direction_is_read() {
+	entries := load_file(both_dirs_path) or {
+		assert false, 'load_file failed: ${err}'
+		return
+	}
+	assert entries.len == 8
+	mut tx := 0
+	mut rx := 0
+	for e in entries {
+		match e.dir {
+			.tx {
+				tx++
+				assert e.frame.id == 0x200, 'the recorder transmitted 0x200, not 0x${e.frame.id:X}'
+			}
+			.rx {
+				rx++
+				assert e.frame.id == 0x201
+			}
+			.unknown {
+				assert false, 'the file states a direction for every frame'
+			}
+		}
+	}
+	assert tx == 4 && rx == 4
+}
+
+// A candump has no such field, so every line must read `unknown` rather than defaulting to one
+// of the two real answers.
+fn test_a_candump_line_has_no_direction() {
+	e := canlog.parse_line('(1.000000) vcan0 100#AABB') or {
+		assert false, 'parse failed'
+		return
+	}
+	assert e.dir == .unknown
 }

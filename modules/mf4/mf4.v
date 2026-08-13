@@ -205,6 +205,11 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 	// 0x100 from CAN1 and 0x100 from CAN3 became one interleaved stream, and one row in the
 	// grouped view whose count was two different messages added together.
 	c_bus := find_chan(chans, 'CAN_DataFrame.BusChannel') or { Chan{} }
+	// DIRECTION, as the recording states it: 0 = the device received the frame, 1 = it
+	// transmitted. It says what the RECORDER did, not what we would have done — in a foreign
+	// capture a `tx` frame is that recorder's own traffic. Dropped until now; it is the only
+	// provenance a file can carry, and a candump has none at all.
+	c_dir := find_chan(chans, 'CAN_DataFrame.Dir') or { Chan{} }
 
 	stride := data_bytes + inval_bytes
 	if stride <= 0 {
@@ -279,8 +284,18 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 		} else {
 			-1 // absent, or this record says the field is not defined: fall back to the group
 		}
+		dir := if c_dir.bit_count > 0 && !chan_invalid(raw, base, data_bytes, inval_bytes, c_dir) {
+			if read_uint(raw, base + c_dir.byte_off, int(c_dir.bit_off), int(c_dir.bit_count)) == 1 {
+				canlog.Dir.tx
+			} else {
+				canlog.Dir.rx
+			}
+		} else {
+			canlog.Dir.unknown // absent, or this record says the field is not defined
+		}
 		out << canlog.LogEntry{
 			t_s:   ts
+			dir:   dir
 			iface: bus_iface(bus_no, group)
 			frame: transport.CanFrame{
 				id:       u32(rid) & 0x1FFFFFFF
