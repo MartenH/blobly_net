@@ -83,16 +83,16 @@ struct TraceRow {
 	// frame's counter — a verdict the trace cannot reconstruct once the frames are just rows.
 	e2e string
 mut:
-	// Stable identity, so an echo arriving later can confirm THIS row: the trace is a ring
-	// trimmed by re-slicing, which moves every index.
-	seq u64
-	// An outbound row is written at emit, so it states intent. `confirmed` means the frame came
-	// back off the wire; `missed` means its window closed without it. Those disagree in every
-	// bench failure worth catching — CAN needs an ACK from at least one other node, so a lone
-	// node's frames never reach the wire at all, and the same goes for a wrong bitrate, swapped
+	// An outbound row is written at emit, so it states intent; `missed` says its echo window
+	// closed with the frame never coming back off the wire. Those disagree in every bench
+	// failure worth catching — CAN needs an ACK from at least one other node, so a lone node's
+	// frames never reach the wire at all, and the same goes for a wrong bitrate, swapped
 	// CANH/CANL or a down link.
-	confirmed bool
-	missed    bool
+	//
+	// No `seq`, no `confirmed`: a row is located by position (trace_seq against trace_base), and
+	// nothing displays "arrived as expected". A field written but never read is a claim nobody
+	// checks — which is the habit this whole column exists to break.
+	missed bool
 }
 
 
@@ -672,6 +672,14 @@ fn (mut app App) start() {
 	// a generator may target a bus whose channel isn't itself monitored — open those too
 	for sr in app.senders {
 		tgt := sr.target()
+		if tgt != '' && tx_bus_key('', tgt) !in app.tx_buses {
+			// the anonymous tap FIRST: tx_on falls back to it for the paths with no owning
+			// channel — Quick Send, diagnostics, shell — and a bus that is only a generator
+			// target would otherwise have none, so those reported "no open bus for …".
+			if b := app.open_tap(tgt, org_tx) {
+				app.tx_buses[tx_bus_key('', tgt)] = b
+			}
+		}
 		if tgt != '' && tx_bus_key(sr.chan, tgt) !in app.tx_buses {
 			if b := app.open_tap_on(tgt, org_tx, sr.chan) {
 				app.tx_buses[tx_bus_key(sr.chan, tgt)] = b
@@ -1190,9 +1198,7 @@ fn (mut app App) reset_trace_locked() {
 fn (mut app App) push_row_locked(row TraceRow) u64 {
 	seq := app.trace_seq
 	app.trace_seq++
-	mut r := row
-	r.seq = seq
-	app.trace << r
+	app.trace << row
 	if app.trace.len > trace_cap {
 		drop := app.trace.len - trace_cap
 		app.trace = app.trace[drop..].clone()
@@ -1314,17 +1320,13 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 	return seq, if recorded_here { rec_id } else { rec_none }
 }
 
-// tap_chan resolves the logical channel a tap writes under: its own name, or the interface's
-// single channel when it has none.
-fn (app &App) tap_chan(iface string, chan_name string) string {
-	return if chan_name != '' { chan_name } else { app.chan_name_for(iface) }
-}
 
-// rec_append_locked appends to the recording and returns that entry's stable identity. EVERY
-// append goes through here: each entry carries its id in rec_ids, so a path that appended
-// appended without bumping the counter — the received frames and the echoes both do — would make
-// without one would put the two arrays out of step — and a retraction would then delete somebody
-// else's frame. Caller holds app.mu.
+// rec_append_locked appends to the recording and returns that entry's stable identity.
+//
+// EVERY append goes through here, because `rec` and `rec_ids` must stay index-for-index: the
+// received frames and the echoes append too, and one that skipped the id would put the two arrays
+// out of step — after which `unrecord`, which finds an entry by searching rec_ids, would delete
+// somebody else's frame. Caller holds app.mu.
 fn (mut app App) rec_append_locked(e canlog.LogEntry) u64 {
 	id := app.rec_seq
 	app.rec_seq++
@@ -2390,8 +2392,13 @@ fn (mut app App) rebuild_from_proj() {
 						hits << c2.name
 					}
 				}
-				if hits.len == 1 {
-					owner = hits[0]
+				owner = if hits.len == 1 {
+					hits[0]
+				} else {
+					// 0 or several channels on that wire: `ch.name` belongs to a DIFFERENT bus,
+					// so it would be a worse answer than none. Empty means "derive at emit from
+					// the interface", which is what the tap did before this ownership existed.
+					''
 				}
 			}
 			app.senders << SenderRT{
@@ -4671,7 +4678,11 @@ fn draw_buses(mut app App, chans []Chan) {
 				// an inproc bus broadcasts only to subscribers already attached, so a frame sent
 				// while the socket is still opening cannot echo. Claiming a watcher that early
 				// marked healthy traffic as never having reached the wire.
-				if new && app.running && c.monitorable() && !app.chans[i].running
+				// `c` is the PRE-toggle snapshot, so c.enabled is still false here and
+				// c.monitorable() could never be true — this branch has never run, and a channel
+				// re-enabled mid-run silently got no reader at all. Ask about the channel as it
+				// is NOW, using the same rule monitorable() applies.
+				if new && app.running && app.chans[i].monitorable() && !app.chans[i].running
 					&& !app.chans[i].spawning {
 					app.chans[i].spawning = true
 					spawn rx_loop(app, i, app.chans[i].iface, app.run_gen)
@@ -5681,8 +5692,10 @@ fn draw_gen(mut app App) {
 					vgui.same_line()
 					// selected by NAME, not by interface: with two channels on one wire an
 					// interface comparison lights BOTH buttons and cannot say which is current
-					if vgui.toggle_button('${c.name}##b${i}_${ci}', c.name == sr.chan
-						&& c.iface == cur, 0) {
+					// with no owner resolved, fall back to the interface — otherwise NO chip
+					// lights and the picker looks broken
+					sel := if sr.chan != '' { c.name == sr.chan && c.iface == cur } else { c.iface == cur }
+					if vgui.toggle_button('${c.name}##b${i}_${ci}', sel, 0) {
 						app.set_sender_bus(i, if c.iface == sr.iface { '' } else { c.iface },
 							c.name)
 					}
