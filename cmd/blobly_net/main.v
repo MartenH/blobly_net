@@ -137,6 +137,10 @@ mut:
 	trace_base  u64
 	ghost_seq   u64 // identities for emissions made while paused (see ghost_base)
 	tx_mutexes  map[string]&sync.Mutex // per-interface send order (see TapBus.tx_mu)
+	// Guards tx_mutexes ALONE, deliberately not app.mu: open_tap is called with app.mu held
+	// (set_sender_bus retargets a generator mid-run under the lock), and app.mu is not
+	// reentrant — taking it again inside the tap constructor deadlocked the GUI thread.
+	tx_map_mu   sync.Mutex
 	gcount      map[string]u64 // persistent per-group frame totals (survive the ring trim)
 	trecs       []TRec
 	rx          u64 // total across channels
@@ -1348,9 +1352,10 @@ fn (app &App) open_tap(iface string, origin string) !transport.Bus {
 // without coupling unrelated buses.
 fn (app &App) tx_mutex(iface string) &sync.Mutex {
 	mut a := unsafe { app }
-	a.mu.lock()
+	// tx_map_mu, NOT app.mu — see the field comment: a caller may already hold app.mu here.
+	a.tx_map_mu.lock()
 	defer {
-		a.mu.unlock()
+		a.tx_map_mu.unlock()
 	}
 	if m := a.tx_mutexes[iface] {
 		return m
