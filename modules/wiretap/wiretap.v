@@ -141,35 +141,48 @@ pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, 
 		// Dropping in plain arrival order instead threw away records a SECOND monitor had not
 		// reached yet (two channels on one wire, one draining slower), and its copy of our own
 		// frame then arrived with nothing to match and was filed as the device under test's.
-		mut keep := []Pending{cap: r.items.len}
+		// THREE passes, not one. In a single pass an older cheap-to-drop entry is given up before
+		// a later free-to-drop one is even seen — an unwatched record (still claimable, and the
+		// startup window depends on that) would go while a settled record it precedes survives.
+		// Cost order: settled (nothing can ever ask again) → verdictless (never claimable, never
+		// reportable) → oldest.
 		mut need := r.items.len - r.cap
-		for pd in r.items {
-			// Settled first — everyone has answered, so nothing can ever ask again.
-			if need > 0 && pd.settled() {
-				need--
-				continue
+		mut drop := map[int]bool{}
+		for i, pd in r.items {
+			if need == 0 {
+				break
 			}
-			// Then the ones that can never earn a verdict anyway: nobody was watching, or the
-			// watchers left. Dropping those costs nothing, whereas dropping a WATCHED entry
-			// reports it missing — so a high-rate unmonitored emitter on one interface would
-			// otherwise accuse a perfectly healthy monitored one on another.
-			if need > 0 && (pd.allowed.len == 0 || pd.watched_gone) {
+			if pd.settled() {
+				drop[i] = true
 				need--
-				continue
 			}
-			keep << pd
 		}
-		// Still over: the oldest go, and those that never got an answer are reported rather
-		// than dropped in silence — going quiet here would go quiet in exactly the busy-bus
-		// case where a dead link matters most.
-		if need > 0 {
-			for pd in keep[..need] {
-				// same rule as expire(): never seen, and somebody could have seen it
+		for i, pd in r.items {
+			if need == 0 {
+				break
+			}
+			// verdictless: nobody was ever named, or the watchers left. Neither can be reported
+			// missing, so neither costs anything to drop — unlike a watched record, whose
+			// eviction accuses a bus that may be perfectly healthy.
+			if i !in drop && (pd.allowed.len == 0 || pd.watched_gone) {
+				drop[i] = true
+				need--
+			}
+		}
+		mut keep := []Pending{cap: r.items.len}
+		for i, pd in r.items {
+			if i in drop {
+				continue
+			}
+			if need > 0 {
+				// oldest, and reported unless nothing could ever have answered for it
+				need--
 				if pd.claimed.len == 0 && pd.allowed.len > 0 && !pd.watched_gone {
 					evicted << pd.seq
 				}
+				continue
 			}
-			keep = keep[need..].clone()
+			keep << pd
 		}
 		r.items = keep
 	}

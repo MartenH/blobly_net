@@ -80,7 +80,10 @@ pub fn software_iface(iface string) bool {
 // frame reaches the monitor, cannot claim its own record, and lands in the trace as the device
 // under test's. Physical opens still take the caller's spelling; this is for identity only.
 pub fn canonical_iface(iface string) string {
-	i := iface.trim_space() // case as given: the dispatcher's parsers are case-sensitive
+	// NO trim: the dispatcher does not trim either, so `inproc:bench` and `inproc:bench ` are two
+	// different hubs. Collapsing them here would give two physically separate buses one identity,
+	// and a generator on the second would try to claim the first one's echoes.
+	i := iface // case as given, too: the dispatcher's parsers are case-sensitive
 	if i == 'inproc' || i == 'inproc:' {
 		return 'inproc:CAN' // parse_inproc_iface's default name, for both empty spellings
 	}

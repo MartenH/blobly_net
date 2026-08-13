@@ -387,3 +387,26 @@ fn test_capping_gives_up_verdictless_records_before_watched_ones() {
 	}
 	assert c.seq == 1
 }
+
+// An unwatched record is still CLAIMABLE — the startup window depends on it — so a settled one
+// later in the ring must be given up first, even though the unwatched one is older.
+fn test_a_settled_record_goes_before_an_older_unwatched_one() {
+	mut r := Ring{
+		cap: 2
+	}
+	un := frame(0x101, [u8(1)])
+	st := frame(0x102, [u8(2)])
+	r.note(1, 'vcan0', un, 0, [], '', false) // older, unwatched, still claimable
+	r.note(2, 'vcan0', st, 0, [0], '', false)
+	r.claim(0, 'vcan0', st, 1) or {
+		assert false, '${err}'
+		return
+	} // now settled
+	r.note(3, 'vcan0', frame(0x103, [u8(3)]), 1, [0], '', false)
+	// the settled one was dropped; the older unwatched one survives and can still be claimed
+	c := r.claim(0, 'vcan0', un, 2) or {
+		assert false, 'the startup-window record was evicted before a settled one'
+		return
+	}
+	assert c.seq == 1
+}
