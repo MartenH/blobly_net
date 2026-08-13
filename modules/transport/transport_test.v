@@ -105,6 +105,12 @@ fn test_a_socketcan_interface_named_like_a_software_bus() {
 	assert !software_iface('inproc0')
 	assert clamps_to_classic('udp0')
 	assert clamps_to_classic('inproc0')
+	// the vendor drivers reject what they cannot send, so nothing is masked for them: a
+	// malformed frame must fail loudly rather than go out as a different, valid one
+	$if windows {
+		assert !clamps_to_classic('pcan:PCAN_USBBUS1@500000')
+		assert wire_frame('pcan:PCAN_USBBUS1', CanFrame{ id: 0x800, data: [u8(1)] }).id == 0x800
+	}
 	assert software_iface('inproc')
 	assert software_iface('inproc:CAN1')
 	assert software_iface('udp:239.0.0.1:5000')

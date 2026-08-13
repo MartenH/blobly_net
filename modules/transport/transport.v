@@ -57,7 +57,12 @@ pub fn echoes_own_sends(iface string) bool {
 // in-process CAN-FD payloads work (docs/simulation.md), so normalising there would not describe
 // the wire, it would damage it.
 pub fn clamps_to_classic(iface string) bool {
-	return !software_iface(iface)
+	// SocketCAN only. The software buses carry what they are given, and the VENDOR drivers
+	// REJECT an out-of-range id or length rather than truncating it — CAN_Write and canWrite
+	// return an error, which PcanBus.send/KvaserBus.send surface. Masking before handing them
+	// the frame would turn that rejection into a valid-but-different transmission (0x800 sent as
+	// 0x000), which is the opposite of what a bench needs from a malformed frame.
+	return !software_iface(iface) && !vendor_iface(iface)
 }
 
 // software_iface recognises the in-process and UDP buses the SAME way the dispatcher does:
