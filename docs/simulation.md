@@ -220,7 +220,7 @@ records what it is about to send, and a received frame is matched against those 
 one-shot, oldest first, exact on id width, RTR and payload. What matches nothing of ours is the
 other side.
 
-On **PCAN and Kvaser** the driver never hands your own transmissions back, so there is nothing to
+On **PCAN and Kvaser** (Windows only — on Linux those names are ordinary SocketCAN interfaces) the driver never hands your own transmissions back, so there is nothing to
 match: `TST`/`SIM` there come from the tap alone (still accurate — we know what we sent) and
 `BUS` is everything the driver delivered. No row can be wire-*confirmed* there, and none is
 marked for silence — but a row is still marked `!` when the driver **refuses** the send outright,

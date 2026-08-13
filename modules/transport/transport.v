@@ -31,8 +31,17 @@ mut:
 // suffix. Nothing else uses `@` as syntax — `inproc:bench@A` is a perfectly good bus NAME, and
 // treating the suffix as universal sent the emitters to a different hub than the monitor.
 pub fn vendor_iface(iface string) bool {
-	i := iface.to_lower()
-	return i.starts_with('pcan:') || i.starts_with('kvaser:')
+	// PLATFORM-DEPENDENT, because the dispatchers are: only open_windows.v routes `pcan:` and
+	// `kvaser:` to a vendor driver. On Linux open_linux.v sends everything that is not a
+	// software bus to SocketCAN — which echoes — so a channel someone configured as
+	// `pcan:bench` there is an ordinary SocketCAN name, and treating it as a vendor backend
+	// would leave its frames untracked and its echoes filed as the device under test's.
+	$if windows {
+		i := iface.to_lower()
+		return i.starts_with('pcan:') || i.starts_with('kvaser:')
+	} $else {
+		return false
+	}
 }
 
 pub fn echoes_own_sends(iface string) bool {
