@@ -1581,6 +1581,8 @@ fn (mut app App) toggle_record() {
 		app.mu.lock()
 		entries := app.rec.clone()
 		app.rec = []
+		app.rec_ids = [] // WITH the buffer: a stale id list makes the next retraction index past
+		// the end of a shorter buffer, which panics rather than mislabels
 		app.recording = false
 		app.mu.unlock()
 		mut lines := []string{cap: entries.len}
@@ -1595,6 +1597,7 @@ fn (mut app App) toggle_record() {
 	} else {
 		app.mu.lock()
 		app.rec = []
+		app.rec_ids = []
 		app.recording = true
 		app.mu.unlock()
 		app.notify('recording…')
@@ -2342,9 +2345,25 @@ fn (mut app App) rebuild_from_proj() {
 			}
 		}
 		for s in ch.senders {
+			// A persisted `bus:` override points at another INTERFACE, and the generator then
+			// transmits there — so its rows belong to that bus's channel, not to the one the
+			// sender is nested under. Resolved only when that interface has exactly one channel;
+			// with several sharing it there is nothing in the file to say which (see #97).
+			mut owner := ch.name
+			if s.bus != '' && s.bus != ch.iface {
+				mut hits := []string{}
+				for c2 in app.proj.channels {
+					if c2.iface == s.bus {
+						hits << c2.name
+					}
+				}
+				if hits.len == 1 {
+					owner = hits[0]
+				}
+			}
 			app.senders << SenderRT{
 				iface:  ch.iface
-				chan:   ch.name
+				chan:   owner
 				sender: s
 			}
 			app.gen_bufs << GenBuf{
