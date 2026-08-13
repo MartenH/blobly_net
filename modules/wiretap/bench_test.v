@@ -2,6 +2,7 @@ module wiretap
 
 import transport
 import time
+import os
 
 // How expensive is the claim path when the ring is FULL? Every received frame walks the pending
 // records, so the answer decides whether an index is worth having. Measured before optimising —
@@ -43,7 +44,14 @@ fn test_claim_cost_when_the_ring_is_full() {
 	typical_us := f64(time.ticks() - t1) * 1000.0 / 1000.0
 
 	println('claim cost @ ${default_cap} pending: worst ${worst_us:.2}us/frame, typical ${typical_us:.2}us/frame (${hit} hits)')
-	// A 1 Mbit CAN bus tops out around 15k frames/s, i.e. ~66us between frames even back to
-	// back. Fail only if a single claim eats a meaningful share of that.
-	assert worst_us < 20.0, 'claim is too slow to keep up with a saturated bus: ${worst_us}us'
+	assert hit == 1000
+
+	// The number above is INFORMATIONAL by default. time.ticks() measures the machine and the
+	// scheduler as much as it measures claim(), so a preempted shared runner would fail this on a
+	// perfectly good build. Set WIRETAP_BENCH=1 on a quiet machine to hold it to the budget: a
+	// 1 Mbit CAN bus tops out around 15k frames/s, i.e. ~66us between frames even back to back,
+	// and a single claim must not eat a meaningful share of that.
+	if os.getenv('WIRETAP_BENCH') != '' {
+		assert worst_us < 20.0, 'claim is too slow to keep up with a saturated bus: ${worst_us}us'
+	}
 }
