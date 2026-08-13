@@ -57,6 +57,9 @@ const trace_cap = 2000
 // waiting for its echo.
 const ghost_base = u64(1) << 63
 
+// No recording entry was written for this emission (see note_emit's second return value).
+const rec_none = u64(0xFFFF_FFFF_FFFF_FFFF)
+
 const org_tst = wiretap.tst
 const org_sim = wiretap.sim
 const org_rep = wiretap.rep
@@ -138,6 +141,10 @@ mut:
 	trace_base  u64
 	ghost_seq   u64 // identities for emissions made while paused (see ghost_base)
 	tx_mutexes  map[string]&sync.Mutex // per-interface send order (see TapBus.tx_mu)
+	// Stable identity for recording entries, exactly like trace_seq/trace_base for rows: the
+	// buffer is trimmed by re-slicing, so a plain index does not survive.
+	rec_seq     u64
+	rec_base    u64
 	// Guards tx_mutexes ALONE, deliberately not app.mu: open_tap is called with app.mu held
 	// (set_sender_bus retargets a generator mid-run under the lock), and app.mu is not
 	// reentrant — taking it again inside the tap constructor deadlocked the GUI thread.
@@ -620,13 +627,16 @@ fn (mut app App) start() {
 	}
 	app.mu.lock()
 	app.taps = wiretap.Ring{}
+	// The generation moves WITH the ring, under one lock. Advancing it afterwards left a window
+	// where a stale rx_loop returning from recv passed both of its checks and processed the
+	// previous run's frame against the newly empty ring — as this run's bus traffic.
+	app.run_gen++
 	app.mu.unlock()
 	for m in held {
 		m.unlock()
 	}
 	app.tx_map_mu.unlock()
 	app.running = true
-	app.run_gen++
 	for ci, ch in app.chans {
 		if !ch.monitorable() {
 			continue
@@ -1216,12 +1226,17 @@ fn (mut app App) expire_pending_locked(now_ms f64) {
 // note_emit records a frame we are about to put on the wire: one row stating intent, and one
 // pending echo. Called BEFORE the send — the RX thread can see the frame the instant the driver
 // takes it, and a pending entry added afterwards would arrive too late to claim its own echo.
-// Returns the row identity and whether THIS call wrote the frame to the recording — the retract
-// path must not guess that from the backend, because a bus that normally echoes also records at
-// emit whenever no monitor is running.
-fn (mut app App) note_emit(iface string, chan_name string, origin string, f transport.CanFrame) (u64, bool) {
-	t_ms := f64(time.ticks() - app.t0)
+// Returns the row identity and the RECORDING identity of the entry this call wrote, or rec_none
+// when it wrote none. The retract path must not guess that from the backend (a bus that normally
+// echoes also records at emit whenever no monitor is running) and must not search for it either:
+// a scan can be outrun by traffic on a busy bus.
+fn (mut app App) note_emit(iface string, chan_name string, origin string, f transport.CanFrame) (u64, u64) {
 	app.mu.lock()
+	// Sampled AFTER the lock. Another operation can hold app.mu for longer than the echo window
+	// — opening a large recording during a measurement, say — and a time taken before blocking
+	// would make the emission look two seconds old the instant it is registered, expiring it
+	// before the frame has even been sent.
+	t_ms := f64(time.ticks() - app.t0)
 	// Under the lock, not before it. The dbc_readers drain covers the RX loops, which register
 	// as lock-free readers; a tapped emitter — a simulated ECU, a diagnostic or flash worker
 	// still draining after Stop — is not in that lifecycle, so resolving a name outside the
@@ -1266,10 +1281,13 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 	// Not gated on `paused`: pausing freezes the TABLE, not the recording.
 	watching := transport.echoes_own_sends(iface) && app.monitors_locked(iface).len > 0
 	mut recorded_here := false
+	mut rec_id := u64(0)
 	if app.recording && !watching {
 		// Stamped INSIDE the lock, like the rx path: a time taken before acquiring it can be
 		// older than a line already written, and the file would then disagree with itself.
 		app.rec << canlog.LogEntry{f64(time.ticks() - app.t0) / 1000.0, chn, f}
+		rec_id = app.rec_seq
+		app.rec_seq++
 		recorded_here = true
 		// the same bounded window the rx path keeps — with the echo suppressed, our own traffic
 		// arrives through here, so this is the path a long recording actually grows on
@@ -1299,7 +1317,7 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 	} else {
 		app.mu.unlock()
 	}
-	return seq, recorded_here
+	return seq, if recorded_here { rec_id } else { rec_none }
 }
 
 // tap_chan resolves the logical channel a tap writes under: its own name, or the interface's
@@ -1308,32 +1326,29 @@ fn (app &App) tap_chan(iface string, chan_name string) string {
 	return if chan_name != '' { chan_name } else { app.chan_name_for(iface) }
 }
 
-// unrecord_last drops a frame we recorded at emit but never managed to send. Bounded backward
-// scan: the interface's send lock keeps another emitter on this wire out of the interval, but
-// the rx thread and other interfaces may have appended, so the entry need not be last.
-fn (mut app App) unrecord_last(chan_name string, f transport.CanFrame) {
+// unrecord drops a frame we recorded at emit but never managed to send, BY IDENTITY. The
+// previous version searched backwards for a matching frame, which a busy bus outruns: a vendor
+// driver can block long enough for the received traffic to push the entry out of any bounded
+// window, leaving a frame in the file that was never transmitted.
+//
+// NOT gated on app.recording: the user may have stopped recording between the emit-append and
+// the driver's refusal, and the entry is still in the buffer. (If Stop already WROTE the file,
+// the frame is in it — nothing here can reach that, and a stopped recording is not rewritten.)
+fn (mut app App) unrecord(rec_id u64) {
+	if rec_id == rec_none {
+		return
+	}
 	app.mu.lock()
 	defer {
 		app.mu.unlock()
 	}
-	// NOT gated on app.recording: the user may have stopped recording between the emit-append
-	// and the driver's refusal, and the entry is still in the buffer. (If Stop already WROTE the
-	// file, the frame is in it — nothing here can reach that, and a stopped recording is not
-	// rewritten.)
-	if app.rec.len == 0 {
-		return
+	if rec_id < app.rec_base {
+		return // already trimmed out of the buffer
 	}
-	mut i := app.rec.len - 1
-	for i >= 0 && i > app.rec.len - 9 {
-		e := app.rec[i]
-		// the CHANNEL too: identical frames may be in flight on two non-echoing interfaces at
-		// once, and matching on the payload alone deleted the other one's successful entry
-		if e.iface == chan_name && e.frame.id == f.id && e.frame.extended == f.extended
-			&& e.frame.rtr == f.rtr && e.frame.data == f.data {
-			app.rec.delete(i)
-			return
-		}
-		i--
+	i := int(rec_id - app.rec_base)
+	if i < app.rec.len {
+		app.rec.delete(i)
+		app.rec_base++ // every surviving entry shifted down by one
 	}
 }
 
@@ -1388,17 +1403,14 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	}
 	// BEFORE the send: a monitor thread can see the frame the instant the driver takes it, and a
 	// record added afterwards arrives too late to claim its own echo.
-	seq, recorded := t.app.note_emit(t.iface, t.chan_name, t.origin, wire)
+	seq, rec_id := t.app.note_emit(t.iface, t.chan_name, t.origin, wire)
 	// `wire`, not `frame`: on a backend that would carry the extra bytes (inproc, udp) sending
 	// the original makes the echo disagree with the record in the other direction.
 	t.inner.send(wire) or {
 		t.app.retract_emit(seq)
-		// what note_emit ACTUALLY did, not what the backend usually implies: an echoing bus with
-		// no monitor running records at emit too, and guessing from the backend left a frame
-		// that never reached the wire in the file
-		if recorded {
-			t.app.unrecord_last(t.app.tap_chan(t.iface, t.chan_name), wire)
-		}
+		// exactly the entry this send wrote, if it wrote one — not a search, and not a guess
+		// from the backend
+		t.app.unrecord(rec_id)
 		return err
 	}
 }

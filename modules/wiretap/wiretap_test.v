@@ -352,3 +352,18 @@ fn test_an_already_accounted_emission_says_so_on_claim() {
 	assert c.done, 'the claim did not carry that the caller already handled it'
 	assert c.first
 }
+
+// A monitor exiting must not touch emissions it was never eligible for. One noted while nothing
+// was watching has an empty allowed set from the start, and that is the startup window — it has
+// to stay claimable.
+fn test_an_unrelated_monitor_leaving_does_not_close_the_startup_window() {
+	mut r := Ring{}
+	f := frame(0x120, [u8(1)])
+	r.note(1, 'vcan0', f, 0, [], '', false) // nobody watching yet
+	r.drop_monitor(3) // some other channel's loop exits
+	c := r.claim(0, 'vcan0', f, 1) or {
+		assert false, 'the startup window was closed by an unrelated monitor'
+		return
+	}
+	assert c.seq == 1
+}

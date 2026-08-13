@@ -221,8 +221,10 @@ one-shot, oldest first, exact on id width, RTR and payload. What matches nothing
 other side.
 
 On **PCAN and Kvaser** the driver never hands your own transmissions back, so there is nothing to
-match: `TST`/`SIM` there come from the tap alone (still accurate — we know what we sent), while
-`BUS` is everything the driver delivered, and no row can be wire-confirmed or marked `!`.
+match: `TST`/`SIM` there come from the tap alone (still accurate — we know what we sent) and
+`BUS` is everything the driver delivered. No row can be wire-*confirmed* there, and none is
+marked for silence — but a row is still marked `!` when the driver **refuses** the send outright,
+which is the one wire verdict those backends can give you.
 
 That one-shot rule is what makes the case below visible. Leave a simulated ECU running while the
 real one it stands in for is on the bench and both transmit `0x700`:
