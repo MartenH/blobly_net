@@ -1547,14 +1547,23 @@ fn (mut app App) tx_on(iface string, f transport.CanFrame) bool {
 }
 
 fn (mut app App) tx_on_chan(chan_name string, iface string, f transport.CanFrame) bool {
+	// The LOOKUP is under app.mu; the send is not. Enabling a channel mid-run inserts into
+	// tx_buses while a cyclic generator may be reading it from gen_loop, and a V map is not safe
+	// for a concurrent read and write — this used to be safe only because every insertion
+	// happened at Start, before any worker existed. The Bus reference is taken and the lock
+	// released before sending: b.send takes the interface's send lock and then app.mu inside
+	// note_emit, so holding app.mu across it would deadlock.
+	app.mu.lock()
 	mut b := app.tx_buses[tx_bus_key(chan_name, iface)] or {
 		// fall back to the anonymous tap for this wire — a Quick Send or a diagnostic path has
 		// no owning channel, and a generator whose channel was renamed mid-run still transmits
 		app.tx_buses[tx_bus_key('', iface)] or {
+			app.mu.unlock()
 			app.notify('TX failed: no open bus for ${iface}')
 			return false
 		}
 	}
+	app.mu.unlock()
 	// The row, the recording and the pending echo are the tap's job (open_tap), so they happen
 	// for every emitter rather than only for the ones that remember to log.
 	b.send(f) or {
@@ -2137,6 +2146,13 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	if a.run_gen == gen {
 		a.chans[ci].running = false
 		a.chans[ci].spawning = false
+		// Re-enabled while we were on our way out? The toggle saw `running` still true and
+		// skipped spawning a replacement, so without this the channel is left with no reader at
+		// all. We are the ones who know this loop is finished, so we start the next one.
+		if a.chans[ci].monitorable() && a.running {
+			a.chans[ci].spawning = true
+			spawn rx_loop(app, ci, iface, gen)
+		}
 		// Whatever we emitted while this loop was the observer can no longer be answered by it.
 		// Its records stay claimable (an echo may already be queued in the socket) but earn no
 		// verdict: the watcher was removed, so silence proves nothing.
