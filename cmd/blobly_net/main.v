@@ -776,6 +776,13 @@ fn (mut app App) start() {
 	spawn gen_loop(app) // cyclic senders
 }
 
+// host_key identifies a hosted DoIP entity by its CHANNEL and interface. The supervisor uses it
+// to publish, look up and tear down servers, so a collision means one channel's entity reported —
+// or closed — under another's name.
+fn host_key(name string, iface string) string {
+	return project.compose_key(name, iface)
+}
+
 // start_doip_hosts supervises every DoIP channel that simulates an ECU — enabled or not.
 //
 // Driven from the PROJECT rather than app.sims, because a channel disabled when the project
@@ -960,7 +967,7 @@ fn (mut app App) doip_publish_if_current(pch project.Channel, ent sim.DoipEntity
 			return false
 		}
 	}
-	app.doip_hosts['${pch.name}|${pch.iface}'] = srv
+	app.doip_hosts[host_key(pch.name, pch.iface)] = srv
 	if ci := app.chan_index_locked(pch) {
 		app.chans[ci].running = true
 	}
@@ -983,7 +990,7 @@ fn (app &App) doip_is_hosted(name string, iface string) bool {
 	defer {
 		a.mu.unlock()
 	}
-	return '${name}|${iface}' in a.doip_hosts
+	return host_key(name, iface) in a.doip_hosts
 }
 
 // doip_host_failed reports whether THIS channel is one we are meant to host and are not.
@@ -1032,11 +1039,14 @@ fn (app &App) doip_host_failed(name string, iface string) bool {
 // before acting is not atomic; it just looks it.
 // diag_key_doip / diag_key_can name a target uniquely. Interface + address, never the label.
 fn diag_key_doip(pch project.Channel) string {
-	return 'doip|${pch.iface}|${pch.name}|0x${pch.ecu_addr:04X}'
+	// Length-prefixed for the same reason as host_key: interface and name are free text, and a
+	// key two different targets can produce sends a request to the wrong ECU.
+	return 'doip|' + project.compose_key(pch.iface, pch.name, '0x${pch.ecu_addr:04X}')
 }
 
 fn diag_key_can(iface string, rx u32, tx u32) string {
-	return 'can|${iface}|0x${rx:X}/0x${tx:X}'
+	// The ids cannot contain a separator, but the interface can.
+	return 'can|' + project.compose_key(iface, '0x${rx:X}/0x${tx:X}')
 }
 
 fn (mut app App) doip_forget_if_current(pch project.Channel, ent sim.DoipEntity, gen u64) {
@@ -1049,7 +1059,7 @@ fn (mut app App) doip_forget_if_current(pch project.Channel, ent sim.DoipEntity,
 
 // forget_locked is the mutation itself. Caller holds app.mu.
 fn (mut app App) forget_locked(pch project.Channel, ent sim.DoipEntity) {
-	app.doip_hosts.delete('${pch.name}|${pch.iface}')
+	app.doip_hosts.delete(host_key(pch.name, pch.iface))
 	if ci := app.chan_index_locked(pch) {
 		app.chans[ci].running = false
 	}
@@ -1528,12 +1538,9 @@ fn (mut app App) tx(f transport.CanFrame) bool {
 // channels can share one wire, and a tap opened without the name attributes every frame to
 // whichever channel happens to be listed first.
 fn tx_bus_key(chan_name string, iface string) string {
-	// LENGTH-PREFIXED, so the key is injective. A plain 'a|b' is not: a channel named
-	// 'A|inproc:X' on 'inproc:Y' and a channel 'A' on 'inproc:X|inproc:Y' produce the same
-	// string, and the second would then transmit through the first one's tap — onto the wrong
-	// virtual bus, attributed to the wrong channel. Both values are accepted by the project
-	// editor and the inproc parser, so nothing upstream rules this out.
-	return '${chan_name.len}:${chan_name}|${iface}'
+	// project.compose_key is injective — see its comment for why a plain 'a|b' is not, and
+	// modules/project/key_test.v for the property under inputs that contain the separator.
+	return project.compose_key(chan_name, iface)
 }
 
 // tx_on sends a frame on the bus `iface` (a channel iface) and records it as a TX row on
