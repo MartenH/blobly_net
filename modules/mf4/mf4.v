@@ -305,7 +305,7 @@ fn bus_iface(bus_no int, group int) string {
 	if bus_no >= 0 {
 		return 'mf4:bus${bus_no}'
 	}
-	return if group <= 0 { 'mf4:can' } else { 'mf4:group${group}' }
+	return 'mf4:group${group}'
 }
 
 // collect_channels walks a cn_next chain, recursing into struct compositions

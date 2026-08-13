@@ -474,7 +474,8 @@ How the frames are matched back to a channel depends on where the labels came fr
   against the project's channels;
 - an **`.mf4`** names buses in the RECORDING's own numbering — `CAN_DataFrame.BusChannel`, which
   some writers count from 0 and others from 1 — so its labels arrive as `mf4:bus0`, `mf4:bus2`
-  and so on (`mf4:group<N>` for a file that carries no BusChannel at all), and they **never**
+  and so on (`mf4:group0`, `mf4:group1`, … for a file that carries no BusChannel at all), and
+  they **never**
   go through that matching. They are not names in your project's namespace, and a channel could
   legitimately be called anything, `mf4:bus1` included.
 

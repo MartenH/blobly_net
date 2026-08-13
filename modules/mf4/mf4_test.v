@@ -150,6 +150,9 @@ fn test_a_recorded_bus_and_a_fallback_ordinal_cannot_collide() {
 	assert bus_iface(1, 0) != bus_iface(-1, 1)
 	assert bus_iface(1, 0) == 'mf4:bus1'
 	assert bus_iface(-1, 1) == 'mf4:group1'
+	// the FIRST fallback group is group0, not a special case: a documented naming rule with an
+	// exception at index 0 is a rule people get wrong in searches and tooling
+	assert bus_iface(-1, 0) == 'mf4:group0'
 }
 
 // And neither can be mistaken for a project interface.
