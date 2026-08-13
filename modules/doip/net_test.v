@@ -413,3 +413,33 @@ fn test_announce_count_zero_says_nothing() {
 	got := t.wait()
 	assert got.len == 0, 'a silent ECU announced ${got.len} time(s)'
 }
+
+// An IPv4 announce_to on an IPv6-bound entity cannot work — an IPv6 socket has no route to an
+// IPv4 broadcast address, and there is no v4-mapped form of one. What it must NOT do is fail at
+// every Start with a bare socket errno: the two settings that disagree are named.
+fn test_an_ipv4_announce_to_on_an_ipv6_entity_says_which_settings_disagree() {
+	handler := fn (req []u8) []u8 {
+		return []
+	}
+	mut srv := new_server(ServerCfg{
+		logical_address: 0x1000
+		vin:             'V6ENTITYVIN000001'
+		announce_count:  1
+		announce_to:     '127.255.255.255'
+	}, handler)
+	srv.listen('::1', 13461) or {
+		// the same environment skip test_ipv6_roundtrip uses: some runners have no IPv6 loopback
+		eprintln('skipping IPv4-announce_to-on-IPv6 (no IPv6 loopback here): ${err}')
+		return
+	}
+	defer {
+		srv.close()
+	}
+	if _ := srv.announce() {
+		assert false, 'an IPv4 broadcast from an IPv6 socket cannot have succeeded'
+		return
+	} else {
+		assert err.msg().contains('IPv4'), 'unhelpful: ${err}'
+		assert err.msg().contains('::1'), 'the message must name the binding too: ${err}'
+	}
+}

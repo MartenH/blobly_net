@@ -55,6 +55,7 @@ pub fn parse(buf []u8) ![]canlog.LogEntry {
 	// HDBLOCK is at the fixed offset 64; its first link is the first DGBLOCK.
 	hd := block_links(buf, 64)
 	mut dg := if hd.len > 0 { hd[0] } else { u64(0) }
+	mut group := 0 // ordinal of the CAN_DataFrame group, for files without a BusChannel
 	for dg != 0 {
 		dgl := block_links(buf, dg)
 		dg_data_off := data_off(buf, dg)
@@ -65,9 +66,11 @@ pub fn parse(buf []u8) ![]canlog.LogEntry {
 			raw := read_data_block(buf, data_link, unfin)!
 			if rec_id_size == 0 {
 				// Sorted: one CG per DG, the data block is its record stream.
-				parse_cg(buf, cg_first, raw, unfin, map[u64][]u8{}, mut out)!
+				parse_cg(buf, cg_first, raw, unfin, map[u64][]u8{}, group, mut out)!
+				group++
 			} else {
-				demux_unsorted(buf, cg_first, raw, int(rec_id_size), unfin, mut out)!
+				group = demux_unsorted(buf, cg_first, raw, int(rec_id_size), unfin, group, mut
+					out)!
 			}
 		}
 		dg = if dgl.len > 0 { dgl[0] } else { u64(0) }
@@ -91,8 +94,9 @@ struct CgInfo {
 // other groups' VLSD channels carry byte offsets into exactly that
 // concatenation, and their cn_data link names the VLSD CG block (this is how
 // CANedge stores classic-CAN DataBytes).
-fn demux_unsorted(buf []u8, cg_first u64, raw []u8, rec_id_size int, unfin bool,
-	mut out []canlog.LogEntry) ! {
+// Returns the next free group ordinal, so numbering stays unique across data groups.
+fn demux_unsorted(buf []u8, cg_first u64, raw []u8, rec_id_size int, unfin bool, group int,
+	mut out []canlog.LogEntry) !int {
 	mut cgs := []CgInfo{}
 	mut cgi := cg_first
 	for cgi != 0 {
@@ -142,12 +146,15 @@ fn demux_unsorted(buf []u8, cg_first u64, raw []u8, rec_id_size int, unfin bool,
 			break // unknown record id — corrupt tail (common in unfinalized files)
 		}
 	}
+	mut g := group
 	for c in cgs {
 		if !c.vlsd {
-			parse_cg(buf, c.link, streams[c.rec_id] or { []u8{} }, unfin, vlsd_streams, mut
+			parse_cg(buf, c.link, streams[c.rec_id] or { []u8{} }, unfin, vlsd_streams, g, mut
 				out)!
+			g++
 		}
 	}
+	return g
 }
 
 // chan holds the record-layout facts we need for one leaf channel.
@@ -160,9 +167,17 @@ struct Chan {
 	bit_count u32
 	data_link u64   // cn_data: VLSD signal-data block (type 1) or length channel (type 5)
 	cc_link   u64   // cn_cc_conversion (CCBLOCK), for the master-time scale
+	// cn_flags bit 0 = EVERY sample of this channel is invalid; bit 1 = it has a per-record
+	// invalidation bit, whose position in the record's invalidation area is cn_inval_bit_pos.
+	// Either way the raw bits are undefined where the flag applies — reading them anyway
+	// invents a value.
+	flags     u32
+	inval_bit u32
 }
 
-fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8,
+// `group` distinguishes this channel group from the file's others when the records carry no
+// BusChannel of their own — better a stable synthetic name per group than one shared label.
+fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, group int,
 	mut out []canlog.LogEntry) ! {
 	cgl := block_links(buf, cg)
 	cg_d := data_off(buf, cg)
@@ -185,6 +200,11 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8,
 	// Vector packs the IDE flag into ID bit 31; CANedge gives it its own 1-bit
 	// channel (the 29-bit ID is masked to its declared bit count, so bit 31 is 0).
 	c_ide := find_chan(chans, 'CAN_DataFrame.IDE') or { Chan{} }
+	// WHICH BUS. A recording carries several buses — each CAN_DataFrame group is one, and the
+	// standard BusChannel field names it per record. Labelling every frame 'can' merged them:
+	// 0x100 from CAN1 and 0x100 from CAN3 became one interleaved stream, and one row in the
+	// grouped view whose count was two different messages added together.
+	c_bus := find_chan(chans, 'CAN_DataFrame.BusChannel') or { Chan{} }
 
 	stride := data_bytes + inval_bytes
 	if stride <= 0 {
@@ -254,9 +274,14 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8,
 			}
 			data = raw[dstart..dend].clone()
 		}
+		bus_no := if c_bus.bit_count > 0 && !chan_invalid(raw, base, data_bytes, inval_bytes, c_bus) {
+			int(read_uint(raw, base + c_bus.byte_off, int(c_bus.bit_off), int(c_bus.bit_count)))
+		} else {
+			-1 // absent, or this record says the field is not defined: fall back to the group
+		}
 		out << canlog.LogEntry{
 			t_s:   ts
-			iface: 'can'
+			iface: bus_iface(bus_no, group)
 			frame: transport.CanFrame{
 				id:       u32(rid) & 0x1FFFFFFF
 				extended: ide
@@ -264,6 +289,29 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8,
 			}
 		}
 	}
+}
+
+// bus_iface names the bus a frame came from — as the FILE states it, not as we would prefer it.
+// The number is BusChannel verbatim: writers disagree about whether it counts from 0 (python-can)
+// or 1 (Vector, CANedge), and there is nothing in the file that says which. Re-basing it would be
+// a guess presented as a fact — the exact habit that made everything 'can' in the first place.
+// What matters here is that two buses stay two buses.
+//
+// Without a BusChannel, the channel group's position is the only distinction the file offers.
+//
+// NAMESPACED, for the same reason the number is left alone. A recording's bus numbers are not
+// this project's interface names, and a bare `can1` would match a project channel called can1
+// exactly — the imported frames would silently adopt that channel's protection rules, and a
+// Vector file (1-based) would hand bus #1's frames the verdicts meant for the second bus. `mf4:`
+// cannot collide, so an imported label stays unresolved unless the project has exactly one bus
+// to resolve it to. The two sources stay apart too: `bus` is what the file recorded, `group` is
+// only this decoder's ordinal for a group carrying no BusChannel — one name for both would merge
+// a BusChannel-less group 1 with another group's BusChannel 1, the same collapse one level down.
+fn bus_iface(bus_no int, group int) string {
+	if bus_no >= 0 {
+		return 'mf4:bus${bus_no}'
+	}
+	return 'mf4:group${group}'
 }
 
 // collect_channels walks a cn_next chain, recursing into struct compositions
@@ -283,6 +331,8 @@ fn collect_channels(buf []u8, cn_first u64, mut chans []Chan) {
 			bit_count: binary.little_endian_u32_at(buf, d + 8)
 			data_link: if cnl.len > 5 { cnl[5] } else { u64(0) }
 			cc_link:   if cnl.len > 4 { cnl[4] } else { u64(0) }
+			flags:     binary.little_endian_u32_at(buf, d + 12)
+			inval_bit: binary.little_endian_u32_at(buf, d + 16)
 		}
 		comp := if cnl.len > 1 { cnl[1] } else { u64(0) }
 		if comp != 0 && block_id(buf, comp) == '##CN' {
@@ -290,6 +340,24 @@ fn collect_channels(buf []u8, cn_first u64, mut chans []Chan) {
 		}
 		cn = if cnl.len > 0 { cnl[0] } else { u64(0) }
 	}
+}
+
+// chan_invalid reports whether this record marks the channel invalid. The invalidation area sits
+// after the data bytes of each record, one bit per flagged channel; a SET bit means the value is
+// not defined. Without this check a stale or zero BusChannel reads as a real bus number, which
+// either merges those frames into a genuine mf4:busN stream or invents a bus that never existed.
+fn chan_invalid(raw []u8, base int, data_bytes int, inval_bytes int, c Chan) bool {
+	if c.flags & 0x01 != 0 {
+		return true // channel-wide: EVERY sample is invalid, so there is no per-record bit to read
+	}
+	if c.flags & 0x02 == 0 || inval_bytes == 0 {
+		return false // no invalidation bit for this channel
+	}
+	byte_i := base + data_bytes + int(c.inval_bit / 8)
+	if byte_i >= raw.len || int(c.inval_bit / 8) >= inval_bytes {
+		return false // malformed: treat as valid rather than dropping the whole record
+	}
+	return raw[byte_i] & (u8(1) << u8(c.inval_bit % 8)) != 0
 }
 
 // cc_linear returns (offset, factor) of a linear CCBLOCK (cc_type 1), so that

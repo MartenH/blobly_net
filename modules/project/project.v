@@ -833,14 +833,6 @@ fn parse_eid(s string) ![]u8 {
 }
 
 // parse_id reads a CAN id written as decimal or `0x`-prefixed hex.
-// parse_id_wide accumulates in u64 so an over-long identifier is still VISIBLE to validation.
-// parse_id itself wraps at 32 bits, which made 0x1000007E0 arrive as a perfectly ordinary
-// 0x7E0: the range check passed and the server started on an address nobody configured.
-// clamp_i64_u32 narrows a parsed integer without WRAPPING, so an out-of-range value stays out
-// of range for validation instead of becoming a different valid one. Every narrowing in the
-// uds/protect parse path goes through this or clamp_u32 — session, DTC status and data_id were
-// each found separately, which is three times too many for one mistake.
-// bad_ids returns the labels of any field whose value is not a clean numeric id.
 // checked_int parses a plain decimal in [lo, hi], refusing anything else by name. Not i64(),
 // which turns a typo into 0 and changes what the ECU does without saying so.
 fn checked_int(raw string, field string, lo i64, hi i64) !i64 {
@@ -860,6 +852,7 @@ fn checked_int(raw string, field string, lo i64, hi i64) !i64 {
 	return n
 }
 
+// bad_ids returns the labels of any field whose value is not a clean numeric id.
 fn bad_ids(fields map[string]string) []string {
 	mut out := []string{}
 	for k, v in fields {
@@ -871,6 +864,10 @@ fn bad_ids(fields map[string]string) []string {
 	return out
 }
 
+// clamp_i64_u32 narrows a parsed integer without WRAPPING, so an out-of-range value stays out
+// of range for validation instead of becoming a different valid one. Every narrowing in the
+// uds/protect parse path goes through this or clamp_u32 — session, DTC status and data_id were
+// each found separately, which is three times too many for one mistake.
 fn clamp_i64_u32(v i64) u32 {
 	if v < 0 || v > i64(0xFFFFFFFF) {
 		// Both directions saturate to a value the range checks REJECT. Clamping a negative to
@@ -906,6 +903,9 @@ pub fn hex_id_is_clean(s string) bool {
 	return true
 }
 
+// parse_id_wide accumulates in u64 so an over-long identifier is still VISIBLE to validation.
+// parse_id itself wraps at 32 bits, which made 0x1000007E0 arrive as a perfectly ordinary
+// 0x7E0: the range check passed and the server started on an address nobody configured.
 pub fn parse_id_wide(s string) u64 {
 	t := s.trim_space().trim('"')
 	if t.starts_with('0x') || t.starts_with('0X') {
