@@ -367,3 +367,23 @@ fn test_an_unrelated_monitor_leaving_does_not_close_the_startup_window() {
 	}
 	assert c.seq == 1
 }
+
+// A flood of emissions nobody is watching must not push a WATCHED one out of the ring: dropping
+// the unwatched costs nothing, while dropping the watched one reports it missing — one
+// interface's traffic accusing another's healthy bus.
+fn test_capping_gives_up_verdictless_records_before_watched_ones() {
+	mut r := Ring{
+		cap: 2
+	}
+	watched := frame(0x111, [u8(1)])
+	r.note(1, 'vcan0', watched, 0, [0], '', false) // somebody is watching this one
+	r.note(2, 'vcan1', frame(0x222, [u8(2)]), 0, [], '', false) // nobody is
+	missed := r.note(3, 'vcan1', frame(0x333, [u8(3)]), 0, [], '', false)
+	assert missed == []u64{}, 'an unwatched eviction produced a verdict: ${missed}'
+	// the watched record survived, so its own echo can still claim it
+	c := r.claim(0, 'vcan0', watched, 1) or {
+		assert false, 'the watched emission was evicted by unwatched traffic'
+		return
+	}
+	assert c.seq == 1
+}

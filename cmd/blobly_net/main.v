@@ -1465,11 +1465,12 @@ fn (app &App) open_tap_on(iface string, origin string, chan_name string) !transp
 	} else {
 		iface
 	})
-	inner := transport.open(app.bitrate_iface(if transport.vendor_iface(iface) {
-		iface.all_before('@')
-	} else {
-		iface
-	}))!
+	// The caller's string AS GIVEN when it already carries a vendor bitrate. Stripping it and
+	// re-deriving from the current channels loses the rate whenever those no longer describe it
+	// — a script that outlives Stop and a project switch still holds the interface it captured,
+	// and a 250k bus would then be opened at the default.
+	phys := if iface.contains('@') { iface } else { app.bitrate_iface(iface) }
+	inner := transport.open(phys)!
 	return &TapBus{
 		tx_mu:  app.tx_mutex(logical)
 		inner:  inner

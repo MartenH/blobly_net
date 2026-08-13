@@ -144,7 +144,16 @@ pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, 
 		mut keep := []Pending{cap: r.items.len}
 		mut need := r.items.len - r.cap
 		for pd in r.items {
+			// Settled first — everyone has answered, so nothing can ever ask again.
 			if need > 0 && pd.settled() {
+				need--
+				continue
+			}
+			// Then the ones that can never earn a verdict anyway: nobody was watching, or the
+			// watchers left. Dropping those costs nothing, whereas dropping a WATCHED entry
+			// reports it missing — so a high-rate unmonitored emitter on one interface would
+			// otherwise accuse a perfectly healthy monitored one on another.
+			if need > 0 && (pd.allowed.len == 0 || pd.watched_gone) {
 				need--
 				continue
 			}
