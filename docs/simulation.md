@@ -629,7 +629,11 @@ signal generators somebody typed — the SUT hears its actual environment. The p
 `canlog`/`mf4` already read the files and `player` already paces them);
 the part that needs deciding is what to **leave out**, because a capture contains the ECU under
 test too, and replaying its own messages back at it puts two transmitters on every one of its
-ids. The DBC already names each message's sender, which is what makes the subtraction possible.
+ids. The DBC already names each message's sender, which is most of what makes the subtraction
+possible — but not all of it: a DBC may give a message **no** transmitter (`Vector__XXX`, which
+`candb` normalises to empty), and nothing in `replay:` says which node is the ECU under test. So
+the rule needs both an explicit "this is the SUT" and an answer for messages the database cannot
+attribute — replay them, or hold them back — rather than assuming every id resolves.
 Those frames are our simulation, sourced from a file, and the trace would label them as such
 rather than as a recording — `REP` means "a file on screen", where nothing was transmitted.
 

@@ -36,8 +36,10 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   drive the surrounding ECUs from a capture of the actual vehicle instead of hand-written signal
   generators, so the SUT hears its real environment. `canlog` and `mf4` already read the files and
   `modules/player` already paces the decoded entries (play/seek/loop, tested), and `replay:` is
-  already in the project schema; what is missing is a worker and `monitorable()` accepting those
-  channels. The design question is the
+  already in the project schema; what is missing is a worker, `monitorable()` accepting those
+  channels, and **source-bus selection** — a multi-bus `.mf4` loads every bus into one entry list
+  (`mf4:bus0`, `mf4:bus2`, …) while `replay:` names a single channel, so the config has to say
+  which recorded bus feeds which channel. The design question is the
   **subtraction** — a capture contains the ECU under test, so replaying it verbatim puts two
   transmitters on every one of its ids (exactly the collision the trace's `origin` column now
   makes visible). The DBC names each message's sender, which is what makes that solvable.
