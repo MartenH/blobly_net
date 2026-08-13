@@ -1135,7 +1135,11 @@ fn (mut app App) toggle_record() {
 
 // load_recording replaces the trace with a candump .log or ASAM .mf4 file.
 fn (mut app App) load_recording(path string) {
-	entries := if path.to_lower().ends_with('.mf4') {
+	// Whether these labels are the FILE's or this project's. An MF4 names its buses by the
+	// recording's own BusChannel numbering; a candump line names an interface the user actually
+	// configured. That distinction decides whether the alias table applies at all — see below.
+	from_mf4 := path.to_lower().ends_with('.mf4')
+	entries := if from_mf4 {
 		mf4.load_file(path) or {
 			app.notify('mf4 ${path}: ${err}')
 			return
@@ -1188,10 +1192,32 @@ fn (mut app App) load_recording(path string) {
 			}
 		}
 	}
-	// A single simulated bus is unambiguous, so an unrecognised label (an MF4's 'can') resolves
-	// to it rather than going unchecked. With several, a label we cannot place is left alone —
-	// guessing which bus a frame came from would attach verdicts to the wrong sender.
+	// A single simulated bus is unambiguous, so an unrecognised label (an MF4's `mf4:bus0`)
+	// resolves to it rather than going unchecked. With several, a label we cannot place is left
+	// alone — guessing which bus a frame came from would attach verdicts to the wrong sender.
+	// An imported label is deliberately namespaced (`mf4:`) so it can never match a project
+	// interface by accident: BusChannel is the file's numbering, not this project's.
 	only := if verifiers.len == 1 { verifiers.keys()[0] } else { '' }
+	// For an MF4 the fallback needs a stronger question: `verifiers` counts buses that HAVE
+	// simulation or verify: entries, not buses the project has. A project with three CAN buses
+	// where only one is simulated would otherwise apply that one's rules to every `mf4:busN` —
+	// and the distinct labels are the file telling us the recording spans several buses. So the
+	// import may only fall back when the PROJECT itself has a single CAN bus to fall back to.
+	mut can_buses := map[string]bool{}
+	for c in app.chans {
+		if !c.doip {
+			can_buses[c.iface] = true
+		}
+	}
+	// BOTH sides must be unambiguous. A one-bus project importing a TWO-bus recording is still a
+	// guess: routing every mf4:busN through one stateful VerifySet interleaves counters from
+	// different source buses, which is a fabricated verdict either way it lands. The recording's
+	// own distinct labels are the file saying it spans several buses — believe it.
+	mut rec_buses := map[string]bool{}
+	for e in entries {
+		rec_buses[e.iface] = true
+	}
+	mf4_only := if can_buses.len == 1 && rec_buses.len == 1 { only } else { '' }
 	app.mu.lock()
 	app.trace = []
 	app.gcount = map[string]u64{}
@@ -1200,7 +1226,12 @@ fn (mut app App) load_recording(path string) {
 		name := app.lookup_name(f.id, f.extended)
 		mut viol := ''
 		if !f.rtr {
-			ifc := alias[e.iface] or { only }
+			// An imported MF4 label NEVER goes through the alias table. `mf4:` makes an accidental
+			// match unlikely, but a project channel may be named anything at all — including
+			// `mf4:bus1` — and a convention is not a guarantee. Structurally: these labels are
+			// not in this project's namespace, so the only resolution they may take is the
+			// single-bus fallback, where there is nothing to get wrong.
+			ifc := if from_mf4 { mf4_only } else { alias[e.iface] or { only } }
 			if mut vs := verifiers[ifc] {
 				if k := vs.resolve(app.dbs_for(ifc), f.id, f.extended) {
 					if mut ver := vs.by_key[k] {
