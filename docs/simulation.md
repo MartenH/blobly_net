@@ -622,8 +622,25 @@ The project format accepts a replay channel:
 **It does nothing today.** `modules/player` can decode `.log` and `.mf4`, but nothing in the app
 drives it: there is no replay worker, and `monitorable()` — which decides what gets opened when
 you press Start — accepts only `monitor` channels, so a replay channel is not even attached.
-Configuring one produces silence, not an error. Reconnecting the player to the GUI is open
-work; until then, treat this section as schema documentation rather than a feature.
+Configuring one produces silence, not an error. Until then, treat this section as schema
+documentation rather than a feature.
+
+**It is tracked, not forgotten: [#98](https://github.com/MartenH/blobly_net/issues/98).** The
+point of finishing it is a rest bus driven by *a real capture from the car* rather than by
+signal generators somebody typed — the SUT hears its actual environment. The plumbing is small but not one line
+(a worker pumping `player.due()` onto the bus, `monitorable()` accepting replay channels, and
+**source-bus selection** — a multi-bus `.mf4` loads every bus into one entry list, so the config
+has to say which recorded bus feeds which channel; `canlog`/`mf4` already read the files and
+`player` already paces them);
+the part that needs deciding is what to **leave out**, because a capture contains the ECU under
+test too, and replaying its own messages back at it puts two transmitters on every one of its
+ids. The DBC already names each message's sender, which is most of what makes the subtraction
+possible — but not all of it: a DBC may give a message **no** transmitter (`Vector__XXX`, which
+`candb` normalises to empty), and nothing in `replay:` says which node is the ECU under test. So
+the rule needs both an explicit "this is the SUT" and an answer for messages the database cannot
+attribute — replay them, or hold them back — rather than assuming every id resolves.
+Those frames are our simulation, sourced from a file, and the trace would label them as such
+rather than as a recording — `REP` means "a file on screen", where nothing was transmitted.
 
 ## Running it without the GUI
 
