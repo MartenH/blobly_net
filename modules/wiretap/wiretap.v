@@ -37,10 +37,22 @@ pub const default_window_ms = f64(2000)
 // wrong one — the row simply stays unresolved.
 pub const default_cap = 1024
 
+// Claim is what an echo resolved to: the caller's identity for the emission, and whether this
+// was the FIRST monitor to account for it. Several monitors may watch one interface and each
+// claims its own copy, so a caller that acts once per frame — writing a recording, say — must
+// act on the first only.
+pub struct Claim {
+pub:
+	seq   u64
+	first bool
+	tag   string // whatever the caller attached at note(): the logical channel, here
+}
+
 // Pending is one emission still waiting for its echo. `seq` is the caller's row identity,
 // returned when the echo arrives so the caller can mark the right row.
 struct Pending {
 	seq   u64
+	tag   string // caller-owned label, returned with the claim (see Claim.tag)
 	iface string
 	id    u32
 	ext   bool
@@ -105,9 +117,10 @@ mut:
 // for — reported, not dropped in silence, because the whole point of the record is that every
 // emission ends with a verdict. Silent eviction would go quiet in exactly the sustained-traffic
 // case where a dead bus matters most.
-pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, monitors []int) []u64 {
+pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, monitors []int, tag string) []u64 {
 	r.items << Pending{
 		seq:     seq
+		tag:     tag
 		allowed: monitors.clone()
 		iface:   iface
 		id:    f.id
@@ -156,7 +169,7 @@ pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, 
 // when a simulated ECU and the real one both send the same id, the first frame claims our
 // record and the second finds nothing left, so it is attributed to the bus. Matching without
 // consuming would attribute both to us and hide the collision this exists to surface.
-pub fn (mut r Ring) claim(monitor int, iface string, f transport.CanFrame, t_ms f64) ?u64 {
+pub fn (mut r Ring) claim(monitor int, iface string, f transport.CanFrame, t_ms f64) ?Claim {
 	r.drop_expired(t_ms)
 	for i, p in r.items {
 		if monitor in p.claimed {
@@ -178,8 +191,13 @@ pub fn (mut r Ring) claim(monitor int, iface string, f transport.CanFrame, t_ms 
 		// frame answering it — either shortcut would attribute a real ECU's frame to us.
 		if p.iface == iface && p.id == f.id && p.ext == f.extended && p.rtr == f.rtr
 			&& p.data == f.data {
+			first := p.claimed.len == 0
 			r.items[i].claimed << monitor
-			return p.seq
+			return Claim{
+				seq:   p.seq
+				first: first
+				tag:   p.tag
+			}
 		}
 	}
 	return none

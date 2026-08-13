@@ -1249,21 +1249,23 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 	// with it.
 	if transport.echoes_own_sends(iface) {
 		watchers := app.monitors_locked(iface)
-		for missed in app.taps.note(seq, iface, f, t_ms, watchers) {
+		for missed in app.taps.note(seq, iface, f, t_ms, watchers, chn) {
 			i := app.row_index_locked(missed)
 			if i >= 0 {
 				app.trace[i].missed = true
 			}
 		}
 	}
-	// Recording at EMIT only where nothing will observe the frame for us: PCAN and Kvaser never
-	// hand our own transmissions back, so the wire path below can never write them. Everywhere
-	// else the echo does it, in observation order — see rx_loop. Recording here as well would
-	// both duplicate the frame and let a fast responder's answer land in the file ahead of the
-	// request that caused it.
+	// Recording at EMIT only where nothing will observe the frame FOR us: PCAN and Kvaser never
+	// hand our own transmissions back, and a bus with no monitor running has nobody to write it
+	// — a generator aimed at an off channel, or the simulation's first frames before the rx
+	// loop opens, would otherwise vanish from the file while genuinely reaching the bus.
+	// Everywhere else the echo records it, in observation order (see rx_loop); doing both would
+	// duplicate the frame and put a fast responder's answer ahead of its request.
 	//
 	// Not gated on `paused`: pausing freezes the TABLE, not the recording.
-	if app.recording && !transport.echoes_own_sends(iface) {
+	watching := transport.echoes_own_sends(iface) && app.monitors_locked(iface).len > 0
+	if app.recording && !watching {
 		// Stamped INSIDE the lock, like the rx path: a time taken before acquiring it can be
 		// older than a line already written, and the file would then disagree with itself.
 		app.rec << canlog.LogEntry{f64(time.ticks() - app.t0) / 1000.0, chn, f}
@@ -1286,10 +1288,16 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 	return seq
 }
 
+// tap_chan resolves the logical channel a tap writes under: its own name, or the interface's
+// single channel when it has none.
+fn (app &App) tap_chan(iface string, chan_name string) string {
+	return if chan_name != '' { chan_name } else { app.chan_name_for(iface) }
+}
+
 // unrecord_last drops a frame we recorded at emit but never managed to send. Bounded backward
 // scan: the interface's send lock keeps another emitter on this wire out of the interval, but
 // the rx thread and other interfaces may have appended, so the entry need not be last.
-fn (mut app App) unrecord_last(iface string, f transport.CanFrame) {
+fn (mut app App) unrecord_last(chan_name string, f transport.CanFrame) {
 	app.mu.lock()
 	defer {
 		app.mu.unlock()
@@ -1300,8 +1308,10 @@ fn (mut app App) unrecord_last(iface string, f transport.CanFrame) {
 	mut i := app.rec.len - 1
 	for i >= 0 && i > app.rec.len - 9 {
 		e := app.rec[i]
-		if e.frame.id == f.id && e.frame.extended == f.extended && e.frame.rtr == f.rtr
-			&& e.frame.data == f.data {
+		// the CHANNEL too: identical frames may be in flight on two non-echoing interfaces at
+		// once, and matching on the payload alone deleted the other one's successful entry
+		if e.iface == chan_name && e.frame.id == f.id && e.frame.extended == f.extended
+			&& e.frame.rtr == f.rtr && e.frame.data == f.data {
 			app.rec.delete(i)
 			return
 		}
@@ -1325,7 +1335,7 @@ fn (mut app App) retract_emit(seq u64) {
 // claim_echo_locked confirms the emission this frame is the echo of, and reports whether it
 // found one. The matching rules (one-shot, oldest first, width-exact) and why they are what they
 // are live in modules/wiretap. Caller holds app.mu.
-fn (mut app App) claim_echo_locked(monitor int, iface string, f transport.CanFrame, t_ms f64) ?u64 {
+fn (mut app App) claim_echo_locked(monitor int, iface string, f transport.CanFrame, t_ms f64) ?wiretap.Claim {
 	app.expire_pending_locked(t_ms)
 	return app.taps.claim(monitor, iface, f, t_ms)
 }
@@ -1367,7 +1377,7 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 		t.app.retract_emit(seq)
 		// only the non-echoing backends record at emit; elsewhere nothing was written yet
 		if !transport.echoes_own_sends(t.iface) {
-			t.app.unrecord_last(t.iface, wire)
+			t.app.unrecord_last(t.app.tap_chan(t.iface, t.chan_name), wire)
 		}
 		return err
 	}
@@ -1940,12 +1950,21 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		// answer reach the file before the request, because the simulation and the monitor are
 		// different threads on different sockets and neither waits for the other.
 		if a.recording {
-			if seq := claimed {
-				i := a.row_index_locked(seq)
-				ch_own := if i >= 0 { a.trace[i].ch } else { a.chan_name_for(iface) }
-				a.rec << canlog.LogEntry{f64(time.ticks() - a.t0) / 1000.0, ch_own, f}
-				if a.rec.len > 200000 {
-					a.rec = a.rec[a.rec.len - 200000..].clone()
+			if c := claimed {
+				// FIRST claim only. Two channels may share a wire, and each monitor claims its
+				// own copy of the same emission — writing on every claim put the frame in the
+				// file twice, so a replay would transmit it twice.
+				//
+				// The channel comes from the emission itself (the tag it was noted with), not
+				// from the interface: an emission made while the trace was paused has no row to
+				// read it from, and deriving it from the interface picks whichever channel is
+				// listed first.
+				if c.first {
+					ch_own := if c.tag != '' { c.tag } else { a.chan_name_for(iface) }
+					a.rec << canlog.LogEntry{f64(time.ticks() - a.t0) / 1000.0, ch_own, f}
+					if a.rec.len > 200000 {
+						a.rec = a.rec[a.rec.len - 200000..].clone()
+					}
 				}
 			}
 		}

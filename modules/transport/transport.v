@@ -56,8 +56,12 @@ pub fn clamps_to_classic(iface string) bool {
 // SocketCAN interface named `udp0` or `inproc0`, which on Linux opens as SocketCAN — and then
 // the frame we recorded would differ from the one the kernel actually clamped and sent.
 pub fn software_iface(iface string) bool {
-	i := iface.to_lower()
-	return i == 'inproc' || i.starts_with('inproc:') || i == 'udp' || i.starts_with('udp:')
+	// CASE-SENSITIVE, like the dispatcher's own parsers: `UDP` and `INPROC` are not the software
+	// buses, they are ordinary interface names that open as SocketCAN on Linux — and treating
+	// them as software buses leaves their frames un-normalised while the kernel clamps what it
+	// actually transmits.
+	return iface == 'inproc' || iface.starts_with('inproc:') || iface == 'udp'
+		|| iface.starts_with('udp:')
 }
 
 // canonical_iface collapses the spellings of one bus to a single identity. `inproc` and
@@ -67,7 +71,7 @@ pub fn software_iface(iface string) bool {
 // frame reaches the monitor, cannot claim its own record, and lands in the trace as the device
 // under test's. Physical opens still take the caller's spelling; this is for identity only.
 pub fn canonical_iface(iface string) string {
-	i := iface.trim_space()
+	i := iface.trim_space() // case as given: the dispatcher's parsers are case-sensitive
 	if i == 'inproc' || i == 'inproc:' {
 		return 'inproc:CAN' // parse_inproc_iface's default name, for both empty spellings
 	}

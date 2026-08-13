@@ -12,12 +12,12 @@ fn frame(id u32, data []u8) transport.CanFrame {
 fn test_a_frame_we_sent_is_recognised_as_ours() {
 	mut r := Ring{}
 	f := frame(0x120, [u8(1), 2, 3])
-	r.note(7, 'vcan0', f, 0, [0])
-	seq := r.claim(0, 'vcan0', f, 1) or {
+	r.note(7, 'vcan0', f, 0, [0], '')
+	c := r.claim(0, 'vcan0', f, 1) or {
 		assert false, 'our own frame came back and we did not recognise it'
 		return
 	}
-	assert seq == 7
+	assert c.seq == 7
 	// still held — a second monitor on this interface gets its own copy of the frame and would
 	// otherwise see our own emission as foreign. Expiry retires it, silently, having been seen.
 	assert r.outstanding() == 1
@@ -30,7 +30,7 @@ fn test_a_frame_we_sent_is_recognised_as_ours() {
 fn test_a_second_identical_frame_is_the_other_transmitter() {
 	mut r := Ring{}
 	f := frame(0x120, [u8(1), 2, 3])
-	r.note(1, 'vcan0', f, 0, [0])
+	r.note(1, 'vcan0', f, 0, [0], '')
 	r.claim(0, 'vcan0', f, 1) or {
 		assert false, 'ours was not claimed'
 		return
@@ -45,23 +45,23 @@ fn test_a_second_identical_frame_is_the_other_transmitter() {
 fn test_claims_oldest_first() {
 	mut r := Ring{}
 	f := frame(0x120, [u8(9)])
-	r.note(1, 'vcan0', f, 0, [0])
-	r.note(2, 'vcan0', f, 5, [0])
-	a := r.claim(0, 'vcan0', f, 6) or {
+	r.note(1, 'vcan0', f, 0, [0], '')
+	r.note(2, 'vcan0', f, 5, [0], '')
+	ca := r.claim(0, 'vcan0', f, 6) or {
 		assert false, '${err}'
 		return
 	}
-	b := r.claim(0, 'vcan0', f, 7) or {
+	cb := r.claim(0, 'vcan0', f, 7) or {
 		assert false, '${err}'
 		return
 	}
-	assert a == 1 && b == 2, 'frames leave in order, so their echoes must be claimed in order'
+	assert ca.seq == 1 && cb.seq == 2, 'frames leave in order, so their echoes must be claimed in order'
 }
 
 fn test_another_bus_is_not_our_echo() {
 	mut r := Ring{}
 	f := frame(0x120, [u8(1)])
-	r.note(1, 'vcan0', f, 0, [0])
+	r.note(1, 'vcan0', f, 0, [0], '')
 	if _ := r.claim(0, 'vcan1', f, 1) {
 		assert false, 'a frame on a DIFFERENT bus was attributed to what we sent on this one'
 	}
@@ -69,7 +69,7 @@ fn test_another_bus_is_not_our_echo() {
 
 fn test_a_different_payload_is_not_our_echo() {
 	mut r := Ring{}
-	r.note(1, 'vcan0', frame(0x120, [u8(1), 2, 3]), 0, [0])
+	r.note(1, 'vcan0', frame(0x120, [u8(1), 2, 3]), 0, [0], '')
 	if _ := r.claim(0, 'vcan0', frame(0x120, [u8(1), 2, 4]), 1) {
 		assert false, 'same id, different bytes — that is another sender, not our echo'
 	}
@@ -88,7 +88,7 @@ fn test_extended_is_not_the_echo_of_standard() {
 		extended: true
 		data:     [u8(1)]
 	}
-	r.note(1, 'vcan0', std, 0, [0])
+	r.note(1, 'vcan0', std, 0, [0], '')
 	if _ := r.claim(0, 'vcan0', ext, 1) {
 		assert false, 'an extended frame masqueraded as our standard one'
 	}
@@ -104,7 +104,7 @@ fn test_rtr_is_not_the_echo_of_a_data_frame() {
 		id:  0x120
 		rtr: true
 	}
-	r.note(1, 'vcan0', data, 0, [0])
+	r.note(1, 'vcan0', data, 0, [0], '')
 	if _ := r.claim(0, 'vcan0', rtr, 1) {
 		assert false, 'a remote request was taken for the echo of a data frame'
 	}
@@ -114,7 +114,7 @@ fn test_rtr_is_not_the_echo_of_a_data_frame() {
 // at least one other node, so a lone node's frames never make it at all.
 fn test_an_echo_that_never_comes_is_reported_once() {
 	mut r := Ring{}
-	r.note(42, 'vcan0', frame(0x120, [u8(1)]), 0, [0])
+	r.note(42, 'vcan0', frame(0x120, [u8(1)]), 0, [0], '')
 	assert r.expire(500) == []u64{}, 'still inside the window — nothing to report yet'
 	assert r.expire(default_window_ms + 1) == [u64(42)]
 	assert r.expire(default_window_ms + 2) == []u64{}, 'a missed frame must not be reported twice'
@@ -124,7 +124,7 @@ fn test_an_echo_that_never_comes_is_reported_once() {
 fn test_an_expired_emission_cannot_be_claimed() {
 	mut r := Ring{}
 	f := frame(0x120, [u8(1)])
-	r.note(1, 'vcan0', f, 0, [0])
+	r.note(1, 'vcan0', f, 0, [0], '')
 	if _ := r.claim(0, 'vcan0', f, default_window_ms + 1) {
 		assert false, 'a frame arriving long after ours was attributed to us'
 	}
@@ -134,16 +134,16 @@ fn test_an_expired_emission_cannot_be_claimed() {
 fn test_each_monitor_accounts_for_the_frame_once() {
 	mut r := Ring{}
 	f := frame(0x120, [u8(1)])
-	r.note(5, 'vcan0', f, 0, [0, 1])
-	a := r.claim(0, 'vcan0', f, 1) or {
+	r.note(5, 'vcan0', f, 0, [0, 1], '')
+	ca := r.claim(0, 'vcan0', f, 1) or {
 		assert false, 'monitor 0 did not recognise our frame'
 		return
 	}
-	b := r.claim(1, 'vcan0', f, 1) or {
+	cb := r.claim(1, 'vcan0', f, 1) or {
 		assert false, 'the SECOND monitor saw our own frame as foreign'
 		return
 	}
-	assert a == 5 && b == 5
+	assert ca.seq == 5 && cb.seq == 5
 	// but a repeat at a monitor that already accounted for it is somebody else transmitting
 	if _ := r.claim(0, 'vcan0', f, 2) {
 		assert false, 'a duplicate transmitter was hidden by the per-monitor rule'
@@ -155,7 +155,7 @@ fn test_each_monitor_accounts_for_the_frame_once() {
 fn test_a_claimed_emission_is_not_reported_missing() {
 	mut r := Ring{}
 	f := frame(0x120, [u8(1)])
-	r.note(9, 'vcan0', f, 0, [0])
+	r.note(9, 'vcan0', f, 0, [0], '')
 	r.claim(0, 'vcan0', f, 1) or {
 		assert false, '${err}'
 		return
@@ -165,7 +165,7 @@ fn test_a_claimed_emission_is_not_reported_missing() {
 
 fn test_a_failed_send_is_forgotten_without_a_verdict() {
 	mut r := Ring{}
-	r.note(3, 'vcan0', frame(0x120, [u8(1)]), 0, [0])
+	r.note(3, 'vcan0', frame(0x120, [u8(1)]), 0, [0], '')
 	r.forget(3)
 	assert r.expire(default_window_ms + 1) == []u64{}, 'a send that never left reported as missed'
 	assert r.outstanding() == 0
@@ -175,11 +175,11 @@ fn test_eviction_reports_what_it_drops() {
 	mut r := Ring{
 		cap: 2
 	}
-	assert r.note(1, 'vcan0', frame(0x101, [u8(1)]), 0, [0]) == []u64{}
-	assert r.note(2, 'vcan0', frame(0x102, [u8(2)]), 0, [0]) == []u64{}
+	assert r.note(1, 'vcan0', frame(0x101, [u8(1)]), 0, [0], '') == []u64{}
+	assert r.note(2, 'vcan0', frame(0x102, [u8(2)]), 0, [0], '') == []u64{}
 	// the third pushes the first out: reported, never silently dropped — going quiet here would
 	// go quiet in exactly the busy-bus case where a dead link matters
-	assert r.note(3, 'vcan0', frame(0x103, [u8(3)]), 0, [0]) == [u64(1)]
+	assert r.note(3, 'vcan0', frame(0x103, [u8(3)]), 0, [0], '') == [u64(1)]
 }
 
 fn test_the_ring_is_bounded() {
@@ -187,18 +187,18 @@ fn test_the_ring_is_bounded() {
 		cap: 4
 	}
 	for i in 0 .. 10 {
-		r.note(u64(i), 'vcan0', frame(u32(0x100 + i), [u8(i)]), 0, [0])
+		r.note(u64(i), 'vcan0', frame(u32(0x100 + i), [u8(i)]), 0, [0], '')
 	}
 	assert r.outstanding() == 4
 	// the oldest were dropped, so they read as somebody else's rather than pinning memory
 	if _ := r.claim(0, 'vcan0', frame(0x100, [u8(0)]), 1) {
 		assert false, 'a dropped record still claimed a frame'
 	}
-	seq := r.claim(0, 'vcan0', frame(0x109, [u8(9)]), 1) or {
+	c := r.claim(0, 'vcan0', frame(0x109, [u8(9)]), 1) or {
 		assert false, 'the newest record should still be there'
 		return
 	}
-	assert seq == 9
+	assert c.seq == 9
 }
 
 // A row identity the trace has already discarded must still suppress its echo: the frame is
@@ -206,12 +206,12 @@ fn test_the_ring_is_bounded() {
 fn test_a_record_outlives_its_row() {
 	mut r := Ring{}
 	f := frame(0x120, [u8(1)])
-	r.note(1, 'vcan0', f, 0, [0])
-	seq := r.claim(0, 'vcan0', f, 1) or {
+	r.note(1, 'vcan0', f, 0, [0], '')
+	c := r.claim(0, 'vcan0', f, 1) or {
 		assert false, 'our own frame became foreign once its row was gone'
 		return
 	}
-	assert seq == 1
+	assert c.seq == 1
 }
 
 // A monitor that opened AFTER the frame went out never saw it, so it must not be able to claim
@@ -220,15 +220,15 @@ fn test_a_record_outlives_its_row() {
 fn test_a_monitor_that_arrived_late_cannot_claim() {
 	mut r := Ring{}
 	f := frame(0x120, [u8(1)])
-	r.note(1, 'vcan0', f, 0, [0]) // only monitor 0 existed
+	r.note(1, 'vcan0', f, 0, [0], '') // only monitor 0 existed
 	if _ := r.claim(1, 'vcan0', f, 1) {
 		assert false, 'a socket that did not exist yet claimed our emission'
 	}
-	seq := r.claim(0, 'vcan0', f, 1) or {
+	c := r.claim(0, 'vcan0', f, 1) or {
 		assert false, 'the monitor that WAS there could not claim it'
 		return
 	}
-	assert seq == 1
+	assert c.seq == 1
 }
 
 // Emissions made while nothing was watching — the sim's first frames, before the rx loops finish
@@ -237,18 +237,18 @@ fn test_a_monitor_that_arrived_late_cannot_claim() {
 fn test_an_emission_made_before_any_monitor_opened_is_still_ours() {
 	mut r := Ring{}
 	f := frame(0x120, [u8(1)])
-	r.note(1, 'vcan0', f, 0, []) // nobody watching yet
-	seq := r.claim(0, 'vcan0', f, 1) or {
+	r.note(1, 'vcan0', f, 0, [], '') // nobody watching yet
+	c := r.claim(0, 'vcan0', f, 1) or {
 		assert false, 'our own frame was attributed to the device under test'
 		return
 	}
-	assert seq == 1
+	assert c.seq == 1
 }
 
 // …but nobody was watching, so nothing can be called missing either.
 fn test_an_unwatched_emission_is_never_reported_missing() {
 	mut r := Ring{}
-	r.note(1, 'vcan0', frame(0x120, [u8(1)]), 0, [])
+	r.note(1, 'vcan0', frame(0x120, [u8(1)]), 0, [], '')
 	assert r.expire(default_window_ms + 1) == []u64{}, 'silence with no listener is not a fault'
 }
 
@@ -258,9 +258,9 @@ fn test_eviction_reports_nothing_when_nobody_was_watching() {
 	mut r := Ring{
 		cap: 2
 	}
-	r.note(1, 'vcan0', frame(0x101, [u8(1)]), 0, [])
-	r.note(2, 'vcan0', frame(0x102, [u8(2)]), 0, [])
-	assert r.note(3, 'vcan0', frame(0x103, [u8(3)]), 0, []) == []u64{}
+	r.note(1, 'vcan0', frame(0x101, [u8(1)]), 0, [], '')
+	r.note(2, 'vcan0', frame(0x102, [u8(2)]), 0, [], '')
+	assert r.note(3, 'vcan0', frame(0x103, [u8(3)]), 0, [], '') == []u64{}
 }
 
 // Disabling a channel mid-run removes the only thing that could have confirmed our emissions.
@@ -268,7 +268,7 @@ fn test_eviction_reports_nothing_when_nobody_was_watching() {
 fn test_removing_the_watcher_cancels_its_verdict() {
 	mut r := Ring{}
 	f := frame(0x120, [u8(1)])
-	r.note(1, 'vcan0', f, 0, [0])
+	r.note(1, 'vcan0', f, 0, [0], '')
 	r.drop_monitor(0)
 	assert r.expire(default_window_ms + 1) == []u64{}, 'a removed observer still produced a verdict'
 }
@@ -280,7 +280,7 @@ fn test_removing_the_watcher_cancels_its_verdict() {
 fn test_a_reused_monitor_index_cannot_claim_what_it_never_saw() {
 	mut r := Ring{}
 	f := frame(0x120, [u8(1)])
-	r.note(2, 'vcan0', f, 0, [0])
+	r.note(2, 'vcan0', f, 0, [0], '')
 	r.drop_monitor(0)
 	if _ := r.claim(0, 'vcan0', f, 1) {
 		assert false, 'a re-enabled monitor claimed an emission from before it existed'
@@ -292,12 +292,12 @@ fn test_a_reused_monitor_index_cannot_claim_what_it_never_saw() {
 fn test_an_unwatched_emission_is_still_claimable() {
 	mut r := Ring{}
 	f := frame(0x121, [u8(1)])
-	r.note(3, 'vcan0', f, 0, [])
-	seq := r.claim(0, 'vcan0', f, 1) or {
+	r.note(3, 'vcan0', f, 0, [], '')
+	c := r.claim(0, 'vcan0', f, 1) or {
 		assert false, 'our own frame was attributed to the device under test'
 		return
 	}
-	assert seq == 3
+	assert c.seq == 3
 }
 
 // With two monitors on one wire, one draining slower, capping the ring must not throw away a
@@ -309,19 +309,19 @@ fn test_capping_gives_up_settled_records_before_pending_ones() {
 	}
 	a := frame(0x101, [u8(1)])
 	b := frame(0x102, [u8(2)])
-	r.note(1, 'vcan0', a, 0, [0, 1])
-	r.note(2, 'vcan0', b, 0, [0, 1])
+	r.note(1, 'vcan0', a, 0, [0, 1], '')
+	r.note(2, 'vcan0', b, 0, [0, 1], '')
 	// record 1 is fully accounted for; record 2 is still waiting on monitor 1
 	r.claim(0, 'vcan0', a, 1) or { assert false, '${err}' }
 	r.claim(1, 'vcan0', a, 1) or { assert false, '${err}' }
 	r.claim(0, 'vcan0', b, 1) or { assert false, '${err}' }
-	r.note(3, 'vcan0', frame(0x103, [u8(3)]), 1, [0, 1])
+	r.note(3, 'vcan0', frame(0x103, [u8(3)]), 1, [0, 1], '')
 	// the settled one was dropped, so monitor 1's late copy of b can still be claimed
-	seq := r.claim(1, 'vcan0', b, 2) or {
+	c := r.claim(1, 'vcan0', b, 2) or {
 		assert false, 'the slow monitor lost our frame to the cap'
 		return
 	}
-	assert seq == 2
+	assert c.seq == 2
 }
 
 // A claim is evidence the frame reached the wire. Removing the monitor that made it must not
@@ -330,7 +330,7 @@ fn test_capping_gives_up_settled_records_before_pending_ones() {
 fn test_a_departing_monitor_leaves_its_evidence_behind() {
 	mut r := Ring{}
 	f := frame(0x120, [u8(1)])
-	r.note(1, 'vcan0', f, 0, [0, 1])
+	r.note(1, 'vcan0', f, 0, [0, 1], '')
 	r.claim(0, 'vcan0', f, 1) or {
 		assert false, '${err}'
 		return
