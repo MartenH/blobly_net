@@ -144,7 +144,7 @@ mut:
 	// Stable identity for recording entries, exactly like trace_seq/trace_base for rows: the
 	// buffer is trimmed by re-slicing, so a plain index does not survive.
 	rec_seq     u64
-	rec_base    u64
+	rec_ids     []u64 // one per app.rec entry, so an entry is found by IDENTITY not by offset
 	// Guards tx_mutexes ALONE, deliberately not app.mu: open_tap is called with app.mu held
 	// (set_sender_bus retargets a generator mid-run under the lock), and app.mu is not
 	// reentrant — taking it again inside the tap constructor deadlocked the GUI thread.
@@ -1320,18 +1320,19 @@ fn (app &App) tap_chan(iface string, chan_name string) string {
 }
 
 // rec_append_locked appends to the recording and returns that entry's stable identity. EVERY
-// append goes through here: the identity is rec_seq counted against rec_base, so a path that
+// append goes through here: each entry carries its id in rec_ids, so a path that appended
 // appended without bumping the counter — the received frames and the echoes both do — would make
-// every later id point at the wrong entry, and a retraction would delete somebody else's frame.
-// Caller holds app.mu.
+// without one would put the two arrays out of step — and a retraction would then delete somebody
+// else's frame. Caller holds app.mu.
 fn (mut app App) rec_append_locked(e canlog.LogEntry) u64 {
 	id := app.rec_seq
 	app.rec_seq++
 	app.rec << e
+	app.rec_ids << id
 	if app.rec.len > 200000 {
 		drop := app.rec.len - 200000
 		app.rec = app.rec[drop..].clone()
-		app.rec_base += u64(drop)
+		app.rec_ids = app.rec_ids[drop..].clone()
 	}
 	return id
 }
@@ -1352,13 +1353,24 @@ fn (mut app App) unrecord(rec_id u64) {
 	defer {
 		app.mu.unlock()
 	}
-	if rec_id < app.rec_base {
-		return // already trimmed out of the buffer
-	}
-	i := int(rec_id - app.rec_base)
-	if i < app.rec.len {
-		app.rec.delete(i)
-		app.rec_base++ // every surviving entry shifted down by one
+	// Located by its id, kept alongside each entry. Arithmetic on a base does not survive a
+	// deletion in the MIDDLE — two emit-time sends on different interfaces can fail out of
+	// order — after which every later id would point one entry off and a retraction would
+	// delete an unrelated frame. The ids are ascending, so this is a binary search.
+	mut lo := 0
+	mut hi := app.rec_ids.len - 1
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		if app.rec_ids[mid] == rec_id {
+			app.rec.delete(mid)
+			app.rec_ids.delete(mid)
+			return
+		}
+		if app.rec_ids[mid] < rec_id {
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
 	}
 }
 
