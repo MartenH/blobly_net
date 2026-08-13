@@ -725,7 +725,7 @@ fn (mut app App) start() {
 		}
 		mut diag_nodes := sim.uds_nodes(peers)
 		if diag_nodes.len == 0 {
-			spawn diag_server_loop(app, sc.iface) // the built-in default for this bus
+			spawn diag_server_loop(app, sc.iface, sc.pch.name) // the built-in default for this bus
 			app.diag_plan << DiagTarget{
 				key:   diag_key_can(sc.iface, diag_tx_id, diag_rx_id)
 				label: 'default on ${sc.iface}  (0x${diag_tx_id:X}/0x${diag_rx_id:X})'
@@ -1847,9 +1847,12 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 	}
 }
 
-fn diag_server_loop(app &App, iface string) {
+fn diag_server_loop(app &App, iface string, chan_name string) {
 	a := unsafe { app }
-	tapped := a.open_tap(iface, org_sim) or { return }
+	// its OWN channel: two channels can share a wire, and resolving the name from the interface
+	// picks whichever is listed first — so a default server created for the second one had every
+	// response attributed to its neighbour
+	tapped := a.open_tap_on(iface, org_sim, chan_name) or { return }
 	mut ch := isotp.on_bus(tapped, a.bitrate_iface(iface), diag_rx_id, diag_tx_id, false) or {
 		return
 	}
@@ -1951,6 +1954,13 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		// recording and the E2E verifier — whose per-message counter would otherwise see one
 		// message twice and report a jump the ECU never made.
 		a.mu.lock()
+		// AGAIN under the lock. The check after recv can pass and then this thread be
+		// descheduled while Start resets the ring and advances the generation — the stale loop
+		// would resume here and claim or record its old frame against the new run.
+		if a.run_gen != gen {
+			a.mu.unlock()
+			break
+		}
 		claimed := a.claim_echo_locked(ci, transport.canonical_iface(iface), f, t_ms)
 		ours := claimed != none
 		// The recording follows the WIRE, so its order is observation order — the only order
