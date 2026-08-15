@@ -5092,7 +5092,7 @@ fn draw_trace_all(id string, rows []TraceRow, filt string) {
 	if vgui.table_begin(id, 6) {
 		vgui.table_setup_col('t (ms)', 66)
 		vgui.table_setup_col('ch', 52)
-		vgui.table_setup_col('origin', 52)
+		vgui.table_setup_col('origin', 64)
 		vgui.table_setup_col('id', 82)
 		vgui.table_setup_col('name', 150)
 		vgui.table_setup_col('data', 0) // stretch
@@ -5195,7 +5195,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 	if vgui.table_begin('gtrace', 5) {
 		vgui.table_setup_col('id / name', 210)
 		vgui.table_setup_col('ch', 52)
-		vgui.table_setup_col('origin', 52)
+		vgui.table_setup_col('origin', 64)
 		vgui.table_setup_col('count', 60)
 		vgui.table_setup_col('data', 0)
 		vgui.table_freeze_top()
