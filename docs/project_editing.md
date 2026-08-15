@@ -313,7 +313,7 @@ needed for the first cut.
 
 Today the Trace merges all buses into one view with a `ch` column; the only way to narrow
 to a bus is typing its name into the substring filter (`trace_pass`, `main.v:1565`, matches
-id/name/**ch**/dir/data). There is no first-class "watch this bus" control, which is
+id/name/**ch**/origin/data). There is no first-class "watch this bus" control, which is
 awkward for the common multi-bus case (e.g. a 2-vcan ECU restbus — you want vcan0 and vcan1
 separable). Since the config now defines the bus/network list, the Trace reads it directly.
 
