@@ -172,7 +172,12 @@ mut:
 	paused       bool
 	recording    bool
 	rec          []canlog.LogEntry // captured while recording; written on stop
+	// What WE put on the wire, split the way the trace splits it: the tester's own sends and
+	// the simulation's are different facts, and one merged number re-collapses them in the one
+	// place a user looks first. Counted at the tap (note_emit), so every emitter counts —
+	// including the ones that never call tx_on. REP is not counted: nothing was transmitted.
 	tx_count     u64
+	tx_sim_count u64
 	logs         []string           // Log panel (status/events, newest last)
 	doip_ents    []doip.VehicleInfo // DoIP Discovery results
 	// panel visibility (View menu)
@@ -1279,6 +1284,13 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 		})
 		app.gcount[gkey(origin, chn, f.id, f.extended)]++
 	}
+	// Counted whether or not the trace is paused, and whether or not a row was written: pausing
+	// freezes the table, it does not stop the bus.
+	match origin {
+		org_tx { app.tx_count++ }
+		org_tx_sim { app.tx_sim_count++ }
+		else {} // REP never reaches a bus; RX is not ours to count here
+	}
 	// ALWAYS record what we sent, on any backend that could echo — the emission is ours whether
 	// or not a monitor happens to be open at this instant, and the sim emits its first frames
 	// while the rx loops are still opening. Attributing those to the device under test breaks
@@ -1391,12 +1403,30 @@ fn (mut app App) unrecord(rec_id u64) {
 	}
 }
 
+// tx_counts renders what we transmitted, split the way the trace's origin column splits it:
+// the tester's own sends and the simulated rest-of-bus are different facts. TX-S appears only
+// once the simulation has actually sent something, so a pure-tester session is not padded with
+// a permanent zero.
+fn (app &App) tx_counts() string {
+	if app.tx_sim_count == 0 {
+		return 'TX ${app.tx_count}'
+	}
+	return 'TX ${app.tx_count} · ${org_tx_sim} ${app.tx_sim_count}'
+}
+
 // retract_emit takes back an emission the driver refused. The row stays and is marked: the frame
 // did not reach the wire, which is exactly what the mark says — but the pending record goes, so
 // expiry does not report it a second time.
-fn (mut app App) retract_emit(seq u64) {
+fn (mut app App) retract_emit(seq u64, origin string) {
 	app.mu.lock()
 	app.taps.forget(seq)
+	// note_emit counted it before the driver was asked, because the echo can arrive first. The
+	// driver refused, so it never reached the wire and the count must come back.
+	match origin {
+		org_tx { if app.tx_count > 0 { app.tx_count-- } }
+		org_tx_sim { if app.tx_sim_count > 0 { app.tx_sim_count-- } }
+		else {}
+	}
 	i := app.row_index_locked(seq)
 	if i >= 0 {
 		app.trace[i].missed = true
@@ -1446,7 +1476,7 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	// `wire`, not `frame`: on a backend that would carry the extra bytes (inproc, udp) sending
 	// the original makes the echo disagree with the record in the other direction.
 	t.inner.send(wire) or {
-		t.app.retract_emit(seq)
+		t.app.retract_emit(seq, t.origin)
 		// exactly the entry this send wrote, if it wrote one — not a search, and not a guess
 		// from the backend
 		t.app.unrecord(rec_id)
@@ -1581,9 +1611,8 @@ fn (mut app App) tx_on_chan(chan_name string, iface string, f transport.CanFrame
 		app.notify('TX failed: ${err}')
 		return false
 	}
-	app.mu.lock()
-	app.tx_count++
-	app.mu.unlock()
+	// The count is the tap's job (note_emit), like the row and the recording — a generator that
+	// bypasses tx_on still transmits, and used to be invisible here.
 	return true
 }
 
@@ -1593,6 +1622,7 @@ fn (mut app App) clear_trace() {
 	app.trecs = []
 	app.rx = 0
 	app.tx_count = 0
+	app.tx_sim_count = 0
 	for i in 0 .. app.chans.len {
 		app.chans[i].rx = 0
 	}
@@ -2147,8 +2177,14 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				frame: f
 			})
 		}
-		a.chans[ci].rx++
-		a.rx++
+		// Our own echo is not received traffic. The trace has not called it RX since the origin
+		// column landed — it is the TX/TX-S row that was already written at emit — so counting it
+		// here left the header claiming hundreds of RX frames above a table with no RX row in it
+		// (#105). What this counts now is what the bus brought us: everything nobody here sent.
+		if !ours {
+			a.chans[ci].rx++
+			a.rx++
+		}
 		a.mu.unlock()
 		now := time.ticks()
 		if now - a.last_wake >= a.wake_ms {
@@ -2973,7 +3009,7 @@ fn draw_toolbar(mut app App, rx u64) {
 	// Unsaved FILE-tab text counts as modified too. It lives in its own buffer, so without this
 	// the toolbar read clean while an edit sat waiting in a closed window.
 	dirtymark := if app.dirty || app.cfg_text_dirty { ' ●' } else { '' }
-	vgui.text('· RX ${rx}  TX ${app.tx_count}  ·  ${app.proj_name}${dirtymark}   ')
+	vgui.text('· RX ${rx}  ${app.tx_counts()}  ·  ${app.proj_name}${dirtymark}   ')
 	vgui.same_line()
 	if vgui.button(if app.paused { 'Resume' } else { 'Pause' }) {
 		app.paused = !app.paused
@@ -4375,7 +4411,7 @@ fn draw_stats(mut app App, chans []Chan, rx u64) {
 		vgui.end()
 		return
 	}
-	vgui.text('RX ${rx}    TX ${app.tx_count}    ${vgui.fps():.0} fps    trace ${app.trace.len}')
+	vgui.text('RX ${rx}    ${app.tx_counts()}    ${vgui.fps():.0} fps    trace ${app.trace.len}')
 	vgui.separator_text('per channel')
 	if vgui.table_begin('stats', 4) {
 		vgui.table_setup_col('channel', 90)
