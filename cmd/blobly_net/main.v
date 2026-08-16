@@ -172,7 +172,16 @@ mut:
 	paused       bool
 	recording    bool
 	rec          []canlog.LogEntry // captured while recording; written on stop
+	// What WE put on the wire, split the way the trace splits it: the tester's own sends and
+	// the simulation's are different facts, and one merged number re-collapses them in the one
+	// place a user looks first. Counted at the tap (note_emit), so every emitter counts —
+	// including the ones that never call tx_on. REP is not counted: nothing was transmitted.
 	tx_count     u64
+	tx_sim_count u64
+	// Bumped whenever the counters are zeroed. An emission carries the epoch it was counted in,
+	// so a send that fails AFTER a Clear cannot take its refund out of the new session's total
+	// (the counters are aggregates — they cannot tell whose count they are giving back).
+	tx_epoch     u64
 	logs         []string           // Log panel (status/events, newest last)
 	doip_ents    []doip.VehicleInfo // DoIP Discovery results
 	// panel visibility (View menu)
@@ -1247,7 +1256,7 @@ fn (mut app App) expire_pending_locked(now_ms f64) {
 // when it wrote none. The retract path must not guess that from the backend (a bus that normally
 // echoes also records at emit whenever no monitor is running) and must not search for it either:
 // a scan can be outrun by traffic on a busy bus.
-fn (mut app App) note_emit(iface string, chan_name string, origin string, f transport.CanFrame) (u64, u64) {
+fn (mut app App) note_emit(iface string, chan_name string, origin string, f transport.CanFrame) (u64, u64, u64) {
 	app.mu.lock()
 	// Sampled AFTER the lock. Another operation can hold app.mu for longer than the echo window
 	// — opening a large recording during a measurement, say — and a time taken before blocking
@@ -1279,6 +1288,14 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 		})
 		app.gcount[gkey(origin, chn, f.id, f.extended)]++
 	}
+	// Counted whether or not the trace is paused, and whether or not a row was written: pausing
+	// freezes the table, it does not stop the bus.
+	match origin {
+		org_tx { app.tx_count++ }
+		org_tx_sim { app.tx_sim_count++ }
+		else {} // REP never reaches a bus; RX is not ours to count here
+	}
+	epoch := app.tx_epoch
 	// ALWAYS record what we sent, on any backend that could echo — the emission is ours whether
 	// or not a monitor happens to be open at this instant, and the sim emits its first frames
 	// while the rx loops are still opening. Attributing those to the device under test breaks
@@ -1331,7 +1348,7 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 	} else {
 		app.mu.unlock()
 	}
-	return seq, if recorded_here { rec_id } else { rec_none }
+	return seq, if recorded_here { rec_id } else { rec_none }, epoch
 }
 
 
@@ -1391,12 +1408,40 @@ fn (mut app App) unrecord(rec_id u64) {
 	}
 }
 
+// tx_counts renders what we transmitted, split the way the trace's origin column splits it:
+// the tester's own sends and the simulated rest-of-bus are different facts. TX-S appears only
+// once the simulation has actually sent something, so a pure-tester session is not padded with
+// a permanent zero.
+//
+// Rendered ONCE per frame under app.mu, next to rx and the row snapshot, and passed down as a
+// string. The panels run on the UI thread while sim/generator/diagnostic workers are counting;
+// reading the two fields there would be a data race, and reading them separately could print
+// "TX-S" with a count that a concurrent Clear had already zeroed. Caller holds app.mu.
+fn (app &App) tx_counts_locked() string {
+	if app.tx_sim_count == 0 {
+		return 'TX ${app.tx_count}'
+	}
+	return 'TX ${app.tx_count} · ${org_tx_sim} ${app.tx_sim_count}'
+}
+
 // retract_emit takes back an emission the driver refused. The row stays and is marked: the frame
 // did not reach the wire, which is exactly what the mark says — but the pending record goes, so
 // expiry does not report it a second time.
-fn (mut app App) retract_emit(seq u64) {
+fn (mut app App) retract_emit(seq u64, origin string, epoch u64) {
 	app.mu.lock()
 	app.taps.forget(seq)
+	// note_emit counted it before the driver was asked, because the echo can arrive first. The
+	// driver refused, so it never reached the wire and the count must come back — but only to
+	// the session that paid for it. A driver on one interface can block across a Clear while a
+	// send on another succeeds into the fresh counters, and an unconditional decrement would
+	// take the refund out of THAT frame's count instead.
+	if epoch == app.tx_epoch {
+		match origin {
+			org_tx { if app.tx_count > 0 { app.tx_count-- } }
+			org_tx_sim { if app.tx_sim_count > 0 { app.tx_sim_count-- } }
+			else {}
+		}
+	}
 	i := app.row_index_locked(seq)
 	if i >= 0 {
 		app.trace[i].missed = true
@@ -1442,11 +1487,11 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	}
 	// BEFORE the send: a monitor thread can see the frame the instant the driver takes it, and a
 	// record added afterwards arrives too late to claim its own echo.
-	seq, rec_id := t.app.note_emit(t.iface, t.chan_name, t.origin, wire)
+	seq, rec_id, epoch := t.app.note_emit(t.iface, t.chan_name, t.origin, wire)
 	// `wire`, not `frame`: on a backend that would carry the extra bytes (inproc, udp) sending
 	// the original makes the echo disagree with the record in the other direction.
 	t.inner.send(wire) or {
-		t.app.retract_emit(seq)
+		t.app.retract_emit(seq, t.origin, epoch)
 		// exactly the entry this send wrote, if it wrote one — not a search, and not a guess
 		// from the backend
 		t.app.unrecord(rec_id)
@@ -1581,9 +1626,8 @@ fn (mut app App) tx_on_chan(chan_name string, iface string, f transport.CanFrame
 		app.notify('TX failed: ${err}')
 		return false
 	}
-	app.mu.lock()
-	app.tx_count++
-	app.mu.unlock()
+	// The count is the tap's job (note_emit), like the row and the recording — a generator that
+	// bypasses tx_on still transmits, and used to be invisible here.
 	return true
 }
 
@@ -1593,6 +1637,8 @@ fn (mut app App) clear_trace() {
 	app.trecs = []
 	app.rx = 0
 	app.tx_count = 0
+	app.tx_sim_count = 0
+	app.tx_epoch++
 	for i in 0 .. app.chans.len {
 		app.chans[i].rx = 0
 	}
@@ -2147,8 +2193,14 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				frame: f
 			})
 		}
-		a.chans[ci].rx++
-		a.rx++
+		// Our own echo is not received traffic. The trace has not called it RX since the origin
+		// column landed — it is the TX/TX-S row that was already written at emit — so counting it
+		// here left the header claiming hundreds of RX frames above a table with no RX row in it
+		// (#105). What this counts now is what the bus brought us: everything nobody here sent.
+		if !ours {
+			a.chans[ci].rx++
+			a.rx++
+		}
 		a.mu.unlock()
 		now := time.ticks()
 		if now - a.last_wake >= a.wake_ms {
@@ -2299,6 +2351,11 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	app.watch = []
 	app.fwatch = []
 	app.rx = 0
+	// A new project starts at zero on every counter. rx was reset here; the transmit counts were
+	// not, so an empty session opened after a simulated one showed the previous project's total.
+	app.tx_count = 0
+	app.tx_sim_count = 0
+	app.tx_epoch++
 	app.proj_path = path
 	app.proj_name = proj.name
 	app.proj = proj
@@ -2642,6 +2699,7 @@ fn main() {
 
 		app.mu.lock()
 		rx := app.rx
+		txs := app.tx_counts_locked()
 		rows := app.trace.clone()
 		gcount := app.gcount.clone()
 		trecs := app.trecs.clone()
@@ -2658,7 +2716,7 @@ fn main() {
 		draw_activity_bar(mut app)
 		vgui.same_line()
 		vgui.child_fill('##right')
-		draw_toolbar(mut app, rx)
+		draw_toolbar(mut app, rx, txs)
 		vgui.dockspace()
 		vgui.child_end()
 		build_layout()
@@ -2674,7 +2732,7 @@ fn main() {
 			draw_symbols(mut app)
 		}
 		if app.show_stats {
-			draw_stats(mut app, chans, rx)
+			draw_stats(mut app, chans, rx, txs)
 		}
 		if app.show_trace {
 			draw_trace(mut app, rows, gcount, rx)
@@ -2945,7 +3003,7 @@ fn draw_menubar(mut app App, rx u64) {
 
 // draw_toolbar is the button/status strip BELOW the menu bar (Start/Stop, live status,
 // Pause/Clear/Record, theme).
-fn draw_toolbar(mut app App, rx u64) {
+fn draw_toolbar(mut app App, rx u64, txs string) {
 	// breathing room below the menu bar + inset from the left edge (host has zero padding)
 	vgui.indent_y(7 * app.ui_scale)
 	vgui.indent_x(8 * app.ui_scale)
@@ -2973,7 +3031,7 @@ fn draw_toolbar(mut app App, rx u64) {
 	// Unsaved FILE-tab text counts as modified too. It lives in its own buffer, so without this
 	// the toolbar read clean while an edit sat waiting in a closed window.
 	dirtymark := if app.dirty || app.cfg_text_dirty { ' ●' } else { '' }
-	vgui.text('· RX ${rx}  TX ${app.tx_count}  ·  ${app.proj_name}${dirtymark}   ')
+	vgui.text('· RX ${rx}  ${txs}  ·  ${app.proj_name}${dirtymark}   ')
 	vgui.same_line()
 	if vgui.button(if app.paused { 'Resume' } else { 'Pause' }) {
 		app.paused = !app.paused
@@ -4368,14 +4426,14 @@ fn draw_doip(mut app App) {
 }
 
 // draw_stats: totals + per-channel RX counters.
-fn draw_stats(mut app App, chans []Chan, rx u64) {
+fn draw_stats(mut app App, chans []Chan, rx u64, txs string) {
 	vis, op := vgui.begin_closable('Statistics', app.show_stats)
 	app.show_stats = op
 	if !vis {
 		vgui.end()
 		return
 	}
-	vgui.text('RX ${rx}    TX ${app.tx_count}    ${vgui.fps():.0} fps    trace ${app.trace.len}')
+	vgui.text('RX ${rx}    ${txs}    ${vgui.fps():.0} fps    trace ${app.trace.len}')
 	vgui.separator_text('per channel')
 	if vgui.table_begin('stats', 4) {
 		vgui.table_setup_col('channel', 90)
