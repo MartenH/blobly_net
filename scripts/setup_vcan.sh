@@ -13,10 +13,17 @@
 # each other's frames, exactly like a real bus. Swapping to real hardware later is just
 # `canN` instead of `vcanN` (plus a bitrate, via setup_can_hw.sh) — no app code changes.
 #
-# On this WSL2 kernel CAN_RAW / CAN_VCAN / CAN_ISOTP are built in (=y), so NO modprobe
-# is needed — `ip link add type vcan` works directly. (A stale vcan.ko in /lib/modules
-# fails to insert and is irrelevant; ignore it.) Nothing here persists: vcan interfaces
-# die on `wsl --shutdown`, so re-run this each session.
+# WSL2 CAVEAT, verified 2026-08-17 on 6.6.87.2-microsoft-standard-WSL2: the stock kernel
+# has CONFIG_CAN=m and CONFIG_CAN_RAW=m but **CONFIG_CAN_VCAN is not set**, and no vcan.ko
+# ships — so `ip link add type vcan` fails with "Unknown device type" until the module is
+# built. docs/can_hardware.md has the recipe (a full `make LOCALVERSION=` of the matching
+# WSL2-Linux-Kernel tag; the kernel itself does not need replacing).
+#
+# This comment previously claimed CAN_RAW / CAN_VCAN / CAN_ISOTP were built in (=y) and that
+# no modprobe was needed. None of that is true on a stock kernel; it described one machine's
+# custom build, and cost a fresh setup an evening.
+#
+# Nothing here persists: vcan interfaces die on `wsl --shutdown`, so re-run this each session.
 #
 # Needs root for `ip` (scoped passwordless sudo is configured).
 set -euo pipefail

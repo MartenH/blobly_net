@@ -98,9 +98,53 @@ Interface strings would extend the `open()` dispatcher, e.g. `kvaser:0`, `pcan:U
 **FD note:** `transport.CanFrame` carries CAN-FD (`fd`/`brs`, up to 64 payload bytes), and
 **SocketCAN sends it** — the socket asks for `CAN_RAW_FD_FRAMES` at open and falls back to
 classic-only when the interface declines, so an FD send on a classic interface fails at write()
-rather than going out truncated. Verified end-to-end over the software bus (29,275 FD frames
-from a real vehicle capture, 64-byte payloads and BRS intact); the SocketCAN FD path itself is
-**not yet hardware-verified** — it needs an FD-capable interface (`ip link set vcan0 mtu 72`
-for a virtual one). The **PCAN and Kvaser backends do not**: they write classic
+rather than going out truncated. Verified end-to-end on **vcan0 at `mtu 72`**, replaying 29,275
+CAN-FD frames from a real vehicle capture: our reader saw `fd=29275 brs=29275`, 26,370 payloads
+over 8 bytes, 64-byte maximum — and `candump -x` (can-utils, an independent implementation)
+captured the same 29,275 frames with `[16]`/`[32]`/`[48]` payloads and the `B` (BRS) flag.
+Receive was checked the other way round, with `cansend vcan0 '123##1…'` decoding correctly.
+
+A virtual FD bus needs the `vcan` module, which the stock WSL2 kernel does **not** ship
+(`CONFIG_CAN_VCAN` is not set) — see the note below. The **PCAN and Kvaser backends do not**: they write classic
 frames and now refuse an FD frame outright. The PCAN Pro FD and Vector are the FD-capable
 devices, so those backends are where the remaining work is.
+
+
+## CAN on WSL2 — the kernel does not ship `vcan`
+
+The stock WSL2 kernel has `CONFIG_CAN=m` and `CONFIG_CAN_RAW=m`, but **`CONFIG_CAN_VCAN` is not
+set** and no `vcan.ko` exists, so `ip link add type vcan` cannot work and neither can any USB CAN
+driver (`peak_usb`, `kvaser_usb` are absent too). Anything needing SocketCAN — including
+`scripts/setup_vcan.sh` — fails on a stock install, whatever those scripts claim.
+
+Building just the module is enough; the kernel itself does not have to be replaced, because
+`CONFIG_MODULES=y` and there is no `MODULE_SIG_FORCE`. Three details decide whether it loads:
+
+```sh
+sudo apt install -y flex bison libssl-dev libelf-dev dwarves bc cpio
+git clone --depth 1 -b linux-msft-wsl-$(uname -r | cut -d- -f1) \
+    https://github.com/microsoft/WSL2-Linux-Kernel && cd WSL2-Linux-Kernel
+zcat /proc/config.gz > .config
+./scripts/config --module CONFIG_CAN_VCAN --module CONFIG_CAN_VXCAN
+make olddefconfig
+make LOCALVERSION= -j$(nproc)          # LOCALVERSION= is NOT optional, see below
+modinfo -F vermagic drivers/net/can/vcan.ko   # must equal `uname -r` + " SMP preempt mod_unload modversions"
+sudo modprobe can-dev && sudo insmod drivers/net/can/vcan.ko
+sudo ip link add dev vcan0 type vcan && sudo ip link set vcan0 mtu 72 && sudo ip link set up vcan0
+```
+
+- **`LOCALVERSION=`** — without it the build stamps `…-WSL2+` and `insmod` refuses the module.
+  `setlocalversion` looks for a tag named `v<KERNELVERSION>`; Microsoft's tag is
+  `linux-msft-wsl-<version>`, so it never matches and the script marks the tree "past a tag"
+  with `+`. Setting `LOCALVERSION` (even to empty) skips that suffix. `touch .scmversion` does
+  **not** work on 6.6 — that support was removed from the script.
+- **A full `make`, not `modules_prepare`** — WSL ships no `/lib/modules/$(uname -r)/build` and no
+  `Module.symvers`, and the vermagic ends in `modversions`, so the symbol CRCs have to come from
+  a real build of the tree.
+- **`cpio`** is needed by `CONFIG_IKHEADERS`. If you cannot install it,
+  `./scripts/config --disable CONFIG_IKHEADERS` is safe: it only embeds a headers tarball and
+  changes no struct layout, vermagic or symbol CRC.
+- **`mtu 72`** is what makes vcan CAN-FD capable. Nothing else is required for FD.
+
+Nothing persists across `wsl --shutdown` except the built `.ko`, so the `insmod` and `ip link`
+steps run once per session.
