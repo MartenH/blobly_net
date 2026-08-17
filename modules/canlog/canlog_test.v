@@ -132,3 +132,65 @@ fn test_a_foreign_percent_sequence_is_left_alone() {
 	assert iface_from_token(iface_token('a#b')) == 'a#b'
 	assert iface_from_token(iface_token('100% sure')) == '100% sure'
 }
+
+// candump marks CAN-FD with a second '#' and a flags digit. Without it, a recorded 64-byte frame
+// came back as a classic frame with a payload no classic frame can hold, and the FD/BRS bits
+// were gone — a recording that cannot reproduce what was captured.
+fn test_fd_frames_survive_a_candump_round_trip() {
+	mut payload := []u8{len: 64}
+	for i in 0 .. 64 {
+		payload[i] = u8(i)
+	}
+	e := LogEntry{
+		t_s:   1.5
+		iface: 'can0'
+		frame: transport.CanFrame{
+			id:       0x123
+			fd:       true
+			brs:      true
+			data:     payload
+		}
+	}
+	line := format_line(e)
+	assert line.contains('123##1'), 'got ${line[..40]}'
+	back := parse_line(line) or {
+		assert false, 'the FD line does not parse back'
+		return
+	}
+	assert back.frame.fd
+	assert back.frame.brs
+	assert back.frame.data.len == 64
+	assert back.frame.data == payload
+	assert back.frame.id == 0x123
+}
+
+// An FD frame without BRS keeps the flag digit at 0 and stays FD.
+fn test_fd_without_brs() {
+	e := LogEntry{
+		t_s:   0.25
+		iface: 'can0'
+		frame: transport.CanFrame{
+			id:   0x7FF
+			fd:   true
+			data: [u8(1), 2, 3]
+		}
+	}
+	back := parse_line(format_line(e)) or {
+		assert false, 'does not parse'
+		return
+	}
+	assert back.frame.fd
+	assert !back.frame.brs
+	assert back.frame.data == [u8(1), 2, 3]
+}
+
+// A classic line must be untouched by any of this.
+fn test_classic_lines_are_unchanged() {
+	back := parse_line('(1.000000) vcan0 100#AABB') or {
+		assert false, 'classic parse broke'
+		return
+	}
+	assert !back.frame.fd
+	assert !back.frame.brs
+	assert back.frame.data == [u8(0xAA), 0xBB]
+}

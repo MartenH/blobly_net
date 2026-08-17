@@ -59,12 +59,27 @@ pub fn parse_line(line string) ?LogEntry {
 	payload := parts[1]
 	hash := payload.index('#') or { return none }
 	idhex := payload[..hash]
-	datahex := payload[hash + 1..]
+	mut datahex := payload[hash + 1..]
 	id := hex_u32(idhex) or { return none }
 	extended := idhex.len > 3
 	mut rtr := false
+	mut fd := false
+	mut brs := false
+	// candump marks a CAN-FD frame with a SECOND '#', followed by one hex digit of flags
+	// (bit 0 = BRS, bit 1 = ESI) and then the payload: `123##1DEADBEEF…`. Without this a
+	// 64-byte frame written by the recorder read back as a classic frame with an impossible
+	// payload, and its FD and BRS bits were simply gone.
+	if datahex.len > 0 && datahex[0] == `#` {
+		fd = true
+		if datahex.len < 2 {
+			return none
+		}
+		flags := hex_u32(datahex[1..2]) or { return none }
+		brs = flags & 0x01 != 0
+		datahex = datahex[2..]
+	}
 	mut data := []u8{}
-	if datahex.len > 0 && (datahex[0] == `R` || datahex[0] == `r`) {
+	if !fd && datahex.len > 0 && (datahex[0] == `R` || datahex[0] == `r`) {
 		rtr = true
 	} else {
 		data = hex_bytes(datahex) or { return none }
@@ -76,6 +91,8 @@ pub fn parse_line(line string) ?LogEntry {
 			id:       id
 			extended: extended
 			rtr:      rtr
+			fd:       fd
+			brs:      brs
 			data:     data
 		}
 	}
@@ -101,6 +118,13 @@ pub fn load_file(path string) ![]LogEntry {
 // parse_line (modulo timestamp precision and id zero-padding).
 pub fn format_line(e LogEntry) string {
 	idhex := if e.frame.extended { '${e.frame.id:08X}' } else { '${e.frame.id:03X}' }
+	// CAN-FD takes candump's second '#' plus a flags digit, so the FD and BRS bits survive the
+	// file. Writing an FD frame in classic syntax produced a line that parsed back as a classic
+	// frame with a 64-byte payload — a frame that cannot exist, silently.
+	if e.frame.fd {
+		flags := if e.frame.brs { 1 } else { 0 }
+		return '(${e.t_s:.6f}) ${iface_token(e.iface)} ${idhex}##${flags}${bytes_hex(e.frame.data)}'
+	}
 	body := if e.frame.rtr { 'R' } else { bytes_hex(e.frame.data) }
 	return '(${e.t_s:.6f}) ${iface_token(e.iface)} ${idhex}#${body}'
 }

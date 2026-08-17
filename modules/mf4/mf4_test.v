@@ -569,8 +569,9 @@ fn test_the_inline_layout_still_reads_its_payload() {
 }
 
 // The inline layout truncates the same way: a DataLength with the high bit set makes the end of
-// the payload fall BEFORE its start, so the clamp to the record's own bytes never fires and the
-// slice is backwards. The payload is clamped to what the record actually holds.
+// the payload fall BEFORE its start, so the bounds test never fires and the slice is backwards.
+// The payload is REFUSED, not clamped — trimming it to the record boundary would return the
+// DataBytes field's padding, or the channel stored after it, as though a frame had carried it.
 fn test_a_corrupt_inline_length_costs_one_frame_not_the_process() {
 	img := build_mlsd_file([[u8(1), 2, 3, 4], [u8(5), 6, 7, 8]], [u32(0x100), 0x101],
 		[u32(0xFFFFFFF0), 4])

@@ -3,8 +3,8 @@ module transport
 #include "socketcan_shim.h"
 
 fn C.ct_can_open(&u8) int
-fn C.ct_can_send(int, u32, &u8, u8) int
-fn C.ct_can_recv(int, &u32, &u8, int) int
+fn C.ct_can_send(int, u32, &u8, u8, int, int) int
+fn C.ct_can_recv(int, &u32, &u8, int, &u8) int
 fn C.ct_can_close(int)
 fn C.strerror(int) &char
 
@@ -43,16 +43,30 @@ pub fn (mut b SocketCanBus) send(frame CanFrame) ! {
 	if frame.rtr {
 		cid |= can_rtr_flag
 	}
-	rc := C.ct_can_send(b.fd, cid, &u8(frame.data.data), u8(frame.data.len))
+	// Padded HERE, by the one table in transport.v, so every backend puts the same bytes on the
+	// wire. The C side keeps only a defensive clamp.
+	payload := if frame.fd { fd_pad(frame.data) } else { frame.data }
+	rc := C.ct_can_send(b.fd, cid, &u8(payload.data), u8(payload.len), if frame.fd {
+		1
+	} else {
+		0
+	}, if frame.brs { 1 } else { 0 })
 	if rc < 0 {
+		// EINVAL on an FD frame almost always means the interface is classic-only (the socket
+		// declined CAN_RAW_FD_FRAMES at open). Say so, rather than leaving a bare errno for
+		// somebody to decode on a bench.
+		if frame.fd {
+			return error('send FD frame on ${b.iface}: ${cerr(-rc)} (is the interface CAN-FD capable, and up?)')
+		}
 		return error('send: ${cerr(-rc)}')
 	}
 }
 
 pub fn (mut b SocketCanBus) recv(timeout_ms int) !CanFrame {
 	mut raw_id := u32(0)
-	mut buf := []u8{len: 8}
-	dlc := C.ct_can_recv(b.fd, &raw_id, &u8(buf.data), timeout_ms)
+	mut fflags := u8(0)
+	mut buf := []u8{len: 64} // an FD frame is up to 64 bytes; a classic one fills the first 8
+	dlc := C.ct_can_recv(b.fd, &raw_id, &u8(buf.data), timeout_ms, &fflags)
 	if dlc == -1 {
 		return error('timeout')
 	}
@@ -73,6 +87,8 @@ pub fn (mut b SocketCanBus) recv(timeout_ms int) !CanFrame {
 		id:       id
 		extended: ext
 		rtr:      rtr
+		fd:       fflags & 0x01 != 0
+		brs:      fflags & 0x02 != 0
 		data:     data
 	}
 }

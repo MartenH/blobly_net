@@ -53,6 +53,12 @@ pub fn open_kvaser(spec string) !&KvaserBus {
 }
 
 pub fn (mut b KvaserBus) send(f CanFrame) ! {
+	// CAN-FD is not implemented on this backend: the vendor call below writes a classic frame,
+	// so an FD frame would go out truncated and report success. Refuse — a bench that silently
+	// changes what it transmits is worse than one that stops.
+	if f.fd {
+		return error('Kvaser: CAN-FD frames are not supported by this backend yet (id 0x${f.id:X}, ${f.data.len} bytes)')
+	}
 	mut n := f.data.len
 	if n > 8 {
 		n = 8

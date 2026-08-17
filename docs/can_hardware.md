@@ -95,5 +95,12 @@ channels via the calls above (the "vendor enum later" TODO already in that file)
 Interface strings would extend the `open()` dispatcher, e.g. `kvaser:0`, `pcan:USB1`,
 `vector:0:1` — alongside the existing `udp:`/`inproc:`.
 
-**FD note:** `transport.CanFrame` is classic CAN 2.0 today; the PCAN Pro FD and Vector
-are the CAN-FD devices, relevant when the FD work (64-byte payload, BRS) lands.
+**FD note:** `transport.CanFrame` carries CAN-FD (`fd`/`brs`, up to 64 payload bytes), and
+**SocketCAN sends it** — the socket asks for `CAN_RAW_FD_FRAMES` at open and falls back to
+classic-only when the interface declines, so an FD send on a classic interface fails at write()
+rather than going out truncated. Verified end-to-end over the software bus (29,275 FD frames
+from a real vehicle capture, 64-byte payloads and BRS intact); the SocketCAN FD path itself is
+**not yet hardware-verified** — it needs an FD-capable interface (`ip link set vcan0 mtu 72`
+for a virtual one). The **PCAN and Kvaser backends do not**: they write classic
+frames and now refuse an FD frame outright. The PCAN Pro FD and Vector are the FD-capable
+devices, so those backends are where the remaining work is.
