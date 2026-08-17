@@ -48,7 +48,7 @@ For traffic with no hardware, open `projects/sim-demo.blobnet` — the simulated
 
 ```
 cmd/blobly_net/     the GUI (Dear ImGui + ImPlot)   <- the app
-cmd/*                CLI tools + smoke tests (flash, dbc_decode, mf4_dump, trace_dump, ...)
+cmd/*                CLI tools + smoke tests (flash, dbc_decode, mf4_dump, restbus, trace_dump, ...)
 libs/vgui/           the V wrapper around Dear ImGui/ImPlot
 modules/             engine (GUI-free, unit-tested)
 scripts/             setup, run, test, packaging
@@ -74,7 +74,7 @@ docs/                design + platform docs; docs/history.md = archived status l
 | `flash` | UDS firmware-download session against a blobly_emb bootloader (0x29 auth) |
 | `wiretap` | whose frame is this? — the record of what we put on the wire, matched against what comes back, so the trace's `origin` column can separate our tester (`TX`) and our simulation (`TX-S`) from the real ECU (`RX`) |
 | `sim` | simulated ECUs — tests need no hardware; `doip_entity.v` decides what a DoIP channel hosts and `doip_host.v` is the served-side handler, both shared by the GUI and the headless runner |
-| `player` | replay a recording at its recorded cadence |
+| `player` | replay a recording at its recorded cadence, and decide what NOT to replay — `restbus.v` subtracts the ECU under test by DBC sender so a capture can drive a rest bus without the SUT arguing with a recording of itself |
 | `canlog`, `mf4` | `candump -l` files; native ASAM MDF4 (`.mf4`) reader |
 | `telem` | trace + telemetry capture control |
 | `sysview` | read-only system model behind the System panel (reads blobly_emb `system.toml`) |
@@ -87,7 +87,7 @@ docs/                design + platform docs; docs/history.md = archived status l
 ```sh
 ./scripts/run_gui.sh                       # GUI
 v -path "@vlib|@vmodules|modules" run cmd/<tool>/<file>.v   # any other target
-v -enable-globals test modules/             # unit tests — the reliable backbone (32/32)
+v -enable-globals test modules/             # unit tests — the reliable backbone (48/48)
 ./scripts/runtests.sh tests/diag_basic.lua  # headless Lua integration tests (in-process sim)
 ```
 

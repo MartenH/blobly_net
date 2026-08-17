@@ -110,6 +110,29 @@ pub fn (mut p Player) seek(pos_s f64, now_ms f64) {
 	}
 }
 
+// next_due_ms is the playback-clock time the NEXT entry is due, or none when nothing is
+// pending (not playing, or the recording is exhausted and not looping).
+//
+// This is what lets a sender sleep exactly as long as the recording says to, instead of
+// polling on some chosen tick. The distinction is not cosmetic: a tick quantises every
+// message's recorded period, and real captures reach far below any sane tick — one bus here
+// repeats a frame every 0.18 ms, where even a 1 ms tick would clump five frames into a burst
+// and idle between. `due` stays tick-agnostic and correct at any rate; this makes it possible
+// to be FAITHFUL as well, without picking a constant that is wrong for the next recording.
+pub fn (p Player) next_due_ms() ?f64 {
+	if p.st != .playing || p.entries.len == 0 {
+		return none
+	}
+	if p.idx >= p.entries.len {
+		// End of a pass: the next thing due is the first entry of the next loop.
+		if !p.repeat || p.duration_s() <= 0 {
+			return none
+		}
+		return p.base_ms + p.duration_s() * 1000.0 / p.speed
+	}
+	return p.base_ms + (p.entries[p.idx].t_s - p.t0_s()) * 1000.0 / p.speed
+}
+
 // due returns every entry whose recorded offset has elapsed by playback-clock
 // now_ms, advancing past them. Returns nothing unless playing. At the end of
 // the recording it either loops (repeat, recording longer than zero) or moves

@@ -624,11 +624,38 @@ The project format accepts a replay channel:
     replay: { source: logs/drive.mf4, speed: 1.0, loop: true }
 ```
 
-**It does nothing today.** `modules/player` can decode `.log` and `.mf4`, but nothing in the app
-drives it: there is no replay worker, and `monitorable()` — which decides what gets opened when
-you press Start — accepts only `monitor` channels, so a replay channel is not even attached.
-Configuring one produces silence, not an error. Until then, treat this section as schema
+**The `.blobnet` `replay:` block still does nothing** — `monitorable()`, which decides what gets
+opened when you press Start, accepts only `monitor` channels, so a replay channel is not even
+attached. Configuring one produces silence, not an error. Treat the YAML above as schema
 documentation rather than a feature.
+
+**Headless, it works.** `cmd/restbus` replays one recorded bus onto a live one with the ECU
+under test subtracted:
+
+```sh
+v -enable-globals -path "@vlib|@vmodules|modules" run cmd/restbus/main.v \
+    --source capture.mf4 --bus CAN1 --dbc CAN01.dbc --exclude VCM_C --iface vcan0
+restbus --source capture.mf4 --list          # which buses the recording holds
+restbus ... --dry-run                        # what the subtraction would do, transmitting nothing
+```
+
+`--bus` takes either the recording's own name for a bus (`CAN1`) or the label its frames carry
+(`mf4:group25`); the name is a convenience, the label is the identity. The subtraction itself is
+in `modules/player` (`without_senders`, `on_bus`, `check_nodes`), so the GUI will not have to
+re-decide any of it.
+
+**What it does with the awkward cases**, none of which the database answers on its own:
+
+| case | what happens | why |
+|---|---|---|
+| message sent by an excluded node | withheld | the SUT is the only source of its own messages |
+| message with no transmitter in the DBC (`Vector__XXX`) | replayed; `--drop-unattributed` withholds | no safe default: replaying risks a collision, withholding risks silence. The report counts them and names the ids either way |
+| id absent from the DBC entirely | replayed | the recording proves it was on the wire; the database is one description of the bus, not the bus |
+| `--exclude` names a node the DBC does not declare | **refused, exits non-zero** | a typo subtracts nothing and looks exactly like a working rest bus |
+
+Pacing sleeps until each frame is due rather than polling on a tick, because a tick quantises
+every message's recorded period and real captures go well below one: on the recordings this was
+built against, one bus repeats a frame every **0.18 ms**.
 
 **It is tracked, not forgotten: [#98](https://github.com/MartenH/blobly_net/issues/98).** The
 point of finishing it is a rest bus driven by *a real capture from the car* rather than by

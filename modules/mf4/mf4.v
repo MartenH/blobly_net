@@ -41,6 +41,30 @@ import canlog
 // to cross-check the length against.
 const max_can_payload = u64(64)
 
+// dlc_bytes converts a CAN-FD DLC code to its payload length, or none when the code cannot be
+// resolved to one number. Codes 0..8 are the length itself. Above 8 the answer depends on the
+// frame: CAN-FD reads 9..15 as 12/16/20/24/32/48/64, while CLASSIC CAN allows the same codes and
+// means 8 for every one of them. So a DLC over 8 is only decidable with the EDL flag in hand —
+// and guessing FD there would reject perfectly good classic frames whose writer set DLC 15.
+fn dlc_bytes(dlc u64, fd bool) ?u64 {
+	if dlc <= 8 {
+		return dlc
+	}
+	if !fd {
+		return u64(8) // classic CAN: every code above 8 means 8
+	}
+	return match dlc {
+		9 { u64(12) }
+		10 { u64(16) }
+		11 { u64(20) }
+		12 { u64(24) }
+		13 { u64(32) }
+		14 { u64(48) }
+		15 { u64(64) }
+		else { none }
+	}
+}
+
 // load_file parses an .mf4 file and returns its CAN frames as canlog entries,
 // sorted by timestamp (each bus group is internally time-sorted; merging many
 // groups needs the final sort). Errors on I/O or a non-MDF file.
@@ -49,9 +73,58 @@ pub fn load_file(path string) ![]canlog.LogEntry {
 	return parse(buf)!
 }
 
+// BusInfo is one bus of a recording: the label its frames actually carry, and the name the FILE
+// gives it. They are different things and neither replaces the other. The label is what entries
+// are tagged with and what a caller filters on; the name is `cg_tx_acq_name`, free text the
+// writer chose ('CAN1', 'CAN12'), which is how a person recognises the bus but is not unique,
+// not guaranteed present, and — as these recordings show — not necessarily the name of the
+// database that decodes it. Offered so a caller can let somebody pick a bus by the name they
+// know, without that name ever becoming an identity.
+pub struct BusInfo {
+pub:
+	iface  string // the label on every entry from this bus, e.g. 'mf4:group25'
+	name   string // the recording's own name for it; '' when the file gives none
+	frames int
+}
+
+// Recording is a parsed file: its frames, and what buses they came from.
+pub struct Recording {
+pub:
+	entries []canlog.LogEntry
+	buses   []BusInfo
+}
+
+// load_recording parses a file and also reports its buses. Same work as load_file — the bus
+// list is a by-product of the one walk, not a second pass, so the two cannot disagree.
+pub fn load_recording(path string) !Recording {
+	buf := os.read_bytes(path)!
+	return parse_recording(buf)!
+}
+
 // parse reads an in-memory MDF4 image. Split out from load_file so callers/tests
 // can feed bytes directly.
 pub fn parse(buf []u8) ![]canlog.LogEntry {
+	return parse_recording(buf)!.entries
+}
+
+// tally_buses attributes a slice of freshly decoded entries to their bus labels, carrying the
+// channel group's acquisition name along. A group that produced SEVERAL labels (records carrying
+// their own BusChannel) keeps the name only where it is unambiguous: one name covering two buses
+// would be a label pretending to be an identity.
+fn tally_buses(entries []canlog.LogEntry, acq string, mut names map[string]string, mut counts map[string]int) {
+	for e in entries {
+		counts[e.iface]++
+		if existing := names[e.iface] {
+			if existing != acq {
+				names[e.iface] = '' // two different names for one label: trust neither
+			}
+		} else {
+			names[e.iface] = acq
+		}
+	}
+}
+
+fn parse_recording(buf []u8) !Recording {
 	if buf.len < 64 {
 		return error('not an MDF file (bad id block)')
 	}
@@ -65,6 +138,8 @@ pub fn parse(buf []u8) ![]canlog.LogEntry {
 	hd := block_links(buf, 64)
 	mut dg := if hd.len > 0 { hd[0] } else { u64(0) }
 	mut group := 0 // ordinal of the CAN_DataFrame group, for files without a BusChannel
+	mut bus_names := map[string]string{}
+	mut bus_counts := map[string]int{}
 	for dg != 0 {
 		dgl := block_links(buf, dg)
 		dg_data_off := data_off(buf, dg)
@@ -73,19 +148,52 @@ pub fn parse(buf []u8) ![]canlog.LogEntry {
 		data_link := if dgl.len > 2 { dgl[2] } else { u64(0) }
 		if cg_first != 0 {
 			raw := read_data_block(buf, data_link, unfin)!
+			start := out.len
 			if rec_id_size == 0 {
 				// Sorted: one CG per DG, the data block is its record stream.
 				parse_cg(buf, cg_first, raw, unfin, map[u64][]u8{}, group, mut out)!
 				group++
+				// cg_tx_acq_name is link 2. Read AFTER the decode and only over the entries it
+				// produced, so the name follows the frames rather than being guessed at.
+				cgl := block_links(buf, cg_first)
+				acq := read_tx(buf, if cgl.len > 2 { cgl[2] } else { u64(0) })
+				tally_buses(out[start..], acq, mut bus_names, mut bus_counts)
 			} else {
 				group = demux_unsorted(buf, cg_first, raw, int(rec_id_size), unfin, group, mut
 					out)!
+				// Several channel groups share this stream, so no ONE acquisition name covers
+				// the frames it produced. Counted, unnamed — better than attributing them all
+				// to whichever group happened to be first.
+				tally_buses(out[start..], '', mut bus_names, mut bus_counts)
 			}
 		}
 		dg = if dgl.len > 0 { dgl[0] } else { u64(0) }
 	}
 	out.sort(a.t_s < b.t_s)
-	return out
+	// A name that covers SEVERAL labels is not a name for any of them. One channel group whose
+	// records carry their own BusChannel produces two buses under one acquisition name, and
+	// handing that name to both would let a caller ask for a bus the file cannot single out —
+	// the label pretending to be an identity, which is the thing bus_iface exists to prevent.
+	mut labels_per_name := map[string]int{}
+	for _, nm in bus_names {
+		if nm != '' {
+			labels_per_name[nm]++
+		}
+	}
+	mut buses := []BusInfo{}
+	for iface, n in bus_counts {
+		nm := bus_names[iface] or { '' }
+		buses << BusInfo{
+			iface:  iface
+			name:   if labels_per_name[nm] > 1 { '' } else { nm }
+			frames: n
+		}
+	}
+	buses.sort(a.iface < b.iface)
+	return Recording{
+		entries: out
+		buses:   buses
+	}
 }
 
 // CgInfo is one channel group's demux key in an unsorted data group.
@@ -224,6 +332,9 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 	// capture a `tx` frame is that recorder's own traffic. Dropped until now; it is the only
 	// provenance a file can carry, and a candump has none at all.
 	c_dir := find_chan(chans, 'CAN_DataFrame.Dir') or { Chan{} }
+	// EDL — the CAN-FD flag, present only on groups that record FD. It is what makes a DLC above
+	// 8 mean anything: without it, 9..15 could be 12..64 bytes or could be plain 8.
+	c_edl := find_chan(chans, 'CAN_DataFrame.EDL') or { Chan{} }
 
 	stride := data_bytes + inval_bytes
 	if stride <= 0 {
@@ -295,8 +406,20 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 				// otherwise swallow the next entry's prefix and hand back a frame with bytes
 				// that were never its own — inventing payload is worse than dropping it, because
 				// nothing downstream can tell that it happened.
-				agrees := !len_is_bytes || n == read_uint(raw, base + c_len.byte_off,
-					int(c_len.bit_off), int(c_len.bit_count))
+				stated := read_uint(raw, base + c_len.byte_off, int(c_len.bit_off),
+					int(c_len.bit_count))
+				// What the record says the length is — DataLength states it outright, a DLC has
+				// to be decoded, and a DLC above 8 without EDL states nothing decidable at all.
+				// `none` means the record cannot contradict the prefix, so only the ceiling and
+				// the block's bounds apply. It is not a licence to accept anything.
+				expect := if len_is_bytes {
+					?u64(stated)
+				} else {
+					fd := c_edl.bit_count > 0 && read_uint(raw, base + c_edl.byte_off, int(c_edl.bit_off),
+						int(c_edl.bit_count)) == 1
+					dlc_bytes(stated, fd)
+				}
+				agrees := if want := expect { n == want } else { true }
 				if n <= max_can_payload && end <= u64(vlsd.len) && agrees {
 					data = vlsd[int(off) + 4..int(end)].clone()
 				}
@@ -304,12 +427,15 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 		} else {
 			n := read_uint(raw, base + c_len.byte_off, int(c_len.bit_off), int(c_len.bit_count))
 			dstart := u64(base + c_db.byte_off)
-			mut dend := dstart + n
-			if dend > u64(base + data_bytes) {
-				dend = u64(base + data_bytes) // the record's own bytes are the hard limit
-			}
-			if dend > dstart {
-				data = raw[int(dstart)..int(dend)].clone()
+			limit := u64(base + data_bytes)
+			// REFUSED, not clamped. A length that overruns the record is a length we cannot
+			// trust, and trimming it to the record boundary returns whatever the inline
+			// DataBytes array was padded with — or the channel stored after it — as though a
+			// frame had carried those bytes. A well-formed record never reaches this: its
+			// payload fits by construction. Inventing bytes is worse than reporting none,
+			// because only one of the two is visible downstream.
+			if n <= max_can_payload && dstart <= limit && n <= limit - dstart {
+				data = raw[int(dstart)..int(dstart + n)].clone()
 			}
 		}
 		bus_no := if c_bus.bit_count > 0 && !chan_invalid(raw, base, data_bytes, inval_bytes, c_bus) {

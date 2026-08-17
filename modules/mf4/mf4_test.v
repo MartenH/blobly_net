@@ -579,7 +579,7 @@ fn test_a_corrupt_inline_length_costs_one_frame_not_the_process() {
 		return
 	}
 	assert entries.len == 2
-	assert entries[0].frame.data.len <= 8, 'clamped to the record, not read past it'
+	assert entries[0].frame.data.len == 0, 'refused outright: a clamped length returns the record padding as payload'
 	assert entries[1].frame.data == [u8(5), 6, 7, 8], 'the good frame is unaffected'
 }
 
@@ -645,4 +645,24 @@ fn test_an_sd_block_is_a_data_block() {
 		return
 	}
 	assert got == [u8(4), 0, 0, 0, 0xDE, 0xAD, 0xBE, 0xEF]
+}
+
+// A DLC is a CODE, not a count, and above 8 it is only decodable with the CAN-FD flag: FD reads
+// 9..15 as 12/16/20/24/32/48/64, classic CAN means 8 for every one of them. Deciding it wrong in
+// either direction rejects good frames or accepts corrupt ones.
+fn test_a_dlc_code_becomes_a_length_only_when_it_can() {
+	// 0..8 need no flag at all
+	for d in u64(0) .. 9 {
+		assert dlc_bytes(d, false)? == d
+		assert dlc_bytes(d, true)? == d
+	}
+	// CAN-FD: the standard table
+	assert dlc_bytes(9, true)? == 12
+	assert dlc_bytes(13, true)? == 32
+	assert dlc_bytes(15, true)? == 64
+	// classic CAN: every code above 8 is still 8 bytes, so an FD reading would reject good frames
+	assert dlc_bytes(9, false)? == 8
+	assert dlc_bytes(15, false)? == 8
+	// out of range says nothing rather than guessing
+	assert dlc_bytes(16, true) == none
 }
