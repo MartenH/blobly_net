@@ -209,7 +209,9 @@ here exists because a silent version of it lost a review; the incidents are in
   `### 💡 Codex Review … **Reviewed commit:** \`<sha10>\``. Corrected 2026-08-17 after FIVE
   watchers in one session timed out reporting "nothing waiting" while every requested review had
   in fact landed: four rounds on net#108 and two on #109, each naming the exact head it was asked
-  about. They polled `issues/N/comments`, where this bot posts nothing at all. Match the SHA with
+  about. They polled `issues/N/comments`, where **no successful verdict is ever posted** — that
+  endpoint still carries the FAILURE notice ("Something went wrong"), so a watcher must read
+  both: the reviews for a verdict, the issue comments for a failed run to re-request. Match the SHA with
   a plain `grep -F` on the flattened body — the SHA sits inside markdown (`**Reviewed commit:**
   \`abc…\``), so a regex expecting `Reviewed commit: <sha>` finds nothing.
 - **Channels, then:** `pulls/N/reviews` (the VERDICT and its reviewed SHA) · `pulls/N/comments`
