@@ -1293,7 +1293,7 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 			name:   name
 			data:   f.data.clone()
 		})
-		app.gcount[gkey(origin, chn, f.id, f.extended)]++
+		app.gcount[gkey(origin, chn, f.id, f.extended, f.fd, f.brs)]++
 	}
 	// Counted whether or not the trace is paused, and whether or not a row was written: pausing
 	// freezes the table, it does not stop the bus.
@@ -1813,7 +1813,7 @@ fn (mut app App) load_recording(path string) {
 			data:   f.data.clone()
 			e2e:    viol
 		})
-		app.gcount[gkey(org_rep, e.iface, f.id, f.extended)]++
+		app.gcount[gkey(org_rep, e.iface, f.id, f.extended, f.fd, f.brs)]++
 	}
 	app.mu.unlock()
 	app.notify('loaded ${entries.len} frames from ${os.base(path)}')
@@ -2194,7 +2194,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				data:   f.data.clone()
 				e2e:    viol
 			})
-			a.gcount[gkey(org_rx, chname, f.id, f.extended)]++
+			a.gcount[gkey(org_rx, chname, f.id, f.extended, f.fd, f.brs)]++
 			// The capture dump now arrives as an ISO-TP block on 0x7E5 (not raw per-record
 			// frames): trace_dump_worker reassembles + decodes it on demand. The raw ISO-TP
 			// frames still show in the trace table above.
@@ -5102,6 +5102,17 @@ fn idstr(id u32, ext bool) string {
 	return if ext { '0x${id:08X}' } else { '0x${id:03X}' }
 }
 
+// kind_mark labels a frame whose KIND is not classic CAN. A 64-byte payload is obvious from the
+// data column, but an FD frame carrying eight bytes or fewer looks exactly like a classic one,
+// and BRS never shows at all — so the trace would claim a frame that was never on the bus.
+// Empty for classic, which is the overwhelming majority and needs no decoration.
+fn kind_mark(fd bool, brs bool) string {
+	if !fd {
+		return ''
+	}
+	return if brs { ' FD-BRS' } else { ' FD' }
+}
+
 // trace_pass: case-insensitive substring match over id / name / ch / dir / data.
 fn trace_pass(r TraceRow, filt string) bool {
 	if filt == '' {
@@ -5204,7 +5215,7 @@ fn draw_trace_all(id string, rows []TraceRow, filt string) {
 			// A violation is appended to the NAME rather than given a column: it is rare, and
 			// a permanently-empty column costs width on every row for the frames that are fine.
 			vgui.table_cell(trace_name_cell(r))
-			vgui.table_cell(if r.rtr { 'RTR' } else { hex(r.data) })
+			vgui.table_cell(if r.rtr { 'RTR' } else { hex(r.data) + kind_mark(r.fd, r.brs) })
 		}
 		vgui.table_end()
 	}
@@ -5216,6 +5227,8 @@ mut:
 	ch     string
 	id     u32
 	ext    bool
+	fd     bool
+	brs    bool
 	count  int
 	// Any frame in this group that never reached the wire. Taken across the whole group, not
 	// from `last`: the newest row is the one whose echo window has had least time to close, so
@@ -5227,12 +5240,15 @@ mut:
 
 // gkey is the stable per-group identity used for both the grouped-view rows and the
 // persistent all-time frame count (App.gcount). Keep in sync with draw_trace_grouped.
-fn gkey(origin string, ch string, id u32, ext bool) string {
+fn gkey(origin string, ch string, id u32, ext bool, fd bool, brs bool) string {
 	// Length-prefixed for the same reason as tx_bus_key: a channel name may contain '|', and a
 	// key that two different channels can produce merges their rows in the grouped view — with
 	// a count that silently adds them together, which is the very thing this column exists to
 	// stop. (origin is one of four fixed labels, and id/ext cannot contain a separator.)
-	return '${origin}|${ch.len}:${ch}|${id}|${ext}'
+	// fd/brs belong here for the same reason ext does: a CAN-FD frame and a classic frame with
+	// the same id are two different messages, and a key that cannot tell them apart merges their
+	// rows and adds their counts together — the exact collapse #90 was about, one field on.
+	return '${origin}|${ch.len}:${ch}|${id}|${ext}|${fd}|${brs}'
 }
 
 // origin_mark renders the wire verdict for a frame we emitted: '!' once its echo window closed
@@ -5253,8 +5269,10 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		}
 		// Grouping by ORIGIN as well as id means our simulated 0x120 and a real ECU's 0x120 are
 		// two rows, not one row with a count that quietly adds them together.
-		k := gkey(r.origin, r.ch, r.id, r.ext)
-		mut g := agg[k] or { GAgg{r.origin, r.ch, r.id, r.ext, 0, false, r, TraceRow{}} }
+		k := gkey(r.origin, r.ch, r.id, r.ext, r.fd, r.brs)
+		mut g := agg[k] or {
+			GAgg{r.origin, r.ch, r.id, r.ext, r.fd, r.brs, 0, false, r, TraceRow{}}
+		}
 		if r.missed {
 			g.missed = true
 		}
@@ -5295,14 +5313,16 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			vgui.table_next_col()
 			// ### keys the tree id on identity only, so the live label / sort don't reset it.
 			open := vgui.tree_node_table('${idstr(g.id, g.ext)}  ${trace_name_cell(r)}###${gkey(g.origin,
-				g.ch, g.id, g.ext)}')
+				g.ch, g.id, g.ext, g.fd, g.brs)}')
 			// clicking a row selects that frame (drives Signals/Graphics + "Add to filter")
 			if vgui.is_item_clicked() {
 				app.sel_id = int(g.id)
 				app.sel_ext = g.ext
 			}
 			// right-click a row → context menu (plot its signals / add to filter)
-			if vgui.begin_popup_context_item('rowctx##${gkey(g.origin, g.ch, g.id, g.ext)}') {
+			if vgui.begin_popup_context_item('rowctx##${gkey(g.origin, g.ch, g.id, g.ext, g.fd,
+				g.brs)}')
+			{
 				if m := app.find_message(g.id, g.ext) {
 					if vgui.menu_item('Add all signals to Graphics') {
 						for s in m.active_signals(r.data) {
@@ -5319,7 +5339,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			vgui.table_cell(g.ch)
 			vgui.table_cell('${g.origin}${if g.missed { '!' } else { '' }}')
 			// all-time total (survives the ring trim); fall back to the window count.
-			total := gcount[gkey(g.origin, g.ch, g.id, g.ext)] or { u64(g.count) }
+			total := gcount[gkey(g.origin, g.ch, g.id, g.ext, g.fd, g.brs)] or { u64(g.count) }
 			vgui.table_cell('${total}')
 			// data column: dim bytes that match the PREVIOUS frame of this group, normal for
 			// ones that changed (conventional change highlight). Compared against the actual prior
@@ -5330,6 +5350,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			if r.rtr {
 				vgui.text('RTR')
 			} else {
+				mark := kind_mark(r.fd, r.brs)
 				prev := g.prev.data
 				for i, b in r.data {
 					if i > 0 {
@@ -5341,6 +5362,10 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 					} else {
 						vgui.text_dim(tok) // unchanged → dimmed
 					}
+				}
+				if mark != '' {
+					vgui.same_line()
+					vgui.text_dim(mark.trim_space())
 				}
 			}
 			if open {
