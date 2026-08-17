@@ -345,6 +345,9 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 	c_edl := find_chan(chans, 'CAN_DataFrame.EDL') or { Chan{} }
 	// BRS — the data phase ran at the faster rate. Recorded per frame alongside EDL.
 	c_brs := find_chan(chans, 'CAN_DataFrame.BRS') or { Chan{} }
+	// ESI — the transmitter was error-passive. A capture that recorded a degrading bus must not
+	// replay as a healthy one, which is the whole reason the flag is carried at all.
+	c_esi := find_chan(chans, 'CAN_DataFrame.ESI') or { Chan{} }
 
 	stride := data_bytes + inval_bytes
 	if stride <= 0 {
@@ -491,6 +494,9 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 		brs := is_fd && c_brs.bit_count > 0
 			&& !chan_invalid(raw, base, data_bytes, inval_bytes, c_brs)
 			&& read_uint(raw, base + c_brs.byte_off, int(c_brs.bit_off), int(c_brs.bit_count)) == 1
+		esi := is_fd && c_esi.bit_count > 0
+			&& !chan_invalid(raw, base, data_bytes, inval_bytes, c_esi)
+			&& read_uint(raw, base + c_esi.byte_off, int(c_esi.bit_off), int(c_esi.bit_count)) == 1
 		out << canlog.LogEntry{
 			t_s:   ts
 			dir:   dir
@@ -500,6 +506,7 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 				extended: ide
 				fd:       is_fd
 				brs:      brs
+				esi:      esi
 				data:     data
 			}
 		}

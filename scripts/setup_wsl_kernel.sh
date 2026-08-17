@@ -60,14 +60,18 @@ fi
 # --- 1. build ------------------------------------------------------------------------------
 # Skipped when a module with the right vermagic already exists: rebuilding a correct one wastes
 # half an hour, and a module with the WRONG vermagic is the failure this script exists to avoid.
+# The SAME comparison the pre-insmod check uses, not just the release prefix: a module built
+# from a different .config can share the release and still differ in flags, and comparing only
+# the first field skipped the build and then failed the full check — on every retry, forever.
+WANT_VERMAGIC="$KREL SMP preempt mod_unload modversions"
 need_build=1
 if [ -f "$KO" ]; then
-	have="$(modinfo -F vermagic "$KO" 2>/dev/null | awk '{print $1}')"
-	if [ "$have" = "$KREL" ]; then
-		say "existing $KO matches the running kernel ($KREL) — skipping build"
+	have="$(modinfo -F vermagic "$KO" 2>/dev/null || true)"
+	if [ "$(echo "$have" | xargs)" = "$(echo "$WANT_VERMAGIC" | xargs)" ]; then
+		say "existing $KO matches the running kernel — skipping build"
 		need_build=0
 	else
-		say "existing module is for '$have', running kernel is '$KREL' — rebuilding"
+		say "existing module is '$have', need '$WANT_VERMAGIC' — rebuilding"
 	fi
 fi
 
@@ -138,7 +142,7 @@ fi
 if lsmod | grep -q '^vcan '; then
 	say "vcan already loaded — skipping the vermagic check"
 else
-want="$KREL SMP preempt mod_unload modversions"
+want="$WANT_VERMAGIC"
 got="$(modinfo -F vermagic "$KO")"
 if [ "$(echo "$got" | xargs)" != "$(echo "$want" | xargs)" ]; then
 	die "vermagic mismatch — insmod would refuse this module.

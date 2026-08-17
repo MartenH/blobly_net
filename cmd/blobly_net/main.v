@@ -80,8 +80,13 @@ struct TraceRow {
 	// an FD frame carrying 8 bytes or fewer is otherwise indistinguishable from a classic one,
 	// and BRS is invisible either way. The trace is the record people read back, so a row that
 	// drops these describes a frame that was never on the bus.
-	fd   bool
-	brs  bool
+	fd  bool
+	brs bool
+	// ESI is on the ROW but deliberately NOT in the group key or the echo identity: it is a
+	// received status, so keying on it would split one message into two rows the moment its
+	// transmitter went error-passive. Shown from the latest frame, which is where a reader
+	// looking for a degrading bus would look.
+	esi  bool
 	name string
 	data []u8
 	// End-to-end violation on a RECEIVED frame ('' = none, or not a protected message).
@@ -1289,6 +1294,7 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 			ext:    f.extended
 			fd:     f.fd
 			brs:    f.brs
+			esi:    f.esi
 			rtr:    f.rtr
 			name:   name
 			data:   f.data.clone()
@@ -1808,6 +1814,7 @@ fn (mut app App) load_recording(path string) {
 			ext:    f.extended
 			fd:     f.fd
 			brs:    f.brs
+			esi:    f.esi
 			rtr:    f.rtr
 			name:   name
 			data:   f.data.clone()
@@ -2189,6 +2196,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				ext:    f.extended
 				fd:     f.fd
 				brs:    f.brs
+				esi:    f.esi
 				rtr:    f.rtr
 				name:   name
 				data:   f.data.clone()
@@ -5106,11 +5114,18 @@ fn idstr(id u32, ext bool) string {
 // data column, but an FD frame carrying eight bytes or fewer looks exactly like a classic one,
 // and BRS never shows at all — so the trace would claim a frame that was never on the bus.
 // Empty for classic, which is the overwhelming majority and needs no decoration.
-fn kind_mark(fd bool, brs bool) string {
+fn kind_mark(fd bool, brs bool, esi bool) string {
 	if !fd {
 		return ''
 	}
-	return if brs { ' FD-BRS' } else { ' FD' }
+	mut m := ' FD'
+	if brs {
+		m += '-BRS'
+	}
+	if esi {
+		m += '-ESI' // the transmitter was error-passive: the reason this bit is kept at all
+	}
+	return m
 }
 
 // trace_pass: case-insensitive substring match over id / name / ch / dir / data.
@@ -5215,7 +5230,7 @@ fn draw_trace_all(id string, rows []TraceRow, filt string) {
 			// A violation is appended to the NAME rather than given a column: it is rare, and
 			// a permanently-empty column costs width on every row for the frames that are fine.
 			vgui.table_cell(trace_name_cell(r))
-			vgui.table_cell(if r.rtr { 'RTR' } else { hex(r.data) + kind_mark(r.fd, r.brs) })
+			vgui.table_cell(if r.rtr { 'RTR' } else { hex(r.data) + kind_mark(r.fd, r.brs, r.esi) })
 		}
 		vgui.table_end()
 	}
@@ -5357,7 +5372,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			if r.rtr {
 				vgui.text('RTR')
 			} else {
-				mark := kind_mark(r.fd, r.brs)
+				mark := kind_mark(r.fd, r.brs, r.esi)
 				prev := g.prev.data
 				for i, b in r.data {
 					if i > 0 {
