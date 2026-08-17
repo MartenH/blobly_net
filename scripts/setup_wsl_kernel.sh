@@ -168,8 +168,14 @@ for IFACE in "${IFACES[@]}"; do
 		sudo ip link add dev "$IFACE" type vcan
 	fi
 	# mtu 72 = CAN-FD capable (a classic vcan is 16). Real captures are half CAN-FD, and on a
-	# 16-byte interface every one of those frames fails to send.
-	sudo ip link set "$IFACE" mtu 72 || say "warning: could not set mtu 72 on $IFACE (CAN-FD frames will fail)"
+	# 16-byte interface every one of those frames fails to send. The link must be DOWN to change
+	# it — can_change_mtu() returns -EBUSY otherwise — so a re-run over an already-up classic
+	# interface warned and left it at 16. Only bounced when the MTU is actually wrong.
+	cur_mtu="$(cat /sys/class/net/$IFACE/mtu 2>/dev/null || echo 0)"
+	if [ "$cur_mtu" != "72" ]; then
+		sudo ip link set "$IFACE" down 2>/dev/null || true
+		sudo ip link set "$IFACE" mtu 72 || say "warning: could not set mtu 72 on $IFACE (CAN-FD frames will fail)"
+	fi
 	sudo ip link set up "$IFACE"
 	say "$IFACE up ($(ip -d link show "$IFACE" | grep -o 'mtu [0-9]*'))"
 done

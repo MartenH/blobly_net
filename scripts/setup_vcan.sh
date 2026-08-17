@@ -41,7 +41,15 @@ for IFACE in "${IFACES[@]}"; do
 	# MTU 72 = CAN-FD capable (a classic vcan is 16). Replaying a real capture needs it: half the
 	# buses in a vehicle log carry payloads over 8 bytes, and on a 16-byte interface every one of
 	# those sends fails. Costs nothing when only classic traffic is used.
-	sudo ip link set "$IFACE" mtu 72 || echo "[setup_vcan] warning: could not set mtu 72 on $IFACE (CAN-FD frames will fail)"
+	# MTU can only be changed while the link is DOWN — CAN's can_change_mtu() returns -EBUSY
+	# otherwise, so a re-run over an already-up classic interface warned and left it at 16, and
+	# every CAN-FD send kept failing while setup reported success. Only bounced when the MTU is
+	# actually wrong, because bringing a link down interrupts anything already using it.
+	cur_mtu="$(cat /sys/class/net/$IFACE/mtu 2>/dev/null || echo 0)"
+	if [ "$cur_mtu" != "72" ]; then
+		sudo ip link set "$IFACE" down 2>/dev/null || true
+		sudo ip link set "$IFACE" mtu 72 || echo "[setup_vcan] warning: could not set mtu 72 on $IFACE (CAN-FD frames will fail)"
+	fi
 	sudo ip link set up "$IFACE"
 	echo "[setup_vcan] $IFACE is up:"
 	ip -details -brief link show "$IFACE"
