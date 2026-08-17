@@ -205,11 +205,20 @@ here exists because a silent version of it lost a review; the incidents are in
 - **Never edit a watcher script while an instance is running.** bash reads a script
   incrementally, so the running copy executes half of the new file and dies on a comment.
   Write a new file instead.
-- **Three channels**, and the first already contains the second:
-  `pulls/N/comments` (source of truth — review-attached comments appear here too, so summing
-  both double-counts) · `pulls/N/reviews/<id>/comments` (fallback; narrowing to the latest
-  review hides earlier unhandled findings) · `issues/N/comments` (the verdict, or "Something
-  went wrong" = the review FAILED and must be re-requested, not waited on).
+- **The verdict is a REVIEW, not an issue comment** — `pulls/N/reviews`, whose body reads
+  `### 💡 Codex Review … **Reviewed commit:** \`<sha10>\``. Corrected 2026-08-17 after FIVE
+  watchers in one session timed out reporting "nothing waiting" while every requested review had
+  in fact landed: four rounds on net#108 and two on #109, each naming the exact head it was asked
+  about. They polled `issues/N/comments`, where this bot posts nothing at all. Match the SHA with
+  a plain `grep -F` on the flattened body — the SHA sits inside markdown (`**Reviewed commit:**
+  \`abc…\``), so a regex expecting `Reviewed commit: <sha>` finds nothing.
+- **Channels, then:** `pulls/N/reviews` (the VERDICT and its reviewed SHA) · `pulls/N/comments`
+  (the findings — review-attached comments appear here too, so summing with
+  `pulls/N/reviews/<id>/comments` double-counts) · `issues/N/comments` (where *you* request the
+  review; "Something went wrong" appears here when the run FAILED and must be re-requested,
+  not waited on). Review-comment ids and issue-comment ids are **different id spaces** — one
+  watcher compared a review-comment id against an issue-comment baseline, so its finding count
+  was permanently 0 and two real findings sat unread for an hour.
 - **Identify a result by head SHA prefix AND a freshness baseline.** Codex names a 10-char
   abbreviated SHA, so a 40-char compare never matches; but a retry after a failed review names
   the *same* SHA as the failure, so record the highest comment/review id first and require the
