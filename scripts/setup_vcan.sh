@@ -38,6 +38,10 @@ for IFACE in "${IFACES[@]}"; do
 		sudo ip link add dev "$IFACE" type vcan
 		echo "[setup_vcan] created $IFACE"
 	fi
+	# MTU 72 = CAN-FD capable (a classic vcan is 16). Replaying a real capture needs it: half the
+	# buses in a vehicle log carry payloads over 8 bytes, and on a 16-byte interface every one of
+	# those sends fails. Costs nothing when only classic traffic is used.
+	sudo ip link set "$IFACE" mtu 72 || echo "[setup_vcan] warning: could not set mtu 72 on $IFACE (CAN-FD frames will fail)"
 	sudo ip link set up "$IFACE"
 	echo "[setup_vcan] $IFACE is up:"
 	ip -details -brief link show "$IFACE"
