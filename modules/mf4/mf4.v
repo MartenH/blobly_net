@@ -432,7 +432,11 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 						int(c_edl.bit_count)) == 1
 					dlc_bytes(stated, fd)
 				}
-				agrees := if want := expect { n == want } else { true }
+				// `none` is NOT permission. It means the record states no resolvable length —
+				// a DLC outside 0..15 — and accepting the prefix on that basis replays a
+				// payload whose only corroboration is the damaged field itself. The inline
+				// branch refuses the identical doubt; these two must not disagree.
+				agrees := if want := expect { n == want } else { false }
 				if n <= max_can_payload && end <= u64(vlsd.len) && agrees {
 					data = vlsd[int(off) + 4..int(end)].clone()
 				}
