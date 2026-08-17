@@ -225,3 +225,47 @@ fn test_a_standard_and_an_extended_id_are_not_the_same_message() {
 	assert !kept[0].frame.extended, 'the standard frame is EBS traffic and must survive'
 	assert rep.unknown == 0, 'both ids are defined; neither should read as unknown'
 }
+
+// A DBC may declare EXTRA transmitters with BO_TX_BU_. If the SUT is one of them, matching only
+// the BO_ transmitter leaves its frames in the replay and sends them back at it — the exact
+// failure this module exists to prevent, arrived at through the half of the database nobody
+// reads.
+fn test_an_additional_transmitter_still_counts_as_the_sender() {
+	db := candb.Database{
+		nodes:    ['VCM_C', 'EBS']
+		messages: [
+			candb.Message{
+				name:     'SharedMsg'
+				id:       0x400
+				sender:   'EBS' // the BO_ line names EBS...
+				tx_nodes: ['VCM_C'] // ...and BO_TX_BU_ adds the SUT
+			},
+		]
+	}
+	kept, rep := without_senders([entry('a', 0x400, 0.0)], db, ['VCM_C'], true)
+	assert rep.withheld_excluded == 1, 'the SUT transmits this too, so it must be withheld'
+	assert kept.len == 0
+}
+
+// Filtering must not change the recording's cadence. Drop the first and last surviving frames
+// and a loop built on the leftovers plays a SHORTER recording, starts immediately, and drifts
+// against every other bus replayed alongside it.
+fn test_a_filtered_loop_keeps_the_sources_span() {
+	// source spans 0..10 s; only 1 s and 9 s survive the subtraction
+	kept := [entry('a', 1, 1.0), entry('a', 2, 9.0)]
+	mut p := player_over(kept, 0.0, 10.0)
+	p.play(0.0)
+	assert p.duration_s() == 10.0, 'the loop is the source span, got ${p.duration_s()}'
+	// the first surviving frame is due 1 s in, NOT immediately
+	assert p.due(0.0).len == 0, 'a frame at t=1s must not fire at t=0'
+	assert p.due(1000.0).len == 1
+	// and without the span it would wrongly be an 8 s loop starting at once
+	mut q := new_player(kept, 1.0, true)
+	q.play(0.0)
+	assert q.duration_s() == 8.0
+	assert q.due(0.0).len == 1
+}
+
+fn player_over(entries []canlog.LogEntry, t0 f64, end f64) Player {
+	return new_player_over(entries, 1.0, true, t0, end)
+}

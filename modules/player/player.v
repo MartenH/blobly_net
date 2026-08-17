@@ -36,6 +36,14 @@ pub mut:
 	repeat bool // loop back to the start at the end of the recording
 mut:
 	entries    []canlog.LogEntry // time-sorted
+	// The SOURCE recording's span, which is not the same as the span of what is left after
+	// filtering. Drop the SUT's messages and the first and last surviving frames may sit well
+	// inside the original window — a loop built on those plays a shorter recording, starts its
+	// first frame immediately, and drifts against every other bus replayed alongside it. Zero
+	// means "use the entries", which is right when nothing was filtered out.
+	span_t0   f64
+	span_end  f64
+	has_span  bool
 	st         State = .stopped
 	idx        int // next entry to emit (into the current pass)
 	base_ms    f64 // playback clock at which the current pass's first entry plays
@@ -54,6 +62,20 @@ pub fn new_player(entries []canlog.LogEntry, speed f64, repeat bool) Player {
 		speed:   if speed > 0 { speed } else { 1.0 }
 		repeat:  repeat
 	}
+}
+
+// new_player_over builds a Player for entries that were FILTERED out of a longer recording,
+// pinning the loop to the source's own span rather than to whatever survived. Use it whenever
+// entries have been removed: the recorded cadence belongs to the recording, not to the subset,
+// and several buses replayed together must share one origin or they drift apart.
+pub fn new_player_over(entries []canlog.LogEntry, speed f64, repeat bool, t0_s f64, end_s f64) Player {
+	mut p := new_player(entries, speed, repeat)
+	if end_s >= t0_s {
+		p.span_t0 = t0_s
+		p.span_end = end_s
+		p.has_span = true
+	}
+	return p
 }
 
 // play starts (or resumes) playback at playback-clock now_ms. From .finished
@@ -200,6 +222,9 @@ pub fn (p Player) passes() int {
 
 // t0_s is the recording's first timestamp (the zero of recording position).
 fn (p Player) t0_s() f64 {
+	if p.has_span {
+		return p.span_t0
+	}
 	if p.entries.len == 0 {
 		return 0
 	}
@@ -208,6 +233,9 @@ fn (p Player) t0_s() f64 {
 
 // duration_s is the recording's length in seconds (first to last frame).
 pub fn (p Player) duration_s() f64 {
+	if p.has_span {
+		return p.span_end - p.span_t0
+	}
 	if p.entries.len < 2 {
 		return 0
 	}

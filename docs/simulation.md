@@ -655,7 +655,20 @@ re-decide any of it.
 
 Pacing sleeps until each frame is due rather than polling on a tick, because a tick quantises
 every message's recorded period and real captures go well below one: on the recordings this was
-built against, one bus repeats a frame every **0.18 ms**.
+built against, one bus repeats a frame every **0.18 ms**. Filtering never changes the cadence —
+the loop is pinned to the *source* bus's span, so removing the SUT's frames cannot shorten a lap
+or move its origin.
+
+**CAN-FD is decoded but not yet transmittable.** `transport.CanFrame` has no FDF/BRS flag and is
+classic-sized, so an FD frame would go out truncated and be counted as sent. `restbus` refuses a
+bus carrying payloads over 8 bytes rather than silently changing what the SUT hears; `--dry-run`
+reports the share so you can see it before wiring anything up. Real captures make this concrete:
+of one vehicle's 12 databased buses, five are classic and replayable today, while six are
+majority FD (up to 100%).
+
+**Who counts as a sender.** A DBC may name additional transmitters with `BO_TX_BU_`, and the
+subtraction honours all of them — matching only the `BO_` transmitter would leave the SUT's own
+frames in the replay whenever it is the secondary sender.
 
 **It is tracked, not forgotten: [#98](https://github.com/MartenH/blobly_net/issues/98).** The
 point of finishing it is a rest bus driven by *a real capture from the car* rather than by

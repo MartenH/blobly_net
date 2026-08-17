@@ -97,12 +97,33 @@ fn main() {
 		println('  note: ${rep.unknown} frames on ${rep.unknown_ids.len} id(s) are not in the DBC at all — replayed')
 		println('        ${hex_ids(rep.unknown_ids)}')
 	}
+	fd_n := kept.filter(it.frame.data.len > 8).len
+	if fd_n > 0 {
+		pct := 100.0 * f64(fd_n) / f64(kept.len)
+		println('  CAN-FD:  ${fd_n} frames (${pct:.1f}%) carry >8 payload bytes — NOT transmittable yet')
+	}
 	if o.dry_run {
 		println('dry run: nothing transmitted')
 		return
 	}
 	if kept.len == 0 {
 		eprintln('restbus: nothing left to replay after the subtraction')
+		exit(1)
+	}
+	// CAN-FD is DECODED but cannot yet be TRANSMITTED. transport.CanFrame has no FDF/BRS flag
+	// and its payload is classic-CAN sized, so a 32-byte captured frame would go out as an
+	// 8-byte classic frame and be counted as sent. That is a silently different bus, which is
+	// worse on a bench than a refusal: the SUT would see plausible traffic that never existed.
+	fd := kept.filter(it.frame.data.len > 8)
+	if fd.len > 0 {
+		mut ids := map[u32]bool{}
+		for e in fd {
+			ids[e.frame.id] = true
+		}
+		eprintln('restbus: ${fd.len} of ${kept.len} frames carry more than 8 payload bytes (${ids.len} ids)')
+		eprintln('  This bus is CAN-FD. The transport layer has no FD frame yet, so those frames')
+		eprintln('  would be transmitted as truncated classic CAN and counted as sent.')
+		eprintln('  Refusing. Use --dry-run to inspect, or pick a bus that is classic CAN.')
 		exit(1)
 	}
 
@@ -115,7 +136,9 @@ fn main() {
 	}
 	println('transmitting on ${o.iface} at ${o.speed}x${if o.loop { ', looping' } else { '' }} — ctrl-C to stop')
 
-	mut p := player.new_player(kept, o.speed, o.loop)
+	// Over the SOURCE bus's span, not the filtered subset's: removing the SUT's frames must not
+	// shorten the loop or move its origin.
+	mut p := player.new_player_over(kept, o.speed, o.loop, on_bus[0].t_s, on_bus[on_bus.len - 1].t_s)
 	// A StopWatch, NOT time.ticks(): ticks() is whole milliseconds (and GetTickCount, ~15.6 ms,
 	// on Windows) off the wall clock. Quantising to 1 ms would defeat the sleep-until-due
 	// scheduling entirely — these recordings repeat frames every 0.18 ms — and a wall clock can

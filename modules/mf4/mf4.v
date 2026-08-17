@@ -159,12 +159,9 @@ fn parse_recording(buf []u8) !Recording {
 				acq := read_tx(buf, if cgl.len > 2 { cgl[2] } else { u64(0) })
 				tally_buses(out[start..], acq, mut bus_names, mut bus_counts)
 			} else {
+				// Tallied per channel group inside, since each has its own acquisition name.
 				group = demux_unsorted(buf, cg_first, raw, int(rec_id_size), unfin, group, mut
-					out)!
-				// Several channel groups share this stream, so no ONE acquisition name covers
-				// the frames it produced. Counted, unnamed — better than attributing them all
-				// to whichever group happened to be first.
-				tally_buses(out[start..], '', mut bus_names, mut bus_counts)
+					out, mut bus_names, mut bus_counts)!
 			}
 		}
 		dg = if dgl.len > 0 { dgl[0] } else { u64(0) }
@@ -213,7 +210,7 @@ struct CgInfo {
 // CANedge stores classic-CAN DataBytes).
 // Returns the next free group ordinal, so numbering stays unique across data groups.
 fn demux_unsorted(buf []u8, cg_first u64, raw []u8, rec_id_size int, unfin bool, group int,
-	mut out []canlog.LogEntry) !int {
+	mut out []canlog.LogEntry, mut names map[string]string, mut counts map[string]int) !int {
 	mut cgs := []CgInfo{}
 	mut cgi := cg_first
 	for cgi != 0 {
@@ -266,9 +263,15 @@ fn demux_unsorted(buf []u8, cg_first u64, raw []u8, rec_id_size int, unfin bool,
 	mut g := group
 	for c in cgs {
 		if !c.vlsd {
+			start := out.len
 			parse_cg(buf, c.link, streams[c.rec_id] or { []u8{} }, unfin, vlsd_streams, g, mut
 				out)!
 			g++
+			// Each channel group here has its OWN cg_tx_acq_name — sharing a record stream is a
+			// storage detail, not a reason to leave every bus in the file unnamed.
+			cgl := block_links(buf, c.link)
+			tally_buses(out[start..], read_tx(buf, if cgl.len > 2 { cgl[2] } else { u64(0) }), mut
+				names, mut counts)
 		}
 	}
 	return g

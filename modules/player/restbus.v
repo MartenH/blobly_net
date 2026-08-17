@@ -82,11 +82,13 @@ pub fn without_senders(entries []canlog.LogEntry, db candb.Database, exclude []s
 	// another ECU's traffic under the SUT's name, and silence is the failure this tool is least
 	// able to notice. Ids the database does not define exactly are reported as unknown instead,
 	// where a person can see them.
-	mut sender_of := map[u64]string{}
+	// EVERY declared transmitter, not just the BO_ one: a DBC may add more with BO_TX_BU_, and
+	// if the SUT is among them, matching only the first replays its own frames back at it.
+	mut senders_of := map[u64][]string{}
 	mut defined := map[u64]bool{}
 	for m in db.messages {
 		k := key(m.id, m.ext)
-		sender_of[k] = m.sender
+		senders_of[k] = m.senders()
 		defined[k] = true
 	}
 	mut kept := []canlog.LogEntry{cap: entries.len}
@@ -105,8 +107,8 @@ pub fn without_senders(entries []canlog.LogEntry, db candb.Database, exclude []s
 			kept << e
 			continue
 		}
-		sender := sender_of[k] or { '' }
-		if sender == '' {
+		senders := senders_of[k] or { []string{} }
+		if senders.len == 0 {
 			unattr[id] = true
 			unattr_n++
 			if replay_unattributed {
@@ -116,7 +118,7 @@ pub fn without_senders(entries []canlog.LogEntry, db candb.Database, exclude []s
 			}
 			continue
 		}
-		if sender in excluded {
+		if senders.any(it in excluded) {
 			withheld_excluded++
 			continue
 		}
