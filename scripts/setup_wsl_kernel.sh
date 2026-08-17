@@ -46,6 +46,12 @@ if lsmod | grep -q '^vcan '; then
 	[ "$MODE" = build ] && exit 0
 	MODE=load
 elif modinfo vcan >/dev/null 2>&1; then
+	# --build promises to leave the running system alone, so it reports and stops rather than
+	# loading anything. Without this, `--build` modprobe'd the module AND brought interfaces up.
+	if [ "$MODE" = build ]; then
+		say "this kernel SHIPS vcan — nothing to build (run without --build to load it)"
+		exit 0
+	fi
 	say "this kernel SHIPS vcan (no build needed) — loading it"
 	sudo modprobe vcan
 	MODE=load
@@ -82,6 +88,19 @@ if [ "$MODE" != load ] && [ "$need_build" = 1 ]; then
 		say "cloning $TAG (shallow) into $SRC"
 		git clone --depth 1 -b "$TAG" https://github.com/microsoft/WSL2-Linux-Kernel "$SRC" \
 			|| die "no source for tag $TAG — check https://github.com/microsoft/WSL2-Linux-Kernel/tags"
+	else
+		# WSL updates its kernel underneath you. A tree left from the previous one rebuilds the
+		# OLD source, and the module then fails the vermagic check on every retry — an
+		# "idempotent" script that can never recover. Move it to the running kernel's tag, and
+		# drop the stale .config with it (it seeds from /proc/config.gz again below).
+		have_tag="$(git -C "$SRC" describe --tags --exact-match 2>/dev/null || true)"
+		if [ "$have_tag" != "$TAG" ]; then
+			say "source tree is at '${have_tag:-unknown}', running kernel needs $TAG — refetching"
+			git -C "$SRC" fetch --depth 1 origin "refs/tags/$TAG:refs/tags/$TAG" \
+				|| die "cannot fetch $TAG into $SRC (delete it and re-run to clone afresh)"
+			git -C "$SRC" checkout -q "$TAG" || die "cannot check out $TAG in $SRC"
+			rm -f "$SRC/.config" "$SRC/include/config/kernel.release" "$SRC/include/generated/utsrelease.h"
+		fi
 	fi
 	cd "$SRC"
 

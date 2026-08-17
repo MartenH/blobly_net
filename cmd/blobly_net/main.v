@@ -5291,13 +5291,20 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		if a.origin != b.origin {
 			return if a.origin < b.origin { -1 } else { 1 }
 		}
-		return if a.ch < b.ch {
-			-1
-		} else if a.ch > b.ch {
-			1
-		} else {
-			0
+		if a.ch != b.ch {
+			return if a.ch < b.ch { -1 } else { 1 }
 		}
+		// The comparator has to separate everything the GROUP KEY separates. fd/brs joined that
+		// key, so without them two distinct rows compare equal and their order flips as the ring
+		// trims and the map is rebuilt — a table that reshuffles under a reader for no visible
+		// reason. Classic sorts before FD, and FD before FD-BRS.
+		if a.fd != b.fd {
+			return if !a.fd { -1 } else { 1 }
+		}
+		if a.brs != b.brs {
+			return if !a.brs { -1 } else { 1 }
+		}
+		return 0
 	})
 	if vgui.table_begin('gtrace', 5) {
 		vgui.table_setup_col('id / name', 210)
