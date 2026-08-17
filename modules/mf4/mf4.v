@@ -3,9 +3,13 @@
 // Targets the common automotive case: ASAM MDF exports (MDF 4.x),
 // where each bus is a "CAN_DataFrame" channel group. Handles DZ-compressed data
 // blocks (zlib deflate, incl. zip_type 1 byte-transposition), DL/HL data lists,
-// and the MLSD (Maximum Length Signal Data) payload layout where DataBytes live
-// inline in each record (length given by DataLength) — so there is no separate
-// VLSD signal-data block to chase.
+// and both payload layouts a CAN_DataFrame group can use:
+//   * MLSD (Maximum Length Signal Data) — DataBytes live inline in each record,
+//     their length given by DataLength; nothing else to chase.
+//   * VLSD (Variable Length Signal Data) — the record holds only a byte OFFSET,
+//     and the payloads live length-prefixed in a signal-data block (##SD, often
+//     reached through an HL/DL list of DZ-compressed ones). This is what Vector
+//     writes for CAN-FD, where the payload length genuinely varies per frame.
 //
 // Also reads **unfinalized** MDF ("UnFinMF " id, CANedge loggers power off
 // without finalizing): the stale cg_cycle_count is ignored (counts derive from
@@ -478,7 +482,7 @@ fn read_data_block(buf []u8, link u64, unfin bool) ![]u8 {
 	}
 	id := block_id(buf, link)
 	match id {
-		'##DT', '##DV', '##DI', '##RD' {
+		'##DT', '##DV', '##DI', '##RD', '##SD' {
 			length := binary.little_endian_u64_at(buf, int(link) + 8)
 			d := data_off(buf, link)
 			mut end := int(link) + int(length)

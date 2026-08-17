@@ -1,5 +1,6 @@
 module mf4
 
+import math
 import os
 import canlog
 
@@ -251,4 +252,193 @@ fn test_a_candump_line_has_no_direction() {
 		return
 	}
 	assert e.dir == .unknown
+}
+
+// ---- VLSD payloads held in a signal-data (##SD) block ------------------------------------
+//
+// A CAN-FD bus-logging group stores CAN_DataFrame.DataBytes as VLSD: the record carries only a
+// byte OFFSET, and the payloads live length-prefixed in a separate signal-data block. The
+// decoder could already follow that offset, but read_data_block did not recognise '##SD' and
+// failed the WHOLE file with 'unknown data block' — so a recording of this shape produced no
+// frames at all, not merely wrong payloads.
+//
+// The image is built here rather than committed: a real capture is somebody's vehicle data, and
+// the shape that matters is small enough to state exactly. Three payloads of three DIFFERENT
+// lengths, because a fixed-length inline layout would reproduce any single one of them by
+// accident — only varying length proves the offsets are really being followed.
+
+// Mdf4Builder assembles a byte-exact MDF4 image. Blocks are appended in order and their links
+// patched afterwards, which is the only way to link a block to one that does not exist yet.
+struct Mdf4Builder {
+mut:
+	buf []u8
+}
+
+fn le_bytes(v u64, n int) []u8 {
+	mut o := []u8{cap: n}
+	for i in 0 .. n {
+		o << u8(v >> (8 * i))
+	}
+	return o
+}
+
+// block appends one MDF block: common header, N zeroed links, then the data section. The 8-byte
+// alignment padding sits OUTSIDE the declared length, exactly as a real writer emits it — and
+// read_data_block's unfinalized-file heuristic reads that boundary, so getting it wrong here
+// would make the fixture lie about the format.
+fn (mut b Mdf4Builder) block(id string, nlinks int, data []u8) u64 {
+	off := u64(b.buf.len)
+	b.buf << id.bytes()
+	b.buf << []u8{len: 4}
+	b.buf << le_bytes(u64(24 + 8 * nlinks + data.len), 8)
+	b.buf << le_bytes(u64(nlinks), 8)
+	b.buf << []u8{len: 8 * nlinks}
+	b.buf << data
+	for b.buf.len % 8 != 0 {
+		b.buf << 0
+	}
+	return off
+}
+
+fn (mut b Mdf4Builder) set_link(block u64, i int, target u64) {
+	p := int(block) + 24 + 8 * i
+	for k, x in le_bytes(target, 8) {
+		b.buf[p + k] = x
+	}
+}
+
+fn (mut b Mdf4Builder) text(s string) u64 {
+	mut d := s.bytes()
+	d << 0
+	return b.block('##TX', 0, d)
+}
+
+// cn_block_data lays out a CNBLOCK data section the way collect_channels reads it.
+fn cn_block_data(cn_type u8, dtype u8, byte_off u32, bits u32) []u8 {
+	mut d := []u8{len: 72}
+	d[0] = cn_type
+	d[2] = dtype
+	for i, x in le_bytes(byte_off, 4) {
+		d[4 + i] = x
+	}
+	for i, x in le_bytes(bits, 4) {
+		d[8 + i] = x
+	}
+	return d
+}
+
+// build_vlsd_sd_file writes one sorted data group of 18-byte records:
+// time f64 @0, ID u32 @8, IDE @12, DataLength @13, DataBytes VLSD offset u32 @14.
+fn build_vlsd_sd_file(payloads [][]u8, ids []u32, exts []bool, times []f64) []u8 {
+	mut b := Mdf4Builder{}
+	// IDBLOCK: 'MDF' magic, version text, program id, then the version number — 64 bytes.
+	b.buf << 'MDF     '.bytes()
+	b.buf << '4.10    '.bytes()
+	b.buf << 'blobly  '.bytes()
+	b.buf << []u8{len: 4}
+	b.buf << le_bytes(410, 2)
+	b.buf << []u8{len: 34}
+
+	hd := b.block('##HD', 6, []u8{len: 32})
+	dg := b.block('##DG', 4, []u8{len: 8}) // rec_id_size 0 = sorted: one CG owns the stream
+	mut cg_d := []u8{len: 32}
+	for i, x in le_bytes(u64(payloads.len), 8) {
+		cg_d[8 + i] = x // cg_cycle_count
+	}
+	for i, x in le_bytes(18, 4) {
+		cg_d[24 + i] = x // cg_data_bytes; cg_inval_bytes stays 0
+	}
+	cg := b.block('##CG', 6, cg_d)
+
+	cn_t := b.block('##CN', 8, cn_block_data(2, 4, 0, 64)) // master, float64 seconds
+	cn_fr := b.block('##CN', 8, cn_block_data(0, 10, 8, 0)) // CAN_DataFrame, a composed struct
+	cn_id := b.block('##CN', 8, cn_block_data(0, 0, 8, 32))
+	cn_ide := b.block('##CN', 8, cn_block_data(0, 0, 12, 1))
+	cn_len := b.block('##CN', 8, cn_block_data(0, 0, 13, 8))
+	cn_db := b.block('##CN', 8, cn_block_data(1, 10, 14, 32)) // cn_type 1 = VLSD
+
+	tx_t := b.text('time')
+	tx_fr := b.text('CAN_DataFrame')
+	tx_id := b.text('CAN_DataFrame.ID')
+	tx_ide := b.text('CAN_DataFrame.IDE')
+	tx_len := b.text('CAN_DataFrame.DataLength')
+	tx_db := b.text('CAN_DataFrame.DataBytes')
+
+	// The signal-data block: each payload prefixed by its u32 length, offsets noted as we go.
+	mut sd := []u8{}
+	mut offs := []u32{}
+	for p in payloads {
+		offs << u32(sd.len)
+		sd << le_bytes(u64(p.len), 4)
+		sd << p
+	}
+	sd_block := b.block('##SD', 0, sd)
+
+	mut recs := []u8{}
+	for i, p in payloads {
+		recs << le_bytes(math.f64_bits(times[i]), 8)
+		recs << le_bytes(u64(ids[i]), 4)
+		recs << u8(if exts[i] { 1 } else { 0 })
+		recs << u8(p.len)
+		recs << le_bytes(u64(offs[i]), 4)
+	}
+	dt := b.block('##DT', 0, recs)
+
+	b.set_link(hd, 0, dg)
+	b.set_link(dg, 1, cg)
+	b.set_link(dg, 2, dt)
+	b.set_link(cg, 1, cn_t)
+	b.set_link(cn_t, 0, cn_fr)
+	b.set_link(cn_t, 2, tx_t)
+	b.set_link(cn_fr, 1, cn_id) // cn_composition: the sub-channel chain
+	b.set_link(cn_fr, 2, tx_fr)
+	b.set_link(cn_id, 0, cn_ide)
+	b.set_link(cn_id, 2, tx_id)
+	b.set_link(cn_ide, 0, cn_len)
+	b.set_link(cn_ide, 2, tx_ide)
+	b.set_link(cn_len, 0, cn_db)
+	b.set_link(cn_len, 2, tx_len)
+	b.set_link(cn_db, 2, tx_db)
+	b.set_link(cn_db, 5, sd_block) // cn_data: where the payloads actually live
+	return b.buf
+}
+
+fn test_vlsd_payloads_are_read_from_the_sd_block() {
+	payloads := [
+		[u8(0x11), 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88],
+		[u8(0xAA), 0xBB, 0xCC],
+		[u8(1), 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+	]
+	img := build_vlsd_sd_file(payloads, [u32(0x123), 0x1ABCDEF, 0x456], [false, true, false],
+		[0.001, 0.002, 0.003])
+	entries := parse(img) or {
+		assert false, 'parse failed: ${err}'
+		return
+	}
+	assert entries.len == 3, 'got ${entries.len} frames'
+	assert entries[0].frame.id == 0x123
+	assert !entries[0].frame.extended
+	assert entries[0].frame.data == payloads[0]
+	assert entries[1].frame.id == 0x1ABCDEF
+	assert entries[1].frame.extended, 'the IDE channel says this one is 29-bit'
+	assert entries[1].frame.data == payloads[1]
+	// 16 bytes: a CAN-FD payload, and the length no fixed inline layout could have produced
+	assert entries[2].frame.data == payloads[2]
+	assert entries[2].frame.data.len == 16
+	// timestamps survive the trip, so the frames stay in their recorded order
+	assert math.abs(entries[0].t_s - 0.001) < 1e-9
+	assert math.abs(entries[2].t_s - 0.003) < 1e-9
+}
+
+// The failure this fixes was total, not partial: before '##SD' was recognised the whole file
+// errored out. Guard the error path itself so a future refactor cannot quietly restore it.
+fn test_an_sd_block_is_a_data_block() {
+	mut b := Mdf4Builder{}
+	b.buf << []u8{len: 64} // stand-in id block; read_data_block is reached by offset, not magic
+	sd := b.block('##SD', 0, [u8(4), 0, 0, 0, 0xDE, 0xAD, 0xBE, 0xEF])
+	got := read_data_block(b.buf, sd, false) or {
+		assert false, 'read_data_block rejected an SD block: ${err}'
+		return
+	}
+	assert got == [u8(4), 0, 0, 0, 0xDE, 0xAD, 0xBE, 0xEF]
 }
