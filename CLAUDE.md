@@ -204,7 +204,15 @@ here exists because a silent version of it lost a review; the incidents are in
   `gsub("\n";" ")` it into one line, id-prefixed, and take the highest id.
 - **Never edit a watcher script while an instance is running.** bash reads a script
   incrementally, so the running copy executes half of the new file and dies on a comment.
-  Write a new file instead.
+  Write a new file instead. Done anyway on 2026-08-17, and the crash was worse than losing the
+  watcher: bash exits **2** on a syntax error, which the script also used for "the review
+  FAILED" — so a watcher killed by my own edit reported a review failure that never happened,
+  and the next step would have been re-requesting a review that was fine. **Give a crash and a
+  real failure different exit codes**; anything a shell can produce by accident cannot also
+  mean something.
+- **A "review failed" scan needs its own baseline.** Matching "Something went wrong" anywhere in
+  `issues/N/comments` fires forever once a single review has ever failed — compare the comment
+  id against the baseline recorded at re-request, exactly as the verdict match does.
 - **The verdict is a REVIEW, not an issue comment** — `pulls/N/reviews`, whose body reads
   `### 💡 Codex Review … **Reviewed commit:** \`<sha10>\``. Corrected 2026-08-17 after FIVE
   watchers in one session timed out reporting "nothing waiting" while every requested review had
