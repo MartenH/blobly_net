@@ -430,6 +430,153 @@ fn test_vlsd_payloads_are_read_from_the_sd_block() {
 	assert math.abs(entries[2].t_s - 0.003) < 1e-9
 }
 
+// find_block locates a block by id. Blocks are 8-byte aligned, so the scan can step by 8.
+fn find_block(buf []u8, id string) int {
+	for i := 64; i + 4 <= buf.len; i += 8 {
+		if buf[i..i + 4].bytestr() == id {
+			return i
+		}
+	}
+	return -1
+}
+
+// A corrupt VLSD offset must cost its own frame and nothing else. 0xFFFFFFF0 is the case that
+// matters: read as a signed int it turns NEGATIVE, so an `off + 4 <= len` test passes and the
+// slice that follows starts before the array — which aborts the whole process. That is reachable
+// on real files, because an unfinalized recording's last block is deliberately extended to the
+// end of the file and the trailing filler is decoded as records.
+fn test_a_corrupt_vlsd_offset_costs_one_frame_not_the_process() {
+	payloads := [[u8(1), 2, 3, 4], [u8(5), 6]]
+	mut img := build_vlsd_sd_file(payloads, [u32(0x100), 0x101], [false, false], [0.001, 0.002])
+	dt := find_block(img, '##DT')
+	assert dt > 0, 'fixture has no DT block'
+	rec1 := dt + 24 + 18 // past the common header (no links) and the first record
+	for k, x in le_bytes(0xFFFFFFF0, 4) {
+		img[rec1 + 14 + k] = x // the DataBytes offset field
+	}
+	entries := parse(img) or {
+		assert false, 'a malformed offset must be skipped, not fail the file: ${err}'
+		return
+	}
+	assert entries.len == 2
+	assert entries[0].frame.data == payloads[0], 'the good frame is unaffected'
+	assert entries[1].frame.data.len == 0, 'the unreadable payload is empty, not invented'
+}
+
+// The same truncation on the length prefix INSIDE the signal-data block: a high-bit length makes
+// `off + 4 + n` negative, so the end-bounds test passes and the slice ends before it starts.
+fn test_a_corrupt_vlsd_length_prefix_costs_one_frame_not_the_process() {
+	payloads := [[u8(1), 2, 3, 4], [u8(5), 6]]
+	mut img := build_vlsd_sd_file(payloads, [u32(0x100), 0x101], [false, false], [0.001, 0.002])
+	sd := find_block(img, '##SD')
+	assert sd > 0, 'fixture has no SD block'
+	for k, x in le_bytes(0xFFFFFFF8, 4) {
+		img[sd + 24 + k] = x // the FIRST payload's length prefix
+	}
+	entries := parse(img) or {
+		assert false, 'a malformed length must be skipped, not fail the file: ${err}'
+		return
+	}
+	assert entries.len == 2
+	assert entries[0].frame.data.len == 0
+	assert entries[1].frame.data == payloads[1], 'the good frame is unaffected'
+}
+
+// build_mlsd_file is the OTHER payload layout: DataBytes inline in the record, its length in a
+// 32-bit DataLength field. Records are 25 bytes: time f64 @0, ID @8, IDE @12, DataLength @13,
+// DataBytes @17.
+fn build_mlsd_file(payloads [][]u8, ids []u32, lengths []u32) []u8 {
+	mut b := Mdf4Builder{}
+	b.buf << 'MDF     '.bytes()
+	b.buf << '4.10    '.bytes()
+	b.buf << 'blobly  '.bytes()
+	b.buf << []u8{len: 4}
+	b.buf << le_bytes(410, 2)
+	b.buf << []u8{len: 34}
+
+	hd := b.block('##HD', 6, []u8{len: 32})
+	dg := b.block('##DG', 4, []u8{len: 8})
+	mut cg_d := []u8{len: 32}
+	for i, x in le_bytes(u64(payloads.len), 8) {
+		cg_d[8 + i] = x
+	}
+	for i, x in le_bytes(25, 4) {
+		cg_d[24 + i] = x
+	}
+	cg := b.block('##CG', 6, cg_d)
+
+	cn_t := b.block('##CN', 8, cn_block_data(2, 4, 0, 64))
+	cn_fr := b.block('##CN', 8, cn_block_data(0, 10, 8, 0))
+	cn_id := b.block('##CN', 8, cn_block_data(0, 0, 8, 32))
+	cn_ide := b.block('##CN', 8, cn_block_data(0, 0, 12, 1))
+	cn_len := b.block('##CN', 8, cn_block_data(0, 0, 13, 32))
+	cn_db := b.block('##CN', 8, cn_block_data(5, 10, 17, 64)) // cn_type 5 = MLSD, inline
+
+	tx_t := b.text('time')
+	tx_fr := b.text('CAN_DataFrame')
+	tx_id := b.text('CAN_DataFrame.ID')
+	tx_ide := b.text('CAN_DataFrame.IDE')
+	tx_len := b.text('CAN_DataFrame.DataLength')
+	tx_db := b.text('CAN_DataFrame.DataBytes')
+
+	mut recs := []u8{}
+	for i, p in payloads {
+		recs << le_bytes(math.f64_bits(0.001 * f64(i + 1)), 8)
+		recs << le_bytes(u64(ids[i]), 4)
+		recs << u8(0)
+		recs << le_bytes(u64(lengths[i]), 4) // stated length, which need not match the bytes
+		mut pad := p.clone()
+		for pad.len < 8 {
+			pad << 0
+		}
+		recs << pad[..8]
+	}
+	dt := b.block('##DT', 0, recs)
+
+	b.set_link(hd, 0, dg)
+	b.set_link(dg, 1, cg)
+	b.set_link(dg, 2, dt)
+	b.set_link(cg, 1, cn_t)
+	b.set_link(cn_t, 0, cn_fr)
+	b.set_link(cn_t, 2, tx_t)
+	b.set_link(cn_fr, 1, cn_id)
+	b.set_link(cn_fr, 2, tx_fr)
+	b.set_link(cn_id, 0, cn_ide)
+	b.set_link(cn_id, 2, tx_id)
+	b.set_link(cn_ide, 0, cn_len)
+	b.set_link(cn_ide, 2, tx_ide)
+	b.set_link(cn_len, 0, cn_db)
+	b.set_link(cn_len, 2, tx_len)
+	b.set_link(cn_db, 2, tx_db)
+	return b.buf
+}
+
+fn test_the_inline_layout_still_reads_its_payload() {
+	img := build_mlsd_file([[u8(0xDE), 0xAD, 0xBE, 0xEF]], [u32(0x321)], [u32(4)])
+	entries := parse(img) or {
+		assert false, 'parse failed: ${err}'
+		return
+	}
+	assert entries.len == 1
+	assert entries[0].frame.id == 0x321
+	assert entries[0].frame.data == [u8(0xDE), 0xAD, 0xBE, 0xEF]
+}
+
+// The inline layout truncates the same way: a DataLength with the high bit set makes the end of
+// the payload fall BEFORE its start, so the clamp to the record's own bytes never fires and the
+// slice is backwards. The payload is clamped to what the record actually holds.
+fn test_a_corrupt_inline_length_costs_one_frame_not_the_process() {
+	img := build_mlsd_file([[u8(1), 2, 3, 4], [u8(5), 6, 7, 8]], [u32(0x100), 0x101],
+		[u32(0xFFFFFFF0), 4])
+	entries := parse(img) or {
+		assert false, 'a malformed length must be skipped, not fail the file: ${err}'
+		return
+	}
+	assert entries.len == 2
+	assert entries[0].frame.data.len <= 8, 'clamped to the record, not read past it'
+	assert entries[1].frame.data == [u8(5), 6, 7, 8], 'the good frame is unaffected'
+}
+
 // The failure this fixes was total, not partial: before '##SD' was recognised the whole file
 // errored out. Guard the error path itself so a future refactor cannot quietly restore it.
 fn test_an_sd_block_is_a_data_block() {

@@ -265,23 +265,31 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 		}
 		ts := t_off + t_factor * raw_t
 		mut data := []u8{}
+		// Both payload lookups stay UNSIGNED. The offset and the two length fields are u32 on
+		// the wire, and a corrupt one — 0xFFFFFFF0, or the unwritten filler an unfinalized
+		// file's extended last block decodes as records — becomes NEGATIVE as a signed int.
+		// The bounds tests then pass (a negative start is `<=` anything) and the slice runs off
+		// the front of the array, which aborts the process instead of skipping one bad record.
+		// A malformed file must cost its frame, not the measurement.
 		if is_vlsd {
-			off := int(read_uint(raw, base + c_db.byte_off, int(c_db.bit_off), int(c_db.bit_count)))
-			if off + 4 <= vlsd.len {
-				n := int(binary.little_endian_u32_at(vlsd, off))
+			off := read_uint(raw, base + c_db.byte_off, int(c_db.bit_off), int(c_db.bit_count))
+			if off + 4 <= u64(vlsd.len) {
+				n := u64(binary.little_endian_u32_at(vlsd, int(off)))
 				end := off + 4 + n
-				if end <= vlsd.len {
-					data = vlsd[off + 4..end].clone()
+				if end <= u64(vlsd.len) {
+					data = vlsd[int(off) + 4..int(end)].clone()
 				}
 			}
 		} else {
-			n := int(read_uint(raw, base + c_len.byte_off, int(c_len.bit_off), int(c_len.bit_count)))
-			dstart := base + c_db.byte_off
+			n := read_uint(raw, base + c_len.byte_off, int(c_len.bit_off), int(c_len.bit_count))
+			dstart := u64(base + c_db.byte_off)
 			mut dend := dstart + n
-			if dend > base + data_bytes {
-				dend = base + data_bytes
+			if dend > u64(base + data_bytes) {
+				dend = u64(base + data_bytes) // the record's own bytes are the hard limit
 			}
-			data = raw[dstart..dend].clone()
+			if dend > dstart {
+				data = raw[int(dstart)..int(dend)].clone()
+			}
 		}
 		bus_no := if c_bus.bit_count > 0 && !chan_invalid(raw, base, data_bytes, inval_bytes, c_bus) {
 			int(read_uint(raw, base + c_bus.byte_off, int(c_bus.bit_off), int(c_bus.bit_count)))
