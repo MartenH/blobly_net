@@ -117,8 +117,18 @@ set** and no `vcan.ko` exists, so `ip link add type vcan` cannot work and neithe
 driver (`peak_usb`, `kvaser_usb` are absent too). Anything needing SocketCAN — including
 `scripts/setup_vcan.sh` — fails on a stock install, whatever those scripts claim.
 
-Building just the module is enough; the kernel itself does not have to be replaced, because
-`CONFIG_MODULES=y` and there is no `MODULE_SIG_FORCE`. Three details decide whether it loads:
+**`scripts/setup_wsl_kernel.sh` does all of this**, and is idempotent — it exits early when vcan
+already works, skips the build when a module with the right vermagic is already there, and only
+the load steps run on later sessions:
+
+```sh
+./scripts/setup_wsl_kernel.sh          # build if needed, load, bring up vcan0/vcan1 at mtu 72
+./scripts/setup_wsl_kernel.sh --build  # build only, touch nothing on the running system
+```
+
+By hand, or to understand what the script does: building just the module is enough — the kernel
+itself does not have to be replaced, because `CONFIG_MODULES=y` and there is no
+`MODULE_SIG_FORCE`. Three details decide whether it loads:
 
 ```sh
 sudo apt install -y flex bison libssl-dev libelf-dev dwarves bc cpio

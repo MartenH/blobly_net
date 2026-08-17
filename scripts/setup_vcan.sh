@@ -16,8 +16,8 @@
 # WSL2 CAVEAT, verified 2026-08-17 on 6.6.87.2-microsoft-standard-WSL2: the stock kernel
 # has CONFIG_CAN=m and CONFIG_CAN_RAW=m but **CONFIG_CAN_VCAN is not set**, and no vcan.ko
 # ships — so `ip link add type vcan` fails with "Unknown device type" until the module is
-# built. docs/can_hardware.md has the recipe (a full `make LOCALVERSION=` of the matching
-# WSL2-Linux-Kernel tag; the kernel itself does not need replacing).
+# built: run `./scripts/setup_wsl_kernel.sh`, which does it and is idempotent.
+# docs/can_hardware.md explains why each step is needed.
 #
 # This comment previously claimed CAN_RAW / CAN_VCAN / CAN_ISOTP were built in (=y) and that
 # no modprobe was needed. None of that is true on a stock kernel; it described one machine's
