@@ -221,6 +221,11 @@ here exists because a silent version of it lost a review; the incidents are in
   not waited on). Review-comment ids and issue-comment ids are **different id spaces** — one
   watcher compared a review-comment id against an issue-comment baseline, so its finding count
   was permanently 0 and two real findings sat unread for an hour.
+- **Findings can arrive in the review BODY, not only as inline comments.** A round whose body
+  carries a `P1`/`P2` badge or a `/blob/<sha>/file#L…` link is NOT clean, however many inline
+  comments it has — net#109 round 7 had exactly one finding, in the body, with zero inline
+  comments, and a watcher counting only comments reported "clean". Test the body for a badge or
+  a source link before believing a zero.
 - **Identify a result by head SHA prefix AND a freshness baseline.** Codex names a 10-char
   abbreviated SHA, so a 40-char compare never matches; but a retry after a failed review names
   the *same* SHA as the failure, so record the highest comment/review id first and require the
