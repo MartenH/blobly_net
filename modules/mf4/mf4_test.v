@@ -330,6 +330,12 @@ fn cn_block_data(cn_type u8, dtype u8, byte_off u32, bits u32) []u8 {
 // build_vlsd_sd_file writes one sorted data group of 18-byte records:
 // time f64 @0, ID u32 @8, IDE @12, DataLength @13, DataBytes VLSD offset u32 @14.
 fn build_vlsd_sd_file(payloads [][]u8, ids []u32, exts []bool, times []f64) []u8 {
+	return build_vlsd_sd_file_w(payloads, ids, exts, times, 32)
+}
+
+// off_bits is the declared width of the VLSD offset field: real writers use 32, the format
+// permits 64, and the difference decides whether an offset can overflow its own bounds check.
+fn build_vlsd_sd_file_w(payloads [][]u8, ids []u32, exts []bool, times []f64, off_bits int) []u8 {
 	mut b := Mdf4Builder{}
 	// IDBLOCK: 'MDF' magic, version text, program id, then the version number — 64 bytes.
 	b.buf << 'MDF     '.bytes()
@@ -345,7 +351,7 @@ fn build_vlsd_sd_file(payloads [][]u8, ids []u32, exts []bool, times []f64) []u8
 	for i, x in le_bytes(u64(payloads.len), 8) {
 		cg_d[8 + i] = x // cg_cycle_count
 	}
-	for i, x in le_bytes(18, 4) {
+	for i, x in le_bytes(u64(14 + off_bits / 8), 4) {
 		cg_d[24 + i] = x // cg_data_bytes; cg_inval_bytes stays 0
 	}
 	cg := b.block('##CG', 6, cg_d)
@@ -355,7 +361,7 @@ fn build_vlsd_sd_file(payloads [][]u8, ids []u32, exts []bool, times []f64) []u8
 	cn_id := b.block('##CN', 8, cn_block_data(0, 0, 8, 32))
 	cn_ide := b.block('##CN', 8, cn_block_data(0, 0, 12, 1))
 	cn_len := b.block('##CN', 8, cn_block_data(0, 0, 13, 8))
-	cn_db := b.block('##CN', 8, cn_block_data(1, 10, 14, 32)) // cn_type 1 = VLSD
+	cn_db := b.block('##CN', 8, cn_block_data(1, 10, 14, u32(off_bits))) // cn_type 1 = VLSD
 
 	tx_t := b.text('time')
 	tx_fr := b.text('CAN_DataFrame')
@@ -380,7 +386,7 @@ fn build_vlsd_sd_file(payloads [][]u8, ids []u32, exts []bool, times []f64) []u8
 		recs << le_bytes(u64(ids[i]), 4)
 		recs << u8(if exts[i] { 1 } else { 0 })
 		recs << u8(p.len)
-		recs << le_bytes(u64(offs[i]), 4)
+		recs << le_bytes(u64(offs[i]), off_bits / 8)
 	}
 	dt := b.block('##DT', 0, recs)
 
@@ -450,7 +456,7 @@ fn test_a_corrupt_vlsd_offset_costs_one_frame_not_the_process() {
 	mut img := build_vlsd_sd_file(payloads, [u32(0x100), 0x101], [false, false], [0.001, 0.002])
 	dt := find_block(img, '##DT')
 	assert dt > 0, 'fixture has no DT block'
-	rec1 := dt + 24 + 18 // past the common header (no links) and the first record
+	rec1 := dt + 24 + 18 // past the common header (no links) and the first 18-byte record
 	for k, x in le_bytes(0xFFFFFFF0, 4) {
 		img[rec1 + 14 + k] = x // the DataBytes offset field
 	}
@@ -575,6 +581,57 @@ fn test_a_corrupt_inline_length_costs_one_frame_not_the_process() {
 	assert entries.len == 2
 	assert entries[0].frame.data.len <= 8, 'clamped to the record, not read past it'
 	assert entries[1].frame.data == [u8(5), 6, 7, 8], 'the good frame is unaffected'
+}
+
+// The offset field's WIDTH is the file's to declare, not ours to assume. At 64 bits a corrupt
+// 0xFFFF_FFFF_FFFF_FFFF makes `off + 4` wrap to 3, so a bounds test written as an addition
+// passes on the wrapped value and `int(off)` is then negative.
+//
+// HONEST LIMIT OF THIS TEST: it does NOT fail against the addition form, and was checked. The
+// negative index lands in `little_endian_u32_at`, which is @[direct_array_access] — so it reads
+// out of bounds and returns whatever was there rather than panicking, and that garbage length
+// is then rejected by the checks below. The defect is the out-of-bounds read itself, which is
+// undefined behaviour no assertion can pin down; what this test pins down is the outcome that
+// must hold either way — the file parses, and the bad record yields no payload.
+fn test_a_64_bit_vlsd_offset_cannot_overflow_its_bounds_check() {
+	payloads := [[u8(1), 2, 3, 4], [u8(5), 6]]
+	mut img := build_vlsd_sd_file_w(payloads, [u32(0x100), 0x101], [false, false], [0.001, 0.002],
+		64)
+	dt := find_block(img, '##DT')
+	assert dt > 0, 'fixture has no DT block'
+	rec1 := dt + 24 + (14 + 8) // past the header and the first record
+	for k in 0 .. 8 {
+		img[rec1 + 14 + k] = 0xFF
+	}
+	entries := parse(img) or {
+		assert false, 'a wrapped offset must be skipped, not fail the file: ${err}'
+		return
+	}
+	assert entries.len == 2
+	assert entries[0].frame.data == payloads[0], 'the good frame is unaffected'
+	assert entries[1].frame.data.len == 0
+}
+
+// A damaged length prefix that still lands INSIDE the block passes every bounds test, and the
+// copy then runs on into the next entry — handing back a frame carrying bytes that were never
+// its own. That is worse than dropping the payload, because nothing downstream can tell it
+// happened. The record's own DataLength says what the length must be, so it is checked.
+fn test_an_sd_prefix_that_contradicts_the_record_is_refused() {
+	payloads := [[u8(1), 2, 3, 4], [u8(9), 9, 9, 9]]
+	mut img := build_vlsd_sd_file(payloads, [u32(0x100), 0x101], [false, false], [0.001, 0.002])
+	sd := find_block(img, '##SD')
+	assert sd > 0, 'fixture has no SD block'
+	// 4 -> 8 stays inside the block, and would swallow the next entry's prefix and its bytes
+	for k, x in le_bytes(8, 4) {
+		img[sd + 24 + k] = x
+	}
+	entries := parse(img) or {
+		assert false, '${err}'
+		return
+	}
+	assert entries.len == 2
+	assert entries[0].frame.data.len == 0, 'invented bytes from the following entry'
+	assert entries[1].frame.data == payloads[1], 'the good frame is unaffected'
 }
 
 // The failure this fixes was total, not partial: before '##SD' was recognised the whole file

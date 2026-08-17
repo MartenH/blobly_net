@@ -36,6 +36,11 @@ import math
 import transport
 import canlog
 
+// A CAN or CAN-FD frame carries at most 64 payload bytes, whatever a damaged length field in
+// the file claims. The ceiling holds for every writer, so it applies even where there is nothing
+// to cross-check the length against.
+const max_can_payload = u64(64)
+
 // load_file parses an .mf4 file and returns its CAN frames as canlog entries,
 // sorted by timestamp (each bus group is internally time-sorted; merging many
 // groups needs the final sort). Errors on I/O or a non-MDF file.
@@ -198,6 +203,11 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 	c_len := find_chan(chans, 'CAN_DataFrame.DataLength') or {
 		find_chan(chans, 'CAN_DataFrame.DLC') or { return }
 	}
+	// Whether that channel counts BYTES. DataLength does; DLC is the wire code, and above 8 the
+	// two part company — a CAN-FD DLC of 15 means 64 bytes. Only the byte count can be compared
+	// against a payload length, so a file carrying just DLC gets the ceiling check and not the
+	// agreement check.
+	len_is_bytes := c_len.name == 'CAN_DataFrame.DataLength'
 	// The time master is identified by cn_type==2, not its name (Vector calls it
 	// 't', python-can 'time'); fall back to a 't' lookup just in case.
 	c_t := find_master(chans) or { find_chan(chans, 't') or { Chan{} } }
@@ -273,10 +283,21 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 		// A malformed file must cost its frame, not the measurement.
 		if is_vlsd {
 			off := read_uint(raw, base + c_db.byte_off, int(c_db.bit_off), int(c_db.bit_count))
-			if off + 4 <= u64(vlsd.len) {
+			// SUBTRACTION, never `off + 4`: the offset field's width is declared by the file, and
+			// a 64-bit one holding 0xFFFF_FFFF_FFFF_FFFF makes `off + 4` wrap to 3. The bounds
+			// test would pass on the wrapped value and int(off) would go negative — the same
+			// abort as reading it signed, arrived at from the other end.
+			if u64(vlsd.len) >= 4 && off <= u64(vlsd.len) - 4 {
 				n := u64(binary.little_endian_u32_at(vlsd, int(off)))
-				end := off + 4 + n
-				if end <= u64(vlsd.len) {
+				end := off + 4 + n // no overflow: off is within the block and n is a u32
+				// The length prefix is checked against what the RECORD says, not just against
+				// the block's bounds. A damaged prefix that still lands inside the block would
+				// otherwise swallow the next entry's prefix and hand back a frame with bytes
+				// that were never its own — inventing payload is worse than dropping it, because
+				// nothing downstream can tell that it happened.
+				agrees := !len_is_bytes || n == read_uint(raw, base + c_len.byte_off,
+					int(c_len.bit_off), int(c_len.bit_count))
+				if n <= max_can_payload && end <= u64(vlsd.len) && agrees {
 					data = vlsd[int(off) + 4..int(end)].clone()
 				}
 			}
