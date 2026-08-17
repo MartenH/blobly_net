@@ -204,51 +204,30 @@ here exists because a silent version of it lost a review; the incidents are in
   `gsub("\n";" ")` it into one line, id-prefixed, and take the highest id.
 - **Never edit a watcher script while an instance is running.** bash reads a script
   incrementally, so the running copy executes half of the new file and dies on a comment.
-  Write a new file instead. Done anyway on 2026-08-17, and the crash was worse than losing the
-  watcher: bash exits **2** on a syntax error, which the script also used for "the review
-  FAILED" — so a watcher killed by my own edit reported a review failure that never happened,
-  and the next step would have been re-requesting a review that was fine. **Give a crash and a
-  real failure different exit codes**; anything a shell can produce by accident cannot also
-  mean something.
-- **A "review failed" scan needs its own baseline.** Matching "Something went wrong" anywhere in
-  `issues/N/comments` fires forever once a single review has ever failed — compare the comment
-  id against the baseline recorded at re-request, exactly as the verdict match does.
-- **The verdict is a REVIEW, not an issue comment** — `pulls/N/reviews`, whose body reads
-  `### 💡 Codex Review … **Reviewed commit:** \`<sha10>\``. Corrected 2026-08-17 after FIVE
-  watchers in one session timed out reporting "nothing waiting" while every requested review had
-  in fact landed: four rounds on net#108 and two on #109, each naming the exact head it was asked
-  about. They polled `issues/N/comments` alone, which carries only SOME of the answers.
-- **The verdict channel depends on the OUTCOME, and a watcher must read both:**
+  Write a new file instead.
+- **The verdict channel depends on the OUTCOME. Read both, or you see half the answers:**
 
-  | outcome | where | how to match |
+  | outcome | where | match on |
   |---|---|---|
-  | findings | `pulls/N/reviews` | body has `**Reviewed commit:** \`<sha>\`` and P-badges |
-  | **clean** | `issues/N/comments` | body has "Didn't find any major issues" and the same SHA |
+  | findings | `pulls/N/reviews` | `**Reviewed commit:** \`<sha>\`` in the body |
+  | **clean** | `issues/N/comments` | "Didn't find any major issues" + the same SHA |
   | failed | `issues/N/comments` | "Something went wrong" — re-request, do not wait |
 
-  Both halves were learned the hard way in one session, in both directions. Watching only the
-  issue comments saw clean verdicts and missed every round of findings; "correcting" it to watch
-  only the reviews caught findings and then sat for an hour through a CLEAN verdict that had
-  arrived within minutes. Each version was right about the half it was built from and blind to
-  the other, and both failures looked identical from outside: silence. Match the SHA with
-  a plain `grep -F` on the flattened body — the SHA sits inside markdown (`**Reviewed commit:**
-  \`abc…\``), so a regex expecting `Reviewed commit: <sha>` finds nothing.
-- **Channels, then** — and note that NEITHER endpoint is "the verdict channel" on its own:
-  `pulls/N/reviews` (the verdict **when there are findings**, with its reviewed SHA) ·
-  `pulls/N/comments` (the findings themselves — review-attached comments appear here too, so
-  summing with `pulls/N/reviews/<id>/comments` double-counts) · `issues/N/comments` (where *you*
-  request a review, **and where a CLEAN verdict arrives**, and where "Something went wrong"
-  appears when the run FAILED and must be re-requested rather than waited on). A watcher that
-  treats the reviews as the verdict and the issue comments as request-and-failure only will sit
-  through every clean result — which is the hour-long timeout described above, reproduced from
-  a summary rather than from the table. Review-comment ids and issue-comment ids are **different
-  id spaces** — one watcher compared a review-comment id against an issue-comment baseline, so
-  its finding count was permanently 0 and two real findings sat unread for an hour.
-- **Findings can arrive in the review BODY, not only as inline comments.** A round whose body
-  carries a `P1`/`P2` badge or a `/blob/<sha>/file#L…` link is NOT clean, however many inline
-  comments it has — net#109 round 7 had exactly one finding, in the body, with zero inline
-  comments, and a watcher counting only comments reported "clean". Test the body for a badge or
-  a source link before believing a zero.
+  Watching either endpoint alone is silent about the other's outcomes, and both failures look
+  identical from outside: nothing arrives. `pulls/N/comments` holds the findings themselves
+  (review-attached comments appear there too, so summing with `pulls/N/reviews/<id>/comments`
+  double-counts).
+- **Match the SHA with a plain `grep -F`** on the flattened body. It sits inside markdown
+  (`**Reviewed commit:** \`abc…\``), so a regex expecting `Reviewed commit: <sha>` finds nothing.
+- **Findings can arrive in the review BODY, not only as inline comments.** A body carrying a
+  `P1`/`P2` badge or a `/blob/<sha>/file#L…` link is NOT clean, whatever the comment count says.
+- **Review-comment ids and issue-comment ids are different id spaces.** A baseline taken from one
+  and compared against the other never matches, so the count sits at 0 forever.
+- **A "review failed" scan needs its own baseline too**, or one historical failure fires on every
+  later run.
+- **Give a crash and a real failure different exit codes.** bash exits 2 on a syntax error; a
+  watcher using 2 for "review FAILED" cannot tell the two apart, and reports a failure that never
+  happened.
 - **Identify a result by head SHA prefix AND a freshness baseline.** Codex names a 10-char
   abbreviated SHA, so a 40-char compare never matches; but a retry after a failed review names
   the *same* SHA as the failure, so record the highest comment/review id first and require the
