@@ -11,43 +11,6 @@
 
 ## Status log
 
-### 2026-08-17 — five watcher defects in one session (net#108/#109/#110)
-
-Kept here rather than in `CLAUDE.md`, which asks for invariants and not anecdotes. The
-invariants these produced are in that file's *Polling a codex review* section; this is what
-happened, for anyone who wants to know why those rules are phrased so defensively.
-
-Every defect was a **silent wrong answer** — a watcher reporting "nothing waiting" while an
-answer sat on GitHub — and three were in the mechanism whose entire purpose is to prevent silent
-wrong answers.
-
-1. **Wrong channel (findings).** The watcher polled `issues/N/comments` for a verdict. Six
-   reviews across two PRs had landed as *reviews* (`pulls/N/reviews`), each naming the exact head
-   it was asked about: #108 at `96e9deadde`, `c80ba1d8c7`, `b255321830`, `8b74922671`; #109 at
-   `f8a818426e`, `2b9e782153`. Five watchers timed out at 60 minutes reporting nothing.
-2. **Wrong id space.** The finding counter compared *review-comment* ids against an
-   *issue-comment* baseline. Different sequences, so the count was permanently 0 — two real
-   findings on #108 sat unread for an hour.
-3. **Wrong field.** #109 round 7 delivered exactly one finding in the review **body**, with zero
-   inline comments. A watcher counting only comments reported "clean" on a round with a real
-   defect in it.
-4. **Wrong channel again, in the opposite direction.** The fix for (1) read reviews *only* — and
-   then sat a full hour through a CLEAN verdict on #109 `58f96ebd63`, which arrives as an issue
-   comment ("Didn't find any major issues") and had landed within minutes of the request. The
-   original version would have caught it. Each version was right about the half it was built from
-   and blind to the other.
-5. **A crash indistinguishable from a failure.** Editing the watcher while an instance ran — the
-   thing the guide already forbids — killed it with a bash syntax error, exit 2. The script used
-   exit 2 for "the review FAILED", so a self-inflicted crash announced a review failure that
-   never happened. The honest next step would have been re-requesting a review that was fine.
-
-The `CLAUDE.md` section was also rewritten three times that evening and grew from 54 to 93 lines
-before being cut back to invariants; a codex review on #110 called that out as the guide taking
-on operational history, which is what this archive exists for. The pattern in all of it: a
-description of an answer's shape, believed instead of the artifact, and never tested against the
-case that had not been seen yet.
-
-
 > **Keep this current in the PR that lands the work.** This file is the only memory a new
 > agent session has, so an out-of-date log is worse than none — the next session trusts it.
 > On 2026-07-22 a ~2.5-week gap (#19–#54) had to be reconstructed from `git log`; don't
@@ -1294,3 +1257,29 @@ case that had not been seen yet.
   `commits/<sha>/check-runs` pages are OBJECTS, not arrays, so the array-count recipe counts an
   object's keys; and the section as copied into blobly_emb linked a `docs/history.md` that does
   not exist there.
+
+- 2026-08-17: FIVE watcher defects in one session (net#108/#109/#110), every one a SILENT WRONG
+  ANSWER — a watcher reporting "nothing waiting" while an answer sat on GitHub — and three of
+  them inside the mechanism whose whole purpose is to prevent silent wrong answers. The
+  invariants they produced are in `CLAUDE.md`'s *Polling a codex review*; this is why that
+  section is phrased so defensively.
+  (1) WRONG CHANNEL: polled `issues/N/comments` for a verdict while six reviews across two PRs
+  had landed as REVIEWS, each naming the head it was asked about (#108 at 96e9deadde, c80ba1d8c7,
+  b255321830, 8b74922671; #109 at f8a818426e, 2b9e782153). Five watchers timed out at 60 minutes
+  reporting nothing.
+  (2) WRONG ID SPACE: the finding counter compared REVIEW-comment ids against an ISSUE-comment
+  baseline — different sequences, so the count was permanently 0 and two real findings on #108
+  sat unread for an hour.
+  (3) WRONG FIELD: #109 round 7 delivered its only finding in the review BODY with zero inline
+  comments, and a watcher counting comments reported "clean" on a round with a real defect in it.
+  (4) WRONG CHANNEL AGAIN, OPPOSITE DIRECTION: the fix for (1) read reviews ONLY, then sat a full
+  hour through a CLEAN verdict on #109 58f96ebd63 — clean results arrive as an issue comment
+  ("Didn't find any major issues") and it had landed within minutes. The original version would
+  have caught it; each was right about the half it was built from and blind to the other.
+  (5) CRASH INDISTINGUISHABLE FROM FAILURE: editing the watcher while an instance ran (already
+  forbidden) killed it with a bash syntax error, exit 2 — the code the script used for "review
+  FAILED". A self-inflicted crash announced a failure that never happened.
+  The `CLAUDE.md` section was rewritten three times that evening and grew 54 -> 93 lines before
+  being cut back to invariants, which codex flagged on #110 as the guide taking on operational
+  history. The pattern throughout: a description of an answer's shape, believed instead of the
+  artifact, and never tested against the case not yet seen.
