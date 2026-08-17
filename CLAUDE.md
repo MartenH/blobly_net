@@ -233,13 +233,17 @@ here exists because a silent version of it lost a review; the incidents are in
   the other, and both failures looked identical from outside: silence. Match the SHA with
   a plain `grep -F` on the flattened body — the SHA sits inside markdown (`**Reviewed commit:**
   \`abc…\``), so a regex expecting `Reviewed commit: <sha>` finds nothing.
-- **Channels, then:** `pulls/N/reviews` (the VERDICT and its reviewed SHA) · `pulls/N/comments`
-  (the findings — review-attached comments appear here too, so summing with
-  `pulls/N/reviews/<id>/comments` double-counts) · `issues/N/comments` (where *you* request the
-  review; "Something went wrong" appears here when the run FAILED and must be re-requested,
-  not waited on). Review-comment ids and issue-comment ids are **different id spaces** — one
-  watcher compared a review-comment id against an issue-comment baseline, so its finding count
-  was permanently 0 and two real findings sat unread for an hour.
+- **Channels, then** — and note that NEITHER endpoint is "the verdict channel" on its own:
+  `pulls/N/reviews` (the verdict **when there are findings**, with its reviewed SHA) ·
+  `pulls/N/comments` (the findings themselves — review-attached comments appear here too, so
+  summing with `pulls/N/reviews/<id>/comments` double-counts) · `issues/N/comments` (where *you*
+  request a review, **and where a CLEAN verdict arrives**, and where "Something went wrong"
+  appears when the run FAILED and must be re-requested rather than waited on). A watcher that
+  treats the reviews as the verdict and the issue comments as request-and-failure only will sit
+  through every clean result — which is the hour-long timeout described above, reproduced from
+  a summary rather than from the table. Review-comment ids and issue-comment ids are **different
+  id spaces** — one watcher compared a review-comment id against an issue-comment baseline, so
+  its finding count was permanently 0 and two real findings sat unread for an hour.
 - **Findings can arrive in the review BODY, not only as inline comments.** A round whose body
   carries a `P1`/`P2` badge or a `/blob/<sha>/file#L…` link is NOT clean, however many inline
   comments it has — net#109 round 7 had exactly one finding, in the body, with zero inline
