@@ -492,6 +492,12 @@ fn test_a_corrupt_vlsd_length_prefix_costs_one_frame_not_the_process() {
 // 32-bit DataLength field. Records are 25 bytes: time f64 @0, ID @8, IDE @12, DataLength @13,
 // DataBytes @17.
 fn build_mlsd_file(payloads [][]u8, ids []u32, lengths []u32) []u8 {
+	return build_mlsd_file_m(payloads, ids, lengths, false)
+}
+
+// dlc_mode names the length channel DLC rather than DataLength, so it carries a CODE that has to
+// be decoded instead of a byte count.
+fn build_mlsd_file_m(payloads [][]u8, ids []u32, lengths []u32, dlc_mode bool) []u8 {
 	mut b := Mdf4Builder{}
 	b.buf << 'MDF     '.bytes()
 	b.buf << '4.10    '.bytes()
@@ -522,7 +528,7 @@ fn build_mlsd_file(payloads [][]u8, ids []u32, lengths []u32) []u8 {
 	tx_fr := b.text('CAN_DataFrame')
 	tx_id := b.text('CAN_DataFrame.ID')
 	tx_ide := b.text('CAN_DataFrame.IDE')
-	tx_len := b.text('CAN_DataFrame.DataLength')
+	tx_len := b.text(if dlc_mode { 'CAN_DataFrame.DLC' } else { 'CAN_DataFrame.DataLength' })
 	tx_db := b.text('CAN_DataFrame.DataBytes')
 
 	mut recs := []u8{}
@@ -664,6 +670,24 @@ fn test_a_dlc_code_becomes_a_length_only_when_it_can() {
 	// classic CAN: every code above 8 is still 8 bytes, so an FD reading would reject good frames
 	assert dlc_bytes(9, false)? == 8
 	assert dlc_bytes(15, false)? == 8
-	// out of range says nothing rather than guessing
+	// out of range says nothing rather than guessing — a DLC is four bits, so 16 never came off
+	// a wire, and that holds whether or not the record claims FD
 	assert dlc_bytes(16, true) == none
+	assert dlc_bytes(16, false) == none
+	assert dlc_bytes(255, false) == none
+}
+
+// A DLC the format cannot resolve means the length is UNKNOWN. Falling back to 8 accepted the
+// first eight bytes of the field as a frame — inventing a payload out of a record that says
+// nothing trustworthy. Refused, the same way the VLSD branch treats the same doubt.
+fn test_an_unresolvable_dlc_yields_no_payload() {
+	// DLC 16 is out of range; the builder writes DataLength as a 32-bit field, and this file
+	// carries DLC rather than a byte count, so the value has to be decoded and cannot be.
+	img := build_mlsd_file_m([[u8(1), 2, 3, 4]], [u32(0x100)], [u32(16)], true)
+	entries := parse(img) or {
+		assert false, '${err}'
+		return
+	}
+	assert entries.len == 1
+	assert entries[0].frame.data.len == 0, 'invented ${entries[0].frame.data.len} bytes from an undecodable DLC'
 }

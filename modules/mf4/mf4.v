@@ -47,11 +47,16 @@ const max_can_payload = u64(64)
 // means 8 for every one of them. So a DLC over 8 is only decidable with the EDL flag in hand —
 // and guessing FD there would reject perfectly good classic frames whose writer set DLC 15.
 fn dlc_bytes(dlc u64, fd bool) ?u64 {
+	// A DLC is a FOUR-BIT code. Anything above 15 did not come off a wire — it is a damaged
+	// record, and the honest answer is that the length is unknown rather than a plausible 8.
+	if dlc > 15 {
+		return none
+	}
 	if dlc <= 8 {
 		return dlc
 	}
 	if !fd {
-		return u64(8) // classic CAN: every code above 8 means 8
+		return u64(8) // classic CAN: codes 9..15 all mean 8 bytes
 	}
 	return match dlc {
 		9 { u64(12) }
@@ -437,7 +442,13 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 			// DataLength already states bytes.
 			fd_here := c_edl.bit_count > 0 && !chan_invalid(raw, base, data_bytes, inval_bytes, c_edl)
 				&& read_uint(raw, base + c_edl.byte_off, int(c_edl.bit_off), int(c_edl.bit_count)) == 1
-			n := if len_is_bytes { stated } else { dlc_bytes(stated, fd_here) or { u64(8) } }
+			// A DLC the format cannot resolve (out of range in a damaged record) means the
+			// length is UNKNOWN. Falling back to 8 accepted the first eight bytes of the field
+			// as a frame — inventing a payload from a record that says nothing trustworthy.
+			// Refused instead, which is what the VLSD branch does with the same doubt.
+			resolved := if len_is_bytes { ?u64(stated) } else { dlc_bytes(stated, fd_here) }
+			n := resolved or { u64(0) }
+			usable := resolved != none
 			dstart := u64(base + c_db.byte_off)
 			// The DataBytes FIELD, not the whole record: bounding by the record would let a
 			// damaged length run into whatever channel is stored after the payload and return
@@ -453,7 +464,7 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 			// frame had carried those bytes. A well-formed record never reaches this: its
 			// payload fits by construction. Inventing bytes is worse than reporting none,
 			// because only one of the two is visible downstream.
-			if n <= max_can_payload && dstart <= limit && n <= limit - dstart {
+			if usable && n <= max_can_payload && dstart <= limit && n <= limit - dstart {
 				data = raw[int(dstart)..int(dstart + n)].clone()
 			}
 		}

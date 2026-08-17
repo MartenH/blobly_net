@@ -154,3 +154,44 @@ fn test_a_frame_is_classic_unless_it_says_otherwise() {
 	assert !f.fd
 	assert !f.brs
 }
+
+// The RECORD must equal the WIRE. wire_frame is what the GUI stores as its pending echo, so if
+// a backend pads afterwards the record holds 9 bytes while 12 go out, the echo never matches its
+// own record, and the frame appears as somebody else's traffic plus one of ours that never
+// returned. Software buses do not clamp ids or lengths, but they DO pad.
+fn test_wire_frame_pads_fd_on_a_software_bus() {
+	f := CanFrame{
+		id:   0x100
+		fd:   true
+		data: [u8(1), 2, 3, 4, 5, 6, 7, 8, 9]
+	}
+	w := wire_frame('inproc:x', f)
+	assert w.data.len == 12, 'got ${w.data.len}'
+	assert w.data[..9] == f.data
+	assert w.data[9..] == [u8(0), 0, 0]
+	assert w.fd
+}
+
+// A classic frame on a software bus is still passed through untouched.
+fn test_wire_frame_leaves_classic_software_frames_alone() {
+	f := CanFrame{
+		id:   0x100
+		data: [u8(1), 2, 3]
+	}
+	assert wire_frame('inproc:x', f).data == [u8(1), 2, 3]
+	assert wire_frame('udp:239.0.0.1:9', f).data == [u8(1), 2, 3]
+}
+
+// And an FD frame is NOT clamped to 8 on a clamping backend: SocketCAN carries it whole, and the
+// vendor backends refuse it outright — truncating here would record a frame that never goes out.
+fn test_wire_frame_does_not_clamp_an_fd_payload() {
+	mut big := []u8{len: 64}
+	big[63] = 0xAB
+	w := wire_frame('vcan0', CanFrame{
+		id:   0x100
+		fd:   true
+		data: big
+	})
+	assert w.data.len == 64
+	assert w.data[63] == 0xAB
+}

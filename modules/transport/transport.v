@@ -150,6 +150,16 @@ pub fn canonical_iface(iface string) string {
 // SEND this, do not merely record it, or the record and the echo disagree the other way round.
 pub fn wire_frame(iface string, f CanFrame) CanFrame {
 	if !clamps_to_classic(iface) {
+		// The software buses carry ids and lengths verbatim, but an FD payload is still padded
+		// to an encodable length on its way out — so it is padded HERE too. Otherwise the record
+		// holds 9 bytes while 12 go on the wire, the echo never matches its own record, and the
+		// frame shows up as somebody else's traffic plus one of ours that never came back.
+		if f.fd && fd_padded_len(f.data.len) != f.data.len {
+			return CanFrame{
+				...f
+				data: fd_pad(f.data)
+			}
+		}
 		return f
 	}
 	// The ID too, and to its DECLARED width: SocketCAN masks a standard id with can_sff_mask, so
