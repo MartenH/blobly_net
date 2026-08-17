@@ -194,3 +194,34 @@ fn test_classic_lines_are_unchanged() {
 	assert !back.frame.brs
 	assert back.frame.data == [u8(0xAA), 0xBB]
 }
+
+// The candump flags nibble is BRS (bit 0) and ESI (bit 1). Keeping only BRS silently rewrote a
+// valid `##2` recording as `##0` on save — an error-passive transmitter's frames coming back as
+// though the bus had been healthy, which is exactly the evidence somebody opened the file for.
+fn test_esi_survives_a_candump_round_trip() {
+	for brs in [false, true] {
+		for esi in [false, true] {
+			e := LogEntry{
+				t_s:   1.0
+				iface: 'can0'
+				frame: transport.CanFrame{
+					id:   0x321
+					fd:   true
+					brs:  brs
+					esi:  esi
+					data: [u8(1), 2, 3, 4]
+				}
+			}
+			line := format_line(e)
+			want := (if brs { 1 } else { 0 }) | (if esi { 2 } else { 0 })
+			assert line.contains('321##${want}'), 'brs=${brs} esi=${esi} gave ${line}'
+			back := parse_line(line) or {
+				assert false, 'does not parse: ${line}'
+				return
+			}
+			assert back.frame.brs == brs, 'brs lost (brs=${brs} esi=${esi})'
+			assert back.frame.esi == esi, 'esi lost (brs=${brs} esi=${esi})'
+			assert back.frame.fd
+		}
+	}
+}

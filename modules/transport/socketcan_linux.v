@@ -3,7 +3,7 @@ module transport
 #include "socketcan_shim.h"
 
 fn C.ct_can_open(&u8) int
-fn C.ct_can_send(int, u32, &u8, u8, int, int) int
+fn C.ct_can_send(int, u32, &u8, u8, int, int, int) int
 fn C.ct_can_recv(int, &u32, &u8, int, &u8) int
 fn C.ct_can_close(int)
 fn C.strerror(int) &char
@@ -50,7 +50,7 @@ pub fn (mut b SocketCanBus) send(frame CanFrame) ! {
 		1
 	} else {
 		0
-	}, if frame.brs { 1 } else { 0 })
+	}, if frame.brs { 1 } else { 0 }, if frame.esi { 1 } else { 0 })
 	if rc < 0 {
 		// EINVAL on an FD frame almost always means the interface is classic-only (the socket
 		// declined CAN_RAW_FD_FRAMES at open). Say so, rather than leaving a bare errno for
@@ -89,6 +89,7 @@ pub fn (mut b SocketCanBus) recv(timeout_ms int) !CanFrame {
 		rtr:      rtr
 		fd:       fflags & 0x01 != 0
 		brs:      fflags & 0x02 != 0
+		esi:      fflags & 0x04 != 0
 		data:     data
 	}
 }

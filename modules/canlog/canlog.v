@@ -65,6 +65,7 @@ pub fn parse_line(line string) ?LogEntry {
 	mut rtr := false
 	mut fd := false
 	mut brs := false
+	mut esi := false
 	// candump marks a CAN-FD frame with a SECOND '#', followed by one hex digit of flags
 	// (bit 0 = BRS, bit 1 = ESI) and then the payload: `123##1DEADBEEF…`. Without this a
 	// 64-byte frame written by the recorder read back as a classic frame with an impossible
@@ -76,6 +77,7 @@ pub fn parse_line(line string) ?LogEntry {
 		}
 		flags := hex_u32(datahex[1..2]) or { return none }
 		brs = flags & 0x01 != 0
+		esi = flags & 0x02 != 0 // error-passive transmitter; dropping it rewrote ##2 as ##0
 		datahex = datahex[2..]
 	}
 	mut data := []u8{}
@@ -93,6 +95,7 @@ pub fn parse_line(line string) ?LogEntry {
 			rtr:      rtr
 			fd:       fd
 			brs:      brs
+			esi:      esi
 			data:     data
 		}
 	}
@@ -122,7 +125,7 @@ pub fn format_line(e LogEntry) string {
 	// file. Writing an FD frame in classic syntax produced a line that parsed back as a classic
 	// frame with a 64-byte payload — a frame that cannot exist, silently.
 	if e.frame.fd {
-		flags := if e.frame.brs { 1 } else { 0 }
+		flags := (if e.frame.brs { 1 } else { 0 }) | (if e.frame.esi { 2 } else { 0 })
 		return '(${e.t_s:.6f}) ${iface_token(e.iface)} ${idhex}##${flags}${bytes_hex(e.frame.data)}'
 	}
 	body := if e.frame.rtr { 'R' } else { bytes_hex(e.frame.data) }

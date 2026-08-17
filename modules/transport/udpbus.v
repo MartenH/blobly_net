@@ -7,7 +7,7 @@
 // macOS — develop/verify on Linux, ship to Windows unchanged. It implements the
 // same `Bus` interface as the SocketCAN backend, so it's a drop-in.
 //
-// packet: [src u32][id u32][flags u8: 0x01 ext, 0x02 rtr, 0x04 fd, 0x08 brs][len u8][data 0..64]
+// packet: [src u32][id u32][flags u8: 0x01 ext, 0x02 rtr, 0x04 fd, 0x08 brs, 0x10 esi][len u8][data 0..64]
 // `src` is a per-instance id so we drop our own echoed frames — multicast
 // loopback must be ON for same-host peers to receive each other, which also
 // echoes our own sends back to us.
@@ -88,6 +88,9 @@ pub fn (mut b UdpBus) send(frame CanFrame) ! {
 	if frame.brs {
 		flags |= 0x08
 	}
+	if frame.esi {
+		flags |= 0x10
+	}
 	pkt << flags
 	pkt << u8(payload.len)
 	pkt << payload
@@ -125,6 +128,7 @@ pub fn (mut b UdpBus) recv(timeout_ms int) !CanFrame {
 			rtr:      flags & 0x02 != 0
 			fd:       flags & 0x04 != 0
 			brs:      flags & 0x08 != 0
+			esi:      flags & 0x10 != 0
 			data:     buf[10..10 + dlc].clone()
 		}
 	}

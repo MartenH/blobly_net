@@ -45,7 +45,7 @@ static inline int ct_can_open(const char *ifname) {
  * The KERNEL distinguishes the two by write size, so an FD-enabled socket still sends classic
  * frames byte-for-byte as before. Returns 0 on success, -errno on failure. */
 static inline int ct_can_send(int fd, uint32_t can_id, const uint8_t *data, uint8_t len,
-                              int is_fd, int brs) {
+                              int is_fd, int brs, int esi) {
 	if (!is_fd) {
 		struct can_frame f;
 		memset(&f, 0, sizeof(f));
@@ -65,7 +65,7 @@ static inline int ct_can_send(int fd, uint32_t can_id, const uint8_t *data, uint
 	 * rejects anything else, so a wrong length surfaces as EINVAL rather than being papered over
 	 * by a second copy of the table here. */
 	f.len = len;
-	f.flags = brs ? CANFD_BRS : 0;
+	f.flags = (brs ? CANFD_BRS : 0) | (esi ? CANFD_ESI : 0);
 	if (len > 0) memcpy(f.data, data, len);
 	ssize_t n = write(fd, &f, sizeof(f));
 	if (n != (ssize_t)sizeof(f)) return -errno;
@@ -74,7 +74,8 @@ static inline int ct_can_send(int fd, uint32_t can_id, const uint8_t *data, uint
 
 // Receive one frame, classic or CAN-FD. timeout_ms < 0 blocks; >= 0 waits up to that long.
 // Returns the payload LENGTH (0..8 classic, up to 64 for FD) and fills *can_id, up to 64 data
-// bytes — the caller's buffer must be 64 bytes — and *frame_flags (bit0 = FD, bit1 = BRS).
+// bytes — the caller's buffer must be 64 bytes — and *frame_flags (bit0 = FD, bit1 = BRS,
+// bit2 = ESI).
 // -1 on timeout.
 /* Returns the DLC, -1 on timeout, or -(1000+errno) on a real error — EINTR (a signal landing
  * mid-syscall, routine in a GUI process) is RETRIED, not surfaced: it used to abort a whole
@@ -109,7 +110,8 @@ static inline int ct_can_recv(int fd, uint32_t *can_id, uint8_t *data, int timeo
 		}
 		if (n == (ssize_t)sizeof(struct canfd_frame)) {
 			*can_id = f.can_id;
-			*frame_flags = 0x01 | ((f.flags & CANFD_BRS) ? 0x02 : 0);
+			*frame_flags = 0x01 | ((f.flags & CANFD_BRS) ? 0x02 : 0)
+			                    | ((f.flags & CANFD_ESI) ? 0x04 : 0);
 			uint8_t len = f.len > 64 ? 64 : f.len;
 			memcpy(data, f.data, len);
 			return len;
