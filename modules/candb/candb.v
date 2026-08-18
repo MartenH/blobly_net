@@ -37,6 +37,24 @@ pub mut:
 // label returns the VAL_ table name for the signal's current raw value in
 // `data` (e.g. Gear 3 -> "Third"), or '' if the signal has no value table /
 // no entry for that value.
+// senders is every node the database says transmits this message: the BO_ transmitter plus any
+// BO_TX_BU_ additions, without duplicates and without the 'no transmitter' placeholders. Asking
+// `m.sender == node` instead misses a node declared only as an additional transmitter — which,
+// where the question is "is this the ECU under test's own message?", answers a safety question
+// with the wrong half of the data.
+pub fn (m Message) senders() []string {
+	mut out := []string{}
+	if m.sender != '' && m.sender != 'Vector__XXX' {
+		out << m.sender
+	}
+	for n in m.tx_nodes {
+		if n != '' && n != 'Vector__XXX' && n !in out {
+			out << n
+		}
+	}
+	return out
+}
+
 pub fn (s Signal) label(data []u8) string {
 	return s.values[s.raw_value(data)]
 }
@@ -48,6 +66,10 @@ pub mut:
 	ext      bool // 29-bit extended identifier (DBC EFF high-bit was set)
 	dlc      int
 	sender   string // transmitting node (DBC BO_ transmitter); '' / 'Vector__XXX' = none
+	// ADDITIONAL transmitters, from a `BO_TX_BU_` record. A DBC may declare that several nodes
+	// send the same message; `sender` names only the first. Anything asking "does node X send
+	// this?" must consult both — see senders(). Empty for the overwhelming majority of messages.
+	tx_nodes []string
 	cycle_ms int    // GenMsgCycleTime attribute if present (0 = not cyclic / unknown)
 	signals  []Signal
 }

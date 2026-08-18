@@ -36,6 +36,14 @@ pub mut:
 	repeat bool // loop back to the start at the end of the recording
 mut:
 	entries    []canlog.LogEntry // time-sorted
+	// The SOURCE recording's span, which is not the same as the span of what is left after
+	// filtering. Drop the SUT's messages and the first and last surviving frames may sit well
+	// inside the original window — a loop built on those plays a shorter recording, starts its
+	// first frame immediately, and drifts against every other bus replayed alongside it. Zero
+	// means "use the entries", which is right when nothing was filtered out.
+	span_t0   f64
+	span_end  f64
+	has_span  bool
 	st         State = .stopped
 	idx        int // next entry to emit (into the current pass)
 	base_ms    f64 // playback clock at which the current pass's first entry plays
@@ -54,6 +62,20 @@ pub fn new_player(entries []canlog.LogEntry, speed f64, repeat bool) Player {
 		speed:   if speed > 0 { speed } else { 1.0 }
 		repeat:  repeat
 	}
+}
+
+// new_player_over builds a Player for entries that were FILTERED out of a longer recording,
+// pinning the loop to the source's own span rather than to whatever survived. Use it whenever
+// entries have been removed: the recorded cadence belongs to the recording, not to the subset,
+// and several buses replayed together must share one origin or they drift apart.
+pub fn new_player_over(entries []canlog.LogEntry, speed f64, repeat bool, t0_s f64, end_s f64) Player {
+	mut p := new_player(entries, speed, repeat)
+	if end_s >= t0_s {
+		p.span_t0 = t0_s
+		p.span_end = end_s
+		p.has_span = true
+	}
+	return p
 }
 
 // play starts (or resumes) playback at playback-clock now_ms. From .finished
@@ -108,6 +130,29 @@ pub fn (mut p Player) seek(pos_s f64, now_ms f64) {
 	} else if p.st == .finished {
 		p.st = .paused
 	}
+}
+
+// next_due_ms is the playback-clock time the NEXT entry is due, or none when nothing is
+// pending (not playing, or the recording is exhausted and not looping).
+//
+// This is what lets a sender sleep exactly as long as the recording says to, instead of
+// polling on some chosen tick. The distinction is not cosmetic: a tick quantises every
+// message's recorded period, and real captures reach far below any sane tick — one bus here
+// repeats a frame every 0.18 ms, where even a 1 ms tick would clump five frames into a burst
+// and idle between. `due` stays tick-agnostic and correct at any rate; this makes it possible
+// to be FAITHFUL as well, without picking a constant that is wrong for the next recording.
+pub fn (p Player) next_due_ms() ?f64 {
+	if p.st != .playing || p.entries.len == 0 {
+		return none
+	}
+	if p.idx >= p.entries.len {
+		// End of a pass: the next thing due is the first entry of the next loop.
+		if !p.repeat || p.duration_s() <= 0 {
+			return none
+		}
+		return p.base_ms + p.duration_s() * 1000.0 / p.speed
+	}
+	return p.base_ms + (p.entries[p.idx].t_s - p.t0_s()) * 1000.0 / p.speed
 }
 
 // due returns every entry whose recorded offset has elapsed by playback-clock
@@ -177,6 +222,9 @@ pub fn (p Player) passes() int {
 
 // t0_s is the recording's first timestamp (the zero of recording position).
 fn (p Player) t0_s() f64 {
+	if p.has_span {
+		return p.span_t0
+	}
 	if p.entries.len == 0 {
 		return 0
 	}
@@ -185,6 +233,9 @@ fn (p Player) t0_s() f64 {
 
 // duration_s is the recording's length in seconds (first to last frame).
 pub fn (p Player) duration_s() f64 {
+	if p.has_span {
+		return p.span_end - p.span_t0
+	}
 	if p.entries.len < 2 {
 		return 0
 	}
