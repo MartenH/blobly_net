@@ -159,6 +159,16 @@ fn (c Chan) replaying() bool {
 }
 
 // ReplayState is one recording's lifecycle within a run.
+// Who holds a destination. The token matters as much as the source: on an immediate Stop then
+// Start, the replacement worker for the SAME recording can claim the wire before the outgoing
+// one reaches its cleanup, and a release matched on the source alone would then delete the
+// replacement's reservation and leave the wire looking free. Same reason replay_state carries
+// one — a reservation belongs to a particular run of a particular recording, not to a filename.
+struct ReplayOwner {
+	src   string
+	token u64
+}
+
 struct ReplayState {
 	gen  u64  // the run it belongs to; anything older is stale
 	live bool // a worker is running
@@ -190,7 +200,7 @@ mut:
 	// one destination, and a table keyed by the spelling would hand the same wire to two
 	// workers. It holds the entry until the worker's ownership-checked cleanup runs, so a
 	// destination stays reserved while a stopping worker is still draining its last batch.
-	replay_owner map[string]string
+	replay_owner map[string]ReplayOwner
 	trace_seq    u64
 	trace_base   u64
 	ghost_seq    u64                    // identities for emissions made while paused (see ghost_base)
@@ -2169,8 +2179,10 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			}
 			for ch in chans {
 				k := transport.destination_key(ch.iface)
-				if a.replay_owner[k] == source {
-					a.replay_owner.delete(k)
+				if o := a.replay_owner[k] {
+					if o.src == source && o.token == token {
+						a.replay_owner.delete(k)
+					}
 				}
 			}
 		}
@@ -2387,8 +2399,10 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	}
 	for ch in chans {
 		k := transport.destination_key(ch.iface)
-		if a.replay_owner[k] == source {
-			a.replay_owner.delete(k)
+		if o := a.replay_owner[k] {
+			if o.src == source && o.token == token {
+				a.replay_owner.delete(k)
+			}
 		}
 	}
 	a.mu.unlock()
@@ -2431,7 +2445,10 @@ fn (mut app App) spawn_replay_workers_locked() []ReplaySpawn {
 	// its poll before it notices the toggle. Rebuilding this table from the enabled channels
 	// alone would call that wire free and start a second worker onto it. The owner table is the
 	// single authority for who has a destination; this loop only adds the not-yet-started.
-	mut dst_owner := app.replay_owner.clone()
+	mut dst_owner := map[string]string{}
+	for k, o in app.replay_owner {
+		dst_owner[k] = o.src
+	}
 	mut clash := []string{}
 	mut busy := []string{}
 	mut blocked := map[string]bool{}
@@ -2500,7 +2517,10 @@ fn (mut app App) spawn_replay_workers_locked() []ReplaySpawn {
 		to_start[src] = cis.clone()
 		for ci in cis {
 			if ci < app.chans.len {
-				app.replay_owner[transport.destination_key(app.chans[ci].iface)] = src
+				app.replay_owner[transport.destination_key(app.chans[ci].iface)] = ReplayOwner{
+					src:   src
+					token: app.replay_token
+				}
 			}
 		}
 	}
