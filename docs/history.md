@@ -1257,3 +1257,29 @@
   `commits/<sha>/check-runs` pages are OBJECTS, not arrays, so the array-count recipe counts an
   object's keys; and the section as copied into blobly_emb linked a `docs/history.md` that does
   not exist there.
+
+- 2026-08-17: FIVE watcher defects in one session (net#108/#109/#110), every one a SILENT WRONG
+  ANSWER — a watcher reporting "nothing waiting" while an answer sat on GitHub — and three of
+  them inside the mechanism whose whole purpose is to prevent silent wrong answers. The
+  invariants they produced are in `CLAUDE.md`'s *Polling a codex review*; this is why that
+  section is phrased so defensively.
+  (1) WRONG CHANNEL: polled `issues/N/comments` for a verdict while six reviews across two PRs
+  had landed as REVIEWS, each naming the head it was asked about (#108 at 96e9deadde, c80ba1d8c7,
+  b255321830, 8b74922671; #109 at f8a818426e, 2b9e782153). Five watchers timed out at 60 minutes
+  reporting nothing.
+  (2) WRONG ID SPACE: the finding counter compared REVIEW-comment ids against an ISSUE-comment
+  baseline — different sequences, so the count was permanently 0 and two real findings on #108
+  sat unread for an hour.
+  (3) WRONG FIELD: #109 round 7 delivered its only finding in the review BODY with zero inline
+  comments, and a watcher counting comments reported "clean" on a round with a real defect in it.
+  (4) WRONG CHANNEL AGAIN, OPPOSITE DIRECTION: the fix for (1) read reviews ONLY, then sat a full
+  hour through a CLEAN verdict on #109 58f96ebd63 — clean results arrive as an issue comment
+  ("Didn't find any major issues") and it had landed within minutes. The original version would
+  have caught it; each was right about the half it was built from and blind to the other.
+  (5) CRASH INDISTINGUISHABLE FROM FAILURE: editing the watcher while an instance ran (already
+  forbidden) killed it with a bash syntax error, exit 2 — the code the script used for "review
+  FAILED". A self-inflicted crash announced a failure that never happened.
+  The `CLAUDE.md` section was rewritten three times that evening and grew 54 -> 93 lines before
+  being cut back to invariants, which codex flagged on #110 as the guide taking on operational
+  history. The pattern throughout: a description of an answer's shape, believed instead of the
+  artifact, and never tested against the case not yet seen.

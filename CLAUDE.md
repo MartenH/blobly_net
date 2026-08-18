@@ -205,11 +205,29 @@ here exists because a silent version of it lost a review; the incidents are in
 - **Never edit a watcher script while an instance is running.** bash reads a script
   incrementally, so the running copy executes half of the new file and dies on a comment.
   Write a new file instead.
-- **Three channels**, and the first already contains the second:
-  `pulls/N/comments` (source of truth — review-attached comments appear here too, so summing
-  both double-counts) · `pulls/N/reviews/<id>/comments` (fallback; narrowing to the latest
-  review hides earlier unhandled findings) · `issues/N/comments` (the verdict, or "Something
-  went wrong" = the review FAILED and must be re-requested, not waited on).
+- **The verdict channel depends on the OUTCOME. Read both, or you see half the answers:**
+
+  | outcome | where | match on |
+  |---|---|---|
+  | findings | `pulls/N/reviews` | `**Reviewed commit:** \`<sha>\`` in the body |
+  | **clean** | `issues/N/comments` | "Didn't find any major issues" + the same SHA |
+  | failed | `issues/N/comments` | "Something went wrong" — re-request, do not wait |
+
+  Watching either endpoint alone is silent about the other's outcomes, and both failures look
+  identical from outside: nothing arrives. `pulls/N/comments` holds the findings themselves
+  (review-attached comments appear there too, so summing with `pulls/N/reviews/<id>/comments`
+  double-counts).
+- **Match the SHA with a plain `grep -F`** on the flattened body. It sits inside markdown
+  (`**Reviewed commit:** \`abc…\``), so a regex expecting `Reviewed commit: <sha>` finds nothing.
+- **Findings can arrive in the review BODY, not only as inline comments.** A body carrying a
+  `P1`/`P2` badge or a `/blob/<sha>/file#L…` link is NOT clean, whatever the comment count says.
+- **Review-comment ids and issue-comment ids are different id spaces.** A baseline taken from one
+  and compared against the other never matches, so the count sits at 0 forever.
+- **A "review failed" scan needs its own baseline too**, or one historical failure fires on every
+  later run.
+- **Give a crash and a real failure different exit codes.** bash exits 2 on a syntax error; a
+  watcher using 2 for "review FAILED" cannot tell the two apart, and reports a failure that never
+  happened.
 - **Identify a result by head SHA prefix AND a freshness baseline.** Codex names a 10-char
   abbreviated SHA, so a 40-char compare never matches; but a retry after a failed review names
   the *same* SHA as the failure, so record the highest comment/review id first and require the
