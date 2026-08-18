@@ -195,3 +195,77 @@ fn test_wire_frame_does_not_clamp_an_fd_payload() {
 	assert w.data.len == 64
 	assert w.data[63] == 0xAB
 }
+
+// A conflict check that compares interface STRINGS misses two spellings of one bus. The software
+// buses were covered by canonical_iface; the Windows vendor backends were not, and they accept
+// several spellings of one channel plus a default bitrate — so two mappings could address one
+// physical channel while looking different, and two recorded buses would land on one wire.
+//
+// PLATFORM-DEPENDENT, exactly as vendor_iface is: on Linux `pcan:usb1` is not a vendor handle at
+// all, it is an ordinary SocketCAN interface NAME, and `pcan:1` is a different one. Collapsing
+// them there would merge two real interfaces — the opposite mistake.
+fn test_one_vendor_channel_has_one_destination_identity() {
+	$if windows {
+		// 0x51 IS PCAN_USBBUS1 — resolved through the backend's own function, so every spelling
+		// of one channel lands on one identity rather than on one of two parallel rule sets.
+		for a in ['pcan:PCAN_USBBUS1', 'pcan:usb1', 'pcan:1', 'pcan:0x51', 'pcan:PCAN_USBBUS1@500000'] {
+			assert same_destination(a, 'pcan:usb1@500000'), '${a} was treated as a different bus'
+		}
+		assert !same_destination('pcan:usb1', 'pcan:usb2')
+		assert !same_destination('pcan:usb1@500000', 'pcan:usb1@250000')
+	} $else {
+		// here they are distinct SocketCAN names and must stay distinct
+		assert !same_destination('pcan:usb1', 'pcan:1')
+		assert same_destination('pcan:usb1', 'pcan:usb1')
+	}
+}
+
+// The software buses keep the behaviour canonical_iface already gave them, on every platform.
+fn test_software_bus_spellings_still_collapse() {
+	assert same_destination('inproc', 'inproc:CAN')
+	assert same_destination('udp', 'udp:239.63.42.1:20000')
+	assert !same_destination('inproc:a', 'inproc:b')
+	assert !same_destination('vcan0', 'vcan1')
+}
+
+// The spelling→handle rules, tested on any platform because they are pure string logic. They
+// decide whether two mappings address one physical channel, and a second implementation of them
+// had already drifted: `usb1` keyed as 1 while `0x51` keyed as 81, for the same channel.
+fn test_pcan_spellings_resolve_to_one_handle() {
+	want := u16(0x51) // PCAN_USBBUS1
+	for spelling in ['PCAN_USBBUS1', 'pcan_usbbus1', 'usb1', 'USB1', '1', '0x51', ' usb1 '] {
+		got := pcan_handle(spelling) or {
+			assert false, '${spelling}: ${err}'
+			return
+		}
+		assert got == want, '${spelling} resolved to 0x${got:X}, not 0x${want:X}'
+	}
+	assert pcan_handle('usb8') or { 0 } == 0x58
+	// out of range and nonsense are errors, not a silent zero that would collide with everything
+	if _ := pcan_handle('usb9') {
+		assert false, 'usb9 is not a PCAN channel'
+	}
+	if _ := pcan_handle('nonsense') {
+		assert false, 'nonsense is not a PCAN channel'
+	}
+}
+
+// The backends parse numbers, so the identity must too: open_kvaser takes .int() of the channel
+// and both vendor opens take .int() of the bitrate. Compared as strings, `kvaser:0` and
+// `kvaser:00`, or `@500000` and `@0500000`, look like different buses while opening the same one.
+//
+// Windows-only, like every other part of this: on Linux `pcan:`/`kvaser:` are ordinary SocketCAN
+// interface NAMES that no vendor backend parses, and normalising their digits would merge two
+// real interfaces.
+fn test_numeric_vendor_spellings_are_one_destination() {
+	$if windows {
+		assert same_destination('pcan:usb1@500000', 'pcan:usb1@0500000')
+		assert same_destination('kvaser:0', 'kvaser:00')
+		assert same_destination('kvaser:1@500000', 'kvaser:01@0500000')
+		assert !same_destination('kvaser:0', 'kvaser:1')
+		assert !same_destination('kvaser:0@500000', 'kvaser:0@250000')
+	} $else {
+		// distinct SocketCAN names stay distinct
+		assert !same_destination('kvaser:0', 'kvaser:00')
+	}
+}

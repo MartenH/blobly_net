@@ -269,3 +269,19 @@ fn test_a_filtered_loop_keeps_the_sources_span() {
 fn player_over(entries []canlog.LogEntry, t0 f64, end f64) Player {
 	return new_player_over(entries, 1.0, true, t0, end)
 }
+
+// The order restored in mf4's demux and in build_multi has to survive the LAST step. new_player
+// sorts defensively by timestamp with no tie-break, so constructing the player through it would
+// discard the cross-bus sequence of equal-timestamp frames immediately before transmission —
+// undoing both earlier fixes at the point where it stops being observable.
+fn test_new_player_over_does_not_reorder_the_plan() {
+	// three frames at the SAME timestamp, in an order a timestamp sort cannot reconstruct
+	plan := [entry('b', 2, 1.0), entry('a', 1, 1.0), entry('c', 3, 1.0)]
+	mut p := new_player_over(plan, 1.0, false, 0.0, 2.0)
+	p.play(0.0)
+	due := p.due(2000.0)
+	assert due.len == 3
+	assert due[0].iface == 'b' && due[0].frame.id == 2, 'plan order lost at the player'
+	assert due[1].iface == 'a' && due[1].frame.id == 1
+	assert due[2].iface == 'c' && due[2].frame.id == 3
+}

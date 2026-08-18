@@ -69,7 +69,16 @@ pub fn new_player(entries []canlog.LogEntry, speed f64, repeat bool) Player {
 // entries have been removed: the recorded cadence belongs to the recording, not to the subset,
 // and several buses replayed together must share one origin or they drift apart.
 pub fn new_player_over(entries []canlog.LogEntry, speed f64, repeat bool, t0_s f64, end_s f64) Player {
-	mut p := new_player(entries, speed, repeat)
+	// NOT new_player: its defensive `sort(a.t_s < b.t_s)` has no tie-break, so it would discard
+	// the order of equal-timestamp frames — the very thing the caller went to trouble to
+	// preserve. A plan built by build_multi is already in recorded order across every bus, and
+	// re-sorting it here would undo the fix in mf4's demux and the one-pass walk both, at the
+	// last step before transmission.
+	mut p := Player{
+		entries: entries.clone()
+		speed:   if speed > 0 { speed } else { 1.0 }
+		repeat:  repeat
+	}
 	if end_s >= t0_s {
 		p.span_t0 = t0_s
 		p.span_end = end_s
