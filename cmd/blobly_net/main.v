@@ -152,7 +152,10 @@ fn (c Chan) monitorable() bool {
 // monitored — the frames come back like anything else on the wire, and the echo is how the
 // trace confirms they were really transmitted rather than merely queued.
 fn (c Chan) replaying() bool {
-	return c.enabled && c.mode == 'replay' && !c.doip && c.replay_src != ''
+	// listen_only means NEVER TRANSMIT, which is what the editor promises and what a bench
+	// relies on when it is wired to a live vehicle. A replay channel is not an exception: it
+	// would be the loudest possible violation of it.
+	return c.enabled && c.mode == 'replay' && !c.doip && c.replay_src != '' && !c.listen_only
 }
 
 struct App {
@@ -2118,6 +2121,34 @@ fn replay_group(app &App, source string, cis []int, gen u64) {
 	}
 	label := chans.map(it.name).join(', ')
 
+	// WAIT for the readers. rx_loop sets `running` only once its transport is actually open, and
+	// start() has merely SPAWNED them — so with a small recording, or a slow open, the first
+	// frames could go out before any monitor was attached. Nothing would then claim their
+	// echoes and they would come back filed as the device under test's traffic, which is the one
+	// thing the origin column exists to get right. Bounded, because a bus that never opens must
+	// not wedge the player forever; the send simply proceeds and its echo goes unclaimed.
+	mut waited := 0
+	for waited < 5000 {
+		a.mu.lock()
+		mut ready := true
+		for ci in cis {
+			if ci < a.chans.len && a.chans[ci].enabled && !a.chans[ci].running {
+				ready = false
+				break
+			}
+		}
+		stopped := !a.running || a.run_gen != gen
+		a.mu.unlock()
+		if stopped {
+			return
+		}
+		if ready {
+			break
+		}
+		time.sleep(20 * time.millisecond)
+		waited += 20
+	}
+
 	// Decoded ONCE for the whole group, however many channels read from it.
 	all, buses := load_recording_for_replay(source) or {
 		a.notify('replay ${label}: ${err}')
@@ -2185,10 +2216,17 @@ fn replay_group(app &App, source string, cis []int, gen u64) {
 		}
 	}
 
-	// ONE player, ONE clock, over the whole group — and the span of the SOURCE frames, so
-	// subtracting the ECU under test cannot shorten a lap or move its origin.
+	// ONE clock means ONE pacing. Channels sharing a recording cannot play it at different
+	// speeds or with different looping — there is a single player — so silently applying the
+	// first channel's settings would quietly ignore what the others asked for.
 	speed := chans[0].replay_speed
 	repeat := chans[0].replay_loop
+	for ch in chans {
+		if ch.replay_speed != speed || ch.replay_loop != repeat {
+			a.notify('replay ${label}: channels sharing ${os.base(source)} disagree on speed/loop — they share one clock, so set them alike')
+			return
+		}
+	}
 	mut p := player.new_player_over(plan.entries, speed, repeat, plan.t0_s, plan.end_s)
 	mut sw := time.new_stopwatch()
 	mut sent := u64(0)
@@ -2196,17 +2234,20 @@ fn replay_group(app &App, source string, cis []int, gen u64) {
 	mut first_err := ''
 	p.play(0.0)
 	for {
+		// Re-read per DESTINATION, not just "is any channel still on": disabling one channel of
+		// a group left `any` true because a sibling was enabled, and the dispatch below then
+		// kept transmitting to the disabled channel's bus. A box unticked in the Buses panel has
+		// to silence that wire.
 		a.mu.lock()
 		mut stop := !a.running || a.run_gen != gen
+		mut live := map[string]bool{}
 		if !stop {
-			mut any := false
 			for ci in cis {
 				if ci < a.chans.len && a.chans[ci].enabled {
-					any = true
-					break
+					live[a.chans[ci].iface] = true
 				}
 			}
-			stop = !any
+			stop = live.len == 0
 		}
 		a.mu.unlock()
 		if stop {
@@ -2214,6 +2255,9 @@ fn replay_group(app &App, source string, cis []int, gen u64) {
 		}
 		now := f64(i64(sw.elapsed())) / 1e6
 		for e in p.due(now) {
+			if e.iface !in live {
+				continue // this channel was disabled mid-run; its wire goes quiet
+			}
 			mut bus := buses_out[e.iface] or { continue }
 			bus.send(e.frame) or {
 				failed++
@@ -2239,6 +2283,14 @@ fn replay_group(app &App, source string, cis []int, gen u64) {
 	// `sent`, not p.sent(): the player counts what it handed over. An FD capture on a classic
 	// interface fails every send, and reporting attempts would announce a replay that put
 	// nothing on the wire.
+	// Cleared on the way out: the marker says "this recording is playing", not "was started at
+	// some point this run". Left set, a group whose channels were disabled and re-enabled could
+	// never be restarted, because spawn_replay_workers would think it was still going.
+	a.mu.lock()
+	if a.replay_gen[source] or { u64(0) } == gen {
+		a.replay_gen.delete(source)
+	}
+	a.mu.unlock()
 	if failed > 0 {
 		a.notify('replay ${label}: ${sent} sent, ${failed} FAILED — ${first_err}')
 	} else {
@@ -2250,10 +2302,14 @@ fn replay_group(app &App, source string, cis []int, gen u64) {
 // replays from it. Already-running groups are not restarted: `replay_gen` records which run a
 // source is playing for, so a second call (a channel enabled mid-run) starts only what is new.
 fn (mut app App) spawn_replay_workers() {
+	// CANONICAL path as the key. Two channels naming one capture through different spellings —
+	// an absolute path and a symlink, `./x.mf4` and `x.mf4` — would otherwise form two groups,
+	// each decoding the file and running its own clock, which is exactly the skew this grouping
+	// exists to remove.
 	mut by_src := map[string][]int{}
 	for i, c in app.chans {
 		if c.replaying() {
-			by_src[c.replay_src] << i
+			by_src[os.real_path(c.replay_src)] << i
 		}
 	}
 	for src, cis in by_src {
@@ -2294,13 +2350,28 @@ fn resolve_replay_bus(all []canlog.LogEntry, buses []mf4.BusInfo, ch Chan) !stri
 		}
 		return labels.keys()[0]
 	}
+	// LABEL first, in its own pass: the label is the identity and the name is free text a writer
+	// chose. Testing both together let one bus's acquisition name shadow another bus's label and
+	// send that bus's traffic to this wire.
 	for b in buses {
-		if b.iface == ch.replay_bus || (b.name != '' && b.name == ch.replay_bus) {
+		if b.iface == ch.replay_bus {
 			return b.iface
 		}
 	}
 	if ch.replay_bus in labels {
 		return ch.replay_bus
+	}
+	mut named := []string{}
+	for b in buses {
+		if b.name != '' && b.name == ch.replay_bus {
+			named << b.iface
+		}
+	}
+	if named.len == 1 {
+		return named[0]
+	}
+	if named.len > 1 {
+		return error('"${ch.replay_bus}" names ${named.len} buses in ${os.base(ch.replay_src)} — use the label instead')
 	}
 	return error('no bus "${ch.replay_bus}" in ${os.base(ch.replay_src)}')
 }

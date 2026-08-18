@@ -617,7 +617,7 @@ focus) or `cyclic` (sent automatically while the measurement runs).
 `bus: inproc:CAN2`, not `bus: CAN2`. The value is passed straight to the transport, so a
 channel name lands there as a device name and fails to open.
 
-## Replay — configurable, but NOT currently played
+## Replay — playing a recording onto a bus
 
 The project format accepts a replay channel:
 
