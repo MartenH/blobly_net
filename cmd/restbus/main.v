@@ -7,6 +7,16 @@
 //   v -enable-globals -path "@vlib|@vmodules|modules" run cmd/restbus/main.v \
 //       --source capture.mf4 --bus CAN1 --dbc CAN01.dbc --exclude VCM_C --iface inproc:rest
 //
+// SEVERAL buses at once — the shape a real bench needs, since the ECU under test sits on all of
+// them and gateways between them. Repeat --map <recorded bus>,<interface>,<dbc>:
+//
+//   restbus --source capture.mf4 --exclude VCM_C \
+//       --map CAN1,vcan0,com/CAN01-postfix.dbc \
+//       --map CAN2,vcan1,com/CAN02-postfix.dbc
+//
+// All mapped buses replay from ONE time-sorted stream against ONE clock, so the recording's
+// cross-bus ordering survives — the relationship a gateway polices.
+//
 //   --list                 show the recording's buses and stop
 //   --dry-run              do the subtraction and report it, transmit nothing
 //   --speed 1.0            playback rate; --loop to repeat
@@ -24,16 +34,17 @@ import time
 import transport
 
 struct Opts {
-	source      string
-	bus         string
-	dbc         string
-	iface       string
-	exclude     []string
-	speed       f64
-	loop        bool
-	list        bool
-	dry_run     bool
+	source        string
+	bus           string
+	dbc           string
+	iface         string
+	exclude       []string
+	speed         f64
+	loop          bool
+	list          bool
+	dry_run       bool
 	replay_unattr bool
+	maps          []string // raw --map values: <recorded bus>,<interface>,<dbc>
 }
 
 fn main() {
@@ -53,6 +64,10 @@ fn main() {
 		for b in rec.buses {
 			println('${b.name:-14} ${b.iface:-16} ${b.frames}')
 		}
+		return
+	}
+	if o.maps.len > 0 {
+		run_multi(o, rec)
 		return
 	}
 	iface := resolve_bus(rec.buses, o.bus) or {
@@ -89,7 +104,11 @@ fn main() {
 	println('exclude  ${o.exclude.join(', ')}: ${rep.withheld_excluded} frames withheld')
 	println('replay   ${rep.kept} frames')
 	if rep.unattributed > 0 {
-		verb := if o.replay_unattr { 'replayed' } else { 'withheld (${rep.withheld_unattributed} frames)' }
+		verb := if o.replay_unattr {
+			'replayed'
+		} else {
+			'withheld (${rep.withheld_unattributed} frames)'
+		}
 		println('  note: ${rep.unattributed} frames on ${rep.unattributed_ids.len} id(s) have no transmitter in the DBC — ${verb}')
 		println('        ${hex_ids(rep.unattributed_ids)}')
 	}
@@ -113,7 +132,6 @@ fn main() {
 		exit(1)
 	}
 
-
 	mut bus := transport.open(o.iface) or {
 		eprintln('restbus: open ${o.iface}: ${err}')
 		exit(1)
@@ -125,7 +143,8 @@ fn main() {
 
 	// Over the SOURCE bus's span, not the filtered subset's: removing the SUT's frames must not
 	// shorten the loop or move its origin.
-	mut p := player.new_player_over(kept, o.speed, o.loop, on_bus[0].t_s, on_bus[on_bus.len - 1].t_s)
+	mut p := player.new_player_over(kept, o.speed, o.loop, on_bus[0].t_s,
+		on_bus[on_bus.len - 1].t_s)
 	// A StopWatch, NOT time.ticks(): ticks() is whole milliseconds (and GetTickCount, ~15.6 ms,
 	// on Windows) off the wall clock. Quantising to 1 ms would defeat the sleep-until-due
 	// scheduling entirely — these recordings repeat frames every 0.18 ms — and a wall clock can
@@ -153,6 +172,188 @@ fn main() {
 		}
 		// Sleep until the next frame is actually due rather than polling on a chosen tick: a
 		// tick quantises every message's recorded period, and these recordings go below 0.2 ms.
+		nd := p.next_due_ms() or { break }
+		wait := nd - f64(i64(sw.elapsed())) / 1e6
+		if wait > 0 {
+			time.sleep(i64(wait * 1_000_000) * time.nanosecond)
+		}
+		el := f64(i64(sw.elapsed())) / 1e6
+		if el - last_report >= 1000.0 {
+			last_report = el
+			eprint('\r  ${sent} sent, ${p.progress(el) * 100:.0f}%  ')
+		}
+	}
+	println('\ndone: ${sent} frames sent${if failed > 0 { ', ${failed} failed' } else { '' }}')
+	if failed > 0 {
+		eprintln('first failure: ${first_err}')
+		exit(1)
+	}
+}
+
+// run_multi replays several recorded buses at once: one stream, one clock, one open bus per
+// destination. See modules/player/multibus.v for why the buses must not each get their own
+// player — a gateway ECU polices the timing BETWEEN them.
+fn run_multi(o Opts, rec mf4.Recording) {
+	mut specs := []player.BusSpec{}
+	mut unknown_on := map[string][]string{}
+	for m in o.maps {
+		parts := m.split(',').map(it.trim_space())
+		src := resolve_bus(rec.buses, parts[0]) or {
+			eprintln('restbus: --map ${m}: ${err}')
+			exit(1)
+		}
+		db := candb.load_dbc_file(parts[2]) or {
+			eprintln('restbus: ${parts[2]}: ${err}')
+			exit(1)
+		}
+		// NOT fatal per bus: the ECU under test need not transmit on every bus it sits on, and
+		// vendor databases legitimately declare different node sets. Collected and judged after
+		// every mapping is read — a name absent from ONE database says nothing, a name absent
+		// from ALL of them is a typo that subtracts nothing anywhere.
+		for n in player.check_nodes(db, o.exclude) {
+			unknown_on[n] << os.base(parts[2])
+		}
+		specs << player.BusSpec{
+			src:                 src
+			dst:                 parts[1]
+			db:                  db
+			exclude:             o.exclude
+			replay_unattributed: o.replay_unattr
+		}
+	}
+	// A node no mapped database has heard of subtracts nothing at all, and the run then replays
+	// the ECU under test at itself while looking perfectly healthy.
+	mut nowhere := []string{}
+	for n in o.exclude {
+		if n in unknown_on && unknown_on[n].len == specs.len {
+			nowhere << n
+		}
+	}
+	if nowhere.len > 0 {
+		eprintln('restbus: no mapped database declares the node(s): ${nowhere.join(', ')}')
+		exit(1)
+	}
+	for n, dbcs in unknown_on {
+		if n !in nowhere {
+			eprintln('restbus: note: ${n} is not declared by ${dbcs.join(', ')} — it transmits nothing there')
+		}
+	}
+	if o.exclude.len == 0 && !o.dry_run {
+		eprintln('restbus: warning: --exclude not given, so the ECU under test will be replayed at itself')
+	}
+	// Refused rather than warned about: either conflict produces a run that looks like it worked.
+	clashes := player.conflicts(specs)
+	if clashes.len > 0 {
+		for c in clashes {
+			eprintln('restbus: ${c}')
+		}
+		exit(1)
+	}
+
+	plan := player.build_multi(rec.entries, specs)
+	mut name_of := map[string]string{}
+	for b in rec.buses {
+		name_of[b.iface] = if b.name != '' { b.name } else { b.iface }
+	}
+	println('source   ${o.source}')
+	println('exclude  ${o.exclude.join(', ')}')
+	println('bus            interface        recorded  withheld    replay  notes')
+	mut total := 0
+	for b in plan.buses {
+		r := b.report
+		mut notes := []string{}
+		withheld := r.withheld_excluded + r.withheld_unattributed
+		if b.source == 0 {
+			notes << 'NO FRAMES — check the mapping'
+		} else if r.kept == 0 {
+			// Name the actual cause. "belongs to the excluded node" is only true when the
+			// exclusion is what emptied it; --drop-unattributed and an empty --exclude reach
+			// the same zero by different routes, and a wrong diagnosis sends someone hunting
+			// the wrong config.
+			mut why := []string{}
+			if r.withheld_excluded > 0 {
+				why << 'excluded node(s)'
+			}
+			if r.withheld_unattributed > 0 {
+				why << 'unattributed (--drop-unattributed)'
+			}
+			notes << if why.len > 0 {
+				'silent: all frames withheld by ${why.join(' + ')}'
+			} else {
+				'silent'
+			}
+		}
+		if r.withheld_unattributed > 0 {
+			notes << '${r.withheld_unattributed} withheld as unattributed'
+		}
+		if r.unknown > 0 {
+			notes << '${r.unknown} frames on ${r.unknown_ids.len} id(s) not in the DBC'
+		}
+		if r.unattributed > 0 && r.withheld_unattributed == 0 {
+			notes << '${r.unattributed} unattributed, replayed'
+		}
+		nm := name_of[b.src] or { b.src }
+		println('${nm:-14} ${b.dst:-16} ${b.source:9} ${withheld:9} ${r.kept:9}  ${notes.join('; ')}')
+		total += r.kept
+	}
+	span := plan.end_s - plan.t0_s
+	println('replay   ${total} frames over ${span:.2f}s across ${plan.buses.len} bus(es)')
+	fd_n := plan.entries.filter(it.frame.fd).len
+	if fd_n > 0 {
+		println('  CAN-FD:  ${fd_n} frames — every destination interface must be FD-capable and up')
+	}
+	if o.dry_run {
+		println('dry run: nothing transmitted')
+		return
+	}
+	if total == 0 {
+		eprintln('restbus: nothing left to replay after the subtraction')
+		exit(1)
+	}
+
+	// One open bus per DESTINATION. Entries were relabelled to their destination by build_multi,
+	// so this loop is a map lookup and knows nothing about the mapping.
+	mut buses := map[string]transport.Bus{}
+	for sp in specs {
+		if sp.dst in buses {
+			continue
+		}
+		buses[sp.dst] = transport.open(sp.dst) or {
+			eprintln('restbus: open ${sp.dst}: ${err}')
+			exit(1)
+		}
+	}
+	defer {
+		for _, mut b in buses {
+			b.close()
+		}
+	}
+	dsts := specs.map(it.dst).join(', ')
+	println('transmitting on ${dsts} at ${o.speed}x${if o.loop { ', looping' } else { '' }} — ctrl-C to stop')
+
+	mut p := player.new_player_over(plan.entries, o.speed, o.loop, plan.t0_s, plan.end_s)
+	mut sw := time.new_stopwatch()
+	p.play(0.0)
+	mut sent := u64(0)
+	mut failed := u64(0)
+	mut first_err := ''
+	mut last_report := 0.0
+	for {
+		now := f64(i64(sw.elapsed())) / 1e6
+		for e in p.due(now) {
+			mut bus := buses[e.iface] or { continue }
+			bus.send(e.frame) or {
+				failed++
+				if first_err == '' {
+					first_err = '${e.iface}: ${err.msg()}'
+				}
+				continue
+			}
+			sent++
+		}
+		if p.finished() {
+			break
+		}
 		nd := p.next_due_ms() or { break }
 		wait := nd - f64(i64(sw.elapsed())) / 1e6
 		if wait > 0 {
@@ -216,14 +417,23 @@ fn parse_args() !Opts {
 	mut list := false
 	mut dry := false
 	mut replay_unattr := true
+	mut maps := []string{}
 	mut i := 1
 	for i < os.args.len {
 		a := os.args[i]
 		match a {
-			'--list' { list = true }
-			'--dry-run' { dry = true }
-			'--loop' { loop = true }
-			'--drop-unattributed' { replay_unattr = false }
+			'--list' {
+				list = true
+			}
+			'--dry-run' {
+				dry = true
+			}
+			'--loop' {
+				loop = true
+			}
+			'--drop-unattributed' {
+				replay_unattr = false
+			}
 			else {
 				if i + 1 >= os.args.len {
 					return error('${a} needs a value')
@@ -236,17 +446,30 @@ fn parse_args() !Opts {
 					'--iface' { iface = v }
 					'--exclude' { exclude << v.split(',').map(it.trim_space()).filter(it != '') }
 					'--speed' { speed = v.f64() }
+					'--map' { maps << v }
 					else { return error('unknown argument ${a}') }
 				}
+
 				i++
 			}
 		}
+
 		i++
 	}
 	if source == '' {
 		return error('--source is required')
 	}
-	if !list {
+	if !list && maps.len > 0 {
+		if bus != '' || dbc != '' || iface != '' {
+			return error('--map cannot be combined with --bus/--dbc/--iface; give one --map per bus')
+		}
+		for m in maps {
+			if m.split(',').len != 3 {
+				return error('--map takes <recorded bus>,<interface>,<dbc> — got "${m}"')
+			}
+		}
+	}
+	if !list && maps.len == 0 {
 		if bus == '' {
 			return error('--bus is required (or --list to see them)')
 		}
@@ -274,5 +497,6 @@ fn parse_args() !Opts {
 		list:          list
 		dry_run:       dry
 		replay_unattr: replay_unattr
+		maps:          maps
 	}
 }

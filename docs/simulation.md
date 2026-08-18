@@ -643,7 +643,27 @@ restbus ... --dry-run                        # what the subtraction would do, tr
 ```
 
 `--bus` takes either the recording's own name for a bus (`CAN1`) or the label its frames carry
-(`mf4:group25`); the name is a convenience, the label is the identity. The subtraction itself is
+(`mf4:group25`); the name is a convenience, the label is the identity.
+
+**Several buses at once**, which is what a real bench needs — the ECU under test sits on all of
+them and gateways between them:
+
+```sh
+restbus --source capture.mf4 --exclude VCM_C \
+    --map CAN1,vcan0,com/CAN01-postfix.dbc \
+    --map CAN2,vcan1,com/CAN02-postfix.dbc
+```
+
+Every mapped bus replays from **one time-sorted stream against one clock**, so the recording's
+cross-bus ordering survives. Separate players per bus would put an arbitrary skew between them —
+invisible in a trace, and exactly the relationship a gateway is built to police. Frames are
+relabelled to their destination interface as they are selected, so the sender is a map lookup.
+
+Two mappings are refused rather than warned about, because both produce a run that looks like it
+worked: the same recorded bus mapped twice (its traffic sent two ways), and two recorded buses
+mapped onto one interface (ids that never shared a wire colliding — the collapse `mf4:busN`
+labelling exists to prevent, reintroduced by config). A mapped bus that yields no frames, or
+whose every frame belongs to the excluded node, is reported per bus rather than summed away. The subtraction itself is
 in `modules/player` (`without_senders`, `on_bus`, `check_nodes`), so the GUI will not have to
 re-decide any of it.
 
