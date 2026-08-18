@@ -1,0 +1,174 @@
+// Replaying SEVERAL recorded buses at once, which is the shape a real bench needs.
+//
+// The ECU under test sits on every bus in the recording, and on most of them it is a gateway:
+// it takes a message from one and emits a derived one on another, within a deadline it also
+// polices. That is the whole reason this is not just the single-bus path run N times.
+//
+// ONE CLOCK. All buses are replayed from a single time-sorted stream against one player, so the
+// recording's cross-bus ordering survives. N independent players, each started when its thread
+// happened to reach `play()`, would put an arbitrary skew between buses — invisible in a trace,
+// and precisely the relationship a gateway exists to check. A per-bus skew of a few milliseconds
+// is not a rounding error to a receiver watching for a response within ten.
+//
+// The trick that keeps the player bus-agnostic: entries are RE-LABELLED to their destination
+// interface as they are selected, so a sender only has to look up `entry.iface` in a map of open
+// buses. Nothing downstream needs to know a mapping existed.
+module player
+
+import canlog
+import candb
+import transport
+
+// BusSpec maps one recorded bus onto one live one. `src` is the label the recording's entries
+// carry (`mf4:group25`), NOT the name a person types — resolving a name to a label is the
+// caller's job, because a name is not unique and a label is.
+pub struct BusSpec {
+pub:
+	src                 string
+	dst                 string
+	db                  candb.Database
+	exclude             []string
+	replay_unattributed bool = true
+}
+
+// BusPlan is what one mapping did, kept per bus rather than summed. A total would hide the case
+// that matters: one bus subtracting to nothing while the others look healthy.
+pub struct BusPlan {
+pub:
+	src    string
+	dst    string
+	source int // frames on this bus in the recording
+	report Subtraction
+}
+
+// MultiPlan is the whole replay: one stream, and what each bus contributed to it.
+pub struct MultiPlan {
+pub:
+	entries []canlog.LogEntry // time-sorted, relabelled to destination interfaces
+	buses   []BusPlan
+	// The SOURCE span across every selected bus — not the span of what survived. Filtering must
+	// not shorten a lap or move its origin, and with several buses in one stream a per-bus span
+	// would be meaningless anyway.
+	t0_s  f64
+	end_s f64
+}
+
+// build_multi selects, subtracts and merges. Order of `specs` does not matter; the result is
+// sorted by recorded time, so the buses interleave exactly as they did in the car.
+pub fn build_multi(entries []canlog.LogEntry, specs []BusSpec) MultiPlan {
+	// ONE pass over the recording, in recorded order. Filtering bus by bus and sorting the
+	// concatenation by timestamp afterwards loses the order of frames that share a timestamp —
+	// and simultaneous cross-bus stimuli are exactly what a gateway is watching. Their order
+	// would then be decided by --map order or by the sort's tie behaviour, which is the skew
+	// this whole feature exists to avoid.
+	mut idx_of := map[string]int{} // src label -> index into specs
+	for i, sp in specs {
+		idx_of[sp.src] = i
+	}
+	mut deciders := []Decider{}
+	mut tallies := []Tally{}
+	mut sources := []int{}
+	for sp in specs {
+		deciders << new_decider(sp.db, sp.exclude, sp.replay_unattributed)
+		tallies << Tally{}
+		sources << 0
+	}
+	mut out := []canlog.LogEntry{}
+	mut t0 := 0.0
+	mut end := 0.0
+	mut seen_any := false
+	for e in entries {
+		i := idx_of[e.iface] or { continue }
+		sources[i]++
+		// The span comes from the SOURCE frames, before subtraction, across every mapped bus.
+		if !seen_any {
+			t0 = e.t_s
+			end = e.t_s
+			seen_any = true
+		} else {
+			if e.t_s < t0 {
+				t0 = e.t_s
+			}
+			if e.t_s > end {
+				end = e.t_s
+			}
+		}
+		if tallies[i].add(deciders[i].verdict(e.frame), e.frame.id) {
+			// Relabelled to the DESTINATION, so the sender is a map lookup and the player never
+			// learns that a mapping happened.
+			out << canlog.LogEntry{
+				t_s:   e.t_s
+				dir:   e.dir
+				iface: specs[i].dst
+				frame: e.frame
+			}
+		}
+	}
+	mut plans := []BusPlan{}
+	for i, sp in specs {
+		plans << BusPlan{
+			src:    sp.src
+			dst:    sp.dst
+			source: sources[i]
+			report: tallies[i].done(0) // kept is filled below from the tally's own counts
+		}
+	}
+	// kept per bus: the Tally does not know it, so count what each bus contributed.
+	mut kept_of := []int{len: specs.len}
+	for i in 0 .. specs.len {
+		kept_of[i] = sources[i] - plans[i].report.withheld_excluded - plans[i].report.withheld_unattributed
+	}
+	mut fixed := []BusPlan{}
+	for i, pl in plans {
+		fixed << BusPlan{
+			src:    pl.src
+			dst:    pl.dst
+			source: pl.source
+			report: Subtraction{
+				kept:                  kept_of[i]
+				withheld_excluded:     pl.report.withheld_excluded
+				withheld_unattributed: pl.report.withheld_unattributed
+				unattributed:          pl.report.unattributed
+				unknown:               pl.report.unknown
+				unattributed_ids:      pl.report.unattributed_ids
+				unknown_ids:           pl.report.unknown_ids
+			}
+		}
+	}
+	return MultiPlan{
+		entries: out
+		buses:   fixed
+		t0_s:    t0
+		end_s:   end
+	}
+}
+
+// conflicts reports mappings that cannot be run as given. Both are user errors that otherwise
+// produce a plausible-looking run: the same recorded bus sent to two places duplicates its
+// traffic, and two recorded buses sharing one destination merges buses that never shared a wire
+// — which is the collapse `bus_iface` in modules/mf4 exists to prevent, reintroduced by config.
+pub fn conflicts(specs []BusSpec) []string {
+	mut out := []string{}
+	mut src_seen := map[string]int{}
+	mut dst_seen := map[string]int{}
+	for sp in specs {
+		src_seen[sp.src]++
+		// By DESTINATION IDENTITY, not spelling. `inproc` and `inproc:CAN` are one medium; so
+		// are `pcan:PCAN_USBBUS1` and `pcan:usb1@500000`, which the vendor backend resolves to
+		// one handle. Compared as strings, two recorded buses would land on one live bus with
+		// this check reporting no conflict at all.
+		dst_seen[transport.destination_key(sp.dst)]++
+	}
+	for k, n in src_seen {
+		if n > 1 {
+			out << 'recorded bus ${k} is mapped ${n} times — its traffic would be sent twice'
+		}
+	}
+	for k, n in dst_seen {
+		if n > 1 {
+			out << '${n} recorded buses are mapped onto ${k} — ids that never shared a wire would collide'
+		}
+	}
+	out.sort()
+	return out
+}

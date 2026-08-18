@@ -22,6 +22,7 @@ module player
 
 import canlog
 import candb
+import transport
 
 // Subtraction is what a filter did, in enough detail to argue with. Every count is frames, not
 // message definitions, because what reaches the bus is frames.
@@ -51,6 +52,60 @@ fn key(id u32, ext bool) u64 {
 	return (u64(id) << 1) | u64(if ext { 1 } else { 0 })
 }
 
+// Decider is the subtraction expressed as a per-frame question. `without_senders` filters a
+// list; a caller that must preserve ORDER across several buses has to walk the recording once
+// and ask about each frame in place, and both must use the same rule or the policy lives twice.
+pub struct Decider {
+	senders_of          map[u64][]string
+	defined             map[u64]bool
+	excluded            map[string]bool
+	replay_unattributed bool
+}
+
+// Verdict says what happened to one frame, so a caller can count without re-deriving the reason.
+pub enum Verdict {
+	keep // a node we are not excluding sends it
+	keep_unknown // its id is not in the database at all — replayed, and reported
+	keep_unattributed // defined, no transmitter, policy says replay
+	drop_excluded // an excluded node sends it
+	drop_unattributed // defined, no transmitter, policy says withhold
+}
+
+pub fn new_decider(db candb.Database, exclude []string, replay_unattributed bool) Decider {
+	mut excluded := map[string]bool{}
+	for name in exclude {
+		excluded[name] = true
+	}
+	mut senders_of := map[u64][]string{}
+	mut defined := map[u64]bool{}
+	for m in db.messages {
+		k := key(m.id, m.ext)
+		senders_of[k] = m.senders()
+		defined[k] = true
+	}
+	return Decider{
+		senders_of:          senders_of.clone()
+		defined:             defined.clone()
+		excluded:            excluded.clone()
+		replay_unattributed: replay_unattributed
+	}
+}
+
+pub fn (d Decider) verdict(f transport.CanFrame) Verdict {
+	k := key(f.id, f.extended)
+	if k !in d.defined {
+		return .keep_unknown
+	}
+	senders := d.senders_of[k] or { []string{} }
+	if senders.len == 0 {
+		return if d.replay_unattributed { Verdict.keep_unattributed } else { Verdict.drop_unattributed }
+	}
+	if senders.any(it in d.excluded) {
+		return .drop_excluded
+	}
+	return .keep
+}
+
 // on_bus keeps only the entries recorded on one bus. Replay drives one channel from one
 // recorded bus; a multi-bus file merged onto a single channel would collide ids that never
 // shared a wire.
@@ -69,71 +124,69 @@ pub fn on_bus(entries []canlog.LogEntry, iface string) []canlog.LogEntry {
 // recording proves the frame was on the wire, and dropping everything the database omits would
 // silently gut a rest bus wherever the database is incomplete — which is the common case.
 pub fn without_senders(entries []canlog.LogEntry, db candb.Database, exclude []string, replay_unattributed bool) ([]canlog.LogEntry, Subtraction) {
-	mut excluded := map[string]bool{}
-	for name in exclude {
-		excluded[name] = true
-	}
-	// (id, kind) -> sender, once, rather than a linear scan of the database per frame. A capture
-	// is hundreds of thousands of frames and a database is hundreds of messages; the product is
-	// what made this worth a map.
-	//
-	// EXACT matches only — deliberately not candb.lookup_frame, whose J1939 PGN fallback would
-	// attribute a frame to a definition whose source address differs. Here that would withhold
-	// another ECU's traffic under the SUT's name, and silence is the failure this tool is least
-	// able to notice. Ids the database does not define exactly are reported as unknown instead,
-	// where a person can see them.
-	// EVERY declared transmitter, not just the BO_ one: a DBC may add more with BO_TX_BU_, and
-	// if the SUT is among them, matching only the first replays its own frames back at it.
-	mut senders_of := map[u64][]string{}
-	mut defined := map[u64]bool{}
-	for m in db.messages {
-		k := key(m.id, m.ext)
-		senders_of[k] = m.senders()
-		defined[k] = true
-	}
+	d := new_decider(db, exclude, replay_unattributed)
 	mut kept := []canlog.LogEntry{cap: entries.len}
-	mut withheld_excluded := 0
-	mut withheld_unattr := 0
-	mut unattr := map[u32]bool{}
-	mut unknown := map[u32]bool{}
-	mut unattr_n := 0
-	mut unknown_n := 0
+	mut acc := Tally{}
 	for e in entries {
-		id := e.frame.id
-		k := key(id, e.frame.extended)
-		if k !in defined {
-			unknown[id] = true
-			unknown_n++
+		if acc.add(d.verdict(e.frame), e.frame.id) {
 			kept << e
-			continue
 		}
-		senders := senders_of[k] or { []string{} }
-		if senders.len == 0 {
-			unattr[id] = true
-			unattr_n++
-			if replay_unattributed {
-				kept << e
-			} else {
-				withheld_unattr++
-			}
-			continue
-		}
-		if senders.any(it in excluded) {
-			withheld_excluded++
-			continue
-		}
-		kept << e
 	}
-	mut u_ids := unattr.keys()
+	return kept, acc.done(kept.len)
+}
+
+// Tally accumulates verdicts into a Subtraction. Shared by the single-bus filter and the
+// multi-bus walk so their reports cannot drift apart.
+pub struct Tally {
+mut:
+	withheld_excluded int
+	withheld_unattr   int
+	unattr_n          int
+	unknown_n         int
+	unattr            map[u32]bool
+	unknown           map[u32]bool
+}
+
+// add records one verdict and reports whether the frame survives.
+pub fn (mut t Tally) add(v Verdict, id u32) bool {
+	match v {
+		.keep {
+			return true
+		}
+		.keep_unknown {
+			t.unknown[id] = true
+			t.unknown_n++
+			return true
+		}
+		.keep_unattributed {
+			t.unattr[id] = true
+			t.unattr_n++
+			return true
+		}
+		.drop_unattributed {
+			t.unattr[id] = true
+			t.unattr_n++
+			t.withheld_unattr++
+			return false
+		}
+		.drop_excluded {
+			t.withheld_excluded++
+			return false
+		}
+	}
+}
+
+pub fn (t Tally) done(kept int) Subtraction {
+	mut u_ids := t.unattr.keys()
 	u_ids.sort()
-	mut k_ids := unknown.keys()
+	mut k_ids := t.unknown.keys()
 	k_ids.sort()
-	return kept, Subtraction{
-		kept:                  kept.len
-		withheld_excluded:     withheld_excluded
-		withheld_unattributed: withheld_unattr
-		unattributed:          unattr_n
-		unknown:               unknown_n
+	return Subtraction{
+		kept:                  kept
+		withheld_excluded:     t.withheld_excluded
+		withheld_unattributed: t.withheld_unattr
+		unattributed:          t.unattr_n
+		unknown:               t.unknown_n
 		unattributed_ids:      u_ids
 		unknown_ids:           k_ids
 	}

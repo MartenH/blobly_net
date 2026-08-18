@@ -148,6 +148,52 @@ pub fn canonical_iface(iface string) string {
 	return i
 }
 
+// same_destination reports whether two interface strings would open the SAME bus. Stricter than
+// canonical_iface, which normalises the software buses only: the Windows vendor backends accept
+// SEVERAL spellings of one channel (`PCAN_USBBUS1`, `usb1`, `1`, `0x51` all resolve to one
+// handle) and treat an omitted bitrate as the default, so two mappings can address one physical
+// channel while looking different. A conflict check that compares strings misses exactly that,
+// and the cost is two recorded buses emitted onto one wire.
+pub fn same_destination(a string, b string) bool {
+	return destination_key(a) == destination_key(b)
+}
+
+// destination_key is the identity used for that comparison: the canonical software-bus form,
+// or for a vendor interface the backend, the RESOLVED channel handle and the bitrate.
+//
+// Resolved by the backend's own function, not by a second implementation of its rules. A
+// parallel one drifts: stripping the `usb` prefix gave `pcan:usb1` the key `1` while `pcan:0x51`
+// — the same channel, since PCAN_USBBUS1 IS 0x51 — keyed as `81`, so two mappings onto one
+// physical bus still looked different. Whatever the backend will open is the identity.
+pub fn destination_key(iface string) string {
+	i := iface.trim_space()
+	if !vendor_iface(i) {
+		return canonical_iface(i)
+	}
+	body := i.all_before('@')
+	kind := body.all_before(':').to_lower()
+	ch := body.all_after(':').trim_space()
+	// NUMERICALLY, where the backend parses numerically. open_kvaser takes `.int()` of the
+	// channel and both vendor opens take `.int()` of the bitrate, so `kvaser:0` and `kvaser:00`,
+	// or `@500000` and `@0500000`, open the same channel at the same rate while differing as
+	// strings. Comparing the strings let two mappings share one physical bus undetected.
+	raw_rate := if i.contains('@') { i.all_after('@').trim_space() } else { '500000' }
+	rate := raw_rate.int().str()
+	mut resolved := ch.to_lower()
+	$if windows {
+		if kind == 'pcan' {
+			if h := pcan_handle(ch) {
+				resolved = '0x${h:X}'
+			}
+			// An unresolvable channel keeps its spelling: two identical bad strings still
+			// collide, and a wrong guess here would merge buses that never open at all.
+		} else if kind == 'kvaser' {
+			resolved = ch.int().str() // exactly what open_kvaser does with it
+		}
+	}
+	return '${kind}:${resolved}@${rate}'
+}
+
 // wire_frame is the frame this interface will ACTUALLY put on the bus. Where the backend clamps,
 // that means a classic id masked to its declared width and at most 8 bytes: a caller that records
 // what it ASKED for records something that never existed — and, for echo matching, something that

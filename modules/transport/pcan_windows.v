@@ -136,25 +136,6 @@ pub fn (mut b PcanBus) close() {
 
 // pcan_handle maps a channel spec to a PCANBasic channel handle. USB handles are
 // 0x51..0x58 (PCAN_USBBUS1..8) — the common case for the owner's adapters.
-fn pcan_handle(s string) !u16 {
-	t := s.trim_space()
-	low := t.to_lower()
-	if low.starts_with('0x') {
-		return u16(t.all_after('0x').parse_uint(16, 16) or { return error('bad PCAN handle "${t}"') })
-	}
-	mut n := -1
-	if low.starts_with('pcan_usbbus') {
-		n = low.all_after('pcan_usbbus').int()
-	} else if low.starts_with('usb') {
-		n = low.all_after('usb').int()
-	} else if t[0].is_digit() {
-		n = t.int()
-	}
-	if n >= 1 && n <= 8 {
-		return u16(0x50 + n) // PCAN_USBBUS1 == 0x51
-	}
-	return error('unknown PCAN channel "${t}" (use PCAN_USBBUS1..8, usb1.., 1.., or 0x51)')
-}
 
 // pcan_baud maps a bit rate to the PCANBasic BTR0BTR1 baudrate code.
 fn pcan_baud(bitrate int) !u16 {
