@@ -404,26 +404,19 @@ fn uniq_dbcs(maps []string) int {
 	return seen.len
 }
 
-// resolve_bus accepts either the recording's own name for a bus ('CAN1') or the label its frames
-// carry ('mf4:group25'). The name is what a person knows; the label is the identity. Ambiguity is
-// refused rather than resolved by picking one — acquisition names are free text and not unique.
+// resolve_bus asks modules/player, which owns the rule — see the note there on why this is not
+// a front-end concern.
 fn resolve_bus(buses []mf4.BusInfo, want string) !string {
-	if want == '' {
-		return error('no --bus given')
-	}
+	mut names := []player.BusName{}
+	mut labels := []string{}
 	for b in buses {
-		if b.iface == want {
-			return b.iface
+		names << player.BusName{
+			iface: b.iface
+			name:  b.name
 		}
+		labels << b.iface
 	}
-	hits := buses.filter(it.name == want)
-	if hits.len == 1 {
-		return hits[0].iface
-	}
-	if hits.len > 1 {
-		return error('"${want}" names ${hits.len} buses in this recording: ${hits.map(it.iface).join(', ')} — use the label instead')
-	}
-	return error('no bus called "${want}" in this recording')
+	return player.resolve_bus(names, labels, want)
 }
 
 fn hex_ids(ids []u32) string {

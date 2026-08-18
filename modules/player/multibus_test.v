@@ -223,3 +223,53 @@ fn test_the_per_bus_numbers_balance() {
 		assert b.source == r.kept + r.withheld_excluded + r.withheld_unattributed, '${b.src}: ${b.source} != ${r.kept}+${r.withheld_excluded}+${r.withheld_unattributed}'
 	}
 }
+
+// The label is the identity; the acquisition name is free text a writer chose. There were two
+// implementations of this rule (GUI and CLI) and they had already drifted, which is why it lives
+// here now — deciding which bus a recording means is a fact about the file, not a front end's.
+fn test_resolve_bus_prefers_the_label() {
+	buses := [
+		BusName{
+			iface: 'mf4:group1'
+			name:  'CAN1'
+		},
+		BusName{
+			iface: 'mf4:group2'
+			name:  'mf4:group1' // this bus's NAME collides with the other's LABEL
+		},
+	]
+	labels := ['mf4:group1', 'mf4:group2']
+	// the label wins, so the collision cannot divert group1's traffic to group2
+	assert resolve_bus(buses, labels, 'mf4:group1')! == 'mf4:group1'
+	assert resolve_bus(buses, labels, 'CAN1')! == 'mf4:group1'
+}
+
+fn test_resolve_bus_refuses_what_it_cannot_decide() {
+	two := [
+		BusName{
+			iface: 'a'
+			name:  'CAN1'
+		},
+		BusName{
+			iface: 'b'
+			name:  'CAN1'
+		},
+	]
+	// one name, two buses: refused rather than resolved by picking one
+	if _ := resolve_bus(two, ['a', 'b'], 'CAN1') {
+		assert false, 'an ambiguous name must not resolve'
+	}
+	// no name given and several buses present: the caller has to choose
+	if _ := resolve_bus(two, ['a', 'b'], '') {
+		assert false, 'a multi-bus recording needs a bus named'
+	}
+	// no name given and exactly one bus: nothing to choose
+	assert resolve_bus([BusName{
+		iface: 'only'
+		name:  ''
+	}], ['only'], '')! == 'only'
+	// a name nothing carries
+	if _ := resolve_bus(two, ['a', 'b'], 'nope') {
+		assert false, 'an unknown bus must be refused'
+	}
+}

@@ -163,6 +163,11 @@ struct ReplayState {
 	gen  u64  // the run it belongs to; anything older is stale
 	live bool // a worker is running
 	done bool // it played to the end and should not restart on its own
+	// Which worker owns this entry. An interrupted group writes live:false on its way out, and a
+	// channel re-enabled in that instant starts a REPLACEMENT for the same source and the same
+	// run — after which the old worker's cleanup would clear the newcomer's state and leave a
+	// live worker that nothing knows about. Only the token holder may write.
+	token u64
 }
 
 struct App {
@@ -178,6 +183,7 @@ mut:
 	// like one that needs starting, so enabling any unrelated channel restarted it; keeping it
 	// made a group that had stopped unrestartable. Guarded by app.mu like the rest of App.
 	replay_state map[string]ReplayState
+	replay_token u64 // monotonic; identifies which worker owns a replay_state entry
 	// Destinations covered by a live group, so a channel enabled late can be told it is not one.
 	replay_live_ifaces map[string]bool
 	trace_seq          u64
@@ -2129,7 +2135,7 @@ fn diag_server_loop(app &App, iface string, chan_name string) {
 //
 // Channels replaying DIFFERENT files get their own group and their own clock, because timestamps
 // from two recordings are not comparable — nothing would be synchronised by pretending they are.
-fn replay_group(app &App, source string, cis []int, gen u64) {
+fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	mut a := unsafe { app }
 	a.mu.lock()
 	mut chans := []Chan{}
@@ -2171,6 +2177,21 @@ fn replay_group(app &App, source string, cis []int, gen u64) {
 		time.sleep(20 * time.millisecond)
 		waited += 20
 	}
+	// Falling through used to mean "transmit anyway", which is the wrong half of the trade: the
+	// frames go out unheard, their echoes are unclaimed, and the trace files them as the device
+	// under test's traffic. A bus that will not open is a bench that is not ready.
+	mut not_up := []string{}
+	a.mu.lock()
+	for ci in cis {
+		if ci < a.chans.len && a.chans[ci].enabled && !a.chans[ci].running {
+			not_up << a.chans[ci].name
+		}
+	}
+	a.mu.unlock()
+	if not_up.len > 0 {
+		a.notify('replay ${label}: ${not_up.join(', ')} never came up — not starting')
+		return
+	}
 
 	// `live` was set by the caller before this worker existed, so EVERY exit from here on has to
 	// clear it — not just the normal one at the bottom. A decode failure that left it set meant
@@ -2178,10 +2199,11 @@ fn replay_group(app &App, source string, cis []int, gen u64) {
 	defer {
 		a.mu.lock()
 		st := a.replay_state[source] or { ReplayState{} }
-		if st.gen == gen && st.live {
+		if st.gen == gen && st.live && st.token == token {
 			a.replay_state[source] = ReplayState{
-				gen:  gen
-				live: false
+				gen:   gen
+				live:  false
+				token: token
 			}
 			for ch in chans {
 				a.replay_live_ifaces.delete(ch.iface)
@@ -2198,15 +2220,18 @@ fn replay_group(app &App, source string, cis []int, gen u64) {
 	mut specs := []player.BusSpec{}
 	for ch in chans {
 		src_label := resolve_replay_bus(all, buses, ch) or {
-			a.notify('replay ${ch.name}: ${err}')
-			continue
+			// The WHOLE group, not just this channel: the others would otherwise transmit a
+			// partial plan, which is the same incomplete cross-bus picture as a destination that
+			// failed to open — convincing, and missing a wire.
+			a.notify('replay ${label}: ${ch.name}: ${err} — not starting')
+			return
 		}
 		db := replay_db(a, ch)
 		if ch.replay_exclude.len > 0 {
 			missing := player.check_nodes(db, ch.replay_exclude)
 			if missing.len > 0 {
-				a.notify('replay ${ch.name}: the channel databases do not declare ${missing.join(', ')} — nothing would be subtracted')
-				continue
+				a.notify('replay ${label}: ${ch.name}: the channel databases do not declare ${missing.join(', ')} — not starting')
+				return
 			}
 		}
 		specs << player.BusSpec{
@@ -2343,11 +2368,13 @@ fn replay_group(app &App, source string, cis []int, gen u64) {
 	ended := p.finished()
 	a.mu.lock()
 	st := a.replay_state[source] or { ReplayState{} }
-	if st.gen == gen {
+	// Only the owner writes: a replacement worker may already have claimed this source.
+	if st.gen == gen && st.token == token {
 		a.replay_state[source] = ReplayState{
-			gen:  gen
-			live: false
-			done: ended
+			gen:   gen
+			live:  false
+			done:  ended
+			token: token
 		}
 	}
 	for ch in chans {
@@ -2384,8 +2411,38 @@ fn (mut app App) spawn_replay_workers_locked() []ReplaySpawn {
 			by_src[os.real_path(c.replay_src)] << i
 		}
 	}
+	// ACROSS every group, before starting any of them. player.conflicts() is given one
+	// recording's specs, so two channels replaying DIFFERENT files onto one interface never
+	// meet inside it — and two recordings on one wire is the id collision that grouping exists
+	// to prevent, arriving by another door.
+	mut dst_owner := map[string]string{}
+	mut clash := []string{}
+	for src, cis in by_src {
+		for ci in cis {
+			if ci >= app.chans.len {
+				continue
+			}
+			k := transport.destination_key(app.chans[ci].iface)
+			if prev := dst_owner[k] {
+				if prev != src {
+					clash << '${app.chans[ci].iface} (${os.base(prev)} and ${os.base(src)})'
+				}
+			} else {
+				dst_owner[k] = src
+			}
+		}
+	}
 	mut to_start := map[string][]int{}
 	mut late := []string{}
+	if clash.len > 0 {
+		return [
+			ReplaySpawn{
+				late: [
+					'two recordings are mapped onto one interface: ${clash.join(', ')} — not starting either',
+				]
+			},
+		]
+	}
 	for src, cis in by_src {
 		st := app.replay_state[src] or { ReplayState{} }
 		if st.gen == app.run_gen && st.live {
@@ -2403,9 +2460,11 @@ fn (mut app App) spawn_replay_workers_locked() []ReplaySpawn {
 		if st.gen == app.run_gen && st.done {
 			continue // it finished this run; it does not restart because a sibling was enabled
 		}
+		app.replay_token++
 		app.replay_state[src] = ReplayState{
-			gen:  app.run_gen
-			live: true
+			gen:   app.run_gen
+			live:  true
+			token: app.replay_token
 		}
 		to_start[src] = cis.clone()
 		for ci in cis {
@@ -2421,6 +2480,7 @@ fn (mut app App) spawn_replay_workers_locked() []ReplaySpawn {
 			source: src
 			cis:    cis
 			gen:    gen
+			token:  (app.replay_state[src] or { ReplayState{} }).token
 			late:   []string{}
 		}
 	}
@@ -2438,6 +2498,7 @@ struct ReplaySpawn {
 	source string
 	cis    []int
 	gen    u64
+	token  u64
 	late   []string
 }
 
@@ -2448,7 +2509,7 @@ fn (mut app App) run_replay_spawns(items []ReplaySpawn) {
 			app.notify('${n}: that recording is already playing — it joins on the next Start')
 		}
 		if it.source != '' {
-			spawn replay_group(app, it.source, it.cis, it.gen)
+			spawn replay_group(app, it.source, it.cis, it.gen, it.token)
 		}
 	}
 }
@@ -2469,43 +2530,23 @@ fn load_recording_for_replay(source string) !([]canlog.LogEntry, []mf4.BusInfo) 
 	return es.clone(), []mf4.BusInfo{}
 }
 
-// resolve_replay_bus turns the channel's `bus:` into the label its frames carry. A single-bus
-// recording needs no choice; several do, and guessing would put another bus's ids on this wire.
+// resolve_replay_bus asks modules/player, which owns the rule. The GUI and cmd/restbus each had
+// their own copy and had already drifted; which bus a recording means is a fact about the file.
 fn resolve_replay_bus(all []canlog.LogEntry, buses []mf4.BusInfo, ch Chan) !string {
-	mut labels := map[string]bool{}
+	mut seen := map[string]bool{}
 	for e in all {
-		labels[e.iface] = true
+		seen[e.iface] = true
 	}
-	if ch.replay_bus == '' {
-		if labels.len != 1 {
-			return error('${os.base(ch.replay_src)} holds ${labels.len} buses — set `bus:` to choose one')
-		}
-		return labels.keys()[0]
-	}
-	// LABEL first, in its own pass: the label is the identity and the name is free text a writer
-	// chose. Testing both together let one bus's acquisition name shadow another bus's label and
-	// send that bus's traffic to this wire.
+	mut names := []player.BusName{}
 	for b in buses {
-		if b.iface == ch.replay_bus {
-			return b.iface
+		names << player.BusName{
+			iface: b.iface
+			name:  b.name
 		}
 	}
-	if ch.replay_bus in labels {
-		return ch.replay_bus
+	return player.resolve_bus(names, seen.keys(), ch.replay_bus) or {
+		error('${err} (${os.base(ch.replay_src)})')
 	}
-	mut named := []string{}
-	for b in buses {
-		if b.name != '' && b.name == ch.replay_bus {
-			named << b.iface
-		}
-	}
-	if named.len == 1 {
-		return named[0]
-	}
-	if named.len > 1 {
-		return error('"${ch.replay_bus}" names ${named.len} buses in ${os.base(ch.replay_src)} — use the label instead')
-	}
-	return error('no bus "${ch.replay_bus}" in ${os.base(ch.replay_src)}')
 }
 
 // replay_db merges the channel's databases. resolve_asset AND real_path: app.dbs_paths is keyed
