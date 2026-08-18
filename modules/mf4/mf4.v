@@ -139,6 +139,12 @@ fn parse_recording(buf []u8) !Recording {
 		return error('not an MDF file (bad id block)')
 	}
 	mut out := []canlog.LogEntry{}
+	// Tie-break key, one per entry: the record's position in an unsorted data group's
+	// interleaved stream. Sorting by timestamp alone reorders frames that share one, and in an
+	// unsorted file that interleaving is the only cross-bus ordering the recording has.
+	// Sorted data groups store each bus separately, so the file states no order between them —
+	// they get max_int and keep the decoder's own sequence.
+	mut order := []int{}
 	// HDBLOCK is at the fixed offset 64; its first link is the first DGBLOCK.
 	hd := block_links(buf, 64)
 	mut dg := if hd.len > 0 { hd[0] } else { u64(0) }
@@ -156,7 +162,11 @@ fn parse_recording(buf []u8) !Recording {
 			start := out.len
 			if rec_id_size == 0 {
 				// Sorted: one CG per DG, the data block is its record stream.
+				before := out.len
 				parse_cg(buf, cg_first, raw, unfin, map[u64][]u8{}, group, mut out)!
+				for _ in before .. out.len {
+					order << max_int
+				}
 				group++
 				// cg_tx_acq_name is link 2. Read AFTER the decode and only over the entries it
 				// produced, so the name follows the frames rather than being guessed at.
@@ -166,12 +176,32 @@ fn parse_recording(buf []u8) !Recording {
 			} else {
 				// Tallied per channel group inside, since each has its own acquisition name.
 				group = demux_unsorted(buf, cg_first, raw, int(rec_id_size), unfin, group, mut
-					out, mut bus_names, mut bus_counts)!
+					out, mut bus_names, mut bus_counts, mut order)!
 			}
 		}
 		dg = if dgl.len > 0 { dgl[0] } else { u64(0) }
 	}
-	out.sort(a.t_s < b.t_s)
+	// Sorted as PAIRS so the tie-break survives: sorting `out` alone would leave `order`
+	// pointing at the wrong entries, which is worse than not having it.
+	mut idx := []int{len: out.len, init: index}
+	idx.sort_with_compare(fn [out, order] (a &int, b &int) int {
+		ta := out[*a].t_s
+		tb := out[*b].t_s
+		if ta != tb {
+			return if ta < tb { -1 } else { 1 }
+		}
+		oa := order[*a]
+		ob := order[*b]
+		if oa != ob {
+			return if oa < ob { -1 } else { 1 }
+		}
+		return 0
+	})
+	mut sorted := []canlog.LogEntry{cap: out.len}
+	for i in idx {
+		sorted << out[i]
+	}
+	out = sorted.clone()
 	// A name that covers SEVERAL labels is not a name for any of them. One channel group whose
 	// records carry their own BusChannel produces two buses under one acquisition name, and
 	// handing that name to both would let a caller ask for a bus the file cannot single out —
@@ -215,7 +245,7 @@ struct CgInfo {
 // CANedge stores classic-CAN DataBytes).
 // Returns the next free group ordinal, so numbering stays unique across data groups.
 fn demux_unsorted(buf []u8, cg_first u64, raw []u8, rec_id_size int, unfin bool, group int,
-	mut out []canlog.LogEntry, mut names map[string]string, mut counts map[string]int) !int {
+	mut out []canlog.LogEntry, mut names map[string]string, mut counts map[string]int, mut order []int) !int {
 	mut cgs := []CgInfo{}
 	mut cgi := cg_first
 	for cgi != 0 {
@@ -231,10 +261,17 @@ fn demux_unsorted(buf []u8, cg_first u64, raw []u8, rec_id_size int, unfin bool,
 		cgi = if l.len > 0 { l[0] } else { u64(0) }
 	}
 	mut streams := map[u64][]u8{} // fixed-length CGs, keyed by record id
+	// Where each of those records sat in the INTERLEAVED stream. Splitting by record id and
+	// decoding one CG at a time discards the only cross-bus ordering an unsorted file has: two
+	// frames sharing a timestamp come back in channel-group order instead of the order the
+	// logger wrote them, and a replay then reorders simultaneous stimuli across buses.
+	mut ordinals := map[u64][]int{}
+	mut rec_n := 0
 	mut vlsd_streams := map[u64][]u8{} // VLSD CGs, keyed by CG block address
 	mut pos := 0
 	outer: for pos + rec_id_size <= raw.len {
 		rid := read_uint(raw, pos, 0, rec_id_size * 8)
+		rec_n++
 		pos += rec_id_size
 		mut found := false
 		for c in cgs {
@@ -257,6 +294,7 @@ fn demux_unsorted(buf []u8, cg_first u64, raw []u8, rec_id_size int, unfin bool,
 					break outer
 				}
 				streams[c.rec_id] << raw[pos..pos + c.size]
+				ordinals[c.rec_id] << rec_n
 				pos += c.size
 			}
 			break
@@ -271,6 +309,12 @@ fn demux_unsorted(buf []u8, cg_first u64, raw []u8, rec_id_size int, unfin bool,
 			start := out.len
 			parse_cg(buf, c.link, streams[c.rec_id] or { []u8{} }, unfin, vlsd_streams, g, mut
 				out)!
+			// One entry per record, in record order, so the ordinals line up positionally and
+			// the interleaved order can be restored after every CG has been decoded.
+			ords := ordinals[c.rec_id] or { []int{} }
+			for k in start .. out.len {
+				order << if k - start < ords.len { ords[k - start] } else { max_int }
+			}
 			g++
 			// Each channel group here has its OWN cg_tx_acq_name — sharing a record stream is a
 			// storage detail, not a reason to leave every bus in the file unnamed.

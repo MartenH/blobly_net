@@ -195,3 +195,33 @@ fn test_wire_frame_does_not_clamp_an_fd_payload() {
 	assert w.data.len == 64
 	assert w.data[63] == 0xAB
 }
+
+// A conflict check that compares interface STRINGS misses two spellings of one bus. The software
+// buses were covered by canonical_iface; the Windows vendor backends were not, and they accept
+// several spellings of one channel plus a default bitrate — so two mappings could address one
+// physical channel while looking different, and two recorded buses would land on one wire.
+//
+// PLATFORM-DEPENDENT, exactly as vendor_iface is: on Linux `pcan:usb1` is not a vendor handle at
+// all, it is an ordinary SocketCAN interface NAME, and `pcan:1` is a different one. Collapsing
+// them there would merge two real interfaces — the opposite mistake.
+fn test_one_vendor_channel_has_one_destination_identity() {
+	$if windows {
+		for a in ['pcan:PCAN_USBBUS1', 'pcan:usb1', 'pcan:1', 'pcan:PCAN_USBBUS1@500000'] {
+			assert same_destination(a, 'pcan:usb1@500000'), '${a} was treated as a different bus'
+		}
+		assert !same_destination('pcan:usb1', 'pcan:usb2')
+		assert !same_destination('pcan:usb1@500000', 'pcan:usb1@250000')
+	} $else {
+		// here they are distinct SocketCAN names and must stay distinct
+		assert !same_destination('pcan:usb1', 'pcan:1')
+		assert same_destination('pcan:usb1', 'pcan:usb1')
+	}
+}
+
+// The software buses keep the behaviour canonical_iface already gave them, on every platform.
+fn test_software_bus_spellings_still_collapse() {
+	assert same_destination('inproc', 'inproc:CAN')
+	assert same_destination('udp', 'udp:239.63.42.1:20000')
+	assert !same_destination('inproc:a', 'inproc:b')
+	assert !same_destination('vcan0', 'vcan1')
+}

@@ -148,6 +148,41 @@ pub fn canonical_iface(iface string) string {
 	return i
 }
 
+// same_destination reports whether two interface strings would open the SAME bus. Stricter than
+// canonical_iface, which normalises the software buses only: the Windows vendor backends accept
+// SEVERAL spellings of one channel (`PCAN_USBBUS1`, `usb1`, `1`, `0x51` all resolve to one
+// handle) and treat an omitted bitrate as the default, so two mappings can address one physical
+// channel while looking different. A conflict check that compares strings misses exactly that,
+// and the cost is two recorded buses emitted onto one wire.
+pub fn same_destination(a string, b string) bool {
+	return destination_key(a) == destination_key(b)
+}
+
+// destination_key is the identity used for that comparison: the canonical software-bus form, or
+// for a vendor interface the backend, the resolved channel number and the bitrate.
+pub fn destination_key(iface string) string {
+	i := iface.trim_space()
+	if !vendor_iface(i) {
+		return canonical_iface(i)
+	}
+	body := i.all_before('@')
+	rate := if i.contains('@') { i.all_after('@').trim_space() } else { '500000' }
+	kind := body.all_before(':').to_lower()
+	ch := body.all_after(':').trim_space().to_lower()
+	// The digits are what the backend resolves to a handle; the prefix is decoration.
+	mut n := ch
+	for p in ['pcan_usbbus', 'usb', 'pcan_pcibus', 'pci'] {
+		if n.starts_with(p) {
+			n = n.all_after(p)
+			break
+		}
+	}
+	if n.starts_with('0x') {
+		n = u64(n.all_after('0x').parse_uint(16, 16) or { 0 }).str()
+	}
+	return '${kind}:${n}@${rate}'
+}
+
 // wire_frame is the frame this interface will ACTUALLY put on the bus. Where the backend clamps,
 // that means a classic id masked to its declared width and at most 8 bytes: a caller that records
 // what it ASKED for records something that never existed — and, for echo matching, something that

@@ -153,11 +153,11 @@ pub fn conflicts(specs []BusSpec) []string {
 	mut dst_seen := map[string]int{}
 	for sp in specs {
 		src_seen[sp.src]++
-		// CANONICAL, because `inproc` and `inproc:CAN`, or `udp` and `udp:239.63.42.1:20000`,
-		// are the same medium spelled two ways — and transport.canonical_iface exists precisely
-		// so an identity is not decided by a spelling. Compared as strings, two recorded buses
-		// would land on one live bus with this check reporting no conflict at all.
-		dst_seen[transport.canonical_iface(sp.dst)]++
+		// By DESTINATION IDENTITY, not spelling. `inproc` and `inproc:CAN` are one medium; so
+		// are `pcan:PCAN_USBBUS1` and `pcan:usb1@500000`, which the vendor backend resolves to
+		// one handle. Compared as strings, two recorded buses would land on one live bus with
+		// this check reporting no conflict at all.
+		dst_seen[transport.destination_key(sp.dst)]++
 	}
 	for k, n in src_seen {
 		if n > 1 {
