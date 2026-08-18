@@ -139,12 +139,15 @@ fn parse_recording(buf []u8) !Recording {
 		return error('not an MDF file (bad id block)')
 	}
 	mut out := []canlog.LogEntry{}
-	// Tie-break key, one per entry: the record's position in an unsorted data group's
-	// interleaved stream. Sorting by timestamp alone reorders frames that share one, and in an
-	// unsorted file that interleaving is the only cross-bus ordering the recording has.
-	// Sorted data groups store each bus separately, so the file states no order between them —
-	// they get max_int and keep the decoder's own sequence.
+	// Tie-break key, one per entry, on ONE monotone scale across the whole file: the position of
+	// the record that produced it. Sorting by timestamp alone reorders frames that share one,
+	// and that order is real — a SORTED data group still carries several buses when its records
+	// have a BusChannel column (samples/two_buses.mf4 is exactly that), so its record stream
+	// orders them just as an unsorted group's interleaving does. An earlier version gave sorted
+	// groups max_int on the reasoning that each stores one bus; that is true only of buses in
+	// SEPARATE groups, and it discarded the order inside a multi-bus one.
 	mut order := []int{}
+	mut seq := 0
 	// HDBLOCK is at the fixed offset 64; its first link is the first DGBLOCK.
 	hd := block_links(buf, 64)
 	mut dg := if hd.len > 0 { hd[0] } else { u64(0) }
@@ -164,8 +167,10 @@ fn parse_recording(buf []u8) !Recording {
 				// Sorted: one CG per DG, the data block is its record stream.
 				before := out.len
 				parse_cg(buf, cg_first, raw, unfin, map[u64][]u8{}, group, mut out)!
+				// One entry per record, in record order, so the counter IS the record position.
 				for _ in before .. out.len {
-					order << max_int
+					order << seq
+					seq++
 				}
 				group++
 				// cg_tx_acq_name is link 2. Read AFTER the decode and only over the entries it
@@ -175,8 +180,18 @@ fn parse_recording(buf []u8) !Recording {
 				tally_buses(out[start..], acq, mut bus_names, mut bus_counts)
 			} else {
 				// Tallied per channel group inside, since each has its own acquisition name.
+				base := seq
+				before := out.len
 				group = demux_unsorted(buf, cg_first, raw, int(rec_id_size), unfin, group, mut
 					out, mut bus_names, mut bus_counts, mut order)!
+				// demux appends this group's INTERLEAVED record ordinals; lift them onto the
+				// file-wide scale so ties never compare a per-group ordinal against a global one.
+				for k in before .. out.len {
+					if order[k] != max_int {
+						order[k] += base
+					}
+				}
+				seq = base + (out.len - before)
 			}
 		}
 		dg = if dgl.len > 0 { dgl[0] } else { u64(0) }

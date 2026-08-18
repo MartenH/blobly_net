@@ -505,9 +505,21 @@ fn build_mlsd_file(payloads [][]u8, ids []u32, lengths []u32) []u8 {
 	return build_mlsd_file_m(payloads, ids, lengths, false)
 }
 
+// A SORTED group carrying SEVERAL buses, which is the common real shape (samples/two_buses.mf4):
+// one CAN_DataFrame group whose records each name their bus. `buses` and `times` are per record,
+// so a caller can put two buses at one timestamp in a chosen order.
+fn build_mlsd_multibus(payloads [][]u8, ids []u32, buses []u32, times []f64) []u8 {
+	return build_mlsd_file_x(payloads, ids, []u32{len: payloads.len, init: u32(payloads[index].len)},
+		false, buses, times)
+}
+
 // dlc_mode names the length channel DLC rather than DataLength, so it carries a CODE that has to
 // be decoded instead of a byte count.
 fn build_mlsd_file_m(payloads [][]u8, ids []u32, lengths []u32, dlc_mode bool) []u8 {
+	return build_mlsd_file_x(payloads, ids, lengths, dlc_mode, []u32{}, []f64{})
+}
+
+fn build_mlsd_file_x(payloads [][]u8, ids []u32, lengths []u32, dlc_mode bool, buses []u32, times []f64) []u8 {
 	mut b := Mdf4Builder{}
 	b.buf << 'MDF     '.bytes()
 	b.buf << '4.10    '.bytes()
@@ -522,7 +534,8 @@ fn build_mlsd_file_m(payloads [][]u8, ids []u32, lengths []u32, dlc_mode bool) [
 	for i, x in le_bytes(u64(payloads.len), 8) {
 		cg_d[8 + i] = x
 	}
-	for i, x in le_bytes(25, 4) {
+	rec_len := if buses.len > 0 { 26 } else { 25 }
+	for i, x in le_bytes(u64(rec_len), 4) {
 		cg_d[24 + i] = x
 	}
 	cg := b.block('##CG', 6, cg_d)
@@ -533,6 +546,11 @@ fn build_mlsd_file_m(payloads [][]u8, ids []u32, lengths []u32, dlc_mode bool) [
 	cn_ide := b.block('##CN', 8, cn_block_data(0, 0, 12, 1))
 	cn_len := b.block('##CN', 8, cn_block_data(0, 0, 13, 32))
 	cn_db := b.block('##CN', 8, cn_block_data(5, 10, 17, 64)) // cn_type 5 = MLSD, inline
+	cn_bus := if buses.len > 0 {
+		b.block('##CN', 8, cn_block_data(0, 0, 25, 8))
+	} else {
+		u64(0)
+	}
 
 	tx_t := b.text('time')
 	tx_fr := b.text('CAN_DataFrame')
@@ -540,10 +558,12 @@ fn build_mlsd_file_m(payloads [][]u8, ids []u32, lengths []u32, dlc_mode bool) [
 	tx_ide := b.text('CAN_DataFrame.IDE')
 	tx_len := b.text(if dlc_mode { 'CAN_DataFrame.DLC' } else { 'CAN_DataFrame.DataLength' })
 	tx_db := b.text('CAN_DataFrame.DataBytes')
+	tx_bus := if buses.len > 0 { b.text('CAN_DataFrame.BusChannel') } else { u64(0) }
 
 	mut recs := []u8{}
 	for i, p in payloads {
-		recs << le_bytes(math.f64_bits(0.001 * f64(i + 1)), 8)
+		recs << le_bytes(math.f64_bits(if times.len > i { times[i] } else { 0.001 * f64(i + 1) }),
+			8)
 		recs << le_bytes(u64(ids[i]), 4)
 		recs << u8(0)
 		recs << le_bytes(u64(lengths[i]), 4) // stated length, which need not match the bytes
@@ -552,6 +572,9 @@ fn build_mlsd_file_m(payloads [][]u8, ids []u32, lengths []u32, dlc_mode bool) [
 			pad << 0
 		}
 		recs << pad[..8]
+		if buses.len > i {
+			recs << u8(buses[i])
+		}
 	}
 	dt := b.block('##DT', 0, recs)
 
@@ -570,6 +593,10 @@ fn build_mlsd_file_m(payloads [][]u8, ids []u32, lengths []u32, dlc_mode bool) [
 	b.set_link(cn_len, 0, cn_db)
 	b.set_link(cn_len, 2, tx_len)
 	b.set_link(cn_db, 2, tx_db)
+	if cn_bus != 0 {
+		b.set_link(cn_db, 0, cn_bus)
+		b.set_link(cn_bus, 2, tx_bus)
+	}
 	return b.buf
 }
 
@@ -729,4 +756,42 @@ fn test_a_decodable_dlc_still_reads_its_vlsd_payload() {
 	}
 	assert entries.len == 1
 	assert entries[0].frame.data == [u8(1), 2, 3, 4]
+}
+
+// A SORTED data group still carries several buses when its records have a BusChannel column, and
+// then its record stream orders them exactly as an unsorted group's interleaving does. Giving
+// those entries no tie-break made the timestamp sort free to reorder simultaneous cross-bus
+// frames — the same defect as the unsorted case, in the branch that looked exempt.
+fn test_a_multi_bus_sorted_group_keeps_its_record_order() {
+	// HONEST LIMIT: this test does NOT fail against the previous code, and that was checked at
+	// 3 records and at 200. V documents `sort`/`sorted` as keeping equal elements in their
+	// original relative order, so the order survived a comparator that called every sorted-group
+	// entry equal. It documents the invariant rather than catching a regression — the fix is
+	// justified by not depending on that, since `sort_with_compare` is the one variant whose
+	// documentation does not promise it.
+	mut payloads := [][]u8{}
+	mut ids := []u32{}
+	mut buses := []u32{}
+	mut times := []f64{}
+	for i in 0 .. 200 {
+		payloads << [u8(i)]
+		ids << u32(0x100 + i)
+		buses << if i % 2 == 0 { u32(0) } else { u32(2) }
+		times << 1.0
+	}
+	img := build_mlsd_multibus(payloads, ids, buses, times)
+	entries := parse(img) or {
+		assert false, '${err}'
+		return
+	}
+	assert entries.len == 200
+	for i, e in entries {
+		assert e.frame.id == u32(0x100 + i), 'record ${i} came back as 0x${e.frame.id:X} — the record order was lost'
+	}
+	// and the buses really are two distinct labels, so this is a cross-bus ordering test
+	mut ifaces := map[string]bool{}
+	for e in entries {
+		ifaces[e.iface] = true
+	}
+	assert ifaces.len == 2, 'expected two bus labels, got ${ifaces.keys()}'
 }
