@@ -14,7 +14,7 @@ fn mb_db(sender string, ids []u32) candb.Database {
 		}
 	}
 	return candb.Database{
-		nodes:    [sender, 'VCM_C']
+		nodes:    [sender, 'SUT_ECU']
 		messages: msgs
 	}
 }
@@ -30,13 +30,13 @@ fn mb_entry(iface string, id u32, t f64) canlog.LogEntry {
 	}
 }
 
-// Two recorded buses, interleaved in time, each with one VCM_C message to subtract.
+// Two recorded buses, interleaved in time, each with one SUT_ECU message to subtract.
 fn mb_sample() []canlog.LogEntry {
 	return [
 		mb_entry('mf4:group1', 0x100, 0.00), // bus A, EBS
 		mb_entry('mf4:group2', 0x200, 0.01), // bus B, TCM
-		mb_entry('mf4:group1', 0x101, 0.02), // bus A, VCM_C
-		mb_entry('mf4:group2', 0x201, 0.03), // bus B, VCM_C
+		mb_entry('mf4:group1', 0x101, 0.02), // bus A, SUT_ECU
+		mb_entry('mf4:group2', 0x201, 0.03), // bus B, SUT_ECU
 		mb_entry('mf4:group1', 0x100, 0.04),
 		mb_entry('mf4:group3', 0x300, 0.05), // a bus nobody mapped
 	]
@@ -47,26 +47,26 @@ fn mb_specs() []BusSpec {
 	a.messages << candb.Message{
 		name:   'VcmA'
 		id:     0x101
-		sender: 'VCM_C'
+		sender: 'SUT_ECU'
 	}
 	mut b := mb_db('TCM', [u32(0x200)])
 	b.messages << candb.Message{
 		name:   'VcmB'
 		id:     0x201
-		sender: 'VCM_C'
+		sender: 'SUT_ECU'
 	}
 	return [
 		BusSpec{
 			src:     'mf4:group1'
 			dst:     'vcan0'
 			db:      a
-			exclude: ['VCM_C']
+			exclude: ['SUT_ECU']
 		},
 		BusSpec{
 			src:     'mf4:group2'
 			dst:     'vcan1'
 			db:      b
-			exclude: ['VCM_C']
+			exclude: ['SUT_ECU']
 		},
 	]
 }
@@ -90,8 +90,8 @@ fn test_buses_merge_into_one_time_ordered_stream() {
 fn test_the_sut_is_subtracted_on_every_bus() {
 	p := build_multi(mb_sample(), mb_specs())
 	for e in p.entries {
-		assert e.frame.id != 0x101, 'VCM_C survived on bus A'
-		assert e.frame.id != 0x201, 'VCM_C survived on bus B'
+		assert e.frame.id != 0x101, 'SUT_ECU survived on bus A'
+		assert e.frame.id != 0x201, 'SUT_ECU survived on bus B'
 	}
 	assert p.buses.len == 2
 	for b in p.buses {

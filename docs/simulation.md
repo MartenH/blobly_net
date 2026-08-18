@@ -649,7 +649,7 @@ under test subtracted:
 
 ```sh
 v -enable-globals -path "@vlib|@vmodules|modules" run cmd/restbus/main.v \
-    --source capture.mf4 --bus CAN1 --dbc CAN01.dbc --exclude VCM_C --iface vcan0
+    --source capture.mf4 --bus CAN1 --dbc CAN01.dbc --exclude SUT_ECU --iface vcan0
 restbus --source capture.mf4 --list          # which buses the recording holds
 restbus ... --dry-run                        # what the subtraction would do, transmitting nothing
 ```
@@ -661,9 +661,9 @@ restbus ... --dry-run                        # what the subtraction would do, tr
 them and gateways between them:
 
 ```sh
-restbus --source capture.mf4 --exclude VCM_C \
-    --map CAN1,vcan0,com/CAN01-postfix.dbc \
-    --map CAN2,vcan1,com/CAN02-postfix.dbc
+restbus --source capture.mf4 --exclude SUT_ECU \
+    --map CAN1,vcan0,com/CAN01.dbc \
+    --map CAN2,vcan1,com/CAN02.dbc
 ```
 
 Every mapped bus replays from **one time-sorted stream against one clock**, so the recording's
@@ -690,7 +690,7 @@ re-decide any of it.
 
 Pacing sleeps until each frame is due rather than polling on a tick, because a tick quantises
 every message's recorded period and real captures go well below one: on the recordings this was
-built against, one bus repeats a frame every **0.18 ms**. Filtering never changes the cadence —
+built against, a busy bus can repeat a frame in well under a millisecond. Filtering never changes the cadence —
 the loop is pinned to the *source* bus's span, so removing the SUT's frames cannot shorten a lap
 or move its origin.
 

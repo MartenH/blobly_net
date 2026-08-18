@@ -15,7 +15,7 @@
 #
 # For a real vehicle capture, add the two facts a recording cannot supply:
 #   bus: CAN1                 # WHICH recorded bus feeds this channel (a .mf4 holds several)
-#   exclude: [VCM_C]          # the ECU under test — so it stays the only source of its frames
+#   exclude: [SUT_ECU]          # the ECU under test — so it stays the only source of its frames
 project:
   name: Replay onto vcan0
 channels:

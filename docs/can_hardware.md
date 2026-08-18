@@ -98,10 +98,10 @@ Interface strings would extend the `open()` dispatcher, e.g. `kvaser:0`, `pcan:U
 **FD note:** `transport.CanFrame` carries CAN-FD (`fd`/`brs`, up to 64 payload bytes), and
 **SocketCAN sends it** — the socket asks for `CAN_RAW_FD_FRAMES` at open and falls back to
 classic-only when the interface declines, so an FD send on a classic interface fails at write()
-rather than going out truncated. Verified end-to-end on **vcan0 at `mtu 72`**, replaying 29,275
-CAN-FD frames from a real vehicle capture: our reader saw `fd=29275 brs=29275`, 26,370 payloads
-over 8 bytes, 64-byte maximum — and `candump -x` (can-utils, an independent implementation)
-captured the same 29,275 frames with `[16]`/`[32]`/`[48]` payloads and the `B` (BRS) flag.
+rather than going out truncated. Verified end-to-end on **vcan0 at `mtu 72`** against a real vehicle
+capture: every FD frame arrived with its flags intact, payloads up to the 64-byte maximum, and
+`candump -x` (can-utils, an independent implementation) saw the same frames with the `B` (BRS)
+flag set.
 Receive was checked the other way round, with `cansend vcan0 '123##1…'` decoding correctly.
 
 A virtual FD bus needs the `vcan` module, which the stock WSL2 kernel does **not** ship

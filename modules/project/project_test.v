@@ -350,7 +350,7 @@ fn test_replay_without_bus_or_exclude() {
 
 // And when they ARE given they survive a round trip through the writer.
 fn test_replay_bus_and_exclude_round_trip() {
-	src := 'project:\n  name: r\nchannels:\n  - name: CAN1\n    type: can\n    interface: vcan0\n    mode: replay\n    replay:\n      source: cap.mf4\n      bus: CAN1\n      exclude: [VCM_C, ECM]\n      speed: 2.0\n      loop: true\n'
+	src := 'project:\n  name: r\nchannels:\n  - name: CAN1\n    type: can\n    interface: vcan0\n    mode: replay\n    replay:\n      source: cap.mf4\n      bus: CAN1\n      exclude: [SUT_ECU, ECM]\n      speed: 2.0\n      loop: true\n'
 	p := parse(src) or {
 		assert false, '${err}'
 		return
@@ -360,7 +360,7 @@ fn test_replay_bus_and_exclude_round_trip() {
 		return
 	}
 	assert r.bus == 'CAN1'
-	assert r.exclude == ['VCM_C', 'ECM']
+	assert r.exclude == ['SUT_ECU', 'ECM']
 	back := parse(p.to_yaml()) or {
 		assert false, 'rewritten project does not parse: ${err}'
 		return
@@ -370,6 +370,6 @@ fn test_replay_bus_and_exclude_round_trip() {
 		return
 	}
 	assert r2.bus == 'CAN1', 'bus lost on save'
-	assert r2.exclude == ['VCM_C', 'ECM'], 'exclude lost on save: ${r2.exclude}'
+	assert r2.exclude == ['SUT_ECU', 'ECM'], 'exclude lost on save: ${r2.exclude}'
 	assert r2.speed == 2.0 && r2.repeat
 }

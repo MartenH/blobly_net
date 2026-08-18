@@ -5,14 +5,14 @@
 // messages rather than arbitrating against a recording of itself.
 //
 //   v -enable-globals -path "@vlib|@vmodules|modules" run cmd/restbus/main.v \
-//       --source capture.mf4 --bus CAN1 --dbc CAN01.dbc --exclude VCM_C --iface inproc:rest
+//       --source capture.mf4 --bus CAN1 --dbc CAN01.dbc --exclude SUT_ECU --iface inproc:rest
 //
 // SEVERAL buses at once — the shape a real bench needs, since the ECU under test sits on all of
 // them and gateways between them. Repeat --map <recorded bus>,<interface>,<dbc>:
 //
-//   restbus --source capture.mf4 --exclude VCM_C \
-//       --map CAN1,vcan0,com/CAN01-postfix.dbc \
-//       --map CAN2,vcan1,com/CAN02-postfix.dbc
+//   restbus --source capture.mf4 --exclude SUT_ECU \
+//       --map CAN1,vcan0,com/CAN01.dbc \
+//       --map CAN2,vcan1,com/CAN02.dbc
 //
 // All mapped buses replay from ONE time-sorted stream against ONE clock, so the recording's
 // cross-bus ordering survives — the relationship a gateway polices.
@@ -228,7 +228,7 @@ fn run_multi(o Opts, rec mf4.Recording) {
 	// A node no mapped database has heard of subtracts nothing at all, and the run then replays
 	// the ECU under test at itself while looking perfectly healthy.
 	// DEDUPED, and compared as a set of databases rather than a count of reports: `--exclude
-	// VCM_C,VCM_C` made check_nodes report the name twice per database, so the count exceeded
+	// SUT_ECU,SUT_ECU` made check_nodes report the name twice per database, so the count exceeded
 	// specs.len, the equality never held, and a typo repeated by accident subtracted nothing
 	// while passing the check meant to catch it.
 	mut nowhere := []string{}

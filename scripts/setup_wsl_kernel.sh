@@ -20,6 +20,19 @@
 # runner pass on a machine where SocketCAN cannot work at all.
 set -euo pipefail
 
+# Run as a NORMAL user: the script sudo's the three steps that need it, so what is elevated
+# stays visible. Under `sudo ./setup_wsl_kernel.sh` the whole thing runs as root, $HOME becomes
+# /root, and SRC then defaults to a tree that does not exist — so it clones and rebuilds a second
+# kernel (minutes, gigabytes) into /root instead of reusing the one already built. Recover the
+# invoking user's home rather than punishing a reasonable mistake.
+if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ] && [ -z "${SRC:-}" ]; then
+	_home="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+	if [ -n "$_home" ] && [ -d "$_home" ]; then
+		SRC="$_home/repos/WSL2-Linux-Kernel"
+		echo "[wsl-kernel] running under sudo — using $SUDO_USER's tree ($SRC), not root's."
+		echo "[wsl-kernel] you can run this WITHOUT sudo; it elevates only the load and ip steps."
+	fi
+fi
 SRC="${SRC:-$HOME/repos/WSL2-Linux-Kernel}"
 IFACES=(vcan0 vcan1)
 MODE="all"
