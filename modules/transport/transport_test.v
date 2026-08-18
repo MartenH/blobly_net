@@ -249,3 +249,23 @@ fn test_pcan_spellings_resolve_to_one_handle() {
 		assert false, 'nonsense is not a PCAN channel'
 	}
 }
+
+// The backends parse numbers, so the identity must too: open_kvaser takes .int() of the channel
+// and both vendor opens take .int() of the bitrate. Compared as strings, `kvaser:0` and
+// `kvaser:00`, or `@500000` and `@0500000`, look like different buses while opening the same one.
+//
+// Windows-only, like every other part of this: on Linux `pcan:`/`kvaser:` are ordinary SocketCAN
+// interface NAMES that no vendor backend parses, and normalising their digits would merge two
+// real interfaces.
+fn test_numeric_vendor_spellings_are_one_destination() {
+	$if windows {
+		assert same_destination('pcan:usb1@500000', 'pcan:usb1@0500000')
+		assert same_destination('kvaser:0', 'kvaser:00')
+		assert same_destination('kvaser:1@500000', 'kvaser:01@0500000')
+		assert !same_destination('kvaser:0', 'kvaser:1')
+		assert !same_destination('kvaser:0@500000', 'kvaser:0@250000')
+	} $else {
+		// distinct SocketCAN names stay distinct
+		assert !same_destination('kvaser:0', 'kvaser:00')
+	}
+}

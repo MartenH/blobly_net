@@ -171,9 +171,14 @@ pub fn destination_key(iface string) string {
 		return canonical_iface(i)
 	}
 	body := i.all_before('@')
-	rate := if i.contains('@') { i.all_after('@').trim_space() } else { '500000' }
 	kind := body.all_before(':').to_lower()
 	ch := body.all_after(':').trim_space()
+	// NUMERICALLY, where the backend parses numerically. open_kvaser takes `.int()` of the
+	// channel and both vendor opens take `.int()` of the bitrate, so `kvaser:0` and `kvaser:00`,
+	// or `@500000` and `@0500000`, open the same channel at the same rate while differing as
+	// strings. Comparing the strings let two mappings share one physical bus undetected.
+	raw_rate := if i.contains('@') { i.all_after('@').trim_space() } else { '500000' }
+	rate := raw_rate.int().str()
 	mut resolved := ch.to_lower()
 	$if windows {
 		if kind == 'pcan' {
@@ -182,6 +187,8 @@ pub fn destination_key(iface string) string {
 			}
 			// An unresolvable channel keeps its spelling: two identical bad strings still
 			// collide, and a wrong guess here would merge buses that never open at all.
+		} else if kind == 'kvaser' {
+			resolved = ch.int().str() // exactly what open_kvaser does with it
 		}
 	}
 	return '${kind}:${resolved}@${rate}'
