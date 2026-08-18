@@ -206,7 +206,9 @@ fn test_wire_frame_does_not_clamp_an_fd_payload() {
 // them there would merge two real interfaces — the opposite mistake.
 fn test_one_vendor_channel_has_one_destination_identity() {
 	$if windows {
-		for a in ['pcan:PCAN_USBBUS1', 'pcan:usb1', 'pcan:1', 'pcan:PCAN_USBBUS1@500000'] {
+		// 0x51 IS PCAN_USBBUS1 — resolved through the backend's own function, so every spelling
+		// of one channel lands on one identity rather than on one of two parallel rule sets.
+		for a in ['pcan:PCAN_USBBUS1', 'pcan:usb1', 'pcan:1', 'pcan:0x51', 'pcan:PCAN_USBBUS1@500000'] {
 			assert same_destination(a, 'pcan:usb1@500000'), '${a} was treated as a different bus'
 		}
 		assert !same_destination('pcan:usb1', 'pcan:usb2')
@@ -224,4 +226,26 @@ fn test_software_bus_spellings_still_collapse() {
 	assert same_destination('udp', 'udp:239.63.42.1:20000')
 	assert !same_destination('inproc:a', 'inproc:b')
 	assert !same_destination('vcan0', 'vcan1')
+}
+
+// The spelling→handle rules, tested on any platform because they are pure string logic. They
+// decide whether two mappings address one physical channel, and a second implementation of them
+// had already drifted: `usb1` keyed as 1 while `0x51` keyed as 81, for the same channel.
+fn test_pcan_spellings_resolve_to_one_handle() {
+	want := u16(0x51) // PCAN_USBBUS1
+	for spelling in ['PCAN_USBBUS1', 'pcan_usbbus1', 'usb1', 'USB1', '1', '0x51', ' usb1 '] {
+		got := pcan_handle(spelling) or {
+			assert false, '${spelling}: ${err}'
+			return
+		}
+		assert got == want, '${spelling} resolved to 0x${got:X}, not 0x${want:X}'
+	}
+	assert pcan_handle('usb8') or { 0 } == 0x58
+	// out of range and nonsense are errors, not a silent zero that would collide with everything
+	if _ := pcan_handle('usb9') {
+		assert false, 'usb9 is not a PCAN channel'
+	}
+	if _ := pcan_handle('nonsense') {
+		assert false, 'nonsense is not a PCAN channel'
+	}
 }

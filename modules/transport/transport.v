@@ -158,8 +158,13 @@ pub fn same_destination(a string, b string) bool {
 	return destination_key(a) == destination_key(b)
 }
 
-// destination_key is the identity used for that comparison: the canonical software-bus form, or
-// for a vendor interface the backend, the resolved channel number and the bitrate.
+// destination_key is the identity used for that comparison: the canonical software-bus form,
+// or for a vendor interface the backend, the RESOLVED channel handle and the bitrate.
+//
+// Resolved by the backend's own function, not by a second implementation of its rules. A
+// parallel one drifts: stripping the `usb` prefix gave `pcan:usb1` the key `1` while `pcan:0x51`
+// — the same channel, since PCAN_USBBUS1 IS 0x51 — keyed as `81`, so two mappings onto one
+// physical bus still looked different. Whatever the backend will open is the identity.
 pub fn destination_key(iface string) string {
 	i := iface.trim_space()
 	if !vendor_iface(i) {
@@ -168,19 +173,18 @@ pub fn destination_key(iface string) string {
 	body := i.all_before('@')
 	rate := if i.contains('@') { i.all_after('@').trim_space() } else { '500000' }
 	kind := body.all_before(':').to_lower()
-	ch := body.all_after(':').trim_space().to_lower()
-	// The digits are what the backend resolves to a handle; the prefix is decoration.
-	mut n := ch
-	for p in ['pcan_usbbus', 'usb', 'pcan_pcibus', 'pci'] {
-		if n.starts_with(p) {
-			n = n.all_after(p)
-			break
+	ch := body.all_after(':').trim_space()
+	mut resolved := ch.to_lower()
+	$if windows {
+		if kind == 'pcan' {
+			if h := pcan_handle(ch) {
+				resolved = '0x${h:X}'
+			}
+			// An unresolvable channel keeps its spelling: two identical bad strings still
+			// collide, and a wrong guess here would merge buses that never open at all.
 		}
 	}
-	if n.starts_with('0x') {
-		n = u64(n.all_after('0x').parse_uint(16, 16) or { 0 }).str()
-	}
-	return '${kind}:${n}@${rate}'
+	return '${kind}:${resolved}@${rate}'
 }
 
 // wire_frame is the frame this interface will ACTUALLY put on the bus. Where the backend clamps,
