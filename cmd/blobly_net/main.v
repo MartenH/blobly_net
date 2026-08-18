@@ -158,6 +158,13 @@ fn (c Chan) replaying() bool {
 	return c.enabled && c.mode == 'replay' && !c.doip && c.replay_src != '' && !c.listen_only
 }
 
+// ReplayState is one recording's lifecycle within a run.
+struct ReplayState {
+	gen  u64  // the run it belongs to; anything older is stale
+	live bool // a worker is running
+	done bool // it played to the end and should not restart on its own
+}
+
 struct App {
 mut:
 	mu    sync.Mutex
@@ -166,13 +173,17 @@ mut:
 	// Emissions still waiting for their echo, and the bookkeeping that lets one confirm its own
 	// row: `trace_seq` is the next row's identity, `trace_base` the identity of trace[0].
 	taps wiretap.Ring
-	// Which run each recording is playing for, so re-forming the groups (a channel enabled
-	// mid-run) starts only what is not already playing, rather than a second clock for one file.
-	replay_gen map[string]u64
-	trace_seq  u64
-	trace_base u64
-	ghost_seq  u64                    // identities for emissions made while paused (see ghost_base)
-	tx_mutexes map[string]&sync.Mutex // per-interface send order (see TapBus.tx_mu)
+	// Per RECORDING, for this run: whether a worker is alive, and whether it already ran to
+	// completion. One marker cannot carry both — deleting it on exit made a finished group look
+	// like one that needs starting, so enabling any unrelated channel restarted it; keeping it
+	// made a group that had stopped unrestartable. Guarded by app.mu like the rest of App.
+	replay_state map[string]ReplayState
+	// Destinations covered by a live group, so a channel enabled late can be told it is not one.
+	replay_live_ifaces map[string]bool
+	trace_seq          u64
+	trace_base         u64
+	ghost_seq          u64                    // identities for emissions made while paused (see ghost_base)
+	tx_mutexes         map[string]&sync.Mutex // per-interface send order (see TapBus.tx_mu)
 	// Stable identity for recording entries, exactly like trace_seq/trace_base for rows: the
 	// buffer is trimmed by re-slicing, so a plain index does not survive.
 	rec_seq u64
@@ -2292,25 +2303,43 @@ fn replay_group(app &App, source string, cis []int, gen u64) {
 	// `sent`, not p.sent(): the player counts what it handed over. An FD capture on a classic
 	// interface fails every send, and reporting attempts would announce a replay that put
 	// nothing on the wire.
-	// Cleared on the way out: the marker says "this recording is playing", not "was started at
-	// some point this run". Left set, a group whose channels were disabled and re-enabled could
-	// never be restarted, because spawn_replay_workers would think it was still going.
+	// Two different endings, recorded as two different states. `done` is set only when the
+	// recording actually ran out: a group STOPPED early (Stop pressed, or every destination
+	// disabled) may legitimately be restarted, while one that finished must not spring back to
+	// life because an unrelated channel was ticked on.
+	ended := p.finished()
 	a.mu.lock()
-	if a.replay_gen[source] or { u64(0) } == gen {
-		a.replay_gen.delete(source)
+	st := a.replay_state[source] or { ReplayState{} }
+	if st.gen == gen {
+		a.replay_state[source] = ReplayState{
+			gen:  gen
+			live: false
+			done: ended
+		}
+	}
+	for ch in chans {
+		a.replay_live_ifaces.delete(ch.iface)
 	}
 	a.mu.unlock()
 	if failed > 0 {
 		a.notify('replay ${label}: ${sent} sent, ${failed} FAILED — ${first_err}')
-	} else {
+	} else if ended {
 		a.notify('replay ${label}: finished (${sent} frames, ${p.passes()} pass(es))')
+	} else {
+		// NOT "finished": the recording did not run out, we were told to stop. Calling that
+		// finished would let a partially transmitted capture read as a complete one.
+		a.notify('replay ${label}: stopped after ${sent} frames (recording not complete)')
 	}
 }
 
 // spawn_replay_workers starts ONE worker per distinct recording, covering every channel that
 // replays from it. Already-running groups are not restarted: `replay_gen` records which run a
 // source is playing for, so a second call (a channel enabled mid-run) starts only what is new.
+// Caller must NOT hold app.mu — this takes it. It was called from start() without the lock
+// while a previous run's worker could still be inside its own locked cleanup, so the reads and
+// writes of the state map could overlap.
 fn (mut app App) spawn_replay_workers() {
+	app.mu.lock()
 	// CANONICAL path as the key. Two channels naming one capture through different spellings —
 	// an absolute path and a symlink, `./x.mf4` and `x.mf4` — would otherwise form two groups,
 	// each decoding the file and running its own clock, which is exactly the skew this grouping
@@ -2321,12 +2350,43 @@ fn (mut app App) spawn_replay_workers() {
 			by_src[os.real_path(c.replay_src)] << i
 		}
 	}
+	mut to_start := map[string][]int{}
+	mut late := []string{}
 	for src, cis in by_src {
-		if app.replay_gen[src] or { u64(0) } == app.run_gen {
-			continue // this recording is already playing for this run
+		st := app.replay_state[src] or { ReplayState{} }
+		if st.gen == app.run_gen && st.live {
+			// Already playing. A channel enabled now cannot join: the group's membership and its
+			// clock were fixed when it started, and restarting would jerk the buses that are
+			// already mid-recording back to the beginning. Say so rather than leaving one wire
+			// silent with no explanation.
+			for ci in cis {
+				if ci < app.chans.len && app.chans[ci].iface !in app.replay_live_ifaces {
+					late << app.chans[ci].name
+				}
+			}
+			continue
 		}
-		app.replay_gen[src] = app.run_gen
-		spawn replay_group(app, src, cis.clone(), app.run_gen)
+		if st.gen == app.run_gen && st.done {
+			continue // it finished this run; it does not restart because a sibling was enabled
+		}
+		app.replay_state[src] = ReplayState{
+			gen:  app.run_gen
+			live: true
+		}
+		to_start[src] = cis.clone()
+		for ci in cis {
+			if ci < app.chans.len {
+				app.replay_live_ifaces[app.chans[ci].iface] = true
+			}
+		}
+	}
+	gen := app.run_gen
+	app.mu.unlock()
+	for n in late {
+		app.notify('${n}: that recording is already playing — it joins on the next Start')
+	}
+	for src, cis in to_start {
+		spawn replay_group(app, src, cis, gen)
 	}
 }
 
