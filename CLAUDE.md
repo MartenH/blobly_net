@@ -65,7 +65,7 @@ docs/                design + platform docs; docs/history.md = archived status l
 
 | module | what |
 |---|---|
-| `transport` | Bus/Channel interface + SocketCAN, PCAN (Windows), UDP software bus |
+| `transport` | Bus/Channel interface + SocketCAN, PCAN (Windows), UDP software bus. **CAN-FD** (`fd`/`brs`, 64-byte payloads) on SocketCAN + the software buses; the Windows vendor backends refuse FD rather than truncating |
 | `candb` | DBC parse/decode/encode + canonical writer (`dbc_write.v`) |
 | `isotp` | ISO-TP (ISO 15765-2) transport |
 | `uds` | UDS diagnostic client over ISO-TP |

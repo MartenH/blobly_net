@@ -410,3 +410,51 @@ fn test_a_settled_record_goes_before_an_older_unwatched_one() {
 	}
 	assert c.seq == 1
 }
+
+// CAN-FD is a frame KIND, like extended vs standard. A classic frame carrying the same id and
+// the same eight bytes is NOT the echo of our FD transmission — crediting it would mark one of
+// ours confirmed by traffic that was never it, and hide a real ECU frame behind our own row.
+fn test_a_classic_frame_is_not_the_echo_of_an_fd_one() {
+	mut r := Ring{}
+	fdf := transport.CanFrame{
+		id:   0x100
+		fd:   true
+		data: [u8(1), 2, 3, 4, 5, 6, 7, 8]
+	}
+	classic := transport.CanFrame{
+		id:   0x100
+		data: [u8(1), 2, 3, 4, 5, 6, 7, 8]
+	}
+	r.note(1, 'vcan0', fdf, 0, [0], '', false)
+	if _ := r.claim(0, 'vcan0', classic, 1) {
+		assert false, 'a classic frame claimed an FD emission'
+	}
+	r.claim(0, 'vcan0', fdf, 1) or {
+		assert false, 'the FD frame must claim its own echo'
+		return
+	}
+}
+
+// BRS likewise: two FD frames that differ only in the bit-rate-switch bit are different frames.
+fn test_brs_is_part_of_the_identity() {
+	mut r := Ring{}
+	with := transport.CanFrame{
+		id:   0x200
+		fd:   true
+		brs:  true
+		data: [u8(9)]
+	}
+	without := transport.CanFrame{
+		id:   0x200
+		fd:   true
+		data: [u8(9)]
+	}
+	r.note(2, 'vcan0', with, 0, [0], '', false)
+	if _ := r.claim(0, 'vcan0', without, 1) {
+		assert false, 'a non-BRS frame claimed a BRS emission'
+	}
+	r.claim(0, 'vcan0', with, 1) or {
+		assert false, 'the BRS frame must claim its own echo'
+		return
+	}
+}

@@ -40,8 +40,10 @@ echo "==> 4/5 Tests"
 "$HOME/v/v" -enable-globals test modules/
 
 echo "==> 5/5 Virtual CAN bus (vcan0)"
-# CAN is built into the WSL2 kernel (CONFIG_CAN_VCAN=y) — no modprobe needed.
-./scripts/setup_vcan.sh || echo "  (vcan0 setup needs sudo; the kernel must have CONFIG_CAN_VCAN)"
+# NOT built into a stock WSL2 kernel: CONFIG_CAN_VCAN is unset there and no vcan.ko ships, so
+# this step fails with "Unknown device type" until the module is built (docs/can_hardware.md).
+# The in-process and UDP buses need none of this, so the tests above still pass without it.
+./scripts/setup_vcan.sh || echo "  (no vcan0: needs sudo, and CONFIG_CAN_VCAN — see docs/can_hardware.md)"
 
 cat <<'EOF'
 ==> Done. Run it:

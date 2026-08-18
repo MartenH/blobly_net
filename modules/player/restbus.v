@@ -148,10 +148,12 @@ pub fn check_nodes(db candb.Database, exclude []string) []string {
 	for n in db.nodes {
 		known[n] = true
 	}
-	// A database can transmit from a node it never declared in BU_, so senders count as known.
+	// A database can transmit from a node it never declared in BU_, so senders count as known —
+	// EVERY sender, including BO_TX_BU_ additions. without_senders honours those, so rejecting a
+	// node declared only there would refuse the one exclusion that matters most.
 	for m in db.messages {
-		if m.sender != '' {
-			known[m.sender] = true
+		for n in m.senders() {
+			known[n] = true
 		}
 	}
 	return exclude.filter(it !in known)

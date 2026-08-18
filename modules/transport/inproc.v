@@ -78,6 +78,13 @@ pub fn open_inproc(name string) !&InprocBus {
 // send broadcasts the frame to every other bus on the same name. A full
 // subscriber queue drops the frame (bus overload) rather than blocking the sender.
 pub fn (mut b InprocBus) send(frame CanFrame) ! {
+	// Padded like every other backend: an in-process bus that carried a 9-byte FD payload
+	// verbatim would make a headless test pass where hardware pads to 12, which is the one
+	// thing the default transport must never do.
+	f := if frame.fd { CanFrame{
+		...frame
+		data: fd_pad(frame.data)
+	} } else { frame }
 	mut targets := []&InprocBus{}
 	rlock inproc_reg {
 		if hub := inproc_reg.hubs[b.name] {
@@ -90,7 +97,7 @@ pub fn (mut b InprocBus) send(frame CanFrame) ! {
 	}
 	for t in targets {
 		select {
-			t.queue <- frame {}
+			t.queue <- f {}
 			else {} // queue full → drop (overflow), like a real bus under overload
 		}
 	}

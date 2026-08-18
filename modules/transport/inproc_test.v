@@ -61,3 +61,36 @@ fn test_open_dispatch_inproc() {
 	}
 	bus.close()
 }
+
+// Every backend must put the same bytes on the wire. An in-process bus that carried a 9-byte FD
+// payload verbatim would make a headless test pass where hardware pads to 12 — the default
+// transport being the one that lies is the worst version of this.
+fn test_inproc_pads_an_fd_payload() {
+	mut a := open_inproc('fdpad') or {
+		assert false, '${err}'
+		return
+	}
+	mut b := open_inproc('fdpad') or {
+		assert false, '${err}'
+		return
+	}
+	defer {
+		a.close()
+		b.close()
+	}
+	a.send(CanFrame{
+		id:   0x321
+		fd:   true
+		data: [u8(1), 2, 3, 4, 5, 6, 7, 8, 9]
+	}) or {
+		assert false, 'send: ${err}'
+		return
+	}
+	got := b.recv(1000) or {
+		assert false, 'recv: ${err}'
+		return
+	}
+	assert got.data.len == 12, 'in-process bus did not pad: ${got.data.len}'
+	assert got.fd
+	assert got.data[9..] == [u8(0), 0, 0]
+}

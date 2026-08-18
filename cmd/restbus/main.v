@@ -97,10 +97,12 @@ fn main() {
 		println('  note: ${rep.unknown} frames on ${rep.unknown_ids.len} id(s) are not in the DBC at all — replayed')
 		println('        ${hex_ids(rep.unknown_ids)}')
 	}
-	fd_n := kept.filter(it.frame.data.len > 8).len
+	fd_n := kept.filter(it.frame.fd).len
 	if fd_n > 0 {
 		pct := 100.0 * f64(fd_n) / f64(kept.len)
-		println('  CAN-FD:  ${fd_n} frames (${pct:.1f}%) carry >8 payload bytes — NOT transmittable yet')
+		big := kept.filter(it.frame.data.len > 8).len
+		println('  CAN-FD:  ${fd_n} frames (${pct:.1f}%), ${big} with payloads over 8 bytes')
+		println('           the destination interface must be CAN-FD capable and up')
 	}
 	if o.dry_run {
 		println('dry run: nothing transmitted')
@@ -110,22 +112,7 @@ fn main() {
 		eprintln('restbus: nothing left to replay after the subtraction')
 		exit(1)
 	}
-	// CAN-FD is DECODED but cannot yet be TRANSMITTED. transport.CanFrame has no FDF/BRS flag
-	// and its payload is classic-CAN sized, so a 32-byte captured frame would go out as an
-	// 8-byte classic frame and be counted as sent. That is a silently different bus, which is
-	// worse on a bench than a refusal: the SUT would see plausible traffic that never existed.
-	fd := kept.filter(it.frame.data.len > 8)
-	if fd.len > 0 {
-		mut ids := map[u32]bool{}
-		for e in fd {
-			ids[e.frame.id] = true
-		}
-		eprintln('restbus: ${fd.len} of ${kept.len} frames carry more than 8 payload bytes (${ids.len} ids)')
-		eprintln('  This bus is CAN-FD. The transport layer has no FD frame yet, so those frames')
-		eprintln('  would be transmitted as truncated classic CAN and counted as sent.')
-		eprintln('  Refusing. Use --dry-run to inspect, or pick a bus that is classic CAN.')
-		exit(1)
-	}
+
 
 	mut bus := transport.open(o.iface) or {
 		eprintln('restbus: open ${o.iface}: ${err}')
@@ -147,12 +134,16 @@ fn main() {
 	p.play(0.0)
 	mut sent := u64(0)
 	mut failed := u64(0)
+	mut first_err := ''
 	mut last_report := 0.0
 	for {
 		now := f64(i64(sw.elapsed())) / 1e6 // ns -> ms, fractional
 		for e in p.due(now) {
 			bus.send(e.frame) or {
 				failed++
+				if first_err == '' {
+					first_err = err.msg() // one example beats a bare count on a bench
+				}
 				continue
 			}
 			sent++
@@ -174,6 +165,10 @@ fn main() {
 		}
 	}
 	println('\ndone: ${sent} frames sent${if failed > 0 { ', ${failed} failed' } else { '' }}')
+	if failed > 0 {
+		eprintln('first failure: ${first_err}')
+		exit(1)
+	}
 }
 
 // resolve_bus accepts either the recording's own name for a bus ('CAN1') or the label its frames

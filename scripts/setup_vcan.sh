@@ -13,10 +13,17 @@
 # each other's frames, exactly like a real bus. Swapping to real hardware later is just
 # `canN` instead of `vcanN` (plus a bitrate, via setup_can_hw.sh) — no app code changes.
 #
-# On this WSL2 kernel CAN_RAW / CAN_VCAN / CAN_ISOTP are built in (=y), so NO modprobe
-# is needed — `ip link add type vcan` works directly. (A stale vcan.ko in /lib/modules
-# fails to insert and is irrelevant; ignore it.) Nothing here persists: vcan interfaces
-# die on `wsl --shutdown`, so re-run this each session.
+# WSL2 CAVEAT, verified 2026-08-17 on 6.6.87.2-microsoft-standard-WSL2: the stock kernel
+# has CONFIG_CAN=m and CONFIG_CAN_RAW=m but **CONFIG_CAN_VCAN is not set**, and no vcan.ko
+# ships — so `ip link add type vcan` fails with "Unknown device type" until the module is
+# built: run `./scripts/setup_wsl_kernel.sh`, which does it and is idempotent.
+# docs/can_hardware.md explains why each step is needed.
+#
+# This comment previously claimed CAN_RAW / CAN_VCAN / CAN_ISOTP were built in (=y) and that
+# no modprobe was needed. None of that is true on a stock kernel; it described one machine's
+# custom build, and cost a fresh setup an evening.
+#
+# Nothing here persists: vcan interfaces die on `wsl --shutdown`, so re-run this each session.
 #
 # Needs root for `ip` (scoped passwordless sudo is configured).
 set -euo pipefail
@@ -30,6 +37,18 @@ for IFACE in "${IFACES[@]}"; do
 	else
 		sudo ip link add dev "$IFACE" type vcan
 		echo "[setup_vcan] created $IFACE"
+	fi
+	# MTU 72 = CAN-FD capable (a classic vcan is 16). Replaying a real capture needs it: half the
+	# buses in a vehicle log carry payloads over 8 bytes, and on a 16-byte interface every one of
+	# those sends fails. Costs nothing when only classic traffic is used.
+	# MTU can only be changed while the link is DOWN — CAN's can_change_mtu() returns -EBUSY
+	# otherwise, so a re-run over an already-up classic interface warned and left it at 16, and
+	# every CAN-FD send kept failing while setup reported success. Only bounced when the MTU is
+	# actually wrong, because bringing a link down interrupts anything already using it.
+	cur_mtu="$(cat /sys/class/net/$IFACE/mtu 2>/dev/null || echo 0)"
+	if [ "$cur_mtu" != "72" ]; then
+		sudo ip link set "$IFACE" down 2>/dev/null || true
+		sudo ip link set "$IFACE" mtu 72 || echo "[setup_vcan] warning: could not set mtu 72 on $IFACE (CAN-FD frames will fail)"
 	fi
 	sudo ip link set up "$IFACE"
 	echo "[setup_vcan] $IFACE is up:"

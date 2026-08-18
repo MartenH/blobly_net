@@ -7,7 +7,7 @@
 // macOS — develop/verify on Linux, ship to Windows unchanged. It implements the
 // same `Bus` interface as the SocketCAN backend, so it's a drop-in.
 //
-// Wire format (little-endian): [src u32][id u32][flags u8][dlc u8][data 0..8].
+// packet: [src u32][id u32][flags u8: 0x01 ext, 0x02 rtr, 0x04 fd, 0x08 brs, 0x10 esi][len u8][data 0..64]
 // `src` is a per-instance id so we drop our own echoed frames — multicast
 // loopback must be ON for same-host peers to receive each other, which also
 // echoes our own sends back to us.
@@ -68,7 +68,11 @@ pub fn open_udp(group string, port int) !&UdpBus {
 }
 
 pub fn (mut b UdpBus) send(frame CanFrame) ! {
-	mut pkt := []u8{cap: 10 + frame.data.len}
+	// Same padding as the hardware path: a software bus that carries a 9-byte FD payload
+	// verbatim does not reproduce the wire, and a test against it would pass where hardware
+	// would not.
+	payload := if frame.fd { fd_pad(frame.data) } else { frame.data }
+	mut pkt := []u8{cap: 10 + payload.len}
 	put_u32_le(mut pkt, b.src)
 	put_u32_le(mut pkt, frame.id)
 	mut flags := u8(0)
@@ -78,9 +82,18 @@ pub fn (mut b UdpBus) send(frame CanFrame) ! {
 	if frame.rtr {
 		flags |= 0x02
 	}
+	if frame.fd {
+		flags |= 0x04
+	}
+	if frame.brs {
+		flags |= 0x08
+	}
+	if frame.esi {
+		flags |= 0x10
+	}
 	pkt << flags
-	pkt << u8(frame.data.len)
-	pkt << frame.data
+	pkt << u8(payload.len)
+	pkt << payload
 	b.tx.write(pkt)!
 }
 
@@ -88,7 +101,9 @@ pub fn (mut b UdpBus) send(frame CanFrame) ! {
 // error('timeout'). Our own echoed frames (multicast loopback) are skipped.
 pub fn (mut b UdpBus) recv(timeout_ms int) !CanFrame {
 	deadline := time.ticks() + i64(timeout_ms)
-	mut buf := []u8{len: 64}
+	// 10-byte header + up to 64 payload bytes. The old 64-byte buffer silently truncated a
+	// CAN-FD frame at read(), losing bytes before any of the decoding below could see them.
+	mut buf := []u8{len: 10 + 64}
 	for {
 		remaining := deadline - time.ticks()
 		if remaining <= 0 {
@@ -111,6 +126,9 @@ pub fn (mut b UdpBus) recv(timeout_ms int) !CanFrame {
 			id:       get_u32_le(buf, 4)
 			extended: flags & 0x01 != 0
 			rtr:      flags & 0x02 != 0
+			fd:       flags & 0x04 != 0
+			brs:      flags & 0x08 != 0
+			esi:      flags & 0x10 != 0
 			data:     buf[10..10 + dlc].clone()
 		}
 	}

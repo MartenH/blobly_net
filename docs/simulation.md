@@ -7,10 +7,13 @@ exercised with no hardware at all.
 Everything here is **driver-free and in-process** by default: the `inproc:` transport is a
 shared bus inside the running program, so the demos below work identically on Linux and Windows
 with nothing plugged in. The same configuration runs against real hardware by changing only the
-channel's interface — with one limit worth knowing first: **the hardware transports are classic
-CAN.** `transport.CanFrame` carries 0..8 payload bytes, and the SocketCAN and PCAN backends
-send `struct can_frame`, so a simulation is 8-byte-limited on a real bus regardless of what the
-DBC says. CAN-FD payloads exist only in-process today.
+channel's interface — with one limit worth knowing: **the SIMULATED ECUs still transmit classic
+CAN.** `transport.CanFrame` now carries an `fd`/`brs` flag and up to 64 payload bytes, and
+SocketCAN, `inproc` and `udp` all put a real FD frame on the wire — but nothing in `modules/sim`
+sets that flag, so generators, senders and E2E protection produce classic frames whatever the
+DBC says. **Replay is the FD path today**: frames read from a recording carry the FD bits the
+recording captured. The PCAN and Kvaser backends write classic frames only, and **refuse** an FD
+frame rather than truncating it.
 
 For *why* it is built this way, see [simulation_architecture.md](simulation_architecture.md) —
 that is the design document. This page is how to use it.
@@ -659,12 +662,12 @@ built against, one bus repeats a frame every **0.18 ms**. Filtering never change
 the loop is pinned to the *source* bus's span, so removing the SUT's frames cannot shorten a lap
 or move its origin.
 
-**CAN-FD is decoded but not yet transmittable.** `transport.CanFrame` has no FDF/BRS flag and is
-classic-sized, so an FD frame would go out truncated and be counted as sent. `restbus` refuses a
-bus carrying payloads over 8 bytes rather than silently changing what the SUT hears; `--dry-run`
-reports the share so you can see it before wiring anything up. Real captures make this concrete:
-of one vehicle's 12 databased buses, five are classic and replayable today, while six are
-majority FD (up to 100%).
+**CAN-FD replays.** The `fd`/`brs` flags come from the recording's own `EDL`/`BRS` fields (and a
+payload over 8 bytes is FD whatever the flag says), and travel through to the wire. `--dry-run`
+reports the FD share, because the destination interface has to be FD-capable and up — SocketCAN
+declines `CAN_RAW_FD_FRAMES` on a classic interface, and the send then fails with that named as
+the likely cause rather than a bare errno. This matters at real scale: of one vehicle's 12
+databased buses, six are majority FD, one entirely so.
 
 **Who counts as a sender.** A DBC may name additional transmitters with `BO_TX_BU_`, and the
 subtraction honours all of them — matching only the `BO_` transmitter would leave the SUT's own

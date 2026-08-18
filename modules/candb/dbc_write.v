@@ -95,6 +95,16 @@ pub fn (db Database) to_dbc() string {
 		b << ''
 	}
 
+	// BO_TX_BU_ — ADDITIONAL transmitters. The parser reads these, so a writer that omitted them
+	// deleted real content on every save: a message the database said two nodes send would come
+	// back saying one, and the rest-bus subtraction would stop withholding the ECU under test's
+	// own frames. Emitted after the messages, which is where the format puts them.
+	for m in msgs {
+		if m.tx_nodes.len > 0 {
+			b << 'BO_TX_BU_ ${raw_dbc_id(m)} : ${m.tx_nodes.join(',')};'
+		}
+	}
+
 	// signal comments (CM_ SG_), in message order then signal name
 	for m in msgs {
 		mut sigs := m.signals.clone()
