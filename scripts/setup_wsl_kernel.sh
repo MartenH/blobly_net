@@ -101,6 +101,14 @@ if [ "$MODE" != load ] && [ "$need_build" = 1 ]; then
 		sudo apt-get install -y "${missing[@]}"
 	fi
 
+	# Refuse to BUILD as root. Loading needs root and the script elevates that itself; compiling
+	# does not, and doing it under sudo scatters root-owned objects through the invoking user's
+	# tree — which then fails for them later with permission errors they did not cause.
+	if [ "$(id -u)" = 0 ]; then
+		die "a build is needed, and this is running as root.
+  Run it WITHOUT sudo: the script elevates only the module load and the ip commands.
+  (Building as root would leave root-owned files in $SRC.)"
+	fi
 	if [ ! -d "$SRC" ]; then
 		say "cloning $TAG (shallow) into $SRC"
 		git clone --depth 1 -b "$TAG" https://github.com/microsoft/WSL2-Linux-Kernel "$SRC" \

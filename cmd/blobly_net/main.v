@@ -709,6 +709,15 @@ fn (mut app App) start() {
 			app.send_iface = ch.iface // Send panel default = first monitor channel
 		}
 	}
+	for ch in app.chans {
+		if ch.enabled && ch.mode == 'replay' && !ch.doip {
+			if ch.replay_src == '' {
+				app.notify('${ch.name}: mode is replay but no recording is configured — monitoring only')
+			} else if ch.listen_only {
+				app.notify('${ch.name}: replay is configured but the channel is listen-only — nothing will be transmitted')
+			}
+		}
+	}
 	// The players, AFTER every monitor is up: the opening frames must find a reader attached, or
 	// they go out with nothing able to claim their echoes and come back as the ECU's.
 	//
@@ -5171,16 +5180,19 @@ fn draw_buses(mut app App, chans []Chan) {
 				// c.monitorable() could never be true — this branch has never run, and a channel
 				// re-enabled mid-run silently got no reader at all. Ask about the channel as it
 				// is NOW, using the same rule monitorable() applies.
+				// The PLAYER is restarted independently of the reader, and OUTSIDE the guard
+				// below. Its group can exit while rx_loop is still inside a 200 ms recv — untick
+				// a channel, tick it back — and rx_loop then neither exits nor respawns, so
+				// hanging the player off `!running && !spawning` left the reader alive and the
+				// recording dead. spawn_replay_workers is idempotent: it skips any recording
+				// already playing for this run.
+				if new && app.running && app.chans[i].replaying() {
+					app.spawn_replay_workers()
+				}
 				if new && app.running && app.chans[i].monitorable() && !app.chans[i].running
 					&& !app.chans[i].spawning {
 					app.chans[i].spawning = true
 					spawn rx_loop(app, i, app.chans[i].iface, app.run_gen)
-					// …and the PLAYER. Its group is re-formed rather than one worker started:
-					// a channel joining a recording already playing must share that clock, not
-					// begin its own several seconds late.
-					if app.chans[i].replaying() {
-						app.spawn_replay_workers()
-					}
 					// …and the TRANSMIT side, exactly as start() sets it up. Only the reader was
 					// started here, so a channel enabled after Start had no tap: Quick Send and
 					// the diagnostic paths reported "no open bus", and with no send_iface yet the
