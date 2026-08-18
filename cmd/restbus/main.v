@@ -211,7 +211,11 @@ fn run_multi(o Opts, rec mf4.Recording) {
 		// every mapping is read — a name absent from ONE database says nothing, a name absent
 		// from ALL of them is a typo that subtracts nothing anywhere.
 		for n in player.check_nodes(db, o.exclude) {
-			unknown_on[n] << os.base(parts[2])
+			// The PATH is the identity, not the filename: two mappings may legitimately load
+			// `a/CAN01.dbc` and `b/CAN01.dbc`, and collapsing them by basename made a node
+			// declared in one but absent from the other look absent everywhere — rejecting a
+			// perfectly good multi-bus config.
+			unknown_on[n] << os.real_path(parts[2])
 		}
 		specs << player.BusSpec{
 			src:                 src
@@ -248,7 +252,8 @@ fn run_multi(o Opts, rec mf4.Recording) {
 	}
 	for n, dbcs in unknown_on {
 		if n !in nowhere && n in judged {
-			eprintln('restbus: note: ${n} is not declared by ${dbcs.join(', ')} — it transmits nothing there')
+			shown := dbcs.map(os.base(it))
+			eprintln('restbus: note: ${n} is not declared by ${shown.join(', ')} — it transmits nothing there')
 		}
 	}
 	if o.exclude.len == 0 && !o.dry_run {
@@ -393,7 +398,7 @@ fn uniq_dbcs(maps []string) int {
 	for m in maps {
 		parts := m.split(',')
 		if parts.len == 3 {
-			seen[os.base(parts[2].trim_space())] = true
+			seen[os.real_path(parts[2].trim_space())] = true
 		}
 	}
 	return seen.len
