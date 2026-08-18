@@ -237,7 +237,7 @@ fn test_an_additional_transmitter_still_counts_as_the_sender() {
 			candb.Message{
 				name:     'SharedMsg'
 				id:       0x400
-				sender:   'EBS' // the BO_ line names EBS...
+				sender:   'EBS'       // the BO_ line names EBS...
 				tx_nodes: ['SUT_ECU'] // ...and BO_TX_BU_ adds the SUT
 			},
 		]
@@ -284,4 +284,35 @@ fn test_new_player_over_does_not_reorder_the_plan() {
 	assert due[0].iface == 'b' && due[0].frame.id == 2, 'plan order lost at the player'
 	assert due[1].iface == 'a' && due[1].frame.id == 1
 	assert due[2].iface == 'c' && due[2].frame.id == 3
+}
+
+fn db_with_node(node string) candb.Database {
+	return candb.Database{
+		nodes:    [node]
+		messages: []
+	}
+}
+
+// The gateway case the GUI used to refuse: the SUT transmits on ONE of the mapped buses. That
+// is the ordinary shape of a multi-bus recording, not a mistake.
+fn test_node_declared_by_one_database_is_not_unknown() {
+	dbs := [db_with_node('SUT_ECU'), db_with_node('OTHER')]
+	assert unknown_everywhere(dbs, ['SUT_ECU']) == []
+}
+
+// Declared by NONE of them is the typo worth refusing -- it subtracts nothing anywhere.
+fn test_node_declared_nowhere_is_reported() {
+	dbs := [db_with_node('A'), db_with_node('B')]
+	assert unknown_everywhere(dbs, ['SUT_ECU']) == ['SUT_ECU']
+}
+
+// A name repeated on the command line is one name, reported once.
+fn test_repeated_exclusion_is_judged_once() {
+	dbs := [db_with_node('A')]
+	assert unknown_everywhere(dbs, ['GHOST', 'GHOST']) == ['GHOST']
+}
+
+// With no databases at all there is nothing to contradict; the caller's own checks apply.
+fn test_no_databases_reports_nothing() {
+	assert unknown_everywhere([]candb.Database{}, ['ANY']) == []
 }

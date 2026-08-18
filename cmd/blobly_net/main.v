@@ -201,10 +201,17 @@ mut:
 	// workers. It holds the entry until the worker's ownership-checked cleanup runs, so a
 	// destination stays reserved while a stopping worker is still draining its last batch.
 	replay_owner map[string]ReplayOwner
-	trace_seq    u64
-	trace_base   u64
-	ghost_seq    u64                    // identities for emissions made while paused (see ghost_base)
-	tx_mutexes   map[string]&sync.Mutex // per-interface send order (see TapBus.tx_mu)
+	// In-process consumers (simulated ECUs, diagnostic responders) per interface: how many were
+	// spawned, and how many have actually attached to the bus. Counted on the spawn line itself
+	// rather than by a second walk over the configuration -- the branches that decide what gets
+	// spawned are intricate, and a separate count of them would be a second opinion to keep in
+	// step.
+	consumers_want  map[string]int
+	consumers_ready map[string]int
+	trace_seq       u64
+	trace_base      u64
+	ghost_seq       u64                    // identities for emissions made while paused (see ghost_base)
+	tx_mutexes      map[string]&sync.Mutex // per-interface send order (see TapBus.tx_mu)
 	// Stable identity for recording entries, exactly like trace_seq/trace_base for rows: the
 	// buffer is trimmed by re-slicing, so a plain index does not survive.
 	rec_seq u64
@@ -750,16 +757,6 @@ fn (mut app App) start() {
 			}
 		}
 	}
-	// The players, AFTER every monitor is up: the opening frames must find a reader attached, or
-	// they go out with nothing able to claim their echoes and come back as the ECU's.
-	//
-	// Grouped by RECORDING, one worker each. Channels reading the same file share a clock, which
-	// is what keeps the buses in the relationship the car had; channels reading different files
-	// cannot be synchronised at all, since timestamps from two recordings are not comparable.
-	app.mu.lock()
-	replay_spawns := app.spawn_replay_workers_locked()
-	app.mu.unlock()
-	app.run_replay_spawns(replay_spawns)
 	// a generator may target a bus whose channel isn't itself monitored — open those too
 	for sr in app.senders {
 		tgt := sr.target()
@@ -786,6 +783,7 @@ fn (mut app App) start() {
 			continue
 		}
 		if sc.nodes.len > 0 {
+			app.consumers_want[sc.iface]++
 			spawn sim_loop(app, sc) // a verify-only channel has nothing to transmit
 		}
 	}
@@ -841,6 +839,7 @@ fn (mut app App) start() {
 		}
 		mut diag_nodes := sim.uds_nodes(peers)
 		if diag_nodes.len == 0 {
+			app.consumers_want[sc.iface]++
 			spawn diag_server_loop(app, sc.iface, sc.pch.name) // the built-in default for this bus
 			app.diag_plan << DiagTarget{
 				key:   diag_key_can(sc.iface, diag_tx_id, diag_rx_id)
@@ -856,6 +855,7 @@ fn (mut app App) start() {
 		// also run, or the two would both answer whenever their ids overlapped.
 		for mut u in diag_nodes {
 			own := if u.src >= 0 && u.src < owners.len { owners[u.src] } else { sc.pch }
+			app.consumers_want[sc.iface]++
 			spawn uds_node_loop(app, own, sc.iface, u.name, u.rx, u.tx, u.ext, u.server)
 			app.diag_plan << DiagTarget{
 				key:   diag_key_can(sc.iface, u.rx, u.tx)
@@ -874,6 +874,24 @@ fn (mut app App) start() {
 	// what makes the unlocked appends safe, rather than adding a lock to every one of them.
 	app.start_doip_hosts()
 	spawn gen_loop(app) // cyclic senders
+	// The players go LAST -- after the monitors, and after every in-process consumer has been
+	// spawned. Two separate reasons, and only the first was handled before:
+	//
+	// the opening frames must find a READER attached, or they go out with nothing able to claim
+	// their echoes and come back filed as the device under test's traffic;
+	//
+	// and on a bus that also hosts simulated ECUs or a diagnostic responder, they must find
+	// those SUBSCRIBED. The in-process bus broadcasts only to subscribers that already exist, so
+	// a stimulus or an opening request sent before they attach is not delayed, it is gone. The
+	// player waits for both -- see the consumer gate in replay_group.
+	//
+	// Grouped by RECORDING, one worker each. Channels reading the same file share a clock, which
+	// is what keeps the buses in the relationship the car had; channels reading different files
+	// cannot be synchronised at all, since timestamps from two recordings are not comparable.
+	app.mu.lock()
+	replay_spawns := app.spawn_replay_workers_locked()
+	app.mu.unlock()
+	app.run_replay_spawns(replay_spawns)
 }
 
 // host_key identifies a hosted DoIP entity by its CHANNEL and interface. The supervisor uses it
@@ -1984,8 +2002,10 @@ fn sim_loop(app &App, sc SimCfg) {
 	a := unsafe { app }
 	mut bus := app.open_tap_on(sc.iface, org_tx_sim, sc.pch.name) or {
 		eprintln('sim ${sc.iface}: ${err}')
+		consumer_attached(a, sc.iface)
 		return
 	}
+	consumer_attached(a, sc.iface)
 	mut engine := sim.Engine{}
 	// Alive counters for the whole run, not just across one rebuild: an ECU switched OFF leaves
 	// the engine, so state kept only in the previous engine is lost and switching it back on
@@ -2064,12 +2084,24 @@ fn gen_loop(app &App) {
 // diag_server_loop runs the native UDS server (mirror of the tester: rx 0x7E0, tx 0x7E8)
 // so the Diagnostics panel + Lua scripts work driver-free against simulated channels.
 // uds_node_loop answers one simulated ECU's diagnostic requests on its own addresses.
+// consumer_attached reports one in-process consumer as attached to its bus -- or as having
+// given up, which counts the same here: the gate exists so replay does not transmit into a bus
+// nobody is subscribed to yet, and a consumer that will never attach must not hold it shut.
+// Exactly once per spawned consumer, or the gate waits for an arrival that cannot come.
+fn consumer_attached(app &App, iface string) {
+	mut a := unsafe { app }
+	a.mu.lock()
+	a.consumers_ready[iface]++
+	a.mu.unlock()
+}
+
 fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u32, tx u32, ext bool, srv uds.Server) {
 	a := unsafe { app }
 	mut s := srv
 	key := sim_key(pch, name)
 	mut ch := &isotp.SoftChannel(unsafe { nil })
 	mut open := false
+	mut reported := false
 	defer {
 		if open {
 			ch.close()
@@ -2080,6 +2112,10 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 		on := a.sim_enabled[key] or { true }
 		a.mu.unlock()
 		if !on {
+			if !reported {
+				reported = true
+				consumer_attached(a, iface) // switched off: nothing will subscribe, do not wait for it
+			}
 			// CLOSE it, do not merely stop answering. Two things go wrong otherwise, and the
 			// previous two attempts each fixed one: leaving recv running answers a First Frame
 			// with Flow Control, so the "offline" ECU is still visible on the wire; and merely
@@ -2106,6 +2142,10 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 				continue
 			}
 			open = true
+			if !reported {
+				reported = true
+				consumer_attached(a, iface)
+			}
 		}
 		req := ch.recv(50) or { continue }
 		resp := s.handle(req)
@@ -2120,10 +2160,15 @@ fn diag_server_loop(app &App, iface string, chan_name string) {
 	// its OWN channel: two channels can share a wire, and resolving the name from the interface
 	// picks whichever is listed first — so a default server created for the second one had every
 	// response attributed to its neighbour
-	tapped := a.open_tap_on(iface, org_tx_sim, chan_name) or { return }
-	mut ch := isotp.on_bus(tapped, a.bitrate_iface(iface), diag_rx_id, diag_tx_id, false) or {
+	tapped := a.open_tap_on(iface, org_tx_sim, chan_name) or {
+		consumer_attached(a, iface)
 		return
 	}
+	mut ch := isotp.on_bus(tapped, a.bitrate_iface(iface), diag_rx_id, diag_tx_id, false) or {
+		consumer_attached(a, iface)
+		return
+	}
+	consumer_attached(a, iface)
 	mut srv := uds.default_server()
 	for a.running {
 		req := ch.recv(50) or { continue }
@@ -2170,6 +2215,19 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	// once the operator fixed whatever was wrong.
 	defer {
 		a.mu.lock()
+		// The WIRE goes back first, and outside the state check below. A replacement worker for
+		// this same recording has already replaced replay_state's token by the time it is
+		// waiting on us, so releasing the wire only when that token still matched meant the
+		// predecessor never let go and the replacement waited out its whole timeout. What we
+		// hold is decided by the claim we made, not by who owns the source now.
+		for ch in chans {
+			k := transport.destination_key(ch.iface)
+			if o := a.replay_owner[k] {
+				if o.token == token {
+					a.replay_owner.delete(k)
+				}
+			}
+		}
 		st := a.replay_state[source] or { ReplayState{} }
 		if st.gen == gen && st.live && st.token == token {
 			a.replay_state[source] = ReplayState{
@@ -2177,16 +2235,89 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 				live:  false
 				token: token
 			}
-			for ch in chans {
-				k := transport.destination_key(ch.iface)
-				if o := a.replay_owner[k] {
-					if o.src == source && o.token == token {
-						a.replay_owner.delete(k)
-					}
-				}
-			}
 		}
 		a.mu.unlock()
+	}
+
+	// TAKE THE WIRE first. A worker that has been told to stop can still be dispatching a batch
+	// it already computed, so Stop then Start -- which replays the SAME recording, from the
+	// beginning, on a second clock -- used to overlap with its own predecessor: duplicate and
+	// out-of-order traffic, and nothing that looked like a failure.
+	//
+	// Held by the WORKERS, not handed out by whatever decided to spawn them. That split was the
+	// bug underneath four rounds of review: the spawn decision was made from configuration and
+	// could not see a worker that was still winding down, and adding a second table for the
+	// in-flight ones only gave two answers to one question. The worker owns the wire for exactly
+	// as long as it drives it, which is a fact it is in a position to know.
+	//
+	// ALL destinations or none, never one at a time: two groups that each hold what the other
+	// wants would wait for each other forever, and a replay that hangs the bench is worse than
+	// one that says it could not start.
+	mut dests := []string{}
+	for ch in chans {
+		k := transport.destination_key(ch.iface)
+		if k !in dests {
+			dests << k
+		}
+	}
+	mut claimed := false
+	for waited_claim := 0; waited_claim < 5000; waited_claim += 20 {
+		a.mu.lock()
+		st_now := a.replay_state[source] or { ReplayState{} }
+		if !a.running || a.run_gen != gen || st_now.token != token {
+			a.mu.unlock()
+			return
+		}
+		mut free := true
+		for k in dests {
+			if _ := a.replay_owner[k] {
+				free = false
+				break
+			}
+		}
+		if free {
+			for k in dests {
+				a.replay_owner[k] = ReplayOwner{
+					src:   source
+					token: token
+				}
+			}
+			claimed = true
+		}
+		a.mu.unlock()
+		if claimed {
+			break
+		}
+		time.sleep(20 * time.millisecond)
+	}
+	if !claimed {
+		a.notify('replay ${label}: destination still in use by an earlier replay — not started')
+		return
+	}
+
+	// WAIT for the in-process consumers too. A simulated ECU or a diagnostic responder on a
+	// replay bus subscribes to the software bus from its own thread; until it has, the broadcast
+	// reaches nobody and the frame is not delayed but lost. Bounded and non-fatal: a consumer
+	// that cannot attach is its own reported failure, and it must not also silence a replay
+	// whose real destinations are open.
+	for waited_sub := 0; waited_sub < 2000; waited_sub += 20 {
+		a.mu.lock()
+		mut all_in := true
+		for ch in chans {
+			if a.consumers_ready[ch.iface] < a.consumers_want[ch.iface] {
+				all_in = false
+				break
+			}
+		}
+		stopped_sub := !a.running || a.run_gen != gen
+		a.mu.unlock()
+		if stopped_sub {
+			return
+		}
+		if all_in {
+			break
+		}
+		time.sleep(20 * time.millisecond)
 	}
 
 	// WAIT for the readers. rx_loop sets `running` only once its transport is actually open, and
@@ -2247,13 +2378,10 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			return
 		}
 		db := replay_db(a, ch)
-		if ch.replay_exclude.len > 0 {
-			missing := player.check_nodes(db, ch.replay_exclude)
-			if missing.len > 0 {
-				a.notify('replay ${label}: ${ch.name}: the channel databases do not declare ${missing.join(', ')} — not starting')
-				return
-			}
-		}
+		// JUDGED ACROSS THE GROUP, below. Per channel, this refused the ordinary shape of a
+		// gateway recording: the SUT transmits on one of the mapped buses and is absent from the
+		// other databases, which is not a mistake. The CLI has always judged it that way, so the
+		// two front ends disagreed about the same project.
 		specs << player.BusSpec{
 			src:                 src_label
 			dst:                 ch.iface
@@ -2264,6 +2392,22 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	}
 	if specs.len == 0 {
 		return
+	}
+	// One verdict for the whole group, from the rule both front ends share.
+	mut all_ex := []string{}
+	mut all_dbs := []candb.Database{}
+	for sp in specs {
+		all_dbs << sp.db
+		for n in sp.exclude {
+			all_ex << n
+		}
+	}
+	if all_ex.len > 0 {
+		nowhere := player.unknown_everywhere(all_dbs, all_ex)
+		if nowhere.len > 0 {
+			a.notify('replay ${label}: no mapped database declares ${nowhere.join(', ')} — not starting')
+			return
+		}
 	}
 	for c in player.conflicts(specs) {
 		a.notify('replay: ${c}')
@@ -2400,7 +2544,7 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	for ch in chans {
 		k := transport.destination_key(ch.iface)
 		if o := a.replay_owner[k] {
-			if o.src == source && o.token == token {
+			if o.token == token {
 				a.replay_owner.delete(k)
 			}
 		}
@@ -2462,40 +2606,6 @@ fn (mut app App) spawn_replay_workers_locked() []ReplaySpawn {
 			}
 		}
 	}
-	// A wire an IN-FLIGHT worker still holds. Separate from the clash above because the two are
-	// different situations with different fixes: that one is a contradiction in the project and
-	// stays wrong until the operator changes it, this one is a worker that has been told to stop
-	// and has not finished draining -- correct configuration, momentarily unavailable wire.
-	//
-	// Compared by TOKEN, not by recording. Stop then Start replays the SAME file, so matching on
-	// the source alone let the replacement start while its predecessor was still dispatching a
-	// batch it had already computed -- two workers putting one recording on one wire from two
-	// clocks, which is duplicate and out-of-order traffic rather than a visible failure.
-	mut busy := []string{}
-	mut blocked := map[string]bool{}
-	for src, cis in by_src {
-		st := app.replay_state[src] or { ReplayState{} }
-		running_now := st.gen == app.run_gen && st.live
-		for ci in cis {
-			if ci >= app.chans.len {
-				continue
-			}
-			k := transport.destination_key(app.chans[ci].iface)
-			if o := app.replay_owner[k] {
-				if running_now && o.src == src && o.token == st.token {
-					continue // this group's own reservation, from the run it is still playing
-				}
-				who := if o.src == src {
-					'still finishing its previous run'
-				} else {
-					'still finishing ${os.base(o.src)}'
-				}
-				busy << '${app.chans[ci].iface} (${who})'
-				blocked[src] = true
-			}
-		}
-	}
-
 	mut to_start := map[string][]int{}
 	mut late := []string{}
 	if clash.len > 0 {
@@ -2508,9 +2618,6 @@ fn (mut app App) spawn_replay_workers_locked() []ReplaySpawn {
 		]
 	}
 	for src, cis in by_src {
-		if blocked[src] {
-			continue // its destination is still owned; the busy note below explains why
-		}
 		st := app.replay_state[src] or { ReplayState{} }
 		if st.gen == app.run_gen && st.live {
 			// Already playing. A channel enabled now cannot join: the group's membership and its
@@ -2535,14 +2642,6 @@ fn (mut app App) spawn_replay_workers_locked() []ReplaySpawn {
 			token: app.replay_token
 		}
 		to_start[src] = cis.clone()
-		for ci in cis {
-			if ci < app.chans.len {
-				app.replay_owner[transport.destination_key(app.chans[ci].iface)] = ReplayOwner{
-					src:   src
-					token: app.replay_token
-				}
-			}
-		}
 	}
 	gen := app.run_gen
 	mut out := []ReplaySpawn{}
@@ -2553,13 +2652,6 @@ fn (mut app App) spawn_replay_workers_locked() []ReplaySpawn {
 			gen:    gen
 			token:  (app.replay_state[src] or { ReplayState{} }).token
 			late:   []string{}
-		}
-	}
-	if busy.len > 0 {
-		out << ReplaySpawn{
-			notes: [
-				'destination still busy: ${busy.join(', ')} — not started; press Start again in a moment',
-			]
 		}
 	}
 	if late.len > 0 {
