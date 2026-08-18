@@ -185,11 +185,16 @@ mut:
 	replay_state map[string]ReplayState
 	replay_token u64 // monotonic; identifies which worker owns a replay_state entry
 	// Destinations covered by a live group, so a channel enabled late can be told it is not one.
-	replay_live_ifaces map[string]bool
-	trace_seq          u64
-	trace_base         u64
-	ghost_seq          u64                    // identities for emissions made while paused (see ghost_base)
-	tx_mutexes         map[string]&sync.Mutex // per-interface send order (see TapBus.tx_mu)
+	// Destination -> the recording whose worker currently OWNS that wire. Keyed by
+	// transport.destination_key(), not by the interface string: two spellings of one device are
+	// one destination, and a table keyed by the spelling would hand the same wire to two
+	// workers. It holds the entry until the worker's ownership-checked cleanup runs, so a
+	// destination stays reserved while a stopping worker is still draining its last batch.
+	replay_owner map[string]string
+	trace_seq    u64
+	trace_base   u64
+	ghost_seq    u64                    // identities for emissions made while paused (see ghost_base)
+	tx_mutexes   map[string]&sync.Mutex // per-interface send order (see TapBus.tx_mu)
 	// Stable identity for recording entries, exactly like trace_seq/trace_base for rows: the
 	// buffer is trimmed by re-slicing, so a plain index does not survive.
 	rec_seq u64
@@ -2163,7 +2168,10 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 				token: token
 			}
 			for ch in chans {
-				a.replay_live_ifaces.delete(ch.iface)
+				k := transport.destination_key(ch.iface)
+				if a.replay_owner[k] == source {
+					a.replay_owner.delete(k)
+				}
 			}
 		}
 		a.mu.unlock()
@@ -2378,7 +2386,10 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		}
 	}
 	for ch in chans {
-		a.replay_live_ifaces.delete(ch.iface)
+		k := transport.destination_key(ch.iface)
+		if a.replay_owner[k] == source {
+			a.replay_owner.delete(k)
+		}
 	}
 	a.mu.unlock()
 	if failed > 0 {
@@ -2415,8 +2426,15 @@ fn (mut app App) spawn_replay_workers_locked() []ReplaySpawn {
 	// recording's specs, so two channels replaying DIFFERENT files onto one interface never
 	// meet inside it — and two recordings on one wire is the id collision that grouping exists
 	// to prevent, arriving by another door.
-	mut dst_owner := map[string]string{}
+	// SEEDED with the live owners, because a worker that was just disabled still holds its
+	// destination: it may be dispatching a batch it already computed, or sitting up to 50 ms in
+	// its poll before it notices the toggle. Rebuilding this table from the enabled channels
+	// alone would call that wire free and start a second worker onto it. The owner table is the
+	// single authority for who has a destination; this loop only adds the not-yet-started.
+	mut dst_owner := app.replay_owner.clone()
 	mut clash := []string{}
+	mut busy := []string{}
+	mut blocked := map[string]bool{}
 	for src, cis in by_src {
 		for ci in cis {
 			if ci >= app.chans.len {
@@ -2425,7 +2443,16 @@ fn (mut app App) spawn_replay_workers_locked() []ReplaySpawn {
 			k := transport.destination_key(app.chans[ci].iface)
 			if prev := dst_owner[k] {
 				if prev != src {
-					clash << '${app.chans[ci].iface} (${os.base(prev)} and ${os.base(src)})'
+					// A DIFFERENT recording holds this wire. If it is one the operator has
+					// enabled too, the project itself is contradictory and neither should
+					// start. If it is only a worker still winding down, the configuration is
+					// fine and the wire is merely busy — say which, because the fixes differ.
+					if prev in by_src {
+						clash << '${app.chans[ci].iface} (${os.base(prev)} and ${os.base(src)})'
+					} else {
+						busy << '${app.chans[ci].iface} (still finishing ${os.base(prev)})'
+						blocked[src] = true
+					}
 				}
 			} else {
 				dst_owner[k] = src
@@ -2444,6 +2471,9 @@ fn (mut app App) spawn_replay_workers_locked() []ReplaySpawn {
 		]
 	}
 	for src, cis in by_src {
+		if blocked[src] {
+			continue // its destination is still owned; the busy note below explains why
+		}
 		st := app.replay_state[src] or { ReplayState{} }
 		if st.gen == app.run_gen && st.live {
 			// Already playing. A channel enabled now cannot join: the group's membership and its
@@ -2451,7 +2481,8 @@ fn (mut app App) spawn_replay_workers_locked() []ReplaySpawn {
 			// already mid-recording back to the beginning. Say so rather than leaving one wire
 			// silent with no explanation.
 			for ci in cis {
-				if ci < app.chans.len && app.chans[ci].iface !in app.replay_live_ifaces {
+				if ci < app.chans.len
+					&& transport.destination_key(app.chans[ci].iface) !in app.replay_owner {
 					late << app.chans[ci].name
 				}
 			}
@@ -2469,7 +2500,7 @@ fn (mut app App) spawn_replay_workers_locked() []ReplaySpawn {
 		to_start[src] = cis.clone()
 		for ci in cis {
 			if ci < app.chans.len {
-				app.replay_live_ifaces[app.chans[ci].iface] = true
+				app.replay_owner[transport.destination_key(app.chans[ci].iface)] = src
 			}
 		}
 	}
@@ -2482,6 +2513,13 @@ fn (mut app App) spawn_replay_workers_locked() []ReplaySpawn {
 			gen:    gen
 			token:  (app.replay_state[src] or { ReplayState{} }).token
 			late:   []string{}
+		}
+	}
+	if busy.len > 0 {
+		out << ReplaySpawn{
+			late: [
+				'destination still busy: ${busy.join(', ')} — not started; stop and start again once it has',
+			]
 		}
 	}
 	if late.len > 0 {
