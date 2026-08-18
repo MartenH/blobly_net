@@ -2446,12 +2446,7 @@ fn (mut app App) spawn_replay_workers_locked() []ReplaySpawn {
 	// alone would call that wire free and start a second worker onto it. The owner table is the
 	// single authority for who has a destination; this loop only adds the not-yet-started.
 	mut dst_owner := map[string]string{}
-	for k, o in app.replay_owner {
-		dst_owner[k] = o.src
-	}
 	mut clash := []string{}
-	mut busy := []string{}
-	mut blocked := map[string]bool{}
 	for src, cis in by_src {
 		for ci in cis {
 			if ci >= app.chans.len {
@@ -2460,28 +2455,53 @@ fn (mut app App) spawn_replay_workers_locked() []ReplaySpawn {
 			k := transport.destination_key(app.chans[ci].iface)
 			if prev := dst_owner[k] {
 				if prev != src {
-					// A DIFFERENT recording holds this wire. If it is one the operator has
-					// enabled too, the project itself is contradictory and neither should
-					// start. If it is only a worker still winding down, the configuration is
-					// fine and the wire is merely busy — say which, because the fixes differ.
-					if prev in by_src {
-						clash << '${app.chans[ci].iface} (${os.base(prev)} and ${os.base(src)})'
-					} else {
-						busy << '${app.chans[ci].iface} (still finishing ${os.base(prev)})'
-						blocked[src] = true
-					}
+					clash << '${app.chans[ci].iface} (${os.base(prev)} and ${os.base(src)})'
 				}
 			} else {
 				dst_owner[k] = src
 			}
 		}
 	}
+	// A wire an IN-FLIGHT worker still holds. Separate from the clash above because the two are
+	// different situations with different fixes: that one is a contradiction in the project and
+	// stays wrong until the operator changes it, this one is a worker that has been told to stop
+	// and has not finished draining -- correct configuration, momentarily unavailable wire.
+	//
+	// Compared by TOKEN, not by recording. Stop then Start replays the SAME file, so matching on
+	// the source alone let the replacement start while its predecessor was still dispatching a
+	// batch it had already computed -- two workers putting one recording on one wire from two
+	// clocks, which is duplicate and out-of-order traffic rather than a visible failure.
+	mut busy := []string{}
+	mut blocked := map[string]bool{}
+	for src, cis in by_src {
+		st := app.replay_state[src] or { ReplayState{} }
+		running_now := st.gen == app.run_gen && st.live
+		for ci in cis {
+			if ci >= app.chans.len {
+				continue
+			}
+			k := transport.destination_key(app.chans[ci].iface)
+			if o := app.replay_owner[k] {
+				if running_now && o.src == src && o.token == st.token {
+					continue // this group's own reservation, from the run it is still playing
+				}
+				who := if o.src == src {
+					'still finishing its previous run'
+				} else {
+					'still finishing ${os.base(o.src)}'
+				}
+				busy << '${app.chans[ci].iface} (${who})'
+				blocked[src] = true
+			}
+		}
+	}
+
 	mut to_start := map[string][]int{}
 	mut late := []string{}
 	if clash.len > 0 {
 		return [
 			ReplaySpawn{
-				late: [
+				notes: [
 					'two recordings are mapped onto one interface: ${clash.join(', ')} — not starting either',
 				]
 			},
@@ -2537,8 +2557,8 @@ fn (mut app App) spawn_replay_workers_locked() []ReplaySpawn {
 	}
 	if busy.len > 0 {
 		out << ReplaySpawn{
-			late: [
-				'destination still busy: ${busy.join(', ')} — not started; stop and start again once it has',
+			notes: [
+				'destination still busy: ${busy.join(', ')} — not started; press Start again in a moment',
 			]
 		}
 	}
@@ -2557,7 +2577,8 @@ struct ReplaySpawn {
 	cis    []int
 	gen    u64
 	token  u64
-	late   []string
+	late   []string // CHANNEL NAMES, each of which gets the late-join explanation
+	notes  []string // whole messages, emitted verbatim -- they say something else entirely
 }
 
 // run_replay_spawns performs what spawn_replay_workers_locked decided. Caller must NOT hold app.mu.
@@ -2565,6 +2586,10 @@ fn (mut app App) run_replay_spawns(items []ReplaySpawn) {
 	for it in items {
 		for n in it.late {
 			app.notify('${n}: that recording is already playing — it joins on the next Start')
+		}
+		for n in it.notes {
+			app.notify(n) // already a complete sentence; appending the late-join line to a
+			// collision or a busy wire would promise it starts next time, and neither does
 		}
 		if it.source != '' {
 			spawn replay_group(app, it.source, it.cis, it.gen, it.token)
