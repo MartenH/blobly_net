@@ -2494,17 +2494,34 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	// was wrong for exactly the recordings the feature exists for.
 	//
 	// ALL destinations or none: two groups each holding what the other wants would wait forever.
+	//
+	// MEMBERSHIP RE-READ each time round, not frozen from the startup snapshot. The wait can be
+	// long -- a decode ahead of it, a predecessor draining -- and a channel unticked meanwhile
+	// left the worker waiting on a wire it would never send to. With no deadline in front of it
+	// any more, that wait is forever, and the group's still-enabled siblings stay silent behind
+	// it: one unticked box silencing the buses that were left on.
 	mut dests := []string{}
-	for ch in chans {
-		k := transport.destination_key(ch.iface)
-		if k !in dests {
-			dests << k
-		}
-	}
 	for {
 		a.mu.lock()
 		st_claim := a.replay_state[source] or { ReplayState{} }
 		if !a.running || a.run_gen != gen || st_claim.token != token {
+			a.mu.unlock()
+			for _, b in buses_out {
+				mut bb := b
+				bb.close()
+			}
+			return
+		}
+		dests = []string{}
+		for ci in cis {
+			if ci < a.chans.len && a.chans[ci].enabled {
+				k := transport.destination_key(a.chans[ci].iface)
+				if k !in dests {
+					dests << k
+				}
+			}
+		}
+		if dests.len == 0 {
 			a.mu.unlock()
 			for _, b in buses_out {
 				mut bb := b
