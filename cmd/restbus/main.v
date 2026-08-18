@@ -223,9 +223,22 @@ fn run_multi(o Opts, rec mf4.Recording) {
 	}
 	// A node no mapped database has heard of subtracts nothing at all, and the run then replays
 	// the ECU under test at itself while looking perfectly healthy.
+	// DEDUPED, and compared as a set of databases rather than a count of reports: `--exclude
+	// VCM_C,VCM_C` made check_nodes report the name twice per database, so the count exceeded
+	// specs.len, the equality never held, and a typo repeated by accident subtracted nothing
+	// while passing the check meant to catch it.
 	mut nowhere := []string{}
+	mut judged := map[string]bool{}
 	for n in o.exclude {
-		if n in unknown_on && unknown_on[n].len == specs.len {
+		if n in judged {
+			continue
+		}
+		judged[n] = true
+		mut dbs := map[string]bool{}
+		for d in unknown_on[n] or { []string{} } {
+			dbs[d] = true
+		}
+		if dbs.len > 0 && dbs.len == uniq_dbcs(o.maps) {
 			nowhere << n
 		}
 	}
@@ -234,7 +247,7 @@ fn run_multi(o Opts, rec mf4.Recording) {
 		exit(1)
 	}
 	for n, dbcs in unknown_on {
-		if n !in nowhere {
+		if n !in nowhere && n in judged {
 			eprintln('restbus: note: ${n} is not declared by ${dbcs.join(', ')} — it transmits nothing there')
 		}
 	}
@@ -370,6 +383,20 @@ fn run_multi(o Opts, rec mf4.Recording) {
 		eprintln('first failure: ${first_err}')
 		exit(1)
 	}
+}
+
+// uniq_dbcs counts the DISTINCT databases across the mappings — the same file may legitimately
+// be mapped to several buses, and counting mappings instead would make "unknown everywhere"
+// unreachable.
+fn uniq_dbcs(maps []string) int {
+	mut seen := map[string]bool{}
+	for m in maps {
+		parts := m.split(',')
+		if parts.len == 3 {
+			seen[os.base(parts[2].trim_space())] = true
+		}
+	}
+	return seen.len
 }
 
 // resolve_bus accepts either the recording's own name for a bus ('CAN1') or the label its frames

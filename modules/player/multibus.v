@@ -17,6 +17,7 @@ module player
 
 import canlog
 import candb
+import transport
 
 // BusSpec maps one recorded bus onto one live one. `src` is the label the recording's entries
 // carry (`mf4:group25`), NOT the name a person types — resolving a name to a label is the
@@ -55,55 +56,88 @@ pub:
 // build_multi selects, subtracts and merges. Order of `specs` does not matter; the result is
 // sorted by recorded time, so the buses interleave exactly as they did in the car.
 pub fn build_multi(entries []canlog.LogEntry, specs []BusSpec) MultiPlan {
+	// ONE pass over the recording, in recorded order. Filtering bus by bus and sorting the
+	// concatenation by timestamp afterwards loses the order of frames that share a timestamp —
+	// and simultaneous cross-bus stimuli are exactly what a gateway is watching. Their order
+	// would then be decided by --map order or by the sort's tie behaviour, which is the skew
+	// this whole feature exists to avoid.
+	mut idx_of := map[string]int{} // src label -> index into specs
+	for i, sp in specs {
+		idx_of[sp.src] = i
+	}
+	mut deciders := []Decider{}
+	mut tallies := []Tally{}
+	mut sources := []int{}
+	for sp in specs {
+		deciders << new_decider(sp.db, sp.exclude, sp.replay_unattributed)
+		tallies << Tally{}
+		sources << 0
+	}
 	mut out := []canlog.LogEntry{}
-	mut plans := []BusPlan{}
 	mut t0 := 0.0
 	mut end := 0.0
 	mut seen_any := false
-	for sp in specs {
-		src := on_bus(entries, sp.src)
-		if src.len == 0 {
-			plans << BusPlan{
-				src: sp.src
-				dst: sp.dst
-			}
-			continue
-		}
-		// The span comes from the SOURCE frames, before subtraction, and spans every bus.
+	for e in entries {
+		i := idx_of[e.iface] or { continue }
+		sources[i]++
+		// The span comes from the SOURCE frames, before subtraction, across every mapped bus.
 		if !seen_any {
-			t0 = src[0].t_s
-			end = src[src.len - 1].t_s
+			t0 = e.t_s
+			end = e.t_s
 			seen_any = true
 		} else {
-			if src[0].t_s < t0 {
-				t0 = src[0].t_s
+			if e.t_s < t0 {
+				t0 = e.t_s
 			}
-			if src[src.len - 1].t_s > end {
-				end = src[src.len - 1].t_s
+			if e.t_s > end {
+				end = e.t_s
 			}
 		}
-		kept, rep := without_senders(src, sp.db, sp.exclude, sp.replay_unattributed)
-		for e in kept {
+		if tallies[i].add(deciders[i].verdict(e.frame), e.frame.id) {
 			// Relabelled to the DESTINATION, so the sender is a map lookup and the player never
 			// learns that a mapping happened.
 			out << canlog.LogEntry{
 				t_s:   e.t_s
 				dir:   e.dir
-				iface: sp.dst
+				iface: specs[i].dst
 				frame: e.frame
 			}
 		}
+	}
+	mut plans := []BusPlan{}
+	for i, sp in specs {
 		plans << BusPlan{
 			src:    sp.src
 			dst:    sp.dst
-			source: src.len
-			report: rep
+			source: sources[i]
+			report: tallies[i].done(0) // kept is filled below from the tally's own counts
 		}
 	}
-	out.sort(a.t_s < b.t_s)
+	// kept per bus: the Tally does not know it, so count what each bus contributed.
+	mut kept_of := []int{len: specs.len}
+	for i in 0 .. specs.len {
+		kept_of[i] = sources[i] - plans[i].report.withheld_excluded - plans[i].report.withheld_unattributed
+	}
+	mut fixed := []BusPlan{}
+	for i, pl in plans {
+		fixed << BusPlan{
+			src:    pl.src
+			dst:    pl.dst
+			source: pl.source
+			report: Subtraction{
+				kept:                  kept_of[i]
+				withheld_excluded:     pl.report.withheld_excluded
+				withheld_unattributed: pl.report.withheld_unattributed
+				unattributed:          pl.report.unattributed
+				unknown:               pl.report.unknown
+				unattributed_ids:      pl.report.unattributed_ids
+				unknown_ids:           pl.report.unknown_ids
+			}
+		}
+	}
 	return MultiPlan{
 		entries: out
-		buses:   plans
+		buses:   fixed
 		t0_s:    t0
 		end_s:   end
 	}
@@ -119,7 +153,11 @@ pub fn conflicts(specs []BusSpec) []string {
 	mut dst_seen := map[string]int{}
 	for sp in specs {
 		src_seen[sp.src]++
-		dst_seen[sp.dst]++
+		// CANONICAL, because `inproc` and `inproc:CAN`, or `udp` and `udp:239.63.42.1:20000`,
+		// are the same medium spelled two ways — and transport.canonical_iface exists precisely
+		// so an identity is not decided by a spelling. Compared as strings, two recorded buses
+		// would land on one live bus with this check reporting no conflict at all.
+		dst_seen[transport.canonical_iface(sp.dst)]++
 	}
 	for k, n in src_seen {
 		if n > 1 {

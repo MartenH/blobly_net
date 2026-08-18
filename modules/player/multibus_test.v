@@ -178,3 +178,48 @@ fn test_conflicting_mappings_are_named() {
 	ok := mb_specs()
 	assert conflicts(ok) == []
 }
+
+// Frames sharing a timestamp must keep their RECORDED order across buses. Filtering bus by bus
+// and sorting the concatenation by timestamp loses it — and simultaneous cross-bus stimuli are
+// exactly what a gateway is watching, so their order would be decided by --map order or by the
+// sort's tie behaviour instead of by the car.
+fn test_simultaneous_cross_bus_frames_keep_their_recorded_order() {
+	// B before A in the recording, at the SAME timestamp, while the specs list A first
+	src := [
+		mb_entry('mf4:group2', 0x200, 1.0),
+		mb_entry('mf4:group1', 0x100, 1.0),
+		mb_entry('mf4:group2', 0x200, 1.0),
+	]
+	p := build_multi(src, mb_specs())
+	assert p.entries.len == 3
+	assert p.entries[0].iface == 'vcan1', 'the bus recorded FIRST must go out first'
+	assert p.entries[1].iface == 'vcan0'
+	assert p.entries[2].iface == 'vcan1'
+}
+
+// Two spellings of one software bus are one destination. transport.canonical_iface exists so an
+// identity is not decided by a spelling; comparing raw strings let two recorded buses land on
+// the same live bus with the conflict check reporting nothing.
+fn test_equivalent_destination_spellings_are_one_destination() {
+	c := conflicts([
+		BusSpec{
+			src: 'mf4:group1'
+			dst: 'udp'
+		},
+		BusSpec{
+			src: 'mf4:group2'
+			dst: 'udp:239.63.42.1:20000'
+		},
+	])
+	assert c.len == 1, 'equivalent spellings were treated as different buses: ${c}'
+	assert c[0].contains('collide')
+}
+
+// Per-bus counts must still balance after the single-pass rewrite: recorded = withheld + replay.
+fn test_the_per_bus_numbers_balance() {
+	p := build_multi(mb_sample(), mb_specs())
+	for b in p.buses {
+		r := b.report
+		assert b.source == r.kept + r.withheld_excluded + r.withheld_unattributed, '${b.src}: ${b.source} != ${r.kept}+${r.withheld_excluded}+${r.withheld_unattributed}'
+	}
+}
