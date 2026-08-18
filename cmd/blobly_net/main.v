@@ -2096,9 +2096,10 @@ fn gen_loop(app &App) {
 // Exactly once per spawned consumer, or the gate waits for an arrival that cannot come.
 fn consumer_attached(app &App, iface string, gen u64) {
 	mut a := unsafe { app }
+	k := transport.destination_key(iface)
 	a.mu.lock()
 	if a.run_gen == gen {
-		a.consumers_ready[iface]++ // a LEFTOVER from the previous run counts towards nothing
+		a.consumers_ready[k]++ // a LEFTOVER from the previous run counts towards nothing
 	}
 	a.mu.unlock()
 }
@@ -2107,9 +2108,10 @@ fn consumer_attached(app &App, iface string, gen u64) {
 // consumer of the PREVIOUS run can still be attaching while this one starts: V's maps are not
 // safe against concurrent mutation, and locking only the reader's side protects nothing.
 fn consumer_expected(mut app App, iface string, gen u64) {
+	k := transport.destination_key(iface)
 	app.mu.lock()
 	if app.run_gen == gen {
-		app.consumers_want[iface]++
+		app.consumers_want[k]++
 	}
 	app.mu.unlock()
 }
@@ -2271,7 +2273,13 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		a.mu.lock()
 		mut all_in := true
 		for ch in chans {
-			if a.consumers_ready[ch.iface] < a.consumers_want[ch.iface] {
+			// The BUS, not the spelling. `inproc` and `inproc:CAN` are one software bus, so a
+			// gate that compared the raw strings found nothing expected and nothing ready, let
+			// itself through immediately, and put the opening frame on a bus whose simulated
+			// ECU had not subscribed — the exact failure the gate was added to prevent, walked
+			// past by the same substitution this file has now made twice.
+			k := transport.destination_key(ch.iface)
+			if a.consumers_ready[k] < a.consumers_want[k] {
 				all_in = false
 				break
 			}
@@ -2379,6 +2387,23 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		if nowhere.len > 0 {
 			a.notify('replay ${label}: no mapped database declares ${nowhere.join(', ')} — not starting')
 			return
+		}
+	}
+	// PER BUS as well, because the check above is deliberately group-wide and that hides
+	// something worth knowing: an exclusion whose name this bus's own database does not declare
+	// subtracts nothing HERE, however well it works on a sibling. Said, not refused — a node
+	// that transmits on one bus of a gateway recording and not another is the ordinary shape,
+	// and refusing it would reject exactly the configuration the group-wide rule exists to
+	// allow. The operator gets the fact and decides; silence would let a bus nobody subtracted
+	// anything from look identical to one that worked.
+	for i, sp in specs {
+		if sp.exclude.len == 0 {
+			continue
+		}
+		silent := player.check_nodes(sp.db, sp.exclude)
+		if silent.len > 0 {
+			nm := if i < chans.len { chans[i].name } else { sp.dst }
+			a.notify('replay ${nm}: ${silent.join(', ')} not declared by this channel\'s database — nothing is subtracted on ${sp.dst}')
 		}
 	}
 	for c in player.conflicts(specs) {
@@ -2517,13 +2542,58 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 				}
 			}
 			stop = live.len == 0
+			// RELEASED as soon as its wire goes quiet, not when the whole group ends. A looping
+			// group runs forever while one sibling is enabled, so a destination unticked here
+			// stayed reserved for as long as the run lasted and a different recording aimed at
+			// that now-silent wire waited for a release that was never coming.
+			for ch in chans {
+				k := transport.destination_key(ch.iface)
+				if ch.iface !in live {
+					if o := a.replay_owner[k] {
+						if o.token == token {
+							a.replay_owner.delete(k)
+						}
+					}
+					continue
+				}
+				// RE-TAKEN when the box goes back on. Releasing on untick without claiming again
+				// on re-tick would have this worker driving a wire it does not hold, which is
+				// the same two-recordings-one-bus overlap the reservation exists to prevent,
+				// reached by a slower route. If somebody else took it while we were quiet, we
+				// stay quiet: they were here first, and the alternative is both of us talking.
+				if o := a.replay_owner[k] {
+					if o.token != token {
+						live.delete(ch.iface)
+					}
+				} else {
+					a.replay_owner[k] = ReplayOwner{
+						src:   source
+						token: token
+					}
+				}
+			}
 		}
 		a.mu.unlock()
 		if stop {
 			break
 		}
 		now := f64(i64(sw.elapsed())) / 1e6
+		mut n_batch := 0
 		for e in p.due(now) {
+			// A batch is normally a few frames, but after a stall p.due() returns everything
+			// owed at once. Stop was checked before the batch, so a Stop/Start during a long one
+			// left the PREDECESSOR dispatching into the new run — frames the trace then files as
+			// this measurement's. Reserving the wire holds the replacement back; it does not
+			// cancel the worker already inside the loop.
+			n_batch++
+			if n_batch & 0x3F == 0 {
+				a.mu.lock()
+				gone := !a.running || a.run_gen != gen
+				a.mu.unlock()
+				if gone {
+					break
+				}
+			}
 			if e.iface !in live {
 				continue // this channel was disabled mid-run; its wire goes quiet
 			}
