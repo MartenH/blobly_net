@@ -47,11 +47,16 @@ const max_can_payload = u64(64)
 // means 8 for every one of them. So a DLC over 8 is only decidable with the EDL flag in hand —
 // and guessing FD there would reject perfectly good classic frames whose writer set DLC 15.
 fn dlc_bytes(dlc u64, fd bool) ?u64 {
+	// A DLC is a FOUR-BIT code. Anything above 15 did not come off a wire — it is a damaged
+	// record, and the honest answer is that the length is unknown rather than a plausible 8.
+	if dlc > 15 {
+		return none
+	}
 	if dlc <= 8 {
 		return dlc
 	}
 	if !fd {
-		return u64(8) // classic CAN: every code above 8 means 8
+		return u64(8) // classic CAN: codes 9..15 all mean 8 bytes
 	}
 	return match dlc {
 		9 { u64(12) }
@@ -338,6 +343,11 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 	// EDL — the CAN-FD flag, present only on groups that record FD. It is what makes a DLC above
 	// 8 mean anything: without it, 9..15 could be 12..64 bytes or could be plain 8.
 	c_edl := find_chan(chans, 'CAN_DataFrame.EDL') or { Chan{} }
+	// BRS — the data phase ran at the faster rate. Recorded per frame alongside EDL.
+	c_brs := find_chan(chans, 'CAN_DataFrame.BRS') or { Chan{} }
+	// ESI — the transmitter was error-passive. A capture that recorded a degrading bus must not
+	// replay as a healthy one, which is the whole reason the flag is carried at all.
+	c_esi := find_chan(chans, 'CAN_DataFrame.ESI') or { Chan{} }
 
 	stride := data_bytes + inval_bytes
 	if stride <= 0 {
@@ -422,22 +432,46 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 						int(c_edl.bit_count)) == 1
 					dlc_bytes(stated, fd)
 				}
-				agrees := if want := expect { n == want } else { true }
+				// `none` is NOT permission. It means the record states no resolvable length —
+				// a DLC outside 0..15 — and accepting the prefix on that basis replays a
+				// payload whose only corroboration is the damaged field itself. The inline
+				// branch refuses the identical doubt; these two must not disagree.
+				agrees := if want := expect { n == want } else { false }
 				if n <= max_can_payload && end <= u64(vlsd.len) && agrees {
 					data = vlsd[int(off) + 4..int(end)].clone()
 				}
 			}
 		} else {
-			n := read_uint(raw, base + c_len.byte_off, int(c_len.bit_off), int(c_len.bit_count))
+			stated := read_uint(raw, base + c_len.byte_off, int(c_len.bit_off), int(c_len.bit_count))
+			// A DLC is a CODE. Without decoding it, a classic frame carrying DLC 9..15 (legal,
+			// and meaning 8 bytes) reads as a length of 9..15, overruns the record's DataBytes
+			// field and yields NO payload — a regression the byte-count path never sees because
+			// DataLength already states bytes.
+			fd_here := c_edl.bit_count > 0 && !chan_invalid(raw, base, data_bytes, inval_bytes, c_edl)
+				&& read_uint(raw, base + c_edl.byte_off, int(c_edl.bit_off), int(c_edl.bit_count)) == 1
+			// A DLC the format cannot resolve (out of range in a damaged record) means the
+			// length is UNKNOWN. Falling back to 8 accepted the first eight bytes of the field
+			// as a frame — inventing a payload from a record that says nothing trustworthy.
+			// Refused instead, which is what the VLSD branch does with the same doubt.
+			resolved := if len_is_bytes { ?u64(stated) } else { dlc_bytes(stated, fd_here) }
+			n := resolved or { u64(0) }
+			usable := resolved != none
 			dstart := u64(base + c_db.byte_off)
-			limit := u64(base + data_bytes)
+			// The DataBytes FIELD, not the whole record: bounding by the record would let a
+			// damaged length run into whatever channel is stored after the payload and return
+			// those bytes as though a frame had carried them.
+			field := if c_db.bit_count > 0 { u64(c_db.bit_count / 8) } else { u64(data_bytes) }
+			mut limit := dstart + field
+			if limit > u64(base + data_bytes) {
+				limit = u64(base + data_bytes)
+			}
 			// REFUSED, not clamped. A length that overruns the record is a length we cannot
 			// trust, and trimming it to the record boundary returns whatever the inline
 			// DataBytes array was padded with — or the channel stored after it — as though a
 			// frame had carried those bytes. A well-formed record never reaches this: its
 			// payload fits by construction. Inventing bytes is worse than reporting none,
 			// because only one of the two is visible downstream.
-			if n <= max_can_payload && dstart <= limit && n <= limit - dstart {
+			if usable && n <= max_can_payload && dstart <= limit && n <= limit - dstart {
 				data = raw[int(dstart)..int(dstart + n)].clone()
 			}
 		}
@@ -455,6 +489,18 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 		} else {
 			canlog.Dir.unknown // absent, or this record says the field is not defined
 		}
+		// CAN-FD, as the recording states it. EDL is the flag; a payload over 8 bytes is FD by
+		// construction whatever the flag says, and trusting only the flag would hand a 64-byte
+		// payload to a classic frame that cannot express it.
+		is_fd := data.len > 8 || (c_edl.bit_count > 0
+			&& !chan_invalid(raw, base, data_bytes, inval_bytes, c_edl)
+			&& read_uint(raw, base + c_edl.byte_off, int(c_edl.bit_off), int(c_edl.bit_count)) == 1)
+		brs := is_fd && c_brs.bit_count > 0
+			&& !chan_invalid(raw, base, data_bytes, inval_bytes, c_brs)
+			&& read_uint(raw, base + c_brs.byte_off, int(c_brs.bit_off), int(c_brs.bit_count)) == 1
+		esi := is_fd && c_esi.bit_count > 0
+			&& !chan_invalid(raw, base, data_bytes, inval_bytes, c_esi)
+			&& read_uint(raw, base + c_esi.byte_off, int(c_esi.bit_off), int(c_esi.bit_count)) == 1
 		out << canlog.LogEntry{
 			t_s:   ts
 			dir:   dir
@@ -462,6 +508,9 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 			frame: transport.CanFrame{
 				id:       u32(rid) & 0x1FFFFFFF
 				extended: ide
+				fd:       is_fd
+				brs:      brs
+				esi:      esi
 				data:     data
 			}
 		}

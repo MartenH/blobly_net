@@ -76,8 +76,19 @@ struct TraceRow {
 	id     u32
 	ext    bool
 	rtr    bool
-	name   string
-	data   []u8
+	// CAN-FD, as a KIND rather than a decoration: a 64-byte payload is visible from `data`, but
+	// an FD frame carrying 8 bytes or fewer is otherwise indistinguishable from a classic one,
+	// and BRS is invisible either way. The trace is the record people read back, so a row that
+	// drops these describes a frame that was never on the bus.
+	fd  bool
+	brs bool
+	// ESI is on the ROW but deliberately NOT in the group key or the echo identity: it is a
+	// received status, so keying on it would split one message into two rows the moment its
+	// transmitter went error-passive. Shown from the latest frame, which is where a reader
+	// looking for a degrading bus would look.
+	esi  bool
+	name string
+	data []u8
 	// End-to-end violation on a RECEIVED frame ('' = none, or not a protected message).
 	// Carried on the row rather than computed at draw time because it depends on the PREVIOUS
 	// frame's counter — a verdict the trace cannot reconstruct once the frames are just rows.
@@ -94,7 +105,6 @@ mut:
 	// checks — which is the habit this whole column exists to break.
 	missed bool
 }
-
 
 struct TRec {
 	ch     int
@@ -132,20 +142,20 @@ fn (c Chan) monitorable() bool {
 
 struct App {
 mut:
-	mu          sync.Mutex
-	chans       []Chan
-	trace       []TraceRow
+	mu    sync.Mutex
+	chans []Chan
+	trace []TraceRow
 	// Emissions still waiting for their echo, and the bookkeeping that lets one confirm its own
 	// row: `trace_seq` is the next row's identity, `trace_base` the identity of trace[0].
-	taps        wiretap.Ring
-	trace_seq   u64
-	trace_base  u64
-	ghost_seq   u64 // identities for emissions made while paused (see ghost_base)
-	tx_mutexes  map[string]&sync.Mutex // per-interface send order (see TapBus.tx_mu)
+	taps       wiretap.Ring
+	trace_seq  u64
+	trace_base u64
+	ghost_seq  u64                    // identities for emissions made while paused (see ghost_base)
+	tx_mutexes map[string]&sync.Mutex // per-interface send order (see TapBus.tx_mu)
 	// Stable identity for recording entries, exactly like trace_seq/trace_base for rows: the
 	// buffer is trimmed by re-slicing, so a plain index does not survive.
-	rec_seq     u64
-	rec_ids     []u64 // one per app.rec entry, so an entry is found by IDENTITY not by offset
+	rec_seq u64
+	rec_ids []u64 // one per app.rec entry, so an entry is found by IDENTITY not by offset
 	// Guards tx_mutexes ALONE, deliberately not app.mu: open_tap is called with app.mu held
 	// (set_sender_bus retargets a generator mid-run under the lock), and app.mu is not
 	// reentrant — taking it again inside the tap constructor deadlocked the GUI thread.
@@ -181,28 +191,28 @@ mut:
 	// Bumped whenever the counters are zeroed. An emission carries the epoch it was counted in,
 	// so a send that fails AFTER a Clear cannot take its refund out of the new session's total
 	// (the counters are aggregates — they cannot tell whose count they are giving back).
-	tx_epoch     u64
-	logs         []string           // Log panel (status/events, newest last)
-	doip_ents    []doip.VehicleInfo // DoIP Discovery results
+	tx_epoch  u64
+	logs      []string           // Log panel (status/events, newest last)
+	doip_ents []doip.VehicleInfo // DoIP Discovery results
 	// panel visibility (View menu)
 	// Default workspace is intentionally minimal: Buses + Trace + Log. Everything else is
 	// off and toggled on via the activity bar / View menu (its dock slot is still reserved).
-	show_buses     bool = true
-	show_sim       bool
-	show_symbols   bool
-	show_trace     bool = true
-	show_ftrace    bool
-	show_tchart    bool
-	show_signals   bool
-	show_graphics  bool
-	show_diag      bool
-	show_gen       bool
-	show_script    bool
-	show_doip      bool
-	show_network   bool
-	show_stats     bool
-	show_log       bool              = true
-	help_cache     map[string]string = map[string]string{} // markdown file -> contents (read once)
+	show_buses    bool = true
+	show_sim      bool
+	show_symbols  bool
+	show_trace    bool = true
+	show_ftrace   bool
+	show_tchart   bool
+	show_signals  bool
+	show_graphics bool
+	show_diag     bool
+	show_gen      bool
+	show_script   bool
+	show_doip     bool
+	show_network  bool
+	show_stats    bool
+	show_log      bool              = true
+	help_cache    map[string]string = map[string]string{} // markdown file -> contents (read once)
 	// Signals selection + Graphics watch list (UI-thread only; RX never touches these)
 	sel_id        int = -1 // selected message id (-1 = none)
 	sel_ext       bool
@@ -306,9 +316,9 @@ mut:
 	sys               sysview.System
 	sys_loaded        bool
 	sel_ecu           string // selected node in the System panel's ECU master-detail
-	shell_buf         []u8 // the input line (persistent; edited in place by console_input)
-	eth_target_buf    []u8 // the eth shell's board ip (session-only; manifest carries the port)
-	eth_shell_session u16  // persists across commands: a fresh client restarting at session 1
+	shell_buf         []u8   // the input line (persistent; edited in place by console_input)
+	eth_target_buf    []u8   // the eth shell's board ip (session-only; manifest carries the port)
+	eth_shell_session u16    // persists across commands: a fresh client restarting at session 1
 	// would let a late reply to a timed-out command complete the NEXT one
 	eth_someip   telem.SomeipIdent // the eth shell's identity (its OWN slot — see rebuild)
 	eth_method   u16               // the eth shell's method id (0 = no eth shell)
@@ -332,9 +342,9 @@ mut:
 // SenderRT is a project sender bound to its channel iface (Generators panel).
 struct SenderRT {
 mut:
-	iface  string // the bus this generator fires on (a channel iface); rebound if the iface changes
-	chan   string // the CHANNEL that owns it — two channels can share one iface, and only the
-	              // name says which of them a generator's frames belong to
+	iface string // the bus this generator fires on (a channel iface); rebound if the iface changes
+	chan  string // the CHANNEL that owns it — two channels can share one iface, and only the
+	// name says which of them a generator's frames belong to
 	sender project.Sender
 }
 
@@ -381,7 +391,7 @@ struct SimCfg {
 	// `interface:` keeps the CAN default `vcan0`, so a lookup could hand the DoIP entity a CAN
 	// channel's identity and mark its diagnostic target as CAN, leaving the hosted entity
 	// unreachable. The carrier is read from here, never re-derived.
-	pch project.Channel
+	pch   project.Channel
 	db    candb.Database
 	nodes []project.NodeCfg
 	// Protection to CHECK on this bus, from the channel's `verify:` block. Separate from the
@@ -1282,11 +1292,14 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 			origin: origin
 			id:     f.id
 			ext:    f.extended
+			fd:     f.fd
+			brs:    f.brs
+			esi:    f.esi
 			rtr:    f.rtr
 			name:   name
 			data:   f.data.clone()
 		})
-		app.gcount[gkey(origin, chn, f.id, f.extended)]++
+		app.gcount[gkey(origin, chn, f.id, f.extended, f.fd, f.brs)]++
 	}
 	// Counted whether or not the trace is paused, and whether or not a row was written: pausing
 	// freezes the table, it does not stop the bus.
@@ -1295,6 +1308,7 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 		org_tx_sim { app.tx_sim_count++ }
 		else {} // REP never reaches a bus; RX is not ours to count here
 	}
+
 	epoch := app.tx_epoch
 	// ALWAYS record what we sent, on any backend that could echo — the emission is ours whether
 	// or not a monitor happens to be open at this instant, and the sim emits its first frames
@@ -1348,9 +1362,12 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 	} else {
 		app.mu.unlock()
 	}
-	return seq, if recorded_here { rec_id } else { rec_none }, epoch
+	return seq, if recorded_here {
+		rec_id
+	} else {
+		rec_none
+	}, epoch
 }
-
 
 // rec_append_locked appends to the recording and returns that entry's stable identity.
 //
@@ -1437,8 +1454,12 @@ fn (mut app App) retract_emit(seq u64, origin string, epoch u64) {
 	// take the refund out of THAT frame's count instead.
 	if epoch == app.tx_epoch {
 		match origin {
-			org_tx { if app.tx_count > 0 { app.tx_count-- } }
-			org_tx_sim { if app.tx_sim_count > 0 { app.tx_sim_count-- } }
+			org_tx {
+				if app.tx_count > 0 { app.tx_count-- }
+			}
+			org_tx_sim {
+				if app.tx_sim_count > 0 { app.tx_sim_count-- }
+			}
 			else {}
 		}
 	}
@@ -1468,12 +1489,12 @@ mut:
 	// between registering and transmitting, another thread's byte-identical frame can go out
 	// first and have its echo credited to the wrong row — and then a failed or unechoed send
 	// marks the successful row instead. A bus is serial anyway, so this costs nothing real.
-	tx_mu  &sync.Mutex
-	inner  transport.Bus
-	app    &App
-	iface  string
+	tx_mu     &sync.Mutex
+	inner     transport.Bus
+	app       &App
+	iface     string
 	chan_name string // logical channel, '' = derive from the interface
-	origin string
+	origin    string
 }
 
 fn (mut t TapBus) send(frame transport.CanFrame) ! {
@@ -1534,9 +1555,9 @@ fn (app &App) open_tap_on(iface string, origin string, chan_name string) !transp
 	phys := if iface.contains('@') { iface } else { app.bitrate_iface(iface) }
 	inner := transport.open(phys)!
 	return &TapBus{
-		tx_mu:  app.tx_mutex(logical)
-		inner:  inner
-		app:    unsafe { app }
+		tx_mu:     app.tx_mutex(logical)
+		inner:     inner
+		app:       unsafe { app }
 		iface:     logical
 		chan_name: chan_name
 		origin:    origin
@@ -1791,12 +1812,15 @@ fn (mut app App) load_recording(path string) {
 			origin: org_rep
 			id:     f.id
 			ext:    f.extended
+			fd:     f.fd
+			brs:    f.brs
+			esi:    f.esi
 			rtr:    f.rtr
 			name:   name
 			data:   f.data.clone()
 			e2e:    viol
 		})
-		app.gcount[gkey(org_rep, e.iface, f.id, f.extended)]++
+		app.gcount[gkey(org_rep, e.iface, f.id, f.extended, f.fd, f.brs)]++
 	}
 	app.mu.unlock()
 	app.notify('loaded ${entries.len} frames from ${os.base(path)}')
@@ -2170,12 +2194,15 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				origin: org_rx
 				id:     f.id
 				ext:    f.extended
+				fd:     f.fd
+				brs:    f.brs
+				esi:    f.esi
 				rtr:    f.rtr
 				name:   name
 				data:   f.data.clone()
 				e2e:    viol
 			})
-			a.gcount[gkey(org_rx, chname, f.id, f.extended)]++
+			a.gcount[gkey(org_rx, chname, f.id, f.extended, f.fd, f.brs)]++
 			// The capture dump now arrives as an ISO-TP block on 0x7E5 (not raw per-record
 			// frames): trace_dump_worker reassembles + decodes it on demand. The raw ISO-TP
 			// frames still show in the trace table above.
@@ -2523,9 +2550,9 @@ fn (mut app App) rebuild_from_proj() {
 			// simulator's DBCs onto the launch/bundle cwd, so an external project's
 			// relative DBC fed the sim nothing (codex #63 r4)
 			app.sims << SimCfg{
-				iface:  ch.iface
-				pch:    ch
-				db:     merge_dbs(ch.databases.map(app.resolve_asset(it)))
+				iface:    ch.iface
+				pch:      ch
+				db:       merge_dbs(ch.databases.map(app.resolve_asset(it)))
 				nodes:    nodes
 				verify:   ch.verify
 				db_paths: ch.databases.map(app.resolve_asset(it))
@@ -2634,7 +2661,8 @@ fn main() {
 				if frame > 2 && app.dbs[0].messages.len > 0 {
 					app.dbc_ed.msg = 0
 				}
-				if frame > 5 && app.dbs[0].messages.len > 0 && app.dbs[0].messages[0].signals.len > 0 {
+				if frame > 5 && app.dbs[0].messages.len > 0
+					&& app.dbs[0].messages[0].signals.len > 0 {
 					app.dbc_ed.sig = 0
 				}
 			}
@@ -3159,6 +3187,7 @@ fn draw_sim(mut app App) {
 						.freeze_ctr { 'FROZEN CTR' }
 						.out_of_range { 'OUT OF RANGE' }
 					}
+
 					// Only offer what can take effect on THIS message. bad_crc without a
 					// configured checksum changes no bits, and out_of_range needs a signal with
 					// an illegal value — offering either would show a fault the bus never sees.
@@ -3168,7 +3197,11 @@ fn draw_sim(mut app App) {
 					mut mprot := sim.E2e{}
 					for pr in node.protect {
 						if pr.message == m.name {
-							mprot = sim.E2e{ counter: pr.counter, crc: pr.crc, profile: pr.profile }
+							mprot = sim.E2e{
+								counter: pr.counter
+								crc:     pr.crc
+								profile: pr.profile
+							}
 						}
 					}
 					for sg in m.signals {
@@ -3420,7 +3453,7 @@ fn (mut app App) browser_confirm(path string) {
 fn (mut app App) restbus_from_system(sut string) (int, int) {
 	mut nodes := 0
 	mut chans_hit := 0
-	mut sut_dropped := 0    // rich `nodes:` entries removed because they configured the SUT itself
+	mut sut_dropped := 0 // rich `nodes:` entries removed because they configured the SUT itself
 	mut chans_disabled := 0 // matching channels skipped because the project has them disabled
 	// the system buses the ECU under test sits on
 	mut sut_buses := []string{}
@@ -5077,6 +5110,24 @@ fn idstr(id u32, ext bool) string {
 	return if ext { '0x${id:08X}' } else { '0x${id:03X}' }
 }
 
+// kind_mark labels a frame whose KIND is not classic CAN. A 64-byte payload is obvious from the
+// data column, but an FD frame carrying eight bytes or fewer looks exactly like a classic one,
+// and BRS never shows at all — so the trace would claim a frame that was never on the bus.
+// Empty for classic, which is the overwhelming majority and needs no decoration.
+fn kind_mark(fd bool, brs bool, esi bool) string {
+	if !fd {
+		return ''
+	}
+	mut m := ' FD'
+	if brs {
+		m += '-BRS'
+	}
+	if esi {
+		m += '-ESI' // the transmitter was error-passive: the reason this bit is kept at all
+	}
+	return m
+}
+
 // trace_pass: case-insensitive substring match over id / name / ch / dir / data.
 fn trace_pass(r TraceRow, filt string) bool {
 	if filt == '' {
@@ -5091,13 +5142,19 @@ fn trace_pass(r TraceRow, filt string) bool {
 	// `tx-s` is awkward to type, so `s` and `sim` reach the simulation too; `tx`, `rx` and `rep`
 	// are already short. An alias only ever selects an origin — it never widens the search.
 	origin_filter := match filt {
-		's', 'sim' { org_tx_sim }
-		else { if filt in [org_tx, org_tx_sim, org_rep, org_rx].map(it.to_lower()) { filt } else { '' } }
+		's', 'sim' {
+			org_tx_sim
+		}
+		else {
+			if filt in [org_tx, org_tx_sim, org_rep, org_rx].map(it.to_lower()) { filt } else { '' }
+		}
 	}
+
 	if origin_filter != '' {
 		return r.origin.to_lower() == origin_filter.to_lower()
 	}
-	hay := '${idstr(r.id, r.ext)} ${r.name} ${r.ch} ${r.origin}${origin_mark(r)} ${hex(r.data)} ${r.e2e}'.to_lower()
+	hay :=
+		'${idstr(r.id, r.ext)} ${r.name} ${r.ch} ${r.origin}${origin_mark(r)} ${hex(r.data)} ${r.e2e}'.to_lower()
 	return hay.contains(filt)
 }
 
@@ -5173,7 +5230,7 @@ fn draw_trace_all(id string, rows []TraceRow, filt string) {
 			// A violation is appended to the NAME rather than given a column: it is rare, and
 			// a permanently-empty column costs width on every row for the frames that are fine.
 			vgui.table_cell(trace_name_cell(r))
-			vgui.table_cell(if r.rtr { 'RTR' } else { hex(r.data) })
+			vgui.table_cell(if r.rtr { 'RTR' } else { hex(r.data) + kind_mark(r.fd, r.brs, r.esi) })
 		}
 		vgui.table_end()
 	}
@@ -5185,23 +5242,28 @@ mut:
 	ch     string
 	id     u32
 	ext    bool
+	fd     bool
+	brs    bool
 	count  int
 	// Any frame in this group that never reached the wire. Taken across the whole group, not
 	// from `last`: the newest row is the one whose echo window has had least time to close, so
 	// reading the flag off it would hide every miss but the stalest.
 	missed bool
-	last  TraceRow // newest frame of this group in the window
-	prev  TraceRow // the frame before `last` (empty data if only one seen) — for byte-delta dim
+	last   TraceRow // newest frame of this group in the window
+	prev   TraceRow // the frame before `last` (empty data if only one seen) — for byte-delta dim
 }
 
 // gkey is the stable per-group identity used for both the grouped-view rows and the
 // persistent all-time frame count (App.gcount). Keep in sync with draw_trace_grouped.
-fn gkey(origin string, ch string, id u32, ext bool) string {
+fn gkey(origin string, ch string, id u32, ext bool, fd bool, brs bool) string {
 	// Length-prefixed for the same reason as tx_bus_key: a channel name may contain '|', and a
 	// key that two different channels can produce merges their rows in the grouped view — with
 	// a count that silently adds them together, which is the very thing this column exists to
 	// stop. (origin is one of four fixed labels, and id/ext cannot contain a separator.)
-	return '${origin}|${ch.len}:${ch}|${id}|${ext}'
+	// fd/brs belong here for the same reason ext does: a CAN-FD frame and a classic frame with
+	// the same id are two different messages, and a key that cannot tell them apart merges their
+	// rows and adds their counts together — the exact collapse #90 was about, one field on.
+	return '${origin}|${ch.len}:${ch}|${id}|${ext}|${fd}|${brs}'
 }
 
 // origin_mark renders the wire verdict for a frame we emitted: '!' once its echo window closed
@@ -5222,8 +5284,10 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		}
 		// Grouping by ORIGIN as well as id means our simulated 0x120 and a real ECU's 0x120 are
 		// two rows, not one row with a count that quietly adds them together.
-		k := gkey(r.origin, r.ch, r.id, r.ext)
-		mut g := agg[k] or { GAgg{r.origin, r.ch, r.id, r.ext, 0, false, r, TraceRow{}} }
+		k := gkey(r.origin, r.ch, r.id, r.ext, r.fd, r.brs)
+		mut g := agg[k] or {
+			GAgg{r.origin, r.ch, r.id, r.ext, r.fd, r.brs, 0, false, r, TraceRow{}}
+		}
 		if r.missed {
 			g.missed = true
 		}
@@ -5242,13 +5306,20 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		if a.origin != b.origin {
 			return if a.origin < b.origin { -1 } else { 1 }
 		}
-		return if a.ch < b.ch {
-			-1
-		} else if a.ch > b.ch {
-			1
-		} else {
-			0
+		if a.ch != b.ch {
+			return if a.ch < b.ch { -1 } else { 1 }
 		}
+		// The comparator has to separate everything the GROUP KEY separates. fd/brs joined that
+		// key, so without them two distinct rows compare equal and their order flips as the ring
+		// trims and the map is rebuilt — a table that reshuffles under a reader for no visible
+		// reason. Classic sorts before FD, and FD before FD-BRS.
+		if a.fd != b.fd {
+			return if !a.fd { -1 } else { 1 }
+		}
+		if a.brs != b.brs {
+			return if !a.brs { -1 } else { 1 }
+		}
+		return 0
 	})
 	if vgui.table_begin('gtrace', 5) {
 		vgui.table_setup_col('id / name', 210)
@@ -5263,16 +5334,17 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			vgui.table_row()
 			vgui.table_next_col()
 			// ### keys the tree id on identity only, so the live label / sort don't reset it.
-			open :=
-				vgui.tree_node_table('${idstr(g.id, g.ext)}  ${trace_name_cell(r)}###${gkey(g.origin,
-				g.ch, g.id, g.ext)}')
+			open := vgui.tree_node_table('${idstr(g.id, g.ext)}  ${trace_name_cell(r)}###${gkey(g.origin,
+				g.ch, g.id, g.ext, g.fd, g.brs)}')
 			// clicking a row selects that frame (drives Signals/Graphics + "Add to filter")
 			if vgui.is_item_clicked() {
 				app.sel_id = int(g.id)
 				app.sel_ext = g.ext
 			}
 			// right-click a row → context menu (plot its signals / add to filter)
-			if vgui.begin_popup_context_item('rowctx##${gkey(g.origin, g.ch, g.id, g.ext)}') {
+			if vgui.begin_popup_context_item('rowctx##${gkey(g.origin, g.ch, g.id, g.ext, g.fd,
+				g.brs)}')
+			{
 				if m := app.find_message(g.id, g.ext) {
 					if vgui.menu_item('Add all signals to Graphics') {
 						for s in m.active_signals(r.data) {
@@ -5289,7 +5361,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			vgui.table_cell(g.ch)
 			vgui.table_cell('${g.origin}${if g.missed { '!' } else { '' }}')
 			// all-time total (survives the ring trim); fall back to the window count.
-			total := gcount[gkey(g.origin, g.ch, g.id, g.ext)] or { u64(g.count) }
+			total := gcount[gkey(g.origin, g.ch, g.id, g.ext, g.fd, g.brs)] or { u64(g.count) }
 			vgui.table_cell('${total}')
 			// data column: dim bytes that match the PREVIOUS frame of this group, normal for
 			// ones that changed (conventional change highlight). Compared against the actual prior
@@ -5300,6 +5372,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			if r.rtr {
 				vgui.text('RTR')
 			} else {
+				mark := kind_mark(r.fd, r.brs, r.esi)
 				prev := g.prev.data
 				for i, b in r.data {
 					if i > 0 {
@@ -5311,6 +5384,10 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 					} else {
 						vgui.text_dim(tok) // unchanged → dimmed
 					}
+				}
+				if mark != '' {
+					vgui.same_line()
+					vgui.text_dim(mark.trim_space())
 				}
 			}
 			if open {
@@ -5807,7 +5884,11 @@ fn draw_gen(mut app App) {
 					// interface comparison lights BOTH buttons and cannot say which is current
 					// with no owner resolved, fall back to the interface — otherwise NO chip
 					// lights and the picker looks broken
-					sel := if sr.chan != '' { c.name == sr.chan && c.iface == cur } else { c.iface == cur }
+					sel := if sr.chan != '' {
+						c.name == sr.chan && c.iface == cur
+					} else {
+						c.iface == cur
+					}
 					if vgui.toggle_button('${c.name}##b${i}_${ci}', sel, 0) {
 						app.set_sender_bus(i, if c.iface == sr.iface { '' } else { c.iface },
 							c.name)
@@ -6020,11 +6101,13 @@ fn (mut app App) draw_config_text() {
 	if app.dirty {
 		// The two tabs edit different things — app.proj versus the file on disk — and either
 		// action below overwrites one side, so say which is at risk before offering it.
-		vgui.text_colored(230, 170, 70, '● unsaved edits in the model (buses/generators) are not in this text')
+		vgui.text_colored(230, 170, 70,
+			'● unsaved edits in the model (buses/generators) are not in this text')
 		if app.cfg_text_dirty {
 			// Both sides modified: writing the model would overwrite the typing, so that
 			// action is withheld rather than offered and silently destructive.
-			vgui.text_colored(230, 120, 120, '  …and this text has unsaved edits too — Save the text, or Revert it, before folding bus edits in')
+			vgui.text_colored(230, 120, 120,
+				'  …and this text has unsaved edits too — Save the text, or Revert it, before folding bus edits in')
 			if vgui.small_button('Revert the text') {
 				app.cfg_invalidate() // clearing the flag alone leaves the cache holding the edits
 				app.load_cfg_text()
@@ -6070,7 +6153,8 @@ fn (mut app App) draw_config_text() {
 	vgui.text_dim(if app.proj_path == '' { '(unsaved project)' } else { app.proj_path })
 	used := vgui.buf_str(app.cfg_text).len
 	if used > app.cfg_text.len - 1024 {
-		vgui.text_colored(230, 120, 120, 'buffer nearly full (${used}/${app.cfg_text.len}) — Save, then Reload for more room')
+		vgui.text_colored(230, 120, 120,
+			'buffer nearly full (${used}/${app.cfg_text.len}) — Save, then Reload for more room')
 	}
 	if app.cfg_err != '' {
 		vgui.text_colored(230, 120, 120, app.cfg_err)
@@ -6081,7 +6165,8 @@ fn (mut app App) draw_config_text() {
 		// typing frame parsed it twice.
 		n := app.cfg_chans
 		if n == 0 && app.proj.channels.len > 0 {
-			vgui.text_colored(230, 170, 70, 'YAML is well-formed but yields NO channels — saving would empty this project')
+			vgui.text_colored(230, 170, 70,
+				'YAML is well-formed but yields NO channels — saving would empty this project')
 		} else {
 			vgui.text_dim('YAML well-formed · ${n} channel(s) — syntax only, not a config check')
 		}
@@ -6575,8 +6660,8 @@ struct DiagTarget {
 	label string
 	iface string
 	chan  string // the CHANNEL that owns it — an interface cannot say which, when two share one
-	rx    u32 // the ECU listens here — the tester TRANSMITS to it
-	tx    u32 // the ECU answers here — the tester RECEIVES from it
+	rx    u32    // the ECU listens here — the tester TRANSMITS to it
+	tx    u32    // the ECU answers here — the tester RECEIVES from it
 	ext   bool
 	// How to reach it. A DoIP target has no CAN ids at all — it is addressed by the channel's
 	// logical pair — so rx/tx above are meaningless for one and the panel must not open an
@@ -7498,9 +7583,9 @@ fn script_worker(app &App, path string) {
 			// This channel's OWN merged database. Handing every channel the first one meant a
 			// real message on any other DBC was rejected as unknown, or a coincidentally named
 			// message was accepted with the wrong signal metadata.
-			db:        merge_dbs(ch.databases)
-			nodes:     sim_nodes // so a fault that cannot take effect can be refused
-			carrier:   script.carrier_of(pch)
+			db:      merge_dbs(ch.databases)
+			nodes:   sim_nodes // so a fault that cannot take effect can be refused
+			carrier: script.carrier_of(pch)
 		}
 	}
 	mut env := script.new_env(chans) or {
@@ -8164,7 +8249,7 @@ mut:
 	val_name_buf   []u8
 	node_buf       []u8
 	view_tree      bool = true // toggle between Tree view and Table view
-	left_w         f32  // draggable width (px) of the messages&signals pane; 0 = use the default
+	left_w         f32 // draggable width (px) of the messages&signals pane; 0 = use the default
 	// An in-progress bit-endpoint edit. An input field commits on EVERY keystroke, so a handler
 	// that derives the width from the opposite endpoint would measure each keystroke against an
 	// anchor the previous one already moved — typing a higher start collapsed the span to one
@@ -8229,8 +8314,8 @@ fn (mut app App) resolve_pending_bit_edit() {
 	mut note := '' // the edit is applied, but not exactly as typed
 	mut dirty := -1
 	app.mu.lock()
-	ok := di >= 0 && di < app.dbs.len && mi >= 0 && mi < app.dbs[di].messages.len
-		&& si >= 0 && si < app.dbs[di].messages[mi].signals.len
+	ok := di >= 0 && di < app.dbs.len && mi >= 0 && mi < app.dbs[di].messages.len && si >= 0
+		&& si < app.dbs[di].messages[mi].signals.len
 	if ok && app.dbs[di].messages[mi].name == msg_name
 		&& app.dbs[di].messages[mi].signals[si].name == name {
 		// Both names must match. An index alone is not identity: deleting a message shifts the
@@ -8509,7 +8594,11 @@ fn draw_dbc_editor(mut app App) {
 	for i, db in app.dbs {
 		pth := app.db_path(i)
 		mark := if pth != '' && app.dbc_ed.dirty[pth] { '` ' } else { '' }
-		disp := if i < app.dbs_paths.len { '${os.file_name(os.dir(pth))}/${os.file_name(pth)}' } else { 'DBC #${i}' }
+		disp := if i < app.dbs_paths.len {
+			'${os.file_name(os.dir(pth))}/${os.file_name(pth)}'
+		} else {
+			'DBC #${i}'
+		}
 		names << '${mark}${disp} (${db.messages.len} msgs) ##${i}'
 	}
 	if app.dbc_ed.db < 0 && app.dbs.len > 0 {
@@ -8683,7 +8772,8 @@ fn draw_dbc_editor(mut app App) {
 				}
 			}
 			sender_tag := if m.sender != '' { ' [${m.sender}]' } else { '' }
-			is_msg_open := vgui.tree_node('${idtxt} ${m.name}${sender_tag} (${m.signals.len})###treem_${i}')
+			is_msg_open :=
+				vgui.tree_node('${idtxt} ${m.name}${sender_tag} (${m.signals.len})###treem_${i}')
 			if vgui.is_item_clicked() {
 				if app.dbc_ed.msg != i {
 					app.dbc_refresh_trace_names()
@@ -8700,6 +8790,7 @@ fn draw_dbc_editor(mut app App) {
 					sgn := if sg.is_signed { 'i' } else { 'u' }
 					end_b := sg.start_bit + sg.length - 1
 					if vgui.selectable('${sg.name} [b${sg.start_bit}..${end_b}] @${or_tag} ${sgn}${sg.length}##tsig_${i}_${si}',
+
 						app.dbc_ed.msg == i && app.dbc_ed.sig == si)
 					{
 						app.dbc_ed.msg = i
@@ -9078,7 +9169,13 @@ fn draw_dbc_editor(mut app App) {
 	vgui.set_next_item_width(70 * sc)
 	if !ro && vgui.input_int('dlc', &dlcv) {
 		app.mu.lock()
-		app.dbs[di].messages[mi].dlc = if dlcv < 0 { 0 } else if dlcv > 64 { 64 } else { dlcv }
+		app.dbs[di].messages[mi].dlc = if dlcv < 0 {
+			0
+		} else if dlcv > 64 {
+			64
+		} else {
+			dlcv
+		}
 		app.mu.unlock()
 		app.mark_dirty(di)
 	}
@@ -9116,7 +9213,8 @@ fn draw_dbc_editor(mut app App) {
 	// 2. Bit Layout Matrix Grid
 	vgui.separator_text('Bit Layout Matrix')
 	if msg.dlc < 0 || msg.dlc > 64 {
-		vgui.text_colored(205, 60, 60, 'dlc ${msg.dlc} out of range — fix it above to see the layout')
+		vgui.text_colored(205, 60, 60,
+			'dlc ${msg.dlc} out of range — fix it above to see the layout')
 	} else {
 		nbits := msg.dlc * 8
 		mut owner_cnts := [512]int{}
@@ -9674,87 +9772,87 @@ fn draw_system(mut app App) {
 	// buses matrix + id allocation: useful but long, so fold it (closed by default) —
 	// keeps the panel focused on the nodes/ECU detail above.
 	if vgui.tree_node('buses & id allocation###sysbusid') {
-	for b in app.sys.buses {
-		vgui.separator_text('bus ${b.name} (${b.iface}${if b.fd { ', FD' } else { '' }}${if b.bitrate > 0 {
-			', ${b.bitrate / 1000} kbit'
-		} else {
-			''
-		}})')
+		for b in app.sys.buses {
+			vgui.separator_text('bus ${b.name} (${b.iface}${if b.fd { ', FD' } else { '' }}${if b.bitrate > 0 {
+				', ${b.bitrate / 1000} kbit'
+			} else {
+				''
+			}})')
 
-		// the communication matrix: signals x nodes, node columns chunked
-		// well under Dear ImGui's hard 64-column table limit
-		chunk := 32
-		mut n0 := 0
-		// a nodeless (partially authored) system still shows its signals:
-		// the first pass always renders (with zero node columns), and the
-		// explicit break below ends the zero-node case
-		for {
-			n1 := if n0 + chunk < app.sys.nodes.len { n0 + chunk } else { app.sys.nodes.len }
-			if vgui.table_begin('##sysmx_${b.name}_${n0}', 3 + (n1 - n0)) {
-				vgui.table_setup_col('signal', 140 * sc)
-				vgui.table_setup_col('frame', 130 * sc)
-				vgui.table_setup_col('cycle', 50 * sc)
-				for ni in n0 .. n1 {
-					vgui.table_setup_col(app.sys.nodes[ni].name, 70 * sc)
-				}
-				vgui.table_headers()
-				for sg in app.sys.signals {
-					if sg.bus != b.name {
-						continue
-					}
-					vgui.table_row()
-					vgui.table_cell(sg.name)
-					vgui.table_cell(sg.frame)
-					vgui.table_cell(if sg.cycle_ms > 0 { '${sg.cycle_ms}ms' } else { '-' })
+			// the communication matrix: signals x nodes, node columns chunked
+			// well under Dear ImGui's hard 64-column table limit
+			chunk := 32
+			mut n0 := 0
+			// a nodeless (partially authored) system still shows its signals:
+			// the first pass always renders (with zero node columns), and the
+			// explicit break below ends the zero-node case
+			for {
+				n1 := if n0 + chunk < app.sys.nodes.len { n0 + chunk } else { app.sys.nodes.len }
+				if vgui.table_begin('##sysmx_${b.name}_${n0}', 3 + (n1 - n0)) {
+					vgui.table_setup_col('signal', 140 * sc)
+					vgui.table_setup_col('frame', 130 * sc)
+					vgui.table_setup_col('cycle', 50 * sc)
 					for ni in n0 .. n1 {
-						cell := app.sys.matrix_cell(sg, app.sys.nodes[ni])
-						vgui.table_next_col()
-						if cell == 'W' {
-							vgui.text_colored(205, 60, 60, 'W?') // undeclared writer
-						} else if cell == 'P' {
-							vgui.text_colored(120, 190, 120, 'P')
-						} else if cell == 'C' {
-							vgui.text_colored(86, 156, 214, 'C')
-						} else {
-							vgui.text_dim('')
+						vgui.table_setup_col(app.sys.nodes[ni].name, 70 * sc)
+					}
+					vgui.table_headers()
+					for sg in app.sys.signals {
+						if sg.bus != b.name {
+							continue
+						}
+						vgui.table_row()
+						vgui.table_cell(sg.name)
+						vgui.table_cell(sg.frame)
+						vgui.table_cell(if sg.cycle_ms > 0 { '${sg.cycle_ms}ms' } else { '-' })
+						for ni in n0 .. n1 {
+							cell := app.sys.matrix_cell(sg, app.sys.nodes[ni])
+							vgui.table_next_col()
+							if cell == 'W' {
+								vgui.text_colored(205, 60, 60, 'W?') // undeclared writer
+							} else if cell == 'P' {
+								vgui.text_colored(120, 190, 120, 'P')
+							} else if cell == 'C' {
+								vgui.text_colored(86, 156, 214, 'C')
+							} else {
+								vgui.text_dim('')
+							}
 						}
 					}
+					vgui.table_end()
+				}
+				if n1 >= app.sys.nodes.len {
+					break
+				}
+				n0 = n1
+			}
+
+			// id allocation with collisions (kind-aware: an ext twin of a
+			// colliding std id is not itself flagged)
+			ncols := app.sys.collision_count(b.name)
+			if ncols > 0 {
+				vgui.text_colored(205, 60, 60, '${ncols} id collision(s) on ${b.name}')
+			}
+			if vgui.table_begin('##sysid_${b.name}', 3) {
+				vgui.table_setup_col('id', 90 * sc)
+				vgui.table_setup_col('kind', 80 * sc)
+				vgui.table_setup_col('owner', 160 * sc)
+				vgui.table_headers()
+				for a in app.sys.id_allocation(b.name) {
+					vgui.table_row()
+					idtxt := if a.ext { '0x${a.id.hex()}x' } else { '0x${a.id.hex()}' }
+					if app.sys.is_collision(b.name, a.id, a.ext) {
+						vgui.table_next_col()
+						vgui.text_colored(205, 60, 60, '${idtxt} !')
+					} else {
+						vgui.table_cell(idtxt)
+					}
+					vgui.table_cell(a.kind)
+					vgui.table_cell(a.owner)
 				}
 				vgui.table_end()
 			}
-			if n1 >= app.sys.nodes.len {
-				break
-			}
-			n0 = n1
 		}
-
-		// id allocation with collisions (kind-aware: an ext twin of a
-		// colliding std id is not itself flagged)
-		ncols := app.sys.collision_count(b.name)
-		if ncols > 0 {
-			vgui.text_colored(205, 60, 60, '${ncols} id collision(s) on ${b.name}')
-		}
-		if vgui.table_begin('##sysid_${b.name}', 3) {
-			vgui.table_setup_col('id', 90 * sc)
-			vgui.table_setup_col('kind', 80 * sc)
-			vgui.table_setup_col('owner', 160 * sc)
-			vgui.table_headers()
-			for a in app.sys.id_allocation(b.name) {
-				vgui.table_row()
-				idtxt := if a.ext { '0x${a.id.hex()}x' } else { '0x${a.id.hex()}' }
-				if app.sys.is_collision(b.name, a.id, a.ext) {
-					vgui.table_next_col()
-					vgui.text_colored(205, 60, 60, '${idtxt} !')
-				} else {
-					vgui.table_cell(idtxt)
-				}
-				vgui.table_cell(a.kind)
-				vgui.table_cell(a.owner)
-			}
-			vgui.table_end()
-		}
-	}
-	vgui.tree_pop()
+		vgui.tree_pop()
 	}
 	vgui.end()
 }

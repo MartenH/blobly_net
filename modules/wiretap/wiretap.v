@@ -72,6 +72,8 @@ struct Pending {
 	id    u32
 	ext   bool
 	rtr   bool
+	fd    bool // CAN-FD: a kind difference, like `ext` — not a decoration on the same frame
+	brs   bool
 	data  []u8
 	t_ms  f64
 	// The monitors that existed WHEN THIS WAS SENT. A monitor that opened afterwards never saw
@@ -143,6 +145,8 @@ pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, 
 		id:    f.id
 		ext:   f.extended
 		rtr:   f.rtr
+		fd:    f.fd
+		brs:   f.brs
 		data:  f.data.clone()
 		t_ms:  t_ms
 	}
@@ -212,6 +216,12 @@ fn frame_key(iface string, f transport.CanFrame) u64 {
 	h = (h ^ u64(f.id)) * 0x0000_0100_0000_01b3
 	h = (h ^ u64(if f.extended { 1 } else { 0 })) * 0x0000_0100_0000_01b3
 	h = (h ^ u64(if f.rtr { 1 } else { 0 })) * 0x0000_0100_0000_01b3
+	// FD and BRS are part of the frame's KIND, exactly as `extended` is. Without them a classic
+	// frame and an FD frame with the same id and an 8-byte payload hash alike, and a real ECU's
+	// classic frame could claim the echo of our FD transmission (or the reverse) — the trace
+	// then shows one of ours confirmed by traffic that was never it.
+	h = (h ^ u64(if f.fd { 1 } else { 0 })) * 0x0000_0100_0000_01b3
+	h = (h ^ u64(if f.brs { 1 } else { 0 })) * 0x0000_0100_0000_01b3
 	h = (h ^ u64(f.data.len)) * 0x0000_0100_0000_01b3
 	for b in f.data {
 		h = (h ^ u64(b)) * 0x0000_0100_0000_01b3
@@ -252,10 +262,11 @@ pub fn (mut r Ring) claim(monitor int, iface string, f transport.CanFrame, t_ms 
 			continue
 		}
 		// Width- and kind-exact. An extended frame is NOT the echo of a standard one that
-		// happens to share the low 11 bits, and an RTR request is not the echo of the data
-		// frame answering it — either shortcut would attribute a real ECU's frame to us.
+		// happens to share the low 11 bits, an RTR request is not the echo of the data frame
+		// answering it, and a CAN-FD frame is not the echo of a classic one carrying the same
+		// eight bytes — every shortcut here attributes a real ECU's frame to us.
 		if p.iface == iface && p.id == f.id && p.ext == f.extended && p.rtr == f.rtr
-			&& p.data == f.data {
+			&& p.fd == f.fd && p.brs == f.brs && p.data == f.data {
 			first := p.claimed.len == 0
 			r.items[i].claimed << monitor
 			return Claim{

@@ -128,3 +128,70 @@ fn test_equivalent_bus_spellings_share_one_identity() {
 	assert canonical_iface('udp:239.0.0.9:20000') != canonical_iface('udp')
 	assert canonical_iface('vcan0') == 'vcan0'
 }
+
+// A CAN-FD payload is not any length: the DLC encodes 0..8, 12, 16, 20, 24, 32, 48, 64 and
+// nothing else. A 9-byte frame does not exist on the wire — it goes out as 12, padded. Sending
+// the raw 9 would be rejected by the kernel, and truncating to 8 would change the message.
+fn test_fd_lengths_round_up_to_something_encodable() {
+	assert fd_padded_len(0) == 0
+	assert fd_padded_len(8) == 8
+	assert fd_padded_len(9) == 12
+	assert fd_padded_len(12) == 12
+	assert fd_padded_len(13) == 16
+	assert fd_padded_len(33) == 48
+	assert fd_padded_len(64) == 64
+	// nothing valid exists above 64, so it clamps rather than inventing a length
+	assert fd_padded_len(100) == 64
+}
+
+// The classic path must not acquire FD semantics by accident: a frame that says nothing about
+// FD is a classic frame, and that is what every existing caller constructs.
+fn test_a_frame_is_classic_unless_it_says_otherwise() {
+	f := CanFrame{
+		id:   0x100
+		data: [u8(1), 2, 3]
+	}
+	assert !f.fd
+	assert !f.brs
+}
+
+// The RECORD must equal the WIRE. wire_frame is what the GUI stores as its pending echo, so if
+// a backend pads afterwards the record holds 9 bytes while 12 go out, the echo never matches its
+// own record, and the frame appears as somebody else's traffic plus one of ours that never
+// returned. Software buses do not clamp ids or lengths, but they DO pad.
+fn test_wire_frame_pads_fd_on_a_software_bus() {
+	f := CanFrame{
+		id:   0x100
+		fd:   true
+		data: [u8(1), 2, 3, 4, 5, 6, 7, 8, 9]
+	}
+	w := wire_frame('inproc:x', f)
+	assert w.data.len == 12, 'got ${w.data.len}'
+	assert w.data[..9] == f.data
+	assert w.data[9..] == [u8(0), 0, 0]
+	assert w.fd
+}
+
+// A classic frame on a software bus is still passed through untouched.
+fn test_wire_frame_leaves_classic_software_frames_alone() {
+	f := CanFrame{
+		id:   0x100
+		data: [u8(1), 2, 3]
+	}
+	assert wire_frame('inproc:x', f).data == [u8(1), 2, 3]
+	assert wire_frame('udp:239.0.0.1:9', f).data == [u8(1), 2, 3]
+}
+
+// And an FD frame is NOT clamped to 8 on a clamping backend: SocketCAN carries it whole, and the
+// vendor backends refuse it outright — truncating here would record a frame that never goes out.
+fn test_wire_frame_does_not_clamp_an_fd_payload() {
+	mut big := []u8{len: 64}
+	big[63] = 0xAB
+	w := wire_frame('vcan0', CanFrame{
+		id:   0x100
+		fd:   true
+		data: big
+	})
+	assert w.data.len == 64
+	assert w.data[63] == 0xAB
+}

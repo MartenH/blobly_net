@@ -335,7 +335,17 @@ fn build_vlsd_sd_file(payloads [][]u8, ids []u32, exts []bool, times []f64) []u8
 
 // off_bits is the declared width of the VLSD offset field: real writers use 32, the format
 // permits 64, and the difference decides whether an offset can overflow its own bounds check.
+fn build_vlsd_sd_file_dlc(payloads [][]u8, ids []u32, exts []bool, times []f64, dlcs []u32) []u8 {
+	return build_vlsd_sd_file_x(payloads, ids, exts, times, 32, true, dlcs)
+}
+
 fn build_vlsd_sd_file_w(payloads [][]u8, ids []u32, exts []bool, times []f64, off_bits int) []u8 {
+	return build_vlsd_sd_file_x(payloads, ids, exts, times, off_bits, false, [])
+}
+
+// dlc_mode names the length channel DLC (a CODE) instead of DataLength (a byte count), and takes
+// the raw values to write, so a record can state a length the format cannot resolve.
+fn build_vlsd_sd_file_x(payloads [][]u8, ids []u32, exts []bool, times []f64, off_bits int, dlc_mode bool, dlcs []u32) []u8 {
 	mut b := Mdf4Builder{}
 	// IDBLOCK: 'MDF' magic, version text, program id, then the version number — 64 bytes.
 	b.buf << 'MDF     '.bytes()
@@ -367,7 +377,7 @@ fn build_vlsd_sd_file_w(payloads [][]u8, ids []u32, exts []bool, times []f64, of
 	tx_fr := b.text('CAN_DataFrame')
 	tx_id := b.text('CAN_DataFrame.ID')
 	tx_ide := b.text('CAN_DataFrame.IDE')
-	tx_len := b.text('CAN_DataFrame.DataLength')
+	tx_len := b.text(if dlc_mode { 'CAN_DataFrame.DLC' } else { 'CAN_DataFrame.DataLength' })
 	tx_db := b.text('CAN_DataFrame.DataBytes')
 
 	// The signal-data block: each payload prefixed by its u32 length, offsets noted as we go.
@@ -385,7 +395,7 @@ fn build_vlsd_sd_file_w(payloads [][]u8, ids []u32, exts []bool, times []f64, of
 		recs << le_bytes(math.f64_bits(times[i]), 8)
 		recs << le_bytes(u64(ids[i]), 4)
 		recs << u8(if exts[i] { 1 } else { 0 })
-		recs << u8(p.len)
+		recs << u8(if dlc_mode { dlcs[i] } else { u32(p.len) })
 		recs << le_bytes(u64(offs[i]), off_bits / 8)
 	}
 	dt := b.block('##DT', 0, recs)
@@ -492,6 +502,12 @@ fn test_a_corrupt_vlsd_length_prefix_costs_one_frame_not_the_process() {
 // 32-bit DataLength field. Records are 25 bytes: time f64 @0, ID @8, IDE @12, DataLength @13,
 // DataBytes @17.
 fn build_mlsd_file(payloads [][]u8, ids []u32, lengths []u32) []u8 {
+	return build_mlsd_file_m(payloads, ids, lengths, false)
+}
+
+// dlc_mode names the length channel DLC rather than DataLength, so it carries a CODE that has to
+// be decoded instead of a byte count.
+fn build_mlsd_file_m(payloads [][]u8, ids []u32, lengths []u32, dlc_mode bool) []u8 {
 	mut b := Mdf4Builder{}
 	b.buf << 'MDF     '.bytes()
 	b.buf << '4.10    '.bytes()
@@ -522,7 +538,7 @@ fn build_mlsd_file(payloads [][]u8, ids []u32, lengths []u32) []u8 {
 	tx_fr := b.text('CAN_DataFrame')
 	tx_id := b.text('CAN_DataFrame.ID')
 	tx_ide := b.text('CAN_DataFrame.IDE')
-	tx_len := b.text('CAN_DataFrame.DataLength')
+	tx_len := b.text(if dlc_mode { 'CAN_DataFrame.DLC' } else { 'CAN_DataFrame.DataLength' })
 	tx_db := b.text('CAN_DataFrame.DataBytes')
 
 	mut recs := []u8{}
@@ -569,8 +585,9 @@ fn test_the_inline_layout_still_reads_its_payload() {
 }
 
 // The inline layout truncates the same way: a DataLength with the high bit set makes the end of
-// the payload fall BEFORE its start, so the clamp to the record's own bytes never fires and the
-// slice is backwards. The payload is clamped to what the record actually holds.
+// the payload fall BEFORE its start, so the bounds test never fires and the slice is backwards.
+// The payload is REFUSED, not clamped — trimming it to the record boundary would return the
+// DataBytes field's padding, or the channel stored after it, as though a frame had carried it.
 fn test_a_corrupt_inline_length_costs_one_frame_not_the_process() {
 	img := build_mlsd_file([[u8(1), 2, 3, 4], [u8(5), 6, 7, 8]], [u32(0x100), 0x101],
 		[u32(0xFFFFFFF0), 4])
@@ -663,6 +680,53 @@ fn test_a_dlc_code_becomes_a_length_only_when_it_can() {
 	// classic CAN: every code above 8 is still 8 bytes, so an FD reading would reject good frames
 	assert dlc_bytes(9, false)? == 8
 	assert dlc_bytes(15, false)? == 8
-	// out of range says nothing rather than guessing
+	// out of range says nothing rather than guessing — a DLC is four bits, so 16 never came off
+	// a wire, and that holds whether or not the record claims FD
 	assert dlc_bytes(16, true) == none
+	assert dlc_bytes(16, false) == none
+	assert dlc_bytes(255, false) == none
+}
+
+// A DLC the format cannot resolve means the length is UNKNOWN. Falling back to 8 accepted the
+// first eight bytes of the field as a frame — inventing a payload out of a record that says
+// nothing trustworthy. Refused, the same way the VLSD branch treats the same doubt.
+fn test_an_unresolvable_dlc_yields_no_payload() {
+	// DLC 16 is out of range; the builder writes DataLength as a 32-bit field, and this file
+	// carries DLC rather than a byte count, so the value has to be decoded and cannot be.
+	img := build_mlsd_file_m([[u8(1), 2, 3, 4]], [u32(0x100)], [u32(16)], true)
+	entries := parse(img) or {
+		assert false, '${err}'
+		return
+	}
+	assert entries.len == 1
+	assert entries[0].frame.data.len == 0, 'invented ${entries[0].frame.data.len} bytes from an undecodable DLC'
+}
+
+// The VLSD branch must refuse an undecodable DLC exactly as the inline branch does. Treating
+// `none` as agreement accepted a signal-data payload whose only corroboration was the damaged
+// length field itself — and left the two payload layouts disagreeing about the same doubt.
+fn test_an_unresolvable_dlc_is_refused_in_the_vlsd_branch_too() {
+	payloads := [[u8(1), 2, 3, 4]]
+	// DLC 16 is impossible (the code is four bits), and this fixture names its length channel
+	// DLC, so the value must be decoded and cannot be.
+	img := build_vlsd_sd_file_dlc(payloads, [u32(0x100)], [false], [0.001], [u32(16)])
+	entries := parse(img) or {
+		assert false, '${err}'
+		return
+	}
+	assert entries.len == 1
+	assert entries[0].frame.data.len == 0, 'accepted ${entries[0].frame.data.len} bytes on an undecodable DLC'
+}
+
+// ...and a DECODABLE DLC still works through the same path, so the refusal above is the check
+// firing rather than the fixture being broken.
+fn test_a_decodable_dlc_still_reads_its_vlsd_payload() {
+	payloads := [[u8(1), 2, 3, 4]]
+	img := build_vlsd_sd_file_dlc(payloads, [u32(0x100)], [false], [0.001], [u32(4)])
+	entries := parse(img) or {
+		assert false, '${err}'
+		return
+	}
+	assert entries.len == 1
+	assert entries[0].frame.data == [u8(1), 2, 3, 4]
 }

@@ -50,3 +50,45 @@ fn test_udp_bus_extended_and_rtr() {
 	assert rtr.rtr == true
 	assert rtr.data.len == 0
 }
+
+// The software bus has to carry an FD frame intact — flags AND a payload longer than the old
+// 64-byte receive buffer, which used to truncate at read() before any decoding could see it.
+fn test_udpbus_carries_a_full_size_fd_frame() {
+	mut a := open_udp('239.13.13.44', 31344) or {
+		eprintln('skip: no multicast here: ${err}')
+		return
+	}
+	mut b := open_udp('239.13.13.44', 31344) or {
+		a.close()
+		eprintln('skip: no multicast here: ${err}')
+		return
+	}
+	defer {
+		a.close()
+		b.close()
+	}
+	mut payload := []u8{len: 64}
+	for i in 0 .. 64 {
+		payload[i] = u8(i + 1)
+	}
+	a.send(CanFrame{
+		id:       0x1ABCDEF
+		extended: true
+		fd:       true
+		brs:      true
+		data:     payload
+	}) or {
+		assert false, 'send: ${err}'
+		return
+	}
+	got := b.recv(2000) or {
+		assert false, 'recv: ${err}'
+		return
+	}
+	assert got.id == 0x1ABCDEF
+	assert got.extended
+	assert got.fd, 'the FD flag did not survive the wire'
+	assert got.brs, 'the BRS flag did not survive the wire'
+	assert got.data.len == 64, 'payload truncated to ${got.data.len}'
+	assert got.data == payload
+}

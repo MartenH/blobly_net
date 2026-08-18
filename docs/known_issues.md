@@ -53,11 +53,18 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   D3D12 driver and reset the GPU. If the window is black or the display resets, check the Mesa
   version first; `LIBGL_ALWAYS_SOFTWARE=1` (llvmpipe) is the stable fallback and is fine for this
   app.
-- 🟢 **`vcan` "won't load" is a non-issue.** `modprobe vcan` → ENOEXEC because the stale `.ko` in
-  `/lib/modules` predates the running kernel (custom WSL2 build). The running kernel has
-  `CONFIG_CAN_VCAN=y`, `CONFIG_CAN_RAW=y`, `CONFIG_CAN_ISOTP=y` **built in** (verify via
-  `/proc/config.gz`), so no modprobe is needed:
-  `sudo ip link add dev vcan0 type vcan && sudo ip link set up vcan0` just works.
+- 🔴 **A stock WSL2 kernel cannot make a `vcan` interface at all.** `ip link add type vcan` fails
+  with `Error: Unknown device type.` because **`CONFIG_CAN_VCAN` is not set** and no `vcan.ko`
+  ships — verify with `zcat /proc/config.gz | grep CAN_VCAN`. `CONFIG_CAN` and `CONFIG_CAN_RAW`
+  are `=m` (so they DO need `modprobe`), and `CONFIG_CAN_ISOTP` is absent too, as are the USB CAN
+  drivers. The module has to be built:
+  [`can_hardware.md`](can_hardware.md#can-on-wsl2--the-kernel-does-not-ship-vcan) has the recipe,
+  and the kernel itself does not need replacing.
+
+  This entry previously said the opposite — that all three were built in and `ip link add` "just
+  works" — describing one machine's custom kernel as though it were the platform. It cost a fresh
+  setup an evening in 2026-08. The in-process (`inproc:`) and UDP buses need none of this, which
+  is why the unit tests and the headless runner pass on a machine where SocketCAN cannot work.
 
 ## CI (GitHub Actions)
 

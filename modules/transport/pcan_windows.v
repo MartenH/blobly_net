@@ -72,6 +72,12 @@ pub fn open_pcan(spec string) !&PcanBus {
 }
 
 pub fn (mut b PcanBus) send(f CanFrame) ! {
+	// CAN-FD is not implemented on this backend: the vendor call below writes a classic frame,
+	// so an FD frame would go out truncated and report success. Refuse — a bench that silently
+	// changes what it transmits is worse than one that stops.
+	if f.fd {
+		return error('PCAN: CAN-FD frames are not supported by this backend yet (id 0x${f.id:X}, ${f.data.len} bytes)')
+	}
 	mut mt := u8(0)
 	if f.extended {
 		mt |= pcan_msg_extended

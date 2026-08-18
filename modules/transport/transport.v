@@ -10,7 +10,55 @@ pub mut:
 	id       u32  // 11-bit (SFF) or 29-bit (EFF) identifier, without flag bits
 	extended bool // 29-bit extended identifier
 	rtr      bool // remote transmission request
-	data     []u8 // 0..8 payload bytes
+	// CAN-FD. `fd` is the FDF/EDL bit: a flexible-data-rate frame, which may carry up to 64
+	// payload bytes and cannot be sent by a classic-only backend. `brs` is Bit Rate Switch —
+	// the data phase runs at the faster rate. Both are properties of the FRAME, not the bus:
+	// an FD-capable bus carries classic frames too, and a receiver distinguishes them.
+	fd       bool
+	brs      bool
+	// ESI — the transmitting node was error-passive when it sent this. A received STATUS, not a
+	// choice the sender makes, which is why it is deliberately absent from the echo identity in
+	// `wiretap` and from the trace's group key: a message whose transmitter goes error-passive
+	// mid-run would otherwise split into two rows, or stop matching its own echo, on a bit that
+	// says nothing about which message it is.
+	esi      bool
+	// 0..8 payload bytes for a classic frame; 0..64 for an FD one, and only the lengths a DLC
+	// can encode (0..8, 12, 16, 20, 24, 32, 48, 64) — anything else is padded on the way out.
+	data     []u8
+}
+
+// fd_lengths are the only payload sizes a CAN-FD DLC can express. A frame of 9 bytes does not
+// exist on the wire: it is sent as 12 with the remainder padded, which is what every controller
+// does and what a receiver expects.
+pub const fd_lengths = [0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 32, 48, 64]
+
+// fd_padded_len rounds a payload length up to the next encodable CAN-FD length, or returns the
+// length unchanged when it is already one. Above 64 there is nothing valid to round to.
+pub fn fd_padded_len(n int) int {
+	for l in fd_lengths {
+		if n <= l {
+			return l
+		}
+	}
+	return 64
+}
+
+// fd_pad returns the payload a CAN-FD controller would actually transmit: the caller's bytes,
+// zero-filled up to the next encodable length. ONE implementation, used by every backend — the
+// software buses previously sent unpadded payloads while SocketCAN padded, so an in-process test
+// did not reproduce the wire and a 9-byte frame behaved differently in each.
+pub fn fd_pad(data []u8) []u8 {
+	want := fd_padded_len(data.len)
+	if want == data.len {
+		return data
+	}
+	mut out := []u8{len: want}
+	for i, b in data {
+		if i < want {
+			out[i] = b
+		}
+	}
+	return out
 }
 
 // Bus is the transport contract. recv(timeout_ms) returns error('timeout') when
@@ -108,19 +156,41 @@ pub fn canonical_iface(iface string) string {
 // SEND this, do not merely record it, or the record and the echo disagree the other way round.
 pub fn wire_frame(iface string, f CanFrame) CanFrame {
 	if !clamps_to_classic(iface) {
+		// The software buses carry ids and lengths verbatim, but an FD payload is still padded
+		// to an encodable length on its way out — so it is padded HERE too. Otherwise the record
+		// holds 9 bytes while 12 go on the wire, the echo never matches its own record, and the
+		// frame shows up as somebody else's traffic plus one of ours that never came back.
+		if f.fd && fd_padded_len(f.data.len) != f.data.len {
+			return CanFrame{
+				...f
+				data: fd_pad(f.data)
+			}
+		}
 		return f
 	}
 	// The ID too, and to its DECLARED width: SocketCAN masks a standard id with can_sff_mask, so
 	// `extended: false` with 0x800 goes out as 0x000 while the caller recorded 0x800 — a record
 	// that can never match its own echo, hence a false BUS row and an unconfirmed one of ours.
 	id := if f.extended { f.id & 0x1FFF_FFFF } else { f.id & 0x7FF }
-	if id == f.id && f.data.len <= 8 {
+	// An FD frame is NOT clamped to 8. SocketCAN carries it whole now, and the vendor backends
+	// refuse it outright rather than sending a short version — so truncating here would record a
+	// frame that never goes out either way, which is the mistake this function exists to avoid.
+	// It is still padded to a length a DLC can express, because that is what reaches the wire.
+	max := if f.fd { 64 } else { 8 }
+	if id == f.id && f.data.len <= max && (!f.fd || fd_padded_len(f.data.len) == f.data.len) {
 		return f
+	}
+	mut data := f.data.clone()
+	if data.len > max {
+		data = data[..max].clone()
+	}
+	if f.fd {
+		data = fd_pad(data)
 	}
 	return CanFrame{
 		...f
 		id:   id
-		data: if f.data.len > 8 { f.data[..8].clone() } else { f.data }
+		data: data
 	}
 }
 
