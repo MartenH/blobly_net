@@ -208,10 +208,14 @@ mut:
 	// step.
 	consumers_want  map[string]int
 	consumers_ready map[string]int
-	trace_seq       u64
-	trace_base      u64
-	ghost_seq       u64                    // identities for emissions made while paused (see ghost_base)
-	tx_mutexes      map[string]&sync.Mutex // per-interface send order (see TapBus.tx_mu)
+	// …and the ones that could NOT attach, counted apart. Folding a failure into `ready` let the
+	// gate open on it: the recording then transmitted its opening stimuli with the simulated ECU
+	// absent, which is an incomplete experiment that looks like a normal start.
+	consumers_failed map[string]int
+	trace_seq        u64
+	trace_base       u64
+	ghost_seq        u64                    // identities for emissions made while paused (see ghost_base)
+	tx_mutexes       map[string]&sync.Mutex // per-interface send order (see TapBus.tx_mu)
 	// Stable identity for recording entries, exactly like trace_seq/trace_base for rows: the
 	// buffer is trimmed by re-slicing, so a plain index does not survive.
 	rec_seq u64
@@ -712,6 +716,7 @@ fn (mut app App) start() {
 	// run's gate, which is the readiness check passing before anything is actually listening.
 	app.consumers_want = map[string]int{}
 	app.consumers_ready = map[string]int{}
+	app.consumers_failed = map[string]int{}
 	// The generation moves WITH the ring, under one lock. Advancing it afterwards left a window
 	// where a stale rx_loop returning from recv passed both of its checks and processed the
 	// previous run's frame against the newly empty ring — as this run's bus traffic.
@@ -2008,7 +2013,7 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 	a := unsafe { app }
 	mut bus := app.open_tap_on(sc.iface, org_tx_sim, sc.pch.name) or {
 		eprintln('sim ${sc.iface}: ${err}')
-		consumer_attached(a, sc.iface, gen)
+		consumer_failed(a, sc.iface, gen)
 		return
 	}
 	consumer_attached(a, sc.iface, gen)
@@ -2104,6 +2109,20 @@ fn consumer_attached(app &App, iface string, gen u64) {
 	a.mu.unlock()
 }
 
+// consumer_failed records one in-process consumer that could not attach at all. Separate from
+// consumer_attached because the gate must not open on it: a simulated ECU that never subscribed
+// is missing from the experiment, and a replay that starts anyway produces a recording of the
+// wrong bench while looking like an ordinary run.
+fn consumer_failed(app &App, iface string, gen u64) {
+	mut a := unsafe { app }
+	k := transport.destination_key(iface)
+	a.mu.lock()
+	if a.run_gen == gen {
+		a.consumers_failed[k]++
+	}
+	a.mu.unlock()
+}
+
 // consumer_expected records one consumer about to be spawned. Under the lock, because a
 // consumer of the PREVIOUS run can still be attaching while this one starts: V's maps are not
 // safe against concurrent mutation, and locking only the reader's side protects nothing.
@@ -2182,11 +2201,11 @@ fn diag_server_loop(app &App, iface string, chan_name string, gen u64) {
 	// picks whichever is listed first — so a default server created for the second one had every
 	// response attributed to its neighbour
 	tapped := a.open_tap_on(iface, org_tx_sim, chan_name) or {
-		consumer_attached(a, iface, gen)
+		consumer_failed(a, iface, gen)
 		return
 	}
 	mut ch := isotp.on_bus(tapped, a.bitrate_iface(iface), diag_rx_id, diag_tx_id, false) or {
-		consumer_attached(a, iface, gen)
+		consumer_failed(a, iface, gen)
 		return
 	}
 	consumer_attached(a, iface, gen)
@@ -2269,9 +2288,15 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	// stimulus -- often the request the whole experiment is about -- was dropped before anything
 	// could hear it. A consumer this slow is a bench that is not ready.
 	mut subs_in := false
+	mut subs_bad := false
 	for waited_sub := 0; waited_sub < 2000; waited_sub += 20 {
 		a.mu.lock()
 		mut all_in := true
+		for ch in chans {
+			if a.consumers_failed[transport.destination_key(ch.iface)] > 0 {
+				subs_bad = true
+			}
+		}
 		for ch in chans {
 			// The BUS, not the spelling. `inproc` and `inproc:CAN` are one software bus, so a
 			// gate that compared the raw strings found nothing expected and nothing ready, let
@@ -2287,6 +2312,10 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		stopped_sub := !a.running || a.run_gen != gen
 		a.mu.unlock()
 		if stopped_sub {
+			return
+		}
+		if subs_bad {
+			a.notify('replay ${label}: a simulated node on this bus could not open it — not starting')
 			return
 		}
 		if all_in {
@@ -2578,21 +2607,22 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			break
 		}
 		now := f64(i64(sw.elapsed())) / 1e6
-		mut n_batch := 0
 		for e in p.due(now) {
-			// A batch is normally a few frames, but after a stall p.due() returns everything
-			// owed at once. Stop was checked before the batch, so a Stop/Start during a long one
-			// left the PREDECESSOR dispatching into the new run — frames the trace then files as
-			// this measurement's. Reserving the wire holds the replacement back; it does not
-			// cancel the worker already inside the loop.
-			n_batch++
-			if n_batch & 0x3F == 0 {
-				a.mu.lock()
-				gone := !a.running || a.run_gen != gen
-				a.mu.unlock()
-				if gone {
-					break
-				}
+			// BEFORE EVERY SEND. A batch is normally a few frames, but after a stall p.due()
+			// returns everything owed at once, and stop was checked before the batch — so a
+			// Stop/Start during a long one left the PREDECESSOR dispatching into the new run,
+			// frames the trace then files as this measurement's. Reserving the wire holds the
+			// replacement back; it does not cancel the worker already inside this loop.
+			//
+			// Checked per frame rather than per batch of 64: the sampling interval was a guess
+			// at how much stale traffic is acceptable, and the answer is none. An uncontended
+			// lock costs tens of nanoseconds against a send, and the batch is short whenever
+			// the cost would matter.
+			a.mu.lock()
+			gone := !a.running || a.run_gen != gen
+			a.mu.unlock()
+			if gone {
+				break
 			}
 			if e.iface !in live {
 				continue // this channel was disabled mid-run; its wire goes quiet
