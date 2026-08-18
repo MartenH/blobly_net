@@ -627,10 +627,22 @@ The project format accepts a replay channel:
     replay: { source: logs/drive.mf4, speed: 1.0, loop: true }
 ```
 
-**The `.blobnet` `replay:` block still does nothing** — `monitorable()`, which decides what gets
-opened when you press Start, accepts only `monitor` channels, so a replay channel is not even
-attached. Configuring one produces silence, not an error. Treat the YAML above as schema
-documentation rather than a feature.
+**It plays.** A `mode: replay` channel is opened at Start like any monitored one and a worker
+pumps the recording onto its bus at the recorded cadence. Two keys carry the facts a recording
+cannot supply — `bus:` (which recorded bus feeds this channel; a multi-bus `.mf4` holds several
+and their names are the recording's, not the project's) and `exclude:` (nodes whose messages are
+withheld, resolved through the channel's databases by DBC sender).
+
+The frames are transmitted as **TX-S**, not `REP`: they are ours, put on the wire by us, so the
+trace counts them with the simulation and claims their echoes. `REP` still means a file on
+screen, where nothing was transmitted.
+
+**It is PLAYBACK, not simulation**, and the difference decides whether it is enough for a given
+bench. A recording cannot answer a request, and its alive counters and CRCs are the recorded
+ones — consistent within a lap, jumping backwards at a `loop:` wrap, where a receiver policing
+counter continuity will flag them once per lap. Simulated nodes stamp those fresh (`protect:`)
+and can answer (`responses:`). What replay buys instead is traffic no generator reproduces: real
+signal values, real jitter, real event-driven messages, from the car itself.
 
 **Headless, it works.** `cmd/restbus` replays one recorded bus onto a live one with the ECU
 under test subtracted:
