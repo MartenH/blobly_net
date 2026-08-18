@@ -2145,10 +2145,29 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		}
 	}
 	a.mu.unlock()
-	if chans.len == 0 {
-		return
-	}
 	label := chans.map(it.name).join(', ')
+
+	// FIRST, before anything that can return. `live` was set by the caller before this worker
+	// existed, so every exit has to clear it — and each round of review found another early
+	// return that did not: a decode failure, then a readiness timeout. Installing the cleanup at
+	// the top makes the question "did I remember?" impossible to get wrong, rather than one more
+	// path to audit. Leaving it set meant the source could never restart within the run, even
+	// once the operator fixed whatever was wrong.
+	defer {
+		a.mu.lock()
+		st := a.replay_state[source] or { ReplayState{} }
+		if st.gen == gen && st.live && st.token == token {
+			a.replay_state[source] = ReplayState{
+				gen:   gen
+				live:  false
+				token: token
+			}
+			for ch in chans {
+				a.replay_live_ifaces.delete(ch.iface)
+			}
+		}
+		a.mu.unlock()
+	}
 
 	// WAIT for the readers. rx_loop sets `running` only once its transport is actually open, and
 	// start() has merely SPAWNED them — so with a small recording, or a slow open, the first
@@ -2191,25 +2210,6 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	if not_up.len > 0 {
 		a.notify('replay ${label}: ${not_up.join(', ')} never came up — not starting')
 		return
-	}
-
-	// `live` was set by the caller before this worker existed, so EVERY exit from here on has to
-	// clear it — not just the normal one at the bottom. A decode failure that left it set meant
-	// the source could never be started again in this run, even once the file was fixed.
-	defer {
-		a.mu.lock()
-		st := a.replay_state[source] or { ReplayState{} }
-		if st.gen == gen && st.live && st.token == token {
-			a.replay_state[source] = ReplayState{
-				gen:   gen
-				live:  false
-				token: token
-			}
-			for ch in chans {
-				a.replay_live_ifaces.delete(ch.iface)
-			}
-		}
-		a.mu.unlock()
 	}
 
 	// Decoded ONCE for the whole group, however many channels read from it.
