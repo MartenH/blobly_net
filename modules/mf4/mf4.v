@@ -186,12 +186,21 @@ fn parse_recording(buf []u8) !Recording {
 					out, mut bus_names, mut bus_counts, mut order)!
 				// demux appends this group's INTERLEAVED record ordinals; lift them onto the
 				// file-wide scale so ties never compare a per-group ordinal against a global one.
+				mut top := base
 				for k in before .. out.len {
 					if order[k] != max_int {
 						order[k] += base
+						if order[k] >= top {
+							top = order[k] + 1
+						}
 					}
 				}
-				seq = base + (out.len - before)
+				// Past the highest ordinal ACTUALLY ASSIGNED, not past the number of decoded
+				// entries. Those differ: the ordinals count raw records — VLSD payload records
+				// and any the demux steps over included — so advancing by the decode count left
+				// the next group starting at or below ordinals already used, and a later group's
+				// equal-timestamp frames could sort ahead of an earlier one's.
+				seq = top
 			}
 		}
 		dg = if dgl.len > 0 { dgl[0] } else { u64(0) }

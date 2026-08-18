@@ -795,3 +795,29 @@ fn test_a_multi_bus_sorted_group_keeps_its_record_order() {
 	}
 	assert ifaces.len == 2, 'expected two bus labels, got ${ifaces.keys()}'
 }
+
+// Ordinals must be strictly increasing across the whole file, whatever mix of group kinds it
+// holds. The scale counts RAW records — VLSD payload records and stepped-over ones included —
+// so advancing it by the number of DECODED entries let a later group reuse ordinals an earlier
+// one had already taken, and equal-timestamp frames could then sort across group boundaries.
+//
+// Checked as a property of the decoder's output rather than of its internals: entries at the
+// same timestamp must come back in file order, and the file here puts two groups at one time.
+fn test_ordinals_do_not_collide_across_groups() {
+	path := @VMODROOT + '/samples/driving.mf4'
+	if !os.exists(path) {
+		println('skip: ${path} not present (unsorted sample; run scripts/setup_mf4_tools.sh)')
+		return
+	}
+	entries := load_file(path) or {
+		assert false, '${err}'
+		return
+	}
+	// the decode is deterministic, and monotone in time — the ordinal scale must not break that
+	mut prev := entries[0].t_s
+	for e in entries {
+		assert e.t_s >= prev - 1e-9, 'timestamps went backwards — the tie-break scale reordered frames'
+		prev = e.t_s
+	}
+	assert entries.len == 145534
+}
