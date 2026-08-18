@@ -157,3 +157,37 @@ fn test_dbc_decode_roundtrip_and_label() {
 	assert pt.signals[1].physical(data) == 88.0
 	assert pt.signals[4].label(data) == 'Third'
 }
+
+// BO_TX_BU_ declares ADDITIONAL transmitters for a message whose BO_ line names one. Ignoring
+// the record meant the database stated that a node sends a message and the parser did not know
+// — a wrong answer to "who sends this?", which is the question the rest-bus subtraction asks.
+fn test_additional_transmitters_are_parsed() {
+	src := 'VERSION ""\n\nBU_: ECM TCM VCM_C\n\nBO_ 256 Shared: 8 ECM\n SG_ A : 0|8@1+ (1,0) [0|255] "" TCM\n\nBO_TX_BU_ 256 : TCM,VCM_C;\n'
+	db := parse_dbc(src) or {
+		assert false, '${err}'
+		return
+	}
+	m := db.lookup(256) or {
+		assert false, 'message missing'
+		return
+	}
+	assert m.sender == 'ECM', 'the BO_ transmitter is still the primary one'
+	assert m.tx_nodes == ['TCM', 'VCM_C']
+	// senders() is the question callers actually ask: every node that transmits it
+	s := m.senders()
+	assert s == ['ECM', 'TCM', 'VCM_C'], 'got ${s}'
+}
+
+// A message with no BO_TX_BU_ record reports exactly its BO_ transmitter, and the placeholder
+// for "no transmitter" is not a node name.
+fn test_senders_without_the_record() {
+	src := 'VERSION ""\n\nBU_: ECM\n\nBO_ 300 Plain: 8 ECM\n SG_ A : 0|8@1+ (1,0) [0|255] "" Vector__XXX\n\nBO_ 301 Orphan: 8 Vector__XXX\n SG_ B : 0|8@1+ (1,0) [0|255] "" ECM\n'
+	db := parse_dbc(src) or {
+		assert false, '${err}'
+		return
+	}
+	plain := db.lookup(300) or { return }
+	assert plain.senders() == ['ECM']
+	orphan := db.lookup(301) or { return }
+	assert orphan.senders() == [], 'Vector__XXX is not a transmitter'
+}

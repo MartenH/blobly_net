@@ -112,6 +112,7 @@ mut:
 	ext      bool
 	dlc      int
 	sender   string
+	tx_nodes []string // additional transmitters from BO_TX_BU_
 	cycle_ms int
 	sigs     []SigBuilder
 }
@@ -145,6 +146,8 @@ pub fn parse_dbc(text string) !Database {
 				return error('SG_ line with no preceding BO_: ${line}')
 			}
 			msgs[cur].sigs << parse_sg(line)!
+		} else if line.starts_with('BO_TX_BU_ ') {
+			apply_tx_bu(mut msgs, by_id, line)
 		} else if line.starts_with('VAL_ ') {
 			apply_val(mut msgs, by_id, line)
 		} else if line.starts_with('CM_ SG_ ') {
@@ -187,6 +190,7 @@ pub fn parse_dbc(text string) !Database {
 			ext:      mb.ext
 			dlc:      mb.dlc
 			sender:   mb.sender
+			tx_nodes: mb.tx_nodes.clone()
 			cycle_ms: mb.cycle_ms
 			signals:  sigs
 		}
@@ -194,6 +198,23 @@ pub fn parse_dbc(text string) !Database {
 	return Database{
 		messages: out
 		nodes:    nodes
+	}
+}
+
+// apply_tx_bu parses `BO_TX_BU_ <id> : <NodeA>,<NodeB>;` — the record that declares ADDITIONAL
+// transmitters for a message whose BO_ line names only one. Ignoring it meant a database could
+// state that a node sends a message and this parser would not know, which is a wrong answer to
+// "who sends this?" rather than a missing convenience.
+fn apply_tx_bu(mut msgs []MsgBuilder, by_id map[u32]int, line string) {
+	rest := line['BO_TX_BU_ '.len..]
+	colon := rest.index(':') or { return }
+	id := rest[..colon].trim_space().u32()
+	idx := by_id[id] or { return }
+	for n in rest[colon + 1..].trim_space().trim_right(';').split(',') {
+		name := n.trim_space()
+		if name != '' && name !in msgs[idx].tx_nodes {
+			msgs[idx].tx_nodes << name
+		}
 	}
 }
 
