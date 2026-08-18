@@ -194,7 +194,7 @@ mut:
 	// made a group that had stopped unrestartable. Guarded by app.mu like the rest of App.
 	replay_state map[string]ReplayState
 	replay_token u64 // monotonic; identifies which worker owns a replay_state entry
-	// Destinations covered by a live group, so a channel enabled late can be told it is not one.
+	// Which recording is driving which destination, so two never reach one wire.
 	// Destination -> the recording whose worker currently OWNS that wire. Keyed by
 	// transport.destination_key(), not by the interface string: two spellings of one device are
 	// one destination, and a table keyed by the spelling would hand the same wire to two
@@ -1600,6 +1600,12 @@ mut:
 	iface     string
 	chan_name string // logical channel, '' = derive from the interface
 	origin    string
+	// The run this tap belongs to, or 0 for a tap that outlives runs (Quick Send, scripts).
+	// Checked INSIDE tx_mu, because checking it outside cannot close the window: the caller
+	// passes, is descheduled, Start takes the send mutex, advances the generation and resets the
+	// trace, and the frame then lands in a measurement that had already begun. tx_mu is the lock
+	// Start drains, so a decision made while holding it is a decision Start cannot overtake.
+	guard_gen u64
 }
 
 fn (mut t TapBus) send(frame transport.CanFrame) ! {
@@ -1610,6 +1616,15 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	t.tx_mu.lock()
 	defer {
 		t.tx_mu.unlock()
+	}
+	if t.guard_gen != 0 {
+		mut a := unsafe { t.app }
+		a.mu.lock()
+		stale := !a.running || a.run_gen != t.guard_gen
+		a.mu.unlock()
+		if stale {
+			return error('run ended')
+		}
 	}
 	// BEFORE the send: a monitor thread can see the frame the instant the driver takes it, and a
 	// record added afterwards arrives too late to claim its own echo.
@@ -1639,6 +1654,13 @@ fn (mut t TapBus) close() {
 // channel's simulated nodes would show up attributed to its neighbour. '' = derive (the tester
 // paths — generators, diagnostics, shell, flash, scripts — are not per-channel).
 fn (app &App) open_tap_on(iface string, origin string, chan_name string) !transport.Bus {
+	return app.open_tap_on_gen(iface, origin, chan_name, 0)
+}
+
+// open_tap_on_gen is open_tap_on for a tap that must not outlive its run: every send through it
+// is checked against `gen` while the send mutex is held. Used by replay, whose worker can be
+// inside a long catch-up batch when the run it belongs to ends.
+fn (app &App) open_tap_on_gen(iface string, origin string, chan_name string, gen u64) !transport.Bus {
 	// The bitrate suffix is an OPEN-time detail of the VENDOR backends, not part of a bus's
 	// identity: chan_name_for and the pending records both key on the logical name, so a caller
 	// that already carries `pcan:…@250000` (the script engine's ChanInfo does) would otherwise
@@ -1666,6 +1688,7 @@ fn (app &App) open_tap_on(iface string, origin string, chan_name string) !transp
 		iface:     logical
 		chan_name: chan_name
 		origin:    origin
+		guard_gen: gen
 	}
 }
 
@@ -2461,7 +2484,7 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		if ch.iface in buses_out {
 			continue
 		}
-		if b := app.open_tap_on(ch.iface, org_tx_sim, ch.name) {
+		if b := app.open_tap_on_gen(ch.iface, org_tx_sim, ch.name, gen) {
 			buses_out[ch.iface] = b
 		} else {
 			unopened << '${ch.name} (${ch.iface})'
@@ -2495,12 +2518,16 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	//
 	// ALL destinations or none: two groups each holding what the other wants would wait forever.
 	//
-	// MEMBERSHIP RE-READ each time round, not frozen from the startup snapshot. The wait can be
-	// long -- a decode ahead of it, a predecessor draining -- and a channel unticked meanwhile
-	// left the worker waiting on a wire it would never send to. With no deadline in front of it
-	// any more, that wait is forever, and the group's still-enabled siblings stay silent behind
-	// it: one unticked box silencing the buses that were left on.
+	// The list is FIXED, because the enabled set is: a channel cannot leave the group while we
+	// wait for its wire. It was re-read every pass while it could, which is one more thing that
+	// went away with mid-run toggling.
 	mut dests := []string{}
+	for ch in chans {
+		k := transport.destination_key(ch.iface)
+		if k !in dests {
+			dests << k
+		}
+	}
 	for {
 		a.mu.lock()
 		st_claim := a.replay_state[source] or { ReplayState{} }
@@ -2578,47 +2605,12 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		// a group left `any` true because a sibling was enabled, and the dispatch below then
 		// kept transmitting to the disabled channel's bus. A box unticked in the Buses panel has
 		// to silence that wire.
+		// The group's destinations were fixed when Start was pressed and cannot change while it
+		// runs, so there is nothing to re-read here: the run ends, or every wire it holds keeps
+		// playing. Re-reading membership each pass -- and releasing, re-taking and re-silencing
+		// wires as boxes moved -- is what mid-run toggling cost, and it is gone with it.
 		a.mu.lock()
-		mut stop := !a.running || a.run_gen != gen
-		mut live := map[string]bool{}
-		if !stop {
-			for ci in cis {
-				if ci < a.chans.len && a.chans[ci].enabled {
-					live[a.chans[ci].iface] = true
-				}
-			}
-			stop = live.len == 0
-			// RELEASED as soon as its wire goes quiet, not when the whole group ends. A looping
-			// group runs forever while one sibling is enabled, so a destination unticked here
-			// stayed reserved for as long as the run lasted and a different recording aimed at
-			// that now-silent wire waited for a release that was never coming.
-			for ch in chans {
-				k := transport.destination_key(ch.iface)
-				if ch.iface !in live {
-					if o := a.replay_owner[k] {
-						if o.token == token {
-							a.replay_owner.delete(k)
-						}
-					}
-					continue
-				}
-				// RE-TAKEN when the box goes back on. Releasing on untick without claiming again
-				// on re-tick would have this worker driving a wire it does not hold, which is
-				// the same two-recordings-one-bus overlap the reservation exists to prevent,
-				// reached by a slower route. If somebody else took it while we were quiet, we
-				// stay quiet: they were here first, and the alternative is both of us talking.
-				if o := a.replay_owner[k] {
-					if o.token != token {
-						live.delete(ch.iface)
-					}
-				} else {
-					a.replay_owner[k] = ReplayOwner{
-						src:   source
-						token: token
-					}
-				}
-			}
-		}
+		stop := !a.running || a.run_gen != gen
 		a.mu.unlock()
 		if stop {
 			break
@@ -2641,11 +2633,17 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			if gone {
 				break
 			}
-			if e.iface !in live {
-				continue // this channel was disabled mid-run; its wire goes quiet
-			}
 			mut bus := buses_out[e.iface] or { continue }
 			bus.send(e.frame) or {
+				// The tap refuses once the run is over, so a rejection here is usually Stop
+				// arriving mid-batch rather than a bus problem. Ask, and leave quietly if so —
+				// counting it would report a replay that FAILED when it was simply stopped.
+				a.mu.lock()
+				over := !a.running || a.run_gen != gen
+				a.mu.unlock()
+				if over {
+					break
+				}
 				failed++
 				if first_err == '' {
 					first_err = '${e.iface}: ${err.msg()}'
@@ -2751,7 +2749,6 @@ fn (mut app App) spawn_replay_workers_locked() []ReplaySpawn {
 		}
 	}
 	mut to_start := map[string][]int{}
-	mut late := []string{}
 	if clash.len > 0 {
 		return [
 			ReplaySpawn{
@@ -2764,17 +2761,7 @@ fn (mut app App) spawn_replay_workers_locked() []ReplaySpawn {
 	for src, cis in by_src {
 		st := app.replay_state[src] or { ReplayState{} }
 		if st.gen == app.run_gen && st.live {
-			// Already playing. A channel enabled now cannot join: the group's membership and its
-			// clock were fixed when it started, and restarting would jerk the buses that are
-			// already mid-recording back to the beginning. Say so rather than leaving one wire
-			// silent with no explanation.
-			for ci in cis {
-				if ci < app.chans.len
-					&& transport.destination_key(app.chans[ci].iface) !in app.replay_owner {
-					late << app.chans[ci].name
-				}
-			}
-			continue
+			continue // already playing in this run; start() is the only caller, so this is belt
 		}
 		if st.gen == app.run_gen && st.done {
 			continue // it finished this run; it does not restart because a sibling was enabled
@@ -2795,12 +2782,6 @@ fn (mut app App) spawn_replay_workers_locked() []ReplaySpawn {
 			cis:    cis
 			gen:    gen
 			token:  (app.replay_state[src] or { ReplayState{} }).token
-			late:   []string{}
-		}
-	}
-	if late.len > 0 {
-		out << ReplaySpawn{
-			late: late.clone()
 		}
 	}
 	return out
@@ -2813,19 +2794,14 @@ struct ReplaySpawn {
 	cis    []int
 	gen    u64
 	token  u64
-	late   []string // CHANNEL NAMES, each of which gets the late-join explanation
-	notes  []string // whole messages, emitted verbatim -- they say something else entirely
+	notes  []string // whole messages, emitted verbatim
 }
 
 // run_replay_spawns performs what spawn_replay_workers_locked decided. Caller must NOT hold app.mu.
 fn (mut app App) run_replay_spawns(items []ReplaySpawn) {
 	for it in items {
-		for n in it.late {
-			app.notify('${n}: that recording is already playing — it joins on the next Start')
-		}
 		for n in it.notes {
-			app.notify(n) // already a complete sentence; appending the late-join line to a
-			// collision or a busy wire would promise it starts next time, and neither does
+			app.notify(n)
 		}
 		if it.source != '' {
 			spawn replay_group(app, it.source, it.cis, it.gen, it.token)
@@ -3071,7 +3047,6 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		}
 	}
 	bus.close()
-	mut pending_replay := []ReplaySpawn{}
 	a.mu.lock()
 	// Only if this run is still the current one. A loop that exited because the generation moved
 	// on would otherwise clear a flag the NEW loop just set, and every emission after that would
@@ -3086,13 +3061,6 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		if a.chans[ci].monitorable() && a.running {
 			a.chans[ci].spawning = true
 			spawn rx_loop(app, ci, iface, gen)
-			// The player exits on the same condition this loop did (disabled, or a new run), so
-			// a channel re-enabled inside that window needs its group restarted as well —
-			// otherwise the reader comes back and the recording does not. Decided under the lock
-			// this block already holds; performed once it is released.
-			if a.chans[ci].replaying() {
-				pending_replay = a.spawn_replay_workers_locked()
-			}
 		}
 		// Whatever we emitted while this loop was the observer can no longer be answered by it.
 		// Its records stay claimable (an echo may already be queued in the socket) but earn no
@@ -3104,7 +3072,6 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		a.taps.drop_monitor(ci)
 	}
 	a.mu.unlock()
-	a.run_replay_spawns(pending_replay)
 }
 
 fn hex(b []u8) string {
@@ -5654,6 +5621,18 @@ fn draw_buses(mut app App, chans []Chan) {
 			new := vgui.checkbox('##en${i}', c.enabled)
 			if new != c.enabled {
 				app.mu.lock()
+				// FIXED AT START for a replay channel. Changing the set mid-run meant a worker
+				// had to be spawned, or silenced, or made to hand its wire over, against a
+				// group whose clock and membership were fixed when it began -- and every one of
+				// those states was a way for two recordings to reach one bus, or for a wire to
+				// be driven by somebody who no longer held it. The set is what it was when Start
+				// was pressed; changing it is Stop and Start, which costs one click and removes
+				// the states entirely.
+				if app.running && app.chans[i].mode == 'replay' && app.chans[i].replay_src != '' {
+					app.mu.unlock()
+					app.notify('${app.chans[i].name}: replay channels are fixed while running — Stop and Start to change which ones play')
+					continue
+				}
 				app.chans[i].enabled = new
 				// enabling a channel mid-run spawns its RX thread; disabling lets it exit.
 				// `spawning` is the double-click guard — without one, a second click inside the
@@ -5666,16 +5645,6 @@ fn draw_buses(mut app App, chans []Chan) {
 				// c.monitorable() could never be true — this branch has never run, and a channel
 				// re-enabled mid-run silently got no reader at all. Ask about the channel as it
 				// is NOW, using the same rule monitorable() applies.
-				// The PLAYER is restarted independently of the reader, and OUTSIDE the guard
-				// below. Its group can exit while rx_loop is still inside a 200 ms recv — untick
-				// a channel, tick it back — and rx_loop then neither exits nor respawns, so
-				// hanging the player off `!running && !spawning` left the reader alive and the
-				// recording dead. Decided here under the lock we already hold; performed after
-				// the unlock below, since the mutex is not reentrant.
-				mut spawns := []ReplaySpawn{}
-				if new && app.running && app.chans[i].replaying() {
-					spawns = app.spawn_replay_workers_locked()
-				}
 				if new && app.running && app.chans[i].monitorable() && !app.chans[i].running
 					&& !app.chans[i].spawning {
 					app.chans[i].spawning = true
@@ -5702,7 +5671,6 @@ fn draw_buses(mut app App, chans []Chan) {
 					}
 				}
 				app.mu.unlock()
-				app.run_replay_spawns(spawns)
 			}
 			vgui.same_line()
 			r, g, b, label := chan_state(c)

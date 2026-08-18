@@ -633,6 +633,13 @@ cannot supply — `bus:` (which recorded bus feeds this channel; a multi-bus `.m
 and their names are the recording's, not the project's) and `exclude:` (nodes whose messages are
 withheld, resolved through the channel's databases by DBC sender).
 
+**The set is fixed at Start.** Which replay channels play is decided when you press Start, and
+ticking one on or off while the run is going says so rather than taking effect — Stop and Start
+to change it. Channels reading one recording share a clock, so a channel joining late could not
+be given the timing the others already have, and one leaving would hand its bus to whoever asked
+for it next while the worker was still writing to it. Both were real defects; neither is worth a
+click.
+
 The frames are transmitted as **TX-S**, not `REP`: they are ours, put on the wire by us, so the
 trace counts them with the simulation and claims their echoes. `REP` still means a file on
 screen, where nothing was transmitted.
