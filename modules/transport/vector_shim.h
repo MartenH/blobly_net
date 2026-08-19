@@ -401,12 +401,23 @@ static uint64_t ct_vector_mask_why(unsigned int app_channel, int *why, int regis
 	if (rc != 0) { if (why) *why = rc; return 0; }          /* -1 no DLL, -2 no symbol */
 	st = ct_xl_opendrv();
 	if (st != 0) { if (why) *why = -(int)st; return 0; }    /* driver would not open */
+	/* A FAILED LOOKUP IS NOT AN EMPTY ONE, and here the difference is destructive: the branch
+	 * below REGISTERS, which writes an all-zero mapping. Merged with a transient read failure
+	 * that meant an already-configured channel had its assignment cleared — by the very call
+	 * that was about to report it as unassigned. Asked separately, answered separately. */
 	if (ct_xl_getappl("blobly_net", app_channel, &hw_type, &hw_index, &hw_channel,
-	                  CT_XL_BUS_TYPE_CAN) != 0 || hw_type == 0) {
+	                  CT_XL_BUS_TYPE_CAN) != 0) {
+		if (why) *why = -1007;
+		return 0;
+	}
+	if (hw_type == 0) {
 		/* Registering makes the application appear in Vector Hardware Manager so the operator
 		 * has something to assign hardware to — worth doing for a channel somebody ASKED to
 		 * open, and not for the sixty-four this sweeps past during discovery. A dialog listing
-		 * blobly_net channels 1 to 64, all unassigned, is worse than no entry at all. */
+		 * blobly_net channels 1 to 64, all unassigned, is worse than no entry at all.
+		 *
+		 * Safe to write here BECAUSE the lookup succeeded and said the channel is empty: the
+		 * zeroes it writes are the value already there. */
 		if (register_app && ct_xl_setappl) {
 			ct_xl_setappl("blobly_net", app_channel, 0, 0, 0, CT_XL_BUS_TYPE_CAN);
 		}

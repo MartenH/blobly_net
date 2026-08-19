@@ -661,8 +661,26 @@ fn pair_test(o Opts) ! {
 	if n_recv == 0 {
 		// fall through to the diagnosis below
 	} else {
-		// DISTINCT sequences, so a duplicate cannot fill in for something that never came.
-		lost := n_sent - seen_seq.len
+		// THE SET, not its size. Marker-valid frames carrying sequence numbers we never sent —
+		// left over from a previous run, or from a second diagnostic on the same wire — could
+		// otherwise make up the count for frames of ours that never arrived, and the totals
+		// would agree while the contents did not.
+		mut missing := []u32{}
+		mut foreign := 0
+		for q in 0 .. u32(n_sent) {
+			if q !in seen_seq {
+				missing << q
+			}
+		}
+		for q, _ in seen_seq {
+			if q >= u32(n_sent) {
+				foreign++
+			}
+		}
+		if foreign > 0 {
+			return error('${foreign} frames arrived carrying sequence numbers this run never sent — something else is transmitting on this wire')
+		}
+		lost := missing.len
 		pct := 100.0 * f64(seen_seq.len) / f64(n_sent)
 		println('${pct:.1f}% arrived (${lost} not seen)')
 		if n_bad > 0 {
