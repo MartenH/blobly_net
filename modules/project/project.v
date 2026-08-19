@@ -499,16 +499,12 @@ fn parse_channel(c yaml.Any) !Channel {
 		// opens silently while the model still calls the channel transmit-capable, so the GUI
 		// offers replay, generators and manual sends that VectorBus.send then refuses one frame
 		// at a time. listen_only is the single place this is recorded.
-		if ch.adapter == 'vector' && ch.address.contains(',') {
-			mode := ch.address.all_after_last(',').trim_space().to_lower()
-			if mode in ['silent', 'listen_only', 'listenonly'] {
+		if ch.adapter == 'vector' {
+			addr, silent, _ := split_vector_mode(ch.address)
+			ch.address = addr
+			if silent {
 				ch.listen_only = true
-				ch.address = ch.address.all_before_last(',')
-			} else if mode == 'normal' {
-				ch.address = ch.address.all_before_last(',')
 			}
-			// anything else stays put, so the transport parser refuses it rather than this
-			// guessing at what was meant
 		}
 		ch.iface = compose_iface(ch.adapter, ch.address)
 	} else if iv := c.value_opt('interface') {
@@ -571,6 +567,12 @@ fn parse_channel(c yaml.Any) !Channel {
 				// interface here would drop the evidence and open at the 500 kbit/s default,
 				// putting an adapter on a live bus at a rate the project never named. Left as
 				// written, the transport parser refuses it and says so.
+				// IN THE ADDRESS, not only in the iface. decompose_iface has already cut
+				// the rate off the address, so the next commit_cfg or save recomposes a
+				// clean `vector:1` from adapter + address and the evidence is gone — the
+				// bus then opens at the 500 kbit/s default this branch exists to prevent.
+				// Keeping it where recomposition looks makes the refusal survive a save.
+				ch.address = raw.all_after('vector:')
 				ch.iface = raw
 			}
 		} else if ch.adapter == 'vector' && raw.contains(',') {
@@ -1087,6 +1089,29 @@ pub const adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'pcan', 'kvaser', '
 //   kvaser   0               -> kvaser:0
 //   vector   1               -> vector:1
 //   doip     127.0.0.1:13400 -> doip:127.0.0.1:13400 (bare `doip` if empty)
+// split_vector_mode separates a `,silent` style suffix from a Vector address.
+//
+// Returns the address without it, whether it asked for listen-only, and whether the suffix was
+// RECOGNISED at all. An unrecognised one is left on the address so the transport parser refuses
+// it: `vector:1,silnt` is plainly a request for silence, and quietly dropping it would open the
+// channel able to acknowledge.
+//
+// Shared, because the same rule has to hold on every path that can produce an address — the
+// project loader, the editor's text field, and the migration of a v1 interface. It held on one
+// of them for a while, and a `,silent` typed into the editor opened a silent port that the
+// model still believed could transmit.
+pub fn split_vector_mode(address string) (string, bool, bool) {
+	if !address.contains(',') {
+		return address, false, true
+	}
+	body := address.all_before_last(',')
+	return match address.all_after_last(',').trim_space().to_lower() {
+		'silent', 'listen_only', 'listenonly' { body, true, true }
+		'normal' { body, false, true }
+		else { address, false, false }
+	}
+}
+
 pub fn compose_iface(adapter string, address string) string {
 	a := address.trim_space()
 	return match adapter {

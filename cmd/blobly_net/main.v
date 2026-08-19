@@ -650,12 +650,28 @@ fn (c Chan) for_open() project.Channel {
 }
 
 fn (app &App) bitrate_iface(iface string) string {
+	// SILENCE WINS across every channel on this wire, not just the first one listed. Two channel
+	// entries can share one interface, and this returned whichever came first — so a bus with
+	// one listen-only entry and one ordinary entry opened according to list order, and a bench
+	// that had asked to stay quiet could acknowledge because a sibling row did not. The
+	// transceiver has one mode; of the two answers only one is safe on a live bus.
+	mut found := false
+	mut chosen := Chan{}
 	for c in app.chans {
-		if c.iface == iface {
-			return c.for_open().iface_with_bitrate()
+		if c.iface != iface {
+			continue
+		}
+		if !found {
+			found = true
+			chosen = c
+		} else if c.listen_only && !chosen.listen_only {
+			chosen = c
 		}
 	}
-	return iface
+	if !found {
+		return iface
+	}
+	return chosen.for_open().iface_with_bitrate()
 }
 
 // start opens every enabled, monitorable channel on its own RX thread.
@@ -4671,6 +4687,7 @@ fn adapter_hint(a string) string {
 		'udp' { '239.0.0.1:5000 — group:port software bus' }
 		'pcan' { 'PCAN_USBBUS1 — PEAK channel' }
 		'kvaser' { '0 — Kvaser channel index' }
+		'vector' { '1 — Vector application channel (see Vector Hardware Manager)' }
 		'doip' { '127.0.0.1:13400 — host:port' }
 		else { '' }
 	}
@@ -5153,7 +5170,19 @@ fn (mut app App) draw_bus_editor(i int) bool {
 	vgui.set_next_item_width(220)
 	if vgui.input_text('address##cad${i}', mut app.cfg_bufs[i].address_buf) {
 		old_iface := app.proj.channels[i].iface
-		app.proj.channels[i].address = vgui.buf_str(app.cfg_bufs[i].address_buf)
+		mut typed := vgui.buf_str(app.cfg_bufs[i].address_buf)
+		// THE SAME LIFT the project loader does. A `,silent` typed here used to stay in the
+		// address, so the port opened ACK-free while the model went on calling the channel
+		// transmit-capable — no listen-only shown anywhere, and sends refused one frame at a
+		// time. One rule, applied wherever an address can be written.
+		if ch.adapter == 'vector' {
+			stripped, want_silent, _ := project.split_vector_mode(typed)
+			typed = stripped
+			if want_silent {
+				app.proj.channels[i].listen_only = true
+			}
+		}
+		app.proj.channels[i].address = typed
 		app.proj.channels[i].iface = project.compose_iface(ch.adapter, app.proj.channels[i].address)
 		app.rebind_senders(old_iface, app.proj.channels[i].iface) // keep this bus's generators bound
 		app.dirty = true

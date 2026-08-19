@@ -236,8 +236,11 @@ fn main() {
 		}
 		return
 	}
-	if o.channel < 1 {
-		usage()
+	// THE RANGE open() ACCEPTS, checked before anything is written. --assign persists an entry
+	// in Vector Hardware Manager, so a channel number this tool would later refuse used to
+	// leave a permanent record of a channel that can never be opened.
+	if o.channel < 1 || o.channel > 64 {
+		eprintln('vectorcheck: --channel must be 1..64 (Vector application channels)')
 		exit(2)
 	}
 	if o.assign >= 0 {
@@ -367,8 +370,13 @@ fn pair_test(o Opts) ! {
 	}
 	a_row, b_row := parts[0].trim_space().int(), parts[1].trim_space().int()
 	chans := transport.vector_channels()
-	if a_row >= chans.len || b_row >= chans.len {
-		return error('no such --probe row')
+	// BOTH ENDS of the range. Checking only the upper one let `--pair -1,0` index backwards and
+	// take the process down, which is a poor answer to a typo.
+	if a_row < 0 || b_row < 0 || a_row >= chans.len || b_row >= chans.len {
+		return error('no such --probe row (there are ${chans.len}, numbered from 0)')
+	}
+	if a_row == b_row {
+		return error('--pair needs two different channels; a channel cannot acknowledge itself')
 	}
 	// The application channels used are high ones, so an operator's own 1 and 2 assignments
 	// survive a test they may run on a configured bench.

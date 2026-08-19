@@ -96,10 +96,6 @@ fn parse_vector_spec(spec string) !VectorSpec {
 	// and the channel opened at 250 kbit/s while the project said 500 — reachable without
 	// trying, by typing a legacy-style `1@250000` into the address field of a channel whose
 	// bitrate is 500000, because iface_with_bitrate then appends its own.
-	// EXACTLY ONE rate at most. `1@250000@500000` split into three, only the second was read,
-	// and the channel opened at 250 kbit/s while the project said 500 — reachable without
-	// trying, by typing a legacy-style `1@250000` into the address field of a channel whose
-	// bitrate is 500000, because iface_with_bitrate then appends its own.
 	if parts.len > 2 {
 		return error('Vector: "${body}" has more than one bitrate — the rate belongs in the channel\'s bitrate field, not in its address')
 	}

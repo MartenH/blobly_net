@@ -617,3 +617,34 @@ channels:
 	assert c.address == '1'
 	assert c.iface_with_bitrate() == 'vector:1@500000,silent'
 }
+
+// One rule for a mode suffix, on every path that can write an address.
+fn test_split_vector_mode() {
+	a1, s1, ok1 := split_vector_mode('1,silent')
+	assert a1 == '1' && s1 && ok1
+	a2, s2, ok2 := split_vector_mode('1,normal')
+	assert a2 == '1' && !s2 && ok2
+	a3, s3, ok3 := split_vector_mode('1')
+	assert a3 == '1' && !s3 && ok3
+	// An unrecognised one is LEFT ON, so the transport parser refuses it rather than this
+	// resolving a typo in the direction that acknowledges.
+	a4, s4, ok4 := split_vector_mode('1,silnt')
+	assert a4 == '1,silnt' && !s4 && !ok4
+}
+
+// A malformed legacy rate must survive a save, or the defence lasts until the first edit.
+fn test_bad_legacy_rate_survives_recomposition() {
+	p := parse('
+project:
+  name: legacy
+channels:
+  - name: CAN1
+    interface: vector:1@oops
+') or {
+		assert false, '${err}'
+		return
+	}
+	c := p.channels[0]
+	assert c.address.contains('oops'), 'the address is what recomposition reads'
+	assert compose_iface(c.adapter, c.address).contains('oops')
+}

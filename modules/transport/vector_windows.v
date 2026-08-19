@@ -199,7 +199,15 @@ pub fn (mut b VectorBus) recv(timeout_ms int) !CanFrame {
 }
 
 pub fn (mut b VectorBus) close() {
+	// ONCE. A second close would release a reference this port no longer holds, and the record
+	// it decremented would belong to whoever opened the wire next. Callers close via `defer` in
+	// several places and a Bus may be closed by its owner and again on teardown; the port handle
+	// is the flag because it is the thing that stops being valid.
+	if b.port < 0 {
+		return
+	}
 	C.ct_vector_close(b.port, b.mask, b.gen)
+	b.port = -1
 }
 
 // VectorHw is one hardware channel the driver admits to having.

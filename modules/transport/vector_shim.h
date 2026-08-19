@@ -256,13 +256,11 @@ static void ct_vec_cfg_unref(uint64_t mask, ct_xlport port, uint64_t gen) {
 	if (i < 0 || ct_vec_cfg_gen[i] != gen) return;
 	if (ct_vec_cfg_owner[i] == port) { ct_vec_cfg_forget(i); return; }
 	if (--ct_vec_cfg_ports[i] > 0) return;
-	ct_vec_cfg_n--;
-	if (i != ct_vec_cfg_n) { /* keep the array dense */
-		ct_vec_cfg_mask[i]   = ct_vec_cfg_mask[ct_vec_cfg_n];
-		ct_vec_cfg_rate[i]   = ct_vec_cfg_rate[ct_vec_cfg_n];
-		ct_vec_cfg_silent[i] = ct_vec_cfg_silent[ct_vec_cfg_n];
-		ct_vec_cfg_ports[i]  = ct_vec_cfg_ports[ct_vec_cfg_n];
-	}
+	/* ct_vec_cfg_forget, not a second copy of it. This path had its own dense-swap that moved
+	 * four of the six fields, leaving the relocated record with another entry's owner and
+	 * generation — so a later close matched the wrong episode and a wire we no longer held
+	 * still looked configured by us. One swap, in one place. */
+	ct_vec_cfg_forget(i);
 }
 
 /* Where the library was actually found, for diagnostics. Empty until one loads. */
