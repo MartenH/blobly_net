@@ -59,10 +59,14 @@ pub fn (mut b KvaserBus) send(f CanFrame) ! {
 	if f.fd {
 		return error('Kvaser: CAN-FD frames are not supported by this backend yet (id 0x${f.id:X}, ${f.data.len} bytes)')
 	}
-	mut n := f.data.len
-	if n > 8 {
-		n = 8
+	// REFUSED, not truncated — the same rule this backend already applies to an FD frame, and
+	// for the same reason. A vendor interface is not clamps_to_classic(), so wire_frame() gives
+	// the trace the frame AS ASKED: truncating here records nine bytes against eight on the
+	// wire, and the echo can never match its own record.
+	if f.data.len > 8 {
+		return error('Kvaser: ${f.data.len} bytes is not a classic CAN frame (id 0x${f.id:X}) — 8 is the maximum without FD')
 	}
+	n := f.data.len
 	ext := if f.extended { 1 } else { 0 }
 	st := C.ct_kvaser_write(b.handle, f.id, u8(n), f.data.data, ext)
 	if st < 0 {

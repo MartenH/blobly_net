@@ -373,10 +373,28 @@ pub mut:
 // re-appended it and the headless runner did not, which is why the same project worked
 // interactively and stayed silent under a script.
 pub fn (c Channel) iface_with_bitrate() string {
-	if (c.adapter == 'pcan' || c.adapter == 'kvaser' || c.adapter == 'vector') && c.bitrate > 0 {
-		return '${c.iface}@${c.bitrate}'
+	// The MODE is split off first and put back last, because the two suffixes are not
+	// interchangeable: `vector:1,silent@500000` puts the rate inside the mode, and the parser
+	// reads the mode as "silent@500000" and refuses the whole channel. Appending blindly to a
+	// stored interface that already carried `,silent` did exactly that.
+	mut base := c.iface
+	mut mode := ''
+	if c.adapter == 'vector' && base.contains(',') {
+		mode = ',' + base.all_after_last(',')
+		base = base.all_before_last(',')
 	}
-	return c.iface
+	if (c.adapter == 'pcan' || c.adapter == 'kvaser' || c.adapter == 'vector') && c.bitrate > 0 {
+		base = '${base}@${c.bitrate}'
+	}
+	// LISTEN-ONLY REACHES THE TRANSCEIVER, on the one backend that can do it. Everywhere else
+	// `listen_only` stops the application transmitting and nothing more, so the adapter still
+	// acknowledges every frame it sees — which is not what the flag says, and on a live vehicle
+	// at the wrong bitrate it is the difference between hearing nothing and emitting error
+	// frames. The XL backend takes `,silent`, so a project that asks for listen-only gets it.
+	if c.adapter == 'vector' && c.listen_only && mode == '' {
+		mode = ',silent'
+	}
+	return base + mode
 }
 
 // resolve_asset makes a project-relative path (a DBC, a recording) absolute against the
@@ -1016,6 +1034,9 @@ pub fn compose_iface(adapter string, address string) string {
 		}
 		'kvaser' {
 			'kvaser:${a}'
+		}
+		'vector' {
+			'vector:${a}'
 		}
 		'doip' {
 			if a == '' {

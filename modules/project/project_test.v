@@ -402,3 +402,48 @@ fn test_vector_bitrate_is_reappended_at_open() {
 	}
 	assert c.iface_with_bitrate() == 'vector:1@250000'
 }
+
+// The inverse of decompose_iface. Without it a channel discovered on Windows composes to a
+// bare address, which the dispatcher does not recognise, and Start fails on hardware that is
+// sitting right there.
+fn test_vector_composes_with_its_prefix() {
+	assert compose_iface('vector', '1') == 'vector:1'
+	a, addr := decompose_iface(compose_iface('vector', '1'))
+	assert a == 'vector'
+	assert addr == '1', 'compose then decompose must be the identity'
+}
+
+// listen_only is a promise about the WIRE, and Vector is the first backend able to keep it:
+// the interface string must carry it through to the transceiver.
+fn test_listen_only_becomes_silent_on_vector() {
+	c := Channel{
+		iface:       'vector:1'
+		adapter:     'vector'
+		bitrate:     250000
+		listen_only: true
+	}
+	assert c.iface_with_bitrate() == 'vector:1@250000,silent'
+}
+
+// A stored interface that already carries the mode keeps ONE of it, and the bitrate goes
+// where the parser expects it: `vector:1,silent@500000` reads the rate as part of the mode
+// name and the channel is refused outright.
+fn test_listen_only_is_not_duplicated_and_bitrate_precedes_it() {
+	c := Channel{
+		iface:       'vector:1,silent'
+		adapter:     'vector'
+		listen_only: true
+	}
+	assert c.iface_with_bitrate() == 'vector:1@500000,silent'
+}
+
+// …and a channel that did NOT ask for it must not be silenced: a rest bus that cannot
+// acknowledge is a bench that looks connected and answers nothing.
+fn test_normal_vector_channel_is_not_silenced() {
+	c := Channel{
+		iface:   'vector:1'
+		adapter: 'vector'
+		bitrate: 500000
+	}
+	assert c.iface_with_bitrate() == 'vector:1@500000'
+}

@@ -203,6 +203,14 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 	if (permission & mask) {
 		st = ct_xl_setbitrate(port, mask, bitrate);
 		if (st != 0) { ct_xl_closeport(port); return -(int)st; }
+	} else {
+		/* REFUSED, not carried on with. Another XL application already holds init access, so
+		 * the rate we were asked for cannot be applied and the channel would run at whatever
+		 * that application configured. Activating anyway reports success for a bus running at
+		 * an unknown rate, which is the failure this backend is least able to notice and the
+		 * operator most likely to trust. */
+		ct_xl_closeport(port);
+		return -1003;
 	}
 	if (ct_xl_setoutput) {
 		st = ct_xl_setoutput(port, mask, silent ? CT_XL_OUTPUT_MODE_SILENT : CT_XL_OUTPUT_MODE_NORMAL);

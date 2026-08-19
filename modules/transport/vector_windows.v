@@ -114,6 +114,9 @@ pub fn open_vector(spec string) !&VectorBus {
 	if rc == -2 {
 		return error('vxlapi64.dll is missing functions this backend needs — update the Vector XL Driver Library')
 	}
+	if rc == -1003 {
+		return error('Vector channel ${s.channel}: another application holds initialisation access, so the bitrate cannot be set — close the other XL application (CANoe, CANalyzer, a second copy of this one) and try again')
+	}
 	if rc == -1002 {
 		return error('this vxlapi build cannot set silent mode, and ,silent was asked for — refusing to go on the bus able to acknowledge')
 	}
@@ -141,10 +144,15 @@ pub fn (mut b VectorBus) send(f CanFrame) ! {
 	if f.fd {
 		return error('Vector: CAN-FD frames are not supported by this backend yet (id 0x${f.id:X}, ${f.data.len} bytes)')
 	}
-	mut n := f.data.len
-	if n > 8 {
-		n = 8
+	// REFUSED, not truncated. `vector:` is a vendor interface, so clamps_to_classic() is false
+	// and wire_frame() hands the trace the frame AS ASKED — nine bytes recorded, eight on the
+	// wire, and an echo that can never match its own record. The vendor drivers reject a
+	// malformed frame; this backend must not quietly turn that into a valid-but-different
+	// transmission.
+	if f.data.len > 8 {
+		return error('Vector: ${f.data.len} bytes is not a classic CAN frame (id 0x${f.id:X}) — 8 is the maximum without FD')
 	}
+	n := f.data.len
 	ext := if f.extended { 1 } else { 0 }
 	// RTR is carried, not dropped. A remote request with the bit lost goes out as an ordinary
 	// zero-length data frame and is reported as success — a different message than the caller

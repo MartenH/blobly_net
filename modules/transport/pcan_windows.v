@@ -85,10 +85,14 @@ pub fn (mut b PcanBus) send(f CanFrame) ! {
 	if f.rtr {
 		mt |= pcan_msg_rtr
 	}
-	mut n := f.data.len
-	if n > 8 {
-		n = 8
+	// REFUSED, not truncated — the same rule this backend already applies to an FD frame, and
+	// for the same reason. A vendor interface is not clamps_to_classic(), so wire_frame() gives
+	// the trace the frame AS ASKED: truncating here records nine bytes against eight on the
+	// wire, and the echo can never match its own record.
+	if f.data.len > 8 {
+		return error('PCAN: ${f.data.len} bytes is not a classic CAN frame (id 0x${f.id:X}) — 8 is the maximum without FD')
 	}
+	n := f.data.len
 	st := C.ct_pcan_write(b.channel, f.id, mt, u8(n), f.data.data)
 	if st != 0 {
 		return error('CAN_Write failed (0x${st:X})')

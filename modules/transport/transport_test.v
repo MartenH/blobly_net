@@ -269,3 +269,28 @@ fn test_numeric_vendor_spellings_are_one_destination() {
 		assert !same_destination('kvaser:0', 'kvaser:00')
 	}
 }
+
+// On LINUX a vendor prefix is not a vendor backend — open_linux.v sends anything that is not a
+// software bus to SocketCAN, which echoes and clamps — and that is deliberate: a channel
+// somebody named `vector:bench` here is an ordinary interface name. Pinned because the Windows
+// half of this rule cannot be tested from here (the Windows job builds the bundle, it does not
+// run these tests), so the half that CAN run should say what it means.
+fn test_vendor_prefixes_are_socketcan_on_linux() {
+	$if !windows {
+		assert !vendor_iface('vector:1')
+		assert !vendor_iface('pcan:PCAN_USBBUS1')
+		assert clamps_to_classic('vector:1'), 'SocketCAN clamps, so the record must be clamped too'
+		big := CanFrame{
+			id:   0x123
+			data: []u8{len: 12}
+		}
+		assert wire_frame('vector:1', big).data.len == 8, 'what the kernel will actually send'
+	}
+}
+
+// The identity rule that DOES hold everywhere: a Vector channel is one destination however it
+// is spelled, and the listen-only suffix is not part of its address.
+fn test_vector_spelling_is_not_part_of_the_destination() {
+	assert vector_key('1,silent') == vector_key('1')
+	assert vector_key('ch1,silent') == vector_key('app1')
+}
