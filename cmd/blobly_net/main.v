@@ -660,17 +660,30 @@ fn (app &App) bitrate_iface(iface string) string {
 	// differently miss each other entirely, which is the same substitution of a lookup for an
 	// identity this file has made before.
 	want := transport.destination_key(iface)
+	// ENABLED ROWS DECIDE. A disabled alias — `vector:ch1` at 250k, switched off, beside an
+	// enabled `vector:1` at 500k — used to win this scan and set the rate for a channel it is
+	// not part of, while the conflict check at Start skips disabled rows and never noticed the
+	// disagreement. A row that is not in the run has no say in how the run opens its wire; one
+	// is consulted only if nothing enabled matches at all.
 	mut found := false
 	mut chosen := Chan{}
-	for c in app.chans {
-		if transport.destination_key(c.iface) != want {
-			continue
+	for want_enabled in [true, false] {
+		if found {
+			break
 		}
-		if !found {
-			found = true
-			chosen = c
-		} else if c.listen_only && !chosen.listen_only {
-			chosen = c
+		for c in app.chans {
+			if c.enabled != want_enabled {
+				continue
+			}
+			if transport.destination_key(c.iface) != want {
+				continue
+			}
+			if !found {
+				found = true
+				chosen = c
+			} else if c.listen_only && !chosen.listen_only {
+				chosen = c
+			}
 		}
 	}
 	if !found {
@@ -2699,6 +2712,25 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 				a.mu.unlock()
 				if over {
 					break
+				}
+				// BACK-PRESSURE IS NOT A DROPPED FRAME. A busy capture fills a vendor transmit
+				// queue as a matter of course, and skipping the frame would replay a recording
+				// with holes in it wherever the bus was at its busiest — which is exactly where
+				// a rest bus matters. Wait for room and offer the same frame again.
+				if err.msg().starts_with(transport.vector_busy_msg) {
+					mut waited_q := 0
+					mut placed := false
+					for waited_q < 500 {
+						time.sleep(time.millisecond)
+						waited_q++
+						bus.send(e.frame) or { continue }
+						placed = true
+						break
+					}
+					if placed {
+						sent++
+						continue
+					}
 				}
 				failed++
 				if first_err == '' {

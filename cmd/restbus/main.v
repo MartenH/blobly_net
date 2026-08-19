@@ -159,6 +159,24 @@ fn main() {
 		now := f64(i64(sw.elapsed())) / 1e6 // ns -> ms, fractional
 		for e in p.due(now) {
 			bus.send(e.frame) or {
+				// A FULL VENDOR QUEUE means the wire is the slowest thing here, which a busy
+				// capture reaches routinely. Counting it as a failure would put holes in the
+				// replay exactly where the recording was densest.
+				if err.msg().starts_with(transport.vector_busy_msg) {
+					mut waited_q := 0
+					mut placed := false
+					for waited_q < 500 {
+						time.sleep(time.millisecond)
+						waited_q++
+						bus.send(e.frame) or { continue }
+						placed = true
+						break
+					}
+					if placed {
+						sent++
+						continue
+					}
+				}
 				failed++
 				if first_err == '' {
 					first_err = err.msg() // one example beats a bare count on a bench

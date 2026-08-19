@@ -38,7 +38,15 @@ mut:
 pub fn open_kvaser(spec string) !&KvaserBus {
 	parts := spec.split('@')
 	ch := parts[0].trim_space().int()
-	bitrate := if parts.len > 1 { parts[1].int() } else { 500000 }
+	// STRICTLY, through the rule all three vendor backends share: `.int()` takes a numeric
+	// prefix, so `@250000garbage` opened this channel at 250 kbit/s while the project model
+	// refused the same text and kept its default. Two answers about a live bus, one of them
+	// driving it.
+	bitrate := if parts.len > 1 {
+		vendor_bitrate(parts[1], 500000) or { return error('Kvaser: ${err}') }
+	} else {
+		500000
+	}
 	code := kvaser_bitrate_code(bitrate)!
 	if C.ct_kvaser_load() != 0 {
 		return error('canlib32.dll not found — install the Kvaser drivers')

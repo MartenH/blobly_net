@@ -47,6 +47,30 @@ fn vector_app_channel(s string) !int {
 	return n
 }
 
+// vendor_bitrate parses the `@<rate>` a vendor interface carries, refusing a token that is only
+// PARTLY a number.
+//
+// Shared by all three vendor backends, because V's `.int()` takes a numeric prefix and every one
+// of them used it: `@250000garbage` opened the hardware at 250 kbit/s while the project model,
+// which validates strictly, went on believing the default. The two disagreed about a live bus,
+// and only one of them was driving it.
+pub fn vendor_bitrate(tok string, default_rate int) !int {
+	t := tok.trim_space()
+	if t == '' {
+		return error('empty bitrate after "@"')
+	}
+	for c in t {
+		if !c.is_digit() {
+			return error('"${t}" is not a bitrate — digits only, in bits per second')
+		}
+	}
+	n := t.int()
+	if n <= 0 {
+		return error('bitrate ${n} is not a rate')
+	}
+	return n
+}
+
 // vector_key is the canonical channel part for destination_key: the application channel as a
 // number, so `vector:1`, `vector:ch1` and `vector:app01` are ONE destination. Two mappings that
 // address the same wire through different spellings must collide, or the conflict check waves
@@ -105,16 +129,7 @@ fn parse_vector_spec(spec string) !VectorSpec {
 	// malformed rates on the understanding that this parser would refuse them, which it did not.
 	// A rejection two other fixes depend on has to exist.
 	bitrate := if parts.len > 1 {
-		tok := parts[1].trim_space()
-		if tok == '' {
-			return error('Vector: empty bitrate after "@"')
-		}
-		for c in tok {
-			if !c.is_digit() {
-				return error('Vector: "${tok}" is not a bitrate (id ${ch}) — digits only, in bits per second')
-			}
-		}
-		tok.int()
+		vendor_bitrate(parts[1], 500000) or { return error('Vector: ${err}') }
 	} else {
 		500000
 	}

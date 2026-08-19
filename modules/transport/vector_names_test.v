@@ -80,3 +80,13 @@ fn test_vector_spec_rejects_two_bitrates() {
 		assert false, 'the model would say 500k while the hardware ran at 250k'
 	}
 }
+
+// The rate rule every vendor backend shares. A prefix that happens to parse is not a rate.
+fn test_vendor_bitrate_is_strict() {
+	assert vendor_bitrate('250000', 500000)! == 250000
+	for bad in ['250000garbage', '', 'oops', '25 000', '-1'] {
+		if _ := vendor_bitrate(bad, 500000) {
+			assert false, '"${bad}" must not parse as a bitrate'
+		}
+	}
+}

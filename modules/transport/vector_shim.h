@@ -571,7 +571,16 @@ static int ct_vector_read(ct_xlport port, HANDLE ev_handle, uint32_t *id, uint8_
 			return 0;
 		}
 		if (st != CT_XL_ERR_QUEUE_IS_EMPTY && st != 0) return -(int)st;
-		if (!ev_handle) return 1; /* no notification handle: report empty rather than spin */
+		if (!ev_handle) {
+			/* No notification object — xlSetNotification failed at open. Returning at once made
+			 * recv(200) an immediate no, so the GUI's receive loop retried with no delay and
+			 * pegged a core. Poll on a short sleep until the caller's deadline instead: slower
+			 * than an event, and the only alternative to a busy wait. */
+			if (timeout_ms < 0) { Sleep(1); continue; }
+			if (GetTickCount64() - started >= (ULONGLONG)timeout_ms) return 1;
+			Sleep(1);
+			continue;
+		}
 		if (timeout_ms < 0) {
 			budget = INFINITE;
 		} else {
@@ -617,10 +626,7 @@ static int ct_vector_chipstate(ct_xlport port, uint64_t mask, int *bus_status, i
 
 static void ct_vector_close(ct_xlport port, uint64_t mask, uint64_t gen, HANDLE notify) {
 	if (port == CT_XL_INVALID_PORTHANDLE) return;
-	/* The NOTIFICATION HANDLE is a kernel object this process owns from xlSetNotification, and
-	 * nothing was returning it: every Start/Stop cycle leaked one per monitor and per transmit
-	 * tap, on a GUI people leave running all day. Closed here, where its port dies. */
-	if (notify) CloseHandle(notify);
+
 	/* UNDER THE LOCK, AND BEFORE xlClosePort. A port handle is a small reusable number: closing
 	 * first releases it, an open racing this call can be handed the same value and become the
 	 * recorded owner, and the cleanup that followed would then delete the NEW channel's record
@@ -631,6 +637,14 @@ static void ct_vector_close(ct_xlport port, uint64_t mask, uint64_t gen, HANDLE 
 	ct_vec_cfg_unref(mask, port, gen);
 	ct_xl_deactivate(port, (ct_xlaccess)mask);
 	ct_xl_closeport(port);
+	/* The NOTIFICATION HANDLE is a kernel object this process owns from xlSetNotification, and
+	 * nothing was returning it: every Start/Stop cycle leaked one per monitor and per transmit
+	 * tap, on a GUI people leave running all day.
+	 *
+	 * AFTER the port is closed, not before. While the port lives the driver may still signal
+	 * that object, and closing it first leaves a window where Windows can hand the same handle
+	 * value to something else and the driver signals a stranger. */
+	if (notify) CloseHandle(notify);
 	ct_vec_leave();
 }
 
