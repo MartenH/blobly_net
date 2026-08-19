@@ -22,6 +22,13 @@
 // Kvaser backends do. A VN1630A is FD-capable hardware, so this is a real limitation, not an
 // absent one.
 //
+// SEVERAL PORTS PER CHANNEL is the normal case, not an edge one: the monitor opens its own and
+// each tapped transmit path opens another, on the same wire. XL grants initialisation access to
+// the first of those only, so the rest arrive with no right to set the bitrate — and the
+// question they have to answer is not "may I configure this" but "is it already configured the
+// way I would have". The shim answers it by remembering what this process configured, because
+// XL will not report the rate a channel is running at.
+//
 // NOTE: written from the documented XL ABI; NOT yet verified against hardware. The event
 // layout is pinned by _Static_assert in the shim, and the machine this was written on has no
 // Vector hardware and no Windows. Verify with `cmd/vectorcheck` before trusting a bench to it.
@@ -116,6 +123,14 @@ pub fn open_vector(spec string) !&VectorBus {
 	}
 	if rc == -1003 {
 		return error('Vector channel ${s.channel}: another application holds initialisation access, so the bitrate cannot be set — close the other XL application (CANoe, CANalyzer, a second copy of this one) and try again')
+	}
+	// These two mean the channel is already open IN THIS PROCESS with different settings, which
+	// is a project asking one wire to be two things rather than anything about the hardware.
+	if rc == -1004 {
+		return error('Vector channel ${s.channel} is already open in normal mode by this project — it cannot also be listen-only; make every channel on this wire agree')
+	}
+	if rc == -1005 {
+		return error('Vector channel ${s.channel} is already open at a different bitrate by this project — one wire cannot run at two rates')
 	}
 	if rc == -1002 {
 		return error('this vxlapi build cannot set silent mode, and ,silent was asked for — refusing to go on the bus able to acknowledge')

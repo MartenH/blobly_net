@@ -221,7 +221,7 @@ pub struct Channel {
 pub mut:
 	name         string = 'CAN'
 	network      string // v2: optional grouping label (buses of one logical network)
-	adapter      string = 'vcan'  // v2: virtual | vcan | socketcan | udp | pcan | kvaser | doip
+	adapter      string = 'vcan'  // v2: virtual | vcan | socketcan | udp | pcan | kvaser | vector | doip
 	address      string = 'vcan0' // v2: adapter-specific (CAN1 / vcan0 / can0 / grp:port / host:port)
 	typ          string = 'can'   // yaml `type`/`protocol`: can | canfd | doip
 	iface        string = 'vcan0' // derived scheme string (composed from adapter+address)
@@ -495,12 +495,26 @@ fn parse_channel(c yaml.Any) !Channel {
 		ch.adapter, ch.address = decompose_iface(raw)
 		// A legacy vendor iface embeds the bitrate (`pcan:CH@500000`): lift it into the bitrate
 		// field (decompose stripped it from the address) and recompose a clean iface.
-		if (ch.adapter == 'pcan' || ch.adapter == 'kvaser') && raw.contains('@') {
-			br := raw.all_after_last('@').int()
+		if (ch.adapter == 'pcan' || ch.adapter == 'kvaser' || ch.adapter == 'vector')
+			&& raw.contains('@') {
+			// LAST `@`, then the mode: `vector:1@250000,silent` puts the suffix after the rate,
+			// so all_after_last('@') is "250000,silent" and .int() would read 250000 only by
+			// luck of parsing. Cut the mode off first and the number is the number.
+			mut tail := raw.all_after_last('@')
+			if ch.adapter == 'vector' && tail.contains(',') {
+				tail = tail.all_before_last(',')
+			}
+			br := tail.int()
 			if br > 0 {
 				ch.bitrate = br
 			}
-			ch.iface = compose_iface(ch.adapter, ch.address)
+			// A legacy Vector iface carrying `,silent` said listen-only in the only way v1 had
+			// of saying it; the flag is where v2 keeps that, and dropping it on the way in would
+			// silently put a bench that asked to listen back on the bus able to acknowledge.
+			if ch.adapter == 'vector' && raw.contains(',') {
+				ch.listen_only = true
+			}
+			ch.iface = compose_iface(ch.adapter, ch.address.all_before_last(','))
 		} else {
 			ch.iface = raw
 		}
@@ -1001,7 +1015,7 @@ fn parse_id(s string) u32 {
 // adapters is the set of transport backends the editor offers (the `adapter:` value).
 // Order = the picker order. `virtual`/`vcan`/`socketcan`/`udp` are cross-platform or
 // Linux; `pcan`/`kvaser` are Windows CAN hardware; `doip` is an Ethernet diag endpoint.
-pub const adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'pcan', 'kvaser', 'doip']
+pub const adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'pcan', 'kvaser', 'vector', 'doip']
 
 // compose_iface builds the internal scheme string `transport.open()` consumes from an
 // adapter + its backend-specific address. It is the inverse of decompose_iface.
@@ -1011,6 +1025,7 @@ pub const adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'pcan', 'kvaser', '
 //   udp      239.0.0.1:5000  -> udp:239.0.0.1:5000  (bare `udp` if empty)
 //   pcan     PCAN_USBBUS1    -> pcan:PCAN_USBBUS1
 //   kvaser   0               -> kvaser:0
+//   vector   1               -> vector:1
 //   doip     127.0.0.1:13400 -> doip:127.0.0.1:13400 (bare `doip` if empty)
 pub fn compose_iface(adapter string, address string) string {
 	a := address.trim_space()

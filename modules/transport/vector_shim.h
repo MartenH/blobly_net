@@ -109,6 +109,57 @@ static ct_xlGetErrString   ct_xl_errstr;
 
 static int ct_vector_loaded = 0;
 
+/* WHAT WE CONFIGURED, per channel, for the life of this process.
+ *
+ * The application does not open one port per bus: a monitor opens its own, and each tapped
+ * transmit path opens another, all on the same channel. Only the FIRST of those keeps
+ * initialisation access — XL grants it once — so the later ones legitimately arrive with no
+ * right to set the bitrate. Refusing them outright leaves a channel running with no monitor, or
+ * no way to transmit, depending on which open lost the race.
+ *
+ * So the question a secondary open has to answer is not "may I configure this channel" but "is
+ * it already configured the way I would have configured it". That is answerable only by
+ * remembering what we did, because XL will not tell us what rate a channel is running at.
+ * A channel we never configured, denied to us now, belongs to another application. */
+#define CT_VEC_MAX_CFG 16
+static uint64_t ct_vec_cfg_mask[CT_VEC_MAX_CFG];
+static unsigned int ct_vec_cfg_rate[CT_VEC_MAX_CFG];
+static int ct_vec_cfg_silent[CT_VEC_MAX_CFG];
+static int ct_vec_cfg_n = 0;
+
+/* One lock over the symbol table and the configuration record. Those opens happen from several
+ * threads at once — the monitor spawns while the transmit taps are being created — and both
+ * structures are written on first use. */
+static CRITICAL_SECTION ct_vec_lock;
+static INIT_ONCE ct_vec_once = INIT_ONCE_STATIC_INIT;
+static BOOL CALLBACK ct_vec_init_lock(PINIT_ONCE o, PVOID p, PVOID *c) {
+	(void)o; (void)p; (void)c;
+	InitializeCriticalSection(&ct_vec_lock);
+	return TRUE;
+}
+static void ct_vec_enter(void) {
+	InitOnceExecuteOnce(&ct_vec_once, ct_vec_init_lock, NULL, NULL);
+	EnterCriticalSection(&ct_vec_lock);
+}
+static void ct_vec_leave(void) { LeaveCriticalSection(&ct_vec_lock); }
+
+static int ct_vec_cfg_find(uint64_t mask) {
+	int i;
+	for (i = 0; i < ct_vec_cfg_n; i++) if (ct_vec_cfg_mask[i] == mask) return i;
+	return -1;
+}
+
+static void ct_vec_cfg_note(uint64_t mask, unsigned int rate, int silent) {
+	int i = ct_vec_cfg_find(mask);
+	if (i < 0) {
+		if (ct_vec_cfg_n >= CT_VEC_MAX_CFG) return; /* more channels than any bench has */
+		i = ct_vec_cfg_n++;
+		ct_vec_cfg_mask[i] = mask;
+	}
+	ct_vec_cfg_rate[i] = rate;
+	ct_vec_cfg_silent[i] = silent;
+}
+
 /* 0 ok, -1 DLL missing, -2 a symbol missing. */
 static int ct_vector_load(void) {
 	HMODULE h;
@@ -185,8 +236,9 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 	ct_xlport port = CT_XL_INVALID_PORTHANDLE;
 	ct_xlstatus st;
 	int why = 0;
+	ct_vec_enter();
 	mask = (ct_xlaccess)ct_vector_mask_why(app_channel, &why);
-	if (!mask) return why ? why : -1000; /* the caller distinguishes these; see vector_windows.v */
+	if (!mask) { ct_vec_leave(); return why ? why : -1000; } /* the caller distinguishes these; see vector_windows.v */
 	/* permissionMask is IN/OUT: on the way IN it asks for INIT ACCESS on these channels, and on
 	 * the way OUT it says which were granted. Passing 0 asks for init access on nothing, so the
 	 * bitrate below is never applied — the channel keeps whatever rate the last application left
@@ -196,28 +248,30 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 	permission = mask;
 	st = ct_xl_openport(&port, "blobly_net", mask, &permission, 256, CT_XL_INTERFACE_VERSION,
 	                    CT_XL_BUS_TYPE_CAN);
-	if (st != 0 || port == CT_XL_INVALID_PORTHANDLE) return st ? -(int)st : -1001;
+	if (st != 0 || port == CT_XL_INVALID_PORTHANDLE) { ct_vec_leave(); return st ? -(int)st : -1001; }
 	/* Init access decides whether this port may set the bitrate at all. Without it another
 	 * application already owns the channel's parameters, and setting them would either fail
 	 * or reconfigure a bus somebody else is using. */
 	if (permission & mask) {
 		st = ct_xl_setbitrate(port, mask, bitrate);
-		if (st != 0) { ct_xl_closeport(port); return -(int)st; }
+		if (st != 0) { ct_xl_closeport(port); ct_vec_leave(); return -(int)st; }
+		if (ct_xl_setoutput) {
+			st = ct_xl_setoutput(port, mask, silent ? CT_XL_OUTPUT_MODE_SILENT : CT_XL_OUTPUT_MODE_NORMAL);
+			if (st != 0 && silent) { ct_xl_closeport(port); ct_vec_leave(); return -(int)st; }
+		} else if (silent) {
+			ct_xl_closeport(port); ct_vec_leave(); return -1002;
+		}
+		ct_vec_cfg_note(mask, bitrate, silent);
 	} else {
-		/* REFUSED, not carried on with. Another XL application already holds init access, so
-		 * the rate we were asked for cannot be applied and the channel would run at whatever
-		 * that application configured. Activating anyway reports success for a bus running at
-		 * an unknown rate, which is the failure this backend is least able to notice and the
-		 * operator most likely to trust. */
-		ct_xl_closeport(port);
-		return -1003;
-	}
-	if (ct_xl_setoutput) {
-		st = ct_xl_setoutput(port, mask, silent ? CT_XL_OUTPUT_MODE_SILENT : CT_XL_OUTPUT_MODE_NORMAL);
-		if (st != 0 && silent) { ct_xl_closeport(port); return -(int)st; } /* refuse: silence was asked for */
-	} else if (silent) {
-		ct_xl_closeport(port);
-		return -1002; /* cannot promise silence on this DLL */
+		/* No init access. Either we already configured this channel — a second port for a bus
+		 * this process is running, which is normal and must work — or somebody else owns it. */
+		int i = ct_vec_cfg_find(mask);
+		if (i < 0) { ct_xl_closeport(port); ct_vec_leave(); return -1003; }
+		/* Configured by us, but not the way this caller asked. Reported rather than papered
+		 * over: a port that believes it is silent while the channel acknowledges is the exact
+		 * promise this backend was added to keep. */
+		if (silent && !ct_vec_cfg_silent[i]) { ct_xl_closeport(port); ct_vec_leave(); return -1004; }
+		if (ct_vec_cfg_rate[i] != bitrate) { ct_xl_closeport(port); ct_vec_leave(); return -1005; }
 	}
 	/* No TX confirmations and no TX requests in the receive queue. The XL driver can deliver an
 	 * event for every frame WE send, and echoes_own_sends() reports false for a vendor backend —
@@ -226,9 +280,10 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 	if (ct_xl_setchanmode) ct_xl_setchanmode(port, mask, 0, 0);
 	if (ct_xl_setnotify(port, out_event, 1) != 0) *out_event = NULL;
 	st = ct_xl_activate(port, mask, CT_XL_BUS_TYPE_CAN, CT_XL_ACTIVATE_RESET_CLOCK);
-	if (st != 0) { ct_xl_closeport(port); return -(int)st; }
+	if (st != 0) { ct_xl_closeport(port); ct_vec_leave(); return -(int)st; }
 	*out_port = port;
 	*out_mask = (uint64_t)mask;
+	ct_vec_leave();
 	return 0;
 }
 

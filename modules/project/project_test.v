@@ -447,3 +447,42 @@ fn test_normal_vector_channel_is_not_silenced() {
 	}
 	assert c.iface_with_bitrate() == 'vector:1@500000'
 }
+
+// A v1 project embeds the rate in the interface. Left unlifted, the channel keeps the 500000
+// default, and saving migrates it to that default — so the NEXT load activates a live bus at a
+// rate the project never asked for.
+fn test_legacy_vector_bitrate_is_lifted() {
+	p := parse('
+project:
+  name: legacy
+channels:
+  - name: CAN1
+    interface: vector:1@250000
+') or {
+		assert false, '${err}'
+		return
+	}
+	c := p.channels[0]
+	assert c.adapter == 'vector'
+	assert c.address == '1'
+	assert c.bitrate == 250000, 'the embedded rate must survive a save/load round trip'
+	assert c.iface_with_bitrate() == 'vector:1@250000'
+}
+
+// …and a v1 iface that asked for listen-only keeps asking for it.
+fn test_legacy_vector_silent_becomes_listen_only() {
+	p := parse('
+project:
+  name: legacy
+channels:
+  - name: CAN1
+    interface: vector:1@250000,silent
+') or {
+		assert false, '${err}'
+		return
+	}
+	c := p.channels[0]
+	assert c.bitrate == 250000
+	assert c.listen_only, 'v1 said it with ,silent; v2 says it with the flag'
+	assert c.iface_with_bitrate() == 'vector:1@250000,silent'
+}
