@@ -1723,10 +1723,21 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 		// Under tx_mu, which we still hold, so the order frames were recorded in is the order
 		// they reach the wire — the property this lock exists for.
 		mut placed := false
+		mut last_err := err
 		if err.msg().starts_with(transport.vector_busy_msg) {
 			for _ in 0 .. 200 {
 				time.sleep(time.millisecond)
-				t.inner.send(wire) or { continue }
+				t.inner.send(wire) or {
+					// STILL BUSY is worth another try; anything else is a new fault and must be
+					// reported as itself. Retrying through it for 200 ms and then returning the
+					// ORIGINAL queue-full error described an adapter that had disconnected as
+					// ordinary back-pressure.
+					last_err = err
+					if err.msg().starts_with(transport.vector_busy_msg) {
+						continue
+					}
+					break
+				}
 				placed = true
 				break
 			}
@@ -1736,7 +1747,7 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 			// exactly the entry this send wrote, if it wrote one — not a search, and not a guess
 			// from the backend
 			t.app.unrecord(rec_id)
-			return err
+			return last_err
 		}
 	}
 }
@@ -5264,6 +5275,7 @@ fn (mut app App) draw_bus_editor(i int) bool {
 		// time. One rule, applied wherever an address can be written.
 		if ch.adapter == 'vector' {
 			stripped, want_silent, recognised := project.split_vector_mode(typed)
+			had_suffix := stripped != typed
 			if stripped != typed {
 				// BACK INTO THE BUFFER as well. Normalising only the project value left
 				// `1,silent` in the text field, and the next commit_cfg copied it back — the
@@ -5273,10 +5285,14 @@ fn (mut app App) draw_bus_editor(i int) bool {
 				app.cfg_bufs[i].address_buf = mkbuf(stripped, 64)
 			}
 			typed = stripped
-			if recognised && stripped != vgui.buf_str(app.cfg_bufs[i].address_buf) {
-				// BOTH WAYS. `,normal` is an explicit request to acknowledge, and setting the
-				// flag only when the suffix said silent left a listen-only channel — a
-				// discovered one starts that way — silent while its address said otherwise.
+			// AGAINST WHAT WAS TYPED, which is `had_suffix` — captured before the buffer was
+			// rewritten just above. Comparing with the buffer afterwards compared the stripped
+			// value against itself and was always false, so `,normal` on a listen-only channel
+			// still opened silent: the guard for the explicit request was unreachable.
+			if recognised && had_suffix {
+				// BOTH WAYS. `,normal` is an explicit request to acknowledge; setting the flag
+				// only when the suffix said silent left a listen-only channel — a discovered
+				// one starts that way — silent while its address said otherwise.
 				app.proj.channels[i].listen_only = want_silent
 			} else if want_silent {
 				app.proj.channels[i].listen_only = true

@@ -547,12 +547,17 @@ fn parse_channel(c yaml.Any) !Channel {
 			// first rate, so `vector:1@250000@500000` reached the driver as a tidy 500000 and
 			// the strict parser downstream — the one this preservation exists to reach — never
 			// saw the problem at all.
+			// PRESERVED, then parsing CARRIES ON. Returning here skipped every field below —
+			// databases, simulated nodes, senders, verification rules, timing, replay — so
+			// opening such a project and saving it wrote those away as defaults. Preserving a
+			// malformed rate must not cost the rest of the channel.
+			mut two_rates := false
 			if raw.count('@') > 1 {
 				ch.address = raw.all_after('${ch.adapter}:')
 				ch.iface = raw
-				return ch
+				two_rates = true
 			}
-			mut tail := raw.all_after_last('@')
+			mut tail := if two_rates { '' } else { raw.all_after_last('@') }
 			if ch.adapter == 'vector' && tail.contains(',') {
 				tail = tail.all_before_last(',')
 			}
@@ -567,7 +572,7 @@ fn parse_channel(c yaml.Any) !Channel {
 					break
 				}
 			}
-			br := if all_digits { tail.int() } else { 0 }
+			br := if all_digits && !two_rates { tail.int() } else { 0 }
 			if br > 0 {
 				ch.bitrate = br
 				ch.iface = compose_iface(ch.adapter, ch.address)
@@ -587,8 +592,10 @@ fn parse_channel(c yaml.Any) !Channel {
 				// prefix in the address — which recomposition then prefixed again, writing
 				// `pcan:pcan:…` into the project. Preserving a rejected spec must not corrupt
 				// the file it is preserved in.
-				ch.address = raw.all_after('${ch.adapter}:')
-				ch.iface = raw
+				if !two_rates {
+					ch.address = raw.all_after('${ch.adapter}:')
+					ch.iface = raw
+				}
 			}
 		} else if ch.adapter == 'vector' && raw.contains(',') {
 			ch.iface = compose_iface(ch.adapter, ch.address)

@@ -691,3 +691,43 @@ channels:
 	assert c.iface == 'vector:1@250000@500000'
 	assert compose_iface(c.adapter, c.address) == 'vector:1@250000@500000', 'must survive a save'
 }
+
+// Preserving a malformed rate must not cost the rest of the channel. An early return here
+// skipped databases, nodes, senders and replay config, so opening such a project and saving it
+// wrote them away as defaults — losing configuration on a file the user never edited.
+fn test_double_rate_channel_keeps_the_rest_of_its_config() {
+	p := parse('
+project:
+  name: legacy
+channels:
+  - name: CAN1
+    interface: vector:1@250000@500000
+    mode: replay
+    listen_only: true
+    databases:
+      - dbc/a.dbc
+      - dbc/b.dbc
+    replay:
+      source: logs/x.mf4
+      bus: CAN1
+      speed: 2.0
+      loop: true
+') or {
+		assert false, '${err}'
+		return
+	}
+	c := p.channels[0]
+	assert c.iface == 'vector:1@250000@500000', 'the malformed rate still survives'
+	assert c.databases.len == 2, 'databases must not be lost'
+	assert c.mode == .replay
+	assert c.listen_only
+	r := c.replay or {
+		assert false, 'replay config was lost'
+		return
+	}
+
+	assert r.source == 'logs/x.mf4'
+	assert r.bus == 'CAN1'
+	assert r.speed == 2.0
+	assert r.repeat
+}
