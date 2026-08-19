@@ -129,6 +129,9 @@ pub fn open_vector(spec string) !&VectorBus {
 	if rc == -1004 {
 		return error('Vector channel ${s.channel} is already open in normal mode by this project — it cannot also be listen-only; make every channel on this wire agree')
 	}
+	if rc == -1006 {
+		return error('Vector: more than 64 channels are already open in this process — refusing rather than opening one whose later ports would all be denied')
+	}
 	if rc == -1005 {
 		return error('Vector channel ${s.channel} is already open at a different bitrate by this project — one wire cannot run at two rates')
 	}
