@@ -572,7 +572,12 @@ fn parse_channel(c yaml.Any) !Channel {
 				// clean `vector:1` from adapter + address and the evidence is gone — the
 				// bus then opens at the 500 kbit/s default this branch exists to prevent.
 				// Keeping it where recomposition looks makes the refusal survive a save.
-				ch.address = raw.all_after('vector:')
+				// THIS ADAPTER'S prefix, not Vector's. The branch covers pcan and kvaser too
+				// now, and cutting a hardcoded `vector:` off `pcan:PCAN_USBBUS1@oops` left the
+				// prefix in the address — which recomposition then prefixed again, writing
+				// `pcan:pcan:…` into the project. Preserving a rejected spec must not corrupt
+				// the file it is preserved in.
+				ch.address = raw.all_after('${ch.adapter}:')
 				ch.iface = raw
 			}
 		} else if ch.adapter == 'vector' && raw.contains(',') {

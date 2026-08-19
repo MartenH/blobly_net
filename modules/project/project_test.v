@@ -648,3 +648,28 @@ channels:
 	assert c.address.contains('oops'), 'the address is what recomposition reads'
 	assert compose_iface(c.adapter, c.address).contains('oops')
 }
+
+// A malformed rate is preserved for the transport parser to refuse — on every vendor, and
+// without doubling the prefix on the way through.
+fn test_bad_legacy_rate_keeps_its_own_prefix() {
+	for adapter, iface in {
+		'pcan':   'pcan:PCAN_USBBUS1@oops'
+		'kvaser': 'kvaser:0@oops'
+		'vector': 'vector:1@oops'
+	} {
+		p := parse('
+project:
+  name: legacy
+channels:
+  - name: CAN1
+    interface: ${iface}
+') or {
+			assert false, '${err}'
+			return
+		}
+		c := p.channels[0]
+		assert c.adapter == adapter
+		assert !c.address.starts_with('${adapter}:'), '${iface}: the prefix belongs to compose, not the address'
+		assert compose_iface(c.adapter, c.address) == iface, '${iface}: must round-trip unchanged'
+	}
+}

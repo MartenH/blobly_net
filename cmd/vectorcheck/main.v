@@ -111,10 +111,22 @@ fn whole_int(tok string, what string) !int {
 	if t == '' {
 		return error('${what} needs a number')
 	}
+	mut digits := 0
 	for i, c in t {
-		if !c.is_digit() && !(i == 0 && c == `-`) {
-			return error('${what}: "${t}" is not a number')
+		if c.is_digit() {
+			digits++
+			continue
 		}
+		if i == 0 && c == `-` {
+			continue
+		}
+		return error('${what}: "${t}" is not a number')
+	}
+	// AT LEAST ONE DIGIT. A lone "-" passed the character test and `.int()` made it zero, so
+	// `--assign -` selected row 0 and rewrote an application-channel mapping for good. A sign
+	// is not a number.
+	if digits == 0 {
+		return error('${what}: "${t}" is not a number')
 	}
 	return t.int()
 }
