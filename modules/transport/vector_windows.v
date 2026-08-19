@@ -52,6 +52,8 @@ fn C.ct_vector_diag() int
 fn C.ct_vector_dll_path() &char
 fn C.ct_vector_assign(u32, int, int, int) int
 fn C.ct_vector_appl_get(u32, &int, &int, &int) int
+fn C.ct_vector_borrow_lock()
+fn C.ct_vector_borrow_unlock()
 fn C.ct_vector_probe(int, &int, &int, &int, &u64) int
 fn C.ct_vector_channel_info(int, &char, int, &char, int, &int, &int, &int, &u32, &u32, &u32, &int, &int) int
 fn C.ct_vector_error_frames() int
@@ -282,6 +284,17 @@ pub fn vector_assignment(app_channel int) !(VectorChannel, bool) {
 		hw_index:   hi
 		hw_channel: hc
 	}, true
+}
+
+// vector_borrow_lock / vector_borrow_unlock bracket a read-modify-restore of the application
+// channel assignments, across PROCESSES. Two diagnostics running at once would otherwise
+// interleave their saves and restores and leave a channel pointed somewhere nobody chose.
+pub fn vector_borrow_lock() {
+	C.ct_vector_borrow_lock()
+}
+
+pub fn vector_borrow_unlock() {
+	C.ct_vector_borrow_unlock()
 }
 
 // vector_unassign returns one of our application channels to having no hardware, which is what

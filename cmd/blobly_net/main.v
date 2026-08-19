@@ -707,6 +707,27 @@ fn (mut app App) start() {
 	// hands every monitor and transmit open the same string, so the Vector layer's own
 	// "already open at a different bitrate" refusal never fires and the bus quietly runs at
 	// whichever row was listed first. Caught here, before anything is opened.
+	// A WIRE FORCED SILENT CANNOT CARRY A REPLAY. bitrate_iface opens every port on a
+	// destination in listen-only mode as soon as ONE row asks for it — the transceiver has a
+	// single mode and silence is the safe reading — but a replay row with its own flag clear
+	// still starts, opens that silent bus, and has every frame refused. The operator gets a
+	// failed run where the honest answer is that they asked for two different things on one
+	// wire. Said before anything opens.
+	mut silent_dest := map[string]string{}
+	for c in app.chans {
+		if c.enabled && c.listen_only {
+			silent_dest[transport.destination_key(c.iface)] = c.name
+		}
+	}
+	for c in app.chans {
+		if !c.enabled || !c.replaying() {
+			continue
+		}
+		if quiet := silent_dest[transport.destination_key(c.iface)] {
+			app.notify('${c.name} replays onto ${c.iface}, which ${quiet} has set to listen-only — one wire, one mode; not starting')
+			return
+		}
+	}
 	mut rate_of := map[string]int{}
 	mut rate_row := map[string]string{}
 	for c in app.chans {

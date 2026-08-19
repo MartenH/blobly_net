@@ -74,6 +74,10 @@ fn on_interrupt(_ os.Signal) {
 }
 
 fn borrow(app int, hw transport.VectorChannel) !Borrowed {
+	// Held from the first borrow to the last restore — see transport.vector_borrow_lock. Taken
+	// per borrow and released in give_back, which is the span that must be atomic against
+	// another copy of this tool.
+	transport.vector_borrow_lock()
 	// REFUSED if we cannot see what we would overwrite. A read failure used to look like a free
 	// channel, and the borrow then "restored" it by clearing a mapping the operator had made.
 	prev, had := transport.vector_assignment(app)!
@@ -91,6 +95,11 @@ fn borrow(app int, hw transport.VectorChannel) !Borrowed {
 }
 
 fn give_back(bs []Borrowed) {
+	defer {
+		for _ in bs {
+			transport.vector_borrow_unlock()
+		}
+	}
 	for b in bs {
 		// AS WE FOUND IT includes "not assigned at all". Restoring only the channels that had a
 		// mapping left the others pointing at our test hardware for good, which is the same

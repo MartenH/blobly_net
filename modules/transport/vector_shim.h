@@ -812,6 +812,25 @@ static int ct_vector_channel_info(int idx, char *name, int name_len, char *trans
 	return 0;
 }
 
+/* ACROSS PROCESSES, not just threads. Borrowing is read-then-write-then-restore, and two
+ * diagnostics run at once interleave into a permanent change: A saves the original and assigns,
+ * B saves A's assignment and assigns, A restores the original, B restores A's — leaving the
+ * channel pointed somewhere nobody asked for. A named mutex is the only thing that helps; the
+ * process-local lock cannot see the other copy.
+ *
+ * Best-effort: if the mutex cannot be created we proceed rather than refusing to run a
+ * diagnostic, because the common case is one operator at one bench. */
+static HANDLE ct_vec_xproc = NULL;
+
+static void ct_vector_borrow_lock(void) {
+	if (!ct_vec_xproc) ct_vec_xproc = CreateMutexA(NULL, FALSE, "Local\\blobly_net_vector_borrow");
+	if (ct_vec_xproc) WaitForSingleObject(ct_vec_xproc, 10000);
+}
+
+static void ct_vector_borrow_unlock(void) {
+	if (ct_vec_xproc) ReleaseMutex(ct_vec_xproc);
+}
+
 /* What an application channel is currently pointed at, WITHOUT registering anything.
  * 0 = assigned (outputs filled), -1 = not assigned or unavailable. Needed so a test that has to
  * borrow a channel can put it back exactly as it found it. */
