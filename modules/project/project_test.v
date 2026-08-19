@@ -313,7 +313,7 @@ fn test_doip_identity_round_trip() {
 
 fn test_doip_vin_must_be_17() {
 	parse('project:\n  name: d\nchannels:\n  - name: E\n    type: doip\n    vin: SHORTVIN\n') or {
-		return // expected: VIN length error
+		return
 	}
 	assert false, 'expected a non-17-char VIN to error'
 }
@@ -343,6 +343,7 @@ fn test_replay_without_bus_or_exclude() {
 		assert false, 'replay missing'
 		return
 	}
+
 	assert r.source == 'samples/demo.mf4'
 	assert r.bus == '', 'absent bus became "${r.bus}"'
 	assert r.exclude == [], 'absent exclude became ${r.exclude}'
@@ -359,6 +360,7 @@ fn test_replay_bus_and_exclude_round_trip() {
 		assert false, 'replay missing'
 		return
 	}
+
 	assert r.bus == 'CAN1'
 	assert r.exclude == ['SUT_ECU', 'ECM']
 	back := parse(p.to_yaml()) or {
@@ -369,7 +371,34 @@ fn test_replay_bus_and_exclude_round_trip() {
 		assert false, 'replay lost on save'
 		return
 	}
+
 	assert r2.bus == 'CAN1', 'bus lost on save'
 	assert r2.exclude == ['SUT_ECU', 'ECM'], 'exclude lost on save: ${r2.exclude}'
 	assert r2.speed == 2.0 && r2.repeat
+}
+
+// A Vector channel decomposes to its own adapter, or the GUI cannot offer it and the bitrate
+// never reaches the driver — the bug iface_with_bitrate's own comment describes, repeated for
+// a new backend.
+fn test_vector_iface_decomposes_to_its_adapter() {
+	a, addr := decompose_iface('vector:1@500000')
+	assert a == 'vector'
+	assert addr == '1', 'the bitrate belongs in the bitrate field, not the address'
+}
+
+// Listen-only is part of how the channel opens, so it must survive a round trip through the
+// project. Dropping it turns a silent bench into one that acknowledges on the next save.
+fn test_vector_silent_suffix_survives_decompose() {
+	a, addr := decompose_iface('vector:1@500000,silent')
+	assert a == 'vector'
+	assert addr == '1,silent'
+}
+
+fn test_vector_bitrate_is_reappended_at_open() {
+	c := Channel{
+		iface:   'vector:1'
+		adapter: 'vector'
+		bitrate: 250000
+	}
+	assert c.iface_with_bitrate() == 'vector:1@250000'
 }

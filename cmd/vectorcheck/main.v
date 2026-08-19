@@ -7,9 +7,15 @@
 // know. A node that goes on the bus at the wrong bitrate floods error frames and degrades the
 // bus for everyone on it; a silent one that has the bitrate wrong simply reports nothing.
 //
-//   v -path "@vlib|@vmodules|modules" run cmd/vectorcheck/main.v --list
-//   v -path "@vlib|@vmodules|modules" run cmd/vectorcheck/main.v --channel 1 --bitrate 500000
-//   v ... run cmd/vectorcheck/main.v --channel 1 --bitrate 500000 --transmit   # opt in to TX
+//   v -enable-globals -path "@vlib|@vmodules|modules" run cmd/vectorcheck/main.v --list
+//   v -enable-globals -path "@vlib|@vmodules|modules" run cmd/vectorcheck/main.v --channel 1
+//   v -enable-globals -path "@vlib|@vmodules|modules" run cmd/vectorcheck/main.v --channel 1 --transmit
+//
+// `-enable-globals` is not optional: modules/transport/inproc.v uses `__global`, and without it
+// the build fails before anything Vector-specific is reached.
+//
+// From WSL, cross-compile and run the result on Windows — the XL library lives there:
+//   v -os windows -enable-globals -path "@vlib|@vmodules|modules" -o vectorcheck.exe cmd/vectorcheck/main.v
 module main
 
 import os
@@ -127,8 +133,13 @@ fn main() {
 					eprintln('been registered there; assign a VN1630A channel to its channel 1.')
 				}
 				-1 {
-					eprintln('vxlapi64.dll was not found — the Vector Driver Setup is not installed,')
-					eprintln('or not on this PATH. (On WSL this is expected: run the .exe from Windows.)')
+					eprintln('vxlapi64.dll was not found.')
+					eprintln('')
+					eprintln('It is the Vector XL Driver Library, a SEPARATE download from the hardware')
+					eprintln('drivers — the VN device, its kernel driver and Vector Hardware Manager can all')
+					eprintln('be installed and working without it. Check Device Manager: if the VN adapter')
+					eprintln('is listed and healthy, this library is the only thing missing.')
+					eprintln('(On WSL this message is expected regardless: run the .exe from Windows.)')
 				}
 				-2 {
 					eprintln('vxlapi64.dll loaded but is missing functions this backend needs.')

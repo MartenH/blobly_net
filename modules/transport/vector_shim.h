@@ -31,7 +31,10 @@
 #define CT_XL_TRANSMIT_MSG        10
 #define CT_XL_ERR_QUEUE_IS_EMPTY  10
 #define CT_XL_CAN_EXT_MSG_ID      0x80000000
-#define CT_XL_CAN_MSG_FLAG_ERROR_FRAME 0x01
+#define CT_XL_CAN_MSG_FLAG_ERROR_FRAME  0x01
+#define CT_XL_CAN_MSG_FLAG_REMOTE_FRAME 0x10
+#define CT_XL_CAN_MSG_FLAG_TX_COMPLETED 0x40
+#define CT_XL_CAN_MSG_FLAG_TX_REQUEST   0x80
 #define CT_XL_INVALID_PORTHANDLE  (-1)
 
 typedef int16_t  ct_xlstatus;
@@ -79,6 +82,7 @@ typedef ct_xlstatus (__stdcall *ct_xlOpenPort)(ct_xlport *, char *, ct_xlaccess,
 typedef ct_xlstatus (__stdcall *ct_xlClosePort)(ct_xlport);
 typedef ct_xlstatus (__stdcall *ct_xlSetBitrate)(ct_xlport, ct_xlaccess, unsigned int);
 typedef ct_xlstatus (__stdcall *ct_xlSetOutput)(ct_xlport, ct_xlaccess, unsigned int);
+typedef ct_xlstatus (__stdcall *ct_xlSetChanMode)(ct_xlport, ct_xlaccess, int, int);
 typedef ct_xlstatus (__stdcall *ct_xlActivate)(ct_xlport, ct_xlaccess, unsigned int, unsigned int);
 typedef ct_xlstatus (__stdcall *ct_xlDeactivate)(ct_xlport, ct_xlaccess);
 typedef ct_xlstatus (__stdcall *ct_xlTransmit)(ct_xlport, ct_xlaccess, unsigned int *, void *);
@@ -95,6 +99,7 @@ static ct_xlOpenPort       ct_xl_openport;
 static ct_xlClosePort      ct_xl_closeport;
 static ct_xlSetBitrate     ct_xl_setbitrate;
 static ct_xlSetOutput      ct_xl_setoutput;
+static ct_xlSetChanMode    ct_xl_setchanmode;
 static ct_xlActivate       ct_xl_activate;
 static ct_xlDeactivate     ct_xl_deactivate;
 static ct_xlTransmit       ct_xl_transmit;
@@ -120,6 +125,7 @@ static int ct_vector_load(void) {
 	ct_xl_closeport  = (ct_xlClosePort)(void *)GetProcAddress(h, "xlClosePort");
 	ct_xl_setbitrate = (ct_xlSetBitrate)(void *)GetProcAddress(h, "xlCanSetChannelBitrate");
 	ct_xl_setoutput  = (ct_xlSetOutput)(void *)GetProcAddress(h, "xlCanSetChannelOutput");
+	ct_xl_setchanmode = (ct_xlSetChanMode)(void *)GetProcAddress(h, "xlCanSetChannelMode");
 	ct_xl_activate   = (ct_xlActivate)(void *)GetProcAddress(h, "xlActivateChannel");
 	ct_xl_deactivate = (ct_xlDeactivate)(void *)GetProcAddress(h, "xlDeactivateChannel");
 	ct_xl_transmit   = (ct_xlTransmit)(void *)GetProcAddress(h, "xlCanTransmit");
@@ -144,18 +150,28 @@ static const char *ct_vector_err(int st) {
  * application first so it appears in Vector Hardware Configuration for the operator to
  * assign — an unconfigured app is otherwise invisible there, and the error alone would send
  * them looking for a dialog entry that does not exist. */
-static uint64_t ct_vector_mask(unsigned int app_channel) {
+static uint64_t ct_vector_mask_why(unsigned int app_channel, int *why) {
 	unsigned int hw_type = 0, hw_index = 0, hw_channel = 0;
-	if (ct_vector_load() != 0) return 0;
-	if (ct_xl_opendrv() != 0) return 0;
+	int rc;
+	ct_xlstatus st;
+	if (why) *why = 0;
+	rc = ct_vector_load();
+	if (rc != 0) { if (why) *why = rc; return 0; }          /* -1 no DLL, -2 no symbol */
+	st = ct_xl_opendrv();
+	if (st != 0) { if (why) *why = -(int)st; return 0; }    /* driver would not open */
 	if (ct_xl_getappl("blobly_net", app_channel, &hw_type, &hw_index, &hw_channel,
 	                  CT_XL_BUS_TYPE_CAN) != 0 || hw_type == 0) {
 		if (ct_xl_setappl) {
 			ct_xl_setappl("blobly_net", app_channel, 0, 0, 0, CT_XL_BUS_TYPE_CAN);
 		}
+		if (why) *why = -1000; /* driver fine, this channel simply has no hardware yet */
 		return 0;
 	}
 	return (uint64_t)ct_xl_chanmask((int)hw_type, (int)hw_index, (int)hw_channel);
+}
+
+static uint64_t ct_vector_mask(unsigned int app_channel) {
+	return ct_vector_mask_why(app_channel, NULL);
 }
 
 /* Open, configure and activate one application channel.
@@ -165,11 +181,19 @@ static uint64_t ct_vector_mask(unsigned int app_channel) {
  * Returns 0, or a negative XL status. Outputs port + mask on success. */
 static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int silent,
                           ct_xlport *out_port, uint64_t *out_mask, HANDLE *out_event) {
-	ct_xlaccess mask, permission = 0;
+	ct_xlaccess mask, permission;
 	ct_xlport port = CT_XL_INVALID_PORTHANDLE;
 	ct_xlstatus st;
-	mask = (ct_xlaccess)ct_vector_mask(app_channel);
-	if (!mask) return -1000; /* no hardware assigned to this application channel */
+	int why = 0;
+	mask = (ct_xlaccess)ct_vector_mask_why(app_channel, &why);
+	if (!mask) return why ? why : -1000; /* the caller distinguishes these; see vector_windows.v */
+	/* permissionMask is IN/OUT: on the way IN it asks for INIT ACCESS on these channels, and on
+	 * the way OUT it says which were granted. Passing 0 asks for init access on nothing, so the
+	 * bitrate below is never applied — the channel keeps whatever rate the last application left
+	 * on it — and xlCanSetChannelOutput is refused for want of access, which fails every silent
+	 * open. Asking for the channel we are opening is what the XL examples do and what makes the
+	 * two calls after this one mean anything. */
+	permission = mask;
 	st = ct_xl_openport(&port, "blobly_net", mask, &permission, 256, CT_XL_INTERFACE_VERSION,
 	                    CT_XL_BUS_TYPE_CAN);
 	if (st != 0 || port == CT_XL_INVALID_PORTHANDLE) return st ? -(int)st : -1001;
@@ -187,6 +211,11 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 		ct_xl_closeport(port);
 		return -1002; /* cannot promise silence on this DLL */
 	}
+	/* No TX confirmations and no TX requests in the receive queue. The XL driver can deliver an
+	 * event for every frame WE send, and echoes_own_sends() reports false for a vendor backend —
+	 * so anything that arrived here would be filed as traffic the ECU produced. Belt and braces:
+	 * the flags are filtered on read too, because an older DLL may not export this call. */
+	if (ct_xl_setchanmode) ct_xl_setchanmode(port, mask, 0, 0);
 	if (ct_xl_setnotify(port, out_event, 1) != 0) *out_event = NULL;
 	st = ct_xl_activate(port, mask, CT_XL_BUS_TYPE_CAN, CT_XL_ACTIVATE_RESET_CLOCK);
 	if (st != 0) { ct_xl_closeport(port); return -(int)st; }
@@ -197,7 +226,7 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 
 /* 0 ok, negative XL status on failure. */
 static int ct_vector_write(ct_xlport port, uint64_t mask, uint32_t id, uint8_t len,
-                           const uint8_t *data, int ext) {
+                           const uint8_t *data, int ext, int rtr) {
 	ct_xlevent ev;
 	unsigned int count = 1;
 	int i;
@@ -206,7 +235,7 @@ static int ct_vector_write(ct_xlport port, uint64_t mask, uint32_t id, uint8_t l
 	ev.tag = CT_XL_TRANSMIT_MSG;
 	ev.tagData.msg.id = ext ? (id | CT_XL_CAN_EXT_MSG_ID) : id;
 	ev.tagData.msg.dlc = len > 8 ? 8 : len;
-	ev.tagData.msg.flags = 0;
+	ev.tagData.msg.flags = rtr ? CT_XL_CAN_MSG_FLAG_REMOTE_FRAME : 0;
 	for (i = 0; i < 8 && i < len; i++) ev.tagData.msg.data[i] = data[i];
 	st = ct_xl_transmit(port, (ct_xlaccess)mask, &count, &ev);
 	return st == 0 ? 0 : -(int)st;
@@ -217,19 +246,28 @@ static int ct_vector_write(ct_xlport port, uint64_t mask, uint32_t id, uint8_t l
  * frames: an error frame carries no payload and filing one as bus traffic would put a
  * message on the trace that nobody sent. */
 static int ct_vector_read(ct_xlport port, HANDLE ev_handle, uint32_t *id, uint8_t *len,
-                          uint8_t *data, int *ext, int timeout_ms) {
+                          uint8_t *data, int *ext, int *rtr, int timeout_ms) {
 	ct_xlevent ev;
 	unsigned int count;
 	DWORD waited;
 	int i;
 	ct_xlstatus st;
-	DWORD budget = (timeout_ms < 0) ? INFINITE : (DWORD)timeout_ms;
+	/* Against a DEADLINE, not a budget that is spent by the first wake. The notification fires
+	 * for events that are not CAN frames too, and collapsing the remaining time to zero after
+	 * one of those turned `recv(200)` into a busy poll that reported a timeout it had not
+	 * waited for. */
+	ULONGLONG started = GetTickCount64();
+	DWORD budget;
 	for (;;) {
 		count = 1;
 		st = ct_xl_receive(port, &count, &ev);
 		if (st == 0 && count > 0) {
 			if (ev.tag != CT_XL_RECEIVE_MSG) continue;
+			/* An error frame carries no payload, and a TX confirmation is OUR OWN frame coming
+			 * back: filing either as bus traffic puts a message on the trace nobody sent. */
 			if (ev.tagData.msg.flags & CT_XL_CAN_MSG_FLAG_ERROR_FRAME) continue;
+			if (ev.tagData.msg.flags & (CT_XL_CAN_MSG_FLAG_TX_COMPLETED | CT_XL_CAN_MSG_FLAG_TX_REQUEST)) continue;
+			*rtr = (ev.tagData.msg.flags & CT_XL_CAN_MSG_FLAG_REMOTE_FRAME) ? 1 : 0;
 			*ext = (ev.tagData.msg.id & CT_XL_CAN_EXT_MSG_ID) ? 1 : 0;
 			*id  = ev.tagData.msg.id & 0x1FFFFFFF;
 			*len = (uint8_t)(ev.tagData.msg.dlc > 8 ? 8 : ev.tagData.msg.dlc);
@@ -238,9 +276,15 @@ static int ct_vector_read(ct_xlport port, HANDLE ev_handle, uint32_t *id, uint8_
 		}
 		if (st != CT_XL_ERR_QUEUE_IS_EMPTY && st != 0) return -(int)st;
 		if (!ev_handle) return 1; /* no notification handle: report empty rather than spin */
+		if (timeout_ms < 0) {
+			budget = INFINITE;
+		} else {
+			ULONGLONG gone = GetTickCount64() - started;
+			if (gone >= (ULONGLONG)timeout_ms) return 1;
+			budget = (DWORD)((ULONGLONG)timeout_ms - gone);
+		}
 		waited = WaitForSingleObject(ev_handle, budget);
 		if (waited != WAIT_OBJECT_0) return 1; /* timed out */
-		if (budget != INFINITE) budget = 0;    /* drain what woke us, then stop */
 	}
 }
 

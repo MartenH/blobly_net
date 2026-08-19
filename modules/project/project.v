@@ -60,19 +60,19 @@ pub struct GenCfg {
 pub mut:
 	signal    string
 	typ       string = 'const' // const | sine | sawtooth | counter | stepmod
-	value     f64    // const
-	offset    f64    // sine bias
-	amplitude f64    // sine amplitude
-	freq      f64    // sine angular freq (rad/s·t)
-	phase     f64    // sine phase
-	min       f64    // sawtooth
-	max       f64    // sawtooth
-	period    f64    // sawtooth / stepmod period (s)
-	start     f64    // counter start
+	value     f64 // const
+	offset    f64 // sine bias
+	amplitude f64 // sine amplitude
+	freq      f64 // sine angular freq (rad/s·t)
+	phase     f64 // sine phase
+	min       f64 // sawtooth
+	max       f64 // sawtooth
+	period    f64 // sawtooth / stepmod period (s)
+	start     f64 // counter start
 	step      f64 = 1.0 // counter increment
-	modulo    f64    // counter wrap
-	count     f64    // stepmod step count
-	base      f64    // stepmod base
+	modulo    f64 // counter wrap
+	count     f64 // stepmod step count
+	base      f64 // stepmod base
 }
 
 // ResponseCfg configures a request→response rule for a simulated ECU.
@@ -111,10 +111,10 @@ pub mut:
 	malformed []string
 	// u64 for the same reason DidCfg.id is u32: the value must survive parsing intact so the
 	// range check can see it. Narrowed to a CAN id only once it is known to fit.
-	rx      u64 // request id  (tester -> ECU)
-	tx      u64 // response id (ECU -> tester)
-	dids    []DidCfg
-	dtcs    []DtcCfg
+	rx   u64 // request id  (tester -> ECU)
+	tx   u64 // response id (ECU -> tester)
+	dids []DidCfg
+	dtcs []DtcCfg
 	// u32 for the same reason every other id here is wide: 265 narrowed at the cast becomes 9,
 	// and the server then runs a session the project never asked for.
 	session u32 = 1
@@ -170,9 +170,9 @@ pub mut:
 	id_malformed       bool
 	data_id_malformed  bool
 	extended_malformed bool
-	counter string // signal carrying the alive counter ('' = none)
-	crc     string // signal carrying the checksum ('' = none)
-	profile string = 'crc8_j1850' // crc8_j1850 | crc8_autosar | sum8 | xor8
+	counter            string // signal carrying the alive counter ('' = none)
+	crc                string // signal carrying the checksum ('' = none)
+	profile            string = 'crc8_j1850' // crc8_j1850 | crc8_autosar | sum8 | xor8
 	// Mixed into the checksum only; never occupies payload. An OPTION rather than a u32 with
 	// 0 meaning unset: 0 is a valid Data ID. Carrying presence as a separate bool left three
 	// places to remember it and the GUI forgot one, showing an explicit zero id as absent.
@@ -206,7 +206,7 @@ pub mut:
 	signals  []SenderSig
 	bus      string // target bus to transmit on (a channel iface); '' = the sender's own channel
 	trigger  string = 'manual' // manual | key | cyclic
-	cycle_ms int    // cyclic period (ms); only used when trigger == cyclic
+	cycle_ms int // cyclic period (ms); only used when trigger == cyclic
 }
 
 // Channel is one bus the tester attaches to.
@@ -221,9 +221,9 @@ pub struct Channel {
 pub mut:
 	name         string = 'CAN'
 	network      string // v2: optional grouping label (buses of one logical network)
-	adapter      string = 'vcan' // v2: virtual | vcan | socketcan | udp | pcan | kvaser | doip
+	adapter      string = 'vcan'  // v2: virtual | vcan | socketcan | udp | pcan | kvaser | doip
 	address      string = 'vcan0' // v2: adapter-specific (CAN1 / vcan0 / can0 / grp:port / host:port)
-	typ          string = 'can' // yaml `type`/`protocol`: can | canfd | doip
+	typ          string = 'can'   // yaml `type`/`protocol`: can | canfd | doip
 	iface        string = 'vcan0' // derived scheme string (composed from adapter+address)
 	bitrate      int    = 500000
 	fd           bool
@@ -234,16 +234,16 @@ pub mut:
 	listen_only  bool
 	enabled      bool = true
 	databases    []string
-	manifest     string    // telemetry handler manifest (CSV) — resolves handler_id -> FB/handler/core
+	manifest     string // telemetry handler manifest (CSV) — resolves handler_id -> FB/handler/core
 	// Protection to VERIFY on received frames. Independent of `simulation:` on purpose: in a
 	// rest-bus setup the ECU under test is the one node NOT simulated, so its protected messages
 	// can never be described by a simulated node's `protect:` — and it is precisely that ECU's
 	// counter and checksum a bench needs checked.
-	verify       []ProtectCfg
-	simulate     []string  // shorthand: ECU node names to simulate with default behaviour
-	nodes        []NodeCfg // fully-configured simulated ECUs (signals + responses)
-	senders      []Sender  // interactive generators: triggerable custom frames
-	replay       ?Replay
+	verify   []ProtectCfg
+	simulate []string  // shorthand: ECU node names to simulate with default behaviour
+	nodes    []NodeCfg // fully-configured simulated ECUs (signals + responses)
+	senders  []Sender  // interactive generators: triggerable custom frames
+	replay   ?Replay
 	// DoIP (type: doip) — a diagnostics-over-Ethernet endpoint, NOT a CAN bus.
 	// `iface` carries `doip:<host>[:<port>]`; bitrate/timing are meaningless here.
 	// The logical addresses identify the tester (source) and ECU (target) per
@@ -361,7 +361,7 @@ pub fn (ch Channel) all_nodes() []NodeCfg {
 pub struct Project {
 pub mut:
 	name     string = 'untitled'
-	version  int = 1
+	version  int    = 1
 	channels []Channel
 }
 
@@ -373,7 +373,7 @@ pub mut:
 // re-appended it and the headless runner did not, which is why the same project worked
 // interactively and stayed silent under a script.
 pub fn (c Channel) iface_with_bitrate() string {
-	if (c.adapter == 'pcan' || c.adapter == 'kvaser') && c.bitrate > 0 {
+	if (c.adapter == 'pcan' || c.adapter == 'kvaser' || c.adapter == 'vector') && c.bitrate > 0 {
 		return '${c.iface}@${c.bitrate}'
 	}
 	return c.iface
@@ -637,16 +637,16 @@ fn parse_protect_list(ps yaml.Any) []ProtectCfg {
 			}
 		}
 		out << ProtectCfg{
-			message:      p.value('message').default_to('').string()
-			id:           mid
+			message:            p.value('message').default_to('').string()
+			id:                 mid
 			extended:           mext
 			extended_malformed: extbad
-			id_malformed: mbad
-			counter: p.value('counter').default_to('').string()
-			crc:     p.value('crc').default_to('').string()
-			profile:           p.value('profile').default_to('crc8_j1850').string()
-			data_id:           id
-			data_id_malformed: idbad
+			id_malformed:       mbad
+			counter:            p.value('counter').default_to('').string()
+			crc:                p.value('crc').default_to('').string()
+			profile:            p.value('profile').default_to('crc8_j1850').string()
+			data_id:            id
+			data_id_malformed:  idbad
 		}
 	}
 	return out
@@ -694,10 +694,10 @@ fn parse_node(n yaml.Any) NodeCfg {
 			idfields['tx'] = v.str()
 		}
 		mut ucfg := UdsCfg{
-			rx:      parse_id_wide(u.value('rx').str())
-			tx:      parse_id_wide(u.value('tx').str())
+			rx:        parse_id_wide(u.value('rx').str())
+			tx:        parse_id_wide(u.value('tx').str())
 			malformed: bad_ids(idfields)
-			session: clamp_i64_u32(u.value('session').default_to(i64(1)).i64())
+			session:   clamp_i64_u32(u.value('session').default_to(i64(1)).i64())
 		}
 		if ds := u.value_opt('dids') {
 			for d in ds.array() {
@@ -915,8 +915,11 @@ fn clamp_u32(v u64) u32 {
 // parse_id_wide SKIPS anything else, so "0x7G1" quietly became 0x71 — a valid, unintended id.
 pub fn hex_id_is_clean(s string) bool {
 	t := s.trim_space().trim('"')
-	body := if t.starts_with('0x') || t.starts_with('0X') { t[2..] } else { return t.u64() > 0
-			|| t.trim_space() == '0' }
+	body := if t.starts_with('0x') || t.starts_with('0X') {
+		t[2..]
+	} else {
+		return t.u64() > 0 || t.trim_space() == '0'
+	}
 	if body.len == 0 {
 		return false
 	}
@@ -994,13 +997,37 @@ pub const adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'pcan', 'kvaser', '
 pub fn compose_iface(adapter string, address string) string {
 	a := address.trim_space()
 	return match adapter {
-		'virtual' { if a == '' { 'inproc' } else { 'inproc:${a}' } }
-		'udp' { if a == '' { 'udp' } else { 'udp:${a}' } }
-		'pcan' { 'pcan:${a}' }
-		'kvaser' { 'kvaser:${a}' }
-		'doip' { if a == '' { 'doip' } else { 'doip:${a}' } }
+		'virtual' {
+			if a == '' {
+				'inproc'
+			} else {
+				'inproc:${a}'
+			}
+		}
+		'udp' {
+			if a == '' {
+				'udp'
+			} else {
+				'udp:${a}'
+			}
+		}
+		'pcan' {
+			'pcan:${a}'
+		}
+		'kvaser' {
+			'kvaser:${a}'
+		}
+		'doip' {
+			if a == '' {
+				'doip'
+			} else {
+				'doip:${a}'
+			}
+		}
 		// vcan / socketcan / unknown: the address IS the raw interface name.
-		else { a }
+		else {
+			a
+		}
 	}
 }
 
@@ -1029,6 +1056,14 @@ pub fn decompose_iface(iface string) (string, string) {
 	}
 	if s.starts_with('kvaser:') {
 		return 'kvaser', s['kvaser:'.len..].all_before('@')
+	}
+	if s.starts_with('vector:') {
+		// The mode suffix (`,silent`) rides along with the address rather than the bitrate, so
+		// it is kept here: it is part of how the channel is opened, and dropping it would turn
+		// a listen-only bench into one that acknowledges the next time the project is saved.
+		body := s['vector:'.len..]
+		mode := if body.contains(',') { ',' + body.all_after_last(',') } else { '' }
+		return 'vector', body.all_before('@').all_before_last(',') + mode
 	}
 	if s == 'doip' {
 		return 'doip', ''

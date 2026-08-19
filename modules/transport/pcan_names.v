@@ -11,7 +11,9 @@ fn pcan_handle(s string) !u16 {
 	t := s.trim_space()
 	low := t.to_lower()
 	if low.starts_with('0x') {
-		return u16(t.all_after('0x').parse_uint(16, 16) or { return error('bad PCAN handle "${t}"') })
+		return u16(t.all_after('0x').parse_uint(16, 16) or {
+			return error('bad PCAN handle "${t}"')
+		})
 	}
 	mut n := -1
 	if low.starts_with('pcan_usbbus') {

@@ -31,8 +31,8 @@ module transport
 
 fn C.ct_vector_load() int
 fn C.ct_vector_open(u32, u32, int, &int, &u64, &voidptr) int
-fn C.ct_vector_write(int, u64, u32, u8, &u8, int) int
-fn C.ct_vector_read(int, voidptr, &u32, &u8, &u8, &int, int) int
+fn C.ct_vector_write(int, u64, u32, u8, &u8, int, int) int
+fn C.ct_vector_read(int, voidptr, &u32, &u8, &u8, &int, &int, int) int
 fn C.ct_vector_close(int, u64)
 fn C.ct_vector_present(u32) int
 fn C.ct_vector_diag() int
@@ -90,9 +90,6 @@ fn parse_vector_spec(spec string) !VectorSpec {
 // open_windows.v.
 pub fn open_vector(spec string) !&VectorBus {
 	s := parse_vector_spec(spec)!
-	if C.ct_vector_load() != 0 {
-		return error('vxlapi64.dll not found — install the Vector Driver Setup')
-	}
 	mut port := 0
 	mut mask := u64(0)
 	mut notify := unsafe { nil }
@@ -102,7 +99,20 @@ pub fn open_vector(spec string) !&VectorBus {
 	// dialog, so the conversion belongs here rather than in their head.
 	rc := C.ct_vector_open(u32(s.channel - 1), u32(s.bitrate), sil, &port, &mask, &notify)
 	if rc == -1000 {
-		return error('Vector application channel ${s.channel} has no hardware assigned — open Vector Hardware Configuration, find the application "blobly_net" (registered just now) and assign a VN channel to it')
+		return error('Vector application channel ${s.channel} has no hardware assigned — open Vector Hardware Manager, find the application "blobly_net" (registered just now) and assign a VN channel to it')
+	}
+	// TOLD APART. These reach the operator as the same "it did not open" and send them to
+	// completely different places: a missing library is a download, an unassigned channel is a
+	// dialog, and a driver that will not open is usually something else holding the hardware.
+	if rc == -1 {
+		// SEPARATE from the hardware drivers, which is the whole content of this message: a
+		// bench can have the VN device healthy, its kernel driver loaded and Vector Hardware
+		// Manager installed, and still not have this DLL anywhere on the machine. Observed
+		// exactly that way on the first bench this backend met.
+		return error('vxlapi64.dll not found — install the Vector XL Driver Library, which is a SEPARATE download from the hardware drivers (the device and Vector Hardware Manager can be installed without it)')
+	}
+	if rc == -2 {
+		return error('vxlapi64.dll is missing functions this backend needs — update the Vector XL Driver Library')
 	}
 	if rc == -1002 {
 		return error('this vxlapi build cannot set silent mode, and ,silent was asked for — refusing to go on the bus able to acknowledge')
@@ -136,7 +146,11 @@ pub fn (mut b VectorBus) send(f CanFrame) ! {
 		n = 8
 	}
 	ext := if f.extended { 1 } else { 0 }
-	st := C.ct_vector_write(b.port, b.mask, f.id, u8(n), f.data.data, ext)
+	// RTR is carried, not dropped. A remote request with the bit lost goes out as an ordinary
+	// zero-length data frame and is reported as success — a different message than the caller
+	// asked for, on the wire, with nothing to say so.
+	rtr := if f.rtr { 1 } else { 0 }
+	st := C.ct_vector_write(b.port, b.mask, f.id, u8(n), f.data.data, ext, rtr)
 	if st != 0 {
 		msg := unsafe { cstring_to_vstring(C.ct_vector_err(-st)) }
 		extra := if msg == '' { '' } else { ' (${msg})' }
@@ -148,8 +162,9 @@ pub fn (mut b VectorBus) recv(timeout_ms int) !CanFrame {
 	mut id := u32(0)
 	mut ln := u8(0)
 	mut ext := 0
+	mut rtr := 0
 	mut data := [8]u8{}
-	r := C.ct_vector_read(b.port, b.notify, &id, &ln, &data[0], &ext, timeout_ms)
+	r := C.ct_vector_read(b.port, b.notify, &id, &ln, &data[0], &ext, &rtr, timeout_ms)
 	if r == 1 {
 		return error('timeout')
 	}
@@ -165,6 +180,7 @@ pub fn (mut b VectorBus) recv(timeout_ms int) !CanFrame {
 	return CanFrame{
 		id:       id & 0x1FFF_FFFF
 		extended: ext != 0
+		rtr:      rtr != 0
 		data:     out
 	}
 }

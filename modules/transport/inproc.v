@@ -81,10 +81,14 @@ pub fn (mut b InprocBus) send(frame CanFrame) ! {
 	// Padded like every other backend: an in-process bus that carried a 9-byte FD payload
 	// verbatim would make a headless test pass where hardware pads to 12, which is the one
 	// thing the default transport must never do.
-	f := if frame.fd { CanFrame{
-		...frame
-		data: fd_pad(frame.data)
-	} } else { frame }
+	f := if frame.fd {
+		CanFrame{
+			...frame
+			data: fd_pad(frame.data)
+		}
+	} else {
+		frame
+	}
 	mut targets := []&InprocBus{}
 	rlock inproc_reg {
 		if hub := inproc_reg.hubs[b.name] {

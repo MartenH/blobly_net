@@ -76,10 +76,13 @@ vector:1               # Vector APPLICATION channel, as numbered in Vector Hardw
 vector:1@250000        # …at 250 kbit/s
 vector:1@500000,silent # …listen-only: the transceiver never acknowledges
 kvaser:virtual0        # Kvaser SOFTWARE virtual channel (no hardware needed)
-vector:CANcaseXL:0     # Vector app/channel
-vector:virtual         # Vector virtual CAN bus
-slcan:COM5@500000      # USB-serial slcan adapter on a COM port
+slcan:COM5@500000      # USB-serial slcan adapter on a COM port  (not implemented)
 ```
+
+The two `vector:` spellings this file used to show — `vector:CANcaseXL:0` and
+`vector:virtual` — were sketches from before the backend existed, and the shipped parser
+rejects both. A Vector channel is addressed by its application channel number; there is no
+Vector software-virtual bus here (use `inproc:` for driver-free work).
 
 The existing `Channel` config already carries everything a backend needs:
 `bitrate`, `fd`, `data_bitrate`, `sample_point`, `timing{brp,tseg1,tseg2,sjw}`,

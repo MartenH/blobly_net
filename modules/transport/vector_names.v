@@ -52,8 +52,13 @@ fn vector_app_channel(s string) !int {
 // address the same wire through different spellings must collide, or the conflict check waves
 // them through and two recordings reach one bus.
 fn vector_key(s string) string {
-	if n := vector_app_channel(s) {
+	// The MODE is not part of the address. destination_key strips it for free when a bitrate is
+	// present (it reduces everything after `@` to a number), and not at all when one is absent —
+	// so `vector:1` and `vector:1,silent` keyed differently and the check that stops two owners
+	// reaching one bus waved them through. Stripped here, where both paths pass.
+	body := if s.contains(',') { s.all_before_last(',') } else { s }
+	if n := vector_app_channel(body) {
 		return n.str()
 	}
-	return s.trim_space().to_lower() // unresolvable: identical bad strings still collide
+	return body.trim_space().to_lower() // unresolvable: identical bad strings still collide
 }

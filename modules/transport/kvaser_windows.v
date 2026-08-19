@@ -105,14 +105,14 @@ pub fn (mut b KvaserBus) close() {
 fn kvaser_bitrate_code(bitrate int) !int {
 	return match bitrate {
 		1000000 { -1 } // canBITRATE_1M
-		500000 { -2 }  // canBITRATE_500K
-		250000 { -3 }  // canBITRATE_250K
-		125000 { -4 }  // canBITRATE_125K
-		100000 { -5 }  // canBITRATE_100K
-		62500 { -6 }   // canBITRATE_62K
-		50000 { -7 }   // canBITRATE_50K
-		83000 { -8 }   // canBITRATE_83K
-		10000 { -9 }   // canBITRATE_10K
+		500000 { -2 } // canBITRATE_500K
+		250000 { -3 } // canBITRATE_250K
+		125000 { -4 } // canBITRATE_125K
+		100000 { -5 } // canBITRATE_100K
+		62500 { -6 } // canBITRATE_62K
+		50000 { -7 } // canBITRATE_50K
+		83000 { -8 } // canBITRATE_83K
+		10000 { -9 } // canBITRATE_10K
 		else { error('unsupported Kvaser bitrate ${bitrate} (use 10k/50k/62k/83k/100k/125k/250k/500k/1M)') }
 	}
 }

@@ -14,17 +14,17 @@ pub mut:
 	// payload bytes and cannot be sent by a classic-only backend. `brs` is Bit Rate Switch —
 	// the data phase runs at the faster rate. Both are properties of the FRAME, not the bus:
 	// an FD-capable bus carries classic frames too, and a receiver distinguishes them.
-	fd       bool
-	brs      bool
+	fd  bool
+	brs bool
 	// ESI — the transmitting node was error-passive when it sent this. A received STATUS, not a
 	// choice the sender makes, which is why it is deliberately absent from the echo identity in
 	// `wiretap` and from the trace's group key: a message whose transmitter goes error-passive
 	// mid-run would otherwise split into two rows, or stop matching its own echo, on a bit that
 	// says nothing about which message it is.
-	esi      bool
+	esi bool
 	// 0..8 payload bytes for a classic frame; 0..64 for an FD one, and only the lengths a DLC
 	// can encode (0..8, 12, 16, 20, 24, 32, 48, 64) — anything else is padded on the way out.
-	data     []u8
+	data []u8
 }
 
 // fd_lengths are the only payload sizes a CAN-FD DLC can express. A frame of 9 bytes does not

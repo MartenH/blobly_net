@@ -34,7 +34,7 @@ fn pcan_list() []Iface {
 	mut out := []Iface{}
 	for n in 1 .. 9 {
 		cond := C.ct_pcan_condition(u16(0x50 + n)) // PCAN_USBBUS1 = 0x51
-		if cond > 0 {                              // 0x01 available | 0x04 occupied
+		if cond > 0 { // 0x01 available | 0x04 occupied
 			out << Iface{
 				name:    'PCAN_USBBUS${n}'
 				iface:   'pcan:PCAN_USBBUS${n}'
