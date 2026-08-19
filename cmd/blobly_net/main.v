@@ -713,6 +713,14 @@ fn (mut app App) start() {
 		if !c.enabled || c.bitrate <= 0 {
 			continue
 		}
+		// ONLY WHERE THE RATE IS OURS TO SET. An inproc: or udp: bus has no bitrate and opens
+		// unchanged, and SocketCAN's is configured with `ip link` rather than by us — so the
+		// number on those rows is metadata the backend never reads. Refusing to start over a
+		// disagreement about it blocked perfectly good simulation projects, where several
+		// logical channels sharing one software bus is the ordinary arrangement.
+		if c.adapter !in ['pcan', 'kvaser', 'vector'] {
+			continue
+		}
 		k := transport.destination_key(c.iface)
 		if prev := rate_of[k] {
 			if prev != c.bitrate {

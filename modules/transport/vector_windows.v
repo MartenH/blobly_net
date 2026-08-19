@@ -117,7 +117,7 @@ pub fn open_vector(spec string) !&VectorBus {
 		return error('Vector channel ${s.channel} is already open at a different bitrate by this project — one wire cannot run at two rates')
 	}
 	if rc == -1002 {
-		return error('this vxlapi build cannot set silent mode, and ,silent was asked for — refusing to go on the bus able to acknowledge')
+		return error('this vxlapi build has no xlCanSetChannelOutput, so the transceiver mode can be neither set nor read — refusing rather than guessing whether this channel would acknowledge. Update the Vector XL Driver Library.')
 	}
 	if rc != 0 {
 		msg := unsafe { cstring_to_vstring(C.ct_vector_err(-rc)) }

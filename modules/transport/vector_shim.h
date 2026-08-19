@@ -443,7 +443,12 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 			 * frames the transceiver never emitted, which is the quietest way for a bench to
 			 * lie. Setting the mode is not optional in either direction. */
 			if (st != 0) { ct_xl_closeport(port); ct_vec_leave(); return -(int)st; }
-		} else if (silent) {
+		} else {
+			/* EITHER MODE, not just silence. Without this call we cannot set the output mode at
+			 * all, so we cannot promise silence AND cannot undo it: a channel left silent by an
+			 * earlier run would be recorded here as normal, and send() would report traffic the
+			 * transceiver never emitted. Not knowing which mode the hardware is in is a reason
+			 * to refuse in both directions. */
 			ct_xl_closeport(port); ct_vec_leave(); return -1002;
 		}
 		if (ct_vec_cfg_note(mask, bitrate, silent, port) != 0) {
