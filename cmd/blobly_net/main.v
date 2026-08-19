@@ -1713,42 +1713,21 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	seq, rec_id, epoch := t.app.note_emit(t.iface, t.chan_name, t.origin, wire)
 	// `wire`, not `frame`: on a backend that would carry the extra bytes (inproc, udp) sending
 	// the original makes the echo disagree with the record in the other direction.
-	t.inner.send(wire) or {
-		// BACK-PRESSURE IS RETRIED HERE, beneath the record. A vendor transmit queue fills as a
-		// matter of course on a busy replay, and retrying in the CALLER meant re-entering this
-		// function: each attempt noted an emission and retracted it, painting the trace with
-		// failed transmissions for frames that went out perfectly well a millisecond later. The
-		// record is made once; the waiting happens under it.
-		//
-		// Under tx_mu, which we still hold, so the order frames were recorded in is the order
-		// they reach the wire — the property this lock exists for.
-		mut placed := false
-		mut last_err := err
-		if err.msg().starts_with(transport.vector_busy_msg) {
-			for _ in 0 .. 200 {
-				time.sleep(time.millisecond)
-				t.inner.send(wire) or {
-					// STILL BUSY is worth another try; anything else is a new fault and must be
-					// reported as itself. Retrying through it for 200 ms and then returning the
-					// ORIGINAL queue-full error described an adapter that had disconnected as
-					// ordinary back-pressure.
-					last_err = err
-					if err.msg().starts_with(transport.vector_busy_msg) {
-						continue
-					}
-					break
-				}
-				placed = true
-				break
-			}
-		}
-		if !placed {
-			t.app.retract_emit(seq, t.origin, epoch)
-			// exactly the entry this send wrote, if it wrote one — not a search, and not a guess
-			// from the backend
-			t.app.unrecord(rec_id)
-			return last_err
-		}
+	// BENEATH THE RECORD, and through the shared helper cmd/restbus also uses.
+	//
+	// A vendor transmit queue fills as a matter of course on a busy replay. Retrying in the
+	// CALLER meant re-entering this function, and each attempt noted an emission and retracted
+	// it — painting the trace with failed transmissions for frames that went out perfectly well
+	// a millisecond later. The record is made once and the waiting happens under it.
+	//
+	// Still under tx_mu, so the order frames were recorded in is the order they reach the wire,
+	// which is the property this lock exists for.
+	transport.send_waiting_for_room(mut t.inner, wire, 200) or {
+		t.app.retract_emit(seq, t.origin, epoch)
+		// exactly the entry this send wrote, if it wrote one — not a search, and not a guess
+		// from the backend
+		t.app.unrecord(rec_id)
+		return err
 	}
 }
 

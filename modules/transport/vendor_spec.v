@@ -7,6 +7,8 @@
 // rule kept living next to a single caller. It lives here now and all three call it.
 module transport
 
+import time
+
 // vendor_bitrate parses the `@<rate>` a vendor interface carries, refusing a token that is only
 // PARTLY a number.
 //
@@ -47,4 +49,36 @@ pub fn vendor_split_rate(spec string, default_rate int) !(string, int) {
 		return parts[0], vendor_bitrate(parts[1], default_rate)!
 	}
 	return parts[0], default_rate
+}
+
+// send_waiting_for_room offers a frame, waiting out a full vendor transmit queue.
+//
+// A saturated bus is the slowest thing in the system and says so by refusing; a replay of a busy
+// capture reaches that constantly, and treating it as a failure puts holes in the replay exactly
+// where the recording was densest. Waiting is the whole answer.
+//
+// ONLY "still busy" earns another attempt. A retry that fails for a NEW reason — the adapter
+// unplugged, the port broken — is returned as itself: catching every error and going round
+// again reported a disconnected adapter as ordinary back-pressure, after several hundred
+// milliseconds of talking to nothing. That mistake was made independently in both callers,
+// which is why the loop lives here now instead of in each of them.
+pub fn send_waiting_for_room(mut b Bus, f CanFrame, attempts int) ! {
+	b.send(f) or {
+		if !err.msg().starts_with(vector_busy_msg) {
+			return err
+		}
+		mut last := err
+		for _ in 0 .. attempts {
+			time.sleep(time.millisecond)
+			b.send(f) or {
+				last = err
+				if err.msg().starts_with(vector_busy_msg) {
+					continue
+				}
+				return err
+			}
+			return
+		}
+		return last
+	}
 }
