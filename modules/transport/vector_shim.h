@@ -615,8 +615,12 @@ static int ct_vector_chipstate(ct_xlport port, uint64_t mask, int *bus_status, i
 	return -1;
 }
 
-static void ct_vector_close(ct_xlport port, uint64_t mask, uint64_t gen) {
+static void ct_vector_close(ct_xlport port, uint64_t mask, uint64_t gen, HANDLE notify) {
 	if (port == CT_XL_INVALID_PORTHANDLE) return;
+	/* The NOTIFICATION HANDLE is a kernel object this process owns from xlSetNotification, and
+	 * nothing was returning it: every Start/Stop cycle leaked one per monitor and per transmit
+	 * tap, on a GUI people leave running all day. Closed here, where its port dies. */
+	if (notify) CloseHandle(notify);
 	/* UNDER THE LOCK, AND BEFORE xlClosePort. A port handle is a small reusable number: closing
 	 * first releases it, an open racing this call can be handed the same value and become the
 	 * recorded owner, and the cleanup that followed would then delete the NEW channel's record
@@ -730,6 +734,18 @@ static int ct_vector_channel_info(int idx, char *name, int name_len, char *trans
 		*on_bus = c->isOnBus ? 1 : 0;
 		*trx_state = (int)c->transceiverState;
 	}
+	return 0;
+}
+
+/* What an application channel is currently pointed at, WITHOUT registering anything.
+ * 0 = assigned (outputs filled), -1 = not assigned or unavailable. Needed so a test that has to
+ * borrow a channel can put it back exactly as it found it. */
+static int ct_vector_appl_get(unsigned int app_channel, int *hw_type, int *hw_index, int *hw_channel) {
+	unsigned int t = 0, i = 0, c = 0;
+	if (ct_vector_load() != 0 || ct_xl_opendrv() != 0) return -1;
+	if (ct_xl_getappl("blobly_net", app_channel, &t, &i, &c, CT_XL_BUS_TYPE_CAN) != 0) return -1;
+	if (t == 0) return -1;
+	*hw_type = (int)t; *hw_index = (int)i; *hw_channel = (int)c;
 	return 0;
 }
 

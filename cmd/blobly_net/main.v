@@ -655,10 +655,15 @@ fn (app &App) bitrate_iface(iface string) string {
 	// one listen-only entry and one ordinary entry opened according to list order, and a bench
 	// that had asked to stay quiet could acknowledge because a sibling row did not. The
 	// transceiver has one mode; of the two answers only one is safe on a live bus.
+	// BY DESTINATION, not by spelling. `vector:1` and `vector:ch1` are one wire and one
+	// transceiver; comparing the strings let a listen-only row and an ordinary row spelled
+	// differently miss each other entirely, which is the same substitution of a lookup for an
+	// identity this file has made before.
+	want := transport.destination_key(iface)
 	mut found := false
 	mut chosen := Chan{}
 	for c in app.chans {
-		if c.iface != iface {
+		if transport.destination_key(c.iface) != want {
 			continue
 		}
 		if !found {
@@ -683,6 +688,28 @@ fn (mut app App) start() {
 	// attaches to exactly what the Configuration editor shows (not stale buffered values).
 	if app.dirty {
 		app.apply_edits()
+	}
+	// ONE WIRE, ONE RATE. Two enabled rows on the same destination that disagree about the
+	// bitrate are a contradiction the backend cannot see: bitrate_iface picks one of them and
+	// hands every monitor and transmit open the same string, so the Vector layer's own
+	// "already open at a different bitrate" refusal never fires and the bus quietly runs at
+	// whichever row was listed first. Caught here, before anything is opened.
+	mut rate_of := map[string]int{}
+	mut rate_row := map[string]string{}
+	for c in app.chans {
+		if !c.enabled || c.bitrate <= 0 {
+			continue
+		}
+		k := transport.destination_key(c.iface)
+		if prev := rate_of[k] {
+			if prev != c.bitrate {
+				app.notify('${c.name} and ${rate_row[k]} share ${c.iface} but ask for ${c.bitrate} and ${prev} bit/s — not starting')
+				return
+			}
+		} else {
+			rate_of[k] = c.bitrate
+			rate_row[k] = c.name
+		}
 	}
 	if app.cfg_text_dirty {
 		// Text edits are NOT folded in automatically: the file is the authority for everything

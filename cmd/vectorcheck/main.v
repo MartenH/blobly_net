@@ -39,6 +39,64 @@ fn nonempty(s string) ?string {
 	return if s == '' { none } else { s }
 }
 
+// whole_int refuses a token that is only PARTLY a number. V's `.int()` takes a numeric prefix
+// and maps anything else to zero, so `--assign 1x` silently selected row 1 and `--assign oops`
+// selected row 0 — and --assign permanently rewrites an application-channel assignment.
+// is_test_frame recognises a frame this tool sent: the marker bytes, and an id that agrees with
+// the sequence number in the payload. Shared by the main loop and the final drain, because a
+// drain that accepts anything eight bytes long will happily pass the test on other people's
+// traffic.
+// borrow_channels takes the application channels a test needs, remembering what they pointed at
+// so they can be handed back.
+//
+// The 1..64 range is entirely the operator's — picking high numbers made a collision less likely,
+// not impossible, and "less likely" is not a property to rely on when the cost is permanently
+// rewriting somebody's bench configuration. Anything found in use is restored on the way out.
+struct Borrowed {
+	app  int
+	prev ?transport.VectorChannel
+}
+
+fn borrow(app int, hw transport.VectorChannel) !Borrowed {
+	prev := transport.vector_assignment(app)
+	transport.vector_assign(app, hw)!
+	return Borrowed{
+		app:  app
+		prev: prev
+	}
+}
+
+fn give_back(bs []Borrowed) {
+	for b in bs {
+		if p := b.prev {
+			transport.vector_assign(b.app, p) or {
+				eprintln('note: could not restore Vector application channel ${b.app}: ${err}')
+			}
+		}
+	}
+}
+
+fn is_test_frame(f transport.CanFrame) bool {
+	if f.data.len != 8 || f.data[4] != 0xA5 || f.data[7] != 0x3C {
+		return false
+	}
+	seq := (u32(f.data[0]) << 24) | (u32(f.data[1]) << 16) | (u32(f.data[2]) << 8) | u32(f.data[3])
+	return f.id == 0x100 + (seq % 8)
+}
+
+fn whole_int(tok string, what string) !int {
+	t := tok.trim_space()
+	if t == '' {
+		return error('${what} needs a number')
+	}
+	for i, c in t {
+		if !c.is_digit() && !(i == 0 && c == `-`) {
+			return error('${what}: "${t}" is not a number')
+		}
+	}
+	return t.int()
+}
+
 fn usage() {
 	eprintln('usage: vectorcheck --list')
 	eprintln('       vectorcheck --channel <n> [--bitrate <bps>] [--seconds <n>] [--transmit]')
@@ -87,7 +145,9 @@ fn parse(args []string) !Opts {
 				i++
 				o = Opts{
 					...o
-					assign: args[i] or { return error('--assign needs a --probe row index') }.int()
+					assign: whole_int(args[i] or {
+						return error('--assign needs a --probe row index')
+					}, '--assign')!
 				}
 			}
 			'--selftest' {
@@ -106,21 +166,24 @@ fn parse(args []string) !Opts {
 				i++
 				o = Opts{
 					...o
-					channel: args[i] or { return error('--channel needs a value') }.int()
+					channel: whole_int(args[i] or { return error('--channel needs a value') },
+						'--channel')!
 				}
 			}
 			'--bitrate' {
 				i++
 				o = Opts{
 					...o
-					bitrate: args[i] or { return error('--bitrate needs a value') }.int()
+					bitrate: whole_int(args[i] or { return error('--bitrate needs a value') },
+						'--bitrate')!
 				}
 			}
 			'--seconds' {
 				i++
 				o = Opts{
 					...o
-					seconds: args[i] or { return error('--seconds needs a value') }.int()
+					seconds: whole_int(args[i] or { return error('--seconds needs a value') },
+						'--seconds')!
 				}
 			}
 			else {
@@ -276,16 +339,30 @@ fn main() {
 	defer { bus.close() }
 
 	if o.transmit {
+		// FAILS THE COMMAND. Printing and carrying on meant unrelated traffic could make the
+		// run exit successfully while the transmit the flag asked for never happened — a
+		// usable-looking setup report for a channel that cannot send.
 		bus.send(transport.CanFrame{ id: 0x7FF, data: [u8(0xDE), 0xAD] }) or {
 			eprintln('vectorcheck: transmit failed: ${err}')
+			exit(1)
 		}
 	}
+
 	println('listening ${o.seconds}s…')
 	deadline := time.now().add(o.seconds * time.second)
 	mut seen := 0
 	mut ids := map[u32]int{}
 	for time.now() < deadline {
-		f := bus.recv(200) or { continue }
+		// A TIMEOUT IS NOT A FAULT, but everything else is. Treating every error as an empty
+		// poll meant an adapter unplugged mid-run was diagnosed as an idle bus or a wrong
+		// bitrate — and if any frame had arrived first, the command exited successfully.
+		f := bus.recv(200) or {
+			if err.msg().contains('timeout') {
+				continue
+			}
+			eprintln('vectorcheck: receive failed after ${seen} frames: ${err}')
+			exit(1)
+		}
 		seen++
 		ids[f.id]++
 		if seen <= 10 {
@@ -324,8 +401,12 @@ fn selftest() ! {
 	// The last two application channels, so an operator's own channel 1 and 2 assignments are
 	// left alone by a self-test they may run on a configured bench.
 	a_ch, b_ch := 63, 64
-	transport.vector_assign(a_ch, virt[0])!
-	transport.vector_assign(b_ch, virt[1])!
+	mut borrowed := []Borrowed{}
+	defer {
+		give_back(borrowed)
+	}
+	borrowed << borrow(a_ch, virt[0])!
+	borrowed << borrow(b_ch, virt[1])!
 	println('assigned app channel ${a_ch} -> virtual ${virt[0].hw_channel}, ${b_ch} -> virtual ${virt[1].hw_channel}')
 
 	mut tx := transport.open('vector:${a_ch}@500000')!
@@ -368,7 +449,8 @@ fn pair_test(o Opts) ! {
 	if parts.len != 2 {
 		return error('--pair takes two --probe rows, e.g. --pair 0,2')
 	}
-	a_row, b_row := parts[0].trim_space().int(), parts[1].trim_space().int()
+	a_row := whole_int(parts[0], '--pair')!
+	b_row := whole_int(parts[1], '--pair')!
 	chans := transport.vector_channels()
 	// BOTH ENDS of the range. Checking only the upper one let `--pair -1,0` index backwards and
 	// take the process down, which is a poor answer to a typo.
@@ -381,8 +463,12 @@ fn pair_test(o Opts) ! {
 	// The application channels used are high ones, so an operator's own 1 and 2 assignments
 	// survive a test they may run on a configured bench.
 	a_app, b_app := 61, 62
-	transport.vector_assign(a_app, chans[a_row])!
-	transport.vector_assign(b_app, chans[b_row])!
+	mut borrowed := []Borrowed{}
+	defer {
+		give_back(borrowed)
+	}
+	borrowed << borrow(a_app, chans[a_row])!
+	borrowed << borrow(b_app, chans[b_row])!
 	println('TX  app ${a_app} -> ${chans[a_row].name}  (${chans[a_row].transceiver})')
 	println('RX  app ${b_app} -> ${chans[b_row].name}  (${chans[b_row].transceiver})')
 	println('bitrate ${o.bitrate}, both ends able to acknowledge — transmitting for ${o.seconds}s')
@@ -424,20 +510,11 @@ fn pair_test(o Opts) ! {
 		}
 		for {
 			got := rx.recv(0) or { break }
-			if got.data.len != 8 {
+			if !is_test_frame(got) {
 				n_bad++
 				continue
 			}
-			got_seq := (u32(got.data[0]) << 24) | (u32(got.data[1]) << 16) | (u32(got.data[2]) << 8) | u32(got.data[3])
-			if got.data[4] != 0xA5 || got.data[7] != 0x3C {
-				n_bad++
-				continue
-			}
-			if got.id != 0x100 + (got_seq % 8) {
-				n_bad++
-				continue
-			}
-			last_seq = got_seq
+			last_seq = (u32(got.data[0]) << 24) | (u32(got.data[1]) << 16) | (u32(got.data[2]) << 8) | u32(got.data[3])
 			n_recv++
 		}
 	}
@@ -447,11 +524,15 @@ fn pair_test(o Opts) ! {
 	mut quiet := time.new_stopwatch()
 	for quiet.elapsed().milliseconds() < 400 {
 		got := rx.recv(5) or { continue }
-		if got.data.len == 8 {
-			n_recv++
-			last_seq = (u32(got.data[0]) << 24) | (u32(got.data[1]) << 16) | (u32(got.data[2]) << 8) | u32(got.data[3])
-			quiet = time.new_stopwatch()
+		// THE SAME CHECK the main loop applies. Counting any eight-byte frame let unrelated
+		// traffic on a live bus finish the test for us — PAIR TEST PASSED on somebody else's
+		// frames, which is the one result this tool must never print.
+		if !is_test_frame(got) {
+			continue
 		}
+		n_recv++
+		last_seq = (u32(got.data[0]) << 24) | (u32(got.data[1]) << 16) | (u32(got.data[2]) << 8) | u32(got.data[3])
+		quiet = time.new_stopwatch()
 	}
 	println('')
 	rate := if o.seconds > 0 { n_sent / o.seconds } else { 0 }

@@ -47,8 +47,9 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
 - 🧭 **SOME/IP-SD** (service discovery) + the SOME/IP **sim service** — explicitly deferred in
   [`docs/ethernet_architecture.md`](docs/ethernet_architecture.md).
 - 🧭 **DoIP per-connection handler state** — deferred pending the threading change.
-- 🧭 **Vector (XL family) CAN backend** — the notable gap in vendor coverage; PCAN and Kvaser
-  are done, and `transport` is designed for drop-in backends, so it is a shim + bitrate map.
+- 🧭 **Vector CAN-FD** — the classic-CAN backend is done and hardware-verified (below); FD needs
+  the V4 interface, `xlCanFdSetConfiguration` and a different event structure. An FD frame is
+  refused rather than truncated until then, as on PCAN and Kvaser.
 - 🧭 **DoIP discovery — actually discover.** `discover()` sends a **unicast** vehicle
   identification request to a host you already name, reads one reply and returns. It
   confirms an identity; it cannot find an ECU nobody told it about. That is backwards for a
@@ -165,6 +166,16 @@ a wire-visible feature, the matching host support usually lands here in the same
 ---
 
 ## Already shipped
+
+- ✅ **Vector (XL family) CAN backend** — `vector:<channel>[@<bitrate>][,silent]` on Windows,
+  addressed by APPLICATION channel as Vector Hardware Manager numbers them. `vxlapi64.dll` is
+  loaded at runtime and found in the XL Driver Library's own install directory, because it does
+  not install onto the search path and we may not redistribute it. Reads the driver's hardware
+  configuration (device names, transceivers, serial numbers, configured rates), and `,silent`
+  puts the transceiver in ACK-free mode BEFORE the channel goes on the bus — the only ordering
+  that is safe against a running vehicle. Hardware-verified on a VN1630A: Channel 1 to Channel 3
+  over real transceivers at bus saturation, 43,773 frames sent and received with none malformed.
+  Classic CAN only; see Planned for FD. `cmd/vectorcheck` brings a channel up and proves it.
 
 Kept last: this is where the roadmap ends, not where it starts.
 

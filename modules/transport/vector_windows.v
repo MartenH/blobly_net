@@ -45,11 +45,12 @@ fn C.ct_vector_load() int
 fn C.ct_vector_open(u32, u32, int, &int, &u64, &voidptr, &u64) int
 fn C.ct_vector_write(int, u64, u32, u8, &u8, int, int) int
 fn C.ct_vector_read(int, voidptr, &u32, &u8, &u8, &int, &int, int) int
-fn C.ct_vector_close(int, u64, u64)
+fn C.ct_vector_close(int, u64, u64, voidptr)
 fn C.ct_vector_present(u32) int
 fn C.ct_vector_diag() int
 fn C.ct_vector_dll_path() &char
 fn C.ct_vector_assign(u32, int, int, int) int
+fn C.ct_vector_appl_get(u32, &int, &int, &int) int
 fn C.ct_vector_probe(int, &int, &int, &int, &u64) int
 fn C.ct_vector_channel_info(int, &char, int, &char, int, &int, &int, &int, &u32, &u32, &u32, &int, &int) int
 fn C.ct_vector_error_frames() int
@@ -206,8 +207,9 @@ pub fn (mut b VectorBus) close() {
 	if b.port < 0 {
 		return
 	}
-	C.ct_vector_close(b.port, b.mask, b.gen)
+	C.ct_vector_close(b.port, b.mask, b.gen, b.notify)
 	b.port = -1
+	b.notify = unsafe { nil }
 }
 
 // VectorHw is one hardware channel the driver admits to having.
@@ -240,6 +242,22 @@ pub fn vector_hardware() []VectorHw {
 		}
 	}
 	return out
+}
+
+// vector_assignment reports what an application channel currently points at, or none when it
+// has no hardware. Registers nothing, so it is safe to ask about channels we do not own.
+pub fn vector_assignment(app_channel int) ?VectorChannel {
+	mut ht := 0
+	mut hi := 0
+	mut hc := 0
+	if C.ct_vector_appl_get(u32(app_channel - 1), &ht, &hi, &hc) != 0 {
+		return none
+	}
+	return VectorChannel{
+		hw_type:    ht
+		hw_index:   hi
+		hw_channel: hc
+	}
 }
 
 // vector_assign points one of OUR application channels at a piece of hardware, as Vector

@@ -67,3 +67,7 @@ pub fn chip_state_of(b Bus) ?VectorChipState {
 pub fn vector_verbose(on bool) {}
 
 pub const vector_busy_msg = 'vector: busy'
+
+pub fn vector_assignment(app_channel int) ?VectorChannel {
+	return none
+}

@@ -76,8 +76,8 @@ Blobly Net runs, so the interface string differs too:
 |---|---|---|
 | **PEAK PCAN** | ✅ kernel `peak_usb` → SocketCAN `can0` | ✅ PCAN-Basic DLL → `pcan:PCAN_USBBUS1@500000` |
 | **Kvaser** | ✅ kernel `kvaser_usb` → SocketCAN `can0` | ✅ CANlib DLL → `kvaser:0@500000` |
-| **Vector** (VN16xx…) | ❌ no mainline driver | 🧭 [planned](ROADMAP.md) — XL backend not written yet |
-| CAN-FD | PCAN ✅ · Kvaser Leaf Light v2 is classic-only | PCAN ✅ |
+| **Vector** (VN16xx…) | ❌ no mainline driver | ✅ XL Driver Library → `vector:1@500000` (HW-verified on a VN1630A; add `,silent` to listen without acknowledging) |
+| CAN-FD | PCAN ✅ · Kvaser Leaf Light v2 is classic-only | PCAN ✅ · Kvaser and Vector refuse FD rather than truncating |
 
 - **On Linux and WSL2** the *kernel* owns the adapter and presents it as a **SocketCAN netdev**
   (`can0`), so Blobly Net just uses SocketCAN — no vendor SDK involved.
