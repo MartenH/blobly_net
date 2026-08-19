@@ -27,6 +27,7 @@ struct Opts {
 	probe    bool
 	selftest bool
 	assign   int = -1
+	release  int = -1
 	pair     string
 	channel  int
 	bitrate  int
@@ -57,13 +58,30 @@ struct Borrowed {
 	prev ?transport.VectorChannel
 }
 
+// The borrowed channels, reachable from a signal handler. A `defer` covers a return; it does
+// not cover Ctrl-C, which is how anybody stops a diagnostic that is transmitting for ten
+// seconds — and the process then exits with somebody's bench still pointed at our test
+// hardware. The one thing this tool must never do is leave a configuration changed.
+__global (
+	g_borrowed []Borrowed
+)
+
+fn on_interrupt(_ os.Signal) {
+	eprintln('')
+	eprintln('interrupted — restoring Vector application channels')
+	give_back(g_borrowed)
+	exit(130)
+}
+
 fn borrow(app int, hw transport.VectorChannel) !Borrowed {
 	prev := transport.vector_assignment(app)
 	transport.vector_assign(app, hw)!
-	return Borrowed{
+	b := Borrowed{
 		app:  app
 		prev: prev
 	}
+	g_borrowed << b
+	return b
 }
 
 fn give_back(bs []Borrowed) {
@@ -139,6 +157,7 @@ fn usage() {
 	eprintln('  --probe     what the DRIVER says is present (hwType/hwIndex/hwChannel)')
 	eprintln('  --selftest  prove the backend on Vector VIRTUAL channels — touches no real bus')
 	eprintln('  --assign N  point --channel at the hardware on row N of --probe, then listen')
+	eprintln('  --release N clear application channel N — undo an assignment this tool made')
 	eprintln('  --pair A,B  TWO channels wired together: send on A, receive on B.')
 	eprintln('              TRANSMITS — both ends must acknowledge, so neither can be silent.')
 	eprintln('  --channel   application channel, as numbered in that dialog (from 1)')
@@ -173,6 +192,14 @@ fn parse(args []string) !Opts {
 				o = Opts{
 					...o
 					pair: args[i] or { return error('--pair needs two --probe rows, e.g. 0,2') }
+				}
+			}
+			'--release' {
+				i++
+				o = Opts{
+					...o
+					release: whole_int(args[i] or { return error('--release needs a channel') },
+						'--release')!
 				}
 			}
 			'--assign' {
@@ -262,6 +289,22 @@ fn main() {
 			rate := if c.bitrate > 0 { '${c.bitrate}' } else { '-' }
 			println('${i:3}  ${c.name:-32}  ${c.transceiver:-28}  ${c.serial:-9}  ${bus:-6}  ${rate}')
 		}
+		return
+	}
+	// BEFORE anything is borrowed, not after: the window between taking a channel and installing
+	// a handler is exactly when an impatient operator hits Ctrl-C.
+	os.signal_opt(.int, on_interrupt) or {
+		eprintln('note: could not install an interrupt handler; Ctrl-C may leave channels assigned')
+	}
+	if o.release >= 0 {
+		// The counterpart to --assign, and the way out of a diagnostic that was killed before it
+		// could hand a channel back. Clearing is its own operation because an assignment is
+		// persistent: nothing else in this tool can put a channel back to having no hardware.
+		transport.vector_unassign(o.release) or {
+			eprintln('vectorcheck: ${err}')
+			exit(1)
+		}
+		println('application channel ${o.release} cleared')
 		return
 	}
 	if o.pair != '' {

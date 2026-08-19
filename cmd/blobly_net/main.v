@@ -896,10 +896,15 @@ fn (mut app App) start() {
 			// test's — a collision on the bench this configuration exists to observe.
 			continue
 		}
-		if sc.iface in seeded {
+		// ONCE PER WIRE, and a wire is a destination rather than a spelling. Keyed on the raw
+		// interface, `vector:1` and `vector:ch1` seeded independently — two built-in responders
+		// answering on 0x7E0/0x7E8 at once when neither row named its own addresses, which is a
+		// bus with two ECUs claiming one identity. Fifth place this substitution has turned up.
+		sc_key := transport.destination_key(sc.iface)
+		if sc_key in seeded {
 			continue
 		}
-		seeded << sc.iface
+		seeded << sc_key
 		mut peers := []project.NodeCfg{}
 		// Which CHANNEL each node came from, BY POSITION. Diagnostics are seeded once per bus,
 		// but two entries can share that bus and sim_key() puts the channel in the key, so a
@@ -915,7 +920,7 @@ fn (mut app App) start() {
 			if other.pch.is_doip() {
 				continue
 			}
-			if other.iface == sc.iface {
+			if transport.destination_key(other.iface) == sc_key {
 				peers << other.nodes
 				for _ in other.nodes {
 					owners << other.pch
@@ -5250,7 +5255,7 @@ fn (mut app App) draw_bus_editor(i int) bool {
 		// transmit-capable — no listen-only shown anywhere, and sends refused one frame at a
 		// time. One rule, applied wherever an address can be written.
 		if ch.adapter == 'vector' {
-			stripped, want_silent, _ := project.split_vector_mode(typed)
+			stripped, want_silent, recognised := project.split_vector_mode(typed)
 			if stripped != typed {
 				// BACK INTO THE BUFFER as well. Normalising only the project value left
 				// `1,silent` in the text field, and the next commit_cfg copied it back — the
@@ -5260,7 +5265,12 @@ fn (mut app App) draw_bus_editor(i int) bool {
 				app.cfg_bufs[i].address_buf = mkbuf(stripped, 64)
 			}
 			typed = stripped
-			if want_silent {
+			if recognised && stripped != vgui.buf_str(app.cfg_bufs[i].address_buf) {
+				// BOTH WAYS. `,normal` is an explicit request to acknowledge, and setting the
+				// flag only when the suffix said silent left a listen-only channel — a
+				// discovered one starts that way — silent while its address said otherwise.
+				app.proj.channels[i].listen_only = want_silent
+			} else if want_silent {
 				app.proj.channels[i].listen_only = true
 			}
 		}
