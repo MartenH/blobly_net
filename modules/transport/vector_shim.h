@@ -792,11 +792,17 @@ static int ct_vector_channel_info(int idx, char *name, int name_len, char *trans
 /* What an application channel is currently pointed at, WITHOUT registering anything.
  * 0 = assigned (outputs filled), -1 = not assigned or unavailable. Needed so a test that has to
  * borrow a channel can put it back exactly as it found it. */
+/* 0 = assigned, -2 = definitely not assigned, -1 = COULD NOT TELL.
+ *
+ * The third answer matters. Collapsing it into "not assigned" meant a transient read failure
+ * looked exactly like a free channel: the caller borrowed it, and gave it back by unassigning —
+ * erasing a mapping the operator had made, on the strength of a question that was never
+ * answered. A borrow has to refuse when it cannot see what it is about to overwrite. */
 static int ct_vector_appl_get(unsigned int app_channel, int *hw_type, int *hw_index, int *hw_channel) {
 	unsigned int t = 0, i = 0, c = 0;
 	if (ct_vector_load() != 0 || ct_xl_opendrv() != 0) return -1;
 	if (ct_xl_getappl("blobly_net", app_channel, &t, &i, &c, CT_XL_BUS_TYPE_CAN) != 0) return -1;
-	if (t == 0) return -1;
+	if (t == 0) return -2;
 	*hw_type = (int)t; *hw_index = (int)i; *hw_channel = (int)c;
 	return 0;
 }

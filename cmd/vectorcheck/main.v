@@ -74,10 +74,12 @@ fn on_interrupt(_ os.Signal) {
 }
 
 fn borrow(app int, hw transport.VectorChannel) !Borrowed {
-	prev := transport.vector_assignment(app)
+	// REFUSED if we cannot see what we would overwrite. A read failure used to look like a free
+	// channel, and the borrow then "restored" it by clearing a mapping the operator had made.
+	prev, had := transport.vector_assignment(app)!
 	b := Borrowed{
 		app:  app
-		prev: prev
+		prev: if had { ?transport.VectorChannel(prev) } else { none }
 	}
 	// RECORDED BEFORE THE CHANGE. Appending afterwards left a window in which Ctrl-C restored
 	// every earlier borrow and not this one — the assignment already written, and nothing left

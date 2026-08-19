@@ -258,18 +258,26 @@ pub fn vector_hardware() []VectorHw {
 
 // vector_assignment reports what an application channel currently points at, or none when it
 // has no hardware. Registers nothing, so it is safe to ask about channels we do not own.
-pub fn vector_assignment(app_channel int) ?VectorChannel {
+// vector_assignment reports what an application channel points at: the channel and true, or a
+// blank and false when nothing is assigned. It ERRORS when the driver could not be asked —
+// distinct from "nothing is assigned", because a caller about to overwrite the mapping must not
+// treat an unanswered question as a free channel. Registers nothing.
+pub fn vector_assignment(app_channel int) !(VectorChannel, bool) {
 	mut ht := 0
 	mut hi := 0
 	mut hc := 0
-	if C.ct_vector_appl_get(u32(app_channel - 1), &ht, &hi, &hc) != 0 {
-		return none
+	rc := C.ct_vector_appl_get(u32(app_channel - 1), &ht, &hi, &hc)
+	if rc == -2 {
+		return VectorChannel{}, false
+	}
+	if rc != 0 {
+		return error('could not read the assignment of Vector application channel ${app_channel}')
 	}
 	return VectorChannel{
 		hw_type:    ht
 		hw_index:   hi
 		hw_channel: hc
-	}
+	}, true
 }
 
 // vector_unassign returns one of our application channels to having no hardware, which is what

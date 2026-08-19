@@ -68,8 +68,8 @@ pub fn vector_verbose(on bool) {}
 
 pub const vector_busy_msg = 'vector: busy'
 
-pub fn vector_assignment(app_channel int) ?VectorChannel {
-	return none
+pub fn vector_assignment(app_channel int) !(VectorChannel, bool) {
+	return error('the Vector XL backend is Windows-only')
 }
 
 pub fn vector_unassign(app_channel int) ! {
