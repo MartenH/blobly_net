@@ -200,7 +200,12 @@ fn vector_list() []Iface {
 	if C.ct_vector_load() != 0 {
 		return out
 	}
-	for ch in 1 .. 9 {
+	// THE WHOLE SUPPORTED RANGE, matching vector_app_channel and the shim's table. Stopping at
+	// eight hid hardware assigned to a higher application channel and made --list report that
+	// nothing was assigned at all — the same mistake as sizing the configuration table by what
+	// a bench plausibly has. Probing does not register anything, so sweeping 64 costs nothing
+	// but the lookups.
+	for ch in 1 .. 65 {
 		if C.ct_vector_present(u32(ch - 1)) == 0 {
 			continue
 		}

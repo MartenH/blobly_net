@@ -129,8 +129,12 @@ fn main() {
 					eprintln('The Vector driver is installed and working, but no application channel')
 					eprintln('is assigned to hardware yet.')
 					eprintln('')
-					eprintln('Open Vector Hardware Configuration. The application "blobly_net" has just')
-					eprintln('been registered there; assign a VN1630A channel to its channel 1.')
+					eprintln('Open Vector Hardware Manager and assign a VN1630A channel to the')
+					eprintln('application "blobly_net".')
+					eprintln('')
+					eprintln('If blobly_net is not listed there yet, run this once to register it:')
+					eprintln('  vectorcheck --channel 1')
+					eprintln('It will fail for the same reason, and the entry will then exist to assign.')
 				}
 				-1 {
 					eprintln('vxlapi64.dll was not found.')

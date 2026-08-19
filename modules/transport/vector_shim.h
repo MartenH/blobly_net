@@ -266,7 +266,7 @@ static const char *ct_vector_err(int st) {
  * application first so it appears in Vector Hardware Configuration for the operator to
  * assign — an unconfigured app is otherwise invisible there, and the error alone would send
  * them looking for a dialog entry that does not exist. */
-static uint64_t ct_vector_mask_why(unsigned int app_channel, int *why) {
+static uint64_t ct_vector_mask_why(unsigned int app_channel, int *why, int register_app) {
 	unsigned int hw_type = 0, hw_index = 0, hw_channel = 0;
 	int rc;
 	ct_xlstatus st;
@@ -277,7 +277,11 @@ static uint64_t ct_vector_mask_why(unsigned int app_channel, int *why) {
 	if (st != 0) { if (why) *why = -(int)st; return 0; }    /* driver would not open */
 	if (ct_xl_getappl("blobly_net", app_channel, &hw_type, &hw_index, &hw_channel,
 	                  CT_XL_BUS_TYPE_CAN) != 0 || hw_type == 0) {
-		if (ct_xl_setappl) {
+		/* Registering makes the application appear in Vector Hardware Manager so the operator
+		 * has something to assign hardware to — worth doing for a channel somebody ASKED to
+		 * open, and not for the sixty-four this sweeps past during discovery. A dialog listing
+		 * blobly_net channels 1 to 64, all unassigned, is worse than no entry at all. */
+		if (register_app && ct_xl_setappl) {
 			ct_xl_setappl("blobly_net", app_channel, 0, 0, 0, CT_XL_BUS_TYPE_CAN);
 		}
 		if (why) *why = -1000; /* driver fine, this channel simply has no hardware yet */
@@ -286,8 +290,9 @@ static uint64_t ct_vector_mask_why(unsigned int app_channel, int *why) {
 	return (uint64_t)ct_xl_chanmask((int)hw_type, (int)hw_index, (int)hw_channel);
 }
 
+/* Probe only: never registers. Discovery asks about every supported channel. */
 static uint64_t ct_vector_mask(unsigned int app_channel) {
-	return ct_vector_mask_why(app_channel, NULL);
+	return ct_vector_mask_why(app_channel, NULL, 0);
 }
 
 /* Open, configure and activate one application channel.
@@ -303,7 +308,7 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 	ct_xlstatus st;
 	int why = 0;
 	ct_vec_enter();
-	mask = (ct_xlaccess)ct_vector_mask_why(app_channel, &why);
+	mask = (ct_xlaccess)ct_vector_mask_why(app_channel, &why, 1);
 	if (!mask) { ct_vec_leave(); return why ? why : -1000; } /* the caller distinguishes these; see vector_windows.v */
 	/* permissionMask is IN/OUT: on the way IN it asks for INIT ACCESS on these channels, and on
 	 * the way OUT it says which were granted. Passing 0 asks for init access on nothing, so the
