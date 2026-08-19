@@ -57,6 +57,10 @@ fn C.ct_vector_chipstate(int, u64, &int, &int, &int) int
 fn C.ct_vector_set_verbose(int)
 fn C.ct_vector_err(int) &char
 
+// vector_busy_msg prefixes the one error that means "slow down", so callers can recognise it
+// without matching on an XL status number they should not have to know.
+pub const vector_busy_msg = 'vector: busy'
+
 // VectorBus is one open, activated XL port on a single channel.
 pub struct VectorBus {
 mut:
@@ -154,6 +158,12 @@ pub fn (mut b VectorBus) send(f CanFrame) ! {
 	// asked for, on the wire, with nothing to say so.
 	rtr := if f.rtr { 1 } else { 0 }
 	st := C.ct_vector_write(b.port, b.mask, f.id, u8(n), f.data.data, ext, rtr)
+	if st == -2000 {
+		// The WIRE is the limit, not the bench. Named distinctly so a caller can back off and
+		// retry: a replay of a busy capture will reach this whenever it is asked to go faster
+		// than the bus, and treating it as a failure would end the run over a full buffer.
+		return error('${vector_busy_msg}: the transmit queue is full (id 0x${f.id:X})')
+	}
 	if st != 0 {
 		msg := unsafe { cstring_to_vstring(C.ct_vector_err(-st)) }
 		extra := if msg == '' { '' } else { ' (${msg})' }

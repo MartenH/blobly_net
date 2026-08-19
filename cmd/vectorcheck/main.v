@@ -388,22 +388,34 @@ fn pair_test(o Opts) ! {
 	// than just the first, so a link that drops or reorders is caught instead of being reported
 	// as a pass because something with the right id came back.
 	mut n_sent := 0
+	mut n_busy := 0
 	mut n_recv := 0
 	mut n_bad := 0
 	mut last_seq := u32(0)
-	deadline := time.now().add(o.seconds * time.second)
-	for time.now() < deadline {
-		seq := u32(n_sent)
-		f := transport.CanFrame{
-			id:   0x100 + u32(n_sent % 8) // eight ids, so a filter or a stuck mailbox shows up
-			data: [u8(seq >> 24), u8(seq >> 16), u8(seq >> 8), u8(seq), 0xA5, 0x5A, 0xC3, 0x3C]
+	mut sw := time.new_stopwatch()
+	for sw.elapsed().milliseconds() < i64(o.seconds) * 1000 {
+		// A BATCH between clock reads, and a NON-BLOCKING drain. Sending one frame per iteration
+		// and then waiting a millisecond for a receive that had not arrived yet held this to
+		// about seventy frames a second — a number that described this loop, not the bus.
+		for _ in 0 .. 32 {
+			seq := u32(n_sent)
+			f := transport.CanFrame{
+				id:   0x100 + u32(n_sent % 8) // eight ids, so a stuck mailbox shows up
+				data: [u8(seq >> 24), u8(seq >> 16), u8(seq >> 8), u8(seq), 0xA5, 0x5A, 0xC3, 0x3C]
+			}
+			tx.send(f) or {
+				// A FULL QUEUE IS THE WIRE, not a fault: at saturation the bus is the slowest
+				// thing in the system and says so. Stop offering for now and go drain.
+				if err.msg().starts_with(transport.vector_busy_msg) {
+					n_busy++
+					break
+				}
+				return error('send failed after ${n_sent} frames: ${err}')
+			}
+			n_sent++
 		}
-		tx.send(f) or { return error('send failed after ${n_sent} frames: ${err}') }
-		n_sent++
-		// Drain whatever has arrived. A short timeout keeps the transmit cadence steady rather
-		// than letting the receive side dictate it.
 		for {
-			got := rx.recv(1) or { break }
+			got := rx.recv(0) or { break }
 			if got.data.len != 8 {
 				n_bad++
 				continue
@@ -421,16 +433,24 @@ fn pair_test(o Opts) ! {
 			n_recv++
 		}
 	}
-	// Anything still in flight when the clock ran out.
-	for _ in 0 .. 200 {
-		got := rx.recv(5) or { break }
+	// LET THE WIRE FINISH. At saturation the transmit queue still holds a second or so of
+	// frames when the clock stops, and counting them as lost would report a healthy link at
+	// 97%. Drain until it goes quiet for a stretch rather than for a fixed number of tries.
+	mut quiet := time.new_stopwatch()
+	for quiet.elapsed().milliseconds() < 400 {
+		got := rx.recv(5) or { continue }
 		if got.data.len == 8 {
 			n_recv++
 			last_seq = (u32(got.data[0]) << 24) | (u32(got.data[1]) << 16) | (u32(got.data[2]) << 8) | u32(got.data[3])
+			quiet = time.new_stopwatch()
 		}
 	}
 	println('')
-	println('sent ${n_sent}, received ${n_recv}, malformed ${n_bad}, last sequence ${last_seq}')
+	rate := if o.seconds > 0 { n_sent / o.seconds } else { 0 }
+	println('sent ${n_sent} (${rate}/s), received ${n_recv}, malformed ${n_bad}, last sequence ${last_seq}')
+	if n_busy > 0 {
+		println('${n_busy} times the transmit queue was full — the wire setting the pace, which is what saturation looks like')
+	}
 	if n_recv == 0 {
 		// fall through to the diagnosis below
 	} else {

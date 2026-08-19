@@ -46,6 +46,8 @@
 #define CT_XL_CHIPSTAT_ERROR_ACTIVE  0x08
 #define CT_XL_TRANSMIT_MSG        10
 #define CT_XL_ERR_QUEUE_IS_EMPTY  10
+#define CT_XL_ERR_QUEUE_IS_FULL   11
+#define CT_XL_ERR_TX_NOT_POSSIBLE 12
 #define CT_XL_CAN_EXT_MSG_ID      0x80000000
 #define CT_XL_CAN_MSG_FLAG_ERROR_FRAME  0x01
 #define CT_XL_CAN_MSG_FLAG_REMOTE_FRAME 0x10
@@ -509,7 +511,14 @@ static int ct_vector_write(ct_xlport port, uint64_t mask, uint32_t id, uint8_t l
 	st = ct_xl_transmit(port, (ct_xlaccess)mask, &count, &ev);
 	CT_VLOG("xlCanTransmit(id=0x%X len=%u mask=0x%016llX) -> st=%d count=%u\n",
 	        (unsigned)id, (unsigned)len, (unsigned long long)mask, (int)st, count);
-	return st == 0 ? 0 : -(int)st;
+	if (st == 0) return 0;
+	/* BACK-PRESSURE, not failure. A full transmit queue means the caller is offering frames
+	 * faster than a 500 kbit/s wire can carry them, which is an ordinary thing for a replay of a
+	 * busy capture to do and says nothing is wrong. Reported as its own code so the caller can
+	 * wait rather than abandon the run — which is what it did, because a queue-full status was
+	 * indistinguishable from a bus that had gone away. */
+	if (st == CT_XL_ERR_QUEUE_IS_FULL) return -2000;
+	return -(int)st;
 }
 
 /* Read one CAN frame, waiting up to timeout_ms. 0 = frame, 1 = nothing within the timeout,
