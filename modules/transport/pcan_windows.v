@@ -55,17 +55,11 @@ mut:
 // open_pcan parses `pcan:<channel>[@<bitrate>]`, loads PCANBasic.dll and initializes
 // the channel. Referenced only from open_windows.v, so the Linux build never sees it.
 pub fn open_pcan(spec string) !&PcanBus {
-	parts := spec.split('@')
-	handle := pcan_handle(parts[0])!
-	// STRICTLY, through the rule all three vendor backends share: `.int()` takes a numeric
-	// prefix, so `@250000garbage` opened this channel at 250 kbit/s while the project model
-	// refused the same text and kept its default. Two answers about a live bus, one of them
-	// driving it.
-	bitrate := if parts.len > 1 {
-		vendor_bitrate(parts[1], 500000) or { return error('PCAN: ${err}') }
-	} else {
-		500000
-	}
+	// BOTH RULES, from the file all three backends share: at most one bitrate, and that a whole
+	// number. Validating only the second part let `@250000@500000` open at 250 kbit/s while the
+	// project reported 500.
+	chan_part, bitrate := vendor_split_rate(spec, 500000) or { return error('PCAN: ${err}') }
+	handle := pcan_handle(chan_part)!
 	baud := pcan_baud(bitrate)!
 	if C.ct_pcan_load() != 0 {
 		return error('PCANBasic.dll not found — install the PEAK PCAN driver')

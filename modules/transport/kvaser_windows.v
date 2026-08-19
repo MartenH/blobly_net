@@ -36,17 +36,11 @@ mut:
 // open_kvaser parses `kvaser:<channel>[@<bitrate>]`, loads canlib32.dll, opens the
 // channel and goes bus-on. Referenced only from open_windows.v.
 pub fn open_kvaser(spec string) !&KvaserBus {
-	parts := spec.split('@')
-	ch := parts[0].trim_space().int()
-	// STRICTLY, through the rule all three vendor backends share: `.int()` takes a numeric
-	// prefix, so `@250000garbage` opened this channel at 250 kbit/s while the project model
-	// refused the same text and kept its default. Two answers about a live bus, one of them
-	// driving it.
-	bitrate := if parts.len > 1 {
-		vendor_bitrate(parts[1], 500000) or { return error('Kvaser: ${err}') }
-	} else {
-		500000
-	}
+	// BOTH RULES, from the file all three backends share: at most one bitrate, and that a whole
+	// number. Validating only the second part let `@250000@500000` open at 250 kbit/s while the
+	// project reported 500.
+	chan_part, bitrate := vendor_split_rate(spec, 500000) or { return error('Kvaser: ${err}') }
+	ch := chan_part.trim_space().int()
 	code := kvaser_bitrate_code(bitrate)!
 	if C.ct_kvaser_load() != 0 {
 		return error('canlib32.dll not found — install the Kvaser drivers')

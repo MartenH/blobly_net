@@ -47,30 +47,6 @@ fn vector_app_channel(s string) !int {
 	return n
 }
 
-// vendor_bitrate parses the `@<rate>` a vendor interface carries, refusing a token that is only
-// PARTLY a number.
-//
-// Shared by all three vendor backends, because V's `.int()` takes a numeric prefix and every one
-// of them used it: `@250000garbage` opened the hardware at 250 kbit/s while the project model,
-// which validates strictly, went on believing the default. The two disagreed about a live bus,
-// and only one of them was driving it.
-pub fn vendor_bitrate(tok string, default_rate int) !int {
-	t := tok.trim_space()
-	if t == '' {
-		return error('empty bitrate after "@"')
-	}
-	for c in t {
-		if !c.is_digit() {
-			return error('"${t}" is not a bitrate — digits only, in bits per second')
-		}
-	}
-	n := t.int()
-	if n <= 0 {
-		return error('bitrate ${n} is not a rate')
-	}
-	return n
-}
-
 // vector_key is the canonical channel part for destination_key: the application channel as a
 // number, so `vector:1`, `vector:ch1` and `vector:app01` are ONE destination. Two mappings that
 // address the same wire through different spellings must collide, or the conflict check waves
@@ -115,24 +91,10 @@ fn parse_vector_spec(spec string) !VectorSpec {
 			else { return error('unknown Vector mode ",${mode}" (use ,silent)') }
 		}
 	}
-	parts := body.split('@')
-	// EXACTLY ONE rate at most. `1@250000@500000` split into three, only the second was read,
-	// and the channel opened at 250 kbit/s while the project said 500 — reachable without
-	// trying, by typing a legacy-style `1@250000` into the address field of a channel whose
-	// bitrate is 500000, because iface_with_bitrate then appends its own.
-	if parts.len > 2 {
-		return error('Vector: "${body}" has more than one bitrate — the rate belongs in the channel\'s bitrate field, not in its address')
-	}
-	ch := vector_app_channel(parts[0])!
-	// EVERY character a digit. V's `.int()` takes a numeric prefix, so `@250000garbage` parsed
-	// as 250000 and opened at a rate nobody wrote — and the project migration was PRESERVING
-	// malformed rates on the understanding that this parser would refuse them, which it did not.
-	// A rejection two other fixes depend on has to exist.
-	bitrate := if parts.len > 1 {
-		vendor_bitrate(parts[1], 500000) or { return error('Vector: ${err}') }
-	} else {
-		500000
-	}
+	// BOTH RULES live in vendor_spec.v now, because each of them has been got wrong once per
+	// backend when it lived beside a single caller.
+	chan_part, bitrate := vendor_split_rate(body, 500000) or { return error('Vector: ${err}') }
+	ch := vector_app_channel(chan_part)!
 	// A bitrate the hardware cannot produce is a configuration error worth catching here: on a
 	// live bus the consequence of getting it wrong is error frames, not a quiet failure.
 	if bitrate < 5000 || bitrate > 1000000 {

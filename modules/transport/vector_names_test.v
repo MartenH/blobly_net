@@ -90,3 +90,16 @@ fn test_vendor_bitrate_is_strict() {
 		}
 	}
 }
+
+// One rule, checked once, for every backend that has an `@rate` suffix.
+fn test_vendor_split_rate() {
+	c1, r1 := vendor_split_rate('PCAN_USBBUS1@250000', 500000)!
+	assert c1 == 'PCAN_USBBUS1' && r1 == 250000
+	c2, r2 := vendor_split_rate('0', 500000)!
+	assert c2 == '0' && r2 == 500000
+	for bad in ['x@250000@500000', 'x@', 'x@250000garbage', 'x@oops'] {
+		if _, _ := vendor_split_rate(bad, 500000) {
+			assert false, '"${bad}" must not open a channel'
+		}
+	}
+}
