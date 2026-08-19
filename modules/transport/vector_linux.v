@@ -8,3 +8,60 @@ module transport
 pub fn vector_driver_status() int {
 	return -1
 }
+
+// vector_driver_path: nothing is ever loaded here. See vector_driver_status.
+pub fn vector_driver_path() string {
+	return ''
+}
+
+// The Linux halves. There is no XL driver here, so there is nothing to enumerate or assign.
+pub struct VectorHw {
+pub:
+	hw_type    int
+	hw_index   int
+	hw_channel int
+	mask       u64
+}
+
+pub fn vector_hardware() []VectorHw {
+	return []
+}
+
+pub fn vector_assign(app_channel int, hw VectorChannel) ! {
+	return error('the Vector XL backend is Windows-only')
+}
+
+pub struct VectorChannel {
+pub:
+	name        string
+	transceiver string
+	hw_type     int
+	hw_index    int
+	hw_channel  int
+	serial      u32
+	bus_type    u32
+	bitrate     u32
+	on_bus      bool
+	trx_state   int
+}
+
+pub fn vector_error_frames() int {
+	return 0
+}
+
+pub fn vector_channels() []VectorChannel {
+	return []
+}
+
+pub struct VectorChipState {
+pub:
+	bus_status int
+	tx_errors  int
+	rx_errors  int
+}
+
+pub fn chip_state_of(b Bus) ?VectorChipState {
+	return none
+}
+
+pub fn vector_verbose(on bool) {}

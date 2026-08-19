@@ -9,10 +9,12 @@
  * bounds rather than by returning an error, and there is no way to check it from the machine
  * this is written on. xlGetApplConfig/xlGetChannelMask take scalars only.
  *
- * XLstatus is `short` in vxlapi.h. Declared that way here DELIBERATELY, and it is the safe
- * choice even if the header were `int`: the callee returns in EAX, and reading AX of an int
- * return is still correct for every status value the library defines (0..255), while reading
- * EAX of a short return picks up whatever was in the high half.
+ * CHECKED AGAINST vxlapi.h 25.20.14, which the operator's XL Driver Library install ships:
+ * XLstatus is `short`, XLaccess is `XLuint64`, XLportHandle is `XLlong` = `long` = 32-bit here,
+ * XLevent is 48 bytes and s_xl_can_msg 32, and every constant and signature below matches. The
+ * header is NOT included: we cannot depend on a library we are forbidden to ship being present
+ * at build time, and the whole point of this file is that it needs no SDK. Verified against it,
+ * not built against it.
  *
  * Win64 LLP64: `long` is 32-bit, so XLportHandle is int32_t. XLaccess is a 64-bit mask.
  */
@@ -21,13 +23,27 @@
 
 #include <windows.h>
 #include <stdint.h>
+#include <stdio.h>   /* snprintf, for the install-directory search */
+#include <string.h>
+#include <stddef.h>  /* offsetof, for the layout assertions */
 
 #define CT_XL_BUS_TYPE_CAN        0x00000001
 #define CT_XL_INTERFACE_VERSION   3          /* V3 = classic CAN */
-#define CT_XL_ACTIVATE_RESET_CLOCK 8
+/* NO FLAGS on activation. vxlapi.h says of XL_ACTIVATE_RESET_CLOCK (8): "using this flag with
+ * time synchronisation protocols supported by Vector Timesync Service is not recommended" — and
+ * that service is installed alongside the driver, so on an ordinary Vector bench it is running.
+ * Resetting the clock per activation would also give each of our ports its own zero, which is
+ * the opposite of what a multi-channel tester wants: the shared timebase is what makes two VN
+ * channels comparable. */
+#define CT_XL_ACTIVATE_NONE 0
 #define CT_XL_OUTPUT_MODE_SILENT  0          /* ACK-free: the bus cannot be disturbed */
 #define CT_XL_OUTPUT_MODE_NORMAL  1
 #define CT_XL_RECEIVE_MSG         1
+#define CT_XL_CHIP_STATE          4
+#define CT_XL_CHIPSTAT_BUSOFF        0x01
+#define CT_XL_CHIPSTAT_ERROR_PASSIVE 0x02
+#define CT_XL_CHIPSTAT_ERROR_WARNING 0x04
+#define CT_XL_CHIPSTAT_ERROR_ACTIVE  0x08
 #define CT_XL_TRANSMIT_MSG        10
 #define CT_XL_ERR_QUEUE_IS_EMPTY  10
 #define CT_XL_CAN_EXT_MSG_ID      0x80000000
@@ -80,8 +96,11 @@ typedef ct_xlstatus (__stdcall *ct_xlSetApplConfig)(char *, unsigned int, unsign
 typedef ct_xlaccess (__stdcall *ct_xlGetChannelMask)(int, int, int);
 typedef ct_xlstatus (__stdcall *ct_xlOpenPort)(ct_xlport *, char *, ct_xlaccess, ct_xlaccess *, unsigned int, unsigned int, unsigned int);
 typedef ct_xlstatus (__stdcall *ct_xlClosePort)(ct_xlport);
-typedef ct_xlstatus (__stdcall *ct_xlSetBitrate)(ct_xlport, ct_xlaccess, unsigned int);
-typedef ct_xlstatus (__stdcall *ct_xlSetOutput)(ct_xlport, ct_xlaccess, unsigned int);
+/* `XLulong` and `int mode` as vxlapi.h declares them. Both are ABI-identical to the unsigned
+ * int used before on Win64, but there is no reason to keep a near-match once the header can be
+ * read: XLulong is `unsigned long`, which is 32-bit here and 64-bit almost everywhere else. */
+typedef ct_xlstatus (__stdcall *ct_xlSetBitrate)(ct_xlport, ct_xlaccess, unsigned long);
+typedef ct_xlstatus (__stdcall *ct_xlSetOutput)(ct_xlport, ct_xlaccess, int);
 typedef ct_xlstatus (__stdcall *ct_xlSetChanMode)(ct_xlport, ct_xlaccess, int, int);
 typedef ct_xlstatus (__stdcall *ct_xlActivate)(ct_xlport, ct_xlaccess, unsigned int, unsigned int);
 typedef ct_xlstatus (__stdcall *ct_xlDeactivate)(ct_xlport, ct_xlaccess);
@@ -89,6 +108,10 @@ typedef ct_xlstatus (__stdcall *ct_xlTransmit)(ct_xlport, ct_xlaccess, unsigned 
 typedef ct_xlstatus (__stdcall *ct_xlReceive)(ct_xlport, unsigned int *, void *);
 typedef ct_xlstatus (__stdcall *ct_xlSetNotify)(ct_xlport, HANDLE *, int);
 typedef char *      (__stdcall *ct_xlGetErrString)(ct_xlstatus);
+/* Takes XLdriverConfig*; declared void* here so the struct can live beside the code that reads
+ * it, several hundred lines down with its layout assertions. */
+typedef ct_xlstatus (__stdcall *ct_xlGetDriverConfig)(void *);
+typedef ct_xlstatus (__stdcall *ct_xlReqChipState)(ct_xlport, ct_xlaccess);
 
 static ct_xlOpenDriver     ct_xl_opendrv;
 static ct_xlCloseDriver    ct_xl_closedrv;
@@ -106,8 +129,23 @@ static ct_xlTransmit       ct_xl_transmit;
 static ct_xlReceive        ct_xl_receive;
 static ct_xlSetNotify      ct_xl_setnotify;
 static ct_xlGetErrString   ct_xl_errstr;
+static ct_xlGetDriverConfig ct_xl_drvconfig;
+static ct_xlReqChipState   ct_xl_reqchip;
 
 static int ct_vector_loaded = 0;
+
+/* Error frames seen and skipped. They carry no payload, so they must not reach the trace as
+ * traffic — but they are the whole answer to "is this bus alive at some other bitrate": a
+ * silent node on a live bus it cannot decode sees error frames and nothing else, while a dead
+ * or unpowered bus is simply quiet. Discarding them without counting made those two look
+ * identical, which is exactly the question a bench asks first. */
+static volatile long ct_vector_errframes = 0;
+
+/* Step-by-step reporting for the open path. Off unless asked: this is the only way to see which
+ * of half a dozen XL calls quietly did not do what its return value implied. */
+static int ct_vector_verbose = 0;
+static void ct_vector_set_verbose(int on) { ct_vector_verbose = on; }
+#define CT_VLOG(...) do { if (ct_vector_verbose) { fprintf(stderr, "  xl: " __VA_ARGS__); fflush(stderr); } } while (0)
 
 /* WHAT WE CONFIGURED, per channel, for the life of this process.
  *
@@ -225,12 +263,71 @@ static void ct_vec_cfg_unref(uint64_t mask, ct_xlport port, uint64_t gen) {
 	}
 }
 
+/* Where the library was actually found, for diagnostics. Empty until one loads. */
+static char ct_vector_dll[MAX_PATH * 2] = "";
+
+/* The XL Driver Library does NOT install onto the search path. Its installer puts the DLLs
+ * under C:\Users\Public\Documents\Vector\XL Driver Library <version>\bin, so a plain
+ * LoadLibrary by name finds nothing on a machine where it is perfectly well installed — which
+ * is what happened on the first bench this backend met, and reads exactly like "not installed".
+ *
+ * We do not ship the DLL and never will: Vector's terms forbid redistributing it, which is the
+ * whole reason this file resolves everything at runtime. Finding the copy the operator
+ * installed is the other half of that arrangement.
+ *
+ * The version is in the directory name, so the newest by name wins when several are present.
+ * Approximate, and stated rather than hidden: version directories sort correctly until a
+ * component reaches ten, and a bench with two XL versions installed has a bigger question than
+ * which one we picked. */
+static HMODULE ct_vector_from_install_dir(void) {
+#ifdef _WIN64
+	const char *dllname = "vxlapi64.dll";
+#else
+	const char *dllname = "vxlapi.dll";
+#endif
+	char pub[MAX_PATH], pattern[MAX_PATH * 2], best[MAX_PATH], full[MAX_PATH * 2];
+	WIN32_FIND_DATAA fd;
+	HANDLE h;
+	HMODULE m;
+	DWORD n = GetEnvironmentVariableA("PUBLIC", pub, (DWORD)sizeof(pub));
+	if (n == 0 || n >= sizeof(pub)) {
+		strcpy(pub, "C:\\Users\\Public");
+	}
+	snprintf(pattern, sizeof(pattern), "%s\\Documents\\Vector\\XL Driver Library *", pub);
+	best[0] = 0;
+	h = FindFirstFileA(pattern, &fd);
+	if (h == INVALID_HANDLE_VALUE) return NULL;
+	do {
+		if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+		if (strcmp(fd.cFileName, best) > 0) {
+			strncpy(best, fd.cFileName, sizeof(best) - 1);
+			best[sizeof(best) - 1] = 0;
+		}
+	} while (FindNextFileA(h, &fd));
+	FindClose(h);
+	if (!best[0]) return NULL;
+	snprintf(full, sizeof(full), "%s\\Documents\\Vector\\%s\\bin\\%s", pub, best, dllname);
+	m = LoadLibraryA(full);
+	if (m) {
+		strncpy(ct_vector_dll, full, sizeof(ct_vector_dll) - 1);
+		ct_vector_dll[sizeof(ct_vector_dll) - 1] = 0;
+	}
+	return m;
+}
+
 /* 0 ok, -1 DLL missing, -2 a symbol missing. */
 static int ct_vector_load(void) {
 	HMODULE h;
 	if (ct_vector_loaded) return 0;
+	/* BY NAME FIRST: a copy beside the executable, on PATH, or in System32 is a deliberate
+	 * choice by whoever put it there, and it should win over whatever the installer left. */
 	h = LoadLibraryA("vxlapi64.dll");
-	if (!h) h = LoadLibraryA("vxlapi.dll"); /* 32-bit host, same ABI shape */
+	if (h) strcpy(ct_vector_dll, "vxlapi64.dll");
+	if (!h) {
+		h = LoadLibraryA("vxlapi.dll"); /* 32-bit host, same ABI shape */
+		if (h) strcpy(ct_vector_dll, "vxlapi.dll");
+	}
+	if (!h) h = ct_vector_from_install_dir();
 	if (!h) return -1;
 	ct_xl_opendrv    = (ct_xlOpenDriver)(void *)GetProcAddress(h, "xlOpenDriver");
 	ct_xl_closedrv   = (ct_xlCloseDriver)(void *)GetProcAddress(h, "xlCloseDriver");
@@ -248,12 +345,20 @@ static int ct_vector_load(void) {
 	ct_xl_receive    = (ct_xlReceive)(void *)GetProcAddress(h, "xlReceive");
 	ct_xl_setnotify  = (ct_xlSetNotify)(void *)GetProcAddress(h, "xlSetNotification");
 	ct_xl_errstr     = (ct_xlGetErrString)(void *)GetProcAddress(h, "xlGetErrorString");
+	ct_xl_drvconfig  = (ct_xlGetDriverConfig)(void *)GetProcAddress(h, "xlGetDriverConfig");
+	ct_xl_reqchip    = (ct_xlReqChipState)(void *)GetProcAddress(h, "xlCanRequestChipState");
 	if (!ct_xl_opendrv || !ct_xl_getappl || !ct_xl_chanmask || !ct_xl_openport ||
 	    !ct_xl_closeport || !ct_xl_setbitrate || !ct_xl_activate || !ct_xl_deactivate ||
 	    !ct_xl_transmit || !ct_xl_receive || !ct_xl_setnotify) return -2;
 	ct_vector_loaded = 1;
 	return 0;
 }
+
+/* How many error frames this process has seen since it started. */
+static long ct_vector_error_frames(void) { return ct_vector_errframes; }
+
+/* Which vxlapi the process is actually using, or "" if none loaded. */
+static const char *ct_vector_dll_path(void) { return ct_vector_dll; }
 
 /* Human-readable XL status, or "" when the DLL predates xlGetErrorString. */
 static const char *ct_vector_err(int st) {
@@ -309,6 +414,7 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 	int why = 0;
 	ct_vec_enter();
 	mask = (ct_xlaccess)ct_vector_mask_why(app_channel, &why, 1);
+	CT_VLOG("appChannel=%u -> mask=0x%016llX (why=%d)\n", app_channel, (unsigned long long)mask, why);
 	if (!mask) { ct_vec_leave(); return why ? why : -1000; } /* the caller distinguishes these; see vector_windows.v */
 	/* permissionMask is IN/OUT: on the way IN it asks for INIT ACCESS on these channels, and on
 	 * the way OUT it says which were granted. Passing 0 asks for init access on nothing, so the
@@ -319,15 +425,18 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 	permission = mask;
 	st = ct_xl_openport(&port, "blobly_net", mask, &permission, 256, CT_XL_INTERFACE_VERSION,
 	                    CT_XL_BUS_TYPE_CAN);
+	CT_VLOG("xlOpenPort -> st=%d port=%d permission=0x%016llX\n", (int)st, (int)port, (unsigned long long)permission);
 	if (st != 0 || port == CT_XL_INVALID_PORTHANDLE) { ct_vec_leave(); return st ? -(int)st : -1001; }
 	/* Init access decides whether this port may set the bitrate at all. Without it another
 	 * application already owns the channel's parameters, and setting them would either fail
 	 * or reconfigure a bus somebody else is using. */
 	if (permission & mask) {
-		st = ct_xl_setbitrate(port, mask, bitrate);
+		st = ct_xl_setbitrate(port, mask, (unsigned long)bitrate);
+		CT_VLOG("xlCanSetChannelBitrate(%u) -> st=%d\n", bitrate, (int)st);
 		if (st != 0) { ct_xl_closeport(port); ct_vec_leave(); return -(int)st; }
 		if (ct_xl_setoutput) {
-			st = ct_xl_setoutput(port, mask, silent ? CT_XL_OUTPUT_MODE_SILENT : CT_XL_OUTPUT_MODE_NORMAL);
+			st = ct_xl_setoutput(port, mask, silent ? (int)CT_XL_OUTPUT_MODE_SILENT : (int)CT_XL_OUTPUT_MODE_NORMAL);
+			CT_VLOG("xlCanSetChannelOutput(%s) -> st=%d\n", silent ? "SILENT" : "NORMAL", (int)st);
 			/* EITHER DIRECTION. Ignoring a failed NORMAL request left the channel on whatever
 			 * output mode it already had — silent, if a previous run set it — while this port
 			 * recorded itself as able to transmit. send() then succeeds and the trace shows
@@ -363,9 +472,13 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 	 * event for every frame WE send, and echoes_own_sends() reports false for a vendor backend —
 	 * so anything that arrived here would be filed as traffic the ECU produced. Belt and braces:
 	 * the flags are filtered on read too, because an older DLL may not export this call. */
-	if (ct_xl_setchanmode) ct_xl_setchanmode(port, mask, 0, 0);
+	if (ct_xl_setchanmode) {
+		st = ct_xl_setchanmode(port, mask, 0, 0);
+		CT_VLOG("xlCanSetChannelMode(tx=0,txrq=0) -> st=%d\n", (int)st);
+	}
 	if (ct_xl_setnotify(port, out_event, 1) != 0) *out_event = NULL;
-	st = ct_xl_activate(port, mask, CT_XL_BUS_TYPE_CAN, CT_XL_ACTIVATE_RESET_CLOCK);
+	st = ct_xl_activate(port, mask, CT_XL_BUS_TYPE_CAN, CT_XL_ACTIVATE_NONE);
+	CT_VLOG("xlActivateChannel -> st=%d\n", (int)st);
 	if (st != 0) {
 		/* The reference was taken above; drop it here rather than in ct_vector_close, which the
 		 * caller never reaches for a port that failed to activate. */
@@ -394,6 +507,8 @@ static int ct_vector_write(ct_xlport port, uint64_t mask, uint32_t id, uint8_t l
 	ev.tagData.msg.flags = rtr ? CT_XL_CAN_MSG_FLAG_REMOTE_FRAME : 0;
 	for (i = 0; i < 8 && i < len; i++) ev.tagData.msg.data[i] = data[i];
 	st = ct_xl_transmit(port, (ct_xlaccess)mask, &count, &ev);
+	CT_VLOG("xlCanTransmit(id=0x%X len=%u mask=0x%016llX) -> st=%d count=%u\n",
+	        (unsigned)id, (unsigned)len, (unsigned long long)mask, (int)st, count);
 	return st == 0 ? 0 : -(int)st;
 }
 
@@ -414,21 +529,32 @@ static int ct_vector_read(ct_xlport port, HANDLE ev_handle, uint32_t *id, uint8_
 	 * waited for. */
 	ULONGLONG started = GetTickCount64();
 	DWORD budget;
+	int polled = 0;
 	for (;;) {
-		/* THE DEADLINE APPLIES TO SKIPPING TOO. Every event we drop — a non-message tag, an
+		/* AT LEAST ONE POLL, always. Checking the deadline before the first receive made
+		 * recv(0) — the non-blocking poll a drain loop wants — return "nothing" without ever
+		 * asking the driver, because zero milliseconds have always already elapsed. Every
+		 * caller draining a queue was then paying a full millisecond per frame to get an
+		 * answer the driver had ready.
+		 *
+		 * THE DEADLINE APPLIES TO SKIPPING TOO. Every event we drop — a non-message tag, an
 		 * error frame, a confirmation of our own transmission — used to `continue` without
 		 * consulting it, so a queue that stays populated (an error-frame storm, or a bus we are
 		 * driving hard) let recv(200) drain for as long as the events kept coming. The caller
 		 * that asked for 200 ms is a GUI receive loop or an ISO-TP timeout, and neither expects
 		 * to be held. */
-		if (timeout_ms >= 0 && GetTickCount64() - started >= (ULONGLONG)timeout_ms) return 1;
+		if (polled && timeout_ms >= 0 && GetTickCount64() - started >= (ULONGLONG)timeout_ms) return 1;
+		polled = 1;
 		count = 1;
 		st = ct_xl_receive(port, &count, &ev);
 		if (st == 0 && count > 0) {
 			if (ev.tag != CT_XL_RECEIVE_MSG) continue;
 			/* An error frame carries no payload, and a TX confirmation is OUR OWN frame coming
 			 * back: filing either as bus traffic puts a message on the trace nobody sent. */
-			if (ev.tagData.msg.flags & CT_XL_CAN_MSG_FLAG_ERROR_FRAME) continue;
+			if (ev.tagData.msg.flags & CT_XL_CAN_MSG_FLAG_ERROR_FRAME) {
+				InterlockedIncrement(&ct_vector_errframes);
+				continue;
+			}
 			if (ev.tagData.msg.flags & (CT_XL_CAN_MSG_FLAG_TX_COMPLETED | CT_XL_CAN_MSG_FLAG_TX_REQUEST)) continue;
 			*rtr = (ev.tagData.msg.flags & CT_XL_CAN_MSG_FLAG_REMOTE_FRAME) ? 1 : 0;
 			*ext = (ev.tagData.msg.id & CT_XL_CAN_EXT_MSG_ID) ? 1 : 0;
@@ -449,6 +575,37 @@ static int ct_vector_read(ct_xlport port, HANDLE ev_handle, uint32_t *id, uint8_
 		waited = WaitForSingleObject(ev_handle, budget);
 		if (waited != WAIT_OBJECT_0) return 1; /* timed out */
 	}
+}
+
+/* THE CONTROLLER'S OWN VERDICT on a send that produced nothing.
+ *
+ * xlCanTransmit returning 0 means the frame was QUEUED, not that it reached the wire — so a
+ * silent failure looks identical to a bus nobody is listening on. The error counters tell them
+ * apart: a frame that went out and was never acknowledged drives txErrorCounter up and the chip
+ * towards error-passive, while a frame that never left leaves both counters at rest.
+ *
+ * 0 ok, negative otherwise. Consumes queued events while it looks for the answer, so it belongs
+ * at the END of a diagnostic run. */
+static int ct_vector_chipstate(ct_xlport port, uint64_t mask, int *bus_status, int *tx_err, int *rx_err) {
+	ct_xlevent ev;
+	unsigned int count;
+	ct_xlstatus st;
+	int spins;
+	if (!ct_xl_reqchip) return -1;
+	st = ct_xl_reqchip(port, (ct_xlaccess)mask);
+	if (st != 0) return -(int)st;
+	for (spins = 0; spins < 200; spins++) {
+		count = 1;
+		st = ct_xl_receive(port, &count, &ev);
+		if (st == 0 && count > 0 && ev.tag == CT_XL_CHIP_STATE) {
+			*bus_status = ev.tagData.raw[0];
+			*tx_err     = ev.tagData.raw[1];
+			*rx_err     = ev.tagData.raw[2];
+			return 0;
+		}
+		Sleep(5);
+	}
+	return -1;
 }
 
 static void ct_vector_close(ct_xlport port, uint64_t mask, uint64_t gen) {
@@ -478,6 +635,130 @@ static int ct_vector_diag(void) {
 	st = ct_xl_opendrv();
 	if (st != 0) return -(int)st;
 	return 0;
+}
+
+/* WHAT IS ACTUALLY PLUGGED IN, from xlGetDriverConfig.
+ *
+ * This struct was left out of the first version of this backend on purpose: reproducing forty
+ * packed fields from documentation fails by reading out of bounds rather than by returning an
+ * error, and there was no way to check it. It is here now because the operator's XL Driver
+ * Library install ships vxlapi.h, so the layout below was compared field by field against the
+ * real one and every size and offset in the assertions was MEASURED by compiling against it —
+ * not deduced. The header is still not included: we cannot depend at build time on a library we
+ * are forbidden to redistribute.
+ *
+ * Byte-packed. sizeof(XLchannelConfig) is 227, an odd number, which is the giveaway. */
+#pragma pack(push, 1)
+typedef struct {
+	uint32_t busType;
+	uint32_t bitRate;   /* the CAN arm of the union; the rest is not ours to interpret */
+	uint8_t  rest[24];
+} ct_xl_bus_params;
+
+typedef struct {
+	char     name[32];
+	uint8_t  hwType, hwIndex, hwChannel;
+	uint16_t transceiverType, transceiverState, configError;
+	uint8_t  channelIndex;
+	uint64_t channelMask;
+	uint32_t channelCapabilities, channelBusCapabilities;
+	uint8_t  isOnBus;
+	uint32_t connectedBusType;
+	ct_xl_bus_params busParams;
+	uint32_t doNotUse, driverVersion, interfaceVersion;
+	uint32_t raw_data[10];
+	uint32_t serialNumber, articleNumber;
+	char     transceiverName[32];
+	uint32_t specialCabFlags, dominantTimeout;
+	uint8_t  dominantRecessiveDelay, recessiveDominantDelay, connectionInfo, currentlyAvailableTimestamps;
+	uint16_t minimalSupplyVoltage, maximalSupplyVoltage;
+	uint32_t maximalBaudrate;
+	uint8_t  fpgaCoreCapabilities, specialDeviceStatus;
+	uint16_t channelBusActiveCapabilities, breakOffset, delimiterOffset;
+	uint32_t reserved[3];
+} ct_xl_channel_config;
+
+typedef struct {
+	uint32_t dllVersion;
+	uint32_t channelCount;
+	uint32_t reserved[10];
+	ct_xl_channel_config channel[64];
+} ct_xl_driver_config;
+#pragma pack(pop)
+
+_Static_assert(sizeof(ct_xl_bus_params) == 32, "XLbusParams is 32 bytes");
+_Static_assert(sizeof(ct_xl_channel_config) == 227, "XLchannelConfig is 227 bytes");
+_Static_assert(sizeof(ct_xl_driver_config) == 14576, "XLdriverConfig is 14576 bytes");
+_Static_assert(offsetof(ct_xl_channel_config, hwType) == 32, "hwType at 32");
+_Static_assert(offsetof(ct_xl_channel_config, channelIndex) == 41, "channelIndex at 41");
+_Static_assert(offsetof(ct_xl_channel_config, channelMask) == 42, "channelMask at 42");
+_Static_assert(offsetof(ct_xl_channel_config, connectedBusType) == 59, "connectedBusType at 59");
+_Static_assert(offsetof(ct_xl_channel_config, busParams) == 63, "busParams at 63");
+_Static_assert(offsetof(ct_xl_channel_config, serialNumber) == 147, "serialNumber at 147");
+_Static_assert(offsetof(ct_xl_channel_config, transceiverName) == 155, "transceiverName at 155");
+_Static_assert(offsetof(ct_xl_driver_config, channel) == 48, "channel array at 48");
+
+/* One channel from the driver's own view of the bench. 0 ok, -1 unavailable, -2 out of range.
+ * `name` and `transceiver` are NUL-terminated on the way out; the driver's are fixed-width. */
+static int ct_vector_channel_info(int idx, char *name, int name_len, char *transceiver,
+                                  int trans_len, int *hw_type, int *hw_index, int *hw_channel,
+                                  unsigned int *serial, unsigned int *bus_type,
+                                  unsigned int *bitrate, int *on_bus, int *trx_state) {
+	static ct_xl_driver_config cfg;
+	if (ct_vector_load() != 0 || !ct_xl_drvconfig) return -1;
+	if (ct_xl_opendrv() != 0) return -1;
+	memset(&cfg, 0, sizeof(cfg));
+	if (ct_xl_drvconfig(&cfg) != 0) return -1;
+	if (idx < 0 || (unsigned int)idx >= cfg.channelCount || idx >= 64) return -2;
+	{
+		ct_xl_channel_config *c = &cfg.channel[idx];
+		int n = name_len < 33 ? name_len : 33;
+		if (n > 0) { memcpy(name, c->name, n - 1); name[n - 1] = 0; }
+		n = trans_len < 33 ? trans_len : 33;
+		if (n > 0) { memcpy(transceiver, c->transceiverName, n - 1); transceiver[n - 1] = 0; }
+		*hw_type = c->hwType; *hw_index = c->hwIndex; *hw_channel = c->hwChannel;
+		*serial = c->serialNumber;
+		*bus_type = c->connectedBusType;
+		*bitrate = c->busParams.bitRate;
+		*on_bus = c->isOnBus ? 1 : 0;
+		*trx_state = (int)c->transceiverState;
+	}
+	return 0;
+}
+
+/* Point one of OUR application channels at a specific piece of hardware, the way Vector
+ * Hardware Manager would. Writes only under the name "blobly_net", so it cannot disturb another
+ * application's assignment. 0 ok, negative XL status. */
+static int ct_vector_assign(unsigned int app_channel, int hw_type, int hw_index, int hw_channel) {
+	ct_xlstatus st;
+	if (ct_vector_load() != 0) return -1;
+	if (ct_xl_opendrv() != 0) return -2;
+	if (!ct_xl_setappl) return -3;
+	st = ct_xl_setappl("blobly_net", app_channel, (unsigned int)hw_type, (unsigned int)hw_index,
+	                   (unsigned int)hw_channel, CT_XL_BUS_TYPE_CAN);
+	return st == 0 ? 0 : -(int)st;
+}
+
+/* Ask the driver which (hwType, hwIndex, hwChannel) triples resolve to a real channel.
+ * xlGetChannelMask is a pure lookup that returns 0 for hardware that is not there, so sweeping
+ * it needs no table of device types to keep up to date — the driver is the authority on what is
+ * plugged in, and asking it cannot be wrong the way a hardcoded list goes stale. */
+static int ct_vector_probe(int idx, int *hw_type, int *hw_index, int *hw_channel, uint64_t *mask) {
+	int t, i, c, n = 0;
+	if (ct_vector_load() != 0) return -1;
+	if (ct_xl_opendrv() != 0) return -1;
+	for (t = 0; t < 256; t++)
+		for (i = 0; i < 4; i++)
+			for (c = 0; c < 8; c++) {
+				uint64_t m = (uint64_t)ct_xl_chanmask(t, i, c);
+				if (!m) continue;
+				if (n == idx) {
+					*hw_type = t; *hw_index = i; *hw_channel = c; *mask = m;
+					return 0;
+				}
+				n++;
+			}
+	return -1;
 }
 
 /* Is an application channel assigned to hardware? For discovery. */

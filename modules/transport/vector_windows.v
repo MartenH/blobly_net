@@ -29,9 +29,14 @@
 // way I would have". The shim answers it by remembering what this process configured, because
 // XL will not report the rate a channel is running at.
 //
-// NOTE: written from the documented XL ABI; NOT yet verified against hardware. The event
-// layout is pinned by _Static_assert in the shim, and the machine this was written on has no
-// Vector hardware and no Windows. Verify with `cmd/vectorcheck` before trusting a bench to it.
+// ABI CHECKED against vxlapi.h 25.20.14 (shipped with the XL Driver Library, not with the
+// hardware drivers): every typedef, signature and constant this backend uses matches, and
+// _Static_assert pins the event layout at build time. The driver loads, resolves and opens —
+// xlOpenDriver returns XL_SUCCESS on a real VN1630A bench.
+//
+// STILL UNPROVEN: a frame. Nothing has been transmitted or received, because no application
+// channel has hardware assigned to it yet. `cmd/vectorcheck` is the way to close that gap, and
+// it opens silently so the first attempt cannot disturb a live bus.
 module transport
 
 #include "vector_shim.h"
@@ -43,6 +48,13 @@ fn C.ct_vector_read(int, voidptr, &u32, &u8, &u8, &int, &int, int) int
 fn C.ct_vector_close(int, u64, u64)
 fn C.ct_vector_present(u32) int
 fn C.ct_vector_diag() int
+fn C.ct_vector_dll_path() &char
+fn C.ct_vector_assign(u32, int, int, int) int
+fn C.ct_vector_probe(int, &int, &int, &int, &u64) int
+fn C.ct_vector_channel_info(int, &char, int, &char, int, &int, &int, &int, &u32, &u32, &u32, &int, &int) int
+fn C.ct_vector_error_frames() int
+fn C.ct_vector_chipstate(int, u64, &int, &int, &int) int
+fn C.ct_vector_set_verbose(int)
 fn C.ct_vector_err(int) &char
 
 // VectorBus is one open, activated XL port on a single channel.
@@ -180,6 +192,153 @@ pub fn (mut b VectorBus) close() {
 	C.ct_vector_close(b.port, b.mask, b.gen)
 }
 
+// VectorHw is one hardware channel the driver admits to having.
+pub struct VectorHw {
+pub:
+	hw_type    int
+	hw_index   int
+	hw_channel int
+	mask       u64
+}
+
+// vector_hardware asks the DRIVER what is present, rather than matching a table of device types
+// that would go stale every time Vector ships one. xlGetChannelMask is a pure lookup returning
+// zero for hardware that is not there.
+pub fn vector_hardware() []VectorHw {
+	mut out := []VectorHw{}
+	for i in 0 .. 64 {
+		mut ht := 0
+		mut hi := 0
+		mut hc := 0
+		mut m := u64(0)
+		if C.ct_vector_probe(i, &ht, &hi, &hc, &m) != 0 {
+			break
+		}
+		out << VectorHw{
+			hw_type:    ht
+			hw_index:   hi
+			hw_channel: hc
+			mask:       m
+		}
+	}
+	return out
+}
+
+// vector_assign points one of OUR application channels at a piece of hardware, as Vector
+// Hardware Manager would. It writes only under the name `blobly_net`, so another application's
+// assignment cannot be disturbed by it.
+// Takes the channel AS THE DRIVER DESCRIBES IT, not an index into some other list. It used to
+// take a VectorHw from a separate probe sweep, and the two lists were in different orders —
+// the driver reports its channels device-first, the sweep walks hwType ascending, so row 0 was
+// "VN1630A Channel 1" in the table and the virtual channel in the assignment. The caller named
+// one thing and got another, and the only symptom was silence on a wire that was fine.
+pub fn vector_assign(app_channel int, hw VectorChannel) ! {
+	rc := C.ct_vector_assign(u32(app_channel - 1), hw.hw_type, hw.hw_index, hw.hw_channel)
+	if rc != 0 {
+		return error('assigning Vector application channel ${app_channel} failed (XL status ${-rc})')
+	}
+}
+
+// VectorChannel is one channel as the DRIVER describes it — the bench's own view, not ours.
+pub struct VectorChannel {
+pub:
+	name        string // e.g. "VN1630A Channel 1"
+	transceiver string // e.g. "On board CAN 1051cap"
+	hw_type     int
+	hw_index    int
+	hw_channel  int
+	serial      u32
+	bus_type    u32 // what it is CONNECTED as (1 = CAN); 0 when nothing is configured
+	bitrate     u32 // the rate the channel is currently configured for
+	on_bus      bool
+	trx_state   int // XL_TRANSCEIVER_STATUS_*: 0 = no transceiver seen on this channel
+}
+
+// vector_channels reads the Vector hardware configuration: every channel the driver knows
+// about, with the device name, transceiver, serial number, the bus it is wired as and the rate
+// it is set to. This is what Vector Hardware Manager shows, from the same source.
+pub fn vector_channels() []VectorChannel {
+	mut out := []VectorChannel{}
+	for i in 0 .. 64 {
+		mut nm := [33]u8{}
+		mut tr := [33]u8{}
+		mut ht := 0
+		mut hi := 0
+		mut hc := 0
+		mut sn := u32(0)
+		mut bt := u32(0)
+		mut br := u32(0)
+		mut ob := 0
+		mut ts := 0
+		rc := C.ct_vector_channel_info(i, unsafe { &char(&nm[0]) }, 33, unsafe { &char(&tr[0]) },
+			33, &ht, &hi, &hc, &sn, &bt, &br, &ob, &ts)
+		if rc != 0 {
+			break
+		}
+		out << VectorChannel{
+			name:        unsafe { cstring_to_vstring(&char(&nm[0])) }.trim_space()
+			transceiver: unsafe { cstring_to_vstring(&char(&tr[0])) }.trim_space()
+			hw_type:     ht
+			hw_index:    hi
+			hw_channel:  hc
+			serial:      sn
+			bus_type:    bt
+			bitrate:     br
+			on_bus:      ob != 0
+			trx_state:   ts
+		}
+	}
+	return out
+}
+
+// vector_error_frames is how many error frames this process has seen. On a bus we cannot decode
+// it is the difference between "nothing is there" and "something is there and we have the rate
+// wrong" — a silent node sees error frames and nothing else.
+// VectorChipState is what the CAN controller says about itself.
+pub struct VectorChipState {
+pub:
+	bus_status int // XL_CHIPSTAT_*: 8 = error active (healthy), 2 = error passive, 1 = bus off
+	tx_errors  int
+	rx_errors  int
+}
+
+// chip_state asks this channel's controller how it is doing. A transmit that produced no
+// traffic is ambiguous until you look here: unacknowledged frames drive tx_errors up, while a
+// frame that never reached the wire leaves the counters alone.
+pub fn (b &VectorBus) chip_state() !VectorChipState {
+	mut bs := 0
+	mut tx := 0
+	mut rx := 0
+	if C.ct_vector_chipstate(b.port, b.mask, &bs, &tx, &rx) != 0 {
+		return error('the controller did not report its state')
+	}
+	return VectorChipState{
+		bus_status: bs
+		tx_errors:  tx
+		rx_errors:  rx
+	}
+}
+
+// chip_state_of asks a Bus for its controller state, when it is a Vector one. The type switch
+// lives here rather than at the call site: `Bus` is this module's interface and the concrete
+// types behind it are this module's business.
+pub fn chip_state_of(b Bus) ?VectorChipState {
+	if b is VectorBus {
+		return b.chip_state() or { return none }
+	}
+	return none
+}
+
+// vector_verbose makes the backend narrate each XL call it makes. For working out which of them
+// returned success without doing anything.
+pub fn vector_verbose(on bool) {
+	C.ct_vector_set_verbose(if on { 1 } else { 0 })
+}
+
+pub fn vector_error_frames() int {
+	return C.ct_vector_error_frames()
+}
+
 // vector_list reports the application channels that have hardware assigned, for discovery.
 // Returns [] when vxlapi64.dll is absent.
 //
@@ -193,6 +352,17 @@ pub fn (mut b VectorBus) close() {
 // negatives an XL status from xlOpenDriver.
 pub fn vector_driver_status() int {
 	return C.ct_vector_diag()
+}
+
+// vector_driver_path is the vxlapi the process actually loaded, or '' if none. Worth reporting:
+// the library does not install onto the search path, so "which copy is this" is a real question
+// on a machine that may also have one beside an executable or in System32.
+pub fn vector_driver_path() string {
+	p := C.ct_vector_dll_path()
+	if p == unsafe { nil } {
+		return ''
+	}
+	return unsafe { cstring_to_vstring(p) }
 }
 
 fn vector_list() []Iface {

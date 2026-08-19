@@ -24,17 +24,31 @@ import transport
 
 struct Opts {
 	list     bool
+	probe    bool
+	selftest bool
+	assign   int = -1
+	pair     string
 	channel  int
 	bitrate  int
 	seconds  int
 	transmit bool
 }
 
+// nonempty is `?string` sugar so an unloaded library prints nothing rather than a blank label.
+fn nonempty(s string) ?string {
+	return if s == '' { none } else { s }
+}
+
 fn usage() {
 	eprintln('usage: vectorcheck --list')
 	eprintln('       vectorcheck --channel <n> [--bitrate <bps>] [--seconds <n>] [--transmit]')
 	eprintln('')
-	eprintln('  --list      application channels with hardware assigned in Vector Hardware Config')
+	eprintln('  --list      application channels with hardware assigned in Vector Hardware Manager')
+	eprintln('  --probe     what the DRIVER says is present (hwType/hwIndex/hwChannel)')
+	eprintln('  --selftest  prove the backend on Vector VIRTUAL channels — touches no real bus')
+	eprintln('  --assign N  point --channel at the hardware on row N of --probe, then listen')
+	eprintln('  --pair A,B  TWO channels wired together: send on A, receive on B.')
+	eprintln('              TRANSMITS — both ends must acknowledge, so neither can be silent.')
 	eprintln('  --channel   application channel, as numbered in that dialog (from 1)')
 	eprintln('  --bitrate   bits/s (default 500000)')
 	eprintln('  --seconds   how long to listen (default 5)')
@@ -54,6 +68,32 @@ fn parse(args []string) !Opts {
 				o = Opts{
 					...o
 					list: true
+				}
+			}
+			'--probe' {
+				o = Opts{
+					...o
+					probe: true
+				}
+			}
+			'--pair' {
+				i++
+				o = Opts{
+					...o
+					pair: args[i] or { return error('--pair needs two --probe rows, e.g. 0,2') }
+				}
+			}
+			'--assign' {
+				i++
+				o = Opts{
+					...o
+					assign: args[i] or { return error('--assign needs a --probe row index') }.int()
+				}
+			}
+			'--selftest' {
+				o = Opts{
+					...o
+					selftest: true
 				}
 			}
 			'--transmit' {
@@ -108,10 +148,46 @@ fn main() {
 		usage()
 		exit(2)
 	}
+	if o.probe {
+		chans := transport.vector_channels()
+		if chans.len == 0 {
+			eprintln('the driver reports no channels (is the XL Driver Library installed?)')
+			exit(1)
+		}
+		println('idx  name                              transceiver                   serial     bus     rate')
+		for i, c in chans {
+			bus := match c.bus_type {
+				0 { '-' }
+				1 { 'CAN' }
+				else { '0x${c.bus_type:X}' }
+			}
+
+			rate := if c.bitrate > 0 { '${c.bitrate}' } else { '-' }
+			println('${i:3}  ${c.name:-32}  ${c.transceiver:-28}  ${c.serial:-9}  ${bus:-6}  ${rate}')
+		}
+		return
+	}
+	if o.pair != '' {
+		pair_test(o) or {
+			eprintln('vectorcheck: ${err}')
+			exit(1)
+		}
+		return
+	}
+	if o.selftest {
+		selftest() or {
+			eprintln('vectorcheck: ${err}')
+			exit(1)
+		}
+		return
+	}
 	if o.list {
 		ifaces := transport.list_interfaces() or {
 			eprintln('vectorcheck: ${err}')
 			exit(1)
+		}
+		if lib := nonempty(transport.vector_driver_path()) {
+			println('vxlapi: ${lib}')
 		}
 		mut n := 0
 		for f in ifaces {
@@ -164,6 +240,25 @@ fn main() {
 		usage()
 		exit(2)
 	}
+	if o.assign >= 0 {
+		chans := transport.vector_channels()
+		if o.assign >= chans.len {
+			eprintln('vectorcheck: no --probe row ${o.assign}')
+			exit(1)
+		}
+		c := chans[o.assign]
+		// REFUSED for a channel that is not CAN. The VN1630A's fifth channel is D/A IO, and
+		// pointing a CAN application at it would fail somewhere less obvious than here.
+		if !c.transceiver.to_lower().contains('can') {
+			eprintln('vectorcheck: row ${o.assign} is "${c.name}" (${c.transceiver}) — not a CAN channel')
+			exit(1)
+		}
+		transport.vector_assign(o.channel, c) or {
+			eprintln('vectorcheck: ${err}')
+			exit(1)
+		}
+		println('application channel ${o.channel} -> ${c.name}  (${c.transceiver}, serial ${c.serial})')
+	}
 	mode := if o.transmit { '' } else { ',silent' }
 	spec := 'vector:${o.channel}@${o.bitrate}${mode}'
 	println('opening ${spec}${if o.transmit {
@@ -203,4 +298,171 @@ fn main() {
 		eprintln('so trying the other likely rates is safe.')
 		exit(1)
 	}
+}
+
+// selftest proves the whole path — assign, open, set the bitrate, go on the bus, transmit,
+// receive — on Vector's SOFTWARE VIRTUAL channels, which exist once the driver is installed and
+// are wired to nothing. That is the point: the first end-to-end run of a backend written from a
+// header should not be against a bus with somebody's ECU on it, and the same trick is what makes
+// the Kvaser backend verifiable without an adapter.
+//
+// It writes only our own application's channel assignments (`blobly_net`), never another
+// application's, and never the physical adapter's.
+fn selftest() ! {
+	mut virt := []transport.VectorChannel{}
+	for c in transport.vector_channels() {
+		if c.hw_type == 1 { // XL_HWTYPE_VIRTUAL
+			virt << c
+		}
+	}
+	if virt.len < 2 {
+		return error('need two Vector virtual channels; the driver reports ${virt.len}. They come with the XL Driver Library — check Vector Hardware Manager has a "Virtual Bus" device.')
+	}
+	// The last two application channels, so an operator's own channel 1 and 2 assignments are
+	// left alone by a self-test they may run on a configured bench.
+	a_ch, b_ch := 63, 64
+	transport.vector_assign(a_ch, virt[0])!
+	transport.vector_assign(b_ch, virt[1])!
+	println('assigned app channel ${a_ch} -> virtual ${virt[0].hw_channel}, ${b_ch} -> virtual ${virt[1].hw_channel}')
+
+	mut tx := transport.open('vector:${a_ch}@500000')!
+	defer { tx.close() }
+	mut rx := transport.open('vector:${b_ch}@500000')!
+	defer { rx.close() }
+	println('both ports open and on the bus')
+
+	sent := transport.CanFrame{
+		id:   0x1A5
+		data: [u8(0xDE), 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04]
+	}
+	tx.send(sent)!
+	println('sent  0x${sent.id:03X}  ${sent.data.hex()}')
+
+	for _ in 0 .. 20 {
+		got := rx.recv(200) or { continue }
+		if got.id != sent.id {
+			continue
+		}
+		if got.data != sent.data {
+			return error('payload differs: sent ${sent.data.hex()}, got ${got.data.hex()}')
+		}
+		println('recv  0x${got.id:03X}  ${got.data.hex()}')
+		println('')
+		println('SELFTEST PASSED — open, bitrate, activate, transmit and receive all work.')
+		return
+	}
+	return error('nothing arrived on the second virtual channel within 4s')
+}
+
+// pair_test drives two channels of the same adapter that the operator has wired together.
+//
+// NEITHER END IS SILENT, and that is forced by CAN itself rather than chosen: a transmitter
+// needs another node to acknowledge, so a listen-only receiver would leave every frame
+// unacknowledged and retransmitting forever. This is the one mode of this tool that puts
+// traffic on a real wire, which is why it is a separate flag and says so.
+fn pair_test(o Opts) ! {
+	parts := o.pair.split(',')
+	if parts.len != 2 {
+		return error('--pair takes two --probe rows, e.g. --pair 0,2')
+	}
+	a_row, b_row := parts[0].trim_space().int(), parts[1].trim_space().int()
+	chans := transport.vector_channels()
+	if a_row >= chans.len || b_row >= chans.len {
+		return error('no such --probe row')
+	}
+	// The application channels used are high ones, so an operator's own 1 and 2 assignments
+	// survive a test they may run on a configured bench.
+	a_app, b_app := 61, 62
+	transport.vector_assign(a_app, chans[a_row])!
+	transport.vector_assign(b_app, chans[b_row])!
+	println('TX  app ${a_app} -> ${chans[a_row].name}  (${chans[a_row].transceiver})')
+	println('RX  app ${b_app} -> ${chans[b_row].name}  (${chans[b_row].transceiver})')
+	println('bitrate ${o.bitrate}, both ends able to acknowledge — transmitting for ${o.seconds}s')
+
+	mut tx := transport.open('vector:${a_app}@${o.bitrate}')!
+	defer { tx.close() }
+	mut rx := transport.open('vector:${b_app}@${o.bitrate}')!
+	defer { rx.close() }
+
+	// A COUNTER IN THE PAYLOAD, not one frame repeated. It makes every frame checkable rather
+	// than just the first, so a link that drops or reorders is caught instead of being reported
+	// as a pass because something with the right id came back.
+	mut n_sent := 0
+	mut n_recv := 0
+	mut n_bad := 0
+	mut last_seq := u32(0)
+	deadline := time.now().add(o.seconds * time.second)
+	for time.now() < deadline {
+		seq := u32(n_sent)
+		f := transport.CanFrame{
+			id:   0x100 + u32(n_sent % 8) // eight ids, so a filter or a stuck mailbox shows up
+			data: [u8(seq >> 24), u8(seq >> 16), u8(seq >> 8), u8(seq), 0xA5, 0x5A, 0xC3, 0x3C]
+		}
+		tx.send(f) or { return error('send failed after ${n_sent} frames: ${err}') }
+		n_sent++
+		// Drain whatever has arrived. A short timeout keeps the transmit cadence steady rather
+		// than letting the receive side dictate it.
+		for {
+			got := rx.recv(1) or { break }
+			if got.data.len != 8 {
+				n_bad++
+				continue
+			}
+			got_seq := (u32(got.data[0]) << 24) | (u32(got.data[1]) << 16) | (u32(got.data[2]) << 8) | u32(got.data[3])
+			if got.data[4] != 0xA5 || got.data[7] != 0x3C {
+				n_bad++
+				continue
+			}
+			if got.id != 0x100 + (got_seq % 8) {
+				n_bad++
+				continue
+			}
+			last_seq = got_seq
+			n_recv++
+		}
+	}
+	// Anything still in flight when the clock ran out.
+	for _ in 0 .. 200 {
+		got := rx.recv(5) or { break }
+		if got.data.len == 8 {
+			n_recv++
+			last_seq = (u32(got.data[0]) << 24) | (u32(got.data[1]) << 16) | (u32(got.data[2]) << 8) | u32(got.data[3])
+		}
+	}
+	println('')
+	println('sent ${n_sent}, received ${n_recv}, malformed ${n_bad}, last sequence ${last_seq}')
+	if n_recv == 0 {
+		// fall through to the diagnosis below
+	} else {
+		lost := n_sent - n_recv
+		pct := 100.0 * f64(n_recv) / f64(n_sent)
+		println('${pct:.1f}% arrived (${lost} not seen)')
+		if n_bad > 0 {
+			return error('${n_bad} frames arrived corrupted — the link carries traffic but not intact')
+		}
+		println('')
+		println('PAIR TEST PASSED on real transceivers and a real wire.')
+		return
+	}
+	// ASK THE CONTROLLER before blaming the wire. A queued frame that never reached the bus and
+	// one that reached it unacknowledged look the same from here, and they are different faults.
+	errs := transport.vector_error_frames()
+	if st := transport.chip_state_of(tx) {
+		health := match true {
+			st.bus_status & 0x01 != 0 { 'BUS OFF' }
+			st.bus_status & 0x02 != 0 { 'error passive' }
+			st.bus_status & 0x04 != 0 { 'error warning' }
+			else { 'error active (healthy)' }
+		}
+
+		println('TX controller: ${health}, tx errors ${st.tx_errors}, rx errors ${st.rx_errors}')
+		if st.tx_errors > 0 || st.bus_status & 0x07 != 0 {
+			return error('the frame WAS driven onto the wire and nobody acknowledged it (tx error counter ${st.tx_errors}). The two channels are not electrically connected, or the bus is not terminated — a high-speed VN channel needs 120 ohm at each end and has none built in.')
+		}
+		return error('the controller is healthy and its transmit error counter is ${st.tx_errors}, so the frame never left the chip. That points at the port setup rather than the wiring.')
+	}
+	if errs > 0 {
+		return error('no frame arrived, but ${errs} error frames did — something is on the wire and ${o.bitrate} is not its bitrate')
+	}
+	return error('nothing arrived, no error frames, and the controller would not report its state')
 }
