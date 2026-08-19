@@ -494,6 +494,22 @@ fn parse_channel(c yaml.Any) !Channel {
 	if av := c.value_opt('adapter') {
 		ch.adapter = av.string()
 		ch.address = c.value('address').default_to('').string()
+		// A mode written into a v2 ADDRESS is lifted into the flag, exactly as the v1 interface
+		// spelling is. Left in the address it becomes a second source for one decision: the port
+		// opens silently while the model still calls the channel transmit-capable, so the GUI
+		// offers replay, generators and manual sends that VectorBus.send then refuses one frame
+		// at a time. listen_only is the single place this is recorded.
+		if ch.adapter == 'vector' && ch.address.contains(',') {
+			mode := ch.address.all_after_last(',').trim_space().to_lower()
+			if mode in ['silent', 'listen_only', 'listenonly'] {
+				ch.listen_only = true
+				ch.address = ch.address.all_before_last(',')
+			} else if mode == 'normal' {
+				ch.address = ch.address.all_before_last(',')
+			}
+			// anything else stays put, so the transport parser refuses it rather than this
+			// guessing at what was meant
+		}
 		ch.iface = compose_iface(ch.adapter, ch.address)
 	} else if iv := c.value_opt('interface') {
 		raw := iv.string()

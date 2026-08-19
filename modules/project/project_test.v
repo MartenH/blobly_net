@@ -596,3 +596,24 @@ fn test_listen_only_overrides_an_embedded_normal_mode() {
 	}
 	assert c.iface_with_bitrate() == 'vector:1@250000,silent'
 }
+
+// A mode written into a v2 ADDRESS must land in the flag, or the port opens silently while the
+// model calls the channel transmit-capable — the GUI then offering sends that are refused one
+// frame at a time.
+fn test_v2_address_silent_lifts_into_listen_only() {
+	p := parse('
+project:
+  name: v2
+channels:
+  - name: CAN1
+    adapter: vector
+    address: "1,silent"
+') or {
+		assert false, '${err}'
+		return
+	}
+	c := p.channels[0]
+	assert c.listen_only, 'one place records this, and it is the flag'
+	assert c.address == '1'
+	assert c.iface_with_bitrate() == 'vector:1@500000,silent'
+}

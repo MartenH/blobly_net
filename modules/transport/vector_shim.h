@@ -410,6 +410,13 @@ static int ct_vector_read(ct_xlport port, HANDLE ev_handle, uint32_t *id, uint8_
 	ULONGLONG started = GetTickCount64();
 	DWORD budget;
 	for (;;) {
+		/* THE DEADLINE APPLIES TO SKIPPING TOO. Every event we drop — a non-message tag, an
+		 * error frame, a confirmation of our own transmission — used to `continue` without
+		 * consulting it, so a queue that stays populated (an error-frame storm, or a bus we are
+		 * driving hard) let recv(200) drain for as long as the events kept coming. The caller
+		 * that asked for 200 ms is a GUI receive loop or an ISO-TP timeout, and neither expects
+		 * to be held. */
+		if (timeout_ms >= 0 && GetTickCount64() - started >= (ULONGLONG)timeout_ms) return 1;
 		count = 1;
 		st = ct_xl_receive(port, &count, &ev);
 		if (st == 0 && count > 0) {
