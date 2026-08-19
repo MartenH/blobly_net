@@ -172,6 +172,12 @@ static unsigned int ct_vec_cfg_rate[CT_VEC_MAX_CFG];
 static int ct_vec_cfg_silent[CT_VEC_MAX_CFG];
 static int ct_vec_cfg_ports[CT_VEC_MAX_CFG];
 static ct_xlport ct_vec_cfg_owner[CT_VEC_MAX_CFG];
+/* Set when the port holding initialisation access has closed while others are still open. What
+ * we knew about the channel stopped being true at that moment — another application may take
+ * the access and change the rate — but the ports still running are still running, and dropping
+ * the record out from under them refused their siblings for want of one. Kept for their
+ * bookkeeping, closed to new arrivals. */
+static int ct_vec_cfg_stale[CT_VEC_MAX_CFG];
 /* Which OPEN of this channel a reference belongs to. The mask identifies a wire, not an
  * episode: when the owner closes the record is forgotten, a replacement owner can configure the
  * same wire afresh, and a secondary port left over from the previous episode then closes and
@@ -214,6 +220,7 @@ static int ct_vec_cfg_note(uint64_t mask, unsigned int rate, int silent, ct_xlpo
 		ct_vec_cfg_mask[i] = mask;
 		ct_vec_cfg_ports[i] = 0;
 		ct_vec_cfg_gen[i] = ++ct_vec_gen_seq;
+		ct_vec_cfg_stale[i] = 0;
 	}
 	ct_vec_cfg_rate[i] = rate;
 	ct_vec_cfg_silent[i] = silent;
@@ -240,6 +247,7 @@ static void ct_vec_cfg_forget(int i) {
 		ct_vec_cfg_ports[i]  = ct_vec_cfg_ports[ct_vec_cfg_n];
 		ct_vec_cfg_owner[i]  = ct_vec_cfg_owner[ct_vec_cfg_n];
 		ct_vec_cfg_gen[i]    = ct_vec_cfg_gen[ct_vec_cfg_n];
+		ct_vec_cfg_stale[i]  = ct_vec_cfg_stale[ct_vec_cfg_n];
 	}
 }
 
@@ -254,7 +262,20 @@ static void ct_vec_cfg_unref(uint64_t mask, ct_xlport port, uint64_t gen) {
 	/* A port from a PREVIOUS episode of this wire has nothing to release: its record went with
 	 * its owner, and the one here now belongs to somebody else. */
 	if (i < 0 || ct_vec_cfg_gen[i] != gen) return;
-	if (ct_vec_cfg_owner[i] == port) { ct_vec_cfg_forget(i); return; }
+	if (ct_vec_cfg_owner[i] == port) {
+		/* The owner is going, but its siblings are not. Forgetting the record here left every
+		 * still-open port's eventual close with nothing to release, and — worse — the next open
+		 * on that wire was refused for want of a record while ports were live on it. Marked
+		 * stale instead: existing ports keep their bookkeeping, and nothing new is admitted on
+		 * what we no longer know. */
+		if (--ct_vec_cfg_ports[i] > 0) {
+			ct_vec_cfg_stale[i] = 1;
+			ct_vec_cfg_owner[i] = CT_XL_INVALID_PORTHANDLE;
+			return;
+		}
+		ct_vec_cfg_forget(i);
+		return;
+	}
 	if (--ct_vec_cfg_ports[i] > 0) return;
 	/* ct_vec_cfg_forget, not a second copy of it. This path had its own dense-swap that moved
 	 * four of the six fields, leaving the relocated record with another entry's owner and
@@ -469,7 +490,7 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 		/* No init access. Either we already configured this channel — a second port for a bus
 		 * this process is running, which is normal and must work — or somebody else owns it. */
 		int i = ct_vec_cfg_find(mask);
-		if (i < 0) { ct_xl_closeport(port); ct_vec_leave(); return -1003; }
+		if (i < 0 || ct_vec_cfg_stale[i]) { ct_xl_closeport(port); ct_vec_leave(); return -1003; }
 		/* Configured by us, but not the way this caller asked. Reported rather than papered
 		 * over: a port that believes it is silent while the channel acknowledges is the exact
 		 * promise this backend was added to keep. */

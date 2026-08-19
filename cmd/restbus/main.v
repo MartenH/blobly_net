@@ -352,7 +352,11 @@ fn run_multi(o Opts, rec mf4.Recording) {
 		now := f64(i64(sw.elapsed())) / 1e6
 		for e in p.due(now) {
 			mut bus := buses[e.iface] or { continue }
-			bus.send(e.frame) or {
+			// THE SAME HELPER main() uses. Applying the queue-full wait to the single-bus path
+			// and not this one dropped a frame per full queue on a saturated destination —
+			// corrupting a multi-bus replay exactly where the traffic was densest, which is
+			// where the cross-bus timing this feature exists for is hardest.
+			transport.send_waiting_for_room(mut bus, e.frame, 500) or {
 				failed++
 				if first_err == '' {
 					first_err = '${e.iface}: ${err.msg()}'

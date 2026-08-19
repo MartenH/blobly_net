@@ -5020,7 +5020,15 @@ fn (mut app App) set_adapter(i int, a string) {
 		return
 	}
 	old_iface := app.proj.channels[i].iface
+	was := app.proj.channels[i].adapter
 	app.proj.channels[i].adapter = a
+	// SILENT BY DEFAULT when a bus BECOMES a Vector one, for the same reason a discovered
+	// Vector channel starts that way: it is hardware that may already be wired to a running
+	// vehicle, arriving with a 500 kbit/s guess nobody has confirmed. Exposing the adapter in
+	// the picker without this made the manual route the unsafe one while Discover was careful.
+	if a == 'vector' && was != 'vector' {
+		app.proj.channels[i].listen_only = true
+	}
 	if a == 'doip' {
 		app.proj.channels[i].typ = 'doip'
 	} else if app.proj.channels[i].typ == 'doip' {

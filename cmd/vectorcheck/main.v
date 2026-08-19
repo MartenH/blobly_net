@@ -75,12 +75,16 @@ fn on_interrupt(_ os.Signal) {
 
 fn borrow(app int, hw transport.VectorChannel) !Borrowed {
 	prev := transport.vector_assignment(app)
-	transport.vector_assign(app, hw)!
 	b := Borrowed{
 		app:  app
 		prev: prev
 	}
+	// RECORDED BEFORE THE CHANGE. Appending afterwards left a window in which Ctrl-C restored
+	// every earlier borrow and not this one — the assignment already written, and nothing left
+	// that knew to undo it. Recording an intention we might not carry out is harmless: giving
+	// back a channel that was never taken restores it to what it already is.
 	g_borrowed << b
+	transport.vector_assign(app, hw)!
 	return b
 }
 
@@ -297,6 +301,13 @@ fn main() {
 		eprintln('note: could not install an interrupt handler; Ctrl-C may leave channels assigned')
 	}
 	if o.release >= 0 {
+		// BEFORE it reaches XL. vector_unassign converts `n - 1` to u32, so --release 0 became
+		// 0xFFFFFFFF and went straight into a persistent xlSetApplConfig; anything above 64 is
+		// equally not a channel this program can address.
+		if o.release < 1 || o.release > 64 {
+			eprintln('vectorcheck: --release must be 1..64 (Vector application channels)')
+			exit(2)
+		}
 		// The counterpart to --assign, and the way out of a diagnostic that was killed before it
 		// could hand a channel back. Clearing is its own operation because an assignment is
 		// persistent: nothing else in this tool can put a channel back to having no hardware.
@@ -565,6 +576,10 @@ fn pair_test(o Opts) ! {
 	mut n_busy := 0
 	mut n_recv := 0
 	mut n_bad := 0
+	mut n_dup := 0
+	// WHICH sequences arrived, not merely how many. A duplicate paired with a missing frame
+	// nets out in a count: n_recv == n_sent, lost == 0, and the test passes over real loss.
+	mut seen_seq := map[u32]bool{}
 	mut last_seq := u32(0)
 	mut sw := time.new_stopwatch()
 	for sw.elapsed().milliseconds() < i64(o.seconds) * 1000 {
@@ -600,7 +615,13 @@ fn pair_test(o Opts) ! {
 				n_bad++
 				continue
 			}
-			last_seq = (u32(got.data[0]) << 24) | (u32(got.data[1]) << 16) | (u32(got.data[2]) << 8) | u32(got.data[3])
+			seq_got := (u32(got.data[0]) << 24) | (u32(got.data[1]) << 16) | (u32(got.data[2]) << 8) | u32(got.data[3])
+			last_seq = seq_got
+			if seq_got in seen_seq {
+				n_dup++
+			} else {
+				seen_seq[seq_got] = true
+			}
 			n_recv++
 		}
 	}
@@ -620,20 +641,27 @@ fn pair_test(o Opts) ! {
 			continue
 		}
 		n_recv++
-		last_seq = (u32(got.data[0]) << 24) | (u32(got.data[1]) << 16) | (u32(got.data[2]) << 8) | u32(got.data[3])
+		seq_tail := (u32(got.data[0]) << 24) | (u32(got.data[1]) << 16) | (u32(got.data[2]) << 8) | u32(got.data[3])
+		last_seq = seq_tail
+		if seq_tail in seen_seq {
+			n_dup++
+		} else {
+			seen_seq[seq_tail] = true
+		}
 		quiet = time.new_stopwatch()
 	}
 	println('')
 	rate := if o.seconds > 0 { n_sent / o.seconds } else { 0 }
-	println('sent ${n_sent} (${rate}/s), received ${n_recv}, malformed ${n_bad}, last sequence ${last_seq}')
+	println('sent ${n_sent} (${rate}/s), received ${n_recv} (${seen_seq.len} distinct), duplicates ${n_dup}, malformed ${n_bad}, last sequence ${last_seq}')
 	if n_busy > 0 {
 		println('${n_busy} times the transmit queue was full — the wire setting the pace, which is what saturation looks like')
 	}
 	if n_recv == 0 {
 		// fall through to the diagnosis below
 	} else {
-		lost := n_sent - n_recv
-		pct := 100.0 * f64(n_recv) / f64(n_sent)
+		// DISTINCT sequences, so a duplicate cannot fill in for something that never came.
+		lost := n_sent - seen_seq.len
+		pct := 100.0 * f64(seen_seq.len) / f64(n_sent)
 		println('${pct:.1f}% arrived (${lost} not seen)')
 		if n_bad > 0 {
 			return error('${n_bad} frames arrived corrupted — the link carries traffic but not intact')
@@ -641,6 +669,9 @@ fn pair_test(o Opts) ! {
 		// EVERY frame, not merely one. Passing on "something arrived" would certify a link that
 		// dropped all but a handful, and the drain above already waits for the wire to go quiet,
 		// so anything still missing is genuinely missing.
+		if n_dup > 0 {
+			return error('${n_dup} frames arrived more than once — a link that repeats itself is not carrying the recording faithfully')
+		}
 		if lost != 0 {
 			return error('${lost} of ${n_sent} frames never arrived (${pct:.1f}%) — the link carries traffic but loses it')
 		}
