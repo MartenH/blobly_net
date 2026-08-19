@@ -5244,6 +5244,14 @@ fn (mut app App) draw_bus_editor(i int) bool {
 		// time. One rule, applied wherever an address can be written.
 		if ch.adapter == 'vector' {
 			stripped, want_silent, _ := project.split_vector_mode(typed)
+			if stripped != typed {
+				// BACK INTO THE BUFFER as well. Normalising only the project value left
+				// `1,silent` in the text field, and the next commit_cfg copied it back — the
+				// interface flipping from `vector:1` to `vector:1,silent` behind the operator,
+				// after which every generator bound to the old spelling no longer matched its
+				// own bus. What the field shows has to be what the model holds.
+				app.cfg_bufs[i].address_buf = mkbuf(stripped, 64)
+			}
 			typed = stripped
 			if want_silent {
 				app.proj.channels[i].listen_only = true

@@ -516,7 +516,15 @@ fn pair_test(o Opts) ! {
 			n_sent++
 		}
 		for {
-			got := rx.recv(0) or { break }
+			// AN EMPTY QUEUE IS A TIMEOUT; anything else is the adapter in trouble. Treating
+			// every error alike meant an RX port that disconnected mid-run was reported as
+			// frame loss or a wiring fault, with the transmit side still cheerfully going.
+			got := rx.recv(0) or {
+				if err.msg().contains('timeout') {
+					break
+				}
+				return error('receive failed after ${n_recv} frames: ${err}')
+			}
 			if !is_test_frame(got) {
 				n_bad++
 				continue
@@ -530,7 +538,12 @@ fn pair_test(o Opts) ! {
 	// 97%. Drain until it goes quiet for a stretch rather than for a fixed number of tries.
 	mut quiet := time.new_stopwatch()
 	for quiet.elapsed().milliseconds() < 400 {
-		got := rx.recv(5) or { continue }
+		got := rx.recv(5) or {
+			if err.msg().contains('timeout') {
+				continue
+			}
+			return error('receive failed while draining after ${n_recv} frames: ${err}')
+		}
 		// THE SAME CHECK the main loop applies. Counting any eight-byte frame let unrelated
 		// traffic on a live bus finish the test for us — PAIR TEST PASSED on somebody else's
 		// frames, which is the one result this tool must never print.

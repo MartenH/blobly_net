@@ -86,6 +86,9 @@ pub fn open_vector(spec string) !&VectorBus {
 	// application channels from 1 and the operator reads the interface string against that
 	// dialog, so the conversion belongs here rather than in their head.
 	rc := C.ct_vector_open(u32(s.channel - 1), u32(s.bitrate), sil, &port, &mask, &notify, &gen)
+	if rc == -1001 {
+		return error('Vector application channel ${s.channel} is assigned to hardware that is not present — the adapter it names is unplugged, powered off, or claimed by another application. The assignment itself is fine.')
+	}
 	if rc == -1000 {
 		return error('Vector application channel ${s.channel} has no hardware assigned — open Vector Hardware Manager, find the application "blobly_net" (registered just now) and assign a VN channel to it')
 	}

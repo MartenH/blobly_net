@@ -392,7 +392,16 @@ static uint64_t ct_vector_mask_why(unsigned int app_channel, int *why, int regis
 		if (why) *why = -1000; /* driver fine, this channel simply has no hardware yet */
 		return 0;
 	}
-	return (uint64_t)ct_xl_chanmask((int)hw_type, (int)hw_index, (int)hw_channel);
+	{
+		uint64_t m = (uint64_t)ct_xl_chanmask((int)hw_type, (int)hw_index, (int)hw_channel);
+		/* ASSIGNED BUT ABSENT. xlGetApplConfig hands back the saved triple whether or not the
+		 * device is plugged in, and only xlGetChannelMask notices it has gone — returning zero,
+		 * which used to be reported as "no hardware assigned" and sent the operator to rewrite
+		 * an assignment that was perfectly correct. The adapter being unplugged is a different
+		 * sentence. */
+		if (!m && why) *why = -1001;
+		return m;
+	}
 }
 
 /* Probe only: never registers. Discovery asks about every supported channel. */
