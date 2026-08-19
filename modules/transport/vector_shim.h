@@ -480,10 +480,13 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 	st = ct_xl_activate(port, mask, CT_XL_BUS_TYPE_CAN, CT_XL_ACTIVATE_NONE);
 	CT_VLOG("xlActivateChannel -> st=%d\n", (int)st);
 	if (st != 0) {
-		/* The reference was taken above; drop it here rather than in ct_vector_close, which the
-		 * caller never reaches for a port that failed to activate. */
+		/* The reference AND the notification handle were both taken above; drop them here rather
+		 * than in ct_vector_close, which the caller never reaches for a port that failed to
+		 * activate. A retry loop against a channel that will not activate leaked one Win32 event
+		 * per attempt. */
 		ct_vec_cfg_unref(mask, port, *out_gen);
 		ct_xl_closeport(port);
+		if (*out_event) { CloseHandle(*out_event); *out_event = NULL; }
 		ct_vec_leave();
 		return -(int)st;
 	}

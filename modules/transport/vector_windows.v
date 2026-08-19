@@ -260,6 +260,17 @@ pub fn vector_assignment(app_channel int) ?VectorChannel {
 	}
 }
 
+// vector_unassign returns one of our application channels to having no hardware, which is what
+// "as we found it" means for a channel that was unassigned before we borrowed it. hwType 0 is
+// how the XL library spells unassigned, and it is the same call that registers the application
+// in the first place.
+pub fn vector_unassign(app_channel int) ! {
+	rc := C.ct_vector_assign(u32(app_channel - 1), 0, 0, 0)
+	if rc != 0 {
+		return error('clearing Vector application channel ${app_channel} failed (XL status ${-rc})')
+	}
+}
+
 // vector_assign points one of OUR application channels at a piece of hardware, as Vector
 // Hardware Manager would. It writes only under the name `blobly_net`, so another application's
 // assignment cannot be disturbed by it.

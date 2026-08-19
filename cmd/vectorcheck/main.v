@@ -68,9 +68,16 @@ fn borrow(app int, hw transport.VectorChannel) !Borrowed {
 
 fn give_back(bs []Borrowed) {
 	for b in bs {
+		// AS WE FOUND IT includes "not assigned at all". Restoring only the channels that had a
+		// mapping left the others pointing at our test hardware for good, which is the same
+		// unasked-for change to somebody's bench, just quieter.
 		if p := b.prev {
 			transport.vector_assign(b.app, p) or {
 				eprintln('note: could not restore Vector application channel ${b.app}: ${err}')
+			}
+		} else {
+			transport.vector_unassign(b.app) or {
+				eprintln('note: could not clear Vector application channel ${b.app}: ${err}')
 			}
 		}
 	}
@@ -548,6 +555,12 @@ fn pair_test(o Opts) ! {
 		println('${pct:.1f}% arrived (${lost} not seen)')
 		if n_bad > 0 {
 			return error('${n_bad} frames arrived corrupted — the link carries traffic but not intact')
+		}
+		// EVERY frame, not merely one. Passing on "something arrived" would certify a link that
+		// dropped all but a handful, and the drain above already waits for the wire to go quiet,
+		// so anything still missing is genuinely missing.
+		if lost != 0 {
+			return error('${lost} of ${n_sent} frames never arrived (${pct:.1f}%) — the link carries traffic but loses it')
 		}
 		println('')
 		println('PAIR TEST PASSED on real transceivers and a real wire.')
