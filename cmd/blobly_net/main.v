@@ -1778,17 +1778,24 @@ fn (app &App) open_tap(iface string, origin string) !transport.Bus {
 // without coupling unrelated buses.
 fn (app &App) tx_mutex(iface string) &sync.Mutex {
 	mut a := unsafe { app }
+	// KEYED ON THE DESTINATION, not on the spelling. This lock serialises the record-then-send
+	// pair in TapBus, so two spellings of one wire taking two different locks lets one thread
+	// record A, pause, and the other queue B first — the trace then says A went out before B
+	// while the bus carried B, and each frame can claim the other's echo. `vector:1` and
+	// `vector:ch1` are one transceiver; canonical_iface does not know that and
+	// destination_key does.
+	key := transport.destination_key(iface)
 	// tx_map_mu, NOT app.mu — see the field comment: a caller may already hold app.mu here.
 	a.tx_map_mu.lock()
 	defer {
 		a.tx_map_mu.unlock()
 	}
-	if m := a.tx_mutexes[iface] {
+	if m := a.tx_mutexes[key] {
 		return m
 	}
 	m := &sync.Mutex{}
 	m.init()
-	a.tx_mutexes[iface] = m
+	a.tx_mutexes[key] = m
 	return m
 }
 

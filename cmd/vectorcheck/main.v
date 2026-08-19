@@ -83,6 +83,21 @@ fn give_back(bs []Borrowed) {
 	}
 }
 
+// poll returns a frame, or none when the queue is simply empty, and FAILS on anything else.
+//
+// The fourth place this distinction was needed. It was added to the --channel loop, then the
+// --pair drain, then its tail, and each time the remaining loops went on reporting a broken
+// adapter as an idle bus. A predicate every caller shares cannot be got right in one of them.
+fn poll(mut b transport.Bus, ms int) !(transport.CanFrame, bool) {
+	f := b.recv(ms) or {
+		if err.msg().contains('timeout') {
+			return transport.CanFrame{}, false
+		}
+		return err
+	}
+	return f, true
+}
+
 fn is_test_frame(f transport.CanFrame) bool {
 	if f.data.len != 8 || f.data[4] != 0xA5 || f.data[7] != 0x3C {
 		return false
@@ -430,7 +445,10 @@ fn selftest() ! {
 	println('sent  0x${sent.id:03X}  ${sent.data.hex()}')
 
 	for _ in 0 .. 20 {
-		got := rx.recv(200) or { continue }
+		got, ok := poll(mut rx, 200)!
+		if !ok {
+			continue
+		}
 		if got.id != sent.id {
 			continue
 		}
@@ -519,11 +537,9 @@ fn pair_test(o Opts) ! {
 			// AN EMPTY QUEUE IS A TIMEOUT; anything else is the adapter in trouble. Treating
 			// every error alike meant an RX port that disconnected mid-run was reported as
 			// frame loss or a wiring fault, with the transmit side still cheerfully going.
-			got := rx.recv(0) or {
-				if err.msg().contains('timeout') {
-					break
-				}
-				return error('receive failed after ${n_recv} frames: ${err}')
+			got, ok := poll(mut rx, 0)!
+			if !ok {
+				break
 			}
 			if !is_test_frame(got) {
 				n_bad++
@@ -538,11 +554,9 @@ fn pair_test(o Opts) ! {
 	// 97%. Drain until it goes quiet for a stretch rather than for a fixed number of tries.
 	mut quiet := time.new_stopwatch()
 	for quiet.elapsed().milliseconds() < 400 {
-		got := rx.recv(5) or {
-			if err.msg().contains('timeout') {
-				continue
-			}
-			return error('receive failed while draining after ${n_recv} frames: ${err}')
+		got, ok := poll(mut rx, 5)!
+		if !ok {
+			continue
 		}
 		// THE SAME CHECK the main loop applies. Counting any eight-byte frame let unrelated
 		// traffic on a live bus finish the test for us — PAIR TEST PASSED on somebody else's
