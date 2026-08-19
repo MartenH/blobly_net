@@ -9,17 +9,17 @@ import transport
 // database small enough to reason about by hand.
 fn sample_db() candb.Database {
 	return candb.Database{
-		nodes:    ['VCM_C', 'EBS']
+		nodes:    ['SUT_ECU', 'EBS']
 		messages: [
 			candb.Message{
 				name:   'VcmStatus'
 				id:     0x100
-				sender: 'VCM_C'
+				sender: 'SUT_ECU'
 			},
 			candb.Message{
 				name:   'VcmSpeed'
 				id:     0x101
-				sender: 'VCM_C'
+				sender: 'SUT_ECU'
 			},
 			candb.Message{
 				name:   'BrakeStatus'
@@ -48,11 +48,11 @@ fn entry(iface string, id u32, t f64) canlog.LogEntry {
 
 fn sample() []canlog.LogEntry {
 	return [
-		entry('mf4:group25', 0x100, 0.00), // VCM_C
+		entry('mf4:group25', 0x100, 0.00), // SUT_ECU
 		entry('mf4:group25', 0x200, 0.01), // EBS
 		entry('mf4:group25', 0x300, 0.02), // unattributed
 		entry('mf4:group25', 0x999, 0.03), // not in the database at all
-		entry('mf4:group25', 0x101, 0.04), // VCM_C
+		entry('mf4:group25', 0x101, 0.04), // SUT_ECU
 		entry('mf4:group37', 0x200, 0.05), // another bus entirely
 	]
 }
@@ -68,7 +68,7 @@ fn test_only_the_named_bus_is_replayed() {
 // The point of the whole exercise: the ECU under test stops being replayed at itself.
 fn test_the_excluded_nodes_frames_are_withheld() {
 	src := on_bus(sample(), 'mf4:group25')
-	kept, rep := without_senders(src, sample_db(), ['VCM_C'], true)
+	kept, rep := without_senders(src, sample_db(), ['SUT_ECU'], true)
 	mut ids := []u32{}
 	for e in kept {
 		ids << e.frame.id
@@ -86,7 +86,7 @@ fn test_the_excluded_nodes_frames_are_withheld() {
 // incomplete, which is the normal state of affairs.
 fn test_an_id_the_database_never_heard_of_is_still_replayed() {
 	src := on_bus(sample(), 'mf4:group25')
-	kept, rep := without_senders(src, sample_db(), ['VCM_C'], true)
+	kept, rep := without_senders(src, sample_db(), ['SUT_ECU'], true)
 	assert kept.filter(it.frame.id == 0x999).len == 1
 	assert rep.unknown == 1
 	assert rep.unknown_ids == [u32(0x999)]
@@ -96,12 +96,12 @@ fn test_an_id_the_database_never_heard_of_is_still_replayed() {
 // caller picks and BOTH answers must actually work.
 fn test_unattributed_messages_follow_the_callers_choice() {
 	src := on_bus(sample(), 'mf4:group25')
-	with, rep_with := without_senders(src, sample_db(), ['VCM_C'], true)
+	with, rep_with := without_senders(src, sample_db(), ['SUT_ECU'], true)
 	assert with.filter(it.frame.id == 0x300).len == 1
 	assert rep_with.unattributed == 1
 	assert rep_with.unattributed_ids == [u32(0x300)]
 
-	without, rep_without := without_senders(src, sample_db(), ['VCM_C'], false)
+	without, rep_without := without_senders(src, sample_db(), ['SUT_ECU'], false)
 	assert without.filter(it.frame.id == 0x300).len == 0
 	assert rep_without.unattributed == 1, 'still reported when withheld — the count is the point'
 	// the two reasons stay apart: 2 frames are the SUT's, 1 is the unattributed policy
@@ -112,10 +112,10 @@ fn test_unattributed_messages_follow_the_callers_choice() {
 // A misspelled node subtracts NOTHING, and the result looks exactly like a working rest bus
 // until the SUT starts losing arbitration against a recording of itself.
 fn test_an_unknown_node_name_is_caught() {
-	assert check_nodes(sample_db(), ['VCM_C']) == []
+	assert check_nodes(sample_db(), ['SUT_ECU']) == []
 	assert check_nodes(sample_db(), ['VCM']) == ['VCM'], 'a typo must not pass silently'
-	assert check_nodes(sample_db(), ['VCM_C', 'EBS']) == []
-	assert check_nodes(sample_db(), ['VCM_C', 'nope']) == ['nope']
+	assert check_nodes(sample_db(), ['SUT_ECU', 'EBS']) == []
+	assert check_nodes(sample_db(), ['SUT_ECU', 'nope']) == ['nope']
 }
 
 // A node that transmits without being declared in BU_ is still a real node. Rejecting it would
@@ -193,7 +193,7 @@ fn test_the_end_of_the_recording_is_reported() {
 // shows neither.
 fn test_a_standard_and_an_extended_id_are_not_the_same_message() {
 	db := candb.Database{
-		nodes:    ['VCM_C', 'EBS']
+		nodes:    ['SUT_ECU', 'EBS']
 		messages: [
 			candb.Message{
 				name:   'StdFromEbs'
@@ -205,7 +205,7 @@ fn test_a_standard_and_an_extended_id_are_not_the_same_message() {
 				name:   'ExtFromVcm'
 				id:     0x100
 				ext:    true
-				sender: 'VCM_C'
+				sender: 'SUT_ECU'
 			},
 		]
 	}
@@ -219,7 +219,7 @@ fn test_a_standard_and_an_extended_id_are_not_the_same_message() {
 			data:     [u8(1), 2, 3, 4]
 		}
 	}
-	kept, rep := without_senders([std, ext], db, ['VCM_C'], true)
+	kept, rep := without_senders([std, ext], db, ['SUT_ECU'], true)
 	assert rep.withheld_excluded == 1, 'exactly the extended one belongs to the SUT'
 	assert kept.len == 1
 	assert !kept[0].frame.extended, 'the standard frame is EBS traffic and must survive'
@@ -232,17 +232,17 @@ fn test_a_standard_and_an_extended_id_are_not_the_same_message() {
 // reads.
 fn test_an_additional_transmitter_still_counts_as_the_sender() {
 	db := candb.Database{
-		nodes:    ['VCM_C', 'EBS']
+		nodes:    ['SUT_ECU', 'EBS']
 		messages: [
 			candb.Message{
 				name:     'SharedMsg'
 				id:       0x400
-				sender:   'EBS' // the BO_ line names EBS...
-				tx_nodes: ['VCM_C'] // ...and BO_TX_BU_ adds the SUT
+				sender:   'EBS'       // the BO_ line names EBS...
+				tx_nodes: ['SUT_ECU'] // ...and BO_TX_BU_ adds the SUT
 			},
 		]
 	}
-	kept, rep := without_senders([entry('a', 0x400, 0.0)], db, ['VCM_C'], true)
+	kept, rep := without_senders([entry('a', 0x400, 0.0)], db, ['SUT_ECU'], true)
 	assert rep.withheld_excluded == 1, 'the SUT transmits this too, so it must be withheld'
 	assert kept.len == 0
 }
@@ -284,4 +284,35 @@ fn test_new_player_over_does_not_reorder_the_plan() {
 	assert due[0].iface == 'b' && due[0].frame.id == 2, 'plan order lost at the player'
 	assert due[1].iface == 'a' && due[1].frame.id == 1
 	assert due[2].iface == 'c' && due[2].frame.id == 3
+}
+
+fn db_with_node(node string) candb.Database {
+	return candb.Database{
+		nodes:    [node]
+		messages: []
+	}
+}
+
+// The gateway case the GUI used to refuse: the SUT transmits on ONE of the mapped buses. That
+// is the ordinary shape of a multi-bus recording, not a mistake.
+fn test_node_declared_by_one_database_is_not_unknown() {
+	dbs := [db_with_node('SUT_ECU'), db_with_node('OTHER')]
+	assert unknown_everywhere(dbs, ['SUT_ECU']) == []
+}
+
+// Declared by NONE of them is the typo worth refusing -- it subtracts nothing anywhere.
+fn test_node_declared_nowhere_is_reported() {
+	dbs := [db_with_node('A'), db_with_node('B')]
+	assert unknown_everywhere(dbs, ['SUT_ECU']) == ['SUT_ECU']
+}
+
+// A name repeated on the command line is one name, reported once.
+fn test_repeated_exclusion_is_judged_once() {
+	dbs := [db_with_node('A')]
+	assert unknown_everywhere(dbs, ['GHOST', 'GHOST']) == ['GHOST']
+}
+
+// With no databases at all there is nothing to contradict; the caller's own checks apply.
+fn test_no_databases_reports_nothing() {
+	assert unknown_everywhere([]candb.Database{}, ['ANY']) == []
 }

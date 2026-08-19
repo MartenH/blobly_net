@@ -20,6 +20,19 @@
 # runner pass on a machine where SocketCAN cannot work at all.
 set -euo pipefail
 
+# Run as a NORMAL user: the script sudo's the three steps that need it, so what is elevated
+# stays visible. Under `sudo ./setup_wsl_kernel.sh` the whole thing runs as root, $HOME becomes
+# /root, and SRC then defaults to a tree that does not exist — so it clones and rebuilds a second
+# kernel (minutes, gigabytes) into /root instead of reusing the one already built. Recover the
+# invoking user's home rather than punishing a reasonable mistake.
+if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ] && [ -z "${SRC:-}" ]; then
+	_home="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+	if [ -n "$_home" ] && [ -d "$_home" ]; then
+		SRC="$_home/repos/WSL2-Linux-Kernel"
+		echo "[wsl-kernel] running under sudo — using $SUDO_USER's tree ($SRC), not root's."
+		echo "[wsl-kernel] you can run this WITHOUT sudo; it elevates only the load and ip steps."
+	fi
+fi
 SRC="${SRC:-$HOME/repos/WSL2-Linux-Kernel}"
 IFACES=(vcan0 vcan1)
 MODE="all"
@@ -88,6 +101,14 @@ if [ "$MODE" != load ] && [ "$need_build" = 1 ]; then
 		sudo apt-get install -y "${missing[@]}"
 	fi
 
+	# Refuse to BUILD as root. Loading needs root and the script elevates that itself; compiling
+	# does not, and doing it under sudo scatters root-owned objects through the invoking user's
+	# tree — which then fails for them later with permission errors they did not cause.
+	if [ "$(id -u)" = 0 ]; then
+		die "a build is needed, and this is running as root.
+  Run it WITHOUT sudo: the script elevates only the module load and the ip commands.
+  (Building as root would leave root-owned files in $SRC.)"
+	fi
 	if [ ! -d "$SRC" ]; then
 		say "cloning $TAG (shallow) into $SRC"
 		git clone --depth 1 -b "$TAG" https://github.com/microsoft/WSL2-Linux-Kernel "$SRC" \

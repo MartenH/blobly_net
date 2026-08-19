@@ -41,8 +41,17 @@ pub:
 pub struct Replay {
 pub:
 	source string // .log or .mf4 recording
-	speed  f64 = 1.0
-	repeat bool // yaml key `loop`
+	// WHICH recorded bus feeds this channel. A multi-bus `.mf4` holds several, and their names
+	// are the recording's, not this project's — so nothing can infer the pairing. Either the
+	// name the file gives a bus ('CAN1') or the label its frames carry ('mf4:group25'); empty
+	// means the recording holds exactly one bus and there is nothing to choose.
+	bus string
+	// Nodes whose messages are NOT replayed: the ECU under test, so it stays the only
+	// transmitter of its own frames instead of arbitrating against a recording of itself.
+	// Resolved through the channel's databases by DBC sender.
+	exclude []string
+	speed   f64 = 1.0
+	repeat  bool // yaml key `loop`
 }
 
 // GenCfg configures one signal's value generator for a simulated ECU. `typ`
@@ -563,11 +572,28 @@ fn parse_channel(c yaml.Any) !Channel {
 		}
 	}
 	if r := c.value_opt('replay') {
-		ch.replay = Replay{
+		// value_opt for the two optional keys, like `databases`/`simulate` above: `value()` on a
+		// missing key yields a null node, and `.array()` on that produced a one-element list
+		// containing the string "null" — an exclusion naming a node no database declares, which
+		// the replay worker then correctly refused. An absent key must mean an empty list.
+		mut rp := Replay{
 			source: r.value('source').string()
 			speed:  r.value('speed').default_to(f64(1)).f64()
 			repeat: r.value('loop').default_to(false).bool()
 		}
+		if b := r.value_opt('bus') {
+			rp = Replay{
+				...rp
+				bus: b.string()
+			}
+		}
+		if ex := r.value_opt('exclude') {
+			rp = Replay{
+				...rp
+				exclude: ex.array().as_strings()
+			}
+		}
+		ch.replay = rp
 	}
 	return ch
 }

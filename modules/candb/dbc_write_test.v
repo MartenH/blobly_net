@@ -407,13 +407,13 @@ fn test_line_breaks_cannot_split_records() {
 // and a save that dropped them turned a two-sender message into a one-sender message — which is
 // exactly the input the rest-bus subtraction uses to decide what NOT to replay at the SUT.
 fn test_additional_transmitters_survive_a_round_trip() {
-	src := 'VERSION ""\n\nBU_: ECM TCM VCM_C\n\nBO_ 256 Shared: 8 ECM\n SG_ A : 0|8@1+ (1,0) [0|255] "" TCM\n\nBO_TX_BU_ 256 : TCM,VCM_C;\n'
+	src := 'VERSION ""\n\nBU_: ECM TCM SUT_ECU\n\nBO_ 256 Shared: 8 ECM\n SG_ A : 0|8@1+ (1,0) [0|255] "" TCM\n\nBO_TX_BU_ 256 : TCM,SUT_ECU;\n'
 	db := parse_dbc(src) or {
 		assert false, '${err}'
 		return
 	}
 	text := db.to_dbc()
-	assert text.contains('BO_TX_BU_ 256 : TCM,VCM_C;'), 'the record was dropped on write'
+	assert text.contains('BO_TX_BU_ 256 : TCM,SUT_ECU;'), 'the record was dropped on write'
 	back := parse_dbc(text) or {
 		assert false, 'rewritten file does not parse: ${err}'
 		return
@@ -422,5 +422,5 @@ fn test_additional_transmitters_survive_a_round_trip() {
 		assert false, 'message lost'
 		return
 	}
-	assert m.senders() == ['ECM', 'TCM', 'VCM_C'], 'got ${m.senders()}'
+	assert m.senders() == ['ECM', 'TCM', 'SUT_ECU'], 'got ${m.senders()}'
 }

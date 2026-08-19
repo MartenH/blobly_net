@@ -189,6 +189,10 @@ pub fn (mut p Player) due(now_ms f64) []canlog.LogEntry {
 				p.loops++
 				continue
 			}
+			// The pass that just ENDED counts. Only a wrap incremented this, so a
+			// non-looping replay that transmitted the whole recording reported zero
+			// passes -- the one case where the count is least ambiguous.
+			p.loops++
 			p.st = .finished
 			p.elapsed_ms = p.duration_s() * 1000.0 / p.speed
 			break
@@ -224,7 +228,9 @@ pub fn (p Player) sent() int {
 	return p.idx
 }
 
-// passes returns how many complete loop passes have finished.
+// passes returns how many complete passes over the recording have finished --
+// including the last one of a non-looping replay, which ends at .finished
+// rather than at a wrap.
 pub fn (p Player) passes() int {
 	return p.loops
 }
