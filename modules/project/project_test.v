@@ -525,3 +525,23 @@ channels:
 	assert !c.listen_only, '",normal" is an explicit request to acknowledge'
 	assert c.iface_with_bitrate() == 'vector:1@250000'
 }
+
+// A MISSPELLED mode must not be quietly dropped: `vector:1,silnt` is plainly a request for
+// silence, and stripping it opens the channel normally — acknowledging a live bus. The suffix
+// is kept so the transport parser refuses it.
+fn test_legacy_vector_unknown_mode_is_not_silently_dropped() {
+	p := parse('
+project:
+  name: legacy
+channels:
+  - name: CAN1
+    interface: vector:1,silnt
+') or {
+		assert false, '${err}'
+		return
+	}
+	c := p.channels[0]
+	assert !c.listen_only, 'a typo is not a listen-only request we can honour'
+	assert c.address.contains(','), 'the bad suffix survives so the open fails loudly'
+	assert c.iface_with_bitrate().contains('silnt')
+}

@@ -131,6 +131,7 @@ static uint64_t ct_vec_cfg_mask[CT_VEC_MAX_CFG];
 static unsigned int ct_vec_cfg_rate[CT_VEC_MAX_CFG];
 static int ct_vec_cfg_silent[CT_VEC_MAX_CFG];
 static int ct_vec_cfg_ports[CT_VEC_MAX_CFG];
+static ct_xlport ct_vec_cfg_owner[CT_VEC_MAX_CFG];
 static int ct_vec_cfg_n = 0;
 
 /* One lock over the symbol table and the configuration record. Those opens happen from several
@@ -158,7 +159,7 @@ static int ct_vec_cfg_find(uint64_t mask) {
 /* 0 recorded, -1 full. FAILS rather than forgetting: a channel we configured but did not record
  * is one whose secondary ports will all be refused, which reads as hardware trouble. With the
  * table sized to the whole accepted range this cannot happen, and saying so costs one branch. */
-static int ct_vec_cfg_note(uint64_t mask, unsigned int rate, int silent) {
+static int ct_vec_cfg_note(uint64_t mask, unsigned int rate, int silent, ct_xlport owner) {
 	int i = ct_vec_cfg_find(mask);
 	if (i < 0) {
 		if (ct_vec_cfg_n >= CT_VEC_MAX_CFG) return -1;
@@ -168,6 +169,7 @@ static int ct_vec_cfg_note(uint64_t mask, unsigned int rate, int silent) {
 	}
 	ct_vec_cfg_rate[i] = rate;
 	ct_vec_cfg_silent[i] = silent;
+	ct_vec_cfg_owner[i] = owner;
 	return 0;
 }
 
@@ -181,9 +183,27 @@ static void ct_vec_cfg_ref(uint64_t mask) {
 	if (i >= 0) ct_vec_cfg_ports[i]++;
 }
 
-static void ct_vec_cfg_unref(uint64_t mask) {
+static void ct_vec_cfg_forget(int i) {
+	ct_vec_cfg_n--;
+	if (i != ct_vec_cfg_n) { /* keep the array dense */
+		ct_vec_cfg_mask[i]   = ct_vec_cfg_mask[ct_vec_cfg_n];
+		ct_vec_cfg_rate[i]   = ct_vec_cfg_rate[ct_vec_cfg_n];
+		ct_vec_cfg_silent[i] = ct_vec_cfg_silent[ct_vec_cfg_n];
+		ct_vec_cfg_ports[i]  = ct_vec_cfg_ports[ct_vec_cfg_n];
+		ct_vec_cfg_owner[i]  = ct_vec_cfg_owner[ct_vec_cfg_n];
+	}
+}
+
+/* INITIALISATION ACCESS BELONGS TO A PORT, not to the channel. When the port that holds it
+ * closes, XL releases that access even though our other ports on the same wire stay open — so
+ * another application can take it and change the rate or the output mode, and everything we
+ * remember about the channel stops being true at that moment rather than when our last port
+ * goes. The record is dropped with its owner; ports still open keep running, but nothing new is
+ * admitted on the strength of what we used to know. */
+static void ct_vec_cfg_unref(uint64_t mask, ct_xlport port) {
 	int i = ct_vec_cfg_find(mask);
 	if (i < 0) return;
+	if (ct_vec_cfg_owner[i] == port) { ct_vec_cfg_forget(i); return; }
 	if (--ct_vec_cfg_ports[i] > 0) return;
 	ct_vec_cfg_n--;
 	if (i != ct_vec_cfg_n) { /* keep the array dense */
@@ -295,7 +315,7 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 		} else if (silent) {
 			ct_xl_closeport(port); ct_vec_leave(); return -1002;
 		}
-		if (ct_vec_cfg_note(mask, bitrate, silent) != 0) {
+		if (ct_vec_cfg_note(mask, bitrate, silent, port) != 0) {
 			ct_xl_closeport(port); ct_vec_leave(); return -1006;
 		}
 		ct_vec_cfg_ref(mask);
@@ -325,7 +345,7 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 	if (st != 0) {
 		/* The reference was taken above; drop it here rather than in ct_vector_close, which the
 		 * caller never reaches for a port that failed to activate. */
-		ct_vec_cfg_unref(mask);
+		ct_vec_cfg_unref(mask, port);
 		ct_xl_closeport(port);
 		ct_vec_leave();
 		return -(int)st;
@@ -405,7 +425,7 @@ static void ct_vector_close(ct_xlport port, uint64_t mask) {
 	ct_xl_deactivate(port, (ct_xlaccess)mask);
 	ct_xl_closeport(port);
 	ct_vec_enter();
-	ct_vec_cfg_unref(mask);
+	ct_vec_cfg_unref(mask, port);
 	ct_vec_leave();
 }
 

@@ -505,11 +505,20 @@ fn parse_channel(c yaml.Any) !Channel {
 			// asks for the opposite of listen-only. Reading any comma as silence turned an
 			// explicit request to acknowledge into a channel that cannot.
 			match raw.all_after_last(',').trim_space().to_lower() {
-				'silent', 'listen_only', 'listenonly' { ch.listen_only = true }
-				else {} // `,normal`, or something the transport parser will reject on open
+				'silent', 'listen_only', 'listenonly' {
+					ch.listen_only = true
+					ch.address = ch.address.all_before_last(',')
+				}
+				'normal' {
+					ch.address = ch.address.all_before_last(',') // explicit, and the default
+				}
+				else {
+					// KEPT, so the transport parser sees it and refuses. Stripping an
+					// unrecognised mode turned `vector:1,silnt` — plainly a request for
+					// silence — into a channel that opens NORMALLY on a live bus. A typo must
+					// never be resolved in the direction that acknowledges.
+				}
 			}
-
-			ch.address = ch.address.all_before_last(',')
 		}
 		if (ch.adapter == 'pcan' || ch.adapter == 'kvaser' || ch.adapter == 'vector')
 			&& raw.contains('@') {
