@@ -79,14 +79,14 @@ mut:
 // suffix. Nothing else uses `@` as syntax — `inproc:bench@A` is a perfectly good bus NAME, and
 // treating the suffix as universal sent the emitters to a different hub than the monitor.
 pub fn vendor_iface(iface string) bool {
-	// PLATFORM-DEPENDENT, because the dispatchers are: only open_windows.v routes `pcan:` and
-	// `kvaser:` to a vendor driver. On Linux open_linux.v sends everything that is not a
+	// PLATFORM-DEPENDENT, because the dispatchers are: only open_windows.v routes `pcan:`,
+	// `kvaser:` and `vector:` to a vendor driver. On Linux open_linux.v sends everything that is not a
 	// software bus to SocketCAN — which echoes — so a channel someone configured as
 	// `pcan:bench` there is an ordinary SocketCAN name, and treating it as a vendor backend
 	// would leave its frames untracked and its echoes filed as the device under test's.
 	$if windows {
 		i := iface.to_lower()
-		return i.starts_with('pcan:') || i.starts_with('kvaser:')
+		return i.starts_with('pcan:') || i.starts_with('kvaser:') || i.starts_with('vector:')
 	} $else {
 		return false
 	}
@@ -189,6 +189,11 @@ pub fn destination_key(iface string) string {
 			// collide, and a wrong guess here would merge buses that never open at all.
 		} else if kind == 'kvaser' {
 			resolved = ch.int().str() // exactly what open_kvaser does with it
+		} else if kind == 'vector' {
+			// Through the SAME resolver open_vector uses, so `vector:1`, `vector:ch1` and
+			// `vector:app01` are one destination. The mode suffix is already gone: it sits
+			// after the bitrate, which this function reduces to a number.
+			resolved = vector_key(ch)
 		}
 	}
 	return '${kind}:${resolved}@${rate}'

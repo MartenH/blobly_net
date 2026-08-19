@@ -7,14 +7,35 @@ via `cmd/can_smoke` (defaults `kvaser:0` / `pcan:PCAN_USBBUS1` worked first try)
 vendor stacks agreeing on the wire is itself the cross-vendor oracle.
 This documents how real CAN adapters (PCAN / Kvaser / Vector) and the vendor-neutral
 `slcan` path slot into Blobly Net on Windows, behind the existing `transport.Bus`
-seam. PCAN and Kvaser are hardware-verified; Vector is unimplemented and untested.
+seam. PCAN and Kvaser are hardware-verified; **Vector is implemented, cross-compiled and
+run on Windows, but not yet exercised against a bus** — see below.
 
 - **Done:** `transport/pcan_windows.v` + `pcan_shim.h`, `transport/kvaser_windows.v`
   + `kvaser_shim.h`, wired into `open_windows.v` (`pcan:` / `kvaser:` prefixes).
   Both are LoadLibrary-based (no SDK). **Cross-compiled to a real Windows x64 PE
   from WSL** (mingw-w64) and compile-checked in the Windows CI — but **not yet run
   against hardware** (no adapter/driver on the dev box).
-- **Pending:** owner runs the verification below; Vector + slcan backends later.
+- **Vector (`vector:`):** `transport/vector_windows.v` + `vector_shim.h`, wired into
+  `open_windows.v`. Addressed by APPLICATION channel (`vector:1`), because that is what
+  `xlGetApplConfig`/`xlGetChannelMask` take and what Vector Hardware Manager shows — the
+  alternative is reproducing `XLdriverConfig`, a packed struct whose exact size decides
+  where its channel array starts, and getting that wrong reads out of bounds instead of
+  failing. Classic CAN only; an FD frame is refused, not truncated.
+  - Cross-compiled from WSL with mingw-w64 to a real Windows x64 PE, and the shim compiles
+    clean under `-Wall -Wextra` against the actual `windows.h`. `_Static_assert` pins
+    `sizeof(XLevent) == 48` at build time rather than trusting a comment.
+  - `cmd/vectorcheck` was RUN on this Windows host (WSL interop) and correctly reported the
+    real blocker below. What is still unproven is everything past `xlOpenPort`: no frame has
+    gone in or out.
+
+  **What is missing on this bench (2026-08-19):** the VN1630A and its kernel driver are fine —
+  `Get-PnpDevice` shows `VN1630A` and the Vector services as `OK`, and Vector Hardware Manager
+  is installed — but **`vxlapi64.dll` is not on the system at all** (not in `System32`, not
+  under either `Program Files`). The XL Driver Library is a separate free download from
+  Vector; the hardware/config install does not include it. Until it is there, `vector:` opens
+  will report exactly that.
+
+- **Pending:** owner runs the verification below; slcan backend later.
 
 ## Why there's work to do at all
 
@@ -51,6 +72,9 @@ code or on Linux changes.** Linux stays green; the backends never compile off-Wi
 ```
 pcan:PCAN_USBBUS1      # PEAK channel handle name (or pcan:usb1)
 kvaser:0               # Kvaser channel number
+vector:1               # Vector APPLICATION channel, as numbered in Vector Hardware Manager
+vector:1@250000        # …at 250 kbit/s
+vector:1@500000,silent # …listen-only: the transceiver never acknowledges
 kvaser:virtual0        # Kvaser SOFTWARE virtual channel (no hardware needed)
 vector:CANcaseXL:0     # Vector app/channel
 vector:virtual         # Vector virtual CAN bus
