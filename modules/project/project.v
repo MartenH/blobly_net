@@ -542,6 +542,16 @@ fn parse_channel(c yaml.Any) !Channel {
 			// LAST `@`, then the mode: `vector:1@250000,silent` puts the suffix after the rate,
 			// so all_after_last('@') is "250000,silent" and .int() would read 250000 only by
 			// luck of parsing. Cut the mode off first and the number is the number.
+			// MORE THAN ONE `@` is a contradiction, not a preference for the last one.
+			// Taking all_after_last and recomposing a clean interface silently discarded the
+			// first rate, so `vector:1@250000@500000` reached the driver as a tidy 500000 and
+			// the strict parser downstream — the one this preservation exists to reach — never
+			// saw the problem at all.
+			if raw.count('@') > 1 {
+				ch.address = raw.all_after('${ch.adapter}:')
+				ch.iface = raw
+				return ch
+			}
 			mut tail := raw.all_after_last('@')
 			if ch.adapter == 'vector' && tail.contains(',') {
 				tail = tail.all_before_last(',')

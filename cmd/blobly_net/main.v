@@ -1714,11 +1714,30 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	// `wire`, not `frame`: on a backend that would carry the extra bytes (inproc, udp) sending
 	// the original makes the echo disagree with the record in the other direction.
 	t.inner.send(wire) or {
-		t.app.retract_emit(seq, t.origin, epoch)
-		// exactly the entry this send wrote, if it wrote one — not a search, and not a guess
-		// from the backend
-		t.app.unrecord(rec_id)
-		return err
+		// BACK-PRESSURE IS RETRIED HERE, beneath the record. A vendor transmit queue fills as a
+		// matter of course on a busy replay, and retrying in the CALLER meant re-entering this
+		// function: each attempt noted an emission and retracted it, painting the trace with
+		// failed transmissions for frames that went out perfectly well a millisecond later. The
+		// record is made once; the waiting happens under it.
+		//
+		// Under tx_mu, which we still hold, so the order frames were recorded in is the order
+		// they reach the wire — the property this lock exists for.
+		mut placed := false
+		if err.msg().starts_with(transport.vector_busy_msg) {
+			for _ in 0 .. 200 {
+				time.sleep(time.millisecond)
+				t.inner.send(wire) or { continue }
+				placed = true
+				break
+			}
+		}
+		if !placed {
+			t.app.retract_emit(seq, t.origin, epoch)
+			// exactly the entry this send wrote, if it wrote one — not a search, and not a guess
+			// from the backend
+			t.app.unrecord(rec_id)
+			return err
+		}
 	}
 }
 
@@ -2733,25 +2752,9 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 				if over {
 					break
 				}
-				// BACK-PRESSURE IS NOT A DROPPED FRAME. A busy capture fills a vendor transmit
-				// queue as a matter of course, and skipping the frame would replay a recording
-				// with holes in it wherever the bus was at its busiest — which is exactly where
-				// a rest bus matters. Wait for room and offer the same frame again.
-				if err.msg().starts_with(transport.vector_busy_msg) {
-					mut waited_q := 0
-					mut placed := false
-					for waited_q < 500 {
-						time.sleep(time.millisecond)
-						waited_q++
-						bus.send(e.frame) or { continue }
-						placed = true
-						break
-					}
-					if placed {
-						sent++
-						continue
-					}
-				}
+				// The waiting for a full transmit queue happens in TapBus.send, beneath the
+				// trace record — retrying here re-entered it and painted a failed row per
+				// attempt. Anything that reaches this point has genuinely failed.
 				failed++
 				if first_err == '' {
 					first_err = '${e.iface}: ${err.msg()}'
@@ -4576,7 +4579,12 @@ fn (app &App) match_ext(name string) bool {
 // included so a project authored on another OS still shows (and can keep) its adapter.
 fn available_adapters(current string) []string {
 	mut list := $if windows {
-		['virtual', 'udp', 'pcan', 'kvaser', 'doip']
+		// `vector` belongs here for the same reason pcan and kvaser do. Without it the only
+		// route to a Vector channel was Discover, which lists application channels whose
+		// hardware is present — so a bench could not be configured with the adapter unplugged,
+		// or before it had been assigned in Vector Hardware Manager, which is exactly when
+		// somebody sits down to write the project.
+		['virtual', 'udp', 'pcan', 'kvaser', 'vector', 'doip']
 	} $else {
 		['virtual', 'vcan', 'socketcan', 'udp', 'doip']
 	}

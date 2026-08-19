@@ -155,6 +155,15 @@ pub fn (mut b VectorBus) send(f CanFrame) ! {
 	if f.data.len > 8 {
 		return error('Vector: ${f.data.len} bytes is not a classic CAN frame (id 0x${f.id:X}) — 8 is the maximum without FD')
 	}
+	// THE ID AGAINST ITS DECLARED WIDTH, which cannot be left to XL: the shim marks an extended
+	// frame by setting bit 31 of the identifier, so `id: 0x80000001, extended: false` already
+	// carries that flag and goes out extended while the trace records it as standard. Values
+	// above the width are equally a lie — a standard frame cannot hold 0x800.
+	limit := if f.extended { u32(0x1FFF_FFFF) } else { u32(0x7FF) }
+	if f.id > limit {
+		width := if f.extended { '29-bit' } else { '11-bit' }
+		return error('Vector: id 0x${f.id:X} does not fit a ${width} identifier')
+	}
 	n := f.data.len
 	ext := if f.extended { 1 } else { 0 }
 	// RTR is carried, not dropped. A remote request with the bit lost goes out as an ordinary

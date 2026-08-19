@@ -673,3 +673,21 @@ channels:
 		assert compose_iface(c.adapter, c.address) == iface, '${iface}: must round-trip unchanged'
 	}
 }
+
+// Two rates is a contradiction the transport parser must get to see. Sanitising it here to the
+// last one sent a tidy single rate to the driver and the disagreement was never reported.
+fn test_legacy_double_rate_is_preserved() {
+	p := parse('
+project:
+  name: legacy
+channels:
+  - name: CAN1
+    interface: vector:1@250000@500000
+') or {
+		assert false, '${err}'
+		return
+	}
+	c := p.channels[0]
+	assert c.iface == 'vector:1@250000@500000'
+	assert compose_iface(c.adapter, c.address) == 'vector:1@250000@500000', 'must survive a save'
+}
