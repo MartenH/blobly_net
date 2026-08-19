@@ -62,3 +62,63 @@ fn vector_key(s string) string {
 	}
 	return body.trim_space().to_lower() // unresolvable: identical bad strings still collide
 }
+
+// VectorSpec is the parsed interface string.
+//
+// HERE, not in vector_windows.v, and the difference is not cosmetic: written beside the driver
+// it compiled only on Windows, where nothing runs these tests — so the rule that a malformed
+// bitrate is refused had no test at all, and the project migration was preserving malformed
+// rates on the strength of a rejection that did not exist. This file is the one that gets to
+// be checked.
+struct VectorSpec {
+	channel int // application channel, 1-based as the operator sees it
+	bitrate int
+	silent  bool
+}
+
+fn parse_vector_spec(spec string) !VectorSpec {
+	mut body := spec.trim_space()
+	mut silent := false
+	// The mode is a suffix, not part of the address: `vector:1@500000` and
+	// `vector:1@500000,silent` are the SAME wire, and destination_key must see them collide or
+	// the conflict check lets two owners onto one bus.
+	if body.contains(',') {
+		mode := body.all_after_last(',').trim_space().to_lower()
+		body = body.all_before_last(',')
+		match mode {
+			'silent', 'listen_only', 'listenonly' { silent = true }
+			'normal' { silent = false }
+			else { return error('unknown Vector mode ",${mode}" (use ,silent)') }
+		}
+	}
+	parts := body.split('@')
+	ch := vector_app_channel(parts[0])!
+	// EVERY character a digit. V's `.int()` takes a numeric prefix, so `@250000garbage` parsed
+	// as 250000 and opened at a rate nobody wrote — and the project migration was PRESERVING
+	// malformed rates on the understanding that this parser would refuse them, which it did not.
+	// A rejection two other fixes depend on has to exist.
+	bitrate := if parts.len > 1 {
+		tok := parts[1].trim_space()
+		if tok == '' {
+			return error('Vector: empty bitrate after "@"')
+		}
+		for c in tok {
+			if !c.is_digit() {
+				return error('Vector: "${tok}" is not a bitrate (id ${ch}) — digits only, in bits per second')
+			}
+		}
+		tok.int()
+	} else {
+		500000
+	}
+	// A bitrate the hardware cannot produce is a configuration error worth catching here: on a
+	// live bus the consequence of getting it wrong is error frames, not a quiet failure.
+	if bitrate < 5000 || bitrate > 1000000 {
+		return error('Vector bitrate ${bitrate} out of range (5000..1000000)')
+	}
+	return VectorSpec{
+		channel: ch
+		bitrate: bitrate
+		silent:  silent
+	}
+}

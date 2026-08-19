@@ -42,3 +42,33 @@ fn test_unresolvable_channel_still_collides_with_itself() {
 	assert vector_key('bench') == vector_key(' BENCH ')
 	assert vector_key('bench') != vector_key('other')
 }
+
+// The project migration KEEPS a malformed rate so that this parser refuses it. That only works
+// if it does: `.int()` takes a numeric prefix, so `250000garbage` opened at 250 kbit/s and the
+// preservation was pointless.
+fn test_vector_spec_rejects_partial_bitrate() {
+	if _ := parse_vector_spec('1@250000garbage') {
+		assert false, 'a rate that is nearly a number must not open a channel'
+	}
+	if _ := parse_vector_spec('1@') {
+		assert false, 'an empty rate is not the default'
+	}
+	if _ := parse_vector_spec('1@oops') {
+		assert false, 'not a number at all'
+	}
+	ok := parse_vector_spec('1@250000') or {
+		assert false, '${err}'
+		return
+	}
+	assert ok.bitrate == 250000
+	assert ok.channel == 1
+}
+
+// …and the mode still rides after the rate.
+fn test_vector_spec_mode_after_rate() {
+	s := parse_vector_spec('1@250000,silent') or {
+		assert false, '${err}'
+		return
+	}
+	assert s.silent && s.bitrate == 250000
+}

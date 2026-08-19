@@ -132,6 +132,13 @@ static unsigned int ct_vec_cfg_rate[CT_VEC_MAX_CFG];
 static int ct_vec_cfg_silent[CT_VEC_MAX_CFG];
 static int ct_vec_cfg_ports[CT_VEC_MAX_CFG];
 static ct_xlport ct_vec_cfg_owner[CT_VEC_MAX_CFG];
+/* Which OPEN of this channel a reference belongs to. The mask identifies a wire, not an
+ * episode: when the owner closes the record is forgotten, a replacement owner can configure the
+ * same wire afresh, and a secondary port left over from the previous episode then closes and
+ * decrements a record it never joined — taking the live channel's count down with it, after
+ * which its taps are refused. Every reference carries the generation it joined. */
+static uint64_t ct_vec_cfg_gen[CT_VEC_MAX_CFG];
+static uint64_t ct_vec_gen_seq = 0;
 static int ct_vec_cfg_n = 0;
 
 /* One lock over the symbol table and the configuration record. Those opens happen from several
@@ -166,6 +173,7 @@ static int ct_vec_cfg_note(uint64_t mask, unsigned int rate, int silent, ct_xlpo
 		i = ct_vec_cfg_n++;
 		ct_vec_cfg_mask[i] = mask;
 		ct_vec_cfg_ports[i] = 0;
+		ct_vec_cfg_gen[i] = ++ct_vec_gen_seq;
 	}
 	ct_vec_cfg_rate[i] = rate;
 	ct_vec_cfg_silent[i] = silent;
@@ -191,6 +199,7 @@ static void ct_vec_cfg_forget(int i) {
 		ct_vec_cfg_silent[i] = ct_vec_cfg_silent[ct_vec_cfg_n];
 		ct_vec_cfg_ports[i]  = ct_vec_cfg_ports[ct_vec_cfg_n];
 		ct_vec_cfg_owner[i]  = ct_vec_cfg_owner[ct_vec_cfg_n];
+		ct_vec_cfg_gen[i]    = ct_vec_cfg_gen[ct_vec_cfg_n];
 	}
 }
 
@@ -200,9 +209,11 @@ static void ct_vec_cfg_forget(int i) {
  * remember about the channel stops being true at that moment rather than when our last port
  * goes. The record is dropped with its owner; ports still open keep running, but nothing new is
  * admitted on the strength of what we used to know. */
-static void ct_vec_cfg_unref(uint64_t mask, ct_xlport port) {
+static void ct_vec_cfg_unref(uint64_t mask, ct_xlport port, uint64_t gen) {
 	int i = ct_vec_cfg_find(mask);
-	if (i < 0) return;
+	/* A port from a PREVIOUS episode of this wire has nothing to release: its record went with
+	 * its owner, and the one here now belongs to somebody else. */
+	if (i < 0 || ct_vec_cfg_gen[i] != gen) return;
 	if (ct_vec_cfg_owner[i] == port) { ct_vec_cfg_forget(i); return; }
 	if (--ct_vec_cfg_ports[i] > 0) return;
 	ct_vec_cfg_n--;
@@ -285,7 +296,8 @@ static uint64_t ct_vector_mask(unsigned int app_channel) {
  * wrong bitrate acknowledges nothing correctly and floods error frames.
  * Returns 0, or a negative XL status. Outputs port + mask on success. */
 static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int silent,
-                          ct_xlport *out_port, uint64_t *out_mask, HANDLE *out_event) {
+                          ct_xlport *out_port, uint64_t *out_mask, HANDLE *out_event,
+                          uint64_t *out_gen) {
 	ct_xlaccess mask, permission;
 	ct_xlport port = CT_XL_INVALID_PORTHANDLE;
 	ct_xlstatus st;
@@ -324,6 +336,7 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 			ct_xl_closeport(port); ct_vec_leave(); return -1006;
 		}
 		ct_vec_cfg_ref(mask);
+		*out_gen = ct_vec_cfg_gen[ct_vec_cfg_find(mask)];
 	} else {
 		/* No init access. Either we already configured this channel — a second port for a bus
 		 * this process is running, which is normal and must work — or somebody else owns it. */
@@ -339,6 +352,7 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 		if (silent != ct_vec_cfg_silent[i]) { ct_xl_closeport(port); ct_vec_leave(); return -1004; }
 		if (ct_vec_cfg_rate[i] != bitrate) { ct_xl_closeport(port); ct_vec_leave(); return -1005; }
 		ct_vec_cfg_ports[i]++;
+		*out_gen = ct_vec_cfg_gen[i];
 	}
 	/* No TX confirmations and no TX requests in the receive queue. The XL driver can deliver an
 	 * event for every frame WE send, and echoes_own_sends() reports false for a vendor backend —
@@ -350,7 +364,7 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 	if (st != 0) {
 		/* The reference was taken above; drop it here rather than in ct_vector_close, which the
 		 * caller never reaches for a port that failed to activate. */
-		ct_vec_cfg_unref(mask, port);
+		ct_vec_cfg_unref(mask, port, *out_gen);
 		ct_xl_closeport(port);
 		ct_vec_leave();
 		return -(int)st;
@@ -425,7 +439,7 @@ static int ct_vector_read(ct_xlport port, HANDLE ev_handle, uint32_t *id, uint8_
 	}
 }
 
-static void ct_vector_close(ct_xlport port, uint64_t mask) {
+static void ct_vector_close(ct_xlport port, uint64_t mask, uint64_t gen) {
 	if (port == CT_XL_INVALID_PORTHANDLE) return;
 	/* UNDER THE LOCK, AND BEFORE xlClosePort. A port handle is a small reusable number: closing
 	 * first releases it, an open racing this call can be handed the same value and become the
@@ -434,7 +448,7 @@ static void ct_vector_close(ct_xlport port, uint64_t mask) {
 	 * want of a record. Releasing the record while the handle is still ours makes the identity
 	 * unambiguous without having to invent generations for it. */
 	ct_vec_enter();
-	ct_vec_cfg_unref(mask, port);
+	ct_vec_cfg_unref(mask, port, gen);
 	ct_xl_deactivate(port, (ct_xlaccess)mask);
 	ct_xl_closeport(port);
 	ct_vec_leave();

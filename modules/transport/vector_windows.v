@@ -37,10 +37,10 @@ module transport
 #include "vector_shim.h"
 
 fn C.ct_vector_load() int
-fn C.ct_vector_open(u32, u32, int, &int, &u64, &voidptr) int
+fn C.ct_vector_open(u32, u32, int, &int, &u64, &voidptr, &u64) int
 fn C.ct_vector_write(int, u64, u32, u8, &u8, int, int) int
 fn C.ct_vector_read(int, voidptr, &u32, &u8, &u8, &int, &int, int) int
-fn C.ct_vector_close(int, u64)
+fn C.ct_vector_close(int, u64, u64)
 fn C.ct_vector_present(u32) int
 fn C.ct_vector_diag() int
 fn C.ct_vector_err(int) &char
@@ -50,46 +50,9 @@ pub struct VectorBus {
 mut:
 	port   int
 	mask   u64
+	gen    u64 // which open of this channel we are; see the generation note in vector_shim.h
 	notify voidptr
 	silent bool
-}
-
-// VectorSpec is the parsed interface string. Separate from the open so the parsing is
-// exercised by the tests in vector_names_test.v rather than only on a machine with the driver.
-struct VectorSpec {
-	channel int // application channel, 1-based as the operator sees it
-	bitrate int
-	silent  bool
-}
-
-fn parse_vector_spec(spec string) !VectorSpec {
-	mut body := spec.trim_space()
-	mut silent := false
-	// The mode is a suffix, not part of the address: `vector:1@500000` and
-	// `vector:1@500000,silent` are the SAME wire, and destination_key must see them collide or
-	// the conflict check lets two owners onto one bus.
-	if body.contains(',') {
-		mode := body.all_after_last(',').trim_space().to_lower()
-		body = body.all_before_last(',')
-		match mode {
-			'silent', 'listen_only', 'listenonly' { silent = true }
-			'normal' { silent = false }
-			else { return error('unknown Vector mode ",${mode}" (use ,silent)') }
-		}
-	}
-	parts := body.split('@')
-	ch := vector_app_channel(parts[0])!
-	bitrate := if parts.len > 1 { parts[1].trim_space().int() } else { 500000 }
-	// A bitrate the hardware cannot produce is a configuration error worth catching here: on a
-	// live bus the consequence of getting it wrong is error frames, not a quiet failure.
-	if bitrate < 5000 || bitrate > 1000000 {
-		return error('Vector bitrate ${bitrate} out of range (5000..1000000)')
-	}
-	return VectorSpec{
-		channel: ch
-		bitrate: bitrate
-		silent:  silent
-	}
 }
 
 // open_vector parses `vector:<channel>[@<bitrate>][,silent]`, loads vxlapi64.dll, resolves the
@@ -100,11 +63,12 @@ pub fn open_vector(spec string) !&VectorBus {
 	mut port := 0
 	mut mask := u64(0)
 	mut notify := unsafe { nil }
+	mut gen := u64(0)
 	sil := if s.silent { 1 } else { 0 }
 	// 0-BASED at the API, 1-based in the spelling: Vector Hardware Configuration numbers the
 	// application channels from 1 and the operator reads the interface string against that
 	// dialog, so the conversion belongs here rather than in their head.
-	rc := C.ct_vector_open(u32(s.channel - 1), u32(s.bitrate), sil, &port, &mask, &notify)
+	rc := C.ct_vector_open(u32(s.channel - 1), u32(s.bitrate), sil, &port, &mask, &notify, &gen)
 	if rc == -1000 {
 		return error('Vector application channel ${s.channel} has no hardware assigned — open Vector Hardware Manager, find the application "blobly_net" (registered just now) and assign a VN channel to it')
 	}
@@ -146,6 +110,7 @@ pub fn open_vector(spec string) !&VectorBus {
 	return &VectorBus{
 		port:   port
 		mask:   mask
+		gen:    gen
 		notify: notify
 		silent: s.silent
 	}
@@ -212,7 +177,7 @@ pub fn (mut b VectorBus) recv(timeout_ms int) !CanFrame {
 }
 
 pub fn (mut b VectorBus) close() {
-	C.ct_vector_close(b.port, b.mask)
+	C.ct_vector_close(b.port, b.mask, b.gen)
 }
 
 // vector_list reports the application channels that have hardware assigned, for discovery.
