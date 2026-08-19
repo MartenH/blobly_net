@@ -529,7 +529,18 @@ fn parse_channel(c yaml.Any) !Channel {
 			if ch.adapter == 'vector' && tail.contains(',') {
 				tail = tail.all_before_last(',')
 			}
-			br := tail.int()
+			// EVERY character, not merely a leading digit: V's `.int()` takes the numeric
+			// prefix, so `250000garbage` parsed as 250000, took the success path, and the
+			// recomposition dropped the garbage before the transport parser could object. A
+			// rate that is nearly a number is not a number.
+			mut all_digits := tail.len > 0
+			for ch_b in tail {
+				if !ch_b.is_digit() {
+					all_digits = false
+					break
+				}
+			}
+			br := if all_digits { tail.int() } else { 0 }
 			if br > 0 {
 				ch.bitrate = br
 				ch.iface = compose_iface(ch.adapter, ch.address)

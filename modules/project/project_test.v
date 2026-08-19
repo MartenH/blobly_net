@@ -564,3 +564,22 @@ channels:
 	assert c.iface.contains('oops'), 'the bad rate survives so the open fails loudly'
 	assert c.iface_with_bitrate().contains('oops')
 }
+
+// A rate that is NEARLY a number is not a number. V's `.int()` takes the numeric prefix, so
+// `250000garbage` parsed happily and the recomposition dropped the evidence — the adapter then
+// opening normally at a rate the project never wrote.
+fn test_legacy_vector_partial_bitrate_is_not_accepted() {
+	p := parse('
+project:
+  name: legacy
+channels:
+  - name: CAN1
+    interface: vector:1@250000garbage,normal
+') or {
+		assert false, '${err}'
+		return
+	}
+	c := p.channels[0]
+	assert c.iface.contains('garbage'), 'the malformed rate survives so the open fails loudly'
+	assert c.bitrate != 250000, 'a prefix that happens to parse is not the configured rate'
+}

@@ -311,7 +311,12 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 		if (st != 0) { ct_xl_closeport(port); ct_vec_leave(); return -(int)st; }
 		if (ct_xl_setoutput) {
 			st = ct_xl_setoutput(port, mask, silent ? CT_XL_OUTPUT_MODE_SILENT : CT_XL_OUTPUT_MODE_NORMAL);
-			if (st != 0 && silent) { ct_xl_closeport(port); ct_vec_leave(); return -(int)st; }
+			/* EITHER DIRECTION. Ignoring a failed NORMAL request left the channel on whatever
+			 * output mode it already had — silent, if a previous run set it — while this port
+			 * recorded itself as able to transmit. send() then succeeds and the trace shows
+			 * frames the transceiver never emitted, which is the quietest way for a bench to
+			 * lie. Setting the mode is not optional in either direction. */
+			if (st != 0) { ct_xl_closeport(port); ct_vec_leave(); return -(int)st; }
 		} else if (silent) {
 			ct_xl_closeport(port); ct_vec_leave(); return -1002;
 		}
