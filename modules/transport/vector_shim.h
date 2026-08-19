@@ -337,7 +337,7 @@ static HMODULE ct_vector_from_install_dir(void) {
 }
 
 /* 0 ok, -1 DLL missing, -2 a symbol missing. */
-static int ct_vector_load(void) {
+static int ct_vector_load_locked(void) {
 	HMODULE h;
 	if (ct_vector_loaded) return 0;
 	/* BY NAME FIRST: a copy beside the executable, on PATH, or in System32 is a deliberate
@@ -373,6 +373,18 @@ static int ct_vector_load(void) {
 	    !ct_xl_transmit || !ct_xl_receive || !ct_xl_setnotify) return -2;
 	ct_vector_loaded = 1;
 	return 0;
+}
+
+/* THE FIRST LOAD IS A RACE otherwise. The Discover dialog can Refresh on the UI thread while an
+ * RX worker opens a channel, and both reach the "already loaded?" test before either sets it —
+ * two LoadLibrary calls writing the same function-pointer table while the other reads it. The
+ * flag was doing the job of a lock. */
+static int ct_vector_load(void) {
+	int rc;
+	ct_vec_enter();
+	rc = ct_vector_load_locked();
+	ct_vec_leave();
+	return rc;
 }
 
 /* How many error frames this process has seen since it started. */

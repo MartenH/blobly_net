@@ -38,8 +38,10 @@ For traffic with no hardware, open `projects/sim-demo.blobnet` — the simulated
   is `cmd/blobly_net`. *(Migrated 2026-07-06 from `vlang/gui`; the old `src/main.v` app is
   deleted. Rationale in [`docs/gui_toolkit_evaluation.md`](docs/gui_toolkit_evaluation.md).)*
 - **CAN:** SocketCAN on Linux (`vcan0` virtual, or any adapter); **PCAN**, **Kvaser** and
-  **Vector XL** on Windows (vendor DLLs loaded at runtime; PCAN and Kvaser HW-verified, Vector
-  not yet — it needs `vxlapi64.dll`, a separate Vector download). All behind the `transport`
+  **Vector XL** on Windows (vendor DLLs loaded at runtime; all three HW-verified — Vector on a
+  VN1630A, Channel 1 to Channel 3 at bus saturation. Vector additionally needs `vxlapi64.dll`,
+  which is a SEPARATE download from the hardware drivers and does not install onto the search
+  path; the backend looks in its install directory). All behind the `transport`
   interface, so backends are drop-in.
 - **Engine stays GUI-free.** CAN/protocol logic lives in `modules/` with no GUI imports, so it is
   independently testable and the GUI stays replaceable. This is the one architectural rule.

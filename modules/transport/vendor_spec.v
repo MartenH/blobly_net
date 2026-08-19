@@ -62,13 +62,20 @@ pub fn vendor_split_rate(spec string, default_rate int) !(string, int) {
 // again reported a disconnected adapter as ordinary back-pressure, after several hundred
 // milliseconds of talking to nothing. That mistake was made independently in both callers,
 // which is why the loop lives here now instead of in each of them.
-pub fn send_waiting_for_room(mut b Bus, f CanFrame, attempts int) ! {
+// `cancel` is asked between attempts and stops the wait when it answers true. A replay that is
+// waiting out a full queue must notice Stop: the guard that ends a run is checked before this
+// call, so without a way in, pressing Stop meant waiting out the whole retry budget while the
+// worker's own taps were being closed underneath it.
+pub fn send_waiting_for_room(mut b Bus, f CanFrame, attempts int, cancel fn () bool) ! {
 	b.send(f) or {
 		if !err.msg().starts_with(vector_busy_msg) {
 			return err
 		}
 		mut last := err
 		for _ in 0 .. attempts {
+			if cancel() {
+				return last
+			}
 			time.sleep(time.millisecond)
 			b.send(f) or {
 				last = err

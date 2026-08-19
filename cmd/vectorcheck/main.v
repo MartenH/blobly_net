@@ -123,7 +123,11 @@ fn poll(mut b transport.Bus, ms int) !(transport.CanFrame, bool) {
 }
 
 fn is_test_frame(f transport.CanFrame) bool {
-	if f.data.len != 8 || f.data[4] != 0xA5 || f.data[7] != 0x3C {
+	// ALL FOUR marker bytes. Checking two of them let a payload corrupted in byte 5 or 6 pass as
+	// a good frame, which is the one thing a link test must not do: the markers are there to
+	// notice corruption, and half of them notice half of it.
+	if f.data.len != 8 || f.data[4] != 0xA5 || f.data[5] != 0x5A || f.data[6] != 0xC3
+		|| f.data[7] != 0x3C {
 		return false
 	}
 	seq := (u32(f.data[0]) << 24) | (u32(f.data[1]) << 16) | (u32(f.data[2]) << 8) | u32(f.data[3])

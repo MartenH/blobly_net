@@ -710,7 +710,7 @@ fn (mut app App) start() {
 	mut rate_of := map[string]int{}
 	mut rate_row := map[string]string{}
 	for c in app.chans {
-		if !c.enabled || c.bitrate <= 0 {
+		if !c.enabled {
 			continue
 		}
 		// ONLY WHERE THE RATE IS OURS TO SET. An inproc: or udp: bus has no bitrate and opens
@@ -721,14 +721,18 @@ fn (mut app App) start() {
 		if c.adapter !in ['pcan', 'kvaser', 'vector'] {
 			continue
 		}
+		// A ROW WITH NO RATE STILL HAS ONE: iface_with_bitrate omits the suffix and the backend
+		// then opens at its 500 kbit/s default. Skipping those rows let a 250k row sit beside a
+		// defaulted one without complaint, and the wire ran at whichever opened first.
+		want_rate := if c.bitrate > 0 { c.bitrate } else { 500000 }
 		k := transport.destination_key(c.iface)
 		if prev := rate_of[k] {
-			if prev != c.bitrate {
-				app.notify('${c.name} and ${rate_row[k]} share ${c.iface} but ask for ${c.bitrate} and ${prev} bit/s — not starting')
+			if prev != want_rate {
+				app.notify('${c.name} and ${rate_row[k]} share ${c.iface} but ask for ${want_rate} and ${prev} bit/s — not starting')
 				return
 			}
 		} else {
-			rate_of[k] = c.bitrate
+			rate_of[k] = want_rate
 			rate_row[k] = c.name
 		}
 	}
@@ -1722,7 +1726,20 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	//
 	// Still under tx_mu, so the order frames were recorded in is the order they reach the wire,
 	// which is the property this lock exists for.
-	transport.send_waiting_for_room(mut t.inner, wire, 200) or {
+	// The wait ends when the RUN does. t.guard_gen is the run this tap belongs to; without this
+	// the worker sat out its whole retry budget after Stop, with its own taps closing underneath.
+	gen_now := t.guard_gen
+	app_ref := t.app
+	transport.send_waiting_for_room(mut t.inner, wire, 200, fn [gen_now, app_ref] () bool {
+		if gen_now == 0 {
+			return false
+		}
+		mut a := unsafe { app_ref }
+		a.mu.lock()
+		over := !a.running || a.run_gen != gen_now
+		a.mu.unlock()
+		return over
+	}) or {
 		t.app.retract_emit(seq, t.origin, epoch)
 		// exactly the entry this send wrote, if it wrote one — not a search, and not a guess
 		// from the backend
@@ -3002,8 +3019,13 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	// diagnostics setup already handles that — and stopping at the first meant later entries'
 	// protected messages were never checked, or were checked against the wrong layout.
 	mut verifiers := sim.VerifySet{}
+	// BY DESTINATION. Two rows spelling one wire differently (`vector:1`, `vector:ch1`) each
+	// observe the same traffic, and comparing the strings meant each port checked only its own
+	// row's protected messages — so a frame arriving on the wire was verified against half the
+	// project, and the missing half read as an ECU that had stopped stamping.
+	want_dest := transport.destination_key(iface)
 	for sc in a.sims {
-		if sc.iface != iface {
+		if transport.destination_key(sc.iface) != want_dest {
 			continue
 		}
 		for w in verifiers.merge_into(sim.verifiers_for(sc.db, sc.nodes, sc.verify)) {

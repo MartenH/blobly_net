@@ -161,7 +161,9 @@ fn main() {
 			// The waiting for a full vendor queue is transport.send_waiting_for_room, which
 			// also decides that only "still busy" is worth another go — this loop used to
 			// catch every retry error and report a disconnected adapter as back-pressure.
-			transport.send_waiting_for_room(mut bus, e.frame, 500) or {
+			transport.send_waiting_for_room(mut bus, e.frame, 500, fn () bool {
+				return false
+			}) or {
 				failed++
 				if first_err == '' {
 					first_err = err.msg() // one example beats a bare count on a bench
@@ -356,7 +358,9 @@ fn run_multi(o Opts, rec mf4.Recording) {
 			// and not this one dropped a frame per full queue on a saturated destination —
 			// corrupting a multi-bus replay exactly where the traffic was densest, which is
 			// where the cross-bus timing this feature exists for is hardest.
-			transport.send_waiting_for_room(mut bus, e.frame, 500) or {
+			transport.send_waiting_for_room(mut bus, e.frame, 500, fn () bool {
+				return false
+			}) or {
 				failed++
 				if first_err == '' {
 					first_err = '${e.iface}: ${err.msg()}'
