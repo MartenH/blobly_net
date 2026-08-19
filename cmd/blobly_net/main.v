@@ -4794,6 +4794,13 @@ fn (mut app App) add_bus_spec(adapter string, address string) {
 		iface:   project.compose_iface(adapter, address)
 		typ:     'can'
 		mode:    .monitor
+		// LISTEN-ONLY UNTIL SOMEBODY SAYS OTHERWISE, on Vector. Every other adapter here is a
+		// virtual bus or one whose driver cannot be told to stay quiet, but a VN channel added
+		// from Discover is hardware that may already be wired to a running vehicle — and it
+		// arrives with the 500 kbit/s default, which nobody has confirmed. Going on that bus
+		// able to acknowledge, at a rate that is a guess, is how a tester disturbs the thing it
+		// came to observe. Untick it in the editor once the rate is known.
+		listen_only: adapter == 'vector'
 	}
 	app.dirty = true
 	app.sync_cfg_bufs()

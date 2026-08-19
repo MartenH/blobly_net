@@ -422,10 +422,16 @@ static int ct_vector_read(ct_xlport port, HANDLE ev_handle, uint32_t *id, uint8_
 
 static void ct_vector_close(ct_xlport port, uint64_t mask) {
 	if (port == CT_XL_INVALID_PORTHANDLE) return;
-	ct_xl_deactivate(port, (ct_xlaccess)mask);
-	ct_xl_closeport(port);
+	/* UNDER THE LOCK, AND BEFORE xlClosePort. A port handle is a small reusable number: closing
+	 * first releases it, an open racing this call can be handed the same value and become the
+	 * recorded owner, and the cleanup that followed would then delete the NEW channel's record
+	 * on the strength of the old port's number. Every same-process tap after that is refused for
+	 * want of a record. Releasing the record while the handle is still ours makes the identity
+	 * unambiguous without having to invent generations for it. */
 	ct_vec_enter();
 	ct_vec_cfg_unref(mask, port);
+	ct_xl_deactivate(port, (ct_xlaccess)mask);
+	ct_xl_closeport(port);
 	ct_vec_leave();
 }
 

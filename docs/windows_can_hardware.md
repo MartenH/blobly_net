@@ -75,6 +75,8 @@ kvaser:0               # Kvaser channel number
 vector:1               # Vector APPLICATION channel, as numbered in Vector Hardware Manager
 vector:1@250000        # …at 250 kbit/s
 vector:1@500000,silent # …listen-only: the transceiver never acknowledges
+                       #   (a channel added through Discover starts this way on purpose —
+                       #    the 500 kbit/s default is a guess until somebody confirms it)
 kvaser:virtual0        # Kvaser SOFTWARE virtual channel (no hardware needed)
 slcan:COM5@500000      # USB-serial slcan adapter on a COM port  (not implemented)
 ```

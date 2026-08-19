@@ -545,3 +545,22 @@ channels:
 	assert c.address.contains(','), 'the bad suffix survives so the open fails loudly'
 	assert c.iface_with_bitrate().contains('silnt')
 }
+
+// A MALFORMED rate must reach the transport parser too. `vector:1@oops` reads as 0, and
+// recomposing a clean interface would drop the evidence and open at the 500 kbit/s default —
+// an adapter on a live bus at a rate the project never named.
+fn test_legacy_vector_bad_bitrate_is_not_sanitised() {
+	p := parse('
+project:
+  name: legacy
+channels:
+  - name: CAN1
+    interface: vector:1@oops
+') or {
+		assert false, '${err}'
+		return
+	}
+	c := p.channels[0]
+	assert c.iface.contains('oops'), 'the bad rate survives so the open fails loudly'
+	assert c.iface_with_bitrate().contains('oops')
+}

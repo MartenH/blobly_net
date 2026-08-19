@@ -532,8 +532,15 @@ fn parse_channel(c yaml.Any) !Channel {
 			br := tail.int()
 			if br > 0 {
 				ch.bitrate = br
+				ch.iface = compose_iface(ch.adapter, ch.address)
+			} else {
+				// KEPT VERBATIM, for the same reason an unrecognised mode is. `vector:1@oops`
+				// reads as 0, which is not a rate anybody asked for — and recomposing a clean
+				// interface here would drop the evidence and open at the 500 kbit/s default,
+				// putting an adapter on a live bus at a rate the project never named. Left as
+				// written, the transport parser refuses it and says so.
+				ch.iface = raw
 			}
-			ch.iface = compose_iface(ch.adapter, ch.address)
 		} else if ch.adapter == 'vector' && raw.contains(',') {
 			ch.iface = compose_iface(ch.adapter, ch.address)
 		} else {
