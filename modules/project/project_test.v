@@ -583,3 +583,16 @@ channels:
 	assert c.iface.contains('garbage'), 'the malformed rate survives so the open fails loudly'
 	assert c.bitrate != 250000, 'a prefix that happens to parse is not the configured rate'
 }
+
+// A contradictory channel — address says `,normal`, the flag says listen-only — must resolve
+// toward silence. It used to resolve toward the transceiver acknowledging, with the application
+// still believing the channel was listening quietly.
+fn test_listen_only_overrides_an_embedded_normal_mode() {
+	c := Channel{
+		iface:       'vector:1,normal'
+		adapter:     'vector'
+		bitrate:     250000
+		listen_only: true
+	}
+	assert c.iface_with_bitrate() == 'vector:1@250000,silent'
+}

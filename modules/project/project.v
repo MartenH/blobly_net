@@ -391,7 +391,12 @@ pub fn (c Channel) iface_with_bitrate() string {
 	// acknowledges every frame it sees — which is not what the flag says, and on a live vehicle
 	// at the wrong bitrate it is the difference between hearing nothing and emitting error
 	// frames. The XL backend takes `,silent`, so a project that asks for listen-only gets it.
-	if c.adapter == 'vector' && c.listen_only && mode == '' {
+	if c.adapter == 'vector' && c.listen_only {
+		// THE FLAG WINS over a mode embedded in the address. The address is free text in the
+		// editor, so `1,normal` with `listen_only: true` is a configuration that contradicts
+		// itself — and it used to resolve toward the transceiver acknowledging, with the
+		// application still believing the channel was listening quietly. Of the two readings,
+		// only one can disturb a live bus.
 		mode = ',silent'
 	}
 	return base + mode

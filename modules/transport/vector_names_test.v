@@ -72,3 +72,11 @@ fn test_vector_spec_mode_after_rate() {
 	}
 	assert s.silent && s.bitrate == 250000
 }
+
+// Two rates is a contradiction, not a preference for the first. Reachable by typing a
+// legacy-style `1@250000` into the address field of a channel whose bitrate is 500000.
+fn test_vector_spec_rejects_two_bitrates() {
+	if _ := parse_vector_spec('1@250000@500000') {
+		assert false, 'the model would say 500k while the hardware ran at 250k'
+	}
+}
