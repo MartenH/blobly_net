@@ -1,0 +1,31 @@
+# Replay demo on a REAL bus — vcan0, CAN-FD capable.
+#
+# The other replay demo (replay-demo.blobnet) plays a .log onto an in-process bus and needs no
+# drivers at all; this one puts the same kind of traffic on a real SocketCAN interface, which is
+# what a bench looks like. Bring the interface up first:
+#
+#   ./scripts/setup_wsl_kernel.sh      # loads vcan, creates vcan0/vcan1 at mtu 72 (CAN-FD)
+#
+# Press ▶ Start and the recording plays onto vcan0. The frames are OURS, so the trace counts
+# them as TX-S and claims their echoes; `candump -x vcan0` shows the same frames on the wire.
+#
+# This is PLAYBACK, not simulation: the alive counters and CRCs are whatever the recording holds.
+# They are consistent within a lap and jump backwards at a `loop:` wrap. Simulated nodes stamp
+# those fresh (see `protect:` in docs/simulation.md); a recording cannot.
+#
+# For a real vehicle capture, add the two facts a recording cannot supply:
+#   bus: CAN1                 # WHICH recorded bus feeds this channel (a .mf4 holds several)
+#   exclude: [SUT_ECU]          # the ECU under test — so it stays the only source of its frames
+project:
+  name: Replay onto vcan0
+channels:
+  - name: CAN1
+    type: can
+    interface: vcan0
+    mode: replay
+    databases:
+      - dbc/blobly_net.dbc
+    replay:
+      source: samples/demo.mf4
+      speed: 1.0
+      loop: false

@@ -207,6 +207,12 @@ pub fn (p Project) to_yaml() string {
 		if replay := ch.replay {
 			b.writeln('    replay:')
 			b.writeln('      source: ${yaml_scalar(replay.source)}')
+			if replay.bus != '' {
+				b.writeln('      bus: ${yaml_scalar(replay.bus)}')
+			}
+			if replay.exclude.len > 0 {
+				b.writeln('      exclude: [${replay.exclude.map(yaml_scalar(it)).join(', ')}]')
+			}
 			b.writeln('      speed: ${num(replay.speed)}')
 			b.writeln('      loop: ${replay.repeat}')
 		}

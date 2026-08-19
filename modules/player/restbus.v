@@ -49,7 +49,11 @@ pub:
 // parsed last decide the sender for both — which either silences a bus or replays the SUT's own
 // frames back at it, the exact failure this file exists to prevent.
 fn key(id u32, ext bool) u64 {
-	return (u64(id) << 1) | u64(if ext { 1 } else { 0 })
+	return (u64(id) << 1) | u64(if ext {
+		1
+	} else {
+		0
+	})
 }
 
 // Decider is the subtraction expressed as a per-frame question. `without_senders` filters a
@@ -64,10 +68,10 @@ pub struct Decider {
 
 // Verdict says what happened to one frame, so a caller can count without re-deriving the reason.
 pub enum Verdict {
-	keep // a node we are not excluding sends it
-	keep_unknown // its id is not in the database at all — replayed, and reported
+	keep              // a node we are not excluding sends it
+	keep_unknown      // its id is not in the database at all — replayed, and reported
 	keep_unattributed // defined, no transmitter, policy says replay
-	drop_excluded // an excluded node sends it
+	drop_excluded     // an excluded node sends it
 	drop_unattributed // defined, no transmitter, policy says withhold
 }
 
@@ -98,7 +102,11 @@ pub fn (d Decider) verdict(f transport.CanFrame) Verdict {
 	}
 	senders := d.senders_of[k] or { []string{} }
 	if senders.len == 0 {
-		return if d.replay_unattributed { Verdict.keep_unattributed } else { Verdict.drop_unattributed }
+		return if d.replay_unattributed {
+			Verdict.keep_unattributed
+		} else {
+			Verdict.drop_unattributed
+		}
 	}
 	if senders.any(it in d.excluded) {
 		return .drop_excluded
@@ -210,4 +218,41 @@ pub fn check_nodes(db candb.Database, exclude []string) []string {
 		}
 	}
 	return exclude.filter(it !in known)
+}
+
+// unknown_everywhere reports the excluded names that NOT ONE of the mapped databases declares.
+//
+// Absence from a SINGLE database means nothing: the ECU under test need not transmit on every
+// bus it sits on, and vendor databases legitimately declare different node sets — a gateway
+// recording maps several buses and the SUT will be missing from most of them. Absence from ALL
+// of them is the typo worth refusing, because it subtracts nothing anywhere and leaves the bench
+// replaying the SUT's own messages back at it while looking healthy.
+//
+// This is the rule, and it lives here because both front ends have to reach the same verdict on
+// the same configuration. They did not: the CLI judged across every mapping while the GUI
+// judged one channel at a time, so a perfectly good multi-bus replay ran headless and was
+// refused in the GUI.
+pub fn unknown_everywhere(dbs []candb.Database, exclude []string) []string {
+	if dbs.len == 0 {
+		return []
+	}
+	mut out := []string{}
+	mut judged := map[string]bool{}
+	for n in exclude {
+		if n in judged {
+			continue // `--exclude SUT,SUT` must not be reported, or counted, twice
+		}
+		judged[n] = true
+		mut declared := false
+		for db in dbs {
+			if check_nodes(db, [n]).len == 0 {
+				declared = true
+				break
+			}
+		}
+		if !declared {
+			out << n
+		}
+	}
+	return out
 }

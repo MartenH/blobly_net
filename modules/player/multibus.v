@@ -172,3 +172,52 @@ pub fn conflicts(specs []BusSpec) []string {
 	out.sort()
 	return out
 }
+
+// resolve_bus turns what a person configured — `CAN1`, or `mf4:group25` — into the label the
+// recording's entries actually carry.
+//
+// ONE implementation, because there were two: the GUI and cmd/restbus each grew their own and
+// had already drifted in their fallbacks. Which bus a recording means is a fact about the file,
+// not a front-end convenience, so it belongs here (CLAUDE.md: anything deciding what a wire
+// format MEANS lives in modules/).
+//
+// The LABEL is the identity and is matched first, in its own pass. The acquisition name is free
+// text a writer chose: it may collide with another bus's label, and it may not be unique, so an
+// ambiguous name is refused rather than resolved by picking one.
+pub fn resolve_bus(buses []BusName, labels []string, want string) !string {
+	if want == '' {
+		if labels.len != 1 {
+			return error('the recording holds ${labels.len} buses — name one')
+		}
+		return labels[0]
+	}
+	for b in buses {
+		if b.iface == want {
+			return b.iface
+		}
+	}
+	if want in labels {
+		return want
+	}
+	mut named := []string{}
+	for b in buses {
+		if b.name != '' && b.name == want {
+			named << b.iface
+		}
+	}
+	if named.len == 1 {
+		return named[0]
+	}
+	if named.len > 1 {
+		return error('"${want}" names ${named.len} buses — use the label instead')
+	}
+	return error('no bus "${want}" in the recording')
+}
+
+// BusName is the (label, name) pair resolve_bus needs, so this module does not depend on mf4 —
+// a recording format is one caller's concern, and canlog files have no bus names at all.
+pub struct BusName {
+pub:
+	iface string
+	name  string
+}

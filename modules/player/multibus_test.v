@@ -14,7 +14,7 @@ fn mb_db(sender string, ids []u32) candb.Database {
 		}
 	}
 	return candb.Database{
-		nodes:    [sender, 'VCM_C']
+		nodes:    [sender, 'SUT_ECU']
 		messages: msgs
 	}
 }
@@ -30,13 +30,13 @@ fn mb_entry(iface string, id u32, t f64) canlog.LogEntry {
 	}
 }
 
-// Two recorded buses, interleaved in time, each with one VCM_C message to subtract.
+// Two recorded buses, interleaved in time, each with one SUT_ECU message to subtract.
 fn mb_sample() []canlog.LogEntry {
 	return [
 		mb_entry('mf4:group1', 0x100, 0.00), // bus A, EBS
 		mb_entry('mf4:group2', 0x200, 0.01), // bus B, TCM
-		mb_entry('mf4:group1', 0x101, 0.02), // bus A, VCM_C
-		mb_entry('mf4:group2', 0x201, 0.03), // bus B, VCM_C
+		mb_entry('mf4:group1', 0x101, 0.02), // bus A, SUT_ECU
+		mb_entry('mf4:group2', 0x201, 0.03), // bus B, SUT_ECU
 		mb_entry('mf4:group1', 0x100, 0.04),
 		mb_entry('mf4:group3', 0x300, 0.05), // a bus nobody mapped
 	]
@@ -47,26 +47,26 @@ fn mb_specs() []BusSpec {
 	a.messages << candb.Message{
 		name:   'VcmA'
 		id:     0x101
-		sender: 'VCM_C'
+		sender: 'SUT_ECU'
 	}
 	mut b := mb_db('TCM', [u32(0x200)])
 	b.messages << candb.Message{
 		name:   'VcmB'
 		id:     0x201
-		sender: 'VCM_C'
+		sender: 'SUT_ECU'
 	}
 	return [
 		BusSpec{
 			src:     'mf4:group1'
 			dst:     'vcan0'
 			db:      a
-			exclude: ['VCM_C']
+			exclude: ['SUT_ECU']
 		},
 		BusSpec{
 			src:     'mf4:group2'
 			dst:     'vcan1'
 			db:      b
-			exclude: ['VCM_C']
+			exclude: ['SUT_ECU']
 		},
 	]
 }
@@ -90,8 +90,8 @@ fn test_buses_merge_into_one_time_ordered_stream() {
 fn test_the_sut_is_subtracted_on_every_bus() {
 	p := build_multi(mb_sample(), mb_specs())
 	for e in p.entries {
-		assert e.frame.id != 0x101, 'VCM_C survived on bus A'
-		assert e.frame.id != 0x201, 'VCM_C survived on bus B'
+		assert e.frame.id != 0x101, 'SUT_ECU survived on bus A'
+		assert e.frame.id != 0x201, 'SUT_ECU survived on bus B'
 	}
 	assert p.buses.len == 2
 	for b in p.buses {
@@ -221,5 +221,55 @@ fn test_the_per_bus_numbers_balance() {
 	for b in p.buses {
 		r := b.report
 		assert b.source == r.kept + r.withheld_excluded + r.withheld_unattributed, '${b.src}: ${b.source} != ${r.kept}+${r.withheld_excluded}+${r.withheld_unattributed}'
+	}
+}
+
+// The label is the identity; the acquisition name is free text a writer chose. There were two
+// implementations of this rule (GUI and CLI) and they had already drifted, which is why it lives
+// here now — deciding which bus a recording means is a fact about the file, not a front end's.
+fn test_resolve_bus_prefers_the_label() {
+	buses := [
+		BusName{
+			iface: 'mf4:group1'
+			name:  'CAN1'
+		},
+		BusName{
+			iface: 'mf4:group2'
+			name:  'mf4:group1' // this bus's NAME collides with the other's LABEL
+		},
+	]
+	labels := ['mf4:group1', 'mf4:group2']
+	// the label wins, so the collision cannot divert group1's traffic to group2
+	assert resolve_bus(buses, labels, 'mf4:group1')! == 'mf4:group1'
+	assert resolve_bus(buses, labels, 'CAN1')! == 'mf4:group1'
+}
+
+fn test_resolve_bus_refuses_what_it_cannot_decide() {
+	two := [
+		BusName{
+			iface: 'a'
+			name:  'CAN1'
+		},
+		BusName{
+			iface: 'b'
+			name:  'CAN1'
+		},
+	]
+	// one name, two buses: refused rather than resolved by picking one
+	if _ := resolve_bus(two, ['a', 'b'], 'CAN1') {
+		assert false, 'an ambiguous name must not resolve'
+	}
+	// no name given and several buses present: the caller has to choose
+	if _ := resolve_bus(two, ['a', 'b'], '') {
+		assert false, 'a multi-bus recording needs a bus named'
+	}
+	// no name given and exactly one bus: nothing to choose
+	assert resolve_bus([BusName{
+		iface: 'only'
+		name:  ''
+	}], ['only'], '')! == 'only'
+	// a name nothing carries
+	if _ := resolve_bus(two, ['a', 'b'], 'nope') {
+		assert false, 'an unknown bus must be refused'
 	}
 }

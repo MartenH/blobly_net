@@ -617,7 +617,7 @@ focus) or `cyclic` (sent automatically while the measurement runs).
 `bus: inproc:CAN2`, not `bus: CAN2`. The value is passed straight to the transport, so a
 channel name lands there as a device name and fails to open.
 
-## Replay — configurable, but NOT currently played
+## Replay — playing a recording onto a bus
 
 The project format accepts a replay channel:
 
@@ -627,17 +627,36 @@ The project format accepts a replay channel:
     replay: { source: logs/drive.mf4, speed: 1.0, loop: true }
 ```
 
-**The `.blobnet` `replay:` block still does nothing** — `monitorable()`, which decides what gets
-opened when you press Start, accepts only `monitor` channels, so a replay channel is not even
-attached. Configuring one produces silence, not an error. Treat the YAML above as schema
-documentation rather than a feature.
+**It plays.** A `mode: replay` channel is opened at Start like any monitored one and a worker
+pumps the recording onto its bus at the recorded cadence. Two keys carry the facts a recording
+cannot supply — `bus:` (which recorded bus feeds this channel; a multi-bus `.mf4` holds several
+and their names are the recording's, not the project's) and `exclude:` (nodes whose messages are
+withheld, resolved through the channel's databases by DBC sender).
+
+**The set is fixed at Start.** Which replay channels play is decided when you press Start, and
+ticking one on or off while the run is going says so rather than taking effect — Stop and Start
+to change it. Channels reading one recording share a clock, so a channel joining late could not
+be given the timing the others already have, and one leaving would hand its bus to whoever asked
+for it next while the worker was still writing to it. Both were real defects; neither is worth a
+click.
+
+The frames are transmitted as **TX-S**, not `REP`: they are ours, put on the wire by us, so the
+trace counts them with the simulation and claims their echoes. `REP` still means a file on
+screen, where nothing was transmitted.
+
+**It is PLAYBACK, not simulation**, and the difference decides whether it is enough for a given
+bench. A recording cannot answer a request, and its alive counters and CRCs are the recorded
+ones — consistent within a lap, jumping backwards at a `loop:` wrap, where a receiver policing
+counter continuity will flag them once per lap. Simulated nodes stamp those fresh (`protect:`)
+and can answer (`responses:`). What replay buys instead is traffic no generator reproduces: real
+signal values, real jitter, real event-driven messages, from the car itself.
 
 **Headless, it works.** `cmd/restbus` replays one recorded bus onto a live one with the ECU
 under test subtracted:
 
 ```sh
 v -enable-globals -path "@vlib|@vmodules|modules" run cmd/restbus/main.v \
-    --source capture.mf4 --bus CAN1 --dbc CAN01.dbc --exclude VCM_C --iface vcan0
+    --source capture.mf4 --bus CAN1 --dbc CAN01.dbc --exclude SUT_ECU --iface vcan0
 restbus --source capture.mf4 --list          # which buses the recording holds
 restbus ... --dry-run                        # what the subtraction would do, transmitting nothing
 ```
@@ -649,9 +668,9 @@ restbus ... --dry-run                        # what the subtraction would do, tr
 them and gateways between them:
 
 ```sh
-restbus --source capture.mf4 --exclude VCM_C \
-    --map CAN1,vcan0,com/CAN01-postfix.dbc \
-    --map CAN2,vcan1,com/CAN02-postfix.dbc
+restbus --source capture.mf4 --exclude SUT_ECU \
+    --map CAN1,vcan0,com/CAN01.dbc \
+    --map CAN2,vcan1,com/CAN02.dbc
 ```
 
 Every mapped bus replays from **one time-sorted stream against one clock**, so the recording's
@@ -678,7 +697,7 @@ re-decide any of it.
 
 Pacing sleeps until each frame is due rather than polling on a tick, because a tick quantises
 every message's recorded period and real captures go well below one: on the recordings this was
-built against, one bus repeats a frame every **0.18 ms**. Filtering never changes the cadence —
+built against, a busy bus can repeat a frame in well under a millisecond. Filtering never changes the cadence —
 the loop is pinned to the *source* bus's span, so removing the SUT's frames cannot shorten a lap
 or move its origin.
 

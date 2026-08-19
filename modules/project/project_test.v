@@ -330,3 +330,46 @@ fn test_doip_eid_strict() {
 	}
 	assert false, 'expected a 0x-prefixed EID to error'
 }
+
+// An ABSENT optional key must mean "empty", not a list containing the string "null". `value()`
+// on a missing key yields a null node, and `.array()` on that produced ["null"] — an exclusion
+// naming a node no database declares, which stopped a replay channel from playing at all.
+fn test_replay_without_bus_or_exclude() {
+	p := parse('project:\n  name: r\nchannels:\n  - name: CAN1\n    type: can\n    interface: vcan0\n    mode: replay\n    replay:\n      source: samples/demo.mf4\n      speed: 1.0\n      loop: false\n') or {
+		assert false, '${err}'
+		return
+	}
+	r := p.channels[0].replay or {
+		assert false, 'replay missing'
+		return
+	}
+	assert r.source == 'samples/demo.mf4'
+	assert r.bus == '', 'absent bus became "${r.bus}"'
+	assert r.exclude == [], 'absent exclude became ${r.exclude}'
+}
+
+// And when they ARE given they survive a round trip through the writer.
+fn test_replay_bus_and_exclude_round_trip() {
+	src := 'project:\n  name: r\nchannels:\n  - name: CAN1\n    type: can\n    interface: vcan0\n    mode: replay\n    replay:\n      source: cap.mf4\n      bus: CAN1\n      exclude: [SUT_ECU, ECM]\n      speed: 2.0\n      loop: true\n'
+	p := parse(src) or {
+		assert false, '${err}'
+		return
+	}
+	r := p.channels[0].replay or {
+		assert false, 'replay missing'
+		return
+	}
+	assert r.bus == 'CAN1'
+	assert r.exclude == ['SUT_ECU', 'ECM']
+	back := parse(p.to_yaml()) or {
+		assert false, 'rewritten project does not parse: ${err}'
+		return
+	}
+	r2 := back.channels[0].replay or {
+		assert false, 'replay lost on save'
+		return
+	}
+	assert r2.bus == 'CAN1', 'bus lost on save'
+	assert r2.exclude == ['SUT_ECU', 'ECM'], 'exclude lost on save: ${r2.exclude}'
+	assert r2.speed == 2.0 && r2.repeat
+}

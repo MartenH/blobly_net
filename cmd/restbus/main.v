@@ -5,14 +5,14 @@
 // messages rather than arbitrating against a recording of itself.
 //
 //   v -enable-globals -path "@vlib|@vmodules|modules" run cmd/restbus/main.v \
-//       --source capture.mf4 --bus CAN1 --dbc CAN01.dbc --exclude VCM_C --iface inproc:rest
+//       --source capture.mf4 --bus CAN1 --dbc CAN01.dbc --exclude SUT_ECU --iface inproc:rest
 //
 // SEVERAL buses at once — the shape a real bench needs, since the ECU under test sits on all of
 // them and gateways between them. Repeat --map <recorded bus>,<interface>,<dbc>:
 //
-//   restbus --source capture.mf4 --exclude VCM_C \
-//       --map CAN1,vcan0,com/CAN01-postfix.dbc \
-//       --map CAN2,vcan1,com/CAN02-postfix.dbc
+//   restbus --source capture.mf4 --exclude SUT_ECU \
+//       --map CAN1,vcan0,com/CAN01.dbc \
+//       --map CAN2,vcan1,com/CAN02.dbc
 //
 // All mapped buses replay from ONE time-sorted stream against ONE clock, so the recording's
 // cross-bus ordering survives — the relationship a gateway polices.
@@ -227,31 +227,20 @@ fn run_multi(o Opts, rec mf4.Recording) {
 	}
 	// A node no mapped database has heard of subtracts nothing at all, and the run then replays
 	// the ECU under test at itself while looking perfectly healthy.
-	// DEDUPED, and compared as a set of databases rather than a count of reports: `--exclude
-	// VCM_C,VCM_C` made check_nodes report the name twice per database, so the count exceeded
-	// specs.len, the equality never held, and a typo repeated by accident subtracted nothing
-	// while passing the check meant to catch it.
-	mut nowhere := []string{}
-	mut judged := map[string]bool{}
-	for n in o.exclude {
-		if n in judged {
-			continue
-		}
-		judged[n] = true
-		mut dbs := map[string]bool{}
-		for d in unknown_on[n] or { []string{} } {
-			dbs[d] = true
-		}
-		if dbs.len > 0 && dbs.len == uniq_dbcs(o.maps) {
-			nowhere << n
-		}
+	//
+	// The rule is player.unknown_everywhere, not a copy of it here: the GUI reached a DIFFERENT
+	// verdict on the same configuration for as long as each front end carried its own version.
+	mut group_dbs := []candb.Database{}
+	for sp in specs {
+		group_dbs << sp.db
 	}
+	nowhere := player.unknown_everywhere(group_dbs, o.exclude)
 	if nowhere.len > 0 {
 		eprintln('restbus: no mapped database declares the node(s): ${nowhere.join(', ')}')
 		exit(1)
 	}
 	for n, dbcs in unknown_on {
-		if n !in nowhere && n in judged {
+		if n !in nowhere {
 			shown := dbcs.map(os.base(it))
 			eprintln('restbus: note: ${n} is not declared by ${shown.join(', ')} — it transmits nothing there')
 		}
@@ -390,40 +379,19 @@ fn run_multi(o Opts, rec mf4.Recording) {
 	}
 }
 
-// uniq_dbcs counts the DISTINCT databases across the mappings — the same file may legitimately
-// be mapped to several buses, and counting mappings instead would make "unknown everywhere"
-// unreachable.
-fn uniq_dbcs(maps []string) int {
-	mut seen := map[string]bool{}
-	for m in maps {
-		parts := m.split(',')
-		if parts.len == 3 {
-			seen[os.real_path(parts[2].trim_space())] = true
-		}
-	}
-	return seen.len
-}
-
-// resolve_bus accepts either the recording's own name for a bus ('CAN1') or the label its frames
-// carry ('mf4:group25'). The name is what a person knows; the label is the identity. Ambiguity is
-// refused rather than resolved by picking one — acquisition names are free text and not unique.
+// resolve_bus asks modules/player, which owns the rule — see the note there on why this is not
+// a front-end concern.
 fn resolve_bus(buses []mf4.BusInfo, want string) !string {
-	if want == '' {
-		return error('no --bus given')
-	}
+	mut names := []player.BusName{}
+	mut labels := []string{}
 	for b in buses {
-		if b.iface == want {
-			return b.iface
+		names << player.BusName{
+			iface: b.iface
+			name:  b.name
 		}
+		labels << b.iface
 	}
-	hits := buses.filter(it.name == want)
-	if hits.len == 1 {
-		return hits[0].iface
-	}
-	if hits.len > 1 {
-		return error('"${want}" names ${hits.len} buses in this recording: ${hits.map(it.iface).join(', ')} — use the label instead')
-	}
-	return error('no bus called "${want}" in this recording')
+	return player.resolve_bus(names, labels, want)
 }
 
 fn hex_ids(ids []u32) string {
