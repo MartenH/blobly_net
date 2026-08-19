@@ -495,6 +495,22 @@ fn parse_channel(c yaml.Any) !Channel {
 		ch.adapter, ch.address = decompose_iface(raw)
 		// A legacy vendor iface embeds the bitrate (`pcan:CH@500000`): lift it into the bitrate
 		// field (decompose stripped it from the address) and recompose a clean iface.
+		// A legacy Vector iface may carry a mode with or WITHOUT a rate (`vector:1,silent` is
+		// as valid as `vector:1@250000,silent`), so the mode is migrated on its own terms
+		// rather than as a side effect of finding an `@`. Hanging it off the bitrate branch
+		// left `vector:1,silent` opening silently at the hardware while the model believed the
+		// channel could transmit — the editor offering sends that VectorBus.send then refuses.
+		if ch.adapter == 'vector' && raw.contains(',') {
+			// The SUFFIX, not merely a comma: `,normal` is a spelling the parser accepts and it
+			// asks for the opposite of listen-only. Reading any comma as silence turned an
+			// explicit request to acknowledge into a channel that cannot.
+			match raw.all_after_last(',').trim_space().to_lower() {
+				'silent', 'listen_only', 'listenonly' { ch.listen_only = true }
+				else {} // `,normal`, or something the transport parser will reject on open
+			}
+
+			ch.address = ch.address.all_before_last(',')
+		}
 		if (ch.adapter == 'pcan' || ch.adapter == 'kvaser' || ch.adapter == 'vector')
 			&& raw.contains('@') {
 			// LAST `@`, then the mode: `vector:1@250000,silent` puts the suffix after the rate,
@@ -508,13 +524,9 @@ fn parse_channel(c yaml.Any) !Channel {
 			if br > 0 {
 				ch.bitrate = br
 			}
-			// A legacy Vector iface carrying `,silent` said listen-only in the only way v1 had
-			// of saying it; the flag is where v2 keeps that, and dropping it on the way in would
-			// silently put a bench that asked to listen back on the bus able to acknowledge.
-			if ch.adapter == 'vector' && raw.contains(',') {
-				ch.listen_only = true
-			}
-			ch.iface = compose_iface(ch.adapter, ch.address.all_before_last(','))
+			ch.iface = compose_iface(ch.adapter, ch.address)
+		} else if ch.adapter == 'vector' && raw.contains(',') {
+			ch.iface = compose_iface(ch.adapter, ch.address)
 		} else {
 			ch.iface = raw
 		}

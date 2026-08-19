@@ -632,14 +632,27 @@ fn (app &App) open_transport(iface string) !transport.Bus {
 // diagnostics ISO-TP paths) — so UDS reaches the vendor driver at the configured bitrate too.
 // bitrate_iface finds the channel owning this interface and applies its configured rate.
 // The per-channel rule lives in project.Channel.iface_with_bitrate, shared with the runner.
+// for_open is this channel as the project model sees it, for the questions about HOW A BUS IS
+// OPENED that project.Channel answers — today the bitrate suffix and the listen-only mode.
+//
+// In ONE place, because the fields are copied by hand: Chan mirrors project.Channel rather than
+// containing one, so a call site that rebuilds it inline silently drops whatever it forgets.
+// This one forgot listen_only, and every Vector channel a project had marked listen-only opened
+// able to acknowledge — the promise that backend exists to keep, lost between two structs with
+// the same field names. Anything added here is added once.
+fn (c Chan) for_open() project.Channel {
+	return project.Channel{
+		iface:       c.iface
+		adapter:     c.adapter
+		bitrate:     c.bitrate
+		listen_only: c.listen_only
+	}
+}
+
 fn (app &App) bitrate_iface(iface string) string {
 	for c in app.chans {
 		if c.iface == iface {
-			return project.Channel{
-				iface:   c.iface
-				adapter: c.adapter
-				bitrate: c.bitrate
-			}.iface_with_bitrate()
+			return c.for_open().iface_with_bitrate()
 		}
 	}
 	return iface

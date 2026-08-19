@@ -486,3 +486,42 @@ channels:
 	assert c.listen_only, 'v1 said it with ,silent; v2 says it with the flag'
 	assert c.iface_with_bitrate() == 'vector:1@250000,silent'
 }
+
+// `,silent` without a bitrate is a valid legacy spelling. Migrated only alongside a rate, the
+// hardware opened silently while the model thought the channel could transmit — the editor
+// offering sends that the backend then refuses.
+fn test_legacy_vector_silent_without_bitrate_migrates() {
+	p := parse('
+project:
+  name: legacy
+channels:
+  - name: CAN1
+    interface: vector:1,silent
+') or {
+		assert false, '${err}'
+		return
+	}
+	c := p.channels[0]
+	assert c.adapter == 'vector'
+	assert c.address == '1'
+	assert c.listen_only, 'the mode is not a side effect of finding a bitrate'
+}
+
+// …and `,normal` asks for the OPPOSITE. Reading any comma as silence turned an explicit
+// request to acknowledge into a channel that cannot.
+fn test_legacy_vector_normal_is_not_listen_only() {
+	p := parse('
+project:
+  name: legacy
+channels:
+  - name: CAN1
+    interface: vector:1@250000,normal
+') or {
+		assert false, '${err}'
+		return
+	}
+	c := p.channels[0]
+	assert c.bitrate == 250000
+	assert !c.listen_only, '",normal" is an explicit request to acknowledge'
+	assert c.iface_with_bitrate() == 'vector:1@250000'
+}

@@ -125,6 +125,7 @@ static int ct_vector_loaded = 0;
 static uint64_t ct_vec_cfg_mask[CT_VEC_MAX_CFG];
 static unsigned int ct_vec_cfg_rate[CT_VEC_MAX_CFG];
 static int ct_vec_cfg_silent[CT_VEC_MAX_CFG];
+static int ct_vec_cfg_ports[CT_VEC_MAX_CFG];
 static int ct_vec_cfg_n = 0;
 
 /* One lock over the symbol table and the configuration record. Those opens happen from several
@@ -158,6 +159,29 @@ static void ct_vec_cfg_note(uint64_t mask, unsigned int rate, int silent) {
 	}
 	ct_vec_cfg_rate[i] = rate;
 	ct_vec_cfg_silent[i] = silent;
+}
+
+/* Count a port against the channel it opened, and FORGET the channel when the last one goes.
+ * Kept for the life of the process, the record outlived the ports: stop, let another XL
+ * application take initialisation access and change the rate, start again, and the reopen is
+ * denied init access but matches a memory of how WE last configured it — reporting success on a
+ * bus running at somebody else's rate. What we know is only true while we hold a port. */
+static void ct_vec_cfg_ref(uint64_t mask) {
+	int i = ct_vec_cfg_find(mask);
+	if (i >= 0) ct_vec_cfg_ports[i]++;
+}
+
+static void ct_vec_cfg_unref(uint64_t mask) {
+	int i = ct_vec_cfg_find(mask);
+	if (i < 0) return;
+	if (--ct_vec_cfg_ports[i] > 0) return;
+	ct_vec_cfg_n--;
+	if (i != ct_vec_cfg_n) { /* keep the array dense */
+		ct_vec_cfg_mask[i]   = ct_vec_cfg_mask[ct_vec_cfg_n];
+		ct_vec_cfg_rate[i]   = ct_vec_cfg_rate[ct_vec_cfg_n];
+		ct_vec_cfg_silent[i] = ct_vec_cfg_silent[ct_vec_cfg_n];
+		ct_vec_cfg_ports[i]  = ct_vec_cfg_ports[ct_vec_cfg_n];
+	}
 }
 
 /* 0 ok, -1 DLL missing, -2 a symbol missing. */
@@ -262,6 +286,7 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 			ct_xl_closeport(port); ct_vec_leave(); return -1002;
 		}
 		ct_vec_cfg_note(mask, bitrate, silent);
+		ct_vec_cfg_ref(mask);
 	} else {
 		/* No init access. Either we already configured this channel — a second port for a bus
 		 * this process is running, which is normal and must work — or somebody else owns it. */
@@ -270,8 +295,13 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 		/* Configured by us, but not the way this caller asked. Reported rather than papered
 		 * over: a port that believes it is silent while the channel acknowledges is the exact
 		 * promise this backend was added to keep. */
-		if (silent && !ct_vec_cfg_silent[i]) { ct_xl_closeport(port); ct_vec_leave(); return -1004; }
+		/* BOTH DIRECTIONS. Refusing only a silent request after a normal open leaves the other
+		 * half wrong in the more dangerous way: a normal port on a channel we configured silent
+		 * would report itself able to transmit, and send() and the trace would treat frames as
+		 * having gone out while the transceiver acknowledged nothing. */
+		if (silent != ct_vec_cfg_silent[i]) { ct_xl_closeport(port); ct_vec_leave(); return -1004; }
 		if (ct_vec_cfg_rate[i] != bitrate) { ct_xl_closeport(port); ct_vec_leave(); return -1005; }
+		ct_vec_cfg_ports[i]++;
 	}
 	/* No TX confirmations and no TX requests in the receive queue. The XL driver can deliver an
 	 * event for every frame WE send, and echoes_own_sends() reports false for a vendor backend —
@@ -280,7 +310,14 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 	if (ct_xl_setchanmode) ct_xl_setchanmode(port, mask, 0, 0);
 	if (ct_xl_setnotify(port, out_event, 1) != 0) *out_event = NULL;
 	st = ct_xl_activate(port, mask, CT_XL_BUS_TYPE_CAN, CT_XL_ACTIVATE_RESET_CLOCK);
-	if (st != 0) { ct_xl_closeport(port); ct_vec_leave(); return -(int)st; }
+	if (st != 0) {
+		/* The reference was taken above; drop it here rather than in ct_vector_close, which the
+		 * caller never reaches for a port that failed to activate. */
+		ct_vec_cfg_unref(mask);
+		ct_xl_closeport(port);
+		ct_vec_leave();
+		return -(int)st;
+	}
 	*out_port = port;
 	*out_mask = (uint64_t)mask;
 	ct_vec_leave();
@@ -355,6 +392,9 @@ static void ct_vector_close(ct_xlport port, uint64_t mask) {
 	if (port == CT_XL_INVALID_PORTHANDLE) return;
 	ct_xl_deactivate(port, (ct_xlaccess)mask);
 	ct_xl_closeport(port);
+	ct_vec_enter();
+	ct_vec_cfg_unref(mask);
+	ct_vec_leave();
 }
 
 /* How far the driver gets, so a caller can tell apart failures that look identical from
