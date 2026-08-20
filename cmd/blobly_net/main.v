@@ -649,88 +649,6 @@ fn (c Chan) for_open() project.Channel {
 	}
 }
 
-// transmits_on reports whether this channel has anything that would put frames on its bus:
-// simulated ECUs, a diagnostic responder, or a cyclic sender aimed at it. Replay is asked about
-// separately because Chan answers that one itself.
-// rate_conflict reports two enabled rows on one destination asking for different bitrates, or
-// none. bitrate_iface picks ONE of them and hands every monitor and transmit open the same
-// string, so the vendor layer's own "already open at a different rate" refusal can never fire
-// and the bus quietly runs at whichever row was listed first.
-//
-// A FUNCTION, because the check is needed twice: Start is not the only way a channel joins a
-// run — the Buses panel can enable one live, and that path went straight past this.
-// silent_conflict reports a Vector destination that one row has set to listen-only while
-// another puts frames on it. The transceiver has ONE mode and silence is the safe reading, so
-// the other row's traffic would be refused a frame at a time — a failed run where the honest
-// answer is that the project asks two different things of one wire.
-//
-// A FUNCTION for the same reason rate_conflict is: Start is not the only way a channel joins a
-// run.
-fn (app &App) silent_conflict() ?string {
-	// VECTOR ONLY, because it is the only backend where listen_only reaches the transceiver.
-	// Applied to every adapter this refused two perfectly good rows on one `inproc:` bus — a
-	// listen-only monitor beside a replay — where nothing is silenced at all.
-	mut silent_dest := map[string]string{}
-	for c in app.chans {
-		if c.enabled && c.listen_only && c.adapter == 'vector' {
-			silent_dest[transport.destination_key(c.iface)] = c.name
-		}
-	}
-	for c in app.chans {
-		if !c.enabled || c.adapter != 'vector' {
-			continue
-		}
-		// EVERY TRANSMITTER, not only replay. Simulated nodes, diagnostic responders and cyclic
-		// senders all put frames on the wire, and each of them would have been refused one frame
-		// at a time by a transceiver a sibling row had quieted.
-		mut what := ''
-		if c.replaying() {
-			what = 'replays onto'
-		} else if app.transmits_on(c) {
-			what = 'transmits on'
-		}
-		if what == '' {
-			continue
-		}
-		if quiet := silent_dest[transport.destination_key(c.iface)] {
-			return '${c.name} ${what} ${c.iface}, which ${quiet} has set to listen-only — one wire, one mode'
-		}
-	}
-	return none
-}
-
-fn (app &App) rate_conflict() ?string {
-	mut rate_of := map[string]int{}
-	mut rate_row := map[string]string{}
-	for c in app.chans {
-		if !c.enabled {
-			continue
-		}
-		// ONLY WHERE THE RATE IS OURS TO SET. An inproc: or udp: bus has no bitrate and opens
-		// unchanged, and SocketCAN's is configured with `ip link` rather than by us — so the
-		// number on those rows is metadata the backend never reads. Refusing to start over a
-		// disagreement about it blocked perfectly good simulation projects, where several
-		// logical channels sharing one software bus is the ordinary arrangement.
-		if c.adapter !in ['pcan', 'kvaser', 'vector'] {
-			continue
-		}
-		// A ROW WITH NO RATE STILL HAS ONE: iface_with_bitrate omits the suffix and the backend
-		// then opens at its 500 kbit/s default. Skipping those rows let a 250k row sit beside a
-		// defaulted one without complaint, and the wire ran at whichever opened first.
-		want_rate := if c.bitrate > 0 { c.bitrate } else { 500000 }
-		k := transport.destination_key(c.iface)
-		if prev := rate_of[k] {
-			if prev != want_rate {
-				return '${c.name} and ${rate_row[k]} share ${c.iface} but ask for ${want_rate} and ${prev} bit/s'
-			}
-		} else {
-			rate_of[k] = want_rate
-			rate_row[k] = c.name
-		}
-	}
-	return none
-}
-
 // dbs_for_dest merges the databases of EVERY channel row on this wire. The verifier sets are
 // grouped by destination, so resolving one against a single row's DBCs left a verifier that came
 // from the sibling alias unable to adopt a name or a layout from its own database.
@@ -754,8 +672,8 @@ fn (app &App) dbs_for_dest(iface string) []candb.Database {
 // dest_is_read_locked reports whether ANY enabled row on this wire has its monitor open. Caller
 // holds app.mu.
 //
-// The distinction exists because one reader now serves a destination: `running` is a property of
-// the row that opened the port, while "is this bus being watched" is a property of the wire, and
+// The distinction exists because one reader serves a destination: `running` is a property of the
+// row that opened the port, while "is this bus being watched" is a property of the wire, and
 // every caller that was asking the first meant the second.
 fn (app &App) dest_is_read_locked(iface string) bool {
 	want := transport.destination_key(iface)
@@ -767,29 +685,30 @@ fn (app &App) dest_is_read_locked(iface string) bool {
 	return false
 }
 
-fn (app &App) transmits_on(c Chan) bool {
-	for sc in app.sims {
-		// NODES ONLY. start() spawns sim_loop when `nodes.len > 0`, so a row carrying just
-		// `verify:` rules never transmits — it watches. Counting it as a transmitter refused a
-		// perfectly good arrangement: a listen-only alias beside a row that only checks what it
-		// hears is exactly what a quiet bench looks like.
-		if sc.pch.name == c.name && sc.nodes.len > 0 {
-			return true
+// destination_conflict asks project.vendor_destination_conflicts about the rows as they stand.
+//
+// ONE POLICY, and this is its third home: the GUI had its own mode check and its own rate check,
+// the headless runner had neither, and when the shared rule was tightened — a mode disagreement
+// is invalid whether or not a row LOOKS like a transmitter, because Quick Send, the shell, a
+// script and the diagnostic panel can all make one talk — the GUI kept the old reading and the
+// two front ends disagreed about the same project again. There is nothing here left to drift.
+fn (app &App) destination_conflict() ?string {
+	mut rows := []project.Channel{}
+	for c in app.chans {
+		rows << project.Channel{
+			name:        c.name
+			adapter:     c.adapter
+			iface:       c.iface
+			bitrate:     c.bitrate
+			listen_only: c.listen_only
+			enabled:     c.enabled
 		}
 	}
-	for sr in app.senders {
-		// BY DESTINATION. A sender whose explicit `bus:` names a valid alias of this wire has no
-		// exact-interface owner, and comparing the strings missed it — so a listen-only row with
-		// a generator aimed at its own bus through the other spelling looked passive.
-		if sr.chan == c.name {
-			return true
-		}
-		tgt := sr.target()
-		if tgt != '' && transport.destination_key(tgt) == transport.destination_key(c.iface) {
-			return true
-		}
+	problems := project.vendor_destination_conflicts(rows)
+	if problems.len == 0 {
+		return none
 	}
-	return false
+	return problems[0]
 }
 
 fn (app &App) bitrate_iface(iface string) string {
@@ -856,12 +775,9 @@ fn (mut app App) start() {
 	// still starts, opens that silent bus, and has every frame refused. The operator gets a
 	// failed run where the honest answer is that they asked for two different things on one
 	// wire. Said before anything opens.
-	if bad := app.silent_conflict() {
-		app.notify('${bad} — not starting')
-		return
-	}
-	if bad := app.rate_conflict() {
-		app.notify('${bad} — not starting')
+	// One wire, one mode and one rate — the same verdict the headless runner reaches.
+	if bad := app.destination_conflict() {
+		app.notify('${bad} — one wire, one mode and one rate; not starting')
 		return
 	}
 	if app.cfg_text_dirty {
@@ -6066,15 +5982,9 @@ fn draw_buses(mut app App, chans []Chan) {
 				}
 				if new && app.running && app.chans[i].adapter in ['pcan', 'kvaser', 'vector'] {
 					app.chans[i].enabled = true
-					clash := app.rate_conflict()
-					quiet := app.silent_conflict()
+					clash := app.destination_conflict()
 					app.chans[i].enabled = false
 					if bad := clash {
-						app.mu.unlock()
-						app.notify('${bad} — not enabling')
-						continue
-					}
-					if bad := quiet {
 						app.mu.unlock()
 						app.notify('${bad} — not enabling')
 						continue
