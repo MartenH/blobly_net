@@ -34,7 +34,7 @@ fn pcan_list() []Iface {
 	mut out := []Iface{}
 	for n in 1 .. 9 {
 		cond := C.ct_pcan_condition(u16(0x50 + n)) // PCAN_USBBUS1 = 0x51
-		if cond > 0 {                              // 0x01 available | 0x04 occupied
+		if cond > 0 { // 0x01 available | 0x04 occupied
 			out << Iface{
 				name:    'PCAN_USBBUS${n}'
 				iface:   'pcan:PCAN_USBBUS${n}'
@@ -55,9 +55,11 @@ mut:
 // open_pcan parses `pcan:<channel>[@<bitrate>]`, loads PCANBasic.dll and initializes
 // the channel. Referenced only from open_windows.v, so the Linux build never sees it.
 pub fn open_pcan(spec string) !&PcanBus {
-	parts := spec.split('@')
-	handle := pcan_handle(parts[0])!
-	bitrate := if parts.len > 1 { parts[1].int() } else { 500000 }
+	// BOTH RULES, from the file all three backends share: at most one bitrate, and that a whole
+	// number. Validating only the second part let `@250000@500000` open at 250 kbit/s while the
+	// project reported 500.
+	chan_part, bitrate := vendor_split_rate(spec, 500000) or { return error('PCAN: ${err}') }
+	handle := pcan_handle(chan_part)!
 	baud := pcan_baud(bitrate)!
 	if C.ct_pcan_load() != 0 {
 		return error('PCANBasic.dll not found — install the PEAK PCAN driver')
@@ -85,10 +87,14 @@ pub fn (mut b PcanBus) send(f CanFrame) ! {
 	if f.rtr {
 		mt |= pcan_msg_rtr
 	}
-	mut n := f.data.len
-	if n > 8 {
-		n = 8
+	// REFUSED, not truncated — the same rule this backend already applies to an FD frame, and
+	// for the same reason. A vendor interface is not clamps_to_classic(), so wire_frame() gives
+	// the trace the frame AS ASKED: truncating here records nine bytes against eight on the
+	// wire, and the echo can never match its own record.
+	if f.data.len > 8 {
+		return error('PCAN: ${f.data.len} bytes is not a classic CAN frame (id 0x${f.id:X}) — 8 is the maximum without FD')
 	}
+	n := f.data.len
 	st := C.ct_pcan_write(b.channel, f.id, mt, u8(n), f.data.data)
 	if st != 0 {
 		return error('CAN_Write failed (0x${st:X})')

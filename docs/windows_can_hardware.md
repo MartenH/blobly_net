@@ -7,14 +7,49 @@ via `cmd/can_smoke` (defaults `kvaser:0` / `pcan:PCAN_USBBUS1` worked first try)
 vendor stacks agreeing on the wire is itself the cross-vendor oracle.
 This documents how real CAN adapters (PCAN / Kvaser / Vector) and the vendor-neutral
 `slcan` path slot into Blobly Net on Windows, behind the existing `transport.Bus`
-seam. PCAN and Kvaser are hardware-verified; Vector is unimplemented and untested.
+seam. PCAN, Kvaser **and Vector** are hardware-verified — Vector on a VN1630A, 2026-08-19,
+see below.
 
 - **Done:** `transport/pcan_windows.v` + `pcan_shim.h`, `transport/kvaser_windows.v`
   + `kvaser_shim.h`, wired into `open_windows.v` (`pcan:` / `kvaser:` prefixes).
   Both are LoadLibrary-based (no SDK). **Cross-compiled to a real Windows x64 PE
   from WSL** (mingw-w64) and compile-checked in the Windows CI — but **not yet run
   against hardware** (no adapter/driver on the dev box).
-- **Pending:** owner runs the verification below; Vector + slcan backends later.
+- **Vector (`vector:`) — HW-VERIFIED 2026-08-19 on a VN1630A** (serial 545980).
+  `transport/vector_windows.v` + `vector_shim.h`, wired into `open_windows.v`. Addressed by
+  APPLICATION channel (`vector:1`), because that is what `xlGetApplConfig`/`xlGetChannelMask`
+  take and what Vector Hardware Manager numbers. Classic CAN only; an FD frame is refused, not
+  truncated.
+  - **What was measured:** Channel 1 → Channel 3 over real transceivers (CANpiggy 1057Gcap →
+    on-board 1051cap), 500 kbit/s, **43,773 frames sent and 43,773 received, none malformed**,
+    sequence numbers checked end to end. That is ~4,400 frames/s, which is a saturated
+    500 kbit/s wire for eight data bytes. A `--selftest` on Vector's software virtual channels
+    passes the same way with no hardware involved.
+  - **The wire is the limit, not the backend.** 111 bits per standard frame with eight data
+    bytes puts the 500 kbit/s ceiling at ~4,504 frames/s, and the measurement above sits at
+    4,468. To find where the code gives out, `--pair` over the driver's two VIRTUAL channels
+    removes the wire entirely: **2,880,640 frames in 6 s — 480,106 frames/s, 100% arrived, no
+    duplicates, none malformed**. That is ~107x the fastest real bus we can attach, so classic
+    CAN saturates long before this backend does and there is no throughput work to do here.
+    Raising it is CAN-FD's job (Planned).
+  - **The ABI is checked, not guessed.** `vxlapi.h` ships with the XL Driver Library, so every
+    typedef, signature and constant this backend uses was compared against it: `XLstatus` is
+    `short`, `XLportHandle` is `long` (32-bit here), `XLevent` is 48 bytes, `XLchannelConfig`
+    227 and `XLdriverConfig` 14576. The sizes and offsets are `_Static_assert`s. The header is
+    **not** included — we cannot depend at build time on a library we may not redistribute.
+  - **`vxlapi64.dll` is a separate download from the hardware drivers**, and it does not
+    install onto the search path: its installer puts it under
+    `C:\Users\Public\Documents\Vector\XL Driver Library <version>\bin`. The loader tries
+    the bare name first, then that directory. A bench can have the VN device healthy and Vector
+    Hardware Manager installed with no XL library present at all — that was the state of this
+    one until it was installed.
+  - **Silent mode.** `vector:1@500000,silent` sets ACK-free output *before* the channel is
+    activated, which is the only ordering that is safe against a running vehicle: a node that
+    goes on the bus at the wrong bitrate floods error frames. A project's `listen_only:` is
+    translated to it. `cmd/vectorcheck --channel 1` defaults to silent for this reason.
+
+- **Pending:** CAN-FD on the Vector backend (needs the V4 interface and a different event
+  structure); the slcan backend.
 
 ## Why there's work to do at all
 
@@ -51,11 +86,19 @@ code or on Linux changes.** Linux stays green; the backends never compile off-Wi
 ```
 pcan:PCAN_USBBUS1      # PEAK channel handle name (or pcan:usb1)
 kvaser:0               # Kvaser channel number
+vector:1               # Vector APPLICATION channel, as numbered in Vector Hardware Manager
+vector:1@250000        # …at 250 kbit/s
+vector:1@500000,silent # …listen-only: the transceiver never acknowledges
+                       #   (a channel added through Discover starts this way on purpose —
+                       #    the 500 kbit/s default is a guess until somebody confirms it)
 kvaser:virtual0        # Kvaser SOFTWARE virtual channel (no hardware needed)
-vector:CANcaseXL:0     # Vector app/channel
-vector:virtual         # Vector virtual CAN bus
-slcan:COM5@500000      # USB-serial slcan adapter on a COM port
+slcan:COM5@500000      # USB-serial slcan adapter on a COM port  (not implemented)
 ```
+
+The two `vector:` spellings this file used to show — `vector:CANcaseXL:0` and
+`vector:virtual` — were sketches from before the backend existed, and the shipped parser
+rejects both. A Vector channel is addressed by its application channel number; there is no
+Vector software-virtual bus here (use `inproc:` for driver-free work).
 
 The existing `Channel` config already carries everything a backend needs:
 `bitrate`, `fd`, `data_bitrate`, `sample_point`, `timing{brp,tseg1,tseg2,sjw}`,

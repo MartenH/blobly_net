@@ -632,17 +632,145 @@ fn (app &App) open_transport(iface string) !transport.Bus {
 // diagnostics ISO-TP paths) — so UDS reaches the vendor driver at the configured bitrate too.
 // bitrate_iface finds the channel owning this interface and applies its configured rate.
 // The per-channel rule lives in project.Channel.iface_with_bitrate, shared with the runner.
-fn (app &App) bitrate_iface(iface string) string {
+// for_open is this channel as the project model sees it, for the questions about HOW A BUS IS
+// OPENED that project.Channel answers — today the bitrate suffix and the listen-only mode.
+//
+// In ONE place, because the fields are copied by hand: Chan mirrors project.Channel rather than
+// containing one, so a call site that rebuilds it inline silently drops whatever it forgets.
+// This one forgot listen_only, and every Vector channel a project had marked listen-only opened
+// able to acknowledge — the promise that backend exists to keep, lost between two structs with
+// the same field names. Anything added here is added once.
+fn (c Chan) for_open() project.Channel {
+	return project.Channel{
+		iface:       c.iface
+		adapter:     c.adapter
+		bitrate:     c.bitrate
+		listen_only: c.listen_only
+	}
+}
+
+// dbs_for_dest merges the databases of EVERY channel row on this wire. The verifier sets are
+// grouped by destination, so resolving one against a single row's DBCs left a verifier that came
+// from the sibling alias unable to adopt a name or a layout from its own database.
+fn (app &App) dbs_for_dest(iface string) []candb.Database {
+	want := transport.destination_key(iface)
+	mut out := []candb.Database{}
+	mut seen := map[string]bool{}
 	for c in app.chans {
-		if c.iface == iface {
-			return project.Channel{
-				iface:   c.iface
-				adapter: c.adapter
-				bitrate: c.bitrate
-			}.iface_with_bitrate()
+		if transport.destination_key(c.iface) != want || c.iface in seen {
+			continue
+		}
+		seen[c.iface] = true
+		out << app.dbs_for(c.iface)
+	}
+	if out.len == 0 {
+		return app.dbs_for(iface)
+	}
+	return out
+}
+
+// dest_is_read_locked reports whether ANY enabled row on this wire has its monitor open. Caller
+// holds app.mu.
+//
+// The distinction exists because one reader serves a destination: `running` is a property of the
+// row that opened the port, while "is this bus being watched" is a property of the wire, and
+// every caller that was asking the first meant the second.
+// dest_left_the_run_locked reports a destination whose rows are ALL disabled, having existed in
+// this project — which is what rx_loop does to a wire whose adapter failed. A destination with no
+// rows at all (an anonymous tap, a generator's own target) has not left anything. Caller holds
+// app.mu.
+fn (app &App) dest_left_the_run_locked(iface string) bool {
+	want := transport.destination_key(iface)
+	mut seen := false
+	for c in app.chans {
+		if transport.destination_key(c.iface) != want {
+			continue
+		}
+		seen = true
+		if c.enabled {
+			return false
 		}
 	}
-	return iface
+	return seen
+}
+
+fn (app &App) dest_is_read_locked(iface string) bool {
+	want := transport.destination_key(iface)
+	for c in app.chans {
+		if c.enabled && c.running && transport.destination_key(c.iface) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// destination_conflict asks project.vendor_destination_conflicts about the rows as they stand.
+//
+// ONE POLICY, and this is its third home: the GUI had its own mode check and its own rate check,
+// the headless runner had neither, and when the shared rule was tightened — a mode disagreement
+// is invalid whether or not a row LOOKS like a transmitter, because Quick Send, the shell, a
+// script and the diagnostic panel can all make one talk — the GUI kept the old reading and the
+// two front ends disagreed about the same project again. There is nothing here left to drift.
+fn (app &App) destination_conflict() ?string {
+	mut rows := []project.Channel{}
+	for c in app.chans {
+		rows << project.Channel{
+			name:        c.name
+			adapter:     c.adapter
+			iface:       c.iface
+			bitrate:     c.bitrate
+			listen_only: c.listen_only
+			enabled:     c.enabled
+		}
+	}
+	problems := project.vendor_destination_conflicts(rows)
+	if problems.len == 0 {
+		return none
+	}
+	return problems[0]
+}
+
+fn (app &App) bitrate_iface(iface string) string {
+	// SILENCE WINS across every channel on this wire, not just the first one listed. Two channel
+	// entries can share one interface, and this returned whichever came first — so a bus with
+	// one listen-only entry and one ordinary entry opened according to list order, and a bench
+	// that had asked to stay quiet could acknowledge because a sibling row did not. The
+	// transceiver has one mode; of the two answers only one is safe on a live bus.
+	// BY DESTINATION, not by spelling. `vector:1` and `vector:ch1` are one wire and one
+	// transceiver; comparing the strings let a listen-only row and an ordinary row spelled
+	// differently miss each other entirely, which is the same substitution of a lookup for an
+	// identity this file has made before.
+	want := transport.destination_key(iface)
+	// ENABLED ROWS DECIDE. A disabled alias — `vector:ch1` at 250k, switched off, beside an
+	// enabled `vector:1` at 500k — used to win this scan and set the rate for a channel it is
+	// not part of, while the conflict check at Start skips disabled rows and never noticed the
+	// disagreement. A row that is not in the run has no say in how the run opens its wire; one
+	// is consulted only if nothing enabled matches at all.
+	mut found := false
+	mut chosen := Chan{}
+	for want_enabled in [true, false] {
+		if found {
+			break
+		}
+		for c in app.chans {
+			if c.enabled != want_enabled {
+				continue
+			}
+			if transport.destination_key(c.iface) != want {
+				continue
+			}
+			if !found {
+				found = true
+				chosen = c
+			} else if c.listen_only && !chosen.listen_only {
+				chosen = c
+			}
+		}
+	}
+	if !found {
+		return iface
+	}
+	return chosen.for_open().iface_with_bitrate()
 }
 
 // start opens every enabled, monitorable channel on its own RX thread.
@@ -654,6 +782,22 @@ fn (mut app App) start() {
 	// attaches to exactly what the Configuration editor shows (not stale buffered values).
 	if app.dirty {
 		app.apply_edits()
+	}
+	// ONE WIRE, ONE RATE. Two enabled rows on the same destination that disagree about the
+	// bitrate are a contradiction the backend cannot see: bitrate_iface picks one of them and
+	// hands every monitor and transmit open the same string, so the Vector layer's own
+	// "already open at a different bitrate" refusal never fires and the bus quietly runs at
+	// whichever row was listed first. Caught here, before anything is opened.
+	// A WIRE FORCED SILENT CANNOT CARRY A REPLAY. bitrate_iface opens every port on a
+	// destination in listen-only mode as soon as ONE row asks for it — the transceiver has a
+	// single mode and silence is the safe reading — but a replay row with its own flag clear
+	// still starts, opens that silent bus, and has every frame refused. The operator gets a
+	// failed run where the honest answer is that they asked for two different things on one
+	// wire. Said before anything opens.
+	// One wire, one mode and one rate — the same verdict the headless runner reaches.
+	if bad := app.destination_conflict() {
+		app.notify('${bad} — one wire, one mode and one rate; not starting')
+		return
 	}
 	if app.cfg_text_dirty {
 		// Text edits are NOT folded in automatically: the file is the authority for everything
@@ -728,6 +872,8 @@ fn (mut app App) start() {
 	}
 	app.tx_map_mu.unlock()
 	app.running = true
+	// Which wires already have a reader, so aliases do not each open one.
+	mut monitored := map[string]bool{}
 	for ci, ch in app.chans {
 		if !ch.monitorable() {
 			continue
@@ -741,8 +887,19 @@ fn (mut app App) start() {
 		// still pending would otherwise start a SECOND loop for one channel, and both would
 		// claim against the same monitor index — one gets the echo, the other files its copy
 		// under the device under test
-		app.chans[ci].spawning = true
-		spawn rx_loop(app, ci, ch.iface, app.run_gen)
+		// ONE READER PER WIRE. Two rows spelling one destination differently each opened their
+		// own RX port, and every external frame was then delivered twice — two trace rows, two
+		// verifier passes over the same message, and an E2E counter check seeing each frame
+		// twice in a row. The second row still transmits and is still configured; it simply does
+		// not need its own pair of eyes on a bus somebody is already watching.
+		rx_key := transport.destination_key(ch.iface)
+		if rx_key in monitored {
+			app.chans[ci].spawning = false
+		} else {
+			monitored[rx_key] = true
+			app.chans[ci].spawning = true
+			spawn rx_loop(app, ci, ch.iface, app.run_gen)
+		}
 		// A TX bus per CHANNEL (each generator fires on its target bus), plus one anonymous tap
 		// per wire for the paths with no particular channel — Quick Send, diagnostics, shell.
 		if tx_bus_key(ch.name, ch.iface) !in app.tx_buses {
@@ -819,10 +976,15 @@ fn (mut app App) start() {
 			// test's — a collision on the bench this configuration exists to observe.
 			continue
 		}
-		if sc.iface in seeded {
+		// ONCE PER WIRE, and a wire is a destination rather than a spelling. Keyed on the raw
+		// interface, `vector:1` and `vector:ch1` seeded independently — two built-in responders
+		// answering on 0x7E0/0x7E8 at once when neither row named its own addresses, which is a
+		// bus with two ECUs claiming one identity. Fifth place this substitution has turned up.
+		sc_key := transport.destination_key(sc.iface)
+		if sc_key in seeded {
 			continue
 		}
-		seeded << sc.iface
+		seeded << sc_key
 		mut peers := []project.NodeCfg{}
 		// Which CHANNEL each node came from, BY POSITION. Diagnostics are seeded once per bus,
 		// but two entries can share that bus and sim_key() puts the channel in the key, so a
@@ -838,7 +1000,7 @@ fn (mut app App) start() {
 			if other.pch.is_doip() {
 				continue
 			}
-			if other.iface == sc.iface {
+			if transport.destination_key(other.iface) == sc_key {
 				peers << other.nodes
 				for _ in other.nodes {
 					owners << other.pch
@@ -1631,7 +1793,36 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	seq, rec_id, epoch := t.app.note_emit(t.iface, t.chan_name, t.origin, wire)
 	// `wire`, not `frame`: on a backend that would carry the extra bytes (inproc, udp) sending
 	// the original makes the echo disagree with the record in the other direction.
-	t.inner.send(wire) or {
+	// BENEATH THE RECORD, and through the shared helper cmd/restbus also uses.
+	//
+	// A vendor transmit queue fills as a matter of course on a busy replay. Retrying in the
+	// CALLER meant re-entering this function, and each attempt noted an emission and retracted
+	// it — painting the trace with failed transmissions for frames that went out perfectly well
+	// a millisecond later. The record is made once and the waiting happens under it.
+	//
+	// Still under tx_mu, so the order frames were recorded in is the order they reach the wire,
+	// which is the property this lock exists for.
+	//
+	// KNOWN LIMITATION: note_emit has already timestamped the row, so a frame that waits for
+	// room is recorded up to a fifth of a second before it reaches the bus. ORDER is right and
+	// the echo still matches; only the absolute time is early, and only while the wire is
+	// saturated. Correcting it means splitting note_emit into a reserve that registers the
+	// pending echo and a commit that writes the row once the driver has the frame — a change to
+	// the hot path that wants its own change, not a corner of this one.
+	// The wait ends when the RUN does. t.guard_gen is the run this tap belongs to; without this
+	// the worker sat out its whole retry budget after Stop, with its own taps closing underneath.
+	gen_now := t.guard_gen
+	app_ref := t.app
+	transport.send_waiting_for_room(mut t.inner, wire, 200, fn [gen_now, app_ref] () bool {
+		if gen_now == 0 {
+			return false
+		}
+		mut a := unsafe { app_ref }
+		a.mu.lock()
+		over := !a.running || a.run_gen != gen_now
+		a.mu.unlock()
+		return over
+	}) or {
 		t.app.retract_emit(seq, t.origin, epoch)
 		// exactly the entry this send wrote, if it wrote one — not a search, and not a guess
 		// from the backend
@@ -1701,17 +1892,24 @@ fn (app &App) open_tap(iface string, origin string) !transport.Bus {
 // without coupling unrelated buses.
 fn (app &App) tx_mutex(iface string) &sync.Mutex {
 	mut a := unsafe { app }
+	// KEYED ON THE DESTINATION, not on the spelling. This lock serialises the record-then-send
+	// pair in TapBus, so two spellings of one wire taking two different locks lets one thread
+	// record A, pause, and the other queue B first — the trace then says A went out before B
+	// while the bus carried B, and each frame can claim the other's echo. `vector:1` and
+	// `vector:ch1` are one transceiver; canonical_iface does not know that and
+	// destination_key does.
+	key := transport.destination_key(iface)
 	// tx_map_mu, NOT app.mu — see the field comment: a caller may already hold app.mu here.
 	a.tx_map_mu.lock()
 	defer {
 		a.tx_map_mu.unlock()
 	}
-	if m := a.tx_mutexes[iface] {
+	if m := a.tx_mutexes[key] {
 		return m
 	}
 	m := &sync.Mutex{}
 	m.init()
-	a.tx_mutexes[iface] = m
+	a.tx_mutexes[key] = m
 	return m
 }
 
@@ -1852,7 +2050,11 @@ fn (mut app App) load_recording(path string) {
 	// string. Keying the sets by iface alone therefore matched nothing and every imported frame
 	// came back with an empty verdict, which is what the previous attempt at this did.
 	mut verifiers := map[string]sim.VerifySet{}
-	mut alias := map[string]string{} // recorded label -> project iface
+	mut alias := map[string]string{} // recorded label -> destination key
+	// destination key -> EVERY raw interface on it. Remembering only the first lost the later
+	// alias's databases, so a verifier that came from `vector:ch1` was resolved against
+	// `vector:1`'s DBCs alone and could not adopt a name or a J1939 PGN layout from its own.
+	mut dbc_ifaces := map[string][]string{}
 	for sc in app.sims {
 		// A DoIP entry carries no frames and no `verify:`, so it must not create a verifier set
 		// for its interface: an empty one made `verifiers.len == 1` false and an unlabelled MF4
@@ -1866,7 +2068,11 @@ fn (mut app App) load_recording(path string) {
 		// capture that was checked live), and unsaved editor changes must be reflected, since
 		// app.dbs already drives naming and decoding everywhere else in the UI.
 		live := merge_dbs_from(app.loaded_dbs_for(sc.db_paths))
-		mut vs := verifiers[sc.iface] or { sim.VerifySet{} }
+		// KEYED ON THE DESTINATION. Two rows spelling one wire differently kept separate
+		// verifier sets, so an imported recording was checked against whichever row's rules
+		// happened to be found — and rules split across the aliases silently stopped applying.
+		sc_dest := transport.destination_key_for(sc.pch.adapter, sc.iface)
+		mut vs := verifiers[sc_dest] or { sim.VerifySet{} }
 		// `verify:` ONLY — the ECU under test's messages, never our own.
 		//
 		// A candump log carries no direction, so a recording made while we were transmitting
@@ -1876,11 +2082,17 @@ fn (mut app App) load_recording(path string) {
 		// about is the other side's protection, and that is exactly what `verify:` describes.
 		vs.merge_into(sim.verifiers_for(live, [], sc.verify)) // conflicts already reported at start
 
-		verifiers[sc.iface] = vs
-		alias[sc.iface] = sc.iface
+		verifiers[sc_dest] = vs
+		mut known := dbc_ifaces[sc_dest] or { []string{} }
+		if sc.iface !in known {
+			known << sc.iface
+		}
+		dbc_ifaces[sc_dest] = known
+		alias[sc.iface] = sc_dest
+		alias[sc_dest] = sc_dest
 		for c in app.chans {
 			if c.iface == sc.iface {
-				alias[c.name] = sc.iface
+				alias[c.name] = sc_dest
 			}
 		}
 	}
@@ -1895,10 +2107,13 @@ fn (mut app App) load_recording(path string) {
 	// where only one is simulated would otherwise apply that one's rules to every `mf4:busN` —
 	// and the distinct labels are the file telling us the recording spans several buses. So the
 	// import may only fall back when the PROJECT itself has a single CAN bus to fall back to.
+	// COUNTED BY DESTINATION, like the verifier map above it. Two spellings of one wire counted
+	// as two buses, so a project with `vector:1` and `vector:ch1` looked multi-bus to the
+	// single-bus fallback and an imported one-bus recording was verified against nothing.
 	mut can_buses := map[string]bool{}
 	for c in app.chans {
 		if !c.doip {
-			can_buses[c.iface] = true
+			can_buses[transport.destination_key_for(c.adapter, c.iface)] = true
 		}
 	}
 	// BOTH sides must be unambiguous. A one-bus project importing a TWO-bus recording is still a
@@ -1932,7 +2147,15 @@ fn (mut app App) load_recording(path string) {
 			// single-bus fallback, where there is nothing to get wrong.
 			ifc := if from_mf4 { mf4_only } else { alias[e.iface] or { only } }
 			if mut vs := verifiers[ifc] {
-				if k := vs.resolve(app.dbs_for(ifc), f.id, f.extended) {
+				// THE RAW INTERFACE for the databases. dbs_by_iface is keyed by what the
+				// channel is called, and `ifc` is now a destination key — so looking the DBCs
+				// up by it found none, and a verifier could no longer adopt a name or a layout
+				// from the database. The map remembers one raw spelling per destination.
+				mut scope := []candb.Database{}
+				for raw in dbc_ifaces[ifc] or { [ifc] } {
+					scope << app.dbs_for(raw)
+				}
+				if k := vs.resolve(scope, f.id, f.extended) {
 					if mut ver := vs.by_key[k] {
 						viol = ver.check(f.data).str()
 						vs.by_key[k] = ver
@@ -2049,6 +2272,41 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 	mut built := false
 	t0 := time.ticks()
 	for a.running {
+		// A CHANNEL THAT HAS LEFT THE RUN takes its simulation with it. rx_loop disables a
+		// channel whose adapter failed, and this loop only watched `a.running` — so a simulated
+		// ECU went on transmitting into a port that had gone, discarding every failure.
+		a.mu.lock()
+		// BY NAME AND WIRE. A hand-edited project can carry the same channel name on two buses,
+		// and matching on the name alone let an unrelated enabled row keep this simulation alive
+		// after its own channel was switched off — transmitting onto a bus nobody had asked for.
+		mut still_on := false
+		sim_dest := transport.destination_key(sc.iface)
+		for c in a.chans {
+			if c.enabled && c.name == sc.pch.name && transport.destination_key(c.iface) == sim_dest {
+				still_on = true
+				break
+			}
+		}
+		a.mu.unlock()
+		if !still_on {
+			// PARKED, not finished. Leaving outright stopped the transmission — which was the
+			// point, since rx_loop takes a dead destination's rows out of the run — but nothing
+			// respawns a simulation: start() is its only spawner, so a channel disabled and
+			// re-enabled during a run came back with a reader, taps and no simulated ECUs at all
+			// until the whole run was restarted.
+			//
+			// Parking has to keep READING, though. The tap stays subscribed, so a loop that only
+			// slept would move the traffic into the socket and the 8192-frame inproc queue rather
+			// than drop it: on re-enable the ECU would answer requests put to it while it was
+			// switched off, seconds late, and a queue allowed to fill drops frames for everyone
+			// sharing the wire. Read and discard. recv's own 5 ms timeout paces an idle bus, so
+			// the drain ends on the first empty read and the sleep only bounds the retry rate.
+			for _ in 0 .. 1024 {
+				bus.recv(5) or { break }
+			}
+			time.sleep(20 * time.millisecond)
+			continue
+		}
 		if !built || a.sim_gen != local_gen {
 			built = true
 			local_gen = a.sim_gen
@@ -2094,6 +2352,19 @@ fn gen_loop(app &App) {
 		a.mu.lock()
 		for i, sr in a.senders {
 			if sr.sender.trigger == 'cyclic' && sr.sender.cycle_ms > 0 {
+				// NOT ONTO A WIRE THAT HAS LEFT THE RUN — but "has no reader" is not that.
+				// A generator may legitimately target a bus nobody monitors: an `off` channel,
+				// or a target-only wire, both of which start() opens a transmit tap for on
+				// purpose. Requiring a reader silenced every one of them, which is a supported
+				// arrangement rather than a failure.
+				//
+				// What rx_loop actually does to a dead destination is DISABLE its rows. So the
+				// question is whether this target's rows exist and have all left the run — not
+				// whether anybody is listening to it.
+				tgt := sr.target()
+				if tgt != '' && a.dest_left_the_run_locked(tgt) {
+					continue
+				}
 				lf := last[i] or { i64(0) }
 				if now - lf >= i64(sr.sender.cycle_ms) {
 					last[i] = now
@@ -2363,7 +2634,13 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		a.mu.lock()
 		mut ready := true
 		for ci in cis {
-			if ci < a.chans.len && a.chans[ci].enabled && !a.chans[ci].running {
+			if ci >= a.chans.len || !a.chans[ci].enabled {
+				continue
+			}
+			// IS THIS WIRE BEING READ, by anybody. One reader serves a destination now, so a row
+			// that shares a wire with the row holding the monitor never sets its own `running`
+			// — and waiting for it would time out on a bus that is perfectly well watched.
+			if !a.dest_is_read_locked(a.chans[ci].iface) {
 				ready = false
 				break
 			}
@@ -2385,7 +2662,7 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	mut not_up := []string{}
 	a.mu.lock()
 	for ci in cis {
-		if ci < a.chans.len && a.chans[ci].enabled && !a.chans[ci].running {
+		if ci < a.chans.len && a.chans[ci].enabled && !a.dest_is_read_locked(a.chans[ci].iface) {
 			not_up << a.chans[ci].name
 		}
 	}
@@ -2644,6 +2921,9 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 				if over {
 					break
 				}
+				// The waiting for a full transmit queue happens in TapBus.send, beneath the
+				// trace record — retrying here re-entered it and painted a failed row per
+				// attempt. Anything that reaches this point has genuinely failed.
 				failed++
 				if first_err == '' {
 					first_err = '${e.iface}: ${err.msg()}'
@@ -2901,8 +3181,13 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	// diagnostics setup already handles that — and stopping at the first meant later entries'
 	// protected messages were never checked, or were checked against the wrong layout.
 	mut verifiers := sim.VerifySet{}
+	// BY DESTINATION. Two rows spelling one wire differently (`vector:1`, `vector:ch1`) each
+	// observe the same traffic, and comparing the strings meant each port checked only its own
+	// row's protected messages — so a frame arriving on the wire was verified against half the
+	// project, and the missing half read as an ECU that had stopped stamping.
+	want_dest := transport.destination_key(iface)
 	for sc in a.sims {
-		if sc.iface != iface {
+		if transport.destination_key(sc.iface) != want_dest {
 			continue
 		}
 		for w in verifiers.merge_into(sim.verifiers_for(sc.db, sc.nodes, sc.verify)) {
@@ -2922,7 +3207,33 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			a.mu.unlock()
 			vgui.wake()
 		}
-		f := bus.recv(200) or { continue }
+		f := bus.recv(200) or {
+			// A TIMEOUT IS THE NORMAL ANSWER; anything else is the adapter in trouble, and
+			// continuing repeated the failing call as fast as it could return — a core spun on
+			// an unplugged VN while the panel still showed the channel running.
+			if err.msg().contains('timeout') {
+				continue
+			}
+			a.notify('${iface}: receive failed — ${err}')
+			// DISABLED, not merely broken out of. The teardown below respawns rx_loop whenever
+			// the channel is still enabled, so breaking alone reopened the failed adapter and
+			// repeated the failure — the same spin, one open slower. A channel whose adapter has
+			// gone stops being part of the run until somebody says otherwise.
+			a.mu.lock()
+			if a.run_gen == gen && ci < a.chans.len {
+				// EVERY ALIAS ON THIS WIRE. Disabling only the reader-owning row let the
+				// teardown hand the reader to a sibling, which opens the same failed adapter and
+				// fails the same way — a relay race around a port that has gone.
+				dead := transport.destination_key(a.chans[ci].iface)
+				for cj, other in a.chans {
+					if transport.destination_key(other.iface) == dead {
+						a.chans[cj].enabled = false
+					}
+				}
+			}
+			a.mu.unlock()
+			break
+		}
 		// A blocked recv can be woken by the previous run's echo after Start has already reset
 		// the ring: this loop would then find no record and file that frame as the CURRENT
 		// run's bus traffic — into the trace, the recording and the verifier.
@@ -2982,7 +3293,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		// zero and a request on a protected id was labelled !CRC — or, repeated, !CNT stalled.
 		// A verdict about bytes that were never sent says nothing about the sender.
 		if !f.rtr && !ours {
-			if k := verifiers.resolve(a.dbs_for(iface), f.id, f.extended) {
+			if k := verifiers.resolve(a.dbs_for_dest(iface), f.id, f.extended) {
 				if mut ver := verifiers.by_key[k] {
 					v := ver.check(f.data)
 					verifiers.by_key[k] = ver
@@ -3058,6 +3369,22 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		// Re-enabled while we were on our way out? The toggle saw `running` still true and
 		// skipped spawning a replacement, so without this the channel is left with no reader at
 		// all. We are the ones who know this loop is finished, so we start the next one.
+		// HANDED ON. This loop held the only reader for its wire, so when its own row is
+		// switched off the siblings still enabled on that wire are left with nothing watching
+		// them — silent, and looking healthy. Whoever is still here takes it.
+		if !a.chans[ci].monitorable() && a.running {
+			want := transport.destination_key(iface)
+			for cj, other in a.chans {
+				if cj == ci || !other.monitorable() || other.running || other.spawning {
+					continue
+				}
+				if transport.destination_key(other.iface) == want {
+					a.chans[cj].spawning = true
+					spawn rx_loop(app, cj, other.iface, gen)
+					break
+				}
+			}
+		}
 		if a.chans[ci].monitorable() && a.running {
 			a.chans[ci].spawning = true
 			spawn rx_loop(app, ci, iface, gen)
@@ -3898,12 +4225,43 @@ fn draw_toolbar(mut app App, rx u64, txs string) {
 
 // channel state colour + short ASCII label (imgui's default font is ASCII-only):
 // grey off (disabled) / red down (attached but the CAN iface is DOWN) / green run / amber idle.
-fn chan_state(c Chan) (u8, u8, u8, string) {
+// `shared_reader` says this row's wire is being read by a SIBLING. One reader serves a
+// destination, so every alias after the first has running == false while its transmit taps and
+// its simulation are perfectly alive — and the panels drew them amber `idle`, reporting that
+// part of the experiment had not started when it had.
+// read_destinations builds "which wires have a reader" from a SNAPSHOT of the rows, so a panel
+// can answer it without touching live state. dest_is_read_locked wants app.mu and the panels do
+// not hold it — the frame already cloned `chans` under the lock, and re-reading the live array
+// past that snapshot raced the workers publishing into it. My own comment on that helper said it
+// required the lock, which made calling it here a contradiction rather than an oversight.
+// Returns, per destination: is it read at all, and is the reader's link DOWN. The second half
+// matters because a readerless alias carries its own untouched `link_down == false` — so a wire
+// the owning row correctly showed as `down` was drawn green and running on every alias of it.
+// The link is a property of the interface, not of the row that happened to open it.
+struct DestState {
+	read bool
+	down bool
+}
+
+fn read_destinations(rows []Chan) map[string]DestState {
+	mut out := map[string]DestState{}
+	for c in rows {
+		if c.enabled && c.running {
+			out[transport.destination_key(c.iface)] = DestState{
+				read: true
+				down: c.link_down
+			}
+		}
+	}
+	return out
+}
+
+fn chan_state(c Chan, wire DestState) (u8, u8, u8, string) {
 	if !c.enabled {
 		return u8(140), u8(140), u8(145), 'off '
 	}
-	if c.running {
-		if c.link_down {
+	if c.running || wire.read {
+		if c.link_down || wire.down {
 			return u8(215), u8(90), u8(90), 'down' // iface DOWN — bound but can't tx/rx
 		}
 		return u8(90), u8(200), u8(120), 'run '
@@ -4468,7 +4826,12 @@ fn (app &App) match_ext(name string) bool {
 // included so a project authored on another OS still shows (and can keep) its adapter.
 fn available_adapters(current string) []string {
 	mut list := $if windows {
-		['virtual', 'udp', 'pcan', 'kvaser', 'doip']
+		// `vector` belongs here for the same reason pcan and kvaser do. Without it the only
+		// route to a Vector channel was Discover, which lists application channels whose
+		// hardware is present — so a bench could not be configured with the adapter unplugged,
+		// or before it had been assigned in Vector Hardware Manager, which is exactly when
+		// somebody sits down to write the project.
+		['virtual', 'udp', 'pcan', 'kvaser', 'vector', 'doip']
 	} $else {
 		['virtual', 'vcan', 'socketcan', 'udp', 'doip']
 	}
@@ -4658,6 +5021,7 @@ fn adapter_hint(a string) string {
 		'udp' { '239.0.0.1:5000 — group:port software bus' }
 		'pcan' { 'PCAN_USBBUS1 — PEAK channel' }
 		'kvaser' { '0 — Kvaser channel index' }
+		'vector' { '1 — Vector application channel (see Vector Hardware Manager)' }
 		'doip' { '127.0.0.1:13400 — host:port' }
 		else { '' }
 	}
@@ -4781,6 +5145,13 @@ fn (mut app App) add_bus_spec(adapter string, address string) {
 		iface:   project.compose_iface(adapter, address)
 		typ:     'can'
 		mode:    .monitor
+		// LISTEN-ONLY UNTIL SOMEBODY SAYS OTHERWISE, on Vector. Every other adapter here is a
+		// virtual bus or one whose driver cannot be told to stay quiet, but a VN channel added
+		// from Discover is hardware that may already be wired to a running vehicle — and it
+		// arrives with the 500 kbit/s default, which nobody has confirmed. Going on that bus
+		// able to acknowledge, at a rate that is a guess, is how a tester disturbs the thing it
+		// came to observe. Untick it in the editor once the rate is known.
+		listen_only: adapter == 'vector'
 	}
 	app.dirty = true
 	app.sync_cfg_bufs()
@@ -4906,7 +5277,24 @@ fn (mut app App) set_adapter(i int, a string) {
 		return
 	}
 	old_iface := app.proj.channels[i].iface
+	was := app.proj.channels[i].adapter
 	app.proj.channels[i].adapter = a
+	// SILENT BY DEFAULT when a bus BECOMES a Vector one, for the same reason a discovered
+	// Vector channel starts that way: it is hardware that may already be wired to a running
+	// vehicle, arriving with a 500 kbit/s guess nobody has confirmed. Exposing the adapter in
+	// the picker without this made the manual route the unsafe one while Discover was careful.
+	if a == 'vector' && was != 'vector' {
+		app.proj.channels[i].listen_only = true
+	} else if was == 'vector' && a != 'vector' && app.proj.channels[i].listen_only {
+		// AND TAKE IT BACK when the row stops being a Vector one. Setting the flag above and
+		// never clearing it left the editor showing "never transmit (no ACKs)" on a PCAN or
+		// SocketCAN row, where `,silent` does not exist and the transceiver acknowledges
+		// everything it hears — the safety promise this default exists to make, made by a
+		// backend that cannot keep it. Of the two ways to be wrong, an operator who can SEE
+		// the channel is not listen-only is better off than one who believes it is.
+		app.proj.channels[i].listen_only = false
+		app.notify('${app.proj.channels[i].name}: listen-only cleared — ${a} cannot silence the transceiver, only Vector can')
+	}
 	if a == 'doip' {
 		app.proj.channels[i].typ = 'doip'
 	} else if app.proj.channels[i].typ == 'doip' {
@@ -5133,7 +5521,37 @@ fn (mut app App) draw_bus_editor(i int) bool {
 	vgui.set_next_item_width(220)
 	if vgui.input_text('address##cad${i}', mut app.cfg_bufs[i].address_buf) {
 		old_iface := app.proj.channels[i].iface
-		app.proj.channels[i].address = vgui.buf_str(app.cfg_bufs[i].address_buf)
+		mut typed := vgui.buf_str(app.cfg_bufs[i].address_buf)
+		// THE SAME LIFT the project loader does. A `,silent` typed here used to stay in the
+		// address, so the port opened ACK-free while the model went on calling the channel
+		// transmit-capable — no listen-only shown anywhere, and sends refused one frame at a
+		// time. One rule, applied wherever an address can be written.
+		if ch.adapter == 'vector' {
+			stripped, want_silent, recognised := project.split_vector_mode(typed)
+			had_suffix := stripped != typed
+			if stripped != typed {
+				// BACK INTO THE BUFFER as well. Normalising only the project value left
+				// `1,silent` in the text field, and the next commit_cfg copied it back — the
+				// interface flipping from `vector:1` to `vector:1,silent` behind the operator,
+				// after which every generator bound to the old spelling no longer matched its
+				// own bus. What the field shows has to be what the model holds.
+				app.cfg_bufs[i].address_buf = mkbuf(stripped, 64)
+			}
+			typed = stripped
+			// AGAINST WHAT WAS TYPED, which is `had_suffix` — captured before the buffer was
+			// rewritten just above. Comparing with the buffer afterwards compared the stripped
+			// value against itself and was always false, so `,normal` on a listen-only channel
+			// still opened silent: the guard for the explicit request was unreachable.
+			if recognised && had_suffix {
+				// BOTH WAYS. `,normal` is an explicit request to acknowledge; setting the flag
+				// only when the suffix said silent left a listen-only channel — a discovered
+				// one starts that way — silent while its address said otherwise.
+				app.proj.channels[i].listen_only = want_silent
+			} else if want_silent {
+				app.proj.channels[i].listen_only = true
+			}
+		}
+		app.proj.channels[i].address = typed
 		app.proj.channels[i].iface = project.compose_iface(ch.adapter, app.proj.channels[i].address)
 		app.rebind_senders(old_iface, app.proj.channels[i].iface) // keep this bus's generators bound
 		app.dirty = true
@@ -5584,6 +6002,9 @@ fn open_uri_in_browser(path string) (bool, string) {
 }
 
 fn draw_buses(mut app App, chans []Chan) {
+	// From the SNAPSHOT this frame was given, not from live state: the rows were cloned under
+	// app.mu and re-reading past that clone races the workers writing into it.
+	read_dests := read_destinations(chans)
 	vis, op := vgui.begin_closable('Buses', app.show_buses)
 	app.show_buses = op
 	if !vis {
@@ -5628,6 +6049,83 @@ fn draw_buses(mut app App, chans []Chan) {
 				// be driven by somebody who no longer held it. The set is what it was when Start
 				// was pressed; changing it is Stop and Start, which costs one click and removes
 				// the states entirely.
+				// THE SAME CHECK Start makes. Enabling a channel live is another way into a
+				// run, and it walked past the rate-conflict validation entirely — so an alias
+				// configured for a different bitrate could join a running wire, and the vendor
+				// layer never saw the disagreement because bitrate_iface had already picked one.
+				// DISABLING can change the mode as much as enabling. With a passive normal row
+				// and a listen-only row on one wire, every port opened silent; switching the
+				// listen-only row off leaves the normal row's already-open ports silent while
+				// the model now says the wire is normal, and its transmits are refused one at a
+				// time with nothing to explain it. Only Vector, where the mode reaches hardware.
+				if !new && app.running && app.chans[i].adapter == 'vector'
+					&& app.chans[i].listen_only {
+					mut others_live := false
+					off_key := transport.destination_key(app.chans[i].iface)
+					for j, other in app.chans {
+						if j != i && other.enabled && other.running
+							&& transport.destination_key(other.iface) == off_key {
+							others_live = true
+							break
+						}
+					}
+					if others_live {
+						app.mu.unlock()
+						app.notify('${app.chans[i].name} set ${app.chans[i].iface} to listen-only and other channels are running on it — Stop before changing the mode of a live wire')
+						continue
+					}
+				}
+				if new && app.running && app.chans[i].adapter in ['pcan', 'kvaser', 'vector'] {
+					app.chans[i].enabled = true
+					clash := app.destination_conflict()
+					app.chans[i].enabled = false
+					if bad := clash {
+						app.mu.unlock()
+						app.notify('${bad} — not enabling')
+						continue
+					}
+					// THE MODE OF A WIRE THAT IS ALREADY OPEN. silent_conflict only speaks up
+					// when something would transmit; two passive rows disagreeing about the
+					// mode say nothing to it, yet the shim still refuses the new ports because
+					// the live ones configured the channel the other way — leaving the row
+					// ticked with no reader and no explanation. Ask whether this row would
+					// change the answer for a destination that is already running.
+					wire_key := transport.destination_key(app.chans[i].iface)
+					// SILENCE WINS, as bitrate_iface decides it. Taking the first running alias's
+					// flag read the wire as normal whenever the normal row happened to be listed
+					// first, though every port on it had been opened silent by its sibling — so
+					// the guard let through exactly the change it exists to refuse.
+					mut live_mode := ?bool(none)
+					for j, other in app.chans {
+						// PART OF THE RUN, not "owns the reader". Under one reader per wire an
+						// alias has running == false while its transmit tap is open and its
+						// simulation is going, and skipping it read a silenced wire as having no
+						// opinion about its own mode.
+						if j == i || !other.enabled {
+							continue
+						}
+						if transport.destination_key(other.iface) != wire_key {
+							continue
+						}
+						if !app.dest_is_read_locked(other.iface) {
+							continue
+						}
+						if m := live_mode {
+							live_mode = m || other.listen_only
+						} else {
+							live_mode = other.listen_only
+						}
+					}
+					if lm := live_mode {
+						if lm != app.chans[i].listen_only {
+							app.mu.unlock()
+							want := if app.chans[i].listen_only { 'listen-only' } else { 'normal' }
+							has := if lm { 'listen-only' } else { 'normal' }
+							app.notify('${app.chans[i].name} is ${want} but ${app.chans[i].iface} is already running ${has} — one wire, one mode; not enabling')
+							continue
+						}
+					}
+				}
 				if app.running && app.chans[i].mode == 'replay' && app.chans[i].replay_src != '' {
 					app.mu.unlock()
 					app.notify('${app.chans[i].name}: replay channels are fixed while running — Stop and Start to change which ones play')
@@ -5645,10 +6143,21 @@ fn draw_buses(mut app App, chans []Chan) {
 				// c.monitorable() could never be true — this branch has never run, and a channel
 				// re-enabled mid-run silently got no reader at all. Ask about the channel as it
 				// is NOW, using the same rule monitorable() applies.
+				// AND NOBODY ELSE IS READING THIS WIRE. Enabling an alias of a monitored
+				// destination used to open a second port on it, which is the duplicate delivery
+				// that one-reader-per-wire exists to prevent, arriving through the toggle
+				// instead of through Start.
+				// THE READER IS OPTIONAL; THE TRANSMIT SIDE IS NOT. Folding the wire-already-read
+				// test into this condition skipped the tap setup below along with it, so an
+				// alias enabled beside a monitored sibling could not transmit at all — Quick
+				// Send and the diagnostic paths reporting "no open bus" for a channel that was
+				// ticked and sitting on a live wire.
 				if new && app.running && app.chans[i].monitorable() && !app.chans[i].running
 					&& !app.chans[i].spawning {
-					app.chans[i].spawning = true
-					spawn rx_loop(app, i, app.chans[i].iface, app.run_gen)
+					if !app.dest_is_read_locked(app.chans[i].iface) {
+						app.chans[i].spawning = true
+						spawn rx_loop(app, i, app.chans[i].iface, app.run_gen)
+					}
 					// …and the TRANSMIT side, exactly as start() sets it up. Only the reader was
 					// started here, so a channel enabled after Start had no tap: Quick Send and
 					// the diagnostic paths reported "no open bus", and with no send_iface yet the
@@ -5673,7 +6182,9 @@ fn draw_buses(mut app App, chans []Chan) {
 				app.mu.unlock()
 			}
 			vgui.same_line()
-			r, g, b, label := chan_state(c)
+			r, g, b, label := chan_state(c, read_dests[transport.destination_key(c.iface)] or {
+				DestState{}
+			})
 			vgui.text_colored(r, g, b, label)
 			vgui.same_line()
 			vgui.text('${c.name}  ${c.iface}  [${c.mode}]  RX ${c.rx}')
@@ -5726,6 +6237,9 @@ fn bus_kind(adapter string) string {
 // the tester's own functions (Monitor / Send / Diagnostics), simulated ECUs, and generators
 // grouped by the bus they actually transmit on. The simulation-setup analog.
 fn draw_network(mut app App, chans []Chan) {
+	// From the SNAPSHOT this frame was given, not from live state: the rows were cloned under
+	// app.mu and re-reading past that clone races the workers writing into it.
+	read_dests := read_destinations(chans)
 	vis, op := vgui.begin_closable('Network', app.show_network)
 	app.show_network = op
 	if !vis {
@@ -5739,7 +6253,9 @@ fn draw_network(mut app App, chans []Chan) {
 		return
 	}
 	for ci, c in chans {
-		r, g, b, st := chan_state(c)
+		r, g, b, st := chan_state(c, read_dests[transport.destination_key(c.iface)] or {
+			DestState{}
+		})
 		vgui.text_colored(r, g, b, '*')
 		vgui.same_line()
 		if vgui.tree_node_open('${c.name}   ${c.iface}   [${c.mode}]   ${st.trim_space()}   RX ${c.rx}###net${ci}') {
@@ -7926,12 +8442,35 @@ fn trace_ext(id u32) bool {
 // carries the telemetry manifest (the target being traced), so a multi-channel project sends
 // to the right bus. Falls back to the first running channel when no channel has a manifest.
 fn (app &App) trace_iface() string {
-	for c in app.chans {
-		if c.monitorable() && c.running && c.manifest != '' {
-			return c.iface
+	// IS THIS WIRE BEING READ, not "does this row hold the reader". Under one reader per wire a
+	// manifest attached to a non-owner alias left that row with running == false, so its
+	// manifest was ignored and another destination's channel answered for it — trace commands
+	// going to the wrong bus in a multi-bus project.
+	//
+	// UNDER THE LOCK, taken here. The previous version of this comment asserted that callers
+	// held app.mu; they do not — trace_dump_worker, the shell and the flash worker all release
+	// it before calling, and the panel never takes it. So the scan below ran unlocked against
+	// rows an rx_loop was publishing or a toggle was rewriting. None of the callers hold it,
+	// which is what makes taking it here safe as well as necessary.
+	mut a := unsafe { app }
+	a.mu.lock()
+	mut found := ''
+	for c in a.chans {
+		if c.monitorable() && c.manifest != '' && a.dest_is_read_locked(c.iface) {
+			found = c.iface
+			break
 		}
 	}
-	return app.diag_iface()
+	if found == '' {
+		for c in a.chans {
+			if c.monitorable() && c.running {
+				found = c.iface
+				break
+			}
+		}
+	}
+	a.mu.unlock()
+	return found
 }
 
 // trace_core_mask builds a dump mask from the manifest's distinct cores, so "Dump" reads out

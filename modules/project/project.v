@@ -11,6 +11,7 @@
 // `ip link set can0 type can bitrate … sample-point …`.
 module project
 
+import transport
 import os
 import yaml
 import doip
@@ -60,19 +61,19 @@ pub struct GenCfg {
 pub mut:
 	signal    string
 	typ       string = 'const' // const | sine | sawtooth | counter | stepmod
-	value     f64    // const
-	offset    f64    // sine bias
-	amplitude f64    // sine amplitude
-	freq      f64    // sine angular freq (rad/s·t)
-	phase     f64    // sine phase
-	min       f64    // sawtooth
-	max       f64    // sawtooth
-	period    f64    // sawtooth / stepmod period (s)
-	start     f64    // counter start
+	value     f64 // const
+	offset    f64 // sine bias
+	amplitude f64 // sine amplitude
+	freq      f64 // sine angular freq (rad/s·t)
+	phase     f64 // sine phase
+	min       f64 // sawtooth
+	max       f64 // sawtooth
+	period    f64 // sawtooth / stepmod period (s)
+	start     f64 // counter start
 	step      f64 = 1.0 // counter increment
-	modulo    f64    // counter wrap
-	count     f64    // stepmod step count
-	base      f64    // stepmod base
+	modulo    f64 // counter wrap
+	count     f64 // stepmod step count
+	base      f64 // stepmod base
 }
 
 // ResponseCfg configures a request→response rule for a simulated ECU.
@@ -111,10 +112,10 @@ pub mut:
 	malformed []string
 	// u64 for the same reason DidCfg.id is u32: the value must survive parsing intact so the
 	// range check can see it. Narrowed to a CAN id only once it is known to fit.
-	rx      u64 // request id  (tester -> ECU)
-	tx      u64 // response id (ECU -> tester)
-	dids    []DidCfg
-	dtcs    []DtcCfg
+	rx   u64 // request id  (tester -> ECU)
+	tx   u64 // response id (ECU -> tester)
+	dids []DidCfg
+	dtcs []DtcCfg
 	// u32 for the same reason every other id here is wide: 265 narrowed at the cast becomes 9,
 	// and the server then runs a session the project never asked for.
 	session u32 = 1
@@ -170,9 +171,9 @@ pub mut:
 	id_malformed       bool
 	data_id_malformed  bool
 	extended_malformed bool
-	counter string // signal carrying the alive counter ('' = none)
-	crc     string // signal carrying the checksum ('' = none)
-	profile string = 'crc8_j1850' // crc8_j1850 | crc8_autosar | sum8 | xor8
+	counter            string // signal carrying the alive counter ('' = none)
+	crc                string // signal carrying the checksum ('' = none)
+	profile            string = 'crc8_j1850' // crc8_j1850 | crc8_autosar | sum8 | xor8
 	// Mixed into the checksum only; never occupies payload. An OPTION rather than a u32 with
 	// 0 meaning unset: 0 is a valid Data ID. Carrying presence as a separate bool left three
 	// places to remember it and the GUI forgot one, showing an explicit zero id as absent.
@@ -206,7 +207,7 @@ pub mut:
 	signals  []SenderSig
 	bus      string // target bus to transmit on (a channel iface); '' = the sender's own channel
 	trigger  string = 'manual' // manual | key | cyclic
-	cycle_ms int    // cyclic period (ms); only used when trigger == cyclic
+	cycle_ms int // cyclic period (ms); only used when trigger == cyclic
 }
 
 // Channel is one bus the tester attaches to.
@@ -221,9 +222,9 @@ pub struct Channel {
 pub mut:
 	name         string = 'CAN'
 	network      string // v2: optional grouping label (buses of one logical network)
-	adapter      string = 'vcan' // v2: virtual | vcan | socketcan | udp | pcan | kvaser | doip
+	adapter      string = 'vcan'  // v2: virtual | vcan | socketcan | udp | pcan | kvaser | vector | doip
 	address      string = 'vcan0' // v2: adapter-specific (CAN1 / vcan0 / can0 / grp:port / host:port)
-	typ          string = 'can' // yaml `type`/`protocol`: can | canfd | doip
+	typ          string = 'can'   // yaml `type`/`protocol`: can | canfd | doip
 	iface        string = 'vcan0' // derived scheme string (composed from adapter+address)
 	bitrate      int    = 500000
 	fd           bool
@@ -234,16 +235,16 @@ pub mut:
 	listen_only  bool
 	enabled      bool = true
 	databases    []string
-	manifest     string    // telemetry handler manifest (CSV) — resolves handler_id -> FB/handler/core
+	manifest     string // telemetry handler manifest (CSV) — resolves handler_id -> FB/handler/core
 	// Protection to VERIFY on received frames. Independent of `simulation:` on purpose: in a
 	// rest-bus setup the ECU under test is the one node NOT simulated, so its protected messages
 	// can never be described by a simulated node's `protect:` — and it is precisely that ECU's
 	// counter and checksum a bench needs checked.
-	verify       []ProtectCfg
-	simulate     []string  // shorthand: ECU node names to simulate with default behaviour
-	nodes        []NodeCfg // fully-configured simulated ECUs (signals + responses)
-	senders      []Sender  // interactive generators: triggerable custom frames
-	replay       ?Replay
+	verify   []ProtectCfg
+	simulate []string  // shorthand: ECU node names to simulate with default behaviour
+	nodes    []NodeCfg // fully-configured simulated ECUs (signals + responses)
+	senders  []Sender  // interactive generators: triggerable custom frames
+	replay   ?Replay
 	// DoIP (type: doip) — a diagnostics-over-Ethernet endpoint, NOT a CAN bus.
 	// `iface` carries `doip:<host>[:<port>]`; bitrate/timing are meaningless here.
 	// The logical addresses identify the tester (source) and ECU (target) per
@@ -361,7 +362,7 @@ pub fn (ch Channel) all_nodes() []NodeCfg {
 pub struct Project {
 pub mut:
 	name     string = 'untitled'
-	version  int = 1
+	version  int    = 1
 	channels []Channel
 }
 
@@ -373,10 +374,33 @@ pub mut:
 // re-appended it and the headless runner did not, which is why the same project worked
 // interactively and stayed silent under a script.
 pub fn (c Channel) iface_with_bitrate() string {
-	if (c.adapter == 'pcan' || c.adapter == 'kvaser') && c.bitrate > 0 {
-		return '${c.iface}@${c.bitrate}'
+	// The MODE is split off first and put back last, because the two suffixes are not
+	// interchangeable: `vector:1,silent@500000` puts the rate inside the mode, and the parser
+	// reads the mode as "silent@500000" and refuses the whole channel. Appending blindly to a
+	// stored interface that already carried `,silent` did exactly that.
+	mut base := c.iface
+	mut mode := ''
+	if c.adapter == 'vector' && base.contains(',') {
+		mode = ',' + base.all_after_last(',')
+		base = base.all_before_last(',')
 	}
-	return c.iface
+	if (c.adapter == 'pcan' || c.adapter == 'kvaser' || c.adapter == 'vector') && c.bitrate > 0 {
+		base = '${base}@${c.bitrate}'
+	}
+	// LISTEN-ONLY REACHES THE TRANSCEIVER, on the one backend that can do it. Everywhere else
+	// `listen_only` stops the application transmitting and nothing more, so the adapter still
+	// acknowledges every frame it sees — which is not what the flag says, and on a live vehicle
+	// at the wrong bitrate it is the difference between hearing nothing and emitting error
+	// frames. The XL backend takes `,silent`, so a project that asks for listen-only gets it.
+	if c.adapter == 'vector' && c.listen_only {
+		// THE FLAG WINS over a mode embedded in the address. The address is free text in the
+		// editor, so `1,normal` with `listen_only: true` is a configuration that contradicts
+		// itself — and it used to resolve toward the transceiver acknowledging, with the
+		// application still believing the channel was listening quietly. Of the two readings,
+		// only one can disturb a live bus.
+		mode = ',silent'
+	}
+	return base + mode
 }
 
 // resolve_asset makes a project-relative path (a DBC, a recording) absolute against the
@@ -471,17 +495,110 @@ fn parse_channel(c yaml.Any) !Channel {
 	if av := c.value_opt('adapter') {
 		ch.adapter = av.string()
 		ch.address = c.value('address').default_to('').string()
+		// A mode written into a v2 ADDRESS is lifted into the flag, exactly as the v1 interface
+		// spelling is. Left in the address it becomes a second source for one decision: the port
+		// opens silently while the model still calls the channel transmit-capable, so the GUI
+		// offers replay, generators and manual sends that VectorBus.send then refuses one frame
+		// at a time. listen_only is the single place this is recorded.
+		if ch.adapter == 'vector' {
+			addr, silent, _ := split_vector_mode(ch.address)
+			ch.address = addr
+			if silent {
+				ch.listen_only = true
+			}
+		}
 		ch.iface = compose_iface(ch.adapter, ch.address)
 	} else if iv := c.value_opt('interface') {
 		raw := iv.string()
 		ch.adapter, ch.address = decompose_iface(raw)
 		// A legacy vendor iface embeds the bitrate (`pcan:CH@500000`): lift it into the bitrate
 		// field (decompose stripped it from the address) and recompose a clean iface.
-		if (ch.adapter == 'pcan' || ch.adapter == 'kvaser') && raw.contains('@') {
-			br := raw.all_after_last('@').int()
+		// A legacy Vector iface may carry a mode with or WITHOUT a rate (`vector:1,silent` is
+		// as valid as `vector:1@250000,silent`), so the mode is migrated on its own terms
+		// rather than as a side effect of finding an `@`. Hanging it off the bitrate branch
+		// left `vector:1,silent` opening silently at the hardware while the model believed the
+		// channel could transmit — the editor offering sends that VectorBus.send then refuses.
+		if ch.adapter == 'vector' && raw.contains(',') {
+			// THE SHARED SPLITTER, which also refuses a stacked `1,silent,normal`. This branch
+			// had its own copy that read only the final suffix, so that spelling left `,silent`
+			// in the address while the flag said transmit-capable — the two halves of one
+			// decision disagreeing, in the one path that still had its own rule.
+			addr, silent, ok := split_vector_mode(ch.address)
+			if ok {
+				ch.address = addr
+				// ONLY SETS. A v1 file carrying both `interface: vector:1,normal` and
+				// `listen_only: true` states the safety flag explicitly, and clearing it from a
+				// suffix would open the transceiver on a bench that asked for quiet —
+				// iface_with_bitrate already makes the flag win over an embedded mode, and the
+				// two must not disagree. The editor is where `,normal` can clear it, because
+				// there somebody is choosing rather than a file being migrated.
+				if silent {
+					ch.listen_only = true
+				}
+			}
+		}
+
+		if (ch.adapter == 'pcan' || ch.adapter == 'kvaser' || ch.adapter == 'vector')
+			&& raw.contains('@') {
+			// LAST `@`, then the mode: `vector:1@250000,silent` puts the suffix after the rate,
+			// so all_after_last('@') is "250000,silent" and .int() would read 250000 only by
+			// luck of parsing. Cut the mode off first and the number is the number.
+			// MORE THAN ONE `@` is a contradiction, not a preference for the last one.
+			// Taking all_after_last and recomposing a clean interface silently discarded the
+			// first rate, so `vector:1@250000@500000` reached the driver as a tidy 500000 and
+			// the strict parser downstream — the one this preservation exists to reach — never
+			// saw the problem at all.
+			// PRESERVED, then parsing CARRIES ON. Returning here skipped every field below —
+			// databases, simulated nodes, senders, verification rules, timing, replay — so
+			// opening such a project and saving it wrote those away as defaults. Preserving a
+			// malformed rate must not cost the rest of the channel.
+			mut two_rates := false
+			if raw.count('@') > 1 {
+				ch.address = raw.all_after('${ch.adapter}:')
+				ch.iface = raw
+				two_rates = true
+			}
+			mut tail := if two_rates { '' } else { raw.all_after_last('@') }
+			if ch.adapter == 'vector' && tail.contains(',') {
+				tail = tail.all_before_last(',')
+			}
+			// EVERY character, not merely a leading digit: V's `.int()` takes the numeric
+			// prefix, so `250000garbage` parsed as 250000, took the success path, and the
+			// recomposition dropped the garbage before the transport parser could object. A
+			// rate that is nearly a number is not a number.
+			mut all_digits := tail.len > 0
+			for ch_b in tail {
+				if !ch_b.is_digit() {
+					all_digits = false
+					break
+				}
+			}
+			br := if all_digits && !two_rates { tail.int() } else { 0 }
 			if br > 0 {
 				ch.bitrate = br
+				ch.iface = compose_iface(ch.adapter, ch.address)
+			} else {
+				// KEPT VERBATIM, for the same reason an unrecognised mode is. `vector:1@oops`
+				// reads as 0, which is not a rate anybody asked for — and recomposing a clean
+				// interface here would drop the evidence and open at the 500 kbit/s default,
+				// putting an adapter on a live bus at a rate the project never named. Left as
+				// written, the transport parser refuses it and says so.
+				// IN THE ADDRESS, not only in the iface. decompose_iface has already cut
+				// the rate off the address, so the next commit_cfg or save recomposes a
+				// clean `vector:1` from adapter + address and the evidence is gone — the
+				// bus then opens at the 500 kbit/s default this branch exists to prevent.
+				// Keeping it where recomposition looks makes the refusal survive a save.
+				// THIS ADAPTER'S prefix, not Vector's. The branch covers pcan and kvaser too
+				// now, and cutting a hardcoded `vector:` off `pcan:PCAN_USBBUS1@oops` left the
+				// prefix in the address — which recomposition then prefixed again, writing
+				// `pcan:pcan:…` into the project. Preserving a rejected spec must not corrupt
+				// the file it is preserved in.
+				if !two_rates {
+					ch.address = raw.all_after('${ch.adapter}:')
+					ch.iface = raw
+				}
 			}
+		} else if ch.adapter == 'vector' && raw.contains(',') {
 			ch.iface = compose_iface(ch.adapter, ch.address)
 		} else {
 			ch.iface = raw
@@ -637,16 +754,16 @@ fn parse_protect_list(ps yaml.Any) []ProtectCfg {
 			}
 		}
 		out << ProtectCfg{
-			message:      p.value('message').default_to('').string()
-			id:           mid
+			message:            p.value('message').default_to('').string()
+			id:                 mid
 			extended:           mext
 			extended_malformed: extbad
-			id_malformed: mbad
-			counter: p.value('counter').default_to('').string()
-			crc:     p.value('crc').default_to('').string()
-			profile:           p.value('profile').default_to('crc8_j1850').string()
-			data_id:           id
-			data_id_malformed: idbad
+			id_malformed:       mbad
+			counter:            p.value('counter').default_to('').string()
+			crc:                p.value('crc').default_to('').string()
+			profile:            p.value('profile').default_to('crc8_j1850').string()
+			data_id:            id
+			data_id_malformed:  idbad
 		}
 	}
 	return out
@@ -694,10 +811,10 @@ fn parse_node(n yaml.Any) NodeCfg {
 			idfields['tx'] = v.str()
 		}
 		mut ucfg := UdsCfg{
-			rx:      parse_id_wide(u.value('rx').str())
-			tx:      parse_id_wide(u.value('tx').str())
+			rx:        parse_id_wide(u.value('rx').str())
+			tx:        parse_id_wide(u.value('tx').str())
 			malformed: bad_ids(idfields)
-			session: clamp_i64_u32(u.value('session').default_to(i64(1)).i64())
+			session:   clamp_i64_u32(u.value('session').default_to(i64(1)).i64())
 		}
 		if ds := u.value_opt('dids') {
 			for d in ds.array() {
@@ -915,8 +1032,11 @@ fn clamp_u32(v u64) u32 {
 // parse_id_wide SKIPS anything else, so "0x7G1" quietly became 0x71 — a valid, unintended id.
 pub fn hex_id_is_clean(s string) bool {
 	t := s.trim_space().trim('"')
-	body := if t.starts_with('0x') || t.starts_with('0X') { t[2..] } else { return t.u64() > 0
-			|| t.trim_space() == '0' }
+	body := if t.starts_with('0x') || t.starts_with('0X') {
+		t[2..]
+	} else {
+		return t.u64() > 0 || t.trim_space() == '0'
+	}
 	if body.len == 0 {
 		return false
 	}
@@ -980,7 +1100,7 @@ fn parse_id(s string) u32 {
 // adapters is the set of transport backends the editor offers (the `adapter:` value).
 // Order = the picker order. `virtual`/`vcan`/`socketcan`/`udp` are cross-platform or
 // Linux; `pcan`/`kvaser` are Windows CAN hardware; `doip` is an Ethernet diag endpoint.
-pub const adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'pcan', 'kvaser', 'doip']
+pub const adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'pcan', 'kvaser', 'vector', 'doip']
 
 // compose_iface builds the internal scheme string `transport.open()` consumes from an
 // adapter + its backend-specific address. It is the inverse of decompose_iface.
@@ -990,17 +1110,75 @@ pub const adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'pcan', 'kvaser', '
 //   udp      239.0.0.1:5000  -> udp:239.0.0.1:5000  (bare `udp` if empty)
 //   pcan     PCAN_USBBUS1    -> pcan:PCAN_USBBUS1
 //   kvaser   0               -> kvaser:0
+//   vector   1               -> vector:1
 //   doip     127.0.0.1:13400 -> doip:127.0.0.1:13400 (bare `doip` if empty)
+// split_vector_mode separates a `,silent` style suffix from a Vector address.
+//
+// Returns the address without it, whether it asked for listen-only, and whether the suffix was
+// RECOGNISED at all. An unrecognised one is left on the address so the transport parser refuses
+// it: `vector:1,silnt` is plainly a request for silence, and quietly dropping it would open the
+// channel able to acknowledge.
+//
+// Shared, because the same rule has to hold on every path that can produce an address — the
+// project loader, the editor's text field, and the migration of a v1 interface. It held on one
+// of them for a while, and a `,silent` typed into the editor opened a silent port that the
+// model still believed could transmit.
+pub fn split_vector_mode(address string) (string, bool, bool) {
+	if !address.contains(',') {
+		return address, false, true
+	}
+	body := address.all_before_last(',')
+	// ONE suffix. `1,silent,normal` recognised the final `,normal`, returned `1,silent`, and the
+	// model then called the channel transmit-capable while the address it kept still said
+	// silent — the two halves of one decision disagreeing again, from a spelling nobody should
+	// be able to write and have quietly resolved.
+	if body.contains(',') {
+		return address, false, false
+	}
+	return match address.all_after_last(',').trim_space().to_lower() {
+		'silent', 'listen_only', 'listenonly' { body, true, true }
+		'normal' { body, false, true }
+		else { address, false, false }
+	}
+}
+
 pub fn compose_iface(adapter string, address string) string {
 	a := address.trim_space()
 	return match adapter {
-		'virtual' { if a == '' { 'inproc' } else { 'inproc:${a}' } }
-		'udp' { if a == '' { 'udp' } else { 'udp:${a}' } }
-		'pcan' { 'pcan:${a}' }
-		'kvaser' { 'kvaser:${a}' }
-		'doip' { if a == '' { 'doip' } else { 'doip:${a}' } }
+		'virtual' {
+			if a == '' {
+				'inproc'
+			} else {
+				'inproc:${a}'
+			}
+		}
+		'udp' {
+			if a == '' {
+				'udp'
+			} else {
+				'udp:${a}'
+			}
+		}
+		'pcan' {
+			'pcan:${a}'
+		}
+		'kvaser' {
+			'kvaser:${a}'
+		}
+		'vector' {
+			'vector:${a}'
+		}
+		'doip' {
+			if a == '' {
+				'doip'
+			} else {
+				'doip:${a}'
+			}
+		}
 		// vcan / socketcan / unknown: the address IS the raw interface name.
-		else { a }
+		else {
+			a
+		}
 	}
 }
 
@@ -1030,6 +1208,14 @@ pub fn decompose_iface(iface string) (string, string) {
 	if s.starts_with('kvaser:') {
 		return 'kvaser', s['kvaser:'.len..].all_before('@')
 	}
+	if s.starts_with('vector:') {
+		// The mode suffix (`,silent`) rides along with the address rather than the bitrate, so
+		// it is kept here: it is part of how the channel is opened, and dropping it would turn
+		// a listen-only bench into one that acknowledges the next time the project is saved.
+		body := s['vector:'.len..]
+		mode := if body.contains(',') { ',' + body.all_after_last(',') } else { '' }
+		return 'vector', body.all_before('@').all_before_last(',') + mode
+	}
 	if s == 'doip' {
 		return 'doip', ''
 	}
@@ -1058,4 +1244,62 @@ pub fn (m Mode) str() string {
 		.monitor { 'monitor' }
 		.replay { 'replay' }
 	}
+}
+
+// vendor_destination_conflicts reports configurations that two rows on ONE physical vendor wire
+// cannot both have. Empty means nothing to say.
+//
+// HERE, not in a front end, because both have to reach the same verdict on the same file and
+// they did not: the GUI refused these at Start while the headless runner started the simulation
+// anyway and discarded the refusals a frame at a time. The rules are about what a project MEANS,
+// which is this module's job.
+//
+// Two of them, and both come from a transceiver having one mode and one bitrate:
+//   - a wire one row has set listen-only cannot carry another row's traffic;
+//   - two rows cannot ask for different bitrates on it.
+pub fn vendor_destination_conflicts(chs []Channel) []string {
+	mut out := []string{}
+	mut quiet := map[string]string{}
+	mut rate := map[string]int{}
+	mut rate_row := map[string]string{}
+	for c in chs {
+		if !c.enabled || c.adapter !in ['pcan', 'kvaser', 'vector'] {
+			continue
+		}
+		// WITHOUT THE RATE. The rate is what these rows disagree about, so a key containing it
+		// gave each of them their own and the comparison below never happened.
+		k := transport.wire_key_for(c.adapter, c.iface)
+		if c.listen_only && c.adapter == 'vector' {
+			quiet[k] = c.name
+		}
+		want := if c.bitrate > 0 { c.bitrate } else { 500000 }
+		if prev := rate[k] {
+			if prev != want {
+				out << '${c.name} and ${rate_row[k]} share ${c.iface} but ask for ${want} and ${prev} bit/s'
+			}
+		} else {
+			rate[k] = want
+			rate_row[k] = c.name
+		}
+	}
+	// DISAGREEMENT IS THE CONFLICT, not "would this row transmit".
+	//
+	// This reverses an earlier reading of mine, and the reason is worth keeping: I judged a row
+	// passive from its CONFIGURATION — no simulated nodes, no replay — and concluded it could
+	// share a silenced wire harmlessly. Runtime does not respect that. A Lua script can call
+	// bus.send on any channel, and so can Quick Send, the shell and the diagnostic panel; the
+	// row's configuration says nothing about whether somebody will ask it to talk.
+	//
+	// A transceiver has one mode. Two enabled rows on one wire that disagree about it have
+	// stated something the hardware cannot do, whoever ends up transmitting, and that is
+	// answerable now instead of a frame at a time later.
+	for c in chs {
+		if !c.enabled || c.adapter != 'vector' || c.listen_only {
+			continue
+		}
+		if who := quiet[transport.wire_key_for(c.adapter, c.iface)] {
+			out << '${c.name} shares ${c.iface} with ${who}, which is listen-only'
+		}
+	}
+	return out
 }

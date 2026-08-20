@@ -158,7 +158,12 @@ fn main() {
 	for {
 		now := f64(i64(sw.elapsed())) / 1e6 // ns -> ms, fractional
 		for e in p.due(now) {
-			bus.send(e.frame) or {
+			// The waiting for a full vendor queue is transport.send_waiting_for_room, which
+			// also decides that only "still busy" is worth another go — this loop used to
+			// catch every retry error and report a disconnected adapter as back-pressure.
+			transport.send_waiting_for_room(mut bus, e.frame, 500, fn () bool {
+				return false
+			}) or {
 				failed++
 				if first_err == '' {
 					first_err = err.msg() // one example beats a bare count on a bench
@@ -349,7 +354,18 @@ fn run_multi(o Opts, rec mf4.Recording) {
 		now := f64(i64(sw.elapsed())) / 1e6
 		for e in p.due(now) {
 			mut bus := buses[e.iface] or { continue }
-			bus.send(e.frame) or {
+			// THE SAME HELPER main() uses. Applying the queue-full wait to the single-bus path
+			// and not this one dropped a frame per full queue on a saturated destination —
+			// corrupting a multi-bus replay exactly where the traffic was densest, which is
+			// where the cross-bus timing this feature exists for is hardest.
+			// SHORT HERE, because this loop serves EVERY destination. A five-hundred millisecond
+			// wait for one full queue held back the due frames of buses that had room —
+			// including, on a gateway capture, the other side of the exchange being measured. A
+			// few milliseconds absorbs an ordinary burst; a destination that stays full is a bus
+			// that cannot keep up, and saying so beats stalling its neighbours.
+			transport.send_waiting_for_room(mut bus, e.frame, 5, fn () bool {
+				return false
+			}) or {
 				failed++
 				if first_err == '' {
 					first_err = '${e.iface}: ${err.msg()}'

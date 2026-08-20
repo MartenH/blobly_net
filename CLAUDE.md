@@ -37,9 +37,12 @@ For traffic with no hardware, open `projects/sim-demo.blobnet` — the simulated
 - **GUI:** **Dear ImGui + ImPlot**, wrapped as the native-V `vgui` module (`libs/vgui`); the app
   is `cmd/blobly_net`. *(Migrated 2026-07-06 from `vlang/gui`; the old `src/main.v` app is
   deleted. Rationale in [`docs/gui_toolkit_evaluation.md`](docs/gui_toolkit_evaluation.md).)*
-- **CAN:** SocketCAN on Linux (`vcan0` virtual, or any adapter); **PCAN** and **Kvaser** on
-  Windows (vendor DLLs loaded at runtime, both HW-verified). No Vector backend. All behind the
-  `transport` interface, so backends are drop-in.
+- **CAN:** SocketCAN on Linux (`vcan0` virtual, or any adapter); **PCAN**, **Kvaser** and
+  **Vector XL** on Windows (vendor DLLs loaded at runtime; all three HW-verified — Vector on a
+  VN1630A, Channel 1 to Channel 3 at bus saturation. Vector additionally needs `vxlapi64.dll`,
+  which is a SEPARATE download from the hardware drivers and does not install onto the search
+  path; the backend looks in its install directory). All behind the `transport`
+  interface, so backends are drop-in.
 - **Engine stays GUI-free.** CAN/protocol logic lives in `modules/` with no GUI imports, so it is
   independently testable and the GUI stays replaceable. This is the one architectural rule.
 - **Projects** are `.blobnet` files (YAML content) describing buses, channels and databases.
@@ -65,7 +68,7 @@ docs/                design + platform docs; docs/history.md = archived status l
 
 | module | what |
 |---|---|
-| `transport` | Bus/Channel interface + SocketCAN, PCAN (Windows), UDP software bus. **CAN-FD** (`fd`/`brs`, 64-byte payloads) on SocketCAN + the software buses; the Windows vendor backends refuse FD rather than truncating |
+| `transport` | Bus/Channel interface + SocketCAN, PCAN and Vector XL (Windows), UDP software bus. **CAN-FD** (`fd`/`brs`, 64-byte payloads) on SocketCAN + the software buses; the Windows vendor backends refuse FD rather than truncating |
 | `candb` | DBC parse/decode/encode + canonical writer (`dbc_write.v`) |
 | `isotp` | ISO-TP (ISO 15765-2) transport |
 | `uds` | UDS diagnostic client over ISO-TP |
