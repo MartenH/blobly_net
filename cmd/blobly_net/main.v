@@ -3463,7 +3463,9 @@ fn (mut app App) load_project(path string) {
 		app.notify('load failed: ${err}')
 		return
 	}
-	app.set_project(proj, path)
+	if !app.set_project(proj, path) {
+		return
+	}
 	// Convenience: if a system.toml sits next to the project (the system_full layout),
 	// load it into the System panel and open it — so the per-ECU dashboard is one click
 	// away instead of a manual Browse/Load. Non-system projects (sim-demo) are unaffected.
@@ -3498,7 +3500,14 @@ fn (app &App) resolve_asset(path string) string {
 	return project.resolve_asset(os.dir(app.proj_path), path)
 }
 
-fn (mut app App) set_project(proj project.Project, path string) {
+// Reports whether the project was installed. Refused — with nothing touched — while a worker
+// still reads the current one; see may_replace_model.
+fn (mut app App) set_project(proj project.Project, path string) bool {
+	// BEFORE anything is cleared or replaced. Every reset below is irreversible from here, and
+	// the rebuild that would finish the job is at the end.
+	if !app.may_replace_model('not opened') {
+		return false
+	}
 	// Warn HERE, not in load_project: this is the function that abandons the File tab's buffer
 	// (via cfg_invalidate below), so every caller is covered — File ▸ New bypassed a warning
 	// placed in load_project — and load_project's error path returns before reaching this, so
@@ -3536,6 +3545,7 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	app.disc_tick = []
 	app.mu.unlock()
 	app.rebuild_from_proj()
+	return true
 }
 
 // rebuild_from_proj derives the runtime view (chans, dbs, sims, senders, manifest, default
@@ -3586,6 +3596,33 @@ fn (mut app App) wait_readers_drained() bool {
 // one, and save_project/save_cfg_text/set_project all go on to clear `dirty` afterwards. So the
 // answer is recorded in app.runtime_stale here — at the single point that can know it, rather
 // than at each of the callers that would have to remember (codex #121 r4).
+// may_replace_model reports whether app.proj may be swapped WHOLESALE right now — a project
+// opened, File ▸ New, edited project text applied. Those are not edits that can be half-applied.
+// An incremental edit that gets its rebuild refused leaves the model ahead of the runtime and
+// nothing worse: the caches still describe the same project, and Start folds them in and
+// retries. A REPLACEMENT that gets its rebuild refused leaves app.senders/gen_bufs keyed by the
+// OLD project's interfaces while app.proj is the new one — and the retry's
+// sync_senders_into_proj then matches those keys against the new channels, finds nothing, and
+// empties the new project's generators, which a later Save persists (codex #121 r5).
+//
+// So the question is asked BEFORE anything is replaced. Not a second copy of the rule — the
+// same wait_readers_drained, on the same condition; only the timing differs, because these
+// callers have no half-way state to leave behind.
+fn (mut app App) may_replace_model(what string) bool {
+	if app.wait_readers_drained() {
+		return true
+	}
+	app.mu.lock()
+	scripting := app.script_readers > 0
+	app.mu.unlock()
+	if scripting {
+		app.notify('${what} — a Lua script is running and reads the current project; try again once it finishes')
+	} else {
+		app.notify('${what} — workers from the last run are still finishing; try again in a moment')
+	}
+	return false
+}
+
 fn (mut app App) rebuild_from_proj() bool {
 	// EVERY WAY IN, not just Start. This replaces app.chans and app.dbs while a worker from the
 	// last run may still be reading them lock-free, and it is reached from Save, from closing
@@ -7569,6 +7606,13 @@ fn (mut app App) save_cfg_text() {
 		app.notify('not saved — it would empty the project')
 		return
 	}
+	// ASKED BEFORE THE WRITE. Applying the text replaces the model wholesale, and if that is
+	// refused after the file has already been written, the file says one thing, app.proj
+	// another, and both flags below say everything is clean.
+	if !app.may_replace_model('not saved') {
+		app.cfg_err = 'a worker is still reading the current project — see the log'
+		return
+	}
 	path := app.proj_path
 	os.write_file(path, txt) or {
 		app.notify('save failed: ${err}')
@@ -7587,9 +7631,16 @@ fn (mut app App) save_cfg_text() {
 
 // apply_parsed_text folds already-validated project text into the model and rebuilds the
 // runtime view, leaving the captured session alone.
+// false means the text did not become the model — it did not parse, or a worker still reads the
+// project it would replace. Both leave app.proj untouched, which is what the callers rely on.
 fn (mut app App) apply_parsed_text(txt string) bool {
 	p := project.parse(txt) or { return false }
 	if !p.is_supported() {
+		return false
+	}
+	// Before sim.clear_all() and the swap below: a refusal here must leave the current project
+	// entirely alone, faults included.
+	if !app.may_replace_model('not applied') {
 		return false
 	}
 	// Injected faults are keyed by interface/node/message; a config edit can rename or remove
@@ -7619,7 +7670,9 @@ fn (mut app App) revert_proj_from_disk() {
 	// left the edited model live and looking clean, so a later save would persist changes the
 	// user had been told were discarded.
 	if !app.apply_parsed_text(txt) {
-		app.notify('nothing discarded — ${app.proj_path} does not parse; fix it on the File tab')
+		// Deliberately not naming the cause: apply_parsed_text refuses both for text that does
+		// not parse AND for a project a worker is still reading, and it has already said which.
+		app.notify('nothing discarded — ${app.proj_path} was not re-applied')
 		return
 	}
 	app.dirty = false
@@ -7709,6 +7762,13 @@ fn (mut app App) save_as(path string) {
 // new_project resets to a blank, unsaved project (0 buses) — the from-scratch entry point.
 fn (mut app App) new_project() {
 	app.stop()
+	// AFTER the swap, not before. set_project can refuse — a Lua script still reading the
+	// current project — and clearing these first left the System panel empty for a project that
+	// had not been replaced. (Stopping first is unavoidable: while a measurement runs its rx
+	// loops are readers, so the question cannot be asked until they have been told to leave.)
+	if !app.set_project(project.Project{ name: 'untitled' }, '') {
+		return
+	}
 	// A blank project inherits nothing: set_project bypasses load_project's reset, so without
 	// this the System panel kept showing the PREVIOUS project's ECUs and annotated any newly
 	// added channel from that stale model (codex #65 r5) — the same staleness fixed for the
@@ -7717,7 +7777,6 @@ fn (mut app App) new_project() {
 	app.sys_loaded = false
 	app.sel_ecu = ''
 	app.show_sys = false
-	app.set_project(project.Project{ name: 'untitled' }, '')
 	app.notify('new project — add buses in Configure…')
 }
 
@@ -9002,7 +9061,12 @@ fn draw_script(mut app App) {
 	vgui.set_next_item_width(240)
 	vgui.input_text('.lua', mut app.script_path_buf)
 	vgui.same_line()
-	if vgui.button('Run') && !busy {
+	// NOT ONLY `busy`. script_worker builds its channel list from app.chans and talks to
+	// app.sims — the runtime view. While that view is stale it belongs to a different project
+	// than app.proj, and the script's tap would transmit on the previous project's interface
+	// with no Start having ever rebuilt anything. The script that caused the staleness can
+	// finish and clear `busy` while it is still true, which is exactly when this would fire.
+	if vgui.button('Run') && !busy && !app.runtime_stale {
 		// reserve the dbs-reader slot HERE, before the spawn: a worker that
 		// hasn't been scheduled yet hasn't registered, and an edit could slip
 		// into that gap (the worker releases it in its defer)
@@ -9014,6 +9078,10 @@ fn draw_script(mut app App) {
 	if busy {
 		vgui.same_line()
 		vgui.text_dim('running…')
+	} else if app.runtime_stale {
+		vgui.same_line()
+		vgui.text_colored(230, 120, 120,
+			'the runtime is not the project — press Start to rebuild it')
 	}
 	vgui.separator_text('output')
 	vgui.child_begin('##scriptlog', 0)
@@ -9947,8 +10015,16 @@ fn draw_dbc_editor(mut app App) {
 	app.mu.lock()
 	live_readers := app.live_readers_locked()
 	app.mu.unlock()
-	ro := app.running || live_readers > 0
-	if ro {
+	// `runtime_stale` too: when a rebuild was refused, app.dbs and app.dbs_paths deliberately
+	// still hold the databases from BEFORE the config change — an attached or detached DBC has
+	// reached app.proj and not the runtime. The reader that refused the rebuild can then finish,
+	// dropping live_readers to zero, and this editor would become writable over a database list
+	// the rest of the UI no longer shows (codex #121 r5).
+	ro := app.running || live_readers > 0 || app.runtime_stale
+	if app.runtime_stale {
+		vgui.text_colored(230, 120, 120,
+			'read-only — the runtime was not rebuilt after the last config change, so this list is out of date; press Start')
+	} else if ro {
 		vgui.text_colored(230, 170, 70,
 			'read-only while measuring — Stop to edit (workers drain briefly after Stop)')
 	}
@@ -11119,7 +11195,10 @@ fn draw_system(mut app App) {
 			app.mu.lock()
 			rb_readers := app.live_readers_locked()
 			app.mu.unlock()
-			if app.running || rb_readers > 0 {
+			// Same three conditions as the DBC editor: this action edits app.proj and rebuilds,
+			// and while the runtime is stale the channels it matches ECU buses against are the
+			// previous project's.
+			if app.running || rb_readers > 0 || app.runtime_stale {
 				vgui.text_dim('Simulate the rest — stop to configure (workers drain briefly after Stop)')
 			} else if vgui.small_button('Simulate the rest##restbus') {
 				n, c := app.restbus_from_system(en.name)
