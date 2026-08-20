@@ -5285,6 +5285,15 @@ fn (mut app App) set_adapter(i int, a string) {
 	// the picker without this made the manual route the unsafe one while Discover was careful.
 	if a == 'vector' && was != 'vector' {
 		app.proj.channels[i].listen_only = true
+	} else if was == 'vector' && a != 'vector' && app.proj.channels[i].listen_only {
+		// AND TAKE IT BACK when the row stops being a Vector one. Setting the flag above and
+		// never clearing it left the editor showing "never transmit (no ACKs)" on a PCAN or
+		// SocketCAN row, where `,silent` does not exist and the transceiver acknowledges
+		// everything it hears — the safety promise this default exists to make, made by a
+		// backend that cannot keep it. Of the two ways to be wrong, an operator who can SEE
+		// the channel is not listen-only is better off than one who believes it is.
+		app.proj.channels[i].listen_only = false
+		app.notify('${app.proj.channels[i].name}: listen-only cleared — ${a} cannot silence the transceiver, only Vector can')
 	}
 	if a == 'doip' {
 		app.proj.channels[i].typ = 'doip'
