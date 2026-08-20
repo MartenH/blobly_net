@@ -1,0 +1,626 @@
+module main
+
+import os
+import project
+import vgui
+
+// open_browser opens the file browser for a target action:
+//   'open'          — load a project (.blobnet)
+//   'saveas'        — Save As (.blobnet, filename input)
+//   'dbc:<ci>'      — attach a DBC to bus ci (.dbc)
+//   'manifest:<ci>' — attach a telemetry manifest to bus ci (.csv)
+fn (mut app App) open_browser(target string) {
+	app.fb_target = target
+	app.fb_save = target == 'saveas'
+	app.fb_ext = if target == 'open' || target == 'saveas' {
+		'.blobnet'
+	} else if target.starts_with('dbc') {
+		'.dbc'
+	} else if target.starts_with('manifest') {
+		'.csv'
+	} else if target == 'system' {
+		'.toml'
+	} else if target == 'flash' {
+		'.img' // match_ext also lets .bin through for this filter
+	} else {
+		''
+	}
+	mut dir := if app.proj_path != '' { os.dir(app.proj_path) } else { 'projects' }
+	if !os.is_dir(dir) {
+		dir = '.'
+	}
+	app.fb_dir = os.abs_path(dir)
+	initname := if app.fb_save && app.proj_path != '' { os.file_name(app.proj_path) } else { '' }
+	app.fb_name_buf = mkbuf(initname, 128)
+	app.fb_open = true
+}
+
+// browser_confirm runs the pending target action with the chosen path, then closes.
+fn (mut app App) browser_confirm(path string) {
+	t := app.fb_target
+	app.fb_open = false
+	if t == 'open' {
+		app.load_project(path)
+	} else if t == 'saveas' {
+		app.save_as(path)
+	} else if t.starts_with('dbc:') {
+		app.add_dbc(t['dbc:'.len..].int(), path)
+	} else if t.starts_with('manifest:') {
+		app.set_manifest(t['manifest:'.len..].int(), path)
+	} else if t == 'system' {
+		app.load_system(path)
+	} else if t == 'flash' {
+		app.flash_img_buf = mkbuf(path, 256)
+	}
+}
+
+// draw_filebrowser is a small self-contained file picker (no native dialog — imgui has
+// none, and WSL isn't the primary target). Lists the current directory, navigates on click,
+// filters by extension, and (save mode) takes a filename.
+fn draw_filebrowser(mut app App) {
+	title := if app.fb_target == 'open' {
+		'Open Project'
+	} else if app.fb_target == 'saveas' {
+		'Save Project As'
+	} else if app.fb_target.starts_with('dbc') {
+		'Attach DBC'
+	} else if app.fb_target == 'system' {
+		'Open system.toml'
+	} else {
+		'Attach Manifest'
+	}
+	vgui.set_next_window(260, 140, 560, 520)
+	if !vgui.begin('${title}##filebrowser') {
+		vgui.end()
+		return
+	}
+	vgui.text('dir: ${app.fb_dir}')
+	if vgui.small_button('.. up') {
+		app.fb_dir = os.dir(app.fb_dir)
+	}
+	vgui.same_line()
+	if vgui.small_button('projects/') {
+		p := os.abs_path('projects')
+		if os.is_dir(p) {
+			app.fb_dir = p
+		}
+	}
+	filt := if app.fb_ext != '' { '(*${app.fb_ext})' } else { '' }
+	vgui.same_line()
+	vgui.text_dim(filt)
+	vgui.separator()
+
+	entries := os.ls(app.fb_dir) or { []string{} }
+	mut dirs := []string{}
+	mut files := []string{}
+	for e in entries {
+		full := os.join_path(app.fb_dir, e)
+		if os.is_dir(full) {
+			dirs << e
+		} else if app.match_ext(e) {
+			files << e
+		}
+	}
+	dirs.sort()
+	files.sort()
+	mut nav := ''
+	mut chosen := ''
+	vgui.child_begin('fb_list', 300)
+	for d in dirs {
+		if vgui.selectable('[dir]  ${d}', false) {
+			nav = os.join_path(app.fb_dir, d)
+		}
+	}
+	for f in files {
+		if vgui.selectable('      ${f}', false) {
+			if app.fb_save {
+				app.fb_name_buf = mkbuf(f, 128)
+			} else {
+				chosen = os.join_path(app.fb_dir, f)
+			}
+		}
+	}
+	vgui.child_end()
+	vgui.separator()
+	if app.fb_save {
+		vgui.set_next_item_width(300)
+		vgui.input_text('name', mut app.fb_name_buf)
+		vgui.same_line()
+		if vgui.button('Save') {
+			name := vgui.buf_str(app.fb_name_buf)
+			if name != '' {
+				chosen = os.join_path(app.fb_dir, name)
+			}
+		}
+		vgui.same_line()
+	}
+	if vgui.button('Cancel') {
+		app.fb_open = false
+	}
+	vgui.end()
+	// apply navigation / selection after end() so the imgui stack stays balanced
+	if nav != '' {
+		app.fb_dir = nav
+	}
+	if chosen != '' {
+		app.browser_confirm(chosen)
+	}
+}
+
+// match_ext reports whether a filename passes the browser's current extension filter.
+// The project filter also accepts legacy `.yml`/`.yaml`; an empty filter accepts anything.
+fn (app &App) match_ext(name string) bool {
+	if app.fb_ext == '' {
+		return true
+	}
+	n := name.to_lower()
+	if n.ends_with(app.fb_ext) {
+		return true
+	}
+	if app.fb_ext == '.blobnet' && (n.ends_with('.yml') || n.ends_with('.yaml')) {
+		return true
+	}
+	if app.fb_ext == '.img' && n.ends_with('.bin') {
+		return true // firmware picker: wrapped .img preferred, raw .bin allowed
+	}
+	return false
+}
+
+// draw_discover_dialog is the "Discover interfaces" dialog (mirrors the old app): it lists
+// every detected transport — real CAN hardware (with product/state), vcan, a UDP bus, an
+// in-process sim net — with tick boxes and + Add ticked, plus + vcan / + Sim net quick-adds.
+fn draw_discover_dialog(mut app App) {
+	vgui.set_next_window(200, 130, 640, 460)
+	vis, op := vgui.begin_closable('Discover interfaces', app.disc_open)
+	app.disc_open = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	if vgui.button('Refresh') {
+		app.refresh_discovery()
+	}
+	vgui.same_line()
+	if vgui.button('+ vcan') {
+		app.add_bus_spec('vcan', app.next_free_vcan())
+		app.refresh_discovery()
+	}
+	vgui.same_line()
+	if vgui.button('+ Sim net') {
+		app.add_bus_spec('virtual', app.unique_bus_name('SIM'))
+		app.refresh_discovery()
+	}
+	vgui.same_line()
+	if vgui.button('+ Add ticked') {
+		for k, d in app.disc_list {
+			if k < app.disc_tick.len && app.disc_tick[k] && !d.added {
+				app.add_bus_spec(d.adapter, d.address)
+			}
+		}
+		app.refresh_discovery()
+	}
+	vgui.separator()
+	if app.disc_list.len == 0 {
+		vgui.text_dim('click Refresh to scan for interfaces')
+	}
+	for k, d in app.disc_list {
+		if d.added {
+			vgui.text_dim('   [added]   ${d.address}   ${d.adapter} · ${d.desc}')
+			continue
+		}
+		t := if k < app.disc_tick.len { app.disc_tick[k] } else { false }
+		nt := vgui.checkbox('##dt${k}', t)
+		if nt != t && k < app.disc_tick.len {
+			app.disc_tick[k] = nt
+		}
+		vgui.same_line()
+		vgui.text('${d.address}   ${d.adapter} · ${d.desc}')
+	}
+	vgui.separator()
+	vgui.text_dim('Tip: a PCAN/Kvaser device on Linux/WSL appears here as SocketCAN (canN) — add those, not the pcan/kvaser adapter (Windows-only).')
+	vgui.end()
+}
+
+// draw_config is the dedicated Configuration editor (File → Configure…): add/edit/remove
+// buses, pick adapters, attach DBCs. Stopped-only; Save persists to the .blobnet.
+fn draw_config(mut app App) {
+	vgui.set_next_window(120, 90, 720, 620)
+	was_open := app.show_config
+	vis, op := vgui.begin_closable('Configuration', app.show_config)
+	app.show_config = op
+	if was_open && !op && !app.running && app.dirty {
+		app.apply_edits() // closed via the [X] with unsaved edits — fold them into model + runtime
+	}
+	if !vis {
+		vgui.end()
+		return
+	}
+	if app.running {
+		vgui.text_dim('Measurement running — Stop to edit the configuration.')
+		if vgui.button('Close') {
+			app.show_config = false
+		}
+		vgui.end()
+		return
+	}
+	if app.cfg_bufs.len != app.proj.channels.len {
+		app.sync_cfg_bufs()
+	}
+	// Two views of one configuration: the structured bus editor, and the file itself. The file
+	// tab exists because most of what a project says — simulated ECUs, generators, responses,
+	// protection, per-ECU UDS, verification, senders — has no structured editor at all, so
+	// without it those are only reachable by leaving the app.
+	if vgui.small_button(if app.cfg_tab == 0 { '[ Buses ]' } else { '  Buses  ' }) {
+		app.cfg_tab = 0
+	}
+	vgui.same_line()
+	if vgui.small_button(if app.cfg_tab == 1 { '[ File ]' } else { '  File  ' }) {
+		app.cfg_tab = 1
+		app.load_cfg_text()
+	}
+	vgui.separator()
+	if app.cfg_tab == 1 {
+		app.load_cfg_text() // every frame: a no-op while typing, and correct after a switch
+		app.draw_config_text()
+		vgui.end()
+		return
+	}
+	if vgui.button('+ Add bus') {
+		app.add_bus()
+	}
+	vgui.same_line()
+	if vgui.button('Discover...') {
+		app.refresh_discovery()
+		app.disc_open = true
+	}
+	vgui.same_line()
+	if vgui.button('Save') {
+		app.save_project()
+	}
+	vgui.same_line()
+	if vgui.button('Close') {
+		app.show_config = false
+		if app.dirty {
+			app.apply_edits() // fold unsaved edits into the model + runtime view on close
+		}
+	}
+	if app.dirty || app.cfg_text_dirty {
+		vgui.same_line()
+		vgui.text_colored(230, 170, 70, '● modified')
+	}
+	vgui.separator()
+	if app.proj.channels.len == 0 {
+		vgui.text_dim('no buses — click "+ Add bus" to start a configuration')
+		vgui.end()
+		return
+	}
+	for i in 0 .. app.proj.channels.len {
+		if app.draw_bus_editor(i) {
+			break // a bus was removed — indices shifted, redraw next frame
+		}
+	}
+	vgui.end()
+}
+
+// draw_bus_editor renders one bus as a tree node: an enable checkbox + a header summary on
+// the collapsed row, expanding to the editable fields. Returns true if the bus was removed
+// (indices shifted — the caller stops iterating this frame). Enum/checkbox edits apply to
+// app.proj live; text fields are flushed by commit_cfg on Save / structural change.
+fn (mut app App) draw_bus_editor(i int) bool {
+	ch := app.proj.channels[i]
+	// header row: enable checkbox + the tree node (name · adapter:address · network)
+	en := vgui.checkbox('##cfgen${i}', ch.enabled)
+	if en != ch.enabled {
+		app.proj.channels[i].enabled = en
+		app.dirty = true
+	}
+	vgui.same_line()
+	vgui.set_item_tooltip('enable this bus (attached on Start)')
+	nm := vgui.buf_str(app.cfg_bufs[i].name_buf)
+	addr := if ch.address != '' { ':${ch.address}' } else { '' }
+	net := if ch.network != '' { '  ·  ${ch.network}' } else { '' }
+	dis := if ch.enabled { '' } else { '   — disabled' } // visible feedback for the enable checkbox
+	// header: collapsible tree node + a remove button that works whether expanded or not.
+	// Use ### so the imgui ID is fixed to `bus<i>` — the visible label (adapter/address/name)
+	// changes as you edit, and with plain ## that would re-key the node and collapse it.
+	open := vgui.tree_node('${nm}   [${ch.adapter}${addr}]${net}${dis}###bus${i}')
+	vgui.same_line()
+	if vgui.small_button('remove##crm${i}') {
+		if open {
+			vgui.tree_pop()
+		}
+		app.remove_bus(i)
+		return true
+	}
+	if !open {
+		return false
+	}
+	// name · network
+	vgui.set_next_item_width(160)
+	if vgui.input_text('name##cn${i}', mut app.cfg_bufs[i].name_buf) {
+		app.dirty = true
+	}
+	vgui.same_line()
+	vgui.set_next_item_width(140)
+	if vgui.input_text('network##cnw${i}', mut app.cfg_bufs[i].network_buf) {
+		app.dirty = true
+	}
+	vgui.same_line()
+	vgui.help_marker('Optional label grouping buses of one logical vehicle network. Buses that share a network name are grouped in the Buses tree and the Trace bus chips.')
+	// adapter picker + tooltip (only backends usable on this platform)
+	vgui.text('adapter:')
+	vgui.same_line()
+	vgui.help_marker(adapter_tip(ch.adapter))
+	for a in available_adapters(ch.adapter) {
+		vgui.same_line()
+		if vgui.toggle_button('${a}##ad${i}_${a}', ch.adapter == a, 0) {
+			app.set_adapter(i, a)
+		}
+	}
+	// address (type it, or add detected interfaces via the Discover... dialog above)
+	vgui.set_next_item_width(220)
+	if vgui.input_text('address##cad${i}', mut app.cfg_bufs[i].address_buf) {
+		old_iface := app.proj.channels[i].iface
+		mut typed := vgui.buf_str(app.cfg_bufs[i].address_buf)
+		// THE SAME LIFT the project loader does. A `,silent` typed here used to stay in the
+		// address, so the port opened ACK-free while the model went on calling the channel
+		// transmit-capable — no listen-only shown anywhere, and sends refused one frame at a
+		// time. One rule, applied wherever an address can be written.
+		if ch.adapter == 'vector' {
+			stripped, want_silent, recognised := project.split_vector_mode(typed)
+			had_suffix := stripped != typed
+			if stripped != typed {
+				// BACK INTO THE BUFFER as well. Normalising only the project value left
+				// `1,silent` in the text field, and the next commit_cfg copied it back — the
+				// interface flipping from `vector:1` to `vector:1,silent` behind the operator,
+				// after which every generator bound to the old spelling no longer matched its
+				// own bus. What the field shows has to be what the model holds.
+				app.cfg_bufs[i].address_buf = mkbuf(stripped, 64)
+			}
+			typed = stripped
+			// AGAINST WHAT WAS TYPED, which is `had_suffix` — captured before the buffer was
+			// rewritten just above. Comparing with the buffer afterwards compared the stripped
+			// value against itself and was always false, so `,normal` on a listen-only channel
+			// still opened silent: the guard for the explicit request was unreachable.
+			if recognised && had_suffix {
+				// BOTH WAYS. `,normal` is an explicit request to acknowledge; setting the flag
+				// only when the suffix said silent left a listen-only channel — a discovered
+				// one starts that way — silent while its address said otherwise.
+				app.proj.channels[i].listen_only = want_silent
+			} else if want_silent {
+				app.proj.channels[i].listen_only = true
+			}
+		}
+		app.proj.channels[i].address = typed
+		app.proj.channels[i].iface = project.compose_iface(ch.adapter, app.proj.channels[i].address)
+		app.rebind_senders(old_iface, app.proj.channels[i].iface) // keep this bus's generators bound
+		app.dirty = true
+	}
+	vgui.same_line()
+	vgui.text_dim(adapter_hint(ch.adapter))
+
+	if ch.adapter == 'doip' {
+		vgui.set_next_item_width(90)
+		if vgui.input_text('tester##ct${i}', mut app.cfg_bufs[i].tester_buf) {
+			app.dirty = true
+		}
+		vgui.same_line()
+		vgui.set_next_item_width(90)
+		if vgui.input_text('ecu##ce${i}', mut app.cfg_bufs[i].ecu_buf) {
+			app.dirty = true
+		}
+		vgui.same_line()
+		vgui.help_marker('DoIP logical addresses (ISO 13400): the tester (source) and ECU (target), e.g. 0x0E80 / 0x1000. They replace the CAN diagnostic id pair.')
+		vgui.set_next_item_width(180)
+		if vgui.input_text('vin##cv${i}', mut app.cfg_bufs[i].vin_buf) {
+			app.dirty = true
+		}
+		vgui.same_line()
+		vgui.help_marker('17-character VIN reported by this entity in vehicle announcements (only used when this DoIP bus hosts a simulated entity).')
+	} else {
+		vgui.text('protocol:')
+		for pr in ['can', 'canfd'] {
+			vgui.same_line()
+			if vgui.toggle_button('${pr}##pr${i}_${pr}', ch.typ == pr, 0) {
+				app.set_protocol(i, pr)
+			}
+		}
+		vgui.same_line()
+		vgui.set_next_item_width(90)
+		if vgui.input_text('bitrate##cb${i}', mut app.cfg_bufs[i].bitrate_buf) {
+			app.dirty = true
+		}
+		vgui.same_line()
+		vgui.help_marker('Nominal bit rate in bit/s (e.g. 500000). For virtual/vcan buses this is informational; for real hardware it configures the interface.')
+		vgui.text('mode:')
+		vgui.same_line()
+		vgui.help_marker('off = configured but not attached · monitor = observe live traffic · replay = play a recording onto the bus.')
+		for md in ['off', 'monitor', 'replay'] {
+			vgui.same_line()
+			if vgui.toggle_button('${md}##md${i}_${md}', ch.mode.str() == md, 0) {
+				app.set_mode(i, md)
+			}
+		}
+		vgui.same_line()
+		lo := vgui.checkbox('listen-only##lo${i}', ch.listen_only)
+		if lo != ch.listen_only {
+			app.proj.channels[i].listen_only = lo
+			app.dirty = true
+		}
+		vgui.same_line()
+		vgui.help_marker('Listen-only: never transmit (no ACKs) — passive monitoring of a live bus.')
+		if ch.mode == .replay {
+			vgui.text('replay:')
+			vgui.same_line()
+			vgui.set_next_item_width(220)
+			if vgui.input_text('source##rs${i}', mut app.cfg_bufs[i].replay_src_buf) {
+				app.dirty = true
+			}
+			vgui.same_line()
+			vgui.set_next_item_width(56)
+			if vgui.input_text('x speed##rsp${i}', mut app.cfg_bufs[i].replay_speed_buf) {
+				app.dirty = true
+			}
+			vgui.same_line()
+			loopv := if r := ch.replay { r.repeat } else { false }
+			nl := vgui.checkbox('loop##rl${i}', loopv)
+			if nl != loopv {
+				src := vgui.buf_str(app.cfg_bufs[i].replay_src_buf)
+				spd := vgui.buf_str(app.cfg_bufs[i].replay_speed_buf).f64()
+				// ...old for the same reason as commit_cfg: one click on a checkbox must not
+				// delete the keys this dialog cannot edit.
+				old := app.proj.channels[i].replay or { project.Replay{} }
+				app.proj.channels[i].replay = project.Replay{
+					...old
+					source: src
+					speed:  if spd > 0 { spd } else { 1.0 }
+					repeat: nl
+				}
+				app.dirty = true
+			}
+		}
+	}
+	// databases
+	vgui.text('databases:')
+	vgui.same_line()
+	vgui.help_marker('DBC files describing this bus/network — used to decode frames into signals and to drive the simulated ECUs.')
+	for di, dbp in ch.databases {
+		vgui.text('   ${dbp}')
+		vgui.same_line()
+		if vgui.small_button('x##dbrm${i}_${di}') {
+			app.remove_dbc(i, di)
+			vgui.tree_pop()
+			return true
+		}
+	}
+	if vgui.small_button('+ Add DBC##adddbc${i}') {
+		app.open_browser('dbc:${i}')
+	}
+	// manifest
+	vgui.set_next_item_width(220)
+	if vgui.input_text('manifest##cmf${i}', mut app.cfg_bufs[i].manifest_buf) {
+		app.proj.channels[i].manifest = vgui.buf_str(app.cfg_bufs[i].manifest_buf)
+		app.dirty = true
+	}
+	vgui.same_line()
+	if vgui.small_button('...##mfbrowse${i}') {
+		app.open_browser('manifest:${i}')
+	}
+	vgui.same_line()
+	vgui.help_marker('Optional telemetry handler manifest (CSV) — resolves handler ids to FB/handler/core for the Trace Chart.')
+	vgui.tree_pop()
+	return false
+}
+
+fn draw_doip(mut app App) {
+	vis, op := vgui.begin_closable('DoIP Discovery', app.show_doip)
+	app.show_doip = op
+	if !vis {
+		vgui.end()
+		return
+	}
+	vgui.set_next_item_width(160)
+	vgui.input_text('host', mut app.doip_host_buf)
+	vgui.same_line()
+	if vgui.button('Discover') {
+		app.mu.lock()
+		app.doip_ents = []
+		app.mu.unlock()
+		spawn doip_worker(app, vgui.buf_str(app.doip_host_buf))
+	}
+	app.mu.lock()
+	ents := app.doip_ents.clone()
+	app.mu.unlock()
+	vgui.separator_text('entities')
+	if ents.len == 0 {
+		vgui.text_dim('none — Discover a DoIP host (default 127.0.0.1:13400)')
+	}
+	for e in ents {
+		vgui.text('VIN ${e.vin}   logical 0x${e.logical_address:04X}')
+	}
+	vgui.end()
+}
+
+// draw_config_text is the File tab: edit the project as text, validate, write it back.
+fn (mut app App) draw_config_text() {
+	if app.dirty {
+		// The two tabs edit different things — app.proj versus the file on disk — and either
+		// action below overwrites one side, so say which is at risk before offering it.
+		vgui.text_colored(230, 170, 70,
+			'● unsaved edits in the model (buses/generators) are not in this text')
+		if app.cfg_text_dirty {
+			// Both sides modified: writing the model would overwrite the typing, so that
+			// action is withheld rather than offered and silently destructive.
+			vgui.text_colored(230, 120, 120,
+				'  …and this text has unsaved edits too — Save the text, or Revert it, before folding bus edits in')
+			if vgui.small_button('Revert the text') {
+				app.cfg_invalidate() // clearing the flag alone leaves the cache holding the edits
+				app.load_cfg_text()
+			}
+		} else {
+			if vgui.small_button('Save those edits into the file') {
+				app.save_project()
+				app.load_cfg_text() // re-read what was just written
+			}
+			vgui.same_line()
+			// "bus edits" was too narrow: app.dirty is also set by the Generators panel, and
+			// revert re-reads the whole project, so a generator edit went with it under a label
+			// that did not mention it.
+			if vgui.small_button('Discard ALL unsaved edits (buses + generators)') {
+				app.revert_proj_from_disk()
+			}
+		}
+		vgui.separator()
+	}
+	// Gated, not merely ignored on click: os.write_file('') fails, and Save As serialises the
+	// MODEL, which would throw away the text the user is looking at.
+	can_save := app.cfg_err == '' && app.proj_path != ''
+	if can_save {
+		if vgui.button('Save') {
+			app.save_cfg_text()
+		}
+	} else {
+		vgui.text_dim('[ Save ]')
+	}
+	vgui.same_line()
+	if vgui.button('Reload') {
+		// invalidate, not just un-dirty: load_cfg_text returns early while cfg_loaded still
+		// matches the path, so the edited buffer would stay on screen with its marker cleared
+		// and a later Save would write text the user believed was discarded
+		app.cfg_invalidate()
+		app.load_cfg_text()
+	}
+	if app.cfg_text_dirty {
+		vgui.same_line()
+		vgui.text_colored(230, 170, 70, '● modified')
+	}
+	vgui.same_line()
+	vgui.text_dim(if app.proj_path == '' { '(unsaved project)' } else { app.proj_path })
+	used := vgui.buf_str(app.cfg_text).len
+	if used > app.cfg_text.len - 1024 {
+		vgui.text_colored(230, 120, 120,
+			'buffer nearly full (${used}/${app.cfg_text.len}) — Save, then Reload for more room')
+	}
+	if app.cfg_err != '' {
+		vgui.text_colored(230, 120, 120, app.cfg_err)
+	} else {
+		// The channel count, not just "OK": an empty file parses perfectly and yields zero
+		// channels, so "OK" alone would reassure someone whose edit had emptied the project.
+		// Cached — recomputing it per frame reparsed the whole document at frame rate, and a
+		// typing frame parsed it twice.
+		n := app.cfg_chans
+		if n == 0 && app.proj.channels.len > 0 {
+			vgui.text_colored(230, 170, 70,
+				'YAML is well-formed but yields NO channels — saving would empty this project')
+		} else {
+			vgui.text_dim('YAML well-formed · ${n} channel(s) — syntax only, not a config check')
+		}
+	}
+	if vgui.text_edit('##cfgtext', mut app.cfg_text, 460) {
+		// Validate as you type, so a mistake is visible where it was made rather than at Save.
+		app.cfg_text_dirty = true
+		t := vgui.buf_str(app.cfg_text)
+		app.cfg_err = cfg_text_error(t)
+		app.cfg_chans = cfg_text_channels(t)
+	}
+}

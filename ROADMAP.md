@@ -98,7 +98,10 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   recorded as a known limitation in [`docs/doip.md`](docs/doip.md).
 - 🧭 **LIN** — `modules/lindb` (LDF) + a `LinFrame` type. Kept type-safe alongside `CanFrame` /
   `EthFrame` rather than faked behind a generic frame.
-- 🧭 **Split `cmd/blobly_net/main.v`** — it is **7,475 lines / 231 KB** (measured 2026-08-10; it only grows), and essentially every
+- 🧭 **Split `cmd/blobly_net/main.v`** — *the mechanical half landed via #123: 20 per-concern
+  files, pure moves, build targets the directory. What remains here is the second half below —
+  the app state and the telemetry-speaking core paths, which no file move dislodges.*
+  It was **7,475 lines / 231 KB** (measured 2026-08-10; 11,328 by the split), and essentially every
   GUI change touches it. The cost is not aesthetic, it is measurable in four places: GitHub
   renders its diffs slowly enough to be painful on every PR; review findings arrive as line
   numbers into one enormous file; two GUI branches almost always collide there; and the editor
@@ -108,24 +111,18 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   cannot hold) plus the app state, which is roughly how
   the file is already organised internally — so the panel bodies are a mechanical move rather
   than a redesign. **Two things around them are not.**
-  First, **the build entry point has to move with them.** Every build names the single file:
-  `scripts/run_gui.sh` (lines 36 and 89-92) and `.github/workflows/windows.yml` (line 107) all
-  pass `cmd/blobly_net/main.v` — and so does line 45, which *re-assigns* the target after a
-  `.blobnet` argument has been moved into `BLOBLY_PROJECT`, so fixing only the default leaves
-  `run_gui.sh project.blobnet` broken. V compiling one file does not pull in its siblings, so the
-  moment a panel leaves `main.v` those builds fail on undefined symbols — locally, in CI and on
-  the Windows bundle at once. Switch them to compile the directory, or make the panels imported
-  modules; either way it lands in the same commit as the first move, with all three builds
-  verified, not afterwards.
-  Second, **the app state — and the core paths that speak telemetry.** `App` embeds the optional modules' types directly
+  First, the build entry point — *done in #123: `run_gui.sh` (both its default and the
+  `.blobnet` branch that re-assigns the target) and `windows.yml` now compile the directory,
+  verified before anything moved.*
+  Second — and now the whole of what remains — **the app state — and the core paths that speak telemetry.** `App` embeds the optional modules' types directly
   (`telem.Manifest`, `sysview.System`), so moving panel functions into new files leaves the core
   importing exactly what the tiering item below says it must not. Extracting or abstracting that
   state — an interface, or a side table the optional panels own — is part of this work, not a
   free consequence of it, and it is the part to schedule time for.
-  It reaches past the state, too: `telem` appears **43 times** in `main.v`, and not only in
-  panels. `TRec` — the core trace row — embeds a `telem.Record` (~55-60); the CAN RX path
-  decodes trace responses inline (~862); and project rebuilding loads and classifies manifests
-  (~1083-1101). Those are core responsibilities that happen to speak an optional module's
+  It reaches past the state, too — and the split makes the reach visible by file: `TRec` — the
+  core trace row — embeds a `telem.Record` (`trace.v`); the CAN RX path decodes trace
+  responses inline (`rx_loop`, `workers.v`); and project rebuilding loads and classifies
+  manifests (`rebuild_from_proj`, `app.v`). Those are core responsibilities that happen to speak an optional module's
   types, so no amount of moving *panels* dislodges them. They go behind a callback the
   optional panel registers, or into the telemetry-owned file — decided as part of this item,
   because it is what determines whether `core must not import telem` is achievable at all.
@@ -134,9 +131,9 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   **lever for the tiering below** — panels cannot be separated while they all live in one file.
 - 🧭 **Tier the UI: standard tester vs. blobly_emb integration.** Most people who pick this up
   want the ordinary thing — trace, DBC decode, send, generators, simulation, diagnostics,
-  scripting, logging. A large part of the GUI is not that: the **Shell** (93 references in
-  `main.v`), **flash** (81), the **trace manifest** and swimlane (84), the **System** panel and
-  `system.toml` (17), and the SOME/IP module bindings (13), plus the `sysview`, `telem` and
+  scripting, logging. A large part of the GUI is not that: the **Shell**, **flash**, the
+  **trace manifest** and swimlane (`tchart.v` — since #123 each is one file to lift), the
+  **System** panel and `system.toml` (`panel_system.v`), and the SOME/IP module bindings, plus the `sysview`, `telem` and
   `flash` modules and the `flash` / `trace_dump` CLI tools. All of it speaks protocols and
   config formats that only **blobly_emb** produces, so for anyone without that stack it is
   surface area that cannot do anything — the README already has to explain that several panels
@@ -148,13 +145,14 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   the core must not import `sysview`/`telem`/`flash`, so "works without emb" is enforced rather
   than asserted. The **visible** half of this already exists and is the baseline to build on,
   not remaining work: Trace Chart, Flash, Shell and System are already grouped under a
-  `blobly_emb target` separator in both the View menu and the activity bar (`main.v` ~1477 and
-  ~1562). One *promotion* also already ships: `load_project` finds a `system.toml` beside the
-  project and sets `show_sys = sys_loaded` (`main.v` ~961), opening the System panel by itself.
+  `blobly_emb target` separator in both the View menu and the activity bar
+  (`draw_menubar`/`draw_activity_bar`, `panel_misc.v`). One *promotion* also already ships:
+  `load_project` finds a `system.toml` beside the project and sets `show_sys = sys_loaded`
+  (`app.v`), opening the System panel by itself.
   So the remaining promotion work is the manifest and bootloader cases, not all three.
   **Discovery must not gate the entry points that create the thing being discovered.** Two in
   particular are circular: the System panel holds the *only* `system.toml` path input
-  (`main.v` ~7187), so hiding it until a `system.toml` is found beside the project leaves no
+  (`draw_system`, `panel_system.v`), so hiding it until a `system.toml` is found beside the project leaves no
   way to open one from anywhere else; and the Flash panel is where a running application is
   driven into its bootloader, so hiding it until a bootloader is on the bus means it never
   will be. The project schema stores neither a system path nor a target capability, so a user

@@ -104,7 +104,7 @@ jobs:
         run: |
           mkdir -p build
           /c/v-ct/v.exe -cc gcc -no-parallel -enable-globals -path '@vlib|@vmodules|modules|libs' \
-            -o build/blobly_net.exe cmd/blobly_net/main.v
+            -o build/blobly_net.exe cmd/blobly_net/
           test -f build/blobly_net.exe && echo "BUILD OK -> build/blobly_net.exe"
           # Copy the exe's mingw64 runtime DLLs (freetype/harfbuzz/glib/gcc/…) next to it via
           # ldd, so the bundled artifact runs outside an MSYS2 shell.
