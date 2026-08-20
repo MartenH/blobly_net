@@ -54,7 +54,11 @@ cmd/blobly_net/     the GUI (Dear ImGui + ImPlot)   <- the app
 cmd/*                CLI tools + smoke tests (flash, dbc_decode, mf4_dump, restbus, trace_dump, ...)
 libs/vgui/           the V wrapper around Dear ImGui/ImPlot
 modules/             engine (GUI-free, unit-tested)
-scripts/             setup, run, test, packaging
+scripts/             setup, run, test, packaging. `setup_vcan.sh` is the ONE per-session command
+                     (loads vcan, brings up vcan0/vcan1 at mtu 72); `build_vcan_module.sh` is the
+                     rare one (once, and after a kernel upgrade). Both source `vcan_common.sh`
+                     for the questions they share — one answer each, tested by
+                     `vcan_common_test.sh`, because every place they were answered twice drifted
 projects/            example `.blobnet` projects
 sut/                 Python VERIFICATION ORACLES (dev-time only, not CI, not the sim path):
                      cantools/asammdf/udsoncan as INDEPENDENT implementations to diff V against.
@@ -94,7 +98,9 @@ v -enable-globals test modules/             # unit tests — the reliable backbo
 ./scripts/runtests.sh tests/diag_basic.lua  # headless Lua integration tests (in-process sim)
 ```
 
-CI (`.github/workflows/`) runs `v -enable-globals test modules/` plus `scripts/runtests.sh`. `windows.yml`
+CI (`.github/workflows/`) runs `v -enable-globals test modules/`, `scripts/runtests.sh` and
+`scripts/vcan_common_test.sh` (the shared setup-script answers — whose home under sudo, is vcan
+available — driven through stubbed `getent`/`id`/`ip`/`sudo`, so it runs unprivileged). `windows.yml`
 additionally downloads a prebuilt V toolchain from this repo's **`v-toolchain` release** — if that
 release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks.
 
