@@ -9,6 +9,13 @@ module transport
 
 fn pcan_handle(s string) !u16 {
 	t := s.trim_space()
+	// EMPTY FIRST. `adapter: pcan` with no address composes to `pcan:`, and this used to index
+	// t[0] on an empty string — a panic, in a validation pass whose whole job is to report a bad
+	// configuration rather than die on one. It only became reachable when the resolver stopped
+	// being Windows-only, which is the kind of thing widening a guard exposes.
+	if t == '' {
+		return error('empty PCAN channel — give the row an address (PCAN_USBBUS1, usb1, 1, or 0x51)')
+	}
 	low := t.to_lower()
 	if low.starts_with('0x') {
 		return u16(t.all_after('0x').parse_uint(16, 16) or {

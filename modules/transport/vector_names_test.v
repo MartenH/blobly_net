@@ -120,3 +120,15 @@ fn test_destination_key_keeps_its_platform_guard() {
 		assert destination_key('vector:1') != destination_key('vector:ch1')
 	}
 }
+
+// An adapter with no address must report, not panic. This became reachable when the vendor
+// resolvers stopped being Windows-only, so the headless validation pass could reach them.
+fn test_empty_vendor_addresses_do_not_panic() {
+	if _ := pcan_handle('') {
+		assert false, 'an empty PCAN channel is not a channel'
+	}
+	// And the destination keys built on them survive it.
+	assert vendor_destination_key('pcan:') != ''
+	assert vendor_destination_key('vector:') != ''
+	assert vendor_destination_key('kvaser:') != ''
+}

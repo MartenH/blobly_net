@@ -67,6 +67,7 @@ __global (
 	g_borrowed      []Borrowed
 	g_borrow_mu     &sync.Mutex
 	g_shutting_down bool
+	g_restoring     int // restorations in flight; the handler must not exit through one
 )
 
 // The handler runs on another thread, and `borrow()` appends to the same array — an append that
@@ -104,6 +105,20 @@ fn on_interrupt(_ os.Signal) {
 	snapshot := g_borrowed.clone()
 	borrow_unlock()
 	give_back(snapshot)
+	// WAIT OUT ANYONE ELSE'S RESTORE. The ordinary deferred cleanup may be partway through
+	// writing assignments back — it claims the entries first, so the snapshot above saw an empty
+	// list and this handler had nothing to do — and exiting over it leaves exactly the
+	// half-restored bench the handler exists to prevent. Bounded, because a stuck restore must
+	// not make Ctrl-C useless.
+	for _ in 0 .. 300 {
+		borrow_lock()
+		busy := g_restoring > 0
+		borrow_unlock()
+		if !busy {
+			break
+		}
+		time.sleep(10 * time.millisecond)
+	}
 	exit(130)
 }
 
@@ -159,8 +174,16 @@ fn give_back(bs []Borrowed) {
 			}
 		}
 	}
+	// COUNTED WHILE IT HAPPENS. Claiming removes the entries from the shared list, so between
+	// the claim and the writes an interrupt sees an empty list, concludes there is nothing to do,
+	// and exits THROUGH a restoration that is halfway done — the one moment when stopping is
+	// worse than either finishing or never having started.
+	g_restoring++
 	borrow_unlock()
 	defer {
+		borrow_lock()
+		g_restoring--
+		borrow_unlock()
 		for _ in mine {
 			transport.vector_borrow_unlock()
 		}

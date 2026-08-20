@@ -792,8 +792,11 @@ fn test_vendor_destination_conflicts() {
 	]
 	assert vendor_destination_conflicts(rates).len == 1
 
-	// A listen-only monitor beside a row that only WATCHES is a perfectly good quiet bench.
-	ok := [
+	// A row that merely WATCHES is no longer excused. A script, Quick Send or the shell can tell
+	// any channel to transmit, so its configuration says nothing about whether it will — and two
+	// rows disagreeing about the mode of one wire have asked the transceiver for something it
+	// cannot do, whoever ends up talking.
+	mixed := [
 		Channel{
 			name:        'mon'
 			adapter:     'vector'
@@ -808,5 +811,24 @@ fn test_vendor_destination_conflicts() {
 			enabled: true
 		},
 	]
-	assert vendor_destination_conflicts(ok).len == 0
+	assert vendor_destination_conflicts(mixed).len == 1
+
+	// Agreeing is fine, either way round.
+	agreed := [
+		Channel{
+			name:        'a'
+			adapter:     'vector'
+			iface:       'vector:1'
+			enabled:     true
+			listen_only: true
+		},
+		Channel{
+			name:        'b'
+			adapter:     'vector'
+			iface:       'vector:ch1'
+			enabled:     true
+			listen_only: true
+		},
+	]
+	assert vendor_destination_conflicts(agreed).len == 0
 }

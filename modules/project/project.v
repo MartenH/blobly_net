@@ -1280,20 +1280,23 @@ pub fn vendor_destination_conflicts(chs []Channel) []string {
 			rate_row[k] = c.name
 		}
 	}
+	// DISAGREEMENT IS THE CONFLICT, not "would this row transmit".
+	//
+	// This reverses an earlier reading of mine, and the reason is worth keeping: I judged a row
+	// passive from its CONFIGURATION — no simulated nodes, no replay — and concluded it could
+	// share a silenced wire harmlessly. Runtime does not respect that. A Lua script can call
+	// bus.send on any channel, and so can Quick Send, the shell and the diagnostic panel; the
+	// row's configuration says nothing about whether somebody will ask it to talk.
+	//
+	// A transceiver has one mode. Two enabled rows on one wire that disagree about it have
+	// stated something the hardware cannot do, whoever ends up transmitting, and that is
+	// answerable now instead of a frame at a time later.
 	for c in chs {
-		if !c.enabled || c.adapter != 'vector' {
-			continue
-		}
-		// WHAT WOULD TRANSMIT, from the project rather than from a running app: simulated nodes,
-		// or a replay. A verify-only row watches and is no trouble on a quiet wire.
-		transmits := c.all_nodes().len > 0 || c.mode == .replay
-		if !transmits {
+		if !c.enabled || c.adapter != 'vector' || c.listen_only {
 			continue
 		}
 		if who := quiet[transport.destination_key_for(c.adapter, c.iface)] {
-			if who != c.name {
-				out << '${c.name} would transmit on ${c.iface}, which ${who} has set to listen-only'
-			}
+			out << '${c.name} shares ${c.iface} with ${who}, which is listen-only'
 		}
 	}
 	return out
