@@ -103,3 +103,20 @@ fn test_vendor_split_rate() {
 		}
 	}
 }
+
+// The vendor resolvers describe how the VENDOR reads a name, which is a fact about the vendor
+// and not about the machine. This runs on Linux, where the old version resolved nothing.
+fn test_vendor_destination_key_resolves_off_windows() {
+	assert vendor_destination_key('vector:1') == vendor_destination_key('vector:ch1')
+	assert vendor_destination_key('vector:app01@500000') == vendor_destination_key('vector:1@500000')
+	assert vendor_destination_key('kvaser:0') == vendor_destination_key('kvaser:00')
+	assert vendor_destination_key('vector:1') != vendor_destination_key('vector:2')
+}
+
+// …while destination_key keeps its platform guard, because on Linux a prefixed name really is
+// an ordinary SocketCAN interface and opening it must not be redirected.
+fn test_destination_key_keeps_its_platform_guard() {
+	$if !windows {
+		assert destination_key('vector:1') != destination_key('vector:ch1')
+	}
+}

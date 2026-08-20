@@ -187,22 +187,27 @@ pub fn vendor_destination_key(iface string) string {
 	// strings. Comparing the strings let two mappings share one physical bus undetected.
 	raw_rate := if i.contains('@') { i.all_after('@').trim_space() } else { '500000' }
 	rate := raw_rate.int().str()
+	// NOT UNDER `$if windows`. These resolvers are pure string logic — pcan_handle, vector_key
+	// and `.int()` — and they describe how the VENDOR reads a channel name, which is a fact
+	// about the vendor and not about the machine running this code. Gated on the platform, a
+	// Linux GUI reading a Windows project saw `vector:1` and `vector:ch1` as two wires and split
+	// its verifier map and its bus count accordingly. What stays platform-dependent is
+	// vendor_iface — whether a prefixed name is a vendor bus AT ALL here — and that guard is
+	// still in destination_key, where opening is decided.
 	mut resolved := ch.to_lower()
-	$if windows {
-		if kind == 'pcan' {
-			if h := pcan_handle(ch) {
-				resolved = '0x${h:X}'
-			}
-			// An unresolvable channel keeps its spelling: two identical bad strings still
-			// collide, and a wrong guess here would merge buses that never open at all.
-		} else if kind == 'kvaser' {
-			resolved = ch.int().str() // exactly what open_kvaser does with it
-		} else if kind == 'vector' {
-			// Through the SAME resolver open_vector uses, so `vector:1`, `vector:ch1` and
-			// `vector:app01` are one destination. The mode suffix is already gone: it sits
-			// after the bitrate, which this function reduces to a number.
-			resolved = vector_key(ch)
+	if kind == 'pcan' {
+		if h := pcan_handle(ch) {
+			resolved = '0x${h:X}'
 		}
+		// An unresolvable channel keeps its spelling: two identical bad strings still collide,
+		// and a wrong guess here would merge buses that never open at all.
+	} else if kind == 'kvaser' {
+		resolved = ch.int().str() // exactly what open_kvaser does with it
+	} else if kind == 'vector' {
+		// Through the SAME resolver open_vector uses, so `vector:1`, `vector:ch1` and
+		// `vector:app01` are one destination. The mode suffix is already gone: it sits after the
+		// bitrate, which this function reduces to a number.
+		resolved = vector_key(ch)
 	}
 	return '${kind}:${resolved}@${rate}'
 }

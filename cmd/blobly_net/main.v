@@ -762,7 +762,14 @@ fn (app &App) transmits_on(c Chan) bool {
 		}
 	}
 	for sr in app.senders {
-		if sr.chan == c.name || sr.target() == c.iface {
+		// BY DESTINATION. A sender whose explicit `bus:` names a valid alias of this wire has no
+		// exact-interface owner, and comparing the strings missed it — so a listen-only row with
+		// a generator aimed at its own bus through the other spelling looked passive.
+		if sr.chan == c.name {
+			return true
+		}
+		tgt := sr.target()
+		if tgt != '' && transport.destination_key(tgt) == transport.destination_key(c.iface) {
 			return true
 		}
 	}
@@ -1831,6 +1838,13 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	//
 	// Still under tx_mu, so the order frames were recorded in is the order they reach the wire,
 	// which is the property this lock exists for.
+	//
+	// KNOWN LIMITATION: note_emit has already timestamped the row, so a frame that waits for
+	// room is recorded up to a fifth of a second before it reaches the bus. ORDER is right and
+	// the echo still matches; only the absolute time is early, and only while the wire is
+	// saturated. Correcting it means splitting note_emit into a reserve that registers the
+	// pending echo and a commit that writes the row once the driver has the frame — a change to
+	// the hot path that wants its own change, not a corner of this one.
 	// The wait ends when the RUN does. t.guard_gen is the run this tap belongs to; without this
 	// the worker sat out its whole retry budget after Stop, with its own taps closing underneath.
 	gen_now := t.guard_gen
@@ -5954,6 +5968,28 @@ fn draw_buses(mut app App, chans []Chan) {
 				// run, and it walked past the rate-conflict validation entirely — so an alias
 				// configured for a different bitrate could join a running wire, and the vendor
 				// layer never saw the disagreement because bitrate_iface had already picked one.
+				// DISABLING can change the mode as much as enabling. With a passive normal row
+				// and a listen-only row on one wire, every port opened silent; switching the
+				// listen-only row off leaves the normal row's already-open ports silent while
+				// the model now says the wire is normal, and its transmits are refused one at a
+				// time with nothing to explain it. Only Vector, where the mode reaches hardware.
+				if !new && app.running && app.chans[i].adapter == 'vector'
+					&& app.chans[i].listen_only {
+					mut others_live := false
+					off_key := transport.destination_key(app.chans[i].iface)
+					for j, other in app.chans {
+						if j != i && other.enabled && other.running
+							&& transport.destination_key(other.iface) == off_key {
+							others_live = true
+							break
+						}
+					}
+					if others_live {
+						app.mu.unlock()
+						app.notify('${app.chans[i].name} set ${app.chans[i].iface} to listen-only and other channels are running on it — Stop before changing the mode of a live wire')
+						continue
+					}
+				}
 				if new && app.running && app.chans[i].adapter in ['pcan', 'kvaser', 'vector'] {
 					app.chans[i].enabled = true
 					clash := app.rate_conflict()
