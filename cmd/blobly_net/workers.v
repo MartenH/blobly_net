@@ -287,7 +287,7 @@ fn gen_loop(app &App) {
 		// emission or the next received frame, so on a bus that falls silent — a disconnected
 		// bench, the very case the mark is for — the last rows stayed unresolved forever.
 		a.mu.lock()
-		a.expire_pending_locked(f64(time.ticks() - a.t0))
+		a.expire_pending_locked(a.since_ms())
 		a.mu.unlock()
 		time.sleep(8 * time.millisecond)
 	}
@@ -526,7 +526,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		if a.run_gen != gen {
 			break
 		}
-		t_ms := f64(time.ticks() - a.t0)
+		t_ms := a.since_ms()
 		// Is this the echo of something WE just put on the wire? Every backend delivers our own
 		// sends to the monitor's separate bus instance (transport.test_inproc_cross_delivery
 		// pins it), so without this the tester and our simulated ECUs arrive here looking
@@ -562,7 +562,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				if c.first && !c.done {
 					ch_own := if c.tag != '' { c.tag } else { a.chan_name_for(iface) }
 					a.rec_append_locked(canlog.LogEntry{
-						t_s:   f64(time.ticks() - a.t0) / 1000.0
+						t_s:   a.since_s()
 						iface: ch_own
 						frame: f
 					})
@@ -623,7 +623,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		}
 		if a.recording && !ours {
 			a.rec_append_locked(canlog.LogEntry{
-				t_s:   f64(time.ticks() - a.t0) / 1000.0
+				t_s:   a.since_s()
 				iface: chname
 				frame: f
 			})

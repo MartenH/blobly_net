@@ -43,10 +43,23 @@ mut:
 	// frames never reach the wire at all, and the same goes for a wrong bitrate, swapped
 	// CANH/CANL or a down link.
 	//
-	// No `seq`, no `confirmed`: a row is located by position (trace_seq against trace_base), and
-	// nothing displays "arrived as expected". A field written but never read is a claim nobody
-	// checks — which is the habit this whole column exists to break.
+	// No `confirmed`: nothing displays "arrived as expected", and a field written but never read
+	// is a claim nobody checks. `seq` DOES earn its place now: it is the row's global frame
+	// index, written once by push_row_locked and read by the IDX column — the views filter and
+	// regroup their row slices, so "position in the slice" stops being the identity the moment
+	// a filter runs. Row LOOKUP (echo confirmation) still goes by position against trace_base.
 	missed bool
+	seq    u64
+}
+
+// has_payload gates every SIGNAL-DECODING consumer of a row's data. An RTR frame's data is a
+// zero-filled placeholder that carries only the requested DLC — live SocketCAN delivers it that
+// way (the shim returns can_dlc bytes with no RTR check) and the canlog import now mirrors it —
+// so decoding those bytes fabricates all-zero signal values from a frame that has NO payload.
+// One predicate rather than a `!r.rtr` at each site, so the next decoder greps into the rule
+// instead of rediscovering it (codex #127 r2).
+fn (r TraceRow) has_payload() bool {
+	return !r.rtr && r.data.len > 0
 }
 
 struct TRec {
@@ -60,6 +73,7 @@ struct TRec {
 fn (mut app App) reset_trace_locked() {
 	app.trace = []
 	app.gcount = map[string]u64{}
+	app.trace_run_base = app.trace_seq // idx restarts at 0 for the new measurement's rows
 	// The pending records STAY. An echo already in flight is still ours, and dropping the record
 	// would turn the next few of our own frames into RX rows, recording entries and verifier
 	// input. Row identities are monotonic and trace_base makes the old ones unresolvable, so a
@@ -67,11 +81,27 @@ fn (mut app App) reset_trace_locked() {
 	app.trace_base = app.trace_seq
 }
 
+// since_ms is the one clock every row and record is stamped from: f64 milliseconds since the
+// app started, carried at the ns-resolution of the monotonic clock underneath. All stamp sites
+// go through here — the previous arrangement had five copies of `f64(time.ticks() - t0)`, so a
+// clock change meant five edits, and the chart's "now" (a sixth) could drift from the rows'.
+fn (app &App) since_ms() f64 {
+	return f64(time.sys_mono_now() - app.t0_ns) / 1_000_000.0
+}
+
+// since_s: the same instant in seconds — what canlog.LogEntry.t_s and the chart's x-axis speak.
+// A sibling rather than four copies of `/ 1000.0`, for the same reason since_ms exists at all.
+fn (app &App) since_s() f64 {
+	return app.since_ms() / 1000.0
+}
+
 // push_row_locked appends a row, stamps its identity and trims the ring. Caller holds app.mu.
 fn (mut app App) push_row_locked(row TraceRow) u64 {
 	seq := app.trace_seq
 	app.trace_seq++
-	app.trace << row
+	mut r := row
+	r.seq = seq
+	app.trace << r
 	// Trimmed in CHUNKS. Reslicing to the cap on every append copies the whole ring each time —
 	// unnoticeable at a few frames a second, and the dominant cost when a recording is imported,
 	// which is exactly where the row count is largest. Letting it run to 1.5x and cutting back
@@ -120,7 +150,7 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 	// — opening a large recording during a measurement, say — and a time taken before blocking
 	// would make the emission look two seconds old the instant it is registered, expiring it
 	// before the frame has even been sent.
-	t_ms := f64(time.ticks() - app.t0)
+	t_ms := app.since_ms()
 	// Under the lock, not before it. The dbc_readers drain covers the RX loops, which register
 	// as lock-free readers; a tapped emitter — a simulated ECU, a diagnostic or flash worker
 	// still draining after Stop — is not in that lifecycle, so resolving a name outside the
@@ -182,7 +212,7 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 		// Stamped INSIDE the lock, like the rx path: a time taken before acquiring it can be
 		// older than a line already written, and the file would then disagree with itself.
 		rec_id = app.rec_append_locked(canlog.LogEntry{
-			t_s:   f64(time.ticks() - app.t0) / 1000.0
+			t_s:   app.since_s()
 			iface: chn
 			frame: f
 		})

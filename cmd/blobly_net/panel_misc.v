@@ -1,7 +1,6 @@
 module main
 
 import os
-import time
 import project
 import transport
 import candb
@@ -202,7 +201,9 @@ fn draw_menubar(mut app App, rx u64) {
 				}
 			}
 			vgui.separator_text('UI scale')
-			for s in [100, 125, 150, 175] {
+			// 75 exists for the opposite problem the maximized window solves: on a small screen
+			// the panels fight for room, and shrinking the UI is cheaper than closing one.
+			for s in [75, 100, 125, 150, 175] {
 				if vgui.menu_item('${s}%') {
 					app.ui_scale = f32(s) / 100.0
 					vgui.set_font_scale(app.ui_scale)
@@ -488,7 +489,9 @@ fn build_layout() {
 fn latest_data(rows []TraceRow, id u32, ext bool) []u8 {
 	mut i := rows.len - 1
 	for i >= 0 {
-		if rows[i].id == id && rows[i].ext == ext {
+		// has_payload: an RTR row matching this id would return its zero-filled DLC
+		// placeholder as the "latest value" of every signal
+		if rows[i].id == id && rows[i].ext == ext && rows[i].has_payload() {
 			return rows[i].data
 		}
 		i--
@@ -589,7 +592,9 @@ fn (app &App) build_series(rows []TraceRow, w Watch) ([]f32, []f32) {
 	mut xs := []f32{}
 	mut ys := []f32{}
 	for r in rows {
-		if r.id == w.id && r.ext == w.ext && r.data.len > 0 {
+		// has_payload, not data.len: an imported `200#R8` between real 0x200 frames would
+		// inject a zero sample into the middle of the series
+		if r.id == w.id && r.ext == w.ext && r.has_payload() {
 			xs << f32(r.t_ms / 1000.0) // seconds — the plot x-axis is t (s)
 			ys << f32(sig.physical(r.data))
 		}
@@ -658,10 +663,11 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 	vgui.help_marker('Each y-axis is live-fitted by default. To take one over: right-click the axis, untick Auto-Fit, then set Min/Max (e.g. 0/100 for a load %). The small checkboxes lock that end against pan/zoom. Drag axis = pan, scroll = zoom, double-click = fit once.')
 	// x-window right edge: wall-clock NOW while live, so the strip chart slides on real time
 	// (not only when a sample arrives); the latest sample time when stopped/paused/loaded, so
-	// it holds still. Samples and `now` share app.t0's clock (rx stamps t_ms = ticks - t0).
+	// it holds still. Samples and `now` share one clock BY CONSTRUCTION: both come from
+	// app.since_ms(), so the chart's right edge cannot drift from the rows' stamps.
 	mut xmax := f64(0)
 	if app.running && !app.paused {
-		xmax = f64(time.ticks() - app.t0) / 1000.0
+		xmax = app.since_s()
 	} else {
 		for r in rows {
 			if app.is_watched_frame(r.id, r.ext) && f64(r.t_ms) / 1000.0 > xmax {
