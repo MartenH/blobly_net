@@ -170,6 +170,14 @@ pub fn destination_key(iface string) string {
 	if !vendor_iface(i) {
 		return canonical_iface(i)
 	}
+	return vendor_destination_key(i)
+}
+
+// vendor_destination_key is the vendor half of destination_key, WITHOUT the platform guard.
+// Callers that are opening a bus want destination_key; callers reading a project written
+// elsewhere want this.
+pub fn vendor_destination_key(iface string) string {
+	i := iface.trim_space()
 	body := i.all_before('@')
 	kind := body.all_before(':').to_lower()
 	ch := body.all_after(':').trim_space()
@@ -197,6 +205,20 @@ pub fn destination_key(iface string) string {
 		}
 	}
 	return '${kind}:${resolved}@${rate}'
+}
+
+// destination_key_for is destination_key for code that is READING a project rather than opening
+// it. The platform guard in vendor_iface is right for opening — on Linux a channel somebody
+// named `pcan:bench` really is a SocketCAN interface — but wrong for analysis: opening a
+// recording on Linux against a project authored for a Windows bench must still see `vector:1`
+// and `vector:ch1` as one wire, because on the machine that made the recording they were.
+//
+// The project's own `adapter` field is what settles it, and only these paths have it.
+pub fn destination_key_for(adapter string, iface string) string {
+	if adapter in ['pcan', 'kvaser', 'vector'] {
+		return vendor_destination_key(iface)
+	}
+	return destination_key(iface)
 }
 
 // wire_frame is the frame this interface will ACTUALLY put on the bus. Where the backend clamps,

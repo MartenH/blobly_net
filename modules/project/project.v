@@ -525,7 +525,15 @@ fn parse_channel(c yaml.Any) !Channel {
 			addr, silent, ok := split_vector_mode(ch.address)
 			if ok {
 				ch.address = addr
-				ch.listen_only = silent
+				// ONLY SETS. A v1 file carrying both `interface: vector:1,normal` and
+				// `listen_only: true` states the safety flag explicitly, and clearing it from a
+				// suffix would open the transceiver on a bench that asked for quiet —
+				// iface_with_bitrate already makes the flag win over an embedded mode, and the
+				// two must not disagree. The editor is where `,normal` can clear it, because
+				// there somebody is choosing rather than a file being migrated.
+				if silent {
+					ch.listen_only = true
+				}
 			}
 		}
 

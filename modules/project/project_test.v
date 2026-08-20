@@ -731,3 +731,23 @@ channels:
 	assert r.speed == 2.0
 	assert r.repeat
 }
+
+// A v1 file that says listen_only explicitly keeps it, even beside a `,normal` suffix. The two
+// must not disagree: iface_with_bitrate already makes the flag win over an embedded mode, so
+// clearing it here would open a transceiver on a bench that asked for quiet.
+fn test_legacy_explicit_listen_only_survives_normal_suffix() {
+	p := parse('
+project:
+  name: legacy
+channels:
+  - name: CAN1
+    interface: vector:1,normal
+    listen_only: true
+') or {
+		assert false, '${err}'
+		return
+	}
+	c := p.channels[0]
+	assert c.listen_only, 'the explicit flag wins'
+	assert c.iface_with_bitrate().ends_with(',silent')
+}

@@ -731,6 +731,26 @@ fn (app &App) rate_conflict() ?string {
 	return none
 }
 
+// dbs_for_dest merges the databases of EVERY channel row on this wire. The verifier sets are
+// grouped by destination, so resolving one against a single row's DBCs left a verifier that came
+// from the sibling alias unable to adopt a name or a layout from its own database.
+fn (app &App) dbs_for_dest(iface string) []candb.Database {
+	want := transport.destination_key(iface)
+	mut out := []candb.Database{}
+	mut seen := map[string]bool{}
+	for c in app.chans {
+		if transport.destination_key(c.iface) != want || c.iface in seen {
+			continue
+		}
+		seen[c.iface] = true
+		out << app.dbs_for(c.iface)
+	}
+	if out.len == 0 {
+		return app.dbs_for(iface)
+	}
+	return out
+}
+
 fn (app &App) transmits_on(c Chan) bool {
 	for sc in app.sims {
 		// NODES ONLY. start() spawns sim_loop when `nodes.len > 0`, so a row carrying just
@@ -2073,7 +2093,7 @@ fn (mut app App) load_recording(path string) {
 		// KEYED ON THE DESTINATION. Two rows spelling one wire differently kept separate
 		// verifier sets, so an imported recording was checked against whichever row's rules
 		// happened to be found — and rules split across the aliases silently stopped applying.
-		sc_dest := transport.destination_key(sc.iface)
+		sc_dest := transport.destination_key_for(sc.pch.adapter, sc.iface)
 		mut vs := verifiers[sc_dest] or { sim.VerifySet{} }
 		// `verify:` ONLY — the ECU under test's messages, never our own.
 		//
@@ -2115,7 +2135,7 @@ fn (mut app App) load_recording(path string) {
 	mut can_buses := map[string]bool{}
 	for c in app.chans {
 		if !c.doip {
-			can_buses[transport.destination_key(c.iface)] = true
+			can_buses[transport.destination_key_for(c.adapter, c.iface)] = true
 		}
 	}
 	// BOTH sides must be unambiguous. A one-bus project importing a TWO-bus recording is still a
@@ -3163,6 +3183,15 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				continue
 			}
 			a.notify('${iface}: receive failed — ${err}')
+			// DISABLED, not merely broken out of. The teardown below respawns rx_loop whenever
+			// the channel is still enabled, so breaking alone reopened the failed adapter and
+			// repeated the failure — the same spin, one open slower. A channel whose adapter has
+			// gone stops being part of the run until somebody says otherwise.
+			a.mu.lock()
+			if a.run_gen == gen && ci < a.chans.len {
+				a.chans[ci].enabled = false
+			}
+			a.mu.unlock()
 			break
 		}
 		// A blocked recv can be woken by the previous run's echo after Start has already reset
@@ -3224,7 +3253,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		// zero and a request on a protected id was labelled !CRC — or, repeated, !CNT stalled.
 		// A verdict about bytes that were never sent says nothing about the sender.
 		if !f.rtr && !ours {
-			if k := verifiers.resolve(a.dbs_for(iface), f.id, f.extended) {
+			if k := verifiers.resolve(a.dbs_for_dest(iface), f.id, f.extended) {
 				if mut ver := verifiers.by_key[k] {
 					v := ver.check(f.data)
 					verifiers.by_key[k] = ver
