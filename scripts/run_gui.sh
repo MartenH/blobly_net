@@ -33,7 +33,7 @@ cd "$HERE"
 # Convenience: if the first arg is a .blobnet project (not a .v target), open THAT
 # project instead of the sim-demo default. So `run_gui.sh path/to/system_full.blobnet`
 # launches straight into that system. A .v arg still overrides the target as before.
-target="${1:-cmd/blobly_net/main.v}"
+target="${1:-cmd/blobly_net/}"
 case "$target" in
 	*.blobnet)
 		# resolve against the caller's directory, since we have already cd'd to the repo root
@@ -42,7 +42,7 @@ case "$target" in
 		*) target="$CALLER_PWD/$target" ;;
 		esac
 		export BLOBLY_PROJECT="$target"
-		target="cmd/blobly_net/main.v"
+		target="cmd/blobly_net/"
 		;;
 esac
 
