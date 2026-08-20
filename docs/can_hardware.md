@@ -117,13 +117,22 @@ set** and no `vcan.ko` exists, so `ip link add type vcan` cannot work and neithe
 driver (`peak_usb`, `kvaser_usb` are absent too). Anything needing SocketCAN — including
 `scripts/setup_vcan.sh` — fails on a stock install, whatever those scripts claim.
 
-**`scripts/setup_wsl_kernel.sh` does all of this**, and is idempotent — it exits early when vcan
-already works, skips the build when a module with the right vermagic is already there, and only
-the load steps run on later sessions:
+A **custom** WSL2 kernel is a different case and a common one here: built with
+`CONFIG_CAN_VCAN=y`, vcan needs no module at all. It then appears in no `lsmod` listing, and
+such a build often ships no `/lib/modules/$(uname -r)` for `modprobe` to search — so both of the
+usual "is vcan available?" tests say no while `ip link add type vcan` succeeds. That is why
+`setup_vcan.sh` decides by creating an interface and only goes looking for a module when the
+create fails.
+
+**`scripts/build_vcan_module.sh` does all of this**, and is idempotent — it exits early when vcan
+already works and skips the build when a module with the right vermagic is already there. It is
+the RARE one: once, and again after a kernel upgrade. The per-session command is
+`scripts/setup_vcan.sh`, which loads what the build produced and brings the interfaces up:
 
 ```sh
-./scripts/setup_wsl_kernel.sh          # build if needed, load, bring up vcan0/vcan1 at mtu 72
-./scripts/setup_wsl_kernel.sh --build  # build only, touch nothing on the running system
+./scripts/build_vcan_module.sh        # build the module (once, and after a kernel upgrade)
+./scripts/setup_vcan.sh               # EVERY SESSION: load it + bring up vcan0/vcan1 at mtu 72
+./scripts/build_vcan_module.sh --build # build only, touch nothing on the running system
 ```
 
 By hand, or to understand what the script does: building just the module is enough — the kernel

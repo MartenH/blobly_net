@@ -48,6 +48,15 @@ jobs:
       - name: Unit tests (v test modules/)
         run: v -enable-globals test modules/
 
+      # The shared answers behind setup_vcan.sh / build_vcan_module.sh. Pure functions of the
+      # environment (whose home under sudo, is vcan available, may we even ask), driven through
+      # stubbed getent/id/ip/sudo so they run unprivileged here. net#122 spent four review rounds
+      # on two bugs these cover, and the CLAUDE.md rule for a repeating path is to cover it.
+      - name: vcan shared-answer tests (scripts/vcan_common_test.sh)
+        run: |
+          chmod +x scripts/vcan_common_test.sh
+          ./scripts/vcan_common_test.sh
+
       # End-to-end: brings the sim-demo project's simulated ECUs + native UDS
       # server up driver-free on the in-proc bus and runs the Lua test scripts.
       # Non-zero exit on any failing test (the script enforces it).
