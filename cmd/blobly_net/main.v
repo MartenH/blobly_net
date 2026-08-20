@@ -2289,7 +2289,14 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 		}
 		a.mu.unlock()
 		if !still_on {
-			break
+			// PARKED, not finished. Leaving outright stopped the transmission — which was the
+			// point, since rx_loop takes a dead destination's rows out of the run — but nothing
+			// respawns a simulation: start() is its only spawner, so a channel disabled and
+			// re-enabled during a run came back with a reader, taps and no simulated ECUs at
+			// all until the whole run was restarted. Waiting costs an idle thread and keeps the
+			// channel able to come back; the loop still ends when the RUN does.
+			time.sleep(100 * time.millisecond)
+			continue
 		}
 		if !built || a.sim_gen != local_gen {
 			built = true
