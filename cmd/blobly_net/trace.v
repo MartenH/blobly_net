@@ -386,9 +386,16 @@ fn (app &App) recordings_dir() string {
 	return os.abs_path('.')
 }
 
-// fresh_rec_path picks a collision-proof destination: timestamped, with a -N suffix for the
-// same-second restart the timestamp alone cannot split.
-fn (app &App) fresh_rec_path() string {
+// fresh_rec_path picks a collision-proof destination — timestamped, -N suffix within the
+// second — and RESERVES it by creating the file on the spot. Choosing without reserving left
+// the whole capture interval as a race window: a second app instance recording beside the same
+// project in the same second saw the name as free and truncated whichever capture finished
+// first. Creation shrinks that window to the microseconds between the exists() probe and the
+// create (vlib's open_file has no O_EXCL to close it entirely — its mode parser ignores
+// unknown letters, verified, so 'wx' silently means 'w'). Reserving up front also means an
+// unwritable destination fails AT THE RECORD PRESS, not after an hour of capturing.
+// A crash mid-recording leaves the reserved file empty; it is timestamped and gitignored.
+fn (app &App) fresh_rec_path() !string {
 	dir := app.recordings_dir()
 	stamp := time.now().custom_format('YYYYMMDD-HHmmss')
 	mut path := os.join_path(dir, 'recording-${stamp}.log')
@@ -397,6 +404,8 @@ fn (app &App) fresh_rec_path() string {
 		path = os.join_path(dir, 'recording-${stamp}-${n}.log')
 		n++
 	}
+	mut f := os.create(path)!
+	f.close()
 	return path
 }
 
@@ -437,10 +446,17 @@ fn (mut app App) toggle_record() {
 			// press retries the save — it does not arm a new capture, because rearming let
 			// live frames append to (and, at the 200k cap, evict from) the very frames the
 			// failure path had promised to preserve (codex #128 r1).
-			app.write_rec(frozen, app.fresh_rec_path())
+			retry_path := app.fresh_rec_path() or {
+				app.notify('cannot create a recording file: ${err} — frames kept')
+				return
+			}
+			app.write_rec(frozen, retry_path)
 			return
 		}
-		path := app.fresh_rec_path()
+		path := app.fresh_rec_path() or {
+			app.notify('cannot create a recording file here: ${err} — not recording')
+			return
+		}
 		app.mu.lock()
 		app.rec_ids = []
 		app.recording = true
