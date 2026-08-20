@@ -60,12 +60,46 @@ in to GitHub, and artifacts expire (~90 days), so use a recent run.
 
 ## What it does
 
-**Buses**
-- **CAN / CAN-FD** — see the hardware/OS matrix below
-  - software buses for driver-free tests: in-process (`inproc:`) and UDP multicast
+**Buses & transport**
+- **CAN / CAN-FD** — SocketCAN on Linux; PCAN, Kvaser and Vector XL on Windows (see the
+  hardware/OS matrix below). CAN-FD on SocketCAN and the software buses; the Windows vendor
+  backends refuse an FD frame rather than truncating it.
+- **Software buses** for driver-free tests — in-process (`inproc:`) and UDP multicast, so the
+  whole test suite runs with no hardware and no drivers.
 - **Ethernet** — **DoIP** (UDS over TCP) and **SOME/IP** (incl. an RPC client), over ordinary
   TCP/UDP sockets. Automotive *PHYs* (100BASE-T1 and similar) and TSN are out of scope.
 - **LIN** — 🧭 [planned](ROADMAP.md), not implemented yet
+
+**Diagnostics**
+- **ISO-TP** (ISO 15765-2) and a **UDS client** over it
+- **DoIP** (ISO 13400) — UDS over TCP, tester side and entity (server) side
+- **Firmware flashing** — `cmd/flash` and the GUI Flash panel, UDS download with 0x29 auth
+- **Shell panel** — an interactive console to the target over CAN
+
+**Databases & decoding**
+- **DBC** parse, decode, encode — multiplexing and value tables included
+- **DBC editor** in the GUI — forms, a bit-matrix grid, live save, read-only while running
+- **`candump -l` logs** and a native **ASAM MDF4** (`.mf4`) reader
+
+**Simulation** ([manual](docs/simulation.md))
+- **Simulated ECUs** in-process — cyclic senders, signal generators (sine, sawtooth, counter,
+  step), request/response rules and per-ECU UDS servers, so tests need no hardware
+- **Rest bus** from a real recording — replay a capture with the ECU under test subtracted by
+  DBC sender, so it cannot argue with a recording of itself
+- **Multi-bus replay** — several recorded buses onto several live ones from one clock, because
+  the timing *between* buses is what a gateway polices
+- **Fault injection** — drop, bad CRC, frozen counter, out-of-range, applied around end-to-end
+  protection rather than after it
+
+**Scripting & automation**
+- **Embedded Lua** with a test-framework prelude, and a **headless runner** for CI
+- **Projects** are `.blobnet` files (YAML) describing buses, channels and databases
+
+**Trace & analysis**
+- Live trace with signal decode, a send panel, and telemetry capture
+- **Trace chart** — handler/thread swimlanes, a derived idle lane, execution-vs-response bars
+- **Cross-core time correlation** — a satellite core's block carries its measured clock offset
+- **System panel** — a read-only view of a blobly_emb `system.toml`
 
 ### CAN hardware — and why the same adapter is named differently per OS
 
