@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # Install the Blobly Net scoped passwordless-sudo drop-in.
 #
-# Grants the invoking user NOPASSWD for exactly three commands the setup/run
+# Grants the invoking user NOPASSWD for exactly four commands the setup/run
 # scripts need: apt-get (install deps), ip (bring up vcan0), modprobe (load
-# kernel modules, if ever needed). Nothing else.
+# kernel modules) and insmod (insert the vcan module WSL2 does not ship, which
+# lives in a source tree rather than under /lib/modules where modprobe looks).
+# Nothing else.
+#
+# This enumeration is the security scope of installed machine state, so it is
+# the list a reader audits. Keep it and the rule below in step — insmod was
+# added to the rule while this comment still said "three ... nothing else".
 #
 # This is the one piece of machine state that does NOT live in git and so does
 # not transfer to a fresh box — run this once per machine:

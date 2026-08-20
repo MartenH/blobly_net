@@ -54,6 +54,38 @@ KO="$SRC/drivers/net/can/vcan.ko"
 say() { echo "[vcan-module] $*"; }
 die() { echo "[vcan-module] ERROR: $*" >&2; exit 1; }
 
+# RECORD WHERE THE MODULE IS, for setup_vcan.sh. It runs bare in later sessions with no SRC in
+# its environment, so a tree kept anywhere but the default would be invisible to it — it would
+# report that no module was built while this one sat next to it. Written beside the repo, not
+# into it: the path is one machine's.
+#
+# Called from EVERY exit that leaves a usable module behind, not just the end: `--build` returns
+# at the build-only exit, which is exactly the mode a custom SRC is most likely paired with.
+# Guarded on $KO existing, so the early exits that build nothing (kernel already has vcan) do
+# not overwrite a good marker with a tree that holds no module.
+#
+# And written as the INVOKING user. `sudo ./build_vcan_module.sh` is tolerated above, and it
+# reaches this line whenever no build is needed; the root-owned file it left behind then made
+# the RECOMMENDED non-root run fail here — after tens of minutes of successful rebuild, and
+# before the interfaces came up. The unlink recovers a marker an older version already left,
+# since the directory is the user's; a failure to record is only a lost optimisation, so it
+# warns rather than taking the run down with it.
+record_src() {
+	[ -f "$KO" ] || return 0
+	marker="$(dirname "$0")/../.vcan_module_src"
+	if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ]; then
+		printf '%s\n' "$SRC" | sudo -u "$SUDO_USER" tee "$marker" >/dev/null 2>&1 \
+			|| say "note: could not record $SRC in $marker (setup_vcan.sh will need SRC=)"
+		return 0
+	fi
+	rm -f "$marker" 2>/dev/null || true
+	# 2>/dev/null BEFORE the redirect, so a failing `>` is silenced by it — bash reports that
+	# one against whatever fd 2 is at the moment it tries, and the say below is the message
+	# worth reading.
+	printf '%s\n' "$SRC" 2>/dev/null > "$marker" \
+		|| say "note: could not record $SRC in $marker (setup_vcan.sh will need SRC=)"
+}
+
 # --- 0. is there anything to do at all? -----------------------------------------------------
 # Probed WITHOUT root: `ip link add` needs privileges, so using it as the capability test would
 # report "vcan is missing" for every unprivileged run and rebuild a kernel that was already fine.
@@ -157,7 +189,7 @@ if [ "$MODE" != load ] && [ "$need_build" = 1 ]; then
 	cd - >/dev/null
 fi
 
-[ "$MODE" = build ] && { say "built $KO"; exit 0; }
+[ "$MODE" = build ] && { record_src; say "built $KO"; exit 0; }
 if ! lsmod | grep -q '^vcan ' && [ ! -f "$KO" ]; then
 	die "$KO not found and vcan is not loaded — run with --build first"
 fi
@@ -188,11 +220,7 @@ lsmod | grep -q '^vcan ' || {
 # THE INTERFACES ARE setup_vcan.sh's JOB. This script used to create them too, with its own
 # copy of the mtu-72 dance — two places to fix when the rule changed, and two answers when they
 # disagreed. Build here, bring the bus up there.
-# RECORD WHERE IT IS. setup_vcan.sh runs bare in later sessions with no SRC in its environment,
-# so a tree kept anywhere but the default would be invisible to it — it would report that no
-# module was built while this one sat next to it. Written next to the repo, not into it: the
-# path is one machine's, and .claude/ is already ignored.
-echo "$SRC" > "$(dirname "$0")/../.vcan_module_src"
+record_src
 
 say "module ready — bringing the interfaces up via setup_vcan.sh"
 "$(dirname "$0")/setup_vcan.sh" "${IFACES[@]}"
