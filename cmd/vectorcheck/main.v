@@ -117,13 +117,31 @@ fn borrow(app int, hw transport.VectorChannel) !Borrowed {
 	return b
 }
 
+// EXACTLY ONCE PER CHANNEL, whoever gets there first. The interrupt handler and the ordinary
+// deferred cleanup can run at the same time, and neither used to claim what it was about to
+// restore — so both wrote the same mappings, and a handler delayed past the interprocess unlock
+// could overwrite the assignments of the NEXT vectorcheck to take the lock. Each entry is
+// removed from the shared list under the mutex before it is restored; a caller that finds
+// nothing left has nothing to do.
 fn give_back(bs []Borrowed) {
+	borrow_lock()
+	mut mine := []Borrowed{}
+	for b in bs {
+		for i, g in g_borrowed {
+			if g.app == b.app {
+				mine << g
+				g_borrowed.delete(i)
+				break
+			}
+		}
+	}
+	borrow_unlock()
 	defer {
-		for _ in bs {
+		for _ in mine {
 			transport.vector_borrow_unlock()
 		}
 	}
-	for b in bs {
+	for b in mine {
 		// AS WE FOUND IT includes "not assigned at all". Restoring only the channels that had a
 		// mapping left the others pointing at our test hardware for good, which is the same
 		// unasked-for change to somebody's bench, just quieter.
