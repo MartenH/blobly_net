@@ -140,7 +140,6 @@ mut:
 	enabled   bool
 	rx        u64
 	running   bool
-	spawning  bool // rx_loop spawned but its bus not open yet — the failover below must not start a second reader on a wire whose replacement is already coming up
 	link_down bool // real CAN iface is administratively DOWN (bound but can't tx/rx)
 }
 
@@ -174,9 +173,9 @@ struct ReplayState {
 	live bool // a worker is running
 	done bool // it played to the end and should not restart on its own
 	// Which worker owns this entry. An interrupted group writes live:false on its way out, and a
-	// channel re-enabled in that instant starts a REPLACEMENT for the same source and the same
-	// run — after which the old worker's cleanup would clear the newcomer's state and leave a
-	// live worker that nothing knows about. Only the token holder may write.
+	// replacement for the same source can be under way in that instant — after which the old
+	// worker's cleanup would clear the newcomer's state and leave a live worker that nothing
+	// knows about. Only the token holder may write.
 	token u64
 }
 
@@ -883,10 +882,6 @@ fn (mut app App) start() {
 		// which broadcasts only to already-attached subscribers — those frames genuinely had no
 		// listener, yet were tracked as if one existed and later marked as never sent.
 		app.chans[ci].link_down = !iface_link_up(ch.adapter, ch.address)
-		// the same guard the mid-run toggle uses: disabling and re-enabling while this open is
-		// still pending would otherwise start a SECOND loop for one channel, and both would
-		// claim against the same monitor index — one gets the echo, the other files its copy
-		// under the device under test
 		// ONE READER PER WIRE. Two rows spelling one destination differently each opened their
 		// own RX port, and every external frame was then delivered twice — two trace rows, two
 		// verifier passes over the same message, and an E2E counter check seeing each frame
@@ -894,10 +889,8 @@ fn (mut app App) start() {
 		// not need its own pair of eyes on a bus somebody is already watching.
 		rx_key := transport.destination_key(ch.iface)
 		if rx_key in monitored {
-			app.chans[ci].spawning = false
 		} else {
 			monitored[rx_key] = true
-			app.chans[ci].spawning = true
 			spawn rx_loop(app, ci, ch.iface, app.run_gen)
 		}
 		// A TX bus per CHANNEL (each generator fires on its target bus), plus one anonymous tap
@@ -1142,8 +1135,8 @@ fn doip_watch(app &App, pch project.Channel, ent sim.DoipEntity, key string, gen
 			// and silent — which is what this PR set out to stop.
 			warned = false
 			// Generation-checked here TOO. Guarding only the bind-failure path left this one:
-			// an old watcher between its close() and this call, while a Stop/Start/re-enable
-			// published a replacement, would deregister the NEW run's live listener.
+			// an old watcher between its close() and this call, while a Stop/Start published a
+			// replacement, would deregister the NEW run's live listener.
 			a.doip_forget_if_current(pch, ent, gen)
 			a.notify('${pch.name}: DoIP entity stopped — ${host}:${port} released')
 		} else if !want || !bound {
@@ -1394,7 +1387,9 @@ fn (app &App) chan_index_locked(pch project.Channel) ?int {
 
 // doip_should_host reports whether this entity should be listening right now: its channel
 // ticked in Buses AND its ECU ticked in Simulation.
-// chan_enabled reports a channel's LIVE tick from the Buses panel.
+// chan_enabled reports a channel's tick in the Buses panel. Fixed for the duration of a run —
+// the tick is stopped-only — so this answers the same way from Start to Stop unless the
+// channel's adapter failed and rx_loop took its wire out of the run.
 fn (app &App) chan_enabled(pch project.Channel) bool {
 	a := unsafe { app }
 	a.mu.lock()
@@ -2994,9 +2989,9 @@ fn (mut app App) spawn_replay_workers_locked() []ReplaySpawn {
 	// recording's specs, so two channels replaying DIFFERENT files onto one interface never
 	// meet inside it — and two recordings on one wire is the id collision that grouping exists
 	// to prevent, arriving by another door.
-	// SEEDED with the live owners, because a worker that was just disabled still holds its
-	// destination: it may be dispatching a batch it already computed, or sitting up to 50 ms in
-	// its poll before it notices the toggle. Rebuilding this table from the enabled channels
+	// SEEDED with the live owners, because a worker whose row has just left the run still holds
+	// its destination: it may be dispatching a batch it already computed, or sitting up to 50 ms
+	// in its poll before it notices. Rebuilding this table from the enabled channels
 	// alone would call that wire free and start a second worker onto it. The owner table is the
 	// single authority for who has a destination; this loop only adds the not-yet-started.
 	mut dst_owner := map[string]string{}
@@ -3134,7 +3129,6 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		// after it recorded as having no watcher, and its echo read as the ECU's.
 		if a.run_gen == gen {
 			a.chans[ci].running = false
-			a.chans[ci].spawning = false // release the guard, or it can never be re-enabled
 		}
 		a.mu.unlock()
 		return
@@ -3153,7 +3147,6 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	// The bus is open: from here a frame we emit can actually come back to us, which is what
 	// `running` promises to note_emit's "is anyone watching?" check.
 	a.chans[ci].running = true
-	a.chans[ci].spawning = false
 	a.dbc_readers++ // this loop reads app.dbs lock-free (lookup_name per frame)
 	a.mu.unlock()
 	defer {
@@ -3353,30 +3346,13 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	// the verifier, while the monitor was in fact running the whole time.
 	if a.run_gen == gen {
 		a.chans[ci].running = false
-		a.chans[ci].spawning = false
-		// Re-enabled while we were on our way out? The toggle saw `running` still true and
-		// skipped spawning a replacement, so without this the channel is left with no reader at
-		// all. We are the ones who know this loop is finished, so we start the next one.
-		// HANDED ON. This loop held the only reader for its wire, so when its own row is
-		// switched off the siblings still enabled on that wire are left with nothing watching
-		// them — silent, and looking healthy. Whoever is still here takes it.
-		if !a.chans[ci].monitorable() && a.running {
-			want := transport.destination_key(iface)
-			for cj, other in a.chans {
-				if cj == ci || !other.monitorable() || other.running || other.spawning {
-					continue
-				}
-				if transport.destination_key(other.iface) == want {
-					a.chans[cj].spawning = true
-					spawn rx_loop(app, cj, other.iface, gen)
-					break
-				}
-			}
-		}
-		if a.chans[ci].monitorable() && a.running {
-			a.chans[ci].spawning = true
-			spawn rx_loop(app, ci, iface, gen)
-		}
+		// NOTHING IS RESPAWNED HERE, and there is nothing left to hand the wire to. Both used
+		// to matter when a row could be toggled mid-run: a reader could exit while its siblings
+		// stayed in the run, so the wire needed a new owner. Now this loop leaves for exactly
+		// three reasons, and none of them wants a replacement — Stop (guarded by `a.running`
+		// above), a generation change (the new run brings its own readers), or an adapter that
+		// failed, which takes EVERY row on that wire out of the run together. A wire with no
+		// rows left in the run should have no reader.
 		// Whatever we emitted while this loop was the observer can no longer be answered by it.
 		// Its records stay claimable (an echo may already be queued in the socket) but earn no
 		// verdict: the watcher was removed, so silence proves nothing.
@@ -6044,7 +6020,20 @@ fn draw_buses(mut app App, chans []Chan) {
 				if new != c.enabled {
 					app.mu.lock()
 					app.chans[i].enabled = new
+					// AND THE PROJECT, which is what Start actually reads. app.chans is the
+					// runtime view; app.sims — the simulated ECUs with their UDS servers and
+					// E2E verifiers — is built from app.proj in rebuild_from_proj, gated on
+					// this flag. Writing only the runtime row left Start opening a reader and
+					// the transmit taps for a bus with no ECUs on it: the generators kept
+					// sending, so the bus looked alive while every simulated node was missing.
+					// Unticking had the mirror fault, leaving a SimCfg behind for a row the
+					// operator had switched off. One-for-one with proj.channels, so the index
+					// is the same row (rebuild_from_proj appends one Chan per project channel).
+					app.proj.channels[i].enabled = new
 					app.mu.unlock()
+					// start() rebuilds only when this is set — and the tick IS a change to the
+					// project, so Save should carry it and the title should show it.
+					app.dirty = true
 				}
 			}
 			vgui.same_line()
@@ -7925,9 +7914,8 @@ fn (app &App) diag_targets() []DiagTarget {
 		if !c.is_doip() {
 			continue
 		}
-		// The LIVE tick, not the load-time value. The Buses checkbox writes app.chans, so a
-		// channel switched off stayed selectable and the panel could still reach the external
-		// ECU — and one switched on after starting disabled never appeared at all.
+		// The tick, not the load-time value: a channel switched off in the Buses panel must not
+		// stay selectable here, or the panel offers a target it can no longer reach.
 		if !app.chan_enabled(c) {
 			continue
 		}
