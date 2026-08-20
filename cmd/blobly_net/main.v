@@ -816,6 +816,20 @@ fn (mut app App) start() {
 			return
 		}
 	}
+	// A RUN-TIME DISABLE IS A PROPERTY OF THE RUN. rx_loop switches every alias on a wire off
+	// when its adapter fails, so the rest of that measurement does not hammer a port that has
+	// gone — but it writes only app.chans, never app.proj. Nothing marks it and nothing can:
+	// the project is unchanged, so the fingerprint still matches and no rebuild is owed. The
+	// next Start then skipped a bus the project enables and reported a running measurement
+	// without it (codex #121 r9). The project is the authority on which buses exist; restore
+	// from it on every start.
+	app.mu.lock()
+	for i in 0 .. app.chans.len {
+		if i < app.proj.channels.len {
+			app.chans[i].enabled = app.proj.channels[i].enabled
+		}
+	}
+	app.mu.unlock()
 	// ONE WIRE, ONE RATE. Two enabled rows on the same destination that disagree about the
 	// bitrate are a contradiction the backend cannot see: bitrate_iface picks one of them and
 	// hands every monitor and transmit open the same string, so the Vector layer's own
@@ -5287,6 +5301,7 @@ fn (mut app App) add_bus() {
 // add_bus_spec appends a bus for a specific adapter+address (used by + Add bus, the Discover
 // dialog's Add-ticked, and the quick-add buttons). The name defaults to the address.
 fn (mut app App) add_bus_spec(adapter string, address string) {
+	app.begin_topology_edit()
 	app.commit_cfg()
 	base := if address != '' { address } else { adapter }
 	app.proj.channels << project.Channel{
@@ -5406,6 +5421,7 @@ fn (mut app App) remove_bus(i int) {
 	if i < 0 || i >= app.proj.channels.len {
 		return
 	}
+	app.begin_topology_edit()
 	app.commit_cfg()
 	removed_iface := app.proj.channels[i].iface
 	app.proj.channels.delete(i)
@@ -5436,6 +5452,7 @@ fn (mut app App) set_adapter(i int, a string) {
 	if i < 0 || i >= app.proj.channels.len {
 		return
 	}
+	app.begin_topology_edit()
 	old_iface := app.proj.channels[i].iface
 	was := app.proj.channels[i].adapter
 	app.proj.channels[i].adapter = a
@@ -5466,12 +5483,25 @@ fn (mut app App) set_adapter(i int, a string) {
 	app.rebuild_preserving_senders()
 }
 
-// rebuild_preserving_senders folds unsaved Generators-panel edits (gen_bufs id/data) into
-// app.proj before rebuilding the runtime view — so a structural config change (add/remove
-// bus/DBC, adapter/mode) doesn't discard them when rebuild_from_proj repopulates senders from
-// the model. Use this instead of rebuild_from_proj for edits made while the editor is open.
-fn (mut app App) rebuild_preserving_senders() bool {
+// begin_topology_edit folds unsaved Generators-panel edits into app.proj BEFORE the caller
+// changes the channel map. Every mutator that touches topology calls it first.
+//
+// The order is the whole point. sync_senders_into_proj matches `sr.iface` against the project's
+// channels, which is only sound while app.senders was built from that same project — and
+// `runtime_stale()` is now derived, so it becomes true the instant a mutator edits app.proj.
+// Syncing AFTERWARDS therefore always refused, and every ordinary edit (add a bus, attach a DBC,
+// change a mode) silently discarded unsaved generator edits before the rebuild repopulated them
+// from the older model (codex #121 r9 — a regression from deriving staleness).
+//
+// Folded here, the cache lands on the map it belongs to, and the rebuild that follows the edit
+// derives senders from an app.proj that already has them.
+fn (mut app App) begin_topology_edit() {
 	app.sync_senders_into_proj()
+}
+
+// rebuild_preserving_senders is what a topology mutator calls AFTER its edit. The preserving
+// half now happens in begin_topology_edit, before the edit; this is the rebuild.
+fn (mut app App) rebuild_preserving_senders() bool {
 	return app.rebuild_from_proj()
 }
 
@@ -5521,6 +5551,7 @@ fn (mut app App) set_protocol(i int, pr string) {
 }
 
 fn (mut app App) set_mode(i int, md string) {
+	app.begin_topology_edit()
 	app.proj.channels[i].mode = project.mode_from(md)
 	app.dirty = true
 	app.rebuild_preserving_senders()
@@ -5530,6 +5561,7 @@ fn (mut app App) add_dbc(ci int, path string) {
 	if ci < 0 || ci >= app.proj.channels.len {
 		return
 	}
+	app.begin_topology_edit()
 	app.commit_cfg()
 	app.proj.channels[ci].databases << rel_path(path)
 	app.dirty = true
@@ -5541,6 +5573,7 @@ fn (mut app App) remove_dbc(ci int, di int) {
 	if ci < 0 || ci >= app.proj.channels.len {
 		return
 	}
+	app.begin_topology_edit()
 	if di < 0 || di >= app.proj.channels[ci].databases.len {
 		return
 	}
@@ -5555,6 +5588,7 @@ fn (mut app App) set_manifest(ci int, path string) {
 	if ci < 0 || ci >= app.proj.channels.len {
 		return
 	}
+	app.begin_topology_edit()
 	app.commit_cfg()
 	app.proj.channels[ci].manifest = rel_path(path)
 	app.dirty = true
