@@ -64,8 +64,9 @@ struct Borrowed {
 // seconds — and the process then exits with somebody's bench still pointed at our test
 // hardware. The one thing this tool must never do is leave a configuration changed.
 __global (
-	g_borrowed  []Borrowed
-	g_borrow_mu &sync.Mutex
+	g_borrowed      []Borrowed
+	g_borrow_mu     &sync.Mutex
+	g_shutting_down bool
 )
 
 // The handler runs on another thread, and `borrow()` appends to the same array — an append that
@@ -88,6 +89,11 @@ fn on_interrupt(_ os.Signal) {
 	eprintln('')
 	eprintln('interrupted — restoring Vector application channels')
 	borrow_lock()
+	// CLOSED FOR NEW BORROWS before the snapshot is taken. The handler runs on another thread,
+	// so releasing the lock and then exiting left the main thread free to borrow one more
+	// channel — which no snapshot could contain, and which therefore stayed pointed at the test
+	// hardware for good.
+	g_shutting_down = true
 	snapshot := g_borrowed.clone()
 	borrow_unlock()
 	give_back(snapshot)
@@ -110,10 +116,21 @@ fn borrow(app int, hw transport.VectorChannel) !Borrowed {
 	// every earlier borrow and not this one — the assignment already written, and nothing left
 	// that knew to undo it. Recording an intention we might not carry out is harmless: giving
 	// back a channel that was never taken restores it to what it already is.
+	// RECORDED AND ASSIGNED UNDER ONE LOCK. Split, the handler could snapshot between them and
+	// restore a channel the main thread was about to overwrite — putting the assignment back
+	// after the cleanup that was meant to undo it.
 	borrow_lock()
+	if g_shutting_down {
+		borrow_unlock()
+		return error('interrupted before this channel was taken')
+	}
 	g_borrowed << b
+	transport.vector_assign(app, hw) or {
+		g_borrowed.delete_last()
+		borrow_unlock()
+		return err
+	}
 	borrow_unlock()
-	transport.vector_assign(app, hw)!
 	return b
 }
 
