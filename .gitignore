@@ -48,7 +48,11 @@ __pycache__/
 heaptrack.*.gz
 massif.out.*
 imgui.ini
-recording.log
+# Captures from the Record button: timestamped (recording-YYYYMMDD-HHmmss[-N].log), written
+# beside the open project — which for the shipped example projects is inside this repo.
+# DELIBERATELY unanchored, unlike the source-dir patterns above: these names are generated,
+# collide with no directory, and must be caught at any depth a project lives at.
+recording-*.log
 
 # Agent working state — sessions, worktrees, scratch. Never published: a stray
 # `git add -A` would otherwise sweep transcripts and worktree checkouts into the repo.

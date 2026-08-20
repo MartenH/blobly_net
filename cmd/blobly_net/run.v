@@ -262,6 +262,14 @@ fn (mut app App) start() {
 	// previous run's frame against the newly empty ring — as this run's bus traffic.
 	app.run_gen++
 	start_gen := app.run_gen // the run every consumer spawned below belongs to
+	// The view transition rides the SAME lock, AFTER the generation bump. A fresh measurement
+	// supersedes any recording view (the chip comes down; the pause load_recording set is
+	// lifted) — but unpausing before the bump left a window where a stale rx_loop waking from
+	// recv passed the old-generation checks and dropped its frame into the freshly unpaused
+	// trace. After every validation return, too: a refused Start must leave the imported REP
+	// rows wearing the label that explains them (codex #128 r1, r4).
+	app.viewing_rec = ''
+	app.paused = false
 	app.mu.unlock()
 	for m in held {
 		m.unlock()

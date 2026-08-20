@@ -143,6 +143,13 @@ fn draw_menubar(mut app App, rx u64) {
 				app.show_config = true
 				app.sync_cfg_bufs()
 			}
+			// A recording opens into the TRACE (REP rows) — viewing a capture, not replaying
+			// it onto a bus (that is a replay channel, configured per project). It is a file
+			// operation, so it lives with the file operations; it sat inside the Trace panel
+			// as a bare path field + "Open", which read as some third kind of replay.
+			if vgui.menu_item('Open Recording (.log/.mf4)...') {
+				app.open_browser('recording')
+			}
 			if vgui.menu_begin('Open Example') {
 				for ex in examples {
 					if vgui.menu_item(ex[0]) {
@@ -252,17 +259,25 @@ fn draw_toolbar(mut app App, rx u64, txs string) {
 	// the toolbar read clean while an edit sat waiting in a closed window.
 	dirtymark := if app.dirty || app.cfg_text_dirty { ' ●' } else { '' }
 	vgui.text('· RX ${rx}  ${txs}  ·  ${app.proj_name}${dirtymark}   ')
-	vgui.same_line()
-	if vgui.button(if app.paused { 'Resume' } else { 'Pause' }) {
-		app.paused = !app.paused
+	// The capture CONTROLS live in the Trace window; the toolbar shows the two capture states
+	// that LATCH, and only while they are latched. The Trace window is closable, so without
+	// this a recording or a pause could be running with zero visible evidence and no reachable
+	// way out anywhere on screen.
+	if app.recording {
+		vgui.same_line()
+		vgui.text_colored(230, 120, 120, '● REC')
+		vgui.same_line()
+		if vgui.small_button('Stop Rec##tb') {
+			app.toggle_record()
+		}
 	}
-	vgui.same_line()
-	if vgui.button('Clear') {
-		app.clear_trace()
-	}
-	vgui.same_line()
-	if vgui.button(if app.recording { 'Stop Rec' } else { 'Record' }) {
-		app.toggle_record()
+	if app.paused {
+		vgui.same_line()
+		vgui.text_colored(230, 170, 70, 'paused')
+		vgui.same_line()
+		if vgui.small_button('Resume##tb') {
+			app.toggle_pause()
+		}
 	}
 	vgui.same_line()
 	if vgui.button(if app.dark { 'Light' } else { 'Dark' }) {

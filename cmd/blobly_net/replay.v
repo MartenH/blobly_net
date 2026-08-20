@@ -135,6 +135,13 @@ fn (mut app App) load_recording(path string) {
 	mf4_only := if can_buses.len == 1 && rec_buses.len == 1 { only } else { '' }
 	app.mu.lock()
 	app.reset_trace_locked()
+	// Claim the view HERE, inside the same locked region that reset it, and PAUSE the capture:
+	// a label alone let live frames keep filling the ring under the file's rows — trimming them
+	// away within seconds on a busy bus while the chip still named the file — and let gcount sum
+	// file and live counts into one meaningless total. Paused, the ring holds exactly the file;
+	// 'resume live' (or Start) hands the view back.
+	app.viewing_rec = os.base(path)
+	app.paused = true
 	// Only the LAST trace_cap rows can survive the ring, so only those are built. A 600k-frame
 	// capture otherwise paid for 600k DBC name lookups — each a linear scan of every message in
 	// every loaded database — and 600k payload clones, to display two thousand rows. Measured on

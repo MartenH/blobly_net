@@ -168,12 +168,17 @@ mut:
 	qs_iface          string // Quick send target bus (a channel iface); '' = send_iface default
 	send_id_buf       []u8
 	send_data_buf     []u8
-	trace_filter_buf  []u8 // Trace substring filter
-	trace_grouped2    bool // second Trace (filter) panel: own view mode
-	trace_filter2_buf []u8 // second Trace (filter) panel: own filter
-	symbol_filter_buf []u8 // Symbol Browser search
-	log_path_buf      []u8 // Open Recording path (.log/.mf4)
-	doip_host_buf     []u8 // DoIP manual discover host[:port]
+	trace_filter_buf  []u8   // Trace substring filter
+	trace_grouped2    bool   // second Trace (filter) panel: own view mode
+	trace_filter2_buf []u8   // second Trace (filter) panel: own filter
+	symbol_filter_buf []u8   // Symbol Browser search
+	rec_path          string // FULL path Record writes on stop; chosen at start so the UI can show it
+	// The recording the trace is SHOWING ('' = live). Importing one also PAUSES the capture:
+	// the label alone let live frames keep pouring into the same ring, trimming the file's rows
+	// away within seconds on a busy bus while the chip still named the file, and summing file
+	// and live counts into one gcount total. Cleared by reset_trace_locked and by Start.
+	viewing_rec   string
+	doip_host_buf []u8 // DoIP manual discover host[:port]
 	// Diagnostics (UDS on a worker thread)
 	diag_did_buf []u8
 	diag_sel     int // which DiagTarget the panel addresses (index into the CURRENT list)
@@ -223,12 +228,17 @@ mut:
 	disc_list []DiscoveredIface
 	disc_tick []bool // parallel to disc_list
 	// File browser (Open / Save As / attach DBC / attach manifest)
-	fb_open     bool            // browser window shown
-	fb_save     bool            // true = save mode (filename input), false = open mode
-	fb_dir      string          // current directory
-	fb_name_buf []u8            // filename (save mode)
-	fb_ext      string          // extension filter ('.blobnet' | '.dbc' | '' = recordings)
-	fb_target   string          // action on OK: 'open' | 'saveas' | 'dbc:<ci>' | 'manifest:<ci>'
+	fb_open     bool   // browser window shown
+	fb_save     bool   // true = save mode (filename input), false = open mode
+	fb_dir      string // current directory
+	fb_name_buf []u8   // filename (save mode)
+	// ACCEPTED extensions, plural — the caption the browser shows and the match it applies both
+	// derive from this one list, so a picker can no longer advertise '(*.log)' while listing
+	// .mf4, which is what the single-string version with per-case aliases did. Empty = any.
+	fb_ext    []string
+	fb_target string // action on OK: 'open' | 'saveas' | 'dbc:<ci>' | 'manifest:<ci>' |
+	// 'system' | 'flash' | 'recording' — keep this list in step with the four dispatch
+	// sites in panel_config.v (open_browser, browser_confirm, the title, match_ext)
 	sims        []SimCfg        // per-channel in-process simulation workloads
 	sim_enabled map[string]bool // sim_key(channel, node) -> enabled (Simulation panel)
 	sim_gen     u64             // bumped when sim_enabled changes -> sim_loop rebuilds
@@ -532,6 +542,14 @@ fn (app &App) resolve_asset(path string) string {
 }
 
 fn (mut app App) set_project(proj project.Project, path string) {
+	// A capture belongs to the project it was recorded IN. Neither stop() nor the reset below
+	// touches `recording`, so a Record left running across File > Open/New kept appending the
+	// NEXT project's traffic to the old capture and saved the mixture beside the old project —
+	// where the new project's picker never looks (codex #128 r4). Stop Rec here writes the
+	// frames to the path the capture reserved; a failed write keeps them, same as any Stop.
+	if app.recording {
+		app.toggle_record()
+	}
 	// Warn HERE, not in load_project: this is the function that abandons the File tab's buffer
 	// (via cfg_invalidate below), so every caller is covered — File ▸ New bypassed a warning
 	// placed in load_project — and load_project's error path returns before reaching this, so

@@ -102,7 +102,6 @@ fn main() {
 	app.trace_filter_buf = mkbuf('', 64)
 	app.trace_filter2_buf = mkbuf('', 64)
 	app.symbol_filter_buf = mkbuf('', 64)
-	app.log_path_buf = mkbuf('samples/demo.log', 256)
 	app.doip_host_buf = mkbuf('127.0.0.1', 64)
 	app.load_project(proj_path)
 	println('blobly_net: ${app.proj_name} — ${app.chans.len} channel(s), ${app.dbs.len} DBC(s), manifest=${app.has_manifest}. Press Start.')
