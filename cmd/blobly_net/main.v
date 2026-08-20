@@ -2292,10 +2292,19 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 			// PARKED, not finished. Leaving outright stopped the transmission — which was the
 			// point, since rx_loop takes a dead destination's rows out of the run — but nothing
 			// respawns a simulation: start() is its only spawner, so a channel disabled and
-			// re-enabled during a run came back with a reader, taps and no simulated ECUs at
-			// all until the whole run was restarted. Waiting costs an idle thread and keeps the
-			// channel able to come back; the loop still ends when the RUN does.
-			time.sleep(100 * time.millisecond)
+			// re-enabled during a run came back with a reader, taps and no simulated ECUs at all
+			// until the whole run was restarted.
+			//
+			// Parking has to keep READING, though. The tap stays subscribed, so a loop that only
+			// slept would move the traffic into the socket and the 8192-frame inproc queue rather
+			// than drop it: on re-enable the ECU would answer requests put to it while it was
+			// switched off, seconds late, and a queue allowed to fill drops frames for everyone
+			// sharing the wire. Read and discard. recv's own 5 ms timeout paces an idle bus, so
+			// the drain ends on the first empty read and the sleep only bounds the retry rate.
+			for _ in 0 .. 1024 {
+				bus.recv(5) or { break }
+			}
+			time.sleep(20 * time.millisecond)
 			continue
 		}
 		if !built || a.sim_gen != local_gen {
