@@ -7,7 +7,8 @@ module transport
 pub fn list_interfaces() ![]Iface {
 	mut out := []Iface{}
 	out << kvaser_list() // canlib32.dll: physical + virtual Kvaser channels
-	out << pcan_list()   // PCANBasic.dll: attached PCAN USB channels
+	out << pcan_list() // PCANBasic.dll: attached PCAN USB channels
+	out << vector_list() // vxlapi64.dll: application channels with hardware assigned
 	out << virtual_ifaces()
 	return out
 }

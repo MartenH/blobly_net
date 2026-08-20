@@ -5,6 +5,7 @@ module transport
 // and the vendor CAN-hardware backends:
 //   - `pcan:<channel>[@<bitrate>]`   PEAK PCAN-Basic (pcan_windows.v)
 //   - `kvaser:<channel>[@<bitrate>]` Kvaser CANlib   (kvaser_windows.v)
+//   - `vector:<channel>[@<bitrate>][,silent]` Vector XL (vector_windows.v)
 // The Linux counterpart (open_linux.v) accepts `vcan0`/`can0` instead.
 pub fn open(iface string) !Bus {
 	if name := parse_inproc_iface(iface) {
@@ -19,5 +20,8 @@ pub fn open(iface string) !Bus {
 	if iface.starts_with('kvaser:') {
 		return open_kvaser(iface['kvaser:'.len..])!
 	}
-	return error('no SocketCAN on Windows; use inproc:/udp:/pcan:/kvaser: (got "${iface}")')
+	if iface.starts_with('vector:') {
+		return open_vector(iface['vector:'.len..])!
+	}
+	return error('no SocketCAN on Windows; use inproc:/udp:/pcan:/kvaser:/vector: (got "${iface}")')
 }

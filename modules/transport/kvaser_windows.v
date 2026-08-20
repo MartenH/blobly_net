@@ -36,9 +36,11 @@ mut:
 // open_kvaser parses `kvaser:<channel>[@<bitrate>]`, loads canlib32.dll, opens the
 // channel and goes bus-on. Referenced only from open_windows.v.
 pub fn open_kvaser(spec string) !&KvaserBus {
-	parts := spec.split('@')
-	ch := parts[0].trim_space().int()
-	bitrate := if parts.len > 1 { parts[1].int() } else { 500000 }
+	// BOTH RULES, from the file all three backends share: at most one bitrate, and that a whole
+	// number. Validating only the second part let `@250000@500000` open at 250 kbit/s while the
+	// project reported 500.
+	chan_part, bitrate := vendor_split_rate(spec, 500000) or { return error('Kvaser: ${err}') }
+	ch := chan_part.trim_space().int()
 	code := kvaser_bitrate_code(bitrate)!
 	if C.ct_kvaser_load() != 0 {
 		return error('canlib32.dll not found — install the Kvaser drivers')
@@ -59,10 +61,14 @@ pub fn (mut b KvaserBus) send(f CanFrame) ! {
 	if f.fd {
 		return error('Kvaser: CAN-FD frames are not supported by this backend yet (id 0x${f.id:X}, ${f.data.len} bytes)')
 	}
-	mut n := f.data.len
-	if n > 8 {
-		n = 8
+	// REFUSED, not truncated — the same rule this backend already applies to an FD frame, and
+	// for the same reason. A vendor interface is not clamps_to_classic(), so wire_frame() gives
+	// the trace the frame AS ASKED: truncating here records nine bytes against eight on the
+	// wire, and the echo can never match its own record.
+	if f.data.len > 8 {
+		return error('Kvaser: ${f.data.len} bytes is not a classic CAN frame (id 0x${f.id:X}) — 8 is the maximum without FD')
 	}
+	n := f.data.len
 	ext := if f.extended { 1 } else { 0 }
 	st := C.ct_kvaser_write(b.handle, f.id, u8(n), f.data.data, ext)
 	if st < 0 {
@@ -105,14 +111,14 @@ pub fn (mut b KvaserBus) close() {
 fn kvaser_bitrate_code(bitrate int) !int {
 	return match bitrate {
 		1000000 { -1 } // canBITRATE_1M
-		500000 { -2 }  // canBITRATE_500K
-		250000 { -3 }  // canBITRATE_250K
-		125000 { -4 }  // canBITRATE_125K
-		100000 { -5 }  // canBITRATE_100K
-		62500 { -6 }   // canBITRATE_62K
-		50000 { -7 }   // canBITRATE_50K
-		83000 { -8 }   // canBITRATE_83K
-		10000 { -9 }   // canBITRATE_10K
+		500000 { -2 } // canBITRATE_500K
+		250000 { -3 } // canBITRATE_250K
+		125000 { -4 } // canBITRATE_125K
+		100000 { -5 } // canBITRATE_100K
+		62500 { -6 } // canBITRATE_62K
+		50000 { -7 } // canBITRATE_50K
+		83000 { -8 } // canBITRATE_83K
+		10000 { -9 } // canBITRATE_10K
 		else { error('unsupported Kvaser bitrate ${bitrate} (use 10k/50k/62k/83k/100k/125k/250k/500k/1M)') }
 	}
 }

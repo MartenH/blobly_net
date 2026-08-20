@@ -14,17 +14,17 @@ pub mut:
 	// payload bytes and cannot be sent by a classic-only backend. `brs` is Bit Rate Switch —
 	// the data phase runs at the faster rate. Both are properties of the FRAME, not the bus:
 	// an FD-capable bus carries classic frames too, and a receiver distinguishes them.
-	fd       bool
-	brs      bool
+	fd  bool
+	brs bool
 	// ESI — the transmitting node was error-passive when it sent this. A received STATUS, not a
 	// choice the sender makes, which is why it is deliberately absent from the echo identity in
 	// `wiretap` and from the trace's group key: a message whose transmitter goes error-passive
 	// mid-run would otherwise split into two rows, or stop matching its own echo, on a bit that
 	// says nothing about which message it is.
-	esi      bool
+	esi bool
 	// 0..8 payload bytes for a classic frame; 0..64 for an FD one, and only the lengths a DLC
 	// can encode (0..8, 12, 16, 20, 24, 32, 48, 64) — anything else is padded on the way out.
-	data     []u8
+	data []u8
 }
 
 // fd_lengths are the only payload sizes a CAN-FD DLC can express. A frame of 9 bytes does not
@@ -79,14 +79,14 @@ mut:
 // suffix. Nothing else uses `@` as syntax — `inproc:bench@A` is a perfectly good bus NAME, and
 // treating the suffix as universal sent the emitters to a different hub than the monitor.
 pub fn vendor_iface(iface string) bool {
-	// PLATFORM-DEPENDENT, because the dispatchers are: only open_windows.v routes `pcan:` and
-	// `kvaser:` to a vendor driver. On Linux open_linux.v sends everything that is not a
+	// PLATFORM-DEPENDENT, because the dispatchers are: only open_windows.v routes `pcan:`,
+	// `kvaser:` and `vector:` to a vendor driver. On Linux open_linux.v sends everything that is not a
 	// software bus to SocketCAN — which echoes — so a channel someone configured as
 	// `pcan:bench` there is an ordinary SocketCAN name, and treating it as a vendor backend
 	// would leave its frames untracked and its echoes filed as the device under test's.
 	$if windows {
 		i := iface.to_lower()
-		return i.starts_with('pcan:') || i.starts_with('kvaser:')
+		return i.starts_with('pcan:') || i.starts_with('kvaser:') || i.starts_with('vector:')
 	} $else {
 		return false
 	}
@@ -170,6 +170,14 @@ pub fn destination_key(iface string) string {
 	if !vendor_iface(i) {
 		return canonical_iface(i)
 	}
+	return vendor_destination_key(i)
+}
+
+// vendor_destination_key is the vendor half of destination_key, WITHOUT the platform guard.
+// Callers that are opening a bus want destination_key; callers reading a project written
+// elsewhere want this.
+pub fn vendor_destination_key(iface string) string {
+	i := iface.trim_space()
 	body := i.all_before('@')
 	kind := body.all_before(':').to_lower()
 	ch := body.all_after(':').trim_space()
@@ -179,19 +187,51 @@ pub fn destination_key(iface string) string {
 	// strings. Comparing the strings let two mappings share one physical bus undetected.
 	raw_rate := if i.contains('@') { i.all_after('@').trim_space() } else { '500000' }
 	rate := raw_rate.int().str()
+	// NOT UNDER `$if windows`. These resolvers are pure string logic — pcan_handle, vector_key
+	// and `.int()` — and they describe how the VENDOR reads a channel name, which is a fact
+	// about the vendor and not about the machine running this code. Gated on the platform, a
+	// Linux GUI reading a Windows project saw `vector:1` and `vector:ch1` as two wires and split
+	// its verifier map and its bus count accordingly. What stays platform-dependent is
+	// vendor_iface — whether a prefixed name is a vendor bus AT ALL here — and that guard is
+	// still in destination_key, where opening is decided.
 	mut resolved := ch.to_lower()
-	$if windows {
-		if kind == 'pcan' {
-			if h := pcan_handle(ch) {
-				resolved = '0x${h:X}'
-			}
-			// An unresolvable channel keeps its spelling: two identical bad strings still
-			// collide, and a wrong guess here would merge buses that never open at all.
-		} else if kind == 'kvaser' {
-			resolved = ch.int().str() // exactly what open_kvaser does with it
+	if kind == 'pcan' {
+		if h := pcan_handle(ch) {
+			resolved = '0x${h:X}'
 		}
+		// An unresolvable channel keeps its spelling: two identical bad strings still collide,
+		// and a wrong guess here would merge buses that never open at all.
+	} else if kind == 'kvaser' {
+		resolved = ch.int().str() // exactly what open_kvaser does with it
+	} else if kind == 'vector' {
+		// Through the SAME resolver open_vector uses, so `vector:1`, `vector:ch1` and
+		// `vector:app01` are one destination. The mode suffix is already gone: it sits after the
+		// bitrate, which this function reduces to a number.
+		resolved = vector_key(ch)
 	}
 	return '${kind}:${resolved}@${rate}'
+}
+
+// wire_key_for is destination_key_for WITHOUT the bitrate. Two rows that disagree about the rate
+// must still be recognised as addressing one wire — keyed with the rate in it, a 250k row and a
+// 500k row on one channel produced two different keys and never met, so the check that exists to
+// find exactly that disagreement could not fire at all.
+pub fn wire_key_for(adapter string, iface string) string {
+	return destination_key_for(adapter, iface).all_before('@')
+}
+
+// destination_key_for is destination_key for code that is READING a project rather than opening
+// it. The platform guard in vendor_iface is right for opening — on Linux a channel somebody
+// named `pcan:bench` really is a SocketCAN interface — but wrong for analysis: opening a
+// recording on Linux against a project authored for a Windows bench must still see `vector:1`
+// and `vector:ch1` as one wire, because on the machine that made the recording they were.
+//
+// The project's own `adapter` field is what settles it, and only these paths have it.
+pub fn destination_key_for(adapter string, iface string) string {
+	if adapter in ['pcan', 'kvaser', 'vector'] {
+		return vendor_destination_key(iface)
+	}
+	return destination_key(iface)
 }
 
 // wire_frame is the frame this interface will ACTUALLY put on the bus. Where the backend clamps,

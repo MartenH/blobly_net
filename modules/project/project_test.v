@@ -313,7 +313,7 @@ fn test_doip_identity_round_trip() {
 
 fn test_doip_vin_must_be_17() {
 	parse('project:\n  name: d\nchannels:\n  - name: E\n    type: doip\n    vin: SHORTVIN\n') or {
-		return // expected: VIN length error
+		return
 	}
 	assert false, 'expected a non-17-char VIN to error'
 }
@@ -343,6 +343,7 @@ fn test_replay_without_bus_or_exclude() {
 		assert false, 'replay missing'
 		return
 	}
+
 	assert r.source == 'samples/demo.mf4'
 	assert r.bus == '', 'absent bus became "${r.bus}"'
 	assert r.exclude == [], 'absent exclude became ${r.exclude}'
@@ -359,6 +360,7 @@ fn test_replay_bus_and_exclude_round_trip() {
 		assert false, 'replay missing'
 		return
 	}
+
 	assert r.bus == 'CAN1'
 	assert r.exclude == ['SUT_ECU', 'ECM']
 	back := parse(p.to_yaml()) or {
@@ -369,7 +371,510 @@ fn test_replay_bus_and_exclude_round_trip() {
 		assert false, 'replay lost on save'
 		return
 	}
+
 	assert r2.bus == 'CAN1', 'bus lost on save'
 	assert r2.exclude == ['SUT_ECU', 'ECM'], 'exclude lost on save: ${r2.exclude}'
 	assert r2.speed == 2.0 && r2.repeat
+}
+
+// A Vector channel decomposes to its own adapter, or the GUI cannot offer it and the bitrate
+// never reaches the driver — the bug iface_with_bitrate's own comment describes, repeated for
+// a new backend.
+fn test_vector_iface_decomposes_to_its_adapter() {
+	a, addr := decompose_iface('vector:1@500000')
+	assert a == 'vector'
+	assert addr == '1', 'the bitrate belongs in the bitrate field, not the address'
+}
+
+// Listen-only is part of how the channel opens, so it must survive a round trip through the
+// project. Dropping it turns a silent bench into one that acknowledges on the next save.
+fn test_vector_silent_suffix_survives_decompose() {
+	a, addr := decompose_iface('vector:1@500000,silent')
+	assert a == 'vector'
+	assert addr == '1,silent'
+}
+
+fn test_vector_bitrate_is_reappended_at_open() {
+	c := Channel{
+		iface:   'vector:1'
+		adapter: 'vector'
+		bitrate: 250000
+	}
+	assert c.iface_with_bitrate() == 'vector:1@250000'
+}
+
+// The inverse of decompose_iface. Without it a channel discovered on Windows composes to a
+// bare address, which the dispatcher does not recognise, and Start fails on hardware that is
+// sitting right there.
+fn test_vector_composes_with_its_prefix() {
+	assert compose_iface('vector', '1') == 'vector:1'
+	a, addr := decompose_iface(compose_iface('vector', '1'))
+	assert a == 'vector'
+	assert addr == '1', 'compose then decompose must be the identity'
+}
+
+// listen_only is a promise about the WIRE, and Vector is the first backend able to keep it:
+// the interface string must carry it through to the transceiver.
+fn test_listen_only_becomes_silent_on_vector() {
+	c := Channel{
+		iface:       'vector:1'
+		adapter:     'vector'
+		bitrate:     250000
+		listen_only: true
+	}
+	assert c.iface_with_bitrate() == 'vector:1@250000,silent'
+}
+
+// A stored interface that already carries the mode keeps ONE of it, and the bitrate goes
+// where the parser expects it: `vector:1,silent@500000` reads the rate as part of the mode
+// name and the channel is refused outright.
+fn test_listen_only_is_not_duplicated_and_bitrate_precedes_it() {
+	c := Channel{
+		iface:       'vector:1,silent'
+		adapter:     'vector'
+		listen_only: true
+	}
+	assert c.iface_with_bitrate() == 'vector:1@500000,silent'
+}
+
+// …and a channel that did NOT ask for it must not be silenced: a rest bus that cannot
+// acknowledge is a bench that looks connected and answers nothing.
+fn test_normal_vector_channel_is_not_silenced() {
+	c := Channel{
+		iface:   'vector:1'
+		adapter: 'vector'
+		bitrate: 500000
+	}
+	assert c.iface_with_bitrate() == 'vector:1@500000'
+}
+
+// A v1 project embeds the rate in the interface. Left unlifted, the channel keeps the 500000
+// default, and saving migrates it to that default — so the NEXT load activates a live bus at a
+// rate the project never asked for.
+fn test_legacy_vector_bitrate_is_lifted() {
+	p := parse('
+project:
+  name: legacy
+channels:
+  - name: CAN1
+    interface: vector:1@250000
+') or {
+		assert false, '${err}'
+		return
+	}
+	c := p.channels[0]
+	assert c.adapter == 'vector'
+	assert c.address == '1'
+	assert c.bitrate == 250000, 'the embedded rate must survive a save/load round trip'
+	assert c.iface_with_bitrate() == 'vector:1@250000'
+}
+
+// …and a v1 iface that asked for listen-only keeps asking for it.
+fn test_legacy_vector_silent_becomes_listen_only() {
+	p := parse('
+project:
+  name: legacy
+channels:
+  - name: CAN1
+    interface: vector:1@250000,silent
+') or {
+		assert false, '${err}'
+		return
+	}
+	c := p.channels[0]
+	assert c.bitrate == 250000
+	assert c.listen_only, 'v1 said it with ,silent; v2 says it with the flag'
+	assert c.iface_with_bitrate() == 'vector:1@250000,silent'
+}
+
+// `,silent` without a bitrate is a valid legacy spelling. Migrated only alongside a rate, the
+// hardware opened silently while the model thought the channel could transmit — the editor
+// offering sends that the backend then refuses.
+fn test_legacy_vector_silent_without_bitrate_migrates() {
+	p := parse('
+project:
+  name: legacy
+channels:
+  - name: CAN1
+    interface: vector:1,silent
+') or {
+		assert false, '${err}'
+		return
+	}
+	c := p.channels[0]
+	assert c.adapter == 'vector'
+	assert c.address == '1'
+	assert c.listen_only, 'the mode is not a side effect of finding a bitrate'
+}
+
+// …and `,normal` asks for the OPPOSITE. Reading any comma as silence turned an explicit
+// request to acknowledge into a channel that cannot.
+fn test_legacy_vector_normal_is_not_listen_only() {
+	p := parse('
+project:
+  name: legacy
+channels:
+  - name: CAN1
+    interface: vector:1@250000,normal
+') or {
+		assert false, '${err}'
+		return
+	}
+	c := p.channels[0]
+	assert c.bitrate == 250000
+	assert !c.listen_only, '",normal" is an explicit request to acknowledge'
+	assert c.iface_with_bitrate() == 'vector:1@250000'
+}
+
+// A MISSPELLED mode must not be quietly dropped: `vector:1,silnt` is plainly a request for
+// silence, and stripping it opens the channel normally — acknowledging a live bus. The suffix
+// is kept so the transport parser refuses it.
+fn test_legacy_vector_unknown_mode_is_not_silently_dropped() {
+	p := parse('
+project:
+  name: legacy
+channels:
+  - name: CAN1
+    interface: vector:1,silnt
+') or {
+		assert false, '${err}'
+		return
+	}
+	c := p.channels[0]
+	assert !c.listen_only, 'a typo is not a listen-only request we can honour'
+	assert c.address.contains(','), 'the bad suffix survives so the open fails loudly'
+	assert c.iface_with_bitrate().contains('silnt')
+}
+
+// A MALFORMED rate must reach the transport parser too. `vector:1@oops` reads as 0, and
+// recomposing a clean interface would drop the evidence and open at the 500 kbit/s default —
+// an adapter on a live bus at a rate the project never named.
+fn test_legacy_vector_bad_bitrate_is_not_sanitised() {
+	p := parse('
+project:
+  name: legacy
+channels:
+  - name: CAN1
+    interface: vector:1@oops
+') or {
+		assert false, '${err}'
+		return
+	}
+	c := p.channels[0]
+	assert c.iface.contains('oops'), 'the bad rate survives so the open fails loudly'
+	assert c.iface_with_bitrate().contains('oops')
+}
+
+// A rate that is NEARLY a number is not a number. V's `.int()` takes the numeric prefix, so
+// `250000garbage` parsed happily and the recomposition dropped the evidence — the adapter then
+// opening normally at a rate the project never wrote.
+fn test_legacy_vector_partial_bitrate_is_not_accepted() {
+	p := parse('
+project:
+  name: legacy
+channels:
+  - name: CAN1
+    interface: vector:1@250000garbage,normal
+') or {
+		assert false, '${err}'
+		return
+	}
+	c := p.channels[0]
+	assert c.iface.contains('garbage'), 'the malformed rate survives so the open fails loudly'
+	assert c.bitrate != 250000, 'a prefix that happens to parse is not the configured rate'
+}
+
+// A contradictory channel — address says `,normal`, the flag says listen-only — must resolve
+// toward silence. It used to resolve toward the transceiver acknowledging, with the application
+// still believing the channel was listening quietly.
+fn test_listen_only_overrides_an_embedded_normal_mode() {
+	c := Channel{
+		iface:       'vector:1,normal'
+		adapter:     'vector'
+		bitrate:     250000
+		listen_only: true
+	}
+	assert c.iface_with_bitrate() == 'vector:1@250000,silent'
+}
+
+// A mode written into a v2 ADDRESS must land in the flag, or the port opens silently while the
+// model calls the channel transmit-capable — the GUI then offering sends that are refused one
+// frame at a time.
+fn test_v2_address_silent_lifts_into_listen_only() {
+	p := parse('
+project:
+  name: v2
+channels:
+  - name: CAN1
+    adapter: vector
+    address: "1,silent"
+') or {
+		assert false, '${err}'
+		return
+	}
+	c := p.channels[0]
+	assert c.listen_only, 'one place records this, and it is the flag'
+	assert c.address == '1'
+	assert c.iface_with_bitrate() == 'vector:1@500000,silent'
+}
+
+// One rule for a mode suffix, on every path that can write an address.
+fn test_split_vector_mode() {
+	a1, s1, ok1 := split_vector_mode('1,silent')
+	assert a1 == '1' && s1 && ok1
+	a2, s2, ok2 := split_vector_mode('1,normal')
+	assert a2 == '1' && !s2 && ok2
+	a3, s3, ok3 := split_vector_mode('1')
+	assert a3 == '1' && !s3 && ok3
+	// An unrecognised one is LEFT ON, so the transport parser refuses it rather than this
+	// resolving a typo in the direction that acknowledges.
+	a4, s4, ok4 := split_vector_mode('1,silnt')
+	assert a4 == '1,silnt' && !s4 && !ok4
+}
+
+// A malformed legacy rate must survive a save, or the defence lasts until the first edit.
+fn test_bad_legacy_rate_survives_recomposition() {
+	p := parse('
+project:
+  name: legacy
+channels:
+  - name: CAN1
+    interface: vector:1@oops
+') or {
+		assert false, '${err}'
+		return
+	}
+	c := p.channels[0]
+	assert c.address.contains('oops'), 'the address is what recomposition reads'
+	assert compose_iface(c.adapter, c.address).contains('oops')
+}
+
+// A malformed rate is preserved for the transport parser to refuse — on every vendor, and
+// without doubling the prefix on the way through.
+fn test_bad_legacy_rate_keeps_its_own_prefix() {
+	for adapter, iface in {
+		'pcan':   'pcan:PCAN_USBBUS1@oops'
+		'kvaser': 'kvaser:0@oops'
+		'vector': 'vector:1@oops'
+	} {
+		p := parse('
+project:
+  name: legacy
+channels:
+  - name: CAN1
+    interface: ${iface}
+') or {
+			assert false, '${err}'
+			return
+		}
+		c := p.channels[0]
+		assert c.adapter == adapter
+		assert !c.address.starts_with('${adapter}:'), '${iface}: the prefix belongs to compose, not the address'
+		assert compose_iface(c.adapter, c.address) == iface, '${iface}: must round-trip unchanged'
+	}
+}
+
+// Two rates is a contradiction the transport parser must get to see. Sanitising it here to the
+// last one sent a tidy single rate to the driver and the disagreement was never reported.
+fn test_legacy_double_rate_is_preserved() {
+	p := parse('
+project:
+  name: legacy
+channels:
+  - name: CAN1
+    interface: vector:1@250000@500000
+') or {
+		assert false, '${err}'
+		return
+	}
+	c := p.channels[0]
+	assert c.iface == 'vector:1@250000@500000'
+	assert compose_iface(c.adapter, c.address) == 'vector:1@250000@500000', 'must survive a save'
+}
+
+// Preserving a malformed rate must not cost the rest of the channel. An early return here
+// skipped databases, nodes, senders and replay config, so opening such a project and saving it
+// wrote them away as defaults — losing configuration on a file the user never edited.
+fn test_double_rate_channel_keeps_the_rest_of_its_config() {
+	p := parse('
+project:
+  name: legacy
+channels:
+  - name: CAN1
+    interface: vector:1@250000@500000
+    mode: replay
+    listen_only: true
+    databases:
+      - dbc/a.dbc
+      - dbc/b.dbc
+    replay:
+      source: logs/x.mf4
+      bus: CAN1
+      speed: 2.0
+      loop: true
+') or {
+		assert false, '${err}'
+		return
+	}
+	c := p.channels[0]
+	assert c.iface == 'vector:1@250000@500000', 'the malformed rate still survives'
+	assert c.databases.len == 2, 'databases must not be lost'
+	assert c.mode == .replay
+	assert c.listen_only
+	r := c.replay or {
+		assert false, 'replay config was lost'
+		return
+	}
+
+	assert r.source == 'logs/x.mf4'
+	assert r.bus == 'CAN1'
+	assert r.speed == 2.0
+	assert r.repeat
+}
+
+// A v1 file that says listen_only explicitly keeps it, even beside a `,normal` suffix. The two
+// must not disagree: iface_with_bitrate already makes the flag win over an embedded mode, so
+// clearing it here would open a transceiver on a bench that asked for quiet.
+fn test_legacy_explicit_listen_only_survives_normal_suffix() {
+	p := parse('
+project:
+  name: legacy
+channels:
+  - name: CAN1
+    interface: vector:1,normal
+    listen_only: true
+') or {
+		assert false, '${err}'
+		return
+	}
+	c := p.channels[0]
+	assert c.listen_only, 'the explicit flag wins'
+	assert c.iface_with_bitrate().ends_with(',silent')
+}
+
+// One wire, one mode and one rate — the rules both front ends must reach the same verdict on.
+fn test_vendor_destination_conflicts() {
+	// A silenced wire cannot carry another row's simulation, even spelled differently.
+	quiet := [
+		Channel{
+			name:        'mon'
+			adapter:     'vector'
+			iface:       'vector:ch1'
+			enabled:     true
+			listen_only: true
+		},
+		Channel{
+			name:     'sim'
+			adapter:  'vector'
+			iface:    'vector:1'
+			enabled:  true
+			simulate: ['ECU']
+		},
+	]
+	assert vendor_destination_conflicts(quiet).len == 1
+
+	// Two rates on one wire.
+	rates := [
+		Channel{
+			name:    'a'
+			adapter: 'vector'
+			iface:   'vector:1'
+			enabled: true
+			bitrate: 250000
+		},
+		Channel{
+			name:    'b'
+			adapter: 'vector'
+			iface:   'vector:ch1'
+			enabled: true
+			bitrate: 500000
+		},
+	]
+	assert vendor_destination_conflicts(rates).len == 1
+
+	// A row that merely WATCHES is no longer excused. A script, Quick Send or the shell can tell
+	// any channel to transmit, so its configuration says nothing about whether it will — and two
+	// rows disagreeing about the mode of one wire have asked the transceiver for something it
+	// cannot do, whoever ends up talking.
+	mixed := [
+		Channel{
+			name:        'mon'
+			adapter:     'vector'
+			iface:       'vector:1'
+			enabled:     true
+			listen_only: true
+		},
+		Channel{
+			name:    'watch'
+			adapter: 'vector'
+			iface:   'vector:ch1'
+			enabled: true
+		},
+	]
+	assert vendor_destination_conflicts(mixed).len == 1
+
+	// Agreeing is fine, either way round.
+	agreed := [
+		Channel{
+			name:        'a'
+			adapter:     'vector'
+			iface:       'vector:1'
+			enabled:     true
+			listen_only: true
+		},
+		Channel{
+			name:        'b'
+			adapter:     'vector'
+			iface:       'vector:ch1'
+			enabled:     true
+			listen_only: true
+		},
+	]
+	assert vendor_destination_conflicts(agreed).len == 0
+}
+
+// The rate is what these rows disagree about, so the key that groups them must not contain it.
+// With the rate in the key each row got its own and the check never fired.
+fn test_rate_conflict_actually_fires() {
+	rows := [
+		Channel{
+			name:    'a'
+			adapter: 'vector'
+			iface:   'vector:1'
+			enabled: true
+			bitrate: 250000
+		},
+		Channel{
+			name:    'b'
+			adapter: 'vector'
+			iface:   'vector:1'
+			enabled: true
+			bitrate: 500000
+		},
+	]
+	got := vendor_destination_conflicts(rows)
+	assert got.len == 1, 'two rates on one wire must be reported, got ${got}'
+	assert got[0].contains('250000') && got[0].contains('500000')
+
+	// THE CASE THAT ACTUALLY BROKE IT: the rate carried in the INTERFACE, as a v1 project
+	// writes it. destination_key_for keeps that rate in the key, so the two rows were filed
+	// under different wires and the disagreement they exist to report was never compared.
+	legacy := [
+		Channel{
+			name:    'a'
+			adapter: 'vector'
+			iface:   'vector:1@250000'
+			enabled: true
+			bitrate: 250000
+		},
+		Channel{
+			name:    'b'
+			adapter: 'vector'
+			iface:   'vector:ch1@500000'
+			enabled: true
+			bitrate: 500000
+		},
+	]
+	legacy_got := vendor_destination_conflicts(legacy)
+	assert legacy_got.len == 1, 'one wire, two rates in the interfaces: ${legacy_got}'
 }
