@@ -193,6 +193,24 @@ release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks.
   promise the GUI made and the backend could not keep, in the original work, not in any fix.**
   Stopping one round earlier would have shipped it. Judge each finding on its merits; let
   repetition tell you what to test, not when to quit.
+- **Answer every finding: react on the comment, then post ONE table.** Codex's footer asks
+  "Useful? React with 👍 / 👎", and that is the only channel the review has for learning what it
+  got right; leaving it empty tells it nothing, round after round. React on each finding comment
+  — `gh api -X POST repos/<o>/<r>/pulls/comments/<id>/reactions -f content='+1'` (or `'-1'`) —
+  and then reply once with a table, so the round's disposition is readable without opening every
+  thread:
+
+  | finding | reaction | action |
+  |---|---|---|
+  | Disable the Ethernet shell while stale | 👍 | gated on `!runtime_stale` in `abd8c52` |
+  | Reserve RX workers before opening transport | 👍 | slot taken by the spawner, `f1fb3f7` |
+  | <a finding you disagree with> | 👎 | why it is not a defect — one line, never silence |
+
+  A 👎 is a legitimate answer and needs a reason in the table; "judge each finding on its merits"
+  cuts both ways. **This is the opposite direction from the reaction rule below.** WRITING a
+  reaction is feedback to codex and is expected of you. READING codex's 👍 as the verdict is what
+  cannot be made to work — the payload carries no reviewed SHA, and GitHub will not re-create an
+  identical reaction, so it can never look fresh. Write them; never read them.
 - **Update this file in the PR that lands the work** — especially new modules/panels. The gap
   between 2026-07-06 and 07-21 (~30 PRs) had to be reconstructed from `git log`; don't repeat it.
 - **Cross-repo:** the SUT side is **blobly_emb** — see
