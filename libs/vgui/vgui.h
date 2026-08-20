@@ -79,6 +79,7 @@ unsigned int vgui_dock_root(void);
 unsigned int vgui_dock_split(unsigned int node, int dir, float ratio, unsigned int* remainder);
 void vgui_dock_window(const char* name, unsigned int node);
 void vgui_dock_finish(unsigned int root);
+void vgui_dock_reset(void);
 int  vgui_begin(const char* title);
 int  vgui_begin_closable(const char* title, int* p_open);
 void vgui_end(void);

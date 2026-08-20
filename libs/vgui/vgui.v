@@ -126,6 +126,7 @@ fn C.vgui_tree_pop()
 fn C.vgui_dock_root() u32
 fn C.vgui_dock_split(u32, int, f32, &u32) u32
 fn C.vgui_dock_window(&char, u32)
+fn C.vgui_dock_reset()
 fn C.vgui_dock_finish(u32)
 fn C.vgui_begin(&char) int
 fn C.vgui_begin_closable(&char, &int) int
@@ -565,6 +566,13 @@ pub fn dock_window(name string, node u32) {
 
 pub fn dock_finish(root u32) {
 	C.vgui_dock_finish(root)
+}
+
+// dock_reset discards the persisted dock layout; the next dock_root() rebuilds the default.
+// The builder is idempotent against imgui.ini by design, so a layout scrambled by a geometry
+// change would otherwise persist forever — this is the way back.
+pub fn dock_reset() {
+	C.vgui_dock_reset()
 }
 
 // begin opens a window; returns true if it is visible (active dock tab / not collapsed).

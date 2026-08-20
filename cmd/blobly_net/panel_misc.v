@@ -170,6 +170,10 @@ fn draw_menubar(mut app App, rx u64) {
 			vgui.menu_end()
 		}
 		if vgui.menu_begin('View') {
+			if vgui.menu_item('Reset Layout') {
+				app.relayout = true
+			}
+			vgui.separator()
 			app.show_buses = vgui.menu_item_check('Buses', app.show_buses)
 			app.show_sim = vgui.menu_item_check('Simulation', app.show_sim)
 			app.show_symbols = vgui.menu_item_check('Symbols', app.show_symbols)

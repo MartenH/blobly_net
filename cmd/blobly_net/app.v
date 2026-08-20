@@ -177,7 +177,10 @@ mut:
 	// the label alone let live frames keep pouring into the same ring, trimming the file's rows
 	// away within seconds on a busy bus while the chip still named the file, and summing file
 	// and live counts into one gcount total. Cleared by reset_trace_locked and by Start.
-	viewing_rec   string
+	viewing_rec string
+	// One-frame request from View > Reset Layout: the dock reset must run at the point in the
+	// frame where build_layout runs (after the dockspace exists), not from inside the menu.
+	relayout      bool
 	doip_host_buf []u8 // DoIP manual discover host[:port]
 	// Diagnostics (UDS on a worker thread)
 	diag_did_buf []u8

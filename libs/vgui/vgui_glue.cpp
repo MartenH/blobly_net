@@ -120,20 +120,32 @@ int vgui_init(const char* title, int w, int h, int event_driven) {
     if (!glfwInit()) return 1;
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
-    // w/h <= 0 = START MAXIMIZED (the hint must be set BEFORE the window exists — it is a
-    // creation hint). The size the window RESTORES to when un-maximized is the positive half
-    // of w/h if the caller gave one, else the library default — so the caller can choose the
-    // restore size, and the doc on the V wrapper describes a contract that actually exists
-    // (the first version discarded both values and the doc claimed otherwise).
+    // w/h <= 0 = START MAXIMIZED (creation hint; the positive half, if any, is the restore
+    // size). NOTE: blobly_net no longer uses this — a maximized first frame over a layout
+    // persisted at a smaller size scrambled the dock tree (panels in one corner, the rest
+    // black) with no way back until Reset Layout existed. The capability stays for callers
+    // that want it; the app asks for a large FIXED size and lets the clamp below fit it.
     bool maximized = (w <= 0 || h <= 0);
     if (maximized) {
         glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
         if (w <= 0) w = 1500;
         if (h <= 0) h = 850;
     }
+    // Clamp a fixed size to the monitor's work area: "as big as asked, but never fullscreen
+    // and never off the screen" — a 1800x1000 request on a 1366x768 laptop must not produce
+    // a window whose title bar (and close button) live beyond the desktop.
+    if (!maximized) {
+        GLFWmonitor* mon = glfwGetPrimaryMonitor();
+        if (mon) {
+            int mx, my, mw, mh;
+            glfwGetMonitorWorkarea(mon, &mx, &my, &mw, &mh);
+            if (mw > 0 && w > mw - 60) w = mw - 60;
+            if (mh > 0 && h > mh - 60) h = mh - 60;
+        }
+    }
     g_win = glfwCreateWindow(w, h, title, nullptr, nullptr);
     if (!g_win) return 2;
-    if (!maximized) glfwSetWindowPos(g_win, 60, 80);
+    if (!maximized) glfwSetWindowPos(g_win, 40, 50);
     glfwMakeContextCurrent(g_win);
     glfwSwapInterval(1);
     IMGUI_CHECKVERSION();
@@ -612,6 +624,17 @@ unsigned int vgui_dock_split(unsigned int node, int dir, float ratio, unsigned i
 }
 void vgui_dock_window(const char* name, unsigned int node) { ImGui::DockBuilderDockWindow(name, node); }
 void vgui_dock_finish(unsigned int root) { ImGui::DockBuilderFinish(root); }
+
+// vgui_dock_reset throws the persisted dock layout away so the NEXT vgui_dock_root call
+// rebuilds from scratch. The builder is deliberately idempotent against imgui.ini — which
+// also means a layout scrambled by a geometry change persists forever with no escape hatch;
+// this is the escape hatch (View > Reset Layout).
+void vgui_dock_reset() {
+    if (g_dockspace_id == 0) return;
+    ImGui::DockBuilderRemoveNode(g_dockspace_id);
+    ImGui::DockBuilderAddNode(g_dockspace_id, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(g_dockspace_id, ImGui::GetMainViewport()->WorkSize);
+}
 
 // Returns 1 if the window is visible (active tab / not collapsed). Callers must skip the
 // content when it returns 0 but ALWAYS call vgui_end (imgui pairs Begin/End unconditionally).
