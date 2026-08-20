@@ -235,8 +235,12 @@ evidence behind that warning.
 - **Cross-checked against independent implementations.** Decoders are diffed against cantools
   (DBC), asammdf (MDF4) and a hand-written Python ECU, so a V decoder is never validated only by
   the matching V encoder. These are the [oracles in `sut/`](sut/README.md); they are not in CI.
-- **Hardware.** PCAN and Kvaser adapters are verified on real buses, and target-facing features
-  against STM32 boards on the author's bench. CI runners have neither, so none of this is gated.
+- **Hardware.** PCAN, Kvaser and Vector adapters are verified on real buses, and target-facing
+  features against STM32 boards on the author's bench. CI runners have none of it, so none of
+  this is gated — and for Vector a runner could not be, since the XL library may not be
+  redistributed. Every vendor ✅ means *verified by hand, on the bench and date named in*
+  [windows_can_hardware.md](docs/windows_can_hardware.md); CI proves those backends compile and
+  link, nothing more.
 
 **The gaps, plainly:** there is **no automated GUI testing** — CI proves the app builds, not that
 a panel behaves. The Windows job **builds but runs no tests**. And every hardware and oracle check
@@ -257,7 +261,8 @@ above is manual, so a regression there is caught only when someone next runs it.
 
 **Platform & troubleshooting**
 - [can_hardware.md](docs/can_hardware.md) — real CAN adapters ·
-  [windows_can_hardware.md](docs/windows_can_hardware.md) — PCAN/Kvaser on Windows
+  [windows_can_hardware.md](docs/windows_can_hardware.md) — PCAN/Kvaser/Vector on Windows,
+  and what is verified by hand rather than by CI
 - [known_issues.md](docs/known_issues.md) — gotchas (V / GUI / environment / CI)
 
 **Project**

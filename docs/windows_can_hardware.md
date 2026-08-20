@@ -13,8 +13,11 @@ see below.
 - **Done:** `transport/pcan_windows.v` + `pcan_shim.h`, `transport/kvaser_windows.v`
   + `kvaser_shim.h`, wired into `open_windows.v` (`pcan:` / `kvaser:` prefixes).
   Both are LoadLibrary-based (no SDK). **Cross-compiled to a real Windows x64 PE
-  from WSL** (mingw-w64) and compile-checked in the Windows CI — but **not yet run
-  against hardware** (no adapter/driver on the dev box).
+  from WSL** (mingw-w64) and compile-checked in the Windows CI, then run against the
+  adapters on 2026-06-18 — the cross-vendor test in the status line above. *(This bullet
+  read "not yet run against hardware" until 2026-08-20, contradicting the status line
+  three lines above it: the text was written before the adapters arrived and nobody came
+  back to it.)*
 - **Vector (`vector:`) — HW-VERIFIED 2026-08-19 on a VN1630A** (serial 545980).
   `transport/vector_windows.v` + `vector_shim.h`, wired into `open_windows.v`. Addressed by
   APPLICATION channel (`vector:1`), because that is what `xlGetApplConfig`/`xlGetChannelMask`
@@ -47,6 +50,22 @@ see below.
     activated, which is the only ordering that is safe against a running vehicle: a node that
     goes on the bus at the wrong bitrate floods error frames. A project's `listen_only:` is
     translated to it. `cmd/vectorcheck --channel 1` defaults to silent for this reason.
+
+- **What is NOT checked — for any vendor backend, Vector included.** The three vendor
+  backends are verified the way this section describes: by hand, on one bench, on the dates
+  given. **Nothing in CI exercises them**, and nothing can: no GitHub runner has a CAN
+  adapter, and for Vector not even the library — `vxlapi64.dll` may not be redistributed, so
+  a runner cannot legally hold the one file the backend needs to load. What Windows CI does
+  prove is narrower than it looks: the code **compiles and links** into a Windows x64 PE.
+  That catches a signature that stopped matching; it cannot catch a wrong struct offset, a
+  bitrate that never reaches the transceiver, or a channel that opens and hears nothing.
+  Read every ✅ on a vendor backend as *"verified by hand, once, on the bench described"*.
+  For Vector specifically that means: **one adapter** (VN1630A, serial 545980),
+  **one date** (2026-08-19), **one bitrate** (500 kbit/s), **classic CAN only** — an FD
+  frame is refused, not truncated — and **two channels of one device wired to each other**,
+  not a multi-ECU vehicle bus. The `_Static_assert`s on every struct size and offset are
+  compile-time and DO run in CI, which is why the ABI is the part of this backend that is
+  machine-checked rather than trusted.
 
 - **Pending:** CAN-FD on the Vector backend (needs the V4 interface and a different event
   structure); the slcan backend.
