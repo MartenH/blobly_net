@@ -40,6 +40,8 @@
 // on Vector's software virtual channels, which need no hardware and touch no real bus.
 module transport
 
+import time
+
 #include "vector_shim.h"
 
 fn C.ct_vector_load() int
@@ -88,7 +90,20 @@ pub fn open_vector(spec string) !&VectorBus {
 	// 0-BASED at the API, 1-based in the spelling: Vector Hardware Configuration numbers the
 	// application channels from 1 and the operator reads the interface string against that
 	// dialog, so the conversion belongs here rather than in their head.
-	rc := C.ct_vector_open(u32(s.channel - 1), u32(s.bitrate), sil, &port, &mask, &notify, &gen)
+	mut rc := C.ct_vector_open(u32(s.channel - 1), u32(s.bitrate), sil, &port, &mask, &notify, &gen)
+	// WAIT OUT A WINDING-DOWN RUN. -1009 means the previous run's ports are still closing, which
+	// is what an immediate Stop/Start looks like from here; it clears itself when the last one
+	// goes. Bounded, because a port that never closes must not hang the open forever.
+	for _ in 0 .. 200 {
+		if rc != -1009 {
+			break
+		}
+		time.sleep(10 * time.millisecond)
+		rc = C.ct_vector_open(u32(s.channel - 1), u32(s.bitrate), sil, &port, &mask, &notify, &gen)
+	}
+	if rc == -1009 {
+		return error('Vector channel ${s.channel} is still being released by the previous run — try again in a moment')
+	}
 	if rc == -1008 {
 		return error('Vector application channel ${s.channel} has no hardware assigned, and registering the application "blobly_net" failed — so it will NOT appear in Vector Hardware Manager to be assigned. Check the XL Driver Library version.')
 	}

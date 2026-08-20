@@ -4173,11 +4173,15 @@ fn draw_toolbar(mut app App, rx u64, txs string) {
 
 // channel state colour + short ASCII label (imgui's default font is ASCII-only):
 // grey off (disabled) / red down (attached but the CAN iface is DOWN) / green run / amber idle.
-fn chan_state(c Chan) (u8, u8, u8, string) {
+// `shared_reader` says this row's wire is being read by a SIBLING. One reader serves a
+// destination, so every alias after the first has running == false while its transmit taps and
+// its simulation are perfectly alive — and the panels drew them amber `idle`, reporting that
+// part of the experiment had not started when it had.
+fn chan_state(c Chan, shared_reader bool) (u8, u8, u8, string) {
 	if !c.enabled {
 		return u8(140), u8(140), u8(145), 'off '
 	}
-	if c.running {
+	if c.running || shared_reader {
 		if c.link_down {
 			return u8(215), u8(90), u8(90), 'down' // iface DOWN — bound but can't tx/rx
 		}
@@ -6087,7 +6091,7 @@ fn draw_buses(mut app App, chans []Chan) {
 				app.mu.unlock()
 			}
 			vgui.same_line()
-			r, g, b, label := chan_state(c)
+			r, g, b, label := chan_state(c, app.dest_is_read_locked(c.iface))
 			vgui.text_colored(r, g, b, label)
 			vgui.same_line()
 			vgui.text('${c.name}  ${c.iface}  [${c.mode}]  RX ${c.rx}')
@@ -6153,7 +6157,7 @@ fn draw_network(mut app App, chans []Chan) {
 		return
 	}
 	for ci, c in chans {
-		r, g, b, st := chan_state(c)
+		r, g, b, st := chan_state(c, app.dest_is_read_locked(c.iface))
 		vgui.text_colored(r, g, b, '*')
 		vgui.same_line()
 		if vgui.tree_node_open('${c.name}   ${c.iface}   [${c.mode}]   ${st.trim_space()}   RX ${c.rx}###net${ci}') {

@@ -527,7 +527,15 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 		/* No init access. Either we already configured this channel — a second port for a bus
 		 * this process is running, which is normal and must work — or somebody else owns it. */
 		int i = ct_vec_cfg_find(mask);
-		if (i < 0 || ct_vec_cfg_stale[i]) { ct_xl_closeport(port); ct_vec_leave(); return -1003; }
+		if (i < 0) { ct_xl_closeport(port); ct_vec_leave(); return -1003; }
+		/* STALE IS TEMPORARY, and telling it apart matters. The record goes stale when the port
+		 * holding initialisation access closes while siblings are still draining — on Stop with
+		 * a reader parked in recv(200), that is every restart — and it disappears by itself once
+		 * they finish. Refusing it with the same code as "somebody else owns this wire" made an
+		 * immediate Start fail for the new reader AND every transmit tap, and rx_loop does not
+		 * retry an open, so the run sat there with neither until another Stop/Start. Its own
+		 * code, so the caller can wait the moment out. */
+		if (ct_vec_cfg_stale[i]) { ct_xl_closeport(port); ct_vec_leave(); return -1009; }
 		/* Configured by us, but not the way this caller asked. Reported rather than papered
 		 * over: a port that believes it is silent while the channel acknowledges is the exact
 		 * promise this backend was added to keep. */
