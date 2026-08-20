@@ -19,14 +19,37 @@ fn draw_trace(mut app App, rows []TraceRow, gcount map[string]u64, rx u64, run_b
 	vgui.set_next_item_width(200)
 	vgui.input_text('filter', mut app.trace_filter_buf)
 	vgui.same_line()
+	// The capture controls live with the capture. Pause freezes what the views take in,
+	// Clear empties them, Record writes what they hold — all three act on THIS data, and in
+	// the toolbar they read as app-global (Clear even existed in both places at once).
+	// Opening a recording moved the other way, to File ▸ Open Recording: it is a file
+	// operation, and a bare path field here read as a third kind of replay.
+	if vgui.small_button(if app.paused { 'Resume' } else { 'Pause' }) {
+		app.paused = !app.paused
+	}
+	vgui.same_line()
 	if vgui.small_button('Clear') {
 		app.clear_trace()
 	}
-	vgui.set_next_item_width(200)
-	vgui.input_text('.log/.mf4', mut app.log_path_buf)
 	vgui.same_line()
-	if vgui.small_button('Open') {
-		app.load_recording(vgui.buf_str(app.log_path_buf))
+	if vgui.small_button(if app.recording { 'Stop Rec' } else { 'Record' }) {
+		app.toggle_record()
+	}
+	if app.recording {
+		vgui.same_line()
+		// the destination, while it still matters — a capture that only names its file in a
+		// toast after the fact is a capture nobody could point a colleague at
+		vgui.text_colored(230, 120, 120, '● ${app.rec_path}')
+	}
+	if app.viewing_rec != '' {
+		// SAY when the rows are a file, and hand back the way out. Opening a recording is a
+		// one-shot import, so there is nothing to "stop" — but a trace that silently becomes
+		// a file's contents looks exactly like a live view that stopped updating.
+		vgui.text_colored(230, 170, 70, 'viewing recording: ${app.viewing_rec}')
+		vgui.same_line()
+		if vgui.small_button('back to live##unrec') {
+			app.clear_trace()
+		}
 	}
 	// add the selected frame (click a row) to the Trace (filter) watch list
 	if app.sel_id >= 0 {

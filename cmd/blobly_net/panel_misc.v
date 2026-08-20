@@ -143,6 +143,13 @@ fn draw_menubar(mut app App, rx u64) {
 				app.show_config = true
 				app.sync_cfg_bufs()
 			}
+			// A recording opens into the TRACE (REP rows) — viewing a capture, not replaying
+			// it onto a bus (that is a replay channel, configured per project). It is a file
+			// operation, so it lives with the file operations; it sat inside the Trace panel
+			// as a bare path field + "Open", which read as some third kind of replay.
+			if vgui.menu_item('Open Recording (.log/.mf4)...') {
+				app.open_browser('recording')
+			}
 			if vgui.menu_begin('Open Example') {
 				for ex in examples {
 					if vgui.menu_item(ex[0]) {
@@ -252,18 +259,10 @@ fn draw_toolbar(mut app App, rx u64, txs string) {
 	// the toolbar read clean while an edit sat waiting in a closed window.
 	dirtymark := if app.dirty || app.cfg_text_dirty { ' ●' } else { '' }
 	vgui.text('· RX ${rx}  ${txs}  ·  ${app.proj_name}${dirtymark}   ')
-	vgui.same_line()
-	if vgui.button(if app.paused { 'Resume' } else { 'Pause' }) {
-		app.paused = !app.paused
-	}
-	vgui.same_line()
-	if vgui.button('Clear') {
-		app.clear_trace()
-	}
-	vgui.same_line()
-	if vgui.button(if app.recording { 'Stop Rec' } else { 'Record' }) {
-		app.toggle_record()
-	}
+	// Pause / Clear / Record moved INTO the Trace window: they act on the capture, and a
+	// control that lives away from the thing it acts on reads as global when it is not —
+	// Clear even existed twice, once here and once in Trace. The toolbar keeps what is truly
+	// app-wide: Start/Stop, the live counters, the project name, the theme.
 	vgui.same_line()
 	if vgui.button(if app.dark { 'Light' } else { 'Dark' }) {
 		app.dark = !app.dark

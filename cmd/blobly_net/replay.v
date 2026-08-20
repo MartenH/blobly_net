@@ -196,6 +196,10 @@ fn (mut app App) load_recording(path string) {
 		})
 	}
 	app.mu.unlock()
+	// ABOVE the notify branch, so both sizes of recording claim the view — the first version
+	// set this only on the truncated-load branch, and a recording smaller than the ring loaded
+	// without the "viewing recording" chip ever appearing.
+	app.viewing_rec = os.base(path)
 	shown := entries.len - first_row
 	if first_row > 0 {
 		app.notify('loaded ${entries.len} frames from ${os.base(path)} — showing the last ${shown}')

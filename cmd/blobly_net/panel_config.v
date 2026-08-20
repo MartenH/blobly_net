@@ -22,6 +22,8 @@ fn (mut app App) open_browser(target string) {
 		'.toml'
 	} else if target == 'flash' {
 		'.img' // match_ext also lets .bin through for this filter
+	} else if target == 'recording' {
+		'.log' // match_ext also lets .mf4 through for this filter
 	} else {
 		''
 	}
@@ -51,6 +53,8 @@ fn (mut app App) browser_confirm(path string) {
 		app.load_system(path)
 	} else if t == 'flash' {
 		app.flash_img_buf = mkbuf(path, 256)
+	} else if t == 'recording' {
+		app.load_recording(path)
 	}
 }
 
@@ -66,6 +70,8 @@ fn draw_filebrowser(mut app App) {
 		'Attach DBC'
 	} else if app.fb_target == 'system' {
 		'Open system.toml'
+	} else if app.fb_target == 'recording' {
+		'Open Recording'
 	} else {
 		'Attach Manifest'
 	}
@@ -162,6 +168,9 @@ fn (app &App) match_ext(name string) bool {
 	}
 	if app.fb_ext == '.img' && n.ends_with('.bin') {
 		return true // firmware picker: wrapped .img preferred, raw .bin allowed
+	}
+	if app.fb_ext == '.log' && n.ends_with('.mf4') {
+		return true // recordings come in both formats; one picker shows both
 	}
 	return false
 }

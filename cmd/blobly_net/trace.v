@@ -73,6 +73,7 @@ struct TRec {
 fn (mut app App) reset_trace_locked() {
 	app.trace = []
 	app.gcount = map[string]u64{}
+	app.viewing_rec = '' // whatever replaces the rows, the view is no longer that recording
 	app.trace_run_base = app.trace_seq // idx restarts at 0 for the new measurement's rows
 	// The pending records STAY. An echo already in flight is still ours, and dropping the record
 	// would turn the next few of our own frames into RX rows, recording entries and verifier
@@ -384,17 +385,23 @@ fn (mut app App) toggle_record() {
 		for e in entries {
 			lines << canlog.format_line(e)
 		}
-		os.write_file('recording.log', lines.join('\n') + '\n') or {
+		os.write_file(app.rec_path, lines.join('\n') + '\n') or {
 			app.notify('record write failed: ${err}')
 			return
 		}
-		app.notify('recorded ${entries.len} frames -> recording.log')
+		app.notify('recorded ${entries.len} frames -> ${app.rec_path}')
 	} else {
 		app.mu.lock()
 		app.rec = []
 		app.rec_ids = []
 		app.recording = true
 		app.mu.unlock()
-		app.notify('recording…')
+		// The destination is chosen at START, and it is timestamped. The old fixed
+		// 'recording.log' meant every capture silently overwrote the last one — the second
+		// Record of a session destroyed the evidence the first had collected — and the name
+		// only appeared in a toast after stopping, so while recording, nothing said where
+		// the frames would land.
+		app.rec_path = 'recording-${time.now().custom_format('YYYYMMDD-HHmmss')}.log'
+		app.notify('recording -> ${app.rec_path}')
 	}
 }

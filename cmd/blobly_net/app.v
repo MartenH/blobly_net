@@ -168,12 +168,17 @@ mut:
 	qs_iface          string // Quick send target bus (a channel iface); '' = send_iface default
 	send_id_buf       []u8
 	send_data_buf     []u8
-	trace_filter_buf  []u8 // Trace substring filter
-	trace_grouped2    bool // second Trace (filter) panel: own view mode
-	trace_filter2_buf []u8 // second Trace (filter) panel: own filter
-	symbol_filter_buf []u8 // Symbol Browser search
-	log_path_buf      []u8 // Open Recording path (.log/.mf4)
-	doip_host_buf     []u8 // DoIP manual discover host[:port]
+	trace_filter_buf  []u8   // Trace substring filter
+	trace_grouped2    bool   // second Trace (filter) panel: own view mode
+	trace_filter2_buf []u8   // second Trace (filter) panel: own filter
+	symbol_filter_buf []u8   // Symbol Browser search
+	rec_path          string // where Record writes on stop; chosen at START so the UI can show it
+	// The recording the trace is currently SHOWING ('' = live capture). Opening a recording is
+	// a one-shot import — nothing keeps playing — but without this the view silently became a
+	// file's contents with no way to tell, and no visible way back ("we can't stop it?" — the
+	// answer is Clear, which nothing pointed at).
+	viewing_rec   string
+	doip_host_buf []u8 // DoIP manual discover host[:port]
 	// Diagnostics (UDS on a worker thread)
 	diag_did_buf []u8
 	diag_sel     int // which DiagTarget the panel addresses (index into the CURRENT list)
