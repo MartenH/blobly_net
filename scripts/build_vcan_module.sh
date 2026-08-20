@@ -70,6 +70,16 @@ if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ] && [ -z "${SRC:-}" ]; then
 	fi
 fi
 SRC="${SRC:-$HOME/repos/WSL2-Linux-Kernel}"
+# ABSOLUTE, before $KO is derived from it and before it is recorded. The marker is explicitly
+# machine-wide — read by setup_vcan.sh in a later session and by this script from any checkout —
+# and a relative SRC= written verbatim would be resolved against whatever directory the reader
+# happens to be in. From another worktree it names nothing, and the bare rebuild then falls back
+# to cloning the default tree. Resolved via the directory when it exists (so symlinks and `..`
+# collapse), and prefixed with $PWD when it does not yet — SRC is also the clone target.
+case "$SRC" in
+	/*) ;;
+	*) SRC="$(cd "$SRC" 2>/dev/null && pwd -P || echo "$PWD/$SRC")" ;;
+esac
 IFACES=(vcan0 vcan1)
 MODE="all"
 case "${1:-}" in
@@ -128,18 +138,46 @@ record_src() {
 # Observed on 6.6.123.2-microsoft-standard-WSL2+ while testing the sibling fix in setup_vcan.sh:
 # the same wrong probe, in the second of the two places it lived.
 #
-# Asked by trying, and it needs root — but every path out of here does, and the alternative is
-# the build above. An existing interface answers it for free; otherwise a probe device is
-# created and removed, and it is only removed when this script is the thing that created it.
-vcan_usable() {
+# Answered without root and without touching anything wherever possible: an interface that
+# already exists, the running kernel's own config, or the builtin list. Only if none of those can
+# tell do we ask by doing — and NOT under --build, which promises to leave the running system
+# alone, and whose caller has every reason not to have authorised `sudo ip` at all. A denied or
+# unauthorised probe is not evidence that vcan is missing, and treating it as such is how this
+# script talks itself into compiling a kernel it does not need.
+vcan_builtin() {
 	[ -n "$(ip -brief link show type vcan 2>/dev/null)" ] && return 0
-	sudo ip link add dev vcanprobe type vcan >/dev/null 2>&1 || return 1
-	sudo ip link del vcanprobe >/dev/null 2>&1 || true
+	# Process substitution, NOT a pipe. Under `set -o pipefail` a `grep -q` that matches closes
+	# the pipe, zcat dies of SIGPIPE, and the pipeline reports failure — so the check answered
+	# "no" precisely when the answer was yes, and this script went off to build a kernel again.
+	grep -q '^CONFIG_CAN_VCAN=y' <(zcat /proc/config.gz 2>/dev/null) && return 0
+	grep -qs 'vcan\.ko' "/lib/modules/$(uname -r)/modules.builtin" && return 0
+	return 1
+}
+
+# The mutating fallback. `sudo -n`: a probe must never sit at a password prompt, and a refusal
+# has to be distinguishable from "the kernel cannot do this".
+vcan_probe() {
+	sudo -n ip link add dev vcanprobe type vcan >/dev/null 2>&1 || return 1
+	sudo -n ip link del vcanprobe >/dev/null 2>&1 || true
 	return 0
+}
+
+vcan_usable() {
+	vcan_builtin && return 0
+	# --build changes nothing on the running system, so it stops at the free checks. If they
+	# cannot tell, it goes on and builds a module — redundant on a built-in kernel, but that is
+	# the conservative answer for a mode whose whole promise is not to touch anything.
+	[ "$MODE" = build ] && return 1
+	vcan_probe
 }
 
 if lsmod | grep -q '^vcan '; then
 	say "vcan is already loaded — skipping the build"
+	# BEFORE the exit. The loaded module may be the one in $SRC, put there by an earlier run or
+	# by hand, and this is the only moment we know where it came from. Without it, a marker that
+	# is missing or stale stays that way, and after the next shutdown a bare setup_vcan.sh
+	# cannot find that custom build. record_src is a no-op unless $KO actually exists.
+	record_src
 	[ "$MODE" = build ] && exit 0
 	MODE=load
 elif modinfo vcan >/dev/null 2>&1; then
