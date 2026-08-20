@@ -399,6 +399,17 @@ fn main() {
 		// The counterpart to --assign, and the way out of a diagnostic that was killed before it
 		// could hand a channel back. Clearing is its own operation because an assignment is
 		// persistent: nothing else in this tool can put a channel back to having no hardware.
+		// THE SAME LOCK a borrow takes. These write the assignment permanently, so running one
+		// beside a --pair let the diagnostic keep an older snapshot and restore over it — the
+		// direct command's change quietly undone by a process that had photographed the world
+		// before it.
+		transport.vector_borrow_lock() or {
+			eprintln('vectorcheck: ${err}')
+			exit(1)
+		}
+		defer {
+			transport.vector_borrow_unlock()
+		}
 		transport.vector_unassign(o.release) or {
 			eprintln('vectorcheck: ${err}')
 			exit(1)
@@ -494,6 +505,13 @@ fn main() {
 		if !c.transceiver.to_lower().contains('can') {
 			eprintln('vectorcheck: row ${o.assign} is "${c.name}" (${c.transceiver}) — not a CAN channel')
 			exit(1)
+		}
+		transport.vector_borrow_lock() or {
+			eprintln('vectorcheck: ${err}')
+			exit(1)
+		}
+		defer {
+			transport.vector_borrow_unlock()
 		}
 		transport.vector_assign(o.channel, c) or {
 			eprintln('vectorcheck: ${err}')

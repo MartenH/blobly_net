@@ -3393,6 +3393,22 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		// Re-enabled while we were on our way out? The toggle saw `running` still true and
 		// skipped spawning a replacement, so without this the channel is left with no reader at
 		// all. We are the ones who know this loop is finished, so we start the next one.
+		// HANDED ON. This loop held the only reader for its wire, so when its own row is
+		// switched off the siblings still enabled on that wire are left with nothing watching
+		// them — silent, and looking healthy. Whoever is still here takes it.
+		if !a.chans[ci].monitorable() && a.running {
+			want := transport.destination_key(iface)
+			for cj, other in a.chans {
+				if cj == ci || !other.monitorable() || other.running || other.spawning {
+					continue
+				}
+				if transport.destination_key(other.iface) == want {
+					a.chans[cj].spawning = true
+					spawn rx_loop(app, cj, other.iface, gen)
+					break
+				}
+			}
+		}
 		if a.chans[ci].monitorable() && a.running {
 			a.chans[ci].spawning = true
 			spawn rx_loop(app, ci, iface, gen)
@@ -6107,8 +6123,12 @@ fn draw_buses(mut app App, chans []Chan) {
 				// c.monitorable() could never be true — this branch has never run, and a channel
 				// re-enabled mid-run silently got no reader at all. Ask about the channel as it
 				// is NOW, using the same rule monitorable() applies.
+				// AND NOBODY ELSE IS READING THIS WIRE. Enabling an alias of a monitored
+				// destination used to open a second port on it, which is the duplicate delivery
+				// that one-reader-per-wire exists to prevent, arriving through the toggle
+				// instead of through Start.
 				if new && app.running && app.chans[i].monitorable() && !app.chans[i].running
-					&& !app.chans[i].spawning {
+					&& !app.chans[i].spawning && !app.dest_is_read_locked(app.chans[i].iface) {
 					app.chans[i].spawning = true
 					spawn rx_loop(app, i, app.chans[i].iface, app.run_gen)
 					// …and the TRANSMIT side, exactly as start() sets it up. Only the reader was

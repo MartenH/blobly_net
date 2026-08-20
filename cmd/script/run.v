@@ -27,7 +27,6 @@ mut:
 	running bool = true
 }
 
-
 fn main() {
 	mut proj_path := 'projects/sim-demo.blobnet'
 	mut scripts := []string{}
@@ -45,6 +44,7 @@ fn main() {
 				scripts << a
 			}
 		}
+
 		i++
 	}
 	if scripts.len == 0 {
@@ -150,15 +150,21 @@ fn main() {
 			// entry on an interface — rather than emptying the server list — is the difference
 			// that matters: the emptied list fell through to the default branch and spawned a
 			// SECOND 0x7E0 responder on a wire that already had one.
-			if ch.iface in seeded_ifaces {
+			// BY DESTINATION, as the GUI does. Two spellings of one wire each seeded their own
+			// diagnostics, so a headless run got two built-in responders answering 0x7E0/0x7E8
+			// at once — a bus with two ECUs claiming one identity, in the runner that is
+			// supposed to be the reproducible one.
+			ch_dest := transport.destination_key_for(ch.adapter, ch.iface)
+			if ch_dest in seeded_ifaces {
 				println('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s)')
 			} else {
-				seeded_ifaces << ch.iface
+				seeded_ifaces << ch_dest
 				// ENABLED channels only: a disabled entry sharing this interface must not
 				// contribute servers, or a test observes an ECU it explicitly switched off.
 				mut peers := []project.NodeCfg{}
 				for other in proj.channels {
-					if other.enabled && other.iface == ch.iface {
+					if other.enabled
+						&& transport.destination_key_for(other.adapter, other.iface) == ch_dest {
 						peers << other.all_nodes()
 					}
 				}
@@ -185,7 +191,8 @@ fn main() {
 					println('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + UDS server')
 				} else {
 					for mut u in servers {
-						spawn uds_node_loop(ch.iface_with_bitrate(), u.rx, u.tx, u.ext, u.server, ctl)
+						spawn uds_node_loop(ch.iface_with_bitrate(), u.rx, u.tx, u.ext, u.server,
+							ctl)
 					}
 					println('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + ${servers.len} UDS target(s)')
 				}
