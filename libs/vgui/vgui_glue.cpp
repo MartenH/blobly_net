@@ -111,17 +111,26 @@ extern "C" void vgui_set_theme(int dark) {
 // io.FontGlobalScale to style.FontScaleMain.
 extern "C" void vgui_set_font_scale(float s) { ImGui::GetStyle().FontScaleMain = s; }
 
+// jump to an absolute column. TableNextColumn-only navigation forces callers that skip columns
+// to count them — a count that silently lands text in the wrong column when a column is added.
+extern "C" void vgui_table_set_col(int n) { ImGui::TableSetColumnIndex(n); }
+
 int vgui_init(const char* title, int w, int h, int event_driven) {
     g_event_driven = event_driven != 0;
     if (!glfwInit()) return 1;
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
-    // w/h <= 0 = START MAXIMIZED. The fixed 1500x850 default meant the first act of every
-    // session was dragging the window out to the monitor; the hint has to be set BEFORE the
-    // window exists (GLFW_MAXIMIZED is a creation hint), and the size given underneath is
-    // what the window RESTORES to when un-maximized, so it stays the old sensible default.
+    // w/h <= 0 = START MAXIMIZED (the hint must be set BEFORE the window exists — it is a
+    // creation hint). The size the window RESTORES to when un-maximized is the positive half
+    // of w/h if the caller gave one, else the library default — so the caller can choose the
+    // restore size, and the doc on the V wrapper describes a contract that actually exists
+    // (the first version discarded both values and the doc claimed otherwise).
     bool maximized = (w <= 0 || h <= 0);
-    if (maximized) { glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE); w = 1500; h = 850; }
+    if (maximized) {
+        glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
+        if (w <= 0) w = 1500;
+        if (h <= 0) h = 850;
+    }
     g_win = glfwCreateWindow(w, h, title, nullptr, nullptr);
     if (!g_win) return 2;
     if (!maximized) glfwSetWindowPos(g_win, 60, 80);

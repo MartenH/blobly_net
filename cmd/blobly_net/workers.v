@@ -562,7 +562,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				if c.first && !c.done {
 					ch_own := if c.tag != '' { c.tag } else { a.chan_name_for(iface) }
 					a.rec_append_locked(canlog.LogEntry{
-						t_s:   a.since_ms() / 1000.0
+						t_s:   a.since_s()
 						iface: ch_own
 						frame: f
 					})
@@ -623,7 +623,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		}
 		if a.recording && !ours {
 			a.rec_append_locked(canlog.LogEntry{
-				t_s:   a.since_ms() / 1000.0
+				t_s:   a.since_s()
 				iface: chname
 				frame: f
 			})

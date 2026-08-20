@@ -141,9 +141,14 @@ fn main() {
 		return
 	}
 
-	// 0x0 = maximized: the first act of every session was dragging the window out to size.
-	// The selftest keeps its fixed 1500x850 — screenshots must be comparable across runs.
-	if !vgui.init('blobly_net — ${app.proj_name} (imgui/ImPlot)', 0, 0, true) {
+	// 0x0 = maximized: the first act of every interactive session was dragging the window out
+	// to size. HEADLESS runs (VGUI_FRAMES / VGUI_SHOT — the documented GUI smoke) keep the
+	// fixed 1500x850 instead: a screenshot's dimensions must not depend on the monitor it
+	// happened to render on, and GLFW_MAXIMIZED is only a WM request — under bare Xvfb it is
+	// ignored, so the same run would produce two different geometries in two environments.
+	headless := max_frames > 0 || shot != ''
+	init_w, init_h := if headless { 1500, 850 } else { 0, 0 }
+	if !vgui.init('blobly_net — ${app.proj_name} (imgui/ImPlot)', init_w, init_h, true) {
 		eprintln('vgui.init failed')
 		return
 	}

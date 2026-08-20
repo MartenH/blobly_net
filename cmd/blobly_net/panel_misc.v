@@ -659,10 +659,11 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 	vgui.help_marker('Each y-axis is live-fitted by default. To take one over: right-click the axis, untick Auto-Fit, then set Min/Max (e.g. 0/100 for a load %). The small checkboxes lock that end against pan/zoom. Drag axis = pan, scroll = zoom, double-click = fit once.')
 	// x-window right edge: wall-clock NOW while live, so the strip chart slides on real time
 	// (not only when a sample arrives); the latest sample time when stopped/paused/loaded, so
-	// it holds still. Samples and `now` share app.t0's clock (rx stamps t_ms = ticks - t0).
+	// it holds still. Samples and `now` share one clock BY CONSTRUCTION: both come from
+	// app.since_ms(), so the chart's right edge cannot drift from the rows' stamps.
 	mut xmax := f64(0)
 	if app.running && !app.paused {
-		xmax = app.since_ms() / 1000.0
+		xmax = app.since_s()
 	} else {
 		for r in rows {
 			if app.is_watched_frame(r.id, r.ext) && f64(r.t_ms) / 1000.0 > xmax {

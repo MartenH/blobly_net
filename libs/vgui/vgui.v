@@ -146,6 +146,7 @@ fn C.vgui_table_col(&char)
 fn C.vgui_table_headers()
 fn C.vgui_table_row()
 fn C.vgui_table_cell(&char)
+fn C.vgui_table_set_col(int)
 fn C.vgui_table_next_col()
 fn C.vgui_tree_node_table(&char) int
 fn C.vgui_is_item_clicked() int
@@ -158,8 +159,9 @@ fn C.vgui_key_pressed(int) int
 fn C.vgui_combo(&char, &&char, int, int) int
 
 // --- lifecycle ---
-// init creates the OS window + GL context. w/h <= 0 opens MAXIMIZED (the values then only set
-// the size the window restores to); positive values open a fixed-size window at that size.
+// init creates the OS window + GL context. If either of w/h is <= 0 the window opens MAXIMIZED,
+// and the positive one (if any) sets the size the window restores to — a non-positive half
+// restores to the library default (1500x850). Both positive: a fixed-size window at that size.
 pub fn init(title string, w int, h int, event_driven bool) bool {
 	return C.vgui_init(title.str, w, h, if event_driven { 1 } else { 0 }) == 0
 }
@@ -673,6 +675,13 @@ pub fn table_end() {
 // table_next_col advances to the next column without emitting text (for arbitrary widgets).
 pub fn table_next_col() {
 	C.vgui_table_next_col()
+}
+
+// table_set_col jumps to the absolute column `n` of the current row. Use this — not a counted
+// run of table_next_col — whenever a row skips columns: a count is relative to whatever the
+// column list happens to be today, and lands in the wrong column the day one is inserted.
+pub fn table_set_col(n int) {
+	C.vgui_table_set_col(n)
 }
 
 // tree_node_table is a tree node inside a table cell (spans all columns for the click).

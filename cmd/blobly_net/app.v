@@ -75,8 +75,15 @@ mut:
 	consumers_failed map[string]int
 	trace_seq        u64
 	trace_base       u64
-	ghost_seq        u64                    // identities for emissions made while paused (see ghost_base)
-	tx_mutexes       map[string]&sync.Mutex // per-interface send order (see TapBus.tx_mu)
+	// trace_seq as of the last reset — what the idx COLUMN subtracts, so idx reads as "frame
+	// number of this measurement". trace_seq itself deliberately survives resets (an in-flight
+	// echo must stay unresolvable, never confirm a new run's row), which means raw seq keeps
+	// counting across Clear / Load / Start: after a 100k-frame recording, the first live frame
+	// of the next run would display as ~100000 and read as phantom loss. Distinct from
+	// trace_base, which additionally advances on every ring trim.
+	trace_run_base u64
+	ghost_seq      u64                    // identities for emissions made while paused (see ghost_base)
+	tx_mutexes     map[string]&sync.Mutex // per-interface send order (see TapBus.tx_mu)
 	// Stable identity for recording entries, exactly like trace_seq/trace_base for rows: the
 	// buffer is trimmed by re-slicing, so a plain index does not survive.
 	rec_seq u64

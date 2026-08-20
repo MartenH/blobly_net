@@ -47,7 +47,7 @@ fn draw_trace(mut app App, rows []TraceRow, gcount map[string]u64, rx u64) {
 		draw_trace_grouped(mut app, brows, gcount, filt)
 	} else {
 		vgui.separator_text('frames (newest first)')
-		draw_trace_all('trace', brows, filt)
+		draw_trace_all('trace9', brows, filt, app.trace_run_base)
 	}
 	vgui.end()
 }
@@ -98,7 +98,7 @@ fn draw_ftrace(mut app App, rows []TraceRow, gcount map[string]u64) {
 	if app.trace_grouped2 {
 		draw_trace_grouped(mut app, frows, gcount, filt)
 	} else {
-		draw_trace_all('ftrace', frows, filt)
+		draw_trace_all('ftrace9', frows, filt, app.trace_run_base)
 	}
 	vgui.end()
 }
@@ -154,28 +154,34 @@ fn idstr(id u32, ext bool) string {
 // and BRS never shows at all — so the trace would claim a frame that was never on the bus.
 // Empty for classic, which is the overwhelming majority and needs no decoration.
 // flags_str is the FLAGS column: the frame kinds that are invisible from the payload alone.
-// RTR and FD/BRS/ESI reuse the exact wording kind_mark established; EXT is deliberately absent
-// because the 8-digit id already shows it, and a column that repeats a neighbouring column
-// teaches the reader to skip both.
+// EXT is deliberately absent — the 8-digit id already shows it, and a column repeating a
+// neighbouring column teaches the reader to skip both. (This absorbed kind_mark, whose leading
+// space existed only for the data-cell suffix the flags column replaced.)
 fn flags_str(r TraceRow) string {
 	if r.rtr {
 		return 'RTR'
 	}
-	return kind_mark(r.fd, r.brs, r.esi).trim_space()
-}
-
-fn kind_mark(fd bool, brs bool, esi bool) string {
-	if !fd {
+	if !r.fd {
 		return ''
 	}
-	mut m := ' FD'
-	if brs {
+	mut m := 'FD'
+	if r.brs {
 		m += '-BRS'
 	}
-	if esi {
+	if r.esi {
 		m += '-ESI' // the transmitter was error-passive: the reason this bit is kept at all
 	}
 	return m
+}
+
+// The idx and t (s) cells appear in both trace views; one implementation, so the two views
+// cannot drift into showing the same frame with different numbers. idx is per-MEASUREMENT
+// (seq minus the base recorded at the last reset); t is seconds at fixed six decimals — the
+// decimals are real since the clock behind t_ms went monotonic-ns, and %f keeps trailing
+// zeros so the column does not go ragged.
+fn trace_idx_t_cells(r TraceRow, run_base u64) {
+	vgui.table_cell('${r.seq - run_base}')
+	vgui.table_cell('${r.t_ms / 1000.0:.6f}')
 }
 
 // trace_pass: case-insensitive substring match over id / name / ch / dir / data.
@@ -253,7 +259,7 @@ fn trace_name_cell(r TraceRow) string {
 	return if r.e2e == '' { r.name } else { '${r.name}  ${r.e2e}' }
 }
 
-fn draw_trace_all(id string, rows []TraceRow, filt string) {
+fn draw_trace_all(id string, rows []TraceRow, filt string, run_base u64) {
 	if vgui.table_begin(id, 9) {
 		// Column order follows the layout every CAN tool's summary view has taught people to
 		// read: index and time lead, then where (ch) and what (id/name), then the frame's shape.
@@ -281,8 +287,7 @@ fn draw_trace_all(id string, rows []TraceRow, filt string) {
 			}
 			shown++
 			vgui.table_row()
-			vgui.table_cell('${r.seq}')
-			vgui.table_cell('${r.t_ms / 1000.0:.6f}')
+			trace_idx_t_cells(r, run_base)
 			vgui.table_cell(r.ch)
 			vgui.table_cell(idstr(r.id, r.ext))
 			// A violation is appended to the NAME rather than given a column: it is rare, and
@@ -343,6 +348,12 @@ fn origin_mark(r TraceRow) string {
 // grouped: one collapsible row per (dir, ch, id), expand to decode its latest signals.
 // Rows are sorted by a STABLE key (id, then dir) so they never jump as the ring trims —
 // the order is fixed by identity, not by which frame arrived most recently.
+// gtrace10's column indices, for the sub-rows that address columns absolutely. Keep in step
+// with the table_setup_col list directly below — these two lines and that list are the ONE
+// place the grouped view's geometry lives.
+const gcol_name = 3
+const gcol_data = 7
+
 fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt string) {
 	mut agg := map[string]GAgg{}
 	for r in rows {
@@ -397,9 +408,12 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		}
 		return 0
 	})
-	if vgui.table_begin('gtrace', 10) {
+	if vgui.table_begin('gtrace10', 10) {
 		// idx and t lead, as in the chronological view and in every summary view readers come
 		// from; the tree (expand) widget rides on the id/name column, wherever that column is.
+		// (Table id carries the column count: imgui persists per-column widths BY INDEX under
+		// the id, so reusing 'gtrace' would drape the 5-column layout's saved widths over
+		// these 10 columns. A new id starts clean; the old entry is orphaned, not misapplied.)
 		vgui.table_setup_col('idx', 60)
 		vgui.table_setup_col('t (s)', 100)
 		vgui.table_setup_col('ch', 52)
@@ -417,8 +431,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			vgui.table_row()
 			// idx and t are the NEWEST frame's — the same one the data column shows — so the
 			// row reads as one frame plus its history, not as fields from different frames.
-			vgui.table_cell('${r.seq}')
-			vgui.table_cell('${r.t_ms / 1000.0:.6f}')
+			trace_idx_t_cells(r, app.trace_run_base)
 			vgui.table_cell(g.ch)
 			vgui.table_next_col()
 			// ### keys the tree id on identity only, so the live label / sort don't reset it.
@@ -455,11 +468,9 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			// regardless of repaint timing (a byte that flips and flips back between repaints still
 			// shows against the real previous frame).
 			vgui.table_next_col()
-			if r.rtr {
-				// the flags column already says RTR; repeating it here as fake payload made the
-				// one row with no data the only row saying something twice
-			} else {
-				// the FD/BRS suffix moved to the flags column; this cell is payload only
+			// payload only: the flags column carries RTR and the FD/BRS kind now, and an RTR
+			// frame has no payload to show
+			if !r.rtr {
 				prev := g.prev.data
 				for i, b in r.data {
 					if i > 0 {
@@ -492,12 +503,10 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 						extra := if lbl != '' { ' (${lbl})' } else { '' }
 						unit := if s.unit != '' { ' ${s.unit}' } else { '' }
 						vgui.table_row()
-						// the signal name sits under id/name (column 4), value under data —
-						// the same columns their parent row uses for those things
-						for _ in 0 .. 3 {
-							vgui.table_next_col()
-						}
-						vgui.table_next_col()
+						// absolute columns, so inserting a column cannot silently land these
+						// cells under a neighbour: the name sits in the id/name column, the
+						// value in the data column — the same ones the parent row uses
+						vgui.table_set_col(gcol_name)
 						// selectable spans the cell so the whole row is a right-click target
 						vgui.selectable('    ${s.name}##sigrow${g.id}_${g.ext}_${s.name}', false)
 						if vgui.begin_popup_context_item('sigctx##${g.id}_${g.ext}_${s.name}') {
@@ -507,11 +516,8 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 							}
 							vgui.end_popup()
 						}
-						// skip origin/len/flags to land the value in the data column
-						for _ in 0 .. 3 {
-							vgui.table_next_col()
-						}
-						vgui.table_cell('${s.physical(r.data):.3}${unit}${extra}')
+						vgui.table_set_col(gcol_data)
+						vgui.text('${s.physical(r.data):.3}${unit}${extra}')
 					}
 				}
 				vgui.tree_pop()
