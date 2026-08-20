@@ -4,7 +4,9 @@
 # drivers at all; this one puts the same kind of traffic on a real SocketCAN interface, which is
 # what a bench looks like. Bring the interface up first:
 #
-#   ./scripts/setup_wsl_kernel.sh      # loads vcan, creates vcan0/vcan1 at mtu 72 (CAN-FD)
+#   ./scripts/setup_vcan.sh            # loads vcan, creates vcan0/vcan1 at mtu 72 (CAN-FD)
+#                                      (once per WSL session; ./scripts/build_vcan_module.sh
+#                                       first, if the module has never been built here)
 #
 # Press ▶ Start and the recording plays onto vcan0. The frames are OURS, so the trace counts
 # them as TX-S and claims their echoes; `candump -x vcan0` shows the same frames on the wire.

@@ -42,8 +42,22 @@ IFACES=("$@")
 ensure_vcan_module() {
 	lsmod | grep -q '^vcan ' && return 0
 	sudo modprobe vcan 2>/dev/null && return 0
-	ko="${SRC:-$HOME/repos/WSL2-Linux-Kernel}/drivers/net/can/vcan.ko"
+	# WHERE THE MODULE IS. $SRC for this invocation, else the path build_vcan_module.sh recorded
+	# when it built one (which is how a tree kept somewhere other than the default is found — an
+	# `SRC=... ./scripts/build_vcan_module.sh` sets it for that command only, and this script,
+	# run bare in a later session, would otherwise look in the default place and report that
+	# nothing was built while a perfectly good module sat elsewhere), else the default.
+	src="${SRC:-}"
+	[ -z "$src" ] && [ -f "$(dirname "$0")/../.vcan_module_src" ] \
+		&& src="$(cat "$(dirname "$0")/../.vcan_module_src")"
+	ko="${src:-$HOME/repos/WSL2-Linux-Kernel}/drivers/net/can/vcan.ko"
 	if [ -f "$ko" ]; then
+		# can-dev FIRST: vcan.ko declares it as a dependency (`modinfo -F depends`), and insmod
+		# resolves nothing on its own — modprobe would have, but it cannot see a module outside
+		# /lib/modules, which is the whole reason this path exists. A stock `wsl --shutdown`
+		# unloads can-dev along with vcan, so on the session this script is FOR, the dependency
+		# is missing and insmod fails with unresolved symbols.
+		sudo modprobe can-dev 2>/dev/null || true
 		echo "[setup_vcan] vcan not loaded; inserting the module built earlier: $ko"
 		sudo insmod "$ko" 2>/dev/null && return 0
 		echo "[setup_vcan] insmod failed. Two usual causes:"

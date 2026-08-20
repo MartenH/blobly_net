@@ -188,6 +188,12 @@ lsmod | grep -q '^vcan ' || {
 # THE INTERFACES ARE setup_vcan.sh's JOB. This script used to create them too, with its own
 # copy of the mtu-72 dance — two places to fix when the rule changed, and two answers when they
 # disagreed. Build here, bring the bus up there.
+# RECORD WHERE IT IS. setup_vcan.sh runs bare in later sessions with no SRC in its environment,
+# so a tree kept anywhere but the default would be invisible to it — it would report that no
+# module was built while this one sat next to it. Written next to the repo, not into it: the
+# path is one machine's, and .claude/ is already ignored.
+echo "$SRC" > "$(dirname "$0")/../.vcan_module_src"
+
 say "module ready — bringing the interfaces up via setup_vcan.sh"
 "$(dirname "$0")/setup_vcan.sh" "${IFACES[@]}"
 
