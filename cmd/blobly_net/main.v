@@ -7170,6 +7170,13 @@ fn draw_gen(mut app App) {
 		vgui.same_line()
 		vgui.text_colored(230, 170, 70, '● modified')
 	}
+	if app.runtime_stale {
+		// These rows were derived from the configuration BEFORE the last change, which could
+		// not be applied. sync_senders_into_proj refuses to fold them back into a channel map
+		// they no longer describe, so an edit here goes nowhere until the runtime is rebuilt.
+		vgui.text_colored(230, 120, 120,
+			'not saved to the project — these generators are from the previous configuration; press Start to rebuild the runtime')
+	}
 	if app.running {
 		vgui.text_dim('edit freely · Send now fires once · cyclic auto-repeats · on-key fires on its key')
 	} else {
@@ -7376,6 +7383,22 @@ fn (mut app App) remove_generator(i int) {
 // sync_senders_into_proj flushes the Generators panel edit buffers into app.proj so a Save
 // persists them (a sender belongs to its channel; its `bus:` override travels as a field).
 fn (mut app App) sync_senders_into_proj() {
+	// ONLY WHEN THE CACHE BELONGS TO THIS CHANNEL MAP. The match below is `sr.iface ==
+	// p.channels[ci].iface` — an interface STRING standing in for a channel identity, which is
+	// sound exactly while app.senders was built from app.proj by rebuild_from_proj. A refused
+	// rebuild breaks that, and then the string can name a DIFFERENT bus: remove a bus that has
+	// generators while a Lua script blocks the rebuild, add another using the freed interface,
+	// and the deleted bus's generators are copied into the new one for a later Save to persist
+	// (codex #121 r6). The wholesale-swap guard does not cover this — the interfaces here are
+	// reused within one project.
+	//
+	// Refusing is not a lost edit that folding would have saved: while stale, the Generators
+	// panel is showing senders derived from the PREVIOUS configuration, so an edit made there
+	// is against a view the model no longer matches. The panel says so; the next successful
+	// rebuild reconciles both.
+	if app.runtime_stale {
+		return
+	}
 	app.mu.lock()
 	defer { app.mu.unlock() }
 	for i in 0 .. app.senders.len {
