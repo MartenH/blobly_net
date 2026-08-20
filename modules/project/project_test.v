@@ -751,3 +751,62 @@ channels:
 	assert c.listen_only, 'the explicit flag wins'
 	assert c.iface_with_bitrate().ends_with(',silent')
 }
+
+// One wire, one mode and one rate — the rules both front ends must reach the same verdict on.
+fn test_vendor_destination_conflicts() {
+	// A silenced wire cannot carry another row's simulation, even spelled differently.
+	quiet := [
+		Channel{
+			name:        'mon'
+			adapter:     'vector'
+			iface:       'vector:ch1'
+			enabled:     true
+			listen_only: true
+		},
+		Channel{
+			name:     'sim'
+			adapter:  'vector'
+			iface:    'vector:1'
+			enabled:  true
+			simulate: ['ECU']
+		},
+	]
+	assert vendor_destination_conflicts(quiet).len == 1
+
+	// Two rates on one wire.
+	rates := [
+		Channel{
+			name:    'a'
+			adapter: 'vector'
+			iface:   'vector:1'
+			enabled: true
+			bitrate: 250000
+		},
+		Channel{
+			name:    'b'
+			adapter: 'vector'
+			iface:   'vector:ch1'
+			enabled: true
+			bitrate: 500000
+		},
+	]
+	assert vendor_destination_conflicts(rates).len == 1
+
+	// A listen-only monitor beside a row that only WATCHES is a perfectly good quiet bench.
+	ok := [
+		Channel{
+			name:        'mon'
+			adapter:     'vector'
+			iface:       'vector:1'
+			enabled:     true
+			listen_only: true
+		},
+		Channel{
+			name:    'watch'
+			adapter: 'vector'
+			iface:   'vector:ch1'
+			enabled: true
+		},
+	]
+	assert vendor_destination_conflicts(ok).len == 0
+}

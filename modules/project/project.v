@@ -11,6 +11,7 @@
 // `ip link set can0 type can bitrate … sample-point …`.
 module project
 
+import transport
 import os
 import yaml
 import doip
@@ -1243,4 +1244,57 @@ pub fn (m Mode) str() string {
 		.monitor { 'monitor' }
 		.replay { 'replay' }
 	}
+}
+
+// vendor_destination_conflicts reports configurations that two rows on ONE physical vendor wire
+// cannot both have. Empty means nothing to say.
+//
+// HERE, not in a front end, because both have to reach the same verdict on the same file and
+// they did not: the GUI refused these at Start while the headless runner started the simulation
+// anyway and discarded the refusals a frame at a time. The rules are about what a project MEANS,
+// which is this module's job.
+//
+// Two of them, and both come from a transceiver having one mode and one bitrate:
+//   - a wire one row has set listen-only cannot carry another row's traffic;
+//   - two rows cannot ask for different bitrates on it.
+pub fn vendor_destination_conflicts(chs []Channel) []string {
+	mut out := []string{}
+	mut quiet := map[string]string{}
+	mut rate := map[string]int{}
+	mut rate_row := map[string]string{}
+	for c in chs {
+		if !c.enabled || c.adapter !in ['pcan', 'kvaser', 'vector'] {
+			continue
+		}
+		k := transport.destination_key_for(c.adapter, c.iface)
+		if c.listen_only && c.adapter == 'vector' {
+			quiet[k] = c.name
+		}
+		want := if c.bitrate > 0 { c.bitrate } else { 500000 }
+		if prev := rate[k] {
+			if prev != want {
+				out << '${c.name} and ${rate_row[k]} share ${c.iface} but ask for ${want} and ${prev} bit/s'
+			}
+		} else {
+			rate[k] = want
+			rate_row[k] = c.name
+		}
+	}
+	for c in chs {
+		if !c.enabled || c.adapter != 'vector' {
+			continue
+		}
+		// WHAT WOULD TRANSMIT, from the project rather than from a running app: simulated nodes,
+		// or a replay. A verify-only row watches and is no trouble on a quiet wire.
+		transmits := c.all_nodes().len > 0 || c.mode == .replay
+		if !transmits {
+			continue
+		}
+		if who := quiet[transport.destination_key_for(c.adapter, c.iface)] {
+			if who != c.name {
+				out << '${c.name} would transmit on ${c.iface}, which ${who} has set to listen-only'
+			}
+		}
+	}
+	return out
 }
