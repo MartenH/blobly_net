@@ -230,8 +230,11 @@ mut:
 	running     bool
 	dbs         []candb.Database // all loaded DBCs (union; trace/symbol decode)
 	dbs_paths   []string         // resolved file path per dbs entry (editor save target)
-	dbc_readers int              // live workers reading app.dbs lock-free (rx loops);
-	// the editor stays read-only until 0 — app.running clears BEFORE workers exit
+	dbc_readers int              // live workers reading app.dbs lock-free (rx loops, scripts);
+	// the editor, the System-panel rebuild and Start's own rebuild all wait for 0 — app.running
+	// clears BEFORE workers exit. RESERVED BY THE SPAWNER, not by the worker: a thread that has
+	// not been scheduled yet, or is still inside a slow open, has read nothing and would be
+	// invisible to those gates if it registered itself.
 	dbs_by_iface map[string][]candb.Database // per-channel DBCs (generator message picker scope)
 	manifest     telem.Manifest
 	has_manifest bool
@@ -918,6 +921,15 @@ fn (mut app App) start() {
 		if rx_key in monitored {
 		} else {
 			monitored[rx_key] = true
+			// RESERVE THE READER SLOT BEFORE THE SPAWN. Opening a bus is slow, and until this
+			// worker registers it is invisible to the drain above — which would then let a
+			// later Start rebuild app.chans and app.dbs underneath an open still in progress,
+			// after which the worker indexes a replaced array by its stale `ci`. The Script
+			// panel's Run reserves the same way, for the same reason; rx_loop releases it on
+			// every path out.
+			app.mu.lock()
+			app.dbc_readers++
+			app.mu.unlock()
 			spawn rx_loop(app, ci, ch.iface, app.run_gen)
 		}
 		// A TX bus per CHANNEL (each generator fires on its target bus), plus one anonymous tap
@@ -3146,9 +3158,17 @@ fn replay_db(app &App, ch Chan) candb.Database {
 }
 
 fn rx_loop(app &App, ci int, iface string, gen u64) {
+	mut a := unsafe { app }
+	// The reader slot was reserved by our SPAWNER (see start()), because this thread may not be
+	// scheduled until well after the open begins. Released here on every path out, including
+	// both early returns below.
+	defer {
+		a.mu.lock()
+		a.dbc_readers--
+		a.mu.unlock()
+	}
 	mut bus := app.open_transport(iface) or {
 		eprintln('rx ${iface}: ${err}')
-		mut a := unsafe { app }
 		a.mu.lock()
 		// Same generation guard as the teardown below: opening can fail slowly, so a PREVIOUS
 		// run's failure can land after the new loop has opened and published readiness. Clearing
@@ -3160,7 +3180,6 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		a.mu.unlock()
 		return
 	}
-	mut a := unsafe { app }
 	a.mu.lock()
 	// Only for the run we belong to. Opening a bus takes time, so a loop from the PREVIOUS run
 	// can arrive here after a restart — and since the teardown below is generation-guarded, the
@@ -3174,13 +3193,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	// The bus is open: from here a frame we emit can actually come back to us, which is what
 	// `running` promises to note_emit's "is anyone watching?" check.
 	a.chans[ci].running = true
-	a.dbc_readers++ // this loop reads app.dbs lock-free (lookup_name per frame)
 	a.mu.unlock()
-	defer {
-		a.mu.lock()
-		a.dbc_readers--
-		a.mu.unlock()
-	}
 	chname := a.chans[ci].name
 	// Built from the SAME `protect:` entries the simulation stamps with, so a project describes
 	// each protected message once and both directions follow it. A separate "check this on
