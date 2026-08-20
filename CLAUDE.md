@@ -22,7 +22,7 @@ This repo is the single source of truth — a new agent session has no prior mem
 memory such as `~/.claude` does not transfer). Everything needed is in git.
 
 ```sh
-sudo ./scripts/setup_sudoers.sh   # optional: scoped passwordless sudo (apt-get/ip/modprobe)
+sudo ./scripts/setup_sudoers.sh   # optional: scoped passwordless sudo (apt-get/ip/modprobe/insmod)
 ./scripts/setup_env.sh            # V + native deps (GLFW/FreeType) + can-utils, builds the GUI,
                                   # brings up vcan0, runs the tests
 ./scripts/run_gui.sh             # build + run the GUI

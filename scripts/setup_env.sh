@@ -43,7 +43,8 @@ echo "==> 5/5 Virtual CAN bus (vcan0)"
 # NOT built into a stock WSL2 kernel: CONFIG_CAN_VCAN is unset there and no vcan.ko ships, so
 # this step fails with "Unknown device type" until the module is built (docs/can_hardware.md).
 # The in-process and UDP buses need none of this, so the tests above still pass without it.
-./scripts/setup_vcan.sh || echo "  (no vcan0: needs sudo, and CONFIG_CAN_VCAN — see docs/can_hardware.md)"
+./scripts/setup_vcan.sh || echo "  (no vcan0 — build the module once with ./scripts/build_vcan_module.sh, then
+   ./scripts/setup_vcan.sh after each wsl restart; docs/can_hardware.md has the why)"
 
 cat <<'EOF'
 ==> Done. Run it:
