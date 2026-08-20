@@ -77,7 +77,7 @@ fn borrow(app int, hw transport.VectorChannel) !Borrowed {
 	// Held from the first borrow to the last restore — see transport.vector_borrow_lock. Taken
 	// per borrow and released in give_back, which is the span that must be atomic against
 	// another copy of this tool.
-	transport.vector_borrow_lock()
+	transport.vector_borrow_lock()!
 	// REFUSED if we cannot see what we would overwrite. A read failure used to look like a free
 	// channel, and the borrow then "restored" it by clearing a mapping the operator had made.
 	prev, had := transport.vector_assignment(app)!
@@ -135,6 +135,13 @@ fn is_test_frame(f transport.CanFrame) bool {
 	// ALL FOUR marker bytes. Checking two of them let a payload corrupted in byte 5 or 6 pass as
 	// a good frame, which is the one thing a link test must not do: the markers are there to
 	// notice corruption, and half of them notice half of it.
+	// THE FORMAT TOO, not only the bytes. This test sends a standard classic data frame; a
+	// remote, extended or FD frame carrying the same id and payload is a different message on
+	// the wire, and accepting it would report a link that faithfully carries something we never
+	// sent.
+	if f.extended || f.rtr || f.fd {
+		return false
+	}
 	if f.data.len != 8 || f.data[4] != 0xA5 || f.data[5] != 0x5A || f.data[6] != 0xC3
 		|| f.data[7] != 0x3C {
 		return false

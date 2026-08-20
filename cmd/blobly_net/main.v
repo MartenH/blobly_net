@@ -649,6 +649,62 @@ fn (c Chan) for_open() project.Channel {
 	}
 }
 
+// transmits_on reports whether this channel has anything that would put frames on its bus:
+// simulated ECUs, a diagnostic responder, or a cyclic sender aimed at it. Replay is asked about
+// separately because Chan answers that one itself.
+// rate_conflict reports two enabled rows on one destination asking for different bitrates, or
+// none. bitrate_iface picks ONE of them and hands every monitor and transmit open the same
+// string, so the vendor layer's own "already open at a different rate" refusal can never fire
+// and the bus quietly runs at whichever row was listed first.
+//
+// A FUNCTION, because the check is needed twice: Start is not the only way a channel joins a
+// run — the Buses panel can enable one live, and that path went straight past this.
+fn (app &App) rate_conflict() ?string {
+	mut rate_of := map[string]int{}
+	mut rate_row := map[string]string{}
+	for c in app.chans {
+		if !c.enabled {
+			continue
+		}
+		// ONLY WHERE THE RATE IS OURS TO SET. An inproc: or udp: bus has no bitrate and opens
+		// unchanged, and SocketCAN's is configured with `ip link` rather than by us — so the
+		// number on those rows is metadata the backend never reads. Refusing to start over a
+		// disagreement about it blocked perfectly good simulation projects, where several
+		// logical channels sharing one software bus is the ordinary arrangement.
+		if c.adapter !in ['pcan', 'kvaser', 'vector'] {
+			continue
+		}
+		// A ROW WITH NO RATE STILL HAS ONE: iface_with_bitrate omits the suffix and the backend
+		// then opens at its 500 kbit/s default. Skipping those rows let a 250k row sit beside a
+		// defaulted one without complaint, and the wire ran at whichever opened first.
+		want_rate := if c.bitrate > 0 { c.bitrate } else { 500000 }
+		k := transport.destination_key(c.iface)
+		if prev := rate_of[k] {
+			if prev != want_rate {
+				return '${c.name} and ${rate_row[k]} share ${c.iface} but ask for ${want_rate} and ${prev} bit/s'
+			}
+		} else {
+			rate_of[k] = want_rate
+			rate_row[k] = c.name
+		}
+	}
+	return none
+}
+
+fn (app &App) transmits_on(c Chan) bool {
+	for sc in app.sims {
+		if sc.pch.name == c.name && (sc.nodes.len > 0 || sc.verify.len > 0) {
+			return true
+		}
+	}
+	for sr in app.senders {
+		if sr.chan == c.name || sr.target() == c.iface {
+			return true
+		}
+	}
+	return false
+}
+
 fn (app &App) bitrate_iface(iface string) string {
 	// SILENCE WINS across every channel on this wire, not just the first one listed. Two channel
 	// entries can share one interface, and this returned whichever came first — so a bus with
@@ -713,49 +769,39 @@ fn (mut app App) start() {
 	// still starts, opens that silent bus, and has every frame refused. The operator gets a
 	// failed run where the honest answer is that they asked for two different things on one
 	// wire. Said before anything opens.
+	// VECTOR ONLY, because it is the only backend where listen_only reaches the transceiver.
+	// Applied to every adapter this refused two perfectly good rows on one `inproc:` bus — a
+	// listen-only monitor beside a replay — where nothing is silenced at all.
 	mut silent_dest := map[string]string{}
 	for c in app.chans {
-		if c.enabled && c.listen_only {
+		if c.enabled && c.listen_only && c.adapter == 'vector' {
 			silent_dest[transport.destination_key(c.iface)] = c.name
 		}
 	}
 	for c in app.chans {
-		if !c.enabled || !c.replaying() {
+		if !c.enabled || c.adapter != 'vector' {
+			continue
+		}
+		// EVERY TRANSMITTER, not only replay. Simulated nodes, diagnostic responders and cyclic
+		// senders all put frames on the wire, and each of them would have been refused one frame
+		// at a time by a transceiver a sibling row had quieted.
+		mut what := ''
+		if c.replaying() {
+			what = 'replays onto'
+		} else if app.transmits_on(c) {
+			what = 'transmits on'
+		}
+		if what == '' {
 			continue
 		}
 		if quiet := silent_dest[transport.destination_key(c.iface)] {
-			app.notify('${c.name} replays onto ${c.iface}, which ${quiet} has set to listen-only — one wire, one mode; not starting')
+			app.notify('${c.name} ${what} ${c.iface}, which ${quiet} has set to listen-only — one wire, one mode; not starting')
 			return
 		}
 	}
-	mut rate_of := map[string]int{}
-	mut rate_row := map[string]string{}
-	for c in app.chans {
-		if !c.enabled {
-			continue
-		}
-		// ONLY WHERE THE RATE IS OURS TO SET. An inproc: or udp: bus has no bitrate and opens
-		// unchanged, and SocketCAN's is configured with `ip link` rather than by us — so the
-		// number on those rows is metadata the backend never reads. Refusing to start over a
-		// disagreement about it blocked perfectly good simulation projects, where several
-		// logical channels sharing one software bus is the ordinary arrangement.
-		if c.adapter !in ['pcan', 'kvaser', 'vector'] {
-			continue
-		}
-		// A ROW WITH NO RATE STILL HAS ONE: iface_with_bitrate omits the suffix and the backend
-		// then opens at its 500 kbit/s default. Skipping those rows let a 250k row sit beside a
-		// defaulted one without complaint, and the wire ran at whichever opened first.
-		want_rate := if c.bitrate > 0 { c.bitrate } else { 500000 }
-		k := transport.destination_key(c.iface)
-		if prev := rate_of[k] {
-			if prev != want_rate {
-				app.notify('${c.name} and ${rate_row[k]} share ${c.iface} but ask for ${want_rate} and ${prev} bit/s — not starting')
-				return
-			}
-		} else {
-			rate_of[k] = want_rate
-			rate_row[k] = c.name
-		}
+	if bad := app.rate_conflict() {
+		app.notify('${bad} — not starting')
+		return
 	}
 	if app.cfg_text_dirty {
 		// Text edits are NOT folded in automatically: the file is the authority for everything
@@ -2002,7 +2048,11 @@ fn (mut app App) load_recording(path string) {
 		// capture that was checked live), and unsaved editor changes must be reflected, since
 		// app.dbs already drives naming and decoding everywhere else in the UI.
 		live := merge_dbs_from(app.loaded_dbs_for(sc.db_paths))
-		mut vs := verifiers[sc.iface] or { sim.VerifySet{} }
+		// KEYED ON THE DESTINATION. Two rows spelling one wire differently kept separate
+		// verifier sets, so an imported recording was checked against whichever row's rules
+		// happened to be found — and rules split across the aliases silently stopped applying.
+		sc_dest := transport.destination_key(sc.iface)
+		mut vs := verifiers[sc_dest] or { sim.VerifySet{} }
 		// `verify:` ONLY — the ECU under test's messages, never our own.
 		//
 		// A candump log carries no direction, so a recording made while we were transmitting
@@ -2012,11 +2062,12 @@ fn (mut app App) load_recording(path string) {
 		// about is the other side's protection, and that is exactly what `verify:` describes.
 		vs.merge_into(sim.verifiers_for(live, [], sc.verify)) // conflicts already reported at start
 
-		verifiers[sc.iface] = vs
-		alias[sc.iface] = sc.iface
+		verifiers[sc_dest] = vs
+		alias[sc.iface] = sc_dest
+		alias[sc_dest] = sc_dest
 		for c in app.chans {
 			if c.iface == sc.iface {
-				alias[c.name] = sc.iface
+				alias[c.name] = sc_dest
 			}
 		}
 	}
@@ -5823,6 +5874,20 @@ fn draw_buses(mut app App, chans []Chan) {
 				// be driven by somebody who no longer held it. The set is what it was when Start
 				// was pressed; changing it is Stop and Start, which costs one click and removes
 				// the states entirely.
+				// THE SAME CHECK Start makes. Enabling a channel live is another way into a
+				// run, and it walked past the rate-conflict validation entirely — so an alias
+				// configured for a different bitrate could join a running wire, and the vendor
+				// layer never saw the disagreement because bitrate_iface had already picked one.
+				if new && app.running && app.chans[i].adapter in ['pcan', 'kvaser', 'vector'] {
+					app.chans[i].enabled = true
+					clash := app.rate_conflict()
+					app.chans[i].enabled = false
+					if bad := clash {
+						app.mu.unlock()
+						app.notify('${bad} — not enabling')
+						continue
+					}
+				}
 				if app.running && app.chans[i].mode == 'replay' && app.chans[i].replay_src != '' {
 					app.mu.unlock()
 					app.notify('${app.chans[i].name}: replay channels are fixed while running — Stop and Start to change which ones play')

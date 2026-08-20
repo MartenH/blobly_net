@@ -76,6 +76,6 @@ pub fn vector_unassign(app_channel int) ! {
 	return error('the Vector XL backend is Windows-only')
 }
 
-pub fn vector_borrow_lock() {}
+pub fn vector_borrow_lock() ! {}
 
 pub fn vector_borrow_unlock() {}

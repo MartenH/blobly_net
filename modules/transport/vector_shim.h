@@ -822,9 +822,18 @@ static int ct_vector_channel_info(int idx, char *name, int name_len, char *trans
  * diagnostic, because the common case is one operator at one bench. */
 static HANDLE ct_vec_xproc = NULL;
 
-static void ct_vector_borrow_lock(void) {
+/* 0 got it, -1 did not. The wait used to be issued and its answer thrown away, so a second
+ * diagnostic simply carried on after ten seconds and did the interleaving this lock exists to
+ * prevent — and a --pair run legitimately takes longer than that. A lock whose failure is
+ * ignored is a comment. */
+static int ct_vector_borrow_lock(void) {
+	DWORD r;
 	if (!ct_vec_xproc) ct_vec_xproc = CreateMutexA(NULL, FALSE, "Local\\blobly_net_vector_borrow");
-	if (ct_vec_xproc) WaitForSingleObject(ct_vec_xproc, 10000);
+	if (!ct_vec_xproc) return 0; /* cannot create one: one operator at one bench is the norm */
+	r = WaitForSingleObject(ct_vec_xproc, 60000);
+	/* WAIT_ABANDONED means the holder died without releasing; the channels may be half-restored,
+	 * but we own it now and refusing would leave nobody able to tidy up. */
+	return (r == WAIT_OBJECT_0 || r == WAIT_ABANDONED) ? 0 : -1;
 }
 
 static void ct_vector_borrow_unlock(void) {

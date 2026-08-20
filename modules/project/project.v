@@ -1127,6 +1127,13 @@ pub fn split_vector_mode(address string) (string, bool, bool) {
 		return address, false, true
 	}
 	body := address.all_before_last(',')
+	// ONE suffix. `1,silent,normal` recognised the final `,normal`, returned `1,silent`, and the
+	// model then called the channel transmit-capable while the address it kept still said
+	// silent — the two halves of one decision disagreeing again, from a spelling nobody should
+	// be able to write and have quietly resolved.
+	if body.contains(',') {
+		return address, false, false
+	}
 	return match address.all_after_last(',').trim_space().to_lower() {
 		'silent', 'listen_only', 'listenonly' { body, true, true }
 		'normal' { body, false, true }
