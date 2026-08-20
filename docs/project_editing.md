@@ -364,7 +364,7 @@ makes a new chip appear automatically.
 ## Implementation plan
 
 Ordered so each step builds + runs on its own. Model/persistence first (pure V, testable),
-then the GUI surfaces. All GUI work is in the single-file `cmd/blobly_net/main.v`.
+then the GUI surfaces. All GUI work is in `cmd/blobly_net/` (one `module main` split across per-concern files; the config editor itself is mostly `panel_config.v` and `config.v`).
 
 ### Step 1 — schema v2 in `modules/project` (pure V, no GUI)
 - `project.v`: add `Channel` fields `adapter string`, `address string`, `network string`,

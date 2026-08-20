@@ -98,7 +98,10 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   recorded as a known limitation in [`docs/doip.md`](docs/doip.md).
 - 🧭 **LIN** — `modules/lindb` (LDF) + a `LinFrame` type. Kept type-safe alongside `CanFrame` /
   `EthFrame` rather than faked behind a generic frame.
-- 🧭 **Split `cmd/blobly_net/main.v`** — it is **7,475 lines / 231 KB** (measured 2026-08-10; it only grows), and essentially every
+- 🧭 **Split `cmd/blobly_net/main.v`** — *the mechanical half landed via #123: 20 per-concern
+  files, pure moves, build targets the directory. What remains here is the second half below —
+  the app state and the telemetry-speaking core paths, which no file move dislodges.*
+  It was **7,475 lines / 231 KB** (measured 2026-08-10; 11,328 by the split), and essentially every
   GUI change touches it. The cost is not aesthetic, it is measurable in four places: GitHub
   renders its diffs slowly enough to be painful on every PR; review findings arrive as line
   numbers into one enormous file; two GUI branches almost always collide there; and the editor
