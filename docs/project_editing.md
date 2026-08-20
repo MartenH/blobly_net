@@ -247,7 +247,7 @@ flowchart LR
 ```
 
 **Rule: the editor mutates `app.proj`; `app.chans` is always derived from it** (so Save
-captures every edit). `load_project`'s inline derivation (`main.v:731–785`) is extracted
+captures every edit). `load_project`'s inline derivation (now `rebuild_from_proj` in `cmd/blobly_net/app.v`) is extracted
 into a reusable `rebuild_from_proj()`.
 
 ## Editing is a dedicated, stopped-only surface
@@ -312,7 +312,7 @@ needed for the first cut.
 ## Trace: per-bus / per-network view
 
 Today the Trace merges all buses into one view with a `ch` column; the only way to narrow
-to a bus is typing its name into the substring filter (`trace_pass`, `main.v:1565`, matches
+to a bus is typing its name into the substring filter (`trace_pass`, `cmd/blobly_net/panel_trace.v`, matches
 id/name/**ch**/origin/data). There is no first-class "watch this bus" control, which is
 awkward for the common multi-bus case (e.g. a 2-vcan ECU restbus — you want vcan0 and vcan1
 separable). Since the config now defines the bus/network list, the Trace reads it directly.
@@ -384,24 +384,24 @@ then the GUI surfaces. All GUI work is in `cmd/blobly_net/` (one `module main` s
   buses, a `network:` label); a legacy-file test (`channels:`/`interface:`/`type:` still
   loads and decomposes correctly). **Gate: `v test modules/project/` green.**
 
-### Step 2 — `rebuild_from_proj()` extraction (`main.v`)
-- Extract the derivation loop currently inline in `load_project` (`main.v:731–785`) — the
+### Step 2 — `rebuild_from_proj()` extraction (now `cmd/blobly_net/app.v`)
+- Extract the derivation loop currently inline in `load_project` (since extracted to `rebuild_from_proj`, `app.v`) — the
   bit that builds `app.chans`/`app.dbs`/`app.sims`/`app.senders`/`gen_bufs`/manifest/`sel_id`
   from `app.proj.channels` — into `fn (mut app App) rebuild_from_proj()`.
 - `load_project` becomes: `stop → reset → app.proj = project.load(path) → rebuild_from_proj()`.
 - No behaviour change. **Gate: build + `sim-demo` runs as before (screenshot).**
 
-### Step 3 — File lifecycle + dirty flag (`main.v`)
+### Step 3 — File lifecycle + dirty flag (now `config.v` + `panel_misc.v`)
 - Rename/generalize `gen_dirty` → `dirty` (config or generator edits set it).
-- File menu (`draw_menubar`, `main.v:1023`): add **New**, **Open…**, **Save**, **Save As…**,
+- File menu (`draw_menubar`, `panel_misc.v`): add **New**, **Open…**, **Save**, **Save As…**,
   **Configure…** (Configure disabled while `app.running`). Keep Open Example/Reload/Exit.
 - `new_project()` (`app.proj = Project{name:'untitled'}`, `proj_path=''`, rebuild),
-  `save_project()` (generalized `save_generators`, `main.v:2059`; `proj_path==''` → Save As).
-- Title/toolbar (`draw_toolbar`, `main.v:1108`) shows `name ●` when dirty.
+  `save_project()` (generalized `save_generators`, now `save_project` in `config.v`; `proj_path==''` → Save As).
+- Title/toolbar (`draw_toolbar`, `panel_misc.v`) shows `name ●` when dirty.
 - **Gate: New → 0 buses; Save on a loaded project rewrites the file byte-for-byte-ish
   (round-trips through parse).**
 
-### Step 4 — imgui file browser (`main.v` + tiny vgui glue)
+### Step 4 — imgui file browser (now `panel_config.v` + tiny vgui glue)
 - Add `vgui.modal_begin(title) bool` / `vgui.modal_end()` (imgui `OpenPopup`+`BeginPopupModal`)
   to `libs/vgui/{vgui.v,vgui.h,vgui_glue.cpp}` — the only C change (⇒ `DEPS=1` rebuild).
 - `App` state: `fb_open bool`, `fb_mode` (open|save), `fb_dir string`, `fb_name_buf []u8`,
@@ -410,7 +410,7 @@ then the GUI surfaces. All GUI work is in `cmd/blobly_net/` (one `module main` s
   Cancel/OK. Wire Open…/Save As…/＋Add DBC/manifest browse through it.
 - **Gate: Open… navigates + loads a project; Save As… writes to a chosen path.**
 
-### Step 5 — Configuration editor (`main.v`)
+### Step 5 — Configuration editor (now `panel_config.v` + `config.v`)
 - `draw_config(mut app)` — a dedicated window (`show_config`, opened by Configure…), rendered
   only when stopped; while running show "Stop to edit". Replaces the read-only
   `draw_busconfig` as the *edit* surface (keep `draw_busconfig` as the running-view read-only
@@ -424,7 +424,7 @@ then the GUI surfaces. All GUI work is in `cmd/blobly_net/` (one `module main` s
 - **Gate: the blank-project walkthrough (New→Add bus→Add DBC→Save As→reopen) works end to
   end; screenshot.**
 
-### Step 6 — Trace per-bus/network view (`main.v`)
+### Step 6 — Trace per-bus/network view (now `panel_trace.v`)
 - `App`: `trace_bus string` (main Trace) + `ftrace_bus string` (second panel); `''` = all.
 - Bus chips row in `draw_trace`/`draw_ftrace` (toggle_buttons from `app.chans`, **All** +
   one per bus, grouped by `network:` when set).
