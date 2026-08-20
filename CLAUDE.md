@@ -164,6 +164,18 @@ release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks.
   which makes this repo an *additional* working directory — its `CLAUDE.md` never enters context
   on its own. Read it before the first change here. An entire session (PRs #79–#84) ran without
   it and broke two of the rules below in silence.
+- **And read the CURRENT one — `git fetch -q origin && git show origin/main:CLAUDE.md`.** The
+  main checkout is a shared working copy that other sessions leave behind; the copy sitting in
+  it can be many commits old, and nothing about reading it says so. This guide is where the
+  hard-won operational detail lives, so a stale copy is not a stale summary — it is a *confident
+  wrong answer* about the thing you are least able to verify from the outside.
+  Concretely, in the session that added this bullet: the checkout was four commits behind, the
+  polling section it served predated net#110/#116, and the watcher built from it read only
+  `pulls/N/reviews`. Findings arrive there, so it looked like it worked for four rounds — but a
+  **clean** verdict lands in `issues/N/comments`, so it could never have reported one, and
+  "iterate until clean" had no way to terminate. Every fact needed was already written down, one
+  `git show` away. Re-read it the same way whenever you pick work back up after a gap; other
+  sessions land PRs into this file while you are working.
 - **PRs get `@codex review`**; iterate until clean before merging. Watch each round with a
   **tracked** background job, never a detached shell (`( ... & )`) — a detached watcher fires
   into nothing and the round sits unread. Two reviews were missed that way in one session, one
