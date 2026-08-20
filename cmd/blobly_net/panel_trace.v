@@ -3,6 +3,46 @@ module main
 import candb
 import vgui
 
+// trace_capture_chips renders the latched capture states — recording destination, and the
+// viewing-a-recording banner with its NON-destructive exit. Shared by both trace panels: the
+// filter panel shows the same rows, so it must say the same things about them.
+fn trace_capture_chips(mut app App) {
+	if app.recording {
+		// the destination, while it still matters — a capture that only names its file in a
+		// toast after the fact is a capture nobody could point a colleague at
+		vgui.text_colored(230, 120, 120, '● REC ${app.rec_path}')
+	}
+	if app.viewing_rec != '' {
+		// The rows are a file, and the capture is PAUSED (load_recording did both). The exit
+		// resumes the live view without clearing: Clear sits right above for the full reset,
+		// and wiring this exit to clear_trace made a view toggle silently zero the session's
+		// counters and telemetry history mid-run.
+		vgui.text_colored(230, 170, 70, 'viewing recording: ${app.viewing_rec} (capture paused)')
+		vgui.same_line()
+		if vgui.small_button('resume live##unrec') {
+			app.toggle_pause() // unpausing IS leaving the file view — see toggle_pause
+		}
+	}
+}
+
+// toggle_pause flips the capture intake under the lock the readers hold: rx workers evaluate
+// `!app.paused` inside app.mu, and an unlocked write from the GUI thread was a data race that
+// could defer a Pause press arbitrarily on a hot bus.
+//
+// EVERY unpause leaves the file view. There is no state where the capture runs and the trace
+// legitimately shows a recording — a file does not play — so a generic Resume that cleared only
+// `paused` let live frames pour back into the imported ring while the chip still named the
+// file. One transition, used by the Trace button, the toolbar chip and 'resume live' alike;
+// which button the user found must not decide what state they land in (codex #128 r1).
+fn (mut app App) toggle_pause() {
+	app.mu.lock()
+	app.paused = !app.paused
+	if !app.paused {
+		app.viewing_rec = ''
+	}
+	app.mu.unlock()
+}
+
 fn draw_trace(mut app App, rows []TraceRow, gcount map[string]u64, rx u64, run_base u64) {
 	vis, op := vgui.begin_closable('Trace', app.show_trace)
 	app.show_trace = op
@@ -19,16 +59,21 @@ fn draw_trace(mut app App, rows []TraceRow, gcount map[string]u64, rx u64, run_b
 	vgui.set_next_item_width(200)
 	vgui.input_text('filter', mut app.trace_filter_buf)
 	vgui.same_line()
+	// The capture controls live with the capture (the toolbar carries a chip while one of
+	// these states is LATCHED, since this window is closable — see draw_toolbar).
+	if vgui.small_button(if app.paused { 'Resume' } else { 'Pause' }) {
+		app.toggle_pause()
+	}
+	vgui.same_line()
 	if vgui.small_button('Clear') {
 		app.clear_trace()
 	}
-	vgui.set_next_item_width(200)
-	vgui.input_text('.log/.mf4', mut app.log_path_buf)
 	vgui.same_line()
-	if vgui.small_button('Open') {
-		app.load_recording(vgui.buf_str(app.log_path_buf))
+	if vgui.small_button(if app.recording { 'Stop Rec' } else { 'Record' }) {
+		app.toggle_record()
 	}
-	// add the selected frame (click a row) to the Trace (filter) watch list
+	// The row-position of this button must not depend on capture state: the chips below get
+	// their own rows, so a click aimed here can never land on a button that appeared under it.
 	if app.sel_id >= 0 {
 		vgui.same_line()
 		sid := u32(app.sel_id)
@@ -37,6 +82,7 @@ fn draw_trace(mut app App, rows []TraceRow, gcount map[string]u64, rx u64, run_b
 			app.add_fwatch(sid, sext)
 		}
 	}
+	trace_capture_chips(mut app)
 	if app.chans.len > 1 {
 		app.trace_bus = bus_chips(app.chans, app.trace_bus, 't')
 	}
@@ -92,6 +138,7 @@ fn draw_ftrace(mut app App, rows []TraceRow, gcount map[string]u64, run_base u64
 		vgui.end()
 		return
 	}
+	trace_capture_chips(mut app)
 	// restrict to watched frames + optional bus, then apply the optional text find
 	frows := app.filter_bus(rows.filter(app.is_fwatched(it.id, it.ext)), app.ftrace_bus)
 	filt := vgui.buf_str(app.trace_filter2_buf).to_lower()

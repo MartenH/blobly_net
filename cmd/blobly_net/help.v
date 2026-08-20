@@ -43,10 +43,19 @@ sets the frame rate and UI scale.
 - **Diagnostics / DoIP** — UDS diagnostics and DoIP discovery
 - **Script** — run a Lua test file
 
-## Toolbar
+## Trace capture controls
 
-- **Pause** freezes the trace, **Clear** empties it, **Record** writes `recording.log`
-- **Open** loads a candump `.log` or ASAM `.mf4` into the trace
+In the **Trace** window: **Pause** freezes what every view takes in, **Clear** empties the
+capture (counters included), **Record** writes the frames to a timestamped
+`recording-YYYYMMDD-HHmmss.log` beside the open project — each capture gets its own file, and
+the destination is shown next to the button while recording. While a recording or a pause is
+active, the toolbar shows a chip with the matching control, so neither state can get stranded
+behind a closed window.
+
+**File ▸ Open Recording (.log/.mf4)** loads a capture into the trace for inspection (rows
+marked `REP`); the capture pauses while a file is shown, and **resume live** hands the view
+back without clearing anything. The shipped demo lives in `samples/` — the picker has a button
+for it.
 
 ## Generators
 
