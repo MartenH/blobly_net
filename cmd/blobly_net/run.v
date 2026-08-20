@@ -179,6 +179,13 @@ fn (mut app App) start() {
 	if app.dirty {
 		app.apply_edits()
 	}
+	// A fresh measurement supersedes any recording view: the chip comes down and a pause left
+	// over from viewing (load_recording pauses the capture) is lifted — otherwise Start would
+	// silently capture nothing into a trace still labelled as a file.
+	app.mu.lock()
+	app.viewing_rec = ''
+	app.paused = false
+	app.mu.unlock()
 	// ONE WIRE, ONE RATE. Two enabled rows on the same destination that disagree about the
 	// bitrate are a contradiction the backend cannot see: bitrate_iface picks one of them and
 	// hands every monitor and transmit open the same string, so the Vector layer's own

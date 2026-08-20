@@ -259,10 +259,26 @@ fn draw_toolbar(mut app App, rx u64, txs string) {
 	// the toolbar read clean while an edit sat waiting in a closed window.
 	dirtymark := if app.dirty || app.cfg_text_dirty { ' ●' } else { '' }
 	vgui.text('· RX ${rx}  ${txs}  ·  ${app.proj_name}${dirtymark}   ')
-	// Pause / Clear / Record moved INTO the Trace window: they act on the capture, and a
-	// control that lives away from the thing it acts on reads as global when it is not —
-	// Clear even existed twice, once here and once in Trace. The toolbar keeps what is truly
-	// app-wide: Start/Stop, the live counters, the project name, the theme.
+	// The capture CONTROLS live in the Trace window; the toolbar shows the two capture states
+	// that LATCH, and only while they are latched. The Trace window is closable, so without
+	// this a recording or a pause could be running with zero visible evidence and no reachable
+	// way out anywhere on screen.
+	if app.recording {
+		vgui.same_line()
+		vgui.text_colored(230, 120, 120, '● REC')
+		vgui.same_line()
+		if vgui.small_button('Stop Rec##tb') {
+			app.toggle_record()
+		}
+	}
+	if app.paused {
+		vgui.same_line()
+		vgui.text_colored(230, 170, 70, 'paused')
+		vgui.same_line()
+		if vgui.small_button('Resume##tb') {
+			app.toggle_pause()
+		}
+	}
 	vgui.same_line()
 	if vgui.button(if app.dark { 'Light' } else { 'Dark' }) {
 		app.dark = !app.dark

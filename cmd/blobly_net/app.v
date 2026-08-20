@@ -172,11 +172,11 @@ mut:
 	trace_grouped2    bool   // second Trace (filter) panel: own view mode
 	trace_filter2_buf []u8   // second Trace (filter) panel: own filter
 	symbol_filter_buf []u8   // Symbol Browser search
-	rec_path          string // where Record writes on stop; chosen at START so the UI can show it
-	// The recording the trace is currently SHOWING ('' = live capture). Opening a recording is
-	// a one-shot import — nothing keeps playing — but without this the view silently became a
-	// file's contents with no way to tell, and no visible way back ("we can't stop it?" — the
-	// answer is Clear, which nothing pointed at).
+	rec_path          string // FULL path Record writes on stop; chosen at start so the UI can show it
+	// The recording the trace is SHOWING ('' = live). Importing one also PAUSES the capture:
+	// the label alone let live frames keep pouring into the same ring, trimming the file's rows
+	// away within seconds on a busy bus while the chip still named the file, and summing file
+	// and live counts into one gcount total. Cleared by reset_trace_locked and by Start.
 	viewing_rec   string
 	doip_host_buf []u8 // DoIP manual discover host[:port]
 	// Diagnostics (UDS on a worker thread)
@@ -228,12 +228,17 @@ mut:
 	disc_list []DiscoveredIface
 	disc_tick []bool // parallel to disc_list
 	// File browser (Open / Save As / attach DBC / attach manifest)
-	fb_open     bool            // browser window shown
-	fb_save     bool            // true = save mode (filename input), false = open mode
-	fb_dir      string          // current directory
-	fb_name_buf []u8            // filename (save mode)
-	fb_ext      string          // extension filter ('.blobnet' | '.dbc' | '' = recordings)
-	fb_target   string          // action on OK: 'open' | 'saveas' | 'dbc:<ci>' | 'manifest:<ci>'
+	fb_open     bool   // browser window shown
+	fb_save     bool   // true = save mode (filename input), false = open mode
+	fb_dir      string // current directory
+	fb_name_buf []u8   // filename (save mode)
+	// ACCEPTED extensions, plural — the caption the browser shows and the match it applies both
+	// derive from this one list, so a picker can no longer advertise '(*.log)' while listing
+	// .mf4, which is what the single-string version with per-case aliases did. Empty = any.
+	fb_ext    []string
+	fb_target string // action on OK: 'open' | 'saveas' | 'dbc:<ci>' | 'manifest:<ci>' |
+	// 'system' | 'flash' | 'recording' — keep this list in step with the four dispatch
+	// sites in panel_config.v (open_browser, browser_confirm, the title, match_ext)
 	sims        []SimCfg        // per-channel in-process simulation workloads
 	sim_enabled map[string]bool // sim_key(channel, node) -> enabled (Simulation panel)
 	sim_gen     u64             // bumped when sim_enabled changes -> sim_loop rebuilds

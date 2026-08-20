@@ -13,19 +13,19 @@ fn (mut app App) open_browser(target string) {
 	app.fb_target = target
 	app.fb_save = target == 'saveas'
 	app.fb_ext = if target == 'open' || target == 'saveas' {
-		'.blobnet'
+		['.blobnet', '.yml', '.yaml']
 	} else if target.starts_with('dbc') {
-		'.dbc'
+		['.dbc']
 	} else if target.starts_with('manifest') {
-		'.csv'
+		['.csv']
 	} else if target == 'system' {
-		'.toml'
+		['.toml']
 	} else if target == 'flash' {
-		'.img' // match_ext also lets .bin through for this filter
+		['.img', '.bin'] // wrapped .img preferred, raw .bin allowed
 	} else if target == 'recording' {
-		'.log' // match_ext also lets .mf4 through for this filter
+		['.log', '.mf4'] // recordings come in both formats; one picker shows both
 	} else {
-		''
+		[]string{}
 	}
 	mut dir := if app.proj_path != '' { os.dir(app.proj_path) } else { 'projects' }
 	if !os.is_dir(dir) {
@@ -72,6 +72,10 @@ fn draw_filebrowser(mut app App) {
 		'Open system.toml'
 	} else if app.fb_target == 'recording' {
 		'Open Recording'
+	} else if app.fb_target == 'flash' {
+		// fell through to 'Attach Manifest' before — the firmware picker wore another
+		// feature's title, which is what an else-catchall does the day a target is added
+		'Firmware Image'
 	} else {
 		'Attach Manifest'
 	}
@@ -91,7 +95,16 @@ fn draw_filebrowser(mut app App) {
 			app.fb_dir = p
 		}
 	}
-	filt := if app.fb_ext != '' { '(*${app.fb_ext})' } else { '' }
+	// The shipped demo capture lives in samples/ — the old Trace path field defaulted to it,
+	// and removing that field removed the only pointer a fresh setup had to a file this
+	// picker can open. Only for the recording target; other pickers have no business there.
+	if app.fb_target == 'recording' && os.is_dir('samples') {
+		vgui.same_line()
+		if vgui.small_button('samples/') {
+			app.fb_dir = os.abs_path('samples')
+		}
+	}
+	filt := if app.fb_ext.len > 0 { '(' + app.fb_ext.map('*' + it).join(' ') + ')' } else { '' }
 	vgui.same_line()
 	vgui.text_dim(filt)
 	vgui.separator()
@@ -156,21 +169,14 @@ fn draw_filebrowser(mut app App) {
 // match_ext reports whether a filename passes the browser's current extension filter.
 // The project filter also accepts legacy `.yml`/`.yaml`; an empty filter accepts anything.
 fn (app &App) match_ext(name string) bool {
-	if app.fb_ext == '' {
+	if app.fb_ext.len == 0 {
 		return true
 	}
 	n := name.to_lower()
-	if n.ends_with(app.fb_ext) {
-		return true
-	}
-	if app.fb_ext == '.blobnet' && (n.ends_with('.yml') || n.ends_with('.yaml')) {
-		return true
-	}
-	if app.fb_ext == '.img' && n.ends_with('.bin') {
-		return true // firmware picker: wrapped .img preferred, raw .bin allowed
-	}
-	if app.fb_ext == '.log' && n.ends_with('.mf4') {
-		return true // recordings come in both formats; one picker shows both
+	for e in app.fb_ext {
+		if n.ends_with(e) {
+			return true
+		}
 	}
 	return false
 }

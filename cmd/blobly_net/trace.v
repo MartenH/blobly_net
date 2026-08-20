@@ -376,32 +376,49 @@ fn (mut app App) toggle_record() {
 	if app.recording {
 		app.mu.lock()
 		entries := app.rec.clone()
-		app.rec = []
-		app.rec_ids = [] // WITH the buffer: a stale id list makes the next retraction index past
-		// the end of a shorter buffer, which panics rather than mislabels
 		app.recording = false
 		app.mu.unlock()
 		mut lines := []string{cap: entries.len}
 		for e in entries {
 			lines << canlog.format_line(e)
 		}
+		// WRITE FIRST, DISCARD ON SUCCESS. The buffer used to be emptied before the write, so
+		// a full disk or read-only directory threw away up to 200k captured frames with only a
+		// toast to say so. Now a failed write keeps them: the next Record press notices the
+		// undiscarded buffer and continues into it, and the next Stop retries to a fresh path.
 		os.write_file(app.rec_path, lines.join('\n') + '\n') or {
-			app.notify('record write failed: ${err}')
+			app.notify('record write failed: ${err} — frames kept; press Record, then Stop Rec to retry')
 			return
 		}
-		app.notify('recorded ${entries.len} frames -> ${app.rec_path}')
-	} else {
 		app.mu.lock()
 		app.rec = []
-		app.rec_ids = []
-		app.recording = true
+		app.rec_ids = [] // WITH the buffer: a stale id list makes the next retraction index past
+		// the end of a shorter buffer, which panics rather than mislabels
 		app.mu.unlock()
-		// The destination is chosen at START, and it is timestamped. The old fixed
-		// 'recording.log' meant every capture silently overwrote the last one — the second
-		// Record of a session destroyed the evidence the first had collected — and the name
-		// only appeared in a toast after stopping, so while recording, nothing said where
-		// the frames would land.
-		app.rec_path = 'recording-${time.now().custom_format('YYYYMMDD-HHmmss')}.log'
-		app.notify('recording -> ${app.rec_path}')
+		app.notify('recorded ${entries.len} frames -> ${app.rec_path}')
+	} else {
+		// The destination: chosen at START so the UI can show it while it matters, ANCHORED to
+		// the project's directory (the same place File > Open Recording starts) rather than the
+		// process CWD — a bare relative name landed wherever the launcher happened to start the
+		// process, which the picker never showed. Timestamped so captures never overwrite each
+		// other, with a -N suffix for the same-second restart the timestamp alone cannot split.
+		dir := if app.proj_path != '' { os.dir(app.proj_path) } else { os.abs_path('.') }
+		stamp := time.now().custom_format('YYYYMMDD-HHmmss')
+		mut path := os.join_path(dir, 'recording-${stamp}.log')
+		mut n := 2
+		for os.exists(path) {
+			path = os.join_path(dir, 'recording-${stamp}-${n}.log')
+			n++
+		}
+		app.mu.lock()
+		// The buffer is NOT cleared if it still holds frames — that is a capture whose write
+		// failed, and starting fresh here was the second half of losing it.
+		if app.rec.len == 0 {
+			app.rec_ids = []
+		}
+		app.recording = true
+		app.rec_path = path
+		app.mu.unlock()
+		app.notify('recording -> ${path}')
 	}
 }
