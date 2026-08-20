@@ -41,6 +41,9 @@ void vgui_menu_end(void);
 int  vgui_menu_item(const char* label);
 int  vgui_menu_item_check(const char* label, int checked);
 int  vgui_checkbox(const char* label, int cur);
+// Grey out and make inert everything drawn between these two.
+void vgui_begin_disabled(void);
+void vgui_end_disabled(void);
 void vgui_text_colored(int r, int g, int b, const char* s);
 int  vgui_small_button(const char* label);
 int  vgui_begin_popup_context_item(const char* id);

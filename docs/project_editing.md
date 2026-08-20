@@ -256,9 +256,18 @@ The normal measurement view is **read-only**; editing is a distinct **Configurat
 editor** you open, use, and close — only when stopped (a conventional tool's measurement view vs. its
 Configuration dialog).
 
-- **Buses panel** = always-on read-only view; shows live state when running. (The separate
-  read-only *Bus Config* panel this line used to name is gone — its content is the
-  Configuration window's Buses tab, which can also edit.)
+- **Buses panel** = always-on read-only view; shows live state when running. Its enable tick
+  box is live only while STOPPED: **the set of buses in a run is fixed at ▶ Start**, and the
+  box greys out once one begins so the state stays readable without being changeable. Changing
+  which buses take part is Stop and Start.
+
+  This is a deliberate limit, not a missing feature. Enabling a bus mid-run meant starting a
+  reader against ports another thread already held, re-checking the rate and mode of a bus that
+  was open, and handing a wire from one owner to another while frames moved over it; disabling
+  meant the reverse. What stays live is the *workload* — simulated ECUs on and off, fault
+  injection, Quick Send, generators, pause, per-channel trace filters — which is what a bus
+  tester actually needs during a run, and which changes data the workers read rather than the
+  workers themselves.
 - **Configuration editor** = opened from File → Configure… (or a toolbar button), enabled
   only when `!app.running`. Add/edit/remove buses, pick adapters, attach DBCs; **Save**
   writes `.blobnet`; **Close** returns to the view. Not an always-editable inline panel.

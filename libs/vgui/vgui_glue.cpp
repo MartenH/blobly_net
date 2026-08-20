@@ -320,6 +320,9 @@ int  vgui_menu_item_check(const char* label, int checked) {
 // --- more widgets ---
 // checkbox square side = FontSize + 2*FramePadding.y; our theme padding (7) makes chunky boxes,
 // so shrink just the checkbox's vertical padding for a smaller tick box (keeps the label height).
+void vgui_begin_disabled(void) { ImGui::BeginDisabled(); }
+void vgui_end_disabled(void)   { ImGui::EndDisabled(); }
+
 int  vgui_checkbox(const char* label, int cur) {
     bool b = cur != 0;
     float px = ImGui::GetStyle().FramePadding.x;

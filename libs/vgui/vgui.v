@@ -94,6 +94,8 @@ fn C.vgui_clipboard_set(&char)
 fn C.vgui_end_popup()
 fn C.vgui_menu_item_check(&char, int) int
 fn C.vgui_checkbox(&char, int) int
+fn C.vgui_begin_disabled()
+fn C.vgui_end_disabled()
 fn C.vgui_text_colored(int, int, int, &char)
 fn C.vgui_small_button(&char) int
 fn C.vgui_spacing()
@@ -356,6 +358,17 @@ pub fn menu_item_check(label string, checked bool) bool {
 // checkbox renders a checkbox with the current state; returns the (possibly toggled) state.
 pub fn checkbox(label string, cur bool) bool {
 	return C.vgui_checkbox(label.str, if cur { 1 } else { 0 }) == 1
+}
+
+// begin_disabled greys out and makes inert everything drawn until end_disabled. Use it for a
+// control whose state is worth SEEING while the app cannot accept a change to it — hiding the
+// control instead makes the state unreadable, and leaving it live makes the refusal a surprise.
+pub fn begin_disabled() {
+	C.vgui_begin_disabled()
+}
+
+pub fn end_disabled() {
+	C.vgui_end_disabled()
 }
 
 pub fn text_colored(r u8, g u8, b u8, s string) {
@@ -714,8 +727,8 @@ pub fn swimlane(id string, labels []string, bars []Bar, links []Link, full_span_
 	if links.len > 0 {
 		lnp = unsafe { voidptr(&links[0]) }
 	}
-	C.vgui_swimlane(id.str, labels.len, unsafe { &&char(lp.data) }, unsafe { &bars[0] },
-		bars.len, lnp, links.len, full_span_us, cursor_a, cursor_b)
+	C.vgui_swimlane(id.str, labels.len, unsafe { &&char(lp.data) }, unsafe { &bars[0] }, bars.len,
+		lnp, links.len, full_span_us, cursor_a, cursor_b)
 }
 
 // rgba packs a colour into IM_COL32 order (ABGR in memory).

@@ -140,7 +140,7 @@ mut:
 	enabled   bool
 	rx        u64
 	running   bool
-	spawning  bool // rx_loop spawned but its bus not open yet (double-click guard)
+	spawning  bool // rx_loop spawned but its bus not open yet — the failover below must not start a second reader on a wire whose replacement is already coming up
 	link_down bool // real CAN iface is administratively DOWN (bound but can't tx/rx)
 }
 
@@ -2289,23 +2289,11 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 		}
 		a.mu.unlock()
 		if !still_on {
-			// PARKED, not finished. Leaving outright stopped the transmission — which was the
-			// point, since rx_loop takes a dead destination's rows out of the run — but nothing
-			// respawns a simulation: start() is its only spawner, so a channel disabled and
-			// re-enabled during a run came back with a reader, taps and no simulated ECUs at all
-			// until the whole run was restarted.
-			//
-			// Parking has to keep READING, though. The tap stays subscribed, so a loop that only
-			// slept would move the traffic into the socket and the 8192-frame inproc queue rather
-			// than drop it: on re-enable the ECU would answer requests put to it while it was
-			// switched off, seconds late, and a queue allowed to fill drops frames for everyone
-			// sharing the wire. Read and discard. recv's own 5 ms timeout paces an idle bus, so
-			// the drain ends on the first empty read and the sleep only bounds the retry rate.
-			for _ in 0 .. 1024 {
-				bus.recv(5) or { break }
-			}
-			time.sleep(20 * time.millisecond)
-			continue
+			// AND IT CANNOT COME BACK. A row leaves a run only when rx_loop disables it after
+			// its adapter failed; the set is otherwise fixed at Start, so there is nothing to wait
+			// for and no queue to drain. Leaving is the whole point: a simulated ECU that kept
+			// transmitting into a port that had gone discarded every failure it got.
+			break
 		}
 		if !built || a.sim_gen != local_gen {
 			built = true
@@ -6039,147 +6027,25 @@ fn draw_buses(mut app App, chans []Chan) {
 		}
 		for i in idxs {
 			c := chans[i]
-			new := vgui.checkbox('##en${i}', c.enabled)
-			if new != c.enabled {
-				app.mu.lock()
-				// FIXED AT START for a replay channel. Changing the set mid-run meant a worker
-				// had to be spawned, or silenced, or made to hand its wire over, against a
-				// group whose clock and membership were fixed when it began -- and every one of
-				// those states was a way for two recordings to reach one bus, or for a wire to
-				// be driven by somebody who no longer held it. The set is what it was when Start
-				// was pressed; changing it is Stop and Start, which costs one click and removes
-				// the states entirely.
-				// THE SAME CHECK Start makes. Enabling a channel live is another way into a
-				// run, and it walked past the rate-conflict validation entirely — so an alias
-				// configured for a different bitrate could join a running wire, and the vendor
-				// layer never saw the disagreement because bitrate_iface had already picked one.
-				// DISABLING can change the mode as much as enabling. With a passive normal row
-				// and a listen-only row on one wire, every port opened silent; switching the
-				// listen-only row off leaves the normal row's already-open ports silent while
-				// the model now says the wire is normal, and its transmits are refused one at a
-				// time with nothing to explain it. Only Vector, where the mode reaches hardware.
-				if !new && app.running && app.chans[i].adapter == 'vector'
-					&& app.chans[i].listen_only {
-					mut others_live := false
-					off_key := transport.destination_key(app.chans[i].iface)
-					for j, other in app.chans {
-						if j != i && other.enabled && other.running
-							&& transport.destination_key(other.iface) == off_key {
-							others_live = true
-							break
-						}
-					}
-					if others_live {
-						app.mu.unlock()
-						app.notify('${app.chans[i].name} set ${app.chans[i].iface} to listen-only and other channels are running on it — Stop before changing the mode of a live wire')
-						continue
-					}
-				}
-				if new && app.running && app.chans[i].adapter in ['pcan', 'kvaser', 'vector'] {
-					app.chans[i].enabled = true
-					clash := app.destination_conflict()
-					app.chans[i].enabled = false
-					if bad := clash {
-						app.mu.unlock()
-						app.notify('${bad} — not enabling')
-						continue
-					}
-					// THE MODE OF A WIRE THAT IS ALREADY OPEN. silent_conflict only speaks up
-					// when something would transmit; two passive rows disagreeing about the
-					// mode say nothing to it, yet the shim still refuses the new ports because
-					// the live ones configured the channel the other way — leaving the row
-					// ticked with no reader and no explanation. Ask whether this row would
-					// change the answer for a destination that is already running.
-					wire_key := transport.destination_key(app.chans[i].iface)
-					// SILENCE WINS, as bitrate_iface decides it. Taking the first running alias's
-					// flag read the wire as normal whenever the normal row happened to be listed
-					// first, though every port on it had been opened silent by its sibling — so
-					// the guard let through exactly the change it exists to refuse.
-					mut live_mode := ?bool(none)
-					for j, other in app.chans {
-						// PART OF THE RUN, not "owns the reader". Under one reader per wire an
-						// alias has running == false while its transmit tap is open and its
-						// simulation is going, and skipping it read a silenced wire as having no
-						// opinion about its own mode.
-						if j == i || !other.enabled {
-							continue
-						}
-						if transport.destination_key(other.iface) != wire_key {
-							continue
-						}
-						if !app.dest_is_read_locked(other.iface) {
-							continue
-						}
-						if m := live_mode {
-							live_mode = m || other.listen_only
-						} else {
-							live_mode = other.listen_only
-						}
-					}
-					if lm := live_mode {
-						if lm != app.chans[i].listen_only {
-							app.mu.unlock()
-							want := if app.chans[i].listen_only { 'listen-only' } else { 'normal' }
-							has := if lm { 'listen-only' } else { 'normal' }
-							app.notify('${app.chans[i].name} is ${want} but ${app.chans[i].iface} is already running ${has} — one wire, one mode; not enabling')
-							continue
-						}
-					}
-				}
-				if app.running && app.chans[i].mode == 'replay' && app.chans[i].replay_src != '' {
+			// TOPOLOGY IS FIXED AT START. While a run is in progress this row SHOWS its
+			// state and will not change it. Enabling a channel live meant spawning a reader
+			// against ports another thread holds, re-validating the rate and mode of a bus that
+			// is already open, and handing a wire between owners mid-flight; disabling meant the
+			// reverse. Those states are where nearly every defect in this file came from, and
+			// none of them can arise if the set is what it was when Start was pressed. Changing
+			// it is Stop and Start — the same rule the Configure button above already applies,
+			// and the one replay membership has followed since #113.
+			if app.running {
+				vgui.begin_disabled()
+				vgui.checkbox('##en${i}', c.enabled)
+				vgui.end_disabled()
+			} else {
+				new := vgui.checkbox('##en${i}', c.enabled)
+				if new != c.enabled {
+					app.mu.lock()
+					app.chans[i].enabled = new
 					app.mu.unlock()
-					app.notify('${app.chans[i].name}: replay channels are fixed while running — Stop and Start to change which ones play')
-					continue
 				}
-				app.chans[i].enabled = new
-				// enabling a channel mid-run spawns its RX thread; disabling lets it exit.
-				// `spawning` is the double-click guard — without one, a second click inside the
-				// open window starts a second rx_loop and every frame is logged twice. It is
-				// SEPARATE from `running` on purpose: running means "a monitor is reading", and
-				// an inproc bus broadcasts only to subscribers already attached, so a frame sent
-				// while the socket is still opening cannot echo. Claiming a watcher that early
-				// marked healthy traffic as never having reached the wire.
-				// `c` is the PRE-toggle snapshot, so c.enabled is still false here and
-				// c.monitorable() could never be true — this branch has never run, and a channel
-				// re-enabled mid-run silently got no reader at all. Ask about the channel as it
-				// is NOW, using the same rule monitorable() applies.
-				// AND NOBODY ELSE IS READING THIS WIRE. Enabling an alias of a monitored
-				// destination used to open a second port on it, which is the duplicate delivery
-				// that one-reader-per-wire exists to prevent, arriving through the toggle
-				// instead of through Start.
-				// THE READER IS OPTIONAL; THE TRANSMIT SIDE IS NOT. Folding the wire-already-read
-				// test into this condition skipped the tap setup below along with it, so an
-				// alias enabled beside a monitored sibling could not transmit at all — Quick
-				// Send and the diagnostic paths reporting "no open bus" for a channel that was
-				// ticked and sitting on a live wire.
-				if new && app.running && app.chans[i].monitorable() && !app.chans[i].running
-					&& !app.chans[i].spawning {
-					if !app.dest_is_read_locked(app.chans[i].iface) {
-						app.chans[i].spawning = true
-						spawn rx_loop(app, i, app.chans[i].iface, app.run_gen)
-					}
-					// …and the TRANSMIT side, exactly as start() sets it up. Only the reader was
-					// started here, so a channel enabled after Start had no tap: Quick Send and
-					// the diagnostic paths reported "no open bus", and with no send_iface yet the
-					// Send panel had nothing selected. (Nobody hit it while the branch was
-					// unreachable — fixing that exposed the other half.)
-					iface := app.chans[i].iface
-					name := app.chans[i].name
-					if tx_bus_key(name, iface) !in app.tx_buses {
-						if b := app.open_tap_on(iface, org_tx, name) {
-							app.tx_buses[tx_bus_key(name, iface)] = b
-						}
-					}
-					if tx_bus_key('', iface) !in app.tx_buses {
-						if b := app.open_tap(iface, org_tx) {
-							app.tx_buses[tx_bus_key('', iface)] = b
-						}
-					}
-					if app.send_iface == '' {
-						app.send_iface = iface
-					}
-				}
-				app.mu.unlock()
 			}
 			vgui.same_line()
 			r, g, b, label := chan_state(c, read_dests[transport.destination_key(c.iface)] or {
