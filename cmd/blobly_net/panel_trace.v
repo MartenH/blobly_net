@@ -3,7 +3,7 @@ module main
 import candb
 import vgui
 
-fn draw_trace(mut app App, rows []TraceRow, gcount map[string]u64, rx u64) {
+fn draw_trace(mut app App, rows []TraceRow, gcount map[string]u64, rx u64, run_base u64) {
 	vis, op := vgui.begin_closable('Trace', app.show_trace)
 	app.show_trace = op
 	if !vis {
@@ -44,17 +44,17 @@ fn draw_trace(mut app App, rows []TraceRow, gcount map[string]u64, rx u64) {
 	filt := vgui.buf_str(app.trace_filter_buf).to_lower()
 	if app.trace_grouped {
 		vgui.separator_text('by id (click to expand · click row to select)')
-		draw_trace_grouped(mut app, brows, gcount, filt)
+		draw_trace_grouped(mut app, brows, gcount, filt, run_base)
 	} else {
 		vgui.separator_text('frames (newest first)')
-		draw_trace_all('trace9', brows, filt, app.trace_run_base)
+		draw_trace_all('trace9', brows, filt, run_base)
 	}
 	vgui.end()
 }
 
 // draw_ftrace is the "Trace (filter)" watch list: it shows ONLY the frames you've added
 // (via "+ Add to filter" in the Trace panel, or "+" in Symbols), over the same buffer.
-fn draw_ftrace(mut app App, rows []TraceRow, gcount map[string]u64) {
+fn draw_ftrace(mut app App, rows []TraceRow, gcount map[string]u64, run_base u64) {
 	vis, op := vgui.begin_closable('Trace (filter)', app.show_ftrace)
 	app.show_ftrace = op
 	if !vis {
@@ -96,9 +96,9 @@ fn draw_ftrace(mut app App, rows []TraceRow, gcount map[string]u64) {
 	frows := app.filter_bus(rows.filter(app.is_fwatched(it.id, it.ext)), app.ftrace_bus)
 	filt := vgui.buf_str(app.trace_filter2_buf).to_lower()
 	if app.trace_grouped2 {
-		draw_trace_grouped(mut app, frows, gcount, filt)
+		draw_trace_grouped(mut app, frows, gcount, filt, run_base)
 	} else {
-		draw_trace_all('ftrace9', frows, filt, app.trace_run_base)
+		draw_trace_all('ftrace9', frows, filt, run_base)
 	}
 	vgui.end()
 }
@@ -354,7 +354,7 @@ fn origin_mark(r TraceRow) string {
 const gcol_name = 3
 const gcol_data = 7
 
-fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt string) {
+fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt string, run_base u64) {
 	mut agg := map[string]GAgg{}
 	for r in rows {
 		if !trace_pass(r, filt) {
@@ -431,7 +431,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			vgui.table_row()
 			// idx and t are the NEWEST frame's — the same one the data column shows — so the
 			// row reads as one frame plus its history, not as fields from different frames.
-			trace_idx_t_cells(r, app.trace_run_base)
+			trace_idx_t_cells(r, run_base)
 			vgui.table_cell(g.ch)
 			vgui.table_next_col()
 			// ### keys the tree id on identity only, so the live label / sort don't reset it.
