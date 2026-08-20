@@ -140,13 +140,11 @@ fn main() {
 		return
 	}
 
-	// A LARGER FIXED window, deliberately not maximized: the maximized experiment scrambled
-	// layouts persisted at the old size — panels in one corner, the rest black — because the
-	// dock tree in imgui.ini does not survive that jump, and (before Reset Layout existed)
-	// there was no way back. 1800x1000 is the ask; vgui.init clamps it to the monitor's work
-	// area so a laptop still gets a window whose close button is on the screen. HEADLESS runs
-	// (VGUI_FRAMES / VGUI_SHOT — the documented GUI smoke) keep 1500x850: a screenshot's
-	// dimensions must not depend on the monitor it happened to render on.
+	// A LARGER FIXED window — deliberately not maximized (that experiment scrambled layouts
+	// persisted at the old size; View > Reset Layout is the recovery) and deliberately not
+	// clamped to the monitor (a clamp made these sizes machine-dependent, which the headless
+	// branch exists to prevent). HEADLESS runs (VGUI_FRAMES / VGUI_SHOT — the documented GUI
+	// smoke) keep 1500x850: a screenshot's dimensions must not depend on the monitor.
 	headless := max_frames > 0 || shot != ''
 	init_w, init_h := if headless { 1500, 850 } else { 1800, 1000 }
 	if !vgui.init('blobly_net — ${app.proj_name} (imgui/ImPlot)', init_w, init_h, true) {
@@ -227,13 +225,6 @@ fn main() {
 		draw_toolbar(mut app, rx, txs)
 		vgui.dockspace()
 		vgui.child_end()
-		if app.relayout {
-			// View > Reset Layout: throw the persisted dock tree away and rebuild the default.
-			// The builder is idempotent against imgui.ini by design, so a layout scrambled by a
-			// geometry change (the maximized-window episode) had no other way back.
-			app.relayout = false
-			vgui.dock_reset()
-		}
 		build_layout()
 		app.poll_hotkeys()
 
