@@ -5382,6 +5382,15 @@ fn (mut app App) remove_bus(i int) {
 	app.proj.channels.delete(i)
 	// drop generator bus-overrides that pointed at the removed bus, so start() won't reopen and
 	// transmit on an interface that's no longer configured (they fall back to their own channel).
+	//
+	// IN THE MODEL AS WELL AS THE CACHE. This is not an edit the operator made — it is
+	// maintenance that keeps the project consistent with a bus they deleted, and reaching only
+	// app.senders left it dependent on the fold. When the fold is refused (a Lua script holding
+	// the rebuild off), the next successful rebuild derives senders from app.proj, where the
+	// override still names the removed interface — and Start reopens and transmits on the very
+	// bus this loop exists to stop it from touching (codex #121 r7). app.proj is the authority,
+	// so the authority is what gets corrected.
+	app.clear_sender_bus(removed_iface, '')
 	for si in 0 .. app.senders.len {
 		if app.senders[si].sender.bus == removed_iface {
 			app.senders[si].sender.bus = ''
@@ -5441,10 +5450,31 @@ fn (mut app App) rebuild_preserving_senders() bool {
 // editing a bus address doesn't orphan them: sync_senders_into_proj groups senders by iface
 // (and firing opens tx_buses[iface]), so a stale SenderRT.iface would drop all of a renamed
 // bus's generators on the next Save/Start. Also follows explicit per-sender bus overrides.
+// clear_sender_bus repoints every explicit generator bus-override naming `old_iface` at
+// `new_iface` ('' = no override, i.e. fall back to the generator's own channel) IN THE MODEL.
+// Separate from the app.senders rewrites beside its callers because the two serve different
+// purposes: those keep the live panel consistent, this keeps the project consistent, and only
+// the second one survives a rebuild that had to be refused.
+fn (mut app App) clear_sender_bus(old_iface string, new_iface string) {
+	if old_iface == '' {
+		return
+	}
+	for ci in 0 .. app.proj.channels.len {
+		for si in 0 .. app.proj.channels[ci].senders.len {
+			if app.proj.channels[ci].senders[si].bus == old_iface {
+				app.proj.channels[ci].senders[si].bus = new_iface
+			}
+		}
+	}
+}
+
 fn (mut app App) rebind_senders(old_iface string, new_iface string) {
 	if old_iface == new_iface || old_iface == '' {
 		return
 	}
+	// The model first, for the same reason as remove_bus: an override left naming the old
+	// interface outlives the cache that was going to carry the correction.
+	app.clear_sender_bus(old_iface, new_iface)
 	for si in 0 .. app.senders.len {
 		if app.senders[si].iface == old_iface {
 			app.senders[si].iface = new_iface
@@ -8597,7 +8627,18 @@ fn draw_shell(mut app App) {
 	}
 	// the eth RPC shell (manifest `ethmod,shell,method`) needs NO CAN channel:
 	// it dials the board's UDP endpoint directly, Start or not
-	eth := app.eth_method != 0 && app.eth_someip.service != 0
+	//
+	// …which is exactly why it needs `!runtime_stale`. eth_someip and eth_method are RUNTIME
+	// fields, filled by rebuild_from_proj from the manifest. A refused rebuild leaves the
+	// PREVIOUS manifest's service, method and port sitting there, and because this shell does
+	// not wait for Start, nothing else stands between them and a command on the wire: the
+	// blocking script exits, the app is stopped and looks idle, and the shell dials an endpoint
+	// the project no longer describes (codex #121 r7).
+	eth := app.eth_method != 0 && app.eth_someip.service != 0 && !app.runtime_stale
+	if app.runtime_stale && app.eth_method != 0 {
+		vgui.text_colored(230, 120, 120,
+			'the Ethernet shell is from the previous configuration and is disabled — press Start to rebuild the runtime')
+	}
 	// NOTE (codex #65): absence of manifest metadata does NOT mean "no shell endpoint".
 	// ShellFrames.or_defaults() — which the worker itself calls — supplies 0x7F0/0x7F2/0x7F1,
 	// so a legacy manifest (no `# shell frames` section) and a manifest-less project both
