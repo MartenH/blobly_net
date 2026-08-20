@@ -97,16 +97,21 @@ mut:
 	dbs_by_iface map[string][]candb.Database // per-channel DBCs (generator message picker scope)
 	manifest     telem.Manifest
 	has_manifest bool
-	t0           i64
-	wake_ms      i64
-	last_wake    i64
-	proj_path    string
-	proj_name    string
-	dark         bool = true // theme
-	ui_scale     f32  = 1.0
-	paused       bool
-	recording    bool
-	rec          []canlog.LogEntry // captured while recording; written on stop
+	// Monotonic ns anchor for every row/record timestamp. Was `t0 i64` in ms via time.ticks(),
+	// which quantised t_ms to whole milliseconds — a 1 kHz bus showed every frame at the same
+	// stamp as its neighbour, and an FPS column computed from those stamps divides by zero.
+	// t_ms stays f64 MILLISECONDS everywhere (charts, echo windows, telemetry all consume it);
+	// only the clock behind it gained the missing decimals.
+	t0_ns     u64
+	wake_ms   i64
+	last_wake i64
+	proj_path string
+	proj_name string
+	dark      bool = true // theme
+	ui_scale  f32  = 1.0
+	paused    bool
+	recording bool
+	rec       []canlog.LogEntry // captured while recording; written on stop
 	// What WE put on the wire, split the way the trace splits it: the tester's own sends and
 	// the simulation's are different facts, and one merged number re-collapses them in the one
 	// place a user looks first. Counted at the tap (note_emit), so every emitter counts —

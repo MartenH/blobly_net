@@ -153,6 +153,17 @@ fn idstr(id u32, ext bool) string {
 // data column, but an FD frame carrying eight bytes or fewer looks exactly like a classic one,
 // and BRS never shows at all — so the trace would claim a frame that was never on the bus.
 // Empty for classic, which is the overwhelming majority and needs no decoration.
+// flags_str is the FLAGS column: the frame kinds that are invisible from the payload alone.
+// RTR and FD/BRS/ESI reuse the exact wording kind_mark established; EXT is deliberately absent
+// because the 8-digit id already shows it, and a column that repeats a neighbouring column
+// teaches the reader to skip both.
+fn flags_str(r TraceRow) string {
+	if r.rtr {
+		return 'RTR'
+	}
+	return kind_mark(r.fd, r.brs, r.esi).trim_space()
+}
+
 fn kind_mark(fd bool, brs bool, esi bool) string {
 	if !fd {
 		return ''
@@ -243,12 +254,20 @@ fn trace_name_cell(r TraceRow) string {
 }
 
 fn draw_trace_all(id string, rows []TraceRow, filt string) {
-	if vgui.table_begin(id, 6) {
-		vgui.table_setup_col('t (ms)', 66)
+	if vgui.table_begin(id, 9) {
+		// Column order follows the layout every CAN tool's summary view has taught people to
+		// read: index and time lead, then where (ch) and what (id/name), then the frame's shape.
+		vgui.table_setup_col('idx', 60)
+		// SECONDS, six decimals. The old `t (ms)` at one decimal quantised a 1 kHz bus to rows
+		// that all read alike; the clock behind t_ms is ns-resolution now, so the decimals are
+		// real, and seconds is the unit candump readers already think in.
+		vgui.table_setup_col('t (s)', 100)
 		vgui.table_setup_col('ch', 52)
-		vgui.table_setup_col('origin', 64)
 		vgui.table_setup_col('id', 82)
 		vgui.table_setup_col('name', 150)
+		vgui.table_setup_col('origin', 64)
+		vgui.table_setup_col('len', 34)
+		vgui.table_setup_col('flags', 58)
 		vgui.table_setup_col('data', 0) // stretch
 		vgui.table_freeze_top()
 		vgui.table_headers()
@@ -262,14 +281,18 @@ fn draw_trace_all(id string, rows []TraceRow, filt string) {
 			}
 			shown++
 			vgui.table_row()
-			vgui.table_cell('${r.t_ms:.1}')
+			vgui.table_cell('${r.seq}')
+			vgui.table_cell('${r.t_ms / 1000.0:.6f}')
 			vgui.table_cell(r.ch)
-			vgui.table_cell('${r.origin}${origin_mark(r)}')
 			vgui.table_cell(idstr(r.id, r.ext))
 			// A violation is appended to the NAME rather than given a column: it is rare, and
 			// a permanently-empty column costs width on every row for the frames that are fine.
 			vgui.table_cell(trace_name_cell(r))
-			vgui.table_cell(if r.rtr { 'RTR' } else { hex(r.data) + kind_mark(r.fd, r.brs, r.esi) })
+			vgui.table_cell('${r.origin}${origin_mark(r)}')
+			vgui.table_cell('${r.data.len}')
+			vgui.table_cell(flags_str(r))
+			// the FD/BRS suffix moved out of this cell into the flags column — payload only here
+			vgui.table_cell(if r.rtr { '' } else { hex(r.data) })
 		}
 		vgui.table_end()
 	}
@@ -284,6 +307,11 @@ mut:
 	fd     bool
 	brs    bool
 	count  int
+	// t_ms of the group's OLDEST frame still in the visible ring — the denominator of the fps
+	// column. The ring holds 2000 rows, so this is the rate over the window the reader is
+	// looking at, not over all time: a group that stops sending keeps its last computed rate
+	// until its frames age out, exactly like the count next to it.
+	first_t f64
 	// Any frame in this group that never reached the wire. Taken across the whole group, not
 	// from `last`: the newest row is the one whose echo window has had least time to close, so
 	// reading the flag off it would hide every miss but the stalest.
@@ -325,7 +353,16 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		// two rows, not one row with a count that quietly adds them together.
 		k := gkey(r.origin, r.ch, r.id, r.ext, r.fd, r.brs)
 		mut g := agg[k] or {
-			GAgg{r.origin, r.ch, r.id, r.ext, r.fd, r.brs, 0, false, r, TraceRow{}}
+			GAgg{
+				origin:  r.origin
+				ch:      r.ch
+				id:      r.id
+				ext:     r.ext
+				fd:      r.fd
+				brs:     r.brs
+				first_t: r.t_ms
+				last:    r
+			}
 		}
 		if r.missed {
 			g.missed = true
@@ -360,17 +397,29 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		}
 		return 0
 	})
-	if vgui.table_begin('gtrace', 5) {
-		vgui.table_setup_col('id / name', 210)
+	if vgui.table_begin('gtrace', 10) {
+		// idx and t lead, as in the chronological view and in every summary view readers come
+		// from; the tree (expand) widget rides on the id/name column, wherever that column is.
+		vgui.table_setup_col('idx', 60)
+		vgui.table_setup_col('t (s)', 100)
 		vgui.table_setup_col('ch', 52)
+		vgui.table_setup_col('id / name', 210)
 		vgui.table_setup_col('origin', 64)
-		vgui.table_setup_col('count', 60)
+		vgui.table_setup_col('len', 34)
+		vgui.table_setup_col('flags', 58)
 		vgui.table_setup_col('data', 0)
+		vgui.table_setup_col('count', 60)
+		vgui.table_setup_col('fps', 56)
 		vgui.table_freeze_top()
 		vgui.table_headers()
 		for g in groups {
 			r := g.last
 			vgui.table_row()
+			// idx and t are the NEWEST frame's — the same one the data column shows — so the
+			// row reads as one frame plus its history, not as fields from different frames.
+			vgui.table_cell('${r.seq}')
+			vgui.table_cell('${r.t_ms / 1000.0:.6f}')
+			vgui.table_cell(g.ch)
 			vgui.table_next_col()
 			// ### keys the tree id on identity only, so the live label / sort don't reset it.
 			open := vgui.tree_node_table('${idstr(g.id, g.ext)}  ${trace_name_cell(r)}###${gkey(g.origin,
@@ -397,11 +446,9 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				}
 				vgui.end_popup()
 			}
-			vgui.table_cell(g.ch)
 			vgui.table_cell('${g.origin}${if g.missed { '!' } else { '' }}')
-			// all-time total (survives the ring trim); fall back to the window count.
-			total := gcount[gkey(g.origin, g.ch, g.id, g.ext, g.fd, g.brs)] or { u64(g.count) }
-			vgui.table_cell('${total}')
+			vgui.table_cell('${r.data.len}')
+			vgui.table_cell(flags_str(r))
 			// data column: dim bytes that match the PREVIOUS frame of this group, normal for
 			// ones that changed (conventional change highlight). Compared against the actual prior
 			// frame in the trace buffer — not the last-rendered payload — so the delta is correct
@@ -409,9 +456,10 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			// shows against the real previous frame).
 			vgui.table_next_col()
 			if r.rtr {
-				vgui.text('RTR')
+				// the flags column already says RTR; repeating it here as fake payload made the
+				// one row with no data the only row saying something twice
 			} else {
-				mark := kind_mark(r.fd, r.brs, r.esi)
+				// the FD/BRS suffix moved to the flags column; this cell is payload only
 				prev := g.prev.data
 				for i, b in r.data {
 					if i > 0 {
@@ -424,10 +472,18 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 						vgui.text_dim(tok) // unchanged → dimmed
 					}
 				}
-				if mark != '' {
-					vgui.same_line()
-					vgui.text_dim(mark.trim_space())
-				}
+			}
+			// all-time total (survives the ring trim); fall back to the window count.
+			total := gcount[gkey(g.origin, g.ch, g.id, g.ext, g.fd, g.brs)] or { u64(g.count) }
+			vgui.table_cell('${total}')
+			// Rate over the frames the ring still holds: n-1 intervals across the span they
+			// cover. Two frames minimum — a single frame has no interval, and inventing one
+			// from "now" would show a rate for a message that may never come again.
+			span_ms := r.t_ms - g.first_t
+			if g.count >= 2 && span_ms > 0 {
+				vgui.table_cell('${f64(g.count - 1) * 1000.0 / span_ms:.1}')
+			} else {
+				vgui.table_cell('-')
 			}
 			if open {
 				if m := app.find_message(g.id, g.ext) {
@@ -436,6 +492,11 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 						extra := if lbl != '' { ' (${lbl})' } else { '' }
 						unit := if s.unit != '' { ' ${s.unit}' } else { '' }
 						vgui.table_row()
+						// the signal name sits under id/name (column 4), value under data —
+						// the same columns their parent row uses for those things
+						for _ in 0 .. 3 {
+							vgui.table_next_col()
+						}
 						vgui.table_next_col()
 						// selectable spans the cell so the whole row is a right-click target
 						vgui.selectable('    ${s.name}##sigrow${g.id}_${g.ext}_${s.name}', false)
@@ -446,9 +507,10 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 							}
 							vgui.end_popup()
 						}
-						vgui.table_next_col()
-						vgui.table_next_col()
-						vgui.table_next_col()
+						// skip origin/len/flags to land the value in the data column
+						for _ in 0 .. 3 {
+							vgui.table_next_col()
+						}
 						vgui.table_cell('${s.physical(r.data):.3}${unit}${extra}')
 					}
 				}

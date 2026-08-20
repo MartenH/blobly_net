@@ -1,7 +1,6 @@
 module main
 
 import os
-import time
 import project
 import transport
 import candb
@@ -202,7 +201,9 @@ fn draw_menubar(mut app App, rx u64) {
 				}
 			}
 			vgui.separator_text('UI scale')
-			for s in [100, 125, 150, 175] {
+			// 75 exists for the opposite problem the maximized window solves: on a small screen
+			// the panels fight for room, and shrinking the UI is cheaper than closing one.
+			for s in [75, 100, 125, 150, 175] {
 				if vgui.menu_item('${s}%') {
 					app.ui_scale = f32(s) / 100.0
 					vgui.set_font_scale(app.ui_scale)
@@ -661,7 +662,7 @@ fn draw_graphics(mut app App, rows []TraceRow) {
 	// it holds still. Samples and `now` share app.t0's clock (rx stamps t_ms = ticks - t0).
 	mut xmax := f64(0)
 	if app.running && !app.paused {
-		xmax = f64(time.ticks() - app.t0) / 1000.0
+		xmax = app.since_ms() / 1000.0
 	} else {
 		for r in rows {
 			if app.is_watched_frame(r.id, r.ext) && f64(r.t_ms) / 1000.0 > xmax {

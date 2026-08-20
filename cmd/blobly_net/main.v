@@ -85,7 +85,7 @@ fn main() {
 	shot := os.getenv('VGUI_SHOT')
 
 	mut app := &App{
-		t0:      time.ticks()
+		t0_ns:   time.sys_mono_now()
 		wake_ms: wake_ms
 	}
 	app.send_id_buf = mkbuf('101', 24)
@@ -141,7 +141,9 @@ fn main() {
 		return
 	}
 
-	if !vgui.init('blobly_net — ${app.proj_name} (imgui/ImPlot)', 1500, 850, true) {
+	// 0x0 = maximized: the first act of every session was dragging the window out to size.
+	// The selftest keeps its fixed 1500x850 — screenshots must be comparable across runs.
+	if !vgui.init('blobly_net — ${app.proj_name} (imgui/ImPlot)', 0, 0, true) {
 		eprintln('vgui.init failed')
 		return
 	}

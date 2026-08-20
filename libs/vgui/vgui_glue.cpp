@@ -116,9 +116,15 @@ int vgui_init(const char* title, int w, int h, int event_driven) {
     if (!glfwInit()) return 1;
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
+    // w/h <= 0 = START MAXIMIZED. The fixed 1500x850 default meant the first act of every
+    // session was dragging the window out to the monitor; the hint has to be set BEFORE the
+    // window exists (GLFW_MAXIMIZED is a creation hint), and the size given underneath is
+    // what the window RESTORES to when un-maximized, so it stays the old sensible default.
+    bool maximized = (w <= 0 || h <= 0);
+    if (maximized) { glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE); w = 1500; h = 850; }
     g_win = glfwCreateWindow(w, h, title, nullptr, nullptr);
     if (!g_win) return 2;
-    glfwSetWindowPos(g_win, 60, 80);
+    if (!maximized) glfwSetWindowPos(g_win, 60, 80);
     glfwMakeContextCurrent(g_win);
     glfwSwapInterval(1);
     IMGUI_CHECKVERSION();

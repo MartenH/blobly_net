@@ -158,6 +158,8 @@ fn C.vgui_key_pressed(int) int
 fn C.vgui_combo(&char, &&char, int, int) int
 
 // --- lifecycle ---
+// init creates the OS window + GL context. w/h <= 0 opens MAXIMIZED (the values then only set
+// the size the window restores to); positive values open a fixed-size window at that size.
 pub fn init(title string, w int, h int, event_driven bool) bool {
 	return C.vgui_init(title.str, w, h, if event_driven { 1 } else { 0 }) == 0
 }
@@ -714,8 +716,8 @@ pub fn swimlane(id string, labels []string, bars []Bar, links []Link, full_span_
 	if links.len > 0 {
 		lnp = unsafe { voidptr(&links[0]) }
 	}
-	C.vgui_swimlane(id.str, labels.len, unsafe { &&char(lp.data) }, unsafe { &bars[0] },
-		bars.len, lnp, links.len, full_span_us, cursor_a, cursor_b)
+	C.vgui_swimlane(id.str, labels.len, unsafe { &&char(lp.data) }, unsafe { &bars[0] }, bars.len,
+		lnp, links.len, full_span_us, cursor_a, cursor_b)
 }
 
 // rgba packs a colour into IM_COL32 order (ABGR in memory).
