@@ -54,7 +54,11 @@ cmd/blobly_net/     the GUI (Dear ImGui + ImPlot)   <- the app
 cmd/*                CLI tools + smoke tests (flash, dbc_decode, mf4_dump, restbus, trace_dump, ...)
 libs/vgui/           the V wrapper around Dear ImGui/ImPlot
 modules/             engine (GUI-free, unit-tested)
-scripts/             setup, run, test, packaging
+scripts/             setup, run, test, packaging. `setup_vcan.sh` is the ONE per-session command
+                     (loads vcan, brings up vcan0/vcan1 at mtu 72); `build_vcan_module.sh` is the
+                     rare one (once, and after a kernel upgrade). Both source `vcan_common.sh`
+                     for the questions they share — one answer each, tested by
+                     `vcan_common_test.sh`, because every place they were answered twice drifted
 projects/            example `.blobnet` projects
 sut/                 Python VERIFICATION ORACLES (dev-time only, not CI, not the sim path):
                      cantools/asammdf/udsoncan as INDEPENDENT implementations to diff V against.
@@ -94,7 +98,9 @@ v -enable-globals test modules/             # unit tests — the reliable backbo
 ./scripts/runtests.sh tests/diag_basic.lua  # headless Lua integration tests (in-process sim)
 ```
 
-CI (`.github/workflows/`) runs `v -enable-globals test modules/` plus `scripts/runtests.sh`. `windows.yml`
+CI (`.github/workflows/`) runs `v -enable-globals test modules/`, `scripts/runtests.sh` and
+`scripts/vcan_common_test.sh` (the shared setup-script answers — whose home under sudo, is vcan
+available — driven through stubbed `getent`/`id`/`ip`/`sudo`, so it runs unprivileged). `windows.yml`
 additionally downloads a prebuilt V toolchain from this repo's **`v-toolchain` release** — if that
 release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks.
 
@@ -164,6 +170,18 @@ release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks.
   which makes this repo an *additional* working directory — its `CLAUDE.md` never enters context
   on its own. Read it before the first change here. An entire session (PRs #79–#84) ran without
   it and broke two of the rules below in silence.
+- **And read the CURRENT one — `git fetch -q origin && git show origin/main:CLAUDE.md`.** The
+  main checkout is a shared working copy that other sessions leave behind; the copy sitting in
+  it can be many commits old, and nothing about reading it says so. This guide is where the
+  hard-won operational detail lives, so a stale copy is not a stale summary — it is a *confident
+  wrong answer* about the thing you are least able to verify from the outside.
+  Concretely, in the session that added this bullet: the checkout was four commits behind, the
+  polling section it served predated net#110/#116, and the watcher built from it read only
+  `pulls/N/reviews`. Findings arrive there, so it looked like it worked for four rounds — but a
+  **clean** verdict lands in `issues/N/comments`, so it could never have reported one, and
+  "iterate until clean" had no way to terminate. Every fact needed was already written down, one
+  `git show` away. Re-read it the same way whenever you pick work back up after a gap; other
+  sessions land PRs into this file while you are working.
 - **PRs get `@codex review`**; iterate until clean before merging. Watch each round with a
   **tracked** background job, never a detached shell (`( ... & )`) — a detached watcher fires
   into nothing and the round sits unread. Two reviews were missed that way in one session, one
@@ -181,6 +199,32 @@ release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks.
   promise the GUI made and the backend could not keep, in the original work, not in any fix.**
   Stopping one round earlier would have shipped it. Judge each finding on its merits; let
   repetition tell you what to test, not when to quit.
+- **React 👍/👎 on every finding.** Codex's footer asks "Useful? React with 👍 / 👎", and that is
+  the only channel the review has for learning what it got right; leaving it empty tells it
+  nothing, round after round. `gh api -X POST repos/<o>/<r>/pulls/comments/<id>/reactions -f
+  content='+1'` (or `'-1'`). **What the reaction rates is whether the FINDING is true, not
+  whether you liked the remedy and not whether you are going to act on it here:**
+
+  | the finding is… | react | and |
+  |---|---|---|
+  | a real defect you reproduced, or one plainly derivable from the code | 👍 | fix it |
+  | real, but **pre-existing** — it is not this PR's doing | 👍 | file an issue; say which, so it is not lost when the branch is |
+  | real, but the suggested **fix** is wrong or too narrow | 👍 | fix it your way and say why the shape differs |
+  | real, and caused by **your own previous round's fix** | 👍 | the strongest signal you get — see the repeat rule above, and go after the class |
+  | a claim you **checked and it does not hold** | 👎 | one line of evidence; never a silent dismissal |
+  | an artifact of the review's own checkout (see the commit-identity note above) | 👎 | run both of that note's tests first |
+  | style with no defect behind it | 👎 | say so plainly |
+  | something you **cannot yet tell** | *wait* | investigate, then react — a reaction you have to take back is worse than a late one |
+
+  Then reply once with a table of the round's disposition (finding · reaction · what happened),
+  so the maintainer can read it without opening every thread. A 👎 costs a sentence of reasoning;
+  "judge each finding on its merits" cuts both ways, and a round where every row is 👍 is worth
+  noticing rather than assuming.
+
+  **This is the opposite direction from the reaction rule below.** WRITING a reaction is feedback
+  to codex and is expected of you. READING codex's 👍 as the verdict is what cannot be made to
+  work — the payload carries no reviewed SHA, and GitHub will not re-create an identical
+  reaction, so it can never look fresh. Write them; never read them.
 - **Update this file in the PR that lands the work** — especially new modules/panels. The gap
   between 2026-07-06 and 07-21 (~30 PRs) had to be reconstructed from `git log`; don't repeat it.
 - **Cross-repo:** the SUT side is **blobly_emb** — see
