@@ -8431,18 +8431,34 @@ fn trace_ext(id u32) bool {
 // to the right bus. Falls back to the first running channel when no channel has a manifest.
 fn (app &App) trace_iface() string {
 	// IS THIS WIRE BEING READ, not "does this row hold the reader". Under one reader per wire a
-	// manifest attached to a non-owner alias left this row with running == false, so its
+	// manifest attached to a non-owner alias left that row with running == false, so its
 	// manifest was ignored and another destination's channel answered for it — trace commands
 	// going to the wrong bus in a multi-bus project.
 	//
-	// app.mu is held by the callers of this (the panel draws under it), which is why the locked
-	// helper is the right one to ask.
-	for c in app.chans {
-		if c.monitorable() && c.manifest != '' && app.dest_is_read_locked(c.iface) {
-			return c.iface
+	// UNDER THE LOCK, taken here. The previous version of this comment asserted that callers
+	// held app.mu; they do not — trace_dump_worker, the shell and the flash worker all release
+	// it before calling, and the panel never takes it. So the scan below ran unlocked against
+	// rows an rx_loop was publishing or a toggle was rewriting. None of the callers hold it,
+	// which is what makes taking it here safe as well as necessary.
+	mut a := unsafe { app }
+	a.mu.lock()
+	mut found := ''
+	for c in a.chans {
+		if c.monitorable() && c.manifest != '' && a.dest_is_read_locked(c.iface) {
+			found = c.iface
+			break
 		}
 	}
-	return app.diag_iface()
+	if found == '' {
+		for c in a.chans {
+			if c.monitorable() && c.running {
+				found = c.iface
+				break
+			}
+		}
+	}
+	a.mu.unlock()
+	return found
 }
 
 // trace_core_mask builds a dump mask from the manifest's distinct cores, so "Dump" reads out

@@ -154,6 +154,15 @@ fn main() {
 			// diagnostics, so a headless run got two built-in responders answering 0x7E0/0x7E8
 			// at once — a bus with two ECUs claiming one identity, in the runner that is
 			// supposed to be the reproducible one.
+			// A SILENCED WIRE CANNOT SIMULATE. A listen-only Vector channel opens ACK-free, so
+			// every simulated frame and every diagnostic response is refused — and this runner
+			// discards those errors, so it announced "simulating N nodes" and then produced
+			// nothing at all. A headless run that reports work it did not do is worse than one
+			// that stops.
+			if ch.adapter == 'vector' && ch.listen_only {
+				eprintln('channel ${ch.name} (${ch.iface}): listen_only, so it cannot host simulated nodes — remove listen_only or move them to another channel')
+				exit(1)
+			}
 			ch_dest := transport.destination_key_for(ch.adapter, ch.iface)
 			if ch_dest in seeded_ifaces {
 				println('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s)')
