@@ -20,6 +20,7 @@ module main
 
 import os
 import time
+import sync
 import transport
 
 struct Opts {
@@ -63,13 +64,33 @@ struct Borrowed {
 // seconds — and the process then exits with somebody's bench still pointed at our test
 // hardware. The one thing this tool must never do is leave a configuration changed.
 __global (
-	g_borrowed []Borrowed
+	g_borrowed  []Borrowed
+	g_borrow_mu &sync.Mutex
 )
+
+// The handler runs on another thread, and `borrow()` appends to the same array — an append that
+// may reallocate while the handler is walking it. A torn read there restores the wrong channels,
+// or none, which is the failure this whole mechanism exists to prevent.
+fn borrow_lock() {
+	if isnil(g_borrow_mu) {
+		g_borrow_mu = sync.new_mutex()
+	}
+	g_borrow_mu.lock()
+}
+
+fn borrow_unlock() {
+	if !isnil(g_borrow_mu) {
+		g_borrow_mu.unlock()
+	}
+}
 
 fn on_interrupt(_ os.Signal) {
 	eprintln('')
 	eprintln('interrupted — restoring Vector application channels')
-	give_back(g_borrowed)
+	borrow_lock()
+	snapshot := g_borrowed.clone()
+	borrow_unlock()
+	give_back(snapshot)
 	exit(130)
 }
 
@@ -89,7 +110,9 @@ fn borrow(app int, hw transport.VectorChannel) !Borrowed {
 	// every earlier borrow and not this one — the assignment already written, and nothing left
 	// that knew to undo it. Recording an intention we might not carry out is harmless: giving
 	// back a channel that was never taken restores it to what it already is.
+	borrow_lock()
 	g_borrowed << b
+	borrow_unlock()
 	transport.vector_assign(app, hw)!
 	return b
 }
@@ -540,6 +563,19 @@ fn selftest() ! {
 		if got.id != sent.id {
 			continue
 		}
+		// THE FORMAT, as the pair test checks it. The id has already had its extended flag
+		// stripped by the time it reaches here, so comparing id and payload alone would pass a
+		// standard frame that came back marked extended or remote — a receive path
+		// misclassifying frames is exactly what a self-test is for.
+		if got.extended || got.rtr || got.fd {
+			return error('the frame came back as ${if got.extended {
+				'extended'
+			} else if got.rtr {
+				'remote'
+			} else {
+				'FD'
+			}}, but a standard data frame was sent')
+		}
 		if got.data != sent.data {
 			return error('payload differs: sent ${sent.data.hex()}, got ${got.data.hex()}')
 		}
@@ -660,6 +696,10 @@ fn pair_test(o Opts) ! {
 		// traffic on a live bus finish the test for us — PAIR TEST PASSED on somebody else's
 		// frames, which is the one result this tool must never print.
 		if !is_test_frame(got) {
+			// COUNTED, as the main loop counts it. At saturation most frames arrive in this
+			// drain, so a corrupted one landing here was silently skipped and the run reported
+			// zero malformed — the tail is where the evidence mostly is.
+			n_bad++
 			continue
 		}
 		n_recv++

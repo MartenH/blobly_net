@@ -6012,14 +6012,22 @@ fn draw_buses(mut app App, chans []Chan) {
 					// ticked with no reader and no explanation. Ask whether this row would
 					// change the answer for a destination that is already running.
 					wire_key := transport.destination_key(app.chans[i].iface)
+					// SILENCE WINS, as bitrate_iface decides it. Taking the first running alias's
+					// flag read the wire as normal whenever the normal row happened to be listed
+					// first, though every port on it had been opened silent by its sibling — so
+					// the guard let through exactly the change it exists to refuse.
 					mut live_mode := ?bool(none)
 					for j, other in app.chans {
 						if j == i || !other.enabled || !other.running {
 							continue
 						}
-						if transport.destination_key(other.iface) == wire_key {
+						if transport.destination_key(other.iface) != wire_key {
+							continue
+						}
+						if m := live_mode {
+							live_mode = m || other.listen_only
+						} else {
 							live_mode = other.listen_only
-							break
 						}
 					}
 					if lm := live_mode {
