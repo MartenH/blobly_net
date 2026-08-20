@@ -235,15 +235,6 @@ fn (mut app App) start() {
 	// so the echo comes back with nothing to match and is filed as the device under test's.
 	// Taking each send lock waits for those to finish; taking them BEFORE app.mu keeps the same
 	// order the emitters use (send lock, then app.mu), so the two cannot deadlock.
-	// A fresh measurement supersedes any recording view: the chip comes down and a pause left
-	// over from viewing (load_recording pauses the capture) is lifted. AFTER every validation
-	// return above, not at the top — a Start refused by a destination conflict or unsaved DBC
-	// edits must leave the view state alone, or the imported REP rows sit there stripped of
-	// the label that explains them (codex #128 r1).
-	app.mu.lock()
-	app.viewing_rec = ''
-	app.paused = false
-	app.mu.unlock()
 	// tx_map_mu is held ACROSS the whole reset, not just the snapshot. A script from the previous
 	// run is not cancelled by Stop, and its BusOpener can lazily open a tap for an interface
 	// nobody used before — creating a send lock this drain never took, so that emitter could
@@ -271,6 +262,14 @@ fn (mut app App) start() {
 	// previous run's frame against the newly empty ring — as this run's bus traffic.
 	app.run_gen++
 	start_gen := app.run_gen // the run every consumer spawned below belongs to
+	// The view transition rides the SAME lock, AFTER the generation bump. A fresh measurement
+	// supersedes any recording view (the chip comes down; the pause load_recording set is
+	// lifted) — but unpausing before the bump left a window where a stale rx_loop waking from
+	// recv passed the old-generation checks and dropped its frame into the freshly unpaused
+	// trace. After every validation return, too: a refused Start must leave the imported REP
+	// rows wearing the label that explains them (codex #128 r1, r4).
+	app.viewing_rec = ''
+	app.paused = false
 	app.mu.unlock()
 	for m in held {
 		m.unlock()

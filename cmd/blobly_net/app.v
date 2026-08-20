@@ -542,6 +542,14 @@ fn (app &App) resolve_asset(path string) string {
 }
 
 fn (mut app App) set_project(proj project.Project, path string) {
+	// A capture belongs to the project it was recorded IN. Neither stop() nor the reset below
+	// touches `recording`, so a Record left running across File > Open/New kept appending the
+	// NEXT project's traffic to the old capture and saved the mixture beside the old project —
+	// where the new project's picker never looks (codex #128 r4). Stop Rec here writes the
+	// frames to the path the capture reserved; a failed write keeps them, same as any Stop.
+	if app.recording {
+		app.toggle_record()
+	}
 	// Warn HERE, not in load_project: this is the function that abandons the File tab's buffer
 	// (via cfg_invalidate below), so every caller is covered — File ▸ New bypassed a warning
 	// placed in load_project — and load_project's error path returns before reaching this, so
