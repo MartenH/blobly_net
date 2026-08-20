@@ -179,13 +179,6 @@ fn (mut app App) start() {
 	if app.dirty {
 		app.apply_edits()
 	}
-	// A fresh measurement supersedes any recording view: the chip comes down and a pause left
-	// over from viewing (load_recording pauses the capture) is lifted — otherwise Start would
-	// silently capture nothing into a trace still labelled as a file.
-	app.mu.lock()
-	app.viewing_rec = ''
-	app.paused = false
-	app.mu.unlock()
 	// ONE WIRE, ONE RATE. Two enabled rows on the same destination that disagree about the
 	// bitrate are a contradiction the backend cannot see: bitrate_iface picks one of them and
 	// hands every monitor and transmit open the same string, so the Vector layer's own
@@ -242,6 +235,15 @@ fn (mut app App) start() {
 	// so the echo comes back with nothing to match and is filed as the device under test's.
 	// Taking each send lock waits for those to finish; taking them BEFORE app.mu keeps the same
 	// order the emitters use (send lock, then app.mu), so the two cannot deadlock.
+	// A fresh measurement supersedes any recording view: the chip comes down and a pause left
+	// over from viewing (load_recording pauses the capture) is lifted. AFTER every validation
+	// return above, not at the top — a Start refused by a destination conflict or unsaved DBC
+	// edits must leave the view state alone, or the imported REP rows sit there stripped of
+	// the label that explains them (codex #128 r1).
+	app.mu.lock()
+	app.viewing_rec = ''
+	app.paused = false
+	app.mu.unlock()
 	// tx_map_mu is held ACROSS the whole reset, not just the snapshot. A script from the previous
 	// run is not cancelled by Stop, and its BusOpener can lazily open a tap for an interface
 	// nobody used before — creating a send lock this drain never took, so that emitter could

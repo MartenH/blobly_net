@@ -27,7 +27,14 @@ fn (mut app App) open_browser(target string) {
 	} else {
 		[]string{}
 	}
-	mut dir := if app.proj_path != '' { os.dir(app.proj_path) } else { 'projects' }
+	// For recordings, START WHERE RECORD WRITES — one function decides both sides.
+	mut dir := if target == 'recording' {
+		app.recordings_dir()
+	} else if app.proj_path != '' {
+		os.dir(app.proj_path)
+	} else {
+		'projects'
+	}
 	if !os.is_dir(dir) {
 		dir = '.'
 	}

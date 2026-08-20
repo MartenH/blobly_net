@@ -20,10 +20,7 @@ fn trace_capture_chips(mut app App) {
 		vgui.text_colored(230, 170, 70, 'viewing recording: ${app.viewing_rec} (capture paused)')
 		vgui.same_line()
 		if vgui.small_button('resume live##unrec') {
-			app.mu.lock()
-			app.viewing_rec = ''
-			app.paused = false
-			app.mu.unlock()
+			app.toggle_pause() // unpausing IS leaving the file view — see toggle_pause
 		}
 	}
 }
@@ -31,9 +28,18 @@ fn trace_capture_chips(mut app App) {
 // toggle_pause flips the capture intake under the lock the readers hold: rx workers evaluate
 // `!app.paused` inside app.mu, and an unlocked write from the GUI thread was a data race that
 // could defer a Pause press arbitrarily on a hot bus.
+//
+// EVERY unpause leaves the file view. There is no state where the capture runs and the trace
+// legitimately shows a recording — a file does not play — so a generic Resume that cleared only
+// `paused` let live frames pour back into the imported ring while the chip still named the
+// file. One transition, used by the Trace button, the toolbar chip and 'resume live' alike;
+// which button the user found must not decide what state they land in (codex #128 r1).
 fn (mut app App) toggle_pause() {
 	app.mu.lock()
 	app.paused = !app.paused
+	if !app.paused {
+		app.viewing_rec = ''
+	}
 	app.mu.unlock()
 }
 
