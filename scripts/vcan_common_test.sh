@@ -7,6 +7,11 @@
 # allowed to ask" as "the answer is no". Both are pure functions of the environment, so both are
 # testable — and CLAUDE.md's rule for findings that repeat in one path is to cover the path
 # rather than keep patching cases.
+# `set -e` is DELIBERATELY absent here (the harness counts failures rather than dying on the
+# first), which is exactly why the caller-path tests at the bottom set it explicitly: the real
+# scripts run under `set -euo pipefail`, and a suite that never does cannot see an errexit bug.
+# One slipped through precisely that gap — a bare `vcan_available` that killed the script before
+# its status could be captured, on the stock-WSL path the script exists to repair.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 . scripts/vcan_common.sh
@@ -51,6 +56,29 @@ ok "neither script hard-codes a second marker path" \
 # --- "cannot tell" is not "no" ------------------------------------------------------------------
 # A kernel with no usable signal AND no sudo must return 2, never 1: returning 1 sends the caller
 # off to compile a kernel because a probe was refused.
+# Stub environments, one per scenario and never reused — an earlier draft shared one directory
+# and then rewrote its `zcat` for a later assertion, so a test asking for "the kernel says no"
+# silently got "vcan is built in" and passed for the wrong reason.
+#
+# `kernelno`: sudo works, `ip link show` succeeds and lists no vcan, `ip link add` fails.
+# That is the kernel genuinely answering no — availability 1.
+kernelno=$(mktemp -d)
+printf '#!/bin/sh\n[ "$1" = "-n" ] && shift\nexec "$@"\n' > "$kernelno/sudo"
+printf '#!/bin/sh\ncase "$*" in *"link add"*) exit 1 ;; *) exit 0 ;; esac\n' > "$kernelno/ip"
+printf '#!/bin/sh\nexit 1\n' > "$kernelno/zcat"
+printf '#!/bin/sh\nexit 1\n' > "$kernelno/lsmod"
+printf '#!/bin/sh\nexit 1\n' > "$kernelno/modinfo"
+chmod +x "$kernelno"/*
+
+# `nosudo`: sudo is refused outright, so the question cannot be asked — availability 2.
+nosudo=$(mktemp -d)
+printf '#!/bin/sh\nexit 1\n' > "$nosudo/sudo"
+printf '#!/bin/sh\nexit 1\n' > "$nosudo/ip"
+printf '#!/bin/sh\nexit 1\n' > "$nosudo/zcat"
+printf '#!/bin/sh\nexit 1\n' > "$nosudo/lsmod"
+printf '#!/bin/sh\nexit 1\n' > "$nosudo/modinfo"
+chmod +x "$nosudo"/*
+
 deny=$(mktemp -d)
 printf '#!/bin/sh\nexit 1\n' > "$deny/sudo"                                  # every sudo denied
 printf '#!/bin/sh\nexit 1\n' > "$deny/ip"                                    # no vcan interfaces
@@ -74,6 +102,29 @@ cfg=$(mktemp -d)
 printf '#!/bin/sh\nexec /bin/zcat "'"$cfg"'/config.gz"\n' > "$deny/zcat"; chmod +x "$deny/zcat"
 PATH="$deny:/usr/bin:/bin" bash -c 'set -o pipefail; . '"$PWD"'/scripts/vcan_common.sh; vcan_available_free' >/dev/null 2>&1
 ok "vcan_available_free: CONFIG_CAN_VCAN=y matches under pipefail" "$?" "0"
+
+# --- the CALLER path, under the errexit the real scripts actually use --------------------------
+# Not the helpers in isolation: how build_vcan_module.sh consumes them. `vcan_available` returns
+# 1 and 2 as ANSWERS, and under `set -e` a bare call turns either into a silent exit.
+for want in 1 2; do
+	case $want in
+		1) env="$kernelno" ;; # sudo works, the kernel says no
+		2) env="$nosudo" ;;   # sudo refused: cannot tell
+	esac
+	got=$(PATH="$env:/usr/bin:/bin" bash -c '
+		set -euo pipefail
+		. '"$PWD"'/scripts/vcan_common.sh
+		_avail=0
+		vcan_available || _avail=$?
+		echo "captured=$_avail"' 2>&1)
+	ok "caller under set -e captures $want instead of dying" "$got" "captured=$want"
+done
+
+# And the real script must reach its own reporting on the no-privilege path rather than
+# vanishing: exit 2 with no output was the symptom.
+out=$(PATH="$nosudo:/usr/bin:/bin" timeout 30 bash "$PWD/scripts/build_vcan_module.sh" --load 2>&1 || true)
+ok "build_vcan_module.sh --load explains a refused probe" \
+   "$(printf '%s' "$out" | grep -c 'setup_sudoers.sh')" "1"
 
 echo "vcan_common: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

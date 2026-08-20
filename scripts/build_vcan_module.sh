@@ -149,7 +149,13 @@ elif [ "$MODE" = build ]; then
 	# the cheap wrong answer here where a refusal would be the expensive one.
 	:
 else
-	vcan_available; _avail=$?
+	# `|| _avail=$?`, never a bare call. Under `set -e` a bare `vcan_available` that returns
+	# non-zero kills the script BEFORE the assignment — silently, on the stock-WSL path this
+	# whole script exists to repair (no vcan, probe says no → 1), and equally on the 2 that was
+	# supposed to print the sudoers guidance. A `||` suspends errexit for the call and captures
+	# the status (codex #122 r5).
+	_avail=0
+	vcan_available || _avail=$?
 	case "$_avail" in
 		0)
 			# Built in (CONFIG_CAN_VCAN=y): there is no module, and there is nothing for the load
