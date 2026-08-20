@@ -145,9 +145,10 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   the core must not import `sysview`/`telem`/`flash`, so "works without emb" is enforced rather
   than asserted. The **visible** half of this already exists and is the baseline to build on,
   not remaining work: Trace Chart, Flash, Shell and System are already grouped under a
-  `blobly_emb target` separator in both the View menu and the activity bar (`draw_menubar`/`draw_activity_bar`, `panel_misc.v`, and
-  ~1562). One *promotion* also already ships: `load_project` finds a `system.toml` beside the
-  project and sets `show_sys = sys_loaded` (`load_project`, `app.v`), opening the System panel by itself.
+  `blobly_emb target` separator in both the View menu and the activity bar
+  (`draw_menubar`/`draw_activity_bar`, `panel_misc.v`). One *promotion* also already ships:
+  `load_project` finds a `system.toml` beside the project and sets `show_sys = sys_loaded`
+  (`app.v`), opening the System panel by itself.
   So the remaining promotion work is the manifest and bootloader cases, not all three.
   **Discovery must not gate the entry points that create the thing being discovered.** Two in
   particular are circular: the System panel holds the *only* `system.toml` path input
