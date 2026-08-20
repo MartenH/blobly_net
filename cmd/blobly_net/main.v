@@ -659,6 +659,46 @@ fn (c Chan) for_open() project.Channel {
 //
 // A FUNCTION, because the check is needed twice: Start is not the only way a channel joins a
 // run — the Buses panel can enable one live, and that path went straight past this.
+// silent_conflict reports a Vector destination that one row has set to listen-only while
+// another puts frames on it. The transceiver has ONE mode and silence is the safe reading, so
+// the other row's traffic would be refused a frame at a time — a failed run where the honest
+// answer is that the project asks two different things of one wire.
+//
+// A FUNCTION for the same reason rate_conflict is: Start is not the only way a channel joins a
+// run.
+fn (app &App) silent_conflict() ?string {
+	// VECTOR ONLY, because it is the only backend where listen_only reaches the transceiver.
+	// Applied to every adapter this refused two perfectly good rows on one `inproc:` bus — a
+	// listen-only monitor beside a replay — where nothing is silenced at all.
+	mut silent_dest := map[string]string{}
+	for c in app.chans {
+		if c.enabled && c.listen_only && c.adapter == 'vector' {
+			silent_dest[transport.destination_key(c.iface)] = c.name
+		}
+	}
+	for c in app.chans {
+		if !c.enabled || c.adapter != 'vector' {
+			continue
+		}
+		// EVERY TRANSMITTER, not only replay. Simulated nodes, diagnostic responders and cyclic
+		// senders all put frames on the wire, and each of them would have been refused one frame
+		// at a time by a transceiver a sibling row had quieted.
+		mut what := ''
+		if c.replaying() {
+			what = 'replays onto'
+		} else if app.transmits_on(c) {
+			what = 'transmits on'
+		}
+		if what == '' {
+			continue
+		}
+		if quiet := silent_dest[transport.destination_key(c.iface)] {
+			return '${c.name} ${what} ${c.iface}, which ${quiet} has set to listen-only — one wire, one mode'
+		}
+	}
+	return none
+}
+
 fn (app &App) rate_conflict() ?string {
 	mut rate_of := map[string]int{}
 	mut rate_row := map[string]string{}
@@ -693,7 +733,11 @@ fn (app &App) rate_conflict() ?string {
 
 fn (app &App) transmits_on(c Chan) bool {
 	for sc in app.sims {
-		if sc.pch.name == c.name && (sc.nodes.len > 0 || sc.verify.len > 0) {
+		// NODES ONLY. start() spawns sim_loop when `nodes.len > 0`, so a row carrying just
+		// `verify:` rules never transmits — it watches. Counting it as a transmitter refused a
+		// perfectly good arrangement: a listen-only alias beside a row that only checks what it
+		// hears is exactly what a quiet bench looks like.
+		if sc.pch.name == c.name && sc.nodes.len > 0 {
 			return true
 		}
 	}
@@ -769,35 +813,9 @@ fn (mut app App) start() {
 	// still starts, opens that silent bus, and has every frame refused. The operator gets a
 	// failed run where the honest answer is that they asked for two different things on one
 	// wire. Said before anything opens.
-	// VECTOR ONLY, because it is the only backend where listen_only reaches the transceiver.
-	// Applied to every adapter this refused two perfectly good rows on one `inproc:` bus — a
-	// listen-only monitor beside a replay — where nothing is silenced at all.
-	mut silent_dest := map[string]string{}
-	for c in app.chans {
-		if c.enabled && c.listen_only && c.adapter == 'vector' {
-			silent_dest[transport.destination_key(c.iface)] = c.name
-		}
-	}
-	for c in app.chans {
-		if !c.enabled || c.adapter != 'vector' {
-			continue
-		}
-		// EVERY TRANSMITTER, not only replay. Simulated nodes, diagnostic responders and cyclic
-		// senders all put frames on the wire, and each of them would have been refused one frame
-		// at a time by a transceiver a sibling row had quieted.
-		mut what := ''
-		if c.replaying() {
-			what = 'replays onto'
-		} else if app.transmits_on(c) {
-			what = 'transmits on'
-		}
-		if what == '' {
-			continue
-		}
-		if quiet := silent_dest[transport.destination_key(c.iface)] {
-			app.notify('${c.name} ${what} ${c.iface}, which ${quiet} has set to listen-only — one wire, one mode; not starting')
-			return
-		}
+	if bad := app.silent_conflict() {
+		app.notify('${bad} — not starting')
+		return
 	}
 	if bad := app.rate_conflict() {
 		app.notify('${bad} — not starting')
@@ -2034,7 +2052,8 @@ fn (mut app App) load_recording(path string) {
 	// string. Keying the sets by iface alone therefore matched nothing and every imported frame
 	// came back with an empty verdict, which is what the previous attempt at this did.
 	mut verifiers := map[string]sim.VerifySet{}
-	mut alias := map[string]string{} // recorded label -> project iface
+	mut alias := map[string]string{} // recorded label -> destination key
+	mut dbc_iface := map[string]string{} // destination key -> one raw interface, for dbs_for
 	for sc in app.sims {
 		// A DoIP entry carries no frames and no `verify:`, so it must not create a verifier set
 		// for its interface: an empty one made `verifiers.len == 1` false and an unlabelled MF4
@@ -2063,6 +2082,9 @@ fn (mut app App) load_recording(path string) {
 		vs.merge_into(sim.verifiers_for(live, [], sc.verify)) // conflicts already reported at start
 
 		verifiers[sc_dest] = vs
+		if sc_dest !in dbc_iface {
+			dbc_iface[sc_dest] = sc.iface
+		}
 		alias[sc.iface] = sc_dest
 		alias[sc_dest] = sc_dest
 		for c in app.chans {
@@ -2082,10 +2104,13 @@ fn (mut app App) load_recording(path string) {
 	// where only one is simulated would otherwise apply that one's rules to every `mf4:busN` —
 	// and the distinct labels are the file telling us the recording spans several buses. So the
 	// import may only fall back when the PROJECT itself has a single CAN bus to fall back to.
+	// COUNTED BY DESTINATION, like the verifier map above it. Two spellings of one wire counted
+	// as two buses, so a project with `vector:1` and `vector:ch1` looked multi-bus to the
+	// single-bus fallback and an imported one-bus recording was verified against nothing.
 	mut can_buses := map[string]bool{}
 	for c in app.chans {
 		if !c.doip {
-			can_buses[c.iface] = true
+			can_buses[transport.destination_key(c.iface)] = true
 		}
 	}
 	// BOTH sides must be unambiguous. A one-bus project importing a TWO-bus recording is still a
@@ -2119,7 +2144,11 @@ fn (mut app App) load_recording(path string) {
 			// single-bus fallback, where there is nothing to get wrong.
 			ifc := if from_mf4 { mf4_only } else { alias[e.iface] or { only } }
 			if mut vs := verifiers[ifc] {
-				if k := vs.resolve(app.dbs_for(ifc), f.id, f.extended) {
+				// THE RAW INTERFACE for the databases. dbs_by_iface is keyed by what the
+				// channel is called, and `ifc` is now a destination key — so looking the DBCs
+				// up by it found none, and a verifier could no longer adopt a name or a layout
+				// from the database. The map remembers one raw spelling per destination.
+				if k := vs.resolve(app.dbs_for(dbc_iface[ifc] or { ifc }), f.id, f.extended) {
 					if mut ver := vs.by_key[k] {
 						viol = ver.check(f.data).str()
 						vs.by_key[k] = ver
@@ -5881,8 +5910,18 @@ fn draw_buses(mut app App, chans []Chan) {
 				if new && app.running && app.chans[i].adapter in ['pcan', 'kvaser', 'vector'] {
 					app.chans[i].enabled = true
 					clash := app.rate_conflict()
+					quiet := app.silent_conflict()
 					app.chans[i].enabled = false
 					if bad := clash {
+						app.mu.unlock()
+						app.notify('${bad} — not enabling')
+						continue
+					}
+					// THE MODE TOO, not only the rate. Enabling a listen-only alias beside a
+					// running normal row flips the whole destination to silent, and the shim
+					// then refuses the new opens because the live ports configured it normally —
+					// leaving the row ticked, with no reader and no explanation.
+					if bad := quiet {
 						app.mu.unlock()
 						app.notify('${bad} — not enabling')
 						continue
