@@ -5321,7 +5321,7 @@ fn (mut app App) add_bus_spec(adapter string, address string) {
 	}
 	app.dirty = true
 	app.sync_cfg_bufs()
-	app.rebuild_preserving_senders()
+	app.rebuild_from_proj()
 }
 
 // unique_bus_name returns `base`, or base_2/base_3/… if the name is already taken.
@@ -5443,7 +5443,7 @@ fn (mut app App) remove_bus(i int) {
 	}
 	app.dirty = true
 	app.sync_cfg_bufs()
-	app.rebuild_preserving_senders()
+	app.rebuild_from_proj()
 }
 
 // set_adapter changes a bus's transport backend, recomposing its iface and keeping the
@@ -5480,7 +5480,7 @@ fn (mut app App) set_adapter(i int, a string) {
 	app.proj.channels[i].iface = project.compose_iface(a, vgui.buf_str(app.cfg_bufs[i].address_buf))
 	app.rebind_senders(old_iface, app.proj.channels[i].iface) // keep this bus's generators bound
 	app.dirty = true
-	app.rebuild_preserving_senders()
+	app.rebuild_from_proj()
 }
 
 // begin_topology_edit folds unsaved Generators-panel edits into app.proj BEFORE the caller
@@ -5497,12 +5497,6 @@ fn (mut app App) set_adapter(i int, a string) {
 // derives senders from an app.proj that already has them.
 fn (mut app App) begin_topology_edit() {
 	app.sync_senders_into_proj()
-}
-
-// rebuild_preserving_senders is what a topology mutator calls AFTER its edit. The preserving
-// half now happens in begin_topology_edit, before the edit; this is the rebuild.
-fn (mut app App) rebuild_preserving_senders() bool {
-	return app.rebuild_from_proj()
 }
 
 // rebind_senders repoints a channel's flattened generators from an old iface to a new one, so
@@ -5554,7 +5548,7 @@ fn (mut app App) set_mode(i int, md string) {
 	app.begin_topology_edit()
 	app.proj.channels[i].mode = project.mode_from(md)
 	app.dirty = true
-	app.rebuild_preserving_senders()
+	app.rebuild_from_proj()
 }
 
 fn (mut app App) add_dbc(ci int, path string) {
@@ -5566,7 +5560,7 @@ fn (mut app App) add_dbc(ci int, path string) {
 	app.proj.channels[ci].databases << rel_path(path)
 	app.dirty = true
 	app.sync_cfg_bufs()
-	app.rebuild_preserving_senders()
+	app.rebuild_from_proj()
 }
 
 fn (mut app App) remove_dbc(ci int, di int) {
@@ -5581,7 +5575,7 @@ fn (mut app App) remove_dbc(ci int, di int) {
 	app.proj.channels[ci].databases.delete(di)
 	app.dirty = true
 	app.sync_cfg_bufs()
-	app.rebuild_preserving_senders()
+	app.rebuild_from_proj()
 }
 
 fn (mut app App) set_manifest(ci int, path string) {
@@ -5593,7 +5587,7 @@ fn (mut app App) set_manifest(ci int, path string) {
 	app.proj.channels[ci].manifest = rel_path(path)
 	app.dirty = true
 	app.sync_cfg_bufs()
-	app.rebuild_preserving_senders()
+	app.rebuild_from_proj()
 }
 
 // draw_config is the dedicated Configuration editor (File → Configure…): add/edit/remove
@@ -7849,8 +7843,14 @@ fn (mut app App) apply_edits() bool {
 		app.sync_senders_into_proj() // generators may be edited live; persist them, don't rebuild
 		return true // nothing was rebuilt because nothing needed to be — not a refusal
 	}
+	// THE FOLD COMES FIRST, because commit_cfg is itself a mutation of app.proj — a buffered
+	// bus name, bitrate, DoIP address or replay source reaches the model here. That moves the
+	// fingerprint, and sync_senders_into_proj then refuses a cache it now considers stale, so
+	// pending generator edits were dropped and the rebuild below restored the older ones for
+	// Save to persist. These fields never pass through a topology mutator, so putting the fold
+	// in begin_topology_edit did not cover them (codex #121 r10).
+	app.begin_topology_edit() // session generators -> app.proj, while the cache still matches
 	app.commit_cfg() // Configuration-editor buffers -> app.proj (no-op if the editor never opened)
-	app.sync_senders_into_proj() // session generators -> app.proj
 	return app.rebuild_from_proj() // rebuild app.chans/dbs/sims from the updated model
 }
 
@@ -10065,7 +10065,15 @@ fn (mut app App) dbc_refresh_if_all_clean() {
 	} else {
 		''
 	}
-	app.rebuild_preserving_senders()
+	// Saving the last dirty DBC rebuilds the runtime view, which repopulates app.senders from
+	// app.proj — so unsaved Generators-panel edits have to land in the model first. This path
+	// mutates no topology, so the cache still matches and the fold always succeeds. It used to
+	// come free from a helper called "rebuild_preserving_senders"; that helper's preserving half
+	// moved and its name kept the promise, which is why this site was left silently discarding
+	// the edits (codex #121 r10). The helper is gone now — nothing is left to mislead the next
+	// caller — so the fold is written out where it happens.
+	app.begin_topology_edit()
+	app.rebuild_from_proj()
 	if sel_path != '' {
 		app.dbc_ed.db = app.dbs_paths.index(sel_path)
 	}
