@@ -3253,7 +3253,15 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			// gone stops being part of the run until somebody says otherwise.
 			a.mu.lock()
 			if a.run_gen == gen && ci < a.chans.len {
-				a.chans[ci].enabled = false
+				// EVERY ALIAS ON THIS WIRE. Disabling only the reader-owning row let the
+				// teardown hand the reader to a sibling, which opens the same failed adapter and
+				// fails the same way — a relay race around a port that has gone.
+				dead := transport.destination_key(a.chans[ci].iface)
+				for cj, other in a.chans {
+					if transport.destination_key(other.iface) == dead {
+						a.chans[cj].enabled = false
+					}
+				}
 			}
 			a.mu.unlock()
 			break
@@ -6084,10 +6092,17 @@ fn draw_buses(mut app App, chans []Chan) {
 					// the guard let through exactly the change it exists to refuse.
 					mut live_mode := ?bool(none)
 					for j, other in app.chans {
-						if j == i || !other.enabled || !other.running {
+						// PART OF THE RUN, not "owns the reader". Under one reader per wire an
+						// alias has running == false while its transmit tap is open and its
+						// simulation is going, and skipping it read a silenced wire as having no
+						// opinion about its own mode.
+						if j == i || !other.enabled {
 							continue
 						}
 						if transport.destination_key(other.iface) != wire_key {
+							continue
+						}
+						if !app.dest_is_read_locked(other.iface) {
 							continue
 						}
 						if m := live_mode {
@@ -6127,10 +6142,17 @@ fn draw_buses(mut app App, chans []Chan) {
 				// destination used to open a second port on it, which is the duplicate delivery
 				// that one-reader-per-wire exists to prevent, arriving through the toggle
 				// instead of through Start.
+				// THE READER IS OPTIONAL; THE TRANSMIT SIDE IS NOT. Folding the wire-already-read
+				// test into this condition skipped the tap setup below along with it, so an
+				// alias enabled beside a monitored sibling could not transmit at all — Quick
+				// Send and the diagnostic paths reporting "no open bus" for a channel that was
+				// ticked and sitting on a live wire.
 				if new && app.running && app.chans[i].monitorable() && !app.chans[i].running
-					&& !app.chans[i].spawning && !app.dest_is_read_locked(app.chans[i].iface) {
-					app.chans[i].spawning = true
-					spawn rx_loop(app, i, app.chans[i].iface, app.run_gen)
+					&& !app.chans[i].spawning {
+					if !app.dest_is_read_locked(app.chans[i].iface) {
+						app.chans[i].spawning = true
+						spawn rx_loop(app, i, app.chans[i].iface, app.run_gen)
+					}
 					// …and the TRANSMIT side, exactly as start() sets it up. Only the reader was
 					// started here, so a channel enabled after Start had no tap: Quick Send and
 					// the diagnostic paths reported "no open bus", and with no send_iface yet the
@@ -8408,8 +8430,15 @@ fn trace_ext(id u32) bool {
 // carries the telemetry manifest (the target being traced), so a multi-channel project sends
 // to the right bus. Falls back to the first running channel when no channel has a manifest.
 fn (app &App) trace_iface() string {
+	// IS THIS WIRE BEING READ, not "does this row hold the reader". Under one reader per wire a
+	// manifest attached to a non-owner alias left this row with running == false, so its
+	// manifest was ignored and another destination's channel answered for it — trace commands
+	// going to the wrong bus in a multi-bus project.
+	//
+	// app.mu is held by the callers of this (the panel draws under it), which is why the locked
+	// helper is the right one to ask.
 	for c in app.chans {
-		if c.monitorable() && c.running && c.manifest != '' {
+		if c.monitorable() && c.manifest != '' && app.dest_is_read_locked(c.iface) {
 			return c.iface
 		}
 	}
