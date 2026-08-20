@@ -2053,7 +2053,10 @@ fn (mut app App) load_recording(path string) {
 	// came back with an empty verdict, which is what the previous attempt at this did.
 	mut verifiers := map[string]sim.VerifySet{}
 	mut alias := map[string]string{} // recorded label -> destination key
-	mut dbc_iface := map[string]string{} // destination key -> one raw interface, for dbs_for
+	// destination key -> EVERY raw interface on it. Remembering only the first lost the later
+	// alias's databases, so a verifier that came from `vector:ch1` was resolved against
+	// `vector:1`'s DBCs alone and could not adopt a name or a J1939 PGN layout from its own.
+	mut dbc_ifaces := map[string][]string{}
 	for sc in app.sims {
 		// A DoIP entry carries no frames and no `verify:`, so it must not create a verifier set
 		// for its interface: an empty one made `verifiers.len == 1` false and an unlabelled MF4
@@ -2082,9 +2085,11 @@ fn (mut app App) load_recording(path string) {
 		vs.merge_into(sim.verifiers_for(live, [], sc.verify)) // conflicts already reported at start
 
 		verifiers[sc_dest] = vs
-		if sc_dest !in dbc_iface {
-			dbc_iface[sc_dest] = sc.iface
+		mut known := dbc_ifaces[sc_dest] or { []string{} }
+		if sc.iface !in known {
+			known << sc.iface
 		}
+		dbc_ifaces[sc_dest] = known
 		alias[sc.iface] = sc_dest
 		alias[sc_dest] = sc_dest
 		for c in app.chans {
@@ -2148,7 +2153,11 @@ fn (mut app App) load_recording(path string) {
 				// channel is called, and `ifc` is now a destination key — so looking the DBCs
 				// up by it found none, and a verifier could no longer adopt a name or a layout
 				// from the database. The map remembers one raw spelling per destination.
-				if k := vs.resolve(app.dbs_for(dbc_iface[ifc] or { ifc }), f.id, f.extended) {
+				mut scope := []candb.Database{}
+				for raw in dbc_ifaces[ifc] or { [ifc] } {
+					scope << app.dbs_for(raw)
+				}
+				if k := vs.resolve(scope, f.id, f.extended) {
 					if mut ver := vs.by_key[k] {
 						viol = ver.check(f.data).str()
 						vs.by_key[k] = ver
@@ -3146,7 +3155,16 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			a.mu.unlock()
 			vgui.wake()
 		}
-		f := bus.recv(200) or { continue }
+		f := bus.recv(200) or {
+			// A TIMEOUT IS THE NORMAL ANSWER; anything else is the adapter in trouble, and
+			// continuing repeated the failing call as fast as it could return — a core spun on
+			// an unplugged VN while the panel still showed the channel running.
+			if err.msg().contains('timeout') {
+				continue
+			}
+			a.notify('${iface}: receive failed — ${err}')
+			break
+		}
 		// A blocked recv can be woken by the previous run's echo after Start has already reset
 		// the ring: this loop would then find no record and file that frame as the CURRENT
 		// run's bus traffic — into the trace, the recording and the verifier.
@@ -5917,14 +5935,36 @@ fn draw_buses(mut app App, chans []Chan) {
 						app.notify('${bad} — not enabling')
 						continue
 					}
-					// THE MODE TOO, not only the rate. Enabling a listen-only alias beside a
-					// running normal row flips the whole destination to silent, and the shim
-					// then refuses the new opens because the live ports configured it normally —
-					// leaving the row ticked, with no reader and no explanation.
 					if bad := quiet {
 						app.mu.unlock()
 						app.notify('${bad} — not enabling')
 						continue
+					}
+					// THE MODE OF A WIRE THAT IS ALREADY OPEN. silent_conflict only speaks up
+					// when something would transmit; two passive rows disagreeing about the
+					// mode say nothing to it, yet the shim still refuses the new ports because
+					// the live ones configured the channel the other way — leaving the row
+					// ticked with no reader and no explanation. Ask whether this row would
+					// change the answer for a destination that is already running.
+					wire_key := transport.destination_key(app.chans[i].iface)
+					mut live_mode := ?bool(none)
+					for j, other in app.chans {
+						if j == i || !other.enabled || !other.running {
+							continue
+						}
+						if transport.destination_key(other.iface) == wire_key {
+							live_mode = other.listen_only
+							break
+						}
+					}
+					if lm := live_mode {
+						if lm != app.chans[i].listen_only {
+							app.mu.unlock()
+							want := if app.chans[i].listen_only { 'listen-only' } else { 'normal' }
+							has := if lm { 'listen-only' } else { 'normal' }
+							app.notify('${app.chans[i].name} is ${want} but ${app.chans[i].iface} is already running ${has} — one wire, one mode; not enabling')
+							continue
+						}
 					}
 				}
 				if app.running && app.chans[i].mode == 'replay' && app.chans[i].replay_src != '' {

@@ -518,25 +518,17 @@ fn parse_channel(c yaml.Any) !Channel {
 		// left `vector:1,silent` opening silently at the hardware while the model believed the
 		// channel could transmit — the editor offering sends that VectorBus.send then refuses.
 		if ch.adapter == 'vector' && raw.contains(',') {
-			// The SUFFIX, not merely a comma: `,normal` is a spelling the parser accepts and it
-			// asks for the opposite of listen-only. Reading any comma as silence turned an
-			// explicit request to acknowledge into a channel that cannot.
-			match raw.all_after_last(',').trim_space().to_lower() {
-				'silent', 'listen_only', 'listenonly' {
-					ch.listen_only = true
-					ch.address = ch.address.all_before_last(',')
-				}
-				'normal' {
-					ch.address = ch.address.all_before_last(',') // explicit, and the default
-				}
-				else {
-					// KEPT, so the transport parser sees it and refuses. Stripping an
-					// unrecognised mode turned `vector:1,silnt` — plainly a request for
-					// silence — into a channel that opens NORMALLY on a live bus. A typo must
-					// never be resolved in the direction that acknowledges.
-				}
+			// THE SHARED SPLITTER, which also refuses a stacked `1,silent,normal`. This branch
+			// had its own copy that read only the final suffix, so that spelling left `,silent`
+			// in the address while the flag said transmit-capable — the two halves of one
+			// decision disagreeing, in the one path that still had its own rule.
+			addr, silent, ok := split_vector_mode(ch.address)
+			if ok {
+				ch.address = addr
+				ch.listen_only = silent
 			}
 		}
+
 		if (ch.adapter == 'pcan' || ch.adapter == 'kvaser' || ch.adapter == 'vector')
 			&& raw.contains('@') {
 			// LAST `@`, then the mode: `vector:1@250000,silent` puts the suffix after the rate,

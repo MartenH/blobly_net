@@ -430,8 +430,16 @@ static uint64_t ct_vector_mask_why(unsigned int app_channel, int *why, int regis
 		 *
 		 * Safe to write here BECAUSE the lookup succeeded and said the channel is empty: the
 		 * zeroes it writes are the value already there. */
-		if (register_app && ct_xl_setappl) {
-			ct_xl_setappl("blobly_net", app_channel, 0, 0, 0, CT_XL_BUS_TYPE_CAN);
+		if (register_app) {
+			/* REPORTED. Ignoring this told the operator the application had been "registered
+			 * just now" and to go and assign it, when nothing had been written and Vector
+			 * Hardware Manager would show no such entry — sending them to look for something
+			 * that is not there. */
+			if (!ct_xl_setappl) { if (why) *why = -1008; return 0; }
+			if (ct_xl_setappl("blobly_net", app_channel, 0, 0, 0, CT_XL_BUS_TYPE_CAN) != 0) {
+				if (why) *why = -1008;
+				return 0;
+			}
 		}
 		if (why) *why = -1000; /* driver fine, this channel simply has no hardware yet */
 		return 0;
