@@ -783,31 +783,10 @@ fn (mut app App) start() {
 	// flush any unsaved editor edits into the model + runtime view first, so the measurement
 	// attaches to exactly what the Configuration editor shows (not stale buffered values).
 	if app.dirty {
-		// DRAINED FIRST. apply_edits() runs rebuild_from_proj(), which REPLACES app.chans and
-		// app.dbs while the previous run's rx loops may still be iterating them lock-free:
-		// stop() clears app.running but joins nothing, so Stop → change something → Start can
-		// free what a live worker is reading. The DBC editor and the System panel's rebuild
-		// already refuse while `dbc_readers > 0` (codex #65 r4); this path is the third one in
-		// and had no gate at all. It is reachable by an ordinary sequence now that changing a
-		// bus means Stop and Start.
-		mut waited := 0
-		for waited < 2000 {
-			app.mu.lock()
-			live := app.dbc_readers
-			app.mu.unlock()
-			if live == 0 {
-				break
-			}
-			time.sleep(5 * time.millisecond)
-			waited += 5
-		}
-		app.mu.lock()
-		still_live := app.dbc_readers
-		app.mu.unlock()
-		if still_live > 0 {
-			// REFUSE rather than rebuild under them. A worker this slow to leave is a bug of
-			// its own, and starting anyway is the one outcome that can corrupt the new run.
-			app.notify('workers from the last run have not finished (${still_live} still reading) — press Start again in a moment')
+		// Refuse rather than start on a runtime that could not be rebuilt safely — see
+		// wait_readers_drained. Starting anyway is the one outcome that corrupts the new run.
+		if !app.wait_readers_drained() {
+			app.notify('workers from the last run have not finished — press Start again in a moment')
 			return
 		}
 		app.apply_edits()
@@ -3542,7 +3521,38 @@ fn (mut app App) set_project(proj project.Project, path string) {
 // rebuild_from_proj derives the runtime view (chans, dbs, sims, senders, manifest, default
 // selection) from app.proj. Called after a load and after any config/generator edit, so the
 // live panels reflect the edited model. Must be called while stopped (no RX threads running).
+// wait_readers_drained waits for the lock-free readers of app.dbs/app.chans to finish, up to
+// two seconds, and reports whether they did. stop() clears app.running and joins nothing, so
+// "not running" does not mean "nobody is reading": an rx loop can still be inside its open or
+// draining its last batch. The reservation is taken by the SPAWNER, so a worker that has not
+// been scheduled yet is counted here too.
+fn (mut app App) wait_readers_drained() bool {
+	for _ in 0 .. 400 {
+		app.mu.lock()
+		live := app.dbc_readers
+		app.mu.unlock()
+		if live == 0 {
+			return true
+		}
+		time.sleep(5 * time.millisecond)
+	}
+	app.mu.lock()
+	left := app.dbc_readers
+	app.mu.unlock()
+	return left == 0
+}
+
 fn (mut app App) rebuild_from_proj() {
+	// EVERY WAY IN, not just Start. This replaces app.chans and app.dbs while a worker from the
+	// last run may still be reading them lock-free, and it is reached from Save, from closing
+	// the Configuration editor, from applying edited project text and from Start — gating one
+	// caller left the rest (codex #121 r3). The DBC editor and the System panel ask the same
+	// question before offering their actions; this is the same rule, on the function that
+	// actually does the dangerous thing.
+	if !app.wait_readers_drained() {
+		app.notify('workers from the last run are still finishing — runtime not rebuilt; Stop and try again')
+		return
+	}
 	// this replaces app.dbs wholesale, so a pending endpoint edit must land first or it is
 	// silently dropped along with the databases it referred to
 	app.resolve_pending_bit_edit()
