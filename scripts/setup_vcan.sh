@@ -13,10 +13,15 @@
 # each other's frames, exactly like a real bus. Swapping to real hardware later is just
 # `canN` instead of `vcanN` (plus a bitrate, via setup_can_hw.sh) — no app code changes.
 #
-# WSL2 CAVEAT, verified 2026-08-17 on 6.6.87.2-microsoft-standard-WSL2: the stock kernel
-# has CONFIG_CAN=m and CONFIG_CAN_RAW=m but **CONFIG_CAN_VCAN is not set**, and no vcan.ko
-# ships — so `ip link add type vcan` fails with "Unknown device type" until the module is
-# built: run `./scripts/setup_wsl_kernel.sh`, which does it and is idempotent.
+# RUN THIS ONCE PER WSL SESSION. Nothing here survives `wsl --shutdown`: the interfaces go,
+# and on WSL2 the vcan MODULE goes with them, because a stock kernel does not ship vcan.ko and
+# the built one is inserted rather than installed. So this script loads the module first and
+# then creates the interfaces — it is the only thing you need to run to get a virtual bus back.
+#
+# WSL2 CAVEAT, verified 2026-08-17 on 6.6.87.2-microsoft-standard-WSL2: the stock kernel has
+# CONFIG_CAN=m and CONFIG_CAN_RAW=m but **CONFIG_CAN_VCAN is not set**. Building that module is
+# a separate, rare job — `./scripts/build_vcan_module.sh`, needed once and again only after a
+# kernel upgrade. This script calls for it by name if the module is missing.
 # docs/can_hardware.md explains why each step is needed.
 #
 # This comment previously claimed CAN_RAW / CAN_VCAN / CAN_ISOTP were built in (=y) and that
@@ -30,6 +35,29 @@ set -euo pipefail
 
 IFACES=("$@")
 [ ${#IFACES[@]} -eq 0 ] && IFACES=(vcan0 vcan1)
+
+# THE MODULE BEFORE THE INTERFACES. Without it `ip link add type vcan` fails with a bare
+# "Unknown device type", which names neither the cause nor the fix — and it is the first thing
+# every session hits after a restart, since an insmod'd module does not persist.
+ensure_vcan_module() {
+	lsmod | grep -q '^vcan ' && return 0
+	sudo modprobe vcan 2>/dev/null && return 0
+	ko="${SRC:-$HOME/repos/WSL2-Linux-Kernel}/drivers/net/can/vcan.ko"
+	if [ -f "$ko" ]; then
+		echo "[setup_vcan] vcan not loaded; inserting the module built earlier: $ko"
+		sudo insmod "$ko" 2>/dev/null && return 0
+		echo "[setup_vcan] insmod failed. Two usual causes:"
+		echo "[setup_vcan]   - the kernel moved on since that module was built ($(uname -r)):"
+		echo "[setup_vcan]     rebuild with ./scripts/build_vcan_module.sh"
+		echo "[setup_vcan]   - insmod is not in the passwordless sudo rule (it was added after"
+		echo "[setup_vcan]     that rule shipped): re-run sudo ./scripts/setup_sudoers.sh"
+		return 1
+	fi
+	echo "[setup_vcan] no vcan module, and none built at $ko"
+	echo "[setup_vcan] build it once (a few minutes): ./scripts/build_vcan_module.sh"
+	return 1
+}
+ensure_vcan_module || exit 1
 
 for IFACE in "${IFACES[@]}"; do
 	if ip link show "$IFACE" >/dev/null 2>&1; then

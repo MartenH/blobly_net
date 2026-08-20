@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
-# setup_wsl_kernel.sh — build the `vcan` module a stock WSL2 kernel does not ship.
+# build_vcan_module.sh — build the `vcan` module a stock WSL2 kernel does not ship.
+#
+# RARE. You need this once, and again only after a kernel upgrade. To get a virtual bus back
+# after an ordinary WSL restart, run ./scripts/setup_vcan.sh — it loads this module for you.
 #
 # WSL2 gives you CONFIG_CAN=m and CONFIG_CAN_RAW=m but NOT CONFIG_CAN_VCAN, so
 # `ip link add type vcan` fails with "Unknown device type" and nothing in this repo that needs
 # SocketCAN can run. The kernel itself does not have to be replaced: CONFIG_MODULES=y and there
 # is no MODULE_SIG_FORCE, so a module built from the matching source loads fine.
 #
-#   ./scripts/setup_wsl_kernel.sh            # build (if needed), then load + bring up vcan0/vcan1
-#   ./scripts/setup_wsl_kernel.sh --build    # build only, do not touch the running system
-#   ./scripts/setup_wsl_kernel.sh --load     # load an already-built module and bring the links up
-#   SRC=~/src/wsl-kernel ./scripts/setup_wsl_kernel.sh    # keep the source tree elsewhere
+#   ./scripts/build_vcan_module.sh            # build (if needed), then load + bring up vcan0/vcan1
+#   ./scripts/build_vcan_module.sh --build    # build only, do not touch the running system
+#   ./scripts/build_vcan_module.sh --load     # load an already-built module and bring the links up
+#   SRC=~/src/wsl-kernel ./scripts/build_vcan_module.sh    # keep the source tree elsewhere
 #
 # Idempotent: exits early when vcan already works, and skips the build when a module with the
 # RIGHT vermagic is already present. The build is a full `make` and takes tens of minutes once;
@@ -21,7 +24,7 @@
 set -euo pipefail
 
 # Run as a NORMAL user: the script sudo's the three steps that need it, so what is elevated
-# stays visible. Under `sudo ./setup_wsl_kernel.sh` the whole thing runs as root, $HOME becomes
+# stays visible. Under `sudo ./build_vcan_module.sh` the whole thing runs as root, $HOME becomes
 # /root, and SRC then defaults to a tree that does not exist — so it clones and rebuilds a second
 # kernel (minutes, gigabytes) into /root instead of reusing the one already built. Recover the
 # invoking user's home rather than punishing a reasonable mistake.
@@ -29,8 +32,8 @@ if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ] && [ -z "${SRC:-}" ]; then
 	_home="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
 	if [ -n "$_home" ] && [ -d "$_home" ]; then
 		SRC="$_home/repos/WSL2-Linux-Kernel"
-		echo "[wsl-kernel] running under sudo — using $SUDO_USER's tree ($SRC), not root's."
-		echo "[wsl-kernel] you can run this WITHOUT sudo; it elevates only the load and ip steps."
+		echo "[vcan-module] running under sudo — using $SUDO_USER's tree ($SRC), not root's."
+		echo "[vcan-module] you can run this WITHOUT sudo; it elevates only the load and ip steps."
 	fi
 fi
 SRC="${SRC:-$HOME/repos/WSL2-Linux-Kernel}"
@@ -48,8 +51,8 @@ KVER="${KREL%%-*}"                       # e.g. 6.6.87.2
 TAG="linux-msft-wsl-${KVER}"
 KO="$SRC/drivers/net/can/vcan.ko"
 
-say() { echo "[wsl-kernel] $*"; }
-die() { echo "[wsl-kernel] ERROR: $*" >&2; exit 1; }
+say() { echo "[vcan-module] $*"; }
+die() { echo "[vcan-module] ERROR: $*" >&2; exit 1; }
 
 # --- 0. is there anything to do at all? -----------------------------------------------------
 # Probed WITHOUT root: `ip link add` needs privileges, so using it as the capability test would
@@ -182,29 +185,19 @@ lsmod | grep -q '^vcan ' || {
 	say "loaded vcan.ko"
 }
 
-for IFACE in "${IFACES[@]}"; do
-	if ip link show "$IFACE" >/dev/null 2>&1; then
-		say "$IFACE already exists"
-	else
-		sudo ip link add dev "$IFACE" type vcan
-	fi
-	# mtu 72 = CAN-FD capable (a classic vcan is 16). Real captures are half CAN-FD, and on a
-	# 16-byte interface every one of those frames fails to send. The link must be DOWN to change
-	# it — can_change_mtu() returns -EBUSY otherwise — so a re-run over an already-up classic
-	# interface warned and left it at 16. Only bounced when the MTU is actually wrong.
-	cur_mtu="$(cat /sys/class/net/$IFACE/mtu 2>/dev/null || echo 0)"
-	if [ "$cur_mtu" != "72" ]; then
-		sudo ip link set "$IFACE" down 2>/dev/null || true
-		sudo ip link set "$IFACE" mtu 72 || say "warning: could not set mtu 72 on $IFACE (CAN-FD frames will fail)"
-	fi
-	sudo ip link set up "$IFACE"
-	say "$IFACE up ($(ip -d link show "$IFACE" | grep -o 'mtu [0-9]*'))"
-done
+# THE INTERFACES ARE setup_vcan.sh's JOB. This script used to create them too, with its own
+# copy of the mtu-72 dance — two places to fix when the rule changed, and two answers when they
+# disagreed. Build here, bring the bus up there.
+say "module ready — bringing the interfaces up via setup_vcan.sh"
+"$(dirname "$0")/setup_vcan.sh" "${IFACES[@]}"
 
 cat <<EOF
-[wsl-kernel] done. Nothing here survives \`wsl --shutdown\` except the built module, so re-run
-             this (it will skip straight to the load steps) once per session.
-             Check CAN-FD end to end with:
-               cansend ${IFACES[0]} '123##1112233445566778899AABBCCDDEEFF'
-               candump -x ${IFACES[0]}
+[vcan-module] done. The BUILT MODULE is the only part that survives \`wsl --shutdown\`; the
+              module load and the interfaces do not. After each restart run just:
+                  ./scripts/setup_vcan.sh
+              You need this script again only after a kernel upgrade, when the module stops
+              matching the running kernel.
+              Check CAN-FD end to end with:
+                cansend ${IFACES[0]} '123##1112233445566778899AABBCCDDEEFF'
+                candump -x ${IFACES[0]}
 EOF

@@ -32,13 +32,18 @@ fi
 APT="$(command -v apt-get || echo /usr/bin/apt-get)"
 IP="$(command -v ip || echo /usr/sbin/ip)"
 MODPROBE="$(command -v modprobe || echo /usr/sbin/modprobe)"
+# insmod, because the vcan module on WSL2 is INSERTED, not installed: a stock kernel ships no
+# vcan.ko, the one build_vcan_module.sh builds lives in the source tree, and modprobe only
+# finds modules under /lib/modules. Without this line setup_vcan.sh asks for a password after
+# every wsl restart — exactly the moment the rule exists to smooth over.
+INSMOD="$(command -v insmod || echo /usr/sbin/insmod)"
 
 TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT
 cat >"$TMP" <<EOF
 # Blobly Net scoped passwordless sudo — managed by scripts/setup_sudoers.sh.
 # Lets the setup/run scripts install deps and bring up vcan0 without a prompt.
-${TARGET_USER} ALL=(ALL) NOPASSWD: ${APT}, ${IP}, ${MODPROBE}
+${TARGET_USER} ALL=(ALL) NOPASSWD: ${APT}, ${IP}, ${MODPROBE}, ${INSMOD}
 EOF
 
 # Validate BEFORE touching the real file. visudo -c exits non-zero on any error.
