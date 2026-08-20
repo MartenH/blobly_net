@@ -480,11 +480,16 @@ fn vector_list() []Iface {
 	// a bench plausibly has. Probing does not register anything, so sweeping 64 costs nothing
 	// but the lookups.
 	for ch in 1 .. 65 {
-		if C.ct_vector_present(u32(ch - 1)) == 0 {
+		state := C.ct_vector_present(u32(ch - 1))
+		if state == 0 {
 			continue
 		}
+		// LISTED EITHER WAY, and said which. A channel assigned to an adapter that is currently
+		// unplugged is still assigned, and dropping it from this list told the operator to go
+		// and create a mapping that already existed.
+		note := if state == 2 { ' — assigned, hardware not present' } else { '' }
 		out << Iface{
-			name:    'Vector application channel ${ch}'
+			name:    'Vector application channel ${ch}${note}'
 			iface:   'vector:${ch}'
 			kind:    'can'
 			virtual: false

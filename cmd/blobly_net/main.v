@@ -4194,22 +4194,34 @@ fn draw_toolbar(mut app App, rx u64, txs string) {
 // not hold it — the frame already cloned `chans` under the lock, and re-reading the live array
 // past that snapshot raced the workers publishing into it. My own comment on that helper said it
 // required the lock, which made calling it here a contradiction rather than an oversight.
-fn read_destinations(rows []Chan) map[string]bool {
-	mut out := map[string]bool{}
+// Returns, per destination: is it read at all, and is the reader's link DOWN. The second half
+// matters because a readerless alias carries its own untouched `link_down == false` — so a wire
+// the owning row correctly showed as `down` was drawn green and running on every alias of it.
+// The link is a property of the interface, not of the row that happened to open it.
+struct DestState {
+	read bool
+	down bool
+}
+
+fn read_destinations(rows []Chan) map[string]DestState {
+	mut out := map[string]DestState{}
 	for c in rows {
 		if c.enabled && c.running {
-			out[transport.destination_key(c.iface)] = true
+			out[transport.destination_key(c.iface)] = DestState{
+				read: true
+				down: c.link_down
+			}
 		}
 	}
 	return out
 }
 
-fn chan_state(c Chan, shared_reader bool) (u8, u8, u8, string) {
+fn chan_state(c Chan, wire DestState) (u8, u8, u8, string) {
 	if !c.enabled {
 		return u8(140), u8(140), u8(145), 'off '
 	}
-	if c.running || shared_reader {
-		if c.link_down {
+	if c.running || wire.read {
+		if c.link_down || wire.down {
 			return u8(215), u8(90), u8(90), 'down' // iface DOWN — bound but can't tx/rx
 		}
 		return u8(90), u8(200), u8(120), 'run '
@@ -6121,7 +6133,9 @@ fn draw_buses(mut app App, chans []Chan) {
 				app.mu.unlock()
 			}
 			vgui.same_line()
-			r, g, b, label := chan_state(c, read_dests[transport.destination_key(c.iface)])
+			r, g, b, label := chan_state(c, read_dests[transport.destination_key(c.iface)] or {
+				DestState{}
+			})
 			vgui.text_colored(r, g, b, label)
 			vgui.same_line()
 			vgui.text('${c.name}  ${c.iface}  [${c.mode}]  RX ${c.rx}')
@@ -6190,7 +6204,9 @@ fn draw_network(mut app App, chans []Chan) {
 		return
 	}
 	for ci, c in chans {
-		r, g, b, st := chan_state(c, read_dests[transport.destination_key(c.iface)])
+		r, g, b, st := chan_state(c, read_dests[transport.destination_key(c.iface)] or {
+			DestState{}
+		})
 		vgui.text_colored(r, g, b, '*')
 		vgui.same_line()
 		if vgui.tree_node_open('${c.name}   ${c.iface}   [${c.mode}]   ${st.trim_space()}   RX ${c.rx}###net${ci}') {

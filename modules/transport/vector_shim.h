@@ -850,7 +850,16 @@ static HANDLE ct_vec_xproc = NULL;
  * ignored is a comment. */
 static int ct_vector_borrow_lock(void) {
 	DWORD r;
-	if (!ct_vec_xproc) ct_vec_xproc = CreateMutexA(NULL, FALSE, "Local\\blobly_net_vector_borrow");
+	if (!ct_vec_xproc) {
+		/* GLOBAL, so a console session and an RDP session see ONE object. `Local\` is per
+		 * session: two operators on one machine each took their own lock, protected nothing
+		 * from each other, and interleaved snapshots and restores of the same persistent
+		 * assignments. Falling back to Local\ when the global namespace is refused — some
+		 * accounts lack SeCreateGlobalPrivilege — because one session's protection is better
+		 * than none. */
+		ct_vec_xproc = CreateMutexA(NULL, FALSE, "Global\\blobly_net_vector_borrow");
+		if (!ct_vec_xproc) ct_vec_xproc = CreateMutexA(NULL, FALSE, "Local\\blobly_net_vector_borrow");
+	}
 	if (!ct_vec_xproc) return 0; /* cannot create one: one operator at one bench is the norm */
 	r = WaitForSingleObject(ct_vec_xproc, 60000);
 	/* WAIT_ABANDONED means the holder died without releasing; the channels may be half-restored,
@@ -916,8 +925,16 @@ static int ct_vector_probe(int idx, int *hw_type, int *hw_index, int *hw_channel
 }
 
 /* Is an application channel assigned to hardware? For discovery. */
+/* 0 not assigned, 1 assigned and the hardware is here, 2 assigned to hardware that is NOT.
+ *
+ * Reducing the last two to "absent" made --list report that nothing was assigned and send the
+ * operator off to rewrite a mapping that was perfectly correct — the adapter was merely
+ * unplugged. The assignment is a fact about the configuration; the mask is a fact about the
+ * moment. */
 static int ct_vector_present(unsigned int app_channel) {
-	return ct_vector_mask(app_channel) != 0;
+	int why = 0;
+	if (ct_vector_mask_why(app_channel, &why, 0) != 0) return 1;
+	return (why == -1001) ? 2 : 0;
 }
 
 #endif /* CT_VECTOR_SHIM_H */
