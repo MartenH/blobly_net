@@ -24,6 +24,38 @@
 # runner pass on a machine where SocketCAN cannot work at all.
 set -euo pipefail
 
+say() { echo "[vcan-module] $*"; }
+die() { echo "[vcan-module] ERROR: $*" >&2; exit 1; }
+
+# Where the tree this script built in is recorded, for setup_vcan.sh and for the next run of
+# this one. Per-MACHINE, under the user's cache, NOT in the repo: the path is one machine's
+# fact, and a repo-relative marker is per-CHECKOUT — this project works in `.claude/worktrees/*`
+# by convention, so a build from one worktree left a marker no other checkout could see.
+marker_path() {
+	if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ]; then
+		_h="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+		echo "${_h:-$HOME}/.cache/blobly_net/vcan_module_src"
+		return 0
+	fi
+	echo "${XDG_CACHE_HOME:-$HOME/.cache}/blobly_net/vcan_module_src"
+}
+
+# WHERE THE SOURCE TREE IS, in order: an explicit SRC= for this invocation, then the tree a
+# previous run recorded, then (under sudo) the invoking user's default, then the default.
+#
+# The recorded tree matters most on the path that leads back here: a kernel upgrade makes the
+# built module stale, setup_vcan.sh says so and sends the user to a BARE
+# `./scripts/build_vcan_module.sh` — which, reading no marker, cloned and built a SECOND kernel
+# in the default place (tens of minutes, gigabytes) and then overwrote the marker pointing at
+# the first. It also makes the advertised `--load` find a custom build.
+if [ -z "${SRC:-}" ]; then
+	_marker="$(marker_path)"
+	if [ -s "$_marker" ] && [ -d "$(cat "$_marker")" ]; then
+		SRC="$(cat "$_marker")"
+		say "using the source tree an earlier run recorded: $SRC"
+	fi
+fi
+
 # Run as a NORMAL user: the script sudo's the three steps that need it, so what is elevated
 # stays visible. Under `sudo ./build_vcan_module.sh` the whole thing runs as root, $HOME becomes
 # /root, and SRC then defaults to a tree that does not exist — so it clones and rebuilds a second
@@ -52,17 +84,10 @@ KVER="${KREL%%-*}"                       # e.g. 6.6.87.2
 TAG="linux-msft-wsl-${KVER}"
 KO="$SRC/drivers/net/can/vcan.ko"
 
-say() { echo "[vcan-module] $*"; }
-die() { echo "[vcan-module] ERROR: $*" >&2; exit 1; }
-
-# RECORD WHERE THE MODULE IS, for setup_vcan.sh. It runs bare in later sessions with no SRC in
-# its environment, so a tree kept anywhere but the default would be invisible to it — it would
-# report that no module was built while this one sat next to it.
-#
-# Kept per-MACHINE, under the user's cache, NOT in the repo: the path is one machine's fact, and
-# a repo-relative marker is per-CHECKOUT — this project's own convention is to work in
-# `.claude/worktrees/*`, so a build run from one worktree left a marker no other checkout could
-# see. setup_vcan.sh reads the same location.
+# RECORD WHERE THE MODULE IS, for setup_vcan.sh and for the next run of this script. Either can
+# run bare in a later session with no SRC in its environment, so a tree kept anywhere but the
+# default would be invisible — reported as "nothing was built" while a good module sat next to
+# it, or rebuilt from scratch somewhere else.
 #
 # Called from EVERY exit that leaves a usable module behind, not just the end: `--build` returns
 # at the build-only exit, which is exactly the mode a custom SRC is most likely paired with.
@@ -75,15 +100,6 @@ die() { echo "[vcan-module] ERROR: $*" >&2; exit 1; }
 # before the interfaces came up. The unlink recovers a marker an older version already left,
 # since the directory is the user's; a failure to record is only a lost optimisation, so it
 # warns rather than taking the run down with it.
-marker_path() {
-	if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ]; then
-		_h="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
-		echo "${_h:-$HOME}/.cache/blobly_net/vcan_module_src"
-		return 0
-	fi
-	echo "${XDG_CACHE_HOME:-$HOME/.cache}/blobly_net/vcan_module_src"
-}
-
 record_src() {
 	[ -f "$KO" ] || return 0
 	marker="$(marker_path)"
@@ -103,8 +119,25 @@ record_src() {
 }
 
 # --- 0. is there anything to do at all? -----------------------------------------------------
-# Probed WITHOUT root: `ip link add` needs privileges, so using it as the capability test would
-# report "vcan is missing" for every unprivileged run and rebuild a kernel that was already fine.
+# vcan_usable asks the question that actually decides this: CAN THIS KERNEL MAKE A VCAN DEVICE?
+# The two checks below it ask narrower ones — "is a module loaded", "is a module installable" —
+# and a kernel built with CONFIG_CAN_VCAN=y answers no to both while `ip link add type vcan`
+# works: a built-in vcan is in no `lsmod` listing, and such a build often ships no
+# /lib/modules/$(uname -r) for modinfo to search. Without this the script cloned and compiled an
+# ENTIRE KERNEL — tens of minutes, gigabytes — for a machine whose vcan was already there.
+# Observed on 6.6.123.2-microsoft-standard-WSL2+ while testing the sibling fix in setup_vcan.sh:
+# the same wrong probe, in the second of the two places it lived.
+#
+# Asked by trying, and it needs root — but every path out of here does, and the alternative is
+# the build above. An existing interface answers it for free; otherwise a probe device is
+# created and removed, and it is only removed when this script is the thing that created it.
+vcan_usable() {
+	[ -n "$(ip -brief link show type vcan 2>/dev/null)" ] && return 0
+	sudo ip link add dev vcanprobe type vcan >/dev/null 2>&1 || return 1
+	sudo ip link del vcanprobe >/dev/null 2>&1 || true
+	return 0
+}
+
 if lsmod | grep -q '^vcan '; then
 	say "vcan is already loaded — skipping the build"
 	[ "$MODE" = build ] && exit 0
@@ -119,6 +152,14 @@ elif modinfo vcan >/dev/null 2>&1; then
 	say "this kernel SHIPS vcan (no build needed) — loading it"
 	sudo modprobe vcan
 	MODE=load
+elif vcan_usable; then
+	# Built in (CONFIG_CAN_VCAN=y): there is no module, and there is nothing for the load path
+	# below to do either — it would reach the "$KO not found" die. Finish here instead.
+	say "this kernel creates vcan devices with no module at all (CONFIG_CAN_VCAN=y)"
+	[ "$MODE" = build ] && { say "nothing to build"; exit 0; }
+	say "bringing the interfaces up via setup_vcan.sh"
+	"$(dirname "$0")/setup_vcan.sh" "${IFACES[@]}"
+	exit 0
 fi
 
 # --- 1. build ------------------------------------------------------------------------------
