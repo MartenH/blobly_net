@@ -41,11 +41,13 @@ set -euo pipefail
 IFACES=("$@")
 [ ${#IFACES[@]} -eq 0 ] && IFACES=(vcan0 vcan1)
 
-# Where build_vcan_module.sh records the tree it built in. Per-MACHINE, under the user's cache —
-# not in the repo. The path is one machine's fact, and a repo-relative marker is per-CHECKOUT:
-# this project's own convention is to work in `.claude/worktrees/*`, so a build run from one
-# worktree left a marker no other checkout could see.
-MARKER="${XDG_CACHE_HOME:-$HOME/.cache}/blobly_net/vcan_module_src"
+# The questions this script shares with build_vcan_module.sh — whose home, where the marker is,
+# whether sudo can be used, whether vcan is available — are answered in ONE place. This script
+# had its own copy of the marker path and no notion of SUDO_USER at all, so `sudo
+# ./scripts/setup_vcan.sh` looked under /root and reported that no module was built while the
+# invoking user's perfectly good .ko sat in their own tree.
+. "$(dirname "$0")/vcan_common.sh"
+MARKER="$(vcan_marker_path)"
 
 # ASKED BY TRYING, NOT BY LOOKING FOR A MODULE. This is called only when creating an interface
 # has actually failed, because "is there a loadable vcan module?" is a narrower question than
@@ -64,7 +66,9 @@ ensure_vcan_module() {
 	# nothing was built while a perfectly good module sat elsewhere), else the default.
 	src="${SRC:-}"
 	[ -z "$src" ] && [ -f "$MARKER" ] && src="$(cat "$MARKER")"
-	ko="${src:-$HOME/repos/WSL2-Linux-Kernel}/drivers/net/can/vcan.ko"
+	# vcan_default_src, not $HOME: under sudo $HOME is root's, and the default tree we would look
+	# in is one the invoking user never built into.
+	ko="${src:-$(vcan_default_src)}/drivers/net/can/vcan.ko"
 	if [ -f "$ko" ]; then
 		# can-dev FIRST: vcan.ko declares it as a dependency (`modinfo -F depends`), and insmod
 		# resolves nothing on its own — modprobe would have, but it cannot see a module outside
@@ -109,6 +113,14 @@ for IFACE in "${IFACES[@]}"; do
 		if ! err="$(sudo ip link add dev "$IFACE" type vcan 2>&1)"; then
 			if [ "$tried_module" = 0 ]; then
 				tried_module=1
+				# A create that failed because we are not allowed to run `ip` says nothing about
+				# the kernel. Say which of the two it was, rather than sending the operator off
+				# to build a module they may not need.
+				if ! vcan_sudo_ip_ok; then
+					echo "[setup_vcan] cannot create $IFACE: ${err:-(no message)}"
+					vcan_say_no_privilege
+					exit 1
+				fi
 				# A MISSING MODULE IS ONLY THE LIKELIEST CAUSE, not the only one — a name too
 				# long for an interface fails right here too, and the module hunt that follows
 				# would answer a question nobody asked. Print what the kernel actually said, so

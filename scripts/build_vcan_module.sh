@@ -27,21 +27,13 @@ set -euo pipefail
 say() { echo "[vcan-module] $*"; }
 die() { echo "[vcan-module] ERROR: $*" >&2; exit 1; }
 
-# Where the tree this script built in is recorded, for setup_vcan.sh and for the next run of
-# this one. Per-MACHINE, under the user's cache, NOT in the repo: the path is one machine's
-# fact, and a repo-relative marker is per-CHECKOUT — this project works in `.claude/worktrees/*`
-# by convention, so a build from one worktree left a marker no other checkout could see.
-marker_path() {
-	if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ]; then
-		_h="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
-		echo "${_h:-$HOME}/.cache/blobly_net/vcan_module_src"
-		return 0
-	fi
-	echo "${XDG_CACHE_HOME:-$HOME/.cache}/blobly_net/vcan_module_src"
-}
+# The questions this script shares with setup_vcan.sh — whose home, where the marker is, whether
+# sudo can be used, whether vcan is available — are answered in ONE place. Every review round on
+# this PR found another spot where two local copies of one of them had drifted.
+. "$(dirname "$0")/vcan_common.sh"
 
 # WHERE THE SOURCE TREE IS, in order: an explicit SRC= for this invocation, then the tree a
-# previous run recorded, then (under sudo) the invoking user's default, then the default.
+# previous run recorded, then the default.
 #
 # The recorded tree matters most on the path that leads back here: a kernel upgrade makes the
 # built module stale, setup_vcan.sh says so and sends the user to a BARE
@@ -49,7 +41,7 @@ marker_path() {
 # in the default place (tens of minutes, gigabytes) and then overwrote the marker pointing at
 # the first. It also makes the advertised `--load` find a custom build.
 if [ -z "${SRC:-}" ]; then
-	_marker="$(marker_path)"
+	_marker="$(vcan_marker_path)"
 	if [ -s "$_marker" ] && [ -d "$(cat "$_marker")" ]; then
 		SRC="$(cat "$_marker")"
 		say "using the source tree an earlier run recorded: $SRC"
@@ -62,14 +54,11 @@ fi
 # kernel (minutes, gigabytes) into /root instead of reusing the one already built. Recover the
 # invoking user's home rather than punishing a reasonable mistake.
 if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ] && [ -z "${SRC:-}" ]; then
-	_home="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
-	if [ -n "$_home" ] && [ -d "$_home" ]; then
-		SRC="$_home/repos/WSL2-Linux-Kernel"
-		echo "[vcan-module] running under sudo — using $SUDO_USER's tree ($SRC), not root's."
-		echo "[vcan-module] you can run this WITHOUT sudo; it elevates only the load and ip steps."
-	fi
+	SRC="$(vcan_default_src)"
+	echo "[vcan-module] running under sudo — using $SUDO_USER's tree ($SRC), not root's."
+	echo "[vcan-module] you can run this WITHOUT sudo; it elevates only the load and ip steps."
 fi
-SRC="${SRC:-$HOME/repos/WSL2-Linux-Kernel}"
+SRC="${SRC:-$(vcan_default_src)}"
 # ABSOLUTE, before $KO is derived from it and before it is recorded. The marker is explicitly
 # machine-wide — read by setup_vcan.sh in a later session and by this script from any checkout —
 # and a relative SRC= written verbatim would be resolved against whatever directory the reader
@@ -112,7 +101,7 @@ KO="$SRC/drivers/net/can/vcan.ko"
 # warns rather than taking the run down with it.
 record_src() {
 	[ -f "$KO" ] || return 0
-	marker="$(marker_path)"
+	marker="$(vcan_marker_path)"
 	if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ]; then
 		sudo -u "$SUDO_USER" mkdir -p "$(dirname "$marker")" 2>/dev/null || true
 		printf '%s\n' "$SRC" | sudo -u "$SUDO_USER" tee "$marker" >/dev/null 2>&1 \
@@ -129,48 +118,6 @@ record_src() {
 }
 
 # --- 0. is there anything to do at all? -----------------------------------------------------
-# vcan_usable asks the question that actually decides this: CAN THIS KERNEL MAKE A VCAN DEVICE?
-# The two checks below it ask narrower ones — "is a module loaded", "is a module installable" —
-# and a kernel built with CONFIG_CAN_VCAN=y answers no to both while `ip link add type vcan`
-# works: a built-in vcan is in no `lsmod` listing, and such a build often ships no
-# /lib/modules/$(uname -r) for modinfo to search. Without this the script cloned and compiled an
-# ENTIRE KERNEL — tens of minutes, gigabytes — for a machine whose vcan was already there.
-# Observed on 6.6.123.2-microsoft-standard-WSL2+ while testing the sibling fix in setup_vcan.sh:
-# the same wrong probe, in the second of the two places it lived.
-#
-# Answered without root and without touching anything wherever possible: an interface that
-# already exists, the running kernel's own config, or the builtin list. Only if none of those can
-# tell do we ask by doing — and NOT under --build, which promises to leave the running system
-# alone, and whose caller has every reason not to have authorised `sudo ip` at all. A denied or
-# unauthorised probe is not evidence that vcan is missing, and treating it as such is how this
-# script talks itself into compiling a kernel it does not need.
-vcan_builtin() {
-	[ -n "$(ip -brief link show type vcan 2>/dev/null)" ] && return 0
-	# Process substitution, NOT a pipe. Under `set -o pipefail` a `grep -q` that matches closes
-	# the pipe, zcat dies of SIGPIPE, and the pipeline reports failure — so the check answered
-	# "no" precisely when the answer was yes, and this script went off to build a kernel again.
-	grep -q '^CONFIG_CAN_VCAN=y' <(zcat /proc/config.gz 2>/dev/null) && return 0
-	grep -qs 'vcan\.ko' "/lib/modules/$(uname -r)/modules.builtin" && return 0
-	return 1
-}
-
-# The mutating fallback. `sudo -n`: a probe must never sit at a password prompt, and a refusal
-# has to be distinguishable from "the kernel cannot do this".
-vcan_probe() {
-	sudo -n ip link add dev vcanprobe type vcan >/dev/null 2>&1 || return 1
-	sudo -n ip link del vcanprobe >/dev/null 2>&1 || true
-	return 0
-}
-
-vcan_usable() {
-	vcan_builtin && return 0
-	# --build changes nothing on the running system, so it stops at the free checks. If they
-	# cannot tell, it goes on and builds a module — redundant on a built-in kernel, but that is
-	# the conservative answer for a mode whose whole promise is not to touch anything.
-	[ "$MODE" = build ] && return 1
-	vcan_probe
-}
-
 if lsmod | grep -q '^vcan '; then
 	say "vcan is already loaded — skipping the build"
 	# BEFORE the exit. The loaded module may be the one in $SRC, put there by an earlier run or
@@ -190,14 +137,35 @@ elif modinfo vcan >/dev/null 2>&1; then
 	say "this kernel SHIPS vcan (no build needed) — loading it"
 	sudo modprobe vcan
 	MODE=load
-elif vcan_usable; then
-	# Built in (CONFIG_CAN_VCAN=y): there is no module, and there is nothing for the load path
-	# below to do either — it would reach the "$KO not found" die. Finish here instead.
+elif [ "$MODE" = build ] && vcan_available_free; then
+	# --build may LOOK — the free checks need no root and change nothing. What it must not do is
+	# reach the privileged probe inside vcan_available, which creates and removes a device.
 	say "this kernel creates vcan devices with no module at all (CONFIG_CAN_VCAN=y)"
-	[ "$MODE" = build ] && { say "nothing to build"; exit 0; }
-	say "bringing the interfaces up via setup_vcan.sh"
-	"$(dirname "$0")/setup_vcan.sh" "${IFACES[@]}"
+	say "nothing to build"
 	exit 0
+elif [ "$MODE" = build ]; then
+	# The free checks cannot tell, and --build will not pay for the answer by touching anything.
+	# It builds: that is what the caller asked for in as many words, and a redundant module is
+	# the cheap wrong answer here where a refusal would be the expensive one.
+	:
+else
+	vcan_available; _avail=$?
+	case "$_avail" in
+		0)
+			# Built in (CONFIG_CAN_VCAN=y): there is no module, and there is nothing for the load
+			# path below to do either — it would reach the "$KO not found" die. Finish here.
+			say "this kernel creates vcan devices with no module at all (CONFIG_CAN_VCAN=y)"
+			say "bringing the interfaces up via setup_vcan.sh"
+			"$(dirname "$0")/setup_vcan.sh" "${IFACES[@]}"
+			exit 0
+			;;
+		2)
+			# NOT "unsupported". Building a kernel because a probe was refused is the single most
+			# expensive wrong answer this script can give.
+			vcan_say_no_privilege
+			die "not building a kernel on a guess — grant the rule above, or pass --build to force it"
+			;;
+	esac
 fi
 
 # --- 1. build ------------------------------------------------------------------------------
