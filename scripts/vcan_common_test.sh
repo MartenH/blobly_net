@@ -42,8 +42,20 @@ ok "vcan_default_src: under sudo" "$out" "/home/bob/repos/WSL2-Linux-Kernel"
 out=$(HOME=/home/alice bash -c 'unset XDG_CACHE_HOME; . scripts/vcan_common.sh; vcan_marker_path')
 ok "vcan_marker_path: plain" "$out" "/home/alice/.cache/blobly_net/vcan_module_src"
 
+# ONE PATH ACROSS THE SUDO BOUNDARY. The marker's job is to be found again — by the other
+# script, in a later session, possibly on the other side of `sudo`. sudo's env_reset strips
+# XDG_CACHE_HOME, so honouring it would give two answers for one user; the previous version
+# branched on privilege and honoured it on one side only, which is precisely how a tree recorded
+# by a normal build became invisible to `sudo ./scripts/setup_vcan.sh`.
 out=$(HOME=/home/alice XDG_CACHE_HOME=/tmp/xdg bash -c '. scripts/vcan_common.sh; vcan_marker_path')
-ok "vcan_marker_path: honours XDG_CACHE_HOME" "$out" "/tmp/xdg/blobly_net/vcan_module_src"
+ok "vcan_marker_path: XDG_CACHE_HOME does not move it" "$out" "/home/alice/.cache/blobly_net/vcan_module_src"
+
+plain=$(HOME=/home/bob bash -c 'unset XDG_CACHE_HOME; . scripts/vcan_common.sh; vcan_marker_path')
+sudoed=$(PATH="$stub:$PATH" HOME=/root SUDO_USER=bob bash -c '. scripts/vcan_common.sh; vcan_marker_path')
+ok "vcan_marker_path: same path plain and under sudo" "$sudoed" "$plain"
+
+xdg_sudoed=$(PATH="$stub:$PATH" HOME=/root SUDO_USER=bob XDG_CACHE_HOME=/tmp/xdg bash -c '. scripts/vcan_common.sh; vcan_marker_path')
+ok "vcan_marker_path: same path even if XDG survives sudo" "$xdg_sudoed" "$plain"
 
 # The marker that setup_vcan.sh READS must be the one build_vcan_module.sh WRITES. They each had
 # their own expression of it once, and the two drifted.

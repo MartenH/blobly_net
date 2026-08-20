@@ -19,15 +19,20 @@ vcan_user_home() {
 }
 
 # WHERE THE MARKER IS: the tree build_vcan_module.sh last built a module in, recorded for
-# setup_vcan.sh and for the next build. Per-MACHINE under the user's cache, never in the repo —
-# the path is one machine's fact, and a repo-relative file is per-CHECKOUT, invisible from the
-# `.claude/worktrees/*` this project works in by convention.
+# setup_vcan.sh and for the next build. Per-MACHINE under the invoking user's home, never in the
+# repo — the path is one machine's fact, and a repo-relative file is per-CHECKOUT, invisible from
+# the `.claude/worktrees/*` this project works in by convention.
+#
+# XDG_CACHE_HOME IS DELIBERATELY NOT HONOURED, and that is the point rather than an oversight.
+# Both scripts are run both ways — plainly, and through `sudo` — and sudo's `env_reset` strips
+# XDG_CACHE_HOME, so a path that consulted it would resolve to the user's directory in one
+# context and to `~/.cache` in the other. A marker whose entire job is to be FOUND AGAIN, by the
+# other script, in a later session, possibly across that boundary, has to be one path. An earlier
+# version of this function branched on privilege and honoured XDG on only one side; a tree
+# recorded by a normal build was then invisible to `sudo ./scripts/setup_vcan.sh` (codex #122 r6)
+# — the same divergence this file exists to eliminate, reintroduced inside it.
 vcan_marker_path() {
-	if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ]; then
-		printf '%s\n' "$(vcan_user_home)/.cache/blobly_net/vcan_module_src"
-		return 0
-	fi
-	printf '%s\n' "${XDG_CACHE_HOME:-$(vcan_user_home)/.cache}/blobly_net/vcan_module_src"
+	printf '%s\n' "$(vcan_user_home)/.cache/blobly_net/vcan_module_src"
 }
 
 vcan_default_src() { printf '%s\n' "$(vcan_user_home)/repos/WSL2-Linux-Kernel"; }
