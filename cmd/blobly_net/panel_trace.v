@@ -448,7 +448,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			{
 				if m := app.find_message(g.id, g.ext) {
 					if vgui.menu_item('Add all signals to Graphics') {
-						for s in m.active_signals(r.data) {
+						for s in m.active_signals(if r.has_payload() { r.data } else { []u8{} }) {
 							app.add_watch(g.id, g.ext, s.name)
 						}
 						app.show_graphics = true
@@ -497,8 +497,10 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				vgui.table_cell('-')
 			}
 			if open {
+				// an expanded RTR group decodes nothing: its newest frame has no payload,
+				// only a DLC placeholder (see TraceRow.has_payload)
 				if m := app.find_message(g.id, g.ext) {
-					for s in m.active_signals(r.data) {
+					for s in m.active_signals(if r.has_payload() { r.data } else { []u8{} }) {
 						lbl := s.label(r.data)
 						extra := if lbl != '' { ' (${lbl})' } else { '' }
 						unit := if s.unit != '' { ' ${s.unit}' } else { '' }

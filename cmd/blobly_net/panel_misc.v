@@ -489,7 +489,9 @@ fn build_layout() {
 fn latest_data(rows []TraceRow, id u32, ext bool) []u8 {
 	mut i := rows.len - 1
 	for i >= 0 {
-		if rows[i].id == id && rows[i].ext == ext {
+		// has_payload: an RTR row matching this id would return its zero-filled DLC
+		// placeholder as the "latest value" of every signal
+		if rows[i].id == id && rows[i].ext == ext && rows[i].has_payload() {
 			return rows[i].data
 		}
 		i--
@@ -590,7 +592,9 @@ fn (app &App) build_series(rows []TraceRow, w Watch) ([]f32, []f32) {
 	mut xs := []f32{}
 	mut ys := []f32{}
 	for r in rows {
-		if r.id == w.id && r.ext == w.ext && r.data.len > 0 {
+		// has_payload, not data.len: an imported `200#R8` between real 0x200 frames would
+		// inject a zero sample into the middle of the series
+		if r.id == w.id && r.ext == w.ext && r.has_payload() {
 			xs << f32(r.t_ms / 1000.0) // seconds — the plot x-axis is t (s)
 			ys << f32(sig.physical(r.data))
 		}

@@ -52,6 +52,16 @@ mut:
 	seq    u64
 }
 
+// has_payload gates every SIGNAL-DECODING consumer of a row's data. An RTR frame's data is a
+// zero-filled placeholder that carries only the requested DLC — live SocketCAN delivers it that
+// way (the shim returns can_dlc bytes with no RTR check) and the canlog import now mirrors it —
+// so decoding those bytes fabricates all-zero signal values from a frame that has NO payload.
+// One predicate rather than a `!r.rtr` at each site, so the next decoder greps into the rule
+// instead of rediscovering it (codex #127 r2).
+fn (r TraceRow) has_payload() bool {
+	return !r.rtr && r.data.len > 0
+}
+
 struct TRec {
 	ch     int
 	core   int // the block's core (from its header) — authoritative for lane grouping (esp. idle)
