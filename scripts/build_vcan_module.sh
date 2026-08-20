@@ -15,8 +15,9 @@
 #   SRC=~/src/wsl-kernel ./scripts/build_vcan_module.sh    # keep the source tree elsewhere
 #
 # Idempotent: exits early when vcan already works, and skips the build when a module with the
-# RIGHT vermagic is already present. The build is a full `make` and takes tens of minutes once;
-# after that only the load steps run, and those are needed once per `wsl --shutdown`.
+# RIGHT vermagic is already present. The build is a full `make` and takes tens of minutes once.
+# After that you do NOT come back here each session — the per-session job is setup_vcan.sh
+# above, which loads what this built. This script is for the build, and for kernel upgrades.
 #
 # Everything that needs root is a single `sudo` line, so it is obvious what is being elevated.
 # The in-process (`inproc:`) and UDP buses need NONE of this — unit tests and the headless
@@ -56,8 +57,12 @@ die() { echo "[vcan-module] ERROR: $*" >&2; exit 1; }
 
 # RECORD WHERE THE MODULE IS, for setup_vcan.sh. It runs bare in later sessions with no SRC in
 # its environment, so a tree kept anywhere but the default would be invisible to it — it would
-# report that no module was built while this one sat next to it. Written beside the repo, not
-# into it: the path is one machine's.
+# report that no module was built while this one sat next to it.
+#
+# Kept per-MACHINE, under the user's cache, NOT in the repo: the path is one machine's fact, and
+# a repo-relative marker is per-CHECKOUT — this project's own convention is to work in
+# `.claude/worktrees/*`, so a build run from one worktree left a marker no other checkout could
+# see. setup_vcan.sh reads the same location.
 #
 # Called from EVERY exit that leaves a usable module behind, not just the end: `--build` returns
 # at the build-only exit, which is exactly the mode a custom SRC is most likely paired with.
@@ -70,14 +75,25 @@ die() { echo "[vcan-module] ERROR: $*" >&2; exit 1; }
 # before the interfaces came up. The unlink recovers a marker an older version already left,
 # since the directory is the user's; a failure to record is only a lost optimisation, so it
 # warns rather than taking the run down with it.
+marker_path() {
+	if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ]; then
+		_h="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+		echo "${_h:-$HOME}/.cache/blobly_net/vcan_module_src"
+		return 0
+	fi
+	echo "${XDG_CACHE_HOME:-$HOME/.cache}/blobly_net/vcan_module_src"
+}
+
 record_src() {
 	[ -f "$KO" ] || return 0
-	marker="$(dirname "$0")/../.vcan_module_src"
+	marker="$(marker_path)"
 	if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ]; then
+		sudo -u "$SUDO_USER" mkdir -p "$(dirname "$marker")" 2>/dev/null || true
 		printf '%s\n' "$SRC" | sudo -u "$SUDO_USER" tee "$marker" >/dev/null 2>&1 \
 			|| say "note: could not record $SRC in $marker (setup_vcan.sh will need SRC=)"
 		return 0
 	fi
+	mkdir -p "$(dirname "$marker")" 2>/dev/null || true
 	rm -f "$marker" 2>/dev/null || true
 	# 2>/dev/null BEFORE the redirect, so a failing `>` is silenced by it — bash reports that
 	# one against whatever fd 2 is at the moment it tries, and the say below is the message

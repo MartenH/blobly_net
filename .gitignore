@@ -58,7 +58,3 @@ eval/
 # is kept out of the repo. .vscode/launch.json IS shared — it uses ${workspaceFolder} only.
 .vscode/tasks.json
 
-# where build_vcan_module.sh put the vcan module — one machine's path, not the repo's business.
-# Anchored: an unanchored pattern matches at every depth, and this repo has already lost a
-# source directory to one that did.
-/.vcan_module_src
