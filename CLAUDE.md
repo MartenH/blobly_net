@@ -169,6 +169,18 @@ release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks.
   into nothing and the round sits unread. Two reviews were missed that way in one session, one
   of them for over an hour. Match the verdict by the head SHA codex names, not by its wording:
   phrase-matching missed "Didn't find any major issues" more than once.
+- **When findings repeat in one path, write the test — do not stop the review.** "Iterate
+  until clean" is right; what it lacks is a response to rounds that keep landing in the same
+  uncovered place. When consecutive rounds find defects introduced by the previous round's fix,
+  and they cluster, the loop is designing an untested path one repair at a time: cover that path
+  with a test, which ends the repeats at their source. A round count is the wrong instrument —
+  #84's nine rounds were nine rounds of real findings and were worth every one.
+  On net#114, rounds 5–7 were three consecutive regressions-of-fixes in mid-run channel
+  enable/disable, which looked exactly like a loop feeding on itself; the session drafted this
+  very rule to end it. **Round 8 then found a listen-only channel that transmits — a safety
+  promise the GUI made and the backend could not keep, in the original work, not in any fix.**
+  Stopping one round earlier would have shipped it. Judge each finding on its merits; let
+  repetition tell you what to test, not when to quit.
 - **Update this file in the PR that lands the work** — especially new modules/panels. The gap
   between 2026-07-06 and 07-21 (~30 PRs) had to be reconstructed from `git log`; don't repeat it.
 - **Cross-repo:** the SUT side is **blobly_emb** — see
