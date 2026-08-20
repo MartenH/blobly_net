@@ -72,10 +72,17 @@ __global (
 // The handler runs on another thread, and `borrow()` appends to the same array — an append that
 // may reallocate while the handler is walking it. A torn read there restores the wrong channels,
 // or none, which is the failure this whole mechanism exists to prevent.
-fn borrow_lock() {
+// Created ONCE, by borrow_init, before the interrupt handler is installed. Creating it lazily
+// was itself an unsynchronised check-and-assign: the handler thread and the first borrow could
+// each make a mutex, lock different objects, and protect nothing — a lock with a race in its own
+// construction.
+fn borrow_init() {
 	if isnil(g_borrow_mu) {
 		g_borrow_mu = sync.new_mutex()
 	}
+}
+
+fn borrow_lock() {
 	g_borrow_mu.lock()
 }
 
@@ -377,6 +384,7 @@ fn main() {
 	}
 	// BEFORE anything is borrowed, not after: the window between taking a channel and installing
 	// a handler is exactly when an impatient operator hits Ctrl-C.
+	borrow_init()
 	os.signal_opt(.int, on_interrupt) or {
 		eprintln('note: could not install an interrupt handler; Ctrl-C may leave channels assigned')
 	}

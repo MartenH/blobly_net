@@ -225,6 +225,12 @@ static int ct_vec_cfg_note(uint64_t mask, unsigned int rate, int silent, ct_xlpo
 	ct_vec_cfg_rate[i] = rate;
 	ct_vec_cfg_silent[i] = silent;
 	ct_vec_cfg_owner[i] = owner;
+	/* FRESH AGAIN. A record marked stale when its owner closed keeps that mark until it is
+	 * forgotten, so a later port that DID win initialisation access — and therefore configured
+	 * the channel itself — inherited a record saying nothing about it could be trusted, and
+	 * every sibling open after it was refused. Configuring the channel is what makes the record
+	 * true again. */
+	ct_vec_cfg_stale[i] = 0;
 	return 0;
 }
 

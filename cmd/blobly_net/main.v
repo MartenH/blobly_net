@@ -751,6 +751,22 @@ fn (app &App) dbs_for_dest(iface string) []candb.Database {
 	return out
 }
 
+// dest_is_read_locked reports whether ANY enabled row on this wire has its monitor open. Caller
+// holds app.mu.
+//
+// The distinction exists because one reader now serves a destination: `running` is a property of
+// the row that opened the port, while "is this bus being watched" is a property of the wire, and
+// every caller that was asking the first meant the second.
+fn (app &App) dest_is_read_locked(iface string) bool {
+	want := transport.destination_key(iface)
+	for c in app.chans {
+		if c.enabled && c.running && transport.destination_key(c.iface) == want {
+			return true
+		}
+	}
+	return false
+}
+
 fn (app &App) transmits_on(c Chan) bool {
 	for sc in app.sims {
 		// NODES ONLY. start() spawns sim_loop when `nodes.len > 0`, so a row carrying just
@@ -921,6 +937,8 @@ fn (mut app App) start() {
 	}
 	app.tx_map_mu.unlock()
 	app.running = true
+	// Which wires already have a reader, so aliases do not each open one.
+	mut monitored := map[string]bool{}
 	for ci, ch in app.chans {
 		if !ch.monitorable() {
 			continue
@@ -934,8 +952,19 @@ fn (mut app App) start() {
 		// still pending would otherwise start a SECOND loop for one channel, and both would
 		// claim against the same monitor index — one gets the echo, the other files its copy
 		// under the device under test
-		app.chans[ci].spawning = true
-		spawn rx_loop(app, ci, ch.iface, app.run_gen)
+		// ONE READER PER WIRE. Two rows spelling one destination differently each opened their
+		// own RX port, and every external frame was then delivered twice — two trace rows, two
+		// verifier passes over the same message, and an E2E counter check seeing each frame
+		// twice in a row. The second row still transmits and is still configured; it simply does
+		// not need its own pair of eyes on a bus somebody is already watching.
+		rx_key := transport.destination_key(ch.iface)
+		if rx_key in monitored {
+			app.chans[ci].spawning = false
+		} else {
+			monitored[rx_key] = true
+			app.chans[ci].spawning = true
+			spawn rx_loop(app, ci, ch.iface, app.run_gen)
+		}
 		// A TX bus per CHANNEL (each generator fires on its target bus), plus one anonymous tap
 		// per wire for the paths with no particular channel — Quick Send, diagnostics, shell.
 		if tx_bus_key(ch.name, ch.iface) !in app.tx_buses {
@@ -2308,6 +2337,21 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 	mut built := false
 	t0 := time.ticks()
 	for a.running {
+		// A CHANNEL THAT HAS LEFT THE RUN takes its simulation with it. rx_loop disables a
+		// channel whose adapter failed, and this loop only watched `a.running` — so a simulated
+		// ECU went on transmitting into a port that had gone, discarding every failure.
+		a.mu.lock()
+		mut still_on := false
+		for c in a.chans {
+			if c.name == sc.pch.name && c.enabled {
+				still_on = true
+				break
+			}
+		}
+		a.mu.unlock()
+		if !still_on {
+			break
+		}
 		if !built || a.sim_gen != local_gen {
 			built = true
 			local_gen = a.sim_gen
@@ -2622,7 +2666,13 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		a.mu.lock()
 		mut ready := true
 		for ci in cis {
-			if ci < a.chans.len && a.chans[ci].enabled && !a.chans[ci].running {
+			if ci >= a.chans.len || !a.chans[ci].enabled {
+				continue
+			}
+			// IS THIS WIRE BEING READ, by anybody. One reader serves a destination now, so a row
+			// that shares a wire with the row holding the monitor never sets its own `running`
+			// — and waiting for it would time out on a bus that is perfectly well watched.
+			if !a.dest_is_read_locked(a.chans[ci].iface) {
 				ready = false
 				break
 			}
@@ -2644,7 +2694,7 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	mut not_up := []string{}
 	a.mu.lock()
 	for ci in cis {
-		if ci < a.chans.len && a.chans[ci].enabled && !a.chans[ci].running {
+		if ci < a.chans.len && a.chans[ci].enabled && !a.dest_is_read_locked(a.chans[ci].iface) {
 			not_up << a.chans[ci].name
 		}
 	}
