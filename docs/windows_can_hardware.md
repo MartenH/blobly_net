@@ -25,6 +25,13 @@ see below.
     sequence numbers checked end to end. That is ~4,400 frames/s, which is a saturated
     500 kbit/s wire for eight data bytes. A `--selftest` on Vector's software virtual channels
     passes the same way with no hardware involved.
+  - **The wire is the limit, not the backend.** 111 bits per standard frame with eight data
+    bytes puts the 500 kbit/s ceiling at ~4,504 frames/s, and the measurement above sits at
+    4,468. To find where the code gives out, `--pair` over the driver's two VIRTUAL channels
+    removes the wire entirely: **2,880,640 frames in 6 s — 480,106 frames/s, 100% arrived, no
+    duplicates, none malformed**. That is ~107x the fastest real bus we can attach, so classic
+    CAN saturates long before this backend does and there is no throughput work to do here.
+    Raising it is CAN-FD's job (Planned).
   - **The ABI is checked, not guessed.** `vxlapi.h` ships with the XL Driver Library, so every
     typedef, signature and constant this backend uses was compared against it: `XLstatus` is
     `short`, `XLportHandle` is `long` (32-bit here), `XLevent` is 48 bytes, `XLchannelConfig`

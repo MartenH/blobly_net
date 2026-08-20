@@ -859,7 +859,17 @@ fn pair_test(o Opts) ! {
 			return error('${lost} of ${n_sent} frames never arrived (${pct:.1f}%) — the link carries traffic but loses it')
 		}
 		println('')
-		println('PAIR TEST PASSED on real transceivers and a real wire.')
+		// SAY WHICH BUS IT WAS. This printed "on real transceivers and a real wire"
+		// unconditionally, including for --pair over the driver's own virtual channels,
+		// where there is neither — a verification tool asserting the one thing the operator
+		// cannot check from the output. hw_type 1 is XL_HWTYPE_VIRTUAL, the same test
+		// --selftest uses to find them.
+		virtual_pair := chans[a_row].hw_type == 1 && chans[b_row].hw_type == 1
+		if virtual_pair {
+			println('PAIR TEST PASSED on the driver VIRTUAL bus — no transceiver, no wire.')
+		} else {
+			println('PAIR TEST PASSED on real transceivers and a real wire.')
+		}
 		return
 	}
 	// ASK THE CONTROLLER before blaming the wire. A queued frame that never reached the bus and
