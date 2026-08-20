@@ -1283,3 +1283,21 @@
   being cut back to invariants, which codex flagged on #110 as the guide taking on operational
   history. The pattern throughout: a description of an answer's shape, believed instead of the
   artifact, and never tested against the case not yet seen.
+- 2026-08-20: `docs/windows_can_hardware.md` cut 239 -> 155 lines and turned from a plan into a
+  description of what exists. It had been written before any Windows backend did, and kept its
+  planning shape long after: per-vendor sections headed "do FIRST" / "do SECOND" / "do LAST",
+  a "Verification plan (owner runs on Windows)", a "Phasing" section listing "P4 — Vector
+  backend **when a Vector machine is available. TODO**" a day after Vector was verified on a
+  VN1630A, and a closing instruction to report results back "into the CLAUDE.md status log"
+  because "the code is written from the documented ABI but unverified against silicon". The
+  seam section still said `open_windows.v` handled "today: `inproc:` / `udp:` only; errors
+  otherwise" — it had dispatched `pcan:`, `kvaser:` and `vector:` for months. The file also
+  contradicted itself outright: its status line had read "PCAN + Kvaser backends HW-VERIFIED
+  2026-06-18" since June while a bullet three lines below still said "not yet run against
+  hardware", text written before the adapters arrived that nobody came back to. Two paragraphs
+  of the file's own editing history went the same way, including one explaining which `vector:`
+  spellings an earlier draft had shown. The operational content — verification steps, what
+  "good" looks like — was kept and reframed as "Checking a bench", since it is a procedure
+  someone with a new adapter still runs. Lesson: a design doc written before the work describes
+  a plan, and nothing converts it into a description of the result except somebody doing it;
+  until then every reader gets the plan and believes it is the state.
