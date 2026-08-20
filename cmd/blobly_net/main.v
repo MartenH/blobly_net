@@ -230,24 +230,30 @@ mut:
 	running     bool
 	dbs         []candb.Database // all loaded DBCs (union; trace/symbol decode)
 	dbs_paths   []string         // resolved file path per dbs entry (editor save target)
-	dbc_readers int              // live workers reading app.dbs lock-free (rx loops, scripts);
+	dbc_readers int              // live RUN workers reading app.dbs lock-free (rx loops);
 	// the editor, the System-panel rebuild and Start's own rebuild all wait for 0 — app.running
 	// clears BEFORE workers exit. RESERVED BY THE SPAWNER, not by the worker: a thread that has
 	// not been scheduled yet, or is still inside a slow open, has read nothing and would be
 	// invisible to those gates if it registered itself.
-	dbs_by_iface map[string][]candb.Database // per-channel DBCs (generator message picker scope)
-	manifest     telem.Manifest
-	has_manifest bool
-	t0           i64
-	wake_ms      i64
-	last_wake    i64
-	proj_path    string
-	proj_name    string
-	dark         bool = true // theme
-	ui_scale     f32  = 1.0
-	paused       bool
-	recording    bool
-	rec          []canlog.LogEntry // captured while recording; written on stop
+	// The Lua script worker reads the same arrays, so it is the same hazard — but it is counted
+	// SEPARATELY because its lifetime is nothing like an rx loop's. An rx loop leaves within
+	// milliseconds of Stop, which is what makes a short spin worth doing; a script runs until
+	// its own code finishes and Stop does not cancel it. Spinning on one freezes the render
+	// thread for the whole timeout and then refuses anyway, so a script is answered at once.
+	script_readers int
+	dbs_by_iface   map[string][]candb.Database // per-channel DBCs (generator message picker scope)
+	manifest       telem.Manifest
+	has_manifest   bool
+	t0             i64
+	wake_ms        i64
+	last_wake      i64
+	proj_path      string
+	proj_name      string
+	dark           bool = true // theme
+	ui_scale       f32  = 1.0
+	paused         bool
+	recording      bool
+	rec            []canlog.LogEntry // captured while recording; written on stop
 	// What WE put on the wire, split the way the trace splits it: the tester's own sends and
 	// the simulation's are different facts, and one merged number re-collapses them in the one
 	// place a user looks first. Counted at the tap (note_emit), so every emitter counts —
@@ -799,7 +805,9 @@ fn (mut app App) start() {
 		// be a second place for the policy to drift (and could pass a moment before the real
 		// one fails). Ask apply_edits whether the rebuild happened, and believe the answer.
 		if !app.apply_edits() {
-			app.notify('not started — the runtime could not be rebuilt; press Start again in a moment')
+			// No remedy repeated here: rebuild_from_proj has just named the reader that
+			// refused, and the two cases have different answers.
+			app.notify('not started — the runtime could not be rebuilt')
 			return
 		}
 	}
@@ -3533,12 +3541,31 @@ fn (mut app App) set_project(proj project.Project, path string) {
 // rebuild_from_proj derives the runtime view (chans, dbs, sims, senders, manifest, default
 // selection) from app.proj. Called after a load and after any config/generator edit, so the
 // live panels reflect the edited model. Must be called while stopped (no RX threads running).
+// live_readers_locked is every lock-free reader of app.dbs/app.chans, whatever its lifetime.
+// The two populations are counted apart (see the fields) but a gate that only asks "may I
+// replace these arrays?" wants the total. Caller holds app.mu.
+fn (app &App) live_readers_locked() int {
+	return app.dbc_readers + app.script_readers
+}
+
 // wait_readers_drained waits for the lock-free readers of app.dbs/app.chans to finish, up to
 // two seconds, and reports whether they did. stop() clears app.running and joins nothing, so
 // "not running" does not mean "nobody is reading": an rx loop can still be inside its open or
 // draining its last batch. The reservation is taken by the SPAWNER, so a worker that has not
 // been scheduled yet is counted here too.
+//
+// This runs on the RENDER THREAD, which is why a script is not waited on at all. Every config
+// edit reaches it, so each 5 ms of spin is a dropped frame; that is a fair price for an rx
+// loop, which leaves in a few of them, and no price at all for a script, which will still be
+// reading when the timeout expires. Two seconds of frozen GUI followed by the same refusal is
+// strictly worse than the refusal.
 fn (mut app App) wait_readers_drained() bool {
+	app.mu.lock()
+	scripting := app.script_readers > 0
+	app.mu.unlock()
+	if scripting {
+		return false
+	}
 	for _ in 0 .. 400 {
 		app.mu.lock()
 		live := app.dbc_readers
@@ -3549,7 +3576,7 @@ fn (mut app App) wait_readers_drained() bool {
 		time.sleep(5 * time.millisecond)
 	}
 	app.mu.lock()
-	left := app.dbc_readers
+	left := app.live_readers_locked()
 	app.mu.unlock()
 	return left == 0
 }
@@ -3567,7 +3594,17 @@ fn (mut app App) rebuild_from_proj() bool {
 	// question before offering their actions; this is the same rule, on the function that
 	// actually does the dangerous thing.
 	if !app.wait_readers_drained() {
-		app.notify('workers from the last run are still finishing — runtime not rebuilt; Stop and try again')
+		app.mu.lock()
+		scripting := app.script_readers > 0
+		app.mu.unlock()
+		// Two refusals with two different remedies. One resolves itself in a moment; the other
+		// waits on a script only its own code can end, and telling that operator to "try again"
+		// sends them clicking at a button that cannot work yet.
+		if scripting {
+			app.notify('a Lua script is running and reads the databases this would replace — runtime not rebuilt; try again once it finishes')
+		} else {
+			app.notify('workers from the last run are still finishing — runtime not rebuilt; Stop and try again')
+		}
 		app.runtime_stale = true
 		return false
 	}
@@ -6060,6 +6097,18 @@ fn draw_buses(mut app App, chans []Chan) {
 		return
 	}
 	vgui.text('${app.proj_name} · ${chans.len} channel(s)')
+	// The row index below is shared with app.proj.channels — rebuild_from_proj appends one Chan
+	// per project channel, so row i is the same bus in both. A REFUSED rebuild breaks exactly
+	// that: the model has already taken the edit (a bus removed, a smaller project opened)
+	// while app.chans still describes the previous set, so the index can name a different bus
+	// or run off the end of proj.channels and panic. These rows are then a view of something
+	// that is no longer the project, and the tick is withheld rather than landing on the wrong
+	// row.
+	stale := app.runtime_stale || chans.len != app.proj.channels.len
+	if stale {
+		vgui.text_colored(230, 120, 120,
+			'showing the previous bus set — the project changed but the runtime could not be rebuilt')
+	}
 	// The Buses panel is the runtime VIEW (enable/state); add/remove/edit a bus lives in the
 	// Configuration editor (stopped-only).
 	if app.running {
@@ -6095,7 +6144,7 @@ fn draw_buses(mut app App, chans []Chan) {
 			// none of them can arise if the set is what it was when Start was pressed. Changing
 			// it is Stop and Start — the same rule the Configure button above already applies,
 			// and the one replay membership has followed since #113.
-			if app.running {
+			if app.running || stale {
 				vgui.begin_disabled()
 				vgui.checkbox('##en${i}', c.enabled)
 				vgui.end_disabled()
@@ -8854,7 +8903,7 @@ fn script_worker(app &App, path string) {
 	mut a := unsafe { app }
 	a.mu.lock()
 	if a.script_busy {
-		a.dbc_readers-- // release the spawn-side reservation: we never read
+		a.script_readers-- // release the spawn-side reservation: we never read
 		a.mu.unlock()
 		return
 	}
@@ -8865,7 +8914,7 @@ fn script_worker(app &App, path string) {
 	// worker may not schedule before an edit) — this side only releases it
 	defer {
 		a.mu.lock()
-		a.dbc_readers--
+		a.script_readers--
 		a.mu.unlock()
 	}
 	mut chans := []script.ChanInfo{}
@@ -8958,7 +9007,7 @@ fn draw_script(mut app App) {
 		// hasn't been scheduled yet hasn't registered, and an edit could slip
 		// into that gap (the worker releases it in its defer)
 		app.mu.lock()
-		app.dbc_readers++
+		app.script_readers++
 		app.mu.unlock()
 		spawn script_worker(app, vgui.buf_str(app.script_path_buf))
 	}
@@ -9896,7 +9945,7 @@ fn draw_dbc_editor(mut app App) {
 	// only safe stopped. (Editing a stopped capture still re-decodes it live:
 	// the trace decodes signal values at draw time.)
 	app.mu.lock()
-	live_readers := app.dbc_readers
+	live_readers := app.live_readers_locked()
 	app.mu.unlock()
 	ro := app.running || live_readers > 0
 	if ro {
@@ -11068,7 +11117,7 @@ fn draw_system(mut app App) {
 			// window where the rebuild frees what a live worker is reading (codex #65 r4). Use
 			// the same gate the DBC editor uses.
 			app.mu.lock()
-			rb_readers := app.dbc_readers
+			rb_readers := app.live_readers_locked()
 			app.mu.unlock()
 			if app.running || rb_readers > 0 {
 				vgui.text_dim('Simulate the rest — stop to configure (workers drain briefly after Stop)')
