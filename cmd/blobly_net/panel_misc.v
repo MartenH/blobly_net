@@ -488,6 +488,13 @@ fn (mut app App) reset_layout() {
 	app.show_dbc = false
 	app.show_sys = false
 	app.show_flash = false
+	// The floating windows that live OUTSIDE the show_* set go back to closed too — left open,
+	// they hover over the freshly restored workspace as leftovers of the state being escaped.
+	// Configuration closes through its own setter, which folds unsaved edits into the model on
+	// the way out; setting the flag directly would silently drop them (codex #129 r1).
+	app.set_config_open(false)
+	app.disc_open = false
+	app.fb_open = false
 }
 
 fn build_layout() {
