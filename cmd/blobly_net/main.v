@@ -675,6 +675,25 @@ fn (app &App) dbs_for_dest(iface string) []candb.Database {
 // The distinction exists because one reader serves a destination: `running` is a property of the
 // row that opened the port, while "is this bus being watched" is a property of the wire, and
 // every caller that was asking the first meant the second.
+// dest_left_the_run_locked reports a destination whose rows are ALL disabled, having existed in
+// this project — which is what rx_loop does to a wire whose adapter failed. A destination with no
+// rows at all (an anonymous tap, a generator's own target) has not left anything. Caller holds
+// app.mu.
+fn (app &App) dest_left_the_run_locked(iface string) bool {
+	want := transport.destination_key(iface)
+	mut seen := false
+	for c in app.chans {
+		if transport.destination_key(c.iface) != want {
+			continue
+		}
+		seen = true
+		if c.enabled {
+			return false
+		}
+	}
+	return seen
+}
+
 fn (app &App) dest_is_read_locked(iface string) bool {
 	want := transport.destination_key(iface)
 	for c in app.chans {
@@ -2317,12 +2336,17 @@ fn gen_loop(app &App) {
 		a.mu.lock()
 		for i, sr in a.senders {
 			if sr.sender.trigger == 'cyclic' && sr.sender.cycle_ms > 0 {
-				// NOT ONTO A WIRE THAT HAS LEFT THE RUN. rx_loop takes every alias of a failed
-				// destination out of the run; sim_loop learned to notice and this did not, so
-				// cyclic senders went on firing into a port that had gone, discarding each
-				// failure. A generator has no business outliving its bus.
+				// NOT ONTO A WIRE THAT HAS LEFT THE RUN — but "has no reader" is not that.
+				// A generator may legitimately target a bus nobody monitors: an `off` channel,
+				// or a target-only wire, both of which start() opens a transmit tap for on
+				// purpose. Requiring a reader silenced every one of them, which is a supported
+				// arrangement rather than a failure.
+				//
+				// What rx_loop actually does to a dead destination is DISABLE its rows. So the
+				// question is whether this target's rows exist and have all left the run — not
+				// whether anybody is listening to it.
 				tgt := sr.target()
-				if tgt != '' && !a.dest_is_read_locked(tgt) {
+				if tgt != '' && a.dest_left_the_run_locked(tgt) {
 					continue
 				}
 				lf := last[i] or { i64(0) }

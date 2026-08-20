@@ -24,16 +24,17 @@ import sync
 import transport
 
 struct Opts {
-	list     bool
-	probe    bool
-	selftest bool
-	assign   int = -1
-	release  int = -1
-	pair     string
-	channel  int
-	bitrate  int
-	seconds  int
-	transmit bool
+	list       bool
+	probe      bool
+	selftest   bool
+	assign     int = -1
+	assign_set bool // WHETHER --assign was given: -1 is the sentinel, and a user can type -1
+	release    int = -1
+	pair       string
+	channel    int
+	bitrate    int
+	seconds    int
+	transmit   bool
 }
 
 // nonempty is `?string` sugar so an unloaded library prints nothing rather than a blank label.
@@ -320,9 +321,10 @@ fn parse(args []string) !Opts {
 				i++
 				o = Opts{
 					...o
-					assign: whole_int(args[i] or {
+					assign:     whole_int(args[i] or {
 						return error('--assign needs a --probe row index')
 					}, '--assign')!
+					assign_set: true
 				}
 			}
 			'--selftest' {
@@ -516,7 +518,24 @@ fn main() {
 		eprintln('vectorcheck: --channel must be 1..64 (Vector application channels)')
 		exit(2)
 	}
-	if o.assign >= 0 {
+	// NEGATIVE IS NOT THE SENTINEL. -1 means "no --assign given", but whole_int accepts a leading
+	// minus, so `--assign -1` looked like the absent option: the block below was skipped, the
+	// channel opened on whatever mapping it already had, and with --transmit that drives hardware
+	// the operator did not choose.
+	if o.assign < -1 {
+		eprintln('vectorcheck: --assign takes a --probe row, which is not negative')
+		exit(2)
+	}
+	// A SEPARATE FLAG, because -1 is the sentinel and whole_int accepts a leading minus — so
+	// `--assign -1` was indistinguishable from not passing the option at all. It skipped this
+	// block, opened the channel on whatever mapping it already had, and with --transmit drove
+	// hardware the operator had not chosen. A value and "was a value given" are two questions,
+	// and one int cannot answer both.
+	if o.assign_set && o.assign < 0 {
+		eprintln('vectorcheck: --assign takes a --probe row, which is not negative')
+		exit(2)
+	}
+	if o.assign_set {
 		chans := transport.vector_channels()
 		if o.assign >= chans.len {
 			eprintln('vectorcheck: no --probe row ${o.assign}')
