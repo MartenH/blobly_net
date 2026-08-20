@@ -780,6 +780,33 @@ fn (mut app App) start() {
 	// flush any unsaved editor edits into the model + runtime view first, so the measurement
 	// attaches to exactly what the Configuration editor shows (not stale buffered values).
 	if app.dirty {
+		// DRAINED FIRST. apply_edits() runs rebuild_from_proj(), which REPLACES app.chans and
+		// app.dbs while the previous run's rx loops may still be iterating them lock-free:
+		// stop() clears app.running but joins nothing, so Stop → change something → Start can
+		// free what a live worker is reading. The DBC editor and the System panel's rebuild
+		// already refuse while `dbc_readers > 0` (codex #65 r4); this path is the third one in
+		// and had no gate at all. It is reachable by an ordinary sequence now that changing a
+		// bus means Stop and Start.
+		mut waited := 0
+		for waited < 2000 {
+			app.mu.lock()
+			live := app.dbc_readers
+			app.mu.unlock()
+			if live == 0 {
+				break
+			}
+			time.sleep(5 * time.millisecond)
+			waited += 5
+		}
+		app.mu.lock()
+		still_live := app.dbc_readers
+		app.mu.unlock()
+		if still_live > 0 {
+			// REFUSE rather than rebuild under them. A worker this slow to leave is a bug of
+			// its own, and starting anyway is the one outcome that can corrupt the new run.
+			app.notify('workers from the last run have not finished (${still_live} still reading) — press Start again in a moment')
+			return
+		}
 		app.apply_edits()
 	}
 	// ONE WIRE, ONE RATE. Two enabled rows on the same destination that disagree about the
