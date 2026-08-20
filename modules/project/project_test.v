@@ -832,3 +832,49 @@ fn test_vendor_destination_conflicts() {
 	]
 	assert vendor_destination_conflicts(agreed).len == 0
 }
+
+// The rate is what these rows disagree about, so the key that groups them must not contain it.
+// With the rate in the key each row got its own and the check never fired.
+fn test_rate_conflict_actually_fires() {
+	rows := [
+		Channel{
+			name:    'a'
+			adapter: 'vector'
+			iface:   'vector:1'
+			enabled: true
+			bitrate: 250000
+		},
+		Channel{
+			name:    'b'
+			adapter: 'vector'
+			iface:   'vector:1'
+			enabled: true
+			bitrate: 500000
+		},
+	]
+	got := vendor_destination_conflicts(rows)
+	assert got.len == 1, 'two rates on one wire must be reported, got ${got}'
+	assert got[0].contains('250000') && got[0].contains('500000')
+
+	// THE CASE THAT ACTUALLY BROKE IT: the rate carried in the INTERFACE, as a v1 project
+	// writes it. destination_key_for keeps that rate in the key, so the two rows were filed
+	// under different wires and the disagreement they exist to report was never compared.
+	legacy := [
+		Channel{
+			name:    'a'
+			adapter: 'vector'
+			iface:   'vector:1@250000'
+			enabled: true
+			bitrate: 250000
+		},
+		Channel{
+			name:    'b'
+			adapter: 'vector'
+			iface:   'vector:ch1@500000'
+			enabled: true
+			bitrate: 500000
+		},
+	]
+	legacy_got := vendor_destination_conflicts(legacy)
+	assert legacy_got.len == 1, 'one wire, two rates in the interfaces: ${legacy_got}'
+}

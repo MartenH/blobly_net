@@ -2257,9 +2257,13 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 		// channel whose adapter failed, and this loop only watched `a.running` — so a simulated
 		// ECU went on transmitting into a port that had gone, discarding every failure.
 		a.mu.lock()
+		// BY NAME AND WIRE. A hand-edited project can carry the same channel name on two buses,
+		// and matching on the name alone let an unrelated enabled row keep this simulation alive
+		// after its own channel was switched off — transmitting onto a bus nobody had asked for.
 		mut still_on := false
+		sim_dest := transport.destination_key(sc.iface)
 		for c in a.chans {
-			if c.name == sc.pch.name && c.enabled {
+			if c.enabled && c.name == sc.pch.name && transport.destination_key(c.iface) == sim_dest {
 				still_on = true
 				break
 			}
@@ -2313,6 +2317,14 @@ fn gen_loop(app &App) {
 		a.mu.lock()
 		for i, sr in a.senders {
 			if sr.sender.trigger == 'cyclic' && sr.sender.cycle_ms > 0 {
+				// NOT ONTO A WIRE THAT HAS LEFT THE RUN. rx_loop takes every alias of a failed
+				// destination out of the run; sim_loop learned to notice and this did not, so
+				// cyclic senders went on firing into a port that had gone, discarding each
+				// failure. A generator has no business outliving its bus.
+				tgt := sr.target()
+				if tgt != '' && !a.dest_is_read_locked(tgt) {
+					continue
+				}
 				lf := last[i] or { i64(0) }
 				if now - lf >= i64(sr.sender.cycle_ms) {
 					last[i] = now
@@ -4177,6 +4189,21 @@ fn draw_toolbar(mut app App, rx u64, txs string) {
 // destination, so every alias after the first has running == false while its transmit taps and
 // its simulation are perfectly alive — and the panels drew them amber `idle`, reporting that
 // part of the experiment had not started when it had.
+// read_destinations builds "which wires have a reader" from a SNAPSHOT of the rows, so a panel
+// can answer it without touching live state. dest_is_read_locked wants app.mu and the panels do
+// not hold it — the frame already cloned `chans` under the lock, and re-reading the live array
+// past that snapshot raced the workers publishing into it. My own comment on that helper said it
+// required the lock, which made calling it here a contradiction rather than an oversight.
+fn read_destinations(rows []Chan) map[string]bool {
+	mut out := map[string]bool{}
+	for c in rows {
+		if c.enabled && c.running {
+			out[transport.destination_key(c.iface)] = true
+		}
+	}
+	return out
+}
+
 fn chan_state(c Chan, shared_reader bool) (u8, u8, u8, string) {
 	if !c.enabled {
 		return u8(140), u8(140), u8(145), 'off '
@@ -5914,6 +5941,9 @@ fn open_uri_in_browser(path string) (bool, string) {
 }
 
 fn draw_buses(mut app App, chans []Chan) {
+	// From the SNAPSHOT this frame was given, not from live state: the rows were cloned under
+	// app.mu and re-reading past that clone races the workers writing into it.
+	read_dests := read_destinations(chans)
 	vis, op := vgui.begin_closable('Buses', app.show_buses)
 	app.show_buses = op
 	if !vis {
@@ -6091,7 +6121,7 @@ fn draw_buses(mut app App, chans []Chan) {
 				app.mu.unlock()
 			}
 			vgui.same_line()
-			r, g, b, label := chan_state(c, app.dest_is_read_locked(c.iface))
+			r, g, b, label := chan_state(c, read_dests[transport.destination_key(c.iface)])
 			vgui.text_colored(r, g, b, label)
 			vgui.same_line()
 			vgui.text('${c.name}  ${c.iface}  [${c.mode}]  RX ${c.rx}')
@@ -6144,6 +6174,9 @@ fn bus_kind(adapter string) string {
 // the tester's own functions (Monitor / Send / Diagnostics), simulated ECUs, and generators
 // grouped by the bus they actually transmit on. The simulation-setup analog.
 fn draw_network(mut app App, chans []Chan) {
+	// From the SNAPSHOT this frame was given, not from live state: the rows were cloned under
+	// app.mu and re-reading past that clone races the workers writing into it.
+	read_dests := read_destinations(chans)
 	vis, op := vgui.begin_closable('Network', app.show_network)
 	app.show_network = op
 	if !vis {
@@ -6157,7 +6190,7 @@ fn draw_network(mut app App, chans []Chan) {
 		return
 	}
 	for ci, c in chans {
-		r, g, b, st := chan_state(c, app.dest_is_read_locked(c.iface))
+		r, g, b, st := chan_state(c, read_dests[transport.destination_key(c.iface)])
 		vgui.text_colored(r, g, b, '*')
 		vgui.same_line()
 		if vgui.tree_node_open('${c.name}   ${c.iface}   [${c.mode}]   ${st.trim_space()}   RX ${c.rx}###net${ci}') {

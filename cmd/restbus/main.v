@@ -358,7 +358,12 @@ fn run_multi(o Opts, rec mf4.Recording) {
 			// and not this one dropped a frame per full queue on a saturated destination —
 			// corrupting a multi-bus replay exactly where the traffic was densest, which is
 			// where the cross-bus timing this feature exists for is hardest.
-			transport.send_waiting_for_room(mut bus, e.frame, 500, fn () bool {
+			// SHORT HERE, because this loop serves EVERY destination. A five-hundred millisecond
+			// wait for one full queue held back the due frames of buses that had room —
+			// including, on a gateway capture, the other side of the exchange being measured. A
+			// few milliseconds absorbs an ordinary burst; a destination that stays full is a bus
+			// that cannot keep up, and saying so beats stalling its neighbours.
+			transport.send_waiting_for_room(mut bus, e.frame, 5, fn () bool {
 				return false
 			}) or {
 				failed++

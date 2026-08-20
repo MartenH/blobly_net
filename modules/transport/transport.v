@@ -212,6 +212,14 @@ pub fn vendor_destination_key(iface string) string {
 	return '${kind}:${resolved}@${rate}'
 }
 
+// wire_key_for is destination_key_for WITHOUT the bitrate. Two rows that disagree about the rate
+// must still be recognised as addressing one wire — keyed with the rate in it, a 250k row and a
+// 500k row on one channel produced two different keys and never met, so the check that exists to
+// find exactly that disagreement could not fire at all.
+pub fn wire_key_for(adapter string, iface string) string {
+	return destination_key_for(adapter, iface).all_before('@')
+}
+
 // destination_key_for is destination_key for code that is READING a project rather than opening
 // it. The platform guard in vendor_iface is right for opening — on Linux a channel somebody
 // named `pcan:bench` really is a SocketCAN interface — but wrong for analysis: opening a

@@ -1266,7 +1266,9 @@ pub fn vendor_destination_conflicts(chs []Channel) []string {
 		if !c.enabled || c.adapter !in ['pcan', 'kvaser', 'vector'] {
 			continue
 		}
-		k := transport.destination_key_for(c.adapter, c.iface)
+		// WITHOUT THE RATE. The rate is what these rows disagree about, so a key containing it
+		// gave each of them their own and the comparison below never happened.
+		k := transport.wire_key_for(c.adapter, c.iface)
 		if c.listen_only && c.adapter == 'vector' {
 			quiet[k] = c.name
 		}
@@ -1295,7 +1297,7 @@ pub fn vendor_destination_conflicts(chs []Channel) []string {
 		if !c.enabled || c.adapter != 'vector' || c.listen_only {
 			continue
 		}
-		if who := quiet[transport.destination_key_for(c.adapter, c.iface)] {
+		if who := quiet[transport.wire_key_for(c.adapter, c.iface)] {
 			out << '${c.name} shares ${c.iface} with ${who}, which is listen-only'
 		}
 	}
