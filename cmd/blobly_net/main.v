@@ -340,10 +340,16 @@ mut:
 
 	// Script (Lua on a worker thread)
 	script_path_buf []u8
-	senders         []SenderRT      // flattened project senders (Generators)
-	gen_bufs        []GenBuf        // per-sender editable fields (parallel to senders)
-	dirty           bool            // project (config or generators) changed since load/save (● modified)
-	proj            project.Project // the loaded project, kept so Save can persist edits
+	senders         []SenderRT // flattened project senders (Generators)
+	gen_bufs        []GenBuf   // per-sender editable fields (parallel to senders)
+	dirty           bool       // project (config or generators) changed since load/save (● modified)
+	// The model moved but app.chans/app.dbs did NOT: rebuild_from_proj refused because a
+	// worker from the last run was still reading them. Distinct from `dirty`, which means
+	// "the model differs from the file" — a Save clears that one while the runtime stays
+	// stale, and the next Start would then have skipped the rebuild and run the old bus set
+	// (codex #121 r4). Set and cleared only by rebuild_from_proj; read by Start and the toolbar.
+	runtime_stale bool
+	proj          project.Project // the loaded project, kept so Save can persist edits
 	// Configuration editor (stopped-only) + its per-bus edit buffers (parallel to proj.channels)
 	show_config bool
 	cfg_bufs    []CfgBuf
@@ -782,14 +788,20 @@ fn (mut app App) start() {
 	}
 	// flush any unsaved editor edits into the model + runtime view first, so the measurement
 	// attaches to exactly what the Configuration editor shows (not stale buffered values).
-	if app.dirty {
+	// `runtime_stale` as well as `dirty`: an earlier rebuild may have been refused, and after
+	// the Save that followed it the model matches the file while app.chans/app.dbs still
+	// describe the previous bus set. Retry it here — this is the moment it matters.
+	if app.dirty || app.runtime_stale {
 		// Refuse rather than start on a runtime that could not be rebuilt safely — see
 		// wait_readers_drained. Starting anyway is the one outcome that corrupts the new run.
-		if !app.wait_readers_drained() {
-			app.notify('workers from the last run have not finished — press Start again in a moment')
+		// The drain is NOT repeated here: it lives on rebuild_from_proj, the function that
+		// actually replaces app.chans/app.dbs, and a copy of the check in this caller would
+		// be a second place for the policy to drift (and could pass a moment before the real
+		// one fails). Ask apply_edits whether the rebuild happened, and believe the answer.
+		if !app.apply_edits() {
+			app.notify('not started — the runtime could not be rebuilt; press Start again in a moment')
 			return
 		}
-		app.apply_edits()
 	}
 	// ONE WIRE, ONE RATE. Two enabled rows on the same destination that disagree about the
 	// bitrate are a contradiction the backend cannot see: bitrate_iface picks one of them and
@@ -3542,7 +3554,12 @@ fn (mut app App) wait_readers_drained() bool {
 	return left == 0
 }
 
-fn (mut app App) rebuild_from_proj() {
+// Reports whether the rebuild happened. A refusal is not a detail the caller may ignore: it
+// leaves app.chans/app.dbs describing the PREVIOUS project while app.proj describes the new
+// one, and save_project/save_cfg_text/set_project all go on to clear `dirty` afterwards. So the
+// answer is recorded in app.runtime_stale here — at the single point that can know it, rather
+// than at each of the callers that would have to remember (codex #121 r4).
+fn (mut app App) rebuild_from_proj() bool {
 	// EVERY WAY IN, not just Start. This replaces app.chans and app.dbs while a worker from the
 	// last run may still be reading them lock-free, and it is reached from Save, from closing
 	// the Configuration editor, from applying edited project text and from Start — gating one
@@ -3551,7 +3568,8 @@ fn (mut app App) rebuild_from_proj() {
 	// actually does the dangerous thing.
 	if !app.wait_readers_drained() {
 		app.notify('workers from the last run are still finishing — runtime not rebuilt; Stop and try again')
-		return
+		app.runtime_stale = true
+		return false
 	}
 	// this replaces app.dbs wholesale, so a pending endpoint edit must land first or it is
 	// silently dropped along with the databases it referred to
@@ -3723,6 +3741,10 @@ fn (mut app App) rebuild_from_proj() {
 			break
 		}
 	}
+	// Cleared HERE, at the end, not next to the drain that let us in: the flag says the runtime
+	// view matches app.proj, and that only becomes true once the rebuild has actually run.
+	app.runtime_stale = false
+	return true
 }
 
 // examples lists the shipped projects for the File > Open Example menu.
@@ -4203,7 +4225,12 @@ fn draw_toolbar(mut app App, rx u64, txs string) {
 	} else {
 		if vgui.button_big('Start', 45, 150, 90, bw, bh) {
 			app.start()
-			app.notify('started')
+			// start() refuses on a destination conflict, on a runtime it could not rebuild and
+			// on a project with nothing to open, each time saying why. Announcing 'started'
+			// regardless put a reassuring message directly on top of that explanation.
+			if app.running {
+				app.notify('started')
+			}
 		}
 	}
 	vgui.same_line()
@@ -4217,6 +4244,13 @@ fn draw_toolbar(mut app App, rx u64, txs string) {
 	// the toolbar read clean while an edit sat waiting in a closed window.
 	dirtymark := if app.dirty || app.cfg_text_dirty { ' ●' } else { '' }
 	vgui.text('· RX ${rx}  ${txs}  ·  ${app.proj_name}${dirtymark}   ')
+	if app.runtime_stale {
+		// A refused rebuild leaves the panels describing the previous bus set. The toast that
+		// said so scrolls away; the discrepancy does not, so it gets a persistent marker until
+		// a rebuild succeeds.
+		vgui.same_line()
+		vgui.text_colored(230, 120, 120, 'runtime not rebuilt   ')
+	}
 	vgui.same_line()
 	if vgui.button(if app.paused { 'Resume' } else { 'Pause' }) {
 		app.paused = !app.paused
@@ -5324,9 +5358,9 @@ fn (mut app App) set_adapter(i int, a string) {
 // app.proj before rebuilding the runtime view — so a structural config change (add/remove
 // bus/DBC, adapter/mode) doesn't discard them when rebuild_from_proj repopulates senders from
 // the model. Use this instead of rebuild_from_proj for edits made while the editor is open.
-fn (mut app App) rebuild_preserving_senders() {
+fn (mut app App) rebuild_preserving_senders() bool {
 	app.sync_senders_into_proj()
-	app.rebuild_from_proj()
+	return app.rebuild_from_proj()
 }
 
 // rebind_senders repoints a channel's flattened generators from an old iface to a new one, so
@@ -7518,6 +7552,9 @@ fn (mut app App) apply_parsed_text(txt string) bool {
 	app.proj_name = p.name
 	app.mu.unlock()
 	app.cfg_bufs = [] // re-derived from the new channel list on the next Buses render
+	// The bool says "the text parsed and became the model", which is what the callers ask —
+	// revert_proj_from_disk reports a parse failure on false. A refused rebuild is a different
+	// fact and travels on app.runtime_stale, so it is not folded into this answer.
 	app.rebuild_from_proj()
 	return true
 }
@@ -7571,6 +7608,10 @@ fn (mut app App) save_project() {
 		app.notify('save failed: ${err}')
 		return
 	}
+	// `dirty` is cleared because the FILE now matches the model — which it does, whether or not
+	// apply_edits managed to rebuild the runtime view as well. Those are two different facts,
+	// and the second one travels on app.runtime_stale, so a refused rebuild is retried by the
+	// next Start instead of being lost here (codex #121 r4).
 	app.dirty = false
 	app.cfg_invalidate() // the file just changed under the File tab
 	app.notify('saved -> ${path}')
@@ -7581,14 +7622,18 @@ fn (mut app App) save_project() {
 // generator edits into the model for the file write and does NOT rebuild — rebuilding app.chans
 // mid-measurement would reset the running flags / desync the live RX/gen threads and tx_buses
 // (the config editor is stopped-only, so there are no live config edits to apply anyway).
-fn (mut app App) apply_edits() {
+// Reports whether app.proj and the runtime view now agree: false only when the rebuild was
+// refused. Start is the caller that must act on it; the others (Save, closing the editor)
+// legitimately go on to write the file, and rely on app.runtime_stale to make the next Start
+// rebuild instead.
+fn (mut app App) apply_edits() bool {
 	if app.running {
 		app.sync_senders_into_proj() // generators may be edited live; persist them, don't rebuild
-		return
+		return true // nothing was rebuilt because nothing needed to be — not a refusal
 	}
 	app.commit_cfg() // Configuration-editor buffers -> app.proj (no-op if the editor never opened)
 	app.sync_senders_into_proj() // session generators -> app.proj
-	app.rebuild_from_proj() // rebuild app.chans/dbs/sims from the updated model
+	return app.rebuild_from_proj() // rebuild app.chans/dbs/sims from the updated model
 }
 
 // save_as sets the path (from the browser) and saves.
