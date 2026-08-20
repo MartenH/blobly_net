@@ -105,6 +105,7 @@ void vgui_table_headers(void);
 void vgui_table_row(void);
 void vgui_table_cell(const char* s);
 void vgui_table_next_col(void);
+void vgui_table_set_col(int n);
 int  vgui_tree_node_table(const char* label);
 int  vgui_is_item_clicked(void);
 void vgui_table_setup_col(const char* name, float width);

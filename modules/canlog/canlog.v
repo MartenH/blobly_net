@@ -83,6 +83,18 @@ pub fn parse_line(line string) ?LogEntry {
 	mut data := []u8{}
 	if !fd && datahex.len > 0 && (datahex[0] == `R` || datahex[0] == `r`) {
 		rtr = true
+		// `200#R8`: a remote frame REQUESTS a DLC, and candump records it after the R. Live
+		// SocketCAN delivers the same frame as len 8 with a zeroed payload, so an import that
+		// dropped the digit showed len 0 for a frame every live backend shows as len 8 — the
+		// recording and the wire disagreeing about the same frame. Zero-filled data of that
+		// length IS the live representation; the writer below derives the digit back from it.
+		if datahex.len > 1 {
+			dlc := hex_u32(datahex[1..]) or { return none }
+			if dlc > 8 {
+				return none // a classic remote frame cannot request more than 8
+			}
+			data = []u8{len: int(dlc)}
+		}
 	} else {
 		data = hex_bytes(datahex) or { return none }
 	}
@@ -128,7 +140,13 @@ pub fn format_line(e LogEntry) string {
 		flags := (if e.frame.brs { 1 } else { 0 }) | (if e.frame.esi { 2 } else { 0 })
 		return '(${e.t_s:.6f}) ${iface_token(e.iface)} ${idhex}##${flags}${bytes_hex(e.frame.data)}'
 	}
-	body := if e.frame.rtr { 'R' } else { bytes_hex(e.frame.data) }
+	// an RTR's data is a zero-filled placeholder carrying only its length — write the length,
+	// which is what candump's own `R<dlc>` syntax records
+	body := if e.frame.rtr {
+		if e.frame.data.len > 0 { 'R${e.frame.data.len}' } else { 'R' }
+	} else {
+		bytes_hex(e.frame.data)
+	}
 	return '(${e.t_s:.6f}) ${iface_token(e.iface)} ${idhex}#${body}'
 }
 
@@ -194,7 +212,6 @@ pub fn iface_from_token(s string) string {
 	}
 	return out.bytestr()
 }
-
 
 fn bytes_hex(data []u8) string {
 	mut s := ''

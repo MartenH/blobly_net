@@ -145,10 +145,10 @@ fn test_fd_frames_survive_a_candump_round_trip() {
 		t_s:   1.5
 		iface: 'can0'
 		frame: transport.CanFrame{
-			id:       0x123
-			fd:       true
-			brs:      true
-			data:     payload
+			id:   0x123
+			fd:   true
+			brs:  true
+			data: payload
 		}
 	}
 	line := format_line(e)
@@ -223,5 +223,34 @@ fn test_esi_survives_a_candump_round_trip() {
 			assert back.frame.esi == esi, 'esi lost (brs=${brs} esi=${esi})'
 			assert back.frame.fd
 		}
+	}
+}
+
+// A remote frame's requested DLC survives the round-trip. candump records `200#R8`; live
+// SocketCAN delivers the same frame as len 8 with a zeroed payload, so the import must too —
+// dropping the digit made the recording and the wire disagree about one frame's length
+// (surfaced by the trace's len column, net#127).
+fn test_rtr_dlc_roundtrip() {
+	e := parse_line('(1700000000.000001) vcan0 200#R8') or {
+		assert false, 'R8 line must parse'
+		return
+	}
+	assert e.frame.rtr
+	assert e.frame.data.len == 8
+	assert e.frame.data == []u8{len: 8} // zero-filled placeholder, the live representation
+	assert format_line(e).ends_with('200#R8')
+
+	// no digit = DLC 0, and the writer emits the bare R back
+	e0 := parse_line('(1700000000.000002) vcan0 200#R') or {
+		assert false, 'bare R must parse'
+		return
+	}
+	assert e0.frame.rtr
+	assert e0.frame.data.len == 0
+	assert format_line(e0).ends_with('200#R')
+
+	// a classic remote frame cannot request more than 8 — refuse, don't guess
+	if _ := parse_line('(1700000000.000003) vcan0 200#R9') {
+		assert false, 'R9 must be rejected'
 	}
 }

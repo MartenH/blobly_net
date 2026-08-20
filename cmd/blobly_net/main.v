@@ -85,7 +85,7 @@ fn main() {
 	shot := os.getenv('VGUI_SHOT')
 
 	mut app := &App{
-		t0:      time.ticks()
+		t0_ns:   time.sys_mono_now()
 		wake_ms: wake_ms
 	}
 	app.send_id_buf = mkbuf('101', 24)
@@ -141,7 +141,14 @@ fn main() {
 		return
 	}
 
-	if !vgui.init('blobly_net — ${app.proj_name} (imgui/ImPlot)', 1500, 850, true) {
+	// 0x0 = maximized: the first act of every interactive session was dragging the window out
+	// to size. HEADLESS runs (VGUI_FRAMES / VGUI_SHOT — the documented GUI smoke) keep the
+	// fixed 1500x850 instead: a screenshot's dimensions must not depend on the monitor it
+	// happened to render on, and GLFW_MAXIMIZED is only a WM request — under bare Xvfb it is
+	// ignored, so the same run would produce two different geometries in two environments.
+	headless := max_frames > 0 || shot != ''
+	init_w, init_h := if headless { 1500, 850 } else { 0, 0 }
+	if !vgui.init('blobly_net — ${app.proj_name} (imgui/ImPlot)', init_w, init_h, true) {
 		eprintln('vgui.init failed')
 		return
 	}
@@ -196,6 +203,11 @@ fn main() {
 		rx := app.rx
 		txs := app.tx_counts_locked()
 		rows := app.trace.clone()
+		// The idx base travels WITH the snapshot it belongs to. Clear/Open run inside this
+		// frame's draw and reset trace_run_base immediately — reading the base live at the
+		// draw sites subtracted the NEW base from the OLD snapshot's u64 seqs, and every idx
+		// wrapped to ~1.8e19 for the rest of that frame (codex #127 r1). One lock, one moment.
+		run_base := app.trace_run_base
 		gcount := app.gcount.clone()
 		trecs := app.trecs.clone()
 		chans := app.chans.clone()
@@ -230,10 +242,10 @@ fn main() {
 			draw_stats(mut app, chans, rx, txs)
 		}
 		if app.show_trace {
-			draw_trace(mut app, rows, gcount, rx)
+			draw_trace(mut app, rows, gcount, rx, run_base)
 		}
 		if app.show_ftrace {
-			draw_ftrace(mut app, rows, gcount)
+			draw_ftrace(mut app, rows, gcount, run_base)
 		}
 		if app.show_log {
 			draw_log(mut app)
