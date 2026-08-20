@@ -349,13 +349,18 @@ mut:
 	senders         []SenderRT // flattened project senders (Generators)
 	gen_bufs        []GenBuf   // per-sender editable fields (parallel to senders)
 	dirty           bool       // project (config or generators) changed since load/save (● modified)
-	// The model moved but app.chans/app.dbs did NOT: rebuild_from_proj refused because a
-	// worker from the last run was still reading them. Distinct from `dirty`, which means
-	// "the model differs from the file" — a Save clears that one while the runtime stays
-	// stale, and the next Start would then have skipped the rebuild and run the old bus set
-	// (codex #121 r4). Set and cleared only by rebuild_from_proj; read by Start and the toolbar.
-	runtime_stale bool
-	proj          project.Project // the loaded project, kept so Save can persist edits
+	// app.proj's fingerprint as of the last SUCCESSFUL rebuild_from_proj. `runtime_stale()`
+	// compares it against the project's current one, so "the runtime view is not the project"
+	// is DERIVED rather than remembered.
+	//
+	// It was a bool, set by hand. Four codex rounds on #121 found sites that forgot to set it —
+	// the last was the Buses checkbox, which writes app.proj.channels[i].enabled and marked
+	// nothing, so Run and the DBC editor went on trusting a runtime whose app.sims no longer
+	// matched. A flag is only as good as the least careful mutation site; a comparison has no
+	// mutation site at all. Distinct from `dirty`, which means "the model differs from the
+	// FILE" — a Save legitimately clears that one while the runtime is still behind.
+	runtime_fp u64
+	proj       project.Project // the loaded project, kept so Save can persist edits
 	// Configuration editor (stopped-only) + its per-bus edit buffers (parallel to proj.channels)
 	show_config bool
 	cfg_bufs    []CfgBuf
@@ -797,7 +802,7 @@ fn (mut app App) start() {
 	// `runtime_stale` as well as `dirty`: an earlier rebuild may have been refused, and after
 	// the Save that followed it the model matches the file while app.chans/app.dbs still
 	// describe the previous bus set. Retry it here — this is the moment it matters.
-	if app.dirty || app.runtime_stale {
+	if app.dirty || app.runtime_stale() {
 		// Refuse rather than start on a runtime that could not be rebuilt safely — see
 		// wait_readers_drained. Starting anyway is the one outcome that corrupts the new run.
 		// The drain is NOT repeated here: it lives on rebuild_from_proj, the function that
@@ -3596,6 +3601,14 @@ fn (mut app App) wait_readers_drained() bool {
 // one, and save_project/save_cfg_text/set_project all go on to clear `dirty` afterwards. So the
 // answer is recorded in app.runtime_stale here — at the single point that can know it, rather
 // than at each of the callers that would have to remember (codex #121 r4).
+// runtime_stale reports that the runtime view (app.chans, app.dbs, app.sims, app.senders, the
+// manifest and the Ethernet shell's identity) was NOT built from the project as it now stands —
+// because a rebuild was refused, or because an edit changed the model without rebuilding at all.
+// Every consumer that would ACT on that view asks this one question.
+fn (app &App) runtime_stale() bool {
+	return app.runtime_fp != app.proj.runtime_fingerprint()
+}
+
 // may_replace_model reports whether app.proj may be swapped WHOLESALE right now — a project
 // opened, File ▸ New, edited project text applied. Those are not edits that can be half-applied.
 // An incremental edit that gets its rebuild refused leaves the model ahead of the runtime and
@@ -3642,7 +3655,6 @@ fn (mut app App) rebuild_from_proj() bool {
 		} else {
 			app.notify('workers from the last run are still finishing — runtime not rebuilt; Stop and try again')
 		}
-		app.runtime_stale = true
 		return false
 	}
 	// this replaces app.dbs wholesale, so a pending endpoint edit must land first or it is
@@ -3815,9 +3827,9 @@ fn (mut app App) rebuild_from_proj() bool {
 			break
 		}
 	}
-	// Cleared HERE, at the end, not next to the drain that let us in: the flag says the runtime
-	// view matches app.proj, and that only becomes true once the rebuild has actually run.
-	app.runtime_stale = false
+	// Recorded HERE, at the end, not next to the drain that let us in: it means "the runtime view
+	// matches THIS project", and that only becomes true once the rebuild has actually run.
+	app.runtime_fp = app.proj.runtime_fingerprint()
 	return true
 }
 
@@ -4318,7 +4330,7 @@ fn draw_toolbar(mut app App, rx u64, txs string) {
 	// the toolbar read clean while an edit sat waiting in a closed window.
 	dirtymark := if app.dirty || app.cfg_text_dirty { ' ●' } else { '' }
 	vgui.text('· RX ${rx}  ${txs}  ·  ${app.proj_name}${dirtymark}   ')
-	if app.runtime_stale {
+	if app.runtime_stale() {
 		// A refused rebuild leaves the panels describing the previous bus set. The toast that
 		// said so scrolls away; the discrepancy does not, so it gets a persistent marker until
 		// a rebuild succeeds.
@@ -4405,7 +4417,19 @@ fn draw_sim(mut app App) {
 		vgui.end()
 		return
 	}
-	vgui.text_dim('tick to enable/disable an ECU live')
+	// STALE MEANS THE KEYS ARE WRONG, not just the labels. A tick writes app.sim_enabled under
+	// sim_key(sc.pch, node), and sc.pch comes from app.sims — the runtime view. While that view
+	// predates the current project, the key carries the OLD channel identity: the operator
+	// unticks an ECU, the next successful rebuild gives that ECU a new key, the map is consulted
+	// under the new one, finds nothing, defaults to enabled, and the node runs despite an
+	// explicit disable (codex #121 r7). Read-only until the runtime is the project again.
+	sim_stale := app.runtime_stale()
+	if sim_stale {
+		vgui.text_colored(230, 120, 120,
+			'read-only — these ECUs are from the previous configuration; press Start to rebuild the runtime')
+	} else {
+		vgui.text_dim('tick to enable/disable an ECU live')
+	}
 	for sc in app.sims {
 		// each bus is a collapsible group, collapsed by default (### keeps the id stable if the
 		// label changes)
@@ -4421,7 +4445,12 @@ fn draw_sim(mut app App) {
 			// interface string and a node name.
 			key := sim_key(sc.pch, node.name)
 			en := app.sim_enabled[key] or { true }
-			nen := vgui.checkbox('##simen_${key}', en)
+			if sim_stale {
+				vgui.begin_disabled()
+				vgui.checkbox('##simen_${key}', en)
+				vgui.end_disabled()
+			}
+			nen := if sim_stale { en } else { vgui.checkbox('##simen_${key}', en) }
 			if nen != en {
 				app.mu.lock()
 				app.sim_enabled[key] = nen
@@ -6171,7 +6200,7 @@ fn draw_buses(mut app App, chans []Chan) {
 	// or run off the end of proj.channels and panic. These rows are then a view of something
 	// that is no longer the project, and the tick is withheld rather than landing on the wrong
 	// row.
-	stale := app.runtime_stale || chans.len != app.proj.channels.len
+	stale := app.runtime_stale() || chans.len != app.proj.channels.len
 	if stale {
 		vgui.text_colored(230, 120, 120,
 			'showing the previous bus set — the project changed but the runtime could not be rebuilt')
@@ -7200,7 +7229,7 @@ fn draw_gen(mut app App) {
 		vgui.same_line()
 		vgui.text_colored(230, 170, 70, '● modified')
 	}
-	if app.runtime_stale {
+	if app.runtime_stale() {
 		// These rows were derived from the configuration BEFORE the last change, which could
 		// not be applied. sync_senders_into_proj refuses to fold them back into a channel map
 		// they no longer describe, so an edit here goes nowhere until the runtime is rebuilt.
@@ -7426,7 +7455,7 @@ fn (mut app App) sync_senders_into_proj() {
 	// panel is showing senders derived from the PREVIOUS configuration, so an edit made there
 	// is against a view the model no longer matches. The panel says so; the next successful
 	// rebuild reconciles both.
-	if app.runtime_stale {
+	if app.runtime_stale() {
 		return
 	}
 	app.mu.lock()
@@ -8634,8 +8663,8 @@ fn draw_shell(mut app App) {
 	// not wait for Start, nothing else stands between them and a command on the wire: the
 	// blocking script exits, the app is stopped and looks idle, and the shell dials an endpoint
 	// the project no longer describes (codex #121 r7).
-	eth := app.eth_method != 0 && app.eth_someip.service != 0 && !app.runtime_stale
-	if app.runtime_stale && app.eth_method != 0 {
+	eth := app.eth_method != 0 && app.eth_someip.service != 0 && !app.runtime_stale()
+	if app.runtime_stale() && app.eth_method != 0 {
 		vgui.text_colored(230, 120, 120,
 			'the Ethernet shell is from the previous configuration and is disabled — press Start to rebuild the runtime')
 	}
@@ -9130,7 +9159,7 @@ fn draw_script(mut app App) {
 	// than app.proj, and the script's tap would transmit on the previous project's interface
 	// with no Start having ever rebuilt anything. The script that caused the staleness can
 	// finish and clear `busy` while it is still true, which is exactly when this would fire.
-	if vgui.button('Run') && !busy && !app.runtime_stale {
+	if vgui.button('Run') && !busy && !app.runtime_stale() {
 		// reserve the dbs-reader slot HERE, before the spawn: a worker that
 		// hasn't been scheduled yet hasn't registered, and an edit could slip
 		// into that gap (the worker releases it in its defer)
@@ -9142,7 +9171,7 @@ fn draw_script(mut app App) {
 	if busy {
 		vgui.same_line()
 		vgui.text_dim('running…')
-	} else if app.runtime_stale {
+	} else if app.runtime_stale() {
 		vgui.same_line()
 		vgui.text_colored(230, 120, 120,
 			'the runtime is not the project — press Start to rebuild it')
@@ -10084,8 +10113,8 @@ fn draw_dbc_editor(mut app App) {
 	// reached app.proj and not the runtime. The reader that refused the rebuild can then finish,
 	// dropping live_readers to zero, and this editor would become writable over a database list
 	// the rest of the UI no longer shows (codex #121 r5).
-	ro := app.running || live_readers > 0 || app.runtime_stale
-	if app.runtime_stale {
+	ro := app.running || live_readers > 0 || app.runtime_stale()
+	if app.runtime_stale() {
 		vgui.text_colored(230, 120, 120,
 			'read-only — the runtime was not rebuilt after the last config change, so this list is out of date; press Start')
 	} else if ro {
@@ -11262,7 +11291,7 @@ fn draw_system(mut app App) {
 			// Same three conditions as the DBC editor: this action edits app.proj and rebuilds,
 			// and while the runtime is stale the channels it matches ECU buses against are the
 			// previous project's.
-			if app.running || rb_readers > 0 || app.runtime_stale {
+			if app.running || rb_readers > 0 || app.runtime_stale() {
 				vgui.text_dim('Simulate the rest — stop to configure (workers drain briefly after Stop)')
 			} else if vgui.small_button('Simulate the rest##restbus') {
 				n, c := app.restbus_from_system(en.name)
