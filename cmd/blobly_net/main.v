@@ -16,28 +16,7 @@
 module main
 
 import os
-import math
-import strings
-import markdown
-import sync
 import time
-import project
-import transport
-import wiretap
-import candb
-import sysview
-import telem
-import isotp
-import uds
-import flash
-import sim
-import script
-import canlog
-import mf4
-import player
-import doip
-import someip
-import net as vnet
 import vgui
 
 // load_ui_font replaces imgui's blocky default (ProggyClean) with a real TTF: VGUI_FONT

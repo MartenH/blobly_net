@@ -1,5 +1,9 @@
 # V build artifacts
-blobly_net
+# Anchored: bare `blobly_net` matches at EVERY depth, including the cmd/blobly_net SOURCE
+# directory — which silently swallowed all 19 files of the #123 split while the commit deleted
+# their lines from main.v, and had already eaten a source dir once before (the memory that names
+# this pattern). The in-directory binary is covered by the cmd/blobly_net/blobly_net line below.
+/blobly_net
 /main
 cmd/mf4_dump/mf4_dump
 *.tmp.c

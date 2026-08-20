@@ -111,16 +111,10 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   cannot hold) plus the app state, which is roughly how
   the file is already organised internally — so the panel bodies are a mechanical move rather
   than a redesign. **Two things around them are not.**
-  First, **the build entry point has to move with them.** Every build names the single file:
-  `scripts/run_gui.sh` (lines 36 and 89-92) and `.github/workflows/windows.yml` (line 107) all
-  pass `cmd/blobly_net/main.v` — and so does line 45, which *re-assigns* the target after a
-  `.blobnet` argument has been moved into `BLOBLY_PROJECT`, so fixing only the default leaves
-  `run_gui.sh project.blobnet` broken. V compiling one file does not pull in its siblings, so the
-  moment a panel leaves `main.v` those builds fail on undefined symbols — locally, in CI and on
-  the Windows bundle at once. Switch them to compile the directory, or make the panels imported
-  modules; either way it lands in the same commit as the first move, with all three builds
-  verified, not afterwards.
-  Second, **the app state — and the core paths that speak telemetry.** `App` embeds the optional modules' types directly
+  First, the build entry point — *done in #123: `run_gui.sh` (both its default and the
+  `.blobnet` branch that re-assigns the target) and `windows.yml` now compile the directory,
+  verified before anything moved.*
+  Second — and now the whole of what remains — **the app state — and the core paths that speak telemetry.** `App` embeds the optional modules' types directly
   (`telem.Manifest`, `sysview.System`), so moving panel functions into new files leaves the core
   importing exactly what the tiering item below says it must not. Extracting or abstracting that
   state — an interface, or a side table the optional panels own — is part of this work, not a

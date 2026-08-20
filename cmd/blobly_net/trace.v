@@ -1,0 +1,370 @@
+module main
+
+import os
+import time
+import transport
+import wiretap
+import telem
+import canlog
+import vgui
+
+struct TraceRow {
+	t_ms f64
+	ch   string
+	// TX | TX-S | REP | RX. The old `dir` answered "did I press send", never "whose frame is
+	// this" — and our own sends come back to the monitor, so they landed in the same RX pile as
+	// the device under test's. TX-S is still a TX: the simulation is us. REP is the one that is
+	// not a direction, because a recording does not say who transmitted its lines.
+	origin string
+	id     u32
+	ext    bool
+	rtr    bool
+	// CAN-FD, as a KIND rather than a decoration: a 64-byte payload is visible from `data`, but
+	// an FD frame carrying 8 bytes or fewer is otherwise indistinguishable from a classic one,
+	// and BRS is invisible either way. The trace is the record people read back, so a row that
+	// drops these describes a frame that was never on the bus.
+	fd  bool
+	brs bool
+	// ESI is on the ROW but deliberately NOT in the group key or the echo identity: it is a
+	// received status, so keying on it would split one message into two rows the moment its
+	// transmitter went error-passive. Shown from the latest frame, which is where a reader
+	// looking for a degrading bus would look.
+	esi  bool
+	name string
+	data []u8
+	// End-to-end violation on a RECEIVED frame ('' = none, or not a protected message).
+	// Carried on the row rather than computed at draw time because it depends on the PREVIOUS
+	// frame's counter — a verdict the trace cannot reconstruct once the frames are just rows.
+	e2e string
+mut:
+	// An outbound row is written at emit, so it states intent; `missed` says its echo window
+	// closed with the frame never coming back off the wire. Those disagree in every bench
+	// failure worth catching — CAN needs an ACK from at least one other node, so a lone node's
+	// frames never reach the wire at all, and the same goes for a wrong bitrate, swapped
+	// CANH/CANL or a down link.
+	//
+	// No `seq`, no `confirmed`: a row is located by position (trace_seq against trace_base), and
+	// nothing displays "arrived as expected". A field written but never read is a claim nobody
+	// checks — which is the habit this whole column exists to break.
+	missed bool
+}
+
+struct TRec {
+	ch     int
+	core   int // the block's core (from its header) — authoritative for lane grouping (esp. idle)
+	abs_us u64 // start_us folded across epoch re-anchors (µs; u64 so a long capture can't wrap)
+	rec    telem.Record
+}
+
+// reset_trace_locked empties the trace and everything keyed to it. Caller holds app.mu.
+fn (mut app App) reset_trace_locked() {
+	app.trace = []
+	app.gcount = map[string]u64{}
+	// The pending records STAY. An echo already in flight is still ours, and dropping the record
+	// would turn the next few of our own frames into RX rows, recording entries and verifier
+	// input. Row identities are monotonic and trace_base makes the old ones unresolvable, so a
+	// surviving record suppresses its echo without confirming a row that came later.
+	app.trace_base = app.trace_seq
+}
+
+// push_row_locked appends a row, stamps its identity and trims the ring. Caller holds app.mu.
+fn (mut app App) push_row_locked(row TraceRow) u64 {
+	seq := app.trace_seq
+	app.trace_seq++
+	app.trace << row
+	// Trimmed in CHUNKS. Reslicing to the cap on every append copies the whole ring each time —
+	// unnoticeable at a few frames a second, and the dominant cost when a recording is imported,
+	// which is exactly where the row count is largest. Letting it run to 1.5x and cutting back
+	// to the cap makes the copying amortised O(1) per row; the visible window is unchanged.
+	if app.trace.len > trace_cap + trace_cap / 2 {
+		drop := app.trace.len - trace_cap
+		app.trace = app.trace[drop..].clone()
+		app.trace_base += u64(drop)
+	}
+	return seq
+}
+
+// row_index_locked maps a row identity to its current position, or -1 once the ring has trimmed
+// it away. Caller holds app.mu.
+fn (app &App) row_index_locked(seq u64) int {
+	// Every comparison in u64, and the ghost range rejected BEFORE any narrowing: V's int is
+	// 32 bits, so int(ghost_base - 0) wraps to a small number — the first paused emissions were
+	// resolving to rows 0, 1, 2 and marking healthy pre-pause traffic as never sent.
+	if seq >= ghost_base || seq < app.trace_base {
+		return -1
+	}
+	off := seq - app.trace_base
+	return if off < u64(app.trace.len) { int(off) } else { -1 }
+}
+
+// expire_pending_locked marks the rows whose frame never came back off the wire.
+fn (mut app App) expire_pending_locked(now_ms f64) {
+	for seq in app.taps.expire(now_ms) {
+		i := app.row_index_locked(seq)
+		if i >= 0 {
+			app.trace[i].missed = true
+		}
+	}
+}
+
+// note_emit records a frame we are about to put on the wire: one row stating intent, and one
+// pending echo. Called BEFORE the send — the RX thread can see the frame the instant the driver
+// takes it, and a pending entry added afterwards would arrive too late to claim its own echo.
+// Returns the row identity and the RECORDING identity of the entry this call wrote, or rec_none
+// when it wrote none. The retract path must not guess that from the backend (a bus that normally
+// echoes also records at emit whenever no monitor is running) and must not search for it either:
+// a scan can be outrun by traffic on a busy bus.
+fn (mut app App) note_emit(iface string, chan_name string, origin string, f transport.CanFrame) (u64, u64, u64) {
+	app.mu.lock()
+	// Sampled AFTER the lock. Another operation can hold app.mu for longer than the echo window
+	// — opening a large recording during a measurement, say — and a time taken before blocking
+	// would make the emission look two seconds old the instant it is registered, expiring it
+	// before the frame has even been sent.
+	t_ms := f64(time.ticks() - app.t0)
+	// Under the lock, not before it. The dbc_readers drain covers the RX loops, which register
+	// as lock-free readers; a tapped emitter — a simulated ECU, a diagnostic or flash worker
+	// still draining after Stop — is not in that lifecycle, so resolving a name outside the
+	// mutex could read app.dbs while a configuration edit replaces it.
+	chn := if chan_name != '' { chan_name } else { app.chan_name_for(iface) }
+	name := app.lookup_name(f.id, f.extended)
+	app.expire_pending_locked(t_ms)
+	// Paused: the emission is STILL tracked so its echo is recognised as ours — otherwise a
+	// paused trace would feed our own frames to the E2E verifier as the ECU's and log them to
+	// the recording twice — it simply has no row to confirm.
+	mut seq := ghost_base + app.ghost_seq
+	app.ghost_seq++
+	if !app.paused {
+		seq = app.push_row_locked(TraceRow{
+			t_ms:   t_ms
+			ch:     chn
+			origin: origin
+			id:     f.id
+			ext:    f.extended
+			fd:     f.fd
+			brs:    f.brs
+			esi:    f.esi
+			rtr:    f.rtr
+			name:   name
+			data:   f.data.clone()
+		})
+		app.gcount[gkey(origin, chn, f.id, f.extended, f.fd, f.brs)]++
+	}
+	// Counted whether or not the trace is paused, and whether or not a row was written: pausing
+	// freezes the table, it does not stop the bus.
+	match origin {
+		org_tx { app.tx_count++ }
+		org_tx_sim { app.tx_sim_count++ }
+		else {} // REP never reaches a bus; RX is not ours to count here
+	}
+
+	epoch := app.tx_epoch
+	// ALWAYS record what we sent, on any backend that could echo — the emission is ours whether
+	// or not a monitor happens to be open at this instant, and the sim emits its first frames
+	// while the rx loops are still opening. Attributing those to the device under test breaks
+	// the one promise this column makes.
+	//
+	// The monitor list rides along instead of gating: it says who could have seen this frame,
+	// which decides who may claim it and whether "never came back" is evidence of anything. Asked
+	// NOW rather than when the bus was opened, since a channel disabled mid-run takes its monitor
+	// with it.
+	// Recording at EMIT only where nothing will observe the frame FOR us: PCAN and Kvaser never
+	// hand our own transmissions back, and a bus with no monitor running has nobody to write it
+	// — a generator aimed at an off channel, or the simulation's first frames before the rx
+	// loop opens, would otherwise vanish from the file while genuinely reaching the bus.
+	// Everywhere else the echo records it, in observation order (see rx_loop); doing both would
+	// duplicate the frame and put a fast responder's answer ahead of its request.
+	//
+	// Not gated on `paused`: pausing freezes the TABLE, not the recording.
+	watching := transport.echoes_own_sends(iface) && app.monitors_locked(iface).len > 0
+	mut recorded_here := false
+	mut rec_id := u64(0)
+	if app.recording && !watching {
+		// Stamped INSIDE the lock, like the rx path: a time taken before acquiring it can be
+		// older than a line already written, and the file would then disagree with itself.
+		rec_id = app.rec_append_locked(canlog.LogEntry{
+			t_s:   f64(time.ticks() - app.t0) / 1000.0
+			iface: chn
+			frame: f
+		})
+		recorded_here = true
+	}
+	if transport.echoes_own_sends(iface) {
+		watchers := app.monitors_locked(iface)
+		// `recorded_here` travels with the emission: a monitor whose bus is OPEN but which has
+		// not published readiness yet is invisible to the check above, so we record at emit and
+		// its echo would then record the same frame again.
+		for missed in app.taps.note(seq, iface, f, t_ms, watchers, chn, recorded_here) {
+			i := app.row_index_locked(missed)
+			if i >= 0 {
+				app.trace[i].missed = true
+			}
+		}
+	}
+	// Rate-limited exactly like the rx path: a simulation emitting hundreds of frames a second
+	// would otherwise post an event per frame and hold the UI at the traffic rate.
+	now := time.ticks()
+	if now - app.last_wake >= app.wake_ms {
+		app.last_wake = now
+		app.mu.unlock()
+		vgui.wake()
+	} else {
+		app.mu.unlock()
+	}
+	return seq, if recorded_here {
+		rec_id
+	} else {
+		rec_none
+	}, epoch
+}
+
+// rec_append_locked appends to the recording and returns that entry's stable identity.
+//
+// EVERY append goes through here, because `rec` and `rec_ids` must stay index-for-index: the
+// received frames and the echoes append too, and one that skipped the id would put the two arrays
+// out of step — after which `unrecord`, which finds an entry by searching rec_ids, would delete
+// somebody else's frame. Caller holds app.mu.
+fn (mut app App) rec_append_locked(e canlog.LogEntry) u64 {
+	id := app.rec_seq
+	app.rec_seq++
+	app.rec << e
+	app.rec_ids << id
+	if app.rec.len > 200000 {
+		drop := app.rec.len - 200000
+		app.rec = app.rec[drop..].clone()
+		app.rec_ids = app.rec_ids[drop..].clone()
+	}
+	return id
+}
+
+// unrecord drops a frame we recorded at emit but never managed to send, BY IDENTITY. The
+// previous version searched backwards for a matching frame, which a busy bus outruns: a vendor
+// driver can block long enough for the received traffic to push the entry out of any bounded
+// window, leaving a frame in the file that was never transmitted.
+//
+// NOT gated on app.recording: the user may have stopped recording between the emit-append and
+// the driver's refusal, and the entry is still in the buffer. (If Stop already WROTE the file,
+// the frame is in it — nothing here can reach that, and a stopped recording is not rewritten.)
+fn (mut app App) unrecord(rec_id u64) {
+	if rec_id == rec_none {
+		return
+	}
+	app.mu.lock()
+	defer {
+		app.mu.unlock()
+	}
+	// Located by its id, kept alongside each entry. Arithmetic on a base does not survive a
+	// deletion in the MIDDLE — two emit-time sends on different interfaces can fail out of
+	// order — after which every later id would point one entry off and a retraction would
+	// delete an unrelated frame. The ids are ascending, so this is a binary search.
+	mut lo := 0
+	mut hi := app.rec_ids.len - 1
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		if app.rec_ids[mid] == rec_id {
+			app.rec.delete(mid)
+			app.rec_ids.delete(mid)
+			return
+		}
+		if app.rec_ids[mid] < rec_id {
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
+	}
+}
+
+// tx_counts renders what we transmitted, split the way the trace's origin column splits it:
+// the tester's own sends and the simulated rest-of-bus are different facts. TX-S appears only
+// once the simulation has actually sent something, so a pure-tester session is not padded with
+// a permanent zero.
+//
+// Rendered ONCE per frame under app.mu, next to rx and the row snapshot, and passed down as a
+// string. The panels run on the UI thread while sim/generator/diagnostic workers are counting;
+// reading the two fields there would be a data race, and reading them separately could print
+// "TX-S" with a count that a concurrent Clear had already zeroed. Caller holds app.mu.
+fn (app &App) tx_counts_locked() string {
+	if app.tx_sim_count == 0 {
+		return 'TX ${app.tx_count}'
+	}
+	return 'TX ${app.tx_count} · ${org_tx_sim} ${app.tx_sim_count}'
+}
+
+// retract_emit takes back an emission the driver refused. The row stays and is marked: the frame
+// did not reach the wire, which is exactly what the mark says — but the pending record goes, so
+// expiry does not report it a second time.
+fn (mut app App) retract_emit(seq u64, origin string, epoch u64) {
+	app.mu.lock()
+	app.taps.forget(seq)
+	// note_emit counted it before the driver was asked, because the echo can arrive first. The
+	// driver refused, so it never reached the wire and the count must come back — but only to
+	// the session that paid for it. A driver on one interface can block across a Clear while a
+	// send on another succeeds into the fresh counters, and an unconditional decrement would
+	// take the refund out of THAT frame's count instead.
+	if epoch == app.tx_epoch {
+		match origin {
+			org_tx {
+				if app.tx_count > 0 { app.tx_count-- }
+			}
+			org_tx_sim {
+				if app.tx_sim_count > 0 { app.tx_sim_count-- }
+			}
+			else {}
+		}
+	}
+	i := app.row_index_locked(seq)
+	if i >= 0 {
+		app.trace[i].missed = true
+	}
+	app.mu.unlock()
+}
+
+// claim_echo_locked confirms the emission this frame is the echo of, and reports whether it
+// found one. The matching rules (one-shot, oldest first, width-exact) and why they are what they
+// are live in modules/wiretap. Caller holds app.mu.
+fn (mut app App) claim_echo_locked(monitor int, iface string, f transport.CanFrame, t_ms f64) ?wiretap.Claim {
+	app.expire_pending_locked(t_ms)
+	return app.taps.claim(monitor, iface, f, t_ms)
+}
+
+fn (mut app App) clear_trace() {
+	app.mu.lock()
+	app.reset_trace_locked()
+	app.trecs = []
+	app.rx = 0
+	app.tx_count = 0
+	app.tx_sim_count = 0
+	app.tx_epoch++
+	for i in 0 .. app.chans.len {
+		app.chans[i].rx = 0
+	}
+	app.mu.unlock()
+}
+
+// toggle_record starts capturing frames, or stops and writes them to a candump .log.
+fn (mut app App) toggle_record() {
+	if app.recording {
+		app.mu.lock()
+		entries := app.rec.clone()
+		app.rec = []
+		app.rec_ids = [] // WITH the buffer: a stale id list makes the next retraction index past
+		// the end of a shorter buffer, which panics rather than mislabels
+		app.recording = false
+		app.mu.unlock()
+		mut lines := []string{cap: entries.len}
+		for e in entries {
+			lines << canlog.format_line(e)
+		}
+		os.write_file('recording.log', lines.join('\n') + '\n') or {
+			app.notify('record write failed: ${err}')
+			return
+		}
+		app.notify('recorded ${entries.len} frames -> recording.log')
+	} else {
+		app.mu.lock()
+		app.rec = []
+		app.rec_ids = []
+		app.recording = true
+		app.mu.unlock()
+		app.notify('recording…')
+	}
+}
