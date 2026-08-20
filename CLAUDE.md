@@ -166,6 +166,14 @@ release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks.
   into nothing and the round sits unread. Two reviews were missed that way in one session, one
   of them for over an hour. Match the verdict by the head SHA codex names, not by its wording:
   phrase-matching missed "Didn't find any major issues" more than once.
+- **Stop iterating when the rounds turn inward.** "Iterate until clean" assumes each round
+  finds problems in the WORK. When consecutive rounds instead find defects introduced by the
+  previous round's fix, and they cluster in one path, the review has stopped reviewing the
+  change and started designing an untested path one repair at a time — stop and cover that
+  path with a test instead. Not a round count: #84's nine rounds were nine rounds of real
+  findings and were worth it, while net#114 ended at seven with three consecutive
+  regressions-of-fixes in mid-run channel enable/disable, a GUI path with no automated
+  coverage. The signal is where the findings come from, not how many there are.
 - **Update this file in the PR that lands the work** — especially new modules/panels. The gap
   between 2026-07-06 and 07-21 (~30 PRs) had to be reconstructed from `git log`; don't repeat it.
 - **Cross-repo:** the SUT side is **blobly_emb** — see
