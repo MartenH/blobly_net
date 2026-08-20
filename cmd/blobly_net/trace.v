@@ -445,12 +445,11 @@ fn (mut app App) toggle_record() {
 			// A non-empty buffer while not recording is a capture whose write FAILED. This
 			// press retries the save — it does not arm a new capture, because rearming let
 			// live frames append to (and, at the 200k cap, evict from) the very frames the
-			// failure path had promised to preserve (codex #128 r1).
-			retry_path := app.fresh_rec_path() or {
-				app.notify('cannot create a recording file: ${err} — frames kept')
-				return
-			}
-			app.write_rec(frozen, retry_path)
+			// failure path had promised to preserve (codex #128 r1). And it retries to the
+			// path ALREADY RESERVED for this capture: allocating a fresh name left the
+			// reserved file behind empty, so the picker showed two files for one capture and
+			// a later reader could open the wrong one and conclude frames were lost.
+			app.write_rec(frozen, app.rec_path)
 			return
 		}
 		path := app.fresh_rec_path() or {
