@@ -511,6 +511,7 @@ fn (mut app App) notify(msg string) {
 // project is left untouched.
 fn (mut app App) load_project(path string) {
 	app.stop()
+	app.close_chan_picker() // a pending dbc/manifest/replaysrc picker indexes the OLD channel set
 	proj := project.load(path) or {
 		eprintln('load ${path}: ${err}')
 		app.notify('load failed: ${err}')

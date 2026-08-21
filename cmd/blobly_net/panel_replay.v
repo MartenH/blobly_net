@@ -117,14 +117,17 @@ fn draw_replay(mut app App) {
 		// EXACT match, not epsilon: the append's job is to make the configured rate reachable,
 		// and a tolerance hid any rate within 0.001 of a preset — 1.0005 could be left but
 		// never restored. Config rates are parsed f64 literals; if it differs at all, it is a
-		// different button. (The ACTIVE highlight below stays epsilon-based: the running speed
-		// travels through the worker and equality there is the fragile kind.)
+		// different button.
 		if cfg_speed !in replay_speeds {
 			speeds << cfg_speed
 		}
 		for sp in speeds {
 			vgui.same_line()
-			active := (sp - speed) < 0.001 && (speed - sp) < 0.001
+			// The ACTIVE compare is exact too — r4 kept it epsilon on the theory that a trip
+			// through the worker frays equality, but the published rate is a pure COPY of what
+			// a button (or the config) assigned, never recomputed; with a near-preset rate now
+			// holding its own button, the tolerance lit two buttons at once (codex #133 r5).
+			active := sp == speed
 			// the ID carries the RAW rate — a configured 1.004 beside the 1.0 preset rounded
 			// to the same ':.2' and the two buttons collided; the display may round, the
 			// identity may not. The appended configured rate also DISPLAYS at full precision,

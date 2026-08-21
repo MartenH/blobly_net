@@ -188,10 +188,25 @@ fn (app &App) next_free_vcan() string {
 	return 'vcan0'
 }
 
+// close_chan_picker closes the file browser when its pending action is bound to a channel
+// INDEX ('dbc:<ci>' / 'manifest:<ci>' / 'replaysrc:<ci>'). Called wherever indices shift or
+// the channel set is replaced — a picker opened for slot 3 must not deliver its file to
+// whatever channel slides into slot 3, nor to a slot that no longer exists (codex #133 r5,
+// found on replaysrc; the class is every index-bound target). The index is the only identity
+// a pending target has: channel names are user-editable and need not be unique, so closing
+// the stale picker is the honest move, not re-resolving it.
+fn (mut app App) close_chan_picker() {
+	t := app.fb_target
+	if t.starts_with('dbc:') || t.starts_with('manifest:') || t.starts_with('replaysrc:') {
+		app.fb_open = false
+	}
+}
+
 fn (mut app App) remove_bus(i int) {
 	if i < 0 || i >= app.proj.channels.len {
 		return
 	}
+	app.close_chan_picker()
 	app.commit_cfg()
 	removed_iface := app.proj.channels[i].iface
 	app.proj.channels.delete(i)
@@ -593,6 +608,7 @@ fn (mut app App) save_as(path string) {
 
 // new_project resets to a blank, unsaved project (0 buses) — the from-scratch entry point.
 fn (mut app App) new_project() {
+	app.close_chan_picker() // a pending dbc/manifest/replaysrc picker indexes the OLD channel set
 	app.stop()
 	// A blank project inherits nothing: set_project bypasses load_project's reset, so without
 	// this the System panel kept showing the PREVIOUS project's ECUs and annotated any newly
