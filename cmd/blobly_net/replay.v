@@ -8,6 +8,7 @@ import sim
 import canlog
 import mf4
 import player
+import vgui
 
 // ReplayState is one recording's lifecycle within a run.
 // Who holds a destination. The token matters as much as the source: on an immediate Stop then
@@ -298,10 +299,10 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	defer {
 		a.mu.lock()
 		a.replay_ctls.delete(token)
-		// the seek latch is keyed by the same token; a drag interrupted by Stop otherwise
-		// leaves its entry behind for the session (tokens never recur, so it is dead weight)
-		a.replay_seek.delete(token)
 		a.mu.unlock()
+		// the seek latch is NOT deleted here: replay_seek is GUI-thread state, read and
+		// written by the panel without the lock, and a worker-side delete raced those
+		// accesses (codex #135 r1, P1). The panel prunes entries whose group is gone.
 	}
 
 	// FIRST, before anything that can return. `live` was set by the caller before this worker
@@ -640,6 +641,7 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	mut failed := u64(0)
 	mut first_err := ''
 	mut announced_sent := u64(0)
+	mut announced_failed := u64(0)
 	mut announced := false
 	p.play(0.0)
 	a.mu.lock()
@@ -705,6 +707,9 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			p.set_speed(cmd_speed, now)
 		}
 		if cmd_seek >= 0 {
+			if p.state() == .finished {
+				announced = false // seek revives a finished player — the NEXT run-out is fresh news
+			}
 			p.seek(cmd_seek, now)
 		}
 		for e in p.due(now) {
@@ -760,6 +765,7 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 				// watching the log rather than the panel (self-review of the idle rework).
 				announced = true
 				announced_sent = sent
+				announced_failed = failed
 				if failed > 0 {
 					a.notify('replay ${label}: ${sent} sent, ${failed} FAILED — ${first_err}')
 				} else {
@@ -806,7 +812,7 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		}
 	}
 	a.mu.unlock()
-	if announced && ended && sent == announced_sent {
+	if announced && ended && sent == announced_sent && failed == announced_failed {
 		// the run-out was already announced from the idle loop and nothing moved since —
 		// repeating it at Stop would report one replay twice
 	} else if failed > 0 {
@@ -1023,6 +1029,9 @@ fn scan_replay_source(app &App, ci int, path string, db candb.Database, mine &Re
 			}
 		}
 		a.mu.unlock()
+		// the GUI's event-driven wait knows nothing of this thread: without a wake the row
+		// says "scanning…" until the next input event happens along (codex #135 r1)
+		vgui.wake()
 		return
 	}
 	mut cens := map[string]player.NodeCensus{}
@@ -1040,4 +1049,5 @@ fn scan_replay_source(app &App, ci int, path string, db candb.Database, mine &Re
 		}
 	}
 	a.mu.unlock()
+	vgui.wake() // same reason as the error path above
 }

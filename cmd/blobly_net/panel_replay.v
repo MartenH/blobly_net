@@ -35,6 +35,21 @@ fn draw_replay(mut app App) {
 		return
 	}
 	toks.sort()
+	// Prune seek-latch entries whose group is gone — HERE, on the GUI thread, because
+	// replay_seek is GUI-thread state (the slider reads and writes it without the lock) and a
+	// worker-side delete raced those accesses (codex #135 r1, P1). Tokens never recur, so a
+	// surviving entry is only dead weight until this runs, never a phantom seek.
+	if app.replay_seek.len > 0 {
+		mut dead := []u64{}
+		for k, _ in app.replay_seek {
+			if k !in toks {
+				dead << k
+			}
+		}
+		for k in dead {
+			app.replay_seek.delete(k)
+		}
+	}
 	for tok in toks {
 		// snapshot the status under the lock; render from the copy
 		app.mu.lock()
