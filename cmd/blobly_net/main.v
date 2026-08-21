@@ -244,6 +244,9 @@ fn main() {
 		if app.show_log {
 			draw_log(mut app)
 		}
+		if app.show_replay {
+			draw_replay(mut app)
+		}
 		if app.show_tchart {
 			draw_tchart(mut app, trecs)
 		}

@@ -588,6 +588,15 @@ float vgui_splitter_h(const char* id, float h, float min_h, float max_h) {
     return splitter_axis(id, h, min_h, max_h, true);
 }
 
+// progress bar with an overlay label; frac is 0..1.
+void vgui_progress(float frac, const char* overlay) {
+    ImGui::ProgressBar(frac, ImVec2(-1.0f, 0.0f), overlay);
+}
+// float slider. Writes through v; returns 1 while the value is being changed. Pair with
+// vgui_is_item_deactivated_after_edit to act once, on release, rather than per pixel of drag.
+int vgui_slider_f(const char* label, float* v, float min_v, float max_v, const char* fmt) {
+    return ImGui::SliderFloat(label, v, min_v, max_v, fmt) ? 1 : 0;
+}
 void vgui_set_next_item_width(float w) { ImGui::SetNextItemWidth(w); }
 // advance the cursor horizontally on the current line (a left inset / spacer).
 void vgui_indent_x(float w) { ImGui::SetCursorPosX(ImGui::GetCursorPosX() + w); }

@@ -91,8 +91,13 @@ mut:
 	// Guards tx_mutexes ALONE, deliberately not app.mu: open_tap is called with app.mu held
 	// (set_sender_bus retargets a generator mid-run under the lock), and app.mu is not
 	// reentrant — taking it again inside the tap constructor deadlocked the GUI thread.
-	tx_map_mu   sync.Mutex
-	gcount      map[string]u64 // persistent per-group frame totals (survive the ring trim)
+	tx_map_mu sync.Mutex
+	gcount    map[string]u64 // persistent per-group frame totals (survive the ring trim)
+	// One control block per RUNNING replay group (key = the group's spawn token, the same
+	// identity ReplayState uses). The worker registers it at spawn and removes it on exit;
+	// the Replay panel reads status and writes commands through it, all under app.mu — the
+	// worker's Player itself never leaves the worker's stack.
+	replay_ctls map[u64]&ReplayCtl
 	trecs       []TRec
 	rx          u64 // total across channels
 	rev         u64
@@ -148,7 +153,8 @@ mut:
 	show_doip     bool
 	show_network  bool
 	show_stats    bool
-	show_log      bool              = true
+	show_log      bool = true
+	show_replay   bool
 	help_cache    map[string]string = map[string]string{} // markdown file -> contents (read once)
 	// Signals selection + Graphics watch list (UI-thread only; RX never touches these)
 	sel_id        int = -1 // selected message id (-1 = none)

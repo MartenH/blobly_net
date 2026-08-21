@@ -40,6 +40,7 @@ sets the frame rate and UI scale.
 - **Trace Chart** — telemetry handler swimlane
 - **Shell** — command line on the target (over CAN; Up/Down = history)
 - **Generators** — quick send + saved senders (manual / on-key / cyclic)
+- **Replay** — transport controls (pause / seek / speed) for running replay channels
 - **Diagnostics / DoIP** — UDS diagnostics and DoIP discovery
 - **Script** — run a Lua test file
 

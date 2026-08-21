@@ -15,6 +15,31 @@ import player
 // one reaches its cleanup, and a release matched on the source alone would then delete the
 // replacement's reservation and leave the wire looking free. Same reason replay_state carries
 // one — a reservation belongs to a particular run of a particular recording, not to a filename.
+// ReplayCtl is a replay group's face to the Replay panel: status the worker publishes each
+// tick, and commands the panel leaves for the worker to apply on its next wake (<= 50ms).
+// Everything under app.mu; the Player stays on the worker's stack, so the panel can never
+// race the playback math — it talks to the worker, and only the worker talks to the player.
+@[heap]
+struct ReplayCtl {
+mut:
+	// status: worker -> panel
+	src    string
+	buses  []string
+	dur_s  f64
+	total  int
+	state  player.State
+	pos_s  f64
+	speed  f64
+	repeat bool
+	loops  int
+	sent   u64
+	failed u64
+	// commands: panel -> worker (applied and cleared by the worker)
+	want_toggle bool // pause if playing, resume if paused
+	want_speed  f64  // > 0: change rate, position preserved
+	want_seek   f64 = -1.0 // >= 0: jump to this recording position (seconds)
+}
+
 struct ReplayOwner {
 	src   string
 	token u64
@@ -583,6 +608,30 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	mut failed := u64(0)
 	mut first_err := ''
 	p.play(0.0)
+	// The panel's window into this group. Registered under the spawn token (the identity
+	// ReplayState already uses), removed on every exit path by the defer — the token is the
+	// key, so no other worker's entry can be clobbered.
+	mut ctl := &ReplayCtl{
+		src:    os.base(source)
+		dur_s:  p.duration_s()
+		total:  p.len()
+		state:  p.state()
+		speed:  p.speed
+		repeat: repeat
+	}
+	a.mu.lock()
+	for ci in cis {
+		if ci >= 0 && ci < a.chans.len {
+			ctl.buses << a.chans[ci].name
+		}
+	}
+	a.replay_ctls[token] = ctl
+	a.mu.unlock()
+	defer {
+		a.mu.lock()
+		a.replay_ctls.delete(token)
+		a.mu.unlock()
+	}
 	for {
 		// Re-read per DESTINATION, not just "is any channel still on": disabling one channel of
 		// a group left `any` true because a sibling was enabled, and the dispatch below then
@@ -594,11 +643,41 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		// wires as boxes moved -- is what mid-run toggling cost, and it is gone with it.
 		a.mu.lock()
 		stop := !a.running || a.run_gen != gen
+		// commands left by the Replay panel, copied out and cleared inside the SAME lock the
+		// stop check already takes — the worker applies them to its private player below
+		cmd_toggle := ctl.want_toggle
+		cmd_speed := ctl.want_speed
+		cmd_seek := ctl.want_seek
+		ctl.want_toggle = false
+		ctl.want_speed = 0
+		ctl.want_seek = -1.0
 		a.mu.unlock()
 		if stop {
 			break
 		}
 		now := f64(i64(sw.elapsed())) / 1e6
+		if cmd_toggle {
+			if p.state() == .playing {
+				p.pause(now)
+			} else if p.state() == .paused {
+				p.play(now)
+			}
+		}
+		if cmd_speed > 0 && cmd_speed != p.speed {
+			// pause/set/play so the clock rebases: position is retained, and the new rate
+			// applies from HERE rather than re-mapping the whole elapsed span
+			was := p.state()
+			if was == .playing {
+				p.pause(now)
+			}
+			p.speed = cmd_speed
+			if was == .playing {
+				p.play(now)
+			}
+		}
+		if cmd_seek >= 0 {
+			p.seek(cmd_seek, now)
+		}
 		for e in p.due(now) {
 			// BEFORE EVERY SEND. A batch is normally a few frames, but after a stall p.due()
 			// returns everything owed at once, and stop was checked before the batch — so a
@@ -638,8 +717,24 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			}
 			sent++
 		}
+		// publish status for the panel — same tick, short lock
+		pub_now := f64(i64(sw.elapsed())) / 1e6
+		a.mu.lock()
+		ctl.state = p.state()
+		ctl.pos_s = p.position_s(pub_now)
+		ctl.speed = p.speed
+		ctl.loops = p.passes()
+		ctl.sent = sent
+		ctl.failed = failed
+		a.mu.unlock()
 		if p.finished() {
 			break
+		}
+		if p.state() == .paused {
+			// next_due_ms returns none while paused — breaking on that killed the worker the
+			// moment the panel paused it. A paused group idles at the stop-poll cadence.
+			time.sleep(50 * time.millisecond)
+			continue
 		}
 		nd := p.next_due_ms() or { break }
 		mut wait := nd - f64(i64(sw.elapsed())) / 1e6

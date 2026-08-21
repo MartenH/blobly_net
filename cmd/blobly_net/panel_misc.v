@@ -69,6 +69,10 @@ fn draw_activity_bar(mut app App) {
 	if vgui.toggle_button('Gen', app.show_gen, -1) {
 		app.show_gen = !app.show_gen
 	}
+	if vgui.toggle_button('Rep', app.show_replay, -1) {
+		app.show_replay = !app.show_replay
+	}
+	vgui.set_item_tooltip('Replay — transport controls for running replay channels')
 	vgui.separator()
 	// --- diagnostics ---
 	if vgui.toggle_button('Dia', app.show_diag, -1) {
@@ -192,6 +196,7 @@ fn draw_menubar(mut app App, rx u64) {
 			app.show_doip = vgui.menu_item_check('DoIP Discovery', app.show_doip)
 			app.show_network = vgui.menu_item_check('Network', app.show_network)
 			app.show_gen = vgui.menu_item_check('Generators', app.show_gen)
+			app.show_replay = vgui.menu_item_check('Replay', app.show_replay)
 			app.show_script = vgui.menu_item_check('Script', app.show_script)
 			app.show_stats = vgui.menu_item_check('Statistics', app.show_stats)
 			app.show_log = vgui.menu_item_check('Log', app.show_log)
@@ -488,6 +493,7 @@ fn (mut app App) reset_layout() {
 	app.show_dbc = false
 	app.show_sys = false
 	app.show_flash = false
+	app.show_replay = false
 	// The floating windows that live OUTSIDE the show_* set go back to closed too — left open,
 	// they hover over the freshly restored workspace as leftovers of the state being escaped.
 	// Configuration closes through its own setter, which folds unsaved edits into the model on
@@ -538,6 +544,7 @@ fn build_layout() {
 	vgui.dock_window('DoIP Discovery', midnode)
 	vgui.dock_window('Graphics', bottom)
 	vgui.dock_window('Generators', bottom)
+	vgui.dock_window('Replay', bottom)
 	vgui.dock_window('Script', bottom)
 	// Help is not a panel — it's the Help menu's "Documentation" action, which opens the docs in
 	// the system browser.
