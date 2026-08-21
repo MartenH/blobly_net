@@ -319,13 +319,20 @@ fn (mut app App) start() {
 		// A TX bus per CHANNEL (each generator fires on its target bus), plus one anonymous tap
 		// per wire for the paths with no particular channel — Quick Send, diagnostics, shell.
 		if tx_bus_key(ch.name, ch.iface) !in app.tx_buses {
+			// same silence class as rx_loop's open: a tap that fails here is a channel that
+			// cannot transmit, and swallowing the error left a dead Send button with no
+			// explanation anywhere a Windows user can see
 			if b := app.open_tap_on(ch.iface, org_tx, ch.name) {
 				app.tx_buses[tx_bus_key(ch.name, ch.iface)] = b
+			} else {
+				app.notify('${ch.name}: transmit path failed to open — ${err}')
 			}
 		}
 		if tx_bus_key('', ch.iface) !in app.tx_buses {
 			if b := app.open_tap(ch.iface, org_tx) {
 				app.tx_buses[tx_bus_key('', ch.iface)] = b
+			} else {
+				app.notify('${ch.iface}: transmit path failed to open — ${err}')
 			}
 		}
 		if app.send_iface == '' {

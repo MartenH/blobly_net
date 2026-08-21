@@ -423,8 +423,14 @@ fn diag_server_loop(app &App, iface string, chan_name string, gen u64) {
 
 fn rx_loop(app &App, ci int, iface string, gen u64) {
 	mut bus := app.open_transport(iface) or {
-		eprintln('rx ${iface}: ${err}')
 		mut a := unsafe { app }
+		// notify, not (only) eprintln: on the Windows GUI-subsystem exe stderr goes nowhere,
+		// and this failure was completely silent — two PCAN channels failing to open looked
+		// exactly like a healthy silent bus, with the replay's downstream "never came up"
+		// timeout as the only audible symptom, pointing at the wrong place (maintainer's
+		// bench, 2026-08-21). The Log panel is the one channel every platform can hear.
+		a.notify('${iface}: open failed — ${err} — channel is NOT monitoring')
+		eprintln('rx ${iface}: ${err}')
 		a.mu.lock()
 		// Same generation guard as the teardown below: opening can fail slowly, so a PREVIOUS
 		// run's failure can land after the new loop has opened and published readiness. Clearing
