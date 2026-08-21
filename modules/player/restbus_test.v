@@ -316,3 +316,35 @@ fn test_repeated_exclusion_is_judged_once() {
 fn test_no_databases_reports_nothing() {
 	assert unknown_everywhere([]candb.Database{}, ['ANY']) == []
 }
+
+fn test_census_counts_by_attribution() {
+	c := census(on_bus(sample(), 'mf4:group25'), sample_db())
+	assert c.total == 5
+	assert c.nodes['SUT_ECU'] == 2
+	assert c.nodes['EBS'] == 1
+	assert c.unattributed == 1
+	assert c.unknown == 1
+	// a frame with several declared senders counts for each — exclusion is per node, and
+	// excluding either node withholds this frame
+	mut db := sample_db()
+	db.messages << candb.Message{
+		name:     'Shared'
+		id:       0x400
+		sender:   'SUT_ECU'
+		tx_nodes: ['EBS']
+	}
+	c2 := census([entry('b', 0x400, 0.0)], db)
+	assert c2.nodes['SUT_ECU'] == 1
+	assert c2.nodes['EBS'] == 1
+	// an 11-bit and a 29-bit 0x100 are different messages — the census may not conflate them
+	xe := canlog.LogEntry{
+		iface: 'b'
+		frame: transport.CanFrame{
+			id:       0x100
+			extended: true
+		}
+	}
+	cx := census([xe], sample_db())
+	assert cx.unknown == 1
+	assert cx.nodes.len == 0
+}

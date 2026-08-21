@@ -8,6 +8,7 @@ import sim
 import canlog
 import mf4
 import player
+import vgui
 
 // ReplayState is one recording's lifecycle within a run.
 // Who holds a destination. The token matters as much as the source: on an immediate Stop then
@@ -283,7 +284,14 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		src:       os.base(source)
 		buses_lbl: label
 		loading:   true
-		cfg_speed: if chans.len > 0 { chans[0].replay_speed } else { 1.0 }
+		// clamped like new_player_over clamps its speed: a `speed: 0` in the file otherwise
+		// becomes a dead 0x button and a "restored on Stop/Start" promise that is false —
+		// Start restores the coerced 1.0, not the 0 (self-review of the Scan work)
+		cfg_speed: if chans.len > 0 && chans[0].replay_speed > 0 {
+			chans[0].replay_speed
+		} else {
+			1.0
+		}
 	}
 	a.mu.lock()
 	a.replay_ctls[token] = ctl
@@ -292,6 +300,9 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		a.mu.lock()
 		a.replay_ctls.delete(token)
 		a.mu.unlock()
+		// the seek latch is NOT deleted here: replay_seek is GUI-thread state, read and
+		// written by the panel without the lock, and a worker-side delete raced those
+		// accesses (codex #135 r1, P1). The panel prunes entries whose group is gone.
 	}
 
 	// FIRST, before anything that can return. `live` was set by the caller before this worker
@@ -432,7 +443,7 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	}
 	mut specs := []player.BusSpec{}
 	for ch in chans {
-		src_label := resolve_replay_bus(all, buses, ch) or {
+		src_label := resolve_replay_bus(buses, ch) or {
 			// The WHOLE group, not just this channel: the others would otherwise transmit a
 			// partial plan, which is the same incomplete cross-bus picture as a destination that
 			// failed to open — convincing, and missing a wire.
@@ -629,6 +640,9 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	mut sent := u64(0)
 	mut failed := u64(0)
 	mut first_err := ''
+	mut announced_sent := u64(0)
+	mut announced_failed := u64(0)
+	mut announced := false
 	p.play(0.0)
 	a.mu.lock()
 	ctl.loading = false
@@ -651,7 +665,7 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		// a dense capture at 4x meant ~20k extra takes of the app-wide mutex per second, each
 		// a chance to queue behind the GUI's per-frame ring clone, to feed a panel that
 		// repaints ~30 times a second.
-		now := f64(i64(sw.elapsed())) / 1e6
+		mut now := f64(i64(sw.elapsed())) / 1e6
 		a.mu.lock()
 		stop := !a.running || a.run_gen != gen
 		cmd_state := ctl.want_state
@@ -670,10 +684,19 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		if stop {
 			break
 		}
+		// Re-sampled: the publish above can queue behind the GUI's per-frame ring clone, and
+		// transport math anchored to a pre-wait clock re-times every frame of this tick by
+		// the wait — mutex jitter injected into the replayed cadence, which on a gateway SUT
+		// is the measurement itself. The publish keeps the pre-lock sample; position display
+		// off by a lock wait is invisible, an emission time is not.
+		now = f64(i64(sw.elapsed())) / 1e6
 		// A TARGET state, not a toggle: two clicks inside one tick must not cancel out.
 		if cmd_state == .paused && p.state() == .playing {
 			p.pause(now)
 		} else if cmd_state == .playing && p.state() in [player.State.paused, .finished] {
+			if p.state() == .finished {
+				announced = false // restarting: the NEXT run-out is fresh news
+			}
 			p.play(now) // from .finished this restarts at 0 — the panel labels it Restart
 		}
 		if cmd_speed > 0 {
@@ -684,6 +707,9 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			p.set_speed(cmd_speed, now)
 		}
 		if cmd_seek >= 0 {
+			if p.state() == .finished {
+				announced = false // seek revives a finished player — the NEXT run-out is fresh news
+			}
 			p.seek(cmd_seek, now)
 		}
 		for e in p.due(now) {
@@ -732,6 +758,20 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		// a finished player to .paused; Resume from .finished restarts at 0). The row now
 		// stays until the RUN ends; Stop still lands within the 50ms poll.
 		if p.state() in [player.State.paused, .finished] {
+			if p.state() == .finished && !announced {
+				// The row staying alive must not silence the OUTCOME: it used to arrive when
+				// the worker exited on finish, and deferring it to Stop turned a one-shot
+				// stimulus whose every send failed into minutes of false quiet for anyone
+				// watching the log rather than the panel (self-review of the idle rework).
+				announced = true
+				announced_sent = sent
+				announced_failed = failed
+				if failed > 0 {
+					a.notify('replay ${label}: ${sent} sent, ${failed} FAILED — ${first_err}')
+				} else {
+					a.notify('replay ${label}: finished (${sent} frames, ${p.passes()} pass(es))')
+				}
+			}
 			time.sleep(50 * time.millisecond)
 			continue
 		}
@@ -772,7 +812,10 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		}
 	}
 	a.mu.unlock()
-	if failed > 0 {
+	if announced && ended && sent == announced_sent && failed == announced_failed {
+		// the run-out was already announced from the idle loop and nothing moved since —
+		// repeating it at Stop would report one replay twice
+	} else if failed > 0 {
 		a.notify('replay ${label}: ${sent} sent, ${failed} FAILED — ${first_err}')
 	} else if ended {
 		a.notify('replay ${label}: finished (${sent} frames, ${p.passes()} pass(es))')
@@ -889,7 +932,11 @@ fn (mut app App) run_replay_spawns(items []ReplaySpawn) {
 	}
 }
 
-// load_recording_for_replay decodes a `.mf4` or candump `.log` once.
+// load_recording_for_replay decodes a `.mf4` or candump `.log` once. The bus list is part of
+// the decode for BOTH formats: an .mf4 carries its own table, and a .log's is synthesized here
+// from the interface names its lines carry — in the loader and nowhere else, so Start's
+// resolver and the Configure row's Scan match against ONE list by construction (they briefly
+// each derived their own; self-review of the Scan work).
 fn load_recording_for_replay(source string) !([]canlog.LogEntry, []mf4.BusInfo) {
 	if source.to_lower().ends_with('.mf4') {
 		rec := mf4.load_recording(source)!
@@ -902,24 +949,35 @@ fn load_recording_for_replay(source string) !([]canlog.LogEntry, []mf4.BusInfo) 
 	if es.len == 0 {
 		return error('${os.base(source)} holds no frames')
 	}
-	return es.clone(), []mf4.BusInfo{}
+	mut counts := map[string]int{}
+	for e in es {
+		counts[e.iface]++
+	}
+	mut ifs := counts.keys()
+	ifs.sort()
+	mut buses := []mf4.BusInfo{}
+	for name in ifs {
+		buses << mf4.BusInfo{
+			iface:  name
+			frames: counts[name]
+		}
+	}
+	return es.clone(), buses
 }
 
 // resolve_replay_bus asks modules/player, which owns the rule. The GUI and cmd/restbus each had
 // their own copy and had already drifted; which bus a recording means is a fact about the file.
-fn resolve_replay_bus(all []canlog.LogEntry, buses []mf4.BusInfo, ch Chan) !string {
-	mut seen := map[string]bool{}
-	for e in all {
-		seen[e.iface] = true
-	}
+fn resolve_replay_bus(buses []mf4.BusInfo, ch Chan) !string {
 	mut names := []player.BusName{}
+	mut labels := []string{}
 	for b in buses {
 		names << player.BusName{
 			iface: b.iface
 			name:  b.name
 		}
+		labels << b.iface
 	}
-	return player.resolve_bus(names, seen.keys(), ch.replay_bus) or {
+	return player.resolve_bus(names, labels, ch.replay_bus) or {
 		error('${err} (${os.base(ch.replay_src)})')
 	}
 }
@@ -933,4 +991,63 @@ fn replay_db(app &App, ch Chan) candb.Database {
 	db := merge_dbs_from(app.loaded_dbs_for(ch.databases.map(os.real_path(app.resolve_asset(it)))))
 	a.mu.unlock()
 	return db
+}
+
+// ReplayScan is what a Scan of a channel's recording found: its buses, and per bus who talks
+// on it through the channel's databases. Display-only — Start does its own load and never
+// requires a scan; this exists so `bus:` and the rest-bus exclusions are picked from what the
+// file and the DBC actually say instead of typed from memory. `src` names the file the result
+// describes: the panel renders it only while the row's source still resolves to that path.
+@[heap]
+struct ReplayScan {
+	src string // resolved path this scan was started for
+mut:
+	loading bool
+	err     string
+	buses   []mf4.BusInfo
+	census  map[string]player.NodeCensus // by bus label (BusInfo.iface)
+}
+
+// scan_replay_source decodes a recording off the UI thread and files the result under mu.
+// The census runs the SAME attribution the rest-bus subtraction applies (player.census sits
+// beside the Decider), so what the row previews is what Start will do; the bus list comes out
+// of the same loader Start uses, for the same reason.
+//
+// `mine` is the entry this worker was started for, and BOTH write-backs compare pointers
+// before touching the map: a slow scan finishing after the row was rescanned — or after the
+// map was cleared and repopulated for a different file at the same index — must not overwrite
+// the newer result. Same ownership rule as ReplayState.token, same reason.
+fn scan_replay_source(app &App, ci int, path string, db candb.Database, mine &ReplayScan) {
+	mut a := unsafe { app }
+	entries, buses := load_recording_for_replay(path) or {
+		a.mu.lock()
+		if sc := a.replay_scans[ci] {
+			if voidptr(sc) == voidptr(mine) {
+				mut m := unsafe { mine }
+				m.loading = false
+				m.err = err.msg()
+			}
+		}
+		a.mu.unlock()
+		// the GUI's event-driven wait knows nothing of this thread: without a wake the row
+		// says "scanning…" until the next input event happens along (codex #135 r1)
+		vgui.wake()
+		return
+	}
+	mut cens := map[string]player.NodeCensus{}
+	for b in buses {
+		cens[b.iface] = player.census(player.on_bus(entries, b.iface), db)
+	}
+	a.mu.lock()
+	if sc := a.replay_scans[ci] {
+		if voidptr(sc) == voidptr(mine) {
+			mut m := unsafe { mine }
+			m.loading = false
+			m.err = ''
+			m.buses = buses.clone()
+			m.census = cens.clone()
+		}
+	}
+	a.mu.unlock()
+	vgui.wake() // same reason as the error path above
 }

@@ -256,3 +256,47 @@ pub fn unknown_everywhere(dbs []candb.Database, exclude []string) []string {
 	}
 	return out
 }
+
+// NodeCensus is who actually talks in a recording, by DBC attribution: the per-node frame
+// counts a user needs to SEE before choosing what to exclude — on a captured vehicle bus the
+// busiest node is usually the ECU now sitting on the bench. The tally applies the same
+// attribution verdict() does, so the preview shows exactly what the subtraction will act on;
+// a separate walk with its own lookup would let the two drift.
+pub struct NodeCensus {
+pub:
+	// frames per transmitting node. A frame with several declared senders counts once for
+	// EACH: exclusion is per node, so that is the number an exclusion of that node acts on.
+	nodes        map[string]int
+	unattributed int // defined by the database, but it names no transmitter
+	unknown      int // ids the database does not define at all
+	total        int
+}
+
+// census tallies one bus's entries — filter with on_bus first, for the reason on_bus states.
+pub fn census(entries []canlog.LogEntry, db candb.Database) NodeCensus {
+	d := new_decider(db, [], true)
+	mut nodes := map[string]int{}
+	mut unattributed := 0
+	mut unknown := 0
+	for e in entries {
+		k := key(e.frame.id, e.frame.extended)
+		if k !in d.defined {
+			unknown++
+			continue
+		}
+		senders := d.senders_of[k] or { []string{} }
+		if senders.len == 0 {
+			unattributed++
+			continue
+		}
+		for n in senders {
+			nodes[n]++
+		}
+	}
+	return NodeCensus{
+		nodes:        nodes.clone()
+		unattributed: unattributed
+		unknown:      unknown
+		total:        entries.len
+	}
+}

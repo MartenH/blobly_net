@@ -273,6 +273,10 @@ fn (mut app App) dbc_ed_load_bufs() {
 // disk once NO database holds unsaved edits (the rebuild re-reads every
 // file). Preserves the editor's selected database across the index shuffle.
 fn (mut app App) dbc_refresh_if_all_clean() {
+	// save or revert lands content whose attribution any displayed census predates
+	app.mu.lock()
+	app.replay_scans.clear()
+	app.mu.unlock()
 	for _, d in app.dbc_ed.dirty {
 		if d {
 			app.notify('sim/generator databases refresh after ALL DBCs are saved')
@@ -322,6 +326,12 @@ fn (mut app App) mark_dirty(di int) {
 	if pth != '' {
 		app.dbc_ed.dirty[pth] = true
 	}
+	// attribution just changed under any Scan on display: the census was taken through a
+	// database this edit may have re-sendered — stale exclusions could replay the SUT's own
+	// frames back at it, the exact failure the census exists to prevent (codex #135 r1)
+	app.mu.lock()
+	app.replay_scans.clear()
+	app.mu.unlock()
 }
 
 fn draw_dbc_editor(mut app App) {
