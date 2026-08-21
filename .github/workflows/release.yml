@@ -145,14 +145,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          prev="$(git tag -l 'v[0-9]*' --sort=-v:refname | grep -vx "$GITHUB_REF_NAME" | head -1)"
+          # the highest product tag that is an ANCESTOR of this commit — not merely "any
+          # other tag": backfilling v0.1.0 after a v0.2.0 exists must not baseline the
+          # changelog on the later release (codex #137 r2)
+          prev="$(git tag -l 'v[0-9]*' --sort=-v:refname | grep -vx "$GITHUB_REF_NAME" \
+            | while read -r t; do
+                git merge-base --is-ancestor "$t" "$GITHUB_SHA" 2>/dev/null || continue
+                printf '%s\n' "$t"
+                break
+              done)"
           if [ -n "$prev" ]; then
             gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
               -f tag_name="$GITHUB_REF_NAME" -f previous_tag_name="$prev" --jq .body > generated.md
           else
             printf '**First release** — the full history is the changelog.\n' > generated.md
           fi
-          cat packaging/RELEASE_NOTES_HEADER.md generated.md > notes.md
+          # the header's evidence link must survive being a RELEASE body, where relative
+          # paths resolve under /releases/tag/ — pin it to the released tag (codex #137 r2)
+          sed "s|@TAG@|$GITHUB_REF_NAME|g" packaging/RELEASE_NOTES_HEADER.md > header.md
+          cat header.md generated.md > notes.md
           gh release create "$GITHUB_REF_NAME" \
             --title "Blobly Net $GITHUB_REF_NAME" \
             --verify-tag \

@@ -135,7 +135,11 @@ jobs:
           ver="$(sed -n "s/^\s*version: '\(.*\)'\s*$/\1/p" v.mod)"
           sh scripts/stage_bundle.sh dist "$ver"
           cp build/blobly_net.exe dist/blobly_net.exe
-          cp build/*.dll dist/
+          # ZERO DLLs is a legitimate outcome, not a missing file: the link is -static (see
+          # libs/vgui's windows flags), and the ldd sweep above copies only what remains
+          # dynamic — possibly nothing. A bare `cp build/*.dll` fails the whole release on
+          # exactly the healthiest build (codex #137 r2, P1); find tolerates no matches.
+          find build -maxdepth 1 -name '*.dll' -exec cp {} dist/ \;
           # register_blobnet_win.ps1 resolves the exe "next to THIS script" first, and
           # says the bundle stages it alongside — it once did not, so .blobnet association
           # was unreachable for exactly the users it was written for. Stage it.
