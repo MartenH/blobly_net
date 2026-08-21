@@ -21,7 +21,10 @@ mut:
 	dirty map[string]bool // unsaved edits keyed by dbc PATH (survives rebuilds/index shifts)
 	// the messages box height, dragged via the horizontal splitter under it (the signals box
 	// fills whatever remains). Same lifetime as left_w: survives frames, resets with DbcEd.
-	msgs_h         f32
+	msgs_h f32
+	// the right pane's upper region (message properties + bit grid) height, dragged via the
+	// splitter above the Signal Inspector; the inspector fills what remains. Same lifetime.
+	props_h        f32
 	loaded_key     string // which db:msg:sig the string buffers hold
 	mname_buf      []u8
 	sender_buf     []u8
@@ -341,7 +344,7 @@ fn draw_dbc_editor(mut app App) {
 	}
 	// A useful floating default (Once — the user's own size/pos wins afterwards): undocked by
 	// default, and without this a fresh float opened at imgui's tiny fallback size.
-	vgui.set_next_window(220, 120, 980, 640)
+	vgui.set_next_window(140, 90, 1500, 880)
 	vis, op := vgui.begin_closable('DBC Editor', app.show_dbc)
 	app.show_dbc = op
 	if !vis {
@@ -841,6 +844,13 @@ fn draw_dbc_editor(mut app App) {
 
 	// 1. Message Properties Form
 	id_hex_str := if msg.ext { '0x${msg.id.hex()}x' } else { '0x${msg.id.hex()}' }
+	// Properties + bit grid live in their OWN scrolling child of draggable height, so the
+	// Signal Inspector below keeps its room no matter how many grid rows the message has —
+	// before this, a wide message pushed the inspector off the bottom of the pane.
+	if app.dbc_ed.props_h <= 0 {
+		app.dbc_ed.props_h = 380 * sc
+	}
+	vgui.child_begin('##dbced_props', app.dbc_ed.props_h)
 	vgui.separator_text('Message Properties: ${msg.name} (${id_hex_str})')
 	app.dbc_ed_load_bufs()
 
@@ -1125,6 +1135,14 @@ fn draw_dbc_editor(mut app App) {
 			}
 		}
 	}
+
+	vgui.child_end() // end properties + bit grid region
+	// the slider above the Signal Inspector: drag to trade height between the properties/grid
+	// region above and the inspector below. 220*sc reserves a useful inspector; the splitter
+	// itself floors max at min, so a short pane degrades gracefully instead of inverting.
+	props_max := app.dbc_ed.props_h + vgui.content_avail_h() - 220 * sc
+	app.dbc_ed.props_h = vgui.splitter_h('##dbced_props_split', app.dbc_ed.props_h, 120 * sc,
+		props_max)
 
 	// 3. Signal Inspector Form (for selected signal)
 	si := app.dbc_ed.sig
