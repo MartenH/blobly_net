@@ -47,7 +47,7 @@ fn load_ui_font() {
 }
 
 fn main() {
-	if os.args.len > 1 && os.args[1] in ['--version', '-V'] {
+	if '--version' in os.args || '-V' in os.args {
 		// scripts and bug reports need the version without a window; -V not -v, which V's
 		// own tooling and many CLIs reserve for verbose
 		println('blobly_net ${app_version}')
@@ -122,7 +122,7 @@ fn main() {
 
 	if os.getenv('BLOBLY_SELFTEST_DBC') != '' {
 		app.show_dbc = true
-		if !vgui.init('blobly_net — selftest', 1500, 850, true) {
+		if !vgui.init('blobly_net ${app_version} — selftest', 1500, 850, true) {
 			eprintln('vgui.init failed')
 			return
 		}

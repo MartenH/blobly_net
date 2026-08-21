@@ -1,9 +1,11 @@
 module main
 
-// app_version is the SINGLE statement of what this build calls itself — the window title and
-// `--version` read it, and release.yml refuses a tag that disagrees, so the tag and what the
-// binary reports can never drift. It is a COMMITTED constant, not a build-time injection: a
-// release is "tag the commit whose const says so" (`git tag v0.1.0 && git push origin
-// v0.1.0`), which keeps the version diffable and the build reproducible from any checkout.
-// Bump it in the PR that prepares the next release, not before.
-pub const app_version = '0.1.0'
+import v.vmod
+
+// app_version is what this build calls itself — the window title and `--version` read it.
+// The VALUE lives in v.mod, the repo's one version statement (self-review: this file first
+// carried its own literal, and v.mod sat two lines of prose away saying 0.0.1); this const
+// decodes the compile-time-embedded @VMOD_FILE at startup, so the two cannot disagree.
+// release.yml's guard refuses a tag that does not match v.mod, and the release build then
+// asserts the BINARY answers with the tag — bump v.mod in the PR that prepares a release.
+pub const app_version = (vmod.decode(@VMOD_FILE) or { panic('v.mod unparsable: ${err}') }).version

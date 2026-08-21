@@ -43,21 +43,28 @@ on one timeline.*
 
 ## Get it
 
-**[Releases](../../releases)** carry a Windows zip and a Linux tar.gz per version — no GitHub
-sign-in, no expiry. Both bundle the demo projects, DBCs, sample logs and the docs the Help
-panel renders, so they run on a clean machine; the Windows zip additionally carries the mingw
-runtime DLLs and `register_blobnet_win.ps1` (run it to make `.blobnet` files open in the app).
+**[Releases](../../releases)** carry a Windows zip and a Linux tar.gz per version, each under
+one top-level folder — no GitHub sign-in, no expiry. (Ignore the `v-toolchain` entry — that is
+CI's prebuilt compiler; if no `v0.x` release is listed yet, the first tag has not been cut —
+use the Actions route below.) Both bundle the demo projects, DBCs, sample logs, the docs the
+Help panel renders, a `README.txt` and a `VERSION.txt`. The **Windows zip is self-contained**
+(mingw runtime DLLs included; run the bundled `register_blobnet_win.ps1` to make `.blobnet`
+files open in the app). The **Linux tar.gz needs the distro runtime**:
+`sudo apt install libglfw3 libfreetype6 libgl1`. Which version you have: `VERSION.txt`, the
+window title, or `./blobly_net --version` — on Windows the exe is a GUI-subsystem program, so
+pipe it (`blobly_net.exe --version | more`).
 **Vendor CAN libraries are never bundled** — `vxlapi64.dll`, `PCANBasic.dll`, `canlib32.dll`
 come with the vendor's own driver installs (the Vector XL terms forbid redistributing it).
 Every release is cut from a tag the release workflow verifies against reviewed `main` and
-against the version the binary itself reports (`blobly_net --version`).
+against the version in `v.mod`, which is the same value the binary decodes and reports.
 
 **Between releases (Windows)** — CI still builds the bundle on every push to `main` (pull
 requests compile-validate but publish no artifact, so every downloadable bundle comes from
 reviewed `main`). Take it from **[Actions](../../actions/workflows/windows.yml)** → the latest
-`windows-build` run **on `main`** → the **`blobly_net-windows-x64`** artifact. Two caveats —
-downloading an artifact requires being signed in to GitHub, and artifacts expire (~90 days),
-so use a recent run.
+`windows-build` run **on `main`** → the **`blobly_net-windows-x64`** artifact. Unzip and run
+`blobly_net.exe` — same self-contained contents as a release zip, minus the top-level folder.
+Two caveats: downloading an artifact requires being signed in to GitHub, and artifacts expire
+(~90 days), so use a recent run.
 
 **Linux / WSL2 from source** — it's two commands, see [Build & run](#build--run) below.
 

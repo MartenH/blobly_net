@@ -10,15 +10,20 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
 
 ## Next
 
-- 🔨 **Make a real release.** The machinery is in: a committed `app_version` const the window
-  title and `--version` report, and `release.yml` — push a `v*` tag and it publishes a Linux
-  tar.gz plus the Windows zip (built by *calling* `windows.yml`, one bundle recipe) with
-  auto-generated notes, after verifying the tag equals the const AND the tagged commit is on
-  reviewed `main`. No vendor CAN library ships, ever — only the mingw runtime DLLs are ours
-  (the XL terms forbid redistributing `vxlapi64.dll`). What remains is the act itself:
-  `git tag v0.1.0 && git push origin v0.1.0`. v0.1.0's claim, settled: virtual/SocketCAN paths
-  are CI-verified; the Windows vendor backends are hand-verified on real hardware
-  ([windows_can_hardware.md](docs/windows_can_hardware.md)) — the notes say so.
+- 🔨 **Make a real release.** The machinery is in: `v.mod` is the one version statement (the
+  binary decodes it into `--version` and the window title), and `release.yml` — push a
+  `v0.1.0`-style tag and it publishes a Linux tar.gz plus the Windows zip (built by *calling*
+  `windows.yml`, which publishes for a tag only when the call carries `publish_bundle=true`
+  from behind the guard) with notes composed from
+  [`packaging/RELEASE_NOTES_HEADER.md`](packaging/RELEASE_NOTES_HEADER.md) — the standing
+  honesty statement: virtual/SocketCAN paths CI-verified, the Windows vendor backends
+  hand-verified on real hardware ([windows_can_hardware.md](docs/windows_can_hardware.md)) —
+  plus GitHub's generated changelog. The guard proves the tag equals `v.mod` AND the tagged
+  commit is on reviewed `main`. **No vendor CAN library ships, ever** — `vxlapi64.dll`,
+  `PCANBasic.dll`, `canlib32.dll` are the user's to install and the XL terms forbid
+  redistributing Vector's; only the mingw runtime DLLs are ours. The bundle payload list
+  lives once, in `scripts/stage_bundle.sh`. What remains is the act itself:
+  `git tag v0.1.0 && git push origin v0.1.0`. Later: a `-prod` build once CI exercises one.
 - ⏭️ **`fill_rect` / drawlist binding in `vgui`** — the blocker for two shipped-adjacent features:
   **trace-manifest rows** and a **drawn topology graph** in the System panel both wait on it.
 - ⏭️ **System wizards** ([`docs/dbc_editor.md`](docs/dbc_editor.md)) — "add a signal/frame"

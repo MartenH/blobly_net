@@ -1,43 +1,60 @@
 # A release is cut by pushing a version tag: `git tag v0.1.0 && git push origin v0.1.0`.
 #
-# Two invariants, both enforced here rather than trusted:
-#  - the tag must equal the committed app_version const (cmd/blobly_net/version.v), so the
-#    tag and what the binary reports can never disagree;
-#  - the tagged commit must be reachable from origin/main, so a downloadable release can only
-#    come from reviewed history — the same provenance promise windows.yml makes for its
-#    artifact, extended to tags because this guard proves it first.
+# Two invariants, enforced rather than trusted:
+#  - the tag must equal the version in v.mod — the repo's ONE version statement, which the
+#    binary itself decodes into `--version` and the window title — and the Linux job then
+#    asserts the BUILT BINARY answers with the tag (the Windows exe compiles the same
+#    committed v.mod, so one execution covers both; that transitivity breaks the day the
+#    version becomes build-injected, which is why it is written down here);
+#  - the tagged commit must be reachable from origin/main, so a release can only come from
+#    reviewed history. windows.yml publishes for a tag ONLY when this workflow calls it with
+#    publish_bundle=true, behind that guard — never on the ref's say-so.
 #
-# Assets: a Linux tar.gz staged HERE with the same contents windows.yml stages, and the
-# Windows zip built by CALLING windows.yml — one Windows bundle recipe, not a copy that
-# drifts. NO vendor CAN library ships either way: vxlapi64.dll / PCANBasic.dll / canlib32.dll
-# are the user's to install, and the Vector XL terms forbid redistribution (ROADMAP). Only
-# the mingw runtime DLLs are ours to bundle.
+# The bundle payload list lives in scripts/stage_bundle.sh, shared with windows.yml — one
+# list, two archives, no drift. NO vendor CAN library ships either way: vxlapi64.dll,
+# PCANBasic.dll and canlib32.dll come with the vendor's driver installs, and the Vector XL
+# terms forbid redistribution (ROADMAP: the one hard-to-take-back mistake).
+#
+# The release binary is the same non-optimized build every test and CI run exercises — on a
+# beta compiler, shipping the binary everybody tested beats shipping a -prod profile nothing
+# ever ran. Revisit when CI itself builds -prod.
 name: release
 
 on:
   push:
-    tags: ['v*']
+    tags: ['v[0-9]*'] # not plain v*: the v-toolchain tag (prebuilt V for CI) must not fire this
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+# read-only by default: the called Windows build compiles third-party sources (cimgui,
+# vlang/markdown) and must not hold a token that can write releases. Only publish gets write.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   guard:
     runs-on: ubuntu-latest
     steps:
+      # full history: merge-base needs origin/main, and checkout@v4 at depth 0 fetches all
+      # branch heads even on a tag ref
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: tag equals app_version and sits on main
+      - name: tag equals v.mod and sits on main
         run: |
-          want="v$(sed -n "s/^pub const app_version = '\(.*\)'\$/\1/p" cmd/blobly_net/version.v)"
-          [ "$want" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != version.v $want"; exit 1; }
+          ver="$(sed -n "s/^\s*version: '\(.*\)'\s*\$/\1/p" v.mod)"
+          [ -n "$ver" ] || { echo "could not parse version from v.mod — its format changed?"; exit 1; }
+          [ "v$ver" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != v.mod v$ver"; exit 1; }
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
             || { echo "tagged commit is not on origin/main — releases come from reviewed history only"; exit 1; }
 
   windows:
     needs: guard
     uses: ./.github/workflows/windows.yml
+    with:
+      publish_bundle: true # only ever set here, behind the guard above
 
   linux:
     needs: guard
@@ -48,7 +65,7 @@ jobs:
         with:
           check-latest: true
       # same deps + module fetch as ci.yml's GUI job — the build IS scripts/run_gui.sh, the
-      # command devs run, so a release binary is the binary everyone has been testing
+      # command devs run, so the release binary is the binary everyone has been testing
       - name: Native deps (apt)
         run: |
           sudo apt-get update
@@ -64,16 +81,11 @@ jobs:
         run: |
           got="$(./build/blobly_net --version)"
           [ "$got" = "blobly_net ${GITHUB_REF_NAME#v}" ] || { echo "binary says '$got'"; exit 1; }
-      # the same bundle contents windows.yml stages: demo projects, DBCs, Lua tests,
-      # manifests, docs (Help panel reads them), samples, licence + third-party notices
       - name: Stage + tar
         run: |
-          mkdir -p dist/blobly_net/samples
+          mkdir -p dist/blobly_net
+          sh scripts/stage_bundle.sh dist/blobly_net "${GITHUB_REF_NAME#v}"
           cp build/blobly_net dist/blobly_net/
-          cp -r projects dbc tests manifests docs dist/blobly_net/
-          cp samples/*.log samples/*.mf4 dist/blobly_net/samples/ 2>/dev/null || true
-          cp LICENSE dist/blobly_net/LICENSE.txt
-          cp packaging/THIRD-PARTY-NOTICES.txt dist/blobly_net/
           tar -C dist -czf "blobly_net-${GITHUB_REF_NAME}-linux-x64.tar.gz" blobly_net
       - uses: actions/upload-artifact@v4
         with:
@@ -84,23 +96,39 @@ jobs:
   publish:
     needs: [windows, linux]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
+      # the checkout is load-bearing: packaging/RELEASE_NOTES_HEADER.md is read below (and gh
+      # resolves the repo from it). The tarball downloads into the workspace root; its name is
+      # untracked, so the two writers cannot collide.
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: linux-tarball
+      # into a subdirectory named for the app, so the zip below carries ONE top-level folder
+      # like the tar does — "Extract All" into Downloads must not scatter an exe, fifteen
+      # DLLs and six directories among the user's files
       - uses: actions/download-artifact@v4
         with:
           name: blobly_net-windows-x64
-          path: winbundle
+          path: winbundle/blobly_net
       - name: Zip the Windows bundle
-        run: cd winbundle && zip -qr "../blobly_net-${GITHUB_REF_NAME}-windows-x64.zip" .
+        working-directory: winbundle
+        run: zip -qr "../blobly_net-${GITHUB_REF_NAME}-windows-x64.zip" blobly_net
+      # Notes = the committed header (what the version's claims rest on: CI-verified virtual
+      # paths vs hand-verified vendor backends, the no-vendor-DLL rule, the Linux runtime
+      # prerequisites) + GitHub's generated changelog. Composed via the API so the two always
+      # land in one body, in that order.
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="$GITHUB_REF_NAME" --jq .body > generated.md
+          cat packaging/RELEASE_NOTES_HEADER.md generated.md > notes.md
           gh release create "$GITHUB_REF_NAME" \
             --title "Blobly Net $GITHUB_REF_NAME" \
-            --generate-notes \
+            --notes-file notes.md \
             "blobly_net-${GITHUB_REF_NAME}-linux-x64.tar.gz" \
             "blobly_net-${GITHUB_REF_NAME}-windows-x64.zip"
