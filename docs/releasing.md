@@ -58,7 +58,9 @@ release on GitHub afterwards if you want to add anything by hand.
 ## If something goes wrong
 
 - **Guard fails** — the message says which invariant broke (tag/version mismatch, or the
-  commit is not on main). Fix, delete the tag (`git push --delete origin vX.Y.Z`), re-tag.
+  commit is not on main). Fix, delete the tag **both places** — remote and local, or the
+  re-tag fails with "already exists":
+  `git push --delete origin vX.Y.Z && git tag -d vX.Y.Z` — then re-tag.
 - **A build fails after the guard** — nothing was published; re-tagging the same name after
   a fix cancels the superseded run (there is a concurrency group) and starts fresh.
 - **Publish fails after a release exists** — `gh release create` is not idempotent; delete

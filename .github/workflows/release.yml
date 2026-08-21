@@ -132,6 +132,12 @@ jobs:
           now="$(git rev-parse "${GITHUB_REF_NAME}^{commit}")"
           [ "$now" = "$GITHUB_SHA" ] \
             || { echo "tag moved during the build (now $now, built $GITHUB_SHA) — not publishing"; exit 1; }
+          # ... and the ANCESTRY too: a main force-pushed during the build to recall this
+          # very commit makes the guard's proof stale, and the reviewed-history gate must
+          # hold at publication time, not only an hour earlier (codex #137 r4)
+          git fetch --force origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+            || { echo "the tagged commit is no longer on origin/main — not publishing"; exit 1; }
       # Notes = the committed header (what the version's claims rest on: CI-verified virtual
       # paths vs hand-verified vendor backends, the no-vendor-DLL rule, the Linux runtime
       # prerequisites) + GitHub's generated changelog. Composed via the API so the two always
@@ -158,7 +164,13 @@ jobs:
             gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
               -f tag_name="$GITHUB_REF_NAME" -f previous_tag_name="$prev" --jq .body > generated.md
           else
-            printf '**First release** — the full history is the changelog.\n' > generated.md
+            # a first release still owes the promised PR history — the API cannot express
+            # "baseline = the beginning" (it wants a tag, and auto-choice picks the
+            # v-toolchain tooling release), so the changelog is built from the merged PRs
+            # directly (codex #137 r4)
+            printf '## First release — every PR merged to date\n\n' > generated.md
+            gh pr list --state merged --base main --limit 1000 \
+              --json number,title --jq '.[] | "* \(.title) (#\(.number))"' >> generated.md
           fi
           # the header's evidence link must survive being a RELEASE body, where relative
           # paths resolve under /releases/tag/ — pin it to the released tag (codex #137 r2)
