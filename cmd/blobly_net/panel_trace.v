@@ -488,6 +488,12 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		}
 		if r.refused {
 			g.refused = true
+			// the verdict folds in, the METRICS do not: a refused frame was never on the
+			// wire, and counting it into count/fps showed a bus-off group transmitting at
+			// rate while the header said TX 0 (codex #143 r2). last/prev stay too — the
+			// newest-data cells must show what the wire carried, not what it refused.
+			agg[k] = g
+			continue
 		}
 		if g.count > 0 {
 			g.prev = g.last // slide the previous-frame window forward

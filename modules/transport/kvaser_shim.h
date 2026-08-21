@@ -45,8 +45,12 @@ typedef int (__stdcall *ct_kvChanData)(int, int, void *, size_t);
 static ct_kvNumChan  ct_kv_numchan;
 static ct_kvChanData ct_kv_chandata;
 
-/* bus health (optional): canReadStatus fills canSTAT_* flags — BUS_OFF 0x01, ERROR_PASSIVE
- * 0x02, ERROR_WARNING 0x40, ERROR_ACTIVE 0x10 (canstat.h). */
+/* bus health (optional): canReadStatus fills canSTAT_* flags — ERROR_PASSIVE 0x01,
+ * BUS_OFF 0x02, ERROR_WARNING 0x04, ERROR_ACTIVE 0x08 (canstat.h; TX_PENDING 0x10,
+ * RESERVED_1 0x40 carry no ladder meaning). This table once had PASSIVE/BUS_OFF swapped
+ * and a 0x40 warning that does not exist — the decode AND its pinned test live in
+ * modules/transport/health.v; read the vendor header, not this comment, before touching
+ * either (codex #143 r2 caught this comment still carrying the swap the decoder shed). */
 typedef int (__stdcall *ct_kvReadStatus)(int, uint32_t *);
 static ct_kvReadStatus ct_kv_readstatus;
 
