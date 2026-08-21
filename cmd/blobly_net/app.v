@@ -98,6 +98,10 @@ mut:
 	// the Replay panel reads status and writes commands through it, all under app.mu — the
 	// worker's Player itself never leaves the worker's stack.
 	replay_ctls map[u64]&ReplayCtl
+	// The seek slider's in-drag values, latched per group: ImGui does not write the backing
+	// variable on the release frame, so a per-frame local re-seeded from the live position
+	// committed "seek to where you already are" on every release.
+	replay_seek map[u64]f32
 	trecs       []TRec
 	rx          u64 // total across channels
 	rev         u64

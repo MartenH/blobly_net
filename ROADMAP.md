@@ -216,10 +216,10 @@ Kept last: this is where the roadmap ends, not where it starts.
 **Simulation, logs & replay**
 - ✅ Simulated ECUs (`sim`) — tests need no hardware
 - ✅ `candump -l` logs · ✅ native **ASAM MDF4** (`.mf4`) reader
-- ⚠️ **Replay** — `modules/player` paces a decoded recording at its original cadence (play, pause,
-  seek, loop) and is tested, but **nothing drives it**: no worker feeds the bus and `monitorable()`
-  does not open a replay channel, so configuring one produces silence. Listed here for years as
-  shipped, which it is not end to end — see [#98](https://github.com/MartenH/blobly_net/issues/98)
+- ✅ **Replay** — end to end since #111/#113 (this line said "nothing drives it" long after that
+  stopped being true): replay channels play on Start, every bus of one recording shares one
+  clock, and the **Replay panel** is the live transport surface (pause / seek / speed,
+  position-preserving via `player.set_speed`)
 
 **Observability**
 - ✅ **Trace chart** — handler/thread swimlanes, derived idle lane, execution-vs-response bars,

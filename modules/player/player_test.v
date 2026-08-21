@@ -145,3 +145,55 @@ fn test_speed_guard() {
 	p := new_player(rec([0.0]), -3.0, false)
 	assert p.speed == 1.0
 }
+
+// set_speed preserves the recording position in every state — the property the GUI's
+// hand-rolled pause/set/play dance violated (position scaled by new/old, then a burst of
+// every frame in the gap; net#133). The probe position sits MID-GAP deliberately: seek's
+// boundary rule is "an entry exactly at pos is the next to play", so a set_speed landing
+// precisely on a frame time re-emits that frame — correct per that rule, but not what this
+// test is about.
+fn test_set_speed_keeps_position() {
+	mut p := new_player(rec([0.0, 1.0, 2.0, 3.0, 4.0]), 1.0, false)
+	p.play(0.0)
+	assert p.due(2500.0).len == 3 // t=0,1,2 played; position now 2.5s, mid-gap
+	assert p.position_s(2500.0) == 2.5
+
+	// playing: double the rate at now=2500 — position must stay 2.5s
+	p.set_speed(2.0, 2500.0)
+	assert p.position_s(2500.0) == 2.5
+	// nothing already owed — the burst bug returned the whole 2.5..5.0s gap here
+	assert p.due(2500.0).len == 0
+	// the NEXT frame (t=3.0s) is half a recording-second away: +250ms at 2x
+	nd := p.next_due_ms() or {
+		assert false, 'next frame must be pending'
+		return
+	}
+	assert nd - 2500.0 > 249.0 && nd - 2500.0 < 251.0
+
+	// paused: the same invariant without the clock running
+	p.pause(2600.0)
+	pos_before := p.position_s(2600.0)
+	p.set_speed(0.5, 2600.0)
+	assert p.position_s(2600.0) == pos_before
+
+	// a nonsense rate is refused, not divided by
+	p.set_speed(0.0, 2600.0)
+	assert p.speed == 0.5
+	p.set_speed(-2.0, 2600.0)
+	assert p.speed == 0.5
+}
+
+// the binary-search seek lands where the linear scan did, including the exact boundary
+// (an entry precisely AT the sought position is the next to play, not skipped).
+fn test_seek_binary_boundaries() {
+	mut p := new_player(rec([0.0, 1.0, 2.0, 3.0, 4.0]), 1.0, false)
+	p.play(0.0)
+	p.seek(2.0, 0.0)
+	nxt := p.due(0.0) // same clock instant: exactly the boundary entry is due
+	assert nxt.len == 1
+	assert nxt[0].t_s - p.t0_s() == 2.0
+	p.seek(0.0, 0.0)
+	assert p.due(0.0).len == 1 // t=0 replays from the start
+	p.seek(99.0, 0.0) // past the end clamps to duration
+	assert p.position_s(0.0) == 4.0
+}

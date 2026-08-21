@@ -23,21 +23,24 @@ import player
 struct ReplayCtl {
 mut:
 	// status: worker -> panel
-	src    string
-	buses  []string
-	dur_s  f64
-	total  int
-	state  player.State
-	pos_s  f64
-	speed  f64
-	repeat bool
-	loops  int
-	sent   u64
-	failed u64
-	// commands: panel -> worker (applied and cleared by the worker)
-	want_toggle bool // pause if playing, resume if paused
-	want_speed  f64  // > 0: change rate, position preserved
-	want_seek   f64 = -1.0 // >= 0: jump to this recording position (seconds)
+	src       string
+	buses_lbl string // the group's bus names, joined — the same label its notifications use
+	loading   bool   // registered but still decoding the recording / waiting for its wires
+	dur_s     f64
+	state     player.State
+	pos_s     f64
+	speed     f64
+	cfg_speed f64 // the PROJECT's configured rate — panel changes are transport-transient
+	repeat    bool
+	loops     int
+	sent      u64
+	failed    u64
+	// commands: panel -> worker (applied and cleared by the worker). want_state is a TARGET,
+	// not a toggle: two clicks inside one worker tick collapsed a toggle into a no-op while
+	// the button still showed the pre-click label (the state publishes up to 50ms late).
+	want_state player.State = .stopped // .stopped = no request; .playing / .paused otherwise
+	want_speed f64 // > 0: change rate, position preserved
+	want_seek  f64 = -1.0 // >= 0: jump to this recording position (seconds)
 }
 
 struct ReplayOwner {
@@ -271,6 +274,25 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	}
 	a.mu.unlock()
 	label := chans.map(it.name).join(', ')
+	// The panel's window into this group, registered AT ENTRY — a large .mf4 decodes for
+	// seconds, and a panel that says "no replay running" while one is starting states a
+	// falsehood at the exact moment the operator is watching for it. Keyed by the spawn token
+	// (the identity ReplayState already uses); the defer directly below removes it on EVERY
+	// exit, including the decode-failure and readiness-timeout returns.
+	mut ctl := &ReplayCtl{
+		src:       os.base(source)
+		buses_lbl: label
+		loading:   true
+		cfg_speed: if chans.len > 0 { chans[0].replay_speed } else { 1.0 }
+	}
+	a.mu.lock()
+	a.replay_ctls[token] = ctl
+	a.mu.unlock()
+	defer {
+		a.mu.lock()
+		a.replay_ctls.delete(token)
+		a.mu.unlock()
+	}
 
 	// FIRST, before anything that can return. `live` was set by the caller before this worker
 	// existed, so every exit has to clear it — and each round of review found another early
@@ -608,30 +630,13 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	mut failed := u64(0)
 	mut first_err := ''
 	p.play(0.0)
-	// The panel's window into this group. Registered under the spawn token (the identity
-	// ReplayState already uses), removed on every exit path by the defer — the token is the
-	// key, so no other worker's entry can be clobbered.
-	mut ctl := &ReplayCtl{
-		src:    os.base(source)
-		dur_s:  p.duration_s()
-		total:  p.len()
-		state:  p.state()
-		speed:  p.speed
-		repeat: repeat
-	}
 	a.mu.lock()
-	for ci in cis {
-		if ci >= 0 && ci < a.chans.len {
-			ctl.buses << a.chans[ci].name
-		}
-	}
-	a.replay_ctls[token] = ctl
+	ctl.loading = false
+	ctl.dur_s = p.duration_s()
+	ctl.state = p.state()
+	ctl.speed = p.speed
+	ctl.repeat = repeat
 	a.mu.unlock()
-	defer {
-		a.mu.lock()
-		a.replay_ctls.delete(token)
-		a.mu.unlock()
-	}
 	for {
 		// Re-read per DESTINATION, not just "is any channel still on": disabling one channel of
 		// a group left `any` true because a sibling was enabled, and the dispatch below then
@@ -641,39 +646,42 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		// runs, so there is nothing to re-read here: the run ends, or every wire it holds keeps
 		// playing. Re-reading membership each pass -- and releasing, re-taking and re-silencing
 		// wires as boxes moved -- is what mid-run toggling cost, and it is gone with it.
+		// ONE lock per tick: the stop check, the panel's commands out, and the previous
+		// tick's status in. A separate publish acquisition ran at the RECORDING's frame rate —
+		// a dense capture at 4x meant ~20k extra takes of the app-wide mutex per second, each
+		// a chance to queue behind the GUI's per-frame ring clone, to feed a panel that
+		// repaints ~30 times a second.
+		now := f64(i64(sw.elapsed())) / 1e6
 		a.mu.lock()
 		stop := !a.running || a.run_gen != gen
-		// commands left by the Replay panel, copied out and cleared inside the SAME lock the
-		// stop check already takes — the worker applies them to its private player below
-		cmd_toggle := ctl.want_toggle
+		cmd_state := ctl.want_state
 		cmd_speed := ctl.want_speed
 		cmd_seek := ctl.want_seek
-		ctl.want_toggle = false
+		ctl.want_state = .stopped
 		ctl.want_speed = 0
 		ctl.want_seek = -1.0
+		ctl.state = p.state()
+		ctl.pos_s = p.position_s(now)
+		ctl.speed = p.speed
+		ctl.loops = p.passes()
+		ctl.sent = sent
+		ctl.failed = failed
 		a.mu.unlock()
 		if stop {
 			break
 		}
-		now := f64(i64(sw.elapsed())) / 1e6
-		if cmd_toggle {
-			if p.state() == .playing {
-				p.pause(now)
-			} else if p.state() == .paused {
-				p.play(now)
-			}
+		// A TARGET state, not a toggle: two clicks inside one tick must not cancel out.
+		if cmd_state == .paused && p.state() == .playing {
+			p.pause(now)
+		} else if cmd_state == .playing && p.state() in [player.State.paused, .finished] {
+			p.play(now) // from .finished this restarts at 0 — the panel labels it Restart
 		}
-		if cmd_speed > 0 && cmd_speed != p.speed {
-			// pause/set/play so the clock rebases: position is retained, and the new rate
-			// applies from HERE rather than re-mapping the whole elapsed span
-			was := p.state()
-			if was == .playing {
-				p.pause(now)
-			}
-			p.speed = cmd_speed
-			if was == .playing {
-				p.play(now)
-			}
+		if cmd_speed > 0 {
+			// the transport math lives in the module, where its test can reach it — the
+			// hand-rolled pause/set/play dance here scaled the position by new/old and
+			// dumped the difference onto the wire in one burst (the review's numbers: 2x at
+			// 30s of a 60s recording = 30 seconds of traffic in one batch)
+			p.set_speed(cmd_speed, now)
 		}
 		if cmd_seek >= 0 {
 			p.seek(cmd_seek, now)
@@ -717,22 +725,13 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			}
 			sent++
 		}
-		// publish status for the panel — same tick, short lock
-		pub_now := f64(i64(sw.elapsed())) / 1e6
-		a.mu.lock()
-		ctl.state = p.state()
-		ctl.pos_s = p.position_s(pub_now)
-		ctl.speed = p.speed
-		ctl.loops = p.passes()
-		ctl.sent = sent
-		ctl.failed = failed
-		a.mu.unlock()
-		if p.finished() {
-			break
-		}
-		if p.state() == .paused {
-			// next_due_ms returns none while paused — breaking on that killed the worker the
-			// moment the panel paused it. A paused group idles at the stop-poll cadence.
+		// A paused OR FINISHED group idles instead of exiting. next_due_ms returns none in
+		// both states, and breaking on it killed the worker the moment the panel paused it —
+		// and, for a non-looping recording that ran out, deleted the row at the exact moment
+		// the operator reaches for "scrub back and watch that again" (seek explicitly revives
+		// a finished player to .paused; Resume from .finished restarts at 0). The row now
+		// stays until the RUN ends; Stop still lands within the 50ms poll.
+		if p.state() in [player.State.paused, .finished] {
 			time.sleep(50 * time.millisecond)
 			continue
 		}

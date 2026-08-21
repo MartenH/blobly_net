@@ -116,7 +116,8 @@ pub fn build_multi(entries []canlog.LogEntry, specs []BusSpec) MultiPlan {
 	// kept per bus: the Tally does not know it, so count what each bus contributed.
 	mut kept_of := []int{len: specs.len}
 	for i in 0 .. specs.len {
-		kept_of[i] = sources[i] - plans[i].report.withheld_excluded - plans[i].report.withheld_unattributed
+		kept_of[i] = sources[i] - plans[i].report.withheld_excluded -
+			plans[i].report.withheld_unattributed
 	}
 	mut fixed := []BusPlan{}
 	for i, pl in plans {

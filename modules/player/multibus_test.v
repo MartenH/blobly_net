@@ -135,11 +135,13 @@ fn test_each_bus_reports_separately() {
 // A bus that is mapped but carries nothing is reported, not silently dropped: on a real capture
 // this is how you learn the mapping is wrong.
 fn test_a_mapped_bus_with_no_frames_is_still_reported() {
-	specs := [BusSpec{
-		src: 'mf4:nosuch'
-		dst: 'vcan9'
-		db:  mb_db('EBS', [u32(0x100)])
-	}]
+	specs := [
+		BusSpec{
+			src: 'mf4:nosuch'
+			dst: 'vcan9'
+			db:  mb_db('EBS', [u32(0x100)])
+		},
+	]
 	p := build_multi(mb_sample(), specs)
 	assert p.entries.len == 0
 	assert p.buses.len == 1

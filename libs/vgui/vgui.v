@@ -672,7 +672,7 @@ pub fn progress(frac f32, overlay string) {
 // slider_f drags a float in [min, max]; returns true while the value is CHANGING. For an
 // action that should fire once — a seek, a commit — gate on is_item_deactivated_after_edit
 // instead of the return value, or the action runs per pixel of drag.
-pub fn slider_f(label string, mut v &f32, min_v f32, max_v f32, fmt string) bool {
+pub fn slider_f(label string, v &f32, min_v f32, max_v f32, fmt string) bool {
 	return C.vgui_slider_f(label.str, v, min_v, max_v, fmt.str) != 0
 }
 

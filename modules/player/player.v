@@ -35,15 +35,15 @@ pub mut:
 	speed  f64 = 1.0 // playback rate (1.0 = recorded cadence); must be > 0
 	repeat bool // loop back to the start at the end of the recording
 mut:
-	entries    []canlog.LogEntry // time-sorted
+	entries []canlog.LogEntry // time-sorted
 	// The SOURCE recording's span, which is not the same as the span of what is left after
 	// filtering. Drop the SUT's messages and the first and last surviving frames may sit well
 	// inside the original window — a loop built on those plays a shorter recording, starts its
 	// first frame immediately, and drifts against every other bus replayed alongside it. Zero
 	// means "use the entries", which is right when nothing was filtered out.
-	span_t0   f64
-	span_end  f64
-	has_span  bool
+	span_t0    f64
+	span_end   f64
+	has_span   bool
 	st         State = .stopped
 	idx        int // next entry to emit (into the current pass)
 	base_ms    f64 // playback clock at which the current pass's first entry plays
@@ -110,6 +110,24 @@ pub fn (mut p Player) pause(now_ms f64) {
 	p.st = .paused
 }
 
+// set_speed changes the playback rate with the RECORDING POSITION preserved, in any state.
+// This exists because the rate change is transport math that looks trivial and is not:
+// elapsed_ms is playback-clock ms and position = elapsed_ms * speed, so writing the public
+// `speed` field alone MULTIPLIES the position by new/old — a front end that tried the
+// obvious pause/set/play dance teleported 30s forward on a 2x click and dumped every frame
+// in between onto the wire in one burst (net#133). seek() owns the correct rebase
+// (elapsed_ms and idx recomputed for the new rate); this is the one place allowed to
+// combine the two. A rate <= 0 is ignored — the same guard the constructors apply, because
+// due() divides by it.
+pub fn (mut p Player) set_speed(rate f64, now_ms f64) {
+	if rate <= 0 || rate == p.speed {
+		return
+	}
+	pos := p.position_s(now_ms)
+	p.speed = rate
+	p.seek(pos, now_ms)
+}
+
 // stop resets to the start of the recording.
 pub fn (mut p Player) stop() {
 	p.st = .stopped
@@ -130,10 +148,21 @@ pub fn (mut p Player) seek(pos_s f64, now_ms f64) {
 	}
 	p.elapsed_ms = pos * 1000.0 / p.speed
 	t0 := p.t0_s()
-	p.idx = 0
-	for p.idx < p.entries.len && p.entries[p.idx].t_s - t0 < pos {
-		p.idx++
+	// binary search for the first entry at or after pos — entries are time-sorted by the
+	// constructor. The linear scan from zero was invisible while nothing called seek; a seek
+	// slider calls it per drag on recordings of millions of entries, and an O(n) walk on the
+	// worker thread stalls playback for the duration and then bursts the owed frames.
+	mut lo := 0
+	mut hi := p.entries.len
+	for lo < hi {
+		mid := lo + (hi - lo) / 2
+		if p.entries[mid].t_s - t0 < pos {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
 	}
+	p.idx = lo
 	if p.st == .playing {
 		p.base_ms = now_ms - p.elapsed_ms
 	} else if p.st == .finished {
