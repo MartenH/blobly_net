@@ -71,6 +71,8 @@ void vgui_scroll_bottom(void);
 void vgui_console_text(const char* id, const char* text, int len, int nlines);
 int  vgui_input_double(const char* label, double* v);
 int  vgui_input_int(const char* label, int* v);
+void vgui_progress(float frac, const char* overlay);
+int vgui_slider_f(const char* label, float* v, float min_v, float max_v, const char* fmt);
 void vgui_set_next_item_width(float w);
 int  vgui_tree_node(const char* label);
 int  vgui_tree_node_open(const char* label);

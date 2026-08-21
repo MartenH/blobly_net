@@ -628,7 +628,10 @@ The project format accepts a replay channel:
 ```
 
 **It plays.** A `mode: replay` channel is opened at Start like any monitored one and a worker
-pumps the recording onto its bus at the recorded cadence. Two keys carry the facts a recording
+pumps the recording onto its bus at the recorded cadence. The **Replay panel** (activity bar
+▸ Rep, or View ▸ Replay) is the transport surface while it runs: one row per playing
+recording, with a progress bar, pause/resume, a seek slider, and speed (0.25×–4×) — commands
+land on the worker within 50 ms, and every bus fed by one recording stays on that one clock. Two keys carry the facts a recording
 cannot supply — `bus:` (which recorded bus feeds this channel; a multi-bus `.mf4` holds several
 and their names are the recording's, not the project's) and `exclude:` (nodes whose messages are
 withheld, resolved through the channel's databases by DBC sender).

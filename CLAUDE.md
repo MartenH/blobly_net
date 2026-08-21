@@ -81,7 +81,7 @@ docs/                design + platform docs; docs/history.md = archived status l
 | `flash` | UDS firmware-download session against a blobly_emb bootloader (0x29 auth) |
 | `wiretap` | whose frame is this? — the record of what we put on the wire, matched against what comes back, so the trace's `origin` column can separate our tester (`TX`) and our simulation (`TX-S`) from the real ECU (`RX`) |
 | `sim` | simulated ECUs — tests need no hardware; `doip_entity.v` decides what a DoIP channel hosts and `doip_host.v` is the served-side handler, both shared by the GUI and the headless runner |
-| `player` | replay a recording at its recorded cadence, and decide what NOT to replay — `restbus.v` subtracts the ECU under test by DBC sender so a capture can drive a rest bus without the SUT arguing with a recording of itself; `multibus.v` maps SEVERAL recorded buses onto several live ones from ONE clock, because the SUT gateways between them and the timing across buses is what it polices |
+| `player` | replay a recording at its recorded cadence — the GUI's **Replay panel** is its transport face (pause/seek/speed via `set_speed`, position-preserving), and decide what NOT to replay — `restbus.v` subtracts the ECU under test by DBC sender so a capture can drive a rest bus without the SUT arguing with a recording of itself; `multibus.v` maps SEVERAL recorded buses onto several live ones from ONE clock, because the SUT gateways between them and the timing across buses is what it polices |
 | `canlog`, `mf4` | `candump -l` files; native ASAM MDF4 (`.mf4`) reader |
 | `telem` | trace + telemetry capture control |
 | `sysview` | read-only system model behind the System panel (reads blobly_emb `system.toml`) |
