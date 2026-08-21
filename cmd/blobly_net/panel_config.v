@@ -5,7 +5,6 @@ import project
 import vgui
 import mf4
 import player
-import candb
 
 // is_recording_target: does this picker action open a recording? ONE predicate — the ext
 // filter, the samples shortcut and the title each asked separately, and two of the three had
@@ -826,17 +825,21 @@ fn (mut app App) draw_replay_scan(i int, ch project.Channel) bool {
 // fresh &ReplayScan is the worker's ownership token: a previous scan still running writes
 // back only if the map still holds ITS pointer, so replacement here is also cancellation.
 fn (mut app App) start_replay_scan(i int, rp string) {
+	if i < 0 || i >= app.proj.channels.len {
+		return
+	}
 	mine := &ReplayScan{
 		src:     rp
 		loading: true
 	}
+	// Databases from the PROJECT channel, not the runtime row: proj is GUI-thread-owned
+	// stopped-only state, while app.chans[i] is still being written by a winding-down
+	// rx_loop under app.mu right after Stop — copying it here was an unlocked read of a
+	// worker-mutated element, the exact class CLAUDE.md names (codex #135 r3).
+	paths := app.proj.channels[i].databases.map(os.real_path(app.resolve_asset(it)))
 	app.mu.lock()
 	app.replay_scans[i] = mine
+	db := merge_dbs_from(app.loaded_dbs_for(paths))
 	app.mu.unlock()
-	db := if i < app.chans.len {
-		replay_db(app, app.chans[i])
-	} else {
-		candb.Database{}
-	}
 	spawn scan_replay_source(app, i, rp, db, mine)
 }
