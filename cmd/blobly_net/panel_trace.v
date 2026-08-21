@@ -358,6 +358,7 @@ mut:
 	ext    bool
 	fd     bool
 	brs    bool
+	rtr    bool
 	count  int
 	// t_ms of the group's OLDEST frame still in the visible ring — the denominator of the fps
 	// column. The ring holds 2000 rows, so this is the rate over the window the reader is
@@ -374,7 +375,7 @@ mut:
 
 // gkey is the stable per-group identity used for both the grouped-view rows and the
 // persistent all-time frame count (App.gcount). Keep in sync with draw_trace_grouped.
-fn gkey(origin string, ch string, id u32, ext bool, fd bool, brs bool) string {
+fn gkey(origin string, ch string, id u32, ext bool, fd bool, brs bool, rtr bool) string {
 	// Length-prefixed for the same reason as tx_bus_key: a channel name may contain '|', and a
 	// key that two different channels can produce merges their rows in the grouped view — with
 	// a count that silently adds them together, which is the very thing this column exists to
@@ -382,7 +383,10 @@ fn gkey(origin string, ch string, id u32, ext bool, fd bool, brs bool) string {
 	// fd/brs belong here for the same reason ext does: a CAN-FD frame and a classic frame with
 	// the same id are two different messages, and a key that cannot tell them apart merges their
 	// rows and adds their counts together — the exact collapse #90 was about, one field on.
-	return '${origin}|${ch.len}:${ch}|${id}|${ext}|${fd}|${brs}'
+	// rtr for the same reason again: a remote REQUEST and its data response ride one CAN id by
+	// design, and merging them made the fps column count intervals across two interleaved
+	// streams while len and flags flickered between the request's and the response's.
+	return '${origin}|${ch.len}:${ch}|${id}|${ext}|${fd}|${brs}|${rtr}'
 }
 
 // origin_mark renders the wire verdict for a frame we emitted: '!' once its echo window closed
@@ -409,7 +413,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		}
 		// Grouping by ORIGIN as well as id means our simulated 0x120 and a real ECU's 0x120 are
 		// two rows, not one row with a count that quietly adds them together.
-		k := gkey(r.origin, r.ch, r.id, r.ext, r.fd, r.brs)
+		k := gkey(r.origin, r.ch, r.id, r.ext, r.fd, r.brs, r.rtr)
 		mut g := agg[k] or {
 			GAgg{
 				origin:  r.origin
@@ -418,6 +422,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				ext:     r.ext
 				fd:      r.fd
 				brs:     r.brs
+				rtr:     r.rtr
 				first_t: r.t_ms
 				last:    r
 			}
@@ -453,6 +458,11 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		if a.brs != b.brs {
 			return if !a.brs { -1 } else { 1 }
 		}
+		// the comparator separates everything the KEY separates, or rows reshuffle as the ring
+		// trims — data before request, matching the reading order of a request/response pair
+		if a.rtr != b.rtr {
+			return if !a.rtr { -1 } else { 1 }
+		}
 		return 0
 	})
 	if vgui.table_begin('gtrace10', 10) {
@@ -483,7 +493,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			vgui.table_next_col()
 			// ### keys the tree id on identity only, so the live label / sort don't reset it.
 			open := vgui.tree_node_table('${idstr(g.id, g.ext)}  ${trace_name_cell(r)}###${gkey(g.origin,
-				g.ch, g.id, g.ext, g.fd, g.brs)}')
+				g.ch, g.id, g.ext, g.fd, g.brs, g.rtr)}')
 			// clicking a row selects that frame (drives Signals/Graphics + "Add to filter")
 			if vgui.is_item_clicked() {
 				app.sel_id = int(g.id)
@@ -491,7 +501,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			}
 			// right-click a row → context menu (plot its signals / add to filter)
 			if vgui.begin_popup_context_item('rowctx##${gkey(g.origin, g.ch, g.id, g.ext, g.fd,
-				g.brs)}')
+				g.brs, g.rtr)}')
 			{
 				if m := app.find_message(g.id, g.ext) {
 					if vgui.menu_item('Add all signals to Graphics') {
@@ -532,7 +542,9 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				}
 			}
 			// all-time total (survives the ring trim); fall back to the window count.
-			total := gcount[gkey(g.origin, g.ch, g.id, g.ext, g.fd, g.brs)] or { u64(g.count) }
+			total := gcount[gkey(g.origin, g.ch, g.id, g.ext, g.fd, g.brs, g.rtr)] or {
+				u64(g.count)
+			}
 			vgui.table_cell('${total}')
 			// Rate over the frames the ring still holds: n-1 intervals across the span they
 			// cover. Two frames minimum — a single frame has no interval, and inventing one

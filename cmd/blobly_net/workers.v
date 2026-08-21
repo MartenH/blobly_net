@@ -610,7 +610,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				data:   f.data.clone()
 				e2e:    viol
 			})
-			a.gcount[gkey(org_rx, chname, f.id, f.extended, f.fd, f.brs)]++
+			a.gcount[gkey(org_rx, chname, f.id, f.extended, f.fd, f.brs, f.rtr)]++
 			// The capture dump now arrives as an ISO-TP block on 0x7E5 (not raw per-record
 			// frames): trace_dump_worker reassembles + decodes it on demand. The raw ISO-TP
 			// frames still show in the trace table above.

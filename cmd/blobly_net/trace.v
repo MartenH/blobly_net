@@ -178,7 +178,7 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 			name:   name
 			data:   f.data.clone()
 		})
-		app.gcount[gkey(origin, chn, f.id, f.extended, f.fd, f.brs)]++
+		app.gcount[gkey(origin, chn, f.id, f.extended, f.fd, f.brs, f.rtr)]++
 	}
 	// Counted whether or not the trace is paused, and whether or not a row was written: pausing
 	// freezes the table, it does not stop the bus.

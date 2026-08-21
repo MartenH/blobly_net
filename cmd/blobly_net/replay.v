@@ -133,6 +133,7 @@ fn (mut app App) load_recording(path string) {
 		rec_buses[e.iface] = true
 	}
 	mf4_only := if can_buses.len == 1 && rec_buses.len == 1 { only } else { '' }
+	first_row := if entries.len > trace_cap { entries.len - trace_cap } else { 0 }
 	app.mu.lock()
 	app.reset_trace_locked()
 	// Claim the view HERE, inside the same locked region that reset it, and PAUSE the capture:
@@ -142,6 +143,15 @@ fn (mut app App) load_recording(path string) {
 	// 'resume live' (or Start) hands the view back.
 	app.viewing_rec = os.base(path)
 	app.paused = true
+	// A TRIMMED import keeps the FILE's frame numbers. Only the last trace_cap entries are
+	// pushed (first_row below — one computation, used for both the skip and this), and without
+	// this the idx column labelled source frame 598000 as 0 — a number that matches nothing in
+	// the file the toast just named, and that changes if the same file is reopened after more
+	// rows were captured. Advancing seq AND base together keeps the positional invariant
+	// (trace[i].seq == trace_base + i) intact; run_base stays at the reset point, so
+	// idx = seq - run_base = the entry's index in the file.
+	app.trace_seq += u64(first_row)
+	app.trace_base += u64(first_row)
 	// Only the LAST trace_cap rows can survive the ring, so only those are built. A 600k-frame
 	// capture otherwise paid for 600k DBC name lookups — each a linear scan of every message in
 	// every loaded database — and 600k payload clones, to display two thousand rows. Measured on
@@ -150,7 +160,6 @@ fn (mut app App) load_recording(path string) {
 	// Verification still runs over EVERY frame: an E2E counter/CRC verdict depends on the frames
 	// before it, so skipping any would invent verdicts for the ones shown. Likewise the grouped
 	// view's totals, which exist precisely to outlive trimming.
-	first_row := if entries.len > trace_cap { entries.len - trace_cap } else { 0 }
 	for i, e in entries {
 		f := e.frame
 		mut viol := ''
@@ -182,7 +191,7 @@ fn (mut app App) load_recording(path string) {
 		// REP, not BUS: these frames were never on this bench's wire. A candump log carries no
 		// origin at all, so we cannot say whether a given line was the recorder's tester, its
 		// simulation or the ECU — and claiming one would be a guess dressed as a fact.
-		app.gcount[gkey(org_rep, e.iface, f.id, f.extended, f.fd, f.brs)]++
+		app.gcount[gkey(org_rep, e.iface, f.id, f.extended, f.fd, f.brs, f.rtr)]++
 		if i < first_row {
 			continue // trimmed before it could ever be drawn
 		}
