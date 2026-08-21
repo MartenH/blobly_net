@@ -280,6 +280,13 @@ fn (mut app App) start() {
 		m.unlock()
 	}
 	app.tx_map_mu.unlock()
+	// The file picker is a stopped-world affordance: every project-mutating target (dbc,
+	// manifest, replaysrc) is offered from surfaces that gate on running at DRAW time, so a
+	// picker left floating across Start is the one path where a confirm lands mid-run and
+	// rebuilds the runtime arrays live workers are reading (codex #133 r3, on replaysrc — but
+	// the class is every target). Closed at the state change, once, instead of teaching each
+	// confirm about app.running.
+	app.fb_open = false
 	app.running = true
 	// Which wires already have a reader, so aliases do not each open one.
 	mut monitored := map[string]bool{}

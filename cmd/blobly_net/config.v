@@ -322,7 +322,9 @@ fn (mut app App) set_manifest(ci int, path string) {
 // lands in app.proj (dirty set), so Save writes it into the .blobnet — the Replay panel's
 // Browse is a project edit, not a runtime one. The spread carries `bus:`/`exclude:` for the
 // same reason commit_cfg's does: rebuilding the struct from the one field on offer deleted
-// the keys only the file can express.
+// the keys only the file can express. Rebuild PRESERVING senders, like every other stopped
+// mutation here — rebuild_from_proj would reconstruct the generators from the still-stale
+// proj and drop unsaved Generators-panel edits (codex #133 r3).
 fn (mut app App) set_replay_source(ci int, path string) {
 	if ci < 0 || ci >= app.proj.channels.len {
 		return
@@ -335,7 +337,7 @@ fn (mut app App) set_replay_source(ci int, path string) {
 	}
 	app.dirty = true
 	app.sync_cfg_bufs()
-	app.rebuild_from_proj()
+	app.rebuild_preserving_senders()
 }
 
 // save_project writes the whole project to its file (config + generators). An unsaved
