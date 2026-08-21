@@ -120,20 +120,17 @@ int vgui_init(const char* title, int w, int h, int event_driven) {
     if (!glfwInit()) return 1;
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
-    // w/h <= 0 = START MAXIMIZED (the hint must be set BEFORE the window exists — it is a
-    // creation hint). The size the window RESTORES to when un-maximized is the positive half
-    // of w/h if the caller gave one, else the library default — so the caller can choose the
-    // restore size, and the doc on the V wrapper describes a contract that actually exists
-    // (the first version discarded both values and the doc claimed otherwise).
-    bool maximized = (w <= 0 || h <= 0);
-    if (maximized) {
-        glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
-        if (w <= 0) w = 1500;
-        if (h <= 0) h = 850;
-    }
+    // A FIXED size, exactly as asked — no maximize, no clamping. Both were tried and both
+    // created failures worse than the one they solved: the maximized first frame scrambled
+    // dock layouts persisted at the old size (panels in a corner, the rest black), and a
+    // "helpful" work-area clamp made the headless screenshot geometry depend on the monitor
+    // it rendered on, planted windows under docked taskbars by discarding the work-area
+    // origin, and went negative on tiny displays. The caller states a size; it gets it.
+    if (w <= 0) w = 1500;
+    if (h <= 0) h = 850;
     g_win = glfwCreateWindow(w, h, title, nullptr, nullptr);
     if (!g_win) return 2;
-    if (!maximized) glfwSetWindowPos(g_win, 60, 80);
+    glfwSetWindowPos(g_win, 60, 80);
     glfwMakeContextCurrent(g_win);
     glfwSwapInterval(1);
     IMGUI_CHECKVERSION();
@@ -612,6 +609,16 @@ unsigned int vgui_dock_split(unsigned int node, int dir, float ratio, unsigned i
 }
 void vgui_dock_window(const char* name, unsigned int node) { ImGui::DockBuilderDockWindow(name, node); }
 void vgui_dock_finish(unsigned int root) { ImGui::DockBuilderFinish(root); }
+
+// vgui_dock_reset throws the persisted dock layout away; the caller's next dock_root()
+// rebuilds the default. Just the RemoveNode: the first version also Add'd and sized a fresh
+// node, which dock_root deletes and redoes unread — a fourth copy of that triple, kept in
+// sync with the other three by nothing. Windows the layout builder does not name pop out
+// floating (their dock ref is cleared); that is what "reset to the DEFAULT layout" means.
+void vgui_dock_reset() {
+    if (g_dockspace_id == 0) return;
+    ImGui::DockBuilderRemoveNode(g_dockspace_id);
+}
 
 // Returns 1 if the window is visible (active tab / not collapsed). Callers must skip the
 // content when it returns 0 but ALWAYS call vgui_end (imgui pairs Begin/End unconditionally).
