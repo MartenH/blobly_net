@@ -99,10 +99,13 @@ jobs:
     permissions:
       contents: write
     steps:
-      # the checkout is load-bearing: packaging/RELEASE_NOTES_HEADER.md is read below (and gh
-      # resolves the repo from it). The tarball downloads into the workspace root; its name is
-      # untracked, so the two writers cannot collide.
+      # the checkout is load-bearing three times over: packaging/RELEASE_NOTES_HEADER.md is
+      # read below, gh resolves the repo from it, and the tag revalidation + previous-tag
+      # baseline need the refs — hence full depth with tags. The tarball downloads into the
+      # workspace root; its name is untracked, so the two writers cannot collide.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           name: linux-tarball
@@ -116,19 +119,43 @@ jobs:
       - name: Zip the Windows bundle
         working-directory: winbundle
         run: zip -qr "../blobly_net-${GITHUB_REF_NAME}-windows-x64.zip" blobly_net
+      # The Windows build runs for the better part of an hour, and a tag deleted or force
+      # -moved in that window must not publish: gh would silently re-create a missing tag
+      # from the DEFAULT BRANCH, associating these binaries with source they were not built
+      # from. Re-fetch the tag and require its peeled commit to still be the one the guard
+      # proved and the jobs built (codex #137 r1) — and --verify-tag below refuses the
+      # re-creation path outright.
+      - name: The tag still is what the guard proved
+        run: |
+          git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}" \
+            || { echo "tag ${GITHUB_REF_NAME} is gone from origin — not publishing"; exit 1; }
+          now="$(git rev-parse "${GITHUB_REF_NAME}^{commit}")"
+          [ "$now" = "$GITHUB_SHA" ] \
+            || { echo "tag moved during the build (now $now, built $GITHUB_SHA) — not publishing"; exit 1; }
       # Notes = the committed header (what the version's claims rest on: CI-verified virtual
       # paths vs hand-verified vendor backends, the no-vendor-DLL rule, the Linux runtime
       # prerequisites) + GitHub's generated changelog. Composed via the API so the two always
-      # land in one body, in that order.
+      # land in one body, in that order. The changelog BASELINE is the previous v[0-9]* tag,
+      # named explicitly: left to the API's automatic choice it baselines on the repository's
+      # latest RELEASE, which today is the v-toolchain tooling entry — the first product
+      # changelog would then omit every PR merged before that tag (codex #137 r1). No
+      # previous product tag = first release, said outright instead of diffed against
+      # tooling.
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
-            -f tag_name="$GITHUB_REF_NAME" --jq .body > generated.md
+          prev="$(git tag -l 'v[0-9]*' --sort=-v:refname | grep -vx "$GITHUB_REF_NAME" | head -1)"
+          if [ -n "$prev" ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+              -f tag_name="$GITHUB_REF_NAME" -f previous_tag_name="$prev" --jq .body > generated.md
+          else
+            printf '**First release** — the full history is the changelog.\n' > generated.md
+          fi
           cat packaging/RELEASE_NOTES_HEADER.md generated.md > notes.md
           gh release create "$GITHUB_REF_NAME" \
             --title "Blobly Net $GITHUB_REF_NAME" \
+            --verify-tag \
             --notes-file notes.md \
             "blobly_net-${GITHUB_REF_NAME}-linux-x64.tar.gz" \
             "blobly_net-${GITHUB_REF_NAME}-windows-x64.zip"
