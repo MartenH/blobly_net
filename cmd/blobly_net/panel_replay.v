@@ -171,6 +171,19 @@ fn draw_replay(mut app App) {
 	vgui.end()
 }
 
+// pending_replay_speed reads the speed Configure currently SHOWS — the buffered text —
+// parsed exactly as commit_cfg will parse it when Start folds the edits (spd > 0, else 1.0).
+// The preview must read the pending state Start commits: proj lags the buffer while both
+// windows are open, and a mismatch typed but not yet applied was invisible right up until
+// Start refused the group for it (codex #136 r2).
+fn pending_replay_speed(app &App, ci int, fallback f64) f64 {
+	if ci < app.cfg_bufs.len {
+		spd := vgui.buf_str(app.cfg_bufs[ci].replay_speed_buf).f64()
+		return if spd > 0 { spd } else { 1.0 }
+	}
+	return fallback
+}
+
 // ReplayGroupView is one recording's stopped-view group, precomputed OFF the frame loop: the
 // grouping walks the filesystem (real_path — symlink spellings of one capture must land in
 // one group, the spawner's own rule), and that is syscall work the 60Hz draw must not repeat
@@ -276,9 +289,11 @@ fn draw_replay_config(mut app App) {
 		// here while the disagreement is being configured
 		if active.len > 1 {
 			r0 := app.proj.channels[active[0]].replay or { project.Replay{} }
+			s0 := pending_replay_speed(app, active[0], r0.speed)
 			for ci in active[1..] {
 				ri := app.proj.channels[ci].replay or { project.Replay{} }
-				if ri.speed != r0.speed || ri.repeat != r0.repeat {
+				si := pending_replay_speed(app, ci, ri.speed)
+				if si != s0 || ri.repeat != r0.repeat {
 					vgui.text_colored(230, 120, 120,
 						'   members disagree on speed/loop — they share one clock, so set them alike (Start refuses this)')
 					break
@@ -313,7 +328,6 @@ fn draw_replay_config(mut app App) {
 		// (Start's other refusal) can be counted before any row renders
 		mut resolved := map[int]string{}
 		mut pair_err := map[int]string{}
-		mut label_uses := map[string]int{}
 		if have_scan {
 			for ci in active {
 				bus := (app.proj.channels[ci].replay or { project.Replay{} }).bus
@@ -323,8 +337,26 @@ fn draw_replay_config(mut app App) {
 				}
 				if lbl != '' {
 					resolved[ci] = lbl
-					label_uses[lbl]++
 				}
+			}
+			// group-level refusals from the SHARED rule — counting source labels here was a
+			// half-copy of it that missed the destination side entirely: two recorded buses
+			// mapped onto one wire (spelled two ways — destination IDENTITY, not string) is
+			// the other conflict Start refuses (codex #136 r2). conflicts() only reads
+			// src/dst, so minimal specs suffice; dst is the MODEL's iface, the same
+			// pending-state direction as every other read in this preview.
+			mut specs := []player.BusSpec{}
+			for ci in active {
+				if lbl := resolved[ci] {
+					pc := app.proj.channels[ci]
+					specs << player.BusSpec{
+						src: lbl
+						dst: project.compose_iface(pc.adapter, pc.address)
+					}
+				}
+			}
+			for c in player.conflicts(specs) {
+				vgui.text_colored(230, 120, 120, '   ${c} (Start refuses this)')
 			}
 		}
 		for ci in g.cis {
@@ -362,10 +394,7 @@ fn draw_replay_config(mut app App) {
 				vgui.text_colored(230, 120, 120, '<- ${e}')
 			} else if lbl := resolved[ci] {
 				vgui.same_line()
-				if label_uses[lbl] > 1 {
-					vgui.text_colored(230, 120, 120,
-						'<- ${lbl} — mapped ${label_uses[lbl]} times, its traffic would be sent twice (Start refuses this)')
-				} else if arrow != '' {
+				if arrow != '' {
 					vgui.text(arrow)
 				} else {
 					vgui.text_dim('<- ${lbl} (the only bus)')
@@ -386,7 +415,8 @@ fn draw_replay_config(mut app App) {
 				app.open_browser('replaysrc:${ci}')
 			}
 			vgui.indent_x(14 * app.ui_scale)
-			vgui.text_dim('   speed ${rp0.speed:.2}x${if rp0.repeat { ' · loop' } else { '' }} — press Start to play (speed/loop: Configure)')
+			pspd := pending_replay_speed(app, ci, rp0.speed)
+			vgui.text_dim('   speed ${pspd:.2}x${if rp0.repeat { ' · loop' } else { '' }} — press Start to play (speed/loop: Configure)')
 		}
 	}
 	if !app.running {
