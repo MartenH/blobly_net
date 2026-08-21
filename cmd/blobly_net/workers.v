@@ -160,6 +160,18 @@ fn doip_worker(app &App, host string) {
 	vgui.wake()
 }
 
+// gen_current reports whether `gen` is still the live run — the gate every WORKER-side
+// failure notify must pass: an obsolete worker whose slow open fails after a restart must
+// not make the healthy replacement run look broken (the same rule consumer_failed and
+// rx_loop's flag-clearing already apply, stated once).
+fn gen_current(app &App, gen u64) bool {
+	mut a := unsafe { app }
+	a.mu.lock()
+	ok := a.run_gen == gen
+	a.mu.unlock()
+	return ok
+}
+
 // sim_loop runs a channel's simulated ECUs on its bus: emit cyclic frames + answer
 // request/response rules. Driver-free on inproc:, real on vcan0/can0.
 fn sim_loop(app &App, sc SimCfg, gen u64) {
@@ -167,9 +179,12 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 	mut bus := app.open_tap_on(sc.iface, org_tx_sim, sc.pch.name) or {
 		eprintln('sim ${sc.iface}: ${err}')
 		// consumer_failed only counts, and the count is read only by the replay gate — on a
-		// non-replay run a dead sim was discoverable only by the absence of its traffic
-		mut na := unsafe { app }
-		na.notify('${sc.pch.name}: simulation could not open ${sc.iface} — ${err}')
+		// non-replay run a dead sim was discoverable only by the absence of its traffic.
+		// Gen-gated like every worker notify: a stale sim's late failure is not this run's.
+		if gen_current(app, gen) {
+			mut na := unsafe { app }
+			na.notify('${sc.pch.name}: simulation could not open ${sc.iface} — ${err}')
+		}
 		consumer_failed(a, sc.iface, gen)
 		return
 	}
@@ -380,10 +395,12 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 			// pch: this node's OWN channel — two entries can share one interface, and the
 			// simulated ECUs of the second must not be attributed to the first.
 			tapped := a.open_tap_on(iface, org_tx_sim, pch.name) or {
-				if !open_err_said {
+				if !open_err_said && gen_current(app, gen) {
 					open_err_said = true
-					// once, not per 200ms retry: the retry is the recovery, the silence was
-					// the bug — a UDS node that never came up said nothing, forever
+					// once PER FAILURE EPISODE, not per 200ms retry: the retry is the
+					// recovery, the silence was the bug — a UDS node that never came up
+					// said nothing, forever. The flag resets on success below, so a later
+					// outage of this long-lived worker speaks again.
 					mut na := unsafe { app }
 					na.notify('${pch.name}: UDS node could not open ${iface} — ${err} (retrying)')
 				}
@@ -391,7 +408,7 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 				continue
 			}
 			ch = isotp.on_bus(tapped, a.bitrate_iface(iface), tx, rx, ext) or {
-				if !open_err_said {
+				if !open_err_said && gen_current(app, gen) {
 					open_err_said = true
 					mut na := unsafe { app }
 					na.notify('${pch.name}: UDS node could not bind ISO-TP on ${iface} — ${err} (retrying)')
@@ -400,6 +417,7 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 				continue
 			}
 			open = true
+			open_err_said = false // this episode ended in recovery; the next one may speak
 			if !reported {
 				reported = true
 				consumer_attached(a, iface, gen)
@@ -419,14 +437,18 @@ fn diag_server_loop(app &App, iface string, chan_name string, gen u64) {
 	// picks whichever is listed first — so a default server created for the second one had every
 	// response attributed to its neighbour
 	tapped := a.open_tap_on(iface, org_tx_sim, chan_name) or {
-		mut na := unsafe { app }
-		na.notify('${chan_name}: UDS server could not open ${iface} — ${err}')
+		if gen_current(app, gen) {
+			mut na := unsafe { app }
+			na.notify('${chan_name}: UDS server could not open ${iface} — ${err}')
+		}
 		consumer_failed(a, iface, gen)
 		return
 	}
 	mut ch := isotp.on_bus(tapped, a.bitrate_iface(iface), diag_rx_id, diag_tx_id, false) or {
-		mut na := unsafe { app }
-		na.notify('${chan_name}: UDS server could not bind ISO-TP on ${iface} — ${err}')
+		if gen_current(app, gen) {
+			mut na := unsafe { app }
+			na.notify('${chan_name}: UDS server could not bind ISO-TP on ${iface} — ${err}')
+		}
 		consumer_failed(a, iface, gen)
 		return
 	}

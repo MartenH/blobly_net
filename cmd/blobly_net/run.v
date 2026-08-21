@@ -291,6 +291,7 @@ fn (mut app App) start() {
 	// Which wires already have a reader, so aliases do not each open one.
 	mut monitored := map[string]bool{}
 	mut anon_tap_failed := map[string]bool{}
+	mut named_tap_failed := map[string]bool{}
 	for ci, ch in app.chans {
 		if !ch.monitorable() {
 			continue
@@ -365,14 +366,22 @@ fn (mut app App) start() {
 				app.tx_buses[tx_bus_key('', tgt)] = b
 			} else {
 				// a generator whose only bus fails to open is a silent dead generator —
-				// the same class as the channel taps above, one loop down
-				app.notify('generator target ${tgt}: transmit tap failed to open — ${err}')
+				// the same class as the channel taps above, one loop down. Deduped by the
+				// SAME sets as those taps: hundreds of generators sharing one dead target
+				// must not evict the useful diagnostics from the Log's bounded buffer.
+				// (plain else, dedupe inside: an `else if` loses the guard's err binding)
+				if transport.destination_key(tgt) !in anon_tap_failed {
+					anon_tap_failed[transport.destination_key(tgt)] = true
+					app.notify('generator target ${tgt}: transmit tap failed to open — ${err}')
+				}
 			}
 		}
-		if tgt != '' && tx_bus_key(sr.chan, tgt) !in app.tx_buses {
+		if tgt != '' && tx_bus_key(sr.chan, tgt) !in app.tx_buses
+			&& tx_bus_key(sr.chan, tgt) !in named_tap_failed {
 			if b := app.open_tap_on(tgt, org_tx, sr.chan) {
 				app.tx_buses[tx_bus_key(sr.chan, tgt)] = b
 			} else {
+				named_tap_failed[tx_bus_key(sr.chan, tgt)] = true
 				app.notify('${sr.chan}: generator transmit tap failed to open — ${err}')
 			}
 		}
