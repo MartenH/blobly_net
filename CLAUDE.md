@@ -242,11 +242,12 @@ here exists because a silent version of it lost a review; the incidents are in
 [`docs/history.md`](docs/history.md).
 
 Do not hand-roll the polling in a shell fragment. `scripts/request_codex_review.sh <pr> --post`
-posts the request, records the PR head SHA, records the request comment marker and fresh
-baselines for the GitHub id spaces, and
-`scripts/codex_review_watch.sh --state .claude/reviews/pr-<pr>.env` reads both verdict channels.
-Its fixtures are in `scripts/codex_review_watch_test.sh` and run in CI; update those fixtures
-when the GitHub/Codex response shape changes.
+is a thin wrapper over `scripts/codex_review.py`: it posts the request, records the PR head SHA,
+records the request comment marker and fresh baselines for the GitHub id spaces, and
+`scripts/codex_review_watch.sh --state .claude/reviews/pr-<pr>.env` reads the verdict channels
+as GitHub JSON rather than shell-scraped text. Its fixtures are in
+`scripts/codex_review_watch_test.sh` and run in CI; update those fixtures when the GitHub/Codex
+response shape changes.
 
 - **`--paginate` everything**, but for two different reasons. Comments come back **ascending**,
   30 per page, so an un-paginated read drops the **newest** — the ones you are waiting for.
@@ -280,7 +281,7 @@ when the GitHub/Codex response shape changes.
   | outcome | where | match on |
   |---|---|---|
   | findings | `pulls/N/reviews` | `**Reviewed commit:** \`<sha>\`` in the body |
-  | **clean** | `issues/N/comments` | `**Reviewed commit:** \`<sha>\`` in the body |
+  | **clean** | `issues/N/comments` or `pulls/N/reviews` | `**Reviewed commit:** \`<sha>\`` in the body |
   | failed | `issues/N/comments` | "Something went wrong" — re-request, do not wait |
 
   Watching either endpoint alone is silent about the other's outcomes, and both failures look
