@@ -202,11 +202,6 @@ fn main() {
 		rx := app.rx
 		txs := app.tx_counts_locked()
 		rows := app.trace.clone()
-		// The idx base travels WITH the snapshot it belongs to. Clear/Open run inside this
-		// frame's draw and reset trace_run_base immediately — reading the base live at the
-		// draw sites subtracted the NEW base from the OLD snapshot's u64 seqs, and every idx
-		// wrapped to ~1.8e19 for the rest of that frame (codex #127 r1). One lock, one moment.
-		run_base := app.trace_run_base
 		gcount := app.gcount.clone()
 		trecs := app.trecs.clone()
 		chans := app.chans.clone()
@@ -241,10 +236,10 @@ fn main() {
 			draw_stats(mut app, chans, rx, txs)
 		}
 		if app.show_trace {
-			draw_trace(mut app, rows, gcount, rx, run_base)
+			draw_trace(mut app, rows, gcount, rx)
 		}
 		if app.show_ftrace {
-			draw_ftrace(mut app, rows, gcount, run_base)
+			draw_ftrace(mut app, rows, gcount)
 		}
 		if app.show_log {
 			draw_log(mut app)

@@ -270,6 +270,11 @@ fn (mut app App) start() {
 	// rows wearing the label that explains them (codex #128 r1, r4).
 	app.viewing_rec = ''
 	app.paused = false
+	// And the idx base: a fresh measurement numbers from 0. Without this, Start after a trimmed
+	// 600k-frame import numbered the first live frame ~600000 — the documented phantom-loss
+	// symptom trace_run_base exists to prevent, reintroduced through the import's seq advance
+	// (codex #130 pre-review). Rows already in the ring keep their frozen idx.
+	app.trace_run_base = app.trace_seq
 	app.mu.unlock()
 	for m in held {
 		m.unlock()
