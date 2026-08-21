@@ -168,9 +168,19 @@ jobs:
             # "baseline = the beginning" (it wants a tag, and auto-choice picks the
             # v-toolchain tooling release), so the changelog is built from the merged PRs
             # directly (codex #137 r4)
-            printf '## First release — every PR merged to date\n\n' > generated.md
+            # bounded by the TAGGED commit's history, not "merged by publication time": a
+            # PR landing during the hour-long build is not in these binaries and must not
+            # be advertised by them (codex #137 r5) — hence the ancestry filter per merge
+            # commit (PRs merged by other means may carry no mergeCommit; skipped, since
+            # nothing proves they are in this history)
+            printf '## First release — every PR in this history\n\n' > generated.md
             gh pr list --state merged --base main --limit 1000 \
-              --json number,title --jq '.[] | "* \(.title) (#\(.number))"' >> generated.md
+              --json number,title,mergeCommit \
+              --jq '.[] | select(.mergeCommit != null) | "\(.mergeCommit.oid) \(.number) \(.title)"' \
+              | while read -r oid num title; do
+                  git merge-base --is-ancestor "$oid" "$GITHUB_SHA" 2>/dev/null || continue
+                  printf '* %s (#%s)\n' "$title" "$num"
+                done >> generated.md
           fi
           # the header's evidence link must survive being a RELEASE body, where relative
           # paths resolve under /releases/tag/ — pin it to the released tag (codex #137 r2)
