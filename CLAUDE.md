@@ -104,7 +104,8 @@ from `main`; `release.yml` verifies both, then publishes the Linux tar.gz and th
 (via `windows.yml`, which publishes for a tag only when called with `publish_bundle=true` from
 behind that guard). Bundle payload list: `scripts/stage_bundle.sh`, once, for both. Notes =
 `packaging/RELEASE_NOTES_HEADER.md` + generated changelog. Never bundle a vendor CAN DLL
-(ROADMAP has the list and the reason).
+(ROADMAP has the list and the reason). The maintainer walkthrough is
+[docs/releasing.md](docs/releasing.md).
 
 CI (`.github/workflows/`) runs `v -enable-globals test modules/`, `scripts/runtests.sh` and
 `scripts/vcan_common_test.sh` (the shared setup-script answers — whose home under sudo, is vcan
