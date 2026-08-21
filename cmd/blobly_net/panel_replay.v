@@ -3,6 +3,7 @@ module main
 import os
 import vgui
 import player
+import transport
 import mf4
 import project
 
@@ -210,21 +211,21 @@ fn (mut app App) replay_view_groups() []ReplayGroupView {
 		if ch.mode != .replay {
 			continue
 		}
-		src := if r := ch.replay { r.source } else { '' }
+		// the PENDING source — the buffer Configure shows, which apply_edits commits before
+		// Start groups anything. Grouping on the frozen runtime value left a retyped source
+		// displayed under its old recording until apply (codex #136 r3); the source field's
+		// edit handler bumps replay_view_gen, so this rebuild tracks typing.
+		mut src := if r := ch.replay { r.source } else { '' }
+		if ci < app.cfg_bufs.len {
+			src = vgui.buf_str(app.cfg_bufs[ci].replay_src_buf)
+		}
 		if src == '' {
 			out << ReplayGroupView{
 				cis: [ci]
 			}
 			continue
 		}
-		// the spawner's key, from the SAME frozen resolution the spawner reads
-		// (chans[ci].replay_src, resolved at rebuild) — resolving proj afresh here opened a
-		// skew where panel and Start keyed one file differently (self-review)
-		key := if ci < app.chans.len && app.chans[ci].replay_src != '' {
-			os.real_path(app.chans[ci].replay_src)
-		} else {
-			os.real_path(app.resolve_asset(src))
-		}
+		key := os.real_path(app.resolve_asset(src))
 		gi := idx[key] or { -1 }
 		if gi >= 0 {
 			out[gi].cis << ci
@@ -259,6 +260,36 @@ fn draw_replay_config(mut app App) {
 		vgui.text_dim('See docs/simulation.md ("Replay — playing a recording onto a bus").')
 		return
 	}
+	// The cross-GROUP refusal, from the same dst_clashes the spawner calls: two recordings
+	// on one destination identity stops Start from starting EITHER, so it is said above all
+	// groups rather than inside one (codex #136 r3). Claims are built the way this whole
+	// preview reads state: the model, pending edits included.
+	mut claims := []DstClaim{}
+	for g in groups {
+		if g.key == '' {
+			continue
+		}
+		for ci in g.cis {
+			pc := app.proj.channels[ci]
+			mut psrc := if r := pc.replay { r.source } else { '' }
+			if ci < app.cfg_bufs.len {
+				psrc = vgui.buf_str(app.cfg_bufs[ci].replay_src_buf)
+			}
+			if pc.enabled && replay_blocker(pc.is_doip(), pc.listen_only, psrc) == '' {
+				ifc := project.compose_iface(pc.adapter, pc.address)
+				claims << DstClaim{
+					key:   transport.destination_key(ifc)
+					src:   g.key
+					iface: ifc
+					base:  os.base(g.src)
+				}
+			}
+		}
+	}
+	for c in dst_clashes(claims) {
+		vgui.text_colored(230, 120, 120,
+			'two recordings are mapped onto one interface: ${c} — Start refuses to start either')
+	}
 	for g in groups {
 		// one existence stat per GROUP per frame (was one per row) — live on purpose, so a
 		// capture landing on disk clears the red without waiting for an edit
@@ -276,8 +307,11 @@ fn draw_replay_config(mut app App) {
 		mut active := []int{}
 		for ci in g.cis {
 			pc := app.proj.channels[ci]
-			src_i := if r := pc.replay { r.source } else { '' }
-			if pc.enabled && replay_blocker(pc.is_doip(), pc.listen_only, src_i) == '' {
+			mut psrc := if r := pc.replay { r.source } else { '' }
+			if ci < app.cfg_bufs.len {
+				psrc = vgui.buf_str(app.cfg_bufs[ci].replay_src_buf)
+			}
+			if pc.enabled && replay_blocker(pc.is_doip(), pc.listen_only, psrc) == '' {
 				active << ci
 			}
 		}
@@ -363,7 +397,11 @@ fn draw_replay_config(mut app App) {
 			ch := app.proj.channels[ci]
 			rp0 := ch.replay or { project.Replay{} }
 			en := ch.enabled
-			blocker := replay_blocker(ch.is_doip(), ch.listen_only, rp0.source)
+			mut src_i := rp0.source
+			if ci < app.cfg_bufs.len {
+				src_i = vgui.buf_str(app.cfg_bufs[ci].replay_src_buf)
+			}
+			blocker := replay_blocker(ch.is_doip(), ch.listen_only, src_i)
 			arrow := if rp0.bus != '' { '<- ${rp0.bus}' } else { '' }
 			if app.running {
 				// mid-run the set is fixed (topology at Start); show, don't edit
@@ -378,11 +416,11 @@ fn draw_replay_config(mut app App) {
 				// survive Save)
 				app.set_chan_enabled_stopped(ci, nen)
 			}
-			if g.src != '' && rp0.source != g.src {
+			if g.src != '' && src_i != g.src {
 				// the canonical key merged a different spelling into this group — show it,
 				// or a hard-coded absolute path hides under the header until a move breaks it
 				vgui.same_line()
-				vgui.text_dim('(${rp0.source})')
+				vgui.text_dim('(${src_i})')
 			}
 			if blocker != '' && blocker != 'no recording set' {
 				// the group header already carries the sourceless case

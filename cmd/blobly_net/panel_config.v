@@ -491,6 +491,9 @@ fn (mut app App) draw_bus_editor(i int) bool {
 			vgui.set_next_item_width(220)
 			if vgui.input_text('source##rs${i}', mut app.cfg_bufs[i].replay_src_buf) {
 				app.dirty = true
+				// the Replay panel's grouping reads this buffer (the pending source is what
+				// Start will fold) — regroup as it changes (codex #136 r3)
+				app.replay_view_gen++
 			}
 			vgui.same_line()
 			if vgui.small_button('...##rsbrowse${i}') {
