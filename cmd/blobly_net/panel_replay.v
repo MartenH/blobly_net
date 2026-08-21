@@ -3,6 +3,8 @@ module main
 import os
 import vgui
 import player
+import mf4
+import project
 
 // replay_speeds is the preset rate row. A project may configure ANY rate ('speed: 3'), so the
 // panel appends the configured rate when it is off this list — otherwise one click away from a
@@ -169,65 +171,169 @@ fn draw_replay(mut app App) {
 	vgui.end()
 }
 
-// draw_replay_config lists the project's replay channels for editing while nothing plays —
-// GROUPED BY RECORDING, because that is what Start does: every channel naming one source
-// joins a single group on a single clock (spawn_replay_workers_locked, canonical path as the
-// key — the SAME key, so the panel's grouping is a promise Start keeps). Each member row is a
-// play-on-Start checkbox (a PROJECT edit through set_chan_enabled_stopped), the recorded bus
-// feeding that wire, and Browse. Save writes all of it to the .blobnet.
-fn draw_replay_config(mut app App) {
-	// group by the canonical resolved path — the rule spawn_replay_workers_locked applies —
-	// with sourceless channels each alone under a sentinel key that cannot be a path
-	mut order := []string{}
-	mut members := map[string][]int{}
-	mut disp := map[string]string{}
+// ReplayGroupView is one recording's stopped-view group, precomputed OFF the frame loop: the
+// grouping walks the filesystem (real_path — symlink spellings of one capture must land in
+// one group, the spawner's own rule), and that is syscall work the 60Hz draw must not repeat
+// (the load_cfg_text lesson). Rebuilt when replay_view_gen moves — rebuild_from_proj and the
+// panel's enable tick bump it.
+struct ReplayGroupView {
+mut:
+	// the FIRST member's configured spelling, as the header. The canonical key deliberately
+	// merges spellings, so a member whose own spelling differs shows it dimmed on its row —
+	// hiding a member's hard-coded absolute path is how it survives a project move unseen.
+	src string
+	key string // canonical identity (real_path of the frozen resolved source); '' = sourceless
+	cis []int
+}
+
+fn (mut app App) replay_view_groups() []ReplayGroupView {
+	if app.replay_view_built == app.replay_view_gen {
+		return app.replay_view
+	}
+	mut out := []ReplayGroupView{}
+	mut idx := map[string]int{}
 	for ci in 0 .. app.proj.channels.len {
 		ch := app.proj.channels[ci]
 		if ch.mode != .replay {
 			continue
 		}
 		src := if r := ch.replay { r.source } else { '' }
-		key := if src == '' { '\x00none:${ci}' } else { os.real_path(app.resolve_asset(src)) }
-		if key !in members {
-			order << key
-			disp[key] = src
+		if src == '' {
+			out << ReplayGroupView{
+				cis: [ci]
+			}
+			continue
 		}
-		members[key] << ci
+		// the spawner's key, from the SAME frozen resolution the spawner reads
+		// (chans[ci].replay_src, resolved at rebuild) — resolving proj afresh here opened a
+		// skew where panel and Start keyed one file differently (self-review)
+		key := if ci < app.chans.len && app.chans[ci].replay_src != '' {
+			os.real_path(app.chans[ci].replay_src)
+		} else {
+			os.real_path(app.resolve_asset(src))
+		}
+		gi := idx[key] or { -1 }
+		if gi >= 0 {
+			out[gi].cis << ci
+		} else {
+			idx[key] = out.len
+			out << ReplayGroupView{
+				src: src
+				key: key
+				cis: [ci]
+			}
+		}
 	}
-	if order.len == 0 {
+	app.replay_view = out
+	app.replay_view_built = app.replay_view_gen
+	return app.replay_view
+}
+
+// draw_replay_config lists the project's replay channels while nothing plays — GROUPED BY
+// RECORDING under the spawner's own canonical key, with "(one clock)" over the members that
+// will actually PLAY (enabled, no blocker): the badge describes the group Start builds, not
+// the rows that happen to share a file. Members that will not play say why, from the SAME
+// replay_blocker() that defines replaying() — never a hand-copy of its clauses. Where a Scan
+// of this recording exists, the pairing is checked through player.resolve_bus (the module
+// owns which-bus-does-the-config-mean; an inline match here was copy number four and wrong
+// twice over) and duplicate mappings are counted; without one the panel says it cannot know,
+// dimly, instead of guessing from sibling counts. Ticks and Browse are PROJECT edits.
+fn draw_replay_config(mut app App) {
+	groups := app.replay_view_groups()
+	if groups.len == 0 {
 		vgui.text_dim('no replay channels in this project')
 		vgui.text_dim('make one: Configure -> set a bus\'s mode to "replay" — then pick its recording here.')
 		vgui.text_dim('See docs/simulation.md ("Replay — playing a recording onto a bus").')
 		return
 	}
-	for key in order {
-		cis := members[key]
-		src := disp[key]
-		// group header: the recording, its shared-clock promise, and its problems — a
-		// missing file fails the GROUP at Start, so it is said once here, not per row
-		if src == '' {
+	for g in groups {
+		// one existence stat per GROUP per frame (was one per row) — live on purpose, so a
+		// capture landing on disk clears the red without waiting for an edit
+		exists := g.key != '' && os.exists(g.key)
+		if g.src == '' {
 			vgui.text_colored(230, 120, 120, 'no recording set')
-		} else if !os.exists(app.resolve_asset(src)) {
-			vgui.text_colored(230, 120, 120, '${src}  (NOT FOUND)')
+		} else if !exists {
+			vgui.text_colored(230, 120, 120, '${g.src}  (NOT FOUND)')
 		} else {
-			vgui.text(src)
+			vgui.text(g.src)
 		}
-		if cis.len > 1 {
+		mut active := []int{}
+		for ci in g.cis {
+			if ci < app.chans.len && app.chans[ci].replaying() {
+				active << ci
+			}
+		}
+		if active.len > 1 {
 			vgui.same_line()
 			vgui.text_dim('(one clock)')
 		}
-		for ci in cis {
+		// ONE clock means ONE pacing — the group refusal replay_group gives at Start, said
+		// here while the disagreement is being configured
+		if active.len > 1 {
+			r0 := app.proj.channels[active[0]].replay or { project.Replay{} }
+			for ci in active[1..] {
+				ri := app.proj.channels[ci].replay or { project.Replay{} }
+				if ri.speed != r0.speed || ri.repeat != r0.repeat {
+					vgui.text_colored(230, 120, 120,
+						'   members disagree on speed/loop — they share one clock, so set them alike (Start refuses this)')
+					break
+				}
+			}
+		}
+		// The file's bus list, when any member's Scan covered THIS recording — the only
+		// source of pairing facts the panel accepts. sc.src is the resolved (not canonical)
+		// path, so it is canonicalized for the compare; scans are few (explicit clicks,
+		// cleared on every edit), which bounds the per-frame cost.
+		mut names := []player.BusName{}
+		mut labels := []string{}
+		mut have_scan := false
+		app.mu.lock()
+		for ci in g.cis {
+			if sc := app.replay_scans[ci] {
+				if !sc.loading && sc.err == '' && sc.src != '' && os.real_path(sc.src) == g.key {
+					for b in sc.buses {
+						names << player.BusName{
+							iface: b.iface
+							name:  b.name
+						}
+						labels << b.iface
+					}
+					have_scan = true
+					break
+				}
+			}
+		}
+		app.mu.unlock()
+		// resolve every ACTIVE member through the module's rule first, so duplicate mappings
+		// (Start's other refusal) can be counted before any row renders
+		mut resolved := map[int]string{}
+		mut pair_err := map[int]string{}
+		mut label_uses := map[string]int{}
+		if have_scan {
+			for ci in active {
+				bus := (app.proj.channels[ci].replay or { project.Replay{} }).bus
+				lbl := player.resolve_bus(names, labels, bus) or {
+					pair_err[ci] = err.msg()
+					''
+				}
+				if lbl != '' {
+					resolved[ci] = lbl
+					label_uses[lbl]++
+				}
+			}
+		}
+		for ci in g.cis {
 			ch := app.proj.channels[ci]
+			rp0 := ch.replay or { project.Replay{} }
 			en := ch.enabled
-			bus := if r := ch.replay { r.bus } else { '' }
-			arrow := if bus != '' { '<- ${bus}' } else { '' }
+			blocker := if ci < app.chans.len { app.chans[ci].replay_blocker() } else { '' }
+			arrow := if rp0.bus != '' { '<- ${rp0.bus}' } else { '' }
 			if app.running {
 				// mid-run the set is fixed (topology at Start); show, don't edit
 				vgui.text_dim('   ${if en { '[x]' } else { '[ ]' }} ${ch.name}  ${arrow}')
 				continue
 			}
-			vgui.text('  ')
-			vgui.same_line()
+			vgui.indent_x(14 * app.ui_scale)
 			nen := vgui.checkbox('${ch.name}##rpen${ci}', en)
 			if nen != en {
 				// a PROJECT edit that also moves the runtime row — set_chan_enabled_stopped
@@ -235,33 +341,47 @@ fn draw_replay_config(mut app App) {
 				// survive Save)
 				app.set_chan_enabled_stopped(ci, nen)
 			}
-			// the same disqualifiers replaying() applies, said HERE instead of as a silent
-			// skip at Start: a ticked row that will not play is a promise the panel must
-			// not make
-			if ch.listen_only {
+			if g.src != '' && rp0.source != g.src {
+				// the canonical key merged a different spelling into this group — show it,
+				// or a hard-coded absolute path hides under the header until a move breaks it
 				vgui.same_line()
-				vgui.text_colored(230, 120, 120,
-					"listen-only — will NOT play (never transmit is the editor's promise)")
-			} else if ch.typ == 'doip' {
+				vgui.text_dim('(${rp0.source})')
+			}
+			if blocker != '' && blocker != 'no recording set' {
+				// the group header already carries the sourceless case
 				vgui.same_line()
-				vgui.text_colored(230, 120, 120, 'DoIP channel — replay does not apply')
+				vgui.text_colored(230, 120, 120, blocker)
+			} else if e := pair_err[ci] {
+				// Start's own refusal (resolve_bus wording), before Start gives it
+				vgui.same_line()
+				vgui.text_colored(230, 120, 120, '<- ${e}')
+			} else if lbl := resolved[ci] {
+				vgui.same_line()
+				if label_uses[lbl] > 1 {
+					vgui.text_colored(230, 120, 120,
+						'<- ${lbl} — mapped ${label_uses[lbl]} times, its traffic would be sent twice (Start refuses this)')
+				} else if arrow != '' {
+					vgui.text(arrow)
+				} else {
+					vgui.text_dim('<- ${lbl} (the only bus)')
+				}
 			} else if arrow != '' {
 				vgui.same_line()
-				vgui.text('${arrow}')
-			} else if src != '' && cis.len > 1 {
-				// several channels on one recording and this one names no bus: Start will
-				// refuse the ambiguity — say it where the pairing is being read
+				vgui.text(arrow)
+			} else if en && blocker == '' && g.src != '' {
+				// no Scan covers this recording, so the panel cannot know whether an empty
+				// bus: resolves (one recorded bus) or is refused (several) — say that, dimly,
+				// instead of guessing from sibling counts (the first draft guessed, and was
+				// wrong in both directions)
 				vgui.same_line()
-				vgui.text_colored(230, 120, 120,
-					'<- no bus: set (Scan the recording in Configure and `use` one)')
+				vgui.text_dim('<- bus: unset — Scan in Configure to check the pairing')
 			}
 			vgui.same_line()
 			if vgui.small_button('Browse##rpsrc${ci}') {
 				app.open_browser('replaysrc:${ci}')
 			}
-			spd := if r := ch.replay { r.speed } else { 1.0 }
-			lp := if r := ch.replay { r.repeat } else { false }
-			vgui.text_dim('      speed ${spd:.2}x${if lp { ' · loop' } else { '' }} — press Start to play (speed/loop: Configure)')
+			vgui.indent_x(14 * app.ui_scale)
+			vgui.text_dim('   speed ${rp0.speed:.2}x${if rp0.repeat { ' · loop' } else { '' }} — press Start to play (speed/loop: Configure)')
 		}
 	}
 	if !app.running {

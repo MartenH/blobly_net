@@ -106,13 +106,20 @@ mut:
 	// state, dropped by drop_index_bound_ui() at every event that shifts indices. Under mu: the
 	// scan worker fills an entry from its thread.
 	replay_scans map[int]&ReplayScan
-	trecs        []TRec
-	rx           u64 // total across channels
-	rev          u64
-	running      bool
-	dbs          []candb.Database // all loaded DBCs (union; trace/symbol decode)
-	dbs_paths    []string         // resolved file path per dbs entry (editor save target)
-	dbc_readers  int              // live workers reading app.dbs lock-free (rx loops);
+	// The stopped Replay panel's precomputed grouping (see replay_view_groups): rebuilt when
+	// replay_view_gen moves past replay_view_built. gen starts at 0 and rebuild_from_proj
+	// bumps it, so the load in main() already leaves built(0) != gen(>=1) — the first frame
+	// builds.
+	replay_view_gen   u64
+	replay_view_built u64
+	replay_view       []ReplayGroupView
+	trecs             []TRec
+	rx                u64 // total across channels
+	rev               u64
+	running           bool
+	dbs               []candb.Database // all loaded DBCs (union; trace/symbol decode)
+	dbs_paths         []string         // resolved file path per dbs entry (editor save target)
+	dbc_readers       int              // live workers reading app.dbs lock-free (rx loops);
 	// the editor stays read-only until 0 — app.running clears BEFORE workers exit
 	dbs_by_iface map[string][]candb.Database // per-channel DBCs (generator message picker scope)
 	manifest     telem.Manifest
@@ -608,6 +615,8 @@ fn (mut app App) set_project(proj project.Project, path string) {
 // selection) from app.proj. Called after a load and after any config/generator edit, so the
 // live panels reflect the edited model. Must be called while stopped (no RX threads running).
 fn (mut app App) rebuild_from_proj() {
+	app.replay_view_gen++ // the grouping the stopped Replay panel caches is derived from what
+	// this function rebuilds
 	// this replaces app.dbs wholesale, so a pending endpoint edit must land first or it is
 	// silently dropped along with the databases it referred to
 	app.resolve_pending_bit_edit()

@@ -39,14 +39,33 @@ fn (c Chan) monitorable() bool {
 	return c.enabled && c.mode in ['monitor', 'replay'] && !c.doip
 }
 
+// replay_blocker names the reason a replay-mode channel will not play — '' when nothing
+// blocks it. THE one statement of the disqualifiers: replaying() is defined by it and the
+// Replay panel prints it, so a clause added here reaches both — the panel hand-copying the
+// clauses is how a ticked row that will not play came back once already (self-review of the
+// grouped panel: its copy tested `typ == 'doip'`, narrower than the is_doip() rule behind
+// c.doip, and an `interface: doip:<host>` row rendered as playable).
+fn (c Chan) replay_blocker() string {
+	if c.doip {
+		return 'DoIP channel — replay does not apply'
+	}
+	if c.listen_only {
+		// listen_only means NEVER TRANSMIT, which is what the editor promises and what a
+		// bench relies on when it is wired to a live vehicle. A replay channel is not an
+		// exception: it would be the loudest possible violation of it.
+		return "listen-only — will NOT play (never transmit is the editor's promise)"
+	}
+	if c.replay_src == '' {
+		return 'no recording set'
+	}
+	return ''
+}
+
 // replaying reports a channel that PLAYS a recording onto its bus. Such a channel is also
 // monitored — the frames come back like anything else on the wire, and the echo is how the
 // trace confirms they were really transmitted rather than merely queued.
 fn (c Chan) replaying() bool {
-	// listen_only means NEVER TRANSMIT, which is what the editor promises and what a bench
-	// relies on when it is wired to a live vehicle. A replay channel is not an exception: it
-	// would be the loudest possible violation of it.
-	return c.enabled && c.mode == 'replay' && !c.doip && c.replay_src != '' && !c.listen_only
+	return c.enabled && c.mode == 'replay' && c.replay_blocker() == ''
 }
 
 // chan_name_for maps a bus iface back to its channel name (the Trace `ch` column value),
