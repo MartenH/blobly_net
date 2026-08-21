@@ -497,6 +497,11 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		}
 		if g.count > 0 {
 			g.prev = g.last // slide the previous-frame window forward
+		} else {
+			// the fps clock starts at the first ACCEPTED frame: a group whose oldest
+			// retained row was refused otherwise carried the whole bus-off interval in its
+			// denominator, understating the rate long after recovery (codex #143 r3)
+			g.first_t = r.t_ms
 		}
 		g.count++
 		g.last = r

@@ -233,6 +233,13 @@ fn draw_buses(mut app App, chans []Chan) {
 				if new && app.running && app.chans[i].monitorable() && !app.chans[i].running
 					&& !app.chans[i].spawning {
 					if !app.dest_is_read_locked(app.chans[i].iface) {
+						// a re-enable after a GAP resets the verdict: nobody watched the
+						// wire while this row was off, and the interface may have
+						// recovered unseen — a fresh healthy backend reports .unknown and
+						// would never overwrite the stale BUS-OFF (codex #143 r3). The
+						// reader HANDOFF is different and carries its verdict: there the
+						// wire was observed continuously.
+						app.chans[i].health = .unknown
 						app.chans[i].spawning = true
 						spawn rx_loop(app, i, app.chans[i].iface, app.run_gen)
 					}
