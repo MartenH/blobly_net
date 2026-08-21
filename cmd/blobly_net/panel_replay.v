@@ -1,5 +1,6 @@
 module main
 
+import os
 import vgui
 import player
 
@@ -25,12 +26,11 @@ fn draw_replay(mut app App) {
 	mut toks := app.replay_ctls.keys()
 	app.mu.unlock()
 	if toks.len == 0 {
-		vgui.text_dim('no replay running')
-		vgui.text_dim('a replay is a CHANNEL: set a bus to mode "replay" in Configure and give it a')
-		vgui.text_dim('recording (source/speed/loop) — press Start and it plays here. See docs/simulation.md.')
-		if !app.running {
-			vgui.text_dim('(the app is stopped — replay channels play while a measurement runs)')
-		}
+		// STOPPED (or nothing playing): the panel is the configuration surface — which
+		// recordings will play on Start, each with the file and a play-on-Start tick. Both
+		// write into app.proj with `dirty` set, so Save persists them into the .blobnet:
+		// these are project edits made from the panel, not runtime toggles.
+		draw_replay_config(mut app)
 		vgui.end()
 		return
 	}
@@ -114,16 +114,26 @@ fn draw_replay(mut app App) {
 		// ### ids: the bracket highlight changes the label text, and an id derived from the
 		// label would change with it — ### pins each button's identity to rate + token alone
 		mut speeds := replay_speeds.clone()
-		if !replay_speeds.any((it - cfg_speed) < 0.001 && (cfg_speed - it) < 0.001) {
+		// EXACT match, not epsilon: the append's job is to make the configured rate reachable,
+		// and a tolerance hid any rate within 0.001 of a preset — 1.0005 could be left but
+		// never restored. Config rates are parsed f64 literals; if it differs at all, it is a
+		// different button. (The ACTIVE highlight below stays epsilon-based: the running speed
+		// travels through the worker and equality there is the fragile kind.)
+		if cfg_speed !in replay_speeds {
 			speeds << cfg_speed
 		}
 		for sp in speeds {
 			vgui.same_line()
 			active := (sp - speed) < 0.001 && (speed - sp) < 0.001
+			// the ID carries the RAW rate — a configured 1.004 beside the 1.0 preset rounded
+			// to the same ':.2' and the two buttons collided; the display may round, the
+			// identity may not. The appended configured rate also DISPLAYS at full precision,
+			// or the row shows two '1.00x' buttons nobody can tell apart.
+			shown := if sp in replay_speeds { '${sp:.2}x' } else { '${sp}x' }
 			lbl := if active {
-				'[${sp:.2}x]###sp${tok}_${sp:.2}'
+				'[${shown}]###sp${tok}_${sp}'
 			} else {
-				'${sp:.2}x###sp${tok}_${sp:.2}'
+				'${shown}###sp${tok}_${sp}'
 			}
 			if vgui.small_button(lbl) {
 				app.mu.lock()
@@ -139,4 +149,60 @@ fn draw_replay(mut app App) {
 		}
 	}
 	vgui.end()
+}
+
+// draw_replay_config lists the project's replay channels for editing while nothing plays:
+// a play-on-Start checkbox (the channel's `enabled` — the same flag the Buses panel ticks,
+// written to chans AND proj exactly as its stopped tick does) and the recording, with a
+// Browse into the file picker. All of it is model state: Save writes the .blobnet.
+fn draw_replay_config(mut app App) {
+	mut have := false
+	for ci in 0 .. app.proj.channels.len {
+		if app.proj.channels[ci].mode != .replay {
+			continue
+		}
+		have = true
+		ch := app.proj.channels[ci]
+		src := if r := ch.replay { r.source } else { '' }
+		en := ch.enabled
+		if app.running {
+			// mid-run the set is fixed (topology at Start); show, don't edit
+			vgui.text_dim('${if en { '[x]' } else { '[ ]' }} ${ch.name}  ${src}')
+			continue
+		}
+		nen := vgui.checkbox('${ch.name}##rpen${ci}', en)
+		if nen != en {
+			// the Buses panel's stopped-tick, verbatim in spirit: the runtime row AND the
+			// model move together, and dirty makes Save carry it to the file
+			app.mu.lock()
+			if ci < app.chans.len {
+				app.chans[ci].enabled = nen
+			}
+			app.proj.channels[ci].enabled = nen
+			app.mu.unlock()
+			app.dirty = true
+		}
+		vgui.same_line()
+		if src == '' {
+			vgui.text_colored(230, 120, 120, 'no recording set')
+		} else if !os.exists(app.resolve_asset(src)) {
+			vgui.text_colored(230, 120, 120, '${src}  (NOT FOUND)')
+		} else {
+			vgui.text(src)
+		}
+		vgui.same_line()
+		if vgui.small_button('Browse##rpsrc${ci}') {
+			app.open_browser('replaysrc:${ci}')
+		}
+		spd := if r := ch.replay { r.speed } else { 1.0 }
+		lp := if r := ch.replay { r.repeat } else { false }
+		vgui.text_dim('   speed ${spd:.2}x${if lp { ' · loop' } else { '' }} — press Start to play (speed/loop: Configure)')
+	}
+	if !have {
+		vgui.text_dim('no replay channels in this project')
+		vgui.text_dim('make one: Configure -> set a bus\'s mode to "replay" — then pick its recording here.')
+		vgui.text_dim('See docs/simulation.md ("Replay — playing a recording onto a bus").')
+	} else if !app.running {
+		vgui.text_dim('ticks and files are PROJECT edits — Save writes them to the .blobnet')
+	}
 }

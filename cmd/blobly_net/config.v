@@ -318,6 +318,26 @@ fn (mut app App) set_manifest(ci int, path string) {
 	app.rebuild_preserving_senders()
 }
 
+// set_replay_source points a replay channel at a recording, FROM THE MODEL SIDE: the value
+// lands in app.proj (dirty set), so Save writes it into the .blobnet — the Replay panel's
+// Browse is a project edit, not a runtime one. The spread carries `bus:`/`exclude:` for the
+// same reason commit_cfg's does: rebuilding the struct from the one field on offer deleted
+// the keys only the file can express.
+fn (mut app App) set_replay_source(ci int, path string) {
+	if ci < 0 || ci >= app.proj.channels.len {
+		return
+	}
+	app.commit_cfg()
+	old := app.proj.channels[ci].replay or { project.Replay{} }
+	app.proj.channels[ci].replay = project.Replay{
+		...old
+		source: rel_path(path)
+	}
+	app.dirty = true
+	app.sync_cfg_bufs()
+	app.rebuild_from_proj()
+}
+
 // save_project writes the whole project to its file (config + generators). An unsaved
 // project (no path) routes to Save As. Reformats the .blobnet — comments are not preserved.
 // load_cfg_text reads the project file into the edit buffer.
