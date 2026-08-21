@@ -183,6 +183,27 @@ fn test_set_speed_keeps_position() {
 	assert p.speed == 0.5
 }
 
+// set_speed changes ONLY the clock mapping — not the cursor, not the state. The first version
+// delegated to seek, which re-emitted the frame at an exact boundary position and demoted a
+// finished player to .paused (the panel's Restart became a Resume that replayed one frame or
+// finished again instantly).
+fn test_set_speed_moves_neither_cursor_nor_state() {
+	mut p := new_player(rec([0.0, 1.0, 2.0]), 1.0, false)
+	p.play(0.0)
+	assert p.due(1000.0).len == 2 // t=0 and t=1 played; position EXACTLY on the 1.0s boundary
+	p.set_speed(2.0, 1000.0)
+	assert p.due(1000.0).len == 0 // the boundary frame must NOT re-emit
+	assert p.position_s(1000.0) == 1.0
+
+	// run it out, then change speed while finished
+	assert p.due(9999.0).len == 1
+	assert p.due(99999.0).len == 0
+	assert p.state() == .finished
+	p.set_speed(0.5, 99999.0)
+	assert p.state() == .finished // NOT demoted to .paused
+	assert p.position_s(99999.0) == 2.0
+}
+
 // the binary-search seek lands where the linear scan did, including the exact boundary
 // (an entry precisely AT the sought position is the next to play, not skipped).
 fn test_seek_binary_boundaries() {

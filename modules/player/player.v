@@ -125,7 +125,16 @@ pub fn (mut p Player) set_speed(rate f64, now_ms f64) {
 	}
 	pos := p.position_s(now_ms)
 	p.speed = rate
-	p.seek(pos, now_ms)
+	// Re-anchor the clock DIRECTLY — deliberately not via seek. seek carries two semantics a
+	// rate change must not inherit: it recomputes idx (which re-emitted the frame sitting
+	// exactly at the current position), and it demotes .finished to .paused (which turned the
+	// panel's Restart into a Resume that either replayed the final frame or finished again
+	// instantly). A rate change moves neither the cursor nor the state; only the mapping
+	// between the playback clock and the recording changes.
+	p.elapsed_ms = pos * 1000.0 / rate
+	if p.st == .playing {
+		p.base_ms = now_ms - p.elapsed_ms
+	}
 }
 
 // stop resets to the start of the recording.
