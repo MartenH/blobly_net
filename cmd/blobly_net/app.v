@@ -75,11 +75,11 @@ mut:
 	consumers_failed map[string]int
 	trace_seq        u64
 	trace_base       u64
-	// trace_seq as of the last reset — what the idx COLUMN subtracts, so idx reads as "frame
-	// number of this measurement". trace_seq itself deliberately survives resets (an in-flight
-	// echo must stay unresolvable, never confirm a new run's row), which means raw seq keeps
-	// counting across Clear / Load / Start: after a 100k-frame recording, the first live frame
-	// of the next run would display as ~100000 and read as phantom loss. Distinct from
+	// trace_seq as of the last reset OR Start — the base a pushed row's displayed idx is frozen
+	// against (see TraceRow.idx). trace_seq itself deliberately survives resets (an in-flight
+	// echo must stay unresolvable, never confirm a new run's row); this base is what makes idx
+	// read as "frame number of this measurement" anyway, and Start resets it too, so a live run
+	// after a trimmed import starts at 0 instead of the file's frame count. Distinct from
 	// trace_base, which additionally advances on every ring trim.
 	trace_run_base u64
 	ghost_seq      u64                    // identities for emissions made while paused (see ghost_base)
