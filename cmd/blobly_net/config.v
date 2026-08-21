@@ -188,25 +188,38 @@ fn (app &App) next_free_vcan() string {
 	return 'vcan0'
 }
 
-// close_chan_picker closes the file browser when its pending action is bound to a channel
-// INDEX ('dbc:<ci>' / 'manifest:<ci>' / 'replaysrc:<ci>'). Called wherever indices shift or
-// the channel set is replaced — a picker opened for slot 3 must not deliver its file to
-// whatever channel slides into slot 3, nor to a slot that no longer exists (codex #133 r5,
-// found on replaysrc; the class is every index-bound target). The index is the only identity
-// a pending target has: channel names are user-editable and need not be unique, so closing
-// the stale picker is the honest move, not re-resolving it.
-fn (mut app App) close_chan_picker() {
-	t := app.fb_target
-	if t.starts_with('dbc:') || t.starts_with('manifest:') || t.starts_with('replaysrc:') {
+// drop_index_bound_ui invalidates everything whose identity is a channel INDEX: a pending
+// file-picker action, and the Scan results the Configure replay row displays. Called at every
+// event that shifts indices or replaces the channel set — a picker opened for slot 3 must not
+// deliver its file to whatever channel slides into slot 3, nor to a slot that no longer exists
+// (codex #133 r5, found on replaysrc; the class is every index-bound target). The index is the
+// only identity a pending target has (channel names are user-editable and need not be unique),
+// so the stale state is dropped, not re-resolved — and the two invalidations live in ONE
+// function because a site that remembers one and forgets the other is how the class returns.
+// Channel-bound picker targets are exactly the ones carrying ':<ci>'; the project-level
+// targets (open/saveas/recording/flash/system) have no colon.
+fn (mut app App) drop_index_bound_ui() {
+	if app.fb_target.contains(':') {
 		app.fb_open = false
 	}
+	app.mu.lock()
+	app.replay_scans.clear()
+	app.mu.unlock()
+}
+
+// drop_replay_scan forgets ONE channel's Scan: its source or its databases changed, so the
+// buses and census on display describe a file or an attribution that is no longer the row's.
+fn (mut app App) drop_replay_scan(ci int) {
+	app.mu.lock()
+	app.replay_scans.delete(ci)
+	app.mu.unlock()
 }
 
 fn (mut app App) remove_bus(i int) {
 	if i < 0 || i >= app.proj.channels.len {
 		return
 	}
-	app.close_chan_picker()
+	app.drop_index_bound_ui()
 	app.commit_cfg()
 	removed_iface := app.proj.channels[i].iface
 	app.proj.channels.delete(i)
@@ -292,6 +305,10 @@ fn (mut app App) set_protocol(i int, pr string) {
 }
 
 fn (mut app App) set_mode(i int, md string) {
+	// indices do not shift, but a mode change repurposes what a pending picker or a Scan for
+	// this slot MEANS — a Browse confirmed after the switch would write a replay: block onto
+	// a monitor channel (update_replay refuses that too; this closes the door it knocks on)
+	app.drop_index_bound_ui()
 	app.proj.channels[i].mode = project.mode_from(md)
 	app.dirty = true
 	app.rebuild_preserving_senders()
@@ -301,6 +318,7 @@ fn (mut app App) add_dbc(ci int, path string) {
 	if ci < 0 || ci >= app.proj.channels.len {
 		return
 	}
+	app.drop_replay_scan(ci) // the census on display was attributed through the OLD databases
 	app.commit_cfg()
 	app.proj.channels[ci].databases << rel_path(path)
 	app.dirty = true
@@ -315,6 +333,7 @@ fn (mut app App) remove_dbc(ci int, di int) {
 	if di < 0 || di >= app.proj.channels[ci].databases.len {
 		return
 	}
+	app.drop_replay_scan(ci) // the census on display was attributed through the OLD databases
 	app.commit_cfg()
 	app.proj.channels[ci].databases.delete(di)
 	app.dirty = true
@@ -333,26 +352,79 @@ fn (mut app App) set_manifest(ci int, path string) {
 	app.rebuild_preserving_senders()
 }
 
-// set_replay_source points a replay channel at a recording, FROM THE MODEL SIDE: the value
-// lands in app.proj (dirty set), so Save writes it into the .blobnet — the Replay panel's
-// Browse is a project edit, not a runtime one. The spread carries `bus:`/`exclude:` for the
-// same reason commit_cfg's does: rebuilding the struct from the one field on offer deleted
-// the keys only the file can express. Rebuild PRESERVING senders, like every other stopped
-// mutation here — rebuild_from_proj would reconstruct the generators from the still-stale
-// proj and drop unsaved Generators-panel edits (codex #133 r3).
-fn (mut app App) set_replay_source(ci int, path string) {
+// update_replay is the ONE mutation frame for a channel's Replay struct — the sequence IS
+// the invariant: commit the buffered edits (so the spread the callers build starts from what
+// the user typed, not a stale model), write, dirty, sync, rebuild PRESERVING senders. Codex
+// #133 r3 caught the one copy of this frame that said rebuild_from_proj and silently dropped
+// unsaved generator edits; one copy means one place for that class to exist. The mode guard
+// covers the non-modal picker: a Browse confirmed after the channel was switched away from
+// replay must not write a replay: block onto a monitor channel.
+fn (mut app App) update_replay(ci int, f fn (project.Replay) project.Replay) {
 	if ci < 0 || ci >= app.proj.channels.len {
+		return
+	}
+	if app.proj.channels[ci].mode != .replay {
 		return
 	}
 	app.commit_cfg()
 	old := app.proj.channels[ci].replay or { project.Replay{} }
-	app.proj.channels[ci].replay = project.Replay{
-		...old
-		source: rel_path(path)
-	}
+	app.proj.channels[ci].replay = f(old)
 	app.dirty = true
 	app.sync_cfg_bufs()
 	app.rebuild_preserving_senders()
+}
+
+// The three Replay keys the GUI writes, each a one-field spread over update_replay — the
+// spread carries the keys only the .blobnet can express, the same reason commit_cfg's does.
+// All of it lands in app.proj with dirty set, so Save writes the .blobnet: these are project
+// edits, not runtime ones.
+fn (mut app App) set_replay_source(ci int, path string) {
+	rel := rel_path(path)
+	app.update_replay(ci, fn [rel] (old project.Replay) project.Replay {
+		return project.Replay{
+			...old
+			source: rel
+		}
+	})
+	// the census on display was taken through the OLD source — forget it
+	app.drop_replay_scan(ci)
+}
+
+fn (mut app App) set_replay_bus(ci int, bus string) {
+	app.update_replay(ci, fn [bus] (old project.Replay) project.Replay {
+		return project.Replay{
+			...old
+			bus: bus
+		}
+	})
+}
+
+fn (mut app App) set_replay_exclude(ci int, exclude []string) {
+	ex := exclude.clone()
+	app.update_replay(ci, fn [ex] (old project.Replay) project.Replay {
+		return project.Replay{
+			...old
+			exclude: ex.clone()
+		}
+	})
+}
+
+// set_chan_enabled_stopped is the Replay panel's enable tick: a PROJECT edit (dirty — Save
+// persists it) that also moves the runtime row, so Start needs no intervening apply. This is
+// deliberately NOT the Buses panel's tick, which is runtime-only and does not survive Save,
+// and not the Configure header's, which edits the model alone and reaches the runtime through
+// apply_edits — three surfaces with three intents; this one's is named here and single-sited.
+fn (mut app App) set_chan_enabled_stopped(ci int, en bool) {
+	if ci < 0 || ci >= app.proj.channels.len {
+		return
+	}
+	app.mu.lock()
+	if ci < app.chans.len {
+		app.chans[ci].enabled = en
+	}
+	app.proj.channels[ci].enabled = en
+	app.mu.unlock()
+	app.dirty = true
 }
 
 // save_project writes the whole project to its file (config + generators). An unsaved
@@ -507,6 +579,10 @@ fn (mut app App) apply_parsed_text(txt string) bool {
 	// any of those, and a fault left pointing at the old names would apply to whatever now
 	// occupies them.
 	sim.clear_all()
+	// The File tab replaces the channel set as thoroughly as loading a project does — the same
+	// index-bound UI (pending picker, Scan results) goes stale with it. This was the one
+	// replacement path the invalidation missed (self-review of the Scan work).
+	app.drop_index_bound_ui()
 	app.mu.lock()
 	app.proj = p
 	app.proj_name = p.name
@@ -608,7 +684,7 @@ fn (mut app App) save_as(path string) {
 
 // new_project resets to a blank, unsaved project (0 buses) — the from-scratch entry point.
 fn (mut app App) new_project() {
-	app.close_chan_picker() // a pending dbc/manifest/replaysrc picker indexes the OLD channel set
+	app.drop_index_bound_ui() // pending pickers and Scan results index the OLD channel set
 	app.stop()
 	// A blank project inherits nothing: set_project bypasses load_project's reset, so without
 	// this the System panel kept showing the PREVIOUS project's ECUs and annotated any newly

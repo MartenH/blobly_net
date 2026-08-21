@@ -35,6 +35,21 @@ fn draw_replay(mut app App) {
 		return
 	}
 	toks.sort()
+	// Prune seek-latch entries whose group is gone — HERE, on the GUI thread, because
+	// replay_seek is GUI-thread state (the slider reads and writes it without the lock) and a
+	// worker-side delete raced those accesses (codex #135 r1, P1). Tokens never recur, so a
+	// surviving entry is only dead weight until this runs, never a phantom seek.
+	if app.replay_seek.len > 0 {
+		mut dead := []u64{}
+		for k, _ in app.replay_seek {
+			if k !in toks {
+				dead << k
+			}
+		}
+		for k in dead {
+			app.replay_seek.delete(k)
+		}
+	}
 	for tok in toks {
 		// snapshot the status under the lock; render from the copy
 		app.mu.lock()
@@ -175,18 +190,20 @@ fn draw_replay_config(mut app App) {
 		}
 		nen := vgui.checkbox('${ch.name}##rpen${ci}', en)
 		if nen != en {
-			// the Buses panel's stopped-tick, verbatim in spirit: the runtime row AND the
-			// model move together, and dirty makes Save carry it to the file
-			app.mu.lock()
-			if ci < app.chans.len {
-				app.chans[ci].enabled = nen
-			}
-			app.proj.channels[ci].enabled = nen
-			app.mu.unlock()
-			app.dirty = true
+			// a PROJECT edit that also moves the runtime row — set_chan_enabled_stopped names
+			// the intent (this is NOT the Buses tick, which is runtime-only and does not
+			// survive Save; the first draft's comment claimed to mirror it and was wrong)
+			app.set_chan_enabled_stopped(ci, nen)
 		}
 		vgui.same_line()
-		if src == '' {
+		// the same disqualifiers replaying() applies, said HERE instead of as a silent skip
+		// at Start: a ticked row that will not play is a promise the panel must not make
+		if ch.listen_only {
+			vgui.text_colored(230, 120, 120,
+				"listen-only — will NOT play (never transmit is the editor's promise)")
+		} else if ch.typ == 'doip' {
+			vgui.text_colored(230, 120, 120, 'DoIP channel — replay does not apply')
+		} else if src == '' {
 			vgui.text_colored(230, 120, 120, 'no recording set')
 		} else if !os.exists(app.resolve_asset(src)) {
 			vgui.text_colored(230, 120, 120, '${src}  (NOT FOUND)')

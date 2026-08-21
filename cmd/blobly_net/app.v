@@ -102,13 +102,17 @@ mut:
 	// variable on the release frame, so a per-frame local re-seeded from the live position
 	// committed "seek to where you already are" on every release.
 	replay_seek map[u64]f32
-	trecs       []TRec
-	rx          u64 // total across channels
-	rev         u64
-	running     bool
-	dbs         []candb.Database // all loaded DBCs (union; trace/symbol decode)
-	dbs_paths   []string         // resolved file path per dbs entry (editor save target)
-	dbc_readers int              // live workers reading app.dbs lock-free (rx loops);
+	// Scan results for the Configure replay row, keyed by channel index — index-bound display
+	// state, dropped by drop_index_bound_ui() at every event that shifts indices. Under mu: the
+	// scan worker fills an entry from its thread.
+	replay_scans map[int]&ReplayScan
+	trecs        []TRec
+	rx           u64 // total across channels
+	rev          u64
+	running      bool
+	dbs          []candb.Database // all loaded DBCs (union; trace/symbol decode)
+	dbs_paths    []string         // resolved file path per dbs entry (editor save target)
+	dbc_readers  int              // live workers reading app.dbs lock-free (rx loops);
 	// the editor stays read-only until 0 — app.running clears BEFORE workers exit
 	dbs_by_iface map[string][]candb.Database // per-channel DBCs (generator message picker scope)
 	manifest     telem.Manifest
@@ -511,7 +515,7 @@ fn (mut app App) notify(msg string) {
 // project is left untouched.
 fn (mut app App) load_project(path string) {
 	app.stop()
-	app.close_chan_picker() // a pending dbc/manifest/replaysrc picker indexes the OLD channel set
+	app.drop_index_bound_ui() // pending pickers and Scan results index the OLD channel set
 	proj := project.load(path) or {
 		eprintln('load ${path}: ${err}')
 		app.notify('load failed: ${err}')
