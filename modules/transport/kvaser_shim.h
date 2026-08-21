@@ -135,11 +135,11 @@ static void ct_kvaser_close(int hnd) {
 	if (hnd >= 0) { ct_kv_busoff(hnd); ct_kv_close(hnd); }
 }
 
-#endif /* CT_KVASER_SHIM_H */
-
 /* Status flags of an on-bus handle. Returns -1 when the symbol is absent or the call fails
  * (the caller reads that as "cannot say"); 0 on success with *flags filled. */
 static int ct_kvaser_status(int hnd, uint32_t *flags) {
 	if (!ct_kv_readstatus) return -1;
 	return ct_kv_readstatus(hnd, flags) == 0 ? 0 : -1;
 }
+
+#endif /* CT_KVASER_SHIM_H */

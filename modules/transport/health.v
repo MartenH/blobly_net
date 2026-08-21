@@ -13,13 +13,6 @@ pub enum BusHealth {
 	bus_off       // counters hit 256: the controller LEFT the bus and transmits nothing
 }
 
-// HealthSource is the optional face a backend grows when its driver can report the ladder.
-// Separate from Bus so software buses (inproc/udp) need not pretend to have error counters.
-pub interface HealthSource {
-mut:
-	health() BusHealth
-}
-
 // health_name is the operator-facing word for a state, shared by the Buses panel and the Log.
 pub fn health_name(h BusHealth) string {
 	return match h {
@@ -33,9 +26,11 @@ pub fn health_name(h BusHealth) string {
 
 // --- per-backend decoders: values from the vendors' own headers, worst state wins ---
 
-// pcan_status_health decodes a PCANBasic status word (CAN_GetStatus / a status frame's
-// assembled code). PCAN_ERROR_BUSLIGHT 0x04, BUSHEAVY (= BUSWARNING) 0x08, BUSPASSIVE
-// 0x40000, BUSOFF 0x10 — from PCANBasic.h.
+// pcan_status_health decodes a PCANBasic status word (CAN_GetStatus). PCAN_ERROR_BUSLIGHT
+// 0x04, BUSHEAVY (= BUSWARNING) 0x08, BUSPASSIVE 0x40000, BUSOFF 0x10 — from PCANBasic.h.
+// A NONZERO word with none of the ladder bits (ILLHW when the adapter is unplugged,
+// INITIALIZE, …) is .unknown: "cannot say" — decoding it .ok painted a physically absent
+// adapter green (self-review). Only an exact 0 is the driver saying error-active-and-fine.
 pub fn pcan_status_health(st u32) BusHealth {
 	if st & 0x10 != 0 {
 		return .bus_off
@@ -46,26 +41,39 @@ pub fn pcan_status_health(st u32) BusHealth {
 	if st & 0x08 != 0 || st & 0x04 != 0 {
 		return .warning
 	}
-	return .ok
+	if st == 0 {
+		return .ok
+	}
+	return .unknown
 }
 
-// kvaser_status_health decodes canReadStatus flags: canSTAT_BUS_OFF 0x01, ERROR_PASSIVE
-// 0x02, ERROR_WARNING 0x40, ERROR_ACTIVE 0x10 — from canstat.h.
+// kvaser_status_health decodes canReadStatus flags — canstat.h: canSTAT_ERROR_PASSIVE 0x01,
+// canSTAT_BUS_OFF 0x02, canSTAT_ERROR_WARNING 0x04, canSTAT_ERROR_ACTIVE 0x08 (TX_PENDING
+// 0x10, RESERVED_1 0x40 carry no ladder meaning). The first transcription of this table had
+// BUS_OFF and ERROR_PASSIVE swapped and a warning mask that does not exist — with the test
+// pinning the swap; the review that caught it read the vendor's header, which is the only
+// defense a transcription has. .ok requires the EXPLICIT error-active bit: flags without any
+// ladder bit are .unknown, not a diagnosis.
 pub fn kvaser_status_health(flags u32) BusHealth {
-	if flags & 0x01 != 0 {
+	if flags & 0x02 != 0 {
 		return .bus_off
 	}
-	if flags & 0x02 != 0 {
+	if flags & 0x01 != 0 {
 		return .error_passive
 	}
-	if flags & 0x40 != 0 {
+	if flags & 0x04 != 0 {
 		return .warning
 	}
-	return .ok
+	if flags & 0x08 != 0 {
+		return .ok
+	}
+	return .unknown
 }
 
 // xl_chipstat_health decodes an XL_CHIP_STATE event's busStatus: XL_CHIPSTAT_BUSOFF 0x01,
-// ERROR_PASSIVE 0x02, ERROR_WARNING 0x04, ERROR_ACTIVE 0x08 — from vxlapi.h.
+// ERROR_PASSIVE 0x02, ERROR_WARNING 0x04, ERROR_ACTIVE 0x08 — from vxlapi.h. .ok requires
+// the explicit error-active bit; a zero busStatus is a driver that has not said, not a
+// healthy bus.
 pub fn xl_chipstat_health(bus_status u8) BusHealth {
 	if bus_status & 0x01 != 0 {
 		return .bus_off
@@ -76,7 +84,23 @@ pub fn xl_chipstat_health(bus_status u8) BusHealth {
 	if bus_status & 0x04 != 0 {
 		return .warning
 	}
-	return .ok
+	if bus_status & 0x08 != 0 {
+		return .ok
+	}
+	return .unknown
+}
+
+// health_rank orders the ladder for worst-of folding (a wire's health is the worst any
+// observer on it reports): bus_off worst, unknown least — "cannot say" never outranks a
+// diagnosis.
+pub fn health_rank(h BusHealth) int {
+	return match h {
+		.bus_off { 4 }
+		.error_passive { 3 }
+		.warning { 2 }
+		.ok { 1 }
+		.unknown { 0 }
+	}
 }
 
 // socketcan_err_health decodes a kernel error frame (can_id has CAN_ERR_FLAG set; delivery

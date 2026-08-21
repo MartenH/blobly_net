@@ -12,14 +12,32 @@ fn test_pcan_status_ladder() {
 	// worst wins when combined: a controller going off often carries the lower bits too
 	assert pcan_status_health(0x10 | 0x08 | 0x04) == .bus_off
 	assert pcan_status_health(0x40000 | 0x04) == .error_passive
+	// unplugged / uninitialized (ILLHW 0x1400, INITIALIZE 0x4000000): cannot say — NOT ok
+	assert pcan_status_health(0x1400) == .unknown
+	assert pcan_status_health(0x4000000) == .unknown
+}
+
+fn test_health_rank_orders_worst_first() {
+	assert health_rank(.bus_off) > health_rank(.error_passive)
+	assert health_rank(.error_passive) > health_rank(.warning)
+	assert health_rank(.warning) > health_rank(.ok)
+	assert health_rank(.ok) > health_rank(.unknown)
 }
 
 fn test_kvaser_status_ladder() {
-	assert kvaser_status_health(0x10) == .ok // ERROR_ACTIVE alone
-	assert kvaser_status_health(0x40) == .warning
-	assert kvaser_status_health(0x02) == .error_passive
-	assert kvaser_status_health(0x01) == .bus_off
-	assert kvaser_status_health(0x01 | 0x02 | 0x40) == .bus_off
+	// canstat.h: ERROR_PASSIVE 0x01, BUS_OFF 0x02, ERROR_WARNING 0x04, ERROR_ACTIVE 0x08,
+	// TX_PENDING 0x10, RESERVED_1 0x40. The first version of this test pinned a transcription
+	// with PASSIVE/BUS_OFF swapped and 0x40 invented as warning — a pin is only as good as
+	// the header it was read from.
+	assert kvaser_status_health(0x08) == .ok // ERROR_ACTIVE alone
+	assert kvaser_status_health(0x04) == .warning
+	assert kvaser_status_health(0x01) == .error_passive
+	assert kvaser_status_health(0x02) == .bus_off
+	assert kvaser_status_health(0x02 | 0x01 | 0x04) == .bus_off
+	// no ladder bit at all — TX_PENDING, RESERVED_1, or nothing — is "cannot say", never ok
+	assert kvaser_status_health(0x10) == .unknown
+	assert kvaser_status_health(0x40) == .unknown
+	assert kvaser_status_health(0) == .unknown
 }
 
 fn test_xl_chipstat_ladder() {
@@ -28,6 +46,7 @@ fn test_xl_chipstat_ladder() {
 	assert xl_chipstat_health(0x02) == .error_passive
 	assert xl_chipstat_health(0x01) == .bus_off
 	assert xl_chipstat_health(0x01 | 0x04) == .bus_off
+	assert xl_chipstat_health(0) == .unknown // the driver has not said — not a healthy bus
 }
 
 fn test_socketcan_err_ladder() {

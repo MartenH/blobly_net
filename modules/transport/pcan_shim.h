@@ -103,8 +103,6 @@ static int ct_pcan_read(uint16_t ch, uint32_t *id, uint8_t *msgtype, uint8_t *le
 	return 0;
 }
 
-#endif /* CT_PCAN_SHIM_H */
-
 /* Bus status word of an initialized channel (PCAN_ERROR_* bits: BUSLIGHT 0x04, BUSHEAVY
  * 0x08, BUSOFF 0x10, BUSPASSIVE 0x40000). 0 = error-active and healthy. Returns the raw
  * status; 0xFFFFFFFF when the symbol is absent (older DLL) — the caller reads that as
@@ -113,3 +111,5 @@ static uint32_t ct_pcan_status(uint16_t ch) {
 	if (!ct_fn_getstatus) return 0xFFFFFFFFu;
 	return ct_fn_getstatus(ch);
 }
+
+#endif /* CT_PCAN_SHIM_H */

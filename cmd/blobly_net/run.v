@@ -301,6 +301,11 @@ fn (mut app App) start() {
 		// which broadcasts only to already-attached subscribers — those frames genuinely had no
 		// listener, yet were tracked as if one existed and later marked as never sent.
 		app.chans[ci].link_down = !iface_link_up(ch.adapter, ch.address)
+		// a NEW run starts with no verdict: the fresh backend reports .unknown until its
+		// driver says otherwise, and a healthy bus may never say anything — carrying the
+		// previous run's BUS-OFF forward painted a repaired bus red for the process
+		// lifetime, with no transition left to clear it (self-review)
+		app.chans[ci].health = .unknown
 		// the same guard the mid-run toggle uses: disabling and re-enabling while this open is
 		// still pending would otherwise start a SECOND loop for one channel, and both would
 		// claim against the same monitor index — one gets the echo, the other files its copy
@@ -327,6 +332,9 @@ fn (mut app App) start() {
 			if b := app.open_tap_on(ch.iface, org_tx, ch.name) {
 				app.tx_buses[tx_bus_key(ch.name, ch.iface)] = b
 			} else {
+				// recorded in the same set the generator loop consults, or a generator on
+				// this channel re-pays the ~2s vendor open and re-logs the line
+				named_tap_failed[tx_bus_key(ch.name, ch.iface)] = true
 				app.notify('${ch.name}: transmit tap failed to open — ${err}')
 			}
 		}

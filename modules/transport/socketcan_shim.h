@@ -41,7 +41,10 @@ static inline int ct_can_open(const char *ifname) {
 	 * UNOBSERVABLE from this socket — a bench at bus-off looked like a healthy silent bus.
 	 * Also not fatal on refusal: health degrades to unknown, traffic still flows. The V
 	 * side recognizes these frames by CAN_ERR_FLAG in the id and never shows them as data. */
-	can_err_mask_t errs = CAN_ERR_MASK;
+	/* only the classes the decoder consumes: the full CAN_ERR_MASK delivered every class to
+	 * EVERY socket (taps included), and with berr-reporting on that is one frame per bus
+	 * error — tens of thousands a second flooding queues nothing drains (self-review) */
+	can_err_mask_t errs = CAN_ERR_CRTL | CAN_ERR_BUSOFF | CAN_ERR_RESTARTED;
 	setsockopt(s, SOL_CAN_RAW, CAN_RAW_ERR_FILTER, &errs, sizeof(errs));
 	return s;
 }

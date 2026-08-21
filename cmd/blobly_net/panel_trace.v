@@ -305,11 +305,30 @@ fn merge_dbs_from(dbs []candb.Database) candb.Database {
 // only in the flat table is invisible unless the user happens to switch modes, which is the
 // same as not reporting it.
 fn trace_name_cell(r TraceRow) string {
+	return trace_name_refused(r, r.refused)
+}
+
+// trace_name_refused takes the refusal as ITS OWN input because the grouped view aggregates
+// it: the mark cell already ORs refusal across the group, and text driven by the newest row
+// alone went wrong both ways — a group whose old rows were refused showed the bare mark (the
+// exact thing the comment below forbids), and a group whose newest row was refused claimed
+// NOT SENT for 200 frames that went out fine (self-review). Mark and text now share one
+// source per view.
+fn trace_name_refused(r TraceRow, refused bool) string {
 	base := if r.e2e == '' { r.name } else { '${r.name}  ${r.e2e}' }
 	// NOT SENT rides the name cell like a violation does: it is rare, the origin column is
 	// too narrow to spell it, and a mark alone ('x') must never be the only statement that
 	// nothing reached the wire
-	return if r.refused { '${base}  NOT SENT — driver refused' } else { base }
+	return if refused { '${base}  NOT SENT — driver refused' } else { base }
+}
+
+// verdict_mark is the ONE mark ladder — flat rows and grouped aggregates render through it,
+// or a wording change updates one view and not the other.
+fn verdict_mark(refused bool, missed bool) string {
+	if refused {
+		return ' x'
+	}
+	return if missed { '!' } else { '' }
 }
 
 fn draw_trace_all(id string, rows []TraceRow, filt string) {
@@ -419,10 +438,7 @@ fn gkey_frame(origin string, ch string, f transport.CanFrame) string {
 // node, wrong bitrate, swapped CANH/CANL, or a down link). The legend above the table
 // carries both.
 fn origin_mark(r TraceRow) string {
-	if r.refused {
-		return ' x'
-	}
-	return if r.missed { '!' } else { '' }
+	return verdict_mark(r.refused, r.missed)
 }
 
 // origin_cell paints the verdict: a failed emission renders red — the mark carries the
@@ -542,7 +558,8 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			vgui.table_cell(g.ch)
 			vgui.table_next_col()
 			// ### keys the tree id on identity only, so the live label / sort don't reset it.
-			open := vgui.tree_node_table('${idstr(g.id, g.ext)}  ${trace_name_cell(r)}###${k}')
+			open :=
+				vgui.tree_node_table('${idstr(g.id, g.ext)}  ${trace_name_refused(r, g.refused)}###${k}')
 			// clicking a row selects that frame (drives Signals/Graphics + "Add to filter")
 			if vgui.is_item_clicked() {
 				app.sel_id = int(g.id)
@@ -563,13 +580,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				}
 				vgui.end_popup()
 			}
-			origin_cell(g.origin, if g.refused {
-				' x'
-			} else if g.missed {
-				'!'
-			} else {
-				''
-			})
+			origin_cell(g.origin, verdict_mark(g.refused, g.missed))
 			vgui.table_cell('${r.data.len}')
 			vgui.table_cell(flags_str(r))
 			// data column: dim bytes that match the PREVIOUS frame of this group, normal for

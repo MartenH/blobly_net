@@ -67,15 +67,29 @@ pub fn (mut b SocketCanBus) send(frame CanFrame) ! {
 
 pub fn (mut b SocketCanBus) recv(timeout_ms int) !CanFrame {
 	deadline := time.ticks() + i64(timeout_ms)
+	mut buf := []u8{len: 64} // an FD frame is up to 64 bytes; a classic one fills the first 8
+	mut polled := false
 	for {
 		mut raw_id := u32(0)
 		mut fflags := u8(0)
-		mut buf := []u8{len: 64} // an FD frame is up to 64 bytes; a classic one fills the first 8
 		mut wait := timeout_ms
 		if timeout_ms >= 0 {
 			left := int(deadline - time.ticks())
-			wait = if left < 0 { 0 } else { left }
+			if left <= 0 {
+				// Past the deadline the loop must EXIT, not downgrade to nonblocking polls:
+				// draining a backlog of error frames at wait=0 overran the caller's budget by
+				// the drain time, and an ISO-TP N_Cr timeout fed a late consecutive frame it
+				// should have refused (self-review). One poll is still owed when nothing has
+				// been tried yet — recv(0) is the drain loop's nonblocking probe.
+				if polled {
+					return error('timeout')
+				}
+				wait = 0
+			} else {
+				wait = left
+			}
 		}
+		polled = true
 		dlc := C.ct_can_recv(b.fd, &raw_id, &u8(buf.data), wait, &fflags)
 		if dlc == -1 {
 			return error('timeout')
@@ -97,6 +111,13 @@ pub fn (mut b SocketCanBus) recv(timeout_ms int) !CanFrame {
 			}
 			continue
 		}
+		// A DATA frame is proof of life: the documented bus-off recovery on Linux is
+		// `ip link set canX down && up`, which resets the controller through close/open and
+		// emits neither RESTARTED nor CRTL_ACTIVE — the latch would hold red on a bus that
+		// is plainly carrying traffic again (self-review). Traffic clears it.
+		if b.hstate == .bus_off {
+			b.hstate = .ok
+		}
 		ext := (raw_id & can_eff_flag) != 0
 		rtr := (raw_id & can_rtr_flag) != 0
 		id := if ext { raw_id & can_eff_mask } else { raw_id & can_sff_mask }
@@ -114,6 +135,8 @@ pub fn (mut b SocketCanBus) recv(timeout_ms int) !CanFrame {
 			data:     data
 		}
 	}
+	// unreachable — every path exits by return above; V requires a terminal return after a
+	// bare `for`
 	return error('timeout')
 }
 

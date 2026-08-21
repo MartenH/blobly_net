@@ -484,7 +484,9 @@ fn health_msg(iface string, from transport.BusHealth, to transport.BusHealth) st
 			}
 		}
 		.unknown {
-			base
+			// reachable only if a future caller drops the != .unknown gate — say something
+			// legible rather than a trailing-space fragment
+			'${iface}: bus state changed'
 		}
 	}
 }
@@ -578,7 +580,10 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			h := bus.health()
 			if h != .unknown && h != last_health {
 				a.mu.lock()
-				if a.run_gen == gen && ci < a.chans.len {
+				// running AND generation, notify_gen's own rule: a health event landing in
+				// the teardown after Stop must neither narrate a finished run nor seed a
+				// stale verdict for the next one (self-review)
+				if a.running && a.run_gen == gen && ci < a.chans.len {
 					a.chans[ci].health = h
 					a.log_append_locked(health_msg(iface, last_health, h))
 				}
