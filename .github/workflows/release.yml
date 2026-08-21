@@ -1,0 +1,194 @@
+# A release is cut by pushing a version tag: `git tag v0.1.0 && git push origin v0.1.0`.
+#
+# Two invariants, enforced rather than trusted:
+#  - the tag must equal the version in v.mod — the repo's ONE version statement, which the
+#    binary itself decodes into `--version` and the window title — and the Linux job then
+#    asserts the BUILT BINARY answers with the tag (the Windows exe compiles the same
+#    committed v.mod, so one execution covers both; that transitivity breaks the day the
+#    version becomes build-injected, which is why it is written down here);
+#  - the tagged commit must be reachable from origin/main, so a release can only come from
+#    reviewed history. windows.yml publishes for a tag ONLY when this workflow calls it with
+#    publish_bundle=true, behind that guard — never on the ref's say-so.
+#
+# The bundle payload list lives in scripts/stage_bundle.sh, shared with windows.yml — one
+# list, two archives, no drift. NO vendor CAN library ships either way: vxlapi64.dll,
+# PCANBasic.dll and canlib32.dll come with the vendor's driver installs, and the Vector XL
+# terms forbid redistribution (ROADMAP: the one hard-to-take-back mistake).
+#
+# The release binary is the same non-optimized build every test and CI run exercises — on a
+# beta compiler, shipping the binary everybody tested beats shipping a -prod profile nothing
+# ever ran. Revisit when CI itself builds -prod.
+name: release
+
+on:
+  push:
+    tags: ['v[0-9]*'] # not plain v*: the v-toolchain tag (prebuilt V for CI) must not fire this
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+# read-only by default: the called Windows build compiles third-party sources (cimgui,
+# vlang/markdown) and must not hold a token that can write releases. Only publish gets write.
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      # full history: merge-base needs origin/main, and checkout@v4 at depth 0 fetches all
+      # branch heads even on a tag ref
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: tag equals v.mod and sits on main
+        run: |
+          ver="$(sed -n "s/^\s*version: '\(.*\)'\s*\$/\1/p" v.mod)"
+          [ -n "$ver" ] || { echo "could not parse version from v.mod — its format changed?"; exit 1; }
+          [ "v$ver" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != v.mod v$ver"; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+            || { echo "tagged commit is not on origin/main — releases come from reviewed history only"; exit 1; }
+
+  windows:
+    needs: guard
+    uses: ./.github/workflows/windows.yml
+    with:
+      publish_bundle: true # only ever set here, behind the guard above
+
+  linux:
+    needs: guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vlang/setup-v@v1.4
+        with:
+          check-latest: true
+      # same deps + module fetch as ci.yml's GUI job — the build IS scripts/run_gui.sh, the
+      # command devs run, so the release binary is the binary everyone has been testing
+      - name: Native deps (apt)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            g++ pkg-config libglfw3-dev libfreetype-dev libgl1-mesa-dev
+      - name: Fetch vlang/markdown (Help browser view)
+        run: |
+          git -c advice.detachedHead=false clone --quiet https://github.com/vlang/markdown.git "$HOME/.vmodules/markdown"
+          git -C "$HOME/.vmodules/markdown" -c advice.detachedHead=false checkout --quiet ef2f101
+      - name: Build GUI app
+        run: RUN=0 bash scripts/run_gui.sh
+      - name: Sanity — the binary answers with the tagged version
+        run: |
+          got="$(./build/blobly_net --version)"
+          [ "$got" = "blobly_net ${GITHUB_REF_NAME#v}" ] || { echo "binary says '$got'"; exit 1; }
+      - name: Stage + tar
+        run: |
+          mkdir -p dist/blobly_net
+          sh scripts/stage_bundle.sh dist/blobly_net "${GITHUB_REF_NAME#v}"
+          cp build/blobly_net dist/blobly_net/
+          tar -C dist -czf "blobly_net-${GITHUB_REF_NAME}-linux-x64.tar.gz" blobly_net
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-tarball
+          path: blobly_net-*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # the checkout is load-bearing three times over: packaging/RELEASE_NOTES_HEADER.md is
+      # read below, gh resolves the repo from it, and the tag revalidation + previous-tag
+      # baseline need the refs — hence full depth with tags. The tarball downloads into the
+      # workspace root; its name is untracked, so the two writers cannot collide.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-tarball
+      # into a subdirectory named for the app, so the zip below carries ONE top-level folder
+      # like the tar does — "Extract All" into Downloads must not scatter an exe, fifteen
+      # DLLs and six directories among the user's files
+      - uses: actions/download-artifact@v4
+        with:
+          name: blobly_net-windows-x64
+          path: winbundle/blobly_net
+      - name: Zip the Windows bundle
+        working-directory: winbundle
+        run: zip -qr "../blobly_net-${GITHUB_REF_NAME}-windows-x64.zip" blobly_net
+      # The Windows build runs for the better part of an hour, and a tag deleted or force
+      # -moved in that window must not publish: gh would silently re-create a missing tag
+      # from the DEFAULT BRANCH, associating these binaries with source they were not built
+      # from. Re-fetch the tag and require its peeled commit to still be the one the guard
+      # proved and the jobs built (codex #137 r1) — and --verify-tag below refuses the
+      # re-creation path outright.
+      - name: The tag still is what the guard proved
+        run: |
+          git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}" \
+            || { echo "tag ${GITHUB_REF_NAME} is gone from origin — not publishing"; exit 1; }
+          now="$(git rev-parse "${GITHUB_REF_NAME}^{commit}")"
+          [ "$now" = "$GITHUB_SHA" ] \
+            || { echo "tag moved during the build (now $now, built $GITHUB_SHA) — not publishing"; exit 1; }
+          # ... and the ANCESTRY too: a main force-pushed during the build to recall this
+          # very commit makes the guard's proof stale, and the reviewed-history gate must
+          # hold at publication time, not only an hour earlier (codex #137 r4)
+          git fetch --force origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+            || { echo "the tagged commit is no longer on origin/main — not publishing"; exit 1; }
+      # Notes = the committed header (what the version's claims rest on: CI-verified virtual
+      # paths vs hand-verified vendor backends, the no-vendor-DLL rule, the Linux runtime
+      # prerequisites) + GitHub's generated changelog. Composed via the API so the two always
+      # land in one body, in that order. The changelog BASELINE is the previous v[0-9]* tag,
+      # named explicitly: left to the API's automatic choice it baselines on the repository's
+      # latest RELEASE, which today is the v-toolchain tooling entry — the first product
+      # changelog would then omit every PR merged before that tag (codex #137 r1). No
+      # previous product tag = first release, said outright instead of diffed against
+      # tooling.
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # the highest product tag that is an ANCESTOR of this commit — not merely "any
+          # other tag": backfilling v0.1.0 after a v0.2.0 exists must not baseline the
+          # changelog on the later release (codex #137 r2)
+          prev="$(git tag -l 'v[0-9]*' --sort=-v:refname | grep -vx "$GITHUB_REF_NAME" \
+            | while read -r t; do
+                git merge-base --is-ancestor "$t" "$GITHUB_SHA" 2>/dev/null || continue
+                printf '%s\n' "$t"
+                break
+              done)"
+          if [ -n "$prev" ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+              -f tag_name="$GITHUB_REF_NAME" -f previous_tag_name="$prev" --jq .body > generated.md
+          else
+            # a first release still owes the promised PR history — the API cannot express
+            # "baseline = the beginning" (it wants a tag, and auto-choice picks the
+            # v-toolchain tooling release), so the changelog is built from the merged PRs
+            # directly (codex #137 r4)
+            # bounded by the TAGGED commit's history, not "merged by publication time": a
+            # PR landing during the hour-long build is not in these binaries and must not
+            # be advertised by them (codex #137 r5) — hence the ancestry filter per merge
+            # commit (PRs merged by other means may carry no mergeCommit; skipped, since
+            # nothing proves they are in this history)
+            printf '## First release — every PR in this history\n\n' > generated.md
+            gh pr list --state merged --base main --limit 1000 \
+              --json number,title,mergeCommit \
+              --jq '.[] | select(.mergeCommit != null) | "\(.mergeCommit.oid) \(.number) \(.title)"' \
+              | while read -r oid num title; do
+                  git merge-base --is-ancestor "$oid" "$GITHUB_SHA" 2>/dev/null || continue
+                  printf '* %s (#%s)\n' "$title" "$num"
+                done >> generated.md
+          fi
+          # the header's evidence link must survive being a RELEASE body, where relative
+          # paths resolve under /releases/tag/ — pin it to the released tag (codex #137 r2)
+          sed "s|@TAG@|$GITHUB_REF_NAME|g" packaging/RELEASE_NOTES_HEADER.md > header.md
+          cat header.md generated.md > notes.md
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Blobly Net $GITHUB_REF_NAME" \
+            --verify-tag \
+            --notes-file notes.md \
+            "blobly_net-${GITHUB_REF_NAME}-linux-x64.tar.gz" \
+            "blobly_net-${GITHUB_REF_NAME}-windows-x64.zip"

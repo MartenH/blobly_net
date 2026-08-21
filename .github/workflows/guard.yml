@@ -12,6 +12,11 @@ on:
   pull_request_target:
     types: [opened, reopened]
   push:
+    # branches only: a v* tag push (release.yml's trigger) points at a commit this guard
+    # already scanned when it landed on main — release.yml requires exactly that — so a tag
+    # run would full-clone history to scan an empty range and paint a second unrelated
+    # status on the release commit.
+    branches: ['**']
 
 permissions:
   contents: read
