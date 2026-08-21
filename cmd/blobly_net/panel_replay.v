@@ -169,60 +169,102 @@ fn draw_replay(mut app App) {
 	vgui.end()
 }
 
-// draw_replay_config lists the project's replay channels for editing while nothing plays:
-// a play-on-Start checkbox (the channel's `enabled` — the same flag the Buses panel ticks,
-// written to chans AND proj exactly as its stopped tick does) and the recording, with a
-// Browse into the file picker. All of it is model state: Save writes the .blobnet.
+// draw_replay_config lists the project's replay channels for editing while nothing plays —
+// GROUPED BY RECORDING, because that is what Start does: every channel naming one source
+// joins a single group on a single clock (spawn_replay_workers_locked, canonical path as the
+// key — the SAME key, so the panel's grouping is a promise Start keeps). Each member row is a
+// play-on-Start checkbox (a PROJECT edit through set_chan_enabled_stopped), the recorded bus
+// feeding that wire, and Browse. Save writes all of it to the .blobnet.
 fn draw_replay_config(mut app App) {
-	mut have := false
+	// group by the canonical resolved path — the rule spawn_replay_workers_locked applies —
+	// with sourceless channels each alone under a sentinel key that cannot be a path
+	mut order := []string{}
+	mut members := map[string][]int{}
+	mut disp := map[string]string{}
 	for ci in 0 .. app.proj.channels.len {
-		if app.proj.channels[ci].mode != .replay {
-			continue
-		}
-		have = true
 		ch := app.proj.channels[ci]
-		src := if r := ch.replay { r.source } else { '' }
-		en := ch.enabled
-		if app.running {
-			// mid-run the set is fixed (topology at Start); show, don't edit
-			vgui.text_dim('${if en { '[x]' } else { '[ ]' }} ${ch.name}  ${src}')
+		if ch.mode != .replay {
 			continue
 		}
-		nen := vgui.checkbox('${ch.name}##rpen${ci}', en)
-		if nen != en {
-			// a PROJECT edit that also moves the runtime row — set_chan_enabled_stopped names
-			// the intent (this is NOT the Buses tick, which is runtime-only and does not
-			// survive Save; the first draft's comment claimed to mirror it and was wrong)
-			app.set_chan_enabled_stopped(ci, nen)
+		src := if r := ch.replay { r.source } else { '' }
+		key := if src == '' { '\x00none:${ci}' } else { os.real_path(app.resolve_asset(src)) }
+		if key !in members {
+			order << key
+			disp[key] = src
 		}
-		vgui.same_line()
-		// the same disqualifiers replaying() applies, said HERE instead of as a silent skip
-		// at Start: a ticked row that will not play is a promise the panel must not make
-		if ch.listen_only {
-			vgui.text_colored(230, 120, 120,
-				"listen-only — will NOT play (never transmit is the editor's promise)")
-		} else if ch.typ == 'doip' {
-			vgui.text_colored(230, 120, 120, 'DoIP channel — replay does not apply')
-		} else if src == '' {
+		members[key] << ci
+	}
+	if order.len == 0 {
+		vgui.text_dim('no replay channels in this project')
+		vgui.text_dim('make one: Configure -> set a bus\'s mode to "replay" — then pick its recording here.')
+		vgui.text_dim('See docs/simulation.md ("Replay — playing a recording onto a bus").')
+		return
+	}
+	for key in order {
+		cis := members[key]
+		src := disp[key]
+		// group header: the recording, its shared-clock promise, and its problems — a
+		// missing file fails the GROUP at Start, so it is said once here, not per row
+		if src == '' {
 			vgui.text_colored(230, 120, 120, 'no recording set')
 		} else if !os.exists(app.resolve_asset(src)) {
 			vgui.text_colored(230, 120, 120, '${src}  (NOT FOUND)')
 		} else {
 			vgui.text(src)
 		}
-		vgui.same_line()
-		if vgui.small_button('Browse##rpsrc${ci}') {
-			app.open_browser('replaysrc:${ci}')
+		if cis.len > 1 {
+			vgui.same_line()
+			vgui.text_dim('(one clock)')
 		}
-		spd := if r := ch.replay { r.speed } else { 1.0 }
-		lp := if r := ch.replay { r.repeat } else { false }
-		vgui.text_dim('   speed ${spd:.2}x${if lp { ' · loop' } else { '' }} — press Start to play (speed/loop: Configure)')
+		for ci in cis {
+			ch := app.proj.channels[ci]
+			en := ch.enabled
+			bus := if r := ch.replay { r.bus } else { '' }
+			arrow := if bus != '' { '<- ${bus}' } else { '' }
+			if app.running {
+				// mid-run the set is fixed (topology at Start); show, don't edit
+				vgui.text_dim('   ${if en { '[x]' } else { '[ ]' }} ${ch.name}  ${arrow}')
+				continue
+			}
+			vgui.text('  ')
+			vgui.same_line()
+			nen := vgui.checkbox('${ch.name}##rpen${ci}', en)
+			if nen != en {
+				// a PROJECT edit that also moves the runtime row — set_chan_enabled_stopped
+				// names the intent (NOT the Buses tick, which is runtime-only and does not
+				// survive Save)
+				app.set_chan_enabled_stopped(ci, nen)
+			}
+			// the same disqualifiers replaying() applies, said HERE instead of as a silent
+			// skip at Start: a ticked row that will not play is a promise the panel must
+			// not make
+			if ch.listen_only {
+				vgui.same_line()
+				vgui.text_colored(230, 120, 120,
+					"listen-only — will NOT play (never transmit is the editor's promise)")
+			} else if ch.typ == 'doip' {
+				vgui.same_line()
+				vgui.text_colored(230, 120, 120, 'DoIP channel — replay does not apply')
+			} else if arrow != '' {
+				vgui.same_line()
+				vgui.text('${arrow}')
+			} else if src != '' && cis.len > 1 {
+				// several channels on one recording and this one names no bus: Start will
+				// refuse the ambiguity — say it where the pairing is being read
+				vgui.same_line()
+				vgui.text_colored(230, 120, 120,
+					'<- no bus: set (Scan the recording in Configure and `use` one)')
+			}
+			vgui.same_line()
+			if vgui.small_button('Browse##rpsrc${ci}') {
+				app.open_browser('replaysrc:${ci}')
+			}
+			spd := if r := ch.replay { r.speed } else { 1.0 }
+			lp := if r := ch.replay { r.repeat } else { false }
+			vgui.text_dim('      speed ${spd:.2}x${if lp { ' · loop' } else { '' }} — press Start to play (speed/loop: Configure)')
+		}
 	}
-	if !have {
-		vgui.text_dim('no replay channels in this project')
-		vgui.text_dim('make one: Configure -> set a bus\'s mode to "replay" — then pick its recording here.')
-		vgui.text_dim('See docs/simulation.md ("Replay — playing a recording onto a bus").')
-	} else if !app.running {
+	if !app.running {
 		vgui.text_dim('ticks and files are PROJECT edits — Save writes them to the .blobnet')
 	}
 }
