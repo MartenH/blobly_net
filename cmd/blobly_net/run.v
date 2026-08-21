@@ -358,7 +358,12 @@ fn (mut app App) start() {
 	// a generator may target a bus whose channel isn't itself monitored — open those too
 	for sr in app.senders {
 		tgt := sr.target()
-		if tgt != '' && tx_bus_key('', tgt) !in app.tx_buses {
+		// dedupe in the OUTER condition, like the named branch below: gating only the log
+		// line still re-attempted the open per sender, and a vendor open can block ~2s
+		// waiting for a port release — hundreds of generators on one dead target turned
+		// Start into minutes of retrying an answer it already had (codex #141 r3)
+		if tgt != '' && tx_bus_key('', tgt) !in app.tx_buses
+			&& transport.destination_key(tgt) !in anon_tap_failed {
 			// the anonymous tap FIRST: tx_on falls back to it for the paths with no owning
 			// channel — Quick Send, diagnostics, shell — and a bus that is only a generator
 			// target would otherwise have none, so those reported "no open bus for …".
@@ -366,14 +371,9 @@ fn (mut app App) start() {
 				app.tx_buses[tx_bus_key('', tgt)] = b
 			} else {
 				// a generator whose only bus fails to open is a silent dead generator —
-				// the same class as the channel taps above, one loop down. Deduped by the
-				// SAME sets as those taps: hundreds of generators sharing one dead target
-				// must not evict the useful diagnostics from the Log's bounded buffer.
-				// (plain else, dedupe inside: an `else if` loses the guard's err binding)
-				if transport.destination_key(tgt) !in anon_tap_failed {
-					anon_tap_failed[transport.destination_key(tgt)] = true
-					app.notify('generator target ${tgt}: transmit tap failed to open — ${err}')
-				}
+				// the same class as the channel taps above, one loop down
+				anon_tap_failed[transport.destination_key(tgt)] = true
+				app.notify('generator target ${tgt}: transmit tap failed to open — ${err}')
 			}
 		}
 		if tgt != '' && tx_bus_key(sr.chan, tgt) !in app.tx_buses
