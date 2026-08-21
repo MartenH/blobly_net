@@ -295,9 +295,13 @@ void vgui_set_next_window(float x, float y, float w, float h) {
     // app runs on another one. Offset by the main viewport pos. (#55 applied this to
     // eval/vgui/vgui_glue.cpp; the libs copy this app actually links never got it — so
     // every floating window regressed to the wrong monitor.)
+    // FirstUseEver, NOT Once: Once re-applies on the first Begin of EVERY SESSION and
+    // overrides the rect imgui.ini saved, so a persistent window (the floating DBC editor)
+    // snapped back to its hardcoded default on every launch. FirstUseEver yields to the ini —
+    // the caller's values are only the seed for a window the user has never placed.
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + x, vp->Pos.y + y), ImGuiCond_Once);
-    ImGui::SetNextWindowSize(ImVec2(w,h), ImGuiCond_Once);
+    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + x, vp->Pos.y + y), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(w,h), ImGuiCond_FirstUseEver);
 }
 // vgui_set_window_focus brings a docked window's tab to the front by name.
 void vgui_set_window_focus(const char* name) { ImGui::SetWindowFocus(name); }
@@ -541,6 +545,8 @@ int vgui_input_int(const char* label, int* v) {
 // A thin draggable divider between two side-by-side panes. Place it (with same_line) after the
 // left child_end and before the right child. Drag it to grow/shrink the left pane; returns the
 // new width, clamped to [min_w, max_w]. The handle is invisible until hovered/active.
+// remaining content-region extent in the current window/child — pane-budget arithmetic for
+// splitter clamps and fill-minus-N layouts.
 float vgui_content_avail_w(void) { return ImGui::GetContentRegionAvail().x; }
 float vgui_content_avail_h(void) { return ImGui::GetContentRegionAvail().y; }
 
@@ -548,40 +554,40 @@ int vgui_is_item_deactivated_after_edit(void) {
     return ImGui::IsItemDeactivatedAfterEdit() ? 1 : 0;
 }
 
+// ONE splitter body for both axes. The guarantee "neither pane can be squeezed out" is a
+// property of the WIDGET, not a discipline for call sites: max is floored at min here, because
+// the first horizontal call site re-derived the sibling's clamp and dropped exactly that floor
+// — a short pane then inverted the clamp, drove the stored size negative, and the caller's
+// "<= 0 means default" seed reset the user's dragged height every frame.
+static float splitter_axis(const char* id, float pos, float min_v, float max_v, bool horizontal) {
+    if (max_v < min_v) max_v = min_v;
+    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0,0,0,0));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4(ImGuiCol_SeparatorHovered));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImGui::GetStyleColorVec4(ImGuiCol_SeparatorActive));
+    const float grip = 6.0f;
+    float span = horizontal ? ImGui::GetContentRegionAvail().x : ImGui::GetContentRegionAvail().y;
+    if (span < 1.0f) span = 1.0f;
+    ImGui::Button(id, horizontal ? ImVec2(span, grip) : ImVec2(grip, span));
+    ImGui::PopStyleColor(3);
+    if (ImGui::IsItemHovered() || ImGui::IsItemActive())
+        ImGui::SetMouseCursor(horizontal ? ImGuiMouseCursor_ResizeNS : ImGuiMouseCursor_ResizeEW);
+    if (ImGui::IsItemActive())
+        pos += horizontal ? ImGui::GetIO().MouseDelta.y : ImGui::GetIO().MouseDelta.x;
+    if (pos < min_v) pos = min_v;
+    if (pos > max_v) pos = max_v;
+    return pos;
+}
+
 float vgui_splitter_v(const char* id, float w, float min_w, float max_w) {
-    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0,0,0,0));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4(ImGuiCol_SeparatorHovered));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImGui::GetStyleColorVec4(ImGuiCol_SeparatorActive));
-    float h = ImGui::GetContentRegionAvail().y;
-    if (h < 1.0f) h = 1.0f;
-    ImGui::Button(id, ImVec2(6.0f, h));
-    ImGui::PopStyleColor(3);
-    if (ImGui::IsItemHovered() || ImGui::IsItemActive())
-        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
-    if (ImGui::IsItemActive())
-        w += ImGui::GetIO().MouseDelta.x;
-    if (w < min_w) w = min_w;
-    if (w > max_w) w = max_w;
-    return w;
+    return splitter_axis(id, w, min_w, max_w, false);
 }
-// horizontal counterpart of vgui_splitter_v: a draggable divider between two stacked panes.
-// Returns the new height of the pane ABOVE it.
+
+// horizontal counterpart: a draggable divider between two stacked panes; returns the new
+// height of the pane ABOVE it.
 float vgui_splitter_h(const char* id, float h, float min_h, float max_h) {
-    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0,0,0,0));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4(ImGuiCol_SeparatorHovered));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImGui::GetStyleColorVec4(ImGuiCol_SeparatorActive));
-    float w = ImGui::GetContentRegionAvail().x;
-    if (w < 1.0f) w = 1.0f;
-    ImGui::Button(id, ImVec2(w, 6.0f));
-    ImGui::PopStyleColor(3);
-    if (ImGui::IsItemHovered() || ImGui::IsItemActive())
-        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
-    if (ImGui::IsItemActive())
-        h += ImGui::GetIO().MouseDelta.y;
-    if (h < min_h) h = min_h;
-    if (h > max_h) h = max_h;
-    return h;
+    return splitter_axis(id, h, min_h, max_h, true);
 }
+
 void vgui_set_next_item_width(float w) { ImGui::SetNextItemWidth(w); }
 // advance the cursor horizontally on the current line (a left inset / spacer).
 void vgui_indent_x(float w) { ImGui::SetCursorPosX(ImGui::GetCursorPosX() + w); }

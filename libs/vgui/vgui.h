@@ -94,6 +94,7 @@ float vgui_splitter_v(const char* id, float w, float min_w, float max_w);
 float vgui_splitter_h(const char* id, float h, float min_h, float max_h);
 // width still available in the current window/child (px) — for clamping a persisted pane width
 // against a panel that has since been docked or resized narrower.
+/* remaining content-region width/height in the current window or child */
 float vgui_content_avail_w(void);
 float vgui_content_avail_h(void);
 // true on the frame the PREVIOUS item stopped being edited and its value changed. An input

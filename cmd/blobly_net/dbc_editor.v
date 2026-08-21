@@ -613,8 +613,12 @@ fn draw_dbc_editor(mut app App) {
 		}
 	}
 	vgui.child_end()
-	// drag to trade height between the messages box above and the signals box below (which
-	// fills the remainder) — clamped so neither can be squeezed out entirely
+	// drag to trade height between the messages box above and the signals region below (which
+	// fills the remainder). 160*sc is the reserve kept below the divider: the message-button
+	// row, the signals separator + filter row, a minimum useful signals height, and the signal
+	// button row. If the pane is shorter than that, the splitter itself floors max at min —
+	// the guarantee lives in the widget, not here (the first cut re-derived the sibling
+	// splitter's clamp and dropped exactly that floor).
 	msgs_max := app.dbc_ed.msgs_h + vgui.content_avail_h() - 160 * sc
 	app.dbc_ed.msgs_h = vgui.splitter_h('##dbced_hsplit', app.dbc_ed.msgs_h, 80 * sc, msgs_max)
 
@@ -693,8 +697,45 @@ fn draw_dbc_editor(mut app App) {
 
 		// Signals List for Selected Message
 		vgui.separator_text('signals (${app.dbs[di].messages[mi].signals.len})')
-		// The +/- signal buttons live ABOVE the table: the signals box below fills every
-		// remaining pixel of the pane, so anything after it would render off the bottom.
+		vgui.set_next_item_width(180 * sc)
+		vgui.input_text('filter signals##sf', mut app.dbc_ed.sig_filter_buf)
+		sfilter := vgui.buf_str(app.dbc_ed.sig_filter_buf).to_lower()
+		// Fill the remaining left-pane height MINUS one button row — negative height is
+		// ImGui's fill-minus-N, the same shape the Shell panel uses for its input row. The
+		// old fixed 180*sc wasted every tall window and starved every short one.
+		vgui.child_begin('##dbcsigbox', -30 * sc)
+		if vgui.table_begin('##dbcsigtable', 4) {
+			vgui.table_setup_col('#', 18 * sc)
+			vgui.table_setup_col('name', 130 * sc)
+			vgui.table_setup_col('start|len', 65 * sc)
+			vgui.table_setup_col('fmt', 45 * sc)
+			vgui.table_headers()
+			for i, sg in app.dbs[di].messages[mi].signals {
+				if sfilter != '' {
+					name_match := sg.name.to_lower().contains(sfilter)
+					unit_match := sg.unit.to_lower().contains(sfilter)
+					desc_match := sg.desc.to_lower().contains(sfilter)
+					if !name_match && !unit_match && !desc_match {
+						continue
+					}
+				}
+				or_tag := if sg.byte_order == .little_endian { 'LE' } else { 'BE' }
+				sgn := if sg.is_signed { 'i' } else { 'u' }
+				cr, cg, cb := dbc_ed_color(i)
+				vgui.table_row()
+				vgui.table_next_col()
+				vgui.text_colored(u8(cr), u8(cg), u8(cb), '#')
+				vgui.table_next_col()
+				if vgui.selectable('${sg.name}##ds${i}', app.dbc_ed.sig == i) {
+					app.dbc_ed.sig = i
+				}
+				vgui.table_cell('${sg.start_bit}|${sg.length}')
+				vgui.table_cell('@${or_tag}${sgn}')
+			}
+			vgui.table_end()
+		}
+		vgui.child_end()
+
 		if !ro && vgui.small_button('+ signal') {
 			app.mu.lock()
 			mut top := 0
@@ -759,45 +800,6 @@ fn draw_dbc_editor(mut app App) {
 				return
 			}
 		}
-		vgui.set_next_item_width(180 * sc)
-		vgui.input_text('filter signals##sf', mut app.dbc_ed.sig_filter_buf)
-		sfilter := vgui.buf_str(app.dbc_ed.sig_filter_buf).to_lower()
-
-		// FILLS the remaining left-pane height (0): the old fixed 180*sc wasted every tall
-		// window and starved every short one. The +/- signal buttons moved above the table for
-		// exactly this — a filling child leaves no room below itself.
-		vgui.child_begin('##dbcsigbox', 0)
-		if vgui.table_begin('##dbcsigtable', 4) {
-			vgui.table_setup_col('#', 18 * sc)
-			vgui.table_setup_col('name', 130 * sc)
-			vgui.table_setup_col('start|len', 65 * sc)
-			vgui.table_setup_col('fmt', 45 * sc)
-			vgui.table_headers()
-			for i, sg in app.dbs[di].messages[mi].signals {
-				if sfilter != '' {
-					name_match := sg.name.to_lower().contains(sfilter)
-					unit_match := sg.unit.to_lower().contains(sfilter)
-					desc_match := sg.desc.to_lower().contains(sfilter)
-					if !name_match && !unit_match && !desc_match {
-						continue
-					}
-				}
-				or_tag := if sg.byte_order == .little_endian { 'LE' } else { 'BE' }
-				sgn := if sg.is_signed { 'i' } else { 'u' }
-				cr, cg, cb := dbc_ed_color(i)
-				vgui.table_row()
-				vgui.table_next_col()
-				vgui.text_colored(u8(cr), u8(cg), u8(cb), '#')
-				vgui.table_next_col()
-				if vgui.selectable('${sg.name}##ds${i}', app.dbc_ed.sig == i) {
-					app.dbc_ed.sig = i
-				}
-				vgui.table_cell('${sg.start_bit}|${sg.length}')
-				vgui.table_cell('@${or_tag}${sgn}')
-			}
-			vgui.table_end()
-		}
-		vgui.child_end()
 	}
 	vgui.child_end() // end left pane
 
