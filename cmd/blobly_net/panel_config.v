@@ -7,6 +7,14 @@ import mf4
 import player
 import candb
 
+// is_recording_target: does this picker action open a recording? ONE predicate — the ext
+// filter, the samples shortcut and the title each asked separately, and two of the three had
+// already drifted to the colon-less prefix (matching a hypothetical 'replaysrc2' target the
+// confirm dispatch would not).
+fn is_recording_target(t string) bool {
+	return t == 'recording' || t.starts_with('replaysrc:')
+}
+
 // open_browser opens the file browser for a target action:
 //   'open'          — load a project (.blobnet)
 //   'saveas'        — Save As (.blobnet, filename input)
@@ -25,7 +33,7 @@ fn (mut app App) open_browser(target string) {
 		['.toml']
 	} else if target == 'flash' {
 		['.img', '.bin'] // wrapped .img preferred, raw .bin allowed
-	} else if target == 'recording' || target.starts_with('replaysrc') {
+	} else if is_recording_target(target) {
 		['.log', '.mf4'] // recordings come in both formats; one picker shows both
 	} else {
 		[]string{}
@@ -84,7 +92,7 @@ fn draw_filebrowser(mut app App) {
 		'Open system.toml'
 	} else if app.fb_target == 'recording' {
 		'Open Recording'
-	} else if app.fb_target.starts_with('replaysrc') {
+	} else if app.fb_target.starts_with('replaysrc:') {
 		'Replay Recording'
 	} else if app.fb_target == 'flash' {
 		// fell through to 'Attach Manifest' before — the firmware picker wore another
@@ -112,8 +120,7 @@ fn draw_filebrowser(mut app App) {
 	// The shipped demo capture lives in samples/ — the old Trace path field defaulted to it,
 	// and removing that field removed the only pointer a fresh setup had to a file this
 	// picker can open. Only for the recording target; other pickers have no business there.
-	if (app.fb_target == 'recording' || app.fb_target.starts_with('replaysrc'))
-		&& os.is_dir('samples') {
+	if is_recording_target(app.fb_target) && os.is_dir('samples') {
 		vgui.same_line()
 		if vgui.small_button('samples/') {
 			app.fb_dir = os.abs_path('samples')
@@ -514,112 +521,9 @@ fn (mut app App) draw_bus_editor(i int) bool {
 				}
 				app.dirty = true
 			}
-			// Scan: read the recording and show what is IN it — its buses, and who talks on
-			// each through this channel's databases — so `bus:` and the rest-bus exclusions
-			// are picked from what the file and the DBC say instead of typed from memory.
-			// Display-only state; Start loads the recording for itself either way.
-			src_now := vgui.buf_str(app.cfg_bufs[i].replay_src_buf)
-			mut sc_have := false
-			mut sc_loading := false
-			mut sc_err := ''
-			mut sc_buses := []mf4.BusInfo{}
-			mut sc_census := map[string]player.NodeCensus{}
-			app.mu.lock()
-			if sc := app.replay_scans[i] {
-				sc_have = true
-				sc_loading = sc.loading
-				sc_err = sc.err
-				sc_buses = sc.buses.clone()
-				sc_census = sc.census.clone()
-			}
-			app.mu.unlock()
-			if sc_loading {
-				vgui.text_dim('   scanning ${os.base(src_now)}…')
-			} else if src_now != '' {
-				if vgui.small_button('Scan recording##rscan${i}') {
-					rp := app.resolve_asset(src_now)
-					app.mu.lock()
-					app.replay_scans[i] = &ReplayScan{
-						loading: true
-					}
-					app.mu.unlock()
-					db := if i < app.chans.len {
-						replay_db(app, app.chans[i])
-					} else {
-						candb.Database{}
-					}
-					spawn scan_replay_source(app, i, rp, db)
-				}
-				vgui.same_line()
-				vgui.help_marker('Decode the recording and list its buses and, per bus, the nodes the attached DBCs attribute frames to — with counts, so the ECU under test (usually the busiest) is easy to spot and exclude.')
-			}
-			if sc_err != '' {
-				vgui.text_colored(230, 80, 80, '   scan: ${sc_err}')
-			}
-			if sc_have && !sc_loading && sc_err == '' {
-				cur_bus := if r := ch.replay { r.bus } else { '' }
-				mut sel := if sc_buses.len == 1 { sc_buses[0].iface } else { '' }
-				for b in sc_buses {
-					if b.iface == cur_bus || (cur_bus != '' && b.name == cur_bus) {
-						sel = b.iface
-					}
-					b_nm := if b.name != '' { " '${b.name}'" } else { '' }
-					mark := if sel == b.iface && cur_bus != '' { '>' } else { ' ' }
-					vgui.text('   ${mark} ${b.iface}${b_nm}  ${b.frames} frames')
-					if sc_buses.len > 1 || cur_bus != '' {
-						vgui.same_line()
-						if cur_bus != '' && sel == b.iface {
-							if vgui.small_button('clear##rbusc${i}') {
-								app.set_replay_bus(i, '')
-								vgui.tree_pop()
-								return true
-							}
-						} else if vgui.small_button('use##rbus${i}_${b.iface}') {
-							app.set_replay_bus(i, b.iface)
-							vgui.tree_pop()
-							return true
-						}
-					}
-				}
-				if sel == '' {
-					vgui.text_dim('   several buses — `use` one to see who talks on it (and to satisfy `bus:`)')
-				} else if cn := sc_census[sel] {
-					cur_ex := if r := ch.replay { r.exclude.clone() } else { []string{} }
-					// every node the DBCs attribute frames to, plus any already-excluded
-					// name the census does not see — visible so its tick can be removed
-					mut names := cn.nodes.keys()
-					for x in cur_ex {
-						if x !in names {
-							names << x
-						}
-					}
-					names.sort()
-					if names.len > 0 {
-						vgui.text_dim('   tick a node to EXCLUDE it from replay — the ECU under test stays the only sender of its own frames:')
-					} else {
-						vgui.text_dim('   the attached DBCs attribute no frames on this bus to any node — nothing to exclude by sender')
-					}
-					for n in names {
-						cnt := cn.nodes[n] or { 0 }
-						was := n in cur_ex
-						vgui.text('     ')
-						vgui.same_line()
-						if vgui.checkbox('${n}  —  ${cnt} frames##rex${i}_${n}', was) != was {
-							mut ex := cur_ex.clone()
-							if !was {
-								ex << n
-							} else {
-								ex = ex.filter(it != n)
-							}
-							app.set_replay_exclude(i, ex)
-							vgui.tree_pop()
-							return true
-						}
-					}
-					if cn.unattributed > 0 || cn.unknown > 0 {
-						vgui.text_dim('   ${cn.unattributed} frames carry no declared sender · ${cn.unknown} are on ids the DBCs do not define — both replay regardless')
-					}
-				}
+			if app.draw_replay_scan(i, ch) {
+				vgui.tree_pop()
+				return true
 			}
 		}
 	}
@@ -766,4 +670,154 @@ fn (mut app App) draw_config_text() {
 		app.cfg_err = cfg_text_error(t)
 		app.cfg_chans = cfg_text_channels(t)
 	}
+}
+
+// draw_replay_scan is the Configure replay row's Scan surface: read the recording and show
+// what is IN it — its buses, and who talks on each through this channel's databases — so
+// `bus:` and the rest-bus exclusions are picked from what the file and the DBC say instead of
+// typed from memory. Display-only state; Start loads the recording for itself either way.
+// Returns true when it mutated the project (the caller pops the tree node and ends the pass,
+// the same contract as remove_bus).
+fn (mut app App) draw_replay_scan(i int, ch project.Channel) bool {
+	src_now := vgui.buf_str(app.cfg_bufs[i].replay_src_buf)
+	rp := app.resolve_asset(src_now)
+	mut sc_have := false
+	mut sc_loading := false
+	mut sc_err := ''
+	mut sc_buses := []mf4.BusInfo{}
+	mut sc_census := map[string]player.NodeCensus{}
+	app.mu.lock()
+	if sc := app.replay_scans[i] {
+		// results for the file the ROW now names, only: after Browse or a typed edit the old
+		// census describes a recording this channel no longer plays, and `use`/ticks would
+		// write its labels and node names into the wrong file's config
+		if sc.src == rp {
+			sc_have = true
+			sc_loading = sc.loading
+			sc_err = sc.err
+			sc_buses = sc.buses.clone()
+			sc_census = sc.census.clone()
+		}
+	}
+	app.mu.unlock()
+	if sc_loading {
+		vgui.text_dim('   scanning ${os.base(src_now)}…')
+		return false
+	}
+	if src_now != '' && !sc_have {
+		if vgui.small_button('Scan recording##rscan${i}') {
+			mine := &ReplayScan{
+				src:     rp
+				loading: true
+			}
+			app.mu.lock()
+			app.replay_scans[i] = mine
+			app.mu.unlock()
+			db := if i < app.chans.len {
+				replay_db(app, app.chans[i])
+			} else {
+				candb.Database{}
+			}
+			spawn scan_replay_source(app, i, rp, db, mine)
+		}
+		vgui.same_line()
+		vgui.help_marker('Decode the recording and list its buses and, per bus, the nodes the attached DBCs attribute frames to — with counts, so the ECU under test (usually the busiest) is easy to spot and exclude.')
+		return false
+	}
+	if sc_err != '' {
+		vgui.text_colored(230, 80, 80, '   scan: ${sc_err}')
+		return false
+	}
+	if !sc_have {
+		return false
+	}
+	// WHICH bus the config means is the module's question, never re-answered here: the GUI
+	// and cmd/restbus each grew a copy of this rule once and drifted, which is why
+	// player.resolve_bus exists — an inline match would be copy number three, and its
+	// divergences (last-match-wins on an ambiguous name, a stale `bus:` silently shown as
+	// selected) were exactly what the self-review caught in the first draft of this panel.
+	cur_bus := if r := ch.replay { r.bus } else { '' }
+	mut names := []player.BusName{}
+	mut labels := []string{}
+	for b in sc_buses {
+		names << player.BusName{
+			iface: b.iface
+			name:  b.name
+		}
+		labels << b.iface
+	}
+	mut sel := ''
+	mut sel_err := ''
+	sel = player.resolve_bus(names, labels, cur_bus) or {
+		sel_err = err.msg()
+		''
+	}
+	for b in sc_buses {
+		b_nm := if b.name != '' { " '${b.name}'" } else { '' }
+		mark := if sel == b.iface && cur_bus != '' { '>' } else { ' ' }
+		vgui.text('   ${mark} ${b.iface}${b_nm}  ${b.frames} frames')
+		if sc_buses.len > 1 || cur_bus != '' {
+			vgui.same_line()
+			if cur_bus != '' && sel == b.iface {
+				if vgui.small_button('clear##rbusc${i}') {
+					app.set_replay_bus(i, '')
+					return true
+				}
+			} else if vgui.small_button('use##rbus${i}_${b.iface}') {
+				app.set_replay_bus(i, b.iface)
+				return true
+			}
+		}
+	}
+	if cur_bus != '' && sel == '' {
+		// the config names a bus this recording does not hold (or an ambiguous name) — the
+		// exact refusal Start will give, shown before Start gives it
+		vgui.text_colored(230, 80, 80, '   bus: `${cur_bus}` — ${sel_err}')
+		vgui.same_line()
+		if vgui.small_button('clear##rbusx${i}') {
+			app.set_replay_bus(i, '')
+			return true
+		}
+		return false
+	}
+	if sel == '' {
+		vgui.text_dim('   several buses — `use` one to see who talks on it (and to satisfy `bus:`)')
+		return false
+	}
+	cn := sc_census[sel] or { return false }
+	cur_ex := if r := ch.replay { r.exclude.clone() } else { []string{} }
+	// every node the DBCs attribute frames to, plus any already-excluded name the census
+	// does not see — visible so its tick can be removed
+	mut nodenames := cn.nodes.keys()
+	for x in cur_ex {
+		if x !in nodenames {
+			nodenames << x
+		}
+	}
+	nodenames.sort()
+	if nodenames.len > 0 {
+		vgui.text_dim('   tick a node to EXCLUDE it from replay — the ECU under test stays the only sender of its own frames:')
+	} else {
+		vgui.text_dim('   the attached DBCs attribute no frames on this bus to any node — nothing to exclude by sender')
+	}
+	for n in nodenames {
+		cnt := cn.nodes[n] or { 0 }
+		was := n in cur_ex
+		vgui.text('     ')
+		vgui.same_line()
+		if vgui.checkbox('${n}  —  ${cnt} frames##rex${i}_${n}', was) != was {
+			mut ex := cur_ex.clone()
+			if !was {
+				ex << n
+			} else {
+				ex = ex.filter(it != n)
+			}
+			app.set_replay_exclude(i, ex)
+			return true
+		}
+	}
+	if cn.unattributed > 0 || cn.unknown > 0 {
+		vgui.text_dim('   ${cn.unattributed} frames carry no declared sender · ${cn.unknown} are on ids the DBCs do not define — both replay regardless')
+	}
+	return false
 }
