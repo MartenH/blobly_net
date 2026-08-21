@@ -98,6 +98,11 @@ v -enable-globals test modules/             # unit tests — the reliable backbo
 ./scripts/runtests.sh tests/diag_basic.lua  # headless Lua integration tests (in-process sim)
 ```
 
+Releases: push a `v*` tag matching the `app_version` const (`cmd/blobly_net/version.v`) on a
+commit reachable from `main` — `release.yml` verifies both, then publishes the Linux tar.gz and
+the Windows zip (via `windows.yml` as a reusable workflow) with generated notes. Never bundle a
+vendor CAN DLL (ROADMAP has the list and the reason).
+
 CI (`.github/workflows/`) runs `v -enable-globals test modules/`, `scripts/runtests.sh` and
 `scripts/vcan_common_test.sh` (the shared setup-script answers — whose home under sudo, is vcan
 available — driven through stubbed `getent`/`id`/`ip`/`sudo`, so it runs unprivileged). `windows.yml`

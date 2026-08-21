@@ -10,18 +10,15 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
 
 ## Next
 
-- ⏭️ **Make a real release.** There has never been one: no version tag, no release workflow, no
-  published binary. `windows.yml` uploads a `blobly_net-windows-x64` bundle as a CI *artifact*,
-  which expires and needs a GitHub login to fetch — so today "getting Blobly Net" means building
-  it. A release needs a version scheme and a tag, a workflow that publishes on that tag, a Linux
-  build alongside the Windows bundle, notes generated from the merged PRs, and the licence file
-  in the archive.
-  - **What may not go in it:** no vendor CAN library — `vxlapi64.dll`, `PCANBasic.dll`,
-    `canlib32.dll` are the user's to install, and the XL library's terms forbid redistributing
-    it. Only the mingw runtime DLLs `scripts/bundle_dlls.sh` copies are ours to ship. A release
-    that quietly bundled a vendor DLL would be the one mistake here that is hard to take back.
-  - Worth settling first: what version 0.1 claims to be, given that the vendor CAN backends are
-    verified by hand rather than by CI ([windows_can_hardware.md](docs/windows_can_hardware.md)).
+- 🔨 **Make a real release.** The machinery is in: a committed `app_version` const the window
+  title and `--version` report, and `release.yml` — push a `v*` tag and it publishes a Linux
+  tar.gz plus the Windows zip (built by *calling* `windows.yml`, one bundle recipe) with
+  auto-generated notes, after verifying the tag equals the const AND the tagged commit is on
+  reviewed `main`. No vendor CAN library ships, ever — only the mingw runtime DLLs are ours
+  (the XL terms forbid redistributing `vxlapi64.dll`). What remains is the act itself:
+  `git tag v0.1.0 && git push origin v0.1.0`. v0.1.0's claim, settled: virtual/SocketCAN paths
+  are CI-verified; the Windows vendor backends are hand-verified on real hardware
+  ([windows_can_hardware.md](docs/windows_can_hardware.md)) — the notes say so.
 - ⏭️ **`fill_rect` / drawlist binding in `vgui`** — the blocker for two shipped-adjacent features:
   **trace-manifest rows** and a **drawn topology graph** in the System panel both wait on it.
 - ⏭️ **System wizards** ([`docs/dbc_editor.md`](docs/dbc_editor.md)) — "add a signal/frame"

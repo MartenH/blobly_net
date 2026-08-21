@@ -20,6 +20,7 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  workflow_call: # release.yml reuses this build — ONE bundle recipe, not a copy that drifts
 
 concurrency:
   group: windows-${{ github.ref }}
@@ -139,7 +140,10 @@ jobs:
       # main would hand users an executable nobody reviewed — the README points at this
       # artifact by name and promises it comes from main (codex net#62/#63).
       - name: Upload bundle
-        if: github.ref == 'refs/heads/main'
+        # Tag refs qualify alongside main because release.yml's guard job has already proven
+        # the tagged commit is reachable from origin/main — the provenance promise below is
+        # kept, not widened (an arbitrary tag on an unreviewed branch never gets here).
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v4
         with:
           name: blobly_net-windows-x64

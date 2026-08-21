@@ -1,0 +1,106 @@
+# A release is cut by pushing a version tag: `git tag v0.1.0 && git push origin v0.1.0`.
+#
+# Two invariants, both enforced here rather than trusted:
+#  - the tag must equal the committed app_version const (cmd/blobly_net/version.v), so the
+#    tag and what the binary reports can never disagree;
+#  - the tagged commit must be reachable from origin/main, so a downloadable release can only
+#    come from reviewed history — the same provenance promise windows.yml makes for its
+#    artifact, extended to tags because this guard proves it first.
+#
+# Assets: a Linux tar.gz staged HERE with the same contents windows.yml stages, and the
+# Windows zip built by CALLING windows.yml — one Windows bundle recipe, not a copy that
+# drifts. NO vendor CAN library ships either way: vxlapi64.dll / PCANBasic.dll / canlib32.dll
+# are the user's to install, and the Vector XL terms forbid redistribution (ROADMAP). Only
+# the mingw runtime DLLs are ours to bundle.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: tag equals app_version and sits on main
+        run: |
+          want="v$(sed -n "s/^pub const app_version = '\(.*\)'\$/\1/p" cmd/blobly_net/version.v)"
+          [ "$want" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != version.v $want"; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+            || { echo "tagged commit is not on origin/main — releases come from reviewed history only"; exit 1; }
+
+  windows:
+    needs: guard
+    uses: ./.github/workflows/windows.yml
+
+  linux:
+    needs: guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vlang/setup-v@v1.4
+        with:
+          check-latest: true
+      # same deps + module fetch as ci.yml's GUI job — the build IS scripts/run_gui.sh, the
+      # command devs run, so a release binary is the binary everyone has been testing
+      - name: Native deps (apt)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            g++ pkg-config libglfw3-dev libfreetype-dev libgl1-mesa-dev
+      - name: Fetch vlang/markdown (Help browser view)
+        run: |
+          git -c advice.detachedHead=false clone --quiet https://github.com/vlang/markdown.git "$HOME/.vmodules/markdown"
+          git -C "$HOME/.vmodules/markdown" -c advice.detachedHead=false checkout --quiet ef2f101
+      - name: Build GUI app
+        run: RUN=0 bash scripts/run_gui.sh
+      - name: Sanity — the binary answers with the tagged version
+        run: |
+          got="$(./build/blobly_net --version)"
+          [ "$got" = "blobly_net ${GITHUB_REF_NAME#v}" ] || { echo "binary says '$got'"; exit 1; }
+      # the same bundle contents windows.yml stages: demo projects, DBCs, Lua tests,
+      # manifests, docs (Help panel reads them), samples, licence + third-party notices
+      - name: Stage + tar
+        run: |
+          mkdir -p dist/blobly_net/samples
+          cp build/blobly_net dist/blobly_net/
+          cp -r projects dbc tests manifests docs dist/blobly_net/
+          cp samples/*.log samples/*.mf4 dist/blobly_net/samples/ 2>/dev/null || true
+          cp LICENSE dist/blobly_net/LICENSE.txt
+          cp packaging/THIRD-PARTY-NOTICES.txt dist/blobly_net/
+          tar -C dist -czf "blobly_net-${GITHUB_REF_NAME}-linux-x64.tar.gz" blobly_net
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-tarball
+          path: blobly_net-*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-tarball
+      - uses: actions/download-artifact@v4
+        with:
+          name: blobly_net-windows-x64
+          path: winbundle
+      - name: Zip the Windows bundle
+        run: cd winbundle && zip -qr "../blobly_net-${GITHUB_REF_NAME}-windows-x64.zip" .
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Blobly Net $GITHUB_REF_NAME" \
+            --generate-notes \
+            "blobly_net-${GITHUB_REF_NAME}-linux-x64.tar.gz" \
+            "blobly_net-${GITHUB_REF_NAME}-windows-x64.zip"
