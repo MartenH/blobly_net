@@ -119,6 +119,8 @@ fn C.vgui_console_text(&char, &char, int, int)
 fn C.vgui_text_edit(&char, &char, int, f32) int
 fn C.vgui_input_double(&char, &f64) int
 fn C.vgui_input_int(&char, &int) int
+fn C.vgui_progress(f32, &char)
+fn C.vgui_slider_f(&char, &f32, f32, f32, &char) int
 fn C.vgui_set_next_item_width(f32)
 fn C.vgui_tree_node(&char) int
 fn C.vgui_tree_node_open(&char) int
@@ -660,6 +662,18 @@ pub fn content_avail_h() f32 {
 // moved. Applying on deactivation instead sees only the final value.
 pub fn is_item_deactivated_after_edit() bool {
 	return C.vgui_is_item_deactivated_after_edit() != 0
+}
+
+// progress renders a full-width progress bar (frac 0..1) with an overlay label.
+pub fn progress(frac f32, overlay string) {
+	C.vgui_progress(frac, overlay.str)
+}
+
+// slider_f drags a float in [min, max]; returns true while the value is CHANGING. For an
+// action that should fire once — a seek, a commit — gate on is_item_deactivated_after_edit
+// instead of the return value, or the action runs per pixel of drag.
+pub fn slider_f(label string, v &f32, min_v f32, max_v f32, fmt string) bool {
+	return C.vgui_slider_f(label.str, v, min_v, max_v, fmt.str) != 0
 }
 
 pub fn same_line() {

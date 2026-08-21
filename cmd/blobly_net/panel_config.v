@@ -22,7 +22,7 @@ fn (mut app App) open_browser(target string) {
 		['.toml']
 	} else if target == 'flash' {
 		['.img', '.bin'] // wrapped .img preferred, raw .bin allowed
-	} else if target == 'recording' {
+	} else if target == 'recording' || target.starts_with('replaysrc') {
 		['.log', '.mf4'] // recordings come in both formats; one picker shows both
 	} else {
 		[]string{}
@@ -62,6 +62,8 @@ fn (mut app App) browser_confirm(path string) {
 		app.flash_img_buf = mkbuf(path, 256)
 	} else if t == 'recording' {
 		app.load_recording(path)
+	} else if t.starts_with('replaysrc:') {
+		app.set_replay_source(t['replaysrc:'.len..].int(), path)
 	}
 }
 
@@ -79,6 +81,8 @@ fn draw_filebrowser(mut app App) {
 		'Open system.toml'
 	} else if app.fb_target == 'recording' {
 		'Open Recording'
+	} else if app.fb_target.starts_with('replaysrc') {
+		'Replay Recording'
 	} else if app.fb_target == 'flash' {
 		// fell through to 'Attach Manifest' before — the firmware picker wore another
 		// feature's title, which is what an else-catchall does the day a target is added
@@ -105,7 +109,8 @@ fn draw_filebrowser(mut app App) {
 	// The shipped demo capture lives in samples/ — the old Trace path field defaulted to it,
 	// and removing that field removed the only pointer a fresh setup had to a file this
 	// picker can open. Only for the recording target; other pickers have no business there.
-	if app.fb_target == 'recording' && os.is_dir('samples') {
+	if (app.fb_target == 'recording' || app.fb_target.starts_with('replaysrc'))
+		&& os.is_dir('samples') {
 		vgui.same_line()
 		if vgui.small_button('samples/') {
 			app.fb_dir = os.abs_path('samples')
@@ -478,6 +483,12 @@ fn (mut app App) draw_bus_editor(i int) bool {
 			if vgui.input_text('source##rs${i}', mut app.cfg_bufs[i].replay_src_buf) {
 				app.dirty = true
 			}
+			vgui.same_line()
+			if vgui.small_button('...##rsbrowse${i}') {
+				app.open_browser('replaysrc:${i}')
+			}
+			vgui.same_line()
+			vgui.help_marker("Recording to play on this channel (.log or .mf4). A multi-bus .mf4 needs a `bus:` key in the .blobnet naming WHICH recorded bus feeds this channel (the file's own bus name, or its `mf4:groupN` label) — the recording's names are not this project's, so nothing can infer the pairing; without it a multi-bus source is refused at Start. Channels replaying the same source play on ONE clock.")
 			vgui.same_line()
 			vgui.set_next_item_width(56)
 			if vgui.input_text('x speed##rsp${i}', mut app.cfg_bufs[i].replay_speed_buf) {
