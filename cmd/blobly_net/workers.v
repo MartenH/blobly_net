@@ -166,6 +166,10 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 	a := unsafe { app }
 	mut bus := app.open_tap_on(sc.iface, org_tx_sim, sc.pch.name) or {
 		eprintln('sim ${sc.iface}: ${err}')
+		// consumer_failed only counts, and the count is read only by the replay gate — on a
+		// non-replay run a dead sim was discoverable only by the absence of its traffic
+		mut na := unsafe { app }
+		na.notify('${sc.pch.name}: simulation could not open ${sc.iface} — ${err}')
 		consumer_failed(a, sc.iface, gen)
 		return
 	}
@@ -343,6 +347,7 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 	mut ch := &isotp.SoftChannel(unsafe { nil })
 	mut open := false
 	mut reported := false
+	mut open_err_said := false
 	defer {
 		if open {
 			ch.close()
@@ -375,10 +380,22 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 			// pch: this node's OWN channel — two entries can share one interface, and the
 			// simulated ECUs of the second must not be attributed to the first.
 			tapped := a.open_tap_on(iface, org_tx_sim, pch.name) or {
+				if !open_err_said {
+					open_err_said = true
+					// once, not per 200ms retry: the retry is the recovery, the silence was
+					// the bug — a UDS node that never came up said nothing, forever
+					mut na := unsafe { app }
+					na.notify('${pch.name}: UDS node could not open ${iface} — ${err} (retrying)')
+				}
 				time.sleep(200 * time.millisecond)
 				continue
 			}
 			ch = isotp.on_bus(tapped, a.bitrate_iface(iface), tx, rx, ext) or {
+				if !open_err_said {
+					open_err_said = true
+					mut na := unsafe { app }
+					na.notify('${pch.name}: UDS node could not bind ISO-TP on ${iface} — ${err} (retrying)')
+				}
 				time.sleep(200 * time.millisecond)
 				continue
 			}
@@ -402,10 +419,14 @@ fn diag_server_loop(app &App, iface string, chan_name string, gen u64) {
 	// picks whichever is listed first — so a default server created for the second one had every
 	// response attributed to its neighbour
 	tapped := a.open_tap_on(iface, org_tx_sim, chan_name) or {
+		mut na := unsafe { app }
+		na.notify('${chan_name}: UDS server could not open ${iface} — ${err}')
 		consumer_failed(a, iface, gen)
 		return
 	}
 	mut ch := isotp.on_bus(tapped, a.bitrate_iface(iface), diag_rx_id, diag_tx_id, false) or {
+		mut na := unsafe { app }
+		na.notify('${chan_name}: UDS server could not bind ISO-TP on ${iface} — ${err}')
 		consumer_failed(a, iface, gen)
 		return
 	}
@@ -423,24 +444,32 @@ fn diag_server_loop(app &App, iface string, chan_name string, gen u64) {
 
 fn rx_loop(app &App, ci int, iface string, gen u64) {
 	mut bus := app.open_transport(iface) or {
-		mut a := unsafe { app }
-		// notify, not (only) eprintln: on the Windows GUI-subsystem exe stderr goes nowhere,
-		// and this failure was completely silent — two PCAN channels failing to open looked
-		// exactly like a healthy silent bus, with the replay's downstream "never came up"
-		// timeout as the only audible symptom, pointing at the wrong place (maintainer's
-		// bench, 2026-08-21). The Log panel is the one channel every platform can hear.
-		a.notify('${iface}: open failed — ${err} — channel is NOT monitoring')
 		eprintln('rx ${iface}: ${err}')
+		mut a := unsafe { app }
 		a.mu.lock()
 		// Same generation guard as the teardown below: opening can fail slowly, so a PREVIOUS
 		// run's failure can land after the new loop has opened and published readiness. Clearing
 		// the flag then would leave the current run with a monitor nobody counts — every emission
 		// after it recorded as having no watcher, and its echo read as the ECU's.
+		mut say := false
 		if a.run_gen == gen {
 			a.chans[ci].running = false
 			a.chans[ci].spawning = false // release the guard, or it can never be re-enabled
+			say = true
 		}
 		a.mu.unlock()
+		// Notify UNDER THE SAME generation condition as the flags, and after the unlock
+		// (notify re-takes app.mu): a previous run's slow failure landing after the new run
+		// opened must not post "not monitored" about a wire that IS monitored — the exact
+		// timing the guard above exists for. And notify at all, not only eprintln: on the
+		// Windows GUI-subsystem exe stderr goes nowhere, and two PCAN channels failing to
+		// open looked exactly like a healthy silent bus, with the replay's "never came up"
+		// as the only audible symptom, pointing at the wrong place (maintainer's bench,
+		// 2026-08-21). Worded for the WIRE: this loop is the destination's one reader, so
+		// an aliased row shows no failure of its own yet is equally unwatched.
+		if say {
+			a.notify('${iface}: open failed — ${err} — nothing is monitoring this wire')
+		}
 		return
 	}
 	mut a := unsafe { app }

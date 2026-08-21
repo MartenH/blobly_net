@@ -89,6 +89,11 @@ fn draw_buses(mut app App, chans []Chan) {
 			c := chans[i]
 			new := vgui.checkbox('##en${i}', c.enabled)
 			if new != c.enabled {
+				// failures found while app.mu is HELD are said after the unlock: notify
+				// re-takes the (non-reentrant) mutex, so an inline notify here deadlocks
+				// the GUI thread — the trap that kept this path silent when start()'s copy
+				// of the tap setup learned to speak
+				mut open_errs := []string{}
 				app.mu.lock()
 				// FIXED AT START for a replay channel. Changing the set mid-run meant a worker
 				// had to be spawned, or silenced, or made to hand its wire over, against a
@@ -216,11 +221,15 @@ fn draw_buses(mut app App, chans []Chan) {
 					if tx_bus_key(name, iface) !in app.tx_buses {
 						if b := app.open_tap_on(iface, org_tx, name) {
 							app.tx_buses[tx_bus_key(name, iface)] = b
+						} else {
+							open_errs << '${name}: transmit tap failed to open — ${err}'
 						}
 					}
 					if tx_bus_key('', iface) !in app.tx_buses {
 						if b := app.open_tap(iface, org_tx) {
 							app.tx_buses[tx_bus_key('', iface)] = b
+						} else {
+							open_errs << '${iface}: shared transmit tap failed to open — ${err}'
 						}
 					}
 					if app.send_iface == '' {
@@ -228,6 +237,9 @@ fn draw_buses(mut app App, chans []Chan) {
 					}
 				}
 				app.mu.unlock()
+				for m in open_errs {
+					app.notify(m)
+				}
 			}
 			vgui.same_line()
 			r, g, b, label := chan_state(c, read_dests[transport.destination_key(c.iface)] or {
