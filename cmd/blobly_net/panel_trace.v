@@ -1,5 +1,6 @@
 module main
 
+import transport
 import candb
 import vgui
 
@@ -43,7 +44,7 @@ fn (mut app App) toggle_pause() {
 	app.mu.unlock()
 }
 
-fn draw_trace(mut app App, rows []TraceRow, gcount map[string]u64, rx u64, run_base u64) {
+fn draw_trace(mut app App, rows []TraceRow, gcount map[string]u64, rx u64) {
 	vis, op := vgui.begin_closable('Trace', app.show_trace)
 	app.show_trace = op
 	if !vis {
@@ -90,17 +91,17 @@ fn draw_trace(mut app App, rows []TraceRow, gcount map[string]u64, rx u64, run_b
 	filt := vgui.buf_str(app.trace_filter_buf).to_lower()
 	if app.trace_grouped {
 		vgui.separator_text('by id (click to expand · click row to select)')
-		draw_trace_grouped(mut app, brows, gcount, filt, run_base)
+		draw_trace_grouped(mut app, brows, gcount, filt)
 	} else {
 		vgui.separator_text('frames (newest first)')
-		draw_trace_all('trace9', brows, filt, run_base)
+		draw_trace_all('trace9', brows, filt)
 	}
 	vgui.end()
 }
 
 // draw_ftrace is the "Trace (filter)" watch list: it shows ONLY the frames you've added
 // (via "+ Add to filter" in the Trace panel, or "+" in Symbols), over the same buffer.
-fn draw_ftrace(mut app App, rows []TraceRow, gcount map[string]u64, run_base u64) {
+fn draw_ftrace(mut app App, rows []TraceRow, gcount map[string]u64) {
 	vis, op := vgui.begin_closable('Trace (filter)', app.show_ftrace)
 	app.show_ftrace = op
 	if !vis {
@@ -143,9 +144,9 @@ fn draw_ftrace(mut app App, rows []TraceRow, gcount map[string]u64, run_base u64
 	frows := app.filter_bus(rows.filter(app.is_fwatched(it.id, it.ext)), app.ftrace_bus)
 	filt := vgui.buf_str(app.trace_filter2_buf).to_lower()
 	if app.trace_grouped2 {
-		draw_trace_grouped(mut app, frows, gcount, filt, run_base)
+		draw_trace_grouped(mut app, frows, gcount, filt)
 	} else {
-		draw_trace_all('ftrace9', frows, filt, run_base)
+		draw_trace_all('ftrace9', frows, filt)
 	}
 	vgui.end()
 }
@@ -222,12 +223,13 @@ fn flags_str(r TraceRow) string {
 }
 
 // The idx and t (s) cells appear in both trace views; one implementation, so the two views
-// cannot drift into showing the same frame with different numbers. idx is per-MEASUREMENT
-// (seq minus the base recorded at the last reset); t is seconds at fixed six decimals — the
-// decimals are real since the clock behind t_ms went monotonic-ns, and %f keeps trailing
-// zeros so the column does not go ragged.
-fn trace_idx_t_cells(r TraceRow, run_base u64) {
-	vgui.table_cell('${r.seq - run_base}')
+// cannot drift into showing the same frame with different numbers. idx is the row's FROZEN
+// per-measurement number (see TraceRow.idx — frozen at push, so no draw-time base is needed
+// and a mid-frame reset cannot wrap it); t is seconds at fixed six decimals — the decimals
+// are real since the clock behind t_ms went monotonic-ns, and %f keeps trailing zeros so the
+// column does not go ragged.
+fn trace_idx_t_cells(r TraceRow) {
+	vgui.table_cell('${r.idx}')
 	vgui.table_cell('${r.t_ms / 1000.0:.6f}')
 }
 
@@ -306,7 +308,7 @@ fn trace_name_cell(r TraceRow) string {
 	return if r.e2e == '' { r.name } else { '${r.name}  ${r.e2e}' }
 }
 
-fn draw_trace_all(id string, rows []TraceRow, filt string, run_base u64) {
+fn draw_trace_all(id string, rows []TraceRow, filt string) {
 	if vgui.table_begin(id, 9) {
 		// Column order follows the layout every CAN tool's summary view has taught people to
 		// read: index and time lead, then where (ch) and what (id/name), then the frame's shape.
@@ -334,7 +336,7 @@ fn draw_trace_all(id string, rows []TraceRow, filt string, run_base u64) {
 			}
 			shown++
 			vgui.table_row()
-			trace_idx_t_cells(r, run_base)
+			trace_idx_t_cells(r)
 			vgui.table_cell(r.ch)
 			vgui.table_cell(idstr(r.id, r.ext))
 			// A violation is appended to the NAME rather than given a column: it is rare, and
@@ -375,18 +377,34 @@ mut:
 
 // gkey is the stable per-group identity used for both the grouped-view rows and the
 // persistent all-time frame count (App.gcount). Keep in sync with draw_trace_grouped.
-fn gkey(origin string, ch string, id u32, ext bool, fd bool, brs bool, rtr bool) string {
-	// Length-prefixed for the same reason as tx_bus_key: a channel name may contain '|', and a
-	// key that two different channels can produce merges their rows in the grouped view — with
-	// a count that silently adds them together, which is the very thing this column exists to
-	// stop. (origin is one of four fixed labels, and id/ext cannot contain a separator.)
-	// fd/brs belong here for the same reason ext does: a CAN-FD frame and a classic frame with
-	// the same id are two different messages, and a key that cannot tell them apart merges their
-	// rows and adds their counts together — the exact collapse #90 was about, one field on.
-	// rtr for the same reason again: a remote REQUEST and its data response ride one CAN id by
-	// design, and merging them made the fps column count intervals across two interleaved
-	// streams while len and flags flickered between the request's and the response's.
+// gkey is the grouped view's identity. Length-prefixed for the same reason as tx_bus_key: a
+// channel name may contain '|', and a key two different channels can produce merges their rows
+// — with a count that silently adds them together, the very thing this column exists to stop.
+// fd/brs belong here for the same reason ext does (#90: a CAN-FD frame and a classic frame with
+// one id are two messages), and rtr for the same reason again — a remote REQUEST and its data
+// response ride one CAN id BY DESIGN, and merging them fed the fps column intervals from two
+// interleaved streams. ESI is deliberately absent, here AND in the echo identity — see
+// TraceRow.esi. This list must move in step with wiretap.frame_key (modules/wiretap), which
+// keys the SAME frame-kind distinction for echo claiming: the two agreeing is what keeps the
+// origin column and the grouped rows describing one world. gkey lagged it on rtr for a release.
+//
+// ONE formatter, addressed through the values that already carry the fields — seven positional
+// arguments (four adjacent bools) at seven call sites is the transposition trap the compiler
+// cannot catch, and a mismatch between a gcount writer and the lookup is silently absorbed by
+// its window-count fallback.
+fn gkey_fmt(origin string, ch string, id u32, ext bool, fd bool, brs bool, rtr bool) string {
 	return '${origin}|${ch.len}:${ch}|${id}|${ext}|${fd}|${brs}|${rtr}'
+}
+
+// gkey: the row's own group identity.
+fn (r TraceRow) gkey() string {
+	return gkey_fmt(r.origin, r.ch, r.id, r.ext, r.fd, r.brs, r.rtr)
+}
+
+// gkey_frame: the producer-side identity, for the paths that count a frame without holding
+// its TraceRow (the push sites' gcount writes, and an import's trimmed fast path).
+fn gkey_frame(origin string, ch string, f transport.CanFrame) string {
+	return gkey_fmt(origin, ch, f.id, f.extended, f.fd, f.brs, f.rtr)
 }
 
 // origin_mark renders the wire verdict for a frame we emitted: '!' once its echo window closed
@@ -405,7 +423,7 @@ fn origin_mark(r TraceRow) string {
 const gcol_name = 3
 const gcol_data = 7
 
-fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt string, run_base u64) {
+fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt string) {
 	mut agg := map[string]GAgg{}
 	for r in rows {
 		if !trace_pass(r, filt) {
@@ -413,7 +431,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		}
 		// Grouping by ORIGIN as well as id means our simulated 0x120 and a real ECU's 0x120 are
 		// two rows, not one row with a count that quietly adds them together.
-		k := gkey(r.origin, r.ch, r.id, r.ext, r.fd, r.brs, r.rtr)
+		k := r.gkey()
 		mut g := agg[k] or {
 			GAgg{
 				origin:  r.origin
@@ -448,18 +466,21 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		if a.ch != b.ch {
 			return if a.ch < b.ch { -1 } else { 1 }
 		}
-		// The comparator has to separate everything the GROUP KEY separates. fd/brs joined that
-		// key, so without them two distinct rows compare equal and their order flips as the ring
-		// trims and the map is rebuilt — a table that reshuffles under a reader for no visible
-		// reason. Classic sorts before FD, and FD before FD-BRS.
+		// The comparator has to separate everything the GROUP KEY separates — and it had
+		// silently violated its own rule for a while: ext was in the key from the start and
+		// absent here, so a standard-id and an extended-id group sharing one raw id value
+		// reshuffled as the ring trimmed. Classic sorts before FD, and FD before FD-BRS.
+		if a.ext != b.ext {
+			return if !a.ext { -1 } else { 1 }
+		}
 		if a.fd != b.fd {
 			return if !a.fd { -1 } else { 1 }
 		}
 		if a.brs != b.brs {
 			return if !a.brs { -1 } else { 1 }
 		}
-		// the comparator separates everything the KEY separates, or rows reshuffle as the ring
-		// trims — data before request, matching the reading order of a request/response pair
+		// data before request — any DETERMINISTIC order mirroring the key works; this one keeps
+		// the payload-carrying row (the one most readers scan for) first
 		if a.rtr != b.rtr {
 			return if !a.rtr { -1 } else { 1 }
 		}
@@ -485,24 +506,25 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		vgui.table_headers()
 		for g in groups {
 			r := g.last
+			// ONE key per rendered group. g.last carries the group's identity by construction
+			// (it is a member), and three separately spelled 7-argument calls per row is how a
+			// transposed pair forks the tree id from the count lookup with no error anywhere.
+			k := r.gkey()
 			vgui.table_row()
 			// idx and t are the NEWEST frame's — the same one the data column shows — so the
 			// row reads as one frame plus its history, not as fields from different frames.
-			trace_idx_t_cells(r, run_base)
+			trace_idx_t_cells(r)
 			vgui.table_cell(g.ch)
 			vgui.table_next_col()
 			// ### keys the tree id on identity only, so the live label / sort don't reset it.
-			open := vgui.tree_node_table('${idstr(g.id, g.ext)}  ${trace_name_cell(r)}###${gkey(g.origin,
-				g.ch, g.id, g.ext, g.fd, g.brs, g.rtr)}')
+			open := vgui.tree_node_table('${idstr(g.id, g.ext)}  ${trace_name_cell(r)}###${k}')
 			// clicking a row selects that frame (drives Signals/Graphics + "Add to filter")
 			if vgui.is_item_clicked() {
 				app.sel_id = int(g.id)
 				app.sel_ext = g.ext
 			}
 			// right-click a row → context menu (plot its signals / add to filter)
-			if vgui.begin_popup_context_item('rowctx##${gkey(g.origin, g.ch, g.id, g.ext, g.fd,
-				g.brs, g.rtr)}')
-			{
+			if vgui.begin_popup_context_item('rowctx##${k}') {
 				if m := app.find_message(g.id, g.ext) {
 					if vgui.menu_item('Add all signals to Graphics') {
 						for s in m.active_signals(if r.has_payload() { r.data } else { []u8{} }) {
@@ -542,9 +564,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				}
 			}
 			// all-time total (survives the ring trim); fall back to the window count.
-			total := gcount[gkey(g.origin, g.ch, g.id, g.ext, g.fd, g.brs, g.rtr)] or {
-				u64(g.count)
-			}
+			total := gcount[k] or { u64(g.count) }
 			vgui.table_cell('${total}')
 			// Rate over the frames the ring still holds: n-1 intervals across the span they
 			// cover. Two frames minimum — a single frame has no interval, and inventing one

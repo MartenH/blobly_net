@@ -50,6 +50,14 @@ mut:
 	// a filter runs. Row LOOKUP (echo confirmation) still goes by position against trace_base.
 	missed bool
 	seq    u64
+	// The DISPLAYED frame number, frozen at push as seq - trace_run_base. Computing it at draw
+	// time required threading the base through every view (and pairing it with the row snapshot,
+	// or a mid-frame Clear wrapped every idx to ~1.8e19 — codex #127 r1), and a base reset
+	// still renumbered history: after Start, the file rows of a trimmed import would have
+	// wrapped. Frozen, a row's number is a fact about the row; later resets only affect later
+	// rows. Start/Clear/Load all reset the base, so a new measurement numbers from 0 — a
+	// trimmed import pre-advances seq, so its rows freeze to the file's own frame numbers.
+	idx u64
 }
 
 // has_payload gates every SIGNAL-DECODING consumer of a row's data. An RTR frame's data is a
@@ -102,6 +110,7 @@ fn (mut app App) push_row_locked(row TraceRow) u64 {
 	app.trace_seq++
 	mut r := row
 	r.seq = seq
+	r.idx = seq - app.trace_run_base // frozen here — see the field
 	app.trace << r
 	// Trimmed in CHUNKS. Reslicing to the cap on every append copies the whole ring each time —
 	// unnoticeable at a few frames a second, and the dominant cost when a recording is imported,
@@ -178,7 +187,7 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 			name:   name
 			data:   f.data.clone()
 		})
-		app.gcount[gkey(origin, chn, f.id, f.extended, f.fd, f.brs, f.rtr)]++
+		app.gcount[gkey_frame(origin, chn, f)]++
 	}
 	// Counted whether or not the trace is paused, and whether or not a row was written: pausing
 	// freezes the table, it does not stop the bus.

@@ -191,7 +191,7 @@ fn (mut app App) load_recording(path string) {
 		// REP, not BUS: these frames were never on this bench's wire. A candump log carries no
 		// origin at all, so we cannot say whether a given line was the recorder's tester, its
 		// simulation or the ECU — and claiming one would be a guess dressed as a fact.
-		app.gcount[gkey(org_rep, e.iface, f.id, f.extended, f.fd, f.brs, f.rtr)]++
+		app.gcount[gkey_frame(org_rep, e.iface, f)]++
 		if i < first_row {
 			continue // trimmed before it could ever be drawn
 		}
