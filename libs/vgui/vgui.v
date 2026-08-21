@@ -126,6 +126,7 @@ fn C.vgui_tree_pop()
 fn C.vgui_dock_root() u32
 fn C.vgui_dock_split(u32, int, f32, &u32) u32
 fn C.vgui_dock_window(&char, u32)
+fn C.vgui_dock_reset()
 fn C.vgui_dock_finish(u32)
 fn C.vgui_begin(&char) int
 fn C.vgui_begin_closable(&char, &int) int
@@ -159,9 +160,10 @@ fn C.vgui_key_pressed(int) int
 fn C.vgui_combo(&char, &&char, int, int) int
 
 // --- lifecycle ---
-// init creates the OS window + GL context. If either of w/h is <= 0 the window opens MAXIMIZED,
-// and the positive one (if any) sets the size the window restores to — a non-positive half
-// restores to the library default (1500x850). Both positive: a fixed-size window at that size.
+// init creates the OS window + GL context, at EXACTLY w x h (a non-positive value falls back
+// to 1500x850). No maximize and no clamping-to-monitor: both were tried, and both traded one
+// visible problem for quieter ones — a scrambled persisted dock layout, and screenshot
+// geometry that depended on the machine. Callers that need to fit a monitor query it and ask.
 pub fn init(title string, w int, h int, event_driven bool) bool {
 	return C.vgui_init(title.str, w, h, if event_driven { 1 } else { 0 }) == 0
 }
@@ -565,6 +567,14 @@ pub fn dock_window(name string, node u32) {
 
 pub fn dock_finish(root u32) {
 	C.vgui_dock_finish(root)
+}
+
+// dock_reset discards the persisted dock layout; the next dock_root() rebuilds the default.
+// The builder is idempotent against imgui.ini by design, so a scrambled layout would otherwise
+// persist forever — this is the way back. Call it any time after the first frame (it no-ops
+// before the dockspace exists); the same frame's layout builder completes the rebuild.
+pub fn dock_reset() {
+	C.vgui_dock_reset()
 }
 
 // begin opens a window; returns true if it is visible (active dock tab / not collapsed).

@@ -170,6 +170,10 @@ fn draw_menubar(mut app App, rx u64) {
 			vgui.menu_end()
 		}
 		if vgui.menu_begin('View') {
+			if vgui.menu_item('Reset Layout') {
+				app.reset_layout()
+			}
+			vgui.separator()
 			app.show_buses = vgui.menu_item_check('Buses', app.show_buses)
 			app.show_sim = vgui.menu_item_check('Simulation', app.show_sim)
 			app.show_symbols = vgui.menu_item_check('Symbols', app.show_symbols)
@@ -208,8 +212,8 @@ fn draw_menubar(mut app App, rx u64) {
 				}
 			}
 			vgui.separator_text('UI scale')
-			// 75 exists for the opposite problem the maximized window solves: on a small screen
-			// the panels fight for room, and shrinking the UI is cheaper than closing one.
+			// 75 for small screens: the panels fight for room, and shrinking the UI is
+			// cheaper than closing one.
 			for s in [75, 100, 125, 150, 175] {
 				if vgui.menu_item('${s}%') {
 					app.ui_scale = f32(s) / 100.0
@@ -456,6 +460,43 @@ fn draw_log(mut app App) {
 
 // build_layout docks the five panels once: Buses (left) | Trace (centre) | a right
 // column stacked Trace Chart / Signals / Graphics.
+// reset_layout is the way back from a scrambled workspace: it discards the persisted dock
+// tree (build_layout rebuilds the default later this same frame — dock_reset is safe from
+// inside the menu, the dockspace id survives from the previous frame) AND restores the
+// default panel visibility. The dock tree alone was not enough: a user digging out of a
+// broken layout has usually closed panels on the way, and a "reset" that rebuilds empty
+// nodes for still-hidden windows hands back a different broken screen. Keep the defaults
+// here in step with the `show_*` declarations in app.v.
+fn (mut app App) reset_layout() {
+	vgui.dock_reset()
+	app.show_buses = true
+	app.show_trace = true
+	app.show_log = true
+	app.show_sim = false
+	app.show_symbols = false
+	app.show_ftrace = false
+	app.show_tchart = false
+	app.show_signals = false
+	app.show_graphics = false
+	app.show_diag = false
+	app.show_gen = false
+	app.show_script = false
+	app.show_doip = false
+	app.show_network = false
+	app.show_stats = false
+	app.show_shell = false
+	app.show_dbc = false
+	app.show_sys = false
+	app.show_flash = false
+	// The floating windows that live OUTSIDE the show_* set go back to closed too — left open,
+	// they hover over the freshly restored workspace as leftovers of the state being escaped.
+	// Configuration closes through its own setter, which folds unsaved edits into the model on
+	// the way out; setting the flag directly would silently drop them (codex #129 r1).
+	app.set_config_open(false)
+	app.disc_open = false
+	app.fb_open = false
+}
+
 fn build_layout() {
 	root := vgui.dock_root()
 	if root == 0 {
