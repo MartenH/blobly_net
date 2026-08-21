@@ -6,8 +6,11 @@
 
 ## The one idea
 
-The editor's killer feature is the dock it lives in: **edit a signal next to
-the live trace and watch real traffic re-decode instantly**. CANdb++ and the
+The editor's killer feature is live decode: **edit a signal next to the live
+trace and watch real traffic re-decode instantly**. It opens as a floating
+window (an editor wants room a dock tab beside small monitors cannot give);
+drag it into the dock next to the Trace when you want the side-by-side loop,
+or clean out of the app onto another monitor — both stick. CANdb++ and the
 free alternatives all make DBC authoring a dead loop (edit → save → restart →
 replay); blobly_net already has live decode against loaded `candb.Database`s
 — the editor closes the loop by making those databases writable. Everything

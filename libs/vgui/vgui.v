@@ -138,7 +138,9 @@ fn C.vgui_text_dim(&char)
 fn C.vgui_button(&char) int
 fn C.vgui_button_big(&char, int, int, int, f32, f32) int
 fn C.vgui_splitter_v(&char, f32, f32, f32) f32
+fn C.vgui_splitter_h(&char, f32, f32, f32) f32
 fn C.vgui_content_avail_w() f32
+fn C.vgui_content_avail_h() f32
 fn C.vgui_is_item_deactivated_after_edit() int
 fn C.vgui_same_line()
 fn C.vgui_separator_text(&char)
@@ -631,11 +633,22 @@ pub fn splitter_v(id string, w f32, min_w f32, max_w f32) f32 {
 	return C.vgui_splitter_v(id.str, w, min_w, max_w)
 }
 
+// splitter_h: a draggable horizontal divider between two stacked panes. Call it with the
+// current height of the pane ABOVE; returns the dragged/clamped height for next frame.
+pub fn splitter_h(id string, h f32, min_h f32, max_h f32) f32 {
+	return C.vgui_splitter_h(id.str, h, min_h, max_h)
+}
+
 // content_avail_w is the width still available in the current window or child, in px. Use it
 // to clamp a width you persisted against a panel that has since been docked or resized
 // narrower — otherwise a pane sized in a big window can consume a small one entirely.
 pub fn content_avail_w() f32 {
 	return C.vgui_content_avail_w()
+}
+
+// content_avail_h: the height still available in the current window or child, in px.
+pub fn content_avail_h() f32 {
+	return C.vgui_content_avail_h()
 }
 
 // is_item_deactivated_after_edit reports whether the PREVIOUS item stopped being edited this

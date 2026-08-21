@@ -15,11 +15,17 @@ import vgui
 
 struct DbcEd {
 mut:
-	db             int = -1 // dbs index
-	msg            int = -1
-	sig            int = -1
-	dirty          map[string]bool // unsaved edits keyed by dbc PATH (survives rebuilds/index shifts)
-	loaded_key     string          // which db:msg:sig the string buffers hold
+	db    int = -1 // dbs index
+	msg   int = -1
+	sig   int = -1
+	dirty map[string]bool // unsaved edits keyed by dbc PATH (survives rebuilds/index shifts)
+	// the messages box height, dragged via the horizontal splitter under it (the signals box
+	// fills whatever remains). Same lifetime as left_w: survives frames, resets with DbcEd.
+	msgs_h f32
+	// the right pane's upper region (message properties + bit grid) height, dragged via the
+	// splitter above the Signal Inspector; the inspector fills what remains. Same lifetime.
+	props_h        f32
+	loaded_key     string // which db:msg:sig the string buffers hold
 	mname_buf      []u8
 	sender_buf     []u8
 	sname_buf      []u8
@@ -336,6 +342,9 @@ fn draw_dbc_editor(mut app App) {
 		&& !app.dbc_ed.bit_edit_key.ends_with(':${app.dbc_ed.db}:${app.dbc_ed.msg}:${app.dbc_ed.sig}') {
 		app.dbc_ed.bit_edit_key = ''
 	}
+	// A useful floating default (Once — the user's own size/pos wins afterwards): undocked by
+	// default, and without this a fresh float opened at imgui's tiny fallback size.
+	vgui.set_next_window(140, 90, 1500, 880)
 	vis, op := vgui.begin_closable('DBC Editor', app.show_dbc)
 	app.show_dbc = op
 	if !vis {
@@ -540,8 +549,12 @@ fn draw_dbc_editor(mut app App) {
 	app.dbc_ed.view_tree = vgui.checkbox('Tree##tv', app.dbc_ed.view_tree)
 	mfilter := vgui.buf_str(app.dbc_ed.msg_filter_buf).to_lower()
 
-	// Messages tree/list child
-	vgui.child_begin('##dbcmsgbox', 220 * sc)
+	// Messages tree/list child — height is DRAGGABLE (splitter_h below); the signals box takes
+	// what remains, so the two trade space instead of both being frozen at a guess.
+	if app.dbc_ed.msgs_h <= 0 {
+		app.dbc_ed.msgs_h = 220 * sc
+	}
+	vgui.child_begin('##dbcmsgbox', app.dbc_ed.msgs_h)
 	if app.dbc_ed.view_tree {
 		for i, m in app.dbs[di].messages {
 			idtxt := if m.ext { '0x${m.id.hex()}x' } else { '0x${m.id.hex()}' }
@@ -603,6 +616,14 @@ fn draw_dbc_editor(mut app App) {
 		}
 	}
 	vgui.child_end()
+	// drag to trade height between the messages box above and the signals region below (which
+	// fills the remainder). 160*sc is the reserve kept below the divider: the message-button
+	// row, the signals separator + filter row, a minimum useful signals height, and the signal
+	// button row. If the pane is shorter than that, the splitter itself floors max at min —
+	// the guarantee lives in the widget, not here (the first cut re-derived the sibling
+	// splitter's clamp and dropped exactly that floor).
+	msgs_max := app.dbc_ed.msgs_h + vgui.content_avail_h() - 160 * sc
+	app.dbc_ed.msgs_h = vgui.splitter_h('##dbced_hsplit', app.dbc_ed.msgs_h, 80 * sc, msgs_max)
 
 	// Message Action Buttons
 	if !ro && vgui.small_button('+ message') {
@@ -682,8 +703,10 @@ fn draw_dbc_editor(mut app App) {
 		vgui.set_next_item_width(180 * sc)
 		vgui.input_text('filter signals##sf', mut app.dbc_ed.sig_filter_buf)
 		sfilter := vgui.buf_str(app.dbc_ed.sig_filter_buf).to_lower()
-
-		vgui.child_begin('##dbcsigbox', 180 * sc)
+		// Fill the remaining left-pane height MINUS one button row — negative height is
+		// ImGui's fill-minus-N, the same shape the Shell panel uses for its input row. The
+		// old fixed 180*sc wasted every tall window and starved every short one.
+		vgui.child_begin('##dbcsigbox', -30 * sc)
 		if vgui.table_begin('##dbcsigtable', 4) {
 			vgui.table_setup_col('#', 18 * sc)
 			vgui.table_setup_col('name', 130 * sc)
@@ -821,6 +844,13 @@ fn draw_dbc_editor(mut app App) {
 
 	// 1. Message Properties Form
 	id_hex_str := if msg.ext { '0x${msg.id.hex()}x' } else { '0x${msg.id.hex()}' }
+	// Properties + bit grid live in their OWN scrolling child of draggable height, so the
+	// Signal Inspector below keeps its room no matter how many grid rows the message has —
+	// before this, a wide message pushed the inspector off the bottom of the pane.
+	if app.dbc_ed.props_h <= 0 {
+		app.dbc_ed.props_h = 380 * sc
+	}
+	vgui.child_begin('##dbced_props', app.dbc_ed.props_h)
 	vgui.separator_text('Message Properties: ${msg.name} (${id_hex_str})')
 	app.dbc_ed_load_bufs()
 
@@ -1105,6 +1135,14 @@ fn draw_dbc_editor(mut app App) {
 			}
 		}
 	}
+
+	vgui.child_end() // end properties + bit grid region
+	// the slider above the Signal Inspector: drag to trade height between the properties/grid
+	// region above and the inspector below. 220*sc reserves a useful inspector; the splitter
+	// itself floors max at min, so a short pane degrades gracefully instead of inverting.
+	props_max := app.dbc_ed.props_h + vgui.content_avail_h() - 220 * sc
+	app.dbc_ed.props_h = vgui.splitter_h('##dbced_props_split', app.dbc_ed.props_h, 120 * sc,
+		props_max)
 
 	// 3. Signal Inspector Form (for selected signal)
 	si := app.dbc_ed.sig
