@@ -15,11 +15,14 @@ import vgui
 
 struct DbcEd {
 mut:
-	db             int = -1 // dbs index
-	msg            int = -1
-	sig            int = -1
-	dirty          map[string]bool // unsaved edits keyed by dbc PATH (survives rebuilds/index shifts)
-	loaded_key     string          // which db:msg:sig the string buffers hold
+	db    int = -1 // dbs index
+	msg   int = -1
+	sig   int = -1
+	dirty map[string]bool // unsaved edits keyed by dbc PATH (survives rebuilds/index shifts)
+	// the messages box height, dragged via the horizontal splitter under it (the signals box
+	// fills whatever remains). Same lifetime as left_w: survives frames, resets with DbcEd.
+	msgs_h         f32
+	loaded_key     string // which db:msg:sig the string buffers hold
 	mname_buf      []u8
 	sender_buf     []u8
 	sname_buf      []u8
@@ -336,6 +339,9 @@ fn draw_dbc_editor(mut app App) {
 		&& !app.dbc_ed.bit_edit_key.ends_with(':${app.dbc_ed.db}:${app.dbc_ed.msg}:${app.dbc_ed.sig}') {
 		app.dbc_ed.bit_edit_key = ''
 	}
+	// A useful floating default (Once — the user's own size/pos wins afterwards): undocked by
+	// default, and without this a fresh float opened at imgui's tiny fallback size.
+	vgui.set_next_window(220, 120, 980, 640)
 	vis, op := vgui.begin_closable('DBC Editor', app.show_dbc)
 	app.show_dbc = op
 	if !vis {
@@ -540,8 +546,12 @@ fn draw_dbc_editor(mut app App) {
 	app.dbc_ed.view_tree = vgui.checkbox('Tree##tv', app.dbc_ed.view_tree)
 	mfilter := vgui.buf_str(app.dbc_ed.msg_filter_buf).to_lower()
 
-	// Messages tree/list child
-	vgui.child_begin('##dbcmsgbox', 220 * sc)
+	// Messages tree/list child — height is DRAGGABLE (splitter_h below); the signals box takes
+	// what remains, so the two trade space instead of both being frozen at a guess.
+	if app.dbc_ed.msgs_h <= 0 {
+		app.dbc_ed.msgs_h = 220 * sc
+	}
+	vgui.child_begin('##dbcmsgbox', app.dbc_ed.msgs_h)
 	if app.dbc_ed.view_tree {
 		for i, m in app.dbs[di].messages {
 			idtxt := if m.ext { '0x${m.id.hex()}x' } else { '0x${m.id.hex()}' }
@@ -603,6 +613,10 @@ fn draw_dbc_editor(mut app App) {
 		}
 	}
 	vgui.child_end()
+	// drag to trade height between the messages box above and the signals box below (which
+	// fills the remainder) — clamped so neither can be squeezed out entirely
+	msgs_max := app.dbc_ed.msgs_h + vgui.content_avail_h() - 160 * sc
+	app.dbc_ed.msgs_h = vgui.splitter_h('##dbced_hsplit', app.dbc_ed.msgs_h, 80 * sc, msgs_max)
 
 	// Message Action Buttons
 	if !ro && vgui.small_button('+ message') {
@@ -679,43 +693,8 @@ fn draw_dbc_editor(mut app App) {
 
 		// Signals List for Selected Message
 		vgui.separator_text('signals (${app.dbs[di].messages[mi].signals.len})')
-		vgui.set_next_item_width(180 * sc)
-		vgui.input_text('filter signals##sf', mut app.dbc_ed.sig_filter_buf)
-		sfilter := vgui.buf_str(app.dbc_ed.sig_filter_buf).to_lower()
-
-		vgui.child_begin('##dbcsigbox', 180 * sc)
-		if vgui.table_begin('##dbcsigtable', 4) {
-			vgui.table_setup_col('#', 18 * sc)
-			vgui.table_setup_col('name', 130 * sc)
-			vgui.table_setup_col('start|len', 65 * sc)
-			vgui.table_setup_col('fmt', 45 * sc)
-			vgui.table_headers()
-			for i, sg in app.dbs[di].messages[mi].signals {
-				if sfilter != '' {
-					name_match := sg.name.to_lower().contains(sfilter)
-					unit_match := sg.unit.to_lower().contains(sfilter)
-					desc_match := sg.desc.to_lower().contains(sfilter)
-					if !name_match && !unit_match && !desc_match {
-						continue
-					}
-				}
-				or_tag := if sg.byte_order == .little_endian { 'LE' } else { 'BE' }
-				sgn := if sg.is_signed { 'i' } else { 'u' }
-				cr, cg, cb := dbc_ed_color(i)
-				vgui.table_row()
-				vgui.table_next_col()
-				vgui.text_colored(u8(cr), u8(cg), u8(cb), '#')
-				vgui.table_next_col()
-				if vgui.selectable('${sg.name}##ds${i}', app.dbc_ed.sig == i) {
-					app.dbc_ed.sig = i
-				}
-				vgui.table_cell('${sg.start_bit}|${sg.length}')
-				vgui.table_cell('@${or_tag}${sgn}')
-			}
-			vgui.table_end()
-		}
-		vgui.child_end()
-
+		// The +/- signal buttons live ABOVE the table: the signals box below fills every
+		// remaining pixel of the pane, so anything after it would render off the bottom.
 		if !ro && vgui.small_button('+ signal') {
 			app.mu.lock()
 			mut top := 0
@@ -780,6 +759,45 @@ fn draw_dbc_editor(mut app App) {
 				return
 			}
 		}
+		vgui.set_next_item_width(180 * sc)
+		vgui.input_text('filter signals##sf', mut app.dbc_ed.sig_filter_buf)
+		sfilter := vgui.buf_str(app.dbc_ed.sig_filter_buf).to_lower()
+
+		// FILLS the remaining left-pane height (0): the old fixed 180*sc wasted every tall
+		// window and starved every short one. The +/- signal buttons moved above the table for
+		// exactly this — a filling child leaves no room below itself.
+		vgui.child_begin('##dbcsigbox', 0)
+		if vgui.table_begin('##dbcsigtable', 4) {
+			vgui.table_setup_col('#', 18 * sc)
+			vgui.table_setup_col('name', 130 * sc)
+			vgui.table_setup_col('start|len', 65 * sc)
+			vgui.table_setup_col('fmt', 45 * sc)
+			vgui.table_headers()
+			for i, sg in app.dbs[di].messages[mi].signals {
+				if sfilter != '' {
+					name_match := sg.name.to_lower().contains(sfilter)
+					unit_match := sg.unit.to_lower().contains(sfilter)
+					desc_match := sg.desc.to_lower().contains(sfilter)
+					if !name_match && !unit_match && !desc_match {
+						continue
+					}
+				}
+				or_tag := if sg.byte_order == .little_endian { 'LE' } else { 'BE' }
+				sgn := if sg.is_signed { 'i' } else { 'u' }
+				cr, cg, cb := dbc_ed_color(i)
+				vgui.table_row()
+				vgui.table_next_col()
+				vgui.text_colored(u8(cr), u8(cg), u8(cb), '#')
+				vgui.table_next_col()
+				if vgui.selectable('${sg.name}##ds${i}', app.dbc_ed.sig == i) {
+					app.dbc_ed.sig = i
+				}
+				vgui.table_cell('${sg.start_bit}|${sg.length}')
+				vgui.table_cell('@${or_tag}${sgn}')
+			}
+			vgui.table_end()
+		}
+		vgui.child_end()
 	}
 	vgui.child_end() // end left pane
 

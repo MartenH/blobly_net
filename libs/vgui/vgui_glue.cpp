@@ -542,6 +542,7 @@ int vgui_input_int(const char* label, int* v) {
 // left child_end and before the right child. Drag it to grow/shrink the left pane; returns the
 // new width, clamped to [min_w, max_w]. The handle is invisible until hovered/active.
 float vgui_content_avail_w(void) { return ImGui::GetContentRegionAvail().x; }
+float vgui_content_avail_h(void) { return ImGui::GetContentRegionAvail().y; }
 
 int vgui_is_item_deactivated_after_edit(void) {
     return ImGui::IsItemDeactivatedAfterEdit() ? 1 : 0;
@@ -562,6 +563,24 @@ float vgui_splitter_v(const char* id, float w, float min_w, float max_w) {
     if (w < min_w) w = min_w;
     if (w > max_w) w = max_w;
     return w;
+}
+// horizontal counterpart of vgui_splitter_v: a draggable divider between two stacked panes.
+// Returns the new height of the pane ABOVE it.
+float vgui_splitter_h(const char* id, float h, float min_h, float max_h) {
+    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0,0,0,0));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4(ImGuiCol_SeparatorHovered));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImGui::GetStyleColorVec4(ImGuiCol_SeparatorActive));
+    float w = ImGui::GetContentRegionAvail().x;
+    if (w < 1.0f) w = 1.0f;
+    ImGui::Button(id, ImVec2(w, 6.0f));
+    ImGui::PopStyleColor(3);
+    if (ImGui::IsItemHovered() || ImGui::IsItemActive())
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+    if (ImGui::IsItemActive())
+        h += ImGui::GetIO().MouseDelta.y;
+    if (h < min_h) h = min_h;
+    if (h > max_h) h = max_h;
+    return h;
 }
 void vgui_set_next_item_width(float w) { ImGui::SetNextItemWidth(w); }
 // advance the cursor horizontally on the current line (a left inset / spacer).
