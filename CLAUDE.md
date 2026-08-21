@@ -153,7 +153,8 @@ release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks.
 - **The order is: build → `/code-review high` → `@codex review`.** Not two of the three, and not
   a different order. Each codex round is a ~10-minute wait, so anything the self-review can find
   is found for free; codex then sees a branch that has already had its obvious problems removed.
-  Every round is watched by a *tracked* background timer — see the note on watchers below.
+  Every round is watched by `scripts/codex_review_watch.sh` in a *tracked* background timer —
+  see the note on watchers below.
 - **Run `/code-review high` on the branch BEFORE asking codex.** Self-run, high effort; not the
   billed cloud `/code-review ultra`, which only the maintainer triggers. Precedent:
   `docs/history.md` 2026-06-21, where a self-run high review of gui#65 found a real bug the
@@ -182,7 +183,10 @@ release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks.
   "iterate until clean" had no way to terminate. Every fact needed was already written down, one
   `git show` away. Re-read it the same way whenever you pick work back up after a gap; other
   sessions land PRs into this file while you are working.
-- **PRs get `@codex review`**; iterate until clean before merging. Watch each round with a
+- **PRs get `@codex review`**; iterate until clean before merging. Before the first request,
+  run `scripts/review_preflight.sh`. Start each round with
+  `scripts/request_codex_review.sh <pr> --post`, then run the printed
+  `scripts/codex_review_watch.sh --state ...` command as a
   **tracked** background job, never a detached shell (`( ... & )`) — a detached watcher fires
   into nothing and the round sits unread. Two reviews were missed that way in one session, one
   of them for over an hour. Match the verdict by the head SHA codex names, not by its wording:
@@ -237,6 +241,13 @@ A watcher that reports "nothing" when something is waiting is worse than no watc
 here exists because a silent version of it lost a review; the incidents are in
 [`docs/history.md`](docs/history.md).
 
+Do not hand-roll the polling in a shell fragment. `scripts/request_codex_review.sh <pr> --post`
+posts the request, records the PR head SHA, records the request comment marker and fresh
+baselines for the GitHub id spaces, and
+`scripts/codex_review_watch.sh --state .claude/reviews/pr-<pr>.env` reads both verdict channels.
+Its fixtures are in `scripts/codex_review_watch_test.sh` and run in CI; update those fixtures
+when the GitHub/Codex response shape changes.
+
 - **`--paginate` everything**, but for two different reasons. Comments come back **ascending**,
   30 per page, so an un-paginated read drops the **newest** — the ones you are waiting for.
   `commits/<sha>/check-runs` is ordered by id **descending**, so there an un-paginated read keeps
@@ -269,7 +280,7 @@ here exists because a silent version of it lost a review; the incidents are in
   | outcome | where | match on |
   |---|---|---|
   | findings | `pulls/N/reviews` | `**Reviewed commit:** \`<sha>\`` in the body |
-  | **clean** | `issues/N/comments` | "Didn't find any major issues" + the same SHA |
+  | **clean** | `issues/N/comments` | `**Reviewed commit:** \`<sha>\`` in the body |
   | failed | `issues/N/comments` | "Something went wrong" — re-request, do not wait |
 
   Watching either endpoint alone is silent about the other's outcomes, and both failures look

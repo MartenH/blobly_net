@@ -57,6 +57,14 @@ jobs:
           chmod +x scripts/vcan_common_test.sh
           ./scripts/vcan_common_test.sh
 
+      # The @codex review watcher has to read both GitHub verdict channels, match by reviewed
+      # SHA, and preserve gh API failures instead of reporting "nothing waiting". The fixtures
+      # pin those behaviours so future review rounds do not depend on a hand-rolled watcher.
+      - name: codex review watcher tests (scripts/codex_review_watch_test.sh)
+        run: |
+          chmod +x scripts/codex_review_watch_test.sh
+          ./scripts/codex_review_watch_test.sh
+
       # End-to-end: brings the sim-demo project's simulated ECUs + native UDS
       # server up driver-free on the in-proc bus and runs the Lua test scripts.
       # Non-zero exit on any failing test (the script enforces it).
