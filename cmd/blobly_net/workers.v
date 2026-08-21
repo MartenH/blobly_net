@@ -773,6 +773,11 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 					continue
 				}
 				if transport.destination_key(other.iface) == want {
+					// the WIRE's verdict survives the handoff: a socket opened after the
+					// controller entered bus-off sees only future transitions, so a
+					// successor starting at .unknown painted the still-dead wire green
+					// (codex #143 r1). The outgoing reader is the one that knows.
+					a.chans[cj].health = a.chans[ci].health
 					a.chans[cj].spawning = true
 					spawn rx_loop(app, cj, other.iface, gen)
 					break

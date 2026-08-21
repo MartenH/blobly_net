@@ -293,6 +293,10 @@ fn (mut app App) start() {
 	mut anon_tap_failed := map[string]bool{}
 	mut named_tap_failed := map[string]bool{}
 	for ci, ch in app.chans {
+		// EVERY row, before the monitorable gate: a disabled row keeping an earlier run's
+		// BUS-OFF became the reader on a mid-run enable and showed it forever — a fresh
+		// healthy backend reports .unknown and never overwrites (codex #143 r1)
+		app.chans[ci].health = .unknown
 		if !ch.monitorable() {
 			continue
 		}
@@ -301,11 +305,6 @@ fn (mut app App) start() {
 		// which broadcasts only to already-attached subscribers — those frames genuinely had no
 		// listener, yet were tracked as if one existed and later marked as never sent.
 		app.chans[ci].link_down = !iface_link_up(ch.adapter, ch.address)
-		// a NEW run starts with no verdict: the fresh backend reports .unknown until its
-		// driver says otherwise, and a healthy bus may never say anything — carrying the
-		// previous run's BUS-OFF forward painted a repaired bus red for the process
-		// lifetime, with no transition left to clear it (self-review)
-		app.chans[ci].health = .unknown
 		// the same guard the mid-run toggle uses: disabling and re-enabling while this open is
 		// still pending would otherwise start a SECOND loop for one channel, and both would
 		// claim against the same monitor index — one gets the echo, the other files its copy

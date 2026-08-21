@@ -112,6 +112,8 @@ fn draw_buses(mut app App, chans []Chan) {
 			if new != c.enabled {
 				mut want_iface := ''
 				mut want_name := ''
+				mut need_named := false
+				mut need_anon := false
 				// failures found while app.mu is HELD are said after the unlock: notify
 				// re-takes the (non-reentrant) mutex, so an inline notify here deadlocks
 				// the GUI thread — the trap that kept this path silent when start()'s copy
@@ -245,8 +247,14 @@ fn draw_buses(mut app App, chans []Chan) {
 					// per-frame lock behind a driver timeout (self-review). The opens run
 					// after the unlock; the inserts re-take the lock briefly — a V map is
 					// not safe for a concurrent read and write (tx_on_chan's invariant).
+					// record WHICH taps are actually missing while the lock is held — a
+					// re-enabled row's taps usually still exist (disable does not remove
+					// them), and opening unconditionally leaked the discarded winner's
+					// port on Vector, unreachable by teardown (codex #143 r1, P1)
 					want_iface = app.chans[i].iface
 					want_name = app.chans[i].name
+					need_named = tx_bus_key(want_name, want_iface) !in app.tx_buses
+					need_anon = tx_bus_key('', want_iface) !in app.tx_buses
 					if app.send_iface == '' {
 						app.send_iface = want_iface
 					}
@@ -255,24 +263,34 @@ fn draw_buses(mut app App, chans []Chan) {
 				for m in open_errs {
 					app.notify(m)
 				}
-				if want_iface != '' {
-					want_named := tx_bus_key(want_name, want_iface)
-					want_anon := tx_bus_key('', want_iface)
-					if b := app.open_tap_on(want_iface, org_tx, want_name) {
+				if want_iface != '' && need_named {
+					key := tx_bus_key(want_name, want_iface)
+					if mut b := app.open_tap_on(want_iface, org_tx, want_name) {
 						app.mu.lock()
-						if want_named !in app.tx_buses {
-							app.tx_buses[want_named] = b
+						race := key in app.tx_buses
+						if !race {
+							app.tx_buses[key] = b
 						}
 						app.mu.unlock()
+						if race {
+							b.close() // somebody inserted first — the loser must not leak
+						}
 					} else {
 						app.notify('${want_name}: transmit tap failed to open — ${err}')
 					}
-					if b := app.open_tap(want_iface, org_tx) {
+				}
+				if want_iface != '' && need_anon {
+					key := tx_bus_key('', want_iface)
+					if mut b := app.open_tap(want_iface, org_tx) {
 						app.mu.lock()
-						if want_anon !in app.tx_buses {
-							app.tx_buses[want_anon] = b
+						race := key in app.tx_buses
+						if !race {
+							app.tx_buses[key] = b
 						}
 						app.mu.unlock()
+						if race {
+							b.close()
+						}
 					} else {
 						app.notify('${want_iface}: shared transmit tap failed to open — ${err}')
 					}
