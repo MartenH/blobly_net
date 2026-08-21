@@ -529,7 +529,10 @@ fn build_layout() {
 	vgui.dock_window('Signals', midnode)
 	vgui.dock_window('Diagnostics', midnode)
 	vgui.dock_window('Shell', midnode)
-	vgui.dock_window('DBC Editor', midnode) // beside the live Trace: edit, watch re-decode
+	// DBC Editor deliberately NOT docked: it is an editor, not a monitor panel — it opens as a
+	// floating window (drag it into the dock, or right out of the app into its own OS window,
+	// if you prefer). It was tabbed beside the live views by default, which made a large edit
+	// surface fight small monitoring panels for one dock node's space.
 	vgui.dock_window('System', midnode)
 	vgui.dock_window('Flash', midnode)
 	vgui.dock_window('DoIP Discovery', midnode)
