@@ -44,6 +44,16 @@ fn chan_state(c Chan, wire DestState) (u8, u8, u8, string) {
 		if c.link_down || wire.down {
 			return u8(215), u8(90), u8(90), 'down' // iface DOWN — bound but can't tx/rx
 		}
+		// the controller's own fault ladder outranks "running": a bus-off channel IS still
+		// running its reader — that is how it will notice the recovery — but nothing
+		// transmits, and painting it green was the lie the bench kept believing
+		match c.health {
+			.bus_off { return u8(230), u8(70), u8(70), 'BOFF' }
+			.error_passive { return u8(230), u8(140), u8(60), 'errP' }
+			.warning { return u8(220), u8(190), u8(70), 'warn' }
+			else {}
+		}
+
 		return u8(90), u8(200), u8(120), 'run '
 	}
 	return u8(220), u8(170), u8(70), 'idle'

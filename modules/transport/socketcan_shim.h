@@ -14,6 +14,7 @@
 #include <sys/socket.h>
 #include <linux/can.h>
 #include <linux/can/raw.h>
+#include <linux/can/error.h>
 
 // Open a raw CAN socket bound to `ifname` (e.g. "vcan0"). Returns fd >= 0, or
 // -errno on failure.
@@ -35,6 +36,13 @@ static inline int ct_can_open(const char *ifname) {
 	 * for it — the frame is what cannot be represented, not the socket. */
 	int on = 1;
 	setsockopt(s, SOL_CAN_RAW, CAN_RAW_FD_FRAMES, &on, sizeof(on));
+	/* Subscribe to the kernel's error frames (bus-off, error-passive, controller warnings):
+	 * without CAN_RAW_ERR_FILTER the kernel never delivers them, so bus health was
+	 * UNOBSERVABLE from this socket — a bench at bus-off looked like a healthy silent bus.
+	 * Also not fatal on refusal: health degrades to unknown, traffic still flows. The V
+	 * side recognizes these frames by CAN_ERR_FLAG in the id and never shows them as data. */
+	can_err_mask_t errs = CAN_ERR_MASK;
+	setsockopt(s, SOL_CAN_RAW, CAN_RAW_ERR_FILTER, &errs, sizeof(errs));
 	return s;
 }
 

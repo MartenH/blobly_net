@@ -72,7 +72,7 @@ docs/                design + platform docs; docs/history.md = archived status l
 
 | module | what |
 |---|---|
-| `transport` | Bus/Channel interface + SocketCAN, PCAN and Vector XL (Windows), UDP software bus. **CAN-FD** (`fd`/`brs`, 64-byte payloads) on SocketCAN + the software buses; the Windows vendor backends refuse FD rather than truncating |
+| `transport` | Bus/Channel interface + SocketCAN, PCAN and Vector XL (Windows), UDP software bus. **Bus health** (warning/error-passive/**BUS-OFF**) decoded per backend (`health.v`, pinned to vendor headers by tests) — the Buses panel colors it, the Log narrates transitions. **CAN-FD** (`fd`/`brs`, 64-byte payloads) on SocketCAN + the software buses; the Windows vendor backends refuse FD rather than truncating |
 | `candb` | DBC parse/decode/encode + canonical writer (`dbc_write.v`) |
 | `isotp` | ISO-TP (ISO 15765-2) transport |
 | `uds` | UDS diagnostic client over ISO-TP |

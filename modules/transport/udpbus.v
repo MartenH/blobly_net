@@ -135,6 +135,11 @@ pub fn (mut b UdpBus) recv(timeout_ms int) !CanFrame {
 	return error('timeout')
 }
 
+// health: a UDP datagram bus has no CAN controller — nothing to report, honestly.
+pub fn (mut b UdpBus) health() BusHealth {
+	return .unknown
+}
+
 pub fn (mut b UdpBus) close() {
 	b.tx.close() or {}
 	b.rx.close() or {}

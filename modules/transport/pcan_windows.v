@@ -21,6 +21,7 @@ fn C.ct_pcan_init(u16, u16) u32
 fn C.ct_pcan_uninit(u16) u32
 fn C.ct_pcan_write(u16, u32, u8, u8, &u8) u32
 fn C.ct_pcan_read(u16, &u32, &u8, &u8, &u8) int
+fn C.ct_pcan_status(u16) u32
 fn C.ct_pcan_condition(u16) int
 
 // PCAN message-type flags (mirror pcan_shim.h).
@@ -138,6 +139,17 @@ pub fn (mut b PcanBus) recv(timeout_ms int) !CanFrame {
 
 pub fn (mut b PcanBus) close() {
 	C.ct_pcan_uninit(b.channel)
+}
+
+// health asks CAN_GetStatus for the controller's fault ladder. 0xFFFFFFFF means the loaded
+// DLL predates the symbol — reported as unknown, never as a state; the decode itself lives
+// in health.v where a test pins it to PCANBasic.h's constants.
+pub fn (mut b PcanBus) health() BusHealth {
+	st := C.ct_pcan_status(b.channel)
+	if st == 0xFFFF_FFFF {
+		return .unknown
+	}
+	return pcan_status_health(st)
 }
 
 // pcan_handle maps a channel spec to a PCANBasic channel handle. USB handles are

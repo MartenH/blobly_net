@@ -33,6 +33,9 @@ mut:
 	running   bool
 	spawning  bool // rx_loop spawned but its bus not open yet (double-click guard)
 	link_down bool // real CAN iface is administratively DOWN (bound but can't tx/rx)
+	// The controller's fault ladder, from the backend's own driver (transport.BusHealth) —
+	// written by the wire's RX loop on transitions, .unknown where the backend cannot say.
+	health transport.BusHealth
 }
 
 fn (c Chan) monitorable() bool {
@@ -181,6 +184,12 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 
 fn (mut t TapBus) recv(timeout_ms int) !transport.CanFrame {
 	return t.inner.recv(timeout_ms)
+}
+
+// health passes the inner backend's fault ladder through — the tap wraps for attribution,
+// not for transport, so the controller state is whatever the wire's driver says.
+fn (mut t TapBus) health() transport.BusHealth {
+	return t.inner.health()
 }
 
 fn (mut t TapBus) close() {

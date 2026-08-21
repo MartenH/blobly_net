@@ -45,6 +45,11 @@ typedef int (__stdcall *ct_kvChanData)(int, int, void *, size_t);
 static ct_kvNumChan  ct_kv_numchan;
 static ct_kvChanData ct_kv_chandata;
 
+/* bus health (optional): canReadStatus fills canSTAT_* flags — BUS_OFF 0x01, ERROR_PASSIVE
+ * 0x02, ERROR_WARNING 0x40, ERROR_ACTIVE 0x10 (canstat.h). */
+typedef int (__stdcall *ct_kvReadStatus)(int, uint32_t *);
+static ct_kvReadStatus ct_kv_readstatus;
+
 /* 0 ok, -1 DLL missing, -2 a symbol missing. */
 static int ct_kvaser_load(void) {
 	HMODULE h = LoadLibraryA("canlib32.dll");
@@ -56,6 +61,7 @@ static int ct_kvaser_load(void) {
 	ct_kv_busoff   = (ct_kvBusOff)(void *)GetProcAddress(h, "canBusOff");
 	ct_kv_write    = (ct_kvWrite)(void *)GetProcAddress(h, "canWrite");
 	ct_kv_readwait = (ct_kvReadWait)(void *)GetProcAddress(h, "canReadWait");
+	ct_kv_readstatus = (ct_kvReadStatus)(void *)GetProcAddress(h, "canReadStatus");
 	ct_kv_close    = (ct_kvClose)(void *)GetProcAddress(h, "canClose");
 	ct_kv_numchan  = (ct_kvNumChan)(void *)GetProcAddress(h, "canGetNumberOfChannels");
 	ct_kv_chandata = (ct_kvChanData)(void *)GetProcAddress(h, "canGetChannelData");
@@ -130,3 +136,10 @@ static void ct_kvaser_close(int hnd) {
 }
 
 #endif /* CT_KVASER_SHIM_H */
+
+/* Status flags of an on-bus handle. Returns -1 when the symbol is absent or the call fails
+ * (the caller reads that as "cannot say"); 0 on success with *flags filled. */
+static int ct_kvaser_status(int hnd, uint32_t *flags) {
+	if (!ct_kv_readstatus) return -1;
+	return ct_kv_readstatus(hnd, flags) == 0 ? 0 : -1;
+}

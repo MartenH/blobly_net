@@ -423,6 +423,13 @@ pub fn (b &VectorBus) chip_state() !VectorChipState {
 	}
 }
 
+// health folds chip_state into the cross-backend ladder — the existing per-backend answer,
+// wearing the shared face rx_loop polls; decode pinned in health.v against vxlapi.h.
+pub fn (mut b VectorBus) health() BusHealth {
+	st := b.chip_state() or { return .unknown }
+	return xl_chipstat_health(u8(st.bus_status))
+}
+
 // chip_state_of asks a Bus for its controller state, when it is a Vector one. The type switch
 // lives here rather than at the call site: `Bus` is this module's interface and the concrete
 // types behind it are this module's business.

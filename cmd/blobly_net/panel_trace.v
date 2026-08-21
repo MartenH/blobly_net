@@ -90,7 +90,7 @@ fn draw_trace(mut app App, rows []TraceRow, gcount map[string]u64, rx u64) {
 	brows := app.filter_bus(rows, app.trace_bus)
 	filt := vgui.buf_str(app.trace_filter_buf).to_lower()
 	if app.trace_grouped {
-		vgui.separator_text('by id (click to expand · click row to select)')
+		vgui.separator_text('by id (click to expand · click row to select · x = NOT SENT, driver refused · ! = no echo)')
 		draw_trace_grouped(mut app, brows, gcount, filt)
 	} else {
 		vgui.separator_text('frames (newest first)')
@@ -305,7 +305,11 @@ fn merge_dbs_from(dbs []candb.Database) candb.Database {
 // only in the flat table is invisible unless the user happens to switch modes, which is the
 // same as not reporting it.
 fn trace_name_cell(r TraceRow) string {
-	return if r.e2e == '' { r.name } else { '${r.name}  ${r.e2e}' }
+	base := if r.e2e == '' { r.name } else { '${r.name}  ${r.e2e}' }
+	// NOT SENT rides the name cell like a violation does: it is rare, the origin column is
+	// too narrow to spell it, and a mark alone ('x') must never be the only statement that
+	// nothing reached the wire
+	return if r.refused { '${base}  NOT SENT — driver refused' } else { base }
 }
 
 fn draw_trace_all(id string, rows []TraceRow, filt string) {
@@ -342,7 +346,7 @@ fn draw_trace_all(id string, rows []TraceRow, filt string) {
 			// A violation is appended to the NAME rather than given a column: it is rare, and
 			// a permanently-empty column costs width on every row for the frames that are fine.
 			vgui.table_cell(trace_name_cell(r))
-			vgui.table_cell('${r.origin}${origin_mark(r)}')
+			origin_cell(r.origin, origin_mark(r))
 			vgui.table_cell('${r.data.len}')
 			vgui.table_cell(flags_str(r))
 			// the FD/BRS suffix moved out of this cell into the flags column — payload only here
@@ -370,9 +374,10 @@ mut:
 	// Any frame in this group that never reached the wire. Taken across the whole group, not
 	// from `last`: the newest row is the one whose echo window has had least time to close, so
 	// reading the flag off it would hide every miss but the stalest.
-	missed bool
-	last   TraceRow // newest frame of this group in the window
-	prev   TraceRow // the frame before `last` (empty data if only one seen) — for byte-delta dim
+	missed  bool
+	refused bool
+	last    TraceRow // newest frame of this group in the window
+	prev    TraceRow // the frame before `last` (empty data if only one seen) — for byte-delta dim
 }
 
 // gkey is the stable per-group identity used for both the grouped-view rows and the
@@ -407,11 +412,28 @@ fn gkey_frame(origin string, ch string, f transport.CanFrame) string {
 	return gkey_fmt(origin, ch, f.id, f.extended, f.fd, f.brs, f.rtr)
 }
 
-// origin_mark renders the wire verdict for a frame we emitted: '!' once its echo window closed
-// with nothing coming back. A bus that never echoes is a bus nothing reached — no ACK from any
-// other node, wrong bitrate, swapped CANH/CANL, or a down link — and today that is invisible.
+// origin_mark renders the wire verdict for a frame we emitted. Two distinct failures, two
+// distinct marks, because they call for different fixes: ' x NOT SENT' — the DRIVER refused
+// it, nothing went on the line (dead adapter, bus-off, FD on a classic port); '!' — the
+// driver took it but the echo window closed with nothing coming back (no ACK from any other
+// node, wrong bitrate, swapped CANH/CANL, or a down link). The legend above the table
+// carries both.
 fn origin_mark(r TraceRow) string {
+	if r.refused {
+		return ' x'
+	}
 	return if r.missed { '!' } else { '' }
+}
+
+// origin_cell paints the verdict: a failed emission renders red — the mark carries the
+// meaning (color alone is not the message), the color makes it impossible to skim past.
+fn origin_cell(origin string, mark string) {
+	if mark == '' {
+		vgui.table_cell(origin)
+		return
+	}
+	vgui.table_next_col()
+	vgui.text_colored(230, 80, 80, '${origin}${mark}')
 }
 
 // grouped: one collapsible row per (dir, ch, id), expand to decode its latest signals.
@@ -447,6 +469,9 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		}
 		if r.missed {
 			g.missed = true
+		}
+		if r.refused {
+			g.refused = true
 		}
 		if g.count > 0 {
 			g.prev = g.last // slide the previous-frame window forward
@@ -538,7 +563,13 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				}
 				vgui.end_popup()
 			}
-			vgui.table_cell('${g.origin}${if g.missed { '!' } else { '' }}')
+			origin_cell(g.origin, if g.refused {
+				' x'
+			} else if g.missed {
+				'!'
+			} else {
+				''
+			})
 			vgui.table_cell('${r.data.len}')
 			vgui.table_cell(flags_str(r))
 			// data column: dim bytes that match the PREVIOUS frame of this group, normal for

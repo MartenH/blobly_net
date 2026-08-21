@@ -462,6 +462,33 @@ fn diag_server_loop(app &App, iface string, chan_name string, gen u64) {
 	ch.close()
 }
 
+// health_msg words a fault-ladder transition for the Log. BUS-OFF carries the diagnosis
+// hints: it is the state a bench actually hits, and the naked word helps nobody at 2am.
+fn health_msg(iface string, from transport.BusHealth, to transport.BusHealth) string {
+	base := '${iface}: bus ${transport.health_name(to)}'
+	return match to {
+		.bus_off {
+			'${base} — the controller LEFT the bus; nothing transmits until it recovers (shorted/unterminated wire, or a bitrate every other node rejects?)'
+		}
+		.error_passive {
+			'${base} — error counters over 128: this node no longer signals errors actively'
+		}
+		.warning {
+			'${base} — error counters climbing (over the warning limit)'
+		}
+		.ok {
+			if from != .unknown {
+				'${base} — recovered'
+			} else {
+				base
+			}
+		}
+		.unknown {
+			base
+		}
+	}
+}
+
 fn rx_loop(app &App, ci int, iface string, gen u64) {
 	mut bus := app.open_transport(iface) or {
 		eprintln('rx ${iface}: ${err}')
@@ -540,7 +567,26 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	// the TraceRsp id is config-static (the manifest is only mutated while stopped, so it can't
 	// change under a running RX loop) — resolve it once, not per frame in the hot path.
 	rsp_id := a.manifest.frames.or_defaults().rsp
+	// the controller's fault ladder, polled ~1/s and reported on TRANSITIONS only — the
+	// local last-state means no unlocked read of shared state, and the write is generation
+	// -guarded like every other flag this loop owns
+	mut last_health := transport.BusHealth.unknown
+	mut next_health := i64(0)
 	for a.running && a.run_gen == gen && a.chans[ci].enabled {
+		if time.ticks() >= next_health {
+			next_health = time.ticks() + 1000
+			h := bus.health()
+			if h != .unknown && h != last_health {
+				a.mu.lock()
+				if a.run_gen == gen && ci < a.chans.len {
+					a.chans[ci].health = h
+					a.log_append_locked(health_msg(iface, last_health, h))
+				}
+				a.mu.unlock()
+				vgui.wake()
+				last_health = h
+			}
+		}
 		// track the real link state so a bound-but-DOWN iface shows "down" (red), not "run",
 		// and flips to green the moment the user brings it up (ip link set … up).
 		down := !iface_link_up(a.chans[ci].adapter, a.chans[ci].address)
