@@ -257,9 +257,14 @@ fn draw_replay_config(mut app App) {
 		} else {
 			vgui.text(g.src)
 		}
+		// active membership from the MODEL, not the runtime rows: Configure's listen-only
+		// and enable checkboxes write proj and lag in chans until apply_edits — which Start
+		// runs first, so the model is what Start will group (codex #136 r1)
 		mut active := []int{}
 		for ci in g.cis {
-			if ci < app.chans.len && app.chans[ci].replaying() {
+			pc := app.proj.channels[ci]
+			src_i := if r := pc.replay { r.source } else { '' }
+			if pc.enabled && replay_blocker(pc.is_doip(), pc.listen_only, src_i) == '' {
 				active << ci
 			}
 		}
@@ -326,7 +331,7 @@ fn draw_replay_config(mut app App) {
 			ch := app.proj.channels[ci]
 			rp0 := ch.replay or { project.Replay{} }
 			en := ch.enabled
-			blocker := if ci < app.chans.len { app.chans[ci].replay_blocker() } else { '' }
+			blocker := replay_blocker(ch.is_doip(), ch.listen_only, rp0.source)
 			arrow := if rp0.bus != '' { '<- ${rp0.bus}' } else { '' }
 			if app.running {
 				// mid-run the set is fixed (topology at Start); show, don't edit

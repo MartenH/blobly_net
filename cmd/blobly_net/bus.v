@@ -46,16 +46,25 @@ fn (c Chan) monitorable() bool {
 // grouped panel: its copy tested `typ == 'doip'`, narrower than the is_doip() rule behind
 // c.doip, and an `interface: doip:<host>` row rendered as playable).
 fn (c Chan) replay_blocker() string {
-	if c.doip {
+	return replay_blocker(c.doip, c.listen_only, c.replay_src)
+}
+
+// The free form exists for the Replay panel's preview, which must judge the MODEL
+// (project.Channel: is_doip(), listen_only, replay source) — the runtime rows lag behind
+// Configure's checkboxes until apply_edits, and Start folds the model first, so a preview
+// read from Chan showed "(one clock)" over a channel Start was about to drop (codex #136
+// r1). One rule, two adapters; the clauses live only here.
+fn replay_blocker(doip bool, listen_only bool, src string) string {
+	if doip {
 		return 'DoIP channel — replay does not apply'
 	}
-	if c.listen_only {
+	if listen_only {
 		// listen_only means NEVER TRANSMIT, which is what the editor promises and what a
 		// bench relies on when it is wired to a live vehicle. A replay channel is not an
 		// exception: it would be the loudest possible violation of it.
 		return "listen-only — will NOT play (never transmit is the editor's promise)"
 	}
-	if c.replay_src == '' {
+	if src == '' {
 		return 'no recording set'
 	}
 	return ''
