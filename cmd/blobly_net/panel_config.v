@@ -484,6 +484,12 @@ fn (mut app App) draw_bus_editor(i int) bool {
 				app.dirty = true
 			}
 			vgui.same_line()
+			if vgui.small_button('...##rsbrowse${i}') {
+				app.open_browser('replaysrc:${i}')
+			}
+			vgui.same_line()
+			vgui.help_marker("Recording to play on this channel (.log or .mf4). A multi-bus .mf4 needs a `bus:` key in the .blobnet naming WHICH recorded bus feeds this channel (the file's own bus name, or its `mf4:groupN` label) — the recording's names are not this project's, so nothing can infer the pairing; without it a multi-bus source is refused at Start. Channels replaying the same source play on ONE clock.")
+			vgui.same_line()
 			vgui.set_next_item_width(56)
 			if vgui.input_text('x speed##rsp${i}', mut app.cfg_bufs[i].replay_speed_buf) {
 				app.dirty = true
