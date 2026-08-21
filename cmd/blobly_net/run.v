@@ -290,6 +290,8 @@ fn (mut app App) start() {
 	app.running = true
 	// Which wires already have a reader, so aliases do not each open one.
 	mut monitored := map[string]bool{}
+	mut anon_tap_failed := map[string]bool{}
+	mut named_tap_failed := map[string]bool{}
 	for ci, ch in app.chans {
 		if !ch.monitorable() {
 			continue
@@ -319,13 +321,25 @@ fn (mut app App) start() {
 		// A TX bus per CHANNEL (each generator fires on its target bus), plus one anonymous tap
 		// per wire for the paths with no particular channel — Quick Send, diagnostics, shell.
 		if tx_bus_key(ch.name, ch.iface) !in app.tx_buses {
+			// same silence class as rx_loop's open: a tap that fails here is a channel that
+			// cannot transmit, and swallowing the error left a dead Send button with no
+			// explanation anywhere a Windows user can see
 			if b := app.open_tap_on(ch.iface, org_tx, ch.name) {
 				app.tx_buses[tx_bus_key(ch.name, ch.iface)] = b
+			} else {
+				app.notify('${ch.name}: transmit tap failed to open — ${err}')
 			}
 		}
-		if tx_bus_key('', ch.iface) !in app.tx_buses {
+		// ONE line per wire, not per row: nothing lands in tx_buses on failure, so every
+		// aliased row would re-attempt this shared tap and repeat the identical message —
+		// one dead wire read as several failures
+		anon_key := transport.destination_key(ch.iface)
+		if tx_bus_key('', ch.iface) !in app.tx_buses && anon_key !in anon_tap_failed {
 			if b := app.open_tap(ch.iface, org_tx) {
 				app.tx_buses[tx_bus_key('', ch.iface)] = b
+			} else {
+				anon_tap_failed[anon_key] = true
+				app.notify('${ch.iface}: shared transmit tap failed to open — ${err}')
 			}
 		}
 		if app.send_iface == '' {
@@ -344,17 +358,31 @@ fn (mut app App) start() {
 	// a generator may target a bus whose channel isn't itself monitored — open those too
 	for sr in app.senders {
 		tgt := sr.target()
-		if tgt != '' && tx_bus_key('', tgt) !in app.tx_buses {
+		// dedupe in the OUTER condition, like the named branch below: gating only the log
+		// line still re-attempted the open per sender, and a vendor open can block ~2s
+		// waiting for a port release — hundreds of generators on one dead target turned
+		// Start into minutes of retrying an answer it already had (codex #141 r3)
+		if tgt != '' && tx_bus_key('', tgt) !in app.tx_buses
+			&& transport.destination_key(tgt) !in anon_tap_failed {
 			// the anonymous tap FIRST: tx_on falls back to it for the paths with no owning
 			// channel — Quick Send, diagnostics, shell — and a bus that is only a generator
 			// target would otherwise have none, so those reported "no open bus for …".
 			if b := app.open_tap(tgt, org_tx) {
 				app.tx_buses[tx_bus_key('', tgt)] = b
+			} else {
+				// a generator whose only bus fails to open is a silent dead generator —
+				// the same class as the channel taps above, one loop down
+				anon_tap_failed[transport.destination_key(tgt)] = true
+				app.notify('generator target ${tgt}: transmit tap failed to open — ${err}')
 			}
 		}
-		if tgt != '' && tx_bus_key(sr.chan, tgt) !in app.tx_buses {
+		if tgt != '' && tx_bus_key(sr.chan, tgt) !in app.tx_buses
+			&& tx_bus_key(sr.chan, tgt) !in named_tap_failed {
 			if b := app.open_tap_on(tgt, org_tx, sr.chan) {
 				app.tx_buses[tx_bus_key(sr.chan, tgt)] = b
+			} else {
+				named_tap_failed[tx_bus_key(sr.chan, tgt)] = true
+				app.notify('${sr.chan}: generator transmit tap failed to open — ${err}')
 			}
 		}
 	}

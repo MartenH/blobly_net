@@ -269,6 +269,10 @@ fn (mut app App) add_generator() {
 	if app.running && iface != '' && tx_bus_key(cname, iface) !in app.tx_buses {
 		if b := app.open_tap_on(iface, org_tx, cname) {
 			app.tx_buses[tx_bus_key(cname, iface)] = b
+		} else {
+			// mu already released above, so the notify is safe here — a generator added
+			// mid-run onto a bus that will not open must not just quietly never fire
+			app.notify('${cname}: generator transmit tap failed to open — ${err}')
 		}
 	}
 }
@@ -479,6 +483,9 @@ fn (mut app App) set_cycle(i int, ms int) {
 // only the second one survives two channels sharing a wire — an interface cannot say which of
 // them the generator now belongs to.
 fn (mut app App) set_sender_bus(i int, bus string, chan_name string) {
+	// a failure found while app.mu is held is said AFTER the unlock — notify re-takes the
+	// non-reentrant mutex, and an inline call here would deadlock the GUI thread
+	mut tap_err := ''
 	app.mu.lock()
 	if i < app.senders.len {
 		app.senders[i].sender.bus = bus
@@ -490,10 +497,15 @@ fn (mut app App) set_sender_bus(i int, bus string, chan_name string) {
 		if app.running && tgt != '' && tx_bus_key(own, tgt) !in app.tx_buses {
 			if b := app.open_tap_on(tgt, org_tx, own) {
 				app.tx_buses[tx_bus_key(own, tgt)] = b
+			} else {
+				tap_err = '${own}: generator transmit tap failed to open — ${err}'
 			}
 		}
 	}
 	app.mu.unlock()
+	if tap_err != '' {
+		app.notify(tap_err)
+	}
 }
 
 // fire_index sends generator `i`'s CURRENT (edited) frame once. DBC-message generators
