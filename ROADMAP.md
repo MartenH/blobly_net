@@ -16,8 +16,8 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   `windows.yml`, which publishes for a tag only when the call carries `publish_bundle=true`
   from behind the guard) with notes composed from
   [`packaging/RELEASE_NOTES_HEADER.md`](packaging/RELEASE_NOTES_HEADER.md) — the standing
-  honesty statement: virtual/SocketCAN paths CI-verified, the Windows vendor backends
-  hand-verified on real hardware ([windows_can_hardware.md](docs/windows_can_hardware.md)) —
+  honesty statement: the virtual paths CI-verified, SocketCAN exercised on the bench (CI has
+  no vcan), the Windows vendor backends hand-verified on real hardware ([windows_can_hardware.md](docs/windows_can_hardware.md)) —
   plus GitHub's generated changelog. The guard proves the tag equals `v.mod` AND the tagged
   commit is on reviewed `main`. **No vendor CAN library ships, ever** — `vxlapi64.dll`,
   `PCANBasic.dll`, `canlib32.dll` are the user's to install and the XL terms forbid
