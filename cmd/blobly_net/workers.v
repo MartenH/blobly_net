@@ -160,16 +160,22 @@ fn doip_worker(app &App, host string) {
 	vgui.wake()
 }
 
-// gen_current reports whether `gen` is still the live run — the gate every WORKER-side
-// failure notify must pass: an obsolete worker whose slow open fails after a restart must
-// not make the healthy replacement run look broken (the same rule consumer_failed and
-// rx_loop's flag-clearing already apply, stated once).
-fn gen_current(app &App, gen u64) bool {
+// notify_gen logs `msg` iff `gen` is still the LIVE, RUNNING measurement — the gate every
+// WORKER-side failure notify must pass, with the check and the append in ONE take of app.mu:
+// a check that unlocks before the append can straddle a Stop/Start and log a stale worker's
+// failure into the replacement run, and after a plain Stop run_gen is unchanged, so `running`
+// matters too — an obsolete worker must not narrate a run that is over (codex #141 r2).
+fn notify_gen(app &App, gen u64, msg string) {
 	mut a := unsafe { app }
 	a.mu.lock()
-	ok := a.run_gen == gen
+	live := a.running && a.run_gen == gen
+	if live {
+		a.log_append_locked(msg)
+	}
 	a.mu.unlock()
-	return ok
+	if live {
+		vgui.wake()
+	}
 }
 
 // sim_loop runs a channel's simulated ECUs on its bus: emit cyclic frames + answer
@@ -181,10 +187,7 @@ fn sim_loop(app &App, sc SimCfg, gen u64) {
 		// consumer_failed only counts, and the count is read only by the replay gate — on a
 		// non-replay run a dead sim was discoverable only by the absence of its traffic.
 		// Gen-gated like every worker notify: a stale sim's late failure is not this run's.
-		if gen_current(app, gen) {
-			mut na := unsafe { app }
-			na.notify('${sc.pch.name}: simulation could not open ${sc.iface} — ${err}')
-		}
+		notify_gen(app, gen, '${sc.pch.name}: simulation could not open ${sc.iface} — ${err}')
 		consumer_failed(a, sc.iface, gen)
 		return
 	}
@@ -395,23 +398,23 @@ fn uds_node_loop(app &App, pch project.Channel, iface string, name string, rx u3
 			// pch: this node's OWN channel — two entries can share one interface, and the
 			// simulated ECUs of the second must not be attributed to the first.
 			tapped := a.open_tap_on(iface, org_tx_sim, pch.name) or {
-				if !open_err_said && gen_current(app, gen) {
+				if !open_err_said {
 					open_err_said = true
 					// once PER FAILURE EPISODE, not per 200ms retry: the retry is the
 					// recovery, the silence was the bug — a UDS node that never came up
 					// said nothing, forever. The flag resets on success below, so a later
 					// outage of this long-lived worker speaks again.
-					mut na := unsafe { app }
-					na.notify('${pch.name}: UDS node could not open ${iface} — ${err} (retrying)')
+					notify_gen(app, gen,
+						'${pch.name}: UDS node could not open ${iface} — ${err} (retrying)')
 				}
 				time.sleep(200 * time.millisecond)
 				continue
 			}
 			ch = isotp.on_bus(tapped, a.bitrate_iface(iface), tx, rx, ext) or {
-				if !open_err_said && gen_current(app, gen) {
+				if !open_err_said {
 					open_err_said = true
-					mut na := unsafe { app }
-					na.notify('${pch.name}: UDS node could not bind ISO-TP on ${iface} — ${err} (retrying)')
+					notify_gen(app, gen,
+						'${pch.name}: UDS node could not bind ISO-TP on ${iface} — ${err} (retrying)')
 				}
 				time.sleep(200 * time.millisecond)
 				continue
@@ -437,18 +440,13 @@ fn diag_server_loop(app &App, iface string, chan_name string, gen u64) {
 	// picks whichever is listed first — so a default server created for the second one had every
 	// response attributed to its neighbour
 	tapped := a.open_tap_on(iface, org_tx_sim, chan_name) or {
-		if gen_current(app, gen) {
-			mut na := unsafe { app }
-			na.notify('${chan_name}: UDS server could not open ${iface} — ${err}')
-		}
+		notify_gen(app, gen, '${chan_name}: UDS server could not open ${iface} — ${err}')
 		consumer_failed(a, iface, gen)
 		return
 	}
 	mut ch := isotp.on_bus(tapped, a.bitrate_iface(iface), diag_rx_id, diag_tx_id, false) or {
-		if gen_current(app, gen) {
-			mut na := unsafe { app }
-			na.notify('${chan_name}: UDS server could not bind ISO-TP on ${iface} — ${err}')
-		}
+		notify_gen(app, gen,
+			'${chan_name}: UDS server could not bind ISO-TP on ${iface} — ${err}')
 		consumer_failed(a, iface, gen)
 		return
 	}
@@ -477,20 +475,22 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		if a.run_gen == gen {
 			a.chans[ci].running = false
 			a.chans[ci].spawning = false // release the guard, or it can never be re-enabled
+			// Append UNDER THE SAME take of the lock as the flags: a check that unlocks
+			// first can straddle a Stop/Start and narrate the replacement run (codex #141
+			// r2 — the exact gap the guard exists for, one layer up). And say it at all,
+			// not only eprintln: on the Windows GUI-subsystem exe stderr goes nowhere, and
+			// two PCAN channels failing to open looked exactly like a healthy silent bus,
+			// with the replay's "never came up" as the only audible symptom (maintainer's
+			// bench, 2026-08-21). Worded for the WIRE: this loop is the destination's one
+			// reader, so an aliased row shows no failure of its own yet is equally
+			// unwatched. `running` is not required here: this failure belongs to the run
+			// that spawned this loop, which run_gen just proved is still current.
+			a.log_append_locked('${iface}: open failed — ${err} — nothing is monitoring this wire')
 			say = true
 		}
 		a.mu.unlock()
-		// Notify UNDER THE SAME generation condition as the flags, and after the unlock
-		// (notify re-takes app.mu): a previous run's slow failure landing after the new run
-		// opened must not post "not monitored" about a wire that IS monitored — the exact
-		// timing the guard above exists for. And notify at all, not only eprintln: on the
-		// Windows GUI-subsystem exe stderr goes nowhere, and two PCAN channels failing to
-		// open looked exactly like a healthy silent bus, with the replay's "never came up"
-		// as the only audible symptom, pointing at the wrong place (maintainer's bench,
-		// 2026-08-21). Worded for the WIRE: this loop is the destination's one reader, so
-		// an aliased row shows no failure of its own yet is equally unwatched.
 		if say {
-			a.notify('${iface}: open failed — ${err} — nothing is monitoring this wire')
+			vgui.wake()
 		}
 		return
 	}

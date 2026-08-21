@@ -506,12 +506,20 @@ fn (a &App) lookup_name(id u32, ext bool) string {
 // notify appends a line to the Log panel (thread-safe).
 fn (mut app App) notify(msg string) {
 	app.mu.lock()
+	app.log_append_locked(msg)
+	app.mu.unlock()
+	vgui.wake()
+}
+
+// log_append_locked is the ONE append+trim, callable inside a caller's own critical section —
+// notify_gen needs the generation check and the append to be a single mutex-protected
+// operation (codex #141 r2), and a second copy of the trim is how the two would drift.
+// Caller holds app.mu.
+fn (mut app App) log_append_locked(msg string) {
 	app.logs << msg
 	if app.logs.len > 500 {
 		app.logs = app.logs[app.logs.len - 500..].clone()
 	}
-	app.mu.unlock()
-	vgui.wake()
 }
 
 // load_project (re)loads a project into the app: stops any measurement, clears the
