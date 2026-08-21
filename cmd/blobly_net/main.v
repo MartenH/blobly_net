@@ -47,6 +47,12 @@ fn load_ui_font() {
 }
 
 fn main() {
+	if '--version' in os.args || '-V' in os.args {
+		// scripts and bug reports need the version without a window; -V not -v, which V's
+		// own tooling and many CLIs reserve for verbose
+		println('blobly_net ${app_version}')
+		return
+	}
 	// Capture any CALLER-supplied project path FIRST, absolutized against the caller's
 	// cwd — the re-anchoring chdir below would otherwise re-base a relative argv/env
 	// path under the bundle directory and fail to open it (codex #63 r3).
@@ -116,7 +122,7 @@ fn main() {
 
 	if os.getenv('BLOBLY_SELFTEST_DBC') != '' {
 		app.show_dbc = true
-		if !vgui.init('blobly_net — selftest', 1500, 850, true) {
+		if !vgui.init('blobly_net ${app_version} — selftest', 1500, 850, true) {
 			eprintln('vgui.init failed')
 			return
 		}
@@ -147,7 +153,7 @@ fn main() {
 	// smoke) keep 1500x850: a screenshot's dimensions must not depend on the monitor.
 	headless := max_frames > 0 || shot != ''
 	init_w, init_h := if headless { 1500, 850 } else { 1800, 1000 }
-	if !vgui.init('blobly_net — ${app.proj_name} (imgui/ImPlot)', init_w, init_h, true) {
+	if !vgui.init('blobly_net ${app_version} — ${app.proj_name}', init_w, init_h, true) {
 		eprintln('vgui.init failed')
 		return
 	}

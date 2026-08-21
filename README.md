@@ -17,7 +17,8 @@ a drop-in.
 >   author's own bench, against the author's own boards. Some of it is **effectively untested**,
 >   and a feature existing here is not a claim that it is correct.
 > - **Formats and interfaces will change** — `.blobnet` projects, and the wire formats shared
->   with blobly_emb. No compatibility promise, no tagged release.
+>   with blobly_emb. Releases are tagged, but a version number is not yet a compatibility
+>   promise.
 > - **It has had no users but the author**, so expect missing validation, unhandled edge cases
 >   and error paths nobody has walked.
 >
@@ -42,19 +43,30 @@ on one timeline.*
 
 ## Get it
 
-There is **no tagged release yet** — nothing to download from a Releases page.
+**[Releases](../../releases)** carry a Windows zip and a Linux tar.gz per version, each under
+one top-level folder — no GitHub sign-in, no expiry. (Ignore the `v-toolchain` entry — that is
+CI's prebuilt compiler; if no `v0.x` release is listed yet, the first tag has not been cut —
+use the Actions route below.) Both bundle the demo projects, DBCs, sample logs, the docs the
+Help panel renders, a `README.txt` and a `VERSION.txt`. The **Windows zip is self-contained**
+(mingw runtime DLLs included; run the bundled `register_blobnet_win.ps1` to make `.blobnet`
+files open in the app). The **Linux tar.gz needs the distro runtime**:
+`sudo apt install libglfw3 libfreetype6 libgl1`. Which version you have: `VERSION.txt`, the
+window title, or `./blobly_net --version` — on Windows the exe is a GUI-subsystem program, so
+pipe it (`blobly_net.exe --version | more`).
+**Vendor CAN libraries are never bundled** — `vxlapi64.dll`, `PCANBasic.dll`, `canlib32.dll`
+come with the vendor's own driver installs (the Vector XL terms forbid redistributing it).
+Every release is cut from a tag the release workflow verifies against reviewed `main` and
+against the version in `v.mod`, which is the same value the binary decodes and reports.
 
-**Windows** — CI builds a self-contained bundle on every push to `main` (pull requests
-compile-validate but publish no artifact, so every downloadable bundle comes from reviewed
-`main`). Take it from **[Actions](../../actions/workflows/windows.yml)** → the latest
-`windows-build` run **on `main`** → the **`blobly_net-windows-x64`** artifact. Unzip and run **`blobly_net.exe`**: the runtime
-DLLs, demo projects, DBCs, sample logs and the docs the Help panel renders are all bundled, so
-it runs on a clean machine with nothing installed. To make `.blobnet` files open in it, run the
-bundled `register_blobnet_win.ps1`. Two caveats — downloading an artifact requires being signed
-in to GitHub, and artifacts expire (~90 days), so use a recent run.
+**Between releases (Windows)** — CI still builds the bundle on every push to `main` (pull
+requests compile-validate but publish no artifact, so every downloadable bundle comes from
+reviewed `main`). Take it from **[Actions](../../actions/workflows/windows.yml)** → the latest
+`windows-build` run **on `main`** → the **`blobly_net-windows-x64`** artifact. Unzip and run
+`blobly_net.exe` — same self-contained contents as a release zip, minus the top-level folder.
+Two caveats: downloading an artifact requires being signed in to GitHub, and artifacts expire
+(~90 days), so use a recent run.
 
-**Linux / WSL2** — build from source; it's two commands, see
-[Build & run](#build--run) below.
+**Linux / WSL2 from source** — it's two commands, see [Build & run](#build--run) below.
 
 **macOS** — not built or tested.
 
