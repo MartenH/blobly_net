@@ -645,6 +645,17 @@ DBC does not define are counted separately and replay regardless (the same polic
 itself applies — the preview and the subtraction share one attribution, `player.census`
 beside the `Decider`). Scan is display-only: Start loads the recording for itself either way.
 
+**The panel shows the grouping before it exists.** While stopped, the Replay panel lists the
+replay channels grouped **by recording** — the spawner's own canonical-path key — with the
+shared file as the header and each member's recorded bus beside its play-on-Start tick.
+"(one clock)" appears over the members that will actually PLAY (ticked, not listen-only, not
+DoIP): the badge describes the group Start builds, and a member Start would drop says why in
+red instead of counting toward it. Where a Scan of that recording exists, the pairing is
+checked through the same resolver Start uses — a `bus:` the file does not hold, an ambiguous
+empty one, or one recorded bus mapped twice all show Start's refusal before Start gives it;
+without a Scan the panel says it cannot know rather than guessing. Speed/loop disagreements
+inside a group are flagged the same way (one clock means one pacing).
+
 **The set is fixed at Start.** Which replay channels play is decided when you press Start, and
 ticking one on or off while the run is going says so rather than taking effect — Stop and Start
 to change it. Channels reading one recording share a clock, so a channel joining late could not
