@@ -636,6 +636,15 @@ cannot supply — `bus:` (which recorded bus feeds this channel; a multi-bus `.m
 and their names are the recording's, not the project's) and `exclude:` (nodes whose messages are
 withheld, resolved through the channel's databases by DBC sender).
 
+**Scan fills those keys from facts.** The Configure replay row's **Scan recording** button
+decodes the file off the UI thread and shows what is in it: every bus with its frame count
+(`use` writes `bus:`), and per bus the nodes the attached DBCs attribute frames to — with
+counts, because on a captured vehicle bus the busiest node is usually the ECU now sitting on
+the bench. Tick a node to put it in `exclude:`; frames with no declared sender and ids the
+DBC does not define are counted separately and replay regardless (the same policy the replay
+itself applies — the preview and the subtraction share one attribution, `player.census`
+beside the `Decider`). Scan is display-only: Start loads the recording for itself either way.
+
 **The set is fixed at Start.** Which replay channels play is decided when you press Start, and
 ticking one on or off while the run is going says so rather than taking effect — Stop and Start
 to change it. Channels reading one recording share a clock, so a channel joining late could not

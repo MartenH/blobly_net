@@ -202,11 +202,21 @@ fn (mut app App) close_chan_picker() {
 	}
 }
 
+// drop_replay_scans throws away Scan results. They are keyed by channel INDEX, exactly like a
+// pending picker's target, and go stale at exactly the events close_chan_picker fires on — the
+// two are called together at every such site.
+fn (mut app App) drop_replay_scans() {
+	app.mu.lock()
+	app.replay_scans.clear()
+	app.mu.unlock()
+}
+
 fn (mut app App) remove_bus(i int) {
 	if i < 0 || i >= app.proj.channels.len {
 		return
 	}
 	app.close_chan_picker()
+	app.drop_replay_scans()
 	app.commit_cfg()
 	removed_iface := app.proj.channels[i].iface
 	app.proj.channels.delete(i)
@@ -349,6 +359,40 @@ fn (mut app App) set_replay_source(ci int, path string) {
 	app.proj.channels[ci].replay = project.Replay{
 		...old
 		source: rel_path(path)
+	}
+	app.dirty = true
+	app.sync_cfg_bufs()
+	app.rebuild_preserving_senders()
+}
+
+// set_replay_bus and set_replay_exclude write the two Replay keys the structured editor
+// could not touch before the Scan existed to populate them: WHICH recorded bus feeds the
+// channel, and which nodes are withheld for a rest bus. Same shape as set_replay_source —
+// commit the buffered edits, spread the rest, mark dirty; Save persists to the .blobnet.
+fn (mut app App) set_replay_bus(ci int, bus string) {
+	if ci < 0 || ci >= app.proj.channels.len {
+		return
+	}
+	app.commit_cfg()
+	old := app.proj.channels[ci].replay or { project.Replay{} }
+	app.proj.channels[ci].replay = project.Replay{
+		...old
+		bus: bus
+	}
+	app.dirty = true
+	app.sync_cfg_bufs()
+	app.rebuild_preserving_senders()
+}
+
+fn (mut app App) set_replay_exclude(ci int, exclude []string) {
+	if ci < 0 || ci >= app.proj.channels.len {
+		return
+	}
+	app.commit_cfg()
+	old := app.proj.channels[ci].replay or { project.Replay{} }
+	app.proj.channels[ci].replay = project.Replay{
+		...old
+		exclude: exclude.clone()
 	}
 	app.dirty = true
 	app.sync_cfg_bufs()
@@ -609,6 +653,7 @@ fn (mut app App) save_as(path string) {
 // new_project resets to a blank, unsaved project (0 buses) — the from-scratch entry point.
 fn (mut app App) new_project() {
 	app.close_chan_picker() // a pending dbc/manifest/replaysrc picker indexes the OLD channel set
+	app.drop_replay_scans()
 	app.stop()
 	// A blank project inherits nothing: set_project bypasses load_project's reset, so without
 	// this the System panel kept showing the PREVIOUS project's ECUs and annotated any newly

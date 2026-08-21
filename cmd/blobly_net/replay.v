@@ -934,3 +934,61 @@ fn replay_db(app &App, ch Chan) candb.Database {
 	a.mu.unlock()
 	return db
 }
+
+// ReplayScan is what a Scan of a channel's recording found: its buses, and per bus who talks
+// on it through the channel's databases. Display-only — Start does its own load and never
+// requires a scan; this exists so `bus:` and the rest-bus exclusions are picked from what the
+// file and the DBC actually say instead of typed from memory.
+@[heap]
+struct ReplayScan {
+mut:
+	loading bool
+	err     string
+	buses   []mf4.BusInfo
+	census  map[string]player.NodeCensus // by bus label (BusInfo.iface)
+}
+
+// scan_replay_source decodes a recording off the UI thread and files the result under mu.
+// The census runs the SAME attribution the rest-bus subtraction applies (player.census sits
+// beside the Decider), so what the row previews is what Start will do. A `.log` has no bus
+// table, so its bus list is synthesized from the interface names its lines carry — the same
+// labels resolve_replay_bus matches against.
+fn scan_replay_source(app &App, ci int, path string, db candb.Database) {
+	mut a := unsafe { app }
+	entries, mbuses := load_recording_for_replay(path) or {
+		a.mu.lock()
+		if mut sc := a.replay_scans[ci] {
+			sc.loading = false
+			sc.err = err.msg()
+		}
+		a.mu.unlock()
+		return
+	}
+	mut buses := mbuses.clone()
+	if buses.len == 0 {
+		mut counts := map[string]int{}
+		for e in entries {
+			counts[e.iface]++
+		}
+		mut ifs := counts.keys()
+		ifs.sort()
+		for name in ifs {
+			buses << mf4.BusInfo{
+				iface:  name
+				frames: counts[name]
+			}
+		}
+	}
+	mut cens := map[string]player.NodeCensus{}
+	for b in buses {
+		cens[b.iface] = player.census(player.on_bus(entries, b.iface), db)
+	}
+	a.mu.lock()
+	if mut sc := a.replay_scans[ci] {
+		sc.loading = false
+		sc.err = ''
+		sc.buses = buses.clone()
+		sc.census = cens.clone()
+	}
+	a.mu.unlock()
+}
