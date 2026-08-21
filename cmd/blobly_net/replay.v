@@ -826,6 +826,35 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	}
 }
 
+// DstClaim is one channel's claim on a live destination for one recording, in the terms the
+// cross-group rule needs: the canonical destination identity, the group's identity, and the
+// two display names its refusal message quotes.
+struct DstClaim {
+	key   string // transport.destination_key of the live interface
+	src   string // the recording (group identity)
+	iface string // display: the interface as configured
+	base  string // display: the recording's name
+}
+
+// dst_clashes reports destinations claimed by more than one recording — the cross-GROUP
+// refusal (player.conflicts judges within one group). ONE implementation, fed by Start's
+// spawner and by the Replay panel's stopped preview, so the rule cannot fork between what
+// the panel shows and what Start refuses (codex #136 r3).
+fn dst_clashes(claims []DstClaim) []string {
+	mut owner := map[string]DstClaim{}
+	mut out := []string{}
+	for c in claims {
+		if prev := owner[c.key] {
+			if prev.src != c.src {
+				out << '${c.iface} (${prev.base} and ${c.base})'
+			}
+		} else {
+			owner[c.key] = c
+		}
+	}
+	return out
+}
+
 // spawn_replay_workers starts ONE worker per distinct recording, covering every channel that
 // replays from it. Already-running groups are not restarted: `replay_gen` records which run a
 // source is playing for, so a second call (a channel enabled mid-run) starts only what is new.
@@ -854,23 +883,21 @@ fn (mut app App) spawn_replay_workers_locked() []ReplaySpawn {
 	// its poll before it notices the toggle. Rebuilding this table from the enabled channels
 	// alone would call that wire free and start a second worker onto it. The owner table is the
 	// single authority for who has a destination; this loop only adds the not-yet-started.
-	mut dst_owner := map[string]string{}
-	mut clash := []string{}
+	mut claims := []DstClaim{}
 	for src, cis in by_src {
 		for ci in cis {
 			if ci >= app.chans.len {
 				continue
 			}
-			k := transport.destination_key(app.chans[ci].iface)
-			if prev := dst_owner[k] {
-				if prev != src {
-					clash << '${app.chans[ci].iface} (${os.base(prev)} and ${os.base(src)})'
-				}
-			} else {
-				dst_owner[k] = src
+			claims << DstClaim{
+				key:   transport.destination_key(app.chans[ci].iface)
+				src:   src
+				iface: app.chans[ci].iface
+				base:  os.base(src)
 			}
 		}
 	}
+	clash := dst_clashes(claims)
 	mut to_start := map[string][]int{}
 	if clash.len > 0 {
 		return [

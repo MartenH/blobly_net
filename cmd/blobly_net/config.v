@@ -425,6 +425,7 @@ fn (mut app App) set_chan_enabled_stopped(ci int, en bool) {
 	app.proj.channels[ci].enabled = en
 	app.mu.unlock()
 	app.dirty = true
+	app.replay_view_gen++ // the tick changes which members of a replay group will PLAY
 }
 
 // save_project writes the whole project to its file (config + generators). An unsaved
