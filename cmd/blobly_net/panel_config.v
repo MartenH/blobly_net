@@ -706,19 +706,7 @@ fn (mut app App) draw_replay_scan(i int, ch project.Channel) bool {
 	}
 	if src_now != '' && !sc_have {
 		if vgui.small_button('Scan recording##rscan${i}') {
-			mine := &ReplayScan{
-				src:     rp
-				loading: true
-			}
-			app.mu.lock()
-			app.replay_scans[i] = mine
-			app.mu.unlock()
-			db := if i < app.chans.len {
-				replay_db(app, app.chans[i])
-			} else {
-				candb.Database{}
-			}
-			spawn scan_replay_source(app, i, rp, db, mine)
+			app.start_replay_scan(i, rp)
 		}
 		vgui.same_line()
 		vgui.help_marker('Decode the recording and list its buses and, per bus, the nodes the attached DBCs attribute frames to — with counts, so the ECU under test (usually the busiest) is easy to spot and exclude.')
@@ -726,9 +714,21 @@ fn (mut app App) draw_replay_scan(i int, ch project.Channel) bool {
 	}
 	if sc_err != '' {
 		vgui.text_colored(230, 80, 80, '   scan: ${sc_err}')
+		vgui.same_line()
+		// the path is only ONE ingredient of the result: the file behind it can be created,
+		// repaired or re-recorded without the path changing, so a terminal state always
+		// keeps a way back to the button (codex #135 r2)
+		if vgui.small_button('retry##rscan${i}') {
+			app.start_replay_scan(i, rp)
+		}
 		return false
 	}
 	if !sc_have {
+		return false
+	}
+	if vgui.small_button('Rescan##rscan${i}') {
+		// same reason as the retry above: same path, possibly a different file by now
+		app.start_replay_scan(i, rp)
 		return false
 	}
 	// WHICH bus the config means is the module's question, never re-answered here: the GUI
@@ -820,4 +820,23 @@ fn (mut app App) draw_replay_scan(i int, ch project.Channel) bool {
 		vgui.text_dim('   ${cn.unattributed} frames carry no declared sender · ${cn.unknown} are on ids the DBCs do not define — both replay regardless')
 	}
 	return false
+}
+
+// start_replay_scan replaces channel i's scan entry and decodes `rp` on a worker thread. The
+// fresh &ReplayScan is the worker's ownership token: a previous scan still running writes
+// back only if the map still holds ITS pointer, so replacement here is also cancellation.
+fn (mut app App) start_replay_scan(i int, rp string) {
+	mine := &ReplayScan{
+		src:     rp
+		loading: true
+	}
+	app.mu.lock()
+	app.replay_scans[i] = mine
+	app.mu.unlock()
+	db := if i < app.chans.len {
+		replay_db(app, app.chans[i])
+	} else {
+		candb.Database{}
+	}
+	spawn scan_replay_source(app, i, rp, db, mine)
 }
