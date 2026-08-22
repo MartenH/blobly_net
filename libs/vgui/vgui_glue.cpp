@@ -158,6 +158,46 @@ void vgui_set_window_icon(int w, int h, const unsigned char* rgba) {
     glfwSetWindowIcon(g_win, 1, &img);
 }
 
+// vgui_create_texture uploads a w×h RGBA8 buffer as a GL texture and returns its id (0 on
+// failure). GL 1.1 calls only — no loader needed on Windows, where GLFW's header gives us
+// nothing newer. Needs the GL context, so call after vgui_init; the caller keeps the id for
+// the process lifetime (nothing here ever frees one).
+unsigned int vgui_create_texture(int w, int h, const unsigned char* rgba) {
+    if (!g_win || !rgba || w <= 0 || h <= 0) return 0;
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    if (!tex) return 0;
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    return (unsigned int)tex;
+}
+
+// vgui_menu_image draws a texture as a menu-bar item: current font size tall, width from the
+// texture's aspect ratio, multiplied by the tint (a white mark takes the theme's color).
+// The menu bar lays items out horizontally, so it flows inline before the first menu.
+void vgui_menu_image(unsigned int tex, float aspect, float r, float g, float b, float a) {
+    if (!tex || aspect <= 0.0f) return;
+    // Painted straight into the draw list, centered in the menu-bar rect; the layout only
+    // sees a zero-HEIGHT spacer for the width. An ImGui::Image item here would instead set
+    // the bar's line height from the image's own y, and every menu after it drops lower —
+    // the item path and the text path disagree about where a line starts.
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    // BeginMenuBar's clip rect IS the bar; center in that rather than trusting window
+    // fields, whose height the pushed menu FramePadding does not reach.
+    ImVec2 cmin = dl->GetClipRectMin();
+    ImVec2 cmax = dl->GetClipRectMax();
+    float h = ImGui::GetFontSize();
+    float w = h * aspect;
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    float y = cmin.y + (cmax.y - cmin.y - h) * 0.5f;
+    dl->AddImage((ImTextureID)(intptr_t)tex, ImVec2(p.x, y), ImVec2(p.x + w, y + h),
+                 ImVec2(0, 0), ImVec2(1, 1), ImGui::GetColorU32(ImVec4(r, g, b, a)));
+    ImGui::Dummy(ImVec2(w, 0.0f));
+}
+
 // Frames to keep rendering at full rate after the last UI activity, so imgui animations
 // (window close, dock reflow, tab/hover fades) play smoothly instead of at the idle wait
 // rate. Set in vgui_frame_end when activity is detected; counted down here.

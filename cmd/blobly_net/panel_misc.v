@@ -127,6 +127,7 @@ fn draw_activity_bar(mut app App) {
 
 fn draw_menubar(mut app App, rx u64) {
 	if vgui.menu_bar_begin() {
+		draw_logo(app)
 		if vgui.menu_begin('File') {
 			if vgui.menu_item('New') {
 				app.new_project()

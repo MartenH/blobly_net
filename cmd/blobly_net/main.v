@@ -158,6 +158,7 @@ fn main() {
 		return
 	}
 	vgui.set_window_icon(32, 32, app_icon()) // replace the default placeholder window icon
+	app.load_logo() // the menu-bar wordmark (needs the GL context, so after init)
 	load_ui_font()
 	if os.getenv('BLOBLY_THEME') == 'light' {
 		app.dark = false

@@ -46,6 +46,9 @@ mut:
 	mu    sync.Mutex
 	chans []Chan
 	trace []TraceRow
+	// The menu-bar wordmark: GL texture id + width/height ratio, 0 until load_logo ran.
+	logo_tex    u32
+	logo_aspect f32
 	// Emissions still waiting for their echo, and the bookkeeping that lets one confirm its own
 	// row: `trace_seq` is the next row's identity, `trace_base` the identity of trace[0].
 	taps wiretap.Ring

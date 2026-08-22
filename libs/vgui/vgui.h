@@ -7,6 +7,8 @@ extern "C" {
 #endif
 int vgui_init(const char* title, int w, int h, int event_driven);
 void vgui_set_window_icon(int w, int h, const unsigned char* rgba);
+unsigned int vgui_create_texture(int w, int h, const unsigned char* rgba);
+void vgui_menu_image(unsigned int tex, float aspect, float r, float g, float b, float a);
 int  vgui_plot_begin_x(const char* title, float height, double x_min, double x_max);
 int  vgui_is_item_clicked_right(void);
 int vgui_running(void);
