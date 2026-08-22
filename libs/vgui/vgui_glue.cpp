@@ -158,6 +158,23 @@ void vgui_set_window_icon(int w, int h, const unsigned char* rgba) {
     glfwSetWindowIcon(g_win, 1, &img);
 }
 
+// vgui_set_window_icons is set_window_icon with several candidate sizes in one call, so the
+// OS picks the native one per context (Windows: taskbar 32, title bar 16) instead of scaling
+// a single bitmap. One call replaces the whole set — GLFW does not accumulate across calls.
+void vgui_set_window_icons(int count, const int* w, const int* h,
+                           const unsigned char* const* rgba) {
+    if (!g_win || !w || !h || !rgba || count <= 0 || count > 8) return;
+    GLFWimage imgs[8];
+    int n = 0;
+    for (int i = 0; i < count; i++) {
+        if (!rgba[i] || w[i] <= 0 || h[i] <= 0) continue;
+        imgs[n].width = w[i]; imgs[n].height = h[i];
+        imgs[n].pixels = (unsigned char*)rgba[i];
+        n++;
+    }
+    if (n) glfwSetWindowIcon(g_win, n, imgs);
+}
+
 // vgui_create_texture uploads a w×h RGBA8 buffer as a GL texture and returns its id (0 on
 // failure). GL 1.1 calls only — no loader needed on Windows, where GLFW's header gives us
 // nothing newer. Needs the GL context, so call after vgui_init; the caller keeps the id for

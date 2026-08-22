@@ -58,6 +58,7 @@ pub mut:
 
 fn C.vgui_init(&char, int, int, int) int
 fn C.vgui_set_window_icon(int, int, &u8)
+fn C.vgui_set_window_icons(int, &int, &int, &voidptr)
 fn C.vgui_create_texture(int, int, &u8) u32
 fn C.vgui_menu_image(u32, f32)
 fn C.vgui_plot_begin_x(&char, f32, f64, f64) int
@@ -181,6 +182,38 @@ pub fn set_window_icon(w int, h int, rgba []u8) {
 		return
 	}
 	C.vgui_set_window_icon(w, h, &u8(rgba.data))
+}
+
+// IconImage is one candidate size for set_window_icons: a w×h RGBA8 buffer, same layout as
+// set_window_icon.
+pub struct IconImage {
+pub:
+	w    int
+	h    int
+	rgba []u8
+}
+
+// set_window_icons hands the OS several sizes of the window/taskbar icon in one call, so each
+// context (taskbar, title bar, alt-tab) gets its native size instead of a scaled one. Call
+// after init(). Entries whose buffer is shorter than w*h*4 are dropped; one call replaces the
+// whole set.
+pub fn set_window_icons(icons []IconImage) {
+	mut ws := []int{cap: icons.len}
+	mut hs := []int{cap: icons.len}
+	mut ps := []voidptr{cap: icons.len}
+	for ic in icons {
+		if ic.w <= 0 || ic.h <= 0 || i64(ic.rgba.len) < i64(ic.w) * i64(ic.h) * 4 {
+			continue
+		}
+		ws << ic.w
+		hs << ic.h
+		ps << voidptr(ic.rgba.data)
+	}
+	if ps.len == 0 {
+		return
+	}
+	C.vgui_set_window_icons(ps.len, unsafe { &int(ws.data) }, unsafe { &int(hs.data) },
+		unsafe { &voidptr(ps.data) })
 }
 
 // create_texture uploads a w×h RGBA8 buffer (same layout as set_window_icon) as a GL texture

@@ -8,6 +8,42 @@ import vgui
 // menu_image multiplies by a tint, and white times the tint IS the tint.
 const logo_png = $embed_file('logo_white.png')
 
+// The window/taskbar icon: the wordmark's stencil B on the accent-blue rounded tile, 64px
+// (the wordmark itself is far too wide for a square icon). Decoded and downscaled at startup
+// so the OS gets native 16/32/48/64 candidates instead of scaling one bitmap.
+const icon_png = $embed_file('icon_b.png')
+
+// set_app_icon decodes the embedded icon and hands the OS a size set. Call after vgui.init().
+// If decoding fails it falls back to the procedural placeholder, so the window never goes
+// without an icon.
+fn set_app_icon() {
+	img := stbi.load_from_memory(icon_png.data(), icon_png.len) or {
+		vgui.set_window_icon(32, 32, app_icon())
+		return
+	}
+	defer {
+		img.free()
+	}
+	mut icons := []vgui.IconImage{}
+	base := unsafe { icon_rgba_copy(img.data, img.width, img.height) }
+	icons << vgui.IconImage{img.width, img.height, base}
+	for sz in [48, 32, 16] {
+		small := stbi.resize_uint8(img, sz, sz) or { continue }
+		icons << vgui.IconImage{sz, sz, unsafe { icon_rgba_copy(small.data, sz, sz) }}
+		small.free()
+	}
+	vgui.set_window_icons(icons)
+}
+
+// icon_rgba_copy clones a decoded w×h RGBA buffer into V-owned memory, so the stbi originals
+// can be freed while GLFW still reads the copies during set_window_icons.
+@[unsafe]
+fn icon_rgba_copy(data &u8, w int, h int) []u8 {
+	mut out := []u8{len: w * h * 4}
+	unsafe { vmemcpy(out.data, data, out.len) }
+	return out
+}
+
 // load_logo decodes the embedded wordmark and uploads it as a GL texture. Call after
 // vgui.init(). Failure just leaves logo_tex 0 and the menu bar starts at File, as before.
 fn (mut app App) load_logo() {
