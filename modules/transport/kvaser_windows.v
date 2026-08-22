@@ -24,6 +24,7 @@ fn C.ct_kvaser_open(int, int) int
 fn C.ct_kvaser_write(int, u32, u8, &u8, int) int
 fn C.ct_kvaser_read(int, &u32, &u8, &u8, &int, u32) int
 fn C.ct_kvaser_close(int)
+fn C.ct_kvaser_status(int, &u32) int
 fn C.ct_kvaser_count() int
 fn C.ct_kvaser_descr(int, &char, int) int
 
@@ -104,6 +105,16 @@ pub fn (mut b KvaserBus) recv(timeout_ms int) !CanFrame {
 
 pub fn (mut b KvaserBus) close() {
 	C.ct_kvaser_close(b.handle)
+}
+
+// health asks canReadStatus for the canSTAT_* ladder; -1 (symbol absent in an old canlib,
+// or the call failing) reads as unknown, never as a state. Decode pinned in health.v.
+pub fn (mut b KvaserBus) health() BusHealth {
+	mut flags := u32(0)
+	if C.ct_kvaser_status(b.handle, &flags) != 0 {
+		return .unknown
+	}
+	return kvaser_status_health(flags)
 }
 
 // kvaser_bitrate_code maps a bit rate to a canBITRATE_* code (negative constants

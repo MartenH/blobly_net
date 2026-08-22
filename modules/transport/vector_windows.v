@@ -47,7 +47,7 @@ import time
 fn C.ct_vector_load() int
 fn C.ct_vector_open(u32, u32, int, &int, &u64, &voidptr, &u64) int
 fn C.ct_vector_write(int, u64, u32, u8, &u8, int, int) int
-fn C.ct_vector_read(int, voidptr, &u32, &u8, &u8, &int, &int, int) int
+fn C.ct_vector_read(int, voidptr, &u32, &u8, &u8, &int, &int, int, &int) int
 fn C.ct_vector_close(int, u64, u64, voidptr)
 fn C.ct_vector_present(u32) int
 fn C.ct_vector_diag() int
@@ -60,6 +60,7 @@ fn C.ct_vector_probe(int, &int, &int, &int, &u64) int
 fn C.ct_vector_channel_info(int, &char, int, &char, int, &int, &int, &int, &u32, &u32, &u32, &int, &int) int
 fn C.ct_vector_error_frames() int
 fn C.ct_vector_chipstate(int, u64, &int, &int, &int) int
+fn C.ct_vector_reqchip(int, u64) int
 fn C.ct_vector_set_verbose(int)
 fn C.ct_vector_err(int) &char
 
@@ -75,6 +76,10 @@ mut:
 	gen    u64 // which open of this channel we are; see the generation note in vector_shim.h
 	notify voidptr
 	silent bool
+	// last chip-state busStatus captured by recv from the event stream (-1 = none yet).
+	// health() only REQUESTS a report; the reply rides the queue the reader is already
+	// emptying — the drain-and-hunt alternative lost data frames mid-run (self-review).
+	last_chip int = -1
 }
 
 // open_vector parses `vector:<channel>[@<bitrate>][,silent]`, loads vxlapi64.dll, resolves the
@@ -214,7 +219,11 @@ pub fn (mut b VectorBus) recv(timeout_ms int) !CanFrame {
 	mut ext := 0
 	mut rtr := 0
 	mut data := [8]u8{}
-	r := C.ct_vector_read(b.port, b.notify, &id, &ln, &data[0], &ext, &rtr, timeout_ms)
+	mut chip := -1
+	r := C.ct_vector_read(b.port, b.notify, &id, &ln, &data[0], &ext, &rtr, timeout_ms, &chip)
+	if chip >= 0 {
+		b.last_chip = chip
+	}
 	if r == 1 {
 		return error('timeout')
 	}
@@ -421,6 +430,17 @@ pub fn (b &VectorBus) chip_state() !VectorChipState {
 		tx_errors:  tx
 		rx_errors:  rx
 	}
+}
+
+// health returns the last chip state the RECV STREAM carried and fires the next async
+// request. The first draft polled ct_vector_chipstate here — which drains the same queue
+// the reader empties, discarding data frames while hunting (its own comment says it belongs
+// at the END of a run); mid-run health must never compete with the reader (self-review).
+// .unknown until the first reply arrives, and after that at most one poll interval stale.
+pub fn (mut b VectorBus) health() BusHealth {
+	h := if b.last_chip >= 0 { xl_chipstat_health(u8(b.last_chip)) } else { BusHealth.unknown }
+	C.ct_vector_reqchip(b.port, b.mask) // reply lands in recv's capture on a later frame
+	return h
 }
 
 // chip_state_of asks a Bus for its controller state, when it is a Vector one. The type switch

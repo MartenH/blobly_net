@@ -125,6 +125,11 @@ pub fn (mut b InprocBus) recv(timeout_ms int) !CanFrame {
 	return error('timeout')
 }
 
+// health: an in-process broadcast has no error counters — nothing to report, honestly.
+pub fn (mut b InprocBus) health() BusHealth {
+	return .unknown
+}
+
 pub fn (mut b InprocBus) close() {
 	lock inproc_reg {
 		if mut hub := inproc_reg.hubs[b.name] {

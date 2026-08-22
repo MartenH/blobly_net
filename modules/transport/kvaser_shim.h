@@ -45,6 +45,15 @@ typedef int (__stdcall *ct_kvChanData)(int, int, void *, size_t);
 static ct_kvNumChan  ct_kv_numchan;
 static ct_kvChanData ct_kv_chandata;
 
+/* bus health (optional): canReadStatus fills canSTAT_* flags — ERROR_PASSIVE 0x01,
+ * BUS_OFF 0x02, ERROR_WARNING 0x04, ERROR_ACTIVE 0x08 (canstat.h; TX_PENDING 0x10,
+ * RESERVED_1 0x40 carry no ladder meaning). This table once had PASSIVE/BUS_OFF swapped
+ * and a 0x40 warning that does not exist — the decode AND its pinned test live in
+ * modules/transport/health.v; read the vendor header, not this comment, before touching
+ * either (codex #143 r2 caught this comment still carrying the swap the decoder shed). */
+typedef int (__stdcall *ct_kvReadStatus)(int, uint32_t *);
+static ct_kvReadStatus ct_kv_readstatus;
+
 /* 0 ok, -1 DLL missing, -2 a symbol missing. */
 static int ct_kvaser_load(void) {
 	HMODULE h = LoadLibraryA("canlib32.dll");
@@ -56,6 +65,7 @@ static int ct_kvaser_load(void) {
 	ct_kv_busoff   = (ct_kvBusOff)(void *)GetProcAddress(h, "canBusOff");
 	ct_kv_write    = (ct_kvWrite)(void *)GetProcAddress(h, "canWrite");
 	ct_kv_readwait = (ct_kvReadWait)(void *)GetProcAddress(h, "canReadWait");
+	ct_kv_readstatus = (ct_kvReadStatus)(void *)GetProcAddress(h, "canReadStatus");
 	ct_kv_close    = (ct_kvClose)(void *)GetProcAddress(h, "canClose");
 	ct_kv_numchan  = (ct_kvNumChan)(void *)GetProcAddress(h, "canGetNumberOfChannels");
 	ct_kv_chandata = (ct_kvChanData)(void *)GetProcAddress(h, "canGetChannelData");
@@ -127,6 +137,13 @@ static int ct_kvaser_read(int hnd, uint32_t *id, uint8_t *len, uint8_t *data, in
 
 static void ct_kvaser_close(int hnd) {
 	if (hnd >= 0) { ct_kv_busoff(hnd); ct_kv_close(hnd); }
+}
+
+/* Status flags of an on-bus handle. Returns -1 when the symbol is absent or the call fails
+ * (the caller reads that as "cannot say"); 0 on success with *flags filled. */
+static int ct_kvaser_status(int hnd, uint32_t *flags) {
+	if (!ct_kv_readstatus) return -1;
+	return ct_kv_readstatus(hnd, flags) == 0 ? 0 : -1;
 }
 
 #endif /* CT_KVASER_SHIM_H */

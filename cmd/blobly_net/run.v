@@ -293,6 +293,10 @@ fn (mut app App) start() {
 	mut anon_tap_failed := map[string]bool{}
 	mut named_tap_failed := map[string]bool{}
 	for ci, ch in app.chans {
+		// EVERY row, before the monitorable gate: a disabled row keeping an earlier run's
+		// BUS-OFF became the reader on a mid-run enable and showed it forever — a fresh
+		// healthy backend reports .unknown and never overwrites (codex #143 r1)
+		app.chans[ci].health = .unknown
 		if !ch.monitorable() {
 			continue
 		}
@@ -327,6 +331,9 @@ fn (mut app App) start() {
 			if b := app.open_tap_on(ch.iface, org_tx, ch.name) {
 				app.tx_buses[tx_bus_key(ch.name, ch.iface)] = b
 			} else {
+				// recorded in the same set the generator loop consults, or a generator on
+				// this channel re-pays the ~2s vendor open and re-logs the line
+				named_tap_failed[tx_bus_key(ch.name, ch.iface)] = true
 				app.notify('${ch.name}: transmit tap failed to open — ${err}')
 			}
 		}

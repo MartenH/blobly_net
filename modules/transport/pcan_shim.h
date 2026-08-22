@@ -34,12 +34,14 @@ typedef uint32_t (__stdcall *ct_pWrite)(uint16_t, CT_TPCANMsg *);
 typedef uint32_t (__stdcall *ct_pRead)(uint16_t, CT_TPCANMsg *, void *);
 
 typedef uint32_t (__stdcall *ct_pGetValue)(uint16_t, uint8_t, void *, uint32_t);
+typedef uint32_t (__stdcall *ct_pGetStatus)(uint16_t);
 
 static ct_pInit     ct_fn_init;
 static ct_pUninit   ct_fn_uninit;
 static ct_pWrite    ct_fn_write;
 static ct_pRead     ct_fn_read;
 static ct_pGetValue ct_fn_getvalue; /* CAN_GetValue — discovery only, optional */
+static ct_pGetStatus ct_fn_getstatus; /* CAN_GetStatus — bus health, optional */
 
 /* Load the DLL + resolve the four entry points. 0 ok, -1 DLL missing, -2 symbol missing. */
 static int ct_pcan_load(void) {
@@ -50,6 +52,7 @@ static int ct_pcan_load(void) {
 	ct_fn_write  = (ct_pWrite)(void *)GetProcAddress(h, "CAN_Write");
 	ct_fn_read   = (ct_pRead)(void *)GetProcAddress(h, "CAN_Read");
 	ct_fn_getvalue = (ct_pGetValue)(void *)GetProcAddress(h, "CAN_GetValue");
+	ct_fn_getstatus = (ct_pGetStatus)(void *)GetProcAddress(h, "CAN_GetStatus");
 	if (!ct_fn_init || !ct_fn_uninit || !ct_fn_write || !ct_fn_read) return -2;
 	return 0;
 }
@@ -98,6 +101,15 @@ static int ct_pcan_read(uint16_t ch, uint32_t *id, uint8_t *msgtype, uint8_t *le
 	*len = m.LEN;
 	for (i = 0; i < 8; i++) data[i] = m.DATA[i];
 	return 0;
+}
+
+/* Bus status word of an initialized channel (PCAN_ERROR_* bits: BUSLIGHT 0x04, BUSHEAVY
+ * 0x08, BUSOFF 0x10, BUSPASSIVE 0x40000). 0 = error-active and healthy. Returns the raw
+ * status; 0xFFFFFFFF when the symbol is absent (older DLL) — the caller reads that as
+ * "cannot say", never as a state. */
+static uint32_t ct_pcan_status(uint16_t ch) {
+	if (!ct_fn_getstatus) return 0xFFFFFFFFu;
+	return ct_fn_getstatus(ch);
 }
 
 #endif /* CT_PCAN_SHIM_H */
