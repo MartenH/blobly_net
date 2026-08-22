@@ -157,7 +157,8 @@ fn main() {
 		eprintln('vgui.init failed')
 		return
 	}
-	vgui.set_window_icon(32, 32, app_icon()) // replace the default placeholder window icon
+	set_app_icon() // the B-on-blue window/taskbar icon (procedural placeholder as fallback)
+	app.load_logo() // the menu-bar wordmark (needs the GL context, so after init)
 	load_ui_font()
 	if os.getenv('BLOBLY_THEME') == 'light' {
 		app.dark = false

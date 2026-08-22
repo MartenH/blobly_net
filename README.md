@@ -1,4 +1,7 @@
-# Blobly Net
+<h1><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.png">
+  <img src="docs/logo-light.png" alt="Blobly Net" width="480">
+</picture></h1>
 
 An automotive bus tester written in [V](https://vlang.io). It exercises a System Under
 Test (SUT) over **CAN**, and over **Ethernet** using the automotive protocols that run on it

@@ -46,6 +46,9 @@ mut:
 	mu    sync.Mutex
 	chans []Chan
 	trace []TraceRow
+	// The menu-bar wordmark: GL texture id + width/height ratio, 0 until load_logo ran.
+	logo_tex    u32
+	logo_aspect f32
 	// Emissions still waiting for their echo, and the bookkeeping that lets one confirm its own
 	// row: `trace_seq` is the next row's identity, `trace_base` the identity of trace[0].
 	taps wiretap.Ring
@@ -407,8 +410,9 @@ fn (mut app App) add_watch(id u32, ext bool, sig string) {
 	app.watch << Watch{id, ext, sig}
 }
 
-// app_icon renders the 32×32 RGBA window/taskbar icon: an accent-blue rounded square with
-// three dashed "trace" lines (a bus-monitor motif). Procedural — no image file to embed.
+// app_icon renders a 32×32 RGBA window/taskbar icon: an accent-blue rounded square with
+// three dashed "trace" lines (a bus-monitor motif). Procedural, and since the embedded
+// B-on-blue icon took over (set_app_icon in logo.v) only the fallback for a failed decode.
 fn app_icon() []u8 {
 	sz := 32
 	rad := 6
