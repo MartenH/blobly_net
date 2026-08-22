@@ -19,18 +19,27 @@ import vgui
 // the owning row correctly showed as `down` was drawn green and running on every alias of it.
 // The link is a property of the interface, not of the row that happened to open it.
 struct DestState {
+mut:
 	read bool
 	down bool
+	// worst fault-ladder verdict of any row on this wire — health is a property of the
+	// INTERFACE like `down` is (the reader-owning row is the only one whose rx_loop writes
+	// it, and every alias must show it or a bus-off wire draws green on its other rows —
+	// the exact defect `down` was added here to fix, repeated; self-review)
+	health transport.BusHealth
 }
 
 fn read_destinations(rows []Chan) map[string]DestState {
 	mut out := map[string]DestState{}
 	for c in rows {
 		if c.enabled && c.running {
-			out[transport.destination_key(c.iface)] = DestState{
-				read: true
-				down: c.link_down
+			mut st := out[transport.destination_key(c.iface)] or { DestState{} }
+			st.read = true
+			st.down = st.down || c.link_down
+			if transport.health_rank(c.health) > transport.health_rank(st.health) {
+				st.health = c.health
 			}
+			out[transport.destination_key(c.iface)] = st
 		}
 	}
 	return out
@@ -44,6 +53,18 @@ fn chan_state(c Chan, wire DestState) (u8, u8, u8, string) {
 		if c.link_down || wire.down {
 			return u8(215), u8(90), u8(90), 'down' // iface DOWN — bound but can't tx/rx
 		}
+		// the controller's own fault ladder outranks "running": a bus-off channel IS still
+		// running its reader — that is how it will notice the recovery — but nothing
+		// transmits, and painting it green was the lie the bench kept believing. Read from
+		// the WIRE's folded verdict, not the row's own field: only the reader-owning row is
+		// ever written, and its aliases must not draw green on a bus-off wire
+		match wire.health {
+			.bus_off { return u8(230), u8(70), u8(70), 'BOFF' }
+			.error_passive { return u8(230), u8(140), u8(60), 'errP' }
+			.warning { return u8(220), u8(190), u8(70), 'warn' }
+			else {}
+		}
+
 		return u8(90), u8(200), u8(120), 'run '
 	}
 	return u8(220), u8(170), u8(70), 'idle'
@@ -89,6 +110,10 @@ fn draw_buses(mut app App, chans []Chan) {
 			c := chans[i]
 			new := vgui.checkbox('##en${i}', c.enabled)
 			if new != c.enabled {
+				mut want_iface := ''
+				mut want_name := ''
+				mut need_named := false
+				mut need_anon := false
 				// failures found while app.mu is HELD are said after the unlock: notify
 				// re-takes the (non-reentrant) mutex, so an inline notify here deadlocks
 				// the GUI thread — the trap that kept this path silent when start()'s copy
@@ -208,6 +233,13 @@ fn draw_buses(mut app App, chans []Chan) {
 				if new && app.running && app.chans[i].monitorable() && !app.chans[i].running
 					&& !app.chans[i].spawning {
 					if !app.dest_is_read_locked(app.chans[i].iface) {
+						// a re-enable after a GAP resets the verdict: nobody watched the
+						// wire while this row was off, and the interface may have
+						// recovered unseen — a fresh healthy backend reports .unknown and
+						// would never overwrite the stale BUS-OFF (codex #143 r3). The
+						// reader HANDOFF is different and carries its verdict: there the
+						// wire was observed continuously.
+						app.chans[i].health = .unknown
 						app.chans[i].spawning = true
 						spawn rx_loop(app, i, app.chans[i].iface, app.run_gen)
 					}
@@ -216,29 +248,59 @@ fn draw_buses(mut app App, chans []Chan) {
 					// the diagnostic paths reported "no open bus", and with no send_iface yet the
 					// Send panel had nothing selected. (Nobody hit it while the branch was
 					// unreachable — fixing that exposed the other half.)
-					iface := app.chans[i].iface
-					name := app.chans[i].name
-					if tx_bus_key(name, iface) !in app.tx_buses {
-						if b := app.open_tap_on(iface, org_tx, name) {
-							app.tx_buses[tx_bus_key(name, iface)] = b
-						} else {
-							open_errs << '${name}: transmit tap failed to open — ${err}'
-						}
-					}
-					if tx_bus_key('', iface) !in app.tx_buses {
-						if b := app.open_tap(iface, org_tx) {
-							app.tx_buses[tx_bus_key('', iface)] = b
-						} else {
-							open_errs << '${iface}: shared transmit tap failed to open — ${err}'
-						}
-					}
+					// only RECORD what needs a tap here: a vendor open can block ~2s
+					// waiting for a port release (run.v's own lesson), and doing it with
+					// app.mu held on the GUI thread froze the UI AND every rx_loop's
+					// per-frame lock behind a driver timeout (self-review). The opens run
+					// after the unlock; the inserts re-take the lock briefly — a V map is
+					// not safe for a concurrent read and write (tx_on_chan's invariant).
+					// record WHICH taps are actually missing while the lock is held — a
+					// re-enabled row's taps usually still exist (disable does not remove
+					// them), and opening unconditionally leaked the discarded winner's
+					// port on Vector, unreachable by teardown (codex #143 r1, P1)
+					want_iface = app.chans[i].iface
+					want_name = app.chans[i].name
+					need_named = tx_bus_key(want_name, want_iface) !in app.tx_buses
+					need_anon = tx_bus_key('', want_iface) !in app.tx_buses
 					if app.send_iface == '' {
-						app.send_iface = iface
+						app.send_iface = want_iface
 					}
 				}
 				app.mu.unlock()
 				for m in open_errs {
 					app.notify(m)
+				}
+				if want_iface != '' && need_named {
+					key := tx_bus_key(want_name, want_iface)
+					if mut b := app.open_tap_on(want_iface, org_tx, want_name) {
+						app.mu.lock()
+						race := key in app.tx_buses
+						if !race {
+							app.tx_buses[key] = b
+						}
+						app.mu.unlock()
+						if race {
+							b.close() // somebody inserted first — the loser must not leak
+						}
+					} else {
+						app.notify('${want_name}: transmit tap failed to open — ${err}')
+					}
+				}
+				if want_iface != '' && need_anon {
+					key := tx_bus_key('', want_iface)
+					if mut b := app.open_tap(want_iface, org_tx) {
+						app.mu.lock()
+						race := key in app.tx_buses
+						if !race {
+							app.tx_buses[key] = b
+						}
+						app.mu.unlock()
+						if race {
+							b.close()
+						}
+					} else {
+						app.notify('${want_iface}: shared transmit tap failed to open — ${err}')
+					}
 				}
 			}
 			vgui.same_line()

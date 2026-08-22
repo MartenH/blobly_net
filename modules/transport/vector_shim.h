@@ -607,8 +607,9 @@ static int ct_vector_write(ct_xlport port, uint64_t mask, uint32_t id, uint8_t l
  * frames: an error frame carries no payload and filing one as bus traffic would put a
  * message on the trace that nobody sent. */
 static int ct_vector_read(ct_xlport port, HANDLE ev_handle, uint32_t *id, uint8_t *len,
-                          uint8_t *data, int *ext, int *rtr, int timeout_ms) {
+                          uint8_t *data, int *ext, int *rtr, int timeout_ms, int *chip_status) {
 	ct_xlevent ev;
+	if (chip_status) *chip_status = -1; /* -1 = no chip-state event seen this call */
 	unsigned int count;
 	DWORD waited;
 	int i;
@@ -638,6 +639,14 @@ static int ct_vector_read(ct_xlport port, HANDLE ev_handle, uint32_t *id, uint8_
 		count = 1;
 		st = ct_xl_receive(port, &count, &ev);
 		if (st == 0 && count > 0) {
+			/* A chip-state reply riding the same queue: capture it for the health latch
+			 * instead of discarding it. The old helper that DRAINED the queue hunting for
+			 * this event threw away data frames mid-run — health must ride the stream the
+			 * reader is already emptying, never compete with it (self-review). */
+			if (ev.tag == CT_XL_CHIP_STATE) {
+				if (chip_status) *chip_status = ev.tagData.raw[0];
+				continue;
+			}
 			if (ev.tag != CT_XL_RECEIVE_MSG) continue;
 			/* An error frame carries no payload, and a TX confirmation is OUR OWN frame coming
 			 * back: filing either as bus traffic puts a message on the trace nobody sent. */
@@ -685,6 +694,14 @@ static int ct_vector_read(ct_xlport port, HANDLE ev_handle, uint32_t *id, uint8_
  *
  * 0 ok, negative otherwise. Consumes queued events while it looks for the answer, so it belongs
  * at the END of a diagnostic run. */
+/* Fire-and-forget chip-state request: the reply arrives through the port's event queue and
+ * ct_vector_read captures it into the caller's latch. NEVER reads the queue itself — that
+ * is the reader's, and competing with it loses trace frames. */
+static int ct_vector_reqchip(ct_xlport port, uint64_t mask) {
+	if (!ct_xl_reqchip) return -1;
+	return ct_xl_reqchip(port, (ct_xlaccess)mask) == 0 ? 0 : -1;
+}
+
 static int ct_vector_chipstate(ct_xlport port, uint64_t mask, int *bus_status, int *tx_err, int *rx_err) {
 	ct_xlevent ev;
 	unsigned int count;

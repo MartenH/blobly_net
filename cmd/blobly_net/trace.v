@@ -49,7 +49,12 @@ mut:
 	// regroup their row slices, so "position in the slice" stops being the identity the moment
 	// a filter runs. Row LOOKUP (echo confirmation) still goes by position against trace_base.
 	missed bool
-	seq    u64
+	// The driver REFUSED this emission: nothing went on the line, and the row must say so —
+	// a row that reads as an ordinary TX for a frame that never left the host is the trace
+	// claiming a send that did not happen (maintainer, 2026-08-21). Distinct from `missed`:
+	// refused never reached the driver's queue; missed left it and nobody answered.
+	refused bool
+	seq     u64
 	// The DISPLAYED frame number, frozen at push as seq - trace_run_base. Computing it at draw
 	// time required threading the base through every view (and pairing it with the row snapshot,
 	// or a mid-frame Clear wrapped every idx to ~1.8e19 — codex #127 r1), and a base reset
@@ -353,7 +358,19 @@ fn (mut app App) retract_emit(seq u64, origin string, epoch u64) {
 	}
 	i := app.row_index_locked(seq)
 	if i >= 0 {
-		app.trace[i].missed = true
+		app.trace[i].refused = true
+		// the gcount refund, next to the TX-counter refund and under the same epoch guard:
+		// note_emit counted this frame into the group total before the driver was asked, and
+		// a sustained refusal (bus-off) otherwise grew count and fps as if frames were
+		// flowing while the header honestly said TX 0 (codex #143 r2). Only while the row is
+		// still in the ring — the key is rebuilt from it; a retract lands ms after the emit,
+		// so a trimmed row is a busy-bus corner where one count is the honest loss.
+		if epoch == app.tx_epoch {
+			k := app.trace[i].gkey()
+			if app.gcount[k] > 0 {
+				app.gcount[k]--
+			}
+		}
 	}
 	app.mu.unlock()
 }

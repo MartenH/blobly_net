@@ -68,6 +68,12 @@ mut:
 	send(frame CanFrame) !
 	recv(timeout_ms int) !CanFrame
 	close()
+	// health is the controller's fault ladder (see health.v). Backends whose driver reports
+	// it decode the vendor's word; software buses answer .unknown — "cannot say" is a state
+	// here, never a guess. On the interface itself rather than an optional side-interface:
+	// the RX loop polls this per wire, and V's interface-to-interface casts are not a
+	// foundation to build a hot path on.
+	health() BusHealth
 }
 
 // echoes_own_sends reports whether frames written to this interface come back to another bus

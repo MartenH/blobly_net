@@ -153,3 +153,13 @@ rather than a bug in the backend.
   ([ROADMAP](../ROADMAP.md)).
 - **slcan** — vendor-neutral, cross-platform, no DLL; the cheapest path to real frames on a
   bench with no vendor adapter at all.
+
+## Bus health (fault ladder)
+
+Every backend now reports the controller's fault ladder (warning / error-passive / **BUS-OFF**)
+through one decode in `modules/transport/health.v`: PCAN via `CAN_GetStatus`, Kvaser via
+`canReadStatus`, Vector from its chip state. The Buses panel colors the row (`BOFF` red) and
+the Log narrates transitions. The decoders are pinned to the vendors' header constants by unit
+tests; **the live paths are NOT yet hand-verified on hardware** — the same bench pass that
+verified each backend's I/O should provoke a bus-off (short CANH/CANL, or a lone node
+transmitting) and confirm the row turns red and the Log speaks.

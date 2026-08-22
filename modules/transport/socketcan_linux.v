@@ -1,5 +1,7 @@
 module transport
 
+import time
+
 #include "socketcan_shim.h"
 
 fn C.ct_can_open(&u8) int
@@ -19,7 +21,8 @@ pub struct SocketCanBus {
 pub:
 	iface string
 mut:
-	fd int = -1
+	fd     int       = -1
+	hstate BusHealth = .unknown // last kernel error-frame verdict; recv updates it
 }
 
 // open_socketcan binds a raw CAN socket to `iface` (e.g. 'vcan0').
@@ -63,35 +66,85 @@ pub fn (mut b SocketCanBus) send(frame CanFrame) ! {
 }
 
 pub fn (mut b SocketCanBus) recv(timeout_ms int) !CanFrame {
-	mut raw_id := u32(0)
-	mut fflags := u8(0)
+	deadline := time.ticks() + i64(timeout_ms)
 	mut buf := []u8{len: 64} // an FD frame is up to 64 bytes; a classic one fills the first 8
-	dlc := C.ct_can_recv(b.fd, &raw_id, &u8(buf.data), timeout_ms, &fflags)
-	if dlc == -1 {
-		return error('timeout')
+	mut polled := false
+	for {
+		mut raw_id := u32(0)
+		mut fflags := u8(0)
+		mut wait := timeout_ms
+		if timeout_ms >= 0 {
+			left := int(deadline - time.ticks())
+			if left <= 0 {
+				// Past the deadline the loop must EXIT, not downgrade to nonblocking polls:
+				// draining a backlog of error frames at wait=0 overran the caller's budget by
+				// the drain time, and an ISO-TP N_Cr timeout fed a late consecutive frame it
+				// should have refused (self-review). One poll is still owed when nothing has
+				// been tried yet — recv(0) is the drain loop's nonblocking probe.
+				if polled {
+					return error('timeout')
+				}
+				wait = 0
+			} else {
+				wait = left
+			}
+		}
+		polled = true
+		dlc := C.ct_can_recv(b.fd, &raw_id, &u8(buf.data), wait, &fflags)
+		if dlc == -1 {
+			return error('timeout')
+		}
+		if dlc <= -1000 {
+			return error('recv on ${b.iface}: ${cerr(-(dlc + 1000))}') // the errno names the culprit
+		}
+		if dlc < 0 {
+			return error('recv failed on ${b.iface}')
+		}
+		// A kernel ERROR frame (CAN_RAW_ERR_FILTER subscribed at open): the bus's health
+		// talking, not traffic — fold it into the ladder, never surface it as data. The
+		// unknown verdicts (bit error, ACK slot, …) leave the last ladder state alone.
+		if is_socketcan_err(raw_id) {
+			d1 := if dlc > 1 { buf[1] } else { u8(0) }
+			h := socketcan_err_health(raw_id, d1)
+			if h != .unknown {
+				b.hstate = h
+			}
+			continue
+		}
+		// A DATA frame is proof of life: the documented bus-off recovery on Linux is
+		// `ip link set canX down && up`, which resets the controller through close/open and
+		// emits neither RESTARTED nor CRTL_ACTIVE — the latch would hold red on a bus that
+		// is plainly carrying traffic again (self-review). Traffic clears it.
+		if b.hstate == .bus_off {
+			b.hstate = .ok
+		}
+		ext := (raw_id & can_eff_flag) != 0
+		rtr := (raw_id & can_rtr_flag) != 0
+		id := if ext { raw_id & can_eff_mask } else { raw_id & can_sff_mask }
+		mut data := []u8{len: dlc}
+		for i in 0 .. dlc {
+			data[i] = buf[i]
+		}
+		return CanFrame{
+			id:       id
+			extended: ext
+			rtr:      rtr
+			fd:       fflags & 0x01 != 0
+			brs:      fflags & 0x02 != 0
+			esi:      fflags & 0x04 != 0
+			data:     data
+		}
 	}
-	if dlc <= -1000 {
-		return error('recv on ${b.iface}: ${cerr(-(dlc + 1000))}') // the errno names the culprit
-	}
-	if dlc < 0 {
-		return error('recv failed on ${b.iface}')
-	}
-	ext := (raw_id & can_eff_flag) != 0
-	rtr := (raw_id & can_rtr_flag) != 0
-	id := if ext { raw_id & can_eff_mask } else { raw_id & can_sff_mask }
-	mut data := []u8{len: dlc}
-	for i in 0 .. dlc {
-		data[i] = buf[i]
-	}
-	return CanFrame{
-		id:       id
-		extended: ext
-		rtr:      rtr
-		fd:       fflags & 0x01 != 0
-		brs:      fflags & 0x02 != 0
-		esi:      fflags & 0x04 != 0
-		data:     data
-	}
+	// unreachable — every path exits by return above; V requires a terminal return after a
+	// bare `for`
+	return error('timeout')
+}
+
+// health reports the last kernel error-frame verdict — updated passively while recv runs
+// (which is constantly: every open bus has its RX loop). .unknown until the kernel has said
+// anything; a healthy bus emits no error frames, so unknown IS the healthy silence.
+pub fn (mut b SocketCanBus) health() BusHealth {
+	return b.hstate
 }
 
 pub fn (mut b SocketCanBus) close() {

@@ -268,10 +268,18 @@ fn (mut app App) add_generator() {
 	app.mu.unlock()
 	if app.running && iface != '' && tx_bus_key(cname, iface) !in app.tx_buses {
 		if b := app.open_tap_on(iface, org_tx, cname) {
-			app.tx_buses[tx_bus_key(cname, iface)] = b
+			// the OPEN runs unlocked (a vendor open can block ~2s), the INSERT re-takes the
+			// lock: a cyclic generator may be inside tx_on_chan's locked lookup of this very
+			// map, and a V map is not safe for a concurrent read and write (the invariant
+			// tx_on_chan documents; this site was the one sibling violating it)
+			app.mu.lock()
+			if tx_bus_key(cname, iface) !in app.tx_buses {
+				app.tx_buses[tx_bus_key(cname, iface)] = b
+			}
+			app.mu.unlock()
 		} else {
-			// mu already released above, so the notify is safe here — a generator added
-			// mid-run onto a bus that will not open must not just quietly never fire
+			// a generator added mid-run onto a bus that will not open must not just
+			// quietly never fire
 			app.notify('${cname}: generator transmit tap failed to open — ${err}')
 		}
 	}
