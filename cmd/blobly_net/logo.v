@@ -21,14 +21,11 @@ fn (mut app App) load_logo() {
 	app.logo_aspect = f32(img.width) / f32(img.height)
 }
 
-// draw_logo puts the wordmark at the left end of the menu bar, in the theme's ink color.
+// draw_logo puts the wordmark at the left end of the menu bar; menu_image inks it with the
+// theme's text color, so there is no theme branch to keep in sync here.
 fn draw_logo(app &App) {
 	if app.logo_tex == 0 {
 		return
 	}
-	if app.dark {
-		vgui.menu_image(app.logo_tex, app.logo_aspect, 0.86, 0.88, 0.90, 1.0)
-	} else {
-		vgui.menu_image(app.logo_tex, app.logo_aspect, 0.13, 0.14, 0.16, 1.0)
-	}
+	vgui.menu_image(app.logo_tex, app.logo_aspect)
 }

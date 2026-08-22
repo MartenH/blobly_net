@@ -59,7 +59,7 @@ pub mut:
 fn C.vgui_init(&char, int, int, int) int
 fn C.vgui_set_window_icon(int, int, &u8)
 fn C.vgui_create_texture(int, int, &u8) u32
-fn C.vgui_menu_image(u32, f32, f32, f32, f32, f32)
+fn C.vgui_menu_image(u32, f32)
 fn C.vgui_plot_begin_x(&char, f32, f64, f64) int
 fn C.vgui_is_item_clicked_right() int
 fn C.vgui_running() int
@@ -186,16 +186,16 @@ pub fn set_window_icon(w int, h int, rgba []u8) {
 // create_texture uploads a w×h RGBA8 buffer (same layout as set_window_icon) as a GL texture
 // and returns its id, 0 on failure. Call after init(); the texture lives until shutdown.
 pub fn create_texture(w int, h int, rgba []u8) u32 {
-	if rgba.len < w * h * 4 {
+	if w <= 0 || h <= 0 || i64(rgba.len) < i64(w) * i64(h) * 4 {
 		return 0
 	}
 	return C.vgui_create_texture(w, h, &u8(rgba.data))
 }
 
 // menu_image draws a texture as a menu-bar item, font-size tall and `aspect` times as wide,
-// with its colors multiplied by the tint — a white-on-transparent mark takes the theme color.
-pub fn menu_image(tex u32, aspect f32, r f32, g f32, b f32, a f32) {
-	C.vgui_menu_image(tex, aspect, r, g, b, a)
+// multiplied by the theme's text color — a white-on-transparent mark becomes the theme ink.
+pub fn menu_image(tex u32, aspect f32) {
+	C.vgui_menu_image(tex, aspect)
 }
 
 pub fn running() bool {

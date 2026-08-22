@@ -176,9 +176,9 @@ unsigned int vgui_create_texture(int w, int h, const unsigned char* rgba) {
 }
 
 // vgui_menu_image draws a texture as a menu-bar item: current font size tall, width from the
-// texture's aspect ratio, multiplied by the tint (a white mark takes the theme's color).
-// The menu bar lays items out horizontally, so it flows inline before the first menu.
-void vgui_menu_image(unsigned int tex, float aspect, float r, float g, float b, float a) {
+// texture's aspect ratio, multiplied by the theme's text color — a white-on-transparent mark
+// is the theme's ink by construction, and follows a theme switch with no caller involvement.
+void vgui_menu_image(unsigned int tex, float aspect) {
     if (!tex || aspect <= 0.0f) return;
     // Painted straight into the draw list, centered in the menu-bar rect; the layout only
     // sees a zero-HEIGHT spacer for the width. An ImGui::Image item here would instead set
@@ -194,7 +194,7 @@ void vgui_menu_image(unsigned int tex, float aspect, float r, float g, float b, 
     ImVec2 p = ImGui::GetCursorScreenPos();
     float y = cmin.y + (cmax.y - cmin.y - h) * 0.5f;
     dl->AddImage((ImTextureID)(intptr_t)tex, ImVec2(p.x, y), ImVec2(p.x + w, y + h),
-                 ImVec2(0, 0), ImVec2(1, 1), ImGui::GetColorU32(ImVec4(r, g, b, a)));
+                 ImVec2(0, 0), ImVec2(1, 1), ImGui::GetColorU32(ImGuiCol_Text));
     ImGui::Dummy(ImVec2(w, 0.0f));
 }
 
