@@ -35,8 +35,9 @@ fn set_app_icon() {
 	vgui.set_window_icons(icons)
 }
 
-// icon_rgba_copy clones a decoded w×h RGBA buffer into V-owned memory, so the stbi originals
-// can be freed while GLFW still reads the copies during set_window_icons.
+// icon_rgba_copy clones a decoded w×h RGBA buffer into a V-owned []u8, which is what the
+// vgui icon/texture API takes. (Lifetime is not the reason: GLFW copies the pixels before
+// glfwSetWindowIcon returns.)
 @[unsafe]
 fn icon_rgba_copy(data &u8, w int, h int) []u8 {
 	mut out := []u8{len: w * h * 4}

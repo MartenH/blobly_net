@@ -163,7 +163,8 @@ void vgui_set_window_icon(int w, int h, const unsigned char* rgba) {
 // a single bitmap. One call replaces the whole set — GLFW does not accumulate across calls.
 void vgui_set_window_icons(int count, const int* w, const int* h,
                            const unsigned char* const* rgba) {
-    if (!g_win || !w || !h || !rgba || count <= 0 || count > 8) return;
+    if (!g_win || !w || !h || !rgba || count <= 0) return;
+    if (count > 8) count = 8; // keep the best 8 rather than dropping the whole set
     GLFWimage imgs[8];
     int n = 0;
     for (int i = 0; i < count; i++) {
@@ -187,6 +188,13 @@ unsigned int vgui_create_texture(int w, int h, const unsigned char* rgba) {
     glBindTexture(GL_TEXTURE_2D, tex);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+#ifndef GL_CLAMP_TO_EDGE
+#define GL_CLAMP_TO_EDGE 0x812F /* GL 1.2 token; Windows' GL 1.1 header may lack it */
+#endif
+    // Clamp, or GL_REPEAT bleeds the opposite edge into border texels under linear
+    // filtering — the wordmark's ink touches all four borders.
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
     return (unsigned int)tex;
