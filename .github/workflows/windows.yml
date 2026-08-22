@@ -98,22 +98,22 @@ jobs:
           git -c advice.detachedHead=false clone --quiet https://github.com/vlang/markdown.git "$vm/markdown"
           git -C "$vm/markdown" -c advice.detachedHead=false checkout --quiet ef2f101
 
-      # Build cmd/blobly_net. The prebuilt v.exe drives mingw gcc via -cc gcc; the
-      # `#flag windows` line in vgui.v carries the static glfw + freetype/harfbuzz/glib link
-      # line. -path adds `libs` for the `vgui` module. (The old app needed a 2-step V->C->gcc
-      # workaround for a V/os.execute panic; the mingw src/main.v job built with the one-liner
-      # fine, so we use it here too — switch to build_deps.sh's 2-step if it regresses.)
-      # The binary is blobly_net.exe — the product name. It was blobly_vgui.exe until the app
-      # was renamed cmd/blobly_vgui -> cmd/blobly_net; "vgui" is the internal ImGui wrapper
-      # (libs/vgui, which keeps that name), not something a user should ever see. That mismatch
-      # was a live bug: scripts/register_blobnet_win.ps1 has always searched for blobly_net.exe,
-      # so .blobnet file association could never find the executable it was written for.
-      - name: Build the GUI app (V -cc gcc)
+      # Build cmd/blobly_net through scripts/run_gui.sh — the SAME script developers run and the
+      # Linux job (ci.yml) already calls, so this recipe cannot drift from theirs. It once did:
+      # this job knew the build needs vlang/markdown on VMODULES and the script did not, so a
+      # local Windows build failed on `cannot import module "markdown"` while CI stayed green.
+      # Only the CI-specific inputs are passed in: V= the prebuilt toolchain (no sibling ../v
+      # on a runner) and NO_PARALLEL=1 (this runner builds serially).
+      # RUN=0 = build only; V appends .exe, so the output is build/blobly_net.exe — the product
+      # name. It was blobly_vgui.exe until the app was renamed cmd/blobly_vgui -> cmd/blobly_net;
+      # "vgui" is the internal ImGui wrapper (libs/vgui, which keeps that name), not something a
+      # user should ever see. That mismatch was a live bug: scripts/register_blobnet_win.ps1 has
+      # always searched for blobly_net.exe, so .blobnet file association could never find the
+      # executable it was written for.
+      - name: Build the GUI app (RUN=0 scripts/run_gui.sh)
         shell: msys2 {0}
         run: |
-          mkdir -p build
-          /c/v-ct/v.exe -cc gcc -no-parallel -enable-globals -path '@vlib|@vmodules|modules|libs' \
-            -o build/blobly_net.exe cmd/blobly_net/
+          RUN=0 NO_PARALLEL=1 V=/c/v-ct/v.exe sh scripts/run_gui.sh
           test -f build/blobly_net.exe && echo "BUILD OK -> build/blobly_net.exe"
           # Copy the exe's mingw64 runtime DLLs (freetype/harfbuzz/glib/gcc/…) next to it via
           # ldd, so the bundled artifact runs outside an MSYS2 shell.
