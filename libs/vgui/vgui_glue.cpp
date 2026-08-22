@@ -158,6 +158,71 @@ void vgui_set_window_icon(int w, int h, const unsigned char* rgba) {
     glfwSetWindowIcon(g_win, 1, &img);
 }
 
+// vgui_set_window_icons is set_window_icon with several candidate sizes in one call, so the
+// OS picks the native one per context (Windows: taskbar 32, title bar 16) instead of scaling
+// a single bitmap. One call replaces the whole set — GLFW does not accumulate across calls.
+void vgui_set_window_icons(int count, const int* w, const int* h,
+                           const unsigned char* const* rgba) {
+    if (!g_win || !w || !h || !rgba || count <= 0) return;
+    if (count > 8) count = 8; // keep the best 8 rather than dropping the whole set
+    GLFWimage imgs[8];
+    int n = 0;
+    for (int i = 0; i < count; i++) {
+        if (!rgba[i] || w[i] <= 0 || h[i] <= 0) continue;
+        imgs[n].width = w[i]; imgs[n].height = h[i];
+        imgs[n].pixels = (unsigned char*)rgba[i];
+        n++;
+    }
+    if (n) glfwSetWindowIcon(g_win, n, imgs);
+}
+
+// vgui_create_texture uploads a w×h RGBA8 buffer as a GL texture and returns its id (0 on
+// failure). GL 1.1 calls only — no loader needed on Windows, where GLFW's header gives us
+// nothing newer. Needs the GL context, so call after vgui_init; the caller keeps the id for
+// the process lifetime (nothing here ever frees one).
+unsigned int vgui_create_texture(int w, int h, const unsigned char* rgba) {
+    if (!g_win || !rgba || w <= 0 || h <= 0) return 0;
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    if (!tex) return 0;
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+#ifndef GL_CLAMP_TO_EDGE
+#define GL_CLAMP_TO_EDGE 0x812F /* GL 1.2 token; Windows' GL 1.1 header may lack it */
+#endif
+    // Clamp, or GL_REPEAT bleeds the opposite edge into border texels under linear
+    // filtering — the wordmark's ink touches all four borders.
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    return (unsigned int)tex;
+}
+
+// vgui_menu_image draws a texture as a menu-bar item: current font size tall, width from the
+// texture's aspect ratio, multiplied by the theme's text color — a white-on-transparent mark
+// is the theme's ink by construction, and follows a theme switch with no caller involvement.
+void vgui_menu_image(unsigned int tex, float aspect) {
+    if (!tex || aspect <= 0.0f) return;
+    // Painted straight into the draw list, centered in the menu-bar rect; the layout only
+    // sees a zero-HEIGHT spacer for the width. An ImGui::Image item here would instead set
+    // the bar's line height from the image's own y, and every menu after it drops lower —
+    // the item path and the text path disagree about where a line starts.
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    // BeginMenuBar's clip rect IS the bar; center in that rather than trusting window
+    // fields, whose height the pushed menu FramePadding does not reach.
+    ImVec2 cmin = dl->GetClipRectMin();
+    ImVec2 cmax = dl->GetClipRectMax();
+    float h = ImGui::GetFontSize();
+    float w = h * aspect;
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    float y = cmin.y + (cmax.y - cmin.y - h) * 0.5f;
+    dl->AddImage((ImTextureID)(intptr_t)tex, ImVec2(p.x, y), ImVec2(p.x + w, y + h),
+                 ImVec2(0, 0), ImVec2(1, 1), ImGui::GetColorU32(ImGuiCol_Text));
+    ImGui::Dummy(ImVec2(w, 0.0f));
+}
+
 // Frames to keep rendering at full rate after the last UI activity, so imgui animations
 // (window close, dock reflow, tab/hover fades) play smoothly instead of at the idle wait
 // rate. Set in vgui_frame_end when activity is detected; counted down here.
