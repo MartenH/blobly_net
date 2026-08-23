@@ -446,6 +446,31 @@ fn draw_stats(mut app App, chans []Chan, rx u64, txs string) {
 }
 
 // draw_log: the scrolling status/event log.
+// draw_copyable_log renders newest-last output as SELECTABLE console text, above a Copy all
+// button. ONE helper for the Log, Flash, Diagnostics and Script panels, which were four copies
+// of `for line in log { vgui.text(line) }` -- ImGui::TextUnformatted, which draws glyphs rather
+// than a widget. Nothing in any of them could be marked with the mouse or reached with Ctrl+C,
+// so the only way to quote a failure into a bug report was to retype it or screenshot it
+// (net#153). Every piece was already in the wrapper: console_text had been carrying the Shell
+// since it was written, and clipboard_set had no callers at all.
+//
+// A BUTTON rather than the right-click menu this started as. begin_popup_context_window() keys
+// off IsWindowHovered() for the CURRENT window, and console_text is an InputTextMultiline --
+// its own child. Right-clicking the text would leave the outer child unhovered and open
+// nothing; only the padding below it would work, and that padding is exactly what disappears
+// once the log is long enough to want copying. A control that stops working as the panel fills
+// is worse than no control, and a button is discoverable besides.
+fn draw_copyable_log(id string, c LogCache) {
+	if vgui.small_button('Copy all##${id}') {
+		vgui.clipboard_set(c.text)
+	}
+	vgui.same_line()
+	vgui.text_dim('${c.lines} line(s) · drag to select, Ctrl+A / Ctrl+C')
+	vgui.child_begin('${id}box', 0)
+	vgui.console_text('${id}text', c.text, c.lines)
+	vgui.child_end()
+}
+
 fn draw_log(mut app App) {
 	vis, op := vgui.begin_closable('Log', app.show_log)
 	app.show_log = op
@@ -454,13 +479,15 @@ fn draw_log(mut app App) {
 		return
 	}
 	app.mu.lock()
-	logs := app.logs.clone()
+	gen := app.log_gen
+	// Cloned only when it has actually moved. The old loop copied all 500 lines under the lock
+	// every frame merely to print them; now an idle Log costs one u64 comparison.
+	src := if gen != app.log_cache.gen { app.logs.clone() } else { []string{} }
 	app.mu.unlock()
-	vgui.child_begin('##loglines', 0)
-	for l in logs {
-		vgui.text(l)
+	if gen != app.log_cache.gen {
+		app.log_cache.refresh(gen, src)
 	}
-	vgui.child_end()
+	draw_copyable_log('##log', app.log_cache)
 	vgui.end()
 }
 
@@ -912,6 +939,7 @@ fn (mut app App) shell_append(s string) {
 fn (mut app App) flash_append(line string) {
 	app.mu.lock()
 	app.flash_log << line
+	app.flash_gen++
 	app.mu.unlock()
 	vgui.wake()
 }
@@ -950,10 +978,14 @@ fn draw_flash(mut app App) {
 	}
 	app.mu.lock()
 	busy := app.flash_busy
-	log := app.flash_log.clone()
+	fgen := app.flash_gen
+	fsrc := if fgen != app.flash_cache.gen { app.flash_log.clone() } else { []string{} }
 	done := app.flash_done
 	total := app.flash_total
 	app.mu.unlock()
+	if fgen != app.flash_cache.gen {
+		app.flash_cache.refresh(fgen, fsrc)
+	}
 	vgui.set_next_item_width(340)
 	vgui.input_text('image', mut app.flash_img_buf)
 	vgui.same_line()
@@ -1011,11 +1043,7 @@ fn draw_flash(mut app App) {
 		}
 	}
 	vgui.separator_text('log (newest last)')
-	vgui.child_begin('##flashlog', 0)
-	for line in log {
-		vgui.text(line)
-	}
-	vgui.child_end()
+	draw_copyable_log('##flash', app.flash_cache)
 	vgui.end()
 }
 
@@ -1033,8 +1061,12 @@ fn draw_diag(mut app App) {
 	}
 	app.mu.lock()
 	busy := app.diag_busy
-	log := app.diag_log.clone()
+	dgen := app.diag_gen
+	dsrc := if dgen != app.diag_cache.gen { app.diag_log.clone() } else { []string{} }
 	app.mu.unlock()
+	if dgen != app.diag_cache.gen {
+		app.diag_cache.refresh(dgen, dsrc)
+	}
 	// Which ECU are we talking to? With per-ECU servers there is no longer one answer, and the
 	// panel used to assume 0x7E0/0x7E8 — unreachable for every other configured target.
 	targets := app.diag_targets()
@@ -1080,11 +1112,7 @@ fn draw_diag(mut app App) {
 		vgui.text_dim('busy…')
 	}
 	vgui.separator_text('responses (newest last)')
-	vgui.child_begin('##diaglog', 0)
-	for line in log {
-		vgui.text(line)
-	}
-	vgui.child_end()
+	draw_copyable_log('##diag', app.diag_cache)
 	vgui.end()
 }
 
@@ -1092,6 +1120,7 @@ fn draw_diag(mut app App) {
 fn (mut app App) script_push(line string) {
 	app.mu.lock()
 	app.script_log << line
+	app.script_gen++
 	app.mu.unlock()
 }
 
@@ -1111,8 +1140,12 @@ fn draw_script(mut app App) {
 	}
 	app.mu.lock()
 	busy := app.script_busy
-	log := app.script_log.clone()
+	sgen := app.script_gen
+	ssrc := if sgen != app.script_cache.gen { app.script_log.clone() } else { []string{} }
 	app.mu.unlock()
+	if sgen != app.script_cache.gen {
+		app.script_cache.refresh(sgen, ssrc)
+	}
 	vgui.set_next_item_width(240)
 	vgui.input_text('.lua', mut app.script_path_buf)
 	vgui.same_line()
@@ -1130,10 +1163,6 @@ fn draw_script(mut app App) {
 		vgui.text_dim('running…')
 	}
 	vgui.separator_text('output')
-	vgui.child_begin('##scriptlog', 0)
-	for line in log {
-		vgui.text(line)
-	}
-	vgui.child_end()
+	draw_copyable_log('##script', app.script_cache)
 	vgui.end()
 }
