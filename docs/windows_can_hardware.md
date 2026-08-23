@@ -127,6 +127,17 @@ MSGTYPE flags. The free driver has no software virtual channel, so testing needs
   ACKs what it hears. What it DOES do everywhere, since #117, is stop this process
   transmitting: `transport.open` hands back a bus that refuses to send on a silenced wire, so
   no emitter can route around it. Two tiers, and the tooltip states both.
+- **An open port PINS the channel** — its mode and its bitrate both. A second port asking for
+  the other mode is refused (`-1004`), a second bitrate likewise (`-1005`), and no software
+  policy can talk the driver out of either: the configuration belongs to the ports, not to the
+  project. Not quite "until the last port closes", and the exception is worse rather than
+  better — initialisation access belongs to one PORT, so when that port closes while siblings
+  stay open XL releases it, and the next port to win it reconfigures the channel under those
+  siblings, which go on running against a mode they never asked for. This is why the front ends ask
+  `transport.wire_pin_clash` before they open anything (`modules/transport/pinned.v`), and it
+  is the one rule here a disabled channel can still break — a disabled row keeps its transmit
+  taps open on purpose, so its ports go on holding a channel the project no longer mentions
+  (issue #165).
 
 **slcan** — not implemented. CANable / CANtact / USBtin appear as a COM port speaking an
 ASCII line protocol (`O` open, `S6` 500k, `t<id><len><data>`, `T…` for 29-bit); no DLL and no
@@ -136,9 +147,52 @@ SDK, and it would work identically on Linux and Windows.
 
 `cmd/vectorcheck` is the Vector one: `--list` shows application channels with hardware
 assigned, `--probe` shows what the driver reports as present, `--selftest` proves the backend
-on Vector's own virtual channels with no hardware, and `--pair A,B` transmits on one channel
-and verifies every frame arrives on another. It is silent by default — it will not
-acknowledge on a bus until you ask it to.
+on Vector's own virtual channels with no hardware, `--modecheck` proves that an open port pins
+its channel and that `wire_pin_clash` predicts it, and `--pair A,B` transmits on one channel
+and verifies every frame arrives on another. All but `--pair` are silent — they will not
+acknowledge on a bus until you ask them to, so they are safe to point at a live one.
+
+`--modecheck` is the bench half of a test whose other half runs everywhere: on Linux
+`modules/transport/pinned_test.v` checks the bookkeeping over `inproc:` buses, and only a VN
+device can answer whether the driver actually refuses what that bookkeeping predicts. It holds
+one listen-only port, asks for a second bitrate, opens a matching sibling, and checks the
+refusals against the predictions — then that all of it is released when the ports close.
+
+The **normal-mode** probe needs `--transmit`, and the reason is worth stating: asking the driver
+for a normal port is the sharpest check in the set, and it is silent only *while the driver
+refuses it*. If the driver ever allowed it — a regression, a different XL version, a channel
+whose initialisation access had been released — the port would activate, and a normal port on a
+live bus acknowledges (or, at the wrong bitrate, floods error frames) for as long as it takes to
+close. A test that is safe only while it passes is not safe, so that one probe is opt-in and its
+absence is printed rather than silently skipped.
+
+Run on a VN1630A, application channel 1 at 500k and 250k, `--transmit`, 2026-08-23:
+
+```
+modecheck: application channel 1 at 500000, listen-only
+  held  vector:1@500000,silent
+  predicted, normal open : is normal and ports are still open on vector:1 in listen-only mode
+  predicted, other rate  : asks 250000 and ports are still open on vector:1 at 500000
+  predicted, same again  : (no clash)
+  driver refused normal  : Vector channel 1 is already open in listen-only mode by this project
+                           and cannot also be normal …
+  driver refused rate    : Vector channel 1 is already open at a different bitrate by this project …
+  driver allowed sibling : vector:1@500000,silent
+  released, channel free
+modecheck: OK — the driver pins what wire_pin_clash predicts, and releases it
+```
+
+It was worth running for a second reason: the `-1004` message used to name the mode backwards.
+The shim's check is bidirectional and says so, but the V-side text assumed the channel was open
+in *normal* mode — and `--modecheck` holds one *silent*, which is how the mismatch showed. The
+message now derives the direction instead of assuming it.
+
+CROSS-COMPILED FROM WSL, which is how it is run here — `v -os windows -enable-globals -path
+"@vlib|@vmodules|modules" -o vectorcheck.exe cmd/vectorcheck/main.v`, then the `.exe` from a
+Windows-visible directory. WSL's interop launches it as an ordinary Windows process, so it
+reaches `vxlapi64.dll` and the adapter. A Linux build of this tool warns at startup that the
+backend is Windows-only and then runs anyway — on Linux `vector:1` is an ordinary SocketCAN
+name, so what it reports is a missing interface rather than a missing driver.
 
 For PCAN and Kvaser, `cmd/can_smoke` opens a channel and does a TX/RX round trip. Kvaser's
 virtual channels make that possible with nothing plugged in.
