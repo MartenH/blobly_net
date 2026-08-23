@@ -361,7 +361,7 @@ fn (mut app App) retract_emit(seq u64, origin string, epoch u64) {
 		app.trace[i].refused = true
 		// the gcount refund, next to the TX-counter refund and under the same epoch guard:
 		// note_emit counted this frame into the group total before the driver was asked, and
-		// a sustained refusal (bus-off) otherwise grew count and fps as if frames were
+		// a sustained refusal (bus-off) otherwise grew count and held the cycle as if frames were
 		// flowing while the header honestly said TX 0 (codex #143 r2). Only while the row is
 		// still in the ring — the key is rebuilt from it; a retract lands ms after the emit,
 		// so a trimmed row is a busy-bus corner where one count is the honest loss.
