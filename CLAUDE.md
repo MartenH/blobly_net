@@ -72,7 +72,7 @@ docs/                design + platform docs; docs/history.md = archived status l
 
 | module | what |
 |---|---|
-| `transport` | Bus/Channel interface + SocketCAN, PCAN and Vector XL (Windows), UDP software bus. **Bus health** (warning/error-passive/**BUS-OFF**) decoded per backend (`health.v`, pinned to vendor headers by tests) — the Buses panel colors it, the Log narrates transitions. **CAN-FD** (`fd`/`brs`, 64-byte payloads) on SocketCAN + the software buses; the Windows vendor backends refuse FD rather than truncating |
+| `transport` | Bus/Channel interface + SocketCAN, PCAN and Vector XL (Windows), UDP software bus. **Bus health** (warning/error-passive/**BUS-OFF**) decoded per backend (`health.v`, pinned to vendor headers by tests) — the Buses panel colors it, the Log narrates transitions. **CAN-FD** (`fd`/`brs`, 64-byte payloads) on SocketCAN + the software buses; the Windows vendor backends refuse FD rather than truncating. **One wire, one handle** where the driver demands it (`shared.v`): PCANBasic permits a single `CAN_Initialize` per channel per process, and the app opens each wire several times per Start, so `pcan:` opens share a refcounted bus keyed on the wire (the destination WITHOUT its bitrate). Deliberately not applied to `inproc:`/`udp:`/SocketCAN, where a second open is a second *subscriber* and must stay one |
 | `candb` | DBC parse/decode/encode + canonical writer (`dbc_write.v`) |
 | `isotp` | ISO-TP (ISO 15765-2) transport |
 | `uds` | UDS diagnostic client over ISO-TP |
