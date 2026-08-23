@@ -163,6 +163,7 @@ fn C.vgui_table_freeze_top()
 fn C.vgui_table_end()
 fn C.vgui_fps() f32
 fn C.vgui_want_text_input() int
+fn C.vgui_any_item_active() int
 fn C.vgui_key_pressed(int) int
 fn C.vgui_combo(&char, &&char, int, int) int
 
@@ -290,6 +291,13 @@ pub fn fps() f32 {
 // before acting on single-key shortcuts so typing doesn't trigger them.
 pub fn want_text_input() bool {
 	return C.vgui_want_text_input() != 0
+}
+
+// any_item_active is true while some widget holds the keyboard -- including a READ-ONLY text
+// box the user has clicked into, which want_text_input does not report. Pair the two before
+// acting on a raw keypress.
+pub fn any_item_active() bool {
+	return C.vgui_any_item_active() != 0
 }
 
 // key_pressed reports whether the printable key `ch` (A-Z / a-z / 0-9) was pressed this frame

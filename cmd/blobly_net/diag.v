@@ -9,6 +9,7 @@ import vgui
 fn (mut app App) diag_push(line string) {
 	app.mu.lock()
 	app.diag_log << line
+	app.diag_gen++
 	if app.diag_log.len > 200 {
 		app.diag_log = app.diag_log[app.diag_log.len - 200..].clone()
 	}
