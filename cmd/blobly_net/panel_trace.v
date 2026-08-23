@@ -385,9 +385,9 @@ mut:
 	brs    bool
 	rtr    bool
 	count  int
-	// t_ms of the group's OLDEST frame still in the visible ring — the denominator of the fps
-	// column. The ring holds 2000 rows, so this is the rate over the window the reader is
-	// looking at, not over all time: a group that stops sending keeps its last computed rate
+	// t_ms of the group's OLDEST frame still in the visible ring — the base of the `cycle (ms)`
+	// column. The ring holds 2000 rows, so this is the cadence over the window the reader is
+	// looking at, not over all time: a group that stops sending keeps its last computed cycle
 	// until its frames age out, exactly like the count next to it.
 	first_t f64
 	// Any frame in this group that never reached the wire. Taken across the whole group, not
@@ -406,8 +406,8 @@ mut:
 // — with a count that silently adds them together, the very thing this column exists to stop.
 // fd/brs belong here for the same reason ext does (#90: a CAN-FD frame and a classic frame with
 // one id are two messages), and rtr for the same reason again — a remote REQUEST and its data
-// response ride one CAN id BY DESIGN, and merging them fed the fps column intervals from two
-// interleaved streams. ESI is deliberately absent, here AND in the echo identity — see
+// response ride one CAN id BY DESIGN, and merging them fed the `cycle (ms)` column intervals from
+// two interleaved streams. ESI is deliberately absent, here AND in the echo identity — see
 // TraceRow.esi. This list must move in step with wiretap.frame_key (modules/wiretap), which
 // keys the SAME frame-kind distinction for echo claiming: the two agreeing is what keeps the
 // origin column and the grouped rows describing one world. gkey lagged it on rtr for a release.
@@ -489,8 +489,8 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		if r.refused {
 			g.refused = true
 			// the verdict folds in, the METRICS do not: a refused frame was never on the
-			// wire, and counting it into count/fps showed a bus-off group transmitting at
-			// rate while the header said TX 0 (codex #143 r2). last/prev stay too — the
+			// wire, and counting it into count/cycle showed a bus-off group still cycling
+			// while the header said TX 0 (codex #143 r2). last/prev stay too — the
 			// newest-data cells must show what the wire carried, not what it refused.
 			agg[k] = g
 			continue
@@ -498,9 +498,9 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		if g.count > 0 {
 			g.prev = g.last // slide the previous-frame window forward
 		} else {
-			// the fps clock starts at the first ACCEPTED frame: a group whose oldest
+			// the cycle clock starts at the first ACCEPTED frame: a group whose oldest
 			// retained row was refused otherwise carried the whole bus-off interval in its
-			// denominator, understating the rate long after recovery (codex #143 r3)
+			// span, overstating the cycle long after recovery (codex #143 r3)
 			g.first_t = r.t_ms
 		}
 		g.count++
@@ -553,7 +553,9 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		vgui.table_setup_col('flags', 58)
 		vgui.table_setup_col('data', 0)
 		vgui.table_setup_col('count', 60)
-		vgui.table_setup_col('fps', 56)
+		// `cycle (ms)`, parenthesised like the `t (s)` column two tables up — one unit
+		// convention across the trace.
+		vgui.table_setup_col('cycle (ms)', 78)
 		vgui.table_freeze_top()
 		vgui.table_headers()
 		for g in groups {
@@ -619,12 +621,25 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			// all-time total (survives the ring trim); fall back to the window count.
 			total := gcount[k] or { u64(g.count) }
 			vgui.table_cell('${total}')
-			// Rate over the frames the ring still holds: n-1 intervals across the span they
-			// cover. Two frames minimum — a single frame has no interval, and inventing one
-			// from "now" would show a rate for a message that may never come again.
+			// Cycle time over the frames the ring still holds: the span they cover divided by
+			// the n-1 intervals in it. Two frames minimum — a single frame has no interval,
+			// and inventing one from "now" would show a cycle for a message that may never
+			// come again.
+			//
+			// In MILLISECONDS, the unit CAN is specified in: a DBC states GenMsgCycleTime in
+			// ms, so this column is read against that number. It was fps until #150 — the
+			// same measurement inverted, but one decimal of fps is ~1 ms of cycle at 10 Hz and
+			// ~100 ms at 1 Hz, so the resolution collapsed exactly where most body and
+			// diagnostic traffic sits. Two PCAN channels on ONE bus reading `10` and `9.9`
+			// (#149) looked like the channels disagreeing when it was only that rounding.
+			//
+			// AVERAGED over the window, not the last interval alone. A single-interval delta
+			// is the obvious reading of "time since the previous frame" and is the wrong one
+			// here: it is noisy, and while the timestamps are host arrival stamps (#149) it
+			// would largely display our own poll jitter rather than the bus's cadence.
 			span_ms := r.t_ms - g.first_t
 			if g.count >= 2 && span_ms > 0 {
-				vgui.table_cell('${f64(g.count - 1) * 1000.0 / span_ms:.1}')
+				vgui.table_cell('${span_ms / f64(g.count - 1):.1}')
 			} else {
 				vgui.table_cell('-')
 			}
