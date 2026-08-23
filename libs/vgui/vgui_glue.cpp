@@ -59,13 +59,30 @@ static void style_vscode_dark() {
     c[ImGuiCol_WindowBg]             = hx(bg0);
     c[ImGuiCol_ChildBg]              = hx(0, 0.0f);
     c[ImGuiCol_PopupBg]              = hx(bg1);
-    c[ImGuiCol_Border]               = hx(border);
+    // WINDOW EDGES, and child-panel edges with them: ImGui has one Border slot and
+    // vgui_child_begin asks for borders, so this colour outlines both. That is what bounds how
+    // far it can go -- 1.51:1 was too little to separate two stacked windows, and the ~2.9:1 it
+    // would take to clear the 3:1 guideline turns every child panel in the app into a wireframe.
+    // 2.00:1 is the compromise, and it is deliberately the SMALLER half of net#154: the focus
+    // cue above is what answers "which window am I about to click", and an outline cannot.
+    c[ImGuiCol_Border]               = hx(0x4E4E4E);
     c[ImGuiCol_BorderShadow]         = hx(0, 0.0f);
     c[ImGuiCol_FrameBg]              = hx(input);
     c[ImGuiCol_FrameBgHovered]       = hx(inputHov);
     c[ImGuiCol_FrameBgActive]        = hx(sel);
     c[ImGuiCol_TitleBg]              = hx(bg1);
-    c[ImGuiCol_TitleBgActive]        = hx(bg1);
+    // THE FOCUS CUE, and the theme had none. All three title slots were bg1, so a focused window
+    // was drawn exactly like an unfocused one -- and at 1.09:1 against the body the bar itself is
+    // barely a bar. Overlapping floating windows had a 1px 1.51:1 outline between them and
+    // nothing else, which is what "you have to look twice to click the right one" is (net#154).
+    //
+    // `sel`, NOT `accent`, and the difference is one a screenshot settled. ImGui paints a DOCKED
+    // node's tab-bar background from these same slots, so this colour is not the narrow strip on
+    // a floating window it looks like in the palette -- it is a full-width bar across the top of
+    // whichever docked panel has focus. In accent (3.40:1) that is a slab of bright blue and the
+    // loudest thing on screen. `sel` is the palette's dark selection blue: a clear hue shift off
+    // the neutral bar next to it, at a weight a full-width strip can carry.
+    c[ImGuiCol_TitleBgActive]        = hx(sel);
     c[ImGuiCol_TitleBgCollapsed]     = hx(bg1);
     c[ImGuiCol_MenuBarBg]            = hx(bg1);
     c[ImGuiCol_ScrollbarBg]          = hx(bg0);
@@ -93,10 +110,26 @@ static void style_vscode_dark() {
     c[ImGuiCol_PlotHistogramHovered] = hx(accentHov);
     c[ImGuiCol_TextSelectedBg]       = hx(selText);
     c[ImGuiCol_Tab]                  = hx(bg2);
-    c[ImGuiCol_TabHovered]           = hx(0x3F3F46);
+    // HOVER YOU CAN SEE (net#155). At 1.32:1 over the resting tab the old hover was invisible,
+    // which is a shame because hover is exactly when a cue is useful: the pointer is already on
+    // the thing, and nothing else in this GUI says a tab can be dragged. Accent-family, so it
+    // reads as the same "this is interactive" language as the overline below and the docking
+    // preview the drag itself produces.
+    c[ImGuiCol_TabHovered]           = hx(0x0E639C);
     c[ImGuiCol_TabSelected]          = hx(bg0);
     c[ImGuiCol_TabDimmed]            = hx(bg1);
     c[ImGuiCol_TabDimmedSelected]    = hx(bg0);
+    // THE DOCKED HALF OF THE FOCUS CUE. TabSelected and TabDimmedSelected are both bg0 on
+    // purpose -- the VS Code look, where the active tab merges into the pane under it -- so a
+    // dock node looked the same whether it had focus or not, and changing the fills to fix that
+    // would trade one deliberate thing for another. The overline is a separate slot: it marks the
+    // focused node's active tab without touching a single fill.
+    c[ImGuiCol_TabSelectedOverline]  = hx(accent);
+    // TRANSPARENT, as every built-in ImGui style sets it -- and here it is the point rather than
+    // a convention followed. The overline IS the focus cue, so an unfocused node carrying a
+    // faint one of its own weakens exactly the distinction it exists to draw. Present or absent
+    // reads faster than bright or dim.
+    c[ImGuiCol_TabDimmedSelectedOverline] = hx(0, 0.0f);
     c[ImGuiCol_DockingPreview]       = hx(accent, 0.4f);
     c[ImGuiCol_DockingEmptyBg]       = hx(bg0);
     c[ImGuiCol_TableHeaderBg]        = hx(bg1);

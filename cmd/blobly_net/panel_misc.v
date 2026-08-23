@@ -175,6 +175,16 @@ fn draw_menubar(mut app App, rx u64) {
 			vgui.menu_end()
 		}
 		if vgui.menu_begin('View') {
+			// WHERE SOMEBODY LOOKS FOR IT. Docking is one of the more useful things about this
+			// GUI and it is discoverable only by accident: nothing on screen says a panel's tab
+			// is a handle (net#155). The tab hover is now loud enough to suggest it and the drop
+			// preview explains the rest once a drag starts, but neither helps the user who has
+			// not tried. A tooltip on the tab itself is not reachable -- ImGui draws a dock
+			// node's tab bar internally, and we submit no item to hang one on -- so the sentence
+			// goes in the menu that is already about arranging panels, one line above the way
+			// back from a layout gone wrong.
+			vgui.text_dim('drag a panel tab to move, dock or tear it out')
+			vgui.separator()
 			if vgui.menu_item('Reset Layout') {
 				app.reset_layout()
 			}
