@@ -629,12 +629,22 @@ The project format accepts a replay channel:
 
 **It plays.** A `mode: replay` channel is opened at Start like any monitored one and a worker
 pumps the recording onto its bus at the recorded cadence. The **Replay panel** (activity bar
-▸ Rep, or View ▸ Replay) is the transport surface while it runs: one row per playing
-recording, with a progress bar, pause/resume, a seek slider, and speed (0.25×–4×) — commands
-land on the worker within 50 ms, and every bus fed by one recording stays on that one clock. Two keys carry the facts a recording
-cannot supply — `bus:` (which recorded bus feeds this channel; a multi-bus `.mf4` holds several
-and their names are the recording's, not the project's) and `exclude:` (nodes whose messages are
-withheld, resolved through the channel's databases by DBC sender).
+▸ Rep, or View ▸ Replay) is the transport surface while it runs: one row per playing recording,
+with a seek bar that doubles as the position readout, pause/resume, a **loop** tick and speed
+(0.25×–4×) — commands land on the worker within 50 ms, and every bus fed by one recording stays
+on that one clock.
+
+**Loop is armed, not pressed.** Ticking it never does anything by itself: the flag is read only
+when playback reaches the end of the recording, and it decides whether that end wraps to the
+start or stops. So ticking it while paused does nothing until you resume and run out, and
+ticking it on a row that has already finished does nothing at all — that end is behind it, and
+Restart is what moves it. Panel changes are transport-transient, like speed: `loop:` in the
+project is what a Stop/Start restores, and the row says so while the two differ.
+
+Two keys carry the facts a recording cannot supply — `bus:` (which recorded bus feeds this
+channel; a multi-bus `.mf4` holds several and their names are the recording's, not the
+project's) and `exclude:` (nodes whose messages are withheld, resolved through the channel's
+databases by DBC sender).
 
 **Scan fills those keys from facts.** The Configure replay row's **Scan recording** button
 decodes the file off the UI thread and shows what is in it: every bus with its frame count

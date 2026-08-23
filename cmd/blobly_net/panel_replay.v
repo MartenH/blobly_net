@@ -53,6 +53,17 @@ fn draw_replay(mut app App) {
 			app.replay_seek.delete(k)
 		}
 	}
+	if app.replay_loop.len > 0 {
+		mut dead_l := []u64{}
+		for k, _ in app.replay_loop {
+			if k !in toks {
+				dead_l << k
+			}
+		}
+		for k in dead_l {
+			app.replay_loop.delete(k)
+		}
+	}
 	for tok in toks {
 		// snapshot the status under the lock; render from the copy
 		app.mu.lock()
@@ -69,6 +80,7 @@ fn draw_replay(mut app App) {
 		speed := c.speed
 		cfg_speed := c.cfg_speed
 		repeat := c.repeat
+		cfg_repeat := c.cfg_repeat
 		loops := c.loops
 		sent := c.sent
 		failed := c.failed
@@ -79,22 +91,25 @@ fn draw_replay(mut app App) {
 			vgui.text_dim('loading the recording…')
 			continue
 		}
-		loop_txt := if repeat { '  (loop ${loops + 1})' } else { '' }
-		frac := if dur > 0 {
-			f32(pos / dur)
-		} else if st == .finished {
-			f32(1)
-		} else {
-			f32(0)
-		}
-		vgui.progress(frac, '${pos:.1f} / ${dur:.1f} s${loop_txt}')
+		// No pass number on a finished group: there is no current pass, and the count is the
+		// one it ended on -- "(loop 2)" on something that is not playing reads as a claim that
+		// it looped. The status text beside it already says finished.
+		loop_txt := if repeat && st != .finished { '  (loop ${loops + 1})' } else { '' }
+		// ONE bar, not two. This was a full-width read-only progress bar with the seek slider
+		// beneath it -- both spanning 0..dur, both reporting the position, so the panel drew the
+		// same number twice (net#158). The slider is the half that survives, because it is the
+		// half that can also be dragged; it inherits the progress bar's caption through the
+		// FORMAT string, which ImGui prints centred over the grab. Only the position is a slider
+		// value here: the duration and the loop counter are already-formatted literal text, and
+		// neither can contain a '%' that printf would take for a second conversion.
+		//
 		// seek: the DRAGGED value is latched across frames, because ImGui does not write the
 		// slider's backing variable on the release frame — a per-frame local re-seeded from
 		// the live position made every seek a jump to where playback already was. The latch
 		// holds the last value the drag reported; release commits it, once.
 		mut seek_v := app.replay_seek[tok] or { f32(pos) }
-		vgui.set_next_item_width(300 * app.ui_scale)
-		if vgui.slider_f('##seek${tok}', &seek_v, 0, f32(dur), '%.1f s') {
+		vgui.set_next_item_width(-1.0) // full width, as the progress bar it replaces was
+		if vgui.slider_f('##seek${tok}', &seek_v, 0, f32(dur), '%.1f / ${dur:.1f} s${loop_txt}') {
 			app.replay_seek[tok] = seek_v
 		}
 		if vgui.is_item_deactivated_after_edit() {
@@ -107,7 +122,6 @@ fn draw_replay(mut app App) {
 			app.mu.unlock()
 		}
 		if st in [player.State.playing, player.State.paused, player.State.finished] {
-			vgui.same_line()
 			// a TARGET state, not a toggle — two clicks in one worker tick must not cancel
 			// out while the label lags the (<=50ms late) published state
 			lbl := match st {
@@ -124,6 +138,41 @@ fn draw_replay(mut app App) {
 				}
 				app.mu.unlock()
 			}
+		}
+		// Loop is armed here and never acts here. The player reads the flag only when a pass
+		// runs out, so ticking it while paused -- or on a group that has already finished --
+		// does nothing at all, by design (net#157): it decides the NEXT run-out, and nothing
+		// else.
+		//
+		// Rendered from the LATCHED target, not from the published `repeat`. The worker
+		// publishes before it applies, so a click took up to two ticks (~100 ms) to come back
+		// -- and a checkbox that shows the old value is not merely late, it is wrong: a second
+		// click meant to undo the first read the stale box, computed the same target again, and
+		// the undo vanished (codex #160 r2). The latch clears when the worker's published value
+		// agrees, so it holds intent only while a command is genuinely in flight. This is the
+		// same reason replay_seek exists, one control over.
+		vgui.same_line()
+		if pend := app.replay_loop[tok] {
+			if pend == repeat {
+				app.replay_loop.delete(tok) // acknowledged — published truth takes over again
+			}
+		}
+		shown_rep := app.replay_loop[tok] or { repeat }
+		want_rep := vgui.checkbox('loop##${tok}', shown_rep)
+		if want_rep != shown_rep {
+			app.replay_loop[tok] = want_rep
+			app.mu.lock()
+			if mut cc := app.replay_ctls[tok] {
+				cc.want_repeat = if want_rep { i8(1) } else { i8(0) }
+			}
+			app.mu.unlock()
+		}
+		// The note follows the box, not the wire: it belongs to the control and would otherwise
+		// appear and disappear a tick out of step with the tick it describes.
+		if shown_rep != cfg_repeat {
+			vgui.same_line()
+			cfg_lbl := if cfg_repeat { 'on' } else { 'off' }
+			vgui.text_dim('(configured: loop ${cfg_lbl} — restored on Stop/Start)')
 		}
 		vgui.same_line()
 		failed_txt := if failed > 0 { '  ·  ${failed} FAILED' } else { '' }

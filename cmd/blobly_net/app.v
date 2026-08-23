@@ -105,6 +105,12 @@ mut:
 	// variable on the release frame, so a per-frame local re-seeded from the live position
 	// committed "seek to where you already are" on every release.
 	replay_seek map[u64]f32
+	// The loop checkbox's pending target, latched per group until the worker publishes it.
+	// A checkbox states a VALUE, so rendering it from the published `repeat` while a command is
+	// in flight showed the old one for up to two worker ticks -- and a second click meant to
+	// undo the first read that stale box and re-sent the SAME target, so the undo was swallowed
+	// (codex #160 r2). GUI-thread state, like replay_seek above and pruned beside it.
+	replay_loop map[u64]bool
 	// Scan results for the Configure replay row, keyed by channel index — index-bound display
 	// state, dropped by drop_index_bound_ui() at every event that shifts indices. Under mu: the
 	// scan worker fills an entry from its thread.
