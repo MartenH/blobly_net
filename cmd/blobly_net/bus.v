@@ -28,9 +28,18 @@ struct Chan {
 	replay_speed   f64 = 1.0
 	replay_loop    bool
 mut:
-	enabled   bool
-	rx        u64
-	running   bool
+	enabled bool
+	rx      u64
+	// When traffic first and last reached this wire, in the trace's clock (App.since_ms), and
+	// how many frames that covers. Enough to answer "has this bus gone quiet, and for how
+	// long?" without touching the trace: the ring is capped and filtered, and a bus is silent
+	// whether or not its rows are still on screen. rx_first/rx_seen are the cadence — mean gap
+	// is (rx_last - rx_first) / (rx_seen - 1) — and rx_seen is separate from `rx` because that
+	// counter survives across a Clear and these must reset with the measurement.
+	rx_first f64
+	rx_last  f64
+	rx_seen  u64
+	running  bool
 	spawning  bool // rx_loop spawned but its bus not open yet (double-click guard)
 	link_down bool // real CAN iface is administratively DOWN (bound but can't tx/rx)
 	// The controller's fault ladder, from the backend's own driver (transport.BusHealth) —

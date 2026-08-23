@@ -58,6 +58,60 @@ fn is_stale(age_ms f64, expected_ms f64) bool {
 	return age_ms > stale_threshold_ms(expected_ms)
 }
 
+// --- the WIRE's verdict ---------------------------------------------------------------
+//
+// Per message is the evidence; per bus is the answer. Pulling one connector on the bench put
+// STALE on five rows with the identical age — five statements of one fact, and the fact
+// itself ("CAN1 went quiet 45 s ago") stated nowhere.
+//
+// Measured on the WIRE, not by aggregating the messages on it. That is not a shortcut: a bus
+// is silent whether or not its rows are still in the trace ring, which is capped and filtered,
+// and the wire's own first/last/count are three fields the RX loop already has in hand. It
+// also means this needs no access to the trace at all, so the toolbar and the Buses panel can
+// state it without the trace panel being open.
+
+// quiet_ms is how long this wire has been silent, in ms — or 0 when it is not quiet.
+//
+// The threshold is the wire's own mean gap between frames, times the same factor a message
+// gets, under the same floor. A bus carrying five messages at 100 ms has a mean gap of 20 ms,
+// so the floor is what actually decides there — which is right: 500 ms of total silence on a
+// bus that has never been silent that long IS the event, and waiting three mean gaps (60 ms)
+// would fire on one late frame.
+fn (app &App) quiet_ms(c Chan) f64 {
+	if !app.staleness_live() || !c.running {
+		return 0
+	}
+	// Same eligibility as a message: a wire has to have been talking before its silence means
+	// anything. A bus that never carried traffic is not quiet, it is unused — and saying
+	// otherwise about a correctly-configured listen-only wire is how an indicator gets ignored.
+	if c.rx_seen < stale_min_samples {
+		return 0
+	}
+	span := c.rx_last - c.rx_first
+	mean_gap := if span > 0 { span / f64(c.rx_seen - 1) } else { f64(0) }
+	age := app.since_ms() - c.rx_last
+	if age > stale_threshold_ms(mean_gap) {
+		return age
+	}
+	return 0
+}
+
+// quietest_wire names the wire that has been silent longest, with its silence in ms (0 = none
+// is quiet). One line for the toolbar: with several buses down, the worst one is the headline
+// and the Buses panel carries the rest.
+fn (app &App) quietest_wire() (string, f64) {
+	mut worst := f64(0)
+	mut name := ''
+	for c in app.chans {
+		q := app.quiet_ms(c)
+		if q > worst {
+			worst = q
+			name = c.name
+		}
+	}
+	return name, worst
+}
+
 // stale_age is how long this group has been silent, in ms — or 0 when it is not stale, so the
 // caller has one call to make and one thing to test. The cadence it is judged against is the
 // database's if there is one, otherwise the one this group has actually been keeping, which is

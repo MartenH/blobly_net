@@ -415,6 +415,15 @@ fn draw_buses(mut app App, chans []Chan) {
 			vgui.text_colored(r, g, b, label)
 			vgui.same_line()
 			vgui.text('${c.name}  ${c.iface}  [${c.mode}]  RX ${c.rx}')
+			// Silence, per wire, next to the row it belongs to. The ladder colour to the left
+			// cannot carry this: a listening channel whose cable is pulled reports a perfectly
+			// healthy bus, because CAN has no link detection and an unplugged wire is
+			// indistinguishable from an idle one (#156).
+			qms := app.quiet_ms(c)
+			if qms > 0 {
+				vgui.same_line()
+				vgui.text_colored(230, 140, 60, 'quiet ${qms / 1000:.0f}s')
+			}
 			// system awareness: when a system.toml is loaded, name the ECUs that sit on
 			// this bus — the channel row alone doesn't say WHO is on the wire. The system
 			// bus is matched by its interface (system [bus.x].interface == the channel's).

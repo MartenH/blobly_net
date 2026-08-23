@@ -747,6 +747,15 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		if !ours {
 			a.chans[ci].rx++
 			a.rx++
+			// Cadence of the WIRE, for the quiet-bus verdict (stale.v). Stamped from the same
+			// `ours` branch as the counter, and for the same reason: our own echo is not the
+			// bus talking, and counting it would keep a silent wire looking alive for as long
+			// as anything on this host kept transmitting into it.
+			if a.chans[ci].rx_seen == 0 {
+				a.chans[ci].rx_first = t_ms
+			}
+			a.chans[ci].rx_last = t_ms
+			a.chans[ci].rx_seen++
 		}
 		a.mu.unlock()
 		now := time.ticks()

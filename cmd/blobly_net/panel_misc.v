@@ -276,6 +276,14 @@ fn draw_toolbar(mut app App, rx u64, txs string) {
 			vgui.same_line()
 			vgui.text_colored(r, g, b, '· ${wire} ${transport.health_name(h)}')
 		}
+		// A wire that has gone SILENT, which the ladder above cannot report: a listening
+		// channel whose cable is pulled sees an idle bus, because CAN has no link detection.
+		// This is the only statement of it an operator gets without reading the trace.
+		qname, qms := app.quietest_wire()
+		if qms > 0 {
+			vgui.same_line()
+			vgui.text_colored(230, 140, 60, '· ${qname} quiet ${qms / 1000:.0f}s')
+		}
 	}
 	vgui.same_line()
 	// Unsaved FILE-tab text counts as modified too. It lives in its own buffer, so without this
