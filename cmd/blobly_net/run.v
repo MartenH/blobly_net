@@ -100,6 +100,33 @@ fn (app &App) dest_is_read_locked(iface string) bool {
 	return false
 }
 
+// runtime_rows is app.chans in the shape modules/project's shared policies take. Extracted
+// because there are two of them now -- the destination conflicts below and the listen-only wire
+// list -- and both must see the SAME rows: the runtime set, which a live enable/disable moves
+// without touching the file.
+fn (app &App) runtime_rows() []project.Channel {
+	mut rows := []project.Channel{}
+	for c in app.chans {
+		rows << project.Channel{
+			name:        c.name
+			adapter:     c.adapter
+			iface:       c.iface
+			typ:         c.typ
+			bitrate:     c.bitrate
+			listen_only: c.listen_only
+			enabled:     c.enabled
+		}
+	}
+	return rows
+}
+
+// push_listen_only republishes which wires refuse to transmit. Called wherever the runtime
+// channel set changes -- a rebuild, and every live enable/disable -- because the marks are
+// consulted per send, so a stale list is a wire transmitting that was ticked silent.
+fn (app &App) push_listen_only() {
+	project.apply_listen_only(app.runtime_rows())
+}
+
 // destination_conflict asks project.destination_conflicts about the rows as they stand.
 //
 // ONE POLICY, and this is its third home: the GUI had its own mode check and its own rate check,
@@ -108,18 +135,7 @@ fn (app &App) dest_is_read_locked(iface string) bool {
 // script and the diagnostic panel can all make one talk — the GUI kept the old reading and the
 // two front ends disagreed about the same project again. There is nothing here left to drift.
 fn (app &App) destination_conflict() ?string {
-	mut rows := []project.Channel{}
-	for c in app.chans {
-		rows << project.Channel{
-			name:        c.name
-			adapter:     c.adapter
-			iface:       c.iface
-			bitrate:     c.bitrate
-			listen_only: c.listen_only
-			enabled:     c.enabled
-		}
-	}
-	problems := project.destination_conflicts(rows)
+	problems := project.destination_conflicts(app.runtime_rows())
 	if problems.len == 0 {
 		return none
 	}

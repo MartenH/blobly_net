@@ -974,7 +974,7 @@ fn test_apply_listen_only_registers_enabled_can_rows_only() {
 			},
 		]
 	}
-	p.apply_listen_only()
+	apply_listen_only(p.channels)
 	assert transport.is_listen_only('inproc:lo_on')
 	assert !transport.is_listen_only('inproc:lo_off'), 'a disabled row silenced a wire'
 	assert !transport.is_listen_only('inproc:lo_plain2')
@@ -990,7 +990,7 @@ fn test_apply_listen_only_registers_enabled_can_rows_only() {
 			},
 		]
 	}
-	next.apply_listen_only()
+	apply_listen_only(next.channels)
 	assert !transport.is_listen_only('inproc:lo_on')
 	transport.clear_listen_only()
 }

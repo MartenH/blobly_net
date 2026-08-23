@@ -77,7 +77,7 @@ fn main() {
 	// Which wires may transmit, through the same call the GUI makes. The runner honoured
 	// listen-only nowhere before #117: `bus.send` from a script reached the wire whatever the
 	// project said, and a simulated node on a silenced row transmitted at its own cadence.
-	proj.apply_listen_only()
+	project.apply_listen_only(proj.channels)
 	for ch in proj.channels {
 		if !ch.enabled {
 			continue

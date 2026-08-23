@@ -403,24 +403,19 @@ pub fn (c Channel) iface_with_bitrate() string {
 	return base + mode
 }
 
-// apply_listen_only pushes this project's listen-only marks into the transport table, replacing
-// whatever the previous project left in it.
+// apply_listen_only publishes which wires refuse to transmit, from the rows AS THEY STAND.
 //
-// ONE function, called by every front end that runs a project -- the GUI when it rebuilds, and
-// the headless Lua runner -- because the alternative is each of them deciding separately which
-// wires may transmit. That is the shape issue #117 had: the flag was honoured in exactly one
-// emitter out of eight, while the checkbox's tooltip promised all of them.
+// Takes rows rather than a Project for the reason destination_conflicts does, and the GUI's
+// comment there says it best: one policy, and the front ends must not each keep their own
+// reading of it. The GUI passes its RUNTIME channel set -- a bus enabled or disabled from the
+// Buses panel mid-run never touches the file, so a version reading p.channels would publish a
+// wire list the run had already moved past. The headless runner passes the file's.
 //
-// Rebuilt wholesale rather than patched. A channel that was unticked, renamed, retargeted or
-// removed must not leave a wire silenced behind it, and rebuilding is the only version of that
-// with no path to get wrong.
-//
-// The address registered is the one the bus will be OPENED with (iface_with_bitrate), not the
-// stored spelling: for Vector those differ -- the flag adds `,silent` and the rate lands between
-// them -- and a mark filed under a spelling nobody opens is a mark that never fires.
-pub fn (p Project) apply_listen_only() {
+// Rebuilt wholesale and swapped in one locked step. A channel unticked, renamed, retargeted or
+// removed must not leave a wire silenced behind it.
+pub fn apply_listen_only(chs []Channel) {
 	mut quiet := []string{}
-	for c in p.channels {
+	for c in chs {
 		// ENABLED ROWS DECIDE, the rule bitrate_iface already follows. A row switched off states
 		// nothing about the wire -- and destination_conflicts skips disabled rows too, so a
 		// disabled listen-only row silencing an enabled sibling would be a contradiction that

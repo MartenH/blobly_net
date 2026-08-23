@@ -113,7 +113,12 @@ mut:
 	iface string
 }
 
-fn (mut s SilentBus) send(_ CanFrame) ! {
+fn (mut s SilentBus) send(frame CanFrame) ! {
+	// ASKED NOW, not at open. See silenced() below for why the answer is not cached.
+	if !is_listen_only(s.iface) {
+		s.inner.send(frame)!
+		return
+	}
 	return error('${s.iface}: listen-only — nothing is transmitted on this wire')
 }
 
@@ -129,17 +134,20 @@ fn (mut s SilentBus) health() BusHealth {
 	return s.inner.health()
 }
 
-// silenced wraps a freshly opened bus when its wire is marked. `open` is the only caller, and
-// that is the point: it is the one door every bus in the process comes through.
+// silenced wraps every bus `open` hands out. ALWAYS, and the decision is deferred to the send.
 //
-// The wrapper is OUTSIDE any backend, so it costs the vendor backends nothing and applies to
-// the ones that cannot do it in hardware. Vector still gets true transceiver silence from
-// `,silent` in its address; this stops the APPLICATION transmitting, which is the half every
-// backend can keep.
+// It used to wrap only wires marked at open time, which reads as the cheaper thing and is a
+// different promise: it freezes the policy into the handle. Everything that changes the marks
+// afterwards then cannot reach a bus that is already open -- enabling a listen-only row mid-run
+// gives its fresh taps a writable bus, disabling one leaves the running taps refusing, and a Lua
+// script (explicitly allowed to outlive Stop, holding its bus across a project edit) keeps
+// transmitting on a wire the operator has since ticked silent. All three are the same bug
+// (codex #164 r1, two P1s), and asking per send is the only version with no stale copy in it.
+//
+// The cost is one map read behind an uncontended mutex per frame. The replay dispatcher already
+// takes an app-wide lock per frame for a comparable reason and records the arithmetic: tens of
+// nanoseconds against a send, on a path already doing a syscall.
 fn silenced(iface string, b Bus) Bus {
-	if !is_listen_only(iface) {
-		return b
-	}
 	return &SilentBus{
 		inner: b
 		iface: iface

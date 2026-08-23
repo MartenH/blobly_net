@@ -215,6 +215,12 @@ fn draw_buses(mut app App, chans []Chan) {
 					continue
 				}
 				app.chans[i].enabled = new
+				// The wire list is derived from the runtime rows and consulted per SEND, so it has
+				// to move with this toggle: a listen-only row enabled here would otherwise open its
+				// taps against a table that never learned about it, and a disabled one would leave
+				// its mark silencing a normal row enabled onto the same wire afterwards. Before the
+				// taps below, and while the lock is held, so no open can read a stale list.
+				app.push_listen_only()
 				// enabling a channel mid-run spawns its RX thread; disabling lets it exit.
 				// `spawning` is the double-click guard — without one, a second click inside the
 				// open window starts a second rx_loop and every frame is logged twice. It is

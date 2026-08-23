@@ -17,22 +17,26 @@ fn test_unmarked_wire_transmits() {
 
 fn test_marked_wire_refuses_to_send_but_still_receives() {
 	clear_listen_only()
-	// the LISTENER is the marked one; its peer is not, so there is something to hear
-	set_listen_only('inproc:lo_silent', true)
 	mut quiet := open('inproc:lo_silent')!
 	defer { quiet.close() }
-	clear_listen_only()
-	mut talker := open('inproc:lo_silent')!
-	defer { talker.close() }
+	mut peer := open('inproc:lo_silent')!
+	defer { peer.close() }
 
 	set_listen_only('inproc:lo_silent', true)
 	if _ := quiet.send(CanFrame{ id: 0x200, data: [u8(2)] }) {
 		assert false, 'a listen-only wire transmitted'
 	}
-	// ... and it is still a monitor: the flag stops us talking, not listening
-	talker.send(CanFrame{ id: 0x201, data: [u8(3)] })!
+	// SILENCE IS A PROPERTY OF THE WIRE, not of the handle that was marked: the peer is on the
+	// same bus and is refused too, which is the whole point -- one transceiver, one mode.
+	if _ := peer.send(CanFrame{ id: 0x201, data: [u8(3)] }) {
+		assert false, 'a second handle on a silenced wire transmitted'
+	}
+	// ... and it is still a monitor throughout. The flag stops us talking, not listening.
+	clear_listen_only()
+	peer.send(CanFrame{ id: 0x202, data: [u8(4)] })!
+	set_listen_only('inproc:lo_silent', true)
 	got := quiet.recv(200)!
-	assert got.id == 0x201
+	assert got.id == 0x202
 	clear_listen_only()
 }
 
@@ -78,24 +82,26 @@ fn test_clear_releases_every_wire() {
 	assert got.id == 0x300
 }
 
-// Unmarking is not the same as never marking: a row unticked while stopped must transmit on the
-// next Start, and only a bus opened AFTER the change can reflect it.
-fn test_unmark_restores_transmission_on_the_next_open() {
+// The mark is consulted PER SEND, so a handle that is already open follows it in both
+// directions. This is the guarantee that makes a policy change reach a Lua script holding a bus
+// across Stop, and a tap opened before its row was ticked (codex #164 r1).
+fn test_an_open_handle_follows_the_mark_both_ways() {
 	clear_listen_only()
-	set_listen_only('inproc:lo_toggle', true)
-	mut quiet := open('inproc:lo_toggle')!
-	if _ := quiet.send(CanFrame{ id: 0x400, data: [u8(5)] }) {
-		assert false, 'a listen-only wire transmitted'
-	}
-	quiet.close()
-	set_listen_only('inproc:lo_toggle', false)
-	mut loud := open('inproc:lo_toggle')!
-	defer { loud.close() }
+	mut b := open('inproc:lo_toggle')!
+	defer { b.close() }
 	mut ear := open('inproc:lo_toggle')!
 	defer { ear.close() }
-	loud.send(CanFrame{ id: 0x401, data: [u8(6)] })!
-	got := ear.recv(200)!
-	assert got.id == 0x401
+	b.send(CanFrame{ id: 0x400, data: [u8(5)] })! // opened unmarked: transmits
+	assert ear.recv(200)!.id == 0x400
+
+	set_listen_only('inproc:lo_toggle', true) // marked AFTER the open
+	if _ := b.send(CanFrame{ id: 0x401, data: [u8(6)] }) {
+		assert false, 'an already-open handle ignored a mark set after it was opened'
+	}
+
+	set_listen_only('inproc:lo_toggle', false) // and released, on the same handle
+	b.send(CanFrame{ id: 0x402, data: [u8(7)] })!
+	assert ear.recv(200)!.id == 0x402
 	clear_listen_only()
 }
 
