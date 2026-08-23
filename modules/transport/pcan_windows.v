@@ -20,7 +20,7 @@ fn C.ct_pcan_load() int
 fn C.ct_pcan_init(u16, u16) u32
 fn C.ct_pcan_uninit(u16) u32
 fn C.ct_pcan_write(u16, u32, u8, u8, &u8) u32
-fn C.ct_pcan_read(u16, &u32, &u8, &u8, &u8) int
+fn C.ct_pcan_read(u16, &u32, &u8, &u8, &u8) u32
 fn C.ct_pcan_status(u16) u32
 fn C.ct_pcan_condition(u16) int
 
@@ -117,8 +117,11 @@ pub fn (mut b PcanBus) recv(timeout_ms int) !CanFrame {
 		mut mt := u8(0)
 		mut ln := u8(0)
 		mut data := [8]u8{}
-		r := C.ct_pcan_read(b.channel, &id, &mt, &ln, &data[0])
-		if r == 0 {
+		// The status word decides, and the fault ladder in it is NOT a failure — see
+		// pcan_read_verdict, which is where that rule lives and where a test can reach it.
+		st := C.ct_pcan_read(b.channel, &id, &mt, &ln, &data[0])
+		verdict := pcan_read_verdict(st)
+		if verdict == .frame {
 			if mt & pcan_msg_status != 0 {
 				continue // PCAN status/error frame, not a data frame
 			}
@@ -133,10 +136,13 @@ pub fn (mut b PcanBus) recv(timeout_ms int) !CanFrame {
 				data:     out
 			}
 		}
-		if r < 0 {
-			return error('CAN_Read failed (${-r})')
+		if verdict == .failed {
+			// Hex, because every PCANBasic status is written in hex in the vendor's header and
+			// in ours: the bench read "CAN_Read failed (8)" and had to go looking for what 8
+			// was. The health poll names the ladder in words; this names the raw word.
+			return error('CAN_Read failed (0x${st:X})')
 		}
-		// r == 1: receive queue empty — poll until the deadline.
+		// .empty: receive queue empty — poll until the deadline.
 		if timeout_ms >= 0 && time.ticks() >= deadline {
 			return error('timeout')
 		}
