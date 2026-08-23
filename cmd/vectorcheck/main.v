@@ -35,6 +35,7 @@ struct Opts {
 	bitrate    int
 	seconds    int
 	transmit   bool
+	modecheck  bool
 }
 
 // nonempty is `?string` sugar so an unloaded library prints nothing rather than a blank label.
@@ -271,6 +272,9 @@ fn usage() {
 	eprintln('  --list      application channels with hardware assigned in Vector Hardware Manager')
 	eprintln('  --probe     what the DRIVER says is present (hwType/hwIndex/hwChannel)')
 	eprintln('  --selftest  prove the backend on Vector VIRTUAL channels — touches no real bus')
+	eprintln('  --modecheck prove that an OPEN PORT pins its channel and that the app knows it')
+	eprintln('              (issue #165). Listen-only throughout: the one normal open it tries')
+	eprintln('              is the one the driver has to refuse.')
 	eprintln('  --assign N  point --channel at the hardware on row N of --probe, then listen')
 	eprintln('  --release N clear application channel N — undo an assignment this tool made')
 	eprintln('  --pair A,B  TWO channels wired together: send on A, receive on B.')
@@ -331,6 +335,12 @@ fn parse(args []string) !Opts {
 				o = Opts{
 					...o
 					selftest: true
+				}
+			}
+			'--modecheck' {
+				o = Opts{
+					...o
+					modecheck: true
 				}
 			}
 			'--transmit' {
@@ -451,6 +461,13 @@ fn main() {
 	}
 	if o.selftest {
 		selftest() or {
+			eprintln('vectorcheck: ${err}')
+			exit(1)
+		}
+		return
+	}
+	if o.modecheck {
+		modecheck(o) or {
 			eprintln('vectorcheck: ${err}')
 			exit(1)
 		}
@@ -624,6 +641,116 @@ fn main() {
 //
 // It writes only our own application's channel assignments (`blobly_net`), never another
 // application's, and never the physical adapter's.
+// modecheck — what an OPEN PORT does to its channel, and whether the app knows before it tries.
+// Issue #165.
+//
+// THE THING NO OTHER TEST CAN REACH. The XL driver fixes a channel's output mode and bitrate
+// when the first port configures it, and will not reconfigure while any port on that channel is
+// still open — so `transport.wire_pin_clash` predicts a refusal that only this driver can
+// deliver. modules/transport/pinned_test.v checks the bookkeeping over `inproc:` buses because
+// that is all a Linux machine has; what it cannot check is that the prediction is TRUE. That is
+// this, and it wants silicon.
+//
+// The sequence is the bug's, with the disabled row's stale tap standing in for itself: a port is
+// open, every row that opened it is gone as far as the model is concerned, and something asks
+// for the other mode.
+//
+// SILENT THROUGHOUT, and that is not a detail — this is meant to be run against the live bus the
+// adapter is already wired to. The port it holds open is listen-only, so the transceiver never
+// acknowledges. The one normal open it attempts is the one the driver must REFUSE; if the driver
+// were to allow it, that is the test failing, and it is closed immediately.
+fn modecheck(o Opts) ! {
+	ch := if o.channel > 0 { o.channel } else { 1 }
+	silent := 'vector:${ch}@${o.bitrate},silent'
+	normal := 'vector:${ch}@${o.bitrate}'
+	// A RATE THE PARSER ACCEPTS. Half the given one falls outside parse_vector_spec's
+	// 5000..1000000 range below --bitrate 10000, and an address that will not parse makes
+	// wire_pin_clash answer '' — which this test would then report as a failure that never
+	// happened, with the driver probe beside it passing vacuously on the same unopenable string.
+	alt_rate := if o.bitrate == 250000 { 500000 } else { 250000 }
+	other_rate := 'vector:${ch}@${alt_rate},silent'
+	println('modecheck: application channel ${ch} at ${o.bitrate}, listen-only')
+
+	pre := transport.wire_pin_clash(normal)
+	if pre != '' {
+		return error('channel ${ch} is pinned before this test opened anything: ${pre}')
+	}
+
+	mut held := transport.open(silent) or { return error('could not open ${silent}: ${err}') }
+	println('  held  ${silent}')
+
+	mut failures := []string{}
+	// 1. The app's answer, which is the one the Buses panel acts on.
+	mode_clash := transport.wire_pin_clash(normal)
+	rate_clash := transport.wire_pin_clash(other_rate)
+	agrees := transport.wire_pin_clash(silent)
+	println('  predicted, normal open : ${said(mode_clash)}')
+	println('  predicted, other rate  : ${said(rate_clash)}')
+	println('  predicted, same again  : ${said(agrees)}')
+	if mode_clash == '' {
+		failures << 'a normal open was predicted to be fine while a silent port held the channel'
+	}
+	if rate_clash == '' {
+		failures << 'a different bitrate was predicted to be fine while a port held the channel'
+	}
+	if agrees != '' {
+		failures << 'an open matching the held port was predicted to clash: ${agrees}'
+	}
+
+	// 2. What the DRIVER actually does with the same three requests. This is the half that
+	//    cannot be faked, and the reason the numbers above are worth anything.
+	if mut b := transport.open(normal) {
+		b.close()
+		failures << 'the driver ALLOWED a normal open on a channel held silent — the mode is not pinned the way #165 describes, and this guard is solving a problem that is not there'
+	} else {
+		println('  driver refused normal  : ${err}')
+	}
+	if mut b := transport.open(other_rate) {
+		b.close()
+		failures << 'the driver ALLOWED a second bitrate on a channel already configured'
+	} else {
+		println('  driver refused rate    : ${err}')
+	}
+	// A second port asking for what the channel already IS must still work: this is every
+	// ordinary run, where a monitor and its transmit taps all open the same wire.
+	mut sibling := transport.open(silent) or {
+		failures << 'a second port matching the held configuration was refused: ${err}'
+		held.close()
+		return report_modecheck(failures)
+	}
+	println('  driver allowed sibling : ${silent}')
+
+	// 3. RELEASE. The prediction has to go away when the ports do, or the panel refuses forever.
+	sibling.close()
+	if transport.wire_pin_clash(normal) == '' {
+		failures << 'the channel read as free while one port was still open on it'
+	}
+	held.close()
+	left := transport.wire_pin_clash(normal)
+	if left != '' {
+		failures << 'every port closed and the channel still read as pinned: ${left}'
+	} else {
+		println('  released, channel free')
+	}
+	return report_modecheck(failures)
+}
+
+// said prints an empty prediction as words, so a blank line cannot be mistaken for a missing one.
+fn said(clash string) string {
+	return if clash == '' { '(no clash)' } else { clash }
+}
+
+fn report_modecheck(failures []string) ! {
+	if failures.len == 0 {
+		println('modecheck: OK — the driver pins what wire_pin_clash predicts, and releases it')
+		return
+	}
+	for f in failures {
+		eprintln('  FAIL ${f}')
+	}
+	return error('${failures.len} modecheck failure(s)')
+}
+
 fn selftest() ! {
 	mut virt := []transport.VectorChannel{}
 	for c in transport.vector_channels() {

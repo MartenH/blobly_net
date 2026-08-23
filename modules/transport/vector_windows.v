@@ -140,7 +140,14 @@ pub fn open_vector(spec string) !&VectorBus {
 	// These two mean the channel is already open IN THIS PROCESS with different settings, which
 	// is a project asking one wire to be two things rather than anything about the hardware.
 	if rc == -1004 {
-		return error('Vector channel ${s.channel} is already open in normal mode by this project — it cannot also be listen-only; make every channel on this wire agree')
+		// WHICHEVER WAY ROUND, derived rather than assumed. The shim's check is bidirectional
+		// and says so; this message was not, and named the mode backwards for half the cases it
+		// covers — observed on a VN1630A by `--modecheck`, which holds a channel LISTEN-ONLY and
+		// was told the channel was open in normal mode. rc -1004 means only that the channel's
+		// mode differs from the one asked for, so the channel is in the other one.
+		has := if s.silent { 'normal' } else { 'listen-only' }
+		want := if s.silent { 'listen-only' } else { 'normal' }
+		return error('Vector channel ${s.channel} is already open in ${has} mode by this project and cannot also be ${want} — the configuration belongs to the ports open on this channel, so make every channel on this wire agree, or Stop and Start to change it')
 	}
 	if rc == -1006 {
 		return error('Vector: more than 64 channels are already open in this process — refusing rather than opening one whose later ports would all be denied')

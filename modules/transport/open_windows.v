@@ -11,7 +11,11 @@ module transport
 // wrapper is applied to whatever the backend returns, so no emitter can route around it
 // (issue #117). See listen.v.
 pub fn open(iface string) !Bus {
-	return silenced(iface, open_raw(iface)!)
+	// TWO WRAPPERS, one choke point. `silenced` refuses what THIS PROCESS has decided must not
+	// transmit and asks per send (listen.v); `track_pinned` records what the DRIVER has been
+	// configured to, for the wires whose mode a live port fixes (pinned.v, issue #165). The
+	// first is a policy we can change at any moment, the second a fact we can only observe.
+	return silenced(iface, track_pinned(iface, open_raw(iface)!))
 }
 
 fn open_raw(iface string) !Bus {
