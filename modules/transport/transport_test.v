@@ -53,14 +53,23 @@ fn test_only_the_vendor_backends_carry_a_bitrate_suffix() {
 	}
 }
 
-// And the same distinction decides whether an echo can be expected at all.
-fn test_the_vendor_backends_do_not_echo_our_sends() {
+// And a related distinction decides whether an echo can be expected at all — RELATED, not the
+// same one: `vendor_iface` says who opens the wire, and the three vendors it names do not agree
+// about echoes. Reading one answer off the other is what #139 was.
+fn test_which_backends_echo_our_own_sends() {
 	assert echoes_own_sends('vcan0')
 	assert echoes_own_sends('inproc:CAN1')
 	assert echoes_own_sends('pcan0'), 'SocketCAN echoes, whatever the interface happens to be called'
-	// The vendor backends exist only on Windows — open_linux.v has no pcan:/kvaser: branch, so
-	// there such a name is an ordinary SocketCAN interface and DOES echo. Asserting otherwise
-	// would encode a Windows-only truth as a universal one.
+	// VECTOR echoes, on every platform, because it is the DRIVER that does it: we open separate
+	// ports on one XL channel and it hands a frame from one to the others with no TX flag. That
+	// is not a fact about the host, so unlike pcan:/kvaser: below it is not platform-gated.
+	assert echoes_own_sends('vector:1')
+	assert echoes_own_sends('vector:61@500000'), 'the bitrate suffix does not change the driver'
+	assert echoes_own_sends('VECTOR:app01'), 'the prefix decides, whatever its case'
+	assert echoes_own_sends('vector:1,silent'), 'a silenced wire still echoes what it does send'
+	// PCAN and Kvaser do NOT, and they exist only on Windows — open_linux.v has no pcan:/kvaser:
+	// branch, so there such a name is an ordinary SocketCAN interface and DOES echo. Asserting
+	// otherwise would encode a Windows-only truth as a universal one.
 	$if windows {
 		assert !echoes_own_sends('pcan:PCAN_USBBUS1@500000')
 		assert !echoes_own_sends('kvaser:0')

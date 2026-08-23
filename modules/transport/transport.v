@@ -99,9 +99,26 @@ pub fn vendor_iface(iface string) bool {
 }
 
 pub fn echoes_own_sends(iface string) bool {
-	// The vendor backends do not hand our own transmissions back. Matched by DISPATCHER prefix,
-	// separator included: on Linux anything without one is opened as SocketCAN, which does echo,
-	// so a plain interface a user happened to name `pcan0` must not be mistaken for one.
+	// VECTOR DOES, and treating the three vendor backends as one class was the bug (#139). We
+	// open SEPARATE PORTS on one XL channel — the monitor's rx_loop is not the port a replay,
+	// generator or tester transmits on — and XL delivers a frame from one port to the others on
+	// that channel as a plain RECEIVE_MSG with no TX flag. The shim already drops the
+	// TRANSMITTING port's own confirmation (CT_XL_CAN_MSG_FLAG_TX_COMPLETED), but the monitor's
+	// port cannot tell that copy from bus traffic. Answering `false` here meant note_emit never
+	// registered the emission, so rx_loop had nothing to claim the echo against and filed every
+	// replayed frame a second time as the ECU's — measured on a VN1630A, 431 us apart.
+	//
+	// Not `,silent` -sensitive and not bitrate-sensitive: this is a property of the DRIVER, so
+	// the prefix decides it. The claim itself is already scoped to one wire (wiretap keys on the
+	// interface string), which is what keeps a SECOND Vector channel on the same physical bus
+	// reporting the frame as RX — from there it is genuinely bus traffic somebody else's port
+	// put on the wire.
+	if iface.trim_space().to_lower().starts_with('vector:') {
+		return true
+	}
+	// PCAN and Kvaser do not. Matched by DISPATCHER prefix, separator included: on Linux
+	// anything without one is opened as SocketCAN, which does echo, so a plain interface a user
+	// happened to name `pcan0` must not be mistaken for one.
 	return !vendor_iface(iface)
 }
 
