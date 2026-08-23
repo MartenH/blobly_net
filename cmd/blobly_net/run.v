@@ -317,6 +317,7 @@ fn (mut app App) start() {
 		app.chans[ci].rx_first = 0
 		app.chans[ci].rx_last = 0
 		app.chans[ci].rx_seen = 0
+		app.chans[ci].rx_max_gap = 0
 	}
 	// Which wires already have a reader, so aliases do not each open one.
 	mut monitored := map[string]bool{}

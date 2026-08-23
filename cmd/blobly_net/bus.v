@@ -43,6 +43,12 @@ mut:
 	rx_first f64
 	rx_last  f64
 	rx_seen  u64
+	// The LARGEST gap this wire has ever left between frames. Silence only means something
+	// once it exceeds what this wire has already shown itself capable of: a bus that regularly
+	// goes three seconds between bursts is not broken at four, and judging it by its MEAN gap
+	// accused it at half a second. The mean says how busy a wire is; the maximum says what its
+	// silence is worth.
+	rx_max_gap f64
 	running  bool
 	spawning  bool // rx_loop spawned but its bus not open yet (double-click guard)
 	link_down bool // real CAN iface is administratively DOWN (bound but can't tx/rx)

@@ -30,9 +30,10 @@ mut:
 	// When traffic first and last reached this WIRE, and how many frames that covers — folded
 	// here for the same reason health is. Only the reader-owning alias records them, so read
 	// row-by-row every other alias of one wire looks healthy while the wire it names is dead.
-	rx_first f64
-	rx_last  f64
-	rx_seen  u64
+	rx_first   f64
+	rx_last    f64
+	rx_seen    u64
+	rx_max_gap f64
 }
 
 fn read_destinations(rows []Chan) map[string]DestState {
@@ -52,6 +53,7 @@ fn read_destinations(rows []Chan) map[string]DestState {
 				st.rx_first = c.rx_first
 				st.rx_last = c.rx_last
 				st.rx_seen = c.rx_seen
+				st.rx_max_gap = c.rx_max_gap
 			}
 			out[transport.destination_key(c.iface)] = st
 		}
@@ -365,6 +367,14 @@ fn draw_buses(mut app App, chans []Chan) {
 						// reader HANDOFF is different and carries its verdict: there the
 						// wire was observed continuously.
 						app.chans[i].health = .unknown
+						// The CADENCE goes with it, and for the same reason: the wire may
+						// have carried traffic all through the gap with nobody counting it,
+						// so the old timestamp would report the entire unobserved interval
+						// as silence the moment the reader comes back (codex #159 r3).
+						app.chans[i].rx_first = 0
+						app.chans[i].rx_last = 0
+						app.chans[i].rx_seen = 0
+						app.chans[i].rx_max_gap = 0
 						app.chans[i].spawning = true
 						spawn rx_loop(app, i, app.chans[i].iface, app.run_gen)
 					}

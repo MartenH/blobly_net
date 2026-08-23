@@ -753,6 +753,11 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			// as anything on this host kept transmitting into it.
 			if a.chans[ci].rx_seen == 0 {
 				a.chans[ci].rx_first = t_ms
+			} else {
+				gap := t_ms - a.chans[ci].rx_last
+				if gap > a.chans[ci].rx_max_gap {
+					a.chans[ci].rx_max_gap = gap
+				}
 			}
 			a.chans[ci].rx_last = t_ms
 			a.chans[ci].rx_seen++

@@ -32,14 +32,27 @@ import transport
 const stale_factor = 3.0
 const stale_floor_ms = 500.0
 
-// A cadence has to be OBSERVED this many times before absence means anything. A wire that
-// carried three frames and stopped is not necessarily broken, and a correctly-configured
-// listen-only wire that has heard nothing must never be accused of having died.
+// RECURRENCE, not a count. Silence is only evidence of a fault on a wire that has shown itself
+// to carry traffic regularly, and "five frames arrived" does not show that: five frames of one
+// diagnostic burst, milliseconds apart, gave a tiny mean gap and had the toolbar declaring a
+// perfectly healthy event-driven bus quiet forever half a second later. That false-positive
+// class survived the rewrite from per-message to per-wire — codex found it on both — so it is
+// answered here, at the class, rather than at either symptom.
+//
+// Three things must hold, and each rules out a different impostor:
+//   samples  — one frame has no gap to measure at all
+//   window   — a burst is not a cadence: five frames in 40 ms say nothing about what this wire
+//              does over seconds, so it has to have been talking for a real interval first
+//   max gap  — silence is measured against the LONGEST gap this wire has actually left, not its
+//              mean. A bus that regularly pauses three seconds between bursts is not broken at
+//              four; the mean would have accused it at half a second.
 const stale_min_samples = 5
+const stale_min_window_ms = 2000.0
 
-// stale_threshold_ms is how long a wire may be silent before it is called quiet.
-fn stale_threshold_ms(expected_ms f64) f64 {
-	t := expected_ms * stale_factor
+// stale_threshold_ms is how long a wire may be silent before it is called quiet: a multiple of
+// the worst silence it has already shown, never below the floor.
+fn stale_threshold_ms(worst_gap_ms f64) f64 {
+	t := worst_gap_ms * stale_factor
 	return if t < stale_floor_ms { stale_floor_ms } else { t }
 }
 
@@ -56,10 +69,11 @@ fn (app &App) quiet_ms(st DestState) f64 {
 	if st.rx_seen < stale_min_samples {
 		return 0
 	}
-	span := st.rx_last - st.rx_first
-	mean_gap := if span > 0 { span / f64(st.rx_seen - 1) } else { f64(0) }
+	if st.rx_last - st.rx_first < stale_min_window_ms {
+		return 0 // a burst, not a cadence
+	}
 	age := app.since_ms() - st.rx_last
-	if age > stale_threshold_ms(mean_gap) {
+	if age > stale_threshold_ms(st.rx_max_gap) {
 		return age
 	}
 	return 0
