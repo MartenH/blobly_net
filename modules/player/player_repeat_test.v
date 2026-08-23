@@ -72,3 +72,17 @@ fn test_set_repeat_while_paused_plays_nothing_then_takes_effect_on_resume() {
 	p.play(500) // resumes 100 ms into the recording
 	assert rep_ids(p.due(650)) == [u32(3), 1] // finishes the pass, then wraps
 }
+
+// A Restart is a fresh run, so its pass count starts over. play() already rewound idx and
+// elapsed_ms from .finished and left `loops` alone, which only became visible once loop was
+// settable at runtime: the panel then labelled a restarted first pass "(loop 2)".
+fn test_restart_from_finished_resets_the_pass_count() {
+	mut p := new_player(rep_rec(), 1.0, false)
+	p.play(0)
+	assert rep_ids(p.due(250)) == [u32(1), 2, 3]
+	assert p.finished()
+	assert p.passes() == 1 // the pass that just ended counts
+	p.play(300) // Restart
+	assert p.passes() == 0 // ... and the new run starts from zero
+	assert rep_ids(p.due(300)) == [u32(1)]
+}

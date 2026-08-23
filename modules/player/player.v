@@ -96,6 +96,12 @@ pub fn (mut p Player) play(now_ms f64) {
 	if p.st == .finished {
 		p.idx = 0
 		p.elapsed_ms = 0
+		// The pass count belongs to the RUN, and this is a fresh one -- idx and elapsed_ms are
+		// already being rewound here, and leaving `loops` behind made the counter describe the
+		// previous run: a Restart labelled its first pass "(loop 2)", and its first wrap
+		// "(loop 3)". Harmless while `repeat` was fixed at config time, because a non-looping
+		// player's count was never displayed; runtime loop (net#157) is what put it on screen.
+		p.loops = 0
 	}
 	p.base_ms = now_ms - p.elapsed_ms
 	p.st = .playing

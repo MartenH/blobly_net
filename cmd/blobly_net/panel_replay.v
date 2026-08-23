@@ -80,7 +80,10 @@ fn draw_replay(mut app App) {
 			vgui.text_dim('loading the recording…')
 			continue
 		}
-		loop_txt := if repeat { '  (loop ${loops + 1})' } else { '' }
+		// No pass number on a finished group: there is no current pass, and the count is the
+		// one it ended on -- "(loop 2)" on something that is not playing reads as a claim that
+		// it looped. The status text beside it already says finished.
+		loop_txt := if repeat && st != .finished { '  (loop ${loops + 1})' } else { '' }
 		// ONE bar, not two. This was a full-width read-only progress bar with the seek slider
 		// beneath it -- both spanning 0..dur, both reporting the position, so the panel drew the
 		// same number twice (net#158). The slider is the half that survives, because it is the
