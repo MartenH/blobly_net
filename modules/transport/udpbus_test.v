@@ -1,6 +1,6 @@
 module transport
 
-import os
+import testports
 import time
 
 // A multicast group and port NOBODY ELSE IS USING, derived from this process.
@@ -14,11 +14,12 @@ import time
 //
 // The pid varies the group's low bytes AND the port, so concurrent runs cannot meet; the slot
 // keeps two tests in ONE run apart, since a file's tests share a process. 239.x is the
-// administratively-scoped block — the right place for something this local. The low byte is
-// forced odd to stay off .0, which some stacks treat specially.
+// administratively-scoped block — the right place for something this local. Both the group and
+// this file's port band live in `testports`, which states why they are what they are: two
+// processes sharing a group AND a port would see each other's frames, which is exactly what the
+// self-filter assertion below reads as a failure.
 fn uniq_group(slot int) (string, int) {
-	p := os.getpid()
-	return '239.13.${(p >> 8) & 0xFF}.${(p & 0xFF) | 1}', 24000 + (p % 8000) + slot
+	return testports.group(), testports.udp_bus.port(slot)
 }
 
 // Two buses on the same group must see each other's frames, but not their own.

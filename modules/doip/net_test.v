@@ -1,7 +1,7 @@
 module doip
 
 import net
-import os
+import testports
 import time
 
 // A uds-free networking test: a DoIP server with a trivial echo+1 handler, driven
@@ -19,9 +19,10 @@ import time
 // Where a test owns its listener outright it uses port 0 instead and reads back what the OS
 // assigned — see free_listener below, which cannot collide at all. This helper is for the cases
 // that cannot: DoipServer.listen binds TCP and UDP to the SAME number, and port 0 would hand
-// those two different ones.
+// those two different ones. The arithmetic and this file's band live in `testports`, which states
+// why they are what they are.
 fn uniq_port(slot int) int {
-	return 20000 + (os.getpid() % 20000) + slot
+	return testports.doip.port(slot)
 }
 
 // A TCP listener on an OS-assigned port, with the port it actually got. Nothing can collide with
@@ -153,8 +154,7 @@ fn test_client_server_roundtrip() {
 
 	// Regression: a hostile UDP datagram advertising a 0xFFFFFFFF payload length
 	// must NOT crash the discovery thread (parse() rejects it before slicing).
-	hostile := [protocol_version, u8(~protocol_version), u8(0x00), 0x01, 0xFF, 0xFF, 0xFF,
-		0xFF]
+	hostile := [protocol_version, u8(~protocol_version), u8(0x00), 0x01, 0xFF, 0xFF, 0xFF, 0xFF]
 	u.write(hostile) or { assert false, 'udp write hostile: ${err}' }
 	time.sleep(100 * time.millisecond)
 	// The thread should still answer a subsequent valid request.
@@ -246,8 +246,7 @@ fn test_client_server_roundtrip() {
 		return
 	}
 	// generic header only: payload_type 0x8001, payload_length 0x7FFFFFFF, no body.
-	header := [protocol_version, u8(~protocol_version), u8(0x80), 0x01, 0x7F, 0xFF, 0xFF,
-		0xFF]
+	header := [protocol_version, u8(~protocol_version), u8(0x80), 0x01, 0x7F, 0xFF, 0xFF, 0xFF]
 	big.write(header) or { assert false, 'write: ${err}' }
 	big.set_read_timeout(1 * time.second)
 	mut bbuf := []u8{len: 16}

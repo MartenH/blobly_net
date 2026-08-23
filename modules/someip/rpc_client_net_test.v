@@ -1,7 +1,7 @@
 module someip
 
 import net
-import os
+import testports
 import time
 
 // The RpcClient over REAL sockets on loopback — the exact shape the GUI
@@ -9,10 +9,11 @@ import time
 // reads + the clock). Single process: UDP buffers the exchange, so the
 // server side answers sequentially after the client sends.
 
-// A port derived from this process, with a slot to keep two sockets in one test apart. See the
-// note at its use below for why these are not OS-assigned.
+// A port derived from this process, with a slot to keep two sockets in one test apart. The
+// arithmetic and this file's band live in `testports`, which states why they are what they are;
+// see the note at the use below for why these are not OS-assigned instead.
 fn uniq_port(slot int) int {
-	return 20000 + (os.getpid() % 20000) + slot
+	return testports.someip.port(slot)
 }
 
 fn test_rpc_over_loopback_sockets() {

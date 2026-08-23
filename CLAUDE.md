@@ -90,13 +90,14 @@ docs/                design + platform docs; docs/history.md = archived status l
 | `script`, `lua` | embedded Lua + the test-framework prelude |
 | `project` | `.blobnet` project files. `destination_conflicts()` is the ONE place a project is refused for asking a wire to be two things — one mode, one rate, and (#167) one physical channel: two Vector *application* channels assigned to one *physical* channel are two wires here and one to the driver, so the comparison is pure and testable (`alias_conflicts`) while the resolution behind it (`transport.physical_wire_key`) is per-platform and answers `none` wherever no driver can say |
 | `sampledb` | hand-coded message catalog (superseded by DBC loading) |
+| `testports` | which port may a test bind? Test-support, and the one module the engine does not use. A test that binds a FIXED port fails once, on somebody else's machine, and passes on every re-run (#112) — so ports are derived from the pid. The arithmetic is easy to get subtly wrong and was, in three files at once: the pid picks a BLOCK and the slot indexes inside it, because `base + pid + slot` makes process N's slot 1 process N+1's slot 0, and a runner spawns its files with pids a few apart. Each file gets its own BAND for the same reason across files; bands are declared TOGETHER here, since disjointness is a property of the set and cannot be checked one file at a time. Where a test owns its listener outright it binds port 0 and reads back what the OS gave it (`doip/net_test.v:free_listener`) — that cannot collide at all, and is preferred |
 
 ## Build / run / test
 
 ```sh
 ./scripts/run_gui.sh                       # GUI
 v -path "@vlib|@vmodules|modules" run cmd/<tool>/<file>.v   # any other target
-v -enable-globals test modules/             # unit tests — the reliable backbone (53/53)
+v -enable-globals test modules/             # unit tests — the reliable backbone (58/58)
 ./scripts/runtests.sh tests/diag_basic.lua  # headless Lua integration tests (in-process sim)
 ```
 
