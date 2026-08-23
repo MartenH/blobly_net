@@ -166,8 +166,13 @@ fn parse_recording(buf []u8) !Recording {
 			if rec_id_size == 0 {
 				// Sorted: one CG per DG, the data block is its record stream.
 				before := out.len
-				parse_cg(buf, cg_first, raw, unfin, map[u64][]u8{}, group, mut out)!
-				// One entry per record, in record order, so the counter IS the record position.
+				// The record indices are not needed here: a SORTED group's ordinal is a running
+				// counter over the entries that EXIST, so a refused record simply never gets one
+				// and the sequence stays ascending. Only the unsorted path indexes ordinals by
+				// record, and only that one breaks when a record produces no entry.
+				mut idxs := []int{}
+				parse_cg(buf, cg_first, raw, unfin, map[u64][]u8{}, group, mut idxs, mut out)!
+				// One entry per ENTRY, in record order, so the counter IS the sequence position.
 				for _ in before .. out.len {
 					order << seq
 					seq++
@@ -331,13 +336,19 @@ fn demux_unsorted(buf []u8, cg_first u64, raw []u8, rec_id_size int, unfin bool,
 	for c in cgs {
 		if !c.vlsd {
 			start := out.len
+			mut idxs := []int{}
 			parse_cg(buf, c.link, streams[c.rec_id] or { []u8{} }, unfin, vlsd_streams, g, mut
-				out)!
-			// One entry per record, in record order, so the ordinals line up positionally and
-			// the interleaved order can be restored after every CG has been decoded.
+				idxs, mut out)!
+			// BY RECORD INDEX, not by position in `out`. A record the decoder refused — an
+			// undefined id, a remote frame whose requested length is unknown — produces no
+			// entry, so the two lists stop lining up at the first skip and everything after it
+			// would take an earlier record's ordinal. That is not a cosmetic slip: these
+			// ordinals are what restore the INTERLEAVED order of several channel groups sharing
+			// one record stream, and a wrong one reorders equal-timestamp frames across buses.
 			ords := ordinals[c.rec_id] or { []int{} }
 			for k in start .. out.len {
-				order << if k - start < ords.len { ords[k - start] } else { max_int }
+				ri := idxs[k - start]
+				order << if ri < ords.len { ords[ri] } else { max_int }
 			}
 			g++
 			// Each channel group here has its OWN cg_tx_acq_name — sharing a record stream is a
@@ -370,7 +381,15 @@ struct Chan {
 
 // `group` distinguishes this channel group from the file's others when the records carry no
 // BusChannel of their own — better a stable synthetic name per group than one shared label.
-fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, group int,
+// `rec_idx` receives the index of the RECORD each appended entry came from. It used to be
+// unnecessary: one entry per record meant the caller could pair them positionally, and
+// demux_unsorted does exactly that when it restores the interleaved order. Skipping a record —
+// an undefined id, or a remote frame whose requested length is unknown — breaks that pairing,
+// and every entry after the skip would inherit an earlier record's ordinal. Equal-timestamp
+// frames from another channel group would then sort into the wrong order and replay in a
+// cross-bus sequence the recording never had, which is the one property multibus replay exists
+// to preserve (codex #175 r3).
+fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, group int, mut rec_idx []int,
 	mut out []canlog.LogEntry) ! {
 	cgl := block_links(buf, cg)
 	cg_d := data_off(buf, cg)
@@ -676,6 +695,7 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 		esi := is_fd && c_esi.bit_count > 0
 			&& !chan_invalid(raw, base, data_bytes, inval_bytes, c_esi)
 			&& read_uint(raw, base + c_esi.byte_off, int(c_esi.bit_off), int(c_esi.bit_count)) == 1
+		rec_idx << int(k) // which record this entry came from — see the note on the parameter
 		out << canlog.LogEntry{
 			t_s:   ts
 			dir:   dir
