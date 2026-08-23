@@ -519,10 +519,17 @@ fn (mut app App) set_sender_bus(i int, bus string, chan_name string) {
 // fire_index sends generator `i`'s CURRENT (edited) frame once. DBC-message generators
 // encode the edited signal values; raw generators use the edited id/data hex fields.
 // poll_hotkeys fires any 'key'-triggered generator whose key went down this frame. Runs on the
-// UI thread once per frame (fire_index reads UI-thread edit buffers). Suppressed while a text
-// field is focused so typing a key into an input box doesn't also fire a generator.
+// UI thread once per frame (fire_index reads UI-thread edit buffers).
+//
+// Suppressed while a widget holds the keyboard, which takes BOTH tests. want_text_input covers
+// an editable field; it is set only for editable ones (imgui gates it on !is_readonly), so a
+// READ-ONLY console the user has clicked into does not raise it -- and key_pressed asks whether
+// the bare key went down, ignoring modifiers. Since net#153 those consoles carry the Log, Flash,
+// Diagnostics and Script panels and say "Ctrl+A / Ctrl+C" on screen, so with the Log docked by
+// default and a generator bound to `a` or `c`, following that instruction during a run would
+// have put a frame on the wire. any_item_active closes it.
 fn (mut app App) poll_hotkeys() {
-	if !app.running || vgui.want_text_input() {
+	if !app.running || vgui.want_text_input() || vgui.any_item_active() {
 		return
 	}
 	for i, sr in app.senders {

@@ -809,6 +809,11 @@ int vgui_combo(const char* label, const char** items, int n, int current) {
 // true while a text field is focused / imgui wants the keyboard — callers use this to suppress
 // their own single-key shortcuts so typing in an input box doesn't trigger them.
 int vgui_want_text_input() { return ImGui::GetIO().WantTextInput ? 1 : 0; }
+// Is any widget holding the keyboard right now? WantTextInput is set only for EDITABLE inputs
+// (imgui_widgets.cpp gates it on !is_readonly), so a read-only console the user has clicked
+// into -- which owns ActiveId, and Ctrl+A / Ctrl+C -- does not raise it. Callers that must not
+// steal keys from a focused widget need this one as well.
+int vgui_any_item_active() { return ImGui::IsAnyItemActive() ? 1 : 0; }
 
 // vgui_key_pressed reports whether the printable key `ch` (A-Z / a-z / 0-9) went down THIS frame
 // (no auto-repeat). Used for generator hotkeys. Returns 0 for anything it can't map.

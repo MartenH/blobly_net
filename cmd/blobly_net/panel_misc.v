@@ -445,8 +445,7 @@ fn draw_stats(mut app App, chans []Chan, rx u64, txs string) {
 	vgui.end()
 }
 
-// draw_log: the scrolling status/event log.
-// draw_copyable_log renders newest-last output as SELECTABLE console text, above a Copy all
+// draw_copyable_log renders newest-last output as SELECTABLE console text, beneath a Copy all
 // button. ONE helper for the Log, Flash, Diagnostics and Script panels, which were four copies
 // of `for line in log { vgui.text(line) }` -- ImGui::TextUnformatted, which draws glyphs rather
 // than a widget. Nothing in any of them could be marked with the mouse or reached with Ctrl+C,
@@ -471,6 +470,7 @@ fn draw_copyable_log(id string, c LogCache) {
 	vgui.child_end()
 }
 
+// draw_log: the scrolling status/event log.
 fn draw_log(mut app App) {
 	vis, op := vgui.begin_closable('Log', app.show_log)
 	app.show_log = op

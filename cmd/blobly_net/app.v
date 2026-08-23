@@ -839,5 +839,12 @@ mut:
 fn (mut c LogCache) refresh(gen u64, src []string) {
 	c.gen = gen
 	c.text = src.join('\n')
-	c.lines = src.len
+	// VISUAL lines, not array elements. console_text sizes its InputTextMultiline as
+	// line_height * (nlines + 1), so one buffered string carrying an embedded newline
+	// under-sizes the widget: the inner ImGui child grows its own scrollbar and the newest line
+	// sits below the fold with the panel already scrolled to the bottom. The Shell -- the one
+	// caller console_text had before this -- keeps the invariant at the source by splitting as
+	// it appends; these four producers do not, and a Lua error carrying a newline reaches
+	// script_push in one piece.
+	c.lines = if c.text == '' { 0 } else { c.text.count('\n') + 1 }
 }
