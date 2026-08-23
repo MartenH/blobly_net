@@ -30,13 +30,25 @@ import sync
 // those consult the listen-only table per send — so recording their opens would buy a refusal
 // nobody needs. mode_pinned_by_ports names the one backend that does.
 
-// PinnedWire is the configuration the ports currently open on one wire installed, and how many
-// of them are holding it.
+// PinnedPort is one live port on a wire — reserved before the driver is asked, held until it
+// closes — and the configuration it requires the channel to be in.
+struct PinnedPort {
+	id  u64
+	cfg PinnedConfig
+}
+
+// PinnedWire is the ports currently holding one wire.
+//
+// A LIST, not one configuration and a count, and the reason is rollback. A pin is RESERVED
+// before `open_raw` runs (see pinned_open), so a reservation whose open then fails has to be
+// undone — and with a single record there is nothing to undo TO: restoring a snapshot taken
+// before the reservation would clobber whatever an interleaved open established in the meantime,
+// and simply decrementing would leave the failed port's configuration standing as the wire's.
+// Per-port records make a rollback the removal of one element, which cannot disturb anybody
+// else's.
 struct PinnedWire {
 mut:
-	silent  bool
-	bitrate int
-	ports   int
+	ports []PinnedPort
 }
 
 // PinnedConfig is a configuration: what a wire is set to, or what an address asks it to be.
@@ -49,6 +61,7 @@ struct PinnedModes {
 mut:
 	mu    sync.Mutex
 	wires map[string]PinnedWire
+	seq   u64 // hands each reservation an identity, so a rollback removes ITS port and no other
 }
 
 // pinned_tbl is THE record of open vendor ports for the process, a global for the same reason
@@ -112,13 +125,19 @@ fn wire_pinned_config(iface string) ?PinnedConfig {
 	pinned_tbl.mu.lock()
 	w := pinned_tbl.wires[k] or { PinnedWire{} }
 	pinned_tbl.mu.unlock()
-	if w.ports <= 0 {
+	if w.ports.len == 0 {
 		return none
 	}
-	return PinnedConfig{
-		silent:  w.silent
-		bitrate: w.bitrate
-	}
+	// THE LATEST, not the first, and the difference is not a preference: an open that RETURNED is
+	// one whose configuration the channel now has. Either it matched what was already installed,
+	// and this changes nothing — or it installed it, which happens more readily than "the first
+	// port pins it forever" suggests. Initialisation access belongs to a PORT: when the port
+	// holding it closes while siblings stay open, XL releases that access, the shim marks its
+	// record stale (vector_shim.h, ct_vec_cfg_unref) and the next port to win access reconfigures
+	// the channel outright and re-notes it. Keeping the first answer would describe a
+	// configuration no longer installed. What wire_pin_clash does with a wire whose ports
+	// DISAGREE is stricter still — see there.
+	return w.ports.last().cfg
 }
 
 // wire_pin_clash reports how opening THIS ADDRESS would contradict the configuration the ports
@@ -136,50 +155,100 @@ fn wire_pinned_config(iface string) ?PinnedConfig {
 // once. It is a fragment: the caller says who, and what to do about it.
 pub fn wire_pin_clash(iface string) string {
 	want := pinned_open_config(iface) or { return '' }
-	has := wire_pinned_config(iface) or { return '' }
-	if want.silent != has.silent {
-		w := if want.silent { 'listen-only' } else { 'normal' }
-		h := if has.silent { 'listen-only' } else { 'normal' }
-		return 'is ${w} and ports are still open on ${iface.all_before('@')} in ${h} mode'
-	}
-	if want.bitrate != has.bitrate {
-		return 'asks ${want.bitrate} and ports are still open on ${iface.all_before('@')} at ${has.bitrate}'
+	k := pinned_wire_key(iface)
+	pinned_tbl.mu.lock()
+	held := pinned_tbl.wires[k] or { PinnedWire{} }.ports.clone()
+	pinned_tbl.mu.unlock()
+	// EVERY PORT, not just the newest. They normally all agree — the driver is what makes them —
+	// but a channel reconfigured under its siblings (see wire_pinned_config) leaves ports on it
+	// that do not, and a new port cannot satisfy both. Asking all of them refuses that state
+	// instead of picking a half of it to answer from.
+	for p in held {
+		if want.silent != p.cfg.silent {
+			w := if want.silent { 'listen-only' } else { 'normal' }
+			h := if p.cfg.silent { 'listen-only' } else { 'normal' }
+			return 'is ${w} and ports are still open on ${iface.all_before('@')} in ${h} mode'
+		}
+		if want.bitrate != p.cfg.bitrate {
+			return 'asks ${want.bitrate} and ports are still open on ${iface.all_before('@')} at ${p.cfg.bitrate}'
+		}
 	}
 	return ''
 }
 
-// track_pinned wraps a bus whose port pins its wire, and records what it pinned it to.
-// Everything else is returned untouched: no wrapper, no map entry, nothing on the paths that do
-// not need one.
-fn track_pinned(iface string, b Bus) Bus {
-	cfg := pinned_open_config(iface) or { return b }
+// pinned_open reserves this address's pin BEFORE the backend opens, then hands back a bus that
+// holds it — or, if the open fails, rolls the reservation back as though it never happened.
+//
+// THE RESERVATION COMES FIRST, and that ordering is the whole point of this function existing
+// instead of a wrapper applied to an already-open bus. A vendor open ACTIVATES and CONFIGURES
+// the channel before it returns; recording afterwards leaves a window in which the port is live
+// on the wire and the table says the wire is free. It is not a theoretical window: rx_loop opens
+// its monitor without holding app.mu (and says why — opening a bus takes time), so the GUI
+// thread can run the enable guard inside it, read a free wire, and admit the conflicting alias
+// this whole change exists to refuse. Codex #166 r1.
+//
+// The cost is the opposite window, which is the safe one: between the reservation and a FAILED
+// open the wire reads as pinned to a configuration nothing installed, so a concurrent check
+// refuses for as long as the vendor open takes. A refusal that resolves itself, against a wire
+// nobody could have used anyway.
+//
+// NOT UNDER THE LOCK, unlike shared_open, and for the reason that one gives for the opposite
+// choice: it must serialise because a second caller would otherwise join an entry with no bus in
+// it. Here every caller gets its own port and its own record, so there is nothing to join —
+// holding the mutex across a ~1s vendor open would only stall the front end's guard against
+// every unrelated wire.
+fn pinned_open(iface string, make fn (string) !Bus) !Bus {
+	cfg := pinned_open_config(iface) or { return make(iface)! }
 	k := pinned_wire_key(iface)
 	pinned_tbl.mu.lock()
+	pinned_tbl.seq++
+	id := pinned_tbl.seq
 	mut w := pinned_tbl.wires[k] or { PinnedWire{} }
-	// THE LATEST SUCCESSFUL OPEN, not the first, and the difference is not a preference: an open
-	// that RETURNED is one whose configuration the channel now has. Either it matched what was
-	// already installed, and recording it changes nothing — or it installed it, which happens
-	// more readily than "the first port pins it forever" suggests. Initialisation access belongs
-	// to a PORT: when the port holding it closes while siblings stay open, XL releases that
-	// access, the shim marks its record stale (vector_shim.h, ct_vec_cfg_unref) and the next
-	// port to win access reconfigures the channel outright and re-notes it. A table that kept
-	// the first answer would then describe a configuration no longer installed, and wave through
-	// exactly the open the driver goes on to refuse.
-	w.silent = cfg.silent
-	w.bitrate = cfg.bitrate
-	w.ports++
+	w.ports << PinnedPort{
+		id:  id
+		cfg: cfg
+	}
 	pinned_tbl.wires[k] = w
 	pinned_tbl.mu.unlock()
+	b := make(iface) or {
+		pinned_release(k, id)
+		return err
+	}
 	return &PinnedBus{
 		inner: b
 		key:   k
+		id:    id
 	}
+}
+
+// pinned_release drops one port's hold, by the identity it was given. By id, not by position or
+// by configuration: ports come and go from a wire in any order, and two of them on one wire are
+// routinely identical.
+fn pinned_release(key string, id u64) {
+	pinned_tbl.mu.lock()
+	mut w := pinned_tbl.wires[key] or {
+		pinned_tbl.mu.unlock()
+		return
+	}
+	for i, p in w.ports {
+		if p.id == id {
+			w.ports.delete(i)
+			break
+		}
+	}
+	if w.ports.len == 0 {
+		pinned_tbl.wires.delete(key)
+	} else {
+		pinned_tbl.wires[key] = w
+	}
+	pinned_tbl.mu.unlock()
 }
 
 // PinnedBus is a bus that holds a wire's configuration for as long as it is open. It adds no
 // behaviour of its own — the whole of it is the bookkeeping in close().
 struct PinnedBus {
 	key string
+	id  u64
 mut:
 	inner  Bus
 	closed bool
@@ -211,21 +280,14 @@ fn (mut p PinnedBus) close() {
 	p.inner.close()
 	// UNDER THE LOCK, not beside it. `closed` is what makes this idempotent, and the app closes
 	// a bus twice on at least one race path; tested outside the mutex, two threads can both read
-	// false and decrement twice, reporting a wire free while a port still holds it.
+	// false and release twice — and the second release would take a LATER port's record, since
+	// ids are handed out per reservation and this one's is already gone.
 	pinned_tbl.mu.lock()
 	if p.closed {
 		pinned_tbl.mu.unlock()
 		return
 	}
 	p.closed = true
-	mut w := pinned_tbl.wires[p.key] or { PinnedWire{} }
-	if w.ports > 0 {
-		w.ports--
-	}
-	if w.ports <= 0 {
-		pinned_tbl.wires.delete(p.key)
-	} else {
-		pinned_tbl.wires[p.key] = w
-	}
 	pinned_tbl.mu.unlock()
+	pinned_release(p.key, p.id)
 }

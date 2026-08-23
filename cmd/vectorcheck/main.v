@@ -273,8 +273,9 @@ fn usage() {
 	eprintln('  --probe     what the DRIVER says is present (hwType/hwIndex/hwChannel)')
 	eprintln('  --selftest  prove the backend on Vector VIRTUAL channels — touches no real bus')
 	eprintln('  --modecheck prove that an OPEN PORT pins its channel and that the app knows it')
-	eprintln('              (issue #165). Listen-only throughout: the one normal open it tries')
-	eprintln('              is the one the driver has to refuse.')
+	eprintln('              (issue #165). Listen-only, and safe against a live bus. Add')
+	eprintln('              --transmit for the normal-mode probe, which is only silent while')
+	eprintln('              the driver refuses it — the thing being tested.')
 	eprintln('  --assign N  point --channel at the hardware on row N of --probe, then listen')
 	eprintln('  --release N clear application channel N — undo an assignment this tool made')
 	eprintln('  --pair A,B  TWO channels wired together: send on A, receive on B.')
@@ -655,10 +656,19 @@ fn main() {
 // open, every row that opened it is gone as far as the model is concerned, and something asks
 // for the other mode.
 //
-// SILENT THROUGHOUT, and that is not a detail — this is meant to be run against the live bus the
+// SILENT BY DEFAULT, and that is not a detail — this is meant to be run against the live bus the
 // adapter is already wired to. The port it holds open is listen-only, so the transceiver never
-// acknowledges. The one normal open it attempts is the one the driver must REFUSE; if the driver
-// were to allow it, that is the test failing, and it is closed immediately.
+// acknowledges.
+//
+// WHICH IS WHY THE NORMAL-MODE PROBE NEEDS --transmit. Asking the driver to open a normal port
+// is the sharpest check here, and its safety was resting on the very refusal it exists to prove:
+// if the driver ever allowed it — a regression, a different XL version, a channel whose
+// initialisation access had been released — the port would activate, and a normal port on a live
+// bus acknowledges, or at the wrong bitrate floods error frames, for as long as it takes to
+// close. A test that is safe only while it passes is not safe (codex #166 r1). So it is gated on
+// the flag this tool already uses for "ALSO go on the bus able to acknowledge", and skipping it
+// is SAID rather than silently left out. Everything else — the predictions, the second-bitrate
+// refusal, the sibling open, the release — is listen-only and always runs.
 fn modecheck(o Opts) ! {
 	ch := if o.channel > 0 { o.channel } else { 1 }
 	silent := 'vector:${ch}@${o.bitrate},silent'
@@ -699,11 +709,16 @@ fn modecheck(o Opts) ! {
 
 	// 2. What the DRIVER actually does with the same three requests. This is the half that
 	//    cannot be faked, and the reason the numbers above are worth anything.
-	if mut b := transport.open(normal) {
-		b.close()
-		failures << 'the driver ALLOWED a normal open on a channel held silent — the mode is not pinned the way #165 describes, and this guard is solving a problem that is not there'
+	if o.transmit {
+		if mut b := transport.open(normal) {
+			b.close()
+			failures << 'the driver ALLOWED a normal open on a channel held silent — the mode is not pinned the way #165 describes, and this guard is solving a problem that is not there'
+		} else {
+			println('  driver refused normal  : ${err}')
+		}
 	} else {
-		println('  driver refused normal  : ${err}')
+		println('  driver refused normal  : NOT CHECKED — needs --transmit, because a driver that')
+		println('                           allowed it would put an acknowledging port on the bus')
 	}
 	if mut b := transport.open(other_rate) {
 		b.close()

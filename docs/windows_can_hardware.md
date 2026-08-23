@@ -155,9 +155,18 @@ acknowledge on a bus until you ask them to, so they are safe to point at a live 
 `--modecheck` is the bench half of a test whose other half runs everywhere: on Linux
 `modules/transport/pinned_test.v` checks the bookkeeping over `inproc:` buses, and only a VN
 device can answer whether the driver actually refuses what that bookkeeping predicts. It holds
-one listen-only port, asks for the other mode and for a second bitrate, and checks the refusals
-against the predictions — then that both are released when the ports close. Run on a VN1630A,
-application channel 1 at 500k, 2026-08-23:
+one listen-only port, asks for a second bitrate, opens a matching sibling, and checks the
+refusals against the predictions — then that all of it is released when the ports close.
+
+The **normal-mode** probe needs `--transmit`, and the reason is worth stating: asking the driver
+for a normal port is the sharpest check in the set, and it is silent only *while the driver
+refuses it*. If the driver ever allowed it — a regression, a different XL version, a channel
+whose initialisation access had been released — the port would activate, and a normal port on a
+live bus acknowledges (or, at the wrong bitrate, floods error frames) for as long as it takes to
+close. A test that is safe only while it passes is not safe, so that one probe is opt-in and its
+absence is printed rather than silently skipped.
+
+Run on a VN1630A, application channel 1 at 500k and 250k, `--transmit`, 2026-08-23:
 
 ```
 modecheck: application channel 1 at 500000, listen-only

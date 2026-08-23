@@ -25,7 +25,9 @@ fn test_nothing_open_pins_nothing() {
 }
 
 fn test_an_open_port_pins_its_wire_and_releases_it() {
-	mut b := track_pinned('vector:3@500000', open_inproc('pin_one')!)
+	mut b := pinned_open('vector:3@500000', fn (_ string) !Bus {
+		return open_inproc('pin_one')!
+	})!
 	cfg := wire_pinned_config('vector:3') or {
 		assert false, 'an open port pinned nothing'
 		return
@@ -42,8 +44,12 @@ fn test_an_open_port_pins_its_wire_and_releases_it() {
 // would call part of the run has gone, and the wire is still pinned — because a disabled row
 // keeps its transmit taps open on purpose and the driver has never heard of a row.
 fn test_a_surviving_port_keeps_the_wire_pinned() {
-	mut monitor := track_pinned('vector:4@500000', open_inproc('pin_two')!)
-	mut tap := track_pinned('vector:4@500000', open_inproc('pin_two')!)
+	mut monitor := pinned_open('vector:4@500000', fn (_ string) !Bus {
+		return open_inproc('pin_two')!
+	})!
+	mut tap := pinned_open('vector:4@500000', fn (_ string) !Bus {
+		return open_inproc('pin_two')!
+	})!
 	monitor.close()
 	cfg := wire_pinned_config('vector:4') or {
 		assert false, 'one port closed and the wire stopped being pinned while another held it'
@@ -57,7 +63,9 @@ fn test_a_surviving_port_keeps_the_wire_pinned() {
 }
 
 fn test_silent_ports_pin_silence() {
-	mut b := track_pinned('vector:5@250000,silent', open_inproc('pin_silent')!)
+	mut b := pinned_open('vector:5@250000,silent', fn (_ string) !Bus {
+		return open_inproc('pin_silent')!
+	})!
 	defer {
 		b.close()
 	}
@@ -77,32 +85,43 @@ fn test_silent_ports_pin_silence() {
 // table that kept the first answer would describe a configuration no longer installed, and wave
 // through the very open the driver then refuses.
 fn test_the_latest_successful_open_is_what_the_wire_is_set_to() {
-	mut first := track_pinned('vector:6@500000', open_inproc('pin_first')!)
+	mut first := pinned_open('vector:6@500000', fn (_ string) !Bus {
+		return open_inproc('pin_first')!
+	})!
 	defer {
 		first.close()
 	}
-	mut second := track_pinned('vector:6@250000,silent', open_inproc('pin_first')!)
+	mut second := pinned_open('vector:6@250000,silent', fn (_ string) !Bus {
+		return open_inproc('pin_first')!
+	})!
 	cfg := wire_pinned_config('vector:6') or {
 		assert false, 'nothing pinned'
 		return
 	}
 	assert cfg.silent == true, 'a port that opened successfully did not become the record'
 	assert cfg.bitrate == 250000
-	// ... and the one still open keeps the wire pinned when it goes, at what IT installed being
-	// the last word only until something else opens.
+	// AND A PORT THAT CLOSES TAKES ITS ANSWER WITH IT. The wire now reads as what the port still
+	// open on it requires, not as what a departed one installed — a single record could not do
+	// that, and kept a closed port's configuration standing as the wire's for the rest of the
+	// process. It matches the driver: this state is only reachable when the port holding
+	// initialisation access reconfigured the channel and then left, which marks the shim's record
+	// stale, so the next port to ask is free to reconfigure it again.
 	second.close()
 	after := wire_pinned_config('vector:6') or {
 		assert false, 'a port was still open and the wire read as free'
 		return
 	}
-	assert after.silent == true, 'closing a port rewrote the record'
+	assert after.silent == false, 'a closed port went on speaking for the wire'
+	assert after.bitrate == 500000
 }
 
 // ONE WIRE, HOWEVER IT IS SPELLED — the identity destination_key is built on. The rate and mode
 // suffixes are not part of a wire's name, and an ALIAS is how a wire comes to carry two rows at
 // all, so a key any narrower would miss precisely the pair that produces this bug.
 fn test_every_spelling_of_a_wire_shares_its_pin() {
-	mut b := track_pinned('vector:app08@500000,silent', open_inproc('pin_alias')!)
+	mut b := pinned_open('vector:app08@500000,silent', fn (_ string) !Bus {
+		return open_inproc('pin_alias')!
+	})!
 	defer {
 		b.close()
 	}
@@ -122,8 +141,12 @@ fn test_every_spelling_of_a_wire_shares_its_pin() {
 // Idempotent, for the reason SharedHandle.close is. A double close that decremented twice would
 // report a wire free while a port still holds it.
 fn test_closing_a_port_twice_does_not_free_the_wire() {
-	mut a := track_pinned('vector:7@500000', open_inproc('pin_dbl')!)
-	mut b := track_pinned('vector:7@500000', open_inproc('pin_dbl')!)
+	mut a := pinned_open('vector:7@500000', fn (_ string) !Bus {
+		return open_inproc('pin_dbl')!
+	})!
+	mut b := pinned_open('vector:7@500000', fn (_ string) !Bus {
+		return open_inproc('pin_dbl')!
+	})!
 	a.close()
 	a.close()
 	cfg := wire_pinned_config('vector:7') or {
@@ -156,12 +179,12 @@ fn test_the_backends_that_do_not_pin_record_nothing() {
 // A bus this file declines to track is handed back UNTOUCHED — not wrapped in a no-op — so the
 // common path keeps the backend's own type and one less indirection per frame.
 fn test_a_non_pinning_bus_is_not_wrapped() {
-	mut raw := open_inproc('pin_bare')!
-	defer {
-		raw.close()
-	}
-	tracked := track_pinned('inproc:pin_bare', raw)
+	tracked := pinned_open('inproc:pin_bare', fn (_ string) !Bus {
+		return open_inproc('pin_bare')!
+	})!
 	assert tracked !is PinnedBus, 'a non-pinning bus was wrapped anyway'
+	mut t := tracked
+	t.close()
 }
 
 // The address is read by the backend's OWN parser, so every spelling it accepts is one this
@@ -190,4 +213,66 @@ fn test_the_mode_is_read_by_the_backends_own_parser() {
 			assert false, '${bad} is not openable and produced ${c}'
 		}
 	}
+}
+
+// THE RESERVATION IS UNDONE WHEN THE OPEN FAILS. The pin is taken BEFORE the backend runs, so
+// that no window exists in which a live port is unrecorded (codex #166 r1) — which means a
+// failed open leaves a reservation behind unless it is rolled back, and one that is never
+// released refuses every later open on that wire for the life of the process.
+fn test_a_failed_open_leaves_no_reservation() {
+	if _ := pinned_open('vector:11@500000', fn (_ string) !Bus {
+		return error('the backend refused')
+	})
+	{
+		assert false, 'a failing backend produced a bus'
+	}
+	if c := wire_pinned_config('vector:11') {
+		assert false, 'an open that failed left the wire pinned to ${c}'
+	}
+	// And the wire is genuinely usable afterwards, in either mode.
+	assert wire_pin_clash('vector:11@500000') == ''
+	assert wire_pin_clash('vector:11@250000,silent') == ''
+}
+
+// ... and the rollback takes ITS port, not whichever one happens to be first. A failure racing an
+// established port on the same wire must leave that port's record exactly as it was.
+fn test_a_failed_open_does_not_release_somebody_elses_port() {
+	mut held := pinned_open('vector:12@500000,silent', fn (_ string) !Bus {
+		return open_inproc('pin_roll')!
+	})!
+	defer {
+		held.close()
+	}
+	if _ := pinned_open('vector:12@500000,silent', fn (_ string) !Bus {
+		return error('the backend refused')
+	})
+	{
+		assert false, 'a failing backend produced a bus'
+	}
+	cfg := wire_pinned_config('vector:12') or {
+		assert false, 'a failed open released a port that was still open'
+		return
+	}
+	assert cfg.silent == true
+}
+
+// EVERY PORT IS ASKED, not just the newest. Ports on one wire normally agree — the driver is
+// what makes them — but a channel reconfigured under its siblings leaves ports that do not, and
+// a newcomer cannot satisfy both. Answering from a half of that state would admit an open one of
+// the live ports contradicts.
+fn test_a_wire_whose_ports_disagree_refuses_both_answers() {
+	mut normal := pinned_open('vector:13@500000', fn (_ string) !Bus {
+		return open_inproc('pin_split')!
+	})!
+	defer {
+		normal.close()
+	}
+	mut silent := pinned_open('vector:13@500000,silent', fn (_ string) !Bus {
+		return open_inproc('pin_split')!
+	})!
+	defer {
+		silent.close()
+	}
+	assert wire_pin_clash('vector:13@500000') != '', 'the normal port on this wire was not consulted'
+	assert wire_pin_clash('vector:13@500000,silent') != '', 'the silent port on this wire was not consulted'
 }
