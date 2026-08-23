@@ -70,10 +70,14 @@ fn main() {
 	// the silenced row never opens a bus here and the simulation therefore drove a channel the
 	// project had asked to keep quiet. And the runner had no rate check at all, so two aliases
 	// disagreeing about the bitrate configured the hardware from whichever spawned first.
-	for problem in project.vendor_destination_conflicts(proj.channels) {
+	for problem in project.destination_conflicts(proj.channels) {
 		eprintln('${problem} — one wire, one mode and one rate; not starting')
 		exit(1)
 	}
+	// Which wires may transmit, through the same call the GUI makes. The runner honoured
+	// listen-only nowhere before #117: `bus.send` from a script reached the wire whatever the
+	// project said, and a simulated node on a silenced row transmitted at its own cadence.
+	proj.apply_listen_only()
 	for ch in proj.channels {
 		if !ch.enabled {
 			continue

@@ -123,8 +123,10 @@ MSGTYPE flags. The free driver has no software virtual channel, so testing needs
 - **`,silent` reaches the transceiver** — ACK-free output is set *before* the channel is
   activated, the only ordering that is safe against a running vehicle. A project's
   `listen_only:` is translated to it, and `cmd/vectorcheck --channel N` defaults to silent.
-  On every other backend `listen_only` does not reach the transceiver — see
-  [#117](https://github.com/MartenH/blobly_net/issues/117).
+  On every other backend `listen_only` does not reach the transceiver, so the adapter still
+  ACKs what it hears. What it DOES do everywhere, since #117, is stop this process
+  transmitting: `transport.open` hands back a bus that refuses to send on a silenced wire, so
+  no emitter can route around it. Two tiers, and the tooltip states both.
 
 **slcan** — not implemented. CANable / CANtact / USBtin appear as a COM port speaking an
 ASCII line protocol (`O` open, `S6` 500k, `t<id><len><data>`, `T…` for 29-bit); no DLL and no

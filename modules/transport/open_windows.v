@@ -7,7 +7,14 @@ module transport
 //   - `kvaser:<channel>[@<bitrate>]` Kvaser CANlib   (kvaser_windows.v)
 //   - `vector:<channel>[@<bitrate>][,silent]` Vector XL (vector_windows.v)
 // The Linux counterpart (open_linux.v) accepts `vcan0`/`can0` instead.
+// Every bus in the process is opened here, which is why listen-only is enforced here: the
+// wrapper is applied to whatever the backend returns, so no emitter can route around it
+// (issue #117). See listen.v.
 pub fn open(iface string) !Bus {
+	return silenced(iface, open_raw(iface)!)
+}
+
+fn open_raw(iface string) !Bus {
 	if name := parse_inproc_iface(iface) {
 		return open_inproc(name)!
 	}

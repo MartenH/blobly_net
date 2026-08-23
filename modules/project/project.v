@@ -403,6 +403,30 @@ pub fn (c Channel) iface_with_bitrate() string {
 	return base + mode
 }
 
+// apply_listen_only pushes this project's listen-only marks into the transport table, replacing
+// whatever the previous project left in it.
+//
+// ONE function, called by every front end that runs a project -- the GUI when it rebuilds, and
+// the headless Lua runner -- because the alternative is each of them deciding separately which
+// wires may transmit. That is the shape issue #117 had: the flag was honoured in exactly one
+// emitter out of eight, while the checkbox's tooltip promised all of them.
+//
+// Rebuilt wholesale rather than patched. A channel that was unticked, renamed, retargeted or
+// removed must not leave a wire silenced behind it, and rebuilding is the only version of that
+// with no path to get wrong.
+//
+// The address registered is the one the bus will be OPENED with (iface_with_bitrate), not the
+// stored spelling: for Vector those differ -- the flag adds `,silent` and the rate lands between
+// them -- and a mark filed under a spelling nobody opens is a mark that never fires.
+pub fn (p Project) apply_listen_only() {
+	transport.clear_listen_only()
+	for c in p.channels {
+		if c.listen_only {
+			transport.set_listen_only(c.iface_with_bitrate(), true)
+		}
+	}
+}
+
 // resolve_asset makes a project-relative path (a DBC, a recording) absolute against the
 // project file's own directory.
 //
@@ -1246,32 +1270,62 @@ pub fn (m Mode) str() string {
 	}
 }
 
-// vendor_destination_conflicts reports configurations that two rows on ONE physical vendor wire
-// cannot both have. Empty means nothing to say.
+// conflict_wire_key groups rows by the wire they reach, for checks that READ a project.
+//
+// Deliberately not transport.wire_key, which this module's own apply_listen_only uses: that one
+// is platform-guarded, because it is naming a bus about to be opened HERE. This is analysis — a
+// Linux GUI must resolve `vector:1` and `vector:ch1` to one wire while reading a project
+// authored for a Windows bench, which is exactly what destination_key_for exists for.
+//
+// And the two families need different treatment of `@`: a bitrate suffix on a vendor address, a
+// literal part of the name anywhere else, where `inproc:bench@A` is a bus called `bench@A`.
+fn conflict_wire_key(c Channel) string {
+	if c.adapter in ['pcan', 'kvaser', 'vector'] {
+		return transport.wire_key_for(c.adapter, c.iface)
+	}
+	return transport.canonical_iface(c.iface)
+}
+
+// destination_conflicts reports configurations that two rows on ONE physical wire cannot both
+// have. Empty means nothing to say.
 //
 // HERE, not in a front end, because both have to reach the same verdict on the same file and
 // they did not: the GUI refused these at Start while the headless runner started the simulation
 // anyway and discarded the refusals a frame at a time. The rules are about what a project MEANS,
 // which is this module's job.
 //
-// Two of them, and both come from a transceiver having one mode and one bitrate:
-//   - a wire one row has set listen-only cannot carry another row's traffic;
-//   - two rows cannot ask for different bitrates on it.
-pub fn vendor_destination_conflicts(chs []Channel) []string {
+// Two of them, and both come from a wire having one mode and one bitrate:
+//   - a wire one row has set listen-only cannot carry another row's traffic — checked on EVERY
+//     adapter since #117. It used to be Vector-only, because `,silent` reached only the Vector
+//     transceiver and the flag did nothing anywhere else, so two rows disagreeing about it on a
+//     PCAN or SocketCAN wire contradicted each other harmlessly. Now the wire itself refuses to
+//     transmit, whichever row asked for it, so the disagreement costs the OTHER row its voice —
+//     answerable before Start rather than discovered as silence afterwards.
+//   - two rows cannot ask for different bitrates on it — vendor adapters only, which are the
+//     ones we configure the rate on.
+//
+// (Named vendor_destination_conflicts while both halves were vendor-only.)
+pub fn destination_conflicts(chs []Channel) []string {
 	mut out := []string{}
 	mut quiet := map[string]string{}
 	mut rate := map[string]int{}
 	mut rate_row := map[string]string{}
 	for c in chs {
-		if !c.enabled || c.adapter !in ['pcan', 'kvaser', 'vector'] {
+		if !c.enabled {
+			continue
+		}
+		// Keyed on what the bus will be OPENED with, so this groups rows exactly as the
+		// transport table does — a mark filed under one spelling and looked up under another
+		// finds nothing, and would report agreement between rows that will not agree at run time.
+		if c.listen_only {
+			quiet[conflict_wire_key(c)] = c.name
+		}
+		if c.adapter !in ['pcan', 'kvaser', 'vector'] {
 			continue
 		}
 		// WITHOUT THE RATE. The rate is what these rows disagree about, so a key containing it
 		// gave each of them their own and the comparison below never happened.
 		k := transport.wire_key_for(c.adapter, c.iface)
-		if c.listen_only && c.adapter == 'vector' {
-			quiet[k] = c.name
-		}
 		want := if c.bitrate > 0 { c.bitrate } else { 500000 }
 		if prev := rate[k] {
 			if prev != want {
@@ -1290,14 +1344,14 @@ pub fn vendor_destination_conflicts(chs []Channel) []string {
 	// bus.send on any channel, and so can Quick Send, the shell and the diagnostic panel; the
 	// row's configuration says nothing about whether somebody will ask it to talk.
 	//
-	// A transceiver has one mode. Two enabled rows on one wire that disagree about it have
-	// stated something the hardware cannot do, whoever ends up transmitting, and that is
-	// answerable now instead of a frame at a time later.
+	// A wire has one mode. Two enabled rows on it that disagree about it have stated something
+	// that cannot be done, whoever ends up transmitting, and that is answerable now instead of a
+	// frame at a time later.
 	for c in chs {
-		if !c.enabled || c.adapter != 'vector' || c.listen_only {
+		if !c.enabled || c.listen_only {
 			continue
 		}
-		if who := quiet[transport.wire_key_for(c.adapter, c.iface)] {
+		if who := quiet[conflict_wire_key(c)] {
 			out << '${c.name} shares ${c.iface} with ${who}, which is listen-only'
 		}
 	}

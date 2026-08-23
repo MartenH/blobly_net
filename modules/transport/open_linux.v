@@ -8,7 +8,14 @@ module transport
 // (udp + inproc). Keeping `open_socketcan` referenced ONLY here preserves the
 // platform seam — `socketcan_linux.v` never has to compile on Windows.
 //   - `inproc` / `inproc:NAME` → the driver-free in-process bus (inproc.v).
+// Every bus in the process is opened here, which is why listen-only is enforced here: the
+// wrapper is applied to whatever the backend returns, so no emitter can route around it
+// (issue #117). See listen.v.
 pub fn open(iface string) !Bus {
+	return silenced(iface, open_raw(iface)!)
+}
+
+fn open_raw(iface string) !Bus {
 	if name := parse_inproc_iface(iface) {
 		return open_inproc(name)!
 	}

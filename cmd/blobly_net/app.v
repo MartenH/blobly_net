@@ -639,6 +639,11 @@ fn (mut app App) rebuild_from_proj() {
 	// silently dropped along with the databases it referred to
 	app.resolve_pending_bit_edit()
 	proj := app.proj
+	// Which wires may transmit, refreshed with everything else this rebuild derives, and
+	// through the same call the headless runner makes. Not in load_project: a bus edited from
+	// the Buses panel reaches here without going near a file, and a listen-only tick that only
+	// took effect on the next reload is a tick that lies until then.
+	proj.apply_listen_only()
 	app.mu.lock()
 	app.chans = []
 	// rebuild runs for ordinary config ops too (add bus/DBC, adapter change) —

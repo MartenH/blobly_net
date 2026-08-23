@@ -100,7 +100,7 @@ fn (app &App) dest_is_read_locked(iface string) bool {
 	return false
 }
 
-// destination_conflict asks project.vendor_destination_conflicts about the rows as they stand.
+// destination_conflict asks project.destination_conflicts about the rows as they stand.
 //
 // ONE POLICY, and this is its third home: the GUI had its own mode check and its own rate check,
 // the headless runner had neither, and when the shared rule was tightened — a mode disagreement
@@ -119,7 +119,7 @@ fn (app &App) destination_conflict() ?string {
 			enabled:     c.enabled
 		}
 	}
-	problems := project.vendor_destination_conflicts(rows)
+	problems := project.destination_conflicts(rows)
 	if problems.len == 0 {
 		return none
 	}

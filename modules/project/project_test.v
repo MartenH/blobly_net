@@ -753,7 +753,7 @@ channels:
 }
 
 // One wire, one mode and one rate — the rules both front ends must reach the same verdict on.
-fn test_vendor_destination_conflicts() {
+fn test_destination_conflicts() {
 	// A silenced wire cannot carry another row's simulation, even spelled differently.
 	quiet := [
 		Channel{
@@ -771,7 +771,7 @@ fn test_vendor_destination_conflicts() {
 			simulate: ['ECU']
 		},
 	]
-	assert vendor_destination_conflicts(quiet).len == 1
+	assert destination_conflicts(quiet).len == 1
 
 	// Two rates on one wire.
 	rates := [
@@ -790,7 +790,7 @@ fn test_vendor_destination_conflicts() {
 			bitrate: 500000
 		},
 	]
-	assert vendor_destination_conflicts(rates).len == 1
+	assert destination_conflicts(rates).len == 1
 
 	// A row that merely WATCHES is no longer excused. A script, Quick Send or the shell can tell
 	// any channel to transmit, so its configuration says nothing about whether it will — and two
@@ -811,7 +811,7 @@ fn test_vendor_destination_conflicts() {
 			enabled: true
 		},
 	]
-	assert vendor_destination_conflicts(mixed).len == 1
+	assert destination_conflicts(mixed).len == 1
 
 	// Agreeing is fine, either way round.
 	agreed := [
@@ -830,7 +830,7 @@ fn test_vendor_destination_conflicts() {
 			listen_only: true
 		},
 	]
-	assert vendor_destination_conflicts(agreed).len == 0
+	assert destination_conflicts(agreed).len == 0
 }
 
 // The rate is what these rows disagree about, so the key that groups them must not contain it.
@@ -852,7 +852,7 @@ fn test_rate_conflict_actually_fires() {
 			bitrate: 500000
 		},
 	]
-	got := vendor_destination_conflicts(rows)
+	got := destination_conflicts(rows)
 	assert got.len == 1, 'two rates on one wire must be reported, got ${got}'
 	assert got[0].contains('250000') && got[0].contains('500000')
 
@@ -875,6 +875,71 @@ fn test_rate_conflict_actually_fires() {
 			bitrate: 500000
 		},
 	]
-	legacy_got := vendor_destination_conflicts(legacy)
+	legacy_got := destination_conflicts(legacy)
 	assert legacy_got.len == 1, 'one wire, two rates in the interfaces: ${legacy_got}'
+}
+
+// Listen-only is enforced on every backend since #117, so a disagreement about it is a conflict
+// on every backend too -- not only on Vector, where `,silent` used to be the only version of it
+// that did anything. Before, these rows started happily and the software row simply transmitted.
+fn test_listen_only_conflicts_on_non_vendor_wires() {
+	rows := [
+		Channel{
+			name:        'watch'
+			iface:       'vcan0'
+			enabled:     true
+			listen_only: true
+		},
+		Channel{
+			name:     'drive'
+			iface:    'vcan0'
+			enabled:  true
+			simulate: ['ECU']
+		},
+	]
+	got := destination_conflicts(rows)
+	assert got.len == 1
+	assert got[0].contains('watch')
+
+	// A disabled row states nothing.
+	mut off := rows.clone()
+	off[0].enabled = false
+	assert destination_conflicts(off).len == 0
+
+	// Two rows that AGREE are not a conflict, however many of them there are.
+	agreed := [
+		Channel{
+			name:        'a'
+			iface:       'vcan0'
+			enabled:     true
+			listen_only: true
+		},
+		Channel{
+			name:        'b'
+			iface:       'vcan0'
+			enabled:     true
+			listen_only: true
+		},
+	]
+	assert destination_conflicts(agreed).len == 0
+}
+
+// `@` is a bitrate on a vendor address and part of the NAME on a software bus. Grouped by a key
+// that cut at it, two unrelated in-process hubs would be reported as one contended wire.
+fn test_at_sign_does_not_merge_software_buses() {
+	rows := [
+		Channel{
+			name:        'quiet'
+			iface:       'inproc:bench@A'
+			enabled:     true
+			listen_only: true
+		},
+		Channel{
+			name:     'loud'
+			iface:    'inproc:bench@B'
+			enabled:  true
+			simulate: ['ECU']
+		},
+	]
+	assert destination_conflicts(rows).len == 0
 }
