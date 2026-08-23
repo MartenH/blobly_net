@@ -125,7 +125,11 @@ static void style_vscode_dark() {
     // would trade one deliberate thing for another. The overline is a separate slot: it marks the
     // focused node's active tab without touching a single fill.
     c[ImGuiCol_TabSelectedOverline]  = hx(accent);
-    c[ImGuiCol_TabDimmedSelectedOverline] = hx(bg3);
+    // TRANSPARENT, as every built-in ImGui style sets it -- and here it is the point rather than
+    // a convention followed. The overline IS the focus cue, so an unfocused node carrying a
+    // faint one of its own weakens exactly the distinction it exists to draw. Present or absent
+    // reads faster than bright or dim.
+    c[ImGuiCol_TabDimmedSelectedOverline] = hx(0, 0.0f);
     c[ImGuiCol_DockingPreview]       = hx(accent, 0.4f);
     c[ImGuiCol_DockingEmptyBg]       = hx(bg0);
     c[ImGuiCol_TableHeaderBg]        = hx(bg1);
