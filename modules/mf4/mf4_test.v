@@ -966,3 +966,122 @@ fn test_remote_frame_timestamps_are_read() {
 	assert es[1].t_s > 0.7 && es[1].t_s < 0.8, 'got ${es[1].t_s}'
 	assert es[0].t_s < es[1].t_s
 }
+
+// cn_block_data_inval is cn_block_data with an INVALIDATION BIT declared (cn_flags bit 1, and
+// the bit's index in the record's invalidation area).
+fn cn_block_data_inval(cn_type u8, dtype u8, byte_off u32, bits u32, inval_bit u32) []u8 {
+	mut d := cn_block_data(cn_type, dtype, byte_off, bits)
+	for i, x in le_bytes(u32(0x02), 4) {
+		d[12 + i] = x
+	}
+	for i, x in le_bytes(inval_bit, 4) {
+		d[16 + i] = x
+	}
+	return d
+}
+
+// build_remote_frame_file_both writes a CAN_RemoteFrame group carrying BOTH length channels —
+// DLC and DataLength — which is what the standard schemas define. Records are 18 bytes plus one
+// invalidation byte: time f64 @0, ID @8, IDE @12, DLC @13, DataLength u32 @14. When
+// `dlc_invalid` is set the DLC channel declares invalidation bit 0 and every record sets it.
+fn build_remote_frame_file_both(ids []u32, dlcs []u32, datalens []u32, dlc_invalid bool) []u8 {
+	mut b := Mdf4Builder{}
+	b.buf << 'MDF     '.bytes()
+	b.buf << '4.10    '.bytes()
+	b.buf << 'blobly  '.bytes()
+	b.buf << []u8{len: 4}
+	b.buf << le_bytes(410, 2)
+	b.buf << []u8{len: 34}
+
+	hd := b.block('##HD', 6, []u8{len: 32})
+	dg := b.block('##DG', 4, []u8{len: 8})
+	mut cg_d := []u8{len: 32}
+	for i, x in le_bytes(u64(ids.len), 8) {
+		cg_d[8 + i] = x
+	}
+	for i, x in le_bytes(u64(18), 4) {
+		cg_d[24 + i] = x // data bytes per record
+	}
+	for i, x in le_bytes(u64(1), 4) {
+		cg_d[28 + i] = x // one invalidation byte after them
+	}
+	cg := b.block('##CG', 6, cg_d)
+
+	cn_t := b.block('##CN', 8, cn_block_data(2, 4, 0, 64))
+	cn_fr := b.block('##CN', 8, cn_block_data(0, 10, 8, 0))
+	cn_id := b.block('##CN', 8, cn_block_data(0, 0, 8, 32))
+	cn_ide := b.block('##CN', 8, cn_block_data(0, 0, 12, 1))
+	cn_dlc := if dlc_invalid {
+		b.block('##CN', 8, cn_block_data_inval(0, 0, 13, 8, 0))
+	} else {
+		b.block('##CN', 8, cn_block_data(0, 0, 13, 8))
+	}
+	cn_dl := b.block('##CN', 8, cn_block_data(0, 0, 14, 32))
+
+	tx_t := b.text('time')
+	tx_fr := b.text('CAN_RemoteFrame')
+	tx_id := b.text('CAN_RemoteFrame.ID')
+	tx_ide := b.text('CAN_RemoteFrame.IDE')
+	tx_dlc := b.text('CAN_RemoteFrame.DLC')
+	tx_dl := b.text('CAN_RemoteFrame.DataLength')
+
+	mut recs := []u8{}
+	for i, id in ids {
+		recs << le_bytes(math.f64_bits(0.001 * f64(i + 1)), 8)
+		recs << le_bytes(u64(id), 4)
+		recs << u8(0)
+		recs << u8(dlcs[i])
+		recs << le_bytes(u64(datalens[i]), 4)
+		recs << u8(if dlc_invalid { 0x01 } else { 0x00 }) // invalidation area
+	}
+	dt := b.block('##DT', 0, recs)
+
+	b.set_link(hd, 0, dg)
+	b.set_link(dg, 1, cg)
+	b.set_link(dg, 2, dt)
+	b.set_link(cg, 1, cn_t)
+	b.set_link(cn_t, 0, cn_fr)
+	b.set_link(cn_t, 2, tx_t)
+	b.set_link(cn_fr, 1, cn_id)
+	b.set_link(cn_fr, 2, tx_fr)
+	b.set_link(cn_id, 0, cn_ide)
+	b.set_link(cn_id, 2, tx_id)
+	b.set_link(cn_ide, 0, cn_dlc)
+	b.set_link(cn_ide, 2, tx_ide)
+	b.set_link(cn_dlc, 0, cn_dl)
+	b.set_link(cn_dlc, 2, tx_dlc)
+	b.set_link(cn_dl, 2, tx_dl)
+	return b.buf
+}
+
+// A writer that emits BOTH length channels can record DataLength as 0 — a remote frame carries
+// no payload, so there is nothing for a byte count to describe — while the length being REQUESTED
+// sits in DLC. Preferring DataLength there imported an `R8` as an `R0` and replayed it as one: a
+// request for eight bytes turned into a request for none, which an ECU answers differently or
+// not at all (codex #175 r1).
+fn test_a_remote_frame_prefers_its_dlc_over_a_zero_datalength() {
+	buf := build_remote_frame_file_both([u32(0x400), 0x401], [u32(8), 3], [u32(0), 0],
+		false)
+	es := parse(buf) or {
+		assert false, '${err}'
+		return
+	}
+	assert es.len == 2
+	assert es[0].frame.rtr && es[1].frame.rtr
+	assert es[0].frame.data.len == 8, 'DLC 8 is the requested length, not DataLength 0'
+	assert es[1].frame.data.len == 3
+}
+
+// A record may declare its DLC INVALID, and the bits then hold whatever the writer left there.
+// Read regardless, stale bits become a plausible request length and the frame replays asking for
+// bytes the recording never said were asked for.
+fn test_an_invalid_remote_dlc_is_not_read() {
+	buf := build_remote_frame_file_both([u32(0x402)], [u32(8)], [u32(0)], true)
+	es := parse(buf) or {
+		assert false, '${err}'
+		return
+	}
+	assert es.len == 1, 'the frame is still real; only its length is undefined'
+	assert es[0].frame.rtr
+	assert es[0].frame.data.len == 0, 'an invalidated DLC must not become a request for 8'
+}

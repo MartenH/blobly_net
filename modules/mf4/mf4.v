@@ -410,10 +410,23 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 	} else {
 		find_chan(chans, 'CAN_DataFrame.DataBytes') or { return }
 	}
-	// DLC, not DataLength, on a remote group: the frame states the length it is ASKING for, and
-	// there are no bytes for a byte count to describe.
-	c_len := find_chan(chans, '${prefix}.DataLength') or {
-		find_chan(chans, '${prefix}.DLC') or { return }
+	// DLC FIRST on a remote group, and that order is the point. A remote frame states the length
+	// it is ASKING for and carries no bytes, so a writer that emits both channels can perfectly
+	// reasonably record DataLength as 0 — there is no payload for a byte count to describe —
+	// while the requested length sits in DLC. Preferring DataLength there imports an `R8` as an
+	// `R0` and replays it as one: a request for eight bytes turned into a request for none,
+	// which the receiving ECU answers differently or not at all (codex #175 r1).
+	//
+	// The data path keeps the opposite preference for the opposite reason: there DataLength
+	// states bytes outright while a DLC has to be decoded, and above 8 the two part company.
+	c_len := if remote {
+		find_chan(chans, 'CAN_RemoteFrame.DLC') or {
+			find_chan(chans, 'CAN_RemoteFrame.DataLength') or { return }
+		}
+	} else {
+		find_chan(chans, 'CAN_DataFrame.DataLength') or {
+			find_chan(chans, 'CAN_DataFrame.DLC') or { return }
+		}
 	}
 	// Whether that channel counts BYTES. DataLength does; DLC is the wire code, and above 8 the
 	// two part company — a CAN-FD DLC of 15 means 64 bytes. Only the byte count can be compared
@@ -514,10 +527,23 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 			// codes 9..15 would invent a 64-byte request that cannot exist. A code that still
 			// resolves above 8 is refused rather than clamped, on the same reasoning the two
 			// payload branches below already apply to a length they cannot trust.
-			stated := read_uint(raw, base + c_len.byte_off, int(c_len.bit_off), int(c_len.bit_count))
-			if n := dlc_bytes(stated, false) {
-				if n <= 8 {
-					data = []u8{len: int(n)}
+			// INVALIDATION FIRST. An MDF record can mark a channel's value undefined, and the
+			// bits then hold whatever the writer left there. Read regardless, stale bits become
+			// a plausible request length and the frame replays asking for bytes the recording
+			// never said were asked for — the other optional fields in this parser all consult
+			// chan_invalid for exactly this, and a length has more consequence than most
+			// (codex #175 r1).
+			if !chan_invalid(raw, base, data_bytes, inval_bytes, c_len) {
+				stated := read_uint(raw, base + c_len.byte_off, int(c_len.bit_off),
+					int(c_len.bit_count))
+				// Whichever channel was chosen above: a DataLength states bytes outright, a DLC
+				// is a code to decode. Deciding by name rather than assuming DLC keeps the
+				// fallback honest for a writer that records only DataLength.
+				resolved := if len_is_bytes { ?u64(stated) } else { dlc_bytes(stated, false) }
+				if n := resolved {
+					if n <= 8 {
+						data = []u8{len: int(n)}
+					}
 				}
 			}
 		} else if is_vlsd {
