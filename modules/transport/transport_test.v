@@ -303,3 +303,28 @@ fn test_vector_spelling_is_not_part_of_the_destination() {
 	assert vector_key('1,silent') == vector_key('1')
 	assert vector_key('ch1,silent') == vector_key('app1')
 }
+
+// wire_key (listen.v) answers "is this the same piece of copper", which is NOT the question
+// destination_key answers: the rate is a setting ON a wire, not part of which wire it is. It was
+// written for listen-only marks; echo matching and "who can see this emission" ask the same
+// question, and asking destination_key instead meant an emitter that had stripped the bitrate
+// never met the reader that had kept it. Pinned here because those callers now depend on it.
+fn test_wire_key_is_the_destination_without_its_rate() {
+	$if windows {
+		// Same channel, three spellings, two rates — one wire.
+		a := wire_key('vector:1@250000')
+		assert a == wire_key('vector:ch1@250000'), 'aliases of one application channel are one wire'
+		assert a == wire_key('vector:1'), 'a missing rate must not invent a different wire'
+		assert a == wire_key('vector:1@500000'), 'the rate is a setting on the wire, not its identity'
+		assert !a.contains('@'), 'wire_key carries no rate'
+		// Different channels stay different.
+		assert wire_key('vector:1') != wire_key('vector:2')
+		assert wire_key('pcan:PCAN_USBBUS1') != wire_key('pcan:PCAN_USBBUS2')
+	}
+	// The software buses keep their spelling — `@` is VENDOR syntax for a bitrate, and
+	// `inproc:bench@A` is a perfectly good bus NAME. Truncating there would merge two buses.
+	assert wire_key('inproc:bench@A') == 'inproc:bench@A'
+	assert wire_key('inproc:bench@A') != wire_key('inproc:bench@B')
+	// ...and the canonical spellings still collapse, exactly as destination_key has them.
+	assert wire_key('inproc') == wire_key('inproc:')
+}

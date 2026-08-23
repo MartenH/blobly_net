@@ -142,7 +142,7 @@ pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, 
 	// frame duplicated as RX — the very bug this ring exists to prevent (codex #174 P1).
 	// destination_key is what the BACKEND will open, which is the identity that matters, and for
 	// the software buses it is canonical_iface, so nothing changes for them.
-	wire := transport.destination_key(iface)
+	wire := transport.wire_key(iface)
 	r.items << Pending{
 		seq:     seq
 		key:     frame_key(wire, f)
@@ -248,7 +248,7 @@ pub fn (mut r Ring) claim(monitor int, iface string, f transport.CanFrame, t_ms 
 	r.drop_expired(t_ms)
 	// Resolved the same way `note` resolved it, or an emitter and its monitor that spell one
 	// wire differently never meet. See the comment there.
-	wire := transport.destination_key(iface)
+	wire := transport.wire_key(iface)
 	want := frame_key(wire, f)
 	// BY INDEX, not `for i, p in`. That form copies each Pending — strings, payload, monitor
 	// lists and all — for every candidate, which cost ~200us per received frame at a full ring:

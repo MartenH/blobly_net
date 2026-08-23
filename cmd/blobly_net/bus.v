@@ -290,9 +290,17 @@ fn (app &App) tx_mutex(iface string) &sync.Mutex {
 // Caller holds app.mu.
 fn (app &App) monitors_locked(iface string) []int {
 	mut out := []int{}
-	want := transport.canonical_iface(iface)
+	// THE WIRE, like tx_mutex above and like wiretap's own matching — not canonical_iface, which
+	// does not know that `vector:1` and `vector:ch1` are one transceiver, and which keeps a
+	// bitrate suffix that only one side of this comparison carries. start() gives a wire ONE
+	// reader, so a mismatch here does not merely pick the wrong row: it finds NO row, and the
+	// emission is noted with an empty `allowed` set. That still lets the echo be claimed, so the
+	// duplicate disappears and the bug looks fixed — while expire() can never call the emission
+	// missed, and the recording takes the nobody-is-watching path and writes the frame at emit as
+	// well as at echo (codex #174 r2).
+	want := transport.wire_key(iface)
 	for i, c in app.chans {
-		if transport.canonical_iface(c.iface) == want && c.monitorable() && c.running {
+		if transport.wire_key(c.iface) == want && c.monitorable() && c.running {
 			out << i
 		}
 	}
