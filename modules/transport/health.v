@@ -47,6 +47,45 @@ pub fn pcan_status_health(st u32) BusHealth {
 	return .unknown
 }
 
+// PcanRead is what a CAN_Read return value MEANS. Three answers, because the vendor packs
+// three different things into one word and conflating any two of them loses a wire.
+pub enum PcanRead {
+	frame  // a message was returned
+	empty  // nothing waiting — poll again
+	failed // the channel is broken: stop reading it
+}
+
+// pcan_ladder_mask is the fault ladder CAN_Read ORs into its return value: BUSLIGHT 0x04,
+// BUSHEAVY/BUSWARNING 0x08, BUSOFF 0x10, BUSPASSIVE 0x40000 — the same PCANBasic.h bits
+// pcan_status_health decodes above, and the reason this function exists.
+const pcan_ladder_mask = u32(0x04 | 0x08 | 0x10 | 0x40000)
+
+// pcan_read_verdict classifies CAN_Read's status word.
+//
+// THE LADDER IS NOT A READ FAILURE. CAN_Read reports the channel's condition alongside the
+// message, so a wire in trouble returns BUSHEAVY *and* whatever it had (or nothing). The
+// backend used to answer "any status that is neither OK nor QRCVEMPTY" with a hard error, and
+// rx_loop answers a hard error by disabling every channel on the wire — so transmitting into a
+// disconnected bus reported 0x08 and killed its own reader. A warning must degrade the wire,
+// never remove it: the ladder belongs to health() (which polls it every second and narrates
+// the transition), and only what is left after masking it off decides whether the READ worked.
+//
+// Masks the ladder and nothing else. PCAN_ERROR_QOVERRUN (0x40) and QXMTFULL (0x80) are
+// arguably the same class — conditions rather than read failures — but nothing has been
+// observed to raise them here, and widening this mask on reasoning alone is how a genuine
+// failure (ILLHW when an adapter is unplugged, NODRIVER, INITIALIZE) ends up silently swallowed
+// and a dead channel is polled forever.
+pub fn pcan_read_verdict(st u32) PcanRead {
+	rest := st & ~pcan_ladder_mask
+	if rest == 0 {
+		return .frame
+	}
+	if rest == 0x20 { // PCAN_ERROR_QRCVEMPTY
+		return .empty
+	}
+	return .failed
+}
+
 // kvaser_status_health decodes canReadStatus flags — canstat.h: canSTAT_ERROR_PASSIVE 0x01,
 // canSTAT_BUS_OFF 0x02, canSTAT_ERROR_WARNING 0x04, canSTAT_ERROR_ACTIVE 0x08 (TX_PENDING
 // 0x10, RESERVED_1 0x40 carry no ladder meaning). The first transcription of this table had
