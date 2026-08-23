@@ -45,6 +45,60 @@ fn read_destinations(rows []Chan) map[string]DestState {
 	return out
 }
 
+// worst_wire_health folds every running wire down to the one verdict worth interrupting the
+// operator with, and names the bus it came from. Built on read_destinations, the same fold the
+// Buses panel colours its rows from — a second walk over `chans` here is how the toolbar and
+// the panel would end up disagreeing about which wire is in trouble.
+//
+// `.unknown` deliberately cannot win: it ranks BELOW ok (transport.health_rank), because
+// "cannot say" is not a fault and a chip that fires on it would be permanent on backends whose
+// driver reports no ladder at all.
+// health_chip_color and health_short are the ONE mapping of the fault ladder to how it looks:
+// the Buses row and the toolbar chip both read them, so a wire cannot be amber in one place and
+// red in the other. Anything at or below `ok` is never drawn by either caller — both test the
+// rank first — so the fallthrough colour is only a defensive neutral.
+fn health_chip_color(h transport.BusHealth) (u8, u8, u8) {
+	if h == .bus_off {
+		return u8(230), u8(70), u8(70)
+	}
+	if h == .error_passive {
+		return u8(230), u8(140), u8(60)
+	}
+	if h == .warning {
+		return u8(220), u8(190), u8(70)
+	}
+	return u8(200), u8(200), u8(200)
+}
+
+// health_short is the 4-character form the Buses table column has room for; the toolbar uses
+// transport.health_name, which spells it out.
+fn health_short(h transport.BusHealth) string {
+	if h == .bus_off {
+		return 'BOFF'
+	}
+	if h == .error_passive {
+		return 'errP'
+	}
+	if h == .warning {
+		return 'warn'
+	}
+	return ''
+}
+
+fn worst_wire_health(chans []Chan) (transport.BusHealth, string) {
+	dests := read_destinations(chans)
+	mut worst := transport.BusHealth.ok
+	mut name := ''
+	for c in chans {
+		st := dests[transport.destination_key(c.iface)] or { continue }
+		if transport.health_rank(st.health) > transport.health_rank(worst) {
+			worst = st.health
+			name = c.name
+		}
+	}
+	return worst, name
+}
+
 fn chan_state(c Chan, wire DestState) (u8, u8, u8, string) {
 	if !c.enabled {
 		return u8(140), u8(140), u8(145), 'off '
@@ -58,11 +112,13 @@ fn chan_state(c Chan, wire DestState) (u8, u8, u8, string) {
 		// transmits, and painting it green was the lie the bench kept believing. Read from
 		// the WIRE's folded verdict, not the row's own field: only the reader-owning row is
 		// ever written, and its aliases must not draw green on a bus-off wire
-		match wire.health {
-			.bus_off { return u8(230), u8(70), u8(70), 'BOFF' }
-			.error_passive { return u8(230), u8(140), u8(60), 'errP' }
-			.warning { return u8(220), u8(190), u8(70), 'warn' }
-			else {}
+		// Colour and label from the ONE mapping of the ladder (health_chip_color /
+		// health_short), which the toolbar chip reads too: this row and that chip describe the
+		// same wire, and two tables of colours is how they would come to describe it
+		// differently.
+		if transport.health_rank(wire.health) > transport.health_rank(transport.BusHealth.ok) {
+			hr, hg, hb := health_chip_color(wire.health)
+			return hr, hg, hb, health_short(wire.health)
 		}
 
 		return u8(90), u8(200), u8(120), 'run '

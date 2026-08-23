@@ -264,6 +264,19 @@ fn draw_toolbar(mut app App, rx u64, txs string) {
 	} else {
 		vgui.text_colored(210, 120, 120, 'stopped')
 	}
+	// The controller's fault ladder, beside the thing it contradicts. It used to appear ONLY as
+	// a four-character label in the Buses panel, which an operator watching the Trace never
+	// sees: the bench pulled a connector, the adapter reported BUSHEAVY within half a second,
+	// and the screen said "running" and nothing else (#156). A wire whose transmissions are not
+	// reaching it is not a footnote in another window.
+	if app.running {
+		h, wire := worst_wire_health(app.chans)
+		if transport.health_rank(h) > transport.health_rank(transport.BusHealth.ok) {
+			r, g, b := health_chip_color(h)
+			vgui.same_line()
+			vgui.text_colored(r, g, b, '· ${wire} ${transport.health_name(h)}')
+		}
+	}
 	vgui.same_line()
 	// Unsaved FILE-tab text counts as modified too. It lives in its own buffer, so without this
 	// the toolbar read clean while an edit sat waiting in a closed window.
