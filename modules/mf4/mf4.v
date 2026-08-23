@@ -493,6 +493,24 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 		if base + data_bytes > raw.len {
 			break
 		}
+		// IDENTITY FIRST, and a record whose identity is undefined is not a record. An MDF
+		// invalidation flag — channel-wide or per record — says these bits mean nothing, and
+		// reading them anyway produces a frame under a plausible id that the recording never
+		// stated. Unlike an optional field, there is no degraded answer available: an id is not
+		// something a frame can lack, and IDE decides whether the id is 11 or 29 bits, so an
+		// undefined one changes which frame this is. Skipped rather than guessed, because these
+		// entries are REPLAYED — a guess here puts traffic on a real bus that no recording ever
+		// contained (codex #175 r2).
+		//
+		// Applies to data frames as much as to remote ones. The finding was raised against the
+		// remote path this PR adds, but the read is shared, and the consequence — an invented
+		// id, transmitted — does not become acceptable because the frame carries a payload.
+		if chan_invalid(raw, base, data_bytes, inval_bytes, c_id) {
+			continue
+		}
+		if c_ide.bit_count > 0 && chan_invalid(raw, base, data_bytes, inval_bytes, c_ide) {
+			continue
+		}
 		rid := read_uint(raw, base + c_id.byte_off, int(c_id.bit_off), int(c_id.bit_count))
 		ide := if c_ide.bit_count > 0 {
 			read_uint(raw, base + c_ide.byte_off, int(c_ide.bit_off), int(c_ide.bit_count)) == 1
@@ -533,19 +551,31 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 			// never said were asked for — the other optional fields in this parser all consult
 			// chan_invalid for exactly this, and a length has more consequence than most
 			// (codex #175 r1).
-			if !chan_invalid(raw, base, data_bytes, inval_bytes, c_len) {
-				stated := read_uint(raw, base + c_len.byte_off, int(c_len.bit_off),
-					int(c_len.bit_count))
-				// Whichever channel was chosen above: a DataLength states bytes outright, a DLC
-				// is a code to decode. Deciding by name rather than assuming DLC keeps the
-				// fallback honest for a writer that records only DataLength.
-				resolved := if len_is_bytes { ?u64(stated) } else { dlc_bytes(stated, false) }
-				if n := resolved {
-					if n <= 8 {
-						data = []u8{len: int(n)}
-					}
-				}
+			// SKIPPED when the length is unknown, not emitted empty. For a data frame an absent
+			// payload is a frame we can still place on the bus honestly; for a remote frame the
+			// DLC IS the message — `R0` and `R8` are different requests, and an ECU answers them
+			// differently or not at all. So leaving `data` empty here does not withhold a
+			// doubtful detail, it states a specific request the recording never made, and these
+			// entries are replayed onto real buses. The first version of this branch did exactly
+			// that: it turned a stale R8 into an invented R0 and called it caution (codex
+			// #175 r2).
+			//
+			// Three ways the length can be unknown, one answer: the record says the channel is
+			// invalid, the code is not a four-bit DLC at all, or it resolves above 8 — which no
+			// classic remote frame can request, and CAN-FD has none to reinterpret it as.
+			if chan_invalid(raw, base, data_bytes, inval_bytes, c_len) {
+				continue
 			}
+			stated := read_uint(raw, base + c_len.byte_off, int(c_len.bit_off), int(c_len.bit_count))
+			// Whichever channel was chosen above: a DataLength states bytes outright, a DLC is a
+			// code to decode. Deciding by name rather than assuming DLC keeps the fallback honest
+			// for a writer that records only DataLength.
+			resolved := if len_is_bytes { ?u64(stated) } else { dlc_bytes(stated, false) }
+			n := resolved or { continue }
+			if n > 8 {
+				continue
+			}
+			data = []u8{len: int(n)}
 		} else if is_vlsd {
 			off := read_uint(raw, base + c_db.byte_off, int(c_db.bit_off), int(c_db.bit_count))
 			// SUBTRACTION, never `off + 4`: the offset field's width is declared by the file, and

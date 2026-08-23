@@ -936,18 +936,17 @@ fn test_a_remote_dlc_above_eight_reads_as_eight() {
 	assert !es[0].frame.fd, 'and neither is FD — that reading is what must never happen'
 }
 
-// A DLC that is not a four-bit code at all did not come off a wire. The length is unknown, and
-// an unknown length must not become a plausible 8 — the same refusal every other length this
-// parser cannot trust already gets.
-fn test_a_remote_dlc_outside_the_code_range_is_refused() {
+// A DLC that is not a four-bit code at all did not come off a wire, so the requested length is
+// unknown — and for a remote frame that means the whole message is unknown, not merely one field
+// of it. DROPPED, for the same reason an invalidated DLC is: `R0` is a real request, and
+// emitting one here would replay a request the recording never contained.
+fn test_a_remote_dlc_outside_the_code_range_drops_the_frame() {
 	buf := build_remote_frame_file([u32(0x202)], [false], [u32(200)], [0.001])
 	es := parse(buf) or {
 		assert false, '${err}'
 		return
 	}
-	assert es.len == 1, 'the frame still arrives; it is its length that is unknown'
-	assert es[0].frame.rtr
-	assert es[0].frame.data.len == 0
+	assert es.len == 0, 'an unresolvable DLC must not become a request for zero bytes'
 }
 
 // Timestamps and ordering come from the same machinery as a data group — the point of
@@ -984,7 +983,9 @@ fn cn_block_data_inval(cn_type u8, dtype u8, byte_off u32, bits u32, inval_bit u
 // DLC and DataLength — which is what the standard schemas define. Records are 18 bytes plus one
 // invalidation byte: time f64 @0, ID @8, IDE @12, DLC @13, DataLength u32 @14. When
 // `dlc_invalid` is set the DLC channel declares invalidation bit 0 and every record sets it.
-fn build_remote_frame_file_both(ids []u32, dlcs []u32, datalens []u32, dlc_invalid bool) []u8 {
+fn build_remote_frame_file_both(ids []u32, dlcs []u32, datalens []u32, inval string) []u8 {
+	dlc_invalid := inval == 'dlc'
+	id_invalid := inval == 'id'
 	mut b := Mdf4Builder{}
 	b.buf << 'MDF     '.bytes()
 	b.buf << '4.10    '.bytes()
@@ -1009,7 +1010,11 @@ fn build_remote_frame_file_both(ids []u32, dlcs []u32, datalens []u32, dlc_inval
 
 	cn_t := b.block('##CN', 8, cn_block_data(2, 4, 0, 64))
 	cn_fr := b.block('##CN', 8, cn_block_data(0, 10, 8, 0))
-	cn_id := b.block('##CN', 8, cn_block_data(0, 0, 8, 32))
+	cn_id := if id_invalid {
+		b.block('##CN', 8, cn_block_data_inval(0, 0, 8, 32, 1))
+	} else {
+		b.block('##CN', 8, cn_block_data(0, 0, 8, 32))
+	}
 	cn_ide := b.block('##CN', 8, cn_block_data(0, 0, 12, 1))
 	cn_dlc := if dlc_invalid {
 		b.block('##CN', 8, cn_block_data_inval(0, 0, 13, 8, 0))
@@ -1032,7 +1037,7 @@ fn build_remote_frame_file_both(ids []u32, dlcs []u32, datalens []u32, dlc_inval
 		recs << u8(0)
 		recs << u8(dlcs[i])
 		recs << le_bytes(u64(datalens[i]), 4)
-		recs << u8(if dlc_invalid { 0x01 } else { 0x00 }) // invalidation area
+		recs << u8(if dlc_invalid { 0x01 } else if id_invalid { 0x02 } else { 0x00 }) // invalidation area
 	}
 	dt := b.block('##DT', 0, recs)
 
@@ -1061,7 +1066,7 @@ fn build_remote_frame_file_both(ids []u32, dlcs []u32, datalens []u32, dlc_inval
 // not at all (codex #175 r1).
 fn test_a_remote_frame_prefers_its_dlc_over_a_zero_datalength() {
 	buf := build_remote_frame_file_both([u32(0x400), 0x401], [u32(8), 3], [u32(0), 0],
-		false)
+		'')
 	es := parse(buf) or {
 		assert false, '${err}'
 		return
@@ -1073,15 +1078,28 @@ fn test_a_remote_frame_prefers_its_dlc_over_a_zero_datalength() {
 }
 
 // A record may declare its DLC INVALID, and the bits then hold whatever the writer left there.
-// Read regardless, stale bits become a plausible request length and the frame replays asking for
-// bytes the recording never said were asked for.
-fn test_an_invalid_remote_dlc_is_not_read() {
-	buf := build_remote_frame_file_both([u32(0x402)], [u32(8)], [u32(0)], true)
+// The frame is DROPPED, not emitted with an empty payload: for a remote frame the DLC IS the
+// message, so `R0` is not "an R8 with the length withheld" — it is a different request, and one
+// an ECU answers differently or not at all. These entries get replayed onto real buses, so an
+// invented request is traffic no recording ever contained. Emitting it empty was this branch's
+// first attempt, and it turned a stale R8 into a confident R0 (codex #175 r2).
+fn test_a_remote_frame_with_an_invalid_dlc_is_dropped() {
+	buf := build_remote_frame_file_both([u32(0x402)], [u32(8)], [u32(0)], 'dlc')
 	es := parse(buf) or {
 		assert false, '${err}'
 		return
 	}
-	assert es.len == 1, 'the frame is still real; only its length is undefined'
-	assert es[0].frame.rtr
-	assert es[0].frame.data.len == 0, 'an invalidated DLC must not become a request for 8'
+	assert es.len == 0, 'an unknown requested length must not become a request for none'
+}
+
+// The same rule for the frame's IDENTITY, and it is not a remote-frame question: an id is not
+// something a frame can lack, and IDE decides whether it is 11 or 29 bits. An invalidated one
+// read anyway puts a frame on the bus under an id the recording never stated.
+fn test_a_frame_with_an_invalid_id_is_dropped() {
+	buf := build_remote_frame_file_both([u32(0x403)], [u32(8)], [u32(0)], 'id')
+	es := parse(buf) or {
+		assert false, '${err}'
+		return
+	}
+	assert es.len == 0, 'an undefined id must not be replayed as a plausible one'
 }
