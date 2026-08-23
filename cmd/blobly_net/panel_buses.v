@@ -219,6 +219,33 @@ fn draw_buses(mut app App, chans []Chan) {
 							continue
 						}
 					}
+					// AND THE PORTS THAT ARE ALREADY OPEN, which no scan of the rows can see. A
+					// DISABLED row keeps its transmit taps open deliberately, so it is neither
+					// enabled nor read and gets no vote above — right for the project's rule,
+					// which #164 settled on enabled rows, and irrelevant to a driver that has
+					// never heard of a row. Issue #165: disable the only normal row, enable the
+					// listen-only alias, and every check here waved it through to ports the XL
+					// driver then refused, leaving the ticked row with no taps at all while the
+					// transceiver went on acknowledging through the stale ones.
+					// AGAINST THE STRING THAT WILL ACTUALLY BE OPENED. bitrate_iface picks the
+					// mode and the rate for the WIRE — silence wins, enabled rows decide — so the
+					// row's own fields are not what its taps are about to ask for. Asked with the
+					// row enabled, exactly as the rate conflict above is, because that is the
+					// state whose consequences are in question.
+					app.chans[i].enabled = true
+					would_open := app.bitrate_iface(app.chans[i].iface)
+					app.chans[i].enabled = false
+					// The transport layer answers, rather than this panel comparing modes it
+					// would have to parse out of a vendor address for itself: which ports are
+					// open is known only to the code that opened them, and reading the address is
+					// the interpretation that belongs in modules/. Empty for every backend that
+					// does not pin — see modules/transport/pinned.v.
+					pin := transport.wire_pin_clash(would_open)
+					if pin != '' {
+						app.mu.unlock()
+						app.notify('${app.chans[i].name} ${pin} — the configuration belongs to the ports open on this channel, not to the rows; Stop and Start to change it')
+						continue
+					}
 				}
 				if app.running && app.chans[i].mode == 'replay' && app.chans[i].replay_src != '' {
 					app.mu.unlock()
