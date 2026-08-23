@@ -220,7 +220,7 @@ Kept last: this is where the roadmap ends, not where it starts.
 - ✅ `candump -l` logs · ✅ native **ASAM MDF4** (`.mf4`) reader
 - ✅ **Replay** — end to end since #111/#113 (this line said "nothing drives it" long after that
   stopped being true): replay channels play on Start, every bus of one recording shares one
-  clock, and the **Replay panel** is the live transport surface (pause / seek / speed,
+  clock, and the **Replay panel** is the live transport surface (pause / seek / speed / loop,
   position-preserving via `player.set_speed`)
 
 **Observability**
