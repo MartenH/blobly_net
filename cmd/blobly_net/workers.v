@@ -1178,6 +1178,7 @@ fn script_worker(app &App, path string) {
 	}
 	a.script_busy = true
 	a.script_log = []
+	a.script_gen++ // clearing invalidates the panel's joined text, same as an append
 	a.mu.unlock()
 	// the reader slot was reserved by the SPAWNING thread (TOCTOU: this
 	// worker may not schedule before an edit) — this side only releases it

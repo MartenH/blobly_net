@@ -111,6 +111,12 @@ mut:
 	// undo the first read that stale box and re-sent the SAME target, so the undo was swallowed
 	// (codex #160 r2). GUI-thread state, like replay_seek above and pruned beside it.
 	replay_loop map[u64]bool
+	// Joined text for the three panels that render selectable console output, rebuilt only when
+	// the matching *_gen moves (net#153). GUI-thread state, like the replay latches above.
+	log_cache    LogCache
+	diag_cache   LogCache
+	script_cache LogCache
+	flash_cache  LogCache
 	// Scan results for the Configure replay row, keyed by channel index — index-bound display
 	// state, dropped by drop_index_bound_ui() at every event that shifts indices. Under mu: the
 	// scan worker fills an entry from its thread.
@@ -159,6 +165,7 @@ mut:
 	// (the counters are aggregates — they cannot tell whose count they are giving back).
 	tx_epoch  u64
 	logs      []string           // Log panel (status/events, newest last)
+	log_gen   u64                // bumped on every append/trim of logs -- the Log panel's cache key
 	doip_ents []doip.VehicleInfo // DoIP Discovery results
 	// panel visibility (View menu)
 	// Default workspace is intentionally minimal: Buses + Trace + Log. Everything else is
@@ -274,8 +281,10 @@ mut:
 	sim_gen     u64             // bumped when sim_enabled changes -> sim_loop rebuilds
 	// worker-thread outputs (guarded by mu)
 	diag_log        []string
+	diag_gen        u64 // cache key for the Diagnostics panel's joined text
 	diag_busy       bool
 	script_log      []string
+	script_gen      u64 // cache key for the Script panel's joined text
 	script_busy     bool
 	trace_busy      bool   // a trace-dump transfer is in flight (single-flight guard)
 	trace_recording bool   // Record toggle: the target's capture is armed (optimistic)
@@ -311,6 +320,7 @@ mut:
 	flash_rsp_buf  []u8     // boot tx id, hex
 	flash_ver_buf  []u8     // sw_version, decimal (raw .bin only — .img carries its own)
 	flash_log      []string // milestones + errors (guarded by mu; the worker appends)
+	flash_gen      u64      // cache key for the Flash panel's joined text
 	flash_busy     bool     // single-flight: one download at a time
 	flash_done     int      // transfer progress, blocks (worker-updated)
 	flash_total    int
@@ -527,6 +537,7 @@ fn (mut app App) notify(msg string) {
 // Caller holds app.mu.
 fn (mut app App) log_append_locked(msg string) {
 	app.logs << msg
+	app.log_gen++
 	if app.logs.len > 500 {
 		app.logs = app.logs[app.logs.len - 500..].clone()
 	}
@@ -606,7 +617,9 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	app.reset_trace_locked()
 	app.trecs = []
 	app.diag_log = []
+	app.diag_gen++ // a clear moves the buffer as surely as an append -- invalidate with it
 	app.script_log = []
+	app.script_gen++
 	app.watch = []
 	app.fwatch = []
 	app.rx = 0
@@ -805,4 +818,33 @@ fn (mut app App) rebuild_from_proj() {
 			break
 		}
 	}
+}
+
+// LogCache holds one output buffer joined into a single string, for the panels that render
+// their lines as SELECTABLE console text rather than as glyphs. The widget takes one string, so
+// something has to join; doing it per frame would re-walk (and re-allocate) the whole buffer 60
+// times a second for output that changes a few times a minute -- and script_log has no cap at
+// all. Rebuilt only when the source's generation counter moves.
+//
+// GUI-thread state: only the draw functions touch a LogCache. The counters it compares against
+// live under app.mu with the buffers they describe.
+struct LogCache {
+mut:
+	gen   u64
+	text  string
+	lines int
+}
+
+// refresh rebuilds the cache from a snapshot the caller took under the lock.
+fn (mut c LogCache) refresh(gen u64, src []string) {
+	c.gen = gen
+	c.text = src.join('\n')
+	// VISUAL lines, not array elements. console_text sizes its InputTextMultiline as
+	// line_height * (nlines + 1), so one buffered string carrying an embedded newline
+	// under-sizes the widget: the inner ImGui child grows its own scrollbar and the newest line
+	// sits below the fold with the panel already scrolled to the bottom. The Shell -- the one
+	// caller console_text had before this -- keeps the invariant at the source by splitting as
+	// it appends; these four producers do not, and a Lua error carrying a newline reaches
+	// script_push in one piece.
+	c.lines = if c.text == '' { 0 } else { c.text.count('\n') + 1 }
 }
