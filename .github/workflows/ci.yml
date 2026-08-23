@@ -10,7 +10,8 @@ name: ci
 #                  compiles the V frontend against it. It does NOT run the app (no display).
 #
 # The GUI is the imgui frontend (cmd/blobly_net) — the old vlang/gui app (src/main.v)
-# was retired when the migration landed, so there's no gui/vglyph/markdown here anymore.
+# was retired when the migration landed, so there's no gui/vglyph to fetch here, and
+# vlang/markdown is vendored in libs/markdown.
 #
 # V acquisition: vlang/setup-v with check-latest (master V — the in-process bus and the
 # vendored Lua need a current toolchain; the 0.5.1 *release* predates vlib/yaml which
@@ -97,21 +98,13 @@ jobs:
 
       # cmd/blobly_net links against the imgui C deps: g++ builds them, GLFW is the
       # windowing backend (its X11 deps come in transitively), FreeType is the glyph
-      # rasterizer, mesa provides libGL. No vlang/gui / vglyph — the imgui app doesn't
-      # use them; the ONE V-module dep is vlang/markdown (Help browser view), cloned below.
+      # rasterizer, mesa provides libGL. No V-module deps to fetch: vlang/markdown (the Help
+      # browser view) is vendored in libs/markdown, which is already on -path.
       - name: Native deps (apt)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             g++ pkg-config libglfw3-dev libfreetype-dev libgl1-mesa-dev
-
-      # vlang/markdown (md4c) — the Help panel's "Open in browser" renders the docs to HTML via
-      # markdown.to_html(). md4c-lib.o auto-builds from its sibling .c on first compile, so a plain
-      # clone into @vmodules is enough. Pinned to a known-good commit.
-      - name: Fetch vlang/markdown (Help browser view)
-        run: |
-          git -c advice.detachedHead=false clone --quiet https://github.com/vlang/markdown.git "$HOME/.vmodules/markdown"
-          git -C "$HOME/.vmodules/markdown" -c advice.detachedHead=false checkout --quiet ef2f101
 
       # scripts/run_gui.sh (RUN=0 = build only) builds libs/vgui/libvgui_c.a from the
       # pinned cimgui/cimplot (gitignored, so always built fresh) and then compiles

@@ -24,16 +24,11 @@ ln -sf "$HOME/v/v" "$HOME/.local/bin/v"
 export PATH="$HOME/.local/bin:$PATH"
 "$HOME/v/v" version
 
-echo "==> 2b/5 vlang/markdown (md4c) — Help panel 'Open in browser' renders docs to HTML"
-if [ ! -d "$HOME/.vmodules/markdown" ]; then
-	git clone --quiet https://github.com/vlang/markdown.git "$HOME/.vmodules/markdown"
-	git -C "$HOME/.vmodules/markdown" checkout --quiet ef2f101
-fi
-
 echo "==> 3/5 Build the GUI (imgui C deps -> libvgui_c.a, then cmd/blobly_net)"
 # run_gui.sh (RUN=0 = build only) builds libs/vgui/libvgui_c.a from the pinned cimgui/
-# cimplot (via libs/vgui/build_deps.sh) and compiles cmd/blobly_net. No vlang/gui / vglyph
-# / markdown — the imgui app doesn't use them (that GUI stack was retired at the migration).
+# cimplot (via libs/vgui/build_deps.sh) and compiles cmd/blobly_net. Nothing to fetch into
+# @vmodules: vlang/gui and vglyph went away with the migration, and vlang/markdown (the Help
+# panel's 'Open in browser') is vendored in libs/markdown, which is already on -path.
 RUN=0 ./scripts/run_gui.sh
 
 echo "==> 4/5 Tests"
