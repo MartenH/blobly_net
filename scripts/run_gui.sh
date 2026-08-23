@@ -62,9 +62,19 @@ case "$(uname -s)" in
 		# one, and deriving from the immediate parent finds nothing there.
 		parent="$(cd "$HERE/.." && pwd)"
 		d="$parent"
-		while [ ! -d "$d/msys64-ct" ]; do
-			nd="$(cd "$d/.." && pwd)"
-			[ "$nd" = "$d" ] && break          # filesystem root: keep the original guess
+		# BOUNDED, and not by "the parent stopped changing". On MSYS2 `cd /.. && pwd` prints
+		# `//` and `cd //.. && pwd` prints `/`, so at the root the two spellings alternate
+		# forever and a plain nd != d test never fires. On a runner, where no msys64-ct exists
+		# anywhere above the checkout, that spun silently until the job's 60-minute timeout
+		# killed it — no output, no error, just a hung build. The hop limit is what makes a
+		# hang impossible; the root and no-change cases below merely stop it sooner.
+		hops=0
+		while [ ! -d "$d/msys64-ct" ] && [ "$hops" -lt 12 ]; do
+			hops=$((hops + 1))
+			nd="$(cd "$d/.." 2>/dev/null && pwd)" || break
+			case "$nd" in
+				"$d" | / | //) break ;;        # the root, in either of its spellings
+			esac
 			d="$nd"
 		done
 		[ -d "$d/msys64-ct" ] && parent="$d"
