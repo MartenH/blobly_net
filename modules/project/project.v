@@ -1300,7 +1300,7 @@ fn conflict_wire_key(c Channel) string {
 // anyway and discarded the refusals a frame at a time. The rules are about what a project MEANS,
 // which is this module's job.
 //
-// Two of them, and both come from a wire having one mode and one bitrate:
+// Three of them now. Two come from a wire having one mode and one bitrate:
 //   - a wire one row has set listen-only cannot carry another row's traffic — checked on EVERY
 //     adapter since #117. It used to be Vector-only, because `,silent` reached only the Vector
 //     transceiver and the flag did nothing anywhere else, so two rows disagreeing about it on a
@@ -1309,6 +1309,11 @@ fn conflict_wire_key(c Channel) string {
 //     answerable before Start rather than discovered as silence afterwards.
 //   - two rows cannot ask for different bitrates on it — vendor adapters only, which are the
 //     ones we configure the rate on.
+//
+// And the third is about a wire being TWO rows without either of them saying so:
+//   - two Vector application channels assigned to ONE physical channel (#167). Every check above
+//     compares rows that destination_key has already agreed are the same wire; this one is for
+//     rows it says are different and the hardware says are not.
 //
 // (Named vendor_destination_conflicts while both halves were vendor-only.)
 pub fn destination_conflicts(chs []Channel) []string {
@@ -1360,6 +1365,75 @@ pub fn destination_conflicts(chs []Channel) []string {
 		if who := quiet[conflict_wire_key(c)] {
 			out << '${c.name} shares ${c.iface} with ${who}, which is listen-only'
 		}
+	}
+	// ASKED ONCE PER ROW, here, where the answers are collected — not inside the pure check
+	// below. This is the only part of the rule that needs a driver: `physical_wire_key` is a
+	// query to the XL library on Windows and a flat `none` everywhere else, so putting it in the
+	// comparison would make the comparison itself untestable on the machine that runs the tests.
+	// The three cold callers (Start, the headless runner, an enable toggle) can afford it; there
+	// is no per-frame path here, and Start already pays a second per vendor open.
+	mut phys := map[string]string{}
+	for c in chs {
+		if !c.enabled {
+			continue
+		}
+		if k := transport.physical_wire_key(c.adapter, c.iface) {
+			phys[c.iface] = k
+		}
+	}
+	out << alias_conflicts(chs, phys)
+	return out
+}
+
+// alias_conflicts reports rows that this app calls different wires and the hardware calls one.
+//
+// SEPARATE, AND PURE, so it can be tested at all. `phys` maps a row's interface to the physical
+// channel it resolves to, for the rows where that is knowable; a row absent from the map is one
+// nobody could resolve, and it is left alone rather than assumed distinct. Splitting it this way
+// is what lets the comparison — which is the part with the mistakes in it — be exercised on
+// Linux, where the resolver itself can only ever answer none.
+//
+// THE CONFLICT IS A DISAGREEMENT BETWEEN THE TWO KEYS, not a shared physical channel on its own.
+// `vector:1` and `vector:ch1` share one, and must: they are one wire under both readings, which
+// is exactly what destination_key exists to say. What cannot stand is two rows whose wire keys
+// DIFFER while their hardware is the same — that is one transceiver being reasoned about as two,
+// which is how a listen-only tick fails to silence its own bus and two monitors split one receive
+// queue between them.
+fn alias_conflicts(chs []Channel, phys map[string]string) []string {
+	mut out := []string{}
+	mut owner := map[string]string{} // physical channel -> the wire key that claimed it
+	mut owner_row := map[string]string{}
+	// ONE LINE PER PHYSICAL CHANNEL, not one per pair, and not per row after the first. Three
+	// rows aliased onto one channel is a SINGLE mistake in the assignment; saying it twice more
+	// tells the operator nothing the first line did not, and a set is what keeps that true —
+	// dropping the claim instead would let the third row re-claim the channel and the fourth
+	// report it all over again.
+	mut said := map[string]bool{}
+	for c in chs {
+		if !c.enabled {
+			continue
+		}
+		pk := phys[c.iface] or { continue }
+		if pk in said {
+			continue
+		}
+		// conflict_wire_key, NOT transport.wire_key_for, though only Vector rows can reach here
+		// today and the two agree on those. This file already has ONE answer to "which wire is
+		// this row on" and every other check in it goes through that answer; a second copy is
+		// how they drift. It is not hypothetical either — wire_key_for splits a vendor `@rate`
+		// suffix unconditionally, so the moment physical_wire_key learns another adapter,
+		// `inproc:bench@A` and `inproc:bench@B` would compare equal HERE while the rest of
+		// destination_conflicts goes on treating them as two hubs.
+		wk := conflict_wire_key(c)
+		if prev := owner[pk] {
+			if prev != wk {
+				out << '${c.name} (${c.iface}) and ${owner_row[pk]} are different channels in this project but are assigned to the same physical adapter channel — one transceiver cannot be two wires; give them separate channels in Vector Hardware Manager, or remove one'
+				said[pk] = true
+			}
+			continue
+		}
+		owner[pk] = wk
+		owner_row[pk] = c.name
 	}
 	return out
 }

@@ -110,11 +110,21 @@ MSGTYPE flags. The free driver has no software virtual channel, so testing needs
 **Vector (XL Driver Library)** — `vxlapi64.dll`, the most verbose of the three
 (`xlOpenDriver`, `xlGetApplConfig`, `xlGetChannelMask`, `xlOpenPort`, `xlCanSetChannelBitrate`,
 `xlCanSetChannelOutput`, `xlActivateChannel`, `xlCanTransmit`, `xlReceive`, `xlClosePort`,
-`xlCloseDriver`). Three things are specific to it:
+`xlCloseDriver`). Several things are specific to it:
 
 - **Addressed by application channel**, because that is what `xlGetApplConfig` and
   `xlGetChannelMask` take and what Vector Hardware Manager numbers. `vector:1` is the channel
   the operator sees in that dialog.
+- **An application channel is not a physical channel**, and the dialog will let two of them
+  point at one piece of hardware. To this app those are two wires — `destination_key` resolves
+  the application channel and nothing else — and to the driver they are one, which means the
+  rate check, the listen-only check, the one-monitor rule, the transmit lock and the pin guard
+  each reason about half a wire. Refused at Start rather than run that way (#167): a project
+  whose enabled rows resolve to one physical channel under two different names is told so and
+  does not start. `cmd/vectorcheck --list` prints the assignment triple beside each channel and
+  warns if two share one, so the configuration can be seen before a project is written against
+  it. Nothing without the XL driver can answer the question, and there the check says nothing at
+  all rather than guessing.
 - **`vxlapi64.dll` is a separate download from the hardware drivers** and does not install
   onto the search path: its installer puts it under
   `C:\Users\Public\Documents\Vector\XL Driver Library <version>\bin`. The loader tries the
