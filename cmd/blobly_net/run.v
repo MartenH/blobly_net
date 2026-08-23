@@ -310,6 +310,13 @@ fn (mut app App) start() {
 	// confirm about app.running.
 	app.fb_open = false
 	app.running = true
+	// The quiet-bus verdict measures THIS run. Carrying a previous run's first/last across a
+	// Stop would have every wire reading "quiet for 4 minutes" the instant Start is pressed —
+	// an alarm about the interval the operator spent not measuring.
+	for ci in 0 .. app.chans.len {
+		app.chans[ci].rx_last = 0
+		app.chans[ci].rx_seen = 0
+	}
 	// Which wires already have a reader, so aliases do not each open one.
 	mut monitored := map[string]bool{}
 	mut anon_tap_failed := map[string]bool{}

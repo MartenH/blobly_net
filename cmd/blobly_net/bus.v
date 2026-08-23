@@ -28,9 +28,21 @@ struct Chan {
 	replay_speed   f64 = 1.0
 	replay_loop    bool
 mut:
-	enabled   bool
-	rx        u64
-	running   bool
+	enabled bool
+	rx      u64
+	// When traffic last reached this wire (the trace's clock, App.since_ms) and whether any ever
+	// did. Enough to answer "how long has this bus been silent?" without touching the trace: the
+	// ring is capped and filtered, and a wire is silent whether or not its rows are still on
+	// screen. `rx_seen` is a HAS-IT-EVER, not a cadence — see stale.v for why no cadence is
+	// inferred from these at all.
+	//
+	// Separate from `rx`, which is the DISPLAYED count and is zeroed by clear_trace() — these
+	// are not, deliberately: clearing the view must not make the app forget the wire was ever
+	// alive, or a Clear would silently reset the reported silence to nothing. They reset at
+	// Start instead, with the measurement they describe.
+	rx_last f64
+	rx_seen u64
+	running  bool
 	spawning  bool // rx_loop spawned but its bus not open yet (double-click guard)
 	link_down bool // real CAN iface is administratively DOWN (bound but can't tx/rx)
 	// The controller's fault ladder, from the backend's own driver (transport.BusHealth) —

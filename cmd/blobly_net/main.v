@@ -224,7 +224,7 @@ fn main() {
 		draw_activity_bar(mut app)
 		vgui.same_line()
 		vgui.child_fill('##right')
-		draw_toolbar(mut app, rx, txs)
+		draw_toolbar(mut app, rx, txs, chans)
 		vgui.dockspace()
 		vgui.child_end()
 		build_layout()
