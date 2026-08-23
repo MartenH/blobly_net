@@ -483,11 +483,34 @@ fn main() {
 			println('vxlapi: ${lib}')
 		}
 		mut n := 0
+		// THE HARDWARE EACH ONE REACHES, beside the channel, because two application channels
+		// pointed at ONE physical channel is invisible from the names alone — they read as two
+		// perfectly ordinary wires (#167). Printed as the assignment triple, which is what the
+		// conflict check compares and what Vector Hardware Manager sets.
+		mut seen := map[string]string{}
+		mut aliased := []string{}
 		for f in ifaces {
-			if f.iface.starts_with('vector:') {
-				println('${f.iface}\t${f.name}')
-				n++
+			if !f.iface.starts_with('vector:') {
+				continue
 			}
+			hw := transport.physical_wire_key('vector', f.iface) or { '' }
+			if hw == '' {
+				println('${f.iface}\t${f.name}')
+			} else {
+				println('${f.iface}\t${f.name}\t${hw}')
+				if prev := seen[hw] {
+					aliased << '${prev} and ${f.iface} are both assigned to ${hw}'
+				} else {
+					seen[hw] = f.iface
+				}
+			}
+			n++
+		}
+		for a in aliased {
+			eprintln('')
+			eprintln('WARNING: ${a}.')
+			eprintln('One transceiver cannot be two wires: a project naming both will be refused')
+			eprintln('at Start. Give them separate channels in Vector Hardware Manager.')
 		}
 		if n == 0 {
 			// ASKED, not guessed. These two look identical from outside — nothing listed — and

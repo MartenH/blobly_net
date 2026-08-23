@@ -88,7 +88,7 @@ docs/                design + platform docs; docs/history.md = archived status l
 | `telem` | trace + telemetry capture control |
 | `sysview` | read-only system model behind the System panel (reads blobly_emb `system.toml`) |
 | `script`, `lua` | embedded Lua + the test-framework prelude |
-| `project` | `.blobnet` project files |
+| `project` | `.blobnet` project files. `destination_conflicts()` is the ONE place a project is refused for asking a wire to be two things — one mode, one rate, and (#167) one physical channel: two Vector *application* channels assigned to one *physical* channel are two wires here and one to the driver, so the comparison is pure and testable (`alias_conflicts`) while the resolution behind it (`transport.physical_wire_key`) is per-platform and answers `none` wherever no driver can say |
 | `sampledb` | hand-coded message catalog (superseded by DBC loading) |
 
 ## Build / run / test
