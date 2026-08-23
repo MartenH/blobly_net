@@ -53,6 +53,8 @@ For traffic with no hardware, open `projects/sim-demo.blobnet` — the simulated
 cmd/blobly_net/     the GUI (Dear ImGui + ImPlot)   <- the app
 cmd/*                CLI tools + smoke tests (flash, dbc_decode, mf4_dump, restbus, trace_dump, ...)
 libs/vgui/           the V wrapper around Dear ImGui/ImPlot
+libs/markdown/       vendored vlang/markdown (md4c) — renders the Help pages to HTML. Vendored,
+                     not fetched, so a clone builds offline and the version is stated once
 modules/             engine (GUI-free, unit-tested)
 scripts/             setup, run, test, packaging. `setup_vcan.sh` is the ONE per-session command
                      (loads vcan, brings up vcan0/vcan1 at mtu 72); `build_vcan_module.sh` is the
