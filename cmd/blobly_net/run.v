@@ -214,7 +214,10 @@ fn (mut app App) start() {
 	// wire. Said before anything opens.
 	// One wire, one mode and one rate — the same verdict the headless runner reaches.
 	if bad := app.destination_conflict() {
-		app.notify('${bad} — one wire, one mode and one rate; not starting')
+		// Not "one wire, one mode and one rate" any more: #167 added a third kind this check
+		// reports — two application channels on one physical channel — and each problem states
+		// itself. A summary that lists two of three is the kind of claim that goes stale.
+		app.notify('${bad} — not starting')
 		return
 	}
 	if app.cfg_text_dirty {

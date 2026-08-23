@@ -71,7 +71,10 @@ fn main() {
 	// project had asked to keep quiet. And the runner had no rate check at all, so two aliases
 	// disagreeing about the bitrate configured the hardware from whichever spawned first.
 	for problem in project.destination_conflicts(proj.channels) {
-		eprintln('${problem} — one wire, one mode and one rate; not starting')
+		// The summary used to name the two kinds this check had ("one wire, one mode and one
+		// rate"). #167 added a third — two application channels assigned to one physical
+		// channel — which that phrase does not cover, and each problem already says what it is.
+		eprintln('${problem} — not starting')
 		exit(1)
 	}
 	// Which wires may transmit, through the same call the GUI makes. The runner honoured
