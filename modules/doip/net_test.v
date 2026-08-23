@@ -30,12 +30,84 @@ import time
 //
 // 0 means every candidate refused, which is an environment fact (no IPv6 loopback on this runner)
 // rather than one unlucky number. Callers that skip on that can now mean it.
+//
+// The TCP bind alone is NOT proof the pair is free, and the UDP half is checked separately for
+// that reason. listen() takes both, but only the TCP bind can fail: on Windows SO_REUSEADDR lets a
+// second socket take a held UDP port outright, so a candidate whose UDP endpoint somebody else
+// owns would pass the TCP test and then quietly share its discovery datagrams, delivered to
+// whichever socket the platform prefers. (On Linux SO_REUSEADDR does not do that for unicast UDP —
+// a second bind fails, and there the TCP+UDP pair really is settled by binding it.)
 fn listen_somewhere(mut srv DoipServer, host string) int {
 	for p in testports.doip.candidates() {
+		if !udp_delivers_to_us(host, p) {
+			continue
+		}
 		srv.listen(host, p) or { continue }
 		return p
 	}
 	return 0
+}
+
+// udp_delivers_to_us answers the question a bind cannot: if we listen on this port, do datagrams
+// sent to it arrive HERE?
+//
+// Asked by doing it — bind the port, send it a token from another socket, and see whether we are
+// the one who receives it. Where a bind is exclusive (Linux unicast UDP) the listen simply fails
+// and this returns false. Where it is not (Windows), we and the other holder are both bound and
+// the platform picks a winner; if it is not us, the read times out and the caller moves to the
+// next candidate.
+//
+// The socket is closed before the server binds the port for real, so a determined racer could
+// still slip in between. That window is microseconds and needs a competitor arriving in it; the
+// case this catches is the persistent one — somebody already holding the port when we looked.
+fn udp_delivers_to_us(host string, port int) bool {
+	addr := if host.contains(':') { '[${host}]:${port}' } else { '${host}:${port}' }
+	mut ours := net.listen_udp(addr) or { return false }
+	defer {
+		ours.close() or {}
+	}
+	ours.set_read_timeout(200 * time.millisecond)
+	mut probe := net.dial_udp(addr) or { return false }
+	defer {
+		probe.close() or {}
+	}
+	token := 'blobly-net port probe'.bytes()
+	probe.write(token) or { return false }
+	mut buf := []u8{len: 64}
+	n, _ := ours.read(mut buf) or { return false }
+	return buf[..n] == token
+}
+
+// Hold `port` and ask the probe whether datagrams still reach a NEW listener on it. True means
+// the probe failed to notice the squatter.
+//
+// A plain helper, not part of the test below, because `net.listen_udp` called DIRECTLY inside a
+// `fn test_*` in this file trips a V codegen bug: the generated C calls fprintf without including
+// <stdio.h> and the build dies with "C function `C.fprintf` was declared in V". Reached through a
+// normal function it compiles fine, which is why udp_delivers_to_us above is unaffected.
+fn probe_survives_a_squatter(port int) ?bool {
+	if !udp_delivers_to_us('127.0.0.1', port) {
+		return none // not free here to begin with; nothing to learn
+	}
+	mut squatter := net.listen_udp('127.0.0.1:${port}') or { return none }
+	defer {
+		squatter.close() or {}
+	}
+	return udp_delivers_to_us('127.0.0.1', port)
+}
+
+// The probe is only worth having if it detects a port somebody else holds, and that is not obvious
+// on Windows: both sockets bind, and the platform decides who gets the datagram. Asserted rather
+// than assumed — on Linux the squatting bind is refused outright and the probe reports the same
+// false, so this holds on both.
+fn test_the_udp_probe_detects_a_port_somebody_else_holds() {
+	// the far end of the band, so squatting it does not take a port the tests above reach for
+	cands := testports.doip.candidates()
+	still_ours := probe_survives_a_squatter(cands[cands.len - 1]) or {
+		eprintln('skipping probe check: no free port at the end of the band')
+		return
+	}
+	assert !still_ours, 'the probe accepted a port somebody else holds — listen_somewhere would hand it to the server'
 }
 
 // A TCP listener on an OS-assigned port, with the port it actually got. Nothing can collide with
