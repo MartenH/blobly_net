@@ -809,5 +809,7 @@ fn (mut app App) rebuild_from_proj() {
 	// to describe, and it does not exist until here. Not in load_project either — a bus edited
 	// from the Buses panel reaches this function without going near a file, and a listen-only
 	// tick that only took effect on the next reload is a tick that lies until then.
-	app.push_listen_only()
+	app.mu.lock()
+	app.push_listen_only_locked()
+	app.mu.unlock()
 }

@@ -140,16 +140,27 @@ fn draw_buses(mut app App, chans []Chan) {
 				// backend as the bus is handed out, so an already-open tap keeps the answer it was
 				// given and the same stale-mode trap applies to a SocketCAN or PCAN wire.
 				if !new && app.running && app.chans[i].listen_only {
-					mut others_live := false
 					off_key := transport.destination_key(app.chans[i].iface)
+					mut others_live := false
+					mut stays_silent := false
 					for j, other in app.chans {
-						if j != i && other.enabled && other.running
-							&& transport.destination_key(other.iface) == off_key {
+						if j == i || transport.destination_key(other.iface) != off_key {
+							continue
+						}
+						if other.enabled && other.running {
 							others_live = true
-							break
+						}
+						// SILENCE WINS, the rule bitrate_iface already applies: another enabled
+						// listen-only row keeps this wire quiet after the tick, so there is no
+						// mode change here and nothing to refuse. Without this the widened guard
+						// rejected a legitimate disable purely on which alias happened to own
+						// the reader (codex #164 r2). ENABLED, not running -- an alias holds its
+						// transmit tap open whether or not it reads.
+						if other.enabled && other.listen_only {
+							stays_silent = true
 						}
 					}
-					if others_live {
+					if others_live && !stays_silent {
 						app.mu.unlock()
 						app.notify('${app.chans[i].name} set ${app.chans[i].iface} to listen-only and other channels are running on it — Stop before changing the mode of a live wire')
 						continue
@@ -220,7 +231,7 @@ fn draw_buses(mut app App, chans []Chan) {
 				// taps against a table that never learned about it, and a disabled one would leave
 				// its mark silencing a normal row enabled onto the same wire afterwards. Before the
 				// taps below, and while the lock is held, so no open can read a stale list.
-				app.push_listen_only()
+				app.push_listen_only_locked()
 				// enabling a channel mid-run spawns its RX thread; disabling lets it exit.
 				// `spawning` is the double-click guard — without one, a second click inside the
 				// open window starts a second rx_loop and every frame is logged twice. It is

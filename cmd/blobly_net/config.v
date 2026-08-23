@@ -423,6 +423,9 @@ fn (mut app App) set_chan_enabled_stopped(ci int, en bool) {
 		app.chans[ci].enabled = en
 	}
 	app.proj.channels[ci].enabled = en
+	// chans[].enabled moved, so the wire list has to move with it -- the marks are consulted per
+	// send, and a script that outlived Stop is holding a bus that will ask.
+	app.push_listen_only_locked()
 	app.mu.unlock()
 	app.dirty = true
 	app.replay_view_gen++ // the tick changes which members of a replay group will PLAY

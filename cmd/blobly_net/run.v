@@ -120,10 +120,16 @@ fn (app &App) runtime_rows() []project.Channel {
 	return rows
 }
 
-// push_listen_only republishes which wires refuse to transmit. Called wherever the runtime
+// push_listen_only_locked republishes which wires refuse to transmit. Called wherever the runtime
 // channel set changes -- a rebuild, and every live enable/disable -- because the marks are
 // consulted per send, so a stale list is a wire transmitting that was ticked silent.
-fn (app &App) push_listen_only() {
+//
+// _locked: it reads app.chans, so the caller holds app.mu -- and must, or a republish could
+// interleave with the mutation it is meant to describe. EVERY path that writes chans[].enabled
+// calls it: the Buses panel toggle, the stopped Replay tick (config.v) and rx_loop retiring a
+// dead destination (workers.v). It was three of four, and the one it missed could leave a script
+// that outlived Stop transmitting on a wire the operator had ticked silent (codex #164 r2).
+fn (app &App) push_listen_only_locked() {
 	project.apply_listen_only(app.runtime_rows())
 }
 
