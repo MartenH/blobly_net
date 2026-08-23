@@ -347,13 +347,16 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
   the panel and scripts cannot disagree. A fault that cannot take effect is refused loudly.
 - **Silence** (`cmd/blobly_net/stale.v`): CAN has no link detection, so a *receiver* cannot tell
   a disconnected bus from an idle one — on any vendor. The only honest signal is that traffic
-  which was arriving has stopped. Two levels, one policy file: the **wire's** verdict
-  (`CAN1 quiet 57s`, in the toolbar and on the Buses row) measured from the channel's own
-  first/last/count of RECEIVED frames — our own sends do not keep a dead wire looking alive —
-  and the **message's** (`STALE 12.3s` in the grouped trace) judged against the DBC's
-  `GenMsgCycleTime` or, with no database, the cadence it was observed keeping. The wire is the
-  verdict and the messages are the evidence: one pulled connector used to put the identical
-  age on five rows and state the actual fact nowhere.
+  which was arriving has stopped — so the **wire** says so (`CAN1 quiet 57s`, in the toolbar and
+  on the Buses row), measured from its own first/last/count of RECEIVED frames. Our own sends do
+  not count, or anything this host transmits would keep a dead wire looking alive; the cadence is
+  folded per DESTINATION like `health` is, and handed to the successor when a reader moves,
+  because only the reader-owning alias records it. **Per message deliberately not**: an earlier
+  version marked individual messages `STALE` from the trace view, and review found six ways for
+  it to raise a false alarm (event-driven ids, RTR groups inheriting a data cycle, all-refused
+  groups, the text filter hiding newer frames, one id defined differently on two buses, resuming
+  a pause) — all of them because the trace view is filtered, capped, origin-split and pausable.
+  Worth having, but on the unfiltered stream and with its own tests.
 - [simulation.md](docs/simulation.md) — the simulation user manual (rest-bus, generators,
   senders, replay, end-to-end protection) ·
   [doip.md](docs/doip.md) — the DoIP user manual (supported vs planned) ·

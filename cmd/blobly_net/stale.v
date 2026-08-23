@@ -1,5 +1,7 @@
 module main
 
+import transport
+
 // When a wire goes quiet, nothing in the hardware says so (issue #156).
 //
 // CAN has no link detection — no carrier, no PHY link state — so to a RECEIVER a disconnected
@@ -8,88 +10,55 @@ module main
 // never be told its cable is out. Pulling a connector on the bench produced exactly that: the
 // frames stopped and not one thing on screen changed.
 //
-// The only honest indicator left is at this level: messages that were arriving have stopped.
-// That is what this file decides, and it is deliberately the whole policy in one place — the
-// trace marks a row with it and the header counts it, and those two must never disagree about
-// what "stale" means.
+// The only honest indicator left is that traffic which was arriving has stopped, and this file
+// is the whole of that policy.
+//
+// PER WIRE, not per message. An earlier version of this also marked individual messages STALE,
+// inferring a cadence from the DBC or from what a message had been doing. Review found six
+// separate ways for that to raise a false alarm — an event-driven id seen five times, an RTR
+// request inheriting its data message's cycle, a group whose frames were all refused, a text
+// filter hiding the newest frames, the same id defined differently on two buses, and resuming a
+// pause — and they were not six bugs so much as one wrong foundation: it measured the TRACE
+// VIEW, which is filtered, capped, origin-split and pausable, none of which a measurement
+// should depend on. The wire's own counters have none of those properties. Message-level
+// staleness is worth having, but it has to be built on the unfiltered stream with its own
+// tests, not bolted to the panel that displays it.
 
-// Three cycles missed before a message is called stale: one late frame is traffic, three is a
-// pattern. The floor matters more than the factor — at a 10 ms cadence three cycles is 30 ms,
-// which is inside the jitter of a host-stamped arrival time (#149) and shorter than the gap
-// between repaints, so without it a fast message would flicker between stale and fine and the
-// marker would teach the reader to ignore it.
+// Three cycles missed before a wire is called quiet: one late frame is traffic, three is a
+// pattern. The floor matters more than the factor — on a bus carrying five messages at 100 ms
+// the mean gap is 20 ms, and three of those is inside the jitter of a host-stamped arrival time
+// (#149) and shorter than the gap between repaints, so without it the verdict would flicker and
+// teach the reader to ignore it.
 const stale_factor = 3.0
 const stale_floor_ms = 500.0
 
-// A cadence has to be OBSERVED this many times before absence means anything. The cycle column
-// needs two frames to show a number; staleness needs more, because an event-driven message
-// that legitimately fires twice and never again is not a fault, and reporting it as one is how
-// a warning indicator becomes furniture.
+// A cadence has to be OBSERVED this many times before absence means anything. A wire that
+// carried three frames and stopped is not necessarily broken, and a correctly-configured
+// listen-only wire that has heard nothing must never be accused of having died.
 const stale_min_samples = 5
 
-// stale_threshold_ms is how long a message may be absent before it is called stale.
+// stale_threshold_ms is how long a wire may be silent before it is called quiet.
 fn stale_threshold_ms(expected_ms f64) f64 {
 	t := expected_ms * stale_factor
 	return if t < stale_floor_ms { stale_floor_ms } else { t }
 }
 
-// expected_cycle_ms answers "how often SHOULD this message arrive?".
-//
-// The database first: `GenMsgCycleTime` is the specified cadence, and a message that is late
-// against its own specification is the finding, whatever it has been doing lately. Failing
-// that — the bench case that raised #156 ran with no DBC at all — the cadence actually
-// observed, once there is enough of it to call the message cyclic. Zero means "not known to be
-// cyclic", and nothing that returns zero can ever be reported stale.
-fn expected_cycle_ms(dbc_cycle_ms int, observed_ms f64, samples int) f64 {
-	if dbc_cycle_ms > 0 {
-		return f64(dbc_cycle_ms)
-	}
-	if samples >= stale_min_samples && observed_ms > 0 {
-		return observed_ms
-	}
-	return 0
-}
-
-// is_stale: has this message been absent for longer than its cadence allows?
-fn is_stale(age_ms f64, expected_ms f64) bool {
-	if expected_ms <= 0 {
-		return false
-	}
-	return age_ms > stale_threshold_ms(expected_ms)
-}
-
-// --- the WIRE's verdict ---------------------------------------------------------------
-//
-// Per message is the evidence; per bus is the answer. Pulling one connector on the bench put
-// STALE on five rows with the identical age — five statements of one fact, and the fact
-// itself ("CAN1 went quiet 45 s ago") stated nowhere.
-//
-// Measured on the WIRE, not by aggregating the messages on it. That is not a shortcut: a bus
-// is silent whether or not its rows are still in the trace ring, which is capped and filtered,
-// and the wire's own first/last/count are three fields the RX loop already has in hand. It
-// also means this needs no access to the trace at all, so the toolbar and the Buses panel can
-// state it without the trace panel being open.
-
 // quiet_ms is how long this wire has been silent, in ms — or 0 when it is not quiet.
 //
-// The threshold is the wire's own mean gap between frames, times the same factor a message
-// gets, under the same floor. A bus carrying five messages at 100 ms has a mean gap of 20 ms,
-// so the floor is what actually decides there — which is right: 500 ms of total silence on a
-// bus that has never been silent that long IS the event, and waiting three mean gaps (60 ms)
-// would fire on one late frame.
-fn (app &App) quiet_ms(c Chan) f64 {
-	if !app.staleness_live() || !c.running {
+// Takes the DESTINATION's folded cadence, not a row's own. Only the reader-owning alias records
+// frames, so a row-by-row answer would leave every other alias of one wire looking healthy
+// while the wire it names is dead — the exact defect DestState.health exists to prevent, and
+// the reason `down` was folded here before it.
+fn (app &App) quiet_ms(st DestState) f64 {
+	if !app.staleness_live() || !st.read {
 		return 0
 	}
-	// Same eligibility as a message: a wire has to have been talking before its silence means
-	// anything. A bus that never carried traffic is not quiet, it is unused — and saying
-	// otherwise about a correctly-configured listen-only wire is how an indicator gets ignored.
-	if c.rx_seen < stale_min_samples {
+	if st.rx_seen < stale_min_samples {
 		return 0
 	}
-	span := c.rx_last - c.rx_first
-	mean_gap := if span > 0 { span / f64(c.rx_seen - 1) } else { f64(0) }
-	age := app.since_ms() - c.rx_last
+	span := st.rx_last - st.rx_first
+	mean_gap := if span > 0 { span / f64(st.rx_seen - 1) } else { f64(0) }
+	age := app.since_ms() - st.rx_last
 	if age > stale_threshold_ms(mean_gap) {
 		return age
 	}
@@ -99,11 +68,24 @@ fn (app &App) quiet_ms(c Chan) f64 {
 // quietest_wire names the wire that has been silent longest, with its silence in ms (0 = none
 // is quiet). One line for the toolbar: with several buses down, the worst one is the headline
 // and the Buses panel carries the rest.
-fn (app &App) quietest_wire() (string, f64) {
+//
+// Takes the frame's SNAPSHOT of the rows, like every other panel: the RX workers write
+// health/running/link_down and now the cadence fields under app.mu, and reading the live array
+// past the clone the frame already took races them.
+//
+// Names a RUNNING alias. Folding is by destination, so a disabled row shares its key with the
+// enabled one that supplied the state — and naming the disabled row would blame a channel the
+// operator can see is off.
+fn (app &App) quietest_wire(chans []Chan) (string, f64) {
+	dests := read_destinations(chans)
 	mut worst := f64(0)
 	mut name := ''
-	for c in app.chans {
-		q := app.quiet_ms(c)
+	for c in chans {
+		if !c.enabled || !c.running {
+			continue
+		}
+		st := dests[transport.destination_key(c.iface)] or { continue }
+		q := app.quiet_ms(st)
 		if q > worst {
 			worst = q
 			name = c.name
@@ -112,32 +94,10 @@ fn (app &App) quietest_wire() (string, f64) {
 	return name, worst
 }
 
-// stale_age is how long this group has been silent, in ms — or 0 when it is not stale, so the
-// caller has one call to make and one thing to test. The cadence it is judged against is the
-// database's if there is one, otherwise the one this group has actually been keeping, which is
-// computed here from the SAME span and count the `cycle (ms)` column shows: the number on
-// screen and the number the marker is decided by must be the same number.
-fn stale_age(app &App, g GAgg) f64 {
-	if !app.staleness_live() {
-		return 0
-	}
-	span_ms := g.last.t_ms - g.first_t
-	observed := if g.count >= 2 && span_ms > 0 { span_ms / f64(g.count - 1) } else { f64(0) }
-	mut spec := 0
-	if m := app.find_message(g.id, g.ext) {
-		spec = m.cycle_ms
-	}
-	age := app.since_ms() - g.last.t_ms
-	if is_stale(age, expected_cycle_ms(spec, observed, g.count)) {
-		return age
-	}
-	return 0
-}
-
 // staleness_live reports whether absence means anything RIGHT NOW. It does not, unless a
-// measurement is actually running: a paused capture and a loaded recording both hold rows whose
-// timestamps recede from a clock that keeps going, so every row in them would turn stale a few
-// seconds after it was opened — an alarm about a file, which is nonsense.
+// measurement is actually running: a paused capture and a loaded recording both hold state whose
+// timestamps recede from a clock that keeps going, so everything would turn quiet a few seconds
+// after it was opened — an alarm about a file, which is nonsense.
 fn (app &App) staleness_live() bool {
 	return app.running && !app.paused && app.viewing_rec == ''
 }

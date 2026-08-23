@@ -27,6 +27,12 @@ mut:
 	// it, and every alias must show it or a bus-off wire draws green on its other rows —
 	// the exact defect `down` was added here to fix, repeated; self-review)
 	health transport.BusHealth
+	// When traffic first and last reached this WIRE, and how many frames that covers — folded
+	// here for the same reason health is. Only the reader-owning alias records them, so read
+	// row-by-row every other alias of one wire looks healthy while the wire it names is dead.
+	rx_first f64
+	rx_last  f64
+	rx_seen  u64
 }
 
 fn read_destinations(rows []Chan) map[string]DestState {
@@ -38,6 +44,14 @@ fn read_destinations(rows []Chan) map[string]DestState {
 			st.down = st.down || c.link_down
 			if transport.health_rank(c.health) > transport.health_rank(st.health) {
 				st.health = c.health
+			}
+			// The alias that has actually been reading is the one that knows. Not summed:
+			// one reader per destination, so exactly one row carries these — and adding two
+			// rows' counts together would invent a cadence neither of them saw.
+			if c.rx_seen > st.rx_seen {
+				st.rx_first = c.rx_first
+				st.rx_last = c.rx_last
+				st.rx_seen = c.rx_seen
 			}
 			out[transport.destination_key(c.iface)] = st
 		}
@@ -90,6 +104,12 @@ fn worst_wire_health(chans []Chan) (transport.BusHealth, string) {
 	mut worst := transport.BusHealth.ok
 	mut name := ''
 	for c in chans {
+		// A RUNNING alias, or the name is a lie. Folding is by destination, so a disabled row
+		// shares its key with the enabled one that supplied the verdict — and if the disabled
+		// row comes first, the toolbar blames a channel the operator can see is switched off.
+		if !c.enabled || !c.running {
+			continue
+		}
 		st := dests[transport.destination_key(c.iface)] or { continue }
 		if transport.health_rank(st.health) > transport.health_rank(worst) {
 			worst = st.health
@@ -419,7 +439,7 @@ fn draw_buses(mut app App, chans []Chan) {
 			// cannot carry this: a listening channel whose cable is pulled reports a perfectly
 			// healthy bus, because CAN has no link detection and an unplugged wire is
 			// indistinguishable from an idle one (#156).
-			qms := app.quiet_ms(c)
+			qms := app.quiet_ms(read_dests[transport.destination_key(c.iface)] or { DestState{} })
 			if qms > 0 {
 				vgui.same_line()
 				vgui.text_colored(230, 140, 60, 'quiet ${qms / 1000:.0f}s')

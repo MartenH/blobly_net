@@ -791,6 +791,15 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 					// successor starting at .unknown painted the still-dead wire green
 					// (codex #143 r1). The outgoing reader is the one that knows.
 					a.chans[cj].health = a.chans[ci].health
+					// The wire's CADENCE survives the handoff for the same reason its health
+					// does, and it matters more: only the reader-owning row records these, so
+					// a successor starting empty has to re-learn a cadence from frames that,
+					// on the unplugged wire this exists to report, will never come — and the
+					// quiet verdict would disappear permanently at the moment it is true
+					// (codex #159).
+					a.chans[cj].rx_first = a.chans[ci].rx_first
+					a.chans[cj].rx_last = a.chans[ci].rx_last
+					a.chans[cj].rx_seen = a.chans[ci].rx_seen
 					a.chans[cj].spawning = true
 					spawn rx_loop(app, cj, other.iface, gen)
 					break

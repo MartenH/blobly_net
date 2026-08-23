@@ -550,10 +550,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		vgui.table_setup_col('id / name', 210)
 		vgui.table_setup_col('origin', 64)
 		vgui.table_setup_col('len', 34)
-		// 58 fitted RTR/FD/BRS; `STALE 12.3s` needs the rest. The width comes out of `data`,
-		// which is the flexible column — see #156 for why the age is spelled out rather than
-		// left as a bare marker.
-		vgui.table_setup_col('flags', 96)
+		vgui.table_setup_col('flags', 58)
 		vgui.table_setup_col('data', 0)
 		vgui.table_setup_col('count', 60)
 		// `cycle (ms)`, parenthesised like the `t (s)` column two tables up — one unit
@@ -598,20 +595,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			}
 			origin_cell(g.origin, verdict_mark(g.refused, g.missed))
 			vgui.table_cell('${r.data.len}')
-			// STALE rides the flags column: a message that has stopped arriving is a property
-			// of this frame's delivery, which is what that column already reports. The cell is
-			// coloured because the whole point is that it must not be skimmed past — the bench
-			// pulled a connector and nothing on screen changed (#156).
-			stale_ms := stale_age(app, g)
-			if stale_ms > 0 {
-				// HOW LONG it has been silent, not just that it has: "stopped 30 s ago" is the
-				// operational fact, and a bare marker leaves the reader timing it by hand.
-				lead := if flags_str(r) == '' { '' } else { '${flags_str(r)} ' }
-				vgui.table_next_col()
-				vgui.text_colored(230, 140, 60, '${lead}STALE ${stale_ms / 1000:.1f}s')
-			} else {
-				vgui.table_cell(flags_str(r))
-			}
+			vgui.table_cell(flags_str(r))
 			// data column: dim bytes that match the PREVIOUS frame of this group, normal for
 			// ones that changed (conventional change highlight). Compared against the actual prior
 			// frame in the trace buffer — not the last-rendered payload — so the delta is correct

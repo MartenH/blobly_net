@@ -33,9 +33,13 @@ mut:
 	// When traffic first and last reached this wire, in the trace's clock (App.since_ms), and
 	// how many frames that covers. Enough to answer "has this bus gone quiet, and for how
 	// long?" without touching the trace: the ring is capped and filtered, and a bus is silent
-	// whether or not its rows are still on screen. rx_first/rx_seen are the cadence — mean gap
-	// is (rx_last - rx_first) / (rx_seen - 1) — and rx_seen is separate from `rx` because that
-	// counter survives across a Clear and these must reset with the measurement.
+	// whether or not its rows are still on screen. The mean gap is
+	// (rx_last - rx_first) / (rx_seen - 1).
+	//
+	// Separate from `rx`, which is the DISPLAYED count and is zeroed by clear_trace() — these
+	// are not, deliberately: clearing the view must not make the app forget the wire was ever
+	// alive, or a Clear would silently retract a standing quiet verdict. They reset at Start
+	// instead, with the measurement they describe.
 	rx_first f64
 	rx_last  f64
 	rx_seen  u64
