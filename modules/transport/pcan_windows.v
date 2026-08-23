@@ -74,6 +74,14 @@ pub fn open_pcan(spec string) !&PcanBus {
 	}
 }
 
+// open_pcan_bus adapts open_pcan to the shared registry's factory signature. It takes the FULL
+// interface string, because that is what the registry keeps as the wire's requested settings
+// and compares a later opener against.
+fn open_pcan_bus(iface string) !Bus {
+	body := if iface.starts_with('pcan:') { iface['pcan:'.len..] } else { iface }
+	return open_pcan(body)!
+}
+
 pub fn (mut b PcanBus) send(f CanFrame) ! {
 	// CAN-FD is not implemented on this backend: the vendor call below writes a classic frame,
 	// so an FD frame would go out truncated and report success. Refuse — a bench that silently

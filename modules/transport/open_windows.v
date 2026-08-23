@@ -15,7 +15,20 @@ pub fn open(iface string) !Bus {
 		return open_udp(t.group, t.port)!
 	}
 	if iface.starts_with('pcan:') {
-		return open_pcan(iface['pcan:'.len..])!
+		// Through the shared registry, not straight to the driver: PCANBasic permits exactly
+		// one CAN_Initialize per channel per process (issue #147), and the app opens each wire
+		// several times per Start — a monitor plus one transmit tap per channel plus the
+		// anonymous tap. Whichever call arrived first won and the rest were told the adapter
+		// was missing; usually the loser was the reader, so the measurement transmitted and
+		// heard nothing. The other backends are deliberately NOT routed through here — see
+		// shared.v for why a second open of `inproc:`/`udp:` is a second subscriber and must
+		// stay one.
+		// Keyed on the WIRE, which is destination_key WITHOUT the bitrate. The channel is the
+		// thing the driver lets us open once; the rate is a setting ON it. Keyed WITH the rate,
+		// a 250k row and a 500k row on one channel would be two entries, both would reach
+		// CAN_Initialize, and the second would fail with the very error this exists to prevent
+		// — instead of being told the two disagree. Same reasoning as wire_key_for.
+		return shared_open(wire_key_for('pcan', iface), iface, open_pcan_bus)!
 	}
 	if iface.starts_with('kvaser:') {
 		return open_kvaser(iface['kvaser:'.len..])!
