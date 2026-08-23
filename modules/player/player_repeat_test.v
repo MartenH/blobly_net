@@ -86,3 +86,46 @@ fn test_restart_from_finished_resets_the_pass_count() {
 	assert p.passes() == 0 // ... and the new run starts from zero
 	assert rep_ids(p.due(300)) == [u32(1)]
 }
+
+// A SPAN-filtered replay (new_player_over, as restbus and multibus build) keeps the lap of the
+// recording it came from, not of what survived the filter -- so the last retained frame can fall
+// well before the lap ends, and the tail is legitimate silence. The wrap/finish decision belongs
+// at that boundary, not at the last frame: taken early it reads `repeat` before the operator has
+// finished deciding, and the runtime toggle then governs a lap that was already committed.
+//
+// entries end at 0.2 s; the source span runs to 0.5 s, so 200..500 ms is the tail gap.
+fn test_span_tail_gap_defers_the_wrap_decision() {
+	mut p := new_player_over(rep_rec(), 1.0, true, 100.0, 100.5)
+	p.play(0)
+	assert p.duration_s() == 0.5
+	assert rep_ids(p.due(200)) == [u32(1), 2, 3] // every retained frame is out
+	assert p.due(300).len == 0 // ... and the gap is silence, not a wrap
+	assert p.passes() == 0 // nothing has been decided yet
+	p.set_repeat(false) // disarmed INSIDE the gap, before the boundary
+	assert p.due(500).len == 0 // so the lap ends instead of playing another
+	assert p.finished()
+}
+
+fn test_span_tail_gap_can_still_arm_the_wrap() {
+	mut p := new_player_over(rep_rec(), 1.0, false, 100.0, 100.5)
+	p.play(0)
+	assert rep_ids(p.due(200)) == [u32(1), 2, 3]
+	assert !p.finished() // still playing: the lap runs to the span end, not to the last frame
+	p.set_repeat(true) // armed inside the gap
+	assert rep_ids(p.due(500)) == [u32(1)] // the boundary wraps, on the recording's own period
+	assert p.passes() == 1
+}
+
+// The non-looping case must not report finished mid-lap either -- a subtracted capture whose
+// SUT transmitted last would otherwise announce completion seconds early, with the rest bus
+// still owing silence to the ECU under test.
+fn test_span_tail_gap_finishes_at_the_boundary_not_the_last_frame() {
+	mut p := new_player_over(rep_rec(), 1.0, false, 100.0, 100.5)
+	p.play(0)
+	assert rep_ids(p.due(200)) == [u32(1), 2, 3]
+	assert !p.finished()
+	assert p.due(499).len == 0
+	assert !p.finished() // still inside the lap
+	assert p.due(500).len == 0
+	assert p.finished() // and finished exactly at the span end
+}

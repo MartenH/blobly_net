@@ -197,8 +197,9 @@ pub fn (mut p Player) seek(pos_s f64, now_ms f64) {
 	}
 }
 
-// next_due_ms is the playback-clock time the NEXT entry is due, or none when nothing is
-// pending (not playing, or the recording is exhausted and not looping).
+// next_due_ms is the playback-clock time the next thing is due -- an entry, or the span
+// boundary where the pass wraps or finishes -- or none when nothing is
+// pending (not playing, or the recording is empty or spans no time).
 //
 // This is what lets a sender sleep exactly as long as the recording says to, instead of
 // polling on some chosen tick. The distinction is not cosmetic: a tick quantises every
@@ -211,10 +212,15 @@ pub fn (p Player) next_due_ms() ?f64 {
 		return none
 	}
 	if p.idx >= p.entries.len {
-		// End of a pass: the next thing due is the first entry of the next loop.
-		if !p.repeat || p.duration_s() <= 0 {
+		if p.duration_s() <= 0 {
 			return none
 		}
+		// The next event is the SPAN BOUNDARY, whether the pass wraps or finishes there --
+		// due() defers that decision to it, so the caller has to be awake for it either way.
+		// Deliberately NOT conditional on `repeat` any more: it can be toggled before we
+		// arrive, and returning none here while still .playing would strand a caller that
+		// treats none as "this replay is over" (the GUI worker breaks its loop on it), inside
+		// a tail gap that has not ended yet.
 		return p.base_ms + p.duration_s() * 1000.0 / p.speed
 	}
 	return p.base_ms + (p.entries[p.idx].t_s - p.t0_s()) * 1000.0 / p.speed
@@ -237,10 +243,27 @@ pub fn (mut p Player) due(now_ms f64) []canlog.LogEntry {
 	t0 := p.t0_s()
 	for {
 		if p.idx >= p.entries.len {
-			// End of a pass. Loop with the recording's duration as the period
-			// (a zero-length recording can't loop — it would spin forever).
+			// The pass is not over when the last RETAINED entry goes out -- it is over when the
+			// SOURCE SPAN ends. new_player_over exists precisely because those differ: a
+			// subtracted capture keeps the lap of the recording it came from, not of what
+			// survived the filter (multibus.v: "filtering must not shorten a lap"), so with the
+			// SUT's frames removed the tail of a lap can be seconds of legitimate silence.
+			//
+			// Committing the wrap/finish decision at the last entry read `repeat` too early.
+			// Harmless while the flag was fixed at config time; with a runtime toggle (net#157)
+			// it made the control lie -- disarming loop during that tail still played one more
+			// lap, because the wrap had already been taken, and a non-looping pass reported
+			// .finished mid-lap, where there was no longer anything to arm. Wait for the
+			// boundary and decide there, which is what the panel says the toggle does.
+			pass_end_ms := p.base_ms + p.duration_s() * 1000.0 / p.speed
+			if now_ms + time_eps_ms < pass_end_ms {
+				break // inside the tail gap: nothing is due, and nothing is decided yet
+			}
+			// Loop with the recording's duration as the period (a zero-length recording can't
+			// loop — it would spin forever). Assigning the boundary rather than adding to it
+			// keeps a wrap anchored to the span even when a late tick discovers it.
 			if p.repeat && p.duration_s() > 0 {
-				p.base_ms += p.duration_s() * 1000.0 / p.speed
+				p.base_ms = pass_end_ms
 				p.idx = 0
 				p.loops++
 				continue
