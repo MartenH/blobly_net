@@ -27,13 +27,11 @@ mut:
 	// it, and every alias must show it or a bus-off wire draws green on its other rows —
 	// the exact defect `down` was added here to fix, repeated; self-review)
 	health transport.BusHealth
-	// When traffic first and last reached this WIRE, and how many frames that covers — folded
-	// here for the same reason health is. Only the reader-owning alias records them, so read
-	// row-by-row every other alias of one wire looks healthy while the wire it names is dead.
-	rx_first   f64
-	rx_last    f64
-	rx_seen    u64
-	rx_max_gap f64
+	// When traffic last reached this WIRE, and whether any ever did — folded here for the same
+	// reason health is. Only the reader-owning alias records them, so read row-by-row every
+	// other alias of one wire looks fine while the wire it names is dead.
+	rx_last f64
+	rx_seen u64
 }
 
 fn read_destinations(rows []Chan) map[string]DestState {
@@ -50,10 +48,8 @@ fn read_destinations(rows []Chan) map[string]DestState {
 			// one reader per destination, so exactly one row carries these — and adding two
 			// rows' counts together would invent a cadence neither of them saw.
 			if c.rx_seen > st.rx_seen {
-				st.rx_first = c.rx_first
 				st.rx_last = c.rx_last
 				st.rx_seen = c.rx_seen
-				st.rx_max_gap = c.rx_max_gap
 			}
 			out[transport.destination_key(c.iface)] = st
 		}
@@ -371,10 +367,8 @@ fn draw_buses(mut app App, chans []Chan) {
 						// have carried traffic all through the gap with nobody counting it,
 						// so the old timestamp would report the entire unobserved interval
 						// as silence the moment the reader comes back (codex #159 r3).
-						app.chans[i].rx_first = 0
 						app.chans[i].rx_last = 0
 						app.chans[i].rx_seen = 0
-						app.chans[i].rx_max_gap = 0
 						app.chans[i].spawning = true
 						spawn rx_loop(app, i, app.chans[i].iface, app.run_gen)
 					}
@@ -449,10 +443,12 @@ fn draw_buses(mut app App, chans []Chan) {
 			// cannot carry this: a listening channel whose cable is pulled reports a perfectly
 			// healthy bus, because CAN has no link detection and an unplugged wire is
 			// indistinguishable from an idle one (#156).
-			qms := app.quiet_ms(read_dests[transport.destination_key(c.iface)] or { DestState{} })
+			qms := app.silent_ms(read_dests[transport.destination_key(c.iface)] or { DestState{} })
 			if qms > 0 {
+				// DIM, and worded as an observation. Whether silence is a fault depends on what
+				// the wire was supposed to carry, which nothing here knows — see stale.v.
 				vgui.same_line()
-				vgui.text_colored(230, 140, 60, 'quiet ${qms / 1000:.0f}s')
+				vgui.text_dim('last RX ${qms / 1000:.0f}s')
 			}
 			// system awareness: when a system.toml is loaded, name the ECUs that sit on
 			// this bus — the channel row alone doesn't say WHO is on the wire. The system

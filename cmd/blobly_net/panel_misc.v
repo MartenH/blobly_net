@@ -284,8 +284,11 @@ fn draw_toolbar(mut app App, rx u64, txs string, chans []Chan) {
 		// This is the only statement of it an operator gets without reading the trace.
 		qname, qms := app.quietest_wire(chans)
 		if qms > 0 {
+			// Dim, and phrased as the observation it is. The coloured chip above is the
+			// driver reporting a real fault; this one is only "nothing has arrived lately",
+			// which on an event-driven wire is perfectly normal (#159 review).
 			vgui.same_line()
-			vgui.text_colored(230, 140, 60, '· ${qname} quiet ${qms / 1000:.0f}s')
+			vgui.text_dim('· ${qname} last RX ${qms / 1000:.0f}s')
 		}
 	}
 	vgui.same_line()

@@ -751,14 +751,6 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			// `ours` branch as the counter, and for the same reason: our own echo is not the
 			// bus talking, and counting it would keep a silent wire looking alive for as long
 			// as anything on this host kept transmitting into it.
-			if a.chans[ci].rx_seen == 0 {
-				a.chans[ci].rx_first = t_ms
-			} else {
-				gap := t_ms - a.chans[ci].rx_last
-				if gap > a.chans[ci].rx_max_gap {
-					a.chans[ci].rx_max_gap = gap
-				}
-			}
 			a.chans[ci].rx_last = t_ms
 			a.chans[ci].rx_seen++
 		}
@@ -802,7 +794,6 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 					// on the unplugged wire this exists to report, will never come — and the
 					// quiet verdict would disappear permanently at the moment it is true
 					// (codex #159).
-					a.chans[cj].rx_first = a.chans[ci].rx_first
 					a.chans[cj].rx_last = a.chans[ci].rx_last
 					a.chans[cj].rx_seen = a.chans[ci].rx_seen
 					a.chans[cj].spawning = true

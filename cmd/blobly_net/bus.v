@@ -30,25 +30,18 @@ struct Chan {
 mut:
 	enabled bool
 	rx      u64
-	// When traffic first and last reached this wire, in the trace's clock (App.since_ms), and
-	// how many frames that covers. Enough to answer "has this bus gone quiet, and for how
-	// long?" without touching the trace: the ring is capped and filtered, and a bus is silent
-	// whether or not its rows are still on screen. The mean gap is
-	// (rx_last - rx_first) / (rx_seen - 1).
+	// When traffic last reached this wire (the trace's clock, App.since_ms) and whether any ever
+	// did. Enough to answer "how long has this bus been silent?" without touching the trace: the
+	// ring is capped and filtered, and a wire is silent whether or not its rows are still on
+	// screen. `rx_seen` is a HAS-IT-EVER, not a cadence — see stale.v for why no cadence is
+	// inferred from these at all.
 	//
 	// Separate from `rx`, which is the DISPLAYED count and is zeroed by clear_trace() — these
 	// are not, deliberately: clearing the view must not make the app forget the wire was ever
-	// alive, or a Clear would silently retract a standing quiet verdict. They reset at Start
-	// instead, with the measurement they describe.
-	rx_first f64
-	rx_last  f64
-	rx_seen  u64
-	// The LARGEST gap this wire has ever left between frames. Silence only means something
-	// once it exceeds what this wire has already shown itself capable of: a bus that regularly
-	// goes three seconds between bursts is not broken at four, and judging it by its MEAN gap
-	// accused it at half a second. The mean says how busy a wire is; the maximum says what its
-	// silence is worth.
-	rx_max_gap f64
+	// alive, or a Clear would silently reset the reported silence to nothing. They reset at
+	// Start instead, with the measurement they describe.
+	rx_last f64
+	rx_seen u64
 	running  bool
 	spawning  bool // rx_loop spawned but its bus not open yet (double-click guard)
 	link_down bool // real CAN iface is administratively DOWN (bound but can't tx/rx)

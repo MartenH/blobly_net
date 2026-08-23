@@ -347,16 +347,16 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
   the panel and scripts cannot disagree. A fault that cannot take effect is refused loudly.
 - **Silence** (`cmd/blobly_net/stale.v`): CAN has no link detection, so a *receiver* cannot tell
   a disconnected bus from an idle one — on any vendor. The only honest signal is that traffic
-  which was arriving has stopped — so the **wire** says so (`CAN1 quiet 57s`, in the toolbar and
-  on the Buses row), measured from its own first/last/count of RECEIVED frames. Our own sends do
-  not count, or anything this host transmits would keep a dead wire looking alive; the cadence is
-  folded per DESTINATION like `health` is, and handed to the successor when a reader moves,
-  because only the reader-owning alias records it. **Per message deliberately not**: an earlier
-  version marked individual messages `STALE` from the trace view, and review found six ways for
-  it to raise a false alarm (event-driven ids, RTR groups inheriting a data cycle, all-refused
-  groups, the text filter hiding newer frames, one id defined differently on two buses, resuming
-  a pause) — all of them because the trace view is filtered, capped, origin-split and pausable.
-  Worth having, but on the unfiltered stream and with its own tests.
+  which was arriving has stopped — so each wire reports `last RX 45s` (dim, in the toolbar and on
+  its Buses row) from its own last RECEIVED frame. Our own sends do not count, or anything this
+  host transmits would keep a dead wire looking alive; it is folded per DESTINATION like `health`
+  is, and handed to the successor when a reader moves, because only the reader-owning alias
+  records it. **It states a fact and makes no judgement**, deliberately: three attempts to decide
+  whether silence was a FAULT were each taken apart by the same counter-example (five diagnostic
+  requests a second apart), because "traffic that stopped" and "traffic that finished" are
+  identical on the wire and no amount of observing separates them. Only a declaration can — a
+  DBC's `GenMsgCycleTime` — and that alarm is not built yet. The controller's fault ladder is the
+  other half and IS a judgement, because the driver made it: that one stays coloured.
 - [simulation.md](docs/simulation.md) — the simulation user manual (rest-bus, generators,
   senders, replay, end-to-end protection) ·
   [doip.md](docs/doip.md) — the DoIP user manual (supported vs planned) ·
