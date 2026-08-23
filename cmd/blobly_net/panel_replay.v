@@ -53,6 +53,17 @@ fn draw_replay(mut app App) {
 			app.replay_seek.delete(k)
 		}
 	}
+	if app.replay_loop.len > 0 {
+		mut dead_l := []u64{}
+		for k, _ in app.replay_loop {
+			if k !in toks {
+				dead_l << k
+			}
+		}
+		for k in dead_l {
+			app.replay_loop.delete(k)
+		}
+	}
 	for tok in toks {
 		// snapshot the status under the lock; render from the copy
 		app.mu.lock()
@@ -131,19 +142,34 @@ fn draw_replay(mut app App) {
 		// Loop is armed here and never acts here. The player reads the flag only when a pass
 		// runs out, so ticking it while paused -- or on a group that has already finished --
 		// does nothing at all, by design (net#157): it decides the NEXT run-out, and nothing
-		// else. A TARGET, like want_state above and for the same reason: the published `repeat`
-		// lags by up to one worker tick, so two clicks inside one tick must both mean the value
-		// the box now shows rather than cancelling each other out.
+		// else.
+		//
+		// Rendered from the LATCHED target, not from the published `repeat`. The worker
+		// publishes before it applies, so a click took up to two ticks (~100 ms) to come back
+		// -- and a checkbox that shows the old value is not merely late, it is wrong: a second
+		// click meant to undo the first read the stale box, computed the same target again, and
+		// the undo vanished (codex #160 r2). The latch clears when the worker's published value
+		// agrees, so it holds intent only while a command is genuinely in flight. This is the
+		// same reason replay_seek exists, one control over.
 		vgui.same_line()
-		want_rep := vgui.checkbox('loop##${tok}', repeat)
-		if want_rep != repeat {
+		if pend := app.replay_loop[tok] {
+			if pend == repeat {
+				app.replay_loop.delete(tok) // acknowledged — published truth takes over again
+			}
+		}
+		shown_rep := app.replay_loop[tok] or { repeat }
+		want_rep := vgui.checkbox('loop##${tok}', shown_rep)
+		if want_rep != shown_rep {
+			app.replay_loop[tok] = want_rep
 			app.mu.lock()
 			if mut cc := app.replay_ctls[tok] {
 				cc.want_repeat = if want_rep { i8(1) } else { i8(0) }
 			}
 			app.mu.unlock()
 		}
-		if repeat != cfg_repeat {
+		// The note follows the box, not the wire: it belongs to the control and would otherwise
+		// appear and disappear a tick out of step with the tick it describes.
+		if shown_rep != cfg_repeat {
 			vgui.same_line()
 			cfg_lbl := if cfg_repeat { 'on' } else { 'off' }
 			vgui.text_dim('(configured: loop ${cfg_lbl} — restored on Stop/Start)')
