@@ -240,7 +240,10 @@ fn draw_menubar(mut app App, rx u64) {
 
 // draw_toolbar is the button/status strip BELOW the menu bar (Start/Stop, live status,
 // Pause/Clear/Record, theme).
-fn draw_toolbar(mut app App, rx u64, txs string) {
+// `chans` is the frame's SNAPSHOT, cloned under app.mu with rx/txs — not app.chans. The RX
+// workers write health, running, link_down and the cadence fields under that lock, so reading
+// the live array here raced them for a verdict this strip then displays.
+fn draw_toolbar(mut app App, rx u64, txs string, chans []Chan) {
 	// breathing room below the menu bar + inset from the left edge (host has zero padding)
 	vgui.indent_y(7 * app.ui_scale)
 	vgui.indent_x(8 * app.ui_scale)
@@ -263,6 +266,30 @@ fn draw_toolbar(mut app App, rx u64, txs string) {
 		vgui.text_colored(90, 200, 120, 'running')
 	} else {
 		vgui.text_colored(210, 120, 120, 'stopped')
+	}
+	// The controller's fault ladder, beside the thing it contradicts. It used to appear ONLY as
+	// a four-character label in the Buses panel, which an operator watching the Trace never
+	// sees: the bench pulled a connector, the adapter reported BUSHEAVY within half a second,
+	// and the screen said "running" and nothing else (#156). A wire whose transmissions are not
+	// reaching it is not a footnote in another window.
+	if app.running {
+		h, wire := worst_wire_health(chans)
+		if transport.health_rank(h) > transport.health_rank(transport.BusHealth.ok) {
+			r, g, b := health_chip_color(h)
+			vgui.same_line()
+			vgui.text_colored(r, g, b, '· ${wire} ${transport.health_name(h)}')
+		}
+		// A wire that has gone SILENT, which the ladder above cannot report: a listening
+		// channel whose cable is pulled sees an idle bus, because CAN has no link detection.
+		// This is the only statement of it an operator gets without reading the trace.
+		qname, qms := app.quietest_wire(chans)
+		if qms > 0 {
+			// Dim, and phrased as the observation it is. The coloured chip above is the
+			// driver reporting a real fault; this one is only "nothing has arrived lately",
+			// which on an event-driven wire is perfectly normal (#159 review).
+			vgui.same_line()
+			vgui.text_dim('· ${qname} last RX ${qms / 1000:.0f}s')
+		}
 	}
 	vgui.same_line()
 	// Unsaved FILE-tab text counts as modified too. It lives in its own buffer, so without this
