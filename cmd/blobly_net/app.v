@@ -652,6 +652,17 @@ fn (mut app App) rebuild_from_proj() {
 	// silently dropped along with the databases it referred to
 	app.resolve_pending_bit_edit()
 	proj := app.proj
+	// SILENCE FIRST, before any of the loading below. The runtime rows do not exist yet, so this
+	// publishes the FILE's enabled CAN rows -- and the rows are not the point, the timing is: the
+	// marks are read per send, and everything between here and the republish at the end is
+	// synchronous DBC, manifest and simulator loading that can take a visible moment on a large
+	// project. A Lua script is explicitly allowed to outlive Stop still holding its bus, so for
+	// exactly that long it would ask the table and be told the OLD project's answer -- and
+	// transmit on a wire the new one marks listen-only (codex #164 r3).
+	//
+	// Of the two ways to be early, this is the safe one: a wire the new project silences goes
+	// quiet at once, and a wire it releases stays quiet a moment longer than it must.
+	project.apply_listen_only(proj.channels)
 	app.mu.lock()
 	app.chans = []
 	// rebuild runs for ordinary config ops too (add bus/DBC, adapter change) —
@@ -818,6 +829,14 @@ fn (mut app App) rebuild_from_proj() {
 			break
 		}
 	}
+	// AND AGAIN, now from the runtime rows: the file was only the pre-image published at the top
+	// of this function, and app.chans is what the run actually holds -- a bus enabled or disabled
+	// from the Buses panel never touches the file. Not in load_project either: an ordinary config
+	// op (add bus, add DBC) reaches this function without going near one, and a listen-only tick
+	// that only took effect on the next reload is a tick that lies until then.
+	app.mu.lock()
+	app.push_listen_only_locked()
+	app.mu.unlock()
 }
 
 // LogCache holds one output buffer joined into a single string, for the panels that render

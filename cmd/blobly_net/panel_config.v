@@ -484,7 +484,7 @@ fn (mut app App) draw_bus_editor(i int) bool {
 			app.dirty = true
 		}
 		vgui.same_line()
-		vgui.help_marker('Listen-only: never transmit (no ACKs) — passive monitoring of a live bus.')
+		vgui.help_marker('Listen-only: this tester transmits NOTHING on the wire — not Quick Send, generators, simulated ECUs, replay, diagnostics or scripts. On Vector the transceiver is put in silent mode as well, so it does not even acknowledge; every other adapter still ACKs what it hears.')
 		if ch.mode == .replay {
 			vgui.text('replay:')
 			vgui.same_line()

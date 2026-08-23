@@ -624,6 +624,10 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 						a.chans[cj].enabled = false
 					}
 				}
+				// Same rule as every other writer of chans[].enabled: republish the wire list
+				// before releasing the lock, or a row retired here keeps silencing a wire that
+				// something else is enabled onto later.
+				a.push_listen_only_locked()
 			}
 			a.mu.unlock()
 			break

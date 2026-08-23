@@ -21,9 +21,11 @@ channels:
     interface: vcan0     # the bus blobly_emb scale sends CpuLoad on (can0)
     bitrate: 500000      # nominal (vcan ignores it)
     mode: monitor        # observe the load frames
-    listen_only: true    # bus-config intent (maps to `ip link set canX type can listen-only`
-                         # on real HW). NOTE: blobly_net's UI does not yet block manual
-                         # Send/Generators on a listen-only channel — enforcement is a TODO.
+    listen_only: true    # nothing in blobly_net transmits on this wire: Send, generators,
+                         # simulated ECUs, replay and scripts all get a bus that refuses.
+                         # The transceiver is silenced too on Vector only (`,silent`);
+                         # elsewhere it still ACKs, and on SocketCAN that needs
+                         # `ip link set canX type can listen-only`.
     enabled: true
     databases:
       - dbc/cpuload.dbc

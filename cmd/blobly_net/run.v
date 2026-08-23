@@ -100,7 +100,40 @@ fn (app &App) dest_is_read_locked(iface string) bool {
 	return false
 }
 
-// destination_conflict asks project.vendor_destination_conflicts about the rows as they stand.
+// runtime_rows is app.chans in the shape modules/project's shared policies take. Extracted
+// because there are two of them now -- the destination conflicts below and the listen-only wire
+// list -- and both must see the SAME rows: the runtime set, which a live enable/disable moves
+// without touching the file.
+fn (app &App) runtime_rows() []project.Channel {
+	mut rows := []project.Channel{}
+	for c in app.chans {
+		rows << project.Channel{
+			name:        c.name
+			adapter:     c.adapter
+			iface:       c.iface
+			typ:         c.typ
+			bitrate:     c.bitrate
+			listen_only: c.listen_only
+			enabled:     c.enabled
+		}
+	}
+	return rows
+}
+
+// push_listen_only_locked republishes which wires refuse to transmit. Called wherever the runtime
+// channel set changes -- a rebuild, and every live enable/disable -- because the marks are
+// consulted per send, so a stale list is a wire transmitting that was ticked silent.
+//
+// _locked: it reads app.chans, so the caller holds app.mu -- and must, or a republish could
+// interleave with the mutation it is meant to describe. EVERY path that writes chans[].enabled
+// calls it: the Buses panel toggle, the stopped Replay tick (config.v) and rx_loop retiring a
+// dead destination (workers.v). It was three of four, and the one it missed could leave a script
+// that outlived Stop transmitting on a wire the operator had ticked silent (codex #164 r2).
+fn (app &App) push_listen_only_locked() {
+	project.apply_listen_only(app.runtime_rows())
+}
+
+// destination_conflict asks project.destination_conflicts about the rows as they stand.
 //
 // ONE POLICY, and this is its third home: the GUI had its own mode check and its own rate check,
 // the headless runner had neither, and when the shared rule was tightened — a mode disagreement
@@ -108,18 +141,7 @@ fn (app &App) dest_is_read_locked(iface string) bool {
 // script and the diagnostic panel can all make one talk — the GUI kept the old reading and the
 // two front ends disagreed about the same project again. There is nothing here left to drift.
 fn (app &App) destination_conflict() ?string {
-	mut rows := []project.Channel{}
-	for c in app.chans {
-		rows << project.Channel{
-			name:        c.name
-			adapter:     c.adapter
-			iface:       c.iface
-			bitrate:     c.bitrate
-			listen_only: c.listen_only
-			enabled:     c.enabled
-		}
-	}
-	problems := project.vendor_destination_conflicts(rows)
+	problems := project.destination_conflicts(app.runtime_rows())
 	if problems.len == 0 {
 		return none
 	}
