@@ -62,3 +62,32 @@ fn test_socketcan_err_ladder() {
 	// passive outranks warning when both detail bits are present
 	assert socketcan_err_health(0x2000_0004, 0x30 | 0x0c) == .error_passive
 }
+
+// The bench case: a PCAN channel transmitting into a disconnected bus reports BUSHEAVY
+// through CAN_Read's return, and the backend used to call that a failed read — which the GUI
+// answers by disabling the wire. A warning must degrade a channel, never remove it.
+fn test_pcan_read_verdict_ladder_is_not_a_failure() {
+	// plain answers first
+	assert pcan_read_verdict(0x00) == .frame // OK, message returned
+	assert pcan_read_verdict(0x20) == .empty // QRCVEMPTY, nothing waiting
+
+	// the ladder alone: the channel is in trouble AND handed us a message
+	assert pcan_read_verdict(0x04) == .frame // BUSLIGHT
+	assert pcan_read_verdict(0x08) == .frame // BUSHEAVY — the one measured on the bench
+	assert pcan_read_verdict(0x10) == .frame // BUSOFF
+	assert pcan_read_verdict(0x40000) == .frame // BUSPASSIVE
+
+	// the ladder OR'd with "nothing waiting" — a degraded wire that is simply idle. Reported
+	// as a failure, this is what disabled the channel and stopped the trace dead.
+	assert pcan_read_verdict(0x08 | 0x20) == .empty
+	assert pcan_read_verdict(0x10 | 0x20) == .empty
+	assert pcan_read_verdict(0x40000 | 0x20) == .empty
+	assert pcan_read_verdict(0x04 | 0x08 | 0x10 | 0x40000 | 0x20) == .empty
+
+	// and what MUST still be fatal: the adapter is gone, or was never opened. Masking the
+	// ladder must not swallow these — a dead channel polled forever is the opposite failure.
+	assert pcan_read_verdict(0x1400) == .failed // ILLHW: unplugged
+	assert pcan_read_verdict(0x200) == .failed // NODRIVER
+	assert pcan_read_verdict(0x4000000) == .failed // INITIALIZE: channel not open
+	assert pcan_read_verdict(0x1400 | 0x08) == .failed // a real fault WITH ladder bits set
+}

@@ -88,19 +88,25 @@ static uint32_t ct_pcan_write(uint16_t ch, uint32_t id, uint8_t msgtype, uint8_t
 	return ct_fn_write(ch, &m);
 }
 
-/* Read one message. Returns 0 (got a frame, out params filled), 1 (queue empty —
- * caller should poll/timeout), or -(status) on a real error. */
-static int ct_pcan_read(uint16_t ch, uint32_t *id, uint8_t *msgtype, uint8_t *len, uint8_t *data) {
-	CT_TPCANMsg m;
+/* Read one message. Returns PCANBasic's status word VERBATIM; the out params carry whatever
+ * the call left in the message struct.
+ *
+ * Deciding what that word means is the CALLER's job (transport.pcan_read_verdict), for two
+ * reasons. It is testable in V and untestable here — this file only compiles on Windows, so a
+ * test of it would never run in CI. And it was WRONG here: this function used to report any
+ * status that was neither OK nor QRCVEMPTY as a failed read, but CAN_Read ORs the fault ladder
+ * (BUSLIGHT/BUSHEAVY/BUSOFF/BUSPASSIVE) into its return, and the caller answers a failed read
+ * by disabling the whole wire. A channel transmitting into a disconnected bus reports BUSHEAVY
+ * within half a second, so it killed its own reader and the trace simply stopped. */
+static uint32_t ct_pcan_read(uint16_t ch, uint32_t *id, uint8_t *msgtype, uint8_t *len, uint8_t *data) {
+	CT_TPCANMsg m = {0}; /* zeroed: on an empty read the vendor leaves this untouched */
 	uint32_t st = ct_fn_read(ch, &m, NULL);
 	int i;
-	if (st == CT_PCAN_ERROR_QRCVEMPTY) return 1;
-	if (st != CT_PCAN_ERROR_OK) return -(int)st;
 	*id = m.ID;
 	*msgtype = m.MSGTYPE;
 	*len = m.LEN;
 	for (i = 0; i < 8; i++) data[i] = m.DATA[i];
-	return 0;
+	return st;
 }
 
 /* Bus status word of an initialized channel (PCAN_ERROR_* bits: BUSLIGHT 0x04, BUSHEAVY
