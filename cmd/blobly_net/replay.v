@@ -684,6 +684,21 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		ctl.want_speed = 0
 		ctl.want_seek = -1.0
 		ctl.want_repeat = -1
+		// Loop is applied HERE -- inside the lock, BEFORE the publish below -- unlike every
+		// other command, which is applied after the unlock so the re-sampled `now` keeps mutex
+		// jitter out of the replayed cadence. set_repeat takes no `now` and touches no clock,
+		// so it has nothing to gain from being out there and one thing to lose: the status
+		// published in this tick would predate the command consumed in it. That is not cosmetic
+		// lag, it is a value the panel cannot interpret -- its checkbox clears its pending latch
+		// when the published value agrees, and a stale `false` matched a pending `false` that
+		// the worker had not applied yet, so the box cleared early and then visibly flipped back
+		// on when the NEXT tick published the intervening `true` (codex #160 r4, a defect of
+		// r2's fix). Applied before the publish, `ctl.repeat` always reflects every command the
+		// worker has taken, which is the invariant that acknowledgement rests on. Keep them
+		// adjacent and in this order.
+		if cmd_repeat >= 0 {
+			p.set_repeat(cmd_repeat == 1)
+		}
 		ctl.state = p.state()
 		ctl.pos_s = p.position_s(now)
 		ctl.speed = p.speed
@@ -738,14 +753,6 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 				announced = false
 			}
 			p.seek(cmd_seek, now)
-		}
-		// Loop is a passive flag: set_repeat writes it and nothing else, and the player reads
-		// it only when a pass runs out (below, inside p.due). So this is deliberately applied
-		// with no state handling of its own -- no revival of a .finished group, no `announced`
-		// reset. Arming loop on a group that already ran out does nothing, which is the
-		// contract: the end it would have looped at is behind it.
-		if cmd_repeat >= 0 {
-			p.set_repeat(cmd_repeat == 1)
 		}
 		for e in p.due(now) {
 			// BEFORE EVERY SEND. A batch is normally a few frames, but after a stall p.due()
