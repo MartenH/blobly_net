@@ -19,10 +19,23 @@ import time
 // Where a test owns its listener outright it uses port 0 instead and reads back what the OS
 // assigned — see free_listener below, which cannot collide at all. This helper is for the cases
 // that cannot: DoipServer.listen binds TCP and UDP to the SAME number, and port 0 would hand
-// those two different ones. The arithmetic and this file's band live in `testports`, which states
-// why they are what they are.
-fn uniq_port(slot int) int {
-	return testports.doip.port(slot)
+// those two different ones — so the number has to be known before the bind, and the only honest
+// way to know it is to have bound it.
+//
+// listen_somewhere walks this file's band (see `testports`) and returns the first port the server
+// actually took. A pid-derived guess is where it STARTS, not what it trusts: any formula over a
+// finite band aliases, and two live processes that alias would otherwise both be told the same
+// free port. Binding settles it, and settles two sites in one process too — the first holds its
+// socket, so the second's bind fails there and it moves on.
+//
+// 0 means every candidate refused, which is an environment fact (no IPv6 loopback on this runner)
+// rather than one unlucky number. Callers that skip on that can now mean it.
+fn listen_somewhere(mut srv DoipServer, host string) int {
+	for p in testports.doip.candidates() {
+		srv.listen(host, p) or { continue }
+		return p
+	}
+	return 0
 }
 
 // A TCP listener on an OS-assigned port, with the port it actually got. Nothing can collide with
@@ -39,10 +52,6 @@ fn free_listener() !(&net.TcpListener, int) {
 		return error('no port')
 	})
 }
-
-// The server's port, resolved once. TCP and UDP must share it, so this cannot be an
-// OS-assigned one.
-const test_port = uniq_port(0)
 
 fn echo_handler(req []u8) []u8 {
 	return req.map(it + 1) // distinct from the request so we know it round-tripped
@@ -92,8 +101,11 @@ fn test_client_ignores_foreign_response() {
 fn test_client_server_roundtrip() {
 	mut srv := new_server(ServerCfg{ logical_address: 0x1000, vin: 'TESTVIN0000000001' },
 		echo_handler)
-	srv.listen('127.0.0.1', test_port) or {
-		assert false, 'listen failed: ${err}'
+	// TCP and UDP must share the number, so this cannot be an OS-assigned one — it is bound,
+	// then reused, rather than predicted.
+	test_port := listen_somewhere(mut srv, '127.0.0.1')
+	if test_port == 0 {
+		assert false, 'no bindable port in the band'
 		return
 	}
 	spawn fn (mut s DoipServer) {
@@ -261,10 +273,10 @@ fn test_client_server_roundtrip() {
 // (a GUI Stop), interrupting serve_connection's per-connection read PROMPTLY
 // rather than waiting out its 60s timeout.
 fn test_close_interrupts_active_connection() {
-	lport := uniq_port(2)
 	mut srv := new_server(ServerCfg{ logical_address: 0x1000 }, echo_handler)
-	srv.listen('127.0.0.1', lport) or {
-		assert false, 'listen: ${err}'
+	lport := listen_somewhere(mut srv, '127.0.0.1')
+	if lport == 0 {
+		assert false, 'no bindable port in the band'
 		return
 	}
 	spawn fn (mut srv DoipServer) {
@@ -323,8 +335,12 @@ fn test_close_interrupts_active_connection() {
 fn test_ipv6_roundtrip() {
 	mut srv := new_server(ServerCfg{ logical_address: 0x1000, vin: 'TESTVIN0000000001' },
 		echo_handler)
-	srv.listen('::1', 13467) or {
-		eprintln('skipping IPv6 roundtrip (no IPv6 loopback here): ${err}')
+	v6_port := listen_somewhere(mut srv, '::1')
+	if v6_port == 0 {
+		// EVERY candidate refused, so this is the environment and not a busy port. That
+		// distinction is the point: a single fixed port made a collision indistinguishable from
+		// "no IPv6 here", and this skip then dropped the coverage without saying so.
+		eprintln('skipping IPv6 roundtrip (no IPv6 loopback here)')
 		return
 	}
 	spawn fn (mut s DoipServer) {
@@ -338,7 +354,7 @@ fn test_ipv6_roundtrip() {
 		}
 	}(mut srv)
 	time.sleep(150 * time.millisecond)
-	mut ch := open_doip('::1', 13467, 0x0E80, 0x1000) or {
+	mut ch := open_doip('::1', v6_port, 0x0E80, 0x1000) or {
 		srv.close()
 		assert false, 'IPv6 open_doip: ${err}'
 		return
@@ -359,8 +375,9 @@ fn test_ipv6_roundtrip() {
 fn test_discover() {
 	mut srv := new_server(ServerCfg{ logical_address: 0x1234, vin: 'TESTVIN0000000099' },
 		echo_handler)
-	srv.listen('127.0.0.1', 13468) or {
-		assert false, 'listen: ${err}'
+	dport := listen_somewhere(mut srv, '127.0.0.1')
+	if dport == 0 {
+		assert false, 'no bindable port in the band'
 		return
 	}
 	spawn fn (mut s DoipServer) {
@@ -374,7 +391,7 @@ fn test_discover() {
 		}
 	}(mut srv)
 	time.sleep(150 * time.millisecond)
-	info := discover('127.0.0.1', 13468, 1000) or {
+	info := discover('127.0.0.1', dport, 1000) or {
 		srv.close()
 		assert false, 'discover: ${err}'
 		return
@@ -397,8 +414,9 @@ fn test_entity_announces_itself_unasked() {
 		announce_count:    2
 		announce_interval: 50
 	}, handler)
-	srv.listen('127.0.0.1', 13413) or {
-		assert false, 'listen: ${err}'
+	aport := listen_somewhere(mut srv, '127.0.0.1')
+	if aport == 0 {
+		assert false, 'no bindable port in the band'
 		return
 	}
 	defer {
@@ -406,9 +424,9 @@ fn test_entity_announces_itself_unasked() {
 	}
 	// listener first: announcements are not queued for a tester that is not there yet
 	mut got := []Announcement{}
-	t := spawn fn () []Announcement {
+	t := spawn fn [aport] () []Announcement {
 		// the entity's OWN port: announcements go where it is bound, not to the module default
-		return collect_announcements(13413, 900) or { []Announcement{} }
+		return collect_announcements(aport, 900) or { []Announcement{} }
 	}()
 	time.sleep(150 * time.millisecond)
 	srv.announce() or {
@@ -430,15 +448,16 @@ fn test_announce_count_zero_says_nothing() {
 	mut srv := new_server(ServerCfg{
 		announce_count: 0
 	}, handler)
-	srv.listen('127.0.0.1', 13414) or {
-		assert false, 'listen: ${err}'
+	zport := listen_somewhere(mut srv, '127.0.0.1')
+	if zport == 0 {
+		assert false, 'no bindable port in the band'
 		return
 	}
 	defer {
 		srv.close()
 	}
-	t := spawn fn () []Announcement {
-		return collect_announcements(13414, 400) or { []Announcement{} }
+	t := spawn fn [zport] () []Announcement {
+		return collect_announcements(zport, 400) or { []Announcement{} }
 	}()
 	time.sleep(100 * time.millisecond)
 	srv.announce() or {
@@ -462,9 +481,10 @@ fn test_an_ipv4_announce_to_on_an_ipv6_entity_says_which_settings_disagree() {
 		announce_count:  1
 		announce_to:     '127.255.255.255'
 	}, handler)
-	srv.listen('::1', 13461) or {
-		// the same environment skip test_ipv6_roundtrip uses: some runners have no IPv6 loopback
-		eprintln('skipping IPv4-announce_to-on-IPv6 (no IPv6 loopback here): ${err}')
+	if listen_somewhere(mut srv, '::1') == 0 {
+		// the same environment skip test_ipv6_roundtrip uses, and now it means what it says:
+		// every candidate refused, not one that happened to be taken
+		eprintln('skipping IPv4-announce_to-on-IPv6 (no IPv6 loopback here)')
 		return
 	}
 	defer {

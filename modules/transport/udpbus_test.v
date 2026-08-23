@@ -14,12 +14,16 @@ import time
 //
 // The pid varies the group's low bytes AND the port, so concurrent runs cannot meet; the slot
 // keeps two tests in ONE run apart, since a file's tests share a process. 239.x is the
-// administratively-scoped block — the right place for something this local. Both the group and
-// this file's port band live in `testports`, which states why they are what they are: two
-// processes sharing a group AND a port would see each other's frames, which is exactly what the
-// self-filter assertion below reads as a failure.
+// administratively-scoped block — the right place for something this local.
+//
+// This is the one place that CANNOT verify by binding, and `testports.group_of` says why: two
+// processes may both bind one multicast group and port, and then each sees the other's frames —
+// which is exactly what the self-filter assertion below reads as a failure. No bind fails to warn
+// them. So here the GROUP does the separating and is predicted from the pid; the port varies with
+// the pid as a second lock, and the slot keeps this file's three tests apart, since they share a
+// process and each needs a pair of buses that hear only each other.
 fn uniq_group(slot int) (string, int) {
-	return testports.group(), testports.udp_bus.port(slot)
+	return testports.group(), testports.udp_bus.slot(4, slot)
 }
 
 // Two buses on the same group must see each other's frames, but not their own.

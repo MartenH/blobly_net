@@ -9,11 +9,18 @@ import time
 // reads + the clock). Single process: UDP buffers the exchange, so the
 // server side answers sequentially after the client sends.
 
-// A port derived from this process, with a slot to keep two sockets in one test apart. The
-// arithmetic and this file's band live in `testports`, which states why they are what they are;
-// see the note at the use below for why these are not OS-assigned instead.
+// The two ports this test binds: a block of two, belonging to this process alone.
+//
+// Predicted, not verified, and that is forced rather than chosen — this V's net.listen_udp sets
+// SO_REUSEADDR, so a second bind on a held UDP port SUCCEEDS and proves nothing. Walking
+// candidates until one "works" would be a check that always passes on the first try, including
+// the collision it exists to avoid. See the head of `testports`.
+//
+// So it has to be prediction that cannot overlap: the pid picks the BLOCK and the slot indexes
+// inside it. `pid + slot` — what this was — makes process N's slot 1 into process N+1's slot 0,
+// and a test runner spawns its files with pids a few apart, so that is the common case.
 fn uniq_port(slot int) int {
-	return testports.someip.port(slot)
+	return testports.someip.slot(2, slot)
 }
 
 fn test_rpc_over_loopback_sockets() {
@@ -22,10 +29,9 @@ fn test_rpc_over_loopback_sockets() {
 	// surface as one intermittent failure that passes on every re-run afterwards, which is what
 	// #112 was filed for and could not identify.
 	//
-	// Derived from the pid rather than assigned by the OS, unlike the TCP cases elsewhere: this V's
-	// net.UdpConn has no addr(), so a socket bound to port 0 cannot report the number it got, and
-	// the client below has to be told where to write. A pid-derived pair is the next best thing —
-	// two concurrent runs cannot meet, and the two sockets in this one test differ by their slot.
+	// Not OS-assigned, unlike the TCP cases elsewhere: this V's net.UdpConn has no addr(), so a
+	// socket bound to port 0 cannot report the number it got, and the client below has to be told
+	// where to write before either socket exists.
 	srv_port := uniq_port(0)
 	mut srv := net.listen_udp('127.0.0.1:${srv_port}')!
 	defer {
