@@ -419,12 +419,23 @@ pub fn (c Channel) iface_with_bitrate() string {
 // stored spelling: for Vector those differ -- the flag adds `,silent` and the rate lands between
 // them -- and a mark filed under a spelling nobody opens is a mark that never fires.
 pub fn (p Project) apply_listen_only() {
-	transport.clear_listen_only()
+	mut quiet := []string{}
 	for c in p.channels {
-		if c.listen_only {
-			transport.set_listen_only(c.iface_with_bitrate(), true)
+		// ENABLED ROWS DECIDE, the rule bitrate_iface already follows. A row switched off states
+		// nothing about the wire -- and destination_conflicts skips disabled rows too, so a
+		// disabled listen-only row silencing an enabled sibling would be a contradiction that
+		// nothing in the project could even warn about.
+		//
+		// CAN ONLY, which is what the checkbox is offered for. A `doip:` row addresses a TCP
+		// endpoint, not a wire that can be held quiet, and its editor never draws the tick — so
+		// a flag left behind by an adapter change would silence an address no CAN bus opens and
+		// could not be cleared from the UI that set it.
+		if !c.enabled || !c.listen_only || c.is_doip() {
+			continue
 		}
+		quiet << c.iface_with_bitrate()
 	}
+	transport.replace_listen_only(quiet)
 }
 
 // resolve_asset makes a project-relative path (a DBC, a recording) absolute against the
@@ -1317,7 +1328,7 @@ pub fn destination_conflicts(chs []Channel) []string {
 		// Keyed on what the bus will be OPENED with, so this groups rows exactly as the
 		// transport table does — a mark filed under one spelling and looked up under another
 		// finds nothing, and would report agreement between rows that will not agree at run time.
-		if c.listen_only {
+		if c.listen_only && !c.is_doip() {
 			quiet[conflict_wire_key(c)] = c.name
 		}
 		if c.adapter !in ['pcan', 'kvaser', 'vector'] {

@@ -135,9 +135,11 @@ fn draw_buses(mut app App, chans []Chan) {
 				// and a listen-only row on one wire, every port opened silent; switching the
 				// listen-only row off leaves the normal row's already-open ports silent while
 				// the model now says the wire is normal, and its transmits are refused one at a
-				// time with nothing to explain it. Only Vector, where the mode reaches hardware.
-				if !new && app.running && app.chans[i].adapter == 'vector'
-					&& app.chans[i].listen_only {
+				// time with nothing to explain it. EVERY ADAPTER since #117: the mode reaches the
+				// transceiver only on Vector, but transport.open now decides silence for every
+				// backend as the bus is handed out, so an already-open tap keeps the answer it was
+				// given and the same stale-mode trap applies to a SocketCAN or PCAN wire.
+				if !new && app.running && app.chans[i].listen_only {
 					mut others_live := false
 					off_key := transport.destination_key(app.chans[i].iface)
 					for j, other in app.chans {
@@ -153,7 +155,10 @@ fn draw_buses(mut app App, chans []Chan) {
 						continue
 					}
 				}
-				if new && app.running && app.chans[i].adapter in ['pcan', 'kvaser', 'vector'] {
+				// Not vendor-only either: destination_conflicts now refuses a listen-only
+				// disagreement on any wire, so enabling a normal row onto a silenced software or
+				// SocketCAN bus has to be caught here too rather than joining it mute.
+				if new && app.running {
 					app.chans[i].enabled = true
 					clash := app.destination_conflict()
 					app.chans[i].enabled = false

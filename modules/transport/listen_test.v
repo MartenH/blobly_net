@@ -36,15 +36,18 @@ fn test_marked_wire_refuses_to_send_but_still_receives() {
 	clear_listen_only()
 }
 
-// The mark travels with the WIRE, not with the spelling that opened it, or a second emitter
-// naming the same bus differently would quietly get a bus that transmits.
+// The mark travels with the WIRE, not with the spelling that opened it: canonical_iface
+// collapses the addresses that reach one hub, so a second emitter naming it the other way does
+// not quietly get a bus that transmits. (Trailing whitespace is NOT one of those spellings --
+// see test_trailing_space_is_a_different_hub.)
 fn test_mark_is_keyed_on_the_wire_not_the_spelling() {
 	clear_listen_only()
-	set_listen_only('inproc:lo_alias', true)
-	assert is_listen_only('  inproc:lo_alias  ') // trimmed
-	assert !is_listen_only('inproc:lo_other')
+	set_listen_only('inproc', true)
+	assert is_listen_only('inproc:CAN'), 'the default hub name did not resolve to the same wire'
+	assert is_listen_only('inproc:')
+	assert !is_listen_only('inproc:other')
 	clear_listen_only()
-	assert !is_listen_only('inproc:lo_alias')
+	assert !is_listen_only('inproc')
 }
 
 // `@` is a bitrate suffix on a vendor address and part of the NAME everywhere else. Cutting it
@@ -93,5 +96,28 @@ fn test_unmark_restores_transmission_on_the_next_open() {
 	loud.send(CanFrame{ id: 0x401, data: [u8(6)] })!
 	got := ear.recv(200)!
 	assert got.id == 0x401
+	clear_listen_only()
+}
+
+// replace_listen_only swaps the set in ONE locked step. clear-then-set left a window in which a
+// bus opened by another thread read an empty table and transmitted for its whole lifetime.
+fn test_replace_swaps_the_whole_set_at_once() {
+	clear_listen_only()
+	set_listen_only('inproc:lo_old', true)
+	replace_listen_only(['inproc:lo_new'])
+	assert !is_listen_only('inproc:lo_old'), 'the old set survived a replace'
+	assert is_listen_only('inproc:lo_new')
+	replace_listen_only([])
+	assert !is_listen_only('inproc:lo_new')
+}
+
+// `inproc:bench` and `inproc:bench ` are two hubs -- the dispatcher does not trim, and
+// canonical_iface deliberately does not either. A key that trimmed would silence a bus nobody
+// ticked.
+fn test_trailing_space_is_a_different_hub() {
+	clear_listen_only()
+	set_listen_only('inproc:lo_space ', true)
+	assert is_listen_only('inproc:lo_space ')
+	assert !is_listen_only('inproc:lo_space'), 'a trimmed key merged two separate hubs'
 	clear_listen_only()
 }

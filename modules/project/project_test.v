@@ -1,5 +1,7 @@
 module project
 
+import transport
+
 const sample = '
 project:
   name: demo-bench
@@ -942,4 +944,53 @@ fn test_at_sign_does_not_merge_software_buses() {
 		},
 	]
 	assert destination_conflicts(rows).len == 0
+}
+
+// apply_listen_only registers ENABLED CAN rows only. A disabled row states nothing about the
+// wire -- and destination_conflicts skips disabled rows too, so a disabled row silencing an
+// enabled sibling would be a contradiction nothing could warn about. A DoIP row addresses a TCP
+// endpoint rather than a wire, and its editor never draws the tick.
+fn test_apply_listen_only_registers_enabled_can_rows_only() {
+	transport.clear_listen_only()
+	p := Project{
+		channels: [
+			Channel{
+				name:        'on'
+				iface:       'inproc:lo_on'
+				enabled:     true
+				listen_only: true
+			},
+			Channel{
+				name:        'off'
+				iface:       'inproc:lo_off'
+				enabled:     false
+				listen_only: true
+			},
+			Channel{
+				name:        'plain'
+				iface:       'inproc:lo_plain2'
+				enabled:     true
+				listen_only: false
+			},
+		]
+	}
+	p.apply_listen_only()
+	assert transport.is_listen_only('inproc:lo_on')
+	assert !transport.is_listen_only('inproc:lo_off'), 'a disabled row silenced a wire'
+	assert !transport.is_listen_only('inproc:lo_plain2')
+
+	// Applying a project REPLACES the previous one's marks, so a wire reused by the next
+	// project is not silenced by a tick it never carried.
+	next := Project{
+		channels: [
+			Channel{
+				name:    'on'
+				iface:   'inproc:lo_on'
+				enabled: true
+			},
+		]
+	}
+	next.apply_listen_only()
+	assert !transport.is_listen_only('inproc:lo_on')
+	transport.clear_listen_only()
 }

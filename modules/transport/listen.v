@@ -43,11 +43,13 @@ __global listen_tbl = &ListenTable{}
 // open on THIS machine, and `@` is a bitrate suffix only on a vendor address: `inproc:bench@A`
 // is a bus NAME, and cutting it there names a different hub than the one the operator marked.
 pub fn wire_key(iface string) string {
-	i := iface.trim_space()
-	if vendor_iface(i) {
-		return vendor_destination_key(i).all_before('@')
+	if vendor_iface(iface.trim_space()) {
+		return vendor_destination_key(iface).all_before('@')
 	}
-	return canonical_iface(i)
+	// UNTRIMMED on this path, deliberately. canonical_iface does not trim either, and says why:
+	// the dispatcher does not, so `inproc:bench` and `inproc:bench ` are two separate hubs.
+	// Trimming here would let one tick silence a bus nobody ticked.
+	return canonical_iface(iface)
 }
 
 // set_listen_only marks (or unmarks) a wire. Called where a project is APPLIED, once per
@@ -70,6 +72,23 @@ pub fn is_listen_only(iface string) bool {
 	v := listen_tbl.wires[k] or { false }
 	listen_tbl.mu.unlock()
 	return v
+}
+
+// replace_listen_only swaps the WHOLE set under one lock.
+//
+// Not clear-then-set. Those are two locked operations with a gap between them, and a bus opened
+// in that gap -- by a script worker, the shell, a replay spawn, anything holding no lock of its
+// own -- reads an empty table and gets a transmitting bus for its whole lifetime. The window is
+// microseconds and the consequence is a wire the operator ticked silent transmitting until Stop,
+// which is the failure this whole change exists to remove.
+pub fn replace_listen_only(ifaces []string) {
+	mut next := map[string]bool{}
+	for i in ifaces {
+		next[wire_key(i)] = true
+	}
+	listen_tbl.mu.lock()
+	listen_tbl.wires = next.move()
+	listen_tbl.mu.unlock()
 }
 
 // clear_listen_only drops every mark. Used when a project is replaced -- a wire marked by the
