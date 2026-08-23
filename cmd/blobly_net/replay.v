@@ -706,7 +706,18 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 			p.pause(now)
 		} else if cmd_state == .playing && p.state() in [player.State.paused, .finished] {
 			if p.state() == .finished {
-				announced = false // restarting: the NEXT run-out is fresh news
+				// Restarting. play() rewinds the recording AND the pass count (player.v), so
+				// every other number that describes a RUN has to rewind with them, here, at the
+				// one place a run begins again. Left cumulative, a second play-through announced
+				// "2N frames, 1 pass" -- a worker-lifetime total paired with a per-run count
+				// (codex #160 r1). first_err goes too: it is sticky once set, so a stale one
+				// would name the PREVIOUS run's wire in this run's failure line. `announced`
+				// was always reset here; it is the same thought, and now the whole set moves
+				// together instead of one member of it.
+				announced = false
+				sent = 0
+				failed = 0
+				first_err = ''
 			}
 			p.play(now) // from .finished this restarts at 0 — the panel labels it Restart
 		}
@@ -719,7 +730,12 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		}
 		if cmd_seek >= 0 {
 			if p.state() == .finished {
-				announced = false // seek revives a finished player — the NEXT run-out is fresh news
+				// seek revives a finished player — the NEXT run-out is fresh news. Deliberately
+				// NOT the counter reset the restart above does: seek moves within the run it is
+				// already in (it demotes .finished to .paused at a position, it does not rewind
+				// to 0), so its frames belong to the same run and keep counting. Restart begins
+				// a run; seek scrubs one.
+				announced = false
 			}
 			p.seek(cmd_seek, now)
 		}
