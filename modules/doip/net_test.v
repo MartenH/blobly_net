@@ -1,13 +1,47 @@
 module doip
 
 import net
+import os
 import time
 
 // A uds-free networking test: a DoIP server with a trivial echo+1 handler, driven
 // by DoipClient over real localhost TCP, plus UDP discovery. Keeps `v test
 // modules/doip/` free of the uds→isotp→transport globals dependency.
 
-const test_port = 13456
+// PER PROCESS, not a constant. A fixed port collides two ways — with another test in the same
+// suite, and with another suite run (or anything else on the machine) that happens to hold it —
+// and both show up as one intermittent failure nobody can reproduce afterwards (#112).
+//
+// Derived from the pid so two concurrent runs cannot meet, with a slot to keep tests in one run
+// apart, since a file's tests share a process. Above 20000 to stay clear of 13400, which is
+// DoIP's registered port and may genuinely be in use here by a real entity.
+//
+// Where a test owns its listener outright it uses port 0 instead and reads back what the OS
+// assigned — see free_listener below, which cannot collide at all. This helper is for the cases
+// that cannot: DoipServer.listen binds TCP and UDP to the SAME number, and port 0 would hand
+// those two different ones.
+fn uniq_port(slot int) int {
+	return 20000 + (os.getpid() % 20000) + slot
+}
+
+// A TCP listener on an OS-assigned port, with the port it actually got. Nothing can collide with
+// this: the socket is bound before the number is known, so there is no window in which another
+// process could take it. Preferred wherever the test only needs *a* port.
+fn free_listener() !(&net.TcpListener, int) {
+	mut ln := net.listen_tcp(.ip, '127.0.0.1:0')!
+	a := ln.addr() or {
+		ln.close() or {}
+		return error('no addr: ${err}')
+	}
+	return ln, int(a.port() or {
+		ln.close() or {}
+		return error('no port')
+	})
+}
+
+// The server's port, resolved once. TCP and UDP must share it, so this cannot be an
+// OS-assigned one.
+const test_port = uniq_port(0)
 
 fn echo_handler(req []u8) []u8 {
 	return req.map(it + 1) // distinct from the request so we know it round-tripped
@@ -17,8 +51,10 @@ fn echo_handler(req []u8) []u8 {
 // logical addresses (gateway noise / spoofing) and only accept the one for its own
 // source/target pair.
 fn test_client_ignores_foreign_response() {
-	lport := 13457
-	mut ln := net.listen_tcp(.ip, '127.0.0.1:${lport}') or {
+	// This test owns its listener and needs no particular number, so it takes an OS-assigned
+	// one — which cannot collide with anything, unlike a derived port that merely collides
+	// rarely.
+	mut ln, lport := free_listener() or {
 		assert false, 'listen: ${err}'
 		return
 	}
@@ -226,7 +262,7 @@ fn test_client_server_roundtrip() {
 // (a GUI Stop), interrupting serve_connection's per-connection read PROMPTLY
 // rather than waiting out its 60s timeout.
 fn test_close_interrupts_active_connection() {
-	lport := 13458
+	lport := uniq_port(2)
 	mut srv := new_server(ServerCfg{ logical_address: 0x1000 }, echo_handler)
 	srv.listen('127.0.0.1', lport) or {
 		assert false, 'listen: ${err}'

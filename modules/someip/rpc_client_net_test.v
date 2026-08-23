@@ -1,6 +1,7 @@
 module someip
 
 import net
+import os
 import time
 
 // The RpcClient over REAL sockets on loopback — the exact shape the GUI
@@ -8,18 +9,34 @@ import time
 // reads + the clock). Single process: UDP buffers the exchange, so the
 // server side answers sequentially after the client sends.
 
+// A port derived from this process, with a slot to keep two sockets in one test apart. See the
+// note at its use below for why these are not OS-assigned.
+fn uniq_port(slot int) int {
+	return 20000 + (os.getpid() % 20000) + slot
+}
+
 fn test_rpc_over_loopback_sockets() {
-	mut srv := net.listen_udp('127.0.0.1:47654')!
+	// PER PROCESS, not constants. A fixed port collides two ways — with another test in the same
+	// suite, and with another suite run (or anything else on this machine) holding it — and both
+	// surface as one intermittent failure that passes on every re-run afterwards, which is what
+	// #112 was filed for and could not identify.
+	//
+	// Derived from the pid rather than assigned by the OS, unlike the TCP cases elsewhere: this V's
+	// net.UdpConn has no addr(), so a socket bound to port 0 cannot report the number it got, and
+	// the client below has to be told where to write. A pid-derived pair is the next best thing —
+	// two concurrent runs cannot meet, and the two sockets in this one test differ by their slot.
+	srv_port := uniq_port(0)
+	mut srv := net.listen_udp('127.0.0.1:${srv_port}')!
 	defer {
 		srv.close() or {}
 	}
 	srv.set_read_timeout(500 * time.millisecond)
-	mut cli_sock := net.listen_udp('127.0.0.1:47655')!
+	mut cli_sock := net.listen_udp('127.0.0.1:${uniq_port(1)}')!
 	defer {
 		cli_sock.close() or {}
 	}
 	cli_sock.set_read_timeout(100 * time.millisecond)
-	srv_addr := net.resolve_addrs('127.0.0.1:47654', .ip, .udp)![0]
+	srv_addr := net.resolve_addrs('127.0.0.1:${srv_port}', .ip, .udp)![0]
 
 	mut cli := RpcClient{
 		service:    0x0100
