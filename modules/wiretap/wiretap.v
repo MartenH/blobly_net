@@ -140,8 +140,15 @@ pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, 
 	// `vector:ch1` while the single reader for that wire was opened as `vector:1`, and both are
 	// the same application channel. Matching raw strings left the emission unclaimable and the
 	// frame duplicated as RX — the very bug this ring exists to prevent (codex #174 P1).
-	// destination_key is what the BACKEND will open, which is the identity that matters, and for
-	// the software buses it is canonical_iface, so nothing changes for them.
+	//
+	// wire_key, and NOT destination_key: the difference is the whole safety boundary here.
+	// destination_key keeps the `@<bitrate>`, and the two sides of an echo do not spell the rate
+	// the same way — a tap's identity is built with the rate STRIPPED while a reader claims under
+	// its channel's full interface string, so on any wire not at the 500000 default the two would
+	// resolve differently and nothing would ever match. wire_key is that identity without the
+	// rate, which is right on its own terms too: the rate is a setting ON a wire, not which wire
+	// it is. For the software buses it is canonical_iface, so nothing changes for them — and it
+	// leaves their `@` alone, because `inproc:bench@A` is a bus NAME.
 	wire := transport.wire_key(iface)
 	r.items << Pending{
 		seq:     seq

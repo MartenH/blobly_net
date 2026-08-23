@@ -266,8 +266,14 @@ fn (app &App) tx_mutex(iface string) &sync.Mutex {
 	// record A, pause, and the other queue B first — the trace then says A went out before B
 	// while the bus carried B, and each frame can claim the other's echo. `vector:1` and
 	// `vector:ch1` are one transceiver; canonical_iface does not know that and
-	// destination_key does.
-	key := transport.destination_key(iface)
+	// wire_key does.
+	//
+	// wire_key rather than destination_key, which is what this used to say. Not a bug today —
+	// the single caller passes an address whose rate is already stripped, so destination_key
+	// appended the same default to every one of them — but correct by coincidence, and the
+	// coincidence is one caller deep. wire_key is the same identity the echo matcher and the
+	// listen-only marks use, and it does not care whether the rate was stripped first.
+	key := transport.wire_key(iface)
 	// tx_map_mu, NOT app.mu — see the field comment: a caller may already hold app.mu here.
 	a.tx_map_mu.lock()
 	defer {
