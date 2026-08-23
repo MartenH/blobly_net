@@ -821,3 +821,148 @@ fn test_ordinals_do_not_collide_across_groups() {
 	}
 	assert entries.len == 145534
 }
+
+// build_remote_frame_file writes one sorted CAN_RemoteFrame group. Records are 14 bytes:
+// time f64 @0, ID @8, IDE @12, DLC @13. NO DataBytes and no DataLength channel — a remote frame
+// requests data and carries none, which is exactly why the DataFrame lookups missed the group
+// and it was skipped in silence (#131).
+fn build_remote_frame_file(ids []u32, ides []bool, dlcs []u32, times []f64) []u8 {
+	mut b := Mdf4Builder{}
+	b.buf << 'MDF     '.bytes()
+	b.buf << '4.10    '.bytes()
+	b.buf << 'blobly  '.bytes()
+	b.buf << []u8{len: 4}
+	b.buf << le_bytes(410, 2)
+	b.buf << []u8{len: 34}
+
+	hd := b.block('##HD', 6, []u8{len: 32})
+	dg := b.block('##DG', 4, []u8{len: 8})
+	mut cg_d := []u8{len: 32}
+	for i, x in le_bytes(u64(ids.len), 8) {
+		cg_d[8 + i] = x
+	}
+	for i, x in le_bytes(u64(14), 4) {
+		cg_d[24 + i] = x
+	}
+	cg := b.block('##CG', 6, cg_d)
+
+	cn_t := b.block('##CN', 8, cn_block_data(2, 4, 0, 64))
+	cn_fr := b.block('##CN', 8, cn_block_data(0, 10, 8, 0))
+	cn_id := b.block('##CN', 8, cn_block_data(0, 0, 8, 32))
+	cn_ide := b.block('##CN', 8, cn_block_data(0, 0, 12, 1))
+	cn_dlc := b.block('##CN', 8, cn_block_data(0, 0, 13, 8))
+
+	tx_t := b.text('time')
+	tx_fr := b.text('CAN_RemoteFrame')
+	tx_id := b.text('CAN_RemoteFrame.ID')
+	tx_ide := b.text('CAN_RemoteFrame.IDE')
+	tx_dlc := b.text('CAN_RemoteFrame.DLC')
+
+	mut recs := []u8{}
+	for i, id in ids {
+		recs << le_bytes(math.f64_bits(if times.len > i { times[i] } else { 0.001 * f64(i + 1) }),
+			8)
+		recs << le_bytes(u64(id), 4)
+		recs << u8(if ides.len > i && ides[i] { 1 } else { 0 })
+		recs << u8(dlcs[i])
+	}
+	dt := b.block('##DT', 0, recs)
+
+	b.set_link(hd, 0, dg)
+	b.set_link(dg, 1, cg)
+	b.set_link(dg, 2, dt)
+	b.set_link(cg, 1, cn_t)
+	b.set_link(cn_t, 0, cn_fr)
+	b.set_link(cn_t, 2, tx_t)
+	b.set_link(cn_fr, 1, cn_id)
+	b.set_link(cn_fr, 2, tx_fr)
+	b.set_link(cn_id, 0, cn_ide)
+	b.set_link(cn_id, 2, tx_id)
+	b.set_link(cn_ide, 0, cn_dlc)
+	b.set_link(cn_ide, 2, tx_ide)
+	b.set_link(cn_dlc, 2, tx_dlc)
+	return b.buf
+}
+
+// A remote frame REQUESTS a payload of a stated length and carries none. It used to vanish: the
+// group's channels are named CAN_RemoteFrame.*, every CAN_DataFrame lookup missed, and parse_cg
+// returned without a word — so identical traffic showed rtr rows when imported from a candump
+// and nothing at all from an .mf4 (#131).
+fn test_remote_frames_are_imported_not_skipped() {
+	buf := build_remote_frame_file([u32(0x123), 0x1ABCDEF], [false, true], [u32(8), 3],
+		[0.001, 0.002])
+	es := parse(buf) or {
+		assert false, 'a CAN_RemoteFrame group must parse: ${err}'
+		return
+	}
+	assert es.len == 2, 'both remote frames must arrive, got ${es.len}'
+	assert es[0].frame.id == 0x123
+	assert es[0].frame.rtr, 'a CAN_RemoteFrame group produces remote frames'
+	assert !es[0].frame.extended
+	assert !es[0].frame.fd, 'CAN-FD has no remote frames'
+	// ZERO-FILLED to the requested DLC — the live representation, and what modules/canlog
+	// builds from `123#R8`. The two importers must agree about the same traffic.
+	assert es[0].frame.data.len == 8
+	assert es[0].frame.data == []u8{len: 8}
+	assert es[1].frame.id == 0x1ABCDEF
+	assert es[1].frame.extended, 'the IDE channel must still be read under the other prefix'
+	assert es[1].frame.rtr
+	assert es[1].frame.data.len == 3
+}
+
+// A DLC above 8 is read the way CLASSIC CAN defines it: codes 9..15 all mean 8 bytes. Read as
+// CAN-FD they would mean 12..64, and that reading has to be refused here rather than merely
+// avoided — FD has no remote frames at all, so a 64-byte request describes a frame that cannot
+// exist on any wire. Decoding it as 8 keeps the frame; decoding it as FD would invent one.
+//
+// This is the one place the two importers differ, and deliberately: modules/canlog REJECTS the
+// whole line for `R9`..`R15`, because there the digit is free text a writer chose and a value
+// out of range is evidence the line is malformed. Here the DLC is a fixed-width field a
+// recorder filled from the controller, where 9..15 is the ordinary encoding of a frame that
+// requested 8 — dropping it would lose a real frame over a legal code.
+fn test_a_remote_dlc_above_eight_reads_as_eight() {
+	buf := build_remote_frame_file([u32(0x200), 0x201], [false, false], [u32(15), 9], [
+		0.001,
+		0.002,
+	])
+	es := parse(buf) or {
+		assert false, 'the group must still parse: ${err}'
+		return
+	}
+	assert es.len == 2
+	assert es[0].frame.rtr && es[1].frame.rtr
+	assert es[0].frame.data.len == 8, 'classic DLC 15 requests 8 bytes'
+	assert es[1].frame.data.len == 8, 'and so does 9'
+	assert !es[0].frame.fd, 'and neither is FD — that reading is what must never happen'
+}
+
+// A DLC that is not a four-bit code at all did not come off a wire. The length is unknown, and
+// an unknown length must not become a plausible 8 — the same refusal every other length this
+// parser cannot trust already gets.
+fn test_a_remote_dlc_outside_the_code_range_is_refused() {
+	buf := build_remote_frame_file([u32(0x202)], [false], [u32(200)], [0.001])
+	es := parse(buf) or {
+		assert false, '${err}'
+		return
+	}
+	assert es.len == 1, 'the frame still arrives; it is its length that is unknown'
+	assert es[0].frame.rtr
+	assert es[0].frame.data.len == 0
+}
+
+// Timestamps and ordering come from the same machinery as a data group — the point of
+// parameterising the prefix rather than writing a second parser beside it.
+fn test_remote_frame_timestamps_are_read() {
+	buf := build_remote_frame_file([u32(0x300), 0x301], [false, false], [u32(1), 2], [
+		0.25,
+		0.75,
+	])
+	es := parse(buf) or {
+		assert false, '${err}'
+		return
+	}
+	assert es.len == 2
+	assert es[0].t_s > 0.2 && es[0].t_s < 0.3, 'got ${es[0].t_s}'
+	assert es[1].t_s > 0.7 && es[1].t_s < 0.8, 'got ${es[1].t_s}'
+	assert es[0].t_s < es[1].t_s
+}

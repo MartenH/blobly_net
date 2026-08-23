@@ -382,32 +382,60 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 	// Collect leaf channels (recursing struct compositions like CAN_DataFrame).
 	mut chans := []Chan{}
 	collect_channels(buf, cn_first, mut chans)
-	c_id := find_chan(chans, 'CAN_DataFrame.ID') or { return }
-	c_db := find_chan(chans, 'CAN_DataFrame.DataBytes') or { return }
-	c_len := find_chan(chans, 'CAN_DataFrame.DataLength') or {
-		find_chan(chans, 'CAN_DataFrame.DLC') or { return }
+	// WHICH KIND of group. A recording carries CAN_RemoteFrame groups beside its CAN_DataFrame
+	// ones, and every channel in them is named under that prefix instead — so the DataFrame
+	// lookups all missed and the group was skipped in silence, taking its frames with it (#131).
+	// Absent, not mislabelled: the trace's request/response split could never appear for an MF4
+	// import while identical traffic from a candump showed it.
+	//
+	// One parser, parameterised, rather than a second one beside it: the identity, timing,
+	// bus-channel, direction and invalidation handling are the same work, and a copy of that
+	// much record striding is a copy that drifts.
+	mut prefix := 'CAN_DataFrame'
+	if _ := find_chan(chans, 'CAN_DataFrame.ID') {
+		prefix = 'CAN_DataFrame'
+	} else if _ := find_chan(chans, 'CAN_RemoteFrame.ID') {
+		prefix = 'CAN_RemoteFrame'
+	} else {
+		return
+	}
+	remote := prefix == 'CAN_RemoteFrame'
+	c_id := find_chan(chans, '${prefix}.ID') or { return }
+	// A remote frame REQUESTS data and carries none, so it has no DataBytes channel and there is
+	// nothing to require. Left empty rather than looked up: an absent Chan reads bit_count 0 and
+	// byte_off 0, which the payload branches below must never be allowed to treat as a field —
+	// see the `remote` branch, which never reaches them.
+	c_db := if remote {
+		Chan{}
+	} else {
+		find_chan(chans, 'CAN_DataFrame.DataBytes') or { return }
+	}
+	// DLC, not DataLength, on a remote group: the frame states the length it is ASKING for, and
+	// there are no bytes for a byte count to describe.
+	c_len := find_chan(chans, '${prefix}.DataLength') or {
+		find_chan(chans, '${prefix}.DLC') or { return }
 	}
 	// Whether that channel counts BYTES. DataLength does; DLC is the wire code, and above 8 the
 	// two part company — a CAN-FD DLC of 15 means 64 bytes. Only the byte count can be compared
 	// against a payload length, so a file carrying just DLC gets the ceiling check and not the
 	// agreement check.
-	len_is_bytes := c_len.name == 'CAN_DataFrame.DataLength'
+	len_is_bytes := c_len.name == '${prefix}.DataLength'
 	// The time master is identified by cn_type==2, not its name (Vector calls it
 	// 't', python-can 'time'); fall back to a 't' lookup just in case.
 	c_t := find_master(chans) or { find_chan(chans, 't') or { Chan{} } }
 	// Vector packs the IDE flag into ID bit 31; CANedge gives it its own 1-bit
 	// channel (the 29-bit ID is masked to its declared bit count, so bit 31 is 0).
-	c_ide := find_chan(chans, 'CAN_DataFrame.IDE') or { Chan{} }
+	c_ide := find_chan(chans, '${prefix}.IDE') or { Chan{} }
 	// WHICH BUS. A recording carries several buses — each CAN_DataFrame group is one, and the
 	// standard BusChannel field names it per record. Labelling every frame 'can' merged them:
 	// 0x100 from CAN1 and 0x100 from CAN3 became one interleaved stream, and one row in the
 	// grouped view whose count was two different messages added together.
-	c_bus := find_chan(chans, 'CAN_DataFrame.BusChannel') or { Chan{} }
+	c_bus := find_chan(chans, '${prefix}.BusChannel') or { Chan{} }
 	// DIRECTION, as the recording states it: 0 = the device received the frame, 1 = it
 	// transmitted. It says what the RECORDER did, not what we would have done — in a foreign
 	// capture a `tx` frame is that recorder's own traffic. Dropped until now; it is the only
 	// provenance a file can carry, and a candump has none at all.
-	c_dir := find_chan(chans, 'CAN_DataFrame.Dir') or { Chan{} }
+	c_dir := find_chan(chans, '${prefix}.Dir') or { Chan{} }
 	// EDL — the CAN-FD flag, present only on groups that record FD. It is what makes a DLC above
 	// 8 mean anything: without it, 9..15 could be 12..64 bytes or could be plain 8.
 	c_edl := find_chan(chans, 'CAN_DataFrame.EDL') or { Chan{} }
@@ -473,7 +501,26 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 		// The bounds tests then pass (a negative start is `<=` anything) and the slice runs off
 		// the front of the array, which aborts the process instead of skipping one bad record.
 		// A malformed file must cost its frame, not the measurement.
-		if is_vlsd {
+		if remote {
+			// A remote frame carries NO bytes; it names the DLC it is requesting. The live
+			// representation of that is a zero-filled payload of the requested length — what
+			// SocketCAN hands a receiver, and exactly what modules/canlog builds from a
+			// candump `200#R8`. Matching it is the point: the same traffic imported from the
+			// two formats must produce the same frame, or the trace's request/response split
+			// depends on which file it was read from.
+			//
+			// CLASSIC ONLY, so the DLC is decoded with fd=false. CAN-FD has no remote frames at
+			// all — the RTR bit is what FD reused for its own signalling — so an FD reading of
+			// codes 9..15 would invent a 64-byte request that cannot exist. A code that still
+			// resolves above 8 is refused rather than clamped, on the same reasoning the two
+			// payload branches below already apply to a length they cannot trust.
+			stated := read_uint(raw, base + c_len.byte_off, int(c_len.bit_off), int(c_len.bit_count))
+			if n := dlc_bytes(stated, false) {
+				if n <= 8 {
+					data = []u8{len: int(n)}
+				}
+			}
+		} else if is_vlsd {
 			off := read_uint(raw, base + c_db.byte_off, int(c_db.bit_off), int(c_db.bit_count))
 			// SUBTRACTION, never `off + 4`: the offset field's width is declared by the file, and
 			// a 64-bit one holding 0xFFFF_FFFF_FFFF_FFFF makes `off + 4` wrap to 3. The bounds
@@ -560,9 +607,13 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 		// CAN-FD, as the recording states it. EDL is the flag; a payload over 8 bytes is FD by
 		// construction whatever the flag says, and trusting only the flag would hand a 64-byte
 		// payload to a classic frame that cannot express it.
-		is_fd := data.len > 8 || (c_edl.bit_count > 0
+		// …and never on a remote group. CAN-FD has no remote frames — FD reused the RTR bit —
+		// so an EDL channel cannot be present there, and a zero-filled request is at most 8
+		// bytes by the branch above. Stated rather than left to those two facts holding: the
+		// pair `fd` and `rtr` describes a frame that does not exist on any wire.
+		is_fd := !remote && (data.len > 8 || (c_edl.bit_count > 0
 			&& !chan_invalid(raw, base, data_bytes, inval_bytes, c_edl)
-			&& read_uint(raw, base + c_edl.byte_off, int(c_edl.bit_off), int(c_edl.bit_count)) == 1)
+			&& read_uint(raw, base + c_edl.byte_off, int(c_edl.bit_off), int(c_edl.bit_count)) == 1))
 		brs := is_fd && c_brs.bit_count > 0
 			&& !chan_invalid(raw, base, data_bytes, inval_bytes, c_brs)
 			&& read_uint(raw, base + c_brs.byte_off, int(c_brs.bit_off), int(c_brs.bit_count)) == 1
@@ -576,6 +627,7 @@ fn parse_cg(buf []u8, cg u64, recs []u8, unfin bool, vlsd_streams map[u64][]u8, 
 			frame: transport.CanFrame{
 				id:       u32(rid) & 0x1FFFFFFF
 				extended: ide
+				rtr:      remote
 				fd:       is_fd
 				brs:      brs
 				esi:      esi
