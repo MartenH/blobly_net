@@ -24,24 +24,30 @@ import vgui
 struct ReplayCtl {
 mut:
 	// status: worker -> panel
-	src       string
-	buses_lbl string // the group's bus names, joined — the same label its notifications use
-	loading   bool   // registered but still decoding the recording / waiting for its wires
-	dur_s     f64
-	state     player.State
-	pos_s     f64
-	speed     f64
-	cfg_speed f64 // the PROJECT's configured rate — panel changes are transport-transient
-	repeat    bool
-	loops     int
-	sent      u64
-	failed    u64
+	src        string
+	buses_lbl  string // the group's bus names, joined — the same label its notifications use
+	loading    bool   // registered but still decoding the recording / waiting for its wires
+	dur_s      f64
+	state      player.State
+	pos_s      f64
+	speed      f64
+	cfg_speed  f64 // the PROJECT's configured rate — panel changes are transport-transient
+	repeat     bool
+	cfg_repeat bool // the PROJECT's configured loop flag -- same transient rule as cfg_speed
+	loops      int
+	sent       u64
+	failed     u64
 	// commands: panel -> worker (applied and cleared by the worker). want_state is a TARGET,
 	// not a toggle: two clicks inside one worker tick collapsed a toggle into a no-op while
 	// the button still showed the pre-click label (the state publishes up to 50ms late).
 	want_state player.State = .stopped // .stopped = no request; .playing / .paused otherwise
 	want_speed f64 // > 0: change rate, position preserved
 	want_seek  f64 = -1.0 // >= 0: jump to this recording position (seconds)
+	// want_repeat is TRI-STATE, unlike the bool it carries. The commands beside it encode "no
+	// request" in a sentinel value (want_speed 0, want_seek -1) and a bool has none to spare:
+	// `false` would be indistinguishable from "turn loop off", so the worker would re-clear the
+	// flag on every tick and loop could never stay on.
+	want_repeat i8 = -1 // -1 = no request, 0 = loop off, 1 = loop on
 }
 
 struct ReplayOwner {
@@ -284,6 +290,8 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		src:       os.base(source)
 		buses_lbl: label
 		loading:   true
+		// No clamp, unlike cfg_speed below -- a bool has no out-of-range spelling to coerce.
+		cfg_repeat: chans.len > 0 && chans[0].replay_loop
 		// clamped like new_player_over clamps its speed: a `speed: 0` in the file otherwise
 		// becomes a dead 0x button and a "restored on Stop/Start" promise that is false —
 		// Start restores the coerced 1.0, not the 0 (self-review of the Scan work)
@@ -671,13 +679,16 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		cmd_state := ctl.want_state
 		cmd_speed := ctl.want_speed
 		cmd_seek := ctl.want_seek
+		cmd_repeat := ctl.want_repeat
 		ctl.want_state = .stopped
 		ctl.want_speed = 0
 		ctl.want_seek = -1.0
+		ctl.want_repeat = -1
 		ctl.state = p.state()
 		ctl.pos_s = p.position_s(now)
 		ctl.speed = p.speed
 		ctl.loops = p.passes()
+		ctl.repeat = p.repeat
 		ctl.sent = sent
 		ctl.failed = failed
 		a.mu.unlock()
@@ -711,6 +722,14 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 				announced = false // seek revives a finished player — the NEXT run-out is fresh news
 			}
 			p.seek(cmd_seek, now)
+		}
+		// Loop is a passive flag: set_repeat writes it and nothing else, and the player reads
+		// it only when a pass runs out (below, inside p.due). So this is deliberately applied
+		// with no state handling of its own -- no revival of a .finished group, no `announced`
+		// reset. Arming loop on a group that already ran out does nothing, which is the
+		// contract: the end it would have looped at is behind it.
+		if cmd_repeat >= 0 {
+			p.set_repeat(cmd_repeat == 1)
 		}
 		for e in p.due(now) {
 			// BEFORE EVERY SEND. A batch is normally a few frames, but after a stall p.due()

@@ -137,6 +137,18 @@ pub fn (mut p Player) set_speed(rate f64, now_ms f64) {
 	}
 }
 
+// set_repeat arms or disarms looping on a loaded recording.
+//
+// The flag is PASSIVE. `repeat` is read in exactly two places, and both are the end-of-a-pass
+// branch (next_due_ms and due), so setting it has no immediate effect on a playing or paused
+// group -- it decides what happens the NEXT time playback reaches the end. Arming it on a group
+// that has already reached .finished therefore does nothing at all: that end is behind it, and
+// only play() moves it again (from .finished, back to 0). That is the entire contract, and it is
+// why this is a plain field write and not a state transition -- there is no state to transition.
+pub fn (mut p Player) set_repeat(on bool) {
+	p.repeat = on
+}
+
 // stop resets to the start of the recording.
 pub fn (mut p Player) stop() {
 	p.st = .stopped
