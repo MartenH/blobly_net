@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -75,7 +76,14 @@ def die(message: str, code: int = EXIT_USAGE) -> None:
 
 def run(args: list[str], timeout: float | None = None) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(args, text=True, capture_output=True, check=False, timeout=timeout)
+        # encoding SPELLED OUT. `text=True` alone decodes with the platform's preferred codec,
+        # which on Windows is the ANSI codepage — and GitHub's JSON is UTF-8, so one em-dash in
+        # a PR body raised UnicodeDecodeError inside subprocess, left `stdout` as None, and the
+        # failure surfaced far away as "object of type 'NoneType' has no len()" in the JSON
+        # parser. errors='replace' so a stray byte degrades one character instead of losing a
+        # whole review. No effect on POSIX, where UTF-8 is already the answer.
+        return subprocess.run(args, text=True, encoding="utf-8", errors="replace",
+            capture_output=True, check=False, timeout=timeout)
     except FileNotFoundError:
         return subprocess.CompletedProcess(args, 127, "", f"command not found: {args[0]}")
     except subprocess.TimeoutExpired as exc:
@@ -343,7 +351,11 @@ def git_common_lock(name: str, timeout: int = 60, fallback_parent: Path | None =
 
 
 def command_exists(name: str) -> bool:
-    return any((Path(path) / name).exists() for path in os.environ.get("PATH", "").split(os.pathsep) if path)
+    # shutil.which, not a hand-rolled PATH walk: on Windows the executable is `gh.exe`, and a
+    # walk testing `<dir>/gh` finds nothing — so this returned False for EVERY command and the
+    # whole review flow died on "gh is required" from a machine that had gh on its PATH.
+    # shutil.which consults PATHEXT there and behaves identically on POSIX.
+    return shutil.which(name) is not None
 
 
 def parse_state(path: Path) -> dict[str, str]:
