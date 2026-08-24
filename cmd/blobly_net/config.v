@@ -136,6 +136,7 @@ fn (mut app App) commit_cfg() {
 			// RECORDED, not only announced. The model keeps its previous rate, so without this the
 			// editor shows one thing and the run uses another with nothing to stop it.
 			app.cfg_invalid << CfgInvalid{
+				idx:     i
 				name:    ch.name
 				enabled: ch.enabled
 				why:     'data rate "${dbr_txt}" is not a number'
@@ -148,6 +149,7 @@ fn (mut app App) commit_cfg() {
 		if why := ch.fd_config_error() {
 			app.notify('${ch.name}: ${why}')
 			app.cfg_invalid << CfgInvalid{
+				idx:     i
 				name:    ch.name
 				enabled: ch.enabled
 				why:     why

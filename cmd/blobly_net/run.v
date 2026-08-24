@@ -42,12 +42,17 @@ fn (app &App) open_transport(iface string) !transport.Bus {
 // CAN-FD row was projected into a classic one and opened `vector:<n>@<rate>` with no data phase.
 // Every FD frame was then refused by VectorBus.send, on the GUI path only, because the headless
 // runner passes real project rows and never comes through here (codex #181 r1).
-// rejected_edit reports why this channel's editor fields would not commit, or none. By NAME,
-// because that is what a CfgInvalid entry and a runtime row have in common — the entry is built
-// from the project model and the Buses panel acts on the runtime one.
-fn (app &App) rejected_edit(name string) ?string {
+// rejected_edit reports why the channel at this ROW INDEX would not commit, or none.
+//
+// BY INDEX, NOT BY NAME. The first version matched on the name, which is a label rather than an
+// identity: names are user-editable and need not be unique — config.v says exactly that where the
+// index-bound picker targets are invalidated — so a rejected edit on one row refused the enable of
+// a different row that happened to share its text (codex #183 r4). `app.chans` is rebuilt one
+// entry per project channel in order, so the index means the same row on both sides, and it is
+// the identity every other index-bound piece of this app already uses.
+fn (app &App) rejected_edit(idx int) ?string {
 	for bad in app.cfg_invalid {
-		if bad.name == name {
+		if bad.idx == idx {
 			return bad.why
 		}
 	}

@@ -375,7 +375,13 @@ mut:
 // row was corrected — a channel that will never be opened cannot be a reason not to open the
 // others (codex #183 r2).
 struct CfgInvalid {
-	name    string
+	// THE ROW INDEX IS THE IDENTITY, not the name. Channel names are user-editable and need not
+	// be unique — config.v says so where the picker targets are invalidated, for this same reason
+	// — so a by-name lookup let a rejected edit on ONE row refuse an enable on a different row
+	// that happened to share its label (codex #183 r4). `app.chans` is rebuilt one entry per
+	// project channel in order, so the index means the same row on both sides.
+	idx     int
+	name    string // for the message only; never matched on
 	enabled bool
 	why     string
 }

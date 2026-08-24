@@ -330,7 +330,7 @@ fn draw_buses(mut app App, chans []Chan) {
 				// that was refused. The same model/editor mismatch the Start guard exists to
 				// prevent, arrived at from the side (codex #183 r3).
 				if new {
-					if why := app.rejected_edit(app.chans[i].name) {
+					if why := app.rejected_edit(i) {
 						app.mu.unlock()
 						app.notify('${app.chans[i].name}: ${why} — correct it in Configuration ▸ Buses before enabling this channel')
 						continue
