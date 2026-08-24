@@ -248,6 +248,18 @@ pub fn (mut b VectorBus) send(f CanFrame) ! {
 	if f.data.len > 64 {
 		return error('Vector: ${f.data.len} bytes does not fit a CAN-FD frame (id 0x${f.id:X}) — 64 is the maximum')
 	}
+	// BEFORE THE TRANSMIT, not after it. Above eight bytes CAN-FD carries only the sizes a DLC can
+	// encode, so a 9-byte payload goes out as 12 with the remainder padded — and the trace would
+	// then record a length the wire never carried, the same record-versus-wire disagreement the
+	// classic path refuses a 9-byte frame to avoid.
+	//
+	// The first draft of this compared the shim's reported on-wire length AFTER the call, which
+	// refused the frame having already sent it — an error returned for a transmission that
+	// happened, which is worse than either padding silently or refusing cleanly. The check belongs
+	// where it can still prevent something.
+	if f.fd && f.data.len !in fd_lengths {
+		return error('Vector: ${f.data.len} bytes is not a CAN-FD payload size (id 0x${f.id:X}) — a DLC can only express ${fd_lengths}, so this would go out padded; pad it deliberately and the trace will match the wire')
+	}
 	// THE ID AGAINST ITS DECLARED WIDTH, which cannot be left to XL: the shim marks an extended
 	// frame by setting bit 31 of the identifier, so `id: 0x80000001, extended: false` already
 	// carries that flag and goes out extended while the trace records it as standard. Values
@@ -273,14 +285,14 @@ pub fn (mut b VectorBus) send(f CanFrame) ! {
 		brs := if f.brs { 1 } else { 0 }
 		st = C.ct_vector_write_fd(b.port, b.mask, f.id, u8(n), f.data.data, ext, rtr, fdflag,
 			brs, &on_wire)
+		// A BACKSTOP, and it must not report failure: the length was checked against fd_lengths
+		// above, so reaching here means the shim padded a length this function believed exact —
+		// a disagreement between the two tables rather than anything the caller did. The frame
+		// HAS gone out, so returning an error would report a transmission that happened as one
+		// that did not; the frame is what it is, and the mismatch belongs where a developer sees
+		// it rather than in a send that the caller would retry.
 		if st == 0 && int(on_wire) != n {
-			// PADDING IS NOT AN ERROR, and it is not silent either. Above eight bytes CAN-FD
-			// carries only 12, 16, 20, 24, 32, 48 and 64, so a 9-byte payload goes out as 12 and
-			// the trace would otherwise record a length the wire never carried — the same
-			// record-versus-wire disagreement the classic path refuses a 9-byte frame to avoid.
-			// Refused rather than padded quietly: the caller can pad deliberately and then what
-			// it records is what it sent.
-			return error('Vector: ${n} bytes is not a CAN-FD payload size (id 0x${f.id:X}) — the frame would go out padded to ${on_wire}; use one of ${fd_lengths}')
+			eprintln('vector: BUG — ${n} bytes went out as ${on_wire}; fd_lengths and ct_fd_dlc_for_len disagree')
 		}
 	} else {
 		st = C.ct_vector_write(b.port, b.mask, f.id, u8(n), f.data.data, ext, rtr)
