@@ -458,3 +458,38 @@ fn test_brs_is_part_of_the_identity() {
 		return
 	}
 }
+
+// One wire, however it is spelled. The emitter and the monitor that sees its echo need not name
+// the destination identically: an enabled row can transmit through a tap opened as `vector:ch1`
+// while the single reader for that wire was opened as `vector:1`. Matching raw strings left the
+// emission unclaimable and the frame duplicated as RX (codex #174 P1).
+//
+// Pinned here with a pair the software buses unify on EVERY platform — `inproc` and `inproc:`
+// both canonicalise to `inproc:CAN` — because the vendor resolvers are behind `$if windows` and
+// a Linux CI runner would never execute a vector: assertion. The mechanism is the same one.
+fn test_an_echo_is_claimed_however_the_wire_is_spelled() {
+	mut r := Ring{}
+	f := transport.CanFrame{
+		id:   0x321
+		data: [u8(1), 2, 3]
+	}
+	r.note(1, 'inproc', f, 0, [0], '', false)
+	r.claim(0, 'inproc:', f, 1) or {
+		assert false, 'the same wire under another spelling must claim its own echo'
+		return
+	}
+}
+
+// ...and the unification must not reach further than the wire. Two DIFFERENT destinations stay
+// different, or one bus would swallow another's traffic as its own echo.
+fn test_a_different_wire_still_cannot_claim() {
+	mut r := Ring{}
+	f := transport.CanFrame{
+		id:   0x321
+		data: [u8(1), 2, 3]
+	}
+	r.note(1, 'inproc:CAN1', f, 0, [0], '', false)
+	if _ := r.claim(0, 'inproc:CAN2', f, 1) {
+		assert false, 'a different bus claimed an emission that was never on it'
+	}
+}

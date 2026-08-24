@@ -548,10 +548,16 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 		ct_vec_cfg_ports[i]++;
 		*out_gen = ct_vec_cfg_gen[i];
 	}
-	/* No TX confirmations and no TX requests in the receive queue. The XL driver can deliver an
-	 * event for every frame WE send, and echoes_own_sends() reports false for a vendor backend —
-	 * so anything that arrived here would be filed as traffic the ECU produced. Belt and braces:
-	 * the flags are filtered on read too, because an older DLL may not export this call. */
+	/* No TX confirmations and no TX requests in the receive queue: the XL driver can deliver an
+	 * event for every frame WE send on THIS port, and a confirmation is not bus traffic. Belt and
+	 * braces: the flags are filtered on read too, because an older DLL may not export this call.
+	 *
+	 * This covers only the TRANSMITTING port's own confirmations. A frame sent on one port of a
+	 * channel still reaches the OTHER ports on it as a plain RECEIVE_MSG with no TX flag, which
+	 * no filter here can recognise — and the app's monitor is a different port from its transmit
+	 * taps. That copy is caught one layer up instead: echoes_own_sends() answers TRUE for
+	 * `vector:` (#139), so the emission is registered with modules/wiretap and the monitor claims
+	 * its own echo rather than filing it as the device under test's. */
 	if (ct_xl_setchanmode) {
 		st = ct_xl_setchanmode(port, mask, 0, 0);
 		CT_VLOG("xlCanSetChannelMode(tx=0,txrq=0) -> st=%d\n", (int)st);
