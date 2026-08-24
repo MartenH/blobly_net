@@ -61,9 +61,11 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
 - 🧭 **SOME/IP-SD** (service discovery) + the SOME/IP **sim service** — explicitly deferred in
   [`docs/ethernet_architecture.md`](docs/ethernet_architecture.md).
 - 🧭 **DoIP per-connection handler state** — deferred pending the threading change.
-- 🧭 **Vector CAN-FD** — the classic-CAN backend is done and hardware-verified (below); FD needs
-  the V4 interface, `xlCanFdSetConfiguration` and a different event structure. An FD frame is
-  refused rather than truncated until then, as on PCAN and Kvaser.
+- 🧭 **CAN-FD on PCAN and Kvaser** — Vector has it now (see Already shipped); these two still
+  refuse an FD frame rather than truncating it. PCANBasic needs `CAN_InitializeFD` and a bit-rate
+  *string* in place of the baudrate enum; Kvaser needs `canOpenChannel` with `canOPEN_CAN_FD` and
+  `canSetBusParamsFd`. Neither is blocked on hardware the way Vector was — both adapters are on
+  the bench — and the address syntax and the project plumbing are already there to reuse.
 - 🧭 **DoIP discovery — actually discover.** `discover()` sends a **unicast** vehicle
   identification request to a host you already name, reads one reply and returns. It
   confirms an identity; it cannot find an ECU nobody told it about. That is backwards for a
@@ -187,11 +189,28 @@ a wire-visible feature, the matching host support usually lands here in the same
   puts the transceiver in ACK-free mode BEFORE the channel goes on the bus — the only ordering
   that is safe against a running vehicle. Hardware-verified on a VN1630A: Channel 1 to Channel 3
   over real transceivers at bus saturation, 43,773 frames sent and received with none malformed.
-  Classic CAN only; see Planned for FD. `cmd/vectorcheck` brings a channel up and proves it.
+  CAN-FD too, as its own entry below. `cmd/vectorcheck` brings a channel up and proves it.
   **Done, not automatically checked:** no CI runner has a VN device or may hold `vxlapi64.dll`,
   so the ✅ rests on that one bench run — one adapter, one bitrate, two channels wired together.
   CI compiles and links the backend and asserts its struct sizes at compile time; it never
   opens a channel. [windows_can_hardware.md](docs/windows_can_hardware.md) spells out the limits.
+- ✅ **Vector CAN-FD** — `vector:<channel>@<arbitration>/<data>` opens the port at XL interface
+  **V4** and configures both phases with `xlCanFdSetConfiguration`; transmit is
+  `xlCanTransmitEx`, receive `xlCanReceive`. The data rate in the address is what asks for FD,
+  so there is no second flag to contradict it, and `@500000/500000` is FD without a bit-rate
+  switch. An FD channel still carries classic frames (`fd` sets EDL, `brs` the switch); a
+  classic channel refuses an FD frame rather than truncating it, as before. The protocol and its
+  data rate are **pinned by the open ports** exactly as the mode and the nominal rate are
+  (-1011/-1012), because the interface version decides the event layout on a port's queue — a
+  sibling that disagreed would decode every frame through the wrong struct.
+  **Hardware-verified on a VN1630A** (serial 545980, 2026-08-24): Channel 1 to Channel 3, 64-byte
+  payloads with BRS at data phases of 2, 4, 5 and **8 Mbit/s**, every byte of every payload
+  checked against what was sent — 100% arrived, none malformed, none duplicated, at bus
+  saturation. `cmd/vectorcheck --pair A,B --fd [--dbitrate N]` is that run, and
+  `--modecheck` proves the four pin cases against the driver. Segment timing is derived
+  (`vector_fd_segments`) against an assumed 80 MHz controller clock — the one number here that
+  is hardware and not standard, stated because `XLcanFdConf` has no prescaler field and nothing
+  in the API reports what it divided. Still to do: CAN-FD on PCAN and Kvaser (see Planned).
 
 Kept last: this is where the roadmap ends, not where it starts.
 

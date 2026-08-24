@@ -94,14 +94,12 @@ fn test_a_software_bus_is_not_clamped() {
 	assert u.data.len == 24
 	assert !clamps_to_classic('inproc:CAN1')
 	assert clamps_to_classic('vcan0')
-	// PLATFORM-GATED, like the other three assertions about a `pcan:` name in this file. On
-	// Linux open_linux.v has no pcan: branch, so that string is an ordinary SocketCAN interface
-	// and the kernel DOES clamp it; on Windows it is the vendor driver, which rejects what it
-	// cannot send rather than quietly masking it. Asserted unconditionally, this encoded the
-	// Linux answer as universal and the file could not pass on Windows at all — while
-	// test_a_socketcan_interface_named_like_a_software_bus, twenty lines below, asserts the
-	// exact opposite under `$if windows`. CI runs the module tests on Linux only, so the
-	// contradiction has always been green.
+	// PLATFORM-SPLIT for the same reason as the echo test above, whose comment spells it out: the
+	// vendor backends exist only on Windows, and there a `pcan:` name is a vendor interface that
+	// REJECTS an out-of-range frame rather than truncating it — so it does not clamp. On Linux the
+	// same string is an ordinary SocketCAN interface, and the kernel clamps. Asserted
+	// unconditionally, this encoded the Linux answer as universal and failed on Windows; no CI
+	// runner noticed, because `windows.yml` builds the module tests without running them.
 	$if windows {
 		assert !clamps_to_classic('pcan:PCAN_USBBUS1@500000')
 	} $else {

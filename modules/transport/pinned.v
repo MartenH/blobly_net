@@ -55,6 +55,13 @@ mut:
 struct PinnedConfig {
 	silent  bool
 	bitrate int
+	// The PROTOCOL is pinned by the open ports exactly as the mode and the rate are, and it is the
+	// one of the three a sibling cannot recover from by agreeing later: the interface version a
+	// port was opened with decides the event encoding on its queue, so a port that guessed wrong
+	// does not merely disagree — it decodes every frame through the wrong struct. Refused with
+	// -1011/-1012 down in the shim; predicted here, so the front end asks before it opens.
+	fd           bool
+	data_bitrate int
 }
 
 struct PinnedModes {
@@ -107,8 +114,10 @@ fn pinned_open_config(iface string) ?PinnedConfig {
 	i := iface.trim_space()
 	s := parse_vector_spec(i.all_after_first(':')) or { return none }
 	return PinnedConfig{
-		silent:  s.silent
-		bitrate: s.bitrate
+		silent:       s.silent
+		bitrate:      s.bitrate
+		fd:           s.fd
+		data_bitrate: s.data_bitrate
 	}
 }
 
@@ -171,6 +180,17 @@ pub fn wire_pin_clash(iface string) string {
 		}
 		if want.bitrate != p.cfg.bitrate {
 			return 'asks ${want.bitrate} and ports are still open on ${iface.all_before('@')} at ${p.cfg.bitrate}'
+		}
+		// BEFORE THE DATA RATE, because the two say different things: one is "this wire is not
+		// running the protocol you asked for", the other "it is, at another speed", and an
+		// operator fixes them in different places.
+		if want.fd != p.cfg.fd {
+			w := if want.fd { 'CAN-FD' } else { 'classic CAN' }
+			h := if p.cfg.fd { 'CAN-FD' } else { 'classic CAN' }
+			return 'is ${w} and ports are still open on ${iface.all_before('@')} as ${h}'
+		}
+		if want.fd && want.data_bitrate != p.cfg.data_bitrate {
+			return 'asks a ${want.data_bitrate} bit/s data phase and ports are still open on ${iface.all_before('@')} at ${p.cfg.data_bitrate}'
 		}
 	}
 	return ''

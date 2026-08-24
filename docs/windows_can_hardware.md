@@ -14,8 +14,10 @@ verified. (On Linux the kernel owns the adapter and everything is SocketCAN — 
 | **Vector XL** | `vector:1@500000` | `vxlapi64.dll` | ✅ verified on hardware |
 | slcan (USB-serial) | `slcan:COM5@500000` | none — serial | ❌ not implemented |
 
-Classic CAN on all three. **CAN-FD is refused, not truncated**, on the Windows vendor
-backends: a bench that silently dropped 56 of 64 payload bytes is worse than one that says no.
+**CAN-FD on Vector** (`vector:1@500000/2000000` — the data rate in the address is what asks for
+it), classic CAN on all three. On **PCAN and Kvaser** CAN-FD is still **refused, not truncated**:
+a bench that silently dropped 56 of 64 payload bytes is worse than one that says no. A *classic*
+Vector channel refuses an FD frame for the same reason.
 
 Software buses (`inproc:`, `udp:`) work on Windows exactly as on Linux and need no driver.
 
@@ -137,10 +139,14 @@ MSGTYPE flags. The free driver has no software virtual channel, so testing needs
   ACKs what it hears. What it DOES do everywhere, since #117, is stop this process
   transmitting: `transport.open` hands back a bus that refuses to send on a silenced wire, so
   no emitter can route around it. Two tiers, and the tooltip states both.
-- **An open port PINS the channel** — its mode and its bitrate both. A second port asking for
-  the other mode is refused (`-1004`), a second bitrate likewise (`-1005`), and no software
-  policy can talk the driver out of either: the configuration belongs to the ports, not to the
-  project. Not quite "until the last port closes", and the exception is worse rather than
+- **An open port PINS the channel** — its mode, its bitrate, and (since CAN-FD) its PROTOCOL and
+  data phase. A second port asking for the other mode is refused (`-1004`), a second bitrate
+  likewise (`-1005`), classic-versus-FD `-1011` and a second data rate `-1012`; no software
+  policy can talk the driver out of any of them: the configuration belongs to the ports, not to
+  the project. The protocol is the strictest of the four, because it is not merely a setting —
+  the XL interface version a port is opened with (V3 classic, V4 FD) decides the layout of the
+  events on that port's receive queue, so a sibling that disagreed would decode every frame
+  through the wrong struct rather than simply running at the wrong speed. Not quite "until the last port closes", and the exception is worse rather than
   better — initialisation access belongs to one PORT, so when that port closes while siblings
   stay open XL releases it, and the next port to win it reconfigures the channel under those
   siblings, which go on running against a mode they never asked for. This is why the front ends ask
@@ -161,6 +167,18 @@ on Vector's own virtual channels with no hardware, `--modecheck` proves that an 
 its channel and that `wire_pin_clash` predicts it, and `--pair A,B` transmits on one channel
 and verifies every frame arrives on another. All but `--pair` are silent — they will not
 acknowledge on a bus until you ask them to, so they are safe to point at a live one.
+
+Add **`--fd`** to `--pair` or `--channel` for CAN-FD, with `--dbitrate` for the data phase
+(default 2 Mbit/s) and `--length` for the payload size (default 64 with `--fd`). `--dbitrate`
+on its own implies `--fd`, because a data rate that was silently ignored would be worse than a
+refusal. The payload is checked byte for byte against what was sent, not merely counted: an
+under-terminated FD bus corrupts the data phase, and a marker-only check would pass over it.
+
+**Termination matters much more for FD.** A CAN bus wants 120 Ω at *both* ends. One resistor is
+usually survivable at 500 kbit/s over a short bench link, and it is the first thing to suspect
+when an FD data phase at 2 Mbit/s or above starts producing malformed frames — the reflections
+it leaves scale with the bit rate. Fix the termination before reading a malformed-frame count as
+a backend bug.
 
 `--modecheck` is the bench half of a test whose other half runs everywhere: on Linux
 `modules/transport/pinned_test.v` checks the bookkeeping over `inproc:` buses, and only a VN
@@ -187,10 +205,37 @@ modecheck: application channel 1 at 500000, listen-only
   driver refused normal  : Vector channel 1 is already open in listen-only mode by this project
                            and cannot also be normal …
   driver refused rate    : Vector channel 1 is already open at a different bitrate by this project …
+  predicted, as CAN-FD   : is CAN-FD and ports are still open on vector:1 as classic CAN
+  driver refused CAN-FD  : Vector channel 1 is already open as classic CAN by this project …
   driver allowed sibling : vector:1@500000,silent
   released, channel free
+  held  vector:1@500000/2000000,silent
+  predicted, other dphase: asks a 4000000 bit/s data phase and ports are still open … at 2000000
+  driver refused dphase  : Vector channel 1 is already open with a different CAN-FD data bitrate …
+  driver refused classic : Vector channel 1 is already open as CAN-FD by this project …
+  released, FD channel free
 modecheck: OK — the driver pins what wire_pin_clash predicts, and releases it
 ```
+
+The FD half was added with the CAN-FD backend and covers all four directions: a classic-held
+channel refusing an FD port, an FD-held channel refusing a classic one, and an FD-held channel
+refusing a second data phase. It needs no `--transmit`, because both addresses are silent and
+only the protocol changes.
+
+**CAN-FD link test**, same adapter, Channel 1 to Channel 3, 2026-08-24 — 64-byte payloads with
+BRS, every byte verified against what was sent:
+
+| data phase | frames | arrived | malformed |
+|---|---|---|---|
+| 2 Mbit/s | 14,913 | 100% | 0 |
+| 4 Mbit/s | 15,212 | 100% | 0 |
+| 5 Mbit/s | 17,604 | 100% | 0 |
+| 8 Mbit/s | 23,216 | 100% | 0 |
+
+`vectorcheck --pair 0,2 --fd --dbitrate <rate>`. The frame rate rising with the data phase is
+itself part of the result: it is what proves BRS is switching rather than the payload quietly
+going out at the arbitration rate. Run with only ONE 120 Ω terminator fitted, which is worth
+recording as the condition it passed under rather than as a recommendation.
 
 It was worth running for a second reason: the `-1004` message used to name the mode backwards.
 The shim's check is bidirectional and says so, but the V-side text assumed the channel was open
@@ -215,7 +260,8 @@ rather than a bug in the backend.
 
 ## Pending
 
-- **CAN-FD on Vector** — needs the V4 interface and a different event structure
+- **CAN-FD on PCAN and Kvaser** — Vector has it; these two need `CAN_InitializeFD` (a bit-rate
+  *string* instead of the baudrate enum) and `canOPEN_CAN_FD` + `canSetBusParamsFd` respectively
   ([ROADMAP](../ROADMAP.md)).
 - **slcan** — vendor-neutral, cross-platform, no DLL; the cheapest path to real frames on a
   bench with no vendor adapter at all.

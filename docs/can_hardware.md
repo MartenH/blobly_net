@@ -106,8 +106,9 @@ Receive was checked the other way round, with `cansend vcan0 '123##1…'` decodi
 
 A virtual FD bus needs the `vcan` module, which the stock WSL2 kernel does **not** ship
 (`CONFIG_CAN_VCAN` is not set) — see the note below. The **PCAN and Kvaser backends do not**: they write classic
-frames and now refuse an FD frame outright. The PCAN Pro FD and Vector are the FD-capable
-devices, so those backends are where the remaining work is.
+frames and refuse an FD frame outright. The **Vector backend does** — `vector:1@500000/2000000`,
+hardware-verified on a VN1630A to an 8 Mbit/s data phase — so of the FD-capable devices it is
+the PCAN Pro FD that is left, and PCANBasic's `CAN_InitializeFD` is where that work starts.
 
 
 ## CAN on WSL2 — the kernel does not ship `vcan`

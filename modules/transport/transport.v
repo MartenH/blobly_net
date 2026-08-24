@@ -212,7 +212,17 @@ pub fn vendor_destination_key(iface string) string {
 	// or `@500000` and `@0500000`, open the same channel at the same rate while differing as
 	// strings. Comparing the strings let two mappings share one physical bus undetected.
 	raw_rate := if i.contains('@') { i.all_after('@').trim_space() } else { '500000' }
-	rate := raw_rate.int().str()
+	// BOTH PHASES, normalised separately. `.int()` stops at the first non-digit, so a CAN-FD rate
+	// token reduced as one number becomes its arbitration half — and `vector:1@500000/2000000`
+	// then keyed identically to classic `vector:1@500000`. They address one wire, which is why
+	// wire_key_for (this without the rate) is what the conflict check groups on; but they are not
+	// one BUS, and a transport table that shares a handle between them hands the second opener a
+	// port running the other protocol. Keeping the data rate here keeps those two answers apart.
+	rate := if raw_rate.contains('/') {
+		'${raw_rate.all_before('/').int()}/${raw_rate.all_after('/').int()}'
+	} else {
+		raw_rate.int().str()
+	}
 	// NOT UNDER `$if windows`. These resolvers are pure string logic — pcan_handle, vector_key
 	// and `.int()` — and they describe how the VENDOR reads a channel name, which is a fact
 	// about the vendor and not about the machine running this code. Gated on the platform, a
