@@ -309,3 +309,36 @@ fn test_the_arbitration_phase_searches_further_than_the_data_phase() {
 		assert false, '5000 must not resolve on the data phase, whose segments are narrow'
 	}
 }
+
+// A CLASSIC RATE IS THE DRIVER'S PROBLEM, NOT OURS. Classic opens call xlCanSetChannelBitrate and
+// let XL derive the timing; only the FD path needs segments, because XLcanFdConf takes them and
+// nothing derives them for us. Deriving them for classic too refused opens that had always
+// worked — 83333 bit/s is an ordinary CAN rate and 80e6/83333 is 960.0038, so no prescaler
+// produces it from this clock and the channel stopped opening (codex #182 r1).
+//
+// The parser is what must keep accepting those rates; open_vector is where the FD-only condition
+// lives, and this pins the half that can be tested off-hardware.
+fn test_a_classic_rate_the_clock_cannot_divide_is_still_a_valid_address() {
+	for rate in [83333, 95238, 33333] {
+		s := parse_vector_spec('1@${rate}') or {
+			assert false, '${rate} is a legal classic CAN rate: ${err}'
+			continue
+		}
+		assert !s.fd && s.bitrate == rate
+		// It genuinely has no timing on this clock — which is why deriving one for classic was
+		// a refusal rather than a formality.
+		if _ := vector_fd_timing(rate) {
+			assert false, '${rate} was expected to have no whole prescaler at 80 MHz'
+		}
+	}
+	// …and as an FD ARBITRATION rate the same value must still be refused, because there the
+	// segments are load-bearing.
+	if _ := parse_vector_spec('1@83333/2000000') {
+		// The address parses — the range check allows it — and the refusal comes at open, from
+		// vector_fd_timing. That split is deliberate: the parser validates the standard, the open
+		// validates this controller.
+		if _ := vector_fd_timing(83333) {
+			assert false, 'an FD arbitration phase at 83333 has no timing and must be refused'
+		}
+	}
+}

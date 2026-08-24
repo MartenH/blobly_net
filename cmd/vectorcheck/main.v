@@ -423,8 +423,10 @@ fn usage() {
 	eprintln('  --fd        CAN-FD: open both ends with a data phase and send FD frames.')
 	eprintln('              Applies to --pair and --channel.')
 	eprintln('  --dbitrate  CAN-FD data-phase bits/s (default 2000000). Implies --fd.')
-	eprintln('  --length    payload bytes for --pair (default 8, or 64 with --fd). Must be a')
-	eprintln('              size a DLC can express: 0-8, 12, 16, 20, 24, 32, 48, 64.')
+	eprintln('  --length    payload bytes for --pair (default 8, or 64 with --fd). One of')
+	eprintln('              8, 12, 16, 20, 24, 32, 48, 64 — the DLC sizes from 8 up. Shorter')
+	eprintln('              frames are legal CAN but not checkable here: each carries a 4-byte')
+	eprintln('              sequence number and 4 marker bytes.')
 }
 
 fn parse(args []string) !Opts {

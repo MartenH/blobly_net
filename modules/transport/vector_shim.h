@@ -695,12 +695,18 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 	 * whose library has them. Refused here, before a port exists: the classic path would satisfy
 	 * an FD request WRONGLY — a channel configured for classic CAN, ports opened V3, and every
 	 * 64-byte frame refused one at a time at send() with nothing saying the wire was never FD. */
+	CT_VLOG("appChannel=%u -> mask=0x%016llX (why=%d)\n", app_channel, (unsigned long long)mask, why);
+	/* THE LOADER'S OWN VERDICT FIRST. When the library is absent or a REQUIRED symbol is missing,
+	 * ct_vector_mask_why returns a zero mask with -1 or -2 in `why` — and the optional FD pointers
+	 * are null for the same reason. Tested first, the FD branch below claimed the library was
+	 * merely too old for CAN-FD, sending somebody to look for a newer XL release when what they
+	 * actually needed was to install one at all, or to find out why the load failed. The specific
+	 * diagnosis outranks the general one (codex #182 r1). */
+	if (!mask) { ct_vec_leave(); return why ? why : -1000; } /* the caller distinguishes these; see vector_windows.v */
 	if (fd && (!ct_xl_fdsetconf || !ct_xl_transmitex || !ct_xl_canreceive)) {
 		ct_vec_leave();
 		return -1010;
 	}
-	CT_VLOG("appChannel=%u -> mask=0x%016llX (why=%d)\n", app_channel, (unsigned long long)mask, why);
-	if (!mask) { ct_vec_leave(); return why ? why : -1000; } /* the caller distinguishes these; see vector_windows.v */
 	/* permissionMask is IN/OUT: on the way IN it asks for INIT ACCESS on these channels, and on
 	 * the way OUT it says which were granted. Passing 0 asks for init access on nothing, so the
 	 * bitrate below is never applied — the channel keeps whatever rate the last application left

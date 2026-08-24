@@ -760,6 +760,16 @@ fn parse_channel(c yaml.Any) !Channel {
 		if proto == 'canfd' {
 			ch.fd = true
 		}
+		// AND THE OTHER DIRECTION, for a v1 file that expresses FD only in its ADDRESS. The
+		// migration above lifts `interface: vector:1@500000/2000000` into `fd` + `data_bitrate`,
+		// but `protocol:`/`type:` is absent from such a file and defaults to `can` — so `typ` was
+		// set to 'can' on a channel that opens as CAN-FD. The model then contradicted itself:
+		// saving wrote `protocol: can` beside an FD data rate, and the editor lit the CAN toggle
+		// on an FD channel. `fd` and `typ` are two spellings of one fact and must not disagree
+		// whichever of them the file happened to carry (codex #182 r1).
+		if ch.fd && ch.typ == 'can' {
+			ch.typ = 'canfd'
+		}
 	}
 	// CHECKED parse. yaml's i64() coerces a malformed scalar to 0, so `announce_count: three`
 	// would have turned the ECU deliberately silent, and a bad interval would have fired the

@@ -113,27 +113,29 @@ pub fn open_vector(spec string) !&VectorBus {
 	mut gen := u64(0)
 	sil := if s.silent { 1 } else { 0 }
 	isfd := if s.fd { 1 } else { 0 }
-	// A TIMING PER PHASE. Each reaches the same ~80% sample point with its own quanta count and
-	// its own prescaler; requiring them to share a count refuses rate pairs the hardware can do.
+	// FOR AN FD PORT ONLY, AND THAT IS THE WHOLE CONDITION. A classic open does not use these
+	// segments at all — the shim's classic branch calls xlCanSetChannelBitrate and lets the DRIVER
+	// work out the timing — so deriving them there answers a question nobody asked, and refusing
+	// when the answer does not exist breaks opens that have always worked.
 	//
-	// REFUSED HERE, with the rate named, rather than by the driver with a bare XL status. A rate
-	// this controller's clock cannot produce is not something the open might get away with — see
-	// vector_fd_timing — and the parser accepts rates on the standard's ranges rather than on this
-	// device's arithmetic, so the two have to meet somewhere. This is that place.
-	at := vector_fd_timing(s.bitrate) or {
-		return error('Vector channel ${s.channel}: arbitration ${err}')
-	}
-	// ONLY WHEN THERE IS A DATA PHASE. Computed unconditionally, this ran the ARBITRATION rate
-	// through the DATA phase's narrower ceiling and refused classic addresses over a value the
-	// shim never reads: `vector:1@5000` resolves at 64 quanta for arbitration and has no data
-	// phase at all, yet failed to open because 5000 does not fit 25 quanta. A classic channel is
-	// not a slow FD channel (codex #181 r6).
-	dt := if s.fd {
-		vector_fd_timing_data(s.data_bitrate) or {
+	// It did: 83333 bit/s is an ordinary CAN rate on real buses and 80e6/83333 is 960.0038, so no
+	// prescaler produces it from this clock. The driver has its own answer for that and had been
+	// giving it; this validation stepped in front of it and refused the channel (codex #182 r1).
+	// The FD path has no such fallback — XLcanFdConf takes the segments and nothing derives them
+	// for us — which is exactly why the check belongs to that path and only that path.
+	//
+	// A TIMING PER PHASE within it. Each reaches the same ~80% sample point with its own quanta
+	// count and its own prescaler; requiring them to share a count refuses rate pairs the hardware
+	// can do, and applying the data phase's narrower ceiling to both refuses more (#181 r5, r6).
+	mut at := FdTiming{}
+	mut dt := FdTiming{}
+	if s.fd {
+		at = vector_fd_timing(s.bitrate) or {
+			return error('Vector channel ${s.channel}: arbitration ${err}')
+		}
+		dt = vector_fd_timing_data(s.data_bitrate) or {
 			return error('Vector channel ${s.channel}: CAN-FD data phase ${err}')
 		}
-	} else {
-		at // unused by the shim when fd is 0; carried so the call site has one shape
 	}
 	// 0-BASED at the API, 1-based in the spelling: Vector Hardware Configuration numbers the
 	// application channels from 1 and the operator reads the interface string against that
