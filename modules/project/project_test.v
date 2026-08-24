@@ -1114,3 +1114,82 @@ fn test_fd_disagreement_is_per_wire() {
 	}
 	assert destination_conflicts([a, b]).len == 0
 }
+
+// An FD row on a backend that refuses FD is a warning at Start, not a refusal (issue #170): the
+// classic half of such a run is real, so taking the run away would remove something that works.
+// What must not happen is silence — replay counts refused frames and keeps going, so the operator
+// reads a successful measurement that is missing traffic.
+fn test_an_fd_row_on_a_backend_that_refuses_fd_warns() {
+	pc := Channel{
+		name:    'PCAN FD'
+		adapter: 'pcan'
+		address: 'PCAN_USBBUS1'
+		iface:   'pcan:PCAN_USBBUS1'
+		fd:      true
+		enabled: true
+	}
+	w := fd_capability_warnings([pc])
+	assert w.len == 1, 'expected one warning, got ${w}'
+	assert w[0].contains('PCAN FD') && w[0].contains('pcan')
+
+	// It is NOT a destination_conflicts entry — everything there refuses the project.
+	assert destination_conflicts([pc]) == [], 'an FD row on PCAN must not stop the run'
+}
+
+fn test_fd_capability_warnings_stay_quiet_where_fd_works() {
+	for adapter, address in {
+		'vector':    '1'
+		'socketcan': 'can0'
+		'vcan':      'vcan0'
+		'virtual':   'CAN1'
+		'udp':       '239.0.0.1:5000'
+	} {
+		c := Channel{
+			name:    adapter
+			adapter: adapter
+			address: address
+			iface:   address
+			fd:      true
+			enabled: true
+		}
+		assert fd_capability_warnings([c]) == [], '${adapter} carries FD; it must not warn'
+		assert c.can_carry_fd(), '${adapter} carries FD'
+	}
+}
+
+// DISABLED ROWS HAVE NO SAY, the rule every check here follows — and a CLASSIC row on PCAN is
+// perfectly ordinary, so the warning must key on `fd` rather than on the adapter alone.
+fn test_fd_capability_warnings_ignore_disabled_and_classic_rows() {
+	off := Channel{
+		name:    'off'
+		adapter: 'pcan'
+		iface:   'pcan:PCAN_USBBUS1'
+		fd:      true
+		enabled: false
+	}
+	classic := Channel{
+		name:    'classic'
+		adapter: 'pcan'
+		iface:   'pcan:PCAN_USBBUS1'
+		enabled: true
+	}
+	assert fd_capability_warnings([off, classic]) == []
+}
+
+// A DoIP row marked canfd is a different mistake, and saying "this backend refuses CAN-FD" about
+// an Ethernet channel would answer a question nobody asked.
+fn test_a_doip_row_marked_canfd_is_told_what_it_actually_is() {
+	d := Channel{
+		name:    'ECU'
+		adapter: 'doip'
+		address: '10.0.0.2'
+		iface:   'doip:10.0.0.2'
+		typ:     'doip'
+		fd:      true
+		enabled: true
+	}
+	w := fd_capability_warnings([d])
+	assert w.len == 1
+	assert w[0].contains('DoIP') && w[0].contains('does not apply')
+	assert !w[0].contains('refuses'), 'a DoIP channel is not a CAN backend that refuses FD'
+}

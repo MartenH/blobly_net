@@ -220,6 +220,13 @@ fn (mut app App) start() {
 		app.notify('${bad} — not starting')
 		return
 	}
+	// SAID ONCE, HERE, before anything opens — issue #170. An FD row on a backend that refuses FD
+	// otherwise announces itself only as a rising `failed` count while traffic flows, which on a
+	// part-classic recording reads as a successful measurement with some of its traffic missing.
+	// A warning rather than a refusal: the classic half of that run is real.
+	for w in project.fd_capability_warnings(app.runtime_rows()) {
+		app.notify(w)
+	}
 	if app.cfg_text_dirty {
 		// Text edits are NOT folded in automatically: the file is the authority for everything
 		// the structured editor cannot express, and guessing that a half-typed YAML buffer
