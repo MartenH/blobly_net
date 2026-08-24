@@ -1272,3 +1272,38 @@ fn test_is_all_digits_refuses_a_partial_number() {
 	assert !is_all_digits('2000 000')
 	assert !is_all_digits('-2000000')
 }
+
+// A rate is digits or it is not a rate — in the FILE too, not only in the editor buffer. The
+// round-2 fix guarded the GUI field and left the YAML it saves to unguarded, so the Configuration
+// File tab and the headless runner could run a data phase different from the one the project
+// states (codex #181 r3).
+fn test_a_malformed_data_bitrate_in_the_file_is_refused() {
+	for bad in ['2000000oops', 'oops', '2000 000', '-2000000'] {
+		if p := parse('
+channels:
+  - name: FD
+    adapter: vector
+    address: "1"
+    fd: true
+    bitrate: 500000
+    data_bitrate: ${bad}
+') {
+			assert false, '"${bad}" must not load (got data_bitrate ${p.channels[0].data_bitrate})'
+		}
+	}
+	// …and a well-formed one still loads and reaches the address.
+	ok := parse('
+channels:
+  - name: FD
+    adapter: vector
+    address: "1"
+    fd: true
+    bitrate: 500000
+    data_bitrate: 2000000
+') or {
+		assert false, 'a valid rate must load: ${err}'
+		return
+	}
+	assert ok.channels[0].data_bitrate == 2000000
+	assert ok.channels[0].iface_with_bitrate() == 'vector:1@500000/2000000'
+}

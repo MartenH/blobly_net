@@ -233,6 +233,32 @@ pub fn is_all_digits(s string) bool {
 	return true
 }
 
+// strict_rate reads a bits-per-second scalar from a project file, refusing one that is only
+// PARTLY a number.
+//
+// THE SAME RULE AS EVERY OTHER READER OF A RATE, and the reason it is a function is that the rule
+// had to be applied three times before it stopped being got wrong: transport.vendor_bitrate for
+// the address, the editor buffer, and now the file itself. `2000000oops` reached the Vector
+// backend as 2000000 through V's permissive `.int()`, so the Configuration ▸ File tab and the
+// headless runner could run a data phase different from the one the project states — and the
+// round-2 fix for the GUI validated only the editor buffer, leaving the file it saves to
+// unguarded (codex #181 r3).
+//
+// REFUSES THE PROJECT rather than defaulting. A malformed rate has no safe reading: 0 means "run
+// the data phase at the nominal rate", which is a real configuration and not what the file says,
+// so silently choosing it puts a bench on a wire at a speed nobody asked for. The message names
+// the field and the value, because this is a hand-edited file and the author can fix it.
+fn strict_rate(c yaml.Any, key string) !int {
+	v := c.value(key).default_to('').string().trim_space()
+	if v == '' {
+		return 0
+	}
+	if !is_all_digits(v) {
+		return error('${key}: "${v}" is not a rate — digits only, in bits per second')
+	}
+	return v.int()
+}
+
 // default_bitrate is what an unset nominal rate MEANS, in the one place it is decided.
 //
 // It was written out as a bare 500000 in three places that have to agree — the struct default,
@@ -556,7 +582,7 @@ fn parse_channel(c yaml.Any) !Channel {
 		network:      c.value('network').default_to('').string()
 		bitrate:      c.value('bitrate').default_to(i64(default_bitrate)).int()
 		fd:           c.value('fd').default_to(false).bool()
-		data_bitrate: c.value('data_bitrate').default_to(i64(0)).int()
+		data_bitrate: strict_rate(c, 'data_bitrate')!
 		sample_point: c.value('sample_point').default_to(f64(0)).f64()
 		mode:         mode_from(c.value('mode').default_to('monitor').string())
 		listen_only:  c.value('listen_only').default_to(false).bool()

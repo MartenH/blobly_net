@@ -682,7 +682,8 @@ static uint64_t ct_vector_mask(unsigned int app_channel) {
 static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int silent,
                           ct_xlport *out_port, uint64_t *out_mask, HANDLE *out_event,
                           uint64_t *out_gen, int fd, unsigned int dbitrate,
-                          unsigned int tseg1, unsigned int tseg2, unsigned int sjw) {
+                          unsigned int a_tseg1, unsigned int a_tseg2, unsigned int a_sjw,
+                          unsigned int d_tseg1, unsigned int d_tseg2, unsigned int d_sjw) {
 	ct_xlaccess mask, permission;
 	ct_xlport port = CT_XL_INVALID_PORTHANDLE;
 	ct_xlstatus st;
@@ -730,26 +731,27 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 			 * THE SEGMENTS ARE REQUIRED. XLcanFdConf has no BRP field and no "just give me this
 			 * bitrate" form — the driver derives the prescaler from the rate and the segment
 			 * count, so (1 + tseg1 + tseg2) has to divide the controller clock by the rate
-			 * exactly or the call is refused. That is why they come in from the caller with a
-			 * default rather than being invented here: the default suits the common rates on a
-			 * VN device's 80 MHz clock, and a bench that needs another can say so. */
+			 * exactly or the call is refused. That is why they come in from the caller: the
+			 * arithmetic is pure and belongs where it can be tested (vector_fd_timing).
+			 *
+			 * A SET PER PHASE, which is how XLcanFdConf is shaped and the only thing that works.
+			 * Sharing one quanta count between the phases refuses pairs the hardware can do —
+			 * 800k/5M is exact at 20 quanta for arbitration and 16 for data, with no usable
+			 * common count (codex #181 r3). The two phases still aim at the same sample-point
+			 * RATIO; they simply reach it with their own count and their own prescaler. */
 			ct_xl_canfd_conf conf;
 			memset(&conf, 0, sizeof(conf));
 			conf.arbitrationBitRate = bitrate;
-			conf.sjwAbr = sjw;
-			conf.tseg1Abr = tseg1;
-			conf.tseg2Abr = tseg2;
-			/* THE SAME SEGMENTS FOR BOTH PHASES. The sample point a bus needs is a property of its
-			 * topology, not of which phase is running, and CiA 601-3 recommends the same figure for
-			 * both. Two independent sets would be one more thing for an address to carry and one
-			 * more way for the two to disagree. */
+			conf.sjwAbr = a_sjw;
+			conf.tseg1Abr = a_tseg1;
+			conf.tseg2Abr = a_tseg2;
 			conf.dataBitRate = dbitrate;
-			conf.sjwDbr = sjw;
-			conf.tseg1Dbr = tseg1;
-			conf.tseg2Dbr = tseg2;
+			conf.sjwDbr = d_sjw;
+			conf.tseg1Dbr = d_tseg1;
+			conf.tseg2Dbr = d_tseg2;
 			st = ct_xl_fdsetconf(port, mask, &conf);
-			CT_VLOG("xlCanFdSetConfiguration(arb=%u dbr=%u tseg1=%u tseg2=%u sjw=%u) -> st=%d\n",
-			        bitrate, dbitrate, tseg1, tseg2, sjw, (int)st);
+			CT_VLOG("xlCanFdSetConfiguration(arb=%u [%u/%u/%u] dbr=%u [%u/%u/%u]) -> st=%d\n",
+			        bitrate, a_tseg1, a_tseg2, a_sjw, dbitrate, d_tseg1, d_tseg2, d_sjw, (int)st);
 			if (st != 0) { ct_xl_closeport(port); ct_vec_leave(); return -(int)st; }
 		} else {
 			st = ct_xl_setbitrate(port, mask, (unsigned long)bitrate);

@@ -59,7 +59,7 @@ import time
 #include "vector_shim.h"
 
 fn C.ct_vector_load() int
-fn C.ct_vector_open(u32, u32, int, &int, &u64, &voidptr, &u64, int, u32, u32, u32, u32) int
+fn C.ct_vector_open(u32, u32, int, &int, &u64, &voidptr, &u64, int, u32, u32, u32, u32, u32, u32, u32) int
 fn C.ct_vector_write(int, u64, u32, u8, &u8, int, int) int
 fn C.ct_vector_write_fd(int, u64, u32, u8, &u8, int, int, int, int, &u8) int
 fn C.ct_vector_read(int, voidptr, &u32, &u8, &u8, &int, &int, int, &int, int, &int, &int, &int) int
@@ -113,12 +113,18 @@ pub fn open_vector(spec string) !&VectorBus {
 	mut gen := u64(0)
 	sil := if s.silent { 1 } else { 0 }
 	isfd := if s.fd { 1 } else { 0 }
-	t1, t2, sjw := vector_fd_segments(s.bitrate, s.data_bitrate)
+	// A TIMING PER PHASE. Each reaches the same ~80% sample point with its own quanta count and
+	// its own prescaler; requiring them to share a count refuses rate pairs the hardware can do.
+	// The data timing is computed for the arbitration rate on a classic channel, where it is
+	// simply unused — the shim only reads it when `fd` is set.
+	at := vector_fd_timing(s.bitrate)
+	dt := vector_fd_timing(if s.data_bitrate > 0 { s.data_bitrate } else { s.bitrate })
 	// 0-BASED at the API, 1-based in the spelling: Vector Hardware Configuration numbers the
 	// application channels from 1 and the operator reads the interface string against that
 	// dialog, so the conversion belongs here rather than in their head.
 	mut rc := C.ct_vector_open(u32(s.channel - 1), u32(s.bitrate), sil, &port, &mask, &notify,
-		&gen, isfd, u32(s.data_bitrate), u32(t1), u32(t2), u32(sjw))
+		&gen, isfd, u32(s.data_bitrate), u32(at.tseg1), u32(at.tseg2), u32(at.sjw), u32(dt.tseg1),
+		u32(dt.tseg2), u32(dt.sjw))
 	// WAIT OUT A WINDING-DOWN RUN. -1009 means the previous run's ports are still closing, which
 	// is what an immediate Stop/Start looks like from here; it clears itself when the last one
 	// goes. Bounded, because a port that never closes must not hang the open forever.
@@ -128,7 +134,8 @@ pub fn open_vector(spec string) !&VectorBus {
 		}
 		time.sleep(10 * time.millisecond)
 		rc = C.ct_vector_open(u32(s.channel - 1), u32(s.bitrate), sil, &port, &mask, &notify,
-			&gen, isfd, u32(s.data_bitrate), u32(t1), u32(t2), u32(sjw))
+			&gen, isfd, u32(s.data_bitrate), u32(at.tseg1), u32(at.tseg2), u32(at.sjw),
+			u32(dt.tseg1), u32(dt.tseg2), u32(dt.sjw))
 	}
 	if rc == -1009 {
 		return error('Vector channel ${s.channel} is still being released by the previous run — try again in a moment')

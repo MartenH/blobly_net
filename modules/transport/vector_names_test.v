@@ -205,32 +205,47 @@ fn test_fd_and_classic_are_one_wire_but_not_one_bus() {
 // prescaler field, so a segment count that does not divide the controller clock exactly is
 // refused by the driver and the channel does not come up. These are the rates a bench actually
 // uses, and every one of them was exercised on a VN1630A.
-fn test_fd_segments_divide_the_controller_clock() {
+// PER PHASE, which is the whole point: each phase gets its own quanta count and its own
+// prescaler, aiming at the same sample-point RATIO. The first version searched for one count
+// satisfying BOTH rates and so refused pairs the hardware can do — see the 800k/5M case.
+fn test_fd_timing_divides_the_controller_clock_per_phase() {
 	for pair in [[500000, 2000000], [500000, 4000000], [500000, 5000000], [500000, 8000000],
-		[250000, 2000000], [1000000, 4000000], [1000000, 8000000]] {
+		[250000, 2000000], [1000000, 4000000], [1000000, 8000000],
+		// THE CASE A SHARED QUANTA COUNT COULD NOT DO. 800k is exact at 20 quanta and 5M at 16;
+		// their only common counts are below the 8-quanta minimum, so the joint search fell back
+		// to a shape dividing neither and the driver refused an open the parser had accepted.
+		[800000, 5000000]] {
 		arb, data := pair[0], pair[1]
-		t1, t2, sjw := vector_fd_segments(arb, data)
-		tq := 1 + t1 + t2
-		assert vector_fd_clock_hz % (arb * tq) == 0,
-			'${arb}/${data}: ${tq} quanta gives no whole prescaler for the arbitration phase'
-		assert vector_fd_clock_hz % (data * tq) == 0,
-			'${arb}/${data}: ${tq} quanta gives no whole prescaler for the data phase'
-		// The prescaler has to be something the controller can hold, and a bit needs enough
-		// quanta to place a sample point in.
-		assert vector_fd_clock_hz / (arb * tq) <= 256
-		assert tq >= 8
-		// sjw may not exceed the segment it shortens, or resynchronisation runs past the bit.
-		assert sjw >= 1 && sjw <= t2
-		// The sample point sits where CiA 601-3 asks, within rounding of one quantum.
-		sp := f64(1 + t1) / f64(tq)
-		assert sp > 0.72 && sp < 0.86, '${arb}/${data}: sample point at ${sp}'
+		for rate in [arb, data] {
+			t := vector_fd_timing(rate)
+			tq := 1 + t.tseg1 + t.tseg2
+			assert vector_fd_clock_hz % (rate * tq) == 0,
+				'${arb}/${data}: ${tq} quanta gives no whole prescaler for ${rate}'
+			brp := vector_fd_clock_hz / (rate * tq)
+			assert brp >= 1 && brp <= 256, '${arb}/${data}: prescaler ${brp} for ${rate}'
+			assert tq >= 8
+			// sjw may not exceed the segment it shortens, or resync runs past the bit.
+			assert t.sjw >= 1 && t.sjw <= t.tseg2
+			// The sample point sits where CiA 601-3 asks, within rounding of one quantum.
+			sp := f64(1 + t.tseg1) / f64(tq)
+			assert sp > 0.72 && sp < 0.86, '${arb}/${data}: sample point at ${sp} for ${rate}'
+		}
 	}
 }
 
-// A classic channel asks the same function for its timing, and must not be made to satisfy a
-// data phase it does not have.
-fn test_fd_segments_ignore_an_absent_data_phase() {
-	t1, t2, _ := vector_fd_segments(500000, 0)
-	tq := 1 + t1 + t2
-	assert vector_fd_clock_hz % (500000 * tq) == 0
+// EVERY RATE THE PARSER ACCEPTS must produce timing the driver can take, or the parser promises
+// something the open cannot deliver. The 800k/5M case above is one instance; this is the property
+// itself, checked across the accepted grid rather than at hand-picked points.
+fn test_every_accepted_fd_rate_pair_has_usable_timing() {
+	for arb in [125000, 250000, 500000, 800000, 1000000] {
+		for data in [500000, 1000000, 2000000, 4000000, 5000000, 8000000] {
+			spec := parse_vector_spec('1@${arb}/${data}') or { continue }
+			for rate in [spec.bitrate, spec.data_bitrate] {
+				t := vector_fd_timing(rate)
+				tq := 1 + t.tseg1 + t.tseg2
+				assert vector_fd_clock_hz % (rate * tq) == 0,
+					'${arb}/${data} is accepted, but ${rate} has no whole prescaler at ${tq} quanta'
+			}
+		}
+	}
 }

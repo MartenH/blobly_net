@@ -39,7 +39,12 @@ struct Opts {
 	fd         bool
 	dbitrate   int
 	length     int
-	length_set bool // WHETHER --length was given: 0 is a legal DLC size and a user can type it
+	// WHETHER THE OPTION WAS GIVEN, for both of the numeric ones whose zero is typeable. This is
+	// the same mistake in two places and it has now been made twice: a value of 0 read as "not
+	// supplied", so an explicit request was silently replaced by a default and the run reported a
+	// pass for an experiment nobody asked for (codex #181 r2 for --length, r3 for --dbitrate).
+	length_set   bool
+	dbitrate_set bool
 }
 
 // FdOpts is what the FD flags actually MEAN, resolved once.
@@ -64,12 +69,20 @@ struct FdOpts {
 
 // resolve_fd answers the three questions every FD-capable mode asks, in one place.
 fn resolve_fd(o Opts) !FdOpts {
+	// AN EXPLICIT RATE MUST BE A RATE. `--dbitrate 0` and `--dbitrate -1` parse (whole_int allows a
+	// sign) and then read as "not supplied": `--pair --dbitrate 0` quietly ran a CLASSIC experiment
+	// and `--fd --dbitrate 0` substituted the 2 Mbit/s default, either way reporting a pass at a
+	// rate the operator never asked for — and contradicting the help, which says --dbitrate implies
+	// --fd. Refused on provenance, not on value (codex #181 r3).
+	if o.dbitrate_set && o.dbitrate <= 0 {
+		return error('--dbitrate ${o.dbitrate} is not a rate — give the data phase in bits per second, e.g. --dbitrate 2000000')
+	}
 	// EITHER FLAG ASKS FOR FD. `--dbitrate` alone says what the data phase should be, and would
 	// otherwise be accepted and silently ignored.
-	fd := o.fd || o.dbitrate > 0
+	fd := o.fd || o.dbitrate_set
 	dbr := if !fd {
 		0
-	} else if o.dbitrate > 0 {
+	} else if o.dbitrate_set {
 		o.dbitrate
 	} else {
 		2000000
@@ -478,8 +491,9 @@ fn parse(args []string) !Opts {
 				i++
 				o = Opts{
 					...o
-					dbitrate: whole_int(args[i] or { return error('--dbitrate needs a value') },
+					dbitrate:     whole_int(args[i] or { return error('--dbitrate needs a value') },
 						'--dbitrate')!
+					dbitrate_set: true
 				}
 			}
 			'--length' {

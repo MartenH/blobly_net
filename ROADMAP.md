@@ -189,7 +189,7 @@ a wire-visible feature, the matching host support usually lands here in the same
   puts the transceiver in ACK-free mode BEFORE the channel goes on the bus — the only ordering
   that is safe against a running vehicle. Hardware-verified on a VN1630A: Channel 1 to Channel 3
   over real transceivers at bus saturation, 43,773 frames sent and received with none malformed.
-  Classic CAN only; see Planned for FD. `cmd/vectorcheck` brings a channel up and proves it.
+  CAN-FD too, as its own entry below. `cmd/vectorcheck` brings a channel up and proves it.
   **Done, not automatically checked:** no CI runner has a VN device or may hold `vxlapi64.dll`,
   so the ✅ rests on that one bench run — one adapter, one bitrate, two channels wired together.
   CI compiles and links the backend and asserts its struct sizes at compile time; it never

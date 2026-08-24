@@ -74,36 +74,39 @@ fn vector_key(s string) string {
 // rather than running the bus at something nobody asked for.
 const vector_fd_clock_hz = 80_000_000
 
-// vector_fd_segments picks the bit timing for an FD channel: how many time quanta a bit is
-// divided into, and where in that bit the controller samples.
+// FdTiming is one phase's bit timing: how many quanta the bit is divided into, and where in it
+// the controller samples.
+struct FdTiming {
+	tseg1 int
+	tseg2 int
+	sjw   int
+}
+
+// vector_fd_timing picks the bit timing for ONE phase at one rate.
 //
 // WHY THIS IS OURS TO CHOOSE AT ALL. XLcanFdConf has no prescaler field and no "just give me this
-// bitrate" form — it takes the two rates AND tseg1/tseg2/sjw, and the driver computes
+// bitrate" form — it takes the rates AND tseg1/tseg2/sjw, and the driver computes
 // brp = clock / (bitrate * (1 + tseg1 + tseg2)). So the segment count is not a refinement on top
 // of a working configuration; without it there is no configuration, and a count that does not
 // divide the clock exactly is refused outright.
 //
-// ONE SEGMENT COUNT FOR BOTH PHASES, searched from the finest downwards: the same quanta-per-bit
-// has to produce a whole prescaler for the arbitration rate AND the data rate, which is a real
-// constraint rather than a formality — 500k/2M divides at 20 quanta, 500k/5M does not and needs
-// 16. Preferring more quanta per bit gives the smaller prescaler and so the finer resynchronisation
-// step, which is what a bus with reflections on it wants.
+// PER PHASE, which is how the struct is shaped and — as it turns out — the only way that works.
+// The first version searched for ONE quanta count satisfying both rates, on the reasoning that
+// CiA 601-3 wants the same sample point in both phases. That conflates the sample POINT with the
+// quanta COUNT: the point is a ratio and each phase reaches it with its own count and its own
+// prescaler. Requiring a shared count refuses combinations the hardware can do — 800k/5M is exact
+// at 20 quanta for arbitration and 16 for data, and their only common counts are below the
+// minimum, so a rate pair the parser accepts could never be opened (codex #181 r3).
 //
-// The sample point lands at ~80%, which is CiA 601-3's recommendation for both phases of an FD
-// link. Returns (tseg1, tseg2, sjw).
-fn vector_fd_segments(arb int, data int) (int, int, int) {
+// Searched from the finest downwards, because more quanta per bit means a smaller prescaler and
+// so a finer resynchronisation step, which is what a bus with reflections on it wants.
+fn vector_fd_timing(rate int) FdTiming {
 	// 25 down to 8: below eight quanta a bit there is not enough resolution to place an 80%
 	// sample point at all, and above 25 the prescaler reaches 1 for the rates FD is used at.
 	for tq := 25; tq >= 8; tq-- {
-		if arb <= 0 || vector_fd_clock_hz % (arb * tq) != 0 {
-			continue
+		if rate > 0 && vector_fd_clock_hz % (rate * tq) == 0 {
+			return vector_fd_split(tq)
 		}
-		// A CLASSIC channel has no data phase to satisfy — this function is called for both so
-		// that the arithmetic has one home, and `data == 0` is how a classic address says so.
-		if data > 0 && vector_fd_clock_hz % (data * tq) != 0 {
-			continue
-		}
-		return vector_fd_split(tq)
 	}
 	// NOTHING DIVIDES. Returning a shape anyway, rather than an error, because the driver is the
 	// authority on what it will accept and its refusal names the channel and the rates; inventing
@@ -113,7 +116,7 @@ fn vector_fd_segments(arb int, data int) (int, int, int) {
 }
 
 // vector_fd_split places the sample point at ~80% of a bit divided into `tq` quanta.
-fn vector_fd_split(tq int) (int, int, int) {
+fn vector_fd_split(tq int) FdTiming {
 	// The bit is 1 (sync) + tseg1 + tseg2 quanta, and the sample point sits at the end of tseg1 —
 	// so (1 + tseg1) / tq is the figure being aimed at. Rounded, and floored at 2 quanta of
 	// tseg2: a single-quantum phase-2 segment leaves no room to shorten on resynchronisation.
@@ -128,7 +131,11 @@ fn vector_fd_split(tq int) (int, int, int) {
 	if sjw > 4 {
 		sjw = 4
 	}
-	return t1, t2, sjw
+	return FdTiming{
+		tseg1: t1
+		tseg2: t2
+		sjw:   sjw
+	}
 }
 
 // VectorSpec is the parsed interface string.
