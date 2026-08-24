@@ -217,7 +217,7 @@ fn test_fd_timing_divides_the_controller_clock_per_phase() {
 		[800000, 5000000]] {
 		arb, data := pair[0], pair[1]
 		for rate in [arb, data] {
-			t := vector_fd_timing(rate)
+			t := vector_fd_timing(rate) or { continue }
 			tq := 1 + t.tseg1 + t.tseg2
 			assert vector_fd_clock_hz % (rate * tq) == 0,
 				'${arb}/${data}: ${tq} quanta gives no whole prescaler for ${rate}'
@@ -233,19 +233,54 @@ fn test_fd_timing_divides_the_controller_clock_per_phase() {
 	}
 }
 
-// EVERY RATE THE PARSER ACCEPTS must produce timing the driver can take, or the parser promises
-// something the open cannot deliver. The 800k/5M case above is one instance; this is the property
-// itself, checked across the accepted grid rather than at hand-picked points.
-fn test_every_accepted_fd_rate_pair_has_usable_timing() {
-	for arb in [125000, 250000, 500000, 800000, 1000000] {
-		for data in [500000, 1000000, 2000000, 4000000, 5000000, 8000000] {
-			spec := parse_vector_spec('1@${arb}/${data}') or { continue }
-			for rate in [spec.bitrate, spec.data_bitrate] {
-				t := vector_fd_timing(rate)
-				tq := 1 + t.tseg1 + t.tseg2
-				assert vector_fd_clock_hz % (rate * tq) == 0,
-					'${arb}/${data} is accepted, but ${rate} has no whole prescaler at ${tq} quanta'
-			}
+// THE INVARIANT, swept rather than sampled: for every rate the parser accepts, the timing either
+// works or SAYS IT DOES NOT. A hand-picked grid asserted the first half and missed the second —
+// 500000/750000 parses, and 750000 needs brp*tq = 106.67, which no division of a bit can give, so
+// the old fallback handed the driver a shape that could not produce the rate and the operator got
+// a bare XL status against an address the parser had promised (codex #181 r4).
+//
+// The sweep is over the whole accepted range at a fine step, not a list of rates a bench happens
+// to use — the previous version of this test was exactly such a list, and that is why it passed.
+fn test_every_accepted_rate_either_has_timing_or_is_refused() {
+	mut checked := 0
+	mut refused := 0
+	for rate := 5000; rate <= 8_000_000; rate += 1000 {
+		// Only rates an ADDRESS can actually carry: the data phase is the wider range, so parsing
+		// as a data phase is what decides whether this rate is reachable at all.
+		parse_vector_spec('1@500000/${rate}') or { continue }
+		checked++
+		t := vector_fd_timing(rate) or {
+			refused++
+			continue
 		}
+		tq := 1 + t.tseg1 + t.tseg2
+		brp := vector_fd_clock_hz / (rate * tq)
+		assert vector_fd_clock_hz % (rate * tq) == 0,
+			'${rate} accepted with ${tq} quanta, which gives no whole prescaler'
+		assert brp >= 1 && brp <= 256, '${rate} accepted with prescaler ${brp}'
+		assert t.sjw >= 1 && t.sjw <= t.tseg2
+		sp := f64(1 + t.tseg1) / f64(tq)
+		assert sp > 0.72 && sp < 0.86, '${rate}: sample point at ${sp}'
+	}
+	assert checked > 1000, 'the sweep must actually cover the range, checked ${checked}'
+	// Most rates on an 80 MHz clock are NOT producible, which is the point: the old code returned
+	// a shape for every one of them.
+	assert refused > 0, 'a sweep this wide must contain rates this clock cannot produce'
+}
+
+// The two concrete cases behind the rule, named so a regression says which one broke.
+fn test_the_rates_that_cannot_be_produced_are_refused() {
+	// No whole brp*tq exists at all: 80e6 / 750e3 is 106.67.
+	if t := vector_fd_timing(750_000) {
+		tq := 1 + t.tseg1 + t.tseg2
+		assert false, '750000 must be refused; got ${tq} quanta'
+	}
+	// Divides cleanly, but the prescaler (640 at 25 quanta) is past what the field holds.
+	if _ := vector_fd_timing(5000) {
+		assert false, '5000 needs a prescaler above 256 and must be refused'
+	}
+	// …while the rates a bench actually uses still resolve.
+	for good in [125000, 250000, 500000, 800000, 1000000, 2000000, 4000000, 5000000, 8000000] {
+		vector_fd_timing(good) or { assert false, '${good} must resolve: ${err}' }
 	}
 }

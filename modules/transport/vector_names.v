@@ -100,19 +100,37 @@ struct FdTiming {
 //
 // Searched from the finest downwards, because more quanta per bit means a smaller prescaler and
 // so a finer resynchronisation step, which is what a bus with reflections on it wants.
-fn vector_fd_timing(rate int) FdTiming {
+// REFUSES rather than guessing. The first version returned a default shape when nothing divided,
+// on the reasoning that the driver is the authority on what it accepts. That reasoning was wrong
+// in a way worth keeping: a shape that does not divide is not a configuration the driver might
+// take a different view of — it CANNOT produce the requested bitrate, arithmetically, and the
+// driver's only possible answer is a bare XL status against an address the parser had accepted.
+//
+// Two ways a rate can be unusable on this clock, and both are reachable from addresses
+// parse_vector_spec allows (codex #181 r4):
+//   - NO WHOLE PRESCALER AT ANY COUNT. 750000 needs brp*tq = 80e6/750e3 = 106.67, which is not an
+//     integer at all, so no division of the bit can produce it.
+//   - A PRESCALER THE CONTROLLER CANNOT HOLD. 5000 bit/s at 25 quanta needs brp 640, over the
+//     8-bit field's 256.
+fn vector_fd_timing(rate int) !FdTiming {
+	if rate <= 0 {
+		return error('${rate} is not a bitrate')
+	}
 	// 25 down to 8: below eight quanta a bit there is not enough resolution to place an 80%
 	// sample point at all, and above 25 the prescaler reaches 1 for the rates FD is used at.
 	for tq := 25; tq >= 8; tq-- {
-		if rate > 0 && vector_fd_clock_hz % (rate * tq) == 0 {
-			return vector_fd_split(tq)
+		if vector_fd_clock_hz % (rate * tq) != 0 {
+			continue
 		}
+		// THE PRESCALER HAS TO FIT. A whole brp is not the same as a usable one: the low end of
+		// the accepted range divides cleanly and then asks for a value the field cannot hold.
+		brp := vector_fd_clock_hz / (rate * tq)
+		if brp < 1 || brp > 256 {
+			continue
+		}
+		return vector_fd_split(tq)
 	}
-	// NOTHING DIVIDES. Returning a shape anyway, rather than an error, because the driver is the
-	// authority on what it will accept and its refusal names the channel and the rates; inventing
-	// a failure here would report "unsupported" for a combination some future controller clock
-	// takes. 20 quanta is the default shape, and it is what the common rates resolve to.
-	return vector_fd_split(20)
+	return error('${rate} bit/s cannot be produced from this controller\'s ${vector_fd_clock_hz / 1_000_000} MHz clock: no whole prescaler of 256 or less divides it at 8 to 25 quanta per bit')
 }
 
 // vector_fd_split places the sample point at ~80% of a bit divided into `tq` quanta.

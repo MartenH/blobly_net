@@ -117,8 +117,16 @@ pub fn open_vector(spec string) !&VectorBus {
 	// its own prescaler; requiring them to share a count refuses rate pairs the hardware can do.
 	// The data timing is computed for the arbitration rate on a classic channel, where it is
 	// simply unused — the shim only reads it when `fd` is set.
-	at := vector_fd_timing(s.bitrate)
-	dt := vector_fd_timing(if s.data_bitrate > 0 { s.data_bitrate } else { s.bitrate })
+	// REFUSED HERE, with the rate named, rather than by the driver with a bare XL status. A rate
+	// this controller's clock cannot produce is not something the open might get away with — see
+	// vector_fd_timing — and the parser accepts rates on the standard's ranges rather than on this
+	// device's arithmetic, so the two have to meet somewhere. This is that place.
+	at := vector_fd_timing(s.bitrate) or {
+		return error('Vector channel ${s.channel}: arbitration ${err}')
+	}
+	dt := vector_fd_timing(if s.data_bitrate > 0 { s.data_bitrate } else { s.bitrate }) or {
+		return error('Vector channel ${s.channel}: CAN-FD data phase ${err}')
+	}
 	// 0-BASED at the API, 1-based in the spelling: Vector Hardware Configuration numbers the
 	// application channels from 1 and the operator reads the interface string against that
 	// dialog, so the conversion belongs here rather than in their head.
