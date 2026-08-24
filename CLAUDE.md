@@ -90,13 +90,14 @@ docs/                design + platform docs; docs/history.md = archived status l
 | `script`, `lua` | embedded Lua + the test-framework prelude |
 | `project` | `.blobnet` project files. `destination_conflicts()` is the ONE place a project is refused for asking a wire to be two things — one mode, one rate, and (#167) one physical channel: two Vector *application* channels assigned to one *physical* channel are two wires here and one to the driver, so the comparison is pure and testable (`alias_conflicts`) while the resolution behind it (`transport.physical_wire_key`) is per-platform and answers `none` wherever no driver can say |
 | `sampledb` | hand-coded message catalog (superseded by DBC loading) |
+| `testports` | which port may a test bind? Test-support, and the one module the engine does not use. A FIXED port fails once, on somebody else's machine, and passes on every re-run (#112) — worst of all in `doip/net_test.v`, where two sites read a failed bind as "no IPv6 loopback here" and skipped, so a collision dropped coverage while printing a plausible reason. Deriving the port from the pid is not the fix on its own: any formula over a finite band aliases. So **TCP verifies** — `candidates()` proposes, starting where the pid points, and the caller takes the first it actually BINDS, which also settles two sites in one process and makes "every candidate refused" a real environment fact. **UDP cannot be verified at all** from this V: `listen_udp` sets SO_REUSEADDR with no opt-out, so a second bind on a held port succeeds and the later binder wins delivery — a probe that checks whether the token comes back is therefore the squatter's successor and always says yes (tried; CI caught it). So UDP predicts instead, and `slot_for` gives each process a disjoint BLOCK, the original defect being `base + pid + slot` making process N's slot 1 into process N+1's slot 0 while a runner spawns its files pids apart. Each file gets its own BAND, declared together because disjointness is a property of the set; all below 32768, clear of the ephemeral range. Where a test owns its listener, none of this applies — bind port 0 and read back what the OS gave (`free_listener`), which cannot collide at all |
 
 ## Build / run / test
 
 ```sh
 ./scripts/run_gui.sh                       # GUI
 v -path "@vlib|@vmodules|modules" run cmd/<tool>/<file>.v   # any other target
-v -enable-globals test modules/             # unit tests — the reliable backbone (53/53)
+v -enable-globals test modules/             # unit tests — the reliable backbone (58/58)
 ./scripts/runtests.sh tests/diag_basic.lua  # headless Lua integration tests (in-process sim)
 ```
 
