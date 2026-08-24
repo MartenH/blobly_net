@@ -15,6 +15,12 @@ struct Chan {
 	mode         string
 	typ          string
 	bitrate      int
+	// CAN-FD, and BOTH halves of it. `data_bitrate` was here on its own and `fd` was not, which
+	// reads as harmless — the data rate is the interesting number — and is not: `fd` is what
+	// iface_with_bitrate tests to decide whether to compose a data phase at all, so a runtime row
+	// carrying the rate without the flag opens CLASSIC and refuses every FD frame it is handed.
+	// The two travel together everywhere or neither is worth carrying (codex #181 r1).
+	fd           bool
 	data_bitrate int
 	listen_only  bool
 	databases    []string

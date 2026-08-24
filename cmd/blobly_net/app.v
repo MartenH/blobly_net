@@ -249,6 +249,20 @@ mut:
 	// answer: a project switch or a structured Save left old YAML on screen that Save would
 	// then write over the new file.
 	cfg_text_dirty bool
+	// Editor fields whose text could not be committed to the model, rebuilt by every commit_cfg.
+	//
+	// A REJECTED FIELD HAS TO REACH START, not merely the Log. Leaving the previous value in the
+	// model is right — a typo mid-edit must not discard a good stored rate — but on its own it
+	// puts the editor and the model into disagreement, and Start then opened the channel at a
+	// rate the operator could no longer see anywhere on screen. Refusing while any field is in
+	// that state is what makes "keep the old value" safe (codex #181 r5).
+	//
+	// IT DESCRIBES THE BUFFERS, so it dies with them. Every place that discards or rebuilds
+	// cfg_bufs clears this too: commit_cfg returns early when the buffer count does not match the
+	// channel count, so a list left over from a REPLACED project could never be recomputed — and
+	// it blocked Start and Save on the newly opened one until the operator happened to make
+	// another structured edit. An error about a project that is no longer loaded (codex #183 r1).
+	cfg_invalid []CfgInvalid
 	cfg_chans      int // channels the text yields; cached, because parsing per frame is not free
 
 	// Script (Lua on a worker thread)
@@ -353,12 +367,34 @@ mut:
 // CfgBuf holds one bus's editable text fields in the Configuration editor (parallel to
 // app.proj.channels). Enums (adapter/mode/protocol) and checkboxes edit the model directly;
 // only the free-text fields need a buffer.
+// CfgInvalid is one editor field that would not commit, and WHOSE row it belongs to.
+//
+// THE ROW MATTERS BECAUSE THE TWO CONSUMERS DIFFER. Save writes the whole project, so a bad value
+// anywhere is a bad value it would persist. Start opens only the ENABLED rows, and refusing the
+// run over a disabled channel's field stopped otherwise-valid buses from running until an unused
+// row was corrected — a channel that will never be opened cannot be a reason not to open the
+// others (codex #183 r2).
+struct CfgInvalid {
+	// THE ROW INDEX IS THE IDENTITY, not the name. Channel names are user-editable and need not
+	// be unique — config.v says so where the picker targets are invalidated, for this same reason
+	// — so a by-name lookup let a rejected edit on ONE row refuse an enable on a different row
+	// that happened to share its label (codex #183 r4). `app.chans` is rebuilt one entry per
+	// project channel in order, so the index means the same row on both sides.
+	idx  int
+	name string // for the message only; never matched on
+	why  string
+}
+
 struct CfgBuf {
 mut:
 	name_buf     []u8
 	network_buf  []u8
 	address_buf  []u8
 	bitrate_buf  []u8
+	// The CAN-FD data phase. A BUFFER rather than a number with a zero default, because empty and
+	// zero have to stay distinguishable: empty means "no separate data phase, run it at the
+	// nominal rate", which is a real CAN-FD configuration and not an absent answer.
+	dbitrate_buf []u8
 	manifest_buf []u8
 	dbc_buf      []u8 // "+ Add DBC" typed-path fallback
 	// DoIP
@@ -636,6 +672,7 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	// be flushed into the newly loaded project by the next commit_cfg (same channel count = no
 	// resync in draw_config); stale discovery results belong to the old machine view.
 	app.cfg_bufs = []
+	app.cfg_invalid = [] // describes the buffers just discarded; see the field
 	app.disc_list = []
 	app.disc_tick = []
 	app.mu.unlock()
@@ -699,6 +736,7 @@ fn (mut app App) rebuild_from_proj() {
 			mode:           ch.mode.str()
 			typ:            ch.typ
 			bitrate:        ch.bitrate
+			fd:             ch.fd
 			data_bitrate:   ch.data_bitrate
 			listen_only:    ch.listen_only
 			databases:      ch.databases.clone()

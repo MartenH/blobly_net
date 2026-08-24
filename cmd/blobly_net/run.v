@@ -36,12 +36,37 @@ fn (app &App) open_transport(iface string) !transport.Bus {
 // This one forgot listen_only, and every Vector channel a project had marked listen-only opened
 // able to acknowledge — the promise that backend exists to keep, lost between two structs with
 // the same field names. Anything added here is added once.
+// EVERY FIELD iface_with_bitrate READS, which is the contract this projection has to keep and
+// the one it silently broke. It exists to hand that function a Channel; a field it composes the
+// address from and this does not copy becomes a DEFAULT — and `fd` defaults to false, so a
+// CAN-FD row was projected into a classic one and opened `vector:<n>@<rate>` with no data phase.
+// Every FD frame was then refused by VectorBus.send, on the GUI path only, because the headless
+// runner passes real project rows and never comes through here (codex #181 r1).
+// rejected_edit reports why the channel at this ROW INDEX would not commit, or none.
+//
+// BY INDEX, NOT BY NAME. The first version matched on the name, which is a label rather than an
+// identity: names are user-editable and need not be unique — config.v says exactly that where the
+// index-bound picker targets are invalidated — so a rejected edit on one row refused the enable of
+// a different row that happened to share its text (codex #183 r4). `app.chans` is rebuilt one
+// entry per project channel in order, so the index means the same row on both sides, and it is
+// the identity every other index-bound piece of this app already uses.
+fn (app &App) rejected_edit(idx int) ?string {
+	for bad in app.cfg_invalid {
+		if bad.idx == idx {
+			return bad.why
+		}
+	}
+	return none
+}
+
 fn (c Chan) for_open() project.Channel {
 	return project.Channel{
-		iface:       c.iface
-		adapter:     c.adapter
-		bitrate:     c.bitrate
-		listen_only: c.listen_only
+		iface:        c.iface
+		adapter:      c.adapter
+		bitrate:      c.bitrate
+		fd:           c.fd
+		data_bitrate: c.data_bitrate
+		listen_only:  c.listen_only
 	}
 }
 
@@ -108,13 +133,20 @@ fn (app &App) runtime_rows() []project.Channel {
 	mut rows := []project.Channel{}
 	for c in app.chans {
 		rows << project.Channel{
-			name:        c.name
-			adapter:     c.adapter
-			iface:       c.iface
-			typ:         c.typ
-			bitrate:     c.bitrate
-			listen_only: c.listen_only
-			enabled:     c.enabled
+			name:    c.name
+			adapter: c.adapter
+			iface:   c.iface
+			typ:     c.typ
+			bitrate: c.bitrate
+			// THE SAME OMISSION AS for_open's, with a different consequence: these rows are what
+			// destination_conflicts and fd_capability_warnings are asked about, so a dropped `fd`
+			// does not merely open the wrong thing — it makes both checks answer as though no row
+			// in the run were CAN-FD at all. A wire asked to be classic AND FD passed, and the
+			// warning about an FD row on a backend that refuses FD could never fire in the GUI.
+			fd:           c.fd
+			data_bitrate: c.data_bitrate
+			listen_only:  c.listen_only
+			enabled:      c.enabled
 		}
 	}
 	return rows
@@ -201,6 +233,32 @@ fn (mut app App) start() {
 	if app.dirty {
 		app.apply_edits()
 	}
+	// AN EDITOR FIELD THAT WOULD NOT COMMIT STOPS THE RUN. apply_edits has just folded the buffers
+	// into the model, and a field it could not parse left its PREVIOUS value standing — which is
+	// the right thing to do with a typo mid-edit and the wrong thing to run on, because the value
+	// the channel would open with is then one the editor no longer shows anywhere. Refusing here
+	// is what makes keeping the old value safe (codex #181 r5).
+	// EVERY ROW, and the exemption that used to be here is gone rather than widened.
+	//
+	// r2 asked for "enabled rows only", on the reasoning that a disabled channel is never opened
+	// and so cannot be a reason to refuse the run. The reasoning is wrong: `rebuild_from_proj`
+	// builds a row's SENDERS without consulting `enabled`, and Start opens every sender target —
+	// so a disabled Vector row with a rejected data-rate edit still got a generator tap opened at
+	// the model's previous rate, which is exactly the editor/model mismatch this guard exists to
+	// prevent (#183 r5). The mid-run enable path was the same hole from another side (#183 r3).
+	//
+	// Two rounds of patching an approximation of "will this row be opened" is the signal to stop
+	// approximating. The honest predicate is simpler and needs no enumeration: a rejected edit
+	// means the editor and the model disagree about that row, and a project in that state should
+	// not start. The cost is that an untidy row blocks Start — but the message names the row and
+	// the field, and clearing the field is one keystroke, so it is a visible cost with an obvious
+	// remedy rather than a silent open at a rate nobody chose.
+	blocking := app.cfg_invalid.map('${it.name}: ${it.why}')
+	if blocking.len > 0 {
+		app.notify('not starting — ${blocking.join('; ')} (correct it in Configuration ▸ Buses, or clear the field)')
+		app.show_config = true
+		return
+	}
 	// ONE WIRE, ONE RATE. Two enabled rows on the same destination that disagree about the
 	// bitrate are a contradiction the backend cannot see: bitrate_iface picks one of them and
 	// hands every monitor and transmit open the same string, so the Vector layer's own
@@ -219,6 +277,13 @@ fn (mut app App) start() {
 		// itself. A summary that lists two of three is the kind of claim that goes stale.
 		app.notify('${bad} — not starting')
 		return
+	}
+	// SAID ONCE, HERE, before anything opens — issue #170. An FD row on a backend that refuses FD
+	// otherwise announces itself only as a rising `failed` count while traffic flows, which on a
+	// part-classic recording reads as a successful measurement with some of its traffic missing.
+	// A warning rather than a refusal: the classic half of that run is real.
+	for w in project.fd_capability_warnings(app.runtime_rows()) {
+		app.notify(w)
 	}
 	if app.cfg_text_dirty {
 		// Text edits are NOT folded in automatically: the file is the authority for everything

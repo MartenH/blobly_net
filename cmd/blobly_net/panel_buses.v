@@ -1,6 +1,7 @@
 module main
 
 import transport
+import project
 import vgui
 
 // channel state colour + short ASCII label (imgui's default font is ASCII-only):
@@ -321,12 +322,55 @@ fn draw_buses(mut app App, chans []Chan) {
 						continue
 					}
 				}
+				// A ROW WITH A REJECTED EDIT MAY NOT JOIN A RUN, and this path is the only way one
+				// can. Start refuses on enabled rows only — a disabled channel is never opened, so
+				// its uncommitted field is not a reason to stop the others (#183 r2) — which is
+				// exactly what leaves this door open: enabling that row mid-run would put it on
+				// the wire at the model's PREVIOUS rate while the editor still shows the value
+				// that was refused. The same model/editor mismatch the Start guard exists to
+				// prevent, arrived at from the side (codex #183 r3).
+				if new {
+					if why := app.rejected_edit(i) {
+						app.mu.unlock()
+						app.notify('${app.chans[i].name}: ${why} — correct it in Configuration ▸ Buses before enabling this channel')
+						continue
+					}
+				}
 				if app.running && app.chans[i].mode == 'replay' && app.chans[i].replay_src != '' {
 					app.mu.unlock()
 					app.notify('${app.chans[i].name}: replay channels are fixed while running — Stop and Start to change which ones play')
 					continue
 				}
 				app.chans[i].enabled = new
+				// THE CAPABILITY WARNING BELONGS TO EVERY PATH THAT PUTS A ROW INTO A RUN, not
+				// only to Start. A row disabled at Start is correctly skipped by
+				// fd_capability_warnings — it states nothing about the run — but enabling it here
+				// is the moment it starts stating something, and this path never asked again. It
+				// mattered more after #181 r5 stopped reporting a PCAN/Kvaser FD row as a
+				// destination CONFLICT: with the conflict gone and the warning never re-run, such
+				// a row joined a live run in silence, its classic traffic flowing while replayed
+				// FD frames were counted as failed — the misleading partial experiment the
+				// warning exists to prevent (codex #181 r6).
+				//
+				// Warnings only, and after the toggle: nothing here refuses an enable that the
+				// checks above allowed.
+				//
+				// UNDER THE LOCK THROUGHOUT, via log_append_locked. notify() takes app.mu itself,
+				// so calling it here would deadlock — and dropping the lock to call it would leave
+				// app.chans open to another thread in the middle of a sequence that goes on to
+				// read it, which is the unlocked-read-of-a-replaced-array mistake this file has
+				// paid for before. fd_capability_warnings is pure, so it is safe to run inside.
+				// THE ROW THAT JUST JOINED, not every row in the run. Passing the whole set warned
+				// again about every already-enabled PCAN/Kvaser FD channel on each toggle, so
+				// unrelated ticking filled the Log with duplicates of a warning already given at
+				// Start — and a warning repeated for no reason is one an operator learns to skip
+				// past (codex #183 r2). Start still asks about the whole project, because there
+				// every row is joining at once.
+				if new {
+					for w in project.fd_capability_warnings([app.runtime_rows()[i]]) {
+						app.log_append_locked(w)
+					}
+				}
 				// The wire list is derived from the runtime rows and consulted per SEND, so it has
 				// to move with this toggle: a listen-only row enabled here would otherwise open its
 				// taps against a table that never learned about it, and a disabled one would leave

@@ -33,6 +33,27 @@ pub fn vendor_bitrate(tok string, default_rate int) !int {
 	return n
 }
 
+// adapter_carries_fd reports whether the backend behind a project ADAPTER can put a CAN-FD frame
+// on the wire. False for the two Windows vendor backends that refuse one, and for `doip`, which
+// is not CAN at all.
+//
+// BY ADAPTER, not by interface string, because that is what the project stores and what the
+// operator picks from a dropdown — and it is deliberately NOT platform-gated. On Linux a `pcan:`
+// name opens as SocketCAN and would carry FD, but a project authored for a Windows bench is
+// wrong about its own hardware whichever machine is reading it, and a warning that appeared only
+// on the bench would be a warning nobody sees until they are standing at the bench.
+//
+// The list is the answer to "which backends did somebody implement FD for", so it lives beside
+// the FD address parsing rather than in a front end: the GUI and the headless runner both ask,
+// and a second copy of it would be the pair of them disagreeing about the same project.
+pub fn adapter_carries_fd(adapter string) bool {
+	return match adapter.trim_space().to_lower() {
+		'pcan', 'kvaser' { false } // refuse an FD frame rather than truncating it
+		'doip' { false } // not a CAN bus
+		else { true } // vector, socketcan/vcan, and the software buses
+	}
+}
+
 // vendor_split_fd_rate separates the rate token of a CAN-FD address: `<arb>/<data>`.
 //
 // THE DATA RATE IS THE FD FLAG. There is no separate `,fd` — one thing to say, so there is no way
