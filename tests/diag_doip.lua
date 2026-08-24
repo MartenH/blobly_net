@@ -1,5 +1,11 @@
 -- diag_doip.lua — UDS over DoIP (ISO 13400), against the simulated DoIP entity.
 --
+-- @project ../projects/doip-demo.blobnet
+--
+-- This one passes against sim-demo too, which also carries a DoIP channel. It is declared
+-- anyway: CI ran it against doip-demo, and a suite that quietly changes which project it
+-- exercises is a coverage change nobody reviewed.
+--
 -- The same uds.Server the CAN suites talk to, reached over real localhost TCP
 -- instead of ISO-TP: no CAN ids, addressing is the logical pair configured on the
 -- channel (tester_address / ecu_address). Run headless:

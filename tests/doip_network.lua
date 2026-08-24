@@ -1,4 +1,9 @@
--- doip_network.lua — a small network of DoIP entities (projects/doip-network-demo.blobnet).
+-- doip_network.lua — a small network of DoIP entities.
+--
+-- @project ../projects/doip-network-demo.blobnet
+--
+-- Gateway, EngineECU and BodyECU exist in that project alone; against any other this test
+-- reports failures rather than the configuration mistake it actually is (#115).
 --
 -- Three entities on 127.0.0.1/.2/.3, each announcing its own VIN. The point of this suite is
 -- that an entity's ANNOUNCED identity (what discovery returns) and its SERVED identity (DID

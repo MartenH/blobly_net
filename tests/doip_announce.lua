@@ -3,7 +3,13 @@
 -- ISO 13400: an entity broadcasts a vehicle announcement when it comes up, so a tester finds
 -- ECUs nobody told it about by LISTENING rather than asking. The simulator only ever ANSWERED
 -- a Vehicle Identification Request, so such a tester saw nothing at all from it.
---   scripts/runtests.sh --project projects/doip-announce-demo.blobnet tests/doip_announce.lua
+-- @project ../projects/doip-announce-demo.blobnet
+--
+-- That directive is not decoration: this test addresses channels named Talker, AltPort and
+-- Silent, which exist in no other project. Run against the default it reported three test
+-- failures instead of a configuration mistake, and did so on main for weeks (#115). The runner
+-- reads the line above and refuses a --project that contradicts it.
+--   scripts/runtests.sh tests/doip_announce.lua
 --
 -- Talker and AltPort announce for ~4s, because a script CANNOT listen first: the runner brings
 -- entities up before it parses the suite, exactly as an ECU is powered before a tester arrives.
