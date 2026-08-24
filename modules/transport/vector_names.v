@@ -63,6 +63,125 @@ fn vector_key(s string) string {
 	return body.trim_space().to_lower() // unresolvable: identical bad strings still collide
 }
 
+// vector_fd_clock_hz is the CAN controller clock the FD segment arithmetic below assumes.
+//
+// STATED, because it is the one number here that is a property of the hardware rather than of the
+// standard, and it is not discoverable: XLcanFdConf takes the two bitrates and the segment counts
+// and the DRIVER derives the prescaler, so nothing in the API reports what it divided. 80 MHz is
+// what the VN family runs its CAN controllers at, and every VN device this backend has been used
+// on. Where it is wrong the consequence is contained and loud — no integer prescaler exists, the
+// driver refuses xlCanFdSetConfiguration, and the open reports that refusal with both rates in it
+// rather than running the bus at something nobody asked for.
+const vector_fd_clock_hz = 80_000_000
+
+// FdTiming is one phase's bit timing: how many quanta the bit is divided into, and where in it
+// the controller samples.
+struct FdTiming {
+	tseg1 int
+	tseg2 int
+	sjw   int
+}
+
+// vector_fd_timing picks the bit timing for ONE phase at one rate.
+//
+// WHY THIS IS OURS TO CHOOSE AT ALL. XLcanFdConf has no prescaler field and no "just give me this
+// bitrate" form — it takes the rates AND tseg1/tseg2/sjw, and the driver computes
+// brp = clock / (bitrate * (1 + tseg1 + tseg2)). So the segment count is not a refinement on top
+// of a working configuration; without it there is no configuration, and a count that does not
+// divide the clock exactly is refused outright.
+//
+// PER PHASE, which is how the struct is shaped and — as it turns out — the only way that works.
+// The first version searched for ONE quanta count satisfying both rates, on the reasoning that
+// CiA 601-3 wants the same sample point in both phases. That conflates the sample POINT with the
+// quanta COUNT: the point is a ratio and each phase reaches it with its own count and its own
+// prescaler. Requiring a shared count refuses combinations the hardware can do — 800k/5M is exact
+// at 20 quanta for arbitration and 16 for data, and their only common counts are below the
+// minimum, so a rate pair the parser accepts could never be opened (codex #181 r3).
+//
+// Searched from the finest downwards, because more quanta per bit means a smaller prescaler and
+// so a finer resynchronisation step, which is what a bus with reflections on it wants.
+// REFUSES rather than guessing. The first version returned a default shape when nothing divided,
+// on the reasoning that the driver is the authority on what it accepts. That reasoning was wrong
+// in a way worth keeping: a shape that does not divide is not a configuration the driver might
+// take a different view of — it CANNOT produce the requested bitrate, arithmetically, and the
+// driver's only possible answer is a bare XL status against an address the parser had accepted.
+//
+// Two ways a rate can be unusable on this clock, and both are reachable from addresses
+// parse_vector_spec allows (codex #181 r4):
+//   - NO WHOLE PRESCALER AT ANY COUNT. 750000 needs brp*tq = 80e6/750e3 = 106.67, which is not an
+//     integer at all, so no division of the bit can produce it.
+//   - A PRESCALER THE CONTROLLER CANNOT HOLD. 5000 bit/s at 25 quanta needs brp 640, over the
+//     8-bit field's 256.
+// THE TWO PHASES DO NOT HAVE THE SAME LIMITS, which is why this takes the phase rather than only
+// the rate. An FD controller's NOMINAL segment fields are wide — the arbitration phase is ordinary
+// CAN and its tseg1 is an 8-bit field on the usual silicon — while the DATA phase's are narrow,
+// because it has to switch fast. Applying the data phase's ceiling to both refused arbitration
+// timings the hardware can do: 5 kbit/s is exact at 64 quanta with prescaler 250, well inside the
+// nominal fields, and was rejected only because 25 was being used as a universal bound. The claim
+// in the round-4 message that 5 kbit/s "needs prescaler 640" was true only under that self-imposed
+// ceiling (codex #181 r5).
+//
+// The ceilings below are deliberately conservative rather than the widest any controller allows:
+// XLcanFdConf declares its fields as plain unsigned ints and states no ranges, so these are chosen
+// to sit inside what the common FD silicon accepts for each phase rather than to be maximal.
+const fd_tq_max_arbitration = 64
+const fd_tq_max_data = 25
+
+fn vector_fd_timing(rate int) !FdTiming {
+	return vector_fd_timing_for(rate, fd_tq_max_arbitration)
+}
+
+// vector_fd_timing_data is the data phase's narrower search. Kept as its own entry point so a
+// caller cannot pass the wrong ceiling by getting an argument order wrong.
+fn vector_fd_timing_data(rate int) !FdTiming {
+	return vector_fd_timing_for(rate, fd_tq_max_data)
+}
+
+fn vector_fd_timing_for(rate int, tq_max int) !FdTiming {
+	if rate <= 0 {
+		return error('${rate} is not a bitrate')
+	}
+	// Downwards from the ceiling: more quanta per bit means a smaller prescaler and so a finer
+	// resynchronisation step. Below eight there is not enough resolution to place an 80% sample
+	// point at all.
+	for tq := tq_max; tq >= 8; tq-- {
+		if vector_fd_clock_hz % (rate * tq) != 0 {
+			continue
+		}
+		// THE PRESCALER HAS TO FIT. A whole brp is not the same as a usable one: the low end of
+		// the accepted range divides cleanly and then asks for a value the field cannot hold.
+		brp := vector_fd_clock_hz / (rate * tq)
+		if brp < 1 || brp > 256 {
+			continue
+		}
+		return vector_fd_split(tq)
+	}
+	return error('${rate} bit/s cannot be produced from this controller\'s ${vector_fd_clock_hz / 1_000_000} MHz clock: no whole prescaler of 256 or less divides it at 8 to ${tq_max} quanta per bit')
+}
+
+// vector_fd_split places the sample point at ~80% of a bit divided into `tq` quanta.
+fn vector_fd_split(tq int) FdTiming {
+	// The bit is 1 (sync) + tseg1 + tseg2 quanta, and the sample point sits at the end of tseg1 —
+	// so (1 + tseg1) / tq is the figure being aimed at. Rounded, and floored at 2 quanta of
+	// tseg2: a single-quantum phase-2 segment leaves no room to shorten on resynchronisation.
+	mut t2 := (tq + 2) / 5 // round(tq * 0.2)
+	if t2 < 2 {
+		t2 = 2
+	}
+	t1 := tq - 1 - t2
+	// sjw cannot exceed tseg2 — it is the amount phase 2 may be shortened by — and there is
+	// nothing to gain from more than 4.
+	mut sjw := t2
+	if sjw > 4 {
+		sjw = 4
+	}
+	return FdTiming{
+		tseg1: t1
+		tseg2: t2
+		sjw:   sjw
+	}
+}
+
 // VectorSpec is the parsed interface string.
 //
 // HERE, not in vector_windows.v, and the difference is not cosmetic: written beside the driver
@@ -72,8 +191,13 @@ fn vector_key(s string) string {
 // be checked.
 struct VectorSpec {
 	channel int // application channel, 1-based as the operator sees it
-	bitrate int
+	bitrate int // the arbitration rate; the only rate a classic address has
 	silent  bool
+	// CAN-FD, spelled `@<arb>/<data>`. `fd` and a zero `data_bitrate` cannot occur together:
+	// vendor_split_fd_rate derives the flag FROM the second rate, so there is no state in which
+	// the backend is asked for FD without being told what its payload phase runs at.
+	fd           bool
+	data_bitrate int
 }
 
 fn parse_vector_spec(spec string) !VectorSpec {
@@ -93,16 +217,41 @@ fn parse_vector_spec(spec string) !VectorSpec {
 	}
 	// BOTH RULES live in vendor_spec.v now, because each of them has been got wrong once per
 	// backend when it lived beside a single caller.
-	chan_part, bitrate := vendor_split_rate(body, 500000) or { return error('Vector: ${err}') }
+	// SPLIT ON `@` FIRST, then on `/` inside the rate: the "at most one rate" rule is about the
+	// `@` separator and still holds — `vector:1@500000@250000` is as wrong as it ever was — while
+	// `/` divides the two phases of the ONE rate an FD address carries.
+	parts := body.split('@')
+	if parts.len > 2 {
+		return error('Vector: "${body}" has more than one bitrate — the rate belongs in the channel\'s bitrate field, not in its address')
+	}
+	chan_part := parts[0]
+	mut bitrate := 500000
+	mut fd := false
+	mut dbr := 0
+	if parts.len > 1 {
+		bitrate, dbr, fd = vendor_split_fd_rate(parts[1], 500000) or {
+			return error('Vector: ${err}')
+		}
+	}
 	ch := vector_app_channel(chan_part)!
 	// A bitrate the hardware cannot produce is a configuration error worth catching here: on a
 	// live bus the consequence of getting it wrong is error frames, not a quiet failure.
 	if bitrate < 5000 || bitrate > 1000000 {
 		return error('Vector bitrate ${bitrate} out of range (5000..1000000)')
 	}
+	// THE DATA PHASE HAS ITS OWN CEILING, and it is the reason FD exists: 8 Mbit/s is what
+	// ISO 11898-1 allows and what a VN device's controller will accept. The arbitration limit
+	// above stays at 1 Mbit/s, because that phase is still classic CAN however fast the payload
+	// goes — checked separately rather than sharing one range, which would let an address ask for
+	// arbitration at 4 Mbit/s.
+	if fd && (dbr < 5000 || dbr > 8000000) {
+		return error('Vector CAN-FD data bitrate ${dbr} out of range (5000..8000000)')
+	}
 	return VectorSpec{
-		channel: ch
-		bitrate: bitrate
-		silent:  silent
+		channel:      ch
+		bitrate:      bitrate
+		silent:       silent
+		fd:           fd
+		data_bitrate: dbr
 	}
 }
