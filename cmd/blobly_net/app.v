@@ -249,6 +249,14 @@ mut:
 	// answer: a project switch or a structured Save left old YAML on screen that Save would
 	// then write over the new file.
 	cfg_text_dirty bool
+	// Editor fields whose text could not be committed to the model, rebuilt by every commit_cfg.
+	//
+	// A REJECTED FIELD HAS TO REACH START, not merely the Log. Leaving the previous value in the
+	// model is right — a typo mid-edit must not discard a good stored rate — but on its own it
+	// puts the editor and the model into disagreement, and Start then opened the channel at a
+	// rate the operator could no longer see anywhere on screen. Refusing while any field is in
+	// that state is what makes "keep the old value" safe (codex #181 r5).
+	cfg_invalid []string
 	cfg_chans      int // channels the text yields; cached, because parsing per frame is not free
 
 	// Script (Lua on a worker thread)

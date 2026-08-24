@@ -112,13 +112,39 @@ struct FdTiming {
 //     integer at all, so no division of the bit can produce it.
 //   - A PRESCALER THE CONTROLLER CANNOT HOLD. 5000 bit/s at 25 quanta needs brp 640, over the
 //     8-bit field's 256.
+// THE TWO PHASES DO NOT HAVE THE SAME LIMITS, which is why this takes the phase rather than only
+// the rate. An FD controller's NOMINAL segment fields are wide — the arbitration phase is ordinary
+// CAN and its tseg1 is an 8-bit field on the usual silicon — while the DATA phase's are narrow,
+// because it has to switch fast. Applying the data phase's ceiling to both refused arbitration
+// timings the hardware can do: 5 kbit/s is exact at 64 quanta with prescaler 250, well inside the
+// nominal fields, and was rejected only because 25 was being used as a universal bound. The claim
+// in the round-4 message that 5 kbit/s "needs prescaler 640" was true only under that self-imposed
+// ceiling (codex #181 r5).
+//
+// The ceilings below are deliberately conservative rather than the widest any controller allows:
+// XLcanFdConf declares its fields as plain unsigned ints and states no ranges, so these are chosen
+// to sit inside what the common FD silicon accepts for each phase rather than to be maximal.
+const fd_tq_max_arbitration = 64
+const fd_tq_max_data = 25
+
 fn vector_fd_timing(rate int) !FdTiming {
+	return vector_fd_timing_for(rate, fd_tq_max_arbitration)
+}
+
+// vector_fd_timing_data is the data phase's narrower search. Kept as its own entry point so a
+// caller cannot pass the wrong ceiling by getting an argument order wrong.
+fn vector_fd_timing_data(rate int) !FdTiming {
+	return vector_fd_timing_for(rate, fd_tq_max_data)
+}
+
+fn vector_fd_timing_for(rate int, tq_max int) !FdTiming {
 	if rate <= 0 {
 		return error('${rate} is not a bitrate')
 	}
-	// 25 down to 8: below eight quanta a bit there is not enough resolution to place an 80%
-	// sample point at all, and above 25 the prescaler reaches 1 for the rates FD is used at.
-	for tq := 25; tq >= 8; tq-- {
+	// Downwards from the ceiling: more quanta per bit means a smaller prescaler and so a finer
+	// resynchronisation step. Below eight there is not enough resolution to place an 80% sample
+	// point at all.
+	for tq := tq_max; tq >= 8; tq-- {
 		if vector_fd_clock_hz % (rate * tq) != 0 {
 			continue
 		}
@@ -130,7 +156,7 @@ fn vector_fd_timing(rate int) !FdTiming {
 		}
 		return vector_fd_split(tq)
 	}
-	return error('${rate} bit/s cannot be produced from this controller\'s ${vector_fd_clock_hz / 1_000_000} MHz clock: no whole prescaler of 256 or less divides it at 8 to 25 quanta per bit')
+	return error('${rate} bit/s cannot be produced from this controller\'s ${vector_fd_clock_hz / 1_000_000} MHz clock: no whole prescaler of 256 or less divides it at 8 to ${tq_max} quanta per bit')
 }
 
 // vector_fd_split places the sample point at ~80% of a bit divided into `tq` quanta.

@@ -249,7 +249,7 @@ fn test_every_accepted_rate_either_has_timing_or_is_refused() {
 		// as a data phase is what decides whether this rate is reachable at all.
 		parse_vector_spec('1@500000/${rate}') or { continue }
 		checked++
-		t := vector_fd_timing(rate) or {
+		t := vector_fd_timing_data(rate) or {
 			refused++
 			continue
 		}
@@ -268,19 +268,44 @@ fn test_every_accepted_rate_either_has_timing_or_is_refused() {
 	assert refused > 0, 'a sweep this wide must contain rates this clock cannot produce'
 }
 
-// The two concrete cases behind the rule, named so a regression says which one broke.
+// The concrete cases behind the rule, named so a regression says which one broke.
 fn test_the_rates_that_cannot_be_produced_are_refused() {
-	// No whole brp*tq exists at all: 80e6 / 750e3 is 106.67.
+	// UNPRODUCIBLE AT ANY COUNT, on either phase: 80e6 / 750e3 is 106.67, so no (brp, tq) exists.
+	// This is arithmetic about the clock, not a bound anything here chose.
 	if t := vector_fd_timing(750_000) {
 		tq := 1 + t.tseg1 + t.tseg2
-		assert false, '750000 must be refused; got ${tq} quanta'
+		assert false, 'arbitration 750000 must be refused; got ${tq} quanta'
 	}
-	// Divides cleanly, but the prescaler (640 at 25 quanta) is past what the field holds.
-	if _ := vector_fd_timing(5000) {
-		assert false, '5000 needs a prescaler above 256 and must be refused'
+	if _ := vector_fd_timing_data(750_000) {
+		assert false, 'data 750000 must be refused'
 	}
-	// …while the rates a bench actually uses still resolve.
-	for good in [125000, 250000, 500000, 800000, 1000000, 2000000, 4000000, 5000000, 8000000] {
-		vector_fd_timing(good) or { assert false, '${good} must resolve: ${err}' }
+	// …while the rates a bench actually uses still resolve on both phases.
+	for good in [125000, 250000, 500000, 800000, 1000000] {
+		vector_fd_timing(good) or { assert false, 'arbitration ${good} must resolve: ${err}' }
+	}
+	for good in [500000, 1000000, 2000000, 4000000, 5000000, 8000000] {
+		vector_fd_timing_data(good) or { assert false, 'data ${good} must resolve: ${err}' }
+	}
+}
+
+// THE PHASES HAVE DIFFERENT CEILINGS, and 5 kbit/s is the case that shows why. An FD controller's
+// NOMINAL segment fields are wide — the arbitration phase is ordinary CAN — while the DATA phase's
+// are narrow because it has to switch fast. Applying the data bound to both refused an arbitration
+// timing the hardware can do: 5000 is exact at 64 quanta with prescaler 250. The round-4 claim
+// that 5 kbit/s "needs prescaler 640" was true only under that self-imposed 25-quanta ceiling
+// (codex #181 r5).
+fn test_the_arbitration_phase_searches_further_than_the_data_phase() {
+	t := vector_fd_timing(5000) or {
+		assert false, '5000 is producible on the arbitration phase: ${err}'
+		return
+	}
+	tq := 1 + t.tseg1 + t.tseg2
+	brp := vector_fd_clock_hz / (5000 * tq)
+	assert vector_fd_clock_hz % (5000 * tq) == 0, '5000 at ${tq} quanta gives no whole prescaler'
+	assert brp >= 1 && brp <= 256, '5000 resolved to prescaler ${brp}'
+	assert tq > fd_tq_max_data, 'the point of this case is a count beyond the data ceiling'
+	// The DATA phase still refuses it, because its fields cannot hold that many quanta.
+	if _ := vector_fd_timing_data(5000) {
+		assert false, '5000 must not resolve on the data phase, whose segments are narrow'
 	}
 }

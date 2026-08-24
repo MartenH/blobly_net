@@ -124,7 +124,7 @@ pub fn open_vector(spec string) !&VectorBus {
 	at := vector_fd_timing(s.bitrate) or {
 		return error('Vector channel ${s.channel}: arbitration ${err}')
 	}
-	dt := vector_fd_timing(if s.data_bitrate > 0 { s.data_bitrate } else { s.bitrate }) or {
+	dt := vector_fd_timing_data(if s.data_bitrate > 0 { s.data_bitrate } else { s.bitrate }) or {
 		return error('Vector channel ${s.channel}: CAN-FD data phase ${err}')
 	}
 	// 0-BASED at the API, 1-based in the spelling: Vector Hardware Configuration numbers the

@@ -1529,9 +1529,21 @@ pub fn destination_conflicts(chs []Channel) []string {
 		// and that is answerable here, from the file, instead of as a channel that fails to open
 		// halfway through a Start.
 		//
+		// VECTOR ONLY, unlike the rate above, and the asymmetry is the point. The rate is a real
+		// disagreement on every vendor backend, because all three configure it. The PROTOCOL is
+		// only pinned where something configures a data phase — and PCAN and Kvaser configure
+		// none: both rows open the same classic bus and each FD frame is refused individually.
+		// Reported there, this refused the WHOLE PROJECT at Start and so overrode
+		// fd_capability_warnings, whose entire policy is that an FD row on those adapters is a
+		// warning because its classic traffic still runs. Two rules this change introduced,
+		// contradicting each other, with the stricter one silently winning (codex #181 r5).
+		//
 		// The comparison is on the ROW's fields rather than on its address, because that is what
 		// the operator edits and what iface_with_bitrate composes the address from; comparing the
 		// composed strings would make this a test of the composer.
+		if c.adapter != 'vector' {
+			continue
+		}
 		fdw := fd_wanted(c)
 		if prev := fd_mode[k] {
 			if prev != fdw {

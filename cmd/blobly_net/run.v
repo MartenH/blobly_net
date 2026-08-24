@@ -216,6 +216,16 @@ fn (mut app App) start() {
 	if app.dirty {
 		app.apply_edits()
 	}
+	// AN EDITOR FIELD THAT WOULD NOT COMMIT STOPS THE RUN. apply_edits has just folded the buffers
+	// into the model, and a field it could not parse left its PREVIOUS value standing — which is
+	// the right thing to do with a typo mid-edit and the wrong thing to run on, because the value
+	// the channel would open with is then one the editor no longer shows anywhere. Refusing here
+	// is what makes keeping the old value safe (codex #181 r5).
+	if app.cfg_invalid.len > 0 {
+		app.notify('not starting — ${app.cfg_invalid.join('; ')} (correct it in Configuration ▸ Buses, or clear the field)')
+		app.show_config = true
+		return
+	}
 	// ONE WIRE, ONE RATE. Two enabled rows on the same destination that disagree about the
 	// bitrate are a contradiction the backend cannot see: bitrate_iface picks one of them and
 	// hands every monitor and transmit open the same string, so the Vector layer's own

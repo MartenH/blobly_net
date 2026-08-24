@@ -84,6 +84,9 @@ fn (mut app App) commit_cfg() {
 	if app.cfg_bufs.len != app.proj.channels.len {
 		return
 	}
+	// REBUILT WHOLESALE each time, not appended to: a field corrected since the last commit must
+	// stop blocking Start, and a stale entry would wedge the run forever.
+	app.cfg_invalid = []
 	for i in 0 .. app.proj.channels.len {
 		b := app.cfg_bufs[i]
 		mut ch := &app.proj.channels[i]
@@ -119,6 +122,9 @@ fn (mut app App) commit_cfg() {
 			ch.data_bitrate = dbr_txt.int()
 		} else {
 			app.notify('${ch.name}: "${dbr_txt}" is not a data bitrate — digits only, in bits per second; keeping ${ch.data_bitrate}')
+			// RECORDED, not only announced. The model keeps its previous rate, so without this the
+			// editor shows one thing and the run uses another with nothing to stop it.
+			app.cfg_invalid << '${ch.name}: data rate "${dbr_txt}"'
 		}
 		if ch.adapter == 'doip' {
 			ch.tester_addr = parse_u16_hex(vgui.buf_str(b.tester_buf), ch.tester_addr)
@@ -663,6 +669,15 @@ fn (mut app App) save_project() {
 		return
 	}
 	app.apply_edits()
+	// THE SAME REFUSAL AS START'S, and Save needs it more: writing the file would persist the
+	// value the rejected field replaced, so a typo the operator can still see on screen becomes
+	// a stored rate they never chose — and the evidence that anything was wrong is gone as soon
+	// as the buffers are rebuilt from the saved model.
+	if app.cfg_invalid.len > 0 {
+		app.notify('not saved — ${app.cfg_invalid.join('; ')} (correct it in Configuration ▸ Buses, or clear the field)')
+		app.show_config = true
+		return
+	}
 	app.mu.lock()
 	p := app.proj
 	path := app.proj_path
