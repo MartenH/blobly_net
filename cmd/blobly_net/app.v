@@ -380,10 +380,9 @@ struct CfgInvalid {
 	// — so a by-name lookup let a rejected edit on ONE row refuse an enable on a different row
 	// that happened to share its label (codex #183 r4). `app.chans` is rebuilt one entry per
 	// project channel in order, so the index means the same row on both sides.
-	idx     int
-	name    string // for the message only; never matched on
-	enabled bool
-	why     string
+	idx  int
+	name string // for the message only; never matched on
+	why  string
 }
 
 struct CfgBuf {

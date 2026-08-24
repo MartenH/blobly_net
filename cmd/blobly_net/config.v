@@ -138,7 +138,6 @@ fn (mut app App) commit_cfg() {
 			app.cfg_invalid << CfgInvalid{
 				idx:     i
 				name:    ch.name
-				enabled: ch.enabled
 				why:     'data rate "${dbr_txt}" is not a number'
 			}
 		}
@@ -151,7 +150,6 @@ fn (mut app App) commit_cfg() {
 			app.cfg_invalid << CfgInvalid{
 				idx:     i
 				name:    ch.name
-				enabled: ch.enabled
 				why:     why
 			}
 		}
@@ -712,8 +710,10 @@ fn (mut app App) save_project() {
 	// value the rejected field replaced, so a typo the operator can still see on screen becomes
 	// a stored rate they never chose — and the evidence that anything was wrong is gone as soon
 	// as the buffers are rebuilt from the saved model.
-	// EVERY ROW HERE, enabled or not, unlike Start's check: a save writes the whole project, so a
-	// value that would not commit is one the file would be wrong about whichever rows are ticked.
+	// EVERY ROW, as Start now also checks: a save writes the whole project, so a value that would
+	// not commit is one the file would be wrong about whichever rows are ticked. The two used to
+	// differ — Start exempted disabled rows — until that exemption turned out to rest on a false
+	// premise (see run.v, #183 r5).
 	if app.cfg_invalid.len > 0 {
 		bad := app.cfg_invalid.map('${it.name}: ${it.why}')
 		app.notify('not saved — ${bad.join('; ')} (correct it in Configuration ▸ Buses, or clear the field)')

@@ -238,12 +238,22 @@ fn (mut app App) start() {
 	// the right thing to do with a typo mid-edit and the wrong thing to run on, because the value
 	// the channel would open with is then one the editor no longer shows anywhere. Refusing here
 	// is what makes keeping the old value safe (codex #181 r5).
-	// ENABLED ROWS ONLY. A disabled channel is never opened, so a field it could not commit is not
-	// a reason to refuse the run — blocking on one stopped every other bus until an unused row was
-	// corrected. Save still checks the whole project, because a save writes all of it (#183 r2),
-	// and the Buses panel refuses to ENABLE such a row mid-run, which is the door this exemption
-	// would otherwise leave open (#183 r3).
-	blocking := app.cfg_invalid.filter(it.enabled).map('${it.name}: ${it.why}')
+	// EVERY ROW, and the exemption that used to be here is gone rather than widened.
+	//
+	// r2 asked for "enabled rows only", on the reasoning that a disabled channel is never opened
+	// and so cannot be a reason to refuse the run. The reasoning is wrong: `rebuild_from_proj`
+	// builds a row's SENDERS without consulting `enabled`, and Start opens every sender target —
+	// so a disabled Vector row with a rejected data-rate edit still got a generator tap opened at
+	// the model's previous rate, which is exactly the editor/model mismatch this guard exists to
+	// prevent (#183 r5). The mid-run enable path was the same hole from another side (#183 r3).
+	//
+	// Two rounds of patching an approximation of "will this row be opened" is the signal to stop
+	// approximating. The honest predicate is simpler and needs no enumeration: a rejected edit
+	// means the editor and the model disagree about that row, and a project in that state should
+	// not start. The cost is that an untidy row blocks Start — but the message names the row and
+	// the field, and clearing the field is one keystroke, so it is a visible cost with an obvious
+	// remedy rather than a silent open at a rate nobody chose.
+	blocking := app.cfg_invalid.map('${it.name}: ${it.why}')
 	if blocking.len > 0 {
 		app.notify('not starting — ${blocking.join('; ')} (correct it in Configuration ▸ Buses, or clear the field)')
 		app.show_config = true
