@@ -100,8 +100,26 @@ fn (mut app App) commit_cfg() {
 		// than accepting a zero. Clearing this field deliberately says "no separate data phase",
 		// so it must write 0 — skipped, the previous rate would survive the edit that removed it,
 		// and the channel would go on opening with a data phase the dialog no longer shows.
+		//
+		// DIGITS OR NOTHING otherwise, the same rule transport.vendor_bitrate applies to the address — and
+		// the reason it exists there is this exact coercion. V's `.int()` takes a numeric prefix,
+		// so `2000000oops` became 2000000 and a wholly non-numeric entry became 0, which then
+		// selected the nominal-rate fallback: either way the channel opened with a data phase the
+		// operator had not typed, and a Save wrote that number into the project as though it had
+		// been chosen. A permissive copy of a rule the engine made strict is the drift this repo
+		// keeps paying for (codex #181 r2).
+		//
+		// A REJECTED VALUE LEAVES THE MODEL ALONE rather than resetting it to 0. Committing runs
+		// on every structural change and before every Save, so zeroing here would quietly discard
+		// a good stored rate the moment the buffer held a typo mid-edit.
 		dbr_txt := vgui.buf_str(b.dbitrate_buf).trim_space()
-		ch.data_bitrate = if dbr_txt == '' { 0 } else { dbr_txt.int() }
+		if dbr_txt == '' {
+			ch.data_bitrate = 0
+		} else if project.is_all_digits(dbr_txt) && dbr_txt.int() > 0 {
+			ch.data_bitrate = dbr_txt.int()
+		} else {
+			app.notify('${ch.name}: "${dbr_txt}" is not a data bitrate — digits only, in bits per second; keeping ${ch.data_bitrate}')
+		}
 		if ch.adapter == 'doip' {
 			ch.tester_addr = parse_u16_hex(vgui.buf_str(b.tester_buf), ch.tester_addr)
 			ch.ecu_addr = parse_u16_hex(vgui.buf_str(b.ecu_buf), ch.ecu_addr)

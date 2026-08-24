@@ -1193,3 +1193,82 @@ fn test_a_doip_row_marked_canfd_is_told_what_it_actually_is() {
 	assert w[0].contains('DoIP') && w[0].contains('does not apply')
 	assert !w[0].contains('refuses'), 'a DoIP channel is not a CAN backend that refuses FD'
 }
+
+// ---- codex #181 r2 -------------------------------------------------------------------------
+
+// A v1 project may carry the FD address form this release documents. Left to the digits-only
+// rule it was "not a number", so the whole spec was preserved verbatim AND another @rate was
+// appended — producing two rate separators, which the strict parser then refused. A legacy
+// project could not use the advertised form at all.
+fn test_a_v1_interface_carrying_both_phases_is_migrated() {
+	p := parse('
+channels:
+  - name: FD
+    interface: vector:1@500000/2000000
+') or {
+		assert false, 'must parse: ${err}'
+		return
+	}
+	c := p.channels[0]
+	assert c.adapter == 'vector'
+	assert c.bitrate == 500000, 'arbitration phase lifted, got ${c.bitrate}'
+	assert c.fd, 'the second rate is what marks the row CAN-FD'
+	assert c.data_bitrate == 2000000, 'data phase lifted, got ${c.data_bitrate}'
+	// And it recomposes to exactly one rate, not the doubled address that was refused.
+	assert c.iface_with_bitrate() == 'vector:1@500000/2000000'
+	assert c.iface_with_bitrate().count('@') == 1
+}
+
+// A malformed two-phase rate must still be PRESERVED rather than migrated, so the transport
+// parser refuses it with the evidence intact instead of the address quietly opening at a default.
+fn test_a_malformed_v1_fd_rate_is_still_preserved() {
+	p := parse('
+channels:
+  - name: bad
+    interface: vector:1@500000/oops
+') or {
+		assert false, 'must parse: ${err}'
+		return
+	}
+	c := p.channels[0]
+	assert !c.fd, 'a rate that is not a number must not be migrated into an FD configuration'
+	assert c.iface.contains('oops'), 'the evidence has to survive, got ${c.iface}'
+}
+
+// An FD row with no nominal rate opened CLASSIC while fd_wanted read the same unset value as the
+// 500 kbit/s default and reported the wire as CAN-FD — the project refusing a mixture on a wire
+// it was itself opening as the other half of that mixture.
+fn test_fd_survives_an_unset_nominal_rate() {
+	c := Channel{
+		adapter:      'vector'
+		iface:        'vector:1'
+		fd:           true
+		bitrate:      0
+		data_bitrate: 2000000
+	}
+	got := c.iface_with_bitrate()
+	assert got == 'vector:1@${default_bitrate}/2000000', 'got ${got}'
+	// The address and the conflict check must agree about what this row is.
+	assert fd_wanted(c) == 2000000
+}
+
+// The same, with no data rate either: FD at the default nominal rate, not a silent downgrade.
+fn test_fd_with_nothing_set_is_fd_at_the_default_rate() {
+	c := Channel{
+		adapter: 'vector'
+		iface:   'vector:1'
+		fd:      true
+		bitrate: 0
+	}
+	assert c.iface_with_bitrate() == 'vector:1@${default_bitrate}/${default_bitrate}'
+	assert fd_wanted(c) == default_bitrate
+}
+
+fn test_is_all_digits_refuses_a_partial_number() {
+	assert is_all_digits('2000000')
+	assert !is_all_digits('2000000oops')
+	assert !is_all_digits('oops')
+	assert !is_all_digits('')
+	assert !is_all_digits('2000 000')
+	assert !is_all_digits('-2000000')
+}

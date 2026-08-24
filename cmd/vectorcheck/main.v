@@ -39,6 +39,76 @@ struct Opts {
 	fd         bool
 	dbitrate   int
 	length     int
+	length_set bool // WHETHER --length was given: 0 is a legal DLC size and a user can type it
+}
+
+// FdOpts is what the FD flags actually MEAN, resolved once.
+//
+// ONE RESOLVER, because the ad-hoc version was wrong twice in one round — both times because a
+// second copy of the arithmetic drifted from the first. `--pair` computed an effective data rate
+// and `--channel` computed its own; the `--channel` one then decided BRS from whether --dbitrate
+// was EXPLICIT rather than from the rate it had just opened with, so the documented
+// `--channel N --fd --transmit` opened at 2 Mbit/s and sent without the bit-rate switch — an FD
+// frame carrying its payload at the arbitration rate, reported as a pass. Codex #181 r2.
+//
+// The rule that makes both call sites correct is that the EFFECTIVE data rate decides BRS, not
+// the provenance of the number.
+struct FdOpts {
+	fd    bool
+	dbr   int    // the data phase actually opened with; 0 when classic
+	brs   bool   // is there a faster phase to switch into
+	rate  string // the `@…` body of the address, both phases where there are two
+	len   int    // payload bytes
+	given bool   // --length was supplied, as opposed to defaulted
+}
+
+// resolve_fd answers the three questions every FD-capable mode asks, in one place.
+fn resolve_fd(o Opts) !FdOpts {
+	// EITHER FLAG ASKS FOR FD. `--dbitrate` alone says what the data phase should be, and would
+	// otherwise be accepted and silently ignored.
+	fd := o.fd || o.dbitrate > 0
+	dbr := if !fd {
+		0
+	} else if o.dbitrate > 0 {
+		o.dbitrate
+	} else {
+		2000000
+	}
+	// 64 bytes is the point of FD, so that is what its default proves; 8 remains the classic one.
+	mut ln := if o.length_set {
+		o.length
+	} else if fd {
+		64
+	} else {
+		8
+	}
+	// EXPLICIT ZERO IS NOT ABSENT. `--length 0` is a legal DLC size and usage() advertises it, so
+	// silently substituting the default reported a passing experiment for one that was never run.
+	// It is refused below by the same floor as 1, 2 and 3 — but it has to REACH that floor, which
+	// it could not while zero meant "unset" (codex #181 r2).
+	if ln !in transport.fd_lengths {
+		return error('--length ${ln} is not a payload size a DLC can express — use one of ${transport.fd_lengths}')
+	}
+	// EIGHT IS THIS TEST'S FLOOR, and it is a property of the FORMAT rather than of CAN: every
+	// frame carries a 4-byte sequence number so that loss, duplication and reordering are
+	// detectable per frame, and 4 marker bytes so a foreign frame of the right length cannot
+	// finish the run for us. 0..3 are legal DLC sizes this test cannot express itself in.
+	if ln < 8 {
+		return error('--length ${ln} is too short for this test: every frame carries a 4-byte sequence number and 4 marker bytes, so the smallest checkable payload is 8')
+	}
+	if !fd && ln > 8 {
+		return error('--length ${ln} needs --fd: a classic CAN frame carries at most 8 bytes')
+	}
+	return FdOpts{
+		fd:    fd
+		dbr:   dbr
+		// FROM THE EFFECTIVE RATE, which is the whole reason this struct exists. With an equal
+		// data rate there is no faster phase to switch into and the library refuses the flag.
+		brs:   fd && dbr != o.bitrate
+		rate:  if fd { '${o.bitrate}/${dbr}' } else { '${o.bitrate}' }
+		len:   ln
+		given: o.length_set
+	}
 }
 
 // nonempty is `?string` sugar so an unloaded library prints nothing rather than a blank label.
@@ -416,8 +486,9 @@ fn parse(args []string) !Opts {
 				i++
 				o = Opts{
 					...o
-					length: whole_int(args[i] or { return error('--length needs a value') },
+					length:     whole_int(args[i] or { return error('--length needs a value') },
 						'--length')!
+					length_set: true
 				}
 			}
 			'--channel' {
@@ -676,12 +747,11 @@ fn main() {
 	// FD HERE TOO, and not only in --pair: listening to an FD bus as classic CAN hears nothing
 	// decodable and reports an idle wire, which is the wrong answer to give about a bus that is
 	// busy. `--dbitrate` on its own means FD, as it does for --pair.
-	rate := if o.fd || o.dbitrate > 0 {
-		'${o.bitrate}/${if o.dbitrate > 0 { o.dbitrate } else { 2000000 }}'
-	} else {
-		'${o.bitrate}'
+	fo := resolve_fd(o) or {
+		eprintln('vectorcheck: ${err}')
+		exit(1)
 	}
-	spec := 'vector:${o.channel}@${rate}${mode}'
+	spec := 'vector:${o.channel}@${fo.rate}${mode}'
 	println('opening ${spec}${if o.transmit {
 		'  [CAN ACKNOWLEDGE]'
 	} else {
@@ -703,21 +773,21 @@ fn main() {
 		// that tests something other than what was asked for is a passing report about the wrong
 		// experiment (codex #181 r1).
 		//
-		// BRS only when the rates DIFFER, matching --pair: with an equal data rate there is no
-		// faster phase to switch into, and the library refuses the combination.
-		probe_fd := o.fd || o.dbitrate > 0
-		probe_brs := probe_fd && o.dbitrate > 0 && o.dbitrate != o.bitrate
+		// THROUGH THE SHARED RESOLVER, so the probe exercises the phase the port was opened with.
+		// Deciding BRS here from whether --dbitrate was EXPLICIT sent an FD frame at the
+		// arbitration rate for the documented `--channel N --fd --transmit` (codex #181 r2).
+		//
 		// 12 bytes with FD so the frame is one a classic controller could not have produced —
 		// eight would go out as an ordinary CAN frame with EDL set and prove less.
-		payload := if probe_fd {
+		payload := if fo.fd {
 			[]u8{len: 12, init: u8(0xDE + index)}
 		} else {
 			[u8(0xDE), 0xAD]
 		}
 		bus.send(transport.CanFrame{
 			id:   0x7FF
-			fd:   probe_fd
-			brs:  probe_brs
+			fd:   fo.fd
+			brs:  fo.brs
 			data: payload
 		}) or {
 			eprintln('vectorcheck: transmit failed: ${err}')
@@ -1037,6 +1107,12 @@ fn pair_test(o Opts) ! {
 	if a_row == b_row {
 		return error('--pair needs two different channels; a channel cannot acknowledge itself')
 	}
+	// RESOLVED AND VALIDATED BEFORE ANYTHING IS BORROWED. A refusal that arrives after two
+	// application-channel assignments have been rewritten is a refusal that has already changed
+	// somebody's bench, and it relies on the deferred restore to undo what it never needed to do.
+	fo := resolve_fd(o)!
+	want_fd, dbr, want_len := fo.fd, fo.dbr, fo.len
+	rate_part := fo.rate
 	// The application channels used are high ones, so an operator's own 1 and 2 assignments
 	// survive a test they may run on a configured bench.
 	a_app, b_app := 61, 62
@@ -1046,40 +1122,6 @@ fn pair_test(o Opts) ! {
 	}
 	borrowed << borrow(a_app, chans[a_row])!
 	borrowed << borrow(b_app, chans[b_row])!
-	// FD IS ASKED FOR EITHER WAY ROUND — `--fd` with the default data rate, or `--dbitrate` on its
-	// own, which says what the data phase should be and would be silently ignored without this.
-	want_fd := o.fd || o.dbitrate > 0
-	dbr := if o.dbitrate > 0 { o.dbitrate } else { 2000000 }
-	// 64 bytes is the point of FD, so that is what its default proves; 8 remains the classic
-	// default. A length the DLC cannot express is refused here rather than at the first send,
-	// because the whole run would be that one refusal repeated.
-	want_len := if o.length > 0 {
-		o.length
-	} else if want_fd {
-		64
-	} else {
-		8
-	}
-	if want_len !in transport.fd_lengths {
-		return error('--length ${want_len} is not a payload size a DLC can express — use one of ${transport.fd_lengths}')
-	}
-	// EIGHT IS THIS TEST'S FLOOR, and it is a property of the FORMAT rather than of CAN: every
-	// frame carries a 4-byte sequence number so that loss, duplication and reordering are
-	// detectable per frame, and 4 marker bytes so that a foreign frame of the right length cannot
-	// finish the run for us. 1, 2 and 3 are perfectly legal DLC sizes and this test simply cannot
-	// express itself in them.
-	//
-	// REFUSED, not clamped. Accepted, `--length 2` built a 2-byte payload and then wrote four
-	// bytes into it — a panic AFTER both ports were already on the bus, which skipped the
-	// deferred restore and left two borrowed application channels pointed at the test hardware.
-	// The one thing this tool must never do (codex #181 r1).
-	if want_len < 8 {
-		return error('--length ${want_len} is too short for this test: every frame carries a 4-byte sequence number and 4 marker bytes, so the smallest checkable payload is 8')
-	}
-	if !want_fd && want_len > 8 {
-		return error('--length ${want_len} needs --fd: a classic CAN frame carries at most 8 bytes')
-	}
-	rate_part := if want_fd { '${o.bitrate}/${dbr}' } else { '${o.bitrate}' }
 	println('TX  app ${a_app} -> ${chans[a_row].name}  (${chans[a_row].transceiver})')
 	println('RX  app ${b_app} -> ${chans[b_row].name}  (${chans[b_row].transceiver})')
 	if want_fd {
@@ -1123,7 +1165,7 @@ fn pair_test(o Opts) ! {
 				// payload goes out at the arbitration rate and the data phase — the thing being
 				// tested — is never exercised. A run that passed that way would prove 64-byte
 				// frames and nothing about the fast half.
-				brs:  want_fd && dbr != o.bitrate
+				brs:  fo.brs
 				data: test_payload(seq, want_len)
 			}
 			tx.send(f) or {

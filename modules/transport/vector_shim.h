@@ -1019,6 +1019,22 @@ static int ct_vector_decode_v4(ct_xlport port, uint32_t *id, uint8_t *len, uint8
 	/* THROUGH THE TABLE, not the raw nibble. Above eight bytes the DLC is a code for one of eight
 	 * sizes, so using it as a length would report a 64-byte frame as fifteen bytes long. */
 	n = ct_fd_len_from_dlc(ev.tagData.canRxOkMsg.dlc, *fd, *rtr);
+	/* EXCEPT FOR RTR, WHERE THE DLC IS THE MESSAGE. ct_fd_len_from_dlc answers vxlapi's own
+	 * question — how many data bytes this event carries — and for a remote request that is
+	 * correctly zero, because a remote frame has no payload. But this layer's CanFrame represents
+	 * an RTR's REQUESTED length as a zero-filled `data` of that length, which is what the classic
+	 * decoder returns and what ct_vector_write stamps on the way out. Zeroing it here made one
+	 * frame decode two different ways depending only on which interface version the receiving
+	 * port happened to be opened with: an RTR for 8 bytes came back as 8 on a classic port and 0
+	 * on an FD one, so a replay lost the requested length and wiretap could not match the echo to
+	 * the request it had recorded. The bytes are still never READ as payload — they are zero from
+	 * the memset (codex #181 r2).
+	 *
+	 * An FD frame cannot be remote at all (EDL with RTR is refused both here and by the library),
+	 * so this is always a classic DLC and cannot exceed 8. */
+	if (*rtr) {
+		n = ev.tagData.canRxOkMsg.dlc > 8 ? 8 : ev.tagData.canRxOkMsg.dlc;
+	}
 	if (n > CT_XL_CAN_MAX_DATA_LEN) n = CT_XL_CAN_MAX_DATA_LEN;
 	*len = n;
 	for (i = 0; i < (int)n; i++) data[i] = ev.tagData.canRxOkMsg.data[i];
