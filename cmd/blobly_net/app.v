@@ -703,6 +703,7 @@ fn (mut app App) rebuild_from_proj() {
 			mode:           ch.mode.str()
 			typ:            ch.typ
 			bitrate:        ch.bitrate
+			fd:             ch.fd
 			data_bitrate:   ch.data_bitrate
 			listen_only:    ch.listen_only
 			databases:      ch.databases.clone()

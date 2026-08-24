@@ -227,6 +227,14 @@ fn poll(mut b transport.Bus, ms int) !(transport.CanFrame, bool) {
 // phase — which is exactly what an under-terminated FD bus produces — pass as a good frame,
 // and the data phase is the part FD adds.
 fn test_payload(seq u32, len int) []u8 {
+	// GUARDED HERE TOO, not only at the flag. The caller validates `--length`, and that validation
+	// is one edit away from being the only thing between a short payload and four unconditional
+	// writes into it — which panicked with both ports already open on the bus, skipping the
+	// deferred restore of the borrowed channels. A helper that indexes fixed offsets should refuse
+	// a buffer that cannot hold them rather than trust its caller (codex #181 r1).
+	if len < 8 {
+		return []u8{len: if len < 0 { 0 } else { len }}
+	}
 	mut d := []u8{len: len}
 	d[0] = u8(seq >> 24)
 	d[1] = u8(seq >> 16)
@@ -258,6 +266,12 @@ fn is_test_frame(f transport.CanFrame, want_fd bool, want_len int) bool {
 		return false
 	}
 	if f.data.len != want_len {
+		return false
+	}
+	// The same floor as test_payload's, and reached the same way: this reads four sequence bytes
+	// unconditionally, so a frame shorter than the header it is about to parse is not ours by
+	// definition rather than a panic.
+	if f.data.len < 8 {
 		return false
 	}
 	// EVERY BYTE against what was built for this sequence number. The alternative — checking the
@@ -683,7 +697,29 @@ fn main() {
 		// FAILS THE COMMAND. Printing and carrying on meant unrelated traffic could make the
 		// run exit successfully while the transmit the flag asked for never happened — a
 		// usable-looking setup report for a channel that cannot send.
-		bus.send(transport.CanFrame{ id: 0x7FF, data: [u8(0xDE), 0xAD] }) or {
+		// AS THE FLAG SAID IT WOULD. With `--fd` this opened a V4 port and then probed it with a
+		// CLASSIC frame, so the command reported success having exercised none of the data phase
+		// — while the help promised `--fd` sends FD frames and applies to `--channel`. A probe
+		// that tests something other than what was asked for is a passing report about the wrong
+		// experiment (codex #181 r1).
+		//
+		// BRS only when the rates DIFFER, matching --pair: with an equal data rate there is no
+		// faster phase to switch into, and the library refuses the combination.
+		probe_fd := o.fd || o.dbitrate > 0
+		probe_brs := probe_fd && o.dbitrate > 0 && o.dbitrate != o.bitrate
+		// 12 bytes with FD so the frame is one a classic controller could not have produced —
+		// eight would go out as an ordinary CAN frame with EDL set and prove less.
+		payload := if probe_fd {
+			[]u8{len: 12, init: u8(0xDE + index)}
+		} else {
+			[u8(0xDE), 0xAD]
+		}
+		bus.send(transport.CanFrame{
+			id:   0x7FF
+			fd:   probe_fd
+			brs:  probe_brs
+			data: payload
+		}) or {
 			eprintln('vectorcheck: transmit failed: ${err}')
 			exit(1)
 		}
@@ -1026,6 +1062,19 @@ fn pair_test(o Opts) ! {
 	}
 	if want_len !in transport.fd_lengths {
 		return error('--length ${want_len} is not a payload size a DLC can express — use one of ${transport.fd_lengths}')
+	}
+	// EIGHT IS THIS TEST'S FLOOR, and it is a property of the FORMAT rather than of CAN: every
+	// frame carries a 4-byte sequence number so that loss, duplication and reordering are
+	// detectable per frame, and 4 marker bytes so that a foreign frame of the right length cannot
+	// finish the run for us. 1, 2 and 3 are perfectly legal DLC sizes and this test simply cannot
+	// express itself in them.
+	//
+	// REFUSED, not clamped. Accepted, `--length 2` built a 2-byte payload and then wrote four
+	// bytes into it — a panic AFTER both ports were already on the bus, which skipped the
+	// deferred restore and left two borrowed application channels pointed at the test hardware.
+	// The one thing this tool must never do (codex #181 r1).
+	if want_len < 8 {
+		return error('--length ${want_len} is too short for this test: every frame carries a 4-byte sequence number and 4 marker bytes, so the smallest checkable payload is 8')
 	}
 	if !want_fd && want_len > 8 {
 		return error('--length ${want_len} needs --fd: a classic CAN frame carries at most 8 bytes')

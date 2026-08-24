@@ -36,12 +36,20 @@ fn (app &App) open_transport(iface string) !transport.Bus {
 // This one forgot listen_only, and every Vector channel a project had marked listen-only opened
 // able to acknowledge — the promise that backend exists to keep, lost between two structs with
 // the same field names. Anything added here is added once.
+// EVERY FIELD iface_with_bitrate READS, which is the contract this projection has to keep and
+// the one it silently broke. It exists to hand that function a Channel; a field it composes the
+// address from and this does not copy becomes a DEFAULT — and `fd` defaults to false, so a
+// CAN-FD row was projected into a classic one and opened `vector:<n>@<rate>` with no data phase.
+// Every FD frame was then refused by VectorBus.send, on the GUI path only, because the headless
+// runner passes real project rows and never comes through here (codex #181 r1).
 fn (c Chan) for_open() project.Channel {
 	return project.Channel{
-		iface:       c.iface
-		adapter:     c.adapter
-		bitrate:     c.bitrate
-		listen_only: c.listen_only
+		iface:        c.iface
+		adapter:      c.adapter
+		bitrate:      c.bitrate
+		fd:           c.fd
+		data_bitrate: c.data_bitrate
+		listen_only:  c.listen_only
 	}
 }
 
@@ -108,13 +116,20 @@ fn (app &App) runtime_rows() []project.Channel {
 	mut rows := []project.Channel{}
 	for c in app.chans {
 		rows << project.Channel{
-			name:        c.name
-			adapter:     c.adapter
-			iface:       c.iface
-			typ:         c.typ
-			bitrate:     c.bitrate
-			listen_only: c.listen_only
-			enabled:     c.enabled
+			name:    c.name
+			adapter: c.adapter
+			iface:   c.iface
+			typ:     c.typ
+			bitrate: c.bitrate
+			// THE SAME OMISSION AS for_open's, with a different consequence: these rows are what
+			// destination_conflicts and fd_capability_warnings are asked about, so a dropped `fd`
+			// does not merely open the wrong thing — it makes both checks answer as though no row
+			// in the run were CAN-FD at all. A wire asked to be classic AND FD passed, and the
+			// warning about an FD row on a backend that refuses FD could never fire in the GUI.
+			fd:           c.fd
+			data_bitrate: c.data_bitrate
+			listen_only:  c.listen_only
+			enabled:      c.enabled
 		}
 	}
 	return rows
