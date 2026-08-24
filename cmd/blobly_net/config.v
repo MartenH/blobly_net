@@ -65,6 +65,8 @@ fn (mut app App) sync_cfg_bufs() {
 			network_buf:      mkbuf(ch.network, 48)
 			address_buf:      mkbuf(ch.address, 64)
 			bitrate_buf:      mkbuf('${ch.bitrate}', 12)
+			dbitrate_buf:     mkbuf(if ch.data_bitrate > 0 { '${ch.data_bitrate}' } else { '' },
+				12)
 			manifest_buf:     mkbuf(ch.manifest, 128)
 			dbc_buf:          mkbuf('', 128)
 			tester_buf:       mkbuf('0x${ch.tester_addr:X}', 12)
@@ -94,6 +96,12 @@ fn (mut app App) commit_cfg() {
 		if br > 0 {
 			ch.bitrate = br
 		}
+		// EMPTY IS A VALUE HERE, unlike the nominal rate above, which keeps its old figure rather
+		// than accepting a zero. Clearing this field deliberately says "no separate data phase",
+		// so it must write 0 — skipped, the previous rate would survive the edit that removed it,
+		// and the channel would go on opening with a data phase the dialog no longer shows.
+		dbr_txt := vgui.buf_str(b.dbitrate_buf).trim_space()
+		ch.data_bitrate = if dbr_txt == '' { 0 } else { dbr_txt.int() }
 		if ch.adapter == 'doip' {
 			ch.tester_addr = parse_u16_hex(vgui.buf_str(b.tester_buf), ch.tester_addr)
 			ch.ecu_addr = parse_u16_hex(vgui.buf_str(b.ecu_buf), ch.ecu_addr)

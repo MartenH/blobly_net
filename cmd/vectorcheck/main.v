@@ -36,6 +36,9 @@ struct Opts {
 	seconds    int
 	transmit   bool
 	modecheck  bool
+	fd         bool
+	dbitrate   int
+	length     int
 }
 
 // nonempty is `?string` sugar so an unloaded library prints nothing rather than a blank label.
@@ -46,10 +49,7 @@ fn nonempty(s string) ?string {
 // whole_int refuses a token that is only PARTLY a number. V's `.int()` takes a numeric prefix
 // and maps anything else to zero, so `--assign 1x` silently selected row 1 and `--assign oops`
 // selected row 0 — and --assign permanently rewrites an application-channel assignment.
-// is_test_frame recognises a frame this tool sent: the marker bytes, and an id that agrees with
-// the sequence number in the payload. Shared by the main loop and the final drain, because a
-// drain that accepts anything eight bytes long will happily pass the test on other people's
-// traffic.
+//
 // borrow_channels takes the application channels a test needs, remembering what they pointed at
 // so they can be handed back.
 //
@@ -221,22 +221,51 @@ fn poll(mut b transport.Bus, ms int) !(transport.CanFrame, bool) {
 	return f, true
 }
 
-fn is_test_frame(f transport.CanFrame) bool {
+// test_payload builds the payload for sequence `seq` at `len` bytes: the sequence number, the
+// four markers, and then every remaining byte derived from the sequence so that NO byte of a
+// 64-byte FD frame is unchecked. A tail of constant filler would let corruption in the data
+// phase — which is exactly what an under-terminated FD bus produces — pass as a good frame,
+// and the data phase is the part FD adds.
+fn test_payload(seq u32, len int) []u8 {
+	mut d := []u8{len: len}
+	d[0] = u8(seq >> 24)
+	d[1] = u8(seq >> 16)
+	d[2] = u8(seq >> 8)
+	d[3] = u8(seq)
+	if len > 4 {
+		markers := [u8(0xA5), 0x5A, 0xC3, 0x3C]
+		for i in 4 .. len {
+			d[i] = if i < 8 { markers[i - 4] } else { u8(seq) ^ u8(i) }
+		}
+	}
+	return d
+}
+
+// is_test_frame recognises a frame this tool sent, in the format it was asked to send.
+//
+// THE FORMAT IS PART OF THE ASSERTION, which is why the expected shape is passed in rather than
+// assumed: a link that carries our 64-byte FD frame back as a classic 8-byte one has not carried
+// it, and a run that accepted either would report a working FD wire on a bus that quietly fell
+// back. `want_fd` and `want_len` are what the transmit side was configured for.
+fn is_test_frame(f transport.CanFrame, want_fd bool, want_len int) bool {
 	// ALL FOUR marker bytes. Checking two of them let a payload corrupted in byte 5 or 6 pass as
 	// a good frame, which is the one thing a link test must not do: the markers are there to
 	// notice corruption, and half of them notice half of it.
-	// THE FORMAT TOO, not only the bytes. This test sends a standard classic data frame; a
-	// remote, extended or FD frame carrying the same id and payload is a different message on
-	// the wire, and accepting it would report a link that faithfully carries something we never
-	// sent.
-	if f.extended || f.rtr || f.fd {
+	// THE FORMAT TOO, not only the bytes. A remote or extended frame carrying the same id and
+	// payload is a different message on the wire, and accepting it would report a link that
+	// faithfully carries something we never sent.
+	if f.extended || f.rtr || f.fd != want_fd {
 		return false
 	}
-	if f.data.len != 8 || f.data[4] != 0xA5 || f.data[5] != 0x5A || f.data[6] != 0xC3
-		|| f.data[7] != 0x3C {
+	if f.data.len != want_len {
 		return false
 	}
+	// EVERY BYTE against what was built for this sequence number. The alternative — checking the
+	// markers and trusting the rest — leaves 56 of a 64-byte FD payload unexamined.
 	seq := (u32(f.data[0]) << 24) | (u32(f.data[1]) << 16) | (u32(f.data[2]) << 8) | u32(f.data[3])
+	if f.data != test_payload(seq, want_len) {
+		return false
+	}
 	return f.id == 0x100 + (seq % 8)
 }
 
@@ -285,6 +314,11 @@ fn usage() {
 	eprintln('  --seconds   how long to listen (default 5)')
 	eprintln('  --transmit  ALSO go on the bus able to acknowledge, and send one frame.')
 	eprintln('              Leave it off against a live target until the bitrate is confirmed.')
+	eprintln('  --fd        CAN-FD: open both ends with a data phase and send FD frames.')
+	eprintln('              Applies to --pair and --channel.')
+	eprintln('  --dbitrate  CAN-FD data-phase bits/s (default 2000000). Implies --fd.')
+	eprintln('  --length    payload bytes for --pair (default 8, or 64 with --fd). Must be a')
+	eprintln('              size a DLC can express: 0-8, 12, 16, 20, 24, 32, 48, 64.')
 }
 
 fn parse(args []string) !Opts {
@@ -348,6 +382,28 @@ fn parse(args []string) !Opts {
 				o = Opts{
 					...o
 					transmit: true
+				}
+			}
+			'--fd' {
+				o = Opts{
+					...o
+					fd: true
+				}
+			}
+			'--dbitrate' {
+				i++
+				o = Opts{
+					...o
+					dbitrate: whole_int(args[i] or { return error('--dbitrate needs a value') },
+						'--dbitrate')!
+				}
+			}
+			'--length' {
+				i++
+				o = Opts{
+					...o
+					length: whole_int(args[i] or { return error('--length needs a value') },
+						'--length')!
 				}
 			}
 			'--channel' {
@@ -603,7 +659,15 @@ fn main() {
 		println('application channel ${o.channel} -> ${c.name}  (${c.transceiver}, serial ${c.serial})')
 	}
 	mode := if o.transmit { '' } else { ',silent' }
-	spec := 'vector:${o.channel}@${o.bitrate}${mode}'
+	// FD HERE TOO, and not only in --pair: listening to an FD bus as classic CAN hears nothing
+	// decodable and reports an idle wire, which is the wrong answer to give about a bus that is
+	// busy. `--dbitrate` on its own means FD, as it does for --pair.
+	rate := if o.fd || o.dbitrate > 0 {
+		'${o.bitrate}/${if o.dbitrate > 0 { o.dbitrate } else { 2000000 }}'
+	} else {
+		'${o.bitrate}'
+	}
+	spec := 'vector:${o.channel}@${rate}${mode}'
 	println('opening ${spec}${if o.transmit {
 		'  [CAN ACKNOWLEDGE]'
 	} else {
@@ -702,6 +766,13 @@ fn modecheck(o Opts) ! {
 	// happened, with the driver probe beside it passing vacuously on the same unopenable string.
 	alt_rate := if o.bitrate == 250000 { 500000 } else { 250000 }
 	other_rate := 'vector:${ch}@${alt_rate},silent'
+	// THE PROTOCOL IS PINNED TOO, and it is the strictest of the three: the mode and the rate are
+	// settings on a channel, while the interface version a port was opened with decides how the
+	// bytes on its receive queue are laid out. A sibling that guessed wrong does not disagree
+	// about a setting, it decodes every frame through the wrong struct — so this asks the driver
+	// the same question the other two ask, on the one bench that can answer it.
+	as_fd := 'vector:${ch}@${o.bitrate}/2000000,silent'
+	other_dbr := 'vector:${ch}@${o.bitrate}/4000000,silent'
 	println('modecheck: application channel ${ch} at ${o.bitrate}, listen-only')
 
 	pre := transport.wire_pin_clash(normal)
@@ -717,14 +788,19 @@ fn modecheck(o Opts) ! {
 	mode_clash := transport.wire_pin_clash(normal)
 	rate_clash := transport.wire_pin_clash(other_rate)
 	agrees := transport.wire_pin_clash(silent)
+	fd_clash := transport.wire_pin_clash(as_fd)
 	println('  predicted, normal open : ${said(mode_clash)}')
 	println('  predicted, other rate  : ${said(rate_clash)}')
+	println('  predicted, as CAN-FD   : ${said(fd_clash)}')
 	println('  predicted, same again  : ${said(agrees)}')
 	if mode_clash == '' {
 		failures << 'a normal open was predicted to be fine while a silent port held the channel'
 	}
 	if rate_clash == '' {
 		failures << 'a different bitrate was predicted to be fine while a port held the channel'
+	}
+	if fd_clash == '' {
+		failures << 'a CAN-FD open was predicted to be fine while a classic port held the channel'
 	}
 	if agrees != '' {
 		failures << 'an open matching the held port was predicted to clash: ${agrees}'
@@ -749,6 +825,15 @@ fn modecheck(o Opts) ! {
 	} else {
 		println('  driver refused rate    : ${err}')
 	}
+	// SILENT EITHER WAY, so this one needs no --transmit: both addresses ask for listen-only, and
+	// the only thing being changed is the protocol. If the driver ever allowed it, the port that
+	// got through would still be unable to acknowledge.
+	if mut b := transport.open(as_fd) {
+		b.close()
+		failures << 'the driver ALLOWED a CAN-FD port on a channel configured for classic CAN — the protocol is not pinned, and a sibling would be decoding the wrong event layout'
+	} else {
+		println('  driver refused CAN-FD  : ${err}')
+	}
 	// A second port asking for what the channel already IS must still work: this is every
 	// ordinary run, where a monitor and its transmit taps all open the same wire.
 	mut sibling := transport.open(silent) or {
@@ -769,6 +854,45 @@ fn modecheck(o Opts) ! {
 		failures << 'every port closed and the channel still read as pinned: ${left}'
 	} else {
 		println('  released, channel free')
+	}
+
+	// 4. THE OTHER HALF OF THE FD PIN. Above, a classic-held channel refused an FD port; this is
+	//    the case where both sides agree the wire is FD and disagree about its DATA phase (-1012).
+	//    It needs its own held port, because the question only exists once something FD is open.
+	//    Both addresses are silent, so this stays safe against a live bus.
+	mut fd_held := transport.open(as_fd) or {
+		// NOT A FAILURE. A library without the FD entry points refuses this by design, and so does
+		// a channel whose transceiver cannot do FD — neither says anything about the pin.
+		println('  CAN-FD not available on this channel, data-phase pin NOT CHECKED: ${err}')
+		return report_modecheck(failures)
+	}
+	println('  held  ${as_fd}')
+	dbr_clash := transport.wire_pin_clash(other_dbr)
+	println('  predicted, other dphase: ${said(dbr_clash)}')
+	if dbr_clash == '' {
+		failures << 'a second CAN-FD data bitrate was predicted to be fine while an FD port held the channel'
+	}
+	if transport.wire_pin_clash(as_fd) != '' {
+		failures << 'an FD open matching the held FD port was predicted to clash'
+	}
+	if mut b := transport.open(other_dbr) {
+		b.close()
+		failures << 'the driver ALLOWED a second CAN-FD data bitrate on a channel already configured'
+	} else {
+		println('  driver refused dphase  : ${err}')
+	}
+	// And a classic port on an FD-held channel — the refusal above, the other way round.
+	if mut b := transport.open(silent) {
+		b.close()
+		failures << 'the driver ALLOWED a classic port on a channel configured for CAN-FD'
+	} else {
+		println('  driver refused classic : ${err}')
+	}
+	fd_held.close()
+	if fd_left := nonempty(transport.wire_pin_clash(as_fd)) {
+		failures << 'every FD port closed and the channel still read as pinned: ${fd_left}'
+	} else {
+		println('  released, FD channel free')
 	}
 	return report_modecheck(failures)
 }
@@ -886,13 +1010,42 @@ fn pair_test(o Opts) ! {
 	}
 	borrowed << borrow(a_app, chans[a_row])!
 	borrowed << borrow(b_app, chans[b_row])!
+	// FD IS ASKED FOR EITHER WAY ROUND — `--fd` with the default data rate, or `--dbitrate` on its
+	// own, which says what the data phase should be and would be silently ignored without this.
+	want_fd := o.fd || o.dbitrate > 0
+	dbr := if o.dbitrate > 0 { o.dbitrate } else { 2000000 }
+	// 64 bytes is the point of FD, so that is what its default proves; 8 remains the classic
+	// default. A length the DLC cannot express is refused here rather than at the first send,
+	// because the whole run would be that one refusal repeated.
+	want_len := if o.length > 0 {
+		o.length
+	} else if want_fd {
+		64
+	} else {
+		8
+	}
+	if want_len !in transport.fd_lengths {
+		return error('--length ${want_len} is not a payload size a DLC can express — use one of ${transport.fd_lengths}')
+	}
+	if !want_fd && want_len > 8 {
+		return error('--length ${want_len} needs --fd: a classic CAN frame carries at most 8 bytes')
+	}
+	rate_part := if want_fd { '${o.bitrate}/${dbr}' } else { '${o.bitrate}' }
 	println('TX  app ${a_app} -> ${chans[a_row].name}  (${chans[a_row].transceiver})')
 	println('RX  app ${b_app} -> ${chans[b_row].name}  (${chans[b_row].transceiver})')
+	if want_fd {
+		println('CAN-FD: arbitration ${o.bitrate}, data ${dbr}, ${want_len}-byte payloads')
+		// SAID OUT LOUD, because it is the difference between a backend bug and a bench one. A
+		// CAN bus wants 120 ohm at BOTH ends; one resistor is survivable at 500 kbit/s and is the
+		// first thing to suspect when an FD data phase at 2 Mbit/s or more starts producing
+		// malformed frames, since the reflections it leaves scale with the bit rate.
+		println('   (FD is sensitive to termination — 120 ohm at BOTH ends of the wire)')
+	}
 	println('bitrate ${o.bitrate}, both ends able to acknowledge — transmitting for ${o.seconds}s')
 
-	mut tx := transport.open('vector:${a_app}@${o.bitrate}')!
+	mut tx := transport.open('vector:${a_app}@${rate_part}')!
 	defer { tx.close() }
-	mut rx := transport.open('vector:${b_app}@${o.bitrate}')!
+	mut rx := transport.open('vector:${b_app}@${rate_part}')!
 	defer { rx.close() }
 
 	// A COUNTER IN THE PAYLOAD, not one frame repeated. It makes every frame checkable rather
@@ -916,7 +1069,13 @@ fn pair_test(o Opts) ! {
 			seq := u32(n_sent)
 			f := transport.CanFrame{
 				id:   0x100 + u32(n_sent % 8) // eight ids, so a stuck mailbox shows up
-				data: [u8(seq >> 24), u8(seq >> 16), u8(seq >> 8), u8(seq), 0xA5, 0x5A, 0xC3, 0x3C]
+				fd:   want_fd
+				// BRS WITH FD, always, when the two rates differ: without the bit-rate switch the
+				// payload goes out at the arbitration rate and the data phase — the thing being
+				// tested — is never exercised. A run that passed that way would prove 64-byte
+				// frames and nothing about the fast half.
+				brs:  want_fd && dbr != o.bitrate
+				data: test_payload(seq, want_len)
 			}
 			tx.send(f) or {
 				// A FULL QUEUE IS THE WIRE, not a fault: at saturation the bus is the slowest
@@ -937,7 +1096,7 @@ fn pair_test(o Opts) ! {
 			if !ok {
 				break
 			}
-			if !is_test_frame(got) {
+			if !is_test_frame(got, want_fd, want_len) {
 				n_bad++
 				continue
 			}
@@ -963,7 +1122,7 @@ fn pair_test(o Opts) ! {
 		// THE SAME CHECK the main loop applies. Counting any eight-byte frame let unrelated
 		// traffic on a live bus finish the test for us — PAIR TEST PASSED on somebody else's
 		// frames, which is the one result this tool must never print.
-		if !is_test_frame(got) {
+		if !is_test_frame(got, want_fd, want_len) {
 			// COUNTED, as the main loop counts it. At saturation most frames arrive in this
 			// drain, so a corrupted one landing here was silently skipped and the run reported
 			// zero malformed — the tail is where the evidence mostly is.

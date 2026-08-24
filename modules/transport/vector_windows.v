@@ -2,11 +2,13 @@
 // implementing the platform-agnostic `Bus` interface. Windows-only (`_windows.v` gates
 // compilation). vxlapi64.dll is loaded at RUNTIME via vector_shim.h — no SDK, no import lib.
 //
-// Interface string: `vector:<channel>[@<bitrate>][,silent]`
+// Interface string: `vector:<channel>[@<bitrate>[/<data bitrate>]][,silent]`
 //   channel : the APPLICATION channel as shown in Vector Hardware Configuration, from 1.
 //             Assign hardware to it there once; opening an unassigned channel registers
 //             `blobly_net` so it appears in that dialog, and says so.
 //   bitrate : bits/s (default 500000)      e.g. vector:1@250000
+//   /<rate> : CAN-FD, with that data-phase rate  e.g. vector:1@500000/2000000
+//             Its presence is what asks for FD; `@500000/500000` is FD with no bit-rate switch.
 //   ,silent : listen only — the transceiver never acknowledges, so the channel cannot
 //             disturb the bus. See the note below; on a live vehicle, start here.
 //
@@ -17,10 +19,17 @@
 // project-level `listen_only:` flag stops US transmitting; it does not stop the transceiver
 // acknowledging, because until this backend nothing below the GUI could.
 //
-// CLASSIC CAN ONLY. CAN-FD needs the V4 interface, xlCanFdSetConfiguration and a different
-// event structure; an FD frame is refused here rather than truncated, exactly as the PCAN and
-// Kvaser backends do. A VN1630A is FD-capable hardware, so this is a real limitation, not an
-// absent one.
+// CAN-FD is supported, and it is a property of the ADDRESS rather than of a frame: the data
+// bitrate in `@<arb>/<data>` is what selects it, because the payload phase has to be configured
+// before the channel goes on the bus and `open` is all the backend is given. An FD address opens
+// the port at XL interface V4 and configures both phases with xlCanFdSetConfiguration; a classic
+// address opens V3 exactly as before. The two are not interchangeable — a V4 port must be read
+// with xlCanReceive and written with xlCanTransmitEx — so which one a port is travels with it in
+// `VectorBus.fd` and is pinned across the ports of one channel like the bitrate is.
+//
+// An FD-configured channel still carries CLASSIC frames: `fd` on the frame sets EDL, `brs` the
+// bit-rate switch. What is refused is an FD frame on a CLASSIC channel, because there is nothing
+// truthful to do with it — see send().
 //
 // SEVERAL PORTS PER CHANNEL is the normal case, not an edge one: the monitor opens its own and
 // each tapped transmit path opens another, on the same wire. XL grants initialisation access to
@@ -38,6 +47,11 @@
 // transceivers, 43,773 frames sent and received with none malformed and the sequence numbers
 // checked, at bus saturation for 500 kbit/s. `cmd/vectorcheck --selftest` repeats the same proof
 // on Vector's software virtual channels, which need no hardware and touch no real bus.
+//
+// CAN-FD verified on the same adapter (2026-08-24): 64-byte payloads with BRS at data phases of
+// 2, 4, 5 and 8 Mbit/s, every byte of every payload checked against what was sent — 100%
+// arrived, none malformed. `--modecheck` proves the protocol pin in all four directions against
+// the driver. The table is in docs/windows_can_hardware.md.
 module transport
 
 import time
@@ -45,9 +59,10 @@ import time
 #include "vector_shim.h"
 
 fn C.ct_vector_load() int
-fn C.ct_vector_open(u32, u32, int, &int, &u64, &voidptr, &u64) int
+fn C.ct_vector_open(u32, u32, int, &int, &u64, &voidptr, &u64, int, u32, u32, u32, u32) int
 fn C.ct_vector_write(int, u64, u32, u8, &u8, int, int) int
-fn C.ct_vector_read(int, voidptr, &u32, &u8, &u8, &int, &int, int, &int) int
+fn C.ct_vector_write_fd(int, u64, u32, u8, &u8, int, int, int, int, &u8) int
+fn C.ct_vector_read(int, voidptr, &u32, &u8, &u8, &int, &int, int, &int, int, &int, &int, &int) int
 fn C.ct_vector_close(int, u64, u64, voidptr)
 fn C.ct_vector_present(u32) int
 fn C.ct_vector_diag() int
@@ -76,6 +91,11 @@ mut:
 	gen    u64 // which open of this channel we are; see the generation note in vector_shim.h
 	notify voidptr
 	silent bool
+	// WHICH INTERFACE VERSION THIS PORT WAS OPENED WITH, and therefore which of the two event
+	// encodings its queue carries. Not a preference that send/recv could reconsider per frame:
+	// reading a V4 queue with xlReceive decodes the first 48 bytes of a 128-byte event as if they
+	// were a classic one. Set once at open and never written again.
+	fd bool
 	// last chip-state busStatus captured by recv from the event stream (-1 = none yet).
 	// health() only REQUESTS a report; the reply rides the queue the reader is already
 	// emptying — the drain-and-hunt alternative lost data frames mid-run (self-review).
@@ -92,10 +112,13 @@ pub fn open_vector(spec string) !&VectorBus {
 	mut notify := unsafe { nil }
 	mut gen := u64(0)
 	sil := if s.silent { 1 } else { 0 }
+	isfd := if s.fd { 1 } else { 0 }
+	t1, t2, sjw := vector_fd_segments(s.bitrate, s.data_bitrate)
 	// 0-BASED at the API, 1-based in the spelling: Vector Hardware Configuration numbers the
 	// application channels from 1 and the operator reads the interface string against that
 	// dialog, so the conversion belongs here rather than in their head.
-	mut rc := C.ct_vector_open(u32(s.channel - 1), u32(s.bitrate), sil, &port, &mask, &notify, &gen)
+	mut rc := C.ct_vector_open(u32(s.channel - 1), u32(s.bitrate), sil, &port, &mask, &notify,
+		&gen, isfd, u32(s.data_bitrate), u32(t1), u32(t2), u32(sjw))
 	// WAIT OUT A WINDING-DOWN RUN. -1009 means the previous run's ports are still closing, which
 	// is what an immediate Stop/Start looks like from here; it clears itself when the last one
 	// goes. Bounded, because a port that never closes must not hang the open forever.
@@ -104,7 +127,8 @@ pub fn open_vector(spec string) !&VectorBus {
 			break
 		}
 		time.sleep(10 * time.millisecond)
-		rc = C.ct_vector_open(u32(s.channel - 1), u32(s.bitrate), sil, &port, &mask, &notify, &gen)
+		rc = C.ct_vector_open(u32(s.channel - 1), u32(s.bitrate), sil, &port, &mask, &notify,
+			&gen, isfd, u32(s.data_bitrate), u32(t1), u32(t2), u32(sjw))
 	}
 	if rc == -1009 {
 		return error('Vector channel ${s.channel} is still being released by the previous run — try again in a moment')
@@ -155,6 +179,20 @@ pub fn open_vector(spec string) !&VectorBus {
 	if rc == -1005 {
 		return error('Vector channel ${s.channel} is already open at a different bitrate by this project — one wire cannot run at two rates')
 	}
+	if rc == -1010 {
+		return error('this vxlapi build has no CAN-FD support (xlCanFdSetConfiguration, xlCanTransmitEx and xlCanReceive are all needed) — update the Vector XL Driver Library, or address this channel as classic CAN by dropping the "/${s.data_bitrate}" from its bitrate')
+	}
+	// The FD half of -1004/-1005: same rule, same reason, and told apart because the two send an
+	// operator to different places — one is a protocol disagreement between rows, the other a
+	// data-rate one between rows that already agree the wire is FD.
+	if rc == -1011 {
+		has := if s.fd { 'classic CAN' } else { 'CAN-FD' }
+		want := if s.fd { 'CAN-FD' } else { 'classic CAN' }
+		return error('Vector channel ${s.channel} is already open as ${has} by this project and cannot also be ${want} — the protocol belongs to the ports open on this channel, so make every channel on this wire agree, or Stop and Start to change it')
+	}
+	if rc == -1012 {
+		return error('Vector channel ${s.channel} is already open with a different CAN-FD data bitrate by this project — one wire cannot run two data phases')
+	}
 	if rc == -1002 {
 		return error('this vxlapi build has no xlCanSetChannelOutput, so the transceiver mode can be neither set nor read — refusing rather than guessing whether this channel would acknowledge. Update the Vector XL Driver Library.')
 	}
@@ -169,6 +207,7 @@ pub fn open_vector(spec string) !&VectorBus {
 		gen:    gen
 		notify: notify
 		silent: s.silent
+		fd:     s.fd
 	}
 }
 
@@ -180,16 +219,34 @@ pub fn (mut b VectorBus) send(f CanFrame) ! {
 	if b.silent {
 		return error('Vector: this channel is open in silent mode and cannot transmit (id 0x${f.id:X})')
 	}
-	if f.fd {
-		return error('Vector: CAN-FD frames are not supported by this backend yet (id 0x${f.id:X}, ${f.data.len} bytes)')
+	// THE CHANNEL'S PROTOCOL, not the frame's wish. An FD frame on a channel configured for
+	// classic CAN has nowhere truthful to go: the port is open at interface V3, the transceiver
+	// was never given a data phase, and the alternatives to refusing are to truncate the payload
+	// (a different message, on the wire, reported as this one) or to send it as classic at the
+	// arbitration rate (which is not what the caller asked for either). Named as a channel
+	// configuration problem, because that is what fixes it.
+	if f.fd && !b.fd {
+		return error('Vector: this channel is open as classic CAN and cannot send a CAN-FD frame (id 0x${f.id:X}, ${f.data.len} bytes) — give its address a data bitrate, as vector:<n>@500000/2000000, or set the channel type to canfd in the project')
+	}
+	if f.brs && !f.fd {
+		// The library's XL_ERR_EDL_NOT_SET, refused here where it can be explained: the bit-rate
+		// switch is what an FD frame does BETWEEN its phases, so a classic frame has no phase to
+		// switch to.
+		return error('Vector: brs is set on a frame that is not FD (id 0x${f.id:X}) — the bit-rate switch belongs to a CAN-FD frame')
 	}
 	// REFUSED, not truncated. `vector:` is a vendor interface, so clamps_to_classic() is false
 	// and wire_frame() hands the trace the frame AS ASKED — nine bytes recorded, eight on the
 	// wire, and an echo that can never match its own record. The vendor drivers reject a
 	// malformed frame; this backend must not quietly turn that into a valid-but-different
 	// transmission.
-	if f.data.len > 8 {
+	//
+	// STILL 8 FOR A NON-FD FRAME on an FD channel: the limit belongs to the frame format, not to
+	// the channel. A 12-byte payload with `fd` unset is as malformed on an FD wire as anywhere.
+	if !f.fd && f.data.len > 8 {
 		return error('Vector: ${f.data.len} bytes is not a classic CAN frame (id 0x${f.id:X}) — 8 is the maximum without FD')
+	}
+	if f.data.len > 64 {
+		return error('Vector: ${f.data.len} bytes does not fit a CAN-FD frame (id 0x${f.id:X}) — 64 is the maximum')
 	}
 	// THE ID AGAINST ITS DECLARED WIDTH, which cannot be left to XL: the shim marks an extended
 	// frame by setting bit 31 of the identifier, so `id: 0x80000001, extended: false` already
@@ -206,7 +263,37 @@ pub fn (mut b VectorBus) send(f CanFrame) ! {
 	// zero-length data frame and is reported as success — a different message than the caller
 	// asked for, on the wire, with nothing to say so.
 	rtr := if f.rtr { 1 } else { 0 }
-	st := C.ct_vector_write(b.port, b.mask, f.id, u8(n), f.data.data, ext, rtr)
+	// WHICHEVER CALL MATCHES THE PORT. xlCanTransmit on a V4 port and xlCanTransmitEx on a V3 one
+	// are both wrong at the ABI level, so this follows `b.fd` — the port's own version — and not
+	// `f.fd`, which is only what this frame wants to be.
+	mut st := 0
+	if b.fd {
+		mut on_wire := u8(0)
+		fdflag := if f.fd { 1 } else { 0 }
+		brs := if f.brs { 1 } else { 0 }
+		st = C.ct_vector_write_fd(b.port, b.mask, f.id, u8(n), f.data.data, ext, rtr, fdflag,
+			brs, &on_wire)
+		if st == 0 && int(on_wire) != n {
+			// PADDING IS NOT AN ERROR, and it is not silent either. Above eight bytes CAN-FD
+			// carries only 12, 16, 20, 24, 32, 48 and 64, so a 9-byte payload goes out as 12 and
+			// the trace would otherwise record a length the wire never carried — the same
+			// record-versus-wire disagreement the classic path refuses a 9-byte frame to avoid.
+			// Refused rather than padded quietly: the caller can pad deliberately and then what
+			// it records is what it sent.
+			return error('Vector: ${n} bytes is not a CAN-FD payload size (id 0x${f.id:X}) — the frame would go out padded to ${on_wire}; use one of ${fd_lengths}')
+		}
+	} else {
+		st = C.ct_vector_write(b.port, b.mask, f.id, u8(n), f.data.data, ext, rtr)
+	}
+	if st == -2001 {
+		return error('Vector: a CAN-FD frame cannot also be a remote request (id 0x${f.id:X}) — RTR does not exist in FD')
+	}
+	if st == -2002 {
+		return error('Vector: brs without fd (id 0x${f.id:X})')
+	}
+	if st == -2003 {
+		return error('Vector: ${n} bytes cannot be carried by this frame format (id 0x${f.id:X})')
+	}
 	if st == -2000 {
 		// The WIRE is the limit, not the bench. Named distinctly so a caller can back off and
 		// retry: a replay of a busy capture will reach this whenever it is asked to go faster
@@ -225,9 +312,18 @@ pub fn (mut b VectorBus) recv(timeout_ms int) !CanFrame {
 	mut ln := u8(0)
 	mut ext := 0
 	mut rtr := 0
-	mut data := [8]u8{}
+	// 64 ALWAYS, not 8 on a classic channel. The shim writes at most `ln` bytes and a V3 decode
+	// never sets `ln` above 8, so the extra bytes cost one stack frame's worth of nothing — while
+	// a buffer sized by the channel's protocol would be an 8-byte array behind a pointer the FD
+	// decoder writes 64 bytes through the moment the two ever disagree.
+	mut data := [64]u8{}
 	mut chip := -1
-	r := C.ct_vector_read(b.port, b.notify, &id, &ln, &data[0], &ext, &rtr, timeout_ms, &chip)
+	mut isfd := 0
+	mut brs := 0
+	mut esi := 0
+	pfd := if b.fd { 1 } else { 0 }
+	r := C.ct_vector_read(b.port, b.notify, &id, &ln, &data[0], &ext, &rtr, timeout_ms, &chip,
+		pfd, &isfd, &brs, &esi)
 	if chip >= 0 {
 		b.last_chip = chip
 	}
@@ -247,6 +343,9 @@ pub fn (mut b VectorBus) recv(timeout_ms int) !CanFrame {
 		id:       id & 0x1FFF_FFFF
 		extended: ext != 0
 		rtr:      rtr != 0
+		fd:       isfd != 0
+		brs:      brs != 0
+		esi:      esi != 0
 		data:     out
 	}
 }

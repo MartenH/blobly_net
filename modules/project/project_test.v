@@ -994,3 +994,123 @@ fn test_apply_listen_only_registers_enabled_can_rows_only() {
 	assert !transport.is_listen_only('inproc:lo_on')
 	transport.clear_listen_only()
 }
+
+// ---- CAN-FD reaches the wire -------------------------------------------------------------
+//
+// `fd` and `data_bitrate` were in the schema, in the save file and in the editor, and reached no
+// transport at all: the address is everything `open` is handed, so a canfd Vector row opened
+// CLASSIC and then refused every FD frame one at a time at send(). This is the test that the
+// project's answer and the wire's are the same answer.
+fn test_a_canfd_vector_channel_carries_its_data_phase_into_the_address() {
+	c := Channel{
+		adapter:      'vector'
+		address:      '1'
+		iface:        'vector:1'
+		typ:          'canfd'
+		fd:           true
+		bitrate:      500000
+		data_bitrate: 2000000
+	}
+	assert c.iface_with_bitrate() == 'vector:1@500000/2000000'
+	// With listen-only, the mode still goes on the END — after the whole rate, not inside it.
+	quiet := Channel{
+		...c
+		listen_only: true
+	}
+	assert quiet.iface_with_bitrate() == 'vector:1@500000/2000000,silent'
+}
+
+// A row marked FD with no data bitrate is FD at its arbitration rate — 64-byte payloads, no
+// bit-rate switch. Dropping the flag instead would silently downgrade it to classic, which is
+// the failure above wearing a different hat.
+fn test_canfd_without_a_data_bitrate_defaults_to_the_arbitration_rate() {
+	c := Channel{
+		adapter: 'vector'
+		iface:   'vector:2'
+		fd:      true
+		bitrate: 500000
+	}
+	assert c.iface_with_bitrate() == 'vector:2@500000/500000'
+}
+
+// CLASSIC STAYS CLASSIC, and on the other backends nothing changes: PCAN and Kvaser refuse FD, so
+// composing a data phase into their addresses would produce a string their parsers reject.
+fn test_a_data_phase_is_composed_only_where_it_can_be_configured() {
+	classic := Channel{
+		adapter: 'vector'
+		iface:   'vector:1'
+		bitrate: 500000
+	}
+	assert classic.iface_with_bitrate() == 'vector:1@500000'
+	pc := Channel{
+		adapter: 'pcan'
+		iface:   'pcan:PCAN_USBBUS1'
+		fd:      true
+		bitrate: 500000
+	}
+	assert pc.iface_with_bitrate() == 'pcan:PCAN_USBBUS1@500000', 'PCAN refuses FD; its address must not claim it'
+}
+
+// ONE WIRE, ONE PROTOCOL — the same rule as one mode and one rate, and refused from the file
+// rather than as a channel that fails to open halfway through a Start.
+fn test_two_rows_on_one_wire_must_agree_about_fd() {
+	base := Channel{
+		adapter: 'vector'
+		address: '1'
+		iface:   'vector:1'
+		bitrate: 500000
+		enabled: true
+	}
+	fd_row := Channel{
+		...base
+		name:         'FD'
+		fd:           true
+		data_bitrate: 2000000
+	}
+	classic_row := Channel{
+		...base
+		name: 'Classic'
+	}
+	msgs := destination_conflicts([fd_row, classic_row])
+	assert msgs.len > 0, 'a wire asked to be both CAN-FD and classic must be refused'
+	assert msgs.any(it.contains('CAN-FD') && it.contains('classic CAN')),
+		'the message must name both protocols, got ${msgs}'
+
+	// Agreeing rows are not a conflict — including two FD rows at the same data rate.
+	same := destination_conflicts([fd_row, Channel{
+		...fd_row
+		name: 'FD again'
+	}])
+	assert same.len == 0, 'two rows agreeing about FD is not a conflict: ${same}'
+
+	// …and two FD rows that disagree about the DATA rate are, which a check on the flag alone
+	// would have waved through.
+	faster := destination_conflicts([fd_row, Channel{
+		...fd_row
+		name:         'FD fast'
+		data_bitrate: 4000000
+	}])
+	assert faster.len > 0, 'one wire cannot run two data phases'
+}
+
+// A row on a DIFFERENT wire is not a conflict, however it is configured — the grouping is by
+// wire, and a bug there would report conflicts across a whole bench.
+fn test_fd_disagreement_is_per_wire() {
+	a := Channel{
+		adapter:      'vector'
+		name:         'FD'
+		iface:        'vector:1'
+		bitrate:      500000
+		fd:           true
+		data_bitrate: 2000000
+		enabled:      true
+	}
+	b := Channel{
+		adapter: 'vector'
+		name:    'Classic'
+		iface:   'vector:3'
+		bitrate: 500000
+		enabled: true
+	}
+	assert destination_conflicts([a, b]).len == 0
+}

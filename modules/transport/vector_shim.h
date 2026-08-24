@@ -29,6 +29,18 @@
 
 #define CT_XL_BUS_TYPE_CAN        0x00000001
 #define CT_XL_INTERFACE_VERSION   3          /* V3 = classic CAN */
+/* V4 = CAN-FD, and it is not a superset of V3 that a classic port could harmlessly ask for: the
+ * event encoding differs, so a V4 port MUST be read with xlCanReceive and written with
+ * xlCanTransmitEx, and a V3 port with xlReceive/xlCanTransmit. Mixing them reads one struct's
+ * bytes through the other's layout. Which version a port was opened with therefore travels with
+ * the port (ct_vector_open's `fd`, VectorBus.fd) rather than being decided per call. */
+#define CT_XL_INTERFACE_VERSION_V4 4
+/* rxQueueSize is EVENTS for V3 and BYTES for V4 — the same argument with two units. 256 events
+ * is what the classic port asks for; 256 BYTES would be below the library's own minimum
+ * (RX_FIFO_CANFD_QUEUE_SIZE_MIN, 8192) and is rejected. 64 KiB holds ~512 maximum-size FD
+ * events, which is the same order of buffering the classic port gets. */
+#define CT_XL_RX_QUEUE_EVENTS     256
+#define CT_XL_RX_QUEUE_BYTES_FD   65536
 /* NO FLAGS on activation. vxlapi.h says of XL_ACTIVATE_RESET_CLOCK (8): "using this flag with
  * time synchronisation protocols supported by Vector Timesync Service is not recommended" — and
  * that service is installed alongside the driver, so on an ordinary Vector bench it is running.
@@ -91,6 +103,133 @@ typedef struct {
 _Static_assert(sizeof(ct_xl_can_msg) == 32, "XL CAN message must be 32 bytes");
 _Static_assert(sizeof(ct_xlevent) == 48, "XLevent must be 48 bytes");
 
+/* ---- CAN-FD (XL interface V4) ----------------------------------------------------------
+ *
+ * A SEPARATE SET OF STRUCTURES, not flags on the classic ones. vxlapi.h declares these under
+ * `#pragma pack(8)` while XLevent is packed to 1 — the reason the classic block above can
+ * assert both packings agree is that every one of its members already sits on its natural
+ * offset, which is NOT true here (XLcanRxEvent has 64-bit members after an odd run of 16-bit
+ * ones). So these are declared pack(8) to match the header rather than folded into the block
+ * above, and the assertions below are the check that the two agree.
+ *
+ * The header states two of the three sizes itself — XL_CANFD_RX_EVENT_HEADER_SIZE 32 and
+ * XL_CANFD_MAX_EVENT_SIZE 128 — so the RX assertions test our layout against the library's own
+ * arithmetic, not merely against a number retyped from the same place. */
+#define CT_XL_CAN_MAX_DATA_LEN        64
+#define CT_XL_CANFD_MAX_EVENT_SIZE   128
+#define CT_XL_CANFD_RX_HEADER_SIZE    32
+/* Event tags on a V4 port. RX_OK and TX_OK carry the same XL_CAN_EV_RX_MSG payload — a TX_OK is
+ * this port's own confirmation, which the classic path drops via the TX_COMPLETED flag and this
+ * one drops by tag. */
+#define CT_XL_CAN_EV_TAG_RX_OK      0x0400
+#define CT_XL_CAN_EV_TAG_RX_ERROR   0x0401
+#define CT_XL_CAN_EV_TAG_TX_ERROR   0x0402
+#define CT_XL_CAN_EV_TAG_TX_REQUEST 0x0403
+#define CT_XL_CAN_EV_TAG_TX_OK      0x0404
+#define CT_XL_CAN_EV_TAG_CHIP_STATE 0x0409
+#define CT_XL_CAN_EV_TAG_TX_MSG     0x0440
+/* Transmit flags (XLcanTxEvent::XL_CAN_TX_MSG::msgFlags). EDL is what makes a frame FD at all;
+ * BRS additionally switches to the data bitrate for the payload. The library refuses EDL with
+ * RTR (XL_ERR_EDL_RTR) and BRS without EDL (XL_ERR_EDL_NOT_SET), so both combinations are
+ * rejected here rather than sent to be refused. */
+#define CT_XL_CAN_TXMSG_FLAG_EDL 0x0001
+#define CT_XL_CAN_TXMSG_FLAG_BRS 0x0002
+#define CT_XL_CAN_TXMSG_FLAG_RTR 0x0010
+/* Receive flags (XLcanRxEvent::XL_CAN_EV_RX_MSG::msgFlags). ESI is the transmitting node saying
+ * it is error-passive — carried up because it is a fact about the OTHER end that no local
+ * counter reports. */
+#define CT_XL_CAN_RXMSG_FLAG_EDL 0x0001
+#define CT_XL_CAN_RXMSG_FLAG_BRS 0x0002
+#define CT_XL_CAN_RXMSG_FLAG_ESI 0x0004
+#define CT_XL_CAN_RXMSG_FLAG_RTR 0x0010
+#define CT_XL_CAN_RXMSG_FLAG_EF  0x0200
+
+#pragma pack(push, 8)
+typedef struct {
+	unsigned int  arbitrationBitRate;
+	unsigned int  sjwAbr;
+	unsigned int  tseg1Abr;
+	unsigned int  tseg2Abr;
+	unsigned int  dataBitRate;
+	unsigned int  sjwDbr;
+	unsigned int  tseg1Dbr;
+	unsigned int  tseg2Dbr;
+	unsigned char reserved;     /* has to be zero */
+	unsigned char options;      /* CANFD_CONFOPT_* */
+	unsigned char reserved1[2]; /* has to be zero */
+	unsigned int  reserved2;    /* has to be zero */
+} ct_xl_canfd_conf;
+
+typedef struct {
+	unsigned int  canId;
+	unsigned int  msgFlags;
+	unsigned char dlc;
+	unsigned char reserved[7];
+	unsigned char data[CT_XL_CAN_MAX_DATA_LEN];
+} ct_xl_can_tx_msg;
+
+typedef struct {
+	unsigned short tag;
+	unsigned short transId;
+	unsigned char  channelIndex; /* "internal has to be 0" */
+	unsigned char  reserved[3];
+	union {
+		ct_xl_can_tx_msg canMsg;
+	} tagData;
+} ct_xl_can_tx_event;
+
+typedef struct {
+	unsigned int   canId;
+	unsigned int   msgFlags;
+	unsigned int   crc;
+	unsigned char  reserved1[12];
+	unsigned short totalBitCnt;
+	unsigned char  dlc;
+	unsigned char  reserved[5];
+	unsigned char  data[CT_XL_CAN_MAX_DATA_LEN];
+} ct_xl_can_ev_rx_msg;
+
+typedef struct {
+	unsigned char busStatus;
+	unsigned char txErrorCounter;
+	unsigned char rxErrorCounter;
+	unsigned char reserved;
+	unsigned int  reserved0;
+} ct_xl_can_ev_chip_state;
+
+typedef struct {
+	unsigned int   size; /* overall size of the complete event */
+	unsigned short tag;
+	unsigned short channelIndex;
+	unsigned int   userHandle;
+	unsigned short flagsChip;
+	unsigned short reserved0;
+	uint64_t       reserved1;
+	uint64_t       timeStampSync;
+	union {
+		unsigned char           raw[CT_XL_CANFD_MAX_EVENT_SIZE - CT_XL_CANFD_RX_HEADER_SIZE];
+		ct_xl_can_ev_rx_msg     canRxOkMsg;
+		ct_xl_can_ev_rx_msg     canTxOkMsg;
+		ct_xl_can_ev_chip_state canChipState;
+	} tagData;
+} ct_xl_can_rx_event;
+#pragma pack(pop)
+
+_Static_assert(sizeof(ct_xl_canfd_conf) == 40, "XLcanFdConf must be 40 bytes");
+_Static_assert(sizeof(ct_xl_can_tx_msg) == 80, "XL_CAN_TX_MSG must be 80 bytes");
+_Static_assert(sizeof(ct_xl_can_tx_event) == 88, "XLcanTxEvent must be 88 bytes");
+/* The header's own two constants, which is what makes these more than a retyped number: the
+ * union is sized as MAX_EVENT_SIZE - RX_HEADER_SIZE, so a header whose members did not add up
+ * to 32 would fail the first of these rather than silently shifting every payload. */
+_Static_assert(offsetof(ct_xl_can_rx_event, tagData) == CT_XL_CANFD_RX_HEADER_SIZE,
+               "XLcanRxEvent header must be 32 bytes");
+_Static_assert(sizeof(ct_xl_can_ev_rx_msg) == CT_XL_CANFD_MAX_EVENT_SIZE - CT_XL_CANFD_RX_HEADER_SIZE,
+               "XL_CAN_EV_RX_MSG must fill the event payload");
+_Static_assert(sizeof(ct_xl_can_rx_event) == CT_XL_CANFD_MAX_EVENT_SIZE,
+               "XLcanRxEvent must be 128 bytes");
+_Static_assert(offsetof(ct_xl_can_ev_rx_msg, data) == 32, "FD receive payload must start at 32");
+_Static_assert(offsetof(ct_xl_can_tx_msg, data) == 16, "FD transmit payload must start at 16");
+
 typedef ct_xlstatus (__stdcall *ct_xlOpenDriver)(void);
 typedef ct_xlstatus (__stdcall *ct_xlCloseDriver)(void);
 typedef ct_xlstatus (__stdcall *ct_xlGetApplConfig)(char *, unsigned int, unsigned int *, unsigned int *, unsigned int *, unsigned int);
@@ -114,6 +253,11 @@ typedef char *      (__stdcall *ct_xlGetErrString)(ct_xlstatus);
  * it, several hundred lines down with its layout assertions. */
 typedef ct_xlstatus (__stdcall *ct_xlGetDriverConfig)(void *);
 typedef ct_xlstatus (__stdcall *ct_xlReqChipState)(ct_xlport, ct_xlaccess);
+/* CAN-FD. Resolved like the rest and allowed to be absent: an older XL library has a working
+ * classic backend and no FD, and that must stay a refused FD open rather than a failed load. */
+typedef ct_xlstatus (__stdcall *ct_xlCanFdSetConfiguration)(ct_xlport, ct_xlaccess, ct_xl_canfd_conf *);
+typedef ct_xlstatus (__stdcall *ct_xlCanTransmitEx)(ct_xlport, ct_xlaccess, unsigned int, unsigned int *, ct_xl_can_tx_event *);
+typedef ct_xlstatus (__stdcall *ct_xlCanReceive)(ct_xlport, ct_xl_can_rx_event *);
 
 static ct_xlOpenDriver     ct_xl_opendrv;
 static ct_xlCloseDriver    ct_xl_closedrv;
@@ -133,6 +277,46 @@ static ct_xlSetNotify      ct_xl_setnotify;
 static ct_xlGetErrString   ct_xl_errstr;
 static ct_xlGetDriverConfig ct_xl_drvconfig;
 static ct_xlReqChipState   ct_xl_reqchip;
+static ct_xlCanFdSetConfiguration ct_xl_fdsetconf;
+static ct_xlCanTransmitEx  ct_xl_transmitex;
+static ct_xlCanReceive     ct_xl_canreceive;
+
+/* DLC <-> length, the FD way. Above eight bytes a CAN-FD frame does not carry its length: it
+ * carries a 4-bit CODE for one of eight discrete sizes, so 12, 16, 20, 24, 32, 48 and 64 are
+ * the only payloads that exist and anything between them must be padded up to the next one.
+ * CANFD_GET_NUM_DATABYTES in vxlapi.h is the receive direction of exactly this table. */
+static uint8_t ct_fd_len_from_dlc(uint8_t dlc, int edl, int rtr) {
+	if (rtr) return 0;
+	if (dlc < 9) return dlc;
+	if (!edl) return 8; /* a classic frame cannot exceed 8 whatever its DLC nibble says */
+	switch (dlc) {
+	case 9:  return 12;
+	case 10: return 16;
+	case 11: return 20;
+	case 12: return 24;
+	case 13: return 32;
+	case 14: return 48;
+	default: return 64;
+	}
+}
+
+/* The transmit direction: the DLC code that carries at least `len` bytes, and the padded length
+ * that code actually puts on the wire. Returns 0xFF for a length no FD frame can hold.
+ *
+ * PADDING IS REPORTED, not applied silently: a 9-byte payload goes out as a 12-byte frame, and
+ * the caller has to know that or the trace records nine bytes against a frame carrying twelve —
+ * the same disagreement between record and wire that the classic path refuses a 9-byte frame to
+ * avoid. ct_vector_write hands the padded length back so the caller can decide. */
+static uint8_t ct_fd_dlc_for_len(uint8_t len, uint8_t *padded) {
+	static const uint8_t sizes[] = {12, 16, 20, 24, 32, 48, 64};
+	int i;
+	if (len <= 8) { *padded = len; return len; }
+	for (i = 0; i < 7; i++) {
+		if (len <= sizes[i]) { *padded = sizes[i]; return (uint8_t)(9 + i); }
+	}
+	*padded = 0;
+	return 0xFF;
+}
 
 static int ct_vector_loaded = 0;
 
@@ -169,6 +353,14 @@ static void ct_vector_set_verbose(int on) { ct_vector_verbose = on; }
 #define CT_VEC_MAX_CFG 64
 static uint64_t ct_vec_cfg_mask[CT_VEC_MAX_CFG];
 static unsigned int ct_vec_cfg_rate[CT_VEC_MAX_CFG];
+/* PINNED LIKE THE BITRATE, and for the same reason: an FD channel and a classic one are two
+ * different configurations of one transceiver, and the ports open on it decide which. A second
+ * port asking for the other is refused (-1011) rather than joining a channel that is not running
+ * the protocol it thinks it is — which would read every FD frame's payload through the classic
+ * event layout. The data bitrate is pinned separately (-1012) because two ports can agree that
+ * the wire is FD and still disagree about the rate its payload phase runs at. */
+static int ct_vec_cfg_fd[CT_VEC_MAX_CFG];
+static unsigned int ct_vec_cfg_dbr[CT_VEC_MAX_CFG];
 static int ct_vec_cfg_silent[CT_VEC_MAX_CFG];
 static int ct_vec_cfg_ports[CT_VEC_MAX_CFG];
 static ct_xlport ct_vec_cfg_owner[CT_VEC_MAX_CFG];
@@ -212,7 +404,8 @@ static int ct_vec_cfg_find(uint64_t mask) {
 /* 0 recorded, -1 full. FAILS rather than forgetting: a channel we configured but did not record
  * is one whose secondary ports will all be refused, which reads as hardware trouble. With the
  * table sized to the whole accepted range this cannot happen, and saying so costs one branch. */
-static int ct_vec_cfg_note(uint64_t mask, unsigned int rate, int silent, ct_xlport owner) {
+static int ct_vec_cfg_note(uint64_t mask, unsigned int rate, int silent, ct_xlport owner,
+                           int fd, unsigned int dbr) {
 	int i = ct_vec_cfg_find(mask);
 	if (i < 0) {
 		if (ct_vec_cfg_n >= CT_VEC_MAX_CFG) return -1;
@@ -225,6 +418,8 @@ static int ct_vec_cfg_note(uint64_t mask, unsigned int rate, int silent, ct_xlpo
 	ct_vec_cfg_rate[i] = rate;
 	ct_vec_cfg_silent[i] = silent;
 	ct_vec_cfg_owner[i] = owner;
+	ct_vec_cfg_fd[i] = fd;
+	ct_vec_cfg_dbr[i] = dbr;
 	/* FRESH AGAIN. A record marked stale when its owner closed keeps that mark until it is
 	 * forgotten, so a later port that DID win initialisation access — and therefore configured
 	 * the channel itself — inherited a record saying nothing about it could be trusted, and
@@ -254,6 +449,11 @@ static void ct_vec_cfg_forget(int i) {
 		ct_vec_cfg_owner[i]  = ct_vec_cfg_owner[ct_vec_cfg_n];
 		ct_vec_cfg_gen[i]    = ct_vec_cfg_gen[ct_vec_cfg_n];
 		ct_vec_cfg_stale[i]  = ct_vec_cfg_stale[ct_vec_cfg_n];
+		/* MOVED WITH THE REST. Left out of this compaction, an FD record's fd/dbr would stay
+		 * behind on a row now describing a different wire — and the pin check below would then
+		 * compare a new channel's request against the departed channel's protocol. */
+		ct_vec_cfg_fd[i]     = ct_vec_cfg_fd[ct_vec_cfg_n];
+		ct_vec_cfg_dbr[i]    = ct_vec_cfg_dbr[ct_vec_cfg_n];
 	}
 }
 
@@ -374,6 +574,13 @@ static int ct_vector_load_locked(void) {
 	ct_xl_errstr     = (ct_xlGetErrString)(void *)GetProcAddress(h, "xlGetErrorString");
 	ct_xl_drvconfig  = (ct_xlGetDriverConfig)(void *)GetProcAddress(h, "xlGetDriverConfig");
 	ct_xl_reqchip    = (ct_xlReqChipState)(void *)GetProcAddress(h, "xlCanRequestChipState");
+	ct_xl_fdsetconf  = (ct_xlCanFdSetConfiguration)(void *)GetProcAddress(h, "xlCanFdSetConfiguration");
+	ct_xl_transmitex = (ct_xlCanTransmitEx)(void *)GetProcAddress(h, "xlCanTransmitEx");
+	ct_xl_canreceive = (ct_xlCanReceive)(void *)GetProcAddress(h, "xlCanReceive");
+	/* NOT IN THE REQUIRED SET. The three FD symbols are optional on purpose: a library too old to
+	 * have them still drives classic CAN correctly, and failing the whole load would take a
+	 * working backend away over a feature the project may not use. An FD OPEN refuses instead
+	 * (-1010), which names the missing capability where it is actually wanted. */
 	if (!ct_xl_opendrv || !ct_xl_getappl || !ct_xl_chanmask || !ct_xl_openport ||
 	    !ct_xl_closeport || !ct_xl_setbitrate || !ct_xl_activate || !ct_xl_deactivate ||
 	    !ct_xl_transmit || !ct_xl_receive || !ct_xl_setnotify) return -2;
@@ -474,13 +681,23 @@ static uint64_t ct_vector_mask(unsigned int app_channel) {
  * Returns 0, or a negative XL status. Outputs port + mask on success. */
 static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int silent,
                           ct_xlport *out_port, uint64_t *out_mask, HANDLE *out_event,
-                          uint64_t *out_gen) {
+                          uint64_t *out_gen, int fd, unsigned int dbitrate,
+                          unsigned int tseg1, unsigned int tseg2, unsigned int sjw) {
 	ct_xlaccess mask, permission;
 	ct_xlport port = CT_XL_INVALID_PORTHANDLE;
 	ct_xlstatus st;
 	int why = 0;
 	ct_vec_enter();
 	mask = (ct_xlaccess)ct_vector_mask_why(app_channel, &why, 1);
+	/* AFTER the mask lookup, which is what loads the library — the FD entry points are NULL until
+	 * something has resolved them, so this test run first would refuse every FD open on a machine
+	 * whose library has them. Refused here, before a port exists: the classic path would satisfy
+	 * an FD request WRONGLY — a channel configured for classic CAN, ports opened V3, and every
+	 * 64-byte frame refused one at a time at send() with nothing saying the wire was never FD. */
+	if (fd && (!ct_xl_fdsetconf || !ct_xl_transmitex || !ct_xl_canreceive)) {
+		ct_vec_leave();
+		return -1010;
+	}
 	CT_VLOG("appChannel=%u -> mask=0x%016llX (why=%d)\n", app_channel, (unsigned long long)mask, why);
 	if (!mask) { ct_vec_leave(); return why ? why : -1000; } /* the caller distinguishes these; see vector_windows.v */
 	/* permissionMask is IN/OUT: on the way IN it asks for INIT ACCESS on these channels, and on
@@ -490,17 +707,55 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 	 * open. Asking for the channel we are opening is what the XL examples do and what makes the
 	 * two calls after this one mean anything. */
 	permission = mask;
-	st = ct_xl_openport(&port, "blobly_net", mask, &permission, 256, CT_XL_INTERFACE_VERSION,
+	/* THE PORT'S INTERFACE VERSION IS THE PROTOCOL, and the queue size argument changes units with
+	 * it (events for V3, bytes for V4). Both travel together here so the two can never disagree —
+	 * a V4 port with a 256-BYTE queue is below the library's minimum and refuses to open, which
+	 * would read as "the adapter would not open". */
+	st = ct_xl_openport(&port, "blobly_net", mask, &permission,
+	                    fd ? CT_XL_RX_QUEUE_BYTES_FD : CT_XL_RX_QUEUE_EVENTS,
+	                    fd ? CT_XL_INTERFACE_VERSION_V4 : CT_XL_INTERFACE_VERSION,
 	                    CT_XL_BUS_TYPE_CAN);
-	CT_VLOG("xlOpenPort -> st=%d port=%d permission=0x%016llX\n", (int)st, (int)port, (unsigned long long)permission);
+	CT_VLOG("xlOpenPort(v%d) -> st=%d port=%d permission=0x%016llX\n",
+	        fd ? 4 : 3, (int)st, (int)port, (unsigned long long)permission);
 	if (st != 0 || port == CT_XL_INVALID_PORTHANDLE) { ct_vec_leave(); return st ? -(int)st : -1001; }
 	/* Init access decides whether this port may set the bitrate at all. Without it another
 	 * application already owns the channel's parameters, and setting them would either fail
 	 * or reconfigure a bus somebody else is using. */
 	if (permission & mask) {
-		st = ct_xl_setbitrate(port, mask, (unsigned long)bitrate);
-		CT_VLOG("xlCanSetChannelBitrate(%u) -> st=%d\n", bitrate, (int)st);
-		if (st != 0) { ct_xl_closeport(port); ct_vec_leave(); return -(int)st; }
+		if (fd) {
+			/* ONE CALL FOR BOTH PHASES, and xlCanSetChannelBitrate is not part of it: mixing the
+			 * classic bitrate call with the FD configuration leaves the arbitration phase set
+			 * twice, the second time from segments the first knew nothing about.
+			 *
+			 * THE SEGMENTS ARE REQUIRED. XLcanFdConf has no BRP field and no "just give me this
+			 * bitrate" form — the driver derives the prescaler from the rate and the segment
+			 * count, so (1 + tseg1 + tseg2) has to divide the controller clock by the rate
+			 * exactly or the call is refused. That is why they come in from the caller with a
+			 * default rather than being invented here: the default suits the common rates on a
+			 * VN device's 80 MHz clock, and a bench that needs another can say so. */
+			ct_xl_canfd_conf conf;
+			memset(&conf, 0, sizeof(conf));
+			conf.arbitrationBitRate = bitrate;
+			conf.sjwAbr = sjw;
+			conf.tseg1Abr = tseg1;
+			conf.tseg2Abr = tseg2;
+			/* THE SAME SEGMENTS FOR BOTH PHASES. The sample point a bus needs is a property of its
+			 * topology, not of which phase is running, and CiA 601-3 recommends the same figure for
+			 * both. Two independent sets would be one more thing for an address to carry and one
+			 * more way for the two to disagree. */
+			conf.dataBitRate = dbitrate;
+			conf.sjwDbr = sjw;
+			conf.tseg1Dbr = tseg1;
+			conf.tseg2Dbr = tseg2;
+			st = ct_xl_fdsetconf(port, mask, &conf);
+			CT_VLOG("xlCanFdSetConfiguration(arb=%u dbr=%u tseg1=%u tseg2=%u sjw=%u) -> st=%d\n",
+			        bitrate, dbitrate, tseg1, tseg2, sjw, (int)st);
+			if (st != 0) { ct_xl_closeport(port); ct_vec_leave(); return -(int)st; }
+		} else {
+			st = ct_xl_setbitrate(port, mask, (unsigned long)bitrate);
+			CT_VLOG("xlCanSetChannelBitrate(%u) -> st=%d\n", bitrate, (int)st);
+			if (st != 0) { ct_xl_closeport(port); ct_vec_leave(); return -(int)st; }
+		}
 		if (ct_xl_setoutput) {
 			st = ct_xl_setoutput(port, mask, silent ? (int)CT_XL_OUTPUT_MODE_SILENT : (int)CT_XL_OUTPUT_MODE_NORMAL);
 			CT_VLOG("xlCanSetChannelOutput(%s) -> st=%d\n", silent ? "SILENT" : "NORMAL", (int)st);
@@ -518,7 +773,7 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 			 * to refuse in both directions. */
 			ct_xl_closeport(port); ct_vec_leave(); return -1002;
 		}
-		if (ct_vec_cfg_note(mask, bitrate, silent, port) != 0) {
+		if (ct_vec_cfg_note(mask, bitrate, silent, port, fd, dbitrate) != 0) {
 			ct_xl_closeport(port); ct_vec_leave(); return -1006;
 		}
 		ct_vec_cfg_ref(mask);
@@ -545,6 +800,13 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 		 * having gone out while the transceiver acknowledged nothing. */
 		if (silent != ct_vec_cfg_silent[i]) { ct_xl_closeport(port); ct_vec_leave(); return -1004; }
 		if (ct_vec_cfg_rate[i] != bitrate) { ct_xl_closeport(port); ct_vec_leave(); return -1005; }
+		/* THE PROTOCOL, before the rate its payload phase runs at. This port has ALREADY been
+		 * opened at whichever interface version `fd` asked for, and that is the half a sibling
+		 * cannot recover from by agreeing later: a V4 port on a channel configured classic reads
+		 * every frame through the wrong event layout, and a V3 port on an FD channel silently
+		 * truncates. Refused rather than joined. */
+		if (fd != ct_vec_cfg_fd[i]) { ct_xl_closeport(port); ct_vec_leave(); return -1011; }
+		if (fd && ct_vec_cfg_dbr[i] != dbitrate) { ct_xl_closeport(port); ct_vec_leave(); return -1012; }
 		ct_vec_cfg_ports[i]++;
 		*out_gen = ct_vec_cfg_gen[i];
 	}
@@ -582,6 +844,56 @@ static int ct_vector_open(unsigned int app_channel, unsigned int bitrate, int si
 	return 0;
 }
 
+/* Transmit on a V4 (CAN-FD) port. 0 ok, negative XL status on failure, -2000 for a full queue.
+ *
+ * `fd` is per FRAME, not per port: an FD-configured channel carries classic frames too — EDL
+ * clear and at most eight bytes — and a rest bus of classic messages with one FD diagnostic
+ * stream is the ordinary case rather than an exotic one. `*out_len` reports the length the wire
+ * will actually carry, which differs from `len` whenever FD padding rounds a payload up to the
+ * next legal size (see ct_fd_dlc_for_len). */
+static int ct_vector_write_fd(ct_xlport port, uint64_t mask, uint32_t id, uint8_t len,
+                              const uint8_t *data, int ext, int rtr, int fd, int brs,
+                              uint8_t *out_len) {
+	ct_xl_can_tx_event ev;
+	unsigned int sent = 0;
+	uint8_t padded = 0, dlc;
+	int i;
+	ct_xlstatus st;
+	if (out_len) *out_len = len;
+	/* THE LIBRARY'S OWN TWO REFUSALS, made here where they can be explained. XL_ERR_EDL_RTR and
+	 * XL_ERR_EDL_NOT_SET come back as bare status numbers from a transmit that has already been
+	 * recorded as attempted; as arguments they are a configuration mistake with a name. */
+	if (fd && rtr) return -2001;
+	if (brs && !fd) return -2002;
+	dlc = ct_fd_dlc_for_len(len, &padded);
+	if (dlc == 0xFF) return -2003;
+	if (!fd && len > 8) return -2003;
+	memset(&ev, 0, sizeof(ev));
+	ev.tag = CT_XL_CAN_EV_TAG_TX_MSG;
+	ev.tagData.canMsg.canId = ext ? (id | CT_XL_CAN_EXT_MSG_ID) : id;
+	ev.tagData.canMsg.dlc = dlc;
+	ev.tagData.canMsg.msgFlags = (fd ? CT_XL_CAN_TXMSG_FLAG_EDL : 0) |
+	                             (brs ? CT_XL_CAN_TXMSG_FLAG_BRS : 0) |
+	                             (rtr ? CT_XL_CAN_TXMSG_FLAG_RTR : 0);
+	for (i = 0; i < (int)padded && i < len; i++) ev.tagData.canMsg.data[i] = data[i];
+	/* The pad bytes stay zero from the memset above. Which value they carry is not specified by
+	 * CAN FD, and zero is what every other tool on a bench shows. */
+	st = ct_xl_transmitex(port, (ct_xlaccess)mask, 1, &sent, &ev);
+	CT_VLOG("xlCanTransmitEx(id=0x%X len=%u dlc=%u fd=%d brs=%d) -> st=%d sent=%u\n",
+	        (unsigned)id, (unsigned)padded, (unsigned)dlc, fd, brs, (int)st, sent);
+	if (st == 0) {
+		/* ACCEPTED IS NOT SENT. xlCanTransmitEx reports how many of the events it took, and
+		 * taking none while returning success is exactly the back-pressure case the classic path
+		 * gets as a status code — treated the same way rather than reported as a frame that went
+		 * out. */
+		if (sent == 0) return -2000;
+		if (out_len) *out_len = padded;
+		return 0;
+	}
+	if (st == CT_XL_ERR_QUEUE_IS_FULL) return -2000;
+	return -(int)st;
+}
+
 /* 0 ok, negative XL status on failure. */
 static int ct_vector_write(ct_xlport port, uint64_t mask, uint32_t id, uint8_t len,
                            const uint8_t *data, int ext, int rtr) {
@@ -612,14 +924,113 @@ static int ct_vector_write(ct_xlport port, uint64_t mask, uint32_t id, uint8_t l
  * negative = XL status. Non-message events and error frames are skipped, not reported as
  * frames: an error frame carries no payload and filing one as bus traffic would put a
  * message on the trace that nobody sent. */
-static int ct_vector_read(ct_xlport port, HANDLE ev_handle, uint32_t *id, uint8_t *len,
-                          uint8_t *data, int *ext, int *rtr, int timeout_ms, int *chip_status) {
+/* ONE EVENT off a V3 port. Split out of the loop below so that the FD port's decoder can sit
+ * beside it and the deadline, the notification wait and the busy-poll fallback stay in ONE place.
+ * Every one of those has its own hard-won comment in the loop; a second copy for FD would be the
+ * same policy in two files' worth of code, differing the first time one of them was fixed.
+ *
+ * THREE OUTCOMES, and the third is not a detail:
+ *   0  a frame, in the out-parameters
+ *   1  the queue is EMPTY — there is nothing to do but wait for the notification
+ *   2  an event was taken and it was not bus traffic — poll AGAIN, do not wait
+ *   <0 an XL status
+ * Collapsing 1 and 2 into one "nothing" is a stall: the notification is auto-reset, so after
+ * consuming a chip-state event whose signal has already been taken, a wait can block with
+ * decodable frames sitting in the queue behind it. The loop below acts on the difference. */
+static int ct_vector_decode_v3(ct_xlport port, uint32_t *id, uint8_t *len, uint8_t *data,
+                               int *ext, int *rtr, int *fd, int *brs, int *esi,
+                               int *chip_status) {
 	ct_xlevent ev;
-	if (chip_status) *chip_status = -1; /* -1 = no chip-state event seen this call */
-	unsigned int count;
-	DWORD waited;
+	unsigned int count = 1;
 	int i;
+	ct_xlstatus st = ct_xl_receive(port, &count, &ev);
+	if (st != 0 || count == 0) {
+		if (st != CT_XL_ERR_QUEUE_IS_EMPTY && st != 0) return -(int)st;
+		return 1;
+	}
+	/* A chip-state reply riding the same queue: capture it for the health latch
+	 * instead of discarding it. The old helper that DRAINED the queue hunting for
+	 * this event threw away data frames mid-run — health must ride the stream the
+	 * reader is already emptying, never compete with it (self-review). */
+	if (ev.tag == CT_XL_CHIP_STATE) {
+		if (chip_status) *chip_status = ev.tagData.raw[0];
+		return 2;
+	}
+	if (ev.tag != CT_XL_RECEIVE_MSG) return 2;
+	/* An error frame carries no payload, and a TX confirmation is OUR OWN frame coming
+	 * back: filing either as bus traffic puts a message on the trace nobody sent. */
+	if (ev.tagData.msg.flags & CT_XL_CAN_MSG_FLAG_ERROR_FRAME) {
+		InterlockedIncrement(&ct_vector_errframes);
+		return 2;
+	}
+	if (ev.tagData.msg.flags & (CT_XL_CAN_MSG_FLAG_TX_COMPLETED | CT_XL_CAN_MSG_FLAG_TX_REQUEST)) return 2;
+	*rtr = (ev.tagData.msg.flags & CT_XL_CAN_MSG_FLAG_REMOTE_FRAME) ? 1 : 0;
+	*ext = (ev.tagData.msg.id & CT_XL_CAN_EXT_MSG_ID) ? 1 : 0;
+	*id  = ev.tagData.msg.id & 0x1FFFFFFF;
+	*len = (uint8_t)(ev.tagData.msg.dlc > 8 ? 8 : ev.tagData.msg.dlc);
+	for (i = 0; i < 8; i++) data[i] = ev.tagData.msg.data[i];
+	/* A V3 port cannot receive an FD frame at all, so these are facts and not defaults. */
+	*fd = 0;
+	*brs = 0;
+	*esi = 0;
+	return 0;
+}
+
+/* The same, off a V4 (CAN-FD) port. Same return contract, and the same rule about what is not
+ * bus traffic — expressed by TAG here, where the classic path reads flags. */
+static int ct_vector_decode_v4(ct_xlport port, uint32_t *id, uint8_t *len, uint8_t *data,
+                               int *ext, int *rtr, int *fd, int *brs, int *esi,
+                               int *chip_status) {
+	ct_xl_can_rx_event ev;
+	int i;
+	uint8_t n;
 	ct_xlstatus st;
+	memset(&ev, 0, sizeof(ev));
+	st = ct_xl_canreceive(port, &ev);
+	if (st != 0) {
+		if (st != CT_XL_ERR_QUEUE_IS_EMPTY) return -(int)st;
+		return 1;
+	}
+	if (ev.tag == CT_XL_CAN_EV_TAG_CHIP_STATE) {
+		if (chip_status) *chip_status = ev.tagData.canChipState.busStatus;
+		return 2;
+	}
+	/* AN ERROR IS COUNTED, NOT REPORTED, exactly as on the classic port — and on a V4 port it
+	 * arrives as its own tag rather than a flag on a message. Counting both directions: a bus
+	 * running FD at a data rate this channel has wrong produces TX errors on what we send and RX
+	 * errors on what we hear, and either one is the answer to "why is nothing decoding". */
+	if (ev.tag == CT_XL_CAN_EV_TAG_RX_ERROR || ev.tag == CT_XL_CAN_EV_TAG_TX_ERROR) {
+		InterlockedIncrement(&ct_vector_errframes);
+		return 2;
+	}
+	/* TX_OK is this port's own confirmation and TX_REQUEST its own queued frame; neither is
+	 * traffic somebody else put on the wire. The classic path drops the same two by flag. */
+	if (ev.tag != CT_XL_CAN_EV_TAG_RX_OK) return 2;
+	if (ev.tagData.canRxOkMsg.msgFlags & CT_XL_CAN_RXMSG_FLAG_EF) {
+		InterlockedIncrement(&ct_vector_errframes);
+		return 2;
+	}
+	*rtr = (ev.tagData.canRxOkMsg.msgFlags & CT_XL_CAN_RXMSG_FLAG_RTR) ? 1 : 0;
+	*fd  = (ev.tagData.canRxOkMsg.msgFlags & CT_XL_CAN_RXMSG_FLAG_EDL) ? 1 : 0;
+	*brs = (ev.tagData.canRxOkMsg.msgFlags & CT_XL_CAN_RXMSG_FLAG_BRS) ? 1 : 0;
+	*esi = (ev.tagData.canRxOkMsg.msgFlags & CT_XL_CAN_RXMSG_FLAG_ESI) ? 1 : 0;
+	*ext = (ev.tagData.canRxOkMsg.canId & CT_XL_CAN_EXT_MSG_ID) ? 1 : 0;
+	*id  = ev.tagData.canRxOkMsg.canId & 0x1FFFFFFF;
+	/* THROUGH THE TABLE, not the raw nibble. Above eight bytes the DLC is a code for one of eight
+	 * sizes, so using it as a length would report a 64-byte frame as fifteen bytes long. */
+	n = ct_fd_len_from_dlc(ev.tagData.canRxOkMsg.dlc, *fd, *rtr);
+	if (n > CT_XL_CAN_MAX_DATA_LEN) n = CT_XL_CAN_MAX_DATA_LEN;
+	*len = n;
+	for (i = 0; i < (int)n; i++) data[i] = ev.tagData.canRxOkMsg.data[i];
+	return 0;
+}
+
+static int ct_vector_read(ct_xlport port, HANDLE ev_handle, uint32_t *id, uint8_t *len,
+                          uint8_t *data, int *ext, int *rtr, int timeout_ms, int *chip_status,
+                          int port_is_fd, int *fd, int *brs, int *esi) {
+	if (chip_status) *chip_status = -1; /* -1 = no chip-state event seen this call */
+	DWORD waited;
+	int rc;
 	/* Against a DEADLINE, not a budget that is spent by the first wake. The notification fires
 	 * for events that are not CAN frames too, and collapsing the remaining time to zero after
 	 * one of those turned `recv(200)` into a busy poll that reported a timeout it had not
@@ -642,33 +1053,21 @@ static int ct_vector_read(ct_xlport port, HANDLE ev_handle, uint32_t *id, uint8_
 		 * to be held. */
 		if (polled && timeout_ms >= 0 && GetTickCount64() - started >= (ULONGLONG)timeout_ms) return 1;
 		polled = 1;
-		count = 1;
-		st = ct_xl_receive(port, &count, &ev);
-		if (st == 0 && count > 0) {
-			/* A chip-state reply riding the same queue: capture it for the health latch
-			 * instead of discarding it. The old helper that DRAINED the queue hunting for
-			 * this event threw away data frames mid-run — health must ride the stream the
-			 * reader is already emptying, never compete with it (self-review). */
-			if (ev.tag == CT_XL_CHIP_STATE) {
-				if (chip_status) *chip_status = ev.tagData.raw[0];
-				continue;
-			}
-			if (ev.tag != CT_XL_RECEIVE_MSG) continue;
-			/* An error frame carries no payload, and a TX confirmation is OUR OWN frame coming
-			 * back: filing either as bus traffic puts a message on the trace nobody sent. */
-			if (ev.tagData.msg.flags & CT_XL_CAN_MSG_FLAG_ERROR_FRAME) {
-				InterlockedIncrement(&ct_vector_errframes);
-				continue;
-			}
-			if (ev.tagData.msg.flags & (CT_XL_CAN_MSG_FLAG_TX_COMPLETED | CT_XL_CAN_MSG_FLAG_TX_REQUEST)) continue;
-			*rtr = (ev.tagData.msg.flags & CT_XL_CAN_MSG_FLAG_REMOTE_FRAME) ? 1 : 0;
-			*ext = (ev.tagData.msg.id & CT_XL_CAN_EXT_MSG_ID) ? 1 : 0;
-			*id  = ev.tagData.msg.id & 0x1FFFFFFF;
-			*len = (uint8_t)(ev.tagData.msg.dlc > 8 ? 8 : ev.tagData.msg.dlc);
-			for (i = 0; i < 8; i++) data[i] = ev.tagData.msg.data[i];
-			return 0;
-		}
-		if (st != CT_XL_ERR_QUEUE_IS_EMPTY && st != 0) return -(int)st;
+		/* WHICH DECODER IS THE PORT'S, not the frame's. The interface version a port was opened
+		 * with decides the event encoding on its queue, so this cannot be chosen per event —
+		 * reading a V4 queue with xlReceive returns whatever the first 48 bytes of a 128-byte
+		 * event happen to look like. */
+		rc = port_is_fd
+		     ? ct_vector_decode_v4(port, id, len, data, ext, rtr, fd, brs, esi, chip_status)
+		     : ct_vector_decode_v3(port, id, len, data, ext, rtr, fd, brs, esi, chip_status);
+		if (rc == 0) return 0;
+		if (rc < 0) return rc;
+		/* AN EVENT WAS TAKEN AND SKIPPED: poll again rather than wait. The notification is
+		 * auto-reset, so its signal for this event has already been consumed — waiting here would
+		 * block behind frames that are in the queue right now. The deadline at the top of the loop
+		 * is what stops a queue that keeps producing skippable events from holding the caller. */
+		if (rc == 2) continue;
+		/* rc == 1: the queue really is empty, and waiting is the whole point. */
 		if (!ev_handle) {
 			/* No notification object — xlSetNotification failed at open. Returning at once made
 			 * recv(200) an immediate no, so the GUI's receive loop retried with no delay and

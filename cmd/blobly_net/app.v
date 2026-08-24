@@ -359,6 +359,10 @@ mut:
 	network_buf  []u8
 	address_buf  []u8
 	bitrate_buf  []u8
+	// The CAN-FD data phase. A BUFFER rather than a number with a zero default, because empty and
+	// zero have to stay distinguishable: empty means "no separate data phase, run it at the
+	// nominal rate", which is a real CAN-FD configuration and not an absent answer.
+	dbitrate_buf []u8
 	manifest_buf []u8
 	dbc_buf      []u8 // "+ Add DBC" typed-path fallback
 	// DoIP

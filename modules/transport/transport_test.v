@@ -94,7 +94,17 @@ fn test_a_software_bus_is_not_clamped() {
 	assert u.data.len == 24
 	assert !clamps_to_classic('inproc:CAN1')
 	assert clamps_to_classic('vcan0')
-	assert clamps_to_classic('pcan:PCAN_USBBUS1@500000')
+	// PLATFORM-SPLIT for the same reason as the echo test above, whose comment spells it out: the
+	// vendor backends exist only on Windows, and there a `pcan:` name is a vendor interface that
+	// REJECTS an out-of-range frame rather than truncating it — so it does not clamp. On Linux the
+	// same string is an ordinary SocketCAN interface, and the kernel clamps. Asserted
+	// unconditionally, this encoded the Linux answer as universal and failed on Windows; no CI
+	// runner noticed, because `windows.yml` builds the module tests without running them.
+	$if windows {
+		assert !clamps_to_classic('pcan:PCAN_USBBUS1@500000')
+	} $else {
+		assert clamps_to_classic('pcan:PCAN_USBBUS1@500000')
+	}
 }
 
 // …and an id the software bus would carry verbatim is left alone too.

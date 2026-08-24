@@ -386,6 +386,20 @@ pub fn (c Channel) iface_with_bitrate() string {
 	}
 	if (c.adapter == 'pcan' || c.adapter == 'kvaser' || c.adapter == 'vector') && c.bitrate > 0 {
 		base = '${base}@${c.bitrate}'
+		// THE DATA PHASE TRAVELS WITH THE RATE, on the one backend that can configure it. `fd` and
+		// `data_bitrate` sat in the schema and in the editor and reached no transport at all: the
+		// address is everything `open` is given, so a `canfd` Vector row opened CLASSIC and then
+		// refused every FD frame at send() — the project saying one thing and the wire doing
+		// another, which is the failure this whole function exists to stop.
+		//
+		// DEFAULTED TO THE ARBITRATION RATE rather than dropped when `data_bitrate` is unset. FD
+		// at one rate is a real configuration (64-byte payloads, no bit-rate switch), and it is
+		// the honest reading of "this channel is CAN-FD" with nothing said about its data phase.
+		// Dropping the flag instead would silently downgrade the row to classic.
+		if c.adapter == 'vector' && c.fd {
+			dbr := if c.data_bitrate > 0 { c.data_bitrate } else { c.bitrate }
+			base = '${base}/${dbr}'
+		}
 	}
 	// LISTEN-ONLY REACHES THE TRANSCEIVER, on the one backend that can do it. Everywhere else
 	// `listen_only` stops the application transmitting and nothing more, so the adapter still
@@ -1316,11 +1330,38 @@ fn conflict_wire_key(c Channel) string {
 //     rows it says are different and the hardware says are not.
 //
 // (Named vendor_destination_conflicts while both halves were vendor-only.)
+// fd_wanted reduces a channel's CAN-FD configuration to the one comparable number
+// destination_conflicts groups on: 0 for classic, and otherwise the data bitrate the wire's
+// payload phase would run at.
+//
+// THE DEFAULT MATCHES iface_with_bitrate's. A row marked FD with no data bitrate opens at its
+// arbitration rate, so that is the figure it must be compared with — reading it as 0 here would
+// make an FD row look classic and let it share a wire with one.
+fn fd_wanted(c Channel) int {
+	if !c.fd {
+		return 0
+	}
+	if c.data_bitrate > 0 {
+		return c.data_bitrate
+	}
+	return if c.bitrate > 0 { c.bitrate } else { 500000 }
+}
+
+// fd_describe names an fd_wanted value the way an operator would read it back.
+fn fd_describe(v int) string {
+	return if v == 0 { 'classic CAN' } else { 'CAN-FD with a ${v} bit/s data phase' }
+}
+
 pub fn destination_conflicts(chs []Channel) []string {
 	mut out := []string{}
 	mut quiet := map[string]string{}
 	mut rate := map[string]int{}
 	mut rate_row := map[string]string{}
+	// The protocol a wire runs, as a comparable value: 0 classic, otherwise the data bitrate.
+	// One map rather than two, because "is it FD" and "at what data rate" are one answer — a row
+	// asking FD at 2 Mbit/s disagrees with a classic row and with an FD row at 4 Mbit/s alike.
+	mut fd_mode := map[string]int{}
+	mut fd_row := map[string]string{}
 	for c in chs {
 		if !c.enabled {
 			continue
@@ -1345,6 +1386,24 @@ pub fn destination_conflicts(chs []Channel) []string {
 		} else {
 			rate[k] = want
 			rate_row[k] = c.name
+		}
+		// THE PROTOCOL AND ITS DATA PHASE, checked exactly as the rate above and for the same
+		// reason: a wire runs one of them. Two enabled rows that disagree have stated something
+		// the hardware cannot do — the Vector backend refuses the second port with -1011/-1012 —
+		// and that is answerable here, from the file, instead of as a channel that fails to open
+		// halfway through a Start.
+		//
+		// The comparison is on the ROW's fields rather than on its address, because that is what
+		// the operator edits and what iface_with_bitrate composes the address from; comparing the
+		// composed strings would make this a test of the composer.
+		fdw := fd_wanted(c)
+		if prev := fd_mode[k] {
+			if prev != fdw {
+				out << '${c.name} and ${fd_row[k]} share ${c.iface} but ask for ${fd_describe(fdw)} and ${fd_describe(prev)}'
+			}
+		} else {
+			fd_mode[k] = fdw
+			fd_row[k] = c.name
 		}
 	}
 	// DISAGREEMENT IS THE CONFLICT, not "would this row transmit".

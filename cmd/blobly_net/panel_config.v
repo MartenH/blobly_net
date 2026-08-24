@@ -468,6 +468,18 @@ fn (mut app App) draw_bus_editor(i int) bool {
 		}
 		vgui.same_line()
 		vgui.help_marker('Nominal bit rate in bit/s (e.g. 500000). For virtual/vcan buses this is informational; for real hardware it configures the interface.')
+		// ONLY WHEN THE CHANNEL IS FD, because on a classic channel there is no data phase for the
+		// number to describe — an always-visible field would invite a value that nothing reads and
+		// that a save would then persist as a property of a classic bus.
+		if ch.fd {
+			vgui.same_line()
+			vgui.set_next_item_width(90)
+			if vgui.input_text('data rate##cd${i}', mut app.cfg_bufs[i].dbitrate_buf) {
+				app.dirty = true
+			}
+			vgui.same_line()
+			vgui.help_marker('CAN-FD data-phase bit rate in bit/s (e.g. 2000000) — the faster rate the payload is sent at. Leave empty to run the data phase at the nominal rate, which is CAN-FD without a bit-rate switch (64-byte payloads, no speed-up). Configured by the Vector backend; PCAN and Kvaser refuse CAN-FD.')
+		}
 		vgui.text('mode:')
 		vgui.same_line()
 		vgui.help_marker('off = configured but not attached · monitor = observe live traffic · replay = play a recording onto the bus.')
