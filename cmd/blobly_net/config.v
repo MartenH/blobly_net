@@ -116,7 +116,17 @@ fn (mut app App) commit_cfg() {
 		// on every structural change and before every Save, so zeroing here would quietly discard
 		// a good stored rate the moment the buffer held a typo mid-edit.
 		dbr_txt := vgui.buf_str(b.dbitrate_buf).trim_space()
-		if dbr_txt == '' {
+		// THE SAME CONDITION THE PANEL DRAWS IT UNDER. A row switched from canfd back to can hides
+		// this field, and validating it anyway blocked Start and Save on text the operator could
+		// no longer see or reach without turning FD back on — a refusal with no visible cause,
+		// which is worse than the silent coercion the validation replaced. The stale text is
+		// dropped rather than kept, because a row with no data phase has nothing to remember it
+		// for (codex #181 r6).
+		if !(ch.fd && ch.can_carry_fd()) {
+			// NOT `continue`: the DoIP and replay blocks below belong to this same row, and
+			// skipping the rest of the body would drop their edits on any classic channel.
+			ch.data_bitrate = 0
+		} else if dbr_txt == '' {
 			ch.data_bitrate = 0
 		} else if project.is_all_digits(dbr_txt) && dbr_txt.int() > 0 {
 			ch.data_bitrate = dbr_txt.int()

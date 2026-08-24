@@ -74,7 +74,7 @@ fn C.ct_vector_borrow_unlock()
 fn C.ct_vector_probe(int, &int, &int, &int, &u64) int
 fn C.ct_vector_channel_info(int, &char, int, &char, int, &int, &int, &int, &u32, &u32, &u32, &int, &int) int
 fn C.ct_vector_error_frames() int
-fn C.ct_vector_chipstate(int, u64, &int, &int, &int) int
+fn C.ct_vector_chipstate(int, u64, &int, &int, &int, int) int
 fn C.ct_vector_reqchip(int, u64) int
 fn C.ct_vector_set_verbose(int)
 fn C.ct_vector_err(int) &char
@@ -115,8 +115,7 @@ pub fn open_vector(spec string) !&VectorBus {
 	isfd := if s.fd { 1 } else { 0 }
 	// A TIMING PER PHASE. Each reaches the same ~80% sample point with its own quanta count and
 	// its own prescaler; requiring them to share a count refuses rate pairs the hardware can do.
-	// The data timing is computed for the arbitration rate on a classic channel, where it is
-	// simply unused — the shim only reads it when `fd` is set.
+	//
 	// REFUSED HERE, with the rate named, rather than by the driver with a bare XL status. A rate
 	// this controller's clock cannot produce is not something the open might get away with — see
 	// vector_fd_timing — and the parser accepts rates on the standard's ranges rather than on this
@@ -124,8 +123,17 @@ pub fn open_vector(spec string) !&VectorBus {
 	at := vector_fd_timing(s.bitrate) or {
 		return error('Vector channel ${s.channel}: arbitration ${err}')
 	}
-	dt := vector_fd_timing_data(if s.data_bitrate > 0 { s.data_bitrate } else { s.bitrate }) or {
-		return error('Vector channel ${s.channel}: CAN-FD data phase ${err}')
+	// ONLY WHEN THERE IS A DATA PHASE. Computed unconditionally, this ran the ARBITRATION rate
+	// through the DATA phase's narrower ceiling and refused classic addresses over a value the
+	// shim never reads: `vector:1@5000` resolves at 64 quanta for arbitration and has no data
+	// phase at all, yet failed to open because 5000 does not fit 25 quanta. A classic channel is
+	// not a slow FD channel (codex #181 r6).
+	dt := if s.fd {
+		vector_fd_timing_data(s.data_bitrate) or {
+			return error('Vector channel ${s.channel}: CAN-FD data phase ${err}')
+		}
+	} else {
+		at // unused by the shim when fd is 0; carried so the call site has one shape
 	}
 	// 0-BASED at the API, 1-based in the spelling: Vector Hardware Configuration numbers the
 	// application channels from 1 and the operator reads the interface string against that
@@ -555,7 +563,7 @@ pub fn (b &VectorBus) chip_state() !VectorChipState {
 	mut bs := 0
 	mut tx := 0
 	mut rx := 0
-	if C.ct_vector_chipstate(b.port, b.mask, &bs, &tx, &rx) != 0 {
+	if C.ct_vector_chipstate(b.port, b.mask, &bs, &tx, &rx, if b.fd { 1 } else { 0 }) != 0 {
 		return error('the controller did not report its state')
 	}
 	return VectorChipState{

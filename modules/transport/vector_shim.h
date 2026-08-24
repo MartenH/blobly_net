@@ -1125,22 +1125,42 @@ static int ct_vector_reqchip(ct_xlport port, uint64_t mask) {
 	return ct_xl_reqchip(port, (ct_xlaccess)mask) == 0 ? 0 : -1;
 }
 
-static int ct_vector_chipstate(ct_xlport port, uint64_t mask, int *bus_status, int *tx_err, int *rx_err) {
+/* THE PORT'S OWN RECEIVE API, exactly as ct_vector_read chooses one. A V4 port's queue carries
+ * 128-byte events with a different header, so reading it with xlReceive into a 48-byte ct_xlevent
+ * interprets one struct's bytes through the other's layout — the tag never matches, the loop spins
+ * out its 200 attempts and reports "the controller did not report its state". That is the generic
+ * failure, so on an FD bench the one diagnostic that separates an unacknowledged frame from a
+ * wiring fault was unavailable precisely when a run had produced no traffic (codex #181 r6). */
+static int ct_vector_chipstate(ct_xlport port, uint64_t mask, int *bus_status, int *tx_err,
+                               int *rx_err, int port_is_fd) {
 	ct_xlevent ev;
+	ct_xl_can_rx_event fdev;
 	unsigned int count;
 	ct_xlstatus st;
 	int spins;
 	if (!ct_xl_reqchip) return -1;
+	if (port_is_fd && !ct_xl_canreceive) return -1;
 	st = ct_xl_reqchip(port, (ct_xlaccess)mask);
 	if (st != 0) return -(int)st;
 	for (spins = 0; spins < 200; spins++) {
-		count = 1;
-		st = ct_xl_receive(port, &count, &ev);
-		if (st == 0 && count > 0 && ev.tag == CT_XL_CHIP_STATE) {
-			*bus_status = ev.tagData.raw[0];
-			*tx_err     = ev.tagData.raw[1];
-			*rx_err     = ev.tagData.raw[2];
-			return 0;
+		if (port_is_fd) {
+			memset(&fdev, 0, sizeof(fdev));
+			st = ct_xl_canreceive(port, &fdev);
+			if (st == 0 && fdev.tag == CT_XL_CAN_EV_TAG_CHIP_STATE) {
+				*bus_status = fdev.tagData.canChipState.busStatus;
+				*tx_err     = fdev.tagData.canChipState.txErrorCounter;
+				*rx_err     = fdev.tagData.canChipState.rxErrorCounter;
+				return 0;
+			}
+		} else {
+			count = 1;
+			st = ct_xl_receive(port, &count, &ev);
+			if (st == 0 && count > 0 && ev.tag == CT_XL_CHIP_STATE) {
+				*bus_status = ev.tagData.raw[0];
+				*tx_err     = ev.tagData.raw[1];
+				*rx_err     = ev.tagData.raw[2];
+				return 0;
+			}
 		}
 		Sleep(5);
 	}

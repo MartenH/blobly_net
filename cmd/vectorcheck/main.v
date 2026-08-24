@@ -338,7 +338,7 @@ fn test_payload(seq u32, len int) []u8 {
 // assumed: a link that carries our 64-byte FD frame back as a classic 8-byte one has not carried
 // it, and a run that accepted either would report a working FD wire on a bus that quietly fell
 // back. `want_fd` and `want_len` are what the transmit side was configured for.
-fn is_test_frame(f transport.CanFrame, want_fd bool, want_len int) bool {
+fn is_test_frame(f transport.CanFrame, want_fd bool, want_brs bool, want_len int) bool {
 	// ALL FOUR marker bytes. Checking two of them let a payload corrupted in byte 5 or 6 pass as
 	// a good frame, which is the one thing a link test must not do: the markers are there to
 	// notice corruption, and half of them notice half of it.
@@ -346,6 +346,15 @@ fn is_test_frame(f transport.CanFrame, want_fd bool, want_len int) bool {
 	// payload is a different message on the wire, and accepting it would report a link that
 	// faithfully carries something we never sent.
 	if f.extended || f.rtr || f.fd != want_fd {
+		return false
+	}
+	// THE BIT-RATE SWITCH IS PART OF THE EXPERIMENT, so it is part of what a frame has to match.
+	// Checking only `fd` meant a backend that dropped BRS and carried the whole payload at the
+	// ARBITRATION rate returned frames this accepted, every one of them counted, and the run
+	// printed PAIR TEST PASSED — proving 64-byte frames and nothing whatever about the data phase
+	// the operator asked for. Nothing else here would have caught it: the throughput is printed
+	// but never compared against a threshold (codex #181 r6).
+	if f.brs != want_brs {
 		return false
 	}
 	if f.data.len != want_len {
@@ -1201,7 +1210,7 @@ fn pair_test(o Opts) ! {
 			if !ok {
 				break
 			}
-			if !is_test_frame(got, want_fd, want_len) {
+			if !is_test_frame(got, want_fd, fo.brs, want_len) {
 				n_bad++
 				continue
 			}
@@ -1227,7 +1236,7 @@ fn pair_test(o Opts) ! {
 		// THE SAME CHECK the main loop applies. Counting any eight-byte frame let unrelated
 		// traffic on a live bus finish the test for us — PAIR TEST PASSED on somebody else's
 		// frames, which is the one result this tool must never print.
-		if !is_test_frame(got, want_fd, want_len) {
+		if !is_test_frame(got, want_fd, fo.brs, want_len) {
 			// COUNTED, as the main loop counts it. At saturation most frames arrive in this
 			// drain, so a corrupted one landing here was silently skipped and the run reported
 			// zero malformed — the tail is where the evidence mostly is.
