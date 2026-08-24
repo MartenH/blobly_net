@@ -42,6 +42,18 @@ fn (app &App) open_transport(iface string) !transport.Bus {
 // CAN-FD row was projected into a classic one and opened `vector:<n>@<rate>` with no data phase.
 // Every FD frame was then refused by VectorBus.send, on the GUI path only, because the headless
 // runner passes real project rows and never comes through here (codex #181 r1).
+// rejected_edit reports why this channel's editor fields would not commit, or none. By NAME,
+// because that is what a CfgInvalid entry and a runtime row have in common — the entry is built
+// from the project model and the Buses panel acts on the runtime one.
+fn (app &App) rejected_edit(name string) ?string {
+	for bad in app.cfg_invalid {
+		if bad.name == name {
+			return bad.why
+		}
+	}
+	return none
+}
+
 fn (c Chan) for_open() project.Channel {
 	return project.Channel{
 		iface:        c.iface
@@ -223,7 +235,9 @@ fn (mut app App) start() {
 	// is what makes keeping the old value safe (codex #181 r5).
 	// ENABLED ROWS ONLY. A disabled channel is never opened, so a field it could not commit is not
 	// a reason to refuse the run — blocking on one stopped every other bus until an unused row was
-	// corrected. Save still checks the whole project, because a save writes all of it (#183 r2).
+	// corrected. Save still checks the whole project, because a save writes all of it (#183 r2),
+	// and the Buses panel refuses to ENABLE such a row mid-run, which is the door this exemption
+	// would otherwise leave open (#183 r3).
 	blocking := app.cfg_invalid.filter(it.enabled).map('${it.name}: ${it.why}')
 	if blocking.len > 0 {
 		app.notify('not starting — ${blocking.join('; ')} (correct it in Configuration ▸ Buses, or clear the field)')

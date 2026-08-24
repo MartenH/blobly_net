@@ -322,6 +322,20 @@ fn draw_buses(mut app App, chans []Chan) {
 						continue
 					}
 				}
+				// A ROW WITH A REJECTED EDIT MAY NOT JOIN A RUN, and this path is the only way one
+				// can. Start refuses on enabled rows only — a disabled channel is never opened, so
+				// its uncommitted field is not a reason to stop the others (#183 r2) — which is
+				// exactly what leaves this door open: enabling that row mid-run would put it on
+				// the wire at the model's PREVIOUS rate while the editor still shows the value
+				// that was refused. The same model/editor mismatch the Start guard exists to
+				// prevent, arrived at from the side (codex #183 r3).
+				if new {
+					if why := app.rejected_edit(app.chans[i].name) {
+						app.mu.unlock()
+						app.notify('${app.chans[i].name}: ${why} — correct it in Configuration ▸ Buses before enabling this channel')
+						continue
+					}
+				}
 				if app.running && app.chans[i].mode == 'replay' && app.chans[i].replay_src != '' {
 					app.mu.unlock()
 					app.notify('${app.chans[i].name}: replay channels are fixed while running — Stop and Start to change which ones play')

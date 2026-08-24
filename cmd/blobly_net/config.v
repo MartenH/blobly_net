@@ -758,6 +758,20 @@ fn (mut app App) save_as(path string) {
 		app.cfg_tab = 1
 		return
 	}
+	// THE SAME ORDERING, for the same reason as the guard above and one this change had to be
+	// taught: save_project refuses on a rejected editor field, but by then proj_path already names
+	// the new destination — so a failed Save As wrote nothing and still rebound the application to
+	// a file it had not written, moving the relative asset base and the target of the next plain
+	// Save with it. Committing first is what makes the check meaningful here: cfg_invalid is
+	// rebuilt by commit_cfg, so testing it before the buffers are folded in would read a stale
+	// answer (codex #183 r3).
+	app.commit_cfg()
+	if app.cfg_invalid.len > 0 {
+		bad := app.cfg_invalid.map('${it.name}: ${it.why}')
+		app.notify('not saved — ${bad.join('; ')} (correct it in Configuration ▸ Buses, or clear the field)')
+		app.show_config = true
+		return
+	}
 	mut p := path
 	if !p.ends_with('.blobnet') && !p.ends_with('.yml') && !p.ends_with('.yaml') {
 		p += '.blobnet'
