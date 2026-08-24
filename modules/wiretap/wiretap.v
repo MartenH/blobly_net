@@ -135,13 +135,28 @@ mut:
 // emission ends with a verdict. Silent eviction would go quiet in exactly the sustained-traffic
 // case where a dead bus matters most.
 pub fn (mut r Ring) note(seq u64, iface string, f transport.CanFrame, t_ms f64, monitors []int, tag string, done bool) []u64 {
+	// THE WIRE, not the spelling. An emitter and the monitor that will see its echo do not have
+	// to name the destination the same way: one enabled row may transmit through a tap opened as
+	// `vector:ch1` while the single reader for that wire was opened as `vector:1`, and both are
+	// the same application channel. Matching raw strings left the emission unclaimable and the
+	// frame duplicated as RX — the very bug this ring exists to prevent (codex #174 P1).
+	//
+	// wire_key, and NOT destination_key: the difference is the whole safety boundary here.
+	// destination_key keeps the `@<bitrate>`, and the two sides of an echo do not spell the rate
+	// the same way — a tap's identity is built with the rate STRIPPED while a reader claims under
+	// its channel's full interface string, so on any wire not at the 500000 default the two would
+	// resolve differently and nothing would ever match. wire_key is that identity without the
+	// rate, which is right on its own terms too: the rate is a setting ON a wire, not which wire
+	// it is. For the software buses it is canonical_iface, so nothing changes for them — and it
+	// leaves their `@` alone, because `inproc:bench@A` is a bus NAME.
+	wire := transport.wire_key(iface)
 	r.items << Pending{
 		seq:     seq
-		key:     frame_key(iface, f)
+		key:     frame_key(wire, f)
 		tag:     tag
 		done:    done
 		allowed: monitors.clone()
-		iface:   iface
+		iface:   wire
 		id:    f.id
 		ext:   f.extended
 		rtr:   f.rtr
@@ -238,7 +253,10 @@ fn frame_key(iface string, f transport.CanFrame) u64 {
 // consuming would attribute both to us and hide the collision this exists to surface.
 pub fn (mut r Ring) claim(monitor int, iface string, f transport.CanFrame, t_ms f64) ?Claim {
 	r.drop_expired(t_ms)
-	want := frame_key(iface, f)
+	// Resolved the same way `note` resolved it, or an emitter and its monitor that spell one
+	// wire differently never meet. See the comment there.
+	wire := transport.wire_key(iface)
+	want := frame_key(wire, f)
 	// BY INDEX, not `for i, p in`. That form copies each Pending — strings, payload, monitor
 	// lists and all — for every candidate, which cost ~200us per received frame at a full ring:
 	// three times the gap between frames on a saturated 1 Mbit bus. Nothing here needs a copy.
@@ -265,7 +283,7 @@ pub fn (mut r Ring) claim(monitor int, iface string, f transport.CanFrame, t_ms 
 		// happens to share the low 11 bits, an RTR request is not the echo of the data frame
 		// answering it, and a CAN-FD frame is not the echo of a classic one carrying the same
 		// eight bytes — every shortcut here attributes a real ECU's frame to us.
-		if p.iface == iface && p.id == f.id && p.ext == f.extended && p.rtr == f.rtr
+		if p.iface == wire && p.id == f.id && p.ext == f.extended && p.rtr == f.rtr
 			&& p.fd == f.fd && p.brs == f.brs && p.data == f.data {
 			first := p.claimed.len == 0
 			r.items[i].claimed << monitor
