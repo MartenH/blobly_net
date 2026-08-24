@@ -33,6 +33,38 @@ pub fn vendor_bitrate(tok string, default_rate int) !int {
 	return n
 }
 
+// vendor_split_fd_rate separates the rate token of a CAN-FD address: `<arb>/<data>`.
+//
+// THE DATA RATE IS THE FD FLAG. There is no separate `,fd` — one thing to say, so there is no way
+// for the two to contradict each other, and no address that claims FD while naming a single rate
+// the driver would then have to guess a payload phase for. `500000` is classic; `500000/2000000`
+// is FD; `500000/500000` is FD with no bit-rate switch, which is a real configuration (64-byte
+// payloads at the arbitration rate) and the reason the same-rate case has to be spellable.
+//
+// Returns (arb, data, is_fd). `data` is 0 when the address is classic, so a caller that ignores
+// is_fd cannot silently configure a data phase.
+pub fn vendor_split_fd_rate(tok string, default_rate int) !(int, int, bool) {
+	t := tok.trim_space()
+	if !t.contains('/') {
+		return vendor_bitrate(t, default_rate)!, 0, false
+	}
+	parts := t.split('/')
+	if parts.len > 2 {
+		return error('"${t}" names more than two bitrates — a CAN-FD address is <arbitration>/<data>')
+	}
+	arb := vendor_bitrate(parts[0], default_rate)!
+	data := vendor_bitrate(parts[1], default_rate)!
+	// THE DATA PHASE CANNOT BE SLOWER. That is the whole point of the second rate — FD switches to
+	// it to move the payload faster — and a controller asked for the reverse either refuses or
+	// produces a bus nothing else on it can read. Caught here, where the numbers are still a
+	// string the operator typed, rather than as a bare XL status from a channel that would not
+	// configure.
+	if data < arb {
+		return error('CAN-FD data bitrate ${data} is slower than the arbitration bitrate ${arb} — the data phase is the fast one')
+	}
+	return arb, data, true
+}
+
 // vendor_split_rate separates `<channel>[@<bitrate>]`, applying both rules: at most one rate,
 // and that rate a whole number.
 //

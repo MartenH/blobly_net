@@ -218,6 +218,57 @@ pub mut:
 // from adapter+address). v1 files (`channels:` with `interface:`/`type:`) still
 // load — the parser decomposes `interface` back into adapter+address so the editor
 // always has them. See compose_iface / decompose_iface.
+// all_digits_of is the "a rate that is nearly a number is not a number" rule, as a predicate.
+// V's `.int()` takes a numeric prefix, so `250000garbage` reads as 250000 — the mistake this
+// repo has now fixed once per caller. Non-empty and every byte a digit.
+pub fn is_all_digits(s string) bool {
+	if s.len == 0 {
+		return false
+	}
+	for c in s {
+		if !c.is_digit() {
+			return false
+		}
+	}
+	return true
+}
+
+// strict_rate reads a bits-per-second scalar from a project file, refusing one that is only
+// PARTLY a number.
+//
+// THE SAME RULE AS EVERY OTHER READER OF A RATE, and the reason it is a function is that the rule
+// had to be applied three times before it stopped being got wrong: transport.vendor_bitrate for
+// the address, the editor buffer, and now the file itself. `2000000oops` reached the Vector
+// backend as 2000000 through V's permissive `.int()`, so the Configuration ▸ File tab and the
+// headless runner could run a data phase different from the one the project states — and the
+// round-2 fix for the GUI validated only the editor buffer, leaving the file it saves to
+// unguarded (codex #181 r3).
+//
+// REFUSES THE PROJECT rather than defaulting. A malformed rate has no safe reading: 0 means "run
+// the data phase at the nominal rate", which is a real configuration and not what the file says,
+// so silently choosing it puts a bench on a wire at a speed nobody asked for. The message names
+// the field and the value, because this is a hand-edited file and the author can fix it.
+fn strict_rate(c yaml.Any, key string) !int {
+	v := c.value(key).default_to('').string().trim_space()
+	if v == '' {
+		return 0
+	}
+	if !is_all_digits(v) {
+		return error('${key}: "${v}" is not a rate — digits only, in bits per second')
+	}
+	return v.int()
+}
+
+// default_bitrate is what an unset nominal rate MEANS, in the one place it is decided.
+//
+// It was written out as a bare 500000 in three places that have to agree — the struct default,
+// the conflict check's `want`, and fd_wanted — and iface_with_bitrate had a FOURTH reading in
+// which an unset rate meant "compose no address suffix at all". So a CAN-FD row with no explicit
+// bitrate opened classic while the conflict check called the same wire CAN-FD at 500 kbit/s: the
+// project refusing a mixture on a wire it was itself opening as the other half of that mixture
+// (codex #181 r2). One constant, so a future default cannot move in some of them.
+pub const default_bitrate = 500000
+
 pub struct Channel {
 pub mut:
 	name         string = 'CAN'
@@ -226,7 +277,7 @@ pub mut:
 	address      string = 'vcan0' // v2: adapter-specific (CAN1 / vcan0 / can0 / grp:port / host:port)
 	typ          string = 'can'   // yaml `type`/`protocol`: can | canfd | doip
 	iface        string = 'vcan0' // derived scheme string (composed from adapter+address)
-	bitrate      int    = 500000
+	bitrate      int    = default_bitrate
 	fd           bool
 	data_bitrate int
 	sample_point f64
@@ -384,8 +435,30 @@ pub fn (c Channel) iface_with_bitrate() string {
 		mode = ',' + base.all_after_last(',')
 		base = base.all_before_last(',')
 	}
-	if (c.adapter == 'pcan' || c.adapter == 'kvaser' || c.adapter == 'vector') && c.bitrate > 0 {
-		base = '${base}@${c.bitrate}'
+	// THE SAME DEFAULT fd_wanted USES, and it has to be the same one. This block used to be
+	// skipped entirely when `bitrate` was 0, so a row with `fd: true` and no nominal rate composed
+	// a bare address and opened CLASSIC — while fd_wanted, reading that same 0 as the transport's
+	// 500000 default, reported the wire as CAN-FD to every conflict check. The project refused
+	// mixtures on a wire it was simultaneously opening as classic. One reading of an unset rate,
+	// here, where the address is built (codex #181 r2).
+	nominal := if c.bitrate > 0 { c.bitrate } else { default_bitrate }
+	if (c.adapter == 'pcan' || c.adapter == 'kvaser' || c.adapter == 'vector')
+		&& (c.bitrate > 0 || (c.adapter == 'vector' && c.fd)) {
+		base = '${base}@${nominal}'
+		// THE DATA PHASE TRAVELS WITH THE RATE, on the one backend that can configure it. `fd` and
+		// `data_bitrate` sat in the schema and in the editor and reached no transport at all: the
+		// address is everything `open` is given, so a `canfd` Vector row opened CLASSIC and then
+		// refused every FD frame at send() — the project saying one thing and the wire doing
+		// another, which is the failure this whole function exists to stop.
+		//
+		// DEFAULTED TO THE ARBITRATION RATE rather than dropped when `data_bitrate` is unset. FD
+		// at one rate is a real configuration (64-byte payloads, no bit-rate switch), and it is
+		// the honest reading of "this channel is CAN-FD" with nothing said about its data phase.
+		// Dropping the flag instead would silently downgrade the row to classic.
+		if c.adapter == 'vector' && c.fd {
+			dbr := if c.data_bitrate > 0 { c.data_bitrate } else { nominal }
+			base = '${base}/${dbr}'
+		}
 	}
 	// LISTEN-ONLY REACHES THE TRANSCEIVER, on the one backend that can do it. Everywhere else
 	// `listen_only` stops the application transmitting and nothing more, so the adapter still
@@ -507,9 +580,9 @@ fn parse_channel(c yaml.Any) !Channel {
 	mut ch := Channel{
 		name:         c.value('name').default_to('CAN').string()
 		network:      c.value('network').default_to('').string()
-		bitrate:      c.value('bitrate').default_to(i64(500000)).int()
+		bitrate:      c.value('bitrate').default_to(i64(default_bitrate)).int()
 		fd:           c.value('fd').default_to(false).bool()
-		data_bitrate: c.value('data_bitrate').default_to(i64(0)).int()
+		data_bitrate: strict_rate(c, 'data_bitrate')!
 		sample_point: c.value('sample_point').default_to(f64(0)).f64()
 		mode:         mode_from(c.value('mode').default_to('monitor').string())
 		listen_only:  c.value('listen_only').default_to(false).bool()
@@ -596,6 +669,33 @@ fn parse_channel(c yaml.Any) !Channel {
 			// prefix, so `250000garbage` parsed as 250000, took the success path, and the
 			// recomposition dropped the garbage before the transport parser could object. A
 			// rate that is nearly a number is not a number.
+			// A CAN-FD RATE HAS TWO PHASES, and a v1 `interface:` may carry both — the address
+			// form this release documents. Lifted here into `bitrate` + `data_bitrate` + `fd`,
+			// because everything below reads those fields and `iface_with_bitrate` recomposes the
+			// address from them. Left to the digits-only test, `500000/2000000` was "not a
+			// number", so the whole spec was preserved verbatim AND another `@500000` was appended
+			// to it — producing `vector:1@500000/2000000@500000`, which the strict parser then
+			// refused for having two rates. A legacy project could not use the advertised FD form
+			// at all (codex #181 r2).
+			mut migrated_fd := false
+			if ch.adapter == 'vector' && !two_rates && tail.count('/') == 1 {
+				fd_arb, fd_dat := tail.all_before('/'), tail.all_after('/')
+				if is_all_digits(fd_arb) && is_all_digits(fd_dat) {
+					arb, dat := fd_arb.int(), fd_dat.int()
+					// SANITY ONLY, not the full range check: parse_vector_spec owns the ranges
+					// and must stay the thing that refuses a bad one. What matters here is not to
+					// migrate a pair that would compose into something worse than it started as —
+					// anything this leaves alone falls through to the verbatim branch below and
+					// is refused downstream with its evidence intact.
+					if arb > 0 && dat > 0 {
+						ch.bitrate = arb
+						ch.fd = true
+						ch.data_bitrate = dat
+						ch.iface = compose_iface(ch.adapter, ch.address)
+						migrated_fd = true
+					}
+				}
+			}
 			mut all_digits := tail.len > 0
 			for ch_b in tail {
 				if !ch_b.is_digit() {
@@ -604,7 +704,11 @@ fn parse_channel(c yaml.Any) !Channel {
 				}
 			}
 			br := if all_digits && !two_rates { tail.int() } else { 0 }
-			if br > 0 {
+			if migrated_fd {
+				// Already lifted into bitrate + data_bitrate + fd above; the verbatim branch
+				// below would otherwise "preserve" a spec that is no longer malformed and undo
+				// the migration by putting the two-phase rate back into the address.
+			} else if br > 0 {
 				ch.bitrate = br
 				ch.iface = compose_iface(ch.adapter, ch.address)
 			} else {
@@ -1316,11 +1420,39 @@ fn conflict_wire_key(c Channel) string {
 //     rows it says are different and the hardware says are not.
 //
 // (Named vendor_destination_conflicts while both halves were vendor-only.)
+
+// fd_wanted reduces a channel's CAN-FD configuration to the one comparable number
+// destination_conflicts groups on: 0 for classic, and otherwise the data bitrate the wire's
+// payload phase would run at.
+//
+// THE DEFAULT MATCHES iface_with_bitrate's. A row marked FD with no data bitrate opens at its
+// arbitration rate, so that is the figure it must be compared with — reading it as 0 here would
+// make an FD row look classic and let it share a wire with one.
+fn fd_wanted(c Channel) int {
+	if !c.fd {
+		return 0
+	}
+	if c.data_bitrate > 0 {
+		return c.data_bitrate
+	}
+	return if c.bitrate > 0 { c.bitrate } else { default_bitrate }
+}
+
+// fd_describe names an fd_wanted value the way an operator would read it back.
+fn fd_describe(v int) string {
+	return if v == 0 { 'classic CAN' } else { 'CAN-FD with a ${v} bit/s data phase' }
+}
+
 pub fn destination_conflicts(chs []Channel) []string {
 	mut out := []string{}
 	mut quiet := map[string]string{}
 	mut rate := map[string]int{}
 	mut rate_row := map[string]string{}
+	// The protocol a wire runs, as a comparable value: 0 classic, otherwise the data bitrate.
+	// One map rather than two, because "is it FD" and "at what data rate" are one answer — a row
+	// asking FD at 2 Mbit/s disagrees with a classic row and with an FD row at 4 Mbit/s alike.
+	mut fd_mode := map[string]int{}
+	mut fd_row := map[string]string{}
 	for c in chs {
 		if !c.enabled {
 			continue
@@ -1337,7 +1469,7 @@ pub fn destination_conflicts(chs []Channel) []string {
 		// WITHOUT THE RATE. The rate is what these rows disagree about, so a key containing it
 		// gave each of them their own and the comparison below never happened.
 		k := transport.wire_key_for(c.adapter, c.iface)
-		want := if c.bitrate > 0 { c.bitrate } else { 500000 }
+		want := if c.bitrate > 0 { c.bitrate } else { default_bitrate }
 		if prev := rate[k] {
 			if prev != want {
 				out << '${c.name} and ${rate_row[k]} share ${c.iface} but ask for ${want} and ${prev} bit/s'
@@ -1345,6 +1477,34 @@ pub fn destination_conflicts(chs []Channel) []string {
 		} else {
 			rate[k] = want
 			rate_row[k] = c.name
+		}
+		// THE PROTOCOL AND ITS DATA PHASE, checked exactly as the rate above and for the same
+		// reason: a wire runs one of them. Two enabled rows that disagree have stated something
+		// the hardware cannot do — the Vector backend refuses the second port with -1011/-1012 —
+		// and that is answerable here, from the file, instead of as a channel that fails to open
+		// halfway through a Start.
+		//
+		// VECTOR ONLY, unlike the rate above, and the asymmetry is the point. The rate is a real
+		// disagreement on every vendor backend, because all three configure it. The PROTOCOL is
+		// only pinned where something configures a data phase — and PCAN and Kvaser configure
+		// none: both rows open the same classic bus, and each FD frame is refused individually by
+		// the backend. Refusing the whole PROJECT for that would take away a run whose classic
+		// half is real and useful, which is not a trade this check gets to make on its own.
+		//
+		// The comparison is on the ROW's fields rather than on its address, because that is what
+		// the operator edits and what iface_with_bitrate composes the address from; comparing the
+		// composed strings would make this a test of the composer.
+		if c.adapter != 'vector' {
+			continue
+		}
+		fdw := fd_wanted(c)
+		if prev := fd_mode[k] {
+			if prev != fdw {
+				out << '${c.name} and ${fd_row[k]} share ${c.iface} but ask for ${fd_describe(fdw)} and ${fd_describe(prev)}'
+			}
+		} else {
+			fd_mode[k] = fdw
+			fd_row[k] = c.name
 		}
 	}
 	// DISAGREEMENT IS THE CONFLICT, not "would this row transmit".
