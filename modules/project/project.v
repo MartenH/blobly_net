@@ -1430,6 +1430,70 @@ fn conflict_wire_key(c Channel) string {
 //     rows it says are different and the hardware says are not.
 //
 // (Named vendor_destination_conflicts while both halves were vendor-only.)
+// can_carry_fd reports whether this row's backend can put a CAN-FD frame on the wire.
+//
+// A METHOD ON THE ROW so a front end asks the project about a project row rather than importing
+// the transport module to reason about an adapter string itself. The answer still comes from
+// transport, which is where "who implemented FD" belongs; this is the seam, not a second copy.
+pub fn (c Channel) can_carry_fd() bool {
+	return transport.adapter_carries_fd(c.adapter)
+}
+
+// fd_config_error reports why this row's CAN-FD rates could not be opened, or none when they can.
+//
+// ASKS THE REAL PARSER rather than restating its rules, and asks it about the ADDRESS THIS ROW
+// WILL ACTUALLY BE OPENED WITH. An editor enforcing its own copy is a second opinion about the
+// same string, and it was one twice over: `commit_cfg` accepted any positive digit string, so a
+// 250000 data phase under a 500000 nominal was accepted, persisted, and refused only at Start —
+// and the first attempt at this check reached for vendor_split_fd_rate, which enforces the
+// ordering and leaves the RANGES to parse_vector_spec, so 9 Mbit/s still slipped through
+// (codex #183 r1; the second half was caught by this function's own test).
+//
+// Composing through iface_with_bitrate is what makes it exact: whatever that produces is what
+// `transport.open` is handed, so anything this accepts, the open accepts.
+pub fn (c Channel) fd_config_error() ?string {
+	if !c.fd || !c.can_carry_fd() || c.adapter != 'vector' {
+		return none
+	}
+	return transport.vector_address_error(c.iface_with_bitrate())
+}
+
+// fd_capability_warnings reports enabled rows configured for CAN-FD on an adapter whose backend
+// refuses an FD frame — said ONCE, at Start, before any traffic flows.
+//
+// WHY A WARNING AND NOT A REFUSAL (issue #170). The failure it describes is quiet in the worst
+// way: replay counts refused frames into `failed` and keeps going, so a recording that is part
+// classic and part FD replays its classic half and produces "a convincing-looking measurement
+// that is missing traffic". But the run is not worthless — the classic half is real, and a bench
+// may deliberately be exercising it — so refusing to start would take away something that works.
+// The honest answer is to say so before the operator reads the results, which is what #141
+// established for a channel that cannot open at all.
+//
+// NOT a destination_conflicts entry, for that reason: everything in there refuses the project.
+// This is one row being wrong about its own hardware rather than two rows contradicting each
+// other on one wire.
+pub fn fd_capability_warnings(chs []Channel) []string {
+	mut out := []string{}
+	for c in chs {
+		// ENABLED ROWS ONLY, the rule every check here follows: a row switched off states nothing
+		// about the run and will open nothing.
+		if !c.enabled || !c.fd {
+			continue
+		}
+		if c.can_carry_fd() {
+			continue
+		}
+		if c.is_doip() {
+			// A `doip:` row with `type: canfd` is a different mistake — an Ethernet channel
+			// carrying a CAN protocol flag — and naming CAN-FD support would answer a question
+			// nobody asked. Said as what it is.
+			out << '${c.name} is a DoIP channel configured as CAN-FD; the protocol flag does not apply to it and is ignored'
+			continue
+		}
+		out << '${c.name} is configured as CAN-FD on ${c.adapter}, whose backend refuses CAN-FD frames — its classic traffic will run and every FD frame will be counted as failed'
+	}
+	return out
+}
 
 // fd_wanted reduces a channel's CAN-FD configuration to the one comparable number
 // destination_conflicts groups on: 0 for classic, and otherwise the data bitrate the wire's
@@ -1497,9 +1561,11 @@ pub fn destination_conflicts(chs []Channel) []string {
 		// VECTOR ONLY, unlike the rate above, and the asymmetry is the point. The rate is a real
 		// disagreement on every vendor backend, because all three configure it. The PROTOCOL is
 		// only pinned where something configures a data phase — and PCAN and Kvaser configure
-		// none: both rows open the same classic bus, and each FD frame is refused individually by
-		// the backend. Refusing the whole PROJECT for that would take away a run whose classic
-		// half is real and useful, which is not a trade this check gets to make on its own.
+		// none: both rows open the same classic bus and each FD frame is refused individually.
+		// Reported there, this refused the WHOLE PROJECT at Start and so overrode
+		// fd_capability_warnings, whose entire policy is that an FD row on those adapters is a
+		// warning because its classic traffic still runs. Two rules this change introduced,
+		// contradicting each other, with the stricter one silently winning (codex #181 r5).
 		//
 		// The comparison is on the ROW's fields rather than on its address, because that is what
 		// the operator edits and what iface_with_bitrate composes the address from; comparing the

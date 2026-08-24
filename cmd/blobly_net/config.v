@@ -53,6 +53,7 @@ fn parse_u16_hex(s string, deflt u16) u16 {
 // and after add/remove bus/DBC).
 fn (mut app App) sync_cfg_bufs() {
 	app.cfg_bufs = []
+	app.cfg_invalid = []
 	for ch in app.proj.channels {
 		mut rsrc := ''
 		mut rspeed := '1'
@@ -65,6 +66,8 @@ fn (mut app App) sync_cfg_bufs() {
 			network_buf:      mkbuf(ch.network, 48)
 			address_buf:      mkbuf(ch.address, 64)
 			bitrate_buf:      mkbuf('${ch.bitrate}', 12)
+			dbitrate_buf:     mkbuf(if ch.data_bitrate > 0 { '${ch.data_bitrate}' } else { '' },
+				12)
 			manifest_buf:     mkbuf(ch.manifest, 128)
 			dbc_buf:          mkbuf('', 128)
 			tester_buf:       mkbuf('0x${ch.tester_addr:X}', 12)
@@ -82,6 +85,9 @@ fn (mut app App) commit_cfg() {
 	if app.cfg_bufs.len != app.proj.channels.len {
 		return
 	}
+	// REBUILT WHOLESALE each time, not appended to: a field corrected since the last commit must
+	// stop blocking Start, and a stale entry would wedge the run forever.
+	app.cfg_invalid = []
 	for i in 0 .. app.proj.channels.len {
 		b := app.cfg_bufs[i]
 		mut ch := &app.proj.channels[i]
@@ -93,6 +99,59 @@ fn (mut app App) commit_cfg() {
 		br := vgui.buf_str(b.bitrate_buf).int()
 		if br > 0 {
 			ch.bitrate = br
+		}
+		// EMPTY IS A VALUE HERE, unlike the nominal rate above, which keeps its old figure rather
+		// than accepting a zero. Clearing this field deliberately says "no separate data phase",
+		// so it must write 0 — skipped, the previous rate would survive the edit that removed it,
+		// and the channel would go on opening with a data phase the dialog no longer shows.
+		//
+		// DIGITS OR NOTHING otherwise, the same rule transport.vendor_bitrate applies to the address — and
+		// the reason it exists there is this exact coercion. V's `.int()` takes a numeric prefix,
+		// so `2000000oops` became 2000000 and a wholly non-numeric entry became 0, which then
+		// selected the nominal-rate fallback: either way the channel opened with a data phase the
+		// operator had not typed, and a Save wrote that number into the project as though it had
+		// been chosen. A permissive copy of a rule the engine made strict is the drift this repo
+		// keeps paying for (codex #181 r2).
+		//
+		// A REJECTED VALUE LEAVES THE MODEL ALONE rather than resetting it to 0. Committing runs
+		// on every structural change and before every Save, so zeroing here would quietly discard
+		// a good stored rate the moment the buffer held a typo mid-edit.
+		dbr_txt := vgui.buf_str(b.dbitrate_buf).trim_space()
+		// THE SAME CONDITION THE PANEL DRAWS IT UNDER. A row switched from canfd back to can hides
+		// this field, and validating it anyway blocked Start and Save on text the operator could
+		// no longer see or reach without turning FD back on — a refusal with no visible cause,
+		// which is worse than the silent coercion the validation replaced. The stale text is
+		// dropped rather than kept, because a row with no data phase has nothing to remember it
+		// for (codex #181 r6).
+		if !(ch.fd && ch.can_carry_fd()) {
+			// NOT `continue`: the DoIP and replay blocks below belong to this same row, and
+			// skipping the rest of the body would drop their edits on any classic channel.
+			ch.data_bitrate = 0
+		} else if dbr_txt == '' {
+			ch.data_bitrate = 0
+		} else if project.is_all_digits(dbr_txt) && dbr_txt.int() > 0 {
+			ch.data_bitrate = dbr_txt.int()
+		} else {
+			app.notify('${ch.name}: "${dbr_txt}" is not a data bitrate — digits only, in bits per second; keeping ${ch.data_bitrate}')
+			// RECORDED, not only announced. The model keeps its previous rate, so without this the
+			// editor shows one thing and the run uses another with nothing to stop it.
+			app.cfg_invalid << CfgInvalid{
+				idx:     i
+				name:    ch.name
+				why:     'data rate "${dbr_txt}" is not a number'
+			}
+		}
+		// AND THE RATES AS A PAIR, through the engine's own parser. Digits-only says nothing about
+		// whether the two phases make sense together: a 250000 data phase under a 500000 nominal
+		// is a perfectly good number that no FD channel can open, and it was accepted, saved, and
+		// refused only at Start — long after the field that caused it left the screen.
+		if why := ch.fd_config_error() {
+			app.notify('${ch.name}: ${why}')
+			app.cfg_invalid << CfgInvalid{
+				idx:     i
+				name:    ch.name
+				why:     why
+			}
 		}
 		if ch.adapter == 'doip' {
 			ch.tester_addr = parse_u16_hex(vgui.buf_str(b.tester_buf), ch.tester_addr)
@@ -244,6 +303,15 @@ fn (mut app App) set_adapter(i int, a string) {
 	old_iface := app.proj.channels[i].iface
 	was := app.proj.channels[i].adapter
 	app.proj.channels[i].adapter = a
+	// A DoIP ROW IS NOT A CAN ROW, so it cannot still be CAN-FD. Left set, `fd` survived the
+	// transition with no control left on screen to clear it — the CAN/CAN-FD toggles are hidden
+	// for a DoIP adapter — so every Start warned that a DoIP channel was configured as CAN-FD, a
+	// configuration error the editor itself had created and the operator could not undo. Save
+	// persisted `fd: true` beside `type: doip` as well (codex #183 r2).
+	if a == 'doip' {
+		app.proj.channels[i].fd = false
+		app.proj.channels[i].data_bitrate = 0
+	}
 	// SILENT BY DEFAULT when a bus BECOMES a Vector one, for the same reason a discovered
 	// Vector channel starts that way: it is hardware that may already be wired to a running
 	// vehicle, arriving with a 500 kbit/s guess nobody has confirmed. Exposing the adapter in
@@ -592,6 +660,7 @@ fn (mut app App) apply_parsed_text(txt string) bool {
 	app.proj_name = p.name
 	app.mu.unlock()
 	app.cfg_bufs = [] // re-derived from the new channel list on the next Buses render
+	app.cfg_invalid = [] // …and the rejections describing them go with them
 	app.rebuild_from_proj()
 	return true
 }
@@ -637,6 +706,20 @@ fn (mut app App) save_project() {
 		return
 	}
 	app.apply_edits()
+	// THE SAME REFUSAL AS START'S, and Save needs it more: writing the file would persist the
+	// value the rejected field replaced, so a typo the operator can still see on screen becomes
+	// a stored rate they never chose — and the evidence that anything was wrong is gone as soon
+	// as the buffers are rebuilt from the saved model.
+	// EVERY ROW, as Start now also checks: a save writes the whole project, so a value that would
+	// not commit is one the file would be wrong about whichever rows are ticked. The two used to
+	// differ — Start exempted disabled rows — until that exemption turned out to rest on a false
+	// premise (see run.v, #183 r5).
+	if app.cfg_invalid.len > 0 {
+		bad := app.cfg_invalid.map('${it.name}: ${it.why}')
+		app.notify('not saved — ${bad.join('; ')} (correct it in Configuration ▸ Buses, or clear the field)')
+		app.show_config = true
+		return
+	}
 	app.mu.lock()
 	p := app.proj
 	path := app.proj_path
@@ -675,6 +758,20 @@ fn (mut app App) save_as(path string) {
 		app.notify('not saved — the Configuration ▸ File tab has unsaved text; save or revert it there first')
 		app.show_config = true
 		app.cfg_tab = 1
+		return
+	}
+	// THE SAME ORDERING, for the same reason as the guard above and one this change had to be
+	// taught: save_project refuses on a rejected editor field, but by then proj_path already names
+	// the new destination — so a failed Save As wrote nothing and still rebound the application to
+	// a file it had not written, moving the relative asset base and the target of the next plain
+	// Save with it. Committing first is what makes the check meaningful here: cfg_invalid is
+	// rebuilt by commit_cfg, so testing it before the buffers are folded in would read a stale
+	// answer (codex #183 r3).
+	app.commit_cfg()
+	if app.cfg_invalid.len > 0 {
+		bad := app.cfg_invalid.map('${it.name}: ${it.why}')
+		app.notify('not saved — ${bad.join('; ')} (correct it in Configuration ▸ Buses, or clear the field)')
+		app.show_config = true
 		return
 	}
 	mut p := path

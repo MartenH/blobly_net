@@ -182,6 +182,47 @@ fn vector_fd_split(tq int) FdTiming {
 	}
 }
 
+// vector_address_error reports why a `vector:` interface string could not be opened, or none when
+// it can. The scheme prefix is optional, so a caller may pass either what it stores or what it
+// opens with.
+//
+// THE WHOLE RULE, not a piece of it. This exists because a front end that wanted to check a rate
+// pair before Start reached for vendor_split_fd_rate — which enforces the ORDERING and leaves the
+// RANGES to parse_vector_spec, so a 9 Mbit/s data phase passed the editor and was refused at open
+// (codex #183 r1, caught by its own test). Running the real parser is the only check that cannot
+// be a subset of the real check.
+pub fn vector_address_error(iface string) ?string {
+	i := iface.trim_space()
+	body := if i.to_lower().starts_with('vector:') { i['vector:'.len..] } else { i }
+	s := parse_vector_spec(body) or { return err.msg() }
+	return vector_timing_error(s)
+}
+
+// vector_timing_error is the SECOND half of "can this address be opened" — whether this
+// controller's clock can actually produce the rates the parser accepted.
+//
+// SPLIT OUT SO BOTH CALLERS RUN IT. open_vector derives the same timings and refuses on the same
+// condition; a front end that wanted to check an address before Start therefore had to reproduce
+// that, and every attempt so far has been a SUBSET of it. Three rounds running:
+//   - the first checked ordering via vendor_split_fd_rate and missed the ranges;
+//   - the second ran parse_vector_spec and got syntax, ordering and range — and missed timing, so
+//     `500000/750000` was accepted by the editor, saved, and refused only while opening, at a
+//     rate this file's own test pins as unproducible (codex #183 r2);
+//   - so the answer is not a third hand-written approximation but ONE function that both the
+//     editor and the open consult.
+// Whatever this accepts, open_vector accepts.
+fn vector_timing_error(s VectorSpec) ?string {
+	// CLASSIC DERIVES NOTHING, and must not be judged as though it did: xlCanSetChannelBitrate
+	// lets the driver work the timing out, which is what keeps ordinary rates like 83333 — that
+	// no prescaler produces from this clock — perfectly openable (#182 r1).
+	if !s.fd {
+		return none
+	}
+	vector_fd_timing(s.bitrate) or { return 'arbitration ${err.msg()}' }
+	vector_fd_timing_data(s.data_bitrate) or { return 'CAN-FD data phase ${err.msg()}' }
+	return none
+}
+
 // VectorSpec is the parsed interface string.
 //
 // HERE, not in vector_windows.v, and the difference is not cosmetic: written beside the driver
