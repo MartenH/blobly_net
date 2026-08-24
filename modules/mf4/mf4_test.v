@@ -821,3 +821,285 @@ fn test_ordinals_do_not_collide_across_groups() {
 	}
 	assert entries.len == 145534
 }
+
+// build_remote_frame_file writes one sorted CAN_RemoteFrame group. Records are 14 bytes:
+// time f64 @0, ID @8, IDE @12, DLC @13. NO DataBytes and no DataLength channel — a remote frame
+// requests data and carries none, which is exactly why the DataFrame lookups missed the group
+// and it was skipped in silence (#131).
+fn build_remote_frame_file(ids []u32, ides []bool, dlcs []u32, times []f64) []u8 {
+	mut b := Mdf4Builder{}
+	b.buf << 'MDF     '.bytes()
+	b.buf << '4.10    '.bytes()
+	b.buf << 'blobly  '.bytes()
+	b.buf << []u8{len: 4}
+	b.buf << le_bytes(410, 2)
+	b.buf << []u8{len: 34}
+
+	hd := b.block('##HD', 6, []u8{len: 32})
+	dg := b.block('##DG', 4, []u8{len: 8})
+	mut cg_d := []u8{len: 32}
+	for i, x in le_bytes(u64(ids.len), 8) {
+		cg_d[8 + i] = x
+	}
+	for i, x in le_bytes(u64(14), 4) {
+		cg_d[24 + i] = x
+	}
+	cg := b.block('##CG', 6, cg_d)
+
+	cn_t := b.block('##CN', 8, cn_block_data(2, 4, 0, 64))
+	cn_fr := b.block('##CN', 8, cn_block_data(0, 10, 8, 0))
+	cn_id := b.block('##CN', 8, cn_block_data(0, 0, 8, 32))
+	cn_ide := b.block('##CN', 8, cn_block_data(0, 0, 12, 1))
+	cn_dlc := b.block('##CN', 8, cn_block_data(0, 0, 13, 8))
+
+	tx_t := b.text('time')
+	tx_fr := b.text('CAN_RemoteFrame')
+	tx_id := b.text('CAN_RemoteFrame.ID')
+	tx_ide := b.text('CAN_RemoteFrame.IDE')
+	tx_dlc := b.text('CAN_RemoteFrame.DLC')
+
+	mut recs := []u8{}
+	for i, id in ids {
+		recs << le_bytes(math.f64_bits(if times.len > i { times[i] } else { 0.001 * f64(i + 1) }),
+			8)
+		recs << le_bytes(u64(id), 4)
+		recs << u8(if ides.len > i && ides[i] { 1 } else { 0 })
+		recs << u8(dlcs[i])
+	}
+	dt := b.block('##DT', 0, recs)
+
+	b.set_link(hd, 0, dg)
+	b.set_link(dg, 1, cg)
+	b.set_link(dg, 2, dt)
+	b.set_link(cg, 1, cn_t)
+	b.set_link(cn_t, 0, cn_fr)
+	b.set_link(cn_t, 2, tx_t)
+	b.set_link(cn_fr, 1, cn_id)
+	b.set_link(cn_fr, 2, tx_fr)
+	b.set_link(cn_id, 0, cn_ide)
+	b.set_link(cn_id, 2, tx_id)
+	b.set_link(cn_ide, 0, cn_dlc)
+	b.set_link(cn_ide, 2, tx_ide)
+	b.set_link(cn_dlc, 2, tx_dlc)
+	return b.buf
+}
+
+// A remote frame REQUESTS a payload of a stated length and carries none. It used to vanish: the
+// group's channels are named CAN_RemoteFrame.*, every CAN_DataFrame lookup missed, and parse_cg
+// returned without a word — so identical traffic showed rtr rows when imported from a candump
+// and nothing at all from an .mf4 (#131).
+fn test_remote_frames_are_imported_not_skipped() {
+	buf := build_remote_frame_file([u32(0x123), 0x1ABCDEF], [false, true], [u32(8), 3],
+		[0.001, 0.002])
+	es := parse(buf) or {
+		assert false, 'a CAN_RemoteFrame group must parse: ${err}'
+		return
+	}
+	assert es.len == 2, 'both remote frames must arrive, got ${es.len}'
+	assert es[0].frame.id == 0x123
+	assert es[0].frame.rtr, 'a CAN_RemoteFrame group produces remote frames'
+	assert !es[0].frame.extended
+	assert !es[0].frame.fd, 'CAN-FD has no remote frames'
+	// ZERO-FILLED to the requested DLC — the live representation, and what modules/canlog
+	// builds from `123#R8`. The two importers must agree about the same traffic.
+	assert es[0].frame.data.len == 8
+	assert es[0].frame.data == []u8{len: 8}
+	assert es[1].frame.id == 0x1ABCDEF
+	assert es[1].frame.extended, 'the IDE channel must still be read under the other prefix'
+	assert es[1].frame.rtr
+	assert es[1].frame.data.len == 3
+}
+
+// A DLC above 8 is read the way CLASSIC CAN defines it: codes 9..15 all mean 8 bytes. Read as
+// CAN-FD they would mean 12..64, and that reading has to be refused here rather than merely
+// avoided — FD has no remote frames at all, so a 64-byte request describes a frame that cannot
+// exist on any wire. Decoding it as 8 keeps the frame; decoding it as FD would invent one.
+//
+// This is the one place the two importers differ, and deliberately: modules/canlog REJECTS the
+// whole line for `R9`..`R15`, because there the digit is free text a writer chose and a value
+// out of range is evidence the line is malformed. Here the DLC is a fixed-width field a
+// recorder filled from the controller, where 9..15 is the ordinary encoding of a frame that
+// requested 8 — dropping it would lose a real frame over a legal code.
+fn test_a_remote_dlc_above_eight_reads_as_eight() {
+	buf := build_remote_frame_file([u32(0x200), 0x201], [false, false], [u32(15), 9], [
+		0.001,
+		0.002,
+	])
+	es := parse(buf) or {
+		assert false, 'the group must still parse: ${err}'
+		return
+	}
+	assert es.len == 2
+	assert es[0].frame.rtr && es[1].frame.rtr
+	assert es[0].frame.data.len == 8, 'classic DLC 15 requests 8 bytes'
+	assert es[1].frame.data.len == 8, 'and so does 9'
+	assert !es[0].frame.fd, 'and neither is FD — that reading is what must never happen'
+}
+
+// A DLC that is not a four-bit code at all did not come off a wire, so the requested length is
+// unknown — and for a remote frame that means the whole message is unknown, not merely one field
+// of it. DROPPED, for the same reason an invalidated DLC is: `R0` is a real request, and
+// emitting one here would replay a request the recording never contained.
+fn test_a_remote_dlc_outside_the_code_range_drops_the_frame() {
+	buf := build_remote_frame_file([u32(0x202)], [false], [u32(200)], [0.001])
+	es := parse(buf) or {
+		assert false, '${err}'
+		return
+	}
+	assert es.len == 0, 'an unresolvable DLC must not become a request for zero bytes'
+}
+
+// Timestamps and ordering come from the same machinery as a data group — the point of
+// parameterising the prefix rather than writing a second parser beside it.
+fn test_remote_frame_timestamps_are_read() {
+	buf := build_remote_frame_file([u32(0x300), 0x301], [false, false], [u32(1), 2], [
+		0.25,
+		0.75,
+	])
+	es := parse(buf) or {
+		assert false, '${err}'
+		return
+	}
+	assert es.len == 2
+	assert es[0].t_s > 0.2 && es[0].t_s < 0.3, 'got ${es[0].t_s}'
+	assert es[1].t_s > 0.7 && es[1].t_s < 0.8, 'got ${es[1].t_s}'
+	assert es[0].t_s < es[1].t_s
+}
+
+// cn_block_data_inval is cn_block_data with an INVALIDATION BIT declared (cn_flags bit 1, and
+// the bit's index in the record's invalidation area).
+fn cn_block_data_inval(cn_type u8, dtype u8, byte_off u32, bits u32, inval_bit u32) []u8 {
+	mut d := cn_block_data(cn_type, dtype, byte_off, bits)
+	for i, x in le_bytes(u32(0x02), 4) {
+		d[12 + i] = x
+	}
+	for i, x in le_bytes(inval_bit, 4) {
+		d[16 + i] = x
+	}
+	return d
+}
+
+// build_remote_frame_file_both writes a CAN_RemoteFrame group carrying BOTH length channels —
+// DLC and DataLength — which is what the standard schemas define. Records are 18 bytes plus one
+// invalidation byte: time f64 @0, ID @8, IDE @12, DLC @13, DataLength u32 @14. When
+// `dlc_invalid` is set the DLC channel declares invalidation bit 0 and every record sets it.
+fn build_remote_frame_file_both(ids []u32, dlcs []u32, datalens []u32, inval string) []u8 {
+	dlc_invalid := inval == 'dlc'
+	id_invalid := inval == 'id'
+	mut b := Mdf4Builder{}
+	b.buf << 'MDF     '.bytes()
+	b.buf << '4.10    '.bytes()
+	b.buf << 'blobly  '.bytes()
+	b.buf << []u8{len: 4}
+	b.buf << le_bytes(410, 2)
+	b.buf << []u8{len: 34}
+
+	hd := b.block('##HD', 6, []u8{len: 32})
+	dg := b.block('##DG', 4, []u8{len: 8})
+	mut cg_d := []u8{len: 32}
+	for i, x in le_bytes(u64(ids.len), 8) {
+		cg_d[8 + i] = x
+	}
+	for i, x in le_bytes(u64(18), 4) {
+		cg_d[24 + i] = x // data bytes per record
+	}
+	for i, x in le_bytes(u64(1), 4) {
+		cg_d[28 + i] = x // one invalidation byte after them
+	}
+	cg := b.block('##CG', 6, cg_d)
+
+	cn_t := b.block('##CN', 8, cn_block_data(2, 4, 0, 64))
+	cn_fr := b.block('##CN', 8, cn_block_data(0, 10, 8, 0))
+	cn_id := if id_invalid {
+		b.block('##CN', 8, cn_block_data_inval(0, 0, 8, 32, 1))
+	} else {
+		b.block('##CN', 8, cn_block_data(0, 0, 8, 32))
+	}
+	cn_ide := b.block('##CN', 8, cn_block_data(0, 0, 12, 1))
+	cn_dlc := if dlc_invalid {
+		b.block('##CN', 8, cn_block_data_inval(0, 0, 13, 8, 0))
+	} else {
+		b.block('##CN', 8, cn_block_data(0, 0, 13, 8))
+	}
+	cn_dl := b.block('##CN', 8, cn_block_data(0, 0, 14, 32))
+
+	tx_t := b.text('time')
+	tx_fr := b.text('CAN_RemoteFrame')
+	tx_id := b.text('CAN_RemoteFrame.ID')
+	tx_ide := b.text('CAN_RemoteFrame.IDE')
+	tx_dlc := b.text('CAN_RemoteFrame.DLC')
+	tx_dl := b.text('CAN_RemoteFrame.DataLength')
+
+	mut recs := []u8{}
+	for i, id in ids {
+		recs << le_bytes(math.f64_bits(0.001 * f64(i + 1)), 8)
+		recs << le_bytes(u64(id), 4)
+		recs << u8(0)
+		recs << u8(dlcs[i])
+		recs << le_bytes(u64(datalens[i]), 4)
+		recs << u8(if dlc_invalid { 0x01 } else if id_invalid { 0x02 } else { 0x00 }) // invalidation area
+	}
+	dt := b.block('##DT', 0, recs)
+
+	b.set_link(hd, 0, dg)
+	b.set_link(dg, 1, cg)
+	b.set_link(dg, 2, dt)
+	b.set_link(cg, 1, cn_t)
+	b.set_link(cn_t, 0, cn_fr)
+	b.set_link(cn_t, 2, tx_t)
+	b.set_link(cn_fr, 1, cn_id)
+	b.set_link(cn_fr, 2, tx_fr)
+	b.set_link(cn_id, 0, cn_ide)
+	b.set_link(cn_id, 2, tx_id)
+	b.set_link(cn_ide, 0, cn_dlc)
+	b.set_link(cn_ide, 2, tx_ide)
+	b.set_link(cn_dlc, 0, cn_dl)
+	b.set_link(cn_dlc, 2, tx_dlc)
+	b.set_link(cn_dl, 2, tx_dl)
+	return b.buf
+}
+
+// A writer that emits BOTH length channels can record DataLength as 0 — a remote frame carries
+// no payload, so there is nothing for a byte count to describe — while the length being REQUESTED
+// sits in DLC. Preferring DataLength there imported an `R8` as an `R0` and replayed it as one: a
+// request for eight bytes turned into a request for none, which an ECU answers differently or
+// not at all (codex #175 r1).
+fn test_a_remote_frame_prefers_its_dlc_over_a_zero_datalength() {
+	buf := build_remote_frame_file_both([u32(0x400), 0x401], [u32(8), 3], [u32(0), 0],
+		'')
+	es := parse(buf) or {
+		assert false, '${err}'
+		return
+	}
+	assert es.len == 2
+	assert es[0].frame.rtr && es[1].frame.rtr
+	assert es[0].frame.data.len == 8, 'DLC 8 is the requested length, not DataLength 0'
+	assert es[1].frame.data.len == 3
+}
+
+// A record may declare its DLC INVALID, and the bits then hold whatever the writer left there.
+// The frame is DROPPED, not emitted with an empty payload: for a remote frame the DLC IS the
+// message, so `R0` is not "an R8 with the length withheld" — it is a different request, and one
+// an ECU answers differently or not at all. These entries get replayed onto real buses, so an
+// invented request is traffic no recording ever contained. Emitting it empty was this branch's
+// first attempt, and it turned a stale R8 into a confident R0 (codex #175 r2).
+fn test_a_remote_frame_with_an_invalid_dlc_is_dropped() {
+	buf := build_remote_frame_file_both([u32(0x402)], [u32(8)], [u32(0)], 'dlc')
+	es := parse(buf) or {
+		assert false, '${err}'
+		return
+	}
+	assert es.len == 0, 'an unknown requested length must not become a request for none'
+}
+
+// The same rule for the frame's IDENTITY, and it is not a remote-frame question: an id is not
+// something a frame can lack, and IDE decides whether it is 11 or 29 bits. An invalidated one
+// read anyway puts a frame on the bus under an id the recording never stated.
+fn test_a_frame_with_an_invalid_id_is_dropped() {
+	buf := build_remote_frame_file_both([u32(0x403)], [u32(8)], [u32(0)], 'id')
+	es := parse(buf) or {
+		assert false, '${err}'
+		return
+	}
+	assert es.len == 0, 'an undefined id must not be replayed as a plausible one'
+}
