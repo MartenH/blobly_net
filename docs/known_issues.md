@@ -13,6 +13,15 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
 
 ## V language / compiler / tooling
 
+- 🟡 **`v test` needs `-cc gcc` on Windows, or it looks like it cannot run at all.**
+  `v -enable-globals test modules/` on native Windows (MSYS2/mingw) fails before running a
+  single test with
+  `C function 'C.GetFinalPathNameByHandleW' was declared in V, but the C compiler did not see a
+  matching C declaration`. It comes from **vlib**, not from this repo, and it reproduces on
+  untouched files on `main` — so it reads exactly like "the module suite does not run on this
+  machine", which cost most of a session on that assumption. It is V's default **tcc**:
+  `v -enable-globals -cc gcc test modules/` runs the whole suite (57/57). The Linux CI job uses
+  the default compiler and never sees it.
 - 🟡 **Local module not found.** `import candb` (a module under `./modules/`) fails with
   `cannot import module "candb" (not found)` when compiling a file in `cmd/…`. V's `-path`
   *replaces* the default lookup order, so the working incantation re-lists the defaults:
