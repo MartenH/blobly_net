@@ -94,7 +94,19 @@ fn test_a_software_bus_is_not_clamped() {
 	assert u.data.len == 24
 	assert !clamps_to_classic('inproc:CAN1')
 	assert clamps_to_classic('vcan0')
-	assert clamps_to_classic('pcan:PCAN_USBBUS1@500000')
+	// PLATFORM-GATED, like the other three assertions about a `pcan:` name in this file. On
+	// Linux open_linux.v has no pcan: branch, so that string is an ordinary SocketCAN interface
+	// and the kernel DOES clamp it; on Windows it is the vendor driver, which rejects what it
+	// cannot send rather than quietly masking it. Asserted unconditionally, this encoded the
+	// Linux answer as universal and the file could not pass on Windows at all — while
+	// test_a_socketcan_interface_named_like_a_software_bus, twenty lines below, asserts the
+	// exact opposite under `$if windows`. CI runs the module tests on Linux only, so the
+	// contradiction has always been green.
+	$if windows {
+		assert !clamps_to_classic('pcan:PCAN_USBBUS1@500000')
+	} $else {
+		assert clamps_to_classic('pcan:PCAN_USBBUS1@500000')
+	}
 }
 
 // …and an id the software bus would carry verbatim is left alone too.
