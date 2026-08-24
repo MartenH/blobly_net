@@ -346,8 +346,14 @@ fn draw_buses(mut app App, chans []Chan) {
 				// app.chans open to another thread in the middle of a sequence that goes on to
 				// read it, which is the unlocked-read-of-a-replaced-array mistake this file has
 				// paid for before. fd_capability_warnings is pure, so it is safe to run inside.
+				// THE ROW THAT JUST JOINED, not every row in the run. Passing the whole set warned
+				// again about every already-enabled PCAN/Kvaser FD channel on each toggle, so
+				// unrelated ticking filled the Log with duplicates of a warning already given at
+				// Start — and a warning repeated for no reason is one an operator learns to skip
+				// past (codex #183 r2). Start still asks about the whole project, because there
+				// every row is joining at once.
 				if new {
-					for w in project.fd_capability_warnings(app.runtime_rows()) {
+					for w in project.fd_capability_warnings([app.runtime_rows()[i]]) {
 						app.log_append_locked(w)
 					}
 				}

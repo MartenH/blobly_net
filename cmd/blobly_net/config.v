@@ -135,7 +135,11 @@ fn (mut app App) commit_cfg() {
 			app.notify('${ch.name}: "${dbr_txt}" is not a data bitrate — digits only, in bits per second; keeping ${ch.data_bitrate}')
 			// RECORDED, not only announced. The model keeps its previous rate, so without this the
 			// editor shows one thing and the run uses another with nothing to stop it.
-			app.cfg_invalid << '${ch.name}: data rate "${dbr_txt}"'
+			app.cfg_invalid << CfgInvalid{
+				name:    ch.name
+				enabled: ch.enabled
+				why:     'data rate "${dbr_txt}" is not a number'
+			}
 		}
 		// AND THE RATES AS A PAIR, through the engine's own parser. Digits-only says nothing about
 		// whether the two phases make sense together: a 250000 data phase under a 500000 nominal
@@ -143,7 +147,11 @@ fn (mut app App) commit_cfg() {
 		// refused only at Start — long after the field that caused it left the screen.
 		if why := ch.fd_config_error() {
 			app.notify('${ch.name}: ${why}')
-			app.cfg_invalid << '${ch.name}: ${why}'
+			app.cfg_invalid << CfgInvalid{
+				name:    ch.name
+				enabled: ch.enabled
+				why:     why
+			}
 		}
 		if ch.adapter == 'doip' {
 			ch.tester_addr = parse_u16_hex(vgui.buf_str(b.tester_buf), ch.tester_addr)
@@ -295,6 +303,15 @@ fn (mut app App) set_adapter(i int, a string) {
 	old_iface := app.proj.channels[i].iface
 	was := app.proj.channels[i].adapter
 	app.proj.channels[i].adapter = a
+	// A DoIP ROW IS NOT A CAN ROW, so it cannot still be CAN-FD. Left set, `fd` survived the
+	// transition with no control left on screen to clear it — the CAN/CAN-FD toggles are hidden
+	// for a DoIP adapter — so every Start warned that a DoIP channel was configured as CAN-FD, a
+	// configuration error the editor itself had created and the operator could not undo. Save
+	// persisted `fd: true` beside `type: doip` as well (codex #183 r2).
+	if a == 'doip' {
+		app.proj.channels[i].fd = false
+		app.proj.channels[i].data_bitrate = 0
+	}
 	// SILENT BY DEFAULT when a bus BECOMES a Vector one, for the same reason a discovered
 	// Vector channel starts that way: it is hardware that may already be wired to a running
 	// vehicle, arriving with a 500 kbit/s guess nobody has confirmed. Exposing the adapter in
@@ -693,8 +710,11 @@ fn (mut app App) save_project() {
 	// value the rejected field replaced, so a typo the operator can still see on screen becomes
 	// a stored rate they never chose — and the evidence that anything was wrong is gone as soon
 	// as the buffers are rebuilt from the saved model.
+	// EVERY ROW HERE, enabled or not, unlike Start's check: a save writes the whole project, so a
+	// value that would not commit is one the file would be wrong about whichever rows are ticked.
 	if app.cfg_invalid.len > 0 {
-		app.notify('not saved — ${app.cfg_invalid.join('; ')} (correct it in Configuration ▸ Buses, or clear the field)')
+		bad := app.cfg_invalid.map('${it.name}: ${it.why}')
+		app.notify('not saved — ${bad.join('; ')} (correct it in Configuration ▸ Buses, or clear the field)')
 		app.show_config = true
 		return
 	}

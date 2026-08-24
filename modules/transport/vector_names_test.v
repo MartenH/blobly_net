@@ -342,3 +342,39 @@ fn test_a_classic_rate_the_clock_cannot_divide_is_still_a_valid_address() {
 		}
 	}
 }
+
+// WHAT THE EDITOR ASKS AND WHAT THE OPEN REFUSES MUST BE THE SAME QUESTION. Three rounds running,
+// a front-end pre-flight was a SUBSET of the open's own checks: ordering without ranges, then
+// syntax+ranges without timing — so `500000/750000` was accepted, saved, and refused only while
+// opening (codex #183 r2). vector_address_error runs the parser AND the timing feasibility that
+// open_vector runs, and open_vector calls the same function, so they cannot drift again.
+fn test_the_address_check_covers_timing_not_only_syntax() {
+	// Syntactically fine, in range, correctly ordered — and unproducible on this clock.
+	if why := vector_address_error('vector:1@500000/750000') {
+		assert why.contains('750000'), 'the message must name the offending rate: ${why}'
+		assert why.contains('data phase'), 'and say which phase: ${why}'
+	} else {
+		assert false, '500000/750000 parses but cannot be opened; the check must say so'
+	}
+	// An arbitration phase with no timing is caught too, and named as the other phase.
+	if why := vector_address_error('vector:1@83333/2000000') {
+		assert why.contains('arbitration'), 'got ${why}'
+	} else {
+		assert false, 'an FD arbitration phase at 83333 has no timing'
+	}
+	// A CLASSIC address at that same rate is fine — the driver derives its own timing, and this
+	// is exactly the distinction #182 r1 was about.
+	if why := vector_address_error('vector:1@83333') {
+		assert false, 'a classic rate needs no timing from us: ${why}'
+	}
+	// And the ordinary FD cases still pass, prefix present or absent.
+	for ok in ['vector:1@500000/2000000', '1@500000/2000000', 'vector:1@500000', 'vector:1@800000/5000000'] {
+		if why := vector_address_error(ok) {
+			assert false, '${ok} must be openable: ${why}'
+		}
+	}
+	// Malformed addresses still come back with the parser's own complaint.
+	if _ := vector_address_error('vector:1@500000/oops') {} else {
+		assert false, 'a malformed rate must still be reported'
+	}
+}

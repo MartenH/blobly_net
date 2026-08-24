@@ -262,7 +262,7 @@ mut:
 	// channel count, so a list left over from a REPLACED project could never be recomputed — and
 	// it blocked Start and Save on the newly opened one until the operator happened to make
 	// another structured edit. An error about a project that is no longer loaded (codex #183 r1).
-	cfg_invalid []string
+	cfg_invalid []CfgInvalid
 	cfg_chans      int // channels the text yields; cached, because parsing per frame is not free
 
 	// Script (Lua on a worker thread)
@@ -367,6 +367,19 @@ mut:
 // CfgBuf holds one bus's editable text fields in the Configuration editor (parallel to
 // app.proj.channels). Enums (adapter/mode/protocol) and checkboxes edit the model directly;
 // only the free-text fields need a buffer.
+// CfgInvalid is one editor field that would not commit, and WHOSE row it belongs to.
+//
+// THE ROW MATTERS BECAUSE THE TWO CONSUMERS DIFFER. Save writes the whole project, so a bad value
+// anywhere is a bad value it would persist. Start opens only the ENABLED rows, and refusing the
+// run over a disabled channel's field stopped otherwise-valid buses from running until an unused
+// row was corrected — a channel that will never be opened cannot be a reason not to open the
+// others (codex #183 r2).
+struct CfgInvalid {
+	name    string
+	enabled bool
+	why     string
+}
+
 struct CfgBuf {
 mut:
 	name_buf     []u8

@@ -221,8 +221,12 @@ fn (mut app App) start() {
 	// the right thing to do with a typo mid-edit and the wrong thing to run on, because the value
 	// the channel would open with is then one the editor no longer shows anywhere. Refusing here
 	// is what makes keeping the old value safe (codex #181 r5).
-	if app.cfg_invalid.len > 0 {
-		app.notify('not starting — ${app.cfg_invalid.join('; ')} (correct it in Configuration ▸ Buses, or clear the field)')
+	// ENABLED ROWS ONLY. A disabled channel is never opened, so a field it could not commit is not
+	// a reason to refuse the run — blocking on one stopped every other bus until an unused row was
+	// corrected. Save still checks the whole project, because a save writes all of it (#183 r2).
+	blocking := app.cfg_invalid.filter(it.enabled).map('${it.name}: ${it.why}')
+	if blocking.len > 0 {
+		app.notify('not starting — ${blocking.join('; ')} (correct it in Configuration ▸ Buses, or clear the field)')
 		app.show_config = true
 		return
 	}

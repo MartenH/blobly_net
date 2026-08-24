@@ -127,15 +127,20 @@ pub fn open_vector(spec string) !&VectorBus {
 	// A TIMING PER PHASE within it. Each reaches the same ~80% sample point with its own quanta
 	// count and its own prescaler; requiring them to share a count refuses rate pairs the hardware
 	// can do, and applying the data phase's narrower ceiling to both refuses more (#181 r5, r6).
+	// THROUGH THE SHARED CHECK, so that what a front end can ask beforehand and what this refuses
+	// are the same question. They were not: the editor's pre-flight ran the parser only, so an
+	// address it accepted could still fail here on timing (codex #183 r2). vector_timing_error is
+	// now the one definition of "these rates are producible", and vector_address_error — what the
+	// editor calls — runs it too.
+	if why := vector_timing_error(s) {
+		return error('Vector channel ${s.channel}: ${why}')
+	}
 	mut at := FdTiming{}
 	mut dt := FdTiming{}
 	if s.fd {
-		at = vector_fd_timing(s.bitrate) or {
-			return error('Vector channel ${s.channel}: arbitration ${err}')
-		}
-		dt = vector_fd_timing_data(s.data_bitrate) or {
-			return error('Vector channel ${s.channel}: CAN-FD data phase ${err}')
-		}
+		// Cannot fail: vector_timing_error just proved both phases resolve.
+		at = vector_fd_timing(s.bitrate) or { FdTiming{} }
+		dt = vector_fd_timing_data(s.data_bitrate) or { FdTiming{} }
 	}
 	// 0-BASED at the API, 1-based in the spelling: Vector Hardware Configuration numbers the
 	// application channels from 1 and the operator reads the interface string against that
