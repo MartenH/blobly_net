@@ -36,12 +36,20 @@ fn (app &App) open_transport(iface string) !transport.Bus {
 // This one forgot listen_only, and every Vector channel a project had marked listen-only opened
 // able to acknowledge — the promise that backend exists to keep, lost between two structs with
 // the same field names. Anything added here is added once.
+// EVERY FIELD iface_with_bitrate READS, which is the contract this projection has to keep and
+// the one it silently broke. It exists to hand that function a Channel; a field it composes the
+// address from and this does not copy becomes a DEFAULT — and `fd` defaults to false, so a
+// CAN-FD row was projected into a classic one and opened `vector:<n>@<rate>` with no data phase.
+// Every FD frame was then refused by VectorBus.send, on the GUI path only, because the headless
+// runner passes real project rows and never comes through here (codex #181 r1).
 fn (c Chan) for_open() project.Channel {
 	return project.Channel{
-		iface:       c.iface
-		adapter:     c.adapter
-		bitrate:     c.bitrate
-		listen_only: c.listen_only
+		iface:        c.iface
+		adapter:      c.adapter
+		bitrate:      c.bitrate
+		fd:           c.fd
+		data_bitrate: c.data_bitrate
+		listen_only:  c.listen_only
 	}
 }
 
@@ -108,13 +116,20 @@ fn (app &App) runtime_rows() []project.Channel {
 	mut rows := []project.Channel{}
 	for c in app.chans {
 		rows << project.Channel{
-			name:        c.name
-			adapter:     c.adapter
-			iface:       c.iface
-			typ:         c.typ
-			bitrate:     c.bitrate
-			listen_only: c.listen_only
-			enabled:     c.enabled
+			name:    c.name
+			adapter: c.adapter
+			iface:   c.iface
+			typ:     c.typ
+			bitrate: c.bitrate
+			// THE SAME OMISSION AS for_open's, with a different consequence: these rows are what
+			// destination_conflicts and fd_capability_warnings are asked about, so a dropped `fd`
+			// does not merely open the wrong thing — it makes both checks answer as though no row
+			// in the run were CAN-FD at all. A wire asked to be classic AND FD passed, and the
+			// warning about an FD row on a backend that refuses FD could never fire in the GUI.
+			fd:           c.fd
+			data_bitrate: c.data_bitrate
+			listen_only:  c.listen_only
+			enabled:      c.enabled
 		}
 	}
 	return rows
@@ -201,6 +216,16 @@ fn (mut app App) start() {
 	if app.dirty {
 		app.apply_edits()
 	}
+	// AN EDITOR FIELD THAT WOULD NOT COMMIT STOPS THE RUN. apply_edits has just folded the buffers
+	// into the model, and a field it could not parse left its PREVIOUS value standing — which is
+	// the right thing to do with a typo mid-edit and the wrong thing to run on, because the value
+	// the channel would open with is then one the editor no longer shows anywhere. Refusing here
+	// is what makes keeping the old value safe (codex #181 r5).
+	if app.cfg_invalid.len > 0 {
+		app.notify('not starting — ${app.cfg_invalid.join('; ')} (correct it in Configuration ▸ Buses, or clear the field)')
+		app.show_config = true
+		return
+	}
 	// ONE WIRE, ONE RATE. Two enabled rows on the same destination that disagree about the
 	// bitrate are a contradiction the backend cannot see: bitrate_iface picks one of them and
 	// hands every monitor and transmit open the same string, so the Vector layer's own
@@ -219,6 +244,13 @@ fn (mut app App) start() {
 		// itself. A summary that lists two of three is the kind of claim that goes stale.
 		app.notify('${bad} — not starting')
 		return
+	}
+	// SAID ONCE, HERE, before anything opens — issue #170. An FD row on a backend that refuses FD
+	// otherwise announces itself only as a rising `failed` count while traffic flows, which on a
+	// part-classic recording reads as a successful measurement with some of its traffic missing.
+	// A warning rather than a refusal: the classic half of that run is real.
+	for w in project.fd_capability_warnings(app.runtime_rows()) {
+		app.notify(w)
 	}
 	if app.cfg_text_dirty {
 		// Text edits are NOT folded in automatically: the file is the authority for everything

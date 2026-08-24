@@ -65,6 +65,8 @@ fn (mut app App) sync_cfg_bufs() {
 			network_buf:      mkbuf(ch.network, 48)
 			address_buf:      mkbuf(ch.address, 64)
 			bitrate_buf:      mkbuf('${ch.bitrate}', 12)
+			dbitrate_buf:     mkbuf(if ch.data_bitrate > 0 { '${ch.data_bitrate}' } else { '' },
+				12)
 			manifest_buf:     mkbuf(ch.manifest, 128)
 			dbc_buf:          mkbuf('', 128)
 			tester_buf:       mkbuf('0x${ch.tester_addr:X}', 12)
@@ -82,6 +84,9 @@ fn (mut app App) commit_cfg() {
 	if app.cfg_bufs.len != app.proj.channels.len {
 		return
 	}
+	// REBUILT WHOLESALE each time, not appended to: a field corrected since the last commit must
+	// stop blocking Start, and a stale entry would wedge the run forever.
+	app.cfg_invalid = []
 	for i in 0 .. app.proj.channels.len {
 		b := app.cfg_bufs[i]
 		mut ch := &app.proj.channels[i]
@@ -93,6 +98,43 @@ fn (mut app App) commit_cfg() {
 		br := vgui.buf_str(b.bitrate_buf).int()
 		if br > 0 {
 			ch.bitrate = br
+		}
+		// EMPTY IS A VALUE HERE, unlike the nominal rate above, which keeps its old figure rather
+		// than accepting a zero. Clearing this field deliberately says "no separate data phase",
+		// so it must write 0 — skipped, the previous rate would survive the edit that removed it,
+		// and the channel would go on opening with a data phase the dialog no longer shows.
+		//
+		// DIGITS OR NOTHING otherwise, the same rule transport.vendor_bitrate applies to the address — and
+		// the reason it exists there is this exact coercion. V's `.int()` takes a numeric prefix,
+		// so `2000000oops` became 2000000 and a wholly non-numeric entry became 0, which then
+		// selected the nominal-rate fallback: either way the channel opened with a data phase the
+		// operator had not typed, and a Save wrote that number into the project as though it had
+		// been chosen. A permissive copy of a rule the engine made strict is the drift this repo
+		// keeps paying for (codex #181 r2).
+		//
+		// A REJECTED VALUE LEAVES THE MODEL ALONE rather than resetting it to 0. Committing runs
+		// on every structural change and before every Save, so zeroing here would quietly discard
+		// a good stored rate the moment the buffer held a typo mid-edit.
+		dbr_txt := vgui.buf_str(b.dbitrate_buf).trim_space()
+		// THE SAME CONDITION THE PANEL DRAWS IT UNDER. A row switched from canfd back to can hides
+		// this field, and validating it anyway blocked Start and Save on text the operator could
+		// no longer see or reach without turning FD back on — a refusal with no visible cause,
+		// which is worse than the silent coercion the validation replaced. The stale text is
+		// dropped rather than kept, because a row with no data phase has nothing to remember it
+		// for (codex #181 r6).
+		if !(ch.fd && ch.can_carry_fd()) {
+			// NOT `continue`: the DoIP and replay blocks below belong to this same row, and
+			// skipping the rest of the body would drop their edits on any classic channel.
+			ch.data_bitrate = 0
+		} else if dbr_txt == '' {
+			ch.data_bitrate = 0
+		} else if project.is_all_digits(dbr_txt) && dbr_txt.int() > 0 {
+			ch.data_bitrate = dbr_txt.int()
+		} else {
+			app.notify('${ch.name}: "${dbr_txt}" is not a data bitrate — digits only, in bits per second; keeping ${ch.data_bitrate}')
+			// RECORDED, not only announced. The model keeps its previous rate, so without this the
+			// editor shows one thing and the run uses another with nothing to stop it.
+			app.cfg_invalid << '${ch.name}: data rate "${dbr_txt}"'
 		}
 		if ch.adapter == 'doip' {
 			ch.tester_addr = parse_u16_hex(vgui.buf_str(b.tester_buf), ch.tester_addr)
@@ -637,6 +679,15 @@ fn (mut app App) save_project() {
 		return
 	}
 	app.apply_edits()
+	// THE SAME REFUSAL AS START'S, and Save needs it more: writing the file would persist the
+	// value the rejected field replaced, so a typo the operator can still see on screen becomes
+	// a stored rate they never chose — and the evidence that anything was wrong is gone as soon
+	// as the buffers are rebuilt from the saved model.
+	if app.cfg_invalid.len > 0 {
+		app.notify('not saved — ${app.cfg_invalid.join('; ')} (correct it in Configuration ▸ Buses, or clear the field)')
+		app.show_config = true
+		return
+	}
 	app.mu.lock()
 	p := app.proj
 	path := app.proj_path

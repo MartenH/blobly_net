@@ -96,6 +96,12 @@ fn main() {
 		eprintln('${problem} — not starting')
 		exit(1)
 	}
+	// Through the same call the GUI makes, for the reason the block above exists: one policy, and
+	// the two front ends must not each keep their own reading of it. A WARNING, not a refusal —
+	// see project.fd_capability_warnings.
+	for w in project.fd_capability_warnings(proj.channels) {
+		eprintln('warning: ${w}')
+	}
 	// Which wires may transmit, through the same call the GUI makes. The runner honoured
 	// listen-only nowhere before #117: `bus.send` from a script reached the wire whatever the
 	// project said, and a simulated node on a silenced row transmitted at its own cadence.
