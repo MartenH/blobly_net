@@ -53,6 +53,7 @@ fn parse_u16_hex(s string, deflt u16) u16 {
 // and after add/remove bus/DBC).
 fn (mut app App) sync_cfg_bufs() {
 	app.cfg_bufs = []
+	app.cfg_invalid = []
 	for ch in app.proj.channels {
 		mut rsrc := ''
 		mut rspeed := '1'
@@ -135,6 +136,14 @@ fn (mut app App) commit_cfg() {
 			// RECORDED, not only announced. The model keeps its previous rate, so without this the
 			// editor shows one thing and the run uses another with nothing to stop it.
 			app.cfg_invalid << '${ch.name}: data rate "${dbr_txt}"'
+		}
+		// AND THE RATES AS A PAIR, through the engine's own parser. Digits-only says nothing about
+		// whether the two phases make sense together: a 250000 data phase under a 500000 nominal
+		// is a perfectly good number that no FD channel can open, and it was accepted, saved, and
+		// refused only at Start — long after the field that caused it left the screen.
+		if why := ch.fd_config_error() {
+			app.notify('${ch.name}: ${why}')
+			app.cfg_invalid << '${ch.name}: ${why}'
 		}
 		if ch.adapter == 'doip' {
 			ch.tester_addr = parse_u16_hex(vgui.buf_str(b.tester_buf), ch.tester_addr)
@@ -634,6 +643,7 @@ fn (mut app App) apply_parsed_text(txt string) bool {
 	app.proj_name = p.name
 	app.mu.unlock()
 	app.cfg_bufs = [] // re-derived from the new channel list on the next Buses render
+	app.cfg_invalid = [] // …and the rejections describing them go with them
 	app.rebuild_from_proj()
 	return true
 }

@@ -256,6 +256,12 @@ mut:
 	// puts the editor and the model into disagreement, and Start then opened the channel at a
 	// rate the operator could no longer see anywhere on screen. Refusing while any field is in
 	// that state is what makes "keep the old value" safe (codex #181 r5).
+	//
+	// IT DESCRIBES THE BUFFERS, so it dies with them. Every place that discards or rebuilds
+	// cfg_bufs clears this too: commit_cfg returns early when the buffer count does not match the
+	// channel count, so a list left over from a REPLACED project could never be recomputed — and
+	// it blocked Start and Save on the newly opened one until the operator happened to make
+	// another structured edit. An error about a project that is no longer loaded (codex #183 r1).
 	cfg_invalid []string
 	cfg_chans      int // channels the text yields; cached, because parsing per frame is not free
 
@@ -648,6 +654,7 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	// be flushed into the newly loaded project by the next commit_cfg (same channel count = no
 	// resync in draw_config); stale discovery results belong to the old machine view.
 	app.cfg_bufs = []
+	app.cfg_invalid = [] // describes the buffers just discarded; see the field
 	app.disc_list = []
 	app.disc_tick = []
 	app.mu.unlock()

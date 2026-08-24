@@ -1307,3 +1307,59 @@ channels:
 	assert ok.channels[0].data_bitrate == 2000000
 	assert ok.channels[0].iface_with_bitrate() == 'vector:1@500000/2000000'
 }
+
+// The editor and the opener must agree about a pair of rates. Digits-only says nothing about
+// whether the two phases make sense TOGETHER, so a data phase slower than the arbitration phase
+// was accepted, persisted, and refused only at Start (codex #183 r1).
+fn test_fd_config_error_asks_the_real_parser() {
+	base := Channel{
+		adapter: 'vector'
+		iface:   'vector:1'
+		fd:      true
+		bitrate: 500000
+	}
+	// A slower data phase is not a configuration any FD channel can open.
+	slow := Channel{
+		...base
+		data_bitrate: 250000
+	}
+	if why := slow.fd_config_error() {
+		assert why.contains('slower') || why.contains('data'), 'unhelpful message: ${why}'
+	} else {
+		assert false, 'a data phase below the arbitration rate must be reported'
+	}
+	// Past the range the standard allows.
+	if _ := Channel{ ...base, data_bitrate: 9_000_000 }.fd_config_error() {} else {
+		assert false, '9 Mbit/s is past what ISO 11898-1 allows'
+	}
+	// The ordinary cases are fine, including FD with no bit-rate switch.
+	for ok in [2_000_000, 8_000_000, 500_000] {
+		c := Channel{
+			...base
+			data_bitrate: ok
+		}
+		if why := c.fd_config_error() {
+			assert false, '${ok} must be accepted: ${why}'
+		}
+	}
+	// An unset data rate means "at the nominal rate", which is legal.
+	if why := base.fd_config_error() {
+		assert false, 'an unset data rate must default, not fail: ${why}'
+	}
+	// A classic row has no FD rates to be wrong about, and neither has a backend that refuses FD.
+	classic := Channel{
+		...base
+		fd: false
+	}
+	if _ := classic.fd_config_error() {
+		assert false, 'a classic row has no data phase'
+	}
+	pc := Channel{
+		...base
+		adapter:      'pcan'
+		data_bitrate: 250000
+	}
+	if _ := pc.fd_config_error() {
+		assert false, 'PCAN cannot configure a data phase; fd_capability_warnings covers that row'
+	}
+}

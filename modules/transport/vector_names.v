@@ -182,6 +182,22 @@ fn vector_fd_split(tq int) FdTiming {
 	}
 }
 
+// vector_address_error reports why a `vector:` interface string could not be opened, or none when
+// it can. The scheme prefix is optional, so a caller may pass either what it stores or what it
+// opens with.
+//
+// THE WHOLE RULE, not a piece of it. This exists because a front end that wanted to check a rate
+// pair before Start reached for vendor_split_fd_rate — which enforces the ORDERING and leaves the
+// RANGES to parse_vector_spec, so a 9 Mbit/s data phase passed the editor and was refused at open
+// (codex #183 r1, caught by its own test). Running the real parser is the only check that cannot
+// be a subset of the real check.
+pub fn vector_address_error(iface string) ?string {
+	i := iface.trim_space()
+	body := if i.to_lower().starts_with('vector:') { i['vector:'.len..] } else { i }
+	parse_vector_spec(body) or { return err.msg() }
+	return none
+}
+
 // VectorSpec is the parsed interface string.
 //
 // HERE, not in vector_windows.v, and the difference is not cosmetic: written beside the driver

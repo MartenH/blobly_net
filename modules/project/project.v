@@ -1439,6 +1439,25 @@ pub fn (c Channel) can_carry_fd() bool {
 	return transport.adapter_carries_fd(c.adapter)
 }
 
+// fd_config_error reports why this row's CAN-FD rates could not be opened, or none when they can.
+//
+// ASKS THE REAL PARSER rather than restating its rules, and asks it about the ADDRESS THIS ROW
+// WILL ACTUALLY BE OPENED WITH. An editor enforcing its own copy is a second opinion about the
+// same string, and it was one twice over: `commit_cfg` accepted any positive digit string, so a
+// 250000 data phase under a 500000 nominal was accepted, persisted, and refused only at Start —
+// and the first attempt at this check reached for vendor_split_fd_rate, which enforces the
+// ordering and leaves the RANGES to parse_vector_spec, so 9 Mbit/s still slipped through
+// (codex #183 r1; the second half was caught by this function's own test).
+//
+// Composing through iface_with_bitrate is what makes it exact: whatever that produces is what
+// `transport.open` is handed, so anything this accepts, the open accepts.
+pub fn (c Channel) fd_config_error() ?string {
+	if !c.fd || !c.can_carry_fd() || c.adapter != 'vector' {
+		return none
+	}
+	return transport.vector_address_error(c.iface_with_bitrate())
+}
+
 // fd_capability_warnings reports enabled rows configured for CAN-FD on an adapter whose backend
 // refuses an FD frame — said ONCE, at Start, before any traffic flows.
 //
