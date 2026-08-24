@@ -73,17 +73,15 @@ jobs:
       - name: Headless Lua tests (scripts/runtests.sh)
         run: |
           chmod +x scripts/runtests.sh
-          # Every suite is named explicitly — runtests.sh runs only what it is given, so a new
-          # file is invisible to CI until it appears here. tests/fault_injection.lua covers the
-          # script-to-simulation wiring and timed behaviour, which nothing else exercises.
-          ./scripts/runtests.sh tests/diag_basic.lua tests/bus_signals.lua tests/diag_advanced.lua tests/sequences.lua tests/fault_injection.lua tests/mixed_carriers.lua
-          # DoIP needs its own project: the entity is an Ethernet endpoint, not a bus on
-          # sim-demo, and it binds real localhost TCP/UDP 13400 while it runs.
-          ./scripts/runtests.sh --project projects/doip-demo.blobnet tests/diag_doip.lua
-          # Three entities on 127.0.0.1/.2/.3: announced identity must match served identity.
-          ./scripts/runtests.sh --project projects/doip-network-demo.blobnet tests/doip_network.lua
-          # Unsolicited announcements: a tester that discovers by LISTENING, not asking.
-          ./scripts/runtests.sh --project projects/doip-announce-demo.blobnet tests/doip_announce.lua
+          # EVERY suite in tests/, because that is what no arguments means. It used to name each
+          # file and each file's project here, which made a new suite invisible to CI until
+          # somebody remembered to add it — the gap #115 was filed for.
+          #
+          # The suites that need a particular project now declare it themselves
+          # (`-- @project`, see modules/script/project_decl.v), so this list cannot drift out of
+          # step with what the tests actually require, and the runner refuses a project that
+          # contradicts a declaration rather than reporting it as failing tests.
+          ./scripts/runtests.sh
 
   gui-build:
     name: linux • GUI (imgui) compile-link

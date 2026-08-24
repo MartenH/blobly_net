@@ -29,6 +29,7 @@ mut:
 
 fn main() {
 	mut proj_path := 'projects/sim-demo.blobnet'
+	mut explicit := '' // --project as given, distinct from the default above
 	mut scripts := []string{}
 	mut i := 1
 	for i < os.args.len {
@@ -37,7 +38,8 @@ fn main() {
 			'--project', '-p' {
 				i++
 				if i < os.args.len {
-					proj_path = os.args[i]
+					explicit = os.args[i]
+					proj_path = explicit
 				}
 			}
 			else {
@@ -50,6 +52,23 @@ fn main() {
 	if scripts.len == 0 {
 		eprintln('usage: run [--project <file.blobnet>] <script.lua> [more.lua ...]')
 		exit(2)
+	}
+
+	// A test that needs a particular project says so in its own head; script.agree decides what
+	// that means here, and refuses a run it cannot make true rather than producing failures that
+	// read as broken features (#115). See modules/script/project_decl.v.
+	mut decls := []script.Decl{}
+	for s in scripts {
+		if d := script.declaration_of(s) {
+			decls << d
+		}
+	}
+	chosen := script.agree(decls, explicit) or {
+		eprintln('cannot decide which project to run: ${err}')
+		exit(2)
+	}
+	if chosen != '' {
+		proj_path = chosen
 	}
 
 	proj := project.load(proj_path) or {
