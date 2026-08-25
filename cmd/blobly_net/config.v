@@ -268,7 +268,7 @@ fn (mut app App) assign_vector_hw(hw transport.VectorChannel) {
 		app.notify('${hw.name} is not a CAN channel — it cannot be assigned as one')
 		return
 	}
-	transport.vector_borrow_lock() or {
+	transport.vector_borrow_lock_now() or {
 		app.notify('could not assign ${hw.name}: ${err}')
 		return
 	}

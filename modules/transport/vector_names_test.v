@@ -422,13 +422,15 @@ fn test_a_bench_where_nothing_answers_is_offered_channel_one() {
 // A physical channel whose owner could not be read must not read as unowned: assigning it maps a
 // SECOND application channel onto one wire, which is exactly what destination_conflicts refuses a
 // project for (#167).
-fn test_hardware_ownership_needs_something_to_have_answered() {
-	// A known owner is owned whatever else happened.
+fn test_hardware_ownership_follows_a_readable_owner_only() {
+	// A channel the driver named as the owner is owned, whatever else happened in the sweep.
 	assert hw_owner(3, true) == .owned
 	assert hw_owner(3, false) == .owned
-	// Something answered, and nothing claimed this hardware: the channels that answer ARE the
-	// application list, so the silent ones are not configured and own nothing.
+	// Nobody claims it and something answered: the channels that answer ARE the application list,
+	// so the silent ones are unconfigured and own nothing.
 	assert hw_owner(0, true) == .unowned
-	// NOTHING answered: we know nothing about ownership, so it must not read as free.
-	assert hw_owner(0, false) == .unknown
+	// NOTHING answered: this application owns no hardware at all, so every channel is free for it
+	// — the fresh bench. Calling this `unknown` removed the Assign buttons from the one case the
+	// dialog exists for (codex #192 r4).
+	assert hw_owner(0, false) == .unowned
 }

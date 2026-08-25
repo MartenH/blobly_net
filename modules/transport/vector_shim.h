@@ -1342,6 +1342,23 @@ static HANDLE ct_vec_xproc = NULL;
  * diagnostic simply carried on after ten seconds and did the interleaving this lock exists to
  * prevent — and a --pair run legitimately takes longer than that. A lock whose failure is
  * ignored is a comment. */
+/* Same lock, but for a caller that must not be made to wait — a GUI whose render thread is the one
+ * asking. `vectorcheck` is a batch tool and can afford the full minute; a dialog cannot, and
+ * blocking there freezes the whole window for as long as another process holds the mutex (codex
+ * #192 r4). The short timeout is not a different lock, only a different patience: a caller that
+ * loses the race is told so and can click again. */
+static int ct_vector_borrow_lock_for(unsigned int wait_ms) {
+	DWORD r;
+	if (!ct_vec_xproc) {
+		ct_vec_xproc = CreateMutexA(NULL, FALSE, "Global\\blobly_net_vector_borrow");
+		if (!ct_vec_xproc) ct_vec_xproc = CreateMutexA(NULL, FALSE, "Local\\blobly_net_vector_borrow");
+	}
+	if (!ct_vec_xproc) return 0;
+	r = WaitForSingleObject(ct_vec_xproc, wait_ms);
+	if (r == WAIT_OBJECT_0 || r == WAIT_ABANDONED) return 0;
+	return -1;
+}
+
 static int ct_vector_borrow_lock(void) {
 	DWORD r;
 	if (!ct_vec_xproc) {

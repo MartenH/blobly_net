@@ -70,6 +70,7 @@ fn C.ct_vector_dll_path() &char
 fn C.ct_vector_assign(u32, int, int, int) int
 fn C.ct_vector_appl_get(u32, &int, &int, &int) int
 fn C.ct_vector_borrow_lock() int
+fn C.ct_vector_borrow_lock_for(u32) int
 fn C.ct_vector_borrow_unlock()
 fn C.ct_vector_probe(int, &int, &int, &int, &u64) int
 fn C.ct_vector_channel_info(int, &char, int, &char, int, &int, &int, &int, &u32, &u32, &u32, &int, &int, &int, &int, &int) int
@@ -464,6 +465,15 @@ pub fn vector_assignment(app_channel int) !(VectorChannel, bool) {
 // vector_borrow_lock / vector_borrow_unlock bracket a read-modify-restore of the application
 // channel assignments, across PROCESSES. Two diagnostics running at once would otherwise
 // interleave their saves and restores and leave a channel pointed somewhere nobody chose.
+// vector_borrow_lock_now takes the same interprocess lock but gives up quickly, for a caller that
+// must not block — the GUI render thread. Losing the race is reported, not waited out: a frozen
+// window for as long as another process holds the mutex is worse than "try again" (codex #192 r4).
+pub fn vector_borrow_lock_now() ! {
+	if C.ct_vector_borrow_lock_for(u32(250)) != 0 {
+		return error('another Vector tool is changing the application channels just now — try again in a moment')
+	}
+}
+
 pub fn vector_borrow_lock() ! {
 	if C.ct_vector_borrow_lock() != 0 {
 		return error('another Vector diagnostic is holding the application channels; waited a minute')

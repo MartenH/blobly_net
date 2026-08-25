@@ -312,11 +312,13 @@ pub enum HwOwner {
 // destination_conflicts refuses the project at Start (#167) and `vectorcheck --release` undoes it
 // — which is a different order of harm from the write this function's caller could otherwise make
 // over a live mapping, and that one stays strictly refused in pick_free_app_channel.
+// NOTHING ANSWERING MEANS NOTHING IS OURS, which is the opposite of what the previous version
+// concluded and broke the case this feature exists for. If not one application channel can be
+// read, this application owns no hardware — so every physical channel is unowned BY US and
+// assignable, and a fresh bench gets its Assign buttons. Treating it as `unknown` was cautious
+// about a danger that cannot exist: there is nothing to alias with (codex #192 r4).
 pub fn hw_owner(owner_app int, any_answered bool) HwOwner {
-	if owner_app > 0 {
-		return .owned
-	}
-	return if any_answered { .unowned } else { .unknown }
+	return if owner_app > 0 { HwOwner.owned } else { HwOwner.unowned }
 }
 
 // VectorSpec is the parsed interface string.
