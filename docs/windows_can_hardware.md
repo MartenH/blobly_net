@@ -159,6 +159,90 @@ MSGTYPE flags. The free driver has no software virtual channel, so testing needs
 ASCII line protocol (`O` open, `S6` 500k, `t<id><len><data>`, `T…` for 29-bit); no DLL and no
 SDK, and it would work identically on Linux and Windows.
 
+## Setting up a Vector bench — the application-channel model
+
+The thing that surprises everyone first: **you cannot address Vector hardware directly.** The XL
+library only takes an *application channel*, so a channel has to be MAPPED to a physical one
+before `vector:1` opens anything. On a fresh bench that mapping does not exist yet.
+
+**Why the indirection is there** — it is Vector's design, not ours, and it earns its keep. Every
+XL program registers a name and gets its own 1..64 numbering:
+
+```
+"blobly_net"  channel 1 ─┐
+"CANoe"       channel 1 ─┼─→  all three may point at VN1630A Channel 1
+"CANalyzer"   channel 1 ─┘
+```
+
+Three tools share one device without arguing about channel numbers, and each keeps its own map.
+The alternative — addressing hardware directly — means reproducing `XLdriverConfig`, a large
+packed struct whose exact size decides where the channel array starts; an error there reads out
+of bounds rather than failing. This backend deliberately does not.
+
+The mapping is stored **by the driver**, per application, and survives reboots. That is why a
+tool that borrows a channel has to put it back, and why `vectorcheck --pair` restores on Ctrl-C.
+
+### Reading the dialog
+
+In Vector Hardware Config (or Hardware Manager) an application shows a fixed list:
+
+```
+CAN 1    VN1630A 1 (545980)  Channel 1
+CAN 40   Not assigned
+CAN 61   VN1630A 1 (545980)  Channel 3
+CAN 62   Not assigned
+```
+
+**`CAN <n>` is the application channel NUMBER, not a name** — it is not editable, and it is not
+a description of the bus. It is the `n` in `vector:<n>`. Rows reading *Not assigned* are channels
+this application has registered and not mapped; harmless, and they accumulate, because opening an
+unassigned channel REGISTERS it so it appears in the dialog ready to assign. (`vectorcheck --pair`
+borrows 61/62 for its test and gives them back, which is where those two usually come from.)
+
+So the two columns answer different questions: the left is **our** numbering, the right is **the
+driver's** hardware. `--list` prints both, with the driver's `hwType:hwIndex:hwChannel` triple.
+
+### Doing it without the Hardware Manager
+
+The GUI cannot create a mapping yet ([#186](https://github.com/MartenH/blobly_net/issues/186)),
+but `cmd/vectorcheck` can, and it is the same call the dialog makes:
+
+```sh
+vectorcheck --probe                          # find the row number of the hardware you want
+vectorcheck --channel 2 --assign 2 --seconds 1   # map application channel 2 -> probe row 2
+vectorcheck --release 2                      # unmap it again
+```
+
+`--assign` takes a **`--probe` row**, not a channel number. Deliberately: the driver lists its
+channels device-first while a hwType sweep walks them in another order, and an earlier version
+took one for the other — the caller named one thing and got another, with silence on a wire that
+was fine as the only symptom. It also *listens* after assigning rather than exiting, so give it
+`--seconds 1` when all you want is the mapping.
+
+`--pair` needs no setup at all: it borrows two high application channels, runs, and restores what
+they pointed at.
+
+### "It only shows one speed" — where the CAN-FD data rate lives
+
+The dialog shows a single **Default CAN baud rate** per channel. That is not a statement about
+CAN-FD, and not a limit either:
+
+- it is the rate a channel keeps for applications that never configure one;
+- this backend overrides it at open — `xlCanSetChannelBitrate` for a classic port,
+  `xlCanFdSetConfiguration` for an FD one, which is where the *second* rate comes from;
+- so there is one field because the data phase is an **application-time** setting, not a hardware
+  one. `vector:1@500000/2000000` is where you say it.
+
+**Whether a channel can do CAN-FD at all** is a property of its transceiver, and today the only
+way to know from the outside is to look up the part — the `CANpiggy 1057Gcap` and the on-board
+`1051cap` on the bench this was written against both carry FD, but a piggyback rated for classic
+CAN only will not, and the name is the whole clue. The driver does answer it
+(`XL_CHANNEL_FLAG_CANFD_ISO_SUPPORT` /
+`..._BOSCH_SUPPORT` in `channelCapabilities`, a field the shim already reads), and surfacing it in
+`--probe` is [#187](https://github.com/MartenH/blobly_net/issues/187). Until then the failure is
+late and indirect: configure a data phase, Start, and get a refusal from
+`xlCanFdSetConfiguration` for a channel that was never FD-capable.
+
 ## Checking a bench
 
 `cmd/vectorcheck` is the Vector one: `--list` shows application channels with hardware
