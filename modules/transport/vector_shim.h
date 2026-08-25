@@ -1368,6 +1368,29 @@ static void ct_vector_borrow_unlock(void) {
  * looked exactly like a free channel: the caller borrowed it, and gave it back by unassigning —
  * erasing a mapping the operator had made, on the strength of a question that was never
  * answered. A borrow has to refuse when it cannot see what it is about to overwrite. */
+/* WHETHER THE APPLICATION EXISTS AT ALL, which is a different question from what one of its
+ * channels points at — and the one nothing here could answer (#190).
+ *
+ * xlGetApplConfig fails both when the application is absent and when the channel index is outside
+ * the channel count it was created with, so a per-channel lookup cannot tell "no such application"
+ * from "no such channel" from "the driver could not answer". Sweeping a few low indices settles
+ * it: if ANY of them answers, the application is registered and the failures were about channels.
+ *
+ * 1 registered, 0 not registered, negative = the driver could not be asked. The third is kept
+ * distinct for the reason ct_vector_mask_why's own comment gives: a caller about to WRITE must
+ * never read a failed question as an empty answer. */
+static int ct_vector_appl_exists(void) {
+	unsigned int t, i, c;
+	unsigned int ch;
+	if (ct_vector_load() != 0) return -1;
+	if (ct_xl_opendrv() != 0) return -2;
+	for (ch = 0; ch < 8; ch++) {
+		t = i = c = 0;
+		if (ct_xl_getappl("blobly_net", ch, &t, &i, &c, CT_XL_BUS_TYPE_CAN) == 0) return 1;
+	}
+	return 0;
+}
+
 static int ct_vector_appl_get(unsigned int app_channel, int *hw_type, int *hw_index, int *hw_channel) {
 	unsigned int t = 0, i = 0, c = 0;
 	if (ct_vector_load() != 0 || ct_xl_opendrv() != 0) return -1;

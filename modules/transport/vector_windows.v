@@ -647,6 +647,95 @@ pub fn vector_error_frames() int {
 	return C.ct_vector_error_frames()
 }
 
+fn C.ct_vector_appl_exists() int
+
+// vector_application_registered reports whether `blobly_net` exists in the driver's application
+// list: true, false, or an error when the driver could not be asked.
+//
+// THREE ANSWERS, NOT TWO, and the third is why this is a result rather than a bool. A caller's
+// next move is to CREATE the application, and creating one over a question that merely failed is
+// the shape of the bug ct_vector_mask_why's comment describes — a transient read failure taken
+// for an empty answer, which cleared an assignment that was perfectly good.
+//
+// The case it exists for is a bench where somebody deleted the application in Vector Hardware
+// Manager, or one that has never run this app. Every per-channel lookup then fails, and until
+// this existed that was reported as "the driver would not report what it is assigned to… check
+// that no other XL application is mid-restart" — a driver malfunction, for a state that is
+// ordinary and fixable (#190).
+pub fn vector_application_registered() !bool {
+	rc := C.ct_vector_appl_exists()
+	if rc < 0 {
+		return error('the Vector driver could not be asked whether the application "blobly_net" is registered')
+	}
+	return rc == 1
+}
+
+// VectorMapping is one PHYSICAL channel and the application channel pointed at it, if any.
+//
+// THE PHYSICAL CHANNEL IS THE ROW, which is the whole difference from `vector_list`. That function
+// answers "which of our application channels are usable", which is right for opening and useless
+// for ASSIGNING: it cannot show hardware nobody has mapped yet, and it names channels without
+// saying what they are. Choosing hardware means seeing the hardware.
+pub struct VectorMapping {
+pub:
+	hw VectorChannel // device, transceiver, serial, live rate, CAN-FD capability
+	// Our application channel mapped to this hardware, or 0 for none. `vector:${app}` is the
+	// address it would be opened by.
+	app int
+}
+
+// vector_mappings lists every channel the driver reports, each with the application channel — if
+// any — that points at it.
+//
+// ONE SWEEP OF OUR CHANNELS, not one lookup per row. `vector_assignment` costs a driver call, and
+// asking it per physical channel would be quadratic in a device count that is small today and is
+// not ours to bound. Build the reverse index once and match into it.
+//
+// A LOOKUP FAILURE IS NOT AN EMPTY MAPPING here either — see ct_vector_mask_why's comment on the
+// same distinction. A channel we could not ask about is left unmapped rather than reported as
+// free, because the caller's next move is to WRITE one, and writing over an assignment we simply
+// failed to read is how the original of that bug went.
+pub fn vector_mappings() []VectorMapping {
+	hw := vector_channels()
+	mut owner := map[string]int{}
+	for app in 1 .. 65 {
+		a, ok := vector_assignment(app) or { continue }
+		if !ok {
+			continue
+		}
+		owner['${a.hw_type}:${a.hw_index}:${a.hw_channel}'] = app
+	}
+	mut out := []VectorMapping{}
+	for c in hw {
+		out << VectorMapping{
+			hw:  c
+			app: owner['${c.hw_type}:${c.hw_index}:${c.hw_channel}'] or { 0 }
+		}
+	}
+	return out
+}
+
+// vector_free_app_channel proposes the lowest application channel not already pointing at
+// hardware, or none when all 64 are taken.
+//
+// LOWEST FREE, and deliberately not "next after the highest": an operator's own 1 and 2 survive,
+// gaps left by released channels are reused, and the number stays small enough to read off a
+// Buses row. `vectorcheck --pair` borrows 61/62 precisely to stay out of this range.
+pub fn vector_free_app_channel() ?int {
+	mut taken := map[int]bool{}
+	for m in vector_mappings() {
+		if m.app > 0 {
+			taken[m.app] = true
+		}
+	}
+	for app in 1 .. 65 {
+		if app !in taken {
+			return app
+		}
+	}
+	return none
+}
+
 // vector_list reports the application channels that have hardware assigned, for discovery.
 // Returns [] when vxlapi64.dll is absent.
 //

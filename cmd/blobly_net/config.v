@@ -2,6 +2,7 @@ module main
 
 import os
 import project
+import transport
 import sysview
 import sim
 import vgui
@@ -234,6 +235,51 @@ fn (app &App) unique_bus_name(base string) string {
 fn (mut app App) refresh_discovery() {
 	app.disc_list = app.discover_all()
 	app.disc_tick = []bool{len: app.disc_list.len}
+	// Empty on any machine without the XL driver, which is the honest answer rather than a
+	// placeholder — the Linux stub returns nothing and the section below draws nothing.
+	app.disc_vector = transport.vector_mappings()
+	// A DRIVER THAT COULD NOT BE ASKED IS NOT AN UNREGISTERED APPLICATION. Reported, and treated
+	// as registered so the dialog does not offer to create something that may already exist —
+	// the Assign button still works, and the operator sees why the question went unanswered.
+	app.disc_vector_app_registered = transport.vector_application_registered() or {
+		if app.disc_vector.len > 0 {
+			app.notify('${err}')
+		}
+		true
+	}
+}
+
+// assign_vector_hw points a free application channel at one physical channel, which is what
+// Vector Hardware Manager would otherwise be opened to do (#186).
+//
+// EXPLICIT, NEVER IMPLICIT. This is persistent machine state — it survives reboots and it is what
+// every later `vector:<n>` resolves through — so it happens on a button and nowhere else. Nothing
+// on the Start path may create a mapping on the operator's behalf.
+//
+// UNDER THE INTERPROCESS LOCK, for the reason vector_borrow_lock exists: `cmd/vectorcheck --pair`
+// borrows two application channels and restores them, and a GUI writing the same table between
+// its read and its restore would leave a channel pointed somewhere nobody chose. A GUI is just
+// another process here.
+fn (mut app App) assign_vector_hw(hw transport.VectorChannel) {
+	transport.vector_borrow_lock() or {
+		app.notify('could not assign ${hw.name}: ${err}')
+		return
+	}
+	defer {
+		transport.vector_borrow_unlock()
+	}
+	// INSIDE the lock. Chosen outside it, two writers could pick the same free number and the
+	// second would silently retarget the first's channel.
+	free := transport.vector_free_app_channel() or {
+		app.notify('all 64 Vector application channels are already assigned — release one first')
+		return
+	}
+	transport.vector_assign(free, hw) or {
+		app.notify('could not assign ${hw.name}: ${err}')
+		return
+	}
+	app.notify('vector:${free} now points at ${hw.name} (${hw.transceiver}) — add it as a bus to use it')
+	app.refresh_discovery()
 }
 
 // next_free_vcan returns the first vcanN not already in the project (for the + vcan quick-add).

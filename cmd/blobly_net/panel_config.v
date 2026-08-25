@@ -252,6 +252,42 @@ fn draw_discover_dialog(mut app App) {
 		vgui.same_line()
 		vgui.text('${d.address}   ${d.adapter} · ${d.desc}')
 	}
+	// VECTOR HARDWARE, below the interfaces and separate from them on purpose. The list above is
+	// "what could this app open"; a channel nothing is mapped to cannot appear in it, and those
+	// are precisely the ones a fresh bench has (#186). Drawn only where there is Vector hardware
+	// to talk about, so nothing changes for a bench without it.
+	if app.disc_vector.len > 0 {
+		vgui.separator()
+		vgui.text('Vector hardware')
+		vgui.same_line()
+		vgui.help_marker('The XL library addresses APPLICATION channels, not hardware, so a physical channel must be mapped to one of ours before it can be opened. This writes only under the application name "blobly_net" — another application\'s assignments (CANoe, CANalyzer) are not touched. The mapping is stored by the driver and survives reboots.')
+		// THE FIRST-RUN STATE, said plainly. A bench that has never run this app — or one where
+		// somebody deleted the application in Vector Hardware Manager — has hardware and no
+		// mappings, and every per-channel lookup fails. Without this the section would show a
+		// list of Assign buttons with no explanation of why nothing is mapped, and the Log would
+		// carry a driver-malfunction message for an ordinary, fixable state (#190).
+		if !app.disc_vector_app_registered {
+			vgui.text_dim('   the application "blobly_net" is not registered with the Vector driver yet — assigning a channel below creates it')
+		}
+		for vm in app.disc_vector {
+			// THE TRANSCEIVER'S OWN VERDICT on CAN-FD, from the driver rather than its part
+			// number (#187). Blank for a channel that carries none — a D/A IO card, say.
+			fd := vm.hw.fd_note()
+			rate := if vm.hw.bitrate > 0 { '${vm.hw.bitrate}' } else { '-' }
+			detail := '${vm.hw.transceiver} · ${rate}${if fd == '' { '' } else { ' · CAN-FD ${fd}' }}'
+			if vm.app > 0 {
+				// Already ours: name the address, because that is what a Buses row will carry.
+				vgui.text_dim('   vector:${vm.app}   ${vm.hw.name}   ${detail}')
+				continue
+			}
+			// UNMAPPED. The button is the only path that writes; see assign_vector_hw.
+			if vgui.small_button('Assign##va${vm.hw.hw_type}_${vm.hw.hw_index}_${vm.hw.hw_channel}') {
+				app.assign_vector_hw(vm.hw)
+			}
+			vgui.same_line()
+			vgui.text_dim('(unassigned)  ${vm.hw.name}   ${detail}')
+		}
+	}
 	vgui.separator()
 	vgui.text_dim('Tip: a PCAN/Kvaser device on Linux/WSL appears here as SocketCAN (canN) — add those, not the pcan/kvaser adapter (Windows-only).')
 	vgui.end()

@@ -278,6 +278,15 @@ mut:
 	disc_open bool
 	disc_list []DiscoveredIface
 	disc_tick []bool // parallel to disc_list
+	// Vector HARDWARE, which is a different question from the list above. That one shows
+	// interfaces this app could open; this one shows physical channels the driver reports,
+	// including the ones nothing is mapped to yet — which are exactly the ones a fresh bench
+	// needs and the only ones the interface list can never contain (#186).
+	disc_vector []transport.VectorMapping
+	// Whether the driver knows the application at all. Its own field rather than "is disc_vector
+	// empty", because a bench with hardware and no mappings and a bench whose driver could not be
+	// asked look identical from the list alone (#190).
+	disc_vector_app_registered bool
 	// File browser (Open / Save As / attach DBC / attach manifest)
 	fb_open     bool   // browser window shown
 	fb_save     bool   // true = save mode (filename input), false = open mode

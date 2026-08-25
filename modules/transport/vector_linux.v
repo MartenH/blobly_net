@@ -68,6 +68,29 @@ pub fn (c VectorChannel) fd_note() string {
 	}
 }
 
+// VectorMapping mirrors the Windows type so a front end compiles unguarded. There is no XL driver
+// here, so vector_mappings() is empty and vector_free_app_channel() has nothing to propose —
+// which is the honest answer on a machine with no Vector hardware, not a placeholder.
+pub struct VectorMapping {
+pub:
+	hw  VectorChannel
+	app int
+}
+
+pub fn vector_mappings() []VectorMapping {
+	return []VectorMapping{}
+}
+
+// No XL driver here, so there is no application list to be in. False rather than an error: the
+// question is answerable on this platform, and the answer is no.
+pub fn vector_application_registered() !bool {
+	return false
+}
+
+pub fn vector_free_app_channel() ?int {
+	return none
+}
+
 pub fn vector_error_frames() int {
 	return 0
 }
