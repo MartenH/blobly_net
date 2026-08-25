@@ -266,8 +266,12 @@ fn draw_discover_dialog(mut app App) {
 		// mappings, and every per-channel lookup fails. Without this the section would show a
 		// list of Assign buttons with no explanation of why nothing is mapped, and the Log would
 		// carry a driver-malfunction message for an ordinary, fixable state (#190).
-		if !app.disc_vector_app_registered {
-			vgui.text_dim('   the application "blobly_net" is not registered with the Vector driver yet — assigning a channel below creates it')
+		// WHAT WAS OBSERVED, not what it implies. Nothing answering is what an absent application
+		// looks like — and also what a driver that has stopped answering looks like, which vxlapi
+		// gives no way to tell apart. The sentence is true either way, and the ACTION is safe
+		// either way, so the dialog does not need the certainty it cannot have (codex #192 r2).
+		if !app.disc_vector_app_seen {
+			vgui.text_dim('   no application channels could be read for "blobly_net" — assigning below creates the mapping (and the application, if it is not there)')
 		}
 		for vm in app.disc_vector {
 			// THE TRANSCEIVER'S OWN VERDICT on CAN-FD, from the driver rather than its part

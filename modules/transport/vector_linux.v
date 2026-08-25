@@ -84,9 +84,9 @@ pub fn vector_mappings() []VectorMapping {
 	return []VectorMapping{}
 }
 
-// No XL driver here, so there is no application list to be in. False rather than an error: the
-// question is answerable on this platform, and the answer is no.
-pub fn vector_application_registered() !bool {
+// No XL driver here, so nothing can answer. False means "nothing answered", which is exactly
+// true on this platform — see the Windows side for why that is evidence rather than a verdict.
+pub fn vector_application_seen() !bool {
 	return false
 }
 

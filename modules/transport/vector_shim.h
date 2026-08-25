@@ -1382,10 +1382,17 @@ static void ct_vector_borrow_unlock(void) {
  * from "no such channel" from "the driver could not answer". Sweeping a few low indices settles
  * it: if ANY of them answers, the application is registered and the failures were about channels.
  *
- * 1 registered, 0 not registered, negative = the driver could not be asked. The third is kept
- * distinct for the reason ct_vector_mask_why's own comment gives: a caller about to WRITE must
- * never read a failed question as an empty answer. */
-static int ct_vector_appl_exists(void) {
+ * 1 = at least one channel answered, so the application exists. 0 = NOTHING answered, which is
+ * what an absent application looks like and is ALSO what a driver that has stopped answering
+ * looks like — the two are not separable from here, because vxlapi does not document a status
+ * that proves absence and this code will not guess one (codex #192 r2). Negative = the library or
+ * the driver could not be reached at all, which is separable and is kept apart for the reason
+ * ct_vector_mask_why's comment gives: a caller about to WRITE must never read a failed question
+ * as an empty answer.
+ *
+ * So 0 is EVIDENCE, not a verdict, and the name says `seen` rather than `exists` to stop a caller
+ * reporting it as one. */
+static int ct_vector_appl_seen(void) {
 	unsigned int t, i, c;
 	unsigned int ch;
 	if (ct_vector_load() != 0) return -1;

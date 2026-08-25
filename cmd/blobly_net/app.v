@@ -286,7 +286,7 @@ mut:
 	// Whether the driver knows the application at all. Its own field rather than "is disc_vector
 	// empty", because a bench with hardware and no mappings and a bench whose driver could not be
 	// asked look identical from the list alone (#190).
-	disc_vector_app_registered bool
+	disc_vector_app_seen bool
 	// File browser (Open / Save As / attach DBC / attach manifest)
 	fb_open     bool   // browser window shown
 	fb_save     bool   // true = save mode (filename input), false = open mode

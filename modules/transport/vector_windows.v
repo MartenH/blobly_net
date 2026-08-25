@@ -655,25 +655,29 @@ pub fn vector_error_frames() int {
 	return C.ct_vector_error_frames()
 }
 
-fn C.ct_vector_appl_exists() int
+fn C.ct_vector_appl_seen() int
 
-// vector_application_registered reports whether `blobly_net` exists in the driver's application
-// list: true, false, or an error when the driver could not be asked.
+// vector_application_seen reports whether ANY application channel answered — evidence that the
+// application exists, not proof that it does not.
 //
-// THREE ANSWERS, NOT TWO, and the third is why this is a result rather than a bool. A caller's
-// next move is to CREATE the application, and creating one over a question that merely failed is
-// the shape of the bug ct_vector_mask_why's comment describes — a transient read failure taken
-// for an empty answer, which cleared an assignment that was perfectly good.
+// EVIDENCE, NOT A VERDICT, and the name carries the difference. `true` is proof: a channel
+// answered, so the application is there. `false` is only "nothing answered" — which is what an
+// absent application looks like AND what a driver that has stopped answering looks like. vxlapi
+// documents no status that proves absence, and this will not invent one, so a caller must not
+// turn `false` into "the application does not exist" (codex #192 r2).
+//
+// An error is the separable case: the library or the driver could not be reached at all.
 //
 // The case it exists for is a bench where somebody deleted the application in Vector Hardware
 // Manager, or one that has never run this app. Every per-channel lookup then fails, and until
 // this existed that was reported as "the driver would not report what it is assigned to… check
 // that no other XL application is mid-restart" — a driver malfunction, for a state that is
-// ordinary and fixable (#190).
-pub fn vector_application_registered() !bool {
-	rc := C.ct_vector_appl_exists()
+// ordinary and fixable (#190). Saying "nothing answered" is honest; saying "it is not registered"
+// would be the same overreach in a friendlier voice.
+pub fn vector_application_seen() !bool {
+	rc := C.ct_vector_appl_seen()
 	if rc < 0 {
-		return error('the Vector driver could not be asked whether the application "blobly_net" is registered')
+		return error('the Vector driver could not be asked about the application "blobly_net"')
 	}
 	return rc == 1
 }
@@ -749,35 +753,41 @@ pub fn vector_mappings() []VectorMapping {
 // LOWEST FREE, deliberately not "next after the highest": an operator's own 1 and 2 survive, gaps
 // left by released channels are reused, and the number stays small enough to read off a Buses
 // row. `vectorcheck --pair` borrows 61/62 precisely to stay clear of this range.
-// TWO TIERS, because "the lookup failed" is not one situation. A confirmed empty channel is the
-// best answer and is preferred absolutely. Only when there is none does a channel we could not
-// read become a candidate — and on a bench that has never run this app, that is EVERY channel,
-// which is precisely the case this whole feature exists for. A strict "confirmed only" rule
-// proposes nothing there and the dialog reports all 64 as taken, which is both wrong and the
-// opposite of useful.
+// WHETHER THE DRIVER IS ANSWERING AT ALL is the discriminator, and it is the only one available.
+// The previous version offered a channel whose lookup had FAILED as a fallback, which put the
+// destructive case straight back: a transient failure on an OCCUPIED channel is indistinguishable
+// from a channel outside the application's list, and assigning the first overwrites a mapping
+// somebody made (codex #192 r2 — the second time this exact class arrived here).
 //
-// The second tier cannot overwrite a mapping the way the rejected version could: an assignment
-// the driver CAN read comes back `assigned` and is never offered, plugged in or not. What reaches
-// tier two is a channel outside the application's channel list — nothing to overwrite — or one
-// the driver would not answer for at all, which is rare, reported below, and still only reached
-// when no confirmed-empty channel exists anywhere in the range.
+// So:
+//   - if ANY channel answered, the driver is working and this is an existing application. Only a
+//     channel it explicitly reports EMPTY is offered. A failure is then unexplained, and an
+//     unexplained channel is never written to.
+//   - if NO channel answered at all, there is no application to damage — every write creates
+//     rather than replaces — so channel 1 is offered and the fresh bench this feature exists for
+//     still works.
+//
+// The conservative corner is deliberate: an existing application whose free channels all lie
+// outside its channel list reports none rather than proposing one. That costs a manual
+// `vectorcheck --assign` on a bench that has run out of confirmed-empty channels; the alternative
+// costs somebody's mapping.
 pub fn vector_free_app_channel() ?int {
-	mut unknown := 0
+	mut answered := false
+	mut empty := 0
 	for app in 1 .. 65 {
-		_, assigned := vector_assignment(app) or {
-			if unknown == 0 {
-				unknown = app
-			}
-			continue
-		}
-		if !assigned {
-			return app // confirmed empty: the answer we want
+		_, assigned := vector_assignment(app) or { continue }
+		answered = true
+		if !assigned && empty == 0 {
+			empty = app
 		}
 	}
-	if unknown > 0 {
-		return unknown
+	if empty > 0 {
+		return empty
 	}
-	return none // all 64 confirmed assigned
+	if !answered {
+		return 1 // nothing readable anywhere: no application, so nothing to overwrite
+	}
+	return none // the driver is answering and named no empty channel
 }
 
 // vector_list reports the application channels that have hardware assigned, for discovery.

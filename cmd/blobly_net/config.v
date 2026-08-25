@@ -241,7 +241,7 @@ fn (mut app App) refresh_discovery() {
 	// A DRIVER THAT COULD NOT BE ASKED IS NOT AN UNREGISTERED APPLICATION. Reported, and treated
 	// as registered so the dialog does not offer to create something that may already exist —
 	// the Assign button still works, and the operator sees why the question went unanswered.
-	app.disc_vector_app_registered = transport.vector_application_registered() or {
+	app.disc_vector_app_seen = transport.vector_application_seen() or {
 		if app.disc_vector.len > 0 {
 			app.notify('${err}')
 		}
