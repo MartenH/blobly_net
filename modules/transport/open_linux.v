@@ -3,6 +3,8 @@ module transport
 // open returns a Bus for the given interface string, dispatching by name:
 //   - `udp` / `udp:GROUP` / `udp:GROUP:PORT` → the cross-platform UDP-multicast
 //     software bus (udpbus.v),
+//   - `cansub:<device-id>/<channel>[@<arb>[/<data>]]` -> a CSS Electronics CANsub, reached over
+//     HTTP rather than a driver, which is why it is dispatched on both platforms (cansub.v),
 //   - anything else (e.g. `vcan0`, `can0`) → the Linux SocketCAN backend.
 // This is the Linux dispatcher; `open_windows.v` is the Windows counterpart
 // (udp + inproc). Keeping `open_socketcan` referenced ONLY here preserves the
@@ -27,6 +29,13 @@ fn open_raw(iface string) !Bus {
 	}
 	if t := parse_udp_iface(iface) {
 		return open_udp(t.group, t.port)!
+	}
+	if iface.to_lower().starts_with('cansub:') {
+		// The one hardware backend that is not platform-specific: a CANsub enumerates as a USB
+		// NETWORK adapter and is spoken to over HTTP, so the same code reaches it here as on
+		// Windows. Through the shared registry because the vendor permits a single client per
+		// channel WebSocket and the app opens each wire several times per Start.
+		return shared_open(wire_key_for('cansub', iface), iface, open_cansub_bus)!
 	}
 	return open_socketcan(iface)!
 }

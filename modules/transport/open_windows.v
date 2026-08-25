@@ -6,6 +6,9 @@ module transport
 //   - `pcan:<channel>[@<bitrate>]`   PEAK PCAN-Basic (pcan_windows.v)
 //   - `kvaser:<channel>[@<bitrate>]` Kvaser CANlib   (kvaser_windows.v)
 //   - `vector:<channel>[@<bitrate>][,silent]` Vector XL (vector_windows.v)
+//   - `cansub:<device-id>/<channel>[@<arb>[/<data>]]` CSS Electronics CANsub (cansub.v) — not a
+//     vendor DLL but an HTTP server on the end of a USB cable, so it is the one hardware backend
+//     that works identically on Linux; open_linux.v routes it too.
 // The Linux counterpart (open_linux.v) accepts `vcan0`/`can0` instead.
 // Every bus in the process is opened here, which is why listen-only is enforced here: the
 // wrapper is applied to whatever the backend returns, so no emitter can route around it
@@ -26,6 +29,14 @@ fn open_raw(iface string) !Bus {
 	}
 	if t := parse_udp_iface(iface) {
 		return open_udp(t.group, t.port)!
+	}
+	if iface.to_lower().starts_with('cansub:') {
+		// Through the shared registry for the same reason `pcan:` is: the vendor states that a
+		// single client may be connected to each channel's WebSocket, and the app opens each wire
+		// several times per Start. Keyed on the WIRE — the device id and channel, without the
+		// bitrate — so a 250k row and a 500k row on one channel meet in the conflict check
+		// instead of both reaching the device and the second being refused by it.
+		return shared_open(wire_key_for('cansub', iface), iface, open_cansub_bus)!
 	}
 	if iface.starts_with('pcan:') {
 		// Through the shared registry, not straight to the driver: PCANBasic permits exactly

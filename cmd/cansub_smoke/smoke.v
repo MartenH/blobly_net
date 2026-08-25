@@ -17,19 +17,19 @@ module main
 
 import os
 import time
-import net.websocket
 import transport
 
 fn main() {
 	args := os.args[1..].filter(!it.starts_with('-'))
 	if args.len == 0 {
-		eprintln('usage: cansub_smoke <device-id> [tx-channel] [rx-channel]')
+		eprintln('usage: cansub_smoke <device-id> [tx-channel] [rx-channel] [rate]')
 		eprintln('  e.g. cansub_smoke e5a16adf 1 2   (channels 1 and 2 wired together)')
 		exit(2)
 	}
 	id := args[0]
 	tx_ch := if args.len > 1 { args[1].int() } else { 1 }
 	rx_ch := if args.len > 2 { args[2].int() } else { 2 }
+	rate := if args.len > 3 { args[3] } else { '250000' } // the device's factory nominal rate
 	host := '${id}-usb.local'
 
 	// The device is addressed by its ID through mDNS, never by an IP. A firmware update clears
@@ -47,30 +47,38 @@ fn main() {
 	println('  version ${rest(host, '/api/version') or { '?' }}')
 	println('  channels ${rest(host, '/api/can') or { '?' }}')
 
-	// The receiver first. Announcements are not queued for a listener that is not there yet, and
-	// opening the bus is what connecting the WebSocket DOES — so a receiver opened after the
-	// sender would miss the frames it is meant to catch.
-	//
-	// A FINITE read timeout, deliberately. The default is infinite, and `drain` below reads until
-	// a read fails — on an idle bus that is a hang, not a result. The timeout is what turns "no
-	// more frames" into an answer.
-	mut rx := websocket.new_client('wss://${host}/api/can/${rx_ch}/ws',
-		read_timeout: 1 * time.second
-	)!
-	rx.connect() or {
-		eprintln('cannot open ch${rx_ch}: ${err}')
+	// Through transport.open(), not the WebSocket directly: that is the path the app uses, so it
+	// is the path worth proving. It carries the REST configuration, the shared registry that
+	// gives one channel one connection however many times it is opened, and the listen-only
+	// wrapper every emitter in this process goes through.
+	rx_iface := 'cansub:${id}/${rx_ch}@${rate}'
+	tx_iface := 'cansub:${id}/${tx_ch}@${rate}'
+
+	// The receiver first: connecting the WebSocket is what opens the CAN channel, so a receiver
+	// opened after the sender misses the frames it is meant to catch.
+	mut rx := transport.open(rx_iface) or {
+		eprintln('cannot open ${rx_iface}: ${err}')
 		exit(1)
 	}
-	time.sleep(300 * time.millisecond)
-
-	mut tx := websocket.new_client('wss://${host}/api/can/${tx_ch}/ws')!
-	tx.connect() or {
-		eprintln('cannot open ch${tx_ch}: ${err}')
+	defer { rx.close() }
+	mut tx := transport.open(tx_iface) or {
+		eprintln('cannot open ${tx_iface}: ${err}')
 		exit(1)
 	}
-	println('  both channels open')
+	defer { tx.close() }
+	println('  both channels open  (${rx_iface}, ${tx_iface})')
 
-	sent := [
+	// One channel, opened twice, must be ONE connection — the device permits a single client per
+	// channel WebSocket, and the app opens each wire several times per Start.
+	mut second := transport.open(tx_iface) or {
+		eprintln('a second open of ${tx_iface} was refused: ${err}')
+		eprintln('  the shared registry should have handed back the first connection')
+		exit(1)
+	}
+	println('  a second open of ch${tx_ch} shared the first connection')
+	second.close()
+
+	mut sent := [
 		transport.CanFrame{
 			id:   0x123
 			data: [u8(0xDE), 0xAD, 0xBE, 0xEF]
@@ -85,37 +93,37 @@ fn main() {
 			data: [u8(0x7E), 0x7D, 0x7E, 0x7D] // bytes that collide with the framing
 		},
 	]
-	for f in sent {
-		body := transport.cansub_encode_frame(f)!
-		tx.write(transport.cansub_hdlc_wrap(body), .binary_frame)!
-		println('  TX ch${tx_ch}  ${describe(f)}')
-		time.sleep(50 * time.millisecond)
-	}
-
-	// Collect for a moment, then report. The receive side runs its own decoder because an HDLC
-	// frame is not guaranteed to align with a WebSocket message.
-	time.sleep(700 * time.millisecond)
-	mut dec := transport.CansubDecoder{}
-	mut got := []transport.CanFrame{}
-	for msg in drain(mut rx) {
-		for rec in dec.feed(msg) {
-			if rec.is_error {
-				println('  RX ch${rx_ch}  bus error: ${rec.err}')
-				continue
-			}
-			tag := if rec.tx { 'TX-ack' } else { 'RX' }
-			println('  ${tag} ch${rx_ch}  ${describe(rec.frame)}  t=${rec.us}us')
-			if !rec.tx {
-				got << rec.frame
-			}
+	// CAN-FD only when the address asked for it — the data rate IS the request, so there is
+	// nothing else to check and no way for the two to disagree. 64 bytes with the bit-rate switch
+	// set is the case that exercises the data phase; a DLC of 15 is the only way to say 64.
+	if rate.contains('/') {
+		sent << transport.CanFrame{
+			id:   0x200
+			fd:   true
+			brs:  true
+			data: []u8{len: 64, init: u8(index)}
+		}
+		sent << transport.CanFrame{
+			id:   0x201
+			fd:   true
+			data: [u8(0xAA), 0xBB, 0xCC] // FD without the rate switch is a real configuration too
 		}
 	}
-	for e in dec.errors {
-		eprintln('  decoder: ${e}')
+	for f in sent {
+		tx.send(f) or {
+			eprintln('send ${describe(f)}: ${err}')
+			exit(1)
+		}
+		println('  TX ch${tx_ch}  ${describe(f)}')
 	}
 
-	rx.close(1000, 'done') or {}
-	tx.close(1000, 'done') or {}
+	mut got := []transport.CanFrame{}
+	for _ in 0 .. sent.len {
+		f := rx.recv(1500) or { break }
+		println('  RX ch${rx_ch}  ${describe(f)}')
+		got << f
+	}
+	println('  health tx=${transport.health_name(tx.health())} rx=${transport.health_name(rx.health())}')
 
 	mut missing := 0
 	for f in sent {
@@ -130,22 +138,6 @@ fn main() {
 		exit(1)
 	}
 	println('OK: all ${sent.len} frames made the round trip ch${tx_ch} -> ch${rx_ch}')
-}
-
-// drain takes whatever the receiver has buffered and stops when the reads dry up.
-//
-// It reads directly rather than running `listen()` in a thread: listen() is itself a loop over
-// read_next_message dispatching to handlers, so doing both puts two readers on one socket and they
-// take each other's frames. One reader, and the client's read timeout ends it.
-fn drain(mut rx websocket.Client) [][]u8 {
-	mut out := [][]u8{}
-	for out.len < 4096 {
-		msg := rx.read_next_message() or { break } // a timeout here means the bus went quiet
-		if msg.opcode == .binary_frame {
-			out << msg.payload
-		}
-	}
-	return out
 }
 
 fn describe(f transport.CanFrame) string {

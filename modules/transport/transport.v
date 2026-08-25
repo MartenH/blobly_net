@@ -88,6 +88,13 @@ mut:
 // suffix. Nothing else uses `@` as syntax — `inproc:bench@A` is a perfectly good bus NAME, and
 // treating the suffix as universal sent the emitters to a different hub than the monitor.
 pub fn vendor_iface(iface string) bool {
+	// `cansub:` FIRST, and outside the platform guard below, because it is the one hardware
+	// backend that is not a vendor DLL: the device is an HTTP server on the end of a USB cable
+	// and the same code reaches it from Linux and Windows alike. The guard below exists because
+	// `pcan:bench` on Linux is an ordinary SocketCAN name; `cansub:` means one thing everywhere.
+	if iface.to_lower().starts_with('cansub:') {
+		return true
+	}
 	// PLATFORM-DEPENDENT, because the dispatchers are: only open_windows.v routes `pcan:`,
 	// `kvaser:` and `vector:` to a vendor driver. On Linux open_linux.v sends everything that is not a
 	// software bus to SocketCAN — which echoes — so a channel someone configured as
@@ -117,6 +124,15 @@ pub fn echoes_own_sends(iface string) bool {
 	// reporting the frame as RX — from there it is genuinely bus traffic somebody else's port
 	// put on the wire.
 	if iface.trim_space().to_lower().starts_with('vector:') {
+		return true
+	}
+	// A CANsub does too, by a different mechanism and for the same reason. It acknowledges every
+	// frame it puts on the wire back over the same WebSocket, `open_cansub_bus` asks for those
+	// (`tx_ack_frames`), and they arrive carrying a hardware timestamp taken at start-of-frame —
+	// better than the send site's guess, so they are delivered rather than dropped. Answered
+	// `false`, note_emit would never register the emission and every frame this tester transmits
+	// would be filed a second time as the ECU's.
+	if iface.trim_space().to_lower().starts_with('cansub:') {
 		return true
 	}
 	// PCAN and Kvaser do not. Matched by DISPATCHER prefix, separator included: on Linux
@@ -264,7 +280,7 @@ pub fn wire_key_for(adapter string, iface string) string {
 //
 // The project's own `adapter` field is what settles it, and only these paths have it.
 pub fn destination_key_for(adapter string, iface string) string {
-	if adapter in ['pcan', 'kvaser', 'vector'] {
+	if adapter in ['pcan', 'kvaser', 'vector', 'cansub'] {
 		return vendor_destination_key(iface)
 	}
 	return destination_key(iface)
