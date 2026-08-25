@@ -223,6 +223,102 @@ fn vector_timing_error(s VectorSpec) ?string {
 	return none
 }
 
+// AppSlot is what the driver said about ONE application channel — three states, because the third
+// is the one this code kept losing.
+//
+// FOUR ROUNDS OF THE SAME BUG put this here. Every version of the free-channel search and the
+// mapping sweep folded "the driver would not answer" into either "empty" or "taken", and each time
+// the consequence was a write over something real: a mapping retargeted, or a second application
+// channel aliased onto one physical wire (#167's exact prohibition). The decision was never the
+// hard part — it was that the decision lived inside the driver calls, where it could not be
+// tested, so each fix was checked by reasoning about it and the reasoning was wrong four times.
+//
+// So the DECISION is pure and lives here, in the file that gets tested; the driver I/O that
+// produces the slots stays in vector_windows.v. That is the same split vector_names.v already
+// exists for, and its own header says why: written beside the driver, a rule compiles only on
+// Windows, where nothing runs these tests.
+pub enum AppSlot {
+	unknown // the driver would not answer for this channel
+	empty   // the driver says it is unassigned
+	taken   // the driver says it points at hardware
+}
+
+// pick_free_app_channel chooses the application channel to offer, given what the driver said about
+// each one. `slots[i]` describes application channel `i + 1`.
+//
+// AN EXPLICIT EMPTY ALWAYS WINS. Anything else risks writing over a mapping somebody made, and no
+// convenience is worth that.
+//
+// NOTHING ANSWERED AT ALL is the one case where an unknown may be offered, and it is safe for a
+// reason rather than by assumption: if not a single channel could be read, there is no application
+// to damage — every write creates rather than replaces — and that is exactly the fresh bench this
+// feature exists for. A bench where SOME channels answer is a working driver with a real
+// application, and there an unexplained failure is never written to.
+//
+// The conservative corner is deliberate: an application whose free channels all lie outside its
+// channel list gets `none` rather than a proposal. That costs a manual `vectorcheck --assign`; the
+// alternative costs somebody's mapping.
+pub fn pick_free_app_channel(slots []AppSlot) ?int {
+	mut answered := false
+	for s in slots {
+		if s != .unknown {
+			answered = true
+			break
+		}
+	}
+	for i, s in slots {
+		if s == .empty {
+			return i + 1
+		}
+	}
+	if !answered && slots.len > 0 {
+		return 1
+	}
+	return none
+}
+
+// HwOwner is what is known about one PHYSICAL channel's ownership.
+//
+// `unknown` is not a nicety. A physical channel whose owning application channel could not be read
+// looks unowned, and offering to assign it creates a SECOND application channel pointing at one
+// physical wire — which destination_conflicts refuses a project for (#167), produced here by the
+// dialog meant to set the bench up.
+pub enum HwOwner {
+	unowned // no application channel points here, and every channel answered
+	owned   // an application channel points here
+	unknown // at least one channel could not be read, so this cannot be claimed unowned
+}
+
+// hw_owner decides one physical channel's ownership from the sweep.
+//
+// `owner_app` is the application channel found pointing at this hardware, or 0. `any_answered` is
+// whether ANY channel in the sweep answered at all.
+//
+// KEYED ON "DID ANYTHING ANSWER", not on "did anything fail", and the difference was measured
+// rather than reasoned. The obvious reading — a channel that would not answer might be this
+// hardware's owner, so treat every unowned row as unknown — is safe and useless: on a VN1630A the
+// channels that answer are exactly the application's channel LIST
+//
+//     application channels that ANSWER: [1, 5, 40, 61, 62, 63, 64]
+//
+// and the rest are outside it. Outside the list means the channel is not configured, so it points
+// at nothing and can own nothing. Since every real application has fewer than 64 channels, "any
+// failed" is true on every bench that exists, and the dialog would offer nothing, ever.
+//
+// So an unreadable channel is taken to own nothing, and `unknown` is reserved for the case where
+// NOTHING answered — where we genuinely know nothing about ownership. The residual risk is a
+// TRANSIENT failure on a channel that really is an owner: we would then offer its hardware and
+// create a second application channel on one wire. That is caught rather than silent —
+// destination_conflicts refuses the project at Start (#167) and `vectorcheck --release` undoes it
+// — which is a different order of harm from the write this function's caller could otherwise make
+// over a live mapping, and that one stays strictly refused in pick_free_app_channel.
+pub fn hw_owner(owner_app int, any_answered bool) HwOwner {
+	if owner_app > 0 {
+		return .owned
+	}
+	return if any_answered { .unowned } else { .unknown }
+}
+
 // VectorSpec is the parsed interface string.
 //
 // HERE, not in vector_windows.v, and the difference is not cosmetic: written beside the driver

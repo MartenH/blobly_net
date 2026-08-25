@@ -1392,7 +1392,7 @@ static void ct_vector_borrow_unlock(void) {
  *
  * So 0 is EVIDENCE, not a verdict, and the name says `seen` rather than `exists` to stop a caller
  * reporting it as one. */
-static int ct_vector_appl_seen(void) {
+static int ct_vector_appl_seen_UNUSED(void) {
 	unsigned int t, i, c;
 	unsigned int ch;
 	if (ct_vector_load() != 0) return -1;

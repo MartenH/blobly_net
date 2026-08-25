@@ -275,10 +275,27 @@ fn (mut app App) assign_vector_hw(hw transport.VectorChannel) {
 	defer {
 		transport.vector_borrow_unlock()
 	}
-	// INSIDE the lock. Chosen outside it, two writers could pick the same free number and the
+	// THE TARGET'S OWNERSHIP, RE-READ INSIDE THE LOCK. The button carries a snapshot from the last
+	// Refresh, and between that scan and this click another process — a second copy of this app,
+	// or `vectorcheck` — may have taken the same hardware. It would then be assigned twice, under
+	// two application channels, which is the alias #167 refuses a project for. The lock alone does
+	// not prevent it: both writers serialise correctly and both act on stale reads (codex #192 r3).
+	mut still_free := false
+	for m in transport.vector_mappings() {
+		if m.hw.hw_type == hw.hw_type && m.hw.hw_index == hw.hw_index
+			&& m.hw.hw_channel == hw.hw_channel {
+			still_free = m.owner == .unowned
+			break
+		}
+	}
+	if !still_free {
+		app.notify('${hw.name} is no longer free — something else assigned it; Refresh to see the current mapping')
+		return
+	}
+	// INSIDE the lock too. Chosen outside it, two writers could pick the same free number and the
 	// second would silently retarget the first's channel.
 	free := transport.vector_free_app_channel() or {
-		app.notify('all 64 Vector application channels are already assigned — release one first')
+		app.notify('no Vector application channel could be confirmed free — release one, or assign it with `vectorcheck --assign`')
 		return
 	}
 	transport.vector_assign(free, hw) or {

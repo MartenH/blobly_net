@@ -378,3 +378,57 @@ fn test_the_address_check_covers_timing_not_only_syntax() {
 		assert false, 'a malformed rate must still be reported'
 	}
 }
+
+// ---- application-channel occupancy ---------------------------------------------------------
+//
+// FOUR ROUNDS OF REVIEW found the same class of bug in the driver-side versions of this decision,
+// because it lived inside the driver calls where nothing could check it and each fix was verified
+// by reasoning about it. These are the cases that reasoning got wrong.
+fn test_an_explicit_empty_channel_is_always_preferred() {
+	// The empty one wins even though unknowns come first — an unknown must never be chosen while
+	// a confirmed-free channel exists anywhere in the range.
+	assert pick_free_app_channel([AppSlot.unknown, .unknown, .empty, .empty])? == 3
+	assert pick_free_app_channel([AppSlot.taken, .empty])? == 2
+	assert pick_free_app_channel([AppSlot.empty])? == 1
+}
+
+// THE DESTRUCTIVE CASE, in both shapes that reached review. A channel the driver would not answer
+// for may be OCCUPIED — assigning it retargets a mapping somebody made — so it is never offered
+// while any other channel answered.
+fn test_an_unreadable_channel_is_not_offered_when_the_driver_is_answering() {
+	if got := pick_free_app_channel([AppSlot.taken, .unknown, .taken]) {
+		assert false, 'channel ${got} was unreadable, not free'
+	}
+	if got := pick_free_app_channel([AppSlot.unknown, .taken]) {
+		assert false, 'channel ${got} was unreadable, not free'
+	}
+	// Every channel confirmed taken is simply full — also none, and for a different reason.
+	if got := pick_free_app_channel([AppSlot.taken, .taken]) {
+		assert false, 'nothing is free, got ${got}'
+	}
+}
+
+// …AND THE FRESH BENCH, which the strict version of the same rule broke. When NOTHING answered
+// there is no application to damage: every write creates rather than replaces, so channel 1 is
+// safe and is the case this whole feature exists for.
+fn test_a_bench_where_nothing_answers_is_offered_channel_one() {
+	assert pick_free_app_channel([AppSlot.unknown, .unknown, .unknown])? == 1
+	// An empty list is not a fresh bench — it is no information at all.
+	if _ := pick_free_app_channel([]AppSlot{}) {
+		assert false, 'no slots is not an offer'
+	}
+}
+
+// A physical channel whose owner could not be read must not read as unowned: assigning it maps a
+// SECOND application channel onto one wire, which is exactly what destination_conflicts refuses a
+// project for (#167).
+fn test_hardware_ownership_needs_something_to_have_answered() {
+	// A known owner is owned whatever else happened.
+	assert hw_owner(3, true) == .owned
+	assert hw_owner(3, false) == .owned
+	// Something answered, and nothing claimed this hardware: the channels that answer ARE the
+	// application list, so the silent ones are not configured and own nothing.
+	assert hw_owner(0, true) == .unowned
+	// NOTHING answered: we know nothing about ownership, so it must not read as free.
+	assert hw_owner(0, false) == .unknown
+}

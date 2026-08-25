@@ -78,6 +78,8 @@ pub struct VectorMapping {
 pub:
 	hw  VectorChannel
 	app int
+	// Mirrors the Windows field.
+	owner HwOwner
 }
 
 pub fn vector_mappings() []VectorMapping {
@@ -88,6 +90,11 @@ pub fn vector_mappings() []VectorMapping {
 // true on this platform — see the Windows side for why that is evidence rather than a verdict.
 pub fn vector_application_seen() !bool {
 	return false
+}
+
+// No channels to sweep here, so nothing is known about any of them.
+pub fn vector_app_slots() []AppSlot {
+	return []AppSlot{}
 }
 
 pub fn vector_free_app_channel() ?int {

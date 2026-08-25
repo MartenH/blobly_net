@@ -279,9 +279,17 @@ fn draw_discover_dialog(mut app App) {
 			fd := vm.hw.fd_note()
 			rate := if vm.hw.bitrate > 0 { '${vm.hw.bitrate}' } else { '-' }
 			detail := '${vm.hw.transceiver} · ${rate}${if fd == '' { '' } else { ' · CAN-FD ${fd}' }}'
-			if vm.app > 0 {
+			if vm.owner == .owned {
 				// Already ours: name the address, because that is what a Buses row will carry.
 				vgui.text_dim('   vector:${vm.app}   ${vm.hw.name}   ${detail}')
+				continue
+			}
+			// OWNERSHIP UNKNOWN — some application channel would not answer, and it may be this
+			// hardware's. Offering Assign here would map a SECOND application channel onto one
+			// physical wire, which is the alias destination_conflicts refuses a whole project for
+			// (#167), manufactured by the dialog meant to set the bench up (codex #192 r3).
+			if vm.owner == .unknown {
+				vgui.text_dim('   (ownership unknown)  ${vm.hw.name}   ${detail}')
 				continue
 			}
 			// NOT EVERY CHANNEL IS A CAN CHANNEL. A VN1630A reports its D/A IO channel here
