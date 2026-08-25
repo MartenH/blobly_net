@@ -261,6 +261,13 @@ fn (mut app App) refresh_discovery() {
 // its read and its restore would leave a channel pointed somewhere nobody chose. A GUI is just
 // another process here.
 fn (mut app App) assign_vector_hw(hw transport.VectorChannel) {
+	// CHECKED HERE TOO, not only where the button is drawn. The panel hides Assign for a non-CAN
+	// channel, but that is a display rule and this is the function that WRITES — a second caller
+	// added later would otherwise create a mapping addressed as CAN for a channel that is not one.
+	if !hw.can_capable {
+		app.notify('${hw.name} is not a CAN channel — it cannot be assigned as one')
+		return
+	}
 	transport.vector_borrow_lock() or {
 		app.notify('could not assign ${hw.name}: ${err}')
 		return

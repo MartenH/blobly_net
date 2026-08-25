@@ -280,6 +280,15 @@ fn draw_discover_dialog(mut app App) {
 				vgui.text_dim('   vector:${vm.app}   ${vm.hw.name}   ${detail}')
 				continue
 			}
+			// NOT EVERY CHANNEL IS A CAN CHANNEL. A VN1630A reports its D/A IO channel here
+			// alongside the four CAN ones, and everything this dialog assigns is addressed as
+			// CAN — so an Assign button on that row could only produce a mapping that fails to
+			// open as the interface it was offered as. Listed, because it is real hardware and
+			// its absence would read as a missing channel; not offered (codex #192 r1).
+			if !vm.hw.can_capable {
+				vgui.text_dim('   (not a CAN channel)  ${vm.hw.name}   ${vm.hw.transceiver}')
+				continue
+			}
 			// UNMAPPED. The button is the only path that writes; see assign_vector_hw.
 			if vgui.small_button('Assign##va${vm.hw.hw_type}_${vm.hw.hw_index}_${vm.hw.hw_channel}') {
 				app.assign_vector_hw(vm.hw)

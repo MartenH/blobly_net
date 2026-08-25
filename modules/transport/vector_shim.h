@@ -1287,7 +1287,7 @@ static int ct_vector_channel_info(int idx, char *name, int name_len, char *trans
                                   int trans_len, int *hw_type, int *hw_index, int *hw_channel,
                                   unsigned int *serial, unsigned int *bus_type,
                                   unsigned int *bitrate, int *on_bus, int *trx_state,
-                                  int *fd_iso, int *fd_bosch) {
+                                  int *fd_iso, int *fd_bosch, int *can_capable) {
 	static ct_xl_driver_config cfg;
 	if (ct_vector_load() != 0 || !ct_xl_drvconfig) return -1;
 	if (ct_xl_opendrv() != 0) return -1;
@@ -1318,6 +1318,12 @@ static int ct_vector_channel_info(int idx, char *name, int name_len, char *trans
 		 * way to disagree about what bit means what. */
 		*fd_iso   = (c->channelCapabilities & CT_XL_CHANNEL_FLAG_CANFD_ISO_SUPPORT)   ? 1 : 0;
 		*fd_bosch = (c->channelCapabilities & CT_XL_CHANNEL_FLAG_CANFD_BOSCH_SUPPORT) ? 1 : 0;
+		/* WHETHER THIS CHANNEL IS A CAN CHANNEL AT ALL. XLdriverConfig lists everything the device
+		 * has — a VN1630A reports a D/A IO channel beside its four CAN ones — and every caller
+		 * here addresses CAN. XL_BUS_COMPATIBLE_CAN is the same bit as XL_BUS_TYPE_CAN, in the
+		 * bus-capability word rather than the bus-type one: what the channel COULD be, not what it
+		 * is currently connected as (codex #192 r1). */
+		*can_capable = (c->channelBusCapabilities & CT_XL_BUS_TYPE_CAN) ? 1 : 0;
 	}
 	return 0;
 }

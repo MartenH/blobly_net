@@ -72,7 +72,7 @@ fn C.ct_vector_appl_get(u32, &int, &int, &int) int
 fn C.ct_vector_borrow_lock() int
 fn C.ct_vector_borrow_unlock()
 fn C.ct_vector_probe(int, &int, &int, &int, &u64) int
-fn C.ct_vector_channel_info(int, &char, int, &char, int, &int, &int, &int, &u32, &u32, &u32, &int, &int, &int, &int) int
+fn C.ct_vector_channel_info(int, &char, int, &char, int, &int, &int, &int, &u32, &u32, &u32, &int, &int, &int, &int, &int) int
 fn C.ct_vector_error_frames() int
 fn C.ct_vector_chipstate(int, u64, &int, &int, &int, int) int
 fn C.ct_vector_reqchip(int, u64) int
@@ -524,6 +524,12 @@ pub:
 	// something the open then refuses.
 	fd_iso   bool
 	fd_bosch bool
+	// WHETHER THIS IS A CAN CHANNEL AT ALL. XLdriverConfig lists everything a device has, and a
+	// VN1630A reports a D/A IO channel beside its four CAN ones — while everything in this module
+	// addresses CAN. Offering to assign one produces a mapping that can only fail to open as the
+	// interface it was advertised as (codex #192 r1). From channelBusCapabilities, which is what
+	// the channel COULD be rather than what it is currently connected as.
+	can_capable bool
 }
 
 // fd_capable reports whether this channel can carry the CAN-FD this backend actually configures.
@@ -565,8 +571,9 @@ pub fn vector_channels() []VectorChannel {
 		mut ts := 0
 		mut fiso := 0
 		mut fbosch := 0
+		mut cancap := 0
 		rc := C.ct_vector_channel_info(i, unsafe { &char(&nm[0]) }, 33, unsafe { &char(&tr[0]) },
-			33, &ht, &hi, &hc, &sn, &bt, &br, &ob, &ts, &fiso, &fbosch)
+			33, &ht, &hi, &hc, &sn, &bt, &br, &ob, &ts, &fiso, &fbosch, &cancap)
 		if rc != 0 {
 			break
 		}
@@ -583,6 +590,7 @@ pub fn vector_channels() []VectorChannel {
 			trx_state:   ts
 			fd_iso:      fiso != 0
 			fd_bosch:    fbosch != 0
+			can_capable: cancap != 0
 		}
 	}
 	return out
@@ -715,25 +723,61 @@ pub fn vector_mappings() []VectorMapping {
 	return out
 }
 
-// vector_free_app_channel proposes the lowest application channel not already pointing at
-// hardware, or none when all 64 are taken.
+// vector_free_app_channel proposes the lowest application channel the driver CONFIRMS is
+// unassigned, or none when there is no such channel.
 //
-// LOWEST FREE, and deliberately not "next after the highest": an operator's own 1 and 2 survive,
-// gaps left by released channels are reused, and the number stays small enough to read off a
-// Buses row. `vectorcheck --pair` borrows 61/62 precisely to stay out of this range.
+// ASKED PER CHANNEL, not derived from vector_mappings(), and the difference is destructive. That
+// list has one row per physical channel PRESENT, so an application channel is missing from it in
+// two ordinary configurations:
+//
+//   - it points at hardware that is UNPLUGGED. xlGetApplConfig still hands back the saved triple;
+//     only xlGetChannelMask notices the device has gone. The mapping is perfectly good and the
+//     adapter is in somebody's drawer — "the adapter being unplugged is a different sentence", as
+//     ct_vector_mask_why puts it.
+//   - it is an ALIAS. Two application channels may point at one physical channel (#167 exists
+//     because of it), and a reverse index keyed on the hardware keeps only the last.
+//
+// Either way the channel looked free, and Assign would have retargeted it — writing over a
+// mapping somebody made, permanently, with no warning. That is the same class as the bug
+// vector_mappings' own comment describes, arrived at from the other side (codex #192 r1).
+//
+// ONLY A CONFIRMED "UNASSIGNED" COUNTS. vector_assignment answers three ways, and the third is
+// why this is not a boolean: `(_, false)` is the driver saying the channel is empty, an error is
+// the driver failing to answer, and treating the second as the first is exactly how a good
+// assignment gets overwritten. A channel we could not ask about is skipped, not offered.
+//
+// LOWEST FREE, deliberately not "next after the highest": an operator's own 1 and 2 survive, gaps
+// left by released channels are reused, and the number stays small enough to read off a Buses
+// row. `vectorcheck --pair` borrows 61/62 precisely to stay clear of this range.
+// TWO TIERS, because "the lookup failed" is not one situation. A confirmed empty channel is the
+// best answer and is preferred absolutely. Only when there is none does a channel we could not
+// read become a candidate — and on a bench that has never run this app, that is EVERY channel,
+// which is precisely the case this whole feature exists for. A strict "confirmed only" rule
+// proposes nothing there and the dialog reports all 64 as taken, which is both wrong and the
+// opposite of useful.
+//
+// The second tier cannot overwrite a mapping the way the rejected version could: an assignment
+// the driver CAN read comes back `assigned` and is never offered, plugged in or not. What reaches
+// tier two is a channel outside the application's channel list — nothing to overwrite — or one
+// the driver would not answer for at all, which is rare, reported below, and still only reached
+// when no confirmed-empty channel exists anywhere in the range.
 pub fn vector_free_app_channel() ?int {
-	mut taken := map[int]bool{}
-	for m in vector_mappings() {
-		if m.app > 0 {
-			taken[m.app] = true
-		}
-	}
+	mut unknown := 0
 	for app in 1 .. 65 {
-		if app !in taken {
-			return app
+		_, assigned := vector_assignment(app) or {
+			if unknown == 0 {
+				unknown = app
+			}
+			continue
+		}
+		if !assigned {
+			return app // confirmed empty: the answer we want
 		}
 	}
-	return none
+	if unknown > 0 {
+		return unknown
+	}
+	return none // all 64 confirmed assigned
 }
 
 // vector_list reports the application channels that have hardware assigned, for discovery.
