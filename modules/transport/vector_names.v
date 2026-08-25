@@ -255,15 +255,28 @@ pub enum AppSlot {
 // actually named. `taken` is the driver saying, about that exact channel, that it points at
 // hardware — evidence, not an inference from what other channels did or did not answer.
 //
-// `unknown` and `empty` both allow the write. Empty is the ordinary case; unknown means the
-// channel is outside the application's channel list, where assigning CREATES rather than replaces
-// — which is the fresh-bench path and has nothing to overwrite.
-pub fn assign_refusal(app int, slot AppSlot) ?string {
+// `app_present` is what finally separates the two readings of `unknown`, and it is the piece the
+// earlier attempts were missing. An unreadable channel means one of two things:
+//
+//   - the application EXISTS and this channel could not be read. It may be occupied, and writing
+//     it would retarget a mapping somebody made — so it is refused (codex #192 r5).
+//   - NOTHING about the application could be read at all, so there is no application and no
+//     mapping to damage. Writing CREATES, and that is the fresh bench this feature exists for.
+//
+// Rounds 3 and 4 could not tell those apart because they were also trying to guess WHICH channel
+// to write. With the operator naming it, the only question left is "may I write this one", and
+// that one has an answer.
+//
+// `empty` is the ordinary case and always permitted.
+pub fn assign_refusal(app int, slot AppSlot, app_present bool) ?string {
 	if app < 1 || app > 64 {
 		return 'Vector application channels are numbered 1 to 64'
 	}
 	if slot == .taken {
 		return 'vector:${app} already points at hardware — release it first, or choose another channel'
+	}
+	if slot == .unknown && app_present {
+		return 'the driver would not say what vector:${app} points at, and this application is registered — refusing rather than overwriting a mapping that may be there. Try again, or use a channel the list below shows as free.'
 	}
 	return none
 }

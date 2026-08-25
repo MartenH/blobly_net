@@ -290,6 +290,9 @@ mut:
 	// The application channel number the operator typed. A buffer, not a proposed int: nothing
 	// suggests a value, so "empty" has to stay distinguishable from "they chose 0" (#192).
 	disc_vector_ch_buf []u8 = mkbuf('', 8)
+	// The application channels the driver CONFIRMED empty, as a display string. Reported, never
+	// proposed — see the panel.
+	disc_vector_free string
 	// File browser (Open / Save As / attach DBC / attach manifest)
 	fb_open     bool   // browser window shown
 	fb_save     bool   // true = save mode (filename input), false = open mode

@@ -275,6 +275,13 @@ fn draw_discover_dialog(mut app App) {
 		vgui.input_text('application channel to assign##vach', mut app.disc_vector_ch_buf)
 		vgui.same_line()
 		vgui.help_marker('The number this hardware becomes: type 2 and the channel opens as `vector:2`. Any 1-64 that is not already assigned; the mapped rows below show which are taken. Nothing is proposed for you — the driver cannot reliably tell an unused channel from one it simply could not read, so the number is yours to choose.')
+		// WHICH CHANNELS THE DRIVER CONFIRMED FREE. Reporting is not proposing: nothing here picks
+		// one, and the operator may still type any number. But refusing `vector:2` as unreadable
+		// while offering no hint of what WOULD work is a dead end, and the sweep already knows —
+		// so it says, and the choice stays theirs (#192, option 3).
+		if app.disc_vector_free != '' {
+			vgui.text_dim('   application channels the driver reports free: ${app.disc_vector_free}')
+		}
 		if !app.disc_vector_app_seen {
 			vgui.text_dim('   no application channels could be read for "blobly_net" — assigning below creates the mapping (and the application, if it is not there)')
 		}

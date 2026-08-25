@@ -388,7 +388,7 @@ fn test_the_address_check_covers_timing_not_only_syntax() {
 // application's channel list" from "failed this time". The guess is gone; the operator names the
 // channel and this checks THAT one (#192, option 3).
 fn test_a_channel_the_driver_says_is_taken_is_refused() {
-	if why := assign_refusal(3, .taken) {
+	if why := assign_refusal(3, .taken, true) {
 		assert why.contains('vector:3'), 'the message must name the channel: ${why}'
 		assert why.contains('release'), 'and say how to proceed: ${why}'
 	} else {
@@ -400,26 +400,39 @@ fn test_a_channel_the_driver_says_is_taken_is_refused() {
 // the channel is outside the application's channel list — where assigning CREATES rather than
 // replaces, which is the fresh-bench path and has nothing to overwrite. Refusing it was what broke
 // that bench in round 4.
-fn test_an_empty_or_unreadable_channel_may_be_written() {
-	if why := assign_refusal(1, .empty) {
+fn test_what_an_unreadable_channel_means_depends_on_the_application() {
+	// Empty is the ordinary case, whether or not the application is there.
+	if why := assign_refusal(1, .empty, true) {
 		assert false, 'an empty channel is the ordinary case: ${why}'
 	}
-	if why := assign_refusal(1, .unknown) {
-		assert false, 'an unreadable channel is outside the list, so creating it is safe: ${why}'
+	if why := assign_refusal(1, .empty, false) {
+		assert false, 'an empty channel is the ordinary case: ${why}'
+	}
+	// NOTHING was readable about the application: there is none, so writing CREATES and cannot
+	// damage anything. This is the fresh bench, and refusing it broke that case in round 4.
+	if why := assign_refusal(1, .unknown, false) {
+		assert false, 'a fresh bench must be assignable: ${why}'
+	}
+	// The application IS there and this channel would not answer — it may be occupied, and writing
+	// it would retarget somebody's mapping (codex #192 r5).
+	if why := assign_refusal(1, .unknown, true) {
+		assert why.contains('would not say'), 'got ${why}'
+	} else {
+		assert false, 'an unreadable channel on a registered application must be refused'
 	}
 }
 
 fn test_the_channel_number_must_be_one_the_library_addresses() {
 	for bad in [0, -1, 65, 1000] {
-		if _ := assign_refusal(bad, .empty) {} else {
+		if _ := assign_refusal(bad, .empty, true) {} else {
 			assert false, '${bad} is not a Vector application channel'
 		}
 	}
 	// The ends of the range are valid.
-	if why := assign_refusal(1, .empty) {
+	if why := assign_refusal(1, .empty, true) {
 		assert false, '1 is valid: ${why}'
 	}
-	if why := assign_refusal(64, .empty) {
+	if why := assign_refusal(64, .empty, true) {
 		assert false, '64 is valid: ${why}'
 	}
 }

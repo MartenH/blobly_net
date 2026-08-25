@@ -241,6 +241,13 @@ fn (mut app App) refresh_discovery() {
 	// A DRIVER THAT COULD NOT BE ASKED IS NOT AN UNREGISTERED APPLICATION. Reported, and treated
 	// as registered so the dialog does not offer to create something that may already exist —
 	// the Assign button still works, and the operator sees why the question went unanswered.
+	mut free := []string{}
+	for i, s in transport.vector_app_slots() {
+		if s == .empty {
+			free << '${i + 1}'
+		}
+	}
+	app.disc_vector_free = free.join(', ')
 	app.disc_vector_app_seen = transport.vector_application_seen() or {
 		if app.disc_vector.len > 0 {
 			app.notify('${err}')
@@ -285,8 +292,27 @@ fn (mut app App) assign_vector_hw(hw transport.VectorChannel, app_channel int) {
 	// replaces: `taken` is the driver saying that THIS channel points at hardware, not an inference
 	// from what other channels did or did not answer.
 	slot := transport.vector_app_slot(app_channel)
-	if why := transport.assign_refusal(app_channel, slot) {
+	present := transport.vector_application_seen() or { true }
+	if why := transport.assign_refusal(app_channel, slot, present) {
 		app.notify('${why}')
+		return
+	}
+	// AND THE HARDWARE, still under the same lock. The channel check above says the DESTINATION is
+	// free; this says the SOURCE is still unclaimed. Two processes acting on the same refreshed row
+	// pick different application channels — so neither collides on the channel check — and both map
+	// the same physical wire, which is the alias destination_conflicts refuses a project for (#167).
+	// The rewrite for option 3 dropped this check along with the ownership machinery it used to
+	// live beside; it was doing a second job (codex #192 r5).
+	mut taken_by := 0
+	for m in transport.vector_mappings() {
+		if m.hw.hw_type == hw.hw_type && m.hw.hw_index == hw.hw_index
+			&& m.hw.hw_channel == hw.hw_channel {
+			taken_by = m.app
+			break
+		}
+	}
+	if taken_by > 0 {
+		app.notify('${hw.name} is already assigned to vector:${taken_by} — Refresh to see the current mapping')
 		return
 	}
 	transport.vector_assign(app_channel, hw) or {
