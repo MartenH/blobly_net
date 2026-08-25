@@ -72,7 +72,7 @@ fn C.ct_vector_appl_get(u32, &int, &int, &int) int
 fn C.ct_vector_borrow_lock() int
 fn C.ct_vector_borrow_unlock()
 fn C.ct_vector_probe(int, &int, &int, &int, &u64) int
-fn C.ct_vector_channel_info(int, &char, int, &char, int, &int, &int, &int, &u32, &u32, &u32, &int, &int) int
+fn C.ct_vector_channel_info(int, &char, int, &char, int, &int, &int, &int, &u32, &u32, &u32, &int, &int, &int, &int) int
 fn C.ct_vector_error_frames() int
 fn C.ct_vector_chipstate(int, u64, &int, &int, &int, int) int
 fn C.ct_vector_reqchip(int, u64) int
@@ -513,6 +513,38 @@ pub:
 	bitrate     u32 // the rate the channel is currently configured for
 	on_bus      bool
 	trx_state   int // XL_TRANSCEIVER_STATUS_*: 0 = no transceiver seen on this channel
+	// WHETHER THIS CHANNEL CAN CARRY CAN-FD, straight from the driver rather than inferred from
+	// the transceiver's part number — which was the only route before, and is not one a dialog
+	// can take on the operator's behalf (#187).
+	//
+	// TWO FLAGS, not one, because ISO and Bosch CAN-FD are different frame formats: ISO
+	// 11898-1:2015 changed the CRC and added the stuff-count, so the two do not interoperate.
+	// This backend always configures ISO (`XLcanFdConf.options` left at 0), so `fd_bosch` without
+	// `fd_iso` is a channel we cannot drive — and reporting a flat "FD" for it would promise
+	// something the open then refuses.
+	fd_iso   bool
+	fd_bosch bool
+}
+
+// fd_capable reports whether this channel can carry the CAN-FD this backend actually configures.
+// Deliberately NOT `fd_iso || fd_bosch`: we send ISO frames, so a Bosch-only channel is not one
+// an FD project row can be pointed at, whatever the hardware is capable of in principle.
+pub fn (c VectorChannel) fd_capable() bool {
+	return c.fd_iso
+}
+
+// fd_note is the one-word summary a listing shows: what this channel offers, in the terms an
+// operator picking hardware needs — blank when it offers no FD at all.
+pub fn (c VectorChannel) fd_note() string {
+	return if c.fd_iso && c.fd_bosch {
+		'iso+bosch'
+	} else if c.fd_iso {
+		'iso'
+	} else if c.fd_bosch {
+		'bosch-only' // real FD hardware, but not the variant this backend speaks
+	} else {
+		''
+	}
 }
 
 // vector_channels reads the Vector hardware configuration: every channel the driver knows
@@ -531,8 +563,10 @@ pub fn vector_channels() []VectorChannel {
 		mut br := u32(0)
 		mut ob := 0
 		mut ts := 0
+		mut fiso := 0
+		mut fbosch := 0
 		rc := C.ct_vector_channel_info(i, unsafe { &char(&nm[0]) }, 33, unsafe { &char(&tr[0]) },
-			33, &ht, &hi, &hc, &sn, &bt, &br, &ob, &ts)
+			33, &ht, &hi, &hc, &sn, &bt, &br, &ob, &ts, &fiso, &fbosch)
 		if rc != 0 {
 			break
 		}
@@ -547,6 +581,8 @@ pub fn vector_channels() []VectorChannel {
 			bitrate:     br
 			on_bus:      ob != 0
 			trx_state:   ts
+			fd_iso:      fiso != 0
+			fd_bosch:    fbosch != 0
 		}
 	}
 	return out

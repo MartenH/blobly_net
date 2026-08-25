@@ -43,6 +43,29 @@ pub:
 	bitrate     u32
 	on_bus      bool
 	trx_state   int
+	// Mirrors the Windows struct so callers compile on both. Always false here: there is no XL
+	// driver to ask, and `vector_channels()` below returns nothing anyway.
+	fd_iso   bool
+	fd_bosch bool
+}
+
+// fd_capable / fd_note mirror the Windows side so a front end can call them unguarded. The
+// answers are the honest ones for a machine with no XL driver: this channel list is empty, so
+// nothing ever reaches them.
+pub fn (c VectorChannel) fd_capable() bool {
+	return c.fd_iso
+}
+
+pub fn (c VectorChannel) fd_note() string {
+	return if c.fd_iso && c.fd_bosch {
+		'iso+bosch'
+	} else if c.fd_iso {
+		'iso'
+	} else if c.fd_bosch {
+		'bosch-only'
+	} else {
+		''
+	}
 }
 
 pub fn vector_error_frames() int {
