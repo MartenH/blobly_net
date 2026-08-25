@@ -287,6 +287,9 @@ mut:
 	// empty", because a bench with hardware and no mappings and a bench whose driver could not be
 	// asked look identical from the list alone (#190).
 	disc_vector_app_seen bool
+	// The application channel number the operator typed. A buffer, not a proposed int: nothing
+	// suggests a value, so "empty" has to stay distinguishable from "they chose 0" (#192).
+	disc_vector_ch_buf []u8 = mkbuf('', 8)
 	// File browser (Open / Save As / attach DBC / attach manifest)
 	fb_open     bool   // browser window shown
 	fb_save     bool   // true = save mode (filename input), false = open mode

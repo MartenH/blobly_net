@@ -677,10 +677,6 @@ pub:
 	// Our application channel mapped to this hardware, or 0 for none. `vector:${app}` is the
 	// address it would be opened by.
 	app int
-	// What is actually KNOWN about that. `app == 0` alone cannot say "unowned": the owner may be a
-	// channel the driver would not answer for, and offering to assign such a row creates the
-	// one-physical-channel-two-application-channels alias #167 refuses (codex #192 r3).
-	owner HwOwner
 }
 
 // vector_app_slots asks the driver about every application channel, once.
@@ -693,6 +689,17 @@ pub:
 // has (codex #192 r3).
 //
 // THE FULL 1..64 RANGE, matching vector_app_channel and the shim's table, for the same reason.
+// vector_app_slot asks about ONE application channel — the one an operator named. Cheaper than a
+// sweep and, more to the point, an answer about the channel being written rather than an
+// inference from the others (#192, option 3).
+pub fn vector_app_slot(app int) AppSlot {
+	if app < 1 || app > 64 {
+		return .unknown
+	}
+	_, assigned := vector_assignment(app) or { return AppSlot.unknown }
+	return if assigned { AppSlot.taken } else { AppSlot.empty }
+}
+
 pub fn vector_app_slots() []AppSlot {
 	mut out := []AppSlot{cap: 64}
 	for app in 1 .. 65 {
@@ -723,11 +730,7 @@ pub fn vector_mappings() []VectorMapping {
 	hw := vector_channels()
 	slots := vector_app_slots()
 	mut owner := map[string]int{}
-	mut any_answered := false
 	for i, s in slots {
-		if s != .unknown {
-			any_answered = true
-		}
 		if s != .taken {
 			continue
 		}
@@ -742,19 +745,9 @@ pub fn vector_mappings() []VectorMapping {
 		out << VectorMapping{
 			hw:    c
 			app:   app
-			owner: hw_owner(app, any_answered)
 		}
 	}
 	return out
-}
-
-// vector_free_app_channel proposes the application channel to assign next, or none.
-//
-// THE DECISION IS pick_free_app_channel, which is pure and tested; this is only the I/O that
-// feeds it. Four rounds of review found the same class of bug in versions of this function that
-// mixed the two, each fix checked by reasoning rather than by a test (codex #192 r1-r3).
-pub fn vector_free_app_channel() ?int {
-	return pick_free_app_channel(vector_app_slots())
 }
 
 // vector_application_seen reports whether ANY application channel answered — evidence that the

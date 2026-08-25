@@ -379,58 +379,47 @@ fn test_the_address_check_covers_timing_not_only_syntax() {
 	}
 }
 
-// ---- application-channel occupancy ---------------------------------------------------------
+
+// ---- assigning an application channel -------------------------------------------------------
 //
-// FOUR ROUNDS OF REVIEW found the same class of bug in the driver-side versions of this decision,
-// because it lived inside the driver calls where nothing could check it and each fix was verified
-// by reasoning about it. These are the cases that reasoning got wrong.
-fn test_an_explicit_empty_channel_is_always_preferred() {
-	// The empty one wins even though unknowns come first — an unknown must never be chosen while
-	// a confirmed-free channel exists anywhere in the range.
-	assert pick_free_app_channel([AppSlot.unknown, .unknown, .empty, .empty])? == 3
-	assert pick_free_app_channel([AppSlot.taken, .empty])? == 2
-	assert pick_free_app_channel([AppSlot.empty])? == 1
-}
-
-// THE DESTRUCTIVE CASE, in both shapes that reached review. A channel the driver would not answer
-// for may be OCCUPIED — assigning it retargets a mapping somebody made — so it is never offered
-// while any other channel answered.
-fn test_an_unreadable_channel_is_not_offered_when_the_driver_is_answering() {
-	if got := pick_free_app_channel([AppSlot.taken, .unknown, .taken]) {
-		assert false, 'channel ${got} was unreadable, not free'
-	}
-	if got := pick_free_app_channel([AppSlot.unknown, .taken]) {
-		assert false, 'channel ${got} was unreadable, not free'
-	}
-	// Every channel confirmed taken is simply full — also none, and for a different reason.
-	if got := pick_free_app_channel([AppSlot.taken, .taken]) {
-		assert false, 'nothing is free, got ${got}'
+// NOTHING PROPOSES A CHANNEL ANY MORE. Four rounds of review went into inferring which application
+// channels were free, and the fourth pair of findings contradicted each other — a fresh bench must
+// be assignable, a partially-read one must not be — because vxlapi cannot separate "outside the
+// application's channel list" from "failed this time". The guess is gone; the operator names the
+// channel and this checks THAT one (#192, option 3).
+fn test_a_channel_the_driver_says_is_taken_is_refused() {
+	if why := assign_refusal(3, .taken) {
+		assert why.contains('vector:3'), 'the message must name the channel: ${why}'
+		assert why.contains('release'), 'and say how to proceed: ${why}'
+	} else {
+		assert false, 'a channel the driver reports as assigned must not be written'
 	}
 }
 
-// …AND THE FRESH BENCH, which the strict version of the same rule broke. When NOTHING answered
-// there is no application to damage: every write creates rather than replaces, so channel 1 is
-// safe and is the case this whole feature exists for.
-fn test_a_bench_where_nothing_answers_is_offered_channel_one() {
-	assert pick_free_app_channel([AppSlot.unknown, .unknown, .unknown])? == 1
-	// An empty list is not a fresh bench — it is no information at all.
-	if _ := pick_free_app_channel([]AppSlot{}) {
-		assert false, 'no slots is not an offer'
+// EMPTY AND UNKNOWN BOTH ALLOW IT, for different reasons. Empty is the ordinary case. Unknown means
+// the channel is outside the application's channel list — where assigning CREATES rather than
+// replaces, which is the fresh-bench path and has nothing to overwrite. Refusing it was what broke
+// that bench in round 4.
+fn test_an_empty_or_unreadable_channel_may_be_written() {
+	if why := assign_refusal(1, .empty) {
+		assert false, 'an empty channel is the ordinary case: ${why}'
+	}
+	if why := assign_refusal(1, .unknown) {
+		assert false, 'an unreadable channel is outside the list, so creating it is safe: ${why}'
 	}
 }
 
-// A physical channel whose owner could not be read must not read as unowned: assigning it maps a
-// SECOND application channel onto one wire, which is exactly what destination_conflicts refuses a
-// project for (#167).
-fn test_hardware_ownership_follows_a_readable_owner_only() {
-	// A channel the driver named as the owner is owned, whatever else happened in the sweep.
-	assert hw_owner(3, true) == .owned
-	assert hw_owner(3, false) == .owned
-	// Nobody claims it and something answered: the channels that answer ARE the application list,
-	// so the silent ones are unconfigured and own nothing.
-	assert hw_owner(0, true) == .unowned
-	// NOTHING answered: this application owns no hardware at all, so every channel is free for it
-	// — the fresh bench. Calling this `unknown` removed the Assign buttons from the one case the
-	// dialog exists for (codex #192 r4).
-	assert hw_owner(0, false) == .unowned
+fn test_the_channel_number_must_be_one_the_library_addresses() {
+	for bad in [0, -1, 65, 1000] {
+		if _ := assign_refusal(bad, .empty) {} else {
+			assert false, '${bad} is not a Vector application channel'
+		}
+	}
+	// The ends of the range are valid.
+	if why := assign_refusal(1, .empty) {
+		assert false, '1 is valid: ${why}'
+	}
+	if why := assign_refusal(64, .empty) {
+		assert false, '64 is valid: ${why}'
+	}
 }

@@ -243,82 +243,29 @@ pub enum AppSlot {
 	taken   // the driver says it points at hardware
 }
 
-// pick_free_app_channel chooses the application channel to offer, given what the driver said about
-// each one. `slots[i]` describes application channel `i + 1`.
+// assign_refusal reports why an application channel must not be written, or none when it may be.
 //
-// AN EXPLICIT EMPTY ALWAYS WINS. Anything else risks writing over a mapping somebody made, and no
-// convenience is worth that.
+// THE OPERATOR NAMES THE CHANNEL; NOTHING GUESSES IT. Four rounds of review went into deciding
+// which channels were free, and the fourth pair of findings contradicted each other: a fresh bench
+// must be assignable, a partially-read one must not be, and vxlapi cannot distinguish "outside the
+// application's channel list" from "failed this time" — so no inference satisfies both. The guess
+// is gone rather than refined (#192, option 3).
 //
-// NOTHING ANSWERED AT ALL is the one case where an unknown may be offered, and it is safe for a
-// reason rather than by assumption: if not a single channel could be read, there is no application
-// to damage — every write creates rather than replaces — and that is exactly the fresh bench this
-// feature exists for. A bench where SOME channels answer is a working driver with a real
-// application, and there an unexplained failure is never written to.
+// What replaces it is stronger than the sweep ever was: a check on the ONE channel the operator
+// actually named. `taken` is the driver saying, about that exact channel, that it points at
+// hardware — evidence, not an inference from what other channels did or did not answer.
 //
-// The conservative corner is deliberate: an application whose free channels all lie outside its
-// channel list gets `none` rather than a proposal. That costs a manual `vectorcheck --assign`; the
-// alternative costs somebody's mapping.
-pub fn pick_free_app_channel(slots []AppSlot) ?int {
-	mut answered := false
-	for s in slots {
-		if s != .unknown {
-			answered = true
-			break
-		}
+// `unknown` and `empty` both allow the write. Empty is the ordinary case; unknown means the
+// channel is outside the application's channel list, where assigning CREATES rather than replaces
+// — which is the fresh-bench path and has nothing to overwrite.
+pub fn assign_refusal(app int, slot AppSlot) ?string {
+	if app < 1 || app > 64 {
+		return 'Vector application channels are numbered 1 to 64'
 	}
-	for i, s in slots {
-		if s == .empty {
-			return i + 1
-		}
-	}
-	if !answered && slots.len > 0 {
-		return 1
+	if slot == .taken {
+		return 'vector:${app} already points at hardware — release it first, or choose another channel'
 	}
 	return none
-}
-
-// HwOwner is what is known about one PHYSICAL channel's ownership.
-//
-// `unknown` is not a nicety. A physical channel whose owning application channel could not be read
-// looks unowned, and offering to assign it creates a SECOND application channel pointing at one
-// physical wire — which destination_conflicts refuses a project for (#167), produced here by the
-// dialog meant to set the bench up.
-pub enum HwOwner {
-	unowned // no application channel points here, and every channel answered
-	owned   // an application channel points here
-	unknown // at least one channel could not be read, so this cannot be claimed unowned
-}
-
-// hw_owner decides one physical channel's ownership from the sweep.
-//
-// `owner_app` is the application channel found pointing at this hardware, or 0. `any_answered` is
-// whether ANY channel in the sweep answered at all.
-//
-// KEYED ON "DID ANYTHING ANSWER", not on "did anything fail", and the difference was measured
-// rather than reasoned. The obvious reading — a channel that would not answer might be this
-// hardware's owner, so treat every unowned row as unknown — is safe and useless: on a VN1630A the
-// channels that answer are exactly the application's channel LIST
-//
-//     application channels that ANSWER: [1, 5, 40, 61, 62, 63, 64]
-//
-// and the rest are outside it. Outside the list means the channel is not configured, so it points
-// at nothing and can own nothing. Since every real application has fewer than 64 channels, "any
-// failed" is true on every bench that exists, and the dialog would offer nothing, ever.
-//
-// So an unreadable channel is taken to own nothing, and `unknown` is reserved for the case where
-// NOTHING answered — where we genuinely know nothing about ownership. The residual risk is a
-// TRANSIENT failure on a channel that really is an owner: we would then offer its hardware and
-// create a second application channel on one wire. That is caught rather than silent —
-// destination_conflicts refuses the project at Start (#167) and `vectorcheck --release` undoes it
-// — which is a different order of harm from the write this function's caller could otherwise make
-// over a live mapping, and that one stays strictly refused in pick_free_app_channel.
-// NOTHING ANSWERING MEANS NOTHING IS OURS, which is the opposite of what the previous version
-// concluded and broke the case this feature exists for. If not one application channel can be
-// read, this application owns no hardware — so every physical channel is unowned BY US and
-// assignable, and a fresh bench gets its Assign buttons. Treating it as `unknown` was cautious
-// about a danger that cannot exist: there is nothing to alias with (codex #192 r4).
-pub fn hw_owner(owner_app int, any_answered bool) HwOwner {
-	return if owner_app > 0 { HwOwner.owned } else { HwOwner.unowned }
 }
 
 // VectorSpec is the parsed interface string.

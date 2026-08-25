@@ -260,7 +260,7 @@ fn (mut app App) refresh_discovery() {
 // borrows two application channels and restores them, and a GUI writing the same table between
 // its read and its restore would leave a channel pointed somewhere nobody chose. A GUI is just
 // another process here.
-fn (mut app App) assign_vector_hw(hw transport.VectorChannel) {
+fn (mut app App) assign_vector_hw(hw transport.VectorChannel, app_channel int) {
 	// CHECKED HERE TOO, not only where the button is drawn. The panel hides Assign for a non-CAN
 	// channel, but that is a display rule and this is the function that WRITES — a second caller
 	// added later would otherwise create a mapping addressed as CAN for a channel that is not one.
@@ -275,34 +275,25 @@ fn (mut app App) assign_vector_hw(hw transport.VectorChannel) {
 	defer {
 		transport.vector_borrow_unlock()
 	}
-	// THE TARGET'S OWNERSHIP, RE-READ INSIDE THE LOCK. The button carries a snapshot from the last
-	// Refresh, and between that scan and this click another process — a second copy of this app,
-	// or `vectorcheck` — may have taken the same hardware. It would then be assigned twice, under
-	// two application channels, which is the alias #167 refuses a project for. The lock alone does
-	// not prevent it: both writers serialise correctly and both act on stale reads (codex #192 r3).
-	mut still_free := false
-	for m in transport.vector_mappings() {
-		if m.hw.hw_type == hw.hw_type && m.hw.hw_index == hw.hw_index
-			&& m.hw.hw_channel == hw.hw_channel {
-			still_free = m.owner == .unowned
-			break
-		}
-	}
-	if !still_free {
-		app.notify('${hw.name} is no longer free — something else assigned it; Refresh to see the current mapping')
+	// THE NAMED CHANNEL, RE-READ INSIDE THE LOCK. The dialog's list is a snapshot from the last
+	// Refresh, and between that scan and this click another process — a second copy of this app, or
+	// `vectorcheck` — may have written the very channel the operator typed. Both writers serialise
+	// correctly on the lock and both act on stale reads, so the check has to happen in here
+	// (codex #192 r3).
+	//
+	// ABOUT THE ONE CHANNEL BEING WRITTEN, which is what makes this stronger than the sweep it
+	// replaces: `taken` is the driver saying that THIS channel points at hardware, not an inference
+	// from what other channels did or did not answer.
+	slot := transport.vector_app_slot(app_channel)
+	if why := transport.assign_refusal(app_channel, slot) {
+		app.notify('${why}')
 		return
 	}
-	// INSIDE the lock too. Chosen outside it, two writers could pick the same free number and the
-	// second would silently retarget the first's channel.
-	free := transport.vector_free_app_channel() or {
-		app.notify('no Vector application channel could be confirmed free — release one, or assign it with `vectorcheck --assign`')
-		return
-	}
-	transport.vector_assign(free, hw) or {
+	transport.vector_assign(app_channel, hw) or {
 		app.notify('could not assign ${hw.name}: ${err}')
 		return
 	}
-	app.notify('vector:${free} now points at ${hw.name} (${hw.transceiver}) — add it as a bus to use it')
+	app.notify('vector:${app_channel} now points at ${hw.name} (${hw.transceiver}) — add it as a bus to use it')
 	app.refresh_discovery()
 }
 

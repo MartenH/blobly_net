@@ -72,14 +72,12 @@ pub fn (c VectorChannel) fd_note() string {
 }
 
 // VectorMapping mirrors the Windows type so a front end compiles unguarded. There is no XL driver
-// here, so vector_mappings() is empty and vector_free_app_channel() has nothing to propose —
-// which is the honest answer on a machine with no Vector hardware, not a placeholder.
+// here, so vector_mappings() is empty — the honest answer on a machine with no Vector hardware.
 pub struct VectorMapping {
 pub:
 	hw  VectorChannel
 	app int
 	// Mirrors the Windows field.
-	owner HwOwner
 }
 
 pub fn vector_mappings() []VectorMapping {
@@ -93,12 +91,12 @@ pub fn vector_application_seen() !bool {
 }
 
 // No channels to sweep here, so nothing is known about any of them.
-pub fn vector_app_slots() []AppSlot {
-	return []AppSlot{}
+pub fn vector_app_slot(app int) AppSlot {
+	return .unknown
 }
 
-pub fn vector_free_app_channel() ?int {
-	return none
+pub fn vector_app_slots() []AppSlot {
+	return []AppSlot{}
 }
 
 pub fn vector_error_frames() int {

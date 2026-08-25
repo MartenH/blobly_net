@@ -270,6 +270,11 @@ fn draw_discover_dialog(mut app App) {
 		// looks like — and also what a driver that has stopped answering looks like, which vxlapi
 		// gives no way to tell apart. The sentence is true either way, and the ACTION is safe
 		// either way, so the dialog does not need the certainty it cannot have (codex #192 r2).
+		vgui.same_line()
+		vgui.set_next_item_width(50)
+		vgui.input_text('application channel to assign##vach', mut app.disc_vector_ch_buf)
+		vgui.same_line()
+		vgui.help_marker('The number this hardware becomes: type 2 and the channel opens as `vector:2`. Any 1-64 that is not already assigned; the mapped rows below show which are taken. Nothing is proposed for you — the driver cannot reliably tell an unused channel from one it simply could not read, so the number is yours to choose.')
 		if !app.disc_vector_app_seen {
 			vgui.text_dim('   no application channels could be read for "blobly_net" — assigning below creates the mapping (and the application, if it is not there)')
 		}
@@ -279,17 +284,9 @@ fn draw_discover_dialog(mut app App) {
 			fd := vm.hw.fd_note()
 			rate := if vm.hw.bitrate > 0 { '${vm.hw.bitrate}' } else { '-' }
 			detail := '${vm.hw.transceiver} · ${rate}${if fd == '' { '' } else { ' · CAN-FD ${fd}' }}'
-			if vm.owner == .owned {
+			if vm.app > 0 {
 				// Already ours: name the address, because that is what a Buses row will carry.
 				vgui.text_dim('   vector:${vm.app}   ${vm.hw.name}   ${detail}')
-				continue
-			}
-			// OWNERSHIP UNKNOWN — some application channel would not answer, and it may be this
-			// hardware's. Offering Assign here would map a SECOND application channel onto one
-			// physical wire, which is the alias destination_conflicts refuses a whole project for
-			// (#167), manufactured by the dialog meant to set the bench up (codex #192 r3).
-			if vm.owner == .unknown {
-				vgui.text_dim('   (ownership unknown)  ${vm.hw.name}   ${detail}')
 				continue
 			}
 			// NOT EVERY CHANNEL IS A CAN CHANNEL. A VN1630A reports its D/A IO channel here
@@ -301,9 +298,19 @@ fn draw_discover_dialog(mut app App) {
 				vgui.text_dim('   (not a CAN channel)  ${vm.hw.name}   ${vm.hw.transceiver}')
 				continue
 			}
-			// UNMAPPED. The button is the only path that writes; see assign_vector_hw.
+			// UNMAPPED. The button is the only path that writes; see assign_vector_hw. The channel
+			// number comes from the field above — NOTHING PROPOSES ONE. Four rounds of review went
+			// into inferring which application channels were free, and the fourth pair of findings
+			// contradicted each other, because vxlapi cannot separate "outside the application's
+			// channel list" from "failed this time". The operator knows which number they want;
+			// asking is both safer and shorter than any inference (#192, option 3).
 			if vgui.small_button('Assign##va${vm.hw.hw_type}_${vm.hw.hw_index}_${vm.hw.hw_channel}') {
-				app.assign_vector_hw(vm.hw)
+				n := vgui.buf_str(app.disc_vector_ch_buf).trim_space()
+				if n == '' || !project.is_all_digits(n) {
+					app.notify('type the Vector application channel to assign (1-64) before pressing Assign')
+				} else {
+					app.assign_vector_hw(vm.hw, n.int())
+				}
 			}
 			vgui.same_line()
 			vgui.text_dim('(unassigned)  ${vm.hw.name}   ${detail}')
