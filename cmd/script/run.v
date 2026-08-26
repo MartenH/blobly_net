@@ -89,7 +89,14 @@ fn main() {
 	// the silenced row never opens a bus here and the simulation therefore drove a channel the
 	// project had asked to keep quiet. And the runner had no rate check at all, so two aliases
 	// disagreeing about the bitrate configured the hardware from whichever spawned first.
-	for problem in project.destination_conflicts(proj.channels) {
+	dest := project.check_destinations(proj.channels)
+	// SAID BEFORE THE REFUSALS, so it is not lost when one of them exits. A row the driver would
+	// not describe is a gap in the alias check rather than a fault, and the headless runner had no
+	// way to mention it at all (codex #199 r1).
+	for w in dest.warnings {
+		eprintln('${w}')
+	}
+	for problem in dest.problems {
 		// The summary used to name the two kinds this check had ("one wire, one mode and one
 		// rate"). #167 added a third — two application channels assigned to one physical
 		// channel — which that phrase does not cover, and each problem already says what it is.

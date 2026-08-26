@@ -370,6 +370,24 @@ fn draw_buses(mut app App, chans []Chan) {
 					for w in project.fd_capability_warnings([app.runtime_rows()[i]]) {
 						app.log_append_locked(w)
 					}
+					// AND WHETHER THE ALIAS CHECK COULD SEE THIS ROW (#194). Same argument as the
+					// capability warning above, which is why it sits beside it: a row disabled at
+					// Start states nothing, and enabling it here is the moment it starts to — so a
+					// row whose physical channel the driver would not describe has to be mentioned
+					// on this path too, or it is silent for every row that joins a live run
+					// (codex #199 r1).
+					//
+					// THIS ROW ONLY, so the driver is asked about one channel rather than sixty-four
+					// while app.mu is held. Unlike fd_capability_warnings this is not pure — it is
+					// an XL registry lookup — and the render thread owns this lock. One lookup is
+					// microseconds and takes no interprocess mutex; a whole-project sweep would be a
+					// visible hitch, and is what Start is for.
+					// Hoisted rather than iterated inline: `for w in f(x).field` miscompiles in this
+					// V (a `volatile` lands in the generated C where an expression belongs).
+					row_check := project.check_destinations([app.runtime_rows()[i]])
+					for w in row_check.warnings {
+						app.log_append_locked(w)
+					}
 				}
 				// The wire list is derived from the runtime rows and consulted per SEND, so it has
 				// to move with this toggle: a listen-only row enabled here would otherwise open its

@@ -173,7 +173,7 @@ fn (app &App) push_listen_only_locked() {
 // script and the diagnostic panel can all make one talk — the GUI kept the old reading and the
 // two front ends disagreed about the same project again. There is nothing here left to drift.
 fn (app &App) destination_conflict() ?string {
-	problems := project.destination_conflicts(app.runtime_rows())
+	problems := project.check_destinations(app.runtime_rows()).problems
 	if problems.len == 0 {
 		return none
 	}
@@ -271,11 +271,16 @@ fn (mut app App) start() {
 	// failed run where the honest answer is that they asked for two different things on one
 	// wire. Said before anything opens.
 	// One wire, one mode and one rate — the same verdict the headless runner reaches.
-	if bad := app.destination_conflict() {
+	// ONE SWEEP FOR BOTH HALVES. The refusals and the "could not read this row" warning are two
+	// readings of the SAME driver answers, and asking twice lets them disagree about one row: a
+	// lookup that fails for the comparison and succeeds for the warning leaves a row neither
+	// checked nor reported, which is the gap the warning exists to close (codex #199 r1).
+	dest := project.check_destinations(app.runtime_rows())
+	if dest.problems.len > 0 {
 		// Not "one wire, one mode and one rate" any more: #167 added a third kind this check
 		// reports — two application channels on one physical channel — and each problem states
 		// itself. A summary that lists two of three is the kind of claim that goes stale.
-		app.notify('${bad} — not starting')
+		app.notify('${dest.problems[0]} — not starting')
 		return
 	}
 	// SAID ONCE, HERE, before anything opens — issue #170. An FD row on a backend that refuses FD
@@ -286,10 +291,10 @@ fn (mut app App) start() {
 		app.notify(w)
 	}
 	// AND WHICH ROWS THE ALIAS CHECK COULD NOT COVER (#194). Same reasoning as the line above and
-	// the same shape: destination_conflicts already refused anything it could prove, so what is
-	// left is a gap it could not see into. A driver that would not answer is not a reason to
-	// refuse a project, but it is a reason to say the two-rows-one-transceiver check ran short.
-	for w in project.alias_unreadable_warnings(app.runtime_rows()) {
+	// the same shape: the refusals above already caught anything provable, so what is left is a
+	// gap the check could not see into. A driver that would not answer is not a reason to refuse a
+	// project, but it is a reason to say the two-rows-one-transceiver check ran short.
+	for w in dest.warnings {
 		app.notify(w)
 	}
 	if app.cfg_text_dirty {

@@ -52,9 +52,22 @@ pub fn physical_wire(adapter string, iface string) (WireReach, string) {
 		.unreadable {
 			return WireReach.unreadable, ''
 		}
-		.absent, .empty {
-			// Registered-and-empty, or not registered at all: either way no hardware is behind it,
-			// and it fails at open with a message of its own (-1000), which is the right place.
+		.absent {
+			// NOT `nothing`, though it looks like it should be. `absent` rests on XL's GENERIC
+			// error, so a channel that fails to read twice is indistinguishable from one that is
+			// genuinely unregistered — and if the truth was the former, the row may be pointing at
+			// hardware another row also claims. Calling that "reaches nothing" skips it silently
+			// and lets the #167 alias through, which is precisely what this function was changed to
+			// prevent (codex #199 r1).
+			//
+			// The same ambiguity makes creating a channel the operator's decision in the Discover
+			// dialog. It is the one honest reading in both places: only `empty` is the driver
+			// POSITIVELY describing a registered channel with nothing behind it.
+			return WireReach.unreadable, ''
+		}
+		.empty {
+			// Registered and pointing at nothing, said positively. No hardware is behind it, and it
+			// fails at open with a message of its own (-1000), which is the right place for that.
 			return WireReach.nothing, ''
 		}
 		.taken {}
