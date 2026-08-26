@@ -40,6 +40,17 @@ fn main() {
 	a_if, b_if := args[0], args[1]
 	println('A = ${a_if}')
 	println('B = ${b_if}')
+	// ONE WIRE CANNOT PROVE TWO ARE CONNECTED. Where both addresses resolve to the same
+	// destination, a second open shares the first handle — and on a CANsub the device echoes its
+	// own sends as TX acknowledgements, so each leg would happily consume its own echo and this
+	// would report a working cable with nothing plugged into it. `cansub_smoke` refuses the same
+	// thing for the same reason (codex round 4 on #204).
+	if transport.destination_key(a_if) == transport.destination_key(b_if) {
+		eprintln('A and B are the same wire (${transport.destination_key(a_if)}).')
+		eprintln('  This tool proves two endpoints are connected; one endpoint cannot show that,')
+		eprintln('  and on a device that echoes its own sends it would appear to.')
+		exit(2)
+	}
 	mut a := transport.open(a_if) or {
 		eprintln('open A (${a_if}): ${err}')
 		exit(1)

@@ -111,3 +111,35 @@ fn test_dechunk_refuses_nothing_at_all() {
 	cansub_dechunk('') or { return }
 	assert false, 'an empty response is not a terminated chunked body'
 }
+
+// A DECLARED LENGTH IS A PROMISE. Fewer bytes than Content-Length says is a connection that ended
+// mid-body, and `cansub_request` treats every read error as EOF — so nothing else is going to
+// notice. The chunked path refuses its own version of this; this one used to fall through and hand
+// back partial JSON as a successful reply (codex round 4 on #204).
+fn test_a_short_content_length_body_is_refused() {
+	raw := 'HTTP/1.1 200 OK\r\nContent-Length: 40\r\n\r\n{"state":"error_act'
+	cansub_parse_response(raw) or { return }
+	assert false, 'accepted 19 bytes against a declared 40'
+}
+
+fn test_a_complete_content_length_body_is_accepted() {
+	body := '{"state":"error_active"}'
+	raw := 'HTTP/1.1 200 OK\r\nContent-Length: ${body.len}\r\n\r\n${body}'
+	r := cansub_parse_response(raw) or {
+		assert false, 'a complete body must parse: ${err}'
+		return
+	}
+	assert r.status == 200
+	assert r.body == body
+}
+
+// More bytes than declared is not a truncation — a keep-alive connection can leave the next
+// response in the buffer — so the body is still cut to the declared length.
+fn test_extra_bytes_after_a_content_length_body_are_ignored() {
+	raw := 'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nokTRAILING'
+	r := cansub_parse_response(raw) or {
+		assert false, '${err}'
+		return
+	}
+	assert r.body == 'ok'
+}

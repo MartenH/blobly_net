@@ -135,7 +135,15 @@ pub fn cansub_parse_response(raw string) !CansubResponse {
 			body:   cansub_dechunk(body)!
 		}
 	}
-	if length >= 0 && length <= body.len {
+	if length >= 0 {
+		// A DECLARED LENGTH IS A PROMISE, and fewer bytes than that is a dropped connection —
+		// `cansub_request` treats every read error as EOF, so nothing else is going to notice.
+		// The chunked path refuses its own version of this; leaving the Content-Length path to
+		// fall through meant partial JSON still reached configuration and health code, parsed,
+		// and answered with fields quietly missing (codex round 4 on #204).
+		if length > body.len {
+			return error('response declared ${length} bytes and ${body.len} arrived — the connection ended mid-body')
+		}
 		return CansubResponse{
 			status: status
 			body:   body[..length]

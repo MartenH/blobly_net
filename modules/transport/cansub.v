@@ -449,17 +449,25 @@ fn cansub_first_wait(timeout_ms int, deadline i64, now i64) ?i64 {
 
 pub fn (mut b CansubBus) recv(timeout_ms int) !CanFrame {
 	deadline := time.ticks() + i64(timeout_ms)
-	mut first := true
+	// `probe` means the next slice may be a zero-length look at the queue rather than a wait. True
+	// to begin with, and true again after anything is TAKEN from the queue — because a record that
+	// came straight out is not time spent waiting, and a recv(0) that consumed an error record and
+	// then reported `timeout` left a perfectly good frame sitting behind it. That was a defect of
+	// the previous round's recv(0) fix (codex round 4 on #204).
+	mut probe := true
 	for {
-		wait := if first {
+		wait := if probe {
 			cansub_first_wait(timeout_ms, deadline, time.ticks()) or { return error('timeout') }
 		} else {
 			cansub_wait_slice(timeout_ms, deadline, time.ticks()) or { return error('timeout') }
 		}
-		first = false
+		probe = false
 		select {
 			rec := <-b.rx {
 				if rec.is_error {
+					// Something came out of the queue, so look again rather than counting this as
+					// time spent waiting — see `probe` above.
+					probe = true
 					// A bus error is real news, but it is not a frame and the Bus interface has
 					// nowhere to put it. `health()` is where it surfaces; here it is skipped so a
 					// noisy bus does not return junk frames.

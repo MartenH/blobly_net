@@ -139,7 +139,12 @@ fn main() {
 
 	mut missing := 0
 	for f in sent {
-		if !got.any(it.id == f.id && it.extended == f.extended && it.data == f.data) {
+		// THE FD FLAGS TOO. One case here exists precisely to show that an FD frame WITHOUT
+		// bit-rate switching survives the path — and matched on id, width and payload alone, that
+		// case passed when the frame came back CLASSIC, which is the silent downgrade the whole
+		// backend refuses to make anywhere else (codex round 4 on #204).
+		if !got.any(it.id == f.id && it.extended == f.extended && it.data == f.data && it.fd == f.fd
+			&& it.brs == f.brs) {
 			eprintln('  MISSING: ${describe(f)}')
 			missing++
 		}
