@@ -1613,12 +1613,66 @@ pub fn destination_conflicts(chs []Channel) []string {
 		if !c.enabled {
 			continue
 		}
-		if k := transport.physical_wire_key(c.adapter, c.iface) {
+		// `.unreadable` rows are deliberately left OUT of the map, exactly as before — the
+		// comparison cannot use a key it does not have. What is new is that they no longer pass
+		// unremarked: alias_unreadable_warnings names them, because a row nobody could resolve is
+		// a gap in this check rather than a row that is fine (#194).
+		reach, k := transport.physical_wire(c.adapter, c.iface)
+		if reach == .resolved {
 			phys[c.iface] = k
 		}
 	}
 	out << alias_conflicts(chs, phys)
 	return out
+}
+
+// alias_unreadable_warnings names the enabled rows whose physical channel the driver would not
+// report, so the operator knows which rows the alias check above could not cover.
+//
+// A WARNING, NOT A REFUSAL, and the split matters. Everything destination_conflicts returns stops
+// a project; this cannot, because "the driver would not answer" is a state a perfectly good bench
+// passes through — the XL library mid-upgrade, or a moment of contention with another tool. Fail
+// closed there and every project on that machine is rejected for a question nobody could answer.
+//
+// But silence is not right either. The gap it leaves is precisely the #167 alias — two rows on one
+// transceiver, reasoned about as two wires by the rate check, the listen-only check, the
+// one-monitor rule and the pin guard. Saying which rows were unresolvable turns an invisible gap
+// into one the operator can close by asking again.
+pub fn alias_unreadable_warnings(chs []Channel) []string {
+	mut rows := []string{}
+	for c in chs {
+		if !c.enabled {
+			continue
+		}
+		reach, _ := transport.physical_wire(c.adapter, c.iface)
+		if reach == .unreadable {
+			rows << '${c.name} (${c.iface})'
+		}
+	}
+	return alias_unreadable_lines(rows)
+}
+
+// The wording, split out PURE so it can be tested at all. On Linux physical_wire answers `.nothing`
+// for everything, so a test driving alias_unreadable_warnings there can only ever see the empty
+// case — the same reason alias_conflicts is separate from the resolver that feeds it.
+fn alias_unreadable_lines(rows []string) []string {
+	if rows.len == 0 {
+		return []
+	}
+	// ONE LINE FOR THE SET, not one per row. The condition is a property of the driver at this
+	// moment rather than of any individual row, so repeating it per row would say the same thing
+	// several times — the same reasoning alias_conflicts uses for `said`.
+	return [
+		'could not read which physical channel ${rows.join(', ')} ${if rows.len == 1 {
+			'reaches'
+		} else {
+			'reach'
+		}} — the check for two channels sharing one transceiver could not cover ${if rows.len == 1 {
+			'it'
+		} else {
+			'them'
+		}}; Refresh or restart to ask the driver again',
+	]
 }
 
 // alias_conflicts reports rows that this app calls different wires and the hardware calls one.

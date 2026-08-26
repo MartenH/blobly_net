@@ -285,6 +285,13 @@ fn (mut app App) start() {
 	for w in project.fd_capability_warnings(app.runtime_rows()) {
 		app.notify(w)
 	}
+	// AND WHICH ROWS THE ALIAS CHECK COULD NOT COVER (#194). Same reasoning as the line above and
+	// the same shape: destination_conflicts already refused anything it could prove, so what is
+	// left is a gap it could not see into. A driver that would not answer is not a reason to
+	// refuse a project, but it is a reason to say the two-rows-one-transceiver check ran short.
+	for w in project.alias_unreadable_warnings(app.runtime_rows()) {
+		app.notify(w)
+	}
 	if app.cfg_text_dirty {
 		// Text edits are NOT folded in automatically: the file is the authority for everything
 		// the structured editor cannot express, and guessing that a half-typed YAML buffer
