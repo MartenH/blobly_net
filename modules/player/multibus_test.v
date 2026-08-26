@@ -312,7 +312,7 @@ fn test_a_withheld_remote_request_leaves_both_the_stream_and_the_kept_count() {
 	mut a := p.buses[0]
 	assert a.report.withheld_remote == 1, 'the request was withheld'
 	assert a.report.remote == 1
-	assert a.report.remote_ids == [u32(0x101)], 'and it is reported on the multi-bus path too'
+	assert a.report.remote_ids == ['0x101'], 'and it is reported on the multi-bus path too'
 	assert a.source == a.report.kept + a.report.withheld_excluded + a.report.withheld_unattributed +
 		a.report.withheld_remote, 'recorded = withheld + replay'
 	// And it really is absent from the stream, which is what `kept` claims about it.

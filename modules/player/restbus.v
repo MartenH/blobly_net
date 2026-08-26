@@ -47,11 +47,25 @@ pub:
 	unattributed          int // frames whose message the DBC defines but gives no transmitter
 	unknown               int // frames whose id the DBC does not define at all
 	remote                int // remote REQUESTS — a frame asking for an id, not sending it
-	// The ids behind the last two, so a report can name them rather than merely count them.
+	// The ids behind the last three, so a report can name them rather than merely count them.
 	// Sorted, each id once.
-	unattributed_ids []u32
-	unknown_ids      []u32
-	remote_ids       []u32
+	//
+	// FORMATTED, AND THE FORMAT CARRIES THE WIDTH: three hex digits for a standard id, eight for
+	// an extended one, which is candump's convention and the one this repo already reads traces
+	// with. Kept as bare numbers, an 11-bit 0x100 and a 29-bit 0x100 -- two different messages
+	// with two different senders, which `key()` exists to keep apart -- collapsed into one entry,
+	// so a report claimed one id where two were involved and printed something that could not say
+	// which (codex round 2 on #210). The tallies below are keyed the same way.
+	unattributed_ids []string
+	unknown_ids      []string
+	remote_ids       []string
+}
+
+// id_label formats one identifier the way a trace does, so its WIDTH is visible: three hex digits
+// standard, eight extended. `0x100` and `0x00000100` are two different messages, and a report that
+// prints them the same way is a report that cannot be acted on.
+fn id_label(id u32, ext bool) string {
+	return if ext { '0x${id:08X}' } else { '0x${id:03X}' }
 }
 
 // key identifies a message the way the bus does: an 11-bit 0x100 and a 29-bit 0x100 are two
@@ -170,7 +184,7 @@ pub fn without_senders(entries []canlog.LogEntry, db candb.Database, exclude []s
 	mut kept := []canlog.LogEntry{cap: entries.len}
 	mut acc := Tally{}
 	for e in entries {
-		if acc.add(d.verdict(e.frame), e.frame.id) {
+		if acc.add(d.verdict(e.frame), e.frame) {
 			kept << e
 		}
 	}
@@ -187,13 +201,19 @@ mut:
 	unattr_n          int
 	unknown_n         int
 	remote_n          int
-	unattr            map[u32]bool
-	unknown           map[u32]bool
-	remote            map[u32]bool
+	// KEYED BY IDENTITY, not by number — the same `key(id, ext)` the decision itself uses.
+	unattr  map[u64]bool
+	unknown map[u64]bool
+	remote  map[u64]bool
 }
 
 // add records one verdict and reports whether the frame survives.
-pub fn (mut t Tally) add(v Verdict, id u32) bool {
+//
+// TAKES THE FRAME, not just its number: an id means nothing without the width it was declared at,
+// and the tallies below have to keep an 11-bit 0x100 apart from a 29-bit one exactly as `verdict`
+// already does.
+pub fn (mut t Tally) add(v Verdict, f transport.CanFrame) bool {
+	id := key(f.id, f.extended)
 	match v {
 		.keep {
 			return true
@@ -233,12 +253,9 @@ pub fn (mut t Tally) add(v Verdict, id u32) bool {
 }
 
 pub fn (t Tally) done(kept int) Subtraction {
-	mut u_ids := t.unattr.keys()
-	u_ids.sort()
-	mut k_ids := t.unknown.keys()
-	k_ids.sort()
-	mut r_ids := t.remote.keys()
-	r_ids.sort()
+	u_ids := labels_of(t.unattr)
+	k_ids := labels_of(t.unknown)
+	r_ids := labels_of(t.remote)
 	return Subtraction{
 		kept:                  kept
 		withheld_excluded:     t.withheld_excluded
@@ -251,6 +268,18 @@ pub fn (t Tally) done(kept int) Subtraction {
 		unknown_ids:           k_ids
 		remote_ids:            r_ids
 	}
+}
+
+// labels_of turns a set of message identities into sorted, width-bearing labels. Sorted by the
+// KEY rather than by the text, so 0x090 comes before 0x100 instead of after it.
+fn labels_of(set map[u64]bool) []string {
+	mut ks := set.keys()
+	ks.sort()
+	mut out := []string{cap: ks.len}
+	for k in ks {
+		out << id_label(u32(k >> 1), k & 1 == 1)
+	}
+	return out
 }
 
 // check_nodes reports the names in `exclude` that the database does not declare. A misspelled

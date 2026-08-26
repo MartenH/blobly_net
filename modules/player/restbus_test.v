@@ -89,7 +89,7 @@ fn test_an_id_the_database_never_heard_of_is_still_replayed() {
 	kept, rep := without_senders(src, sample_db(), ['SUT_ECU'], true)
 	assert kept.filter(it.frame.id == 0x999).len == 1
 	assert rep.unknown == 1
-	assert rep.unknown_ids == [u32(0x999)]
+	assert rep.unknown_ids == ['0x999']
 }
 
 // The messages a database defines but does not attribute. There is no safe default, so the
@@ -99,7 +99,7 @@ fn test_unattributed_messages_follow_the_callers_choice() {
 	with, rep_with := without_senders(src, sample_db(), ['SUT_ECU'], true)
 	assert with.filter(it.frame.id == 0x300).len == 1
 	assert rep_with.unattributed == 1
-	assert rep_with.unattributed_ids == [u32(0x300)]
+	assert rep_with.unattributed_ids == ['0x300']
 
 	without, rep_without := without_senders(src, sample_db(), ['SUT_ECU'], false)
 	assert without.filter(it.frame.id == 0x300).len == 0
@@ -376,11 +376,15 @@ fn test_a_remote_request_for_an_excluded_nodes_message_is_still_replayed() {
 fn test_a_remote_request_is_reported_apart_from_the_excluded_count() {
 	d := new_decider(sample_db(), ['SUT_ECU'], true)
 	mut t := Tally{}
-	assert t.add(d.verdict(transport.CanFrame{ id: 0x100, rtr: true }), 0x100)
+	f := transport.CanFrame{
+		id:  0x100
+		rtr: true
+	}
+	assert t.add(d.verdict(f), f)
 	rep := t.done(1)
 	assert rep.withheld_excluded == 0, 'nothing was withheld on the excluded node account'
 	assert rep.remote == 1
-	assert rep.remote_ids == [u32(0x100)]
+	assert rep.remote_ids == ['0x100']
 }
 
 // NOR folded into the no-transmitter bucket, which was the tempting shortcut: those ids have no
@@ -389,7 +393,10 @@ fn test_a_remote_request_is_reported_apart_from_the_excluded_count() {
 fn test_a_remote_request_is_not_reported_as_unattributed() {
 	d := new_decider(sample_db(), ['SUT_ECU'], true)
 	mut t := Tally{}
-	t.add(d.verdict(transport.CanFrame{ id: 0x100, rtr: true }), 0x100)
+	t.add(d.verdict(transport.CanFrame{ id: 0x100, rtr: true }), transport.CanFrame{
+		id:  0x100
+		rtr: true
+	})
 	rep := t.done(1)
 	assert rep.unattributed == 0
 	assert rep.unattributed_ids.len == 0
@@ -409,7 +416,7 @@ fn test_a_remote_request_follows_the_unattributed_policy() {
 	assert drop.verdict(f) == .drop_remote
 
 	mut t := Tally{}
-	assert !t.add(drop.verdict(f), 0x100), 'withheld, so it does not reach the wire'
+	assert !t.add(drop.verdict(f), f), 'withheld, so it does not reach the wire'
 	rep := t.done(0)
 	assert rep.withheld_remote == 1
 	assert rep.withheld_excluded == 0, 'and still not on the excluded node account'
@@ -458,4 +465,62 @@ fn test_the_census_does_not_credit_a_request_to_the_node_that_produces_it() {
 	assert c.remote == 1
 	assert c.unattributed == 0, 'and the request is not a message without a transmitter'
 	assert c.total == 2
+}
+
+// AN ID IS NOT AN IDENTITY WITHOUT ITS WIDTH. An 11-bit 0x100 and a 29-bit 0x100 are two different
+// messages with two different senders — `key()` exists because conflating them is silent
+// corruption — and the tallies were keyed on the number alone, so two requests on two messages
+// were reported as two frames on ONE id, printed in a form that could not say which (codex round 2
+// on #210). The same defect was in the unattributed and unknown tallies; all three are keyed by
+// identity now.
+fn test_two_widths_of_one_number_are_two_ids_in_the_report() {
+	mut db := sample_db()
+	// The same number at the other width, defined and produced by the excluded node.
+	db.messages << candb.Message{
+		name:   'VcmStatusExt'
+		id:     0x100
+		ext:    true
+		sender: 'SUT_ECU'
+	}
+	d := new_decider(db, ['SUT_ECU'], true)
+	mut t := Tally{}
+	std := transport.CanFrame{
+		id:  0x100
+		rtr: true
+	}
+	ext := transport.CanFrame{
+		id:       0x100
+		extended: true
+		rtr:      true
+	}
+	t.add(d.verdict(std), std)
+	t.add(d.verdict(ext), ext)
+	rep := t.done(2)
+
+	assert rep.remote == 2, 'two frames'
+	assert rep.remote_ids.len == 2, 'and two distinct messages, not one counted twice'
+	assert rep.remote_ids == ['0x100', '0x00000100'], 'got ${rep.remote_ids}'
+}
+
+// The width shows in the label the way a trace prints it: three hex digits standard, eight
+// extended. A report that printed both as `0x100` could not be acted on.
+fn test_an_id_label_carries_its_width() {
+	assert id_label(0x100, false) == '0x100'
+	assert id_label(0x100, true) == '0x00000100'
+	assert id_label(0x7FF, false) == '0x7FF'
+	assert id_label(0x1FFFFFFF, true) == '0x1FFFFFFF'
+}
+
+// Sorted by the identity, not by the text: 0x090 must come before 0x100, which a lexicographic
+// sort of the labels would also give, but 0x00000100 sorting before 0x090 would be wrong.
+fn test_ids_are_sorted_by_identity_not_by_text() {
+	mut t := Tally{}
+	for id in [u32(0x100), 0x090, 0x7FF] {
+		f := transport.CanFrame{
+			id: id
+		}
+		t.add(Verdict.keep_unknown, f)
+	}
+	rep := t.done(3)
+	assert rep.unknown_ids == ['0x090', '0x100', '0x7FF'], 'got ${rep.unknown_ids}'
 }

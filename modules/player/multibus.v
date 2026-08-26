@@ -93,7 +93,7 @@ pub fn build_multi(entries []canlog.LogEntry, specs []BusSpec) MultiPlan {
 				end = e.t_s
 			}
 		}
-		if tallies[i].add(deciders[i].verdict(e.frame), e.frame.id) {
+		if tallies[i].add(deciders[i].verdict(e.frame), e.frame) {
 			// Relabelled to the DESTINATION, so the sender is a map lookup and the player never
 			// learns that a mapping happened.
 			out << canlog.LogEntry{

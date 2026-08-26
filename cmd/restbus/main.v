@@ -436,14 +436,17 @@ fn resolve_bus(buses []mf4.BusInfo, want string) !string {
 	return player.resolve_bus(names, labels, want)
 }
 
-fn hex_ids(ids []u32) string {
+// The ids arrive already formatted, and the format carries the WIDTH — three hex digits standard,
+// eight extended, as a trace prints them. This only decides how many to show (codex round 2 on
+// #210 moved the formatting into the module, where the id's identity is still known).
+fn hex_ids(ids []string) string {
 	mut s := []string{}
 	for i, id in ids {
 		if i == 12 {
 			s << '… (${ids.len - 12} more)'
 			break
 		}
-		s << '0x${id:X}'
+		s << id
 	}
 	return s.join(' ')
 }
