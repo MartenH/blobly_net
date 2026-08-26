@@ -424,6 +424,17 @@ pub mut:
 // channel at the wrong rate and produced no traffic against a bus at any other. The GUI
 // re-appended it and the headless runner did not, which is why the same project worked
 // interactively and stayed silent under a script.
+// nominal_bitrate is the arbitration rate this row will actually be OPENED with — the configured
+// one, or the transport default when it is unset.
+//
+// ONE READING OF AN UNSET RATE, which the address composer below already insisted on and which
+// origination_framing then read a second way: comparing a 500000 data phase against a RAW zero made
+// the phases look different, so an equal-phase channel originated frames demanding a bit-rate
+// switch the wire has no faster phase for (codex #202 r2). Both callers ask this now.
+pub fn (c Channel) nominal_bitrate() int {
+	return if c.bitrate > 0 { c.bitrate } else { default_bitrate }
+}
+
 pub fn (c Channel) iface_with_bitrate() string {
 	// The MODE is split off first and put back last, because the two suffixes are not
 	// interchangeable: `vector:1,silent@500000` puts the rate inside the mode, and the parser
@@ -441,7 +452,7 @@ pub fn (c Channel) iface_with_bitrate() string {
 	// 500000 default, reported the wire as CAN-FD to every conflict check. The project refused
 	// mixtures on a wire it was simultaneously opening as classic. One reading of an unset rate,
 	// here, where the address is built (codex #181 r2).
-	nominal := if c.bitrate > 0 { c.bitrate } else { default_bitrate }
+	nominal := c.nominal_bitrate()
 	if (c.adapter == 'pcan' || c.adapter == 'kvaser' || c.adapter == 'vector')
 		&& (c.bitrate > 0 || (transport.adapter_configures_data_phase(c.adapter) && c.fd)) {
 		base = '${base}@${nominal}'
@@ -503,7 +514,86 @@ pub fn apply_listen_only(chs []Channel) {
 		}
 		quiet << c.iface_with_bitrate()
 	}
-	transport.replace_listen_only(quiet)
+	// ONE PUBLISH, silence and format together — see transport.WirePolicy. Two swaps were externally
+	// observable as two policy versions: a bus a script still holds could send between them, with
+	// the new silence state and the PREVIOUS project's format, which is exactly the stale policy the
+	// per-send lookup exists to prevent (codex #202 r2).
+	//
+	// The name stays `apply_listen_only` because every caller means "publish this project's wire
+	// policy" and always did; what it publishes has grown.
+	transport.replace_wire_policy(quiet, wire_framings(chs))
+}
+
+// apply_framing publishes what format each wire carries, so frames this app ORIGINATES on it are
+// built the way the project declared (#185).
+//
+// BESIDE apply_listen_only AND CALLED WITH IT, because they are the same kind of statement — a
+// policy on a wire, published where a project is APPLIED and consulted per send — and because a
+// caller that remembered one and forgot the other would leave a CAN-FD channel silently building
+// classic frames, which is the state this fixes.
+//
+// ENABLED CAN ROWS ONLY, exactly the rule above: a row switched off states nothing about the wire,
+// and a `doip:` row addresses a TCP endpoint rather than a wire that carries a CAN format at all.
+pub fn wire_framings(chs []Channel) map[string]transport.Framing {
+	mut out := map[string]transport.Framing{}
+	mut disputed := map[string]bool{}
+	for c in chs {
+		if !c.enabled || c.is_doip() {
+			continue
+		}
+		k := transport.wire_key(c.iface_with_bitrate())
+		fr := c.origination_framing()
+		// AN ADAPTER THAT REFUSES FD MUST NOT BE DECLARED FD. PCAN rejects an FD frame rather than
+		// truncating it (Kvaser did too until #200), so declaring this wire FD turns the row's
+		// traffic into nothing at all — while fd_capability_warnings promises the classic half of
+		// such a run is real. Asked through can_carry_fd rather than by naming adapters here, so
+		// this follows the backend rather than restating it.
+		// The warning says the row cannot do what it asked; it must not also take away what it
+		// could still do (codex #202 r2).
+		if fr.fd && !c.can_carry_fd() {
+			continue
+		}
+		// ROWS ON ONE WIRE MUST AGREE. destination_conflicts refuses a canfd/can mixture only for
+		// VECTOR, because only Vector configures a data phase — so on any other adapter two enabled
+		// rows may legitimately name one wire and disagree about the format. This table is per
+		// WIRE, so whichever was listed first would decide for both, and the classic row's frames
+		// would go out FD. Neither row overrules the other: a disagreement leaves the wire
+		// undeclared, which is the format every emitter builds anyway.
+		//
+		// AND WHAT THAT COSTS, said plainly: the FD row on such a wire goes on originating CLASSIC
+		// frames, so a 64-byte generator or simulated response is truncated on SocketCAN. That is
+		// not a regression — before this change every emitter built classic on every wire — but it
+		// is the one configuration this feature does not reach, and it cannot be reached from here:
+		// the table is keyed by WIRE and the disagreement is between ROWS. Two formats on one wire
+		// is ordinary CAN-FD traffic and wants a per-frame answer, which is #203.
+		if existing := out[k] {
+			if existing.fd != fr.fd || existing.brs != fr.brs {
+				disputed[k] = true
+			}
+			continue
+		}
+		out[k] = transport.Framing{
+			fd:  fr.fd
+			brs: fr.brs
+		}
+	}
+	for k, _ in disputed {
+		out.delete(k)
+	}
+	// ONLY THE FD DECLARATIONS SURVIVE. Classic entries were carried this far so a second row on the
+	// same wire could be compared against them — that comparison is what `disputed` is — but classic
+	// is the absence of a declaration rather than a declaration of absence, and returning both would
+	// hand the caller two ways to spell one state.
+	mut classic := []string{}
+	for k, fr in out {
+		if !fr.fd {
+			classic << k
+		}
+	}
+	for k in classic {
+		out.delete(k)
+	}
+	return out
 }
 
 // resolve_asset makes a project-relative path (a DBC, a recording) absolute against the
@@ -1438,6 +1528,65 @@ fn conflict_wire_key(c Channel) string {
 // transport, which is where "who implemented FD" belongs; this is the seam, not a second copy.
 pub fn (c Channel) can_carry_fd() bool {
 	return transport.adapter_carries_fd(c.adapter)
+}
+
+// Framing is how a frame this app ORIGINATES on a channel should be put on the wire.
+//
+// A frame carries the format, and until now every frame the app built carried the classic one —
+// so a channel configured as CAN-FD, opened as CAN-FD and verified at an 8 Mbit/s data phase could
+// still only be exercised by REPLAY, which passes recorded frames through with their own flags
+// (#185). Quick Send, the generators, the simulated ECUs and the diagnostics all built classic.
+pub struct Framing {
+pub:
+	fd  bool
+	brs bool
+}
+
+// origination_framing answers it from the CHANNEL, which is the only party that has declared
+// anything.
+//
+// DECLARED, NOT INFERRED, which is this repo's habit whenever a wire format is at stake. The
+// tempting inference is "a DBC message longer than eight bytes must be FD" — but that reads a
+// format out of a payload size, and it is wrong in both directions: an 8-byte message on an FD
+// wire is a perfectly good FD frame, and a 12-byte one on a classic wire is a mistake worth
+// refusing rather than silently promoting. `type: canfd` in the project is the operator saying it.
+//
+// BRS FOLLOWS A DISTINCT DATA RATE, for the reason vectorcheck's own probe does the same: with
+// equal phases there is no faster phase to switch into, and the XL library refuses the flag. So
+// `canfd` at 500000/500000 originates 64-byte frames without the bit-rate switch, which is a real
+// configuration and the only way to ask for it.
+pub fn (c Channel) origination_framing() Framing {
+	if !c.fd {
+		return Framing{}
+	}
+	return Framing{
+		fd:  true
+		brs: c.data_bitrate > 0 && c.data_bitrate != c.nominal_bitrate()
+	}
+}
+
+// framed returns `f` as this channel would put it on the wire.
+//
+// A FRAME THAT ALREADY SAYS `fd` KEEPS IT. Replay does not come through here, but the emitters that
+// do include ones handling a frame somebody else built, and demoting an FD frame to classic
+// silently would be the truncation this whole change exists to stop. Stamping only upward means
+// this can add the channel's format and never contradict a caller who has already stated one.
+pub fn (c Channel) framed(f transport.CanFrame) transport.CanFrame {
+	return c.origination_framing().apply(f)
+}
+
+// apply is the stamp itself, on Framing rather than on Channel, because the two front ends reach it
+// from different directions: the GUI has the row and the headless runner has only what it passed
+// into its sim loop. One function either way, so they cannot drift about what `canfd` means.
+pub fn (fr Framing) apply(f transport.CanFrame) transport.CanFrame {
+	if f.fd || !fr.fd {
+		return f
+	}
+	return transport.CanFrame{
+		...f
+		fd:  true
+		brs: fr.brs
+	}
 }
 
 // fd_config_error reports why this row's CAN-FD rates could not be opened, or none when they can.
