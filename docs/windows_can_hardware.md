@@ -177,7 +177,19 @@ XL program registers a name and gets its own 1..64 numbering:
 Three tools share one device without arguing about channel numbers, and each keeps its own map.
 The alternative — addressing hardware directly — means reproducing `XLdriverConfig`, a large
 packed struct whose exact size decides where the channel array starts; an error there reads out
-of bounds rather than failing. This backend deliberately does not.
+of bounds rather than failing.
+
+The backend does both, and which one applies depends on the question:
+
+- **Opening a bus never touches that struct.** `vector:<n>` is an application channel, resolved
+  through `xlGetChannelMask`, so the path that carries traffic does not depend on the layout.
+- **Discovering hardware does.** Listing what is physically plugged in has no other source, so
+  `ct_vector_channel_info` calls `xlGetDriverConfig` and the shim reproduces the struct — pinned by
+  the same `_Static_assert`s the ABI note above describes (`XLdriverConfig` is 14576 bytes), which
+  the mingw CI job checks on every push.
+
+So the risk is real but confined to discovery, and it is caught at compile time rather than at
+runtime. It is not avoided altogether, and an earlier version of this page claimed it was.
 
 The mapping is stored **by the driver**, per application, and survives reboots. That is why a
 tool that borrows a channel has to put it back, and why `vectorcheck --pair` restores on Ctrl-C.
@@ -254,10 +266,19 @@ CANalyzer) are never touched, and the mapping is stored by the driver and surviv
 **From the CLI**, when there is no GUI or you want it scripted:
 
 ```sh
-vectorcheck --probe                          # find the row number of the hardware you want
-vectorcheck --channel 2 --assign 2 --seconds 1   # map application channel 2 -> probe row 2
-vectorcheck --release 2                      # unmap it again
+vectorcheck --list                               # which application channels are already mapped
+vectorcheck --probe                              # find the row number of the hardware you want
+vectorcheck --channel 5 --assign 2 --seconds 1   # map application channel 5 -> probe row 2
+vectorcheck --release 5                          # clear channel 5 again
 ```
+
+> **`--assign` overwrites, and `--release` does not undo it.** Unlike the GUI, this path performs no
+> check: it does not look at what the channel currently points at, and it keeps no copy. `--release`
+> **clears** the channel rather than restoring its previous target, so assigning over a mapped
+> channel and then releasing it leaves that channel pointing at *nothing* — and the original mapping
+> is gone for good, from persistent state that survives reboots. Run `--list` first and pick a
+> channel that is not in it. The example above uses 5 rather than 1 or 2 for that reason: the low
+> numbers are the ones a bench is most likely to already be using.
 
 `--assign` takes a **`--probe` row**, not a channel number. Deliberately: the driver lists its
 channels device-first while a hwType sweep walks them in another order, and an earlier version
@@ -265,8 +286,9 @@ took one for the other — the caller named one thing and got another, with sile
 was fine as the only symptom. It also *listens* after assigning rather than exiting, so give it
 `--seconds 1` when all you want is the mapping.
 
-`--pair` needs no setup at all: it borrows two high application channels, runs, and restores what
-they pointed at.
+`--pair` is the exception and needs no setup at all: it borrows two high application channels,
+runs, and **restores what they pointed at**, including on Ctrl-C. It is the only path here with
+save-and-restore behaviour, which is why it is the one to reach for on a bench you did not set up.
 
 ### "It only shows one speed" — where the CAN-FD data rate lives
 

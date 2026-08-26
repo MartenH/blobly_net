@@ -849,9 +849,13 @@ pub fn vector_application_seen() !bool {
 //
 // It lists what is CONFIGURED, not what is plugged in — the XL library addresses application
 // channels, and a VN1630A nobody has assigned yet appears here only once the operator has
-// pointed a channel at it in Vector Hardware Configuration. Reporting the physical device
-// list instead would need XLdriverConfig, whose layout this backend deliberately does not
-// reproduce; see the note at the top of vector_shim.h.
+// pointed a channel at it in Vector Hardware Configuration.
+//
+// THE PHYSICAL LIST IS vector_channels(), which is a different question and answers it from
+// XLdriverConfig. This comment used to say that struct's layout was deliberately not reproduced;
+// that stopped being true when hardware discovery landed, and there is no other source for
+// "what is plugged in" (codex #188). The layout is reproduced in vector_shim.h and pinned by
+// _Static_asserts, so a mistake there fails the mingw build rather than reading out of bounds.
 // vector_driver_status reports whether the XL driver is usable at all, separately from whether
 // any channel is assigned: 0 usable, -1 vxlapi64.dll absent, -2 a needed symbol missing, other
 // negatives an XL status from xlOpenDriver.
