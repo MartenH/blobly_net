@@ -278,6 +278,26 @@ mut:
 	disc_open bool
 	disc_list []DiscoveredIface
 	disc_tick []bool // parallel to disc_list
+	// Vector HARDWARE, which is a different question from the list above. That one shows
+	// interfaces this app could open; this one shows physical channels the driver reports,
+	// including the ones nothing is mapped to yet — which are exactly the ones a fresh bench
+	// needs and the only ones the interface list can never contain (#186).
+	disc_vector []transport.VectorMapping
+	// Whether the driver knows the application at all. Its own field rather than "is disc_vector
+	// empty", because a bench with hardware and no mappings and a bench whose driver could not be
+	// asked look identical from the list alone (#190).
+	disc_vector_app_seen bool
+	// The application channel number the operator typed. A buffer, not a proposed int: nothing
+	// suggests a value, so "empty" has to stay distinguishable from "they chose 0" (#192).
+	disc_vector_ch_buf []u8 = mkbuf('', 8)
+	// The application channels the driver CONFIRMED empty, as a display string. Reported, never
+	// proposed — see the panel.
+	disc_vector_free string
+	// Whether the operator has said they mean to CREATE an application channel that is not
+	// registered yet. Off by default, and deliberately not remembered across a Refresh: it
+	// authorizes the one write whose safety the driver cannot confirm, so it has to be an act
+	// rather than a setting left on from last time (codex #192 r9).
+	disc_vector_create bool
 	// File browser (Open / Save As / attach DBC / attach manifest)
 	fb_open     bool   // browser window shown
 	fb_save     bool   // true = save mode (filename input), false = open mode
