@@ -131,6 +131,11 @@ mut:
 	iface     string
 	chan_name string // logical channel, '' = derive from the interface
 	origin    string
+	// Whether this tap REPRODUCES frames somebody else already decided the format of, rather than
+	// originating them. Set only by replay. An explicit flag rather than a guess at the `origin`
+	// label: replay's tap is opened with org_tx_sim and only its TRACE ROWS carry org_rep, so a
+	// condition on the origin looked right, read right, and never fired (codex #202 r4).
+	reproduces bool
 	// The run this tap belongs to, or 0 for a tap that outlives runs (Quick Send, scripts).
 	// Checked INSIDE tx_mu, because checking it outside cannot close the window: the caller
 	// passes, is descheduled, Start takes the send mutex, advances the generation and resets the
@@ -156,7 +161,7 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	// CLASSIC frame is classic because it was captured that way, and `fd == false` cannot tell that
 	// apart from an emitter that simply did not say — so framing replay's traffic on an FD wire
 	// would silently rewrite the recording it exists to reproduce (r3).
-	framed := if t.origin == org_rep {
+	framed := if t.reproduces {
 		frame
 	} else {
 		transport.framed_for_wire(t.iface, frame)
@@ -245,6 +250,12 @@ fn (app &App) open_tap_on(iface string, origin string, chan_name string) !transp
 // is checked against `gen` while the send mutex is held. Used by replay, whose worker can be
 // inside a long catch-up batch when the run it belongs to ends.
 fn (app &App) open_tap_on_gen(iface string, origin string, chan_name string, gen u64) !transport.Bus {
+	return app.open_tap_full(iface, origin, chan_name, gen, false)
+}
+
+// open_tap_full is open_tap_on_gen with the one thing the others cannot express: whether this tap
+// REPRODUCES frames rather than originating them. Replay is the only caller that passes true.
+fn (app &App) open_tap_full(iface string, origin string, chan_name string, gen u64, reproduces bool) !transport.Bus {
 	// The bitrate suffix is an OPEN-time detail of the VENDOR backends, not part of a bus's
 	// identity: chan_name_for and the pending records both key on the logical name, so a caller
 	// that already carries `pcan:…@250000` (the script engine's ChanInfo does) would otherwise
@@ -275,9 +286,10 @@ fn (app &App) open_tap_on_gen(iface string, origin string, chan_name string, gen
 		inner:     inner
 		app:       unsafe { app }
 		iface:     logical
-		chan_name: chan_name
-		origin:    origin
-		guard_gen: gen
+		chan_name:  chan_name
+		origin:     origin
+		reproduces: reproduces
+		guard_gen:  gen
 	}
 }
 
