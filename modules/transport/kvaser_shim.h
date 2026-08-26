@@ -19,11 +19,21 @@
 #define CT_KV_MSG_EXT          0x0004
 #define CT_KV_MSG_ERROR_FRAME  0x0020
 #define CT_KV_OPEN_ACCEPT_VIRTUAL 0x0020
+#define CT_KV_OPEN_CAN_FD      0x0400
+/* canWrite/canReadWait CAN-FD flags. canlib carries them in the high half of the same
+ * word the classic flags use, so one flags argument says both. */
+#define CT_KV_FDMSG_FDF        0x010000
+#define CT_KV_FDMSG_BRS        0x020000
+#define CT_KV_FDMSG_ESI        0x040000
 #define CT_KV_ERR_NOMSG        (-2)
 
 typedef void    (__stdcall *ct_kvInitLib)(void);
 typedef int     (__stdcall *ct_kvOpen)(int, int);
 typedef int     (__stdcall *ct_kvSetBus)(int, int32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+/* canSetBusParamsFd sets the DATA phase; canSetBusParams goes on setting arbitration.
+ * OPTIONAL: a canlib older than the FD API has no such symbol, and the caller is told that
+ * rather than finding out through a null call. */
+typedef int     (__stdcall *ct_kvSetBusFd)(int, int32_t, uint32_t, uint32_t, uint32_t);
 typedef int     (__stdcall *ct_kvBusOn)(int);
 typedef int     (__stdcall *ct_kvBusOff)(int);
 typedef int     (__stdcall *ct_kvWrite)(int, int32_t, void *, uint32_t, uint32_t);
@@ -33,6 +43,7 @@ typedef int     (__stdcall *ct_kvClose)(int);
 static ct_kvInitLib  ct_kv_initlib;
 static ct_kvOpen     ct_kv_open;
 static ct_kvSetBus   ct_kv_setbus;
+static ct_kvSetBusFd ct_kv_setbusfd;
 static ct_kvBusOn    ct_kv_buson;
 static ct_kvBusOff   ct_kv_busoff;
 static ct_kvWrite    ct_kv_write;
@@ -61,6 +72,7 @@ static int ct_kvaser_load(void) {
 	ct_kv_initlib  = (ct_kvInitLib)(void *)GetProcAddress(h, "canInitializeLibrary");
 	ct_kv_open     = (ct_kvOpen)(void *)GetProcAddress(h, "canOpenChannel");
 	ct_kv_setbus   = (ct_kvSetBus)(void *)GetProcAddress(h, "canSetBusParams");
+	ct_kv_setbusfd = (ct_kvSetBusFd)(void *)GetProcAddress(h, "canSetBusParamsFd");
 	ct_kv_buson    = (ct_kvBusOn)(void *)GetProcAddress(h, "canBusOn");
 	ct_kv_busoff   = (ct_kvBusOff)(void *)GetProcAddress(h, "canBusOff");
 	ct_kv_write    = (ct_kvWrite)(void *)GetProcAddress(h, "canWrite");
@@ -92,6 +104,16 @@ static int ct_kvaser_descr(int ch, char *buf, int len) {
 	return 0;
 }
 
+
+/* Is channel `ch` a SOFTWARE virtual channel? canCHANNELDATA_CHANNEL_CAP bit
+ * canCHANNEL_CAP_VIRTUAL (0x00010000). Returns 1 virtual, 0 physical, -1 cannot say. */
+static int ct_kvaser_is_virtual(int ch) {
+	uint32_t cap = 0;
+	if (!ct_kv_chandata) return -1;
+	/* canCHANNELDATA_CHANNEL_CAP == 1 */
+	if (ct_kv_chandata(ch, 1, &cap, sizeof cap) < 0) return -1;
+	return (cap & 0x00010000L) ? 1 : 0;
+}
 /* Open channel `ch` (accepting virtual channels), set bitrate (a canBITRATE_* code,
  * negative), go bus-on. Returns the handle (>=0) or the negative canStatus error. */
 static int ct_kvaser_open(int ch, int32_t bitrate_code) {
@@ -107,21 +129,61 @@ static int ct_kvaser_open(int ch, int32_t bitrate_code) {
 }
 
 /* canStatus < 0 on error. */
-static int ct_kvaser_write(int hnd, uint32_t id, uint8_t len, const uint8_t *data, int ext) {
+
+/* Does this canlib have the CAN-FD API at all? Call after ct_kvaser_load(). */
+static int ct_kvaser_has_fd(void) { return ct_kv_setbusfd ? 1 : 0; }
+
+/* Open channel `ch` in CAN-FD mode: arbitration code, then the data-phase code, then bus-on.
+ * Both are canlib's negative predefined constants (canBITRATE_* / canFD_BITRATE_*), which is
+ * the pairing the bench run used. Returns the handle (>=0) or the negative canStatus. */
+static int ct_kvaser_open_fd(int ch, int32_t arb_code, int32_t data_code) {
+	int hnd, st;
+	ct_kv_initlib();
+	hnd = ct_kv_open(ch, CT_KV_OPEN_ACCEPT_VIRTUAL | CT_KV_OPEN_CAN_FD);
+	if (hnd < 0) return hnd;
+	st = ct_kv_setbus(hnd, arb_code, 0, 0, 0, 0, 0);
+	if (st < 0) { ct_kv_close(hnd); return st; }
+	st = ct_kv_setbusfd(hnd, data_code, 0, 0, 0);
+	if (st < 0) { ct_kv_close(hnd); return st; }
+	st = ct_kv_buson(hnd);
+	if (st < 0) { ct_kv_close(hnd); return st; }
+	return hnd;
+}
+
+/* Write a CAN-FD frame. `len` is a BYTE COUNT (canlib takes bytes here, not a DLC code) and the
+ * caller has already checked it is one FD allows. BRS is per frame, not per bus. */
+static int ct_kvaser_write_fd(int hnd, uint32_t id, uint8_t len, const uint8_t *data, int ext, int brs) {
+	uint8_t buf[64];
+	int i;
+	uint32_t flag = (ext ? CT_KV_MSG_EXT : CT_KV_MSG_STD) | CT_KV_FDMSG_FDF;
+	if (brs) flag |= CT_KV_FDMSG_BRS;
+	if (len > 64) len = 64;
+	for (i = 0; i < 64; i++) buf[i] = (i < len) ? data[i] : 0;
+	return ct_kv_write(hnd, (int32_t)id, buf, len, flag);
+}
+static int ct_kvaser_write(int hnd, uint32_t id, uint8_t len, const uint8_t *data, int ext, int rtr) {
 	uint8_t buf[8];
 	int i;
-	uint32_t flag = ext ? CT_KV_MSG_EXT : CT_KV_MSG_STD;
+	/* RTR rides the same flags word. It was dropped here, so a remote request went out as an
+	 * ordinary data frame and reported success -- the same silent substitution the FD refusal
+	 * above exists to prevent, one branch over. */
+	uint32_t flag = (ext ? CT_KV_MSG_EXT : CT_KV_MSG_STD) | (rtr ? CT_KV_MSG_RTR : 0);
 	if (len > 8) len = 8;
 	for (i = 0; i < 8; i++) buf[i] = (i < len) ? data[i] : 0;
 	return ct_kv_write(hnd, (int32_t)id, buf, len, flag);
 }
 
-/* Read one frame, blocking up to timeout_ms. Returns 0 (frame, out filled),
- * 1 (timed out / no message), or -(status) on error. Error frames are reported as 1
- * (skip). */
-static int ct_kvaser_read(int hnd, uint32_t *id, uint8_t *len, uint8_t *data, int *ext, uint32_t timeout_ms) {
+/* Read one frame, blocking up to timeout_ms. Returns 0 (frame, out filled), 1 (timed out / no
+ * message / error frame — skip), or the negative canStatus.
+ *
+ * ONE reader for both modes, with a 64-byte buffer. An FD-opened channel carries classic frames
+ * too, and canlib writes only `dlc` bytes, so the wide buffer costs a classic read nothing and
+ * is the difference between a 64-byte FD frame arriving and smashing the stack. `fd` and `brs`
+ * are reported OUT rather than assumed from how the channel was opened: the bus tells us what
+ * each frame was, which is the whole point of the flags. */
+static int ct_kvaser_read(int hnd, uint32_t *id, uint8_t *len, uint8_t *data, int *ext, int *fd, int *brs, int *esi, uint32_t timeout_ms) {
 	int32_t cid = 0;
-	uint8_t buf[8];
+	uint8_t buf[64];
 	uint32_t dlc = 0, flag = 0, t = 0;
 	int st = ct_kv_readwait(hnd, &cid, buf, &dlc, &flag, &t, timeout_ms);
 	int i;
@@ -129,9 +191,14 @@ static int ct_kvaser_read(int hnd, uint32_t *id, uint8_t *len, uint8_t *data, in
 	if (st < 0) return st; /* negative canStatus error */
 	if (flag & CT_KV_MSG_ERROR_FRAME) return 1;
 	*id = (uint32_t)cid;
-	*len = (uint8_t)(dlc > 8 ? 8 : dlc);
+	*len = (uint8_t)(dlc > 64 ? 64 : dlc);
 	*ext = (flag & CT_KV_MSG_EXT) ? 1 : 0;
-	for (i = 0; i < 8; i++) data[i] = buf[i];
+	*fd  = (flag & CT_KV_FDMSG_FDF) ? 1 : 0;
+	*brs = (flag & CT_KV_FDMSG_BRS) ? 1 : 0;
+	/* ESI is a RECEIVED STATUS, not a choice: the transmitting node was error-passive. The other
+	 * backends carry it, so a recording made on Kvaser must not be the one that loses it. */
+	*esi = (flag & CT_KV_FDMSG_ESI) ? 1 : 0;
+	for (i = 0; i < 64; i++) data[i] = buf[i];
 	return 0;
 }
 

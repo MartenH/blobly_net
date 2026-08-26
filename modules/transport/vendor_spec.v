@@ -48,9 +48,28 @@ pub fn vendor_bitrate(tok string, default_rate int) !int {
 // and a second copy of it would be the pair of them disagreeing about the same project.
 pub fn adapter_carries_fd(adapter string) bool {
 	return match adapter.trim_space().to_lower() {
-		'pcan', 'kvaser' { false } // refuse an FD frame rather than truncating it
+		'pcan' { false } // refuses an FD frame rather than truncating it
 		'doip' { false } // not a CAN bus
 		else { true } // vector, socketcan/vcan, and the software buses
+	}
+}
+
+// adapter_configures_data_phase reports whether an address for this adapter carries the CAN-FD
+// DATA rate — whether OUR code sets the payload phase when it opens the channel.
+//
+// NOT the same question as adapter_carries_fd, and the difference is exactly what a conflict
+// check and an address composer each need. SocketCAN carries FD frames, but its data phase
+// belongs to the interface and was set by `ip link` long before this process opened it: two rows
+// disagreeing there is not something we configure, pin or can refuse. The vendor backends that
+// take the rate IN THE ADDRESS are configuring it, so two rows asking for different ones is a
+// contradiction only one of them can win.
+//
+// Kvaser joined Vector here when its FD support landed. It is a list of "who composes a data
+// rate into an address", which is why it lives beside the address parsing and not in a front end.
+pub fn adapter_configures_data_phase(adapter string) bool {
+	return match adapter.trim_space().to_lower() {
+		'vector', 'kvaser' { true }
+		else { false }
 	}
 }
 

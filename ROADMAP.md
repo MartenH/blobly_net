@@ -61,11 +61,10 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
 - 🧭 **SOME/IP-SD** (service discovery) + the SOME/IP **sim service** — explicitly deferred in
   [`docs/ethernet_architecture.md`](docs/ethernet_architecture.md).
 - 🧭 **DoIP per-connection handler state** — deferred pending the threading change.
-- 🧭 **CAN-FD on PCAN and Kvaser** — Vector has it now (see Already shipped); these two still
-  refuse an FD frame rather than truncating it. PCANBasic needs `CAN_InitializeFD` and a bit-rate
-  *string* in place of the baudrate enum; Kvaser needs `canOpenChannel` with `canOPEN_CAN_FD` and
-  `canSetBusParamsFd`. Neither is blocked on hardware the way Vector was — both adapters are on
-  the bench — and the address syntax and the project plumbing are already there to reuse.
+- 🧭 **CAN-FD on PCAN** — Vector and Kvaser have it now (see Already shipped); PCAN still refuses
+  an FD frame rather than truncating it. PCANBasic needs `CAN_InitializeFD` and a bit-rate
+  *string* in place of the baudrate enum. Not blocked on hardware — the adapter is on the bench —
+  and the address syntax, the project plumbing and now two worked examples are there to reuse.
 - 🧭 **DoIP discovery — actually discover.** `discover()` sends a **unicast** vehicle
   identification request to a host you already name, reads one reply and returns. It
   confirms an identity; it cannot find an ECU nobody told it about. That is backwards for a
@@ -210,9 +209,21 @@ a wire-visible feature, the matching host support usually lands here in the same
   `--modecheck` proves the four pin cases against the driver. Segment timing is derived
   (`vector_fd_segments`) against an assumed 80 MHz controller clock — the one number here that
   is hardware and not standard, stated because `XLcanFdConf` has no prescaler field and nothing
-  in the API reports what it divided. Still to do: CAN-FD on PCAN and Kvaser (see Planned).
+  in the API reports what it divided. Still to do: CAN-FD on PCAN (see Planned); Kvaser has it, below.
 
 Kept last: this is where the roadmap ends, not where it starts.
+
+- ✅ **CAN-FD on Kvaser** — `kvaser:<ch>@<arb>/<data>`, the data rate in the address asking for FD
+  exactly as it does on Vector. `canOpenChannel(canOPEN_CAN_FD)` + `canSetBusParamsFd`, and the
+  FD/BRS flags are read back per frame because an FD channel carries classic frames too.
+  Bench-verified on a **Kvaser USBcan Pro 5xHS**, connector CH1 to CH2 over real transceivers with
+  two 120 Ω terminators: payload lengths 8/12/16/24/32/48/64 bytes at data rates 500k, 1M, 2M,
+  4M and 8M, with zero error frames and both controllers error-active throughout. FD arbitration
+  is 500k or 1M — the 80% sample-point family, matching the data phase and matching Vector. `cmd/kvasercheck --ladder` is that run, reproducible. A data rate canlib has no
+  constant for is refused by name rather than rounded to a neighbour. **Done, not automatically
+  checked:** no CI runner has an adapter, so the ✅ rests on that bench; what CI holds is
+  `kvaser_names.v` — the address and the two rate maps — which is why they live outside the
+  `_windows.v` file.
 
 **Buses & transport**
 - ✅ **SocketCAN** (Linux) — `vcan0` virtual and real adapters
