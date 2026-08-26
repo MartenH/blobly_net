@@ -61,11 +61,13 @@ pub fn parse_cansub_iface(iface string) !CansubSpec {
 		}
 	}
 	ch := ch_tok.int()
-	if ch < 1 {
-		// The device numbers from 1 and answers 404 for 0, which arrives as an unhelpful HTTP
-		// error several seconds into an open. Caught here, while it is still a string somebody
-		// typed.
-		return error('channel ${ch}: a CANsub numbers its channels from 1')
+	if ch < 1 || ch > cansub_channels {
+		// The device numbers 1..4 and answers 404 outside that, which arrives as an unhelpful
+		// HTTP error several seconds into an open -- and, because this parser is what
+		// address_config_error asks, an out-of-range channel was accepted by the editor and
+		// saved before anybody found out. Caught here, while it is still a string somebody typed
+		// (codex round 2 on #204: the floor was checked and the ceiling was not).
+		return error('channel ${ch}: a CANsub.4 numbers its channels 1 to ${cansub_channels}')
 	}
 	return CansubSpec{
 		id:      id
@@ -113,6 +115,9 @@ mut:
 	running bool      = true
 	health  BusHealth = .unknown
 	err     string
+	// What the CONTROLLER was last configured to, which is not the same question as what this
+	// process's silence policy currently says — see reconcile_listen_only.
+	phy_silent bool
 }
 
 // open_cansub_bus is what shared_open calls. One connection per wire; every opener of the same
@@ -134,7 +139,8 @@ fn open_cansub_bus(iface string) !Bus {
 	// mid-run moves and a register cannot — but a listen-only channel that still ACKs is not
 	// really listening: on a bus with one other node our acknowledgement is the difference
 	// between its frames succeeding and it going error-passive.
-	body := cansub_phy_json(nominal, data, is_listen_only(iface))
+	silent := is_listen_only(iface)
+	body := cansub_phy_json(nominal, data, silent)
 	r := cansub_request(host, 'PUT', '/api/can/${spec.channel}/phy', body, 5 * time.second) or {
 		return error('cannot configure ${iface}: ${err}')
 	}
@@ -160,6 +166,9 @@ fn open_cansub_bus(iface string) !Bus {
 		ws:    ws
 		rx:    chan CansubRecord{cap: 4096}
 	}
+	lock b.stop {
+		b.stop.phy_silent = silent
+	}
 	b.reader = spawn b.read_loop()
 	b.health_thr = spawn b.health_loop()
 	b.started = true
@@ -182,6 +191,7 @@ fn (mut b CansubBus) health_loop() {
 			break
 		}
 		b.poll_health()
+		b.reconcile_listen_only()
 		// Slept in short steps rather than one long one, so close() is noticed promptly instead of
 		// after the poll interval: a thread this one has to be joined by is a thread that must not
 		// take half a second to look up.
@@ -258,6 +268,58 @@ fn (mut b CansubBus) enqueue(rec CansubRecord) bool {
 		time.sleep(2 * time.millisecond)
 	}
 	return false
+}
+
+// reconcile_listen_only re-configures the CONTROLLER when this process's silence policy for this
+// wire changes underneath a running bus.
+//
+// WHY IT IS NEEDED. `listen_only` is burned into the PHY at open, once, from `is_listen_only()`.
+// The policy behind that answer is not fixed: `project.apply_listen_only()` replaces the whole set
+// whenever a project is applied or a row is toggled, and `silenced()` deliberately asks it PER SEND
+// rather than caching it — because a mark moves and a handle outlives the row that made it. So the
+// software half followed the toggle and the controller did not, in both directions and both of them
+// wrong (codex round 2 on #204):
+//
+//   - marked silent after opening normal: this process refuses to transmit, but the controller is
+//     still ACKing every frame on the bus. That is not listening. On a bus with one other node our
+//     acknowledgement is the difference between its frames succeeding and it going error-passive —
+//     which is the whole argument the open path already makes for silencing the controller at all.
+//   - unmarked after opening silent: sends are permitted in software and the controller cannot
+//     transmit them. The frame is recorded as sent and never reaches the wire.
+//
+// Vector answers this class by REFUSING (`wire_pin_clash`, #165) because an XL port's mode is fixed
+// by the ports open on it and software cannot revise it. A CANsub can be revised: the mode is a
+// field in a PHY object we can PUT again. So it is reconfigured rather than refused.
+//
+// THE COST IS A BUS BOUNCE. A PHY PUT restarts the channel, so traffic stops for the length of one
+// HTTP round trip. That is the lesser evil by some distance: the alternative is a wire whose
+// behaviour disagrees with what the Buses panel says it is, indefinitely, which is exactly the
+// class of fault this repo refuses to ship elsewhere. It happens only when somebody actually
+// changes the mark, which is a deliberate act.
+//
+// Best-effort: a failed PUT leaves `phy_silent` alone, so the next poll tries again rather than
+// recording a change that did not happen.
+fn (mut b CansubBus) reconcile_listen_only() {
+	want := is_listen_only(b.iface)
+	have := rlock b.stop {
+		b.stop.phy_silent
+	}
+	if want == have {
+		return
+	}
+	nominal := cansub_timing_for(b.spec.arb, cansub_default_sample_point) or { return }
+	mut data := ?CansubTiming(none)
+	if b.spec.fd {
+		data = cansub_timing_for_data(b.spec.data, cansub_default_sample_point) or { return }
+	}
+	r := cansub_request(b.host, 'PUT', '/api/can/${b.spec.channel}/phy', cansub_phy_json(nominal,
+		data, want), 5 * time.second) or { return }
+	if r.status != 200 && r.status != 204 {
+		return
+	}
+	lock b.stop {
+		b.stop.phy_silent = want
+	}
 }
 
 // poll_health asks the device what its controller thinks. The states map one to one onto this
@@ -423,6 +485,20 @@ fn cansub_sync_clock(host string) ! {
 // narrower in the data phase than the nominal one, and an out-of-range data phase is answered with
 // an HTTP 500 that names nothing (see the findings in #193). Catching it against the published
 // table beats reading that 500 off a live device.
+// cansub_canonical_spec reduces one address to what it actually ASKS FOR, so that two spellings
+// of one wire compare equal.
+//
+// `shared_open` guards a shared handle by comparing the interface string that opened it, exactly --
+// so `E5A16ADF/1` and `e5a16adf/01` resolved to the same wire key, then collided on that compare,
+// and the second alias was refused its transmit handle over a difference that does not exist
+// (codex round 2 on #204). The raw string is still what diagnostics print; this is only what they
+// are COMPARED by.
+pub fn cansub_canonical_spec(iface string) string {
+	s := parse_cansub_iface(iface) or { return iface.trim_space().to_lower() }
+	fd := if s.fd { '/${s.data}' } else { '' }
+	return 'cansub:${s.id.to_lower()}/${s.channel}@${s.arb}${fd}'
+}
+
 pub fn cansub_address_error(iface string) ?string {
 	s := parse_cansub_iface(iface) or { return err.msg() }
 	cansub_timing_for(s.arb, cansub_default_sample_point) or {

@@ -34,11 +34,11 @@ fn test_fd_at_the_same_rate_is_a_real_configuration() {
 	assert s.data == 500000
 }
 
-// The device numbers its channels from 1 and answers 404 for 0 — several seconds into an open, as
-// an unhelpful HTTP error. Caught while it is still a string somebody typed.
+// The device numbers its channels 1..4 and answers 404 outside that — several seconds into an
+// open, as an unhelpful HTTP error. Caught while it is still a string somebody typed.
 fn test_channel_zero_is_refused() {
 	parse_cansub_iface('cansub:e5a16adf/0') or {
-		assert err.msg().contains('from 1')
+		assert err.msg().contains('1 to 4')
 		return
 	}
 	assert false, 'accepted channel 0, which the device does not have'
@@ -193,4 +193,51 @@ fn test_an_expired_budget_reports_timeout() {
 	if _ := cansub_wait_slice(0, now, now) {
 		assert false, 'recv(0) polls once and does not wait'
 	}
+}
+
+// AND THE CEILING, which was not checked. A `.4` has four channels; `cansub:<id>/5` parsed
+// cleanly, so `address_config_error` accepted it too and the editor SAVED the row — the refusal
+// arrived as an HTTP 404 several seconds into Start, from a project that had looked valid
+// (codex round 2 on #204). The floor had this test; the ceiling had none.
+fn test_a_channel_above_the_devices_last_is_refused() {
+	for ch in [5, 9, 64] {
+		if _ := parse_cansub_iface('cansub:e5a16adf/${ch}') {
+			assert false, 'channel ${ch} does not exist on a CANsub.4'
+		}
+	}
+}
+
+fn test_every_channel_the_device_has_is_accepted() {
+	for ch in 1 .. cansub_channels + 1 {
+		s := parse_cansub_iface('cansub:e5a16adf/${ch}') or {
+			assert false, 'channel ${ch} is one the device has: ${err}'
+			return
+		}
+		assert s.channel == ch
+	}
+}
+
+// TWO SPELLINGS OF ONE WIRE must compare equal, or `shared_open` refuses the second alias its
+// transmit handle over a difference that does not exist. The wire key already folded them
+// together; the spec comparison beside it did not (codex round 2 on #204).
+fn test_spellings_of_one_address_canonicalise_together() {
+	a := cansub_canonical_spec('cansub:E5A16ADF/1@500000')
+	b := cansub_canonical_spec('cansub:e5a16adf/01@500000')
+	assert a == b, '${a} != ${b}'
+}
+
+fn test_canonicalisation_still_separates_different_settings() {
+	base := cansub_canonical_spec('cansub:e5a16adf/1@500000')
+	assert cansub_canonical_spec('cansub:e5a16adf/2@500000') != base, 'a different channel is a different wire'
+	assert cansub_canonical_spec('cansub:e5a16adf/1@250000') != base, 'a different rate is a different setting'
+	assert cansub_canonical_spec('cansub:e5a16adf/1@500000/2000000') != base, 'a data phase is a different setting'
+	assert cansub_canonical_spec('cansub:aaaaaaaa/1@500000') != base, 'a different device is a different wire'
+}
+
+// An address that does not parse has no canonical form to give, and must not collapse into one
+// with any other unparseable address — that would let two unrelated bad strings share a handle.
+fn test_an_unparseable_address_is_its_own_canonical_form() {
+	x := cansub_canonical_spec('cansub:nonsense')
+	y := cansub_canonical_spec('cansub:other-nonsense')
+	assert x != y
 }

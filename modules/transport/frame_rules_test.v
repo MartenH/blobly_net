@@ -105,3 +105,62 @@ fn test_an_ordinary_frame_passes() {
 	assert frame_shape_error(CanFrame{ id: 0x123, rtr: true }) == none
 	assert frame_shape_error(CanFrame{ id: 0x123, fd: true, brs: true, data: []u8{len: 64} }) == none
 }
+
+// ---- the tiers -----------------------------------------------------------
+
+// The IMPOSSIBLE rules and the LENGTH rules are separated because this repo has three tiers and
+// only two of them agree about length: SocketCAN clamps and records the clamp, the software buses
+// pad an FD payload to a DLC length, the vendor backends refuse. A frame that is impossible is
+// impossible in every tier, which is what lets the software buses check those and not these.
+
+fn test_the_impossible_rules_do_not_include_lengths() {
+	// Nine bytes of FD payload is refused by a vendor backend and PADDED by a software one. It is
+	// a limit, not a contradiction, so it must not be in the impossible set — putting it there
+	// would make `inproc:` refuse what it deliberately pads.
+	long_fd := CanFrame{
+		id:   0x123
+		fd:   true
+		data: []u8{len: 9}
+	}
+	assert frame_impossible_error(long_fd) == none, 'a padded length is not an impossible frame'
+	assert frame_shape_error(long_fd) != none, 'but a backend that refuses rather than pads still refuses it'
+
+	long_classic := CanFrame{
+		id:   0x123
+		data: []u8{len: 9}
+	}
+	assert frame_impossible_error(long_classic) == none
+	assert frame_shape_error(long_classic) != none
+}
+
+// Every contradiction, on the other hand, is in both.
+fn test_every_impossible_frame_is_also_refused_by_the_full_rules() {
+	bad := [
+		CanFrame{
+			id:  0x123
+			rtr: true
+			fd:  true
+		},
+		CanFrame{
+			id:  0x123
+			brs: true
+		},
+		CanFrame{
+			id: 0x800
+		},
+		CanFrame{
+			id:       0x2000_0000
+			extended: true
+		},
+	]
+	for f in bad {
+		assert frame_impossible_error(f) != none, 'id 0x${f.id:X} must be impossible'
+		assert frame_shape_error(f) != none, 'and refused by the full rules too'
+	}
+}
+
+fn test_an_ordinary_frame_is_impossible_to_nobody() {
+	assert frame_impossible_error(CanFrame{ id: 0x7FF, data: [u8(1)] }) == none
+	assert frame_impossible_error(CanFrame{ id: 0x123, rtr: true }) == none
+	assert frame_impossible_error(CanFrame{ id: 0x123, fd: true, brs: true, data: []u8{len: 64} }) == none
+}

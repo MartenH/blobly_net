@@ -21,12 +21,20 @@
 // are what tell an operator which row to go and look at.
 module transport
 
-// frame_shape_error reports why this frame is not a frame any controller could send, or none.
+// frame_impossible_error reports why no CAN controller could put this frame on a bus at all, or
+// none. These are contradictions IN THE FRAME rather than limits of a backend.
 //
-// ADAPTER-INDEPENDENT ONLY. Whether a channel was opened for CAN-FD, whether a vendor library is
-// present, whether the wire is silenced — none of that is here; those are properties of the
-// channel and each backend answers them with its own address in the message.
-pub fn frame_shape_error(f CanFrame) ?string {
+// SEPARATE FROM THE LENGTH RULES because this repo has three tiers and only two of them agree
+// about length. SocketCAN CLAMPS (the kernel masks an over-wide id, and `wire_frame` records the
+// clamp so the record matches the wire); the software buses PAD an FD payload to a length a DLC
+// can express; the vendor backends REFUSE. That is a deliberate design, documented at
+// `clamps_to_classic`, and not something to overturn in a review round.
+//
+// None of the rules below is a length or a clamp, though. An `rtr` FD frame, a classic frame with
+// `brs`, an id that will not fit the width the caller DECLARED — no controller of any tier can
+// transmit those, so carrying them is a simulation modelling something that cannot happen, and a
+// test that passes in `inproc:` and fails on a bench (codex round 2 on #204).
+pub fn frame_impossible_error(f CanFrame) ?string {
 	// CAN-FD HAS NO REMOTE FRAME. The standard reused the bit: an FD frame's control field carries
 	// FDF where RTR sat, so there is nothing to ask for. Left through, a backend builds an ordinary
 	// FD data frame and reports success for a message nobody asked for.
@@ -45,6 +53,19 @@ pub fn frame_shape_error(f CanFrame) ?string {
 	if f.id > limit {
 		width := if f.extended { '29-bit' } else { '11-bit' }
 		return 'id 0x${f.id:X} does not fit a ${width} identifier'
+	}
+	return none
+}
+
+// frame_shape_error is the full rule set: everything impossible, plus the lengths a backend that
+// REFUSES rather than clamps has to check. The vendor backends are that tier.
+//
+// ADAPTER-INDEPENDENT ONLY. Whether a channel was opened for CAN-FD, whether a vendor library is
+// present, whether the wire is silenced — none of that is here; those are properties of the
+// channel and each backend answers them with its own address in the message.
+pub fn frame_shape_error(f CanFrame) ?string {
+	if why := frame_impossible_error(f) {
+		return why
 	}
 	if f.fd {
 		// A DLC CANNOT EXPRESS EVERY LENGTH above eight, so a 9-byte payload can only go out

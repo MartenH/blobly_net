@@ -28,6 +28,10 @@ pub const cansub_clock_hz = 80_000_000
 // cansub_default_sample_point is what the hardware arrives set to.
 pub const cansub_default_sample_point = 80
 
+// How many CAN channels the device has. The .4 in the name: 1 to 4, and the REST API answers 404
+// outside that -- several seconds into an open, from a project the editor had already accepted.
+pub const cansub_channels = 4
+
 // Segment bounds. The API documents only a minimum of 1 for each field and names no maximum, so
 // these come from the widest values the vendor's own table uses — seg1 reaches 255 and seg2 64 in
 // the 250 kbit/s rows. Refusing beyond that is better than sending a controller a register value
