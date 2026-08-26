@@ -293,7 +293,13 @@ on one physical channel ([#167](https://github.com/MartenH/blobly_net/issues/167
 Writes go under the application name `blobly_net` only; another application's assignments (CANoe,
 CANalyzer) are never touched, and the mapping is stored by the driver and survives a reboot.
 
-**From the CLI**, when there is no GUI or you want it scripted:
+**From the CLI**, when there is no GUI or you want it scripted. `cmd/vectorcheck` is a **source-tree
+tool and is not in the release bundle** — that ships `blobly_net` only — so build it from a checkout
+first, or use the Discover dialog above, which does the same job and checks more before it writes:
+
+```sh
+v -enable-globals -path "@vlib|@vmodules|modules" -o vectorcheck.exe cmd/vectorcheck
+```
 
 ```sh
 vectorcheck --list                               # which application channels are already mapped
@@ -306,9 +312,16 @@ vectorcheck --release 5                          # clear channel 5 again
 > check: it does not look at what the channel currently points at, and it keeps no copy. `--release`
 > **clears** the channel rather than restoring its previous target, so assigning over a mapped
 > channel and then releasing it leaves that channel pointing at *nothing* — and the original mapping
-> is gone for good, from persistent state that survives reboots. Run `--list` first and pick a
-> channel that is not in it. The example above uses 5 rather than 1 or 2 for that reason: the low
-> numbers are the ones a bench is most likely to already be using.
+> is gone for good, from persistent state that survives reboots.
+>
+> **Absence from `--list` is not proof that a channel is free.** That list skips any channel the
+> driver would not describe, and an unreadable channel is indistinguishable from an unassigned one
+> for the same reason the Discover dialog asks before creating — so a channel hidden by one failed
+> read looks exactly like a spare. For a bench that matters, confirm positively in the **Discover
+> dialog** (which reports `taken`, free, and "could not read" as three different things) or in
+> Vector Hardware Manager, rather than inferring from what `--list` did not print. The example uses
+> channel 5 rather than 1 or 2 because the low numbers are the ones a bench is most likely to be
+> using already.
 
 `--assign` takes a **`--probe` row**, not a channel number. Deliberately: the driver lists its
 channels device-first while a hwType sweep walks them in another order, and an earlier version
@@ -382,10 +395,10 @@ thing to suspect when an FD data phase at 2 Mbit/s or above starts producing mal
 the reflections a missing one leaves scale with the bit rate. Fix the termination before reading a
 malformed-frame count as a backend bug.
 
-One resistor has been survivable *here*, on a short bench link: every FD result below was recorded
-with a single terminator, at both dates. That is worth stating plainly rather than leaving implied —
-this bench has never been terminated at both ends, and still passes at an 8 Mbit/s data phase. It is
-a fact about a short link on a desk, not a licence to under-terminate a real harness.
+One resistor was survivable *here*, and the FD table below records both conditions side by side: a
+single terminator and the correct two, measured the same day. They agree exactly, which on a 30 cm
+link is what to expect — the classic table above explains why. Under-terminating a real harness is a
+different proposition, and nothing here tests it.
 
 **With NO resistor fitted, classic CAN goes too.** Measured on this same bench, Channel 1 to
 Channel 3, after the one terminator was removed:
@@ -413,21 +426,32 @@ higher one is a physical-layer problem, not a software one. Two checks isolate i
 - **Drop the bitrate until it passes.** If the backend is fine and 125 k works while 500 k does not,
   what is left is the wire.
 
-Refitting that one resistor turned every failing row into 100%, which is the confirmation the table
-is there to support — and the controlled comparison the whole section rests on, since only the
-resistor changed between the two columns:
+Refitting the resistor recovered the rows it was re-measured on, and fitting a second one changed
+nothing further. Only the termination differs across these three columns, so the comparison is
+controlled — but note the gaps: 200 kbit/s was re-measured only with two resistors, and 1 Mbit/s was
+never run with none, so neither row is a before-and-after on its own.
 
-| bitrate | no terminator | one terminator |
-|---|---|---|
-| 125 000 | 100% arrived | 100% arrived |
-| 200 000 | 17,899 error frames | — |
-| 250 000 | 22,332 error frames | 100% arrived |
-| 500 000 | 42,894 error frames | 100% arrived |
-| 1 000 000 | — | 100% arrived |
+| bitrate | no terminator | one | two (correct) |
+|---|---|---|---|
+| 125 000 | 100% arrived | 100% arrived | 100% arrived |
+| 200 000 | 17,899 error frames | — | 100% arrived |
+| 250 000 | 22,332 error frames | 100% arrived | 100% arrived |
+| 500 000 | 42,894 error frames | 100% arrived | 100% arrived |
+| 1 000 000 | — | 100% arrived | 100% arrived |
 
-Note that the right column is **one** resistor, not two: this link has never been terminated at both
-ends. So the table shows the difference between none and one, which on a short bench link is the
-difference between unusable and fine — not the difference between under-terminated and correct.
+**The cliff is between none and one, not between one and two.** With both fitted the frame counts
+came back identical to the single-resistor run — 3,132 at 125 k, 5,298 at 250 k, 9,573 at 500 k.
+
+**The link is 30 cm**, and that number is what makes the rest interpretable. Over a stub that short
+a reflection returns in a couple of nanoseconds, far inside even an 8 Mbit/s bit time, so the second
+resistor has nothing left to fix and one is indistinguishable from two. Removing the *last* one is a
+different matter: an entirely unterminated bus has no defined idle state for the differential pair
+to settle to, which is why the left-hand column fails at 200 k on a cable where reflections are
+otherwise irrelevant.
+
+So read this table as "none is broken, one is enough **at 30 cm**" — not as evidence about
+termination in general. On a metres-long harness the one-resistor column is where failures would
+appear first, and the correct answer stays 120 Ω at both ends.
 
 `--modecheck` is the bench half of a test whose other half runs everywhere: on Linux
 `modules/transport/pinned_test.v` checks the bookkeeping over `inproc:` buses, and only a VN
@@ -472,35 +496,35 @@ refusing a second data phase. It needs no `--transmit`, because both addresses a
 only the protocol changes.
 
 **CAN-FD link test**, same adapter, Channel 1 to Channel 3 — 64-byte payloads with BRS, arbitration
-at 500 kbit/s, every byte verified against what was sent. **Both dates ran with a single 120 Ω
-terminator** — the 2026-08-26 re-run is after that one resistor was refitted, not after a second was
-added:
+at 500 kbit/s, every byte verified against what was sent. Every phase passed under **both**
+termination conditions, measured the same day over the same two-second window, with identical
+frame counts:
 
-| data phase | arrived | malformed | enqueued/s (2026-08-26) | frames (2026-08-24) |
+| data phase | arrived | malformed | frames (2×120 Ω) | frames (1×120 Ω) |
 |---|---|---|---|---|
-| 2 Mbit/s | 100% | 0 | 3,098 | 14,913 |
-| 4 Mbit/s | 100% | 0 | 5,133 | 15,212 |
-| 5 Mbit/s | 100% | 0 | 5,938 | 17,604 |
-| 8 Mbit/s | 100% | 0 | 7,801 | 23,216 |
+| 2 Mbit/s | 100% | 0 | 6,196 | 6,196 |
+| 4 Mbit/s | 100% | 0 | 10,267 | 10,267 |
+| 5 Mbit/s | 100% | 0 | 11,877 | 11,877 |
+| 8 Mbit/s | 100% | 0 | 15,603 | 15,603 |
 
-`vectorcheck --pair 0,2 --fd --dbitrate <rate> --length 64`. The rate **rising with the data phase**
+(The 2026-08-24 run reported different totals — 14,913 to 23,216 — because it ran longer, not
+because it behaved differently; these two columns are the same two-second window.)
+
+`vectorcheck --pair 0,2 --fd --dbitrate <rate> --length 64`. The count **rising with the data phase**
 is the part that carries the meaning: it is what shows BRS is switching rather than the payload
 quietly going out at the arbitration rate.
 
-**Those `/s` figures are enqueue rates, not wire throughput**, and should not be quoted as bus
-performance. `--pair` counts frames the driver *accepted* during the run and divides by the run
-length, while the queue keeps draining afterwards — so the number includes buffer absorption. The
-giveaway is in this page's own arithmetic: 4,786/s for eight-byte frames at 500 kbit/s is above the
-~4,504/s that 111 bits per frame allows, which a real wire cannot exceed. The trend across data
-phases is still evidence; the absolute values are an upper bound on what went out.
-[#196](https://github.com/MartenH/blobly_net/issues/196) tracks reporting a true rate.
+**Do not convert those counts into a throughput figure.** `--pair` reports frames the driver
+*accepted* divided by the run length, while its queue keeps draining after the window closes, so the
+`/s` it prints includes buffer absorption. The giveaway is this page's own arithmetic: it printed
+4,786/s for eight-byte frames at 500 kbit/s, above the ~4,504/s that 111 bits per frame allows, and
+a wire cannot beat its own bit time. Counts and arrival percentages are exact; a rate derived from
+them is an upper bound. [#196](https://github.com/MartenH/blobly_net/issues/196) tracks fixing that.
 
-Arrival and malformed counts are exact, and those are the columns the result rests on.
-
-One terminator has been enough *here*, on a short bench link, for FD at 8 Mbit/s; **none** was not
-enough for classic CAN at 250 kbit/s. That is the span these two sections measured, and it is the
-whole of what they license. Treat one as a condition these runs happened to pass under, never as a
-specification — a real harness wants 120 Ω at both ends, and nothing here was tested that way.
+**Termination, as measured rather than assumed:** none failed classic CAN from 200 kbit/s up; one
+carried FD to 8 Mbit/s; two behaved identically to one. All of that is on a 30 cm link, which is
+why one and two are indistinguishable, and it says nothing about a harness of any real length. The
+correct answer remains 120 Ω at both ends — this bench now has that.
 
 It was worth running for a second reason: the `-1004` message used to name the mode backwards.
 The shim's check is bidirectional and says so, but the V-side text assumed the channel was open
