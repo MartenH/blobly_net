@@ -244,3 +244,44 @@ fn test_adapters_with_no_transceiver_do_not_start_silent() {
 		assert !adapter_starts_silent(a), '${a} is not a CAN bus'
 	}
 }
+
+// ---- changing a row's adapter (#204 round 6) -----------------------------
+
+// SWITCHING BETWEEN TWO ADAPTERS THAT BOTH START SILENT IS STILL A CHANGE OF HARDWARE. Expressed
+// in the GUI as "starts silent now and did not before", this missed exactly that pair: a
+// transmit-enabled Vector row switched to CANsub kept `listen_only = false` and the new controller
+// opened able to ACK, at a rate nobody had confirmed for it.
+fn test_switching_between_two_silent_starting_adapters_re_arms_silence() {
+	assert adapter_change_starts_silent('vector', 'cansub')
+	assert adapter_change_starts_silent('cansub', 'vector')
+}
+
+fn test_becoming_hardware_re_arms_silence() {
+	for was in ['virtual', 'udp', 'vcan', 'socketcan', 'pcan', 'kvaser', 'doip'] {
+		for now in silenced_at_the_transceiver {
+			assert adapter_change_starts_silent(was, now), '${was} -> ${now} is new hardware at an unconfirmed rate'
+		}
+	}
+}
+
+// Not a change is not a change: re-selecting the same adapter must not silently re-tick a box the
+// operator deliberately cleared.
+fn test_reselecting_the_same_adapter_changes_nothing() {
+	for a in adapters {
+		assert !adapter_change_starts_silent(a, a), '${a} -> ${a} is not a change of hardware'
+	}
+	// Spelling is not a change either — the picker and a hand-edited file can disagree on case.
+	assert !adapter_change_starts_silent('CANSUB', 'cansub')
+}
+
+// And moving to an adapter that does not start silent never arms it.
+fn test_moving_to_an_adapter_that_does_not_start_silent_arms_nothing() {
+	for now in adapters {
+		if now in silenced_at_the_transceiver {
+			continue
+		}
+		for was in adapters {
+			assert !adapter_change_starts_silent(was, now), '${was} -> ${now} must not arm listen-only'
+		}
+	}
+}

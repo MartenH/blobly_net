@@ -1377,6 +1377,19 @@ pub fn adapter_starts_silent(adapter string) bool {
 	}
 }
 
+// adapter_change_starts_silent reports whether changing a row's adapter from `was` to `now`
+// should re-arm listen-only.
+//
+// THE DECISION, not just the property, because the property alone was not enough to get it right.
+// Written in the GUI as "starts silent now and did not before", a transmit-enabled Vector row
+// switched to CANsub kept `listen_only = false`: both answer true, so the condition never fired
+// and the new controller opened able to ACK — the default defeated by the one case where BOTH
+// adapters need it (codex round 6 on #204). What matters is that the HARDWARE changed, at a rate
+// nobody has confirmed for the new one.
+pub fn adapter_change_starts_silent(was string, now string) bool {
+	return adapter_starts_silent(now) && was.trim_space().to_lower() != now.trim_space().to_lower()
+}
+
 // platform_adapters is what THIS build may offer.
 pub fn platform_adapters() []string {
 	$if windows {

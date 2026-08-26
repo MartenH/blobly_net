@@ -427,7 +427,12 @@ fn (mut app App) set_adapter(i int, a string) {
 	// arriving with a 500 kbit/s guess nobody has confirmed. Exposing an adapter in the picker
 	// without this makes the manual route the unsafe one while Discover stays careful — which is
 	// exactly what happened to CANsub (codex round 5 on #204).
-	if project.adapter_starts_silent(a) && !project.adapter_starts_silent(was) {
+	// The RULE is project.adapter_change_starts_silent — here it is only applied. Written out in
+	// this file as "starts silent now and did not before", it missed the case where both adapters
+	// start silent, so a transmit-enabled Vector row switched to CANsub opened able to ACK (codex
+	// round 6 on #204). It is a decision about adapters, so it lives with them, where a test holds
+	// it.
+	if project.adapter_change_starts_silent(was, a) {
 		app.proj.channels[i].listen_only = true
 	} else if project.adapter_starts_silent(was) && !project.adapter_starts_silent(a)
 		&& app.proj.channels[i].listen_only {

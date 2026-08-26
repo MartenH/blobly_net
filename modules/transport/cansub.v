@@ -350,8 +350,15 @@ fn (mut b CansubBus) reconcile_listen_only() {
 	if b.spec.fd {
 		data = cansub_timing_for_data(b.spec.data, cansub_default_sample_point) or { return }
 	}
+	// THE SAME BOUNDED BUDGET AS THE HEALTH GET BESIDE IT, and for the same reason: this runs on
+	// the thread close() joins, so a device that has gone unreachable would park Stop here for
+	// five seconds — in precisely the case this function exists for, a policy mismatch. Shortening
+	// only the GET left the stall exactly where it started (codex round 6 on #204).
+	//
+	// Safe to bound because a failure changes nothing: `phy_silent` is updated only on success, so
+	// a PUT that runs out of time is simply retried on the next poll.
 	r := cansub_request(b.host, 'PUT', '/api/can/${b.spec.channel}/phy', cansub_phy_json(nominal,
-		data, want), 5 * time.second) or { return }
+		data, want), cansub_health_timeout) or { return }
 	if r.status != 200 && r.status != 204 {
 		return
 	}

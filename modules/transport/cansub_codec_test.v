@@ -360,3 +360,40 @@ fn test_reset_drops_a_half_read_frame() {
 	assert recs.len == 1
 	assert recs[0].frame.id == 0x001
 }
+
+// ---- the accumulator's bound (#204 rounds 5 and 6) -----------------------
+
+// AN OPENING FLAG WITH NO CLOSING ONE must not grow forever. That path never reaches close(), so
+// it produces no decode error either — it simply accumulates for the life of the bus, which is the
+// one failure the error-clearing in read_loop cannot help with.
+fn test_a_stream_with_no_frame_boundary_is_discarded() {
+	mut d := CansubDecoder{}
+	mut junk := []u8{len: cansub_max_payload + 64, init: 0x41} // no 0x7E anywhere
+	junk[0] = 0x7E // an opening flag and then nothing that ends it
+	d.feed(junk)
+	assert d.errors.len > 0, 'a stream with no boundaries must be reported, not accumulated'
+	assert d.buf.len <= cansub_max_payload, 'and dropped: ${d.buf.len} bytes still held'
+}
+
+// AND A LARGE VALID BATCH MUST SURVIVE UNTIL ITS CLOSING FLAG. One HDLC payload carries as many
+// CAN records as the device chose to put in it, so a bound derived from a SINGLE record is one a
+// busy bus walks straight through — the first version of this was 512 bytes, which seven extended
+// 64-byte records and a CRC already pass, so a valid batch was silently dropped under load (codex
+// round 6 on #204). Losing frames is a worse failure than the growth the bound was added to stop.
+fn test_a_large_batch_is_still_accumulating_at_the_size_of_several_records() {
+	mut d := CansubDecoder{}
+	mut payload := []u8{len: 4096, init: 0x41} // far more than one record, far less than the bound
+	payload[0] = 0x7E
+	d.feed(payload)
+	assert d.errors.len == 0, 'a batch this size is ordinary traffic, not a broken stream: ${d.errors}'
+	assert d.buf.len > 512, 'and it is still being accumulated, waiting for its closing flag'
+}
+
+// The bound is about growth, not about how much the device may batch. Stated as a test so that
+// shrinking it back towards one record's worth fails here rather than on somebody's bus.
+fn test_the_bound_is_far_above_any_plausible_batch() {
+	// Sixteen extended CAN-FD records: 64 payload bytes plus an 11-byte header each, and byte
+	// stuffing can double every one of them.
+	worst := 16 * (64 + 11) * 2
+	assert cansub_max_payload > worst, 'the bound (${cansub_max_payload}) must clear a real batch (${worst})'
+}

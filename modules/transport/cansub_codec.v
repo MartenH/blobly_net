@@ -341,19 +341,27 @@ pub fn (mut d CansubDecoder) feed(chunk []u8) []CansubRecord {
 		// its header and CRC, and escaping can double every byte of it. Anything past this is not
 		// a frame we lost the end of, it is a stream that has stopped making sense -- so the
 		// buffer is dropped and said so, rather than kept in the hope that a flag arrives.
-		if d.buf.len > cansub_max_record {
+		if d.buf.len > cansub_max_payload {
 			d.buf.clear()
 			d.escaped = false
-			d.errors << 'no frame boundary within ${cansub_max_record} bytes — stream discarded'
+			d.errors << 'no frame boundary within ${cansub_max_payload} bytes — stream discarded'
 		}
 	}
 	return out
 }
 
-// cansub_max_record bounds an unterminated HDLC frame. A record is at most a 16-byte header plus
-// a 64-byte payload plus a 2-byte CRC, and byte stuffing can double each of those, so 512 is well
-// clear of anything legal while still catching a stream with no boundaries in it.
-const cansub_max_record = 512
+// cansub_max_payload bounds an unterminated HDLC frame.
+//
+// SIZED FOR A BATCH, not for one record. One HDLC payload carries as MANY CAN records as the
+// device chose to put in it, so a bound derived from a single record is a bound a busy bus walks
+// straight through — seven extended 64-byte records and a CRC already pass 512 bytes, and the
+// first version of this dropped exactly that (codex round 6 on #204). Silently losing a valid
+// batch under load is a worse failure than the unbounded growth this was added to stop.
+//
+// So the number is deliberately far above anything the device sends. Its only job is to keep a
+// stream with NO frame boundaries in it from growing until the process dies; it is not a policy
+// about how much the device may batch, and it must never be read as one.
+const cansub_max_payload = 64 * 1024
 
 // close finishes the frame in `buf`: check its CRC, then read the CAN frames out of it.
 fn (mut d CansubDecoder) close(mut out []CansubRecord) {
