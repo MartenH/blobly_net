@@ -127,7 +127,11 @@ fn main() {
 		for rate in [500000, 1000000, 2000000, 4000000, 8000000] {
 			fails += run_case(o, rate)
 		}
-	} else if !o.rtr {
+	} else if !o.rtr || o.data != 0 {
+		// `--data N` is an explicit request for an FD loopback at N. Gating this on `!o.rtr`
+		// alone meant `--rtr --data 4000000` printed a clean report having never put an FD frame
+		// on the wire at that rate — a bench tool doing less than it was asked and saying so in
+		// the language of success (self-review).
 		fails += run_case(o, o.data)
 	}
 	if fails > 0 {
@@ -275,6 +279,39 @@ fn run_rtr_case(o Opts) int {
 			}
 		} else {
 			println('  remote:  FAIL — nothing arrived within ${o.timeout} ms')
+			bad++
+		}
+	}
+
+	// A REQUESTED LENGTH, not just the flag. A remote frame asks for N bytes and carries none,
+	// and canlib reports the DLC while leaving the buffer untouched — so an unzeroed reader
+	// hands up N bytes of whatever was on the stack. wiretap compares payloads, so that echo
+	// still fails to match our record of sending it and is filed as the ECU's answer: the very
+	// defect this change closes, alive for every DLC above zero. The dlc=0 case above cannot
+	// see it, which is exactly why this one is here (self-review).
+	want := []u8{len: 8}
+	mut rsent := true
+	tx.send(transport.CanFrame{ id: 0x324, rtr: true, data: want }) or {
+		println('  remote8: FAIL — send failed: ${err}')
+		rsent = false
+		bad++
+	}
+	if rsent {
+		if got := recv_matching(mut rx, 0x324, o.timeout) {
+			if !got.rtr {
+				println('  remote8: FAIL — arrived as a DATA frame (rtr=false)')
+				bad++
+			} else if got.data.len != 8 {
+				println('  remote8: FAIL — requested 8 bytes, DLC came back ${got.data.len}')
+				bad++
+			} else if got.data != want {
+				println('  remote8: FAIL — a remote frame carried DATA (${got.data.hex()}) — uninitialised buffer')
+				bad++
+			} else {
+				println('  remote8: ok   (rtr=true, dlc=8, zeroed)')
+			}
+		} else {
+			println('  remote8: FAIL — nothing arrived within ${o.timeout} ms')
 			bad++
 		}
 	}

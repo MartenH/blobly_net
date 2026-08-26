@@ -183,7 +183,14 @@ static int ct_kvaser_write(int hnd, uint32_t id, uint8_t len, const uint8_t *dat
  * each frame was, which is the whole point of the flags. */
 static int ct_kvaser_read(int hnd, uint32_t *id, uint8_t *len, uint8_t *data, int *ext, int *rtr, int *fd, int *brs, int *esi, uint32_t timeout_ms) {
 	int32_t cid = 0;
-	uint8_t buf[64];
+	/* ZEROED, because a REMOTE frame carries no data and canlib does not write any: it reports
+	 * the requested DLC and leaves the buffer alone. Uninitialised, those bytes were whatever
+	 * was on the stack, so a request for 8 bytes came back as 8 bytes of garbage -- and
+	 * wiretap compares payloads, so the echo of our own request still failed to match and was
+	 * filed as the ECU answering it. That is the #177 defect surviving its own fix for every
+	 * DLC above zero (self-review). Every other backend hands a remote request up as zeroes of
+	 * the requested length. */
+	uint8_t buf[64] = {0};
 	uint32_t dlc = 0, flag = 0, t = 0;
 	int st = ct_kv_readwait(hnd, &cid, buf, &dlc, &flag, &t, timeout_ms);
 	int i;

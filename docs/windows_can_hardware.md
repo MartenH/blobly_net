@@ -557,19 +557,29 @@ numbers the SOFTWARE virtual channels in the same sequence, which is why `--list
 
 `--rtr` asserts the flag in BOTH directions — a remote frame must arrive marked remote, and a
 data frame must not — because either check alone passes on a broken reader: one that never sets
-the flag passes the second, one that always sets it passes the first. Given a `--data` rate it
+the flag passes the second, one that always sets it passes the first. It also sends a remote
+frame REQUESTING eight bytes, and requires the DLC back at eight with the payload zeroed: a
+remote frame carries no data, canlib reports the length while leaving its buffer untouched, and
+an unzeroed reader hands up whatever was on the stack. Given a `--data` rate it
 also requires an FD channel to REFUSE a remote frame, from a separate handle opened after the
 classic ones are closed, because canlib pins a channel's protocol to the first handle a process
 opens on it ([#201](https://github.com/MartenH/blobly_net/issues/201)) and asking otherwise
 reports a bench failure the tool created itself.
 
 - **Kvaser remote frames, 2026-08-26** — USBcan Pro 5xHS, connector CH1 ↔ CH2 at 500 kbit/s,
-  **both directions**: a remote frame arrived marked remote (`dlc=0`), a data frame arrived as
-  data, and an FD channel refused `rtr` rather than putting a data frame on the wire in its
-  place. Before this the Kvaser reader did not decode `canMSG_RTR` at all, so every incoming
-  remote frame was handed up as ordinary data — and `wiretap` keys an echo on `rtr`, so our own
-  request came back filed as the ECU's answer to it
+  **both directions**: a remote frame arrived marked remote (`dlc=0`), one requesting eight
+  bytes came back with DLC 8 and a zeroed payload, a data frame arrived as data, and an FD
+  channel refused `rtr` rather than putting a data frame on the wire in its place. Before this
+  the Kvaser reader did not decode `canMSG_RTR` at all, so every incoming remote frame was
+  handed up as ordinary data — and `wiretap` keys an echo on `rtr`, so our own request came back
+  filed as the ECU's answer to it
   ([#177](https://github.com/MartenH/blobly_net/issues/177)).
+
+  The eight-byte case is there because the first fix did not go far enough, and the bench said
+  so: with the read buffer left uninitialised the frame came back as `c07db72d00000000` — stack
+  contents, on the wire, in a trace. `wiretap` compares payloads, so the echo still failed to
+  match and was still filed as the ECU's answer; #177 would have been closed with its own defect
+  alive for every DLC above zero. A check that only ever asked for `dlc=0` could not see it.
 
 What good looks like: `transport.open(...)` returns without error (DLL found, channel opens,
 bus on); frames Blobly Net sends appear byte-identical in a second tool on the same bus —
