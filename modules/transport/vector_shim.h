@@ -1441,11 +1441,30 @@ static int ct_vector_appl_seen_UNUSED(void) {
  *
  * The driver-level check above is what makes -3 safe to trust: a library that would not load or a
  * driver that would not open has already returned -1 by this line, so a non-zero status here comes
- * from a driver that IS answering. */
+ * from a driver that IS answering.
+ *
+ * ONLY THE MEASURED STATUS COUNTS AS "NO SUCH CHANNEL". Collapsing every non-zero status to -3 puts
+ * back the very P1 this split was made to fix, one layer lower: a transient per-call error would
+ * read as an unregistered channel and so as writable (codex #192 r7). Anything else is returned as
+ * -(1000 + status), which slot_of reads as `unreadable` — refusing — while keeping the number for
+ * whoever has to diagnose a bench whose driver answers differently.
+ *
+ * BE HONEST ABOUT WHAT 255 IS: it is XL_ERROR, vxlapi's GENERIC failure, not a documented
+ * "no such channel" code. So this is a narrowing, not a proof — a transient error that also reports
+ * 255 is still indistinguishable, and nothing here can change that. What makes it acceptable is
+ * that the other two guards do not depend on it: `taken` refuses whenever the driver describes the
+ * channel at all, and the physical-wire check (owner_known in vector_mappings) is what stands
+ * between a misread and a second application channel on one wire. */
+#define CT_XL_ERR_NO_SUCH_CHANNEL 255
+
 static int ct_vector_appl_get(unsigned int app_channel, int *hw_type, int *hw_index, int *hw_channel) {
 	unsigned int t = 0, i = 0, c = 0;
+	ct_xlstatus st;
 	if (ct_vector_load() != 0 || ct_xl_opendrv() != 0) return -1;
-	if (ct_xl_getappl("blobly_net", app_channel, &t, &i, &c, CT_XL_BUS_TYPE_CAN) != 0) return -3;
+	st = ct_xl_getappl("blobly_net", app_channel, &t, &i, &c, CT_XL_BUS_TYPE_CAN);
+	if (st != 0) {
+		return (st == CT_XL_ERR_NO_SUCH_CHANNEL) ? -3 : -(1000 + (int)st);
+	}
 	if (t == 0) return -2;
 	*hw_type = (int)t; *hw_index = (int)i; *hw_channel = (int)c;
 	return 0;

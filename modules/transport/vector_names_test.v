@@ -420,6 +420,36 @@ fn test_the_driver_codes_map_to_the_states_they_mean() {
 	}
 }
 
+// EVERY OTHER DRIVER STATUS REFUSES, and this is the half the shim has to hold up. Mapping all
+// non-zero statuses to `absent` put the r6 P1 back one layer down: a transient per-call error would
+// have read as an unregistered channel and so as writable. The shim now converts one measured
+// status to -3 and encodes the rest, and what makes that safe is that the encoding lands in
+// slot_of's default (codex #192 r7).
+fn test_an_unexpected_driver_status_refuses_and_keeps_its_number() {
+	// A sample across the XL status range, including the generic error the measured value shares a
+	// space with. None of these may come out as permission to write.
+	for st in [1, 10, 13, 101, 129, 254, 256, 65535] {
+		rc := -(1000 + st)
+		assert slot_of(rc) == .unreadable, 'XL status ${st} must refuse, not permit'
+		if got := xl_status_of(rc) {
+			assert got == st, 'the status must survive the encoding: wanted ${st}, got ${got}'
+		} else {
+			assert false, 'XL status ${st} should be recoverable from ${rc}'
+		}
+		if why := assign_refusal(1, slot_of(rc)) {
+			assert why.contains('would not say'), 'got ${why}'
+		} else {
+			assert false, 'XL status ${st} must not permit an assignment'
+		}
+	}
+	// The plain codes carry no status, and must not be misread as one.
+	for rc in [0, -1, -2, -3] {
+		if got := xl_status_of(rc) {
+			assert false, '${rc} is a plain code, not an encoded status (got ${got})'
+		}
+	}
+}
+
 fn test_a_channel_the_driver_says_is_taken_is_refused() {
 	if why := assign_refusal(3, .taken) {
 		assert why.contains('vector:3'), 'the message must name the channel: ${why}'

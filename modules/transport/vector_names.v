@@ -257,6 +257,13 @@ pub enum AppSlot {
 // vector_windows.v it would compile only on Windows, where CI runs no tests — and the codes it
 // interprets are the ones six rounds of review turned on. The C function that produces them is in
 // vector_shim.h; keep the two in step.
+//
+// ONLY -3 IS `absent`. The shim maps exactly one measured XL status to it and returns every other
+// failing status as -(1000 + status), so an unexpected driver answer arrives here as a large
+// negative and falls to `unreadable` — which refuses. That default is the whole safety property:
+// a code this function has never heard of must never come out as permission to write (codex #192
+// r7). The encoded status is preserved rather than flattened so a bench whose driver answers
+// differently can be diagnosed from the number instead of from a shrug.
 fn slot_of(rc int) AppSlot {
 	return match rc {
 		0 { AppSlot.taken }
@@ -264,6 +271,15 @@ fn slot_of(rc int) AppSlot {
 		-3 { AppSlot.absent }
 		else { AppSlot.unreadable }
 	}
+}
+
+// xl_status_of recovers the driver status the shim encoded as -(1000 + status), or none when this
+// code carries no status. For diagnostics only — nothing decides anything from it.
+fn xl_status_of(rc int) ?int {
+	if rc > -1000 {
+		return none
+	}
+	return -rc - 1000
 }
 
 // assign_refusal reports why an application channel must not be written, or none when it may be.
