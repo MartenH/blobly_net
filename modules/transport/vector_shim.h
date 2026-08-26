@@ -1287,7 +1287,7 @@ static int ct_vector_channel_info(int idx, char *name, int name_len, char *trans
                                   int trans_len, int *hw_type, int *hw_index, int *hw_channel,
                                   unsigned int *serial, unsigned int *bus_type,
                                   unsigned int *bitrate, int *on_bus, int *trx_state,
-                                  int *fd_iso, int *fd_bosch) {
+                                  int *fd_iso, int *fd_bosch, int *can_capable) {
 	static ct_xl_driver_config cfg;
 	if (ct_vector_load() != 0 || !ct_xl_drvconfig) return -1;
 	if (ct_xl_opendrv() != 0) return -1;
@@ -1318,6 +1318,12 @@ static int ct_vector_channel_info(int idx, char *name, int name_len, char *trans
 		 * way to disagree about what bit means what. */
 		*fd_iso   = (c->channelCapabilities & CT_XL_CHANNEL_FLAG_CANFD_ISO_SUPPORT)   ? 1 : 0;
 		*fd_bosch = (c->channelCapabilities & CT_XL_CHANNEL_FLAG_CANFD_BOSCH_SUPPORT) ? 1 : 0;
+		/* WHETHER THIS CHANNEL IS A CAN CHANNEL AT ALL. XLdriverConfig lists everything the device
+		 * has — a VN1630A reports a D/A IO channel beside its four CAN ones — and every caller
+		 * here addresses CAN. XL_BUS_COMPATIBLE_CAN is the same bit as XL_BUS_TYPE_CAN, in the
+		 * bus-capability word rather than the bus-type one: what the channel COULD be, not what it
+		 * is currently connected as (codex #192 r1). */
+		*can_capable = (c->channelBusCapabilities & CT_XL_BUS_TYPE_CAN) ? 1 : 0;
 	}
 	return 0;
 }
@@ -1336,6 +1342,23 @@ static HANDLE ct_vec_xproc = NULL;
  * diagnostic simply carried on after ten seconds and did the interleaving this lock exists to
  * prevent — and a --pair run legitimately takes longer than that. A lock whose failure is
  * ignored is a comment. */
+/* Same lock, but for a caller that must not be made to wait — a GUI whose render thread is the one
+ * asking. `vectorcheck` is a batch tool and can afford the full minute; a dialog cannot, and
+ * blocking there freezes the whole window for as long as another process holds the mutex (codex
+ * #192 r4). The short timeout is not a different lock, only a different patience: a caller that
+ * loses the race is told so and can click again. */
+static int ct_vector_borrow_lock_for(unsigned int wait_ms) {
+	DWORD r;
+	if (!ct_vec_xproc) {
+		ct_vec_xproc = CreateMutexA(NULL, FALSE, "Global\\blobly_net_vector_borrow");
+		if (!ct_vec_xproc) ct_vec_xproc = CreateMutexA(NULL, FALSE, "Local\\blobly_net_vector_borrow");
+	}
+	if (!ct_vec_xproc) return 0;
+	r = WaitForSingleObject(ct_vec_xproc, wait_ms);
+	if (r == WAIT_OBJECT_0 || r == WAIT_ABANDONED) return 0;
+	return -1;
+}
+
 static int ct_vector_borrow_lock(void) {
 	DWORD r;
 	if (!ct_vec_xproc) {
@@ -1368,10 +1391,80 @@ static void ct_vector_borrow_unlock(void) {
  * looked exactly like a free channel: the caller borrowed it, and gave it back by unassigning —
  * erasing a mapping the operator had made, on the strength of a question that was never
  * answered. A borrow has to refuse when it cannot see what it is about to overwrite. */
+/* WHETHER THE APPLICATION EXISTS AT ALL, which is a different question from what one of its
+ * channels points at — and the one nothing here could answer (#190).
+ *
+ * xlGetApplConfig fails both when the application is absent and when the channel index is outside
+ * the channel count it was created with, so a per-channel lookup cannot tell "no such application"
+ * from "no such channel" from "the driver could not answer". Sweeping a few low indices settles
+ * it: if ANY of them answers, the application is registered and the failures were about channels.
+ *
+ * 1 = at least one channel answered, so the application exists. 0 = NOTHING answered, which is
+ * what an absent application looks like and is ALSO what a driver that has stopped answering
+ * looks like — the two are not separable from here, because vxlapi does not document a status
+ * that proves absence and this code will not guess one (codex #192 r2). Negative = the library or
+ * the driver could not be reached at all, which is separable and is kept apart for the reason
+ * ct_vector_mask_why's comment gives: a caller about to WRITE must never read a failed question
+ * as an empty answer.
+ *
+ * So 0 is EVIDENCE, not a verdict, and the name says `seen` rather than `exists` to stop a caller
+ * reporting it as one. */
+static int ct_vector_appl_seen_UNUSED(void) {
+	unsigned int t, i, c;
+	unsigned int ch;
+	if (ct_vector_load() != 0) return -1;
+	if (ct_xl_opendrv() != 0) return -2;
+	for (ch = 0; ch < 8; ch++) {
+		t = i = c = 0;
+		if (ct_xl_getappl("blobly_net", ch, &t, &i, &c, CT_XL_BUS_TYPE_CAN) == 0) return 1;
+	}
+	return 0;
+}
+
+/* THE TWO WAYS THIS CAN FAIL ARE DIFFERENT FACTS, and collapsing them into one code is what
+ * three rounds of review kept circling (codex #192 r6). The driver being unreachable and a channel
+ * not being registered under "blobly_net" are not the same thing, and a caller about to WRITE
+ * needs them apart:
+ *
+ *   -1  THE DRIVER COULD NOT BE REACHED. Nothing is known about anything. Refuse.
+ *   -3  the driver answered, and says it has no such channel for this application. It is not
+ *       registered, so there is no mapping to damage and xlSetApplConfig CREATES it — which is
+ *       precisely the documented way to extend an application.
+ *   -2  registered, and pointing at nothing. The ordinary free channel.
+ *    0  registered and assigned; the triple is filled in.
+ *
+ * MEASURED, not assumed, on a VN1630A: xlGetApplConfig returns 255 for every channel outside the
+ * application's list (57 of 64 on a bench with channels 1, 5, 40 and 61-64 registered) and 0 for
+ * every channel inside it. `unknown` was therefore the NORMAL state for an unregistered channel,
+ * not a rare failure — so refusing it, as r5 did, refused 57 of the 64 numbers an operator may
+ * legitimately type, and the extension this dialog advertises could never happen.
+ *
+ * The driver-level check above is what makes -3 safe to trust: a library that would not load or a
+ * driver that would not open has already returned -1 by this line, so a non-zero status here comes
+ * from a driver that IS answering.
+ *
+ * ONLY THE MEASURED STATUS COUNTS AS "NO SUCH CHANNEL". Collapsing every non-zero status to -3 puts
+ * back the very P1 this split was made to fix, one layer lower: a transient per-call error would
+ * read as an unregistered channel and so as writable (codex #192 r7). Anything else is returned as
+ * -(1000 + status), which slot_of reads as `unreadable` — refusing — while keeping the number for
+ * whoever has to diagnose a bench whose driver answers differently.
+ *
+ * BE HONEST ABOUT WHAT 255 IS: it is XL_ERROR, vxlapi's GENERIC failure, not a documented
+ * "no such channel" code. So this is a narrowing, not a proof — a transient error that also reports
+ * 255 is still indistinguishable, and nothing here can change that. What makes it acceptable is
+ * that the other two guards do not depend on it: `taken` refuses whenever the driver describes the
+ * channel at all, and the physical-wire check (owner_known in vector_mappings) is what stands
+ * between a misread and a second application channel on one wire. */
+#define CT_XL_ERR_NO_SUCH_CHANNEL 255
+
 static int ct_vector_appl_get(unsigned int app_channel, int *hw_type, int *hw_index, int *hw_channel) {
 	unsigned int t = 0, i = 0, c = 0;
+	ct_xlstatus st;
 	if (ct_vector_load() != 0 || ct_xl_opendrv() != 0) return -1;
-	if (ct_xl_getappl("blobly_net", app_channel, &t, &i, &c, CT_XL_BUS_TYPE_CAN) != 0) return -1;
+	st = ct_xl_getappl("blobly_net", app_channel, &t, &i, &c, CT_XL_BUS_TYPE_CAN);
+	if (st != 0) {
+		return (st == CT_XL_ERR_NO_SUCH_CHANNEL) ? -3 : -(1000 + (int)st);
+	}
 	if (t == 0) return -2;
 	*hw_type = (int)t; *hw_index = (int)i; *hw_channel = (int)c;
 	return 0;

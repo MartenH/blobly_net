@@ -252,6 +252,96 @@ fn draw_discover_dialog(mut app App) {
 		vgui.same_line()
 		vgui.text('${d.address}   ${d.adapter} · ${d.desc}')
 	}
+	// VECTOR HARDWARE, below the interfaces and separate from them on purpose. The list above is
+	// "what could this app open"; a channel nothing is mapped to cannot appear in it, and those
+	// are precisely the ones a fresh bench has (#186). Drawn only where there is Vector hardware
+	// to talk about, so nothing changes for a bench without it.
+	if app.disc_vector.len > 0 {
+		vgui.separator()
+		vgui.text('Vector hardware')
+		vgui.same_line()
+		vgui.help_marker('The XL library addresses APPLICATION channels, not hardware, so a physical channel must be mapped to one of ours before it can be opened. This writes only under the application name "blobly_net" — another application\'s assignments (CANoe, CANalyzer) are not touched. The mapping is stored by the driver and survives reboots.')
+		// THE FIRST-RUN STATE, said plainly. A bench that has never run this app — or one where
+		// somebody deleted the application in Vector Hardware Manager — has hardware and no
+		// mappings, and every per-channel lookup fails. Without this the section would show a
+		// list of Assign buttons with no explanation of why nothing is mapped, and the Log would
+		// carry a driver-malfunction message for an ordinary, fixable state (#190).
+		// WHAT WAS OBSERVED, not what it implies. Nothing answering is what an absent application
+		// looks like — and also what a driver that has stopped answering looks like, which vxlapi
+		// gives no way to tell apart. The sentence is true either way, and the ACTION is safe
+		// either way, so the dialog does not need the certainty it cannot have (codex #192 r2).
+		vgui.same_line()
+		vgui.set_next_item_width(50)
+		vgui.input_text('application channel to assign##vach', mut app.disc_vector_ch_buf)
+		vgui.same_line()
+		vgui.help_marker('The number this hardware becomes: type 2 and the channel opens as `vector:2`. Any 1-64 that is not already assigned; the mapped rows below show which are taken. Nothing is proposed for you — the driver cannot reliably tell an unused channel from one it simply could not read, so the number is yours to choose.')
+		// WHICH CHANNELS THE DRIVER CONFIRMED FREE. Reporting is not proposing: nothing here picks
+		// one, and the operator may still type any number. But refusing `vector:2` as unreadable
+		// while offering no hint of what WOULD work is a dead end, and the sweep already knows —
+		// so it says, and the choice stays theirs (#192, option 3).
+		if app.disc_vector_free != '' {
+			vgui.text_dim('   application channels the driver reports free: ${app.disc_vector_free}')
+		}
+		// THE ONE WRITE THE DRIVER CANNOT VOUCH FOR, so the operator says it rather than the code
+		// guessing. An unregistered channel and a momentary read failure on an OCCUPIED one are the
+		// same generic XL error, and no retry separates them — see assign_refusal. Off by default,
+		// so a mistyped number cannot silently retarget a persistent mapping (codex #192 r9).
+		app.disc_vector_create = vgui.checkbox('create unregistered channel##vacreate',
+			app.disc_vector_create)
+		vgui.same_line()
+		vgui.help_marker('Needed only for a channel the application does not have yet — including every channel on a bench where "blobly_net" has never run. The driver reports "no such channel" with its GENERIC error, which is also what one failed read of an occupied channel looks like, so this asks you to confirm you mean to create rather than replace.')
+		if !app.disc_vector_app_seen {
+			vgui.text_dim('   no application channels could be read for "blobly_net" — assigning below creates the mapping (and the application, if it is not there)')
+		}
+		for vm in app.disc_vector {
+			// THE TRANSCEIVER'S OWN VERDICT on CAN-FD, from the driver rather than its part
+			// number (#187). Blank for a channel that carries none — a D/A IO card, say.
+			fd := vm.hw.fd_note()
+			rate := if vm.hw.bitrate > 0 { '${vm.hw.bitrate}' } else { '-' }
+			detail := '${vm.hw.transceiver} · ${rate}${if fd == '' { '' } else { ' · CAN-FD ${fd}' }}'
+			if vm.app > 0 {
+				// Already ours: name the address, because that is what a Buses row will carry.
+				vgui.text_dim('   vector:${vm.app}   ${vm.hw.name}   ${detail}')
+				continue
+			}
+			// NOT EVERY CHANNEL IS A CAN CHANNEL. A VN1630A reports its D/A IO channel here
+			// alongside the four CAN ones, and everything this dialog assigns is addressed as
+			// CAN — so an Assign button on that row could only produce a mapping that fails to
+			// open as the interface it was offered as. Listed, because it is real hardware and
+			// its absence would read as a missing channel; not offered (codex #192 r1).
+			if !vm.hw.can_capable {
+				vgui.text_dim('   (not a CAN channel)  ${vm.hw.name}   ${vm.hw.transceiver}')
+				continue
+			}
+			// UNOWNED, OR MERELY NOT SEEN TO BE OWNED? An application channel that would not answer
+			// may be pointing at this very row, so offering Assign here would invite the operator to
+			// create the #167 alias — two application channels on one physical wire. Shown, because
+			// the hardware is real and hiding it reads as a missing channel; not offered, and the
+			// row says which of the two it is (codex #192 r6).
+			if !vm.owner_known {
+				vgui.text_dim('   (owner unknown)  ${vm.hw.name}   ${detail}')
+				vgui.same_line()
+				vgui.help_marker('The driver did not answer for every application channel, so this hardware may already be assigned to one of the channels it would not describe. Refresh to ask again.')
+				continue
+			}
+			// UNMAPPED. The button is the only path that writes; see assign_vector_hw. The channel
+			// number comes from the field above — NOTHING PROPOSES ONE. Four rounds of review went
+			// into inferring which application channels were free, and the fourth pair of findings
+			// contradicted each other, because vxlapi cannot separate "outside the application's
+			// channel list" from "failed this time". The operator knows which number they want;
+			// asking is both safer and shorter than any inference (#192, option 3).
+			if vgui.small_button('Assign##va${vm.hw.hw_type}_${vm.hw.hw_index}_${vm.hw.hw_channel}') {
+				n := vgui.buf_str(app.disc_vector_ch_buf).trim_space()
+				if n == '' || !project.is_all_digits(n) {
+					app.notify('type the Vector application channel to assign (1-64) before pressing Assign')
+				} else {
+					app.assign_vector_hw(vm.hw, n.int())
+				}
+			}
+			vgui.same_line()
+			vgui.text_dim('(unassigned)  ${vm.hw.name}   ${detail}')
+		}
+	}
 	vgui.separator()
 	vgui.text_dim('Tip: a PCAN/Kvaser device on Linux/WSL appears here as SocketCAN (canN) — add those, not the pcan/kvaser adapter (Windows-only).')
 	vgui.end()

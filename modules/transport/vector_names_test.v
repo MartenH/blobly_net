@@ -378,3 +378,179 @@ fn test_the_address_check_covers_timing_not_only_syntax() {
 		assert false, 'a malformed rate must still be reported'
 	}
 }
+
+
+// ---- assigning an application channel -------------------------------------------------------
+//
+// SIX ROUNDS OF REVIEW LANDED IN assign_refusal, and CLAUDE.md's rule for that is to cover the path
+// rather than keep repairing it. So the truth table below is exhaustive: every AppSlot, stated once,
+// with the reason it decides the way it does. A fifth state cannot be added without this failing to
+// compile-or-assert, which is the point — the defect underneath all six rounds was a state whose
+// meaning was ambiguous, and an exhaustive table is what makes the next ambiguity visible.
+//
+// NOTHING PROPOSES A CHANNEL. Rounds 3 and 4 tried to infer which channels were free and produced a
+// contradictory pair of findings; the operator names the channel and this checks THAT one.
+fn test_assign_refusal_decides_every_slot_state() {
+	// The permitted two: both mean "no mapping is at risk", by different routes.
+	for slot in [AppSlot.empty, AppSlot.absent] {
+		if why := assign_refusal(1, slot, true) {
+			assert false, '${slot} must be assignable: ${why}'
+		}
+	}
+	// The refused two: both mean "something may be under there".
+	for slot in [AppSlot.taken, AppSlot.unreadable] {
+		if _ := assign_refusal(1, slot, true) {} else {
+			assert false, '${slot} must be refused'
+		}
+	}
+}
+
+// THE CONSENT FLAG MOVES EXACTLY ONE STATE, and that is the whole of its contract. `absent` is the
+// only verdict the driver reports with a GENERIC error, so it is the only one an operator has to
+// stand behind; letting it soften `taken` or `unreadable` would turn a safety rule into a checkbox
+// (codex #192 r9).
+fn test_only_absent_depends_on_the_operators_consent() {
+	// Default off: a generic error never authorizes a write on its own.
+	if why := assign_refusal(7, .absent, false) {
+		assert why.contains('not registered'), 'the message must say what is being created: ${why}'
+		assert why.contains('create unregistered channel'), 'and name the affordance: ${why}'
+	} else {
+		assert false, 'an unregistered channel must not be written without the operator saying so'
+	}
+	// Stated: creating is what they asked for.
+	if why := assign_refusal(7, .absent, true) {
+		assert false, 'a stated create must go through: ${why}'
+	}
+	// EVERY OTHER STATE DECIDES THE SAME WAY BOTH WAYS. This is the assertion that stops the flag
+	// growing into a general override.
+	for slot in [AppSlot.taken, AppSlot.unreadable, AppSlot.empty] {
+		off := assign_refusal(7, slot, false)
+		on := assign_refusal(7, slot, true)
+		assert (off == none) == (on == none), '${slot} must not depend on the consent flag'
+	}
+	// And consent never rescues an out-of-range channel.
+	if _ := assign_refusal(0, .absent, true) {} else {
+		assert false, '0 is not a channel, however willing the operator is'
+	}
+}
+
+// THE CODES, PINNED. ct_vector_appl_get in vector_shim.h is the other half of this: 0 assigned,
+// -2 registered-and-free, -3 no-such-channel, anything else the driver could not be reached. -1 is
+// the one that must NOT read as `absent` — it is the driver-unreachable case, and the r5 finding
+// was precisely about not treating an unanswered question as permission to write.
+fn test_the_driver_codes_map_to_the_states_they_mean() {
+	assert slot_of(0) == .taken
+	assert slot_of(-2) == .empty
+	assert slot_of(-3) == .absent
+	assert slot_of(-1) == .unreadable, 'driver-unreachable must never read as an unregistered channel'
+	// Nothing else is defined, and an undefined code is silence rather than permission.
+	for rc in [-4, -99, 1, 255] {
+		assert slot_of(rc) == .unreadable, 'an unrecognised code (${rc}) must be the refusing state'
+	}
+}
+
+// A GENERIC ERROR MAY NOT AUTHORIZE A WRITE ON ITS OWN. `absent` is the only verdict that permits
+// one and the only one resting on XL's generic error, so it is asked twice; every disagreement must
+// resolve away from permission (codex #192 r8).
+fn test_a_second_reading_overrides_a_generic_absent() {
+	// Agreement is the only way a write stays authorized.
+	assert reconcile_absent(.absent, .absent) == .absent
+	// Any answer that actually describes the channel wins, whichever way it decides.
+	assert reconcile_absent(.absent, .taken) == .taken, 'an occupied channel must not be overwritten'
+	assert reconcile_absent(.absent, .unreadable) == .unreadable, 'silence must not read as absent'
+	assert reconcile_absent(.absent, .empty) == .empty
+	// And the three that permit or refuse on real evidence are never re-litigated: a first answer
+	// that is not `absent` stands whatever a second reading might say.
+	for first in [AppSlot.taken, AppSlot.empty, AppSlot.unreadable] {
+		for second in [AppSlot.taken, AppSlot.empty, AppSlot.unreadable, AppSlot.absent] {
+			assert reconcile_absent(first, second) == first, '${first} must not be revised by ${second}'
+		}
+	}
+	// The property that matters, stated as itself: a write is authorized only when BOTH readings
+	// agree the channel is not there.
+	for second in [AppSlot.taken, AppSlot.unreadable] {
+		if _ := assign_refusal(9, reconcile_absent(.absent, second), true) {} else {
+			assert false, 'a disagreeing second reading (${second}) must end in a refusal'
+		}
+	}
+}
+
+// EVERY OTHER DRIVER STATUS REFUSES, and this is the half the shim has to hold up. Mapping all
+// non-zero statuses to `absent` put the r6 P1 back one layer down: a transient per-call error would
+// have read as an unregistered channel and so as writable. The shim now converts one measured
+// status to -3 and encodes the rest, and what makes that safe is that the encoding lands in
+// slot_of's default (codex #192 r7).
+fn test_an_unexpected_driver_status_refuses_and_keeps_its_number() {
+	// A sample across the XL status range, including the generic error the measured value shares a
+	// space with. None of these may come out as permission to write.
+	for st in [1, 10, 13, 101, 129, 254, 256, 65535] {
+		rc := -(1000 + st)
+		assert slot_of(rc) == .unreadable, 'XL status ${st} must refuse, not permit'
+		if got := xl_status_of(rc) {
+			assert got == st, 'the status must survive the encoding: wanted ${st}, got ${got}'
+		} else {
+			assert false, 'XL status ${st} should be recoverable from ${rc}'
+		}
+		if why := assign_refusal(1, slot_of(rc), true) {
+			assert why.contains('would not say'), 'got ${why}'
+		} else {
+			assert false, 'XL status ${st} must not permit an assignment'
+		}
+	}
+	// The plain codes carry no status, and must not be misread as one.
+	for rc in [0, -1, -2, -3] {
+		if got := xl_status_of(rc) {
+			assert false, '${rc} is a plain code, not an encoded status (got ${got})'
+		}
+	}
+}
+
+fn test_a_channel_the_driver_says_is_taken_is_refused() {
+	if why := assign_refusal(3, .taken, true) {
+		assert why.contains('vector:3'), 'the message must name the channel: ${why}'
+		assert why.contains('release'), 'and say how to proceed: ${why}'
+	} else {
+		assert false, 'a channel the driver reports as assigned must not be written'
+	}
+}
+
+// THE DISTINCTION THE WHOLE OF R6 IS ABOUT. `absent` and `unreadable` were one state called
+// `unknown`, and no rule over it could be right for both: r5 refused it to protect an occupied
+// channel, and r6 showed that refusing it also blocked extending an application — which is 57 of
+// the 64 channels on a measured bench, i.e. the feature. They decide OPPOSITE ways, and neither
+// needs to know whether the application exists.
+fn test_absent_and_unreadable_are_not_the_same_answer() {
+	// The driver ANSWERED: no such channel. xlSetApplConfig creates it — the documented way to
+	// extend an application, and measured as the state of 57 of 64 channels on a working bench.
+	if why := assign_refusal(7, .absent, true) {
+		assert false, 'an unregistered channel is exactly what Assign is for: ${why}'
+	}
+	// The driver did not answer at all. Anything could be under there.
+	if why := assign_refusal(7, .unreadable, true) {
+		assert why.contains('would not say'), 'the message must say the driver was silent: ${why}'
+	} else {
+		assert false, 'a channel the driver would not describe must never be overwritten'
+	}
+}
+
+fn test_the_channel_number_must_be_one_the_library_addresses() {
+	for bad in [0, -1, 65, 1000] {
+		if _ := assign_refusal(bad, .empty, false) {} else {
+			assert false, '${bad} is not a Vector application channel'
+		}
+	}
+	// The ends of the range are valid.
+	if why := assign_refusal(1, .empty, false) {
+		assert false, '1 is valid: ${why}'
+	}
+	if why := assign_refusal(64, .empty, false) {
+		assert false, '64 is valid: ${why}'
+	}
+	// The range is checked BEFORE the slot: an out-of-range channel is refused whatever the driver
+	// says about it, including the states that would otherwise be permitted.
+	for slot in [AppSlot.empty, AppSlot.absent, AppSlot.taken, AppSlot.unreadable] {
+		if _ := assign_refusal(0, slot, true) {} else {
+			assert false, '0 is out of range whatever the slot says (${slot})'
+		}
+	}
+}

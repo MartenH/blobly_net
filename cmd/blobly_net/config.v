@@ -2,6 +2,7 @@ module main
 
 import os
 import project
+import transport
 import sysview
 import sim
 import vgui
@@ -234,6 +235,120 @@ fn (app &App) unique_bus_name(base string) string {
 fn (mut app App) refresh_discovery() {
 	app.disc_list = app.discover_all()
 	app.disc_tick = []bool{len: app.disc_list.len}
+	// Empty on any machine without the XL driver, which is the honest answer rather than a
+	// placeholder — the Linux stub returns nothing and the section below draws nothing.
+	app.disc_vector = transport.vector_mappings()
+	// WHAT THE DRIVER CONFIRMED, in the two ways a channel can be usable. `empty` is registered and
+	// pointing at nothing; `absent` is not registered at all, which is equally free — writing it
+	// creates it. Listing only `empty` named the 5 channels this application happens to have and hid
+	// the other 57 an operator may legitimately type (codex #192 r6).
+	mut free := []string{}
+	mut absent := 0
+	for i, s in transport.vector_app_slots() {
+		match s {
+			.empty { free << '${i + 1}' }
+			.absent { absent++ }
+			else {}
+		}
+	}
+	// Not enumerated: on an ordinary bench `absent` is most of the range, and a list of 57 numbers
+	// is not an answer anybody reads. The count says the same thing and stays short.
+	app.disc_vector_free = if absent > 0 && free.len > 0 {
+		'${free.join(', ')} (and ${absent} not yet registered, which Assign would create)'
+	} else if absent > 0 {
+		'${absent} channels not yet registered, which Assign would create'
+	} else {
+		free.join(', ')
+	}
+	app.disc_vector_app_seen = transport.vector_application_seen() or {
+		if app.disc_vector.len > 0 {
+			app.notify('${err}')
+		}
+		true
+	}
+	// CLEARED EVERY TIME, including after the assign that used it — assign_vector_hw ends by calling
+	// this. It authorizes the one write the driver cannot vouch for, so it has to be stated for that
+	// write rather than left ticked from an earlier one (codex #192 r9).
+	app.disc_vector_create = false
+}
+
+// assign_vector_hw points a free application channel at one physical channel, which is what
+// Vector Hardware Manager would otherwise be opened to do (#186).
+//
+// EXPLICIT, NEVER IMPLICIT. This is persistent machine state — it survives reboots and it is what
+// every later `vector:<n>` resolves through — so it happens on a button and nowhere else. Nothing
+// on the Start path may create a mapping on the operator's behalf.
+//
+// UNDER THE INTERPROCESS LOCK, for the reason vector_borrow_lock exists: `cmd/vectorcheck --pair`
+// borrows two application channels and restores them, and a GUI writing the same table between
+// its read and its restore would leave a channel pointed somewhere nobody chose. A GUI is just
+// another process here.
+fn (mut app App) assign_vector_hw(hw transport.VectorChannel, app_channel int) {
+	// CHECKED HERE TOO, not only where the button is drawn. The panel hides Assign for a non-CAN
+	// channel, but that is a display rule and this is the function that WRITES — a second caller
+	// added later would otherwise create a mapping addressed as CAN for a channel that is not one.
+	if !hw.can_capable {
+		app.notify('${hw.name} is not a CAN channel — it cannot be assigned as one')
+		return
+	}
+	transport.vector_borrow_lock_now() or {
+		app.notify('could not assign ${hw.name}: ${err}')
+		return
+	}
+	defer {
+		transport.vector_borrow_unlock()
+	}
+	// THE NAMED CHANNEL, RE-READ INSIDE THE LOCK. The dialog's list is a snapshot from the last
+	// Refresh, and between that scan and this click another process — a second copy of this app, or
+	// `vectorcheck` — may have written the very channel the operator typed. Both writers serialise
+	// correctly on the lock and both act on stale reads, so the check has to happen in here
+	// (codex #192 r3).
+	//
+	// ABOUT THE ONE CHANNEL BEING WRITTEN, which is what makes this stronger than the sweep it
+	// replaces: `taken` is the driver saying that THIS channel points at hardware, not an inference
+	// from what other channels did or did not answer.
+	// No `vector_application_seen()` here any more. It was passed in to decide which of two meanings
+	// `unknown` had, and the driver now answers that itself — see assign_refusal (codex #192 r6).
+	slot := transport.vector_app_slot(app_channel)
+	if why := transport.assign_refusal(app_channel, slot, app.disc_vector_create) {
+		app.notify('${why}')
+		return
+	}
+	// AND THE HARDWARE, still under the same lock. The channel check above says the DESTINATION is
+	// free; this says the SOURCE is still unclaimed. Two processes acting on the same refreshed row
+	// pick different application channels — so neither collides on the channel check — and both map
+	// the same physical wire, which is the alias destination_conflicts refuses a project for (#167).
+	// The rewrite for option 3 dropped this check along with the ownership machinery it used to
+	// live beside; it was doing a second job (codex #192 r5).
+	mut taken_by := 0
+	mut row_known := true
+	mut found := false
+	for m in transport.vector_mappings() {
+		if m.hw.hw_type == hw.hw_type && m.hw.hw_index == hw.hw_index
+			&& m.hw.hw_channel == hw.hw_channel {
+			taken_by = m.app
+			row_known = m.owner_known
+			found = true
+			break
+		}
+	}
+	if taken_by > 0 {
+		app.notify('${hw.name} is already assigned to vector:${taken_by} — Refresh to see the current mapping')
+		return
+	}
+	// AN UNOWNED ROW IS ONLY UNOWNED IF WE COULD SEE ALL THE OWNERS. Some application channel would
+	// not answer, and it may be the one already pointing here — assigning a second channel to it is
+	// the #167 alias, made by the dialog that exists to set the bench up (codex #192 r6).
+	if !found || !row_known {
+		app.notify('could not confirm whether ${hw.name} is already assigned — the Vector driver did not answer for every application channel. Refresh and try again.')
+		return
+	}
+	transport.vector_assign(app_channel, hw) or {
+		app.notify('could not assign ${hw.name}: ${err}')
+		return
+	}
+	app.notify('vector:${app_channel} now points at ${hw.name} (${hw.transceiver}) — add it as a bus to use it')
+	app.refresh_discovery()
 }
 
 // next_free_vcan returns the first vcanN not already in the project (for the + vcan quick-add).

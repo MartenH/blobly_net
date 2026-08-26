@@ -223,6 +223,140 @@ fn vector_timing_error(s VectorSpec) ?string {
 	return none
 }
 
+// AppSlot is what the driver said about ONE application channel — three states, because the third
+// is the one this code kept losing.
+//
+// FOUR ROUNDS OF THE SAME BUG put this here. Every version of the free-channel search and the
+// mapping sweep folded "the driver would not answer" into either "empty" or "taken", and each time
+// the consequence was a write over something real: a mapping retargeted, or a second application
+// channel aliased onto one physical wire (#167's exact prohibition). The decision was never the
+// hard part — it was that the decision lived inside the driver calls, where it could not be
+// tested, so each fix was checked by reasoning about it and the reasoning was wrong four times.
+//
+// So the DECISION is pure and lives here, in the file that gets tested; the driver I/O that
+// produces the slots stays in vector_windows.v. That is the same split vector_names.v already
+// exists for, and its own header says why: written beside the driver, a rule compiles only on
+// Windows, where nothing runs these tests.
+// AppSlot is what the driver says about ONE application channel. Four states, not three, and the
+// split of the old `unknown` into `unreadable` and `absent` is the whole of what r6 fixed: those
+// were two different facts sharing one name, and no rule over the merged state could be right for
+// both. See ct_vector_appl_get in vector_shim.h for the measurement.
+pub enum AppSlot {
+	unreadable // the driver could not be reached at all. Nothing is known; never write.
+	absent     // the driver answered: it has no such channel for this application. Writing CREATES
+	// it, which is the documented way to extend an application — and the state 57 of
+	// 64 channels are in on an ordinary bench.
+	empty // registered, pointing at nothing. The ordinary free channel.
+	taken // registered, pointing at hardware. Writing would retarget somebody's mapping.
+}
+
+// slot_of turns one ct_vector_appl_get return code into the four-state answer. The ONE place that
+// mapping lives, so vector_app_slot and vector_app_slots cannot drift apart about what a code means.
+//
+// HERE RATHER THAN BESIDE THE DRIVER, for the reason this file's own header gives: written in
+// vector_windows.v it would compile only on Windows, where CI runs no tests — and the codes it
+// interprets are the ones six rounds of review turned on. The C function that produces them is in
+// vector_shim.h; keep the two in step.
+//
+// ONLY -3 IS `absent`. The shim maps exactly one measured XL status to it and returns every other
+// failing status as -(1000 + status), so an unexpected driver answer arrives here as a large
+// negative and falls to `unreadable` — which refuses. That default is the whole safety property:
+// a code this function has never heard of must never come out as permission to write (codex #192
+// r7). The encoded status is preserved rather than flattened so a bench whose driver answers
+// differently can be diagnosed from the number instead of from a shrug.
+fn slot_of(rc int) AppSlot {
+	return match rc {
+		0 { AppSlot.taken }
+		-2 { AppSlot.empty }
+		-3 { AppSlot.absent }
+		else { AppSlot.unreadable }
+	}
+}
+
+// reconcile_absent settles two readings of the same channel, where the first said `absent`.
+//
+// The rule is one line, and it is here rather than beside the driver so it can be tested: any second
+// answer that DESCRIBES the channel beats `absent`, which is only ever a generic error. Two of the
+// three (`taken`, `unreadable`) refuse, and the third (`empty`) permits on evidence rather than on
+// the absence of it — so every disagreement resolves in the safe direction. Agreement on `absent`
+// is the only way a write stays authorized (codex #192 r8).
+fn reconcile_absent(first AppSlot, second AppSlot) AppSlot {
+	if first != .absent {
+		return first
+	}
+	return if second == .absent { AppSlot.absent } else { second }
+}
+
+// xl_status_of recovers the driver status the shim encoded as -(1000 + status), or none when this
+// code carries no status. For diagnostics only — nothing decides anything from it.
+fn xl_status_of(rc int) ?int {
+	if rc > -1000 {
+		return none
+	}
+	return -rc - 1000
+}
+
+// assign_refusal reports why an application channel must not be written, or none when it may be.
+//
+// THE OPERATOR NAMES THE CHANNEL; NOTHING GUESSES IT. Rounds 3 and 4 tried to infer which channels
+// were free and produced a contradictory pair of findings; the guess is gone rather than refined
+// (#192, option 3). What replaces it is a check on the ONE channel the operator actually named,
+// which is evidence rather than an inference from what other channels did or did not answer.
+//
+// SIX ROUNDS LANDED IN THIS FUNCTION, and the reason was never the rule — it was the input. `slot`
+// carried a state called `unknown` that meant two incompatible things, so r5 refused it (to protect
+// an occupied channel) and r6 showed that refusing it also blocked the extension this dialog is
+// for. Neither was wrong about its own case. The fix is upstream, in ct_vector_appl_get: the driver
+// distinguishes "I cannot answer" from "no such channel", and once those are separate states the
+// rule is obvious and needs no `app_present` inference to prop it up.
+//
+//   unreadable -> refuse. Nothing is known, so anything could be under there.
+//   taken      -> refuse. The driver says, about this exact channel, that it points at hardware.
+//   empty      -> permit. Registered and pointing at nothing; the driver said so positively.
+//   absent     -> permit ONLY IF the operator asked to create. See below.
+//
+// That `app_present` argument is deliberately gone. It existed to guess which reading of `unknown`
+// applied, it was derived from vector_application_seen(), and that function's own contract says its
+// `false` is not proof of absence — so the guess turned "nothing answered" into "safe to create",
+// which is exactly the P1 r6 reported. A question the driver can answer directly is not one to
+// infer from a sweep of other channels.
+//
+// `create_ok` IS NOT ANOTHER GUESS. It is the operator saying what they meant, and that is a
+// different kind of input entirely — the earlier argument was this code inferring a fact about the
+// world from evidence that did not support it.
+//
+// It exists because `absent` cannot be made trustworthy, and four rounds of review disagreeing
+// about it is the evidence. The driver reports "no such channel" as 255, which is XL_ERROR, its
+// GENERIC failure — so "this channel is not registered" and "this one call failed" are the SAME
+// BYTES. No retry separates them (a persistent transient error repeats), and no other XL call
+// exposes an application's channel count. Rounds 6 and 8/9 each demanded the opposite default and
+// each were right about their own case:
+//
+//   - refuse it, and a fresh bench cannot bootstrap: an application that does not exist yet answers
+//     255 for all 64 channels, so nothing could ever be created. That is #186's entire purpose.
+//   - permit it silently, and one momentary failure on an occupied channel retargets a persistent
+//     mapping that survives reboots.
+//
+// Neither is a defect in the rule; the rule is being asked to know something unknowable. So it is
+// not decided here. Default REFUSE — a generic error never authorizes a write on its own — and the
+// operator may state the intent explicitly, at which point creating is what they asked for and the
+// message has already told them what it might replace.
+pub fn assign_refusal(app int, slot AppSlot, create_ok bool) ?string {
+	if app < 1 || app > 64 {
+		return 'Vector application channels are numbered 1 to 64'
+	}
+	if slot == .taken {
+		return 'vector:${app} already points at hardware — release it first, or choose another channel'
+	}
+	if slot == .unreadable {
+		return 'the Vector driver would not say what vector:${app} points at — refusing rather than overwriting a mapping that may be there. Try again in a moment.'
+	}
+	if slot == .absent && !create_ok {
+		return 'vector:${app} is not registered under "blobly_net". Assigning it CREATES it, which is how a channel is added — but the driver reports that with a generic error, which is also what a momentary read failure on an occupied channel looks like. Tick "create unregistered channel" to say that is what you mean, or pick one of the channels listed as free.'
+	}
+	return none
+}
+
 // VectorSpec is the parsed interface string.
 //
 // HERE, not in vector_windows.v, and the difference is not cosmetic: written beside the driver

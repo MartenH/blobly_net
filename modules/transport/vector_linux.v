@@ -47,6 +47,9 @@ pub:
 	// driver to ask, and `vector_channels()` below returns nothing anyway.
 	fd_iso   bool
 	fd_bosch bool
+	// Mirrors the Windows field. Always false: there is no XL driver here to ask, and
+	// vector_channels() returns nothing anyway.
+	can_capable bool
 }
 
 // fd_capable / fd_note mirror the Windows side so a front end can call them unguarded. The
@@ -66,6 +69,37 @@ pub fn (c VectorChannel) fd_note() string {
 	} else {
 		''
 	}
+}
+
+// VectorMapping mirrors the Windows type so a front end compiles unguarded. There is no XL driver
+// here, so vector_mappings() is empty — the honest answer on a machine with no Vector hardware.
+pub struct VectorMapping {
+pub:
+	hw  VectorChannel
+	app int
+	// Mirrors the Windows field. Nothing here ever constructs one, so the value never matters;
+	// it exists so cmd/blobly_net's ownership check compiles against the same shape.
+	owner_known bool
+}
+
+pub fn vector_mappings() []VectorMapping {
+	return []VectorMapping{}
+}
+
+// No XL driver here, so nothing can answer. False means "nothing answered", which is exactly
+// true on this platform — see the Windows side for why that is evidence rather than a verdict.
+pub fn vector_application_seen() !bool {
+	return false
+}
+
+// No channels to sweep here, so nothing is known about any of them. `.unreadable` rather than
+// `.absent`: absent is the driver ANSWERING that it has no such channel, and no driver answered.
+pub fn vector_app_slot(app int) AppSlot {
+	return .unreadable
+}
+
+pub fn vector_app_slots() []AppSlot {
+	return []AppSlot{}
 }
 
 pub fn vector_error_frames() int {
@@ -100,5 +134,14 @@ pub fn vector_unassign(app_channel int) ! {
 }
 
 pub fn vector_borrow_lock() ! {}
+
+// The impatient variant the GUI uses. Both succeed here for the same reason: there is no XL
+// driver, so there are no application-channel assignments for two processes to interleave and
+// nothing to wait for.
+//
+// MIRRORED BECAUSE THE CALLER IS CROSS-PLATFORM. cmd/blobly_net compiles on Linux, and a helper
+// added beside the Windows driver is invisible to it — which is the whole reason vector_names.v
+// exists as a separate file. CI caught this one; the Windows build here cannot.
+pub fn vector_borrow_lock_now() ! {}
 
 pub fn vector_borrow_unlock() {}
