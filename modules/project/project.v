@@ -453,7 +453,7 @@ pub fn (c Channel) iface_with_bitrate() string {
 	// mixtures on a wire it was simultaneously opening as classic. One reading of an unset rate,
 	// here, where the address is built (codex #181 r2).
 	nominal := c.nominal_bitrate()
-	if (c.adapter == 'pcan' || c.adapter == 'kvaser' || c.adapter == 'vector')
+	if transport.adapter_configures_bitrate(c.adapter)
 		&& (c.bitrate > 0 || (transport.adapter_configures_data_phase(c.adapter) && c.fd)) {
 		base = '${base}@${nominal}'
 		// THE DATA PHASE TRAVELS WITH THE RATE, on the backends that configure one. `fd` and
@@ -731,8 +731,7 @@ fn parse_channel(c yaml.Any) !Channel {
 			}
 		}
 
-		if (ch.adapter == 'pcan' || ch.adapter == 'kvaser' || ch.adapter == 'vector')
-			&& raw.contains('@') {
+		if transport.adapter_configures_bitrate(ch.adapter) && raw.contains('@') {
 			// LAST `@`, then the mode: `vector:1@250000,silent` puts the suffix after the rate,
 			// so all_after_last('@') is "250000,silent" and .int() would read 250000 only by
 			// luck of parsing. Cut the mode off first and the number is the number.
@@ -1335,7 +1334,8 @@ fn parse_id(s string) u32 {
 // adapters is the set of transport backends the editor offers (the `adapter:` value).
 // Order = the picker order. `virtual`/`vcan`/`socketcan`/`udp` are cross-platform or
 // Linux; `pcan`/`kvaser` are Windows CAN hardware; `doip` is an Ethernet diag endpoint.
-pub const adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'pcan', 'kvaser', 'vector', 'doip']
+pub const adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'pcan', 'kvaser', 'vector', 'cansub',
+	'doip']
 
 // compose_iface builds the internal scheme string `transport.open()` consumes from an
 // adapter + its backend-specific address. It is the inverse of decompose_iface.
@@ -1491,7 +1491,7 @@ pub fn (m Mode) str() string {
 // And the two families need different treatment of `@`: a bitrate suffix on a vendor address, a
 // literal part of the name anywhere else, where `inproc:bench@A` is a bus called `bench@A`.
 fn conflict_wire_key(c Channel) string {
-	if c.adapter in ['pcan', 'kvaser', 'vector'] {
+	if transport.adapter_configures_bitrate(c.adapter) {
 		return transport.wire_key_for(c.adapter, c.iface)
 	}
 	return transport.canonical_iface(c.iface)
@@ -1702,7 +1702,7 @@ fn destination_conflicts_without_alias(chs []Channel) []string {
 		if c.listen_only && !c.is_doip() {
 			quiet[conflict_wire_key(c)] = c.name
 		}
-		if c.adapter !in ['pcan', 'kvaser', 'vector'] {
+		if !transport.adapter_configures_bitrate(c.adapter) {
 			continue
 		}
 		// WITHOUT THE RATE. The rate is what these rows disagree about, so a key containing it

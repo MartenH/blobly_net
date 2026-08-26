@@ -280,7 +280,7 @@ pub fn wire_key_for(adapter string, iface string) string {
 //
 // The project's own `adapter` field is what settles it, and only these paths have it.
 pub fn destination_key_for(adapter string, iface string) string {
-	if adapter in ['pcan', 'kvaser', 'vector', 'cansub'] {
+	if adapter_configures_bitrate(adapter) {
 		return vendor_destination_key(iface)
 	}
 	return destination_key(iface)

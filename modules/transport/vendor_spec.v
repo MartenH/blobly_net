@@ -54,6 +54,26 @@ pub fn adapter_carries_fd(adapter string) bool {
 	}
 }
 
+// adapter_configures_bitrate reports whether an address for this adapter carries its nominal rate
+// as an `@<bitrate>` suffix — whether OUR code sets the wire's speed when it opens the channel.
+//
+// ONE PREDICATE, because this was a literal `['pcan', 'kvaser', 'vector']` in five places in
+// modules/project and a four-element version of the same list here in destination_key_for. When
+// the CANsub backend landed, the one list that had been updated was this file's, so the transport
+// layer knew `cansub:` addresses carry a rate and the project layer did not: a CANsub row composed
+// its address without one, opened at the device's default, and the conflict checks that exist to
+// stop two rows disagreeing about a wire's speed skipped it entirely. A list repeated six times is
+// a list that will be updated five times.
+//
+// SocketCAN and the software buses answer false: `ip link` set the rate long before this process
+// opened the interface, and `inproc:`/`udp:` have no rate at all.
+pub fn adapter_configures_bitrate(adapter string) bool {
+	return match adapter.trim_space().to_lower() {
+		'pcan', 'kvaser', 'vector', 'cansub' { true }
+		else { false }
+	}
+}
+
 // adapter_configures_data_phase reports whether an address for this adapter carries the CAN-FD
 // DATA rate — whether OUR code sets the payload phase when it opens the channel.
 //
@@ -68,7 +88,7 @@ pub fn adapter_carries_fd(adapter string) bool {
 // rate into an address", which is why it lives beside the address parsing and not in a front end.
 pub fn adapter_configures_data_phase(adapter string) bool {
 	return match adapter.trim_space().to_lower() {
-		'vector', 'kvaser' { true }
+		'vector', 'kvaser', 'cansub' { true }
 		else { false }
 	}
 }
