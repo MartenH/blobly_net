@@ -1400,6 +1400,9 @@ pub fn compose_iface(adapter string, address string) string {
 		'kvaser' {
 			'kvaser:${a}'
 		}
+		'cansub' {
+			'cansub:${a}'
+		}
 		'vector' {
 			'vector:${a}'
 		}
@@ -1439,6 +1442,11 @@ pub fn decompose_iface(iface string) (string, string) {
 	// distinct bus; the rate is lifted into the bitrate field by parse_channel.
 	if s.starts_with('pcan:') {
 		return 'pcan', s['pcan:'.len..].all_before('@')
+	}
+	// `cansub:<id>/<channel>[@<rates>]` — the id AND channel are the address, so only the rate
+	// suffix comes off, exactly as it does for the other three.
+	if s.starts_with('cansub:') {
+		return 'cansub', s['cansub:'.len..].all_before('@')
 	}
 	if s.starts_with('kvaser:') {
 		return 'kvaser', s['kvaser:'.len..].all_before('@')
@@ -1613,6 +1621,7 @@ pub fn (c Channel) fd_config_error() ?string {
 	return match c.adapter {
 		'vector' { transport.vector_address_error(c.iface_with_bitrate()) }
 		'kvaser' { transport.kvaser_address_error(c.iface_with_bitrate()) }
+		'cansub' { transport.cansub_address_error(c.iface_with_bitrate()) }
 		else { none }
 	}
 }

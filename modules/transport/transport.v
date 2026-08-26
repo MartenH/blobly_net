@@ -255,6 +255,18 @@ pub fn vendor_destination_key(iface string) string {
 		// and a wrong guess here would merge buses that never open at all.
 	} else if kind == 'kvaser' {
 		resolved = ch.int().str() // exactly what open_kvaser does with it
+	} else if kind == 'cansub' {
+		// `<id>/<channel>`, and the CHANNEL is what needs normalising: the device numbers its
+		// channels and `parse_cansub_iface` reads that number with `.int()`, so `id/01` and `id/1`
+		// open the same one while differing as strings. Left unresolved they keyed as two wires,
+		// and the vendor is explicit that "a single client can be connected to each WebSocket" —
+		// so shared_open would hand out two clients for a channel that permits one, and the rate,
+		// listen-only and framing checks would never meet. The id is a name and stays a name.
+		if ch.contains('/') {
+			dev := ch.all_before('/').to_lower()
+			num := ch.all_after_last('/').int().str()
+			resolved = '${dev}/${num}'
+		}
 	} else if kind == 'vector' {
 		// Through the SAME resolver open_vector uses, so `vector:1`, `vector:ch1` and
 		// `vector:app01` are one destination. The mode suffix is already gone: it sits after the

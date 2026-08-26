@@ -97,11 +97,12 @@ struct CansubBus {
 	host  string
 	spec  CansubSpec
 mut:
-	ws      &websocket.Client = unsafe { nil }
-	rx      chan CansubRecord
-	stop    shared CansubStop
-	reader  thread
-	started bool
+	ws         &websocket.Client = unsafe { nil }
+	rx         chan CansubRecord
+	stop       shared CansubStop
+	reader     thread
+	health_thr thread
+	started    bool
 }
 
 // CansubStop carries what the reader thread and the bus both touch. `shared` rather than a plain
@@ -160,8 +161,39 @@ fn open_cansub_bus(iface string) !Bus {
 		rx:    chan CansubRecord{cap: 4096}
 	}
 	b.reader = spawn b.read_loop()
+	b.health_thr = spawn b.health_loop()
 	b.started = true
 	return b
+}
+
+// health_loop polls the controller's fault ladder on its OWN thread.
+//
+// IT USED TO RUN INSIDE read_loop, every 500 ms, and each poll is a fresh TLS dial plus an HTTP
+// GET with a five-second read timeout — so for as long as that took, nothing read the socket. On
+// an idle bench that is invisible; on a loaded bus it is a reader that stops reading for seconds
+// at a time, and the frames it missed are gone. The device reports the ladder as a word on a REST
+// endpoint and nothing in the frame stream carries it, so polling is the only source — but it has
+// no business sharing a thread with the frames.
+fn (mut b CansubBus) health_loop() {
+	for {
+		if !rlock b.stop {
+			b.stop.running
+		} {
+			break
+		}
+		b.poll_health()
+		// Slept in short steps rather than one long one, so close() is noticed promptly instead of
+		// after the poll interval: a thread this one has to be joined by is a thread that must not
+		// take half a second to look up.
+		for _ in 0 .. 10 {
+			if !rlock b.stop {
+				b.stop.running
+			} {
+				return
+			}
+			time.sleep(50 * time.millisecond)
+		}
+	}
 }
 
 // read_loop is the only reader of the socket.
@@ -171,20 +203,11 @@ fn open_cansub_bus(iface string) !Bus {
 // each other's frames.
 fn (mut b CansubBus) read_loop() {
 	mut dec := CansubDecoder{}
-	mut last_poll := i64(0)
 	for {
 		if !rlock b.stop {
 			b.stop.running
 		} {
 			break
-		}
-		// The controller's own verdict, polled rather than derived. The device reports the fault
-		// ladder as a word on a REST endpoint and nothing in the frame stream carries it, so this
-		// is the only source — at a cadence slow enough not to matter beside the frames.
-		now := time.ticks()
-		if now - last_poll > 500 {
-			last_poll = now
-			b.poll_health()
 		}
 		msg := b.ws.read_next_message() or {
 			// A read timeout is an idle bus, not a fault. Anything else ends the loop, and the
@@ -303,10 +326,20 @@ pub fn (mut b CansubBus) close() {
 	// graceful path is a close message and its confirmation; `DELETE /api/can/{ch}/ws` is the
 	// escape hatch when that does not come back, added in API 04.00, and answering 404 when
 	// nothing is connected is a defined no-op rather than a failure to special-case.
+	//
+	// BEFORE the join, deliberately: the reader parks in read_next_message for up to two seconds,
+	// and closing the socket is what wakes it. Joining first would wait out that timeout every
+	// time.
 	b.ws.close(1000, 'closing') or {
 		cansub_request(b.host, 'DELETE', '/api/can/${b.spec.channel}/ws', '', 2 * time.second) or {
 		}
 	}
+	// JOINED, THEN the channel closed. This used to close `rx` and return while the reader was
+	// still parked in the socket — so it woke into a closed socket and pushed into a closed
+	// channel, which is a panic waiting for a bus that happened to be busy at Stop. `reader` was
+	// stored and never waited on; now both threads are.
+	b.reader.wait()
+	b.health_thr.wait()
 	b.rx.close()
 }
 
@@ -325,4 +358,28 @@ fn cansub_sync_clock(host string) ! {
 	if r.status != 200 {
 		return error('PUT /api/time -> HTTP ${r.status}')
 	}
+}
+
+// cansub_address_error reports why this address could not be opened, or none when it can.
+//
+// THE SAME RULES `open_cansub` APPLIES, run without touching the device, so an editor can refuse a
+// rate before it is persisted rather than at Start. Vector and Kvaser each have one and the reason
+// is the same: a front end that reproduces the rules keeps producing a SUBSET of them, and the
+// subset is always missing the case somebody just hit.
+//
+// The timing derivations are what can actually fail here — the device's registers are much
+// narrower in the data phase than the nominal one, and an out-of-range data phase is answered with
+// an HTTP 500 that names nothing (see the findings in #193). Catching it against the published
+// table beats reading that 500 off a live device.
+pub fn cansub_address_error(iface string) ?string {
+	s := parse_cansub_iface(iface) or { return err.msg() }
+	cansub_timing_for(s.arb, cansub_default_sample_point) or {
+		return 'arbitration ${s.arb}: ${err.msg()}'
+	}
+	if s.fd {
+		cansub_timing_for_data(s.data, cansub_default_sample_point) or {
+			return 'data phase ${s.data}: ${err.msg()}'
+		}
+	}
+	return none
 }

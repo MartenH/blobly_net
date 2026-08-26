@@ -76,3 +76,55 @@ fn test_fd_capability_is_declared_per_backend() {
 	assert !transport.adapter_configures_data_phase('socketcan'), '`ip link` sets its data phase, not us'
 	assert !transport.adapter_configures_data_phase('vcan')
 }
+
+// COMPOSE AND DECOMPOSE ARE THE OTHER HALF, and the half the first version of this file missed.
+// The predicates above would all have answered correctly for `cansub` while compose_iface still
+// produced a bare `e5a16adf/1` with no scheme — opened as a SocketCAN name on Linux and refused on
+// Windows — and decompose_iface read a `cansub:` address back as adapter `socketcan`. A backend
+// can be fully classified and still be unreachable, which is exactly what half-registration looks
+// like the third time.
+fn test_every_adapter_round_trips_through_compose() {
+	// address shapes that are realistic for each, since compose is not required to invent one
+	samples := {
+		'virtual':   'CAN1'
+		'vcan':      'vcan0'
+		'socketcan': 'can0'
+		'udp':       '239.63.42.1:20000'
+		'pcan':      'PCAN_USBBUS1'
+		'kvaser':    '0'
+		'vector':    '1'
+		'cansub':    'e5a16adf/1'
+		'doip':      '127.0.0.1:13400'
+	}
+	for a in adapters {
+		addr := samples[a] or {
+			assert false, 'adapters lists ${a} but this test has no sample address for it — add one'
+			continue
+		}
+		iface := compose_iface(a, addr)
+		assert iface != '', '${a} composed nothing'
+		back_adapter, back_addr := decompose_iface(iface)
+		assert back_adapter == a, '${a}: composed "${iface}" but decomposed as "${back_adapter}"'
+		assert back_addr == addr, '${a}: address "${addr}" came back as "${back_addr}"'
+	}
+}
+
+// A rate suffix is stripped by decompose for every adapter that carries one, because the rate
+// lives in the channel's own field and re-appending it at open would produce `…@500000@500000`.
+fn test_a_rate_suffix_does_not_survive_decompose() {
+	for a in adapters {
+		if !transport.adapter_configures_bitrate(a) {
+			continue
+		}
+		base := match a {
+			'pcan' { 'PCAN_USBBUS1' }
+			'kvaser' { '0' }
+			'vector' { '1' }
+			'cansub' { 'e5a16adf/1' }
+			else { continue }
+		}
+
+		_, addr := decompose_iface(compose_iface(a, base) + '@500000')
+		assert addr == base, '${a}: the rate suffix survived decompose as "${addr}"'
+	}
+}
