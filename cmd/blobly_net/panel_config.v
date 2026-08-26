@@ -305,6 +305,17 @@ fn draw_discover_dialog(mut app App) {
 				vgui.text_dim('   (not a CAN channel)  ${vm.hw.name}   ${vm.hw.transceiver}')
 				continue
 			}
+			// UNOWNED, OR MERELY NOT SEEN TO BE OWNED? An application channel that would not answer
+			// may be pointing at this very row, so offering Assign here would invite the operator to
+			// create the #167 alias — two application channels on one physical wire. Shown, because
+			// the hardware is real and hiding it reads as a missing channel; not offered, and the
+			// row says which of the two it is (codex #192 r6).
+			if !vm.owner_known {
+				vgui.text_dim('   (owner unknown)  ${vm.hw.name}   ${detail}')
+				vgui.same_line()
+				vgui.help_marker('The driver did not answer for every application channel, so this hardware may already be assigned to one of the channels it would not describe. Refresh to ask again.')
+				continue
+			}
 			// UNMAPPED. The button is the only path that writes; see assign_vector_hw. The channel
 			// number comes from the field above — NOTHING PROPOSES ONE. Four rounds of review went
 			// into inferring which application channels were free, and the fourth pair of findings

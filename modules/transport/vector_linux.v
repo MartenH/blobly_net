@@ -77,7 +77,9 @@ pub struct VectorMapping {
 pub:
 	hw  VectorChannel
 	app int
-	// Mirrors the Windows field.
+	// Mirrors the Windows field. Nothing here ever constructs one, so the value never matters;
+	// it exists so cmd/blobly_net's ownership check compiles against the same shape.
+	owner_known bool
 }
 
 pub fn vector_mappings() []VectorMapping {
@@ -90,9 +92,10 @@ pub fn vector_application_seen() !bool {
 	return false
 }
 
-// No channels to sweep here, so nothing is known about any of them.
+// No channels to sweep here, so nothing is known about any of them. `.unreadable` rather than
+// `.absent`: absent is the driver ANSWERING that it has no such channel, and no driver answered.
 pub fn vector_app_slot(app int) AppSlot {
-	return .unknown
+	return .unreadable
 }
 
 pub fn vector_app_slots() []AppSlot {

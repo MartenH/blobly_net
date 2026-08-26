@@ -438,18 +438,22 @@ pub fn vector_hardware() []VectorHw {
 	return out
 }
 
-// vector_assignment reports what an application channel currently points at, or none when it
-// has no hardware. Registers nothing, so it is safe to ask about channels we do not own.
 // vector_assignment reports what an application channel points at: the channel and true, or a
-// blank and false when nothing is assigned. It ERRORS when the driver could not be asked —
+// blank and false when nothing is assigned. It ERRORS only when the DRIVER could not be asked —
 // distinct from "nothing is assigned", because a caller about to overwrite the mapping must not
 // treat an unanswered question as a free channel. Registers nothing.
+//
+// A channel the application has never registered (-3) reports as "nothing assigned" rather than as
+// an error, and that is the honest answer to the question this function asks: it points at no
+// hardware. A borrower may then create it and hand it back by unassigning, which is what it would
+// have done for any other free channel. The distinction between -3 and -2 matters only to a caller
+// deciding whether it may WRITE — that one wants vector_app_slot, which keeps them apart.
 pub fn vector_assignment(app_channel int) !(VectorChannel, bool) {
 	mut ht := 0
 	mut hi := 0
 	mut hc := 0
 	rc := C.ct_vector_appl_get(u32(app_channel - 1), &ht, &hi, &hc)
-	if rc == -2 {
+	if rc == -2 || rc == -3 {
 		return VectorChannel{}, false
 	}
 	if rc != 0 {
@@ -460,6 +464,15 @@ pub fn vector_assignment(app_channel int) !(VectorChannel, bool) {
 		hw_index:   hi
 		hw_channel: hc
 	}, true
+}
+
+// appl_get_code asks about one channel and returns the raw code, without the two-state flattening
+// vector_assignment does. `slot_of` lives in vector_names.v, where the tests can reach it.
+fn appl_get_code(app_channel int) int {
+	mut ht := 0
+	mut hi := 0
+	mut hc := 0
+	return C.ct_vector_appl_get(u32(app_channel - 1), &ht, &hi, &hc)
 }
 
 // vector_borrow_lock / vector_borrow_unlock bracket a read-modify-restore of the application
@@ -677,6 +690,10 @@ pub:
 	// Our application channel mapped to this hardware, or 0 for none. `vector:${app}` is the
 	// address it would be opened by.
 	app int
+	// Whether `app == 0` may be believed. False means some application channel could not be read,
+	// so this row might already be owned by it — do not offer to assign a second channel to it.
+	// Always true where `app > 0`: an owner we found is evidence in its own right.
+	owner_known bool
 }
 
 // vector_app_slots asks the driver about every application channel, once.
@@ -694,20 +711,15 @@ pub:
 // inference from the others (#192, option 3).
 pub fn vector_app_slot(app int) AppSlot {
 	if app < 1 || app > 64 {
-		return .unknown
+		return .unreadable
 	}
-	_, assigned := vector_assignment(app) or { return AppSlot.unknown }
-	return if assigned { AppSlot.taken } else { AppSlot.empty }
+	return slot_of(appl_get_code(app))
 }
 
 pub fn vector_app_slots() []AppSlot {
 	mut out := []AppSlot{cap: 64}
 	for app in 1 .. 65 {
-		_, assigned := vector_assignment(app) or {
-			out << AppSlot.unknown
-			continue
-		}
-		out << if assigned { AppSlot.taken } else { AppSlot.empty }
+		out << slot_of(appl_get_code(app))
 	}
 	return out
 }
@@ -720,21 +732,38 @@ pub fn vector_app_slots() []AppSlot {
 // for ASSIGNING: it cannot show hardware nobody has mapped yet, and it names channels without
 // saying what they are. Choosing hardware means seeing the hardware.
 //
-// A CHANNEL WE COULD NOT READ POISONS THE WHOLE SWEEP, deliberately. The unreadable channel may
+// A CHANNEL WE COULD NOT READ POISONS THE WHOLE SWEEP, deliberately. An unreadable channel may
 // have been the owner of any of this hardware, and nothing in the answers says which — so every
-// otherwise-unowned row becomes `unknown` rather than `unowned`. Folding the failure into "no
-// owner" offered an Assign button for hardware that already had one, and taking it would map a
-// SECOND application channel onto one physical wire: the alias destination_conflicts refuses a
-// whole project for (#167), manufactured by the dialog meant to set the bench up.
+// otherwise-unowned row is marked `owner_known: false` rather than reported as free. Folding the
+// failure into "no owner" offers an Assign button for hardware that already has one, and taking it
+// maps a SECOND application channel onto one physical wire: the alias destination_conflicts refuses
+// a whole project for (#167), manufactured by the dialog meant to set the bench up.
+//
+// THE FLAG IS NEW IN R6 AND SO IS THE ABILITY TO CARRY IT. Until the shim separated "cannot answer"
+// from "no such channel", 57 of 64 channels on an ordinary bench read as unreadable — poisoning
+// every row, every time, which is unusable and is why this comment described a behaviour the code
+// did not implement (codex #192 r6). Now only a genuine driver failure poisons, so the rule the
+// comment always claimed can actually be enforced. `absent` and `empty` channels are known NOT to
+// be owners, and cost nothing.
 pub fn vector_mappings() []VectorMapping {
 	hw := vector_channels()
 	slots := vector_app_slots()
 	mut owner := map[string]int{}
+	mut known := true
 	for i, s in slots {
+		if s == .unreadable {
+			// This one may own any row, and we cannot ask which.
+			known = false
+			continue
+		}
 		if s != .taken {
 			continue
 		}
-		a, ok := vector_assignment(i + 1) or { continue }
+		a, ok := vector_assignment(i + 1) or {
+			// It said `taken` a moment ago and will not say what it points at now. Same problem.
+			known = false
+			continue
+		}
 		if ok {
 			owner['${a.hw_type}:${a.hw_index}:${a.hw_channel}'] = i + 1
 		}
@@ -743,8 +772,11 @@ pub fn vector_mappings() []VectorMapping {
 	for c in hw {
 		app := owner['${c.hw_type}:${c.hw_index}:${c.hw_channel}'] or { 0 }
 		out << VectorMapping{
-			hw:    c
-			app:   app
+			hw:  c
+			app: app
+			// A row we DID find an owner for is known regardless: that owner is positive evidence,
+			// and no unreadable channel can take it away.
+			owner_known: known || app > 0
 		}
 	}
 	return out
@@ -761,12 +793,18 @@ pub fn vector_mappings() []VectorMapping {
 //
 // From the SAME sweep the rest uses, so it can no longer disagree with them about the range it
 // covered (codex #192 r3).
+//
+// ONLY `empty` AND `taken` ARE EVIDENCE. Both mean the driver described a channel that belongs to
+// this application, which cannot happen unless the application is registered. `absent` is the
+// driver saying it has no such channel — true of 57 of 64 on a bench that is perfectly well set up,
+// so it proves nothing either way. `unreadable` is silence. Since r6 this is informational only:
+// nothing decides whether to WRITE from it any more (see assign_refusal).
 pub fn vector_application_seen() !bool {
 	if C.ct_vector_load() != 0 {
 		return error('the Vector driver could not be asked about the application "blobly_net"')
 	}
 	for s in vector_app_slots() {
-		if s != .unknown {
+		if s == .empty || s == .taken {
 			return true
 		}
 	}

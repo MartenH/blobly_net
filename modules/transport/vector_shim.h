@@ -1421,10 +1421,31 @@ static int ct_vector_appl_seen_UNUSED(void) {
 	return 0;
 }
 
+/* THE TWO WAYS THIS CAN FAIL ARE DIFFERENT FACTS, and collapsing them into one code is what
+ * three rounds of review kept circling (codex #192 r6). The driver being unreachable and a channel
+ * not being registered under "blobly_net" are not the same thing, and a caller about to WRITE
+ * needs them apart:
+ *
+ *   -1  THE DRIVER COULD NOT BE REACHED. Nothing is known about anything. Refuse.
+ *   -3  the driver answered, and says it has no such channel for this application. It is not
+ *       registered, so there is no mapping to damage and xlSetApplConfig CREATES it — which is
+ *       precisely the documented way to extend an application.
+ *   -2  registered, and pointing at nothing. The ordinary free channel.
+ *    0  registered and assigned; the triple is filled in.
+ *
+ * MEASURED, not assumed, on a VN1630A: xlGetApplConfig returns 255 for every channel outside the
+ * application's list (57 of 64 on a bench with channels 1, 5, 40 and 61-64 registered) and 0 for
+ * every channel inside it. `unknown` was therefore the NORMAL state for an unregistered channel,
+ * not a rare failure — so refusing it, as r5 did, refused 57 of the 64 numbers an operator may
+ * legitimately type, and the extension this dialog advertises could never happen.
+ *
+ * The driver-level check above is what makes -3 safe to trust: a library that would not load or a
+ * driver that would not open has already returned -1 by this line, so a non-zero status here comes
+ * from a driver that IS answering. */
 static int ct_vector_appl_get(unsigned int app_channel, int *hw_type, int *hw_index, int *hw_channel) {
 	unsigned int t = 0, i = 0, c = 0;
 	if (ct_vector_load() != 0 || ct_xl_opendrv() != 0) return -1;
-	if (ct_xl_getappl("blobly_net", app_channel, &t, &i, &c, CT_XL_BUS_TYPE_CAN) != 0) return -1;
+	if (ct_xl_getappl("blobly_net", app_channel, &t, &i, &c, CT_XL_BUS_TYPE_CAN) != 0) return -3;
 	if (t == 0) return -2;
 	*hw_type = (int)t; *hw_index = (int)i; *hw_channel = (int)c;
 	return 0;

@@ -238,16 +238,28 @@ fn (mut app App) refresh_discovery() {
 	// Empty on any machine without the XL driver, which is the honest answer rather than a
 	// placeholder — the Linux stub returns nothing and the section below draws nothing.
 	app.disc_vector = transport.vector_mappings()
-	// A DRIVER THAT COULD NOT BE ASKED IS NOT AN UNREGISTERED APPLICATION. Reported, and treated
-	// as registered so the dialog does not offer to create something that may already exist —
-	// the Assign button still works, and the operator sees why the question went unanswered.
+	// WHAT THE DRIVER CONFIRMED, in the two ways a channel can be usable. `empty` is registered and
+	// pointing at nothing; `absent` is not registered at all, which is equally free — writing it
+	// creates it. Listing only `empty` named the 5 channels this application happens to have and hid
+	// the other 57 an operator may legitimately type (codex #192 r6).
 	mut free := []string{}
+	mut absent := 0
 	for i, s in transport.vector_app_slots() {
-		if s == .empty {
-			free << '${i + 1}'
+		match s {
+			.empty { free << '${i + 1}' }
+			.absent { absent++ }
+			else {}
 		}
 	}
-	app.disc_vector_free = free.join(', ')
+	// Not enumerated: on an ordinary bench `absent` is most of the range, and a list of 57 numbers
+	// is not an answer anybody reads. The count says the same thing and stays short.
+	app.disc_vector_free = if absent > 0 && free.len > 0 {
+		'${free.join(', ')} (and ${absent} not yet registered, which Assign would create)'
+	} else if absent > 0 {
+		'${absent} channels not yet registered, which Assign would create'
+	} else {
+		free.join(', ')
+	}
 	app.disc_vector_app_seen = transport.vector_application_seen() or {
 		if app.disc_vector.len > 0 {
 			app.notify('${err}')
@@ -291,9 +303,10 @@ fn (mut app App) assign_vector_hw(hw transport.VectorChannel, app_channel int) {
 	// ABOUT THE ONE CHANNEL BEING WRITTEN, which is what makes this stronger than the sweep it
 	// replaces: `taken` is the driver saying that THIS channel points at hardware, not an inference
 	// from what other channels did or did not answer.
+	// No `vector_application_seen()` here any more. It was passed in to decide which of two meanings
+	// `unknown` had, and the driver now answers that itself — see assign_refusal (codex #192 r6).
 	slot := transport.vector_app_slot(app_channel)
-	present := transport.vector_application_seen() or { true }
-	if why := transport.assign_refusal(app_channel, slot, present) {
+	if why := transport.assign_refusal(app_channel, slot) {
 		app.notify('${why}')
 		return
 	}
@@ -304,15 +317,26 @@ fn (mut app App) assign_vector_hw(hw transport.VectorChannel, app_channel int) {
 	// The rewrite for option 3 dropped this check along with the ownership machinery it used to
 	// live beside; it was doing a second job (codex #192 r5).
 	mut taken_by := 0
+	mut row_known := true
+	mut found := false
 	for m in transport.vector_mappings() {
 		if m.hw.hw_type == hw.hw_type && m.hw.hw_index == hw.hw_index
 			&& m.hw.hw_channel == hw.hw_channel {
 			taken_by = m.app
+			row_known = m.owner_known
+			found = true
 			break
 		}
 	}
 	if taken_by > 0 {
 		app.notify('${hw.name} is already assigned to vector:${taken_by} — Refresh to see the current mapping')
+		return
+	}
+	// AN UNOWNED ROW IS ONLY UNOWNED IF WE COULD SEE ALL THE OWNERS. Some application channel would
+	// not answer, and it may be the one already pointing here — assigning a second channel to it is
+	// the #167 alias, made by the dialog that exists to set the bench up (codex #192 r6).
+	if !found || !row_known {
+		app.notify('could not confirm whether ${hw.name} is already assigned — the Vector driver did not answer for every application channel. Refresh and try again.')
 		return
 	}
 	transport.vector_assign(app_channel, hw) or {

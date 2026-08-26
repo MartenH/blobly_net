@@ -237,46 +237,68 @@ fn vector_timing_error(s VectorSpec) ?string {
 // produces the slots stays in vector_windows.v. That is the same split vector_names.v already
 // exists for, and its own header says why: written beside the driver, a rule compiles only on
 // Windows, where nothing runs these tests.
+// AppSlot is what the driver says about ONE application channel. Four states, not three, and the
+// split of the old `unknown` into `unreadable` and `absent` is the whole of what r6 fixed: those
+// were two different facts sharing one name, and no rule over the merged state could be right for
+// both. See ct_vector_appl_get in vector_shim.h for the measurement.
 pub enum AppSlot {
-	unknown // the driver would not answer for this channel
-	empty   // the driver says it is unassigned
-	taken   // the driver says it points at hardware
+	unreadable // the driver could not be reached at all. Nothing is known; never write.
+	absent     // the driver answered: it has no such channel for this application. Writing CREATES
+	// it, which is the documented way to extend an application — and the state 57 of
+	// 64 channels are in on an ordinary bench.
+	empty // registered, pointing at nothing. The ordinary free channel.
+	taken // registered, pointing at hardware. Writing would retarget somebody's mapping.
+}
+
+// slot_of turns one ct_vector_appl_get return code into the four-state answer. The ONE place that
+// mapping lives, so vector_app_slot and vector_app_slots cannot drift apart about what a code means.
+//
+// HERE RATHER THAN BESIDE THE DRIVER, for the reason this file's own header gives: written in
+// vector_windows.v it would compile only on Windows, where CI runs no tests — and the codes it
+// interprets are the ones six rounds of review turned on. The C function that produces them is in
+// vector_shim.h; keep the two in step.
+fn slot_of(rc int) AppSlot {
+	return match rc {
+		0 { AppSlot.taken }
+		-2 { AppSlot.empty }
+		-3 { AppSlot.absent }
+		else { AppSlot.unreadable }
+	}
 }
 
 // assign_refusal reports why an application channel must not be written, or none when it may be.
 //
-// THE OPERATOR NAMES THE CHANNEL; NOTHING GUESSES IT. Four rounds of review went into deciding
-// which channels were free, and the fourth pair of findings contradicted each other: a fresh bench
-// must be assignable, a partially-read one must not be, and vxlapi cannot distinguish "outside the
-// application's channel list" from "failed this time" — so no inference satisfies both. The guess
-// is gone rather than refined (#192, option 3).
+// THE OPERATOR NAMES THE CHANNEL; NOTHING GUESSES IT. Rounds 3 and 4 tried to infer which channels
+// were free and produced a contradictory pair of findings; the guess is gone rather than refined
+// (#192, option 3). What replaces it is a check on the ONE channel the operator actually named,
+// which is evidence rather than an inference from what other channels did or did not answer.
 //
-// What replaces it is stronger than the sweep ever was: a check on the ONE channel the operator
-// actually named. `taken` is the driver saying, about that exact channel, that it points at
-// hardware — evidence, not an inference from what other channels did or did not answer.
+// SIX ROUNDS LANDED IN THIS FUNCTION, and the reason was never the rule — it was the input. `slot`
+// carried a state called `unknown` that meant two incompatible things, so r5 refused it (to protect
+// an occupied channel) and r6 showed that refusing it also blocked the extension this dialog is
+// for. Neither was wrong about its own case. The fix is upstream, in ct_vector_appl_get: the driver
+// distinguishes "I cannot answer" from "no such channel", and once those are separate states the
+// rule is obvious and needs no `app_present` inference to prop it up.
 //
-// `app_present` is what finally separates the two readings of `unknown`, and it is the piece the
-// earlier attempts were missing. An unreadable channel means one of two things:
+//   unreadable -> refuse. Nothing is known, so anything could be under there.
+//   taken      -> refuse. The driver says, about this exact channel, that it points at hardware.
+//   absent     -> permit. The driver says there is no such channel; writing creates it.
+//   empty      -> permit. Registered and pointing at nothing.
 //
-//   - the application EXISTS and this channel could not be read. It may be occupied, and writing
-//     it would retarget a mapping somebody made — so it is refused (codex #192 r5).
-//   - NOTHING about the application could be read at all, so there is no application and no
-//     mapping to damage. Writing CREATES, and that is the fresh bench this feature exists for.
-//
-// Rounds 3 and 4 could not tell those apart because they were also trying to guess WHICH channel
-// to write. With the operator naming it, the only question left is "may I write this one", and
-// that one has an answer.
-//
-// `empty` is the ordinary case and always permitted.
-pub fn assign_refusal(app int, slot AppSlot, app_present bool) ?string {
+// That `app_present` argument is deliberately gone. It existed to guess which reading of `unknown`
+// applied, it was derived from vector_application_seen(), and that function's own contract says its
+// `false` is not proof of absence — so the guess turned "nothing answered" into "safe to create",
+// which is exactly the P1 r6 reported. A question the driver can answer directly is not one to
+// infer from a sweep of other channels.
+pub fn assign_refusal(app int, slot AppSlot) ?string {
 	if app < 1 || app > 64 {
 		return 'Vector application channels are numbered 1 to 64'
 	}
 	if slot == .taken {
 		return 'vector:${app} already points at hardware — release it first, or choose another channel'
 	}
-	if slot == .unknown && app_present {
-		return 'the driver would not say what vector:${app} points at, and this application is registered — refusing rather than overwriting a mapping that may be there. Try again, or use a channel the list below shows as free.'
+	if slot == .unreadable {
+		return 'the Vector driver would not say what vector:${app} points at — refusing rather than overwriting a mapping that may be there. Try again in a moment.'
 	}
 	return none
 }

@@ -382,13 +382,46 @@ fn test_the_address_check_covers_timing_not_only_syntax() {
 
 // ---- assigning an application channel -------------------------------------------------------
 //
-// NOTHING PROPOSES A CHANNEL ANY MORE. Four rounds of review went into inferring which application
-// channels were free, and the fourth pair of findings contradicted each other — a fresh bench must
-// be assignable, a partially-read one must not be — because vxlapi cannot separate "outside the
-// application's channel list" from "failed this time". The guess is gone; the operator names the
-// channel and this checks THAT one (#192, option 3).
+// SIX ROUNDS OF REVIEW LANDED IN assign_refusal, and CLAUDE.md's rule for that is to cover the path
+// rather than keep repairing it. So the truth table below is exhaustive: every AppSlot, stated once,
+// with the reason it decides the way it does. A fifth state cannot be added without this failing to
+// compile-or-assert, which is the point — the defect underneath all six rounds was a state whose
+// meaning was ambiguous, and an exhaustive table is what makes the next ambiguity visible.
+//
+// NOTHING PROPOSES A CHANNEL. Rounds 3 and 4 tried to infer which channels were free and produced a
+// contradictory pair of findings; the operator names the channel and this checks THAT one.
+fn test_assign_refusal_decides_every_slot_state() {
+	// The permitted two: both mean "no mapping is at risk", by different routes.
+	for slot in [AppSlot.empty, AppSlot.absent] {
+		if why := assign_refusal(1, slot) {
+			assert false, '${slot} must be assignable: ${why}'
+		}
+	}
+	// The refused two: both mean "something may be under there".
+	for slot in [AppSlot.taken, AppSlot.unreadable] {
+		if _ := assign_refusal(1, slot) {} else {
+			assert false, '${slot} must be refused'
+		}
+	}
+}
+
+// THE CODES, PINNED. ct_vector_appl_get in vector_shim.h is the other half of this: 0 assigned,
+// -2 registered-and-free, -3 no-such-channel, anything else the driver could not be reached. -1 is
+// the one that must NOT read as `absent` — it is the driver-unreachable case, and the r5 finding
+// was precisely about not treating an unanswered question as permission to write.
+fn test_the_driver_codes_map_to_the_states_they_mean() {
+	assert slot_of(0) == .taken
+	assert slot_of(-2) == .empty
+	assert slot_of(-3) == .absent
+	assert slot_of(-1) == .unreadable, 'driver-unreachable must never read as an unregistered channel'
+	// Nothing else is defined, and an undefined code is silence rather than permission.
+	for rc in [-4, -99, 1, 255] {
+		assert slot_of(rc) == .unreadable, 'an unrecognised code (${rc}) must be the refusing state'
+	}
+}
+
 fn test_a_channel_the_driver_says_is_taken_is_refused() {
-	if why := assign_refusal(3, .taken, true) {
+	if why := assign_refusal(3, .taken) {
 		assert why.contains('vector:3'), 'the message must name the channel: ${why}'
 		assert why.contains('release'), 'and say how to proceed: ${why}'
 	} else {
@@ -396,43 +429,43 @@ fn test_a_channel_the_driver_says_is_taken_is_refused() {
 	}
 }
 
-// EMPTY AND UNKNOWN BOTH ALLOW IT, for different reasons. Empty is the ordinary case. Unknown means
-// the channel is outside the application's channel list — where assigning CREATES rather than
-// replaces, which is the fresh-bench path and has nothing to overwrite. Refusing it was what broke
-// that bench in round 4.
-fn test_what_an_unreadable_channel_means_depends_on_the_application() {
-	// Empty is the ordinary case, whether or not the application is there.
-	if why := assign_refusal(1, .empty, true) {
-		assert false, 'an empty channel is the ordinary case: ${why}'
+// THE DISTINCTION THE WHOLE OF R6 IS ABOUT. `absent` and `unreadable` were one state called
+// `unknown`, and no rule over it could be right for both: r5 refused it to protect an occupied
+// channel, and r6 showed that refusing it also blocked extending an application — which is 57 of
+// the 64 channels on a measured bench, i.e. the feature. They decide OPPOSITE ways, and neither
+// needs to know whether the application exists.
+fn test_absent_and_unreadable_are_not_the_same_answer() {
+	// The driver ANSWERED: no such channel. xlSetApplConfig creates it — the documented way to
+	// extend an application, and measured as the state of 57 of 64 channels on a working bench.
+	if why := assign_refusal(7, .absent) {
+		assert false, 'an unregistered channel is exactly what Assign is for: ${why}'
 	}
-	if why := assign_refusal(1, .empty, false) {
-		assert false, 'an empty channel is the ordinary case: ${why}'
-	}
-	// NOTHING was readable about the application: there is none, so writing CREATES and cannot
-	// damage anything. This is the fresh bench, and refusing it broke that case in round 4.
-	if why := assign_refusal(1, .unknown, false) {
-		assert false, 'a fresh bench must be assignable: ${why}'
-	}
-	// The application IS there and this channel would not answer — it may be occupied, and writing
-	// it would retarget somebody's mapping (codex #192 r5).
-	if why := assign_refusal(1, .unknown, true) {
-		assert why.contains('would not say'), 'got ${why}'
+	// The driver did not answer at all. Anything could be under there.
+	if why := assign_refusal(7, .unreadable) {
+		assert why.contains('would not say'), 'the message must say the driver was silent: ${why}'
 	} else {
-		assert false, 'an unreadable channel on a registered application must be refused'
+		assert false, 'a channel the driver would not describe must never be overwritten'
 	}
 }
 
 fn test_the_channel_number_must_be_one_the_library_addresses() {
 	for bad in [0, -1, 65, 1000] {
-		if _ := assign_refusal(bad, .empty, true) {} else {
+		if _ := assign_refusal(bad, .empty) {} else {
 			assert false, '${bad} is not a Vector application channel'
 		}
 	}
 	// The ends of the range are valid.
-	if why := assign_refusal(1, .empty, true) {
+	if why := assign_refusal(1, .empty) {
 		assert false, '1 is valid: ${why}'
 	}
-	if why := assign_refusal(64, .empty, true) {
+	if why := assign_refusal(64, .empty) {
 		assert false, '64 is valid: ${why}'
+	}
+	// The range is checked BEFORE the slot: an out-of-range channel is refused whatever the driver
+	// says about it, including the states that would otherwise be permitted.
+	for slot in [AppSlot.empty, AppSlot.absent, AppSlot.taken, AppSlot.unreadable] {
+		if _ := assign_refusal(0, slot) {} else {
+			assert false, '0 is out of range whatever the slot says (${slot})'
+		}
 	}
 }
