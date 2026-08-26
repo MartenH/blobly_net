@@ -121,6 +121,7 @@ fn test_apply_latched_touches_only_loop() {
 	mut p := new_player(ctl_rec(), 1.0, false)
 	p.play(0.0)
 	before := p.state()
+	pos := p.position_s(100.0)
 
 	mut cmds := no_request()
 	cmds.state = .paused
@@ -130,6 +131,10 @@ fn test_apply_latched_touches_only_loop() {
 
 	assert p.state() == before, 'apply_latched must not act on a state command'
 	assert p.speed == 1.0, 'nor on a speed command'
+	// The seek was named in this test and not checked, so moving seek into apply_latched -- the
+	// exact regression it exists to catch -- passed it (self-review, by making that change and
+	// watching the suite stay green).
+	assert p.position_s(100.0) == pos, 'nor on a seek command'
 }
 
 // ---- a target, not a toggle ---------------------------------------------
@@ -265,8 +270,13 @@ fn test_a_full_tick_never_publishes_a_status_that_contradicts_the_intent() {
 
 	// Loop was applied before the publish, so the panel sees it immediately and its latch clears.
 	assert published.repeat, 'loop must be acknowledged in the tick that took it'
-	// The others are applied after, so the panel sees them on the NEXT tick — which is correct,
-	// and is why the panel latches its own intent for those controls rather than reading back.
+	// The others are applied after, so the panel sees them on the NEXT tick. That is correct for
+	// a different reason in each case, and NOT because they are latched too -- loop is the only
+	// control with a pending latch, and saying otherwise would talk a future reader into
+	// collapsing this split back into one step (self-review). A state command is a TARGET, so a
+	// panel reading a tick-old state still computes the right one; a rate and a position are
+	// shown from the published values and a stale one is merely late, not wrong. Loop is the
+	// exception because its acknowledgement is what clears the latch.
 	assert p.state() == .paused
 	assert p.speed == 2.0
 	assert p.status(50.0).speed == 2.0

@@ -49,12 +49,11 @@ pub fn (c Commands) pending() bool {
 // take reads this tick's commands and clears them in one step, so a command cannot be applied
 // twice or dropped between the read and the clear. The caller holds whatever lock guards them.
 pub fn (mut c Commands) take() Commands {
-	got := Commands{
-		state:  c.state
-		speed:  c.speed
-		seek:   c.seek
-		repeat: c.repeat
-	}
+	// WHOLE-VALUE, not field by field. Listing the fields here means a command added later is
+	// cleared from the source and never returned -- swallowed silently, with nothing from the
+	// compiler and nothing from a test to say so (self-review). `got := c` cannot be used: V
+	// types a `mut` receiver as `&Commands`, so that aliases rather than copies.
+	got := *c
 	c = Commands{}
 	return got
 }
