@@ -159,7 +159,11 @@ fn open_cansub_bus(iface string) !Bus {
 	cansub_sync_clock(host) or {} // best effort: a bus that runs with odd stamps beats no bus
 
 	mut ws := websocket.new_client('wss://${host}/api/can/${spec.channel}/ws',
-		read_timeout: 2 * time.second
+		// SHORT, because this is now what bounds Stop: the reader owns the socket and closes it
+		// on its way out (see close()), so a wire is released one read timeout after it is asked
+		// to stop. An idle reader waking twice a second costs nothing measurable; two seconds of
+		// dead air per wire at Stop is the thing somebody notices.
+		read_timeout: 500 * time.millisecond
 	)!
 	ws.connect() or { return error('cannot open ${iface}: ${err}') }
 
@@ -217,6 +221,19 @@ fn (mut b CansubBus) health_loop() {
 // each other's frames.
 fn (mut b CansubBus) read_loop() {
 	mut dec := CansubDecoder{}
+	// THE SOCKET DIES WITH THIS THREAD, whichever way the loop ends — a stop, a read error, or a
+	// receiver that went away. close() deliberately does not touch it; see the argument there.
+	//
+	// Closing the WebSocket is what closes the CAN channel — the vendor's model, not ours. The
+	// graceful path is a close message and its confirmation; `DELETE /api/can/{ch}/ws` is the
+	// escape hatch when that does not come back, added in API 04.00, and answering 404 when
+	// nothing is connected is a defined no-op rather than a failure to special-case.
+	defer {
+		b.ws.close(1000, 'closing') or {
+			cansub_request(b.host, 'DELETE', '/api/can/${b.spec.channel}/ws', '', 2 * time.second) or {
+			}
+		}
+	}
 	for {
 		if !rlock b.stop {
 			b.stop.running
@@ -479,22 +496,26 @@ pub fn (mut b CansubBus) close() {
 		}
 		b.stop.running = false
 	}
-	// Closing the WebSocket is what closes the CAN channel — the vendor's model, not ours. The
-	// graceful path is a close message and its confirmation; `DELETE /api/can/{ch}/ws` is the
-	// escape hatch when that does not come back, added in API 04.00, and answering 404 when
-	// nothing is connected is a defined no-op rather than a failure to special-case.
+	// THE SOCKET IS CLOSED BY THE THREAD THAT READS IT, and this function does not touch it.
 	//
-	// BEFORE the join, deliberately: the reader parks in read_next_message for up to two seconds,
-	// and closing the socket is what wakes it. Joining first would wait out that timeout every
-	// time.
-	b.ws.close(1000, 'closing') or {
-		cansub_request(b.host, 'DELETE', '/api/can/${b.spec.channel}/ws', '', 2 * time.second) or {
-		}
-	}
-	// JOINED, THEN the channel closed. This used to close `rx` and return while the reader was
-	// still parked in the socket — so it woke into a closed socket and pushed into a closed
-	// channel, which is a panic waiting for a bus that happened to be busy at Stop. `reader` was
-	// stored and never waited on; now both threads are.
+	// It used to: `running = false`, then `ws.close()` here to WAKE the reader out of
+	// read_next_message, then join. That closed the connection underneath a thread parked inside
+	// it, and the reader then segfaulted every single time — on this bench, on every open/close
+	// of a CANsub wire, including the ones `cmd/crosscheck` was reporting as passing, because it
+	// happens after the last result is printed and only the exit status says so (it was 139).
+	//
+	// Waking a blocked reader by destroying what it is blocked on is not something a guard here
+	// can make safe: by the time this thread returns from ws.close(), the other one is already
+	// inside freed structures. The only version that works is the one where a socket has exactly
+	// one owner — so `running = false` is the whole signal, the reader notices it within one read
+	// timeout, closes the socket itself and returns, and this waits.
+	//
+	// That costs up to one read timeout per wire at Stop, which is why the timeout is now 500 ms
+	// rather than two seconds (see new_client): an idle reader waking twice a second costs
+	// nothing, and Stop staying responsive is worth more than the wakeups.
+	//
+	// JOINED, THEN the channel closed. Closing `rx` while the reader still holds it is a panic
+	// waiting for a bus that happens to be busy at Stop.
 	b.reader.wait()
 	b.health_thr.wait()
 	b.rx.close()
