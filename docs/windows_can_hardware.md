@@ -211,13 +211,19 @@ this application has registered and not mapped; harmless, and they accumulate, b
 unassigned channel REGISTERS it so it appears in the dialog ready to assign. (`vectorcheck --pair`
 borrows 61/62 for its test and gives them back, which is where those two usually come from.)
 
-That registration **extends an application that already exists** — it does not create one. Delete
-`blobly_net` in the Hardware Manager and no amount of opening channels brings it back; the driver
-has nothing to add the channel to, and every `vector:<n>` fails with the same code an unmapped
-channel gives. The two are worth separating because they look identical from the wire — nothing
-arrives either way — but the fixes are opposite: an unmapped channel is assigned from the Discover
-dialog in seconds, and a missing application has to be created in the Hardware Manager first.
-So the dialog says which it is rather than leaving you to guess.
+That registration **extends an application that already exists** — *opening* a channel does not
+create one. Delete `blobly_net` in the Hardware Manager and no amount of opening brings it back;
+the driver has nothing to add the channel to, and every `vector:<n>` fails with the same code an
+unmapped channel gives.
+
+**Assigning is the other half, and it does create.** `xlSetApplConfig` — what the Discover dialog's
+Assign button and `vectorcheck --assign` both call — writes the application into existence if it is
+not there, so a deleted or never-created `blobly_net` is recovered from inside the app: tick
+**create unregistered channel**, type a number, press Assign. The Hardware Manager is not needed for
+this, and the dialog says so when nothing could be read for the application.
+
+The two failures are worth separating because they look identical from the wire — nothing arrives
+either way — and the dialog names which one it is rather than leaving you to guess.
 
 So the two columns answer different questions: the left is **our** numbering, the right is **the
 driver's** hardware. `--list` prints both, with the driver's `hwType:hwIndex:hwChannel` triple.
@@ -286,9 +292,16 @@ took one for the other — the caller named one thing and got another, with sile
 was fine as the only symptom. It also *listens* after assigning rather than exiting, so give it
 `--seconds 1` when all you want is the mapping.
 
-`--pair` is the exception and needs no setup at all: it borrows two high application channels,
-runs, and **restores what they pointed at**, including on Ctrl-C. It is the only path here with
-save-and-restore behaviour, which is why it is the one to reach for on a bench you did not set up.
+`--pair` is the one path with **save-and-restore** behaviour: it borrows application channels 61 and
+62, runs, and puts back whatever they pointed at, including on Ctrl-C. That makes it the right tool
+on a bench whose mappings you did not make and must not disturb.
+
+It does need those two channels to be *registered*, though — 61 and 62 are hardcoded, and the borrow
+refuses to touch a channel it cannot first read, which is exactly the protection that stops it
+"restoring" a mapping by clearing one. On a bench where `blobly_net` has never run they are not
+registered, so `--pair` exits before assigning anything. Register them once — assign each to any row
+and release it, or tick **create unregistered channel** in Discover — and it works from then on.
+Letting the borrow bootstrap them itself is [#195](https://github.com/MartenH/blobly_net/issues/195).
 
 ### "It only shows one speed" — where the CAN-FD data rate lives
 
