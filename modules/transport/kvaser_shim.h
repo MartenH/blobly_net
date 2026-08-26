@@ -181,7 +181,7 @@ static int ct_kvaser_write(int hnd, uint32_t id, uint8_t len, const uint8_t *dat
  * is the difference between a 64-byte FD frame arriving and smashing the stack. `fd` and `brs`
  * are reported OUT rather than assumed from how the channel was opened: the bus tells us what
  * each frame was, which is the whole point of the flags. */
-static int ct_kvaser_read(int hnd, uint32_t *id, uint8_t *len, uint8_t *data, int *ext, int *fd, int *brs, int *esi, uint32_t timeout_ms) {
+static int ct_kvaser_read(int hnd, uint32_t *id, uint8_t *len, uint8_t *data, int *ext, int *rtr, int *fd, int *brs, int *esi, uint32_t timeout_ms) {
 	int32_t cid = 0;
 	uint8_t buf[64];
 	uint32_t dlc = 0, flag = 0, t = 0;
@@ -193,6 +193,10 @@ static int ct_kvaser_read(int hnd, uint32_t *id, uint8_t *len, uint8_t *data, in
 	*id = (uint32_t)cid;
 	*len = (uint8_t)(dlc > 64 ? 64 : dlc);
 	*ext = (flag & CT_KV_MSG_EXT) ? 1 : 0;
+	/* A remote frame is a REQUEST, not data. Unreported, it arrived here as an ordinary frame
+	 * carrying whatever the buffer held, so wiretap could not match it against our own record
+	 * of sending one -- the echo of our own request was filed as the ECU answering it. */
+	*rtr = (flag & CT_KV_MSG_RTR) ? 1 : 0;
 	*fd  = (flag & CT_KV_FDMSG_FDF) ? 1 : 0;
 	*brs = (flag & CT_KV_FDMSG_BRS) ? 1 : 0;
 	/* ESI is a RECEIVED STATUS, not a choice: the transmitting node was error-passive. The other
