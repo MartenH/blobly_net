@@ -221,12 +221,23 @@ button. Type the application channel number you want in the field at the top, th
 the row.
 
 Nothing proposes a number for you — the choice is yours, and the dialog reports what the driver
-confirmed rather than guessing. Two kinds of number are free, and both work:
+confirmed rather than guessing. Two kinds of number are free, and they are not offered on the same
+terms:
 
-- channels the application already has, pointing at nothing. These are listed individually.
-- channels it does not have at all — most of the range on any real bench. Assigning one **creates**
-  it, which is the same extension the Hardware Manager performs. These are counted rather than
-  listed, because there are usually about 57 of them and a list that long is not an answer.
+- **channels the application already has, pointing at nothing.** The driver says so positively, so
+  these are listed individually and Assign just works.
+- **channels it does not have at all** — most of the range on any real bench, and *every* channel on
+  one where `blobly_net` has never run. Assigning one **creates** it, the same extension the
+  Hardware Manager performs. These are counted rather than listed (there are usually about 57), and
+  they need the **create unregistered channel** box ticked first.
+
+That box exists because of a limitation worth knowing about. The driver reports "no such channel"
+using its *generic* error code, which is also what a momentary failed read of an **occupied** channel
+looks like — the two are indistinguishable, and no amount of re-asking separates them. Assigning
+blind would therefore risk retargeting a mapping that survives reboots, and refusing outright would
+make a fresh bench impossible to set up. So the app does not guess: it refuses by default and lets
+you say when you mean to create. The box clears itself after each use, because it authorises one
+write rather than switching on a mode.
 
 Both ends are re-checked under a cross-process lock at the moment you press Assign, because the
 list is a snapshot and `vectorcheck` or a second copy of the app may have written since: an
