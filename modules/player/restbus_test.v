@@ -348,3 +348,114 @@ fn test_census_counts_by_attribution() {
 	assert cx.unknown == 1
 	assert cx.nodes.len == 0
 }
+
+// ---- remote frames (#179) ------------------------------------------------
+
+// THE FRAME THAT WAS CERTAINLY NOT THE SUT'S was the one being subtracted on its account. `BO_`
+// names who PRODUCES a message; a remote frame with that id is a REQUEST for it, from somebody
+// else — on a rest bus, very often the tester asking the SUT for exactly the message we are
+// excluding it from sending. Keyed on the id alone, the request was withheld, the SUT never heard
+// the stimulus, and its reply was missing from the run.
+fn test_a_remote_request_for_an_excluded_nodes_message_is_still_replayed() {
+	d := new_decider(sample_db(), ['SUT_ECU'], true)
+	// 0x100 is VcmStatus, which SUT_ECU produces.
+	sent := transport.CanFrame{
+		id: 0x100
+	}
+	asked := transport.CanFrame{
+		id:  0x100
+		rtr: true
+	}
+	assert d.verdict(sent) == .drop_excluded, 'the SUT sending its own message is what we subtract'
+	assert d.verdict(asked) == .keep_remote, 'a request FOR that message is stimulus, not the SUT talking'
+}
+
+// And it must not be counted against the SUT either. `withheld_excluded` is the figure a user is
+// most likely to sanity-check and least likely to doubt, so a request hidden inside it is the
+// worst place for it to be.
+fn test_a_remote_request_is_reported_apart_from_the_excluded_count() {
+	d := new_decider(sample_db(), ['SUT_ECU'], true)
+	mut t := Tally{}
+	assert t.add(d.verdict(transport.CanFrame{ id: 0x100, rtr: true }), 0x100)
+	rep := t.done(1)
+	assert rep.withheld_excluded == 0, 'nothing was withheld on the excluded node account'
+	assert rep.remote == 1
+	assert rep.remote_ids == [u32(0x100)]
+}
+
+// NOR folded into the no-transmitter bucket, which was the tempting shortcut: those ids have no
+// transmitter and this id has one. Reporting it there would put ids into `unattributed_ids` that
+// the DBC attributes perfectly well — a different lie in place of the one this fixes.
+fn test_a_remote_request_is_not_reported_as_unattributed() {
+	d := new_decider(sample_db(), ['SUT_ECU'], true)
+	mut t := Tally{}
+	t.add(d.verdict(transport.CanFrame{ id: 0x100, rtr: true }), 0x100)
+	rep := t.done(1)
+	assert rep.unattributed == 0
+	assert rep.unattributed_ids.len == 0
+	assert rep.withheld_unattributed == 0
+}
+
+// It follows the unattributed POLICY, because it is the same question — the DBC cannot say who
+// asked — even though it is counted separately.
+fn test_a_remote_request_follows_the_unattributed_policy() {
+	keep := new_decider(sample_db(), ['SUT_ECU'], true)
+	drop := new_decider(sample_db(), ['SUT_ECU'], false)
+	f := transport.CanFrame{
+		id:  0x100
+		rtr: true
+	}
+	assert keep.verdict(f) == .keep_remote
+	assert drop.verdict(f) == .drop_remote
+
+	mut t := Tally{}
+	assert !t.add(drop.verdict(f), 0x100), 'withheld, so it does not reach the wire'
+	rep := t.done(0)
+	assert rep.withheld_remote == 1
+	assert rep.withheld_excluded == 0, 'and still not on the excluded node account'
+}
+
+// A remote request for an id the database does not define stays UNKNOWN: the id is what is
+// unknown, and that answer does not change because the frame was a request.
+fn test_a_remote_request_on_an_unknown_id_is_still_unknown() {
+	d := new_decider(sample_db(), ['SUT_ECU'], true)
+	v := d.verdict(transport.CanFrame{ id: 0x7AB, rtr: true })
+	assert v == .keep_unknown, 'got ${v}'
+}
+
+// A remote request for a message the excluded node does NOT produce behaves the same way: the
+// rule is about who asked, and the DBC cannot say that for any remote frame.
+fn test_a_remote_request_for_someone_elses_message_is_also_a_request() {
+	d := new_decider(sample_db(), ['SUT_ECU'], true)
+	// 0x200 is BrakeStatus, produced by EBS, which is not excluded.
+	assert d.verdict(transport.CanFrame{ id: 0x200, rtr: true }) == .keep_remote
+	assert d.verdict(transport.CanFrame{ id: 0x200 }) == .keep, 'and EBS sending it is ordinary traffic'
+}
+
+// THE CENSUS HAD THE SAME MISATTRIBUTION, and it arrives EARLIER: it is the per-node breakdown a
+// user reads while deciding what to exclude. A request counted under the node that produces the
+// message inflated that node's share before the subtraction was even configured.
+fn test_the_census_does_not_credit_a_request_to_the_node_that_produces_it() {
+	entries := [
+		canlog.LogEntry{
+			t_s:   0.0
+			iface: 'can0'
+			frame: transport.CanFrame{
+				id: 0x100
+			}
+		},
+		canlog.LogEntry{
+			t_s:   0.1
+			iface: 'can0'
+			frame: transport.CanFrame{
+				id:  0x100
+				rtr: true
+			}
+		},
+	]
+	c := census(entries, sample_db())
+	assert c.nodes['SUT_ECU'] == 1, 'it sent one frame and was asked for one — only the first is its traffic'
+	assert c.remote == 1
+	assert c.unattributed == 0, 'and the request is not a message without a transmitter'
+	assert c.total == 2
+}

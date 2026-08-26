@@ -116,6 +116,18 @@ fn main() {
 		println('  note: ${rep.unknown} frames on ${rep.unknown_ids.len} id(s) are not in the DBC at all — replayed')
 		println('        ${hex_ids(rep.unknown_ids)}')
 	}
+	// Reported apart from both other notes. A remote frame ASKS for an id rather than sending it,
+	// so the DBC's transmitter says nothing about who sent this one -- and on a rest bus it is
+	// very often the stimulus the SUT is meant to answer (#179).
+	if rep.remote > 0 {
+		verb := if o.replay_unattr {
+			'replayed'
+		} else {
+			'withheld (${rep.withheld_remote} frames)'
+		}
+		println('  note: ${rep.remote} remote request(s) on ${rep.remote_ids.len} id(s) — the DBC cannot say who asked — ${verb}')
+		println('        ${hex_ids(rep.remote_ids)}')
+	}
 	fd_n := kept.filter(it.frame.fd).len
 	if fd_n > 0 {
 		pct := 100.0 * f64(fd_n) / f64(kept.len)
@@ -274,7 +286,7 @@ fn run_multi(o Opts, rec mf4.Recording) {
 	for b in plan.buses {
 		r := b.report
 		mut notes := []string{}
-		withheld := r.withheld_excluded + r.withheld_unattributed
+		withheld := r.withheld_excluded + r.withheld_unattributed + r.withheld_remote
 		if b.source == 0 {
 			notes << 'NO FRAMES — check the mapping'
 		} else if r.kept == 0 {
@@ -289,6 +301,9 @@ fn run_multi(o Opts, rec mf4.Recording) {
 			if r.withheld_unattributed > 0 {
 				why << 'unattributed (--drop-unattributed)'
 			}
+			if r.withheld_remote > 0 {
+				why << 'remote requests (--drop-unattributed)'
+			}
 			notes << if why.len > 0 {
 				'silent: all frames withheld by ${why.join(' + ')}'
 			} else {
@@ -297,6 +312,9 @@ fn run_multi(o Opts, rec mf4.Recording) {
 		}
 		if r.withheld_unattributed > 0 {
 			notes << '${r.withheld_unattributed} withheld as unattributed'
+		}
+		if r.withheld_remote > 0 {
+			notes << '${r.withheld_remote} remote request(s) withheld'
 		}
 		if r.unknown > 0 {
 			notes << '${r.unknown} frames on ${r.unknown_ids.len} id(s) not in the DBC'
