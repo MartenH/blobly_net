@@ -322,6 +322,14 @@ fn run_multi(o Opts, rec mf4.Recording) {
 		if r.unattributed > 0 && r.withheld_unattributed == 0 {
 			notes << '${r.unattributed} unattributed, replayed'
 		}
+		// The REPLAYED case, mirroring the line above. Only the withheld note existed, so under
+		// the default policy -- which replays them -- the multi-bus report mentioned remote
+		// requests nowhere at all, while the single-bus report named them either way. The table
+		// in docs/simulation.md promises they are counted and named whatever happens to them, and
+		// this is the path that was not keeping it (codex round 1 on #210).
+		if r.remote > 0 && r.withheld_remote == 0 {
+			notes << '${r.remote} remote request(s) on ${r.remote_ids.len} id(s), replayed'
+		}
 		nm := name_of[b.src] or { b.src }
 		println('${nm:-14} ${b.dst:-16} ${b.source:9} ${withheld:9} ${r.kept:9}  ${notes.join('; ')}')
 		total += r.kept
