@@ -1,6 +1,6 @@
 module transport
 
-import sync
+
 
 // CAN-FD framing — what format a wire carries, and the ONE place frames we ORIGINATE are given it.
 //

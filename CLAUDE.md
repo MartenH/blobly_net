@@ -344,6 +344,13 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
   here and fails the Linux job ten minutes later. That is a ~10-minute round trip for something
   `-check` finds in seconds without GLFW, FreeType or a linker. It caught `vector_borrow_lock_now`
   exactly this way (#192), after CI did.
+  **It catches missing SYMBOLS, not different BEHAVIOUR** — and the difference has its own trap.
+  `vendor_iface` is `$if windows`, so `vector:1` and `vector:ch1` are one wire here and two
+  ordinary SocketCAN names on Linux; a test asserting the Windows answer compiles and passes on
+  this bench and fails the Linux job (#202). Anything keyed through `wire_key`,
+  `destination_key` or `vendor_iface` needs a `$if windows` guard in the test, or an assertion
+  that holds on both — `inproc:` buses behave the same everywhere and are the safe way to pin the
+  rule itself.
 
 ## Docs
 

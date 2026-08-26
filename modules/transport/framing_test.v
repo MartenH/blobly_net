@@ -38,12 +38,30 @@ fn test_a_frame_that_already_says_fd_is_never_demoted() {
 
 // TWO SPELLINGS, ONE WIRE — keyed exactly as listen-only is, so one transceiver cannot be declared
 // two different formats by two rows that name it differently.
+//
+// WINDOWS ONLY, and the guard is the point rather than a convenience. `vector:` resolves to a
+// vendor wire only where that vendor exists; on Linux the same string is an ordinary SocketCAN
+// interface name, so `vector:1` and `vector:ch1` are genuinely two different wires and must not be
+// folded together — which is exactly what test_destination_key_keeps_its_platform_guard pins for
+// the key this one is built on. Asserting the Windows answer everywhere passed here and failed CI.
 fn test_spellings_of_one_wire_share_a_declaration() {
-	replace_wire_policy([], {'vector:1@500000/2000000': Framing{ fd: true, brs: true }})
-	for spelling in ['vector:1', 'vector:ch1', 'vector:app01@500000/2000000'] {
-		f := framed_for_wire(spelling, CanFrame{ id: 0x100 })
-		assert f.fd, '${spelling} names the same wire and must carry its format'
+	$if windows {
+		replace_wire_policy([], {'vector:1@500000/2000000': Framing{ fd: true, brs: true }})
+		for spelling in ['vector:1', 'vector:ch1', 'vector:app01@500000/2000000'] {
+			f := framed_for_wire(spelling, CanFrame{ id: 0x100 })
+			assert f.fd, '${spelling} names the same wire and must carry its format'
+		}
+		clear_wire_framing()
 	}
+	// EVERYWHERE: a software bus is keyed by its canonical address, so the two spellings of one hub
+	// share a declaration on any platform. This half is what the rule rests on for the buses the
+	// tests actually run over.
+	replace_wire_policy([], {'inproc:framing_spell': Framing{ fd: true, brs: true }})
+	for spelling in ['inproc:framing_spell', ' inproc:framing_spell'.trim_space()] {
+		f := framed_for_wire(spelling, CanFrame{ id: 0x100 })
+		assert f.fd, '${spelling} names the same hub and must carry its format'
+	}
+	clear_wire_framing()
 }
 
 // A PROJECT REPLACED MUST NOT LEAVE ITS MARKS BEHIND, the hazard clear_listen_only exists for.
