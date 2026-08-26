@@ -114,10 +114,16 @@ pub fn build_multi(entries []canlog.LogEntry, specs []BusSpec) MultiPlan {
 		}
 	}
 	// kept per bus: the Tally does not know it, so count what each bus contributed.
+	//
+	// EVERY WITHHELD BUCKET has to be subtracted here, and this is the second place that has to
+	// be told when one is added -- the remote-request bucket (#179) was not, so with
+	// --drop-unattributed the frames it withheld were absent from `entries` and still counted as
+	// replayed. A bus whose traffic was all remote requests then reported kept == source, and the
+	// "silent: all frames withheld" diagnosis could never fire for it (self-review).
 	mut kept_of := []int{len: specs.len}
 	for i in 0 .. specs.len {
-		kept_of[i] = sources[i] - plans[i].report.withheld_excluded -
-			plans[i].report.withheld_unattributed
+		r := plans[i].report
+		kept_of[i] = sources[i] - r.withheld_excluded - r.withheld_unattributed - r.withheld_remote
 	}
 	mut fixed := []BusPlan{}
 	for i, pl in plans {
@@ -125,14 +131,14 @@ pub fn build_multi(entries []canlog.LogEntry, specs []BusSpec) MultiPlan {
 			src:    pl.src
 			dst:    pl.dst
 			source: pl.source
+			// SPREAD, not field by field. Listing them meant a count added to Subtraction was
+			// simply absent here and read as zero everywhere downstream -- which is what happened
+			// to the remote-request counts, leaving their reporting in `cmd/restbus` dead on this
+			// path while it worked perfectly on the single-bus one (self-review). `kept` is the
+			// only field this loop actually computes.
 			report: Subtraction{
-				kept:                  kept_of[i]
-				withheld_excluded:     pl.report.withheld_excluded
-				withheld_unattributed: pl.report.withheld_unattributed
-				unattributed:          pl.report.unattributed
-				unknown:               pl.report.unknown
-				unattributed_ids:      pl.report.unattributed_ids
-				unknown_ids:           pl.report.unknown_ids
+				...pl.report
+				kept: kept_of[i]
 			}
 		}
 	}

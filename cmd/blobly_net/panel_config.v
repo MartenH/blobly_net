@@ -934,12 +934,21 @@ fn (mut app App) draw_replay_scan(i int, ch project.Channel) bool {
 		// for an id instead of sending it, so the DBC attributes the id perfectly well and simply
 		// cannot say who requested it (#179). Summed with the no-transmitter frames, the number a
 		// user reads as "the DBC is incomplete" would grow for a reason that is not that.
-		rem := if cn.remote > 0 {
-			' · ${cn.remote} are remote requests, which the DBC cannot attribute'
-		} else {
-			''
+		// EACH CLAUSE ONLY WHEN IT HAS SOMETHING TO SAY. Widening the guard without doing this
+		// left the first two unconditional, so a bus carrying only remote requests announced
+		// "0 frames carry no declared sender · 0 are on ids the DBCs do not define" before the one
+		// number that was not zero (self-review).
+		mut parts := []string{}
+		if cn.unattributed > 0 {
+			parts << '${cn.unattributed} frames carry no declared sender'
 		}
-		vgui.text_dim('   ${cn.unattributed} frames carry no declared sender · ${cn.unknown} are on ids the DBCs do not define${rem} — all replay regardless')
+		if cn.unknown > 0 {
+			parts << '${cn.unknown} are on ids the DBCs do not define'
+		}
+		if cn.remote > 0 {
+			parts << '${cn.remote} are remote requests, which the DBC cannot attribute'
+		}
+		vgui.text_dim('   ${parts.join(' · ')} — all replay regardless')
 	}
 	return false
 }

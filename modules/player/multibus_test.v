@@ -222,7 +222,13 @@ fn test_the_per_bus_numbers_balance() {
 	p := build_multi(mb_sample(), mb_specs())
 	for b in p.buses {
 		r := b.report
-		assert b.source == r.kept + r.withheld_excluded + r.withheld_unattributed, '${b.src}: ${b.source} != ${r.kept}+${r.withheld_excluded}+${r.withheld_unattributed}'
+		// EVERY BUCKET, including remote requests. This assertion holds trivially -- `kept` is
+		// computed by subtracting exactly these terms -- so its real job is to go stale loudly
+		// when a bucket is added and this line is not told. It did not when the remote bucket
+		// arrived, which is how the multi-bus path kept counting withheld frames as replayed
+		// (self-review).
+		assert b.source == r.kept + r.withheld_excluded + r.withheld_unattributed +
+			r.withheld_remote, '${b.src}: ${b.source} != ${r.kept}+${r.withheld_excluded}+${r.withheld_unattributed}+${r.withheld_remote}'
 	}
 }
 
@@ -274,4 +280,61 @@ fn test_resolve_bus_refuses_what_it_cannot_decide() {
 	if _ := resolve_bus(two, ['a', 'b'], 'nope') {
 		assert false, 'an unknown bus must be refused'
 	}
+}
+
+// A WITHHELD REMOTE REQUEST MUST LEAVE THE STREAM AND THE COUNT TOGETHER. `kept` is computed on
+// this path by subtracting the withheld buckets from the source count, so a bucket the arithmetic
+// has not been told about is one whose frames vanish from `entries` and stay in `kept` — the run
+// then reports replaying frames it never sent, and a bus silenced entirely by that bucket never
+// trips the "all frames withheld" diagnosis (self-review of #179's first commit).
+//
+// The conservation test above cannot see this on its own: with no remote frame in the sample it
+// balances whatever the arithmetic does. This is the case that gives it something to weigh.
+fn test_a_withheld_remote_request_leaves_both_the_stream_and_the_kept_count() {
+	mut entries := mb_sample()
+	// A request for 0x101 — VcmA, which SUT_ECU produces on bus A.
+	entries << canlog.LogEntry{
+		t_s:   0.06
+		iface: 'mf4:group1'
+		frame: transport.CanFrame{
+			id:  0x101
+			rtr: true
+		}
+	}
+	mut specs := mb_specs()
+	// Policy says withhold what the DBC cannot attribute, which now includes the request.
+	specs[0] = BusSpec{
+		...specs[0]
+		replay_unattributed: false
+	}
+	p := build_multi(entries, specs)
+
+	mut a := p.buses[0]
+	assert a.report.withheld_remote == 1, 'the request was withheld'
+	assert a.report.remote == 1
+	assert a.report.remote_ids == [u32(0x101)], 'and it is reported on the multi-bus path too'
+	assert a.source == a.report.kept + a.report.withheld_excluded + a.report.withheld_unattributed +
+		a.report.withheld_remote, 'recorded = withheld + replay'
+	// And it really is absent from the stream, which is what `kept` claims about it.
+	for e in p.entries {
+		assert !e.frame.rtr, 'a withheld request must not reach the wire'
+	}
+}
+
+// The same request with the default policy is replayed, reported, and counted as kept.
+fn test_a_replayed_remote_request_is_reported_on_the_multi_bus_path() {
+	mut entries := mb_sample()
+	entries << canlog.LogEntry{
+		t_s:   0.06
+		iface: 'mf4:group1'
+		frame: transport.CanFrame{
+			id:  0x101
+			rtr: true
+		}
+	}
+	p := build_multi(entries, mb_specs())
+	a := p.buses[0]
+	assert a.report.remote == 1
+	assert a.report.withheld_remote == 0
+	assert p.entries.filter(it.frame.rtr).len == 1, 'stimulus reaches the bench'
 }

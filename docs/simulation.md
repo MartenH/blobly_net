@@ -725,6 +725,7 @@ re-decide any of it.
 |---|---|---|
 | message sent by an excluded node | withheld | the SUT is the only source of its own messages |
 | message with no transmitter in the DBC (`Vector__XXX`) | replayed; `--drop-unattributed` withholds | no safe default: replaying risks a collision, withholding risks silence. The report counts them and names the ids either way |
+| **remote frame** (a request for an id, not a transmission of it) | replayed; `--drop-unattributed` withholds | `BO_` names who *produces* a message, so it cannot say who *asked* — the same unanswerable question, and the same flag. Counted and named apart from the row above, because those ids have no transmitter and these ids have one that did not send this frame. Note that `--drop-unattributed` therefore withholds requests the SUT may be expected to answer (#179) |
 | id absent from the DBC entirely | replayed | the recording proves it was on the wire; the database is one description of the bus, not the bus |
 | `--exclude` names a node the DBC does not declare | **refused, exits non-zero** | a typo subtracts nothing and looks exactly like a working rest bus |
 
