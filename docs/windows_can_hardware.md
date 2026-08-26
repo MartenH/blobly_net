@@ -184,9 +184,17 @@ The backend does both, and which one applies depends on the question:
 - **Opening a bus never touches that struct.** `vector:<n>` is an application channel, resolved
   through `xlGetChannelMask`, so the path that carries traffic does not depend on the layout.
 - **Discovering hardware does.** Listing what is physically plugged in has no other source, so
-  `ct_vector_channel_info` calls `xlGetDriverConfig` and the shim reproduces the struct — pinned by
-  the same `_Static_assert`s the ABI note above describes (`XLdriverConfig` is 14576 bytes), which
-  the mingw CI job checks on every push.
+  `ct_vector_channel_info` calls `xlGetDriverConfig` and the shim reproduces the struct, with the
+  `_Static_assert`s the ABI note above describes (`XLdriverConfig` is 14576 bytes) checked by the
+  mingw CI job on every push.
+
+Be clear about what those assertions are worth, because it is easy to read them as more than they
+are. `vxlapi.h` is deliberately not included at build time, so each one compares the transcribed
+struct against a **hardcoded constant transcribed from the same reading of the header**. They catch
+a field added, reordered or mis-sized locally — real drift, and the reason they exist. They cannot
+catch a value transcribed wrongly in the first place, and they cannot notice that an installed
+`vxlapi64.dll` has a different ABI from 25.20.14: both sides of the comparison are ours. A genuine
+mismatch there still reads the wrong fields, or past the end of the channel array, at runtime.
 
 So the risk is real but confined to discovery, and it is caught at compile time rather than at
 runtime. It is not avoided altogether, and an earlier version of this page claimed it was.
@@ -207,9 +215,15 @@ CAN 62   Not assigned
 
 **`CAN <n>` is the application channel NUMBER, not a name** — it is not editable, and it is not
 a description of the bus. It is the `n` in `vector:<n>`. Rows reading *Not assigned* are channels
-this application has registered and not mapped; harmless, and they accumulate, because opening an
-unassigned channel REGISTERS it so it appears in the dialog ready to assign. (`vectorcheck --pair`
-borrows 61/62 for its test and gives them back, which is where those two usually come from.)
+this application has registered and not mapped. They are harmless, and they are left behind by
+whatever assigned them — `--assign` followed by `--release`, or a `--pair` run on channels 61 and
+62, both of which clear the mapping without removing the row.
+
+**Opening a channel does not create one.** It is worth being exact, because the two look similar:
+opening a channel the application already has but has not mapped rewrites the zeroes already there,
+which is how the application first becomes visible in the Hardware Manager. Opening a channel the
+application does *not* have fails instead (`-1007`) and registers nothing. So rows appear by being
+**assigned**, never by being opened, and the section below is the only way to add one.
 
 That registration **extends an application that already exists** — *opening* a channel does not
 create one. Delete `blobly_net` in the Hardware Manager and no amount of opening brings it back;
@@ -347,10 +361,27 @@ refusal. The payload is checked byte for byte against what was sent, not merely 
 under-terminated FD bus corrupts the data phase, and a marker-only check would pass over it.
 
 **Termination matters much more for FD.** A CAN bus wants 120 Ω at *both* ends. One resistor is
-usually survivable at 500 kbit/s over a short bench link, and it is the first thing to suspect
-when an FD data phase at 2 Mbit/s or above starts producing malformed frames — the reflections
-it leaves scale with the bit rate. Fix the termination before reading a malformed-frame count as
-a backend bug.
+usually survivable at 500 kbit/s over a short bench link — the FD results below were all recorded
+that way — and it is the first thing to suspect when an FD data phase at 2 Mbit/s or above starts
+producing malformed frames, since the reflections it leaves scale with the bit rate. Fix the
+termination before reading a malformed-frame count as a backend bug.
+
+**With NO resistor fitted, classic CAN goes too.** Measured on this same bench, Channel 1 to
+Channel 3, after the one terminator was removed:
+
+| bitrate | result |
+|---|---|
+| 125 000 | 100% arrived |
+| 200 000 | nothing arrived · 17,899 error frames |
+| 250 000 | nothing arrived · 22,332 error frames |
+| 500 000 | nothing arrived · 42,894 error frames |
+
+**The shape of that table is the diagnostic.** Error frames rising roughly in proportion to the bit
+rate is a constant error rate *per bit*, which is what reflections look like — they settle inside a
+125 k bit time and do not inside a 250 k one. So a link that passes at a low bitrate and fails at a
+higher one is a physical-layer problem, not a software one. Two checks isolate it in a minute:
+`--pair 5,6` uses the driver's virtual channels (no transceiver, no wire) and should pass at full
+speed, and dropping the bitrate until it passes tells you it is the wire rather than the setup.
 
 `--modecheck` is the bench half of a test whose other half runs everywhere: on Linux
 `modules/transport/pinned_test.v` checks the bookkeeping over `inproc:` buses, and only a VN
