@@ -199,13 +199,48 @@ this application has registered and not mapped; harmless, and they accumulate, b
 unassigned channel REGISTERS it so it appears in the dialog ready to assign. (`vectorcheck --pair`
 borrows 61/62 for its test and gives them back, which is where those two usually come from.)
 
+That registration **extends an application that already exists** — it does not create one. Delete
+`blobly_net` in the Hardware Manager and no amount of opening channels brings it back; the driver
+has nothing to add the channel to, and every `vector:<n>` fails with the same code an unmapped
+channel gives. The two are worth separating because they look identical from the wire — nothing
+arrives either way — but the fixes are opposite: an unmapped channel is assigned from the Discover
+dialog in seconds, and a missing application has to be created in the Hardware Manager first.
+So the dialog says which it is rather than leaving you to guess.
+
 So the two columns answer different questions: the left is **our** numbering, the right is **the
 driver's** hardware. `--list` prints both, with the driver's `hwType:hwIndex:hwChannel` triple.
 
 ### Doing it without the Hardware Manager
 
-The GUI cannot create a mapping yet ([#186](https://github.com/MartenH/blobly_net/issues/186)),
-but `cmd/vectorcheck` can, and it is the same call the dialog makes:
+Two ways, and both make the same `xlSetApplConfig` call the Hardware Manager does.
+
+**From the app:** the Discover dialog (File → Configure… → Discover) grows a **Vector hardware**
+section listing every physical channel with its transceiver, its rate and its `can-fd` verdict.
+Mapped rows show the address they already answer to (`vector:2`); unmapped ones get an **Assign**
+button. Type the application channel number you want in the field at the top, then press Assign on
+the row.
+
+Nothing proposes a number for you — the choice is yours, and the dialog reports what the driver
+confirmed rather than guessing. Two kinds of number are free, and both work:
+
+- channels the application already has, pointing at nothing. These are listed individually.
+- channels it does not have at all — most of the range on any real bench. Assigning one **creates**
+  it, which is the same extension the Hardware Manager performs. These are counted rather than
+  listed, because there are usually about 57 of them and a list that long is not an answer.
+
+Both ends are re-checked under a cross-process lock at the moment you press Assign, because the
+list is a snapshot and `vectorcheck` or a second copy of the app may have written since: an
+application channel already pointing at hardware is refused, and so is a physical channel another
+number already claims. If the driver will not describe *every* application channel, a row whose
+ownership cannot be established shows `(owner unknown)` and gets no button — one of the channels
+that stayed silent may be the one already pointing at it, and assigning a second is how you end up
+with two addresses for one wire. A channel carrying no CAN — a VN1630A's D/A IO channel, say — is
+listed but gets no button either, since the mapping could only fail to open.
+
+Writes go under the application name `blobly_net` only; another application's assignments (CANoe,
+CANalyzer) are never touched, and the mapping is stored by the driver and survives a reboot.
+
+**From the CLI**, when there is no GUI or you want it scripted:
 
 ```sh
 vectorcheck --probe                          # find the row number of the hardware you want
@@ -233,15 +268,22 @@ CAN-FD, and not a limit either:
 - so there is one field because the data phase is an **application-time** setting, not a hardware
   one. `vector:1@500000/2000000` is where you say it.
 
-**Whether a channel can do CAN-FD at all** is a property of its transceiver, and today the only
-way to know from the outside is to look up the part — the `CANpiggy 1057Gcap` and the on-board
-`1051cap` on the bench this was written against both carry FD, but a piggyback rated for classic
-CAN only will not, and the name is the whole clue. The driver does answer it
-(`XL_CHANNEL_FLAG_CANFD_ISO_SUPPORT` /
-`..._BOSCH_SUPPORT` in `channelCapabilities`, a field the shim already reads), and surfacing it in
-`--probe` is [#187](https://github.com/MartenH/blobly_net/issues/187). Until then the failure is
-late and indirect: configure a data phase, Start, and get a refusal from
-`xlCanFdSetConfiguration` for a channel that was never FD-capable.
+**Whether a channel can do CAN-FD at all** is a property of its transceiver, and you do not have
+to identify the part to find out — the driver answers it
+(`XL_CHANNEL_FLAG_CANFD_ISO_SUPPORT` / `..._BOSCH_SUPPORT` in `channelCapabilities`), and
+`vectorcheck --probe` prints it in a **`can-fd`** column:
+
+| `can-fd` | means |
+|---|---|
+| `iso` | ISO CAN-FD — the variant this backend configures. Usable. |
+| `iso+bosch` | both variants; this backend uses ISO. Usable. |
+| `bosch-only` | FD hardware, but the non-ISO variant only — this backend cannot drive it. |
+| `-` | classic CAN only. A data phase will be refused. |
+
+Asking beforehand is the point: the alternative is a late, indirect failure — configure a data
+phase, Start, and get a refusal from `xlCanFdSetConfiguration` for a channel that was never
+FD-capable. The part name is a weaker clue than the flag but agrees with it; the `CANpiggy
+1057Gcap` and the on-board `1051cap` on the bench this was written against both report `iso`.
 
 ## Checking a bench
 
