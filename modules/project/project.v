@@ -1688,6 +1688,20 @@ pub fn (c Channel) address_config_error() ?string {
 	// to prevent, recurring one row-type over (codex round 1 on #204). The name says `address`
 	// rather than `fd` for the same reason.
 	if c.adapter == 'cansub' {
+		// THE ADDRESS FIELD CARRIES NO RATE. `iface_with_bitrate()` appends the row's rate fields,
+		// so a suffix left in the address is either duplicated (two `@`, refused) or — when the
+		// nominal field is unset — passed through untouched, in which case the backend opens at
+		// the address's rate while `nominal_bitrate()` and `destination_conflicts()` model the row
+		// at the 500 kbit/s default. A rate conflict on that wire then goes unnoticed and the
+		// controller runs at a rate the editor never showed (codex round 8 on #204).
+		//
+		// Refused rather than migrated: moving it silently would change what the row means without
+		// the operator seeing it, and the rate fields are right there. v1 files are unaffected —
+		// `decompose_iface` lifts their suffix into `bitrate` on load, which is what that code is
+		// for.
+		if c.address.contains('@') {
+			return 'the address field holds a rate (${c.address}) — put the rates in the bitrate fields instead; the address is just the device id and channel'
+		}
 		return transport.cansub_address_error(c.iface_with_bitrate())
 	}
 	if !c.fd || !c.can_carry_fd() {

@@ -1073,8 +1073,7 @@ fn test_two_rows_on_one_wire_must_agree_about_fd() {
 	}
 	msgs := destination_conflicts([fd_row, classic_row])
 	assert msgs.len > 0, 'a wire asked to be both CAN-FD and classic must be refused'
-	assert msgs.any(it.contains('CAN-FD') && it.contains('classic CAN')),
-		'the message must name both protocols, got ${msgs}'
+	assert msgs.any(it.contains('CAN-FD') && it.contains('classic CAN')), 'the message must name both protocols, got ${msgs}'
 
 	// Agreeing rows are not a conflict — including two FD rows at the same data rate.
 	same := destination_conflicts([fd_row, Channel{
@@ -1287,7 +1286,8 @@ channels:
     fd: true
     bitrate: 500000
     data_bitrate: ${bad}
-') {
+')
+		{
 			assert false, '"${bad}" must not load (got data_bitrate ${p.channels[0].data_bitrate})'
 		}
 	}
@@ -1329,7 +1329,12 @@ fn test_address_config_error_asks_the_real_parser() {
 		assert false, 'a data phase below the arbitration rate must be reported'
 	}
 	// Past the range the standard allows.
-	if _ := Channel{ ...base, data_bitrate: 9_000_000 }.address_config_error() {} else {
+	if _ := Channel{
+		...base
+		data_bitrate: 9_000_000
+	}.address_config_error()
+	{
+	} else {
 		assert false, '9 Mbit/s is past what ISO 11898-1 allows'
 	}
 	// The ordinary cases are fine, including FD with no bit-rate switch.
@@ -1361,5 +1366,55 @@ fn test_address_config_error_asks_the_real_parser() {
 	}
 	if _ := pc.address_config_error() {
 		assert false, 'PCAN cannot configure a data phase; fd_capability_warnings covers that row'
+	}
+}
+
+// A RATE LEFT IN THE ADDRESS FIELD IS REFUSED, not quietly honoured. `iface_with_bitrate()`
+// appends the row's rate fields, so a suffix in the address is either duplicated — two `@`, which
+// the parser rejects — or, when the nominal field is unset, passed through untouched. In that case
+// the backend opens at the address's rate while `nominal_bitrate()` and `destination_conflicts()`
+// model the row at the default, so a rate conflict on that wire goes unnoticed and the controller
+// runs at a rate the editor never showed (codex round 8 on #204).
+fn test_a_cansub_address_with_a_rate_suffix_is_refused() {
+	c := Channel{
+		name:    'CAN1'
+		adapter: 'cansub'
+		address: '1A2B3C4D/1@250000'
+		iface:   'cansub:1A2B3C4D/1@250000'
+	}
+	why := c.address_config_error() or {
+		assert false, 'a rate in the address field must be refused'
+		return
+	}
+	assert why.contains('250000') || why.contains('address'), 'the refusal must point at the field: ${why}'
+}
+
+// Including when the row also has rate fields set — that is the two-`@` case, and it must be
+// refused here rather than deep in a parser at Start.
+fn test_a_cansub_address_with_a_rate_suffix_is_refused_even_with_rate_fields() {
+	c := Channel{
+		name:    'CAN1'
+		adapter: 'cansub'
+		address: '1A2B3C4D/1@250000'
+		iface:   'cansub:1A2B3C4D/1@250000'
+		bitrate: 500000
+	}
+	if _ := c.address_config_error() {
+	} else {
+		assert false, 'a rate in the address field must be refused whatever the rate fields say'
+	}
+}
+
+// A plain address is what the editor is asking for, and it must still pass.
+fn test_a_plain_cansub_address_is_accepted() {
+	c := Channel{
+		name:    'CAN1'
+		adapter: 'cansub'
+		address: '1A2B3C4D/1'
+		iface:   'cansub:1A2B3C4D/1'
+		bitrate: 500000
+	}
+	if why := c.address_config_error() {
+		assert false, 'an ordinary CANsub row must be accepted: ${why}'
 	}
 }

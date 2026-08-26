@@ -148,7 +148,12 @@ fn open_cansub_bus(iface string) !Bus {
 	// between its frames succeeding and it going error-passive.
 	silent := is_listen_only(iface)
 	body := cansub_phy_json(nominal, data, silent)
-	r := cansub_request(host, 'PUT', '/api/can/${spec.channel}/phy', body, 5 * time.second) or {
+	// BOUNDED, because this whole function runs INSIDE the process-wide registry lock that
+	// shared_open holds (see the argument there). A device that is reachable enough to stall but
+	// not to answer therefore holds up every other opener — including PCAN, which shares that
+	// registry — so the budget here is what somebody waiting at Start actually experiences, not
+	// what a patient client would allow (codex round 8 on #204).
+	r := cansub_request(host, 'PUT', '/api/can/${spec.channel}/phy', body, cansub_open_timeout) or {
 		return error('cannot configure ${iface}: ${err}')
 	}
 	if r.status != 200 && r.status != 204 {
@@ -201,8 +206,13 @@ fn (mut b CansubBus) health_loop() {
 		} {
 			break
 		}
-		b.poll_health()
+		// SILENCE FIRST, THEN DIAGNOSTICS. Ordered the other way round, a wire toggled to
+		// listen-only kept ACKing for a health GET plus whatever remained of the sleep before the
+		// PUT went out — around 1.2 s of a controller acknowledging traffic on a bus the UI had
+		// already declared silent (codex round 8 on #204). Health is a number somebody reads;
+		// this is a promise about what the transceiver is doing.
 		b.reconcile_listen_only()
+		b.poll_health()
 		// Slept in short steps rather than one long one, so close() is noticed promptly instead of
 		// after the poll interval: a thread this one has to be joined by is a thread that must not
 		// take half a second to look up.
@@ -211,6 +221,15 @@ fn (mut b CansubBus) health_loop() {
 				b.stop.running
 			} {
 				return
+			}
+			// AND THE SLEEP IS INTERRUPTED BY A MODE CHANGE, for the same reason. Slept through,
+			// the toggle waited out the rest of the interval before the loop even reached the
+			// reconcile — so the worst case was a full poll period of ACKing rather than the one
+			// step it is now.
+			if is_listen_only(b.iface) != rlock b.stop {
+				b.stop.phy_silent
+			} {
+				break
 			}
 			time.sleep(50 * time.millisecond)
 		}
@@ -462,6 +481,11 @@ const cansub_health_timeout = 700 * time.millisecond
 // answering.
 const cansub_health_misses = 3
 
+// How long any single request on the OPEN path may take. Short because `shared_open` holds a
+// process-wide lock across the whole open, so this is time every other opener spends waiting —
+// see the note beside the PHY PUT.
+const cansub_open_timeout = 2 * time.second
+
 // cansub_wait_slice decides how long ONE select may park, or none when the caller's budget is
 // spent. Extracted from recv so both of its rules are visible to CI, because neither could be
 // seen from outside without a device on the other end (codex round 1 on #204).
@@ -593,7 +617,7 @@ pub fn (mut b CansubBus) health() BusHealth {
 fn cansub_sync_clock(host string) ! {
 	now := time.utc()
 	stamp := '"${now.year:04d}-${now.month:02d}-${now.day:02d}T${now.hour:02d}:${now.minute:02d}:${now.second:02d}.${now.nanosecond / 1_000_000:03d}Z"'
-	r := cansub_request(host, 'PUT', '/api/time', stamp, 3 * time.second)!
+	r := cansub_request(host, 'PUT', '/api/time', stamp, cansub_open_timeout)!
 	if r.status != 200 {
 		return error('PUT /api/time -> HTTP ${r.status}')
 	}
