@@ -115,6 +115,15 @@ _Static_assert(sizeof(ct_xlevent) == 48, "XLevent must be 48 bytes");
  * The header states two of the three sizes itself — XL_CANFD_RX_EVENT_HEADER_SIZE 32 and
  * XL_CANFD_MAX_EVENT_SIZE 128 — so the RX assertions test our layout against the library's own
  * arithmetic, not merely against a number retyped from the same place. */
+/* Flags in XLchannelConfig.channelCapabilities. TWO KINDS OF CAN-FD, and they are different frame
+ * formats rather than two names for one: ISO 11898-1:2015 changed the CRC and the stuff-count, so
+ * a Bosch (non-ISO) controller and an ISO one on the same wire do not understand each other. The
+ * XL library takes the choice as CANFD_CONFOPT_NO_ISO in XLcanFdConf.options; this backend always
+ * configures ISO, so a channel offering only the Bosch variant is one we cannot drive — worth
+ * telling apart rather than reporting a flat "FD". */
+#define CT_XL_CHANNEL_FLAG_CANFD_BOSCH_SUPPORT 0x20000000u
+#define CT_XL_CHANNEL_FLAG_CANFD_ISO_SUPPORT   0x80000000u
+
 #define CT_XL_CAN_MAX_DATA_LEN        64
 #define CT_XL_CANFD_MAX_EVENT_SIZE   128
 #define CT_XL_CANFD_RX_HEADER_SIZE    32
@@ -1277,7 +1286,8 @@ _Static_assert(offsetof(ct_xl_driver_config, channel) == 48, "channel array at 4
 static int ct_vector_channel_info(int idx, char *name, int name_len, char *transceiver,
                                   int trans_len, int *hw_type, int *hw_index, int *hw_channel,
                                   unsigned int *serial, unsigned int *bus_type,
-                                  unsigned int *bitrate, int *on_bus, int *trx_state) {
+                                  unsigned int *bitrate, int *on_bus, int *trx_state,
+                                  int *fd_iso, int *fd_bosch) {
 	static ct_xl_driver_config cfg;
 	if (ct_vector_load() != 0 || !ct_xl_drvconfig) return -1;
 	if (ct_xl_opendrv() != 0) return -1;
@@ -1296,6 +1306,18 @@ static int ct_vector_channel_info(int idx, char *name, int name_len, char *trans
 		*bitrate = c->busParams.bitRate;
 		*on_bus = c->isOnBus ? 1 : 0;
 		*trx_state = (int)c->transceiverState;
+		/* WHAT THE TRANSCEIVER CAN DO, which nothing else here answers. Read from the same struct
+		 * the rest of this function returns — the field was already being fetched and simply not
+		 * handed back, so the only way to find out whether a channel could carry CAN-FD was to
+		 * look up the piggyback's part number (#187). The failure that caused was late and
+		 * indirect: configure a data phase, Start, and get a bare refusal from
+		 * xlCanFdSetConfiguration for a channel that was never FD-capable.
+		 *
+		 * TESTED HERE, not in V, so the flag values stay next to the only place they are defined.
+		 * Handing the raw word up would put the masking in a second language and give the two a
+		 * way to disagree about what bit means what. */
+		*fd_iso   = (c->channelCapabilities & CT_XL_CHANNEL_FLAG_CANFD_ISO_SUPPORT)   ? 1 : 0;
+		*fd_bosch = (c->channelCapabilities & CT_XL_CHANNEL_FLAG_CANFD_BOSCH_SUPPORT) ? 1 : 0;
 	}
 	return 0;
 }
