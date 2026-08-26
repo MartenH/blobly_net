@@ -143,7 +143,25 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 	// What the WIRE will carry, not what the caller asked for: classic CAN takes 8 bytes and the
 	// backends truncate silently, so a 12-byte Quick Send would be recorded whole, never match
 	// its own 8-byte echo, and show up as a false RX row plus an unconfirmed TX one.
-	wire := transport.wire_frame(t.iface, frame)
+	// THE WIRE'S DECLARED FORMAT FIRST, before this frame is normalised and RECORDED (#185).
+	//
+	// The tap runs OUTSIDE the bus, so framing left to the wrapper underneath would change only the
+	// transmitted copy: wiretap's identity includes fd/brs, so the echo could not claim its own
+	// pending TX and would arrive as somebody else's traffic beside an unconfirmed send of ours —
+	// and wire_frame, still reading the frame as classic, would clamp a 64-byte payload to 8 on
+	// SocketCAN (codex #202 r2). The inner bus is opened VERBATIM for that reason, so this is the
+	// only place a tapped frame is framed and the two cannot disagree (r3).
+	//
+	// EXCEPT FOR REPLAY, which reproduces a recording rather than originating anything. A recorded
+	// CLASSIC frame is classic because it was captured that way, and `fd == false` cannot tell that
+	// apart from an emitter that simply did not say — so framing replay's traffic on an FD wire
+	// would silently rewrite the recording it exists to reproduce (r3).
+	framed := if t.origin == org_rep {
+		frame
+	} else {
+		transport.framed_for_wire(t.iface, frame)
+	}
+	wire := transport.wire_frame(t.iface, framed)
 	t.tx_mu.lock()
 	defer {
 		t.tx_mu.unlock()
@@ -246,7 +264,12 @@ fn (app &App) open_tap_on_gen(iface string, origin string, chan_name string, gen
 	// — a script that outlives Stop and a project switch still holds the interface it captured,
 	// and a 250k bus would then be opened at the default.
 	phys := if iface.contains('@') { iface } else { app.bitrate_iface(iface) }
-	inner := transport.open(phys)!
+	// VERBATIM, because this tap decides the format itself a few lines into TapBus.send — before it
+	// normalises and RECORDS the frame. Left framing to the bus underneath, the trace could hold a
+	// classic frame while an FD one went out, and a policy change mid-send could make the two
+	// disagree even when both were right (codex #202 r2, r3).
+	mut raw := transport.open(phys)!
+	inner := transport.verbatim(mut raw)
 	return &TapBus{
 		tx_mu:     app.tx_mutex(logical)
 		inner:     inner
