@@ -196,8 +196,10 @@ catch a value transcribed wrongly in the first place, and they cannot notice tha
 `vxlapi64.dll` has a different ABI from 25.20.14: both sides of the comparison are ours. A genuine
 mismatch there still reads the wrong fields, or past the end of the channel array, at runtime.
 
-So the risk is real but confined to discovery, and it is caught at compile time rather than at
-runtime. It is not avoided altogether, and an earlier version of this page claimed it was.
+So the risk is real, confined to discovery, and only *partly* covered. Local drift introduced later
+fails the build; a wrong transcription or a mismatched installed DLL does not, and shows up as bad
+data or an out-of-bounds read at runtime. It is not avoided altogether, and an earlier version of
+this page claimed it was.
 
 The mapping is stored **by the driver**, per application, and survives reboots. That is why a
 tool that borrows a channel has to put it back, and why `vectorcheck --pair` restores on Ctrl-C.
@@ -315,8 +317,15 @@ was fine as the only symptom. It also *listens* after assigning rather than exit
 `--seconds 1` when all you want is the mapping.
 
 `--pair` is the one path with **save-and-restore** behaviour: it borrows application channels 61 and
-62, runs, and puts back whatever they pointed at, including on Ctrl-C. That makes it the right tool
-on a bench whose mappings you did not make and must not disturb.
+62, runs, and puts back whatever they pointed at, including on Ctrl-C. That makes it the least
+disruptive way to test a bench whose mappings you did not make.
+
+**Best effort, though.** The restore runs from a deferred cleanup that cannot fail the command: if
+the driver resets or disconnects mid-run and `xlSetApplConfig` is rejected, `give_back` prints a
+`note:` line and the run still reports its result. So a `--pair` that ends with a note about a
+channel it could not restore has left 61 or 62 pointing at the test hardware, persistently — read
+those notes, and check `--list` afterwards on a bench that matters. Making a failed restore change
+the exit status is [#197](https://github.com/MartenH/blobly_net/issues/197).
 
 It does need those two channels to be *registered*, though — 61 and 62 are hardcoded, and the borrow
 refuses to touch a channel it cannot first read, which is exactly the protection that stops it
@@ -394,19 +403,25 @@ higher one is a physical-layer problem, not a software one. Two checks isolate i
   (`XL_HWTYPE_VIRTUAL`), so it touches no real bus on any machine. Use this rather than naming
   `--probe` rows: row numbers are per-bench, and `--pair` transmits in **normal** mode, so a
   hardcoded pair of rows that happen to be virtual here can be two live buses somewhere else.
+  Like `--pair`, it borrows fixed application channels — 63 and 64 — and cannot bootstrap them, so
+  on a bench where `blobly_net` has never run they need registering once first
+  ([#195](https://github.com/MartenH/blobly_net/issues/195)).
 - **Drop the bitrate until it passes.** If the backend is fine and 125 k works while 500 k does not,
   what is left is the wire.
 
-Restoring the second resistor on this bench turned every one of the failing rows above into 100%,
-which is the confirmation the table is there to support:
+Refitting the terminator on this bench turned every one of the failing rows above into 100%, which
+is the confirmation the table is there to support:
 
-| bitrate | with one resistor missing | with both fitted |
+| bitrate | no terminator fitted | both fitted |
 |---|---|---|
-| 125 000 | 100% arrived | 100% arrived (1,566/s) |
+| 125 000 | 100% arrived | 100% arrived |
 | 200 000 | 17,899 error frames | — |
-| 250 000 | 22,332 error frames | 100% arrived (2,649/s) |
-| 500 000 | 42,894 error frames | 100% arrived (4,786/s) |
-| 1 000 000 | — | 100% arrived (9,033/s) |
+| 250 000 | 22,332 error frames | 100% arrived |
+| 500 000 | 42,894 error frames | 100% arrived |
+| 1 000 000 | — | 100% arrived |
+
+The left column is **no** resistor at all — this bench had run with one, and that one came out. It
+is not the same condition as the singly-terminated FD runs further down, which passed.
 
 `--modecheck` is the bench half of a test whose other half runs everywhere: on Linux
 `modules/transport/pinned_test.v` checks the bookkeeping over `inproc:` buses, and only a VN
@@ -454,22 +469,30 @@ only the protocol changes.
 at 500 kbit/s, every byte verified against what was sent. Re-run 2026-08-26 with **both** 120 Ω
 terminators fitted; the 2026-08-24 column is the same test with only one:
 
-| data phase | arrived | malformed | frames/s (both) | frames/s (one) |
+| data phase | arrived | malformed | enqueued/s (both fitted) | frames (one, 2026-08-24) |
 |---|---|---|---|---|
-| 2 Mbit/s | 100% | 0 | 3,098 | 14,913 total |
-| 4 Mbit/s | 100% | 0 | 5,133 | 15,212 total |
-| 5 Mbit/s | 100% | 0 | 5,938 | 17,604 total |
-| 8 Mbit/s | 100% | 0 | 7,801 | 23,216 total |
+| 2 Mbit/s | 100% | 0 | 3,098 | 14,913 |
+| 4 Mbit/s | 100% | 0 | 5,133 | 15,212 |
+| 5 Mbit/s | 100% | 0 | 5,938 | 17,604 |
+| 8 Mbit/s | 100% | 0 | 7,801 | 23,216 |
 
-`vectorcheck --pair 0,2 --fd --dbitrate <rate> --length 64`. The frame rate rising with the data
-phase is itself part of the result: it is what proves BRS is switching rather than the payload
+`vectorcheck --pair 0,2 --fd --dbitrate <rate> --length 64`. The rate **rising with the data phase**
+is the part that carries the meaning: it is what shows BRS is switching rather than the payload
 quietly going out at the arbitration rate.
 
-The two runs are not directly comparable in absolute count — the 2026-08-24 figures are totals over
-a longer run, the 2026-08-26 ones are rates over two seconds — but both passed with zero malformed
-frames at every phase. One terminator was enough *here*, on a short bench link; it was not enough
-for classic CAN once the remaining resistor came out, which is the case above. Treat one as a
-condition a particular run happened to pass under, never as a specification.
+**Those `/s` figures are enqueue rates, not wire throughput**, and should not be quoted as bus
+performance. `--pair` counts frames the driver *accepted* during the run and divides by the run
+length, while the queue keeps draining afterwards — so the number includes buffer absorption. The
+giveaway is in this page's own arithmetic: 4,786/s for eight-byte frames at 500 kbit/s is above the
+~4,504/s that 111 bits per frame allows, which a real wire cannot exceed. The trend across data
+phases is still evidence; the absolute values are an upper bound on what went out.
+[#196](https://github.com/MartenH/blobly_net/issues/196) tracks reporting a true rate.
+
+Arrival and malformed counts are exact, and those are the columns the result rests on.
+
+One terminator was enough *here*, on a short bench link, for FD at 8 Mbit/s — and not enough for
+classic CAN once the last resistor came out. Treat one as a condition a particular run happened to
+pass under, never as a specification.
 
 It was worth running for a second reason: the `-1004` message used to name the mode backwards.
 The shim's check is bidirectional and says so, but the V-side text assumed the channel was open
