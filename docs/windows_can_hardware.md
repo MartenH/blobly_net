@@ -159,6 +159,222 @@ MSGTYPE flags. The free driver has no software virtual channel, so testing needs
 ASCII line protocol (`O` open, `S6` 500k, `t<id><len><data>`, `T…` for 29-bit); no DLL and no
 SDK, and it would work identically on Linux and Windows.
 
+## Setting up a Vector bench — the application-channel model
+
+The thing that surprises everyone first: **you cannot address Vector hardware directly.** The XL
+library only takes an *application channel*, so a channel has to be MAPPED to a physical one
+before `vector:1` opens anything. On a fresh bench that mapping does not exist yet.
+
+**Why the indirection is there** — it is Vector's design, not ours, and it earns its keep. Every
+XL program registers a name and gets its own 1..64 numbering:
+
+```
+"blobly_net"  channel 1 ─┐
+"CANoe"       channel 1 ─┼─→  all three may point at VN1630A Channel 1
+"CANalyzer"   channel 1 ─┘
+```
+
+Three tools share one device without arguing about channel numbers, and each keeps its own map.
+The alternative — addressing hardware directly — means reproducing `XLdriverConfig`, a large
+packed struct whose exact size decides where the channel array starts; an error there reads out
+of bounds rather than failing.
+
+The backend does both, and which one applies depends on the question:
+
+- **Opening a bus never touches that struct.** `vector:<n>` is an application channel, resolved
+  through `xlGetChannelMask`, so the path that carries traffic does not depend on the layout.
+- **Discovering hardware does.** Listing what is physically plugged in has no other source, so
+  `ct_vector_channel_info` calls `xlGetDriverConfig` and the shim reproduces the struct, with the
+  `_Static_assert`s the ABI note above describes (`XLdriverConfig` is 14576 bytes) checked by the
+  mingw CI job on every push.
+
+Be clear about what those assertions are worth, because it is easy to read them as more than they
+are. `vxlapi.h` is deliberately not included at build time, so each one compares the transcribed
+struct against a **hardcoded constant transcribed from the same reading of the header**. They catch
+a field added, reordered or mis-sized locally — real drift, and the reason they exist. They cannot
+catch a value transcribed wrongly in the first place, and they cannot notice that an installed
+`vxlapi64.dll` has a different ABI from 25.20.14: both sides of the comparison are ours. A genuine
+mismatch there still reads the wrong fields, or past the end of the channel array, at runtime.
+
+So the risk is real, confined to discovery, and only *partly* covered. Local drift introduced later
+fails the build; a wrong transcription or a mismatched installed DLL does not, and shows up as bad
+data or an out-of-bounds read at runtime. It is not avoided altogether, and an earlier version of
+this page claimed it was.
+
+The mapping is stored **by the driver**, per application, and survives reboots. That is why a
+tool that borrows a channel has to put it back, and why `vectorcheck --pair` restores on Ctrl-C.
+
+### Reading the dialog
+
+In Vector Hardware Config (or Hardware Manager) an application shows a fixed list:
+
+```
+CAN 1    VN1630A 1 (545980)  Channel 1
+CAN 40   Not assigned
+CAN 61   VN1630A 1 (545980)  Channel 3
+CAN 62   Not assigned
+```
+
+**`CAN <n>` is the application channel NUMBER, not a name** — it is not editable, and it is not
+a description of the bus. It is the `n` in `vector:<n>`. Rows reading *Not assigned* are channels
+this application has registered and not mapped. They are harmless, and they are left behind by
+whatever assigned them — `--assign` followed by `--release`, or a `--pair` run on channels 61 and
+62, both of which clear the mapping without removing the row.
+
+**Opening a channel does not create one.** It is worth being exact, because the two look similar:
+opening a channel the application already has but has not mapped rewrites the zeroes already there,
+which is how the application first becomes visible in the Hardware Manager. Opening a channel the
+application does *not* have fails instead (`-1007`) and registers nothing. So rows appear by being
+**assigned**, never by being opened, and the section below is the only way to add one.
+
+That registration **extends an application that already exists** — *opening* a channel does not
+create one. Delete `blobly_net` in the Hardware Manager and no amount of opening brings it back;
+the driver has nothing to add the channel to, and every `vector:<n>` fails with the same code an
+unmapped channel gives.
+
+**Assigning is the other half, and it does create.** `xlSetApplConfig` — what the Discover dialog's
+Assign button and `vectorcheck --assign` both call — writes the application into existence if it is
+not there, so a deleted or never-created `blobly_net` is recovered from inside the app: tick
+**create unregistered channel**, type a number, press Assign. The Hardware Manager is not needed for
+this, and the dialog says so when nothing could be read for the application.
+
+The two failures are worth separating because they look identical from the wire — nothing arrives
+either way — and the dialog names which one it is rather than leaving you to guess.
+
+So the two columns answer different questions: the left is **our** numbering, the right is **the
+driver's** hardware. `--list` prints both, with the driver's `hwType:hwIndex:hwChannel` triple.
+
+### Doing it without the Hardware Manager
+
+Two ways, and both make the same `xlSetApplConfig` call the Hardware Manager does.
+
+**From the app:** the Discover dialog (File → Configure… → Discover) grows a **Vector hardware**
+section listing every physical channel with its transceiver, its rate and its `can-fd` verdict.
+Mapped rows show the address they already answer to (`vector:2`); unmapped ones get an **Assign**
+button. Type the application channel number you want in the field at the top, then press Assign on
+the row.
+
+Nothing proposes a number for you — the choice is yours, and the dialog reports what the driver
+confirmed rather than guessing. Two kinds of number are free, and they are not offered on the same
+terms:
+
+- **channels the application already has, pointing at nothing.** The driver says so positively, so
+  these are listed individually and Assign just works.
+- **channels it does not have at all** — most of the range on any real bench, and *every* channel on
+  one where `blobly_net` has never run. Assigning one **creates** it, the same extension the
+  Hardware Manager performs. These are counted rather than listed (there are usually about 57), and
+  they need the **create unregistered channel** box ticked first.
+
+That box exists because of a limitation worth knowing about. The driver reports "no such channel"
+using its *generic* error code, which is also what a momentary failed read of an **occupied** channel
+looks like — the two are indistinguishable, and no amount of re-asking separates them. Assigning
+blind would therefore risk retargeting a mapping that survives reboots, and refusing outright would
+make a fresh bench impossible to set up. So the app does not guess: it refuses by default and lets
+you say when you mean to create. The box clears itself after each use, because it authorises one
+write rather than switching on a mode.
+
+Both ends are re-checked under a cross-process lock at the moment you press Assign, because the
+list is a snapshot and `vectorcheck` or a second copy of the app may have written since: an
+application channel already pointing at hardware is refused, and so is a physical channel another
+number already claims. If the driver will not describe *every* application channel, a row whose
+ownership cannot be established shows `(owner unknown)` and gets no button — one of the channels
+that stayed silent may be the one already pointing at it, and assigning a second is how you end up
+with two addresses for one wire. A channel carrying no CAN — a VN1630A's D/A IO channel, say — is
+listed but gets no button either, since the mapping could only fail to open.
+
+**Best effort, not a guarantee**, and for the reason the checkbox exists. The owner of a physical
+row is worked out from what each application channel reports, so a channel that answers the generic
+error *twice* is classified as unregistered and counted as a known non-owner — if it was in fact
+occupied and pointing at that row, the row still looks unclaimed. The same ambiguity that makes
+creating a channel your decision limits this check, and no re-reading closes it. What does catch it
+afterwards is `destination_conflicts()`, which refuses a project carrying two application channels
+on one physical channel ([#167](https://github.com/MartenH/blobly_net/issues/167)).
+
+Writes go under the application name `blobly_net` only; another application's assignments (CANoe,
+CANalyzer) are never touched, and the mapping is stored by the driver and survives a reboot.
+
+**From the CLI**, when there is no GUI or you want it scripted. `cmd/vectorcheck` is a **source-tree
+tool and is not in the release bundle** — that ships `blobly_net` only — so build it from a checkout
+first, or use the Discover dialog above, which does the same job and checks more before it writes:
+
+```sh
+v -enable-globals -path "@vlib|@vmodules|modules" -o vectorcheck.exe cmd/vectorcheck
+```
+
+```sh
+vectorcheck --list                               # which application channels are already mapped
+vectorcheck --probe                              # find the row number of the hardware you want
+vectorcheck --channel 5 --assign 2 --seconds 1   # map application channel 5 -> probe row 2
+vectorcheck --release 5                          # clear channel 5 again
+```
+
+> **`--assign` overwrites, and `--release` does not undo it.** Unlike the GUI, this path performs no
+> check: it does not look at what the channel currently points at, and it keeps no copy. `--release`
+> **clears** the channel rather than restoring its previous target, so assigning over a mapped
+> channel and then releasing it leaves that channel pointing at *nothing* — and the original mapping
+> is gone for good, from persistent state that survives reboots.
+>
+> **Absence from `--list` is not proof that a channel is free.** That list skips any channel the
+> driver would not describe, and an unreadable channel is indistinguishable from an unassigned one
+> for the same reason the Discover dialog asks before creating — so a channel hidden by one failed
+> read looks exactly like a spare. For a bench that matters, confirm positively in the **Discover
+> dialog** (which reports `taken`, free, and "could not read" as three different things) or in
+> Vector Hardware Manager, rather than inferring from what `--list` did not print. The example uses
+> channel 5 rather than 1 or 2 because the low numbers are the ones a bench is most likely to be
+> using already.
+
+`--assign` takes a **`--probe` row**, not a channel number. Deliberately: the driver lists its
+channels device-first while a hwType sweep walks them in another order, and an earlier version
+took one for the other — the caller named one thing and got another, with silence on a wire that
+was fine as the only symptom. It also *listens* after assigning rather than exiting, so give it
+`--seconds 1` when all you want is the mapping.
+
+`--pair` is the one path with **save-and-restore** behaviour: it borrows application channels 61 and
+62, runs, and puts back whatever they pointed at, including on Ctrl-C. That makes it the least
+disruptive way to test a bench whose mappings you did not make.
+
+**Best effort, though.** The restore runs from a deferred cleanup that cannot fail the command: if
+the driver resets or disconnects mid-run and `xlSetApplConfig` is rejected, `give_back` prints a
+`note:` line and the run still reports its result. So a `--pair` that ends with a note about a
+channel it could not restore has left 61 or 62 pointing at the test hardware, persistently — read
+those notes, and check `--list` afterwards on a bench that matters. Making a failed restore change
+the exit status is [#197](https://github.com/MartenH/blobly_net/issues/197).
+
+It does need those two channels to be *registered*, though — 61 and 62 are hardcoded, and the borrow
+refuses to touch a channel it cannot first read, which is exactly the protection that stops it
+"restoring" a mapping by clearing one. On a bench where `blobly_net` has never run they are not
+registered, so `--pair` exits before assigning anything. Register them once — assign each to any row
+and release it, or tick **create unregistered channel** in Discover — and it works from then on.
+Letting the borrow bootstrap them itself is [#195](https://github.com/MartenH/blobly_net/issues/195).
+
+### "It only shows one speed" — where the CAN-FD data rate lives
+
+The dialog shows a single **Default CAN baud rate** per channel. That is not a statement about
+CAN-FD, and not a limit either:
+
+- it is the rate a channel keeps for applications that never configure one;
+- this backend overrides it at open — `xlCanSetChannelBitrate` for a classic port,
+  `xlCanFdSetConfiguration` for an FD one, which is where the *second* rate comes from;
+- so there is one field because the data phase is an **application-time** setting, not a hardware
+  one. `vector:1@500000/2000000` is where you say it.
+
+**Whether a channel can do CAN-FD at all** is a property of its transceiver, and you do not have
+to identify the part to find out — the driver answers it
+(`XL_CHANNEL_FLAG_CANFD_ISO_SUPPORT` / `..._BOSCH_SUPPORT` in `channelCapabilities`), and
+`vectorcheck --probe` prints it in a **`can-fd`** column:
+
+| `can-fd` | means |
+|---|---|
+| `iso` | ISO CAN-FD — the variant this backend configures. Usable. |
+| `iso+bosch` | both variants; this backend uses ISO. Usable. |
+| `bosch-only` | FD hardware, but the non-ISO variant only — this backend cannot drive it. |
+| `-` | classic CAN only. A data phase will be refused. |
+
+Asking beforehand is the point: the alternative is a late, indirect failure — configure a data
+phase, Start, and get a refusal from `xlCanFdSetConfiguration` for a channel that was never
+FD-capable. The part name is a weaker clue than the flag but agrees with it; the `CANpiggy
+1057Gcap` and the on-board `1051cap` on the bench this was written against both report `iso`.
+
 ## Checking a bench
 
 `cmd/vectorcheck` is the Vector one: `--list` shows application channels with hardware
@@ -174,11 +390,68 @@ on its own implies `--fd`, because a data rate that was silently ignored would b
 refusal. The payload is checked byte for byte against what was sent, not merely counted: an
 under-terminated FD bus corrupts the data phase, and a marker-only check would pass over it.
 
-**Termination matters much more for FD.** A CAN bus wants 120 Ω at *both* ends. One resistor is
-usually survivable at 500 kbit/s over a short bench link, and it is the first thing to suspect
-when an FD data phase at 2 Mbit/s or above starts producing malformed frames — the reflections
-it leaves scale with the bit rate. Fix the termination before reading a malformed-frame count as
-a backend bug.
+**Termination matters much more for FD.** A CAN bus wants 120 Ω at *both* ends, and it is the first
+thing to suspect when an FD data phase at 2 Mbit/s or above starts producing malformed frames, since
+the reflections a missing one leaves scale with the bit rate. Fix the termination before reading a
+malformed-frame count as a backend bug.
+
+One resistor was survivable *here*, and the FD table below records both conditions side by side: a
+single terminator and the correct two, measured the same day. They agree exactly, which on a 30 cm
+link is what to expect — the classic table above explains why. Under-terminating a real harness is a
+different proposition, and nothing here tests it.
+
+**With NO resistor fitted, classic CAN goes too.** Measured on this same bench, Channel 1 to
+Channel 3, after the one terminator was removed:
+
+| bitrate | result |
+|---|---|
+| 125 000 | 100% arrived |
+| 200 000 | nothing arrived · 17,899 error frames |
+| 250 000 | nothing arrived · 22,332 error frames |
+| 500 000 | nothing arrived · 42,894 error frames |
+
+**The shape of that table is the diagnostic.** Error frames rising roughly in proportion to the bit
+rate is a constant error rate *per bit*, which is what reflections look like — they settle inside a
+125 k bit time and do not inside a 250 k one. So a link that passes at a low bitrate and fails at a
+higher one is a physical-layer problem, not a software one. Two checks isolate it in a minute:
+
+- **`vectorcheck --selftest`** proves the backend end to end on the driver's *virtual* channels —
+  assign, open, set the bitrate, go on the bus, transmit, receive. It picks them by hardware type
+  (`XL_HWTYPE_VIRTUAL`), so it touches no real bus on any machine. Use this rather than naming
+  `--probe` rows: row numbers are per-bench, and `--pair` transmits in **normal** mode, so a
+  hardcoded pair of rows that happen to be virtual here can be two live buses somewhere else.
+  Like `--pair`, it borrows fixed application channels — 63 and 64 — and cannot bootstrap them, so
+  on a bench where `blobly_net` has never run they need registering once first
+  ([#195](https://github.com/MartenH/blobly_net/issues/195)).
+- **Drop the bitrate until it passes.** If the backend is fine and 125 k works while 500 k does not,
+  what is left is the wire.
+
+Refitting the resistor recovered the rows it was re-measured on, and fitting a second one changed
+nothing further. Only the termination differs across these three columns, so the comparison is
+controlled — but note the gaps: 200 kbit/s was re-measured only with two resistors, and 1 Mbit/s was
+never run with none, so neither row is a before-and-after on its own.
+
+| bitrate | no terminator | one | two (correct) |
+|---|---|---|---|
+| 125 000 | 100% arrived | 100% arrived | 100% arrived |
+| 200 000 | 17,899 error frames | — | 100% arrived |
+| 250 000 | 22,332 error frames | 100% arrived | 100% arrived |
+| 500 000 | 42,894 error frames | 100% arrived | 100% arrived |
+| 1 000 000 | — | 100% arrived | 100% arrived |
+
+**The cliff is between none and one, not between one and two.** With both fitted the frame counts
+came back identical to the single-resistor run — 3,132 at 125 k, 5,298 at 250 k, 9,573 at 500 k.
+
+**The link is 30 cm**, and that number is what makes the rest interpretable. Over a stub that short
+a reflection returns in a couple of nanoseconds, far inside even an 8 Mbit/s bit time, so the second
+resistor has nothing left to fix and one is indistinguishable from two. Removing the *last* one is a
+different matter: an entirely unterminated bus has no defined idle state for the differential pair
+to settle to, which is why the left-hand column fails at 200 k on a cable where reflections are
+otherwise irrelevant.
+
+So read this table as "none is broken, one is enough **at 30 cm**" — not as evidence about
+termination in general. On a metres-long harness the one-resistor column is where failures would
+appear first, and the correct answer stays 120 Ω at both ends.
 
 `--modecheck` is the bench half of a test whose other half runs everywhere: on Linux
 `modules/transport/pinned_test.v` checks the bookkeeping over `inproc:` buses, and only a VN
@@ -222,20 +495,36 @@ channel refusing an FD port, an FD-held channel refusing a classic one, and an F
 refusing a second data phase. It needs no `--transmit`, because both addresses are silent and
 only the protocol changes.
 
-**CAN-FD link test**, same adapter, Channel 1 to Channel 3, 2026-08-24 — 64-byte payloads with
-BRS, every byte verified against what was sent:
+**CAN-FD link test**, same adapter, Channel 1 to Channel 3 — 64-byte payloads with BRS, arbitration
+at 500 kbit/s, every byte verified against what was sent. Every phase passed under **both**
+termination conditions, measured the same day over the same two-second window, with identical
+frame counts:
 
-| data phase | frames | arrived | malformed |
-|---|---|---|---|
-| 2 Mbit/s | 14,913 | 100% | 0 |
-| 4 Mbit/s | 15,212 | 100% | 0 |
-| 5 Mbit/s | 17,604 | 100% | 0 |
-| 8 Mbit/s | 23,216 | 100% | 0 |
+| data phase | arrived | malformed | frames (2×120 Ω) | frames (1×120 Ω) |
+|---|---|---|---|---|
+| 2 Mbit/s | 100% | 0 | 6,196 | 6,196 |
+| 4 Mbit/s | 100% | 0 | 10,267 | 10,267 |
+| 5 Mbit/s | 100% | 0 | 11,877 | 11,877 |
+| 8 Mbit/s | 100% | 0 | 15,603 | 15,603 |
 
-`vectorcheck --pair 0,2 --fd --dbitrate <rate>`. The frame rate rising with the data phase is
-itself part of the result: it is what proves BRS is switching rather than the payload quietly
-going out at the arbitration rate. Run with only ONE 120 Ω terminator fitted, which is worth
-recording as the condition it passed under rather than as a recommendation.
+(The 2026-08-24 run reported different totals — 14,913 to 23,216 — because it ran longer, not
+because it behaved differently; these two columns are the same two-second window.)
+
+`vectorcheck --pair 0,2 --fd --dbitrate <rate> --length 64`. The count **rising with the data phase**
+is the part that carries the meaning: it is what shows BRS is switching rather than the payload
+quietly going out at the arbitration rate.
+
+**Do not convert those counts into a throughput figure.** `--pair` reports frames the driver
+*accepted* divided by the run length, while its queue keeps draining after the window closes, so the
+`/s` it prints includes buffer absorption. The giveaway is this page's own arithmetic: it printed
+4,786/s for eight-byte frames at 500 kbit/s, above the ~4,504/s that 111 bits per frame allows, and
+a wire cannot beat its own bit time. Counts and arrival percentages are exact; a rate derived from
+them is an upper bound. [#196](https://github.com/MartenH/blobly_net/issues/196) tracks fixing that.
+
+**Termination, as measured rather than assumed:** none failed classic CAN from 200 kbit/s up; one
+carried FD to 8 Mbit/s; two behaved identically to one. All of that is on a 30 cm link, which is
+why one and two are indistinguishable, and it says nothing about a harness of any real length. The
+correct answer remains 120 Ω at both ends — this bench now has that.
 
 It was worth running for a second reason: the `-1004` message used to name the mode backwards.
 The shim's check is bidirectional and says so, but the V-side text assumed the channel was open
