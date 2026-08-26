@@ -143,3 +143,37 @@ fn test_extra_bytes_after_a_content_length_body_are_ignored() {
 	}
 	assert r.body == 'ok'
 }
+
+// A CHUNK SIZE THAT OVERFLOWS AN INT. `v = v * 16 + d` is int arithmetic, so `80000000` wraps
+// NEGATIVE — and a negative size walks straight past a `i + size > body.len` guard, after which the
+// slice endpoint is invalid and the process dies. The response cap does not help, because the
+// oversized declaration is only a few bytes (codex round 7 on #204).
+fn test_an_oversized_chunk_size_is_refused_rather_than_wrapped() {
+	for tok in ['80000000', 'FFFFFFFF', '100000000', 'FFFFFFFFFFFFFFFF'] {
+		if v := hex_int(tok) {
+			assert false, '${tok} parsed as ${v}, which is not a size this client could ever honour'
+		}
+	}
+}
+
+fn test_ordinary_chunk_sizes_still_parse() {
+	assert hex_int('0')? == 0
+	assert hex_int('4')? == 4
+	assert hex_int('ff')? == 255
+	assert hex_int('FF')? == 255
+	assert hex_int('1000')? == 4096
+}
+
+// And the whole path, not just the parser: a body declaring an absurd chunk must produce an error
+// rather than an invalid slice.
+fn test_dechunk_refuses_an_overflowing_chunk_header() {
+	cansub_dechunk('80000000\r\nWiki\r\n0\r\n\r\n') or { return }
+	assert false, 'accepted a chunk size that cannot be honoured'
+}
+
+// A size larger than what remains is refused by comparing against the REMAINDER, never by adding
+// to the index — the addition is the arithmetic the check exists to be safe from.
+fn test_dechunk_refuses_a_chunk_longer_than_the_remainder() {
+	cansub_dechunk('7FFFFF\r\nWiki\r\n0\r\n\r\n') or { return }
+	assert false, 'accepted a chunk longer than the body'
+}

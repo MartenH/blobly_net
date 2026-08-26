@@ -113,7 +113,9 @@ fn leg(mut tx transport.Bus, mut rx transport.Bus, dir string, c Case) int {
 			bad++
 			continue
 		}
-		got := listen_for(mut rx, id, 400) or {
+		got := listen_for(mut rx, id, 400, fn [f] (g transport.CanFrame) bool {
+			return g.data == f.data && g.fd == f.fd && g.brs == f.brs && g.extended == f.extended
+		}) or {
 			println('  len ${n:2}: nothing arrived')
 			bad++
 			continue
@@ -156,11 +158,19 @@ fn drain(mut b transport.Bus) {
 // listen_for reads until the wanted id turns up or the budget runs out. Other traffic is skipped:
 // a bench cable is not always a private bus, and failing on somebody else's frame would make this
 // tool useless exactly where it is most wanted.
-fn listen_for(mut b transport.Bus, want u32, budget_ms int) ?transport.CanFrame {
+// It takes a MATCHER as well as an id, and keeps looking until one satisfies it. Matching on the
+// id alone, an unrelated frame that happened to use one of the test ids was returned immediately,
+// its payload compared, and reported as a codec or wiring failure — on a bench that was working,
+// with our own frame sitting next in the queue. That is a false negative on the shared bus this
+// tool says in the comment above that it supports (codex round 7 on #204).
+//
+// A frame that matches the id and nothing else is somebody else's; the budget decides when to give
+// up, not the first arrival.
+fn listen_for(mut b transport.Bus, want u32, budget_ms int, ok fn (transport.CanFrame) bool) ?transport.CanFrame {
 	deadline := time.now().add(time.millisecond * budget_ms)
 	for time.now() < deadline {
 		f := b.recv(100) or { continue }
-		if f.id == want {
+		if f.id == want && ok(f) {
 			return f
 		}
 	}

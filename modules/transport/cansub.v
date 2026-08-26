@@ -122,6 +122,9 @@ mut:
 	// costs one integer instead of one string per record — see read_loop.
 	decode_errors      int
 	first_decode_error string
+	// Consecutive health polls that could not reach the device. See poll_health: a stale verdict
+	// is worse than no verdict.
+	health_misses int
 }
 
 // open_cansub_bus is what shared_open calls. One connection per wire; every opener of the same
@@ -372,6 +375,17 @@ fn (mut b CansubBus) reconcile_listen_only() {
 fn (mut b CansubBus) poll_health() {
 	// SHORT, because this thread is joined by close(): see cansub_get_within.
 	body := cansub_get_within(b.host, '/api/can/${b.spec.channel}', cansub_health_timeout) or {
+		// A VERDICT WE CAN NO LONGER OBTAIN MUST STOP BEING REPORTED. Returning quietly left the
+		// LAST sample standing — commonly `.ok` — and `recv` reads socket timeouts as an idle bus,
+		// so a device whose REST interface had died went on reporting a healthy controller
+		// indefinitely (codex round 7 on #204). One miss is a timeout; several in a row is not
+		// knowing, and `.unknown` is what this ladder has for that.
+		lock b.stop {
+			b.stop.health_misses++
+			if b.stop.health_misses >= cansub_health_misses {
+				b.stop.health = .unknown
+			}
+		}
 		return
 	}
 	state := extract_json_string(body, 'state') or { return }
@@ -386,6 +400,7 @@ fn (mut b CansubBus) poll_health() {
 
 	lock b.stop {
 		b.stop.health = h
+		b.stop.health_misses = 0
 	}
 }
 
@@ -409,6 +424,25 @@ pub fn (mut b CansubBus) send(frame CanFrame) ! {
 	if e := b.failure() {
 		return error('${b.iface}: ${e}')
 	}
+	// A SILENCED CONTROLLER CANNOT TRANSMIT, whatever this process's policy currently says.
+	//
+	// The two answers are not updated together and cannot be: `silenced()` is a table this process
+	// rewrites the moment a row is toggled, while the PHY is a register reached over HTTP by the
+	// health thread on its next pass. Going from listen-only to normal, SilentBus therefore starts
+	// permitting sends immediately while the controller is still silent — and a send in that window
+	// returned SUCCESS for a frame that never reached the wire, which the tap then recorded as a
+	// TX that happened (codex round 7 on #204). An experiment loses traffic and the trace says it
+	// did not, which is the one failure this backend exists to prevent.
+	//
+	// So the controller's ACTUAL state is what decides, and the window is a refusal rather than a
+	// lie. It also covers a reconcile that keeps failing: sends stay refused, honestly, instead of
+	// succeeding into a wire that cannot carry them. The reverse direction needs nothing — normal
+	// PHY with a silent policy is what SilentBus already refuses before reaching here.
+	if rlock b.stop {
+		b.stop.phy_silent
+	} {
+		return error('${b.iface}: the controller is still in listen-only — this wire was silenced and is being reconfigured; the frame was not sent')
+	}
 	body := cansub_encode_frame(frame)!
 	b.ws.write(cansub_hdlc_wrap(body), .binary_frame) or {
 		return error('send on ${b.iface}: ${err}')
@@ -422,6 +456,11 @@ const cansub_poll_ms = i64(200)
 // How long a health poll may wait for the device. Bounded by what Stop can tolerate rather than by
 // what the network might need: this runs on a thread close() joins.
 const cansub_health_timeout = 700 * time.millisecond
+
+// How many consecutive unreachable health polls before the last verdict is withdrawn. One is a
+// timeout on a busy device; three in a row, at two polls a second, is a device that has stopped
+// answering.
+const cansub_health_misses = 3
 
 // cansub_wait_slice decides how long ONE select may park, or none when the caller's budget is
 // spent. Extracted from recv so both of its rules are visible to CI, because neither could be

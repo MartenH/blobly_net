@@ -53,6 +53,11 @@ pub fn cansub_status_code(line string) !int {
 	return code.int()
 }
 
+// cansub_max_body is the largest body this client accepts, and therefore the largest chunk size
+// that can mean anything. It exists so hex_int can refuse an oversized declaration before the
+// arithmetic wraps rather than after.
+const cansub_max_body = 8 * 1024 * 1024
+
 // cansub_dechunk decodes a chunked body. The device uses chunked for everything, including the
 // one-word replies, so this is not an edge case here — it is the normal path.
 pub fn cansub_dechunk(body string) !string {
@@ -78,7 +83,9 @@ pub fn cansub_dechunk(body string) !string {
 			terminated = true
 			break // the terminating chunk; any trailer after it is not ours to care about
 		}
-		if i + size > body.len {
+		// COMPARED AGAINST WHAT REMAINS, not by adding to the index: `i + size` is int arithmetic
+		// too, and the whole point of the check is to be safe against a size that is not sane.
+		if size > body.len - i {
 			return error('chunk claims ${size} bytes, ${body.len - i} remain')
 		}
 		out << body[i..i + size].bytes()
@@ -94,6 +101,13 @@ fn hex_int(s string) ?int {
 	if s == '' {
 		return none
 	}
+	// BOUNDED WHILE PARSING. `v = v * 16 + d` is int arithmetic, so a token like `80000000` wraps
+	// NEGATIVE — and a negative size walks straight past `i + size > body.len`, after which the
+	// slice endpoint is invalid and the process dies. The response cap does not help: the
+	// oversized declaration is only a few bytes (codex round 7 on #204).
+	//
+	// The limit is the largest body this client will ever accept, so anything above it is refused
+	// as a size rather than arithmetic that has stopped meaning anything.
 	mut v := 0
 	for c in s {
 		d := match true {
@@ -103,6 +117,9 @@ fn hex_int(s string) ?int {
 			else { return none }
 		}
 
+		if v > (cansub_max_body - d) / 16 {
+			return none
+		}
 		v = v * 16 + d
 	}
 	return v
