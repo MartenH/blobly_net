@@ -312,15 +312,36 @@ fn xl_status_of(rc int) ?int {
 //
 //   unreadable -> refuse. Nothing is known, so anything could be under there.
 //   taken      -> refuse. The driver says, about this exact channel, that it points at hardware.
-//   absent     -> permit. The driver says there is no such channel; writing creates it.
-//   empty      -> permit. Registered and pointing at nothing.
+//   empty      -> permit. Registered and pointing at nothing; the driver said so positively.
+//   absent     -> permit ONLY IF the operator asked to create. See below.
 //
 // That `app_present` argument is deliberately gone. It existed to guess which reading of `unknown`
 // applied, it was derived from vector_application_seen(), and that function's own contract says its
 // `false` is not proof of absence — so the guess turned "nothing answered" into "safe to create",
 // which is exactly the P1 r6 reported. A question the driver can answer directly is not one to
 // infer from a sweep of other channels.
-pub fn assign_refusal(app int, slot AppSlot) ?string {
+//
+// `create_ok` IS NOT ANOTHER GUESS. It is the operator saying what they meant, and that is a
+// different kind of input entirely — the earlier argument was this code inferring a fact about the
+// world from evidence that did not support it.
+//
+// It exists because `absent` cannot be made trustworthy, and four rounds of review disagreeing
+// about it is the evidence. The driver reports "no such channel" as 255, which is XL_ERROR, its
+// GENERIC failure — so "this channel is not registered" and "this one call failed" are the SAME
+// BYTES. No retry separates them (a persistent transient error repeats), and no other XL call
+// exposes an application's channel count. Rounds 6 and 8/9 each demanded the opposite default and
+// each were right about their own case:
+//
+//   - refuse it, and a fresh bench cannot bootstrap: an application that does not exist yet answers
+//     255 for all 64 channels, so nothing could ever be created. That is #186's entire purpose.
+//   - permit it silently, and one momentary failure on an occupied channel retargets a persistent
+//     mapping that survives reboots.
+//
+// Neither is a defect in the rule; the rule is being asked to know something unknowable. So it is
+// not decided here. Default REFUSE — a generic error never authorizes a write on its own — and the
+// operator may state the intent explicitly, at which point creating is what they asked for and the
+// message has already told them what it might replace.
+pub fn assign_refusal(app int, slot AppSlot, create_ok bool) ?string {
 	if app < 1 || app > 64 {
 		return 'Vector application channels are numbered 1 to 64'
 	}
@@ -329,6 +350,9 @@ pub fn assign_refusal(app int, slot AppSlot) ?string {
 	}
 	if slot == .unreadable {
 		return 'the Vector driver would not say what vector:${app} points at — refusing rather than overwriting a mapping that may be there. Try again in a moment.'
+	}
+	if slot == .absent && !create_ok {
+		return 'vector:${app} is not registered under "blobly_net". Assigning it CREATES it, which is how a channel is added — but the driver reports that with a generic error, which is also what a momentary read failure on an occupied channel looks like. Tick "create unregistered channel" to say that is what you mean, or pick one of the channels listed as free.'
 	}
 	return none
 }

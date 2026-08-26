@@ -282,6 +282,14 @@ fn draw_discover_dialog(mut app App) {
 		if app.disc_vector_free != '' {
 			vgui.text_dim('   application channels the driver reports free: ${app.disc_vector_free}')
 		}
+		// THE ONE WRITE THE DRIVER CANNOT VOUCH FOR, so the operator says it rather than the code
+		// guessing. An unregistered channel and a momentary read failure on an OCCUPIED one are the
+		// same generic XL error, and no retry separates them — see assign_refusal. Off by default,
+		// so a mistyped number cannot silently retarget a persistent mapping (codex #192 r9).
+		app.disc_vector_create = vgui.checkbox('create unregistered channel##vacreate',
+			app.disc_vector_create)
+		vgui.same_line()
+		vgui.help_marker('Needed only for a channel the application does not have yet — including every channel on a bench where "blobly_net" has never run. The driver reports "no such channel" with its GENERIC error, which is also what one failed read of an occupied channel looks like, so this asks you to confirm you mean to create rather than replace.')
 		if !app.disc_vector_app_seen {
 			vgui.text_dim('   no application channels could be read for "blobly_net" — assigning below creates the mapping (and the application, if it is not there)')
 		}

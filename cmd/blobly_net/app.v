@@ -293,6 +293,11 @@ mut:
 	// The application channels the driver CONFIRMED empty, as a display string. Reported, never
 	// proposed — see the panel.
 	disc_vector_free string
+	// Whether the operator has said they mean to CREATE an application channel that is not
+	// registered yet. Off by default, and deliberately not remembered across a Refresh: it
+	// authorizes the one write whose safety the driver cannot confirm, so it has to be an act
+	// rather than a setting left on from last time (codex #192 r9).
+	disc_vector_create bool
 	// File browser (Open / Save As / attach DBC / attach manifest)
 	fb_open     bool   // browser window shown
 	fb_save     bool   // true = save mode (filename input), false = open mode

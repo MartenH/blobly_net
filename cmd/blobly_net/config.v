@@ -266,6 +266,10 @@ fn (mut app App) refresh_discovery() {
 		}
 		true
 	}
+	// CLEARED EVERY TIME, including after the assign that used it — assign_vector_hw ends by calling
+	// this. It authorizes the one write the driver cannot vouch for, so it has to be stated for that
+	// write rather than left ticked from an earlier one (codex #192 r9).
+	app.disc_vector_create = false
 }
 
 // assign_vector_hw points a free application channel at one physical channel, which is what
@@ -306,7 +310,7 @@ fn (mut app App) assign_vector_hw(hw transport.VectorChannel, app_channel int) {
 	// No `vector_application_seen()` here any more. It was passed in to decide which of two meanings
 	// `unknown` had, and the driver now answers that itself — see assign_refusal (codex #192 r6).
 	slot := transport.vector_app_slot(app_channel)
-	if why := transport.assign_refusal(app_channel, slot) {
+	if why := transport.assign_refusal(app_channel, slot, app.disc_vector_create) {
 		app.notify('${why}')
 		return
 	}

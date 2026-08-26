@@ -443,17 +443,22 @@ pub fn vector_hardware() []VectorHw {
 // distinct from "nothing is assigned", because a caller about to overwrite the mapping must not
 // treat an unanswered question as a free channel. Registers nothing.
 //
-// A channel the application has never registered (-3) reports as "nothing assigned" rather than as
-// an error, and that is the honest answer to the question this function asks: it points at no
-// hardware. A borrower may then create it and hand it back by unassigning, which is what it would
-// have done for any other free channel. The distinction between -3 and -2 matters only to a caller
-// deciding whether it may WRITE — that one wants vector_app_slot, which keeps them apart.
+// -3 ERRORS, IT DOES NOT REPORT "UNASSIGNED". An earlier revision flattened it to "nothing here",
+// on the reasoning that an unregistered channel points at no hardware — which is true, but -3 rests
+// on XL's GENERIC error and so is also what one momentary failure on an OCCUPIED channel looks
+// like. `borrow` below reads this to snapshot what it is about to overwrite, and its own comment
+// records what a false "free" costs there: it restored the channel by clearing a mapping the
+// operator had made. Only `-2` is the driver positively saying the channel is registered and
+// empty; everything else is a question this function could not answer (codex #192 r9).
+//
+// A caller that must distinguish "no such channel" from "could not read" wants vector_app_slot,
+// which keeps the four states apart and confirms the ambiguous one before anything is written.
 pub fn vector_assignment(app_channel int) !(VectorChannel, bool) {
 	mut ht := 0
 	mut hi := 0
 	mut hc := 0
 	rc := C.ct_vector_appl_get(u32(app_channel - 1), &ht, &hi, &hc)
-	if rc == -2 || rc == -3 {
+	if rc == -2 {
 		return VectorChannel{}, false
 	}
 	if rc != 0 {
