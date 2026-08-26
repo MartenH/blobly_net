@@ -70,7 +70,8 @@ fn test_a_response_without_a_header_terminator_is_refused() {
 
 // Header names are case-insensitive, and the device is not obliged to match anyone's preference.
 fn test_header_names_are_case_insensitive() {
-	r := cansub_parse_response('HTTP/1.1 200\r\ntRaNsFeR-eNcOdInG: Chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n')!
+	r :=
+		cansub_parse_response('HTTP/1.1 200\r\ntRaNsFeR-eNcOdInG: Chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n')!
 	assert r.body == 'abc'
 }
 
@@ -87,4 +88,26 @@ fn test_a_non_200_status_parses_rather_than_erroring() {
 // 10.215.129.1, while the name followed it.
 fn test_a_device_is_addressed_by_name() {
 	assert cansub_host('e5a16adf') == 'e5a16adf-usb.local'
+}
+
+// A BODY THAT SIMPLY STOPS is not a complete one. The chunk sequence ends with a zero-size chunk;
+// without it the connection died mid-response, and `cansub_request` treats every read error as
+// EOF — so the bytes collected so far used to come back as a successful answer. Partial JSON
+// parses to a device reply with fields quietly missing, which is worse than an error (codex round
+// 3 on #204).
+fn test_dechunk_refuses_a_body_that_never_terminates() {
+	// Two complete chunks and then nothing: exactly what a socket dropped between chunks leaves.
+	cansub_dechunk('4\r\nWiki\r\n7\r\npedia i\r\n') or { return }
+	assert false, 'accepted an unterminated chunk sequence as a complete body'
+}
+
+fn test_dechunk_refuses_a_single_complete_chunk_with_no_terminator() {
+	cansub_dechunk('4\r\nWiki\r\n') or { return }
+	assert false, 'one chunk is not a body until the zero chunk says so'
+}
+
+// An empty string is not a chunked body at all — it has no terminating chunk either.
+fn test_dechunk_refuses_nothing_at_all() {
+	cansub_dechunk('') or { return }
+	assert false, 'an empty response is not a terminated chunked body'
 }

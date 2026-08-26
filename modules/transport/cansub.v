@@ -118,6 +118,10 @@ mut:
 	// What the CONTROLLER was last configured to, which is not the same question as what this
 	// process's silence policy currently says — see reconcile_listen_only.
 	phy_silent bool
+	// Records this decoder could not parse. Counted rather than kept, so a persistent bad stream
+	// costs one integer instead of one string per record — see read_loop.
+	decode_errors      int
+	first_decode_error string
 }
 
 // open_cansub_bus is what shared_open calls. One connection per wire; every opener of the same
@@ -239,6 +243,23 @@ fn (mut b CansubBus) read_loop() {
 			if !b.enqueue(rec) {
 				return
 			}
+		}
+		// TAKEN AND CLEARED EVERY PASS. `dec.errors` grows by one string per malformed record and
+		// nothing here ever read it — so a device on incompatible firmware, sending records this
+		// decoder cannot parse, dropped every frame silently AND accumulated an error history for
+		// the lifetime of the bus (codex round 3 on #204). Both halves are fixed by the same
+		// three lines: the count reaches `health()`'s neighbours where somebody can see it, and
+		// the array goes back to empty.
+		if dec.errors.len > 0 {
+			lock b.stop {
+				b.stop.decode_errors += dec.errors.len
+				// The FIRST one is kept, not the latest: a stream that has gone wrong repeats
+				// itself, and the first message is the one that describes what changed.
+				if b.stop.first_decode_error == '' {
+					b.stop.first_decode_error = dec.errors[0]
+				}
+			}
+			dec.errors.clear()
 		}
 	}
 }
@@ -393,10 +414,32 @@ fn cansub_wait_slice(timeout_ms int, deadline i64, now i64) ?i64 {
 	return if remaining < cansub_poll_ms { remaining } else { cansub_poll_ms }
 }
 
+// cansub_first_wait is the FIRST slice of a recv, which is not the same question.
+//
+// `recv(0)` is a NON-BLOCKING POLL, not "do nothing": every other bus here answers it by looking
+// at what is already queued and returning it. Derived from the deadline alone it came out as an
+// expired budget, so a caller draining with a zero timeout was told the queue was empty while
+// frames sat in it (codex round 3 on #204 — and the test beside this asserted the poll behaviour
+// in a comment while the code did not do it).
+//
+// Zero, so the select takes the queued record if there is one and gives up immediately if not.
+fn cansub_first_wait(timeout_ms int, deadline i64, now i64) ?i64 {
+	if timeout_ms == 0 {
+		return i64(0)
+	}
+	return cansub_wait_slice(timeout_ms, deadline, now)
+}
+
 pub fn (mut b CansubBus) recv(timeout_ms int) !CanFrame {
 	deadline := time.ticks() + i64(timeout_ms)
+	mut first := true
 	for {
-		wait := cansub_wait_slice(timeout_ms, deadline, time.ticks()) or { return error('timeout') }
+		wait := if first {
+			cansub_first_wait(timeout_ms, deadline, time.ticks()) or { return error('timeout') }
+		} else {
+			cansub_wait_slice(timeout_ms, deadline, time.ticks()) or { return error('timeout') }
+		}
+		first = false
 		select {
 			rec := <-b.rx {
 				if rec.is_error {

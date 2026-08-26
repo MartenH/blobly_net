@@ -30,6 +30,18 @@ fn main() {
 	tx_ch := if args.len > 1 { args[1].int() } else { 1 }
 	rx_ch := if args.len > 2 { args[2].int() } else { 2 }
 	rate := if args.len > 3 { args[3] } else { '250000' } // the device's factory nominal rate
+	if tx_ch == rx_ch {
+		// BOTH OPENS WOULD RESOLVE TO ONE CONNECTION. shared_open keys on the wire, the vendor
+		// permits one client per channel, and the device deliberately echoes its own sends as TX
+		// acknowledgements — which `recv` hands up like any other record. So a same-channel run
+		// would count the sender's own echo as the expected receive and report a successful
+		// channel-to-channel round trip while proving nothing about a cable (codex round 3 on
+		// #204). The one result this tool exists to give would be the one it cannot give.
+		eprintln('tx-channel and rx-channel must differ: this proves two channels are WIRED')
+		eprintln('  together, and on one channel the device echo of the send would be counted')
+		eprintln('  as the receive.')
+		exit(2)
+	}
 	host := '${id}-usb.local'
 
 	// The device is addressed by its ID through mDNS, never by an IP. A firmware update clears

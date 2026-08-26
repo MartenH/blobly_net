@@ -41,23 +41,50 @@ fn test_configuring_a_data_phase_implies_carrying_fd() {
 // module recognises -- a typo'd or renamed adapter would otherwise answer the `else` branch of
 // each predicate and look like a legitimate software bus.
 fn test_every_declared_adapter_is_known_to_transport() {
+	// EVERY ADAPTER IS CLASSIFIED, and a name nobody classified fails here.
+	//
+	// This replaces three tautologies -- `assert carries || !carries` and friends -- which were
+	// true of every boolean and so passed for an adapter that fell through all three predicates,
+	// which is the exact omission this file says it guards (codex round 3 on #204, and quite
+	// right). The predicates themselves cannot tell "no" from "never heard of it": both answer
+	// false. So the classification is stated HERE, and a newly registered adapter fails until
+	// somebody says which group it belongs to -- at which point the assertions below check that
+	// the predicates were told the same thing.
 	for a in adapters {
-		// Not an assertion about the answer, only that asking is meaningful: `doip` is not CAN at
-		// all and correctly answers false to everything.
-		carries := transport.adapter_carries_fd(a)
-		rate := transport.adapter_configures_bitrate(a)
-		data := transport.adapter_configures_data_phase(a)
-		assert carries || !carries // total
-		assert rate || !rate
-		assert data || !data
+		assert a in software_adapters || a in kernel_adapters || a in vendor_adapters
+			|| a in non_can_adapters, '${a} is registered but unclassified — say which kind it is here, and check the capability predicates were told too'
 	}
-	// The vendor backends this app opens itself, named explicitly so a REMOVAL is as loud as an
-	// addition would be.
-	for a in ['pcan', 'kvaser', 'vector', 'cansub'] {
+	// The vendor backends this app opens itself: the address carries the rate, because no driver
+	// or kernel is going to be asked for it.
+	for a in vendor_adapters {
 		assert a in adapters, '${a} is a backend transport can open but the project cannot name'
 		assert transport.adapter_configures_bitrate(a), '${a} takes its rate in the address'
 	}
+	// And the ones where something else owns the timing. Asserted in the NEGATIVE, which is what
+	// makes the vendor list above mean anything: without this, adding every adapter to
+	// adapter_configures_bitrate would satisfy the loop above.
+	for a in kernel_adapters {
+		assert !transport.adapter_configures_bitrate(a), '${a} is a kernel interface — `ip link` sets its rate, not the address'
+	}
+	for a in software_adapters {
+		assert !transport.adapter_configures_bitrate(a), '${a} is a software bus with no bit timing to configure'
+	}
+	for a in non_can_adapters {
+		assert !transport.adapter_carries_fd(a), '${a} is not a CAN bus and cannot carry a CAN-FD frame'
+		assert !transport.adapter_configures_bitrate(a), '${a} has no bitrate'
+	}
 }
+
+// The four kinds of adapter, which is what the predicates are ABOUT. Kept beside the test rather
+// than in the module: this is the test's own model of the registry, and it has to be able to
+// disagree with the code for the check above to be worth anything.
+const software_adapters = ['virtual', 'udp'] // driver-free, no bit timing exists
+
+const kernel_adapters = ['vcan', 'socketcan'] // the OS owns the timing
+
+const vendor_adapters = ['pcan', 'kvaser', 'vector', 'cansub'] // the address carries the rate
+
+const non_can_adapters = ['doip'] // not a CAN bus at all
 
 // The three that carry CAN-FD, and the one that does not. Stated as a list rather than derived, so
 // that adding a backend forces a decision here instead of inheriting `else { true }` unnoticed --

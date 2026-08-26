@@ -252,6 +252,13 @@ pub fn cansub_parse_payload(p []u8) ([]CansubRecord, string) {
 		}
 		rtr := !fd && bit6
 		dlen := if rtr { 0 } else { cansub_dlc_len(dlc, fd) } // a remote frame asks; it does not carry
+		// THE REQUESTED LENGTH SURVIVES, as zeroes. A remote frame carries no bytes but it does
+		// carry a DLC — it is asking for that many — and dropping it left `data` empty, so a
+		// recorded request replayed through cansub_encode_frame went back out as a request for
+		// ZERO bytes, which is a different question (codex round 3 on #204). Zero-filled is how
+		// every other backend represents it, and how the Kvaser reader was fixed for the same
+		// defect one PR over (#177).
+		want := if rtr { cansub_dlc_len(dlc, false) } else { dlen }
 		if p.len - i < hdr + dlen {
 			return out, 'Not enough data bytes for payload'
 		}
@@ -263,7 +270,11 @@ pub fn cansub_parse_payload(p []u8) ([]CansubRecord, string) {
 				fd:       fd
 				brs:      fd && bit6
 				esi:      b6 & 0x20 != 0
-				data:     p[i + hdr..i + hdr + dlen].clone()
+				data:     if rtr {
+					[]u8{len: want}
+				} else {
+					p[i + hdr..i + hdr + dlen].clone()
+				}
 			}
 			tx:    b6 & 0x10 != 0
 			us:    us

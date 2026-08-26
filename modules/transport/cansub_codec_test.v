@@ -26,6 +26,7 @@ fn hex(s string) []u8 {
 				c >= `A` && c <= `F` { int(c - `A`) + 10 }
 				else { 0 }
 			}
+
 			v = v * 16 + d
 		}
 		out << u8(v)
@@ -71,15 +72,28 @@ fn test_tv02_extended_identifier() {
 	assert recs[0].us == two_years_us
 }
 
-// TV-03 — a remote frame carries a DLC but no data. Reading DLC bytes here would swallow the
-// next frame in the payload.
+// TV-03 — a remote frame carries a DLC but no data. Two different statements, and the decoder
+// has to keep them apart:
+//
+//   * NO BYTES ARE CONSUMED FROM THE WIRE. Reading DLC bytes here would swallow whatever follows
+//     in the payload. That is the wire fact this vector pins, and it is unchanged.
+//   * THE DLC IS STILL REPORTED, as zeroes. It is what the frame is ASKING FOR — this vector asks
+//     for eight — and dropping it left a recorded request replayed as a request for zero bytes,
+//     which is a different question (codex round 3 on #204). Zero-filled to the requested length
+//     is what SocketCAN, Vector and (since #177) Kvaser all hand up, so this was the odd one out.
+//
+// The assertion below changed with that fix. It was pinning a REPRESENTATION choice of ours, not
+// anything the vendor's vector says: the wire carries a DLC of 8 and no payload either way.
 fn test_tv03_remote_frame_has_no_data() {
 	recs, errs := decode_all('7E 00 00 00 00 00 00 48 00 01 EF 87 F8 40 7E')
 	assert errs.len == 0, '${errs}'
 	assert recs.len == 1
 	assert recs[0].frame.rtr
 	assert recs[0].frame.id == 0x001
-	assert recs[0].frame.data.len == 0, 'a remote frame asks for data; it does not carry it'
+	assert recs[0].frame.data.len == 8, 'the request is for eight bytes, and that survives'
+	assert recs[0].frame.data == []u8{len: 8}, 'a remote frame carries no data, so the bytes are zeroes'
+	// The framing still parsed to exactly one record with no errors, which is what says the
+	// decoder took its DLC from the header and no payload bytes from the wire.
 }
 
 fn test_tv04_fd_frame() {
@@ -112,7 +126,8 @@ fn test_tv06_fd_with_esi_is_not_an_error_record() {
 
 // TV-07 — DLC 15 means 64 bytes, not 15.
 fn test_tv07_fd_length_codes() {
-	recs, errs := decode_all('7E 00 00 00 00 00 00 8F 00 01 00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10 11 12 13 14 15 16 17 18 19 1A 1B 1C 1D 1E 1F 20 21 22 23 24 25 26 27 28 29 2A 2B 2C 2D 2E 2F 30 31 32 33 34 35 36 37 38 39 3A 3B 3C 3D 3E 3F DE 43 31 51 7E')
+	recs, errs :=
+		decode_all('7E 00 00 00 00 00 00 8F 00 01 00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10 11 12 13 14 15 16 17 18 19 1A 1B 1C 1D 1E 1F 20 21 22 23 24 25 26 27 28 29 2A 2B 2C 2D 2E 2F 30 31 32 33 34 35 36 37 38 39 3A 3B 3C 3D 3E 3F DE 43 31 51 7E')
 	assert errs.len == 0, '${errs}'
 	assert recs.len == 1
 	assert recs[0].frame.data.len == 64
@@ -152,7 +167,8 @@ fn test_tv10_one_frame_split_across_messages() {
 
 // TV-11 — four CAN frames inside ONE HDLC payload.
 fn test_tv11_several_frames_in_one_hdlc_frame() {
-	recs, errs := decode_all('7E 00 00 00 00 00 00 01 00 01 01 00 00 00 00 00 00 01 00 02 02 00 00 00 00 00 00 01 00 03 03 00 00 00 00 00 00 01 00 04 04 D1 2C 1F D9 7E')
+	recs, errs :=
+		decode_all('7E 00 00 00 00 00 00 01 00 01 01 00 00 00 00 00 00 01 00 02 02 00 00 00 00 00 00 01 00 03 03 00 00 00 00 00 00 01 00 04 04 D1 2C 1F D9 7E')
 	assert errs.len == 0, '${errs}'
 	assert recs.len == 4
 	for i, r in recs {
@@ -164,7 +180,8 @@ fn test_tv11_several_frames_in_one_hdlc_frame() {
 // TV-12 — four HDLC frames back to back, each closing boundary immediately followed by the next
 // opening one.
 fn test_tv12_several_hdlc_frames_back_to_back() {
-	recs, errs := decode_all('7E 00 00 00 00 00 00 01 00 01 01 35 2A 0E C4 7E 7E 00 00 00 00 00 00 01 00 02 02 87 0E 0C BD 7E 7E 00 00 00 00 00 00 01 00 03 03 E9 12 0D 6A 7E 7E 00 00 00 00 00 00 01 00 04 04 38 37 0E 0E 7E')
+	recs, errs :=
+		decode_all('7E 00 00 00 00 00 00 01 00 01 01 35 2A 0E C4 7E 7E 00 00 00 00 00 00 01 00 02 02 87 0E 0C BD 7E 7E 00 00 00 00 00 00 01 00 03 03 E9 12 0D 6A 7E 7E 00 00 00 00 00 00 01 00 04 04 38 37 0E 0E 7E')
 	assert errs.len == 0, '${errs}'
 	assert recs.len == 4
 	for i, r in recs {
@@ -184,7 +201,8 @@ fn test_tv13_garbage_before_the_first_frame() {
 // opening the next frame, that garbage accumulates into a body which then fails its CRC, and the
 // decoder reports an error for a stream the vendor says is fine.
 fn test_tv14_garbage_between_frames_is_not_an_error() {
-	recs, errs := decode_all('7E 00 00 00 00 00 00 01 00 01 01 35 2A 0E C4 7E 01 02 03 04 05 7E 00 00 00 00 00 00 01 00 02 02 87 0E 0C BD 7E')
+	recs, errs :=
+		decode_all('7E 00 00 00 00 00 00 01 00 01 01 35 2A 0E C4 7E 01 02 03 04 05 7E 00 00 00 00 00 00 01 00 02 02 87 0E 0C BD 7E')
 	assert errs.len == 0, 'garbage between frames was reported as a bad frame: ${errs}'
 	assert recs.len == 2
 	assert recs[0].frame.id == 0x001
@@ -193,7 +211,8 @@ fn test_tv14_garbage_between_frames_is_not_an_error() {
 
 // TV-15 — the middle frame's CRC is wrong. It costs that frame and only that frame.
 fn test_tv15_a_bad_crc_drops_only_its_own_frame() {
-	recs, errs := decode_all('7E 00 00 00 00 00 00 01 00 01 01 35 2A 0E C4 7E 7E 00 00 00 00 00 00 01 00 02 02 00 00 00 00 7E 7E 00 00 00 00 00 00 01 00 03 03 E9 12 0D 6A 7E')
+	recs, errs :=
+		decode_all('7E 00 00 00 00 00 00 01 00 01 01 35 2A 0E C4 7E 7E 00 00 00 00 00 00 01 00 02 02 00 00 00 00 7E 7E 00 00 00 00 00 00 01 00 03 03 E9 12 0D 6A 7E')
 	assert recs.len == 2
 	assert recs[0].frame.id == 0x001
 	assert recs[1].frame.id == 0x003, 'the frame after a bad CRC was lost'
@@ -203,7 +222,8 @@ fn test_tv15_a_bad_crc_drops_only_its_own_frame() {
 
 // TV-16 — payload bytes that collide with the framing. Both escapes, in one frame.
 fn test_tv16_stuffing_in_the_payload() {
-	recs, errs := decode_all('7E 00 00 00 00 00 00 08 00 01 7D 5E 7D 5E 7D 5E 7D 5E 7D 5D 7D 5D 7D 5D 7D 5D 67 49 97 08 7E')
+	recs, errs :=
+		decode_all('7E 00 00 00 00 00 00 08 00 01 7D 5E 7D 5E 7D 5E 7D 5E 7D 5D 7D 5D 7D 5D 7D 5D 67 49 97 08 7E')
 	assert errs.len == 0, '${errs}'
 	assert recs.len == 1
 	assert recs[0].frame.data == [u8(0x7E), 0x7E, 0x7E, 0x7E, 0x7D, 0x7D, 0x7D, 0x7D]
@@ -222,7 +242,8 @@ fn test_tv17_stuffing_inside_the_checksum() {
 // TV-18 — a truncated frame at the end of an otherwise valid HDLC payload. The frame BEFORE it
 // was really on the wire and is kept; the next HDLC frame decodes normally.
 fn test_tv18_a_truncated_frame_keeps_its_predecessors() {
-	recs, errs := decode_all('7E 00 00 00 00 00 00 01 00 01 01 00 00 00 00 00 00 02 00 02 02 BE C0 22 71 7E 7E 00 00 00 00 00 00 01 00 03 03 E9 12 0D 6A 7E')
+	recs, errs :=
+		decode_all('7E 00 00 00 00 00 00 01 00 01 01 00 00 00 00 00 00 02 00 02 02 BE C0 22 71 7E 7E 00 00 00 00 00 00 01 00 03 03 E9 12 0D 6A 7E')
 	assert recs.len == 2
 	assert recs[0].frame.id == 0x001, 'the frame before the truncated one was discarded'
 	assert recs[1].frame.id == 0x003

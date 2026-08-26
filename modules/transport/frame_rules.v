@@ -46,6 +46,17 @@ pub fn frame_impossible_error(f CanFrame) ?string {
 	if f.brs && !f.fd {
 		return 'brs without fd (id 0x${f.id:X}) — bit-rate switching belongs to a CAN-FD frame\'s data phase, and a classic frame has none'
 	}
+	// ESI IS A CAN-FD BIT and a classic frame has nowhere to put it. It reports that the
+	// TRANSMITTER was error-passive, which only an FD frame's control field carries.
+	//
+	// Not merely meaningless: the CANsub's own wire format puts ESI in bit 5 of the flags byte,
+	// and its decoder reads `b6 & 0xE0 == 0x20` — a classic frame with ESI and nothing else — as
+	// an ERROR RECORD. So the encoder turned a transmission somebody asked for into something the
+	// receiver reads as a bus error (codex round 3 on #204). A frame that decodes as a different
+	// KIND of thing is the strongest form of the disagreement this file exists to prevent.
+	if f.esi && !f.fd {
+		return 'esi without fd (id 0x${f.id:X}) — ESI reports an error-passive transmitter in a CAN-FD control field, and a classic frame has none'
+	}
 	// THE ID AGAINST ITS DECLARED WIDTH. `extended` is what the caller says the frame is, so an id
 	// too big for it is a contradiction in the frame itself — and masking it transmits a different
 	// identifier under the name of the one asked for.

@@ -1472,7 +1472,15 @@ pub fn decompose_iface(iface string) (string, string) {
 	}
 	// `cansub:<id>/<channel>[@<rates>]` — the id AND channel are the address, so only the rate
 	// suffix comes off, exactly as it does for the other three.
-	if s.starts_with('cansub:') {
+	//
+	// CASE-INSENSITIVELY, unlike the branches around it, because the CANsub DISPATCHER is
+	// (`open_windows.v` / `open_linux.v` both match `iface.to_lower()`). `pcan:`, `kvaser:` and
+	// `vector:` are case-sensitive in both places and so agree with themselves; cansub was the one
+	// that did not, so `CANSUB:E5A16ADF/1@250000` opened as a CANsub at 250k while this classified
+	// the row as SocketCAN and never lifted the rate into the model — leaving the editor and every
+	// conflict check reasoning about a different bus from the one that opens (codex round 3 on
+	// #204).
+	if s.to_lower().starts_with('cansub:') {
 		return 'cansub', s['cansub:'.len..].all_before('@')
 	}
 	if s.starts_with('kvaser:') {

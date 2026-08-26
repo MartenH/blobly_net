@@ -241,3 +241,49 @@ fn test_an_unparseable_address_is_its_own_canonical_form() {
 	y := cansub_canonical_spec('cansub:other-nonsense')
 	assert x != y
 }
+
+// recv(0) IS A NON-BLOCKING POLL, not "do nothing". Every other bus here answers it by looking at
+// what is already queued and returning it. Derived from the deadline alone it came out as an
+// expired budget, so a caller draining with a zero timeout was told the queue was empty while
+// frames sat in it — and the test beside this one asserted the poll behaviour in a comment while
+// the code did not do it (codex round 3 on #204).
+fn test_a_zero_timeout_still_probes_the_queue_once() {
+	now := i64(1_000_000)
+	slice := cansub_first_wait(0, now, now) or {
+		assert false, 'recv(0) must look at the queue before giving up'
+		return
+	}
+	assert slice == 0, 'it looks, and then gives up immediately — it does not wait'
+}
+
+// And only ONCE: the second slice of a recv(0) has no budget left, or the loop would spin.
+fn test_a_zero_timeout_does_not_poll_twice() {
+	now := i64(1_000_000)
+	if _ := cansub_wait_slice(0, now, now) {
+		assert false, 'after the first probe, recv(0) is out of budget'
+	}
+}
+
+// A positive timeout is unaffected by the first-slice rule.
+fn test_the_first_slice_of_a_positive_timeout_is_the_ordinary_one() {
+	now := i64(1_000_000)
+	a := cansub_first_wait(20, now + 20, now) or {
+		assert false, 'budget remains'
+		return
+	}
+	b := cansub_wait_slice(20, now + 20, now) or {
+		assert false, 'budget remains'
+		return
+	}
+	assert a == b && a == 20
+}
+
+// And a blocking recv is still blocking on its first slice.
+fn test_the_first_slice_of_a_blocking_recv_blocks() {
+	now := i64(1_000_000)
+	slice := cansub_first_wait(-1, now - 1, now) or {
+		assert false, 'recv(-1) blocks'
+		return
+	}
+	assert slice == cansub_poll_ms
+}

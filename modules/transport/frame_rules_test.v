@@ -164,3 +164,28 @@ fn test_an_ordinary_frame_is_impossible_to_nobody() {
 	assert frame_impossible_error(CanFrame{ id: 0x123, rtr: true }) == none
 	assert frame_impossible_error(CanFrame{ id: 0x123, fd: true, brs: true, data: []u8{len: 64} }) == none
 }
+
+// ESI ON A CLASSIC FRAME is not merely meaningless — it becomes something else. The CANsub wire
+// format carries ESI in bit 5 of the flags byte, and its own decoder reads a classic frame with
+// bit 5 and nothing else (`b6 & 0xE0 == 0x20`) as an ERROR RECORD. So a transmission somebody
+// asked for was encoded as a thing the receiver reads as a bus fault (codex round 3 on #204).
+fn test_esi_without_fd_is_refused() {
+	f := CanFrame{
+		id:  0x123
+		esi: true
+	}
+	assert frame_impossible_error(f) != none, 'a classic frame has no ESI bit to set'
+	assert frame_shape_error(f) != none
+}
+
+fn test_esi_on_an_fd_frame_is_fine() {
+	// A RECEIVED STATUS, and a perfectly ordinary one: the transmitting node was error-passive.
+	f := CanFrame{
+		id:   0x123
+		fd:   true
+		esi:  true
+		data: []u8{len: 8}
+	}
+	assert frame_impossible_error(f) == none
+	assert frame_shape_error(f) == none
+}

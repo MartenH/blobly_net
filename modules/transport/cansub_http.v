@@ -58,8 +58,16 @@ pub fn cansub_status_code(line string) !int {
 pub fn cansub_dechunk(body string) !string {
 	mut out := []u8{}
 	mut i := 0
+	// A CHUNKED BODY IS ONLY COMPLETE WHEN THE ZERO CHUNK ARRIVES. Running off the end of the
+	// buffer instead is what a dropped connection looks like — and `cansub_request` treats every
+	// read error as EOF, so a socket that died between two chunks handed back the bytes collected
+	// so far as a successful response. Partial JSON parses to a device answer with fields missing,
+	// which is worse than an error (codex round 3 on #204).
+	mut terminated := false
 	for i < body.len {
-		mut eol := body.index_after('\r\n', i) or { return error('chunk header without a line end') }
+		mut eol := body.index_after('\r\n', i) or {
+			return error('chunk header without a line end')
+		}
 		mut header := body[i..eol]
 		if ext := header.index(';') { // chunk extensions are allowed and ignored
 			header = header[..ext]
@@ -67,6 +75,7 @@ pub fn cansub_dechunk(body string) !string {
 		size := hex_int(header.trim_space()) or { return error('bad chunk size "${header}"') }
 		i = eol + 2
 		if size == 0 {
+			terminated = true
 			break // the terminating chunk; any trailer after it is not ours to care about
 		}
 		if i + size > body.len {
@@ -74,6 +83,9 @@ pub fn cansub_dechunk(body string) !string {
 		}
 		out << body[i..i + size].bytes()
 		i += size + 2 // step over the CRLF that follows every chunk
+	}
+	if !terminated {
+		return error('chunked body ended after ${out.len} bytes without its terminating chunk')
 	}
 	return out.bytestr()
 }
@@ -90,6 +102,7 @@ fn hex_int(s string) ?int {
 			c >= `A` && c <= `F` { int(c - `A`) + 10 }
 			else { return none }
 		}
+
 		v = v * 16 + d
 	}
 	return v
