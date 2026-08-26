@@ -377,11 +377,15 @@ on its own implies `--fd`, because a data rate that was silently ignored would b
 refusal. The payload is checked byte for byte against what was sent, not merely counted: an
 under-terminated FD bus corrupts the data phase, and a marker-only check would pass over it.
 
-**Termination matters much more for FD.** A CAN bus wants 120 Ω at *both* ends. One resistor is
-usually survivable at 500 kbit/s over a short bench link — the FD results below were all recorded
-that way — and it is the first thing to suspect when an FD data phase at 2 Mbit/s or above starts
-producing malformed frames, since the reflections it leaves scale with the bit rate. Fix the
-termination before reading a malformed-frame count as a backend bug.
+**Termination matters much more for FD.** A CAN bus wants 120 Ω at *both* ends, and it is the first
+thing to suspect when an FD data phase at 2 Mbit/s or above starts producing malformed frames, since
+the reflections a missing one leaves scale with the bit rate. Fix the termination before reading a
+malformed-frame count as a backend bug.
+
+One resistor has been survivable *here*, on a short bench link: every FD result below was recorded
+with a single terminator, at both dates. That is worth stating plainly rather than leaving implied —
+this bench has never been terminated at both ends, and still passes at an 8 Mbit/s data phase. It is
+a fact about a short link on a desk, not a licence to under-terminate a real harness.
 
 **With NO resistor fitted, classic CAN goes too.** Measured on this same bench, Channel 1 to
 Channel 3, after the one terminator was removed:
@@ -409,10 +413,11 @@ higher one is a physical-layer problem, not a software one. Two checks isolate i
 - **Drop the bitrate until it passes.** If the backend is fine and 125 k works while 500 k does not,
   what is left is the wire.
 
-Refitting the terminator on this bench turned every one of the failing rows above into 100%, which
-is the confirmation the table is there to support:
+Refitting that one resistor turned every failing row into 100%, which is the confirmation the table
+is there to support — and the controlled comparison the whole section rests on, since only the
+resistor changed between the two columns:
 
-| bitrate | no terminator fitted | both fitted |
+| bitrate | no terminator | one terminator |
 |---|---|---|
 | 125 000 | 100% arrived | 100% arrived |
 | 200 000 | 17,899 error frames | — |
@@ -420,8 +425,9 @@ is the confirmation the table is there to support:
 | 500 000 | 42,894 error frames | 100% arrived |
 | 1 000 000 | — | 100% arrived |
 
-The left column is **no** resistor at all — this bench had run with one, and that one came out. It
-is not the same condition as the singly-terminated FD runs further down, which passed.
+Note that the right column is **one** resistor, not two: this link has never been terminated at both
+ends. So the table shows the difference between none and one, which on a short bench link is the
+difference between unusable and fine — not the difference between under-terminated and correct.
 
 `--modecheck` is the bench half of a test whose other half runs everywhere: on Linux
 `modules/transport/pinned_test.v` checks the bookkeeping over `inproc:` buses, and only a VN
@@ -466,10 +472,11 @@ refusing a second data phase. It needs no `--transmit`, because both addresses a
 only the protocol changes.
 
 **CAN-FD link test**, same adapter, Channel 1 to Channel 3 — 64-byte payloads with BRS, arbitration
-at 500 kbit/s, every byte verified against what was sent. Re-run 2026-08-26 with **both** 120 Ω
-terminators fitted; the 2026-08-24 column is the same test with only one:
+at 500 kbit/s, every byte verified against what was sent. **Both dates ran with a single 120 Ω
+terminator** — the 2026-08-26 re-run is after that one resistor was refitted, not after a second was
+added:
 
-| data phase | arrived | malformed | enqueued/s (both fitted) | frames (one, 2026-08-24) |
+| data phase | arrived | malformed | enqueued/s (2026-08-26) | frames (2026-08-24) |
 |---|---|---|---|---|
 | 2 Mbit/s | 100% | 0 | 3,098 | 14,913 |
 | 4 Mbit/s | 100% | 0 | 5,133 | 15,212 |
@@ -490,9 +497,10 @@ phases is still evidence; the absolute values are an upper bound on what went ou
 
 Arrival and malformed counts are exact, and those are the columns the result rests on.
 
-One terminator was enough *here*, on a short bench link, for FD at 8 Mbit/s — and not enough for
-classic CAN once the last resistor came out. Treat one as a condition a particular run happened to
-pass under, never as a specification.
+One terminator has been enough *here*, on a short bench link, for FD at 8 Mbit/s; **none** was not
+enough for classic CAN at 250 kbit/s. That is the span these two sections measured, and it is the
+whole of what they license. Treat one as a condition these runs happened to pass under, never as a
+specification — a real harness wants 120 Ω at both ends, and nothing here was tested that way.
 
 It was worth running for a second reason: the `-1004` message used to name the mode backwards.
 The shim's check is bidirectional and says so, but the V-side text assumed the channel was open
