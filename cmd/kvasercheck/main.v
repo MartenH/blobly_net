@@ -371,6 +371,14 @@ fn run_fd_rtr_refusal(o Opts) int {
 		println('  fd+rtr:  FAIL — accepted; CAN-FD has no remote frames')
 		return 1
 	}
+	// THE RIGHT REFUSAL, not merely a refusal. Any send failure produced a message — a full
+	// queue, a bus-off channel, a driver error from the very canWrite this is meant to keep the
+	// frame away from — and all of them read as `ok`, so a regression that let the invalid frame
+	// through to the driver would still have passed here on an unhealthy device (codex round 1).
+	if !why.contains('CAN-FD has no remote frames') {
+		println('  fd+rtr:  FAIL — refused, but not for being a remote FD frame: ${why}')
+		return 1
+	}
 	println('  fd+rtr:  ok   (refused: ${why})')
 	return 0
 }
