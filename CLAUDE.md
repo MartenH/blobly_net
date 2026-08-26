@@ -336,6 +336,14 @@ categorised list (V / GUI / environment / CI). Two that bite newcomers:
 - **Native Windows** is a separate toolchain (MSYS2/mingw). `.github/workflows/windows.yml` is
   the reproducible recipe — it builds the shipped bundle on every push; there is no hand-written
   walkthrough to drift from it.
+- **Working from Windows, type-check the OTHER platform before you push:**
+  `v -os linux -enable-globals -path "@vlib|@vmodules|modules|libs" -check cmd/blobly_net`.
+  The per-platform backends (`vector_windows.v` / `vector_linux.v`, and the `discover_*` pair)
+  are two files that must offer the SAME symbols, and a Windows bench compiles only one of them —
+  so a helper added beside the driver and called from the cross-platform GUI builds perfectly
+  here and fails the Linux job ten minutes later. That is a ~10-minute round trip for something
+  `-check` finds in seconds without GLFW, FreeType or a linker. It caught `vector_borrow_lock_now`
+  exactly this way (#192), after CI did.
 
 ## Docs
 

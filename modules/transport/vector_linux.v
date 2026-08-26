@@ -132,4 +132,13 @@ pub fn vector_unassign(app_channel int) ! {
 
 pub fn vector_borrow_lock() ! {}
 
+// The impatient variant the GUI uses. Both succeed here for the same reason: there is no XL
+// driver, so there are no application-channel assignments for two processes to interleave and
+// nothing to wait for.
+//
+// MIRRORED BECAUSE THE CALLER IS CROSS-PLATFORM. cmd/blobly_net compiles on Linux, and a helper
+// added beside the Windows driver is invisible to it — which is the whole reason vector_names.v
+// exists as a separate file. CI caught this one; the Windows build here cannot.
+pub fn vector_borrow_lock_now() ! {}
+
 pub fn vector_borrow_unlock() {}
