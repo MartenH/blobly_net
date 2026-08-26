@@ -125,12 +125,23 @@ fn cansub_solve(bitrate int, sample_point_pct int, max_seg1 int, max_seg2 int) !
 	if sample_point_pct < 50 || sample_point_pct > 95 {
 		return error('sample point ${sample_point_pct}% is outside 50-95%')
 	}
+	// A RATE ABOVE A QUARTER OF THE CLOCK CANNOT EXIST HERE, whatever the prescaler: the loop
+	// below needs at least four time quanta per bit, so clock/(brp x bitrate) >= 4 already caps
+	// the bitrate at clock/4 with brp = 1. Refused up front, and in words, because the arithmetic
+	// underneath is where it used to go wrong: `brp * bitrate` is `int`, and 1073741824 bit/s
+	// reached brp = 4 as a WRAPPED divisor of zero, so a number that deserved this sentence
+	// produced a divide-by-zero instead (codex round 1 on #204). The products below are widened
+	// as well, so the guard is a message rather than the only thing standing between us and a
+	// crash.
+	if i64(bitrate) > i64(cansub_clock_hz) / 4 {
+		return error('bitrate ${bitrate} is above a quarter of the ${cansub_clock_hz} Hz CANsub clock — there are not four time quanta in a bit at that rate')
+	}
 	for brp in 1 .. cansub_max_brp + 1 {
-		divisor := brp * bitrate
-		if cansub_clock_hz % divisor != 0 {
+		divisor := i64(brp) * i64(bitrate)
+		if i64(cansub_clock_hz) % divisor != 0 {
 			continue // not an exact division: this prescaler cannot make this rate
 		}
-		total := cansub_clock_hz / divisor
+		total := int(i64(cansub_clock_hz) / divisor)
 		if total < 4 {
 			continue // too few quanta to place a sample point in
 		}

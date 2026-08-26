@@ -1337,6 +1337,33 @@ fn parse_id(s string) u32 {
 pub const adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'pcan', 'kvaser', 'vector', 'cansub',
 	'doip']
 
+// WHICH ADAPTERS A PLATFORM MAY OFFER. `adapters` above is every name a project FILE may carry —
+// these two are what an editor may put in front of somebody, and they live here, next to the
+// registry, rather than in the GUI.
+//
+// The GUI's own copy is how CANsub shipped unselectable: registered in `adapters`, in
+// compose_iface, in decompose_iface and in all three capability predicates, and absent from the
+// single hardcoded list a user actually clicks — so the only way to reach the new backend was to
+// edit the project file by hand (codex round 1 on #204). The registry test holds the union of
+// these two to `adapters`, which is the assertion that would have caught it: a backend cannot be
+// added to the engine and left unreachable from the editor.
+//
+// Split by platform because most backends are: SocketCAN and vcan are Linux kernel interfaces,
+// PCAN/Kvaser/Vector are Windows vendor DLLs. CANsub is on BOTH — it is a network device the
+// host reaches over USB-Ethernet, so there is no driver to be missing.
+pub const windows_adapters = ['virtual', 'udp', 'pcan', 'kvaser', 'vector', 'cansub', 'doip']
+
+pub const linux_adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'cansub', 'doip']
+
+// platform_adapters is what THIS build may offer.
+pub fn platform_adapters() []string {
+	$if windows {
+		return windows_adapters
+	} $else {
+		return linux_adapters
+	}
+}
+
 // compose_iface builds the internal scheme string `transport.open()` consumes from an
 // adapter + its backend-specific address. It is the inverse of decompose_iface.
 //   virtual  CAN1            -> inproc:CAN1   (bare `inproc` if address empty)
@@ -1597,7 +1624,7 @@ pub fn (fr Framing) apply(f transport.CanFrame) transport.CanFrame {
 	}
 }
 
-// fd_config_error reports why this row's CAN-FD rates could not be opened, or none when they can.
+// address_config_error reports why this row's CAN-FD rates could not be opened, or none when they can.
 //
 // ASKS THE REAL PARSER rather than restating its rules, and asks it about the ADDRESS THIS ROW
 // WILL ACTUALLY BE OPENED WITH. An editor enforcing its own copy is a second opinion about the
@@ -1609,7 +1636,17 @@ pub fn (fr Framing) apply(f transport.CanFrame) transport.CanFrame {
 //
 // Composing through iface_with_bitrate is what makes it exact: whatever that produces is what
 // `transport.open` is handed, so anything this accepts, the open accepts.
-pub fn (c Channel) fd_config_error() ?string {
+pub fn (c Channel) address_config_error() ?string {
+	// CANSUB IS ASKED ABOUT EVERY ROW, FD or not. The other vendor backends hand a nominal rate
+	// to a driver that either produces it or says so; the CANsub derives its own bit timing from
+	// an 80 MHz clock that must divide EXACTLY, so it is the first adapter here that can refuse a
+	// plain CLASSIC rate. 333333 bit/s passed the editor's digits-only check, was saved, and was
+	// refused only at Start — which is the exact failure the FD half of this function was written
+	// to prevent, recurring one row-type over (codex round 1 on #204). The name says `address`
+	// rather than `fd` for the same reason.
+	if c.adapter == 'cansub' {
+		return transport.cansub_address_error(c.iface_with_bitrate())
+	}
 	if !c.fd || !c.can_carry_fd() {
 		return none
 	}

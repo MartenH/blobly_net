@@ -176,8 +176,12 @@ fn test_phy_json_is_complete_even_for_a_classic_channel() {
 }
 
 fn test_phy_json_fd_carries_both_phases() {
-	j := cansub_phy_json(CansubTiming{ brp: 4, seg1: 63, seg2: 16, sjw: 4 },
-		CansubTiming{ brp: 4, seg1: 15, seg2: 4, sjw: 4 }, false)
+	j := cansub_phy_json(CansubTiming{ brp: 4, seg1: 63, seg2: 16, sjw: 4 }, CansubTiming{
+		brp:  4
+		seg1: 15
+		seg2: 4
+		sjw:  4
+	}, false)
 	assert j.contains('"timing":{"brp":4,"seg1":63,"seg2":16,"sjw":4}')
 	assert j.contains('"timing_data":{"brp":4,"seg1":15,"seg2":4,"sjw":4}')
 }
@@ -189,4 +193,33 @@ fn test_phy_json_fd_carries_both_phases() {
 fn test_phy_json_can_silence_the_controller() {
 	j := cansub_phy_json(CansubTiming{ brp: 4, seg1: 63, seg2: 16, sjw: 4 }, none, true)
 	assert j.contains('"listen_only":true')
+}
+
+// A BITRATE THAT OVERFLOWS THE PRESCALER PRODUCT. `brp * bitrate` was `int`, so 1073741824 bit/s
+// reached brp = 4 as a wrapped divisor of ZERO and the modulus divided by it — a crash where the
+// answer was always going to be "no". Absurd rates are exactly what a hand-edited project file
+// and a fuzzed address produce, and the difference between a refusal and a crash is the whole
+// point of validating in the editor (codex round 1 on #204).
+fn test_an_enormous_bitrate_is_refused_and_does_not_overflow() {
+	for r in [1_073_741_824, 2_000_000_000, 2_147_483_647, 20_000_001, 80_000_000] {
+		if _ := cansub_timing_for(r, cansub_default_sample_point) {
+			assert false, '${r} bit/s cannot be produced from an 80 MHz clock with four quanta a bit'
+		}
+	}
+}
+
+// The bound is DERIVED, not a round number: four quanta a bit at brp = 1 is exactly clock/4, so
+// that rate is the largest one arithmetic could offer. It is refused for a different reason (no
+// sample point fits), but it must refuse rather than crash, and the rate just under the bound must
+// still be reachable if it divides.
+fn test_the_boundary_rate_is_handled_rather_than_crashing() {
+	if _ := cansub_timing_for(cansub_clock_hz / 4, cansub_default_sample_point) {
+		// A solution here would be a surprise, not an error; either way it must not crash.
+	}
+	// A rate well inside the range that divides exactly still solves.
+	t := cansub_timing_for(1_000_000, cansub_default_sample_point) or {
+		assert false, '1 Mbit/s must be producible: ${err}'
+		return
+	}
+	assert t.brp >= 1
 }

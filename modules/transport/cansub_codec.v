@@ -156,10 +156,14 @@ pub fn cansub_hdlc_wrap(payload []u8) []u8 {
 // the device's to honour — it stamps what actually reaches the wire and reports that back in the
 // TX acknowledgement — so this writes zero rather than inventing one.
 pub fn cansub_encode_frame(f CanFrame) ![]u8 {
-	dlen := if f.rtr && !f.fd { 0 } else { f.data.len }
-	if f.rtr && f.fd {
-		return error('CAN-FD has no remote frame') // the bit is BRS there; there is nothing to ask for
+	// EVERY SHAPE RULE FIRST, from the one place that states them (frame_rules.v). This path used
+	// to mask an oversized standard id down to eleven bits and drop `brs` from a classic frame,
+	// both silently and both reported as success — so the device put a different frame on the wire
+	// from the one wiretap recorded, and the echo of our own frame could never match it.
+	if why := frame_shape_error(f) {
+		return error('CANsub: ${why}')
 	}
+	dlen := if f.rtr && !f.fd { 0 } else { f.data.len }
 	dlc := cansub_len_dlc(if f.rtr { f.data.len } else { dlen }, f.fd)!
 	mut b6 := dlc & 0x0F
 	if f.fd {
@@ -239,8 +243,7 @@ pub fn cansub_parse_payload(p []u8) ([]CansubRecord, string) {
 			if p.len - i < 11 {
 				return out, 'Not enough data bytes for payload'
 			}
-			id = (u32(p[i + 7]) << 24) | (u32(p[i + 8]) << 16) | (u32(p[i + 9]) << 8) | u32(p[
-				i + 10])
+			id = (u32(p[i + 7]) << 24) | (u32(p[i + 8]) << 16) | (u32(p[i + 9]) << 8) | u32(p[i + 10])
 			id &= 0x1FFFFFFF
 			hdr = 11
 		} else {
@@ -327,7 +330,7 @@ fn (mut d CansubDecoder) close(mut out []CansubRecord) {
 	body := d.buf.clone()
 	d.buf.clear()
 	if body.len == 0 {
-		return // `7E 7E` with nothing between: an empty frame is not an error
+		return
 	}
 	if body.len < 5 {
 		d.errors << 'HDLC frame too short (${body.len} bytes)'

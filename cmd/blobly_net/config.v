@@ -146,7 +146,7 @@ fn (mut app App) commit_cfg() {
 		// whether the two phases make sense together: a 250000 data phase under a 500000 nominal
 		// is a perfectly good number that no FD channel can open, and it was accepted, saved, and
 		// refused only at Start — long after the field that caused it left the screen.
-		if why := ch.fd_config_error() {
+		if why := ch.address_config_error() {
 			app.notify('${ch.name}: ${why}')
 			app.cfg_invalid << CfgInvalid{
 				idx:     i

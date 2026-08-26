@@ -1311,7 +1311,7 @@ channels:
 // The editor and the opener must agree about a pair of rates. Digits-only says nothing about
 // whether the two phases make sense TOGETHER, so a data phase slower than the arbitration phase
 // was accepted, persisted, and refused only at Start (codex #183 r1).
-fn test_fd_config_error_asks_the_real_parser() {
+fn test_address_config_error_asks_the_real_parser() {
 	base := Channel{
 		adapter: 'vector'
 		iface:   'vector:1'
@@ -1323,13 +1323,13 @@ fn test_fd_config_error_asks_the_real_parser() {
 		...base
 		data_bitrate: 250000
 	}
-	if why := slow.fd_config_error() {
+	if why := slow.address_config_error() {
 		assert why.contains('slower') || why.contains('data'), 'unhelpful message: ${why}'
 	} else {
 		assert false, 'a data phase below the arbitration rate must be reported'
 	}
 	// Past the range the standard allows.
-	if _ := Channel{ ...base, data_bitrate: 9_000_000 }.fd_config_error() {} else {
+	if _ := Channel{ ...base, data_bitrate: 9_000_000 }.address_config_error() {} else {
 		assert false, '9 Mbit/s is past what ISO 11898-1 allows'
 	}
 	// The ordinary cases are fine, including FD with no bit-rate switch.
@@ -1338,12 +1338,12 @@ fn test_fd_config_error_asks_the_real_parser() {
 			...base
 			data_bitrate: ok
 		}
-		if why := c.fd_config_error() {
+		if why := c.address_config_error() {
 			assert false, '${ok} must be accepted: ${why}'
 		}
 	}
 	// An unset data rate means "at the nominal rate", which is legal.
-	if why := base.fd_config_error() {
+	if why := base.address_config_error() {
 		assert false, 'an unset data rate must default, not fail: ${why}'
 	}
 	// A classic row has no FD rates to be wrong about, and neither has a backend that refuses FD.
@@ -1351,7 +1351,7 @@ fn test_fd_config_error_asks_the_real_parser() {
 		...base
 		fd: false
 	}
-	if _ := classic.fd_config_error() {
+	if _ := classic.address_config_error() {
 		assert false, 'a classic row has no data phase'
 	}
 	pc := Channel{
@@ -1359,7 +1359,7 @@ fn test_fd_config_error_asks_the_real_parser() {
 		adapter:      'pcan'
 		data_bitrate: 250000
 	}
-	if _ := pc.fd_config_error() {
+	if _ := pc.address_config_error() {
 		assert false, 'PCAN cannot configure a data phase; fd_capability_warnings covers that row'
 	}
 }

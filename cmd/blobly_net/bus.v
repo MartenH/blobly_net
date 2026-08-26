@@ -7,14 +7,14 @@ import transport
 
 // Chan is one project channel's live state (the Buses panel row + Start/Stop target).
 struct Chan {
-	name         string
-	network      string // grouping label (v2)
-	adapter      string // transport backend (v2): virtual|vcan|socketcan|udp|pcan|kvaser|doip
-	address      string // adapter-specific address (v2)
-	iface        string
-	mode         string
-	typ          string
-	bitrate      int
+	name    string
+	network string // grouping label (v2)
+	adapter string // transport backend (v2): virtual|vcan|socketcan|udp|pcan|kvaser|doip
+	address string // adapter-specific address (v2)
+	iface   string
+	mode    string
+	typ     string
+	bitrate int
 	// CAN-FD, and BOTH halves of it. `data_bitrate` was here on its own and `fd` was not, which
 	// reads as harmless — the data rate is the interesting number — and is not: `fd` is what
 	// iface_with_bitrate tests to decide whether to compose a data phase at all, so a runtime row
@@ -46,9 +46,9 @@ mut:
 	// are not, deliberately: clearing the view must not make the app forget the wire was ever
 	// alive, or a Clear would silently reset the reported silence to nothing. They reset at
 	// Start instead, with the measurement they describe.
-	rx_last f64
-	rx_seen u64
-	running  bool
+	rx_last   f64
+	rx_seen   u64
+	running   bool
 	spawning  bool // rx_loop spawned but its bus not open yet (double-click guard)
 	link_down bool // real CAN iface is administratively DOWN (bound but can't tx/rx)
 	// The controller's fault ladder, from the backend's own driver (transport.BusHealth) —
@@ -282,10 +282,10 @@ fn (app &App) open_tap_full(iface string, origin string, chan_name string, gen u
 	mut raw := transport.open(phys)!
 	inner := transport.verbatim(mut raw)
 	return &TapBus{
-		tx_mu:     app.tx_mutex(logical)
-		inner:     inner
-		app:       unsafe { app }
-		iface:     logical
+		tx_mu:      app.tx_mutex(logical)
+		inner:      inner
+		app:        unsafe { app }
+		iface:      logical
 		chan_name:  chan_name
 		origin:     origin
 		reproduces: reproduces
@@ -408,16 +408,17 @@ fn (mut app App) tx_on_chan(chan_name string, iface string, f transport.CanFrame
 // actually work here (SocketCAN/vcan are Linux; PCAN/Kvaser are Windows). `current` is always
 // included so a project authored on another OS still shows (and can keep) its adapter.
 fn available_adapters(current string) []string {
-	mut list := $if windows {
-		// `vector` belongs here for the same reason pcan and kvaser do. Without it the only
-		// route to a Vector channel was Discover, which lists application channels whose
-		// hardware is present — so a bench could not be configured with the adapter unplugged,
-		// or before it had been assigned in Vector Hardware Manager, which is exactly when
-		// somebody sits down to write the project.
-		['virtual', 'udp', 'pcan', 'kvaser', 'vector', 'doip']
-	} $else {
-		['virtual', 'vcan', 'socketcan', 'udp', 'doip']
-	}
+	// FROM THE REGISTRY, not from a copy kept here. This list used to be the GUI's own, and a
+	// backend registered everywhere the engine looks was still unselectable because this one
+	// place had not been told — see project.windows_adapters for the whole argument, and the
+	// registry test that now holds the two together.
+	//
+	// (`vector` belongs there for the same reason pcan and kvaser do. Without it the only route
+	// to a Vector channel was Discover, which lists application channels whose hardware is
+	// present — so a bench could not be configured with the adapter unplugged, or before it had
+	// been assigned in Vector Hardware Manager, which is exactly when somebody sits down to
+	// write the project.)
+	mut list := project.platform_adapters().clone()
 	if current !in list {
 		list << current
 	}
@@ -433,6 +434,8 @@ fn adapter_tip(a string) string {
 		'udp' { 'Cross-platform UDP-multicast software bus. The address is group:port (e.g. 239.0.0.1:5000). Lets separate processes/hosts share a virtual wire.' }
 		'pcan' { 'PEAK PCAN hardware (Windows). The address is a channel like PCAN_USBBUS1. Discovery needs the PEAK driver on Windows.' }
 		'kvaser' { 'Kvaser hardware (Windows). The address is a channel index (0, 1…). Discovery needs the Kvaser driver on Windows.' }
+		'vector' { 'Vector hardware (Windows). The address is an APPLICATION channel number as Vector Hardware Manager numbers them (1, 2…), optionally with rates: 1@500000/2000000 for CAN-FD. Needs vxlapi64.dll, which is a separate download from the drivers.' }
+		'cansub' { 'CSS Electronics CANsub.4 (any platform). The address is the device id and channel — 1A2B3C4D/1 — optionally with rates: /1@500000/2000000 for CAN-FD. Reached over USB-Ethernet, so there is no driver to install.' }
 		'doip' { 'Diagnostics over Ethernet (ISO 13400) — NOT a CAN bus. The address is host:port (default 127.0.0.1:13400); set the tester/ECU logical addresses below.' }
 		else { '' }
 	}

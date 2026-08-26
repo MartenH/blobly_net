@@ -122,3 +122,75 @@ fn test_a_cansub_is_hardware_on_every_platform() {
 fn test_the_adapter_carries_fd() {
 	assert adapter_carries_fd('cansub')
 }
+
+// A CLASSIC ROW IS VALIDATED TOO. Unlike a vendor driver that will produce any sane nominal rate,
+// the CANsub derives its timing from an 80 MHz clock that must divide EXACTLY — so it is the first
+// adapter here that can refuse a plain classic bitrate. 333333 bit/s passed the editor's
+// digits-only check and was refused only at Start (codex round 1 on #204).
+fn test_a_classic_rate_the_clock_cannot_divide_is_refused() {
+	why := cansub_address_error('cansub:1A2B3C4D/1@333333') or {
+		assert false, '333333 bit/s does not divide 80 MHz and must be refused'
+		return
+	}
+	assert why.contains('333333'), 'the refusal must name the rate: ${why}'
+}
+
+fn test_a_classic_rate_the_clock_can_divide_is_accepted() {
+	for r in [125_000, 250_000, 500_000, 1_000_000] {
+		if why := cansub_address_error('cansub:1A2B3C4D/1@${r}') {
+			assert false, '${r} bit/s is an ordinary CAN rate and must be accepted: ${why}'
+		}
+	}
+}
+
+// recv(-1) MEANS BLOCK, per the Bus contract — `cmd/can_smoke` is one caller that uses it. Adding
+// the negative to the clock put the deadline in the past, so the one caller asking to wait forever
+// got `timeout` immediately (codex round 1 on #204).
+fn test_a_negative_timeout_blocks_rather_than_expiring() {
+	now := i64(1_000_000)
+	deadline := now + i64(-1) // what recv computes for recv(-1)
+	slice := cansub_wait_slice(-1, deadline, now) or {
+		assert false, 'recv(-1) must block, not expire'
+		return
+	}
+	assert slice == cansub_poll_ms, 'a blocking caller waits a full poll interval at a time'
+	// And it keeps blocking however long it has already been waiting.
+	later := cansub_wait_slice(-1, deadline, now + 10_000) or {
+		assert false, 'a blocking caller never expires'
+		return
+	}
+	assert later == cansub_poll_ms
+}
+
+// The poll interval is a CEILING, not a floor: it exists so an idle receiver notices a dead
+// socket. Parking the whole 200 ms regardless made recv(5) — used by polling and shutdown loops
+// throughout this repo — forty times slower than the interface promises.
+fn test_a_short_timeout_is_not_rounded_up_to_the_poll_interval() {
+	now := i64(1_000_000)
+	for t in [1, 5, 20, 50, 199] {
+		slice := cansub_wait_slice(t, now + i64(t), now) or {
+			assert false, 'recv(${t}) has budget left and must wait'
+			return
+		}
+		assert slice == i64(t), 'recv(${t}) waited ${slice} ms'
+	}
+}
+
+fn test_a_long_timeout_is_capped_at_the_poll_interval() {
+	now := i64(1_000_000)
+	slice := cansub_wait_slice(5000, now + 5000, now) or {
+		assert false, 'budget remains'
+		return
+	}
+	assert slice == cansub_poll_ms, 'a long wait is still broken into poll intervals so the socket is checked'
+}
+
+fn test_an_expired_budget_reports_timeout() {
+	now := i64(1_000_000)
+	if _ := cansub_wait_slice(50, now - 1, now) {
+		assert false, 'a deadline in the past is a timeout'
+	}
+	if _ := cansub_wait_slice(0, now, now) {
+		assert false, 'recv(0) polls once and does not wait'
+	}
+}

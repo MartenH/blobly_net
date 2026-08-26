@@ -128,3 +128,35 @@ fn test_a_rate_suffix_does_not_survive_decompose() {
 		assert addr == base, '${a}: the rate suffix survived decompose as "${addr}"'
 	}
 }
+
+// AN ADAPTER THE ENGINE KNOWS MUST BE ONE A USER CAN PICK. This is the same half-registration the
+// rest of this file guards, one layer up: CANsub was added to `adapters`, to compose_iface, to
+// decompose_iface and to all three capability predicates, and the GUI kept its OWN hardcoded
+// picker list — so the backend was complete, tested, and reachable only by editing the project
+// file in a text editor (codex round 1 on #204).
+//
+// The lists are here rather than in the GUI precisely so this test can see them. It cannot check
+// that an adapter is on the RIGHT platform; it can check that it is on one, which is how this got
+// in.
+fn test_every_registered_adapter_is_offered_somewhere() {
+	for a in adapters {
+		assert a in windows_adapters || a in linux_adapters, '${a} is registered but no platform offers it — the only way to reach it is to hand-edit the project file'
+	}
+}
+
+// And the other direction: a picker cannot offer a name the project cannot compose, which would
+// produce a row that fails at Start with "unknown adapter" long after the editor accepted it.
+fn test_no_platform_offers_an_adapter_the_project_cannot_name() {
+	for a in windows_adapters {
+		assert a in adapters, 'the Windows picker offers ${a}, which is not a registered adapter'
+	}
+	for a in linux_adapters {
+		assert a in adapters, 'the Linux picker offers ${a}, which is not a registered adapter'
+	}
+}
+
+// platform_adapters must answer with one of the two lists, not a third one assembled inline.
+fn test_platform_adapters_is_one_of_the_declared_lists() {
+	got := platform_adapters()
+	assert got == windows_adapters || got == linux_adapters, 'platform_adapters returned a list that is neither declared one: ${got}'
+}

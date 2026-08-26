@@ -226,9 +226,38 @@ fn (mut b CansubBus) read_loop() {
 			continue
 		}
 		for rec in dec.feed(msg.payload) {
-			b.rx <- rec or { break } // the channel is closed: we are shutting down
+			if !b.enqueue(rec) {
+				return
+			}
 		}
 	}
+}
+
+// enqueue hands one record to the receiver without ever PARKING on a full queue.
+//
+// `b.rx <- rec` blocks when the buffer is full, and a CANsub handle used only for sending still
+// receives: the device acknowledges every transmission, so a send-only handle fills all 4096
+// records and the reader parks forever on the push. `close()` joins the reader — and it must,
+// because closing `rx` out from under a reader parked in the socket is the panic the comment
+// there describes — so closing such a handle never returned at all (codex round 1 on #204).
+//
+// close() clears `running` BEFORE it touches the socket, so the wait below is what the reader
+// notices: a full queue is only worth waiting on while somebody is still going to drain it.
+// Nothing is dropped while the bus is up; a bus on its way down stops caring.
+fn (mut b CansubBus) enqueue(rec CansubRecord) bool {
+	for {
+		if b.rx.try_push(rec) == .success {
+			return true
+		}
+		running := rlock b.stop {
+			b.stop.running
+		}
+		if !running {
+			return false
+		}
+		time.sleep(2 * time.millisecond)
+	}
+	return false
 }
 
 // poll_health asks the device what its controller thinks. The states map one to one onto this
@@ -276,13 +305,36 @@ pub fn (mut b CansubBus) send(frame CanFrame) ! {
 	}
 }
 
+// cansub_poll_ms is how often an idle receiver looks up from the queue to ask whether the socket
+// is still there. A CEILING on one select, never a floor.
+const cansub_poll_ms = i64(200)
+
+// cansub_wait_slice decides how long ONE select may park, or none when the caller's budget is
+// spent. Extracted from recv so both of its rules are visible to CI, because neither could be
+// seen from outside without a device on the other end (codex round 1 on #204).
+//
+// A NEGATIVE TIMEOUT MEANS BLOCK — the Bus contract every other backend keeps, and `cmd/can_smoke`
+// uses it. Added straight to the clock it put the deadline in the PAST, so the one caller asking
+// to wait forever was the one that returned instantly.
+//
+// And a positive timeout BOUNDS the wait. The poll interval is there for the socket check, so
+// parking the full 200 ms regardless made `recv(5)` — which polling and shutdown loops all over
+// this repo use — forty times slower than the interface promises.
+fn cansub_wait_slice(timeout_ms int, deadline i64, now i64) ?i64 {
+	if timeout_ms < 0 {
+		return cansub_poll_ms
+	}
+	remaining := deadline - now
+	if remaining <= 0 {
+		return none
+	}
+	return if remaining < cansub_poll_ms { remaining } else { cansub_poll_ms }
+}
+
 pub fn (mut b CansubBus) recv(timeout_ms int) !CanFrame {
 	deadline := time.ticks() + i64(timeout_ms)
 	for {
-		remaining := deadline - time.ticks()
-		if remaining <= 0 {
-			return error('timeout')
-		}
+		wait := cansub_wait_slice(timeout_ms, deadline, time.ticks()) or { return error('timeout') }
 		select {
 			rec := <-b.rx {
 				if rec.is_error {
@@ -294,7 +346,7 @@ pub fn (mut b CansubBus) recv(timeout_ms int) !CanFrame {
 				return rec.frame
 			}
 			// Bounded, so a closed socket does not park a caller here forever.
-			200 * time.millisecond {
+			wait * time.millisecond {
 				if e := b.failure() {
 					return error('${b.iface}: ${e}')
 				}
