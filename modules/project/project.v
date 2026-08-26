@@ -1355,6 +1355,28 @@ pub const windows_adapters = ['virtual', 'udp', 'pcan', 'kvaser', 'vector', 'can
 
 pub const linux_adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'cansub', 'doip']
 
+// adapter_starts_silent reports whether a NEW row on this adapter should begin listen-only.
+//
+// TRUE FOR HARDWARE THAT MAY ALREADY BE ON A LIVE BUS. A row created in the editor or through
+// Discover arrives with the 500 kbit/s default, which nobody has confirmed — and a node joining a
+// running vehicle able to acknowledge, at a rate that is a guess, is how a tester disturbs the
+// thing it came to observe. Untick it once the rate is known.
+//
+// HERE RATHER THAN IN THE GUI, and the reason is the one this whole file keeps running into: the
+// rule lived in two hardcoded `== 'vector'` comparisons in cmd/blobly_net, so exposing CANsub in
+// the picker made the manual route the unsafe one while Discover stayed careful, and nothing
+// failed to say so (codex round 5 on #204). The registry test now holds this against `adapters`,
+// so a hardware backend added later cannot quietly default to transmitting.
+//
+// The software and kernel adapters are not here: `inproc:`/`udp:` have no transceiver to silence
+// and a SocketCAN interface is brought up by `ip link` with a rate its operator already chose.
+pub fn adapter_starts_silent(adapter string) bool {
+	return match adapter.trim_space().to_lower() {
+		'vector', 'cansub' { true }
+		else { false }
+	}
+}
+
 // platform_adapters is what THIS build may offer.
 pub fn platform_adapters() []string {
 	$if windows {

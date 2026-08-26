@@ -363,7 +363,10 @@ fn (mut b CansubBus) reconcile_listen_only() {
 // poll_health asks the device what its controller thinks. The states map one to one onto this
 // repo's ladder, which is the whole reason `health()` can say anything here at all.
 fn (mut b CansubBus) poll_health() {
-	body := cansub_get(b.host, '/api/can/${b.spec.channel}') or { return }
+	// SHORT, because this thread is joined by close(): see cansub_get_within.
+	body := cansub_get_within(b.host, '/api/can/${b.spec.channel}', cansub_health_timeout) or {
+		return
+	}
 	state := extract_json_string(body, 'state') or { return }
 	h := match state {
 		'error_active' { BusHealth.ok }
@@ -408,6 +411,10 @@ pub fn (mut b CansubBus) send(frame CanFrame) ! {
 // cansub_poll_ms is how often an idle receiver looks up from the queue to ask whether the socket
 // is still there. A CEILING on one select, never a floor.
 const cansub_poll_ms = i64(200)
+
+// How long a health poll may wait for the device. Bounded by what Stop can tolerate rather than by
+// what the network might need: this runs on a thread close() joins.
+const cansub_health_timeout = 700 * time.millisecond
 
 // cansub_wait_slice decides how long ONE select may park, or none when the caller's budget is
 // spent. Extracted from recv so both of its rules are visible to CI, because neither could be

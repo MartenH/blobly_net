@@ -332,9 +332,28 @@ pub fn (mut d CansubDecoder) feed(chunk []u8) []CansubRecord {
 			continue
 		}
 		d.buf << b
+		// AN OPENING FLAG WITH NO CLOSING ONE would otherwise append every byte the device ever
+		// sends. That path never reaches close(), so it never produces a decode error either --
+		// it just grows, silently, for the life of the bus, which is the one failure mode the
+		// error-clearing in read_loop cannot help with (codex round 5 on #204).
+		//
+		// The bound is generous on purpose: the largest legal record is a 64-byte FD payload plus
+		// its header and CRC, and escaping can double every byte of it. Anything past this is not
+		// a frame we lost the end of, it is a stream that has stopped making sense -- so the
+		// buffer is dropped and said so, rather than kept in the hope that a flag arrives.
+		if d.buf.len > cansub_max_record {
+			d.buf.clear()
+			d.escaped = false
+			d.errors << 'no frame boundary within ${cansub_max_record} bytes — stream discarded'
+		}
 	}
 	return out
 }
+
+// cansub_max_record bounds an unterminated HDLC frame. A record is at most a 16-byte header plus
+// a 64-byte payload plus a 2-byte CRC, and byte stuffing can double each of those, so 512 is well
+// clear of anything legal while still catching a stream with no boundaries in it.
+const cansub_max_record = 512
 
 // close finishes the frame in `buf`: check its CRC, then read the CAN frames out of it.
 fn (mut d CansubDecoder) close(mut out []CansubRecord) {

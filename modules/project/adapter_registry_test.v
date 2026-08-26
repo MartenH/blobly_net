@@ -86,6 +86,11 @@ const vendor_adapters = ['pcan', 'kvaser', 'vector', 'cansub'] // the address ca
 
 const non_can_adapters = ['doip'] // not a CAN bus at all
 
+// The hardware whose CONTROLLER this app can actually silence — Vector through `,silent` on the
+// port, CANsub through `listen_only` in the PHY object. That is what makes a default tick honest
+// rather than a promise only half kept, which is why it is a shorter list than `vendor_adapters`.
+const silenced_at_the_transceiver = ['vector', 'cansub']
+
 // The three that carry CAN-FD, and the one that does not. Stated as a list rather than derived, so
 // that adding a backend forces a decision here instead of inheriting `else { true }` unnoticed --
 // which is exactly how `cansub` became FD-capable without anybody saying so.
@@ -186,4 +191,56 @@ fn test_no_platform_offers_an_adapter_the_project_cannot_name() {
 fn test_platform_adapters_is_one_of_the_declared_lists() {
 	got := platform_adapters()
 	assert got == windows_adapters || got == linux_adapters, 'platform_adapters returned a list that is neither declared one: ${got}'
+}
+
+// A NEW ROW ON HARDWARE STARTS SILENT, and that rule has to be answered for every adapter — not
+// only the one it was first written for.
+//
+// It lived as two hardcoded `== 'vector'` comparisons in cmd/blobly_net, so exposing CANsub in the
+// picker made the manual route the unsafe one while Discover stayed careful: a fresh row went on a
+// possibly-live bus able to ACK, at a 500 kbit/s guess nobody had confirmed (codex round 5 on
+// #204). It is a property of the adapter, so it belongs beside the other adapter properties, where
+// this can hold it.
+fn test_every_adapter_that_can_silence_its_controller_starts_silent() {
+	for a in silenced_at_the_transceiver {
+		assert adapter_starts_silent(a), '${a} is hardware that may already be wired to a running vehicle — a new row on it must not transmit until somebody confirms the rate'
+	}
+}
+
+// PCAN and Kvaser are hardware too, and deliberately NOT in that list: this app cannot put their
+// controllers into listen-only, only refuse to transmit from inside this process. Defaulting a row
+// to a tick that half-works would be a promise the transceiver does not keep, and changing what
+// existing PCAN and Kvaser rows do is not something a CANsub PR gets to decide. Named here so the
+// distinction is a stated one rather than an oversight.
+fn test_the_hardware_we_cannot_silence_is_a_deliberate_exception() {
+	for a in ['pcan', 'kvaser'] {
+		assert a in vendor_adapters
+		assert a !in silenced_at_the_transceiver
+		assert !adapter_starts_silent(a), '${a} cannot silence its controller, so a default tick would promise what the transceiver will not do'
+	}
+}
+
+// Nothing outside the vendor adapters may start silent: a software bus that defaulted to refusing
+// its own sends would look broken for a reason nobody would think to check.
+fn test_only_hardware_starts_silent() {
+	for a in adapters {
+		if adapter_starts_silent(a) {
+			assert a in vendor_adapters, '${a} starts silent but is not hardware'
+		}
+	}
+}
+
+// And the ones with nothing to silence must NOT start silent, or the tick means nothing and gets
+// ignored where it does matter. A software bus has no transceiver; a SocketCAN interface is
+// brought up by `ip link` with a rate its operator already chose.
+fn test_adapters_with_no_transceiver_do_not_start_silent() {
+	for a in software_adapters {
+		assert !adapter_starts_silent(a), '${a} has no transceiver to silence'
+	}
+	for a in kernel_adapters {
+		assert !adapter_starts_silent(a), '${a} is configured outside this app, at a rate its operator chose'
+	}
+	for a in non_can_adapters {
+		assert !adapter_starts_silent(a), '${a} is not a CAN bus'
+	}
 }

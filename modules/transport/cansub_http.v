@@ -196,7 +196,18 @@ pub fn cansub_request(host string, method string, path string, body string, time
 
 // cansub_get is the read half, and the one used most: identity, channel list, channel state.
 pub fn cansub_get(host string, path string) !string {
-	r := cansub_request(host, 'GET', path, '', 5 * time.second)!
+	return cansub_get_within(host, path, 5 * time.second)
+}
+
+// cansub_get_within is the same request with the caller's own patience.
+//
+// HEALTH POLLING USES A SHORT ONE. It runs on a thread `close()` joins, so a device that has
+// become unreachable mid-run parked that thread inside a five-second request and Stop waited it
+// out -- undoing the 500 ms bound the reader timeout exists to give (codex round 5 on #204). A
+// health poll is a question asked twice a second whose answer is only ever displayed; there is
+// nothing to gain by waiting five seconds for it, and a Stop that hangs is what it costs.
+pub fn cansub_get_within(host string, path string, timeout time.Duration) !string {
+	r := cansub_request(host, 'GET', path, '', timeout)!
 	if r.status != 200 {
 		return error('GET ${path} -> HTTP ${r.status}')
 	}

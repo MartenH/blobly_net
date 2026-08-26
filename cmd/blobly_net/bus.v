@@ -434,8 +434,8 @@ fn adapter_tip(a string) string {
 		'udp' { 'Cross-platform UDP-multicast software bus. The address is group:port (e.g. 239.0.0.1:5000). Lets separate processes/hosts share a virtual wire.' }
 		'pcan' { 'PEAK PCAN hardware (Windows). The address is a channel like PCAN_USBBUS1. Discovery needs the PEAK driver on Windows.' }
 		'kvaser' { 'Kvaser hardware (Windows). The address is a channel index (0, 1…). Discovery needs the Kvaser driver on Windows.' }
-		'vector' { 'Vector hardware (Windows). The address is an APPLICATION channel number as Vector Hardware Manager numbers them (1, 2…), optionally with rates: 1@500000/2000000 for CAN-FD. Needs vxlapi64.dll, which is a separate download from the drivers.' }
-		'cansub' { 'CSS Electronics CANsub.4 (any platform). The address is the device id and channel — 1A2B3C4D/1 — optionally with rates: /1@500000/2000000 for CAN-FD. Reached over USB-Ethernet, so there is no driver to install.' }
+		'vector' { 'Vector hardware (Windows). The address is an APPLICATION channel number as Vector Hardware Manager numbers them (1, 2…) — the rates belong in the bitrate fields below, not here. Needs vxlapi64.dll, which is a separate download from the drivers.' }
+		'cansub' { 'CSS Electronics CANsub.4 (any platform). The address is the device id and channel, e.g. 1A2B3C4D/1 — nothing else: the rates belong in the bitrate fields below, and an @rate typed here is appended twice and refused. Channels are numbered 1 to 4. Reached over USB-Ethernet by device id through mDNS, so there is no driver to install and no IP to write down.' }
 		'doip' { 'Diagnostics over Ethernet (ISO 13400) — NOT a CAN bus. The address is host:port (default 127.0.0.1:13400); set the tester/ECU logical addresses below.' }
 		else { '' }
 	}
