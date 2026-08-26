@@ -18,6 +18,11 @@ const help_docs = [
 	HelpDoc{'Scripting', 'docs/scripting.md'},
 	HelpDoc{'Project editing', 'docs/project_editing.md'},
 	HelpDoc{'CAN hardware', 'docs/can_hardware.md'},
+	// Listed separately from 'CAN hardware' because it answers a question that only comes up with
+	// the dialog open — why a physical channel needs an application channel before it can be
+	// addressed. Reaching it by finding the file in the repo is no use to somebody running the
+	// shipped bundle.
+	HelpDoc{'Vector (Windows)', 'docs/windows_can_hardware.md'},
 	HelpDoc{'Ethernet / DoIP', 'docs/doip.md'},
 	HelpDoc{'Known issues', 'docs/known_issues.md'},
 ]
