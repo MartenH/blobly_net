@@ -709,17 +709,44 @@ pub:
 // vector_app_slot asks about ONE application channel — the one an operator named. Cheaper than a
 // sweep and, more to the point, an answer about the channel being written rather than an
 // inference from the others (#192, option 3).
+// confirm_absent re-asks when the answer was `absent`, and ONLY then.
+//
+// `absent` is the one verdict that rests on a GENERIC driver error — 255 is XL_ERROR, not a
+// documented "no such channel" status — and it is also the only verdict that PERMITS a write. A
+// single transient failure must therefore not be enough to authorize one (codex #192 r8).
+//
+// WHY NOT SIMPLY REFUSE 255, which is what r8 proposed: an unregistered channel answers 255 every
+// time, and so does every channel of an application that does not exist yet. Refusing it refuses 57
+// of 64 channels on this bench and ALL 64 on a fresh one — where creating the mapping is the entire
+// purpose (#186). The feature would be unable to bootstrap itself.
+//
+// So the question is asked twice instead. A channel that is genuinely outside the application's list
+// answers 255 consistently; a transient error, by definition, does not. Any second answer that
+// DESCRIBES the channel wins, and all three of them (`taken`, `empty`, `unreadable`) are safer than
+// `absent` — two refuse outright and the third permits for a reason that does not rest on a generic
+// error. This narrows the window; it does not close it, and nothing vxlapi offers can. What stands
+// behind it is that the ownership check now fails independently: both guards used to be broken by
+// one misread, because both read the same slot.
+// The decision itself is reconcile_absent, in vector_names.v where the tests can reach it; this is
+// only the second question.
+fn confirm_absent(app int, first AppSlot) AppSlot {
+	if first != .absent {
+		return first
+	}
+	return reconcile_absent(first, slot_of(appl_get_code(app)))
+}
+
 pub fn vector_app_slot(app int) AppSlot {
 	if app < 1 || app > 64 {
 		return .unreadable
 	}
-	return slot_of(appl_get_code(app))
+	return confirm_absent(app, slot_of(appl_get_code(app)))
 }
 
 pub fn vector_app_slots() []AppSlot {
 	mut out := []AppSlot{cap: 64}
 	for app in 1 .. 65 {
-		out << slot_of(appl_get_code(app))
+		out << confirm_absent(app, slot_of(appl_get_code(app)))
 	}
 	return out
 }

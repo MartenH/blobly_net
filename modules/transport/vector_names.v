@@ -273,6 +273,20 @@ fn slot_of(rc int) AppSlot {
 	}
 }
 
+// reconcile_absent settles two readings of the same channel, where the first said `absent`.
+//
+// The rule is one line, and it is here rather than beside the driver so it can be tested: any second
+// answer that DESCRIBES the channel beats `absent`, which is only ever a generic error. Two of the
+// three (`taken`, `unreadable`) refuse, and the third (`empty`) permits on evidence rather than on
+// the absence of it — so every disagreement resolves in the safe direction. Agreement on `absent`
+// is the only way a write stays authorized (codex #192 r8).
+fn reconcile_absent(first AppSlot, second AppSlot) AppSlot {
+	if first != .absent {
+		return first
+	}
+	return if second == .absent { AppSlot.absent } else { second }
+}
+
 // xl_status_of recovers the driver status the shim encoded as -(1000 + status), or none when this
 // code carries no status. For diagnostics only — nothing decides anything from it.
 fn xl_status_of(rc int) ?int {

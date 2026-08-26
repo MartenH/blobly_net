@@ -420,6 +420,32 @@ fn test_the_driver_codes_map_to_the_states_they_mean() {
 	}
 }
 
+// A GENERIC ERROR MAY NOT AUTHORIZE A WRITE ON ITS OWN. `absent` is the only verdict that permits
+// one and the only one resting on XL's generic error, so it is asked twice; every disagreement must
+// resolve away from permission (codex #192 r8).
+fn test_a_second_reading_overrides_a_generic_absent() {
+	// Agreement is the only way a write stays authorized.
+	assert reconcile_absent(.absent, .absent) == .absent
+	// Any answer that actually describes the channel wins, whichever way it decides.
+	assert reconcile_absent(.absent, .taken) == .taken, 'an occupied channel must not be overwritten'
+	assert reconcile_absent(.absent, .unreadable) == .unreadable, 'silence must not read as absent'
+	assert reconcile_absent(.absent, .empty) == .empty
+	// And the three that permit or refuse on real evidence are never re-litigated: a first answer
+	// that is not `absent` stands whatever a second reading might say.
+	for first in [AppSlot.taken, AppSlot.empty, AppSlot.unreadable] {
+		for second in [AppSlot.taken, AppSlot.empty, AppSlot.unreadable, AppSlot.absent] {
+			assert reconcile_absent(first, second) == first, '${first} must not be revised by ${second}'
+		}
+	}
+	// The property that matters, stated as itself: a write is authorized only when BOTH readings
+	// agree the channel is not there.
+	for second in [AppSlot.taken, AppSlot.unreadable] {
+		if _ := assign_refusal(9, reconcile_absent(.absent, second)) {} else {
+			assert false, 'a disagreeing second reading (${second}) must end in a refusal'
+		}
+	}
+}
+
 // EVERY OTHER DRIVER STATUS REFUSES, and this is the half the shim has to hold up. Mapping all
 // non-zero statuses to `absent` put the r6 P1 back one layer down: a transient per-call error would
 // have read as an unregistered channel and so as writable. The shim now converts one measured
