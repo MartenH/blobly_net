@@ -237,6 +237,20 @@ fn vector_timing_error(s VectorSpec) ?string {
 // produces the slots stays in vector_windows.v. That is the same split vector_names.v already
 // exists for, and its own header says why: written beside the driver, a rule compiles only on
 // Windows, where nothing runs these tests.
+// WireReach is what `physical_wire` could establish about the hardware behind an address. Here
+// rather than beside either resolver, because alias_windows.v and alias_linux.v must both return
+// it and only one of them compiles on any given machine.
+//
+// THE SAME LESSON AS AppSlot, one layer up: `physical_wire_key` had two very different failures
+// sharing one `none`, and the caller could only read that as "no opinion" — right for a channel
+// that reaches nothing, wrong for one the driver would not describe, which may be aliased onto
+// another row (#194).
+pub enum WireReach {
+	resolved   // the key names the physical channel this address reaches
+	nothing    // the driver answered: no hardware behind it, so it can alias nothing
+	unreadable // the driver would not say; anything could be behind it
+}
+
 // AppSlot is what the driver says about ONE application channel. Four states, not three, and the
 // split of the old `unknown` into `unreadable` and `absent` is the whole of what r6 fixed: those
 // were two different facts sharing one name, and no rule over the merged state could be right for

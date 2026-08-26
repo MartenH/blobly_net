@@ -1518,6 +1518,12 @@ fn fd_describe(v int) string {
 }
 
 pub fn destination_conflicts(chs []Channel) []string {
+	return check_destinations(chs).problems
+}
+
+// The refusals that need no driver. Split out so check_destinations can add the alias verdict from
+// its own single sweep instead of triggering a second one.
+fn destination_conflicts_without_alias(chs []Channel) []string {
 	mut out := []string{}
 	mut quiet := map[string]string{}
 	mut rate := map[string]int{}
@@ -1602,23 +1608,97 @@ pub fn destination_conflicts(chs []Channel) []string {
 			out << '${c.name} shares ${c.iface} with ${who}, which is listen-only'
 		}
 	}
-	// ASKED ONCE PER ROW, here, where the answers are collected — not inside the pure check
-	// below. This is the only part of the rule that needs a driver: `physical_wire_key` is a
-	// query to the XL library on Windows and a flat `none` everywhere else, so putting it in the
-	// comparison would make the comparison itself untestable on the machine that runs the tests.
-	// The three cold callers (Start, the headless runner, an enable toggle) can afford it; there
-	// is no per-frame path here, and Start already pays a second per vendor open.
+	// NO DRIVER BELOW THIS LINE, and no alias verdict either — check_destinations appends that from
+	// the ONE sweep it owns. This function used to end by scanning and appending it itself, which
+	// meant check_destinations swept twice and reported a stable alias twice over; worse, the two
+	// verdicts came from two snapshots, so a changing XL answer produced a combination that
+	// described neither moment (codex #199 r2). Everything above is pure and stays that way.
+	return out
+}
+
+// scan_physical asks the driver ONCE about every enabled row, and returns both answers the alias
+// rule needs: the rows it could resolve, and the rows it could not.
+//
+// ONE SWEEP, TWO ANSWERS, and that is the whole point of it existing. Asking twice — once for the
+// conflict check and again for the warning — lets the two disagree about the same row, because the
+// driver's answer can change between them: a lookup that failed for the comparison and succeeded
+// for the warning leaves a row neither checked NOR reported, which is the exact gap the warning was
+// added to close (codex #199 r1).
+fn scan_physical(chs []Channel) (map[string]string, []string) {
 	mut phys := map[string]string{}
+	mut unread := []string{}
 	for c in chs {
 		if !c.enabled {
 			continue
 		}
-		if k := transport.physical_wire_key(c.adapter, c.iface) {
-			phys[c.iface] = k
+		reach, k := transport.physical_wire(c.adapter, c.iface)
+		match reach {
+			.resolved { phys[c.iface] = k }
+			.unreadable { unread << '${c.name} (${c.iface})' }
+			.nothing {}
 		}
 	}
-	out << alias_conflicts(chs, phys)
-	return out
+	return phys, unread
+}
+
+// check_destinations is destination_conflicts and its warnings from a SINGLE driver sweep.
+//
+// Every caller that starts a project should use this rather than the two separately: the refusals
+// and the warning are two readings of one set of answers, and taking them from two sweeps is how
+// they come to contradict each other.
+pub struct DestinationCheck {
+pub:
+	problems []string // any one of these refuses the project
+	warnings []string // said, never refused — see alias_unreadable_warnings
+}
+
+pub fn check_destinations(chs []Channel) DestinationCheck {
+	phys, unread := scan_physical(chs)
+	mut problems := destination_conflicts_without_alias(chs)
+	problems << alias_conflicts(chs, phys)
+	return DestinationCheck{
+		problems: problems
+		warnings: alias_unreadable_lines(unread)
+	}
+}
+
+// alias_unreadable_warnings names the enabled rows whose physical channel the driver would not
+// report, so the operator knows which rows the alias check above could not cover.
+//
+// A WARNING, NOT A REFUSAL, and the split matters. Everything destination_conflicts returns stops
+// a project; this cannot, because "the driver would not answer" is a state a perfectly good bench
+// passes through — the XL library mid-upgrade, or a moment of contention with another tool. Fail
+// closed there and every project on that machine is rejected for a question nobody could answer.
+//
+// But silence is not right either. The gap it leaves is precisely the #167 alias — two rows on one
+// transceiver, reasoned about as two wires by the rate check, the listen-only check, the
+// one-monitor rule and the pin guard. Saying which rows were unresolvable turns an invisible gap
+// into one the operator can close by asking again.
+pub fn alias_unreadable_warnings(chs []Channel) []string {
+	return check_destinations(chs).warnings
+}
+
+// The wording, split out PURE so it can be tested at all. On Linux physical_wire answers `.nothing`
+// for everything, so a test driving alias_unreadable_warnings there can only ever see the empty
+// case — the same reason alias_conflicts is separate from the resolver that feeds it.
+fn alias_unreadable_lines(rows []string) []string {
+	if rows.len == 0 {
+		return []
+	}
+	// ONE LINE FOR THE SET, not one per row. The condition is a property of the driver at this
+	// moment rather than of any individual row, so repeating it per row would say the same thing
+	// several times — the same reasoning alias_conflicts uses for `said`.
+	return [
+		'could not read which physical channel ${rows.join(', ')} ${if rows.len == 1 {
+			'reaches'
+		} else {
+			'reach'
+		}} — the check for two channels sharing one transceiver could not cover ${if rows.len == 1 {
+			'it'
+		} else {
+			'them'
+		}}; Refresh or restart to ask the driver again',
+	]
 }
 
 // alias_conflicts reports rows that this app calls different wires and the hardware calls one.
