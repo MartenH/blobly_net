@@ -173,11 +173,23 @@ fn (app &App) push_listen_only_locked() {
 // script and the diagnostic panel can all make one talk — the GUI kept the old reading and the
 // two front ends disagreed about the same project again. There is nothing here left to drift.
 fn (app &App) destination_conflict() ?string {
-	problems := project.check_destinations(app.runtime_rows()).problems
+	problems := app.destination_check().problems
 	if problems.len == 0 {
 		return none
 	}
 	return problems[0]
+}
+
+// destination_check is the whole answer — refusals AND the rows the alias check could not see —
+// from one driver sweep.
+//
+// A CALLER THAT ONLY WANTS THE FIRST REFUSAL THROWS THE WARNING AWAY, which is what the live-enable
+// path was doing: it asks this prospectively with the row switched on, and that is the only place
+// the whole-project answer for the new arrangement exists. A row-only check cannot replace it —
+// the unreadable row may be an ALREADY-ENABLED one sharing the transceiver with the row joining,
+// and asking about the newcomer alone says nothing about that (codex #199 r2).
+fn (app &App) destination_check() project.DestinationCheck {
+	return project.check_destinations(app.runtime_rows())
 }
 
 fn (app &App) bitrate_iface(iface string) string {

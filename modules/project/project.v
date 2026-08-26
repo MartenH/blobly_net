@@ -1608,14 +1608,11 @@ fn destination_conflicts_without_alias(chs []Channel) []string {
 			out << '${c.name} shares ${c.iface} with ${who}, which is listen-only'
 		}
 	}
-	// ASKED ONCE PER ROW, here, where the answers are collected — not inside the pure check
-	// below. This is the only part of the rule that needs a driver: `physical_wire_key` is a
-	// query to the XL library on Windows and a flat `none` everywhere else, so putting it in the
-	// comparison would make the comparison itself untestable on the machine that runs the tests.
-	// The three cold callers (Start, the headless runner, an enable toggle) can afford it; there
-	// is no per-frame path here, and Start already pays a second per vendor open.
-	phys, _ := scan_physical(chs)
-	out << alias_conflicts(chs, phys)
+	// NO DRIVER BELOW THIS LINE, and no alias verdict either — check_destinations appends that from
+	// the ONE sweep it owns. This function used to end by scanning and appending it itself, which
+	// meant check_destinations swept twice and reported a stable alias twice over; worse, the two
+	// verdicts came from two snapshots, so a changing XL answer produced a combination that
+	// described neither moment (codex #199 r2). Everything above is pure and stays that way.
 	return out
 }
 

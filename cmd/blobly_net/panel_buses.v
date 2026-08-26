@@ -241,18 +241,27 @@ fn draw_buses(mut app App, chans []Chan) {
 						continue
 					}
 				}
+				// Carried out of the prospective check below so the warning block further down can
+				// use it. Empty unless this toggle is a row joining a LIVE run, which is the only
+				// case where that check runs and the only one where an alias matters yet.
+				mut alias_warns := []string{}
 				// Not vendor-only either: destination_conflicts now refuses a listen-only
 				// disagreement on any wire, so enabling a normal row onto a silenced software or
 				// SocketCAN bus has to be caught here too rather than joining it mute.
 				if new && app.running {
 					app.chans[i].enabled = true
-					clash := app.destination_conflict()
+					// THE WHOLE-PROJECT ANSWER FOR THE ARRANGEMENT THIS TOGGLE WOULD CREATE, kept
+					// rather than reduced to its first refusal. Its warnings are the only ones that
+					// can name an already-enabled row the driver would not describe — the row this
+					// one may be about to share a transceiver with (codex #199 r2).
+					prospective := app.destination_check()
 					app.chans[i].enabled = false
-					if bad := clash {
+					if prospective.problems.len > 0 {
 						app.mu.unlock()
-						app.notify('${bad} — not enabling')
+						app.notify('${prospective.problems[0]} — not enabling')
 						continue
 					}
+					alias_warns = prospective.warnings.clone()
 					// THE MODE OF A WIRE THAT IS ALREADY OPEN. silent_conflict only speaks up
 					// when something would transmit; two passive rows disagreeing about the
 					// mode say nothing to it, yet the shim still refuses the new ports because
@@ -377,15 +386,14 @@ fn draw_buses(mut app App, chans []Chan) {
 					// on this path too, or it is silent for every row that joins a live run
 					// (codex #199 r1).
 					//
-					// THIS ROW ONLY, so the driver is asked about one channel rather than sixty-four
-					// while app.mu is held. Unlike fd_capability_warnings this is not pure — it is
-					// an XL registry lookup — and the render thread owns this lock. One lookup is
-					// microseconds and takes no interprocess mutex; a whole-project sweep would be a
-					// visible hitch, and is what Start is for.
-					// Hoisted rather than iterated inline: `for w in f(x).field` miscompiles in this
-					// V (a `volatile` lands in the generated C where an expression belongs).
-					row_check := project.check_destinations([app.runtime_rows()[i]])
-					for w in row_check.warnings {
+					// FROM THE PROSPECTIVE WHOLE-PROJECT CHECK ABOVE, not a fresh one about this row.
+					// Two reasons, and the first is correctness: the unreadable row may be one that
+					// is ALREADY enabled and sharing this row's transceiver, which a check scoped to
+					// the newcomer cannot see. The second is that the sweep is already paid for — the
+					// clash check a few lines up made it — so asking again would be a second XL sweep
+					// under app.mu for an answer we hold (codex #199 r2). Empty when the toggle did
+					// not go through that branch, which is every case where nothing is running.
+					for w in alias_warns {
 						app.log_append_locked(w)
 					}
 				}
