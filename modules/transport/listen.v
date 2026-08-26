@@ -23,10 +23,23 @@ import sync
 // Process-wide, like sim's fault table and for the same reason: the GUI, a script and a CLI tool
 // must not be able to disagree about whether a bus is allowed to transmit.
 
+// WirePolicy is everything a project declares ABOUT a wire rather than about a frame: whether it
+// may transmit, and what format the frames it originates take.
+//
+// ONE ENTRY, ONE LOCK, ONE SWAP, because the two are published together and read together. Held in
+// separate tables they were two swaps, and a bus a script still holds could send in the gap — with
+// the new silence state and the previous project's format, which is the stale policy the per-send
+// lookup exists to prevent (codex #202 r2).
+pub struct WirePolicy {
+pub:
+	silent  bool
+	framing Framing
+}
+
 pub struct ListenTable {
 mut:
 	mu    sync.Mutex
-	wires map[string]bool
+	wires map[string]WirePolicy
 }
 
 // listen_tbl is THE listen-only table for the process. A global for the reason sim.injected is
@@ -57,21 +70,94 @@ pub fn wire_key(iface string) string {
 pub fn set_listen_only(iface string, on bool) {
 	k := wire_key(iface)
 	listen_tbl.mu.lock()
-	if on {
-		listen_tbl.wires[k] = true
+	mut p := listen_tbl.wires[k] or { WirePolicy{} }
+	p = WirePolicy{
+		...p
+		silent: on
+	}
+	if p.silent || p.framing.fd {
+		listen_tbl.wires[k] = p
+	} else {
+		// An entry saying nothing is no entry. Keeping one would be a second way to spell the
+		// default, which is how two spellings of one state come to disagree.
+		listen_tbl.wires.delete(k)
+	}
+	listen_tbl.mu.unlock()
+}
+
+// wire_policy is everything declared about this wire; the zero value where nothing was.
+pub fn wire_policy(iface string) WirePolicy {
+	k := wire_key(iface)
+	listen_tbl.mu.lock()
+	v := listen_tbl.wires[k] or { WirePolicy{} }
+	listen_tbl.mu.unlock()
+	return v
+}
+
+// replace_wire_policy swaps the WHOLE set — silence and format together — under one lock.
+//
+// The atomic publish the two-table version could not give. `silent` and `framed` are keyed the same
+// way, so a wire may appear in either, both or neither.
+pub fn replace_wire_policy(silent []string, framed map[string]Framing) {
+	mut next := map[string]WirePolicy{}
+	for i in silent {
+		k := wire_key(i)
+		next[k] = WirePolicy{
+			...(next[k] or { WirePolicy{} })
+			silent: true
+		}
+	}
+	for i, fr in framed {
+		if !fr.fd {
+			continue
+		}
+		k := wire_key(i)
+		next[k] = WirePolicy{
+			...(next[k] or { WirePolicy{} })
+			framing: fr
+		}
+	}
+	listen_tbl.mu.lock()
+	listen_tbl.wires = next.move()
+	listen_tbl.mu.unlock()
+}
+
+// set_wire_framing marks one wire. Keyed like listen-only, so `vector:1` and `vector:ch1` are one
+// wire here exactly as they are there — two spellings of one transceiver cannot carry two formats.
+pub fn set_wire_framing(iface string, fr Framing) {
+	k := wire_key(iface)
+	listen_tbl.mu.lock()
+	mut p := listen_tbl.wires[k] or { WirePolicy{} }
+	p = WirePolicy{
+		...p
+		framing: fr
+	}
+	if p.silent || p.framing.fd {
+		listen_tbl.wires[k] = p
 	} else {
 		listen_tbl.wires.delete(k)
 	}
 	listen_tbl.mu.unlock()
 }
 
+// clear_wire_framing drops every format mark, leaving silence marks alone.
+pub fn clear_wire_framing() {
+	listen_tbl.mu.lock()
+	mut next := map[string]WirePolicy{}
+	for k, p in listen_tbl.wires {
+		if p.silent {
+			next[k] = WirePolicy{
+				silent: true
+			}
+		}
+	}
+	listen_tbl.wires = next.move()
+	listen_tbl.mu.unlock()
+}
+
 // is_listen_only reports whether this wire refuses transmission.
 pub fn is_listen_only(iface string) bool {
-	k := wire_key(iface)
-	listen_tbl.mu.lock()
-	v := listen_tbl.wires[k] or { false }
-	listen_tbl.mu.unlock()
-	return v
+	return wire_policy(iface).silent
 }
 
 // replace_listen_only swaps the WHOLE set under one lock.
@@ -82,13 +168,7 @@ pub fn is_listen_only(iface string) bool {
 // microseconds and the consequence is a wire the operator ticked silent transmitting until Stop,
 // which is the failure this whole change exists to remove.
 pub fn replace_listen_only(ifaces []string) {
-	mut next := map[string]bool{}
-	for i in ifaces {
-		next[wire_key(i)] = true
-	}
-	listen_tbl.mu.lock()
-	listen_tbl.wires = next.move()
-	listen_tbl.mu.unlock()
+	replace_wire_policy(ifaces, map[string]Framing{})
 }
 
 // clear_listen_only drops every mark. Used when a project is replaced -- a wire marked by the
@@ -111,15 +191,34 @@ struct SilentBus {
 mut:
 	inner Bus
 	iface string
+	// Whether this bus ORIGINATES frames. False for a bus whose caller has already decided the
+	// format — see open_verbatim.
+	verbatim bool
 }
 
 fn (mut s SilentBus) send(frame CanFrame) ! {
 	// ASKED NOW, not at open. See silenced() below for why the answer is not cached.
-	if !is_listen_only(s.iface) {
+	//
+	// ONE READ FOR BOTH ANSWERS. Silence and format are published together precisely so a send
+	// cannot straddle two policy versions, and reading the entry twice threw that away: a wire
+	// marked listen-only between the two reads still transmitted, which is the one guarantee the
+	// checkbox makes (codex #202 r3).
+	p := wire_policy(s.iface)
+	if p.silent {
+		return error('${s.iface}: listen-only — nothing is transmitted on this wire')
+	}
+	// AND THE FORMAT THIS WIRE CARRIES, for the same reason silence is applied here: every emitter
+	// opens its own bus, and a rule checked at each of them holds until somebody adds the next one.
+	// Frames this app CONSTRUCTS are built classic, so without this a channel configured as CAN-FD
+	// could be exercised by nothing but replay (#185, framing.v).
+	//
+	// NOT ON A VERBATIM BUS, whose caller has already decided — the GUI's tap frames before it
+	// records, and replay reproduces a recording rather than originating anything.
+	if s.verbatim {
 		s.inner.send(frame)!
 		return
 	}
-	return error('${s.iface}: listen-only — nothing is transmitted on this wire')
+	s.inner.send(p.framing.apply(frame))!
 }
 
 fn (mut s SilentBus) recv(timeout_ms int) !CanFrame {
@@ -152,4 +251,26 @@ fn silenced(iface string, b Bus) Bus {
 		inner: b
 		iface: iface
 	}
+}
+
+// verbatim marks a bus whose caller owns the frame's FORMAT, so `open` does not originate-frame it.
+//
+// TWO CALLERS, ONE REASON: the frame reaching this bus is already the frame that should go on the
+// wire, and a second decision here could only disagree with the first.
+//
+//   - REPLAY reproduces a recording. Its classic frames are classic because they were RECORDED
+//     that way, and `fd == false` cannot distinguish that from an emitter that simply did not say
+//     — so on an FD wire replay's classic traffic was being promoted, silently rewriting the
+//     recording it exists to reproduce (codex #202 r3).
+//   - THE GUI'S TAP frames before it normalises and RECORDS, because wiretap's identity includes
+//     fd/brs. Framing again underneath could observe a different policy version mid-send and put a
+//     frame on the wire that does not match the one in the trace.
+//
+// Everything else — the ISO-TP servers, flash, Lua, the headless UDS nodes, the simulated ECUs —
+// holds an ordinary bus and is framed here, which is the whole point of #185.
+pub fn verbatim(mut b Bus) Bus {
+	if mut b is SilentBus {
+		b.verbatim = true
+	}
+	return b
 }

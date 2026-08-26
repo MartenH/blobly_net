@@ -533,7 +533,11 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		if ch.iface in buses_out {
 			continue
 		}
-		if b := app.open_tap_on_gen(ch.iface, org_tx_sim, ch.name, gen) {
+		// REPRODUCES, not originates. A recorded classic frame is classic because it was CAPTURED
+		// that way, and `fd == false` cannot tell that apart from an emitter that simply did not
+		// say — so on an FD-declared wire replay's classic traffic would be promoted, silently
+		// rewriting the recording this exists to play back (#185, codex #202 r3/r4).
+		if b := app.open_tap_full(ch.iface, org_tx_sim, ch.name, gen, true) {
 			buses_out[ch.iface] = b
 		} else {
 			unopened << '${ch.name} (${ch.iface})'
