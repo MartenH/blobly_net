@@ -571,7 +571,7 @@ fn main() {
 			eprintln('the driver reports no channels (is the XL Driver Library installed?)')
 			exit(1)
 		}
-		println('idx  name                              transceiver                   serial     bus     rate')
+		println('idx  name                              transceiver                   serial     bus     rate      can-fd')
 		for i, c in chans {
 			bus := match c.bus_type {
 				0 { '-' }
@@ -580,8 +580,17 @@ fn main() {
 			}
 
 			rate := if c.bitrate > 0 { '${c.bitrate}' } else { '-' }
-			println('${i:3}  ${c.name:-32}  ${c.transceiver:-28}  ${c.serial:-9}  ${bus:-6}  ${rate}')
+			// FROM THE DRIVER, not from the transceiver's part number, which was the only route
+			// before and is not one anybody should have to take (#187). Blank means this channel
+			// cannot carry CAN-FD at all; `bosch-only` means it can, in a frame format this
+			// backend does not speak.
+			fd := if c.fd_note() == '' { '-' } else { c.fd_note() }
+			println('${i:3}  ${c.name:-32}  ${c.transceiver:-28}  ${c.serial:-9}  ${bus:-6}  ${rate:-9} ${fd}')
 		}
+		println('')
+		println('rate is what the channel is running at NOW — it reflects whatever application')
+		println('holds initialisation access, and falls back to the configured default when none does.')
+		println('can-fd: iso = the variant this backend configures · bosch-only = FD hardware it cannot drive.')
 		return
 	}
 	// BEFORE anything is borrowed, not after: the window between taking a channel and installing
