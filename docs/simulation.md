@@ -12,8 +12,8 @@ CAN.** `transport.CanFrame` now carries an `fd`/`brs` flag and up to 64 payload 
 SocketCAN, `inproc` and `udp` all put a real FD frame on the wire — but nothing in `modules/sim`
 sets that flag, so generators, senders and E2E protection produce classic frames whatever the
 DBC says. **Replay is the FD path today**: frames read from a recording carry the FD bits the
-recording captured. The PCAN and Kvaser backends write classic frames only, and **refuse** an FD
-frame rather than truncating it.
+recording captured. The PCAN backend writes classic frames only, and **refuses** an FD frame
+rather than truncating it; Vector and Kvaser carry FD.
 
 For *why* it is built this way, see [simulation_architecture.md](simulation_architecture.md) —
 that is the design document. This page is how to use it.

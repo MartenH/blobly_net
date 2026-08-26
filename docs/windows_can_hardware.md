@@ -14,10 +14,12 @@ verified. (On Linux the kernel owns the adapter and everything is SocketCAN — 
 | **Vector XL** | `vector:1@500000` | `vxlapi64.dll` | ✅ verified on hardware |
 | slcan (USB-serial) | `slcan:COM5@500000` | none — serial | ❌ not implemented |
 
-**CAN-FD on Vector** (`vector:1@500000/2000000` — the data rate in the address is what asks for
-it), classic CAN on all three. On **PCAN and Kvaser** CAN-FD is still **refused, not truncated**:
-a bench that silently dropped 56 of 64 payload bytes is worse than one that says no. A *classic*
-Vector channel refuses an FD frame for the same reason.
+**CAN-FD on Vector** (`vector:1@500000/2000000`) **and Kvaser** (`kvaser:0@500000/2000000`) — in
+both, the data rate in the address is what asks for it — and classic CAN on all three. On **PCAN**
+CAN-FD is still **refused, not truncated**: a bench that silently dropped 56 of 64 payload bytes
+is worse than one that says no. A *classic* Vector or Kvaser channel refuses an FD frame for the
+same reason — the channel decides, not the frame, because a handle opened classic would put a
+classic frame on the wire and report success.
 
 Software buses (`inproc:`, `udp:`) work on Windows exactly as on Linux and need no driver.
 
@@ -50,7 +52,9 @@ depend on a library we may not redistribute.
 ```
 pcan:PCAN_USBBUS1      # PEAK channel handle name (or pcan:usb1)
 kvaser:0               # Kvaser channel number
-kvaser:virtual0        # Kvaser SOFTWARE virtual channel (no hardware needed)
+kvaser:5               # a Kvaser SOFTWARE virtual channel (no hardware needed). Its NUMBER
+                       # depends on the machine -- canlib numbers virtual channels alongside
+                       # physical ones -- so read it off `kvasercheck --list`, which marks them.
 vector:1               # Vector APPLICATION channel, as Vector Hardware Manager numbers them
 vector:1@250000        # …at 250 kbit/s
 vector:1@500000,silent # …listen-only: the transceiver never acknowledges
@@ -107,7 +111,11 @@ MSGTYPE flags. The free driver has no software virtual channel, so testing needs
 **Kvaser (CANlib)** — `canlib32.dll` (`canInitializeLibrary`, `canOpenChannel`,
 `canSetBusParams`, `canBusOn`, `canWrite`, `canReadWait`, `canBusOff`, `canClose`).
 `canSetBusParams` takes bitrate plus segment timing, so `timing{}` maps straight onto it.
-**Software virtual channels** (`kvaser:virtual0`) exercise the backend with no bus at all.
+**Software virtual channels** exercise the backend with no bus at all. They are ordinary canlib
+channel numbers — on a bench with a 5-channel adapter fitted they are 5 and 6, on a machine with
+no Kvaser hardware they are 0 and 1 — so `kvasercheck --list` is what tells you which. (`kvaser:virtual0`
+was once documented here and never worked as advertised: it parsed as channel 0, which is physical
+wherever an adapter is present.)
 
 **Vector (XL Driver Library)** — `vxlapi64.dll`, the most verbose of the three
 (`xlOpenDriver`, `xlGetApplConfig`, `xlGetChannelMask`, `xlOpenPort`, `xlCanSetChannelBitrate`,
@@ -549,9 +557,8 @@ rather than a bug in the backend.
 
 ## Pending
 
-- **CAN-FD on PCAN and Kvaser** — Vector has it; these two need `CAN_InitializeFD` (a bit-rate
-  *string* instead of the baudrate enum) and `canOPEN_CAN_FD` + `canSetBusParamsFd` respectively
-  ([ROADMAP](../ROADMAP.md)).
+- **CAN-FD on PCAN** — Vector and Kvaser have it; PCAN needs `CAN_InitializeFD`, which takes a
+  bit-rate *string* instead of the baudrate enum ([ROADMAP](../ROADMAP.md)).
 - **slcan** — vendor-neutral, cross-platform, no DLL; the cheapest path to real frames on a
   bench with no vendor adapter at all.
 

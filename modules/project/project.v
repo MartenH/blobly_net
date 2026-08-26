@@ -443,9 +443,9 @@ pub fn (c Channel) iface_with_bitrate() string {
 	// here, where the address is built (codex #181 r2).
 	nominal := if c.bitrate > 0 { c.bitrate } else { default_bitrate }
 	if (c.adapter == 'pcan' || c.adapter == 'kvaser' || c.adapter == 'vector')
-		&& (c.bitrate > 0 || (c.adapter == 'vector' && c.fd)) {
+		&& (c.bitrate > 0 || (transport.adapter_configures_data_phase(c.adapter) && c.fd)) {
 		base = '${base}@${nominal}'
-		// THE DATA PHASE TRAVELS WITH THE RATE, on the one backend that can configure it. `fd` and
+		// THE DATA PHASE TRAVELS WITH THE RATE, on the backends that configure one. `fd` and
 		// `data_bitrate` sat in the schema and in the editor and reached no transport at all: the
 		// address is everything `open` is given, so a `canfd` Vector row opened CLASSIC and then
 		// refused every FD frame at send() — the project saying one thing and the wire doing
@@ -455,7 +455,7 @@ pub fn (c Channel) iface_with_bitrate() string {
 		// at one rate is a real configuration (64-byte payloads, no bit-rate switch), and it is
 		// the honest reading of "this channel is CAN-FD" with nothing said about its data phase.
 		// Dropping the flag instead would silently downgrade the row to classic.
-		if c.adapter == 'vector' && c.fd {
+		if transport.adapter_configures_data_phase(c.adapter) && c.fd {
 			dbr := if c.data_bitrate > 0 { c.data_bitrate } else { nominal }
 			base = '${base}/${dbr}'
 		}
@@ -678,7 +678,8 @@ fn parse_channel(c yaml.Any) !Channel {
 			// refused for having two rates. A legacy project could not use the advertised FD form
 			// at all (codex #181 r2).
 			mut migrated_fd := false
-			if ch.adapter == 'vector' && !two_rates && tail.count('/') == 1 {
+			if transport.adapter_configures_data_phase(ch.adapter) && !two_rates
+				&& tail.count('/') == 1 {
 				fd_arb, fd_dat := tail.all_before('/'), tail.all_after('/')
 				if is_all_digits(fd_arb) && is_all_digits(fd_dat) {
 					arb, dat := fd_arb.int(), fd_dat.int()
@@ -1452,10 +1453,19 @@ pub fn (c Channel) can_carry_fd() bool {
 // Composing through iface_with_bitrate is what makes it exact: whatever that produces is what
 // `transport.open` is handed, so anything this accepts, the open accepts.
 pub fn (c Channel) fd_config_error() ?string {
-	if !c.fd || !c.can_carry_fd() || c.adapter != 'vector' {
+	if !c.fd || !c.can_carry_fd() {
 		return none
 	}
-	return transport.vector_address_error(c.iface_with_bitrate())
+	// PER ADAPTER, because each backend's parser owns its own rates and ranges. Asking
+	// Vector's validator about a Kvaser address would answer about the wrong hardware --
+	// and answering `none` for every non-Vector adapter, which is what this did while
+	// Vector was the only one with a data phase, is how a Kvaser row with an impossible
+	// rate got persisted and refused at Start instead of in the editor.
+	return match c.adapter {
+		'vector' { transport.vector_address_error(c.iface_with_bitrate()) }
+		'kvaser' { transport.kvaser_address_error(c.iface_with_bitrate()) }
+		else { none }
+	}
 }
 
 // fd_capability_warnings reports enabled rows configured for CAN-FD on an adapter whose backend
@@ -1564,19 +1574,19 @@ fn destination_conflicts_without_alias(chs []Channel) []string {
 		// and that is answerable here, from the file, instead of as a channel that fails to open
 		// halfway through a Start.
 		//
-		// VECTOR ONLY, unlike the rate above, and the asymmetry is the point. The rate is a real
-		// disagreement on every vendor backend, because all three configure it. The PROTOCOL is
-		// only pinned where something configures a data phase — and PCAN and Kvaser configure
-		// none: both rows open the same classic bus and each FD frame is refused individually.
-		// Reported there, this refused the WHOLE PROJECT at Start and so overrode
-		// fd_capability_warnings, whose entire policy is that an FD row on those adapters is a
-		// warning because its classic traffic still runs. Two rules this change introduced,
-		// contradicting each other, with the stricter one silently winning (codex #181 r5).
-		//
+		// WHERE A DATA PHASE IS CONFIGURED, unlike the rate above, and the asymmetry is the
+		// point. The rate is a real disagreement on every vendor backend, because all three
+		// configure it. The PROTOCOL is only pinned where something configures a data phase —
+		// Vector and, since its FD support landed, Kvaser. PCAN configures none: both rows open
+		// the same classic bus and each FD frame is refused individually. Reported there, this
+		// refused the WHOLE PROJECT at Start and so overrode fd_capability_warnings, whose
+		// entire policy is that an FD row on such an adapter is a warning because its classic
+		// traffic still runs. Two rules contradicting each other, with the stricter one
+		// silently winning (codex #181 r5).
 		// The comparison is on the ROW's fields rather than on its address, because that is what
 		// the operator edits and what iface_with_bitrate composes the address from; comparing the
 		// composed strings would make this a test of the composer.
-		if c.adapter != 'vector' {
+		if !transport.adapter_configures_data_phase(c.adapter) {
 			continue
 		}
 		fdw := fd_wanted(c)
