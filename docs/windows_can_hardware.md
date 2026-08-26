@@ -280,6 +280,14 @@ that stayed silent may be the one already pointing at it, and assigning a second
 with two addresses for one wire. A channel carrying no CAN — a VN1630A's D/A IO channel, say — is
 listed but gets no button either, since the mapping could only fail to open.
 
+**Best effort, not a guarantee**, and for the reason the checkbox exists. The owner of a physical
+row is worked out from what each application channel reports, so a channel that answers the generic
+error *twice* is classified as unregistered and counted as a known non-owner — if it was in fact
+occupied and pointing at that row, the row still looks unclaimed. The same ambiguity that makes
+creating a channel your decision limits this check, and no re-reading closes it. What does catch it
+afterwards is `destination_conflicts()`, which refuses a project carrying two application channels
+on one physical channel ([#167](https://github.com/MartenH/blobly_net/issues/167)).
+
 Writes go under the application name `blobly_net` only; another application's assignments (CANoe,
 CANalyzer) are never touched, and the mapping is stored by the driver and survives a reboot.
 
@@ -380,8 +388,25 @@ Channel 3, after the one terminator was removed:
 rate is a constant error rate *per bit*, which is what reflections look like — they settle inside a
 125 k bit time and do not inside a 250 k one. So a link that passes at a low bitrate and fails at a
 higher one is a physical-layer problem, not a software one. Two checks isolate it in a minute:
-`--pair 5,6` uses the driver's virtual channels (no transceiver, no wire) and should pass at full
-speed, and dropping the bitrate until it passes tells you it is the wire rather than the setup.
+
+- **`vectorcheck --selftest`** proves the backend end to end on the driver's *virtual* channels —
+  assign, open, set the bitrate, go on the bus, transmit, receive. It picks them by hardware type
+  (`XL_HWTYPE_VIRTUAL`), so it touches no real bus on any machine. Use this rather than naming
+  `--probe` rows: row numbers are per-bench, and `--pair` transmits in **normal** mode, so a
+  hardcoded pair of rows that happen to be virtual here can be two live buses somewhere else.
+- **Drop the bitrate until it passes.** If the backend is fine and 125 k works while 500 k does not,
+  what is left is the wire.
+
+Restoring the second resistor on this bench turned every one of the failing rows above into 100%,
+which is the confirmation the table is there to support:
+
+| bitrate | with one resistor missing | with both fitted |
+|---|---|---|
+| 125 000 | 100% arrived | 100% arrived (1,566/s) |
+| 200 000 | 17,899 error frames | — |
+| 250 000 | 22,332 error frames | 100% arrived (2,649/s) |
+| 500 000 | 42,894 error frames | 100% arrived (4,786/s) |
+| 1 000 000 | — | 100% arrived (9,033/s) |
 
 `--modecheck` is the bench half of a test whose other half runs everywhere: on Linux
 `modules/transport/pinned_test.v` checks the bookkeeping over `inproc:` buses, and only a VN
@@ -425,20 +450,26 @@ channel refusing an FD port, an FD-held channel refusing a classic one, and an F
 refusing a second data phase. It needs no `--transmit`, because both addresses are silent and
 only the protocol changes.
 
-**CAN-FD link test**, same adapter, Channel 1 to Channel 3, 2026-08-24 — 64-byte payloads with
-BRS, every byte verified against what was sent:
+**CAN-FD link test**, same adapter, Channel 1 to Channel 3 — 64-byte payloads with BRS, arbitration
+at 500 kbit/s, every byte verified against what was sent. Re-run 2026-08-26 with **both** 120 Ω
+terminators fitted; the 2026-08-24 column is the same test with only one:
 
-| data phase | frames | arrived | malformed |
-|---|---|---|---|
-| 2 Mbit/s | 14,913 | 100% | 0 |
-| 4 Mbit/s | 15,212 | 100% | 0 |
-| 5 Mbit/s | 17,604 | 100% | 0 |
-| 8 Mbit/s | 23,216 | 100% | 0 |
+| data phase | arrived | malformed | frames/s (both) | frames/s (one) |
+|---|---|---|---|---|
+| 2 Mbit/s | 100% | 0 | 3,098 | 14,913 total |
+| 4 Mbit/s | 100% | 0 | 5,133 | 15,212 total |
+| 5 Mbit/s | 100% | 0 | 5,938 | 17,604 total |
+| 8 Mbit/s | 100% | 0 | 7,801 | 23,216 total |
 
-`vectorcheck --pair 0,2 --fd --dbitrate <rate>`. The frame rate rising with the data phase is
-itself part of the result: it is what proves BRS is switching rather than the payload quietly
-going out at the arbitration rate. Run with only ONE 120 Ω terminator fitted, which is worth
-recording as the condition it passed under rather than as a recommendation.
+`vectorcheck --pair 0,2 --fd --dbitrate <rate> --length 64`. The frame rate rising with the data
+phase is itself part of the result: it is what proves BRS is switching rather than the payload
+quietly going out at the arbitration rate.
+
+The two runs are not directly comparable in absolute count — the 2026-08-24 figures are totals over
+a longer run, the 2026-08-26 ones are rates over two seconds — but both passed with zero malformed
+frames at every phase. One terminator was enough *here*, on a short bench link; it was not enough
+for classic CAN once the remaining resistor came out, which is the case above. Treat one as a
+condition a particular run happened to pass under, never as a specification.
 
 It was worth running for a second reason: the `-1004` message used to name the mode backwards.
 The shim's check is bidirectional and says so, but the V-side text assumed the channel was open
