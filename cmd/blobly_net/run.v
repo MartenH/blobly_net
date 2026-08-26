@@ -173,11 +173,23 @@ fn (app &App) push_listen_only_locked() {
 // script and the diagnostic panel can all make one talk — the GUI kept the old reading and the
 // two front ends disagreed about the same project again. There is nothing here left to drift.
 fn (app &App) destination_conflict() ?string {
-	problems := project.destination_conflicts(app.runtime_rows())
+	problems := app.destination_check().problems
 	if problems.len == 0 {
 		return none
 	}
 	return problems[0]
+}
+
+// destination_check is the whole answer — refusals AND the rows the alias check could not see —
+// from one driver sweep.
+//
+// A CALLER THAT ONLY WANTS THE FIRST REFUSAL THROWS THE WARNING AWAY, which is what the live-enable
+// path was doing: it asks this prospectively with the row switched on, and that is the only place
+// the whole-project answer for the new arrangement exists. A row-only check cannot replace it —
+// the unreadable row may be an ALREADY-ENABLED one sharing the transceiver with the row joining,
+// and asking about the newcomer alone says nothing about that (codex #199 r2).
+fn (app &App) destination_check() project.DestinationCheck {
+	return project.check_destinations(app.runtime_rows())
 }
 
 fn (app &App) bitrate_iface(iface string) string {
@@ -271,11 +283,16 @@ fn (mut app App) start() {
 	// failed run where the honest answer is that they asked for two different things on one
 	// wire. Said before anything opens.
 	// One wire, one mode and one rate — the same verdict the headless runner reaches.
-	if bad := app.destination_conflict() {
+	// ONE SWEEP FOR BOTH HALVES. The refusals and the "could not read this row" warning are two
+	// readings of the SAME driver answers, and asking twice lets them disagree about one row: a
+	// lookup that fails for the comparison and succeeds for the warning leaves a row neither
+	// checked nor reported, which is the gap the warning exists to close (codex #199 r1).
+	dest := project.check_destinations(app.runtime_rows())
+	if dest.problems.len > 0 {
 		// Not "one wire, one mode and one rate" any more: #167 added a third kind this check
 		// reports — two application channels on one physical channel — and each problem states
 		// itself. A summary that lists two of three is the kind of claim that goes stale.
-		app.notify('${bad} — not starting')
+		app.notify('${dest.problems[0]} — not starting')
 		return
 	}
 	// SAID ONCE, HERE, before anything opens — issue #170. An FD row on a backend that refuses FD
@@ -283,6 +300,13 @@ fn (mut app App) start() {
 	// part-classic recording reads as a successful measurement with some of its traffic missing.
 	// A warning rather than a refusal: the classic half of that run is real.
 	for w in project.fd_capability_warnings(app.runtime_rows()) {
+		app.notify(w)
+	}
+	// AND WHICH ROWS THE ALIAS CHECK COULD NOT COVER (#194). Same reasoning as the line above and
+	// the same shape: the refusals above already caught anything provable, so what is left is a
+	// gap the check could not see into. A driver that would not answer is not a reason to refuse a
+	// project, but it is a reason to say the two-rows-one-transceiver check ran short.
+	for w in dest.warnings {
 		app.notify(w)
 	}
 	if app.cfg_text_dirty {

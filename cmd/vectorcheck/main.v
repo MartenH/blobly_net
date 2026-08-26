@@ -27,6 +27,10 @@ struct Opts {
 	list       bool
 	probe      bool
 	selftest   bool
+	// Whether the operator has said an unregistered application channel may be CREATED to borrow.
+	// Off by default for the reason assign_refusal gives: the driver reports "no such channel"
+	// with its generic error, which is also one dropped read of an occupied one (#195).
+	create_channels bool
 	assign     int = -1
 	assign_set bool // WHETHER --assign was given: -1 is the sentinel, and a user can type -1
 	release    int = -1
@@ -207,14 +211,45 @@ fn on_interrupt(_ os.Signal) {
 	exit(130)
 }
 
-fn borrow(app int, hw transport.VectorChannel) !Borrowed {
+fn borrow(app int, hw transport.VectorChannel, create_ok bool) !Borrowed {
 	// Held from the first borrow to the last restore — see transport.vector_borrow_lock. Taken
 	// per borrow and released in give_back, which is the span that must be atomic against
 	// another copy of this tool.
 	transport.vector_borrow_lock()!
+	// AN UNREGISTERED CHANNEL IS NOT A READ FAILURE, and telling them apart is what lets this tool
+	// run on a bench where blobly_net has never been (#195). `vector_assignment` cannot: it reports
+	// both as an error, deliberately, because it is the two-state API and "could not read" must
+	// never look free there. The four-state one can, and confirms the ambiguous answer with a
+	// second read before anything is written.
+	//
+	// STILL AN EXPLICIT DECISION, exactly as it is in the GUI, and for the identical reason: the
+	// driver reports "no such channel" with its GENERIC error, which is also what one dropped read
+	// of an OCCUPIED channel looks like. So --create-channels is required rather than assumed, and
+	// without it a fresh bench gets a message naming the channel instead of a silent overwrite.
+	// EVERY FAILURE FROM HERE ON RELEASES THE INTERPROCESS LOCK. give_back releases one per entry
+	// it finds in g_borrowed, so a borrow that fails BEFORE the entry is recorded has no
+	// counterpart there and used to leave the mutex held for the life of the process — locking out
+	// every other vectorcheck and the GUI's Assign button. Not hypothetical now that the slot check
+	// below adds an early return.
+	mut ok := false
+	defer {
+		if !ok {
+			transport.vector_borrow_unlock()
+		}
+	}
+	slot := transport.vector_app_slot(app)
+	if slot == .absent && !create_ok {
+		return error('Vector application channel ${app} is not registered under "blobly_net", so there is nothing to borrow. Pass --create-channels to create it — it is cleared again afterwards — or register it once from the Discover dialog.')
+	}
 	// REFUSED if we cannot see what we would overwrite. A read failure used to look like a free
 	// channel, and the borrow then "restored" it by clearing a mapping the operator had made.
-	prev, had := transport.vector_assignment(app)!
+	// `absent` is the one answer that reaches this line without one: there is genuinely nothing
+	// behind it, so `prev` stays none and give_back clears it, which is where it started.
+	mut prev := transport.VectorChannel{}
+	mut had := false
+	if slot != .absent {
+		prev, had = transport.vector_assignment(app)!
+	}
 	b := Borrowed{
 		app:  app
 		prev: if had { ?transport.VectorChannel(prev) } else { none }
@@ -238,6 +273,8 @@ fn borrow(app int, hw transport.VectorChannel) !Borrowed {
 		return err
 	}
 	borrow_unlock()
+	// Recorded in g_borrowed, so give_back now owns the unlock for this borrow.
+	ok = true
 	return b
 }
 
@@ -407,6 +444,10 @@ fn usage() {
 	eprintln('  --list      application channels with hardware assigned in Vector Hardware Manager')
 	eprintln('  --probe     what the DRIVER says is present (hwType/hwIndex/hwChannel)')
 	eprintln('  --selftest  prove the backend on Vector VIRTUAL channels — touches no real bus')
+	eprintln('  --create-channels  let --pair/--selftest CREATE the application channels they borrow')
+	eprintln('              (61/62 and 63/64). Needed once on a bench where blobly_net has never run;')
+	eprintln('              they are cleared again afterwards. Off by default: an unregistered channel')
+	eprintln('              and a dropped read of an occupied one look identical to the driver.')
 	eprintln('  --modecheck prove that an OPEN PORT pins its channel and that the app knows it')
 	eprintln('              (issue #165). Listen-only, and safe against a live bus. Add')
 	eprintln('              --transmit for the normal-mode probe, which is only silent while')
@@ -478,6 +519,12 @@ fn parse(args []string) !Opts {
 				o = Opts{
 					...o
 					selftest: true
+				}
+			}
+			'--create-channels' {
+				o = Opts{
+					...o
+					create_channels: true
 				}
 			}
 			'--modecheck' {
@@ -636,7 +683,7 @@ fn main() {
 		return
 	}
 	if o.selftest {
-		selftest() or {
+		selftest(o.create_channels) or {
 			eprintln('vectorcheck: ${err}')
 			exit(1)
 		}
@@ -1053,7 +1100,7 @@ fn report_modecheck(failures []string) ! {
 	return error('${failures.len} modecheck failure(s)')
 }
 
-fn selftest() ! {
+fn selftest(create_ok bool) ! {
 	mut virt := []transport.VectorChannel{}
 	for c in transport.vector_channels() {
 		if c.hw_type == 1 { // XL_HWTYPE_VIRTUAL
@@ -1070,8 +1117,8 @@ fn selftest() ! {
 	defer {
 		give_back(borrowed)
 	}
-	borrowed << borrow(a_ch, virt[0])!
-	borrowed << borrow(b_ch, virt[1])!
+	borrowed << borrow(a_ch, virt[0], create_ok)!
+	borrowed << borrow(b_ch, virt[1], create_ok)!
 	println('assigned app channel ${a_ch} -> virtual ${virt[0].hw_channel}, ${b_ch} -> virtual ${virt[1].hw_channel}')
 
 	mut tx := transport.open('vector:${a_ch}@500000')!
@@ -1154,8 +1201,8 @@ fn pair_test(o Opts) ! {
 	defer {
 		give_back(borrowed)
 	}
-	borrowed << borrow(a_app, chans[a_row])!
-	borrowed << borrow(b_app, chans[b_row])!
+	borrowed << borrow(a_app, chans[a_row], o.create_channels)!
+	borrowed << borrow(b_app, chans[b_row], o.create_channels)!
 	println('TX  app ${a_app} -> ${chans[a_row].name}  (${chans[a_row].transceiver})')
 	println('RX  app ${b_app} -> ${chans[b_row].name}  (${chans[b_row].transceiver})')
 	if want_fd {
@@ -1185,6 +1232,9 @@ fn pair_test(o Opts) ! {
 	// nets out in a count: n_recv == n_sent, lost == 0, and the test passes over real loss.
 	mut seen_seq := map[u32]bool{}
 	mut last_seq := u32(0)
+	// When the last frame ARRIVED, measured on the same clock as the transmit window, so the rate
+	// below divides delivered frames by the period they were delivered in.
+	mut last_rx_ms := i64(0)
 	mut sw := time.new_stopwatch()
 	for sw.elapsed().milliseconds() < i64(o.seconds) * 1000 {
 		// A BATCH between clock reads, and a NON-BLOCKING drain. Sending one frame per iteration
@@ -1233,6 +1283,7 @@ fn pair_test(o Opts) ! {
 				seen_seq[seq_got] = true
 			}
 			n_recv++
+			last_rx_ms = sw.elapsed().milliseconds()
 		}
 	}
 	// LET THE WIRE FINISH. At saturation the transmit queue still holds a second or so of
@@ -1263,10 +1314,25 @@ fn pair_test(o Opts) ! {
 			seen_seq[seq_tail] = true
 		}
 		quiet = time.new_stopwatch()
+		last_rx_ms = sw.elapsed().milliseconds()
 	}
 	println('')
-	rate := if o.seconds > 0 { n_sent / o.seconds } else { 0 }
-	println('sent ${n_sent} (${rate}/s), received ${n_recv} (${seen_seq.len} distinct), duplicates ${n_dup}, malformed ${n_bad}, last sequence ${last_seq}')
+	// THE RATE IS DELIVERED FRAMES OVER THE TIME THEY TOOK TO ARRIVE (#196).
+	//
+	// It used to be `n_sent / o.seconds`, which is neither of the two things a reader assumes. The
+	// numerator counted frames the DRIVER ACCEPTED, and the denominator was the transmit window
+	// alone while the queue went on draining afterwards — so the buffer's contents were divided by
+	// a period they did not go out in. On this bench that printed 4,786/s for eight-byte frames at
+	// 500 kbit/s, above the ~4,504/s that 111 bits per frame allows; a wire cannot beat its own bit
+	// time, and the excess was the queue.
+	//
+	// Both halves are now about the wire. `n_recv` is frames that actually traversed it, and the
+	// span ends at the LAST ARRIVAL rather than at the end of the drain — the drain deliberately
+	// waits 400 ms of silence to be sure the tail is in, and counting that idle time would
+	// understate the rate by as much as the old version overstated it.
+	span_ms := if last_rx_ms > 0 { last_rx_ms } else { sw.elapsed().milliseconds() }
+	rate := if span_ms > 0 { int(i64(n_recv) * 1000 / span_ms) } else { 0 }
+	println('sent ${n_sent}, received ${n_recv} (${seen_seq.len} distinct, ${rate}/s on the wire), duplicates ${n_dup}, malformed ${n_bad}, last sequence ${last_seq}')
 	if n_busy > 0 {
 		println('${n_busy} times the transmit queue was full — the wire setting the pace, which is what saturation looks like')
 	}

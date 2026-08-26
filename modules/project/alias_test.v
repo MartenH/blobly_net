@@ -149,3 +149,53 @@ fn test_the_ordinary_project_is_unaffected() {
 	]
 	assert destination_conflicts(rows) == []
 }
+
+// ---- rows the resolver could not read (#194) -------------------------------------------------
+//
+// The alias check compares the rows it CAN resolve and silently skips the rest, which is right for
+// a row that reaches no hardware and wrong for one the driver would not describe: that one may be
+// sharing a transceiver and nothing here can tell. It cannot refuse the project for it — a bench
+// with the XL library mid-upgrade would have every project rejected for an unanswered question —
+// so it warns, and these pin the wording rather than the resolver.
+fn test_no_unreadable_rows_says_nothing() {
+	assert alias_unreadable_lines([]) == [], 'silence is the answer when nothing was unreadable'
+}
+
+fn test_one_unreadable_row_is_named_and_reads_as_singular() {
+	lines := alias_unreadable_lines(['CAN1 (vector:1)'])
+	assert lines.len == 1, 'one line for the set, not one per row'
+	assert lines[0].contains('CAN1 (vector:1)'), 'the row must be named: ${lines[0]}'
+	assert lines[0].contains('reaches'), 'singular: ${lines[0]}'
+	assert lines[0].contains('cover it'), 'singular: ${lines[0]}'
+}
+
+// ONE LINE FOR THE SET. The condition is a property of the driver at this moment, not of any row,
+// so repeating it per row would say the same thing three times — the reasoning alias_conflicts
+// already applies with `said`.
+fn test_several_unreadable_rows_share_one_line() {
+	lines := alias_unreadable_lines(['CAN1 (vector:1)', 'CAN2 (vector:2)', 'CAN3 (vector:3)'])
+	assert lines.len == 1, 'three rows must not produce three lines'
+	for want in ['CAN1 (vector:1)', 'CAN2 (vector:2)', 'CAN3 (vector:3)'] {
+		assert lines[0].contains(want), '${want} missing from: ${lines[0]}'
+	}
+	assert lines[0].contains('reach'), 'plural: ${lines[0]}'
+	assert lines[0].contains('cover them'), 'plural: ${lines[0]}'
+}
+
+// A WARNING, NEVER A REFUSAL. Whatever this says must not reach destination_conflicts, whose
+// entries all stop a project — that is the distinction the split exists for.
+fn test_unreadable_rows_never_refuse_a_project() {
+	rows := [
+		Channel{
+			name:    'CAN1'
+			adapter: 'vector'
+			iface:   'vector:1'
+			enabled: true
+		},
+	]
+	// On this machine physical_wire answers `.nothing` for everything, so both are empty; the
+	// property being pinned is that they are SEPARATE channels, and that the warning path cannot
+	// contribute to the refusal path whatever the driver says.
+	assert destination_conflicts(rows) == []
+	assert alias_unreadable_warnings(rows) == []
+}

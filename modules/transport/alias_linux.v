@@ -13,3 +13,11 @@ module transport
 pub fn physical_wire_key(adapter string, iface string) ?string {
 	return none
 }
+
+// physical_wire — the three-state form. `.nothing`, not `.unreadable`: this is not a driver that
+// failed to answer, it is a platform on which the question does not arise. `.unreadable` would
+// make the alias check warn about every row of every project on Linux, which is noise rather than
+// news. See alias_windows.v for the distinction and #194 for why it exists.
+pub fn physical_wire(adapter string, iface string) (WireReach, string) {
+	return WireReach.nothing, ''
+}
