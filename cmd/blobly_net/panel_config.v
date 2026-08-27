@@ -2,6 +2,7 @@ module main
 
 import os
 import project
+import transport
 import vgui
 import mf4
 import player
@@ -578,7 +579,13 @@ fn (mut app App) draw_bus_editor(i int) bool {
 				app.dirty = true
 			}
 			vgui.same_line()
-			vgui.help_marker('CAN-FD data-phase bit rate in bit/s (e.g. 2000000) — the faster rate the payload is sent at. Leave empty to run the data phase at the nominal rate, which is CAN-FD without a bit-rate switch (64-byte payloads, no speed-up). Configured by the Vector backend; on SocketCAN the link carries it (ip link ... dbitrate).')
+			// THE LIST IS DERIVED, NOT WRITTEN OUT. This said "configured by the Vector backend"
+			// and went on saying it after Kvaser, CANsub and then PCAN could configure a data
+			// phase too — telling operators their entered rate was ignored when it was not
+			// (codex round 4 on #217). `adapter_configures_data_phase` is the one place that
+			// answers, so the tooltip asks it rather than keeping a copy that drifts.
+			configures := project.adapters.filter(transport.adapter_configures_data_phase(it))
+			vgui.help_marker('CAN-FD data-phase bit rate in bit/s (e.g. 2000000) — the faster rate the payload is sent at. Leave empty to run the data phase at the nominal rate, which is CAN-FD without a bit-rate switch (64-byte payloads, no speed-up). Configured from the address by ${configures.join(', ')}; on SocketCAN the link carries it (ip link ... dbitrate).')
 		}
 		vgui.text('mode:')
 		vgui.same_line()

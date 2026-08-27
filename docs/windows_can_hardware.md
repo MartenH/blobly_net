@@ -23,8 +23,14 @@ Software buses (`inproc:`, `udp:`) work on Windows exactly as on Linux and need 
 
 ## Backend parity — what "finished" means
 
-A backend is finished when every row below is a ✅ or an explicit, stated ❌. The point of the
-table is that "leave it as done" becomes a fact somebody can check rather than a feeling.
+A backend is finished when every row below is a ✅, or an ❌ that is a **property of the driver**
+rather than work not done — stated, with the reason.
+
+That distinction is the whole point, and the table is unreadable without it. An ❌ of the second
+kind is a decision somebody made and can defend; an ❌ of the first is a job nobody has done yet,
+and it blocks. **Every ❌ in the table today is the first kind**, which is why the list under it
+says none of the four is finished — `Hardware timestamps` is unbuilt on all of them. "Leave it as
+done" is then a fact somebody can check rather than a feeling.
 
 | | PCAN | Kvaser | Vector | CANsub |
 |---|---|---|---|---|

@@ -3,13 +3,26 @@
 // suffix gates compilation). The vendor DLL (PCANBasic.dll, shipped with the free
 // PEAK driver) is loaded at RUNTIME via pcan_shim.h — no SDK, no import lib.
 //
-// Interface string: `pcan:<channel>[@<bitrate>]`
-//   channel : PCAN_USBBUS1..8 | usb1..8 | 1..8 | a raw 0x51-style handle
-//   bitrate : bits/s (default 500000)  e.g. pcan:PCAN_USBBUS1@250000
+// Interface string: `pcan:<channel>[@<arbitration>[/<data>]]`
+//   channel     : PCAN_USBBUS1..8 | usb1..8 | 1..8 | a raw 0x51-style handle
+//   arbitration : bits/s (default 500000)   e.g. pcan:PCAN_USBBUS1@250000
+//   data        : bits/s, and NAMING IT IS WHAT ASKS FOR CAN-FD — the same rule Kvaser and
+//                 Vector follow, because a channel is opened once, for one protocol, and
+//                 nothing else can then contradict it.
+//                 e.g. pcan:PCAN_USBBUS1@500000/2000000
 //
-// NOTE: written from the documented PCAN-Basic ABI; NOT yet verified against
-// hardware (no adapter/driver available on the dev box). Compile-checked via the
-// Windows CI. See docs/windows_can_hardware.md for the verification plan.
+// CLASSIC AND FD ARE DIFFERENT CALLS, and the difference reaches further than opening: an
+// FD-initialised channel REFUSES CAN_Write outright (PCAN_ERROR_ILLOPERATION), so every send on
+// such a channel goes through CAN_WriteFD, classic frames included, with the FD flag clear. Found
+// on the bench, where every FD leg passed and every classic one failed.
+//
+// The address rules and the FD bit-timing solver are in pcan_names.v, not here: a `_windows.v`
+// file compiles only where CI runs nothing, and PCANBasic takes a bit-rate STRING of register
+// values rather than a rate constant, so that arithmetic is exactly what a test should hold.
+//
+// Hardware-verified on a PCAN-USB Pro FD — classic, and CAN-FD cross-vendor against a Kvaser
+// USBcan Pro 5xHS, 18/18 in both directions at 1/2/4/8 Mbit/s. See docs/windows_can_hardware.md
+// for the bench record and what "verified" means there.
 module transport
 
 import time

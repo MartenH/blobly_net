@@ -249,9 +249,19 @@ pub fn pcan_split_fd(spec string, default_rate int) !(string, int, int, bool) {
 // accepts: it asks the same parser and the same solver the open path does.
 pub fn pcan_address_error(iface string) ?string {
 	body := if iface.to_lower().starts_with('pcan:') { iface['pcan:'.len..] } else { iface }
-	_, arb, data, fd := pcan_split_fd(body, 500000) or { return err.msg() }
+	// `chan_tok` and not `chan`: V reserves that word for the channel type.
+	chan_tok, arb, data, fd := pcan_split_fd(body, 500000) or { return err.msg() }
+	// THE CHANNEL, THROUGH THE PARSER THE OPEN USES. pcan_split_fd only checks that the token is
+	// non-empty, so this discarded it and validated the timing alone: `pcan:bogus@500000/2000000`
+	// was accepted by the editor, saved, and then refused by pcan_handle at Start — the validator
+	// contradicting its own promise two lines above (codex round 4 on #217).
+	pcan_handle(chan_tok) or { return err.msg() }
 	if !fd {
-		return none // a classic rate is a BTR code, checked by pcan_baud when the channel opens
+		// AND THE CLASSIC RATE TOO, for the same reason. "checked by pcan_baud when the channel
+		// opens" is exactly the deferral this function exists to end; pcan_baud is in this file
+		// now, so there is nothing left to defer to.
+		pcan_baud(arb) or { return err.msg() }
+		return none
 	}
 	pcan_fd_bitrate(arb, data, pcan_default_sample_point) or { return err.msg() }
 	return none
