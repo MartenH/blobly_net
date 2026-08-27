@@ -157,9 +157,9 @@ pub fn open_vector(spec string) !&VectorBus {
 			break
 		}
 		time.sleep(10 * time.millisecond)
-		rc = C.ct_vector_open(u32(s.channel - 1), u32(s.bitrate), sil, &port, &mask, &notify,
-			&gen, isfd, u32(s.data_bitrate), u32(at.tseg1), u32(at.tseg2), u32(at.sjw),
-			u32(dt.tseg1), u32(dt.tseg2), u32(dt.sjw))
+		rc = C.ct_vector_open(u32(s.channel - 1), u32(s.bitrate), sil, &port, &mask, &notify, &gen,
+			isfd, u32(s.data_bitrate), u32(at.tseg1), u32(at.tseg2), u32(at.sjw), u32(dt.tseg1),
+			u32(dt.tseg2), u32(dt.sjw))
 	}
 	if rc == -1009 {
 		return error('Vector channel ${s.channel} is still being released by the previous run — try again in a moment')
@@ -243,6 +243,17 @@ pub fn open_vector(spec string) !&VectorBus {
 }
 
 pub fn (mut b VectorBus) send(f CanFrame) ! {
+	// A FRAME NO CONTROLLER COULD SEND is refused here as it is everywhere else. `esi` on a
+	// classic frame arrived with the shared rules and this path never learned it, so the same
+	// input was rejected by `inproc:`, `udp:`, PCAN and CANsub and accepted here — the flag
+	// silently dropped, success reported, and the trace keeping a bit the wire never carried
+	// (codex round 12 on #204).
+	//
+	// The IMPOSSIBLE rules only. What this backend does about a LENGTH is its own tier's business
+	// and is unchanged — see frame_rules.v.
+	if why := frame_impossible_error(f) {
+		return error('Vector: ${why}')
+	}
 	// SILENCE IS A PROMISE. A channel opened `,silent` was opened that way because something
 	// live is on the other end; the transceiver will not acknowledge, so the frame could not
 	// arrive anyway, and reporting success for it would put a row in the trace for traffic that
@@ -314,8 +325,8 @@ pub fn (mut b VectorBus) send(f CanFrame) ! {
 		mut on_wire := u8(0)
 		fdflag := if f.fd { 1 } else { 0 }
 		brs := if f.brs { 1 } else { 0 }
-		st = C.ct_vector_write_fd(b.port, b.mask, f.id, u8(n), f.data.data, ext, rtr, fdflag,
-			brs, &on_wire)
+		st = C.ct_vector_write_fd(b.port, b.mask, f.id, u8(n), f.data.data, ext, rtr, fdflag, brs,
+			&on_wire)
 		// A BACKSTOP, and it must not report failure: the length was checked against fd_lengths
 		// above, so reaching here means the shim padded a length this function believed exact —
 		// a disagreement between the two tables rather than anything the caller did. The frame
@@ -365,8 +376,8 @@ pub fn (mut b VectorBus) recv(timeout_ms int) !CanFrame {
 	mut brs := 0
 	mut esi := 0
 	pfd := if b.fd { 1 } else { 0 }
-	r := C.ct_vector_read(b.port, b.notify, &id, &ln, &data[0], &ext, &rtr, timeout_ms, &chip,
-		pfd, &isfd, &brs, &esi)
+	r := C.ct_vector_read(b.port, b.notify, &id, &ln, &data[0], &ext, &rtr, timeout_ms, &chip, pfd,
+		&isfd, &brs, &esi)
 	if chip >= 0 {
 		b.last_chip = chip
 	}
@@ -842,7 +853,6 @@ pub fn vector_application_seen() !bool {
 	}
 	return false
 }
-
 
 // vector_list reports the application channels that have hardware assigned, for discovery.
 // Returns [] when vxlapi64.dll is absent.

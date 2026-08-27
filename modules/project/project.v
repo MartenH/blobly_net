@@ -453,7 +453,7 @@ pub fn (c Channel) iface_with_bitrate() string {
 	// mixtures on a wire it was simultaneously opening as classic. One reading of an unset rate,
 	// here, where the address is built (codex #181 r2).
 	nominal := c.nominal_bitrate()
-	if (c.adapter == 'pcan' || c.adapter == 'kvaser' || c.adapter == 'vector')
+	if transport.adapter_configures_bitrate(c.adapter)
 		&& (c.bitrate > 0 || (transport.adapter_configures_data_phase(c.adapter) && c.fd)) {
 		base = '${base}@${nominal}'
 		// THE DATA PHASE TRAVELS WITH THE RATE, on the backends that configure one. `fd` and
@@ -731,8 +731,7 @@ fn parse_channel(c yaml.Any) !Channel {
 			}
 		}
 
-		if (ch.adapter == 'pcan' || ch.adapter == 'kvaser' || ch.adapter == 'vector')
-			&& raw.contains('@') {
+		if transport.adapter_configures_bitrate(ch.adapter) && raw.contains('@') {
 			// LAST `@`, then the mode: `vector:1@250000,silent` puts the suffix after the rate,
 			// so all_after_last('@') is "250000,silent" and .int() would read 250000 only by
 			// luck of parsing. Cut the mode off first and the number is the number.
@@ -1335,7 +1334,70 @@ fn parse_id(s string) u32 {
 // adapters is the set of transport backends the editor offers (the `adapter:` value).
 // Order = the picker order. `virtual`/`vcan`/`socketcan`/`udp` are cross-platform or
 // Linux; `pcan`/`kvaser` are Windows CAN hardware; `doip` is an Ethernet diag endpoint.
-pub const adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'pcan', 'kvaser', 'vector', 'doip']
+pub const adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'pcan', 'kvaser', 'vector', 'cansub',
+	'doip']
+
+// WHICH ADAPTERS A PLATFORM MAY OFFER. `adapters` above is every name a project FILE may carry —
+// these two are what an editor may put in front of somebody, and they live here, next to the
+// registry, rather than in the GUI.
+//
+// The GUI's own copy is how CANsub shipped unselectable: registered in `adapters`, in
+// compose_iface, in decompose_iface and in all three capability predicates, and absent from the
+// single hardcoded list a user actually clicks — so the only way to reach the new backend was to
+// edit the project file by hand (codex round 1 on #204). The registry test holds the union of
+// these two to `adapters`, which is the assertion that would have caught it: a backend cannot be
+// added to the engine and left unreachable from the editor.
+//
+// Split by platform because most backends are: SocketCAN and vcan are Linux kernel interfaces,
+// PCAN/Kvaser/Vector are Windows vendor DLLs. CANsub is on BOTH — it is a network device the
+// host reaches over USB-Ethernet, so there is no driver to be missing.
+pub const windows_adapters = ['virtual', 'udp', 'pcan', 'kvaser', 'vector', 'cansub', 'doip']
+
+pub const linux_adapters = ['virtual', 'vcan', 'socketcan', 'udp', 'cansub', 'doip']
+
+// adapter_starts_silent reports whether a NEW row on this adapter should begin listen-only.
+//
+// TRUE FOR HARDWARE THAT MAY ALREADY BE ON A LIVE BUS. A row created in the editor or through
+// Discover arrives with the 500 kbit/s default, which nobody has confirmed — and a node joining a
+// running vehicle able to acknowledge, at a rate that is a guess, is how a tester disturbs the
+// thing it came to observe. Untick it once the rate is known.
+//
+// HERE RATHER THAN IN THE GUI, and the reason is the one this whole file keeps running into: the
+// rule lived in two hardcoded `== 'vector'` comparisons in cmd/blobly_net, so exposing CANsub in
+// the picker made the manual route the unsafe one while Discover stayed careful, and nothing
+// failed to say so (codex round 5 on #204). The registry test now holds this against `adapters`,
+// so a hardware backend added later cannot quietly default to transmitting.
+//
+// The software and kernel adapters are not here: `inproc:`/`udp:` have no transceiver to silence
+// and a SocketCAN interface is brought up by `ip link` with a rate its operator already chose.
+pub fn adapter_starts_silent(adapter string) bool {
+	return match adapter.trim_space().to_lower() {
+		'vector', 'cansub' { true }
+		else { false }
+	}
+}
+
+// adapter_change_starts_silent reports whether changing a row's adapter from `was` to `now`
+// should re-arm listen-only.
+//
+// THE DECISION, not just the property, because the property alone was not enough to get it right.
+// Written in the GUI as "starts silent now and did not before", a transmit-enabled Vector row
+// switched to CANsub kept `listen_only = false`: both answer true, so the condition never fired
+// and the new controller opened able to ACK — the default defeated by the one case where BOTH
+// adapters need it (codex round 6 on #204). What matters is that the HARDWARE changed, at a rate
+// nobody has confirmed for the new one.
+pub fn adapter_change_starts_silent(was string, now string) bool {
+	return adapter_starts_silent(now) && was.trim_space().to_lower() != now.trim_space().to_lower()
+}
+
+// platform_adapters is what THIS build may offer.
+pub fn platform_adapters() []string {
+	$if windows {
+		return windows_adapters
+	} $else {
+		return linux_adapters
+	}
+}
 
 // compose_iface builds the internal scheme string `transport.open()` consumes from an
 // adapter + its backend-specific address. It is the inverse of decompose_iface.
@@ -1400,6 +1462,9 @@ pub fn compose_iface(adapter string, address string) string {
 		'kvaser' {
 			'kvaser:${a}'
 		}
+		'cansub' {
+			'cansub:${a}'
+		}
 		'vector' {
 			'vector:${a}'
 		}
@@ -1439,6 +1504,19 @@ pub fn decompose_iface(iface string) (string, string) {
 	// distinct bus; the rate is lifted into the bitrate field by parse_channel.
 	if s.starts_with('pcan:') {
 		return 'pcan', s['pcan:'.len..].all_before('@')
+	}
+	// `cansub:<id>/<channel>[@<rates>]` — the id AND channel are the address, so only the rate
+	// suffix comes off, exactly as it does for the other three.
+	//
+	// CASE-INSENSITIVELY, unlike the branches around it, because the CANsub DISPATCHER is
+	// (`open_windows.v` / `open_linux.v` both match `iface.to_lower()`). `pcan:`, `kvaser:` and
+	// `vector:` are case-sensitive in both places and so agree with themselves; cansub was the one
+	// that did not, so `CANSUB:E5A16ADF/1@250000` opened as a CANsub at 250k while this classified
+	// the row as SocketCAN and never lifted the rate into the model — leaving the editor and every
+	// conflict check reasoning about a different bus from the one that opens (codex round 3 on
+	// #204).
+	if s.to_lower().starts_with('cansub:') {
+		return 'cansub', s['cansub:'.len..].all_before('@')
 	}
 	if s.starts_with('kvaser:') {
 		return 'kvaser', s['kvaser:'.len..].all_before('@')
@@ -1491,7 +1569,7 @@ pub fn (m Mode) str() string {
 // And the two families need different treatment of `@`: a bitrate suffix on a vendor address, a
 // literal part of the name anywhere else, where `inproc:bench@A` is a bus called `bench@A`.
 fn conflict_wire_key(c Channel) string {
-	if c.adapter in ['pcan', 'kvaser', 'vector'] {
+	if transport.adapter_configures_bitrate(c.adapter) {
 		return transport.wire_key_for(c.adapter, c.iface)
 	}
 	return transport.canonical_iface(c.iface)
@@ -1589,7 +1667,7 @@ pub fn (fr Framing) apply(f transport.CanFrame) transport.CanFrame {
 	}
 }
 
-// fd_config_error reports why this row's CAN-FD rates could not be opened, or none when they can.
+// address_config_error reports why this row's CAN-FD rates could not be opened, or none when they can.
 //
 // ASKS THE REAL PARSER rather than restating its rules, and asks it about the ADDRESS THIS ROW
 // WILL ACTUALLY BE OPENED WITH. An editor enforcing its own copy is a second opinion about the
@@ -1601,7 +1679,47 @@ pub fn (fr Framing) apply(f transport.CanFrame) transport.CanFrame {
 //
 // Composing through iface_with_bitrate is what makes it exact: whatever that produces is what
 // `transport.open` is handed, so anything this accepts, the open accepts.
-pub fn (c Channel) fd_config_error() ?string {
+pub fn (c Channel) address_config_error() ?string {
+	// CANSUB IS ASKED ABOUT EVERY ROW, FD or not. The other vendor backends hand a nominal rate
+	// to a driver that either produces it or says so; the CANsub derives its own bit timing from
+	// an 80 MHz clock that must divide EXACTLY, so it is the first adapter here that can refuse a
+	// plain CLASSIC rate. 333333 bit/s passed the editor's digits-only check, was saved, and was
+	// refused only at Start — which is the exact failure the FD half of this function was written
+	// to prevent, recurring one row-type over (codex round 1 on #204). The name says `address`
+	// rather than `fd` for the same reason.
+	if c.adapter == 'cansub' {
+		// THE ADDRESS FIELD CARRIES NO RATE. `iface_with_bitrate()` appends the row's rate fields,
+		// so a suffix left in the address is either duplicated (two `@`, refused) or — when the
+		// nominal field is unset — passed through untouched, in which case the backend opens at
+		// the address's rate while `nominal_bitrate()` and `destination_conflicts()` model the row
+		// at the 500 kbit/s default. A rate conflict on that wire then goes unnoticed and the
+		// controller runs at a rate the editor never showed (codex round 8 on #204).
+		//
+		// Refused rather than migrated: moving it silently would change what the row means without
+		// the operator seeing it, and the rate fields are right there. v1 files are unaffected —
+		// `decompose_iface` lifts their suffix into `bitrate` on load, which is what that code is
+		// for.
+		if c.address.contains('@') {
+			return 'the address field holds a rate (${c.address}) — put the rates in the bitrate fields instead; the address is just the device id and channel'
+		}
+		// A SAMPLE POINT THE BACKEND CANNOT BE TOLD ABOUT IS REFUSED, not ignored. The CANsub
+		// address carries a device, a channel and rates — there is nowhere in it for a sample
+		// point, so `cansub_timing_for` is always asked for the 80% default. A project that set
+		// 75% for a long bus therefore ran timing it never asked for, silently, and the errors
+		// that produces appear under load and nowhere else (codex round 10 on #204).
+		//
+		// Refused rather than carried, because carrying it means putting it in the address, and
+		// the address is the wire's IDENTITY — `destination_key` derives from it, so a sample
+		// point in there would split one wire into two for every rule keyed on it. Zero means
+		// unset, which is what almost every row has.
+		// THE WHOLE VALUE, not its integer part: `int(80.5)` is 80, so a row asking for 80.5%
+		// passed this check and then ran at exactly 80% anyway — the same silent substitution one
+		// decimal place down (codex round 11 on #204).
+		if c.sample_point != 0 && c.sample_point != f64(transport.cansub_default_sample_point) {
+			return 'sample point ${c.sample_point}% cannot be configured on a CANsub from here — it solves both phases at ${transport.cansub_default_sample_point}%, so remove the setting or use a different adapter'
+		}
+		return transport.cansub_address_error(c.iface_with_bitrate())
+	}
 	if !c.fd || !c.can_carry_fd() {
 		return none
 	}
@@ -1613,6 +1731,7 @@ pub fn (c Channel) fd_config_error() ?string {
 	return match c.adapter {
 		'vector' { transport.vector_address_error(c.iface_with_bitrate()) }
 		'kvaser' { transport.kvaser_address_error(c.iface_with_bitrate()) }
+		'cansub' { transport.cansub_address_error(c.iface_with_bitrate()) }
 		else { none }
 	}
 }
@@ -1702,7 +1821,7 @@ fn destination_conflicts_without_alias(chs []Channel) []string {
 		if c.listen_only && !c.is_doip() {
 			quiet[conflict_wire_key(c)] = c.name
 		}
-		if c.adapter !in ['pcan', 'kvaser', 'vector'] {
+		if !transport.adapter_configures_bitrate(c.adapter) {
 			continue
 		}
 		// WITHOUT THE RATE. The rate is what these rows disagree about, so a key containing it
@@ -1815,10 +1934,39 @@ pub fn check_destinations(chs []Channel) DestinationCheck {
 	phys, unread := scan_physical(chs)
 	mut problems := destination_conflicts_without_alias(chs)
 	problems << alias_conflicts(chs, phys)
+	problems << address_problems(chs)
 	return DestinationCheck{
 		problems: problems
 		warnings: alias_unreadable_lines(unread)
 	}
+}
+
+// address_problems asks every enabled row whether its own address can be opened as configured.
+//
+// IN THE SHARED CHECK, because until now `address_config_error` had exactly one caller: the GUI
+// editor. So everything it refuses — an impossible FD rate pair, a CANsub rate the clock cannot
+// divide, a rate suffix left in the address field, a sample point the backend cannot be told about
+// — was enforced while somebody typed and enforced nowhere at all for a `.blobnet` started
+// headless. `cmd/script/run.v` calls this function and went straight past all of it (codex round
+// 11 on #204).
+//
+// The editor keeps its own call: it needs the answer per row, as the row changes, to mark the
+// field. This is the same question asked once more at the moment a project is about to run, which
+// is the only moment the headless runner has.
+//
+// ENABLED ROWS ONLY, like every other check here. A disabled row is not going to be opened, and
+// refusing to start because of one is refusing over a wire nobody asked for.
+fn address_problems(chs []Channel) []string {
+	mut out := []string{}
+	for c in chs {
+		if !c.enabled {
+			continue
+		}
+		if why := c.address_config_error() {
+			out << '${c.name}: ${why}'
+		}
+	}
+	return out
 }
 
 // alias_unreadable_warnings names the enabled rows whose physical channel the driver would not

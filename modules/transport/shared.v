@@ -51,6 +51,20 @@ __global (
 // two project rows on one adapter at different bitrates, say. It cannot be honoured (the
 // channel is already configured), and silently handing back the first one's bitrate is the
 // class of promise this repo refuses to make. It is an error instead.
+// canonical_spec is how two interface strings are compared for "the same settings".
+//
+// PER BACKEND, because only the backend knows which differences are spelling and which are
+// settings. CANsub is the one that needs it -- its addresses carry a hex device id and a channel
+// number, both of which have more than one spelling. Everything else is compared exactly, as it
+// always was: PCAN is the only other user of this registry, its addresses have one spelling in
+// practice, and widening the comparison there would be a behaviour change nothing asked for.
+fn canonical_spec(iface string) string {
+	if iface.trim_space().to_lower().starts_with('cansub:') {
+		return cansub_canonical_spec(iface)
+	}
+	return iface
+}
+
 fn shared_open(key string, spec string, make fn (string) !Bus) !Bus {
 	mut handle := ?&SharedHandle(none)
 	mut conflict := ''
@@ -66,7 +80,11 @@ fn shared_open(key string, spec string, make fn (string) !Bus) !Bus {
 	// taken before the registry lock is released — not moving `make` out on its own.
 	lock shared_reg {
 		if mut e := shared_reg.entries[key] {
-			if e.spec != spec {
+			// COMPARED CANONICALLY, PRINTED RAW. Two spellings of one address -- a device id in
+			// another case, a channel with a leading zero -- resolve to the same wire key and
+			// must not then collide here, or the second alias is refused its transmit handle
+			// over a difference that does not exist (codex round 2 on #204).
+			if canonical_spec(e.spec) != canonical_spec(spec) {
 				conflict = e.spec
 			} else {
 				e.refs++

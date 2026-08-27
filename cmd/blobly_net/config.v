@@ -67,8 +67,7 @@ fn (mut app App) sync_cfg_bufs() {
 			network_buf:      mkbuf(ch.network, 48)
 			address_buf:      mkbuf(ch.address, 64)
 			bitrate_buf:      mkbuf('${ch.bitrate}', 12)
-			dbitrate_buf:     mkbuf(if ch.data_bitrate > 0 { '${ch.data_bitrate}' } else { '' },
-				12)
+			dbitrate_buf:     mkbuf(if ch.data_bitrate > 0 { '${ch.data_bitrate}' } else { '' }, 12)
 			manifest_buf:     mkbuf(ch.manifest, 128)
 			dbc_buf:          mkbuf('', 128)
 			tester_buf:       mkbuf('0x${ch.tester_addr:X}', 12)
@@ -137,21 +136,21 @@ fn (mut app App) commit_cfg() {
 			// RECORDED, not only announced. The model keeps its previous rate, so without this the
 			// editor shows one thing and the run uses another with nothing to stop it.
 			app.cfg_invalid << CfgInvalid{
-				idx:     i
-				name:    ch.name
-				why:     'data rate "${dbr_txt}" is not a number'
+				idx:  i
+				name: ch.name
+				why:  'data rate "${dbr_txt}" is not a number'
 			}
 		}
 		// AND THE RATES AS A PAIR, through the engine's own parser. Digits-only says nothing about
 		// whether the two phases make sense together: a 250000 data phase under a 500000 nominal
 		// is a perfectly good number that no FD channel can open, and it was accepted, saved, and
 		// refused only at Start — long after the field that caused it left the screen.
-		if why := ch.fd_config_error() {
+		if why := ch.address_config_error() {
 			app.notify('${ch.name}: ${why}')
 			app.cfg_invalid << CfgInvalid{
-				idx:     i
-				name:    ch.name
-				why:     why
+				idx:  i
+				name: ch.name
+				why:  why
 			}
 		}
 		if ch.adapter == 'doip' {
@@ -197,13 +196,9 @@ fn (mut app App) add_bus_spec(adapter string, address string) {
 		iface:   project.compose_iface(adapter, address)
 		typ:     'can'
 		mode:    .monitor
-		// LISTEN-ONLY UNTIL SOMEBODY SAYS OTHERWISE, on Vector. Every other adapter here is a
-		// virtual bus or one whose driver cannot be told to stay quiet, but a VN channel added
-		// from Discover is hardware that may already be wired to a running vehicle — and it
-		// arrives with the 500 kbit/s default, which nobody has confirmed. Going on that bus
-		// able to acknowledge, at a rate that is a guess, is how a tester disturbs the thing it
-		// came to observe. Untick it in the editor once the rate is known.
-		listen_only: adapter == 'vector'
+		// LISTEN-ONLY UNTIL SOMEBODY SAYS OTHERWISE — see project.adapter_starts_silent, which is
+		// where the rule lives now that more than one adapter needs it.
+		listen_only: project.adapter_starts_silent(adapter)
 	}
 	app.dirty = true
 	app.sync_cfg_bufs()
@@ -427,13 +422,20 @@ fn (mut app App) set_adapter(i int, a string) {
 		app.proj.channels[i].fd = false
 		app.proj.channels[i].data_bitrate = 0
 	}
-	// SILENT BY DEFAULT when a bus BECOMES a Vector one, for the same reason a discovered
-	// Vector channel starts that way: it is hardware that may already be wired to a running
-	// vehicle, arriving with a 500 kbit/s guess nobody has confirmed. Exposing the adapter in
-	// the picker without this made the manual route the unsafe one while Discover was careful.
-	if a == 'vector' && was != 'vector' {
+	// SILENT BY DEFAULT when a bus BECOMES one of the adapters that starts silent, for the same
+	// reason a discovered channel does: hardware that may already be wired to a running vehicle,
+	// arriving with a 500 kbit/s guess nobody has confirmed. Exposing an adapter in the picker
+	// without this makes the manual route the unsafe one while Discover stays careful — which is
+	// exactly what happened to CANsub (codex round 5 on #204).
+	// The RULE is project.adapter_change_starts_silent — here it is only applied. Written out in
+	// this file as "starts silent now and did not before", it missed the case where both adapters
+	// start silent, so a transmit-enabled Vector row switched to CANsub opened able to ACK (codex
+	// round 6 on #204). It is a decision about adapters, so it lives with them, where a test holds
+	// it.
+	if project.adapter_change_starts_silent(was, a) {
 		app.proj.channels[i].listen_only = true
-	} else if was == 'vector' && a != 'vector' && app.proj.channels[i].listen_only {
+	} else if project.adapter_starts_silent(was) && !project.adapter_starts_silent(a)
+		&& app.proj.channels[i].listen_only {
 		// KEPT NOW, and said out loud. This used to CLEAR the flag: `,silent` reaches only the
 		// Vector transceiver, so on any other backend the tick promised "no ACKs" that nothing
 		// delivered, and clearing it was the honest half of a bad choice. Since #117 the flag
@@ -441,7 +443,11 @@ fn (mut app App) set_adapter(i int, a string) {
 		// everywhere -- and silently clearing a safety tick is the worse direction to be wrong
 		// in. What actually changes with the adapter is the transceiver, so that is what the
 		// message is now about.
-		app.notify('${app.proj.channels[i].name}: still listen-only — nothing here will transmit, but ${a} cannot silence the transceiver, so it still ACKs (only Vector can)')
+		// NAMED FROM THE REGISTRY, not written out. This said "only Vector can" while CANsub had
+		// become the second adapter that silences its controller — a warning telling an operator
+		// something false about what their hardware can do (codex round 14 on #204).
+		can_silence := project.adapters.filter(project.adapter_starts_silent(it))
+		app.notify('${app.proj.channels[i].name}: still listen-only — nothing here will transmit, but ${a} cannot silence the transceiver, so it still ACKs (${can_silence.join(' and ')} can)')
 	}
 	if a == 'doip' {
 		app.proj.channels[i].typ = 'doip'

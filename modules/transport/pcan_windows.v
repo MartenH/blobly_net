@@ -89,6 +89,15 @@ pub fn (mut b PcanBus) send(f CanFrame) ! {
 	if f.fd {
 		return error('PCAN: CAN-FD frames are not supported by this backend yet (id 0x${f.id:X}, ${f.data.len} bytes)')
 	}
+	// THE SHARED SHAPE RULES FIRST (frame_rules.v). This path accepted `brs` on a classic frame
+	// and simply never passed it to ct_pcan_write, reporting success — while wiretap kept the flag,
+	// so the record claimed a bit-rate switch the wire never saw. Kvaser and Vector each refuse
+	// that in their own words; PCAN had no such check at all, which is the per-backend duplication
+	// this file was extracted to end (codex round 3 on #204). Length and FD stay below: what this
+	// CHANNEL can carry is the backend's own question.
+	if why := frame_shape_error(f) {
+		return error('PCAN: ${why}')
+	}
 	mut mt := u8(0)
 	if f.extended {
 		mt |= pcan_msg_extended
