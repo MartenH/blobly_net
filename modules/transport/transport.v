@@ -263,8 +263,13 @@ pub fn vendor_destination_key(iface string) string {
 		// so shared_open would hand out two clients for a channel that permits one, and the rate,
 		// listen-only and framing checks would never meet. The id is a name and stays a name.
 		if ch.contains('/') {
-			dev := ch.all_before('/').to_lower()
-			num := ch.all_after_last('/').int().str()
+			// TRIMMED, because the PARSER trims. `cansub:id / 1` and `cansub:id/1` open the same
+			// device channel, and a key that kept the spaces made them two wires — so they evaded
+			// the rate and mode conflict checks and reached `shared_open` under different keys,
+			// which hands out two clients for a channel the vendor permits one on (codex round 17
+			// on #204). Whatever the parser ignores, this has to ignore too.
+			dev := ch.all_before('/').trim_space().to_lower()
+			num := ch.all_after_last('/').trim_space().int().str()
 			resolved = '${dev}/${num}'
 		}
 	} else if kind == 'vector' {

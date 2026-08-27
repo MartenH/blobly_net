@@ -356,3 +356,44 @@ fn test_an_id_too_long_for_a_dns_label_is_refused() {
 	assert !cansub_id_ok('a'.repeat(60))
 	assert !cansub_id_ok('')
 }
+
+// The boolean half of the same tolerant reader — `/api/can/{ch}/phy` is where the controller's
+// ACTUAL listen-only bit lives, and reconcile reads it back rather than trusting what it last set.
+fn test_a_json_bool_is_found_however_it_is_spaced() {
+	for body in ['{"listen_only":true}', '{"listen_only": true}', '{"listen_only" : true}',
+		'{\n  "listen_only":\ttrue\n}'] {
+		got := extract_json_bool(body, 'listen_only') or {
+			assert false, 'did not parse: ${body}'
+			return
+		}
+		assert got, body
+	}
+	assert extract_json_bool('{"listen_only":false}', 'listen_only')? == false
+}
+
+fn test_a_json_bool_that_is_not_one_is_no_answer() {
+	assert extract_json_bool('{"listen_only":"true"}', 'listen_only') == none, 'a string is not a bool'
+	assert extract_json_bool('{"listen_only":1}', 'listen_only') == none
+	assert extract_json_bool('{"other":true}', 'listen_only') == none
+	assert extract_json_bool('', 'listen_only') == none
+}
+
+// The real reply from a CANsub.4, so the field this depends on is pinned against the device rather
+// than against my memory of it.
+fn test_the_devices_own_phy_reply_parses() {
+	body := '{"listen_only":false,"auto_reset":true,"error_frames":true,"tx_ack_frames":true,"timing":{"brp":1,"seg1":127,"seg2":32,"sjw":4},"timing_data":{"brp":1,"seg1":31,"seg2":8,"sjw":4}}'
+	assert extract_json_bool(body, 'listen_only')? == false
+	assert extract_json_bool(body, 'auto_reset')? == true
+}
+
+// TWO SPELLINGS OF ONE WIRE, including the whitespace the parser ignores. A key that kept the
+// spaces made `cansub:id / 1` and `cansub:id/1` two wires — so they evaded the rate and mode
+// conflict checks and reached shared_open under different keys, which hands out two clients for a
+// channel the vendor permits one on (codex round 17 on #204).
+fn test_whitespace_in_an_address_does_not_make_a_second_wire() {
+	a := destination_key('cansub:e5a16adf/1@500000')
+	for spelling in ['cansub:e5a16adf / 1@500000', 'cansub: e5a16adf/1@500000',
+		'cansub:E5A16ADF/01@500000'] {
+		assert destination_key(spelling) == a, '${spelling} -> ${destination_key(spelling)}, want ${a}'
+	}
+}

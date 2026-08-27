@@ -466,3 +466,43 @@ fn test_the_decoder_recovers_on_the_next_real_frame() {
 	assert recs.len == 1, 'the stream recovers at the next boundary: got ${recs.len}'
 	assert recs[0].frame.id == 0x001
 }
+
+// AN ERROR CODE OUTSIDE THE ENUM must not be cast into it. The low five bits hold 0..31 and
+// CansubErr declares 0..4, so an unsafe cast stored a value the enum does not have — and `recv`
+// calls `.str()` on it, so the diagnostic path could produce nonsense exactly when it is handling
+// a stream it does not understand, which is the one time it is being read (codex round 17 on #204).
+fn test_an_unknown_controller_error_code_is_reported_not_cast() {
+	// b6 = 0x20 | code, which is the error-record shape; 7 bytes, no id, no data.
+	mut p := []u8{len: 7}
+	p[6] = 0x20 | 0x1F // code 31: not one of the five the device documents
+	recs, note := cansub_parse_payload(p)
+	assert recs.len == 0, 'a code we cannot interpret is not a record to hand up'
+	assert note != '', 'and it must be reported'
+	assert note.contains('31'), 'naming the code: ${note}'
+}
+
+// The five it does document still decode.
+fn test_the_documented_controller_error_codes_decode() {
+	for code in 0 .. 5 {
+		mut p := []u8{len: 7}
+		p[6] = u8(0x20 | code)
+		recs, note := cansub_parse_payload(p)
+		assert note == '', 'code ${code} is documented: ${note}'
+		assert recs.len == 1
+		assert recs[0].is_error
+		assert int(recs[0].err) == code
+	}
+}
+
+// AND AN UNKNOWN CODE DOES NOT COST THE FRAMES AFTER IT. The record is still seven bytes, so the
+// next one starts where it always did — discarding the rest of a payload over one code we do not
+// know would lose real traffic for a diagnostic.
+fn test_an_unknown_error_code_does_not_discard_the_rest_of_the_payload() {
+	mut p := []u8{len: 7}
+	p[6] = 0x20 | 0x1F
+	p << hex('00 00 00 00 00 00 48 00 01') // a remote frame, TV-03's body without its framing
+	recs, note := cansub_parse_payload(p)
+	assert note.contains('31'), 'the unknown code is still reported: ${note}'
+	assert recs.len == 1, 'and the frame after it survives: got ${recs.len}'
+	assert recs[0].frame.rtr
+}

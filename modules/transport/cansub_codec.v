@@ -210,6 +210,10 @@ pub fn cansub_encode_frame(f CanFrame) ![]u8 {
 pub fn cansub_parse_payload(p []u8) ([]CansubRecord, string) {
 	mut out := []CansubRecord{}
 	mut i := 0
+	// A reason that does not stop the parse: something we could not interpret and skipped past.
+	// Reported once, at the end, so it reaches `CansubDecoder.errors` without costing the frames
+	// that came after it.
+	mut note := ''
 	for i < p.len {
 		if p.len - i < 7 {
 			return out, 'Not enough data bytes for header'
@@ -222,10 +226,28 @@ pub fn cansub_parse_payload(p []u8) ([]CansubRecord, string) {
 		if b6 & 0xE0 == 0x20 {
 			// An error record: no identifier, no data, seven bytes in total. Recognised on the
 			// top three bits together — bit 5 alone is ESI on an FD frame.
+			//
+			// THE CODE IS CHECKED BEFORE IT IS CAST. The low five bits hold 0..31 and CansubErr
+			// declares 0..4, so an unsafe cast of anything else stored a value the enum does not
+			// have — and `recv` calls `.str()` on it, so the diagnostic path could produce nonsense
+			// or worse exactly when it is handling a stream it does not understand, which is the
+			// one time it is being read (codex round 17 on #204). Unknown codes are reported as
+			// what they are: something this decoder cannot interpret.
+			code := int(b6 & 0x1F)
+			if code > int(CansubErr.crc_err) {
+				// SKIPPED, NOT FATAL. The record is still seven bytes, so the next one starts where
+				// it always did — throwing away the rest of a payload over one code we do not know
+				// would lose real traffic for a diagnostic. Reported at the end instead.
+				if note == '' {
+					note = 'controller error code ${code} is not one this decoder knows (0..${int(CansubErr.crc_err)})'
+				}
+				i += 7
+				continue
+			}
 			out << CansubRecord{
 				us:       us
 				is_error: true
-				err:      unsafe { CansubErr(int(b6 & 0x1F)) }
+				err:      unsafe { CansubErr(code) }
 			}
 			i += 7
 			continue
@@ -281,7 +303,7 @@ pub fn cansub_parse_payload(p []u8) ([]CansubRecord, string) {
 		}
 		i += hdr + dlen
 	}
-	return out, ''
+	return out, note
 }
 
 // CansubDecoder turns a byte stream into records.

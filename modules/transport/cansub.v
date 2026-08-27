@@ -412,10 +412,30 @@ fn (mut b CansubBus) reconcile_listen_only() {
 		return
 	}
 	want := is_listen_only(b.iface)
-	have := rlock b.stop {
+	// THE DEVICE IS ASKED, NOT OUR MEMORY OF IT.
+	//
+	// `phy_silent` records what THIS bus last PUT, which is only the same thing as what the
+	// controller is doing while nothing else touches it. Something else can: close() no longer
+	// waits for this thread (see there, and #214), so a PUT from a PREVIOUS run of this wire can
+	// still be in flight when a new Start has already configured the channel — and comparing our
+	// own memory against the policy, both buses agree with themselves and neither ever notices
+	// that the controller is doing something else entirely (codex round 17 on #204).
+	//
+	// Reading it back costs one small GET per poll to a device on the end of a USB cable, and it
+	// makes this self-healing against any divergence rather than just the ones we caused: another
+	// tool reconfiguring the channel, a device that rebooted, a PUT we thought had failed and had
+	// not.
+	//
+	// If the device cannot be read, fall back on what we last set. A wire we cannot ask about is
+	// not one to reconfigure on a guess.
+	have := b.phy_listen_only() or { rlock b.stop {
 		b.stop.phy_silent
-	}
+	} }
 	if want == have {
+		// Believed and actual agree; keep the cache honest for the fallback above.
+		lock b.stop {
+			b.stop.phy_silent = have
+		}
 		return
 	}
 	nominal := cansub_timing_for(b.spec.arb, cansub_default_sample_point) or { return }
@@ -438,6 +458,15 @@ fn (mut b CansubBus) reconcile_listen_only() {
 	lock b.stop {
 		b.stop.phy_silent = want
 	}
+}
+
+// phy_listen_only reads the controller's ACTUAL listen-only bit off the device. `/api/can/{ch}`
+// carries the fault state and not this, so it is its own small GET against `/phy`.
+fn (b &CansubBus) phy_listen_only() ?bool {
+	body := cansub_get_within(b.host, '/api/can/${b.spec.channel}/phy', cansub_health_timeout) or {
+		return none
+	}
+	return extract_json_bool(body, 'listen_only')
 }
 
 // poll_health asks the device what its controller thinks. The states map one to one onto this
@@ -488,6 +517,31 @@ fn (mut b CansubBus) health_miss() {
 			b.stop.health = .unknown
 		}
 	}
+}
+
+// extract_json_bool pulls one boolean field out of a flat JSON object, with the same tolerance for
+// whitespace that extract_json_string has and for the same reason.
+fn extract_json_bool(s string, key string) ?bool {
+	i := s.index('"${key}"') or { return none }
+	mut j := i + key.len + 2
+	for j < s.len && s[j] in [` `, `\t`, `\n`, `\r`] {
+		j++
+	}
+	if j >= s.len || s[j] != `:` {
+		return none
+	}
+	j++
+	for j < s.len && s[j] in [` `, `\t`, `\n`, `\r`] {
+		j++
+	}
+	rest := s[j..]
+	if rest.starts_with('true') {
+		return true
+	}
+	if rest.starts_with('false') {
+		return false
+	}
+	return none
 }
 
 // extract_json_string pulls one string field out of a flat JSON object. The device's replies are
