@@ -186,6 +186,24 @@ fn test_not_attempted_records_neither_a_mode_nor_a_fault() {
 	assert spy.calls == [true], 'the next attempt must reach the driver'
 }
 
+// A PROBE REACHES THE DRIVER EVEN WHEN THE RECORD SAYS THERE IS NOTHING TO DO. That is its whole
+// purpose: the record is trusted by every ordinary caller, and the probe is what keeps it honest
+// against a controller changed behind our back (codex round 1 on #223).
+fn test_a_probe_asks_the_driver_despite_the_record() {
+	forget_silence_claims()
+	mut spy := &SilenceSpy{}
+	set := spy.setter()
+	apply_silence('inproc:sil-probe', true, set) or { assert false, err.msg() }
+	apply_silence('inproc:sil-probe', true, set) or { assert false, err.msg() }
+	assert spy.calls == [true], 'the ordinary path must be free once recorded'
+	apply_silence_probe('inproc:sil-probe', true, set, fn (want bool, st int) SilenceReason {
+		return SilenceReason{
+			why: 'n/a'
+		}
+	}) or { assert false, err.msg() }
+	assert spy.calls == [true, true], 'the probe must reach the driver'
+}
+
 // A DECLARED REFUSAL IS THE BACKEND'S WORD, and it travels with the fault.
 fn test_an_explained_refusal_carries_the_backends_reading() {
 	forget_silence_claims()

@@ -111,15 +111,34 @@ pub fn apply_silence(iface string, want bool, set fn (bool) int) ! {
 // One rule for every backend — the lock, the record, the fault — and one place a backend may
 // differ: what a refusal MEANS.
 pub fn apply_silence_explained(iface string, want bool, set fn (bool) int, explain fn (bool, int) SilenceReason) ! {
+	apply_silence_impl(iface, want, set, explain, false)!
+}
+
+// apply_silence_probe is apply_silence_explained WITHOUT the recorded-state shortcut: the driver is
+// asked even when the record says the wire is already where the policy wants it.
+//
+// For a backend whose controller can be changed behind our back — a CANsub is a REST device that
+// another tool can reconfigure, or that reboots — and whose closure therefore reads the device
+// before it writes. Called from that backend's poll thread, once per period: the record is what
+// makes every OTHER caller free, and the probe is what keeps the record honest (codex round 1 on
+// #223: with only the shortcut, the advertised periodic readback never happened once a mode was
+// recorded, and an externally re-silenced or re-enabled controller went unnoticed indefinitely).
+pub fn apply_silence_probe(iface string, want bool, set fn (bool) int, explain fn (bool, int) SilenceReason) ! {
+	apply_silence_impl(iface, want, set, explain, true)!
+}
+
+fn apply_silence_impl(iface string, want bool, set fn (bool) int, explain fn (bool, int) SilenceReason, probe bool) ! {
 	k := wire_key(iface)
 	mut wl := wire_silence_lock(k)
 	wl.@lock()
 	defer {
 		wl.unlock()
 	}
-	if have := recorded_silence(k) {
-		if have == want {
-			return
+	if !probe {
+		if have := recorded_silence(k) {
+			if have == want {
+				return
+			}
 		}
 	}
 	st := set(want)

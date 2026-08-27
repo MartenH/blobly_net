@@ -436,21 +436,25 @@ fn (mut b CansubBus) reconcile_listen_only(want bool, force bool) ! {
 	// a PUT is what changes it. `running` is re-checked INSIDE the closure, under the wire lock —
 	// so a thread of a closed run that gets the lock late sees `false` and attempts nothing, and
 	// close() (which takes the same lock through forget_wire_silence) never races a round trip.
-	apply_silence_explained(b.iface, want, fn [mut b, force] (silent bool) int {
+	set := fn [mut b, force] (silent bool) int {
 		return b.apply_phy_silence(silent, force)
-	}, cansub_silence_reason)!
+	}
+	if force {
+		// THE POLL THREAD PROBES: the device is asked even when the record says it is already
+		// where the policy wants it, because a REST device can be reconfigured behind our back.
+		apply_silence_probe(b.iface, want, set, cansub_silence_reason)!
+	} else {
+		apply_silence_explained(b.iface, want, set, cansub_silence_reason)!
+	}
 }
 
 // apply_phy_silence is the driver call apply_silence_explained wraps: readback, then PUT if the
 // device disagrees with the mark. Returns 0 when the device is in the wanted mode afterwards, the
 // HTTP status when it refused, and silence_not_attempted when it could not be asked at all.
 fn (mut b CansubBus) apply_phy_silence(want bool, force bool) int {
-	if !rlock b.stop {
-		b.stop.running
-	} {
-		return silence_not_attempted
-	}
-	// MEMORY IS CONSULTED HERE, UNDER THE WIRE LOCK, not only before it. Checking for a standing
+	// MEMORY IS CONSULTED FIRST, UNDER THE WIRE LOCK — before even the running check, because a
+	// standing declared refusal is the more useful answer than "not attempted" for a sender on a
+	// bus that is closing: it names the device's rule and the remedy. Checking for a standing
 	// refusal outside the lock let N senders that all found "no fault yet" queue behind the first
 	// attempt and then each run their own readback and PUT after it — N×1.4 s of stalled traffic
 	// on one wire for one toggle, recording the identical fault N times (code-review high on
@@ -463,6 +467,18 @@ fn (mut b CansubBus) apply_phy_silence(want bool, force bool) int {
 			}
 		}
 	}
+	if !rlock b.stop {
+		b.stop.running
+	} {
+		return silence_not_attempted
+	}
+	// A FAULT ABOUT THE OTHER DIRECTION IS RESOLVED BY THIS REQUEST. The device refused to go
+	// silent, the fault says so, and now the row is unticked: the controller is where the row
+	// wants it, and NOT SILENT would be a claim about a request nobody is making any more. It
+	// went on being shown until the poll thread's next successful readback — indefinitely, if
+	// that thread was stuck dialling (codex round 1 on #223). apply_silence clears on success,
+	// so returning 0 below is what clears it; this comment is here so the next reader knows the
+	// clearing is deliberate and not incidental.
 	// THE DEVICE IS ASKED, NOT OUR MEMORY OF IT.
 	//
 	// `phy_silent` records what THIS bus last PUT, which is only the same thing as what the
@@ -905,23 +921,14 @@ fn (b &CansubBus) failure() ?string {
 // Only a DIFFERENCE runs the full reconcile — readback, PUT, and the fault record — on the
 // caller's thread, once, and the poll thread keeps retrying after that as before.
 pub fn (mut b CansubBus) reconcile_silence(want bool) ! {
-	have := rlock b.stop {
-		b.stop.phy_silent
-	}
-	if want == have {
-		return
-	}
-	// A STANDING REFUSAL IS ANSWERED FROM MEMORY, NOT RE-ASKED PER SEND. While the device refuses,
-	// `phy_silent` never reaches `want`, so without this every send after a toggle ran a GET and a
-	// PUT on the sender's thread — a PUT per frame against the REST API for the life of the run,
-	// each send blocking for two round trips (code-review high on #223). The poll thread owns the
-	// retry, once per poll period; this path pays one round trip per policy CHANGE and then reads
-	// the recorded answer. Nothing is guessed: apply_silence returns what it did.
-	if f := wire_silence_fault(b.iface) {
-		if f.want == want {
-			return error(f.why)
-		}
-	}
+	// NO FAST PATH OUTSIDE THE LOCK. There used to be one — "if the cache already says `want`,
+	// return" — and it inverted a toggle: thread A is mid-PUT setting normal, `phy_silent` still
+	// says silent because it moves only when the PUT succeeds; the row is ticked back to
+	// listen-only; thread B reads the stale cache, matches, returns "done"; A's PUT lands last
+	// and the controller is normal under a listen-only mark, with nothing to correct it until the
+	// next poll (codex round 1 on #223). The lock is where the truth is: apply_silence takes it,
+	// checks its own record under it — which is what makes the common case a lock acquire and no
+	// I/O — and the closure answers a standing refusal from memory without a round trip.
 	b.reconcile_listen_only(want, false)!
 }
 

@@ -476,6 +476,25 @@ fn test_a_standing_refusal_is_answered_from_memory_in_its_own_direction() {
 	forget_silence_claims()
 }
 
+// AN UNTICK RESOLVES A REFUSED TICK. The device would not go silent; the row is unticked; the
+// controller is now exactly where the row wants it, and the NOT SILENT fault must go with the
+// request it was about (codex round 1 on #223).
+fn test_a_request_in_the_other_direction_clears_a_standing_refusal() {
+	forget_silence_claims()
+	iface := 'cansub:AAAA0002/1@500000'
+	apply_silence_explained(iface, true, fn (silent bool) int {
+		return 500
+	}, cansub_silence_reason) or {}
+	assert wire_silence_fault(iface) != none
+	// The controller is in normal mode and the row now asks for normal: the closure returns 0
+	// (nothing to change) and the seam clears the fault.
+	apply_silence_explained(iface, false, fn (silent bool) int {
+		return 0
+	}, cansub_silence_reason) or { assert false, err.msg() }
+	assert wire_silence_fault(iface) == none
+	forget_silence_claims()
+}
+
 // A 500 IS DECLARED; anything else is a fault. This is what lets silentcheck call a phase not
 // applicable for the device's rule while still failing on a driver error.
 fn test_only_the_live_channel_refusal_is_declared() {
