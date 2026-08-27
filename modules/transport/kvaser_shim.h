@@ -287,12 +287,22 @@ static int ct_kvaser_set_silent_all(const int *handles, int n, int silent) {
 	   through any later one it does not, with all of them bus-off either way. Tracking "the first
 	   one" would work until that handle closed while its siblings stayed open, which is the case
 	   Vector documents for XL ports (pinned.v) and which no canlib call exposes. So all of them are
-	   asked, and only ALL of them failing is a failure. */
-	st = -100;
+	   asked.
+	 *
+	 * AND EVERY ONE OF THEM MUST SUCCEED. Taking "any success" as success looks like the tolerant
+	 * choice and is the dangerous one: the siblings' success is a NO-OP success, indistinguishable
+	 * from a real one, so a rejection by the handle that actually matters would be masked by any
+	 * sibling shrugging -- and the caller would record the mode as applied and stop retrying while
+	 * the wire went on acknowledging (codex round 6 on #219). That is precisely the silent failure
+	 * this function was written to end, re-entering through its own aggregation.
+	 *
+	 * The conservative direction costs a retry that was not needed; the tolerant one costs the
+	 * promise. A wire whose handles disagree is reported as unsilenced, which is the honest reading
+	 * when we cannot tell which of them was the one being obeyed. */
+	st = 0;
 	for (i = 0; i < n; i++) {
 		int one = ct_kv_setoutctrl(handles[i], silent ? CT_KV_DRIVER_SILENT : CT_KV_DRIVER_NORMAL);
-		if (one >= 0) st = 0;
-		else if (st == -100) st = one;
+		if (one < 0 && st >= 0) st = one;
 	}
 	if (ct_kv_buson) {
 		for (i = 0; i < n; i++) {

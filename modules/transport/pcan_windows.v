@@ -355,6 +355,14 @@ pub fn (mut b PcanBus) close() {
 	//
 	// Kvaser deliberately does NOT do this: `canClose` leaves the driver mode in place, so there
 	// the record is still true after the handle is gone.
+	//
+	// BELT AND BRACES SINCE THE OPEN PATH WRITES UNCONDITIONALLY, and worth saying so rather than
+	// letting the comment above imply a test proves it. `open_pcan` sets the parameter before every
+	// CAN_Initialize and calls note_silence_applied afterwards, so a stale record is overwritten by
+	// the next open whether or not this line runs — and `cmd/silentcheck` phase 4 cannot tell the
+	// difference, because clearing the whole table is exactly how it simulates a fresh process. The
+	// rule this keeps is still worth keeping: a record must not outlive the state it describes.
+	// What holds it is silence_test.v, at the level where the effect is actually observable.
 	forget_wire_silence(b.iface)
 }
 

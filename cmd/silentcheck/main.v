@@ -271,7 +271,18 @@ fn run(o Opts) int {
 	// like to the driver), clear, reopen.
 	transport.set_listen_only(o.listener, true)
 	settle(mut listener, o.timeout)
+	// EVERY HANDLE ON THE WIRE, not just the one being read from — otherwise this phase does not
+	// test what it is named after. `pcan:` opens are refcounted, so the underlying channel is only
+	// uninitialized (and its mode only reset) when the LAST holder lets go; a sibling still open
+	// means CAN_Uninitialize never runs and the reopen reconciles against a channel that never
+	// changed. On Kvaser the siblings keep the wire alive in the same way. Closing one of three and
+	// calling it "after the last handle closed" made the phase pass for a reason it does not claim
+	// (codex round 6 on #219).
 	listener.close()
+	for mut sib in siblings {
+		sib.close()
+	}
+	siblings.clear()
 	transport.clear_listen_only()
 	// AND FORGET WHAT WAS APPLIED, because that is the half a single process cannot otherwise
 	// simulate. What makes this case dangerous is that the CONTROLLER remembers and the process
@@ -286,6 +297,15 @@ fn run(o Opts) int {
 	}
 	defer {
 		reopened.close()
+	}
+	// Reopened to the same shape as well, so the phase measures the configuration the app runs in
+	// rather than a simplified one.
+	for n in 1 .. o.handles {
+		sib := transport.open(o.listener) or {
+			eprintln('could not reopen listener handle ${n + 1}: ${err}')
+			return 1
+		}
+		siblings << sib
 	}
 	fresh.close()
 	mut fresh2 := transport.open(o.talker) or {
