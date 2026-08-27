@@ -22,7 +22,10 @@ fn (mut f FakeBus) send(frame CanFrame) ! {
 fn (mut f FakeBus) recv(timeout_ms int) !CanFrame {
 	// Counted atomically: the hub's reader thread increments it and the test thread reads it.
 	stdatomic.add_i64(&fake_recv_calls, 1)
-	if stdatomic.load_i64(&fake_recv_fails) != 0 {
+	// Fails ONCE per unit armed, so a test can fail one generation's read and let its
+	// replacement work.
+	if stdatomic.load_i64(&fake_recv_fails) > 0 {
+		stdatomic.add_i64(&fake_recv_fails, -1)
 		return error(fake_recv_failure_msg)
 	}
 	if timeout_ms == 0 {
@@ -637,6 +640,35 @@ fn test_a_fatal_read_error_reaches_a_parked_reader() {
 }
 
 const fake_recv_failure_msg = 'device unplugged'
+
+// A JOIN ONTO A PARKED WIRE WHOSE ADAPTER HAS GONE GETS A FRESH GENERATION, not a handle on the
+// dead one. The join's own boundary drain is the first driver call since the park, so it is where
+// the failure is found; it fails the generation and the open goes through the factory again
+// (codex rounds 1 and 2 on #224).
+fn test_a_join_that_finds_the_parked_generation_dead_reopens_through_the_factory() {
+	fake_opens = 0
+	stdatomic.store_i64(&fake_closes, 0)
+	fake_fails = false
+	fake_rx = chan CanFrame{cap: 8}
+	stdatomic.store_i64(&fake_recv_fails, 0)
+	mut tx_only := shared_open('fake:idle-dead', 'fake:idle-dead', fake_make)!
+	shared_test_wait_parked(mut tx_only)
+	stdatomic.store_i64(&fake_recv_fails, 1)
+	mut listener := shared_open('fake:idle-dead', 'fake:idle-dead', fake_make)!
+	assert fake_opens == 2, 'the join found the generation dead and must have opened a new one'
+	assert stdatomic.load_i64(&fake_recv_fails) == 0, 'the armed failure was consumed by the join'
+	if _ := tx_only.send(CanFrame{ id: 0x103 }) {
+		assert false, 'the old generation must be failed'
+	} else {
+		assert err.msg() == fake_recv_failure_msg
+	}
+	fake_rx <- CanFrame{
+		id: 0x104
+	}
+	assert listener.recv(1000)!.id == 0x104, 'the fresh generation must be live'
+	listener.close()
+	tx_only.close()
+}
 
 fn shared_test_failed(mut bus Bus) bool {
 	if mut bus is SharedHandle {

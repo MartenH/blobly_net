@@ -32,6 +32,12 @@ const shared_parked_drain_ms = 1000
 // what the park is for. What such a tap loses if it receives after all is stated in
 // docs/one_reader_per_wire.md.
 const shared_attentive_ms = i64(1000)
+
+// shared_boundary_drain_ms bounds the drain a handle runs to establish its own boundary on a
+// parked wire (admit, and a late first receive). Batches until the queue is empty or this long:
+// a bus that outruns the driver's reads could otherwise hold drain_mu indefinitely, and after a
+// quarter of a second everything still queued arrived within the handle's own open.
+const shared_boundary_drain_ms = i64(250)
 const shared_pending_capacity = 4096
 const shared_pending_ttl_ms = 5000
 
@@ -306,7 +312,12 @@ fn shared_open_events(key string, spec string, make fn (string) !SharedDriver) !
 		}
 		if mut h := handle {
 			if start == none {
-				h.entry.admit(h.id)
+				h.entry.admit(h.id) or {
+					// The generation is failed and removed; this handle's close releases its
+					// reference and the loop opens a fresh one through the factory.
+					h.close()
+					continue
+				}
 			}
 			// A join still reconciles controller policy because its factory did not run.
 			want := is_listen_only(spec)
@@ -378,13 +389,30 @@ fn (mut e SharedEntry) read_loop() {
 			e.mu.lock()
 			e.parked = false
 			e.mu.unlock()
-			e.drain_mu.lock()
-			fatal := e.drain_parked()
-			e.drain_mu.unlock()
-			if f := fatal {
-				e.fail_and_close(f)
-				e.done <- true
-				return
+			// IN BATCHES, RELEASING drain_mu BETWEEN THEM. A drain that ran until it saw an empty
+			// queue never released the lock on a bus that delivers at least as fast as the driver
+			// reads — and a handle opening onto the wire waited in admit for as long as that
+			// lasted, with the last close waiting on the reader behind it (codex round 2 on #224).
+			// Between batches a joiner can take the lock and establish its boundary; the loop
+			// stops as soon as the wire is attentive or closing.
+			for {
+				e.drain_mu.lock()
+				more := e.drain_parked() or {
+					e.drain_mu.unlock()
+					e.fail_and_close(err.msg())
+					e.done <- true
+					return
+				}
+				e.drain_mu.unlock()
+				if !more {
+					break
+				}
+				e.mu.lock()
+				stop := e.state != .running || e.attentive_locked(time.ticks())
+				e.mu.unlock()
+				if stop {
+					break
+				}
 			}
 			continue
 		}
@@ -483,13 +511,24 @@ fn (mut e SharedEntry) read_loop() {
 // open: everything queued before this moment is from before it, everything after is its own,
 // because the reader wakes on the kick and finds the wire attentive. Done here rather than in
 // the registry lock because a drain is driver I/O.
-fn (mut e SharedEntry) admit(id u64) {
+//
+// A FATAL READ HERE FAILS THE GENERATION, AND THE JOIN. This drain is the first driver call on
+// a parked wire since the last one, so it is where an adapter unplugged meanwhile is found —
+// and swallowing that handed the caller a handle on a dead generation whose first receive then
+// failed and took every alias on the wire down, instead of the open going through the factory
+// to the reconnected adapter (codex rounds 1 and 2 on #224). fail_and_close is the same call the
+// reader makes: it is idempotent, and a reader parked or mid-read finds the state changed.
+fn (mut e SharedEntry) admit(id u64) ! {
 	e.drain_mu.lock()
 	e.mu.lock()
 	parked := !e.attentive_locked(time.ticks())
 	e.mu.unlock()
 	if parked && !e.tx_acks {
-		e.drain_parked() or {}
+		e.drain_until_empty(shared_boundary_drain_ms) or {
+			e.drain_mu.unlock()
+			e.fail_and_close(err.msg())
+			return err
+		}
 	}
 	e.mu.lock()
 	e.unread[id] = time.ticks()
@@ -498,6 +537,18 @@ fn (mut e SharedEntry) admit(id u64) {
 	select {
 		e.kick <- true {}
 		else {}
+	}
+}
+
+// drain_until_empty runs drain_parked in batches until the queue is empty or `budget_ms` is
+// spent — a handle establishing its own boundary, under drain_mu. See shared_boundary_drain_ms.
+fn (mut e SharedEntry) drain_until_empty(budget_ms i64) ! {
+	until := time.ticks() + budget_ms
+	for {
+		more := e.drain_parked()!
+		if !more || time.ticks() >= until {
+			return
+		}
 	}
 }
 
@@ -524,22 +575,26 @@ fn (e &SharedEntry) attentive_locked(now i64) bool {
 // driver call, and it runs until the queue IS empty: a bound below one park's worth of traffic
 // (a saturated classic bus queues ~8000 frames a second; the first cut stopped at 4096) left the
 // remainder to be published as current ingress to the subscriber that woke the reader (codex
-// round 1 on #224). It cannot be pinned here: it reads faster than any bus delivers. Returns the
-// message of a fatal read error, which is the reader's to act on.
-fn (mut e SharedEntry) drain_parked() ?string {
+// round 1 on #224). One BATCH per call — up to the ring capacity — and the answer is whether the queue
+// may hold more; the callers decide how to loop (the reader releases drain_mu between batches,
+// a joiner keeps it and stops on a time budget). A fatal read error is returned as the error,
+// and it is the caller's to act on.
+fn (mut e SharedEntry) drain_parked() !bool {
 	e.mu.lock()
 	claimed := e.attentive_locked(time.ticks())
 	e.mu.unlock()
 	if claimed {
-		return none
+		return false
 	}
 	mut n := u64(0)
+	mut more := true
 	mut fatal := ''
-	for {
+	for n < u64(shared_ring_capacity) {
 		e.driver.recv_shared(0) or {
 			if err.msg() != 'timeout' {
 				fatal = err.msg()
 			}
+			more = false
 			break
 		}
 		n++
@@ -548,9 +603,9 @@ fn (mut e SharedEntry) drain_parked() ?string {
 	e.parked_discards += n
 	e.mu.unlock()
 	if fatal != '' {
-		return fatal
+		return error(fatal)
 	}
-	return none
+	return more
 }
 
 fn (mut e SharedEntry) fail_and_close(message string) {
@@ -726,7 +781,10 @@ fn (mut h SharedHandle) recv(timeout_ms int) !CanFrame {
 			unread := !e.attentive_locked(time.ticks())
 			e.mu.unlock()
 			if unread && !e.tx_acks {
-				e.drain_parked() or {}
+				// A fatal here is left to the reader: this handle is about to subscribe, and the
+				// reader's next drain — within a period, since nothing else is attentive — fails
+				// the generation and wakes it with the terminal error.
+				e.drain_until_empty(shared_boundary_drain_ms) or {}
 			}
 		}
 		e.mu.lock()
