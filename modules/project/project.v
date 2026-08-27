@@ -543,7 +543,8 @@ pub fn wire_framings(chs []Channel) map[string]transport.Framing {
 		}
 		k := transport.wire_key(c.iface_with_bitrate())
 		fr := c.origination_framing()
-		// AN ADAPTER THAT REFUSES FD MUST NOT BE DECLARED FD. PCAN rejects an FD frame rather than
+		// AN ADAPTER THAT REFUSES FD MUST NOT BE DECLARED FD. No CAN adapter is one since #217, so
+		// this guards whatever comes next rather than a backend that exists today. It rejects rather than
 		// truncating it (Kvaser did too until #200), so declaring this wire FD turns the row's
 		// traffic into nothing at all — while fd_capability_warnings promises the classic half of
 		// such a run is real. Asked through can_carry_fd rather than by naming adapters here, so
@@ -1720,6 +1721,15 @@ pub fn (c Channel) address_config_error() ?string {
 		}
 		return transport.cansub_address_error(c.iface_with_bitrate())
 	}
+	// THE SAME RULE FOR PCAN, and for the same reason: its address carries a channel and rates and
+	// has nowhere to put a sample point, so `open_pcan` always solves both phases at the default.
+	// A row asking for 75% ran timing it never requested, silently — the failure this repo's own
+	// parity table faults Kvaser for, which this change would otherwise have introduced one
+	// adapter over (self-review of #217).
+	if c.adapter == 'pcan' && c.sample_point != 0
+		&& c.sample_point != f64(transport.pcan_default_sample_point) {
+		return 'sample point ${c.sample_point}% cannot be configured on a PCAN from here — it solves both phases at ${transport.pcan_default_sample_point}%, so remove the setting or use a different adapter'
+	}
 	if !c.fd || !c.can_carry_fd() {
 		return none
 	}
@@ -1732,6 +1742,7 @@ pub fn (c Channel) address_config_error() ?string {
 		'vector' { transport.vector_address_error(c.iface_with_bitrate()) }
 		'kvaser' { transport.kvaser_address_error(c.iface_with_bitrate()) }
 		'cansub' { transport.cansub_address_error(c.iface_with_bitrate()) }
+		'pcan' { transport.pcan_address_error(c.iface_with_bitrate()) }
 		else { none }
 	}
 }
@@ -1842,13 +1853,11 @@ fn destination_conflicts_without_alias(chs []Channel) []string {
 		// and that is answerable here, from the file, instead of as a channel that fails to open
 		// halfway through a Start.
 		//
-		// WHERE A DATA PHASE IS CONFIGURED, unlike the rate above, and the asymmetry is the
-		// point. The rate is a real disagreement on every vendor backend, because all three
-		// configure it. The PROTOCOL is only pinned where something configures a data phase —
-		// Vector and, since its FD support landed, Kvaser. PCAN configures none: both rows open
-		// the same classic bus and each FD frame is refused individually. Reported there, this
-		// refused the WHOLE PROJECT at Start and so overrode fd_capability_warnings, whose
-		// entire policy is that an FD row on such an adapter is a warning because its classic
+		// WHERE A DATA PHASE IS CONFIGURED, unlike the rate above. The asymmetry was the point
+		// while an adapter existed that configured none — PCAN opened both rows on the same
+		// classic bus and refused each FD frame individually, so refusing the WHOLE PROJECT here
+		// overrode fd_capability_warnings, whose entire policy is that an FD row on such an
+		// adapter is a warning because its classic
 		// traffic still runs. Two rules contradicting each other, with the stricter one
 		// silently winning (codex #181 r5).
 		// The comparison is on the ROW's fields rather than on its address, because that is what

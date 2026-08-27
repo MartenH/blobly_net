@@ -155,3 +155,23 @@ pub fn pcan_split_fd(spec string, default_rate int) !(string, int, int, bool) {
 	arb, data, fd := vendor_split_fd_rate(parts[1], default_rate)!
 	return chan_part, arb, data, fd
 }
+
+// pcan_address_error reports why a PCAN address could not be opened as configured, or none.
+//
+// THE EDITOR HAS TO BE ABLE TO ASK. Every other vendor backend has one of these, and without it a
+// PCAN FD rate the 80 MHz clock cannot divide exactly — a 3 Mbit/s data phase, say — was accepted
+// by the editor, saved, and refused only when somebody pressed Start. That is verbatim the failure
+// the CANsub and Kvaser validators exist to prevent, and it was recurring one adapter over
+// (self-review of #217).
+//
+// Composed through the row's own `iface_with_bitrate()`, so whatever this accepts, the open
+// accepts: it asks the same parser and the same solver the open path does.
+pub fn pcan_address_error(iface string) ?string {
+	body := if iface.to_lower().starts_with('pcan:') { iface['pcan:'.len..] } else { iface }
+	_, arb, data, fd := pcan_split_fd(body, 500000) or { return err.msg() }
+	if !fd {
+		return none // a classic rate is a BTR code, checked by pcan_baud when the channel opens
+	}
+	pcan_fd_bitrate(arb, data, pcan_default_sample_point) or { return err.msg() }
+	return none
+}

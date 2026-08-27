@@ -1374,14 +1374,21 @@ fn test_address_config_error_asks_the_real_parser() {
 	if _ := classic.address_config_error() {
 		assert false, 'a classic row has no data phase'
 	}
+	// PCAN CONFIGURES A DATA PHASE SINCE #217, so it has an opinion here where it used to have
+	// none — and the opinion is the right one. A 250 kbit/s data phase under a 500 kbit/s nominal
+	// is backwards: the second rate exists because FD switches INTO it to move the payload faster.
+	// This row was accepted before, on the grounds that the backend would refuse each frame
+	// individually; now it is caught in the editor like every other backend's.
 	pc := Channel{
 		...base
 		adapter:      'pcan'
 		data_bitrate: 250000
 	}
-	if _ := pc.address_config_error() {
-		assert false, 'PCAN cannot configure a data phase; fd_capability_warnings covers that row'
+	why := pc.address_config_error() or {
+		assert false, 'a data phase slower than the arbitration rate must be refused'
+		return
 	}
+	assert why.contains('250000') || why.to_lower().contains('slower'), why
 }
 
 // A RATE LEFT IN THE ADDRESS FIELD IS REFUSED, not quietly honoured. `iface_with_bitrate()`

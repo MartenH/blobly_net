@@ -79,7 +79,7 @@ Two caveats: downloading an artifact requires being signed in to GitHub, and art
 - **CAN / CAN-FD** — SocketCAN on Linux; PCAN, Kvaser and Vector XL on Windows (see the
   hardware/OS matrix below). CAN-FD on SocketCAN, the software buses and **Vector**
   (`vector:1@500000/2000000`) and **Kvaser** (`kvaser:0@500000/2000000`) — in both, the data
-  rate in the address is what asks for it. PCAN refuses an FD frame rather than truncating it.
+  rate in the address is what asks for it. Every CAN backend carries FD since #217; a *classic* channel refuses an FD frame rather than truncating it.
 - **Software buses** for driver-free tests — in-process (`inproc:`) and UDP multicast, so the
   whole test suite runs with no hardware and no drivers.
 - **Ethernet** — **DoIP** (UDS over TCP) and **SOME/IP** (incl. an RPC client), over ordinary
@@ -127,7 +127,7 @@ Blobly Net runs, so the interface string differs too:
 | **PEAK PCAN** | ✅ kernel `peak_usb` → SocketCAN `can0` | ✅ PCAN-Basic DLL → `pcan:PCAN_USBBUS1@500000` |
 | **Kvaser** | ✅ kernel `kvaser_usb` → SocketCAN `can0` | ✅ CANlib DLL → `kvaser:0@500000` |
 | **Vector** (VN16xx…) | ❌ no mainline driver | ✅ XL Driver Library → `vector:1@500000` (HW-verified on a VN1630A; add `,silent` to listen without acknowledging) |
-| CAN-FD | PCAN ✅ · Kvaser Leaf Light v2 is classic-only | **Vector ✅** `vector:1@500000/2000000` · **Kvaser ✅** `kvaser:0@500000/2000000` — both HW-verified to an 8 Mbit/s data phase; Kvaser FD arbitration is 500k or 1M · PCAN refuses FD rather than truncating |
+| CAN-FD | PCAN ✅ · Kvaser Leaf Light v2 is classic-only | **Vector ✅** `vector:1@500000/2000000` · **Kvaser ✅** `kvaser:0@500000/2000000` — both HW-verified to an 8 Mbit/s data phase; Kvaser FD arbitration is 500k or 1M · **PCAN ✅** `pcan:PCAN_USBBUS1@500000/2000000` — HW-verified cross-vendor at 1/2/4/8 Mbit/s |
 
 - **On Linux and WSL2** the *kernel* owns the adapter and presents it as a **SocketCAN netdev**
   (`can0`), so Blobly Net just uses SocketCAN — no vendor SDK involved.

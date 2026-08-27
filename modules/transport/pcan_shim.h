@@ -176,13 +176,17 @@ static uint32_t ct_pcan_write_fd(uint16_t ch, uint32_t id, uint8_t msgtype, uint
  * and smashing the stack. */
 static uint32_t ct_pcan_read_fd(uint16_t ch, uint32_t *id, uint8_t *msgtype, uint8_t *dlc,
                                 uint8_t *data) {
-	CT_TPCANMsgFD m;
+	CT_TPCANMsgFD m = {0}; /* zeroed: on an empty read the vendor leaves this untouched */
 	uint32_t st;
 	int i;
 	if (!ct_fn_readfd) return 0xFFFFFFFFu;
-	memset(&m, 0, sizeof(m));
+	/* COPIED OUT WHATEVER THE STATUS SAYS, exactly as the classic reader does, and for the reason
+	 * pcan_read_verdict exists: CAN_Read ORs the bus fault ladder into the status, so BUSLIGHT or
+	 * BUSHEAVY comes back alongside a perfectly good frame. Returning early on a non-zero status
+	 * threw that frame away and handed the caller a zeroed one instead -- and the ladder appears
+	 * within half a second of transmitting into a disconnected bus, so it is the state a bench in
+	 * trouble is actually in (self-review). The verdict is V's to make; this only reports. */
 	st = ct_fn_readfd(ch, &m, NULL);
-	if (st != CT_PCAN_ERROR_OK) return st;
 	*id = m.ID;
 	*msgtype = m.MSGTYPE;
 	*dlc = m.DLC;

@@ -147,9 +147,11 @@ pub fn (mut b PcanBus) send(f CanFrame) ! {
 			if f.brs {
 				mt |= pcan_msg_brs
 			}
-			if f.esi {
-				mt |= pcan_msg_esi
-			}
+			// ESI IS NOT SET HERE. It reports that the TRANSMITTING NODE was error-passive — the
+			// controller's own condition, which it stamps itself — so a sender choosing it is a
+			// sender lying about its state. Neither Kvaser's nor Vector's write takes it either,
+			// and `CanFrame` says as much where the field is declared. Reachable from replay of a
+			// recording, which carries flags verbatim (self-review).
 		} else if f.data.len > 8 {
 			// A classic frame is still a classic frame on an FD wire: eight bytes, whatever the
 			// channel could otherwise carry. Refused rather than promoted, or the trace would
@@ -209,7 +211,19 @@ pub fn (mut b PcanBus) recv(timeout_ms int) !CanFrame {
 			// ON AN FD READ `ln` IS A DLC CODE, not a byte count — CAN_ReadFD fills DLC where
 			// CAN_Read fills LEN. Treating the code as a length turns a 12-byte frame into 12
 			// bytes of a 24-byte payload, silently.
-			n := if b.fd { fd_len_for(ln) } else { int(ln) }
+			//
+			// AND ONLY AN FD FRAME MAY USE THE HIGH CODES. An FD channel carries classic frames
+			// too, and a classic DLC of 9..15 is legal and means EIGHT bytes — the codes above 8
+			// mean 12..64 only for FD. Decoded through the FD table, such a frame was reported as
+			// a 12-to-64-byte classic frame padded with the shim's zeros (self-review).
+			is_fd := mt & pcan_msg_fd != 0
+			n := if b.fd && is_fd {
+				fd_len_for(ln)
+			} else if int(ln) > 8 {
+				8
+			} else {
+				int(ln)
+			}
 			mut out := []u8{len: n}
 			for i in 0 .. n {
 				out[i] = data[i]
