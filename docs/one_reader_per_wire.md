@@ -1,299 +1,338 @@
-# One reader per wire — design for #212
+# One reader per shared wire - targeted design for #212
 
-**Status: proposal.** Nothing here is built. It exists to be argued with before code is written,
-because the change touches every emitter and every consumer of CAN frames in the app.
+**Status: implemented; hardware acceptance pending.** This change is intentionally limited to
+`shared_open`, the seam already used by PCAN and CANsub because those backends permit only one
+physical receive endpoint per wire in this process. It fixes their competing-consumer bug without
+changing the public `Bus` interface or rebuilding the five backends which already fan out correctly.
 
-## The problem, stated as behaviour
+## Decision
 
-A wire is opened several times per Start. Today each of those opens is a separate reader, and on
-the two backends that physically cannot give you a second reader, the second open **competes for
-frames instead of seeing a copy** (#212):
+Replace the refcount-only object behind `shared_open` with a small per-wire hub:
 
-- the monitor consumes a diagnostic **response** before the ISO-TP channel sees it → intermittent
-  UDS timeouts that look like a slow ECU;
-- the ISO-TP consumer takes ordinary traffic → holes in the trace, with nothing recorded as missing.
+```text
+                         one raw PCAN channel / CANsub WebSocket
+                                         |
+                                  one ingress loop
+                                         |
+                            bounded sequence ring
+                              /       |       \
+                         cursor A  cursor B  cursor C
+                         monitor   ISO-TP    simulation
+```
 
-Both are intermittent and neither leaves evidence of itself.
+The ingress loop writes each record into the ring once. Every `SharedHandle` has its own sequence
+cursor and reads the same record independently. A slow handle can fall behind and lose only its
+own history; it never blocks the ingress loop or another handle. A handle used only for sending
+has a cursor but no frame queue and causes no payload copies or accumulated queue entries.
 
-## What "shared" means today — per backend, and it is not one thing
+This is **not** a universal transport broker. Inproc, UDP, SocketCAN, Vector and Kvaser keep their
+existing open and receive paths:
 
-This is the fact the design turns on. Open one wire twice and ask whether **both** instances see an
-inbound frame:
-
-| backend | second open sees inbound frames? | why |
+| backend | this change | reason |
 |---|---|---|
-| SocketCAN (`can0`, `vcan0`) | **yes** | the kernel delivers to every socket bound to the interface |
-| `inproc:` | **yes** | broadcast to attached subscribers |
-| `udp:` | **yes** | multicast; every participant receives |
-| **Vector** | **yes** | separate XL ports on one channel; the driver hands a frame from one port to the others (#139) |
-| **Kvaser** | **yes** | each `canOpenChannel` handle has its own receive queue |
-| **PCAN** | **no** | one `CAN_Initialize` per channel per process → `shared_open` returns the *same* bus, and `recv` **removes** the frame |
-| **CANsub** | **no** | one client per channel WebSocket → same |
+| PCAN | use the shared hub | PCANBasic permits one initialized channel and currently exposes one competing receive queue |
+| CANsub | use the shared hub | the device permits one WebSocket client per channel and currently exposes one competing receive queue |
+| SocketCAN | unchanged | each socket already receives its own kernel-delivered copy |
+| `inproc:` | unchanged | each participant already has its own queue |
+| `udp:` | unchanged | each participant already receives the multicast traffic |
+| Vector | unchanged | separate XL ports already provide independent receive queues |
+| Kvaser | unchanged | separate CANlib handles already provide independent receive queues and are required by its threading/listen-only rules |
 
-So `shared_open` is doing two unrelated jobs under one name:
+Linux kernel ISO-TP sockets do not pass through `transport.open` and are outside this design.
 
-1. **A hardware necessity** for PCAN and CANsub — the driver permits one handle, full stop.
-2. **A frame-stealing bug** for every consumer above it, because `SharedHandle.recv` takes the
-   frame rather than copying it.
+## Behavioural contract
 
-And the five backends that *do* fan out natively pay for it: on Kvaser, several handles on one
-channel is exactly what made listen-only hard (see the quirks table in
-[`windows_can_hardware.md`](windows_can_hardware.md) — `canSetBusOutputControl` is obeyed only
-through the handle holding initialisation access, and returns success through the rest).
+For a wire routed through `shared_open`:
 
-**The behaviour therefore differs by backend today.** A test that passes on `inproc:` does not
-predict PCAN, which is the property this repo tries hardest to avoid everywhere else.
+1. Each open handle observes every external frame accepted after that handle's subscription
+   boundary, unless its cursor falls behind the bounded ring.
+2. A stalled handle does not delay the physical reader, sends, or another handle.
+3. A handle does not receive a CANsub transmit acknowledgement for its own send. Every other
+   handle sees that acknowledgement once, preserving the existing no-self-loop contract used by
+   simulation and ISO-TP.
+4. PCAN sends do not appear in the receive ring. PCAN has no reliable local-transmit record in the
+   current backend, so its existing record-at-emit trace path remains authoritative.
+5. `send`, `recv`, `health`, `reconcile_silence` and `close` retain the public `Bus` signatures.
+   No public `RxEvent`, tracked-send API, writer role or transport-wide statistics API is added.
+6. A fatal physical-reader error wakes every blocked receiver and remains visible to every handle;
+   it must not degrade into endless `timeout` errors.
+7. The final close and a concurrent reopen cannot overlap two physical opens of the same wire.
 
-## Why is there a second `recv` at all?
+The subscription boundary is the hub's current tail sequence while the new handle is inserted
+under the entry lock. A handle does not receive retained history from before its open. Once open
+returns, all later committed ring records belong to it, subject to bounded-ring overrun.
 
-Not by design — by accretion. Every consumer that needs frames opens its own bus, because there has
-never been anything else to do:
+## Private raw-record seam
 
-| consumer | where |
-|---|---|
-| the monitor / trace | `rx_loop`, `workers.v` — and its own comment already calls it *"the destination's one reader"* |
-| a simulated ECU | `sim_loop` → `sim.v`; it must hear the request it answers |
-| ISO-TP / UDS diagnostics | `isotp.open_software` opens its own bus |
-| a hosted UDS server | `uds/server.v` |
-| a Lua script | `bus.recv` in the prelude |
-| CLI tools | `can_smoke`, `crosscheck`, `cansub_smoke` |
+The public `Bus.recv() !CanFrame` boundary is deliberately unchanged. Only the raw object owned by
+the shared hub needs a richer, private receive result:
 
-The intent was always one reader. The mechanism for sharing it was never built.
+```v
+struct SharedIngress {
+    frame  CanFrame
+    tx_ack bool
+}
+```
 
-## The proposal
+This is an internal `transport` type, not a new application contract. The PCAN adapter leaves
+`tx_ack` false. CANsub projects its existing `CansubRecord.tx` flag into it instead of discarding
+that bit in `CansubBus.recv`. CANsub's hardware timestamp can join this private record in a future
+telemetry change, but this PR does not change the receive timestamp exposed to the GUI.
 
-**One receive BROKER per logical wire per process. `transport` owns it. Everything above it
-subscribes. Each backend uses whatever physical handle topology it needs underneath.**
+Only the hub calls the private raw receive operation. Logical callers still receive ordinary
+`CanFrame` values from `SharedHandle.recv` and cannot manufacture or observe the private direction
+flag. The ring, its sequences and origin ids are all private to `transport`.
 
-The first draft said "one driver handle, always". Codex's review (on #212) is right that this is
-too strong, for a concrete reason: **Kvaser handles are thread-oriented**. canlib's own guidance
-is one handle per thread, and a single handle shared between a reader parked in `canReadWait` and
-arbitrary sender threads would need a lock held across a blocking driver call — the exact thing
-#211 exists to remove. So the invariant is about the *reader*, not the handle count:
+## Ring and cursor semantics
 
-- `transport.open(iface)` returns a **subscriber**, not a driver handle.
-- Exactly one thread per wire reads from the driver — the broker's. Nobody else calls the
-  driver's receive.
-- The broker hands a **copy** to every subscriber's bounded queue. It never blocks on a
-  subscriber (see the chokepoint risk below).
-- Sends go through the broker's single transmit path, which is what makes the acknowledgement
-  correlation below sound.
-- The backend decides the topology: PCAN and CANsub one handle (the driver permits one); SocketCAN
-  one socket; Vector one port; **Kvaser one RX handle and one TX handle**, opened by `transport`
-  in a known order — so which of the two holds initialisation access is a fact the broker knows,
-  not one it has to discover through every handle.
+Each running entry owns:
 
-**Consequence for the #219 arithmetic, stated honestly:** the Kvaser registry, apply-through-every-
-handle and the open/close serialisation do not vanish. They shrink to "two handles whose order we
-chose", which is deterministic where today's is not. Less code, not none.
+- one fixed-capacity circular array of slots;
+- a monotonically increasing `next_sequence` assigned at ingress;
+- the oldest sequence still resident in the array;
+- one cursor and stable handle id per open `SharedHandle`;
+- a sticky terminal error and lifecycle state;
+- a notification mechanism for handles currently blocked in `recv`.
 
-### Why in `transport` and not in the GUI
+A slot contains the sequence, an originating handle id (`0` for external ingress) and one owned
+frame payload. The reader deep-copies the backend's mutable `frame.data` once when committing the
+slot. `SharedHandle.recv` deep-copies it again before returning a public `CanFrame`, because a
+consumer is allowed to mutate that slice and must not alter the slot another consumer will read.
 
-This is the one place I would push back on the framing. Putting the queues in the GUI leaves every
-non-GUI consumer on the old behaviour — `modules/isotp`, `modules/uds`, `modules/sim`,
-`modules/script` and four CLI tools all call `recv` on a bus they opened, and `modules/` is
-GUI-free by the repo's one architectural rule. A fanout that the headless Lua runner does not get
-is a fanout that CI cannot test.
+The initial capacity is 4096 records, matching CANsub's current bounded receive channel. It is a
+named constant and must be exercised by the saturation test before being treated as a tuned
+value. Capacity is a memory bound, not a promise that no application can overrun it.
 
-So the seam is `transport.open`, and the GUI becomes just another subscriber.
+`recv(timeout_ms)` repeatedly performs the following operation under the entry lock:
 
-## Slow subscribers: not a new hazard, and the real one is elsewhere
+1. If the handle cursor is older than the oldest resident sequence, advance it to the oldest
+   sequence and count the skipped records against that handle.
+2. If a record is available, advance the cursor. If it is a local-TX record whose origin is this
+   handle, skip it and continue; otherwise clone and return its frame.
+3. If no record is available and the entry has failed, return the sticky terminal error.
+4. If this handle was closed, return a closed-bus error.
+5. Otherwise wait until ingress, failure, close or the caller's deadline wakes it, then recheck
+   state under the lock.
 
-The instinct is to treat per-subscriber queues as a risk this design introduces. They are not.
-**Five of the seven backends already work exactly this way**: each SocketCAN socket has its own
-buffer, each Kvaser handle its own receive queue, each Vector port its own. A consumer that falls
-behind today already overflows its own queue and drops its own frames without touching anyone
-else. Reproducing that above the driver is parity, not novelty — and PCAN and CANsub, which have
-no per-consumer queue at all because they have competition instead, get it for the first time.
+`recv(0)` is a non-blocking probe. A negative timeout waits indefinitely but must still wake on
+handle close or entry failure. At most one concurrent `recv` is supported per logical handle, as
+today. Notifications carry no frames; a capacity-one wake token or equivalent may coalesce any
+number of commits because `recv` always rechecks the sequence state.
 
-What changes for the better is **visibility**. Today the drop happens inside the driver and is
-reported differently by each one — Kvaser in its status flags, SocketCAN in dropped counters, PCAN
-and CANsub not at all. One implementation means one count, in one place, for every backend.
+Overwriting a slot never waits for a reader. Fast cursors continue normally, while only cursors
+behind the new oldest sequence observe a gap. The per-handle gap count remains internal in this
+change: #213 is the transport-wide diagnostics/telemetry seam. Tests must nevertheless make the
+count observable inside `transport` so a later API can expose it without changing the algorithm.
 
-**Depth is a parameter, not a policy.** The only way app-level queues are worse than what we have
-is if they are shallower than the driver queues they stand in front of, so a consumer that copes
-today starts dropping tomorrow. That is measurable, and it should be measured per backend rather
-than guessed at — the number to beat is whatever the driver gives that consumer now.
+## CANsub transmit acknowledgements and origin exclusion
 
-For the same reason the earlier question here — whether a diagnostic subscriber deserves a deeper
-queue than the trace — is probably the wrong question. No such asymmetry exists today and nothing
-has asked for one. One generous depth for everybody, matching or exceeding the drivers', and revisit
-only if a real consumer is measured to need more.
+CANsub is special inside this otherwise receive-only refactor. The device returns a TX record on
+the same WebSocket for every frame this process sends. That record must enter the ring so the
+monitor and other logical participants can see it, but it must not be returned to the logical
+handle which sent it.
 
-### The risk that IS new
+The hub serializes raw sends made through shared handles. For CANsub, the same critical section
+covers both origin registration and the raw WebSocket write, and the entry keeps a bounded list of
+pending sends in actual write order. PCAN uses the serialization but creates no pending local-echo
+record. A CANsub pending item contains:
 
-Today a slow consumer hurts only itself. With one reader, if the **reader thread** becomes slow —
-contended on a subscriber's lock, or doing unbounded work per frame — it stops draining the single
-driver queue and drops for *everyone*. That coupling does not exist today and it is the thing this
-design must be built against:
+- a monotonically increasing send sequence;
+- the originating `SharedHandle` id;
+- the exact frame sent after the existing framing policy has been applied.
 
-- the fanout **never blocks**: a full subscriber queue drops that subscriber's frame and the reader
-  moves on. There is no path where one consumer can stall the loop;
-- per-frame work in the reader is bounded and does no I/O, no allocation per subscriber where it
-  can be avoided, and no lock held across a copy;
-- the shared driver queue's own overrun is counted too, and reported for the WIRE rather than for a
-  subscriber — because that one means the reader itself fell behind, which is a different fault with
-  a different cause.
+The pending item is installed before the raw WebSocket write, so a fast acknowledgement cannot
+outrun its origin. If the raw write fails, that exact item is removed and no local-TX ring record
+is created. TX-ack matching waits for that write to finish, so an acknowledgement which becomes
+readable before a write reports failure cannot be committed prematurely. The expiry window starts
+after a successful write. Registration plus raw write is serialized; otherwise two caller threads
+could install origins in one order while their WebSocket frames reach the device in another.
 
-## The echo — the part the first draft got backwards
+When ingress receives a flagged CANsub TX acknowledgement, it selects the **oldest pending item
+whose full frame equals the acknowledgement**. Equality includes identifier,
+extended/RTR/FD/BRS flags and payload; content alone without those flags is not identity. ESI is
+excluded because it is received controller status rather than a sender-controlled part of frame
+identity, matching `wiretap`. The TX flag prevents an external frame with identical content from
+consuming a pending item.
 
-The first draft said `echoes_own_sends` "becomes near-trivial: with one handle the app knows exactly
-what it sent." That inverts the problem, and it is the one error in this design that would have
-shipped a regression.
+On a match, ingress removes that pending item and commits a slot carrying its non-zero origin.
+Every handle except that origin may return the frame. If the origin has already closed, the id is
+still valid attribution for the pending item and all remaining handles receive the record.
 
-**Today the echo exists BECAUSE there are two handles.** The monitor's socket or port sees what the
-transmit tap sent, and that arrival is the only evidence the app has that a frame reached the wire.
-`wiretap` matches it by content to separate `TX` from `RX`, to record in observation order, and to
-surface a second transmitter on one id (the frame that finds no record left to claim). Collapse to
-one handle and, per backend:
+A flagged TX acknowledgement which matches no pending local send is **dropped**, increments an
+unmatched-TX diagnostic and is never published as an external frame. Guessing would be worse:
+publishing it as RX could feed a simulator or ISO-TP client its own request. Stale pending items
+expire and increment a missing-TX-ack diagnostic so the list remains bounded. These diagnostics
+stay internal until #213 provides the public transport telemetry seam; tests inspect them through
+transport-private helpers.
 
-| backend | why the echo exists today | one handle, unchanged |
-|---|---|---|
-| SocketCAN | the other socket sees it; `CAN_RAW_RECV_OWN_MSGS` is **not** set | echo gone |
-| `inproc:` | broadcast to the others, *"NOT its own (no self-loopback)"* | echo gone |
-| `udp:` | multicast loopback, then our own echo **dropped** by `src` id | echo gone |
-| Vector | the monitor port sees the tap's frame; the port's own `TX_COMPLETED` is **discarded** (`vector_shim.h`) | echo gone |
-| Kvaser, PCAN | never had one; the trace records at emit time | unchanged |
-| CANsub | the device acknowledges every send, delivered as a frame | unchanged |
+There is one explicit limitation. If two identical sends are pending and an acknowledgement is
+lost, a later identical acknowledgement cannot reveal which physical send it belongs to; the
+oldest-match rule attributes it to the older origin. Neither serialization nor frame comparison
+can manufacture a token the device did not send. The implementation bounds and counts this case,
+and tests pin the behaviour, but exact recovery would require a device-provided transaction id or
+a policy of reconnecting on every missing acknowledgement. #212 does not justify turning a lost
+trace confirmation into a wire outage.
 
-Four of seven backends lose the evidence, and every consumer of `origin` in the trace loses with
-them. So the design **requires** the echo to be re-created, and there is a better way to do it than
-the one being lost.
+This private origin mechanism is not generalized to PCAN or to native-fanout backends. It exists
+only because CANsub supplies an explicit TX bit on the one receive stream shared by all logical
+handles.
 
-**Every driver can hand back a flagged transmit acknowledgement on the same handle**:
+## Trace recording
 
-| backend | mechanism |
-|---|---|
-| SocketCAN | `CAN_RAW_RECV_OWN_MSGS` on, and `MSG_CONFIRM` in the `recvmsg` flags marks the frame as ours |
-| Vector | `TX_COMPLETED` — we already receive it and throw it away |
-| Kvaser | `canIOCTL_SET_TXACK`; the ack arrives with `canMSG_TXACK` |
-| PCAN | the echo-frames parameter (`PCAN_ALLOW_ECHO_FRAMES`, PCANBasic 4.4+), flagged `PCAN_MESSAGE_ECHO` |
-| CANsub | already — `CansubRecord.tx`, with a start-of-frame hardware timestamp |
-| `inproc:`, `udp:` | synthesised by the reader from its own send, flagged the same way |
+This change does not replace `wiretap` and does not promise universal transmit confirmations.
 
-That is not merely a replacement — it is **strictly better than what is being lost**. Today the
-match is a content-key guess: an ECU that sends the same bytes we just sent is indistinguishable
-from our echo, and the ring's "consume oldest first" is the best that can be done about it. A
-driver-flagged ack is not a guess. `CanFrame` grows one field — `tx_ack bool`, a received STATUS
-like `esi`, never set by a sender — and `wiretap` matches on the flag first and the content second.
+PCAN continues to answer `false` from `echoes_own_sends`. Its successful sends are recorded at
+emit time exactly as today, including sends before a monitor is ready and sends aimed at a disabled
+channel's transmit tap. No PCAN echo option, synthetic echo or driver-version dependency is
+introduced.
 
-**Delivered to every subscriber EXCEPT the one that sent it.** The first draft broadcast the ack to
-all, sender included, and that breaks three things that exist today: `inproc:` and `udp:` suppress
-self-delivery by design (`inproc_test.v`, *no self-loopback*), and the simulation is explicit that
-its bus must be *"a dedicated instance so it doesn't hear its own sends"* (`sim.v`). The broker
-knows which subscriber originated each send, so "everyone but the origin" costs nothing and keeps
-the contract every consumer was written against. The monitor still gets its echo — which is what
-Vector gives it today — and the simulated ECU still gets its silence.
+CANsub continues to answer `true`. With a ready monitor, its matched TX acknowledgement reaches
+that monitor through the ring and `wiretap` claims it, preserving device observation order. With
+no ready monitor, the existing emit-time fallback records the send and marks its pending wiretap
+claim as already recorded; a later acknowledgement must not create a duplicate. The sender-origin
+filter affects only the sending logical handle, not the monitor.
 
-**Correlation is per origin, in order.** Two subscribers sending identical bytes at once must each
-be credited with their own ack. Drivers acknowledge in submission order per transmit handle, and
-sends are serialised through the broker's one transmit path, so a per-origin FIFO of outstanding
-sends matches acks without guessing. A bare `tx_ack bool` on the frame cannot express that.
+The targeted hub therefore preserves the current trace rules:
 
-**So the flag is not on `CanFrame`.** The first draft widened the wire struct; codex's objection is
-right: `CanFrame` is the bytes on the wire, and host metadata on it is what `wiretap`'s identity,
-DBC decoding and replay all have to be defended against (`fd`/`brs` in the echo identity was a
-#139-class lesson). Subscribers receive an **envelope** — the frame, its direction (`rx`, or
-`tx_ack` with the origin), and the ingress timestamp. That envelope is also where #149's hardware
-timestamps finally have somewhere to live.
+- PCAN: record successful sends at emit;
+- CANsub with a ready monitor: record the matched device TX acknowledgement;
+- CANsub without a ready monitor: record at emit, then suppress duplicate recording if the
+  acknowledgement is observed later;
+- failed sends: record nothing.
 
-**Emit-time recording stays, as the fallback it already is.** The first draft claimed nothing would
-need to record at emit any more. Wrong twice over: a transmit-only subscriber never drains a queue,
-and `trace.v` records at emit precisely for the case where no monitor exists yet — the simulation's
-first frames go out while the rx loops are still opening. So the rule becomes: **a wire whose broker
-has a monitor subscriber records from the ack; a wire without one records at emit**, per wire,
-declared by the broker rather than inferred from the backend name. Acks where the driver provides
-them, emit-time where it cannot, and the same shape everywhere.
+An unmatched or missing CANsub acknowledgement is counted rather than reclassified as RX. With a
+ready monitor this can leave that send without an observation-time trace row; that is an honest
+loss diagnostic, not permission to invent direction. No ordinary subscriber queue is made
+responsible for durable recording.
 
-That last clause matters because the ack is **a capability, not a given**. PEAK documents echo
-frames from PCAN-Basic **4.6.0**, with driver and hardware restrictions — the first draft said 4.4
-from memory, which is exactly the kind of claim the quirks table forbids. The broker asks each
-backend whether acks are available on this wire and falls back per wire; it never assumes.
+## Registry and lifecycle
 
-## Lifecycle — the part that was underspecified
+The registry remains keyed by `wire_key`, and `canonical_spec` remains the compatibility check for
+configuration. Aliases of one CANsub spelling join one entry; incompatible bitrate, protocol or
+mode requests fail rather than silently inheriting the first opener's configuration.
 
-The first draft had "first subscriber starts the reader, last one stops it" and nothing else. Codex
-named what is missing, and each item is a bug today or a bug tomorrow:
+Each entry generation has explicit states:
 
-- **A fatal reader error must reach every subscriber.** Today `rx_loop` disables every alias on a
-  wire when a non-timeout receive error arrives (`workers.v`). With one reader, a driver failure
-  that only the broker sees leaves every subscriber blocked on an empty queue — and the GUI times
-  out forever, silently. The broker wakes every blocked subscriber with the error, and the error
-  is sticky until the wire is reopened.
-- **Explicit states**: `opening`, `running`, `failed`, `closing`. Not a refcount and a bool.
-- **A closing reservation.** The last close stops a reader that may be parked in the driver
-  (#214's lesson); a new `open` arriving during that window must wait for the old broker to be
-  gone, not race it for the handle. `shared.v`'s close today has exactly this gap.
-- **Lazy receive.** A subscriber's queue is created on its first `recv`, not at open — otherwise
-  every transmit-only tap becomes a permanently overflowing subscriber with a drop count nobody
-  wants to read.
-- **A statistics API on the broker** — subscriber drops and the wire's own overrun — because
-  `Bus` has none and the design's visibility argument is worth nothing without one.
+```text
+running -> closing -> closed
+   |
+   +------> failed -> closed
+```
 
-## Where the wrappers go
+### Open
 
-The stack is **per-subscriber `SilentBus` → subscriber queue → one shared `PinnedBus`/raw backend
-per wire**, and the boundary is not arbitrary. `verbatim` is a property of the *opener* (replay
-owns its frames' format; the GUI's tap frames before it records), so `silenced()` must wrap the
-subscriber; share it any higher and `verbatim` becomes global. `pinned_open` records what the
-*driver* is configured to, once per wire, so it sits below the queue; share it any lower and the
-fake per-subscriber Vector pins that #165 is about survive. The registry is keyed by `wire_key`,
-with a separate backend-normalised configuration signature for bitrate, mode and protocol.
+1. Preserve the existing atomic-open rule: the backend factory runs while the registry lock is
+   held, so two simultaneous first opens cannot both reach a one-client driver. This serializes
+   slow first opens of PCAN/CANsub wires; that narrow startup cost is accepted here rather than
+   introducing a second per-key reservation system into #212.
+2. Install the new entry and first handle with its tail cursor before starting the ingress loop.
+3. A joining handle is assigned the current tail while the entry is locked, before its open
+   returns.
+4. A caller finding `closing` or `failed` waits until physical close removes that generation,
+   then retries against a fresh one. It never joins the terminal generation.
 
-## What this dissolves
+As today, every joiner still calls `reconcile_silence` after acquiring its logical handle. The hub
+delegates health and silence reconciliation to its raw backend; this design does not move dynamic
+framing or per-open `verbatim` state below `SilentBus`.
 
-Not a side benefit — a large part of the justification:
+### Reader failure
 
-- **the Kvaser multi-handle machinery** (~130 lines from #219): the registry, apply-through-every-
-  handle, the open/close serialisation. With one handle it is by definition canlib's first opener,
-  so it holds initialisation access and the mode call is simply obeyed.
-- **`echoes_own_sends` goes away** — but only because the echo is redesigned, not because it becomes
-  trivial. See "The echo" below; without that section this bullet would be a regression.
-- **Vector pin clashes shrink** (`pinned.v`, #165): a disabled row's transmit taps stop holding
-  their own ports, so the case where a port nobody mentions pins a channel largely goes away.
-- **`shared_open` stops being a special case** for two backends and becomes the universal path.
+A non-timeout raw receive error atomically marks the generation failed and stores the original
+error outside the ring. It wakes every finite and infinite receiver, rejects new sends, stops the
+reader and closes the raw backend. A handle may drain records committed before the failure, then
+every later receive returns the same sticky error.
 
-## Risks, honestly
+The failed generation detaches from the registry only after physical close. Old handles remain
+bound to its terminal state; they never silently attach to a replacement. A later open creates a
+fresh generation even if an old Lua handle has not yet called `close`.
 
-- **Ordering and timestamps.** One reader is strictly better here, but only if the queue preserves
-  arrival order per wire.
-- **`recv(-1)`.** The blocking contract is used by Lua and `can_smoke`; a subscriber queue must
-  honour it without pinning a thread per subscriber.
-- **Lifetime, and this is a known-painful shape.** "The last subscriber to close stops the reader"
-  meets two things at once. A Lua script may outlive Stop holding its bus (`listen.v`), so Stop
-  does not release the driver handle — already true on PCAN today via `shared_open`, and fine as
-  long as it is *stated*. And a reader thread parked in a driver call cannot be joined by the close
-  that is stopping it: CANsub learned this the hard way (#214, "close() no longer waits for this
-  thread"), and the reader here inherits exactly that problem on every backend. Tell it to stop,
-  bound its driver wait, then join — in that order, the way `cansub.v` already does.
-- **It is a big change.** Every emitter and consumer. That is the argument for doing it as its own
-  PR with its own bench, not as part of a feature.
+### Close
 
-## Acceptance
+Handle close is idempotent. It marks that handle closed and wakes its blocked receiver. In-flight
+`recv` cannot read a frame after close returns. Pending CANsub items retain only the closed handle's
+numeric origin id until they are acknowledged or expire.
 
-- `cmd/silentcheck` — all five phases, all four pairings, **unchanged**, with less code behind them.
-  If listen-only still holds after the reader collapses to one handle, the dissolution above is
-  real rather than hoped for.
-- **An echo test, first**, because the finding above is the regression this design would otherwise
-  ship: on every backend that can acknowledge, a sent frame comes back exactly once, flagged as
-  ours, and `wiretap` claims it by the flag. On `inproc:` in CI, and on the bench for the vendors —
-  this is the #139 class and gets the #139 proof.
-- A new headless test for the actual bug: two subscribers on one wire, both must see every frame.
-  This runs on `inproc:` in CI — and the point of the design is that it now predicts PCAN too.
-- A slow-subscriber test: one consumer stops draining; the others keep receiving and the drop count
-  is non-zero and readable — the property five backends already give us, now uniform.
-- A reader-chokepoint test, for the risk this design actually introduces: with one subscriber
-  wedged, the WIRE's own overrun count must stay zero. If it does not, the fanout is blocking
-  somewhere it promised not to.
-- **An instrumented fake backend that asserts exactly one physical reader.** The `inproc:`
-  two-subscriber test above proves the *contract*, not the broker: `inproc:` already fans out,
-  so it would pass today with no broker at all. The fake counts driver receives.
-- Fatal-reader broadcast, then reopen: every blocked subscriber wakes with the error; a
-  subsequent open on the same wire succeeds.
-- Concurrent final-close and open on one wire: no race for the handle, no leaked reader.
-- Sender self-suppression: the origin does not receive its own ack; every other subscriber does.
-- Identical concurrent sends from two subscribers: each is credited its own ack.
-- Pre-monitor recording: frames sent before any monitor subscribes are still recorded, at emit.
-- Payload isolation: a subscriber mutating the frame it received does not alter another's copy.
-- Unsupported-ack fallback: a wire whose backend reports no ack capability records at emit and
-  never waits for one.
+The last handle changes the entry to `closing` while leaving its reservation in the registry. It
+rejects new operations, waits for an in-flight send to finish, requests ingress stop, joins the
+reader, closes the raw backend, then removes the reservation so retrying openers can proceed. The
+raw receive uses a bounded poll so shutdown does not depend on traffic arriving. A new physical
+open for the key cannot begin before the previous physical close completes.
+
+The entry lock is never held across vendor close, blocking receive or WebSocket write, and the
+global registry lock is not part of the per-frame ring path. The one deliberate exception is the
+first vendor open described above. Operation ownership/refcounts keep the entry alive across
+calls made outside the entry lock.
+
+## What this deliberately does not do
+
+- It does not route every backend through one process-wide broker.
+- It does not require one physical handle on Kvaser or change its threading model.
+- It does not remove Vector ports or pinning checks.
+- It does not add `RxEvent`, ingress timestamps, tracked sends, `open_tx`, or public drop counters
+  to `Bus`.
+- It does not make PCAN local sends visible to other logical handles; that is unchanged backend
+  behaviour, and trace records them at emit.
+- It does not synthesize PCAN receive events.
+- It does not make subscriber overrun impossible. It bounds memory, isolates the lagging handle
+  and keeps enough internal accounting for #213 to expose later.
+- It does not establish exact physical-wire ordering on a backend which supplies no comparable
+  timestamps. Ring sequence is the order in which the one raw reader accepted records.
+- It cannot exactly attribute a later TX acknowledgement after one of several identical pending
+  CANsub sends loses its acknowledgement; the oldest-match limitation above is explicit.
+
+Those may be useful future projects, but none is required to fix #212. If uniform ingress metadata
+or telemetry later justifies a broader broker, this sequence-ring implementation can be adopted
+backend by backend instead of forcing a transport-wide migration now.
+
+## Acceptance tests
+
+### Deterministic transport tests
+
+- An instrumented shared fake asserts one physical open and one raw `recv` loop while two, then
+  many, logical handles each receive every injected external frame in order.
+- A handle opened after several records starts at the current tail and receives every record
+  committed after its subscription boundary, with no retained history leaking into it.
+- Stall one handle beyond ring capacity. Its cursor advances by the exact overwritten count while
+  a fast handle receives every frame and ingress never blocks.
+- Mutating the `data` returned to one handle cannot change a later result for another handle.
+- `recv(0)`, finite timeout and `recv(-1)` preserve the public `Bus` contract. Close and fatal
+  failure wake a blocked infinite receive.
+- Make the raw reader fail with both an empty and a populated ring. Existing records drain, the
+  same sticky error follows for every handle, sends fail, and a new opener waits for physical
+  close before receiving a clean generation.
+- Race final close with open repeatedly and assert the old raw close always precedes the new raw
+  open. Race close with send, ingress and blocked receive without use-after-close or double close.
+- Same-wire aliases join one entry and incompatible canonical specs fail. A failed first open
+  leaves no entry, so a later attempt can retry cleanly.
+
+### CANsub-specific tests
+
+- Preserve `CansubRecord.tx` through the private raw-record seam.
+- Handle A sends: its matched TX acknowledgement is skipped by A and returned once to B and C.
+- A and B concurrently send different frames: serialized registration/write order and full-frame
+  matching assign each acknowledgement to the correct origin.
+- A and B send identical frames: the oldest matching pending origin is chosen deterministically.
+- Drop the first of two identical acknowledgements and pin the documented ambiguity: the later
+  acknowledgement is assigned to the oldest identical pending item, while expiry counts the
+  remaining missing acknowledgement.
+- An external frame identical to a pending send remains external because its TX bit is clear.
+- An unmatched flagged TX acknowledgement is dropped, increments its diagnostic and is never
+  returned as RX to any logical handle.
+- A raw send failure removes its exact pending item and publishes no local-TX record.
+- Closing an origin before its acknowledgement does not reclassify that acknowledgement and does
+  not prevent remaining handles from receiving it.
+
+### Trace and hardware checks
+
+- PCAN records every successful send exactly once at emit, including startup and no-monitor paths;
+  it does not depend on local echo support and creates no synthetic receive event.
+- CANsub with a ready monitor records a matched device acknowledgement exactly once. Without a
+  ready monitor it records at emit and a later acknowledgement does not duplicate the row.
+- Failed sends record nothing on both backends.
+- Monitor + simulation + software ISO-TP/UDS + Lua can share one PCAN wire and one CANsub wire
+  without stealing external frames or receiving their own matched CANsub sends.
+- Existing `cmd/silentcheck` phases and CANsub classic/FD, TX-record, reader-failure and bounded
+  close benches continue to pass.
+
+The shared fake and lifecycle tests land with the hub. Backend cleanup follows only after those
+tests prove the single-reader and close/reopen invariants.
