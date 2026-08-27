@@ -231,7 +231,7 @@ fn run(o Opts) int {
 
 	// PHASE 1 — the baseline. Without it a failure in phase 2 is unreadable: a bus that was never
 	// working at all produces exactly the same "talker unhealthy, listener silent" reading.
-	base := exchange(mut listener, mut talker, o, true)
+	base := exchange(mut listener, mut talker, o, true, false)
 	println('1. baseline (listener NOT marked)')
 	report(base)
 	if base.rx == 0 {
@@ -261,7 +261,7 @@ fn run(o Opts) int {
 		}
 	}
 	settle(mut listener, o.timeout)
-	sil := exchange(mut listener, mut talker, o, true)
+	sil := exchange(mut listener, mut talker, o, true, true)
 	println('2. listener marked listen-only, mid-run')
 	report(sil)
 	if !degraded(sil.talker_health) {
@@ -301,7 +301,7 @@ fn run(o Opts) int {
 	defer {
 		fresh.close()
 	}
-	back := exchange(mut listener, mut fresh, o, false)
+	back := exchange(mut listener, mut fresh, o, false, false)
 	println('3. mark cleared, mid-run')
 	report(back)
 	// RECOVERY IS JUDGED ON WHAT THE WIRE DOES, NOT ON THE COUNTER BEING BACK TO ZERO — and it is
@@ -352,6 +352,44 @@ fn run(o Opts) int {
 		sib.close()
 	}
 	siblings.clear()
+	// A BACKEND THAT DECLINED THE MID-RUN MARK NEVER WAS SILENT, so "closed while marked" has not
+	// yet made the state this phase claims to leave behind, and an unmarked reopen coming up
+	// normal would prove nothing (codex round 5 on #223). Such a backend follows the mark AT
+	// OPEN — that is what it declared — so silence is established the way it can be: the wire is
+	// reopened MARKED, shown to be silent, and closed again; only then is the unmarked reopen the
+	// test it says it is.
+	if 'phase 2' in not_applicable {
+		transport.forget_silence_claims()
+		mut marked := transport.open(o.listener) or {
+			eprintln('could not reopen listener ${o.listener} marked: ${err}')
+			return 1
+		}
+		mut marked_sibs := []transport.Bus{}
+		for n in 1 .. o.handles {
+			sib := transport.open(o.listener) or {
+				eprintln('could not reopen marked listener handle ${n + 1}: ${err}')
+				marked.close()
+				return 1
+			}
+			marked_sibs << sib
+		}
+		held := exchange(mut marked, mut fresh, o, true, true)
+		println('4a. reopened MARKED (this backend follows the mark only at open)')
+		report(held)
+		if !degraded(held.talker_health) {
+			eprintln('   FAIL — the mark at open did not silence the transceiver: the talker stays ${shown(held.talker_health)}.')
+			ok = false
+		} else if held.rx == 0 {
+			eprintln('   FAIL — silent, but the listener heard nothing: it reads as having left the bus.')
+			ok = false
+		} else {
+			println('   ok — silent at open: the talker went ${shown(held.talker_health)} while the listener still heard it')
+		}
+		for mut sib in marked_sibs {
+			sib.close()
+		}
+		marked.close()
+	}
 	transport.clear_listen_only()
 	// AND FORGET WHAT WAS APPLIED, because that is the half a single process cannot otherwise
 	// simulate. What makes this case dangerous is that the CONTROLLER remembers and the process
@@ -384,7 +422,7 @@ fn run(o Opts) int {
 	defer {
 		fresh2.close()
 	}
-	after := exchange(mut reopened, mut fresh2, o, true)
+	after := exchange(mut reopened, mut fresh2, o, true, false)
 	println('4. closed while marked, reopened unmarked')
 	report(after)
 	// `recovered` here is UNTAINTED: the talker was driven back to `ok` before this tool read a
@@ -414,7 +452,7 @@ fn run(o Opts) int {
 	transport.set_listen_only(o.listener, true)
 	println('5. mark set, then a NEW handle opened onto the already-held wire')
 	if mut joiner := transport.open(o.listener) {
-		joined := exchange(mut reopened, mut fresh2, o, true)
+		joined := exchange(mut reopened, mut fresh2, o, true, true)
 		report(joined)
 		if !degraded(joined.talker_health) {
 			if why := declined(o.listener, true) {
@@ -498,8 +536,15 @@ mut:
 // policy, so a read would repair the very thing under test. Phase 3 says no: it tests the mark
 // changing MID-RUN, and on those backends that is applied by the next receive by design — the
 // app's monitor is always reading — so a listener nobody reads never hears about it at all.
-fn exchange(mut listener transport.Bus, mut talker transport.Bus, o Opts, untainted bool) Result {
+// `expect_silent` is a phase whose verdict is that the talker is NOT acknowledged (2 and 5): no
+// recovery is driven in it, before or after the burst, because five seconds of frames into a
+// listener that is meant to be silent prove nothing the burst did not, and on a retrying talker
+// they walk the counter towards bus-off for the phases that follow.
+fn exchange(mut listener transport.Bus, mut talker transport.Bus, o Opts, untainted bool, expect_silent bool) Result {
 	mut r := Result{}
+	if expect_silent {
+		return exchange_burst(mut listener, mut talker, o, mut r)
+	}
 	// SETTLED FIRST, JUDGED AFTER. The settle clears what the previous phase left in the counter
 	// (a CANsub carries its real ladder across phases); its result is deliberately NOT the
 	// verdict, because a talker that starts `ok` proves nothing about THIS burst — a CANsub
@@ -508,6 +553,16 @@ fn exchange(mut listener transport.Bus, mut talker transport.Bus, o Opts, untain
 	// that never acknowledged (codex round 4 on #223). So `recovered` is decided below, after the
 	// burst and the untainted window, on frames driven after both.
 	recover_talker(mut talker, mut listener, o, untainted)
+	exchange_burst(mut listener, mut talker, o, mut r)
+	// THE VERDICT ON THIS BURST: still untainted (the listener has not been read), and required
+	// to reach `ok` under frames driven now — see recover_talker for why a reading of `ok` is
+	// not trusted before a second of them.
+	r.recovered = recover_talker(mut talker, mut listener, o, untainted)
+	return r
+}
+
+// exchange_burst is the burst itself: the frames, the untainted window, then the reads.
+fn exchange_burst(mut listener transport.Bus, mut talker transport.Bus, o Opts, mut r Result) Result {
 	for i in 0 .. o.frames {
 		f := transport.CanFrame{
 			id:   o.id
@@ -548,10 +603,6 @@ fn exchange(mut listener transport.Bus, mut talker transport.Bus, o Opts, untain
 		time.sleep(10 * time.millisecond)
 		r.talker_health = worse(r.talker_health, talker.health())
 	}
-	// THE VERDICT ON THIS BURST: still untainted (the listener has not been read), and required
-	// to reach `ok` under frames driven now — see recover_talker for why a reading of `ok` is
-	// not trusted before a second of them.
-	r.recovered = recover_talker(mut talker, mut listener, o, untainted)
 	// Then read normally, still sampling: a later reading can only be WORSE than the untainted one
 	// above, never better, so the verdict cannot be manufactured by the reconcile in `recv`.
 	deadline := time.ticks() + i64(window_ms(o))
@@ -584,8 +635,13 @@ fn exchange(mut listener transport.Bus, mut talker transport.Bus, o Opts, untain
 // thread last fetched, up to ~0.6 s old, so `ok` read right after a burst can predate the burst.
 // A second of frames at 5 ms is two hundred attempts: acknowledged, the counter stays at zero;
 // unacknowledged, it has climbed past warning to error-passive and no stale reading survives.
-// Severe is answered at once — nothing this loop sends can bring a controller nobody acknowledges
-// back — and `unknown` is a backend that cannot say, which is not a failure of the wire.
+// ERROR-PASSIVE IS DRIVEN LIKE WARNING IS. An earlier cut answered it at once with "not
+// recoverable", and that was wrong in exactly the case this loop exists for: a CANsub talker that
+// left phase 2 at 129 is still error-passive when the mark clears, an acknowledging listener
+// takes it down one frame at a time, and six frames are not enough to leave 128 — so a listener
+// that had recovered perfectly was reported as never acknowledging (codex round 5 on #223). Only
+// bus-off is not driven: a controller off the bus is not sending anything. `unknown` is a backend
+// that cannot say, which is not a failure of the wire.
 fn recover_talker(mut talker transport.Bus, mut listener transport.Bus, o Opts, untainted bool) bool {
 	start := time.ticks()
 	until := start + 5000
@@ -596,7 +652,7 @@ fn recover_talker(mut talker transport.Bus, mut listener transport.Bus, o Opts, 
 		if h == .unknown {
 			return true
 		}
-		if severe(h) {
+		if h == .bus_off {
 			return false
 		}
 		if h == .ok && time.ticks() >= floor {
