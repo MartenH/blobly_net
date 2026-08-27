@@ -43,11 +43,11 @@ pub:
 	kept                  int // frames that will be replayed
 	withheld_excluded     int // withheld because an excluded node sends them
 	withheld_unattributed int // withheld because the DBC names no transmitter and policy says so
-	withheld_remote       int // withheld because it is a remote request and policy says so
 	unattributed          int // frames whose message the DBC defines but gives no transmitter
 	unknown               int // frames whose id the DBC does not define at all
-	remote                int // remote REQUESTS — a frame asking for an id, not sending it
-	// The ids behind the last three, so a report can name them rather than merely count them.
+	remote                int // remote requests in the recording, which cannot be replayed
+	// The ids behind the two buckets above that have them, so a report can name those rather
+	// than merely count them.
 	// Sorted, each id once.
 	//
 	// FORMATTED, AND THE FORMAT CARRIES THE WIDTH: three hex digits for a standard id, eight for
@@ -58,7 +58,6 @@ pub:
 	// which (codex round 2 on #210). The tallies below are keyed the same way.
 	unattributed_ids []string
 	unknown_ids      []string
-	remote_ids       []string
 }
 
 // id_label formats one identifier the way a trace does, so its WIDTH is visible: three hex digits
@@ -96,10 +95,9 @@ pub enum Verdict {
 	keep              // a node we are not excluding sends it
 	keep_unknown      // its id is not in the database at all — replayed, and reported
 	keep_unattributed // defined, no transmitter, policy says replay
-	keep_remote       // a remote REQUEST for the id — sender unattributable, policy says replay
 	drop_excluded     // an excluded node sends it
 	drop_unattributed // defined, no transmitter, policy says withhold
-	drop_remote       // a remote request, policy says withhold
+	drop_remote       // a remote request, which this app cannot transmit at all
 }
 
 pub fn new_decider(db candb.Database, exclude []string, replay_unattributed bool) Decider {
@@ -123,30 +121,29 @@ pub fn new_decider(db candb.Database, exclude []string, replay_unattributed bool
 }
 
 pub fn (d Decider) verdict(f transport.CanFrame) Verdict {
+	// FIRST, BEFORE THE DATABASE IS CONSULTED. Whether the DBC defines the id has no bearing on
+	// this: the frame cannot be transmitted either way, so anything that returns `keep_` for it
+	// hands the replay a frame that `send()` will refuse. Placed after the `defined` lookup it
+	// caught only the ids a database happened to name — and with no DBC attached, `defined` is
+	// EMPTY, so every remote frame in the recording took the unknown branch, was kept, and failed
+	// at the wire (self-review). A run would report "not replayed" and then count failures for
+	// the same frames.
+	//
+	// A REMOTE FRAME IS NEVER REPLAYED, because this app does not transmit one at all — see
+	// frame_rules.v. Left to the branches below it would be judged by the PRODUCER's name, which
+	// is the wrong question about a request: `BO_` says who produces a message, and the frame
+	// asking for it came from somebody else. A request for a message the excluded node produces
+	// would then be withheld on that node's account, into the `withheld_excluded` figure a user
+	// reads as "the ECU under test" (#179).
+	//
+	// So it gets its own verdict and its own count — not a policy, just a fact about what this
+	// app can put on a wire.
+	if f.rtr {
+		return .drop_remote
+	}
 	k := key(f.id, f.extended)
 	if k !in d.defined {
 		return .keep_unknown
-	}
-	// A REMOTE FRAME IS A REQUEST, and the DBC cannot name who made it. `BO_` says who produces
-	// the message; the frame asking for it came from somebody else. So a remote frame's sender is
-	// genuinely unattributable — the same question the branch below answers — and it follows the
-	// same policy rather than being judged by the producer's name.
-	//
-	// Asked the producer's question instead, a request for a message the EXCLUDED node produces
-	// was withheld on that node's account, silently, into the `withheld_excluded` figure a user
-	// reads as "the ECU under test". The stimulus never reached the SUT and its answer never
-	// reached the run (#179).
-	//
-	// COUNTED APART from the no-transmitter frames, though, and not folded into them: those ids
-	// have no transmitter and these ids do. Reporting a remote request among them would put ids
-	// into `unattributed_ids` that the DBC attributes perfectly well, which is a different lie
-	// in place of the one this fixes.
-	if f.rtr {
-		return if d.replay_unattributed {
-			Verdict.keep_remote
-		} else {
-			Verdict.drop_remote
-		}
 	}
 	senders := d.senders_of[k] or { []string{} }
 	if senders.len == 0 {
@@ -197,14 +194,12 @@ pub struct Tally {
 mut:
 	withheld_excluded int
 	withheld_unattr   int
-	withheld_remote   int
 	unattr_n          int
 	unknown_n         int
 	remote_n          int
 	// KEYED BY IDENTITY, not by number — the same `key(id, ext)` the decision itself uses.
 	unattr  map[u64]bool
 	unknown map[u64]bool
-	remote  map[u64]bool
 }
 
 // add records one verdict and reports whether the frame survives.
@@ -234,15 +229,8 @@ pub fn (mut t Tally) add(v Verdict, f transport.CanFrame) bool {
 			t.withheld_unattr++
 			return false
 		}
-		.keep_remote {
-			t.remote[id] = true
-			t.remote_n++
-			return true
-		}
 		.drop_remote {
-			t.remote[id] = true
 			t.remote_n++
-			t.withheld_remote++
 			return false
 		}
 		.drop_excluded {
@@ -255,18 +243,15 @@ pub fn (mut t Tally) add(v Verdict, f transport.CanFrame) bool {
 pub fn (t Tally) done(kept int) Subtraction {
 	u_ids := labels_of(t.unattr)
 	k_ids := labels_of(t.unknown)
-	r_ids := labels_of(t.remote)
 	return Subtraction{
 		kept:                  kept
 		withheld_excluded:     t.withheld_excluded
 		withheld_unattributed: t.withheld_unattr
-		withheld_remote:       t.withheld_remote
 		unattributed:          t.unattr_n
 		unknown:               t.unknown_n
 		remote:                t.remote_n
 		unattributed_ids:      u_ids
 		unknown_ids:           k_ids
-		remote_ids:            r_ids
 	}
 }
 
@@ -363,19 +348,19 @@ pub fn census(entries []canlog.LogEntry, db candb.Database) NodeCensus {
 	mut unknown := 0
 	mut remote := 0
 	for e in entries {
+		// REMOTE FIRST, in the same order `verdict` uses, because this census is the PREVIEW of
+		// what that will decide. Asking `defined` first put a remote frame on an undefined id into
+		// `unknown` -- which the editor labels "replays regardless" -- while the replay drops every
+		// remote frame before it looks at the database. The preview promised the opposite of what
+		// Start does, and with no DBC attached, where `defined` is empty, it did so for every one
+		// of them (codex on #216).
+		if e.frame.rtr {
+			remote++
+			continue
+		}
 		k := key(e.frame.id, e.frame.extended)
 		if k !in d.defined {
 			unknown++
-			continue
-		}
-		// COUNTED APART FROM ITS PRODUCER, for the reason `verdict` gives: a remote frame asks
-		// for the id, so the node the DBC names as its transmitter is precisely the node that did
-		// NOT send this frame. Added to that node's tally it inflated the share attributed to
-		// whoever produces the message -- and this census is the number a user reads while
-		// DECIDING what to exclude, so the misattribution arrived before the subtraction did
-		// (#179).
-		if e.frame.rtr {
-			remote++
 			continue
 		}
 		senders := d.senders_of[k] or { []string{} }

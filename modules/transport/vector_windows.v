@@ -251,7 +251,7 @@ pub fn (mut b VectorBus) send(f CanFrame) ! {
 	//
 	// The IMPOSSIBLE rules only. What this backend does about a LENGTH is its own tier's business
 	// and is unchanged — see frame_rules.v.
-	if why := frame_impossible_error(f) {
+	if why := frame_send_refusal(f) {
 		return error('Vector: ${why}')
 	}
 	// SILENCE IS A PROMISE. A channel opened `,silent` was opened that way because something
@@ -316,7 +316,9 @@ pub fn (mut b VectorBus) send(f CanFrame) ! {
 	// RTR is carried, not dropped. A remote request with the bit lost goes out as an ordinary
 	// zero-length data frame and is reported as success — a different message than the caller
 	// asked for, on the wire, with nothing to say so.
-	rtr := if f.rtr { 1 } else { 0 }
+	// Always 0: this app does not transmit remote frames — frame_rules.v refuses them above. The
+	// shim keeps the argument because it mirrors XL's own flags, not because anything sets it.
+	rtr := 0
 	// WHICHEVER CALL MATCHES THE PORT. xlCanTransmit on a V4 port and xlCanTransmitEx on a V3 one
 	// are both wrong at the ABI level, so this follows `b.fd` — the port's own version — and not
 	// `f.fd`, which is only what this frame wants to be.

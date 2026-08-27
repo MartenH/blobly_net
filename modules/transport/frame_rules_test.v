@@ -102,7 +102,7 @@ fn test_an_fd_payload_must_be_a_dlc_length() {
 
 fn test_an_ordinary_frame_passes() {
 	assert frame_shape_error(CanFrame{ id: 0x123, data: [u8(1), 2, 3] }) == none
-	assert frame_shape_error(CanFrame{ id: 0x123, rtr: true }) == none
+	assert frame_shape_error(CanFrame{ id: 0x123, rtr: true }) != none, 'a remote frame is not something this app sends'
 	assert frame_shape_error(CanFrame{ id: 0x123, fd: true, brs: true, data: []u8{len: 64} }) == none
 }
 
@@ -122,14 +122,14 @@ fn test_the_impossible_rules_do_not_include_lengths() {
 		fd:   true
 		data: []u8{len: 9}
 	}
-	assert frame_impossible_error(long_fd) == none, 'a padded length is not an impossible frame'
+	assert frame_send_refusal(long_fd) == none, 'a padded length is not a refusal'
 	assert frame_shape_error(long_fd) != none, 'but a backend that refuses rather than pads still refuses it'
 
 	long_classic := CanFrame{
 		id:   0x123
 		data: []u8{len: 9}
 	}
-	assert frame_impossible_error(long_classic) == none
+	assert frame_send_refusal(long_classic) == none
 	assert frame_shape_error(long_classic) != none
 }
 
@@ -154,15 +154,15 @@ fn test_every_impossible_frame_is_also_refused_by_the_full_rules() {
 		},
 	]
 	for f in bad {
-		assert frame_impossible_error(f) != none, 'id 0x${f.id:X} must be impossible'
+		assert frame_send_refusal(f) != none, 'id 0x${f.id:X} must be refused'
 		assert frame_shape_error(f) != none, 'and refused by the full rules too'
 	}
 }
 
 fn test_an_ordinary_frame_is_impossible_to_nobody() {
-	assert frame_impossible_error(CanFrame{ id: 0x7FF, data: [u8(1)] }) == none
-	assert frame_impossible_error(CanFrame{ id: 0x123, rtr: true }) == none
-	assert frame_impossible_error(CanFrame{ id: 0x123, fd: true, brs: true, data: []u8{len: 64} }) == none
+	assert frame_send_refusal(CanFrame{ id: 0x7FF, data: [u8(1)] }) == none
+	assert frame_send_refusal(CanFrame{ id: 0x123, rtr: true }) != none, 'a remote frame is not something this app sends'
+	assert frame_send_refusal(CanFrame{ id: 0x123, fd: true, brs: true, data: []u8{len: 64} }) == none
 }
 
 // ESI ON A CLASSIC FRAME is not merely meaningless — it becomes something else. The CANsub wire
@@ -174,7 +174,7 @@ fn test_esi_without_fd_is_refused() {
 		id:  0x123
 		esi: true
 	}
-	assert frame_impossible_error(f) != none, 'a classic frame has no ESI bit to set'
+	assert frame_send_refusal(f) != none, 'a classic frame has no ESI bit to set'
 	assert frame_shape_error(f) != none
 }
 
@@ -186,6 +186,6 @@ fn test_esi_on_an_fd_frame_is_fine() {
 		esi:  true
 		data: []u8{len: 8}
 	}
-	assert frame_impossible_error(f) == none
+	assert frame_send_refusal(f) == none
 	assert frame_shape_error(f) == none
 }

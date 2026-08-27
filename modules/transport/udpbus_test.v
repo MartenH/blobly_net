@@ -49,7 +49,7 @@ fn test_udp_bus_send_recv_and_self_filter() {
 	}
 }
 
-fn test_udp_bus_extended_and_rtr() {
+fn test_udp_bus_extended() {
 	group, port := uniq_group(1)
 	mut a := open_udp(group, port) or { panic('open a: ${err}') }
 	mut b := open_udp(group, port) or { panic('open b: ${err}') }
@@ -67,10 +67,8 @@ fn test_udp_bus_extended_and_rtr() {
 	assert ext.extended == true
 	assert ext.data.len == 8
 
-	a.send(CanFrame{ id: 0x200, rtr: true }) or { panic('send rtr: ${err}') }
-	rtr := b.recv(1000) or { panic('recv rtr: ${err}') }
-	assert rtr.rtr == true
-	assert rtr.data.len == 0
+	// A remote frame is no longer something this app transmits — see frame_rules.v. The refusal
+	// is asserted in frame_rules_test; here it is simply absent.
 }
 
 // The software bus has to carry an FD frame intact — flags AND a payload longer than the old

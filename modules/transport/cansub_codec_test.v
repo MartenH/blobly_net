@@ -291,10 +291,6 @@ fn test_encoding_round_trips_through_the_decoder() {
 			data:     [u8(0xAA)]
 		},
 		CanFrame{
-			id:  0x123
-			rtr: true
-		},
-		CanFrame{
 			id:   0x100
 			fd:   true
 			brs:  true
