@@ -422,6 +422,28 @@ fn exchange(mut listener transport.Bus, mut talker transport.Bus, o Opts) Result
 	//
 	// The WORST seen is what counts, in both directions: a controller that recovers once ACKs
 	// resume would otherwise erase the evidence before the loop ends.
+	// THE TALKER IS OBSERVED BEFORE THE LISTENER IS TOUCHED, and that ordering is the difference
+	// between a verdict and a self-fulfilling one. Both backends reconcile the policy at the START
+	// of `recv` — so a listener whose OPEN left the controller in the wrong mode gets REPAIRED by
+	// the first receive, and if that receive happens before the talker's queued frames are
+	// attempted, the phase passes without ever testing the open (codex round 11 on #219). Phases 4
+	// and 5 are exactly the phases that claim to test the open.
+	//
+	// So the health of the talker — which is the whole verdict — is sampled across a window in
+	// which this tool does not read from the listener at all. The frames still go out: a send
+	// queued them and the controller transmits whether or not anybody is reading.
+	// SHORT, because the listener is not being read during it and a silenced wire retransmits
+	// continuously — a full window unread overflows the receive queue and the drain below then
+	// finds nothing (measured: phase 2 went from 3300 frames to zero). Long enough is a few
+	// milliseconds: a frame at 500 kbit/s is about 250 us, so 150 ms is hundreds of attempts,
+	// which is all the controller needs to have failed.
+	observe := time.ticks() + 150
+	for time.ticks() < observe {
+		time.sleep(10 * time.millisecond)
+		r.talker_health = worse(r.talker_health, talker.health())
+	}
+	// Then read normally, still sampling: a later reading can only be WORSE than the untainted one
+	// above, never better, so the verdict cannot be manufactured by the reconcile in `recv`.
 	deadline := time.ticks() + i64(window_ms(o))
 	for time.ticks() < deadline {
 		listener.recv(50) or {

@@ -117,7 +117,25 @@ fn shared_open(key string, spec string, make fn (string) !Bus) !Bus {
 	if failure != '' {
 		return error(failure)
 	}
-	if h := handle {
+	if mut h := handle {
+		// A JOINER MUST STILL RECONCILE THE WIRE. On a registry HIT the factory never runs — no
+		// CAN_Initialize, no mode set — so a row marked listen-only and then Started reached the
+		// driver through nothing at all, and the controller went on acknowledging until something
+		// happened to read or write. Kvaser's open reconciles because it always opens; here the
+		// whole point is that it does not (codex round 11 on #219, found by silentcheck phase 5
+		// once its verdict stopped being taken after a receive that repaired it).
+		//
+		// Outside the registry lock, which is what #211 is about, and refused only in the
+		// direction that matters: a wire that will not go silent must not be handed out claiming
+		// to be, while one that will not leave listen-only is reported by `send` and shown on its
+		// Buses row.
+		want := is_listen_only(spec)
+		h.reconcile_silence(want) or {
+			if want {
+				h.close()
+				return error('${spec}: joined an already-open wire but its controller would not be set listen-only — ${err.msg()}')
+			}
+		}
 		return h
 	}
 	return error('${spec}: shared_open produced no handle')

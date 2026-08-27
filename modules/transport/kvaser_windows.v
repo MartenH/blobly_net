@@ -43,7 +43,7 @@ fn C.ct_kvaser_is_virtual(int) int
 fn C.ct_kvaser_set_silent_all(&int, int, int) int
 
 // KvaserBus is one open + bus-on CANlib channel handle.
-// kvaser_open_handles is every handle THIS PROCESS holds, per wire.
+// kvaser_wires is every handle THIS PROCESS holds, per wire; `kvaser_handles` reads it.
 //
 // It exists because the channel's output mode cannot be changed through one handle while its
 // siblings are on the bus — canlib accepts the call and ignores it (see ct_kvaser_set_silent_all).
@@ -209,8 +209,14 @@ pub fn open_kvaser(spec string, iface string) !&KvaserBus {
 		// wire and compares against the record, so a second opener with the same policy does
 		// nothing at all, and one arriving after a policy change writes through every handle. The
 		// only cost is one redundant call on a wire's very first open.
-		kvaser_apply_wire_silence(iface, silent) or {
-			if silent {
+		// FRESH, NOT THE OPEN-TIME SNAPSHOT. `silent` was read before the driver was touched, and
+		// `replace_wire_policy` does not take this wire's lock — so a row enabled while this open
+		// was in flight left the reconcile applying a value that was already out of date, and on a
+		// transmit tap nobody reads from, nothing would correct it (codex round 11 on #219).
+		// Reading again here costs one table lookup and is always at least as current.
+		want := is_listen_only(iface)
+		kvaser_apply_wire_silence(iface, want) or {
+			if want {
 				C.ct_kvaser_close(hnd)
 				kvaser_unregister(iface, hnd)
 				return error('Kvaser: channel ${s.channel} would not be set listen-only — ${err.msg()}; this wire is marked never-transmit and the controller would still acknowledge, so it is not opened')
@@ -249,8 +255,10 @@ pub fn open_kvaser(spec string, iface string) !&KvaserBus {
 	// wire and compares against the record, so a second opener with the same policy does
 	// nothing at all, and one arriving after a policy change writes through every handle. The
 	// only cost is one redundant call on a wire's very first open.
-	kvaser_apply_wire_silence(iface, silent) or {
-		if silent {
+	// FRESH, NOT THE OPEN-TIME SNAPSHOT — see the classic branch above.
+	want := is_listen_only(iface)
+	kvaser_apply_wire_silence(iface, want) or {
+		if want {
 			C.ct_kvaser_close(hnd)
 			kvaser_unregister(iface, hnd)
 			return error('Kvaser: channel ${s.channel} would not be set listen-only — ${err.msg()}; this wire is marked never-transmit and the controller would still acknowledge, so it is not opened')
@@ -365,10 +373,6 @@ pub fn (mut b KvaserBus) recv(timeout_ms int) !CanFrame {
 	// it, and the Buses panel reads that beside the row — because a PASSIVE listener never calls
 	// send, so on a receive-only wire this `or {}` used to be the end of the story (codex round 3
 	// on #219). Every receive retries, so a transient refusal clears itself.
-	b.reconcile_silence(is_listen_only(b.iface)) or {}
-	// canReadWait takes an unsigned timeout; map "block forever" (negative) to a
-	// large value, since the Bus contract allows timeout_ms < 0 = block.
-	to := if timeout_ms < 0 { u32(0xFFFF_FFFF) } else { u32(timeout_ms) }
 	mut id := u32(0)
 	mut ln := u8(0)
 	mut flags := u32(0)
@@ -376,7 +380,26 @@ pub fn (mut b KvaserBus) recv(timeout_ms int) !CanFrame {
 	// FD payload out, and a classic-sized array here would be overrun by the first 64-byte frame
 	// on the wire.
 	mut data := [64]u8{}
-	r := C.ct_kvaser_read(b.handle, &id, &ln, &data[0], &flags, to)
+	// A BLOCKING RECEIVE IS SLICED, so that the reconcile above is not a once-per-CALL thing on a
+	// call that may never return. The Bus contract allows timeout_ms < 0 = block forever, Lua and
+	// `cmd/can_smoke` use it, and canReadWait would then sit in the driver for 0xFFFFFFFF ms — so a
+	// wire marked listen-only during the wait stayed in normal mode until a frame arrived, and
+	// ACKNOWLEDGED that frame on the way out (codex round 11 on #219). Sliced, the policy is
+	// re-asked every 200 ms and the mark reaches the controller before the next frame does.
+	//
+	// A FINITE timeout is passed straight through: it already bounds itself, and cutting it into
+	// slices would only add wakeups to the hot path every monitored wire runs.
+	mut r := 0
+	for {
+		b.reconcile_silence(is_listen_only(b.iface)) or {}
+		to := if timeout_ms < 0 { u32(200) } else { u32(timeout_ms) }
+		r = C.ct_kvaser_read(b.handle, &id, &ln, &data[0], &flags, to)
+		// 1 is "no message" from this shim; 0 is a frame and negative is an error. Only "no
+		// message" is worth another slice, and only when the caller asked to block forever.
+		if r != 1 || timeout_ms >= 0 {
+			break
+		}
+	}
 	if r == 1 {
 		return error('timeout')
 	}
