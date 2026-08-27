@@ -216,10 +216,17 @@ mut:
 fn (mut s SilentBus) send(frame CanFrame) ! {
 	// ASKED NOW, not at open. See silenced() below for why the answer is not cached.
 	//
-	// ONE READ FOR BOTH ANSWERS. Silence and format are published together precisely so a send
-	// cannot straddle two policy versions, and reading the entry twice threw that away: a wire
-	// marked listen-only between the two reads still transmitted, which is the one guarantee the
-	// checkbox makes (codex #202 r3).
+	// ONE READ FOR ALL THREE ANSWERS — the controller's mode, the refusal, and the format. Silence
+	// and format are published together precisely so a send cannot straddle two policy versions,
+	// and reading the entry twice threw that away: a wire marked listen-only between the two reads
+	// still transmitted, which is the one guarantee the checkbox makes (codex #202 r3).
+	//
+	// THE CONTROLLER IS THE THIRD USER OF THAT ONE READ, and it was given the same treatment wrong
+	// in the same way: reconciling before this line re-read the policy for itself, so a mark set
+	// between the two reads left the transceiver on the old answer while this refused on the new
+	// one — and on a transmit-only wire nothing runs again to correct it (codex round 3 on #219).
+	// This comment sat directly above that second read, still describing a property the code beside
+	// it had stopped having. The snapshot is taken once, here, and handed down.
 	// THE CONTROLLER FIRST, BEFORE THIS DECIDES. Refusing the send is the software half; the ACK
 	// is the transceiver's, and on a wire whose only handles are transmit taps — a disabled row
 	// keeps them open on purpose (#165) — this refusal is the ONLY thing that ever runs. Reconciled
@@ -229,8 +236,8 @@ fn (mut s SilentBus) send(frame CanFrame) ! {
 	//
 	// A backend with no controller answers by doing nothing, so this costs one call through the
 	// wrappers on every other bus in the app.
-	s.inner.reconcile_silence()!
 	p := wire_policy(s.iface)
+	s.inner.reconcile_silence(p.silent)!
 	if p.silent {
 		return error('${s.iface}: listen-only — nothing is transmitted on this wire')
 	}
@@ -252,8 +259,8 @@ fn (mut s SilentBus) recv(timeout_ms int) !CanFrame {
 	return s.inner.recv(timeout_ms)!
 }
 
-fn (mut s SilentBus) reconcile_silence() ! {
-	s.inner.reconcile_silence()!
+fn (mut s SilentBus) reconcile_silence(want bool) ! {
+	s.inner.reconcile_silence(want)!
 }
 
 fn (mut s SilentBus) close() {

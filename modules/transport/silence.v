@@ -38,6 +38,9 @@ mut:
 	// One mutex per wire, so a transition can be held across the driver call without a
 	// process-wide lock being held across I/O — see apply_silence.
 	locks map[string]&sync.Mutex
+	// Wires whose controller REFUSED the mode the policy asks for, and in what words — see
+	// wire_silence_fault.
+	faults map[string]string
 }
 
 // silence_applied is process-wide for the reason listen_tbl is: the side that decides and the
@@ -116,9 +119,52 @@ pub fn apply_silence(iface string, want bool, set fn (bool) int) ! {
 	st := set(want)
 	if st != 0 {
 		unrecord_silence(k)
-		return error('the controller would not be set ${silence_word(want)} (driver status ${st})')
+		why := 'the controller would not be set ${silence_word(want)} (driver status ${st})'
+		record_silence_fault(k, why)
+		return error(why)
 	}
 	record_silence(k, want)
+	clear_silence_fault(k)
+}
+
+fn record_silence_fault(k string, why string) {
+	silence_applied.mu.lock()
+	defer {
+		silence_applied.mu.unlock()
+	}
+	silence_applied.faults[k] = why
+}
+
+fn clear_silence_fault(k string) {
+	silence_applied.mu.lock()
+	defer {
+		silence_applied.mu.unlock()
+	}
+	silence_applied.faults.delete(k)
+}
+
+// wire_silence_fault reports that this wire's controller REFUSED the mode its row asks for, or
+// `none` when it is doing what it was told.
+//
+// WHY A RECORD AND NOT JUST AN ERROR. The `open` path turns a refusal into a refusal to open, and
+// `send` returns it to a caller who can act. Neither reaches the case that matters most: a PASSIVE
+// listener never calls send, so on a wire that is only ever RECEIVED from, a mid-run failure to
+// silence the controller had no way out at all — the reconcile is best-effort there on purpose,
+// because a receive that fails takes the wire's reader down with it and health.v already settles
+// that a degraded wire must be degraded and never removed (codex round 3 on #219).
+//
+// So the failure is recorded rather than discarded, and the Buses panel reads it beside the row.
+// It is a FACT about the wire, in the same family as `last RX 45s`: the app said listen-only, the
+// controller did not agree, and an operator watching a live vehicle needs to know which of those
+// they are looking at. Cleared the moment a later attempt succeeds — every receive retries, so a
+// transient refusal disappears on its own.
+pub fn wire_silence_fault(iface string) ?string {
+	k := wire_key(iface)
+	silence_applied.mu.lock()
+	defer {
+		silence_applied.mu.unlock()
+	}
+	return silence_applied.faults[k] or { return none }
 }
 
 // note_silence_applied records a mode this wire's controller was put into by something other than
@@ -137,6 +183,7 @@ pub fn note_silence_applied(iface string, silent bool) {
 		wl.unlock()
 	}
 	record_silence(k, silent)
+	clear_silence_fault(k)
 }
 
 // forget_wire_silence drops what this wire is recorded as, so the next attempt reaches the driver.
@@ -164,6 +211,7 @@ pub fn forget_silence_claims() {
 		silence_applied.mu.unlock()
 	}
 	silence_applied.wires.clear()
+	silence_applied.faults.clear()
 }
 
 // silence_word is for messages: "listen-only"/"normal" is what an operator recognises, where

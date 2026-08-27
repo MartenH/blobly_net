@@ -119,6 +119,16 @@ pub fn open_pcan(spec string, iface string) !&PcanBus {
 	if sst != 0 && silent {
 		return error('PCAN: the channel would not be set listen-only (CAN_SetValue 0x${sst:X}) — this wire is marked never-transmit and the controller would still acknowledge, so it is not opened')
 	}
+	// A REFUSED *NORMAL* SET IS NOT A SUCCESS EITHER, and the wire must be left UNKNOWN rather
+	// than recorded. Opening normal is what repairs a channel a previous run left silent — the
+	// whole reason the first write is unconditional — so if that write is the one that fails,
+	// recording `false` claims the repair happened and suppresses every later attempt. The channel
+	// then cannot transmit and nothing retries (codex round 3 on #219).
+	//
+	// Not fatal, unlike the silent direction: a controller that will not leave listen-only is a
+	// wire that transmits nothing, which `send` reports and the Buses panel shows, where refusing
+	// to open would also take away the receiving that still works.
+	applied := sst == 0
 	if want_fd {
 		// A PRE-FD DRIVER IS A SENTENCE, NOT A CRASH. CAN_InitializeFD and friends simply are not
 		// exported by an older PCANBasic, and the shim reports their absence rather than calling
@@ -133,7 +143,9 @@ pub fn open_pcan(spec string, iface string) !&PcanBus {
 		if st != 0 {
 			return error('CAN_InitializeFD failed (0x${st:X}) for ${bitrate}/${data_rate} — adapter connected? bus terminated/powered?')
 		}
-		note_silence_applied(iface, silent)
+		if applied {
+			note_silence_applied(iface, silent)
+		}
 		return &PcanBus{
 			channel: handle
 			iface:   iface
@@ -145,7 +157,9 @@ pub fn open_pcan(spec string, iface string) !&PcanBus {
 	if st != 0 {
 		return error('CAN_Initialize failed (0x${st:X}) — adapter connected? bus terminated/powered?')
 	}
-	note_silence_applied(iface, silent)
+	if applied {
+		note_silence_applied(iface, silent)
+	}
 	return &PcanBus{
 		channel: handle
 		iface:   iface
@@ -161,9 +175,9 @@ pub fn open_pcan(spec string, iface string) !&PcanBus {
 //
 // PCANBasic spells it as a channel PARAMETER (`CAN_SetValue` with `PCAN_LISTEN_ONLY`), which is
 // taken at any time and needs no bus bounce, unlike canlib.
-pub fn (mut b PcanBus) reconcile_silence() ! {
+pub fn (mut b PcanBus) reconcile_silence(want bool) ! {
 	ch := b.channel
-	apply_silence(b.iface, is_listen_only(b.iface), fn [ch] (silent bool) int {
+	apply_silence(b.iface, want, fn [ch] (silent bool) int {
 		return int(C.ct_pcan_set_silent(ch, if silent { 1 } else { 0 }))
 	})!
 }
@@ -180,7 +194,7 @@ pub fn (mut b PcanBus) send(f CanFrame) ! {
 	// RECONCILED ON THE WAY OUT TOO, not only on receive — a transmit tap may never be read from,
 	// so on a wire with no reader nothing else here would notice a mark being lifted, and `send`
 	// would report success while the controller stayed silent.
-	b.reconcile_silence()!
+	b.reconcile_silence(is_listen_only(b.iface))!
 	// THE SHARED SHAPE RULES FIRST (frame_rules.v). This path accepted `brs` on a classic frame
 	// and simply never passed it to ct_pcan_write, reporting success — while wiretap kept the flag,
 	// so the record claimed a bit-rate switch the wire never saw. Kvaser and Vector each refuse
@@ -254,9 +268,11 @@ pub fn (mut b PcanBus) send(f CanFrame) ! {
 }
 
 pub fn (mut b PcanBus) recv(timeout_ms int) !CanFrame {
-	// Best effort on the read side: a receive that fails takes the wire's reader down with it, and
-	// the send path reports the same failure where a caller can act on it.
-	b.reconcile_silence() or {}
+	// Best effort on the read side: a receive that fails takes the wire's reader down with it. NOT
+	// discarded, though — `apply_silence` records the refusal against the wire and the Buses panel
+	// reads it, because a passive listener never calls send and this `or {}` was otherwise the end
+	// of the story on a receive-only wire (codex round 3 on #219).
+	b.reconcile_silence(is_listen_only(b.iface)) or {}
 	deadline := time.ticks() + i64(timeout_ms)
 	for {
 		mut id := u32(0)

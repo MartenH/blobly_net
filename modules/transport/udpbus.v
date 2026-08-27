@@ -145,7 +145,7 @@ pub fn (mut b UdpBus) health() BusHealth {
 
 // reconcile_silence — nothing to reconcile: this bus has no controller, so it generates no
 // acknowledgement and `SilentBus` refusing its sends is the whole of listen-only here.
-pub fn (mut b UdpBus) reconcile_silence() ! {
+pub fn (mut b UdpBus) reconcile_silence(want bool) ! {
 	{}
 }
 

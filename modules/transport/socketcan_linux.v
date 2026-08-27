@@ -158,7 +158,7 @@ pub fn (mut b SocketCanBus) health() BusHealth {
 // reconcile_silence — a SocketCAN interface's mode is chosen outside this app, by whoever ran
 // `ip link set canX type can listen-only on`. There is nothing here that may revise it, and
 // `vcan` has no transceiver at all.
-pub fn (mut b SocketCanBus) reconcile_silence() ! {}
+pub fn (mut b SocketCanBus) reconcile_silence(want bool) ! {}
 
 pub fn (mut b SocketCanBus) close() {
 	if b.fd >= 0 {

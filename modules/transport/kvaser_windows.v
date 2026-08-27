@@ -27,8 +27,8 @@ module transport
 #include "kvaser_shim.h"
 
 fn C.ct_kvaser_load() int
-fn C.ct_kvaser_open(int, int, int) int
-fn C.ct_kvaser_open_fd(int, int, int, int) int
+fn C.ct_kvaser_open(int, int, int, &int) int
+fn C.ct_kvaser_open_fd(int, int, int, int, &int) int
 fn C.ct_kvaser_write_fd(int, u32, u8, &u8, int, int) int
 fn C.ct_kvaser_has_fd() int
 fn C.ct_kvaser_write(int, u32, u8, &u8, int, int) int
@@ -68,13 +68,20 @@ pub fn open_kvaser(spec string, iface string) !&KvaserBus {
 	// and goes bus-on as part of opening. Applied afterwards it would leave a window in which a
 	// listen-only row acknowledges on a live bus — see note_silence_applied.
 	silent := is_listen_only(iface)
+	// SET, OR NOT SET AT ALL — and the difference is recorded rather than guessed. A canlib with no
+	// canSetBusOutputControl cannot apply either mode; answering "normal" for that would claim a
+	// repair that never happened and suppress every later attempt (codex round 3 on #219). A SILENT
+	// request on such a driver fails the open outright, below.
+	mut mode_unset := 0
 	if !s.fd {
-		hnd := C.ct_kvaser_open(s.channel, arb_code, if silent { 1 } else { 0 })
+		hnd := C.ct_kvaser_open(s.channel, arb_code, if silent { 1 } else { 0 }, &mode_unset)
 		if hnd < 0 {
 			return error('Kvaser: could not open channel ${s.channel} — ${kvaser_open_refusal(hnd,
 				s.channel, false)}')
 		}
-		note_silence_applied(iface, silent)
+		if mode_unset == 0 {
+			note_silence_applied(iface, silent)
+		}
 		return &KvaserBus{
 			handle: hnd
 			iface:  iface
@@ -87,12 +94,15 @@ pub fn open_kvaser(spec string, iface string) !&KvaserBus {
 		return error('Kvaser: this canlib32.dll has no CAN-FD API (canSetBusParamsFd missing) — update the Kvaser drivers')
 	}
 	data_code := kvaser_fd_data_code(s.data_bitrate)!
-	hnd := C.ct_kvaser_open_fd(s.channel, arb_code, data_code, if silent { 1 } else { 0 })
+	hnd := C.ct_kvaser_open_fd(s.channel, arb_code, data_code, if silent { 1 } else { 0 },
+		&mode_unset)
 	if hnd < 0 {
 		return error('Kvaser: could not open channel ${s.channel} for CAN-FD at ${s.bitrate}/${s.data_bitrate} — ${kvaser_open_refusal(hnd,
 			s.channel, true)}')
 	}
-	note_silence_applied(iface, silent)
+	if mode_unset == 0 {
+		note_silence_applied(iface, silent)
+	}
 	return &KvaserBus{
 		handle: hnd
 		iface:  iface
@@ -113,9 +123,9 @@ pub fn open_kvaser(spec string, iface string) !&KvaserBus {
 // channel is bus-OFF, so the shim bounces the bus around it. That bounce is why doing this once
 // per WIRE rather than once per handle matters more here than on PCAN: the app holds several
 // handles on one channel, and one operator tick used to drop traffic once for each of them.
-pub fn (mut b KvaserBus) reconcile_silence() ! {
+pub fn (mut b KvaserBus) reconcile_silence(want bool) ! {
 	h := b.handle
-	apply_silence(b.iface, is_listen_only(b.iface), fn [h] (silent bool) int {
+	apply_silence(b.iface, want, fn [h] (silent bool) int {
 		return C.ct_kvaser_set_silent(h, if silent { 1 } else { 0 })
 	})!
 }
@@ -125,7 +135,7 @@ pub fn (mut b KvaserBus) send(f CanFrame) ! {
 	// be read from, so on a wire with no reader nothing else here would notice a mark being lifted
 	// — `send` would report success while the controller stayed silent and the frame went nowhere.
 	// Costs one map read when nothing has changed.
-	b.reconcile_silence()!
+	b.reconcile_silence(is_listen_only(b.iface))!
 	// A FRAME NO CONTROLLER COULD SEND is refused here as it is everywhere else. `esi` on a
 	// classic frame arrived with the shared rules and this path never learned it, so the same
 	// input was rejected by `inproc:`, `udp:`, PCAN and CANsub and accepted here — the flag
@@ -190,8 +200,13 @@ pub fn (mut b KvaserBus) send(f CanFrame) ! {
 pub fn (mut b KvaserBus) recv(timeout_ms int) !CanFrame {
 	// BEST EFFORT ON THE READ SIDE, deliberately: a receive that fails takes the wire's reader down
 	// with it, and health.v already settles that a degraded wire must be degraded and never
-	// removed. The send path reports the same failure where a caller can act on it.
-	b.reconcile_silence() or {}
+	// removed.
+	//
+	// NOT DISCARDED, THOUGH. `apply_silence` records a refusal against the wire before returning
+	// it, and the Buses panel reads that beside the row — because a PASSIVE listener never calls
+	// send, so on a receive-only wire this `or {}` used to be the end of the story (codex round 3
+	// on #219). Every receive retries, so a transient refusal clears itself.
+	b.reconcile_silence(is_listen_only(b.iface)) or {}
 	// canReadWait takes an unsigned timeout; map "block forever" (negative) to a
 	// large value, since the Bus contract allows timeout_ms < 0 = block.
 	to := if timeout_ms < 0 { u32(0xFFFF_FFFF) } else { u32(timeout_ms) }

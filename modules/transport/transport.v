@@ -106,7 +106,15 @@ mut:
 	// #165) nothing else runs at all: the process stops transmitting, and the controller goes on
 	// acknowledging the bus indefinitely (codex round 1 on #219). The wrapper has to be able to ask
 	// through to the driver before it decides, and V has no interface-to-interface cast to ask with.
-	reconcile_silence() !
+	//
+	// `want` IS PASSED IN, NEVER RE-READ. The wrapper reads the wire's policy once and uses that
+	// ONE answer for both the reconcile and the refusal after it. Read again in here, a mark set
+	// between the two reads reconciled the controller to the OLD state while the wrapper refused on
+	// the NEW one — and on a transmit-only wire nothing runs again to correct it, so the controller
+	// acknowledges indefinitely while the app reports the wire as silent (codex round 3 on #219).
+	// It is the same two-reads defect `wire_policy` was introduced to end one level down (#202 r3),
+	// reintroduced one level up.
+	reconcile_silence(want bool) !
 }
 
 // echoes_own_sends reports whether frames written to this interface come back to another bus

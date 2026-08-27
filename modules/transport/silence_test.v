@@ -165,3 +165,41 @@ fn test_opposing_transitions_leave_the_record_matching_the_last_write() {
 	}
 	assert have == spy.calls.last(), 'recorded ${have}, driver last saw ${spy.calls.last()} (${spy.calls})'
 }
+
+// A REFUSAL IS RECORDED AGAINST THE WIRE, not only returned. The `open` path turns one into a
+// refusal to open and `send` returns it to a caller — but a PASSIVE listener never calls send, so
+// on a receive-only wire the error had no way out at all and the reconcile there is deliberately
+// best-effort (a receive that fails takes the wire's reader down with it). The record is what the
+// Buses panel reads beside the row (codex round 3 on #219).
+fn test_a_refusal_is_recorded_against_the_wire() {
+	forget_silence_claims()
+	assert wire_silence_fault('inproc:sil-i') == none
+	mut spy := &SilenceSpy{
+		fail: true
+	}
+	set := spy.setter()
+	apply_silence('inproc:sil-i', true, set) or {}
+	why := wire_silence_fault('inproc:sil-i') or {
+		assert false, 'a refused mode must leave a fault on the wire'
+		return
+	}
+	assert why.contains('listen-only'), why
+	// AND CLEARED BY A LATER SUCCESS, because every receive retries: a transient refusal must not
+	// leave the row shouting after the controller has come round.
+	spy.fail = false
+	apply_silence('inproc:sil-i', true, set) or { assert false, err.msg() }
+	assert wire_silence_fault('inproc:sil-i') == none
+}
+
+// And a mode applied at OPEN clears it too — that path does not go through apply_silence, so it
+// has to say so itself or a fault from a previous run outlives the wire it described.
+fn test_a_mode_applied_at_open_clears_a_previous_fault() {
+	forget_silence_claims()
+	mut spy := &SilenceSpy{
+		fail: true
+	}
+	apply_silence('inproc:sil-j', true, spy.setter()) or {}
+	assert wire_silence_fault('inproc:sil-j') != none
+	note_silence_applied('inproc:sil-j', true)
+	assert wire_silence_fault('inproc:sil-j') == none
+}

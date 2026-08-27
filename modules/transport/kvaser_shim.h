@@ -134,15 +134,24 @@ static int ct_kvaser_is_virtual(int ch) {
  * avoid (codex round 1 on #219). canSetBusOutputControl is accepted while bus-off, which is where
  * the channel already is at this point, so choosing the mode here costs nothing and closes the
  * window completely. */
+/* Returns 0 when the mode was applied, CT_KV_MODE_UNSET when this canlib cannot apply it at all,
+   and the negative canStatus when the driver refused.
+ *
+ * "NOT IMPLEMENTED" IS NOT "APPLIED NORMAL". It used to answer 0 for a normal request on a canlib
+ * with no canSetBusOutputControl, which reads as success -- so the wire was recorded as known to be
+ * in normal mode when nothing had been set at all. Opening normal is what repairs a channel a
+ * previous run left silent, so recording a repair that did not happen suppresses every later
+ * attempt and the channel stays unable to transmit (codex round 3 on #219). */
+#define CT_KV_MODE_UNSET 1
 static int ct_kvaser_set_mode(int hnd, int silent) {
-	if (!ct_kv_setoutctrl) return silent ? -100 : 0; /* only a SILENT request needs the call */
+	if (!ct_kv_setoutctrl) return silent ? -100 : CT_KV_MODE_UNSET;
 	return ct_kv_setoutctrl(hnd, silent ? CT_KV_DRIVER_SILENT : CT_KV_DRIVER_NORMAL);
 }
 
 /* Open channel `ch` (accepting virtual channels), set bitrate (a canBITRATE_* code,
  * negative), choose the output mode, then go bus-on. Returns the handle (>=0) or the negative
  * canStatus error. */
-static int ct_kvaser_open(int ch, int32_t bitrate_code, int silent) {
+static int ct_kvaser_open(int ch, int32_t bitrate_code, int silent, int *mode_unset) {
 	int hnd, st;
 	ct_kv_initlib();
 	hnd = ct_kv_open(ch, CT_KV_OPEN_ACCEPT_VIRTUAL);
@@ -151,6 +160,7 @@ static int ct_kvaser_open(int ch, int32_t bitrate_code, int silent) {
 	if (st < 0) { ct_kv_close(hnd); return st; }
 	st = ct_kvaser_set_mode(hnd, silent);
 	if (st < 0) { ct_kv_close(hnd); return st; }
+	if (st == CT_KV_MODE_UNSET) *mode_unset = 1;
 	st = ct_kv_buson(hnd);
 	if (st < 0) { ct_kv_close(hnd); return st; }
 	return hnd;
@@ -164,7 +174,7 @@ static int ct_kvaser_has_fd(void) { return ct_kv_setbusfd ? 1 : 0; }
 /* Open channel `ch` in CAN-FD mode: arbitration code, then the data-phase code, then bus-on.
  * Both are canlib's negative predefined constants (canBITRATE_* / canFD_BITRATE_*), which is
  * the pairing the bench run used. Returns the handle (>=0) or the negative canStatus. */
-static int ct_kvaser_open_fd(int ch, int32_t arb_code, int32_t data_code, int silent) {
+static int ct_kvaser_open_fd(int ch, int32_t arb_code, int32_t data_code, int silent, int *mode_unset) {
 	int hnd, st;
 	ct_kv_initlib();
 	hnd = ct_kv_open(ch, CT_KV_OPEN_ACCEPT_VIRTUAL | CT_KV_OPEN_CAN_FD);
@@ -175,6 +185,7 @@ static int ct_kvaser_open_fd(int ch, int32_t arb_code, int32_t data_code, int si
 	if (st < 0) { ct_kv_close(hnd); return st; }
 	st = ct_kvaser_set_mode(hnd, silent);
 	if (st < 0) { ct_kv_close(hnd); return st; }
+	if (st == CT_KV_MODE_UNSET) *mode_unset = 1;
 	st = ct_kv_buson(hnd);
 	if (st < 0) { ct_kv_close(hnd); return st; }
 	return hnd;

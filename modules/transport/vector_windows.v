@@ -407,7 +407,7 @@ pub fn (mut b VectorBus) recv(timeout_ms int) !CanFrame {
 // the address, before the port is opened, and a port that disagrees is REFUSED rather than
 // permitted to revise it. So there is nothing to reconcile here — the answer was fixed at open,
 // which is also why `wire_pin_clash` exists to warn before one is opened.
-pub fn (mut b VectorBus) reconcile_silence() ! {}
+pub fn (mut b VectorBus) reconcile_silence(want bool) ! {}
 
 pub fn (mut b VectorBus) close() {
 	// ONCE. A second close would release a reference this port no longer holds, and the record
