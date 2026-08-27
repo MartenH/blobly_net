@@ -614,6 +614,21 @@ fn (mut e SharedEntry) drain_boundary(until i64) !bool {
 	mut read := u64(0)
 	for read < shared_boundary_drain_frames {
 		if until > 0 && time.ticks() >= until {
+			// NO BUDGET LEFT: ONE LOOK, NOT A BATCH. A poll with 0 ms that read nothing could
+			// never establish its boundary and so never subscribed, however long it kept
+			// polling (codex round 6 on #224). One zero-timeout read: an empty queue IS the
+			// boundary; a frame is discarded and the boundary is still open, so a polling
+			// client gets there one frame per poll on a quiet wire and never on a busy one —
+			// which is stated where the rule is.
+			e.driver.recv_shared(0) or {
+				if err.msg() == 'timeout' {
+					return true
+				}
+				return err
+			}
+			e.mu.lock()
+			e.parked_discards++
+			e.mu.unlock()
 			return false
 		}
 		before := e.discards()
@@ -897,7 +912,8 @@ fn (mut h SharedHandle) recv(timeout_ms int) !CanFrame {
 					// instead this receive reports a timeout with the boundary NOT established,
 					// and the next receive with a budget continues from where the queue is now
 					// (codex round 4 on #224). A handle that only ever polls with 0 ms after a
-					// second of silence therefore never subscribes on a backlogged wire — the
+					// second of silence therefore subscribes only once a poll finds the queue
+					// empty (one look per poll; see drain_boundary), never on a busy wire — the
 					// GUI and the Lua runner receive with a budget, and a send would have kept
 					// the handle attentive in the first place.
 					established := e.drain_boundary(if timeout_ms < 0 { i64(0) } else { deadline }) or {

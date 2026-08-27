@@ -739,6 +739,28 @@ fn test_a_send_after_a_silent_second_keeps_the_reply() {
 	client.close()
 }
 
+// A 0 ms POLL FROM AN EXPIRED TAP STILL SUBSCRIBES on a quiet wire: one look finds the queue
+// empty, that is the boundary, and what arrives after it is delivered (codex round 6 on #224).
+fn test_a_zero_timeout_poll_from_an_expired_tap_subscribes_on_a_quiet_wire() {
+	fake_opens = 0
+	stdatomic.store_i64(&fake_closes, 0)
+	fake_fails = false
+	fake_rx = chan CanFrame{cap: 8}
+	stdatomic.store_i64(&fake_recv_fails, 0)
+	mut tap := shared_open('fake:idle-poll', 'fake:idle-poll', fake_make)!
+	shared_test_wait_parked(mut tap)
+	if _ := tap.recv(0) {
+		assert false, 'nothing was sent'
+	} else {
+		assert err.msg() == 'timeout'
+	}
+	fake_rx <- CanFrame{
+		id: 0x300
+	}
+	assert tap.recv(1000)!.id == 0x300, 'the poll did not subscribe the tap'
+	tap.close()
+}
+
 fn shared_test_failed(mut bus Bus) bool {
 	if mut bus is SharedHandle {
 		mut e := bus.entry
