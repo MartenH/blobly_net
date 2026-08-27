@@ -116,7 +116,7 @@ fn draw_replay(mut app App) {
 			target := app.replay_seek[tok] or { seek_v }
 			app.mu.lock()
 			if mut cc := app.replay_ctls[tok] {
-				cc.want_seek = f64(target)
+				cc.cmds.seek = f64(target)
 			}
 			app.replay_seek.delete(tok)
 			app.mu.unlock()
@@ -134,7 +134,7 @@ fn draw_replay(mut app App) {
 				target := if st == .playing { player.State.paused } else { player.State.playing }
 				app.mu.lock()
 				if mut cc := app.replay_ctls[tok] {
-					cc.want_state = target
+					cc.cmds.state = target
 				}
 				app.mu.unlock()
 			}
@@ -163,7 +163,7 @@ fn draw_replay(mut app App) {
 			app.replay_loop[tok] = want_rep
 			app.mu.lock()
 			if mut cc := app.replay_ctls[tok] {
-				cc.want_repeat = if want_rep { i8(1) } else { i8(0) }
+				cc.cmds.repeat = if want_rep { i8(1) } else { i8(0) }
 			}
 			app.mu.unlock()
 		}
@@ -208,7 +208,7 @@ fn draw_replay(mut app App) {
 			if vgui.small_button(lbl) {
 				app.mu.lock()
 				if mut cc := app.replay_ctls[tok] {
-					cc.want_speed = sp
+					cc.cmds.speed = sp
 				}
 				app.mu.unlock()
 			}
