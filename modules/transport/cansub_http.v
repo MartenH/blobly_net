@@ -189,6 +189,10 @@ pub fn cansub_request(host string, method string, path string, body string, time
 	// (five seconds, vlib's own select), and handed to the SSL layer. What that bounds is every
 	// REST call this backend makes, including the PUT a sender's reconcile can run under the wire
 	// lock while every other sender and close() wait on it (codex round 3 on #223).
+	// THE CONNECT BOUND IS vlib's FIVE SECONDS, not `timeout`: net.dial_tcp has no per-call knob
+	// (its connect_timeout is a module constant), so the 700 ms and 2 s budgets below cap the
+	// request AFTER the connection is up. A tighter bound means a hand-rolled non-blocking
+	// connect against the raw socket; not done here (codex round 11 on #223).
 	mut tcp := net.dial_tcp('${host}:443')!
 	defer {
 		conn.shutdown() or {}

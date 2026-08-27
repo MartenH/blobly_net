@@ -321,3 +321,25 @@ fn test_a_missed_request_clears_a_fault_about_the_other_direction() {
 	assert wire_silence_fault('inproc:sil-other') == none, 'a fault about a request nobody makes any more must go'
 	forget_silence_claims()
 }
+
+// A STALE BUS CLEARS NOTHING: a closed run's thread finishing late must not take a fault the
+// current run recorded on the same wire, whichever direction it is about (codex round 11 on #223).
+fn test_a_stale_bus_does_not_clear_the_current_runs_fault() {
+	forget_silence_claims()
+	apply_silence_explained('inproc:sil-stale', true, fn (silent bool) int {
+		return 500
+	}, fn (want bool, st int) SilenceReason {
+		return SilenceReason{
+			why:      'refused'
+			declared: true
+		}
+	}) or {}
+	assert wire_silence_fault('inproc:sil-stale') != none
+	apply_silence_explained('inproc:sil-stale', false, fn (silent bool) int {
+		return silence_stale
+	}, fn (want bool, st int) SilenceReason {
+		return SilenceReason{}
+	}) or {}
+	assert wire_silence_fault('inproc:sil-stale') != none, 'a stale bus took the current run\'s fault'
+	forget_silence_claims()
+}

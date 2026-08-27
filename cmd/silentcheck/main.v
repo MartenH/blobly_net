@@ -278,7 +278,10 @@ fn run(mut o Opts) int {
 	sil.talker_health = worse(sil.talker_health, linger(mut talker, o))
 	println('2. listener marked listen-only, mid-run')
 	report(sil)
-	if !degraded(sil.talker_health) {
+	if !degraded(sil.talker_health) && !o.talker_reports {
+		println('   n/a — this talker backend reports no health, so a silenced listener cannot be told from an acknowledging one (frames arrived: ${sil.rx})')
+		not_applicable << 'phase 2'
+	} else if !degraded(sil.talker_health) {
 		if why := declined(o.listener, true) {
 			println('   n/a — ${why}')
 			not_applicable << 'phase 2'
@@ -329,7 +332,12 @@ fn run(mut o Opts) int {
 	// of this check drove the CLOSED handle — every send refused, health unknown, "never
 	// recovered" for a wire that had — while the oracle (the device's own tx_error_count) showed
 	// the counter falling 133 -> 0 within two seconds of the mark clearing.
-	if !o.talker_reports {
+	if !o.talker_reports && degraded(back.talker_health) {
+		// NO POSITIVE VERDICT DOES NOT MEAN NO VERDICT: SocketCAN reports nothing while healthy but
+		// its error frames still arrive, and the sampler drains them (codex round 11 on #223).
+		eprintln('   FAIL — the talker went ${shown(back.talker_health)} after the mark cleared: nobody acknowledged it.')
+		ok = false
+	} else if !o.talker_reports {
 		// NOT A PASS. Without a ladder there is no acknowledgement verdict at all: a still-silent
 		// listener receives the frames just the same, so rx > 0 proves nothing here (codex round
 		// 10 on #223). Said as such, not as ok.
@@ -449,7 +457,10 @@ fn run(mut o Opts) int {
 	// `recovered` here is UNTAINTED: the talker was driven back to `ok` before this tool read a
 	// single frame from the reopened listener, so it is the OPEN that put the controller in normal
 	// mode, not a receive-side reconcile repairing it afterwards (codex round 3 on #223).
-	if !o.talker_reports {
+	if !o.talker_reports && degraded(after.talker_health) {
+		eprintln('   FAIL — the reopened wire came back silent: the talker went ${shown(after.talker_health)}.')
+		ok = false
+	} else if !o.talker_reports {
 		println('   n/a — this talker backend reports no health, so whether the reopened wire acknowledges cannot be judged (frames arrived: ${after.rx})')
 		not_applicable << 'phase 4'
 	} else if !after.recovered || severe(after.talker_health) || after.rx == 0 {
@@ -479,7 +490,10 @@ fn run(mut o Opts) int {
 		mut joined := exchange(mut reopened, mut fresh2, o, true, true)
 		joined.talker_health = worse(joined.talker_health, linger(mut fresh2, o))
 		report(joined)
-		if !degraded(joined.talker_health) {
+		if !degraded(joined.talker_health) && !o.talker_reports {
+			println('   n/a — this talker backend reports no health, so a silenced listener cannot be told from an acknowledging one (frames arrived: ${joined.rx})')
+			not_applicable << 'phase 5'
+		} else if !degraded(joined.talker_health) {
 			if why := declined(o.listener, true) {
 				println('   n/a — ${why}')
 				not_applicable << 'phase 5'
@@ -626,18 +640,18 @@ fn exchange_burst(mut listener transport.Bus, mut talker transport.Bus, o Opts, 
 	observe := time.ticks() + 150
 	for time.ticks() < observe {
 		time.sleep(10 * time.millisecond)
-		r.talker_health = worse(r.talker_health, talker.health())
+		r.talker_health = worse(r.talker_health, verdict_now(mut talker, o))
 	}
 	// Then read normally, still sampling: a later reading can only be WORSE than the untainted one
 	// above, never better, so the verdict cannot be manufactured by the reconcile in `recv`.
 	deadline := time.ticks() + i64(window_ms(o))
 	for time.ticks() < deadline {
 		listener.recv(50) or {
-			r.talker_health = worse(r.talker_health, talker.health())
+			r.talker_health = worse(r.talker_health, verdict_now(mut talker, o))
 			continue
 		}
 		r.rx++
-		r.talker_health = worse(r.talker_health, talker.health())
+		r.talker_health = worse(r.talker_health, verdict_now(mut talker, o))
 	}
 	return r
 }
@@ -693,6 +707,11 @@ fn exchange_burst(mut listener transport.Bus, mut talker transport.Bus, o Opts, 
 // device directly for a CANsub talker, on this thread, and waits for the answer: the reading
 // postdates every frame sent before the call. Other backends read the driver synchronously.
 fn recover_talker(mut talker transport.Bus, mut listener transport.Bus, o Opts, untainted bool, reports bool) bool {
+	if !reports {
+		// No ladder to climb: ten seconds of frames could never reach an `ok` that does not
+		// exist, and the phase reads n/a from the burst alone (codex round 11 on #223).
+		return false
+	}
 	start := time.ticks()
 	floor := start + 1000
 	until := start + recovery_bound_ms
@@ -739,6 +758,19 @@ fn talker_reports_health(iface string) bool {
 		}
 	}
 	return false
+}
+
+// verdict_now is the burst-window reading: the driver's own verdict, with a non-blocking read on the
+// talker first so a backend whose faults arrive as frames (SocketCAN's error frames, Vector's
+// chip state) has delivered them (codex round 11 on #223). NOT the device oracle: asking a CANsub
+// over REST every few milliseconds while it transmits was measured to stop the frames reaching
+// the listener at all (heard 0 where 3800 was normal), so the oracle is kept for recovery, where
+// a sample every 5 ms is not needed.
+fn verdict_now(mut talker transport.Bus, o Opts) transport.BusHealth {
+	if !o.talker.to_lower().starts_with('cansub:') {
+		talker.recv(0) or {}
+	}
+	return talker.health()
 }
 
 // sample is a health reading that postdates every frame sent before it: the device itself for a

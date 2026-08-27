@@ -482,7 +482,7 @@ fn (mut b CansubBus) apply_phy_silence(want bool, force bool, pre ?bool) int {
 	if !rlock b.stop {
 		b.stop.running
 	} {
-		return silence_not_attempted
+		return silence_stale // a closed run's thread: records nothing, clears nothing
 	}
 	// A FAULT ABOUT THE OTHER DIRECTION IS RESOLVED BY THIS REQUEST. The device refused to go
 	// silent, the fault says so, and now the row is unticked: the controller is where the row
@@ -566,7 +566,7 @@ fn (mut b CansubBus) apply_phy_silence(want bool, force bool, pre ?bool) int {
 	if !rlock b.stop {
 		b.stop.running
 	} {
-		return silence_not_attempted
+		return silence_stale // a closed run's thread: records nothing, clears nothing
 	}
 	// A PUT THAT COULD NOT BE DELIVERED IS A FAULT, NOT "NOT ATTEMPTED". The readback above has
 	// just shown the controller in the OTHER mode from the record, so the record is disproved

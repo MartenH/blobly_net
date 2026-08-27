@@ -142,6 +142,9 @@ fn apply_silence_impl(iface string, want bool, set fn (bool) int, explain fn (bo
 		}
 	}
 	st := set(want)
+	if st == silence_stale {
+		return error('${iface}: listen-only was not applied — the bus is closed')
+	}
 	if st == silence_not_attempted {
 		// A FAULT ABOUT THE OTHER DIRECTION DOES NOT SURVIVE A REQUEST FOR THIS ONE, even one the
 		// device could not be asked about: the request it was about is gone. Left standing, a
@@ -219,6 +222,13 @@ pub:
 	why      string
 	declared bool
 }
+
+// silence_stale is the status a `set` closure returns when the BUS it belongs to is no longer
+// running: a thread of a closed run getting the lock late. Nothing is recorded and NOTHING IS
+// CLEARED — the wire may belong to a newer generation now, whose faults are its own (codex round
+// 11 on #223: an old CANsub probe finishing its readback after close() cleared the new run's
+// other-direction fault on the same wire).
+pub const silence_stale = -1_000_001
 
 // silence_not_attempted is the status a `set` closure returns when it did NOT reach the driver —
 // the bus is closing, or the device could not even be read. apply_silence records nothing for it
