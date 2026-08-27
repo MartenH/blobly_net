@@ -79,7 +79,9 @@ Two caveats: downloading an artifact requires being signed in to GitHub, and art
 - **CAN / CAN-FD** — SocketCAN on Linux; PCAN, Kvaser and Vector XL on Windows (see the
   hardware/OS matrix below). CAN-FD on SocketCAN, the software buses and **Vector**
   (`vector:1@500000/2000000`) and **Kvaser** (`kvaser:0@500000/2000000`) — in both, the data
-  rate in the address is what asks for it. Every CAN backend carries FD since #217; a *classic* channel refuses an FD frame rather than truncating it.
+  rate in the address is what asks for it — and **PCAN** (`pcan:PCAN_USBBUS1@500000/2000000`)
+  since #217, which completes the FD set: every CAN backend now carries it. A *classic* channel
+  still refuses an FD frame rather than truncating it.
 - **Software buses** for driver-free tests — in-process (`inproc:`) and UDP multicast, so the
   whole test suite runs with no hardware and no drivers.
 - **Ethernet** — **DoIP** (UDS over TCP) and **SOME/IP** (incl. an RPC client), over ordinary

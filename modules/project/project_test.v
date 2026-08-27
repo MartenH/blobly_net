@@ -1033,8 +1033,8 @@ fn test_canfd_without_a_data_bitrate_defaults_to_the_arbitration_rate() {
 	assert c.iface_with_bitrate() == 'vector:2@500000/500000'
 }
 
-// CLASSIC STAYS CLASSIC, and on the other backends nothing changes: PCAN and Kvaser refuse FD, so
-// composing a data phase into their addresses would produce a string their parsers reject.
+// CLASSIC STAYS CLASSIC. A row that did not ask for FD gets a bare rate, on every backend — the
+// data phase is composed only where the row asked for one AND the adapter configures one.
 fn test_a_data_phase_is_composed_only_where_it_can_be_configured() {
 	classic := Channel{
 		adapter: 'vector'
