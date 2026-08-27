@@ -96,6 +96,29 @@ pub fn open_pcan(spec string, iface string) !&PcanBus {
 	if C.ct_pcan_load() != 0 {
 		return error('PCANBasic.dll not found — install the PEAK PCAN driver')
 	}
+	// THE MODE IS CHOSEN BEFORE THE CHANNEL JOINS THE BUS, and it is a safety property rather than
+	// a tidiness one. CAN_Initialize brings the channel up; a listen-only parameter applied after
+	// it leaves a window in which a row marked listen-only is an ACKNOWLEDGING node on somebody's
+	// live vehicle, at a bitrate that is a default nobody has confirmed — the very thing a row
+	// defaulting to listen-only exists to prevent (codex round 1 on #219).
+	//
+	// PCANBasic accepts PCAN_LISTEN_ONLY on a channel that is not yet initialized and CARRIES IT
+	// THROUGH the initialization: measured on a PCAN-USB Pro FD, where reading the parameter back
+	// after CAN_Initialize returns the value set before it. That is what makes this order possible
+	// at all, and it is why it was measured rather than assumed — a status of PCAN_ERROR_OK on an
+	// uninitialized channel would look identical if the value were being accepted and discarded.
+	//
+	// SET IN BOTH DIRECTIONS, not only when silence is wanted: the mode belongs to the channel and
+	// another process may have left it silent, so `false` is as much an instruction as `true`.
+	//
+	// AND A REFUSAL FAILS THE OPEN when silence was asked for. Everything above is a promise the
+	// operator ticked a box for; handing back a bus that acknowledges while the UI says it does not
+	// is the one outcome worse than not opening at all.
+	silent := is_listen_only(iface)
+	sst := C.ct_pcan_set_silent(handle, if silent { 1 } else { 0 })
+	if sst != 0 && silent {
+		return error('PCAN: the channel would not be set listen-only (CAN_SetValue 0x${sst:X}) — this wire is marked never-transmit and the controller would still acknowledge, so it is not opened')
+	}
 	if want_fd {
 		// A PRE-FD DRIVER IS A SENTENCE, NOT A CRASH. CAN_InitializeFD and friends simply are not
 		// exported by an older PCANBasic, and the shim reports their absence rather than calling
@@ -110,42 +133,39 @@ pub fn open_pcan(spec string, iface string) !&PcanBus {
 		if st != 0 {
 			return error('CAN_InitializeFD failed (0x${st:X}) for ${bitrate}/${data_rate} — adapter connected? bus terminated/powered?')
 		}
-		mut b := &PcanBus{
+		note_silence_applied(iface, silent)
+		return &PcanBus{
 			channel: handle
 			iface:   iface
 			fd:      true
 		}
-		b.ensure_silence()
-		return b
 	}
 	baud := pcan_baud(bitrate)!
 	st := C.ct_pcan_init(handle, baud)
 	if st != 0 {
 		return error('CAN_Initialize failed (0x${st:X}) — adapter connected? bus terminated/powered?')
 	}
-	mut b := &PcanBus{
+	note_silence_applied(iface, silent)
+	return &PcanBus{
 		channel: handle
 		iface:   iface
 	}
-	b.ensure_silence()
-	return b
 }
 
-// ensure_silence makes the CONTROLLER match this wire's silence policy — the half of listen-only
-// that software refusal cannot do, because the ACK is the transceiver's. listen.v carries the
-// whole reasoning; silence.v carries why the record of what was applied is keyed by WIRE and not
-// held on this struct.
+// reconcile_silence makes the CONTROLLER match this wire's silence policy — the half of
+// listen-only that software refusal cannot do, because the ACK is the transceiver's. listen.v
+// carries the whole reasoning; silence.v carries why the record is keyed by WIRE.
 //
-// PCANBasic spells it as a channel PARAMETER (`CAN_SetValue` with `PCAN_LISTEN_ONLY`), which an
-// initialized channel takes at any time — no bus bounce, unlike canlib.
-fn (mut b PcanBus) ensure_silence() {
-	want := is_listen_only(b.iface)
-	if !claim_silence(b.iface, want) {
-		return
-	}
-	if C.ct_pcan_set_silent(b.channel, if want { 1 } else { 0 }) != 0 {
-		release_silence_claim(b.iface, want)
-	}
+// MID-RUN ONLY, like Kvaser's: `open_pcan` sets the parameter BEFORE CAN_Initialize, so a channel
+// is never on the bus in the wrong mode even for an instant.
+//
+// PCANBasic spells it as a channel PARAMETER (`CAN_SetValue` with `PCAN_LISTEN_ONLY`), which is
+// taken at any time and needs no bus bounce, unlike canlib.
+pub fn (mut b PcanBus) reconcile_silence() ! {
+	ch := b.channel
+	apply_silence(b.iface, is_listen_only(b.iface), fn [ch] (silent bool) int {
+		return int(C.ct_pcan_set_silent(ch, if silent { 1 } else { 0 }))
+	})!
 }
 
 // open_pcan_bus adapts open_pcan to the shared registry's factory signature. It takes the FULL
@@ -159,8 +179,8 @@ fn open_pcan_bus(iface string) !Bus {
 pub fn (mut b PcanBus) send(f CanFrame) ! {
 	// RECONCILED ON THE WAY OUT TOO, not only on receive — a transmit tap may never be read from,
 	// so on a wire with no reader nothing else here would notice a mark being lifted, and `send`
-	// would report success while the controller stayed silent (self-review of #219).
-	b.ensure_silence()
+	// would report success while the controller stayed silent.
+	b.reconcile_silence()!
 	// THE SHARED SHAPE RULES FIRST (frame_rules.v). This path accepted `brs` on a classic frame
 	// and simply never passed it to ct_pcan_write, reporting success — while wiretap kept the flag,
 	// so the record claimed a bit-rate switch the wire never saw. Kvaser and Vector each refuse
@@ -234,7 +254,9 @@ pub fn (mut b PcanBus) send(f CanFrame) ! {
 }
 
 pub fn (mut b PcanBus) recv(timeout_ms int) !CanFrame {
-	b.ensure_silence()
+	// Best effort on the read side: a receive that fails takes the wire's reader down with it, and
+	// the send path reports the same failure where a caller can act on it.
+	b.reconcile_silence() or {}
 	deadline := time.ticks() + i64(timeout_ms)
 	for {
 		mut id := u32(0)
@@ -307,6 +329,17 @@ pub fn (mut b PcanBus) recv(timeout_ms int) !CanFrame {
 
 pub fn (mut b PcanBus) close() {
 	C.ct_pcan_uninit(b.channel)
+	// AND FORGET WHAT THE WIRE WAS RECORDED AS, because CAN_Uninitialize RESETS the controller's
+	// mode. A record that outlives the state it describes is worse than none: the next open would
+	// find "already listen-only", skip the write, and hand back an acknowledging channel for a row
+	// that is still marked (codex round 1 on #219).
+	//
+	// Reached only when the LAST holder of this wire lets go — `pcan:` opens go through the
+	// refcounted registry in shared.v, which calls this on the final release.
+	//
+	// Kvaser deliberately does NOT do this: `canClose` leaves the driver mode in place, so there
+	// the record is still true after the handle is gone.
+	forget_wire_silence(b.iface)
 }
 
 // health asks CAN_GetStatus for the controller's fault ladder. 0xFFFFFFFF means the loaded

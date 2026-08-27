@@ -2,12 +2,12 @@ module transport
 
 import sync
 
-// silence.v — what each WIRE's transceiver was last told, and who has to tell it.
+// silence.v — what each WIRE's transceiver was last told, who tells it, and in what order.
 //
 // WHY THIS IS NOT A FIELD ON THE BUS. Listen-only at the transceiver is a property of the
-// CHANNEL, not of a handle: `canSetBusOutputControl` and `CAN_SetValue(PCAN_LISTEN_ONLY)` both
-// configure the controller, and every handle open on that wire sees the result. Remembering it
-// per bus therefore gets two things wrong at once, in opposite directions:
+// CONTROLLER, not of a handle: `canSetBusOutputControl` and `CAN_SetValue(PCAN_LISTEN_ONLY)` both
+// configure the channel, and every handle open on that wire sees the result. Remembering it per
+// bus therefore gets two things wrong at once, in opposite directions:
 //
 //   - TOO MANY WRITES. The app opens each wire several times per Start (a reader, transmit taps,
 //     a diagnostics bus), and on Kvaser a mode change must be bracketed by canBusOff/canBusOn —
@@ -15,20 +15,29 @@ import sync
 //     apply a setting the first one had already applied.
 //   - TOO FEW. A handle that is only ever SENT on never reaches its own reconcile, so on a wire
 //     with no reader nothing would notice a mark being lifted and the controller stayed silent
-//     while `send` reported success (self-review of #219).
+//     while `send` reported success.
 //
-// Keyed by wire and consulted by every entry point instead, both stop being possible: whichever
-// handle touches the wire first does the write, once, and the rest see it is done.
+// Keyed by wire and consulted by every entry point instead, both stop being possible.
 //
-// EMPTY AT PROCESS START, WHICH IS THE POINT. The controller's mode outlives the process that set
-// it — Kvaser's `canClose` does not reset it (measured; PCAN's `CAN_Uninitialize` does) — so a run
-// that ended while a wire was marked leaves the next one opening a channel that is already silent,
-// with no mark to say so. An empty table means the first claim on every wire ALWAYS writes,
-// whatever the answer, which is exactly the reconciliation that case needs.
+// EMPTY AT PROCESS START, AND THAT IS LOAD-BEARING. The controller's mode outlives the process
+// that set it — Kvaser's `canClose` does not reset it (measured; PCAN's `CAN_Uninitialize` does) —
+// so a run that ended while a wire was marked leaves the next one opening a channel that is
+// already silent, with no mark to say so. An empty table means the first attempt on every wire
+// ALWAYS reaches the driver, whatever the answer.
+//
+// AND WHAT THE DRIVER RESETS, THE TABLE MUST FORGET. The reverse of that case is just as wrong:
+// PCAN's close DOES reset the mode, so a record surviving it would let the next open skip a write
+// the controller needs, and hand back an acknowledging channel for a row that is still marked
+// (codex round 1 on #219). `forget_wire_silence` is what a backend whose close resets the
+// controller must call.
+
 struct SilenceApplied {
 mut:
 	mu    sync.Mutex
 	wires map[string]bool
+	// One mutex per wire, so a transition can be held across the driver call without a
+	// process-wide lock being held across I/O — see apply_silence.
+	locks map[string]&sync.Mutex
 }
 
 // silence_applied is process-wide for the reason listen_tbl is: the side that decides and the
@@ -36,62 +45,129 @@ mut:
 // would have to reach every backend's open.
 __global silence_applied = &SilenceApplied{}
 
-// claim_silence answers whether the CALLER is the one that must tell this wire's controller about
-// `want`, and records that it is about to.
-//
-// RECORDED BEFORE THE CALL, NOT AFTER, so two threads reaching the same change do not both
-// reconfigure the wire — the second is told it is already handled. The driver call itself happens
-// outside the lock: #211 tracks what holding a process-wide lock across I/O costs, and this write
-// is idempotent, so there is nothing to buy by serialising it.
-//
-// A caller that claims and then FAILS must say so with `release_silence_claim`, or the wire is
-// recorded as being in a state it never reached.
-pub fn claim_silence(iface string, want bool) bool {
-	k := wire_key(iface)
+// wire_silence_lock returns the mutex that serialises transitions on one wire, creating it on
+// first use. The registry lock is held only for the lookup, never across the driver call.
+fn wire_silence_lock(k string) &sync.Mutex {
 	silence_applied.mu.lock()
 	defer {
 		silence_applied.mu.unlock()
 	}
-	if have := silence_applied.wires[k] {
-		if have == want {
-			return false
-		}
+	if m := silence_applied.locks[k] {
+		return m
 	}
-	silence_applied.wires[k] = want
-	return true
+	m := sync.new_mutex()
+	silence_applied.locks[k] = m
+	return m
 }
 
-// release_silence_claim undoes a claim whose driver call did not succeed.
+fn recorded_silence(k string) ?bool {
+	silence_applied.mu.lock()
+	defer {
+		silence_applied.mu.unlock()
+	}
+	return silence_applied.wires[k] or { return none }
+}
+
+fn record_silence(k string, silent bool) {
+	silence_applied.mu.lock()
+	defer {
+		silence_applied.mu.unlock()
+	}
+	silence_applied.wires[k] = silent
+}
+
+fn unrecord_silence(k string) {
+	silence_applied.mu.lock()
+	defer {
+		silence_applied.mu.unlock()
+	}
+	silence_applied.wires.delete(k)
+}
+
+// apply_silence brings this wire's controller to `want`, calling `set` only when the wire is not
+// already known to be there. `set` answers 0 for success, and anything else is reported as it is.
 //
-// It makes the wire UNKNOWN again rather than restoring the previous value, because a failed
+// SERIALISED PER WIRE, ACROSS THE DRIVER CALL, and that is the point of the second map. Publishing
+// the requested state and then doing the I/O unlocked lets two opposite transitions finish in the
+// wrong order: mark on, mark off again while the first write is still in flight, and the table
+// ends up recording `true` while the `false` write is the one that actually landed last — after
+// which every later attempt to silence the wire is suppressed as redundant, and the controller
+// acknowledges indefinitely (codex round 1 on #219). Holding the wire's own lock makes the record
+// and the controller agree by construction.
+//
+// It is deliberately NOT the process-wide lock: #211 tracks what holding one of those across I/O
+// costs, and there is nothing to be gained by making two different wires wait for each other.
+//
+// A FAILURE MAKES THE WIRE UNKNOWN rather than restoring the previous value, because a refused
 // reconfiguration leaves the controller in a state nobody measured. Unknown is the honest record
-// and it is also the useful one: the next caller writes unconditionally instead of comparing
-// against a guess.
-//
-// Guarded on the value, so a claim that has since been superseded by a different one is not
-// erased by a straggler reporting an old failure.
-pub fn release_silence_claim(iface string, want bool) {
+// and also the useful one: the next attempt writes instead of comparing against a guess.
+pub fn apply_silence(iface string, want bool, set fn (bool) int) ! {
 	k := wire_key(iface)
-	silence_applied.mu.lock()
+	mut wl := wire_silence_lock(k)
+	wl.@lock()
 	defer {
-		silence_applied.mu.unlock()
+		wl.unlock()
 	}
-	if have := silence_applied.wires[k] {
+	if have := recorded_silence(k) {
 		if have == want {
-			silence_applied.wires.delete(k)
+			return
 		}
 	}
+	st := set(want)
+	if st != 0 {
+		unrecord_silence(k)
+		return error('the controller would not be set ${silence_word(want)} (driver status ${st})')
+	}
+	record_silence(k, want)
 }
 
-// forget_silence_claims drops every record, so the next claim on any wire writes.
+// note_silence_applied records a mode this wire's controller was put into by something other than
+// apply_silence — an OPEN that set it before the channel joined the bus.
 //
-// For tests, and for anything that has reason to believe the controllers were reconfigured behind
-// this process's back. Not called on close: the mode survives a handle, so what was applied is
-// still what the wire is doing.
+// THAT ORDER IS A SAFETY PROPERTY, not an optimisation. Both drivers bring a channel onto the bus
+// as part of opening it, so a mode applied afterwards leaves a window, however short, in which a
+// row marked listen-only is an ACKNOWLEDGING node on somebody's live vehicle — at a bitrate that
+// is a default nobody has confirmed, which is the very thing the silent-by-default rule exists to
+// prevent (codex round 1 on #219). So the backends set the mode first and tell the table here.
+pub fn note_silence_applied(iface string, silent bool) {
+	k := wire_key(iface)
+	mut wl := wire_silence_lock(k)
+	wl.@lock()
+	defer {
+		wl.unlock()
+	}
+	record_silence(k, silent)
+}
+
+// forget_wire_silence drops what this wire is recorded as, so the next attempt reaches the driver.
+//
+// For a backend whose CLOSE resets the controller — PCAN's `CAN_Uninitialize` does, Kvaser's
+// `canClose` does not — because a record that outlives the state it describes is worse than none.
+pub fn forget_wire_silence(iface string) {
+	k := wire_key(iface)
+	mut wl := wire_silence_lock(k)
+	wl.@lock()
+	defer {
+		wl.unlock()
+	}
+	unrecord_silence(k)
+}
+
+// forget_silence_claims drops every record, so the next attempt on any wire reaches the driver.
+//
+// For tests, and for `cmd/silentcheck`, which uses it to make its "the last run ended while this
+// wire was marked" phase mean what it says: the controller remembers and a fresh process does not,
+// and within one process nothing else reproduces that.
 pub fn forget_silence_claims() {
 	silence_applied.mu.lock()
 	defer {
 		silence_applied.mu.unlock()
 	}
 	silence_applied.wires.clear()
+}
+
+// silence_word is for messages: "listen-only"/"normal" is what an operator recognises, where
+// `true` and `false` need the reader to remember which way round the flag runs.
+fn silence_word(silent bool) string {
+	return if silent { 'listen-only' } else { 'normal' }
 }

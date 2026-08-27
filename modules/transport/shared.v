@@ -164,6 +164,10 @@ fn (mut h SharedHandle) health() BusHealth {
 // close drops THIS handle's reference. The driver handle is released when the last one goes.
 // Idempotent: the app closes a bus twice on at least one race path, and a second decrement
 // would close the wire out from under the callers still using it.
+fn (mut h SharedHandle) reconcile_silence() ! {
+	h.entry.bus.reconcile_silence()!
+}
+
 fn (mut h SharedHandle) close() {
 	if h.closed {
 		return

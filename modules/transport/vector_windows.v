@@ -402,6 +402,13 @@ pub fn (mut b VectorBus) recv(timeout_ms int) !CanFrame {
 	}
 }
 
+// reconcile_silence — NOT POSSIBLE ON VECTOR, and that is a property of the driver rather than
+// a gap. An XL channel's mode belongs to the PORTS open on it (pinned.v): `,silent` is chosen in
+// the address, before the port is opened, and a port that disagrees is REFUSED rather than
+// permitted to revise it. So there is nothing to reconcile here — the answer was fixed at open,
+// which is also why `wire_pin_clash` exists to warn before one is opened.
+pub fn (mut b VectorBus) reconcile_silence() ! {}
+
 pub fn (mut b VectorBus) close() {
 	// ONCE. A second close would release a reference this port no longer holds, and the record
 	// it decremented would belong to whoever opened the wire next. Callers close via `defer` in

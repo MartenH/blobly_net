@@ -290,6 +290,10 @@ fn (mut p PinnedBus) health() BusHealth {
 // closes a bus twice on at least one race path, and a second decrement would report a wire as
 // free while ports are still open on it — which is the failure this file exists to prevent,
 // arrived at from the other side.
+fn (mut p PinnedBus) reconcile_silence() ! {
+	p.inner.reconcile_silence()!
+}
+
 fn (mut p PinnedBus) close() {
 	// THE DRIVER FIRST, the record after. Released the other way round there is a window in
 	// which the wire reads as free while its XL port is still live, and an open let through in

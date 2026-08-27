@@ -120,14 +120,36 @@ static int ct_kvaser_is_virtual(int ch) {
 	if (ct_kv_chandata(ch, 1, &cap, sizeof cap) < 0) return -1;
 	return (cap & 0x00010000L) ? 1 : 0;
 }
+/* canDRIVER_SILENT / canDRIVER_NORMAL (canlib.h). Defined here, above both users: the OPEN
+ * path chooses the mode before going bus-on and the mid-run path revises it afterwards. */
+#define CT_KV_DRIVER_SILENT 1
+#define CT_KV_DRIVER_NORMAL 4
+
+/* SET THE OUTPUT MODE BEFORE canBusOn, NEVER AFTER.
+ *
+ * Opening used to go bus-on in canlib's default (acknowledging) mode and let the caller bounce the
+ * bus afterwards to select canDRIVER_SILENT. Every listen-only channel therefore joined the bus as
+ * an ACKing node first, however briefly -- on somebody's live vehicle, at a bitrate that is a
+ * default nobody has confirmed, which is precisely what a row defaulting to listen-only exists to
+ * avoid (codex round 1 on #219). canSetBusOutputControl is accepted while bus-off, which is where
+ * the channel already is at this point, so choosing the mode here costs nothing and closes the
+ * window completely. */
+static int ct_kvaser_set_mode(int hnd, int silent) {
+	if (!ct_kv_setoutctrl) return silent ? -100 : 0; /* only a SILENT request needs the call */
+	return ct_kv_setoutctrl(hnd, silent ? CT_KV_DRIVER_SILENT : CT_KV_DRIVER_NORMAL);
+}
+
 /* Open channel `ch` (accepting virtual channels), set bitrate (a canBITRATE_* code,
- * negative), go bus-on. Returns the handle (>=0) or the negative canStatus error. */
-static int ct_kvaser_open(int ch, int32_t bitrate_code) {
+ * negative), choose the output mode, then go bus-on. Returns the handle (>=0) or the negative
+ * canStatus error. */
+static int ct_kvaser_open(int ch, int32_t bitrate_code, int silent) {
 	int hnd, st;
 	ct_kv_initlib();
 	hnd = ct_kv_open(ch, CT_KV_OPEN_ACCEPT_VIRTUAL);
 	if (hnd < 0) return hnd;
 	st = ct_kv_setbus(hnd, bitrate_code, 0, 0, 0, 0, 0);
+	if (st < 0) { ct_kv_close(hnd); return st; }
+	st = ct_kvaser_set_mode(hnd, silent);
 	if (st < 0) { ct_kv_close(hnd); return st; }
 	st = ct_kv_buson(hnd);
 	if (st < 0) { ct_kv_close(hnd); return st; }
@@ -142,7 +164,7 @@ static int ct_kvaser_has_fd(void) { return ct_kv_setbusfd ? 1 : 0; }
 /* Open channel `ch` in CAN-FD mode: arbitration code, then the data-phase code, then bus-on.
  * Both are canlib's negative predefined constants (canBITRATE_* / canFD_BITRATE_*), which is
  * the pairing the bench run used. Returns the handle (>=0) or the negative canStatus. */
-static int ct_kvaser_open_fd(int ch, int32_t arb_code, int32_t data_code) {
+static int ct_kvaser_open_fd(int ch, int32_t arb_code, int32_t data_code, int silent) {
 	int hnd, st;
 	ct_kv_initlib();
 	hnd = ct_kv_open(ch, CT_KV_OPEN_ACCEPT_VIRTUAL | CT_KV_OPEN_CAN_FD);
@@ -150,6 +172,8 @@ static int ct_kvaser_open_fd(int ch, int32_t arb_code, int32_t data_code) {
 	st = ct_kv_setbus(hnd, arb_code, 0, 0, 0, 0, 0);
 	if (st < 0) { ct_kv_close(hnd); return st; }
 	st = ct_kv_setbusfd(hnd, data_code, 0, 0, 0);
+	if (st < 0) { ct_kv_close(hnd); return st; }
+	st = ct_kvaser_set_mode(hnd, silent);
 	if (st < 0) { ct_kv_close(hnd); return st; }
 	st = ct_kv_buson(hnd);
 	if (st < 0) { ct_kv_close(hnd); return st; }
@@ -225,8 +249,6 @@ static int ct_kvaser_read(int hnd, uint32_t *id, uint8_t *len, uint8_t *data, ui
  * canlib demands the channel be bus-OFF while this is set, so a change mid-run bounces the bus.
  * That is the honest cost and the caller decides when to pay it.
  */
-#define CT_KV_DRIVER_SILENT 1
-#define CT_KV_DRIVER_NORMAL 4
 
 /* canSetBusOutputControl is only accepted while the channel is bus-OFF, so the bus is bounced
    around it -- AND BROUGHT BACK UP WHICHEVER WAY THE CALL GOES. Returning early on a refused

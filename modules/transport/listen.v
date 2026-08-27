@@ -220,6 +220,16 @@ fn (mut s SilentBus) send(frame CanFrame) ! {
 	// cannot straddle two policy versions, and reading the entry twice threw that away: a wire
 	// marked listen-only between the two reads still transmitted, which is the one guarantee the
 	// checkbox makes (codex #202 r3).
+	// THE CONTROLLER FIRST, BEFORE THIS DECIDES. Refusing the send is the software half; the ACK
+	// is the transceiver's, and on a wire whose only handles are transmit taps — a disabled row
+	// keeps them open on purpose (#165) — this refusal is the ONLY thing that ever runs. Reconciled
+	// after the refusal, or inside the backend's own send, the mark going ON could never reach the
+	// driver at all: the process would stop transmitting while the controller went on acknowledging
+	// the bus indefinitely (codex round 1 on #219).
+	//
+	// A backend with no controller answers by doing nothing, so this costs one call through the
+	// wrappers on every other bus in the app.
+	s.inner.reconcile_silence()!
 	p := wire_policy(s.iface)
 	if p.silent {
 		return error('${s.iface}: listen-only — nothing is transmitted on this wire')
@@ -240,6 +250,10 @@ fn (mut s SilentBus) send(frame CanFrame) ! {
 
 fn (mut s SilentBus) recv(timeout_ms int) !CanFrame {
 	return s.inner.recv(timeout_ms)!
+}
+
+fn (mut s SilentBus) reconcile_silence() ! {
+	s.inner.reconcile_silence()!
 }
 
 fn (mut s SilentBus) close() {

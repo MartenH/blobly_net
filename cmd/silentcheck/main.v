@@ -376,5 +376,13 @@ fn arg_int(args []string, i int, what string) int {
 			exit(2)
 		})
 	}
-	return tok.int()
+	// FALLIBLE, LIKE THE HEXADECIMAL BRANCH. `.int()` answers 0 for anything it cannot read, so a
+	// typo did not fail — it ran the entire hardware proof against different inputs from the ones
+	// on the command line and could print PASS: `--id nope` became id 0, `--timeout nope` became a
+	// zero-millisecond observation window (codex round 1 on #219). A bench tool whose result does
+	// not correspond to its arguments is worse than one that refuses to start.
+	return int(tok.parse_int(10, 32) or {
+		eprintln('${what}: ${tok} is not a number')
+		exit(2)
+	})
 }

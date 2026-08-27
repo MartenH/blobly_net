@@ -19,6 +19,8 @@ fn (mut f FakeBus) recv(timeout_ms int) !CanFrame {
 	return error('timeout')
 }
 
+fn (mut f FakeBus) reconcile_silence() ! {}
+
 fn (mut f FakeBus) close() {
 	fake_closes++
 }

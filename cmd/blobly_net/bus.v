@@ -233,6 +233,10 @@ fn (mut t TapBus) health() transport.BusHealth {
 	return t.inner.health()
 }
 
+fn (mut t TapBus) reconcile_silence() ! {
+	t.inner.reconcile_silence()!
+}
+
 fn (mut t TapBus) close() {
 	t.inner.close()
 }
