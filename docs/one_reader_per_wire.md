@@ -72,8 +72,10 @@ The boundary above holds for every handle that receives within its first second 
 request/response pattern, the monitor — and for every handle on a wire somebody else is reading:
 a handle opening onto a parked wire drains the driver's queue before it counts, so what it gets is
 what arrived after its open. The one handle that loses anything is a tap that never received for
-over a second and then does: its history begins at that first receive, because nothing was
-committed on its behalf in between.
+over a second and then does **on a wire nobody else was reading**: its history begins at that
+first receive, because nothing was committed on its behalf in between. On a wire somebody else
+kept reading, the ring holds everything since the tap's open (bounded-ring overrun aside) and the
+tap gets it — the expiry is a property of the wire's reader, not a penalty on the handle.
 
 ## Private raw-record seam
 

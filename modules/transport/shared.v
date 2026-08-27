@@ -878,7 +878,11 @@ fn (mut h SharedHandle) recv(timeout_ms int) !CanFrame {
 			unread := !e.attentive_locked(time.ticks())
 			e.mu.unlock()
 			if unread {
-				// AN EXPIRED TAP'S HISTORY BEGINS HERE, as docs/one_reader_per_wire.md says: the
+				// AN EXPIRED TAP'S HISTORY BEGINS HERE — on a wire NOBODY was reading, which is what
+				// `unread` means: the wire as a whole, not this handle. Where another subscriber kept
+				// the reader awake, the ring holds this handle's history since its open and its cursor
+				// stands (codex round 5 on #224 read the doc the other way; the doc now says this).
+				// As docs/one_reader_per_wire.md says: the
 				// ring may still hold what was committed on its behalf in its attentive second,
 				// and its open-time cursor would have served that as new (codex round 3 on
 				// #224). The tail is its boundary now, and the driver's queue is drained to it —
