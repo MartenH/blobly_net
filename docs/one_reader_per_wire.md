@@ -62,13 +62,30 @@ The intent was always one reader. The mechanism for sharing it was never built.
 
 ## The proposal
 
-**One driver handle per wire, always, on every backend. `transport` owns the reader. Everything
-above it subscribes.**
+**One receive BROKER per logical wire per process. `transport` owns it. Everything above it
+subscribes. Each backend uses whatever physical handle topology it needs underneath.**
+
+The first draft said "one driver handle, always". Codex's review (on #212) is right that this is
+too strong, for a concrete reason: **Kvaser handles are thread-oriented**. canlib's own guidance
+is one handle per thread, and a single handle shared between a reader parked in `canReadWait` and
+arbitrary sender threads would need a lock held across a blocking driver call — the exact thing
+#211 exists to remove. So the invariant is about the *reader*, not the handle count:
 
 - `transport.open(iface)` returns a **subscriber**, not a driver handle.
-- The first subscriber on a wire starts one reader; the last to close stops it.
-- The reader loop does one `recv` from the driver and hands a **copy** to every subscriber's queue.
-- Sending is unchanged in meaning: subscribers share the one handle, as PCAN already does.
+- Exactly one thread per wire reads from the driver — the broker's. Nobody else calls the
+  driver's receive.
+- The broker hands a **copy** to every subscriber's bounded queue. It never blocks on a
+  subscriber (see the chokepoint risk below).
+- Sends go through the broker's single transmit path, which is what makes the acknowledgement
+  correlation below sound.
+- The backend decides the topology: PCAN and CANsub one handle (the driver permits one); SocketCAN
+  one socket; Vector one port; **Kvaser one RX handle and one TX handle**, opened by `transport`
+  in a known order — so which of the two holds initialisation access is a fact the broker knows,
+  not one it has to discover through every handle.
+
+**Consequence for the #219 arithmetic, stated honestly:** the Kvaser registry, apply-through-every-
+handle and the open/close serialisation do not vanish. They shrink to "two handles whose order we
+chose", which is deterministic where today's is not. Less code, not none.
 
 ### Why in `transport` and not in the GUI
 
@@ -160,14 +177,68 @@ from our echo, and the ring's "consume oldest first" is the best that can be don
 driver-flagged ack is not a guess. `CanFrame` grows one field — `tx_ack bool`, a received STATUS
 like `esi`, never set by a sender — and `wiretap` matches on the flag first and the content second.
 
-The reader therefore does one more thing per frame: an ack is fanned out to subscribers like any
-other frame, because a simulated ECU that sent a response still wants to see it confirmed in its
-own stream, exactly as it does today on Vector.
+**Delivered to every subscriber EXCEPT the one that sent it.** The first draft broadcast the ack to
+all, sender included, and that breaks three things that exist today: `inproc:` and `udp:` suppress
+self-delivery by design (`inproc_test.v`, *no self-loopback*), and the simulation is explicit that
+its bus must be *"a dedicated instance so it doesn't hear its own sends"* (`sim.v`). The broker
+knows which subscriber originated each send, so "everyone but the origin" costs nothing and keeps
+the contract every consumer was written against. The monitor still gets its echo — which is what
+Vector gives it today — and the simulated ECU still gets its silence.
 
-**This also changes what "record at emit" means.** Today PCAN and Kvaser record at emit because
-nothing will ever observe the frame for them; with a flagged ack on every backend, *nothing* needs
-to record at emit — every backend records in observation order, from the ack. One rule instead of
-two, and the ordering the trace shows becomes the ordering the wire saw on every adapter.
+**Correlation is per origin, in order.** Two subscribers sending identical bytes at once must each
+be credited with their own ack. Drivers acknowledge in submission order per transmit handle, and
+sends are serialised through the broker's one transmit path, so a per-origin FIFO of outstanding
+sends matches acks without guessing. A bare `tx_ack bool` on the frame cannot express that.
+
+**So the flag is not on `CanFrame`.** The first draft widened the wire struct; codex's objection is
+right: `CanFrame` is the bytes on the wire, and host metadata on it is what `wiretap`'s identity,
+DBC decoding and replay all have to be defended against (`fd`/`brs` in the echo identity was a
+#139-class lesson). Subscribers receive an **envelope** — the frame, its direction (`rx`, or
+`tx_ack` with the origin), and the ingress timestamp. That envelope is also where #149's hardware
+timestamps finally have somewhere to live.
+
+**Emit-time recording stays, as the fallback it already is.** The first draft claimed nothing would
+need to record at emit any more. Wrong twice over: a transmit-only subscriber never drains a queue,
+and `trace.v` records at emit precisely for the case where no monitor exists yet — the simulation's
+first frames go out while the rx loops are still opening. So the rule becomes: **a wire whose broker
+has a monitor subscriber records from the ack; a wire without one records at emit**, per wire,
+declared by the broker rather than inferred from the backend name. Acks where the driver provides
+them, emit-time where it cannot, and the same shape everywhere.
+
+That last clause matters because the ack is **a capability, not a given**. PEAK documents echo
+frames from PCAN-Basic **4.6.0**, with driver and hardware restrictions — the first draft said 4.4
+from memory, which is exactly the kind of claim the quirks table forbids. The broker asks each
+backend whether acks are available on this wire and falls back per wire; it never assumes.
+
+## Lifecycle — the part that was underspecified
+
+The first draft had "first subscriber starts the reader, last one stops it" and nothing else. Codex
+named what is missing, and each item is a bug today or a bug tomorrow:
+
+- **A fatal reader error must reach every subscriber.** Today `rx_loop` disables every alias on a
+  wire when a non-timeout receive error arrives (`workers.v`). With one reader, a driver failure
+  that only the broker sees leaves every subscriber blocked on an empty queue — and the GUI times
+  out forever, silently. The broker wakes every blocked subscriber with the error, and the error
+  is sticky until the wire is reopened.
+- **Explicit states**: `opening`, `running`, `failed`, `closing`. Not a refcount and a bool.
+- **A closing reservation.** The last close stops a reader that may be parked in the driver
+  (#214's lesson); a new `open` arriving during that window must wait for the old broker to be
+  gone, not race it for the handle. `shared.v`'s close today has exactly this gap.
+- **Lazy receive.** A subscriber's queue is created on its first `recv`, not at open — otherwise
+  every transmit-only tap becomes a permanently overflowing subscriber with a drop count nobody
+  wants to read.
+- **A statistics API on the broker** — subscriber drops and the wire's own overrun — because
+  `Bus` has none and the design's visibility argument is worth nothing without one.
+
+## Where the wrappers go
+
+The stack is **per-subscriber `SilentBus` → subscriber queue → one shared `PinnedBus`/raw backend
+per wire**, and the boundary is not arbitrary. `verbatim` is a property of the *opener* (replay
+owns its frames' format; the GUI's tap frames before it records), so `silenced()` must wrap the
+subscriber; share it any higher and `verbatim` becomes global. `pinned_open` records what the
+*driver* is configured to, once per wire, so it sits below the queue; share it any lower and the
+fake per-subscriber Vector pins that #165 is about survive. The registry is keyed by `wire_key`,
+with a separate backend-normalised configuration signature for bitrate, mode and protocol.
 
 ## What this dissolves
 
@@ -214,3 +285,15 @@ Not a side benefit — a large part of the justification:
 - A reader-chokepoint test, for the risk this design actually introduces: with one subscriber
   wedged, the WIRE's own overrun count must stay zero. If it does not, the fanout is blocking
   somewhere it promised not to.
+- **An instrumented fake backend that asserts exactly one physical reader.** The `inproc:`
+  two-subscriber test above proves the *contract*, not the broker: `inproc:` already fans out,
+  so it would pass today with no broker at all. The fake counts driver receives.
+- Fatal-reader broadcast, then reopen: every blocked subscriber wakes with the error; a
+  subsequent open on the same wire succeeds.
+- Concurrent final-close and open on one wire: no race for the handle, no leaked reader.
+- Sender self-suppression: the origin does not receive its own ack; every other subscriber does.
+- Identical concurrent sends from two subscribers: each is credited its own ack.
+- Pre-monitor recording: frames sent before any monitor subscribes are still recorded, at emit.
+- Payload isolation: a subscriber mutating the frame it received does not alter another's copy.
+- Unsupported-ack fallback: a wire whose backend reports no ack capability records at emit and
+  never waits for one.
