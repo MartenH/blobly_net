@@ -278,7 +278,12 @@ fn run(mut o Opts) int {
 	sil.talker_health = worse(sil.talker_health, linger(mut talker, o))
 	println('2. listener marked listen-only, mid-run')
 	report(sil)
-	if !degraded(sil.talker_health) && !o.talker_reports {
+	if !degraded(sil.talker_health) && !o.talker_reports && driver_fault(o.listener) != '' {
+		// A RECORDED DRIVER FAULT ON THE LISTENER IS DEFINITIVE whatever the talker can say: the
+		// controller call failed and the seam wrote it down (codex round 12 on #223).
+		eprintln('   FAIL — the listener driver refused the mark: ${driver_fault(o.listener)}')
+		ok = false
+	} else if !degraded(sil.talker_health) && !o.talker_reports {
 		println('   n/a — this talker backend reports no health, so a silenced listener cannot be told from an acknowledging one (frames arrived: ${sil.rx})')
 		not_applicable << 'phase 2'
 	} else if !degraded(sil.talker_health) {
@@ -490,7 +495,10 @@ fn run(mut o Opts) int {
 		mut joined := exchange(mut reopened, mut fresh2, o, true, true)
 		joined.talker_health = worse(joined.talker_health, linger(mut fresh2, o))
 		report(joined)
-		if !degraded(joined.talker_health) && !o.talker_reports {
+		if !degraded(joined.talker_health) && !o.talker_reports && driver_fault(o.listener) != '' {
+			eprintln('   FAIL — the listener driver refused the mark: ${driver_fault(o.listener)}')
+			ok = false
+		} else if !degraded(joined.talker_health) && !o.talker_reports {
 			println('   n/a — this talker backend reports no health, so a silenced listener cannot be told from an acknowledging one (frames arrived: ${joined.rx})')
 			not_applicable << 'phase 5'
 		} else if !degraded(joined.talker_health) {
@@ -739,6 +747,17 @@ fn recover_talker(mut talker transport.Bus, mut listener transport.Bus, o Opts, 
 // (fresh samples, so a couple of them is enough for the burst's failures to be counted).
 const recovery_bound_ms = i64(10000)
 const linger_ms = i64(2500)
+
+// driver_fault is a NON-declared silence fault standing on a wire — a driver call that failed, as
+// opposed to a device's declared rule (which `declined` reports as n/a). Empty when none.
+fn driver_fault(iface string) string {
+	if f := transport.wire_silence_fault(iface) {
+		if !f.declared {
+			return f.why
+		}
+	}
+	return ''
+}
 
 // talker_reports_health is whether a backend can be asked for its controller state at all: the
 // vendor drivers and a CANsub can; SocketCAN reads unknown until the kernel emits an error frame,

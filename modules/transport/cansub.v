@@ -517,7 +517,11 @@ fn (mut b CansubBus) apply_phy_silence(want bool, force bool, pre ?bool) int {
 	// The policy is re-read under the lock, and a probe that no longer matches it attempts
 	// nothing; the next period asks again.
 	if force && is_listen_only(b.iface) != want {
-		return silence_not_attempted
+		// STALE, NOT "NOT ATTEMPTED": the status matters, because not-attempted clears a fault
+		// about the other direction — which here is the CURRENT direction's fault, recorded by
+		// the on-demand reconcile that overtook this probe (codex round 12 on #223). A
+		// discarded probe touches nothing.
+		return silence_stale
 	}
 	have := if force {
 		pre or { return silence_not_attempted }

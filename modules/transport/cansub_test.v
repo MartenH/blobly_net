@@ -547,6 +547,11 @@ fn test_whitespace_in_an_address_does_not_make_a_second_wire() {
 // #223, where the dial under the lock was the OS connect timeout, unbounded).
 fn test_a_probe_whose_readback_failed_does_not_dial_under_the_lock() {
 	iface := 'cansub:AAAA0003/1@500000'
+	// The policy the probe sampled still holds, so the probe is current, not stale.
+	set_listen_only(iface, true)
+	defer {
+		clear_listen_only()
+	}
 	mut b := &CansubBus{
 		iface: iface
 		host:  '10.255.255.1'
@@ -578,8 +583,10 @@ fn test_a_probe_whose_policy_changed_meanwhile_attempts_nothing() {
 		b.stop.running = true
 	}
 	t0 := time.ticks()
-	// The probe wanted silent and read the device as normal; the policy is now normal.
-	assert b.apply_phy_silence(true, true, false) == silence_not_attempted
+	// The probe wanted silent and read the device as normal; the policy is now normal. STALE,
+	// so the seam touches nothing — not-attempted would clear the fault the reconcile that
+	// overtook this probe may just have recorded (codex round 12 on #223).
+	assert b.apply_phy_silence(true, true, false) == silence_stale
 	assert time.ticks() - t0 < 500, 'the stale probe reached the network: ${time.ticks() - t0} ms'
 }
 
