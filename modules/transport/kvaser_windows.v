@@ -38,11 +38,34 @@ fn C.ct_kvaser_status(int, &u32) int
 fn C.ct_kvaser_count() int
 fn C.ct_kvaser_descr(int, &char, int) int
 fn C.ct_kvaser_is_virtual(int) int
+fn C.ct_kvaser_set_silent(int, int) int
 
 // KvaserBus is one open + bus-on CANlib channel handle.
 pub struct KvaserBus {
 mut:
 	handle int
+	// The wire this handle is, so the silence policy can be asked about it — see ensure_silence.
+	iface string
+	// What the TRANSCEIVER was last set to, and whether this bus has set it AT ALL.
+	//
+	// THE SECOND HALF IS THE LOAD-BEARING ONE, AND IT WAS MEASURED HERE. The driver mode belongs to
+	// the CHANNEL and canClose does not reset it: a run that ended while the wire was marked leaves
+	// the controller silent for whoever opens it next, while the mark itself died with the process.
+	// A bus that wrote only when the policy differed from its own freshly-zeroed field would find
+	// `want == false`, match, write nothing, and leave that wire silent indefinitely — on a row
+	// nobody had ticked. So the FIRST reconcile always writes, whatever the answer, and only later
+	// ones are allowed to be cheap.
+	//
+	// Not theory: `cmd/silentcheck` phase 4 reproduces it on a bench (close while marked, clear,
+	// reopen) and it FAILS on this backend without this field. PCAN survives it either way, because
+	// CAN_Uninitialize does reset the channel — which is exactly why the rule cannot be left to
+	// whichever driver happens to be forgiving.
+	//
+	// It is the same divergence CANsub answers by reading the device back (`reconcile_listen_only`,
+	// "the device is asked, not our memory of it"). Neither of these drivers is on the end of an
+	// HTTP round trip, so the cheaper cure fits: write once, unconditionally, at open.
+	silent  bool
+	applied bool
 	// The mode this handle was OPENED in. A channel opened classic cannot carry an FD frame
 	// however the frame is flagged, so send() has to know -- and a channel opened FD still
 	// carries classic frames, which is why recv reads the flags per frame rather than assuming.
@@ -53,7 +76,7 @@ mut:
 // (classic, or CAN-FD when the address names a data rate) and goes bus-on.
 // The address rules live in kvaser_names.v, where a CI runner with no adapter can check them.
 // Referenced only from open_windows.v.
-pub fn open_kvaser(spec string) !&KvaserBus {
+pub fn open_kvaser(spec string, iface string) !&KvaserBus {
 	s := kvaser_spec(spec)!
 	// The arbitration code comes from a DIFFERENT family depending on the mode -- see
 	// kvaser_fd_arb_code for why an FD channel must not take the classic constant.
@@ -67,9 +90,12 @@ pub fn open_kvaser(spec string) !&KvaserBus {
 			return error('Kvaser: could not open channel ${s.channel} — ${kvaser_open_refusal(hnd,
 				s.channel, false)}')
 		}
-		return &KvaserBus{
+		mut b := &KvaserBus{
 			handle: hnd
+			iface:  iface
 		}
+		b.ensure_silence()
+		return b
 	}
 	// ASKED OF THE LIBRARY, not assumed from its version. canSetBusParamsFd is absent from a
 	// canlib old enough to predate FD, and calling through a null pointer is a crash where a
@@ -83,10 +109,36 @@ pub fn open_kvaser(spec string) !&KvaserBus {
 		return error('Kvaser: could not open channel ${s.channel} for CAN-FD at ${s.bitrate}/${s.data_bitrate} — ${kvaser_open_refusal(hnd,
 			s.channel, true)}')
 	}
-	return &KvaserBus{
+	mut b := &KvaserBus{
 		handle: hnd
+		iface:  iface
 		fd:     true
 	}
+	b.ensure_silence()
+	return b
+}
+
+// ensure_silence makes the CONTROLLER match this wire's silence policy — the half of listen-only
+// that software refusal cannot do, because the ACK is the transceiver's. listen.v carries the
+// whole reasoning, including why this is asked per receive instead of cached at open.
+//
+// canlib spells it `canSetBusOutputControl(canDRIVER_SILENT)`, and it may only be set while the
+// channel is bus-OFF — so the shim bounces the bus around it. That is the cost of moving the mark
+// mid-run, and it is paid only when somebody actually moves it.
+//
+// A FAILURE LEAVES THE REMEMBERED STATE ALONE, so the next receive tries again rather than
+// recording a change that did not happen.
+fn (mut b KvaserBus) ensure_silence() {
+	want := is_listen_only(b.iface)
+	if b.applied && want == b.silent {
+		return
+	}
+	st := C.ct_kvaser_set_silent(b.handle, if want { 1 } else { 0 })
+	if st != 0 {
+		return
+	}
+	b.silent = want
+	b.applied = true
 }
 
 pub fn (mut b KvaserBus) send(f CanFrame) ! {
@@ -152,6 +204,7 @@ pub fn (mut b KvaserBus) send(f CanFrame) ! {
 }
 
 pub fn (mut b KvaserBus) recv(timeout_ms int) !CanFrame {
+	b.ensure_silence()
 	// canReadWait takes an unsigned timeout; map "block forever" (negative) to a
 	// large value, since the Bus contract allows timeout_ms < 0 = block.
 	to := if timeout_ms < 0 { u32(0xFFFF_FFFF) } else { u32(timeout_ms) }

@@ -40,6 +40,7 @@ fn C.ct_pcan_has_fd() int
 fn C.ct_pcan_init_fd(u16, &char) u32
 fn C.ct_pcan_write_fd(u16, u32, u8, u8, u8, &u8) u32
 fn C.ct_pcan_read_fd(u16, &u32, &u8, &u8, &u8) u32
+fn C.ct_pcan_set_silent(u16, int) u32
 
 // PCAN message-type flags (mirror pcan_shim.h).
 const pcan_msg_rtr = u8(0x01)
@@ -71,6 +72,23 @@ fn pcan_list() []Iface {
 pub struct PcanBus {
 mut:
 	channel u16
+	// The wire this handle is, so the silence policy can be asked about it — see ensure_silence.
+	iface string
+	// What the TRANSCEIVER was last set to, and whether this bus has set it AT ALL.
+	//
+	// THE SECOND HALF IS BELT AND BRACES HERE AND LOAD-BEARING ON KVASER, and it is the same field
+	// on purpose. A mode set on a CHANNEL can outlive the handle that set it, so a run that ended
+	// while the wire was marked can leave the controller silent for whoever opens it next — while
+	// the mark itself died with the process. A bus that wrote only when the policy differed from
+	// its own freshly-zeroed field would find `want == false`, match, write nothing, and leave that
+	// wire silent indefinitely.
+	//
+	// Measured with `cmd/silentcheck` phase 4 (close while marked, clear, reopen): PCAN passes it
+	// without this field, because CAN_Uninitialize resets the channel, and Kvaser does not. Kept
+	// identical anyway — "this driver happens to forget" is not a property to build a promise on,
+	// and the cost is one CAN_SetValue per open.
+	silent  bool
+	applied bool
 	// Opened for CAN-FD. THE CHANNEL DECIDES what it can carry, not the frame — a handle opened
 	// classic cannot send an FD frame whatever the flags say, and an FD-opened one carries classic
 	// frames too, so this is read on every send and every receive.
@@ -79,7 +97,7 @@ mut:
 
 // open_pcan parses `pcan:<channel>[@<bitrate>]`, loads PCANBasic.dll and initializes
 // the channel. Referenced only from open_windows.v, so the Linux build never sees it.
-pub fn open_pcan(spec string) !&PcanBus {
+pub fn open_pcan(spec string, iface string) !&PcanBus {
 	// BOTH RULES, from the file all three backends share: at most one bitrate, and that a whole
 	// number. Validating only the second part let `@250000@500000` open at 250 kbit/s while the
 	// project reported 500.
@@ -107,19 +125,46 @@ pub fn open_pcan(spec string) !&PcanBus {
 		if st != 0 {
 			return error('CAN_InitializeFD failed (0x${st:X}) for ${bitrate}/${data_rate} — adapter connected? bus terminated/powered?')
 		}
-		return &PcanBus{
+		mut b := &PcanBus{
 			channel: handle
+			iface:   iface
 			fd:      true
 		}
+		b.ensure_silence()
+		return b
 	}
 	baud := pcan_baud(bitrate)!
 	st := C.ct_pcan_init(handle, baud)
 	if st != 0 {
 		return error('CAN_Initialize failed (0x${st:X}) — adapter connected? bus terminated/powered?')
 	}
-	return &PcanBus{
+	mut b := &PcanBus{
 		channel: handle
+		iface:   iface
 	}
+	b.ensure_silence()
+	return b
+}
+
+// ensure_silence makes the CONTROLLER match this wire's silence policy — the half of listen-only
+// that software refusal cannot do, because the ACK is the transceiver's. listen.v carries the
+// whole reasoning, including why this is asked per receive instead of cached at open.
+//
+// PCANBasic spells it as a channel PARAMETER (`CAN_SetValue` with `PCAN_LISTEN_ONLY`), which an
+// initialized channel takes at any time — no bus bounce, unlike canlib.
+//
+// A FAILURE LEAVES THE REMEMBERED STATE ALONE, so the next receive tries again rather than
+// recording a change that did not happen.
+fn (mut b PcanBus) ensure_silence() {
+	want := is_listen_only(b.iface)
+	if b.applied && want == b.silent {
+		return
+	}
+	if C.ct_pcan_set_silent(b.channel, if want { 1 } else { 0 }) != 0 {
+		return
+	}
+	b.silent = want
+	b.applied = true
 }
 
 // open_pcan_bus adapts open_pcan to the shared registry's factory signature. It takes the FULL
@@ -127,7 +172,7 @@ pub fn open_pcan(spec string) !&PcanBus {
 // and compares a later opener against.
 fn open_pcan_bus(iface string) !Bus {
 	body := if iface.starts_with('pcan:') { iface['pcan:'.len..] } else { iface }
-	return open_pcan(body)!
+	return open_pcan(body, iface)!
 }
 
 pub fn (mut b PcanBus) send(f CanFrame) ! {
@@ -204,6 +249,7 @@ pub fn (mut b PcanBus) send(f CanFrame) ! {
 }
 
 pub fn (mut b PcanBus) recv(timeout_ms int) !CanFrame {
+	b.ensure_silence()
 	deadline := time.ticks() + i64(timeout_ms)
 	for {
 		mut id := u32(0)
