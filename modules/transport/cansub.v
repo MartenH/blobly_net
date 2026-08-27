@@ -403,6 +403,14 @@ fn (mut b CansubBus) enqueue(rec CansubRecord) bool {
 // Best-effort: a failed PUT leaves `phy_silent` alone, so the next poll tries again rather than
 // recording a change that did not happen.
 fn (mut b CansubBus) reconcile_listen_only() {
+	// NOT ON THE WAY OUT. close() no longer waits for this thread (see there), so it can still be
+	// alive after the bus is considered closed — and reconfiguring a channel then would be this
+	// backend reaching out to hardware nobody believes it still holds.
+	if !rlock b.stop {
+		b.stop.running
+	} {
+		return
+	}
 	want := is_listen_only(b.iface)
 	have := rlock b.stop {
 		b.stop.phy_silent
@@ -733,7 +741,22 @@ pub fn (mut b CansubBus) close() {
 	// JOINED, THEN the channel closed. Closing `rx` while the reader still holds it is a panic
 	// waiting for a bus that happens to be busy at Stop.
 	b.reader.wait()
-	b.health_thr.wait()
+	// THE HEALTH THREAD IS NOT WAITED FOR, and that is the point.
+	//
+	// Its requests cannot be bounded from here. `read_timeout` is the only budget vlib's SSL
+	// client offers and it starts AFTER the connection is up, so a device whose mDNS name resolves
+	// to a host that blackholes connections leaves that thread inside `dial` for however long the
+	// OS takes — and joining it made Stop wait out an OS connect timeout no matter what number
+	// this code chose (codex round 16 on #204). Shortening the budget in rounds 7 and 8 could not
+	// reach it, because the budget was never the thing in charge.
+	//
+	// So Stop does not depend on it. What it does depend on is the reader, which owns the socket
+	// and is bounded by a read timeout this code CAN set — that join stays.
+	//
+	// Safe to leave running: it touches `host`, `spec` and `stop`, all of which outlive it under
+	// the GC, and `running` is already false, so its loop exits on return and reconcile_listen_only
+	// refuses to reconfigure a channel on the way out. The worst it does is finish one GET whose
+	// answer nobody reads. #214 is the missing connect timeout.
 	b.rx.close()
 }
 
