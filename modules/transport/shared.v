@@ -22,6 +22,16 @@ const shared_reader_poll_ms = 50
 // delivers ~8000 a second at 500 kbit/s, so a second of queue is never lost. The first subscriber
 // does not wait for this: subscribing kicks the reader, and the kick drains too.
 const shared_parked_drain_ms = 1000
+
+// shared_attentive_ms is how long a handle that has not yet received still counts as a reader.
+// A handle's boundary is its OPEN (its cursor is taken there), and the pattern that depends on
+// it is the ordinary one: open, send a request, then receive the reply — which has often arrived
+// before the first receive is called. So for this long after open the reader stays awake on a
+// handle's behalf whether or not it has received; a handle that has received once counts for the
+// rest of its life; and a handle that has done neither in a second is a transmit tap, which is
+// what the park is for. What such a tap loses if it receives after all is stated in
+// docs/one_reader_per_wire.md.
+const shared_attentive_ms = i64(1000)
 const shared_pending_capacity = 4096
 const shared_pending_ttl_ms = 5000
 
@@ -132,6 +142,19 @@ mut:
 	expired_tx_acks   u64
 	// parked_discards counts frames the reader read and threw away while nobody subscribed.
 	parked_discards   u64
+	// parked is true while the reader waits in its park (under mu) — a test hook, so a test can
+	// observe the state rather than sleep and hope.
+	parked            bool
+	// unread maps each handle that has NOT yet received to the tick it opened at. With subs, it
+	// is what decides whether anybody is listening — see attentive_locked.
+	unread            map[u64]i64
+	// drain_mu is held by the reader across a whole parked drain, and taken by a handle's FIRST
+	// receive before it registers as a subscriber. So a subscription cannot land in the middle of
+	// a drain: either it registers first and the drain, finding a subscriber, reads nothing — or
+	// the drain finishes first and every frame the subscriber is owed is still in the driver's
+	// queue (codex round 1 on #224). Never held with mu already held; the reader takes mu only
+	// after releasing it.
+	drain_mu          sync.Mutex
 	raw_closed        bool
 }
 
@@ -253,6 +276,7 @@ fn shared_open_events(key string, spec string, make fn (string) !SharedDriver) !
 					state:    .running
 				}
 				shared_reg.entries[key] = e
+				e.unread[1] = time.ticks()
 				handle = &SharedHandle{
 					key:    key
 					entry:  e
@@ -281,6 +305,9 @@ fn shared_open_events(key string, spec string, make fn (string) !SharedDriver) !
 			spawn e.read_loop()
 		}
 		if mut h := handle {
+			if start == none {
+				h.entry.admit(h.id)
+			}
 			// A join still reconciles controller policy because its factory did not run.
 			want := is_listen_only(spec)
 			h.reconcile_silence(want) or {
@@ -304,7 +331,7 @@ fn (mut e SharedEntry) read_loop() {
 		mut idle := false
 		e.mu.lock()
 		should_stop = e.state != .running
-		idle = e.subs.len == 0
+		idle = !e.attentive_locked(time.ticks())
 		e.mu.unlock()
 		if should_stop {
 			break
@@ -328,16 +355,34 @@ fn (mut e SharedEntry) read_loop() {
 		// DISCARDS: once per shared_parked_drain_ms, and on every kick — which is what makes a
 		// subscriber's first frame the first frame after it subscribed.
 		//
+		// WHO COUNTS AS LISTENING is attentive_locked: any handle that has received, and any
+		// handle younger than shared_attentive_ms that has not. The first cut parked whenever no
+		// handle had received yet, and the repository's own fan-out test — open two handles,
+		// inject, receive — failed on it: a frame arriving between open and the first receive
+		// was drained away, which is the request/response pattern every diagnostic client uses
+		// (codex round 1 on #224, proven by the test). A handle's boundary is its open; the
+		// park honours it for as long as a receive can plausibly follow, and a handle silent for
+		// a second is a transmit tap.
+		//
 		// NOT on a tx_ack driver. A CANsub acknowledges every send over the same socket whether or
 		// not anybody reads, so its raw reader still needs draining — and its recv_shared is a
 		// channel wait, not a driver call, so there is nothing to save by parking it.
 		if idle && !e.tx_acks {
+			e.mu.lock()
+			e.parked = true
+			e.mu.unlock()
 			select {
 				_ := <-e.kick {}
 				shared_parked_drain_ms * time.millisecond {}
 			}
-			if fatal := e.drain_parked() {
-				e.fail_and_close(fatal)
+			e.mu.lock()
+			e.parked = false
+			e.mu.unlock()
+			e.drain_mu.lock()
+			fatal := e.drain_parked()
+			e.drain_mu.unlock()
+			if f := fatal {
+				e.fail_and_close(f)
 				e.done <- true
 				return
 			}
@@ -433,29 +478,77 @@ fn (mut e SharedEntry) read_loop() {
 	e.done <- true
 }
 
-// drain_parked empties the driver's receive queue while nobody subscribes, DISCARDING what it
-// finds — see read_loop. Zero-timeout reads, so an empty queue costs one driver call. Bounded per
-// call by the ring capacity so a saturated bus cannot pin the reader here; what is left drains at
-// the next tick. Returns the message of a fatal read error, which is the reader's to act on.
-//
-// A subscriber that registers WHILE a drain is in progress loses the frames that drain reads
-// after its registration: they are already consumed from the driver, and this loop does not
-// look back at `subs` per frame to start publishing mid-drain. The window is the drain itself —
-// a few milliseconds, one read per frame — and what it loses is what the hub's tail rule already
-// excludes: a handle starts at the tail as of its subscription, and frames in the driver's queue
-// at that instant are from before it. The kick that subscription queues is consumed at the next
-// park, where it costs one empty drain and nothing else.
-fn (mut e SharedEntry) drain_parked() ?string {
-	for _ in 0 .. shared_ring_capacity {
-		e.driver.recv_shared(0) or {
-			if err.msg() == 'timeout' {
-				return none
-			}
-			return err.msg()
+// admit makes a handle joining an existing wire count as a reader from now on, and — if the wire
+// was parked — drains the driver's queue FIRST, under drain_mu, so the handle's boundary is its
+// open: everything queued before this moment is from before it, everything after is its own,
+// because the reader wakes on the kick and finds the wire attentive. Done here rather than in
+// the registry lock because a drain is driver I/O.
+fn (mut e SharedEntry) admit(id u64) {
+	e.drain_mu.lock()
+	e.mu.lock()
+	parked := !e.attentive_locked(time.ticks())
+	e.mu.unlock()
+	if parked && !e.tx_acks {
+		e.drain_parked() or {}
+	}
+	e.mu.lock()
+	e.unread[id] = time.ticks()
+	e.mu.unlock()
+	e.drain_mu.unlock()
+	select {
+		e.kick <- true {}
+		else {}
+	}
+}
+
+// attentive_locked is whether anybody is listening on this wire: a handle that has received,
+// or one that opened less than shared_attentive_ms ago and may still. Caller holds mu.
+fn (e &SharedEntry) attentive_locked(now i64) bool {
+	if e.subs.len > 0 {
+		return true
+	}
+	for _, opened in e.unread {
+		if now - opened < shared_attentive_ms {
+			return true
 		}
-		e.mu.lock()
-		e.parked_discards++
-		e.mu.unlock()
+	}
+	return false
+}
+
+// drain_parked empties the driver's receive queue while nobody subscribes, DISCARDING what it
+// finds — see read_loop, shared_open_events (a handle opening onto a parked wire) and the first
+// receive in SharedHandle.recv (an old transmit tap that receives after all).
+// Called with drain_mu held, so no subscription can land while it runs; it checks for one first
+// and reads nothing if there is, because everything in the queue then belongs to that
+// subscriber, who drained before registering. Zero-timeout reads, so an empty queue costs one
+// driver call, and it runs until the queue IS empty: a bound below one park's worth of traffic
+// (a saturated classic bus queues ~8000 frames a second; the first cut stopped at 4096) left the
+// remainder to be published as current ingress to the subscriber that woke the reader (codex
+// round 1 on #224). It cannot be pinned here: it reads faster than any bus delivers. Returns the
+// message of a fatal read error, which is the reader's to act on.
+fn (mut e SharedEntry) drain_parked() ?string {
+	e.mu.lock()
+	claimed := e.attentive_locked(time.ticks())
+	e.mu.unlock()
+	if claimed {
+		return none
+	}
+	mut n := u64(0)
+	mut fatal := ''
+	for {
+		e.driver.recv_shared(0) or {
+			if err.msg() != 'timeout' {
+				fatal = err.msg()
+			}
+			break
+		}
+		n++
+	}
+	e.mu.lock()
+	e.parked_discards += n
+	e.mu.unlock()
+	if fatal != '' {
+		return fatal
 	}
 	return none
 }
@@ -616,6 +709,26 @@ fn (mut h SharedHandle) recv(timeout_ms int) !CanFrame {
 			return error('${h.key}: bus is closed')
 		}
 		mut e := h.entry
+		// THE FIRST RECEIVE ON AN UNREAD WIRE DRAINS THE DRIVER ITSELF, under drain_mu, BEFORE it
+		// registers. Everything queued at that moment is from before this handle listened; a
+		// frame arriving after the drain is this handle's, because registration follows under
+		// the same lock and the reader — which reads the driver only inside drain_mu while
+		// nobody subscribes — cannot drain it away meanwhile. Leaving the drain to the reader's
+		// wake-up was wrong in both orders: draining after registration discarded frames the
+		// subscriber was owed, and reading nothing once a subscriber existed served it the
+		// pre-registration queue as new (codex round 1 on #224, and the test that caught the
+		// second). A fatal read error found here is left for the reader's next poll, which is
+		// the path that knows how to take a generation down.
+		joining := !h.subscribed
+		if joining {
+			e.drain_mu.lock()
+			e.mu.lock()
+			unread := !e.attentive_locked(time.ticks())
+			e.mu.unlock()
+			if unread && !e.tx_acks {
+				e.drain_parked() or {}
+			}
+		}
 		e.mu.lock()
 		if !h.subscribed && e.state == .running {
 			e.subs << SharedSubscriber{
@@ -623,12 +736,16 @@ fn (mut h SharedHandle) recv(timeout_ms int) !CanFrame {
 				wake: h.wake
 			}
 			h.subscribed = true
+			e.unread.delete(h.id)
 			// Wake a parked reader: this handle is the first to listen, or the first since the last
 			// listener left. Non-blocking; a kick already queued is the same kick.
 			select {
 				e.kick <- true {}
 				else {}
 			}
+		}
+		if joining {
+			e.drain_mu.unlock()
 		}
 		oldest := if e.next_seq > u64(shared_ring_capacity) {
 			e.next_seq - u64(shared_ring_capacity)
@@ -753,6 +870,7 @@ fn (mut h SharedHandle) close() {
 	if was_subscribed {
 		e.subs = e.subs.filter(it.id != h.id)
 	}
+	e.unread.delete(h.id)
 	e.refs--
 	if e.refs <= 0 && e.state == .running {
 		e.state = .closing

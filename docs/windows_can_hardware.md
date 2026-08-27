@@ -40,7 +40,7 @@ done" is then a fact somebody can check rather than a feeling.
 | Bus health (fault ladder) | ✅ | ✅ | ✅ | ✅ |
 | Listen-only **at the transceiver** | ✅ #219 | ✅ #219 | ✅ `,silent` | ✅ PHY |
 | Listen-only follows a **mid-run** toggle | ✅ | ✅ | ❌ pinned by the ports | ✅ |
-| Idle wire (transmit taps only) costs the driver nothing | ✅ #224 (0 reads/5 s measured; ~550/s once a subscriber exists) | ✅ own handles, no hub | ✅ own ports | n/a — its reader is a channel wait, not a driver call |
+| Idle wire (transmit taps only) costs the driver almost nothing | ✅ #224 (measured: ~520 reads in a handle's first, attentive second, then 5 reads/5 s — one zero-timeout drain a second; ~520/s once a handle receives) | ✅ own handles, no hub | ✅ own ports | n/a — its reader is a channel wait, not a driver call |
 | Discover | ✅ | ✅ | ✅ + assignment | ❌ |
 | Honours project timing / sample point | partial (BTR) | ❌ ignored | partial | refuses non-default |
 | Hardware timestamps | ❌ | ❌ | ❌ | ❌ |

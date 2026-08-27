@@ -22,8 +22,8 @@ fn (mut f FakeBus) send(frame CanFrame) ! {
 fn (mut f FakeBus) recv(timeout_ms int) !CanFrame {
 	// Counted atomically: the hub's reader thread increments it and the test thread reads it.
 	stdatomic.add_i64(&fake_recv_calls, 1)
-	if fake_recv_failure != '' {
-		return error(fake_recv_failure)
+	if stdatomic.load_i64(&fake_recv_fails) != 0 {
+		return error(fake_recv_failure_msg)
 	}
 	if timeout_ms == 0 {
 		// A zero timeout is one look, not a wait — what a parked reader's drain asks for.
@@ -57,7 +57,8 @@ fn (mut f FakeBus) reconcile_silence(want bool) ! {
 }
 
 fn (mut f FakeBus) close() {
-	fake_closes++
+	// Atomic: the hub's reader thread closes a failed generation while a test thread polls.
+	stdatomic.add_i64(&fake_closes, 1)
 }
 
 fn (mut f FakeBus) health() BusHealth {
@@ -66,10 +67,10 @@ fn (mut f FakeBus) health() BusHealth {
 
 __global (
 	fake_opens             int
-	fake_closes            int
+	fake_closes            i64
 	fake_fails             bool
 	fake_recv_calls        i64
-	fake_recv_failure      string
+	fake_recv_fails        i64
 	fake_rx                chan CanFrame
 	hub_fake_send_gate     chan bool
 	hub_fake_send_blocking bool
@@ -555,23 +556,30 @@ fn test_a_stuck_send_does_not_block_health_reconcile_or_close() {
 
 // AN IDLE WIRE COSTS THE DRIVER ALMOST NOTHING. A handle that only ever sends must not keep the
 // reader polling the driver on its behalf — on PCAN that was ~1000 CAN_Read calls a second per
-// idle wire (#222 item 2); parked, it is one zero-timeout drain a second. What that drain finds
-// is nobody's: a frame from before the first listener opened is discarded, not served to it as
-// new. And the first handle to actually receive must wake the reader promptly, or the saving
-// would be paid for in latency.
+// idle wire (#222 item 2); after the attentive second, it is one zero-timeout drain a second.
+// What that drain finds is nobody's: a frame from before a listener OPENED is discarded, not
+// served to it as new. And a handle opening onto a parked wire must wake the reader promptly, or
+// the saving would be paid for in latency.
 fn test_a_wire_with_no_subscriber_is_not_polled_and_the_first_recv_wakes_it() {
 	fake_opens = 0
 	fake_closes = 0
 	fake_fails = false
-	fake_recv_failure = ''
+	stdatomic.store_i64(&fake_recv_fails, 0)
 	stdatomic.store_i64(&fake_recv_calls, 0)
 	fake_rx = chan CanFrame{cap: 8}
 	mut tx_only := shared_open('fake:idle', 'fake:idle', fake_make)!
 	tx_only.send(CanFrame{ id: 0x100 }) or {}
+	// OBSERVED parked, not assumed after a sleep: on a loaded runner the reader thread may not
+	// have run yet, and a frame injected before it parks is delivered legitimately (codex round
+	// 1 on #224).
+	shared_test_wait_parked(mut tx_only)
+	// Parked after the attentive second, which the reader spent polling on the fresh handle's
+	// behalf; what is counted is the cost from here on.
+	stdatomic.store_i64(&fake_recv_calls, 0)
 	time.sleep(300 * time.millisecond)
-	// Two reads at most: one poll before the loop noticed nobody subscribes, and one drain.
+	// One drain at most in the window.
 	reads := stdatomic.load_i64(&fake_recv_calls)
-	assert reads <= 2, 'the reader polled the driver ${reads} times with nobody listening'
+	assert reads <= 1, 'the reader polled the driver ${reads} times with nobody listening'
 	// A frame arrives while nobody listens; then a listener opens. The kick that wakes the reader
 	// drains that frame away, so the listener's first receive is a timeout, not stale history.
 	fake_rx <- CanFrame{
@@ -604,26 +612,62 @@ fn test_a_fatal_read_error_reaches_a_parked_reader() {
 	fake_closes = 0
 	fake_fails = false
 	fake_rx = chan CanFrame{cap: 8}
-	fake_recv_failure = ''
+	stdatomic.store_i64(&fake_recv_fails, 0)
 	mut tx_only := shared_open('fake:idle-fatal', 'fake:idle-fatal', fake_make)!
-	time.sleep(50 * time.millisecond)
-	fake_recv_failure = 'device unplugged'
-	// The next drain tick finds it; nothing subscribes and nothing kicks.
+	shared_test_wait_parked(mut tx_only)
+	stdatomic.store_i64(&fake_recv_fails, 1)
+	// The next drain tick finds it; nothing subscribes and nothing kicks. Observed on THIS
+	// entry — a global close count could be another test's leftover reader failing on the same
+	// global switch.
 	deadline := time.ticks() + 2 * shared_parked_drain_ms
-	for fake_closes < 1 {
+	for !shared_test_failed(mut tx_only) {
 		if time.ticks() >= deadline {
 			assert false, 'the parked reader never noticed the fatal read error'
 			break
 		}
 		time.sleep(10 * time.millisecond)
 	}
-	fake_recv_failure = ''
+	stdatomic.store_i64(&fake_recv_fails, 0)
 	if _ := tx_only.send(CanFrame{ id: 0x102 }) {
 		assert false, 'a failed generation must reject later sends'
 	} else {
-		assert err.msg() == 'device unplugged'
+		assert err.msg() == fake_recv_failure_msg
 	}
 	tx_only.close()
+}
+
+const fake_recv_failure_msg = 'device unplugged'
+
+fn shared_test_failed(mut bus Bus) bool {
+	if mut bus is SharedHandle {
+		mut e := bus.entry
+		e.mu.lock()
+		failed := e.terminal != ''
+		e.mu.unlock()
+		return failed
+	}
+	return false
+}
+
+// shared_test_wait_parked returns once the hub's reader is observed in its park, or fails.
+fn shared_test_wait_parked(mut bus Bus) {
+	if mut bus is SharedHandle {
+		mut e := bus.entry
+		deadline := time.ticks() + 2000
+		for {
+			e.mu.lock()
+			parked := e.parked
+			e.mu.unlock()
+			if parked {
+				return
+			}
+			if time.ticks() >= deadline {
+				assert false, 'the reader never parked'
+				return
+			}
+			time.sleep(time.millisecond)
+		}
+	}
 }
 
 fn shared_test_parked_discards(mut bus Bus) u64 {
