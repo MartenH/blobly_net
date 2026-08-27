@@ -720,6 +720,25 @@ fn test_a_late_first_receive_that_finds_the_adapter_gone_reports_it() {
 	tap.close()
 }
 
+// A SEND KEEPS A HANDLE ATTENTIVE: a diagnostic client that sits idle for a second and then
+// sends a request must get the reply, not have it drained as nobody's (codex round 4 on #224).
+fn test_a_send_after_a_silent_second_keeps_the_reply() {
+	fake_opens = 0
+	stdatomic.store_i64(&fake_closes, 0)
+	fake_fails = false
+	fake_rx = chan CanFrame{cap: 8}
+	stdatomic.store_i64(&fake_recv_fails, 0)
+	mut client := shared_open('fake:idle-client', 'fake:idle-client', fake_make)!
+	shared_test_wait_parked(mut client)
+	client.send(CanFrame{ id: 0x7E0, data: [u8(0x3E)] })!
+	// The reply arrives before the client calls recv — the ordinary case.
+	fake_rx <- CanFrame{
+		id: 0x7E8
+	}
+	assert client.recv(1000)!.id == 0x7E8, 'the reply to a request sent after a silent second was lost'
+	client.close()
+}
+
 fn shared_test_failed(mut bus Bus) bool {
 	if mut bus is SharedHandle {
 		mut e := bus.entry
