@@ -183,7 +183,17 @@ fn test_not_attempted_records_neither_a_mode_nor_a_fault() {
 	assert wire_silence_fault('inproc:sil-na') == none
 	mut spy := &SilenceSpy{}
 	apply_silence('inproc:sil-na', true, spy.setter()) or { assert false, err.msg() }
-	assert spy.calls == [true], 'the next attempt must reach the driver'
+	assert spy.calls == [true], 'with no record, the next attempt must reach the driver'
+	// AND WITH A RECORD, A MISSED PROBE KEEPS IT: the controller did not change because we could
+	// not ask it, so the next ordinary caller stays free instead of re-running the failed call on
+	// the send path (codex round 2 on #223).
+	apply_silence_probe('inproc:sil-na', true, fn (silent bool) int {
+		return silence_not_attempted
+	}, fn (want bool, st int) SilenceReason {
+		return SilenceReason{}
+	}) or {}
+	apply_silence('inproc:sil-na', true, spy.setter()) or { assert false, err.msg() }
+	assert spy.calls == [true], 'a missed probe must not send the next caller to the driver'
 }
 
 // A PROBE REACHES THE DRIVER EVEN WHEN THE RECORD SAYS THERE IS NOTHING TO DO. That is its whole

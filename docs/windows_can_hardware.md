@@ -61,9 +61,12 @@ reconfigure the controller when a row is ticked while a run is going; Vector can
 channel's mode is fixed by the ports open on it, which is why `,silent` is part of the address
 there and a clash is *refused* rather than reconciled (`pinned.v`) — and **neither can CANsub**:
 the device answers the identical PHY PUT with 200 when nothing holds the channel and **500 while
-any client holds its WebSocket** (measured with curl on a CANsub.4, 02.04.00). Both record the
-refusal on the Buses row and apply the mark at the next Start. Properties of the drivers, not gaps
-to close; `silentcheck` reports those phases as not applicable, in the device's own words.
+any client holds its WebSocket** (measured with curl on a CANsub.4, 02.04.00). Both apply the mark
+at the next Start. They differ in what they *say* meanwhile: CANsub records the refusal as a
+declared fault, so its Buses row shows NOT SILENT and `silentcheck` reports phases 2 and 5 as not
+applicable in the device's own words; **Vector records nothing yet**, so a Vector listener fails
+those phases outright — a known gap in reporting, not in behaviour. Properties of the drivers, not
+gaps to close.
 
 Also cross-cutting and filed: #211 (`shared_open` holds a process-wide lock across I/O), #212 (a
 second open competes for frames instead of subscribing), #213 (a backend cannot report what is

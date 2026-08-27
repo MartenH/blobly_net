@@ -318,7 +318,16 @@ fn run(o Opts) int {
 		eprintln('   FAIL — nothing arrived after clearing the mark.')
 		ok = false
 	} else if back.talker_health == .warning {
-		println('   ok — acknowledging again; talker still ${shown(back.talker_health)}, recovering (the counter decays one per acknowledged frame)')
+		// `fresh`, not `talker`: phase 3 reopened the talker on purpose (see above), and the first
+		// cut of this check drove the CLOSED handle — every send refused, health unknown, "never
+		// recovered" for a wire that had — while the oracle (the device's own tx_error_count)
+		// showed the counter falling 133 -> 0 within two seconds of the mark clearing.
+		if recovers(mut fresh, mut listener, o) {
+			println('   ok — acknowledging again; the talker recovered to ok under acknowledged frames')
+		} else {
+			eprintln('   FAIL — the talker read warning and never recovered: frames arrived, but nobody acknowledged them.')
+			ok = false
+		}
 	} else {
 		println('   ok — acknowledging again, talker back to ${shown(back.talker_health)}')
 	}
@@ -387,7 +396,12 @@ fn run(o Opts) int {
 		eprintln('          and the transceiver never heard about it.')
 		ok = false
 	} else if after.talker_health == .warning {
-		println('   ok — a fresh open puts the transceiver back where the policy says; talker recovering')
+		if recovers(mut fresh2, mut reopened, o) {
+			println('   ok — a fresh open puts the transceiver back where the policy says; the talker recovered to ok')
+		} else {
+			eprintln('   FAIL — the reopened wire came back silent: the talker read warning and never recovered.')
+			ok = false
+		}
 	} else {
 		println('   ok — a fresh open puts the transceiver back where the policy says, not where it was left')
 	}
@@ -588,10 +602,32 @@ fn declined(iface string, want bool) ?string {
 }
 
 // severe — the ladder rungs that mean silence did NOT lift: a talker still shut out of the bus.
-// Warning is not among them; a real controller decays its counter one acknowledged frame at a
-// time, so warning with frames arriving is recovery, not failure.
 fn severe(h transport.BusHealth) bool {
 	return h == .error_passive || h == .bus_off
+}
+
+// recovers reports whether a talker that reads `warning` is actually being acknowledged again.
+//
+// WARNING ALONE PROVES NOTHING, and the case is real: a CANsub transmits an unacknowledged frame
+// ONCE (measured tonight — no retry), which lifts its counter only to warning, while a listener
+// that is still silent nevertheless RECEIVES that frame. So "warning, and frames arrived" is
+// exactly what a silence that failed to lift looks like on that backend (codex round 2 on #223).
+// The evidence that acknowledgements resumed is the counter coming DOWN: acknowledged frames decay
+// it one at a time, unacknowledged ones do not. Up to five seconds of frames; a talker still not
+// `ok` after that was not acknowledged.
+fn recovers(mut talker transport.Bus, mut listener transport.Bus, o Opts) bool {
+	until := time.ticks() + 5000
+	mut n := 0
+	for time.ticks() < until {
+		if talker.health() == .ok {
+			return true
+		}
+		talker.send(transport.CanFrame{ id: o.id, data: [u8(0x5F), u8(n)] }) or {}
+		listener.recv(2) or {}
+		time.sleep(5 * time.millisecond)
+		n++
+	}
+	return talker.health() == .ok
 }
 
 // degraded — anything but a controller that is happy. `.unknown` is NOT degraded: it means the

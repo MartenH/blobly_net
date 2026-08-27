@@ -143,8 +143,12 @@ fn apply_silence_impl(iface string, want bool, set fn (bool) int, explain fn (bo
 	}
 	st := set(want)
 	if st == silence_not_attempted {
-		// Nothing was asked of the driver, so nothing is known: not applied, not refused.
-		unrecord_silence(k)
+		// NOTHING NEW IS KNOWN, AND THE OLD RECORD STANDS. This used to forget the applied mode too,
+		// on the reasoning that an unreachable device is an unknown one — and a CANsub whose REST
+		// endpoint blinked while its WebSocket stayed healthy then had every sender re-run the
+		// failed GET on the send path and refuse the frame: a health-side outage dropped all
+		// experiment traffic (codex round 2 on #223). The controller did not change because we
+		// could not ask it; the record says what was last applied, and the probe will re-ask.
 		return error('${iface}: listen-only was not applied — the bus is closing or the device could not be reached')
 	}
 	if st != 0 {
@@ -207,9 +211,9 @@ pub:
 }
 
 // silence_not_attempted is the status a `set` closure returns when it did NOT reach the driver —
-// the bus is closing, or the device could not even be read. apply_silence records nothing for it:
-// not an applied mode, and not a fault either, because nothing was refused. The next attempt
-// tries again from unknown.
+// the bus is closing, or the device could not even be read. apply_silence records nothing for it
+// and FORGETS nothing either: not a fault, because nothing was refused, and the last applied mode
+// still stands, because the controller cannot have changed by our failing to ask it.
 pub const silence_not_attempted = -1_000_000
 
 fn generic_silence_reason(want bool, st int) SilenceReason {
