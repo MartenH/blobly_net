@@ -14,6 +14,14 @@ import time
 
 const shared_ring_capacity = 4096
 const shared_reader_poll_ms = 50
+
+// shared_parked_drain_ms is how often a PARKED reader (nobody subscribes) empties the driver's
+// receive queue. Long on purpose: each drain is a driver call, which is the cost the park exists
+// to avoid, and a queue that fills between drains costs the driver an overrun count on a frame
+// nobody wanted. PCAN's receive queue holds 32768 frames -- an arbitration-saturated classic bus
+// delivers ~8000 a second at 500 kbit/s, so a second of queue is never lost. The first subscriber
+// does not wait for this: subscribing kicks the reader, and the kick drains too.
+const shared_parked_drain_ms = 1000
 const shared_pending_capacity = 4096
 const shared_pending_ttl_ms = 5000
 
@@ -122,6 +130,8 @@ mut:
 	next_send_token   u64
 	unmatched_tx_acks u64
 	expired_tx_acks   u64
+	// parked_discards counts frames the reader read and threw away while nobody subscribed.
+	parked_discards   u64
 	raw_closed        bool
 }
 
@@ -304,9 +314,19 @@ fn (mut e SharedEntry) read_loop() {
 		// driver calls at all; with this loop always running, PCAN's recv_shared(50) was a 1 ms
 		// CAN_Read loop plus a silence lookup, ~1000 driver reads a second per idle wire, feeding
 		// a ring nobody drained, for the life of the entry (code-review high on #221, #222 item 2).
-		// The first subscriber kicks the loop awake; close and a fatal error kick it so it can
-		// notice the state change. The bounded wait is a belt for the braces: a lost kick costs at
-		// most one second of latency on the first receive, never a hang.
+		// The first subscriber kicks the loop awake, and close kicks it so it can notice the state
+		// change. The bounded wait is a belt for the braces: a lost kick costs at most one drain
+		// period of latency on the first receive, never a hang.
+		//
+		// PARKED IS NOT STOPPED. A parked reader that made no driver calls at all left the
+		// driver's own receive queue filling — on PCAN, every frame on the wire, for as long as
+		// nobody subscribed — so the first subscriber was served a queue of frames from before it
+		// opened (a late handle starts at the tail; that is the hub's rule, and the driver's
+		// queue was breaking it underneath), a fatal read error (a device unplugged) went
+		// unnoticed until somebody listened, and a queue that overflowed cost overrun counts on
+		// frames nobody wanted (self-review of the first cut). So a parked reader DRAINS AND
+		// DISCARDS: once per shared_parked_drain_ms, and on every kick — which is what makes a
+		// subscriber's first frame the first frame after it subscribed.
 		//
 		// NOT on a tx_ack driver. A CANsub acknowledges every send over the same socket whether or
 		// not anybody reads, so its raw reader still needs draining — and its recv_shared is a
@@ -314,7 +334,12 @@ fn (mut e SharedEntry) read_loop() {
 		if idle && !e.tx_acks {
 			select {
 				_ := <-e.kick {}
-				1000 * time.millisecond {}
+				shared_parked_drain_ms * time.millisecond {}
+			}
+			if fatal := e.drain_parked() {
+				e.fail_and_close(fatal)
+				e.done <- true
+				return
 			}
 			continue
 		}
@@ -406,6 +431,25 @@ fn (mut e SharedEntry) read_loop() {
 		e.mu.unlock()
 	}
 	e.done <- true
+}
+
+// drain_parked empties the driver's receive queue while nobody subscribes, DISCARDING what it
+// finds — see read_loop. Zero-timeout reads, so an empty queue costs one driver call. Bounded per
+// call by the ring capacity so a saturated bus cannot pin the reader here; what is left drains at
+// the next tick. Returns the message of a fatal read error, which is the reader's to act on.
+fn (mut e SharedEntry) drain_parked() ?string {
+	for _ in 0 .. shared_ring_capacity {
+		e.driver.recv_shared(0) or {
+			if err.msg() == 'timeout' {
+				return none
+			}
+			return err.msg()
+		}
+		e.mu.lock()
+		e.parked_discards++
+		e.mu.unlock()
+	}
+	return none
 }
 
 fn (mut e SharedEntry) fail_and_close(message string) {
