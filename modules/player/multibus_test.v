@@ -225,7 +225,7 @@ fn test_the_per_bus_numbers_balance() {
 		// EVERY BUCKET. This assertion holds trivially -- `kept` is computed by subtracting
 		// exactly these terms -- so its real job is to go stale loudly when a bucket is added and
 		// this line is not told.
-		assert b.source == r.kept + r.withheld_excluded + r.withheld_unattributed, '${b.src}: ${b.source} != ${r.kept}+${r.withheld_excluded}+${r.withheld_unattributed}'
+		assert b.source == r.kept + r.withheld_excluded + r.withheld_unattributed + r.remote, '${b.src}: ${b.source} != ${r.kept}+${r.withheld_excluded}+${r.withheld_unattributed}+${r.remote}'
 	}
 }
 
@@ -276,5 +276,32 @@ fn test_resolve_bus_refuses_what_it_cannot_decide() {
 	// a name nothing carries
 	if _ := resolve_bus(two, ['a', 'b'], 'nope') {
 		assert false, 'an unknown bus must be refused'
+	}
+}
+
+// A REMOTE FRAME LEAVES THE STREAM AND THE KEPT COUNT TOGETHER. `kept` is computed on this path
+// by subtracting the withheld buckets from the source count, so a bucket the arithmetic has not
+// been told about is one whose frames vanish from `entries` and stay in `kept` — the run then
+// reports replaying frames it never sent, and a bus that is entirely remote requests reports
+// `kept == source`, so the "all frames withheld" diagnosis can never fire for it (self-review of
+// #215; the conservation assertion above cannot see this without a remote frame in the sample).
+fn test_a_remote_frame_leaves_both_the_stream_and_the_kept_count() {
+	mut entries := mb_sample()
+	entries << canlog.LogEntry{
+		t_s:   0.06
+		iface: 'mf4:group1'
+		frame: transport.CanFrame{
+			id:  0x101
+			rtr: true
+		}
+	}
+	p := build_multi(entries, mb_specs())
+	a := p.buses[0]
+
+	assert a.report.remote == 1, 'the request is counted'
+	assert a.source == a.report.kept + a.report.withheld_excluded + a.report.withheld_unattributed +
+		a.report.remote, 'recorded = withheld + replay'
+	for e in p.entries {
+		assert !e.frame.rtr, 'and it does not reach the wire'
 	}
 }

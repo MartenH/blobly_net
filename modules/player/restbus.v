@@ -46,7 +46,8 @@ pub:
 	unattributed          int // frames whose message the DBC defines but gives no transmitter
 	unknown               int // frames whose id the DBC does not define at all
 	remote                int // remote requests in the recording, which cannot be replayed
-	// The ids behind the last three, so a report can name them rather than merely count them.
+	// The ids behind the two buckets above that have them, so a report can name those rather
+	// than merely count them.
 	// Sorted, each id once.
 	//
 	// FORMATTED, AND THE FORMAT CARRIES THE WIDTH: three hex digits for a standard id, eight for
@@ -120,10 +121,14 @@ pub fn new_decider(db candb.Database, exclude []string, replay_unattributed bool
 }
 
 pub fn (d Decider) verdict(f transport.CanFrame) Verdict {
-	k := key(f.id, f.extended)
-	if k !in d.defined {
-		return .keep_unknown
-	}
+	// FIRST, BEFORE THE DATABASE IS CONSULTED. Whether the DBC defines the id has no bearing on
+	// this: the frame cannot be transmitted either way, so anything that returns `keep_` for it
+	// hands the replay a frame that `send()` will refuse. Placed after the `defined` lookup it
+	// caught only the ids a database happened to name — and with no DBC attached, `defined` is
+	// EMPTY, so every remote frame in the recording took the unknown branch, was kept, and failed
+	// at the wire (self-review). A run would report "not replayed" and then count failures for
+	// the same frames.
+	//
 	// A REMOTE FRAME IS NEVER REPLAYED, because this app does not transmit one at all — see
 	// frame_rules.v. Left to the branches below it would be judged by the PRODUCER's name, which
 	// is the wrong question about a request: `BO_` says who produces a message, and the frame
@@ -135,6 +140,10 @@ pub fn (d Decider) verdict(f transport.CanFrame) Verdict {
 	// app can put on a wire.
 	if f.rtr {
 		return .drop_remote
+	}
+	k := key(f.id, f.extended)
+	if k !in d.defined {
+		return .keep_unknown
 	}
 	senders := d.senders_of[k] or { []string{} }
 	if senders.len == 0 {

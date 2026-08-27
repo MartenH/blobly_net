@@ -555,16 +555,6 @@ numbers the SOFTWARE virtual channels in the same sequence, which is why `--list
 `--from`/`--to` loop a frame between two channels, `--ladder` walks classic and then FD at
 500k/1M/2M/4M/8M.
 
-  The eight-byte case is there because the first fix did not go far enough, and the bench said
-  so: with the read buffer left uninitialised the frame came back as `c07db72d00000000`. Those
-  bytes were never **on the wire** — a remote frame carries no payload, which is the whole point
-  of it — they were this host's own stack, read out of an untouched receive buffer and put into
-  the decoded frame. That is a backend defect, not a bus one, and worth saying precisely: chasing
-  it as transmitted data would send you to the cable. `wiretap` compares payloads, so the echo
-  still failed to match and was still filed as the ECU's answer; #177 would have been closed with
-  its own defect alive for every DLC above zero. A check that only ever asked for `dlc=0` could
-  not see it.
-
 What good looks like: `transport.open(...)` returns without error (DLL found, channel opens,
 bus on); frames Blobly Net sends appear byte-identical in a second tool on the same bus —
 `python-can` with the matching backend is the established oracle, as `sut/` does for decoding —

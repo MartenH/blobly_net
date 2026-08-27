@@ -349,7 +349,6 @@ fn test_census_counts_by_attribution() {
 	assert cx.nodes.len == 0
 }
 
-
 // AN ID IS NOT AN IDENTITY WITHOUT ITS WIDTH. An 11-bit 0x100 and a 29-bit 0x100 are two different
 // messages with two different senders — `key()` exists because conflating them is silent
 // corruption — and the tallies were keyed on the number alone, so two requests on two messages
@@ -400,4 +399,31 @@ fn test_ids_are_sorted_by_identity_not_by_text() {
 	}
 	rep := t.done(3)
 	assert rep.unknown_ids == ['0x090', '0x100', '0x7FF'], 'got ${rep.unknown_ids}'
+}
+
+// A REMOTE FRAME IS REFUSED BEFORE THE DATABASE IS CONSULTED. Whether the DBC defines the id has
+// no bearing on it — the frame cannot be transmitted either way — so a verdict of `keep_` for one
+// hands the replay a frame `send()` will refuse. Placed after the `defined` lookup it caught only
+// the ids a database happened to name, and with NO DBC attached `defined` is empty, so every
+// remote frame in a recording was kept and failed at the wire: a run reporting "not replayed" and
+// then counting failures for the same frames (self-review of #215).
+fn test_a_remote_frame_on_an_unknown_id_is_still_not_replayed() {
+	d := new_decider(sample_db(), ['SUT_ECU'], true)
+	v := d.verdict(transport.CanFrame{ id: 0x7AB, rtr: true })
+	assert v == .drop_remote, 'got ${v}'
+}
+
+// The case that matters most, because it is the default one: a replay with no database at all.
+fn test_with_no_database_every_remote_frame_is_still_refused() {
+	d := new_decider(candb.Database{}, [], true)
+	for f in [transport.CanFrame{ id: 0x100, rtr: true }, transport.CanFrame{
+		id:       0x1FFFFFFF
+		extended: true
+		rtr:      true
+	}] {
+		v := d.verdict(f)
+		assert v == .drop_remote, 'id 0x${f.id:X}: got ${v}'
+	}
+	// And an ordinary frame is still kept, so this did not simply refuse everything.
+	assert d.verdict(transport.CanFrame{ id: 0x100, data: [u8(1)] }) == .keep_unknown
 }
