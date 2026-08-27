@@ -52,6 +52,9 @@ mut:
 	tx  &net.UdpConn = unsafe { nil } // dialed to group:port — sends
 	rx  &net.UdpConn = unsafe { nil } // bound to port + joined group — receives
 	src u32 // our source id; frames with this src are our own echoes
+	// closed is set by close(): a recv(-1) blocked in another thread must stop retrying once the
+	// socket is gone, instead of spinning on the read error forever (codex round 7 on #225).
+	closed bool
 }
 
 // open_udp joins the localhost multicast bus `group:port`.
@@ -121,8 +124,14 @@ pub fn (mut b UdpBus) recv(timeout_ms int) !CanFrame {
 		}
 		b.rx.set_read_timeout(time.Duration(remaining * 1_000_000)) // ms → ns
 		n, _ := b.rx.read(mut buf) or {
-			if timeout_ms < 0 {
+			if b.closed {
+				return error('bus is closed')
+			}
+			if timeout_ms < 0 && err.code() == net.err_timed_out_code {
 				continue // a slice ended without a frame; forever means forever
+			}
+			if timeout_ms < 0 {
+				return err // not a timeout: the socket is gone
 			}
 			return error('timeout')
 		}
@@ -162,6 +171,7 @@ pub fn (mut b UdpBus) reconcile_silence(want bool) ! {
 }
 
 pub fn (mut b UdpBus) close() {
+	b.closed = true
 	b.tx.close() or {}
 	b.rx.close() or {}
 }

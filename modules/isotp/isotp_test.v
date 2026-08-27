@@ -181,3 +181,51 @@ fn test_a_negative_timeout_blocks_until_a_frame_arrives() {
 	ch.close()
 	peer.close()
 }
+
+// recv(0) IS ONE LOOK: a reply already queued is returned, nothing waits (codex round 7 on #225).
+fn test_a_zero_timeout_returns_a_queued_reply() {
+	mut peer := transport.open('inproc:isotp-poll') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-poll', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	if _ := ch.recv(0) {
+		assert false, 'nothing was sent'
+	} else {
+		assert err.msg() == 'timeout'
+	}
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x01), 0x33] }) or { assert false, err.msg() }
+	time.sleep(20 * time.millisecond)
+	got := ch.recv(0) or {
+		assert false, 'a queued reply must be returned by a zero-timeout poll: ${err}'
+		return
+	}
+	assert got == [u8(0x33)]
+	ch.close()
+	peer.close()
+}
+
+// A FIRST FRAME DECLARING A SINGLE-FRAME LENGTH IS MALFORMED (codex round 7 on #225).
+fn test_a_first_frame_with_a_single_frame_length_is_refused() {
+	mut peer := transport.open('inproc:isotp-short-ff') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-short-ff', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x10), 3, 1, 2, 3, 0, 0, 0] }) or {
+		assert false, err.msg()
+	}
+	if _ := ch.recv(300) {
+		assert false, 'a 3-byte First Frame must be refused'
+	} else {
+		assert err.msg().contains('must be a Single Frame'), err.msg()
+	}
+	ch.close()
+	peer.close()
+}

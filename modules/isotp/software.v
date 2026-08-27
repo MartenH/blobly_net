@@ -99,14 +99,19 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 	// Negative is "forever", as everywhere else.
 	deadline := time.ticks() + i64(timeout_ms)
 	mut first := []u8{}
+	mut looked := false
 	for {
 		mut rem := timeout_ms
 		if timeout_ms >= 0 {
 			rem = int(deadline - time.ticks())
-			if rem <= 0 {
+			if rem <= 0 && looked {
 				return error('timeout')
 			}
+			if rem < 0 {
+				rem = 0 // one look — see rx_raw
+			}
 		}
+		looked = true
 		first = c.rx_raw(rem)!
 		if first.len < 1 {
 			return error('ISO-TP: empty frame')
@@ -134,6 +139,12 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 			return error('ISO-TP FF too short')
 		}
 		total := (int(first[0] & 0x0F) << 8) | int(first[1])
+		if total <= 7 {
+			// A length that fits a Single Frame must be sent as one (ISO 15765-2); accepted, a
+			// total of 0..6 returned the padding bytes as a PDU and 7 waited for a Consecutive
+			// Frame that never comes (codex round 7 on #225).
+			return error('ISO-TP FF declares ${total} bytes, which must be a Single Frame')
+		}
 		mut out := []u8{cap: total}
 		out << first[2..]
 		c.tx([u8(0x30), 0, 0])! // Flow Control: CTS, block size 0, STmin 0
@@ -214,12 +225,16 @@ fn (mut c SoftChannel) rx_raw(timeout_ms int) ![]u8 {
 		}
 	}
 	deadline := time.ticks() + i64(timeout_ms)
+	// ZERO IS ONE LOOK, as the kernel channel's poll(0) is: a queued frame is returned, an empty
+	// queue is a timeout, and nothing waits (codex round 7 on #225).
+	mut looked := false
 	for {
 		rem := deadline - time.ticks()
-		if rem <= 0 {
+		if rem <= 0 && looked {
 			return error('timeout')
 		}
-		f := c.bus.recv(int(rem))!
+		looked = true
+		f := c.bus.recv(int(if rem < 0 { i64(0) } else { rem }))!
 		if f.id == c.rx_id {
 			return f.data
 		}
