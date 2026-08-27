@@ -184,10 +184,15 @@ fn run(o Opts) int {
 	// acknowledged, so a talker that ended the previous run in a retry storm still reports warning
 	// or error-passive at the start of this one — on a backend that reports its real ladder rather
 	// than resetting it at open, which is what a CANsub does. Judging the baseline on that reads a
-	// perfectly good bench as broken. Up to 200 acknowledged frames is enough to bring a controller
-	// from error-passive (128) below warning (96); one that is still degraded after them is.
+	// perfectly good bench as broken. BOUNDED BY TIME, NOT BY A FRAME COUNT: ~35 acknowledged
+	// frames bring a controller from error-passive (128) below warning (96), but a backend that
+	// polls a device for its health reports the change only when the next sample lands, up to a
+	// second later — a 200-frame loop finished in one second and read the old sample as "still
+	// degraded" (measured: the same bench passed at 126 frames and failed at 200, on timing alone).
+	// Five seconds is hundreds of frames and several samples; a talker still degraded after that is.
 	mut recovered := 0
-	for recovered < 200 && degraded(talker.health()) {
+	recover_until := time.ticks() + 5000
+	for time.ticks() < recover_until && degraded(talker.health()) {
 		talker.send(transport.CanFrame{ id: o.id, data: [u8(0x5E), u8(recovered)] }) or {}
 		listener.recv(2) or {}
 		time.sleep(5 * time.millisecond)
@@ -253,9 +258,17 @@ fn run(o Opts) int {
 	println('2. listener marked listen-only, mid-run')
 	report(sil)
 	if !degraded(sil.talker_health) {
+		// THE FAULT MUST BE ABOUT THIS DIRECTION. A stale STILL SILENT fault from an earlier phase
+		// is not the backend declining to go silent, and accepting any fault turned a genuine
+		// failure into n/a (code-review high on #223).
 		if f := transport.wire_silence_fault(o.listener) {
-			println('   n/a — ${f.why}')
-			not_applicable << 'phase 2'
+			if !f.want {
+				eprintln('   FAIL — the talker is still ${shown(sil.talker_health)}, and the only fault on the wire is about the OTHER direction: ${f.why}')
+				ok = false
+			} else {
+				println('   n/a — ${f.why}')
+				not_applicable << 'phase 2'
+			}
 		} else {
 			eprintln('   FAIL — the talker is still ${shown(sil.talker_health)}. Somebody is still acknowledging')
 			eprintln('          its frames, so the listener transceiver was not silenced — and nothing recorded why.')
@@ -394,52 +407,51 @@ fn run(o Opts) int {
 	// (codex round 7 on #219). The mark is deliberately NOT reconciled through any existing handle
 	// first: the open is the only thing that gets a chance to act on it.
 	transport.set_listen_only(o.listener, true)
-	mut joiner := transport.open(o.listener) or {
+	println('5. mark set, then a NEW handle opened onto the already-held wire')
+	if mut joiner := transport.open(o.listener) {
+		joined := exchange(mut reopened, mut fresh2, o)
+		report(joined)
+		if !degraded(joined.talker_health) {
+			if f := transport.wire_silence_fault(o.listener) {
+				if !f.want {
+					eprintln('   FAIL — the talker is still ${shown(joined.talker_health)}, and the only fault on the wire is about the OTHER direction: ${f.why}')
+					ok = false
+				} else {
+					println('   n/a — ${f.why}')
+					not_applicable << 'phase 5'
+				}
+			} else {
+				eprintln('   FAIL — the talker is still ${shown(joined.talker_health)}. The joining handle recorded a')
+				eprintln('          mode it never applied: canlib obeys only the handle holding initialisation')
+				eprintln('          access, and this was not it.')
+				ok = false
+			}
+		} else if joined.rx == 0 {
+			eprintln('   FAIL — the talker went ${shown(joined.talker_health)}, but the listener heard nothing.')
+			ok = false
+		} else {
+			println('   ok — opening onto a held wire reconciles it rather than assuming it was obeyed')
+		}
+		joiner.close()
+	} else {
 		// A REFUSED JOIN IS THE OTHER HONEST ANSWER. A backend that cannot silence a live channel
 		// does not hand out a handle claiming to be silent (#219's rule): the join is refused with
-		// the device's reason, and that reason is recorded on the wire. That is the declared
-		// limitation, not a failure — and a join refused with NO fault recorded still is one.
+		// the device's reason, and that reason is recorded on the wire, IN THIS DIRECTION. That is
+		// the declared limitation, not a failure. Refused with no such fault, it is one. Either way
+		// the run continues into the common tail below, which puts the wire back and says so if it
+		// cannot -- an early return here once skipped that and printed PASS over a silent adapter.
 		if f := transport.wire_silence_fault(o.listener) {
-			println('5. mark set, then a NEW handle opened onto the already-held wire')
-			println('   n/a — the join was refused: ${f.why}')
-			not_applicable << 'phase 5'
-			transport.set_listen_only(o.listener, false)
-			reopened.reconcile_silence(false) or {}
-			if ok && not_applicable.len > 0 {
-				println('PASS — with ${not_applicable.join(' and ')} not applicable: this backend follows listen-only only at open, and says so on its Buses row.')
-				return 0
+			if f.want {
+				println('   n/a — the join was refused: ${f.why}')
+				not_applicable << 'phase 5'
+			} else {
+				eprintln('   FAIL — the join was refused, but the only fault on the wire is about the OTHER direction: ${f.why}')
+				ok = false
 			}
-			if ok {
-				println('PASS — listen-only reaches the transceiver, both directions, and does not outlive its mark.')
-				return 0
-			}
-			println('FAIL')
-			return 1
-		}
-		eprintln('could not open a joining handle on ${o.listener}: ${err}')
-		return 1
-	}
-	defer {
-		joiner.close()
-	}
-	joined := exchange(mut reopened, mut fresh2, o)
-	println('5. mark set, then a NEW handle opened onto the already-held wire')
-	report(joined)
-	if !degraded(joined.talker_health) {
-		if f := transport.wire_silence_fault(o.listener) {
-			println('   n/a — ${f.why}')
-			not_applicable << 'phase 5'
 		} else {
-			eprintln('   FAIL — the talker is still ${shown(joined.talker_health)}. The joining handle recorded a')
-			eprintln('          mode it never applied: canlib obeys only the handle holding initialisation')
-			eprintln('          access, and this was not it.')
+			eprintln('   FAIL — could not open a joining handle, and nothing recorded why: ${err}')
 			ok = false
 		}
-	} else if joined.rx == 0 {
-		eprintln('   FAIL — the talker went ${shown(joined.talker_health)}, but the listener heard nothing.')
-		ok = false
-	} else {
-		println('   ok — opening onto a held wire reconciles it rather than assuming it was obeyed')
 	}
 	println('')
 
@@ -453,7 +465,7 @@ fn run(o Opts) int {
 	// reaches all of them. Reported rather than ignored, because a bench tool that cannot hand the
 	// hardware back in the state it found it should say so.
 	transport.set_listen_only(o.listener, false)
-	joiner.reconcile_silence(false) or {
+	reopened.reconcile_silence(false) or {
 		eprintln('WARNING: could not return ${o.listener} to normal mode — ${err}')
 		eprintln('         the adapter may still be listen-only for the next thing that opens it.')
 		ok = false
