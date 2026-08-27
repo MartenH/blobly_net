@@ -35,6 +35,9 @@ mut:
 	frames   int = 6
 	timeout  int = 300
 	id       u32 = 0x321
+	// HOW MANY HANDLES THE LISTENER WIRE HOLDS, defaulting to what a GUI Start actually opens: a
+	// monitor plus transmit taps. See the `--handles` note in usage() for why this is not 1.
+	handles int = 3
 }
 
 fn usage() {
@@ -42,6 +45,13 @@ fn usage() {
 	println('')
 	println('  --listener <iface>    the wire under test; it is marked listen-only and never sends')
 	println('  --talker <iface>      the second node, on the same bus; it TRANSMITS')
+	println('  --handles <n>         handles to hold open on the listener wire (default 3)')
+	println('                        A GUI Start opens each wire several times — a monitor plus')
+	println('                        transmit taps — and on Kvaser the channel mode CANNOT be')
+	println('                        changed through one handle while its siblings are on the bus:')
+	println('                        the driver accepts the call and ignores it. A one-handle bench')
+	println('                        therefore passes while the real configuration silently fails,')
+	println('                        which is exactly what happened. 1 to test a single handle.')
 	println('  --frames <n>          frames per phase (default 6)')
 	println('  --timeout <ms>        receive timeout per frame (default 300)')
 	println('  --id <hex|dec>        CAN id to send (default 0x321)')
@@ -66,6 +76,10 @@ fn main() {
 			'--frames' {
 				i++
 				o.frames = arg_int(args, i, '--frames')
+			}
+			'--handles' {
+				i++
+				o.handles = arg_int(args, i, '--handles')
 			}
 			'--timeout' {
 				i++
@@ -103,6 +117,10 @@ fn main() {
 		eprintln('--frames must be at least 1')
 		exit(2)
 	}
+	if o.handles < 1 {
+		eprintln('--handles must be at least 1')
+		exit(2)
+	}
 	// POSITIVE, AND THE LOWER BOUND IS NOT PEDANTRY. The Bus contract reads a NEGATIVE timeout as
 	// "block forever", and `settle` receives before any traffic is sent — so `--timeout -1` did not
 	// produce a wrong answer, it produced no answer at all: the tool sat in recv on a quiet bus
@@ -129,13 +147,36 @@ fn run(o Opts) int {
 	defer {
 		listener.close()
 	}
+	// SIBLING HANDLES ON THE SAME WIRE, held open and otherwise unused, because a wire in this app
+	// is normally held by several: a monitor plus named and anonymous transmit taps. They are not
+	// decoration — on Kvaser the channel's output mode cannot be changed through one handle while
+	// its siblings are on the bus, and the driver reports success anyway. A bench that opened the
+	// listener once passed every phase while the configuration the GUI actually uses went on
+	// acknowledging (codex round 5 on #219).
+	mut siblings := []transport.Bus{}
+	for n in 1 .. o.handles {
+		sib := transport.open(o.listener) or {
+			eprintln('could not open listener handle ${n + 1} of ${o.handles} on ${o.listener}: ${err}')
+			return 1
+		}
+		siblings << sib
+	}
+	defer {
+		for mut sib in siblings {
+			sib.close()
+		}
+	}
 	mut talker := transport.open(o.talker) or {
 		eprintln('could not open talker ${o.talker}: ${err}')
 		return 1
 	}
 	println('listener  ${o.listener}')
 	println('talker    ${o.talker}')
-	println('${o.frames} frames per phase, id 0x${o.id:03X}')
+	println('${o.frames} frames per phase, id 0x${o.id:03X}, ${o.handles} handle${if o.handles == 1 {
+		''
+	} else {
+		's'
+	}} on the listener wire')
 	println('')
 
 	mut ok := true
@@ -161,6 +202,14 @@ fn run(o Opts) int {
 	// being tested is that a row toggled mid-run reaches the controller, which is the case a
 	// policy cached at open time gets wrong.
 	transport.set_listen_only(o.listener, true)
+	// RECONCILED THROUGH THE LAST SIBLING when there is one, not through the handle being read
+	// from. Any handle on the wire must be able to change the mode for every one of them, and the
+	// version that could not was the version where the reader happened to be the one asked.
+	if siblings.len > 0 {
+		siblings[siblings.len - 1].reconcile_silence(true) or {
+			eprintln('   (reconcile through a sibling: ${err})')
+		}
+	}
 	settle(mut listener, o.timeout)
 	sil := exchange(mut listener, mut talker, o)
 	println('2. listener marked listen-only, mid-run')

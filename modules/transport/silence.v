@@ -145,6 +145,20 @@ fn clear_silence_fault(k string) {
 	silence_applied.faults.delete(k)
 }
 
+// SilenceFault is a controller that would not do what its row asked.
+//
+// `want` IS PART OF IT, and leaving it out inverted the diagnosis. A refusal can be in EITHER
+// direction: a wire being silenced whose controller keeps acknowledging, or a wire being
+// transmit-enabled whose controller will not leave listen-only — and the second is not "still
+// acknowledging", it is "nothing this wire sends reaches the bus". Reported as one message, the
+// panel described every fault as the first kind and was exactly backwards for half of them
+// (codex round 4 on #219).
+pub struct SilenceFault {
+pub:
+	want bool   // what the row asked the controller for
+	why  string // the driver's own words
+}
+
 // wire_silence_fault reports that this wire's controller REFUSED the mode its row asks for, or
 // `none` when it is doing what it was told.
 //
@@ -160,20 +174,6 @@ fn clear_silence_fault(k string) {
 // controller did not agree, and an operator watching a live vehicle needs to know which of those
 // they are looking at. Cleared the moment a later attempt succeeds — every receive retries, so a
 // transient refusal disappears on its own.
-// SilenceFault is a controller that would not do what its row asked.
-//
-// `want` IS PART OF IT, and leaving it out inverted the diagnosis. A refusal can be in EITHER
-// direction: a wire being silenced whose controller keeps acknowledging, or a wire being
-// transmit-enabled whose controller will not leave listen-only — and the second is not "still
-// acknowledging", it is "nothing this wire sends reaches the bus". Reported as one message, the
-// panel described every fault as the first kind and was exactly backwards for half of them
-// (codex round 4 on #219).
-pub struct SilenceFault {
-pub:
-	want bool   // what the row asked the controller for
-	why  string // the driver's own words
-}
-
 pub fn wire_silence_fault(iface string) ?SilenceFault {
 	k := wire_key(iface)
 	silence_applied.mu.lock()

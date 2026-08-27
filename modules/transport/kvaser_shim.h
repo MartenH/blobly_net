@@ -261,20 +261,46 @@ static int ct_kvaser_read(int hnd, uint32_t *id, uint8_t *len, uint8_t *data, ui
  * That is the honest cost and the caller decides when to pay it.
  */
 
-/* canSetBusOutputControl is only accepted while the channel is bus-OFF, so the bus is bounced
-   around it -- AND BROUGHT BACK UP WHICHEVER WAY THE CALL GOES. Returning early on a refused
-   mode change left the channel off the bus and handed the caller a handle that looked like a
-   working one: it would transmit nothing, receive nothing, and be taken off the bus again on
-   every subsequent reconcile. A driver that will not change the mode is a reason to report the
-   mode unchanged, never a reason to leave the wire down (self-review of #219). */
-static int ct_kvaser_set_silent(int hnd, int silent) {
-	int st, on;
-	if (!ct_kv_setoutctrl) return -100; /* canERR_NOT_IMPLEMENTED-ish: caller reports it */
-	if (ct_kv_busoff) ct_kv_busoff(hnd);
-	st = ct_kv_setoutctrl(hnd, silent ? CT_KV_DRIVER_SILENT : CT_KV_DRIVER_NORMAL);
-	on = ct_kv_buson ? ct_kv_buson(hnd) : 0;
-	if (st < 0) return st; /* the mode did not change; the bus is back up regardless */
-	return on < 0 ? on : 0;
+/* Set the CHANNEL's output mode with every handle this process holds on it taken bus-off first.
+ *
+ * WHY ALL OF THEM. canlib takes a channel off the bus only when ALL of its handles are off, and
+ * canSetBusOutputControl is accepted only while it is off. Called with one handle bus-off and its
+ * siblings still on, the call RETURNS SUCCESS AND DOES NOTHING -- measured on a USBcan Pro 5xHS,
+ * where silencing a wire that had three handles open left the transceiver acknowledging every
+ * frame while this process recorded it as silent (codex round 5 on #219). A driver that reports a
+ * mode change it did not make is the worst version of this bug: nothing downstream can notice.
+ *
+ * The GUI opens each wire several times per Start -- a monitor plus named and anonymous transmit
+ * taps -- so the multi-handle case is the NORMAL one there, not an edge.
+ *
+ * Every handle goes back on the bus whichever way the mode call goes, for the reason the
+ * single-handle version already gives: a driver that will not change the mode is a reason to
+ * report the mode unchanged, never a reason to leave the wire down. */
+static int ct_kvaser_set_silent_all(const int *handles, int n, int silent) {
+	int i, st, on;
+	if (!ct_kv_setoutctrl || n <= 0) return -100;
+	if (ct_kv_busoff) for (i = 0; i < n; i++) ct_kv_busoff(handles[i]);
+	/* THROUGH EVERY HANDLE, because only one of them can do it and the driver will not say which.
+	   Exactly the handle holding this channel's INITIALISATION ACCESS -- canlib's first opener --
+	   is obeyed; the rest return success and are ignored, so the answer cannot be read off a status
+	   code. Measured both ways on a USBcan Pro 5xHS: through the first handle it takes effect, and
+	   through any later one it does not, with all of them bus-off either way. Tracking "the first
+	   one" would work until that handle closed while its siblings stayed open, which is the case
+	   Vector documents for XL ports (pinned.v) and which no canlib call exposes. So all of them are
+	   asked, and only ALL of them failing is a failure. */
+	st = -100;
+	for (i = 0; i < n; i++) {
+		int one = ct_kv_setoutctrl(handles[i], silent ? CT_KV_DRIVER_SILENT : CT_KV_DRIVER_NORMAL);
+		if (one >= 0) st = 0;
+		else if (st == -100) st = one;
+	}
+	if (ct_kv_buson) {
+		for (i = 0; i < n; i++) {
+			on = ct_kv_buson(handles[i]);
+			if (st >= 0 && on < 0) st = on;
+		}
+	}
+	return st < 0 ? st : 0;
 }
 
 static void ct_kvaser_close(int hnd) {

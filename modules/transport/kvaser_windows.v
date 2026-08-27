@@ -24,6 +24,8 @@
 // See docs/windows_can_hardware.md.
 module transport
 
+import sync
+
 #include "kvaser_shim.h"
 
 fn C.ct_kvaser_load() int
@@ -38,9 +40,62 @@ fn C.ct_kvaser_status(int, &u32) int
 fn C.ct_kvaser_count() int
 fn C.ct_kvaser_descr(int, &char, int) int
 fn C.ct_kvaser_is_virtual(int) int
-fn C.ct_kvaser_set_silent(int, int) int
+fn C.ct_kvaser_set_silent_all(&int, int, int) int
 
 // KvaserBus is one open + bus-on CANlib channel handle.
+// kvaser_open_handles is every handle THIS PROCESS holds, per wire.
+//
+// It exists because the channel's output mode cannot be changed through one handle while its
+// siblings are on the bus — canlib accepts the call and ignores it (see ct_kvaser_set_silent_all).
+// So a mode change has to know about all of them, and this is the only place that does.
+//
+// NOT `shared.v`. A second `kvaser:` open is a second SUBSCRIBER — each handle has its own receive
+// queue — so routing it through the refcounted registry the way `pcan:` is would hand every reader
+// one bus and lose frames, which is what #212 is about. The handles stay separate; only the mode
+// change is coordinated.
+struct KvaserWires {
+mut:
+	mu  sync.Mutex
+	byw map[string][]int
+}
+
+__global kvaser_wires = &KvaserWires{}
+
+fn kvaser_register(iface string, handle int) {
+	kvaser_wires.mu.lock()
+	defer {
+		kvaser_wires.mu.unlock()
+	}
+	kvaser_wires.byw[wire_key(iface)] << handle
+}
+
+fn kvaser_unregister(iface string, handle int) {
+	kvaser_wires.mu.lock()
+	defer {
+		kvaser_wires.mu.unlock()
+	}
+	k := wire_key(iface)
+	if mut hs := kvaser_wires.byw[k] {
+		idx := hs.index(handle)
+		if idx >= 0 {
+			hs.delete(idx)
+		}
+		if hs.len == 0 {
+			kvaser_wires.byw.delete(k)
+		} else {
+			kvaser_wires.byw[k] = hs
+		}
+	}
+}
+
+fn kvaser_handles(iface string) []int {
+	kvaser_wires.mu.lock()
+	defer {
+		kvaser_wires.mu.unlock()
+	}
+	return kvaser_wires.byw[wire_key(iface)] or { []int{} }.clone()
+}
+
 pub struct KvaserBus {
 mut:
 	handle int
@@ -79,6 +134,7 @@ pub fn open_kvaser(spec string, iface string) !&KvaserBus {
 			return error('Kvaser: could not open channel ${s.channel} — ${kvaser_open_refusal(hnd,
 				s.channel, false)}')
 		}
+		kvaser_register(iface, hnd)
 		if mode_unset == 0 {
 			note_silence_applied(iface, silent)
 		}
@@ -100,6 +156,7 @@ pub fn open_kvaser(spec string, iface string) !&KvaserBus {
 		return error('Kvaser: could not open channel ${s.channel} for CAN-FD at ${s.bitrate}/${s.data_bitrate} — ${kvaser_open_refusal(hnd,
 			s.channel, true)}')
 	}
+	kvaser_register(iface, hnd)
 	if mode_unset == 0 {
 		note_silence_applied(iface, silent)
 	}
@@ -124,9 +181,21 @@ pub fn open_kvaser(spec string, iface string) !&KvaserBus {
 // per WIRE rather than once per handle matters more here than on PCAN: the app holds several
 // handles on one channel, and one operator tick used to drop traffic once for each of them.
 pub fn (mut b KvaserBus) reconcile_silence(want bool) ! {
-	h := b.handle
-	apply_silence(b.iface, want, fn [h] (silent bool) int {
-		return C.ct_kvaser_set_silent(h, if silent { 1 } else { 0 })
+	// EVERY HANDLE ON THE WIRE, not just this one. canlib takes a channel off the bus only when all
+	// of its handles are off, and accepts canSetBusOutputControl only while it is off — so through
+	// one handle with siblings still on, the call SUCCEEDS AND DOES NOTHING. Measured: a wire with
+	// three handles open reported itself silenced and went on acknowledging every frame (codex
+	// round 5 on #219). The GUI opens each wire several times per Start, so that is the normal
+	// case here and not an edge.
+	iface := b.iface
+	apply_silence(iface, want, fn [iface] (silent bool) int {
+		// Read inside the closure, so the list is the one that exists when the mode is actually
+		// being changed rather than when the bus was built.
+		hs := kvaser_handles(iface)
+		if hs.len == 0 {
+			return -100 // nothing open on this wire: nothing to reconcile, and nothing to claim
+		}
+		return C.ct_kvaser_set_silent_all(&hs[0], hs.len, if silent { 1 } else { 0 })
 	})!
 }
 
@@ -249,6 +318,7 @@ pub fn (mut b KvaserBus) recv(timeout_ms int) !CanFrame {
 }
 
 pub fn (mut b KvaserBus) close() {
+	kvaser_unregister(b.iface, b.handle)
 	C.ct_kvaser_close(b.handle)
 }
 

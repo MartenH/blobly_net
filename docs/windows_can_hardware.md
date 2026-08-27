@@ -634,6 +634,19 @@ one stopped is the *talker* losing its and climbing its error ladder. Four phase
 | 3 · unmarked **mid-run** | the silence lifts without reopening anything |
 | 4 · closed while marked, reopened unmarked | a channel the previous run left silent does not come back silent |
 
+`--handles` defaults to **3**, not 1, and that default is the whole reason this tool caught what it
+did. A GUI Start opens each wire several times — a monitor plus named and anonymous transmit taps —
+and on Kvaser **the channel's output mode can only be changed through the handle holding
+initialisation access**, which is canlib's FIRST opener. Asked through any later handle the driver
+returns success and does nothing. Measured both ways on the USBcan Pro 5xHS, with every handle
+bus-off in both cases, so it is about WHICH handle and not about bus state — the same "the ports
+already fixed it" shape Vector documents for XL (`pinned.v`), and there is no canlib call that
+reports which handle holds it. So the mode is set through every handle on the wire: exactly one is
+obeyed and the rest are ignored, and only all of them failing is a failure.
+
+A one-handle bench passes this happily while the configuration the app actually uses goes on
+acknowledging — which is precisely what happened before `--handles` existed. Run it at 1 to compare.
+
 Phase 4 is the one worth knowing about. The driver mode belongs to the CHANNEL and can outlive the
 handle: **Kvaser's `canClose` does not reset it**, so a run that ended while a wire was marked
 leaves the next opener silent while the mark itself died with the process. PCAN's
