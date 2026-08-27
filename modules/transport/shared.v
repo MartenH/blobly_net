@@ -437,15 +437,26 @@ fn (mut e SharedEntry) read_loop() {
 		// one poll period at most.
 		e.drain_mu.lock()
 		ingress := e.driver.recv_shared(shared_reader_poll_ms) or {
-			e.drain_mu.unlock()
-			e.yield_to_joiners()
 			mut closing := false
 			e.mu.lock()
 			closing = e.state != .running
 			e.mu.unlock()
 			if closing {
+				e.drain_mu.unlock()
 				break
 			}
+			if err.msg() != 'timeout' {
+				// THE FAILURE IS TAKEN UNDER drain_mu, before the lock is released: a joiner
+				// queued on it must find the generation failed and go back to the factory,
+				// not be admitted to a dead handle in the millisecond the reader yields
+				// (codex round 8 on #224).
+				e.fail_and_close(err.msg())
+				e.drain_mu.unlock()
+				e.done <- true
+				return
+			}
+			e.drain_mu.unlock()
+			e.yield_to_joiners()
 			if err.msg() == 'timeout' {
 				// The reader poll is also the expiry clock. Without this, one lost final CANsub
 				// acknowledgement would retain its payload and origin until another send arrived.
@@ -458,9 +469,7 @@ fn (mut e SharedEntry) read_loop() {
 				}
 				continue
 			}
-			e.fail_and_close(err.msg())
-			e.done <- true
-			return
+			continue
 		}
 		// drain_mu STAYS HELD UNTIL THE FRAME IS COMMITTED below. Released here, a handle could
 		// establish its boundary against an empty driver queue and register while this frame —
@@ -880,6 +889,19 @@ fn (mut h SharedHandle) send(frame CanFrame) ! {
 			}
 		}
 		e.mu.unlock()
+	}
+	// AND AGAIN NOW THAT THE FRAME IS ON THE WIRE. The refresh above was taken before a write
+	// that can wait on send_mu or stall in the driver; if that took longer than the attentive
+	// second, the reader could park the moment the frame left and drain the prompt reply
+	// (codex round 8 on #224). The reply clock starts here.
+	if !subscribed {
+		e.mu.lock()
+		e.unread[h.id] = time.ticks()
+		e.mu.unlock()
+		select {
+			e.kick <- true {}
+			else {}
+		}
 	}
 }
 
