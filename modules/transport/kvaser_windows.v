@@ -46,26 +46,6 @@ mut:
 	handle int
 	// The wire this handle is, so the silence policy can be asked about it — see ensure_silence.
 	iface string
-	// What the TRANSCEIVER was last set to, and whether this bus has set it AT ALL.
-	//
-	// THE SECOND HALF IS THE LOAD-BEARING ONE, AND IT WAS MEASURED HERE. The driver mode belongs to
-	// the CHANNEL and canClose does not reset it: a run that ended while the wire was marked leaves
-	// the controller silent for whoever opens it next, while the mark itself died with the process.
-	// A bus that wrote only when the policy differed from its own freshly-zeroed field would find
-	// `want == false`, match, write nothing, and leave that wire silent indefinitely — on a row
-	// nobody had ticked. So the FIRST reconcile always writes, whatever the answer, and only later
-	// ones are allowed to be cheap.
-	//
-	// Not theory: `cmd/silentcheck` phase 4 reproduces it on a bench (close while marked, clear,
-	// reopen) and it FAILS on this backend without this field. PCAN survives it either way, because
-	// CAN_Uninitialize does reset the channel — which is exactly why the rule cannot be left to
-	// whichever driver happens to be forgiving.
-	//
-	// It is the same divergence CANsub answers by reading the device back (`reconcile_listen_only`,
-	// "the device is asked, not our memory of it"). Neither of these drivers is on the end of an
-	// HTTP round trip, so the cheaper cure fits: write once, unconditionally, at open.
-	silent  bool
-	applied bool
 	// The mode this handle was OPENED in. A channel opened classic cannot carry an FD frame
 	// however the frame is flagged, so send() has to know -- and a channel opened FD still
 	// carries classic frames, which is why recv reads the flags per frame rather than assuming.
@@ -120,28 +100,29 @@ pub fn open_kvaser(spec string, iface string) !&KvaserBus {
 
 // ensure_silence makes the CONTROLLER match this wire's silence policy — the half of listen-only
 // that software refusal cannot do, because the ACK is the transceiver's. listen.v carries the
-// whole reasoning, including why this is asked per receive instead of cached at open.
+// whole reasoning; silence.v carries why the record of what was applied is keyed by WIRE and not
+// held on this struct.
 //
 // canlib spells it `canSetBusOutputControl(canDRIVER_SILENT)`, and it may only be set while the
-// channel is bus-OFF — so the shim bounces the bus around it. That is the cost of moving the mark
-// mid-run, and it is paid only when somebody actually moves it.
-//
-// A FAILURE LEAVES THE REMEMBERED STATE ALONE, so the next receive tries again rather than
-// recording a change that did not happen.
+// channel is bus-OFF — so the shim bounces the bus around it and brings it back up whichever way
+// the call goes. That bounce is the reason the claim matters here more than on PCAN: applied once
+// per handle instead of once per wire, one operator tick dropped traffic several times over.
 fn (mut b KvaserBus) ensure_silence() {
 	want := is_listen_only(b.iface)
-	if b.applied && want == b.silent {
+	if !claim_silence(b.iface, want) {
 		return
 	}
-	st := C.ct_kvaser_set_silent(b.handle, if want { 1 } else { 0 })
-	if st != 0 {
-		return
+	if C.ct_kvaser_set_silent(b.handle, if want { 1 } else { 0 }) != 0 {
+		release_silence_claim(b.iface, want)
 	}
-	b.silent = want
-	b.applied = true
 }
 
 pub fn (mut b KvaserBus) send(f CanFrame) ! {
+	// RECONCILED ON THE WAY OUT TOO, not only on receive. A transmit tap is a handle that may never
+	// be read from, so on a wire with no reader nothing else here would ever notice a mark being
+	// lifted — `send` would report success while the controller stayed silent and the frame went
+	// nowhere (self-review of #219). Costs one map read when nothing has changed.
+	b.ensure_silence()
 	// A FRAME NO CONTROLLER COULD SEND is refused here as it is everywhere else. `esi` on a
 	// classic frame arrived with the shared rules and this path never learned it, so the same
 	// input was rejected by `inproc:`, `udp:`, PCAN and CANsub and accepted here — the flag

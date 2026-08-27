@@ -74,21 +74,6 @@ mut:
 	channel u16
 	// The wire this handle is, so the silence policy can be asked about it — see ensure_silence.
 	iface string
-	// What the TRANSCEIVER was last set to, and whether this bus has set it AT ALL.
-	//
-	// THE SECOND HALF IS BELT AND BRACES HERE AND LOAD-BEARING ON KVASER, and it is the same field
-	// on purpose. A mode set on a CHANNEL can outlive the handle that set it, so a run that ended
-	// while the wire was marked can leave the controller silent for whoever opens it next — while
-	// the mark itself died with the process. A bus that wrote only when the policy differed from
-	// its own freshly-zeroed field would find `want == false`, match, write nothing, and leave that
-	// wire silent indefinitely.
-	//
-	// Measured with `cmd/silentcheck` phase 4 (close while marked, clear, reopen): PCAN passes it
-	// without this field, because CAN_Uninitialize resets the channel, and Kvaser does not. Kept
-	// identical anyway — "this driver happens to forget" is not a property to build a promise on,
-	// and the cost is one CAN_SetValue per open.
-	silent  bool
-	applied bool
 	// Opened for CAN-FD. THE CHANNEL DECIDES what it can carry, not the frame — a handle opened
 	// classic cannot send an FD frame whatever the flags say, and an FD-opened one carries classic
 	// frames too, so this is read on every send and every receive.
@@ -148,23 +133,19 @@ pub fn open_pcan(spec string, iface string) !&PcanBus {
 
 // ensure_silence makes the CONTROLLER match this wire's silence policy — the half of listen-only
 // that software refusal cannot do, because the ACK is the transceiver's. listen.v carries the
-// whole reasoning, including why this is asked per receive instead of cached at open.
+// whole reasoning; silence.v carries why the record of what was applied is keyed by WIRE and not
+// held on this struct.
 //
 // PCANBasic spells it as a channel PARAMETER (`CAN_SetValue` with `PCAN_LISTEN_ONLY`), which an
 // initialized channel takes at any time — no bus bounce, unlike canlib.
-//
-// A FAILURE LEAVES THE REMEMBERED STATE ALONE, so the next receive tries again rather than
-// recording a change that did not happen.
 fn (mut b PcanBus) ensure_silence() {
 	want := is_listen_only(b.iface)
-	if b.applied && want == b.silent {
+	if !claim_silence(b.iface, want) {
 		return
 	}
 	if C.ct_pcan_set_silent(b.channel, if want { 1 } else { 0 }) != 0 {
-		return
+		release_silence_claim(b.iface, want)
 	}
-	b.silent = want
-	b.applied = true
 }
 
 // open_pcan_bus adapts open_pcan to the shared registry's factory signature. It takes the FULL
@@ -176,6 +157,10 @@ fn open_pcan_bus(iface string) !Bus {
 }
 
 pub fn (mut b PcanBus) send(f CanFrame) ! {
+	// RECONCILED ON THE WAY OUT TOO, not only on receive — a transmit tap may never be read from,
+	// so on a wire with no reader nothing else here would notice a mark being lifted, and `send`
+	// would report success while the controller stayed silent (self-review of #219).
+	b.ensure_silence()
 	// THE SHARED SHAPE RULES FIRST (frame_rules.v). This path accepted `brs` on a classic frame
 	// and simply never passed it to ct_pcan_write, reporting success — while wiretap kept the flag,
 	// so the record claimed a bit-rate switch the wire never saw. Kvaser and Vector each refuse

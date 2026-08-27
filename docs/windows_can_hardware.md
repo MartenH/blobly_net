@@ -637,9 +637,14 @@ one stopped is the *talker* losing its and climbing its error ladder. Four phase
 Phase 4 is the one worth knowing about. The driver mode belongs to the CHANNEL and can outlive the
 handle: **Kvaser's `canClose` does not reset it**, so a run that ended while a wire was marked
 leaves the next opener silent while the mark itself died with the process. PCAN's
-`CAN_Uninitialize` does reset it. Both backends therefore write the mode unconditionally on the
-first reconcile rather than only when it differs — "this driver happens to forget" is not a
-property to build a safety promise on.
+`CAN_Uninitialize` does reset it — but both backends behave the same way regardless, because "this
+driver happens to forget" is not a property to build a safety promise on.
+
+What they share is a record of what each WIRE's controller was last told (`silence.v`), which is
+**empty at process start** while the controller is not. So the first claim on any wire always
+writes, whatever the answer, and later ones are free. Keyed by wire rather than held on each bus
+for the reason the mode itself is a property of the controller: several handles are open on one
+channel per Start, and one operator tick should cost one reconfiguration, not one per handle.
 
 **It transmits**, deliberately and repeatedly, and phase 2 exists to drive the talker into its
 fault ladder. Do not point it at a bus you are not willing to disturb.

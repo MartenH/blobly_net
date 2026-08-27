@@ -228,17 +228,20 @@ static int ct_kvaser_read(int hnd, uint32_t *id, uint8_t *len, uint8_t *data, ui
 #define CT_KV_DRIVER_SILENT 1
 #define CT_KV_DRIVER_NORMAL 4
 
+/* canSetBusOutputControl is only accepted while the channel is bus-OFF, so the bus is bounced
+   around it -- AND BROUGHT BACK UP WHICHEVER WAY THE CALL GOES. Returning early on a refused
+   mode change left the channel off the bus and handed the caller a handle that looked like a
+   working one: it would transmit nothing, receive nothing, and be taken off the bus again on
+   every subsequent reconcile. A driver that will not change the mode is a reason to report the
+   mode unchanged, never a reason to leave the wire down (self-review of #219). */
 static int ct_kvaser_set_silent(int hnd, int silent) {
-	int st;
+	int st, on;
 	if (!ct_kv_setoutctrl) return -100; /* canERR_NOT_IMPLEMENTED-ish: caller reports it */
 	if (ct_kv_busoff) ct_kv_busoff(hnd);
 	st = ct_kv_setoutctrl(hnd, silent ? CT_KV_DRIVER_SILENT : CT_KV_DRIVER_NORMAL);
-	if (st < 0) return st;
-	if (ct_kv_buson) {
-		st = ct_kv_buson(hnd);
-		if (st < 0) return st;
-	}
-	return 0;
+	on = ct_kv_buson ? ct_kv_buson(hnd) : 0;
+	if (st < 0) return st; /* the mode did not change; the bus is back up regardless */
+	return on < 0 ? on : 0;
 }
 
 static void ct_kvaser_close(int hnd) {

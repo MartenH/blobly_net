@@ -213,6 +213,13 @@ fn run(o Opts) int {
 	settle(mut listener, o.timeout)
 	listener.close()
 	transport.clear_listen_only()
+	// AND FORGET WHAT WAS APPLIED, because that is the half a single process cannot otherwise
+	// simulate. What makes this case dangerous is that the CONTROLLER remembers and the process
+	// does not: `silence_applied` is empty at start-up, which is what forces the first claim on
+	// every wire to write. Skip this and the table still holds "this wire is silent" from a moment
+	// ago, the reopen reconciles against a record a real new run would not have, and the phase
+	// passes for a reason the case it is named after does not enjoy.
+	transport.forget_silence_claims()
 	mut reopened := transport.open(o.listener) or {
 		eprintln('could not reopen listener ${o.listener}: ${err}')
 		return 1
