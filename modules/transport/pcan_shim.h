@@ -52,6 +52,8 @@ typedef uint32_t (__stdcall *ct_pWrite)(uint16_t, CT_TPCANMsg *);
 typedef uint32_t (__stdcall *ct_pRead)(uint16_t, CT_TPCANMsg *, void *);
 
 typedef uint32_t (__stdcall *ct_pGetValue)(uint16_t, uint8_t, void *, uint32_t);
+/* CAN_SetValue — PCAN_LISTEN_ONLY is what puts the transceiver in ACK-free mode. */
+typedef uint32_t (__stdcall *ct_pSetValue)(uint16_t, uint8_t, void *, uint32_t);
 typedef uint32_t (__stdcall *ct_pGetStatus)(uint16_t);
 
 static ct_pInit     ct_fn_init;
@@ -59,6 +61,7 @@ static ct_pUninit   ct_fn_uninit;
 static ct_pWrite    ct_fn_write;
 static ct_pRead     ct_fn_read;
 static ct_pGetValue ct_fn_getvalue; /* CAN_GetValue — discovery only, optional */
+static ct_pSetValue ct_fn_setvalue; /* CAN_SetValue — listen-only, optional on an old DLL */
 static ct_pGetStatus ct_fn_getstatus; /* CAN_GetStatus — bus health, optional */
 /* Absent on a pre-FD PCANBasic. Their absence is what "this driver cannot do FD" looks like. */
 static ct_pInitFD   ct_fn_initfd;
@@ -77,6 +80,7 @@ static int ct_pcan_load(void) {
 	ct_fn_writefd = (ct_pWriteFD)(void *)GetProcAddress(h, "CAN_WriteFD");
 	ct_fn_readfd  = (ct_pReadFD)(void *)GetProcAddress(h, "CAN_ReadFD");
 	ct_fn_getvalue = (ct_pGetValue)(void *)GetProcAddress(h, "CAN_GetValue");
+	ct_fn_setvalue = (ct_pSetValue)(void *)GetProcAddress(h, "CAN_SetValue");
 	ct_fn_getstatus = (ct_pGetStatus)(void *)GetProcAddress(h, "CAN_GetStatus");
 	if (!ct_fn_init || !ct_fn_uninit || !ct_fn_write || !ct_fn_read) return -2;
 	return 0;
@@ -192,6 +196,26 @@ static uint32_t ct_pcan_read_fd(uint16_t ch, uint32_t *id, uint8_t *msgtype, uin
 	*dlc = m.DLC;
 	for (i = 0; i < 64; i++) data[i] = m.DATA[i];
 	return st;
+}
+
+/* ---- listen-only ---------------------------------------------------------------------------
+ *
+ * PCAN_LISTEN_ONLY puts the transceiver in ACK-free mode. Software declining to transmit is not
+ * the same promise: the controller generates the acknowledgement itself, so a "silent" wire that
+ * still ACKs is the difference between another node's frames succeeding and it going
+ * error-passive.
+ *
+ * Returns the raw TPCANStatus, or 0xFFFFFFFF when the DLL is too old to export CAN_SetValue --
+ * which the caller reports as a sentence rather than pretending the wire is silent.
+ */
+#define CT_PCAN_LISTEN_ONLY  0x08u
+#define CT_PCAN_PARAM_OFF    0u
+#define CT_PCAN_PARAM_ON     1u
+
+static uint32_t ct_pcan_set_silent(uint16_t ch, int silent) {
+	uint32_t v = silent ? CT_PCAN_PARAM_ON : CT_PCAN_PARAM_OFF;
+	if (!ct_fn_setvalue) return 0xFFFFFFFFu;
+	return ct_fn_setvalue(ch, (uint8_t)CT_PCAN_LISTEN_ONLY, &v, (uint32_t)sizeof(v));
 }
 
 static uint32_t ct_pcan_status(uint16_t ch) {

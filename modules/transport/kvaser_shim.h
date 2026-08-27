@@ -34,6 +34,10 @@ typedef int     (__stdcall *ct_kvSetBus)(int, int32_t, uint32_t, uint32_t, uint3
  * OPTIONAL: a canlib older than the FD API has no such symbol, and the caller is told that
  * rather than finding out through a null call. */
 typedef int     (__stdcall *ct_kvSetBusFd)(int, int32_t, uint32_t, uint32_t, uint32_t);
+/* canSetBusOutputControl picks what the TRANSCEIVER does, which is a different question from
+ * whether this process transmits. canDRIVER_SILENT listens without acknowledging; NORMAL is the
+ * ordinary node. canlib requires the channel to be bus-OFF when this is set. */
+typedef int     (__stdcall *ct_kvSetOutCtrl)(int, uint32_t);
 typedef int     (__stdcall *ct_kvBusOn)(int);
 typedef int     (__stdcall *ct_kvBusOff)(int);
 typedef int     (__stdcall *ct_kvWrite)(int, int32_t, void *, uint32_t, uint32_t);
@@ -44,6 +48,7 @@ static ct_kvInitLib  ct_kv_initlib;
 static ct_kvOpen     ct_kv_open;
 static ct_kvSetBus   ct_kv_setbus;
 static ct_kvSetBusFd ct_kv_setbusfd;
+static ct_kvSetOutCtrl ct_kv_setoutctrl; /* canSetBusOutputControl — optional on ancient canlib */
 static ct_kvBusOn    ct_kv_buson;
 static ct_kvBusOff   ct_kv_busoff;
 static ct_kvWrite    ct_kv_write;
@@ -73,6 +78,7 @@ static int ct_kvaser_load(void) {
 	ct_kv_open     = (ct_kvOpen)(void *)GetProcAddress(h, "canOpenChannel");
 	ct_kv_setbus   = (ct_kvSetBus)(void *)GetProcAddress(h, "canSetBusParams");
 	ct_kv_setbusfd = (ct_kvSetBusFd)(void *)GetProcAddress(h, "canSetBusParamsFd");
+	ct_kv_setoutctrl = (ct_kvSetOutCtrl)(void *)GetProcAddress(h, "canSetBusOutputControl");
 	ct_kv_buson    = (ct_kvBusOn)(void *)GetProcAddress(h, "canBusOn");
 	ct_kv_busoff   = (ct_kvBusOff)(void *)GetProcAddress(h, "canBusOff");
 	ct_kv_write    = (ct_kvWrite)(void *)GetProcAddress(h, "canWrite");
@@ -114,14 +120,55 @@ static int ct_kvaser_is_virtual(int ch) {
 	if (ct_kv_chandata(ch, 1, &cap, sizeof cap) < 0) return -1;
 	return (cap & 0x00010000L) ? 1 : 0;
 }
+/* canDRIVER_SILENT / canDRIVER_NORMAL (canlib.h). Defined here, above both users: the OPEN
+ * path chooses the mode before going bus-on and the mid-run path revises it afterwards. */
+#define CT_KV_DRIVER_SILENT 1
+#define CT_KV_DRIVER_NORMAL 4
+
+/* SET THE OUTPUT MODE BEFORE canBusOn, NEVER AFTER.
+ *
+ * Opening used to go bus-on in canlib's default (acknowledging) mode and let the caller bounce the
+ * bus afterwards to select canDRIVER_SILENT. Every listen-only channel therefore joined the bus as
+ * an ACKing node first, however briefly -- on somebody's live vehicle, at a bitrate that is a
+ * default nobody has confirmed, which is precisely what a row defaulting to listen-only exists to
+ * avoid (codex round 1 on #219). canSetBusOutputControl is accepted while bus-off, which is where
+ * the channel already is at this point, so choosing the mode here costs nothing and closes the
+ * window completely. */
+/* Mode set inside an open, while the handle is still bus-off.
+ *
+ * IT IS A HEAD START, NOT THE ANSWER. It takes effect only when this handle turns out to hold the
+ * channel's initialisation access, and nothing here can tell whether it did -- a request through
+ * any other handle returns success and does nothing. What DECIDES the wire's mode is
+ * ct_kvaser_set_silent_all, which the V side runs after the handle is registered; this call exists
+ * so that a genuinely-first opener is never bus-on in the wrong mode, even for an instant.
+ *
+ * THE RESULT MAY REFUSE AN OPEN AND MAY NOT RECORD ONE, and collapsing those two is a mistake I
+ * have now made in both directions. Acting on a SUCCESS is how a mode nobody applied got recorded
+ * as applied (rounds 3 and 7). Discarding a FAILURE is how a listen-only first opener went bus-on
+ * in normal mode and acknowledged until the all-handle reconcile caught up (round 9's fix, found in
+ * round 10). Success here means nothing; failure here means this open must not proceed.
+ *
+ * Returns 0 when the call was accepted -- which, per the above, is not the same as applied -- and
+ * negative when the driver refused. A canlib with no canSetBusOutputControl cannot honour a SILENT
+ * request at all and says so; a normal one is left alone, since normal is where a channel starts. */
+static int ct_kvaser_set_mode(int hnd, int silent) {
+	if (!ct_kv_setoutctrl) return silent ? -100 : 0;
+	return ct_kv_setoutctrl(hnd, silent ? CT_KV_DRIVER_SILENT : CT_KV_DRIVER_NORMAL);
+}
+
 /* Open channel `ch` (accepting virtual channels), set bitrate (a canBITRATE_* code,
- * negative), go bus-on. Returns the handle (>=0) or the negative canStatus error. */
-static int ct_kvaser_open(int ch, int32_t bitrate_code) {
+ * negative), choose the output mode, then go bus-on. Returns the handle (>=0) or the negative
+ * canStatus error. */
+static int ct_kvaser_open(int ch, int32_t bitrate_code, int silent) {
 	int hnd, st;
 	ct_kv_initlib();
 	hnd = ct_kv_open(ch, CT_KV_OPEN_ACCEPT_VIRTUAL);
 	if (hnd < 0) return hnd;
 	st = ct_kv_setbus(hnd, bitrate_code, 0, 0, 0, 0, 0);
+	if (st < 0) { ct_kv_close(hnd); return st; }
+	/* BEFORE canBusOn, and a refusal stops the open: going on the bus acknowledging when the row
+	   said listen-only is the one outcome worse than not opening. */
+	st = ct_kvaser_set_mode(hnd, silent);
 	if (st < 0) { ct_kv_close(hnd); return st; }
 	st = ct_kv_buson(hnd);
 	if (st < 0) { ct_kv_close(hnd); return st; }
@@ -136,7 +183,7 @@ static int ct_kvaser_has_fd(void) { return ct_kv_setbusfd ? 1 : 0; }
 /* Open channel `ch` in CAN-FD mode: arbitration code, then the data-phase code, then bus-on.
  * Both are canlib's negative predefined constants (canBITRATE_* / canFD_BITRATE_*), which is
  * the pairing the bench run used. Returns the handle (>=0) or the negative canStatus. */
-static int ct_kvaser_open_fd(int ch, int32_t arb_code, int32_t data_code) {
+static int ct_kvaser_open_fd(int ch, int32_t arb_code, int32_t data_code, int silent) {
 	int hnd, st;
 	ct_kv_initlib();
 	hnd = ct_kv_open(ch, CT_KV_OPEN_ACCEPT_VIRTUAL | CT_KV_OPEN_CAN_FD);
@@ -144,6 +191,8 @@ static int ct_kvaser_open_fd(int ch, int32_t arb_code, int32_t data_code) {
 	st = ct_kv_setbus(hnd, arb_code, 0, 0, 0, 0, 0);
 	if (st < 0) { ct_kv_close(hnd); return st; }
 	st = ct_kv_setbusfd(hnd, data_code, 0, 0, 0);
+	if (st < 0) { ct_kv_close(hnd); return st; }
+	st = ct_kvaser_set_mode(hnd, silent);
 	if (st < 0) { ct_kv_close(hnd); return st; }
 	st = ct_kv_buson(hnd);
 	if (st < 0) { ct_kv_close(hnd); return st; }
@@ -207,6 +256,80 @@ static int ct_kvaser_read(int hnd, uint32_t *id, uint8_t *len, uint8_t *data, ui
 	*flags = flag;
 	for (i = 0; i < 64; i++) data[i] = buf[i];
 	return 0;
+}
+
+/* ---- listen-only ---------------------------------------------------------------------------
+ *
+ * canDRIVER_SILENT makes the TRANSCEIVER listen without acknowledging, which is a different
+ * promise from this process declining to transmit: an ACK is generated by the controller itself,
+ * so software refusing to send does not stop it. On a bus with one other node our acknowledgement
+ * is the difference between its frames succeeding and it going error-passive.
+ *
+ * canlib demands the channel be bus-OFF while this is set, so a change mid-run bounces the bus.
+ * That is the honest cost and the caller decides when to pay it.
+ */
+
+/* Set the CHANNEL's output mode with every handle this process holds on it taken bus-off first.
+ *
+ * WHY ALL OF THEM. canlib takes a channel off the bus only when ALL of its handles are off, and
+ * canSetBusOutputControl is accepted only while it is off. Called with one handle bus-off and its
+ * siblings still on, the call RETURNS SUCCESS AND DOES NOTHING -- measured on a USBcan Pro 5xHS,
+ * where silencing a wire that had three handles open left the transceiver acknowledging every
+ * frame while this process recorded it as silent (codex round 5 on #219). A driver that reports a
+ * mode change it did not make is the worst version of this bug: nothing downstream can notice.
+ *
+ * The GUI opens each wire several times per Start -- a monitor plus named and anonymous transmit
+ * taps -- so the multi-handle case is the NORMAL one there, not an edge.
+ *
+ * Every handle goes back on the bus whichever way the mode call goes, for the reason the
+ * single-handle version already gives: a driver that will not change the mode is a reason to
+ * report the mode unchanged, never a reason to leave the wire down. */
+static int ct_kvaser_set_silent_all(const int *handles, int n, int silent) {
+	int i, st, on;
+	if (!ct_kv_setoutctrl || !ct_kv_busoff || !ct_kv_buson || n <= 0) return -100;
+	/* BUS-OFF IS A PRECONDITION, NOT A COURTESY, so a failure to reach it fails the whole call.
+	   canSetBusOutputControl is only accepted on a handle that is bus-off, and this shim's own
+	   measured invariant is that a mode call which is not accepted can still RETURN SUCCESS. So
+	   discarding a canBusOff error and asking anyway is how the caller ends up caching a mode the
+	   controller never took, with a listen-only wire acknowledging behind it (codex round 9 on
+	   #219). Every handle must get there. */
+	for (i = 0; i < n; i++) {
+		int off = ct_kv_busoff(handles[i]);
+		if (off < 0) {
+			/* Put back whatever went off before giving up: a refusal must not leave the wire down. */
+			for (i = 0; i < n; i++) ct_kv_buson(handles[i]);
+			return off;
+		}
+	}
+	/* THROUGH EVERY HANDLE, because only one of them can do it and the driver will not say which.
+	   Exactly the handle holding this channel's INITIALISATION ACCESS -- canlib's first opener --
+	   is obeyed; the rest return success and are ignored, so the answer cannot be read off a status
+	   code. Measured both ways on a USBcan Pro 5xHS: through the first handle it takes effect, and
+	   through any later one it does not, with all of them bus-off either way. Tracking "the first
+	   one" would work until that handle closed while its siblings stayed open, which is the case
+	   Vector documents for XL ports (pinned.v) and which no canlib call exposes. So all of them are
+	   asked.
+	 *
+	 * AND EVERY ONE OF THEM MUST SUCCEED. Taking "any success" as success looks like the tolerant
+	 * choice and is the dangerous one: the siblings' success is a NO-OP success, indistinguishable
+	 * from a real one, so a rejection by the handle that actually matters would be masked by any
+	 * sibling shrugging -- and the caller would record the mode as applied and stop retrying while
+	 * the wire went on acknowledging (codex round 6 on #219). That is precisely the silent failure
+	 * this function was written to end, re-entering through its own aggregation.
+	 *
+	 * The conservative direction costs a retry that was not needed; the tolerant one costs the
+	 * promise. A wire whose handles disagree is reported as unsilenced, which is the honest reading
+	 * when we cannot tell which of them was the one being obeyed. */
+	st = 0;
+	for (i = 0; i < n; i++) {
+		int one = ct_kv_setoutctrl(handles[i], silent ? CT_KV_DRIVER_SILENT : CT_KV_DRIVER_NORMAL);
+		if (one < 0 && st >= 0) st = one;
+	}
+	for (i = 0; i < n; i++) {
+		on = ct_kv_buson(handles[i]);
+		if (st >= 0 && on < 0) st = on;
+	}
+	return st < 0 ? st : 0;
 }
 
 static void ct_kvaser_close(int hnd) {

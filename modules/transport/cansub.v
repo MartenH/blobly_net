@@ -788,6 +788,13 @@ fn (b &CansubBus) failure() ?string {
 	}
 }
 
+// reconcile_silence — already done, continuously, by this backend's poll thread
+// (`reconcile_listen_only`), which additionally READS THE DEVICE BACK rather than trusting a
+// record of what was last PUT. That is the right shape for a device on the end of an HTTP round
+// trip and the wrong one for a vendor DLL, which is why PCAN and Kvaser answer this differently;
+// see silence.v. Nothing to do on demand.
+pub fn (mut b CansubBus) reconcile_silence(want bool) ! {}
+
 pub fn (mut b CansubBus) close() {
 	lock b.stop {
 		if !b.stop.running {
