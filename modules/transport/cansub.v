@@ -436,8 +436,18 @@ fn (mut b CansubBus) reconcile_listen_only(want bool, force bool) ! {
 	// a PUT is what changes it. `running` is re-checked INSIDE the closure, under the wire lock —
 	// so a thread of a closed run that gets the lock late sees `false` and attempts nothing, and
 	// close() (which takes the same lock through forget_wire_silence) never races a round trip.
-	set := fn [mut b, force] (silent bool) int {
-		return b.apply_phy_silence(silent, force)
+	// THE PROBE'S READBACK HAPPENS OUTSIDE THE LOCK. The poll thread is the one caller that
+	// reaches the device every period, and its readback ran inside the seam's closure — under the
+	// per-wire lock, with the dial unbounded — so a device that resolved and then blackholed held
+	// the lock for an OS connect timeout, every sender on the wire queued behind it, and close()
+	// queued too, through forget_wire_silence: the Stop hang the detached health thread exists to
+	// prevent, put back one layer up (codex round 3 on #223). So the poll thread asks the device
+	// FIRST, on its own time, and takes the lock only to compare and — if the controller was
+	// changed behind our back — to PUT. A readback that failed reaches the lock as "not
+	// attempted": a wire we could not read is not written to, and not waited for either.
+	pre := if force { b.phy_listen_only() } else { ?bool(none) }
+	set := fn [mut b, force, pre] (silent bool) int {
+		return b.apply_phy_silence(silent, force, pre)
 	}
 	if force {
 		// THE POLL THREAD PROBES: the device is asked even when the record says it is already
@@ -451,7 +461,9 @@ fn (mut b CansubBus) reconcile_listen_only(want bool, force bool) ! {
 // apply_phy_silence is the driver call apply_silence_explained wraps: readback, then PUT if the
 // device disagrees with the mark. Returns 0 when the device is in the wanted mode afterwards, the
 // HTTP status when it refused, and silence_not_attempted when it could not be asked at all.
-fn (mut b CansubBus) apply_phy_silence(want bool, force bool) int {
+// `pre` is the poll thread's readback, taken before the lock (see reconcile_listen_only); the
+// ordinary caller passes none and reads under it, once per policy change.
+fn (mut b CansubBus) apply_phy_silence(want bool, force bool, pre ?bool) int {
 	// MEMORY IS CONSULTED FIRST, UNDER THE WIRE LOCK — before even the running check, because a
 	// standing declared refusal is the more useful answer than "not attempted" for a sender on a
 	// bus that is closing: it names the device's rule and the remedy. Checking for a standing
@@ -498,7 +510,11 @@ fn (mut b CansubBus) apply_phy_silence(want bool, force bool) int {
 	// NOT ONE TO RECONFIGURE ON A GUESS — and now that is enforced rather than stated: a wire we
 	// cannot read is not written to. The previous version fell back to its cache and PUT anyway,
 	// which could set phy_silent on the strength of a write never read back (codex #204 r17/18).
-	have := b.phy_listen_only() or { return silence_not_attempted }
+	have := if force {
+		pre or { return silence_not_attempted }
+	} else {
+		b.phy_listen_only() or { return silence_not_attempted }
+	}
 	// THE CACHE IS PUBLISHED BEFORE THE PUT, not after it, and whether they agree or not.
 	//
 	// `send()` refuses while `phy_silent` says the controller is silent — that is what keeps a

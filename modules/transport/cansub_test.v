@@ -533,3 +533,24 @@ fn test_whitespace_in_an_address_does_not_make_a_second_wire() {
 		assert destination_key(spelling) == a, '${spelling} -> ${destination_key(spelling)}, want ${a}'
 	}
 }
+
+// THE PROBE DOES NOT DIAL UNDER THE LOCK. The poll thread reads the device BEFORE it takes the
+// wire lock and hands the answer in; a readback that failed reaches the closure as none, and the
+// closure answers "not attempted" without touching the network. Decisive: the host here is one
+// nothing answers on, and a dial to it would take net.dial_tcp's five seconds (codex round 3 on
+// #223, where the dial under the lock was the OS connect timeout, unbounded).
+fn test_a_probe_whose_readback_failed_does_not_dial_under_the_lock() {
+	iface := 'cansub:AAAA0003/1@500000'
+	mut b := &CansubBus{
+		iface: iface
+		host:  '10.255.255.1'
+		spec:  parse_cansub_iface(iface) or { panic(err) }
+		rx:    chan CansubRecord{cap: 1}
+	}
+	lock b.stop {
+		b.stop.running = true
+	}
+	t0 := time.ticks()
+	assert b.apply_phy_silence(true, true, none) == silence_not_attempted
+	assert time.ticks() - t0 < 500, 'the closure reached the network: ${time.ticks() - t0} ms'
+}

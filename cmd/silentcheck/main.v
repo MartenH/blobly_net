@@ -231,7 +231,7 @@ fn run(o Opts) int {
 
 	// PHASE 1 — the baseline. Without it a failure in phase 2 is unreadable: a bus that was never
 	// working at all produces exactly the same "talker unhealthy, listener silent" reading.
-	base := exchange(mut listener, mut talker, o)
+	base := exchange(mut listener, mut talker, o, true)
 	println('1. baseline (listener NOT marked)')
 	report(base)
 	if base.rx == 0 {
@@ -261,7 +261,7 @@ fn run(o Opts) int {
 		}
 	}
 	settle(mut listener, o.timeout)
-	sil := exchange(mut listener, mut talker, o)
+	sil := exchange(mut listener, mut talker, o, true)
 	println('2. listener marked listen-only, mid-run')
 	report(sil)
 	if !degraded(sil.talker_health) {
@@ -301,33 +301,29 @@ fn run(o Opts) int {
 	defer {
 		fresh.close()
 	}
-	back := exchange(mut listener, mut fresh, o)
+	back := exchange(mut listener, mut fresh, o, false)
 	println('3. mark cleared, mid-run')
 	report(back)
-	// RECOVERY IS JUDGED ON WHAT THE WIRE DOES, NOT ON THE COUNTER BEING BACK TO ZERO. A CAN
-	// controller's transmit error counter decays by ONE per acknowledged frame, so a talker that
-	// reached error-passive (128) needs ~33 successful frames to leave error-warning (96). Kvaser
-	// and PCAN report `ok` after six because their drivers reset the count; a CANsub reports the
-	// real ladder and still says `warning` — while the listener is plainly acknowledging, which is
-	// the thing being tested. Error-PASSIVE or bus-off after the mark is cleared is a failure;
-	// warning with frames arriving is recovery.
-	if severe(back.talker_health) {
+	// RECOVERY IS JUDGED ON WHAT THE WIRE DOES, NOT ON THE COUNTER BEING BACK TO ZERO — and it is
+	// judged FIRST. A CAN controller's transmit error counter decays by one per acknowledged
+	// frame, so a CANsub talker that reached error-passive in phase 2 starts this phase there,
+	// and a window judged from that state reports phase 2 again. `recover_talker` drives it back to `ok`
+	// under acknowledged frames (reading the listener as it goes: mid-run, PCAN and Kvaser apply a
+	// changed mark at the next receive, and the app's monitor is always receiving); a talker that
+	// never gets there was never acknowledged, which is what "the silence did not lift" means.
+	// `fresh`, not `talker`: phase 3 reopened the talker on purpose (see above), and the first cut
+	// of this check drove the CLOSED handle — every send refused, health unknown, "never
+	// recovered" for a wire that had — while the oracle (the device's own tx_error_count) showed
+	// the counter falling 133 -> 0 within two seconds of the mark clearing.
+	if !back.recovered {
+		eprintln('   FAIL — the talker never recovered after the mark cleared: frames went out and nobody acknowledged them.')
+		ok = false
+	} else if severe(back.talker_health) {
 		eprintln('   FAIL — the talker is still ${shown(back.talker_health)}: the silence did not lift.')
 		ok = false
 	} else if back.rx == 0 {
 		eprintln('   FAIL — nothing arrived after clearing the mark.')
 		ok = false
-	} else if back.talker_health == .warning {
-		// `fresh`, not `talker`: phase 3 reopened the talker on purpose (see above), and the first
-		// cut of this check drove the CLOSED handle — every send refused, health unknown, "never
-		// recovered" for a wire that had — while the oracle (the device's own tx_error_count)
-		// showed the counter falling 133 -> 0 within two seconds of the mark clearing.
-		if recovers(mut fresh, mut listener, o) {
-			println('   ok — acknowledging again; the talker recovered to ok under acknowledged frames')
-		} else {
-			eprintln('   FAIL — the talker read warning and never recovered: frames arrived, but nobody acknowledged them.')
-			ok = false
-		}
 	} else {
 		println('   ok — acknowledging again, talker back to ${shown(back.talker_health)}')
 	}
@@ -388,20 +384,16 @@ fn run(o Opts) int {
 	defer {
 		fresh2.close()
 	}
-	after := exchange(mut reopened, mut fresh2, o)
+	after := exchange(mut reopened, mut fresh2, o, true)
 	println('4. closed while marked, reopened unmarked')
 	report(after)
-	if severe(after.talker_health) || after.rx == 0 {
+	// `recovered` here is UNTAINTED: the talker was driven back to `ok` before this tool read a
+	// single frame from the reopened listener, so it is the OPEN that put the controller in normal
+	// mode, not a receive-side reconcile repairing it afterwards (codex round 3 on #223).
+	if !after.recovered || severe(after.talker_health) || after.rx == 0 {
 		eprintln('   FAIL — a channel the previous run left silent came back silent. The mark is gone')
 		eprintln('          and the transceiver never heard about it.')
 		ok = false
-	} else if after.talker_health == .warning {
-		if recovers(mut fresh2, mut reopened, o) {
-			println('   ok — a fresh open puts the transceiver back where the policy says; the talker recovered to ok')
-		} else {
-			eprintln('   FAIL — the reopened wire came back silent: the talker read warning and never recovered.')
-			ok = false
-		}
 	} else {
 		println('   ok — a fresh open puts the transceiver back where the policy says, not where it was left')
 	}
@@ -422,7 +414,7 @@ fn run(o Opts) int {
 	transport.set_listen_only(o.listener, true)
 	println('5. mark set, then a NEW handle opened onto the already-held wire')
 	if mut joiner := transport.open(o.listener) {
-		joined := exchange(mut reopened, mut fresh2, o)
+		joined := exchange(mut reopened, mut fresh2, o, true)
 		report(joined)
 		if !degraded(joined.talker_health) {
 			if why := declined(o.listener, true) {
@@ -491,6 +483,8 @@ mut:
 	send_errors   int
 	rx            int
 	talker_health transport.BusHealth
+	// recovered: the talker was `ok` before the burst — or was driven back to it first. See recover_talker.
+	recovered bool
 }
 
 // exchange sends one burst and drains whatever reached the listener.
@@ -498,8 +492,14 @@ mut:
 // SEND ERRORS ARE COUNTED, NOT FATAL. In phase 2 the talker is transmitting into a bus that never
 // acknowledges, so its queue backs up and the driver eventually refuses — which is a SYMPTOM of
 // the thing being proved, not a failure of the tool.
-fn exchange(mut listener transport.Bus, mut talker transport.Bus, o Opts) Result {
+// `untainted` is whether recovery must be proved WITHOUT reading the listener. Phases that test
+// the OPEN (4, 5) and the mark itself (1, 2) say yes: on PCAN and Kvaser a receive re-applies the
+// policy, so a read would repair the very thing under test. Phase 3 says no: it tests the mark
+// changing MID-RUN, and on those backends that is applied by the next receive by design — the
+// app's monitor is always reading — so a listener nobody reads never hears about it at all.
+fn exchange(mut listener transport.Bus, mut talker transport.Bus, o Opts, untainted bool) Result {
 	mut r := Result{}
+	r.recovered = recover_talker(mut talker, mut listener, o, untainted)
 	for i in 0 .. o.frames {
 		f := transport.CanFrame{
 			id:   o.id
@@ -554,6 +554,39 @@ fn exchange(mut listener transport.Bus, mut talker transport.Bus, o Opts) Result
 	return r
 }
 
+// recover_talker drives the talker back to `ok` before a burst is judged, and reports whether it got there.
+//
+// A CAN controller's transmit error counter decays by ONE per acknowledged frame, and a CANsub
+// reports the real ladder (Kvaser and PCAN reset theirs on the driver's say-so): a talker that
+// left the previous phase error-passive at 129 is still error-passive at the start of the next,
+// whatever the listener is doing now, and a window judged from there reports the previous phase.
+// The evidence that the LISTENER acknowledges is the counter coming DOWN — unacknowledged frames
+// cannot do that — so frames are driven until the talker reads `ok`, five seconds at most; a
+// talker still not `ok` by then was not acknowledged, which is the finding.
+//
+// `untainted` is whether that may happen WITHOUT reading the listener — see exchange. Judged after
+// the reads instead, the recovery could be the listener's own receive-side reconcile repairing an
+// open that had left it silent, and the phase would pass on the regression it exists to catch
+// (codex round 3 on #223). `unknown` is a backend that cannot say, and nothing to settle.
+fn recover_talker(mut talker transport.Bus, mut listener transport.Bus, o Opts, untainted bool) bool {
+	until := time.ticks() + 5000
+	mut n := 0
+	for time.ticks() < until {
+		h := talker.health()
+		if h == .ok || h == .unknown {
+			return true
+		}
+		talker.send(transport.CanFrame{ id: o.id, data: [u8(0x5F), u8(n)] }) or {}
+		if !untainted {
+			listener.recv(2) or {}
+		}
+		time.sleep(5 * time.millisecond)
+		n++
+	}
+	h := talker.health()
+	return h == .ok || h == .unknown
+}
+
 // window_ms — how long to watch one burst. Long enough for the controller to actually attempt
 // every frame and for its counters to move, which on an unacknowledged bus takes only
 // milliseconds, but the queue behind it does not empty instantly.
@@ -604,30 +637,6 @@ fn declined(iface string, want bool) ?string {
 // severe — the ladder rungs that mean silence did NOT lift: a talker still shut out of the bus.
 fn severe(h transport.BusHealth) bool {
 	return h == .error_passive || h == .bus_off
-}
-
-// recovers reports whether a talker that reads `warning` is actually being acknowledged again.
-//
-// WARNING ALONE PROVES NOTHING, and the case is real: a CANsub transmits an unacknowledged frame
-// ONCE (measured tonight — no retry), which lifts its counter only to warning, while a listener
-// that is still silent nevertheless RECEIVES that frame. So "warning, and frames arrived" is
-// exactly what a silence that failed to lift looks like on that backend (codex round 2 on #223).
-// The evidence that acknowledgements resumed is the counter coming DOWN: acknowledged frames decay
-// it one at a time, unacknowledged ones do not. Up to five seconds of frames; a talker still not
-// `ok` after that was not acknowledged.
-fn recovers(mut talker transport.Bus, mut listener transport.Bus, o Opts) bool {
-	until := time.ticks() + 5000
-	mut n := 0
-	for time.ticks() < until {
-		if talker.health() == .ok {
-			return true
-		}
-		talker.send(transport.CanFrame{ id: o.id, data: [u8(0x5F), u8(n)] }) or {}
-		listener.recv(2) or {}
-		time.sleep(5 * time.millisecond)
-		n++
-	}
-	return talker.health() == .ok
 }
 
 // degraded — anything but a controller that is happy. `.unknown` is NOT degraded: it means the

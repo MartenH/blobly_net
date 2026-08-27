@@ -182,10 +182,19 @@ pub fn cansub_request(host string, method string, path string, body string, time
 		validate:     false // the device signs its own certificate; see the note at the top
 		read_timeout: timeout
 	)!
+	// THE CONNECT IS BOUNDED, AND BY THIS CODE. SSLConn.dial connects through mbedtls_net_connect,
+	// a blocking OS connect with no budget of ours — on Windows around 21 s to a host that
+	// resolves and then blackholes — and `read_timeout`, the one budget the SSL client offers,
+	// starts AFTER the connection is up. So the TCP connection is made here, through net.dial_tcp
+	// (five seconds, vlib's own select), and handed to the SSL layer. What that bounds is every
+	// REST call this backend makes, including the PUT a sender's reconcile can run under the wire
+	// lock while every other sender and close() wait on it (codex round 3 on #223).
+	mut tcp := net.dial_tcp('${host}:443')!
 	defer {
 		conn.shutdown() or {}
+		tcp.close() or {}
 	}
-	conn.dial(host, 443)!
+	conn.connect(mut tcp, host)!
 	mut req := '${method} ${path} HTTP/1.1\r\nHost: ${host}\r\nConnection: close\r\n'
 	if body != '' {
 		req += 'Content-Type: application/json\r\nContent-Length: ${body.len}\r\n'
