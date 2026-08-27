@@ -1722,13 +1722,27 @@ pub fn (c Channel) address_config_error() ?string {
 		return transport.cansub_address_error(c.iface_with_bitrate())
 	}
 	// THE SAME RULE FOR PCAN, and for the same reason: its address carries a channel and rates and
-	// has nowhere to put a sample point, so `open_pcan` always solves both phases at the default.
-	// A row asking for 75% ran timing it never requested, silently — the failure this repo's own
-	// parity table faults Kvaser for, which this change would otherwise have introduced one
-	// adapter over (self-review of #217).
-	if c.adapter == 'pcan' && c.sample_point != 0
-		&& c.sample_point != f64(transport.pcan_default_sample_point) {
-		return 'sample point ${c.sample_point}% cannot be configured on a PCAN from here — it solves both phases at ${transport.pcan_default_sample_point}%, so remove the setting or use a different adapter'
+	// has nowhere to put a sample point, so a row asking for one that will not be used runs timing
+	// it never requested, silently — the failure this repo's own parity table faults Kvaser for.
+	//
+	// BUT THE ANSWER DEPENDS ON THE MODE, which the first version of this check missed. An FD
+	// channel is SOLVED, at the 80% default. A classic channel is LOOKED UP, in a fixed BTR table
+	// whose entries do not agree with each other or with 80: 500 kbit/s samples at 87.5%, 1 Mbit/s
+	// at 75%. Applying the FD default to a classic row refused the sample point that channel
+	// actually has and accepted one it does not (codex round 3 on #217). So each mode is asked
+	// about its own timing.
+	if c.adapter == 'pcan' && c.sample_point != 0 {
+		if c.fd && c.can_carry_fd() {
+			if c.sample_point != f64(transport.pcan_default_sample_point) {
+				return 'sample point ${c.sample_point}% cannot be configured on a PCAN from here — it solves both phases at ${transport.pcan_default_sample_point}%, so remove the setting or use a different adapter'
+			}
+		} else if actual := transport.pcan_classic_sample_point(c.nominal_bitrate()) {
+			// A rate with no BTR code at all is not this check's business: it is refused when the
+			// channel opens, and answering here would report the wrong fault first.
+			if c.sample_point != actual {
+				return 'sample point ${c.sample_point}% cannot be configured on a classic PCAN from here — ${c.nominal_bitrate()} bit/s uses a fixed BTR code that samples at ${actual}%, so remove the setting or use a different adapter'
+			}
+		}
 	}
 	if !c.fd || !c.can_carry_fd() {
 		return none

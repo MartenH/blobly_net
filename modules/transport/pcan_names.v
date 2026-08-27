@@ -170,6 +170,47 @@ pub fn pcan_fd_bitrate(nominal int, data int, sample_point int) !string {
 	return 'f_clock=${pcan_fd_clock_hz},nom_brp=${nom.brp},nom_tseg1=${nom.tseg1},nom_tseg2=${nom.tseg2},nom_sjw=${nom.sjw},data_brp=${dat.brp},data_tseg1=${dat.tseg1},data_tseg2=${dat.tseg2},data_sjw=${dat.sjw}'
 }
 
+// pcan_baud maps a bit rate to the PCANBasic BTR0BTR1 baudrate code.
+//
+// HERE RATHER THAN BESIDE THE DRIVER, for the reason the rest of this file gives: a `_windows.v`
+// file compiles only where CI runs nothing, and these are transcribed register values — the one
+// kind of constant a review cannot check by reading and a test can.
+pub fn pcan_baud(bitrate int) !u16 {
+	return match bitrate {
+		1000000 { u16(0x0014) }
+		800000 { u16(0x0016) }
+		500000 { u16(0x001C) }
+		250000 { u16(0x011C) }
+		125000 { u16(0x031C) }
+		100000 { u16(0x432F) }
+		50000 { u16(0x472F) }
+		20000 { u16(0x532F) }
+		10000 { u16(0x672F) }
+		else { error('unsupported PCAN bitrate ${bitrate} (use 10k/20k/50k/100k/125k/250k/500k/800k/1M)') }
+	}
+}
+
+// pcan_classic_sample_point is where in the bit a CLASSIC PCAN channel samples, decoded from the
+// BTR code it will actually be opened with.
+//
+// THE CLASSIC RATES ARE NOT SOLVED, THEY ARE LOOKED UP — and the fixed codes above do not agree on
+// a sample point: 1 Mbit/s samples at 75%, 800k at 80%, 125k-500k at 87.5% and 10k-100k at 85%.
+// So the FD default of 80% says nothing at all about a classic row, and a validator that applied
+// it to one refused `sample_point: 87.5` at 500 kbit/s — which is exactly what that channel does —
+// while accepting a request for 80%, which it does not (codex round 3 on #217).
+//
+// BTR1 is the SJA1000 layout PCANBasic inherited: bits 0-3 are TSEG1-1, bits 4-6 are TSEG2-1, and
+// the bit is 1 + TSEG1 + TSEG2 time quanta with the sample taken at the end of TSEG1. BTR0 carries
+// the prescaler and SJW, which move the RATE and not the sample point, and are not read here.
+pub fn pcan_classic_sample_point(bitrate int) !f64 {
+	code := pcan_baud(bitrate)!
+	btr1 := u8(code & 0xFF)
+	tseg1 := int(btr1 & 0x0F) + 1
+	tseg2 := int((btr1 >> 4) & 0x07) + 1
+	total := 1 + tseg1 + tseg2
+	return f64(1 + tseg1) * 100.0 / f64(total)
+}
+
 // pcan_default_sample_point is where both phases are placed when the address does not say. 80% is
 // what CiA recommends above 500 kbit/s and what every FD example from PEAK and CSS uses.
 pub const pcan_default_sample_point = 80

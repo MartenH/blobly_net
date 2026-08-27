@@ -133,3 +133,55 @@ fn test_the_tolerance_does_not_admit_a_sample_point_the_rate_cannot_reach() {
 	}
 	assert field(exact, 'data_tseg1') == 4 && field(exact, 'data_tseg2') == 5, exact
 }
+
+// THE CLASSIC RATES ARE A TRANSCRIBED TABLE, so what they mean is pinned here rather than trusted.
+// PCANBasic's BTR0BTR1 codes are the SJA1000 layout: BTR1 bits 0-3 are TSEG1-1, bits 4-6 are
+// TSEG2-1, and the sample is taken at the end of TSEG1 in a bit of 1+TSEG1+TSEG2 quanta.
+//
+// THE POINT OF THE TEST IS THAT THEY DISAGREE. A validator that assumed one sample point for all
+// of them refused 87.5% at 500 kbit/s — which is what that channel does — and accepted 80%, which
+// it does not (codex round 3 on #217).
+fn test_the_classic_btr_codes_do_not_share_a_sample_point() {
+	expected := {
+		1_000_000: 75.0
+		800_000:   80.0
+		500_000:   87.5
+		250_000:   87.5
+		125_000:   87.5
+		100_000:   85.0
+		50_000:    85.0
+		20_000:    85.0
+		10_000:    85.0
+	}
+	for rate, want in expected {
+		got := pcan_classic_sample_point(rate) or {
+			assert false, '${rate} bit/s has a BTR code and should decode: ${err.msg()}'
+			continue
+		}
+		assert got == want, '${rate} bit/s samples at ${got}%, expected ${want}%'
+	}
+	// And a rate with no code at all says so rather than answering about the wrong one.
+	if sp := pcan_classic_sample_point(333_333) {
+		assert false, '333333 bit/s is not in the classic table: ${sp}'
+	}
+}
+
+// The FD default is NOT the classic answer, and the 500 kbit/s row is the case that made this
+// concrete: the same rate samples at 87.5% classic and 80% as CAN-FD, because one is looked up and
+// the other is solved.
+fn test_the_classic_and_fd_sample_points_differ_at_the_same_rate() {
+	classic := pcan_classic_sample_point(500_000) or {
+		assert false, err.msg()
+		return
+	}
+	assert classic == 87.5
+	fd := pcan_fd_bitrate(500_000, 500_000, pcan_default_sample_point) or {
+		assert false, err.msg()
+		return
+	}
+	tseg1 := field(fd, 'nom_tseg1')
+	tseg2 := field(fd, 'nom_tseg2')
+	total := 1 + tseg1 + tseg2
+	assert (1 + tseg1) * 100 / total == pcan_default_sample_point
+	assert classic != f64(pcan_default_sample_point)
+}

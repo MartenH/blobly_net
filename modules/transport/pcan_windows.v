@@ -164,6 +164,7 @@ pub fn (mut b PcanBus) send(f CanFrame) ! {
 			.busy { return busy_error('PCAN', f.id) }
 			.failed { return error('CAN_WriteFD failed (0x${st:X})') }
 		}
+
 		return
 	}
 	if f.fd {
@@ -240,9 +241,9 @@ pub fn (mut b PcanBus) recv(timeout_ms int) !CanFrame {
 				fd:  mt & pcan_msg_fd != 0
 				brs: mt & pcan_msg_brs != 0
 				// A RECEIVED STATUS rather than a choice: the transmitter was error-passive.
-				esi: mt & pcan_msg_esi != 0
-				rtr:      mt & pcan_msg_rtr != 0
-				data:     out
+				esi:  mt & pcan_msg_esi != 0
+				rtr:  mt & pcan_msg_rtr != 0
+				data: out
 			}
 		}
 		if verdict == .failed {
@@ -273,23 +274,4 @@ pub fn (mut b PcanBus) health() BusHealth {
 		return .unknown
 	}
 	return pcan_status_health(st)
-}
-
-// pcan_handle maps a channel spec to a PCANBasic channel handle. USB handles are
-// 0x51..0x58 (PCAN_USBBUS1..8) — the common case for the owner's adapters.
-
-// pcan_baud maps a bit rate to the PCANBasic BTR0BTR1 baudrate code.
-fn pcan_baud(bitrate int) !u16 {
-	return match bitrate {
-		1000000 { u16(0x0014) }
-		800000 { u16(0x0016) }
-		500000 { u16(0x001C) }
-		250000 { u16(0x011C) }
-		125000 { u16(0x031C) }
-		100000 { u16(0x432F) }
-		50000 { u16(0x472F) }
-		20000 { u16(0x532F) }
-		10000 { u16(0x672F) }
-		else { error('unsupported PCAN bitrate ${bitrate} (use 10k/20k/50k/100k/125k/250k/500k/800k/1M)') }
-	}
 }
