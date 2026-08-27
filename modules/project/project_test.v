@@ -1459,3 +1459,70 @@ fn test_a_cansub_row_without_a_sample_point_is_accepted() {
 		assert false, 'asking for what it already does is not a conflict: ${why}'
 	}
 }
+
+// THE SHARED START CHECK MUST ASK THE SAME QUESTIONS THE EDITOR DOES. Until now
+// `address_config_error` had exactly one caller — the GUI editor — so everything it refuses was
+// enforced while somebody typed and enforced nowhere at all for a `.blobnet` started headless,
+// which calls `check_destinations` and went straight past it (codex round 11 on #204).
+fn test_the_shared_check_refuses_a_row_the_editor_would_refuse() {
+	bad := Channel{
+		name:         'CAN1'
+		adapter:      'cansub'
+		address:      '1A2B3C4D/1'
+		iface:        'cansub:1A2B3C4D/1'
+		bitrate:      500000
+		sample_point: 75.0
+		enabled:      true
+	}
+	d := check_destinations([bad])
+	assert d.problems.len > 0, 'a row the editor refuses must not start headless either'
+	assert d.problems[0].contains('CAN1'), 'and the problem must name the row: ${d.problems}'
+}
+
+// A DISABLED row is not going to be opened, so it must not stop a start — the same rule every
+// other check here follows.
+fn test_the_shared_check_ignores_a_disabled_row() {
+	off := Channel{
+		name:         'CAN1'
+		adapter:      'cansub'
+		address:      '1A2B3C4D/1'
+		iface:        'cansub:1A2B3C4D/1'
+		bitrate:      500000
+		sample_point: 75.0
+		enabled:      false
+	}
+	d := check_destinations([off])
+	assert d.problems.len == 0, 'refusing to start over a wire nobody asked for: ${d.problems}'
+}
+
+fn test_the_shared_check_passes_an_ordinary_row() {
+	ok := Channel{
+		name:    'CAN1'
+		adapter: 'cansub'
+		address: '1A2B3C4D/1'
+		iface:   'cansub:1A2B3C4D/1'
+		bitrate: 500000
+		enabled: true
+	}
+	d := check_destinations([ok])
+	assert d.problems.len == 0, 'an ordinary CANsub row must start: ${d.problems}'
+}
+
+// A FRACTION IS NOT ITS INTEGER PART. `int(80.5)` is 80, so a row asking for 80.5% passed the
+// check and then ran at exactly 80% — the same silent substitution one decimal place down.
+fn test_a_fractional_sample_point_near_the_default_is_still_refused() {
+	for sp in [80.5, 80.999, 79.5] {
+		c := Channel{
+			name:         'CAN1'
+			adapter:      'cansub'
+			address:      '1A2B3C4D/1'
+			iface:        'cansub:1A2B3C4D/1'
+			bitrate:      500000
+			sample_point: sp
+		}
+		if _ := c.address_config_error() {
+		} else {
+			assert false, '${sp}% is not what the backend configures, so it must be refused'
+		}
+	}
+}

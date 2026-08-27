@@ -1712,7 +1712,10 @@ pub fn (c Channel) address_config_error() ?string {
 		// the address is the wire's IDENTITY — `destination_key` derives from it, so a sample
 		// point in there would split one wire into two for every rule keyed on it. Zero means
 		// unset, which is what almost every row has.
-		if c.sample_point != 0 && int(c.sample_point) != transport.cansub_default_sample_point {
+		// THE WHOLE VALUE, not its integer part: `int(80.5)` is 80, so a row asking for 80.5%
+		// passed this check and then ran at exactly 80% anyway — the same silent substitution one
+		// decimal place down (codex round 11 on #204).
+		if c.sample_point != 0 && c.sample_point != f64(transport.cansub_default_sample_point) {
 			return 'sample point ${c.sample_point}% cannot be configured on a CANsub from here — it solves both phases at ${transport.cansub_default_sample_point}%, so remove the setting or use a different adapter'
 		}
 		return transport.cansub_address_error(c.iface_with_bitrate())
@@ -1931,10 +1934,39 @@ pub fn check_destinations(chs []Channel) DestinationCheck {
 	phys, unread := scan_physical(chs)
 	mut problems := destination_conflicts_without_alias(chs)
 	problems << alias_conflicts(chs, phys)
+	problems << address_problems(chs)
 	return DestinationCheck{
 		problems: problems
 		warnings: alias_unreadable_lines(unread)
 	}
+}
+
+// address_problems asks every enabled row whether its own address can be opened as configured.
+//
+// IN THE SHARED CHECK, because until now `address_config_error` had exactly one caller: the GUI
+// editor. So everything it refuses — an impossible FD rate pair, a CANsub rate the clock cannot
+// divide, a rate suffix left in the address field, a sample point the backend cannot be told about
+// — was enforced while somebody typed and enforced nowhere at all for a `.blobnet` started
+// headless. `cmd/script/run.v` calls this function and went straight past all of it (codex round
+// 11 on #204).
+//
+// The editor keeps its own call: it needs the answer per row, as the row changes, to mark the
+// field. This is the same question asked once more at the moment a project is about to run, which
+// is the only moment the headless runner has.
+//
+// ENABLED ROWS ONLY, like every other check here. A disabled row is not going to be opened, and
+// refusing to start because of one is refusing over a wire nobody asked for.
+fn address_problems(chs []Channel) []string {
+	mut out := []string{}
+	for c in chs {
+		if !c.enabled {
+			continue
+		}
+		if why := c.address_config_error() {
+			out << '${c.name}: ${why}'
+		}
+	}
+	return out
 }
 
 // alias_unreadable_warnings names the enabled rows whose physical channel the driver would not
