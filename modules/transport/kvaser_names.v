@@ -185,6 +185,12 @@ pub fn kvaser_open_refusal(st int, ch int, fd bool) string {
 // The values are canlib's, transcribed from `canstat.h`/`canlib.h`, and pinned by the test beside
 // this file. CAN-FD rides the HIGH half of the same word the classic flags use, which is why one
 // argument says both.
+// kvaser_err_txbufofl is canERR_TXBUFOFL (canstat.h): the transmit buffer overflowed, which is
+// canlib's way of saying the same thing PCAN_ERROR_QXMTFULL says - offer the frame again shortly.
+// Here rather than beside the driver for the reason the rest of this file is: a `_windows.v` file
+// compiles only where CI runs nothing.
+pub const kvaser_err_txbufofl = -13
+
 pub const kvaser_msg_rtr = u32(0x0001)
 
 pub const kvaser_msg_std = u32(0x0002)

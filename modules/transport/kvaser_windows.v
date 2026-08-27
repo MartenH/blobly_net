@@ -123,6 +123,9 @@ pub fn (mut b KvaserBus) send(f CanFrame) ! {
 		ext := if f.extended { 1 } else { 0 }
 		brs := if f.brs { 1 } else { 0 }
 		st := C.ct_kvaser_write_fd(b.handle, f.id, u8(f.data.len), f.data.data, ext, brs)
+		if st == kvaser_err_txbufofl {
+			return busy_error('Kvaser', f.id)
+		}
 		if st < 0 {
 			return error('canWrite (FD) failed (canStatus ${st})')
 		}
@@ -140,6 +143,9 @@ pub fn (mut b KvaserBus) send(f CanFrame) ! {
 	// remote frames (frame_rules.v refuses them before this line). Kept in the C signature because
 	// it mirrors canlib's own flags word, not because anything sets it.
 	st := C.ct_kvaser_write(b.handle, f.id, u8(n), f.data.data, ext, 0)
+	if st == kvaser_err_txbufofl {
+		return busy_error('Kvaser', f.id)
+	}
 	if st < 0 {
 		return error('canWrite failed (canStatus ${st})')
 	}

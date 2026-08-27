@@ -107,22 +107,34 @@ fn test_a_disabled_or_classic_row_publishes_nothing() {
 	assert wire_framings(rows).len == 0
 }
 
-// AN ADAPTER THAT REFUSES FD MUST NOT BE DECLARED FD. PCAN and Kvaser reject an FD frame outright,
-// so declaring the wire would turn the row's traffic into nothing — while fd_capability_warnings
-// promises the classic half of such a run is real (codex #202 r2).
-// PCAN ONLY, since #200 — Kvaser carries FD now, so it is no longer an example of this rule and
-// asserting that it still refuses would pin a fact the repo has moved past.
+// AN ADAPTER THAT REFUSES FD MUST NOT BE DECLARED FD: declaring the wire would turn the row's
+// traffic into nothing, while fd_capability_warnings promises the classic half of such a run is
+// real (codex #202 r2).
+//
+// NO CAN ADAPTER IS AN EXAMPLE OF IT ANY MORE. Kvaser gained FD in #200 and PCAN in #217, so the
+// rule now has an empty subject — worth ASSERTING rather than leaving a test that passes because
+// it exercises nothing. The loop states the rule for whatever the registry says cannot carry FD;
+// the assertion after it records that today no CAN adapter is in that set. Add one and the loop
+// starts working again on its own.
 fn test_an_adapter_that_cannot_carry_fd_is_not_declared_fd() {
-	rows := [
-		Channel{ name: 'A', adapter: 'pcan', iface: 'pcan:PCAN_USBBUS1', bitrate: 500000, fd: true, data_bitrate: 2000000, enabled: true },
-	]
-	assert wire_framings(rows).len == 0, 'PCAN refuses FD, so its wire must stay classic'
+	mut examined := 0
+	for a in adapters {
+		if transport.adapter_carries_fd(a) || a == 'doip' {
+			continue
+		}
+		rows := [
+			Channel{ name: 'A', adapter: a, iface: '${a}:x', bitrate: 500000, fd: true, data_bitrate: 2000000, enabled: true },
+		]
+		assert wire_framings(rows).len == 0, '${a} cannot carry FD, so its wire must stay classic'
+		examined++
+	}
+	assert examined == 0, 'a CAN adapter that refuses FD exists again — good, this rule has a subject once more'
 	// …and an adapter that DOES carry it is declared, which is what keeps the rule from being a
-	// blanket refusal. Kvaser is the one that changed, so it is the one worth naming.
-	kv := [
-		Channel{ name: 'B', adapter: 'kvaser', iface: 'kvaser:0', bitrate: 500000, fd: true, data_bitrate: 2000000, enabled: true },
+	// blanket refusal. PCAN is the one that changed, so it is the one worth naming.
+	pc := [
+		Channel{ name: 'B', adapter: 'pcan', iface: 'pcan:PCAN_USBBUS1', bitrate: 500000, fd: true, data_bitrate: 2000000, enabled: true },
 	]
-	assert wire_framings(kv).len == 1, 'Kvaser carries FD since #200'
+	assert wire_framings(pc).len == 1, 'PCAN carries FD since #217'
 }
 
 // ROWS ON ONE WIRE MUST AGREE. Only Vector is refused a canfd/can mixture by destination_conflicts,

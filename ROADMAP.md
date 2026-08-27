@@ -61,10 +61,6 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
 - 🧭 **SOME/IP-SD** (service discovery) + the SOME/IP **sim service** — explicitly deferred in
   [`docs/ethernet_architecture.md`](docs/ethernet_architecture.md).
 - 🧭 **DoIP per-connection handler state** — deferred pending the threading change.
-- 🧭 **CAN-FD on PCAN** — Vector and Kvaser have it now (see Already shipped); PCAN still refuses
-  an FD frame rather than truncating it. PCANBasic needs `CAN_InitializeFD` and a bit-rate
-  *string* in place of the baudrate enum. Not blocked on hardware — the adapter is on the bench —
-  and the address syntax, the project plumbing and now two worked examples are there to reuse.
 - 🧭 **DoIP discovery — actually discover.** `discover()` sends a **unicast** vehicle
   identification request to a host you already name, reads one reply and returns. It
   confirms an identity; it cannot find an ECU nobody told it about. That is backwards for a
@@ -209,7 +205,7 @@ a wire-visible feature, the matching host support usually lands here in the same
   `--modecheck` proves the four pin cases against the driver. Segment timing is derived
   (`vector_fd_segments`) against an assumed 80 MHz controller clock — the one number here that
   is hardware and not standard, stated because `XLcanFdConf` has no prescaler field and nothing
-  in the API reports what it divided. Still to do: CAN-FD on PCAN (see Planned); Kvaser has it, below.
+  in the API reports what it divided. Kvaser and PCAN have it too, below.
 
 Kept last: this is where the roadmap ends, not where it starts.
 
@@ -224,6 +220,20 @@ Kept last: this is where the roadmap ends, not where it starts.
   checked:** no CI runner has an adapter, so the ✅ rests on that bench; what CI holds is
   `kvaser_names.v` — the address and the two rate maps — which is why they live outside the
   `_windows.v` file.
+
+- ✅ **CAN-FD on PCAN** — `pcan:<channel>@<arb>/<data>`, the data rate in the address asking for
+  FD as it does on Vector and Kvaser. This one completes the set: every CAN backend now carries FD.
+  PCANBasic takes neither a rate constant nor a segment struct but a **bit-rate string of register
+  values** (`f_clock=80000000,nom_brp=1,nom_tseg1=127,…`), so the timing is SOLVED rather than
+  looked up — `pcan_fd_bitrate` in `modules/transport/pcan_names.v`, deliberately outside the
+  `_windows.v` file so CI can check the arithmetic on a runner with no adapter. And on an
+  FD-initialized channel `CAN_Write` is refused outright (`PCAN_ERROR_ILLOPERATION`), so **every**
+  send on such a channel goes through `CAN_WriteFD`, classic frames included. Bench-verified
+  cross-vendor, a **PCAN-USB Pro FD** CAN1 against a **Kvaser USBcan Pro 5xHS** CH3 on one
+  terminated bus: 18/18 cases in both directions at 1, 2, 4 and 8 Mbit/s. 5 Mbit/s is
+  solver-verified only — the Kvaser refuses it (canlib has five fixed FD constants) and the two
+  PCAN channels are not wired to each other. **Done, not automatically checked**, for the same
+  reason as Kvaser's entry: what CI holds is `pcan_names.v`.
 
 **Buses & transport**
 - ✅ **SocketCAN** (Linux) — `vcan0` virtual and real adapters
