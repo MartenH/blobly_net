@@ -94,6 +94,27 @@ mut:
 	// the RX loop polls this per wire, and V's interface-to-interface casts are not a
 	// foundation to build a hot path on.
 	health() BusHealth
+	// reconcile_silence brings this wire's CONTROLLER into line with the listen-only policy, for
+	// the backends that have a controller to bring. Everything else answers by doing nothing:
+	// a software bus has no acknowledgement to suppress, so refusing to send is already the whole
+	// of listening-only there.
+	//
+	// ON THE INTERFACE, for the reason health() is and one more. `SilentBus` wraps every bus `open`
+	// hands out and REFUSES a send on a silenced wire before the backend is reached — so a backend
+	// that reconciled inside its own send could never see the mark going ON, which is the direction
+	// that matters. On a wire whose only handles are transmit taps (a disabled row keeps them open,
+	// #165) nothing else runs at all: the process stops transmitting, and the controller goes on
+	// acknowledging the bus indefinitely (codex round 1 on #219). The wrapper has to be able to ask
+	// through to the driver before it decides, and V has no interface-to-interface cast to ask with.
+	//
+	// `want` IS PASSED IN, NEVER RE-READ. The wrapper reads the wire's policy once and uses that
+	// ONE answer for both the reconcile and the refusal after it. Read again in here, a mark set
+	// between the two reads reconciled the controller to the OLD state while the wrapper refused on
+	// the NEW one — and on a transmit-only wire nothing runs again to correct it, so the controller
+	// acknowledges indefinitely while the app reports the wire as silent (codex round 3 on #219).
+	// It is the same two-reads defect `wire_policy` was introduced to end one level down (#202 r3),
+	// reintroduced one level up.
+	reconcile_silence(want bool) !
 }
 
 // echoes_own_sends reports whether frames written to this interface come back to another bus

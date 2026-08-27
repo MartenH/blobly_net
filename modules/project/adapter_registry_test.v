@@ -87,9 +87,15 @@ const vendor_adapters = ['pcan', 'kvaser', 'vector', 'cansub'] // the address ca
 const non_can_adapters = ['doip'] // not a CAN bus at all
 
 // The hardware whose CONTROLLER this app can actually silence — Vector through `,silent` on the
-// port, CANsub through `listen_only` in the PHY object. That is what makes a default tick honest
-// rather than a promise only half kept, which is why it is a shorter list than `vendor_adapters`.
-const silenced_at_the_transceiver = ['vector', 'cansub']
+// port, CANsub through `listen_only` in the PHY object, PCAN through CAN_SetValue with
+// PCAN_LISTEN_ONLY and Kvaser through canSetBusOutputControl(canDRIVER_SILENT). That is what makes
+// a default tick honest rather than a promise only half kept.
+//
+// It used to be shorter than `vendor_adapters` and is now the same list. Kept as its own name
+// anyway: the two answer different questions, and writing one where the other was meant is what
+// left the operator being told "only Vector and CANsub can silence the transceiver" after two more
+// backends could.
+const silenced_at_the_transceiver = ['vector', 'cansub', 'pcan', 'kvaser']
 
 // The three that carry CAN-FD, and the one that does not. Stated as a list rather than derived, so
 // that adding a backend forces a decision here instead of inheriting `else { true }` unnoticed --
@@ -207,16 +213,28 @@ fn test_every_adapter_that_can_silence_its_controller_starts_silent() {
 	}
 }
 
-// PCAN and Kvaser are hardware too, and deliberately NOT in that list: this app cannot put their
-// controllers into listen-only, only refuse to transmit from inside this process. Defaulting a row
-// to a tick that half-works would be a promise the transceiver does not keep, and changing what
-// existing PCAN and Kvaser rows do is not something a CANsub PR gets to decide. Named here so the
-// distinction is a stated one rather than an oversight.
-fn test_the_hardware_we_cannot_silence_is_a_deliberate_exception() {
-	for a in ['pcan', 'kvaser'] {
-		assert a in vendor_adapters
-		assert a !in silenced_at_the_transceiver
-		assert !adapter_starts_silent(a), '${a} cannot silence its controller, so a default tick would promise what the transceiver will not do'
+// PCAN AND KVASER WERE THE STATED EXCEPTION, and this is where it ended. They were excluded
+// because this app could only refuse to transmit from inside the process, never silence their
+// controllers — so a default tick would have promised what the transceiver did not keep, and the
+// note here said as much, adding that changing them was not a CANsub PR's decision to make.
+//
+// They are silenced at the transceiver now, so the reason is gone and the exception with it. This
+// test is kept, inverted, so the change is a recorded decision rather than a list that quietly grew:
+// every vendor adapter is silenced at its transceiver, and none of them is an exception any more.
+fn test_no_vendor_hardware_is_left_unsilenced() {
+	for a in vendor_adapters {
+		assert a in silenced_at_the_transceiver, '${a} is hardware on a real bus: either it can be silenced, or this list owes an explanation'
+		assert adapter_silences_transceiver(a)
+	}
+}
+
+// THE CAPABILITY AND THE DEFAULT ARE DIFFERENT QUESTIONS, even while they have the same answer.
+// They were one function, and when PCAN and Kvaser gained the capability the GUI went on telling
+// operators that only Vector and CANsub had it — because the message asked the DEFAULT which
+// adapters could silence a transceiver.
+fn test_the_capability_and_the_default_agree_for_every_adapter() {
+	for a in adapters {
+		assert adapter_starts_silent(a) == adapter_silences_transceiver(a), a
 	}
 }
 
@@ -256,9 +274,17 @@ fn test_switching_between_two_silent_starting_adapters_re_arms_silence() {
 	assert adapter_change_starts_silent('cansub', 'vector')
 }
 
+// DERIVED FROM `adapters`, not from a hand-written list of what used to be on the other side. The
+// list here named pcan and kvaser as adapters you could only move FROM; once they joined the
+// silenced set it generated `pcan -> pcan` and asserted that re-selecting the same adapter is a
+// change of hardware. Any adapter can be either side of this now, so the only pair to exclude is
+// the one that is not a change at all.
 fn test_becoming_hardware_re_arms_silence() {
-	for was in ['virtual', 'udp', 'vcan', 'socketcan', 'pcan', 'kvaser', 'doip'] {
+	for was in adapters {
 		for now in silenced_at_the_transceiver {
+			if was == now {
+				continue
+			}
 			assert adapter_change_starts_silent(was, now), '${was} -> ${now} is new hardware at an unconfirmed rate'
 		}
 	}

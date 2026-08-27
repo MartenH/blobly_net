@@ -55,7 +55,7 @@ fn open_raw(iface string) !Bus {
 		return shared_open(wire_key_for('pcan', iface), iface, open_pcan_bus)!
 	}
 	if iface.starts_with('kvaser:') {
-		return open_kvaser(iface['kvaser:'.len..])!
+		return open_kvaser(iface['kvaser:'.len..], iface)!
 	}
 	if iface.starts_with('vector:') {
 		return open_vector(iface['vector:'.len..])!

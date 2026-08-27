@@ -434,7 +434,7 @@ fn (mut app App) set_adapter(i int, a string) {
 	// it.
 	if project.adapter_change_starts_silent(was, a) {
 		app.proj.channels[i].listen_only = true
-	} else if project.adapter_starts_silent(was) && !project.adapter_starts_silent(a)
+	} else if project.adapter_silences_transceiver(was) && !project.adapter_silences_transceiver(a)
 		&& app.proj.channels[i].listen_only {
 		// KEPT NOW, and said out loud. This used to CLEAR the flag: `,silent` reaches only the
 		// Vector transceiver, so on any other backend the tick promised "no ACKs" that nothing
@@ -446,7 +446,7 @@ fn (mut app App) set_adapter(i int, a string) {
 		// NAMED FROM THE REGISTRY, not written out. This said "only Vector can" while CANsub had
 		// become the second adapter that silences its controller — a warning telling an operator
 		// something false about what their hardware can do (codex round 14 on #204).
-		can_silence := project.adapters.filter(project.adapter_starts_silent(it))
+		can_silence := project.adapters.filter(project.adapter_silences_transceiver(it))
 		app.notify('${app.proj.channels[i].name}: still listen-only — nothing here will transmit, but ${a} cannot silence the transceiver, so it still ACKs (${can_silence.join(' and ')} can)')
 	}
 	if a == 'doip' {

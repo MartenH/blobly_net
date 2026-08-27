@@ -520,6 +520,26 @@ fn draw_buses(mut app App, chans []Chan) {
 				vgui.same_line()
 				vgui.text_dim('last RX ${qms / 1000:.0f}s')
 			}
+			// AND WHETHER THE TRANSCEIVER AGREED. Listen-only has two halves: this process refusing
+			// to transmit, and the CONTROLLER refusing to acknowledge. The second can be declined by
+			// the driver, and on a wire that is only ever RECEIVED from there is no other way for an
+			// operator to learn it — a passive listener never calls send, so the error has no path
+			// out (codex round 3 on #219). COLOURED, unlike `last RX`, because this one IS a
+			// judgement: the row says listen-only and the wire is acknowledging anyway.
+			if f := transport.wire_silence_fault(c.iface) {
+				// WHICH DIRECTION FAILED, because they are opposite faults and one label described
+				// both as the first (codex round 4 on #219). A refused SILENCE is a wire that keeps
+				// acknowledging on a bus it was told to observe; a refused NORMAL is a wire that
+				// cannot transmit at all, which is not "still acknowledging" — it is the reverse.
+				vgui.same_line()
+				if f.want {
+					vgui.text_colored(u8(240), u8(150), u8(60), 'NOT SILENT')
+					vgui.set_item_tooltip('${c.iface}: ${f.why}. This row is marked listen-only, but the transceiver is still acknowledging every frame it sees — on a bus with one other node that is the difference between its frames succeeding and it going error-passive. Retried on every receive.')
+				} else {
+					vgui.text_colored(u8(240), u8(150), u8(60), 'STILL SILENT')
+					vgui.set_item_tooltip('${c.iface}: ${f.why}. This row is transmit-enabled, but the transceiver will not leave listen-only — so nothing sent on this wire reaches the bus, however much this app reports as sent. Retried on every receive.')
+				}
+			}
 			// system awareness: when a system.toml is loaded, name the ECUs that sit on
 			// this bus — the channel row alone doesn't say WHO is on the wire. The system
 			// bus is matched by its interface (system [bus.x].interface == the channel's).
