@@ -483,7 +483,8 @@ mut:
 	send_errors   int
 	rx            int
 	talker_health transport.BusHealth
-	// recovered: the talker was `ok` before the burst — or was driven back to it first. See recover_talker.
+	// recovered: after the burst, the talker was driven to `ok` — with the listener untouched in
+	// the phases that test the open. See exchange and recover_talker.
 	recovered bool
 }
 
@@ -499,7 +500,14 @@ mut:
 // app's monitor is always reading — so a listener nobody reads never hears about it at all.
 fn exchange(mut listener transport.Bus, mut talker transport.Bus, o Opts, untainted bool) Result {
 	mut r := Result{}
-	r.recovered = recover_talker(mut talker, mut listener, o, untainted)
+	// SETTLED FIRST, JUDGED AFTER. The settle clears what the previous phase left in the counter
+	// (a CANsub carries its real ladder across phases); its result is deliberately NOT the
+	// verdict, because a talker that starts `ok` proves nothing about THIS burst — a CANsub
+	// whose six frames go unacknowledged rises only to warning, a still-silent listener receives
+	// the one-shot frames, and rx > 0 with warning would have passed phases 3 and 4 on a listener
+	// that never acknowledged (codex round 4 on #223). So `recovered` is decided below, after the
+	// burst and the untainted window, on frames driven after both.
+	recover_talker(mut talker, mut listener, o, untainted)
 	for i in 0 .. o.frames {
 		f := transport.CanFrame{
 			id:   o.id
@@ -540,6 +548,10 @@ fn exchange(mut listener transport.Bus, mut talker transport.Bus, o Opts, untain
 		time.sleep(10 * time.millisecond)
 		r.talker_health = worse(r.talker_health, talker.health())
 	}
+	// THE VERDICT ON THIS BURST: still untainted (the listener has not been read), and required
+	// to reach `ok` under frames driven now — see recover_talker for why a reading of `ok` is
+	// not trusted before a second of them.
+	r.recovered = recover_talker(mut talker, mut listener, o, untainted)
 	// Then read normally, still sampling: a later reading can only be WORSE than the untainted one
 	// above, never better, so the verdict cannot be manufactured by the reconcile in `recv`.
 	deadline := time.ticks() + i64(window_ms(o))
@@ -568,12 +580,26 @@ fn exchange(mut listener transport.Bus, mut talker transport.Bus, o Opts, untain
 // the reads instead, the recovery could be the listener's own receive-side reconcile repairing an
 // open that had left it silent, and the phase would pass on the regression it exists to catch
 // (codex round 3 on #223). `unknown` is a backend that cannot say, and nothing to settle.
+// A READING OF `ok` IS NOT TRUSTED BEFORE A SECOND OF FRAMES. A CANsub's health is what its poll
+// thread last fetched, up to ~0.6 s old, so `ok` read right after a burst can predate the burst.
+// A second of frames at 5 ms is two hundred attempts: acknowledged, the counter stays at zero;
+// unacknowledged, it has climbed past warning to error-passive and no stale reading survives.
+// Severe is answered at once — nothing this loop sends can bring a controller nobody acknowledges
+// back — and `unknown` is a backend that cannot say, which is not a failure of the wire.
 fn recover_talker(mut talker transport.Bus, mut listener transport.Bus, o Opts, untainted bool) bool {
-	until := time.ticks() + 5000
+	start := time.ticks()
+	until := start + 5000
+	floor := start + 1000
 	mut n := 0
 	for time.ticks() < until {
 		h := talker.health()
-		if h == .ok || h == .unknown {
+		if h == .unknown {
+			return true
+		}
+		if severe(h) {
+			return false
+		}
+		if h == .ok && time.ticks() >= floor {
 			return true
 		}
 		talker.send(transport.CanFrame{ id: o.id, data: [u8(0x5F), u8(n)] }) or {}
