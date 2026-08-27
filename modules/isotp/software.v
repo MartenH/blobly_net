@@ -148,17 +148,13 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 			if timeout_ms >= 0 {
 				rem = int(deadline - time.ticks())
 				if rem <= 0 {
-					c.flush_rx()
+					// No flush: a flush waits a quiet window per frame and a slow peer renews it
+					// indefinitely past the deadline (codex round 5 on #225). The stale tail is
+					// dropped where the next reply is awaited instead.
 					return error('timeout')
 				}
 			}
-			cf := c.rx_raw(rem) or {
-				// A transfer the deadline abandoned leaves its tail on the bus; drained, so the
-				// next receive on this channel does not take a late CF for the start of its reply
-				// (codex round 4 on #225).
-				c.flush_rx()
-				return err
-			}
+			cf := c.rx_raw(rem)! // the tail is dropped at the next first-frame wait, not flushed
 			if cf.len < 1 {
 				continue // empty/padding read — ignore
 			}
@@ -206,6 +202,17 @@ pub fn (mut c SoftChannel) drain_quiet(quiet_ms int) {
 }
 
 fn (mut c SoftChannel) rx_raw(timeout_ms int) ![]u8 {
+	// NEGATIVE IS FOREVER, as the kernel channel and every bus have it. Computed as a deadline it
+	// was a deadline in the past, and recv(-1) on the software channel returned timeout without
+	// touching the bus (codex round 5 on #225).
+	if timeout_ms < 0 {
+		for {
+			f := c.bus.recv(-1)!
+			if f.id == c.rx_id {
+				return f.data
+			}
+		}
+	}
 	deadline := time.ticks() + i64(timeout_ms)
 	for {
 		rem := deadline - time.ticks()

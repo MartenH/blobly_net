@@ -155,3 +155,29 @@ fn test_the_receive_deadline_covers_the_whole_pdu() {
 	ch.close()
 	peer.close()
 }
+
+// recv(-1) BLOCKS UNTIL A FRAME, on the software channel as on the kernel one (codex round 5 on
+// #225: computed as a deadline, -1 was a deadline in the past).
+fn test_a_negative_timeout_blocks_until_a_frame_arrives() {
+	mut peer := transport.open('inproc:isotp-forever') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-forever', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	spawn fn [mut peer] () {
+		time.sleep(150 * time.millisecond)
+		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x01), 0x5A] }) or {}
+	}()
+	t0 := time.ticks()
+	got := ch.recv(-1) or {
+		assert false, 'recv(-1) must wait for the frame, not time out: ${err}'
+		return
+	}
+	assert got == [u8(0x5A)]
+	assert time.ticks() - t0 >= 100, 'recv(-1) returned before the frame was sent'
+	ch.close()
+	peer.close()
+}
