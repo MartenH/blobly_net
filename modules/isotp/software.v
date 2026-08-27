@@ -133,7 +133,13 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 					return error('timeout')
 				}
 			}
-			cf := c.rx_raw(rem)!
+			cf := c.rx_raw(rem) or {
+				// A transfer the deadline abandoned leaves its tail on the bus; drained, so the
+				// next receive on this channel does not take a late CF for the start of its reply
+				// (codex round 4 on #225).
+				c.flush_rx()
+				return err
+			}
 			if cf.len < 1 {
 				continue // empty/padding read — ignore
 			}

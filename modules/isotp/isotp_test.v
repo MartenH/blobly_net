@@ -143,7 +143,15 @@ fn test_the_receive_deadline_covers_the_whole_pdu() {
 	}
 	took := time.ticks() - t0
 	assert took < 600, 'recv(300) took ${took} ms: the deadline was renewed per frame'
-	time.sleep(700 * time.millisecond) // let the peer finish before the bus goes
+	time.sleep(700 * time.millisecond) // the peer finishes its abandoned transfer meanwhile
+	// AND THE CHANNEL IS REUSABLE: the abandoned transfer's late CFs must not be taken for the
+	// start of the next reply (codex round 4 on #225).
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x01), 0xAA] }) or { assert false, err.msg() }
+	next := ch.recv(500) or {
+		assert false, 'the next reply was lost behind the abandoned transfer: ${err}'
+		return
+	}
+	assert next == [u8(0xAA)]
 	ch.close()
 	peer.close()
 }
