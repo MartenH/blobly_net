@@ -611,8 +611,6 @@ rather than a bug in the backend.
 
 ## Pending
 
-- **CAN-FD on PCAN** — Vector and Kvaser have it; PCAN needs `CAN_InitializeFD`, which takes a
-  bit-rate *string* instead of the baudrate enum ([ROADMAP](../ROADMAP.md)).
 - **slcan** — vendor-neutral, cross-platform, no DLL; the cheapest path to real frames on a
   bench with no vendor adapter at all.
 

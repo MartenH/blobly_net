@@ -87,3 +87,49 @@ fn field(s string, name string) int {
 	}
 	return 0
 }
+
+// THE SAMPLE POINT IS PART OF THE PROMISE, not just the bit rate. A rate the clock divides exactly
+// can still be unable to PLACE the sample where it was asked, because few time quanta means coarse
+// placement — and that used to be delivered silently while the project refused any sample point but
+// 80% (codex round 2 on #217). Checked by reading the registers back rather than by trusting the
+// solver's own arithmetic.
+fn test_every_accepted_rate_actually_lands_near_the_sample_point() {
+	// Every rate this backend has been run at on the bench, plus the arbitration rates.
+	for r in [125_000, 250_000, 500_000, 1_000_000, 2_000_000, 4_000_000, 5_000_000, 8_000_000] {
+		s := pcan_fd_bitrate(500_000, r, 80) or {
+			assert false, '${r} bit/s should be producible: ${err.msg()}'
+			continue
+		}
+		tseg1 := field(s, 'data_tseg1')
+		tseg2 := field(s, 'data_tseg2')
+		total := 1 + tseg1 + tseg2
+		achieved := (1 + tseg1) * 100 / total
+		assert achieved >= 78 && achieved <= 82, '${r} bit/s lands at ${achieved}%, not 80% (${s})'
+	}
+}
+
+// AND A RATE THAT CANNOT IS REFUSED, IN WORDS. 10 Mbit/s divides 80 MHz exactly — into eight time
+// quanta, where the nearest placement to 80% is 6/8 = 75%. The refusal names the number it can
+// reach, because that is the only thing the operator can act on.
+fn test_a_rate_with_too_few_quanta_for_the_sample_point_is_refused() {
+	if s := pcan_fd_bitrate(500_000, 10_000_000, 80) {
+		assert false, '10 Mbit/s cannot hold an 80% sample point on an 80 MHz clock: ${s}'
+	} else {
+		assert err.msg().contains('75%'), 'the refusal should say what it CAN reach: ${err.msg()}'
+	}
+}
+
+// The tolerance is not a way in for a sample point the rate cannot approach. Ten time quanta can
+// place the sample at tenths of a bit and nowhere else, so 85% is five points from the nearest
+// either way and is refused — while 50%, which IS a tenth, is produced exactly. (The first draft of
+// this test asserted that 8 Mbit/s could not hold 50%; the solver was right and the test was wrong.)
+fn test_the_tolerance_does_not_admit_a_sample_point_the_rate_cannot_reach() {
+	if s := pcan_fd_bitrate(500_000, 8_000_000, 85) {
+		assert false, '8 Mbit/s is ten quanta — 85% is not one of the placements it has: ${s}'
+	}
+	exact := pcan_fd_bitrate(500_000, 8_000_000, 50) or {
+		assert false, '50% IS a tenth of a bit and should be produced exactly: ${err.msg()}'
+		return
+	}
+	assert field(exact, 'data_tseg1') == 4 && field(exact, 'data_tseg2') == 5, exact
+}

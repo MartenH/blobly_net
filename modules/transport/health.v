@@ -86,6 +86,50 @@ pub fn pcan_read_verdict(st u32) PcanRead {
 	return .failed
 }
 
+// PcanWrite is what CAN_Write / CAN_WriteFD's status word means for the frame just offered.
+pub enum PcanWrite {
+	sent
+	busy   // the adapter's transmit queue is full - back off and offer it again
+	failed // the channel is broken: this frame is not going out and nor is the next
+}
+
+// pcan_write_ladder_mask is the part of the fault ladder that does NOT stop a transmission.
+//
+// BUSLIGHT (0x04), BUSHEAVY/BUSWARNING (0x08) and BUSPASSIVE (0x40000) are degradations: a
+// controller in any of them still transmits, so they are news about the wire and not a verdict on
+// the frame -- the same argument pcan_read_verdict makes about reads.
+//
+// BUSOFF (0x10) IS DELIBERATELY ABSENT. A bus-off controller has LEFT the bus; the frame is going
+// nowhere and neither is the next one. That is the one rung where the read side and the write side
+// must disagree, and it is why this mask exists instead of reusing pcan_ladder_mask.
+const pcan_write_ladder_mask = u32(0x04 | 0x08 | 0x40000)
+
+// pcan_xmt_full_mask is PCANBasic's two "no room" answers: PCAN_ERROR_XMTFULL (0x01, the
+// CONTROLLER's buffer) and PCAN_ERROR_QXMTFULL (0x80, the DRIVER's queue behind it). Different
+// buffers, one meaning for a caller -- offer it again in a moment.
+const pcan_xmt_full_mask = u32(0x01 | 0x80)
+
+// pcan_write_verdict classifies CAN_Write's and CAN_WriteFD's status word.
+//
+// WHY BACK-PRESSURE IS NOT A FAILURE. This backend answered "any status but 0" with a hard error,
+// so a full transmit queue ended a frame permanently -- and a replay of a dense capture reaches a
+// full queue constantly, by construction: it is asking the adapter to go at the speed the
+// recording went. The frame was then counted failed and the replay acquired a hole exactly where
+// the recording was busiest, which is the failure `send_waiting_for_room` exists to prevent and
+// which it could not see, because it recognised only Vector's wording (codex round 2 on #217).
+pub fn pcan_write_verdict(st u32) PcanWrite {
+	rest := st & ~pcan_write_ladder_mask
+	if rest == 0 {
+		return .sent
+	}
+	// Only if there is NOTHING ELSE left. A queue-full bit arriving alongside a real fault is a
+	// real fault: retrying that one waits out the whole budget talking to a broken channel.
+	if rest & ~pcan_xmt_full_mask == 0 {
+		return .busy
+	}
+	return .failed
+}
+
 // kvaser_status_health decodes canReadStatus flags — canstat.h: canSTAT_ERROR_PASSIVE 0x01,
 // canSTAT_BUS_OFF 0x02, canSTAT_ERROR_WARNING 0x04, canSTAT_ERROR_ACTIVE 0x08 (TX_PENDING
 // 0x10, RESERVED_1 0x40 carry no ladder meaning). The first transcription of this table had

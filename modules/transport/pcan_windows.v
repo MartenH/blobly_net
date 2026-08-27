@@ -159,8 +159,10 @@ pub fn (mut b PcanBus) send(f CanFrame) ! {
 			return error('PCAN: ${f.data.len} bytes is not a classic CAN frame (id 0x${f.id:X}) — set fd on the frame, or send 8 bytes')
 		}
 		st := C.ct_pcan_write_fd(b.channel, f.id, mt, dlc, u8(f.data.len), f.data.data)
-		if st != 0 {
-			return error('CAN_WriteFD failed (0x${st:X})')
+		match pcan_write_verdict(st) {
+			.sent {}
+			.busy { return busy_error('PCAN', f.id) }
+			.failed { return error('CAN_WriteFD failed (0x${st:X})') }
 		}
 		return
 	}
@@ -180,8 +182,10 @@ pub fn (mut b PcanBus) send(f CanFrame) ! {
 	}
 	n := f.data.len
 	st := C.ct_pcan_write(b.channel, f.id, mt, u8(n), f.data.data)
-	if st != 0 {
-		return error('CAN_Write failed (0x${st:X})')
+	match pcan_write_verdict(st) {
+		.sent {}
+		.busy { return busy_error('PCAN', f.id) }
+		.failed { return error('CAN_Write failed (0x${st:X})') }
 	}
 }
 

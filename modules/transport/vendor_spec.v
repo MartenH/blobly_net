@@ -142,6 +142,29 @@ pub fn vendor_split_rate(spec string, default_rate int) !(string, int) {
 	return parts[0], default_rate
 }
 
+// busy_marker is the phrase EVERY backend puts in its "the transmit queue is full" error, and the
+// one thing send_waiting_for_room matches on.
+//
+// IT USED TO BE `vector: busy` -- a prefix naming one vendor. So back-pressure was waited out on
+// Vector and terminal on every other adapter, which is a lookup standing in for an identity: the
+// question being asked is "is this frame worth offering again", and the answer had a brand in it.
+// PCAN says PCAN_ERROR_QXMTFULL and Kvaser says canERR_TXBUFOFL to the very same condition.
+//
+// Composed by `busy_error` and read by `is_backpressure`, so no backend spells the phrase out and
+// the two cannot drift apart; the tests pin each backend's message against the reader.
+pub const busy_marker = 'transmit queue is full'
+
+// busy_error is the one way to say "no room, try again". `who` names the vendor for the operator;
+// nothing matches on it.
+pub fn busy_error(who string, id u32) IError {
+	return error('${who}: busy - the ${busy_marker} (id 0x${id:X})')
+}
+
+// is_backpressure - is this error the bus asking for a moment, rather than something being wrong?
+pub fn is_backpressure(e IError) bool {
+	return e.msg().contains(busy_marker)
+}
+
 // send_waiting_for_room offers a frame, waiting out a full vendor transmit queue.
 //
 // A saturated bus is the slowest thing in the system and says so by refusing; a replay of a busy
@@ -159,7 +182,7 @@ pub fn vendor_split_rate(spec string, default_rate int) !(string, int) {
 // worker's own taps were being closed underneath it.
 pub fn send_waiting_for_room(mut b Bus, f CanFrame, attempts int, cancel fn () bool) ! {
 	b.send(f) or {
-		if !err.msg().starts_with(vector_busy_msg) {
+		if !is_backpressure(err) {
 			return err
 		}
 		mut last := err
@@ -170,7 +193,7 @@ pub fn send_waiting_for_room(mut b Bus, f CanFrame, attempts int, cancel fn () b
 			time.sleep(time.millisecond)
 			b.send(f) or {
 				last = err
-				if err.msg().starts_with(vector_busy_msg) {
+				if is_backpressure(err) {
 					continue
 				}
 				return err

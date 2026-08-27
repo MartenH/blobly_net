@@ -74,6 +74,15 @@ pub:
 	sjw   int
 }
 
+// pcan_sample_point_tolerance is how far the achievable sample point may sit from the one asked
+// for, in percentage points, before the rate is refused instead.
+//
+// Two, and the number is set by what the verified rates need rather than by taste: 500k, 1M, 2M, 4M
+// and 8M all land on 80.00% exactly, and 5 Mbit/s -- sixteen quanta -- lands on 81.25%, the coarsest
+// placement any rate this bench has run at. One point would refuse 5M for no reason anybody can
+// measure; five would let 10 Mbit/s through at 75%, which is the defect this constant exists for.
+const pcan_sample_point_tolerance = 2
+
 // pcan_solve_phase finds the smallest prescaler that hits `bitrate` EXACTLY at `sample_point`.
 //
 // Exactly, because a rate the clock cannot produce is refused rather than rounded: a controller
@@ -92,6 +101,10 @@ fn pcan_solve_phase(bitrate int, sample_point int, max_tseg1 int, max_tseg2 int)
 	if i64(bitrate) > i64(pcan_fd_clock_hz) / 4 {
 		return error('bitrate ${bitrate} is above a quarter of the ${pcan_fd_clock_hz} Hz clock — there are not four time quanta in a bit at that rate')
 	}
+	// The closest sample point any prescaler managed, kept so a refusal can say what the rate CAN
+	// do instead of only that it cannot have what was asked.
+	mut closest := 0
+	mut have_closest := false
 	for brp in 1 .. pcan_max_brp + 1 {
 		divisor := i64(brp) * i64(bitrate)
 		if i64(pcan_fd_clock_hz) % divisor != 0 {
@@ -107,6 +120,26 @@ fn pcan_solve_phase(bitrate int, sample_point int, max_tseg1 int, max_tseg2 int)
 		if tseg1 < 1 || tseg2 < 1 || tseg1 > max_tseg1 || tseg2 > max_tseg2 {
 			continue
 		}
+		// AND THE ROUNDING IS CHECKED, because the bit being exact does not make the SAMPLE POINT
+		// exact and this function's whole promise is both. A bit divided into few time quanta can
+		// only place the sample at coarse fractions of itself: 10 Mbit/s off an 80 MHz clock is
+		// eight quanta, and the nearest placement to 80% is 6/8 — 75%, delivered silently while
+		// the project refuses any sample point but 80 (codex round 2 on #217). Nodes that disagree
+		// about where in the bit to look are a fault that appears under load and nowhere else,
+		// which is exactly the class this file already refuses inexact rates to avoid.
+		//
+		// A LARGER PRESCALER CANNOT HELP: total = clock / (brp * bitrate), so every later brp has
+		// FEWER quanta and strictly coarser placement. The loop continues anyway rather than
+		// asserting that here — the register limits above can reject the first candidates, so the
+		// first ACCEPTABLE brp is not always brp 1.
+		achieved := (1 + tseg1) * 100 / total
+		if !have_closest || abs_diff(achieved, sample_point) < abs_diff(closest, sample_point) {
+			closest = achieved
+			have_closest = true
+		}
+		if abs_diff(achieved, sample_point) > pcan_sample_point_tolerance {
+			continue
+		}
 		return PcanTiming{
 			brp:   brp
 			tseg1: tseg1
@@ -116,7 +149,14 @@ fn pcan_solve_phase(bitrate int, sample_point int, max_tseg1 int, max_tseg2 int)
 			sjw: if tseg2 < 4 { tseg2 } else { 4 }
 		}
 	}
+	if have_closest {
+		return error('${bitrate} bit/s divides the ${pcan_fd_clock_hz} Hz clock into too few time quanta to place the sample point at ${sample_point}% — the closest it can manage is ${closest}%')
+	}
 	return error('${pcan_fd_clock_hz} Hz cannot be divided into ${bitrate} bit/s at ${sample_point}% with these registers')
+}
+
+fn abs_diff(a int, b int) int {
+	return if a > b { a - b } else { b - a }
 }
 
 // pcan_fd_bitrate builds the string CAN_InitializeFD takes, or explains why it cannot.
