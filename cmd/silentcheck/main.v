@@ -235,13 +235,18 @@ fn run(mut o Opts) int {
 
 	// PHASE 1 — the baseline. Without it a failure in phase 2 is unreadable: a bus that was never
 	// working at all produces exactly the same "talker unhealthy, listener silent" reading.
+	// DECIDED BY WHAT THE BACKEND IS, NOT BY ONE SAMPLE. Read off phase 1's reading, a CANsub whose
+	// REST endpoint was unreachable for that one second was classed as a backend with no health,
+	// and recovery was then declared after a second of frames whatever the device said later
+	// (codex round 9 on #223). A CANsub reports; a sample it cannot give is a proof it cannot
+	// give, and the phase fails on it rather than passing around it.
+	o.talker_reports = talker_reports_health(o.talker)
+	if !o.talker_reports {
+		println('   (this talker backend reports no health: recovery is judged by frames received, not by the ladder)')
+	}
 	base := exchange(mut listener, mut talker, o, true, false)
 	println('1. baseline (listener NOT marked)')
 	report(base)
-	o.talker_reports = base.talker_health != .unknown
-	if !o.talker_reports {
-		println('   (this talker reports no health: recovery is judged by frames received, not by the ladder)')
-	}
 	if base.rx == 0 {
 		eprintln('   FAIL — nothing arrived at all. Check the cable, the termination and that both')
 		eprintln('          ends are at the same bitrate; nothing below can be trusted until this passes.')
@@ -709,6 +714,19 @@ fn recover_talker(mut talker transport.Bus, mut listener transport.Bus, o Opts, 
 // (fresh samples, so a couple of them is enough for the burst's failures to be counted).
 const recovery_bound_ms = i64(10000)
 const linger_ms = i64(2500)
+
+// talker_reports_health is whether a backend can be asked for its controller state at all: the
+// vendor drivers and a CANsub can; SocketCAN reads unknown until the kernel emits an error frame,
+// and the software buses have no controller.
+fn talker_reports_health(iface string) bool {
+	l := iface.to_lower()
+	for p in ['pcan:', 'kvaser:', 'vector:', 'cansub:'] {
+		if l.starts_with(p) {
+			return true
+		}
+	}
+	return false
+}
 
 // sample is a health reading that postdates every frame sent before it: the device itself for a
 // CANsub (its health() is a cache — see recover_talker), the driver for everything else.
