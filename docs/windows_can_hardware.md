@@ -38,7 +38,7 @@ done" is then a fact somebody can check rather than a feeling.
 | CAN-FD | ✅ #217 | ✅ #200 | ✅ | ✅ |
 | Refuses FD on a classic channel | ✅ | ✅ | ✅ | ✅ |
 | Bus health (fault ladder) | ✅ | ✅ | ✅ | ✅ |
-| Listen-only **at the transceiver** | ✅ #218 | ✅ #218 | ✅ `,silent` | ✅ PHY |
+| Listen-only **at the transceiver** | ✅ #219 | ✅ #219 | ✅ `,silent` | ✅ PHY |
 | Listen-only follows a **mid-run** toggle | ✅ | ✅ | ❌ pinned by the ports | ✅ |
 | Discover | ✅ | ✅ | ✅ + assignment | ❌ |
 | Honours project timing / sample point | partial (BTR) | ❌ ignored | partial | refuses non-default |
@@ -55,7 +55,7 @@ done" is then a fact somebody can check rather than a feeling.
    no backend can carry one. PCAN passes `NULL` where a `TPCANTimestamp*` goes, Vector reads a
    `chip` time it discards, CANsub decodes a synchronised device stamp and drops it.
 
-*Listen-only at the transceiver used to head this list and was closed by #218.* The one row where
+*Listen-only at the transceiver used to head this list and was closed by #219.* The one row where
 the four still differ is whether the mode follows a **mid-run** toggle: PCAN, Kvaser and CANsub
 reconfigure the controller when a row is ticked while a run is going, and Vector cannot — an XL
 channel's mode is fixed by the ports open on it, which is why `,silent` is part of the address
