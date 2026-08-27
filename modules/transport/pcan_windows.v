@@ -191,10 +191,18 @@ fn open_pcan_bus(iface string) !Bus {
 }
 
 pub fn (mut b PcanBus) send(f CanFrame) ! {
-	// RECONCILED ON THE WAY OUT TOO, not only on receive — a transmit tap may never be read from,
-	// so on a wire with no reader nothing else here would notice a mark being lifted, and `send`
-	// would report success while the controller stayed silent.
-	b.reconcile_silence(is_listen_only(b.iface))!
+	// NO RECONCILE HERE. `SilentBus.send` has already done it, with the ONE policy snapshot it also
+	// refuses on — and doing it again here meant reading the policy a SECOND time. A mark set
+	// between the two reads then reconciled the controller to silent and let this send continue
+	// into the driver anyway, because only the wrapper decides whether to refuse: the first frame
+	// after the toggle still went out (codex round 8 on #219).
+	//
+	// That is the same two-reads defect for the third time — #202 r3 inside the wrapper, round 3 of
+	// this PR between wrapper and backend, and now below the backend. The cure is not another
+	// parameter to thread: every bus this app hands out comes from `open`, which always wraps, so
+	// the wrapper's reconcile is guaranteed to have run and this one could only ever disagree with
+	// it. The RECEIVE path keeps its own reconcile — there is no second read to disagree with
+	// there, and it is what retries a refusal.
 	// THE SHARED SHAPE RULES FIRST (frame_rules.v). This path accepted `brs` on a classic frame
 	// and simply never passed it to ct_pcan_write, reporting success — while wiretap kept the flag,
 	// so the record claimed a bit-rate switch the wire never saw. Kvaser and Vector each refuse

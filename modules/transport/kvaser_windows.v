@@ -150,6 +150,10 @@ fn kvaser_settle_open_mode(iface string, silent bool, first bool, mode_unset int
 		}
 		return
 	}
+	// A SECOND TIME, AFTER THE HANDLE EXISTS. Normally a no-op: the pre-open reconcile above has
+	// already brought the wire to `want` and recorded it, so apply_silence finds nothing to do. It
+	// earns its place in the case where that one FAILED — the wire is unknown then, and this is the
+	// call whose refusal stops the open.
 	kvaser_apply_wire_silence(iface, silent)!
 }
 
@@ -173,6 +177,19 @@ pub fn open_kvaser(spec string, iface string) !&KvaserBus {
 	// WHETHER THIS HANDLE WILL BE THE ONE CANLIB OBEYS — asked BEFORE it is registered, because
 	// "first on this wire" is what decides whether the mode set inside the open means anything.
 	first := kvaser_handles(iface).len == 0
+	// BEFORE THE JOINER IS OPENED, NOT AFTER. The handles already on this wire keep it in whatever
+	// mode they were opened in, and the joiner's own in-open request is ignored — it does not hold
+	// initialisation access. So reconciling only after `ct_kvaser_open` returned left the wire
+	// ACKNOWLEDGING for the whole of the open, on a project that had already declared it silent
+	// (codex round 8 on #219). The window is short and it is on somebody's live vehicle.
+	//
+	// MEASURED THAT IT STICKS: with the post-open reconcile disabled, silentcheck's phase 5 still
+	// passes, so a mode set here survives the joiner's canOpenChannel/canSetBusParams/canBusOn.
+	// Best-effort, because the post-open reconcile below is what refuses the open if silence could
+	// not be applied at all — this one only decides WHEN, not whether.
+	if !first {
+		kvaser_apply_wire_silence(iface, silent) or {}
+	}
 	if !s.fd {
 		hnd := C.ct_kvaser_open(s.channel, arb_code, if silent { 1 } else { 0 }, &mode_unset)
 		if hnd < 0 {
@@ -240,11 +257,18 @@ pub fn (mut b KvaserBus) reconcile_silence(want bool) ! {
 }
 
 pub fn (mut b KvaserBus) send(f CanFrame) ! {
-	// RECONCILED ON THE WAY OUT TOO, not only on receive. A transmit tap is a handle that may never
-	// be read from, so on a wire with no reader nothing else here would notice a mark being lifted
-	// — `send` would report success while the controller stayed silent and the frame went nowhere.
-	// Costs one map read when nothing has changed.
-	b.reconcile_silence(is_listen_only(b.iface))!
+	// NO RECONCILE HERE. `SilentBus.send` has already done it, with the ONE policy snapshot it also
+	// refuses on — and doing it again here meant reading the policy a SECOND time. A mark set
+	// between the two reads then reconciled the controller to silent and let this send continue
+	// into the driver anyway, because only the wrapper decides whether to refuse: the first frame
+	// after the toggle still went out (codex round 8 on #219).
+	//
+	// That is the same two-reads defect for the third time — #202 r3 inside the wrapper, round 3 of
+	// this PR between wrapper and backend, and now below the backend. The cure is not another
+	// parameter to thread: every bus this app hands out comes from `open`, which always wraps, so
+	// the wrapper's reconcile is guaranteed to have run and this one could only ever disagree with
+	// it. The RECEIVE path keeps its own reconcile — there is no second read to disagree with
+	// there, and it is what retries a refusal.
 	// A FRAME NO CONTROLLER COULD SEND is refused here as it is everywhere else. `esi` on a
 	// classic frame arrived with the shared rules and this path never learned it, so the same
 	// input was rejected by `inproc:`, `udp:`, PCAN and CANsub and accepted here — the flag

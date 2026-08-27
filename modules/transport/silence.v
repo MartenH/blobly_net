@@ -214,6 +214,12 @@ pub fn forget_wire_silence(iface string) {
 		wl.unlock()
 	}
 	unrecord_silence(k)
+	// AND THE FAULT WITH IT. A fault describes a CONTROLLER that would not do what its row asked;
+	// once the driver has reset that controller there is no longer anything for it to describe, and
+	// the Buses panel does not ask whether a row is running before it shows one. Left behind, a
+	// stopped row went on displaying NOT SILENT about hardware nobody holds, until some later open
+	// happened to succeed (codex round 8 on #219).
+	clear_silence_fault(k)
 }
 
 // forget_silence_claims drops every record, so the next attempt on any wire reaches the driver.

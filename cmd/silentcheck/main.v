@@ -362,7 +362,22 @@ fn run(o Opts) int {
 		println('   ok — opening onto a held wire reconciles it rather than assuming it was obeyed')
 	}
 	println('')
+
+	// AND PUT THE WIRE BACK BEFORE LEAVING. Clearing the process policy is not enough: the mode
+	// belongs to the CONTROLLER and Kvaser's canClose preserves it, so a successful run ended with
+	// the adapter still silent — while printing that silence does not outlive its mark. The next
+	// user of that channel would have found it unable to transmit for no reason they could see
+	// (codex round 8 on #219).
+	//
+	// Through the joining handle, which by then is just another handle on the wire; the reconcile
+	// reaches all of them. Reported rather than ignored, because a bench tool that cannot hand the
+	// hardware back in the state it found it should say so.
 	transport.set_listen_only(o.listener, false)
+	joiner.reconcile_silence(false) or {
+		eprintln('WARNING: could not return ${o.listener} to normal mode — ${err}')
+		eprintln('         the adapter may still be listen-only for the next thing that opens it.')
+		ok = false
+	}
 
 	if ok {
 		println('PASS — listen-only reaches the transceiver, both directions, and does not outlive its mark.')
