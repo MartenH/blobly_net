@@ -427,3 +427,51 @@ fn test_with_no_database_every_remote_frame_is_still_refused() {
 	// And an ordinary frame is still kept, so this did not simply refuse everything.
 	assert d.verdict(transport.CanFrame{ id: 0x100, data: [u8(1)] }) == .keep_unknown
 }
+
+// THE PREVIEW MUST AGREE WITH WHAT START DOES. `census` is what the editor shows while somebody
+// decides what to exclude, and it classified in a different ORDER from `verdict`: asking `defined`
+// first put a remote frame on an undefined id into `unknown`, which the editor labels "replays
+// regardless", while the replay drops every remote frame before it looks at the database. With no
+// DBC attached -- where `defined` is empty -- the preview said the opposite of the truth for every
+// remote frame in the recording (codex on #216).
+fn test_the_census_agrees_with_the_verdict_about_remote_frames() {
+	d := new_decider(sample_db(), [], true)
+	for f in [transport.CanFrame{ id: 0x100, rtr: true }, transport.CanFrame{ id: 0x7AB, rtr: true }] {
+		entries := [canlog.LogEntry{
+			t_s:   0.0
+			iface: 'can0'
+			frame: f
+		}]
+		c := census(entries, sample_db())
+		assert c.remote == 1, 'id 0x${f.id:X}: the preview must call it a remote request'
+		assert c.unknown == 0, 'id 0x${f.id:X}: and not something that replays regardless'
+		assert d.verdict(f) == .drop_remote, 'and the replay agrees'
+	}
+}
+
+// With no database at all, which is the default and the case that was wrong for every frame
+// rather than some of them.
+fn test_the_census_classifies_remote_frames_with_no_database() {
+	entries := [
+		canlog.LogEntry{
+			t_s:   0.0
+			iface: 'can0'
+			frame: transport.CanFrame{
+				id:  0x100
+				rtr: true
+			}
+		},
+		canlog.LogEntry{
+			t_s:   0.1
+			iface: 'can0'
+			frame: transport.CanFrame{
+				id:   0x100
+				data: [u8(1)]
+			}
+		},
+	]
+	c := census(entries, candb.Database{})
+	assert c.remote == 1, 'the request'
+	assert c.unknown == 1, 'and the ordinary frame, which really is on an unknown id'
+	assert c.total == 2
+}

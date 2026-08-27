@@ -348,19 +348,19 @@ pub fn census(entries []canlog.LogEntry, db candb.Database) NodeCensus {
 	mut unknown := 0
 	mut remote := 0
 	for e in entries {
+		// REMOTE FIRST, in the same order `verdict` uses, because this census is the PREVIEW of
+		// what that will decide. Asking `defined` first put a remote frame on an undefined id into
+		// `unknown` -- which the editor labels "replays regardless" -- while the replay drops every
+		// remote frame before it looks at the database. The preview promised the opposite of what
+		// Start does, and with no DBC attached, where `defined` is empty, it did so for every one
+		// of them (codex on #216).
+		if e.frame.rtr {
+			remote++
+			continue
+		}
 		k := key(e.frame.id, e.frame.extended)
 		if k !in d.defined {
 			unknown++
-			continue
-		}
-		// COUNTED APART FROM ITS PRODUCER, for the reason `verdict` gives: a remote frame asks
-		// for the id, so the node the DBC names as its transmitter is precisely the node that did
-		// NOT send this frame. Added to that node's tally it inflated the share attributed to
-		// whoever produces the message -- and this census is the number a user reads while
-		// DECIDING what to exclude, so the misattribution arrived before the subtraction did
-		// (#179).
-		if e.frame.rtr {
-			remote++
 			continue
 		}
 		senders := d.senders_of[k] or { []string{} }
