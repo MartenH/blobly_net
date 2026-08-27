@@ -946,7 +946,7 @@ fn (mut app App) draw_replay_scan(i int, ch project.Channel) bool {
 			parts << '${cn.unknown} are on ids the DBCs do not define'
 		}
 		if cn.remote > 0 {
-			parts << '${cn.remote} are remote requests, which the DBC cannot attribute'
+			parts << '${cn.remote} are remote requests, which are never replayed'
 		}
 		vgui.text_dim('   ${parts.join(' · ')} — all replay regardless')
 	}

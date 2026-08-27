@@ -85,9 +85,6 @@ pub fn (mut b UdpBus) send(frame CanFrame) ! {
 	if frame.extended {
 		flags |= 0x01
 	}
-	if frame.rtr {
-		flags |= 0x02
-	}
 	if frame.fd {
 		flags |= 0x04
 	}

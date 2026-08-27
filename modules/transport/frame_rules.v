@@ -35,11 +35,22 @@ module transport
 // transmit those, so carrying them is a simulation modelling something that cannot happen, and a
 // test that passes in `inproc:` and fails on a bench (codex round 2 on #204).
 pub fn frame_impossible_error(f CanFrame) ?string {
-	// CAN-FD HAS NO REMOTE FRAME. The standard reused the bit: an FD frame's control field carries
-	// FDF where RTR sat, so there is nothing to ask for. Left through, a backend builds an ordinary
-	// FD data frame and reports success for a message nobody asked for.
-	if f.rtr && f.fd {
-		return 'rtr with fd (id 0x${f.id:X}) — CAN-FD has no remote frames; the bit RTR used to occupy carries FDF'
+	// THIS APP DOES NOT TRANSMIT REMOTE FRAMES.
+	//
+	// A remote frame is a REQUEST for a message rather than a transmission of one. CAN-FD removed
+	// it outright — the bit RTR occupied carries FDF — and nothing in modern automotive practice
+	// uses it: not AUTOSAR, not J1939, not UDS or ISO-TP, and most OEM networks forbid it. Nothing
+	// in this repo asks for one either: no DBC message, no project, no simulated ECU, no test.
+	//
+	// So the send paths that carried it are gone, and this is what keeps their removal HONEST. A
+	// backend that simply ignored the flag would put an ordinary data frame on the wire and report
+	// success, which is the silent substitution every other rule in this file exists to prevent —
+	// the worst possible way to drop a feature. Refused, a caller finds out.
+	//
+	// RECEIVING one is unaffected: the wire and a recording can both carry a remote frame, and a
+	// trace that showed it as data would be lying about the bus. Decoding stays.
+	if f.rtr {
+		return 'rtr (id 0x${f.id:X}) — this app does not transmit remote frames; CAN-FD has none at all, and nothing here requests one'
 	}
 	// BRS SWITCHES INTO A DATA PHASE, and a classic frame has none. Dropped instead of refused,
 	// the trace records a rate change that never happened.

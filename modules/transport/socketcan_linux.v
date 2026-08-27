@@ -54,9 +54,6 @@ pub fn (mut b SocketCanBus) send(frame CanFrame) ! {
 	} else {
 		frame.id & can_sff_mask
 	}
-	if frame.rtr {
-		cid |= can_rtr_flag
-	}
 	// Padded HERE, by the one table in transport.v, so every backend puts the same bytes on the
 	// wire. The C side keeps only a defensive clamp.
 	payload := if frame.fd { fd_pad(frame.data) } else { frame.data }

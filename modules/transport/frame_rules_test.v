@@ -102,7 +102,7 @@ fn test_an_fd_payload_must_be_a_dlc_length() {
 
 fn test_an_ordinary_frame_passes() {
 	assert frame_shape_error(CanFrame{ id: 0x123, data: [u8(1), 2, 3] }) == none
-	assert frame_shape_error(CanFrame{ id: 0x123, rtr: true }) == none
+	assert frame_shape_error(CanFrame{ id: 0x123, rtr: true }) != none, 'a remote frame is not something this app sends'
 	assert frame_shape_error(CanFrame{ id: 0x123, fd: true, brs: true, data: []u8{len: 64} }) == none
 }
 
@@ -161,7 +161,7 @@ fn test_every_impossible_frame_is_also_refused_by_the_full_rules() {
 
 fn test_an_ordinary_frame_is_impossible_to_nobody() {
 	assert frame_impossible_error(CanFrame{ id: 0x7FF, data: [u8(1)] }) == none
-	assert frame_impossible_error(CanFrame{ id: 0x123, rtr: true }) == none
+	assert frame_impossible_error(CanFrame{ id: 0x123, rtr: true }) != none, 'a remote frame is not something this app sends'
 	assert frame_impossible_error(CanFrame{ id: 0x123, fd: true, brs: true, data: []u8{len: 64} }) == none
 }
 
