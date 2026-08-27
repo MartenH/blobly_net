@@ -437,6 +437,14 @@ fn (mut e SharedEntry) read_loop() {
 // finds — see read_loop. Zero-timeout reads, so an empty queue costs one driver call. Bounded per
 // call by the ring capacity so a saturated bus cannot pin the reader here; what is left drains at
 // the next tick. Returns the message of a fatal read error, which is the reader's to act on.
+//
+// A subscriber that registers WHILE a drain is in progress loses the frames that drain reads
+// after its registration: they are already consumed from the driver, and this loop does not
+// look back at `subs` per frame to start publishing mid-drain. The window is the drain itself —
+// a few milliseconds, one read per frame — and what it loses is what the hub's tail rule already
+// excludes: a handle starts at the tail as of its subscription, and frames in the driver's queue
+// at that instant are from before it. The kick that subscription queues is consumed at the next
+// park, where it costs one empty drain and nothing else.
 fn (mut e SharedEntry) drain_parked() ?string {
 	for _ in 0 .. shared_ring_capacity {
 		e.driver.recv_shared(0) or {
