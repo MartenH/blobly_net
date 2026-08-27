@@ -186,3 +186,68 @@ fn test_the_lying_open_status_is_translated() {
 	// anything else is passed through as itself rather than guessed at
 	assert kvaser_open_refusal(-7, 0, true) == 'canStatus -7'
 }
+
+// THE FLAGS DECODE, pinned. This is the half of #177 that shipped wrong and looked right: canlib
+// reports a remote frame by setting canMSG_RTR in the same word it reports everything else in, the
+// shim never read that bit, and every remote frame on the wire came up as ordinary data. Nothing
+// about that is visible from outside — it needs a Kvaser and a second node — so it went unnoticed
+// through the send-side fix that was supposed to close the issue.
+//
+// The constants are canlib's. A test that restated them would agree with itself; what it catches
+// is a value edited, an assignment dropped, or a decode quietly rewired (codex round 1 on #205).
+
+fn test_a_remote_frame_is_decoded_as_remote() {
+	f := kvaser_decode_flags(kvaser_msg_std | kvaser_msg_rtr)
+	assert f.rtr, 'canMSG_RTR is what says the frame is a request'
+	assert !f.extended
+	assert !f.fd
+}
+
+fn test_an_ordinary_data_frame_is_not_remote() {
+	f := kvaser_decode_flags(kvaser_msg_std)
+	assert !f.rtr, 'a decode that hard-codes rtr would pass the test above on its own'
+	assert !f.error_frame
+}
+
+fn test_extended_is_read_from_the_flag_and_not_from_the_id() {
+	assert kvaser_decode_flags(kvaser_msg_ext).extended
+	assert !kvaser_decode_flags(kvaser_msg_std).extended
+}
+
+// FD, BRS and ESI ride the HIGH half of the same word. A decode that masked with the classic
+// constants would report every FD frame as classic, which is the silent downgrade this backend
+// refuses to make anywhere else.
+fn test_the_fd_flags_are_read_from_the_high_half() {
+	f := kvaser_decode_flags(kvaser_msg_std | kvaser_fdmsg_fdf | kvaser_fdmsg_brs)
+	assert f.fd
+	assert f.brs
+	assert !f.esi
+	assert !f.rtr, 'CAN-FD has no remote frame, and the bits do not collide'
+}
+
+// ESI is a RECEIVED STATUS — the transmitter was error-passive — not something the sender chose.
+fn test_esi_is_carried() {
+	assert kvaser_decode_flags(kvaser_msg_std | kvaser_fdmsg_fdf | kvaser_fdmsg_esi).esi
+	assert !kvaser_decode_flags(kvaser_msg_std | kvaser_fdmsg_fdf).esi
+}
+
+fn test_an_error_frame_is_not_a_frame() {
+	assert kvaser_decode_flags(kvaser_msg_error_frame).error_frame
+	assert !kvaser_decode_flags(kvaser_msg_std).error_frame
+}
+
+// The values themselves, against canlib's headers. Transcribed once; if one is ever edited this
+// is what says so, rather than a bench three commits later.
+fn test_the_constants_are_canlibs() {
+	assert kvaser_msg_rtr == u32(0x0001)
+	assert kvaser_msg_std == u32(0x0002)
+	assert kvaser_msg_ext == u32(0x0004)
+	assert kvaser_msg_error_frame == u32(0x0020)
+	assert kvaser_fdmsg_fdf == u32(0x01_0000)
+	assert kvaser_fdmsg_brs == u32(0x02_0000)
+	assert kvaser_fdmsg_esi == u32(0x04_0000)
+	// The classic flags and the FD flags must not overlap, or one would be read as the other.
+	classic := kvaser_msg_rtr | kvaser_msg_std | kvaser_msg_ext | kvaser_msg_error_frame
+	fdbits := kvaser_fdmsg_fdf | kvaser_fdmsg_brs | kvaser_fdmsg_esi
+	assert classic & fdbits == 0
+}
