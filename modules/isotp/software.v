@@ -98,9 +98,28 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 	// two seconds, where the kernel channel bounds the reassembled PDU (codex round 3 on #225).
 	// Negative is "forever", as everywhere else.
 	deadline := time.ticks() + i64(timeout_ms)
-	first := c.rx_raw(timeout_ms)!
-	if first.len < 1 {
-		return error('ISO-TP: empty frame')
+	mut first := []u8{}
+	for {
+		mut rem := timeout_ms
+		if timeout_ms >= 0 {
+			rem = int(deadline - time.ticks())
+			if rem <= 0 {
+				return error('timeout')
+			}
+		}
+		first = c.rx_raw(rem)!
+		if first.len < 1 {
+			return error('ISO-TP: empty frame')
+		}
+		// A CONSECUTIVE FRAME WITH NO TRANSFER IN PROGRESS IS A STALE TAIL, not a message: the
+		// rest of a transfer this channel abandoned on its deadline, still arriving from a peer
+		// that did not know. A flush at abort time cannot catch frames that have not arrived
+		// yet, so they are dropped HERE, where the next reply is awaited (codex round 4 on
+		// #225; the first cut flushed and the test proved it insufficient).
+		if (first[0] & 0xF0) == 0x20 {
+			continue
+		}
+		break
 	}
 	pci := first[0] & 0xF0
 	if pci == 0x00 {
