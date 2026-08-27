@@ -103,6 +103,17 @@ fn main() {
 		eprintln('--frames must be at least 1')
 		exit(2)
 	}
+	// POSITIVE, AND THE LOWER BOUND IS NOT PEDANTRY. The Bus contract reads a NEGATIVE timeout as
+	// "block forever", and `settle` receives before any traffic is sent — so `--timeout -1` did not
+	// produce a wrong answer, it produced no answer at all: the tool sat in recv on a quiet bus
+	// until somebody noticed (codex round 2 on #219). Zero is refused for the neighbouring reason,
+	// that it makes every phase report nothing heard and phase 1 then fails the whole run for a
+	// bench that is fine.
+	if o.timeout < 1 {
+		eprintln('--timeout must be positive (milliseconds): a negative one means "block forever" to a bus,')
+		eprintln('and this tool receives before it transmits, so ${o.timeout} would hang rather than report.')
+		exit(2)
+	}
 	exit(run(o))
 }
 
