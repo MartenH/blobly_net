@@ -288,6 +288,57 @@ fn test_the_first_slice_of_a_blocking_recv_blocks() {
 	assert slice == cansub_poll_ms
 }
 
+// The decoder already preserves the device's TX bit in CansubRecord. The shared hub must see it
+// too, or it cannot exclude the logical handle that originated the send and the simulation can
+// receive its own frame. This stays a private transport seam: ordinary Bus.recv still projects a
+// CanFrame for callers that do not share the physical connection.
+fn test_the_shared_receive_seam_preserves_a_tx_acknowledgement() {
+	mut b := CansubBus{
+		iface: 'cansub:test/1'
+		rx:    chan CansubRecord{cap: 3}
+	}
+	b.rx <- CansubRecord{
+		is_error: true
+		err:      .ack_err
+	}
+	b.rx <- CansubRecord{
+		frame: CanFrame{
+			id:   0x123
+			data: [u8(0xAB)]
+		}
+		tx:    true
+	}
+
+	got := b.recv_shared(0) or {
+		assert false, 'the queued TX acknowledgement must be returned: ${err}'
+		return
+	}
+	assert got.tx_ack
+	assert got.frame.id == 0x123
+	assert got.frame.data == [u8(0xAB)]
+	assert b.diagnostics().contains('1 controller error'), 'error records skipped on the way to the frame must still be counted'
+	assert b.reports_tx_ack()
+}
+
+fn test_public_cansub_recv_still_projects_a_plain_frame() {
+	mut b := CansubBus{
+		iface: 'cansub:test/1'
+		rx:    chan CansubRecord{cap: 1}
+	}
+	b.rx <- CansubRecord{
+		frame: CanFrame{
+			id: 0x456
+		}
+		tx:    true
+	}
+
+	got := b.recv(0) or {
+		assert false, 'the queued frame must be returned: ${err}'
+		return
+	}
+	assert got.id == 0x456
+}
+
 // ---- reading the device's health reply (#204 round 13) -------------------
 
 // WHITESPACE IS LEGAL JSON, and matching `"key":"` exactly meant a device that pretty-printed its

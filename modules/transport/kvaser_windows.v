@@ -50,9 +50,10 @@ fn C.ct_kvaser_set_silent_all(&int, int, int) int
 // So a mode change has to know about all of them, and this is the only place that does.
 //
 // NOT `shared.v`. A second `kvaser:` open is a second SUBSCRIBER — each handle has its own receive
-// queue — so routing it through the refcounted registry the way `pcan:` is would hand every reader
-// one bus and lose frames, which is what #212 is about. The handles stay separate; only the mode
-// change is coordinated.
+// queue in the driver, so canlib already fans out and the hub would add nothing but a second copy.
+// (Until #221 the registry also lost frames to competing readers, which was the original reason;
+// that is fixed, and the reason that remains is that Kvaser needs no help.) The handles stay
+// separate; only the mode change is coordinated.
 struct KvaserWires {
 mut:
 	mu  sync.Mutex
