@@ -327,6 +327,43 @@ fn run(o Opts) int {
 	}
 	println('')
 
+	// PHASE 5 — A NEW HANDLE JOINS A WIRE THIS PROCESS IS ALREADY ON, after the mark changed.
+	//
+	// Not an exotic case: a Lua script is explicitly allowed to outlive Stop still holding its bus,
+	// so applying a project and pressing Start can open onto a wire this process never let go of —
+	// and that is exactly when the policy is most likely to have just changed underneath it.
+	//
+	// What makes it dangerous is the measured rule from phase 2's story: canlib obeys
+	// canSetBusOutputControl only through the handle holding INITIALISATION ACCESS, which the new
+	// handle is not. So the mode set inside its open is ignored, silently — and an open that
+	// recorded what it ASKED FOR reported the wire silenced while the controller kept acknowledging
+	// (codex round 7 on #219). The mark is deliberately NOT reconciled through any existing handle
+	// first: the open is the only thing that gets a chance to act on it.
+	transport.set_listen_only(o.listener, true)
+	mut joiner := transport.open(o.listener) or {
+		eprintln('could not open a joining handle on ${o.listener}: ${err}')
+		return 1
+	}
+	defer {
+		joiner.close()
+	}
+	joined := exchange(mut reopened, mut fresh2, o)
+	println('5. mark set, then a NEW handle opened onto the already-held wire')
+	report(joined)
+	if !degraded(joined.talker_health) {
+		eprintln('   FAIL — the talker is still ${shown(joined.talker_health)}. The joining handle recorded a')
+		eprintln('          mode it never applied: canlib obeys only the handle holding initialisation')
+		eprintln('          access, and this was not it.')
+		ok = false
+	} else if joined.rx == 0 {
+		eprintln('   FAIL — the talker went ${shown(joined.talker_health)}, but the listener heard nothing.')
+		ok = false
+	} else {
+		println('   ok — opening onto a held wire reconciles it rather than assuming it was obeyed')
+	}
+	println('')
+	transport.set_listen_only(o.listener, false)
+
 	if ok {
 		println('PASS — listen-only reaches the transceiver, both directions, and does not outlive its mark.')
 		return 0

@@ -111,6 +111,48 @@ mut:
 // (classic, or CAN-FD when the address names a data rate) and goes bus-on.
 // The address rules live in kvaser_names.v, where a CI runner with no adapter can check them.
 // Referenced only from open_windows.v.
+// kvaser_apply_wire_silence brings the WIRE's controller to `want` through every handle this
+// process holds on it. The one shape of mode change that actually works — see
+// ct_kvaser_set_silent_all for why "every handle" and not "the right handle".
+fn kvaser_apply_wire_silence(iface string, want bool) ! {
+	inner := iface
+	apply_silence(inner, want, fn [inner] (silent bool) int {
+		// Read inside the closure, so the list is the one that exists when the mode is actually
+		// being changed rather than when the bus was built.
+		hs := kvaser_handles(inner)
+		if hs.len == 0 {
+			return -100 // nothing open on this wire: nothing to reconcile, and nothing to claim
+		}
+		return C.ct_kvaser_set_silent_all(&hs[0], hs.len, if silent { 1 } else { 0 })
+	})!
+}
+
+// kvaser_settle_open_mode records — or actually applies — the mode for a handle that has just been
+// opened.
+//
+// THE OPEN CALL ONLY SETS THE MODE IF THIS HANDLE HOLDS INITIALISATION ACCESS, which it does only
+// when it is the FIRST on the channel. Opened alongside an existing handle, `canSetBusOutputControl`
+// inside the open returns success and does nothing — so recording what was ASKED FOR made the wire
+// report a mode it had not been put into, and every later reconcile then skipped as redundant
+// (codex round 7 on #219).
+//
+// A pre-existing handle is not an exotic case. A Lua script is explicitly allowed to outlive Stop
+// still holding its bus (listen.v), so a new project can open onto a wire this process is already
+// on — and that is exactly when the policy is most likely to have just changed.
+//
+// So: first handle, record what the open applied. Otherwise reconcile the whole wire, which is the
+// only thing that can actually change it, and let apply_silence decide whether a write is even
+// needed — at a Start where the siblings agree with the record, none is.
+fn kvaser_settle_open_mode(iface string, silent bool, first bool, mode_unset int) ! {
+	if first {
+		if mode_unset == 0 {
+			note_silence_applied(iface, silent)
+		}
+		return
+	}
+	kvaser_apply_wire_silence(iface, silent)!
+}
+
 pub fn open_kvaser(spec string, iface string) !&KvaserBus {
 	s := kvaser_spec(spec)!
 	// The arbitration code comes from a DIFFERENT family depending on the mode -- see
@@ -128,6 +170,9 @@ pub fn open_kvaser(spec string, iface string) !&KvaserBus {
 	// repair that never happened and suppress every later attempt (codex round 3 on #219). A SILENT
 	// request on such a driver fails the open outright, below.
 	mut mode_unset := 0
+	// WHETHER THIS HANDLE WILL BE THE ONE CANLIB OBEYS — asked BEFORE it is registered, because
+	// "first on this wire" is what decides whether the mode set inside the open means anything.
+	first := kvaser_handles(iface).len == 0
 	if !s.fd {
 		hnd := C.ct_kvaser_open(s.channel, arb_code, if silent { 1 } else { 0 }, &mode_unset)
 		if hnd < 0 {
@@ -135,8 +180,12 @@ pub fn open_kvaser(spec string, iface string) !&KvaserBus {
 				s.channel, false)}')
 		}
 		kvaser_register(iface, hnd)
-		if mode_unset == 0 {
-			note_silence_applied(iface, silent)
+		kvaser_settle_open_mode(iface, silent, first, mode_unset) or {
+			if silent {
+				C.ct_kvaser_close(hnd)
+				kvaser_unregister(iface, hnd)
+				return error('Kvaser: channel ${s.channel} would not be set listen-only — ${err.msg()}; this wire is marked never-transmit and the controller would still acknowledge, so it is not opened')
+			}
 		}
 		return &KvaserBus{
 			handle: hnd
@@ -157,8 +206,12 @@ pub fn open_kvaser(spec string, iface string) !&KvaserBus {
 			s.channel, true)}')
 	}
 	kvaser_register(iface, hnd)
-	if mode_unset == 0 {
-		note_silence_applied(iface, silent)
+	kvaser_settle_open_mode(iface, silent, first, mode_unset) or {
+		if silent {
+			C.ct_kvaser_close(hnd)
+			kvaser_unregister(iface, hnd)
+			return error('Kvaser: channel ${s.channel} would not be set listen-only — ${err.msg()}; this wire is marked never-transmit and the controller would still acknowledge, so it is not opened')
+		}
 	}
 	return &KvaserBus{
 		handle: hnd
@@ -181,22 +234,9 @@ pub fn open_kvaser(spec string, iface string) !&KvaserBus {
 // per WIRE rather than once per handle matters more here than on PCAN: the app holds several
 // handles on one channel, and one operator tick used to drop traffic once for each of them.
 pub fn (mut b KvaserBus) reconcile_silence(want bool) ! {
-	// EVERY HANDLE ON THE WIRE, not just this one. canlib takes a channel off the bus only when all
-	// of its handles are off, and accepts canSetBusOutputControl only while it is off — so through
-	// one handle with siblings still on, the call SUCCEEDS AND DOES NOTHING. Measured: a wire with
-	// three handles open reported itself silenced and went on acknowledging every frame (codex
-	// round 5 on #219). The GUI opens each wire several times per Start, so that is the normal
-	// case here and not an edge.
-	iface := b.iface
-	apply_silence(iface, want, fn [iface] (silent bool) int {
-		// Read inside the closure, so the list is the one that exists when the mode is actually
-		// being changed rather than when the bus was built.
-		hs := kvaser_handles(iface)
-		if hs.len == 0 {
-			return -100 // nothing open on this wire: nothing to reconcile, and nothing to claim
-		}
-		return C.ct_kvaser_set_silent_all(&hs[0], hs.len, if silent { 1 } else { 0 })
-	})!
+	// EVERY HANDLE ON THE WIRE, not just this one — see kvaser_apply_wire_silence and, for the
+	// measurement behind it, ct_kvaser_set_silent_all.
+	kvaser_apply_wire_silence(b.iface, want)!
 }
 
 pub fn (mut b KvaserBus) send(f CanFrame) ! {
