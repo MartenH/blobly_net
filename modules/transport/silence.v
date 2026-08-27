@@ -38,9 +38,8 @@ mut:
 	// One mutex per wire, so a transition can be held across the driver call without a
 	// process-wide lock being held across I/O — see apply_silence.
 	locks map[string]&sync.Mutex
-	// Wires whose controller REFUSED the mode the policy asks for, and in what words — see
-	// wire_silence_fault.
-	faults map[string]string
+	// Wires whose controller REFUSED the mode the policy asks for — see wire_silence_fault.
+	faults map[string]SilenceFault
 }
 
 // silence_applied is process-wide for the reason listen_tbl is: the side that decides and the
@@ -120,19 +119,22 @@ pub fn apply_silence(iface string, want bool, set fn (bool) int) ! {
 	if st != 0 {
 		unrecord_silence(k)
 		why := 'the controller would not be set ${silence_word(want)} (driver status ${st})'
-		record_silence_fault(k, why)
+		record_silence_fault(k, SilenceFault{
+			want: want
+			why:  why
+		})
 		return error(why)
 	}
 	record_silence(k, want)
 	clear_silence_fault(k)
 }
 
-fn record_silence_fault(k string, why string) {
+fn record_silence_fault(k string, f SilenceFault) {
 	silence_applied.mu.lock()
 	defer {
 		silence_applied.mu.unlock()
 	}
-	silence_applied.faults[k] = why
+	silence_applied.faults[k] = f
 }
 
 fn clear_silence_fault(k string) {
@@ -158,7 +160,21 @@ fn clear_silence_fault(k string) {
 // controller did not agree, and an operator watching a live vehicle needs to know which of those
 // they are looking at. Cleared the moment a later attempt succeeds — every receive retries, so a
 // transient refusal disappears on its own.
-pub fn wire_silence_fault(iface string) ?string {
+// SilenceFault is a controller that would not do what its row asked.
+//
+// `want` IS PART OF IT, and leaving it out inverted the diagnosis. A refusal can be in EITHER
+// direction: a wire being silenced whose controller keeps acknowledging, or a wire being
+// transmit-enabled whose controller will not leave listen-only — and the second is not "still
+// acknowledging", it is "nothing this wire sends reaches the bus". Reported as one message, the
+// panel described every fault as the first kind and was exactly backwards for half of them
+// (codex round 4 on #219).
+pub struct SilenceFault {
+pub:
+	want bool   // what the row asked the controller for
+	why  string // the driver's own words
+}
+
+pub fn wire_silence_fault(iface string) ?SilenceFault {
 	k := wire_key(iface)
 	silence_applied.mu.lock()
 	defer {

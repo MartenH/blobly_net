@@ -165,6 +165,13 @@ fn (mut h SharedHandle) health() BusHealth {
 // Idempotent: the app closes a bus twice on at least one race path, and a second decrement
 // would close the wire out from under the callers still using it.
 fn (mut h SharedHandle) reconcile_silence(want bool) ! {
+	// THE SAME GUARD send() HAS, and it needs to be here rather than only there: `SilentBus.send`
+	// reconciles BEFORE it reaches send, so a caller holding a handle it has already closed would
+	// reach the driver through this method with the underlying channel uninitialized — and record
+	// a fault against a wire nobody is holding (codex round 4 on #219).
+	if h.closed {
+		return error('${h.key}: bus is closed')
+	}
 	h.entry.bus.reconcile_silence(want)!
 }
 

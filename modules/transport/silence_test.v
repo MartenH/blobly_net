@@ -179,11 +179,12 @@ fn test_a_refusal_is_recorded_against_the_wire() {
 	}
 	set := spy.setter()
 	apply_silence('inproc:sil-i', true, set) or {}
-	why := wire_silence_fault('inproc:sil-i') or {
+	f := wire_silence_fault('inproc:sil-i') or {
 		assert false, 'a refused mode must leave a fault on the wire'
 		return
 	}
-	assert why.contains('listen-only'), why
+	assert f.why.contains('listen-only'), f.why
+	assert f.want, 'the fault must say WHICH mode was refused'
 	// AND CLEARED BY A LATER SUCCESS, because every receive retries: a transient refusal must not
 	// leave the row shouting after the controller has come round.
 	spy.fail = false
@@ -202,4 +203,22 @@ fn test_a_mode_applied_at_open_clears_a_previous_fault() {
 	assert wire_silence_fault('inproc:sil-j') != none
 	note_silence_applied('inproc:sil-j', true)
 	assert wire_silence_fault('inproc:sil-j') == none
+}
+
+// AND WHICH DIRECTION IT WAS, because the two are opposite faults. A refused SILENCE is a wire
+// still acknowledging on a bus it was told to observe; a refused NORMAL is a wire that cannot
+// transmit at all. Reported as one message the panel described every fault as the first kind, and
+// was exactly backwards for half of them (codex round 4 on #219).
+fn test_a_fault_records_which_mode_was_refused() {
+	forget_silence_claims()
+	mut spy := &SilenceSpy{
+		fail: true
+	}
+	apply_silence('inproc:sil-k', false, spy.setter()) or {}
+	f := wire_silence_fault('inproc:sil-k') or {
+		assert false, 'a refused normal-mode set must leave a fault too'
+		return
+	}
+	assert !f.want, 'this wire was asked to be NORMAL, not silent'
+	assert f.why.contains('normal'), f.why
 }

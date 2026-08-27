@@ -8,7 +8,8 @@ module transport
 struct FakeBus {
 	spec string
 mut:
-	sent []CanFrame
+	sent       []CanFrame
+	reconciles int
 }
 
 fn (mut f FakeBus) send(frame CanFrame) ! {
@@ -19,7 +20,9 @@ fn (mut f FakeBus) recv(timeout_ms int) !CanFrame {
 	return error('timeout')
 }
 
-fn (mut f FakeBus) reconcile_silence(want bool) ! {}
+fn (mut f FakeBus) reconcile_silence(want bool) ! {
+	f.reconciles++
+}
 
 fn (mut f FakeBus) close() {
 	fake_closes++
@@ -148,4 +151,27 @@ fn test_a_failed_open_leaves_no_reservation_behind() {
 	a.send(CanFrame{ id: 0x123 })!
 	a.close()
 	assert fake_closes == 1
+}
+
+// A CLOSED HANDLE TOUCHES NO DRIVER, on the reconcile path as well as on send.
+//
+// `SilentBus.send` reconciles BEFORE it reaches send, so this method is where a caller holding an
+// already-closed handle arrives first — and without the guard it reached the vendor call with the
+// underlying channel uninitialized, and could file a fault against a wire nobody is holding
+// (codex round 4 on #219). It answers with the same sentence send() does.
+fn test_a_closed_shared_handle_does_not_reconcile() {
+	fake_opens = 0
+	fake_closes = 0
+	fake_fails = false
+	mut a := shared_open('fake:silent-guard', 'fake:silent-guard', fake_make) or {
+		assert false, err.msg()
+		return
+	}
+	a.reconcile_silence(true) or { assert false, 'an open handle must reconcile: ${err.msg()}' }
+	a.close()
+	if _ := a.reconcile_silence(true) {
+		assert false, 'a closed handle must not reach the driver'
+	} else {
+		assert err.msg().contains('bus is closed'), err.msg()
+	}
 }
