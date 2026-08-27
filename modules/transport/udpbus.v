@@ -108,12 +108,24 @@ pub fn (mut b UdpBus) recv(timeout_ms int) !CanFrame {
 	// CAN-FD frame at read(), losing bytes before any of the decoding below could see them.
 	mut buf := []u8{len: 10 + 64}
 	for {
-		remaining := deadline - time.ticks()
-		if remaining <= 0 {
-			return error('timeout')
+		// NEGATIVE IS FOREVER, as every other bus has it: computed as a deadline it was a deadline
+		// in the past, and recv(-1) returned timeout without reading (codex round 6 on #225, via
+		// the software ISO-TP channel that now runs on this bus off Linux). Waited in one-second
+		// slices so a close can still be noticed by the read failing.
+		mut remaining := i64(1000)
+		if timeout_ms >= 0 {
+			remaining = deadline - time.ticks()
+			if remaining <= 0 {
+				return error('timeout')
+			}
 		}
 		b.rx.set_read_timeout(time.Duration(remaining * 1_000_000)) // ms → ns
-		n, _ := b.rx.read(mut buf) or { return error('timeout') }
+		n, _ := b.rx.read(mut buf) or {
+			if timeout_ms < 0 {
+				continue // a slice ended without a frame; forever means forever
+			}
+			return error('timeout')
+		}
 		if n < 10 {
 			continue
 		}

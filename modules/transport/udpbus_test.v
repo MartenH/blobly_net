@@ -113,3 +113,23 @@ fn test_udpbus_carries_a_full_size_fd_frame() {
 	assert got.data.len == 64, 'payload truncated to ${got.data.len}'
 	assert got.data == payload
 }
+
+// recv(-1) BLOCKS UNTIL A FRAME on the UDP bus, as on every other (codex round 6 on #225).
+fn test_udp_bus_negative_timeout_blocks_until_a_frame() {
+	group, port := uniq_group(3)
+	mut a := open_udp(group, port) or { panic('open a: ${err}') }
+	mut b := open_udp(group, port) or { panic('open b: ${err}') }
+	defer {
+		a.close()
+		b.close()
+	}
+	time.sleep(50 * time.millisecond)
+	spawn fn [mut a] () {
+		time.sleep(150 * time.millisecond)
+		a.send(CanFrame{ id: 0x321, data: [u8(1)] }) or {}
+	}()
+	t0 := time.ticks()
+	got := b.recv(-1) or { panic('recv(-1) must wait for the frame, not time out: ${err}') }
+	assert got.id == 0x321
+	assert time.ticks() - t0 >= 100, 'recv(-1) returned before the frame was sent'
+}
