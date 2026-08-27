@@ -235,6 +235,24 @@ Kept last: this is where the roadmap ends, not where it starts.
   PCAN channels are not wired to each other. **Done, not automatically checked**, for the same
   reason as Kvaser's entry: what CI holds is `pcan_names.v`.
 
+- ✅ **Listen-only at the transceiver, on every vendor backend** — the tick promised "no ACKs" and
+  on PCAN and Kvaser stopped only THIS PROCESS transmitting, while the controller acknowledged
+  every frame it saw. An ACK is hardware, so not calling send cannot suppress it, and on a bus with
+  one other node ours is the difference between that node's frames succeeding and it going
+  error-passive: a tester marked listen-only was changing the thing it came to observe. PCAN uses
+  `CAN_SetValue` with `PCAN_LISTEN_ONLY`, Kvaser `canSetBusOutputControl(canDRIVER_SILENT)` (which
+  canlib takes only while bus-OFF, so the bus is bounced around it), both reading the same
+  process-wide table as the send path — asked PER RECEIVE, so a row toggled mid-run reaches the
+  controller within one poll rather than at the next Start. The first reconcile always WRITES: the
+  mode outlives the handle, and Kvaser's `canClose` does not reset it, so a run that ended while a
+  wire was marked left the next opener silent on a row nobody had ticked. Bench-verified with
+  `cmd/silentcheck` on a PCAN-USB Pro FD and a Kvaser USBcan Pro 5xHS, four pairings including
+  cross-vendor and 500k/2M CAN-FD: the silenced node drives the talker to error-passive while still
+  hearing every retransmission, and lifting the mark restores it without reopening anything. Vector
+  is the one backend that cannot follow a mid-run toggle — an XL channel's mode is fixed by the
+  ports open on it, which is why `,silent` lives in its address and a clash is refused rather than
+  reconciled.
+
 **Buses & transport**
 - ✅ **SocketCAN** (Linux) — `vcan0` virtual and real adapters
 - ✅ **PEAK PCAN** and ✅ **Kvaser** (Windows) — vendor DLLs at runtime, both hardware-verified
