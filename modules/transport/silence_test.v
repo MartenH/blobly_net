@@ -166,6 +166,55 @@ fn test_opposing_transitions_leave_the_record_matching_the_last_write() {
 	assert have == spy.calls.last(), 'recorded ${have}, driver last saw ${spy.calls.last()} (${spy.calls})'
 }
 
+// NOT ATTEMPTED IS NEITHER APPLIED NOR REFUSED. A closure that could not reach the driver says so,
+// and the seam records nothing: no applied mode (the next attempt must write) and no fault (nothing
+// was refused). Recording a fault here is how a device that was merely unreachable for one GET read
+// as one that had declined.
+fn test_not_attempted_records_neither_a_mode_nor_a_fault() {
+	forget_silence_claims()
+	if _ := apply_silence('inproc:sil-na', true, fn (silent bool) int {
+		return silence_not_attempted
+	})
+	{
+		assert false, 'not attempted must be reported as not done'
+	} else {
+		assert err.msg().contains('not applied'), err.msg()
+	}
+	assert wire_silence_fault('inproc:sil-na') == none
+	mut spy := &SilenceSpy{}
+	apply_silence('inproc:sil-na', true, spy.setter()) or { assert false, err.msg() }
+	assert spy.calls == [true], 'the next attempt must reach the driver'
+}
+
+// A DECLARED REFUSAL IS THE BACKEND'S WORD, and it travels with the fault.
+fn test_an_explained_refusal_carries_the_backends_reading() {
+	forget_silence_claims()
+	apply_silence_explained('inproc:sil-decl', true, fn (silent bool) int {
+		return 500
+	}, fn (want bool, st int) SilenceReason {
+		return SilenceReason{
+			why:      'the device says no (${st})'
+			declared: st == 500
+		}
+	}) or {}
+	f := wire_silence_fault('inproc:sil-decl') or {
+		assert false, 'a refusal must be recorded'
+		return
+	}
+	assert f.declared
+	assert f.why == 'the device says no (500)'
+	// The generic seam declares nothing.
+	forget_silence_claims()
+	apply_silence('inproc:sil-decl', true, fn (silent bool) int {
+		return -13
+	}) or {}
+	g := wire_silence_fault('inproc:sil-decl') or {
+		assert false, 'a refusal must be recorded'
+		return
+	}
+	assert !g.declared
+}
+
 // A REFUSAL IS RECORDED AGAINST THE WIRE, not only returned. The `open` path turns one into a
 // refusal to open and `send` returns it to a caller — but a PASSIVE listener never calls send, so
 // on a receive-only wire the error had no way out at all and the reconcile there is deliberately

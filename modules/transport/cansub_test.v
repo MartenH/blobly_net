@@ -431,6 +431,59 @@ fn test_a_json_bool_that_is_not_one_is_no_answer() {
 
 // The real reply from a CANsub.4, so the field this depends on is pinned against the device rather
 // than against my memory of it.
+// THE DECISION LOGIC, WITHOUT A DEVICE. A CansubBus with `running = false` attempts no I/O, so the
+// on-demand path can be driven against the process-wide fault table alone — which is where every
+// review round on #223 landed, and which had no test (code-review high on #223).
+fn test_a_standing_refusal_is_answered_from_memory_in_its_own_direction() {
+	forget_silence_claims()
+	iface := 'cansub:AAAA0001/1@500000'
+	mut b := &CansubBus{
+		iface: iface
+		spec:  parse_cansub_iface(iface) or { panic(err) }
+		rx:    chan CansubRecord{cap: 1}
+	}
+	lock b.stop {
+		b.stop.running = false
+	}
+	// A fault in the wanted direction is returned without any attempt.
+	apply_silence_explained(iface, true, fn (silent bool) int {
+		return 500
+	}, cansub_silence_reason) or {}
+	if _ := b.reconcile_silence(true) {
+		assert false, 'a standing refusal must be reported, not silently passed'
+	} else {
+		assert err.msg().contains('while the channel is open'), err.msg()
+	}
+	// A fault in the OTHER direction does not short-circuit: the attempt is made, and with the
+	// bus not running it is "not attempted", which is an error and not a fault.
+	forget_silence_claims()
+	apply_silence_explained(iface, false, fn (silent bool) int {
+		return 500
+	}, cansub_silence_reason) or {}
+	if _ := b.reconcile_silence(true) {
+		assert false, 'not applied must never read as done'
+	} else {
+		assert err.msg().contains('not applied'), err.msg()
+	}
+	f := wire_silence_fault(iface) or {
+		assert false, 'the other-direction fault must survive an unrelated attempt'
+		return
+	}
+	assert !f.want
+	// (close() forgetting the fault — ordered after `running` goes false — needs a bus whose
+	// threads exist; a bus built with running = false to avoid I/O returns from close() at its
+	// idempotence guard before it gets there. That ordering is the bench's to prove.)
+	forget_silence_claims()
+}
+
+// A 500 IS DECLARED; anything else is a fault. This is what lets silentcheck call a phase not
+// applicable for the device's rule while still failing on a driver error.
+fn test_only_the_live_channel_refusal_is_declared() {
+	assert cansub_silence_reason(true, 500).declared
+	assert !cansub_silence_reason(true, 400).declared
+	assert !cansub_silence_reason(false, 503).declared
+}
+
 // A REFUSED MID-RUN PUT IS THE DEVICE'S RULE, NOT A DEFECT, and the message has to say what to do.
 // Measured with curl on a CANsub.4 (02.04.00): the same PHY body is 200 with nothing on the channel
 // and 500 while any client holds its WebSocket. The reconcile used to return from that 500 in

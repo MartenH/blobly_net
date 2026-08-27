@@ -104,6 +104,13 @@ fn unrecord_silence(k string) {
 // reconfiguration leaves the controller in a state nobody measured. Unknown is the honest record
 // and also the useful one: the next attempt writes instead of comparing against a guess.
 pub fn apply_silence(iface string, want bool, set fn (bool) int) ! {
+	apply_silence_explained(iface, want, set, generic_silence_reason)!
+}
+
+// apply_silence_explained is apply_silence with the backend's own reading of a refused status.
+// One rule for every backend — the lock, the record, the fault — and one place a backend may
+// differ: what a refusal MEANS.
+pub fn apply_silence_explained(iface string, want bool, set fn (bool) int, explain fn (bool, int) SilenceReason) ! {
 	k := wire_key(iface)
 	mut wl := wire_silence_lock(k)
 	wl.@lock()
@@ -116,14 +123,20 @@ pub fn apply_silence(iface string, want bool, set fn (bool) int) ! {
 		}
 	}
 	st := set(want)
+	if st == silence_not_attempted {
+		// Nothing was asked of the driver, so nothing is known: not applied, not refused.
+		unrecord_silence(k)
+		return error('${iface}: listen-only was not applied — the bus is closing or the device could not be reached')
+	}
 	if st != 0 {
 		unrecord_silence(k)
-		why := 'the controller would not be set ${silence_word(want)} (driver status ${st})'
+		r := explain(want, st)
 		record_silence_fault(k, SilenceFault{
-			want: want
-			why:  why
+			want:     want
+			why:      r.why
+			declared: r.declared
 		})
-		return error(why)
+		return error(r.why)
 	}
 	record_silence(k, want)
 	clear_silence_fault(k)
@@ -157,6 +170,33 @@ pub struct SilenceFault {
 pub:
 	want bool   // what the row asked the controller for
 	why  string // the driver's own words
+	// DECLARED: the backend is saying "this is how the device works", not "a call failed". A
+	// CANsub refusing PHY reconfiguration on a live channel is declared; a Kvaser
+	// canSetBusOutputControl returning -13 is not. The distinction is what lets a bench tool
+	// report a phase as not applicable for the first and as a failure for the second — without
+	// it, any driver hiccup on PCAN or Kvaser would have read as a stated limitation
+	// (code-review high on #223).
+	declared bool
+}
+
+// SilenceReason is what a backend's `explain` returns for a refused driver status: the operator's
+// sentence, and whether the refusal is the device's rule rather than a fault.
+pub struct SilenceReason {
+pub:
+	why      string
+	declared bool
+}
+
+// silence_not_attempted is the status a `set` closure returns when it did NOT reach the driver —
+// the bus is closing, or the device could not even be read. apply_silence records nothing for it:
+// not an applied mode, and not a fault either, because nothing was refused. The next attempt
+// tries again from unknown.
+pub const silence_not_attempted = -1_000_000
+
+fn generic_silence_reason(want bool, st int) SilenceReason {
+	return SilenceReason{
+		why: 'the controller would not be set ${silence_word(want)} (driver status ${st})'
+	}
 }
 
 // wire_silence_fault reports that this wire's controller REFUSED the mode its row asks for, or
