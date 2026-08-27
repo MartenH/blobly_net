@@ -116,6 +116,18 @@ fn main() {
 		println('  note: ${rep.unknown} frames on ${rep.unknown_ids.len} id(s) are not in the DBC at all — replayed')
 		println('        ${hex_ids(rep.unknown_ids)}')
 	}
+	// Reported apart from both other notes. A remote frame ASKS for an id rather than sending it,
+	// so the DBC's transmitter says nothing about who sent this one -- and on a rest bus it is
+	// very often the stimulus the SUT is meant to answer (#179).
+	if rep.remote > 0 {
+		verb := if o.replay_unattr {
+			'replayed'
+		} else {
+			'withheld (${rep.withheld_remote} frames)'
+		}
+		println('  note: ${rep.remote} remote request(s) on ${rep.remote_ids.len} id(s) — the DBC cannot say who asked — ${verb}')
+		println('        ${hex_ids(rep.remote_ids)}')
+	}
 	fd_n := kept.filter(it.frame.fd).len
 	if fd_n > 0 {
 		pct := 100.0 * f64(fd_n) / f64(kept.len)
@@ -274,7 +286,7 @@ fn run_multi(o Opts, rec mf4.Recording) {
 	for b in plan.buses {
 		r := b.report
 		mut notes := []string{}
-		withheld := r.withheld_excluded + r.withheld_unattributed
+		withheld := r.withheld_excluded + r.withheld_unattributed + r.withheld_remote
 		if b.source == 0 {
 			notes << 'NO FRAMES — check the mapping'
 		} else if r.kept == 0 {
@@ -289,6 +301,9 @@ fn run_multi(o Opts, rec mf4.Recording) {
 			if r.withheld_unattributed > 0 {
 				why << 'unattributed (--drop-unattributed)'
 			}
+			if r.withheld_remote > 0 {
+				why << 'remote requests (--drop-unattributed)'
+			}
 			notes << if why.len > 0 {
 				'silent: all frames withheld by ${why.join(' + ')}'
 			} else {
@@ -298,11 +313,22 @@ fn run_multi(o Opts, rec mf4.Recording) {
 		if r.withheld_unattributed > 0 {
 			notes << '${r.withheld_unattributed} withheld as unattributed'
 		}
+		if r.withheld_remote > 0 {
+			notes << '${r.withheld_remote} remote request(s) withheld'
+		}
 		if r.unknown > 0 {
 			notes << '${r.unknown} frames on ${r.unknown_ids.len} id(s) not in the DBC'
 		}
 		if r.unattributed > 0 && r.withheld_unattributed == 0 {
 			notes << '${r.unattributed} unattributed, replayed'
+		}
+		// The REPLAYED case, mirroring the line above. Only the withheld note existed, so under
+		// the default policy -- which replays them -- the multi-bus report mentioned remote
+		// requests nowhere at all, while the single-bus report named them either way. The table
+		// in docs/simulation.md promises they are counted and named whatever happens to them, and
+		// this is the path that was not keeping it (codex round 1 on #210).
+		if r.remote > 0 && r.withheld_remote == 0 {
+			notes << '${r.remote} remote request(s) on ${r.remote_ids.len} id(s), replayed'
 		}
 		nm := name_of[b.src] or { b.src }
 		println('${nm:-14} ${b.dst:-16} ${b.source:9} ${withheld:9} ${r.kept:9}  ${notes.join('; ')}')
@@ -410,14 +436,17 @@ fn resolve_bus(buses []mf4.BusInfo, want string) !string {
 	return player.resolve_bus(names, labels, want)
 }
 
-fn hex_ids(ids []u32) string {
+// The ids arrive already formatted, and the format carries the WIDTH — three hex digits standard,
+// eight extended, as a trace prints them. This only decides how many to show (codex round 2 on
+// #210 moved the formatting into the module, where the id's identity is still known).
+fn hex_ids(ids []string) string {
 	mut s := []string{}
 	for i, id in ids {
 		if i == 12 {
 			s << '… (${ids.len - 12} more)'
 			break
 		}
-		s << '0x${id:X}'
+		s << id
 	}
 	return s.join(' ')
 }

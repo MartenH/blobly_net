@@ -298,7 +298,11 @@ fn draw_discover_dialog(mut app App) {
 			// number (#187). Blank for a channel that carries none — a D/A IO card, say.
 			fd := vm.hw.fd_note()
 			rate := if vm.hw.bitrate > 0 { '${vm.hw.bitrate}' } else { '-' }
-			detail := '${vm.hw.transceiver} · ${rate}${if fd == '' { '' } else { ' · CAN-FD ${fd}' }}'
+			detail := '${vm.hw.transceiver} · ${rate}${if fd == '' {
+				''
+			} else {
+				' · CAN-FD ${fd}'
+			}}'
 			if vm.app > 0 {
 				// Already ours: name the address, because that is what a Buses row will carry.
 				vgui.text_dim('   vector:${vm.app}   ${vm.hw.name}   ${detail}')
@@ -925,8 +929,26 @@ fn (mut app App) draw_replay_scan(i int, ch project.Channel) bool {
 			return true
 		}
 	}
-	if cn.unattributed > 0 || cn.unknown > 0 {
-		vgui.text_dim('   ${cn.unattributed} frames carry no declared sender · ${cn.unknown} are on ids the DBCs do not define — both replay regardless')
+	if cn.unattributed > 0 || cn.unknown > 0 || cn.remote > 0 {
+		// The remote count is its own clause rather than folded into the first: those frames ASK
+		// for an id instead of sending it, so the DBC attributes the id perfectly well and simply
+		// cannot say who requested it (#179). Summed with the no-transmitter frames, the number a
+		// user reads as "the DBC is incomplete" would grow for a reason that is not that.
+		// EACH CLAUSE ONLY WHEN IT HAS SOMETHING TO SAY. Widening the guard without doing this
+		// left the first two unconditional, so a bus carrying only remote requests announced
+		// "0 frames carry no declared sender · 0 are on ids the DBCs do not define" before the one
+		// number that was not zero (self-review).
+		mut parts := []string{}
+		if cn.unattributed > 0 {
+			parts << '${cn.unattributed} frames carry no declared sender'
+		}
+		if cn.unknown > 0 {
+			parts << '${cn.unknown} are on ids the DBCs do not define'
+		}
+		if cn.remote > 0 {
+			parts << '${cn.remote} are remote requests, which the DBC cannot attribute'
+		}
+		vgui.text_dim('   ${parts.join(' · ')} — all replay regardless')
 	}
 	return false
 }

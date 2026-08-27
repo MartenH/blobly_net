@@ -15,9 +15,17 @@
 //     on one bus.
 //   * A node name that is not in the database at all — almost always a typo, and one that would
 //     otherwise subtract NOTHING and look exactly like a working rest bus.
+//   * A REMOTE FRAME, where the sender field answers a question nobody asked. `BO_` names who
+//     PRODUCES a message; a remote frame with that id is a REQUEST FOR it, issued by somebody
+//     else — very often the tester, and on a rest bus very often the thing the SUT is meant to
+//     answer. Keyed on the id alone, a request for a message the excluded node produces was
+//     subtracted on that node's account: the SUT never heard the stimulus, its reply was missing
+//     from the run, and the one frame in the recording that certainly was NOT the SUT's own
+//     traffic is the one we removed (#179).
 //
 // The first two are reported, never guessed at, and the caller decides. The third is an error,
-// because there is no reading of "exclude a node that does not exist" that the user meant.
+// because there is no reading of "exclude a node that does not exist" that the user meant. The
+// fourth follows the unattributed policy, because it is the same question — see `verdict`.
 module player
 
 import canlog
@@ -35,12 +43,29 @@ pub:
 	kept                  int // frames that will be replayed
 	withheld_excluded     int // withheld because an excluded node sends them
 	withheld_unattributed int // withheld because the DBC names no transmitter and policy says so
+	withheld_remote       int // withheld because it is a remote request and policy says so
 	unattributed          int // frames whose message the DBC defines but gives no transmitter
 	unknown               int // frames whose id the DBC does not define at all
-	// The ids behind the last two, so a report can name them rather than merely count them.
+	remote                int // remote REQUESTS — a frame asking for an id, not sending it
+	// The ids behind the last three, so a report can name them rather than merely count them.
 	// Sorted, each id once.
-	unattributed_ids []u32
-	unknown_ids      []u32
+	//
+	// FORMATTED, AND THE FORMAT CARRIES THE WIDTH: three hex digits for a standard id, eight for
+	// an extended one, which is candump's convention and the one this repo already reads traces
+	// with. Kept as bare numbers, an 11-bit 0x100 and a 29-bit 0x100 -- two different messages
+	// with two different senders, which `key()` exists to keep apart -- collapsed into one entry,
+	// so a report claimed one id where two were involved and printed something that could not say
+	// which (codex round 2 on #210). The tallies below are keyed the same way.
+	unattributed_ids []string
+	unknown_ids      []string
+	remote_ids       []string
+}
+
+// id_label formats one identifier the way a trace does, so its WIDTH is visible: three hex digits
+// standard, eight extended. `0x100` and `0x00000100` are two different messages, and a report that
+// prints them the same way is a report that cannot be acted on.
+fn id_label(id u32, ext bool) string {
+	return if ext { '0x${id:08X}' } else { '0x${id:03X}' }
 }
 
 // key identifies a message the way the bus does: an 11-bit 0x100 and a 29-bit 0x100 are two
@@ -71,8 +96,10 @@ pub enum Verdict {
 	keep              // a node we are not excluding sends it
 	keep_unknown      // its id is not in the database at all — replayed, and reported
 	keep_unattributed // defined, no transmitter, policy says replay
+	keep_remote       // a remote REQUEST for the id — sender unattributable, policy says replay
 	drop_excluded     // an excluded node sends it
 	drop_unattributed // defined, no transmitter, policy says withhold
+	drop_remote       // a remote request, policy says withhold
 }
 
 pub fn new_decider(db candb.Database, exclude []string, replay_unattributed bool) Decider {
@@ -99,6 +126,27 @@ pub fn (d Decider) verdict(f transport.CanFrame) Verdict {
 	k := key(f.id, f.extended)
 	if k !in d.defined {
 		return .keep_unknown
+	}
+	// A REMOTE FRAME IS A REQUEST, and the DBC cannot name who made it. `BO_` says who produces
+	// the message; the frame asking for it came from somebody else. So a remote frame's sender is
+	// genuinely unattributable — the same question the branch below answers — and it follows the
+	// same policy rather than being judged by the producer's name.
+	//
+	// Asked the producer's question instead, a request for a message the EXCLUDED node produces
+	// was withheld on that node's account, silently, into the `withheld_excluded` figure a user
+	// reads as "the ECU under test". The stimulus never reached the SUT and its answer never
+	// reached the run (#179).
+	//
+	// COUNTED APART from the no-transmitter frames, though, and not folded into them: those ids
+	// have no transmitter and these ids do. Reporting a remote request among them would put ids
+	// into `unattributed_ids` that the DBC attributes perfectly well, which is a different lie
+	// in place of the one this fixes.
+	if f.rtr {
+		return if d.replay_unattributed {
+			Verdict.keep_remote
+		} else {
+			Verdict.drop_remote
+		}
 	}
 	senders := d.senders_of[k] or { []string{} }
 	if senders.len == 0 {
@@ -136,7 +184,7 @@ pub fn without_senders(entries []canlog.LogEntry, db candb.Database, exclude []s
 	mut kept := []canlog.LogEntry{cap: entries.len}
 	mut acc := Tally{}
 	for e in entries {
-		if acc.add(d.verdict(e.frame), e.frame.id) {
+		if acc.add(d.verdict(e.frame), e.frame) {
 			kept << e
 		}
 	}
@@ -149,14 +197,23 @@ pub struct Tally {
 mut:
 	withheld_excluded int
 	withheld_unattr   int
+	withheld_remote   int
 	unattr_n          int
 	unknown_n         int
-	unattr            map[u32]bool
-	unknown           map[u32]bool
+	remote_n          int
+	// KEYED BY IDENTITY, not by number — the same `key(id, ext)` the decision itself uses.
+	unattr  map[u64]bool
+	unknown map[u64]bool
+	remote  map[u64]bool
 }
 
 // add records one verdict and reports whether the frame survives.
-pub fn (mut t Tally) add(v Verdict, id u32) bool {
+//
+// TAKES THE FRAME, not just its number: an id means nothing without the width it was declared at,
+// and the tallies below have to keep an 11-bit 0x100 apart from a 29-bit one exactly as `verdict`
+// already does.
+pub fn (mut t Tally) add(v Verdict, f transport.CanFrame) bool {
+	id := key(f.id, f.extended)
 	match v {
 		.keep {
 			return true
@@ -177,6 +234,17 @@ pub fn (mut t Tally) add(v Verdict, id u32) bool {
 			t.withheld_unattr++
 			return false
 		}
+		.keep_remote {
+			t.remote[id] = true
+			t.remote_n++
+			return true
+		}
+		.drop_remote {
+			t.remote[id] = true
+			t.remote_n++
+			t.withheld_remote++
+			return false
+		}
 		.drop_excluded {
 			t.withheld_excluded++
 			return false
@@ -185,19 +253,33 @@ pub fn (mut t Tally) add(v Verdict, id u32) bool {
 }
 
 pub fn (t Tally) done(kept int) Subtraction {
-	mut u_ids := t.unattr.keys()
-	u_ids.sort()
-	mut k_ids := t.unknown.keys()
-	k_ids.sort()
+	u_ids := labels_of(t.unattr)
+	k_ids := labels_of(t.unknown)
+	r_ids := labels_of(t.remote)
 	return Subtraction{
 		kept:                  kept
 		withheld_excluded:     t.withheld_excluded
 		withheld_unattributed: t.withheld_unattr
+		withheld_remote:       t.withheld_remote
 		unattributed:          t.unattr_n
 		unknown:               t.unknown_n
+		remote:                t.remote_n
 		unattributed_ids:      u_ids
 		unknown_ids:           k_ids
+		remote_ids:            r_ids
 	}
+}
+
+// labels_of turns a set of message identities into sorted, width-bearing labels. Sorted by the
+// KEY rather than by the text, so 0x090 comes before 0x100 instead of after it.
+fn labels_of(set map[u64]bool) []string {
+	mut ks := set.keys()
+	ks.sort()
+	mut out := []string{cap: ks.len}
+	for k in ks {
+		out << id_label(u32(k >> 1), k & 1 == 1)
+	}
+	return out
 }
 
 // check_nodes reports the names in `exclude` that the database does not declare. A misspelled
@@ -269,6 +351,7 @@ pub:
 	nodes        map[string]int
 	unattributed int // defined by the database, but it names no transmitter
 	unknown      int // ids the database does not define at all
+	remote       int // remote REQUESTS — asking for an id, so no node here transmitted them
 	total        int
 }
 
@@ -278,10 +361,21 @@ pub fn census(entries []canlog.LogEntry, db candb.Database) NodeCensus {
 	mut nodes := map[string]int{}
 	mut unattributed := 0
 	mut unknown := 0
+	mut remote := 0
 	for e in entries {
 		k := key(e.frame.id, e.frame.extended)
 		if k !in d.defined {
 			unknown++
+			continue
+		}
+		// COUNTED APART FROM ITS PRODUCER, for the reason `verdict` gives: a remote frame asks
+		// for the id, so the node the DBC names as its transmitter is precisely the node that did
+		// NOT send this frame. Added to that node's tally it inflated the share attributed to
+		// whoever produces the message -- and this census is the number a user reads while
+		// DECIDING what to exclude, so the misattribution arrived before the subtraction did
+		// (#179).
+		if e.frame.rtr {
+			remote++
 			continue
 		}
 		senders := d.senders_of[k] or { []string{} }
@@ -297,6 +391,7 @@ pub fn census(entries []canlog.LogEntry, db candb.Database) NodeCensus {
 		nodes:        nodes.clone()
 		unattributed: unattributed
 		unknown:      unknown
+		remote:       remote
 		total:        entries.len
 	}
 }
