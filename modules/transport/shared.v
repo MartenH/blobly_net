@@ -320,7 +320,7 @@ fn shared_open_events(key string, spec string, make fn (string) !SharedDriver) !
 		}
 		if mut h := handle {
 			if start == none {
-				h.entry.admit(h.id) or {
+				h.entry.admit(mut h) or {
 					// The generation is failed and removed; this handle's close releases its
 					// reference and the loop opens a fresh one through the factory.
 					h.close()
@@ -569,14 +569,30 @@ fn (mut e SharedEntry) yield_to_joiners() {
 	}
 }
 
-fn (mut e SharedEntry) admit(id u64) ! {
+//
+// TWO JOINERS AT ONCE are serialised by drain_mu, and the handle's cursor is taken HERE, at the
+// end of its admission, not at insertion. Taken at insertion, a second joiner's cursor stood
+// while the first joiner's boundary drain discarded frames that arrived after it — frames the
+// second was owed (codex round 7 on #224). Under drain_mu nothing is committed (the reader is
+// parked, or holds this lock to commit), so the tail now IS this handle's boundary, and what is
+// in the driver's queue after the drain is published behind it.
+//
+// AND A FAILED GENERATION IS NOT ADMITTED TO. The failure below is taken under drain_mu and the
+// reader's exit awaited under it, so a second joiner queued on the lock finds the state failed
+// and returns to shared_open's loop for a fresh generation — instead of draining a closed
+// driver and waiting on a `done` the first joiner already consumed (codex round 7 on #224).
+fn (mut e SharedEntry) admit(mut h SharedHandle) ! {
 	e.take_drain_lock()
 	e.mu.lock()
+	failed := e.state != .running
 	parked := !e.attentive_locked(time.ticks())
 	e.mu.unlock()
+	if failed {
+		e.drain_mu.unlock()
+		return error('${e.key}: generation failed while joining')
+	}
 	if parked && !e.tx_acks {
 		_ := e.drain_boundary(0) or {
-			e.drain_mu.unlock()
 			e.fail_and_close(err.msg())
 			// AND THE FAILED READER IS RETIRED BEFORE THE CALLER REOPENS. It is parked; woken,
 			// it finds the state changed and exits, sending done — which nothing else consumes
@@ -589,11 +605,13 @@ fn (mut e SharedEntry) admit(id u64) ! {
 				else {}
 			}
 			_ := <-e.done
+			e.drain_mu.unlock()
 			return err
 		}
 	}
 	e.mu.lock()
-	e.unread[id] = time.ticks()
+	h.cursor = e.next_seq
+	e.unread[h.id] = time.ticks()
 	e.mu.unlock()
 	e.drain_mu.unlock()
 	select {
@@ -887,11 +905,20 @@ fn (mut h SharedHandle) recv(timeout_ms int) !CanFrame {
 		// second). A fatal read error found here is left for the reader's next poll, which is
 		// the path that knows how to take a generation down.
 		joining := !h.subscribed
+		mut holding := joining
 		if joining {
 			e.take_drain_lock()
 			e.mu.lock()
-			unread := !e.attentive_locked(time.ticks())
+			failed_now := e.state != .running
+			mut unread := !e.attentive_locked(time.ticks())
 			e.mu.unlock()
+			if failed_now {
+				// Failed while this handle waited for the lock: the terminal error is read below
+				// like any other, once the lock is dropped.
+				e.drain_mu.unlock()
+				holding = false
+				unread = false
+			}
 			if unread {
 				// AN EXPIRED TAP'S HISTORY BEGINS HERE — on a wire NOBODY was reading, which is what
 				// `unread` means: the wire as a whole, not this handle. Where another subscriber kept
@@ -920,13 +947,13 @@ fn (mut h SharedHandle) recv(timeout_ms int) !CanFrame {
 						// The adapter is gone, and this receive is the one that found out: the
 						// generation fails here, as it would under the reader, and the error is
 						// this caller's answer (codex round 3 on #224).
-						e.drain_mu.unlock()
 						e.fail_and_close(err.msg())
 						select {
 							e.kick <- true {}
 							else {}
 						}
 						_ := <-e.done
+						e.drain_mu.unlock()
 						h.mu.unlock()
 						return err
 					}
@@ -953,7 +980,7 @@ fn (mut h SharedHandle) recv(timeout_ms int) !CanFrame {
 				else {}
 			}
 		}
-		if joining {
+		if holding {
 			e.drain_mu.unlock()
 		}
 		oldest := if e.next_seq > u64(shared_ring_capacity) {
