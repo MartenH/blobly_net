@@ -419,20 +419,19 @@ fn (mut b CansubBus) reconcile_listen_only() {
 fn (mut b CansubBus) poll_health() {
 	// SHORT, because this thread is joined by close(): see cansub_get_within.
 	body := cansub_get_within(b.host, '/api/can/${b.spec.channel}', cansub_health_timeout) or {
-		// A VERDICT WE CAN NO LONGER OBTAIN MUST STOP BEING REPORTED. Returning quietly left the
-		// LAST sample standing — commonly `.ok` — and `recv` reads socket timeouts as an idle bus,
-		// so a device whose REST interface had died went on reporting a healthy controller
-		// indefinitely (codex round 7 on #204). One miss is a timeout; several in a row is not
-		// knowing, and `.unknown` is what this ladder has for that.
-		lock b.stop {
-			b.stop.health_misses++
-			if b.stop.health_misses >= cansub_health_misses {
-				b.stop.health = .unknown
-			}
-		}
+		b.health_miss()
 		return
 	}
-	state := extract_json_string(body, 'state') or { return }
+	// AN ANSWER WE CANNOT READ IS NOT AN ANSWER. A 200 whose body this parser does not understand
+	// — a renamed field, a firmware that dropped it — used to return quietly, leaving the LAST
+	// sample standing. That is the same stale-verdict failure as an unreachable device, arriving
+	// down the one path that had not been told about it, and it is worse: it could hold `.ok` over
+	// a controller that had gone BUS-OFF (codex round 13 on #204). Both roads lead to the same
+	// place now.
+	state := extract_json_string(body, 'state') or {
+		b.health_miss()
+		return
+	}
 	h := match state {
 		'error_active' { BusHealth.ok }
 		'error_warning' { BusHealth.warning }
@@ -448,12 +447,46 @@ fn (mut b CansubBus) poll_health() {
 	}
 }
 
+// health_miss records a poll that produced no verdict, whatever the reason — unreachable, or an
+// answer this code could not read.
+//
+// A VERDICT WE CAN NO LONGER OBTAIN MUST STOP BEING REPORTED. Returning quietly left the LAST
+// sample standing — commonly `.ok` — and `recv` reads socket timeouts as an idle bus, so a device
+// that had stopped answering went on reporting a healthy controller indefinitely (codex rounds 7
+// and 13 on #204). One miss is a hiccup; several in a row is not knowing, and `.unknown` is what
+// this ladder has for that.
+fn (mut b CansubBus) health_miss() {
+	lock b.stop {
+		b.stop.health_misses++
+		if b.stop.health_misses >= cansub_health_misses {
+			b.stop.health = .unknown
+		}
+	}
+}
+
 // extract_json_string pulls one string field out of a flat JSON object. The device's replies are
 // small and flat, and a full parser here would be a dependency for four fields.
 fn extract_json_string(s string, key string) ?string {
-	needle := '"${key}":"'
-	i := s.index(needle) or { return none }
-	rest := s[i + needle.len..]
+	// WHITESPACE IS LEGAL JSON. Matching `"key":"` exactly meant a device that pretty-printed its
+	// reply — `"state": "bus_off"`, one space — parsed as nothing at all, and the caller treated
+	// that as an answer (codex round 13 on #204). The device does not format that way today; a
+	// firmware update is not something to find out about through a health indicator stuck on ok.
+	i := s.index('"${key}"') or { return none }
+	mut j := i + key.len + 2
+	for j < s.len && s[j] in [` `, `\t`, `\n`, `\r`] {
+		j++
+	}
+	if j >= s.len || s[j] != `:` {
+		return none
+	}
+	j++
+	for j < s.len && s[j] in [` `, `\t`, `\n`, `\r`] {
+		j++
+	}
+	if j >= s.len || s[j] != `"` {
+		return none
+	}
+	rest := s[j + 1..]
 	end := rest.index('"') or { return none }
 	return rest[..end]
 }

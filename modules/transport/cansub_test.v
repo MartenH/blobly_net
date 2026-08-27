@@ -287,3 +287,43 @@ fn test_the_first_slice_of_a_blocking_recv_blocks() {
 	}
 	assert slice == cansub_poll_ms
 }
+
+// ---- reading the device's health reply (#204 round 13) -------------------
+
+// WHITESPACE IS LEGAL JSON, and matching `"key":"` exactly meant a device that pretty-printed its
+// reply parsed as nothing at all — after which the caller treated "no answer" as an answer and
+// kept the previous verdict. The device does not format that way today; a firmware update is not
+// something to find out about through a health indicator stuck on ok.
+fn test_a_json_field_is_found_however_it_is_spaced() {
+	for body in ['{"state":"bus_off"}', '{"state": "bus_off"}', '{"state" : "bus_off"}',
+		'{ "state":\t"bus_off" }', '{\n  "state": "bus_off"\n}'] {
+		got := extract_json_string(body, 'state') or {
+			assert false, 'did not parse: ${body}'
+			return
+		}
+		assert got == 'bus_off', '${body} -> ${got}'
+	}
+}
+
+fn test_the_right_field_is_found_among_others() {
+	body := '{"name": "CAN1", "state": "error_passive", "bitrate": 500000}'
+	assert extract_json_string(body, 'state')? == 'error_passive'
+	assert extract_json_string(body, 'name')? == 'CAN1'
+}
+
+// A field that is absent, or whose value is not a string, is NOT an answer — the caller counts
+// that as a missed poll rather than keeping a stale verdict.
+fn test_a_missing_or_non_string_field_is_no_answer() {
+	assert extract_json_string('{"other":"x"}', 'state') == none
+	assert extract_json_string('{"state":500000}', 'state') == none, 'a number is not the state'
+	assert extract_json_string('{"state"}', 'state') == none
+	assert extract_json_string('', 'state') == none
+	assert extract_json_string('{"state":', 'state') == none, 'a truncated body must not parse'
+}
+
+// And a key that merely CONTAINS the name is not the key.
+fn test_a_similar_key_is_not_the_key() {
+	// `"substate"` ends with `state"`, so a naive search for the name would land inside it.
+	body := '{"substate":"wrong","state":"bus_off"}'
+	assert extract_json_string(body, 'state')? == 'bus_off'
+}
