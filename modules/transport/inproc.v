@@ -85,7 +85,7 @@ pub fn (mut b InprocBus) send(frame CanFrame) ! {
 	// 2 on #204). LENGTHS are deliberately not refused: padding an FD payload to a length a DLC can
 	// express is what a controller genuinely does, and this bus is in the tier that pads. See
 	// frame_rules.v and clamps_to_classic.
-	if why := frame_impossible_error(frame) {
+	if why := frame_send_refusal(frame) {
 		return error('inproc: ${why}')
 	}
 	// Padded like every other backend: an in-process bus that carried a 9-byte FD payload

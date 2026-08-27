@@ -28,19 +28,18 @@ fn test_inproc_no_self_loopback() {
 	}
 }
 
-fn test_inproc_extended_and_rtr() {
+fn test_inproc_extended() {
 	mut a := open_inproc('T3') or { panic(err) }
 	mut b := open_inproc('T3') or { panic(err) }
 	defer { a.close() }
 	defer { b.close() }
-	a.send(CanFrame{ id: 0x18FF0011, extended: true, rtr: true, data: [] }) or { panic(err) }
+	a.send(CanFrame{ id: 0x18FF0011, extended: true, data: [] }) or { panic(err) }
 	got := b.recv(500) or {
 		assert false, '${err}'
 		return
 	}
 	assert got.id == 0x18FF0011
 	assert got.extended
-	assert got.rtr
 }
 
 fn test_inproc_names_isolated() {

@@ -163,16 +163,18 @@ pub fn cansub_encode_frame(f CanFrame) ![]u8 {
 	if why := frame_shape_error(f) {
 		return error('CANsub: ${why}')
 	}
-	dlen := if f.rtr && !f.fd { 0 } else { f.data.len }
-	dlc := cansub_len_dlc(if f.rtr { f.data.len } else { dlen }, f.fd)!
+	// No remote-frame branch: frame_rules.v refuses one before this is reached, so everything
+	// encoded here carries its payload. The DECODER still reads them — the device can report a
+	// remote frame that somebody else put on the bus, and a trace that showed it as data would be
+	// lying about the wire.
+	dlen := f.data.len
+	dlc := cansub_len_dlc(dlen, f.fd)!
 	mut b6 := dlc & 0x0F
 	if f.fd {
 		b6 |= 0x80
 		if f.brs {
 			b6 |= 0x40
 		}
-	} else if f.rtr {
-		b6 |= 0x40
 	}
 	if f.esi {
 		b6 |= 0x20
@@ -193,11 +195,9 @@ pub fn cansub_encode_frame(f CanFrame) ![]u8 {
 		out << u8(id >> 8) // IDE clear
 		out << u8(id)
 	}
-	if !f.rtr {
-		out << f.data
-		for _ in f.data.len .. cansub_dlc_len(dlc, f.fd) {
-			out << 0 // pad up to the length the DLC promises
-		}
+	out << f.data
+	for _ in f.data.len .. cansub_dlc_len(dlc, f.fd) {
+		out << 0 // pad up to the length the DLC promises
 	}
 	return out
 }

@@ -123,7 +123,7 @@ pub fn build_multi(entries []canlog.LogEntry, specs []BusSpec) MultiPlan {
 	mut kept_of := []int{len: specs.len}
 	for i in 0 .. specs.len {
 		r := plans[i].report
-		kept_of[i] = sources[i] - r.withheld_excluded - r.withheld_unattributed - r.withheld_remote
+		kept_of[i] = sources[i] - r.withheld_excluded - r.withheld_unattributed - r.remote
 	}
 	mut fixed := []BusPlan{}
 	for i, pl in plans {

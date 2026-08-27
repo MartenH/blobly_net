@@ -515,10 +515,20 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	mut total := 0
 	for b in plan.buses {
 		total += b.report.kept
+		// EVERY BUCKET THAT REMOVED A FRAME, not just the excluded node's. Reporting only
+		// `withheld_excluded`, a remote-only recording announced "nothing to replay, 0 withheld"
+		// — the one line an operator gets, saying nothing about where the traffic went — and a
+		// mixed recording understated it. The CLI already named them; this did not (codex on
+		// #216).
+		mut gone := b.report.withheld_excluded + b.report.withheld_unattributed + b.report.remote
+		mut why := '${gone} withheld'
+		if b.report.remote > 0 {
+			why += ' (${b.report.remote} remote request(s), never replayed)'
+		}
 		if b.report.kept == 0 {
-			a.notify('replay ${b.dst}: nothing to replay, ${b.report.withheld_excluded} withheld')
+			a.notify('replay ${b.dst}: nothing to replay, ${why}')
 		} else {
-			a.notify('replay ${b.dst}: ${b.report.kept} frames, ${b.report.withheld_excluded} withheld')
+			a.notify('replay ${b.dst}: ${b.report.kept} frames, ${why}')
 		}
 	}
 	if total == 0 {

@@ -349,124 +349,6 @@ fn test_census_counts_by_attribution() {
 	assert cx.nodes.len == 0
 }
 
-// ---- remote frames (#179) ------------------------------------------------
-
-// THE FRAME THAT WAS CERTAINLY NOT THE SUT'S was the one being subtracted on its account. `BO_`
-// names who PRODUCES a message; a remote frame with that id is a REQUEST for it, from somebody
-// else — on a rest bus, very often the tester asking the SUT for exactly the message we are
-// excluding it from sending. Keyed on the id alone, the request was withheld, the SUT never heard
-// the stimulus, and its reply was missing from the run.
-fn test_a_remote_request_for_an_excluded_nodes_message_is_still_replayed() {
-	d := new_decider(sample_db(), ['SUT_ECU'], true)
-	// 0x100 is VcmStatus, which SUT_ECU produces.
-	sent := transport.CanFrame{
-		id: 0x100
-	}
-	asked := transport.CanFrame{
-		id:  0x100
-		rtr: true
-	}
-	assert d.verdict(sent) == .drop_excluded, 'the SUT sending its own message is what we subtract'
-	assert d.verdict(asked) == .keep_remote, 'a request FOR that message is stimulus, not the SUT talking'
-}
-
-// And it must not be counted against the SUT either. `withheld_excluded` is the figure a user is
-// most likely to sanity-check and least likely to doubt, so a request hidden inside it is the
-// worst place for it to be.
-fn test_a_remote_request_is_reported_apart_from_the_excluded_count() {
-	d := new_decider(sample_db(), ['SUT_ECU'], true)
-	mut t := Tally{}
-	f := transport.CanFrame{
-		id:  0x100
-		rtr: true
-	}
-	assert t.add(d.verdict(f), f)
-	rep := t.done(1)
-	assert rep.withheld_excluded == 0, 'nothing was withheld on the excluded node account'
-	assert rep.remote == 1
-	assert rep.remote_ids == ['0x100']
-}
-
-// NOR folded into the no-transmitter bucket, which was the tempting shortcut: those ids have no
-// transmitter and this id has one. Reporting it there would put ids into `unattributed_ids` that
-// the DBC attributes perfectly well — a different lie in place of the one this fixes.
-fn test_a_remote_request_is_not_reported_as_unattributed() {
-	d := new_decider(sample_db(), ['SUT_ECU'], true)
-	mut t := Tally{}
-	t.add(d.verdict(transport.CanFrame{ id: 0x100, rtr: true }), transport.CanFrame{
-		id:  0x100
-		rtr: true
-	})
-	rep := t.done(1)
-	assert rep.unattributed == 0
-	assert rep.unattributed_ids.len == 0
-	assert rep.withheld_unattributed == 0
-}
-
-// It follows the unattributed POLICY, because it is the same question — the DBC cannot say who
-// asked — even though it is counted separately.
-fn test_a_remote_request_follows_the_unattributed_policy() {
-	keep := new_decider(sample_db(), ['SUT_ECU'], true)
-	drop := new_decider(sample_db(), ['SUT_ECU'], false)
-	f := transport.CanFrame{
-		id:  0x100
-		rtr: true
-	}
-	assert keep.verdict(f) == .keep_remote
-	assert drop.verdict(f) == .drop_remote
-
-	mut t := Tally{}
-	assert !t.add(drop.verdict(f), f), 'withheld, so it does not reach the wire'
-	rep := t.done(0)
-	assert rep.withheld_remote == 1
-	assert rep.withheld_excluded == 0, 'and still not on the excluded node account'
-}
-
-// A remote request for an id the database does not define stays UNKNOWN: the id is what is
-// unknown, and that answer does not change because the frame was a request.
-fn test_a_remote_request_on_an_unknown_id_is_still_unknown() {
-	d := new_decider(sample_db(), ['SUT_ECU'], true)
-	v := d.verdict(transport.CanFrame{ id: 0x7AB, rtr: true })
-	assert v == .keep_unknown, 'got ${v}'
-}
-
-// A remote request for a message the excluded node does NOT produce behaves the same way: the
-// rule is about who asked, and the DBC cannot say that for any remote frame.
-fn test_a_remote_request_for_someone_elses_message_is_also_a_request() {
-	d := new_decider(sample_db(), ['SUT_ECU'], true)
-	// 0x200 is BrakeStatus, produced by EBS, which is not excluded.
-	assert d.verdict(transport.CanFrame{ id: 0x200, rtr: true }) == .keep_remote
-	assert d.verdict(transport.CanFrame{ id: 0x200 }) == .keep, 'and EBS sending it is ordinary traffic'
-}
-
-// THE CENSUS HAD THE SAME MISATTRIBUTION, and it arrives EARLIER: it is the per-node breakdown a
-// user reads while deciding what to exclude. A request counted under the node that produces the
-// message inflated that node's share before the subtraction was even configured.
-fn test_the_census_does_not_credit_a_request_to_the_node_that_produces_it() {
-	entries := [
-		canlog.LogEntry{
-			t_s:   0.0
-			iface: 'can0'
-			frame: transport.CanFrame{
-				id: 0x100
-			}
-		},
-		canlog.LogEntry{
-			t_s:   0.1
-			iface: 'can0'
-			frame: transport.CanFrame{
-				id:  0x100
-				rtr: true
-			}
-		},
-	]
-	c := census(entries, sample_db())
-	assert c.nodes['SUT_ECU'] == 1, 'it sent one frame and was asked for one — only the first is its traffic'
-	assert c.remote == 1
-	assert c.unattributed == 0, 'and the request is not a message without a transmitter'
-	assert c.total == 2
-}
-
 // AN ID IS NOT AN IDENTITY WITHOUT ITS WIDTH. An 11-bit 0x100 and a 29-bit 0x100 are two different
 // messages with two different senders — `key()` exists because conflating them is silent
 // corruption — and the tallies were keyed on the number alone, so two requests on two messages
@@ -474,32 +356,26 @@ fn test_the_census_does_not_credit_a_request_to_the_node_that_produces_it() {
 // on #210). The same defect was in the unattributed and unknown tallies; all three are keyed by
 // identity now.
 fn test_two_widths_of_one_number_are_two_ids_in_the_report() {
-	mut db := sample_db()
-	// The same number at the other width, defined and produced by the excluded node.
-	db.messages << candb.Message{
-		name:   'VcmStatusExt'
-		id:     0x100
-		ext:    true
-		sender: 'SUT_ECU'
-	}
-	d := new_decider(db, ['SUT_ECU'], true)
+	// An id the database does not define, at BOTH widths. They are two different messages that
+	// may have two different senders — which is why `key()` exists — so a report that folded them
+	// into one entry would claim one id where two were involved, and print something that cannot
+	// say which.
+	d := new_decider(sample_db(), ['SUT_ECU'], true)
 	mut t := Tally{}
 	std := transport.CanFrame{
-		id:  0x100
-		rtr: true
+		id: 0x999
 	}
 	ext := transport.CanFrame{
-		id:       0x100
+		id:       0x999
 		extended: true
-		rtr:      true
 	}
 	t.add(d.verdict(std), std)
 	t.add(d.verdict(ext), ext)
 	rep := t.done(2)
 
-	assert rep.remote == 2, 'two frames'
-	assert rep.remote_ids.len == 2, 'and two distinct messages, not one counted twice'
-	assert rep.remote_ids == ['0x100', '0x00000100'], 'got ${rep.remote_ids}'
+	assert rep.unknown == 2, 'two frames'
+	assert rep.unknown_ids.len == 2, 'and two distinct messages, not one counted twice'
+	assert rep.unknown_ids == ['0x999', '0x00000999'], 'got ${rep.unknown_ids}'
 }
 
 // The width shows in the label the way a trace prints it: three hex digits standard, eight
@@ -523,4 +399,79 @@ fn test_ids_are_sorted_by_identity_not_by_text() {
 	}
 	rep := t.done(3)
 	assert rep.unknown_ids == ['0x090', '0x100', '0x7FF'], 'got ${rep.unknown_ids}'
+}
+
+// A REMOTE FRAME IS REFUSED BEFORE THE DATABASE IS CONSULTED. Whether the DBC defines the id has
+// no bearing on it — the frame cannot be transmitted either way — so a verdict of `keep_` for one
+// hands the replay a frame `send()` will refuse. Placed after the `defined` lookup it caught only
+// the ids a database happened to name, and with NO DBC attached `defined` is empty, so every
+// remote frame in a recording was kept and failed at the wire: a run reporting "not replayed" and
+// then counting failures for the same frames (self-review of #215).
+fn test_a_remote_frame_on_an_unknown_id_is_still_not_replayed() {
+	d := new_decider(sample_db(), ['SUT_ECU'], true)
+	v := d.verdict(transport.CanFrame{ id: 0x7AB, rtr: true })
+	assert v == .drop_remote, 'got ${v}'
+}
+
+// The case that matters most, because it is the default one: a replay with no database at all.
+fn test_with_no_database_every_remote_frame_is_still_refused() {
+	d := new_decider(candb.Database{}, [], true)
+	for f in [transport.CanFrame{ id: 0x100, rtr: true }, transport.CanFrame{
+		id:       0x1FFFFFFF
+		extended: true
+		rtr:      true
+	}] {
+		v := d.verdict(f)
+		assert v == .drop_remote, 'id 0x${f.id:X}: got ${v}'
+	}
+	// And an ordinary frame is still kept, so this did not simply refuse everything.
+	assert d.verdict(transport.CanFrame{ id: 0x100, data: [u8(1)] }) == .keep_unknown
+}
+
+// THE PREVIEW MUST AGREE WITH WHAT START DOES. `census` is what the editor shows while somebody
+// decides what to exclude, and it classified in a different ORDER from `verdict`: asking `defined`
+// first put a remote frame on an undefined id into `unknown`, which the editor labels "replays
+// regardless", while the replay drops every remote frame before it looks at the database. With no
+// DBC attached -- where `defined` is empty -- the preview said the opposite of the truth for every
+// remote frame in the recording (codex on #216).
+fn test_the_census_agrees_with_the_verdict_about_remote_frames() {
+	d := new_decider(sample_db(), [], true)
+	for f in [transport.CanFrame{ id: 0x100, rtr: true }, transport.CanFrame{ id: 0x7AB, rtr: true }] {
+		entries := [canlog.LogEntry{
+			t_s:   0.0
+			iface: 'can0'
+			frame: f
+		}]
+		c := census(entries, sample_db())
+		assert c.remote == 1, 'id 0x${f.id:X}: the preview must call it a remote request'
+		assert c.unknown == 0, 'id 0x${f.id:X}: and not something that replays regardless'
+		assert d.verdict(f) == .drop_remote, 'and the replay agrees'
+	}
+}
+
+// With no database at all, which is the default and the case that was wrong for every frame
+// rather than some of them.
+fn test_the_census_classifies_remote_frames_with_no_database() {
+	entries := [
+		canlog.LogEntry{
+			t_s:   0.0
+			iface: 'can0'
+			frame: transport.CanFrame{
+				id:  0x100
+				rtr: true
+			}
+		},
+		canlog.LogEntry{
+			t_s:   0.1
+			iface: 'can0'
+			frame: transport.CanFrame{
+				id:   0x100
+				data: [u8(1)]
+			}
+		},
+	]
+	c := census(entries, candb.Database{})
+	assert c.remote == 1, 'the request'
+	assert c.unknown == 1, 'and the ordinary frame, which really is on an unknown id'
+	assert c.total == 2
 }

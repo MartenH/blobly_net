@@ -34,7 +34,6 @@ mut:
 	arb     int = 500000
 	data    int // 0 = classic only
 	ladder  bool
-	rtr     bool
 	timeout int = 300
 }
 
@@ -45,7 +44,6 @@ fn usage() {
 	println('  --arb HZ               arbitration rate (default 500000)')
 	println('  --data HZ              CAN-FD data rate; omit for classic only')
 	println('  --ladder               classic, then FD at 500k/1M/2M/4M/8M — the full bench report')
-	println('  --rtr                  remote frames: sent as remote, read back as remote')
 	println('  --timeout MS           per-frame receive timeout (default 300)')
 }
 
@@ -59,9 +57,6 @@ fn main() {
 			}
 			'--ladder' {
 				o.ladder = true
-			}
-			'--rtr' {
-				o.rtr = true
 			}
 			'--from' {
 				i++
@@ -114,24 +109,12 @@ fn main() {
 		exit(2)
 	}
 	mut fails := 0
-	// The modes COMPOSE rather than shadowing each other: `--rtr --ladder` was accepted and ran
-	// only the remote-frame case, which is a bench tool quietly doing less than it was asked.
-	if o.rtr {
-		fails += run_rtr_case(o)
-		if o.data != 0 {
-			fails += run_fd_rtr_refusal(o)
-		}
-	}
 	if o.ladder {
 		fails += run_case(o, 0)
 		for rate in [500000, 1000000, 2000000, 4000000, 8000000] {
 			fails += run_case(o, rate)
 		}
-	} else if !o.rtr || o.data != 0 {
-		// `--data N` is an explicit request for an FD loopback at N. Gating this on `!o.rtr`
-		// alone meant `--rtr --data 4000000` printed a clean report having never put an FD frame
-		// on the wire at that rate — a bench tool doing less than it was asked and saying so in
-		// the language of success (self-review).
+	} else {
 		fails += run_case(o, o.data)
 	}
 	if fails > 0 {
@@ -234,153 +217,6 @@ fn run_case(o Opts, data_rate int) int {
 	}
 	println('  -> ${lens.len - bad}/${lens.len} passed')
 	return if bad > 0 { 1 } else { 0 }
-}
-
-// run_rtr_case proves a REMOTE frame survives the round trip, in BOTH directions of the flag.
-//
-// Two assertions, because either one alone passes on a broken backend: a reader that never sets
-// rtr fails the first, and one that sets it always fails the second. The send half of this
-// landed with #177 and the read half did not, so an incoming remote frame arrived labelled as
-// data -- and wiretap keys an echo on rtr, so our own request came back filed as the ECU's
-// answer to it. None of this is reachable from CI: the backend is a _windows.v file over a
-// vendor DLL, so the bench is where it is checked.
-fn run_rtr_case(o Opts) int {
-	println('
-== remote frames, arbitration ${o.arb} ==')
-	mut tx := transport.open('kvaser:${o.from}@${o.arb}') or {
-		eprintln('  open kvaser:${o.from}@${o.arb}: ${err}')
-		return 1
-	}
-	defer {
-		tx.close()
-	}
-	mut rx := transport.open('kvaser:${o.to}@${o.arb}') or {
-		eprintln('  open kvaser:${o.to}@${o.arb}: ${err}')
-		return 1
-	}
-	defer {
-		rx.close()
-	}
-	mut bad := 0
-
-	mut sent := true
-	tx.send(transport.CanFrame{ id: 0x321, rtr: true }) or {
-		println('  remote:  FAIL — send failed: ${err}')
-		sent = false
-		bad++
-	}
-	if sent {
-		if got := recv_matching(mut rx, 0x321, o.timeout) {
-			if got.rtr {
-				println('  remote:  ok   (rtr=true, dlc=${got.data.len})')
-			} else {
-				println('  remote:  FAIL — arrived as a DATA frame (rtr=false)')
-				bad++
-			}
-		} else {
-			println('  remote:  FAIL — nothing arrived within ${o.timeout} ms')
-			bad++
-		}
-	}
-
-	// A REQUESTED LENGTH, not just the flag. A remote frame asks for N bytes and carries none,
-	// and canlib reports the DLC while leaving the buffer untouched — so an unzeroed reader
-	// hands up N bytes of whatever was on the stack. wiretap compares payloads, so that echo
-	// still fails to match our record of sending it and is filed as the ECU's answer: the very
-	// defect this change closes, alive for every DLC above zero. The dlc=0 case above cannot
-	// see it, which is exactly why this one is here (self-review).
-	want := []u8{len: 8}
-	mut rsent := true
-	tx.send(transport.CanFrame{ id: 0x324, rtr: true, data: want }) or {
-		println('  remote8: FAIL — send failed: ${err}')
-		rsent = false
-		bad++
-	}
-	if rsent {
-		if got := recv_matching(mut rx, 0x324, o.timeout) {
-			if !got.rtr {
-				println('  remote8: FAIL — arrived as a DATA frame (rtr=false)')
-				bad++
-			} else if got.data.len != 8 {
-				println('  remote8: FAIL — requested 8 bytes, DLC came back ${got.data.len}')
-				bad++
-			} else if got.data != want {
-				println('  remote8: FAIL — a remote frame carried DATA (${got.data.hex()}) — uninitialised buffer')
-				bad++
-			} else {
-				println('  remote8: ok   (rtr=true, dlc=8, zeroed)')
-			}
-		} else {
-			println('  remote8: FAIL — nothing arrived within ${o.timeout} ms')
-			bad++
-		}
-	}
-
-	// The other direction of the same flag: an ordinary data frame must NOT come back marked
-	// remote. A reader that hard-codes rtr=true would pass the check above on its own.
-	payload := [u8(0xDE), 0xAD, 0xBE, 0xEF]
-	mut dsent := true
-	tx.send(transport.CanFrame{ id: 0x322, data: payload }) or {
-		println('  data:    FAIL — send failed: ${err}')
-		dsent = false
-		bad++
-	}
-	if dsent {
-		if got := recv_matching(mut rx, 0x322, o.timeout) {
-			if got.rtr {
-				println('  data:    FAIL — a data frame arrived marked remote')
-				bad++
-			} else if got.data != payload {
-				println('  data:    FAIL — payload differs (${got.data.hex()})')
-				bad++
-			} else {
-				println('  data:    ok   (rtr=false)')
-			}
-		} else {
-			println('  data:    FAIL — nothing arrived within ${o.timeout} ms')
-			bad++
-		}
-	}
-
-	println('  -> ${bad} failure(s)')
-	return if bad > 0 { 1 } else { 0 }
-}
-
-// run_fd_rtr_refusal checks that an FD channel REFUSES a remote frame: CAN-FD has none, the bit
-// RTR used to occupy carries FDF, and a backend that sent one anyway would put a plain data
-// frame on the wire and report success — the silent substitution the whole FD path exists to
-// prevent.
-//
-// ITS OWN FUNCTION, and not a third check inside run_rtr_case, because canlib pins the PROTOCOL
-// of a channel to the first handle a process opens on it (#201): asking for an FD handle while
-// the classic ones above are still open is refused with canERR_NOTFOUND, and the tool then
-// reports a bench failure it created itself. V runs a defer at function exit, so the classic
-// handles are shut before this is called.
-fn run_fd_rtr_refusal(o Opts) int {
-	addr := 'kvaser:${o.from}@${o.arb}/${o.data}'
-	println('
-== remote frames refused on CAN-FD, ${addr} ==')
-	mut fdtx := transport.open(addr) or {
-		eprintln('  fd+rtr:  FAIL — open ${addr}: ${err}')
-		return 1
-	}
-	mut why := ''
-	fdtx.send(transport.CanFrame{ id: 0x323, rtr: true, fd: true }) or { why = err.msg() }
-	fdtx.close()
-	if why == '' {
-		println('  fd+rtr:  FAIL — accepted; CAN-FD has no remote frames')
-		return 1
-	}
-	// THE RIGHT REFUSAL, not merely a refusal. Any send failure produced a message — a full
-	// queue, a bus-off channel, a driver error from the very canWrite this is meant to keep the
-	// frame away from — and all of them read as `ok`, so a regression that let the invalid frame
-	// through to the driver would still have passed here on an unhealthy device (codex round 1).
-	if !why.contains('CAN-FD has no remote frames') {
-		println('  fd+rtr:  FAIL — refused, but not for being a remote FD frame: ${why}')
-		return 1
-	}
-	println('  fd+rtr:  ok   (refused: ${why})')
-	return 0
 }
 
 // recv_matching reads until the wanted id turns up or the budget runs out. Anything else on the

@@ -98,7 +98,7 @@ pub fn (mut b KvaserBus) send(f CanFrame) ! {
 	//
 	// The IMPOSSIBLE rules only. What this backend does about a LENGTH is its own tier's business
 	// and is unchanged — see frame_rules.v.
-	if why := frame_impossible_error(f) {
+	if why := frame_send_refusal(f) {
 		return error('Kvaser: ${why}')
 	}
 	// BRS WITHOUT FD IS NOT A FRAME. Bit-rate switching is a property of an FD frame's data
@@ -106,13 +106,6 @@ pub fn (mut b KvaserBus) send(f CanFrame) ! {
 	// classic and reports success while the trace records a switch that never happened — the
 	// same silent disagreement between record and wire that the FD refusal below exists to
 	// prevent. Vector refuses it for the same reason.
-	// RTR HAS NO PLACE IN CAN-FD. The standard removed it: an FD frame's control field carries
-	// FDF where RTR sat, so a remote FD request does not exist. Left through, the shim built an
-	// ordinary FDF data frame and send() reported success for a message nobody asked for -- the
-	// same silent substitution the refusals below exist to prevent. Vector refuses the pair too.
-	if f.rtr && f.fd {
-		return error('Kvaser: rtr with fd (id 0x${f.id:X}) — CAN-FD has no remote frames; the bit RTR used to occupy carries FDF')
-	}
 	if f.brs && !f.fd {
 		return error('Kvaser: brs without fd (id 0x${f.id:X}) — bit-rate switching belongs to a CAN-FD frame\'s data phase, and a classic frame has none')
 	}
@@ -143,8 +136,10 @@ pub fn (mut b KvaserBus) send(f CanFrame) ! {
 	}
 	n := f.data.len
 	ext := if f.extended { 1 } else { 0 }
-	rtr := if f.rtr { 1 } else { 0 }
-	st := C.ct_kvaser_write(b.handle, f.id, u8(n), f.data.data, ext, rtr)
+	// The shim still takes an `rtr` argument and is always passed 0: this app does not transmit
+	// remote frames (frame_rules.v refuses them before this line). Kept in the C signature because
+	// it mirrors canlib's own flags word, not because anything sets it.
+	st := C.ct_kvaser_write(b.handle, f.id, u8(n), f.data.data, ext, 0)
 	if st < 0 {
 		return error('canWrite failed (canStatus ${st})')
 	}

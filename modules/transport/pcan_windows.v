@@ -102,9 +102,6 @@ pub fn (mut b PcanBus) send(f CanFrame) ! {
 	if f.extended {
 		mt |= pcan_msg_extended
 	}
-	if f.rtr {
-		mt |= pcan_msg_rtr
-	}
 	// REFUSED, not truncated — the same rule this backend already applies to an FD frame, and
 	// for the same reason. A vendor interface is not clamps_to_classic(), so wire_frame() gives
 	// the trace the frame AS ASKED: truncating here records nine bytes against eight on the
