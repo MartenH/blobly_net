@@ -118,6 +118,57 @@ design must be built against:
   subscriber — because that one means the reader itself fell behind, which is a different fault with
   a different cause.
 
+## The echo — the part the first draft got backwards
+
+The first draft said `echoes_own_sends` "becomes near-trivial: with one handle the app knows exactly
+what it sent." That inverts the problem, and it is the one error in this design that would have
+shipped a regression.
+
+**Today the echo exists BECAUSE there are two handles.** The monitor's socket or port sees what the
+transmit tap sent, and that arrival is the only evidence the app has that a frame reached the wire.
+`wiretap` matches it by content to separate `TX` from `RX`, to record in observation order, and to
+surface a second transmitter on one id (the frame that finds no record left to claim). Collapse to
+one handle and, per backend:
+
+| backend | why the echo exists today | one handle, unchanged |
+|---|---|---|
+| SocketCAN | the other socket sees it; `CAN_RAW_RECV_OWN_MSGS` is **not** set | echo gone |
+| `inproc:` | broadcast to the others, *"NOT its own (no self-loopback)"* | echo gone |
+| `udp:` | multicast loopback, then our own echo **dropped** by `src` id | echo gone |
+| Vector | the monitor port sees the tap's frame; the port's own `TX_COMPLETED` is **discarded** (`vector_shim.h`) | echo gone |
+| Kvaser, PCAN | never had one; the trace records at emit time | unchanged |
+| CANsub | the device acknowledges every send, delivered as a frame | unchanged |
+
+Four of seven backends lose the evidence, and every consumer of `origin` in the trace loses with
+them. So the design **requires** the echo to be re-created, and there is a better way to do it than
+the one being lost.
+
+**Every driver can hand back a flagged transmit acknowledgement on the same handle**:
+
+| backend | mechanism |
+|---|---|
+| SocketCAN | `CAN_RAW_RECV_OWN_MSGS` on, and `MSG_CONFIRM` in the `recvmsg` flags marks the frame as ours |
+| Vector | `TX_COMPLETED` — we already receive it and throw it away |
+| Kvaser | `canIOCTL_SET_TXACK`; the ack arrives with `canMSG_TXACK` |
+| PCAN | the echo-frames parameter (`PCAN_ALLOW_ECHO_FRAMES`, PCANBasic 4.4+), flagged `PCAN_MESSAGE_ECHO` |
+| CANsub | already — `CansubRecord.tx`, with a start-of-frame hardware timestamp |
+| `inproc:`, `udp:` | synthesised by the reader from its own send, flagged the same way |
+
+That is not merely a replacement — it is **strictly better than what is being lost**. Today the
+match is a content-key guess: an ECU that sends the same bytes we just sent is indistinguishable
+from our echo, and the ring's "consume oldest first" is the best that can be done about it. A
+driver-flagged ack is not a guess. `CanFrame` grows one field — `tx_ack bool`, a received STATUS
+like `esi`, never set by a sender — and `wiretap` matches on the flag first and the content second.
+
+The reader therefore does one more thing per frame: an ack is fanned out to subscribers like any
+other frame, because a simulated ECU that sent a response still wants to see it confirmed in its
+own stream, exactly as it does today on Vector.
+
+**This also changes what "record at emit" means.** Today PCAN and Kvaser record at emit because
+nothing will ever observe the frame for them; with a flagged ack on every backend, *nothing* needs
+to record at emit — every backend records in observation order, from the ack. One rule instead of
+two, and the ordering the trace shows becomes the ordering the wire saw on every adapter.
+
 ## What this dissolves
 
 Not a side benefit — a large part of the justification:
@@ -125,8 +176,8 @@ Not a side benefit — a large part of the justification:
 - **the Kvaser multi-handle machinery** (~130 lines from #219): the registry, apply-through-every-
   handle, the open/close serialisation. With one handle it is by definition canlib's first opener,
   so it holds initialisation access and the mode call is simply obeyed.
-- **`echoes_own_sends`** becomes near-trivial. Today it is a per-driver fact because the monitor's
-  port is not the port that transmitted (#139). With one handle the app knows exactly what it sent.
+- **`echoes_own_sends` goes away** — but only because the echo is redesigned, not because it becomes
+  trivial. See "The echo" below; without that section this bullet would be a regression.
 - **Vector pin clashes shrink** (`pinned.v`, #165): a disabled row's transmit taps stop holding
   their own ports, so the case where a port nobody mentions pins a channel largely goes away.
 - **`shared_open` stops being a special case** for two backends and becomes the universal path.
@@ -137,12 +188,13 @@ Not a side benefit — a large part of the justification:
   arrival order per wire.
 - **`recv(-1)`.** The blocking contract is used by Lua and `can_smoke`; a subscriber queue must
   honour it without pinning a thread per subscriber.
-- **Self-echo.** `wiretap` matches our own frames to separate `TX` from `RX`. Changing which handle
-  sees a transmitted frame is exactly the class of change that produced #139 — it needs the same
-  bench proof.
-- **Lifetime.** A Lua script may outlive Stop holding its bus (`listen.v`). Subscriber lifetime and
-  reader lifetime are then not the same thing, and the last-subscriber-closes rule has to survive
-  that.
+- **Lifetime, and this is a known-painful shape.** "The last subscriber to close stops the reader"
+  meets two things at once. A Lua script may outlive Stop holding its bus (`listen.v`), so Stop
+  does not release the driver handle — already true on PCAN today via `shared_open`, and fine as
+  long as it is *stated*. And a reader thread parked in a driver call cannot be joined by the close
+  that is stopping it: CANsub learned this the hard way (#214, "close() no longer waits for this
+  thread"), and the reader here inherits exactly that problem on every backend. Tell it to stop,
+  bound its driver wait, then join — in that order, the way `cansub.v` already does.
 - **It is a big change.** Every emitter and consumer. That is the argument for doing it as its own
   PR with its own bench, not as part of a feature.
 
@@ -151,6 +203,10 @@ Not a side benefit — a large part of the justification:
 - `cmd/silentcheck` — all five phases, all four pairings, **unchanged**, with less code behind them.
   If listen-only still holds after the reader collapses to one handle, the dissolution above is
   real rather than hoped for.
+- **An echo test, first**, because the finding above is the regression this design would otherwise
+  ship: on every backend that can acknowledge, a sent frame comes back exactly once, flagged as
+  ours, and `wiretap` claims it by the flag. On `inproc:` in CI, and on the bench for the vendors —
+  this is the #139 class and gets the #139 proof.
 - A new headless test for the actual bug: two subscribers on one wire, both must see every frame.
   This runs on `inproc:` in CI — and the point of the design is that it now predicts PCAN too.
 - A slow-subscriber test: one consumer stops draining; the others keep receiving and the drop count
