@@ -161,10 +161,38 @@ resolves them with `LoadLibraryW`/`GetProcAddress` through a small `*_shim.h`. S
 
 ## Per-vendor notes
 
+Each vendor's API, and then **what it does that you would not predict** — the things that cost a
+bench day and are invisible in the header file.
+
+Two rules keep this section from rotting, because a stale quirk is worse than an undocumented one:
+
+- **Every quirk names what enforces it** — the function, the test, or the bench command. If the
+  claim here and the code disagree, the pointer is how you find out which is wrong.
+- **Measured, not inferred.** Where a claim came from an experiment, the experiment is named. A
+  driver's documentation is not evidence about that driver's behaviour; several of the entries
+  below contradict it.
+
+The code comments stay where they are and say something different: they justify a local decision
+to whoever is editing that line. This is the index.
+
 **PCAN (PEAK)** — `PCANBasic.dll`; about six calls (`CAN_Initialize`, `CAN_Uninitialize`,
 `CAN_Read`, `CAN_Write`, `CAN_GetStatus`, `CAN_GetErrorText`). Frames are
-`TPCANMsg{ID u32; MSGTYPE u8; LEN u8; DATA [8]u8}`, with extended/RTR carried in the
+`TPCANMsg{ID u32; MSGTYPE u8; LEN u8; DATA [8]u8}`, with extended carried in the
 MSGTYPE flags. The free driver has no software virtual channel, so testing needs the adapter.
+
+Quirks, all of them found by trying:
+
+| what it does | why it matters | enforced by |
+|---|---|---|
+| **`CAN_Write` is REFUSED on an FD-initialised channel** (`PCAN_ERROR_ILLOPERATION`, `0x8000000`) | every send on such a channel must go through `CAN_WriteFD`, *classic frames included*, with the FD flag clear. Found when every FD leg of the bench passed and every classic one failed | `pcan_windows.v` `send` |
+| **`TPCANMsgFD.DLC` is a DLC code where `TPCANMsg.LEN` is a byte count** | reading one as the other turns a 12-byte frame into 12 bytes of a 24-byte payload, silently | `fd_dlc_for` / `fd_len_for`, `transport.v` |
+| **The status word is a bit field with the fault ladder ORed in** — on reads *and* writes | `st != 0` treats a degraded-but-working wire as a failure. And the two sides must disagree about one rung: `BUSOFF` is a write failure and not a read failure | `pcan_read_verdict`, `pcan_write_verdict`, `health.v` |
+| **`CAN_InitializeFD` takes a bit-rate STRING of register values**, not a rate constant | the timing is *solved* against an 80 MHz clock rather than looked up, so any rate that divides is available — where canlib offers five | `pcan_fd_bitrate`, `pcan_names.v` |
+| **The classic rates are a fixed BTR table whose sample points differ**: 1 Mbit/s samples at **75%**, 800k at 80%, 125k–500k at **87.5%**, 10k–100k at 85% | one sample-point rule cannot cover both modes. Applying the FD default to a classic row refused what the channel actually does and accepted what it does not | `pcan_classic_sample_point`, pinned for all nine codes in `pcan_names_test.v` |
+| **`PCAN_LISTEN_ONLY` can be set on a channel that is NOT yet initialized, and survives `CAN_Initialize`** | so a listen-only channel is never bus-on in the wrong mode, not even for an instant. **Measured** by setting it before init and reading it back after — `PCAN_ERROR_OK` alone proves nothing, since an accepted-and-discarded value looks identical | `open_pcan` |
+| **`CAN_Uninitialize` RESETS the mode** | the opposite of Kvaser, and the record of what a wire was told must be dropped when it happens or it outlives the state it describes | `PcanBus.close` → `forget_wire_silence` |
+| **One `CAN_Initialize` per channel per process** | the app opens each wire several times per Start, so `pcan:` opens share a refcounted bus | `shared.v` |
+| **`XMTFULL` / `QXMTFULL` mean "no room", not "failed"** | a dense replay meets a full queue constantly by construction; treating it as terminal puts holes in the replay exactly where the recording was busiest | `busy_error` / `is_backpressure`, `vendor_spec.v` |
 
 **Kvaser (CANlib)** — `canlib32.dll` (`canInitializeLibrary`, `canOpenChannel`,
 `canSetBusParams`, `canBusOn`, `canWrite`, `canReadWait`, `canBusOff`, `canClose`).
@@ -174,6 +202,19 @@ channel numbers — on a bench with a 5-channel adapter fitted they are 5 and 6,
 no Kvaser hardware they are 0 and 1 — so `kvasercheck --list` is what tells you which. (`kvaser:virtual0`
 was once documented here and never worked as advertised: it parsed as channel 0, which is physical
 wherever an adapter is present.)
+
+Quirks. The first one is the worst thing in this file, and everything under it follows from it:
+
+| what it does | why it matters | enforced by |
+|---|---|---|
+| **`canSetBusOutputControl` is obeyed ONLY through the handle holding the channel's initialisation access** — canlib's first opener. Asked through any other handle it **returns success and does nothing** | there is no way to tell an ignored call from an applied one, so *no return value in this path can be trusted*. A wire with several handles open reported itself silenced and went on acknowledging every frame. **Measured both ways**: through the first handle it takes effect, through any later one it does not, with every handle bus-off in both cases — so it is about WHICH handle, not about bus state | the mode is applied through **every** handle and **all** must succeed: `ct_kvaser_set_silent_all`, `kvaser_open_handles`; `silentcheck --handles` is the bench that sees it |
+| **`canClose` does NOT reset the driver mode** | the opposite of PCAN. A run that ends while a wire is marked leaves the *next* process opening a channel that is already silent, with no mark to say so | the applied-mode table is empty at process start, so a wire's first attempt always reaches the driver: `silence.v` |
+| **Bus-off is a precondition for the mode call** — and, per the first row, a call that is not accepted can still return success | discarding a `canBusOff` error and asking anyway is a third route to caching a mode the controller never took | every handle must reach bus-off or the call fails, restoring bus-on first: `ct_kvaser_set_silent_all` |
+| **canlib has five fixed CAN-FD data-rate constants** | a rate without one is refused by name rather than rounded to a neighbour — which is why the bench proves 1/2/4/8 Mbit/s and 5 Mbit/s is solver-verified only | `kvaser_fd_data_code`, `kvaser_names.v` |
+| **FD arbitration must come from the 80% sample-point family** | canlib's *classic* constants sample at 62.5%, and a loopback bench cannot tell the difference — both ends are wrong together | `kvaser_fd_arb_code` |
+| **`canWrite` takes a BYTE COUNT for FD**, where PCAN takes a DLC code | the two vendors differ on the same argument | `ct_kvaser_write_fd` |
+| **`canERR_TXBUFOFL` means "no room", not "failed"** | as PCAN's queue-full does | `kvaser_err_txbufofl` → `busy_error` |
+| **A second open is a second SUBSCRIBER**, with its own receive queue | so `kvaser:` is deliberately NOT routed through the refcounted single-open that `pcan:` needs — sharing it would hand every reader one bus and lose frames (#212) | `open_windows.v`; the handle registry coordinates only the *mode*, not the handles |
 
 **Vector (XL Driver Library)** — `vxlapi64.dll`, the most verbose of the three
 (`xlOpenDriver`, `xlGetApplConfig`, `xlGetChannelMask`, `xlOpenPort`, `xlCanSetChannelBitrate`,
@@ -201,10 +242,12 @@ wherever an adapter is present.)
 - **`,silent` reaches the transceiver** — ACK-free output is set *before* the channel is
   activated, the only ordering that is safe against a running vehicle. A project's
   `listen_only:` is translated to it, and `cmd/vectorcheck --channel N` defaults to silent.
-  On every other backend `listen_only` does not reach the transceiver, so the adapter still
-  ACKs what it hears. What it DOES do everywhere, since #117, is stop this process
-  transmitting: `transport.open` hands back a bus that refuses to send on a silenced wire, so
-  no emitter can route around it. Two tiers, and the tooltip states both.
+  Every vendor backend reaches the transceiver now (PCAN and Kvaser since #219), so what is
+  left that is specific to Vector is the *ordering*: the mode is part of the address and fixed
+  before the port opens, which is also why Vector alone cannot follow a mid-run toggle. What
+  happens everywhere, since #117, is the software half — `transport.open` hands back a bus that
+  refuses to send on a silenced wire, so no emitter can route around it. Two tiers, and the
+  tooltip states both.
 - **An open port PINS the channel** — its mode, its bitrate, and (since CAN-FD) its PROTOCOL and
   data phase. A second port asking for the other mode is refused (`-1004`), a second bitrate
   likewise (`-1005`), classic-versus-FD `-1011` and a second data rate `-1012`; no software
@@ -220,6 +263,21 @@ wherever an adapter is present.)
   is the one rule here a disabled channel can still break — a disabled row keeps its transmit
   taps open on purpose, so its ports go on holding a channel the project no longer mentions
   (issue #165).
+
+**CANsub (CSS Electronics)** — the one hardware backend that is neither a vendor DLL nor
+platform-gated: it enumerates as a USB **network** adapter, so `list_interfaces()` never sees it
+and the same code reaches it from Linux and Windows. Configuration is REST, frames are HDLC over
+one WebSocket per channel, and the vendor's 20 published test vectors are pinned in
+`cansub_codec_test.v` — which is what lets CI cover a format no runner has hardware for.
+
+| what it does | why it matters | enforced by |
+|---|---|---|
+| **V's `net.http` cannot talk to it at all** | its status line has no reason phrase and V demands three tokens | a hand-rolled client, `cansub_http.v` |
+| **A PHY PUT is refused unless the object is COMPLETE** — `timing_data` included, on a channel that will never send an FD frame | a partial update reads as a malformed one | `cansub_phy_json` |
+| **The data-phase timing registers are far narrower than the nominal ones** | a nominal solution copied across is answered with a bare HTTP 500 | `cansub_timing.v` |
+| **It ECHOES its own sends**, with a start-of-frame hardware timestamp on the acknowledgement | so TX acknowledgements are delivered and `wiretap` claims them, or every transmitted frame is filed twice as the ECU's (#139's lesson) | `cansub.v` |
+| **One client per channel WebSocket** | like PCAN, opens share a refcounted bus | `shared_open` |
+| **Addressed by device id through mDNS, never an IP** | a firmware update clears persistent data and the device returns on a different subnet (seen going 10.63.38.1 → 10.215.129.1) while `<id>-usb.local` follows it | the address grammar, `cansub.v` |
 
 **slcan** — not implemented. CANable / CANtact / USBtin appear as a COM port speaking an
 ASCII line protocol (`O` open, `S6` 500k, `t<id><len><data>`, `T…` for 29-bit); no DLL and no
