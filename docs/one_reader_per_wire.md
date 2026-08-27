@@ -80,23 +80,43 @@ is a fanout that CI cannot test.
 
 So the seam is `transport.open`, and the GUI becomes just another subscriber.
 
-## The hard part: a slow subscriber
+## Slow subscribers: not a new hazard, and the real one is elsewhere
 
-One reader means one queue per subscriber and a policy for what happens when one stops draining.
-Three options, and the repo already has a precedent:
+The instinct is to treat per-subscriber queues as a risk this design introduces. They are not.
+**Five of the seven backends already work exactly this way**: each SocketCAN socket has its own
+buffer, each Kvaser handle its own receive queue, each Vector port its own. A consumer that falls
+behind today already overflows its own queue and drops its own frames without touching anyone
+else. Reproducing that above the driver is parity, not novelty — and PCAN and CANsub, which have
+no per-consumer queue at all because they have competition instead, get it for the first time.
 
-| policy | consequence |
-|---|---|
-| block the reader | one stalled consumer stops the trace for everyone. Unacceptable |
-| drop silently | exactly the failure mode #212 is about, relabelled |
-| **drop and count, per subscriber** | what `cansub` already does for its decoder overruns — *"COUNTED, not silent: a receiver that fell behind has holes in its trace and must be able to say so"* |
+What changes for the better is **visibility**. Today the drop happens inside the driver and is
+reported differently by each one — Kvaser in its status flags, SocketCAN in dropped counters, PCAN
+and CANsub not at all. One implementation means one count, in one place, for every backend.
 
-**Proposal: bounded queue per subscriber, oldest dropped, count exposed per subscriber and surfaced
-the way `last RX` and `NOT SILENT` already are on the Buses row.** A consumer that falls behind is a
-fact about the run, not an error, and it must be visible without being fatal.
+**Depth is a parameter, not a policy.** The only way app-level queues are worse than what we have
+is if they are shallower than the driver queues they stand in front of, so a consumer that copes
+today starts dropping tomorrow. That is measurable, and it should be measured per backend rather
+than guessed at — the number to beat is whatever the driver gives that consumer now.
 
-Open question worth deciding before coding: does a *diagnostic* subscriber get a deeper queue than
-the trace? A dropped UDS response is a failed test; a dropped trace row is a gap in a log.
+For the same reason the earlier question here — whether a diagnostic subscriber deserves a deeper
+queue than the trace — is probably the wrong question. No such asymmetry exists today and nothing
+has asked for one. One generous depth for everybody, matching or exceeding the drivers', and revisit
+only if a real consumer is measured to need more.
+
+### The risk that IS new
+
+Today a slow consumer hurts only itself. With one reader, if the **reader thread** becomes slow —
+contended on a subscriber's lock, or doing unbounded work per frame — it stops draining the single
+driver queue and drops for *everyone*. That coupling does not exist today and it is the thing this
+design must be built against:
+
+- the fanout **never blocks**: a full subscriber queue drops that subscriber's frame and the reader
+  moves on. There is no path where one consumer can stall the loop;
+- per-frame work in the reader is bounded and does no I/O, no allocation per subscriber where it
+  can be avoided, and no lock held across a copy;
+- the shared driver queue's own overrun is counted too, and reported for the WIRE rather than for a
+  subscriber — because that one means the reader itself fell behind, which is a different fault with
+  a different cause.
 
 ## What this dissolves
 
@@ -134,4 +154,7 @@ Not a side benefit — a large part of the justification:
 - A new headless test for the actual bug: two subscribers on one wire, both must see every frame.
   This runs on `inproc:` in CI — and the point of the design is that it now predicts PCAN too.
 - A slow-subscriber test: one consumer stops draining; the others keep receiving and the drop count
-  is non-zero and readable.
+  is non-zero and readable — the property five backends already give us, now uniform.
+- A reader-chokepoint test, for the risk this design actually introduces: with one subscriber
+  wedged, the WIRE's own overrun count must stay zero. If it does not, the fanout is blocking
+  somewhere it promised not to.
