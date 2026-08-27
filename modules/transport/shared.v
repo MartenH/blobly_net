@@ -319,13 +319,20 @@ fn (mut e SharedEntry) read_loop() {
 		}
 		ingress_at := time.ticks()
 
-		// A TX acknowledgement cannot be committed until the raw send which registered it has
-		// returned successfully. In particular, a socket write may make an acknowledgement visible
-		// to the reader and then report failure; send() removes that pending item while holding
-		// send_mu, after which this record is correctly treated as unmatched rather than published.
-		if ingress.tx_ack {
-			e.send_mu.lock()
-		}
+		// THE READER NEVER WAITS ON A WRITER. It used to take send_mu before matching an
+		// acknowledgement, so that an ack made visible by a write that then FAILED would find its
+		// pending entry already deleted. The price was the sole reader parking behind every
+		// in-flight socket write: a stalled TLS write (device wedged, cable pulled) stopped the
+		// ingress loop, CansubBus.rx filled to 4096 and real ECU frames were dropped while sends
+		// kept reporting success -- the defect codex round 10 on #204 was written to prevent,
+		// re-entered one layer up (code-review high on #221, blocker 1).
+		//
+		// So an in-flight entry (expires_at == 0) is matchable. If the device acknowledged a frame,
+		// the frame REACHED THE WIRE, whatever the write call went on to return -- and a frame that
+		// reached the wire belongs in the trace and the recording, attributed to its origin. The
+		// sender is told its write failed; the monitor is told the truth about the bus. Dropping
+		// that ack hid a transmitted frame from both, which is the "vanishes from trace and
+		// recording" class.
 		mut origin := u64(0)
 		mut publish := true
 		e.mu.lock()
@@ -372,9 +379,6 @@ fn (mut e SharedEntry) read_loop() {
 			}
 		}
 		e.mu.unlock()
-		if ingress.tx_ack {
-			e.send_mu.unlock()
-		}
 	}
 	e.done <- true
 }
@@ -392,22 +396,31 @@ fn (mut e SharedEntry) fail_and_close(message string) {
 		}
 	}
 	e.mu.unlock()
-	// Wait for an in-flight serialized write before releasing the raw driver. The reservation
-	// remains in the registry throughout this call, so a fresh opener cannot overlap close.
-	e.send_mu.lock()
+	// NOT BEHIND send_mu. This used to wait for an in-flight write before releasing the driver,
+	// which read as tidy and was the worst half of blocker 1: the reservation stays in the
+	// registry for the whole wait, so with a sender stuck in a 30 s socket write every Start on
+	// this wire spun in shared_open_events for 30 s -- on the GUI thread. A write racing this
+	// close gets the vendor's error for a closed handle and returns it to its caller, which is
+	// what happened before this PR and is the honest outcome: the wire is gone.
+	e.finish_close()
+}
+
+// finish_close is the one teardown sequence, shared by the fatal path and the last close: release
+// the driver once, mark the generation closed, forget its pending sends, leave the registry.
+// Two copies of this drifted once already in review; there is one now.
+fn (mut e SharedEntry) finish_close() {
 	e.mu.lock()
 	raw_open := !e.raw_closed
+	e.raw_closed = true
 	e.mu.unlock()
 	if raw_open {
 		e.driver.close()
 	}
 	e.mu.lock()
-	e.raw_closed = true
 	e.state = .closed
 	e.pending.clear()
 	e.mu.unlock()
 	shared_remove_entry(e)
-	e.send_mu.unlock()
 }
 
 // SharedHandle is one caller's public Bus. Its receive state is just a sequence cursor; a send-only
@@ -433,6 +446,16 @@ fn (mut h SharedHandle) send(frame CanFrame) ! {
 		return error('${h.key}: bus is closed')
 	}
 	mut e := h.entry
+	// send_mu GUARDS ONE THING: that the order of `pending` is the order frames went down the
+	// socket, which is what lets an untagged acknowledgement be matched to its origin. Senders on
+	// one wire therefore serialise here -- as they must on one socket -- and NOTHING ELSE takes
+	// this lock. It used to be a general "is the driver alive" guard for health(),
+	// reconcile_silence(), close() and fail_and_close() too, so one sender stuck in a TLS write
+	// (V's 30 s default write timeout) froze the Buses row, blocked every other sender BEFORE
+	// SilentBus could refuse it, kept Stop from decrementing refs, and left Start spinning on the
+	// GUI thread waiting for a close that could not complete. The comment this PR deleted from the
+	// old shared.v -- "no lock across the driver call ... serialising here would only add a queue
+	// in front of one that already exists" -- was that rule (code-review high on #221, blocker 1).
 	e.send_mu.lock()
 	defer {
 		e.send_mu.unlock()
@@ -489,7 +512,8 @@ fn (mut h SharedHandle) send(frame CanFrame) ! {
 	}
 	if token != 0 {
 		// The acknowledgement window begins when the write succeeds, not while a slow socket
-		// write is still in flight. TX-ack matching waits on send_mu; expiry skips the zero marker.
+		// write is still in flight; expiry skips the zero marker. Matching does NOT skip it --
+		// see read_loop for why an in-flight entry may be claimed.
 		e.mu.lock()
 		for i, pending in e.pending {
 			if pending.token == token {
@@ -577,16 +601,12 @@ fn (mut h SharedHandle) health() BusHealth {
 		return .unknown
 	}
 	mut e := h.entry
-	e.send_mu.lock()
-	defer {
-		e.send_mu.unlock()
-	}
-	h.mu.lock()
-	closed_after_wait := h.closed
-	h.mu.unlock()
-	if closed_after_wait {
-		return .unknown
-	}
+	// NO LOCK ACROSS THE DRIVER CALL. The monitor polls this once a second per wire; taking
+	// send_mu here made that poll wait behind any in-flight write, and a stalled one froze the
+	// Buses row and the toolbar for its duration. The state check under e.mu is what decides
+	// whether the driver is worth asking; a close racing the call itself gets the vendor's
+	// answer for a closed handle, which every backend already reports as .unknown -- exactly
+	// what the pre-PR handle did.
 	mut running := false
 	e.mu.lock()
 	running = e.state == .running
@@ -605,16 +625,11 @@ fn (mut h SharedHandle) reconcile_silence(want bool) ! {
 		return error('${h.key}: bus is closed')
 	}
 	mut e := h.entry
-	e.send_mu.lock()
-	defer {
-		e.send_mu.unlock()
-	}
-	h.mu.lock()
-	closed_after_wait := h.closed
-	h.mu.unlock()
-	if closed_after_wait {
-		return error('${h.key}: bus is closed')
-	}
+	// NO LOCK ACROSS THE DRIVER CALL, for the reason health() gives -- and one more: SilentBus
+	// calls this before EVERY send, so with send_mu here every sender on the wire queued behind
+	// a stalled write before the wrapper could even refuse it, and a listen-only toggle waited out
+	// that write before reaching the controller. The controller-side apply is already serialised
+	// per wire by silence.v; it needs nothing from here.
 	mut running := false
 	mut terminal := ''
 	e.mu.lock()
@@ -649,7 +664,7 @@ fn (mut h SharedHandle) close() {
 		else {}
 	}
 	mut e := h.entry
-	e.send_mu.lock()
+	// Not behind send_mu either -- Stop must be able to let go of a wire whose sender is stuck.
 	mut last_healthy := false
 	e.mu.lock()
 	if was_subscribed {
@@ -661,23 +676,9 @@ fn (mut h SharedHandle) close() {
 		last_healthy = true
 	}
 	e.mu.unlock()
-	e.send_mu.unlock()
 	if !last_healthy {
 		return
 	}
 	_ := <-e.done
-	e.send_mu.lock()
-	e.mu.lock()
-	raw_open := !e.raw_closed
-	e.mu.unlock()
-	if raw_open {
-		e.driver.close()
-	}
-	e.mu.lock()
-	e.raw_closed = true
-	e.state = .closed
-	e.pending.clear()
-	e.mu.unlock()
-	shared_remove_entry(e)
-	e.send_mu.unlock()
+	e.finish_close()
 }

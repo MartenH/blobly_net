@@ -19,6 +19,19 @@ fn (mut f FakeBus) send(frame CanFrame) ! {
 }
 
 fn (mut f FakeBus) recv(timeout_ms int) !CanFrame {
+	// HONOURS ITS TIMEOUT, and can be fed. The old fake returned 'timeout' at once, which the
+	// hub's reader took as "poll again" — a 100% busy loop for the life of every handle in this
+	// file. And it could never yield a frame, so the adapter production PCAN goes through
+	// (SharedBusDriver) had no test that fan-out reached it at all.
+	wait := if timeout_ms < 0 { 1000 } else { timeout_ms }
+	select {
+		got := <-fake_rx {
+			return got
+		}
+		wait * time.millisecond {
+			return error('timeout')
+		}
+	}
 	return error('timeout')
 }
 
@@ -38,6 +51,9 @@ __global (
 	fake_opens             int
 	fake_closes            int
 	fake_fails             bool
+	fake_rx                chan CanFrame
+	hub_fake_send_gate     chan bool
+	hub_fake_send_blocking bool
 	hub_fake_rx            chan HubFakeItem
 	hub_fake_sent          chan CanFrame
 	hub_fake_opened        chan bool
@@ -203,6 +219,10 @@ struct HubFakeDriver {
 
 fn (mut d HubFakeDriver) send(frame CanFrame) ! {
 	hub_fake_sent <- shared_clone_frame(frame)
+	if hub_fake_send_blocking {
+		// A stuck socket write: this send does not return until the test says so.
+		_ := <-hub_fake_send_gate
+	}
 	if hub_fake_ack_in_send {
 		hub_fake_rx <- HubFakeItem{
 			ingress: SharedIngress{
@@ -418,7 +438,12 @@ fn test_identical_tx_acks_are_attributed_to_the_oldest_pending_origin() {
 	b.close()
 }
 
-fn test_a_fast_tx_ack_is_not_published_when_the_raw_send_fails() {
+// AN ACKNOWLEDGED FRAME REACHED THE WIRE, whatever the write call went on to return. This test
+// used to assert the opposite — that an ack arriving while its write was still failing must be
+// dropped — and the machinery that guaranteed it was the reader waiting on send_mu behind every
+// in-flight write (blocker 1). The device's word is the better evidence: the monitor records the
+// frame, attributed to its origin; the sender is told its write failed; and neither is lied to.
+fn test_a_fast_tx_ack_during_a_failing_send_is_still_the_wires_truth() {
 	reset_hub_fakes()
 	hub_fake_ack_in_send = true
 	hub_fake_send_failure = 'raw write failed'
@@ -430,14 +455,112 @@ fn test_a_fast_tx_ack_is_not_published_when_the_raw_send_fails() {
 		assert err.msg() == 'raw write failed'
 	}
 	_ := <-hub_fake_sent
-	if _ := observer.recv(100) {
-		assert false, 'an acknowledgement for a failed send must not enter the receive ring'
+	// The observer sees it: it happened on the bus.
+	assert observer.recv(1000)!.id == 0x45B
+	// The origin does not: it is that handle's own transmission.
+	if _ := sender.recv(100) {
+		assert false, 'a handle must not receive its own acknowledged frame as RX'
 	} else {
 		assert err.msg() == 'timeout'
 	}
-	shared_test_wait_unmatched(mut observer, 1)
 	sender.close()
 	observer.close()
+}
+
+// THE READER, health(), reconcile_silence() AND close() NEVER WAIT ON A WRITER. One handle is
+// stuck in a socket write that will not return; everything else on the wire must still answer.
+// This is blocker 1 of code-review high on #221 as a test: before the fix, every line below the
+// spawn hung behind send_mu for as long as the write did — in the real failure, 30 seconds, on
+// the GUI thread.
+fn test_a_stuck_send_does_not_block_health_reconcile_or_close() {
+	reset_hub_fakes()
+	hub_fake_send_gate = chan bool{cap: 1}
+	hub_fake_send_blocking = true
+	defer {
+		hub_fake_send_blocking = false
+	}
+	mut stuck := shared_open_events('hub:stuck', 'fake:stuck', hub_fake_make)!
+	mut other := shared_open_events('hub:stuck', 'fake:stuck', hub_fake_make)!
+	spawn fn [mut stuck] () {
+		stuck.send(CanFrame{ id: 0x5A1 }) or {}
+	}()
+	_ := <-hub_fake_sent // the write is now in flight and parked
+	// Everything below is bounded by its own deadline; a hang here is the regression.
+	done := chan bool{cap: 4}
+	spawn fn [mut other, done] () {
+		_ = other.health()
+		done <- true
+	}()
+	spawn fn [mut other, done] () {
+		other.reconcile_silence(false) or {}
+		done <- true
+	}()
+	// And the reader still delivers external traffic while that write is stuck.
+	hub_fake_rx <- HubFakeItem{
+		ingress: SharedIngress{
+			frame: CanFrame{
+				id: 0x5A2
+			}
+		}
+	}
+	spawn fn [mut other, done] () {
+		if f := other.recv(2000) {
+			assert f.id == 0x5A2
+		} else {
+			assert false, 'the reader parked behind a stuck writer'
+		}
+		done <- true
+	}()
+	for _ in 0 .. 3 {
+		select {
+			_ := <-done {}
+			2000 * time.millisecond {
+				assert false, 'a call waited on the stuck write'
+			}
+		}
+	}
+	// Closing the OTHER handle must not wait either.
+	spawn fn [mut other, done] () {
+		other.close()
+		done <- true
+	}()
+	select {
+		_ := <-done {}
+		2000 * time.millisecond {
+			assert false, 'close waited on the stuck write'
+		}
+	}
+	hub_fake_send_gate <- true // release the writer so its handle can close cleanly
+	stuck.close()
+}
+
+// FAN-OUT THROUGH THE PATH PCAN ACTUALLY USES. Every other fan-out test here drives
+// shared_open_events with a raw SharedDriver fake; production PCAN arrives through shared_open
+// and the SharedBusDriver adapter, which until this test was covered only by a bench run.
+fn test_shared_open_fans_a_plain_bus_out_to_every_handle() {
+	fake_opens = 0
+	fake_closes = 0
+	fake_fails = false
+	fake_rx = chan CanFrame{cap: 8}
+	mut a := shared_open('fake:fanout', 'fake:fanout', fake_make)!
+	mut b := shared_open('fake:fanout', 'fake:fanout', fake_make)!
+	assert fake_opens == 1, 'one physical open for two logical handles'
+	fake_rx <- CanFrame{
+		id:   0x7E8
+		data: [u8(0x02), 0x50, 0x03]
+	}
+	fa := a.recv(1000)!
+	fb := b.recv(1000)!
+	assert fa.id == 0x7E8 && fb.id == 0x7E8
+	assert fa.data == fb.data
+	// And they are copies, not one buffer seen twice.
+	unsafe {
+		fa.data[0] = 0xFF
+	}
+	assert fb.data[0] == 0x02
+	a.close()
+	b.close()
+	assert fake_closes == 1
 }
 
 fn test_a_tx_ack_from_a_closed_origin_still_reaches_other_handles() {
