@@ -191,7 +191,7 @@ Quirks, all of them found by trying:
 | **The classic rates are a fixed BTR table whose sample points differ**: 1 Mbit/s samples at **75%**, 800k at 80%, 125k–500k at **87.5%**, 10k–100k at 85% | one sample-point rule cannot cover both modes. Applying the FD default to a classic row refused what the channel actually does and accepted what it does not | `pcan_classic_sample_point`, pinned for all nine codes in `pcan_names_test.v` |
 | **`PCAN_LISTEN_ONLY` can be set on a channel that is NOT yet initialized, and survives `CAN_Initialize`** | so a listen-only channel is never bus-on in the wrong mode, not even for an instant. **Measured** by setting it before init and reading it back after — `PCAN_ERROR_OK` alone proves nothing, since an accepted-and-discarded value looks identical | `open_pcan` |
 | **`CAN_Uninitialize` RESETS the mode** | the opposite of Kvaser, and the record of what a wire was told must be dropped when it happens or it outlives the state it describes | `PcanBus.close` → `forget_wire_silence` |
-| **One `CAN_Initialize` per channel per process** | the app opens each wire several times per Start, so `pcan:` opens share a refcounted bus | `shared.v` |
+| **One `CAN_Initialize` per channel per process** | the app opens each wire several times per Start, so `pcan:` opens share one raw reader through a sequence-ring hub | `shared.v` |
 | **`XMTFULL` / `QXMTFULL` mean "no room", not "failed"** | a dense replay meets a full queue constantly by construction; treating it as terminal puts holes in the replay exactly where the recording was busiest | `busy_error` / `is_backpressure`, `vendor_spec.v` |
 
 **Kvaser (CANlib)** — `canlib32.dll` (`canInitializeLibrary`, `canOpenChannel`,
@@ -276,7 +276,7 @@ one WebSocket per channel, and the vendor's 20 published test vectors are pinned
 | **A PHY PUT is refused unless the object is COMPLETE** — `timing_data` included, on a channel that will never send an FD frame | a partial update reads as a malformed one | `cansub_phy_json` |
 | **The data-phase timing registers are far narrower than the nominal ones** | a nominal solution copied across is answered with a bare HTTP 500 | `cansub_timing.v` |
 | **It ECHOES its own sends**, with a start-of-frame hardware timestamp on the acknowledgement | so TX acknowledgements are delivered and `wiretap` claims them, or every transmitted frame is filed twice as the ECU's (#139's lesson) | `cansub.v` |
-| **One client per channel WebSocket** | like PCAN, opens share a refcounted bus | `shared_open` |
+| **One client per channel WebSocket** | like PCAN, opens share one raw reader through a sequence-ring hub | `shared_open` |
 | **Addressed by device id through mDNS, never an IP** | a firmware update clears persistent data and the device returns on a different subnet (seen going 10.63.38.1 → 10.215.129.1) while `<id>-usb.local` follows it | the address grammar, `cansub.v` |
 
 **slcan** — not implemented. CANable / CANtact / USBtin appear as a COM port speaking an

@@ -50,10 +50,16 @@ pub fn pcan_status_health(st u32) BusHealth {
 // PcanRead is what a CAN_Read return value MEANS. Three answers, because the vendor packs
 // three different things into one word and conflating any two of them loses a wire.
 pub enum PcanRead {
-	frame  // a message was returned
-	empty  // nothing waiting — poll again
-	failed // the channel is broken: stop reading it
+	frame   // a message was returned
+	empty   // nothing waiting — poll again
+	overrun // frames were LOST but the channel is alive: count it and keep reading
+	failed  // the channel is broken: stop reading it
 }
+
+// pcan_overrun_mask is the two "you lost frames" answers: PCAN_ERROR_OVERRUN (0x02, the
+// controller's receive buffer) and PCAN_ERROR_QOVERRUN (0x40, the driver's queue behind it).
+// Different buffers, one meaning: the reader fell behind, and the wire is still up.
+const pcan_overrun_mask = u32(0x02 | 0x40)
 
 // pcan_ladder_mask is the fault ladder CAN_Read ORs into its return value: BUSLIGHT 0x04,
 // BUSHEAVY/BUSWARNING 0x08, BUSOFF 0x10, BUSPASSIVE 0x40000 — the same PCANBasic.h bits
@@ -82,6 +88,19 @@ pub fn pcan_read_verdict(st u32) PcanRead {
 	}
 	if rest == 0x20 { // PCAN_ERROR_QRCVEMPTY
 		return .empty
+	}
+	// AN OVERRUN IS NOT A BROKEN CHANNEL. The comment above left 0x40 out of the ladder mask on
+	// purpose -- "nothing observed to raise them here" -- and pcan_windows.v then observed it: a
+	// burst that outran the 50 ms poll. Reported as .failed, that one status became a fatal read,
+	// and since #221 a fatal read closes the channel under EVERY handle on the wire: a UDS
+	// session, a simulated ECU and every transmit tap all died because the monitor lagged once
+	// (code-review high on #221, blocker 2). Lost frames are lost; the wire is still there.
+	//
+	// ONLY IF NOTHING ELSE IS LEFT, the same rule pcan_write_verdict applies to its queue-full
+	// bits: an overrun bit arriving alongside ILLHW or INITIALIZE is an unplugged adapter that
+	// also happened to overrun, and that is a failure.
+	if rest & ~(pcan_overrun_mask | 0x20) == 0 {
+		return .overrun
 	}
 	return .failed
 }

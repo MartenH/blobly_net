@@ -20,8 +20,8 @@
 // each WebSocket". That is the PCAN problem again — the app opens each wire several times per
 // Start (a monitor, a transmit tap per channel, the anonymous tap) and whichever call arrived
 // first would win while the rest were told the device was busy. So `cansub:` goes through
-// `shared_open` like `pcan:` does, keyed on the WIRE without its bitrate, and every opener of one
-// channel shares the one connection.
+// `shared_open` like `pcan:` does, keyed on the WIRE without its bitrate. Every opener gets an
+// independent logical receive cursor behind one connection and one raw reader.
 module transport
 
 import net.websocket
@@ -110,11 +110,11 @@ struct CansubBus {
 mut:
 	ws &websocket.Client = unsafe { nil }
 	rx chan CansubRecord
-	// ONE WRITER AT A TIME on the one socket. `shared_open` hands every logical opener of a wire
-	// the SAME bus, by design — the vendor permits a single client per channel — so the simulation
-	// worker, a UDS server and a script can all be inside send() at once. A WebSocket write is a
-	// framed, stateful operation over TLS, and two of them interleaving corrupts the framing or
-	// loses a message outright (codex round 9 on #204).
+	// ONE WRITER AT A TIME on the one socket. The shared hub hands every logical opener of a wire
+	// the SAME raw driver, by design — the vendor permits a single client per channel — so the
+	// simulation worker, a UDS server and a script can all be inside send() at once. A WebSocket
+	// write is a framed, stateful operation over TLS. Two interleaving writes corrupt framing or
+	// lose a message outright (codex round 9 on #204).
 	//
 	// The GUI's TapBus takes a mutex of its own, which is why this was not showing there — but it
 	// protects only what goes through the tap, and the headless runner's workers hold buses
@@ -153,9 +153,10 @@ mut:
 	dropped int
 }
 
-// open_cansub_bus is what shared_open calls. One connection per wire; every opener of the same
-// channel gets this same bus back.
-fn open_cansub_bus(iface string) !Bus {
+// open_cansub_bus is what shared_open_events calls. It creates the one raw connection behind that
+// wire's logical handles. SharedDriver is private to transport: it carries the device's
+// TX-acknowledgement bit as far as the shared hub without widening the public Bus contract.
+fn open_cansub_bus(iface string) !SharedDriver {
 	spec := parse_cansub_iface(iface)!
 	host := cansub_host(spec.id)
 
@@ -341,9 +342,9 @@ fn (mut b CansubBus) read_loop() {
 
 // enqueue hands one record to the receiver without ever PARKING on a full queue.
 //
-// `b.rx <- rec` blocks when the buffer is full, and a CANsub handle used only for sending still
-// receives: the device acknowledges every transmission, so a send-only handle fills all 4096
-// records and the reader parks forever on the push. `close()` joins the reader — and it must,
+// `b.rx <- rec` blocks when the buffer is full, and a raw CANsub client which is not drained still
+// receives every transmit acknowledgement. It can fill all 4096 records and park the reader
+// forever on the push. `close()` joins the reader — and it must,
 // because closing `rx` out from under a reader parked in the socket is the panic the comment
 // there describes — so closing such a handle never returned at all (codex round 1 on #204).
 //
@@ -357,9 +358,9 @@ fn (mut b CansubBus) enqueue(rec CansubRecord) bool {
 	// A FULL QUEUE DROPS A RECORD; IT NEVER STOPS THE READER.
 	//
 	// This used to wait for space while the bus was running, which is a worse trade than it looks:
-	// every send produces a TX acknowledgement on this same connection, so a send-only run fills
-	// 4096 records and then parks the SOLE reader of the socket. Traffic backs up into the TLS and
-	// device buffers behind it, and what follows is lost frames or a dropped connection — while
+	// every send produces a TX acknowledgement on this same connection, so a stalled consumer can
+	// fill 4096 records and then park the SOLE reader of the socket. Traffic backs up into the TLS
+	// and device buffers behind it, and what follows is lost frames or a dropped connection — while
 	// sends keep reporting success (codex round 10 on #204). Waiting was itself a fix, for a
 	// close() that hung on the parked reader; dropping cures both, because it never blocks.
 	//
@@ -689,7 +690,12 @@ fn cansub_first_wait(timeout_ms int, deadline i64, now i64) ?i64 {
 	return cansub_wait_slice(timeout_ms, deadline, now)
 }
 
-pub fn (mut b CansubBus) recv(timeout_ms int) !CanFrame {
+// recv_shared is the shared hub's private receive seam. A CANsub reports both traffic received
+// from the wire and acknowledgements for this process's own transmissions over the one WebSocket;
+// projecting both straight to CanFrame makes a TX acknowledgement indistinguishable from RX.
+// The hub needs this one bit so it can suppress the frame for its originating logical handle and
+// fan it out to the other subscribers. The public Bus contract stays CanFrame-only below.
+fn (mut b CansubBus) recv_shared(timeout_ms int) !SharedIngress {
 	deadline := time.ticks() + i64(timeout_ms)
 	// `probe` means the next slice may be a zero-length look at the queue rather than a wait. True
 	// to begin with, and true again after anything is TAKEN from the queue — because a record that
@@ -729,7 +735,10 @@ pub fn (mut b CansubBus) recv(timeout_ms int) !CanFrame {
 					}
 					continue
 				}
-				return rec.frame
+				return SharedIngress{
+					frame:  rec.frame
+					tx_ack: rec.tx
+				}
 			}
 			// Bounded, so a closed socket does not park a caller here forever.
 			wait * time.millisecond {
@@ -740,6 +749,17 @@ pub fn (mut b CansubBus) recv(timeout_ms int) !CanFrame {
 		}
 	}
 	return error('timeout')
+}
+
+// reports_tx_ack tells the shared hub that every successful write is expected to produce a
+// flagged record on this ingress. The hub owns send ordering and origin correlation; the backend
+// can report only what the device put in the record, not which logical SharedHandle initiated it.
+fn (b &CansubBus) reports_tx_ack() bool {
+	return true
+}
+
+pub fn (mut b CansubBus) recv(timeout_ms int) !CanFrame {
+	return b.recv_shared(timeout_ms)!.frame
 }
 
 // diagnostics is everything this backend knows that is not a frame and not a health rung: records

@@ -78,6 +78,10 @@ mut:
 	// classic cannot send an FD frame whatever the flags say, and an FD-opened one carries classic
 	// frames too, so this is read on every send and every receive.
 	fd bool
+	// Receive overruns seen on this channel: frames the driver dropped because nobody read fast
+	// enough. COUNTED, not silent, and not fatal — see pcan_read_verdict. Surfacing it beside the
+	// row is #213's job; recording it is this one's.
+	overruns u64
 }
 
 // open_pcan parses `pcan:<channel>[@<bitrate>]`, loads PCANBasic.dll and initializes
@@ -335,6 +339,13 @@ pub fn (mut b PcanBus) recv(timeout_ms int) !CanFrame {
 				rtr:  mt & pcan_msg_rtr != 0
 				data: out
 			}
+		}
+		if verdict == .overrun {
+			// Frames were lost; the channel was not. Keep reading — there may be a frame behind
+			// the status right now, and returning an error here is what killed the wire: through
+			// the shared hub a fatal read uninitialises the channel under every handle (#221).
+			b.overruns++
+			continue
 		}
 		if verdict == .failed {
 			// Hex, because every PCANBasic status is written in hex in the vendor's header and

@@ -36,7 +36,7 @@ fn open_raw(iface string) !Bus {
 		// several times per Start. Keyed on the WIRE — the device id and channel, without the
 		// bitrate — so a 250k row and a 500k row on one channel meet in the conflict check
 		// instead of both reaching the device and the second being refused by it.
-		return shared_open(wire_key_for('cansub', iface), iface, open_cansub_bus)!
+		return shared_open_events(wire_key_for('cansub', iface), iface, open_cansub_bus)!
 	}
 	if iface.starts_with('pcan:') {
 		// Through the shared registry, not straight to the driver: PCANBasic permits exactly

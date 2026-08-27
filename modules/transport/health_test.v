@@ -89,5 +89,18 @@ fn test_pcan_read_verdict_ladder_is_not_a_failure() {
 	assert pcan_read_verdict(0x1400) == .failed // ILLHW: unplugged
 	assert pcan_read_verdict(0x200) == .failed // NODRIVER
 	assert pcan_read_verdict(0x4000000) == .failed // INITIALIZE: channel not open
+}
+
+// AN OVERRUN IS LOST FRAMES, NOT A LOST CHANNEL. Reported as .failed, one lagging poll on a
+// saturated bus became a fatal read — and through the shared hub a fatal read uninitialises the
+// channel under every handle on the wire (code-review high on #221, blocker 2).
+fn test_pcan_read_verdict_overrun_is_not_a_failure() {
+	assert pcan_read_verdict(0x40) == .overrun // QOVERRUN: the driver queue
+	assert pcan_read_verdict(0x02) == .overrun // OVERRUN: the controller buffer
+	assert pcan_read_verdict(0x40 | 0x08) == .overrun // ...on a degraded wire, still an overrun
+	assert pcan_read_verdict(0x40 | 0x20) == .overrun // lost some, and nothing waiting right now
+	// ONLY IF NOTHING ELSE IS LEFT: an overrun alongside a real fault is the fault.
+	assert pcan_read_verdict(0x40 | 0x4000000) == .failed // ...with INITIALIZE
+	assert pcan_read_verdict(0x40 | 0x1400) == .failed // ...with ILLHW: adapter unplugged
 	assert pcan_read_verdict(0x1400 | 0x08) == .failed // a real fault WITH ladder bits set
 }

@@ -35,7 +35,7 @@ fn open_raw(iface string) !Bus {
 		// NETWORK adapter and is spoken to over HTTP, so the same code reaches it here as on
 		// Windows. Through the shared registry because the vendor permits a single client per
 		// channel WebSocket and the app opens each wire several times per Start.
-		return shared_open(wire_key_for('cansub', iface), iface, open_cansub_bus)!
+		return shared_open_events(wire_key_for('cansub', iface), iface, open_cansub_bus)!
 	}
 	return open_socketcan(iface)!
 }
