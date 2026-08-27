@@ -134,18 +134,26 @@ static int ct_kvaser_is_virtual(int ch) {
  * avoid (codex round 1 on #219). canSetBusOutputControl is accepted while bus-off, which is where
  * the channel already is at this point, so choosing the mode here costs nothing and closes the
  * window completely. */
-/* Best-effort mode set inside an open, while the handle is still bus-off.
+/* Mode set inside an open, while the handle is still bus-off.
  *
  * IT IS A HEAD START, NOT THE ANSWER. It takes effect only when this handle turns out to hold the
  * channel's initialisation access, and nothing here can tell whether it did -- a request through
- * any other handle returns success and does nothing. What actually decides the wire's mode is
+ * any other handle returns success and does nothing. What DECIDES the wire's mode is
  * ct_kvaser_set_silent_all, which the V side runs after the handle is registered; this call exists
- * so that a genuinely-first opener is never bus-on in the wrong mode even for an instant.
+ * so that a genuinely-first opener is never bus-on in the wrong mode, even for an instant.
  *
- * So its result is deliberately not reported: acting on it is how a mode nobody applied got
- * recorded as applied (codex rounds 3, 7 and 9 on #219). */
-static void ct_kvaser_set_mode(int hnd, int silent) {
-	if (ct_kv_setoutctrl) ct_kv_setoutctrl(hnd, silent ? CT_KV_DRIVER_SILENT : CT_KV_DRIVER_NORMAL);
+ * THE RESULT MAY REFUSE AN OPEN AND MAY NOT RECORD ONE, and collapsing those two is a mistake I
+ * have now made in both directions. Acting on a SUCCESS is how a mode nobody applied got recorded
+ * as applied (rounds 3 and 7). Discarding a FAILURE is how a listen-only first opener went bus-on
+ * in normal mode and acknowledged until the all-handle reconcile caught up (round 9's fix, found in
+ * round 10). Success here means nothing; failure here means this open must not proceed.
+ *
+ * Returns 0 when the call was accepted -- which, per the above, is not the same as applied -- and
+ * negative when the driver refused. A canlib with no canSetBusOutputControl cannot honour a SILENT
+ * request at all and says so; a normal one is left alone, since normal is where a channel starts. */
+static int ct_kvaser_set_mode(int hnd, int silent) {
+	if (!ct_kv_setoutctrl) return silent ? -100 : 0;
+	return ct_kv_setoutctrl(hnd, silent ? CT_KV_DRIVER_SILENT : CT_KV_DRIVER_NORMAL);
 }
 
 /* Open channel `ch` (accepting virtual channels), set bitrate (a canBITRATE_* code,
@@ -158,7 +166,10 @@ static int ct_kvaser_open(int ch, int32_t bitrate_code, int silent) {
 	if (hnd < 0) return hnd;
 	st = ct_kv_setbus(hnd, bitrate_code, 0, 0, 0, 0, 0);
 	if (st < 0) { ct_kv_close(hnd); return st; }
-	ct_kvaser_set_mode(hnd, silent);
+	/* BEFORE canBusOn, and a refusal stops the open: going on the bus acknowledging when the row
+	   said listen-only is the one outcome worse than not opening. */
+	st = ct_kvaser_set_mode(hnd, silent);
+	if (st < 0) { ct_kv_close(hnd); return st; }
 	st = ct_kv_buson(hnd);
 	if (st < 0) { ct_kv_close(hnd); return st; }
 	return hnd;
@@ -181,7 +192,8 @@ static int ct_kvaser_open_fd(int ch, int32_t arb_code, int32_t data_code, int si
 	if (st < 0) { ct_kv_close(hnd); return st; }
 	st = ct_kv_setbusfd(hnd, data_code, 0, 0, 0);
 	if (st < 0) { ct_kv_close(hnd); return st; }
-	ct_kvaser_set_mode(hnd, silent);
+	st = ct_kvaser_set_mode(hnd, silent);
+	if (st < 0) { ct_kv_close(hnd); return st; }
 	st = ct_kv_buson(hnd);
 	if (st < 0) { ct_kv_close(hnd); return st; }
 	return hnd;

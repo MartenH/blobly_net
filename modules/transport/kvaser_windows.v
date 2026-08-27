@@ -111,6 +111,35 @@ mut:
 // (classic, or CAN-FD when the address names a data rate) and goes bus-on.
 // The address rules live in kvaser_names.v, where a CI runner with no adapter can check them.
 // Referenced only from open_windows.v.
+// kvaser_open_locked runs the driver open and the registration together under this wire's silence
+// lock, and returns the handle (negative on failure).
+//
+// WHY THEY MUST BE ONE STEP. `apply_silence` holds the same lock across its driver call, and inside
+// it the handle list is snapshotted and every handle taken bus-off before the mode is set. Opening
+// outside that lock let a new handle appear BETWEEN the snapshot and the mode call and go bus-on
+// while it was still invisible — so not every live handle was bus-off, canlib returned its
+// documented no-op success, the transition recorded the requested mode, and this opener's own
+// reconcile then skipped it as already applied. A listen-only wire acknowledging, again, by a
+// narrower road (codex round 10 on #219).
+//
+// Under the lock, a concurrent transition sees this handle either not open at all or open AND
+// registered, and never the state between. Lock order is wire lock -> handle registry, which is
+// what close and the reconcile closure both use.
+fn kvaser_open_locked(iface string, do_open fn () int) int {
+	mut wl := wire_silence_lock(wire_key(iface))
+	wl.@lock()
+	defer {
+		wl.unlock()
+	}
+	// `do_open`, not `open`: bare `open` is transport.open in this module, and V resolves the
+	// parameter and the function ambiguously rather than shadowing.
+	hnd := do_open()
+	if hnd >= 0 {
+		kvaser_register(iface, hnd)
+	}
+	return hnd
+}
+
 // kvaser_apply_wire_silence brings the WIRE's controller to `want` through every handle this
 // process holds on it. The one shape of mode change that actually works — see
 // ct_kvaser_set_silent_all for why "every handle" and not "the right handle".
@@ -159,12 +188,14 @@ pub fn open_kvaser(spec string, iface string) !&KvaserBus {
 		kvaser_apply_wire_silence(iface, silent) or {}
 	}
 	if !s.fd {
-		hnd := C.ct_kvaser_open(s.channel, arb_code, if silent { 1 } else { 0 })
+		ch, code, sil := s.channel, arb_code, if silent { 1 } else { 0 }
+		hnd := kvaser_open_locked(iface, fn [ch, code, sil] () int {
+			return C.ct_kvaser_open(ch, code, sil)
+		})
 		if hnd < 0 {
 			return error('Kvaser: could not open channel ${s.channel} — ${kvaser_open_refusal(hnd,
 				s.channel, false)}')
 		}
-		kvaser_register(iface, hnd)
 		// AND THE WIRE IS RECONCILED, ALWAYS, RATHER THAN THE OPEN BEING TRUSTED.
 		//
 		// THERE IS NO "FIRST OPENER" CASE ANY MORE, and removing it is the point. It was there
@@ -197,12 +228,14 @@ pub fn open_kvaser(spec string, iface string) !&KvaserBus {
 		return error('Kvaser: this canlib32.dll has no CAN-FD API (canSetBusParamsFd missing) — update the Kvaser drivers')
 	}
 	data_code := kvaser_fd_data_code(s.data_bitrate)!
-	hnd := C.ct_kvaser_open_fd(s.channel, arb_code, data_code, if silent { 1 } else { 0 })
+	ch, code, dcode, sil := s.channel, arb_code, data_code, if silent { 1 } else { 0 }
+	hnd := kvaser_open_locked(iface, fn [ch, code, dcode, sil] () int {
+		return C.ct_kvaser_open_fd(ch, code, dcode, sil)
+	})
 	if hnd < 0 {
 		return error('Kvaser: could not open channel ${s.channel} for CAN-FD at ${s.bitrate}/${s.data_bitrate} — ${kvaser_open_refusal(hnd,
 			s.channel, true)}')
 	}
-	kvaser_register(iface, hnd)
 	// AND THE WIRE IS RECONCILED, ALWAYS, RATHER THAN THE OPEN BEING TRUSTED.
 	//
 	// THERE IS NO "FIRST OPENER" CASE ANY MORE, and removing it is the point. It was there
