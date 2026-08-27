@@ -14,14 +14,53 @@ verified. (On Linux the kernel owns the adapter and everything is SocketCAN — 
 | **Vector XL** | `vector:1@500000` | `vxlapi64.dll` | ✅ verified on hardware |
 | slcan (USB-serial) | `slcan:COM5@500000` | none — serial | ❌ not implemented |
 
-**CAN-FD on Vector** (`vector:1@500000/2000000`) **and Kvaser** (`kvaser:0@500000/2000000`) — in
-both, the data rate in the address is what asks for it — and classic CAN on all three. On **PCAN**
-CAN-FD is still **refused, not truncated**: a bench that silently dropped 56 of 64 payload bytes
-is worse than one that says no. A *classic* Vector or Kvaser channel refuses an FD frame for the
-same reason — the channel decides, not the frame, because a handle opened classic would put a
-classic frame on the wire and report success.
+**CAN-FD on all four** — Vector, Kvaser, PCAN (since #217) and CANsub. In every one the data rate
+in the address is what asks for it (`vector:1@500000/2000000`), so nothing else can contradict it.
+A *classic* channel refuses an FD frame rather than truncating: the channel decides, not the frame,
+because a handle opened classic would put a classic frame on the wire and report success.
 
 Software buses (`inproc:`, `udp:`) work on Windows exactly as on Linux and need no driver.
+
+## Backend parity — what "finished" means
+
+A backend is finished when every row below is a ✅, or an ❌ that is a **property of the driver**
+rather than work not done — stated, with the reason.
+
+That distinction is the whole point, and the table is unreadable without it. An ❌ of the second
+kind is a decision somebody made and can defend; an ❌ of the first is a job nobody has done yet,
+and it blocks. **Every ❌ in the table today is the first kind**, which is why the list under it
+says none of the four is finished — `Hardware timestamps` is unbuilt on all of them. "Leave it as
+done" is then a fact somebody can check rather than a feeling.
+
+| | PCAN | Kvaser | Vector | CANsub |
+|---|---|---|---|---|
+| Classic CAN | ✅ | ✅ | ✅ | ✅ |
+| CAN-FD | ✅ #217 | ✅ #200 | ✅ | ✅ |
+| Refuses FD on a classic channel | ✅ | ✅ | ✅ | ✅ |
+| Bus health (fault ladder) | ✅ | ✅ | ✅ | ✅ |
+| Listen-only **at the transceiver** | ❌ | ❌ | ✅ `,silent` | ✅ PHY |
+| Discover | ✅ | ✅ | ✅ + assignment | ❌ |
+| Honours project timing / sample point | partial (BTR) | ❌ ignored | partial | refuses non-default |
+| Hardware timestamps | ❌ | ❌ | ❌ | ❌ |
+| Bench record below | ✅ | ✅ | ✅ | ✅ |
+
+**The four gaps that stop any of them being called finished**, in the order they matter:
+
+1. **Listen-only on PCAN and Kvaser.** The tick promises "no ACKs" and today only stops *this
+   process* transmitting — the transceiver still acknowledges. Both vendors support it
+   (`canSetBusOutputControl(canDRIVER_SILENT)`; PCAN has a listen-only parameter). It is a safety
+   promise two of four backends do not keep, which matters most on a live vehicle.
+2. **CANsub Discover.** The only backend you cannot discover — the device id has to be read off the
+   box. It answers mDNS at `<id>-usb.local`, so it is tractable.
+3. **Kvaser project timing.** `sample_point` and `timing{}` are ignored *silently*, which is the
+   failure mode this repo refuses elsewhere. Honour it or refuse it as CANsub does.
+4. **Hardware timestamps** (#149) — cross-cutting: `transport.CanFrame` has nowhere to put one, so
+   no backend can carry one. PCAN passes `NULL` where a `TPCANTimestamp*` goes, Vector reads a
+   `chip` time it discards, CANsub decodes a synchronised device stamp and drops it.
+
+Also cross-cutting and filed: #211 (`shared_open` holds a process-wide lock across I/O), #212 (a
+second open competes for frames instead of subscribing), #213 (a backend cannot report what is
+neither a frame nor a health rung), #208 (per-backend duplication of the shared frame rules).
 
 ### What "verified" means here
 
@@ -29,6 +68,21 @@ By hand, on one bench, on the date given — **not** by CI. Nothing in CI opens 
 no runner has an adapter, and for Vector no runner may even hold `vxlapi64.dll`, which cannot
 be redistributed. The Windows job proves the code **compiles and links**: enough to catch a
 signature that drifted, not enough to catch a bitrate that never reaches the transceiver.
+
+- **PCAN CAN-FD + Kvaser, 2026-08-27** — cross-vendor on one bus: Kvaser USBcan Pro 5xHS connector
+  **CH3** (`kvaser:2`) ↔ **PCAN-USB Pro FD** channel 1 (`pcan:PCAN_USBBUS1`), arbitration 500
+  kbit/s, every payload verified byte for byte against what was sent. Classic **and** FD with BRS,
+  both directions, at data phases **1, 2, 4 and 8 Mbit/s** — 18/18 legs at each. Run with
+  `crosscheck --a kvaser:2@500000/<d> --b pcan:PCAN_USBBUS1@500000/<d> --fd`.
+
+  Two things the bench decided that reading could not. **CAN_Write is refused outright on an
+  FD-initialised channel** (`PCAN_ERROR_ILLOPERATION`, 0x8000000) — so a *classic* frame on an FD
+  channel has to go out through `CAN_WriteFD` with the FD flag clear. Every FD leg passed while
+  every classic leg failed, which is what pointed at it. And **5 Mbit/s is refused by the Kvaser,
+  not by PCAN**: canlib exposes a fixed set of FD constants and 5M is not among them, while PCAN's
+  timing is solved from the clock and handles any rate that divides it. 5 Mbit/s on PCAN is
+  therefore solver-verified but **not** wire-verified — the two PCAN channels on this bench are not
+  wired to each other, so there is no partner for it.
 
 - **PCAN + Kvaser, 2026-06-18** — cross-vendor on one 500 kbit/s bus (Kvaser Leaf Light v2 ↔
   PCAN-USB Pro FD): Kvaser TX `0x123#DEADBEEF` → PCAN RX byte-identical, and PCAN TX
@@ -563,8 +617,6 @@ rather than a bug in the backend.
 
 ## Pending
 
-- **CAN-FD on PCAN** — Vector and Kvaser have it; PCAN needs `CAN_InitializeFD`, which takes a
-  bit-rate *string* instead of the baudrate enum ([ROADMAP](../ROADMAP.md)).
 - **slcan** — vendor-neutral, cross-platform, no DLL; the cheapest path to real frames on a
   bench with no vendor adapter at all.
 

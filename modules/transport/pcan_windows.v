@@ -3,13 +3,26 @@
 // suffix gates compilation). The vendor DLL (PCANBasic.dll, shipped with the free
 // PEAK driver) is loaded at RUNTIME via pcan_shim.h — no SDK, no import lib.
 //
-// Interface string: `pcan:<channel>[@<bitrate>]`
-//   channel : PCAN_USBBUS1..8 | usb1..8 | 1..8 | a raw 0x51-style handle
-//   bitrate : bits/s (default 500000)  e.g. pcan:PCAN_USBBUS1@250000
+// Interface string: `pcan:<channel>[@<arbitration>[/<data>]]`
+//   channel     : PCAN_USBBUS1..8 | usb1..8 | 1..8 | a raw 0x51-style handle
+//   arbitration : bits/s (default 500000)   e.g. pcan:PCAN_USBBUS1@250000
+//   data        : bits/s, and NAMING IT IS WHAT ASKS FOR CAN-FD — the same rule Kvaser and
+//                 Vector follow, because a channel is opened once, for one protocol, and
+//                 nothing else can then contradict it.
+//                 e.g. pcan:PCAN_USBBUS1@500000/2000000
 //
-// NOTE: written from the documented PCAN-Basic ABI; NOT yet verified against
-// hardware (no adapter/driver available on the dev box). Compile-checked via the
-// Windows CI. See docs/windows_can_hardware.md for the verification plan.
+// CLASSIC AND FD ARE DIFFERENT CALLS, and the difference reaches further than opening: an
+// FD-initialised channel REFUSES CAN_Write outright (PCAN_ERROR_ILLOPERATION), so every send on
+// such a channel goes through CAN_WriteFD, classic frames included, with the FD flag clear. Found
+// on the bench, where every FD leg passed and every classic one failed.
+//
+// The address rules and the FD bit-timing solver are in pcan_names.v, not here: a `_windows.v`
+// file compiles only where CI runs nothing, and PCANBasic takes a bit-rate STRING of register
+// values rather than a rate constant, so that arithmetic is exactly what a test should hold.
+//
+// Hardware-verified on a PCAN-USB Pro FD — classic, and CAN-FD cross-vendor against a Kvaser
+// USBcan Pro 5xHS, 18/18 in both directions at 1/2/4/8 Mbit/s. See docs/windows_can_hardware.md
+// for the bench record and what "verified" means there.
 module transport
 
 import time
@@ -23,11 +36,18 @@ fn C.ct_pcan_write(u16, u32, u8, u8, &u8) u32
 fn C.ct_pcan_read(u16, &u32, &u8, &u8, &u8) u32
 fn C.ct_pcan_status(u16) u32
 fn C.ct_pcan_condition(u16) int
+fn C.ct_pcan_has_fd() int
+fn C.ct_pcan_init_fd(u16, &char) u32
+fn C.ct_pcan_write_fd(u16, u32, u8, u8, u8, &u8) u32
+fn C.ct_pcan_read_fd(u16, &u32, &u8, &u8, &u8) u32
 
 // PCAN message-type flags (mirror pcan_shim.h).
 const pcan_msg_rtr = u8(0x01)
 const pcan_msg_extended = u8(0x02)
 const pcan_msg_status = u8(0x80)
+const pcan_msg_fd = u8(0x04)
+const pcan_msg_brs = u8(0x08)
+const pcan_msg_esi = u8(0x10)
 
 // pcan_list probes the fixed PCAN USB channel handles (PCAN_USBBUS1..8 = 0x51..0x58)
 // for discovery. Returns [] when PCANBasic.dll is absent or nothing is attached.
@@ -51,6 +71,10 @@ fn pcan_list() []Iface {
 pub struct PcanBus {
 mut:
 	channel u16
+	// Opened for CAN-FD. THE CHANNEL DECIDES what it can carry, not the frame — a handle opened
+	// classic cannot send an FD frame whatever the flags say, and an FD-opened one carries classic
+	// frames too, so this is read on every send and every receive.
+	fd bool
 }
 
 // open_pcan parses `pcan:<channel>[@<bitrate>]`, loads PCANBasic.dll and initializes
@@ -59,12 +83,36 @@ pub fn open_pcan(spec string) !&PcanBus {
 	// BOTH RULES, from the file all three backends share: at most one bitrate, and that a whole
 	// number. Validating only the second part let `@250000@500000` open at 250 kbit/s while the
 	// project reported 500.
-	chan_part, bitrate := vendor_split_rate(spec, 500000) or { return error('PCAN: ${err}') }
+	// THE DATA RATE IN THE ADDRESS IS WHAT ASKS FOR FD, the same rule Kvaser and Vector follow:
+	// `pcan:PCAN_USBBUS1@500000/2000000`. Nothing else can contradict it, because there is nothing
+	// else to contradict — a channel is opened once, for one protocol.
+	chan_part, bitrate, data_rate, want_fd := pcan_split_fd(spec, 500000) or {
+		return error('PCAN: ${err}')
+	}
 	handle := pcan_handle(chan_part)!
-	baud := pcan_baud(bitrate)!
 	if C.ct_pcan_load() != 0 {
 		return error('PCANBasic.dll not found — install the PEAK PCAN driver')
 	}
+	if want_fd {
+		// A PRE-FD DRIVER IS A SENTENCE, NOT A CRASH. CAN_InitializeFD and friends simply are not
+		// exported by an older PCANBasic, and the shim reports their absence rather than calling
+		// through a null pointer.
+		if C.ct_pcan_has_fd() == 0 {
+			return error('PCAN: this PCANBasic.dll has no CAN_InitializeFD — CAN-FD needs a newer PEAK driver')
+		}
+		btr := pcan_fd_bitrate(bitrate, data_rate, pcan_default_sample_point) or {
+			return error('PCAN: ${err.msg()}')
+		}
+		st := C.ct_pcan_init_fd(handle, btr.str)
+		if st != 0 {
+			return error('CAN_InitializeFD failed (0x${st:X}) for ${bitrate}/${data_rate} — adapter connected? bus terminated/powered?')
+		}
+		return &PcanBus{
+			channel: handle
+			fd:      true
+		}
+	}
+	baud := pcan_baud(bitrate)!
 	st := C.ct_pcan_init(handle, baud)
 	if st != 0 {
 		return error('CAN_Initialize failed (0x${st:X}) — adapter connected? bus terminated/powered?')
@@ -83,12 +131,6 @@ fn open_pcan_bus(iface string) !Bus {
 }
 
 pub fn (mut b PcanBus) send(f CanFrame) ! {
-	// CAN-FD is not implemented on this backend: the vendor call below writes a classic frame,
-	// so an FD frame would go out truncated and report success. Refuse — a bench that silently
-	// changes what it transmits is worse than one that stops.
-	if f.fd {
-		return error('PCAN: CAN-FD frames are not supported by this backend yet (id 0x${f.id:X}, ${f.data.len} bytes)')
-	}
 	// THE SHARED SHAPE RULES FIRST (frame_rules.v). This path accepted `brs` on a classic frame
 	// and simply never passed it to ct_pcan_write, reporting success — while wiretap kept the flag,
 	// so the record claimed a bit-rate switch the wire never saw. Kvaser and Vector each refuse
@@ -102,6 +144,49 @@ pub fn (mut b PcanBus) send(f CanFrame) ! {
 	if f.extended {
 		mt |= pcan_msg_extended
 	}
+	// THE CHANNEL DECIDES WHICH CALL, NOT THE FRAME.
+	//
+	// An FD-initialised channel refuses CAN_Write outright — PCAN_ERROR_ILLOPERATION (0x8000000),
+	// found on the bench when the classic legs of a cross-vendor run failed while every FD leg
+	// passed. So a classic frame on an FD channel goes out through CAN_WriteFD too, with the FD
+	// flag simply not set. The two calls are not interchangeable in either direction: a classic
+	// channel has no CAN_WriteFD either.
+	if b.fd {
+		dlc := fd_dlc_for(f.data.len) or {
+			return error('PCAN: ${f.data.len} bytes is not a payload size a DLC can express (id 0x${f.id:X}) — ${fd_lengths}')
+		}
+		if f.fd {
+			mt |= pcan_msg_fd
+			if f.brs {
+				mt |= pcan_msg_brs
+			}
+			// ESI IS NOT SET HERE. It reports that the TRANSMITTING NODE was error-passive — the
+			// controller's own condition, which it stamps itself — so a sender choosing it is a
+			// sender lying about its state. Neither Kvaser's nor Vector's write takes it either,
+			// and `CanFrame` says as much where the field is declared. Reachable from replay of a
+			// recording, which carries flags verbatim (self-review).
+		} else if f.data.len > 8 {
+			// A classic frame is still a classic frame on an FD wire: eight bytes, whatever the
+			// channel could otherwise carry. Refused rather than promoted, or the trace would
+			// record a classic frame that went out as FD.
+			return error('PCAN: ${f.data.len} bytes is not a classic CAN frame (id 0x${f.id:X}) — set fd on the frame, or send 8 bytes')
+		}
+		st := C.ct_pcan_write_fd(b.channel, f.id, mt, dlc, u8(f.data.len), f.data.data)
+		match pcan_write_verdict(st) {
+			.sent {}
+			.busy { return busy_error('PCAN', f.id) }
+			.failed { return error('CAN_WriteFD failed (0x${st:X})') }
+		}
+
+		return
+	}
+	if f.fd {
+		// THE CHANNEL DECIDES. A handle opened classic cannot carry an FD frame whatever the flags
+		// say — CAN_Write would put a classic frame on the wire and report success, which is the
+		// silent truncation this backend has always refused. Say what to change, because the
+		// answer is in the address.
+		return error('PCAN: this channel is classic — name a data rate to open it for CAN-FD (pcan:${'<channel>'}@500000/2000000), id 0x${f.id:X}')
+	}
 	// REFUSED, not truncated — the same rule this backend already applies to an FD frame, and
 	// for the same reason. A vendor interface is not clamps_to_classic(), so wire_frame() gives
 	// the trace the frame AS ASKED: truncating here records nine bytes against eight on the
@@ -111,8 +196,10 @@ pub fn (mut b PcanBus) send(f CanFrame) ! {
 	}
 	n := f.data.len
 	st := C.ct_pcan_write(b.channel, f.id, mt, u8(n), f.data.data)
-	if st != 0 {
-		return error('CAN_Write failed (0x${st:X})')
+	match pcan_write_verdict(st) {
+		.sent {}
+		.busy { return busy_error('PCAN', f.id) }
+		.failed { return error('CAN_Write failed (0x${st:X})') }
 	}
 }
 
@@ -122,24 +209,54 @@ pub fn (mut b PcanBus) recv(timeout_ms int) !CanFrame {
 		mut id := u32(0)
 		mut mt := u8(0)
 		mut ln := u8(0)
-		mut data := [8]u8{}
+		// 64 BYTES ALWAYS, whichever call fills it: an FD-opened channel carries classic frames
+		// too, and a classic-sized array here would be overrun by the first 64-byte frame.
+		mut data := [64]u8{}
+		// CAN_ReadFD ON AN FD CHANNEL, CAN_Read otherwise. They are different calls against
+		// different structs, and the channel was opened for one of them.
+		st := if b.fd {
+			C.ct_pcan_read_fd(b.channel, &id, &mt, &ln, &data[0])
+		} else {
+			C.ct_pcan_read(b.channel, &id, &mt, &ln, &data[0])
+		}
 		// The status word decides, and the fault ladder in it is NOT a failure — see
 		// pcan_read_verdict, which is where that rule lives and where a test can reach it.
-		st := C.ct_pcan_read(b.channel, &id, &mt, &ln, &data[0])
 		verdict := pcan_read_verdict(st)
 		if verdict == .frame {
 			if mt & pcan_msg_status != 0 {
 				continue // PCAN status/error frame, not a data frame
 			}
-			mut out := []u8{len: int(ln)}
-			for i in 0 .. int(ln) {
+			// ON AN FD READ `ln` IS A DLC CODE, not a byte count — CAN_ReadFD fills DLC where
+			// CAN_Read fills LEN. Treating the code as a length turns a 12-byte frame into 12
+			// bytes of a 24-byte payload, silently.
+			//
+			// AND ONLY AN FD FRAME MAY USE THE HIGH CODES. An FD channel carries classic frames
+			// too, and a classic DLC of 9..15 is legal and means EIGHT bytes — the codes above 8
+			// mean 12..64 only for FD. Decoded through the FD table, such a frame was reported as
+			// a 12-to-64-byte classic frame padded with the shim's zeros (self-review).
+			is_fd := mt & pcan_msg_fd != 0
+			n := if b.fd && is_fd {
+				fd_len_for(ln)
+			} else if int(ln) > 8 {
+				8
+			} else {
+				int(ln)
+			}
+			mut out := []u8{len: n}
+			for i in 0 .. n {
 				out[i] = data[i]
 			}
 			return CanFrame{
 				id:       id & 0x1FFF_FFFF
 				extended: mt & pcan_msg_extended != 0
-				rtr:      mt & pcan_msg_rtr != 0
-				data:     out
+				// FROM THE FRAME, not from the channel: an FD-opened channel carries classic
+				// frames too, and the trace has to tell them apart.
+				fd:  mt & pcan_msg_fd != 0
+				brs: mt & pcan_msg_brs != 0
+				// A RECEIVED STATUS rather than a choice: the transmitter was error-passive.
+				esi:  mt & pcan_msg_esi != 0
+				rtr:  mt & pcan_msg_rtr != 0
+				data: out
 			}
 		}
 		if verdict == .failed {
@@ -170,23 +287,4 @@ pub fn (mut b PcanBus) health() BusHealth {
 		return .unknown
 	}
 	return pcan_status_health(st)
-}
-
-// pcan_handle maps a channel spec to a PCANBasic channel handle. USB handles are
-// 0x51..0x58 (PCAN_USBBUS1..8) — the common case for the owner's adapters.
-
-// pcan_baud maps a bit rate to the PCANBasic BTR0BTR1 baudrate code.
-fn pcan_baud(bitrate int) !u16 {
-	return match bitrate {
-		1000000 { u16(0x0014) }
-		800000 { u16(0x0016) }
-		500000 { u16(0x001C) }
-		250000 { u16(0x011C) }
-		125000 { u16(0x031C) }
-		100000 { u16(0x432F) }
-		50000 { u16(0x472F) }
-		20000 { u16(0x532F) }
-		10000 { u16(0x672F) }
-		else { error('unsupported PCAN bitrate ${bitrate} (use 10k/20k/50k/100k/125k/250k/500k/800k/1M)') }
-	}
 }

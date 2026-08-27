@@ -75,6 +75,46 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   setup an evening in 2026-08. The in-process (`inproc:`) and UDP buses need none of this, which
   is why the unit tests and the headless runner pass on a machine where SocketCAN cannot work.
 
+## Environment (native Windows)
+
+- 🟢 **Build with `-cc gcc` and MSYS2's mingw, not V's bundled tcc.** tcc cannot resolve Win32
+  symbols — it stops on `undefined symbol 'InitOnceExecuteOnce'` / `GetTickCount64`. That is a tcc
+  limitation and not a "Windows V does not work" one, which is worth stating because believing the
+  latter sends you to WSL for everything:
+
+  ```powershell
+  $env:PATH = "C:\dev\msys64-ct\mingw64\bin;$env:PATH"
+  C:\dev\v\v.exe -cc gcc -enable-globals -path "@vlib|@vmodules|modules" -o thing.exe cmd\thing\main.v
+  ```
+
+  It is what `.github/workflows/windows.yml` uses too. Bench work has to be native anyway — the
+  vendor DLLs only exist on Windows.
+
+- 🟡 **The network suites make Windows Firewall prompt on every run.** `udpbus_test.v` binds
+  `0.0.0.0:<port>` and joins multicast, and the DoIP and SOME/IP suites listen on TCP — Windows
+  prompts for any listen on a non-loopback address. A per-program allow rule never sticks, because
+  V builds each test binary to a **fresh temp path** every run, so the prompt returns forever.
+
+  Allow the port bands instead — they are declared once in `modules/testports` and are narrow:
+
+  ```powershell
+  New-NetFirewallRule -DisplayName "blobly_net tests (UDP)" -Direction Inbound `
+    -Protocol UDP -LocalPort 20000-29999 -Action Allow -Profile Any
+  New-NetFirewallRule -DisplayName "blobly_net tests (TCP)" -Direction Inbound `
+    -Protocol TCP -LocalPort 20000-25999 -Action Allow -Profile Any
+  ```
+
+  Not merely cosmetic: dismissing a prompt can fail the multicast bind, and `udpbus_test` then
+  flakes in a way that reads as a code defect. Undo with
+  `Remove-NetFirewallRule -DisplayName "blobly_net tests*"`.
+
+- 🟡 **Do not mix Windows-side and WSL-side writes on one working tree.** Each caches the other's
+  writes to `/mnt/c`. On 2026-08-27 the two views diverged by nine minutes: an edit was silently
+  reverted by a stale copy and two tests were reported as passing while never being compiled at
+  all — which makes verification untrustworthy rather than merely wrong. Do a whole task on one
+  side; `wsl --terminate Ubuntu-24.04` clears a stale view. The bash-only pieces
+  (`scripts/runtests.sh`, the codex review scripts) still need WSL, so flush before running them.
+
 ## CI (GitHub Actions)
 
 - 🔴 **V will NOT self-compile on the Windows runner — CI must DOWNLOAD a prebuilt V.**

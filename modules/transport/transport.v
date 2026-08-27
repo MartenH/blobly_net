@@ -32,6 +32,26 @@ pub mut:
 // does and what a receiver expects.
 pub const fd_lengths = [0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 32, 48, 64]
 
+// fd_dlc_for is the DLC CODE a CAN-FD controller is given for a payload length, or none when no
+// code stands for it. The table above IS the mapping — index 9 means 12 bytes, 15 means 64 — so
+// this indexes it rather than restating the jumps, which is the form they are wrong in.
+pub fn fd_dlc_for(n int) ?u8 {
+	for i, l in fd_lengths {
+		if l == n {
+			return u8(i)
+		}
+	}
+	return none
+}
+
+// fd_len_for is the payload length a DLC code stands for — the inverse of fd_dlc_for, and the
+// half a receiver needs. A vendor read hands back the CODE; treating it as a byte count turns a
+// 12-byte frame into 12 bytes of a 24-byte payload without saying anything.
+pub fn fd_len_for(dlc u8) int {
+	d := int(dlc) & 0x0F
+	return fd_lengths[d]
+}
+
 // fd_padded_len rounds a payload length up to the next encodable CAN-FD length, or returns the
 // length unchanged when it is already one. Above 64 there is nothing valid to round to.
 pub fn fd_padded_len(n int) int {

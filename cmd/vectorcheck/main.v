@@ -1255,7 +1255,7 @@ fn pair_test(o Opts) ! {
 			tx.send(f) or {
 				// A FULL QUEUE IS THE WIRE, not a fault: at saturation the bus is the slowest
 				// thing in the system and says so. Stop offering for now and go drain.
-				if err.msg().starts_with(transport.vector_busy_msg) {
+				if transport.is_backpressure(err) {
 					n_busy++
 					break
 				}

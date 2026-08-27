@@ -56,7 +56,7 @@ fn test_fd_payload_lengths() {
 fn test_kvaser_now_carries_fd() {
 	assert adapter_carries_fd('kvaser')
 	assert adapter_carries_fd('KVASER'), 'the answer is about the adapter, not its spelling'
-	assert !adapter_carries_fd('pcan'), 'PCAN still refuses FD rather than truncating'
+	assert adapter_carries_fd('pcan'), 'PCAN carries FD too since #217'
 	assert !adapter_carries_fd('doip')
 	assert adapter_carries_fd('vector')
 }
@@ -142,7 +142,7 @@ fn test_kvaser_address_error_matches_the_open_rules() {
 fn test_which_adapters_configure_a_data_phase() {
 	assert adapter_configures_data_phase('vector')
 	assert adapter_configures_data_phase('kvaser')
-	assert !adapter_configures_data_phase('pcan')
+	assert adapter_configures_data_phase('pcan')
 	assert !adapter_configures_data_phase('socketcan')
 	assert !adapter_configures_data_phase('vcan')
 	// carrying and configuring are not the same list

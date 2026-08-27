@@ -19,8 +19,8 @@ from the arbitration one. Nothing in `modules/sim` sets the flag itself, and tha
 Replay is unchanged: frames read from a recording carry the FD bits the recording captured.
 
 Not every backend can carry it. SocketCAN, `inproc` and `udp` all do; Vector and Kvaser do, both
-verified on hardware. The PCAN backend writes classic frames only and **refuses** an FD frame
-rather than truncating it.
+verified on hardware — PCAN cross-vendor against a Kvaser at 1/2/4/8 Mbit/s (#217), Kvaser and
+Vector to 8 Mbit/s, CANsub at 2 Mbit/s.
 
 For *why* it is built this way, see [simulation_architecture.md](simulation_architecture.md) —
 that is the design document. This page is how to use it.
