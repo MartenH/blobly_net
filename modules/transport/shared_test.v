@@ -670,6 +670,56 @@ fn test_a_join_that_finds_the_parked_generation_dead_reopens_through_the_factory
 	tx_only.close()
 }
 
+// AN EXPIRED TAP'S HISTORY BEGINS AT ITS FIRST RECEIVE, ring included: what the reader committed
+// on its behalf in its attentive second is not served to it a minute later as new (codex round 3
+// on #224).
+fn test_an_expired_tap_starts_at_the_tail_when_it_finally_receives() {
+	fake_opens = 0
+	stdatomic.store_i64(&fake_closes, 0)
+	fake_fails = false
+	fake_rx = chan CanFrame{cap: 8}
+	stdatomic.store_i64(&fake_recv_fails, 0)
+	mut tap := shared_open('fake:idle-tap', 'fake:idle-tap', fake_make)!
+	mut reader := shared_open('fake:idle-tap', 'fake:idle-tap', fake_make)!
+	// Committed while the tap is attentive: the reader receives it, the tap does not read.
+	fake_rx <- CanFrame{
+		id: 0x200
+	}
+	assert reader.recv(1000)!.id == 0x200
+	reader.close()
+	shared_test_wait_parked(mut tap)
+	if _ := tap.recv(50) {
+		assert false, 'the expired tap was served a frame from its attentive second as new'
+	} else {
+		assert err.msg() == 'timeout'
+	}
+	fake_rx <- CanFrame{
+		id: 0x201
+	}
+	assert tap.recv(1000)!.id == 0x201
+	tap.close()
+}
+
+// A LATE FIRST RECEIVE THAT FINDS THE ADAPTER GONE FAILS THE GENERATION AND SAYS SO — the error
+// is the caller's answer, not a timeout followed by silence (codex round 3 on #224).
+fn test_a_late_first_receive_that_finds_the_adapter_gone_reports_it() {
+	fake_opens = 0
+	stdatomic.store_i64(&fake_closes, 0)
+	fake_fails = false
+	fake_rx = chan CanFrame{cap: 8}
+	stdatomic.store_i64(&fake_recv_fails, 0)
+	mut tap := shared_open('fake:idle-late-fatal', 'fake:idle-late-fatal', fake_make)!
+	shared_test_wait_parked(mut tap)
+	stdatomic.store_i64(&fake_recv_fails, 1)
+	if _ := tap.recv(1000) {
+		assert false, 'a fatal read must not be swallowed by the late first receive'
+	} else {
+		assert err.msg() == fake_recv_failure_msg
+	}
+	assert shared_test_failed(mut tap)
+	tap.close()
+}
+
 fn shared_test_failed(mut bus Bus) bool {
 	if mut bus is SharedHandle {
 		mut e := bus.entry

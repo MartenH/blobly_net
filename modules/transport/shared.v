@@ -33,11 +33,15 @@ const shared_parked_drain_ms = 1000
 // docs/one_reader_per_wire.md.
 const shared_attentive_ms = i64(1000)
 
-// shared_boundary_drain_ms bounds the drain a handle runs to establish its own boundary on a
-// parked wire (admit, and a late first receive). Batches until the queue is empty or this long:
-// a bus that outruns the driver's reads could otherwise hold drain_mu indefinitely, and after a
-// quarter of a second everything still queued arrived within the handle's own open.
-const shared_boundary_drain_ms = i64(250)
+// shared_boundary_drain_frames bounds the drain a handle runs to establish its own boundary on
+// a parked wire (admit, and a late first receive) — by COUNT, sized past the driver's queue. A
+// time budget was wrong: on a bus that outruns zero-timeout reads the queue can still BEGIN with
+// pre-open frames when the clock runs out, and they would then be published to the handle as
+// new (codex round 3 on #224). A count cannot be: PCANBasic's receive queue holds 32768 frames,
+// so after this many reads every frame still queued arrived after the drain began — that is,
+// after the handle's open — whatever the bus is doing. Worst case is a few hundred milliseconds
+// of reads, and only on a saturated bus with a deep backlog.
+const shared_boundary_drain_frames = u64(65536)
 const shared_pending_capacity = 4096
 const shared_pending_ttl_ms = 5000
 
@@ -388,7 +392,13 @@ fn (mut e SharedEntry) read_loop() {
 			}
 			e.mu.lock()
 			e.parked = false
+			woke_failed := e.state != .running
 			e.mu.unlock()
+			if woke_failed {
+				// Failed or closed while parked (a join's boundary drain found the adapter
+				// gone): nothing to drain on a generation that is no longer ours.
+				break
+			}
 			// IN BATCHES, RELEASING drain_mu BETWEEN THEM. A drain that ran until it saw an empty
 			// queue never released the lock on a bus that delivers at least as fast as the driver
 			// reads — and a handle opening onto the wire waited in admit for as long as that
@@ -416,7 +426,14 @@ fn (mut e SharedEntry) read_loop() {
 			}
 			continue
 		}
+		// UNDER drain_mu, LIKE A DRAIN. A handle establishing its boundary while this read was
+		// in flight — the attentive second expired between the check above and here — could
+		// otherwise register before this read's frame was committed, and be handed a frame from
+		// before its boundary as new (codex round 3 on #224). The cost is that a joiner waits out
+		// one poll period at most.
+		e.drain_mu.lock()
 		ingress := e.driver.recv_shared(shared_reader_poll_ms) or {
+			e.drain_mu.unlock()
 			mut closing := false
 			e.mu.lock()
 			closing = e.state != .running
@@ -440,6 +457,7 @@ fn (mut e SharedEntry) read_loop() {
 			e.done <- true
 			return
 		}
+		e.drain_mu.unlock()
 		ingress_at := time.ticks()
 
 		// THE READER NEVER WAITS ON A WRITER. It used to take send_mu before matching an
@@ -524,9 +542,20 @@ fn (mut e SharedEntry) admit(id u64) ! {
 	parked := !e.attentive_locked(time.ticks())
 	e.mu.unlock()
 	if parked && !e.tx_acks {
-		e.drain_until_empty(shared_boundary_drain_ms) or {
+		e.drain_boundary(0) or {
 			e.drain_mu.unlock()
 			e.fail_and_close(err.msg())
+			// AND THE FAILED READER IS RETIRED BEFORE THE CALLER REOPENS. It is parked; woken,
+			// it finds the state changed and exits, sending done — which nothing else consumes
+			// on a failed generation (close waits only on a healthy last close). Without this
+			// the replacement generation could be opened while the old reader still had one
+			// post-park batch to run on the same PCAN channel constant, stealing the
+			// replacement's frames (codex round 3 on #224).
+			select {
+				e.kick <- true {}
+				else {}
+			}
+			_ := <-e.done
 			return err
 		}
 	}
@@ -540,16 +569,28 @@ fn (mut e SharedEntry) admit(id u64) ! {
 	}
 }
 
-// drain_until_empty runs drain_parked in batches until the queue is empty or `budget_ms` is
-// spent — a handle establishing its own boundary, under drain_mu. See shared_boundary_drain_ms.
-fn (mut e SharedEntry) drain_until_empty(budget_ms i64) ! {
-	until := time.ticks() + budget_ms
-	for {
+// drain_boundary runs drain_parked in batches until the queue is empty or
+// shared_boundary_drain_frames have been read — a handle establishing its own boundary, under
+// drain_mu. `until` is a caller's deadline in ticks (0 for none): a receive with a budget of its
+// own stops when that budget is spent, and accepts an approximate boundary rather than blocking
+// past what it asked for (codex round 3 on #224).
+fn (mut e SharedEntry) drain_boundary(until i64) ! {
+	mut read := u64(0)
+	for read < shared_boundary_drain_frames {
+		before := e.discards()
 		more := e.drain_parked()!
-		if !more || time.ticks() >= until {
+		read += e.discards() - before
+		if !more || (until > 0 && time.ticks() >= until) {
 			return
 		}
 	}
+}
+
+fn (mut e SharedEntry) discards() u64 {
+	e.mu.lock()
+	n := e.parked_discards
+	e.mu.unlock()
+	return n
 }
 
 // attentive_locked is whether anybody is listening on this wire: a handle that has received,
@@ -780,11 +821,32 @@ fn (mut h SharedHandle) recv(timeout_ms int) !CanFrame {
 			e.mu.lock()
 			unread := !e.attentive_locked(time.ticks())
 			e.mu.unlock()
-			if unread && !e.tx_acks {
-				// A fatal here is left to the reader: this handle is about to subscribe, and the
-				// reader's next drain — within a period, since nothing else is attentive — fails
-				// the generation and wakes it with the terminal error.
-				e.drain_until_empty(shared_boundary_drain_ms) or {}
+			if unread {
+				// AN EXPIRED TAP'S HISTORY BEGINS HERE, as docs/one_reader_per_wire.md says: the
+				// ring may still hold what was committed on its behalf in its attentive second,
+				// and its open-time cursor would have served that as new (codex round 3 on
+				// #224). The tail is its boundary now, and the driver's queue is drained to it —
+				// within the caller's own budget: a receive that asked for 0 ms is not made to
+				// wait out a backlog, and takes an approximate boundary instead.
+				e.mu.lock()
+				h.cursor = e.next_seq
+				e.mu.unlock()
+				if !e.tx_acks {
+					e.drain_boundary(if timeout_ms < 0 { i64(0) } else { deadline }) or {
+						// The adapter is gone, and this receive is the one that found out: the
+						// generation fails here, as it would under the reader, and the error is
+						// this caller's answer (codex round 3 on #224).
+						e.drain_mu.unlock()
+						e.fail_and_close(err.msg())
+						select {
+							e.kick <- true {}
+							else {}
+						}
+						_ := <-e.done
+						h.mu.unlock()
+						return err
+					}
+				}
 			}
 		}
 		e.mu.lock()
