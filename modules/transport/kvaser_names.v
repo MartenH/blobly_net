@@ -173,3 +173,56 @@ pub fn kvaser_open_refusal(st int, ch int, fd bool) string {
 	want := if fd { 'CAN-FD' } else { 'classic' }
 	return 'canStatus -3 (canERR_NOTFOUND). canlib reports that as "device not found", but channel ${ch} is enumerated — it refuses a second handle in a different protocol, and this process may already hold it as ${other} while this row asks for ${want}. A disabled row keeps its transmit tap open, so one can outlive the row that made it: Stop and Start to change a wire\'s protocol'
 }
+
+// canlib's message flags, and the ONE place a received flags word becomes a frame.
+//
+// IN V, NOT IN THE SHIM, and for the reason health.v gives about the fault ladder: a decode that
+// lives in `kvaser_windows.v` or in C is a decode no runner can test, and this one had already
+// shipped wrong once — `canMSG_RTR` was never read at all, so every remote frame on the wire came
+// up as ordinary data (#177). A changed constant, a dropped assignment or an out-parameter that
+// moved would all have looked exactly like working code (codex round 1 on #205).
+//
+// The values are canlib's, transcribed from `canstat.h`/`canlib.h`, and pinned by the test beside
+// this file. CAN-FD rides the HIGH half of the same word the classic flags use, which is why one
+// argument says both.
+pub const kvaser_msg_rtr = u32(0x0001)
+
+pub const kvaser_msg_std = u32(0x0002)
+
+pub const kvaser_msg_ext = u32(0x0004)
+
+pub const kvaser_msg_error_frame = u32(0x0020)
+
+pub const kvaser_fdmsg_fdf = u32(0x01_0000)
+
+pub const kvaser_fdmsg_brs = u32(0x02_0000)
+
+pub const kvaser_fdmsg_esi = u32(0x04_0000)
+
+// KvaserFrameFlags is what one received flags word says about the frame.
+pub struct KvaserFrameFlags {
+pub:
+	extended    bool
+	rtr         bool
+	fd          bool
+	brs         bool
+	esi         bool
+	error_frame bool
+}
+
+// kvaser_decode_flags reads a canlib flags word.
+//
+// `fd`, `brs` and `esi` come FROM THE FRAME, never from how the channel was opened: an FD-opened
+// channel carries classic frames too, and the trace has to tell them apart. ESI is a received
+// status rather than a choice — the transmitting node was error-passive — and an error frame is
+// not a frame at all, which the caller skips.
+pub fn kvaser_decode_flags(flag u32) KvaserFrameFlags {
+	return KvaserFrameFlags{
+		extended:    flag & kvaser_msg_ext != 0
+		rtr:         flag & kvaser_msg_rtr != 0
+		fd:          flag & kvaser_fdmsg_fdf != 0
+		brs:         flag & kvaser_fdmsg_brs != 0
+		esi:         flag & kvaser_fdmsg_esi != 0
+		error_frame: flag & kvaser_msg_error_frame != 0
+	}
+}

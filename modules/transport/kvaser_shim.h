@@ -174,30 +174,37 @@ static int ct_kvaser_write(int hnd, uint32_t id, uint8_t len, const uint8_t *dat
 }
 
 /* Read one frame, blocking up to timeout_ms. Returns 0 (frame, out filled), 1 (timed out / no
- * message / error frame — skip), or the negative canStatus.
+ * message), or the negative canStatus.
+ *
+ * THE FLAGS WORD IS HANDED OUT WHOLE rather than picked apart here. What each bit means is a
+ * decode, and a decode written in C is one no test can reach -- this one had already shipped
+ * missing canMSG_RTR entirely (#177), which looked exactly like working code from the outside.
+ * kvaser_decode_flags() in kvaser_names.v reads it, and the test beside that file pins the
+ * constants to canlib's headers, the way health.v pins the fault ladder.
  *
  * ONE reader for both modes, with a 64-byte buffer. An FD-opened channel carries classic frames
  * too, and canlib writes only `dlc` bytes, so the wide buffer costs a classic read nothing and
  * is the difference between a 64-byte FD frame arriving and smashing the stack. `fd` and `brs`
  * are reported OUT rather than assumed from how the channel was opened: the bus tells us what
  * each frame was, which is the whole point of the flags. */
-static int ct_kvaser_read(int hnd, uint32_t *id, uint8_t *len, uint8_t *data, int *ext, int *fd, int *brs, int *esi, uint32_t timeout_ms) {
+static int ct_kvaser_read(int hnd, uint32_t *id, uint8_t *len, uint8_t *data, uint32_t *flags, uint32_t timeout_ms) {
 	int32_t cid = 0;
-	uint8_t buf[64];
+	/* ZEROED, because a REMOTE frame carries no data and canlib does not write any: it reports
+	 * the requested DLC and leaves the buffer alone. Uninitialised, those bytes were whatever
+	 * was on the stack, so a request for 8 bytes came back as 8 bytes of garbage -- and
+	 * wiretap compares payloads, so the echo of our own request still failed to match and was
+	 * filed as the ECU answering it. That is the #177 defect surviving its own fix for every
+	 * DLC above zero (self-review). Every other backend hands a remote request up as zeroes of
+	 * the requested length. */
+	uint8_t buf[64] = {0};
 	uint32_t dlc = 0, flag = 0, t = 0;
 	int st = ct_kv_readwait(hnd, &cid, buf, &dlc, &flag, &t, timeout_ms);
 	int i;
 	if (st == CT_KV_ERR_NOMSG) return 1;
 	if (st < 0) return st; /* negative canStatus error */
-	if (flag & CT_KV_MSG_ERROR_FRAME) return 1;
 	*id = (uint32_t)cid;
 	*len = (uint8_t)(dlc > 64 ? 64 : dlc);
-	*ext = (flag & CT_KV_MSG_EXT) ? 1 : 0;
-	*fd  = (flag & CT_KV_FDMSG_FDF) ? 1 : 0;
-	*brs = (flag & CT_KV_FDMSG_BRS) ? 1 : 0;
-	/* ESI is a RECEIVED STATUS, not a choice: the transmitting node was error-passive. The other
-	 * backends carry it, so a recording made on Kvaser must not be the one that loses it. */
-	*esi = (flag & CT_KV_FDMSG_ESI) ? 1 : 0;
+	*flags = flag;
 	for (i = 0; i < 64; i++) data[i] = buf[i];
 	return 0;
 }

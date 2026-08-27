@@ -7,13 +7,20 @@ exercised with no hardware at all.
 Everything here is **driver-free and in-process** by default: the `inproc:` transport is a
 shared bus inside the running program, so the demos below work identically on Linux and Windows
 with nothing plugged in. The same configuration runs against real hardware by changing only the
-channel's interface — with one limit worth knowing: **the SIMULATED ECUs still transmit classic
-CAN.** `transport.CanFrame` now carries an `fd`/`brs` flag and up to 64 payload bytes, and
-SocketCAN, `inproc` and `udp` all put a real FD frame on the wire — but nothing in `modules/sim`
-sets that flag, so generators, senders and E2E protection produce classic frames whatever the
-DBC says. **Replay is the FD path today**: frames read from a recording carry the FD bits the
-recording captured. The PCAN backend writes classic frames only, and **refuses** an FD frame
-rather than truncating it; Vector and Kvaser carry FD.
+channel's interface.
+
+**CAN-FD reaches the frames we originate, not just the ones we replay** (#202). The format is a
+property of the CHANNEL, declared in the project (`type: canfd` plus a data rate) rather than
+inferred from a payload size, and it is applied inside `transport.open` — the same seam
+listen-only uses, and for the same reason: an emitter never sees the decision, it is simply
+handed a bus that frames what it sends. So generators, senders, E2E protection and the
+simulated ECUs all put real FD frames on an FD channel, with BRS when the data phase differs
+from the arbitration one. Nothing in `modules/sim` sets the flag itself, and that is the point.
+Replay is unchanged: frames read from a recording carry the FD bits the recording captured.
+
+Not every backend can carry it. SocketCAN, `inproc` and `udp` all do; Vector and Kvaser do, both
+verified on hardware. The PCAN backend writes classic frames only and **refuses** an FD frame
+rather than truncating it.
 
 For *why* it is built this way, see [simulation_architecture.md](simulation_architecture.md) —
 that is the design document. This page is how to use it.

@@ -32,7 +32,7 @@ fn C.ct_kvaser_open_fd(int, int, int) int
 fn C.ct_kvaser_write_fd(int, u32, u8, &u8, int, int) int
 fn C.ct_kvaser_has_fd() int
 fn C.ct_kvaser_write(int, u32, u8, &u8, int, int) int
-fn C.ct_kvaser_read(int, &u32, &u8, &u8, &int, &int, &int, &int, u32) int
+fn C.ct_kvaser_read(int, &u32, &u8, &u8, &u32, u32) int
 fn C.ct_kvaser_close(int)
 fn C.ct_kvaser_status(int, &u32) int
 fn C.ct_kvaser_count() int
@@ -145,20 +145,23 @@ pub fn (mut b KvaserBus) recv(timeout_ms int) !CanFrame {
 	to := if timeout_ms < 0 { u32(0xFFFF_FFFF) } else { u32(timeout_ms) }
 	mut id := u32(0)
 	mut ln := u8(0)
-	mut ext := 0
-	mut fd := 0
-	mut brs := 0
-	mut esi := 0
+	mut flags := u32(0)
 	// 64 BYTES ALWAYS, whichever mode this handle was opened in: the shim's reader copies a full
 	// FD payload out, and a classic-sized array here would be overrun by the first 64-byte frame
 	// on the wire.
 	mut data := [64]u8{}
-	r := C.ct_kvaser_read(b.handle, &id, &ln, &data[0], &ext, &fd, &brs, &esi, to)
+	r := C.ct_kvaser_read(b.handle, &id, &ln, &data[0], &flags, to)
 	if r == 1 {
 		return error('timeout')
 	}
 	if r < 0 {
 		return error('canReadWait failed (canStatus ${r})')
+	}
+	// ONE DECODE, IN V, pinned by a test — see kvaser_decode_flags. An error frame is not a frame
+	// and is reported as nothing arriving, which is what the shim used to do with it.
+	f := kvaser_decode_flags(flags)
+	if f.error_frame {
+		return error('timeout')
 	}
 	mut out := []u8{len: int(ln)}
 	for i in 0 .. int(ln) {
@@ -166,14 +169,14 @@ pub fn (mut b KvaserBus) recv(timeout_ms int) !CanFrame {
 	}
 	return CanFrame{
 		id:       id & 0x1FFF_FFFF
-		extended: ext != 0
-		// FROM THE FRAME, not from the channel. An FD-opened channel carries classic frames too,
-		// and the trace has to be able to tell them apart.
-		fd:  fd != 0
-		brs: brs != 0
-		// A RECEIVED STATUS, not a choice the sender makes: the transmitter was error-passive.
-		// The other backends carry it and a Kvaser recording must not be the one that drops it.
-		esi:  esi != 0
+		extended: f.extended
+		// A remote frame is a request for data, and the send path has carried RTR since #177.
+		// Reading it back is the other half: wiretap matches an echo on rtr, so a remote frame
+		// that arrives unlabelled is our own request filed as somebody else's answer.
+		rtr:  f.rtr
+		fd:   f.fd
+		brs:  f.brs
+		esi:  f.esi
 		data: out
 	}
 }
