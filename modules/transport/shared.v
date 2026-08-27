@@ -335,6 +335,11 @@ fn shared_open_events(key string, spec string, make fn (string) !SharedDriver) !
 					return error('${spec}: joined an already-open wire but its controller would not be set listen-only — ${err.msg()}')
 				}
 			}
+			// The attentive second starts when the CALLER gets the handle, not when it was
+			// admitted: a reconcile that waited behind a mid-run silence transition could
+			// otherwise spend the second before open returned, and the first receive would
+			// find the reader parked (codex round 9 on #224).
+			h.entry.touch(h.id)
 			return h
 		}
 		return error('${spec}: shared_open produced no handle')
@@ -556,6 +561,17 @@ fn (mut e SharedEntry) read_loop() {
 // failed and took every alias on the wire down, instead of the open going through the factory
 // to the reconnected adapter (codex rounds 1 and 2 on #224). fail_and_close is the same call the
 // reader makes: it is idempotent, and a reader parked or mid-read finds the state changed.
+// touch restarts an unread handle's attentive second, on a running entry only.
+fn (mut e SharedEntry) touch(id u64) {
+	e.mu.lock()
+	if e.state == .running {
+		if _ := e.unread[id] {
+			e.unread[id] = time.ticks()
+		}
+	}
+	e.mu.unlock()
+}
+
 // take_drain_lock is drain_mu.lock() with the reader told to yield — see `waiting`.
 fn (mut e SharedEntry) take_drain_lock() {
 	e.mu.lock()
@@ -594,10 +610,16 @@ fn (mut e SharedEntry) admit(mut h SharedHandle) ! {
 	e.take_drain_lock()
 	e.mu.lock()
 	failed := e.state != .running
+	terminal := e.terminal
 	parked := !e.attentive_locked(time.ticks())
 	e.mu.unlock()
 	if failed {
 		e.drain_mu.unlock()
+		// The generation's own error where it has one: a send from an unsubscribed handle comes
+		// through here too, and its caller is owed the sticky terminal error, not a join's.
+		if terminal != '' {
+			return error(terminal)
+		}
 		return error('${e.key}: generation failed while joining')
 	}
 	if parked && !e.tx_acks {
@@ -619,7 +641,12 @@ fn (mut e SharedEntry) admit(mut h SharedHandle) ! {
 		}
 	}
 	e.mu.lock()
-	h.cursor = e.next_seq
+	if parked {
+		// Only where a drain ran: on a wire somebody reads, the ring holds this handle's
+		// history since its open and its cursor stands (a sender re-admitted before its first
+		// receive keeps what it has not read yet).
+		h.cursor = e.next_seq
+	}
 	e.unread[h.id] = time.ticks()
 	e.mu.unlock()
 	e.drain_mu.unlock()
@@ -801,14 +828,15 @@ fn (mut h SharedHandle) send(frame CanFrame) ! {
 	// or by the handle's own boundary drain on its first receive (codex round 4 on #224).
 	// Delayed send-then-receive is the request/response path, not a transmit-only tap; the
 	// attentive second starts again at every send, and a parked reader is woken for it.
+	//
+	// AND AN EXPIRED SENDER'S BOUNDARY IS ESTABLISHED FIRST, under drain_mu, exactly as a
+	// joining handle's is: merely marking it attentive woke the reader onto a queue of old
+	// traffic, which was then published ahead of the reply to the request about to go out
+	// (codex round 9 on #224). admit is that path — the drain if the wire is parked, the cursor
+	// at the tail, the timestamp, the kick — and a fatal found by that drain fails the send the
+	// way it fails a join.
 	if !subscribed {
-		e.mu.lock()
-		e.unread[h.id] = time.ticks()
-		e.mu.unlock()
-		select {
-			e.kick <- true {}
-			else {}
-		}
+		e.admit(mut h)!
 	}
 	// send_mu GUARDS ONE THING: that the order of `pending` is the order frames went down the
 	// socket, which is what lets an untagged acknowledgement be matched to its origin. Senders on
@@ -893,14 +921,23 @@ fn (mut h SharedHandle) send(frame CanFrame) ! {
 	// AND AGAIN NOW THAT THE FRAME IS ON THE WIRE. The refresh above was taken before a write
 	// that can wait on send_mu or stall in the driver; if that took longer than the attentive
 	// second, the reader could park the moment the frame left and drain the prompt reply
-	// (codex round 8 on #224). The reply clock starts here.
+	// (codex round 8 on #224). The reply clock starts here — unless the handle was closed
+	// while the write was in flight, in which case close() has already removed it and a
+	// refresh would put a dead handle back (codex round 9 on #224).
 	if !subscribed {
-		e.mu.lock()
-		e.unread[h.id] = time.ticks()
-		e.mu.unlock()
-		select {
-			e.kick <- true {}
-			else {}
+		h.mu.lock()
+		gone := h.closed || h.subscribed
+		h.mu.unlock()
+		if !gone {
+			e.mu.lock()
+			if e.state == .running {
+				e.unread[h.id] = time.ticks()
+			}
+			e.mu.unlock()
+			select {
+				e.kick <- true {}
+				else {}
+			}
 		}
 	}
 }
