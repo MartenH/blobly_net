@@ -95,6 +95,12 @@ jobs:
       # user should ever see. That mismatch was a live bug: scripts/register_blobnet_win.ps1 has
       # always searched for blobly_net.exe, so .blobnet file association could never find the
       # executable it was written for.
+      # Same sweep as the Linux job, from the Windows toolchain: a tool that checks on one
+      # runner and not the other is exactly what the per-platform backend split can produce.
+      - name: Every cmd/ tool type-checks, both targets (scripts/check_cmds.sh)
+        shell: msys2 {0}
+        run: V=/c/v-ct/v.exe sh scripts/check_cmds.sh
+
       - name: Build the GUI app (RUN=0 scripts/run_gui.sh)
         shell: msys2 {0}
         run: |

@@ -58,3 +58,19 @@ fn test_cf_sequence_gap_errors_then_channel_resyncs() {
 	rx.close()
 	raw.close()
 }
+
+// ISOTP.OPEN EXISTS ON EVERY PLATFORM, and off Linux it is the software channel over whatever bus
+// the address names — here the in-process bus, so the test needs no hardware and no kernel. On
+// Linux `open` is the kernel socket, which has no such bus, so the answer there is a different
+// test's (#220: the two smoke tools calling `open` did not compile on Windows for months, because
+// it lived in the Linux file and nothing in CI compiled them).
+fn test_open_reaches_the_software_channel_off_linux() {
+	$if !linux {
+		mut ch := open('inproc:isotp-open', 0x7E0, 0x7E8, false) or {
+			assert false, 'isotp.open must open a software channel on the in-process bus: ${err}'
+			return
+		}
+		assert ch.tx_id == 0x7E0 && ch.rx_id == 0x7E8
+		ch.close()
+	}
+}
