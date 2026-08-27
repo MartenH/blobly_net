@@ -89,3 +89,61 @@ fn test_the_software_channel_refuses_an_empty_pdu() {
 	}
 	ch.close()
 }
+
+// AN EMPTY FRAME WHERE FLOW CONTROL WAS EXPECTED IS AN ERROR, NOT A PANIC (codex round 3 on #225).
+fn test_an_empty_frame_in_place_of_flow_control_is_an_error() {
+	mut peer := transport.open('inproc:isotp-empty-fc') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-empty-fc', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	done := chan string{cap: 1}
+	spawn fn [mut ch, done] () {
+		ch.send([]u8{len: 20, init: u8(index)}) or {
+			done <- err.msg()
+			return
+		}
+		done <- 'sent'
+	}()
+	time.sleep(50 * time.millisecond)
+	peer.send(transport.CanFrame{ id: 0x7E8 }) or { assert false, err.msg() }
+	msg := <-done
+	assert msg.contains('empty frame'), msg
+	ch.close()
+	peer.close()
+}
+
+// THE RECEIVE TIMEOUT BOUNDS THE WHOLE PDU: a peer that stalls just under it between Consecutive
+// Frames cannot stretch a 300 ms receive into seconds (codex round 3 on #225).
+fn test_the_receive_deadline_covers_the_whole_pdu() {
+	mut peer := transport.open('inproc:isotp-slow-cf') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-slow-cf', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	spawn fn [mut peer] () {
+		// FF announcing 20 bytes, then one CF every 200 ms — each inside a 300 ms budget on its own.
+		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x10), 20, 1, 2, 3, 4, 5, 6] }) or {}
+		for sn in 1 .. 4 {
+			time.sleep(200 * time.millisecond)
+			peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x20 | sn), 0, 0, 0, 0, 0, 0, 0] }) or {}
+		}
+	}()
+	t0 := time.ticks()
+	if _ := ch.recv(300) {
+		assert false, 'a stalled peer must not complete within the budget'
+	} else {
+		assert err.msg() == 'timeout', err.msg()
+	}
+	took := time.ticks() - t0
+	assert took < 600, 'recv(300) took ${took} ms: the deadline was renewed per frame'
+	time.sleep(700 * time.millisecond) // let the peer finish before the bus goes
+	ch.close()
+	peer.close()
+}

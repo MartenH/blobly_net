@@ -71,7 +71,12 @@ pub fn (mut c SoftChannel) send(data []u8) ! {
 	c.tx(ff)!
 	// Await Flow Control (0x3x). We ignore block size / STmin and send all CFs.
 	fc := c.rx_raw(1000)!
-	if fc.len < 1 || (fc[0] & 0xF0) != 0x30 {
+	if fc.len < 1 {
+		// Split from the PCI check below: it formatted fc[0] for an EMPTY frame, an
+		// out-of-bounds panic where an ISO-TP error was owed (codex round 3 on #225).
+		return error('ISO-TP: expected Flow Control, got an empty frame')
+	}
+	if (fc[0] & 0xF0) != 0x30 {
 		return error('ISO-TP: expected Flow Control, got 0x${fc[0]:02X}')
 	}
 	mut sn := u8(1)
@@ -88,6 +93,11 @@ pub fn (mut c SoftChannel) send(data []u8) ! {
 
 // recv reassembles one ISO-TP PDU (SF directly; FF → send FC → collect CFs).
 pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
+	// ONE DEADLINE FOR THE WHOLE PDU. Each Consecutive Frame used to get the full timeout afresh,
+	// so a peer stalling just under it between frames made request(..., 2000) wait many times
+	// two seconds, where the kernel channel bounds the reassembled PDU (codex round 3 on #225).
+	// Negative is "forever", as everywhere else.
+	deadline := time.ticks() + i64(timeout_ms)
 	first := c.rx_raw(timeout_ms)!
 	if first.len < 1 {
 		return error('ISO-TP: empty frame')
@@ -115,7 +125,15 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 		// recv(). The caller re-issues the transfer; a hard error beats silent misassembly.
 		mut sn := u8(1)
 		for out.len < total {
-			cf := c.rx_raw(timeout_ms)!
+			mut rem := timeout_ms
+			if timeout_ms >= 0 {
+				rem = int(deadline - time.ticks())
+				if rem <= 0 {
+					c.flush_rx()
+					return error('timeout')
+				}
+			}
+			cf := c.rx_raw(rem)!
 			if cf.len < 1 {
 				continue // empty/padding read — ignore
 			}
