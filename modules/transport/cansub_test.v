@@ -431,6 +431,19 @@ fn test_a_json_bool_that_is_not_one_is_no_answer() {
 
 // The real reply from a CANsub.4, so the field this depends on is pinned against the device rather
 // than against my memory of it.
+// A REFUSED MID-RUN PUT IS THE DEVICE'S RULE, NOT A DEFECT, and the message has to say what to do.
+// Measured with curl on a CANsub.4 (02.04.00): the same PHY body is 200 with nothing on the channel
+// and 500 while any client holds its WebSocket. The reconcile used to return from that 500 in
+// silence, on every poll, for the life of the run.
+fn test_a_refused_phy_put_names_the_live_channel_rule_and_the_remedy() {
+	why := cansub_phy_refusal(500)
+	assert why.contains('while the channel is open'), why
+	assert why.contains('Stop and Start'), why
+	other := cansub_phy_refusal(400)
+	assert other.contains('400'), other
+	assert !other.contains('while the channel is open'), 'only the live-channel 500 gets that reading'
+}
+
 fn test_the_devices_own_phy_reply_parses() {
 	body := '{"listen_only":false,"auto_reset":true,"error_frames":true,"tx_ack_frames":true,"timing":{"brp":1,"seg1":127,"seg2":32,"sjw":4},"timing_data":{"brp":1,"seg1":31,"seg2":8,"sjw":4}}'
 	assert extract_json_bool(body, 'listen_only')? == false

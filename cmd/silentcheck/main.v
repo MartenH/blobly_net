@@ -170,8 +170,40 @@ fn run(o Opts) int {
 		eprintln('could not open talker ${o.talker}: ${err}')
 		return 1
 	}
+	// WAIT FOR THE TALKER TO KNOW ITS OWN HEALTH before judging anything by it. Every verdict here
+	// is read off the talker's fault ladder, and a backend that polls a device for it — CANsub asks
+	// over HTTP from a thread started at open — has no sample yet for the first fraction of a
+	// second. Phase 2 judged inside that window read "cannot say" and failed a listener that was
+	// silencing perfectly. Bounded, because some backends never report and must not stall the run.
+	mut warm := 0
+	for warm < 3000 && talker.health() == .unknown {
+		time.sleep(50 * time.millisecond)
+		warm += 50
+	}
+	// AND LET IT RECOVER FROM THE LAST RUN. A controller's error counters decay only as frames are
+	// acknowledged, so a talker that ended the previous run in a retry storm still reports warning
+	// or error-passive at the start of this one — on a backend that reports its real ladder rather
+	// than resetting it at open, which is what a CANsub does. Judging the baseline on that reads a
+	// perfectly good bench as broken. Up to 200 acknowledged frames is enough to bring a controller
+	// from error-passive (128) below warning (96); one that is still degraded after them is.
+	mut recovered := 0
+	for recovered < 200 && degraded(talker.health()) {
+		talker.send(transport.CanFrame{ id: o.id, data: [u8(0x5E), u8(recovered)] }) or {}
+		listener.recv(2) or {}
+		time.sleep(5 * time.millisecond)
+		recovered++
+	}
+	for _ in 0 .. 256 {
+		listener.recv(1) or { break }
+	}
 	println('listener  ${o.listener}')
-	println('talker    ${o.talker}')
+	println('talker    ${o.talker}${if talker.health() == .unknown {
+		'  (reports no health; verdicts below cannot use its ladder)'
+	} else if recovered > 0 {
+		'  (health known after ~${warm} ms; recovered from the last run after ${recovered} acknowledged frames)'
+	} else {
+		'  (health known after ~${warm} ms)'
+	}}')
 	println('${o.frames} frames per phase, id 0x${o.id:03X}, ${o.handles} handle${if o.handles == 1 {
 		''
 	} else {
@@ -180,6 +212,12 @@ fn run(o Opts) int {
 	println('')
 
 	mut ok := true
+	// Phases a backend declines FOR A STATED DRIVER REASON. Vector's mode is pinned by its ports and
+	// a CANsub refuses PHY reconfiguration on a live channel; both record a SilenceFault the tool
+	// can read. Such a phase is reported as not applicable, with the device's own words, and the
+	// run still passes — a limitation the code declares is not a failure of the code. A phase that
+	// fails with NO fault recorded is still a failure: that is the silent case this tool exists for.
+	mut not_applicable := []string{}
 
 	// PHASE 1 — the baseline. Without it a failure in phase 2 is unreadable: a bus that was never
 	// working at all produces exactly the same "talker unhealthy, listener silent" reading.
@@ -215,9 +253,14 @@ fn run(o Opts) int {
 	println('2. listener marked listen-only, mid-run')
 	report(sil)
 	if !degraded(sil.talker_health) {
-		eprintln('   FAIL — the talker is still ${shown(sil.talker_health)}. Somebody is still acknowledging')
-		eprintln('          its frames, so the listener transceiver was not silenced.')
-		ok = false
+		if f := transport.wire_silence_fault(o.listener) {
+			println('   n/a — ${f.why}')
+			not_applicable << 'phase 2'
+		} else {
+			eprintln('   FAIL — the talker is still ${shown(sil.talker_health)}. Somebody is still acknowledging')
+			eprintln('          its frames, so the listener transceiver was not silenced — and nothing recorded why.')
+			ok = false
+		}
 	} else if sil.rx == 0 {
 		// A listener that hears nothing is not listen-only, it is off the bus. Reported as a
 		// failure of its own, because the two are easy to confuse and only one of them is correct.
@@ -249,12 +292,21 @@ fn run(o Opts) int {
 	back := exchange(mut listener, mut fresh, o)
 	println('3. mark cleared, mid-run')
 	report(back)
-	if degraded(back.talker_health) {
+	// RECOVERY IS JUDGED ON WHAT THE WIRE DOES, NOT ON THE COUNTER BEING BACK TO ZERO. A CAN
+	// controller's transmit error counter decays by ONE per acknowledged frame, so a talker that
+	// reached error-passive (128) needs ~33 successful frames to leave error-warning (96). Kvaser
+	// and PCAN report `ok` after six because their drivers reset the count; a CANsub reports the
+	// real ladder and still says `warning` — while the listener is plainly acknowledging, which is
+	// the thing being tested. Error-PASSIVE or bus-off after the mark is cleared is a failure;
+	// warning with frames arriving is recovery.
+	if back.talker_health == .error_passive || back.talker_health == .bus_off {
 		eprintln('   FAIL — the talker is still ${shown(back.talker_health)}: the silence did not lift.')
 		ok = false
 	} else if back.rx == 0 {
 		eprintln('   FAIL — nothing arrived after clearing the mark.')
 		ok = false
+	} else if back.talker_health == .warning {
+		println('   ok — acknowledging again; talker still ${shown(back.talker_health)}, recovering (the counter decays one per acknowledged frame)')
 	} else {
 		println('   ok — acknowledging again, talker back to ${shown(back.talker_health)}')
 	}
@@ -318,10 +370,12 @@ fn run(o Opts) int {
 	after := exchange(mut reopened, mut fresh2, o)
 	println('4. closed while marked, reopened unmarked')
 	report(after)
-	if degraded(after.talker_health) || after.rx == 0 {
+	if after.talker_health == .error_passive || after.talker_health == .bus_off || after.rx == 0 {
 		eprintln('   FAIL — a channel the previous run left silent came back silent. The mark is gone')
 		eprintln('          and the transceiver never heard about it.')
 		ok = false
+	} else if after.talker_health == .warning {
+		println('   ok — a fresh open puts the transceiver back where the policy says; talker recovering')
 	} else {
 		println('   ok — a fresh open puts the transceiver back where the policy says, not where it was left')
 	}
@@ -341,6 +395,27 @@ fn run(o Opts) int {
 	// first: the open is the only thing that gets a chance to act on it.
 	transport.set_listen_only(o.listener, true)
 	mut joiner := transport.open(o.listener) or {
+		// A REFUSED JOIN IS THE OTHER HONEST ANSWER. A backend that cannot silence a live channel
+		// does not hand out a handle claiming to be silent (#219's rule): the join is refused with
+		// the device's reason, and that reason is recorded on the wire. That is the declared
+		// limitation, not a failure — and a join refused with NO fault recorded still is one.
+		if f := transport.wire_silence_fault(o.listener) {
+			println('5. mark set, then a NEW handle opened onto the already-held wire')
+			println('   n/a — the join was refused: ${f.why}')
+			not_applicable << 'phase 5'
+			transport.set_listen_only(o.listener, false)
+			reopened.reconcile_silence(false) or {}
+			if ok && not_applicable.len > 0 {
+				println('PASS — with ${not_applicable.join(' and ')} not applicable: this backend follows listen-only only at open, and says so on its Buses row.')
+				return 0
+			}
+			if ok {
+				println('PASS — listen-only reaches the transceiver, both directions, and does not outlive its mark.')
+				return 0
+			}
+			println('FAIL')
+			return 1
+		}
 		eprintln('could not open a joining handle on ${o.listener}: ${err}')
 		return 1
 	}
@@ -351,10 +426,15 @@ fn run(o Opts) int {
 	println('5. mark set, then a NEW handle opened onto the already-held wire')
 	report(joined)
 	if !degraded(joined.talker_health) {
-		eprintln('   FAIL — the talker is still ${shown(joined.talker_health)}. The joining handle recorded a')
-		eprintln('          mode it never applied: canlib obeys only the handle holding initialisation')
-		eprintln('          access, and this was not it.')
-		ok = false
+		if f := transport.wire_silence_fault(o.listener) {
+			println('   n/a — ${f.why}')
+			not_applicable << 'phase 5'
+		} else {
+			eprintln('   FAIL — the talker is still ${shown(joined.talker_health)}. The joining handle recorded a')
+			eprintln('          mode it never applied: canlib obeys only the handle holding initialisation')
+			eprintln('          access, and this was not it.')
+			ok = false
+		}
 	} else if joined.rx == 0 {
 		eprintln('   FAIL — the talker went ${shown(joined.talker_health)}, but the listener heard nothing.')
 		ok = false
@@ -379,6 +459,10 @@ fn run(o Opts) int {
 		ok = false
 	}
 
+	if ok && not_applicable.len > 0 {
+		println('PASS — with ${not_applicable.join(' and ')} not applicable: this backend follows listen-only only at open, and says so on its Buses row.')
+		return 0
+	}
 	if ok {
 		println('PASS — listen-only reaches the transceiver, both directions, and does not outlive its mark.')
 		return 0

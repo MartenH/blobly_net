@@ -395,11 +395,25 @@ fn (mut b CansubBus) enqueue(rec CansubRecord) bool {
 // by the ports open on it and software cannot revise it. A CANsub can be revised: the mode is a
 // field in a PHY object we can PUT again. So it is reconfigured rather than refused.
 //
-// THE COST IS A BUS BOUNCE. A PHY PUT restarts the channel, so traffic stops for the length of one
-// HTTP round trip. That is the lesser evil by some distance: the alternative is a wire whose
-// behaviour disagrees with what the Buses panel says it is, indefinitely, which is exactly the
-// class of fault this repo refuses to ship elsewhere. It happens only when somebody actually
-// changes the mark, which is a deliberate act.
+// IT DOES NOT WORK ON THIS FIRMWARE, AND THIS FUNCTION NOW SAYS SO INSTEAD OF PRETENDING.
+//
+// The paragraph that used to sit here said a PHY PUT "restarts the channel, so traffic stops for
+// the length of one HTTP round trip" — the cost of a bus bounce, accepted as the lesser evil. It
+// was never measured mid-run. Measured on a CANsub.4 (02.04.00) with curl, from outside the app:
+// the SAME PUT body is answered 200 with nothing on the channel and **500 while any client holds
+// the channel's WebSocket**. So every mid-run PUT this function ever made was refused, and the
+// silent `return` below kept that to itself: the mark moved, the panel said listen-only, and the
+// controller went on acknowledging for as long as the run lasted. `cmd/silentcheck` phases 2 and
+// 5 are what finally showed it, on the first bench run after #221.
+//
+// So CANsub is, like Vector, a backend whose mode FOLLOWS THE MARK ONLY AT OPEN — for a driver
+// reason, not a gap: Vector's is pinned by its ports, CANsub's by a device that refuses PHY
+// reconfiguration on a live channel. The honest behaviour is Vector's: keep asking (one small PUT
+// per poll costs nothing and the firmware may change), and RECORD the refusal against the wire so
+// the Buses row shows NOT SILENT / STILL SILENT with the device's own answer, until a Stop and
+// Start applies the mark at open. What would make the toggle work is closing the WebSocket around
+// the PUT — a real reconnect inside the poll thread, the #214 shape — and that is a feature to
+// decide on, not a fix to slip in here.
 //
 // Best-effort: a failed PUT leaves `phy_silent` alone, so the next poll tries again rather than
 // recording a change that did not happen.
@@ -447,6 +461,7 @@ fn (mut b CansubBus) reconcile_listen_only() {
 		b.stop.phy_silent = have
 	}
 	if want == have {
+		clear_silence_fault(wire_key(b.iface))
 		return
 	}
 	nominal := cansub_timing_for(b.spec.arb, cansub_default_sample_point) or { return }
@@ -473,13 +488,38 @@ fn (mut b CansubBus) reconcile_listen_only() {
 		return
 	}
 	r := cansub_request(b.host, 'PUT', '/api/can/${b.spec.channel}/phy', cansub_phy_json(nominal,
-		data, want), cansub_health_timeout) or { return }
-	if r.status != 200 && r.status != 204 {
+		data, want), cansub_health_timeout) or {
+		record_silence_fault(wire_key(b.iface), SilenceFault{
+			want: want
+			why:  'PHY reconfiguration failed: ${err.msg()}'
+		})
 		return
 	}
+	if r.status != 200 && r.status != 204 {
+		// RECORDED, NOT SWALLOWED. This `return` used to be bare, which is how a refusal that
+		// happens on every single poll stayed invisible for a whole release.
+		record_silence_fault(wire_key(b.iface), SilenceFault{
+			want: want
+			why:  cansub_phy_refusal(r.status)
+		})
+		return
+	}
+	clear_silence_fault(wire_key(b.iface))
 	lock b.stop {
 		b.stop.phy_silent = want
 	}
+}
+
+// cansub_phy_refusal is the operator-facing reading of a refused PHY PUT.
+//
+// Pure, so CI can hold the one answer that matters: a 500 on a live channel is not a fault in the
+// device or in us, it is the device declining to reconfigure a channel somebody is using — and the
+// remedy is a Stop and Start, which applies the mark at open, where the device accepts it.
+pub fn cansub_phy_refusal(status int) string {
+	if status == 500 {
+		return 'the device refuses PHY reconfiguration while the channel is open (HTTP 500) — a CANsub follows listen-only only at open; Stop and Start to apply it'
+	}
+	return 'PHY reconfiguration refused (HTTP ${status})'
 }
 
 // phy_listen_only reads the controller's ACTUAL listen-only bit off the device. `/api/can/{ch}`
@@ -808,12 +848,30 @@ fn (b &CansubBus) failure() ?string {
 	}
 }
 
-// reconcile_silence — already done, continuously, by this backend's poll thread
-// (`reconcile_listen_only`), which additionally READS THE DEVICE BACK rather than trusting a
-// record of what was last PUT. That is the right shape for a device on the end of an HTTP round
-// trip and the wrong one for a vendor DLL, which is why PCAN and Kvaser answer this differently;
-// see silence.v. Nothing to do on demand.
-pub fn (mut b CansubBus) reconcile_silence(want bool) ! {}
+// reconcile_silence — on demand, when the mark differs from what the controller was last told.
+//
+// This was a no-op in #219 on the grounds that the poll thread's `reconcile_listen_only` does the
+// work continuously. True, and LATE: a handle joining an already-held wire, or a send after a
+// toggle, went through here, found nothing to do, and the refusal (or the change) landed only when
+// the poll thread next came round, up to a poll period later — so a check right after the join
+// found no fault recorded and the wire looking obedient while it was not.
+//
+// THE COMMON PATH COSTS A LOCK READ, NOT A ROUND TRIP. `SilentBus.send` calls this before every
+// send, so comparing against the cached `phy_silent` is what keeps an HTTP GET off the send path.
+// Only a DIFFERENCE runs the full reconcile — readback, PUT, and the fault record — on the
+// caller's thread, once, and the poll thread keeps retrying after that as before.
+pub fn (mut b CansubBus) reconcile_silence(want bool) ! {
+	have := rlock b.stop {
+		b.stop.phy_silent
+	}
+	if want == have {
+		return
+	}
+	b.reconcile_listen_only()
+	if f := wire_silence_fault(b.iface) {
+		return error(f.why)
+	}
+}
 
 pub fn (mut b CansubBus) close() {
 	lock b.stop {
