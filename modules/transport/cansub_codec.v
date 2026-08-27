@@ -374,6 +374,13 @@ const cansub_max_payload = 64 * 1024
 fn (mut d CansubDecoder) overrun(mut out []CansubRecord) {
 	d.buf.clear()
 	d.escaped = false
+	// AND LEAVE FRAME MODE, which is what makes this a resynchronisation rather than a truncation.
+	// Staying `in_frame`, every byte after the drop was accumulated as the body of a frame whose
+	// opening boundary was never seen — so if that suffix happened to carry a valid payload and
+	// CRC before the next flag, the decoder emitted CAN records it had invented, immediately after
+	// announcing that it had discarded the stream (codex round 14 on #204). Outside a frame, bytes
+	// are skipped until a real boundary opens the next one.
+	d.in_frame = false
 	d.errors << 'no frame boundary within ${cansub_max_payload} bytes — stream discarded'
 }
 

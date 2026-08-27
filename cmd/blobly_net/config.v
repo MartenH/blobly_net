@@ -443,7 +443,11 @@ fn (mut app App) set_adapter(i int, a string) {
 		// everywhere -- and silently clearing a safety tick is the worse direction to be wrong
 		// in. What actually changes with the adapter is the transceiver, so that is what the
 		// message is now about.
-		app.notify('${app.proj.channels[i].name}: still listen-only — nothing here will transmit, but ${a} cannot silence the transceiver, so it still ACKs (only Vector can)')
+		// NAMED FROM THE REGISTRY, not written out. This said "only Vector can" while CANsub had
+		// become the second adapter that silences its controller — a warning telling an operator
+		// something false about what their hardware can do (codex round 14 on #204).
+		can_silence := project.adapters.filter(project.adapter_starts_silent(it))
+		app.notify('${app.proj.channels[i].name}: still listen-only — nothing here will transmit, but ${a} cannot silence the transceiver, so it still ACKs (${can_silence.join(' and ')} can)')
 	}
 	if a == 'doip' {
 		app.proj.channels[i].typ = 'doip'

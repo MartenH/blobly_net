@@ -327,3 +327,32 @@ fn test_a_similar_key_is_not_the_key() {
 	body := '{"substate":"wrong","state":"bus_off"}'
 	assert extract_json_string(body, 'state')? == 'bus_off'
 }
+
+// A DEVICE ID BECOMES A HOSTNAME: `cansub_host` builds `<id>-usb.local` and hands it to mDNS. An
+// id that is not a legal hostname label cannot resolve, and checked only for emptiness it was
+// accepted by the editor AND by the shared start check, then failed several seconds into an open
+// as a network error (codex round 14 on #204).
+fn test_a_device_id_that_cannot_be_a_hostname_is_refused() {
+	for bad in ['bad id', 'a_b', 'dev.ice', '-lead', 'trail-', 'has/slash', 'sp ace'] {
+		if _ := parse_cansub_iface('cansub:${bad}/1') {
+			assert false, '"${bad}" cannot be half of a hostname'
+		}
+	}
+}
+
+fn test_ordinary_device_ids_are_accepted() {
+	for ok in ['e5a16adf', 'E5A16ADF', '1A2B3C4D', 'dev-01', 'a', '12345678'] {
+		s := parse_cansub_iface('cansub:${ok}/1') or {
+			assert false, '"${ok}" is a perfectly good id: ${err}'
+			return
+		}
+		assert s.id.to_lower() == ok.to_lower(), 'the id is kept, normalised'
+	}
+}
+
+// A DNS label is 63 characters and `-usb` is appended, so the id itself has less room than that.
+fn test_an_id_too_long_for_a_dns_label_is_refused() {
+	assert cansub_id_ok('a'.repeat(59))
+	assert !cansub_id_ok('a'.repeat(60))
+	assert !cansub_id_ok('')
+}

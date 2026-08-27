@@ -56,6 +56,14 @@ pub fn parse_cansub_iface(iface string) !CansubSpec {
 	if id == '' {
 		return error('"${i}" names no device')
 	}
+	// A DEVICE ID BECOMES A HOSTNAME. `cansub_host` builds `<id>-usb.local` and hands it to mDNS,
+	// so an id that is not a legal hostname label cannot resolve — and checked only for emptiness,
+	// `bad id/1` was accepted by the editor AND by the shared start check, then failed several
+	// seconds into an open as a network error (codex round 14 on #204). Refused here, where it is
+	// still a string somebody typed, like the channel number beside it.
+	if !cansub_id_ok(id) {
+		return error('"${id}" is not a device id — it becomes the hostname ${id}-usb.local, so it can hold letters, digits and inner hyphens only')
+	}
 	for c in ch_tok {
 		if !c.is_digit() {
 			return error('"${ch_tok}" is not a channel number')
@@ -269,10 +277,20 @@ fn (mut b CansubBus) read_loop() {
 	// escape hatch when that does not come back, added in API 04.00, and answering 404 when
 	// nothing is connected is a defined no-op rather than a failure to special-case.
 	defer {
+		// UNDER THE WRITE LOCK. Round 9 serialised sender against sender; this is the other pair,
+		// and it is the one that crashes. A send that got past failure() an instant before the
+		// read error can be inside ws.write() right now, and closing a client underneath an
+		// active socket operation is exactly the segfault close() documents — the reason the
+		// socket is closed HERE rather than there (codex round 14 on #204).
+		//
+		// A write completes or errors, so this waits for a bounded thing. The reverse order
+		// cannot deadlock: send takes the lock and never waits on this thread.
+		b.wmu.lock()
 		b.ws.close(1000, 'closing') or {
 			cansub_request(b.host, 'DELETE', '/api/can/${b.spec.channel}/ws', '', 2 * time.second) or {
 			}
 		}
+		b.wmu.unlock()
 	}
 	for {
 		if !rlock b.stop {
@@ -747,6 +765,24 @@ fn cansub_sync_clock(host string) ! {
 // narrower in the data phase than the nominal one, and an out-of-range data phase is answered with
 // an HTTP 500 that names nothing (see the findings in #193). Catching it against the published
 // table beats reading that 500 off a live device.
+// cansub_id_ok reports whether a device id can be half of a hostname: letters, digits and
+// hyphens, no hyphen at either end, and short enough for a DNS label.
+fn cansub_id_ok(id string) bool {
+	// `-usb` is appended, so the label is four characters longer than the id.
+	if id.len == 0 || id.len > 59 {
+		return false
+	}
+	if id.starts_with('-') || id.ends_with('-') {
+		return false
+	}
+	for c in id {
+		if !((c >= `a` && c <= `z`) || (c >= `A` && c <= `Z`) || (c >= `0` && c <= `9`) || c == `-`) {
+			return false
+		}
+	}
+	return true
+}
+
 // cansub_canonical_spec reduces one address to what it actually ASKS FOR, so that two spellings
 // of one wire compare equal.
 //

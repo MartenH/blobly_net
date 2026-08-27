@@ -433,3 +433,36 @@ fn test_both_append_paths_report_an_overrun_alike() {
 
 	assert plain.errors[0] == esc.errors[0], 'one drop, one message: "${plain.errors[0]}" vs "${esc.errors[0]}"'
 }
+
+// AFTER AN OVERRUN THE DECODER MUST RESYNCHRONISE, not keep accumulating. Staying `in_frame`,
+// every byte after the drop was treated as the body of a frame whose opening boundary was never
+// seen — so a suffix carrying a valid payload and CRC before the next flag made the decoder emit
+// CAN records it had invented, immediately after announcing it had discarded the stream (codex
+// round 14 on #204).
+fn test_the_decoder_emits_nothing_from_the_tail_of_a_discarded_stream() {
+	mut d := CansubDecoder{}
+	// Open a frame and run it past the bound with no closing flag.
+	mut junk := []u8{len: cansub_max_payload + 32, init: 0x41}
+	junk[0] = 0x7E
+	before := d.feed(junk)
+	assert before.len == 0, 'nothing decodes out of an unterminated frame'
+	assert d.errors.len > 0, 'and the drop is reported'
+
+	// Now feed the body of TV-03 WITHOUT its opening flag. Outside a frame these bytes are
+	// skipped; treated as a continuation they would close into a valid record.
+	tail := hex('00 00 00 00 00 00 48 00 01 EF 87 F8 40 7E')
+	recs := d.feed(tail)
+	assert recs.len == 0, 'a suffix with no opening boundary is not a frame: got ${recs.len}'
+}
+
+// And the NEXT real frame after all that still decodes — resynchronising must not leave the
+// decoder deaf.
+fn test_the_decoder_recovers_on_the_next_real_frame() {
+	mut d := CansubDecoder{}
+	mut junk := []u8{len: cansub_max_payload + 32, init: 0x41}
+	junk[0] = 0x7E
+	d.feed(junk)
+	recs := d.feed(hex('7E 00 00 00 00 00 00 48 00 01 EF 87 F8 40 7E'))
+	assert recs.len == 1, 'the stream recovers at the next boundary: got ${recs.len}'
+	assert recs[0].frame.id == 0x001
+}
