@@ -232,6 +232,10 @@ fn run(mut o Opts) int {
 	// too, but its reconcile_silence records nothing yet, so on a Vector listener phase 2 FAILS
 	// rather than reading n/a — stated here so nobody reads that as the tool being wrong.)
 	mut not_applicable := []string{}
+	// unjudged is the talker-side n/a: a talker backend with no health verdict. Kept apart from
+	// not_applicable, which is the LISTENER declaring its rule, because the summary must not
+	// blame the listener for the talker chosen (codex round 13 on #223).
+	mut unjudged := []string{}
 
 	// PHASE 1 — the baseline. Without it a failure in phase 2 is unreadable: a bus that was never
 	// working at all produces exactly the same "talker unhealthy, listener silent" reading.
@@ -278,14 +282,16 @@ fn run(mut o Opts) int {
 	sil.talker_health = worse(sil.talker_health, linger(mut talker, o))
 	println('2. listener marked listen-only, mid-run')
 	report(sil)
-	if !degraded(sil.talker_health) && !o.talker_reports && driver_fault(o.listener) != '' {
-		// A RECORDED DRIVER FAULT ON THE LISTENER IS DEFINITIVE whatever the talker can say: the
-		// controller call failed and the seam wrote it down (codex round 12 on #223).
+	if driver_fault(o.listener) != '' {
+		// A RECORDED DRIVER FAULT ON THE LISTENER IS DEFINITIVE whatever the talker says — even a
+		// degraded one: a Kvaser multi-handle transition can silence the wire through the first
+		// handle and still fail on a sibling, and the seam wrote that down (codex rounds 12 and
+		// 13 on #223).
 		eprintln('   FAIL — the listener driver refused the mark: ${driver_fault(o.listener)}')
 		ok = false
 	} else if !degraded(sil.talker_health) && !o.talker_reports {
 		println('   n/a — this talker backend reports no health, so a silenced listener cannot be told from an acknowledging one (frames arrived: ${sil.rx})')
-		not_applicable << 'phase 2'
+		unjudged << 'phase 2'
 	} else if !degraded(sil.talker_health) {
 		if why := declined(o.listener, true) {
 			println('   n/a — ${why}')
@@ -347,7 +353,7 @@ fn run(mut o Opts) int {
 		// listener receives the frames just the same, so rx > 0 proves nothing here (codex round
 		// 10 on #223). Said as such, not as ok.
 		println('   n/a — this talker backend reports no health, so whether acknowledgements resumed cannot be judged (frames arrived: ${back.rx})')
-		not_applicable << 'phase 3'
+		unjudged << 'phase 3'
 	} else if !back.recovered {
 		eprintln('   FAIL — the talker never recovered after the mark cleared: frames went out and nobody acknowledged them.')
 		ok = false
@@ -467,7 +473,7 @@ fn run(mut o Opts) int {
 		ok = false
 	} else if !o.talker_reports {
 		println('   n/a — this talker backend reports no health, so whether the reopened wire acknowledges cannot be judged (frames arrived: ${after.rx})')
-		not_applicable << 'phase 4'
+		unjudged << 'phase 4'
 	} else if !after.recovered || severe(after.talker_health) || after.rx == 0 {
 		eprintln('   FAIL — a channel the previous run left silent came back silent. The mark is gone')
 		eprintln('          and the transceiver never heard about it.')
@@ -495,12 +501,12 @@ fn run(mut o Opts) int {
 		mut joined := exchange(mut reopened, mut fresh2, o, true, true)
 		joined.talker_health = worse(joined.talker_health, linger(mut fresh2, o))
 		report(joined)
-		if !degraded(joined.talker_health) && !o.talker_reports && driver_fault(o.listener) != '' {
+		if driver_fault(o.listener) != '' {
 			eprintln('   FAIL — the listener driver refused the mark: ${driver_fault(o.listener)}')
 			ok = false
 		} else if !degraded(joined.talker_health) && !o.talker_reports {
 			println('   n/a — this talker backend reports no health, so a silenced listener cannot be told from an acknowledging one (frames arrived: ${joined.rx})')
-			not_applicable << 'phase 5'
+			unjudged << 'phase 5'
 		} else if !degraded(joined.talker_health) {
 			if why := declined(o.listener, true) {
 				println('   n/a — ${why}')
@@ -550,8 +556,15 @@ fn run(mut o Opts) int {
 		ok = false
 	}
 
-	if ok && not_applicable.len > 0 {
-		println('PASS — with ${not_applicable.join(' and ')} not applicable: this backend follows listen-only only at open, and says so on its Buses row.')
+	if ok && (not_applicable.len > 0 || unjudged.len > 0) {
+		mut why := []string{}
+		if not_applicable.len > 0 {
+			why << '${not_applicable.join(' and ')} not applicable: this listener backend follows listen-only only at open, and says so on its Buses row'
+		}
+		if unjudged.len > 0 {
+			why << '${unjudged.join(' and ')} not judged: the talker backend reports no health, so acknowledgement could not be observed'
+		}
+		println('PASS — with ${why.join('; ')}.')
 		return 0
 	}
 	if ok {
@@ -724,8 +737,17 @@ fn recover_talker(mut talker transport.Bus, mut listener transport.Bus, o Opts, 
 	floor := start + 1000
 	until := start + recovery_bound_ms
 	mut n := 0
+	// SAMPLED EVERY QUARTER SECOND, NOT EVERY FRAME. A REST request interleaved with each 5 ms
+	// frame is the same hammering that verdict_now records stopping a CANsub's frames
+	// altogether (codex round 13 on #223); frames go out in between, and the sample that
+	// decides is still fresh by construction.
+	mut h := sample(mut talker, o)
+	mut sampled_at := time.ticks()
 	for time.ticks() < until {
-		h := sample(mut talker, o)
+		if time.ticks() - sampled_at >= 250 {
+			h = sample(mut talker, o)
+			sampled_at = time.ticks()
+		}
 		if h == .bus_off {
 			return false
 		}
