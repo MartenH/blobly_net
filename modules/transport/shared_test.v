@@ -19,6 +19,7 @@ fn (mut f FakeBus) send(frame CanFrame) ! {
 }
 
 fn (mut f FakeBus) recv(timeout_ms int) !CanFrame {
+	fake_recv_calls++
 	// HONOURS ITS TIMEOUT, and can be fed. The old fake returned 'timeout' at once, which the
 	// hub's reader took as "poll again" — a 100% busy loop for the life of every handle in this
 	// file. And it could never yield a frame, so the adapter production PCAN goes through
@@ -51,6 +52,7 @@ __global (
 	fake_opens             int
 	fake_closes            int
 	fake_fails             bool
+	fake_recv_calls        int
 	fake_rx                chan CanFrame
 	hub_fake_send_gate     chan bool
 	hub_fake_send_blocking bool
@@ -532,6 +534,36 @@ fn test_a_stuck_send_does_not_block_health_reconcile_or_close() {
 	}
 	hub_fake_send_gate <- true // release the writer so its handle can close cleanly
 	stuck.close()
+}
+
+// AN IDLE WIRE COSTS THE DRIVER NOTHING. A handle that only ever sends must not keep the reader
+// polling the driver on its behalf — on PCAN that was ~1000 CAN_Read calls a second per idle wire
+// (#222 item 2). And the first handle to actually receive must wake the reader promptly, or the
+// saving would be paid for in latency.
+fn test_a_wire_with_no_subscriber_is_not_polled_and_the_first_recv_wakes_it() {
+	fake_opens = 0
+	fake_closes = 0
+	fake_fails = false
+	fake_recv_calls = 0
+	fake_rx = chan CanFrame{cap: 8}
+	mut tx_only := shared_open('fake:idle', 'fake:idle', fake_make)!
+	tx_only.send(CanFrame{ id: 0x100 }) or {}
+	time.sleep(300 * time.millisecond)
+	// One read at most: the loop may have polled once before it noticed nobody subscribes.
+	assert fake_recv_calls <= 1, 'the reader polled the driver ${fake_recv_calls} times with nobody listening'
+	// A listener arrives, a frame is injected, and it is delivered within the poll period —
+	// not after the park's one-second fallback.
+	mut listener := shared_open('fake:idle', 'fake:idle', fake_make)!
+	fake_rx <- CanFrame{
+		id: 0x101
+	}
+	t0 := time.ticks()
+	f := listener.recv(1000)!
+	assert f.id == 0x101
+	assert time.ticks() - t0 < 500, 'the first recv took ${time.ticks() - t0} ms: the kick did not wake the reader'
+	assert fake_recv_calls >= 1
+	listener.close()
+	tx_only.close()
 }
 
 // FAN-OUT THROUGH THE PATH PCAN ACTUALLY USES. Every other fan-out test here drives

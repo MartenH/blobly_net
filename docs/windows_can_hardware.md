@@ -35,11 +35,12 @@ done" is then a fact somebody can check rather than a feeling.
 | | PCAN | Kvaser | Vector | CANsub |
 |---|---|---|---|---|
 | Classic CAN | ✅ | ✅ | ✅ | ✅ |
-| CAN-FD | ✅ #217 | ✅ #200 | ✅ | ✅ |
+| CAN-FD | ✅ #217 | ✅ #200 | ✅ | ✅ cross-vendor to Kvaser CH1 at 500k/2M, 2026-08-27 |
 | Refuses FD on a classic channel | ✅ | ✅ | ✅ | ✅ |
 | Bus health (fault ladder) | ✅ | ✅ | ✅ | ✅ |
 | Listen-only **at the transceiver** | ✅ #219 | ✅ #219 | ✅ `,silent` | ✅ PHY |
 | Listen-only follows a **mid-run** toggle | ✅ | ✅ | ❌ pinned by the ports | ✅ |
+| Idle wire (transmit taps only) costs the driver nothing | ✅ #224 (0 reads/5 s measured; ~550/s once a subscriber exists) | ✅ own handles, no hub | ✅ own ports | n/a — its reader is a channel wait, not a driver call |
 | Discover | ✅ | ✅ | ✅ + assignment | ❌ |
 | Honours project timing / sample point | partial (BTR) | ❌ ignored | partial | refuses non-default |
 | Hardware timestamps | ❌ | ❌ | ❌ | ❌ |

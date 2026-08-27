@@ -100,9 +100,12 @@ enum SharedEntryState {
 // per-frame path. `send_mu` preserves the raw-write order used to correlate CANsub's untagged TX
 // acknowledgements.
 struct SharedEntry {
-	key     string
-	spec    string
-	done    chan bool
+	key  string
+	spec string
+	done chan bool
+	// kick wakes a reader that is PARKED because nobody subscribes — see read_loop. Capacity one, so
+	// a kick with nobody parked is remembered exactly once and never blocks the kicker.
+	kick    chan bool
 	mu      sync.Mutex
 	send_mu sync.Mutex
 	tx_acks bool
@@ -230,6 +233,7 @@ fn shared_open_events(key string, spec string, make fn (string) !SharedDriver) !
 					key:      key
 					spec:     spec
 					done:     chan bool{cap: 1}
+					kick:     chan bool{cap: 1}
 					tx_acks:  driver.reports_tx_ack()
 					driver:   driver
 					refs:     1
@@ -287,11 +291,32 @@ fn shared_open_events(key string, spec string, make fn (string) !SharedDriver) !
 fn (mut e SharedEntry) read_loop() {
 	for {
 		mut should_stop := false
+		mut idle := false
 		e.mu.lock()
 		should_stop = e.state != .running
+		idle = e.subs.len == 0
 		e.mu.unlock()
 		if should_stop {
 			break
+		}
+		// PARKED WHILE NOBODY LISTENS, on a driver with nothing to acknowledge. A wire held only by
+		// transmit taps — a disabled row keeps its taps open on purpose (#165) — used to make no
+		// driver calls at all; with this loop always running, PCAN's recv_shared(50) was a 1 ms
+		// CAN_Read loop plus a silence lookup, ~1000 driver reads a second per idle wire, feeding
+		// a ring nobody drained, for the life of the entry (code-review high on #221, #222 item 2).
+		// The first subscriber kicks the loop awake; close and a fatal error kick it so it can
+		// notice the state change. The bounded wait is a belt for the braces: a lost kick costs at
+		// most one second of latency on the first receive, never a hang.
+		//
+		// NOT on a tx_ack driver. A CANsub acknowledges every send over the same socket whether or
+		// not anybody reads, so its raw reader still needs draining — and its recv_shared is a
+		// channel wait, not a driver call, so there is nothing to save by parking it.
+		if idle && !e.tx_acks {
+			select {
+				_ := <-e.kick {}
+				1000 * time.millisecond {}
+			}
+			continue
 		}
 		ingress := e.driver.recv_shared(shared_reader_poll_ms) or {
 			mut closing := false
@@ -546,6 +571,12 @@ fn (mut h SharedHandle) recv(timeout_ms int) !CanFrame {
 				wake: h.wake
 			}
 			h.subscribed = true
+			// Wake a parked reader: this handle is the first to listen, or the first since the last
+			// listener left. Non-blocking; a kick already queued is the same kick.
+			select {
+				e.kick <- true {}
+				else {}
+			}
 		}
 		oldest := if e.next_seq > u64(shared_ring_capacity) {
 			e.next_seq - u64(shared_ring_capacity)
@@ -676,6 +707,14 @@ fn (mut h SharedHandle) close() {
 		last_healthy = true
 	}
 	e.mu.unlock()
+	if last_healthy {
+		// The reader may be parked with nobody subscribed — which on a closing wire is the common
+		// case. Kick it so `<-e.done` below does not wait out the park's full second.
+		select {
+			e.kick <- true {}
+			else {}
+		}
+	}
 	if !last_healthy {
 		return
 	}
