@@ -143,6 +143,16 @@ fn apply_silence_impl(iface string, want bool, set fn (bool) int, explain fn (bo
 	}
 	st := set(want)
 	if st == silence_not_attempted {
+		// A FAULT ABOUT THE OTHER DIRECTION DOES NOT SURVIVE A REQUEST FOR THIS ONE, even one the
+		// device could not be asked about: the request it was about is gone. Left standing, a
+		// refused tick went on showing NOT SILENT after the row was unticked for as long as the
+		// device stayed unreachable (codex round 10 on #223). The applied record is kept — that
+		// is about the controller, which did not change because we could not ask it.
+		if f := wire_silence_fault(iface) {
+			if f.want != want {
+				clear_silence_fault(k)
+			}
+		}
 		// NOTHING NEW IS KNOWN, AND THE OLD RECORD STANDS. This used to forget the applied mode too,
 		// on the reasoning that an unreachable device is an unknown one — and a CANsub whose REST
 		// endpoint blinked while its WebSocket stayed healthy then had every sender re-run the

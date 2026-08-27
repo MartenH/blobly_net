@@ -467,11 +467,10 @@ fn test_a_standing_refusal_is_answered_from_memory_in_its_own_direction() {
 	} else {
 		assert err.msg().contains('not applied'), err.msg()
 	}
-	f := wire_silence_fault(iface) or {
-		assert false, 'the other-direction fault must survive an unrelated attempt'
-		return
-	}
-	assert !f.want
+	// AND THE OTHER-DIRECTION FAULT IS GONE, not attempted or not: the request it was about is
+	// nobody's any more (codex round 10 on #223 reversed round 1's reading of this case — the
+	// row showed NOT SILENT after an untick for as long as the device stayed unreachable).
+	assert wire_silence_fault(iface) == none, 'a fault about a request nobody makes must not outlive it'
 	// (close() forgetting the fault — ordered after `running` goes false — needs a bus whose
 	// threads exist; a bus built with running = false to avoid I/O returns from close() at its
 	// idempotence guard before it gets there. That ordering is the bench's to prove.)

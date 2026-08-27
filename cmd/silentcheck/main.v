@@ -329,7 +329,13 @@ fn run(mut o Opts) int {
 	// of this check drove the CLOSED handle — every send refused, health unknown, "never
 	// recovered" for a wire that had — while the oracle (the device's own tx_error_count) showed
 	// the counter falling 133 -> 0 within two seconds of the mark clearing.
-	if !back.recovered {
+	if !o.talker_reports {
+		// NOT A PASS. Without a ladder there is no acknowledgement verdict at all: a still-silent
+		// listener receives the frames just the same, so rx > 0 proves nothing here (codex round
+		// 10 on #223). Said as such, not as ok.
+		println('   n/a — this talker backend reports no health, so whether acknowledgements resumed cannot be judged (frames arrived: ${back.rx})')
+		not_applicable << 'phase 3'
+	} else if !back.recovered {
 		eprintln('   FAIL — the talker never recovered after the mark cleared: frames went out and nobody acknowledged them.')
 		ok = false
 	} else if severe(back.talker_health) {
@@ -443,7 +449,10 @@ fn run(mut o Opts) int {
 	// `recovered` here is UNTAINTED: the talker was driven back to `ok` before this tool read a
 	// single frame from the reopened listener, so it is the OPEN that put the controller in normal
 	// mode, not a receive-side reconcile repairing it afterwards (codex round 3 on #223).
-	if !after.recovered || severe(after.talker_health) || after.rx == 0 {
+	if !o.talker_reports {
+		println('   n/a — this talker backend reports no health, so whether the reopened wire acknowledges cannot be judged (frames arrived: ${after.rx})')
+		not_applicable << 'phase 4'
+	} else if !after.recovered || severe(after.talker_health) || after.rx == 0 {
 		eprintln('   FAIL — a channel the previous run left silent came back silent. The mark is gone')
 		eprintln('          and the transceiver never heard about it.')
 		ok = false
@@ -693,9 +702,6 @@ fn recover_talker(mut talker transport.Bus, mut listener transport.Bus, o Opts, 
 		if h == .bus_off {
 			return false
 		}
-		if !reports && time.ticks() >= floor {
-			return true
-		}
 		if h == .ok && time.ticks() >= floor {
 			return true
 		}
@@ -720,9 +726,16 @@ const linger_ms = i64(2500)
 // and the software buses have no controller.
 fn talker_reports_health(iface string) bool {
 	l := iface.to_lower()
-	for p in ['pcan:', 'kvaser:', 'vector:', 'cansub:'] {
-		if l.starts_with(p) {
-			return true
+	if l.starts_with('cansub:') {
+		return true
+	}
+	// The vendor prefixes are wires only on Windows; on Linux transport.open hands the same
+	// names to SocketCAN, which reports nothing (codex round 10 on #223).
+	$if windows {
+		for p in ['pcan:', 'kvaser:', 'vector:'] {
+			if l.starts_with(p) {
+				return true
+			}
 		}
 	}
 	return false
@@ -734,6 +747,10 @@ fn sample(mut talker transport.Bus, o Opts) transport.BusHealth {
 	if o.talker.to_lower().starts_with('cansub:') {
 		return transport.cansub_health_now(o.talker) or { transport.BusHealth.unknown }
 	}
+	// Vector answers a chip-state REQUEST with an event that recv() consumes; a talker nobody
+	// reads from stays unknown forever (codex round 10 on #223). One non-blocking read on the
+	// talker costs nothing on the other backends and taints nothing — the listener is untouched.
+	talker.recv(0) or {}
 	return talker.health()
 }
 

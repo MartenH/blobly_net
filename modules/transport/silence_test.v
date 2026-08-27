@@ -299,3 +299,25 @@ fn test_a_fault_records_which_mode_was_refused() {
 	assert !f.want, 'this wire was asked to be NORMAL, not silent'
 	assert f.why.contains('normal'), f.why
 }
+
+// A FAULT ABOUT THE OTHER DIRECTION IS CLEARED BY A REQUEST FOR THIS ONE, even one that could not
+// reach the device: the request it was about is gone (codex round 10 on #223).
+fn test_a_missed_request_clears_a_fault_about_the_other_direction() {
+	forget_silence_claims()
+	apply_silence_explained('inproc:sil-other', true, fn (silent bool) int {
+		return 500
+	}, fn (want bool, st int) SilenceReason {
+		return SilenceReason{
+			why:      'refused'
+			declared: true
+		}
+	}) or {}
+	assert wire_silence_fault('inproc:sil-other') != none
+	apply_silence_explained('inproc:sil-other', false, fn (silent bool) int {
+		return silence_not_attempted
+	}, fn (want bool, st int) SilenceReason {
+		return SilenceReason{}
+	}) or {}
+	assert wire_silence_fault('inproc:sil-other') == none, 'a fault about a request nobody makes any more must go'
+	forget_silence_claims()
+}
