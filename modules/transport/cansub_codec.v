@@ -325,6 +325,14 @@ pub fn (mut d CansubDecoder) feed(chunk []u8) []CansubRecord {
 		if d.escaped {
 			d.buf << b ^ 0x20
 			d.escaped = false
+			// THE SAME BOUND, because this is the other way a byte reaches `buf`. Checked only
+			// after the ordinary append, a stream of escape pairs — `7D 00 7D 00 …` with no
+			// closing flag — walked straight past it and grew without limit, which is the whole
+			// failure the bound was added for, alive on the path a hostile or broken device is
+			// most likely to take (codex round 10 on #204).
+			if d.buf.len > cansub_max_payload {
+				d.overrun(mut out)
+			}
 			continue
 		}
 		if b == 0x7D {
@@ -342,9 +350,7 @@ pub fn (mut d CansubDecoder) feed(chunk []u8) []CansubRecord {
 		// a frame we lost the end of, it is a stream that has stopped making sense -- so the
 		// buffer is dropped and said so, rather than kept in the hope that a flag arrives.
 		if d.buf.len > cansub_max_payload {
-			d.buf.clear()
-			d.escaped = false
-			d.errors << 'no frame boundary within ${cansub_max_payload} bytes — stream discarded'
+			d.overrun(mut out)
 		}
 	}
 	return out
@@ -362,6 +368,14 @@ pub fn (mut d CansubDecoder) feed(chunk []u8) []CansubRecord {
 // stream with NO frame boundaries in it from growing until the process dies; it is not a policy
 // about how much the device may batch, and it must never be read as one.
 const cansub_max_payload = 64 * 1024
+
+// overrun drops a frame that has no end. Said once, so both append paths report it the same way
+// — the escaped path having been the one that did not (codex round 10 on #204).
+fn (mut d CansubDecoder) overrun(mut out []CansubRecord) {
+	d.buf.clear()
+	d.escaped = false
+	d.errors << 'no frame boundary within ${cansub_max_payload} bytes — stream discarded'
+}
 
 // close finishes the frame in `buf`: check its CRC, then read the CAN frames out of it.
 fn (mut d CansubDecoder) close(mut out []CansubRecord) {

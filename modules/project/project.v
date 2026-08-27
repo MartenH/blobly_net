@@ -1702,6 +1702,19 @@ pub fn (c Channel) address_config_error() ?string {
 		if c.address.contains('@') {
 			return 'the address field holds a rate (${c.address}) — put the rates in the bitrate fields instead; the address is just the device id and channel'
 		}
+		// A SAMPLE POINT THE BACKEND CANNOT BE TOLD ABOUT IS REFUSED, not ignored. The CANsub
+		// address carries a device, a channel and rates — there is nowhere in it for a sample
+		// point, so `cansub_timing_for` is always asked for the 80% default. A project that set
+		// 75% for a long bus therefore ran timing it never asked for, silently, and the errors
+		// that produces appear under load and nowhere else (codex round 10 on #204).
+		//
+		// Refused rather than carried, because carrying it means putting it in the address, and
+		// the address is the wire's IDENTITY — `destination_key` derives from it, so a sample
+		// point in there would split one wire into two for every rule keyed on it. Zero means
+		// unset, which is what almost every row has.
+		if c.sample_point != 0 && int(c.sample_point) != transport.cansub_default_sample_point {
+			return 'sample point ${c.sample_point}% cannot be configured on a CANsub from here — it solves both phases at ${transport.cansub_default_sample_point}%, so remove the setting or use a different adapter'
+		}
 		return transport.cansub_address_error(c.iface_with_bitrate())
 	}
 	if !c.fd || !c.can_carry_fd() {

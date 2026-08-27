@@ -397,3 +397,39 @@ fn test_the_bound_is_far_above_any_plausible_batch() {
 	worst := 16 * (64 + 11) * 2
 	assert cansub_max_payload > worst, 'the bound (${cansub_max_payload}) must clear a real batch (${worst})'
 }
+
+// THE ESCAPED PATH IS THE OTHER WAY A BYTE REACHES THE BUFFER, and the bound was checked only
+// after the ordinary append — so a stream of escape pairs with no closing flag walked straight
+// past it and grew without limit. That is the failure the bound exists for, alive on exactly the
+// path a broken or hostile device is most likely to take (codex round 10 on #204).
+fn test_a_stream_of_escape_pairs_with_no_boundary_is_discarded() {
+	mut d := CansubDecoder{}
+	mut junk := []u8{cap: cansub_max_payload * 3}
+	junk << 0x7E // an opening flag
+	for _ in 0 .. cansub_max_payload + 64 {
+		junk << 0x7D // escape
+		junk << 0x00 // ...and the byte it escapes
+	}
+	d.feed(junk)
+	assert d.errors.len > 0, 'escaped bytes must be bounded like any other'
+	assert d.buf.len <= cansub_max_payload, '${d.buf.len} bytes still held'
+}
+
+// Both paths report it the same way, which is why the drop is one function.
+fn test_both_append_paths_report_an_overrun_alike() {
+	mut plain := CansubDecoder{}
+	mut a := []u8{len: cansub_max_payload + 8, init: 0x41}
+	a[0] = 0x7E
+	plain.feed(a)
+
+	mut esc := CansubDecoder{}
+	mut b := []u8{cap: cansub_max_payload * 3}
+	b << 0x7E
+	for _ in 0 .. cansub_max_payload + 8 {
+		b << 0x7D
+		b << 0x00
+	}
+	esc.feed(b)
+
+	assert plain.errors[0] == esc.errors[0], 'one drop, one message: "${plain.errors[0]}" vs "${esc.errors[0]}"'
+}

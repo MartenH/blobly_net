@@ -1418,3 +1418,44 @@ fn test_a_plain_cansub_address_is_accepted() {
 		assert false, 'an ordinary CANsub row must be accepted: ${why}'
 	}
 }
+
+// A SAMPLE POINT THE BACKEND CANNOT BE TOLD ABOUT IS REFUSED, not ignored. The CANsub address
+// carries a device, a channel and rates — there is nowhere in it for a sample point, so the solver
+// is always asked for the 80% default. A project setting 75% for a long bus ran timing it never
+// asked for, and the errors that produces appear under load and nowhere else (codex round 10).
+fn test_a_cansub_row_with_an_unsupported_sample_point_is_refused() {
+	c := Channel{
+		name:         'CAN1'
+		adapter:      'cansub'
+		address:      '1A2B3C4D/1'
+		iface:        'cansub:1A2B3C4D/1'
+		bitrate:      500000
+		sample_point: 75.0
+	}
+	why := c.address_config_error() or {
+		assert false, 'a sample point this backend cannot honour must be refused'
+		return
+	}
+	assert why.contains('75'), 'the refusal must name the value: ${why}'
+}
+
+// Unset is the ordinary case and must pass, as must the value the backend actually uses.
+fn test_a_cansub_row_without_a_sample_point_is_accepted() {
+	base := Channel{
+		name:    'CAN1'
+		adapter: 'cansub'
+		address: '1A2B3C4D/1'
+		iface:   'cansub:1A2B3C4D/1'
+		bitrate: 500000
+	}
+	if why := base.address_config_error() {
+		assert false, 'an unset sample point is the ordinary case: ${why}'
+	}
+	at_default := Channel{
+		...base
+		sample_point: 80.0
+	}
+	if why := at_default.address_config_error() {
+		assert false, 'asking for what it already does is not a conflict: ${why}'
+	}
+}

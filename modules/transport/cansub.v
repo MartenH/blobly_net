@@ -141,6 +141,8 @@ mut:
 	// Counted rather than kept, like the decode errors above.
 	bus_errors      int
 	first_bus_error string
+	// Records dropped because the receiver was not keeping up — see enqueue.
+	dropped int
 }
 
 // open_cansub_bus is what shared_open calls. One connection per wire; every opener of the same
@@ -331,19 +333,26 @@ fn (mut b CansubBus) read_loop() {
 // notices: a full queue is only worth waiting on while somebody is still going to drain it.
 // Nothing is dropped while the bus is up; a bus on its way down stops caring.
 fn (mut b CansubBus) enqueue(rec CansubRecord) bool {
-	for {
-		if b.rx.try_push(rec) == .success {
-			return true
-		}
-		running := rlock b.stop {
-			b.stop.running
-		}
-		if !running {
-			return false
-		}
-		time.sleep(2 * time.millisecond)
+	if b.rx.try_push(rec) == .success {
+		return true
 	}
-	return false
+	// A FULL QUEUE DROPS A RECORD; IT NEVER STOPS THE READER.
+	//
+	// This used to wait for space while the bus was running, which is a worse trade than it looks:
+	// every send produces a TX acknowledgement on this same connection, so a send-only run fills
+	// 4096 records and then parks the SOLE reader of the socket. Traffic backs up into the TLS and
+	// device buffers behind it, and what follows is lost frames or a dropped connection — while
+	// sends keep reporting success (codex round 10 on #204). Waiting was itself a fix, for a
+	// close() that hung on the parked reader; dropping cures both, because it never blocks.
+	//
+	// COUNTED, not silent: a receiver that fell behind has holes in its trace and must be able to
+	// find out. `diagnostics()` is what carries it.
+	lock b.stop {
+		b.stop.dropped++
+	}
+	return rlock b.stop {
+		b.stop.running
+	}
 }
 
 // reconcile_listen_only re-configures the CONTROLLER when this process's silence policy for this
@@ -457,7 +466,7 @@ pub fn (mut b CansubBus) send(frame CanFrame) ! {
 		return error('${b.iface} is a classic channel — its address names one bitrate, so it cannot carry a CAN-FD frame')
 	}
 	if e := b.failure() {
-		return error('${b.iface}: ${e}')
+		return error('${b.iface}: ${e}${b.diagnostic_suffix()}')
 	}
 	// A SILENCED CONTROLLER CANNOT TRANSMIT, whatever this process's policy currently says.
 	//
@@ -591,12 +600,47 @@ pub fn (mut b CansubBus) recv(timeout_ms int) !CanFrame {
 			// Bounded, so a closed socket does not park a caller here forever.
 			wait * time.millisecond {
 				if e := b.failure() {
-					return error('${b.iface}: ${e}')
+					return error('${b.iface}: ${e}${b.diagnostic_suffix()}')
 				}
 			}
 		}
 	}
 	return error('timeout')
+}
+
+// diagnostics is everything this backend knows that is not a frame and not a health rung: records
+// it could not decode, controller errors the device reported, and records dropped because the
+// receiver fell behind.
+//
+// WHY IT IS A STRING ON THE END OF AN ERROR. The Bus contract is send/recv/close/health, and none
+// of those can carry "the controller reported four ACK errors and we dropped nine records". Round
+// 3 and round 9 each answered a finding by COUNTING one of these and nothing ever read the counts
+// — write-only state that looked like a fix and changed nothing observable, which codex caught for
+// the second set and which was equally true of the first (codex round 10 on #204).
+//
+// So they ride the text of the errors this backend already returns, which is where an operator is
+// looking when something is wrong. That is a smaller answer than these deserve; the real one is a
+// telemetry channel on the Bus contract, which #213 is about and which #149 needs too.
+// diagnostic_suffix is diagnostics() ready to append to a message, or nothing.
+fn (b &CansubBus) diagnostic_suffix() string {
+	d := b.diagnostics()
+	return if d == '' { '' } else { ' (${d})' }
+}
+
+pub fn (b &CansubBus) diagnostics() string {
+	return rlock b.stop {
+		mut parts := []string{}
+		if b.stop.dropped > 0 {
+			parts << '${b.stop.dropped} record(s) dropped — the receiver fell behind'
+		}
+		if b.stop.bus_errors > 0 {
+			parts << '${b.stop.bus_errors} controller error(s), first ${b.stop.first_bus_error}'
+		}
+		if b.stop.decode_errors > 0 {
+			parts << '${b.stop.decode_errors} undecodable record(s), first "${b.stop.first_decode_error}"'
+		}
+		parts.join('; ')
+	}
 }
 
 // failure reports the reason the reader stopped, if it stopped.
