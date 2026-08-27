@@ -578,3 +578,25 @@ fn test_a_probe_whose_policy_changed_meanwhile_attempts_nothing() {
 	assert b.apply_phy_silence(true, true, false) == silence_not_attempted
 	assert time.ticks() - t0 < 500, 'the stale probe reached the network: ${time.ticks() - t0} ms'
 }
+
+// A PUT THAT COULD NOT BE DELIVERED AFTER A READBACK THAT DISPROVED THE RECORD clears the record
+// and shows a fault that is NOT declared: the device was read, the controller is in the other
+// mode, and nobody must take the recorded-state shortcut past that (codex round 8 on #223).
+fn test_an_undelivered_put_after_a_readback_clears_the_record() {
+	forget_silence_claims()
+	iface := 'cansub:AAAA0005/1@500000'
+	apply_silence_explained(iface, true, fn (silent bool) int {
+		return 0
+	}, cansub_silence_reason) or { assert false, err.msg() }
+	assert recorded_silence(wire_key(iface))? == true
+	apply_silence_probe(iface, true, fn (silent bool) int {
+		return cansub_put_undelivered
+	}, cansub_silence_reason) or {}
+	assert recorded_silence(wire_key(iface)) == none, 'a disproved record must not stand'
+	f := wire_silence_fault(iface) or {
+		assert false, 'the undelivered PUT must be shown as a fault'
+		return
+	}
+	assert !f.declared
+	forget_silence_claims()
+}

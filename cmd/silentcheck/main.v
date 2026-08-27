@@ -270,7 +270,7 @@ fn run(mut o Opts) int {
 	}
 	settle(mut listener, o.timeout)
 	mut sil := exchange(mut listener, mut talker, o, true, true)
-	sil.talker_health = worse(sil.talker_health, linger(mut talker))
+	sil.talker_health = worse(sil.talker_health, linger(mut talker, o))
 	println('2. listener marked listen-only, mid-run')
 	report(sil)
 	if !degraded(sil.talker_health) {
@@ -383,7 +383,7 @@ fn run(mut o Opts) int {
 			marked_sibs << sib
 		}
 		mut held := exchange(mut marked, mut fresh, o, true, true)
-		held.talker_health = worse(held.talker_health, linger(mut fresh))
+		held.talker_health = worse(held.talker_health, linger(mut fresh, o))
 		println('4a. reopened MARKED (this backend follows the mark only at open)')
 		report(held)
 		if !degraded(held.talker_health) {
@@ -463,7 +463,7 @@ fn run(mut o Opts) int {
 	println('5. mark set, then a NEW handle opened onto the already-held wire')
 	if mut joiner := transport.open(o.listener) {
 		mut joined := exchange(mut reopened, mut fresh2, o, true, true)
-		joined.talker_health = worse(joined.talker_health, linger(mut fresh2))
+		joined.talker_health = worse(joined.talker_health, linger(mut fresh2, o))
 		report(joined)
 		if !degraded(joined.talker_health) {
 			if why := declined(o.listener, true) {
@@ -672,25 +672,26 @@ fn exchange_burst(mut listener transport.Bus, mut talker transport.Bus, o Opts, 
 // (codex round 7 on #223). `reports` is whether the talker ever gave a known reading — phase 1
 // establishes it — and a talker that does not is driven for the floor and NOT failed: the phase's
 // receive count is then its only evidence, and the verdict says so.
+//
+// AND THE SAMPLE IS FRESH BY CONSTRUCTION, not by an assumption about a cache's age. A CANsub's
+// health() is its poll thread's cache, and that thread runs two bounded REST connects per period,
+// so no elapsed time this tool could pick is a proof (codex round 8 on #223). `sample` asks the
+// device directly for a CANsub talker, on this thread, and waits for the answer: the reading
+// postdates every frame sent before the call. Other backends read the driver synchronously.
 fn recover_talker(mut talker transport.Bus, mut listener transport.Bus, o Opts, untainted bool, reports bool) bool {
 	start := time.ticks()
 	floor := start + 1000
-	stale_floor := start + recovery_stale_ms
 	until := start + recovery_bound_ms
 	mut n := 0
-	mut moved := false
 	for time.ticks() < until {
-		h := talker.health()
+		h := sample(mut talker, o)
 		if h == .bus_off {
 			return false
-		}
-		if h != .ok && h != .unknown {
-			moved = true
 		}
 		if !reports && time.ticks() >= floor {
 			return true
 		}
-		if h == .ok && ((moved && time.ticks() >= floor) || time.ticks() >= stale_floor) {
+		if h == .ok && time.ticks() >= floor {
 			return true
 		}
 		talker.send(transport.CanFrame{ id: o.id, data: [u8(0x5F), u8(n)] }) or {}
@@ -700,14 +701,23 @@ fn recover_talker(mut talker transport.Bus, mut listener transport.Bus, o Opts, 
 		time.sleep(5 * time.millisecond)
 		n++
 	}
-	return talker.health() == .ok
+	return sample(mut talker, o) == .ok
 }
 
-// recovery_stale_ms is the floor under an `ok` that was never seen to move: a bounded REST connect
-// (5 s) plus a CANsub poll period, so no cached reading can be that old. recovery_bound_ms is how
-// long recovery is driven at most.
-const recovery_stale_ms = i64(6500)
+// recovery_bound_ms is how long recovery is driven at most; linger_ms how long a talker that still
+// reads ok after a burst a silent listener should have refused is re-sampled before it is believed
+// (fresh samples, so a couple of them is enough for the burst's failures to be counted).
 const recovery_bound_ms = i64(10000)
+const linger_ms = i64(2500)
+
+// sample is a health reading that postdates every frame sent before it: the device itself for a
+// CANsub (its health() is a cache — see recover_talker), the driver for everything else.
+fn sample(mut talker transport.Bus, o Opts) transport.BusHealth {
+	if o.talker.to_lower().starts_with('cansub:') {
+		return transport.cansub_health_now(o.talker) or { transport.BusHealth.unknown }
+	}
+	return talker.health()
+}
 
 // linger keeps sampling a talker that still reads ok after a burst a silent listener should have
 // refused, for as long as a health reading can be stale (recovery_stale_ms) — a CANsub's cache
@@ -715,11 +725,11 @@ const recovery_bound_ms = i64(10000)
 // burst window is shorter than that. Nothing is sent: the burst's failures are already in the
 // counter, and the question is only whether the reading that shows them has arrived yet. Returns
 // the worst reading seen; a talker still ok after this long really was acknowledged.
-fn linger(mut talker transport.Bus) transport.BusHealth {
-	until := time.ticks() + recovery_stale_ms
+fn linger(mut talker transport.Bus, o Opts) transport.BusHealth {
+	until := time.ticks() + linger_ms
 	mut worst := transport.BusHealth.unknown
 	for time.ticks() < until {
-		h := talker.health()
+		h := sample(mut talker, o)
 		worst = worse(worst, h)
 		if degraded(h) {
 			return worst

@@ -568,8 +568,16 @@ fn (mut b CansubBus) apply_phy_silence(want bool, force bool, pre ?bool) int {
 	} {
 		return silence_not_attempted
 	}
+	// A PUT THAT COULD NOT BE DELIVERED IS A FAULT, NOT "NOT ATTEMPTED". The readback above has
+	// just shown the controller in the OTHER mode from the record, so the record is disproved
+	// whatever happens to the PUT; returning not-attempted preserved it, every ordinary caller
+	// then took the recorded-state shortcut, and a controller another tool had set back to normal
+	// went on acknowledging under a silent record with nothing on the Buses row until a later
+	// probe succeeded (codex round 8 on #223). Not-attempted is right only when the readback
+	// itself could not be made. This status clears the record and shows the fault; the poll
+	// thread retries.
 	r := cansub_request(b.host, 'PUT', '/api/can/${b.spec.channel}/phy', cansub_phy_json(nominal,
-		data, want), cansub_health_timeout) or { return silence_not_attempted }
+		data, want), cansub_health_timeout) or { return cansub_put_undelivered }
 	if r.status != 200 && r.status != 204 {
 		return r.status // apply_silence records it, in cansub_silence_reason's words
 	}
@@ -594,7 +602,14 @@ fn cansub_silence_reason(want bool, status int) SilenceReason {
 // Pure, so CI can hold the one answer that matters: a 500 on a live channel is not a fault in the
 // device or in us, it is the device declining to reconfigure a channel somebody is using — and the
 // remedy is a Stop and Start, which applies the mark at open, where the device accepts it.
+// cansub_put_undelivered is the status apply_phy_silence returns when the device was read but the
+// PUT to change it could not be delivered: a fault (the record is disproved), not a refusal.
+pub const cansub_put_undelivered = -1
+
 pub fn cansub_phy_refusal(status int) string {
+	if status == cansub_put_undelivered {
+		return 'the controller was read in the other mode and the PHY PUT to change it could not be delivered; retried every poll'
+	}
 	if status == 500 {
 		return 'the device refuses PHY reconfiguration while the channel is open (HTTP 500) — a CANsub follows listen-only only at open; Stop and Start to apply it'
 	}
@@ -628,14 +643,7 @@ fn (mut b CansubBus) poll_health() {
 		b.health_miss()
 		return
 	}
-	h := match state {
-		'error_active' { BusHealth.ok }
-		'error_warning' { BusHealth.warning }
-		'error_passive' { BusHealth.error_passive }
-		'bus_off' { BusHealth.bus_off }
-		'stopped' { BusHealth.unknown } // not on the bus: nothing to report, and not a fault
-		else { BusHealth.unknown }
-	}
+	h := cansub_state_health(state)
 
 	lock b.stop {
 		b.stop.health = h
@@ -651,6 +659,35 @@ fn (mut b CansubBus) poll_health() {
 // that had stopped answering went on reporting a healthy controller indefinitely (codex rounds 7
 // and 13 on #204). One miss is a hiccup; several in a row is not knowing, and `.unknown` is what
 // this ladder has for that.
+// cansub_state_health maps the device's controller state onto this repo's ladder — one to one,
+// which is the whole reason health() can say anything here at all.
+fn cansub_state_health(state string) BusHealth {
+	return match state {
+		'error_active' { BusHealth.ok }
+		'error_warning' { BusHealth.warning }
+		'error_passive' { BusHealth.error_passive }
+		'bus_off' { BusHealth.bus_off }
+		'stopped' { BusHealth.unknown } // not on the bus: nothing to report, and not a fault
+		else { BusHealth.unknown }
+	}
+}
+
+// cansub_health_now asks the device for its controller state RIGHT NOW, on the caller's thread,
+// and returns none if it cannot be asked. Not what health() returns: that is the poll thread's
+// cache, and a bench tool proving that acknowledgements resumed needs a sample it can date —
+// one that provably postdates the frames it just sent — which a cache cannot give it whatever
+// its age is assumed to be (codex round 8 on #223). One GET per call; a tool's cost, not the
+// app's.
+pub fn cansub_health_now(iface string) ?BusHealth {
+	spec := parse_cansub_iface(iface) or { return none }
+	host := cansub_host(spec.id)
+	body := cansub_get_within(host, '/api/can/${spec.channel}', cansub_health_timeout) or {
+		return none
+	}
+	state := extract_json_string(body, 'state') or { return none }
+	return cansub_state_health(state)
+}
+
 fn (mut b CansubBus) health_miss() {
 	lock b.stop {
 		b.stop.health_misses++
