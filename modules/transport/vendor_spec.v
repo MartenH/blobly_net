@@ -48,9 +48,8 @@ pub fn vendor_bitrate(tok string, default_rate int) !int {
 // and a second copy of it would be the pair of them disagreeing about the same project.
 pub fn adapter_carries_fd(adapter string) bool {
 	return match adapter.trim_space().to_lower() {
-		'pcan' { false } // refuses an FD frame rather than truncating it
 		'doip' { false } // not a CAN bus
-		else { true } // vector, socketcan/vcan, and the software buses
+		else { true } // every CAN backend now, PCAN included
 	}
 }
 
@@ -88,7 +87,7 @@ pub fn adapter_configures_bitrate(adapter string) bool {
 // rate into an address", which is why it lives beside the address parsing and not in a front end.
 pub fn adapter_configures_data_phase(adapter string) bool {
 	return match adapter.trim_space().to_lower() {
-		'vector', 'kvaser', 'cansub' { true }
+		'vector', 'kvaser', 'cansub', 'pcan' { true }
 		else { false }
 	}
 }

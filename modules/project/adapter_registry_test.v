@@ -98,13 +98,13 @@ fn test_fd_capability_is_declared_per_backend() {
 	assert transport.adapter_carries_fd('vector')
 	assert transport.adapter_carries_fd('kvaser')
 	assert transport.adapter_carries_fd('cansub')
-	assert !transport.adapter_carries_fd('pcan'), 'PCAN refuses an FD frame rather than truncating'
+	assert transport.adapter_carries_fd('pcan'), 'PCAN carries FD since #217; it was the last CAN backend that could not'
 	assert !transport.adapter_carries_fd('doip'), 'DoIP is not a CAN bus'
 
 	assert transport.adapter_configures_data_phase('vector')
 	assert transport.adapter_configures_data_phase('kvaser')
 	assert transport.adapter_configures_data_phase('cansub')
-	assert !transport.adapter_configures_data_phase('pcan')
+	assert transport.adapter_configures_data_phase('pcan'), 'CAN_InitializeFD takes both phases, so the address carries both'
 	assert !transport.adapter_configures_data_phase('socketcan'), '`ip link` sets its data phase, not us'
 	assert !transport.adapter_configures_data_phase('vcan')
 }

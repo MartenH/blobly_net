@@ -1048,7 +1048,10 @@ fn test_a_data_phase_is_composed_only_where_it_can_be_configured() {
 		fd:      true
 		bitrate: 500000
 	}
-	assert pc.iface_with_bitrate() == 'pcan:PCAN_USBBUS1@500000', 'PCAN refuses FD; its address must not claim it'
+	// PCAN carries FD since #217, so an `fd: true` row composes a data phase like any other. With
+	// the data rate unset it is the nominal one — a real configuration, not a degenerate case:
+	// 64-byte payloads at the arbitration rate, with no bit-rate switch to make.
+	assert pc.iface_with_bitrate() == 'pcan:PCAN_USBBUS1@500000/500000', pc.iface_with_bitrate()
 }
 
 // ONE WIRE, ONE PROTOCOL — the same rule as one mode and one rate, and refused from the file
@@ -1118,21 +1121,33 @@ fn test_fd_disagreement_is_per_wire() {
 // classic half of such a run is real, so taking the run away would remove something that works.
 // What must not happen is silence — replay counts refused frames and keeps going, so the operator
 // reads a successful measurement that is missing traffic.
+//
+// PCAN WAS THE EXAMPLE AND IS NOT ONE ANY MORE (#217). The warning still exists and still matters
+// for whatever cannot carry FD next; what it has lost is a CAN adapter to demonstrate it on. So
+// this asserts the rule over the REGISTRY rather than over a name, and records that the set is
+// currently empty — a test that quietly exercised nothing would be worse than one that says so.
 fn test_an_fd_row_on_a_backend_that_refuses_fd_warns() {
-	pc := Channel{
-		name:    'PCAN FD'
-		adapter: 'pcan'
-		address: 'PCAN_USBBUS1'
-		iface:   'pcan:PCAN_USBBUS1'
-		fd:      true
-		enabled: true
+	mut examined := 0
+	for a in adapters {
+		if transport.adapter_carries_fd(a) || a == 'doip' {
+			continue
+		}
+		row := Channel{
+			name:    'row on ${a}'
+			adapter: a
+			address: 'x'
+			iface:   '${a}:x'
+			fd:      true
+			enabled: true
+		}
+		w := fd_capability_warnings([row])
+		assert w.len == 1, '${a} cannot carry FD, so an FD row on it must warn: got ${w}'
+		assert w[0].contains('row on ${a}') && w[0].contains(a)
+		// It is NOT a destination_conflicts entry — everything there refuses the project.
+		assert destination_conflicts([row]) == [], 'an FD row on ${a} must not stop the run'
+		examined++
 	}
-	w := fd_capability_warnings([pc])
-	assert w.len == 1, 'expected one warning, got ${w}'
-	assert w[0].contains('PCAN FD') && w[0].contains('pcan')
-
-	// It is NOT a destination_conflicts entry — everything there refuses the project.
-	assert destination_conflicts([pc]) == [], 'an FD row on PCAN must not stop the run'
+	assert examined == 0, 'a CAN adapter that refuses FD exists again — good, this warning has a subject once more'
 }
 
 fn test_fd_capability_warnings_stay_quiet_where_fd_works() {
