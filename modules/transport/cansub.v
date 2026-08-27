@@ -431,11 +431,21 @@ fn (mut b CansubBus) reconcile_listen_only() {
 	have := b.phy_listen_only() or { rlock b.stop {
 		b.stop.phy_silent
 	} }
+	// THE CACHE IS PUBLISHED BEFORE THE PUT, not after it, and whether they agree or not.
+	//
+	// `send()` refuses while `phy_silent` says the controller is silent — that is what keeps a
+	// send from succeeding into a wire that cannot carry it. When the readback DISCOVERS a silent
+	// controller under a normal policy, the old cache still said `false`, so for the whole
+	// duration of the PUT — and forever if it failed — send() went on reporting success for
+	// frames that never reached the wire (codex round 18 on #204). The readback learned the truth
+	// and kept it to itself.
+	//
+	// So what the DEVICE says is published the moment it is known. The PUT below moves it to
+	// `want` only if it succeeds.
+	lock b.stop {
+		b.stop.phy_silent = have
+	}
 	if want == have {
-		// Believed and actual agree; keep the cache honest for the fallback above.
-		lock b.stop {
-			b.stop.phy_silent = have
-		}
 		return
 	}
 	nominal := cansub_timing_for(b.spec.arb, cansub_default_sample_point) or { return }
@@ -448,8 +458,19 @@ fn (mut b CansubBus) reconcile_listen_only() {
 	// five seconds — in precisely the case this function exists for, a policy mismatch. Shortening
 	// only the GET left the stall exactly where it started (codex round 6 on #204).
 	//
-	// Safe to bound because a failure changes nothing: `phy_silent` is updated only on success, so
-	// a PUT that runs out of time is simply retried on the next poll.
+	// Safe to bound because a failure changes nothing: `phy_silent` holds what the device was last
+	// OBSERVED to be, so a PUT that runs out of time is simply retried on the next poll.
+	//
+	// AND `running` IS CHECKED AGAIN, because the readback above is a network round trip and Stop
+	// can happen inside it. The check at the top of this function had already passed by then — so
+	// a stalled GET, a Stop, and a new run configuring this channel left the old thread free to
+	// resume here and PUT a configuration nobody had asked for since (codex round 18 on #204).
+	// That also makes close()'s claim true again: an abandoned thread finishes a GET and stops.
+	if !rlock b.stop {
+		b.stop.running
+	} {
+		return
+	}
 	r := cansub_request(b.host, 'PUT', '/api/can/${b.spec.channel}/phy', cansub_phy_json(nominal,
 		data, want), cansub_health_timeout) or { return }
 	if r.status != 200 && r.status != 204 {
@@ -808,9 +829,12 @@ pub fn (mut b CansubBus) close() {
 	// and is bounded by a read timeout this code CAN set — that join stays.
 	//
 	// Safe to leave running: it touches `host`, `spec` and `stop`, all of which outlive it under
-	// the GC, and `running` is already false, so its loop exits on return and reconcile_listen_only
-	// refuses to reconfigure a channel on the way out. The worst it does is finish one GET whose
-	// answer nobody reads. #214 is the missing connect timeout.
+	// the GC, and `running` is already false. Its loop exits on return, and reconcile_listen_only
+	// checks `running` BOTH before its readback and again before the PUT that follows it — the
+	// second check being what keeps this sentence true, since a network round trip sits between
+	// them and Stop can happen inside it. So the worst an abandoned thread does is finish one GET
+	// whose answer nobody reads. #214 is the missing connect timeout, and closing the last window
+	// — a PUT already in flight — waits on it.
 	b.rx.close()
 }
 
