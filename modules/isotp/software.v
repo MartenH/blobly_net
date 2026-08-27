@@ -51,6 +51,12 @@ pub fn on_bus(bus transport.Bus, iface string, tx_id u32, rx_id u32, ext bool) !
 // send segments `data` into ISO-TP frames: a Single Frame for ≤7 bytes, else a
 // First Frame + (after a Flow Control) Consecutive Frames.
 pub fn (mut c SoftChannel) send(data []u8) ! {
+	// AN EMPTY PDU IS REFUSED HERE AS THE KERNEL REFUSES IT: encoded, it is a Single Frame with
+	// SF_DL 0, which no receiver accepts, and a platform-transparent open() must not transmit it
+	// on one platform only (codex round 2 on #225).
+	if data.len == 0 {
+		return error('isotp send: empty pdu')
+	}
 	if data.len > max_pdu {
 		return error('ISO-TP PDU too large: ${data.len} > ${max_pdu}')
 	}

@@ -74,3 +74,18 @@ fn test_open_reaches_the_software_channel_off_linux() {
 		ch.close()
 	}
 }
+
+// AN EMPTY PDU IS REFUSED BY THE SOFTWARE CHANNEL, as the kernel channel refuses it: the two
+// backends behind one open() must answer alike (codex round 2 on #225).
+fn test_the_software_channel_refuses_an_empty_pdu() {
+	mut ch := open_software('inproc:isotp-empty', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel on the in-process bus: ${err}'
+		return
+	}
+	if _ := ch.send([]u8{}) {
+		assert false, 'an empty PDU must not be transmitted'
+	} else {
+		assert err.msg() == 'isotp send: empty pdu'
+	}
+	ch.close()
+}
