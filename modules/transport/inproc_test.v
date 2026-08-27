@@ -158,3 +158,21 @@ fn test_the_in_process_bus_still_pads_an_fd_payload() {
 	}
 	assert got.data.len == 12, 'a DLC cannot express nine, so twelve is what reaches the wire'
 }
+
+// ESI ON A CLASSIC FRAME reached the shared rules late, so for a while `inproc:`, `udp:`, PCAN and
+// CANsub refused it while SocketCAN, Kvaser and Vector accepted it and dropped the flag — the same
+// input behaving differently depending on which wire it went out on, which is what having one rule
+// in one place is supposed to make impossible (codex round 12 on #204).
+fn test_the_in_process_bus_refuses_esi_on_a_classic_frame() {
+	mut a := open_inproc('shape2') or { panic(err) }
+	defer {
+		a.close()
+	}
+	if _ := a.send(CanFrame{ id: 0x123, esi: true }) {
+		assert false, 'a classic frame has no ESI bit to set'
+	}
+	// And an FD frame carrying it is ordinary: the transmitter was error-passive.
+	a.send(CanFrame{ id: 0x123, fd: true, esi: true, data: []u8{len: 8} }) or {
+		assert false, 'ESI on an FD frame is a received status, not a contradiction: ${err}'
+	}
+}

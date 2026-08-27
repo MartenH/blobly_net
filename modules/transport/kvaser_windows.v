@@ -90,6 +90,17 @@ pub fn open_kvaser(spec string) !&KvaserBus {
 }
 
 pub fn (mut b KvaserBus) send(f CanFrame) ! {
+	// A FRAME NO CONTROLLER COULD SEND is refused here as it is everywhere else. `esi` on a
+	// classic frame arrived with the shared rules and this path never learned it, so the same
+	// input was rejected by `inproc:`, `udp:`, PCAN and CANsub and accepted here — the flag
+	// silently dropped, success reported, and the trace keeping a bit the wire never carried
+	// (codex round 12 on #204).
+	//
+	// The IMPOSSIBLE rules only. What this backend does about a LENGTH is its own tier's business
+	// and is unchanged — see frame_rules.v.
+	if why := frame_impossible_error(f) {
+		return error('Kvaser: ${why}')
+	}
 	// BRS WITHOUT FD IS NOT A FRAME. Bit-rate switching is a property of an FD frame's data
 	// phase; a classic frame has no second phase to switch into. Left through, it goes out
 	// classic and reports success while the trace records a switch that never happened — the
