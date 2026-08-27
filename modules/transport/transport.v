@@ -88,6 +88,13 @@ mut:
 // suffix. Nothing else uses `@` as syntax — `inproc:bench@A` is a perfectly good bus NAME, and
 // treating the suffix as universal sent the emitters to a different hub than the monitor.
 pub fn vendor_iface(iface string) bool {
+	// `cansub:` FIRST, and outside the platform guard below, because it is the one hardware
+	// backend that is not a vendor DLL: the device is an HTTP server on the end of a USB cable
+	// and the same code reaches it from Linux and Windows alike. The guard below exists because
+	// `pcan:bench` on Linux is an ordinary SocketCAN name; `cansub:` means one thing everywhere.
+	if iface.to_lower().starts_with('cansub:') {
+		return true
+	}
 	// PLATFORM-DEPENDENT, because the dispatchers are: only open_windows.v routes `pcan:`,
 	// `kvaser:` and `vector:` to a vendor driver. On Linux open_linux.v sends everything that is not a
 	// software bus to SocketCAN — which echoes — so a channel someone configured as
@@ -117,6 +124,15 @@ pub fn echoes_own_sends(iface string) bool {
 	// reporting the frame as RX — from there it is genuinely bus traffic somebody else's port
 	// put on the wire.
 	if iface.trim_space().to_lower().starts_with('vector:') {
+		return true
+	}
+	// A CANsub does too, by a different mechanism and for the same reason. It acknowledges every
+	// frame it puts on the wire back over the same WebSocket, `open_cansub_bus` asks for those
+	// (`tx_ack_frames`), and they arrive carrying a hardware timestamp taken at start-of-frame —
+	// better than the send site's guess, so they are delivered rather than dropped. Answered
+	// `false`, note_emit would never register the emission and every frame this tester transmits
+	// would be filed a second time as the ECU's.
+	if iface.trim_space().to_lower().starts_with('cansub:') {
 		return true
 	}
 	// PCAN and Kvaser do not. Matched by DISPATCHER prefix, separator included: on Linux
@@ -239,6 +255,23 @@ pub fn vendor_destination_key(iface string) string {
 		// and a wrong guess here would merge buses that never open at all.
 	} else if kind == 'kvaser' {
 		resolved = ch.int().str() // exactly what open_kvaser does with it
+	} else if kind == 'cansub' {
+		// `<id>/<channel>`, and the CHANNEL is what needs normalising: the device numbers its
+		// channels and `parse_cansub_iface` reads that number with `.int()`, so `id/01` and `id/1`
+		// open the same one while differing as strings. Left unresolved they keyed as two wires,
+		// and the vendor is explicit that "a single client can be connected to each WebSocket" —
+		// so shared_open would hand out two clients for a channel that permits one, and the rate,
+		// listen-only and framing checks would never meet. The id is a name and stays a name.
+		if ch.contains('/') {
+			// TRIMMED, because the PARSER trims. `cansub:id / 1` and `cansub:id/1` open the same
+			// device channel, and a key that kept the spaces made them two wires — so they evaded
+			// the rate and mode conflict checks and reached `shared_open` under different keys,
+			// which hands out two clients for a channel the vendor permits one on (codex round 17
+			// on #204). Whatever the parser ignores, this has to ignore too.
+			dev := ch.all_before('/').trim_space().to_lower()
+			num := ch.all_after_last('/').trim_space().int().str()
+			resolved = '${dev}/${num}'
+		}
 	} else if kind == 'vector' {
 		// Through the SAME resolver open_vector uses, so `vector:1`, `vector:ch1` and
 		// `vector:app01` are one destination. The mode suffix is already gone: it sits after the
@@ -264,7 +297,7 @@ pub fn wire_key_for(adapter string, iface string) string {
 //
 // The project's own `adapter` field is what settles it, and only these paths have it.
 pub fn destination_key_for(adapter string, iface string) string {
-	if adapter in ['pcan', 'kvaser', 'vector'] {
+	if adapter_configures_bitrate(adapter) {
 		return vendor_destination_key(iface)
 	}
 	return destination_key(iface)

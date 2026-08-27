@@ -94,3 +94,85 @@ fn test_inproc_pads_an_fd_payload() {
 	assert got.fd
 	assert got.data[9..] == [u8(0), 0, 0]
 }
+
+// A SIMULATION MUST NOT MODEL WHAT CANNOT HAPPEN. This bus is what every headless test and the
+// whole simulation run on, so a frame no controller could transmit had to be refused here too —
+// otherwise a test passes on `inproc:` and the same frame is refused on a bench, which makes the
+// software bus a worse model of the hardware the tests exist to stand in for (codex round 2 on
+// #204).
+fn test_the_in_process_bus_refuses_a_frame_no_controller_could_send() {
+	mut a := open_inproc('shape0') or { panic(err) }
+	defer {
+		a.close()
+	}
+	bad := [
+		transport_frame_rtr_fd(),
+		transport_frame_brs_classic(),
+		transport_frame_wide_std(),
+	]
+	for f in bad {
+		if _ := a.send(f) {
+			assert false, 'id 0x${f.id:X} is not a frame any controller could put on a bus'
+		}
+	}
+}
+
+fn transport_frame_rtr_fd() CanFrame {
+	return CanFrame{
+		id:  0x123
+		rtr: true
+		fd:  true
+	}
+}
+
+fn transport_frame_brs_classic() CanFrame {
+	return CanFrame{
+		id:  0x123
+		brs: true
+	}
+}
+
+fn transport_frame_wide_std() CanFrame {
+	return CanFrame{
+		id: 0x800
+	}
+}
+
+// LENGTHS ARE STILL PADDED, not refused: this bus is in the tier that pads, and an FD payload of
+// nine bytes is what a controller would put on the wire as twelve. Refusing it here would be a
+// different change and is deliberately not one (see frame_rules.v).
+fn test_the_in_process_bus_still_pads_an_fd_payload() {
+	mut a := open_inproc('shape1') or { panic(err) }
+	mut b := open_inproc('shape1') or { panic(err) }
+	defer {
+		a.close()
+		b.close()
+	}
+	a.send(CanFrame{ id: 0x321, fd: true, data: []u8{len: 9} }) or {
+		assert false, 'nine FD bytes are padded, not refused: ${err}'
+		return
+	}
+	got := b.recv(1000) or {
+		assert false, 'padded frame did not arrive: ${err}'
+		return
+	}
+	assert got.data.len == 12, 'a DLC cannot express nine, so twelve is what reaches the wire'
+}
+
+// ESI ON A CLASSIC FRAME reached the shared rules late, so for a while `inproc:`, `udp:`, PCAN and
+// CANsub refused it while SocketCAN, Kvaser and Vector accepted it and dropped the flag — the same
+// input behaving differently depending on which wire it went out on, which is what having one rule
+// in one place is supposed to make impossible (codex round 12 on #204).
+fn test_the_in_process_bus_refuses_esi_on_a_classic_frame() {
+	mut a := open_inproc('shape2') or { panic(err) }
+	defer {
+		a.close()
+	}
+	if _ := a.send(CanFrame{ id: 0x123, esi: true }) {
+		assert false, 'a classic frame has no ESI bit to set'
+	}
+	// And an FD frame carrying it is ordinary: the transmitter was error-passive.
+	a.send(CanFrame{ id: 0x123, fd: true, esi: true, data: []u8{len: 8} }) or {
+		assert false, 'ESI on an FD frame is a received status, not a contradiction: ${err}'
+	}
+}

@@ -78,6 +78,16 @@ pub fn open_inproc(name string) !&InprocBus {
 // send broadcasts the frame to every other bus on the same name. A full
 // subscriber queue drops the frame (bus overload) rather than blocking the sender.
 pub fn (mut b InprocBus) send(frame CanFrame) ! {
+	// A FRAME NO CONTROLLER COULD SEND is refused here too, not only on hardware. This bus is what
+	// every headless test and the whole simulation run on, so carrying an `rtr` FD frame, a classic
+	// frame with `brs`, or an id too wide for the width it declares makes the simulation a model of
+	// something that cannot happen — and a test that passes here and fails on a bench (codex round
+	// 2 on #204). LENGTHS are deliberately not refused: padding an FD payload to a length a DLC can
+	// express is what a controller genuinely does, and this bus is in the tier that pads. See
+	// frame_rules.v and clamps_to_classic.
+	if why := frame_impossible_error(frame) {
+		return error('inproc: ${why}')
+	}
 	// Padded like every other backend: an in-process bus that carried a 9-byte FD payload
 	// verbatim would make a headless test pass where hardware pads to 12, which is the one
 	// thing the default transport must never do.

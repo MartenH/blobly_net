@@ -1073,8 +1073,7 @@ fn test_two_rows_on_one_wire_must_agree_about_fd() {
 	}
 	msgs := destination_conflicts([fd_row, classic_row])
 	assert msgs.len > 0, 'a wire asked to be both CAN-FD and classic must be refused'
-	assert msgs.any(it.contains('CAN-FD') && it.contains('classic CAN')),
-		'the message must name both protocols, got ${msgs}'
+	assert msgs.any(it.contains('CAN-FD') && it.contains('classic CAN')), 'the message must name both protocols, got ${msgs}'
 
 	// Agreeing rows are not a conflict — including two FD rows at the same data rate.
 	same := destination_conflicts([fd_row, Channel{
@@ -1287,7 +1286,8 @@ channels:
     fd: true
     bitrate: 500000
     data_bitrate: ${bad}
-') {
+')
+		{
 			assert false, '"${bad}" must not load (got data_bitrate ${p.channels[0].data_bitrate})'
 		}
 	}
@@ -1311,7 +1311,7 @@ channels:
 // The editor and the opener must agree about a pair of rates. Digits-only says nothing about
 // whether the two phases make sense TOGETHER, so a data phase slower than the arbitration phase
 // was accepted, persisted, and refused only at Start (codex #183 r1).
-fn test_fd_config_error_asks_the_real_parser() {
+fn test_address_config_error_asks_the_real_parser() {
 	base := Channel{
 		adapter: 'vector'
 		iface:   'vector:1'
@@ -1323,13 +1323,18 @@ fn test_fd_config_error_asks_the_real_parser() {
 		...base
 		data_bitrate: 250000
 	}
-	if why := slow.fd_config_error() {
+	if why := slow.address_config_error() {
 		assert why.contains('slower') || why.contains('data'), 'unhelpful message: ${why}'
 	} else {
 		assert false, 'a data phase below the arbitration rate must be reported'
 	}
 	// Past the range the standard allows.
-	if _ := Channel{ ...base, data_bitrate: 9_000_000 }.fd_config_error() {} else {
+	if _ := Channel{
+		...base
+		data_bitrate: 9_000_000
+	}.address_config_error()
+	{
+	} else {
 		assert false, '9 Mbit/s is past what ISO 11898-1 allows'
 	}
 	// The ordinary cases are fine, including FD with no bit-rate switch.
@@ -1338,12 +1343,12 @@ fn test_fd_config_error_asks_the_real_parser() {
 			...base
 			data_bitrate: ok
 		}
-		if why := c.fd_config_error() {
+		if why := c.address_config_error() {
 			assert false, '${ok} must be accepted: ${why}'
 		}
 	}
 	// An unset data rate means "at the nominal rate", which is legal.
-	if why := base.fd_config_error() {
+	if why := base.address_config_error() {
 		assert false, 'an unset data rate must default, not fail: ${why}'
 	}
 	// A classic row has no FD rates to be wrong about, and neither has a backend that refuses FD.
@@ -1351,7 +1356,7 @@ fn test_fd_config_error_asks_the_real_parser() {
 		...base
 		fd: false
 	}
-	if _ := classic.fd_config_error() {
+	if _ := classic.address_config_error() {
 		assert false, 'a classic row has no data phase'
 	}
 	pc := Channel{
@@ -1359,7 +1364,165 @@ fn test_fd_config_error_asks_the_real_parser() {
 		adapter:      'pcan'
 		data_bitrate: 250000
 	}
-	if _ := pc.fd_config_error() {
+	if _ := pc.address_config_error() {
 		assert false, 'PCAN cannot configure a data phase; fd_capability_warnings covers that row'
+	}
+}
+
+// A RATE LEFT IN THE ADDRESS FIELD IS REFUSED, not quietly honoured. `iface_with_bitrate()`
+// appends the row's rate fields, so a suffix in the address is either duplicated — two `@`, which
+// the parser rejects — or, when the nominal field is unset, passed through untouched. In that case
+// the backend opens at the address's rate while `nominal_bitrate()` and `destination_conflicts()`
+// model the row at the default, so a rate conflict on that wire goes unnoticed and the controller
+// runs at a rate the editor never showed (codex round 8 on #204).
+fn test_a_cansub_address_with_a_rate_suffix_is_refused() {
+	c := Channel{
+		name:    'CAN1'
+		adapter: 'cansub'
+		address: '1A2B3C4D/1@250000'
+		iface:   'cansub:1A2B3C4D/1@250000'
+	}
+	why := c.address_config_error() or {
+		assert false, 'a rate in the address field must be refused'
+		return
+	}
+	assert why.contains('250000') || why.contains('address'), 'the refusal must point at the field: ${why}'
+}
+
+// Including when the row also has rate fields set — that is the two-`@` case, and it must be
+// refused here rather than deep in a parser at Start.
+fn test_a_cansub_address_with_a_rate_suffix_is_refused_even_with_rate_fields() {
+	c := Channel{
+		name:    'CAN1'
+		adapter: 'cansub'
+		address: '1A2B3C4D/1@250000'
+		iface:   'cansub:1A2B3C4D/1@250000'
+		bitrate: 500000
+	}
+	if _ := c.address_config_error() {
+	} else {
+		assert false, 'a rate in the address field must be refused whatever the rate fields say'
+	}
+}
+
+// A plain address is what the editor is asking for, and it must still pass.
+fn test_a_plain_cansub_address_is_accepted() {
+	c := Channel{
+		name:    'CAN1'
+		adapter: 'cansub'
+		address: '1A2B3C4D/1'
+		iface:   'cansub:1A2B3C4D/1'
+		bitrate: 500000
+	}
+	if why := c.address_config_error() {
+		assert false, 'an ordinary CANsub row must be accepted: ${why}'
+	}
+}
+
+// A SAMPLE POINT THE BACKEND CANNOT BE TOLD ABOUT IS REFUSED, not ignored. The CANsub address
+// carries a device, a channel and rates — there is nowhere in it for a sample point, so the solver
+// is always asked for the 80% default. A project setting 75% for a long bus ran timing it never
+// asked for, and the errors that produces appear under load and nowhere else (codex round 10).
+fn test_a_cansub_row_with_an_unsupported_sample_point_is_refused() {
+	c := Channel{
+		name:         'CAN1'
+		adapter:      'cansub'
+		address:      '1A2B3C4D/1'
+		iface:        'cansub:1A2B3C4D/1'
+		bitrate:      500000
+		sample_point: 75.0
+	}
+	why := c.address_config_error() or {
+		assert false, 'a sample point this backend cannot honour must be refused'
+		return
+	}
+	assert why.contains('75'), 'the refusal must name the value: ${why}'
+}
+
+// Unset is the ordinary case and must pass, as must the value the backend actually uses.
+fn test_a_cansub_row_without_a_sample_point_is_accepted() {
+	base := Channel{
+		name:    'CAN1'
+		adapter: 'cansub'
+		address: '1A2B3C4D/1'
+		iface:   'cansub:1A2B3C4D/1'
+		bitrate: 500000
+	}
+	if why := base.address_config_error() {
+		assert false, 'an unset sample point is the ordinary case: ${why}'
+	}
+	at_default := Channel{
+		...base
+		sample_point: 80.0
+	}
+	if why := at_default.address_config_error() {
+		assert false, 'asking for what it already does is not a conflict: ${why}'
+	}
+}
+
+// THE SHARED START CHECK MUST ASK THE SAME QUESTIONS THE EDITOR DOES. Until now
+// `address_config_error` had exactly one caller — the GUI editor — so everything it refuses was
+// enforced while somebody typed and enforced nowhere at all for a `.blobnet` started headless,
+// which calls `check_destinations` and went straight past it (codex round 11 on #204).
+fn test_the_shared_check_refuses_a_row_the_editor_would_refuse() {
+	bad := Channel{
+		name:         'CAN1'
+		adapter:      'cansub'
+		address:      '1A2B3C4D/1'
+		iface:        'cansub:1A2B3C4D/1'
+		bitrate:      500000
+		sample_point: 75.0
+		enabled:      true
+	}
+	d := check_destinations([bad])
+	assert d.problems.len > 0, 'a row the editor refuses must not start headless either'
+	assert d.problems[0].contains('CAN1'), 'and the problem must name the row: ${d.problems}'
+}
+
+// A DISABLED row is not going to be opened, so it must not stop a start — the same rule every
+// other check here follows.
+fn test_the_shared_check_ignores_a_disabled_row() {
+	off := Channel{
+		name:         'CAN1'
+		adapter:      'cansub'
+		address:      '1A2B3C4D/1'
+		iface:        'cansub:1A2B3C4D/1'
+		bitrate:      500000
+		sample_point: 75.0
+		enabled:      false
+	}
+	d := check_destinations([off])
+	assert d.problems.len == 0, 'refusing to start over a wire nobody asked for: ${d.problems}'
+}
+
+fn test_the_shared_check_passes_an_ordinary_row() {
+	ok := Channel{
+		name:    'CAN1'
+		adapter: 'cansub'
+		address: '1A2B3C4D/1'
+		iface:   'cansub:1A2B3C4D/1'
+		bitrate: 500000
+		enabled: true
+	}
+	d := check_destinations([ok])
+	assert d.problems.len == 0, 'an ordinary CANsub row must start: ${d.problems}'
+}
+
+// A FRACTION IS NOT ITS INTEGER PART. `int(80.5)` is 80, so a row asking for 80.5% passed the
+// check and then ran at exactly 80% — the same silent substitution one decimal place down.
+fn test_a_fractional_sample_point_near_the_default_is_still_refused() {
+	for sp in [80.5, 80.999, 79.5] {
+		c := Channel{
+			name:         'CAN1'
+			adapter:      'cansub'
+			address:      '1A2B3C4D/1'
+			iface:        'cansub:1A2B3C4D/1'
+			bitrate:      500000
+			sample_point: sp
+		}
+		if _ := c.address_config_error() {
+		} else {
+			assert false, '${sp}% is not what the backend configures, so it must be refused'
+		}
 	}
 }
