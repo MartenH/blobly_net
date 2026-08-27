@@ -945,7 +945,13 @@ fn (mut app App) draw_replay_scan(i int, ch project.Channel) bool {
 		if cn.unknown > 0 {
 			parts << '${cn.unknown} are on ids the DBCs do not define'
 		}
-		vgui.text_dim('   ${parts.join(' · ')} — all replay regardless')
+		// ONLY IF THERE IS SOMETHING TO SUMMARISE. A recording of nothing but remote requests
+		// leaves `parts` empty, and this rendered a bare "— all replay regardless" directly above
+		// the line saying they are not replayed: two lines contradicting each other, which is the
+		// thing the split was meant to end (codex round 2 on #216).
+		if parts.len > 0 {
+			vgui.text_dim('   ${parts.join(' · ')} — all replay regardless')
+		}
 		// SEPARATE, because the sentence above ends "all replay regardless" and remote requests
 		// are the one thing that does not. Folded in, the line contradicted itself.
 		if cn.remote > 0 {

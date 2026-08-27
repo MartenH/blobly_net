@@ -21,8 +21,13 @@
 // are what tell an operator which row to go and look at.
 module transport
 
-// frame_impossible_error reports why no CAN controller could put this frame on a bus at all, or
-// none. These are contradictions IN THE FRAME rather than limits of a backend.
+// frame_send_refusal reports why this frame will not be put on a wire, or none.
+//
+// TWO KINDS OF REASON, and they are not the same kind of thing. Most are contradictions IN THE
+// FRAME that no controller of any tier could transmit. One — a remote frame — is a PRODUCT
+// DECISION: a classic controller can send one perfectly well, and this app has chosen not to
+// (#215). The function was called `frame_send_refusal` while enforcing both, which invited
+// the next backend to read a decision of ours as a law of CAN (codex round 2 on #216).
 //
 // SEPARATE FROM THE LENGTH RULES because this repo has three tiers and only two of them agree
 // about length. SocketCAN CLAMPS (the kernel masks an over-wide id, and `wire_frame` records the
@@ -34,7 +39,9 @@ module transport
 // `brs`, an id that will not fit the width the caller DECLARED — no controller of any tier can
 // transmit those, so carrying them is a simulation modelling something that cannot happen, and a
 // test that passes in `inproc:` and fails on a bench (codex round 2 on #204).
-pub fn frame_impossible_error(f CanFrame) ?string {
+pub fn frame_send_refusal(f CanFrame) ?string {
+	// ---- a decision, not a law -----------------------------------------------------------
+	//
 	// THIS APP DOES NOT TRANSMIT REMOTE FRAMES.
 	//
 	// A remote frame is a REQUEST for a message rather than a transmission of one. CAN-FD removed
@@ -52,6 +59,8 @@ pub fn frame_impossible_error(f CanFrame) ?string {
 	if f.rtr {
 		return 'rtr (id 0x${f.id:X}) — this app does not transmit remote frames; CAN-FD has none at all, and nothing here requests one'
 	}
+	// ---- frames no controller could transmit ----------------------------------------------
+	//
 	// BRS SWITCHES INTO A DATA PHASE, and a classic frame has none. Dropped instead of refused,
 	// the trace records a rate change that never happened.
 	if f.brs && !f.fd {
@@ -86,7 +95,7 @@ pub fn frame_impossible_error(f CanFrame) ?string {
 // present, whether the wire is silenced — none of that is here; those are properties of the
 // channel and each backend answers them with its own address in the message.
 pub fn frame_shape_error(f CanFrame) ?string {
-	if why := frame_impossible_error(f) {
+	if why := frame_send_refusal(f) {
 		return why
 	}
 	if f.fd {

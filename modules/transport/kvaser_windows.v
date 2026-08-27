@@ -98,7 +98,7 @@ pub fn (mut b KvaserBus) send(f CanFrame) ! {
 	//
 	// The IMPOSSIBLE rules only. What this backend does about a LENGTH is its own tier's business
 	// and is unchanged — see frame_rules.v.
-	if why := frame_impossible_error(f) {
+	if why := frame_send_refusal(f) {
 		return error('Kvaser: ${why}')
 	}
 	// BRS WITHOUT FD IS NOT A FRAME. Bit-rate switching is a property of an FD frame's data

@@ -251,7 +251,7 @@ pub fn (mut b VectorBus) send(f CanFrame) ! {
 	//
 	// The IMPOSSIBLE rules only. What this backend does about a LENGTH is its own tier's business
 	// and is unchanged — see frame_rules.v.
-	if why := frame_impossible_error(f) {
+	if why := frame_send_refusal(f) {
 		return error('Vector: ${why}')
 	}
 	// SILENCE IS A PROMISE. A channel opened `,silent` was opened that way because something
