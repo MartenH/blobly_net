@@ -510,6 +510,15 @@ fn (mut b CansubBus) apply_phy_silence(want bool, force bool, pre ?bool) int {
 	// NOT ONE TO RECONFIGURE ON A GUESS — and now that is enforced rather than stated: a wire we
 	// cannot read is not written to. The previous version fell back to its cache and PUT anyway,
 	// which could set phy_silent on the strength of a write never read back (codex #204 r17/18).
+	// A PROBE WHOSE POLICY MOVED WHILE IT WAS READING IS DISCARDED. `want` and `pre` were taken
+	// outside the lock; a row toggled meanwhile has already been reconciled on demand by the
+	// time the probe holds it, and applying the stale pair would PUT the opposite mode LAST — a
+	// listen-only wire acknowledging, or a normal one that cannot send (codex round 6 on #223).
+	// The policy is re-read under the lock, and a probe that no longer matches it attempts
+	// nothing; the next period asks again.
+	if force && is_listen_only(b.iface) != want {
+		return silence_not_attempted
+	}
 	have := if force {
 		pre or { return silence_not_attempted }
 	} else {

@@ -641,7 +641,11 @@ fn exchange_burst(mut listener transport.Bus, mut talker transport.Bus, o Opts, 
 // takes it down one frame at a time, and six frames are not enough to leave 128 — so a listener
 // that had recovered perfectly was reported as never acknowledging (codex round 5 on #223). Only
 // bus-off is not driven: a controller off the bus is not sending anything. `unknown` is a backend
-// that cannot say, which is not a failure of the wire.
+// that cannot say — and it is WAITED OUT, not accepted: a CANsub reopened a moment ago reports
+// unknown until its first health poll lands, and taking that as recovery let phases 3 and 4 pass
+// on a reopened talker whose one-shot frames a still-silent listener had received (codex round 6
+// on #223). Frames are driven through the unknown stretch; recovery is a KNOWN `ok` after the
+// floor, and a talker still unknown at the end has proved nothing.
 fn recover_talker(mut talker transport.Bus, mut listener transport.Bus, o Opts, untainted bool) bool {
 	start := time.ticks()
 	until := start + 5000
@@ -649,9 +653,6 @@ fn recover_talker(mut talker transport.Bus, mut listener transport.Bus, o Opts, 
 	mut n := 0
 	for time.ticks() < until {
 		h := talker.health()
-		if h == .unknown {
-			return true
-		}
 		if h == .bus_off {
 			return false
 		}
@@ -665,8 +666,7 @@ fn recover_talker(mut talker transport.Bus, mut listener transport.Bus, o Opts, 
 		time.sleep(5 * time.millisecond)
 		n++
 	}
-	h := talker.health()
-	return h == .ok || h == .unknown
+	return talker.health() == .ok
 }
 
 // window_ms — how long to watch one burst. Long enough for the controller to actually attempt

@@ -556,3 +556,25 @@ fn test_a_probe_whose_readback_failed_does_not_dial_under_the_lock() {
 	assert b.apply_phy_silence(true, true, none) == silence_not_attempted
 	assert time.ticks() - t0 < 500, 'the closure reached the network: ${time.ticks() - t0} ms'
 }
+
+// A PROBE WHOSE POLICY MOVED DURING ITS READBACK ATTEMPTS NOTHING. The poll thread sampled
+// "silent" and read the device outside the lock; the row was unticked meanwhile. Under the lock
+// the policy says normal, so the stale pair must not be applied — and decisively not: the host
+// here answers nothing, so a PUT would cost net.dial_tcp's five seconds (codex round 6 on #223).
+fn test_a_probe_whose_policy_changed_meanwhile_attempts_nothing() {
+	iface := 'cansub:AAAA0004/1@500000'
+	clear_listen_only()
+	mut b := &CansubBus{
+		iface: iface
+		host:  '10.255.255.1'
+		spec:  parse_cansub_iface(iface) or { panic(err) }
+		rx:    chan CansubRecord{cap: 1}
+	}
+	lock b.stop {
+		b.stop.running = true
+	}
+	t0 := time.ticks()
+	// The probe wanted silent and read the device as normal; the policy is now normal.
+	assert b.apply_phy_silence(true, true, false) == silence_not_attempted
+	assert time.ticks() - t0 < 500, 'the stale probe reached the network: ${time.ticks() - t0} ms'
+}
