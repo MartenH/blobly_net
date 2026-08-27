@@ -25,6 +25,7 @@
 module transport
 
 import net.websocket
+import sync
 import time
 
 // CansubSpec is a parsed `cansub:` address.
@@ -99,8 +100,19 @@ struct CansubBus {
 	host  string
 	spec  CansubSpec
 mut:
-	ws         &websocket.Client = unsafe { nil }
-	rx         chan CansubRecord
+	ws &websocket.Client = unsafe { nil }
+	rx chan CansubRecord
+	// ONE WRITER AT A TIME on the one socket. `shared_open` hands every logical opener of a wire
+	// the SAME bus, by design — the vendor permits a single client per channel — so the simulation
+	// worker, a UDS server and a script can all be inside send() at once. A WebSocket write is a
+	// framed, stateful operation over TLS, and two of them interleaving corrupts the framing or
+	// loses a message outright (codex round 9 on #204).
+	//
+	// The GUI's TapBus takes a mutex of its own, which is why this was not showing there — but it
+	// protects only what goes through the tap, and the headless runner's workers hold buses
+	// straight from `transport.open`. The socket is what needs protecting, so the lock belongs
+	// with the socket.
+	wmu        &sync.Mutex = sync.new_mutex()
 	stop       shared CansubStop
 	reader     thread
 	health_thr thread
@@ -125,6 +137,10 @@ mut:
 	// Consecutive health polls that could not reach the device. See poll_health: a stale verdict
 	// is worse than no verdict.
 	health_misses int
+	// Controller errors the device reported as records rather than as a state change — see recv.
+	// Counted rather than kept, like the decode errors above.
+	bus_errors      int
+	first_bus_error string
 }
 
 // open_cansub_bus is what shared_open calls. One connection per wire; every opener of the same
@@ -463,6 +479,12 @@ pub fn (mut b CansubBus) send(frame CanFrame) ! {
 		return error('${b.iface}: the controller is still in listen-only — this wire was silenced and is being reconfigured; the frame was not sent')
 	}
 	body := cansub_encode_frame(frame)!
+	// Encoded outside the lock, written inside it: the encoding is per-frame work with no shared
+	// state, and the socket is the thing that cannot take two writers.
+	b.wmu.lock()
+	defer {
+		b.wmu.unlock()
+	}
 	b.ws.write(cansub_hdlc_wrap(body), .binary_frame) or {
 		return error('send on ${b.iface}: ${err}')
 	}
@@ -546,8 +568,22 @@ pub fn (mut b CansubBus) recv(timeout_ms int) !CanFrame {
 					// time spent waiting — see `probe` above.
 					probe = true
 					// A bus error is real news, but it is not a frame and the Bus interface has
-					// nowhere to put it. `health()` is where it surfaces; here it is skipped so a
-					// noisy bus does not return junk frames.
+					// nowhere to put it, so it is skipped here rather than returned as a junk
+					// frame.
+					//
+					// RECORDED ON THE WAY PAST, though. This used to say `health()` is where it
+					// surfaces, and that was simply untrue: health() reports the state the REST
+					// poll last sampled and never looks at `rec.err`, so an isolated ACK, CRC,
+					// bit, form or stuffing error that cleared before the next poll disappeared
+					// from the trace, the log and the indicators alike — the controller told us
+					// and we dropped it (codex round 9 on #204). Counted here, with the first one
+					// kept, beside the decode errors and for the same reason.
+					lock b.stop {
+						b.stop.bus_errors++
+						if b.stop.first_bus_error == '' {
+							b.stop.first_bus_error = rec.err.str()
+						}
+					}
 					continue
 				}
 				return rec.frame
