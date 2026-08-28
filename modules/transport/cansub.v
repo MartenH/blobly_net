@@ -140,17 +140,17 @@ mut:
 	phy_silent bool
 	// Records this decoder could not parse. Counted rather than kept, so a persistent bad stream
 	// costs one integer instead of one string per record — see read_loop.
-	decode_errors      int
+	decode_errors      u64
 	first_decode_error string
 	// Consecutive health polls that could not reach the device. See poll_health: a stale verdict
 	// is worse than no verdict.
 	health_misses int
 	// Controller errors the device reported as records rather than as a state change — see recv.
 	// Counted rather than kept, like the decode errors above.
-	bus_errors      int
+	bus_errors      u64
 	first_bus_error string
 	// Records dropped because the receiver was not keeping up — see enqueue.
-	dropped int
+	dropped u64
 }
 
 // open_cansub_bus is what shared_open_events calls. It creates the one raw connection behind that
@@ -333,7 +333,7 @@ fn (mut b CansubBus) read_loop() {
 		// the array goes back to empty.
 		if dec.errors.len > 0 {
 			lock b.stop {
-				b.stop.decode_errors += dec.errors.len
+				b.stop.decode_errors += u64(dec.errors.len)
 				// The FIRST one is kept, not the latest: a stream that has gone wrong repeats
 				// itself, and the first message is the one that describes what changed.
 				if b.stop.first_decode_error == '' {
@@ -938,9 +938,9 @@ pub fn (mut b CansubBus) recv(timeout_ms int) !CanFrame {
 pub fn (b &CansubBus) diagnostics() BusDiagnostics {
 	return rlock b.stop {
 		BusDiagnostics{
-			dropped:       u64(b.stop.dropped)
-			bus_errors:    u64(b.stop.bus_errors)
-			decode_errors: u64(b.stop.decode_errors)
+			dropped:       b.stop.dropped
+			bus_errors:    b.stop.bus_errors
+			decode_errors: b.stop.decode_errors
 		}
 	}
 }

@@ -117,6 +117,11 @@ fn main() {
 	// end so what their wires counted is booked and printed before the summary rather than
 	// racing the exit (#213, codex round 4 on #231).
 	mut sims := []thread{}
+	// One REPORTING handle per CAN wire, opened before any loop and closed after every loop
+	// has gone: on a shared wire it answers with the wire's totals, booked by the loops'
+	// closes, which a loop's own handle could not report -- it had to close to book them
+	// (codex round 8 on #231). Never reads; a transmit tap's cost.
+	mut reporters := map[string]transport.Bus{}
 	for w in project.fd_capability_warnings(proj.channels) {
 		eprintln('warning: ${w}')
 	}
@@ -198,6 +203,11 @@ fn main() {
 			}
 			println('channel ${ch.name} (doip:${host}:${port}): DoIP entity, logical address 0x${ch.ecu_addr:04X}')
 			continue
+		}
+		if ch.iface_with_bitrate() !in reporters {
+			if rb := transport.open(ch.iface_with_bitrate()) {
+				reporters[ch.iface_with_bitrate()] = rb
+			}
 		}
 		if nodes.len > 0 {
 			// BOTH: the suffixed string opens the transport, the logical one keys faults.
@@ -297,11 +307,14 @@ fn main() {
 	if stdatomic.load_i64(&loops_done) < i64(sims.len) {
 		eprintln('${sims.len - int(stdatomic.load_i64(&loops_done))} bus loop(s) still busy at exit; their wires are not reported')
 	}
-	// And what the script's own buses counted -- a tester-only channel has no simulation loop
-	// to say it (codex round 1 on #231). The diagnostic servers hold ISO-TP channels, not
-	// buses, and do not report.
-	for name, d in env.diagnostics() {
-		eprintln('${name}: ${d.str()}')
+	// What each wire counted that no frame carried (#213), from the reporting handles, after
+	// every loop that could book a loss has closed.
+	for iface, mut rb in reporters {
+		d := rb.diagnostics()
+		if !d.is_empty() {
+			eprintln('${iface}: ${d.str()}')
+		}
+		rb.close()
 	}
 	passed := env.passed()
 	failed := env.failed()
@@ -355,13 +368,6 @@ fn sim_loop(open_iface string, fault_iface string, db candb.Database, nodes []pr
 				bus.send(resp) or {}
 			}
 		}
-	}
-	// What the wire counted that no frame carried (#213): said once, at the end, where a
-	// headless run's operator reads. This is the simulation's handle; a hub reports the wire's
-	// ring gaps through any handle, a plain backend its own.
-	d := bus.diagnostics()
-	if !d.is_empty() {
-		eprintln('${open_iface}: ${d.str()}')
 	}
 	bus.close()
 }
