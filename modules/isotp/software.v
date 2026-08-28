@@ -170,11 +170,12 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 				continue // empty/padding read — ignore
 			}
 			if (cf[0] & 0xF0) != 0x20 {
-				c.flush_rx() // discard the aborted transfer's tail so a reused channel resyncs
+				// No flush here either: its quiet window renews per frame past the deadline (codex
+				// round 8 on #225). The aborted transfer's tail is dropped at the next first-frame
+				// wait, which is what resyncs a reused channel.
 				return error('ISO-TP: expected Consecutive Frame, got PCI 0x${cf[0]:02X} mid-reassembly (a frame was lost)')
 			}
 			if (cf[0] & 0x0F) != sn {
-				c.flush_rx()
 				return error('ISO-TP: CF sequence gap — got SN ${cf[0] & 0x0F}, expected ${sn} (a frame was lost)')
 			}
 			sn = (sn + 1) & 0x0F

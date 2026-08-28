@@ -110,6 +110,7 @@ pub fn (mut b UdpBus) recv(timeout_ms int) !CanFrame {
 	// 10-byte header + up to 64 payload bytes. The old 64-byte buffer silently truncated a
 	// CAN-FD frame at read(), losing bytes before any of the decoding below could see them.
 	mut buf := []u8{len: 10 + 64}
+	mut looked := false
 	for {
 		// NEGATIVE IS FOREVER, as every other bus has it: computed as a deadline it was a deadline
 		// in the past, and recv(-1) returned timeout without reading (codex round 6 on #225, via
@@ -118,10 +119,16 @@ pub fn (mut b UdpBus) recv(timeout_ms int) !CanFrame {
 		mut remaining := i64(1000)
 		if timeout_ms >= 0 {
 			remaining = deadline - time.ticks()
-			if remaining <= 0 {
+			// ZERO IS ONE LOOK: a datagram already queued is returned by a non-blocking poll
+			// (codex round 8 on #225). The socket read below gets the shortest timeout it takes.
+			if remaining <= 0 && looked {
 				return error('timeout')
 			}
+			if remaining <= 0 {
+				remaining = 1
+			}
 		}
+		looked = true
 		b.rx.set_read_timeout(time.Duration(remaining * 1_000_000)) // ms → ns
 		n, _ := b.rx.read(mut buf) or {
 			if b.closed {

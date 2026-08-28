@@ -133,3 +133,19 @@ fn test_udp_bus_negative_timeout_blocks_until_a_frame() {
 	assert got.id == 0x321
 	assert time.ticks() - t0 >= 100, 'recv(-1) returned before the frame was sent'
 }
+
+// recv(0) IS ONE LOOK on the UDP bus: a datagram already queued is returned (codex round 8 on #225).
+fn test_udp_bus_zero_timeout_returns_a_queued_frame() {
+	group, port := uniq_group(5)
+	mut a := open_udp(group, port) or { panic('open a: ${err}') }
+	mut b := open_udp(group, port) or { panic('open b: ${err}') }
+	defer {
+		a.close()
+		b.close()
+	}
+	time.sleep(50 * time.millisecond)
+	a.send(CanFrame{ id: 0x322, data: [u8(2)] }) or { panic('send: ${err}') }
+	time.sleep(50 * time.millisecond)
+	got := b.recv(0) or { panic('a queued frame must be returned by recv(0): ${err}') }
+	assert got.id == 0x322
+}
