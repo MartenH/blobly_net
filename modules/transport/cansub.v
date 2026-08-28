@@ -879,13 +879,13 @@ pub fn (mut b CansubBus) send(frame CanFrame) ! {
 		// Refuse rather than truncate, which is what the Windows vendor backends do with an FD
 		// frame they cannot carry. The address is what asks for FD, so a classic channel being
 		// handed an FD frame is a project that disagrees with itself.
-		return error('${b.iface} is a classic channel — its address names one bitrate, so it cannot carry a CAN-FD frame')
+		return not_written('${b.iface} is a classic channel — its address names one bitrate, so it cannot carry a CAN-FD frame')
 	}
 	if e := b.failure() {
-		return error('${b.iface}: ${e}${b.diagnostic_suffix()}')
+		return not_written('${b.iface}: ${e}${b.diagnostic_suffix()}')
 	}
 	if e := b.send_refusal() {
-		return error('${b.iface}: ${e}')
+		return not_written('${b.iface}: ${e}')
 	}
 	// A SILENCED CONTROLLER CANNOT TRANSMIT, whatever this process's policy currently says.
 	//

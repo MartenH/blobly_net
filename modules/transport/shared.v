@@ -359,6 +359,22 @@ fn (mut e SharedEntry) retire_pending(pending SharedPendingSend) {
 
 // start_pending_window stamps the deadline on the pending entry `token` (0: the driver reports
 // no acks, nothing was recorded). Called once per send, when the raw write returns.
+// cancel_pending removes a send's entry: the send was refused before a write, so nothing will
+// ever match it.
+fn (mut e SharedEntry) cancel_pending(token u64) {
+	if token == 0 {
+		return
+	}
+	e.mu.lock()
+	for i := e.pending.len - 1; i >= 0; i-- {
+		if e.pending[i].token == token {
+			e.pending.delete(i)
+			break
+		}
+	}
+	e.mu.unlock()
+}
+
 fn (mut e SharedEntry) start_pending_window(token u64, ttl_ms i64, failed bool) {
 	if token == 0 {
 		return
@@ -1249,6 +1265,13 @@ fn (mut h SharedHandle) send(frame CanFrame) ! {
 	// four CI runs out of four (#227). Whichever thread reaches the hub first, the frame the
 	// device acknowledged now exists; the sender is still told its write failed.
 	e.driver.send(frame) or {
+		if err is NotWritten {
+			// NOTHING REACHED THE WIRE, so no acknowledgement is coming, and an entry kept for
+			// this send could claim one meant for an earlier write of the same frame (codex
+			// round 9 on #251).
+			e.cancel_pending(token)
+			return err
+		}
 		e.start_pending_window(token, shared_failed_send_grace_ms, true)
 		return err
 	}

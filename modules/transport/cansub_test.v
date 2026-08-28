@@ -799,6 +799,12 @@ fn test_a_failed_write_stops_the_bus_with_its_reason() {
 	// still read, for as long as the hub keeps it matchable (codex rounds 5–7 on #251).
 	assert b.send_refusal()? == 'send on cansub:test/1: write timed out'
 	assert b.failure() == none
+	// And what a later send gets is a refusal the hub can tell from a failed write: nothing
+	// was attempted, so no acknowledgement grace (codex round 9 on #251).
+	b.send(CanFrame{ id: 0x123 }) or {
+		assert err is NotWritten, 'a refused send must be NotWritten, got ${err}'
+		assert err.msg().contains('write timed out')
+	}
 	assert rlock b.stop {
 		b.stop.running
 	}
