@@ -813,11 +813,11 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	}
 	// ONE LAST SAMPLE ON THE WAY OUT, whatever ended the loop: a Stop inside the poll interval
 	// left up to a second of counts unread, and the retained chip is the operator's post-run
-	// view. Written if the GENERATION still matches -- Stop has cleared `running` by now and
-	// the row keeps its value until the next Start -- narrated only while the run is on
-	// (codex round 3 on #231). Taken AFTER the close: a subscriber's close is where its last
-	// ring gap is booked, and a closed hub handle still answers with the wire's totals (codex
-	// round 5).
+	// view. Written AND narrated if the GENERATION still matches -- Stop has cleared `running`
+	// by now, but what this sample holds happened in this run, and the Log is the only record
+	// that survives the next Start (codex round 3 on #231, and again on the rebased head).
+	// Taken AFTER the close: a subscriber's close is where its last ring gap is booked, and a
+	// closed hub handle still answers with the wire's totals (codex round 5).
 	bus.close()
 	final := bus.diagnostics()
 	if final != last_diag {
@@ -825,9 +825,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		if a.run_gen == gen && ci < a.chans.len {
 			a.chans[ci].diag = final
 			a.chans[ci].diag_at = time.ticks()
-			if a.running {
-				a.log_append_locked(diag_msg(iface, last_diag, final))
-			}
+			a.log_append_locked(diag_msg(iface, last_diag, final))
 		}
 		a.mu.unlock()
 		last_diag = final
