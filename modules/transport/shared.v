@@ -131,15 +131,47 @@ struct SharedPendingSend {
 }
 
 enum SharedEntryState {
+	// opening is the reservation: the entry is in the registry, its factory is running OUTSIDE
+	// the registry lock, and it has no driver yet. Nothing joins it, nothing reads it (see
+	// shared_open_events).
+	opening
 	running
 	closing
 	failed
 	closed
 }
 
+// SharedNoDriver stands in for a driver that does not exist yet -- an entry in `opening`. Every
+// path that could reach a driver is gated on `running`, so none of these should ever run; if one
+// does, it answers as a closed bus rather than dereferencing nothing (#147's hazard, made loud).
+struct SharedNoDriver {}
+
+fn (mut d SharedNoDriver) send(frame CanFrame) ! {
+	return error('bus is not open yet')
+}
+
+fn (mut d SharedNoDriver) recv_shared(timeout_ms int) !SharedIngress {
+	return error('bus is not open yet')
+}
+
+fn (mut d SharedNoDriver) close() {}
+
+fn (mut d SharedNoDriver) health() BusHealth {
+	return .unknown
+}
+
+fn (mut d SharedNoDriver) reconcile_silence(want bool) ! {
+	return error('bus is not open yet')
+}
+
+fn (mut d SharedNoDriver) reports_tx_ack() bool {
+	return false
+}
+
 // SharedEntry is one physical-open generation. `mu` protects its ring, subscribers and lifecycle;
-// the process-wide registry lock protects key ownership and serializes first opens, never the
-// per-frame path. `send_mu` preserves the raw-write order used to correlate CANsub's untagged TX
+// the process-wide registry lock protects key ownership and is held across no I/O -- a first
+// open runs its factory behind an `opening` reservation (see shared_open_events) -- and never
+// touches the per-frame path. `send_mu` preserves the raw-write order used to correlate CANsub's untagged TX
 // acknowledgements.
 struct SharedEntry {
 	key  string
@@ -150,9 +182,20 @@ struct SharedEntry {
 	kick    chan bool
 	mu      sync.Mutex
 	send_mu sync.Mutex
-	tx_acks bool
+	// settled is CLOSED by the first opener when its attempt has an outcome, success or failure:
+	// a closed channel wakes every waiter at once, which is the broadcast a cap-1 token cannot
+	// do. Waiters block on it with a bounded timeout rather than spinning on the registry lock.
+	settled chan bool
 mut:
-	driver            SharedDriver
+	tx_acks bool
+	driver  SharedDriver
+	// open_failure is why the FIRST OPEN of this generation failed, written by the open path
+	// only -- never by the reader, whose terminal error belongs to a generation that did open.
+	// A waiter that finds its attempt gone reads this and nothing else: empty means the attempt
+	// succeeded and the generation has since left, which is a fresh open, not an error.
+	open_failure string
+	// opening_waiters counts callers waiting on this attempt (under mu) -- a test hook.
+	opening_waiters   int
 	refs              int
 	next_id           u64
 	ring              []SharedRingSlot
@@ -323,23 +366,75 @@ fn shared_open(key string, spec string, make fn (string) !Bus) !Bus {
 
 // shared_open_events is the CANsub seam: its raw driver retains tx_ack until the hub has mapped it
 // to the logical handle that performed the serialized write.
+//
+// THE FACTORY RUNS OUTSIDE THE REGISTRY LOCK, behind a per-key reservation. It used to run inside
+// it, which was harmless while every open was a driver call and only PCAN came through here; a
+// CANsub open is a REST PUT, a clock sync and a WebSocket connect against a device found by mDNS,
+// and a device reachable enough to stall but not to answer held every other opener in the
+// process -- other vendors included -- for the whole of its budget (#211, codex round 8 on
+// #204). So a first opener publishes the entry in `opening`, with no driver, and releases the
+// registry lock before it calls make(); a second opener that finds `opening` waits for THAT
+// attempt rather than starting its own -- which is also what stops a GUI Start, whose monitor
+// and two transmit taps all open one wire, from paying an unavailable device three times over.
+// On success the entry is filled in and becomes `running`; on failure -- the factory's, or the
+// first opener's listen-only reconcile that follows it -- the failure is recorded on the entry,
+// the entry is removed, and every waiter on that attempt gets that error. A caller arriving
+// after the removal opens afresh, as before: a failed open still publishes nothing to join.
+//
+// WHAT A WAITER IS TOLD is the OPEN's outcome and nothing else. It remembers the attempt it
+// waited on, and when that attempt has left the registry it reads its open_failure: set, that
+// is the answer; empty, the attempt succeeded and the generation has since died or closed,
+// which is a fresh open -- the reader's terminal error is never handed to an opener as the
+// reason its open failed (self-review). A spec that contradicts the reservation is refused at
+// once, not after waiting out a stalled attempt for an error about a rate it never asked for.
+//
+// No handle is ever issued for an `opening` entry -- that is the hazard #147 was (a second
+// opener handed a handle to an entry whose bus did not exist). Joins are gated on `running`,
+// the reader is spawned only after the driver is in place, and until then the driver is a
+// SharedNoDriver that refuses everything.
 fn shared_open_events(key string, spec string, make fn (string) !SharedDriver) !Bus {
+	// The attempt this caller has been waiting on, if any.
+	mut waited := ?&SharedEntry(none)
 	for {
 		mut handle := ?&SharedHandle(none)
 		mut start := ?&SharedEntry(none)
 		mut conflict := ''
-		mut failure := ''
-		mut wait_for_close := false
-		// Driver creation remains inside this lock for now, preserving the existing atomic-open
-		// behaviour. The important close/reopen rule is stronger than before: a closing generation
-		// remains reserved until its reader has exited and physical close has completed.
+		mut wait := false
+		mut settled := chan bool{cap: 1}
+		mut shared_failure := ''
+		mut retry := false
 		lock shared_reg {
-			if mut e := shared_reg.entries[key] {
+			// The attempt this caller waited on has left the registry -- the key is absent or
+			// belongs to a different generation: its outcome is this caller's answer, read
+			// BEFORE the absent key could be taken for a fresh attempt.
+			if mut w := waited {
+				current := shared_reg.entries[key] or { unsafe { nil } }
+				if voidptr(current) != voidptr(w) {
+					w.mu.lock()
+					shared_failure = w.open_failure
+					w.mu.unlock()
+					waited = none
+					retry = shared_failure == ''
+				}
+			}
+			if shared_failure != '' || retry {
+				// resolved below, outside the lock
+			} else if mut e := shared_reg.entries[key] {
 				e.mu.lock()
-				if e.state != .running {
-					wait_for_close = true
-				} else if canonical_spec(e.spec) != canonical_spec(spec) {
+				if e.state in [.opening, .running] && canonical_spec(e.spec) != canonical_spec(spec) {
 					conflict = e.spec
+				} else if e.state == .opening {
+					wait = true
+					if waited == none {
+						e.opening_waiters++
+					}
+					waited = e
+					settled = e.settled
+				} else if e.state != .running {
+					// Never join a failed/closing generation and never overlap its physical
+					// close. The reservation is normally held for at most one bounded reader
+					// poll.
+					wait = true
 				} else {
 					e.refs++
 					e.next_id++
@@ -353,47 +448,66 @@ fn shared_open_events(key string, spec string, make fn (string) !SharedDriver) !
 					}
 				}
 				e.mu.unlock()
-			} else if mut driver := make(spec) {
+			} else {
 				mut e := &SharedEntry{
 					key:      key
 					spec:     spec
 					done:     chan bool{cap: 1}
 					kick:     chan bool{cap: 1}
-					tx_acks:  driver.reports_tx_ack()
-					driver:   driver
-					refs:     1
-					next_id:  1
-					ring:     []SharedRingSlot{len: shared_ring_capacity}
+					settled:  chan bool{cap: 1}
+					driver:   &SharedNoDriver{}
 					next_seq: 1
-					state:    .running
+					state:    .opening
 				}
 				shared_reg.entries[key] = e
-				e.unread[1] = time.ticks()
-				handle = &SharedHandle{
-					key:    key
-					entry:  e
-					id:     1
-					cursor: 1
-					wake:   chan bool{cap: 1}
-				}
 				start = e
-			} else {
-				failure = err.msg()
 			}
 		}
-		if wait_for_close {
-			// Never join a failed/closing generation and never overlap its physical close. The
-			// reservation is normally held for at most one bounded reader poll.
-			time.sleep(time.millisecond)
+		if shared_failure != '' {
+			return error(shared_failure)
+		}
+		if retry {
+			continue
+		}
+		if wait {
+			if waited != none {
+				// Woken by the opener closing `settled`, or by the bound -- a belt for the
+				// braces, never the mechanism.
+				select {
+					_ := <-settled {}
+					shared_reader_poll_ms * time.millisecond {}
+				}
+			} else {
+				time.sleep(time.millisecond)
+			}
 			continue
 		}
 		if conflict != '' {
 			return error('${spec}: this wire is already open as `${conflict}` — one destination cannot be opened twice with different settings')
 		}
-		if failure != '' {
-			return error(failure)
-		}
 		if mut e := start {
+			mut driver := make(spec) or {
+				e.fail_open(err.msg())
+				return err
+			}
+			e.mu.lock()
+			e.tx_acks = driver.reports_tx_ack()
+			e.driver = driver
+			// The ring is allocated HERE, not at the reservation: a quarter-megabyte nobody reads
+			// until the generation runs, and garbage on every failed attempt otherwise.
+			e.ring = []SharedRingSlot{len: shared_ring_capacity}
+			e.refs = 1
+			e.next_id = 1
+			e.unread[1] = time.ticks()
+			e.state = .running
+			e.mu.unlock()
+			handle = &SharedHandle{
+				key:    key
+				entry:  e
+				id:     1
+				cursor: 1
+				wake:   chan bool{cap: 1}
+			}
 			spawn e.read_loop()
 		}
 		if mut h := handle {
@@ -409,9 +523,24 @@ fn shared_open_events(key string, spec string, make fn (string) !SharedDriver) !
 			want := is_listen_only(spec)
 			h.reconcile_silence(want) or {
 				if want {
+					message := '${spec}: joined an already-open wire but its controller would not be set listen-only — ${err.msg()}'
+					if mut e := start {
+						// The first opener's refusal is the ATTEMPT's outcome: recorded before
+						// the close removes the entry, so the waiters share it instead of each
+						// paying the factory to be refused the same way (self-review).
+						e.mu.lock()
+						e.open_failure = message
+						e.mu.unlock()
+					}
 					h.close()
-					return error('${spec}: joined an already-open wire but its controller would not be set listen-only — ${err.msg()}')
+					if mut e := start {
+						e.settled.close()
+					}
+					return error(message)
 				}
+			}
+			if mut e := start {
+				e.settled.close()
 			}
 			// The attentive second starts when the CALLER gets the handle, not when it was
 			// admitted: a reconcile that waited behind a mid-run silence transition could
@@ -423,6 +552,19 @@ fn shared_open_events(key string, spec string, make fn (string) !SharedDriver) !
 		return error('${spec}: shared_open produced no handle')
 	}
 	return error('${spec}: shared_open produced no handle')
+}
+
+// fail_open ends a reservation whose factory failed: the failure is recorded for the waiters
+// (never empty -- an empty message would read as "the attempt succeeded"), the generation goes
+// through the one teardown sequence, and the waiters are woken.
+fn (mut e SharedEntry) fail_open(message string) {
+	e.mu.lock()
+	e.state = .failed
+	e.open_failure = if message == '' { '${e.spec}: open failed' } else { message }
+	e.terminal = e.open_failure
+	e.mu.unlock()
+	e.finish_close()
+	e.settled.close()
 }
 
 // read_loop is the sole raw receiver for this entry. Timeout is control flow; every other receive
