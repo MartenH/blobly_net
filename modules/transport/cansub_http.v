@@ -189,15 +189,21 @@ pub fn cansub_request(host string, method string, path string, body string, time
 	// connection the device has closed fails on the first byte and the second attempt is the real
 	// one. What it buys: an open's three REST calls at ~120 ms instead of ~470, and a health
 	// poll at ~1 ms instead of a TLS handshake twice a second (#240).
+	// ONE DEADLINE FOR THE WHOLE CALL — the wait for the connection, the exchange, the redial and
+	// the retry all spend from it. Given a fresh budget each, a 700 ms health poll whose first
+	// exchange timed out went on to dial (seconds, to a device that has gone) and try again with
+	// 700 ms more (codex round 2 on #248). What is not on the clock is the dial itself: V's
+	// dial_tcp takes no timeout, so a retry is only STARTED while budget remains.
+	deadline := time.now().add(timeout)
 	mut c, reused := cansub_conn(host)!
-	r := c.exchange(method, path, body, timeout) or {
+	r := c.exchange(method, path, body, deadline) or {
 		c.drop()
-		if !reused {
+		if !reused || deadline - time.now() <= 0 {
 			return err
 		}
 		// The connection was one the device may have closed while idle: dial and try once more.
 		mut fresh, _ := cansub_conn(host)!
-		return fresh.exchange(method, path, body, timeout) or {
+		return fresh.exchange(method, path, body, deadline) or {
 			fresh.drop()
 			return err
 		}
@@ -205,15 +211,18 @@ pub fn cansub_request(host string, method string, path string, body string, time
 	return r
 }
 
-// CansubConn is one device's kept-alive TLS connection. Requests on it are serialised by `mu`:
-// the poll thread and a reconcile can want the device at the same time, and the answer to one
-// request must not be read as the answer to another.
+// CansubConn is one device's kept-alive TLS connection. Requests on it are serialised by
+// `turn`: the poll thread and a reconcile can want the device at the same time, and the answer
+// to one request must not be read as the answer to another. A binary SEMAPHORE and not a mutex,
+// because the wait for it is on the caller's clock (exchange) and a semaphore's timed_wait is
+// the one timed acquisition V offers on every platform — Mutex.try_lock is `false` on Windows
+// unless the build says `-d windows_7`, which a test found the hard way.
 struct CansubConn {
 	host string
 mut:
 	tcp  &net.TcpConn
 	ssl  &ssl.SSLConn
-	mu   sync.Mutex
+	turn &sync.Semaphore
 	dead bool
 }
 
@@ -248,6 +257,7 @@ fn cansub_conn(host string) !(&CansubConn, bool) {
 		host: host
 		tcp:  tcp
 		ssl:  conn
+		turn: sync.new_semaphore_init(1)
 	}
 	lock cansub_pool {
 		if mut prior := cansub_pool.conns[host] {
@@ -265,24 +275,26 @@ fn cansub_conn(host string) !(&CansubConn, bool) {
 const cansub_conn_read_ceiling = 5 * time.second
 
 // exchange sends one request and reads its complete reply on this connection.
-fn (mut c CansubConn) exchange(method string, path string, body string, timeout time.Duration) !CansubResponse {
-	// THE BUDGET IS THE CALLER'S, per request, and it starts HERE — before the wait for the
-	// connection, not after. Two channels on one device share the connection, so a 700 ms health
-	// poll can queue behind an open's two-second PUT; charged from the lock, the poll's bound was
-	// whatever the request in front of it took plus its own (codex round 1 on #248). So the wait
-	// is measured and only what remains reaches the socket the TLS layer reads through; the SSL
-	// object's own timeout is only the ceiling above both.
-	deadline := time.now().add(timeout)
-	c.mu.lock()
+fn (mut c CansubConn) exchange(method string, path string, body string, deadline time.Time) !CansubResponse {
+	// THE BUDGET IS THE CALLER'S and the wait for the connection is INSIDE it. Two channels on
+	// one device share the connection, so a 700 ms health poll can queue behind an open's
+	// two-second PUT; a plain lock() would hold the poll for the whole PUT and only then look at
+	// the clock (codex rounds 1 and 2 on #248). So the turn is waited for with a timed wait to
+	// the deadline, and a caller whose budget runs out in the queue leaves it. What remains
+	// reaches the socket the TLS layer reads through; the SSL object's own timeout is only the
+	// ceiling above both.
+	if !c.acquire(deadline) {
+		return error('${method} ${path}: the connection to ${c.host} was busy for the whole budget')
+	}
 	defer {
-		c.mu.unlock()
+		c.turn.post()
 	}
 	if c.dead {
 		return error('connection to ${c.host} is closed')
 	}
 	remaining := deadline - time.now()
 	if remaining <= 0 {
-		return error('${method} ${path}: the connection to ${c.host} was busy for the whole ${timeout}')
+		return error('${method} ${path}: no budget left after waiting for the connection')
 	}
 	c.tcp.set_read_timeout(remaining)
 	mut req := '${method} ${path} HTTP/1.1\r\nHost: ${c.host}\r\n'
@@ -312,11 +324,21 @@ fn (mut c CansubConn) exchange(method string, path string, body string, timeout 
 	return cansub_parse_response(raw.bytestr())
 }
 
+// acquire takes the connection's turn, or gives up at the deadline. True means the turn is
+// held and must be posted back.
+fn (mut c CansubConn) acquire(deadline time.Time) bool {
+	remaining := deadline - time.now()
+	if remaining <= 0 {
+		return c.turn.try_wait()
+	}
+	return c.turn.timed_wait(remaining)
+}
+
 // drop takes a failed connection out of service: the next request dials a new one.
 fn (mut c CansubConn) drop() {
-	c.mu.lock()
+	c.turn.wait()
 	c.close_socket()
-	c.mu.unlock()
+	c.turn.post()
 	lock cansub_pool {
 		if mut cur := cansub_pool.conns[c.host] {
 			if voidptr(cur) == voidptr(c) {

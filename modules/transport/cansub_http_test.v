@@ -1,5 +1,8 @@
 module transport
 
+import sync
+import time
+
 // The parsing half of the CANsub's REST client, checked against what the device actually sends.
 // The bytes in `test_the_status_line_the_device_really_sends` were captured off a TLS socket to a
 // CANsub.4 on firmware 02.04.00; everything else here is the general case around them.
@@ -225,4 +228,26 @@ fn test_forgetting_an_address_leaves_no_connection_pooled() {
 		'192.0.2.1' in cansub_pool.conns
 	}
 	assert !pooled
+}
+
+// A CALLER WHOSE BUDGET RUNS OUT IN THE QUEUE LEAVES IT: with the connection held by another
+// request, a 100 ms exchange fails at about 100 ms — not after the holder is done (codex round 2
+// on #248). No device: the connection is never dialled, only its lock is contended.
+fn test_a_request_gives_up_on_a_busy_connection_at_its_deadline() {
+	mut c := &CansubConn{
+		host: 'nobody.invalid'
+		tcp:  unsafe { nil }
+		ssl:  unsafe { nil }
+		turn: sync.new_semaphore_init(1)
+	}
+	c.turn.wait() // another request, taking its time
+	t0 := time.ticks()
+	deadline := time.now().add(100 * time.millisecond)
+	assert !c.acquire(deadline), 'acquired a lock somebody else holds'
+	waited := time.ticks() - t0
+	assert waited >= 90 && waited < 1000, 'gave up after ${waited} ms, not at the deadline'
+	c.turn.post()
+	later := time.now().add(100 * time.millisecond)
+	assert c.acquire(later)
+	c.turn.post()
 }
