@@ -424,7 +424,7 @@ fn (mut e SharedEntry) read_loop() {
 			// stops as soon as the wire is attentive or closing.
 			for {
 				e.drain_mu.lock()
-				more := e.drain_parked(0, false) or {
+				more := e.drain_parked(false, false) or {
 					e.drain_mu.unlock()
 					e.fail_and_close(err.msg())
 					e.done <- true
@@ -619,7 +619,7 @@ fn (mut e SharedEntry) admit(mut h SharedHandle) ! {
 	e.mu.lock()
 	failed := e.state != .running
 	terminal := e.terminal
-	parked := !e.attentive_except(time.ticks(), h.id)
+	parked := !e.readers_locked(time.ticks())
 	// Another join inserted but not yet admitted: its cursor is at its insertion, so what this
 	// drain finds is committed, not discarded — see pending_admit.
 	others := e.pending_admit.len > 1 || (e.pending_admit.len == 1 && !(h.id in e.pending_admit))
@@ -635,7 +635,7 @@ fn (mut e SharedEntry) admit(mut h SharedHandle) ! {
 		return error('${e.key}: generation failed while joining')
 	}
 	if parked && !e.tx_acks {
-		_ := e.drain_boundary(0, h.id, others) or {
+		_ := e.drain_boundary(0, true, others) or {
 			// The failure is taken under the lock (a queued joiner must find it), the reader is
 			// retired with the lock RELEASED: it may be blocked on drain_mu for its next batch,
 			// and only it sends done (codex round 10 on #224).
@@ -677,7 +677,7 @@ fn (mut e SharedEntry) admit(mut h SharedHandle) ! {
 // Returns whether the boundary was ESTABLISHED — the queue empty, or the count reached — as
 // opposed to the caller's deadline stopping it first. A deadline is checked BEFORE every batch,
 // so a receive with no budget left reads nothing at all (codex round 4 on #224).
-fn (mut e SharedEntry) drain_boundary(until i64, except u64, publish bool) !bool {
+fn (mut e SharedEntry) drain_boundary(until i64, join bool, publish bool) !bool {
 	mut read := u64(0)
 	for read < shared_boundary_drain_frames {
 		if until > 0 && time.ticks() >= until {
@@ -697,7 +697,7 @@ fn (mut e SharedEntry) drain_boundary(until i64, except u64, publish bool) !bool
 			return false
 		}
 		before := e.discards()
-		more := e.drain_parked(except, publish)!
+		more := e.drain_parked(join, publish)!
 		read += if publish { u64(1) } else { e.discards() - before }
 		if !more {
 			return true
@@ -720,18 +720,30 @@ fn (e &SharedEntry) attentive_locked(now i64) bool {
 }
 
 // attentive_except is attentive_locked with one pending admission — the caller's own — left
-// out, so a joiner can ask "is anybody ELSE listening?" before it drains. Caller holds mu.
+// out. Caller holds mu.
 fn (e &SharedEntry) attentive_except(now i64, id u64) bool {
+	if e.readers_locked(now) {
+		return true
+	}
+	for pending, _ in e.pending_admit {
+		if pending != id {
+			return true
+		}
+	}
+	return false
+}
+
+// readers_locked is whether anybody is actually READING — subscribed, or young and unread —
+// with pending admissions left out entirely. It is what a joiner asks before its boundary
+// drain: another pending join must not talk it out of draining (then nobody drains and both
+// are served the backlog — codex round 11 on #224); it only turns the drain from discard into
+// publish. Caller holds mu.
+fn (e &SharedEntry) readers_locked(now i64) bool {
 	if e.subs.len > 0 {
 		return true
 	}
 	for _, opened in e.unread {
 		if now - opened < shared_attentive_ms {
-			return true
-		}
-	}
-	for pending, _ in e.pending_admit {
-		if pending != id {
 			return true
 		}
 	}
@@ -751,11 +763,12 @@ fn (e &SharedEntry) attentive_except(now i64, id u64) bool {
 // may hold more; the callers decide how to loop (the reader releases drain_mu between batches,
 // a joiner keeps it and stops on a time budget). A fatal read error is returned as the error,
 // and it is the caller's to act on.
-// `except` is the caller's own pending admission (0 for the reader); `publish` commits what is
-// read instead of discarding it, for a drain run while another join is pending.
-fn (mut e SharedEntry) drain_parked(except u64, publish bool) !bool {
+// `join` is a handle's boundary drain (pending admissions do not count as readers to it — see
+// readers_locked); the reader passes false. `publish` commits what is read instead of
+// discarding it, for a drain run while another join is pending.
+fn (mut e SharedEntry) drain_parked(join bool, publish bool) !bool {
 	e.mu.lock()
-	claimed := e.attentive_except(time.ticks(), except)
+	claimed := if join { e.readers_locked(time.ticks()) } else { e.attentive_locked(time.ticks()) }
 	e.mu.unlock()
 	if claimed {
 		return false
@@ -1021,7 +1034,8 @@ fn (mut h SharedHandle) recv(timeout_ms int) !CanFrame {
 			e.take_drain_lock()
 			e.mu.lock()
 			failed_now := e.state != .running
-			mut unread := !e.attentive_locked(time.ticks())
+			mut unread := !e.readers_locked(time.ticks())
+			pending_join := e.pending_admit.len > 0
 			e.mu.unlock()
 			if failed_now {
 				// Failed while this handle waited for the lock: the terminal error is read below
@@ -1036,7 +1050,7 @@ fn (mut h SharedHandle) recv(timeout_ms int) !CanFrame {
 				e.mu.unlock()
 				{
 					established := e.drain_boundary(if timeout_ms < 0 { i64(0) } else { deadline },
-						h.id, false) or {
+						true, pending_join) or {
 						e.fail_and_close(err.msg())
 						e.drain_mu.unlock()
 						select {
