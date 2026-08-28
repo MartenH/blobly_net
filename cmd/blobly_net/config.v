@@ -944,18 +944,24 @@ fn (mut app App) save_project() {
 // per-panel Save buttons that used to do the second half from four places are gone (#247): the
 // menu's Save, this shortcut and the File tab's own button are the whole set.
 fn (mut app App) save_what_is_being_edited() {
-	// Not while the file browser is up, from the keyboard OR the menu: an unsaved project's
-	// first Save opens Save As, and a second would open it AGAIN — a fresh, empty name field
-	// and directory over the ones being typed (codex rounds 3 and 4 on #250). The picker's own
-	// Save is the way out of it.
-	if app.fb_open {
-		return
+	// THE DECISION IS project.save_target — pure, tested, and the only place it is made. Five
+	// review rounds on #250 each moved it; each fix was checked by reading, because the GUI has
+	// no tests. Now the table is in modules/project/save_rule_test.v and this is a switch.
+	state := project.SaveState{
+		text_dirty:   app.cfg_text_dirty
+		file_visible: app.cfg_file_visible
+		picker_open:  app.fb_open
+		running:      app.running
 	}
-	if app.cfg_text_dirty && app.cfg_file_visible {
-		app.save_cfg_text()
-		return
+	match project.save_target(state) {
+		.nothing {
+			if app.running && app.cfg_text_dirty && app.cfg_file_visible {
+				app.notify('not saved — the File tab\'s text is applied on save, and the model is not rebuilt while running; Stop first')
+			}
+		}
+		.text { app.save_cfg_text() }
+		.model { app.save_project() }
 	}
-	app.save_project()
 }
 
 // poll_shortcuts is read once per frame, beside the generator hotkeys — but unlike them it is

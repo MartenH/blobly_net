@@ -313,7 +313,9 @@ fn draw_toolbar(mut app App, rx u64, txs string, chans []Chan) {
 	// seconds. The Log has the path; this is only the acknowledgement (#247).
 	if app.saved_at > 0 && time.ticks() - app.saved_at < 3000 && !app.dirty && !app.cfg_text_dirty {
 		vgui.same_line()
-		vgui.text_colored(120, 200, 120, '✓ saved')
+		// ASCII: the UI atlas carries no U+2713, and a missing-glyph box is not an
+		// acknowledgement (codex round 5 on #250).
+		vgui.text_colored(120, 200, 120, 'saved')
 	}
 	// The capture CONTROLS live in the Trace window; the toolbar shows the two capture states
 	// that LATCH, and only while they are latched. The Trace window is closable, so without
