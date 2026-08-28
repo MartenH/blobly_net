@@ -135,6 +135,11 @@ mut:
 	running bool      = true
 	health  BusHealth = .unknown
 	err     string
+	// Whether close() has run: its guard, SEPARATE from `running`. A bus that stopped itself
+	// (fail_send) has `running` false and a reader still holding the device's one WebSocket;
+	// guarded on `running`, close() returned at once and the hub admitted a reopen the device
+	// then refused (codex round 3 on #251).
+	closed bool
 	// What the CONTROLLER was last configured to, which is not the same question as what this
 	// process's silence policy currently says — see reconcile_listen_only.
 	phy_silent bool
@@ -1138,9 +1143,10 @@ pub fn (mut b CansubBus) reconcile_silence(want bool) ! {
 
 pub fn (mut b CansubBus) close() {
 	lock b.stop {
-		if !b.stop.running {
+		if b.stop.closed {
 			return
 		}
+		b.stop.closed = true
 		b.stop.running = false
 	}
 	// A FAULT MUST NOT OUTLIVE THE WIRE IT DESCRIBES — and the order here is the whole point.

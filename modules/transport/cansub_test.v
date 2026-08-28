@@ -696,4 +696,9 @@ fn test_a_failed_write_stops_the_bus_with_its_reason() {
 	// The first reason wins.
 	b.fail_send('later')
 	assert b.failure()? == 'send on cansub:test/1: write timed out'
+	// And the bus is stopped, NOT closed: close() still has the teardown to do — the reader
+	// holds the device's one WebSocket until it is joined (codex round 3 on #251).
+	assert !rlock b.stop {
+		b.stop.closed
+	}
 }
