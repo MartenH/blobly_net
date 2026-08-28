@@ -46,6 +46,9 @@ done" is then a fact somebody can check rather than a feeling.
 | Honours project timing / sample point | partial (BTR) | ❌ ignored | partial | refuses non-default |
 | Hardware timestamps | ❌ | ❌ | ❌ | ❌ |
 | Bench record below | ✅ | ✅ | ✅ | ✅ |
+| A monitor reads its own health | ✅ | ✅ | ✅ | ✅ from the receive counter (#241): the firmware starts every channel at **TEC 129 / error-passive** with nothing on the wire — measured alone and even opened listen-only — and a node that never transmits cannot lower that counter, so `state` alone painted a healthy monitor errP for the life of the run |
+| A monitor's health is its OWN counters | ✅ | ✅ (measured #239: a Kvaser at 250 k under 500 k traffic receives nothing and stays `ok`; the unacknowledged *transmitter* climbs to warning) | ✅ | ✅ |
+| First contact after a pause | n/a | n/a | n/a | one cold mDNS lookup, **2.7 s** on Windows (measured; the request itself is 0.11 s, and the OS forgets the answer within a minute). Resolved once per process and dialled by address since #240, so a run pays it once instead of per connection |
 
 **The gaps that stop any of them being called finished**, in the order they matter:
 
