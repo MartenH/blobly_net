@@ -359,8 +359,10 @@ fn sim_loop(open_iface string, fault_iface string, db candb.Database, nodes []pr
 			}
 		}
 	}
-	report_diag('${open_iface} (sim)', bus.diagnostics())
+	// CLOSED FIRST: a shared handle's close books the last gap its cursor lost, and a closed
+	// handle still answers with the wire's totals (codex round 12 on #231).
 	bus.close()
+	report_diag('${open_iface} (sim)', bus.diagnostics())
 }
 
 // diag_server_loop answers UDS requests (rx 0x7E0 / tx 0x7E8) over software
@@ -382,8 +384,8 @@ fn uds_node_loop(iface string, rx u32, tx u32, ext bool, srv uds.Server, ctl &Ct
 			ch.send(resp) or {}
 		}
 	}
-	report_diag('${iface} (uds node)', ch.diagnostics())
 	ch.close()
+	report_diag('${iface} (uds node)', ch.diagnostics()) // after the close: see sim_loop
 }
 
 // doip_listen binds one simulated DoIP entity: the same uds.Server the CAN path serves,
@@ -450,8 +452,8 @@ fn diag_server_loop(iface string, ctl &Ctl) {
 			ch.send(resp) or {}
 		}
 	}
-	report_diag('${iface} (uds server)', ch.diagnostics())
 	ch.close()
+	report_diag('${iface} (uds server)', ch.diagnostics()) // after the close: see sim_loop
 }
 
 // build_node delegates to sim.from_project. This used to be a copy of the GUI's builder
