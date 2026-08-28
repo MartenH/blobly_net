@@ -64,6 +64,19 @@ The subscription boundary is the hub's current tail sequence while the new handl
 under the entry lock. A handle does not receive retained history from before its open. Once open
 returns, all later committed ring records belong to it, subject to bounded-ring overrun.
 
+**On a wire nobody is listening to, nothing is committed.** The reader parks while no handle is
+*attentive* (#224): a handle is attentive for one second after its open, and for the rest of its
+life once it has received. A wire held only by transmit taps therefore costs the driver one
+zero-timeout drain a second instead of a thousand reads, and what that drain finds is discarded.
+The boundary above holds for every handle that receives within its first second — the
+request/response pattern, the monitor — and for every handle on a wire somebody else is reading:
+a handle opening onto a parked wire drains the driver's queue before it counts, so what it gets is
+what arrived after its open. The one handle that loses anything is a tap that never received for
+over a second and then does **on a wire nobody else was reading**: its history begins at that
+first receive, because nothing was committed on its behalf in between. On a wire somebody else
+kept reading, the ring holds everything since the tap's open (bounded-ring overrun aside) and the
+tap gets it — the expiry is a property of the wire's reader, not a penalty on the handle.
+
 ## Private raw-record seam
 
 The public `Bus.recv() !CanFrame` boundary is deliberately unchanged. Only the raw object owned by
