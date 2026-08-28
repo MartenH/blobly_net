@@ -782,8 +782,12 @@ fn test_warm_all_warms_each_device_once() {
 // send in flight, so the write timeout is what bounds Stop on a wire whose device has stopped
 // taking bytes. The library's default is 30 s (#240).
 fn test_a_cansub_write_is_bounded_well_below_the_librarys_default() {
-	assert cansub_write_timeout <= 2 * time.second
-	assert cansub_write_timeout >= 500 * time.millisecond, 'shorter than a slow but live device'
+	// What the client is GIVEN, not the constant on its own (codex round 12 on #251).
+	opts := cansub_client_opts()
+	assert opts.write_timeout == cansub_write_timeout
+	assert opts.write_timeout <= 2 * time.second
+	assert opts.write_timeout >= 500 * time.millisecond, 'shorter than a slow but live device'
+	assert opts.read_timeout <= time.second, 'the read timeout is what bounds Stop on the other side'
 }
 
 // A WRITE THAT FAILED ENDS THE BUS: the failure is what every later send sees, and the reader is
@@ -801,10 +805,13 @@ fn test_a_failed_write_stops_the_bus_with_its_reason() {
 	assert b.failure() == none
 	// And what a later send gets is a refusal the hub can tell from a failed write: nothing
 	// was attempted, so no acknowledgement grace (codex round 9 on #251).
+	mut refused := false
 	b.send(CanFrame{ id: 0x123 }) or {
 		assert err is NotWritten, 'a refused send must be NotWritten, got ${err}'
 		assert err.msg().contains('write timed out')
+		refused = true
 	}
+	assert refused, 'a send after a write failure went through'
 	assert rlock b.stop {
 		b.stop.running
 	}
@@ -819,9 +826,12 @@ fn test_a_failed_write_stops_the_bus_with_its_reason() {
 	}
 	r.fail_send('send on cansub:test/2: write timed out')
 	assert r.failure()? == 'read: connection reset'
-	// And the bus is stopped, NOT closed: close() still has the teardown to do — the reader
-	// holds the device's one WebSocket until it is joined (codex round 3 on #251).
+	// And neither bus is closed: close() still has the teardown to do — the reader holds the
+	// device's one WebSocket until it is joined (codex round 3 on #251).
 	assert !rlock b.stop {
 		b.stop.closed
+	}
+	assert !rlock r.stop {
+		r.stop.closed
 	}
 }
