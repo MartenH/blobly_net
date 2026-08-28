@@ -499,6 +499,16 @@ __global (
 struct CansubAddrs {
 mut:
 	by_host map[string]string
+	// One lock per name, held while that name is being resolved: a second caller for the same
+	// name waits for the answer in flight instead of starting a lookup of its own. See
+	// cansub_addr.
+	resolving map[string]&sync.Mutex
+	// When a lookup of the name last FAILED, in time.ticks(): for a short while after, a caller
+	// gets that answer instead of repeating the lookup. See cansub_addr.
+	failed_at map[string]i64
+	// How many warm-up workers have been started, ever: what a test counts to hold the
+	// one-per-device rule (cansub_warm_all).
+	warmups int
 	// Bumped by every forget of the name: what a dial in flight is checked against when it
 	// comes back (cansub_conn).
 	generation map[string]int
@@ -511,17 +521,73 @@ fn cansub_addr_generation(host string) int {
 	}
 }
 
+// cansub_failed_lookup_memory is how long a failed lookup answers for the next caller. Long
+// enough that the rows of one project, queued behind one failed lookup, share it; short
+// enough that a device plugged in after is found on the next poll.
+const cansub_failed_lookup_memory = 5000
+
+// cansub_resolving is the lock a lookup of `host` holds — created on first use, one per name for
+// the life of the process.
+fn cansub_resolving(host string) &sync.Mutex {
+	return lock cansub_addrs {
+		if m := cansub_addrs.resolving[host] {
+			m
+		} else {
+			m := sync.new_mutex()
+			cansub_addrs.resolving[host] = m
+			m
+		}
+	}
+}
+
 // cansub_addr is the resolved address of a device name, looked up once per process — see
 // cansub_dial for why. none when it cannot be resolved right now.
 pub fn cansub_addr(host string) ?string {
+	return cansub_lookup(host, false)
+}
+
+// cansub_lookup is cansub_addr with the choice of whether a RECENT FAILURE is an answer. It is
+// for the warm-up (background, speculative: a device not there a moment ago is not asked for
+// again for a few seconds) and NOT for an open — an operator who plugs the device in and
+// presses Start has told us it is there now, and an open that answered "not found" from a
+// memory five seconds old would turn a transient failure into a failed run (codex round 3 on
+// #249).
+fn cansub_lookup(host string, recent_failure_answers bool) ?string {
 	cached := rlock cansub_addrs {
 		cansub_addrs.by_host[host] or { '' }
 	}
 	if cached != '' {
 		return cached
 	}
-	addrs := net.resolve_ipaddrs(host, .ip, .tcp) or { return none }
+	// ONE LOOKUP IN FLIGHT PER NAME. The warm-up at project load (cansub_warm) runs this in the
+	// background; an open that arrives while it is still running would otherwise see an empty
+	// memory and start a second 2.7 s lookup of its own — the pause the warm-up exists to remove,
+	// paid anyway, plus a duplicate query (codex round 1 on #249). So a lookup holds the name's
+	// lock, and a caller that finds it held waits for that answer and reads it from the memory.
+	mut resolving := cansub_resolving(host)
+	resolving.lock()
+	defer {
+		resolving.unlock()
+	}
+	meanwhile, failed := rlock cansub_addrs {
+		cansub_addrs.by_host[host] or { '' }, cansub_addrs.failed_at[host] or { 0 }
+	}
+	if meanwhile != '' {
+		return meanwhile
+	}
+	// A FAILURE IS SHARED TOO. Three rows of one unplugged device queue on the lock above; if
+	// the first lookup's failure were kept by nobody, the second and third would each spend
+	// their own 2.7 s finding the same thing out, and a Start pressed behind them waits for all
+	// of it (codex round 2 on #249).
+	if recent_failure_answers && failed > 0 && time.ticks() - failed < cansub_failed_lookup_memory {
+		return none
+	}
+	addrs := net.resolve_ipaddrs(host, .ip, .tcp) or {
+		cansub_note_failed_lookup(host)
+		return none
+	}
 	if addrs.len == 0 {
+		cansub_note_failed_lookup(host)
 		return none
 	}
 	// The address without a port: resolve_ipaddrs answers for host:port pairs too, and the
@@ -532,14 +598,58 @@ pub fn cansub_addr(host string) ?string {
 	}
 	lock cansub_addrs {
 		cansub_addrs.by_host[host] = ip
+		cansub_addrs.failed_at.delete(host)
 	}
 	return ip
+}
+
+fn cansub_note_failed_lookup(host string) {
+	lock cansub_addrs {
+		cansub_addrs.failed_at[host] = time.ticks()
+	}
+}
+
+// cansub_warm resolves a CANsub address's device name in the background, so the one cold mDNS
+// lookup (2.7 s on Windows, forgotten within a minute) is paid when a project is loaded and not
+// when Start is pressed (#240). Best effort: a name that does not resolve now is tried again by
+// the open, which reports it. Nothing else touches the device.
+pub fn cansub_warm(iface string) {
+	spec := parse_cansub_iface(iface) or { return }
+	cansub_warm_host(cansub_host(spec.id))
+}
+
+// cansub_warm_all warms each DEVICE among `ifaces` once: three channels of one CANsub are three
+// rows and one name, and one worker per row was three lookups queued on one lock (codex round 2
+// on #249). Non-CANsub interfaces are ignored, so a caller can hand it the whole project.
+pub fn cansub_warm_all(ifaces []string) {
+	mut seen := map[string]bool{}
+	for iface in ifaces {
+		spec := parse_cansub_iface(iface) or { continue }
+		host := cansub_host(spec.id)
+		if host in seen {
+			continue
+		}
+		seen[host] = true
+		cansub_warm_host(host)
+	}
+}
+
+// cansub_warm_host is the warm-up by name, and hands back its worker so a caller that needs the
+// answer — a test — can wait for it; cansub_warm itself never does.
+pub fn cansub_warm_host(host string) thread {
+	lock cansub_addrs {
+		cansub_addrs.warmups++
+	}
+	return spawn fn (h string) {
+		_ = cansub_lookup(h, true) or { '' }
+	}(host)
 }
 
 // cansub_forget_addr drops a remembered address: the next cansub_addr resolves the name again.
 pub fn cansub_forget_addr(host string) {
 	lock cansub_addrs {
 		cansub_addrs.by_host.delete(host)
+		cansub_addrs.failed_at.delete(host)
 		cansub_addrs.generation[host]++
 	}
 	// AND THE CONNECTION DIALLED TO IT. An address is forgotten because the device behind it is

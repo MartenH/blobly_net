@@ -387,6 +387,15 @@ fn draw_buses(mut app App, chans []Chan) {
 					continue
 				}
 				app.chans[i].enabled = new
+				// THE TICK IS A PROJECT EDIT, like the Replay panel's set_chan_enabled_stopped
+				// already is. It used to move only the runtime copy: Configure went on showing
+				// the row ticked, and Save wrote it enabled — two owners of one bit, synchronised
+				// in one direction (#245). The trial flips above (set, check, set back) stay
+				// runtime-only on purpose; this is the one that means it.
+				if i < app.proj.channels.len {
+					app.proj.channels[i].enabled = new
+					app.dirty = true
+				}
 				// THE CAPABILITY WARNING BELONGS TO EVERY PATH THAT PUTS A ROW INTO A RUN, not
 				// only to Start. A row disabled at Start is correctly skipped by
 				// fd_capability_warnings — it states nothing about the run — but enabling it here
