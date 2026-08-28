@@ -526,6 +526,9 @@ fn iface_desc(f transport.Iface) string {
 		'can' {
 			if f.name != '' && f.name != f.iface { f.name } else { 'CAN' }
 		}
+		'cansub' {
+			f.name
+		}
 		else {
 			f.kind
 		}
@@ -537,14 +540,22 @@ fn iface_desc(f transport.Iface) string {
 	return d
 }
 
-// discover_all builds the Discover list, marking entries already in the project. Two sources
+// discover_all builds the Discover list, marking entries already in the project. Three sources
 // are merged and de-duplicated by (adapter,address):
 //   1. Linux /sys CAN interfaces — finds interfaces that are DOWN (which `ip -json`, and thus
 //      transport.list_interfaces on Linux, omits) and enriches them with the USB product /
 //      bus path / link state. Empty off Linux.
 //   2. transport.list_interfaces() — the platform-gated enumerator that adds Windows vendor
-//      hardware (PCAN/Kvaser via their DLLs) plus the driver-free software buses (UDP/SIM).
+//      hardware (PCAN/Kvaser/Vector via their DLLs) plus the driver-free software buses.
+//   3. the last mDNS browse's CANsub rows (#235), read under the lock. Not browsed here: a
+//      browse waits its whole window and this runs on the render thread;
+//      start_cansub_browse() fills the mailbox from its own thread.
 fn (app &App) discover_all() []DiscoveredIface {
+	return app.merge_discovered(app.scan_local(), app.cansub_rows_locked())
+}
+
+// scan_local is sources 1 and 2: what this host can enumerate without waiting on a network.
+fn (app &App) scan_local() []DiscoveredIface {
 	mut out := []DiscoveredIface{}
 	mut seen := map[string]bool{}
 	for ci in read_can_ifaces() {
@@ -558,6 +569,40 @@ fn (app &App) discover_all() []DiscoveredIface {
 		}
 	}
 	for f in transport.list_interfaces() or { transport.virtual_ifaces() } {
+		adapter, address := project.decompose_iface(f.iface)
+		key := project.compose_iface(adapter, address)
+		if key in seen {
+			continue
+		}
+		seen[key] = true
+		out << DiscoveredIface{
+			adapter: adapter
+			address: address
+			desc:    iface_desc(f)
+			added:   app.iface_added(adapter, address)
+		}
+	}
+	return out
+}
+
+// cansub_rows_locked copies the mailbox's rows out under the lock -- the worker replaces the
+// array under it, and an unlocked read of an array another thread replaces is the #84 class.
+fn (app &App) cansub_rows_locked() []transport.Iface {
+	mut a := unsafe { app }
+	a.mu.lock()
+	rows := a.disc_cansub.clone()
+	a.mu.unlock()
+	return rows
+}
+
+// merge_discovered appends the browse's rows to a local scan, de-duplicated by the same key.
+fn (app &App) merge_discovered(scan []DiscoveredIface, cansub []transport.Iface) []DiscoveredIface {
+	mut out := scan.clone()
+	mut seen := map[string]bool{}
+	for d in scan {
+		seen[project.compose_iface(d.adapter, d.address)] = true
+	}
+	for f in cansub {
 		adapter, address := project.decompose_iface(f.iface)
 		key := project.compose_iface(adapter, address)
 		if key in seen {
@@ -608,6 +653,11 @@ fn (app &App) iface_added(adapter string, address string) bool {
 	target := project.compose_iface(adapter, address)
 	for c in app.proj.channels {
 		if c.iface == target {
+			return true
+		}
+		// A CANsub id is case-insensitive (the parser lower-cases it) and a browse yields it
+		// lower-cased, so a row typed in capitals is the same wire, not a second one (#235).
+		if adapter == 'cansub' && c.iface.to_lower() == target.to_lower() {
 			return true
 		}
 	}

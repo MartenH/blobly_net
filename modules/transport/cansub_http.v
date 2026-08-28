@@ -250,8 +250,12 @@ pub fn cansub_get_within(host string, path string, timeout time.Duration) !strin
 // is one reboot from being wrong, while the name follows it. It is also the identity the wire key
 // should derive from, for the same reason.
 pub fn cansub_host(id string) string {
-	return '${id}-usb.local'
+	return '${id}${cansub_host_suffix}.local'
 }
+
+// cansub_host_suffix is what the device appends to its id in the name it registers -- the one
+// place the rule lives; cansub_mdns.v strips it, cansub_host adds it.
+pub const cansub_host_suffix = '-usb'
 
 // cansub_resolves reports whether a device id can be found on this machine at all, so a caller can
 // tell "not plugged in" from "plugged in and refusing".

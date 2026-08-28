@@ -42,7 +42,7 @@ fn main() {
 		eprintln('  as the receive.')
 		exit(2)
 	}
-	host := '${id}-usb.local'
+	host := transport.cansub_host(id)
 
 	// The device is addressed by its ID through mDNS, never by an IP. A firmware update clears
 	// persistent data and the device comes back on a different subnet — observed going from

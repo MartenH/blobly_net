@@ -228,8 +228,8 @@ fn (app &App) unique_bus_name(base string) string {
 
 // refresh_discovery re-scans the machine's transports for the Discover dialog.
 fn (mut app App) refresh_discovery() {
-	app.disc_list = app.discover_all()
-	app.disc_tick = []bool{len: app.disc_list.len}
+	app.disc_scan = app.scan_local()
+	app.rebuild_discover_list()
 	// Empty on any machine without the XL driver, which is the honest answer rather than a
 	// placeholder — the Linux stub returns nothing and the section below draws nothing.
 	app.disc_vector = transport.vector_mappings()
@@ -344,6 +344,76 @@ fn (mut app App) assign_vector_hw(hw transport.VectorChannel, app_channel int) {
 	}
 	app.notify('vector:${app_channel} now points at ${hw.name} (${hw.transceiver}) — add it as a bus to use it')
 	app.refresh_discovery()
+}
+
+// rebuild_discover_list is the cached local scan plus the mailbox's CANsub rows, with the
+// operator's ticks carried over by key -- a browse landing while rows are ticked must not clear
+// them.
+fn (mut app App) rebuild_discover_list() {
+	mut ticked := map[string]bool{}
+	for k, d in app.disc_list {
+		if k < app.disc_tick.len && app.disc_tick[k] {
+			ticked[project.compose_iface(d.adapter, d.address)] = true
+		}
+	}
+	app.mu.lock()
+	rows := app.disc_cansub.clone()
+	app.disc_cansub_shown = app.disc_cansub_landed
+	app.mu.unlock()
+	app.disc_list = app.merge_discovered(app.disc_scan, rows)
+	app.disc_tick = []bool{len: app.disc_list.len}
+	for k, d in app.disc_list {
+		app.disc_tick[k] = ticked[project.compose_iface(d.adapter, d.address)] or { false }
+	}
+}
+
+// start_cansub_browse asks mDNS for attached CANsub devices on its own thread (#235), one at a
+// time: a click while one is in flight is that one. The mailbox is cleared first, so a browse
+// in flight contributes nothing rather than yesterday's answer.
+fn (mut app App) start_cansub_browse() {
+	app.mu.lock()
+	if app.disc_cansub_started != app.disc_cansub_landed {
+		app.mu.unlock()
+		return
+	}
+	app.disc_cansub_started++
+	gen := app.disc_cansub_started
+	app.disc_cansub = []
+	app.disc_cansub_note = ''
+	app.mu.unlock()
+	app.rebuild_discover_list()
+	spawn cansub_browse_worker(app, gen)
+}
+
+fn cansub_browse_worker(app &App, gen u64) {
+	mut a := unsafe { app }
+	mut note := ''
+	rows, browse_note := transport.discover_cansub() or {
+		note = 'CANsub browse unavailable — ${err.msg()}'
+		[]transport.Iface{}, ''
+	}
+	if browse_note != '' {
+		note = 'CANsub browse: ${browse_note}'
+	}
+	a.mu.lock()
+	if a.disc_cansub_started == gen {
+		a.disc_cansub = rows
+		a.disc_cansub_note = note
+		a.disc_cansub_landed = gen
+	}
+	a.mu.unlock()
+	vgui.wake()
+}
+
+// cansub_browse_state reads the mailbox under the lock for the frame: whether a browse is in
+// flight, whether one landed since the list was built, and the note to show.
+fn (mut app App) cansub_browse_state() (bool, bool, string) {
+	app.mu.lock()
+	busy := app.disc_cansub_started != app.disc_cansub_landed
+	landed := app.disc_cansub_landed != app.disc_cansub_shown
+	note := app.disc_cansub_note
+	app.mu.unlock()
+	return busy, landed, note
 }
 
 // next_free_vcan returns the first vcanN not already in the project (for the + vcan quick-add).

@@ -35,6 +35,11 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   written unbounded (`transport.SharedEntry.settled` is). Not ours to fix — vlib — and pinned
   here so the next `V panic: Invalid argument` in a CI log is read as this, not as a bug in
   the test it landed in.
+- 🟡 **A UDP read deadline is not honoured.** `net.UdpConn.set_read_deadline` followed by
+  `read` returned after ~100 ms every time, deadline or not (V 0.5.1, #235's first cut). What
+  works is `set_read_timeout` re-armed before each read with what is left of the window, which
+  is what `transport.cansub_browse` does. And a 0-byte datagram comes back from `read` as an
+  ERROR (`none`), not as `n == 0`, so a collector must break only on `net.err_timed_out_code`.
 - 🟡 **Local module not found.** `import candb` (a module under `./modules/`) fails with
   `cannot import module "candb" (not found)` when compiling a file in `cmd/…`. V's `-path`
   *replaces* the default lookup order, so the working incantation re-lists the defaults:
