@@ -1430,6 +1430,9 @@ fn test_shared_hub_diagnostics_fold_the_drivers_counters_with_the_wires_ring_gap
 	slow.close()
 	assert slow.diagnostics() == BusDiagnostics{}
 	assert fast.diagnostics() == want, 'the gap outlives the handle that suffered it'
+	// Asked before its close, a subscriber's gap is booked at the asking: a report taken
+	// before teardown is not a sample short.
+	assert lagging.diagnostics().dropped == 7, 'a subscriber behind the ring books its gap when asked'
 	lagging.close()
 	assert fast.diagnostics().dropped == 7, 'a subscriber that closed behind the ring must book its gap'
 	// Keeps the generation alive past fast's close, which is a transmit tap's (fast never read).

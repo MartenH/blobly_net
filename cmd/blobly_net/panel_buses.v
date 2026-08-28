@@ -76,7 +76,9 @@ fn read_destinations(rows []Chan) map[string]DestState {
 		}
 		key := transport.destination_key(c.iface)
 		mut st := out[key] or { DestState{} }
-		if st.diag.is_empty() {
+		// `read`, not an empty value: a LIVE reader reporting zero is a reopened wire that has
+		// counted nothing yet, and the retired sample must not paint over it (codex round 3).
+		if !st.read {
 			st.diag = c.diag
 			out[key] = st
 		}

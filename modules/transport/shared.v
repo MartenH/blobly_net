@@ -223,6 +223,10 @@ mut:
 	// ring_gaps counts frames the ring overwrote under SOME handle's cursor before it read them,
 	// summed over every handle the wire has had (under mu): the WIRE's loss, which is what a
 	// row shows, where each handle's own `dropped` is that cursor's and dies with it (#213).
+	// AN UPPER BOUND, by sequence: a slot overwritten unread is counted whatever its origin, so
+	// on a CANsub wire a sender that fell behind counts its own acknowledgements -- which it
+	// would have skipped -- among what it lost. Exact needs each overwritten slot's origin, and
+	// the overwrite is what destroyed it (codex round 3 on #231).
 	ring_gaps u64
 	// parked_discards counts frames the reader read and threw away while nobody subscribed.
 	parked_discards   u64
@@ -362,6 +366,24 @@ fn (mut e SharedEntry) start_pending_window(token u64, ttl_ms i64, failed bool) 
 		}
 	}
 	e.mu.unlock()
+}
+
+// book_gap_locked moves a cursor that has fallen behind the ring up to the oldest retained
+// sequence and counts what it skipped, for the handle and for the wire. Caller holds e.mu and
+// h.mu. Run at receive, at a subscriber's close, and when a subscriber's diagnostics are asked
+// for -- the frames are gone whichever of those happens first, and a report taken before the
+// close would otherwise be a sample short (codex round 3 on #231).
+fn (mut e SharedEntry) book_gap_locked(mut h SharedHandle) {
+	oldest := if e.next_seq > u64(shared_ring_capacity) {
+		e.next_seq - u64(shared_ring_capacity)
+	} else {
+		u64(1)
+	}
+	if h.cursor < oldest {
+		h.dropped += oldest - h.cursor
+		e.ring_gaps += oldest - h.cursor
+		h.cursor = oldest
+	}
 }
 
 // shared_open is the existing PCAN/fake factory seam. The raw Bus is adapted to SharedDriver and
@@ -1313,16 +1335,7 @@ fn (mut h SharedHandle) recv(timeout_ms int) !CanFrame {
 		if holding {
 			e.drain_mu.unlock()
 		}
-		oldest := if e.next_seq > u64(shared_ring_capacity) {
-			e.next_seq - u64(shared_ring_capacity)
-		} else {
-			u64(1)
-		}
-		if h.cursor < oldest {
-			h.dropped += oldest - h.cursor
-			e.ring_gaps += oldest - h.cursor
-			h.cursor = oldest
-		}
+		e.book_gap_locked(mut h)
 		for h.cursor < e.next_seq {
 			slot := e.ring[int((h.cursor - 1) % u64(shared_ring_capacity))]
 			h.cursor++
@@ -1393,16 +1406,24 @@ fn (mut h SharedHandle) health() BusHealth {
 fn (mut h SharedHandle) diagnostics() BusDiagnostics {
 	h.mu.lock()
 	closed := h.closed
+	subscribed := h.subscribed
 	h.mu.unlock()
 	if closed {
 		return BusDiagnostics{}
 	}
 	mut e := h.entry
+	// Locks in the order recv takes them (h.mu, then e.mu), so this handle's own gap is
+	// booked before the wire's total is read.
+	h.mu.lock()
 	e.mu.lock()
+	if subscribed && !h.closed {
+		e.book_gap_locked(mut h)
+	}
 	gaps := BusDiagnostics{
 		dropped: e.ring_gaps
 	}
 	e.mu.unlock()
+	h.mu.unlock()
 	return gaps.plus(e.driver.diagnostics())
 }
 
@@ -1454,6 +1475,16 @@ fn (mut h SharedHandle) close() {
 	}
 	mut e := h.entry
 	// Not behind send_mu either -- Stop must be able to let go of a wire whose sender is stuck.
+	// The subscriber's gap is booked BEFORE the lifecycle section below, in recv's lock order
+	// (h.mu, then e.mu) -- taken the other way round it would be the inversion this file's
+	// comments exist to prevent.
+	if was_subscribed {
+		h.mu.lock()
+		e.mu.lock()
+		e.book_gap_locked(mut h)
+		e.mu.unlock()
+		h.mu.unlock()
+	}
 	mut last_healthy := false
 	e.mu.lock()
 	// WHAT A SUBSCRIBER NEVER READ IS STILL THE WIRE'S LOSS. The gap is booked at receive, so a
@@ -1463,18 +1494,6 @@ fn (mut h SharedHandle) close() {
 	// SUBSCRIBERS ONLY: a transmit tap never asked for delivery, and its cursor is old on any
 	// busy wire -- booked, every tap a Start opened would add the whole ring to the wire's loss
 	// at Stop (codex round 2 on #231).
-	if was_subscribed {
-		oldest := if e.next_seq > u64(shared_ring_capacity) {
-			e.next_seq - u64(shared_ring_capacity)
-		} else {
-			u64(1)
-		}
-		if h.cursor < oldest {
-			h.dropped += oldest - h.cursor
-			e.ring_gaps += oldest - h.cursor
-			h.cursor = oldest
-		}
-	}
 	if was_subscribed {
 		e.subs = e.subs.filter(it.id != h.id)
 	}

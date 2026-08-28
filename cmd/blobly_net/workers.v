@@ -809,6 +809,23 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			vgui.wake()
 		}
 	}
+	// ONE LAST SAMPLE ON THE WAY OUT, whatever ended the loop: a Stop inside the poll interval
+	// left up to a second of counts unread, and the retained chip is the operator's post-run
+	// view. Written if the GENERATION still matches -- Stop has cleared `running` by now and
+	// the row keeps its value until the next Start -- narrated only while the run is on
+	// (codex round 3 on #231).
+	final := bus.diagnostics()
+	if final != last_diag {
+		a.mu.lock()
+		if a.run_gen == gen && ci < a.chans.len {
+			a.chans[ci].diag = final
+			if a.running {
+				a.log_append_locked(diag_msg(iface, last_diag, final))
+			}
+		}
+		a.mu.unlock()
+		last_diag = final
+	}
 	bus.close()
 	a.mu.lock()
 	// Only if this run is still the current one. A loop that exited because the generation moved
