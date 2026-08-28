@@ -310,3 +310,34 @@ fn test_a_zero_timeout_looks_past_a_stale_cf() {
 	ch.close()
 	peer.close()
 }
+
+// A SINGLE FRAME ABOVE SEVEN BYTES AND A FIRST FRAME BELOW EIGHT ARE BOTH MALFORMED (codex round
+// 14 on #225).
+fn test_malformed_single_and_first_frames_are_refused() {
+	mut peer := transport.open('inproc:isotp-malformed') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-malformed', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x09), 1, 2, 3, 4, 5, 6, 7, 8, 9], fd: true }) or {
+		assert false, err.msg()
+	}
+	time.sleep(20 * time.millisecond)
+	if _ := ch.recv(100) {
+		assert false, 'an SF_DL of 9 must be refused'
+	} else {
+		assert err.msg().contains('exceeds 7'), err.msg()
+	}
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x10), 20, 1, 2] }) or { assert false, err.msg() }
+	time.sleep(20 * time.millisecond)
+	if _ := ch.recv(100) {
+		assert false, 'a four-byte First Frame must be refused'
+	} else {
+		assert err.msg().contains('too short'), err.msg()
+	}
+	ch.close()
+	peer.close()
+}

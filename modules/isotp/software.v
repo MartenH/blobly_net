@@ -146,6 +146,11 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 	pci := first[0] & 0xF0
 	if pci == 0x00 {
 		len := int(first[0] & 0x0F)
+		if len > 7 {
+			// Classic ISO-TP: a Single Frame carries at most seven bytes; anything above is not one
+			// (codex round 14 on #225).
+			return error('ISO-TP: Single Frame length ${len} exceeds 7')
+		}
 		if len == 0 {
 			// SF_DL 0 is invalid on the wire; the send side refuses to produce one, and the receive
 			// side must not present it as an empty reply (codex round 9 on #225).
@@ -157,7 +162,10 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 		return first[1..1 + len].clone()
 	}
 	if pci == 0x10 {
-		if first.len < 2 {
+		if first.len < 8 {
+			// A First Frame carries its full six initial payload bytes; a shorter one would have
+			// those bytes taken from the Consecutive Frames instead -- a shifted PDU returned as
+			// valid (codex round 14 on #225).
 			return error('ISO-TP FF too short')
 		}
 		total := (int(first[0] & 0x0F) << 8) | int(first[1])
@@ -178,7 +186,7 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 		mut sn := u8(1)
 		for out.len < total {
 			mut rem := timeout_ms
-			if timeout_ms >= 0 {
+			if timeout_ms > 0 {
 				rem = int(deadline - time.ticks())
 				if rem <= 0 {
 					// No flush: a flush waits a quiet window per frame and a slow peer renews it
@@ -187,6 +195,8 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 					return error('timeout')
 				}
 			}
+			// A zero timeout collects what is already queued, Consecutive Frames included: rx_raw(0)
+			// reads until the bus is empty (codex round 14 on #225).
 			cf := c.rx_raw(rem)! // the tail is dropped at the next first-frame wait, not flushed
 			if cf.len < 1 {
 				continue // empty/padding read — ignore
