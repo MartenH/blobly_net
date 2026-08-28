@@ -940,12 +940,13 @@ pub fn (mut b CansubBus) send(frame CanFrame) ! {
 		b.wmu.unlock()
 	}
 	b.ws.write(cansub_hdlc_wrap(body), .binary_frame) or {
-		// A WRITE THAT FAILED IS THE END OF THIS CONNECTION. A timed-out write may have put the
-		// frame header or part of the payload on the stream before giving up; the next send would
-		// be read by the device as the rest of that frame, and CAN traffic is lost or misdecoded
-		// (codex round 2 on #251). So the bus is marked stopped with the reason: the reader,
-		// which owns the socket, sees `running` drop within one read timeout and closes it under
-		// this lock on its way out, and every later send refuses through failure().
+		// A WRITE THAT FAILED IS THE END OF THIS CONNECTION FOR WRITING. A timed-out write may have
+		// put the frame header or part of the payload on the stream before giving up; the next send
+		// would be read by the device as the rest of that frame, and CAN traffic is lost or
+		// misdecoded (codex round 2 on #251). So fail_send records the refusal (send_err), which
+		// every later send — and the hub, asking refusal() first — is answered by. NOTHING ELSE
+		// changes: the reader stays, because the frame may still have reached the device and its
+		// acknowledgement is still coming, and the hub closes the bus when it is done (rounds 5–7).
 		b.fail_send('send on ${b.iface}: ${err}')
 		return error('send on ${b.iface}: ${err}')
 	}
