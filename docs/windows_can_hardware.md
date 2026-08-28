@@ -69,9 +69,10 @@ applicable in the device's own words; **Vector records nothing yet**, so a Vecto
 those phases outright — a known gap in reporting, not in behaviour. Properties of the drivers, not
 gaps to close.
 
-Also cross-cutting and filed: #211 (`shared_open` holds a process-wide lock across I/O), #212 (a
-second open competes for frames instead of subscribing), #213 (a backend cannot report what is
-neither a frame nor a health rung), #208 (per-backend duplication of the shared frame rules).
+Also cross-cutting and filed: #213 (a backend cannot report what is neither a frame nor a health
+rung), #208 (per-backend duplication of the shared frame rules). Closed since: #211 (`shared_open`
+held a process-wide lock across I/O; it now reserves the wire and opens outside it), #212 (a second
+open subscribes rather than competing for frames).
 
 ### What "verified" means here
 

@@ -28,6 +28,11 @@ struct FakeBus {
 	spec string
 	rx   chan CanFrame
 	ctl  &FakeControls
+	// reconcile_gate, when set, is waited on by every reconcile -- a controller that is slow to
+	// answer -- and reconcile_failure is what it then says. Only the slow factory sets them.
+	reconcile_gate    chan bool = chan bool{cap: 0}
+	reconcile_failure string
+	gated_reconcile   bool
 mut:
 	sent       []CanFrame
 	reconciles int
@@ -75,6 +80,12 @@ fn (mut f FakeBus) recv(timeout_ms int) !CanFrame {
 
 fn (mut f FakeBus) reconcile_silence(want bool) ! {
 	f.reconciles++
+	if f.gated_reconcile {
+		_ := <-f.reconcile_gate
+		if f.reconcile_failure != '' {
+			return error(f.reconcile_failure)
+		}
+	}
 }
 
 fn (mut f FakeBus) close() {
@@ -103,6 +114,230 @@ mut:
 	ack_taken     chan bool
 	close_started chan bool
 	close_release chan bool
+}
+
+// slow_fake_make is a factory that does not return until the test releases it -- a CANsub open
+// against a device that is reachable enough to stall. Which outcome it then has is the test's
+// choice; how many times it ran is counted, because one attempt shared is the whole point.
+__global (
+	slow_fake_gates             map[string]chan bool // one per wire: a token must release THAT factory
+	slow_fake_calls             i64
+	slow_fake_failure           string
+	slow_fake_reconcile_gate    chan bool
+	slow_fake_reconcile_failure string
+)
+
+fn slow_fake_make(spec string) !Bus {
+	stdatomic.add_i64(&slow_fake_calls, 1)
+	gate := slow_fake_gates[spec]
+	_ := <-gate
+	if slow_fake_failure != '' {
+		return error(slow_fake_failure)
+	}
+	return &FakeBus{
+		spec:              spec
+		rx:                fake_rx
+		ctl:               fake_ctl
+		gated_reconcile:   slow_fake_reconcile_failure != ''
+		reconcile_gate:    slow_fake_reconcile_gate
+		reconcile_failure: slow_fake_reconcile_failure
+	}
+}
+
+fn reset_slow_fake(failure string) {
+	reset_fakes()
+	slow_fake_gates = {
+		'slow:shared':  chan bool{cap: 8}
+		'slow:other':   chan bool{cap: 8}
+		'slow:failing': chan bool{cap: 8}
+		'slow:refused': chan bool{cap: 8}
+	}
+	stdatomic.store_i64(&slow_fake_calls, 0)
+	slow_fake_failure = failure
+	slow_fake_reconcile_gate = chan bool{cap: 8}
+	slow_fake_reconcile_failure = ''
+}
+
+// THE CONTROLLER'S POLICY IS PART OF THE ATTEMPT. A listen-only wire whose factory succeeds and
+// whose controller then refuses silence: a waiter that wakes while that reconcile is still in
+// flight must not join -- the entry is not running yet -- and when the refusal lands every
+// waiter shares it, from one factory call, with no handle issued to anybody (codex round 1 on
+// #230).
+fn test_a_first_open_whose_listen_only_reconcile_is_refused_fails_every_waiter_with_it() {
+	reset_slow_fake('')
+	slow_fake_reconcile_failure = 'controller stays normal'
+	set_listen_only('slow:refused', true)
+	defer {
+		set_listen_only('slow:refused', false)
+	}
+	out := chan SharedOpenOutcome{cap: 3}
+	for _ in 0 .. 3 {
+		spawn open_slow_for_test('slow:refused', out)
+	}
+	deadline := time.ticks() + 2000
+	for stdatomic.load_i64(&slow_fake_calls) < 1 {
+		assert time.ticks() < deadline, 'the factory was never called'
+		time.sleep(time.millisecond)
+	}
+	for shared_test_opening_waiters('slow:refused') < 2 {
+		assert time.ticks() < deadline, 'the other openers never found the reservation'
+		time.sleep(time.millisecond)
+	}
+	slow_fake_gates['slow:refused'] <- true // the factory returns; the reconcile now stalls
+	// Longer than the waiters' wake-up bound: they wake, find the entry still opening, wait on.
+	time.sleep((shared_reader_poll_ms + 20) * time.millisecond)
+	assert out.len == 0, 'an opener returned while the controller policy was still being applied'
+	slow_fake_reconcile_gate <- true
+	for _ in 0 .. 3 {
+		select {
+			got := <-out {
+				assert got.err.contains('controller stays normal'), 'an opener got `${got.err}`'
+			}
+			2000 * time.millisecond {
+				assert false, 'an opener never returned'
+			}
+		}
+	}
+	assert stdatomic.load_i64(&slow_fake_calls) == 1, 'waiters on a refused attempt started their own'
+	assert fake_ctl.closes == 1, 'the refused generation must release its driver once'
+	assert shared_test_opening_waiters('slow:refused') == 0, 'the refused reservation must be gone'
+}
+
+// shared_test_opening_waiters is how many callers are waiting on `key`'s current reservation.
+fn shared_test_opening_waiters(key string) int {
+	mut n := 0
+	lock shared_reg {
+		if mut e := shared_reg.entries[key] {
+			e.mu.lock()
+			n = e.opening_waiters
+			e.mu.unlock()
+		}
+	}
+	return n
+}
+
+struct SharedOpenOutcome {
+	bus &Bus = unsafe { nil }
+	err string
+}
+
+fn open_slow_for_test(key string, out chan SharedOpenOutcome) {
+	mut bus := shared_open(key, key, slow_fake_make) or {
+		out <- SharedOpenOutcome{
+			err: err.msg()
+		}
+		return
+	}
+	out <- SharedOpenOutcome{
+		bus: &bus
+	}
+}
+
+// THE FACTORY RUNS OUTSIDE THE REGISTRY LOCK, AND ONE ATTEMPT SERVES EVERY CALLER. Three
+// openers of one wire arrive while its factory is stalled: none of them starts a second attempt,
+// and -- the part #211 is about -- an opener of a DIFFERENT wire is not held up by it at all.
+fn test_concurrent_first_opens_share_one_stalled_attempt_and_block_nobody_else() {
+	reset_slow_fake('')
+	out := chan SharedOpenOutcome{cap: 3}
+	for _ in 0 .. 3 {
+		spawn open_slow_for_test('slow:shared', out)
+	}
+	deadline := time.ticks() + 2000
+	for stdatomic.load_i64(&slow_fake_calls) < 1 {
+		assert time.ticks() < deadline, 'the factory was never called'
+		time.sleep(time.millisecond)
+	}
+	// Another wire opens while the first is stalled: the registry lock is not held across make.
+	other_out := chan SharedOpenOutcome{cap: 1}
+	spawn open_slow_for_test('slow:other', other_out)
+	for stdatomic.load_i64(&slow_fake_calls) < 2 {
+		assert time.ticks() < deadline, 'a second wire could not begin opening while the first was stalled'
+		time.sleep(time.millisecond)
+	}
+	slow_fake_gates['slow:other'] <- true
+	select {
+		got := <-other_out {
+			assert got.err == '', 'the other wire failed: ${got.err}'
+			mut b := *got.bus
+			b.close()
+		}
+		2000 * time.millisecond {
+			assert false, 'the other wire waited behind the stalled open'
+		}
+	}
+	// Nobody on the shared wire has an answer yet, and only one attempt is running.
+	assert out.len == 0
+	assert stdatomic.load_i64(&slow_fake_calls) == 2
+	slow_fake_gates['slow:shared'] <- true
+	mut handles := []&Bus{}
+	for _ in 0 .. 3 {
+		select {
+			got := <-out {
+				assert got.err == '', 'an opener failed: ${got.err}'
+				handles << got.bus
+			}
+			2000 * time.millisecond {
+				assert false, 'an opener never returned'
+			}
+		}
+	}
+	assert stdatomic.load_i64(&slow_fake_calls) == 2, 'the stalled attempt was duplicated'
+	// All three share one entry.
+	mut entries := []voidptr{}
+	for h in handles {
+		mut b := *h
+		if mut b is SharedHandle {
+			entries << voidptr(b.entry)
+		}
+	}
+	assert entries.len == 3
+	assert entries[0] == entries[1] && entries[1] == entries[2]
+	for h in handles {
+		mut b := *h
+		b.close()
+	}
+	assert fake_ctl.closes == 2
+}
+
+// A STALLED ATTEMPT THAT FAILS FAILS EVERY CALLER WAITING ON IT, with its error, and runs the
+// factory once for all of them; the next caller after that opens afresh, because a failed open
+// publishes nothing to join.
+fn test_waiters_on_a_failing_first_open_share_its_error_and_the_next_open_retries() {
+	reset_slow_fake('device said no')
+	out := chan SharedOpenOutcome{cap: 3}
+	for _ in 0 .. 3 {
+		spawn open_slow_for_test('slow:failing', out)
+	}
+	deadline := time.ticks() + 2000
+	for stdatomic.load_i64(&slow_fake_calls) < 1 {
+		assert time.ticks() < deadline, 'the factory was never called'
+		time.sleep(time.millisecond)
+	}
+	// Both other openers are OBSERVED waiting on the reservation before it is failed -- a
+	// late arrival after the removal would be served by a fresh attempt, which is correct
+	// and not what this test is about.
+	for shared_test_opening_waiters('slow:failing') < 2 {
+		assert time.ticks() < deadline, 'the other openers never found the reservation'
+		time.sleep(time.millisecond)
+	}
+	slow_fake_gates['slow:failing'] <- true
+	for _ in 0 .. 3 {
+		select {
+			got := <-out {
+				assert got.err == 'device said no', 'an opener got `${got.err}`'
+			}
+			2000 * time.millisecond {
+				assert false, 'an opener never returned'
+			}
+		}
+	}
+	assert stdatomic.load_i64(&slow_fake_calls) == 1, 'waiters on a failing attempt started their own'
+	// Nothing was left behind, and the next open runs the factory again.
+	slow_fake_failure = ''
+	slow_fake_gates['slow:failing'] <- true
+	mut again := shared_open('slow:failing', 'slow:failing', slow_fake_make)!
+	assert stdatomic.load_i64(&slow_fake_calls) == 2
+	again.close()
 }
 
 __global (

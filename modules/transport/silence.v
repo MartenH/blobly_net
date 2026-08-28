@@ -97,8 +97,8 @@ fn unrecord_silence(k string) {
 // acknowledges indefinitely (codex round 1 on #219). Holding the wire's own lock makes the record
 // and the controller agree by construction.
 //
-// It is deliberately NOT the process-wide lock: #211 tracks what holding one of those across I/O
-// costs, and there is nothing to be gained by making two different wires wait for each other.
+// It is deliberately NOT the process-wide lock: #211 was what holding one of those across I/O
+// cost, and there is nothing to be gained by making two different wires wait for each other.
 //
 // A FAILURE MAKES THE WIRE UNKNOWN rather than restoring the previous value, because a refused
 // reconfiguration leaves the controller in a state nobody measured. Unknown is the honest record

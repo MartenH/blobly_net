@@ -247,10 +247,15 @@ running -> closing -> closed
 
 ### Open
 
-1. Preserve the existing atomic-open rule: the backend factory runs while the registry lock is
-   held, so two simultaneous first opens cannot both reach a one-client driver. This serializes
-   slow first opens of PCAN/CANsub wires; that narrow startup cost is accepted here rather than
-   introducing a second per-key reservation system into #212.
+1. Atomic first open, without holding the registry lock across it: the first opener publishes
+   the entry as `opening` — no driver, nothing to join — and releases the registry lock before
+   the backend factory runs, so two simultaneous first opens still cannot both reach a
+   one-client driver, and a factory that stalls (a CANsub open is REST, a clock sync and a
+   WebSocket connect against an mDNS name) no longer holds up every other opener in the
+   process, other vendors included (#211). A caller finding `opening` waits for that attempt
+   and shares its outcome — a handle on success, the error on failure — so the three opens a
+   GUI Start makes on one wire cost an unavailable device one attempt, not three. A caller
+   arriving after a failed attempt has been removed opens afresh.
 2. Install the new entry and first handle with its tail cursor before starting the ingress loop.
 3. A joining handle is assigned the current tail while the entry is locked, before its open
    returns.
@@ -285,8 +290,8 @@ raw receive uses a bounded poll so shutdown does not depend on traffic arriving.
 open for the key cannot begin before the previous physical close completes.
 
 The entry lock is never held across vendor close, blocking receive or WebSocket write, and the
-global registry lock is not part of the per-frame ring path. The one deliberate exception is the
-first vendor open described above. Operation ownership/refcounts keep the entry alive across
+global registry lock is held across no I/O at all — the first vendor open runs behind the
+`opening` reservation described above. Operation ownership/refcounts keep the entry alive across
 calls made outside the entry lock.
 
 ## What this deliberately does not do
