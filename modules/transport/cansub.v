@@ -910,6 +910,13 @@ pub fn (mut b CansubBus) send(frame CanFrame) ! {
 		b.wmu.unlock()
 	}
 	b.ws.write(cansub_hdlc_wrap(body), .binary_frame) or {
+		// A WRITE THAT FAILED IS THE END OF THIS CONNECTION. A timed-out write may have put the
+		// frame header or part of the payload on the stream before giving up; the next send would
+		// be read by the device as the rest of that frame, and CAN traffic is lost or misdecoded
+		// (codex round 2 on #251). So the bus is marked stopped with the reason: the reader,
+		// which owns the socket, sees `running` drop within one read timeout and closes it under
+		// this lock on its way out, and every later send refuses through failure().
+		b.fail_send('send on ${b.iface}: ${err}')
 		return error('send on ${b.iface}: ${err}')
 	}
 	// From here the transmit counter is this node's own doing — see cansub_ladder.
@@ -1081,6 +1088,17 @@ fn (b &CansubBus) diagnostic_suffix() string {
 		parts.join('; ')
 	}
 	return if d == '' { '' } else { ' (${d})' }
+}
+
+// fail_send records a write failure as the reason this bus stopped — see send. The first
+// reason wins: a reader that has already stopped has the better story.
+fn (mut b CansubBus) fail_send(reason string) {
+	lock b.stop {
+		if b.stop.running {
+			b.stop.running = false
+			b.stop.err = reason
+		}
+	}
 }
 
 // failure reports the reason the reader stopped, if it stopped.

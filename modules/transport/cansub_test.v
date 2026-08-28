@@ -680,3 +680,20 @@ fn test_a_cansub_write_is_bounded_well_below_the_librarys_default() {
 	assert cansub_write_timeout <= 2 * time.second
 	assert cansub_write_timeout >= 500 * time.millisecond, 'shorter than a slow but live device'
 }
+
+// A WRITE THAT FAILED ENDS THE BUS: the failure is what every later send sees, and the reader is
+// told to stop and retire the socket (codex round 2 on #251).
+fn test_a_failed_write_stops_the_bus_with_its_reason() {
+	mut b := CansubBus{
+		iface: 'cansub:test/1'
+	}
+	assert b.failure() == none
+	b.fail_send('send on cansub:test/1: write timed out')
+	assert b.failure()? == 'send on cansub:test/1: write timed out'
+	assert !rlock b.stop {
+		b.stop.running
+	}
+	// The first reason wins.
+	b.fail_send('later')
+	assert b.failure()? == 'send on cansub:test/1: write timed out'
+}
