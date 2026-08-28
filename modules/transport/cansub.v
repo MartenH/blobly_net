@@ -145,6 +145,10 @@ mut:
 	// Consecutive health polls that could not reach the device. See poll_health: a stale verdict
 	// is worse than no verdict.
 	health_misses int
+	// Whether THIS handle has put a frame on the wire in this run — see cansub_ladder: a channel
+	// that has never transmitted is judged by its receive counter, because its transmit counter
+	// is the firmware's start value and cannot move (#241).
+	transmitted bool
 	// Controller errors the device reported as records rather than as a state change — see recv.
 	// Counted rather than kept, like the decode errors above.
 	bus_errors      u64
@@ -159,6 +163,17 @@ mut:
 fn open_cansub_bus(iface string) !SharedDriver {
 	spec := parse_cansub_iface(iface)!
 	host := cansub_host(spec.id)
+	// THE DEVICE IS ASKED WHO IT IS BEFORE IT IS TOLD ANYTHING. The name is resolved once per
+	// process and remembered (cansub_addr); an address a device left behind — a firmware update
+	// moves it to another subnet — can be reassigned to another reachable CANsub, and TLS is not
+	// validating a self-signed certificate. So the first request on an open is the identity
+	// read, and a device that answers with another id costs a re-resolve and one more look; one
+	// that still does not match is refused, before the PHY PUT that would have configured it
+	// (codex round 1 on #243).
+	cansub_confirm_identity(host, spec.id) or {
+		cansub_forget_addr(host)
+		cansub_confirm_identity(host, spec.id) or { return error('cannot open ${iface}: ${err}') }
+	}
 
 	// Configuration first, over REST, while nothing is streaming. Opening the WebSocket is what
 	// starts the bus, so the timing has to be right before it — a channel configured after the
@@ -194,7 +209,9 @@ fn open_cansub_bus(iface string) !SharedDriver {
 	// is the difference between a trace that lines up and one that silently does not.
 	cansub_sync_clock(host) or {} // best effort: a bus that runs with odd stamps beats no bus
 
-	mut ws := websocket.new_client('wss://${host}/api/can/${spec.channel}/ws',
+	// BY ADDRESS, NOT BY NAME — see cansub_addr: the name was resolved for the PHY PUT above, and
+	// resolving it again here is another cold mDNS lookup (2.7 s, measured) on the open path.
+	mut ws := websocket.new_client('wss://${cansub_addr(host) or { host }}/api/can/${spec.channel}/ws',
 		// SHORT, because this is now what bounds Stop: the reader owns the socket and closes it
 		// on its way out (see close()), so a wire is released one read timeout after it is asked
 		// to stop. An idle reader waking twice a second costs nothing measurable; two seconds of
@@ -643,16 +660,57 @@ fn (mut b CansubBus) poll_health() {
 	// down the one path that had not been told about it, and it is worse: it could hold `.ok` over
 	// a controller that had gone BUS-OFF (codex round 13 on #204). Both roads lead to the same
 	// place now.
-	state := extract_json_string(body, 'state') or {
+	sent := rlock b.stop {
+		b.stop.transmitted
+	}
+	h := cansub_ladder(body, sent) or {
 		b.health_miss()
 		return
 	}
-	h := cansub_state_health(state)
 
 	lock b.stop {
 		b.stop.health = h
 		b.stop.health_misses = 0
 	}
+}
+
+// cansub_ladder reads the device's status body onto this repo's ladder.
+//
+// THE FIRMWARE STARTS A CHANNEL AT TEC 129 (CANsub.4, 02.04.00, measured on 2026-08-28: state
+// error_passive, tx_error_count 129, frame_count 0 — alone on the wire, and even opened
+// listen-only, where a controller cannot transmit at all). A CAN node lowers its transmit error
+// counter only by transmitting successfully, so a MONITOR — which never transmits — sits at 129
+// for the life of the run while receiving every frame with a receive counter of 0. The device's
+// `state` follows the higher counter, so mapping `state` alone painted a healthy monitor
+// ERROR-PASSIVE at Start and forever after (#241).
+//
+// So the ladder is read from the counter that describes what this node is DOING: a channel that
+// has not transmitted in this run is judged by `rx_error_count` (the thresholds are ISO 11898's:
+// warning at 96, error-passive at 128); once it has transmitted, its `state` is the controller's
+// verdict about both, as on every other backend. Bus-off is bus-off whatever the counters say.
+fn cansub_ladder(body string, transmitted bool) ?BusHealth {
+	state := extract_json_string(body, 'state')?
+	if state == 'bus_off' {
+		return BusHealth.bus_off
+	}
+	if transmitted || state == 'stopped' {
+		return cansub_state_health(state)
+	}
+	// ONLY A STATE THIS CODE KNOWS IS READ THROUGH ITS COUNTER. A firmware that adds or renames
+	// a state still returns counters, and a low receive counter beside a state nobody here
+	// understands is not "ok" — it is the unknown poll_health already treats as no verdict
+	// (codex round 1 on #243).
+	if state !in ['error_active', 'error_warning', 'error_passive'] {
+		return BusHealth.unknown
+	}
+	rec := extract_json_int(body, 'rx_error_count') or { return cansub_state_health(state) }
+	if rec >= 128 {
+		return BusHealth.error_passive
+	}
+	if rec >= 96 {
+		return BusHealth.warning
+	}
+	return BusHealth.ok
 }
 
 // health_miss records a poll that produced no verdict, whatever the reason — unreachable, or an
@@ -663,6 +721,17 @@ fn (mut b CansubBus) poll_health() {
 // that had stopped answering went on reporting a healthy controller indefinitely (codex rounds 7
 // and 13 on #204). One miss is a hiccup; several in a row is not knowing, and `.unknown` is what
 // this ladder has for that.
+// cansub_confirm_identity reads /api/info and requires the id the address was opened for.
+fn cansub_confirm_identity(host string, id string) ! {
+	body := cansub_get_within(host, '/api/info', cansub_open_timeout) or {
+		return error('the device at ${host} did not answer /api/info: ${err}')
+	}
+	got := extract_json_string(body, 'id') or { return error('the device at ${host} reports no id') }
+	if got.to_lower() != id.to_lower() {
+		return error('the device at ${host} is ${got}, not ${id} — the address has been reassigned')
+	}
+}
+
 // cansub_state_health maps the device's controller state onto this repo's ladder — one to one,
 // which is the whole reason health() can say anything here at all.
 fn cansub_state_health(state string) BusHealth {
@@ -728,6 +797,39 @@ fn extract_json_bool(s string, key string) ?bool {
 
 // extract_json_string pulls one string field out of a flat JSON object. The device's replies are
 // small and flat, and a full parser here would be a dependency for four fields.
+// extract_json_int reads a bare integer field ("rx_error_count": 129) from the device's status
+// body — the same flat JSON extract_json_string reads, so the same non-parser: the device's
+// bodies are one level deep and this repo has no JSON module on the engine side.
+fn extract_json_int(s string, key string) ?int {
+	needle := '"${key}"'
+	i := s.index(needle) or { return none }
+	mut j := i + needle.len
+	// Whitespace is legal JSON on either side of the colon — see extract_json_string; a firmware
+	// that pretty-prints must not turn a healthy monitor back into error-passive (codex round 1
+	// on #243).
+	for j < s.len && s[j] in [` `, `\t`, `\n`, `\r`] {
+		j++
+	}
+	if j >= s.len || s[j] != `:` {
+		return none
+	}
+	j++
+	for j < s.len && s[j] in [` `, `\t`, `\n`, `\r`] {
+		j++
+	}
+	mut k := j
+	if k < s.len && s[k] == `-` {
+		k++
+	}
+	for k < s.len && s[k].is_digit() {
+		k++
+	}
+	if k == j || (k == j + 1 && s[j] == `-`) {
+		return none
+	}
+	return s[j..k].int()
+}
+
 fn extract_json_string(s string, key string) ?string {
 	// WHITESPACE IS LEGAL JSON. Matching `"key":"` exactly meant a device that pretty-printed its
 	// reply — `"state": "bus_off"`, one space — parsed as nothing at all, and the caller treated
@@ -797,6 +899,10 @@ pub fn (mut b CansubBus) send(frame CanFrame) ! {
 	}
 	b.ws.write(cansub_hdlc_wrap(body), .binary_frame) or {
 		return error('send on ${b.iface}: ${err}')
+	}
+	// From here the transmit counter is this node's own doing — see cansub_ladder.
+	lock b.stop {
+		b.stop.transmitted = true
 	}
 }
 
