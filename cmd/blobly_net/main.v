@@ -229,7 +229,7 @@ fn main() {
 		vgui.child_end()
 		build_layout()
 		app.poll_hotkeys()
-		app.poll_shortcuts()
+		app.cfg_file_visible = false // the File tab sets it when it draws, below
 
 		if app.show_buses {
 			draw_buses(mut app, chans)
@@ -300,6 +300,11 @@ fn main() {
 		if app.fb_open {
 			draw_filebrowser(mut app)
 		}
+		// AFTER the panels: draw_gen is where a generator's name and key buffers are copied into
+		// the sender, so a Ctrl+S polled before it saved the previous value and then read clean
+		// — the last edit lost on reopen with nothing on screen to say so (codex round 3 on
+		// #250). Polled here, what is saved is what is shown.
+		app.poll_shortcuts()
 
 		vgui.frame_end()
 		if last {

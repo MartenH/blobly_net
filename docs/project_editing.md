@@ -316,10 +316,10 @@ Per bus (a collapsing header `CAN1 · Powertrain` with **Remove**):
 | DoIP: tester/ecu addr, vin, eid | `input_text` | doip adapter only |
 | Replay: source / speed / loop, plus **Scan recording** — pick the recorded bus (`bus:`) and tick nodes to subtract (`exclude:`) | inputs + dialog | mode==replay only |
 
-Panel: **＋ Add bus** (append default `virtual` bus), **Save**, **● modified**. Senders stay
+Panel: **＋ Add bus** (append default `virtual` bus), **● modified**. Senders stay
 owned by the Generators panel; simulated nodes are edited in the File tab (the Simulation panel
-only enables/disables them and injects faults). All edit the same `app.proj`, so one Save
-writes everything. Enum pickers use toggle-button rows — no `combo` widget needed for the
+only enables/disables them and injects faults). All edit the same `app.proj`, so one Save —
+File ▸ Save or Ctrl+S, from anywhere — writes everything; no panel has a Save of its own. Enum pickers use toggle-button rows — no `combo` widget needed for the
 first cut.
 
 > The step-by-step plan that follows is the 2026-07 design and is kept for the reasoning; where
@@ -436,7 +436,8 @@ then the GUI surfaces. All GUI work is in `cmd/blobly_net/` (one `module main` s
   mode/bitrate/listen_only/enabled, DBC list + ＋Add DBC via browser, manifest, DoIP fields,
   replay block). Each edit mutates `app.proj.channels[i]`, sets `dirty`, calls
   `rebuild_from_proj()`. **＋ Add bus** appends a default virtual bus; **Remove** deletes.
-  **Save** = `save_project()`.
+  Saving is File ▸ Save / Ctrl+S = `save_what_is_being_edited()`, which is `save_project()`
+  unless the File tab is drawn with unsaved text.
 - Per-bus edit buffers (parallel arrays, like `gen_bufs`) rebuilt on load/add/remove.
 - **Gate: the blank-project walkthrough (New→Add bus→Add DBC→Save As→reopen) works end to
   end; screenshot.**

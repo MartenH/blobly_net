@@ -167,6 +167,7 @@ fn C.vgui_want_text_input() int
 fn C.vgui_any_item_active() int
 fn C.vgui_key_pressed(int) int
 fn C.vgui_key_ctrl() int
+fn C.vgui_key_ctrl_only() int
 fn C.vgui_combo(&char, &&char, int, int) int
 
 // --- lifecycle ---
@@ -307,6 +308,13 @@ pub fn any_item_active() bool {
 // has the keyboard — the modifier is what says it is a command and not typing.
 pub fn key_ctrl() bool {
 	return C.vgui_key_ctrl() != 0
+}
+
+// key_ctrl_only is the chord's modifier half EXACTLY: Ctrl and no Alt, Shift or Super. AltGr
+// is Ctrl+Alt on Windows layouts, and AltGr+S is a character there, not Save (codex round 3
+// on #250). key_ctrl (any Ctrl) is what the generator hotkeys stand down for.
+pub fn key_ctrl_only() bool {
+	return C.vgui_key_ctrl_only() != 0
 }
 
 // key_pressed reports whether the printable key `ch` (A-Z / a-z / 0-9) was pressed this frame

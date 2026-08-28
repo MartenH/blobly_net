@@ -253,6 +253,10 @@ mut:
 	// shows "saved" beside the project name for a few seconds after, so a Ctrl+S is answered on
 	// the screen the user is looking at and not only in the Log (#247).
 	saved_at i64
+	// Whether the Configuration window's File tab was actually DRAWN this frame — not merely
+	// selected in a window that is collapsed or docked behind another. That is what decides
+	// whether Ctrl+S means the text or the project (codex round 3 on #250).
+	cfg_file_visible bool
 	// Editor fields whose text could not be committed to the model, rebuilt by every commit_cfg.
 	//
 	// A REJECTED FIELD HAS TO REACH START, not merely the Log. Leaving the previous value in the

@@ -404,6 +404,7 @@ fn draw_config(mut app App) {
 	}
 	vgui.separator()
 	if app.cfg_tab == 1 {
+		app.cfg_file_visible = true // drawn this frame — see save_what_is_being_edited
 		app.load_cfg_text() // every frame: a no-op while typing, and correct after a switch
 		app.draw_config_text()
 		vgui.end()

@@ -852,6 +852,13 @@ int vgui_any_item_active() { return ImGui::IsAnyItemActive() ? 1 : 0; }
 // keeps that as KeySuper) is held this frame — the modifier half of a Ctrl+<letter> chord, the
 // letter half being vgui_key_pressed.
 int vgui_key_ctrl() { return ImGui::GetIO().KeyCtrl ? 1 : 0; }
+// vgui_key_ctrl_only: Ctrl held and NO other modifier — what a Ctrl+<letter> chord means. On
+// Windows layouts AltGr arrives as Ctrl+Alt, so "Ctrl is down" alone would make AltGr+S, a
+// character on those layouts, into Save.
+int vgui_key_ctrl_only() {
+    const ImGuiIO& io = ImGui::GetIO();
+    return (io.KeyCtrl && !io.KeyAlt && !io.KeyShift && !io.KeySuper) ? 1 : 0;
+}
 
 // vgui_key_pressed reports whether the printable key `ch` (A-Z / a-z / 0-9) went down THIS frame
 // (no auto-repeat). Used for generator hotkeys. Returns 0 for anything it can't map.

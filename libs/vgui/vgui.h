@@ -126,6 +126,7 @@ float vgui_fps(void);
 int  vgui_want_text_input(void);
 int  vgui_any_item_active(void);
 int  vgui_key_ctrl(void);
+int  vgui_key_ctrl_only(void);
 int  vgui_key_pressed(int ch);
 int  vgui_combo(const char* label, const char** items, int n, int current);
 #ifdef __cplusplus
