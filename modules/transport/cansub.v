@@ -62,7 +62,7 @@ pub fn parse_cansub_iface(iface string) !CansubSpec {
 	// seconds into an open as a network error (codex round 14 on #204). Refused here, where it is
 	// still a string somebody typed, like the channel number beside it.
 	if !cansub_id_ok(id) {
-		return error('"${id}" is not a device id — it becomes the hostname ${id}-usb.local, so it can hold letters, digits and inner hyphens only')
+		return error('"${id}" is not a device id — it becomes the hostname ${cansub_host(id)}, so it can hold letters, digits and inner hyphens only')
 	}
 	for c in ch_tok {
 		if !c.is_digit() {
@@ -1089,8 +1089,9 @@ fn cansub_sync_clock(host string) ! {
 // cansub_id_ok reports whether a device id can be half of a hostname: letters, digits and
 // hyphens, no hyphen at either end, and short enough for a DNS label.
 fn cansub_id_ok(id string) bool {
-	// `-usb` is appended, so the label is four characters longer than the id.
-	if id.len == 0 || id.len > 59 {
+	// The suffix the device appends makes the label that much longer than the id, and a DNS
+	// label is 63 at most.
+	if id.len == 0 || id.len > 63 - cansub_host_suffix.len {
 		return false
 	}
 	if id.starts_with('-') || id.ends_with('-') {

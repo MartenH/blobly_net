@@ -263,7 +263,7 @@ mut:
 	// it blocked Start and Save on the newly opened one until the operator happened to make
 	// another structured edit. An error about a project that is no longer loaded (codex #183 r1).
 	cfg_invalid []CfgInvalid
-	cfg_chans      int // channels the text yields; cached, because parsing per frame is not free
+	cfg_chans   int // channels the text yields; cached, because parsing per frame is not free
 
 	// Script (Lua on a worker thread)
 	script_path_buf []u8
@@ -278,6 +278,22 @@ mut:
 	disc_open bool
 	disc_list []DiscoveredIface
 	disc_tick []bool // parallel to disc_list
+	// The local scan (sys CAN + list_interfaces), cached so a landing browse merges into it
+	// rather than running it again on the render thread.
+	disc_scan []DiscoveredIface
+	// CANsub devices, found by an mDNS browse that waits its whole window (#235) -- so it runs
+	// on its own thread, started by Refresh and by opening the dialog, never by the buttons that
+	// only re-mark the list. A MAILBOX under `mu`, read and written under it on both sides:
+	// `disc_cansub_started` is the browse most recently begun, `disc_cansub_landed` the one whose
+	// answer is in `disc_cansub`/`disc_cansub_note`, `disc_cansub_shown` the one the list was
+	// last built from. Busy is started != landed; a browse that outlived a newer one is dropped
+	// because its generation no longer matches. Nothing else -- flags written on two threads
+	// were the #84 class in the first cut (self-review).
+	disc_cansub         []transport.Iface
+	disc_cansub_note    string
+	disc_cansub_started u64
+	disc_cansub_landed  u64
+	disc_cansub_shown   u64
 	// Vector HARDWARE, which is a different question from the list above. That one shows
 	// interfaces this app could open; this one shows physical channels the driver reports,
 	// including the ones nothing is mapped to yet — which are exactly the ones a fresh bench
@@ -407,10 +423,10 @@ struct CfgInvalid {
 
 struct CfgBuf {
 mut:
-	name_buf     []u8
-	network_buf  []u8
-	address_buf  []u8
-	bitrate_buf  []u8
+	name_buf    []u8
+	network_buf []u8
+	address_buf []u8
+	bitrate_buf []u8
 	// The CAN-FD data phase. A BUFFER rather than a number with a zero default, because empty and
 	// zero have to stay distinguishable: empty means "no separate data phase, run it at the
 	// nominal rate", which is a real CAN-FD configuration and not an absent answer.

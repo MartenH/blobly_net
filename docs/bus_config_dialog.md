@@ -12,7 +12,9 @@ discover*.v`); this is the visual layer on top.
 - ✅ **Shipped** — the Configuration editor has **Discover…**, which opens a "Discover
   interfaces" window (Refresh, + vcan, + Sim net, tick rows, **Add ticked**, and a Vector
   application-channel assignment section). It is a floating window, not a modal. USB CAN
-  pass-through into WSL is a script, `scripts/usbip.sh`, not a GUI button.
+  pass-through into WSL is a script, `scripts/usbip.sh`, not a GUI button. Attached
+  **CANsub** devices are listed too, a row per channel, found by an mDNS browse for
+  `_cansub._tcp` (#235) — on both platforms, since a CANsub is a network device.
 - 🔶 **Partly shipped** — the dialog and Add-to-Project exist; inline per-row edit
   (name / mode / DBC) in the grid does not.
 - 🔜 **Part B** — the DBC→generators scaffolder as a second section of the same dialog.
@@ -36,7 +38,10 @@ discover*.v`); this is the visual layer on top.
 
 **Discover** calls `transport.list_interfaces()` — Linux parses `ip -details -json
 link show` (finds vcan0/can0, reads the real bitrate), Windows queries the vendor DLLs
-(Kvaser, PCAN, Vector) and appends the virtual `udp:`/`inproc:` options — and fills the grid
+(Kvaser, PCAN, Vector) and appends the virtual `udp:`/`inproc:` options — and fills the grid;
+CANsub devices come from a separate mDNS browse (`transport.discover_cansub()`, ~0.7 s) that
+Refresh and opening the dialog start on their own thread, with "browsing…" shown until it lands
+and the reason shown if it could not look
 with candidates pre-filled (name from
 the iface, bitrate read off a configured `can0`). Tick the ones you want and press
 **Add ticked**; name, mode and DBC are then edited in the Configuration editor's rows.
