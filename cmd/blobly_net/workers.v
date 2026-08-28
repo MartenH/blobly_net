@@ -491,6 +491,17 @@ fn health_msg(iface string, from transport.BusHealth, to transport.BusHealth) st
 	}
 }
 
+// diag_msg words a change in a wire's diagnostics for the Log: what is new since the last line
+// and the total since open, so a reader can tell a burst from a steady leak — or, when a count
+// FELL, that the backend was reopened under the row (a reader handoff on a wire that is not
+// shared) and the totals start again.
+fn diag_msg(iface string, from transport.BusDiagnostics, to transport.BusDiagnostics) string {
+	if to.fell(from) {
+		return '${iface}: reopened — counts since: ${to.str()}'
+	}
+	return '${iface}: +${to.minus(from).short().replace(' · ', ', +')} — since open: ${to.str()}'
+}
+
 fn rx_loop(app &App, ci int, iface string, gen u64) {
 	mut bus := app.open_transport(iface) or {
 		eprintln('rx ${iface}: ${err}')
@@ -573,6 +584,12 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	// local last-state means no unlocked read of shared state, and the write is generation
 	// -guarded like every other flag this loop owns
 	mut last_health := transport.BusHealth.unknown
+	// Seeded from the row, which a handoff has filled with the retiring reader's last reading:
+	// a successor on a shared wire sees the same driver counters and must not narrate them
+	// again as new. At Start the row was reset, so this is empty there (#213).
+	a.mu.lock()
+	mut last_diag := if ci < a.chans.len { a.chans[ci].diag } else { transport.BusDiagnostics{} }
+	a.mu.unlock()
 	mut next_health := i64(0)
 	for a.running && a.run_gen == gen && a.chans[ci].enabled {
 		if time.ticks() >= next_health {
@@ -590,6 +607,20 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				a.mu.unlock()
 				vgui.wake()
 				last_health = h
+			}
+			// The same poll, the same rule, for what is neither a frame nor a rung (#213):
+			// narrated when the counts CHANGE — once a second at most, so a wire dropping
+			// steadily is one line a second, not one per record — and shown on the row.
+			d := bus.diagnostics()
+			if d != last_diag {
+				a.mu.lock()
+				if a.running && a.run_gen == gen && ci < a.chans.len {
+					a.chans[ci].diag = d
+					a.log_append_locked(diag_msg(iface, last_diag, d))
+				}
+				a.mu.unlock()
+				vgui.wake()
+				last_diag = d
 			}
 		}
 		// track the real link state so a bound-but-DOWN iface shows "down" (red), not "run",
@@ -796,6 +827,9 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 					// (codex #159).
 					a.chans[cj].rx_last = a.chans[ci].rx_last
 					a.chans[cj].rx_seen = a.chans[ci].rx_seen
+					// And the counts (#213): the successor seeds its narration from these,
+					// so a shared wire's totals are not logged twice as new.
+					a.chans[cj].diag = a.chans[ci].diag
 					a.chans[cj].spawning = true
 					spawn rx_loop(app, cj, other.iface, gen)
 					break

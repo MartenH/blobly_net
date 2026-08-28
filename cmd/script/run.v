@@ -106,6 +106,9 @@ fn main() {
 	// Through the same call the GUI makes, for the reason the block above exists: one policy, and
 	// the two front ends must not each keep their own reading of it. A WARNING, not a refusal —
 	// see project.fd_capability_warnings.
+	// The simulated-ECU loops, joined at the end so what their wires counted is printed
+	// before the summary rather than racing the exit (#213).
+	mut sims := []thread{}
 	for w in project.fd_capability_warnings(proj.channels) {
 		eprintln('warning: ${w}')
 	}
@@ -193,7 +196,7 @@ fn main() {
 			// Passing only the suffixed form meant sim.apply_injected looked up
 			// `pcan:…@250000` while sim.fault() had stored under `pcan:…`, so a scripted
 			// fault on vendor hardware reported success and never reached the wire.
-			spawn sim_loop(ch.iface_with_bitrate(), ch.iface, db, nodes, ctl)
+			sims << spawn sim_loop(ch.iface_with_bitrate(), ch.iface, db, nodes, ctl)
 			// Diagnostics are per BUS and decided ONCE. Skipping outright after the first
 			// entry on an interface — rather than emptying the server list — is the difference
 			// that matters: the emptied list fell through to the default branch and spawned a
@@ -273,6 +276,9 @@ fn main() {
 	}
 
 	ctl.running = false
+	for t in sims {
+		t.wait()
+	}
 	passed := env.passed()
 	failed := env.failed()
 	env.close()
@@ -319,6 +325,13 @@ fn sim_loop(open_iface string, fault_iface string, db candb.Database, nodes []pr
 				bus.send(resp) or {}
 			}
 		}
+	}
+	// What the wire counted that no frame carried (#213): said once, at the end, where a
+	// headless run's operator reads. This is the simulation's handle; a hub reports the wire's
+	// ring gaps through any handle, a plain backend its own.
+	d := bus.diagnostics()
+	if !d.is_empty() {
+		eprintln('${open_iface}: ${d.str()}')
 	}
 	bus.close()
 }

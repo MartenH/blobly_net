@@ -679,6 +679,11 @@ pub fn (mut b VectorBus) health() BusHealth {
 	return h
 }
 
+// diagnostics: nothing this backend counts beyond frames and the health ladder (#213).
+pub fn (mut b VectorBus) diagnostics() BusDiagnostics {
+	return BusDiagnostics{}
+}
+
 // chip_state_of asks a Bus for its controller state, when it is a Vector one. The type switch
 // lives here rather than at the call site: `Bus` is this module's interface and the concrete
 // types behind it are this module's business.

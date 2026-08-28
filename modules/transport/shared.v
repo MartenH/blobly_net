@@ -72,6 +72,7 @@ mut:
 	recv_shared(timeout_ms int) !SharedIngress
 	close()
 	health() BusHealth
+	diagnostics() BusDiagnostics
 	reconcile_silence(want bool) !
 	reports_tx_ack() bool
 }
@@ -98,6 +99,10 @@ fn (mut d SharedBusDriver) close() {
 
 fn (mut d SharedBusDriver) health() BusHealth {
 	return d.bus.health()
+}
+
+fn (mut d SharedBusDriver) diagnostics() BusDiagnostics {
+	return d.bus.diagnostics()
 }
 
 fn (mut d SharedBusDriver) reconcile_silence(want bool) ! {
@@ -215,6 +220,10 @@ mut:
 	// frames that never reached the wire, as the sender was already told.
 	expired_failed_sends u64
 
+	// ring_gaps counts frames the ring overwrote under SOME handle's cursor before it read them,
+	// summed over every handle the wire has had (under mu): the WIRE's loss, which is what a
+	// row shows, where each handle's own `dropped` is that cursor's and dies with it (#213).
+	ring_gaps u64
 	// parked_discards counts frames the reader read and threw away while nobody subscribed.
 	parked_discards   u64
 	// parked is true while the reader waits in its park (under mu) — a test hook, so a test can
@@ -1311,6 +1320,7 @@ fn (mut h SharedHandle) recv(timeout_ms int) !CanFrame {
 		}
 		if h.cursor < oldest {
 			h.dropped += oldest - h.cursor
+			e.ring_gaps += oldest - h.cursor
 			h.cursor = oldest
 		}
 		for h.cursor < e.next_seq {
@@ -1372,6 +1382,28 @@ fn (mut h SharedHandle) health() BusHealth {
 		return .unknown
 	}
 	return e.driver.health()
+}
+
+// diagnostics is the driver's counters plus the WIRE's ring gaps -- every handle's, not this
+// one's, because a row reports the wire and the handle it polls is usually the one that kept up
+// (#213). Asked of the driver whatever the generation's state: a failed generation's counters
+// are still what happened, and are often the explanation, so they must not vanish from the row
+// the moment the wire dies -- unlike health(), whose .unknown the caller filters (self-review).
+// A closed handle answers empty, as health() does.
+fn (mut h SharedHandle) diagnostics() BusDiagnostics {
+	h.mu.lock()
+	closed := h.closed
+	h.mu.unlock()
+	if closed {
+		return BusDiagnostics{}
+	}
+	mut e := h.entry
+	e.mu.lock()
+	gaps := BusDiagnostics{
+		dropped: e.ring_gaps
+	}
+	e.mu.unlock()
+	return gaps.plus(e.driver.diagnostics())
 }
 
 fn (mut h SharedHandle) reconcile_silence(want bool) ! {

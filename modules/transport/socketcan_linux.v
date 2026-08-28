@@ -155,6 +155,11 @@ pub fn (mut b SocketCanBus) health() BusHealth {
 	return b.hstate
 }
 
+// diagnostics: nothing this backend counts beyond frames and the health ladder (#213).
+pub fn (mut b SocketCanBus) diagnostics() BusDiagnostics {
+	return BusDiagnostics{}
+}
+
 // reconcile_silence — a SocketCAN interface's mode is chosen outside this app, by whoever ran
 // `ip link set canX type can listen-only on`. There is nothing here that may revise it, and
 // `vcan` has no transceiver at all.

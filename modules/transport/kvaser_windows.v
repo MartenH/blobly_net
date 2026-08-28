@@ -462,6 +462,11 @@ pub fn (mut b KvaserBus) health() BusHealth {
 	return kvaser_status_health(flags)
 }
 
+// diagnostics: nothing this backend counts beyond frames and the health ladder (#213).
+pub fn (mut b KvaserBus) diagnostics() BusDiagnostics {
+	return BusDiagnostics{}
+}
+
 // kvaser_list enumerates attached Kvaser channels (physical + virtual) for discovery.
 // Returns [] when canlib32.dll is absent (drivers not installed) or has no channels.
 fn kvaser_list() []Iface {

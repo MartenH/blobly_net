@@ -418,6 +418,8 @@ fn (mut app App) start() {
 		// BUS-OFF became the reader on a mid-run enable and showed it forever — a fresh
 		// healthy backend reports .unknown and never overwrites (codex #143 r1)
 		app.chans[ci].health = .unknown
+		// and what the wire counted, for the same reason: counts since THIS run's open (#213)
+		app.chans[ci].diag = transport.BusDiagnostics{}
 		if !ch.monitorable() {
 			continue
 		}
