@@ -45,6 +45,16 @@ const shared_boundary_drain_frames = u64(65536)
 const shared_pending_capacity = 4096
 const shared_pending_ttl_ms = 5000
 
+// shared_failed_send_grace_ms is how long a FAILED write's pending entry stays matchable. The
+// device may still acknowledge it -- the bytes can reach the wire before the call reports
+// failure, and that acknowledgement is either already in the reader's hands or one poll away --
+// but a write that never reached the wire will never be acknowledged, and for as long as its
+// entry stands an identical frame from ANOTHER handle is credited to it: wrong origin, and the
+// real sender receives its own frame as RX (#139's class). So the window is ten reader polls,
+// not the ordinary five seconds: enough for a starved reader to match what it already holds,
+// short enough that a ghost cannot claim a cyclic sibling's next frame.
+const shared_failed_send_grace_ms = 500
+
 // SharedIngress is private transport metadata retained by a backend whose raw receive stream can
 // distinguish its own transmit acknowledgements. Ordinary Bus backends are adapted below and
 // always return tx_ack=false.
@@ -114,6 +124,10 @@ struct SharedPendingSend {
 	origin     u64
 	frame      CanFrame
 	expires_at i64
+	// failed marks a write the driver reported as failed: kept briefly in case the device
+	// acknowledges it anyway (see send), and counted apart when it expires, so that
+	// expired_tx_acks keeps meaning "a write that succeeded and was never acknowledged".
+	failed bool
 }
 
 enum SharedEntryState {
@@ -150,6 +164,11 @@ mut:
 	next_send_token   u64
 	unmatched_tx_acks u64
 	expired_tx_acks   u64
+
+	// expired_failed_sends counts failed writes whose grace ended without an acknowledgement:
+	// frames that never reached the wire, as the sender was already told.
+	expired_failed_sends u64
+
 	// parked_discards counts frames the reader read and threw away while nobody subscribed.
 	parked_discards   u64
 	// parked is true while the reader waits in its park (under mu) — a test hook, so a test can
@@ -227,16 +246,67 @@ fn shared_remove_entry(e &SharedEntry) {
 
 // Called with e.mu held. Pending acknowledgements are evidence, not an unbounded history: a lost
 // device record must not retain payloads forever or let a much later identical acknowledgement be
-// attributed to a stale send.
+// attributed to a stale send. EVERY stamped entry is examined, not a prefix: the list is in write
+// order but the deadlines are not -- a failed write's grace is short and a successful write's
+// window is long, so a ghost queued behind a live earlier send would otherwise outlive its grace
+// by the whole of the earlier window (codex round 1 on #228). An in-flight entry (expires_at 0)
+// is kept wherever it stands; removing entries around it does not change the order of the rest,
+// which is what oldest-equal-first matching depends on.
 fn (mut e SharedEntry) expire_pending(now i64) {
-	mut cut := 0
-	for cut < e.pending.len && e.pending[cut].expires_at > 0 && e.pending[cut].expires_at <= now {
-		cut++
+	// Looked at before anything is rebuilt: this runs before every send, under e.mu, and with
+	// acknowledgements delayed the list is long and nothing in it has expired yet, so a rebuild
+	// per call would make sending quadratic and keep the reader off the lock (codex round 2 on
+	// #228).
+	mut any := false
+	for pending in e.pending {
+		if pending.expires_at > 0 && pending.expires_at <= now {
+			any = true
+			break
+		}
 	}
-	if cut > 0 {
-		e.expired_tx_acks += u64(cut)
-		e.pending = e.pending[cut..].clone()
+	if !any {
+		return
 	}
+	mut kept := []SharedPendingSend{cap: e.pending.len}
+	for pending in e.pending {
+		if pending.expires_at > 0 && pending.expires_at <= now {
+			e.retire_pending(pending)
+			continue
+		}
+		kept << pending
+	}
+	e.pending = kept
+}
+
+// retire_pending counts a pending entry that is leaving the list unacknowledged: a write that
+// failed was never a lost acknowledgement, whichever path removes it. Caller holds mu.
+fn (mut e SharedEntry) retire_pending(pending SharedPendingSend) {
+	if pending.failed {
+		e.expired_failed_sends++
+	} else {
+		e.expired_tx_acks++
+	}
+}
+
+// start_pending_window stamps the deadline on the pending entry `token` (0: the driver reports
+// no acks, nothing was recorded). Called once per send, when the raw write returns.
+fn (mut e SharedEntry) start_pending_window(token u64, ttl_ms i64, failed bool) {
+	if token == 0 {
+		return
+	}
+	e.mu.lock()
+	// Appended at registration, so the entry is almost always the last one.
+	for i := e.pending.len - 1; i >= 0; i-- {
+		if e.pending[i].token == token {
+			e.pending[i] = SharedPendingSend{
+				...e.pending[i]
+				expires_at: time.ticks() + ttl_ms
+				failed:     failed
+			}
+			break
+		}
+	}
+	e.mu.unlock()
 }
 
 // shared_open is the existing PCAN/fake factory seam. The raw Bus is adapted to SharedDriver and
@@ -499,8 +569,9 @@ fn (mut e SharedEntry) read_loop() {
 		// kept reporting success -- the defect codex round 10 on #204 was written to prevent,
 		// re-entered one layer up (code-review high on #221, blocker 1).
 		//
-		// So an in-flight entry (expires_at == 0) is matchable. If the device acknowledged a frame,
-		// the frame REACHED THE WIRE, whatever the write call went on to return -- and a frame that
+		// So an in-flight entry (expires_at == 0) is matchable -- and so, briefly, is a FAILED
+		// write's (see send). If the device acknowledged a frame, the frame REACHED THE WIRE,
+		// whatever the write call went on to return -- and a frame that
 		// reached the wire belongs in the trace and the recording, attributed to its origin. The
 		// sender is told its write failed; the monitor is told the truth about the bus. Dropping
 		// that ack hid a transmitted frame from both, which is the "vanishes from trace and
@@ -949,8 +1020,8 @@ fn (mut h SharedHandle) send(frame CanFrame) ! {
 		now := time.ticks()
 		e.expire_pending(now)
 		if e.pending.len >= shared_pending_capacity {
+			e.retire_pending(e.pending[0])
 			e.pending.delete(0)
-			e.expired_tx_acks++
 		}
 		e.next_send_token++
 		token = e.next_send_token
@@ -958,8 +1029,8 @@ fn (mut h SharedHandle) send(frame CanFrame) ! {
 			token:  token
 			origin: h.id
 			frame:  shared_clone_frame(frame)
-			// Zero means the raw write is still in flight. It cannot expire or match until send()
-			// records a deadline after success while still holding send_mu.
+			// Zero means the raw write is still in flight: expiry skips it, matching does not
+			// (see read_loop), and send() stamps the deadline when the write returns.
 			expires_at: 0
 		}
 	}
@@ -970,35 +1041,20 @@ fn (mut h SharedHandle) send(frame CanFrame) ! {
 		}
 		return error('${h.key}: bus is closing')
 	}
+	// A FAILED WRITE KEEPS ITS ENTRY, for shared_failed_send_grace_ms. It used to be deleted
+	// here, which raced the reader: the acknowledgement is taken off the socket at the driver
+	// seam and matched under e.mu a moment later, so on a two-core runner this path won often
+	// enough to delete the entry first, and the ack was counted unmatched and dropped -- the
+	// "vanishes from trace and recording" outcome read_loop's in-flight rule exists to prevent,
+	// four CI runs out of four (#227). Whichever thread reaches the hub first, the frame the
+	// device acknowledged now exists; the sender is still told its write failed.
 	e.driver.send(frame) or {
-		if token != 0 {
-			e.mu.lock()
-			for i, pending in e.pending {
-				if pending.token == token {
-					e.pending.delete(i)
-					break
-				}
-			}
-			e.mu.unlock()
-		}
+		e.start_pending_window(token, shared_failed_send_grace_ms, true)
 		return err
 	}
-	if token != 0 {
-		// The acknowledgement window begins when the write succeeds, not while a slow socket
-		// write is still in flight; expiry skips the zero marker. Matching does NOT skip it --
-		// see read_loop for why an in-flight entry may be claimed.
-		e.mu.lock()
-		for i, pending in e.pending {
-			if pending.token == token {
-				e.pending[i] = SharedPendingSend{
-					...pending
-					expires_at: time.ticks() + shared_pending_ttl_ms
-				}
-				break
-			}
-		}
-		e.mu.unlock()
-	}
+	// The acknowledgement window begins when the write returns, not while a slow socket write
+	// is still in flight; expiry skips the zero marker, matching does not (see read_loop).
+	e.start_pending_window(token, shared_pending_ttl_ms, false)
 	// AND AGAIN NOW THAT THE FRAME IS ON THE WIRE. The refresh above was taken before a write
 	// that can wait on send_mu or stall in the driver; if that took longer than the attentive
 	// second, the reader could park the moment the frame left and drain the prompt reply
