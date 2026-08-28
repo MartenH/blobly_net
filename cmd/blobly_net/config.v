@@ -795,6 +795,16 @@ fn cfg_text_channels(txt string) int {
 // The TEXT is written, not a re-serialisation of the parsed model: the model does not carry
 // comments, and this file is where a bench setup explains itself.
 fn (mut app App) save_cfg_text() {
+	// NOT WHILE RUNNING. Saving the text applies it to the model and REBUILDS the runtime from
+	// it (apply_parsed_text -> rebuild_from_proj), which is stopped-only: done under live RX and
+	// generator threads it replaces the channels beneath them. Start leaves dirty text
+	// unapplied and warns; Ctrl+S mid-run must not finish what Start declined (codex round 2
+	// on #250).
+	if app.running {
+		app.cfg_err = 'not saved while running — the text is applied to the model on save; Stop first'
+		app.notify('not saved — the File tab\'s text is applied on save, and the model is not rebuilt while running; Stop first')
+		return
+	}
 	if app.dirty {
 		// The mirror of the guard in save_project: applying this text would replace a model
 		// that holds unsaved bus or generator edits.

@@ -266,8 +266,14 @@ Configuration dialog).
   read-only *Bus Config* panel this line used to name is gone — its content is the
   Configuration window's Buses tab, which can also edit.)
 - **Configuration editor** = opened from File → Configure… (or a toolbar button), enabled
-  only when `!app.running`. Add/edit/remove buses, pick adapters, attach DBCs; **Save**
-  writes `.blobnet`; **Close** returns to the view. Not an always-editable inline panel.
+  only when `!app.running`. Add/edit/remove buses, pick adapters, attach DBCs; **Close**
+  returns to the view (unsaved edits are folded into the model). Not an always-editable
+  inline panel. It has no Save of its own (#247): saving is **File ▸ Save** or **Ctrl+S**,
+  from anywhere in the main window. The one exception is the **File tab**, which holds the
+  project as TEXT in its own buffer and has its own **Save text** button — and while that
+  tab is showing with unsaved text, Ctrl+S and the menu save THAT text (a model save would
+  only refuse, because one would overwrite the other). Neither is allowed while running:
+  saving the text rebuilds the runtime from it, and that is stopped-only.
 
 ## File lifecycle + dirty tracking
 
@@ -277,7 +283,7 @@ Generalize `gen_dirty` → `app.dirty`. Title/toolbar shows `name ●` while dir
 |------|--------|
 | **New** | `app.proj = Project{ name: 'untitled' }`, `proj_path = ''`, rebuild → blank (0 buses) |
 | **Open…** | file browser → `load_project(path)` |
-| **Save** | `proj_path == ''` → Save As; else `app.proj.save(proj_path)`, clear dirty |
+| **Save** (Ctrl+S) | File tab showing dirty text → save that text; else `proj_path == ''` → Save As; else `app.proj.save(proj_path)`, clear dirty. The toolbar answers with `✓ saved` for three seconds |
 | **Save As…** | file browser (save) → set `proj_path`, save |
 | **Configure…** | open the Configuration editor (disabled while running) |
 | Open Example ▸ / Reload / Exit | unchanged |
