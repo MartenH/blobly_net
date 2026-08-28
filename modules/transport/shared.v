@@ -901,7 +901,23 @@ fn (mut h SharedHandle) send(frame CanFrame) ! {
 	// at the tail, the timestamp, the kick — and a fatal found by that drain fails the send the
 	// way it fails a join.
 	if !subscribed {
-		e.admit(mut h)!
+		// A SENDER STILL ATTENTIVE ONLY REFRESHES: admission takes drain_mu, which the reader
+		// holds across every 50 ms poll on an attentive wire, so a cyclic generator's transmit
+		// tap paid up to a poll period per frame for a boundary it did not need (codex round 12
+		// on #224). Only a handle whose own second has expired goes through admit.
+		e.mu.lock()
+		now := time.ticks()
+		mut fresh := false
+		if opened := e.unread[h.id] {
+			if now - opened < shared_attentive_ms {
+				e.unread[h.id] = now
+				fresh = true
+			}
+		}
+		e.mu.unlock()
+		if !fresh {
+			e.admit(mut h)!
+		}
 	}
 	// send_mu GUARDS ONE THING: that the order of `pending` is the order frames went down the
 	// socket, which is what lets an untagged acknowledgement be matched to its origin. Senders on
