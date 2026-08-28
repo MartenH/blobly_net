@@ -222,8 +222,12 @@ fn shared_test_opening_waiters(key string) int {
 	return n
 }
 
+// THE BUS CROSSES THE CHANNEL BY VALUE. It used to cross as `&bus`, the address of a local in
+// the spawned function, dereferenced by the test thread after that function had returned: a
+// dangling stack pointer that Linux happened to tolerate and Windows did not — every run of this
+// file segfaulted in the second test on a Windows bench, with Linux CI green (#242).
 struct SharedOpenOutcome {
-	bus &Bus = unsafe { nil }
+	bus ?Bus
 	err string
 }
 
@@ -235,7 +239,7 @@ fn open_slow_for_test(key string, out chan SharedOpenOutcome) {
 		return
 	}
 	out <- SharedOpenOutcome{
-		bus: &bus
+		bus: bus
 	}
 }
 
@@ -264,7 +268,10 @@ fn test_concurrent_first_opens_share_one_stalled_attempt_and_block_nobody_else()
 	select {
 		got := <-other_out {
 			assert got.err == '', 'the other wire failed: ${got.err}'
-			mut b := *got.bus
+			mut b := got.bus or {
+				assert false, 'the other wire opened but carried no bus'
+				return
+			}
 			b.close()
 		}
 		2000 * time.millisecond {
@@ -275,12 +282,15 @@ fn test_concurrent_first_opens_share_one_stalled_attempt_and_block_nobody_else()
 	assert out.len == 0
 	assert stdatomic.load_i64(&slow_fake_calls) == 2
 	slow_fake_gates['slow:shared'] <- true
-	mut handles := []&Bus{}
+	mut handles := []Bus{}
 	for _ in 0 .. 3 {
 		select {
 			got := <-out {
 				assert got.err == '', 'an opener failed: ${got.err}'
-				handles << got.bus
+				handles << got.bus or {
+					assert false, 'an opener succeeded but carried no bus'
+					return
+				}
 			}
 			2000 * time.millisecond {
 				assert false, 'an opener never returned'
@@ -291,7 +301,7 @@ fn test_concurrent_first_opens_share_one_stalled_attempt_and_block_nobody_else()
 	// All three share one entry.
 	mut entries := []voidptr{}
 	for h in handles {
-		mut b := *h
+		mut b := h
 		if mut b is SharedHandle {
 			entries << voidptr(b.entry)
 		}
@@ -299,7 +309,7 @@ fn test_concurrent_first_opens_share_one_stalled_attempt_and_block_nobody_else()
 	assert entries.len == 3
 	assert entries[0] == entries[1] && entries[1] == entries[2]
 	for h in handles {
-		mut b := *h
+		mut b := h
 		b.close()
 	}
 	assert fake_ctl.closes == 2
