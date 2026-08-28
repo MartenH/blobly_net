@@ -740,11 +740,7 @@ fn (mut app App) rebuild_from_proj() {
 	// lookup, ~2.7 s on Windows, and the OS forgets the answer within a minute — so on the GUI
 	// thread at Start it was the "three seconds before everything starts" (#240). Resolved in
 	// the background as the project is applied, it is known by the time anybody presses ▶.
-	for c in proj.channels {
-		if c.adapter == 'cansub' {
-			transport.cansub_warm(c.iface_with_bitrate())
-		}
-	}
+	transport.cansub_warm_all(proj.channels.map(it.iface_with_bitrate()))
 	app.mu.lock()
 	app.chans = []
 	// rebuild runs for ordinary config ops too (add bus/DBC, adapter change) —

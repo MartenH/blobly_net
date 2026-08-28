@@ -723,3 +723,35 @@ fn test_a_lookup_in_flight_is_joined_not_repeated() {
 	assert late == '127.0.0.2'
 	cansub_forget_addr('127.0.0.2')
 }
+
+// A FAILED LOOKUP IS REMEMBERED for a moment, so the rows queued behind it do not each repeat
+// it; a forget clears that memory too (codex round 2 on #249). The name here cannot resolve:
+// .invalid is reserved for exactly that.
+fn test_a_failed_lookup_is_shared_for_a_moment() {
+	cansub_forget_addr('nobody.invalid')
+	assert cansub_addr('nobody.invalid') == none
+	failed := rlock cansub_addrs {
+		cansub_addrs.failed_at['nobody.invalid'] or { 0 }
+	}
+	assert failed > 0, 'the failure was not noted'
+	t0 := time.ticks()
+	assert cansub_addr('nobody.invalid') == none
+	assert time.ticks() - t0 < 100, 'the second caller looked the name up again (${time.ticks() - t0} ms)'
+	cansub_forget_addr('nobody.invalid')
+	cleared := rlock cansub_addrs {
+		cansub_addrs.failed_at['nobody.invalid'] or { 0 }
+	}
+	assert cleared == 0
+}
+
+// ONE DEVICE, ONE WARM-UP, however many of its channels the project lists.
+fn test_warm_all_warms_each_device_once() {
+	cansub_forget_addr('127.0.0.1')
+	cansub_warm_all(['cansub:E5A16ADF/1@500000', 'cansub:E5A16ADF/2@500000', 'pcan:PCAN_USBBUS1@500000',
+		'cansub:e5a16adf/3'])
+	// The dedupe is pure; what it decided is visible through the resolving locks it created.
+	names := rlock cansub_addrs {
+		cansub_addrs.resolving.keys().filter(it.starts_with('e5a16adf'))
+	}
+	assert names.len <= 1, 'more than one lock for one device: ${names}'
+}
