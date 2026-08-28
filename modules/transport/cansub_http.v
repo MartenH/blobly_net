@@ -273,6 +273,24 @@ __global (
 struct CansubAddrs {
 mut:
 	by_host map[string]string
+	// One lock per name, held while that name is being resolved: a second caller for the same
+	// name waits for the answer in flight instead of starting a lookup of its own. See
+	// cansub_addr.
+	resolving map[string]&sync.Mutex
+}
+
+// cansub_resolving is the lock a lookup of `host` holds — created on first use, one per name for
+// the life of the process.
+fn cansub_resolving(host string) &sync.Mutex {
+	return lock cansub_addrs {
+		if m := cansub_addrs.resolving[host] {
+			m
+		} else {
+			m := sync.new_mutex()
+			cansub_addrs.resolving[host] = m
+			m
+		}
+	}
 }
 
 // cansub_addr is the resolved address of a device name, looked up once per process — see
@@ -283,6 +301,22 @@ pub fn cansub_addr(host string) ?string {
 	}
 	if cached != '' {
 		return cached
+	}
+	// ONE LOOKUP IN FLIGHT PER NAME. The warm-up at project load (cansub_warm) runs this in the
+	// background; an open that arrives while it is still running would otherwise see an empty
+	// memory and start a second 2.7 s lookup of its own — the pause the warm-up exists to remove,
+	// paid anyway, plus a duplicate query (codex round 1 on #249). So a lookup holds the name's
+	// lock, and a caller that finds it held waits for that answer and reads it from the memory.
+	mut resolving := cansub_resolving(host)
+	resolving.lock()
+	defer {
+		resolving.unlock()
+	}
+	meanwhile := rlock cansub_addrs {
+		cansub_addrs.by_host[host] or { '' }
+	}
+	if meanwhile != '' {
+		return meanwhile
 	}
 	addrs := net.resolve_ipaddrs(host, .ip, .tcp) or { return none }
 	if addrs.len == 0 {
@@ -306,8 +340,13 @@ pub fn cansub_addr(host string) ?string {
 // the open, which reports it. Nothing else touches the device.
 pub fn cansub_warm(iface string) {
 	spec := parse_cansub_iface(iface) or { return }
-	host := cansub_host(spec.id)
-	spawn fn (h string) {
+	cansub_warm_host(cansub_host(spec.id))
+}
+
+// cansub_warm_host is the warm-up by name, and hands back its worker so a caller that needs the
+// answer — a test — can wait for it; cansub_warm itself never does.
+pub fn cansub_warm_host(host string) thread {
+	return spawn fn (h string) {
 		_ = cansub_addr(h) or { '' }
 	}(host)
 }

@@ -676,8 +676,50 @@ fn test_counters_parse_with_whitespace_and_unknown_states_stay_unknown() {
 // A WARM-UP RETURNS AT ONCE and leaves the address remembered: the lookup runs on its own thread
 // (#240). A literal address needs no lookup, which is what makes this testable without a device.
 fn test_a_warm_up_returns_at_once_and_remembers_the_address() {
-	cansub_forget_addr('127.0.0.1-usb.local')
+	// By name, with a literal address as the name: it resolves without a network and the memory
+	// can be read back (codex round 1 on #249 — the earlier test proved only that the call
+	// returned, not that the worker did anything).
+	cansub_forget_addr('127.0.0.1')
 	t0 := time.ticks()
-	cansub_warm('cansub:127.0.0.1/1@500000')
+	worker := cansub_warm_host('127.0.0.1')
 	assert time.ticks() - t0 < 200, 'warm-up blocked the caller for ${time.ticks() - t0} ms'
+	worker.wait()
+	remembered := rlock cansub_addrs {
+		cansub_addrs.by_host['127.0.0.1'] or { '' }
+	}
+	assert remembered == '127.0.0.1', 'the worker did not fill the memory'
+	cansub_forget_addr('127.0.0.1')
+	// And the interface form reaches the same path: it only derives the name.
+	cansub_warm('cansub:E5A16ADF/1@500000')
+	assert time.ticks() - t0 < 400
+}
+
+// A LOOKUP IN FLIGHT IS WAITED FOR, NOT REPEATED: a caller for a name whose lookup is running
+// blocks until that answer is in the memory and returns it — no second lookup, no second pause.
+fn test_a_lookup_in_flight_is_joined_not_repeated() {
+	cansub_forget_addr('127.0.0.2')
+	mut in_flight := cansub_resolving('127.0.0.2')
+	in_flight.lock() // stands in for the warm-up's lookup
+	done := chan string{cap: 1}
+	spawn fn (done chan string) {
+		done <- (cansub_addr('127.0.0.2') or { 'unresolved' })
+	}(done)
+	mut early := ''
+	select {
+		early = <-done {}
+		150 * time.millisecond {
+			early = 'still waiting'
+		}
+	}
+	assert early == 'still waiting', 'the caller did not wait for the lookup in flight (got ${early})'
+	in_flight.unlock()
+	mut late := ''
+	select {
+		late = <-done {}
+		2 * time.second {
+			late = 'never answered'
+		}
+	}
+	assert late == '127.0.0.2'
+	cansub_forget_addr('127.0.0.2')
 }
