@@ -130,6 +130,20 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
 
 ## CI (GitHub Actions)
 
+- 🔴 **V 0.5.2 tries its experimental V3 compiler first, and CI paid for it twice.** Every
+  build attempts V3 and falls back to the established compiler when V3 cannot build the
+  program — 65 of the 72 test programs on the Linux runner, each compiled twice: the test
+  step summed 1,807 s of compile time where the same files take 100 s on a 0.5.1 bench, and
+  the job took eleven minutes for twenty seconds of tests. The fallback also posts an
+  automatic bug report to `bugs.vlang.io` with a bounded excerpt of the failing source
+  (V's docs, "Automatic bug reports"). `ci.yml` sets `VFLAGS=-old-compiler` for both jobs,
+  which skips V3 entirely; it is an env var and not a flag in the scripts because a V that
+  predates V3 rejects `-old-compiler` as an unknown argument. The flag ends only the
+  fallback's report — the established compiler uploads an excerpt of its own on any C
+  compilation error — so `V_C_ERROR_BUG_REPORT_DISABLED=1` sits beside it, which is V's
+  opt-out for every reporting path (and is harmless on a bench, where the flag is not). If a
+  CI log ever shows `note: V3 could not build this program` again, the env has stopped
+  reaching `v`.
 - 🔴 **V will NOT self-compile on the Windows runner — CI must DOWNLOAD a prebuilt V.**
   `makev.bat` hangs at `Compiling v_stage.exe`, independent of bootstrap compiler, final compiler,
   disk and Defender (every combination timed out at up to 90 min; the same build is ~100 s
