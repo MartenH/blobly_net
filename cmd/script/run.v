@@ -204,9 +204,12 @@ fn main() {
 			println('channel ${ch.name} (doip:${host}:${port}): DoIP entity, logical address 0x${ch.ecu_addr:04X}')
 			continue
 		}
-		if ch.iface_with_bitrate() !in reporters {
+		// Keyed by the physical destination, as the seeding below is: two spellings of one
+		// wire are one reporter, or one wire's totals print twice (codex round 9 on #231).
+		rep_key := transport.destination_key_for(ch.adapter, ch.iface)
+		if rep_key !in reporters {
 			if rb := transport.open(ch.iface_with_bitrate()) {
-				reporters[ch.iface_with_bitrate()] = rb
+				reporters[rep_key] = rb
 			}
 		}
 		if nodes.len > 0 {

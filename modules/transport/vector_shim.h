@@ -978,7 +978,7 @@ static int ct_vector_decode_v3(ct_xlport port, uint32_t *id, uint8_t *len, uint8
 	 * back: filing either as bus traffic puts a message on the trace nobody sent. */
 	if (ev.tagData.msg.flags & CT_XL_CAN_MSG_FLAG_ERROR_FRAME) {
 		InterlockedIncrement(&ct_vector_errframes);
-		return 2;
+		return 3; /* an error record: consumed, and counted for the port by the caller */
 	}
 	if (ev.tagData.msg.flags & (CT_XL_CAN_MSG_FLAG_TX_COMPLETED | CT_XL_CAN_MSG_FLAG_TX_REQUEST)) return 2;
 	*rtr = (ev.tagData.msg.flags & CT_XL_CAN_MSG_FLAG_REMOTE_FRAME) ? 1 : 0;
@@ -1018,14 +1018,14 @@ static int ct_vector_decode_v4(ct_xlport port, uint32_t *id, uint8_t *len, uint8
 	 * errors on what we hear, and either one is the answer to "why is nothing decoding". */
 	if (ev.tag == CT_XL_CAN_EV_TAG_RX_ERROR || ev.tag == CT_XL_CAN_EV_TAG_TX_ERROR) {
 		InterlockedIncrement(&ct_vector_errframes);
-		return 2;
+		return 3; /* an error record: consumed, and counted for the port by the caller */
 	}
 	/* TX_OK is this port's own confirmation and TX_REQUEST its own queued frame; neither is
 	 * traffic somebody else put on the wire. The classic path drops the same two by flag. */
 	if (ev.tag != CT_XL_CAN_EV_TAG_RX_OK) return 2;
 	if (ev.tagData.canRxOkMsg.msgFlags & CT_XL_CAN_RXMSG_FLAG_EF) {
 		InterlockedIncrement(&ct_vector_errframes);
-		return 2;
+		return 3; /* an error record: consumed, and counted for the port by the caller */
 	}
 	*rtr = (ev.tagData.canRxOkMsg.msgFlags & CT_XL_CAN_RXMSG_FLAG_RTR) ? 1 : 0;
 	*fd  = (ev.tagData.canRxOkMsg.msgFlags & CT_XL_CAN_RXMSG_FLAG_EDL) ? 1 : 0;
@@ -1058,9 +1058,12 @@ static int ct_vector_decode_v4(ct_xlport port, uint32_t *id, uint8_t *len, uint8
 	return 0;
 }
 
+/* errs, if given, is incremented once per error record consumed during this call: the
+ * process-wide ct_vector_errframes cannot say which PORT saw them, and diagnostics() reports per
+ * port (#213). */
 static int ct_vector_read(ct_xlport port, HANDLE ev_handle, uint32_t *id, uint8_t *len,
                           uint8_t *data, int *ext, int *rtr, int timeout_ms, int *chip_status,
-                          int port_is_fd, int *fd, int *brs, int *esi) {
+                          int port_is_fd, int *fd, int *brs, int *esi, int *errs) {
 	if (chip_status) *chip_status = -1; /* -1 = no chip-state event seen this call */
 	DWORD waited;
 	int rc;
@@ -1099,6 +1102,10 @@ static int ct_vector_read(ct_xlport port, HANDLE ev_handle, uint32_t *id, uint8_
 		 * auto-reset, so its signal for this event has already been consumed — waiting here would
 		 * block behind frames that are in the queue right now. The deadline at the top of the loop
 		 * is what stops a queue that keeps producing skippable events from holding the caller. */
+		if (rc == 3) {
+			if (errs) (*errs)++;
+			continue;
+		}
 		if (rc == 2) continue;
 		/* rc == 1: the queue really is empty, and waiting is the whole point. */
 		if (!ev_handle) {
