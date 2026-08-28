@@ -708,6 +708,10 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	app.proj_name = proj.name
 	app.proj = proj
 	app.dirty = false
+	// A save acknowledged belongs to the project that was saved: a New or an Open within the
+	// three seconds must not carry "saved" over to a project nobody wrote (codex round 1 on
+	// #250).
+	app.saved_at = 0
 	// drop editor state carried over from the previous project — stale cfg_bufs would otherwise
 	// be flushed into the newly loaded project by the next commit_cfg (same channel count = no
 	// resync in draw_config); stale discovery results belong to the old machine view.

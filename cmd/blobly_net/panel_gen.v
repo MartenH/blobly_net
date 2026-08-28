@@ -525,7 +525,10 @@ fn (mut app App) set_sender_bus(i int, bus string, chan_name string) {
 // default and a generator bound to `a` or `c`, following that instruction during a run would
 // have put a frame on the wire. any_item_active closes it.
 fn (mut app App) poll_hotkeys() {
-	if !app.running || vgui.want_text_input() || vgui.any_item_active() {
+	// AND NOT WHILE CTRL IS HELD: a generator bound to `s` would fire on Ctrl+S an instant before
+	// the save it was meant to be — a frame on the wire for pressing Save (codex round 1 on
+	// #250). A chord is a command, never a hotkey.
+	if !app.running || vgui.want_text_input() || vgui.any_item_active() || vgui.key_ctrl() {
 		return
 	}
 	for i, sr in app.senders {
