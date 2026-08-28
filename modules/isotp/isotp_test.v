@@ -365,3 +365,66 @@ fn test_a_short_non_final_consecutive_frame_is_refused() {
 	ch.close()
 	peer.close()
 }
+
+// IDS THAT DO NOT FIT THEIR DECLARED WIDTH ARE REFUSED AT open() (codex round 17 on #225).
+fn test_open_refuses_an_id_wider_than_declared() {
+	$if !linux {
+		if _ := open('inproc:isotp-wide', 0x800, 0x7E8, false) {
+			assert false, '0x800 does not fit 11 bits'
+		} else {
+			assert err.msg().contains('does not fit 11 bits'), err.msg()
+		}
+	}
+}
+
+// AN OVERSIZED CONSECUTIVE FRAME IS NOT ONE OF OURS on a classic channel (codex round 17 on #225).
+fn test_an_oversized_consecutive_frame_is_refused() {
+	mut peer := transport.open('inproc:isotp-fat-cf') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-fat-cf', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x10), 20, 1, 2, 3, 4, 5, 6] }) or {
+		assert false, err.msg()
+	}
+	time.sleep(20 * time.millisecond)
+	peer.send(transport.CanFrame{ id: 0x7E8, data: []u8{len: 16, init: u8(0x21)}, fd: true }) or {
+		assert false, err.msg()
+	}
+	if _ := ch.recv(300) {
+		assert false, 'a 16-byte CF must be refused on a classic channel'
+	} else {
+		assert err.msg().contains('classic channel'), err.msg()
+	}
+	ch.close()
+	peer.close()
+}
+
+// A STREAM OF STALE CONSECUTIVE FRAMES ON OUR OWN ID does not keep a zero-timeout poll scanning
+// past its budget (codex round 17 on #225).
+fn test_a_zero_timeout_poll_is_bounded_across_stale_cfs() {
+	mut peer := transport.open('inproc:isotp-stale-stream') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-stale-stream', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	for i in 0 .. 5000 {
+		peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x20 | u8(i & 0x0F)), 0, 0, 0, 0, 0, 0, 0] }) or {}
+	}
+	time.sleep(50 * time.millisecond)
+	t0 := time.ticks()
+	if _ := ch.recv(0) {
+		assert false, 'nothing but stale CFs was queued'
+	} else {
+		assert err.msg() == 'timeout', err.msg()
+	}
+	assert time.ticks() - t0 < 2000, 'recv(0) scanned for ${time.ticks() - t0} ms'
+	ch.close()
+	peer.close()
+}

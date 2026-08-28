@@ -38,6 +38,13 @@ mut:
 // ON Linux too (a bus the kernel has no socket for, or one it needs to see the frames of) asks for
 // it by name: open_software / on_bus.
 pub fn open(iface string, tx_id u32, rx_id u32, extended bool) !Channel {
+	// IDS ARE CHECKED AGAINST THEIR DECLARED WIDTH HERE, before either backend sees them: the
+	// kernel channel masked an oversized id and bound to a different endpoint, the software one
+	// kept it and waited on an id no frame can carry (codex round 17 on #225).
+	limit := if extended { u32(0x1FFF_FFFF) } else { u32(0x7FF) }
+	if tx_id > limit || rx_id > limit {
+		return error('isotp open ${iface}: id 0x${(if tx_id > limit { tx_id } else { rx_id }):X} does not fit ${if extended { '29' } else { '11' }} bits')
+	}
 	$if linux {
 		return open_kernel(iface, tx_id, rx_id, extended)
 	} $else {
