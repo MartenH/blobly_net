@@ -20,6 +20,13 @@ import uds
 import sim
 import doip
 import script
+import sync.stdatomic
+
+// loops_done counts the bus-holding loops that have exited, so the runner's bounded wait at the
+// end knows whether every wire has said its piece (#213).
+__global (
+	loops_done i64
+)
 
 // Ctl is the shared run flag the simulation threads poll; set false to stop them.
 struct Ctl {
@@ -277,11 +284,19 @@ fn main() {
 	}
 
 	ctl.running = false
-	for t in sims {
-		t.wait()
-	}
 	// Joined BEFORE the script's buses are asked: a responder that fell behind books its gap
-	// at its close, into the wire, where the script's own handle then reads it.
+	// at its close, into the wire, where the script's own handle then reads it. BOUNDED: a
+	// loop stuck in a stalled CANsub write cannot re-check ctl.running until the write returns,
+	// and the transport confines a stalled write to its sender on purpose -- the runner must
+	// not inherit its timeout (codex round 6 on #231). Loops still running when the bound
+	// expires are left to the exit; what they would have booked is not reported.
+	wait_until := time.ticks() + 2000
+	for stdatomic.load_i64(&loops_done) < i64(sims.len) && time.ticks() < wait_until {
+		time.sleep(10 * time.millisecond)
+	}
+	if stdatomic.load_i64(&loops_done) < i64(sims.len) {
+		eprintln('${sims.len - int(stdatomic.load_i64(&loops_done))} bus loop(s) still busy at exit; their wires are not reported')
+	}
 	// And what the script's own buses counted -- a tester-only channel has no simulation loop
 	// to say it (codex round 1 on #231). The diagnostic servers hold ISO-TP channels, not
 	// buses, and do not report.
@@ -343,6 +358,7 @@ fn sim_loop(open_iface string, fault_iface string, db candb.Database, nodes []pr
 		eprintln('${open_iface}: ${d.str()}')
 	}
 	bus.close()
+	stdatomic.add_i64(&loops_done, 1)
 }
 
 // diag_server_loop answers UDS requests (rx 0x7E0 / tx 0x7E8) over software
@@ -359,6 +375,7 @@ fn uds_node_loop(iface string, rx u32, tx u32, ext bool, srv uds.Server, ctl &Ct
 		}
 	}
 	ch.close()
+	stdatomic.add_i64(&loops_done, 1)
 }
 
 // doip_listen binds one simulated DoIP entity: the same uds.Server the CAN path serves,
@@ -420,6 +437,7 @@ fn diag_server_loop(iface string, ctl &Ctl) {
 		}
 	}
 	ch.close()
+	stdatomic.add_i64(&loops_done, 1)
 }
 
 // build_node delegates to sim.from_project. This used to be a copy of the GUI's builder

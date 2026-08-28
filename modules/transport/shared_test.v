@@ -1414,17 +1414,22 @@ fn test_shared_hub_diagnostics_fold_the_drivers_counters_with_the_wires_ring_gap
 		assert time.ticks() < deadline, 'the raw reader did not publish the injected ring in time'
 		time.sleep(time.millisecond)
 	}
+	// BEFORE the stalled subscriber acts: lagging has read once, so it IS a subscriber, and the
+	// three the flood overwrote past its cursor are the wire's loss the moment anybody asks --
+	// here the handle that kept up. slow has not received yet and is not a subscriber; what it
+	// missed becomes the wire's when it subscribes.
+	assert fast.diagnostics().dropped == 3, "a stalled subscriber's loss is visible while it stalls"
 	_ := slow.recv(1000)!
 	assert shared_test_dropped(mut slow) == 4 // 0xAAA and the first three of the flood
 	want := BusDiagnostics{
-		dropped:    4
+		dropped:    7 // lagging's three, then slow's four at its subscribing receive
 		bus_errors: 2
 	}
 	assert slow.diagnostics() == want
 	assert fast.diagnostics() == want, "the wire's gap is every handle's answer"
-	assert want.short() == '4 dropped · 2 err'
+	assert want.short() == '7 dropped · 2 err'
 	assert want.minus(BusDiagnostics{ bus_errors: 2 }) == BusDiagnostics{
-		dropped: 4
+		dropped: 7
 	}
 	assert BusDiagnostics{}.fell(want)
 	assert !want.fell(BusDiagnostics{})
@@ -1433,9 +1438,9 @@ fn test_shared_hub_diagnostics_fold_the_drivers_counters_with_the_wires_ring_gap
 	assert fast.diagnostics() == want, 'the gap outlives the handle that suffered it'
 	// Asked before its close, a subscriber's gap is booked at the asking: a report taken
 	// before teardown is not a sample short.
-	assert lagging.diagnostics().dropped == 7, 'a subscriber behind the ring books its gap when asked'
+	assert lagging.diagnostics().dropped == 7, 'already booked from the sibling poll: nothing more at the asking'
 	lagging.close()
-	assert fast.diagnostics().dropped == 7, 'a subscriber that closed behind the ring must book its gap'
+	assert fast.diagnostics().dropped == 7, 'a close books nothing that was already booked'
 	// Keeps the generation alive past fast's close, which is a transmit tap's (fast never read).
 	mut after := shared_open_events('hub:diag', 'fake:diag', hub_fake_make)!
 	fast.close()

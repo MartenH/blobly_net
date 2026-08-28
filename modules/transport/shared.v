@@ -228,6 +228,12 @@ mut:
 	// would have skipped -- among what it lost. Exact needs each overwritten slot's origin, and
 	// the overwrite is what destroyed it (codex round 3 on #231).
 	ring_gaps u64
+	// cursors is every SUBSCRIBER's cursor as the entry last saw it (under mu): written when a
+	// handle subscribes and after each of its receives, removed at its close. It is what lets
+	// the wire's gap be reconciled by WHOEVER asks -- a stalled consumer's loss is booked while
+	// it is happening, from the monitor's poll, not when the consumer next wakes (codex round 6
+	// on #231). The handle's own cursor stays the handle's; this is the wire's view of it.
+	cursors map[u64]u64
 	// parked_discards counts frames the reader read and threw away while nobody subscribed.
 	parked_discards   u64
 	// parked is true while the reader waits in its park (under mu) — a test hook, so a test can
@@ -368,20 +374,34 @@ fn (mut e SharedEntry) start_pending_window(token u64, ttl_ms i64, failed bool) 
 	e.mu.unlock()
 }
 
-// book_gap_locked moves a cursor that has fallen behind the ring up to the oldest retained
-// sequence and counts what it skipped, for the handle and for the wire. Caller holds e.mu and
-// h.mu. Run at receive, at a subscriber's close, and when a subscriber's diagnostics are asked
-// for -- the frames are gone whichever of those happens first, and a report taken before the
-// close would otherwise be a sample short (codex round 3 on #231).
-fn (mut e SharedEntry) book_gap_locked(mut h SharedHandle) {
-	oldest := if e.next_seq > u64(shared_ring_capacity) {
-		e.next_seq - u64(shared_ring_capacity)
-	} else {
-		u64(1)
+// oldest_locked is the oldest sequence the ring still holds. Caller holds mu.
+fn (e &SharedEntry) oldest_locked() u64 {
+	if e.next_seq > u64(shared_ring_capacity) {
+		return e.next_seq - u64(shared_ring_capacity)
 	}
+	return 1
+}
+
+// book_wire_gaps_locked reconciles EVERY subscriber's cursor, as the entry last saw it, against
+// the oldest retained sequence, and counts what each has lost since -- the wire's loss, booked
+// by whoever asks (a receive, a close, a diagnostics poll from any handle). Caller holds mu.
+fn (mut e SharedEntry) book_wire_gaps_locked() {
+	oldest := e.oldest_locked()
+	for id, cursor in e.cursors {
+		if cursor < oldest {
+			e.ring_gaps += oldest - cursor
+			e.cursors[id] = oldest
+		}
+	}
+}
+
+// book_own_gap_locked moves this handle's cursor up to the oldest retained sequence and counts
+// what it skipped for the handle; the wire's count is the table's (book_wire_gaps_locked), so
+// the two never double-book one loss. Caller holds e.mu and h.mu.
+fn (mut e SharedEntry) book_own_gap_locked(mut h SharedHandle) {
+	oldest := e.oldest_locked()
 	if h.cursor < oldest {
 		h.dropped += oldest - h.cursor
-		e.ring_gaps += oldest - h.cursor
 		h.cursor = oldest
 	}
 }
@@ -1324,6 +1344,7 @@ fn (mut h SharedHandle) recv(timeout_ms int) !CanFrame {
 				wake: h.wake
 			}
 			h.subscribed = true
+			e.cursors[h.id] = h.cursor
 			e.unread.delete(h.id)
 			// Wake a parked reader: this handle is the first to listen, or the first since the last
 			// listener left. Non-blocking; a kick already queued is the same kick.
@@ -1335,7 +1356,8 @@ fn (mut h SharedHandle) recv(timeout_ms int) !CanFrame {
 		if holding {
 			e.drain_mu.unlock()
 		}
-		e.book_gap_locked(mut h)
+		e.book_wire_gaps_locked()
+		e.book_own_gap_locked(mut h)
 		for h.cursor < e.next_seq {
 			slot := e.ring[int((h.cursor - 1) % u64(shared_ring_capacity))]
 			h.cursor++
@@ -1343,6 +1365,9 @@ fn (mut h SharedHandle) recv(timeout_ms int) !CanFrame {
 				got = shared_clone_frame(slot.frame)
 				break
 			}
+		}
+		if h.subscribed {
+			e.cursors[h.id] = h.cursor
 		}
 		if got == none && e.terminal != '' {
 			terminal = e.terminal
@@ -1408,29 +1433,18 @@ fn (mut h SharedHandle) health() BusHealth {
 fn (mut h SharedHandle) diagnostics() BusDiagnostics {
 	h.mu.lock()
 	closed := h.closed
-	subscribed := h.subscribed
 	h.mu.unlock()
 	mut e := h.entry
-	if closed {
-		e.mu.lock()
-		gaps := BusDiagnostics{
-			dropped: e.ring_gaps
-		}
-		e.mu.unlock()
-		return gaps.plus(e.driver.diagnostics())
-	}
-	// Locks in the order recv takes them (h.mu, then e.mu), so this handle's own gap is
-	// booked before the wire's total is read.
-	h.mu.lock()
+	// EVERY subscriber's loss is reconciled here, not this handle's alone: the row polls the
+	// handle that kept up, and the loss it must show is a stalled sibling's, while it stalls.
 	e.mu.lock()
-	if subscribed && !h.closed {
-		e.book_gap_locked(mut h)
+	if !closed {
+		e.book_wire_gaps_locked()
 	}
 	gaps := BusDiagnostics{
 		dropped: e.ring_gaps
 	}
 	e.mu.unlock()
-	h.mu.unlock()
 	return gaps.plus(e.driver.diagnostics())
 }
 
@@ -1497,7 +1511,9 @@ fn (mut h SharedHandle) close() {
 	h.mu.lock()
 	e.mu.lock()
 	if was_subscribed {
-		e.book_gap_locked(mut h)
+		e.book_wire_gaps_locked()
+		e.book_own_gap_locked(mut h)
+		e.cursors.delete(h.id)
 		e.subs = e.subs.filter(it.id != h.id)
 	}
 	e.unread.delete(h.id)

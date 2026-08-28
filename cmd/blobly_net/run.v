@@ -420,6 +420,7 @@ fn (mut app App) start() {
 		app.chans[ci].health = .unknown
 		// and what the wire counted, for the same reason: counts since THIS run's open (#213)
 		app.chans[ci].diag = transport.BusDiagnostics{}
+		app.chans[ci].diag_at = 0
 		if !ch.monitorable() {
 			continue
 		}

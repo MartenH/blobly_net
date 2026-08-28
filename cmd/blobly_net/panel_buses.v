@@ -73,7 +73,10 @@ fn read_destinations(rows []Chan) map[string]DestState {
 		if c.enabled && c.running {
 			continue
 		}
-		if c.diag.is_empty() {
+		// A retired row that never sampled has nothing to say; one that sampled ZERO does --
+		// a reopened wire that counted nothing is newer than an older alias's counts, and
+		// skipping empties resurrected those (codex round 6). Presence is the timestamp.
+		if c.diag_at == 0 {
 			continue
 		}
 		key := transport.destination_key(c.iface)
