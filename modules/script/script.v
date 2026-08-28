@@ -172,7 +172,9 @@ pub fn (mut env Env) diagnostics() map[string]transport.BusDiagnostics {
 	for mut c in env.conns {
 		d := c.ch.diagnostics()
 		if !d.is_empty() {
-			out['${c.chan} (uds)'] = d
+			// Its own key per address pair: on a backend that counts per handle, two
+			// connections on one channel are two answers (codex round 10 on #231).
+			out['${c.chan} (uds 0x${c.ch.tx_id:X}/0x${c.ch.rx_id:X})'] = d
 		}
 	}
 	return out

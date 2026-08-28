@@ -313,6 +313,13 @@ fn main() {
 	// What each wire counted that no frame carried (#213), from the reporting handles, after
 	// every loop that could book a loss has closed.
 	for iface, mut rb in reporters {
+		// DRAINED FIRST. On a backend that fans out natively (SocketCAN, Vector, Kvaser) every
+		// handle is handed every error record and counts what IT consumed, so a reporter that
+		// never read would answer zero; its own queue holds the same records the loops saw
+		// (codex round 10 on #231). Bounded, and zero-timeout: one look per frame.
+		for _ in 0 .. 65536 {
+			rb.recv(0) or { break }
+		}
 		d := rb.diagnostics()
 		if !d.is_empty() {
 			eprintln('${iface}: ${d.str()}')

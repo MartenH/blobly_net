@@ -13,6 +13,7 @@
 // Requires `-enable-globals` (V's idiom for process-global state).
 module transport
 
+import sync.stdatomic
 import time
 
 const inproc_queue_cap = 8192 // per-subscriber buffered frames before overflow drops
@@ -40,6 +41,9 @@ mut:
 	name  string
 	id    u32
 	queue chan CanFrame
+	// Frames a sender dropped because THIS subscriber's queue was full -- the in-process bus's
+	// only loss, counted on the sender's thread and read on the subscriber's (#213).
+	dropped u64
 }
 
 // parse_inproc_iface recognises `inproc` or `inproc:NAME` (default name 'CAN').
@@ -109,10 +113,14 @@ pub fn (mut b InprocBus) send(frame CanFrame) ! {
 			}
 		}
 	}
-	for t in targets {
+	for mut t in targets {
 		select {
 			t.queue <- f {}
-			else {} // queue full → drop (overflow), like a real bus under overload
+			else {
+				// queue full → drop (overflow), like a real bus under overload; counted for
+				// the subscriber that fell behind (codex round 10 on #231)
+				stdatomic.add_u64(&t.dropped, 1)
+			}
 		}
 	}
 }
@@ -140,9 +148,11 @@ pub fn (mut b InprocBus) health() BusHealth {
 	return .unknown
 }
 
-// diagnostics: nothing this backend counts beyond frames and the health ladder (#213).
+// diagnostics: frames senders dropped because this subscriber's queue was full (#213).
 pub fn (mut b InprocBus) diagnostics() BusDiagnostics {
-	return BusDiagnostics{}
+	return BusDiagnostics{
+		dropped: stdatomic.load_u64(&b.dropped)
+	}
 }
 
 // reconcile_silence — nothing to reconcile: this bus has no controller, so it generates no
