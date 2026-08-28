@@ -158,6 +158,13 @@ mut:
 	// unread maps each handle that has NOT yet received to the tick it opened at. With subs, it
 	// is what decides whether anybody is listening — see attentive_locked.
 	unread            map[u64]i64
+	// pending_admit is every handle inserted into this entry but not yet admitted (under mu).
+	// A drain that cannot see a pending join discards frames that join is owed — so a pending
+	// join makes the wire attentive to the READER (no parked drain), and to another joiner's
+	// boundary drain it means PUBLISH rather than discard: the frames go into the ring behind
+	// the pending join's open-time cursor, and the draining joiner takes its own cursor at the
+	// tail afterwards (codex rounds 7 and 10 on #224).
+	pending_admit     map[u64]bool
 	// drain_mu is held by the reader across a whole parked drain, and taken by a handle's FIRST
 	// receive before it registers as a subscriber. So a subscription cannot land in the middle of
 	// a drain: either it registers first and the drain, finding a subscriber, reads nothing — or
@@ -266,6 +273,7 @@ fn shared_open_events(key string, spec string, make fn (string) !SharedDriver) !
 				} else {
 					e.refs++
 					e.next_id++
+					e.pending_admit[e.next_id] = true
 					handle = &SharedHandle{
 						key:    key
 						entry:  e
@@ -416,7 +424,7 @@ fn (mut e SharedEntry) read_loop() {
 			// stops as soon as the wire is attentive or closing.
 			for {
 				e.drain_mu.lock()
-				more := e.drain_parked() or {
+				more := e.drain_parked(0, false) or {
 					e.drain_mu.unlock()
 					e.fail_and_close(err.msg())
 					e.done <- true
@@ -611,43 +619,48 @@ fn (mut e SharedEntry) admit(mut h SharedHandle) ! {
 	e.mu.lock()
 	failed := e.state != .running
 	terminal := e.terminal
-	parked := !e.attentive_locked(time.ticks())
+	parked := !e.attentive_except(time.ticks(), h.id)
+	// Another join inserted but not yet admitted: its cursor is at its insertion, so what this
+	// drain finds is committed, not discarded — see pending_admit.
+	others := e.pending_admit.len > 1 || (e.pending_admit.len == 1 && !(h.id in e.pending_admit))
 	e.mu.unlock()
 	if failed {
+		e.mu.lock()
+		e.pending_admit.delete(h.id)
+		e.mu.unlock()
 		e.drain_mu.unlock()
-		// The generation's own error where it has one: a send from an unsubscribed handle comes
-		// through here too, and its caller is owed the sticky terminal error, not a join's.
 		if terminal != '' {
 			return error(terminal)
 		}
 		return error('${e.key}: generation failed while joining')
 	}
 	if parked && !e.tx_acks {
-		_ := e.drain_boundary(0) or {
+		_ := e.drain_boundary(0, h.id, others) or {
+			// The failure is taken under the lock (a queued joiner must find it), the reader is
+			// retired with the lock RELEASED: it may be blocked on drain_mu for its next batch,
+			// and only it sends done (codex round 10 on #224).
 			e.fail_and_close(err.msg())
-			// AND THE FAILED READER IS RETIRED BEFORE THE CALLER REOPENS. It is parked; woken,
-			// it finds the state changed and exits, sending done — which nothing else consumes
-			// on a failed generation (close waits only on a healthy last close). Without this
-			// the replacement generation could be opened while the old reader still had one
-			// post-park batch to run on the same PCAN channel constant, stealing the
-			// replacement's frames (codex round 3 on #224).
+			e.mu.lock()
+			e.pending_admit.delete(h.id)
+			e.mu.unlock()
+			e.drain_mu.unlock()
 			select {
 				e.kick <- true {}
 				else {}
 			}
 			_ := <-e.done
-			e.drain_mu.unlock()
 			return err
 		}
 	}
 	e.mu.lock()
-	if parked {
-		// Only where a drain ran: on a wire somebody reads, the ring holds this handle's
-		// history since its open and its cursor stands (a sender re-admitted before its first
-		// receive keeps what it has not read yet).
+	if parked && !e.tx_acks {
+		// Only where a drain ran on a driver whose reader parks: a CANsub's reader never parks
+		// (it acknowledges over the same socket) and keeps committing, so its ring holds this
+		// handle's history since its open and the cursor stands (codex round 10 on #224).
 		h.cursor = e.next_seq
 	}
 	e.unread[h.id] = time.ticks()
+	e.pending_admit.delete(h.id)
 	e.mu.unlock()
 	e.drain_mu.unlock()
 	select {
@@ -664,30 +677,28 @@ fn (mut e SharedEntry) admit(mut h SharedHandle) ! {
 // Returns whether the boundary was ESTABLISHED — the queue empty, or the count reached — as
 // opposed to the caller's deadline stopping it first. A deadline is checked BEFORE every batch,
 // so a receive with no budget left reads nothing at all (codex round 4 on #224).
-fn (mut e SharedEntry) drain_boundary(until i64) !bool {
+fn (mut e SharedEntry) drain_boundary(until i64, except u64, publish bool) !bool {
 	mut read := u64(0)
 	for read < shared_boundary_drain_frames {
 		if until > 0 && time.ticks() >= until {
-			// NO BUDGET LEFT: ONE LOOK, NOT A BATCH. A poll with 0 ms that read nothing could
-			// never establish its boundary and so never subscribed, however long it kept
-			// polling (codex round 6 on #224). One zero-timeout read: an empty queue IS the
-			// boundary; a frame is discarded and the boundary is still open, so a polling
-			// client gets there one frame per poll on a quiet wire and never on a busy one —
-			// which is stated where the rule is.
-			e.driver.recv_shared(0) or {
+			ingress := e.driver.recv_shared(0) or {
 				if err.msg() == 'timeout' {
 					return true
 				}
 				return err
 			}
-			e.mu.lock()
-			e.parked_discards++
-			e.mu.unlock()
+			if publish {
+				e.commit_external(ingress.frame)
+			} else {
+				e.mu.lock()
+				e.parked_discards++
+				e.mu.unlock()
+			}
 			return false
 		}
 		before := e.discards()
-		more := e.drain_parked()!
-		read += e.discards() - before
+		more := e.drain_parked(except, publish)!
+		read += if publish { u64(1) } else { e.discards() - before }
 		if !more {
 			return true
 		}
@@ -705,11 +716,22 @@ fn (mut e SharedEntry) discards() u64 {
 // attentive_locked is whether anybody is listening on this wire: a handle that has received,
 // or one that opened less than shared_attentive_ms ago and may still. Caller holds mu.
 fn (e &SharedEntry) attentive_locked(now i64) bool {
+	return e.attentive_except(now, 0)
+}
+
+// attentive_except is attentive_locked with one pending admission — the caller's own — left
+// out, so a joiner can ask "is anybody ELSE listening?" before it drains. Caller holds mu.
+fn (e &SharedEntry) attentive_except(now i64, id u64) bool {
 	if e.subs.len > 0 {
 		return true
 	}
 	for _, opened in e.unread {
 		if now - opened < shared_attentive_ms {
+			return true
+		}
+	}
+	for pending, _ in e.pending_admit {
+		if pending != id {
 			return true
 		}
 	}
@@ -729,9 +751,11 @@ fn (e &SharedEntry) attentive_locked(now i64) bool {
 // may hold more; the callers decide how to loop (the reader releases drain_mu between batches,
 // a joiner keeps it and stops on a time budget). A fatal read error is returned as the error,
 // and it is the caller's to act on.
-fn (mut e SharedEntry) drain_parked() !bool {
+// `except` is the caller's own pending admission (0 for the reader); `publish` commits what is
+// read instead of discarding it, for a drain run while another join is pending.
+fn (mut e SharedEntry) drain_parked(except u64, publish bool) !bool {
 	e.mu.lock()
-	claimed := e.attentive_locked(time.ticks())
+	claimed := e.attentive_except(time.ticks(), except)
 	e.mu.unlock()
 	if claimed {
 		return false
@@ -740,22 +764,50 @@ fn (mut e SharedEntry) drain_parked() !bool {
 	mut more := true
 	mut fatal := ''
 	for n < u64(shared_ring_capacity) {
-		e.driver.recv_shared(0) or {
+		ingress := e.driver.recv_shared(0) or {
 			if err.msg() != 'timeout' {
 				fatal = err.msg()
 			}
 			more = false
 			break
 		}
+		if publish {
+			e.commit_external(ingress.frame)
+		}
 		n++
 	}
-	e.mu.lock()
-	e.parked_discards += n
-	e.mu.unlock()
+	if !publish {
+		e.mu.lock()
+		e.parked_discards += n
+		e.mu.unlock()
+	}
 	if fatal != '' {
 		return error(fatal)
 	}
 	return more
+}
+
+// commit_external appends a frame nobody in this process sent to the ring — a boundary drain
+// publishing on behalf of a pending join. No acknowledgement matching: only drivers that do not
+// report tx acks park, so nothing here can be ours.
+fn (mut e SharedEntry) commit_external(frame CanFrame) {
+	e.mu.lock()
+	if e.state == .running {
+		seq := e.next_seq
+		e.ring[int((seq - 1) % u64(shared_ring_capacity))] = SharedRingSlot{
+			seq:    seq
+			frame:  shared_clone_frame(frame)
+			origin: 0
+		}
+		e.next_seq++
+		for sub in e.subs {
+			select {
+				sub.wake <- true {}
+				else {}
+			}
+		}
+	}
+	e.mu.unlock()
 }
 
 fn (mut e SharedEntry) fail_and_close(message string) {
@@ -978,41 +1030,20 @@ fn (mut h SharedHandle) recv(timeout_ms int) !CanFrame {
 				holding = false
 				unread = false
 			}
-			if unread {
-				// AN EXPIRED TAP'S HISTORY BEGINS HERE — on a wire NOBODY was reading, which is what
-				// `unread` means: the wire as a whole, not this handle. Where another subscriber kept
-				// the reader awake, the ring holds this handle's history since its open and its cursor
-				// stands (codex round 5 on #224 read the doc the other way; the doc now says this).
-				// As docs/one_reader_per_wire.md says: the
-				// ring may still hold what was committed on its behalf in its attentive second,
-				// and its open-time cursor would have served that as new (codex round 3 on
-				// #224). The tail is its boundary now, and the driver's queue is drained to it —
-				// within the caller's own budget: a receive that asked for 0 ms is not made to
-				// wait out a backlog, and takes an approximate boundary instead.
+			if unread && !e.tx_acks {
 				e.mu.lock()
 				h.cursor = e.next_seq
 				e.mu.unlock()
-				if !e.tx_acks {
-					// AND A DRAIN THE DEADLINE CUT SHORT DOES NOT SUBSCRIBE. Registered after a
-					// partial drain, the handle would be served the rest of the backlog as new;
-					// instead this receive reports a timeout with the boundary NOT established,
-					// and the next receive with a budget continues from where the queue is now
-					// (codex round 4 on #224). A handle that only ever polls with 0 ms after a
-					// second of silence therefore subscribes only once a poll finds the queue
-					// empty (one look per poll; see drain_boundary), never on a busy wire — the
-					// GUI and the Lua runner receive with a budget, and a send would have kept
-					// the handle attentive in the first place.
-					established := e.drain_boundary(if timeout_ms < 0 { i64(0) } else { deadline }) or {
-						// The adapter is gone, and this receive is the one that found out: the
-						// generation fails here, as it would under the reader, and the error is
-						// this caller's answer (codex round 3 on #224).
+				{
+					established := e.drain_boundary(if timeout_ms < 0 { i64(0) } else { deadline },
+						h.id, false) or {
 						e.fail_and_close(err.msg())
+						e.drain_mu.unlock()
 						select {
 							e.kick <- true {}
 							else {}
 						}
 						_ := <-e.done
-						e.drain_mu.unlock()
 						h.mu.unlock()
 						return err
 					}
@@ -1166,6 +1197,7 @@ fn (mut h SharedHandle) close() {
 		e.subs = e.subs.filter(it.id != h.id)
 	}
 	e.unread.delete(h.id)
+	e.pending_admit.delete(h.id)
 	e.refs--
 	if e.refs <= 0 && e.state == .running {
 		e.state = .closing
