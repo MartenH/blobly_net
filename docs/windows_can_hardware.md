@@ -12,6 +12,7 @@ verified. (On Linux the kernel owns the adapter and everything is SocketCAN — 
 | **PEAK PCAN** | `pcan:PCAN_USBBUS1@500000` | `PCANBasic.dll` | ✅ verified on hardware |
 | **Kvaser** | `kvaser:0@500000` | `canlib32.dll` | ✅ verified on hardware |
 | **Vector XL** | `vector:1@500000` | `vxlapi64.dll` | ✅ verified on hardware |
+| **CANsub** (CSS Electronics) | `cansub:<device-id>/1@500000` | none — REST + WebSocket, the same code on Linux | ✅ verified on hardware |
 | slcan (USB-serial) | `slcan:COM5@500000` | none — serial | ❌ not implemented |
 
 **CAN-FD on all four** — Vector, Kvaser, PCAN (since #217) and CANsub. In every one the data rate
@@ -85,7 +86,8 @@ signature that drifted, not enough to catch a bitrate that never reaches the tra
   **CH3** (`kvaser:2`) ↔ **PCAN-USB Pro FD** channel 1 (`pcan:PCAN_USBBUS1`), arbitration 500
   kbit/s, every payload verified byte for byte against what was sent. Classic **and** FD with BRS,
   both directions, at data phases **1, 2, 4 and 8 Mbit/s** — 18/18 legs at each. Run with
-  `crosscheck --a kvaser:2@500000/<d> --b pcan:PCAN_USBBUS1@500000/<d> --fd`.
+  `crosscheck kvaser:2@500000/<d> pcan:PCAN_USBBUS1@500000/<d> --fd` (the two addresses are
+  positional).
 
   Two things the bench decided that reading could not. **CAN_Write is refused outright on an
   FD-initialised channel** (`PCAN_ERROR_ILLOPERATION`, 0x8000000) — so a *classic* frame on an FD
@@ -106,7 +108,8 @@ signature that drifted, not enough to catch a bitrate that never reaches the tra
   saturated wire for eight data bytes — 111 bits per frame caps 500 kbit/s at ~4,504/s.
   One adapter, one bitrate, two channels of one device wired to each other; not a vehicle bus.
 
-The **ABI is the exception**: 14 `_Static_assert`s pin every struct size and offset used by
+The **ABI is the exception**: `_Static_assert`s in `vector_shim.h` (and two in
+`vector_windows.v`) pin every struct size and offset used by
 the Vector backend, and those are compile-time, so the mingw job checks them on every push.
 `vxlapi.h` (25.20.14) was read for each typedef and signature — `XLstatus` is `short`,
 `XLportHandle` is `long` (32-bit here), `XLevent` is 48 bytes, `XLchannelConfig` 227,
@@ -151,11 +154,12 @@ its own proprietary API.
 ## The seam
 
 Callers depend only on `transport.Bus` (`send`/`recv`/`close`) and `transport.open(iface) !Bus`.
-The dispatcher is per-OS: `open_linux.v` handles `inproc:` / `udp:` / SocketCAN;
-`open_windows.v` handles `inproc:` / `udp:` / `pcan:` / `kvaser:` / `vector:` and errors
-otherwise. Each backend is one `transport/<vendor>_windows.v` file — V gates it to Windows by
-the `_windows.v` suffix, as with `socketcan_linux.v` — so a new vendor is additive and never
-compiles off-Windows.
+The dispatcher is per-OS: `open_linux.v` handles `inproc:` / `udp:` / `cansub:` / SocketCAN;
+`open_windows.v` handles `inproc:` / `udp:` / `pcan:` / `kvaser:` / `vector:` / `cansub:` and
+errors otherwise. Each DLL backend is one `transport/<vendor>_windows.v` file — V gates it to
+Windows by the `_windows.v` suffix, as with `socketcan_linux.v` — so a new vendor is additive
+and never compiles off-Windows. CANsub is the exception: HTTP and WebSocket, not a DLL, so it
+is one `cansub.v` that compiles on both platforms.
 
 ## No SDK, no MSVC: the DLL is loaded at runtime
 
@@ -183,8 +187,9 @@ Two rules keep this section from rotting, because a stale quirk is worse than an
 The code comments stay where they are and say something different: they justify a local decision
 to whoever is editing that line. This is the index.
 
-**PCAN (PEAK)** — `PCANBasic.dll`; about six calls (`CAN_Initialize`, `CAN_Uninitialize`,
-`CAN_Read`, `CAN_Write`, `CAN_GetStatus`, `CAN_GetErrorText`). Frames are
+**PCAN (PEAK)** — `PCANBasic.dll`; nine calls in the backend (`CAN_Initialize`/`CAN_InitializeFD`,
+`CAN_Uninitialize`, `CAN_Read`/`CAN_ReadFD`, `CAN_Write`/`CAN_WriteFD`, `CAN_GetStatus`,
+`CAN_SetValue`) plus `CAN_GetValue` in the optional discovery shim. Frames are
 `TPCANMsg{ID u32; MSGTYPE u8; LEN u8; DATA [8]u8}`, with extended carried in the
 MSGTYPE flags. The free driver has no software virtual channel, so testing needs the adapter.
 
@@ -222,9 +227,9 @@ Quirks. The first one is the worst thing in this file, and everything under it f
 | **FD arbitration must come from the 80% sample-point family** | canlib's *classic* constants sample at 62.5%, and a loopback bench cannot tell the difference — both ends are wrong together | `kvaser_fd_arb_code` |
 | **`canWrite` takes a BYTE COUNT for FD**, where PCAN takes a DLC code | the two vendors differ on the same argument | `ct_kvaser_write_fd` |
 | **`canERR_TXBUFOFL` means "no room", not "failed"** | as PCAN's queue-full does | `kvaser_err_txbufofl` → `busy_error` |
-| **A second open is a second SUBSCRIBER**, with its own receive queue | so `kvaser:` is deliberately NOT routed through the refcounted single-open that `pcan:` needs — sharing it would hand every reader one bus and lose frames (#212) | `open_windows.v`; the handle registry coordinates only the *mode*, not the handles |
+| **A second open is a second SUBSCRIBER**, with its own receive queue | so `kvaser:` is deliberately NOT routed through the shared sequence-ring hub that `pcan:` needs — sharing it would hand every reader one bus and lose frames (#212) | `open_windows.v`; the handle registry coordinates only the *mode*, not the handles |
 
-**Vector (XL Driver Library)** — `vxlapi64.dll`, the most verbose of the three
+**Vector (XL Driver Library)** — `vxlapi64.dll`, the most verbose of the three DLL backends
 (`xlOpenDriver`, `xlGetApplConfig`, `xlGetChannelMask`, `xlOpenPort`, `xlCanSetChannelBitrate`,
 `xlCanSetChannelOutput`, `xlActivateChannel`, `xlCanTransmit`, `xlReceive`, `xlClosePort`,
 `xlCloseDriver`). Several things are specific to it:
@@ -478,9 +483,10 @@ the exit status is [#197](https://github.com/MartenH/blobly_net/issues/197).
 It does need those two channels to be *registered*, though — 61 and 62 are hardcoded, and the borrow
 refuses to touch a channel it cannot first read, which is exactly the protection that stops it
 "restoring" a mapping by clearing one. On a bench where `blobly_net` has never run they are not
-registered, so `--pair` exits before assigning anything. Register them once — assign each to any row
-and release it, or tick **create unregistered channel** in Discover — and it works from then on.
-Letting the borrow bootstrap them itself is [#195](https://github.com/MartenH/blobly_net/issues/195).
+registered, so `--pair` exits before assigning anything — unless you pass `--create-channels`,
+which creates them for the borrow and clears them again afterwards
+([#195](https://github.com/MartenH/blobly_net/issues/195)). Off by default, because an
+unregistered channel is indistinguishable from one dropped read of an occupied one.
 
 ### "It only shows one speed" — where the CAN-FD data rate lives
 
@@ -555,8 +561,8 @@ higher one is a physical-layer problem, not a software one. Two checks isolate i
   (`XL_HWTYPE_VIRTUAL`), so it touches no real bus on any machine. Use this rather than naming
   `--probe` rows: row numbers are per-bench, and `--pair` transmits in **normal** mode, so a
   hardcoded pair of rows that happen to be virtual here can be two live buses somewhere else.
-  Like `--pair`, it borrows fixed application channels — 63 and 64 — and cannot bootstrap them, so
-  on a bench where `blobly_net` has never run they need registering once first
+  Like `--pair`, it borrows fixed application channels — 63 and 64 — and on a bench where
+  `blobly_net` has never run they are unregistered: pass `--create-channels`, as for `--pair`
   ([#195](https://github.com/MartenH/blobly_net/issues/195)).
 - **Drop the bitrate until it passes.** If the backend is fine and 125 k works while 500 k does not,
   what is left is the wire.
@@ -649,12 +655,12 @@ because it behaved differently; these two columns are the same two-second window
 is the part that carries the meaning: it is what shows BRS is switching rather than the payload
 quietly going out at the arbitration rate.
 
-**Do not convert those counts into a throughput figure.** `--pair` reports frames the driver
-*accepted* divided by the run length, while its queue keeps draining after the window closes, so the
-`/s` it prints includes buffer absorption. The giveaway is this page's own arithmetic: it printed
-4,786/s for eight-byte frames at 500 kbit/s, above the ~4,504/s that 111 bits per frame allows, and
-a wire cannot beat its own bit time. Counts and arrival percentages are exact; a rate derived from
-them is an upper bound. [#196](https://github.com/MartenH/blobly_net/issues/196) tracks fixing that.
+**The rate `--pair` prints is delivered frames over the time they took to arrive** (since
+[#196](https://github.com/MartenH/blobly_net/issues/196)). It used to divide frames the driver
+*accepted* by the run length while the queue kept draining after the window closed, which is how
+this page once printed 4,786/s for eight-byte frames at 500 kbit/s — above the ~4,504/s that 111
+bits per frame allows, and a wire cannot beat its own bit time. The counts and arrival percentages
+were always exact.
 
 **Termination, as measured rather than assumed:** none failed classic CAN from 200 kbit/s up; one
 carried FD to 8 Mbit/s; two behaved identically to one. All of that is on a 30 cm link, which is
@@ -694,7 +700,7 @@ silentcheck --listener pcan:PCAN_USBBUS1@500000 --talker kvaser:2@500000
 
 **It measures the node that is NOT under test**, which is the only way an absent acknowledgement
 can be observed: an ACK is generated by the receiving controller in hardware, so the evidence that
-one stopped is the *talker* losing its and climbing its error ladder. Four phases:
+one stopped is the *talker* losing its and climbing its error ladder. Five phases:
 
 | phase | what it establishes |
 |---|---|
@@ -702,6 +708,7 @@ one stopped is the *talker* losing its and climbing its error ladder. Four phase
 | 2 · marked **mid-run** | the talker degrades while the listener still HEARS it. A listener that hears nothing is not listen-only, it is off the bus, and that is reported as its own failure |
 | 3 · unmarked **mid-run** | the silence lifts without reopening anything |
 | 4 · closed while marked, reopened unmarked | a channel the previous run left silent does not come back silent |
+| 5 · a NEW handle joins a wire this process already holds, after the mark changed | the joining open reconciles the controller itself rather than assuming the mark was obeyed |
 
 `--handles` defaults to **3**, not 1, and that default is the whole reason this tool caught what it
 did. A GUI Start opens each wire several times — a monitor plus named and anonymous transmit taps —
@@ -732,7 +739,8 @@ channel per Start, and one operator tick should cost one reconfiguration, not on
 fault ladder. Do not point it at a bus you are not willing to disturb.
 
 Measured on a **PCAN-USB Pro FD** CAN1 and a **Kvaser USBcan Pro 5xHS** (CH1↔CH2, and CH3↔the
-PCAN), terminated. All four pairings pass all four phases, including at 500k/2M CAN-FD:
+PCAN), terminated. All four pairings pass every phase (four when this was measured; phase 5
+arrived with #221 and the CANsub run of 2026-08-27 covers it), including at 500k/2M CAN-FD:
 
 | listener (silenced) | talker | phase 2 result |
 |---|---|---|
@@ -765,8 +773,10 @@ rather than a bug in the backend.
 
 Every backend now reports the controller's fault ladder (warning / error-passive / **BUS-OFF**)
 through one decode in `modules/transport/health.v`: PCAN via `CAN_GetStatus`, Kvaser via
-`canReadStatus`, Vector from its chip state. The Buses panel colors the row (`BOFF` red) and
-the Log narrates transitions. The decoders are pinned to the vendors' header constants by unit
-tests; **the live paths are NOT yet hand-verified on hardware** — the same bench pass that
-verified each backend's I/O should provoke a bus-off (short CANH/CANL, or a lone node
-transmitting) and confirm the row turns red and the Log speaks.
+`canReadStatus`, Vector from its chip state, CANsub from the device's controller status,
+SocketCAN from the kernel's error frames. The Buses panel colors the row (`BOFF` red) and the
+Log narrates transitions. The decoders are pinned to the vendors' header constants by unit
+tests, and the warning / error-passive rungs have been read live on the bench (`silentcheck`
+phase 2, above); **BUS-OFF itself has not been provoked on hardware** — shorting CANH/CANL, or
+a lone node transmitting, and confirming the row turns red and the Log speaks is the check
+still owed.

@@ -1,22 +1,25 @@
 # Real CAN hardware — Kvaser / PEAK / Vector across Linux, WSL, Windows
 
-Support differs sharply by vendor *and* OS. Two adapters are **verified against real
-hardware** — a **Kvaser Leaf Light v2** (classic CAN) and a **PCAN-USB Pro FD** (CAN-FD),
-tested cross-vendor on one bus. **Vector** is listed for comparison: no backend
-exists today, and the XL one is [planned, not written](../ROADMAP.md).
+Support differs sharply by vendor *and* OS. Four vendors are **verified against real
+hardware** — Kvaser (a Leaf Light v2, classic; a USBcan Pro 5xHS, FD), PEAK (PCAN-USB Pro FD),
+Vector (a VN1630A, Windows-only because there is no mainline Linux XL driver) and CANsub (a
+CSS Electronics CANsub.4, a USB *network* adapter reached identically from Linux and Windows
+with no driver at all); the dates and runs are in
+[`windows_can_hardware.md`](windows_can_hardware.md).
 
 ## Support matrix
 
-| | Kvaser Leaf Light v2 | PCAN-USB Pro FD | Vector (VN16xx/…) |
-|---|---|---|---|
-| **Native Linux** | ✅ mainline `kvaser_usb` → `can0` (SocketCAN) | ✅ mainline `peak_usb` → `can0`/`can1` | ❌ no mainline driver |
-| **WSL2** | ⚠️ `usbipd-win` + WSL-kernel driver | ⚠️ same | ❌ — |
-| **Native Windows** | vendor SDK — Kvaser **CANlib** | vendor SDK — PEAK **PCAN-Basic** | vendor SDK — Vector **XL Driver Library** |
-| **CAN-FD** | classic only | ✅ FD | ✅ FD |
+| | Kvaser (Leaf Light v2, USBcan Pro 5xHS) | PCAN-USB Pro FD | Vector (VN16xx/…) | CANsub (CSS Electronics) |
+|---|---|---|---|---|
+| **Native Linux** | ✅ mainline `kvaser_usb` → `can0` (SocketCAN) | ✅ mainline `peak_usb` → `can0`/`can1` | ❌ no mainline driver | ✅ `cansub:<id>/1` — a network device, no driver |
+| **WSL2** | ⚠️ `usbipd-win` + WSL-kernel driver | ⚠️ same | ❌ — | ✅ same (it is on the network, not USB-passthrough) |
+| **Native Windows** | vendor SDK — Kvaser **CANlib** | vendor SDK — PEAK **PCAN-Basic** | vendor SDK — Vector **XL Driver Library** | ✅ the same string, the same code |
+| **CAN-FD** | Leaf Light v2 classic only; USBcan Pro 5xHS ✅ FD to 8 Mbit/s | ✅ FD | ✅ FD | ✅ FD (64-byte BRS at 2 Mbit/s) |
 
-**Takeaway:** Kvaser and PEAK are the two best-supported vendors (in-tree SocketCAN
-drivers) and the two this project supports today. Vector has no mainline Linux driver at
-all, so it is Windows-SDK-only by nature — not a candidate for Linux/WSL work either way.
+**Takeaway:** Kvaser and PEAK are the two with in-tree SocketCAN drivers, so on Linux and WSL
+they need no vendor code; Vector has no mainline Linux driver at all, so it is reached through
+its Windows SDK only; CANsub is neither — it is a network device, and the one hardware backend
+that works from Linux without SocketCAN (`cansub:<device-id>/1@500000`).
 
 ## Native Linux — zero new code (recommended first bring-up)
 
@@ -77,23 +80,23 @@ No SocketCAN on Windows, so each vendor needs its SDK DLL wrapped via C-interop 
 `Bus` implementation — exactly what the platform seam (`open_windows.v` /
 `discover_windows.v`) was built for.
 
-> **Kvaser and PEAK are built and hardware-verified** (cross-vendor send/receive on a
-> shared 500 kbit/s bus, 2026-06-18) — use the `kvaser:` / `pcan:` interface prefixes.
-> **Vector is not implemented**; its row below is the sketch it would follow.
+> **Kvaser, PEAK and Vector are all built and hardware-verified** — use the `kvaser:` /
+> `pcan:` / `vector:` interface prefixes (and `cansub:` for the network adapter, on either OS).
 > [`windows_can_hardware.md`](windows_can_hardware.md) is the current, detailed reference
-> for the Windows path (DLL loading, bitrate mapping, the `slcan` fallback).
+> for the Windows path (DLL loading, bitrate mapping, listen-only, and what an `slcan`
+> fallback would take — it is not implemented).
 
 | Vendor | SDK | File | Key calls (open/tx/rx) | Discovery |
 |---|---|---|---|---|
 | Kvaser | CANlib (`canlib32.dll`) | `transport/kvaser_windows.v` | `canOpenChannel` / `canWrite` / `canReadWait` | `canGetNumberOfChannels` |
 | PEAK | PCAN-Basic (`PCANBasic.dll`) | `transport/pcan_windows.v` | `CAN_Initialize` / `CAN_Write` / `CAN_Read` | `CAN_GetValue(PCAN_ATTACHED_CHANNELS)` |
-| Vector | XL Driver Library (`vxlapi64.dll`) | `transport/xl_windows.v` *(not implemented)* | `xlOpenPort` / `xlCanTransmit` / `xlReceive` | `xlGetDriverConfig` |
+| Vector | XL Driver Library (`vxlapi64.dll`) | `transport/vector_windows.v` (+ `vector_shim.h`, where the open/config calls live) | `xlOpenPort` / `xlCanTransmit`(`Ex`) / `xlReceive`, `xlCanReceive` | `xlGetDriverConfig` |
 
 Each implements the existing `transport.Bus` interface, so callers don't change.
-`discover_windows.v` grows from "virtual buses only" to also enumerate attached
-channels via the calls above (the "vendor enum later" TODO already in that file).
-Interface strings would extend the `open()` dispatcher, e.g. `kvaser:0`, `pcan:USB1`,
-`vector:0:1` — alongside the existing `udp:`/`inproc:`.
+`discover_windows.v` enumerates Kvaser, PCAN and Vector channels alongside the software buses.
+The `open()` dispatcher accepts `pcan:`, `kvaser:`, `vector:` and `cansub:` beside
+`inproc:`/`udp:` — e.g. `kvaser:0`, `pcan:PCAN_USBBUS1@500000`, `vector:1@500000,silent`
+(Vector channels are numbered from 1).
 
 **FD note:** `transport.CanFrame` carries CAN-FD (`fd`/`brs`, up to 64 payload bytes), and
 **SocketCAN sends it** — the socket asks for `CAN_RAW_FD_FRAMES` at open and falls back to

@@ -10,20 +10,8 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
 
 ## Next
 
-- 🔨 **Make a real release.** The machinery is in: `v.mod` is the one version statement (the
-  binary decodes it into `--version` and the window title), and `release.yml` — push a
-  `v0.1.0`-style tag and it publishes a Linux tar.gz plus the Windows zip (built by *calling*
-  `windows.yml`, which publishes for a tag only when the call carries `publish_bundle=true`
-  from behind the guard) with notes composed from
-  [`packaging/RELEASE_NOTES_HEADER.md`](packaging/RELEASE_NOTES_HEADER.md) — the standing
-  honesty statement: the virtual paths CI-verified, SocketCAN exercised on the bench (CI has
-  no vcan), the Windows vendor backends hand-verified on real hardware ([windows_can_hardware.md](docs/windows_can_hardware.md)) —
-  plus GitHub's generated changelog. The guard proves the tag equals `v.mod` AND the tagged
-  commit is on reviewed `main`. **No vendor CAN library ships, ever** — `vxlapi64.dll`,
-  `PCANBasic.dll`, `canlib32.dll` are the user's to install and the XL terms forbid
-  redistributing Vector's; only the mingw runtime DLLs are ours. The bundle payload list
-  lives once, in `scripts/stage_bundle.sh`. What remains is the act itself:
-  `git tag v0.1.0 && git push origin v0.1.0`. Later: a `-prod` build once CI exercises one.
+- ⏭️ **A `-prod` build**, once CI exercises one. Releases themselves are routine since
+  `v0.1.0` (2026-08-21) — see the shipped list and [docs/releasing.md](docs/releasing.md).
 - ⏭️ **`fill_rect` / drawlist binding in `vgui`** — the blocker for two shipped-adjacent features:
   **trace-manifest rows** and a **drawn topology graph** in the System panel both wait on it.
 - ⏭️ **System wizards** ([`docs/dbc_editor.md`](docs/dbc_editor.md)) — "add a signal/frame"
@@ -45,18 +33,6 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   - **Per-connection state** for DoIP (shared with the threading item below).
 
 ## Planned
-
-- 🧭 **Rest bus from a real recording** ([#98](https://github.com/MartenH/blobly_net/issues/98)) —
-  drive the surrounding ECUs from a capture of the actual vehicle instead of hand-written signal
-  generators, so the SUT hears its real environment. `canlog` and `mf4` already read the files and
-  `modules/player` already paces the decoded entries (play/seek/loop, tested), and `replay:` is
-  already in the project schema; what is missing is a worker, `monitorable()` accepting those
-  channels, and **source-bus selection** — a multi-bus `.mf4` loads every bus into one entry list
-  (`mf4:bus0`, `mf4:bus2`, …) while `replay:` names a single channel, so the config has to say
-  which recorded bus feeds which channel. The design question is the
-  **subtraction** — a capture contains the ECU under test, so replaying it verbatim puts two
-  transmitters on every one of its ids (exactly the collision the trace's `origin` column now
-  makes visible). The DBC names each message's sender, which is what makes that solvable.
 
 - 🧭 **SOME/IP-SD** (service discovery) + the SOME/IP **sim service** — explicitly deferred in
   [`docs/ethernet_architecture.md`](docs/ethernet_architecture.md).
@@ -97,11 +73,13 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
   recorded as a known limitation in [`docs/doip.md`](docs/doip.md).
 - 🧭 **LIN** — `modules/lindb` (LDF) + a `LinFrame` type. Kept type-safe alongside `CanFrame` /
   `EthFrame` rather than faked behind a generic frame.
-- 🧭 **Split `cmd/blobly_net/main.v`** — *the mechanical half landed via #123: 20 per-concern
-  files, pure moves, build targets the directory. What remains here is the second half below —
-  the app state and the telemetry-speaking core paths, which no file move dislodges.*
-  It was **7,475 lines / 231 KB** (measured 2026-08-10; 11,328 by the split), and essentially every
-  GUI change touches it. The cost is not aesthetic, it is measurable in four places: GitHub
+- 🧭 **Split `cmd/blobly_net/main.v`** — *the mechanical half landed via #123: per-concern
+  files (24 today, 14,751 lines between them, `main.v` itself 311), pure moves, build targets
+  the directory. What remains here is the second half below — the app state and the
+  telemetry-speaking core paths, which no file move dislodges.*
+  The motivation, as measured before the split (2026-08-10): one file of **7,475 lines /
+  231 KB** (11,328 by the time it was split) that essentially every GUI change touched. The
+  cost was not aesthetic, it was measurable in four places: GitHub
   renders its diffs slowly enough to be painful on every PR; review findings arrive as line
   numbers into one enormous file; two GUI branches almost always collide there; and the editor
   and language server carry it on every keystroke. The split is per-panel (Trace, Graphics,
@@ -255,8 +233,17 @@ Kept last: this is where the roadmap ends, not where it starts.
 
 **Buses & transport**
 - ✅ **SocketCAN** (Linux) — `vcan0` virtual and real adapters
-- ✅ **PEAK PCAN** and ✅ **Kvaser** (Windows) — vendor DLLs at runtime, both hardware-verified
-- ✅ UDP software bus (`inproc:`) — driver-free tests and demos
+- ✅ **PEAK PCAN**, ✅ **Kvaser** and ✅ **Vector XL** (Windows) — vendor DLLs at runtime, all three
+  hardware-verified
+- ✅ **CANsub** (CSS Electronics) — the one hardware backend that is neither a vendor DLL nor
+  platform-gated: a USB network adapter over REST + WebSocket, HW-verified classic and FD
+- ✅ Software buses — in-process (`inproc:`) and localhost UDP multicast (`udp:`) — driver-free
+  tests and demos
+- ✅ **Releases** — `v0.1.0` cut 2026-08-21; `release.yml` proves tag = `v.mod` and the tagged
+  commit is on `main`, `windows.yml` publishes only behind that guard. **No vendor CAN library
+  ships, ever** — `vxlapi64.dll`, `PCANBasic.dll`, `canlib32.dll` are the user's to install
+  with the vendor's driver, and the Vector XL terms forbid redistributing theirs; only the
+  mingw runtime DLLs are ours. The bundle payload list lives once, in `scripts/stage_bundle.sh`
 
 **CAN & databases**
 - ✅ Live trace, send panel, signal decode
@@ -280,8 +267,14 @@ Kept last: this is where the roadmap ends, not where it starts.
   stopped being true): replay channels play on Start, every bus of one recording shares one
   clock, and the **Replay panel** is the live transport surface (pause / seek / speed / loop,
   position-preserving via `player.set_speed`)
+- ✅ **Rest bus from a recording** (#98) — the ECU under test subtracted by DBC sender
+  (`replay.exclude`), several recorded buses of one `.mf4` mapped onto several live channels
+  from one clock (`replay.bus`), the Scan-recording dialog to pick both; `cmd/restbus` headless
 
 **Observability**
+- ✅ **`Bus.diagnostics()`** (#213) — dropped, controller-error and undecodable counts beside
+  health on every backend, a chip on the Buses row, narrated by the Log, printed by the
+  headless runner at close
 - ✅ **Trace chart** — handler/thread swimlanes, derived idle lane, execution-vs-response bars,
   preemption cut-links, per-core lanes, RTOS priority labels, multi-block dump
 - ✅ **Cross-core time correlation** — a satellite core's block carries its measured clock offset

@@ -20,7 +20,7 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   matching C declaration`. It comes from **vlib**, not from this repo, and it reproduces on
   untouched files on `main` — so it reads exactly like "the module suite does not run on this
   machine", which cost most of a session on that assumption. It is V's default **tcc**:
-  `v -enable-globals -cc gcc test modules/` runs the whole suite (57/57). The Linux CI job uses
+  `v -enable-globals -cc gcc test modules/` runs the whole suite (72 test programs today). The Linux CI job uses
   the default compiler and never sees it.
 - 🔴 **A timed `select` can panic `Invalid argument` under starvation.** V 0.5.1's
   `channel_select` computes `remaining := timeout - stopwatch.elapsed()` only after its
@@ -130,7 +130,7 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
 
 ## CI (GitHub Actions)
 
-- 🔴 **V 0.5.2 tries its experimental V3 compiler first, and CI paid for it twice.** Every
+- 🟡 **V 0.5.2 tries its experimental V3 compiler first, and CI paid for it twice.** Every
   build attempts V3 and falls back to the established compiler when V3 cannot build the
   program — 65 of the 72 test programs on the Linux runner, each compiled twice: the test
   step summed 1,807 s of compile time where the same files take 100 s on a 0.5.1 bench, and
@@ -143,8 +143,9 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   compilation error — so `V_C_ERROR_BUG_REPORT_DISABLED=1` sits beside it, which is V's
   opt-out for every reporting path (and is harmless on a bench, where the flag is not). If a
   CI log ever shows `note: V3 could not build this program` again, the env has stopped
-  reaching `v`.
-- 🔴 **V will NOT self-compile on the Windows runner — CI must DOWNLOAD a prebuilt V.**
+  reaching `v`. `windows.yml` sets neither: it runs the pinned `v-toolchain` build
+  (`v-ddc9c99`, a 2026-06 master), and whether that build attempts V3 has not been checked.
+- 🟡 **V will NOT self-compile on the Windows runner — CI must DOWNLOAD a prebuilt V.**
   `makev.bat` hangs at `Compiling v_stage.exe`, independent of bootstrap compiler, final compiler,
   disk and Defender (every combination timed out at up to 90 min; the same build is ~100 s
   locally). And there's no fallback: V's newest *release* (0.5.1) predates the `vlib/yaml` that

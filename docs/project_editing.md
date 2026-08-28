@@ -14,8 +14,9 @@ Buses ▸ Configure…) has two views of the same project:
 
 The File tab exists because the structured editor covers **buses only**, while most of what a
 project says has no form at all: simulated ECUs and their signal generators, response rules,
-`protect:`, per-ECU `uds:`, channel-level `verify:`, and interactive senders. Without it those
-are reachable only by leaving the application.
+`protect:`, per-ECU `uds:` and channel-level `verify:`. (Interactive senders do have one — the
+Generators panel adds, edits, removes and saves them.) Without it those are reachable only by
+leaving the application.
 
 It edits the **text**, and saves the text — `to_yaml()` does not preserve comments, and a
 `.blobnet` is where a bench setup explains itself to the next person. Round-tripping through the
@@ -71,7 +72,12 @@ replaces the overloaded "channel".
 | UDP software bus | `udp` | `239.0.0.1:5000` | `udp:239.0.0.1:5000` |
 | PCAN | `pcan` | `PCAN_USBBUS1` | `pcan:PCAN_USBBUS1` |
 | Kvaser | `kvaser` | `0` | `kvaser:0` |
+| Vector | `vector` | `1` | `vector:1` |
+| CANsub | `cansub` | `e5a16adf/1` | `cansub:e5a16adf/1` |
 | DoIP (Ethernet diag) | `doip` | `127.0.0.1:13400` | `doip:127.0.0.1:13400` |
+
+The picker is platform-filtered (`project.windows_adapters` / `linux_adapters`): `vcan`,
+`socketcan` on Linux only, `pcan`/`kvaser`/`vector` on Windows only, `cansub` on both.
 
 The transport layer is untouched: parse composes `adapter`+`address` into the existing
 `iface` scheme string that `transport.open()` already consumes.
@@ -278,11 +284,11 @@ Generalize `gen_dirty` → `app.dirty`. Title/toolbar shows `name ●` while dir
 
 ## File browser (in-imgui, simple)
 
-imgui has no native dialog and WSL isn't the primary target, so we add a small
-self-contained imgui browser: a modal listing `os.ls(dir)` (parent, dirs, then files),
-`*.blobnet` (+ `*.yml`/`*.yaml`) filter in open mode, a filename input in save mode,
-Cancel/OK. Starts in the current project's dir, else `projects/`. May need two thin
-`vgui.modal_begin/end` glue wrappers (a glue change ⇒ rebuild with `DEPS=1`).
+imgui has no native dialog and WSL isn't the primary target, so there is a small
+self-contained imgui browser (`draw_filebrowser`, `cmd/blobly_net/panel_config.v`): a plain
+window — not a modal; no vgui glue was needed — listing `os.ls(dir)` (parent, dirs, then
+files), `*.blobnet` (+ `*.yml`/`*.yaml`) filter in open mode, a filename input in save mode,
+Cancel/OK. Starts in the current project's dir, else `projects/`.
 
 ## Configuration editor — the Bus fields
 
@@ -302,12 +308,18 @@ Per bus (a collapsing header `CAN1 · Powertrain` with **Remove**):
 | **DBCs** | list + Remove each + **＋ Add DBC** (browser, `*.dbc`) | `bus.databases` |
 | manifest | `input_text` + **…** | telemetry CSV |
 | DoIP: tester/ecu addr, vin, eid | `input_text` | doip adapter only |
-| Replay: source / speed / loop | inputs | mode==replay only |
+| Replay: source / speed / loop, plus **Scan recording** — pick the recorded bus (`bus:`) and tick nodes to subtract (`exclude:`) | inputs + dialog | mode==replay only |
 
-Panel: **＋ Add bus** (append default `virtual` bus), **Save**, **● modified**. Nodes and
-senders stay owned by the Simulation and Generators panels (all edit the same `app.proj`,
-so one Save writes everything). Enum pickers use toggle-button rows — no `combo` widget
-needed for the first cut.
+Panel: **＋ Add bus** (append default `virtual` bus), **Save**, **● modified**. Senders stay
+owned by the Generators panel; simulated nodes are edited in the File tab (the Simulation panel
+only enables/disables them and injects faults). All edit the same `app.proj`, so one Save
+writes everything. Enum pickers use toggle-button rows — no `combo` widget needed for the
+first cut.
+
+> The step-by-step plan that follows is the 2026-07 design and is kept for the reasoning; where
+> it names an API that shipped differently — the file browser is a plain window (no
+> `vgui.modal_*`), `draw_busconfig` was removed rather than kept, and the trace's bus filter is
+> `app.filter_bus` ahead of `trace_pass` rather than a parameter on it — the code is right.
 
 ## Trace: per-bus / per-network view
 
@@ -324,10 +336,9 @@ separable). Since the config now defines the bus/network list, the Trace reads i
 show:  [All]  [CAN0 · vcan0]  [CAN1 · vcan1]        (grouped under network headers when set)
 ```
 
-Clicking a chip restricts the view to that bus; **All** clears. Backed by a selection set on
-`App` (`trace_bus string` — `''` = all; or a `map[string]bool` for multi-select). Fold it
-into `trace_pass` as a structured predicate (match on `r.ch == bus`) *before* the text
-filter, so the two compose (pick a bus, then still text-search within it).
+Clicking a chip restricts the view to that bus; **All** clears. Backed by `app.trace_bus`
+(`''` = all), applied by `app.filter_bus` *before* the text filter (`trace_pass` is unchanged),
+so the two compose (pick a bus, then still text-search within it).
 
 **Bindable second panel.** The existing "Trace (filter)" panel gains its own bus binding
 (`ftrace_bus`), so you can have `Trace → vcan0` and `Trace (filter) → vcan1` open side by

@@ -24,14 +24,22 @@ You'll see per-test results and a summary:
 
 ```
 project: Simulation demo — CAN1 + CAN2  (projects/sim-demo.blobnet)
-channel CAN1 (inproc:CAN1): simulating 2 node(s) + UDS server
+channel CAN1 (inproc:CAN1): simulating 2 node(s) + 2 UDS target(s)
+channel DoIP1 (doip:127.0.0.1:13400): DoIP entity, logical address 0x1000
 ...
 === tests/diag_basic.lua ===
   ok   default diagnostic session starts
   ok   VIN reads back over multi-frame ISO-TP
   ...
-10 passed, 0 failed, 0 script error(s)
+12 passed, 0 failed, 0 script error(s)
 ```
+
+(the count grows with the suites)
+
+(The runner also prints, on stderr at exit, what each bus or connection it held counted that no
+frame carried — dropped, controller-error or undecodable records — and waits up to two seconds
+for its bus loops, warning `N bus loop(s) still busy at exit` if one is stuck. Neither is a
+failure.)
 
 The runner **exits non-zero if any test fails**, so it drops straight into CI.
 
@@ -43,7 +51,12 @@ scripts/runtests.sh [--project <file.blobnet>] <script.lua> [more.lua ...]
 
 - `--project <file.blobnet>` (or `-p`) — the project that defines the bus setup.
   Defaults to `projects/sim-demo.blobnet`. See [§4](#4-projects-and-the-simulation).
-- One or more `.lua` scripts, run in order.
+- **A script may declare the project it needs** in its leading comment —
+  `-- @project ../projects/doip-demo.blobnet`, resolved relative to the script. The declaration
+  wins: a `--project` that contradicts it, or two scripts in one invocation declaring different
+  projects, is refused rather than run (one run brings up one project).
+- One or more `.lua` scripts, run in order. With none named, `scripts/runtests.sh` runs every
+  file in `tests/`, one invocation per file — which is what CI does.
 
 Raw form (what the wrapper runs):
 
@@ -54,11 +67,15 @@ v -enable-globals -path "@vlib|@vmodules|modules" run cmd/script/run.v \
 
 ### What the runner does for you
 
-For every **enabled** channel in the project it opens the bus, and if the channel
-declares simulated ECUs it also starts:
+For every **enabled** channel that declares simulated ECUs it starts:
 
 - the **simulated ECUs** (they transmit their cyclic messages and answer requests), and
-- a **UDS diagnostic server** (answers tester requests on `0x7E0` → `0x7E8`).
+- their **diagnostic responders** — one per node that configures `uds:`, on that node's own
+  ids, or a single built-in server on `0x7E0` → `0x7E8` if none does.
+
+A `type: doip` channel with simulated nodes gets a real DoIP entity bound on its host:port
+instead of a bus. A channel without simulated nodes is monitor-only: nothing is started for it,
+and it exists for the scripts to open.
 
 So your script has a live bus to talk to — driver-free, entirely in-process. Against
 real hardware later, the same scripts run unchanged; only the project's `interface:`
@@ -228,16 +245,30 @@ Plus the full Lua 5.4 standard library (`string`, `table`, `math`, …).
 
 ---
 
+### Also in the prelude
+
+| Function | What it does |
+|---|---|
+| `sim.fault(channel, node, message, kind [, ms [, signal]])` | inject a fault into a simulated ECU's message — `drop`, `bad_crc`, `freeze_counter`, `out_of_range` (with `signal`), or `clear`; `ms` limits it in time. A fault that cannot take effect (no such node, no protection field for `bad_crc`) is refused, not silently armed. See [simulation.md](simulation.md). |
+| `sim.clear_fault(channel, node, message)` | lift it |
+| `doip.discover(channel)` | one identification request to the channel's configured endpoint |
+| `doip.listen(window_ms [, {port=, ip6=, from=}])` | collect vehicle announcements for a window; each entry names the sender's endpoint. `from=` (listen on that channel's own port) is accepted but currently ignored — [#233](https://github.com/MartenH/blobly_net/issues/233) |
+
+`uds.open` validates its ids (negative or above `0x1FFFFFFF` is an error) and uses 29-bit
+addressing for any id above `0x7FF`. The handle it returns exposes `handle` and `channel`.
+
 ## 4. Projects and the simulation
 
 Scripts run against a **project** file (`.blobnet`, YAML), which defines the channels. The shipped
 `projects/sim-demo.blobnet` declares `CAN1` (and `CAN2`) on a driver-free in-process bus,
-each with the `dbc/blobly_net.dbc` database and simulated ECUs. That's why the example
-scripts can read a VIN and decode `Powertrain` with no hardware.
+each with the `dbc/blobly_net.dbc` database and simulated ECUs, and `DoIP1`, a DoIP endpoint on
+127.0.0.1:13400 serving the same identity as `SUT` (which is what `uds.open` over DoIP and
+`tests/mixed_carriers.lua` use). That's why the example scripts can read a VIN and decode
+`Powertrain` with no hardware.
 
 The channel `name:` in the project is the string you pass to `uds.open` / `bus.*` /
 `decode` (e.g. `"CAN1"`). The channel `databases:` provide the DBC used by
-`send_message` and `decode`. Full project schema: [CLAUDE.md](../CLAUDE.md) (Phase 9)
+`send_message` and `decode`. Full project schema: [project_editing.md](project_editing.md)
 and `modules/project`.
 
 To run against **real hardware** later, point a channel's `interface:` at a vendor
@@ -248,12 +279,13 @@ adapter (e.g. `pcan:PCAN_USBBUS1`) — the scripts don't change. See
 
 ## 5. Running from the GUI
 
-The **Script** panel (toggle it from the left activity bar — the `ƒ` icon, or the
-**View** menu) runs scripts against the **live measurement**:
+The **Script** panel (toggle it from the left activity bar — **Lua** — or **View ▸ Script**)
+runs scripts against the **live measurement**:
 
 1. Press **▶ Start** first (the script talks to the running buses/sims).
-2. Type a path in **File** and press **▶ Run**, or click a sample button
-   (`diag_basic.lua` / `bus_signals.lua`). **Clear** empties the output.
+2. The `.lua` field starts at `tests/diag_basic.lua`; edit it and press **Run**. Output is
+   replaced per run; **Copy all** copies it. What the script's own buses and connections
+   counted (dropped, controller-error, undecodable records) is appended when it finishes.
 
 Output (per-test results + a pass/fail summary) appears in the panel. Because it uses
 the live measurement, the ISO-TP request frames a script sends are visible in the
@@ -308,8 +340,10 @@ scripts/runtests.sh powertrain.lua
 - **Payloads are byte strings**, not number arrays — build them with `fromhex` /
   `frombytes`, read them with `string.byte` / `u16be` / `tohex`.
 - **Channel names must match the project** file (`.blobnet`); an unknown name is an error.
-- **In the GUI, press ▶ Start before Run** — without a running measurement there's no
-  bus to talk to ("no running channel").
+- **In the GUI, press ▶ Start before Run** — the panel will happily run a script while the
+  measurement is stopped, but nothing is hosted: on a CAN channel no simulated ECU transmits or
+  answers, so every wait times out; on a DoIP channel no entity is bound, so `uds.open` fails
+  at connect.
 - Numbers are Lua numbers (`4.0 == 4` is true), so `check.equal(sig.Gear, 4)` works.
 - A negative UDS response raises an error — wrap it in `check.nrc`, or let it fail the
   test deliberately.
@@ -318,12 +352,17 @@ scripts/runtests.sh powertrain.lua
 
 ## Appendix — other command-line tools
 
-These `cmd/` tools are smaller dev/smoke utilities (run with
-`v -path "@vlib|@vmodules|modules" run cmd/<tool>/<file>.v [args]`):
+A selection of the `cmd/` tools (run with
+`v -enable-globals -path "@vlib|@vmodules|modules" run cmd/<tool>/<file>.v [args]`). The
+hardware bench tools — `silentcheck`, `vectorcheck`, `kvasercheck`, `crosscheck` — are
+described in [windows_can_hardware.md](windows_can_hardware.md); `cansub_smoke` has only its
+own header comment:
 
 | Tool | What it does |
 |---|---|
 | `cmd/script` | the script/test runner (this guide; usually via `scripts/runtests.sh`) |
+| `cmd/doip_smoke` | drive UDS over DoIP against a local entity, no project needed |
+| `cmd/restbus` | replay a recording onto live buses with the ECU under test subtracted |
 | `cmd/lua_smoke` | minimal embedded-Lua check (script + host callback) |
 | `cmd/uds_smoke` | drive the UDS client against an ECU (`vcan0` or `inproc:CAN1`) |
 | `cmd/sim_smoke` | run the native simulated SUT ECU and verify end-to-end |

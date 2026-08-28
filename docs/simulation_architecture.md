@@ -9,14 +9,25 @@ Status: **design agreed 2026-06-07; the CAN CORE is IMPLEMENTED as
 shipped: per-signal generators, request/response rules and end-to-end protection are all
 configurable per node.
 
-Still open from this plan: a **UDS server attached to an individual simulated ECU** (a
-channel-wide one at 0x7E0/0x7E8 already runs), and the **LIN and Ethernet** simulation phases
-below — the CAN core landing does not make those disappear. Tracked in
-[`ROADMAP.md`](../ROADMAP.md). This is the plan for
+Since shipped from this plan: per-node UDS servers (`uds:` per simulated ECU, `modules/sim/uds_nodes.v`)
+and the Ethernet phase for DoIP (`modules/sim/doip_entity.v`, `doip_host.v`). Still open: **LIN**,
+and SOME/IP service simulation. Tracked in [`ROADMAP.md`](../ROADMAP.md).
+
+This is the plan for
 turning the tester into a simulation host: simulated ECUs and the
 tester's own functions all attach to shared virtual networks, **inside one
 process**, driver-free by default, with the existing Python SUT as the oracle
 that proves the native stack before we trust it.
+
+> **This is the 2026-06 design document, kept for the reasoning.** Where it disagrees with what
+> shipped — the generator set is const / sine / sawtooth / counter / stepmod, a Lua scripting layer
+> exists ([`scripting.md`](scripting.md)), and the project schema is `buses:` with per-channel
+> `simulation:`/`nodes:`, `adapter:`+`address:`, signals as a list and `uds:` with a `dids:` list,
+> never `networks:`/`backend:`/`diagnostics:` — [`simulation.md`](simulation.md) and
+> [`project_editing.md`](project_editing.md) are the current description, and the "What exists vs.
+> what's needed" table, the "Python SUT as the oracle" verification gate (superseded by `modules/sim`
+> and the Lua suites; `sut/*.py` are dev-time oracles, not the sim path) and the phasing below are
+> historical (phases 1–5 shipped; 6 shipped for DoIP, not LIN).
 
 ## Mental model — Networks own the database, Nodes attach
 
