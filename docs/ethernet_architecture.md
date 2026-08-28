@@ -16,7 +16,9 @@ DoIP is just **UDS-over-IP**: it carries the same UDS (ISO 14229) diagnostic pay
 cheapest possible Ethernet beachhead:
 
 - **The whole UDS stack is reused unchanged.** `uds.Client` and `uds.Server` are written against the
-  `isotp.Channel` interface (`send`/`recv`/`close` + `iface`/`tx_id`/`rx_id`). A DoIP connection
+  `isotp.Channel` interface (`send`/`recv`/`close`/`diagnostics` + `iface`/`tx_id`/`rx_id`;
+  `diagnostics()` is what the carrier counted that no PDU carried, and a TCP connection has
+  nothing to say). A DoIP connection
   **implements that same interface** — exactly the trick `isotp.SoftChannel` uses for the in-proc CAN
   bus. So `uds.new_client(doip_channel)` and `uds.Server.serve(mut doip_channel, stop)` work with no
   changes. The "carrier swap" seam we built for CAN pays off again.
@@ -89,10 +91,10 @@ modules/doip/
               caller wires uds.Server.handle as the handler) so doip stays a transport, not a protocol.
 ```
 
-`doip` imports neither `uds` nor `isotp`: the client satisfies `isotp.Channel` *structurally* (V
-interfaces are structural), and the server takes a plain callback. This keeps the dependency arrow
-one-way (`uds → isotp`; `cmd/* → doip + uds`) and `doip` a leaf transport module — same hygiene as
-`transport`/`isotp`.
+`doip` imports neither `uds` nor `isotp` (only `transport`, for the `BusDiagnostics` type the
+channel interface returns): the client satisfies `isotp.Channel` *structurally* (V interfaces are
+structural), and the server takes a plain callback. This keeps the dependency arrow one-way
+(`uds → isotp`; `cmd/* → doip + uds`) — same hygiene as `transport`/`isotp`.
 
 ## Verification (oracle-first, same discipline as every module)
 
@@ -114,17 +116,21 @@ one-way (`uds → isotp`; `cmd/* → doip + uds`) and `doip` a leaf transport mo
   a `transport.Bus` — a CAN-*frame* pipe — but DoIP is a diagnostics carrier with no frames to monitor.
   The real carrier-swap seam is one level up at `isotp.Channel`, which is where the Diagnostics panel
   already operates and where `DoipClient` plugs in. So DoIP is wired at the diagnostics layer instead.
-- **Start/Stop:** `start_measurement` branches on `ch.is_doip()` before the CAN mode-match — it does
-  NOT open a `Bus` or RX thread. If the DoIP channel hosts a simulated ECU (`simulate:`/`simulation:`
-  non-empty), it spawns `doip_server_loop` (a native `DoipServer` wrapping `uds.default_server()` over
-  real localhost TCP/UDP, polling the running flag to exit); otherwise the channel is just a client
-  target for an external/real entity.
-- **GUI Diagnostics panel:** `diag_request` resolves the first running channel to a `DiagTarget` and
-  `open_diag_channel()` returns the right `isotp.Channel` — `doip.open_doip(...)` for DoIP, else
-  software ISO-TP — so `uds.Client` rides either carrier unchanged. The panel header
-  (`diag_target_label`) shows the active carrier (DoIP host/port + logical addresses, or 0x7E0/0x7E8
-  software ISO-TP). **Verified** end-to-end: the GUI (autostart + `doip-demo.blobnet`) serves the entity on
-  127.0.0.1:13400 and an external UDS client reads VIN `BLOBLYNETV0SUT001` over Ethernet.
+- **Start/Stop:** a DoIP channel opens no `Bus` and no RX thread. `start_doip_hosts()` walks the
+  project's DoIP channels — enabled or not, so a channel enabled later still has a supervisor —
+  and spawns a `doip_watch` per channel that simulates an ECU. What it serves comes from
+  `sim.doip_entity()`, shared with the headless runner so the GUI cannot announce differently:
+  the first configured `uds:` node's server, or `uds.default_server()` when none is configured.
+  A channel with no simulated node is tester-only and nothing is bound.
+- **GUI Diagnostics panel:** `diag_targets()` (`diag.v`) enumerates every addressable ECU —
+  per-node CAN servers, the DoIP channels this run is hosting, and enabled tester-only DoIP
+  channels (a channel that simulates an ECU but whose host failed to bind is deliberately
+  left out: the endpoint belongs to whoever else holds it) — and
+  `diag_worker()` opens the carrier the *selected* target names: `doip.open_doip(...)` for DoIP,
+  software ISO-TP otherwise, so `uds.Client` rides either unchanged. Each entry's label carries
+  its carrier and address (`SUT on DoIP1 (DoIP 0x1000)`). **Verified** end-to-end: the GUI
+  (autostart + `doip-demo.blobnet`) serves the entity on 127.0.0.1:13400 and an external UDS
+  client reads VIN `BLOBLYNETV0SUT001` over Ethernet.
 
 ## Known limitations (virtual-first scope)
 
@@ -145,6 +151,8 @@ version, message type, return code), request/response RPC, and **SOME-IP-SD** se
 (offer/find/subscribe) over UDP multicast. It does not reuse the UDS stack; it's new middleware with
 its own sim service + oracle. Scoped once DoIP is in the app.
 
-**Status 2026-07-19:** the codec/validation core exists — `modules/someip/` (16-byte header
-encode/decode + envelope validation, hermetic golden-vector tests), the host-side oracle for
-blobly_emb's eth-bus design (its `docs/someip.md`). SOME-IP-SD and the sim service remain deferred.
+**Status:** the codec/validation core — `modules/someip/` (16-byte header encode/decode +
+envelope validation, hermetic golden-vector tests), the host-side oracle for blobly_emb's
+eth-bus design (its `docs/someip.md`) — plus an RPC **client** (`rpc_client.v`: one request in
+flight, a deadline, session-id liveness, stale-datagram drain; hermetic and networked tests),
+used by the GUI's Shell over Ethernet. SOME-IP-SD and the sim service remain deferred.

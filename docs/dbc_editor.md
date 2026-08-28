@@ -37,7 +37,7 @@ Embedded double quotes in units/comments/labels are sanitized to single
 quotes: the DBC record format cannot carry them and a writer must never emit
 a file its own parser rejects.
 
-## P1 — the editor panel (next PR)
+## P1 — the editor panel (shipped)
 
 A dockable blobly_net panel, the Shell-panel precedent:
 
@@ -56,8 +56,8 @@ read the databases lock-free, and saving rebuilds runtime caches — both are
 only safe stopped. Editing a stopped capture still re-decodes it live (the
 trace decodes signal values at draw time), so the live loop survives.
 
-Out of P1 scope: value-table editing UI, multiplexing UI, J1939 attributes,
-creating files from scratch (open-and-edit first), and RENAME REFACTORING —
+Value-table and multiplexing editing have since landed. Out of P1 scope and still absent:
+J1939 attributes, creating files from scratch (open-and-edit first), and RENAME REFACTORING —
 renaming a message/signal does not retarget project generators that reference
 the old name (they fail loud with "message not in any DBC"); a
 rename-aware sweep over the sender model is its own rung.

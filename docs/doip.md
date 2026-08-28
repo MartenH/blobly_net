@@ -18,7 +18,7 @@ For *why* DoIP came before SOME/IP and how the modules are laid out, see the des
 | **Starting a simulated DoIP entity from the GUI** | ✅ ▶ Start hosts it; the channel goes green only once the listener is up |
 | **UDS from the Diagnostics panel over a DoIP channel** | ✅ listed as a target, addressed by logical address |
 | Passive discovery — hearing an entity announce itself | ✅ `doip.listen(window_ms)` / `collect_announcements` |
-| A simulated entity announcing itself at Start | ✅ per ECU: `announce_count` (0 = silent), `announce_interval_ms`, `announce_to` |
+| A simulated entity announcing itself at Start | ✅ per DoIP **channel** (one channel is one entity): `announce_count` (0 = silent), `announce_interval_ms`, `announce_to` |
 | **Subnet scan — finding an entity that neither announced nor sits at a known address** | 🧭 planned |
 
 One thing worth knowing before you plan a bench: an entity **binds a real socket** on its
@@ -75,11 +75,13 @@ arriving late can still find it. Blobly Net does both sides of that:
   address and collects **unsolicited** announcements, each carrying the sender's `host:port` so
   you can dial what you just found. Start listening BEFORE the entity comes up — nothing is
   queued for a listener that is not there.
-- **Active**: `doip.discover(host, port)` sends an identification request to an address you name
-  and reads the reply. This is what the DoIP panel's Discover uses.
+- **Active**: `doip.discover(host, port, timeout_ms)` (Lua: `doip.discover(channel)`, which uses
+  the channel's configured endpoint) sends an identification request to one address and reads
+  the reply. This is what the DoIP panel's Discover uses.
 - **As an entity**: a simulated ECU announces itself at Start, three times 500 ms apart by
-  default, per ECU (`announce_count`, `announce_interval_ms`, `announce_to`); `announce_count: 0`
-  is a silent ECU, which is a fault worth injecting at a tester that relies on discovery.
+  default, configured per DoIP channel — one channel is one entity — (`announce_count`,
+  `announce_interval_ms`, `announce_to`); `announce_count: 0` is a silent ECU, which is a
+  fault worth injecting at a tester that relies on discovery.
 
 What is still missing is a **scan**: sweeping a subnet for entities that neither announced while
 you were listening nor sit at an address you know. For that you still need a static address or a
@@ -166,9 +168,10 @@ long as the project runs.
 - **Passive discovery is verified on IPv4 only.** The IPv6 path resolves in the right family,
   joins `ff02::1` and reports a failed join, but an announcement sent to that group is **not
   received** by a wildcard listener on loopback here, so IPv6 passive collection is implemented
-  and unproven rather than working. Use `doip.discover(host, port)` for IPv6 entities, which is
-  unicast and tested. Tracked separately; do not read the passive-listening row above as
-  covering IPv6.
+  and unproven rather than working. Use `doip.discover` for IPv6 entities, which is unicast: it
+  brackets an IPv6 literal correctly, though only the IPv4 path has a test of its own — the
+  IPv6 path covered end-to-end is the TCP one (`open_doip`). Tracked separately; do not read
+  the passive-listening row above as covering IPv6.
 - **No SOME/IP service discovery** — a separate protocol, tracked separately.
 
 ## Reading a capture

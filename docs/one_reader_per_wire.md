@@ -1,8 +1,11 @@
 # One reader per shared wire - targeted design for #212
 
-**Status: implemented; PCAN hardware acceptance done, CANsub pending.** `cmd/silentcheck` passes all
+**Status: implemented; hardware acceptance done on PCAN and CANsub.** `cmd/silentcheck` passes all
 five phases through the shared hub on a PCAN-USB Pro FD against a Kvaser USBcan Pro 5xHS — PCAN as
-listener, as the talker's peer, and at a 500k/2M FD data phase. The CANsub run is still owed. This change is intentionally limited to
+listener, as the talker's peer, and at a 500k/2M FD data phase; the CANsub run (2026-08-27,
+firmware 02.04.00) is recorded in `windows_can_hardware.md` and is what produced #222 and #223.
+Since then the hub has grown the `opening` reservation (#211) and `Bus.diagnostics()` (#213),
+both described below. This change is intentionally limited to
 `shared_open`, the seam already used by PCAN and CANsub because those backends permit only one
 physical receive endpoint per wire in this process. It fixes their competing-consumer bug without
 changing the public `Bus` interface or rebuilding the five backends which already fan out correctly.
