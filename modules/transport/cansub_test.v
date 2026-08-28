@@ -689,20 +689,22 @@ fn test_a_failed_write_stops_the_bus_with_its_reason() {
 	}
 	assert b.failure() == none
 	b.fail_send('send on cansub:test/1: write timed out')
-	assert b.failure()? == 'send on cansub:test/1: write timed out'
-	// Writes are refused from this instant; the READER is not stopped yet — it drains the
-	// hub's grace for a late acknowledgement of the frame that may have reached the wire
-	// (codex round 5 on #251) — and is stopped after it.
+	// Writes are refused from this instant; the READER is not stopped yet and its failure is
+	// not published — it drains the hub's grace for a late acknowledgement of the frame that
+	// may have reached the wire (codex rounds 5 and 6 on #251) — and after it both happen.
+	assert b.send_refusal()? == 'send on cansub:test/1: write timed out'
+	assert b.failure() == none
 	assert rlock b.stop {
 		b.stop.running
 	}
 	time.sleep((shared_failed_send_grace_ms + 300) * time.millisecond)
+	assert b.failure()? == 'send on cansub:test/1: write timed out'
 	assert !rlock b.stop {
 		b.stop.running
 	}
 	// The first reason wins — including one the reader recorded before dropping `running`.
 	b.fail_send('later')
-	assert b.failure()? == 'send on cansub:test/1: write timed out'
+	assert b.send_refusal()? == 'send on cansub:test/1: write timed out'
 	mut r := CansubBus{
 		iface: 'cansub:test/2'
 	}
@@ -710,6 +712,7 @@ fn test_a_failed_write_stops_the_bus_with_its_reason() {
 		r.stop.err = 'read: connection reset'
 	}
 	r.fail_send('send on cansub:test/2: write timed out')
+	time.sleep((shared_failed_send_grace_ms + 300) * time.millisecond)
 	assert r.failure()? == 'read: connection reset'
 	// And the bus is stopped, NOT closed: close() still has the teardown to do — the reader
 	// holds the device's one WebSocket until it is joined (codex round 3 on #251).

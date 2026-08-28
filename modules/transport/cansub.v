@@ -135,6 +135,9 @@ mut:
 	running bool      = true
 	health  BusHealth = .unknown
 	err     string
+	// A write failure: refuses every later send at once, and becomes `err` only after the
+	// hub's grace — see fail_send.
+	send_err string
 	// Whether close() has run: its guard, SEPARATE from `running`. A bus that stopped itself
 	// (fail_send) has `running` false and a reader still holding the device's one WebSocket;
 	// guarded on `running`, close() returned at once and the hub admitted a reopen the device
@@ -882,6 +885,9 @@ pub fn (mut b CansubBus) send(frame CanFrame) ! {
 	if e := b.failure() {
 		return error('${b.iface}: ${e}${b.diagnostic_suffix()}')
 	}
+	if e := b.send_refusal() {
+		return error('${b.iface}: ${e}')
+	}
 	// A SILENCED CONTROLLER CANNOT TRANSMIT, whatever this process's policy currently says.
 	//
 	// The two answers are not updated together and cannot be: `silenced()` is a table this process
@@ -1099,25 +1105,37 @@ fn (b &CansubBus) diagnostic_suffix() string {
 // reason wins: a reader that has already stopped has the better story.
 fn (mut b CansubBus) fail_send(reason string) {
 	lock b.stop {
-		// The reader may have recorded its own error an instant earlier without yet having
-		// dropped `running` (it does that only in close): that reason stays, being the earlier
-		// and usually the better one (codex round 4 on #251).
-		if b.stop.err == '' {
-			b.stop.err = reason
+		if b.stop.send_err == '' {
+			b.stop.send_err = reason
 		}
 	}
-	// THE READER STAYS FOR THE HUB'S GRACE. A write that timed out may still have REACHED the
-	// device, whose TX acknowledgement arrives a moment later; the hub keeps a failed write's
-	// pending entry matchable for shared_failed_send_grace_ms for exactly that frame, and a
-	// reader stopped at once would close the socket under it — a frame that was on the wire
-	// left out of the trace and the recording (codex round 5 on #251). Writes are refused from
-	// this instant (failure() is set); the reader is asked to leave after the grace.
+	// THE READER STAYS FOR THE HUB'S GRACE, AND IS TOLD NOTHING UNTIL IT IS OVER. A write that
+	// timed out may still have REACHED the device, whose TX acknowledgement arrives a moment
+	// later; the hub keeps a failed write's pending entry matchable for shared_failed_send_grace_ms
+	// for exactly that frame. So writes are refused from this instant (send_err, which only send
+	// reads), while `err` — what the hub's receive path treats as terminal — is published only
+	// after the grace, together with the stop (codex rounds 5 and 6 on #251).
 	spawn fn (mut b CansubBus) {
 		time.sleep((shared_failed_send_grace_ms + 100) * time.millisecond)
 		lock b.stop {
+			// The reader's own reason, if it has one by now, is the earlier and the better.
+			if b.stop.err == '' {
+				b.stop.err = b.stop.send_err
+			}
 			b.stop.running = false
 		}
 	}(mut b)
+}
+
+// send_refusal is the write failure that ended this connection for sending, if one has.
+fn (b &CansubBus) send_refusal() ?string {
+	return rlock b.stop {
+		if b.stop.send_err == '' {
+			none
+		} else {
+			b.stop.send_err
+		}
+	}
 }
 
 // failure reports the reason the reader stopped, if it stopped.
