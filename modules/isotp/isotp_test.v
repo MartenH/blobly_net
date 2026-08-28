@@ -261,3 +261,27 @@ fn test_a_stale_cf_ahead_of_flow_control_is_skipped() {
 	ch.close()
 	peer.close()
 }
+
+// recv(0) LOOKS PAST FRAMES FOR OTHER IDS: a shared bus queues them ahead of the reply, and a
+// non-blocking poll must still find it (codex round 12 on #225).
+fn test_a_zero_timeout_looks_past_unrelated_frames() {
+	mut peer := transport.open('inproc:isotp-poll-mixed') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-poll-mixed', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	peer.send(transport.CanFrame{ id: 0x123, data: [u8(1)] }) or { assert false, err.msg() }
+	peer.send(transport.CanFrame{ id: 0x124, data: [u8(2)] }) or { assert false, err.msg() }
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x01), 0x44] }) or { assert false, err.msg() }
+	time.sleep(20 * time.millisecond)
+	got := ch.recv(0) or {
+		assert false, 'the poll stopped at an unrelated frame: ${err}'
+		return
+	}
+	assert got == [u8(0x44)]
+	ch.close()
+	peer.close()
+}

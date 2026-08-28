@@ -249,13 +249,14 @@ fn (mut c SoftChannel) rx_raw(timeout_ms int) ![]u8 {
 	deadline := time.ticks() + i64(timeout_ms)
 	// ZERO IS ONE LOOK, as the kernel channel's poll(0) is: a queued frame is returned, an empty
 	// queue is a timeout, and nothing waits (codex round 7 on #225).
-	mut looked := false
 	for {
 		rem := deadline - time.ticks()
-		if rem <= 0 && looked {
+		// A zero timeout keeps looking past frames for OTHER ids until the bus reports its queue
+		// empty — the bus's own zero-timeout read is one look, so a poll here ends when that
+		// read times out, not after the first unrelated frame (codex round 12 on #225).
+		if rem <= 0 && timeout_ms > 0 {
 			return error('timeout')
 		}
-		looked = true
 		f := c.bus.recv(int(if rem < 0 { i64(0) } else { rem }))!
 		if f.id == c.rx_id {
 			return f.data
