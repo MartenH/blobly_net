@@ -156,15 +156,38 @@ pub fn (env &Env) total() int {
 	return env.results.len
 }
 
-// close tears down the ISO-TP connections, buses and the interpreter.
-pub fn (mut env Env) close() {
-	for mut c in env.conns {
+// close_reporting is close() that also answers what each bus and connection the script opened
+// counted that no frame carried (#213), by key, non-empty ones only -- sampled AFTER the handles
+// are closed, because on a shared wire a subscriber's close is where its last ring gap is booked
+// and a closed handle still answers with the wire's totals (codex on #231). Sampled before the
+// close, the loss booked by the close itself was never reported.
+pub fn (mut env Env) close_reporting() map[string]transport.BusDiagnostics {
+	mut out := map[string]transport.BusDiagnostics{}
+	for i, mut c in env.conns {
 		c.ch.close()
+		d := c.ch.diagnostics()
+		if !d.is_empty() {
+			// Its own key per CONNECTION: on a backend that counts per handle, two connections
+			// on one channel are two answers, and so are two opens of one address pair
+			// (codex rounds 10 and 13 on #231).
+			out['${c.chan} (uds #${i} 0x${c.ch.tx_id:X}/0x${c.ch.rx_id:X})'] = d
+		}
 	}
-	for _, mut b in env.buses {
+	for name, mut b in env.buses {
 		b.close()
+		d := b.diagnostics()
+		if !d.is_empty() {
+			out[name] = d
+		}
 	}
 	env.st.close()
+	return out
+}
+
+// close tears down the ISO-TP connections, buses and the interpreter; what they counted is
+// discarded -- see close_reporting.
+pub fn (mut env Env) close() {
+	_ = env.close_reporting()
 }
 
 fn (mut env Env) emit(s string) {

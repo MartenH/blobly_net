@@ -33,6 +33,12 @@ mut:
 	// other alias of one wire looks fine while the wire it names is dead.
 	rx_last f64
 	rx_seen u64
+	// What the backend counts beyond frames and the ladder (#213) — a property of the WIRE
+	// (the hub reports every handle's ring gap, not the polled one's), written by the one
+	// reader-owning row, shown on every alias for the reason health is.
+	diag transport.BusDiagnostics
+	// When the retained sample was taken -- ordering among retired rows, see below.
+	diag_at i64
 }
 
 fn read_destinations(rows []Chan) map[string]DestState {
@@ -52,7 +58,37 @@ fn read_destinations(rows []Chan) map[string]DestState {
 				st.rx_last = c.rx_last
 				st.rx_seen = c.rx_seen
 			}
+			// One writer per wire (its RX loop), so this is a copy, not a sum.
+			if !c.diag.is_empty() {
+				st.diag = c.diag
+			}
 			out[transport.destination_key(c.iface)] = st
+		}
+	}
+	// COUNTS OUTLIVE THE READER. A row retired by Stop or by a fatal receive keeps its last
+	// sample on purpose -- it is what the wire knew at its death -- and a fold over running
+	// rows only made the chip vanish at exactly that moment (codex round 2 on #231). A live
+	// reader's value wins; a retired row's stands in only where no live row has one.
+	for c in rows {
+		if c.enabled && c.running {
+			continue
+		}
+		// A retired row that never sampled has nothing to say; one that sampled ZERO does --
+		// a reopened wire that counted nothing is newer than an older alias's counts, and
+		// skipping empties resurrected those (codex round 6). Presence is the timestamp.
+		if c.diag_at == 0 {
+			continue
+		}
+		key := transport.destination_key(c.iface)
+		mut st := out[key] or { DestState{} }
+		// `read`, not an empty value: a LIVE reader reporting zero is a reopened wire that has
+		// counted nothing yet, and the retired sample must not paint over it (codex round 3).
+		// Among retired rows the NEWEST sample wins: after an A -> B -> A handoff, B's row
+		// still holds the value it was handed at the first handoff (codex round 4).
+		if !st.read && c.diag_at > st.diag_at {
+			st.diag = c.diag
+			st.diag_at = c.diag_at
+			out[key] = st
 		}
 	}
 	return out
@@ -439,6 +475,12 @@ fn draw_buses(mut app App, chans []Chan) {
 						// as silence the moment the reader comes back (codex #159 r3).
 						app.chans[i].rx_last = 0
 						app.chans[i].rx_seen = 0
+						// NOT the counts (#213). On a shared wire the transmit taps kept the
+						// generation alive through the gap, so its since-open counters
+						// survive; zeroed here, the successor seeded its narration from
+						// nothing and logged the whole history as new (codex round 1 on
+						// #231). Kept, the successor sees the same counts and says nothing;
+						// on a wire that WAS reopened it sees them fall and says so.
 						app.chans[i].spawning = true
 						spawn rx_loop(app, i, app.chans[i].iface, app.run_gen)
 					}
@@ -503,9 +545,9 @@ fn draw_buses(mut app App, chans []Chan) {
 				}
 			}
 			vgui.same_line()
-			r, g, b, label := chan_state(c, read_dests[transport.destination_key(c.iface)] or {
-				DestState{}
-			})
+			// The wire's folded state, read once per row: three chips below describe it.
+			wire := read_dests[transport.destination_key(c.iface)] or { DestState{} }
+			r, g, b, label := chan_state(c, wire)
 			vgui.text_colored(r, g, b, label)
 			vgui.same_line()
 			vgui.text('${c.name}  ${c.iface}  [${c.mode}]  RX ${c.rx}')
@@ -513,12 +555,22 @@ fn draw_buses(mut app App, chans []Chan) {
 			// cannot carry this: a listening channel whose cable is pulled reports a perfectly
 			// healthy bus, because CAN has no link detection and an unplugged wire is
 			// indistinguishable from an idle one (#156).
-			qms := app.silent_ms(read_dests[transport.destination_key(c.iface)] or { DestState{} })
+			qms := app.silent_ms(wire)
 			if qms > 0 {
 				// DIM, and worded as an observation. Whether silence is a fault depends on what
 				// the wire was supposed to carry, which nothing here knows — see stale.v.
 				vgui.same_line()
 				vgui.text_dim('last RX ${qms / 1000:.0f}s')
+			}
+			// AND WHAT THE BACKEND COUNTED that is neither a frame nor a rung (#213): dropped,
+			// controller-error and undecodable records. DIM, like `last RX`, because it is a
+			// fact and not a judgement: whether a dropped record matters depends on what the wire
+			// was carrying, which nothing here knows — the controller's ladder stays the one
+			// coloured verdict. The sentence is the tooltip; the Log has each change.
+			if !wire.diag.is_empty() {
+				vgui.same_line()
+				vgui.text_dim(wire.diag.short())
+				vgui.set_item_tooltip('${c.iface}: ${wire.diag.str()}. Counts since this wire opened; the Log has each change.')
 			}
 			// AND WHETHER THE TRANSCEIVER AGREED. Listen-only has two halves: this process refusing
 			// to transmit, and the CONTROLLER refusing to acknowledge. The second can be declined by

@@ -44,7 +44,9 @@ static inline int ct_can_open(const char *ifname) {
 	/* only the classes the decoder consumes: the full CAN_ERR_MASK delivered every class to
 	 * EVERY socket (taps included), and with berr-reporting on that is one frame per bus
 	 * error — tens of thousands a second flooding queues nothing drains (self-review) */
-	can_err_mask_t errs = CAN_ERR_CRTL | CAN_ERR_BUSOFF | CAN_ERR_RESTARTED;
+	/* CRTL/BUSOFF/RESTARTED feed the health ladder; PROT and ACK are the controller errors
+	 * diagnostics() counts (#213) -- unsubscribed, the kernel never delivers them. */
+	can_err_mask_t errs = CAN_ERR_CRTL | CAN_ERR_BUSOFF | CAN_ERR_RESTARTED | CAN_ERR_PROT | CAN_ERR_ACK;
 	setsockopt(s, SOL_CAN_RAW, CAN_RAW_ERR_FILTER, &errs, sizeof(errs));
 	return s;
 }

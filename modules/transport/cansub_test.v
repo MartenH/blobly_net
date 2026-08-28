@@ -318,7 +318,8 @@ fn test_the_shared_receive_seam_preserves_a_tx_acknowledgement() {
 	assert got.tx_ack
 	assert got.frame.id == 0x123
 	assert got.frame.data == [u8(0xAB)]
-	assert b.diagnostics().contains('1 controller error'), 'error records skipped on the way to the frame must still be counted'
+	assert b.diagnostics().bus_errors == 1, 'error records skipped on the way to the frame must still be counted'
+	assert b.diagnostic_suffix().contains('1 controller error(s), first')
 	assert b.reports_tx_ack()
 }
 

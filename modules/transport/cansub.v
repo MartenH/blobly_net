@@ -140,17 +140,17 @@ mut:
 	phy_silent bool
 	// Records this decoder could not parse. Counted rather than kept, so a persistent bad stream
 	// costs one integer instead of one string per record — see read_loop.
-	decode_errors      int
+	decode_errors      u64
 	first_decode_error string
 	// Consecutive health polls that could not reach the device. See poll_health: a stale verdict
 	// is worse than no verdict.
 	health_misses int
 	// Controller errors the device reported as records rather than as a state change — see recv.
 	// Counted rather than kept, like the decode errors above.
-	bus_errors      int
+	bus_errors      u64
 	first_bus_error string
 	// Records dropped because the receiver was not keeping up — see enqueue.
-	dropped int
+	dropped u64
 }
 
 // open_cansub_bus is what shared_open_events calls. It creates the one raw connection behind that
@@ -333,7 +333,7 @@ fn (mut b CansubBus) read_loop() {
 		// the array goes back to empty.
 		if dec.errors.len > 0 {
 			lock b.stop {
-				b.stop.decode_errors += dec.errors.len
+				b.stop.decode_errors += u64(dec.errors.len)
 				// The FIRST one is kept, not the latest: a stream that has gone wrong repeats
 				// itself, and the first message is the one that describes what changed.
 				if b.stop.first_decode_error == '' {
@@ -930,25 +930,26 @@ pub fn (mut b CansubBus) recv(timeout_ms int) !CanFrame {
 
 // diagnostics is everything this backend knows that is not a frame and not a health rung: records
 // it could not decode, controller errors the device reported, and records dropped because the
-// receiver fell behind.
-//
-// WHY IT IS A STRING ON THE END OF AN ERROR. The Bus contract is send/recv/close/health, and none
-// of those can carry "the controller reported four ACK errors and we dropped nine records". Round
-// 3 and round 9 each answered a finding by COUNTING one of these and nothing ever read the counts
-// — write-only state that looked like a fix and changed nothing observable, which codex caught for
-// the second set and which was equally true of the first (codex round 10 on #204).
-//
-// So they ride the text of the errors this backend already returns, which is where an operator is
-// looking when something is wrong. That is a smaller answer than these deserve; the real one is a
-// telemetry channel on the Bus contract, which #213 is about and which #149 needs too.
-// diagnostic_suffix is diagnostics() ready to append to a message, or nothing.
-fn (b &CansubBus) diagnostic_suffix() string {
-	d := b.diagnostics()
-	return if d == '' { '' } else { ' (${d})' }
+// receiver fell behind. Round 3 and round 9 of #204 each answered a finding by COUNTING one of
+// these and nothing ever read the counts — write-only state that looked like a fix and changed
+// nothing observable (codex round 10 on #204). Since #213 they travel the Bus contract, which is
+// where the Buses row and the Log read them; they still ride the text of this backend's own
+// errors too, because that is where an operator is looking when a call has just failed.
+pub fn (b &CansubBus) diagnostics() BusDiagnostics {
+	return rlock b.stop {
+		BusDiagnostics{
+			dropped:       b.stop.dropped
+			bus_errors:    b.stop.bus_errors
+			decode_errors: b.stop.decode_errors
+		}
+	}
 }
 
-pub fn (b &CansubBus) diagnostics() string {
-	return rlock b.stop {
+// diagnostic_suffix is the counts with the FIRST error of each kind, ready to append to a
+// message, or nothing. The texts live here and not on BusDiagnostics: they belong beside the
+// failure an operator is reading, not in a value the RX loop diffs once a second.
+fn (b &CansubBus) diagnostic_suffix() string {
+	d := rlock b.stop {
 		mut parts := []string{}
 		if b.stop.dropped > 0 {
 			parts << '${b.stop.dropped} record(s) dropped — the receiver fell behind'
@@ -961,6 +962,7 @@ pub fn (b &CansubBus) diagnostics() string {
 		}
 		parts.join('; ')
 	}
+	return if d == '' { '' } else { ' (${d})' }
 }
 
 // failure reports the reason the reader stopped, if it stopped.

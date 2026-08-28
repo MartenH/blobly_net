@@ -4,6 +4,8 @@
 // never reach a Windows build. Implements the platform-agnostic isotp.Channel.
 module isotp
 
+import transport
+
 #include "isotp_shim.h"
 
 fn C.ct_isotp_open(&u8, u32, u32) int
@@ -76,6 +78,11 @@ fn (mut c KernelChannel) close() {
 		C.ct_isotp_close(c.fd)
 		c.fd = -1
 	}
+}
+
+// diagnostics: the kernel socket reports nothing beyond what send/recv return (#213).
+fn (mut c KernelChannel) diagnostics() transport.BusDiagnostics {
+	return transport.BusDiagnostics{}
 }
 
 fn encode_id(id u32, extended bool) u32 {

@@ -56,6 +56,9 @@ mut:
 	tx  &net.UdpConn = unsafe { nil } // dialed to group:port — sends
 	rx  &net.UdpConn = unsafe { nil } // bound to port + joined group — receives
 	src u32 // our source id; frames with this src are our own echoes
+	// Datagrams this bus could not read as a frame: shorter than the header, or declaring
+	// more payload than arrived (#213). Read on the receiving thread, where it is counted.
+	decode_errors u64
 	// closed is set by close(): a recv(-1) blocked in another thread must stop retrying once the
 	// socket is gone, instead of spinning on the read error forever (codex round 7 on #225).
 	closed_flag i64
@@ -157,6 +160,7 @@ pub fn (mut b UdpBus) recv(timeout_ms int) !CanFrame {
 		}
 		if n < 10 {
 			filtered++
+			b.decode_errors++
 			continue
 		}
 		if get_u32_le(buf, 0) == b.src {
@@ -166,6 +170,7 @@ pub fn (mut b UdpBus) recv(timeout_ms int) !CanFrame {
 		dlc := int(buf[9])
 		if 10 + dlc > n {
 			filtered++ // truncated: counted against the poll budget like the others (codex round 18)
+			b.decode_errors++
 			continue
 		}
 		flags := buf[8]
@@ -185,6 +190,13 @@ pub fn (mut b UdpBus) recv(timeout_ms int) !CanFrame {
 // health: a UDP datagram bus has no CAN controller — nothing to report, honestly.
 pub fn (mut b UdpBus) health() BusHealth {
 	return .unknown
+}
+
+// diagnostics: the datagrams this bus could not read as frames (#213).
+pub fn (mut b UdpBus) diagnostics() BusDiagnostics {
+	return BusDiagnostics{
+		decode_errors: b.decode_errors
+	}
 }
 
 // reconcile_silence — nothing to reconcile: this bus has no controller, so it generates no

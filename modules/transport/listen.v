@@ -271,6 +271,10 @@ fn (mut s SilentBus) health() BusHealth {
 	return s.inner.health()
 }
 
+fn (mut s SilentBus) diagnostics() BusDiagnostics {
+	return s.inner.diagnostics()
+}
+
 // silenced wraps every bus `open` hands out. ALWAYS, and the decision is deferred to the send.
 //
 // It used to wrap only wires marked at open time, which reads as the cheaper thing and is a

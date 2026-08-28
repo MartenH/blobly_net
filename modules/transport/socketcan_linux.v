@@ -21,8 +21,13 @@ pub struct SocketCanBus {
 pub:
 	iface string
 mut:
-	fd     int       = -1
-	hstate BusHealth = .unknown // last kernel error-frame verdict; recv updates it
+	// What the kernel's error frames said that is not a rung: overflow records as `dropped`,
+	// protocol and ACK errors as `bus_errors` -- per socket, since each socket is handed every
+	// error frame (#213).
+	dropped    u64
+	bus_errors u64
+	fd         int       = -1
+	hstate     BusHealth = .unknown // last kernel error-frame verdict; recv updates it
 }
 
 // open_socketcan binds a raw CAN socket to `iface` (e.g. 'vcan0').
@@ -117,6 +122,15 @@ pub fn (mut b SocketCanBus) recv(timeout_ms int) !CanFrame {
 			if h != .unknown {
 				b.hstate = h
 			}
+			// AND COUNTED, where the record is a loss or a controller error rather than a rung:
+			// CAN_ERR_CRTL with RX/TX_OVERFLOW is frames the kernel says it dropped, CAN_ERR_PROT
+			// and CAN_ERR_ACK are controller errors (codex round 10 on #231).
+			if raw_id & 0x04 != 0 && d1 & 0x03 != 0 {
+				b.dropped++
+			}
+			if raw_id & (0x08 | 0x20) != 0 {
+				b.bus_errors++
+			}
 			continue
 		}
 		// A DATA frame is proof of life: the documented bus-off recovery on Linux is
@@ -153,6 +167,14 @@ pub fn (mut b SocketCanBus) recv(timeout_ms int) !CanFrame {
 // anything; a healthy bus emits no error frames, so unknown IS the healthy silence.
 pub fn (mut b SocketCanBus) health() BusHealth {
 	return b.hstate
+}
+
+// diagnostics: what this socket's kernel error frames reported that is not a rung (#213).
+pub fn (mut b SocketCanBus) diagnostics() BusDiagnostics {
+	return BusDiagnostics{
+		dropped:    b.dropped
+		bus_errors: b.bus_errors
+	}
 }
 
 // reconcile_silence — a SocketCAN interface's mode is chosen outside this app, by whoever ran

@@ -54,6 +54,14 @@ mut:
 	// The controller's fault ladder, from the backend's own driver (transport.BusHealth) —
 	// written by the wire's RX loop on transitions, .unknown where the backend cannot say.
 	health transport.BusHealth
+	// What the backend counts that is neither a frame nor a rung — dropped, controller error
+	// and undecodable records (#213). Written by the wire's RX loop when the counts change;
+	// reset with health at Start and on a re-enable, carried across a reader handoff.
+	diag transport.BusDiagnostics
+	// When `diag` was last written (ticks). After Stop every row is retired and the wire's
+	// chip must come from the NEWEST sample among them, not whichever alias is listed last
+	// (codex round 4 on #231).
+	diag_at i64
 }
 
 fn (c Chan) monitorable() bool {
@@ -231,6 +239,10 @@ fn (mut t TapBus) recv(timeout_ms int) !transport.CanFrame {
 // not for transport, so the controller state is whatever the wire's driver says.
 fn (mut t TapBus) health() transport.BusHealth {
 	return t.inner.health()
+}
+
+fn (mut t TapBus) diagnostics() transport.BusDiagnostics {
+	return t.inner.diagnostics()
 }
 
 fn (mut t TapBus) reconcile_silence(want bool) ! {

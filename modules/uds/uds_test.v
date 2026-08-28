@@ -1,5 +1,6 @@
 module uds
 
+import transport
 import isotp
 
 // MockChannel is an in-memory isotp.Channel: it records the last request and
@@ -30,6 +31,10 @@ fn (mut m MockChannel) recv(timeout_ms int) ![]u8 {
 }
 
 fn (mut m MockChannel) close() {}
+
+fn (mut m MockChannel) diagnostics() transport.BusDiagnostics {
+	return transport.BusDiagnostics{}
+}
 
 fn client_with(responses [][]u8) (Client, &MockChannel) {
 	mut m := &MockChannel{
