@@ -736,6 +736,11 @@ fn (mut app App) rebuild_from_proj() {
 	// Of the two ways to be early, this is the safe one: a wire the new project silences goes
 	// quiet at once, and a wire it releases stays quiet a moment longer than it must.
 	project.apply_listen_only(proj.channels)
+	// THE DEVICE NAME IS LOOKED UP NOW, NOT AT START. A CANsub row's open pays one cold mDNS
+	// lookup, ~2.7 s on Windows, and the OS forgets the answer within a minute — so on the GUI
+	// thread at Start it was the "three seconds before everything starts" (#240). Resolved in
+	// the background as the project is applied, it is known by the time anybody presses ▶.
+	transport.cansub_warm_all(proj.channels.map(it.iface_with_bitrate()))
 	app.mu.lock()
 	app.chans = []
 	// rebuild runs for ordinary config ops too (add bus/DBC, adapter change) —
