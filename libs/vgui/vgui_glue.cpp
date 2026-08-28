@@ -425,6 +425,7 @@ int  vgui_begin_popup_context_window() { return ImGui::BeginPopupContextWindow()
 void vgui_clipboard_set(const char* s) { ImGui::SetClipboardText(s); }
 void vgui_end_popup() { ImGui::EndPopup(); }
 int  vgui_menu_item(const char* label) { return ImGui::MenuItem(label) ? 1 : 0; }
+int  vgui_menu_item_shortcut(const char* label, const char* shortcut) { return ImGui::MenuItem(label, shortcut) ? 1 : 0; }
 int  vgui_menu_item_check(const char* label, int checked) {
     bool b = checked != 0;
     ImGui::MenuItem(label, nullptr, &b);
@@ -847,6 +848,17 @@ int vgui_want_text_input() { return ImGui::GetIO().WantTextInput ? 1 : 0; }
 // into -- which owns ActiveId, and Ctrl+A / Ctrl+C -- does not raise it. Callers that must not
 // steal keys from a focused widget need this one as well.
 int vgui_any_item_active() { return ImGui::IsAnyItemActive() ? 1 : 0; }
+// vgui_key_ctrl reports whether a Ctrl key (either side; Cmd on macOS is NOT folded in — ImGui
+// keeps that as KeySuper) is held this frame — the modifier half of a Ctrl+<letter> chord, the
+// letter half being vgui_key_pressed.
+int vgui_key_ctrl() { return ImGui::GetIO().KeyCtrl ? 1 : 0; }
+// vgui_key_ctrl_only: Ctrl held and NO other modifier — what a Ctrl+<letter> chord means. On
+// Windows layouts AltGr arrives as Ctrl+Alt, so "Ctrl is down" alone would make AltGr+S, a
+// character on those layouts, into Save.
+int vgui_key_ctrl_only() {
+    const ImGuiIO& io = ImGui::GetIO();
+    return (io.KeyCtrl && !io.KeyAlt && !io.KeyShift && !io.KeySuper) ? 1 : 0;
+}
 
 // vgui_key_pressed reports whether the printable key `ch` (A-Z / a-z / 0-9) went down THIS frame
 // (no auto-repeat). Used for generator hotkeys. Returns 0 for anything it can't map.

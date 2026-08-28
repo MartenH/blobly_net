@@ -404,6 +404,7 @@ fn draw_config(mut app App) {
 	}
 	vgui.separator()
 	if app.cfg_tab == 1 {
+		app.cfg_file_visible = true // drawn this frame — see save_what_is_being_edited
 		app.load_cfg_text() // every frame: a no-op while typing, and correct after a switch
 		app.draw_config_text()
 		vgui.end()
@@ -417,10 +418,6 @@ fn draw_config(mut app App) {
 		app.refresh_discovery()
 		app.start_cansub_browse()
 		app.disc_open = true
-	}
-	vgui.same_line()
-	if vgui.button('Save') {
-		app.save_project()
 	}
 	vgui.same_line()
 	if vgui.button('Close') {
@@ -758,7 +755,9 @@ fn (mut app App) draw_config_text() {
 	// MODEL, which would throw away the text the user is looking at.
 	can_save := app.cfg_err == '' && app.proj_path != ''
 	if can_save {
-		if vgui.button('Save') {
+		// This one stays, and says what it writes: the TEXT, which is not the same save as
+		// Ctrl+S on any other tab (save_what_is_being_edited).
+		if vgui.button('Save text') {
 			app.save_cfg_text()
 		}
 	} else {

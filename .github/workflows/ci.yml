@@ -68,6 +68,9 @@ jobs:
       # in here too (modules/lua + modules/script pull it via #flag).
       - name: Unit tests (v test modules/)
         run: v -enable-globals test modules/
+      - name: GUI-local rules (v test cmd/blobly_net/saverule/)
+        # GUI policy with a test: pure V, no ImGui, so it runs where the GUI cannot.
+        run: v -enable-globals test cmd/blobly_net/saverule/
 
       # EVERY cmd/ tool type-checks, for both OS targets. Nothing else here compiles a CLI
       # tool, so a rename in modules/ could break any of them and the build stayed green: #217

@@ -43,6 +43,7 @@ void vgui_menu_bar_end(void);
 int  vgui_menu_begin(const char* label);
 void vgui_menu_end(void);
 int  vgui_menu_item(const char* label);
+int  vgui_menu_item_shortcut(const char* label, const char* shortcut);
 int  vgui_menu_item_check(const char* label, int checked);
 int  vgui_checkbox(const char* label, int cur);
 void vgui_text_colored(int r, int g, int b, const char* s);
@@ -124,6 +125,8 @@ void vgui_table_end(void);
 float vgui_fps(void);
 int  vgui_want_text_input(void);
 int  vgui_any_item_active(void);
+int  vgui_key_ctrl(void);
+int  vgui_key_ctrl_only(void);
 int  vgui_key_pressed(int ch);
 int  vgui_combo(const char* label, const char** items, int n, int current);
 #ifdef __cplusplus
