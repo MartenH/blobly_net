@@ -1,7 +1,6 @@
 module uds
 
 import isotp
-import time
 
 // End-to-end native diagnostics with NO Python and NO kernel ISO-TP: a uds.Server
 // and a uds.Client talk over the software ISO-TP state machine on the driver-free
@@ -9,29 +8,26 @@ import time
 // proving the whole stack (software ISO-TP + UDS server) against the already-
 // Python-validated uds.Client.
 
-// ServerRunner wraps the server + its channel so it can run in a spawned thread
-// via a pointer receiver (spawn forbids `mut` non-reference args).
-struct ServerRunner {
-mut:
-	server Server
-	ch     &isotp.SoftChannel
-}
-
-fn (mut r ServerRunner) run(duration_ms int) {
-	r.server.serve_for(mut r.ch, duration_ms)
-}
+// NOTHING HERE WAITS FOR A CLOCK. A server's channel is opened before its thread is spawned,
+// and the in-process bus queues per subscriber, so a request sent before the server reaches its
+// receive loop is waiting for it, not lost -- the 50 ms sleep that used to follow each spawn
+// bought nothing. What did depend on the clock was the server's LIFETIME: serve_for(3000)
+// against a client budgeting up to a second per exchange, and serve_one's four 500 ms polls,
+// so on a machine busy enough the last exchanges were with a server that had already left
+// (#191). A server now runs until the test says stop, and the test joins it.
 
 fn test_inproc_uds_roundtrip() {
 	// Server: rx on 0x7E0 (requests), tx on 0x7E8 (responses). Client mirrored.
-	srv_ch := isotp.open_software('inproc:DIAG', 0x7E8, 0x7E0, false) or { panic(err) }
-	cli_ch := isotp.open_software('inproc:DIAG', 0x7E0, 0x7E8, false) or { panic(err) }
+	mut srv_ch := isotp.open_software('inproc:DIAG', 0x7E8, 0x7E0, false) or { panic(err) }
+	mut cli_ch := isotp.open_software('inproc:DIAG', 0x7E0, 0x7E8, false) or { panic(err) }
 
-	mut runner := &ServerRunner{
-		server: default_server()
-		ch:     srv_ch
+	stop := chan bool{cap: 1}
+	server_thread := spawn serve_one(mut srv_ch, default_server(), stop)
+	defer {
+		stop <- true
+		server_thread.wait()
+		cli_ch.close()
 	}
-	spawn runner.run(3000)
-	time.sleep(50 * time.millisecond) // let the server reach its recv loop
 
 	mut client := new_client(cli_ch)
 
@@ -94,9 +90,16 @@ fn test_two_ecus_answer_as_separate_targets() {
 	// each on its own request/response pair
 	mut bch := isotp.open_software(iface, 0x7E9, 0x7E1, false) or { panic(err) }
 	mut ech := isotp.open_software(iface, 0x7EA, 0x7E2, false) or { panic(err) }
-	spawn serve_one(mut bch, bcm)
-	spawn serve_one(mut ech, ecm)
-	time.sleep(50 * time.millisecond)
+	b_stop := chan bool{cap: 1}
+	e_stop := chan bool{cap: 1}
+	b_thread := spawn serve_one(mut bch, bcm, b_stop)
+	e_thread := spawn serve_one(mut ech, ecm, e_stop)
+	defer {
+		b_stop <- true
+		e_stop <- true
+		b_thread.wait()
+		e_thread.wait()
+	}
 
 	// the tester addresses each ECU in turn
 	mut t_bcm := isotp.open_software(iface, 0x7E1, 0x7E9, false) or { panic(err) }
@@ -113,13 +116,10 @@ fn test_two_ecus_answer_as_separate_targets() {
 	assert rb != re, 'the two ECUs must be distinguishable'
 }
 
-// serve_one answers a few requests on one channel, then closes. A named function because V
-// will not spawn a closure taking mutable non-reference arguments.
-fn serve_one(mut ch isotp.SoftChannel, srv Server) {
+// serve_one answers requests on one channel until told to stop, then closes it. A named
+// function because V will not spawn a closure taking mutable non-reference arguments.
+fn serve_one(mut ch isotp.SoftChannel, srv Server, stop chan bool) {
 	mut s := srv // V will not spawn with a mutable non-reference argument
-	for _ in 0 .. 4 {
-		req := ch.recv(500) or { continue }
-		ch.send(s.handle(req)) or {}
-	}
+	s.serve(mut ch, stop)
 	ch.close()
 }
