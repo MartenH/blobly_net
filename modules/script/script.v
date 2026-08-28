@@ -169,12 +169,13 @@ pub fn (mut env Env) diagnostics() map[string]transport.BusDiagnostics {
 	// A UDS connection is its own handle on the wire, reported under its own key: on a shared
 	// wire it and the bus above report the same wire, and two keys is honest where one sum
 	// would count the wire's loss twice (codex round 2 on #231).
-	for mut c in env.conns {
+	for i, mut c in env.conns {
 		d := c.ch.diagnostics()
 		if !d.is_empty() {
-			// Its own key per address pair: on a backend that counts per handle, two
-			// connections on one channel are two answers (codex round 10 on #231).
-			out['${c.chan} (uds 0x${c.ch.tx_id:X}/0x${c.ch.rx_id:X})'] = d
+			// Its own key per CONNECTION: on a backend that counts per handle, two connections
+			// on one channel are two answers, and so are two opens of one address pair
+			// (codex rounds 10 and 13 on #231).
+			out['${c.chan} (uds #${i} 0x${c.ch.tx_id:X}/0x${c.ch.rx_id:X})'] = d
 		}
 	}
 	return out
