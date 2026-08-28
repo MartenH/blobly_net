@@ -7,7 +7,9 @@ An automotive bus tester written in [V](https://vlang.io). It exercises a System
 Test (SUT) over **CAN**, and over **Ethernet** using the automotive protocols that run on it
 (**DoIP**, **SOME/IP**) — send and observe traffic, run diagnostics, script test cases,
 simulate ECUs, and read back logs — **virtual first** (Linux `vcan0`), with real hardware as
-a drop-in.
+a drop-in: SocketCAN adapters on Linux, **PEAK PCAN**, **Kvaser** and **Vector XL** on
+Windows, and the **CSS Electronics CANsub** — a USB *network* adapter — from either OS with no
+driver at all. All four vendors are hand-verified on the bench, CAN-FD included.
 
 > ## ⚠ Very early in development
 >
@@ -48,8 +50,7 @@ on one timeline.*
 
 **[Releases](../../releases)** carry a Windows zip and a Linux tar.gz per version, each under
 one top-level folder — no GitHub sign-in, no expiry. (Ignore the `v-toolchain` entry — that is
-CI's prebuilt compiler; if no `v0.x` release is listed yet, the first tag has not been cut —
-use the Actions route below.) Both bundle the demo projects, DBCs, sample logs, the docs the
+CI's prebuilt compiler; releases from `v0.1.0` onward are the product.) Both bundle the demo projects, DBCs, sample logs, the docs the
 Help panel renders, a `README.txt` and a `VERSION.txt`. The **Windows zip is self-contained**
 (mingw runtime DLLs included; run the bundled `register_blobnet_win.ps1` to make `.blobnet`
 files open in the app). The **Linux tar.gz needs the distro runtime**:
@@ -76,8 +77,10 @@ Two caveats: downloading an artifact requires being signed in to GitHub, and art
 ## What it does
 
 **Buses & transport**
-- **CAN / CAN-FD** — SocketCAN on Linux; PCAN, Kvaser and Vector XL on Windows (see the
-  hardware/OS matrix below). CAN-FD on SocketCAN, the software buses and **Vector**
+- **CAN / CAN-FD** — SocketCAN on Linux; PCAN, Kvaser and Vector XL on Windows; **CANsub**
+  (CSS Electronics, a USB *network* adapter reached over REST + WebSocket) from either OS with
+  no vendor DLL (see the hardware/OS matrix below). CAN-FD on SocketCAN, the software buses,
+  **CANsub** (`cansub:<device-id>/1@500000/2000000`) and **Vector**
   (`vector:1@500000/2000000`) and **Kvaser** (`kvaser:0@500000/2000000`) — in both, the data
   rate in the address is what asks for it — and **PCAN** (`pcan:PCAN_USBBUS1@500000/2000000`)
   since #217, which completes the FD set: every CAN backend now carries it. A *classic* channel
@@ -129,6 +132,7 @@ Blobly Net runs, so the interface string differs too:
 | **PEAK PCAN** | ✅ kernel `peak_usb` → SocketCAN `can0` | ✅ PCAN-Basic DLL → `pcan:PCAN_USBBUS1@500000` |
 | **Kvaser** | ✅ kernel `kvaser_usb` → SocketCAN `can0` | ✅ CANlib DLL → `kvaser:0@500000` |
 | **Vector** (VN16xx…) | ❌ no mainline driver | ✅ XL Driver Library → `vector:1@500000` (HW-verified on a VN1630A; add `,silent` to listen without acknowledging) |
+| **CANsub** (CSS Electronics) | ✅ `cansub:<device-id>/1@500000` — a USB *network* adapter, found by mDNS, no driver | ✅ the same string, the same code (HW-verified on a CANsub.4, classic and 64-byte FD) |
 | CAN-FD | PCAN ✅ · Kvaser Leaf Light v2 is classic-only | **Vector ✅** `vector:1@500000/2000000` · **Kvaser ✅** `kvaser:0@500000/2000000` — both HW-verified to an 8 Mbit/s data phase; Kvaser FD arbitration is 500k or 1M · **PCAN ✅** `pcan:PCAN_USBBUS1@500000/2000000` — HW-verified cross-vendor at 1/2/4/8 Mbit/s |
 
 - **On Linux and WSL2** the *kernel* owns the adapter and presents it as a **SocketCAN netdev**
@@ -246,7 +250,7 @@ No hardware, no display; non-zero exit if any test fails:
 
 ```sh
 scripts/runtests.sh tests/diag_basic.lua tests/bus_signals.lua
-# => 10 passed, 0 failed, 0 script error(s)
+# => 12 passed, 0 failed, 0 script error(s)      (the count grows with the suites)
 ```
 
 Point it at a different project with `--project projects/<name>.blobnet`. The full Lua API is
@@ -262,6 +266,7 @@ in the **[scripting & test guide](docs/scripting.md)**.
 | `dbc_decode` | decode one CAN frame to physical signal values | |
 | `mf4_dump` | parse an ASAM MDF4 log and summarise its frames | |
 | `loadtest` | data-plane benchmark across many concurrent buses | |
+| `restbus` | replay a recording onto live bus(es) with the ECU under test subtracted by DBC sender; several recorded buses onto several live ones from one clock | |
 
 † needs a **blobly_emb** target, which is [not released yet](#-this-screenshot-needs-the-other-half--which-isnt-released-yet).
 
@@ -277,9 +282,9 @@ evidence behind that warning.
 
 | layer | what | where |
 |---|---|---|
-| **Unit tests** | 32 test files, ~870 assertions across every module | `v -enable-globals test modules/` |
+| **Unit tests** | every `_test.v` under `modules/` — 72 files, ~900 test functions and ~3,200 assertions at 2026.08.00 | `v -enable-globals test modules/` |
 | **Golden byte vectors** | wire formats are pinned to exact bytes — SOME/IP headers, trace records, the simulated ECU's frames — and the same vectors exist on the blobly_emb side, so neither repo can drift alone | inside the unit tests |
-| **Headless integration** | 4 Lua suites drive real diagnostics and signal traffic against an in-process bus, simulated ECU and the native UDS server | `scripts/runtests.sh` |
+| **Headless integration** | 9 Lua suites — every file in `tests/`, which is what CI runs with no arguments — drive real diagnostics and signal traffic against an in-process bus, simulated ECU and the native UDS server | `scripts/runtests.sh` |
 | **GUI build** | the ImGui app compile-links on Linux and Windows | `ci.yml`, `windows.yml` |
 
 **Not automated — done by hand, and worth knowing about:**
@@ -295,7 +300,8 @@ evidence behind that warning.
   link, nothing more.
 
 **The gaps, plainly:** there is **no automated GUI testing** — CI proves the app builds, not that
-a panel behaves. The Windows job **builds but runs no tests**. And every hardware and oracle check
+a panel behaves. The Windows job runs the per-platform module tests (`modules/isotp/`) and
+type-checks every `cmd/` tool for both targets, **not the full unit suite**. And every hardware and oracle check
 above is manual, so a regression there is caught only when someone next runs it.
 
 ## Docs

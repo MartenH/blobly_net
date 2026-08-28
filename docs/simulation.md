@@ -221,9 +221,8 @@ somebody else — with one marker for the half of "us" that is the simulation:
 
 `REP` is the one that is not a direction, and deliberately so: a candump line does not say whether
 its recorder sent or received it, so calling an imported frame `RX` — as the old column did —
-claims something the file cannot support. (When a recording can be *played onto the bus* as the
-rest-bus simulation, those frames are ours and become `TX-S`; see #98. `REP` keeps meaning "a file
-on screen".)
+claims something the file cannot support. (A recording *played onto the bus* as the rest-bus
+simulation is ours, so those frames are `TX-S`; `REP` keeps meaning "a file on screen".)
 
 `origin` is searchable: type `rx` in the trace filter to see only what the real ECU put on the
 wire, or `s` (or `sim`, or the full `tx-s`) for only your simulation.
@@ -565,7 +564,7 @@ How the frames are matched back to a channel depends on where the labels came fr
 - an **`.mf4`** also carries `CAN_DataFrame.Dir` per frame, which says whether **the recording
   device** transmitted it. That device is not you: in a capture from somebody else's bench, `tx`
   marks *their* tester's traffic. It is the only provenance a recording can hold — a candump line
-  has none, so every one reads `unknown` — and it is a hint for #98's subtraction rule, not a
+  has none, so every one reads `unknown` — and it is a hint for the rest-bus subtraction, not a
   substitute for the DBC's per-message sender;
 - an **`.mf4`** names buses in the RECORDING's own numbering — `CAN_DataFrame.BusChannel`, which
   some writers count from 0 and others from 1 — so its labels arrive as `mf4:bus0`, `mf4:bus2`
@@ -753,22 +752,16 @@ databased buses, six are majority FD, one entirely so.
 subtraction honours all of them — matching only the `BO_` transmitter would leave the SUT's own
 frames in the replay whenever it is the secondary sender.
 
-**It is tracked, not forgotten: [#98](https://github.com/MartenH/blobly_net/issues/98).** The
-point of finishing it is a rest bus driven by *a real capture from the car* rather than by
-signal generators somebody typed — the SUT hears its actual environment. The plumbing is small but not one line
-(a worker pumping `player.due()` onto the bus, `monitorable()` accepting replay channels, and
-**source-bus selection** — a multi-bus `.mf4` loads every bus into one entry list, so the config
-has to say which recorded bus feeds which channel; `canlog`/`mf4` already read the files and
-`player` already paces them);
-the part that needs deciding is what to **leave out**, because a capture contains the ECU under
-test too, and replaying its own messages back at it puts two transmitters on every one of its
-ids. The DBC already names each message's sender, which is most of what makes the subtraction
-possible — but not all of it: a DBC may give a message **no** transmitter (`Vector__XXX`, which
-`candb` normalises to empty), and nothing in `replay:` says which node is the ECU under test. So
-the rule needs both an explicit "this is the SUT" and an answer for messages the database cannot
-attribute — replay them, or hold them back — rather than assuming every id resolves.
-Those frames are our simulation, sourced from a file, and the trace would label them as such
-rather than as a recording — `REP` means "a file on screen", where nothing was transmitted.
+**Rest bus from a recording is shipped end to end** ([#98](https://github.com/MartenH/blobly_net/issues/98)):
+replay channels play at Start, `replay.bus` selects the recorded bus of a multi-bus `.mf4`,
+`replay.exclude` subtracts the ECU under test by DBC sender, and the Scan-recording dialog fills
+both from the file. The subtraction lives in `modules/player` (`restbus.v`: `without_senders`,
+`check_nodes`, `census`; `multibus.v` for several recorded buses on one clock), shared with
+`cmd/restbus`. A message the DBC gives no transmitter is always replayed in the GUI (there is no
+switch for it yet) and can be held back with `--drop-unattributed` headless; a remote frame is
+never replayed. The frames go out
+as our simulation, `TX-S`, not as `REP`, which means "a file on screen" where nothing was
+transmitted.
 
 ## Running it without the GUI
 
