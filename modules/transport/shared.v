@@ -165,6 +165,10 @@ fn (mut d SharedNoDriver) health() BusHealth {
 	return .unknown
 }
 
+fn (mut d SharedNoDriver) diagnostics() BusDiagnostics {
+	return BusDiagnostics{}
+}
+
 fn (mut d SharedNoDriver) reconcile_silence(want bool) ! {
 	return error('bus is not open yet')
 }
