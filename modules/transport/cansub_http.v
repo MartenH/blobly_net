@@ -197,16 +197,17 @@ pub fn cansub_request(host string, method string, path string, body string, time
 	deadline := time.now().add(timeout)
 	mut c, reused := cansub_conn(host)!
 	r := c.exchange(method, path, body, deadline) or {
-		c.drop()
-		if !reused || deadline - time.now() <= 0 {
+		// EVICTION IS EXCHANGE'S, not ours: a connection whose socket failed is already dead and
+		// out of the pool by the time the error reaches here, retired under its own turn so no
+		// waiter could take it in between; and a caller that merely ran out of budget in the
+		// queue leaves a healthy connection alone — a drop() here waited for the turn it had
+		// just failed to get, and then closed a connection that was fine (codex round 3 on #248).
+		if !reused || !c.dead || deadline - time.now() <= 0 {
 			return err
 		}
 		// The connection was one the device may have closed while idle: dial and try once more.
 		mut fresh, _ := cansub_conn(host)!
-		return fresh.exchange(method, path, body, deadline) or {
-			fresh.drop()
-			return err
-		}
+		return fresh.exchange(method, path, body, deadline)!
 	}
 	return r
 }
@@ -296,6 +297,17 @@ fn (mut c CansubConn) exchange(method string, path string, body string, deadline
 	if remaining <= 0 {
 		return error('${method} ${path}: no budget left after waiting for the connection')
 	}
+	// FROM HERE THE SOCKET IS USED, and a failure of any kind retires the connection BEFORE the
+	// turn is posted: a waiter woken by the post would otherwise take a stream with a late or
+	// half-read reply still in it and read that as its own answer (codex round 3 on #248).
+	return c.converse(method, path, body, remaining) or {
+		c.retire()
+		return err
+	}
+}
+
+// converse is one request and its complete reply on a connection whose turn is held.
+fn (mut c CansubConn) converse(method string, path string, body string, remaining time.Duration) !CansubResponse {
 	c.tcp.set_read_timeout(remaining)
 	mut req := '${method} ${path} HTTP/1.1\r\nHost: ${c.host}\r\n'
 	if body != '' {
@@ -321,7 +333,26 @@ fn (mut c CansubConn) exchange(method string, path string, body string, deadline
 	if raw.len == 0 {
 		return error('${method} ${path}: no response')
 	}
+	if !cansub_response_complete(raw) {
+		// The reply ended with the connection — a close-delimited body, or a close in the
+		// middle of one. Either way this connection has nothing more to say: retire it, and let
+		// the parser decide whether what arrived is a reply.
+		c.retire()
+	}
 	return cansub_parse_response(raw.bytestr())
+}
+
+// retire closes this connection and takes it out of the pool, with the turn HELD by the caller:
+// the next waiter finds `dead` and the next request dials afresh.
+fn (mut c CansubConn) retire() {
+	c.close_socket()
+	lock cansub_pool {
+		if mut cur := cansub_pool.conns[c.host] {
+			if voidptr(cur) == voidptr(c) {
+				cansub_pool.conns.delete(c.host)
+			}
+		}
+	}
 }
 
 // acquire takes the connection's turn, or gives up at the deadline. True means the turn is
@@ -337,15 +368,8 @@ fn (mut c CansubConn) acquire(deadline time.Time) bool {
 // drop takes a failed connection out of service: the next request dials a new one.
 fn (mut c CansubConn) drop() {
 	c.turn.wait()
-	c.close_socket()
+	c.retire()
 	c.turn.post()
-	lock cansub_pool {
-		if mut cur := cansub_pool.conns[c.host] {
-			if voidptr(cur) == voidptr(c) {
-				cansub_pool.conns.delete(c.host)
-			}
-		}
-	}
 }
 
 fn (mut c CansubConn) close_socket() {
@@ -373,7 +397,12 @@ pub fn cansub_response_complete(raw []u8) bool {
 		length := head[i + 'content-length:'.len..].all_before('\r\n').trim_space().int()
 		return body.len >= length
 	}
-	return true
+	// Neither: the body, if there is one, runs to the connection's close, and no prefix of it
+	// can be called complete — only a status that cannot carry a body ends at the headers
+	// (codex round 3 on #248). The reader then runs to EOF and retires the connection.
+	status := head.all_before('\r\n').split(' ')
+	code := if status.len >= 2 { status[1].int() } else { 0 }
+	return code < 200 || code == 204 || code == 304
 }
 
 // cansub_chunks_complete walks the chunks the way cansub_dechunk does — the SAME reading of a

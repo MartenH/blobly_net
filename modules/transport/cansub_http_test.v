@@ -196,6 +196,10 @@ fn test_a_reply_is_complete_at_its_terminating_chunk_or_content_length() {
 	bodiless := 'HTTP/1.1 204\r\n\r\n'
 	assert cansub_response_complete(bodiless.bytes())
 	assert !cansub_response_complete('HTTP/1.1 204\r\n'.bytes())
+	// A 200 with neither framing header is close-delimited: never complete from the bytes alone.
+	assert !cansub_response_complete('HTTP/1.1 200\r\n\r\n'.bytes())
+	assert !cansub_response_complete('HTTP/1.1 200\r\n\r\n{"a":1}'.bytes())
+	assert cansub_response_complete('HTTP/1.1 304\r\n\r\n'.bytes())
 	// The chunked check is about the terminator, not about an accidental "0" chunk in the body.
 	assert !cansub_response_complete('HTTP/1.1 200\r\nTransfer-Encoding: chunked\r\n\r\n1\r\n0\r\n'.bytes())
 }
