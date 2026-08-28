@@ -712,6 +712,12 @@ fn test_a_lookup_in_flight_is_joined_not_repeated() {
 		}
 	}
 	assert early == 'still waiting', 'the caller did not wait for the lookup in flight (got ${early})'
+	// The lookup in flight answers — with an address no resolver would give for this name, so
+	// a waiter that looked the name up itself instead of taking this answer is caught (codex
+	// round 3 on #249).
+	lock cansub_addrs {
+		cansub_addrs.by_host['127.0.0.2'] = '192.0.2.77'
+	}
 	in_flight.unlock()
 	mut late := ''
 	select {
@@ -720,7 +726,7 @@ fn test_a_lookup_in_flight_is_joined_not_repeated() {
 			late = 'never answered'
 		}
 	}
-	assert late == '127.0.0.2'
+	assert late == '192.0.2.77', 'the waiter looked the name up itself instead of taking the answer in flight (got ${late})'
 	cansub_forget_addr('127.0.0.2')
 }
 
@@ -729,14 +735,23 @@ fn test_a_lookup_in_flight_is_joined_not_repeated() {
 // .invalid is reserved for exactly that.
 fn test_a_failed_lookup_is_shared_for_a_moment() {
 	cansub_forget_addr('nobody.invalid')
-	assert cansub_addr('nobody.invalid') == none
+	assert cansub_lookup('nobody.invalid', true) == none
 	failed := rlock cansub_addrs {
 		cansub_addrs.failed_at['nobody.invalid'] or { 0 }
 	}
 	assert failed > 0, 'the failure was not noted'
 	t0 := time.ticks()
+	assert cansub_lookup('nobody.invalid', true) == none
+	assert time.ticks() - t0 < 100, 'the second warm-up looked the name up again (${time.ticks() - t0} ms)'
+	// An OPEN is not answered from that memory: it asks again, whatever it costs (codex round 3
+	// on #249). Here the name still fails — the point is that it was looked up, which the
+	// failure stamp moving forward shows.
+	time.sleep(5 * time.millisecond)
 	assert cansub_addr('nobody.invalid') == none
-	assert time.ticks() - t0 < 100, 'the second caller looked the name up again (${time.ticks() - t0} ms)'
+	again := rlock cansub_addrs {
+		cansub_addrs.failed_at['nobody.invalid'] or { 0 }
+	}
+	assert again > failed, 'the open took the remembered failure instead of looking the name up'
 	cansub_forget_addr('nobody.invalid')
 	cleared := rlock cansub_addrs {
 		cansub_addrs.failed_at['nobody.invalid'] or { 0 }
@@ -746,12 +761,19 @@ fn test_a_failed_lookup_is_shared_for_a_moment() {
 
 // ONE DEVICE, ONE WARM-UP, however many of its channels the project lists.
 fn test_warm_all_warms_each_device_once() {
-	cansub_forget_addr('127.0.0.1')
+	before := rlock cansub_addrs {
+		cansub_addrs.warmups
+	}
 	cansub_warm_all(['cansub:E5A16ADF/1@500000', 'cansub:E5A16ADF/2@500000', 'pcan:PCAN_USBBUS1@500000',
 		'cansub:e5a16adf/3'])
-	// The dedupe is pure; what it decided is visible through the resolving locks it created.
-	names := rlock cansub_addrs {
-		cansub_addrs.resolving.keys().filter(it.starts_with('e5a16adf'))
-	}
-	assert names.len <= 1, 'more than one lock for one device: ${names}'
+	started := rlock cansub_addrs {
+		cansub_addrs.warmups
+	} - before
+	assert started == 1, 'four rows of one device started ${started} workers, not one'
+	// And two devices are two.
+	cansub_warm_all(['cansub:AAAA0001/1', 'cansub:BBBB0002/1'])
+	two := rlock cansub_addrs {
+		cansub_addrs.warmups
+	} - before
+	assert two == 3
 }

@@ -280,6 +280,9 @@ mut:
 	// When a lookup of the name last FAILED, in time.ticks(): for a short while after, a caller
 	// gets that answer instead of repeating the lookup. See cansub_addr.
 	failed_at map[string]i64
+	// How many warm-up workers have been started, ever: what a test counts to hold the
+	// one-per-device rule (cansub_warm_all).
+	warmups int
 }
 
 // cansub_failed_lookup_memory is how long a failed lookup answers for the next caller. Long
@@ -304,6 +307,16 @@ fn cansub_resolving(host string) &sync.Mutex {
 // cansub_addr is the resolved address of a device name, looked up once per process — see
 // cansub_dial for why. none when it cannot be resolved right now.
 pub fn cansub_addr(host string) ?string {
+	return cansub_lookup(host, false)
+}
+
+// cansub_lookup is cansub_addr with the choice of whether a RECENT FAILURE is an answer. It is
+// for the warm-up (background, speculative: a device not there a moment ago is not asked for
+// again for a few seconds) and NOT for an open — an operator who plugs the device in and
+// presses Start has told us it is there now, and an open that answered "not found" from a
+// memory five seconds old would turn a transient failure into a failed run (codex round 3 on
+// #249).
+fn cansub_lookup(host string, recent_failure_answers bool) ?string {
 	cached := rlock cansub_addrs {
 		cansub_addrs.by_host[host] or { '' }
 	}
@@ -330,7 +343,7 @@ pub fn cansub_addr(host string) ?string {
 	// the first lookup's failure were kept by nobody, the second and third would each spend
 	// their own 2.7 s finding the same thing out, and a Start pressed behind them waits for all
 	// of it (codex round 2 on #249).
-	if failed > 0 && time.ticks() - failed < cansub_failed_lookup_memory {
+	if recent_failure_answers && failed > 0 && time.ticks() - failed < cansub_failed_lookup_memory {
 		return none
 	}
 	addrs := net.resolve_ipaddrs(host, .ip, .tcp) or {
@@ -388,8 +401,11 @@ pub fn cansub_warm_all(ifaces []string) {
 // cansub_warm_host is the warm-up by name, and hands back its worker so a caller that needs the
 // answer — a test — can wait for it; cansub_warm itself never does.
 pub fn cansub_warm_host(host string) thread {
+	lock cansub_addrs {
+		cansub_addrs.warmups++
+	}
 	return spawn fn (h string) {
-		_ = cansub_addr(h) or { '' }
+		_ = cansub_lookup(h, true) or { '' }
 	}(host)
 }
 
