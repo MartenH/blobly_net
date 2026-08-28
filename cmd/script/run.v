@@ -106,8 +106,9 @@ fn main() {
 	// Through the same call the GUI makes, for the reason the block above exists: one policy, and
 	// the two front ends must not each keep their own reading of it. A WARNING, not a refusal —
 	// see project.fd_capability_warnings.
-	// The simulated-ECU loops, joined at the end so what their wires counted is printed
-	// before the summary rather than racing the exit (#213).
+	// Every loop that holds a wire -- simulated ECUs and diagnostic responders -- joined at the
+	// end so what their wires counted is booked and printed before the summary rather than
+	// racing the exit (#213, codex round 4 on #231).
 	mut sims := []thread{}
 	for w in project.fd_capability_warnings(proj.channels) {
 		eprintln('warning: ${w}')
@@ -238,12 +239,12 @@ fn main() {
 					continue
 				}
 				if servers.len == 0 {
-					spawn diag_server_loop(ch.iface_with_bitrate(), ctl)
+					sims << spawn diag_server_loop(ch.iface_with_bitrate(), ctl)
 					println('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + UDS server')
 				} else {
 					for mut u in servers {
-						spawn uds_node_loop(ch.iface_with_bitrate(), u.rx, u.tx, u.ext, u.server,
-							ctl)
+						sims << spawn uds_node_loop(ch.iface_with_bitrate(), u.rx, u.tx, u.ext,
+							u.server, ctl)
 					}
 					println('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + ${servers.len} UDS target(s)')
 				}
@@ -279,6 +280,8 @@ fn main() {
 	for t in sims {
 		t.wait()
 	}
+	// Joined BEFORE the script's buses are asked: a responder that fell behind books its gap
+	// at its close, into the wire, where the script's own handle then reads it.
 	// And what the script's own buses counted -- a tester-only channel has no simulation loop
 	// to say it (codex round 1 on #231). The diagnostic servers hold ISO-TP channels, not
 	// buses, and do not report.

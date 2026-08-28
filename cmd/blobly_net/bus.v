@@ -58,6 +58,10 @@ mut:
 	// and undecodable records (#213). Written by the wire's RX loop when the counts change;
 	// reset with health at Start and on a re-enable, carried across a reader handoff.
 	diag transport.BusDiagnostics
+	// When `diag` was last written (ticks). After Stop every row is retired and the wire's
+	// chip must come from the NEWEST sample among them, not whichever alias is listed last
+	// (codex round 4 on #231).
+	diag_at i64
 }
 
 fn (c Chan) monitorable() bool {

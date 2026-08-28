@@ -619,6 +619,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				a.mu.lock()
 				if a.running && a.run_gen == gen && ci < a.chans.len {
 					a.chans[ci].diag = d
+					a.chans[ci].diag_at = time.ticks()
 					a.log_append_locked(diag_msg(iface, last_diag, d))
 				}
 				a.mu.unlock()
@@ -651,6 +652,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				a.mu.lock()
 				if a.running && a.run_gen == gen && ci < a.chans.len {
 					a.chans[ci].diag = final
+					a.chans[ci].diag_at = time.ticks()
 					a.log_append_locked(diag_msg(iface, last_diag, final))
 				}
 				a.mu.unlock()
@@ -819,6 +821,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		a.mu.lock()
 		if a.run_gen == gen && ci < a.chans.len {
 			a.chans[ci].diag = final
+			a.chans[ci].diag_at = time.ticks()
 			if a.running {
 				a.log_append_locked(diag_msg(iface, last_diag, final))
 			}
@@ -864,6 +867,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 					// And the counts (#213): the successor seeds its narration from these,
 					// so a shared wire's totals are not logged twice as new.
 					a.chans[cj].diag = a.chans[ci].diag
+					a.chans[cj].diag_at = a.chans[ci].diag_at
 					a.chans[cj].spawning = true
 					spawn rx_loop(app, cj, other.iface, gen)
 					break

@@ -37,6 +37,8 @@ mut:
 	// (the hub reports every handle's ring gap, not the polled one's), written by the one
 	// reader-owning row, shown on every alias for the reason health is.
 	diag transport.BusDiagnostics
+	// When the retained sample was taken -- ordering among retired rows, see below.
+	diag_at i64
 }
 
 fn read_destinations(rows []Chan) map[string]DestState {
@@ -78,8 +80,11 @@ fn read_destinations(rows []Chan) map[string]DestState {
 		mut st := out[key] or { DestState{} }
 		// `read`, not an empty value: a LIVE reader reporting zero is a reopened wire that has
 		// counted nothing yet, and the retired sample must not paint over it (codex round 3).
-		if !st.read {
+		// Among retired rows the NEWEST sample wins: after an A -> B -> A handoff, B's row
+		// still holds the value it was handed at the first handoff (codex round 4).
+		if !st.read && c.diag_at > st.diag_at {
 			st.diag = c.diag
+			st.diag_at = c.diag_at
 			out[key] = st
 		}
 	}

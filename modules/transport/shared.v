@@ -1475,26 +1475,22 @@ fn (mut h SharedHandle) close() {
 	}
 	mut e := h.entry
 	// Not behind send_mu either -- Stop must be able to let go of a wire whose sender is stuck.
-	// The subscriber's gap is booked BEFORE the lifecycle section below, in recv's lock order
-	// (h.mu, then e.mu) -- taken the other way round it would be the inversion this file's
-	// comments exist to prevent.
-	if was_subscribed {
-		h.mu.lock()
-		e.mu.lock()
-		e.book_gap_locked(mut h)
-		e.mu.unlock()
-		h.mu.unlock()
-	}
-	mut last_healthy := false
-	e.mu.lock()
 	// WHAT A SUBSCRIBER NEVER READ IS STILL THE WIRE'S LOSS. The gap is booked at receive, so a
 	// handle that fell behind the ring and closed without another receive -- a Lua consumer
 	// that read once, worked, and was torn down -- left its overwritten frames uncounted, and
 	// the row read "nothing dropped" through the handle that kept up (codex round 1 on #231).
 	// SUBSCRIBERS ONLY: a transmit tap never asked for delivery, and its cursor is old on any
 	// busy wire -- booked, every tap a Start opened would add the whole ring to the wire's loss
-	// at Stop (codex round 2 on #231).
+	// at Stop (codex round 2). Booked and unsubscribed in ONE critical section -- released
+	// between them, the reader could overwrite one more record under a cursor still
+	// registered, and a closed handle reconciles nothing (codex round 4) -- taken in recv's
+	// lock order, h.mu then e.mu, because the other way round is the inversion this file's
+	// comments exist to prevent.
+	mut last_healthy := false
+	h.mu.lock()
+	e.mu.lock()
 	if was_subscribed {
+		e.book_gap_locked(mut h)
 		e.subs = e.subs.filter(it.id != h.id)
 	}
 	e.unread.delete(h.id)
@@ -1505,6 +1501,7 @@ fn (mut h SharedHandle) close() {
 		last_healthy = true
 	}
 	e.mu.unlock()
+	h.mu.unlock()
 	if last_healthy {
 		// The reader may be parked with nobody subscribed — which on a closing wire is the common
 		// case. Kick it so `<-e.done` below does not wait out the park's full second.
