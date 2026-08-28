@@ -129,6 +129,11 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 	pci := first[0] & 0xF0
 	if pci == 0x00 {
 		len := int(first[0] & 0x0F)
+		if len == 0 {
+			// SF_DL 0 is invalid on the wire; the send side refuses to produce one, and the receive
+			// side must not present it as an empty reply (codex round 9 on #225).
+			return error('ISO-TP: empty Single Frame')
+		}
 		if 1 + len > first.len {
 			return error('ISO-TP SF length ${len} exceeds frame')
 		}

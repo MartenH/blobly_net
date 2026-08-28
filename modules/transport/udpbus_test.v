@@ -23,7 +23,9 @@ import time
 // the pid as a second lock, and the slot keeps this file's three tests apart, since they share a
 // process and each needs a pair of buses that hear only each other.
 fn uniq_group(slot int) (string, int) {
-	return testports.group(), testports.udp_bus.slot(4, slot)
+	// Eight slots per process: every test here takes one, and a slot outside the stride is the
+	// next process's (codex round 9 on #225).
+	return testports.group(), testports.udp_bus.slot(8, slot)
 }
 
 // Two buses on the same group must see each other's frames, but not their own.
@@ -148,4 +150,9 @@ fn test_udp_bus_zero_timeout_returns_a_queued_frame() {
 	time.sleep(50 * time.millisecond)
 	got := b.recv(0) or { panic('a queued frame must be returned by recv(0): ${err}') }
 	assert got.id == 0x322
+	// And past its own echo: a has its own datagram queued ahead of b's reply.
+	b.send(CanFrame{ id: 0x323, data: [u8(3)] }) or { panic('send: ${err}') }
+	time.sleep(50 * time.millisecond)
+	got2 := a.recv(0) or { panic('recv(0) stopped at a filtered datagram: ${err}') }
+	assert got2.id == 0x323
 }
