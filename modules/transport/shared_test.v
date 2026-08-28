@@ -84,6 +84,8 @@ mut:
 	send_blocking bool
 	ack_in_send   bool
 	send_failure  string
+	// fail_id fails only writes of this id, so one wire can carry a good send and a bad one.
+	fail_id       u32
 	rx            chan HubFakeItem
 	sent          chan CanFrame
 	send_gate     chan bool
@@ -289,6 +291,9 @@ fn (mut d HubFakeDriver) send(frame CanFrame) ! {
 	}
 	if d.send_failure != '' {
 		return error(d.send_failure)
+	}
+	if d.fail_id != 0 && frame.id == d.fail_id {
+		return error('raw write of ${frame.id:x} failed')
 	}
 }
 
@@ -583,6 +588,38 @@ fn test_a_failed_write_stays_matchable_for_its_grace_then_counts_as_failed() {
 	assert shared_test_expired_failed(mut sender) == 1
 	sender.close()
 	observer.close()
+}
+
+// AND THE GRACE HOLDS BEHIND A LIVE ENTRY. Pending sends are in write order; their deadlines are
+// not. A successful write that is still awaiting its acknowledgement, then a failed one: the
+// ghost must expire on its own clock, not the earlier send's five seconds -- expiry that only
+// cut a prefix left it matchable for the whole of the earlier window (codex round 1 on #228).
+fn test_a_failed_write_behind_a_live_send_still_expires_on_its_own_grace() {
+	reset_hub_fakes()
+	hub_fake.fail_id = 0x462
+	mut sender := shared_open_events('hub:failed-behind', 'fake:failed-behind', hub_fake_make)!
+	mut failing := shared_open_events('hub:failed-behind', 'fake:failed-behind', hub_fake_make)!
+	sender.send(CanFrame{ id: 0x461 })! // acknowledged never; lives out the ordinary window
+	_ := <-hub_fake.sent
+	if _ := failing.send(CanFrame{ id: 0x462 }) {
+		assert false, 'the fake raw write was configured to fail'
+	} else {
+		assert err.msg() == 'raw write of 462 failed'
+	}
+	_ := <-hub_fake.sent
+	assert shared_test_pending(mut sender) == 2
+	deadline := time.ticks() + shared_failed_send_grace_ms + 2000
+	for shared_test_pending(mut sender) > 1 {
+		if time.ticks() >= deadline {
+			assert false, 'the failed write behind a live send did not expire after its grace'
+			break
+		}
+		time.sleep(10 * time.millisecond)
+	}
+	assert shared_test_expired_failed(mut sender) == 1
+	assert shared_test_expired(mut sender) == 0, 'the live send must still be waiting for its acknowledgement'
+	sender.close()
+	failing.close()
 }
 
 // THE READER, health(), reconcile_silence() AND close() NEVER WAIT ON A WRITER. One handle is

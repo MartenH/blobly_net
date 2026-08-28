@@ -246,21 +246,29 @@ fn shared_remove_entry(e &SharedEntry) {
 
 // Called with e.mu held. Pending acknowledgements are evidence, not an unbounded history: a lost
 // device record must not retain payloads forever or let a much later identical acknowledgement be
-// attributed to a stale send.
+// attributed to a stale send. EVERY stamped entry is examined, not a prefix: the list is in write
+// order but the deadlines are not -- a failed write's grace is short and a successful write's
+// window is long, so a ghost queued behind a live earlier send would otherwise outlive its grace
+// by the whole of the earlier window (codex round 1 on #228). An in-flight entry (expires_at 0)
+// is kept wherever it stands; removing entries around it does not change the order of the rest,
+// which is what oldest-equal-first matching depends on.
 fn (mut e SharedEntry) expire_pending(now i64) {
-	mut cut := 0
-	for cut < e.pending.len && e.pending[cut].expires_at > 0 && e.pending[cut].expires_at <= now {
-		cut++
-	}
-	if cut > 0 {
-		for i in 0 .. cut {
-			if e.pending[i].failed {
+	mut kept := []SharedPendingSend{cap: e.pending.len}
+	mut dropped := 0
+	for pending in e.pending {
+		if pending.expires_at > 0 && pending.expires_at <= now {
+			if pending.failed {
 				e.expired_failed_sends++
 			} else {
 				e.expired_tx_acks++
 			}
+			dropped++
+			continue
 		}
-		e.pending = e.pending[cut..].clone()
+		kept << pending
+	}
+	if dropped > 0 {
+		e.pending = kept
 	}
 }
 
