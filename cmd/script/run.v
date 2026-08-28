@@ -328,6 +328,12 @@ fn load_channel_db(ch project.Channel, proj_dir string) candb.Database {
 // sim_loop runs the channel's simulated ECUs on a dedicated in-process bus
 // instance (driver-free twin of src/main.v's sim_loop, minus the GUI).
 fn sim_loop(open_iface string, fault_iface string, db candb.Database, nodes []project.NodeCfg, ctl &Ctl) {
+	// Counted done on EVERY way out, an open that fails included -- a loop that returned
+	// before counting itself left the runner's bounded wait waiting for it (codex round 7 on
+	// #231).
+	defer {
+		stdatomic.add_i64(&loops_done, 1)
+	}
 	mut bus := transport.open(open_iface) or { return }
 	mut engine := sim.Engine{}
 	for n in nodes {
@@ -358,13 +364,18 @@ fn sim_loop(open_iface string, fault_iface string, db candb.Database, nodes []pr
 		eprintln('${open_iface}: ${d.str()}')
 	}
 	bus.close()
-	stdatomic.add_i64(&loops_done, 1)
 }
 
 // diag_server_loop answers UDS requests (rx 0x7E0 / tx 0x7E8) over software
 // ISO-TP on the channel's bus, until stopped.
 // uds_node_loop answers one simulated ECU's diagnostic requests on its own addresses.
 fn uds_node_loop(iface string, rx u32, tx u32, ext bool, srv uds.Server, ctl &Ctl) {
+	// Counted done on EVERY way out, an open that fails included -- a loop that returned
+	// before counting itself left the runner's bounded wait waiting for it (codex round 7 on
+	// #231).
+	defer {
+		stdatomic.add_i64(&loops_done, 1)
+	}
 	mut ch := isotp.open_software(iface, tx, rx, ext) or { return }
 	mut s := srv
 	for ctl.running {
@@ -375,7 +386,6 @@ fn uds_node_loop(iface string, rx u32, tx u32, ext bool, srv uds.Server, ctl &Ct
 		}
 	}
 	ch.close()
-	stdatomic.add_i64(&loops_done, 1)
 }
 
 // doip_listen binds one simulated DoIP entity: the same uds.Server the CAN path serves,
@@ -425,6 +435,12 @@ fn doip_udp_loop(mut s doip.DoipServer, ctl &Ctl) {
 }
 
 fn diag_server_loop(iface string, ctl &Ctl) {
+	// Counted done on EVERY way out, an open that fails included -- a loop that returned
+	// before counting itself left the runner's bounded wait waiting for it (codex round 7 on
+	// #231).
+	defer {
+		stdatomic.add_i64(&loops_done, 1)
+	}
 	// Server side: transmit responses on 0x7E8, receive requests on 0x7E0
 	// (the mirror of the tester's tx 0x7E0 / rx 0x7E8).
 	mut ch := isotp.open_software(iface, 0x7E8, 0x7E0, false) or { return }
@@ -437,7 +453,6 @@ fn diag_server_loop(iface string, ctl &Ctl) {
 		}
 	}
 	ch.close()
-	stdatomic.add_i64(&loops_done, 1)
 }
 
 // build_node delegates to sim.from_project. This used to be a copy of the GUI's builder
