@@ -194,8 +194,13 @@ pub fn cansub_request(host string, method string, path string, body string, time
 	// exchange timed out went on to dial (seconds, to a device that has gone) and try again with
 	// 700 ms more (codex round 2 on #248). What is not on the clock is the dial itself: V's
 	// dial_tcp takes no timeout, so a retry is only STARTED while budget remains.
-	deadline := time.now().add(timeout)
+	// THE BUDGET STARTS ONCE THERE IS A CONNECTION. The first dial is a name lookup plus a TLS
+	// handshake that nothing here can interrupt — 2.7 s cold on Windows — and charged against a
+	// two-second open budget it left the identity request with nothing, so the open forgot the
+	// address it had just found and repeated the same cold failure (codex round 4 on #248). The
+	// redial on retry stays inside the deadline, as before: by then the name is known.
 	mut c, reused := cansub_conn(host)!
+	deadline := time.now().add(timeout)
 	r := c.exchange(method, path, body, deadline) or {
 		// EVICTION IS EXCHANGE'S, not ours: a connection whose socket failed is already dead and
 		// out of the pool by the time the error reaches here, retired under its own turn so no
@@ -245,6 +250,12 @@ fn cansub_conn(host string) !(&CansubConn, bool) {
 	if existing != unsafe { nil } {
 		return existing, true
 	}
+	// THE ADDRESS GENERATION THIS DIAL BELONGS TO. A forget (an identity mismatch) bumps it;
+	// a dial that started before the forget may still come back holding the old device, and
+	// pooled it would hand the retry the very connection the forget was meant to end (codex
+	// round 4 on #248). So it is checked at admission, and a connection from an earlier
+	// generation is closed and refused — the caller's retry dials against the new address.
+	gen := cansub_addr_generation(host)
 	mut tcp := cansub_dial(host)!
 	mut conn := ssl.new_ssl_conn(
 		validate:     false // the device signs its own certificate; see the note at the top
@@ -259,6 +270,10 @@ fn cansub_conn(host string) !(&CansubConn, bool) {
 		tcp:  tcp
 		ssl:  conn
 		turn: sync.new_semaphore_init(1)
+	}
+	if cansub_addr_generation(host) != gen {
+		c.close_socket()
+		return error('the address of ${host} was forgotten while connecting to it')
 	}
 	lock cansub_pool {
 		if mut prior := cansub_pool.conns[host] {
@@ -293,22 +308,21 @@ fn (mut c CansubConn) exchange(method string, path string, body string, deadline
 	if c.dead {
 		return error('connection to ${c.host} is closed')
 	}
-	remaining := deadline - time.now()
-	if remaining <= 0 {
+	if deadline - time.now() <= 0 {
 		return error('${method} ${path}: no budget left after waiting for the connection')
 	}
 	// FROM HERE THE SOCKET IS USED, and a failure of any kind retires the connection BEFORE the
 	// turn is posted: a waiter woken by the post would otherwise take a stream with a late or
 	// half-read reply still in it and read that as its own answer (codex round 3 on #248).
-	return c.converse(method, path, body, remaining) or {
+	return c.converse(method, path, body, deadline) or {
 		c.retire()
 		return err
 	}
 }
 
 // converse is one request and its complete reply on a connection whose turn is held.
-fn (mut c CansubConn) converse(method string, path string, body string, remaining time.Duration) !CansubResponse {
-	c.tcp.set_read_timeout(remaining)
+fn (mut c CansubConn) converse(method string, path string, body string, deadline time.Time) !CansubResponse {
+	c.tcp.set_read_timeout(deadline - time.now())
 	mut req := '${method} ${path} HTTP/1.1\r\nHost: ${c.host}\r\n'
 	if body != '' {
 		req += 'Content-Type: application/json\r\nContent-Length: ${body.len}\r\n'
@@ -318,6 +332,14 @@ fn (mut c CansubConn) converse(method string, path string, body string, remainin
 	mut raw := []u8{}
 	mut buf := []u8{len: 4096}
 	for {
+		// THE DEADLINE IS ABSOLUTE, so what each read may wait is what is LEFT of it — set once,
+		// a reply trickled in just under the budget per read ran on for as long as the device
+		// cared to, holding the turn (codex round 4 on #248).
+		left := deadline - time.now()
+		if left <= 0 {
+			return error('${method} ${path}: the reply did not complete within the budget')
+		}
+		c.tcp.set_read_timeout(left)
 		n := c.ssl.read(mut buf)!
 		if n <= 0 {
 			break
@@ -477,6 +499,16 @@ __global (
 struct CansubAddrs {
 mut:
 	by_host map[string]string
+	// Bumped by every forget of the name: what a dial in flight is checked against when it
+	// comes back (cansub_conn).
+	generation map[string]int
+}
+
+// cansub_addr_generation is how many times the name has been forgotten.
+fn cansub_addr_generation(host string) int {
+	return rlock cansub_addrs {
+		cansub_addrs.generation[host] or { 0 }
+	}
 }
 
 // cansub_addr is the resolved address of a device name, looked up once per process — see
@@ -508,6 +540,7 @@ pub fn cansub_addr(host string) ?string {
 pub fn cansub_forget_addr(host string) {
 	lock cansub_addrs {
 		cansub_addrs.by_host.delete(host)
+		cansub_addrs.generation[host]++
 	}
 	// AND THE CONNECTION DIALLED TO IT. An address is forgotten because the device behind it is
 	// not the one the name means any more — a firmware update moved it and another CANsub now

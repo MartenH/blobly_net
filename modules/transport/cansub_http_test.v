@@ -255,3 +255,14 @@ fn test_a_request_gives_up_on_a_busy_connection_at_its_deadline() {
 	assert c.acquire(later)
 	c.turn.post()
 }
+
+// A FORGET IS A NEW GENERATION: what a dial that started before it is checked against when it
+// comes back, so a connection to the device the forget was about is never pooled (codex round
+// 4 on #248).
+fn test_forgetting_an_address_starts_a_new_generation() {
+	before := cansub_addr_generation('192.0.2.9')
+	cansub_forget_addr('192.0.2.9')
+	assert cansub_addr_generation('192.0.2.9') == before + 1
+	cansub_forget_addr('192.0.2.9')
+	assert cansub_addr_generation('192.0.2.9') == before + 2
+}
