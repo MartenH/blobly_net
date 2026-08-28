@@ -283,7 +283,7 @@ Generalize `gen_dirty` → `app.dirty`. Title/toolbar shows `name ●` while dir
 |------|--------|
 | **New** | `app.proj = Project{ name: 'untitled' }`, `proj_path = ''`, rebuild → blank (0 buses) |
 | **Open…** | file browser → `load_project(path)` |
-| **Save** (Ctrl+S) | File tab showing dirty text → save that text; else `proj_path == ''` → Save As; else `app.proj.save(proj_path)`, clear dirty. The toolbar answers with `✓ saved` for three seconds |
+| **Save** (Ctrl+S) | File tab showing dirty text → save that text; else `proj_path == ''` → Save As; else `app.proj.save(proj_path)`, clear dirty. The toolbar answers with `saved` beside the project name for three seconds |
 | **Save As…** | file browser (save) → set `proj_path`, save |
 | **Configure…** | open the Configuration editor (disabled while running) |
 | Open Example ▸ / Reload / Exit | unchanged |

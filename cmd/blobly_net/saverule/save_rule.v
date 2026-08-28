@@ -1,4 +1,4 @@
-module project
+module saverule
 
 // SaveTarget is what one Save — File ▸ Save or Ctrl+S — means in a given state of the GUI.
 pub enum SaveTarget {
@@ -28,9 +28,12 @@ pub:
 	running bool
 }
 
-// save_target is THE rule behind Save. Pure, and here rather than in the GUI so it has a test:
-// five review rounds on #250 each moved this decision, and each fix was checked by reading
-// (the GUI has no tests; CI runs `v test modules/`). The order matters and is the point:
+// save_target is THE rule behind Save. Pure, and in a sub-module of the GUI rather than in
+// its main package so it has a test without linking ImGui: five review rounds on #250 each
+// moved this decision, and each fix was checked by reading. It is GUI policy — what the File
+// tab, the picker and the run state mean to Save — so it does NOT live in modules/, which
+// knows nothing of any of them (codex round 6 on #250). CI runs it as
+// `v test cmd/blobly_net/saverule/`. The order matters and is the point:
 //
 //  1. the picker wins — a Save while it is up must not reopen it;
 //  2. drawn dirty text is what Save means — the text, never the model under it;

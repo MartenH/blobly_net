@@ -257,6 +257,9 @@ mut:
 	// selected in a window that is collapsed or docked behind another. That is what decides
 	// whether Ctrl+S means the text or the project (codex round 3 on #250).
 	cfg_file_visible bool
+	// File ▸ Save was chosen this frame: performed by poll_shortcuts after the panels have
+	// drawn, for the reason given there.
+	save_requested bool
 	// Editor fields whose text could not be committed to the model, rebuilt by every commit_cfg.
 	//
 	// A REJECTED FIELD HAS TO REACH START, not merely the Log. Leaving the previous value in the

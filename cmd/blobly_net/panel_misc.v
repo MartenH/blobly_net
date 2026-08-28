@@ -137,9 +137,8 @@ fn draw_menubar(mut app App, rx u64) {
 				app.open_browser('open')
 			}
 			if vgui.menu_item_shortcut('Save', 'Ctrl+S') {
-				// The same action the chord it advertises performs — with the File tab showing
-				// dirty text that is the text, and save_project would only refuse.
-				app.save_what_is_being_edited()
+				// Asked for here, performed after the panels — see poll_shortcuts.
+				app.save_requested = true
 			}
 			if vgui.menu_item('Save As...') {
 				app.open_browser('saveas')
