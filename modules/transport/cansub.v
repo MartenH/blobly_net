@@ -160,6 +160,10 @@ mut:
 // open_cansub_bus is what shared_open_events calls. It creates the one raw connection behind that
 // wire's logical handles. SharedDriver is private to transport: it carries the device's
 // TX-acknowledgement bit as far as the shared hub without widening the public Bus contract.
+// cansub_write_timeout bounds one WebSocket write — see open_cansub_bus. Named so a test can
+// hold it below what a Stop is allowed to cost.
+const cansub_write_timeout = 2 * time.second
+
 fn open_cansub_bus(iface string) !SharedDriver {
 	spec := parse_cansub_iface(iface)!
 	host := cansub_host(spec.id)
@@ -216,7 +220,15 @@ fn open_cansub_bus(iface string) !SharedDriver {
 		// on its way out (see close()), so a wire is released one read timeout after it is asked
 		// to stop. An idle reader waking twice a second costs nothing measurable; two seconds of
 		// dead air per wire at Stop is the thing somebody notices.
-		read_timeout: 500 * time.millisecond
+		read_timeout:  500 * time.millisecond
+		// AND THE WRITE, for the same reason from the other side. Stop closes the socket under
+		// the write lock and waits for a send in flight to finish first — "a bounded thing",
+		// bounded by THIS, and the library's default is thirty seconds. A send to a device that
+		// has stopped taking bytes (unplugged mid-run, a WebSocket the firmware has abandoned)
+		// blocks in write() until then, and with it every sender on the wire and the Stop
+		// behind them (#240). Two seconds is longer than any send this device has been seen to
+		// take and shorter than anybody's patience.
+		write_timeout: cansub_write_timeout
 	)!
 	ws.connect() or { return error('cannot open ${iface}: ${err}') }
 

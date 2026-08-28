@@ -672,3 +672,11 @@ fn test_counters_parse_with_whitespace_and_unknown_states_stay_unknown() {
 	assert cansub_ladder('{"state":"sleeping","rx_error_count":0,"tx_error_count":0}', false)? == .unknown
 	assert cansub_ladder('{"state":"sleeping","rx_error_count":0,"tx_error_count":0}', true)? == .unknown
 }
+
+// A SEND THAT HANGS IS CUT OFF BEFORE ANYBODY NOTICES: Stop waits under the write lock for a
+// send in flight, so the write timeout is what bounds Stop on a wire whose device has stopped
+// taking bytes. The library's default is 30 s (#240).
+fn test_a_cansub_write_is_bounded_well_below_the_librarys_default() {
+	assert cansub_write_timeout <= 2 * time.second
+	assert cansub_write_timeout >= 500 * time.millisecond, 'shorter than a slow but live device'
+}
