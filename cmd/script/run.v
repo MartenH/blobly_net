@@ -117,11 +117,6 @@ fn main() {
 	// end so what their wires counted is booked and printed before the summary rather than
 	// racing the exit (#213, codex round 4 on #231).
 	mut sims := []thread{}
-	// One REPORTING handle per CAN wire, opened before any loop and closed after every loop
-	// has gone: on a shared wire it answers with the wire's totals, booked by the loops'
-	// closes, which a loop's own handle could not report -- it had to close to book them
-	// (codex round 8 on #231). Never reads; a transmit tap's cost.
-	mut reporters := map[string]transport.Bus{}
 	for w in project.fd_capability_warnings(proj.channels) {
 		eprintln('warning: ${w}')
 	}
@@ -203,14 +198,6 @@ fn main() {
 			}
 			println('channel ${ch.name} (doip:${host}:${port}): DoIP entity, logical address 0x${ch.ecu_addr:04X}')
 			continue
-		}
-		// Keyed by the physical destination, as the seeding below is: two spellings of one
-		// wire are one reporter, or one wire's totals print twice (codex round 9 on #231).
-		rep_key := transport.destination_key_for(ch.adapter, ch.iface)
-		if rep_key !in reporters {
-			if rb := transport.open(ch.iface_with_bitrate()) {
-				reporters[rep_key] = rb
-			}
 		}
 		if nodes.len > 0 {
 			// BOTH: the suffixed string opens the transport, the logical one keys faults.
@@ -310,21 +297,14 @@ fn main() {
 	if stdatomic.load_i64(&loops_done) < i64(sims.len) {
 		eprintln('${sims.len - int(stdatomic.load_i64(&loops_done))} bus loop(s) still busy at exit; their wires are not reported')
 	}
-	// What each wire counted that no frame carried (#213), from the reporting handles, after
-	// every loop that could book a loss has closed.
-	for iface, mut rb in reporters {
-		// DRAINED FIRST. On a backend that fans out natively (SocketCAN, Vector, Kvaser) every
-		// handle is handed every error record and counts what IT consumed, so a reporter that
-		// never read would answer zero; its own queue holds the same records the loops saw
-		// (codex round 10 on #231). Bounded, and zero-timeout: one look per frame.
-		for _ in 0 .. 65536 {
-			rb.recv(0) or { break }
-		}
-		d := rb.diagnostics()
-		if !d.is_empty() {
-			eprintln('${iface}: ${d.str()}')
-		}
-		rb.close()
+	// And what the script's own buses and connections counted (#213). EACH HANDLE REPORTS
+	// ITSELF, here and in the loops above at their close: on a shared wire every handle answers
+	// with the wire's totals, reconciled for every subscriber at the asking; on a backend that
+	// fans out natively each handle counts what it consumed. A separate reporting handle was
+	// tried and was wrong both ways -- it had to drain to see anything on the one kind and
+	// was itself a dropping subscriber on the other (codex rounds 8-11 on #231).
+	for name, d in env.diagnostics() {
+		eprintln('${name}: ${d.str()}')
 	}
 	passed := env.passed()
 	failed := env.failed()
@@ -379,6 +359,7 @@ fn sim_loop(open_iface string, fault_iface string, db candb.Database, nodes []pr
 			}
 		}
 	}
+	report_diag('${open_iface} (sim)', bus.diagnostics())
 	bus.close()
 }
 
@@ -401,6 +382,7 @@ fn uds_node_loop(iface string, rx u32, tx u32, ext bool, srv uds.Server, ctl &Ct
 			ch.send(resp) or {}
 		}
 	}
+	report_diag('${iface} (uds node)', ch.diagnostics())
 	ch.close()
 }
 
@@ -468,6 +450,7 @@ fn diag_server_loop(iface string, ctl &Ctl) {
 			ch.send(resp) or {}
 		}
 	}
+	report_diag('${iface} (uds server)', ch.diagnostics())
 	ch.close()
 }
 
@@ -482,4 +465,11 @@ fn build_node(db candb.Database, cfg project.NodeCfg) sim.SimEcu {
 		eprintln('${cfg.name}: ${w}')
 	}
 	return sim.from_project(db, cfg)
+}
+
+// report_diag prints what one handle counted that no frame carried, if anything (#213).
+fn report_diag(what string, d transport.BusDiagnostics) {
+	if !d.is_empty() {
+		eprintln('${what}: ${d.str()}')
+	}
 }
