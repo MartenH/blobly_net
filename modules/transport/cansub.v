@@ -1099,8 +1099,11 @@ fn (b &CansubBus) diagnostic_suffix() string {
 // reason wins: a reader that has already stopped has the better story.
 fn (mut b CansubBus) fail_send(reason string) {
 	lock b.stop {
-		if b.stop.running {
-			b.stop.running = false
+		b.stop.running = false
+		// The reader may have recorded its own error an instant earlier without yet having
+		// dropped `running` (it does that only in close): that reason stays, being the earlier
+		// and usually the better one (codex round 4 on #251).
+		if b.stop.err == '' {
 			b.stop.err = reason
 		}
 	}
