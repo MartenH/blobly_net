@@ -1387,7 +1387,8 @@ fn shared_test_wait_expired(mut bus Bus, want u64) {
 
 // THE HUB'S DIAGNOSTICS ARE THE DRIVER'S PLUS THE WIRE'S RING GAPS: what the ring overwrote
 // under a slow handle's cursor is reported by EVERY handle on the wire -- the row polls the one
-// that kept up -- and survives the slow handle's close; a closed handle itself answers empty.
+// that kept up -- and survives the slow handle's close; a closed handle still answers with the
+// wire's totals, so a sample taken after its close sees what that close booked.
 fn test_shared_hub_diagnostics_fold_the_drivers_counters_with_the_wires_ring_gaps() {
 	reset_hub_fakes()
 	hub_fake.diag = BusDiagnostics{
@@ -1428,7 +1429,7 @@ fn test_shared_hub_diagnostics_fold_the_drivers_counters_with_the_wires_ring_gap
 	assert BusDiagnostics{}.fell(want)
 	assert !want.fell(BusDiagnostics{})
 	slow.close()
-	assert slow.diagnostics() == BusDiagnostics{}
+	assert slow.diagnostics() == want, 'a closed handle answers with the wire totals'
 	assert fast.diagnostics() == want, 'the gap outlives the handle that suffered it'
 	// Asked before its close, a subscriber's gap is booked at the asking: a report taken
 	// before teardown is not a sample short.
@@ -1440,6 +1441,7 @@ fn test_shared_hub_diagnostics_fold_the_drivers_counters_with_the_wires_ring_gap
 	fast.close()
 	assert after.diagnostics().dropped == 7, 'a transmit tap that never read books nothing at its close'
 	after.close()
+	assert after.diagnostics().dropped == 7, 'the last close still answers with what the wire counted'
 }
 
 fn test_shared_hub_ring_overwrite_only_advances_the_slow_cursor() {

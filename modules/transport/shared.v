@@ -1402,16 +1402,23 @@ fn (mut h SharedHandle) health() BusHealth {
 // (#213). Asked of the driver whatever the generation's state: a failed generation's counters
 // are still what happened, and are often the explanation, so they must not vanish from the row
 // the moment the wire dies -- unlike health(), whose .unknown the caller filters (self-review).
-// A closed handle answers empty, as health() does.
+// AND A CLOSED HANDLE STILL ANSWERS, with the wire's totals as they stood: its own close may
+// have booked the last gap, and a reader that samples after its close is the only one that can
+// see it (codex round 5 on #231). Nothing is booked for a closed handle; the totals are read.
 fn (mut h SharedHandle) diagnostics() BusDiagnostics {
 	h.mu.lock()
 	closed := h.closed
 	subscribed := h.subscribed
 	h.mu.unlock()
-	if closed {
-		return BusDiagnostics{}
-	}
 	mut e := h.entry
+	if closed {
+		e.mu.lock()
+		gaps := BusDiagnostics{
+			dropped: e.ring_gaps
+		}
+		e.mu.unlock()
+		return gaps.plus(e.driver.diagnostics())
+	}
 	// Locks in the order recv takes them (h.mu, then e.mu), so this handle's own gap is
 	// booked before the wire's total is read.
 	h.mu.lock()

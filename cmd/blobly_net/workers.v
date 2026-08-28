@@ -815,7 +815,10 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	// left up to a second of counts unread, and the retained chip is the operator's post-run
 	// view. Written if the GENERATION still matches -- Stop has cleared `running` by now and
 	// the row keeps its value until the next Start -- narrated only while the run is on
-	// (codex round 3 on #231).
+	// (codex round 3 on #231). Taken AFTER the close: a subscriber's close is where its last
+	// ring gap is booked, and a closed hub handle still answers with the wire's totals (codex
+	// round 5).
+	bus.close()
 	final := bus.diagnostics()
 	if final != last_diag {
 		a.mu.lock()
@@ -829,7 +832,6 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		a.mu.unlock()
 		last_diag = final
 	}
-	bus.close()
 	a.mu.lock()
 	// Only if this run is still the current one. A loop that exited because the generation moved
 	// on would otherwise clear a flag the NEW loop just set, and every emission after that would
@@ -1337,6 +1339,12 @@ fn script_worker(app &App, path string) {
 	}
 	env.run_file(path) or { a.script_push('error: ${err}') }
 	a.script_push('${env.passed()}/${env.total()} passed, ${env.failed()} failed')
+	// What the script's own wires counted (#213): a suite run from here while the measurement
+	// is stopped has no RX loop polling on its behalf, so this is its only outlet (codex
+	// round 5 on #231).
+	for name, d in env.diagnostics() {
+		a.script_push('${name}: ${d.str()}')
+	}
 	env.close()
 	a.script_done()
 }
