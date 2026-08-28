@@ -661,3 +661,14 @@ fn test_a_device_address_is_remembered_until_forgotten() {
 	assert again == first
 	cansub_forget_addr('127.0.0.1')
 }
+
+// PRETTY-PRINTED COUNTERS PARSE, and a state this code does not know is not read through its
+// counter as ok (codex round 1 on #243).
+fn test_counters_parse_with_whitespace_and_unknown_states_stay_unknown() {
+	pretty := '{\n\t"state" : "error_passive",\n\t"rx_error_count" :\t0,\n\t"tx_error_count" : 129\n}'
+	assert extract_json_int(pretty, 'rx_error_count')? == 0
+	assert extract_json_int(pretty, 'tx_error_count')? == 129
+	assert cansub_ladder(pretty, false)? == .ok
+	assert cansub_ladder('{"state":"sleeping","rx_error_count":0,"tx_error_count":0}', false)? == .unknown
+	assert cansub_ladder('{"state":"sleeping","rx_error_count":0,"tx_error_count":0}', true)? == .unknown
+}
