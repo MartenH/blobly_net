@@ -249,6 +249,10 @@ mut:
 	// answer: a project switch or a structured Save left old YAML on screen that Save would
 	// then write over the new file.
 	cfg_text_dirty bool
+	// When the project (or the File tab's text) was last written, in time.ticks(): the toolbar
+	// shows "saved" beside the project name for a few seconds after, so a Ctrl+S is answered on
+	// the screen the user is looking at and not only in the Log (#247).
+	saved_at i64
 	// Editor fields whose text could not be committed to the model, rebuilt by every commit_cfg.
 	//
 	// A REJECTED FIELD HAS TO REACH START, not merely the Log. Leaving the previous value in the

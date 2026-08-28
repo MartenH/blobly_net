@@ -75,13 +75,9 @@ fn draw_gen(mut app App) {
 	if vgui.button('+ Add generator') {
 		app.add_generator()
 	}
-	vgui.same_line()
-	if vgui.button('Save to project') {
-		app.save_project()
-	}
 	if app.dirty {
 		vgui.same_line()
-		vgui.text_colored(230, 170, 70, '● modified')
+		vgui.text_colored(230, 170, 70, '● modified — Ctrl+S saves')
 	}
 	if app.running {
 		vgui.text_dim('edit freely · Send now fires once · cyclic auto-repeats · on-key fires on its key')

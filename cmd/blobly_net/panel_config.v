@@ -419,10 +419,6 @@ fn draw_config(mut app App) {
 		app.disc_open = true
 	}
 	vgui.same_line()
-	if vgui.button('Save') {
-		app.save_project()
-	}
-	vgui.same_line()
 	if vgui.button('Close') {
 		app.show_config = false
 		if app.dirty {
@@ -758,7 +754,9 @@ fn (mut app App) draw_config_text() {
 	// MODEL, which would throw away the text the user is looking at.
 	can_save := app.cfg_err == '' && app.proj_path != ''
 	if can_save {
-		if vgui.button('Save') {
+		// This one stays, and says what it writes: the TEXT, which is not the same save as
+		// Ctrl+S on any other tab (save_what_is_being_edited).
+		if vgui.button('Save text') {
 			app.save_cfg_text()
 		}
 	} else {

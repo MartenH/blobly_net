@@ -229,6 +229,7 @@ fn main() {
 		vgui.child_end()
 		build_layout()
 		app.poll_hotkeys()
+		app.poll_shortcuts()
 
 		if app.show_buses {
 			draw_buses(mut app, chans)

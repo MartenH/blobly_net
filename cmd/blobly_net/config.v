@@ -1,6 +1,7 @@
 module main
 
 import os
+import time
 import project
 import transport
 import sysview
@@ -823,6 +824,7 @@ fn (mut app App) save_cfg_text() {
 	app.notify('saved -> ${path}')
 	app.dirty = false
 	app.cfg_text_dirty = false
+	app.saved_at = time.ticks()
 	// rebuild_from_proj, NOT load_project: the full open path calls set_project, which clears
 	// the trace rows, grouped counts, telemetry records, diagnostic and script logs and signal
 	// watches. Editing one config line while stopped must not throw away a captured session —
@@ -920,8 +922,31 @@ fn (mut app App) save_project() {
 		return
 	}
 	app.dirty = false
+	app.saved_at = time.ticks()
 	app.cfg_invalidate() // the file just changed under the File tab
 	app.notify('saved -> ${path}')
+}
+
+// save_what_is_being_edited is Ctrl+S: ONE shortcut, one meaning — write what you are editing.
+// The File tab holds the project as TEXT in its own buffer, and a project save while that text
+// is dirty is refused (save_project) because one of them would overwrite the other; so with the
+// File tab showing dirty text, Ctrl+S saves the text, and otherwise it saves the project. The
+// per-panel Save buttons that used to do the second half from four places are gone (#247): the
+// menu's Save, this shortcut and the File tab's own button are the whole set.
+fn (mut app App) save_what_is_being_edited() {
+	if app.cfg_text_dirty && app.show_config && app.cfg_tab == 1 {
+		app.save_cfg_text()
+		return
+	}
+	app.save_project()
+}
+
+// poll_shortcuts is read once per frame, beside the generator hotkeys — but unlike them it is
+// NOT suppressed while a widget holds the keyboard: Ctrl is what makes S a command.
+fn (mut app App) poll_shortcuts() {
+	if vgui.key_ctrl() && vgui.key_pressed(`s`) {
+		app.save_what_is_being_edited()
+	}
 }
 
 // apply_edits folds pending editor state into app.proj so Start/Save act on exactly what the
