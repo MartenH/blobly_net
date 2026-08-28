@@ -227,15 +227,35 @@ fn mdns_records(data []u8) ![]MdnsRecord {
 	return out
 }
 
+// cansub_instance_name is the PTR target a device of this id announces as, the key a
+// supplemental packet's records are filed under.
+fn cansub_instance_name(id string) string {
+	return '${id}${cansub_host_suffix}.${cansub_mdns_service}'
+}
+
 // cansub_mdns_parse turns one response into the devices it describes: PTR names the instance,
 // SRV the host and port, TXT the api and channel count, A the address. Every name is compared
 // lower-cased, because DNS names are case-insensitive and a responder may spell one record's
 // owner differently from another's. A response missing pieces still yields the device with what
 // it had; the caller merges packets (see cansub_merge).
 pub fn cansub_mdns_parse(data []u8) ![]CansubService {
+	return cansub_mdns_parse_known(data, [])
+}
+
+// cansub_mdns_parse_known is cansub_mdns_parse for a packet that may carry the SRV/TXT/A of an
+// instance whose PTR arrived in an EARLIER packet -- a responder may split them across
+// datagrams (codex on #236), and a packet judged on its own PTRs would drop the channel count
+// and address, leaving a CANsub.4 shown as one channel. `known` are the ids already found.
+pub fn cansub_mdns_parse_known(data []u8, known []string) ![]CansubService {
 	recs := mdns_records(data)!
 	// Keyed by instance; a V map keeps insertion order, which is the packet's order.
 	mut by_instance := map[string]CansubService{}
+	for id in known {
+		by_instance[cansub_instance_name(id)] = CansubService{
+			id:   id
+			host: cansub_host(id)
+		}
+	}
 	for r in recs {
 		if r.rtype == int(MdnsType.ptr) && r.name == cansub_mdns_service {
 			if id := cansub_instance_id(r.target) {
@@ -285,7 +305,9 @@ pub fn cansub_mdns_parse(data []u8) ![]CansubService {
 			}
 		}
 	}
-	return by_instance.values()
+	// A known instance this packet said nothing about is not a finding of this packet.
+	return by_instance.values().filter(it.port != 0 || it.api != '' || it.channels != 0
+		|| it.addr != '' || it.id !in known)
 }
 
 // cansub_merge folds a device seen again into the one already found: a responder may put the
@@ -382,9 +404,22 @@ pub fn cansub_browse(window time.Duration) !CansubBrowse {
 	group := cansub_mdns_group.split('.').map(u8(it.int()))
 	dst := net.new_ip(u16(cansub_mdns_port), [group[0], group[1], group[2], group[3]]!)
 	q := cansub_mdns_query()
+	// Joined is not asked: an interface that went away after the join, or a send the stack
+	// refuses, would otherwise count as an interface that answered "nothing" (codex on #236).
+	mut asked := 0
 	for a in joined {
-		conn.set_multicast_interface(a) or { continue }
-		conn.write_to(dst, q) or {}
+		conn.set_multicast_interface(a) or {
+			refused << a
+			continue
+		}
+		conn.write_to(dst, q) or {
+			refused << a
+			continue
+		}
+		asked++
+	}
+	if asked == 0 {
+		return error('the mDNS query could not be sent on any interface (tried ${addrs.join(', ')})')
 	}
 	// Each read waits for what is LEFT of the window, so the wall clock is the window and not
 	// the window plus a timeout. V's read deadline is not honoured for UDP
@@ -418,13 +453,13 @@ pub fn cansub_browse(window time.Duration) !CansubBrowse {
 		if !has_label_ci(pkt, '_cansub') {
 			continue
 		}
-		devices := cansub_mdns_parse(pkt) or { continue }
+		devices := cansub_mdns_parse_known(pkt, found.map(it.id)) or { continue }
 		for d in devices {
 			cansub_merge(mut found, d)
 		}
 	}
 	note := if refused.len > 0 {
-		'asked ${joined.len} of ${addrs.len} interfaces; not joined: ${refused.join(', ')}'
+		'asked ${asked} of ${addrs.len} interfaces; not asked: ${refused.join(', ')}'
 	} else {
 		''
 	}
