@@ -8,8 +8,26 @@ import time
 // — a second open must NOT reach the driver, and the driver must be released exactly once,
 // when the last handle goes.
 
+// EVERY FAKE CAPTURES ITS CHANNELS WHEN IT IS MADE, as fields, and never reads the globals by
+// name from its reader thread. A test that fails part-way leaves its handles open and its hub
+// reader alive; the next test's reset used to swap the globals under that reader, whose next
+// poll then consumed the next test's injected item -- one timed-out receive turned into five
+// failures and a crash, in CI and on a two-core bench alike (#227). The globals are the TEST
+// thread's way to reach the current instance; a leftover reader keeps polling its own.
+// FakeControls is the reader-side state of one FakeBus generation: the counters its reader
+// thread touches and the failure it is armed with. One allocation per test, captured by pointer
+// at make, so a leftover reader from a failed earlier test counts and consumes on its own.
+struct FakeControls {
+mut:
+	closes     i64
+	recv_calls i64
+	recv_fails i64
+}
+
 struct FakeBus {
 	spec string
+	rx   chan CanFrame
+	ctl  &FakeControls
 mut:
 	sent       []CanFrame
 	reconciles int
@@ -21,17 +39,17 @@ fn (mut f FakeBus) send(frame CanFrame) ! {
 
 fn (mut f FakeBus) recv(timeout_ms int) !CanFrame {
 	// Counted atomically: the hub's reader thread increments it and the test thread reads it.
-	stdatomic.add_i64(&fake_recv_calls, 1)
+	stdatomic.add_i64(&f.ctl.recv_calls, 1)
 	// Fails ONCE per unit armed, so a test can fail one generation's read and let its
 	// replacement work.
-	if stdatomic.load_i64(&fake_recv_fails) > 0 {
-		stdatomic.add_i64(&fake_recv_fails, -1)
+	if stdatomic.load_i64(&f.ctl.recv_fails) > 0 {
+		stdatomic.add_i64(&f.ctl.recv_fails, -1)
 		return error(fake_recv_failure_msg)
 	}
 	if timeout_ms == 0 {
 		// A zero timeout is one look, not a wait — what a parked reader's drain asks for.
 		select {
-			got := <-fake_rx {
+			got := <-f.rx {
 				return got
 			}
 			else {
@@ -45,7 +63,7 @@ fn (mut f FakeBus) recv(timeout_ms int) !CanFrame {
 	// (SharedBusDriver) had no test that fan-out reached it at all.
 	wait := if timeout_ms < 0 { 1000 } else { timeout_ms }
 	select {
-		got := <-fake_rx {
+		got := <-f.rx {
 			return got
 		}
 		wait * time.millisecond {
@@ -61,33 +79,41 @@ fn (mut f FakeBus) reconcile_silence(want bool) ! {
 
 fn (mut f FakeBus) close() {
 	// Atomic: the hub's reader thread closes a failed generation while a test thread polls.
-	stdatomic.add_i64(&fake_closes, 1)
+	stdatomic.add_i64(&f.ctl.closes, 1)
 }
 
 fn (mut f FakeBus) health() BusHealth {
 	return .unknown
 }
 
+// HubFakeConfig is everything a HubFakeDriver is made from: the channels the test thread
+// injects into and reads from, and the knobs a test turns before it opens. One global, one
+// fresh literal per reset, one snapshot by value at make -- there is no list to keep in step.
+struct HubFakeConfig {
+mut:
+	block_close   bool
+	send_blocking bool
+	ack_in_send   bool
+	send_failure  string
+	// fail_id fails only writes of this id, so one wire can carry a good send and a bad one.
+	fail_id       u32
+	rx            chan HubFakeItem
+	sent          chan CanFrame
+	send_gate     chan bool
+	ack_taken     chan bool
+	close_started chan bool
+	close_release chan bool
+}
+
 __global (
-	fake_opens             int
-	fake_closes            i64
-	fake_fails             bool
-	fake_recv_calls        i64
-	fake_recv_fails        i64
-	fake_rx                chan CanFrame
-	hub_fake_send_gate     chan bool
-	hub_fake_send_blocking bool
-	hub_fake_rx            chan HubFakeItem
-	hub_fake_sent          chan CanFrame
-	hub_fake_opened        chan bool
-	hub_fake_close_started chan bool
-	hub_fake_close_release chan bool
-	hub_fake_ack_taken     chan bool
-	hub_fake_opens         int
-	hub_fake_closes        int
-	hub_fake_block_close   bool
-	hub_fake_ack_in_send   bool
-	hub_fake_send_failure  string
+	fake_opens      int
+	fake_fails      bool
+	fake_rx         chan CanFrame
+	fake_ctl        &FakeControls
+	hub_fake        HubFakeConfig
+	hub_fake_opened chan bool
+	hub_fake_opens  int
+	hub_fake_closes int
 )
 
 fn fake_make(spec string) !Bus {
@@ -97,13 +123,16 @@ fn fake_make(spec string) !Bus {
 	fake_opens++
 	return &FakeBus{
 		spec: spec
+		rx:   fake_rx
+		ctl:  fake_ctl
 	}
 }
 
 fn reset_fakes() {
 	fake_opens = 0
-	fake_closes = 0
 	fake_fails = false
+	fake_rx = chan CanFrame{cap: 8}
+	fake_ctl = &FakeControls{}
 }
 
 fn test_second_open_does_not_reach_the_driver() {
@@ -123,9 +152,9 @@ fn test_driver_is_released_only_when_the_last_handle_closes() {
 	mut b := shared_open('k2', 'fake:1', fake_make)!
 	a.close()
 	// The reader closing must not take the wire away from the transmit taps still holding it.
-	assert fake_closes == 0
+	assert fake_ctl.closes == 0
 	b.close()
-	assert fake_closes == 1
+	assert fake_ctl.closes == 1
 }
 
 fn test_closing_a_handle_twice_does_not_release_the_wire() {
@@ -136,9 +165,9 @@ fn test_closing_a_handle_twice_does_not_release_the_wire() {
 	a.close() // the app does this on at least one race path
 	// Without the idempotence guard the second decrement reaches zero and closes the driver
 	// while `b` is still transmitting on it.
-	assert fake_closes == 0
+	assert fake_ctl.closes == 0
 	b.close()
-	assert fake_closes == 1
+	assert fake_ctl.closes == 1
 }
 
 fn test_a_closed_handle_refuses_to_send() {
@@ -158,7 +187,7 @@ fn test_reopening_after_the_last_close_opens_the_driver_again() {
 	reset_fakes()
 	mut a := shared_open('k5', 'fake:1', fake_make)!
 	a.close()
-	assert fake_closes == 1
+	assert fake_ctl.closes == 1
 	// Stop then Start: the entry must be gone, not a stale one pointing at a closed driver.
 	mut b := shared_open('k5', 'fake:1', fake_make)!
 	assert fake_opens == 2
@@ -171,9 +200,9 @@ fn test_different_destinations_are_independent() {
 	mut b := shared_open('k6b', 'fake:2', fake_make)!
 	assert fake_opens == 2
 	a.close()
-	assert fake_closes == 1
+	assert fake_ctl.closes == 1
 	b.close()
-	assert fake_closes == 2
+	assert fake_ctl.closes == 2
 }
 
 fn test_same_wire_with_different_settings_is_refused() {
@@ -202,7 +231,7 @@ fn test_a_failed_open_leaves_no_reservation_behind() {
 	assert fake_opens == 1
 	a.send(CanFrame{ id: 0x123 })!
 	a.close()
-	assert fake_closes == 1
+	assert fake_ctl.closes == 1
 }
 
 // A CLOSED HANDLE TOUCHES NO DRIVER, on the reconcile path as well as on send.
@@ -213,7 +242,7 @@ fn test_a_failed_open_leaves_no_reservation_behind() {
 // (codex round 4 on #219). It answers with the same sentence send() does.
 fn test_a_closed_shared_handle_does_not_reconcile() {
 	fake_opens = 0
-	fake_closes = 0
+	fake_ctl = &FakeControls{}
 	fake_fails = false
 	mut a := shared_open('fake:silent-guard', 'fake:silent-guard', fake_make) or {
 		assert false, err.msg()
@@ -237,40 +266,56 @@ struct HubFakeItem {
 }
 
 struct HubFakeDriver {
-	block_close bool
+	HubFakeConfig
+}
+
+// hub_fake_take is a bounded wait on one of the fake's handshake channels. Both waits in send
+// run under the hub's send_mu, so an unbounded one on a generation whose reader has died (a
+// test that failed an assertion and returned) would hold that lock for the rest of the run.
+fn hub_fake_take(ch chan bool, what string) ! {
+	select {
+		_ := <-ch {}
+		hub_fake_handshake_ms * time.millisecond {
+			return error('${what}: nobody answered the fake within ${hub_fake_handshake_ms} ms')
+		}
+	}
 }
 
 fn (mut d HubFakeDriver) send(frame CanFrame) ! {
-	hub_fake_sent <- shared_clone_frame(frame)
-	if hub_fake_send_blocking {
+	d.sent <- shared_clone_frame(frame)
+	if d.send_blocking {
 		// A stuck socket write: this send does not return until the test says so.
-		_ := <-hub_fake_send_gate
+		hub_fake_take(d.send_gate, 'stuck write')!
 	}
-	if hub_fake_ack_in_send {
-		hub_fake_rx <- HubFakeItem{
+	if d.ack_in_send {
+		d.rx <- HubFakeItem{
 			ingress: SharedIngress{
 				frame:  shared_clone_frame(frame)
 				tx_ack: true
 			}
 		}
-		// Prove that the sole reader has accepted the acknowledgement before this raw send
-		// returns. That makes the send-error regression below deterministic.
-		_ := <-hub_fake_ack_taken
+		// Prove that the sole reader has taken the acknowledgement off the driver before this
+		// raw send returns -- the ordering the send-error regression below is about. What the
+		// hub does with it after that is the hub's race to get right, not this handshake's.
+		hub_fake_take(d.ack_taken, 'acknowledgement')!
 	}
-	if hub_fake_send_failure != '' {
-		return error(hub_fake_send_failure)
+	if d.send_failure != '' {
+		return error(d.send_failure)
+	}
+	if d.fail_id != 0 && frame.id == d.fail_id {
+		return error('raw write of ${frame.id:x} failed')
 	}
 }
 
 fn (mut d HubFakeDriver) recv_shared(timeout_ms int) !SharedIngress {
 	select {
-		item := <-hub_fake_rx {
+		item := <-d.rx {
 			if item.failure != '' {
 				return error(item.failure)
 			}
 			if item.ingress.tx_ack {
 				select {
-					hub_fake_ack_taken <- true {}
+					d.ack_taken <- true {}
 					else {}
 				}
 			}
@@ -285,8 +330,8 @@ fn (mut d HubFakeDriver) recv_shared(timeout_ms int) !SharedIngress {
 
 fn (mut d HubFakeDriver) close() {
 	if d.block_close {
-		hub_fake_close_started <- true
-		_ := <-hub_fake_close_release
+		d.close_started <- true
+		_ := <-d.close_release
 	}
 	hub_fake_closes++
 }
@@ -301,6 +346,9 @@ fn (mut d HubFakeDriver) reports_tx_ack() bool {
 	return true
 }
 
+const hub_fake_handshake_ms = 5000
+
+// hub_fake_make snapshots the CURRENT config into the driver it makes -- see FakeBus.
 fn hub_fake_make(spec string) !SharedDriver {
 	hub_fake_opens++
 	select {
@@ -308,26 +356,26 @@ fn hub_fake_make(spec string) !SharedDriver {
 		else {}
 	}
 	return &HubFakeDriver{
-		block_close: hub_fake_block_close
+		HubFakeConfig: hub_fake
 	}
 }
 
 fn reset_hub_fakes() {
-	hub_fake_rx = chan HubFakeItem{cap: shared_ring_capacity + 16}
-	hub_fake_sent = chan CanFrame{cap: 16}
+	hub_fake = HubFakeConfig{
+		rx:            chan HubFakeItem{cap: shared_ring_capacity + 16}
+		sent:          chan CanFrame{cap: 16}
+		send_gate:     chan bool{cap: 1}
+		ack_taken:     chan bool{cap: 1}
+		close_started: chan bool{cap: 1}
+		close_release: chan bool{cap: 1}
+	}
 	hub_fake_opened = chan bool{cap: 4}
-	hub_fake_close_started = chan bool{cap: 1}
-	hub_fake_close_release = chan bool{cap: 1}
-	hub_fake_ack_taken = chan bool{cap: 1}
 	hub_fake_opens = 0
 	hub_fake_closes = 0
-	hub_fake_block_close = false
-	hub_fake_ack_in_send = false
-	hub_fake_send_failure = ''
 }
 
 fn hub_inject(frame CanFrame) {
-	hub_fake_rx <- HubFakeItem{
+	hub_fake.rx <- HubFakeItem{
 		ingress: SharedIngress{
 			frame: frame
 		}
@@ -375,8 +423,8 @@ fn test_shared_hub_skips_tx_ack_for_its_sender_only() {
 		data: [u8(4), 5, 6]
 	}
 	sender.send(frame)!
-	assert (<-hub_fake_sent).data == frame.data
-	hub_fake_rx <- HubFakeItem{
+	assert (<-hub_fake.sent).data == frame.data
+	hub_fake.rx <- HubFakeItem{
 		ingress: SharedIngress{
 			frame:  frame
 			tx_ack: true
@@ -403,12 +451,12 @@ fn test_an_external_frame_identical_to_a_pending_send_stays_external() {
 		data: [u8(4), 5, 0xA]
 	}
 	sender.send(frame)!
-	_ := <-hub_fake_sent
+	_ := <-hub_fake.sent
 	// Content does not consume pending origin state; only CANsub's private TX bit does.
 	hub_inject(frame)
 	assert sender.recv(1000)!.id == frame.id
 	assert observer.recv(1000)!.id == frame.id
-	hub_fake_rx <- HubFakeItem{
+	hub_fake.rx <- HubFakeItem{
 		ingress: SharedIngress{
 			frame:  frame
 			tx_ack: true
@@ -434,10 +482,10 @@ fn test_identical_tx_acks_are_attributed_to_the_oldest_pending_origin() {
 	}
 	a.send(frame)!
 	b.send(frame)!
-	_ := <-hub_fake_sent
-	_ := <-hub_fake_sent
+	_ := <-hub_fake.sent
+	_ := <-hub_fake.sent
 	for _ in 0 .. 2 {
-		hub_fake_rx <- HubFakeItem{
+		hub_fake.rx <- HubFakeItem{
 			ingress: SharedIngress{
 				frame:  frame
 				tx_ack: true
@@ -466,10 +514,16 @@ fn test_identical_tx_acks_are_attributed_to_the_oldest_pending_origin() {
 // dropped — and the machinery that guaranteed it was the reader waiting on send_mu behind every
 // in-flight write (blocker 1). The device's word is the better evidence: the monitor records the
 // frame, attributed to its origin; the sender is told its write failed; and neither is lied to.
+//
+// AND WHICH THREAD REACHES THE HUB FIRST MUST NOT DECIDE IT. The fake hands the ack to the
+// reader before the raw write returns its failure; from there the reader's match and the
+// sender's error path race for e.mu, and on a two-core runner the sender won four CI runs out
+// of four — its error path deleted the pending entry and the reader counted the ack unmatched
+// (#227). A failed write's entry now stays for the ordinary window, so either order publishes.
 fn test_a_fast_tx_ack_during_a_failing_send_is_still_the_wires_truth() {
 	reset_hub_fakes()
-	hub_fake_ack_in_send = true
-	hub_fake_send_failure = 'raw write failed'
+	hub_fake.ack_in_send = true
+	hub_fake.send_failure = 'raw write failed'
 	mut sender := shared_open_events('hub:send-failure', 'fake:send-failure', hub_fake_make)!
 	mut observer := shared_open_events('hub:send-failure', 'fake:send-failure', hub_fake_make)!
 	if _ := sender.send(CanFrame{ id: 0x45B }) {
@@ -477,7 +531,7 @@ fn test_a_fast_tx_ack_during_a_failing_send_is_still_the_wires_truth() {
 	} else {
 		assert err.msg() == 'raw write failed'
 	}
-	_ := <-hub_fake_sent
+	_ := <-hub_fake.sent
 	// The observer sees it: it happened on the bus.
 	assert observer.recv(1000)!.id == 0x45B
 	// The origin does not: it is that handle's own transmission.
@@ -490,6 +544,94 @@ fn test_a_fast_tx_ack_during_a_failing_send_is_still_the_wires_truth() {
 	observer.close()
 }
 
+// AND THE RULE ITSELF, WITH NO RACE TO WIN: the write fails with nothing acknowledged yet, and
+// the device's acknowledgement arrives only AFTER the failure has been returned. The entry must
+// still be there to match it -- for its grace, not for ever -- so the observer receives the
+// frame, the origin does not, and a grace that ends without an acknowledgement is counted as
+// a failed send, not as a lost acknowledgement.
+fn test_a_failed_write_stays_matchable_for_its_grace_then_counts_as_failed() {
+	reset_hub_fakes()
+	hub_fake.send_failure = 'raw write failed'
+	mut sender := shared_open_events('hub:failed-grace', 'fake:failed-grace', hub_fake_make)!
+	mut observer := shared_open_events('hub:failed-grace', 'fake:failed-grace', hub_fake_make)!
+	frame := CanFrame{
+		id:   0x45F
+		data: [u8(4), 5, 0xF]
+	}
+	if _ := sender.send(frame) {
+		assert false, 'the fake raw write was configured to fail'
+	} else {
+		assert err.msg() == 'raw write failed'
+	}
+	_ := <-hub_fake.sent
+	assert shared_test_pending(mut sender) == 1, 'a failed write must keep its pending entry'
+	hub_fake.rx <- HubFakeItem{
+		ingress: SharedIngress{
+			frame:  frame
+			tx_ack: true
+		}
+	}
+	assert observer.recv(1000)!.id == frame.id
+	if _ := sender.recv(50) {
+		assert false, 'the origin must not receive its own acknowledged frame as RX'
+	} else {
+		assert err.msg() == 'timeout'
+	}
+	assert shared_test_unmatched(mut sender) == 0
+	// A second failed write that nobody acknowledges: gone after its grace, and counted as
+	// what it was.
+	if _ := sender.send(CanFrame{ id: 0x460 }) {
+		assert false, 'the fake raw write was configured to fail'
+	} else {
+		assert err.msg() == 'raw write failed'
+	}
+	_ := <-hub_fake.sent
+	deadline := time.ticks() + shared_failed_send_grace_ms + 2000
+	for shared_test_pending(mut sender) > 0 {
+		if time.ticks() >= deadline {
+			assert false, 'the failed write did not expire after its grace'
+			break
+		}
+		time.sleep(10 * time.millisecond)
+	}
+	assert shared_test_expired(mut sender) == 0, 'a failed write is not a lost acknowledgement'
+	assert shared_test_expired_failed(mut sender) == 1
+	sender.close()
+	observer.close()
+}
+
+// AND THE GRACE HOLDS BEHIND A LIVE ENTRY. Pending sends are in write order; their deadlines are
+// not. A successful write that is still awaiting its acknowledgement, then a failed one: the
+// ghost must expire on its own clock, not the earlier send's five seconds -- expiry that only
+// cut a prefix left it matchable for the whole of the earlier window (codex round 1 on #228).
+fn test_a_failed_write_behind_a_live_send_still_expires_on_its_own_grace() {
+	reset_hub_fakes()
+	hub_fake.fail_id = 0x462
+	mut sender := shared_open_events('hub:failed-behind', 'fake:failed-behind', hub_fake_make)!
+	mut failing := shared_open_events('hub:failed-behind', 'fake:failed-behind', hub_fake_make)!
+	sender.send(CanFrame{ id: 0x461 })! // acknowledged never; lives out the ordinary window
+	_ := <-hub_fake.sent
+	if _ := failing.send(CanFrame{ id: 0x462 }) {
+		assert false, 'the fake raw write was configured to fail'
+	} else {
+		assert err.msg() == 'raw write of 462 failed'
+	}
+	_ := <-hub_fake.sent
+	assert shared_test_pending(mut sender) == 2
+	deadline := time.ticks() + shared_failed_send_grace_ms + 2000
+	for shared_test_pending(mut sender) > 1 {
+		if time.ticks() >= deadline {
+			assert false, 'the failed write behind a live send did not expire after its grace'
+			break
+		}
+		time.sleep(10 * time.millisecond)
+	}
+	assert shared_test_expired_failed(mut sender) == 1
+	assert shared_test_expired(mut sender) == 0, 'the live send must still be waiting for its acknowledgement'
+	sender.close()
+	failing.close()
+}
+
 // THE READER, health(), reconcile_silence() AND close() NEVER WAIT ON A WRITER. One handle is
 // stuck in a socket write that will not return; everything else on the wire must still answer.
 // This is blocker 1 of code-review high on #221 as a test: before the fix, every line below the
@@ -497,17 +639,13 @@ fn test_a_fast_tx_ack_during_a_failing_send_is_still_the_wires_truth() {
 // the GUI thread.
 fn test_a_stuck_send_does_not_block_health_reconcile_or_close() {
 	reset_hub_fakes()
-	hub_fake_send_gate = chan bool{cap: 1}
-	hub_fake_send_blocking = true
-	defer {
-		hub_fake_send_blocking = false
-	}
+	hub_fake.send_blocking = true
 	mut stuck := shared_open_events('hub:stuck', 'fake:stuck', hub_fake_make)!
 	mut other := shared_open_events('hub:stuck', 'fake:stuck', hub_fake_make)!
 	spawn fn [mut stuck] () {
 		stuck.send(CanFrame{ id: 0x5A1 }) or {}
 	}()
-	_ := <-hub_fake_sent // the write is now in flight and parked
+	_ := <-hub_fake.sent // the write is now in flight and parked
 	// Everything below is bounded by its own deadline; a hang here is the regression.
 	done := chan bool{cap: 4}
 	spawn fn [mut other, done] () {
@@ -519,7 +657,7 @@ fn test_a_stuck_send_does_not_block_health_reconcile_or_close() {
 		done <- true
 	}()
 	// And the reader still delivers external traffic while that write is stuck.
-	hub_fake_rx <- HubFakeItem{
+	hub_fake.rx <- HubFakeItem{
 		ingress: SharedIngress{
 			frame: CanFrame{
 				id: 0x5A2
@@ -553,7 +691,7 @@ fn test_a_stuck_send_does_not_block_health_reconcile_or_close() {
 			assert false, 'close waited on the stuck write'
 		}
 	}
-	hub_fake_send_gate <- true // release the writer so its handle can close cleanly
+	hub_fake.send_gate <- true // release the writer so its handle can close cleanly
 	stuck.close()
 }
 
@@ -565,10 +703,8 @@ fn test_a_stuck_send_does_not_block_health_reconcile_or_close() {
 // the saving would be paid for in latency.
 fn test_a_wire_with_no_subscriber_is_not_polled_and_the_first_recv_wakes_it() {
 	fake_opens = 0
-	fake_closes = 0
+	fake_ctl = &FakeControls{}
 	fake_fails = false
-	stdatomic.store_i64(&fake_recv_fails, 0)
-	stdatomic.store_i64(&fake_recv_calls, 0)
 	fake_rx = chan CanFrame{cap: 8}
 	mut tx_only := shared_open('fake:idle', 'fake:idle', fake_make)!
 	tx_only.send(CanFrame{ id: 0x100 }) or {}
@@ -578,10 +714,10 @@ fn test_a_wire_with_no_subscriber_is_not_polled_and_the_first_recv_wakes_it() {
 	shared_test_wait_parked(mut tx_only)
 	// Parked after the attentive second, which the reader spent polling on the fresh handle's
 	// behalf; what is counted is the cost from here on.
-	stdatomic.store_i64(&fake_recv_calls, 0)
+	stdatomic.store_i64(&fake_ctl.recv_calls, 0)
 	time.sleep(300 * time.millisecond)
 	// One drain at most in the window.
-	reads := stdatomic.load_i64(&fake_recv_calls)
+	reads := stdatomic.load_i64(&fake_ctl.recv_calls)
 	assert reads <= 1, 'the reader polled the driver ${reads} times with nobody listening'
 	// A frame arrives while nobody listens; then a listener opens. The kick that wakes the reader
 	// drains that frame away, so the listener's first receive is a timeout, not stale history.
@@ -612,13 +748,12 @@ fn test_a_wire_with_no_subscriber_is_not_polled_and_the_first_recv_wakes_it() {
 // drain reads the driver, and a fatal read error takes the generation down like any other.
 fn test_a_fatal_read_error_reaches_a_parked_reader() {
 	fake_opens = 0
-	fake_closes = 0
+	fake_ctl = &FakeControls{}
 	fake_fails = false
 	fake_rx = chan CanFrame{cap: 8}
-	stdatomic.store_i64(&fake_recv_fails, 0)
 	mut tx_only := shared_open('fake:idle-fatal', 'fake:idle-fatal', fake_make)!
 	shared_test_wait_parked(mut tx_only)
-	stdatomic.store_i64(&fake_recv_fails, 1)
+	stdatomic.store_i64(&fake_ctl.recv_fails, 1)
 	// The next drain tick finds it; nothing subscribes and nothing kicks. Observed on THIS
 	// entry — a global close count could be another test's leftover reader failing on the same
 	// global switch.
@@ -630,7 +765,6 @@ fn test_a_fatal_read_error_reaches_a_parked_reader() {
 		}
 		time.sleep(10 * time.millisecond)
 	}
-	stdatomic.store_i64(&fake_recv_fails, 0)
 	if _ := tx_only.send(CanFrame{ id: 0x102 }) {
 		assert false, 'a failed generation must reject later sends'
 	} else {
@@ -647,16 +781,15 @@ const fake_recv_failure_msg = 'device unplugged'
 // (codex rounds 1 and 2 on #224).
 fn test_a_join_that_finds_the_parked_generation_dead_reopens_through_the_factory() {
 	fake_opens = 0
-	stdatomic.store_i64(&fake_closes, 0)
+	fake_ctl = &FakeControls{}
 	fake_fails = false
 	fake_rx = chan CanFrame{cap: 8}
-	stdatomic.store_i64(&fake_recv_fails, 0)
 	mut tx_only := shared_open('fake:idle-dead', 'fake:idle-dead', fake_make)!
 	shared_test_wait_parked(mut tx_only)
-	stdatomic.store_i64(&fake_recv_fails, 1)
+	stdatomic.store_i64(&fake_ctl.recv_fails, 1)
 	mut listener := shared_open('fake:idle-dead', 'fake:idle-dead', fake_make)!
 	assert fake_opens == 2, 'the join found the generation dead and must have opened a new one'
-	assert stdatomic.load_i64(&fake_recv_fails) == 0, 'the armed failure was consumed by the join'
+	assert stdatomic.load_i64(&fake_ctl.recv_fails) == 0, 'the armed failure was consumed by the join'
 	if _ := tx_only.send(CanFrame{ id: 0x103 }) {
 		assert false, 'the old generation must be failed'
 	} else {
@@ -675,10 +808,9 @@ fn test_a_join_that_finds_the_parked_generation_dead_reopens_through_the_factory
 // on #224).
 fn test_an_expired_tap_starts_at_the_tail_when_it_finally_receives() {
 	fake_opens = 0
-	stdatomic.store_i64(&fake_closes, 0)
+	fake_ctl = &FakeControls{}
 	fake_fails = false
 	fake_rx = chan CanFrame{cap: 8}
-	stdatomic.store_i64(&fake_recv_fails, 0)
 	mut tap := shared_open('fake:idle-tap', 'fake:idle-tap', fake_make)!
 	mut reader := shared_open('fake:idle-tap', 'fake:idle-tap', fake_make)!
 	// Committed while the tap is attentive: the reader receives it, the tap does not read.
@@ -704,13 +836,12 @@ fn test_an_expired_tap_starts_at_the_tail_when_it_finally_receives() {
 // is the caller's answer, not a timeout followed by silence (codex round 3 on #224).
 fn test_a_late_first_receive_that_finds_the_adapter_gone_reports_it() {
 	fake_opens = 0
-	stdatomic.store_i64(&fake_closes, 0)
+	fake_ctl = &FakeControls{}
 	fake_fails = false
 	fake_rx = chan CanFrame{cap: 8}
-	stdatomic.store_i64(&fake_recv_fails, 0)
 	mut tap := shared_open('fake:idle-late-fatal', 'fake:idle-late-fatal', fake_make)!
 	shared_test_wait_parked(mut tap)
-	stdatomic.store_i64(&fake_recv_fails, 1)
+	stdatomic.store_i64(&fake_ctl.recv_fails, 1)
 	if _ := tap.recv(1000) {
 		assert false, 'a fatal read must not be swallowed by the late first receive'
 	} else {
@@ -724,10 +855,9 @@ fn test_a_late_first_receive_that_finds_the_adapter_gone_reports_it() {
 // sends a request must get the reply, not have it drained as nobody's (codex round 4 on #224).
 fn test_a_send_after_a_silent_second_keeps_the_reply() {
 	fake_opens = 0
-	stdatomic.store_i64(&fake_closes, 0)
+	fake_ctl = &FakeControls{}
 	fake_fails = false
 	fake_rx = chan CanFrame{cap: 8}
-	stdatomic.store_i64(&fake_recv_fails, 0)
 	mut client := shared_open('fake:idle-client', 'fake:idle-client', fake_make)!
 	shared_test_wait_parked(mut client)
 	client.send(CanFrame{ id: 0x7E0, data: [u8(0x3E)] })!
@@ -743,10 +873,9 @@ fn test_a_send_after_a_silent_second_keeps_the_reply() {
 // empty, that is the boundary, and what arrives after it is delivered (codex round 6 on #224).
 fn test_a_zero_timeout_poll_from_an_expired_tap_subscribes_on_a_quiet_wire() {
 	fake_opens = 0
-	stdatomic.store_i64(&fake_closes, 0)
+	fake_ctl = &FakeControls{}
 	fake_fails = false
 	fake_rx = chan CanFrame{cap: 8}
-	stdatomic.store_i64(&fake_recv_fails, 0)
 	mut tap := shared_open('fake:idle-poll', 'fake:idle-poll', fake_make)!
 	shared_test_wait_parked(mut tap)
 	if _ := tap.recv(0) {
@@ -809,7 +938,7 @@ fn shared_test_parked_discards(mut bus Bus) u64 {
 // and the SharedBusDriver adapter, which until this test was covered only by a bench run.
 fn test_shared_open_fans_a_plain_bus_out_to_every_handle() {
 	fake_opens = 0
-	fake_closes = 0
+	fake_ctl = &FakeControls{}
 	fake_fails = false
 	fake_rx = chan CanFrame{cap: 8}
 	mut a := shared_open('fake:fanout', 'fake:fanout', fake_make)!
@@ -830,7 +959,7 @@ fn test_shared_open_fans_a_plain_bus_out_to_every_handle() {
 	assert fb.data[0] == 0x02
 	a.close()
 	b.close()
-	assert fake_closes == 1
+	assert fake_ctl.closes == 1
 }
 
 fn test_a_tx_ack_from_a_closed_origin_still_reaches_other_handles() {
@@ -841,9 +970,9 @@ fn test_a_tx_ack_from_a_closed_origin_still_reaches_other_handles() {
 		id: 0x45C
 	}
 	sender.send(frame)!
-	_ := <-hub_fake_sent
+	_ := <-hub_fake.sent
 	sender.close()
-	hub_fake_rx <- HubFakeItem{
+	hub_fake.rx <- HubFakeItem{
 		ingress: SharedIngress{
 			frame:  frame
 			tx_ack: true
@@ -857,7 +986,7 @@ fn test_a_lost_tx_ack_expires_while_external_traffic_continues() {
 	reset_hub_fakes()
 	mut sender := shared_open_events('hub:ack-expiry', 'fake:ack-expiry', hub_fake_make)!
 	sender.send(CanFrame{ id: 0x45D })!
-	_ := <-hub_fake_sent
+	_ := <-hub_fake.sent
 	shared_test_expire_first_pending(mut sender)
 	hub_inject(CanFrame{ id: 0x45F })
 	assert sender.recv(1000)!.id == 0x45F
@@ -886,7 +1015,7 @@ fn test_a_late_handle_starts_at_the_current_tail() {
 fn test_shared_hub_drops_an_unmatched_tx_ack() {
 	reset_hub_fakes()
 	mut a := shared_open_events('hub:unmatched', 'fake:unmatched', hub_fake_make)!
-	hub_fake_rx <- HubFakeItem{
+	hub_fake.rx <- HubFakeItem{
 		ingress: SharedIngress{
 			frame:  CanFrame{
 				id: 0x777
@@ -965,6 +1094,28 @@ fn shared_test_expire_first_pending(mut bus Bus) {
 		}
 		e.mu.unlock()
 	}
+}
+
+fn shared_test_pending(mut bus Bus) int {
+	if mut bus is SharedHandle {
+		mut e := bus.entry
+		e.mu.lock()
+		n := e.pending.len
+		e.mu.unlock()
+		return n
+	}
+	return -1
+}
+
+fn shared_test_expired_failed(mut bus Bus) u64 {
+	if mut bus is SharedHandle {
+		mut e := bus.entry
+		e.mu.lock()
+		n := e.expired_failed_sends
+		e.mu.unlock()
+		return n
+	}
+	return 0
 }
 
 fn shared_test_expired(mut bus Bus) u64 {
@@ -1068,7 +1219,7 @@ fn test_fatal_reader_error_reaches_every_handle_with_an_empty_ring() {
 	reset_hub_fakes()
 	mut a := shared_open_events('hub:fatal-empty', 'fake:fatal-empty', hub_fake_make)!
 	mut b := shared_open_events('hub:fatal-empty', 'fake:fatal-empty', hub_fake_make)!
-	hub_fake_rx <- HubFakeItem{
+	hub_fake.rx <- HubFakeItem{
 		failure: 'empty raw reader failed'
 	}
 	assert_shared_recv_error(mut a, 'empty raw reader failed')
@@ -1083,7 +1234,7 @@ fn test_fatal_reader_error_is_sticky_and_a_new_open_gets_a_new_generation() {
 	mut a := shared_open_events('hub:fatal', 'fake:fatal', hub_fake_make)!
 	mut b := shared_open_events('hub:fatal', 'fake:fatal', hub_fake_make)!
 	hub_inject(CanFrame{ id: 0x101 })
-	hub_fake_rx <- HubFakeItem{
+	hub_fake.rx <- HubFakeItem{
 		failure: 'raw reader failed'
 	}
 	assert a.recv(1000)!.id == 0x101
@@ -1131,7 +1282,7 @@ fn reopen_for_test(key string, done chan bool) {
 
 fn test_reopen_waits_until_the_previous_physical_close_finishes() {
 	reset_hub_fakes()
-	hub_fake_block_close = true
+	hub_fake.block_close = true
 	mut old := shared_open_events('hub:closing', 'fake:closing', hub_fake_make)!
 	_ := <-hub_fake_opened
 	closed := chan bool{cap: 1}
@@ -1139,9 +1290,9 @@ fn test_reopen_waits_until_the_previous_physical_close_finishes() {
 		bus: old
 	}
 	spawn closer.close_for_test(closed)
-	_ := <-hub_fake_close_started
+	_ := <-hub_fake.close_started
 	// Only generation 1 blocks in close; generation 2 may close normally after it opens.
-	hub_fake_block_close = false
+	hub_fake.block_close = false
 	reopened := chan bool{cap: 1}
 	spawn reopen_for_test('hub:closing', reopened)
 	select {
@@ -1150,7 +1301,7 @@ fn test_reopen_waits_until_the_previous_physical_close_finishes() {
 		}
 		30 * time.millisecond {}
 	}
-	hub_fake_close_release <- true
+	hub_fake.close_release <- true
 	select {
 		_ := <-hub_fake_opened {}
 		1000 * time.millisecond {

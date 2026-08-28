@@ -156,11 +156,20 @@ record. A CANsub pending item contains:
 - the exact frame sent after the existing framing policy has been applied.
 
 The pending item is installed before the raw WebSocket write, so a fast acknowledgement cannot
-outrun its origin. If the raw write fails, that exact item is removed and no local-TX ring record
-is created. TX-ack matching waits for that write to finish, so an acknowledgement which becomes
-readable before a write reports failure cannot be committed prematurely. The expiry window starts
-after a successful write. Registration plus raw write is serialized; otherwise two caller threads
-could install origins in one order while their WebSocket frames reach the device in another.
+outrun its origin. TX-ack matching does NOT wait for the write to finish (the reader never waits
+on a writer — #221), so an item whose write is still in flight is matchable, and an item whose
+write FAILED stays too: the device's acknowledgement is the evidence that the frame reached the
+wire, whatever the write call went on to return, and deleting the item on failure raced the
+reader's match — on a two-core runner the sender's error path won often enough to drop the
+acknowledgement as unmatched (#227). The window starts when the write returns: the ordinary
+`shared_pending_ttl_ms` after success, a short `shared_failed_send_grace_ms` after failure —
+long enough for an acknowledgement the reader already holds or that is one poll away, short
+because a failed write that never reached the wire is a ghost for as long as its item stands,
+and an identical frame another handle sends meanwhile would be credited to the ghost (wrong
+origin, and the real sender receives its own frame as RX). A ghost that expires is counted as a
+failed send, not as a missing acknowledgement. Registration plus raw write is serialized;
+otherwise two caller threads could install origins in one order while their WebSocket frames
+reach the device in another.
 
 When ingress receives a flagged CANsub TX acknowledgement, it selects the **oldest pending item
 whose full frame equals the acknowledgement**. Equality includes identifier,
@@ -213,7 +222,9 @@ The targeted hub therefore preserves the current trace rules:
 - CANsub with a ready monitor: record the matched device TX acknowledgement;
 - CANsub without a ready monitor: record at emit, then suppress duplicate recording if the
   acknowledgement is observed later;
-- failed sends: record nothing.
+- failed sends: record nothing at emit; a CANsub acknowledgement that arrives for one anyway
+  (the bytes reached the wire before the call failed) is recorded like any matched
+  acknowledgement, attributed to its origin.
 
 An unmatched or missing CANsub acknowledgement is counted rather than reclassified as RX. With a
 ready monitor this can leave that send without an observation-time trace row; that is an honest
@@ -333,7 +344,10 @@ backend by backend instead of forcing a transport-wide migration now.
 - An external frame identical to a pending send remains external because its TX bit is clear.
 - An unmatched flagged TX acknowledgement is dropped, increments its diagnostic and is never
   returned as RX to any logical handle.
-- A raw send failure removes its exact pending item and publishes no local-TX record.
+- A raw send failure keeps its pending item for a short grace: an acknowledgement taken off the
+  socket before the write reported failure, or arriving just after, is still attributed and
+  published to every other handle, whichever thread reaches the hub first. The known hole: an
+  identical frame from another handle inside that grace is credited to the failed item.
 - Closing an origin before its acknowledgement does not reclassify that acknowledgement and does
   not prevent remaining handles from receiving it.
 
@@ -343,7 +357,8 @@ backend by backend instead of forcing a transport-wide migration now.
   it does not depend on local echo support and creates no synthetic receive event.
 - CANsub with a ready monitor records a matched device acknowledgement exactly once. Without a
   ready monitor it records at emit and a later acknowledgement does not duplicate the row.
-- Failed sends record nothing on both backends.
+- Failed sends record nothing at emit on either backend; on CANsub a failed write that the device
+  acknowledges within its grace is still recorded once, attributed to its origin.
 - Monitor + simulation + software ISO-TP/UDS + Lua can share one PCAN wire and one CANsub wire
   without stealing external frames or receiving their own matched CANsub sends.
 - Existing `cmd/silentcheck` phases and CANsub classic/FD, TX-record, reader-failure and bounded
