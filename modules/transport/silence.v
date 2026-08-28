@@ -104,26 +104,75 @@ fn unrecord_silence(k string) {
 // reconfiguration leaves the controller in a state nobody measured. Unknown is the honest record
 // and also the useful one: the next attempt writes instead of comparing against a guess.
 pub fn apply_silence(iface string, want bool, set fn (bool) int) ! {
+	apply_silence_explained(iface, want, set, generic_silence_reason)!
+}
+
+// apply_silence_explained is apply_silence with the backend's own reading of a refused status.
+// One rule for every backend — the lock, the record, the fault — and one place a backend may
+// differ: what a refusal MEANS.
+pub fn apply_silence_explained(iface string, want bool, set fn (bool) int, explain fn (bool, int) SilenceReason) ! {
+	apply_silence_impl(iface, want, set, explain, false)!
+}
+
+// apply_silence_probe is apply_silence_explained WITHOUT the recorded-state shortcut: the driver is
+// asked even when the record says the wire is already where the policy wants it.
+//
+// For a backend whose controller can be changed behind our back — a CANsub is a REST device that
+// another tool can reconfigure, or that reboots — and whose closure therefore reads the device
+// before it writes. Called from that backend's poll thread, once per period: the record is what
+// makes every OTHER caller free, and the probe is what keeps the record honest (codex round 1 on
+// #223: with only the shortcut, the advertised periodic readback never happened once a mode was
+// recorded, and an externally re-silenced or re-enabled controller went unnoticed indefinitely).
+pub fn apply_silence_probe(iface string, want bool, set fn (bool) int, explain fn (bool, int) SilenceReason) ! {
+	apply_silence_impl(iface, want, set, explain, true)!
+}
+
+fn apply_silence_impl(iface string, want bool, set fn (bool) int, explain fn (bool, int) SilenceReason, probe bool) ! {
 	k := wire_key(iface)
 	mut wl := wire_silence_lock(k)
 	wl.@lock()
 	defer {
 		wl.unlock()
 	}
-	if have := recorded_silence(k) {
-		if have == want {
-			return
+	if !probe {
+		if have := recorded_silence(k) {
+			if have == want {
+				return
+			}
 		}
 	}
 	st := set(want)
+	if st == silence_stale {
+		return error('${iface}: listen-only was not applied — the bus is closed')
+	}
+	if st == silence_not_attempted {
+		// A FAULT ABOUT THE OTHER DIRECTION DOES NOT SURVIVE A REQUEST FOR THIS ONE, even one the
+		// device could not be asked about: the request it was about is gone. Left standing, a
+		// refused tick went on showing NOT SILENT after the row was unticked for as long as the
+		// device stayed unreachable (codex round 10 on #223). The applied record is kept — that
+		// is about the controller, which did not change because we could not ask it.
+		if f := wire_silence_fault(iface) {
+			if f.want != want {
+				clear_silence_fault(k)
+			}
+		}
+		// NOTHING NEW IS KNOWN, AND THE OLD RECORD STANDS. This used to forget the applied mode too,
+		// on the reasoning that an unreachable device is an unknown one — and a CANsub whose REST
+		// endpoint blinked while its WebSocket stayed healthy then had every sender re-run the
+		// failed GET on the send path and refuse the frame: a health-side outage dropped all
+		// experiment traffic (codex round 2 on #223). The controller did not change because we
+		// could not ask it; the record says what was last applied, and the probe will re-ask.
+		return error('${iface}: listen-only was not applied — the bus is closing or the device could not be reached')
+	}
 	if st != 0 {
 		unrecord_silence(k)
-		why := 'the controller would not be set ${silence_word(want)} (driver status ${st})'
+		r := explain(want, st)
 		record_silence_fault(k, SilenceFault{
-			want: want
-			why:  why
+			want:     want
+			why:      r.why
+			declared: r.declared
 		})
-		return error(why)
+		return error(r.why)
 	}
 	record_silence(k, want)
 	clear_silence_fault(k)
@@ -157,6 +206,40 @@ pub struct SilenceFault {
 pub:
 	want bool   // what the row asked the controller for
 	why  string // the driver's own words
+	// DECLARED: the backend is saying "this is how the device works", not "a call failed". A
+	// CANsub refusing PHY reconfiguration on a live channel is declared; a Kvaser
+	// canSetBusOutputControl returning -13 is not. The distinction is what lets a bench tool
+	// report a phase as not applicable for the first and as a failure for the second — without
+	// it, any driver hiccup on PCAN or Kvaser would have read as a stated limitation
+	// (code-review high on #223).
+	declared bool
+}
+
+// SilenceReason is what a backend's `explain` returns for a refused driver status: the operator's
+// sentence, and whether the refusal is the device's rule rather than a fault.
+pub struct SilenceReason {
+pub:
+	why      string
+	declared bool
+}
+
+// silence_stale is the status a `set` closure returns when the BUS it belongs to is no longer
+// running: a thread of a closed run getting the lock late. Nothing is recorded and NOTHING IS
+// CLEARED — the wire may belong to a newer generation now, whose faults are its own (codex round
+// 11 on #223: an old CANsub probe finishing its readback after close() cleared the new run's
+// other-direction fault on the same wire).
+pub const silence_stale = -1_000_001
+
+// silence_not_attempted is the status a `set` closure returns when it did NOT reach the driver —
+// the bus is closing, or the device could not even be read. apply_silence records nothing for it
+// and FORGETS nothing either: not a fault, because nothing was refused, and the last applied mode
+// still stands, because the controller cannot have changed by our failing to ask it.
+pub const silence_not_attempted = -1_000_000
+
+fn generic_silence_reason(want bool, st int) SilenceReason {
+	return SilenceReason{
+		why: 'the controller would not be set ${silence_word(want)} (driver status ${st})'
+	}
 }
 
 // wire_silence_fault reports that this wire's controller REFUSED the mode its row asks for, or

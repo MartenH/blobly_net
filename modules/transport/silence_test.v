@@ -166,6 +166,83 @@ fn test_opposing_transitions_leave_the_record_matching_the_last_write() {
 	assert have == spy.calls.last(), 'recorded ${have}, driver last saw ${spy.calls.last()} (${spy.calls})'
 }
 
+// NOT ATTEMPTED IS NEITHER APPLIED NOR REFUSED. A closure that could not reach the driver says so,
+// and the seam records nothing: no applied mode (the next attempt must write) and no fault (nothing
+// was refused). Recording a fault here is how a device that was merely unreachable for one GET read
+// as one that had declined.
+fn test_not_attempted_records_neither_a_mode_nor_a_fault() {
+	forget_silence_claims()
+	if _ := apply_silence('inproc:sil-na', true, fn (silent bool) int {
+		return silence_not_attempted
+	})
+	{
+		assert false, 'not attempted must be reported as not done'
+	} else {
+		assert err.msg().contains('not applied'), err.msg()
+	}
+	assert wire_silence_fault('inproc:sil-na') == none
+	mut spy := &SilenceSpy{}
+	apply_silence('inproc:sil-na', true, spy.setter()) or { assert false, err.msg() }
+	assert spy.calls == [true], 'with no record, the next attempt must reach the driver'
+	// AND WITH A RECORD, A MISSED PROBE KEEPS IT: the controller did not change because we could
+	// not ask it, so the next ordinary caller stays free instead of re-running the failed call on
+	// the send path (codex round 2 on #223).
+	apply_silence_probe('inproc:sil-na', true, fn (silent bool) int {
+		return silence_not_attempted
+	}, fn (want bool, st int) SilenceReason {
+		return SilenceReason{}
+	}) or {}
+	apply_silence('inproc:sil-na', true, spy.setter()) or { assert false, err.msg() }
+	assert spy.calls == [true], 'a missed probe must not send the next caller to the driver'
+}
+
+// A PROBE REACHES THE DRIVER EVEN WHEN THE RECORD SAYS THERE IS NOTHING TO DO. That is its whole
+// purpose: the record is trusted by every ordinary caller, and the probe is what keeps it honest
+// against a controller changed behind our back (codex round 1 on #223).
+fn test_a_probe_asks_the_driver_despite_the_record() {
+	forget_silence_claims()
+	mut spy := &SilenceSpy{}
+	set := spy.setter()
+	apply_silence('inproc:sil-probe', true, set) or { assert false, err.msg() }
+	apply_silence('inproc:sil-probe', true, set) or { assert false, err.msg() }
+	assert spy.calls == [true], 'the ordinary path must be free once recorded'
+	apply_silence_probe('inproc:sil-probe', true, set, fn (want bool, st int) SilenceReason {
+		return SilenceReason{
+			why: 'n/a'
+		}
+	}) or { assert false, err.msg() }
+	assert spy.calls == [true, true], 'the probe must reach the driver'
+}
+
+// A DECLARED REFUSAL IS THE BACKEND'S WORD, and it travels with the fault.
+fn test_an_explained_refusal_carries_the_backends_reading() {
+	forget_silence_claims()
+	apply_silence_explained('inproc:sil-decl', true, fn (silent bool) int {
+		return 500
+	}, fn (want bool, st int) SilenceReason {
+		return SilenceReason{
+			why:      'the device says no (${st})'
+			declared: st == 500
+		}
+	}) or {}
+	f := wire_silence_fault('inproc:sil-decl') or {
+		assert false, 'a refusal must be recorded'
+		return
+	}
+	assert f.declared
+	assert f.why == 'the device says no (500)'
+	// The generic seam declares nothing.
+	forget_silence_claims()
+	apply_silence('inproc:sil-decl', true, fn (silent bool) int {
+		return -13
+	}) or {}
+	g := wire_silence_fault('inproc:sil-decl') or {
+		assert false, 'a refusal must be recorded'
+		return
+	}
+	assert !g.declared
+}
+
 // A REFUSAL IS RECORDED AGAINST THE WIRE, not only returned. The `open` path turns one into a
 // refusal to open and `send` returns it to a caller — but a PASSIVE listener never calls send, so
 // on a receive-only wire the error had no way out at all and the reconcile there is deliberately
@@ -221,4 +298,48 @@ fn test_a_fault_records_which_mode_was_refused() {
 	}
 	assert !f.want, 'this wire was asked to be NORMAL, not silent'
 	assert f.why.contains('normal'), f.why
+}
+
+// A FAULT ABOUT THE OTHER DIRECTION IS CLEARED BY A REQUEST FOR THIS ONE, even one that could not
+// reach the device: the request it was about is gone (codex round 10 on #223).
+fn test_a_missed_request_clears_a_fault_about_the_other_direction() {
+	forget_silence_claims()
+	apply_silence_explained('inproc:sil-other', true, fn (silent bool) int {
+		return 500
+	}, fn (want bool, st int) SilenceReason {
+		return SilenceReason{
+			why:      'refused'
+			declared: true
+		}
+	}) or {}
+	assert wire_silence_fault('inproc:sil-other') != none
+	apply_silence_explained('inproc:sil-other', false, fn (silent bool) int {
+		return silence_not_attempted
+	}, fn (want bool, st int) SilenceReason {
+		return SilenceReason{}
+	}) or {}
+	assert wire_silence_fault('inproc:sil-other') == none, 'a fault about a request nobody makes any more must go'
+	forget_silence_claims()
+}
+
+// A STALE BUS CLEARS NOTHING: a closed run's thread finishing late must not take a fault the
+// current run recorded on the same wire, whichever direction it is about (codex round 11 on #223).
+fn test_a_stale_bus_does_not_clear_the_current_runs_fault() {
+	forget_silence_claims()
+	apply_silence_explained('inproc:sil-stale', true, fn (silent bool) int {
+		return 500
+	}, fn (want bool, st int) SilenceReason {
+		return SilenceReason{
+			why:      'refused'
+			declared: true
+		}
+	}) or {}
+	assert wire_silence_fault('inproc:sil-stale') != none
+	apply_silence_explained('inproc:sil-stale', false, fn (silent bool) int {
+		return silence_stale
+	}, fn (want bool, st int) SilenceReason {
+		return SilenceReason{}
+	}) or {}
+	assert wire_silence_fault('inproc:sil-stale') != none, 'a stale bus took the current run\'s fault'
+	forget_silence_claims()
 }

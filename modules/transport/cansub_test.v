@@ -1,5 +1,7 @@
 module transport
 
+import time
+
 // The address, and the identity derived from it. Both are string logic, so both are checked here
 // rather than discovered on a bench with four channels running.
 
@@ -431,6 +433,95 @@ fn test_a_json_bool_that_is_not_one_is_no_answer() {
 
 // The real reply from a CANsub.4, so the field this depends on is pinned against the device rather
 // than against my memory of it.
+// THE DECISION LOGIC, WITHOUT A DEVICE. A CansubBus with `running = false` attempts no I/O, so the
+// on-demand path can be driven against the process-wide fault table alone — which is where every
+// review round on #223 landed, and which had no test (code-review high on #223).
+fn test_a_standing_refusal_is_answered_from_memory_in_its_own_direction() {
+	forget_silence_claims()
+	iface := 'cansub:AAAA0001/1@500000'
+	mut b := &CansubBus{
+		iface: iface
+		spec:  parse_cansub_iface(iface) or { panic(err) }
+		rx:    chan CansubRecord{cap: 1}
+	}
+	lock b.stop {
+		b.stop.running = false
+	}
+	// A fault in the wanted direction is returned without any attempt.
+	apply_silence_explained(iface, true, fn (silent bool) int {
+		return 500
+	}, cansub_silence_reason) or {}
+	if _ := b.reconcile_silence(true) {
+		assert false, 'a standing refusal must be reported, not silently passed'
+	} else {
+		assert err.msg().contains('while the channel is open'), err.msg()
+	}
+	// A fault in the OTHER direction does not short-circuit: the attempt is made, and with the
+	// bus not running it is "not attempted", which is an error and not a fault.
+	forget_silence_claims()
+	apply_silence_explained(iface, false, fn (silent bool) int {
+		return 500
+	}, cansub_silence_reason) or {}
+	if _ := b.reconcile_silence(true) {
+		assert false, 'not applied must never read as done'
+	} else {
+		assert err.msg().contains('not applied'), err.msg()
+	}
+	// AND THE OTHER-DIRECTION FAULT SURVIVES A STALE BUS. A closed run's thread clears nothing:
+	// the wire may belong to a newer generation now, whose faults are its own (codex round 11 on
+	// #223). A LIVE bus whose request could not reach the device does clear it — silence_test
+	// covers that (codex round 10).
+	f := wire_silence_fault(iface) or {
+		assert false, 'a stale bus must not take the fault'
+		return
+	}
+	assert !f.want
+	// (close() forgetting the fault — ordered after `running` goes false — needs a bus whose
+	// threads exist; a bus built with running = false to avoid I/O returns from close() at its
+	// idempotence guard before it gets there. That ordering is the bench's to prove.)
+	forget_silence_claims()
+}
+
+// AN UNTICK RESOLVES A REFUSED TICK. The device would not go silent; the row is unticked; the
+// controller is now exactly where the row wants it, and the NOT SILENT fault must go with the
+// request it was about (codex round 1 on #223).
+fn test_a_request_in_the_other_direction_clears_a_standing_refusal() {
+	forget_silence_claims()
+	iface := 'cansub:AAAA0002/1@500000'
+	apply_silence_explained(iface, true, fn (silent bool) int {
+		return 500
+	}, cansub_silence_reason) or {}
+	assert wire_silence_fault(iface) != none
+	// The controller is in normal mode and the row now asks for normal: the closure returns 0
+	// (nothing to change) and the seam clears the fault.
+	apply_silence_explained(iface, false, fn (silent bool) int {
+		return 0
+	}, cansub_silence_reason) or { assert false, err.msg() }
+	assert wire_silence_fault(iface) == none
+	forget_silence_claims()
+}
+
+// A 500 IS DECLARED; anything else is a fault. This is what lets silentcheck call a phase not
+// applicable for the device's rule while still failing on a driver error.
+fn test_only_the_live_channel_refusal_is_declared() {
+	assert cansub_silence_reason(true, 500).declared
+	assert !cansub_silence_reason(true, 400).declared
+	assert !cansub_silence_reason(false, 503).declared
+}
+
+// A REFUSED MID-RUN PUT IS THE DEVICE'S RULE, NOT A DEFECT, and the message has to say what to do.
+// Measured with curl on a CANsub.4 (02.04.00): the same PHY body is 200 with nothing on the channel
+// and 500 while any client holds its WebSocket. The reconcile used to return from that 500 in
+// silence, on every poll, for the life of the run.
+fn test_a_refused_phy_put_names_the_live_channel_rule_and_the_remedy() {
+	why := cansub_phy_refusal(500)
+	assert why.contains('while the channel is open'), why
+	assert why.contains('Stop and Start'), why
+	other := cansub_phy_refusal(400)
+	assert other.contains('400'), other
+	assert !other.contains('while the channel is open'), 'only the live-channel 500 gets that reading'
+}
+
 fn test_the_devices_own_phy_reply_parses() {
 	body := '{"listen_only":false,"auto_reset":true,"error_frames":true,"tx_ack_frames":true,"timing":{"brp":1,"seg1":127,"seg2":32,"sjw":4},"timing_data":{"brp":1,"seg1":31,"seg2":8,"sjw":4}}'
 	assert extract_json_bool(body, 'listen_only')? == false
@@ -447,4 +538,76 @@ fn test_whitespace_in_an_address_does_not_make_a_second_wire() {
 		'cansub:E5A16ADF/01@500000'] {
 		assert destination_key(spelling) == a, '${spelling} -> ${destination_key(spelling)}, want ${a}'
 	}
+}
+
+// THE PROBE DOES NOT DIAL UNDER THE LOCK. The poll thread reads the device BEFORE it takes the
+// wire lock and hands the answer in; a readback that failed reaches the closure as none, and the
+// closure answers "not attempted" without touching the network. Decisive: the host here is one
+// nothing answers on, and a dial to it would take net.dial_tcp's five seconds (codex round 3 on
+// #223, where the dial under the lock was the OS connect timeout, unbounded).
+fn test_a_probe_whose_readback_failed_does_not_dial_under_the_lock() {
+	iface := 'cansub:AAAA0003/1@500000'
+	// The policy the probe sampled still holds, so the probe is current, not stale.
+	set_listen_only(iface, true)
+	defer {
+		clear_listen_only()
+	}
+	mut b := &CansubBus{
+		iface: iface
+		host:  '10.255.255.1'
+		spec:  parse_cansub_iface(iface) or { panic(err) }
+		rx:    chan CansubRecord{cap: 1}
+	}
+	lock b.stop {
+		b.stop.running = true
+	}
+	t0 := time.ticks()
+	assert b.apply_phy_silence(true, true, none) == silence_not_attempted
+	assert time.ticks() - t0 < 500, 'the closure reached the network: ${time.ticks() - t0} ms'
+}
+
+// A PROBE WHOSE POLICY MOVED DURING ITS READBACK ATTEMPTS NOTHING. The poll thread sampled
+// "silent" and read the device outside the lock; the row was unticked meanwhile. Under the lock
+// the policy says normal, so the stale pair must not be applied — and decisively not: the host
+// here answers nothing, so a PUT would cost net.dial_tcp's five seconds (codex round 6 on #223).
+fn test_a_probe_whose_policy_changed_meanwhile_attempts_nothing() {
+	iface := 'cansub:AAAA0004/1@500000'
+	clear_listen_only()
+	mut b := &CansubBus{
+		iface: iface
+		host:  '10.255.255.1'
+		spec:  parse_cansub_iface(iface) or { panic(err) }
+		rx:    chan CansubRecord{cap: 1}
+	}
+	lock b.stop {
+		b.stop.running = true
+	}
+	t0 := time.ticks()
+	// The probe wanted silent and read the device as normal; the policy is now normal. STALE,
+	// so the seam touches nothing — not-attempted would clear the fault the reconcile that
+	// overtook this probe may just have recorded (codex round 12 on #223).
+	assert b.apply_phy_silence(true, true, false) == silence_stale
+	assert time.ticks() - t0 < 500, 'the stale probe reached the network: ${time.ticks() - t0} ms'
+}
+
+// A PUT THAT COULD NOT BE DELIVERED AFTER A READBACK THAT DISPROVED THE RECORD clears the record
+// and shows a fault that is NOT declared: the device was read, the controller is in the other
+// mode, and nobody must take the recorded-state shortcut past that (codex round 8 on #223).
+fn test_an_undelivered_put_after_a_readback_clears_the_record() {
+	forget_silence_claims()
+	iface := 'cansub:AAAA0005/1@500000'
+	apply_silence_explained(iface, true, fn (silent bool) int {
+		return 0
+	}, cansub_silence_reason) or { assert false, err.msg() }
+	assert recorded_silence(wire_key(iface))? == true
+	apply_silence_probe(iface, true, fn (silent bool) int {
+		return cansub_put_undelivered
+	}, cansub_silence_reason) or {}
+	assert recorded_silence(wire_key(iface)) == none, 'a disproved record must not stand'
+	f := wire_silence_fault(iface) or {
+		assert false, 'the undelivered PUT must be shown as a fault'
+		return
+	}
+	assert !f.declared
+	forget_silence_claims()
 }
