@@ -16,6 +16,22 @@ name: ci
 # V acquisition: vlang/setup-v with check-latest (master V — the in-process bus and the
 # vendored Lua need a current toolchain; the 0.5.1 *release* predates vlib/yaml which
 # modules/project uses).
+#
+# VFLAGS=-old-compiler, for every `v` in both jobs. V 0.5.2 tries its experimental V3 compiler
+# FIRST on every build and falls back to the established one when V3 cannot build the program
+# — which on this runner was 65 of the 72 test programs, each compiled twice: the test step
+# summed 1,807 s of compile time where the same 72 files take 100 s locally on V 0.5.1, and the
+# job took eleven minutes. The fallback also posts an automatic bug report to bugs.vlang.io,
+# with a bounded excerpt of the failing source (V's docs, "Automatic bug reports") — from this
+# repository, ~65 times a run. `-old-compiler` skips V3 entirely. The env var rather than the
+# flag in the scripts, because a V that predates V3 (0.5.1, what a bench runs today) rejects
+# the flag as an unknown argument; here the toolchain is always current.
+#
+# V_C_ERROR_BUG_REPORT_DISABLED, because the flag only ends the FALLBACK's report: the
+# established compiler uploads a source excerpt of its own on any C compilation error
+# (vlib/v/builder/cc.v -> submit_c_error_bug_report), and a PR that breaks the vendored Lua's
+# #flag build would send this repository's source too. The env var is V's opt-out for every
+# path that reports (self-review). Harmless on a V that has no reporter, unlike the flag.
 
 on:
   push:
@@ -27,6 +43,10 @@ on:
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  VFLAGS: -old-compiler
+  V_C_ERROR_BUG_REPORT_DISABLED: 1
 
 jobs:
   test:
