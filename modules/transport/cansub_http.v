@@ -27,6 +27,7 @@
 module transport
 
 import net
+import sync
 import net.ssl
 import time
 
@@ -178,46 +179,114 @@ pub fn cansub_parse_response(raw string) !CansubResponse {
 // a handful of calls when a channel opens — so pooling would buy nothing and cost a class of
 // staleness bugs. Frames never come this way; they are on the WebSocket.
 pub fn cansub_request(host string, method string, path string, body string, timeout time.Duration) !CansubResponse {
+	// ONE TLS CONNECTION PER DEVICE, KEPT OPEN. Every request used to make its own connection and
+	// send `Connection: close`, reading until the device hung up — and the device answers a second
+	// request on a kept-alive connection in under a millisecond against ~110 ms for a fresh one
+	// (curl, 2026-08-28: total 0.0008 s, num_connects 0). The earlier finding that keep-alive was
+	// 2.8 s SLOWER was this reader waiting for a close that never came. So the connection stays,
+	// the reader stops when the body is complete (cansub_response_complete), and a connection
+	// that fails is dropped and dialled again — once, for the request in hand, because an idle
+	// connection the device has closed fails on the first byte and the second attempt is the real
+	// one. What it buys: an open's three REST calls at ~120 ms instead of ~470, and a health
+	// poll at ~1 ms instead of a TLS handshake twice a second (#240).
+	mut c, reused := cansub_conn(host)!
+	r := c.exchange(method, path, body, timeout) or {
+		c.drop()
+		if !reused {
+			return err
+		}
+		// The connection was one the device may have closed while idle: dial and try once more.
+		mut fresh, _ := cansub_conn(host)!
+		return fresh.exchange(method, path, body, timeout) or {
+			fresh.drop()
+			return err
+		}
+	}
+	return r
+}
+
+// CansubConn is one device's kept-alive TLS connection. Requests on it are serialised by `mu`:
+// the poll thread and a reconcile can want the device at the same time, and the answer to one
+// request must not be read as the answer to another.
+struct CansubConn {
+	host string
+mut:
+	tcp  &net.TcpConn
+	ssl  &ssl.SSLConn
+	mu   sync.Mutex
+	dead bool
+}
+
+struct CansubPool {
+mut:
+	conns map[string]&CansubConn
+}
+
+__global (
+	cansub_pool shared CansubPool
+)
+
+// cansub_conn is the device's connection, dialled on first use. `reused` reports whether the
+// caller got an existing one, which is what decides whether a failure deserves a second try.
+fn cansub_conn(host string) !(&CansubConn, bool) {
+	existing := rlock cansub_pool {
+		cansub_pool.conns[host] or { unsafe { nil } }
+	}
+	if existing != unsafe { nil } {
+		return existing, true
+	}
+	mut tcp := cansub_dial(host)!
 	mut conn := ssl.new_ssl_conn(
 		validate:     false // the device signs its own certificate; see the note at the top
-		read_timeout: timeout
+		read_timeout: cansub_conn_read_ceiling
 	)!
-	// THE CONNECT IS BOUNDED, AND BY THIS CODE. SSLConn.dial connects through mbedtls_net_connect,
-	// a blocking OS connect with no budget of ours — on Windows around 21 s to a host that
-	// resolves and then blackholes — and `read_timeout`, the one budget the SSL client offers,
-	// starts AFTER the connection is up. So the TCP connection is made here, through net.dial_tcp
-	// (five seconds, vlib's own select), and handed to the SSL layer. What that bounds is every
-	// REST call this backend makes, including the PUT a sender's reconcile can run under the wire
-	// lock while every other sender and close() wait on it (codex round 3 on #223).
-	// THE CONNECT BOUND IS vlib's FIVE SECONDS, not `timeout`: net.dial_tcp has no per-call knob
-	// (its connect_timeout is a module constant), so the 700 ms and 2 s budgets below cap the
-	// request AFTER the connection is up. A tighter bound means a hand-rolled non-blocking
-	// connect against the raw socket; not done here (codex round 11 on #223).
-	// RESOLVED ONCE, DIALLED BY ADDRESS. A cold mDNS lookup of `<id>-usb.local` costs ~2.7 s on
-	// Windows and the answer is not kept for a minute (measured 2026-08-28: 2.681 s cold, 8 ms
-	// warm, cold again after 60 s idle), while the request itself takes 0.11 s. Every REST call
-	// here made its own connection and paid that lookup on the first call after any pause — the
-	// open (three connections, so Start stalled ~3 s behind the CANsub row), every reconnect,
-	// and the health poll after any stall (#240). The name is looked up once per process and the
-	// address kept; a connect that fails forgets it and looks up again, which is what the name
-	// was for — the device changes subnet across firmware updates, and the name follows it.
-	mut tcp := cansub_dial(host)!
-	defer {
-		conn.shutdown() or {}
+	conn.connect(mut tcp, host) or {
 		tcp.close() or {}
+		return err
 	}
-	conn.connect(mut tcp, host)!
-	mut req := '${method} ${path} HTTP/1.1\r\nHost: ${host}\r\nConnection: close\r\n'
+	mut c := &CansubConn{
+		host: host
+		tcp:  tcp
+		ssl:  conn
+	}
+	lock cansub_pool {
+		if mut prior := cansub_pool.conns[host] {
+			// Two callers dialled at once; theirs is in the pool, ours is surplus.
+			c.close_socket()
+			return prior, true
+		}
+		cansub_pool.conns[host] = c
+	}
+	return c, false
+}
+
+// cansub_conn_read_ceiling is the SSL layer's read timeout, fixed at construction: the widest any
+// request asks for. The per-request budget is set on the socket underneath (exchange).
+const cansub_conn_read_ceiling = 5 * time.second
+
+// exchange sends one request and reads its complete reply on this connection.
+fn (mut c CansubConn) exchange(method string, path string, body string, timeout time.Duration) !CansubResponse {
+	c.mu.lock()
+	defer {
+		c.mu.unlock()
+	}
+	if c.dead {
+		return error('connection to ${c.host} is closed')
+	}
+	// THE BUDGET IS THE CALLER'S, per request, on the socket the TLS layer reads through: a
+	// health poll gives 700 ms, an open two seconds, and the SSL object's own timeout is only the
+	// ceiling above both.
+	c.tcp.set_read_timeout(timeout)
+	mut req := '${method} ${path} HTTP/1.1\r\nHost: ${c.host}\r\n'
 	if body != '' {
 		req += 'Content-Type: application/json\r\nContent-Length: ${body.len}\r\n'
 	}
 	req += '\r\n' + body
-	conn.write_string(req)!
-
+	c.ssl.write_string(req)!
 	mut raw := []u8{}
 	mut buf := []u8{len: 4096}
 	for {
-		n := conn.read(mut buf) or { break } // the close is how the device says it is done
+		n := c.ssl.read(mut buf)!
 		if n <= 0 {
 			break
 		}
@@ -225,11 +294,57 @@ pub fn cansub_request(host string, method string, path string, body string, time
 		if raw.len > 1 << 20 {
 			return error('response from ${path} exceeded 1 MiB')
 		}
+		if cansub_response_complete(raw) {
+			break
+		}
 	}
 	if raw.len == 0 {
 		return error('${method} ${path}: no response')
 	}
 	return cansub_parse_response(raw.bytestr())
+}
+
+// drop takes a failed connection out of service: the next request dials a new one.
+fn (mut c CansubConn) drop() {
+	c.mu.lock()
+	c.close_socket()
+	c.mu.unlock()
+	lock cansub_pool {
+		if mut cur := cansub_pool.conns[c.host] {
+			if voidptr(cur) == voidptr(c) {
+				cansub_pool.conns.delete(c.host)
+			}
+		}
+	}
+}
+
+fn (mut c CansubConn) close_socket() {
+	if c.dead {
+		return
+	}
+	c.dead = true
+	c.ssl.shutdown() or {}
+	c.tcp.close() or {}
+}
+
+// cansub_response_complete is whether `raw` holds a whole HTTP reply, so a kept-alive reader can
+// stop without waiting for a close that will not come: headers ended, and then either the
+// chunked body's terminating chunk has arrived (the device uses chunked for everything) or
+// Content-Length bytes have, or the reply declares no body at all.
+pub fn cansub_response_complete(raw []u8) bool {
+	text := raw.bytestr()
+	head_end := text.index('\r\n\r\n') or { return false }
+	head := text[..head_end].to_lower()
+	body := text[head_end + 4..]
+	if head.contains('transfer-encoding:') && head.contains('chunked') {
+		// A terminating chunk is `0\r\n` followed by the trailer's empty line.
+		return body == '0\r\n\r\n' || body.ends_with('\r\n0\r\n\r\n')
+	}
+	if i := head.index('content-length:') {
+		length := head[i + 'content-length:'.len..].all_before('\r\n').trim_space().int()
+		return body.len >= length
+	}
+	return true
 }
 
 // cansub_get is the read half, and the one used most: identity, channel list, channel state.

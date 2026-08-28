@@ -177,3 +177,22 @@ fn test_dechunk_refuses_a_chunk_longer_than_the_remainder() {
 	cansub_dechunk('7FFFFF\r\nWiki\r\n0\r\n\r\n') or { return }
 	assert false, 'accepted a chunk longer than the body'
 }
+
+// A KEPT-ALIVE READER STOPS WHEN THE REPLY IS COMPLETE, not when the device hangs up — which on a
+// kept-alive connection it never does. Chunked (what the device sends), Content-Length, and a
+// bodiless reply; and every partial prefix of each is NOT complete.
+fn test_a_reply_is_complete_at_its_terminating_chunk_or_content_length() {
+	chunked := 'HTTP/1.1 200\r\nTransfer-Encoding: chunked\r\nContent-Type: application/json\r\n\r\n1a\r\n{"state":"error_active"}\r\n0\r\n\r\n'
+	assert cansub_response_complete(chunked.bytes())
+	for cut in 1 .. chunked.len {
+		assert !cansub_response_complete(chunked[..cut].bytes()), 'a prefix of ${cut} bytes read as complete'
+	}
+	with_length := 'HTTP/1.1 200\r\nContent-Length: 5\r\n\r\nhello'
+	assert cansub_response_complete(with_length.bytes())
+	assert !cansub_response_complete(with_length[..with_length.len - 1].bytes())
+	bodiless := 'HTTP/1.1 204\r\n\r\n'
+	assert cansub_response_complete(bodiless.bytes())
+	assert !cansub_response_complete('HTTP/1.1 204\r\n'.bytes())
+	// The chunked check is about the terminator, not about an accidental "0" chunk in the body.
+	assert !cansub_response_complete('HTTP/1.1 200\r\nTransfer-Encoding: chunked\r\n\r\n1\r\n0\r\n'.bytes())
+}
