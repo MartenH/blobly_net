@@ -63,6 +63,24 @@ fn read_destinations(rows []Chan) map[string]DestState {
 			out[transport.destination_key(c.iface)] = st
 		}
 	}
+	// COUNTS OUTLIVE THE READER. A row retired by Stop or by a fatal receive keeps its last
+	// sample on purpose -- it is what the wire knew at its death -- and a fold over running
+	// rows only made the chip vanish at exactly that moment (codex round 2 on #231). A live
+	// reader's value wins; a retired row's stands in only where no live row has one.
+	for c in rows {
+		if c.enabled && c.running {
+			continue
+		}
+		if c.diag.is_empty() {
+			continue
+		}
+		key := transport.destination_key(c.iface)
+		mut st := out[key] or { DestState{} }
+		if st.diag.is_empty() {
+			st.diag = c.diag
+			out[key] = st
+		}
+	}
 	return out
 }
 

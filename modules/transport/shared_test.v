@@ -1395,8 +1395,11 @@ fn test_shared_hub_diagnostics_fold_the_drivers_counters_with_the_wires_ring_gap
 	}
 	mut slow := shared_open_events('hub:diag', 'fake:diag', hub_fake_make)!
 	mut fast := shared_open_events('hub:diag', 'fake:diag', hub_fake_make)!
-	// Never receives at all, and closes behind the ring: its loss is booked at its close.
+	// Reads once -- a subscriber -- then never again, and closes behind the ring: its loss is
+	// booked at its close. `fast` never reads: a transmit tap, whose old cursor is nobody's loss.
 	mut lagging := shared_open_events('hub:diag', 'fake:diag', hub_fake_make)!
+	hub_inject(CanFrame{ id: 0xAAA })
+	assert lagging.recv(1000)!.id == 0xAAA
 	assert fast.diagnostics() == BusDiagnostics{
 		bus_errors: 2
 	}
@@ -1411,16 +1414,16 @@ fn test_shared_hub_diagnostics_fold_the_drivers_counters_with_the_wires_ring_gap
 		time.sleep(time.millisecond)
 	}
 	_ := slow.recv(1000)!
-	assert shared_test_dropped(mut slow) == 3
+	assert shared_test_dropped(mut slow) == 4 // 0xAAA and the first three of the flood
 	want := BusDiagnostics{
-		dropped:    3
+		dropped:    4
 		bus_errors: 2
 	}
 	assert slow.diagnostics() == want
 	assert fast.diagnostics() == want, "the wire's gap is every handle's answer"
-	assert want.short() == '3 dropped · 2 err'
+	assert want.short() == '4 dropped · 2 err'
 	assert want.minus(BusDiagnostics{ bus_errors: 2 }) == BusDiagnostics{
-		dropped: 3
+		dropped: 4
 	}
 	assert BusDiagnostics{}.fell(want)
 	assert !want.fell(BusDiagnostics{})
@@ -1428,8 +1431,12 @@ fn test_shared_hub_diagnostics_fold_the_drivers_counters_with_the_wires_ring_gap
 	assert slow.diagnostics() == BusDiagnostics{}
 	assert fast.diagnostics() == want, 'the gap outlives the handle that suffered it'
 	lagging.close()
-	assert fast.diagnostics().dropped == 6, 'a handle that closed behind the ring without reading must book its gap'
+	assert fast.diagnostics().dropped == 7, 'a subscriber that closed behind the ring must book its gap'
+	// Keeps the generation alive past fast's close, which is a transmit tap's (fast never read).
+	mut after := shared_open_events('hub:diag', 'fake:diag', hub_fake_make)!
 	fast.close()
+	assert after.diagnostics().dropped == 7, 'a transmit tap that never read books nothing at its close'
+	after.close()
 }
 
 fn test_shared_hub_ring_overwrite_only_advances_the_slow_cursor() {

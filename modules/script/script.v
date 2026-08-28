@@ -166,6 +166,15 @@ pub fn (mut env Env) diagnostics() map[string]transport.BusDiagnostics {
 			out[name] = d
 		}
 	}
+	// A UDS connection is its own handle on the wire, reported under its own key: on a shared
+	// wire it and the bus above report the same wire, and two keys is honest where one sum
+	// would count the wire's loss twice (codex round 2 on #231).
+	for mut c in env.conns {
+		d := c.ch.diagnostics()
+		if !d.is_empty() {
+			out['${c.chan} (uds)'] = d
+		}
+	}
 	return out
 }
 
