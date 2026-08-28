@@ -882,14 +882,25 @@ fn extract_json_string(s string, key string) ?string {
 	return rest[..end]
 }
 
-// refusal is what send would refuse before writing — asked by the hub before it registers the
-// send (SharedDriver.refusal), and asked again by send itself as the belt to that brace.
-pub fn (b &CansubBus) refusal(frame CanFrame) ?string {
+// pure_refusal is the part of refusal that depends on the frame and the channel alone — the
+// same answer whenever it is asked, so send may ask it again after the hub's preflight.
+pub fn (b &CansubBus) pure_refusal(frame CanFrame) ?string {
 	if frame.fd && !b.spec.fd {
 		// Refuse rather than truncate, which is what the Windows vendor backends do with an FD
 		// frame they cannot carry. The address is what asks for FD, so a classic channel being
 		// handed an FD frame is a project that disagrees with itself.
 		return '${b.iface} is a classic channel — its address names one bitrate, so it cannot carry a CAN-FD frame'
+	}
+	// A frame the codec will not encode: send encodes again — the encoding is pure.
+	cansub_encode_frame(frame) or { return err.msg() }
+	return none
+}
+
+// refusal is what send would refuse before writing — asked by the hub BEFORE it registers the
+// send (SharedDriver.refusal). The mutable answers live only here: see send.
+pub fn (b &CansubBus) refusal(frame CanFrame) ?string {
+	if r := b.pure_refusal(frame) {
+		return r
 	}
 	if e := b.failure() {
 		return '${b.iface}: ${e}${b.diagnostic_suffix()}'
@@ -922,14 +933,18 @@ pub fn (b &CansubBus) refusal(frame CanFrame) ?string {
 		}
 		return '${b.iface}: the controller is still in listen-only; the frame was not sent — a CANsub follows the mark at open, so Stop and Start'
 	}
-	// And a frame the codec will not encode: decided here, before any token, for the same
-	// reason as the rest (codex round 13 on #251). send encodes again — the encoding is pure.
-	cansub_encode_frame(frame) or { return err.msg() }
 	return none
 }
 
 pub fn (mut b CansubBus) send(frame CanFrame) ! {
-	if reason := b.refusal(frame) {
+	// THE PREFLIGHT IS AUTHORITATIVE. The hub asked refusal() before it registered this send's
+	// acknowledgement token; from then on the token is matchable, and a refusal decided HERE —
+	// from state another thread may have changed since (a reader that stopped, a write that
+	// timed out) — would come after a late acknowledgement could already have been matched to
+	// a send that never happened (codex round 15 on #251). So only what cannot have changed is
+	// asked again — the frame against the channel — and everything else is attempted, its
+	// failure reported as a failed WRITE, which is what the hub's grace is for.
+	if reason := b.pure_refusal(frame) {
 		return not_written(reason)
 	}
 	body := cansub_encode_frame(frame)!
@@ -938,6 +953,12 @@ pub fn (mut b CansubBus) send(frame CanFrame) ! {
 	b.wmu.lock()
 	defer {
 		b.wmu.unlock()
+	}
+	// Under the write lock, a connection that is over for writing is a FAILED write, not a
+	// refusal: nothing more may go onto that stream (see fail_send), and the hub's grace is
+	// the right answer for a send that was attempted and did not go.
+	if e := b.send_refusal() {
+		return error('send on ${b.iface}: ${e}')
 	}
 	b.ws.write(cansub_hdlc_wrap(body), .binary_frame) or {
 		// A WRITE THAT FAILED IS THE END OF THIS CONNECTION FOR WRITING. A timed-out write may have
