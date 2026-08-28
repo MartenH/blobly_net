@@ -12,7 +12,7 @@ verified. (On Linux the kernel owns the adapter and everything is SocketCAN — 
 | **PEAK PCAN** | `pcan:PCAN_USBBUS1@500000` | `PCANBasic.dll` | ✅ verified on hardware |
 | **Kvaser** | `kvaser:0@500000` | `canlib32.dll` | ✅ verified on hardware |
 | **Vector XL** | `vector:1@500000` | `vxlapi64.dll` | ✅ verified on hardware |
-| **CANsub** (CSS Electronics) | `cansub:<device-id>/1@500000` | none — REST + WebSocket, the same code on Linux | ✅ verified on hardware |
+| **CANsub** (CSS Electronics) | `cansub:<device-id>/1@500000` — Discover finds the id by mDNS (#235) | none — REST + WebSocket, the same code on Linux | ✅ verified on hardware |
 | slcan (USB-serial) | `slcan:COM5@500000` | none — serial | ❌ not implemented |
 
 **CAN-FD on all four** — Vector, Kvaser, PCAN (since #217) and CANsub. In every one the data rate
@@ -42,18 +42,16 @@ done" is then a fact somebody can check rather than a feeling.
 | Listen-only **at the transceiver** | ✅ #219 | ✅ #219 | ✅ `,silent` | ✅ PHY |
 | Listen-only follows a **mid-run** toggle | ✅ | ✅ | ❌ pinned by the ports | ❌ the device refuses a PHY PUT on a live channel (measured) |
 | Idle wire (transmit taps only) costs the driver almost nothing | ✅ #224 (measured: ~520 reads in a handle's first, attentive second, then 5 reads/5 s — one zero-timeout drain a second; ~520/s once a handle receives) | ✅ own handles, no hub | ✅ own ports | n/a — its reader is a channel wait, not a driver call |
-| Discover | ✅ | ✅ | ✅ + assignment | ❌ |
+| Discover | ✅ | ✅ | ✅ + assignment | ✅ mDNS (#235; bench-verified from Linux/WSL, the Windows half type-checked only) |
 | Honours project timing / sample point | partial (BTR) | ❌ ignored | partial | refuses non-default |
 | Hardware timestamps | ❌ | ❌ | ❌ | ❌ |
 | Bench record below | ✅ | ✅ | ✅ | ✅ |
 
 **The gaps that stop any of them being called finished**, in the order they matter:
 
-1. **CANsub Discover.** The only backend you cannot discover — the device id has to be read off the
-   box. It answers mDNS at `<id>-usb.local`, so it is tractable.
-2. **Kvaser project timing.** `sample_point` and `timing{}` are ignored *silently*, which is the
+1. **Kvaser project timing.** `sample_point` and `timing{}` are ignored *silently*, which is the
    failure mode this repo refuses elsewhere. Honour it or refuse it as CANsub does.
-3. **Hardware timestamps** (#149) — cross-cutting: `transport.CanFrame` has nowhere to put one, so
+2. **Hardware timestamps** (#149) — cross-cutting: `transport.CanFrame` has nowhere to put one, so
    no backend can carry one. PCAN passes `NULL` where a `TPCANTimestamp*` goes, Vector reads a
    `chip` time it discards, CANsub decodes a synchronised device stamp and drops it.
 
@@ -278,8 +276,9 @@ Quirks. The first one is the worst thing in this file, and everything under it f
   (issue #165).
 
 **CANsub (CSS Electronics)** — the one hardware backend that is neither a vendor DLL nor
-platform-gated: it enumerates as a USB **network** adapter, so `list_interfaces()` never sees it
-and the same code reaches it from Linux and Windows. Configuration is REST, frames are HDLC over
+platform-gated: it enumerates as a USB **network** adapter, so no driver lists it — Discover finds
+it by an mDNS browse for `_cansub._tcp` (#235) — and the same code reaches it from Linux and
+Windows. Configuration is REST, frames are HDLC over
 one WebSocket per channel, and the vendor's 20 published test vectors are pinned in
 `cansub_codec_test.v` — which is what lets CI cover a format no runner has hardware for.
 

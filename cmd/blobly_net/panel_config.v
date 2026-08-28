@@ -214,8 +214,14 @@ fn draw_discover_dialog(mut app App) {
 		vgui.end()
 		return
 	}
+	busy, landed, note := app.cansub_browse_state()
+	if landed {
+		// A browse landed since the list was built: merge its rows, on this thread, ticks kept.
+		app.rebuild_discover_list()
+	}
 	if vgui.button('Refresh') {
 		app.refresh_discovery()
+		app.start_cansub_browse()
 	}
 	vgui.same_line()
 	if vgui.button('+ vcan') {
@@ -239,6 +245,13 @@ fn draw_discover_dialog(mut app App) {
 	vgui.separator()
 	if app.disc_list.len == 0 {
 		vgui.text_dim('click Refresh to scan for interfaces')
+	}
+	if busy {
+		vgui.text_dim('browsing mDNS for CANsub devices…')
+	} else if note != '' {
+		// Could not LOOK, or could ask only some interfaces -- which is not the same as none
+		// attached: said, not blanked (#192).
+		vgui.text_colored(u8(240), u8(150), u8(60), note)
 	}
 	for k, d in app.disc_list {
 		if d.added {
@@ -402,6 +415,7 @@ fn draw_config(mut app App) {
 	vgui.same_line()
 	if vgui.button('Discover...') {
 		app.refresh_discovery()
+		app.start_cansub_browse()
 		app.disc_open = true
 	}
 	vgui.same_line()

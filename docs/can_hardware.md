@@ -11,7 +11,7 @@ with no driver at all); the dates and runs are in
 
 | | Kvaser (Leaf Light v2, USBcan Pro 5xHS) | PCAN-USB Pro FD | Vector (VN16xx/…) | CANsub (CSS Electronics) |
 |---|---|---|---|---|
-| **Native Linux** | ✅ mainline `kvaser_usb` → `can0` (SocketCAN) | ✅ mainline `peak_usb` → `can0`/`can1` | ❌ no mainline driver | ✅ `cansub:<id>/1` — a network device, no driver |
+| **Native Linux** | ✅ mainline `kvaser_usb` → `can0` (SocketCAN) | ✅ mainline `peak_usb` → `can0`/`can1` | ❌ no mainline driver | ✅ `cansub:<id>/1` — a network device, no driver; Discover finds the id by mDNS |
 | **WSL2** | ⚠️ `usbipd-win` + WSL-kernel driver | ⚠️ same | ❌ — | ✅ same (it is on the network, not USB-passthrough) |
 | **Native Windows** | vendor SDK — Kvaser **CANlib** | vendor SDK — PEAK **PCAN-Basic** | vendor SDK — Vector **XL Driver Library** | ✅ the same string, the same code |
 | **CAN-FD** | Leaf Light v2 classic only; USBcan Pro 5xHS ✅ FD to 8 Mbit/s | ✅ FD | ✅ FD | ✅ FD (64-byte BRS at 2 Mbit/s) |
