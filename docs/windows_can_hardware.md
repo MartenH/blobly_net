@@ -39,7 +39,7 @@ done" is then a fact somebody can check rather than a feeling.
 | Refuses FD on a classic channel | ✅ | ✅ | ✅ | ✅ |
 | Bus health (fault ladder) | ✅ | ✅ | ✅ | ✅ |
 | Listen-only **at the transceiver** | ✅ #219 | ✅ #219 | ✅ `,silent` | ✅ PHY |
-| Listen-only follows a **mid-run** toggle | ✅ | ✅ | ❌ pinned by the ports | ✅ |
+| Listen-only follows a **mid-run** toggle | ✅ | ✅ | ❌ pinned by the ports | ❌ the device refuses a PHY PUT on a live channel (measured) |
 | Idle wire (transmit taps only) costs the driver almost nothing | ✅ #224 (measured: ~520 reads in a handle's first, attentive second, then 5 reads/5 s — one zero-timeout drain a second; ~520/s once a handle receives) | ✅ own handles, no hub | ✅ own ports | n/a — its reader is a channel wait, not a driver call |
 | Discover | ✅ | ✅ | ✅ + assignment | ❌ |
 | Honours project timing / sample point | partial (BTR) | ❌ ignored | partial | refuses non-default |
@@ -57,11 +57,17 @@ done" is then a fact somebody can check rather than a feeling.
    `chip` time it discards, CANsub decodes a synchronised device stamp and drops it.
 
 *Listen-only at the transceiver used to head this list and was closed by #219.* The one row where
-the four still differ is whether the mode follows a **mid-run** toggle: PCAN, Kvaser and CANsub
-reconfigure the controller when a row is ticked while a run is going, and Vector cannot — an XL
+the four still differ is whether the mode follows a **mid-run** toggle: PCAN and Kvaser
+reconfigure the controller when a row is ticked while a run is going; Vector cannot — an XL
 channel's mode is fixed by the ports open on it, which is why `,silent` is part of the address
-there and a clash is *refused* rather than reconciled (`pinned.v`). That is a property of the
-driver, not a gap to close.
+there and a clash is *refused* rather than reconciled (`pinned.v`) — and **neither can CANsub**:
+the device answers the identical PHY PUT with 200 when nothing holds the channel and **500 while
+any client holds its WebSocket** (measured with curl on a CANsub.4, 02.04.00). Both apply the mark
+at the next Start. They differ in what they *say* meanwhile: CANsub records the refusal as a
+declared fault, so its Buses row shows NOT SILENT and `silentcheck` reports phases 2 and 5 as not
+applicable in the device's own words; **Vector records nothing yet**, so a Vector listener fails
+those phases outright — a known gap in reporting, not in behaviour. Properties of the drivers, not
+gaps to close.
 
 Also cross-cutting and filed: #211 (`shared_open` holds a process-wide lock across I/O), #212 (a
 second open competes for frames instead of subscribing), #213 (a backend cannot report what is
@@ -279,6 +285,9 @@ one WebSocket per channel, and the vendor's 20 published test vectors are pinned
 | **It ECHOES its own sends**, with a start-of-frame hardware timestamp on the acknowledgement | so TX acknowledgements are delivered and `wiretap` claims them, or every transmitted frame is filed twice as the ECU's (#139's lesson) | `cansub.v` |
 | **One client per channel WebSocket** | like PCAN, opens share one raw reader through a sequence-ring hub | `shared_open` |
 | **Addressed by device id through mDNS, never an IP** | a firmware update clears persistent data and the device returns on a different subnet (seen going 10.63.38.1 → 10.215.129.1) while `<id>-usb.local` follows it | the address grammar, `cansub.v` |
+| **`GET /api/can/<ch>` takes ~2.8 s under HTTP/1.1 keep-alive and 0.11 s with `Connection: close` or HTTP/1.0** (`/phy` is fast either way) | a curl without `-H Connection:close` reads as a slow device and it is not; the app's own client already closes per request, so its health polls are fast — what it does have is a first sample that lands a few hundred ms after open, which is why `silentcheck` now waits for it before judging | `cansub_http.v` sends `Connection: close`; measured with curl `time_starttransfer` three ways |
+| **An unacknowledged frame is NOT retried until an acknowledger appears** — six sends accepted with nobody on the bus, an acknowledging node joining 20 s later received none of them | so a tester started before the ECU is powered does not deliver its early frames late; they are simply gone, the controller reports error-warning, and `wiretap` marks them missed — which is the truth. (The bare controllers in Kvaser and PCAN adapters retransmit indefinitely, error-passive and never bus-off; `silentcheck` phase 2 sees ~3300 retries of six frames.) **Measured**, 2026-08-27, one firmware (02.04.00) | nothing to enforce: the trace already says missed. Recorded so #222's "late ack vanishes" item is known not to arise |
+| **A PHY PUT is refused with a bare HTTP 500 while any client holds the channel's WebSocket** — the same body is 200 with nothing on the channel | so listen-only follows the mark **only at open**, like Vector. The mid-run reconcile added in #204 had been PUTting into that 500 on every poll and returning in silence; `silentcheck` phases 2 and 5 showed it on the first bench run after #221. **Measured with curl**, outside the app, both ways | `reconcile_listen_only` records the refusal as a `SilenceFault` (Buses row: NOT SILENT); `cansub_phy_refusal` is pinned in `cansub_test.v` |
 
 **slcan** — not implemented. CANable / CANtact / USBtin appear as a COM port speaking an
 ASCII line protocol (`O` open, `S6` 500k, `t<id><len><data>`, `T…` for 29-bit); no DLL and no
