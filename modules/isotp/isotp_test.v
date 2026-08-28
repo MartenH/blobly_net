@@ -341,3 +341,27 @@ fn test_malformed_single_and_first_frames_are_refused() {
 	ch.close()
 	peer.close()
 }
+
+// A SHORT CONSECUTIVE FRAME WITH MORE OF THE PDU TO COME IS MALFORMED (codex round 16 on #225).
+fn test_a_short_non_final_consecutive_frame_is_refused() {
+	mut peer := transport.open('inproc:isotp-short-cf') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-short-cf', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x10), 20, 1, 2, 3, 4, 5, 6] }) or {
+		assert false, err.msg()
+	}
+	time.sleep(20 * time.millisecond)
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x21), 7, 8, 9] }) or { assert false, err.msg() }
+	if _ := ch.recv(300) {
+		assert false, 'a three-byte CF with 11 bytes still to come must be refused'
+	} else {
+		assert err.msg().contains('short Consecutive Frame'), err.msg()
+	}
+	ch.close()
+	peer.close()
+}

@@ -210,6 +210,12 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 			if (cf[0] & 0x0F) != sn {
 				return error('ISO-TP: CF sequence gap — got SN ${cf[0] & 0x0F}, expected ${sn} (a frame was lost)')
 			}
+			if cf.len < 8 && out.len + cf.len - 1 < total {
+				// Only the LAST Consecutive Frame may be short; a short one with more of the PDU
+				// still to come would have its missing bytes filled from the next frame — a
+				// shifted PDU returned as valid (codex round 16 on #225).
+				return error('ISO-TP: short Consecutive Frame (${cf.len - 1} bytes) with ${total - out.len} still to come')
+			}
 			sn = (sn + 1) & 0x0F
 			out << cf[1..]
 		}
@@ -245,6 +251,10 @@ pub fn (mut c SoftChannel) drain_quiet(quiet_ms int) {
 	}
 }
 
+// zero_poll_scan_frames bounds how many frames for other ids a zero-timeout poll looks past
+// before it reports nothing: a finite backlog is crossed, an endless one is not waited out.
+const zero_poll_scan_frames = 4096
+
 fn (mut c SoftChannel) rx_raw(timeout_ms int) ![]u8 {
 	// NEGATIVE IS FOREVER, as the kernel channel and every bus have it. Computed as a deadline it
 	// was a deadline in the past, and recv(-1) on the software channel returned timeout without
@@ -260,14 +270,18 @@ fn (mut c SoftChannel) rx_raw(timeout_ms int) ![]u8 {
 	deadline := time.ticks() + i64(timeout_ms)
 	// ZERO IS ONE LOOK, as the kernel channel's poll(0) is: a queued frame is returned, an empty
 	// queue is a timeout, and nothing waits (codex round 7 on #225).
+	mut scanned := 0
 	for {
 		rem := deadline - time.ticks()
 		// A zero timeout keeps looking past frames for OTHER ids until the bus reports its queue
 		// empty — the bus's own zero-timeout read is one look, so a poll here ends when that
-		// read times out, not after the first unrelated frame (codex round 12 on #225).
-		if rem <= 0 && timeout_ms > 0 {
+		// read times out, not after the first unrelated frame (codex round 12 on #225) — and
+		// BOUNDED, because a bus busy with other ids without pause would otherwise keep a
+		// non-blocking poll scanning forever (codex round 16 on #225).
+		if rem <= 0 && (timeout_ms > 0 || scanned >= zero_poll_scan_frames) {
 			return error('timeout')
 		}
+		scanned++
 		f := c.bus.recv(int(if rem < 0 { i64(0) } else { rem }))!
 		if f.id == c.rx_id {
 			return f.data
