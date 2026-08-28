@@ -300,6 +300,18 @@ pub fn cansub_addr(host string) ?string {
 	return ip
 }
 
+// cansub_warm resolves a CANsub address's device name in the background, so the one cold mDNS
+// lookup (2.7 s on Windows, forgotten within a minute) is paid when a project is loaded and not
+// when Start is pressed (#240). Best effort: a name that does not resolve now is tried again by
+// the open, which reports it. Nothing else touches the device.
+pub fn cansub_warm(iface string) {
+	spec := parse_cansub_iface(iface) or { return }
+	host := cansub_host(spec.id)
+	spawn fn (h string) {
+		_ = cansub_addr(h) or { '' }
+	}(host)
+}
+
 // cansub_forget_addr drops a remembered address: the next cansub_addr resolves the name again.
 pub fn cansub_forget_addr(host string) {
 	lock cansub_addrs {

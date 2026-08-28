@@ -672,3 +672,12 @@ fn test_counters_parse_with_whitespace_and_unknown_states_stay_unknown() {
 	assert cansub_ladder('{"state":"sleeping","rx_error_count":0,"tx_error_count":0}', false)? == .unknown
 	assert cansub_ladder('{"state":"sleeping","rx_error_count":0,"tx_error_count":0}', true)? == .unknown
 }
+
+// A WARM-UP RETURNS AT ONCE and leaves the address remembered: the lookup runs on its own thread
+// (#240). A literal address needs no lookup, which is what makes this testable without a device.
+fn test_a_warm_up_returns_at_once_and_remembers_the_address() {
+	cansub_forget_addr('127.0.0.1-usb.local')
+	t0 := time.ticks()
+	cansub_warm('cansub:127.0.0.1/1@500000')
+	assert time.ticks() - t0 < 200, 'warm-up blocked the caller for ${time.ticks() - t0} ms'
+}
