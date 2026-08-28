@@ -167,10 +167,11 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 		return first[1..1 + len].clone()
 	}
 	if pci == 0x10 {
-		if first.len < 8 {
-			// A First Frame carries its full six initial payload bytes; a shorter one would have
-			// those bytes taken from the Consecutive Frames instead -- a shifted PDU returned as
-			// valid (codex round 14 on #225).
+		if first.len != 8 {
+			// A First Frame carries exactly six initial payload bytes on a classic channel: shorter,
+			// those bytes would be taken from the Consecutive Frames instead -- a shifted PDU
+			// returned as valid (codex round 14 on #225); longer, an FD-sized frame on our id could
+			// complete a PDU on its own (codex round 18).
 			return error('ISO-TP FF too short')
 		}
 		total := (int(first[0] & 0x0F) << 8) | int(first[1])
@@ -272,7 +273,7 @@ fn (mut c SoftChannel) rx_raw(timeout_ms int) ![]u8 {
 	if timeout_ms < 0 {
 		for {
 			f := c.bus.recv(-1)!
-			if f.id == c.rx_id {
+			if f.id == c.rx_id && f.extended == c.ext {
 				return f.data
 			}
 		}
@@ -292,7 +293,7 @@ fn (mut c SoftChannel) rx_raw(timeout_ms int) ![]u8 {
 		}
 		c.scanned++
 		f := c.bus.recv(int(if rem < 0 { i64(0) } else { rem }))!
-		if f.id == c.rx_id {
+		if f.id == c.rx_id && f.extended == c.ext {
 			return f.data
 		}
 	}

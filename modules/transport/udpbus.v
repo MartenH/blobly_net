@@ -165,6 +165,7 @@ pub fn (mut b UdpBus) recv(timeout_ms int) !CanFrame {
 		}
 		dlc := int(buf[9])
 		if 10 + dlc > n {
+			filtered++ // truncated: counted against the poll budget like the others (codex round 18)
 			continue
 		}
 		flags := buf[8]

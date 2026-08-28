@@ -338,6 +338,27 @@ fn test_malformed_single_and_first_frames_are_refused() {
 	} else {
 		assert err.msg().contains('too short'), err.msg()
 	}
+	// And an FD-sized one is not a classic First Frame either (codex round 18 on #225).
+	peer.send(transport.CanFrame{ id: 0x7E8, data: []u8{len: 12, init: u8(0x10)}, fd: true }) or {
+		assert false, err.msg()
+	}
+	time.sleep(20 * time.millisecond)
+	if _ := ch.recv(100) {
+		assert false, 'a twelve-byte First Frame must be refused'
+	} else {
+		assert err.msg().contains('too short'), err.msg()
+	}
+	// And a frame of the other id WIDTH is not ours at all: an extended 0x7E8 on a standard
+	// channel is ignored, not taken for the reply (codex round 18 on #225).
+	peer.send(transport.CanFrame{ id: 0x7E8, extended: true, data: [u8(0x01), 0x77] }) or {
+		assert false, err.msg()
+	}
+	time.sleep(20 * time.millisecond)
+	if _ := ch.recv(50) {
+		assert false, 'an extended frame must not match a standard channel'
+	} else {
+		assert err.msg() == 'timeout', err.msg()
+	}
 	ch.close()
 	peer.close()
 }
