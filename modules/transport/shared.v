@@ -1456,6 +1456,20 @@ fn (mut h SharedHandle) close() {
 	// Not behind send_mu either -- Stop must be able to let go of a wire whose sender is stuck.
 	mut last_healthy := false
 	e.mu.lock()
+	// WHAT THIS HANDLE NEVER READ IS STILL THE WIRE'S LOSS. The gap is booked at receive, so a
+	// handle that fell behind the ring and closed without another receive -- a Lua consumer
+	// that read once, worked, and was torn down -- left its overwritten frames uncounted, and
+	// the row read "nothing dropped" through the handle that kept up (codex round 1 on #231).
+	oldest := if e.next_seq > u64(shared_ring_capacity) {
+		e.next_seq - u64(shared_ring_capacity)
+	} else {
+		u64(1)
+	}
+	if h.cursor < oldest {
+		h.dropped += oldest - h.cursor
+		e.ring_gaps += oldest - h.cursor
+		h.cursor = oldest
+	}
 	if was_subscribed {
 		e.subs = e.subs.filter(it.id != h.id)
 	}

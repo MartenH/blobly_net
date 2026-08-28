@@ -279,6 +279,12 @@ fn main() {
 	for t in sims {
 		t.wait()
 	}
+	// And what the script's own buses counted -- a tester-only channel has no simulation loop
+	// to say it (codex round 1 on #231). The diagnostic servers hold ISO-TP channels, not
+	// buses, and do not report.
+	for name, d in env.diagnostics() {
+		eprintln('${name}: ${d.str()}')
+	}
 	passed := env.passed()
 	failed := env.failed()
 	env.close()

@@ -497,6 +497,9 @@ fn health_msg(iface string, from transport.BusHealth, to transport.BusHealth) st
 // shared) and the totals start again.
 fn diag_msg(iface string, from transport.BusDiagnostics, to transport.BusDiagnostics) string {
 	if to.fell(from) {
+		if to.is_empty() {
+			return '${iface}: reopened — nothing counted yet'
+		}
 		return '${iface}: reopened — counts since: ${to.str()}'
 	}
 	return '${iface}: +${to.minus(from).short().replace(' · ', ', +')} — since open: ${to.str()}'
@@ -638,6 +641,20 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			// an unplugged VN while the panel still showed the channel running.
 			if err.msg().contains('timeout') {
 				continue
+			}
+			// ONE LAST SAMPLE. The counts are polled before the receive, and a receive that
+			// fails can have counted first -- PCAN books an overrun verdict and then meets a
+			// failed one in the same call -- so what the wire knew at its death was the sample
+			// nobody read (codex round 1 on #231).
+			final := bus.diagnostics()
+			if final != last_diag {
+				a.mu.lock()
+				if a.running && a.run_gen == gen && ci < a.chans.len {
+					a.chans[ci].diag = final
+					a.log_append_locked(diag_msg(iface, last_diag, final))
+				}
+				a.mu.unlock()
+				last_diag = final
 			}
 			a.notify('${iface}: receive failed — ${err}')
 			// DISABLED, not merely broken out of. The teardown below respawns rx_loop whenever

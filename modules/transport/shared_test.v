@@ -1395,6 +1395,8 @@ fn test_shared_hub_diagnostics_fold_the_drivers_counters_with_the_wires_ring_gap
 	}
 	mut slow := shared_open_events('hub:diag', 'fake:diag', hub_fake_make)!
 	mut fast := shared_open_events('hub:diag', 'fake:diag', hub_fake_make)!
+	// Never receives at all, and closes behind the ring: its loss is booked at its close.
+	mut lagging := shared_open_events('hub:diag', 'fake:diag', hub_fake_make)!
 	assert fast.diagnostics() == BusDiagnostics{
 		bus_errors: 2
 	}
@@ -1425,6 +1427,8 @@ fn test_shared_hub_diagnostics_fold_the_drivers_counters_with_the_wires_ring_gap
 	slow.close()
 	assert slow.diagnostics() == BusDiagnostics{}
 	assert fast.diagnostics() == want, 'the gap outlives the handle that suffered it'
+	lagging.close()
+	assert fast.diagnostics().dropped == 6, 'a handle that closed behind the ring without reading must book its gap'
 	fast.close()
 }
 

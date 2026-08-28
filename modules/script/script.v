@@ -156,6 +156,19 @@ pub fn (env &Env) total() int {
 	return env.results.len
 }
 
+// diagnostics is what each bus a script opened counted that no frame carried (#213), by channel
+// name, non-empty ones only -- read before close, which is the last moment the buses can say.
+pub fn (mut env Env) diagnostics() map[string]transport.BusDiagnostics {
+	mut out := map[string]transport.BusDiagnostics{}
+	for name, mut b in env.buses {
+		d := b.diagnostics()
+		if !d.is_empty() {
+			out[name] = d
+		}
+	}
+	return out
+}
+
 // close tears down the ISO-TP connections, buses and the interpreter.
 pub fn (mut env Env) close() {
 	for mut c in env.conns {

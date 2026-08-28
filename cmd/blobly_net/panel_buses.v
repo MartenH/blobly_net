@@ -447,8 +447,12 @@ fn draw_buses(mut app App, chans []Chan) {
 						// as silence the moment the reader comes back (codex #159 r3).
 						app.chans[i].rx_last = 0
 						app.chans[i].rx_seen = 0
-						// And the counts, which are since open and this is a new one (#213).
-						app.chans[i].diag = transport.BusDiagnostics{}
+						// NOT the counts (#213). On a shared wire the transmit taps kept the
+						// generation alive through the gap, so its since-open counters
+						// survive; zeroed here, the successor seeded its narration from
+						// nothing and logged the whole history as new (codex round 1 on
+						// #231). Kept, the successor sees the same counts and says nothing;
+						// on a wire that WAS reopened it sees them fall and says so.
 						app.chans[i].spawning = true
 						spawn rx_loop(app, i, app.chans[i].iface, app.run_gen)
 					}
