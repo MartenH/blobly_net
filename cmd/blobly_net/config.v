@@ -1,7 +1,9 @@
 module main
 
 import os
+import time
 import project
+import saverule
 import transport
 import sysview
 import sim
@@ -795,6 +797,16 @@ fn cfg_text_channels(txt string) int {
 // The TEXT is written, not a re-serialisation of the parsed model: the model does not carry
 // comments, and this file is where a bench setup explains itself.
 fn (mut app App) save_cfg_text() {
+	// NOT WHILE RUNNING. Saving the text applies it to the model and REBUILDS the runtime from
+	// it (apply_parsed_text -> rebuild_from_proj), which is stopped-only: done under live RX and
+	// generator threads it replaces the channels beneath them. Start leaves dirty text
+	// unapplied and warns; Ctrl+S mid-run must not finish what Start declined (codex round 2
+	// on #250).
+	if app.running {
+		app.cfg_err = 'not saved while running — the text is applied to the model on save; Stop first'
+		app.notify('not saved — the File tab\'s text is applied on save, and the model is not rebuilt while running; Stop first')
+		return
+	}
 	if app.dirty {
 		// The mirror of the guard in save_project: applying this text would replace a model
 		// that holds unsaved bus or generator edits.
@@ -824,6 +836,7 @@ fn (mut app App) save_cfg_text() {
 	app.notify('saved -> ${path}')
 	app.dirty = false
 	app.cfg_text_dirty = false
+	app.saved_at = time.ticks()
 	// rebuild_from_proj, NOT load_project: the full open path calls set_project, which clears
 	// the trace rows, grouped counts, telemetry records, diagnostic and script logs and signal
 	// watches. Editing one config line while stopped must not throw away a captured session —
@@ -921,8 +934,49 @@ fn (mut app App) save_project() {
 		return
 	}
 	app.dirty = false
+	app.saved_at = time.ticks()
 	app.cfg_invalidate() // the file just changed under the File tab
 	app.notify('saved -> ${path}')
+}
+
+// save_what_is_being_edited is Ctrl+S: ONE shortcut, one meaning — write what you are editing.
+// The File tab holds the project as TEXT in its own buffer, and a project save while that text
+// is dirty is refused (save_project) because one of them would overwrite the other; so with the
+// File tab showing dirty text, Ctrl+S saves the text, and otherwise it saves the project. The
+// per-panel Save buttons that used to do the second half from four places are gone (#247): the
+// menu's Save, this shortcut and the File tab's own button are the whole set.
+fn (mut app App) save_what_is_being_edited() {
+	// THE DECISION IS saverule.save_target — pure, tested, and the only place it is made. Five
+	// review rounds on #250 each moved it; each fix was checked by reading, because the GUI has
+	// no tests. Now the table is in saverule/save_rule_test.v and this is a switch.
+	state := saverule.SaveState{
+		text_dirty:   app.cfg_text_dirty
+		file_visible: app.cfg_file_visible
+		picker_open:  app.fb_open
+		running:      app.running
+	}
+	match saverule.save_target(state) {
+		.nothing {
+			if app.running && app.cfg_text_dirty && app.cfg_file_visible {
+				app.notify('not saved — the File tab\'s text is applied on save, and the model is not rebuilt while running; Stop first')
+			}
+		}
+		.text { app.save_cfg_text() }
+		.model { app.save_project() }
+	}
+}
+
+// poll_shortcuts is read once per frame, beside the generator hotkeys — but unlike them it is
+// NOT suppressed while a widget holds the keyboard: Ctrl is what makes S a command.
+fn (mut app App) poll_shortcuts() {
+	// The menu's Save lands here too: drawn in the menubar BEFORE the panels, it ran before
+	// draw_gen had folded a generator's name and key buffers into the sender, and saved the
+	// previous value (codex round 6 on #250 — the same defect the chord had in round 3). So
+	// the menu only asks, and both are performed here, after every panel has drawn.
+	if (vgui.key_ctrl_only() && vgui.key_pressed(`s`)) || app.save_requested {
+		app.save_requested = false
+		app.save_what_is_being_edited()
+	}
 }
 
 // apply_edits folds pending editor state into app.proj so Start/Save act on exactly what the

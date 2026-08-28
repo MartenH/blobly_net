@@ -1,6 +1,7 @@
 module main
 
 import os
+import time
 import project
 import transport
 import candb
@@ -135,8 +136,9 @@ fn draw_menubar(mut app App, rx u64) {
 			if vgui.menu_item('Open...') {
 				app.open_browser('open')
 			}
-			if vgui.menu_item('Save') {
-				app.save_project()
+			if vgui.menu_item_shortcut('Save', 'Ctrl+S') {
+				// Asked for here, performed after the panels — see poll_shortcuts.
+				app.save_requested = true
 			}
 			if vgui.menu_item('Save As...') {
 				app.open_browser('saveas')
@@ -306,6 +308,14 @@ fn draw_toolbar(mut app App, rx u64, txs string, chans []Chan) {
 	// the toolbar read clean while an edit sat waiting in a closed window.
 	dirtymark := if app.dirty || app.cfg_text_dirty { ' ●' } else { '' }
 	vgui.text('· RX ${rx}  ${txs}  ·  ${app.proj_name}${dirtymark}   ')
+	// The answer to Ctrl+S, where the eye is: the dot goes out and "saved" stands in for a few
+	// seconds. The Log has the path; this is only the acknowledgement (#247).
+	if app.saved_at > 0 && time.ticks() - app.saved_at < 3000 && !app.dirty && !app.cfg_text_dirty {
+		vgui.same_line()
+		// ASCII: the UI atlas carries no U+2713, and a missing-glyph box is not an
+		// acknowledgement (codex round 5 on #250).
+		vgui.text_colored(120, 200, 120, 'saved')
+	}
 	// The capture CONTROLS live in the Trace window; the toolbar shows the two capture states
 	// that LATCH, and only while they are latched. The Trace window is closable, so without
 	// this a recording or a pause could be running with zero visible evidence and no reachable

@@ -75,13 +75,9 @@ fn draw_gen(mut app App) {
 	if vgui.button('+ Add generator') {
 		app.add_generator()
 	}
-	vgui.same_line()
-	if vgui.button('Save to project') {
-		app.save_project()
-	}
 	if app.dirty {
 		vgui.same_line()
-		vgui.text_colored(230, 170, 70, '● modified')
+		vgui.text_colored(230, 170, 70, '● modified — Ctrl+S saves')
 	}
 	if app.running {
 		vgui.text_dim('edit freely · Send now fires once · cyclic auto-repeats · on-key fires on its key')
@@ -529,7 +525,10 @@ fn (mut app App) set_sender_bus(i int, bus string, chan_name string) {
 // default and a generator bound to `a` or `c`, following that instruction during a run would
 // have put a frame on the wire. any_item_active closes it.
 fn (mut app App) poll_hotkeys() {
-	if !app.running || vgui.want_text_input() || vgui.any_item_active() {
+	// AND NOT WHILE CTRL IS HELD: a generator bound to `s` would fire on Ctrl+S an instant before
+	// the save it was meant to be — a frame on the wire for pressing Save (codex round 1 on
+	// #250). A chord is a command, never a hotkey.
+	if !app.running || vgui.want_text_input() || vgui.any_item_active() || vgui.key_ctrl() {
 		return
 	}
 	for i, sr in app.senders {

@@ -91,6 +91,7 @@ fn C.vgui_menu_bar_end()
 fn C.vgui_menu_begin(&char) int
 fn C.vgui_menu_end()
 fn C.vgui_menu_item(&char) int
+fn C.vgui_menu_item_shortcut(&char, &char) int
 fn C.vgui_begin_popup_context_item(&char) int
 fn C.vgui_begin_popup_context_window() int
 fn C.vgui_clipboard_set(&char)
@@ -165,6 +166,8 @@ fn C.vgui_fps() f32
 fn C.vgui_want_text_input() int
 fn C.vgui_any_item_active() int
 fn C.vgui_key_pressed(int) int
+fn C.vgui_key_ctrl() int
+fn C.vgui_key_ctrl_only() int
 fn C.vgui_combo(&char, &&char, int, int) int
 
 // --- lifecycle ---
@@ -300,6 +303,20 @@ pub fn any_item_active() bool {
 	return C.vgui_any_item_active() != 0
 }
 
+// key_ctrl reports whether a Ctrl key is held this frame: `key_ctrl() && key_pressed(`s`)` is
+// the Ctrl+S chord. Unlike the generator hotkeys, a chord is safe to honour while a text field
+// has the keyboard — the modifier is what says it is a command and not typing.
+pub fn key_ctrl() bool {
+	return C.vgui_key_ctrl() != 0
+}
+
+// key_ctrl_only is the chord's modifier half EXACTLY: Ctrl and no Alt, Shift or Super. AltGr
+// is Ctrl+Alt on Windows layouts, and AltGr+S is a character there, not Save (codex round 3
+// on #250). key_ctrl (any Ctrl) is what the generator hotkeys stand down for.
+pub fn key_ctrl_only() bool {
+	return C.vgui_key_ctrl_only() != 0
+}
+
 // key_pressed reports whether the printable key `ch` (A-Z / a-z / 0-9) was pressed this frame
 // (no auto-repeat). Returns false for keys it can't map.
 pub fn key_pressed(ch u8) bool {
@@ -414,6 +431,12 @@ pub fn end_popup() {
 // menu_item returns true the frame it is clicked.
 pub fn menu_item(label string) bool {
 	return C.vgui_menu_item(label.str) == 1
+}
+
+// menu_item_shortcut is menu_item with the chord shown right-aligned ("Ctrl+S"). The label is
+// display only: ImGui does not bind it; the caller polls the keys itself.
+pub fn menu_item_shortcut(label string, shortcut string) bool {
+	return C.vgui_menu_item_shortcut(label.str, shortcut.str) == 1
 }
 
 // menu_item_check renders a checkable item; returns the new checked state.

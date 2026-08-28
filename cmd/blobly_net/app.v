@@ -249,6 +249,17 @@ mut:
 	// answer: a project switch or a structured Save left old YAML on screen that Save would
 	// then write over the new file.
 	cfg_text_dirty bool
+	// When the project (or the File tab's text) was last written, in time.ticks(): the toolbar
+	// shows "saved" beside the project name for a few seconds after, so a Ctrl+S is answered on
+	// the screen the user is looking at and not only in the Log (#247).
+	saved_at i64
+	// Whether the Configuration window's File tab was actually DRAWN this frame — not merely
+	// selected in a window that is collapsed or docked behind another. That is what decides
+	// whether Ctrl+S means the text or the project (codex round 3 on #250).
+	cfg_file_visible bool
+	// File ▸ Save was chosen this frame: performed by poll_shortcuts after the panels have
+	// drawn, for the reason given there.
+	save_requested bool
 	// Editor fields whose text could not be committed to the model, rebuilt by every commit_cfg.
 	//
 	// A REJECTED FIELD HAS TO REACH START, not merely the Log. Leaving the previous value in the
@@ -704,6 +715,10 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	app.proj_name = proj.name
 	app.proj = proj
 	app.dirty = false
+	// A save acknowledged belongs to the project that was saved: a New or an Open within the
+	// three seconds must not carry "saved" over to a project nobody wrote (codex round 1 on
+	// #250).
+	app.saved_at = 0
 	// drop editor state carried over from the previous project — stale cfg_bufs would otherwise
 	// be flushed into the newly loaded project by the next commit_cfg (same channel count = no
 	// resync in draw_config); stale discovery results belong to the old machine view.

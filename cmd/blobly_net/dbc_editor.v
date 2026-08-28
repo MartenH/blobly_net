@@ -425,7 +425,7 @@ fn draw_dbc_editor(mut app App) {
 		vgui.text_colored(230, 170, 70, '` modified')
 		vgui.same_line()
 	}
-	if !ro && dbc_path != '' && vgui.small_button('Save') {
+	if !ro && dbc_path != '' && vgui.small_button('Save DBC') {
 		// resolve first: this button is processed before the inspector, so without it the old
 		// endpoint is serialised and the edit commits afterwards, leaving the file dirty again
 		app.resolve_pending_bit_edit()
