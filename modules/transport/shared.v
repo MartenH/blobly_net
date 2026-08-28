@@ -75,6 +75,12 @@ mut:
 	diagnostics() BusDiagnostics
 	reconcile_silence(want bool) !
 	reports_tx_ack() bool
+	// refusal is the reason this driver would NOT attempt `frame`, asked BEFORE the hub
+	// registers the send's acknowledgement token: a token is matchable from the moment it
+	// exists, so a refusal learned from send() afterwards is learned too late — the reader may
+	// already have matched a late acknowledgement, meant for an earlier write of the same
+	// frame, to a send that never happened (codex round 10 on #251). none means "go ahead".
+	refusal(frame CanFrame) ?string
 }
 
 // SharedBusDriver adapts an ordinary Bus. PCAN uses this path; no public transport API changes.
@@ -85,6 +91,10 @@ mut:
 
 fn (mut d SharedBusDriver) send(frame CanFrame) ! {
 	d.bus.send(frame)!
+}
+
+fn (mut d SharedBusDriver) refusal(frame CanFrame) ?string {
+	return none
 }
 
 fn (mut d SharedBusDriver) recv_shared(timeout_ms int) !SharedIngress {
@@ -153,6 +163,10 @@ struct SharedNoDriver {}
 
 fn (mut d SharedNoDriver) send(frame CanFrame) ! {
 	return error('bus is not open yet')
+}
+
+fn (mut d SharedNoDriver) refusal(frame CanFrame) ?string {
+	return none
 }
 
 fn (mut d SharedNoDriver) recv_shared(timeout_ms int) !SharedIngress {
@@ -1225,6 +1239,11 @@ fn (mut h SharedHandle) send(frame CanFrame) ! {
 	h.mu.unlock()
 	if closed_after_wait {
 		return error('${h.key}: bus is closed')
+	}
+	// ASKED BEFORE THE TOKEN EXISTS — see SharedDriver.refusal. The refusal is typed so the
+	// caller can tell it from a write that failed.
+	if reason := e.driver.refusal(frame) {
+		return not_written(reason)
 	}
 	mut terminal := ''
 	mut running := false

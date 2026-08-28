@@ -558,6 +558,10 @@ fn (mut d HubFakeDriver) send(frame CanFrame) ! {
 	}
 }
 
+fn (mut d HubFakeDriver) refusal(frame CanFrame) ?string {
+	return none
+}
+
 fn (mut d HubFakeDriver) recv_shared(timeout_ms int) !SharedIngress {
 	select {
 		item := <-d.rx {

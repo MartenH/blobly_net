@@ -874,18 +874,27 @@ fn extract_json_string(s string, key string) ?string {
 	return rest[..end]
 }
 
-pub fn (mut b CansubBus) send(frame CanFrame) ! {
+// refusal is what send would refuse before writing — asked by the hub before it registers the
+// send (SharedDriver.refusal), and asked again by send itself as the belt to that brace.
+pub fn (b &CansubBus) refusal(frame CanFrame) ?string {
 	if frame.fd && !b.spec.fd {
 		// Refuse rather than truncate, which is what the Windows vendor backends do with an FD
 		// frame they cannot carry. The address is what asks for FD, so a classic channel being
 		// handed an FD frame is a project that disagrees with itself.
-		return not_written('${b.iface} is a classic channel — its address names one bitrate, so it cannot carry a CAN-FD frame')
+		return '${b.iface} is a classic channel — its address names one bitrate, so it cannot carry a CAN-FD frame'
 	}
 	if e := b.failure() {
-		return not_written('${b.iface}: ${e}${b.diagnostic_suffix()}')
+		return '${b.iface}: ${e}${b.diagnostic_suffix()}'
 	}
 	if e := b.send_refusal() {
-		return not_written('${b.iface}: ${e}')
+		return '${b.iface}: ${e}'
+	}
+	return none
+}
+
+pub fn (mut b CansubBus) send(frame CanFrame) ! {
+	if reason := b.refusal(frame) {
+		return not_written(reason)
 	}
 	// A SILENCED CONTROLLER CANNOT TRANSMIT, whatever this process's policy currently says.
 	//
