@@ -70,7 +70,23 @@ pub fn (mut c SoftChannel) send(data []u8) ! {
 	ff << data[..6]
 	c.tx(ff)!
 	// Await Flow Control (0x3x). We ignore block size / STmin and send all CFs.
-	fc := c.rx_raw(1000)!
+	// STALE CONSECUTIVE FRAMES ARE SKIPPED HERE TOO: a transfer this channel abandoned on its
+	// deadline can still be arriving when the caller sends the next request, and the first frame
+	// met while waiting for Flow Control was one of them — "expected Flow Control" for a peer
+	// that had not answered yet (codex round 11 on #225). Bounded by the same one second.
+	fc_deadline := time.ticks() + 1000
+	mut fc := []u8{}
+	for {
+		rem := int(fc_deadline - time.ticks())
+		if rem <= 0 {
+			return error('timeout')
+		}
+		fc = c.rx_raw(rem)!
+		if fc.len >= 1 && (fc[0] & 0xF0) == 0x20 {
+			continue
+		}
+		break
+	}
 	if fc.len < 1 {
 		// Split from the PCI check below: it formatted fc[0] for an EMPTY frame, an
 		// out-of-bounds panic where an ISO-TP error was owed (codex round 3 on #225).

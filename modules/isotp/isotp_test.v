@@ -229,3 +229,35 @@ fn test_a_first_frame_with_a_single_frame_length_is_refused() {
 	ch.close()
 	peer.close()
 }
+
+// A STALE CONSECUTIVE FRAME AHEAD OF FLOW CONTROL IS SKIPPED: the tail of an abandoned transfer
+// must not be taken for the peer's answer to the next request (codex round 11 on #225).
+fn test_a_stale_cf_ahead_of_flow_control_is_skipped() {
+	mut peer := transport.open('inproc:isotp-stale-fc') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-stale-fc', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	// The abandoned transfer's tail, already queued on our rx id.
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x22), 0, 0, 0, 0, 0, 0, 0] }) or {
+		assert false, err.msg()
+	}
+	time.sleep(20 * time.millisecond)
+	done := chan string{cap: 1}
+	spawn fn [mut ch, done] () {
+		ch.send([]u8{len: 20, init: u8(index)}) or {
+			done <- err.msg()
+			return
+		}
+		done <- 'sent'
+	}()
+	time.sleep(80 * time.millisecond) // the FF is out; the stale CF was the first thing queued
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x30), 0, 0] }) or { assert false, err.msg() }
+	msg := <-done
+	assert msg == 'sent', msg
+	ch.close()
+	peer.close()
+}
