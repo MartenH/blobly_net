@@ -612,3 +612,52 @@ fn test_an_undelivered_put_after_a_readback_clears_the_record() {
 	assert !f.declared
 	forget_silence_claims()
 }
+
+// A MONITOR IS JUDGED BY ITS RECEIVE COUNTER. These are the device's own bodies from the bench
+// (2026-08-28): a fresh channel sits at tx_error_count 129 / error_passive with nothing on the
+// wire, and stays there under 937 received frames with rx_error_count 0 — because a node that
+// never transmits cannot lower its transmit counter. Mapped by state alone, a healthy monitor
+// read ERROR-PASSIVE forever (#241).
+fn test_a_channel_that_has_not_transmitted_is_judged_by_its_receive_counter() {
+	fresh := '{"state":"error_passive","frame_count":0,"frame_rate":0,"bus_load":0,"rx_error_count":0,"tx_error_count":129,"bus_error_count":0}'
+	assert cansub_ladder(fresh, false)? == .ok, 'a monitor at the firmware start value is healthy'
+	under_traffic := '{"state":"error_passive","frame_count":937,"frame_rate":9,"bus_load":0,"rx_error_count":0,"tx_error_count":129,"bus_error_count":0}'
+	assert cansub_ladder(under_traffic, false)? == .ok
+	// Its OWN receive trouble still counts, at the standard thresholds.
+	assert cansub_ladder('{"state":"error_warning","rx_error_count":100,"tx_error_count":0}', false)? == .warning
+	assert cansub_ladder('{"state":"error_passive","rx_error_count":130,"tx_error_count":0}', false)? == .error_passive
+	// Once this node has transmitted, the controller's verdict is what it is.
+	assert cansub_ladder(under_traffic, true)? == .error_passive
+	assert cansub_ladder('{"state":"error_active","rx_error_count":0,"tx_error_count":0}', true)? == .ok
+	// Bus-off and stopped are what they are either way.
+	assert cansub_ladder('{"state":"bus_off","rx_error_count":0,"tx_error_count":255}', false)? == .bus_off
+	assert cansub_ladder('{"state":"stopped","rx_error_count":0,"tx_error_count":129}', false)? == .unknown
+	// No state field is no answer.
+	assert cansub_ladder('{"rx_error_count":0}', false) == none
+}
+
+fn test_extract_json_int_reads_the_devices_counters() {
+	body := '{"state":"error_passive","frame_count":937,"rx_error_count":0,"tx_error_count":129}'
+	assert extract_json_int(body, 'tx_error_count')? == 129
+	assert extract_json_int(body, 'rx_error_count')? == 0
+	assert extract_json_int(body, 'frame_count')? == 937
+	assert extract_json_int(body, 'missing') == none
+	assert extract_json_int('{"state":"x"}', 'state') == none
+}
+
+// THE NAME IS RESOLVED ONCE AND REMEMBERED; a forget makes the next call resolve again. Nothing
+// here reaches a device: the memory is exercised with an address that needs no lookup.
+fn test_a_device_address_is_remembered_until_forgotten() {
+	cansub_forget_addr('127.0.0.1')
+	first := cansub_addr('127.0.0.1') or {
+		assert false, 'a literal address must resolve'
+		return
+	}
+	assert first == '127.0.0.1'
+	again := cansub_addr('127.0.0.1') or {
+		assert false, 'the remembered address must be returned'
+		return
+	}
+	assert again == first
+	cansub_forget_addr('127.0.0.1')
+}

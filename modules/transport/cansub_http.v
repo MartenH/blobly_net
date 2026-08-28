@@ -193,7 +193,15 @@ pub fn cansub_request(host string, method string, path string, body string, time
 	// (its connect_timeout is a module constant), so the 700 ms and 2 s budgets below cap the
 	// request AFTER the connection is up. A tighter bound means a hand-rolled non-blocking
 	// connect against the raw socket; not done here (codex round 11 on #223).
-	mut tcp := net.dial_tcp('${host}:443')!
+	// RESOLVED ONCE, DIALLED BY ADDRESS. A cold mDNS lookup of `<id>-usb.local` costs ~2.7 s on
+	// Windows and the answer is not kept for a minute (measured 2026-08-28: 2.681 s cold, 8 ms
+	// warm, cold again after 60 s idle), while the request itself takes 0.11 s. Every REST call
+	// here made its own connection and paid that lookup on the first call after any pause — the
+	// open (three connections, so Start stalled ~3 s behind the CANsub row), every reconnect,
+	// and the health poll after any stall (#240). The name is looked up once per process and the
+	// address kept; a connect that fails forgets it and looks up again, which is what the name
+	// was for — the device changes subnet across firmware updates, and the name follows it.
+	mut tcp := cansub_dial(host)!
 	defer {
 		conn.shutdown() or {}
 		tcp.close() or {}
@@ -256,6 +264,61 @@ pub fn cansub_host(id string) string {
 // cansub_host_suffix is what the device appends to its id in the name it registers -- the one
 // place the rule lives; cansub_mdns.v strips it, cansub_host adds it.
 pub const cansub_host_suffix = '-usb'
+
+// cansub_addrs is the process-wide name -> address memory behind cansub_addr.
+__global (
+	cansub_addrs shared CansubAddrs
+)
+
+struct CansubAddrs {
+mut:
+	by_host map[string]string
+}
+
+// cansub_addr is the resolved address of a device name, looked up once per process — see
+// cansub_dial for why. none when it cannot be resolved right now.
+pub fn cansub_addr(host string) ?string {
+	cached := rlock cansub_addrs {
+		cansub_addrs.by_host[host] or { '' }
+	}
+	if cached != '' {
+		return cached
+	}
+	addrs := net.resolve_ipaddrs(host, .ip, .tcp) or { return none }
+	if addrs.len == 0 {
+		return none
+	}
+	// The address without a port: resolve_ipaddrs answers for host:port pairs too, and the
+	// dialler adds its own port.
+	ip := addrs[0].str().all_before_last(':')
+	if ip == '' {
+		return none
+	}
+	lock cansub_addrs {
+		cansub_addrs.by_host[host] = ip
+	}
+	return ip
+}
+
+// cansub_forget_addr drops a remembered address: the next cansub_addr resolves the name again.
+pub fn cansub_forget_addr(host string) {
+	lock cansub_addrs {
+		cansub_addrs.by_host.delete(host)
+	}
+}
+
+// cansub_dial connects to the device by its remembered address, resolving the name on the first
+// call and again after a connect that fails. See cansub_request for the measurement behind it.
+fn cansub_dial(host string) !&net.TcpConn {
+	addr := cansub_addr(host) or { return error('cannot resolve ${host}') }
+	if tcp := net.dial_tcp('${addr}:443') {
+		return tcp
+	}
+	// The remembered address did not answer: the device may have moved. Look it up again, once.
+	cansub_forget_addr(host)
+	fresh := cansub_addr(host) or { return error('cannot resolve ${host}') }
+	return net.dial_tcp('${fresh}:443')!
+}
 
 // cansub_resolves reports whether a device id can be found on this machine at all, so a caller can
 // tell "not plugged in" from "plugged in and refusing".
