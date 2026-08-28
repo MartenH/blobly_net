@@ -18,7 +18,7 @@ cheapest possible Ethernet beachhead:
 - **The whole UDS stack is reused unchanged.** `uds.Client` and `uds.Server` are written against the
   `isotp.Channel` interface (`send`/`recv`/`close` + `iface`/`tx_id`/`rx_id`). A DoIP connection
   **implements that same interface** — exactly the trick `isotp.SoftChannel` uses for the in-proc CAN
-  bus. So `uds.new_client(doip_channel)` and `uds.Server.serve_for(mut doip_channel, …)` work with no
+  bus. So `uds.new_client(doip_channel)` and `uds.Server.serve(mut doip_channel, stop)` work with no
   changes. The "carrier swap" seam we built for CAN pays off again.
 - **No virtual device, no driver, every platform.** Unlike CAN (which needs vcan0 / a vendor driver),
   DoIP runs on plain **localhost TCP/UDP** — real, native, driver-free on Linux *and* Windows. The
