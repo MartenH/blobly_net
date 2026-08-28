@@ -5,7 +5,6 @@
 // 0x3E tester present; unknown service/DID → negative response.
 module uds
 
-import time
 import isotp
 
 pub struct Server {
@@ -131,11 +130,24 @@ pub fn (mut s Server) handle(req []u8) []u8 {
 	}
 }
 
-// serve_for answers requests on a channel until duration_ms elapses (used by the
-// in-process diagnostics test; the GUI will drive the loop via its own thread).
-pub fn (mut s Server) serve_for(mut ch isotp.Channel, duration_ms int) {
-	deadline := time.ticks() + i64(duration_ms)
-	for time.ticks() < deadline {
+// serve answers requests on a channel until `stop` is signalled. No duration: a server that
+// lived for a fixed number of milliseconds was a test synchronised by the clock -- on a machine
+// busy enough, the client's exchanges outlasted it and its last replies came from nobody
+// (#191). And no exit on a receive error: a timeout is a poll, and a malformed or stale frame
+// is the tester's problem, not a reason for the ECU to leave -- which is also what the two
+// production loops that do this job do (cmd/script/run.v, cmd/blobly_net/workers.v), and what
+// keeps this free of any one channel's spelling of "timeout". The GUI drives its own loop on
+// its own thread; this one is for a spawned server whose owner says when it is done.
+// `stop` is checked between requests, so the server leaves within one receive poll; give each
+// server its own, cap 1, and signalling it never blocks.
+pub fn (mut s Server) serve(mut ch isotp.Channel, stop chan bool) {
+	for {
+		select {
+			_ := <-stop {
+				return
+			}
+			else {}
+		}
 		req := ch.recv(50) or { continue }
 		resp := s.handle(req)
 		if resp.len > 0 {
