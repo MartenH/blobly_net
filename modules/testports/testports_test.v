@@ -51,7 +51,7 @@ fn test_pids_a_band_apart_alias_and_no_formula_fixes_it() {
 // be disjoint between processes — the defect this module was written for was that they were not.
 fn test_slot_blocks_are_disjoint_between_adjacent_pids() {
 	for b in bands {
-		for stride in [2, 4] {
+		for stride in [2, 4, 8] {
 			for pid in 4000 .. 4064 {
 				mut mine := map[int]bool{}
 				for slot in 0 .. stride {
@@ -73,7 +73,7 @@ fn test_slot_blocks_are_disjoint_between_adjacent_pids() {
 // processes' blocks. Every band must divide by every stride used against it.
 fn test_bands_divide_by_the_strides_in_use() {
 	for b in bands {
-		for stride in [2, 4] {
+		for stride in [2, 4, 8] {
 			assert b.count % stride == 0, '${b.name}: ${b.count} ports do not divide into blocks of ${stride}'
 		}
 	}

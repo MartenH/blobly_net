@@ -112,7 +112,9 @@ behind that guard). Bundle payload list: `scripts/stage_bundle.sh`, once, for bo
 (ROADMAP has the list and the reason). The maintainer walkthrough is
 [docs/releasing.md](docs/releasing.md).
 
-CI (`.github/workflows/`) runs `v -enable-globals test modules/`, `scripts/runtests.sh` and
+CI (`.github/workflows/`) runs `v -enable-globals test modules/`, `scripts/runtests.sh`,
+`scripts/check_cmds.sh` (every `cmd/*` entry point type-checked for BOTH `-os` targets, on both
+jobs — nothing else compiles a CLI tool, and two sat broken for months that way, #220) and
 `scripts/vcan_common_test.sh` (the shared setup-script answers — whose home under sudo, is vcan
 available — driven through stubbed `getent`/`id`/`ip`/`sudo`, so it runs unprivileged). `windows.yml`
 additionally downloads a prebuilt V toolchain from this repo's **`v-toolchain` release** — if that

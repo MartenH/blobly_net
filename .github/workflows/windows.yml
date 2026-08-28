@@ -95,6 +95,20 @@ jobs:
       # user should ever see. That mismatch was a live bug: scripts/register_blobnet_win.ps1 has
       # always searched for blobly_net.exe, so .blobnet file association could never find the
       # executable it was written for.
+      # Same sweep as the Linux job, from the Windows toolchain: a tool that checks on one
+      # runner and not the other is exactly what the per-platform backend split can produce.
+      - name: Every cmd/ tool type-checks, both targets (scripts/check_cmds.sh)
+        shell: msys2 {0}
+        run: V=/c/v-ct/v.exe sh scripts/check_cmds.sh
+
+      # THE PLATFORM BRANCH ONLY THIS RUNNER CAN EXECUTE. isotp.open dispatches at compile time
+      # (kernel socket on Linux, software channel elsewhere), so the Ubuntu job compiles the
+      # Linux half and the test of the other half passes there without calling anything (codex
+      # round 1 on #225). One module, seconds; the full suite stays the Linux job's.
+      - name: Module tests that dispatch per platform (v test modules/isotp/)
+        shell: msys2 {0}
+        run: /c/v-ct/v.exe -cc gcc -enable-globals test modules/isotp/
+
       - name: Build the GUI app (RUN=0 scripts/run_gui.sh)
         shell: msys2 {0}
         run: |
