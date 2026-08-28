@@ -1099,7 +1099,6 @@ fn (b &CansubBus) diagnostic_suffix() string {
 // reason wins: a reader that has already stopped has the better story.
 fn (mut b CansubBus) fail_send(reason string) {
 	lock b.stop {
-		b.stop.running = false
 		// The reader may have recorded its own error an instant earlier without yet having
 		// dropped `running` (it does that only in close): that reason stays, being the earlier
 		// and usually the better one (codex round 4 on #251).
@@ -1107,6 +1106,18 @@ fn (mut b CansubBus) fail_send(reason string) {
 			b.stop.err = reason
 		}
 	}
+	// THE READER STAYS FOR THE HUB'S GRACE. A write that timed out may still have REACHED the
+	// device, whose TX acknowledgement arrives a moment later; the hub keeps a failed write's
+	// pending entry matchable for shared_failed_send_grace_ms for exactly that frame, and a
+	// reader stopped at once would close the socket under it — a frame that was on the wire
+	// left out of the trace and the recording (codex round 5 on #251). Writes are refused from
+	// this instant (failure() is set); the reader is asked to leave after the grace.
+	spawn fn (mut b CansubBus) {
+		time.sleep((shared_failed_send_grace_ms + 100) * time.millisecond)
+		lock b.stop {
+			b.stop.running = false
+		}
+	}(mut b)
 }
 
 // failure reports the reason the reader stopped, if it stopped.
