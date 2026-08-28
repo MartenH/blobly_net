@@ -266,3 +266,25 @@ fn test_forgetting_an_address_starts_a_new_generation() {
 	cansub_forget_addr('192.0.2.9')
 	assert cansub_addr_generation('192.0.2.9') == before + 2
 }
+
+// FRAMING IS READ BY HEADER NAME: a header that merely CONTAINS the token is not the framing
+// (codex round 6 on #248).
+fn test_framing_headers_are_matched_by_name_not_by_substring() {
+	decoy := 'HTTP/1.1 200\r\nX-Content-Length: 0\r\nAccess-Control-Expose-Headers: Content-Length\r\n\r\n'
+	assert !cansub_response_complete(decoy.bytes()), 'a decoy header read as Content-Length: 0'
+	real := 'HTTP/1.1 200\r\nX-Content-Length: 0\r\nContent-Length: 2\r\n\r\nok'
+	assert cansub_response_complete(real.bytes())
+	assert !cansub_response_complete(real[..real.len - 1].bytes())
+	chunked_decoy := 'HTTP/1.1 200\r\nX-Transfer-Encoding: chunked\r\nContent-Length: 1\r\n\r\nx'
+	assert cansub_response_complete(chunked_decoy.bytes())
+}
+
+// A REFRESH IS NOT A FORGET: the dial's own re-resolve leaves the generation alone, so the
+// connection it then makes is admitted (codex round 6 on #248).
+fn test_a_refresh_keeps_the_generation() {
+	before := cansub_addr_generation('192.0.2.10')
+	cansub_refresh_addr('192.0.2.10')
+	assert cansub_addr_generation('192.0.2.10') == before
+	cansub_forget_addr('192.0.2.10')
+	assert cansub_addr_generation('192.0.2.10') == before + 1
+}

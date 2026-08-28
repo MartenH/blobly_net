@@ -340,7 +340,16 @@ fn (mut c CansubConn) converse(method string, path string, body string, deadline
 			return error('${method} ${path}: the reply did not complete within the budget')
 		}
 		c.tcp.set_read_timeout(left)
-		n := c.ssl.read(mut buf)!
+		n := c.ssl.read(mut buf) or {
+			// A peer close is reported by the TLS layer through its error path as often as by
+			// a zero read. With bytes already in hand and the failure not a timeout, this is
+			// the END of a close-delimited reply, not a failed one (codex round 6 on #248); the
+			// connection is retired below, as an EOF is. With nothing in hand it is a failure.
+			if raw.len > 0 && !cansub_is_timeout(err) {
+				break
+			}
+			return err
+		}
 		if n <= 0 {
 			break
 		}
@@ -362,6 +371,13 @@ fn (mut c CansubConn) converse(method string, path string, body string, deadline
 		c.retire()
 	}
 	return cansub_parse_response(raw.bytestr())
+}
+
+// cansub_is_timeout is whether a socket error is the read timeout — the one error that says
+// nothing about the connection.
+fn cansub_is_timeout(err IError) bool {
+	m := err.msg().to_lower()
+	return m.contains('timed out') || m.contains('timeout')
 }
 
 // retire closes this connection and takes it out of the pool, with the turn HELD by the caller:
@@ -410,13 +426,26 @@ fn (mut c CansubConn) close_socket() {
 pub fn cansub_response_complete(raw []u8) bool {
 	text := raw.bytestr()
 	head_end := text.index('\r\n\r\n') or { return false }
-	head := text[..head_end].to_lower()
+	head := text[..head_end]
 	body := text[head_end + 4..]
-	if head.contains('transfer-encoding:') && head.contains('chunked') {
+	// BY HEADER NAME, exactly, the way cansub_parse_response reads them: `X-Content-Length: 0`
+	// or `Access-Control-Expose-Headers: Content-Length` contains the token and is not the
+	// framing (codex round 6 on #248).
+	mut chunked := false
+	mut length := -1
+	for line in head.split('\r\n') {
+		name := line.all_before(':').trim_space().to_lower()
+		value := line.all_after(':').trim_space().to_lower()
+		if name == 'transfer-encoding' && value.contains('chunked') {
+			chunked = true
+		} else if name == 'content-length' {
+			length = value.int()
+		}
+	}
+	if chunked {
 		return cansub_chunks_complete(body)
 	}
-	if i := head.index('content-length:') {
-		length := head[i + 'content-length:'.len..].all_before('\r\n').trim_space().int()
+	if length >= 0 {
 		return body.len >= length
 	}
 	// Neither: the body, if there is one, runs to the connection's close, and no prefix of it
@@ -645,6 +674,15 @@ pub fn cansub_warm_host(host string) thread {
 	}(host)
 }
 
+// cansub_refresh_addr drops the remembered address and nothing else: the next lookup resolves
+// the name again, and connections in flight are not disowned. See cansub_dial.
+fn cansub_refresh_addr(host string) {
+	lock cansub_addrs {
+		cansub_addrs.by_host.delete(host)
+		cansub_addrs.failed_at.delete(host)
+	}
+}
+
 // cansub_forget_addr drops a remembered address: the next cansub_addr resolves the name again.
 pub fn cansub_forget_addr(host string) {
 	lock cansub_addrs {
@@ -674,7 +712,11 @@ fn cansub_dial(host string) !&net.TcpConn {
 		return tcp
 	}
 	// The remembered address did not answer: the device may have moved. Look it up again, once.
-	cansub_forget_addr(host)
+	// A REFRESH, not a forget: nothing here has learned the device is the wrong one, only that
+	// the address is stale, so the generation — which a dial in flight is checked against — is
+	// left alone. Bumped here, this very dial came back to a changed generation and refused
+	// the connection it had just made (codex round 6 on #248).
+	cansub_refresh_addr(host)
 	fresh := cansub_addr(host) or { return error('cannot resolve ${host}') }
 	return net.dial_tcp('${fresh}:443')!
 }
