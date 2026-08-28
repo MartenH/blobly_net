@@ -35,6 +35,7 @@ mut:
 // open_software wraps a freshly opened bus on `iface` as an ISO-TP channel that
 // sends on tx_id and receives on rx_id.
 pub fn open_software(iface string, tx_id u32, rx_id u32, ext bool) !&SoftChannel {
+	check_ids(iface, tx_id, rx_id, ext)!
 	bus := transport.open(iface)!
 	return on_bus(bus, iface, tx_id, rx_id, ext)
 }

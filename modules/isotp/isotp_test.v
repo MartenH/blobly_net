@@ -399,6 +399,12 @@ fn test_open_refuses_an_id_wider_than_declared() {
 			assert err.msg().contains('does not fit 11 bits'), err.msg()
 		}
 	}
+	// And the named opener, on every platform (codex round 20 on #225).
+	if _ := open_software('inproc:isotp-wide', 0x7E0, 0x2000_0000, true) {
+		assert false, '0x20000000 does not fit 29 bits'
+	} else {
+		assert err.msg().contains('does not fit 29 bits'), err.msg()
+	}
 }
 
 // AN OVERSIZED CONSECUTIVE FRAME IS NOT ONE OF OURS on a classic channel (codex round 17 on #225).
