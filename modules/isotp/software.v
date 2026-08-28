@@ -115,19 +115,20 @@ pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 	// Negative is "forever", as everywhere else.
 	deadline := time.ticks() + i64(timeout_ms)
 	mut first := []u8{}
-	mut looked := false
 	for {
 		mut rem := timeout_ms
 		if timeout_ms >= 0 {
 			rem = int(deadline - time.ticks())
-			if rem <= 0 && looked {
+			// A zero timeout keeps polling past stale Consecutive Frames as well: the poll ends
+			// when rx_raw reports the bus empty, not after the first frame it had to drop (codex
+			// round 13 on #225). A positive timeout expires by the clock.
+			if rem <= 0 && timeout_ms > 0 {
 				return error('timeout')
 			}
 			if rem < 0 {
-				rem = 0 // one look — see rx_raw
+				rem = 0
 			}
 		}
-		looked = true
 		first = c.rx_raw(rem)!
 		if first.len < 1 {
 			return error('ISO-TP: empty frame')

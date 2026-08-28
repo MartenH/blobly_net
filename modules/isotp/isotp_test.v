@@ -285,3 +285,28 @@ fn test_a_zero_timeout_looks_past_unrelated_frames() {
 	ch.close()
 	peer.close()
 }
+
+// recv(0) LOOKS PAST A STALE CONSECUTIVE FRAME TOO, to the reply queued behind it (codex round 13
+// on #225).
+fn test_a_zero_timeout_looks_past_a_stale_cf() {
+	mut peer := transport.open('inproc:isotp-poll-stale') or {
+		assert false, 'in-process bus: ${err}'
+		return
+	}
+	mut ch := open_software('inproc:isotp-poll-stale', 0x7E0, 0x7E8, false) or {
+		assert false, 'software channel: ${err}'
+		return
+	}
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x23), 0, 0, 0, 0, 0, 0, 0] }) or {
+		assert false, err.msg()
+	}
+	peer.send(transport.CanFrame{ id: 0x7E8, data: [u8(0x01), 0x55] }) or { assert false, err.msg() }
+	time.sleep(20 * time.millisecond)
+	got := ch.recv(0) or {
+		assert false, 'the poll stopped at a stale CF: ${err}'
+		return
+	}
+	assert got == [u8(0x55)]
+	ch.close()
+	peer.close()
+}
