@@ -271,11 +271,17 @@ fn cansub_conn(host string) !(&CansubConn, bool) {
 		ssl:  conn
 		turn: sync.new_semaphore_init(1)
 	}
-	if cansub_addr_generation(host) != gen {
-		c.close_socket()
-		return error('the address of ${host} was forgotten while connecting to it')
-	}
+	// CHECKED UNDER THE ADMISSION LOCK. A forget bumps the generation first and drops from the
+	// pool second, so a check made here, with the pool held, sees either the new generation
+	// (refused) or the old one — in which case the forget's drop, queued behind this lock,
+	// finds the connection just admitted and removes it. Checked before taking the lock, a
+	// forget landing in the gap saw nothing to drop and the wrong device was pooled (codex
+	// round 7 on #248).
 	lock cansub_pool {
+		if cansub_addr_generation(host) != gen {
+			c.close_socket()
+			return error('the address of ${host} was forgotten while connecting to it')
+		}
 		if mut prior := cansub_pool.conns[host] {
 			// Two callers dialled at once; theirs is in the pool, ours is surplus.
 			c.close_socket()
