@@ -22,6 +22,19 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   machine", which cost most of a session on that assumption. It is V's default **tcc**:
   `v -enable-globals -cc gcc test modules/` runs the whole suite (57/57). The Linux CI job uses
   the default compiler and never sees it.
+- 🔴 **A timed `select` can panic `Invalid argument` under starvation.** V 0.5.1's
+  `channel_select` computes `remaining := timeout - stopwatch.elapsed()` only after its
+  non-blocking try loop, so a thread descheduled for longer than its timeout hands
+  `sem_timedwait` a NEGATIVE duration; `Duration.timespec()` adds a negative `tv_nsec` to the
+  clock, and when that underflows the current nanoseconds the kernel answers EINVAL and V's
+  `cpanic` kills the process with `V panic: Invalid argument`. Probabilistic (it needs the
+  current `tv_nsec` to be smaller than the overshoot) and load-dependent: seen once in twenty
+  runs of `shared_test` pinned to two cores behind three busy loops, from a 50 ms wait in a
+  spawned thread, never at 16 cores. Every `select { … N * time.millisecond {} }` in this repo
+  carries it; a wait that has a sender guaranteed to close or post the channel is better
+  written unbounded (`transport.SharedEntry.settled` is). Not ours to fix — vlib — and pinned
+  here so the next `V panic: Invalid argument` in a CI log is read as this, not as a bug in
+  the test it landed in.
 - 🟡 **Local module not found.** `import candb` (a module under `./modules/`) fails with
   `cannot import module "candb" (not found)` when compiling a file in `cmd/…`. V's `-path`
   *replaces* the default lookup order, so the working incantation re-lists the defaults:

@@ -212,11 +212,11 @@ pub fn wire_pin_clash(iface string) string {
 // refuses for as long as the vendor open takes. A refusal that resolves itself, against a wire
 // nobody could have used anyway.
 //
-// NOT UNDER THE LOCK, unlike shared_open, and for the reason that one gives for the opposite
-// choice: it must serialise because a second caller would otherwise join an entry with no bus in
-// it. Here every caller gets its own port and its own record, so there is nothing to join —
-// holding the mutex across a ~1s vendor open would only stall the front end's guard against
-// every unrelated wire.
+// NOT UNDER THE LOCK, like shared_open since #211 (which reserves the key and runs its factory
+// outside the registry lock, because a second caller must never join an entry with no bus in
+// it). Here every caller gets its own port and its own record, so there is nothing to join at
+// all — holding the mutex across a ~1s vendor open would only stall the front end's guard
+// against every unrelated wire.
 fn pinned_open(iface string, make fn (string) !Bus) !Bus {
 	cfg := pinned_open_config(iface) or { return make(iface)! }
 	k := pinned_wire_key(iface)

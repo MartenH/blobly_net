@@ -175,11 +175,11 @@ fn open_cansub_bus(iface string) !SharedDriver {
 	// between its frames succeeding and it going error-passive.
 	silent := is_listen_only(iface)
 	body := cansub_phy_json(nominal, data, silent)
-	// BOUNDED, because this whole function runs INSIDE the process-wide registry lock that
-	// shared_open holds (see the argument there). A device that is reachable enough to stall but
-	// not to answer therefore holds up every other opener — including PCAN, which shares that
-	// registry — so the budget here is what somebody waiting at Start actually experiences, not
-	// what a patient client would allow (codex round 8 on #204).
+	// BOUNDED. This used to run INSIDE the process-wide registry lock, so a device reachable
+	// enough to stall but not to answer held up every other opener, PCAN included (codex round 8
+	// on #204); since #211 it runs behind a per-wire reservation and stalls only this wire's own
+	// openers. The budget stays what somebody waiting at Start actually experiences, not what a
+	// patient client would allow: those openers are still waiting.
 	r := cansub_request(host, 'PUT', '/api/can/${spec.channel}/phy', body, cansub_open_timeout) or {
 		return error('cannot configure ${iface}: ${err}')
 	}
@@ -813,9 +813,9 @@ const cansub_health_timeout = 700 * time.millisecond
 // answering.
 const cansub_health_misses = 3
 
-// How long any single request on the OPEN path may take. Short because `shared_open` holds a
-// process-wide lock across the whole open, so this is time every other opener spends waiting —
-// see the note beside the PHY PUT.
+// How long any single request on the OPEN path may take. Short because a Start waits on it: every
+// opener of this wire waits on the one attempt (#211), and a GUI Start opens each wire three
+// times — see the note beside the PHY PUT.
 const cansub_open_timeout = 2 * time.second
 
 // cansub_wait_slice decides how long ONE select may park, or none when the caller's budget is
