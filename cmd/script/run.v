@@ -303,12 +303,11 @@ fn main() {
 	// fans out natively each handle counts what it consumed. A separate reporting handle was
 	// tried and was wrong both ways -- it had to drain to see anything on the one kind and
 	// was itself a dropping subscriber on the other (codex rounds 8-11 on #231).
-	for name, d in env.diagnostics() {
+	for name, d in env.close_reporting() {
 		eprintln('${name}: ${d.str()}')
 	}
 	passed := env.passed()
 	failed := env.failed()
-	env.close()
 
 	println('\n${passed} passed, ${failed} failed, ${errored} script error(s)')
 	if failed > 0 || errored > 0 {

@@ -1342,10 +1342,9 @@ fn script_worker(app &App, path string) {
 	// What the script's own wires counted (#213): a suite run from here while the measurement
 	// is stopped has no RX loop polling on its behalf, so this is its only outlet (codex
 	// round 5 on #231).
-	for name, d in env.diagnostics() {
+	for name, d in env.close_reporting() {
 		a.script_push('${name}: ${d.str()}')
 	}
-	env.close()
 	a.script_done()
 }
 
