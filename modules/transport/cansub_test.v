@@ -673,6 +673,109 @@ fn test_counters_parse_with_whitespace_and_unknown_states_stay_unknown() {
 	assert cansub_ladder('{"state":"sleeping","rx_error_count":0,"tx_error_count":0}', true)? == .unknown
 }
 
+// A WARM-UP RETURNS AT ONCE and leaves the address remembered: the lookup runs on its own thread
+// (#240). A literal address needs no lookup, which is what makes this testable without a device.
+fn test_a_warm_up_returns_at_once_and_remembers_the_address() {
+	// By name, with a literal address as the name: it resolves without a network and the memory
+	// can be read back (codex round 1 on #249 — the earlier test proved only that the call
+	// returned, not that the worker did anything).
+	cansub_forget_addr('127.0.0.1')
+	t0 := time.ticks()
+	worker := cansub_warm_host('127.0.0.1')
+	assert time.ticks() - t0 < 200, 'warm-up blocked the caller for ${time.ticks() - t0} ms'
+	worker.wait()
+	remembered := rlock cansub_addrs {
+		cansub_addrs.by_host['127.0.0.1'] or { '' }
+	}
+	assert remembered == '127.0.0.1', 'the worker did not fill the memory'
+	cansub_forget_addr('127.0.0.1')
+	// And the interface form reaches the same path: it only derives the name.
+	cansub_warm('cansub:E5A16ADF/1@500000')
+	assert time.ticks() - t0 < 400
+}
+
+// A LOOKUP IN FLIGHT IS WAITED FOR, NOT REPEATED: a caller for a name whose lookup is running
+// blocks until that answer is in the memory and returns it — no second lookup, no second pause.
+fn test_a_lookup_in_flight_is_joined_not_repeated() {
+	cansub_forget_addr('127.0.0.2')
+	mut in_flight := cansub_resolving('127.0.0.2')
+	in_flight.lock() // stands in for the warm-up's lookup
+	done := chan string{cap: 1}
+	spawn fn (done chan string) {
+		done <- (cansub_addr('127.0.0.2') or { 'unresolved' })
+	}(done)
+	mut early := ''
+	select {
+		early = <-done {}
+		150 * time.millisecond {
+			early = 'still waiting'
+		}
+	}
+	assert early == 'still waiting', 'the caller did not wait for the lookup in flight (got ${early})'
+	// The lookup in flight answers — with an address no resolver would give for this name, so
+	// a waiter that looked the name up itself instead of taking this answer is caught (codex
+	// round 3 on #249).
+	lock cansub_addrs {
+		cansub_addrs.by_host['127.0.0.2'] = '192.0.2.77'
+	}
+	in_flight.unlock()
+	mut late := ''
+	select {
+		late = <-done {}
+		2 * time.second {
+			late = 'never answered'
+		}
+	}
+	assert late == '192.0.2.77', 'the waiter looked the name up itself instead of taking the answer in flight (got ${late})'
+	cansub_forget_addr('127.0.0.2')
+}
+
+// A FAILED LOOKUP IS REMEMBERED for a moment, so the rows queued behind it do not each repeat
+// it; a forget clears that memory too (codex round 2 on #249). The name here cannot resolve:
+// .invalid is reserved for exactly that.
+fn test_a_failed_lookup_is_shared_for_a_moment() {
+	cansub_forget_addr('nobody.invalid')
+	assert cansub_lookup('nobody.invalid', true) == none
+	failed := rlock cansub_addrs {
+		cansub_addrs.failed_at['nobody.invalid'] or { 0 }
+	}
+	assert failed > 0, 'the failure was not noted'
+	t0 := time.ticks()
+	assert cansub_lookup('nobody.invalid', true) == none
+	assert time.ticks() - t0 < 100, 'the second warm-up looked the name up again (${time.ticks() - t0} ms)'
+	// An OPEN is not answered from that memory: it asks again, whatever it costs (codex round 3
+	// on #249). Here the name still fails — the point is that it was looked up, which the
+	// failure stamp moving forward shows.
+	time.sleep(5 * time.millisecond)
+	assert cansub_addr('nobody.invalid') == none
+	again := rlock cansub_addrs {
+		cansub_addrs.failed_at['nobody.invalid'] or { 0 }
+	}
+	assert again > failed, 'the open took the remembered failure instead of looking the name up'
+	cansub_forget_addr('nobody.invalid')
+	cleared := rlock cansub_addrs {
+		cansub_addrs.failed_at['nobody.invalid'] or { 0 }
+	}
+	assert cleared == 0
+}
+
+// ONE DEVICE, ONE WARM-UP, however many of its channels the project lists.
+fn test_warm_all_warms_each_device_once() {
+	before := rlock cansub_addrs {
+		cansub_addrs.warmups
+	}
+	cansub_warm_all(['cansub:E5A16ADF/1@500000', 'cansub:E5A16ADF/2@500000', 'pcan:PCAN_USBBUS1@500000',
+		'cansub:e5a16adf/3'])
+	started := rlock cansub_addrs {
+		cansub_addrs.warmups
+	} - before
+	assert started == 1, 'four rows of one device started ${started} workers, not one'
+	// And two devices are two.
+	cansub_warm_all(['cansub:AAAA0001/1', 'cansub:BBBB0002/1'])
+	two := rlock cansub_addrs {
+		cansub_addrs.warmups
+	} - before
+	assert two == 3
 // A SEND THAT HANGS IS CUT OFF BEFORE ANYBODY NOTICES: Stop waits under the write lock for a
 // send in flight, so the write timeout is what bounds Stop on a wire whose device has stopped
 // taking bytes. The library's default is 30 s (#240).

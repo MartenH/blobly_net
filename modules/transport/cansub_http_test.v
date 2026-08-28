@@ -1,5 +1,8 @@
 module transport
 
+import sync
+import time
+
 // The parsing half of the CANsub's REST client, checked against what the device actually sends.
 // The bytes in `test_the_status_line_the_device_really_sends` were captured off a TLS socket to a
 // CANsub.4 on firmware 02.04.00; everything else here is the general case around them.
@@ -176,4 +179,112 @@ fn test_dechunk_refuses_an_overflowing_chunk_header() {
 fn test_dechunk_refuses_a_chunk_longer_than_the_remainder() {
 	cansub_dechunk('7FFFFF\r\nWiki\r\n0\r\n\r\n') or { return }
 	assert false, 'accepted a chunk longer than the body'
+}
+
+// A KEPT-ALIVE READER STOPS WHEN THE REPLY IS COMPLETE, not when the device hangs up — which on a
+// kept-alive connection it never does. Chunked (what the device sends), Content-Length, and a
+// bodiless reply; and every partial prefix of each is NOT complete.
+fn test_a_reply_is_complete_at_its_terminating_chunk_or_content_length() {
+	chunked := 'HTTP/1.1 200\r\nTransfer-Encoding: chunked\r\nContent-Type: application/json\r\n\r\n18\r\n{"state":"error_active"}\r\n0\r\n\r\n'
+	assert cansub_response_complete(chunked.bytes())
+	for cut in 1 .. chunked.len {
+		assert !cansub_response_complete(chunked[..cut].bytes()), 'a prefix of ${cut} bytes read as complete'
+	}
+	with_length := 'HTTP/1.1 200\r\nContent-Length: 5\r\n\r\nhello'
+	assert cansub_response_complete(with_length.bytes())
+	assert !cansub_response_complete(with_length[..with_length.len - 1].bytes())
+	bodiless := 'HTTP/1.1 204\r\n\r\n'
+	assert cansub_response_complete(bodiless.bytes())
+	assert !cansub_response_complete('HTTP/1.1 204\r\n'.bytes())
+	// A 200 with neither framing header is close-delimited: never complete from the bytes alone.
+	assert !cansub_response_complete('HTTP/1.1 200\r\n\r\n'.bytes())
+	assert !cansub_response_complete('HTTP/1.1 200\r\n\r\n{"a":1}'.bytes())
+	assert cansub_response_complete('HTTP/1.1 304\r\n\r\n'.bytes())
+	// The chunked check is about the terminator, not about an accidental "0" chunk in the body.
+	assert !cansub_response_complete('HTTP/1.1 200\r\nTransfer-Encoding: chunked\r\n\r\n1\r\n0\r\n'.bytes())
+}
+
+// THE TERMINATING CHUNK IS RECOGNISED IN EVERY SHAPE cansub_dechunk ACCEPTS: bare, with a chunk
+// extension, and followed by trailers — and a `0` inside a chunk's data is not it (codex round 1
+// on #248).
+fn test_a_terminating_chunk_with_an_extension_or_trailers_completes_the_reply() {
+	head := 'HTTP/1.1 200\r\nTransfer-Encoding: chunked\r\n\r\n'
+	with_ext := head + '5\r\nhello\r\n0;done=1\r\n\r\n'
+	assert cansub_response_complete(with_ext.bytes())
+	assert !cansub_response_complete(with_ext[..with_ext.len - 2].bytes())
+	with_trailer := head + '5\r\nhello\r\n0\r\nX-Checksum: abc\r\n\r\n'
+	assert cansub_response_complete(with_trailer.bytes())
+	assert !cansub_response_complete(with_trailer[..with_trailer.len - 2].bytes()), 'a trailer without its empty line is not the end'
+	// What the completeness test says complete, the dechunker accepts.
+	assert cansub_dechunk(with_ext[head.len..])! == 'hello'
+	assert cansub_dechunk(with_trailer[head.len..])! == 'hello'
+	// A zero in the data is data.
+	assert !cansub_response_complete((head + '3\r\n0\r\n\r\n').bytes())
+	assert cansub_response_complete((head + '3\r\n0\r\n\r\n0\r\n\r\n').bytes())
+}
+
+// FORGETTING AN ADDRESS ALSO FORGETS THE CONNECTION TO IT — there is no device here, so the
+// pool is exercised with no connection: the forget must simply be safe with nothing pooled, and
+// leave nothing pooled.
+fn test_forgetting_an_address_leaves_no_connection_pooled() {
+	cansub_forget_addr('192.0.2.1')
+	pooled := rlock cansub_pool {
+		'192.0.2.1' in cansub_pool.conns
+	}
+	assert !pooled
+}
+
+// A CALLER WHOSE BUDGET RUNS OUT IN THE QUEUE LEAVES IT: with the connection held by another
+// request, a 100 ms exchange fails at about 100 ms — not after the holder is done (codex round 2
+// on #248). No device: the connection is never dialled, only its lock is contended.
+fn test_a_request_gives_up_on_a_busy_connection_at_its_deadline() {
+	mut c := &CansubConn{
+		host: 'nobody.invalid'
+		tcp:  unsafe { nil }
+		ssl:  unsafe { nil }
+		turn: sync.new_semaphore_init(1)
+	}
+	c.turn.wait() // another request, taking its time
+	t0 := time.ticks()
+	deadline := time.now().add(100 * time.millisecond)
+	assert !c.acquire(deadline), 'acquired a lock somebody else holds'
+	waited := time.ticks() - t0
+	assert waited >= 90 && waited < 1000, 'gave up after ${waited} ms, not at the deadline'
+	c.turn.post()
+	later := time.now().add(100 * time.millisecond)
+	assert c.acquire(later)
+	c.turn.post()
+}
+
+// A FORGET IS A NEW GENERATION: what a dial that started before it is checked against when it
+// comes back, so a connection to the device the forget was about is never pooled (codex round
+// 4 on #248).
+fn test_forgetting_an_address_starts_a_new_generation() {
+	before := cansub_addr_generation('192.0.2.9')
+	cansub_forget_addr('192.0.2.9')
+	assert cansub_addr_generation('192.0.2.9') == before + 1
+	cansub_forget_addr('192.0.2.9')
+	assert cansub_addr_generation('192.0.2.9') == before + 2
+}
+
+// FRAMING IS READ BY HEADER NAME: a header that merely CONTAINS the token is not the framing
+// (codex round 6 on #248).
+fn test_framing_headers_are_matched_by_name_not_by_substring() {
+	decoy := 'HTTP/1.1 200\r\nX-Content-Length: 0\r\nAccess-Control-Expose-Headers: Content-Length\r\n\r\n'
+	assert !cansub_response_complete(decoy.bytes()), 'a decoy header read as Content-Length: 0'
+	real := 'HTTP/1.1 200\r\nX-Content-Length: 0\r\nContent-Length: 2\r\n\r\nok'
+	assert cansub_response_complete(real.bytes())
+	assert !cansub_response_complete(real[..real.len - 1].bytes())
+	chunked_decoy := 'HTTP/1.1 200\r\nX-Transfer-Encoding: chunked\r\nContent-Length: 1\r\n\r\nx'
+	assert cansub_response_complete(chunked_decoy.bytes())
+}
+
+// A REFRESH IS NOT A FORGET: the dial's own re-resolve leaves the generation alone, so the
+// connection it then makes is admitted (codex round 6 on #248).
+fn test_a_refresh_keeps_the_generation() {
+	before := cansub_addr_generation('192.0.2.10')
+	cansub_refresh_addr('192.0.2.10')
+	assert cansub_addr_generation('192.0.2.10') == before
+	cansub_forget_addr('192.0.2.10')
+	assert cansub_addr_generation('192.0.2.10') == before + 1
 }
