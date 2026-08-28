@@ -746,12 +746,16 @@ fn test_a_failed_lookup_is_shared_for_a_moment() {
 	// An OPEN is not answered from that memory: it asks again, whatever it costs (codex round 3
 	// on #249). Here the name still fails — the point is that it was looked up, which the
 	// failure stamp moving forward shows.
-	time.sleep(5 * time.millisecond)
+	// A stamp taken AFTER a pause, compared against a clock read before the open: two stamps
+	// compared with each other were equal when the pause fell inside one tick (seen twice
+	// on the Windows bench, #251).
+	time.sleep(20 * time.millisecond)
+	before := time.ticks()
 	assert cansub_addr('nobody.invalid') == none
 	again := rlock cansub_addrs {
 		cansub_addrs.failed_at['nobody.invalid'] or { 0 }
 	}
-	assert again > failed, 'the open took the remembered failure instead of looking the name up'
+	assert again >= before, 'the open took the remembered failure instead of looking the name up'
 	cansub_forget_addr('nobody.invalid')
 	cleared := rlock cansub_addrs {
 		cansub_addrs.failed_at['nobody.invalid'] or { 0 }

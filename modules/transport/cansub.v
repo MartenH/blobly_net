@@ -897,13 +897,6 @@ pub fn (b &CansubBus) refusal(frame CanFrame) ?string {
 	if e := b.send_refusal() {
 		return '${b.iface}: ${e}'
 	}
-	return none
-}
-
-pub fn (mut b CansubBus) send(frame CanFrame) ! {
-	if reason := b.refusal(frame) {
-		return not_written(reason)
-	}
 	// A SILENCED CONTROLLER CANNOT TRANSMIT, whatever this process's policy currently says.
 	//
 	// The two answers are not updated together and cannot be: `silenced()` is a table this process
@@ -925,9 +918,19 @@ pub fn (mut b CansubBus) send(frame CanFrame) ! {
 		// measured to be false on a live channel; when the device has refused, the sender is told
 		// what the Buses row shows, remedy included.
 		if f := wire_silence_fault(b.iface) {
-			return error('${b.iface}: ${f.why}; the frame was not sent')
+			return '${b.iface}: ${f.why}; the frame was not sent'
 		}
-		return error('${b.iface}: the controller is still in listen-only; the frame was not sent — a CANsub follows the mark at open, so Stop and Start')
+		return '${b.iface}: the controller is still in listen-only; the frame was not sent — a CANsub follows the mark at open, so Stop and Start'
+	}
+	// And a frame the codec will not encode: decided here, before any token, for the same
+	// reason as the rest (codex round 13 on #251). send encodes again — the encoding is pure.
+	cansub_encode_frame(frame) or { return err.msg() }
+	return none
+}
+
+pub fn (mut b CansubBus) send(frame CanFrame) ! {
+	if reason := b.refusal(frame) {
+		return not_written(reason)
 	}
 	body := cansub_encode_frame(frame)!
 	// Encoded outside the lock, written inside it: the encoding is per-frame work with no shared
