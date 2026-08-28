@@ -266,6 +266,13 @@ const cansub_conn_read_ceiling = 5 * time.second
 
 // exchange sends one request and reads its complete reply on this connection.
 fn (mut c CansubConn) exchange(method string, path string, body string, timeout time.Duration) !CansubResponse {
+	// THE BUDGET IS THE CALLER'S, per request, and it starts HERE — before the wait for the
+	// connection, not after. Two channels on one device share the connection, so a 700 ms health
+	// poll can queue behind an open's two-second PUT; charged from the lock, the poll's bound was
+	// whatever the request in front of it took plus its own (codex round 1 on #248). So the wait
+	// is measured and only what remains reaches the socket the TLS layer reads through; the SSL
+	// object's own timeout is only the ceiling above both.
+	deadline := time.now().add(timeout)
 	c.mu.lock()
 	defer {
 		c.mu.unlock()
@@ -273,10 +280,11 @@ fn (mut c CansubConn) exchange(method string, path string, body string, timeout 
 	if c.dead {
 		return error('connection to ${c.host} is closed')
 	}
-	// THE BUDGET IS THE CALLER'S, per request, on the socket the TLS layer reads through: a
-	// health poll gives 700 ms, an open two seconds, and the SSL object's own timeout is only the
-	// ceiling above both.
-	c.tcp.set_read_timeout(timeout)
+	remaining := deadline - time.now()
+	if remaining <= 0 {
+		return error('${method} ${path}: the connection to ${c.host} was busy for the whole ${timeout}')
+	}
+	c.tcp.set_read_timeout(remaining)
 	mut req := '${method} ${path} HTTP/1.1\r\nHost: ${c.host}\r\n'
 	if body != '' {
 		req += 'Content-Type: application/json\r\nContent-Length: ${body.len}\r\n'
@@ -337,14 +345,44 @@ pub fn cansub_response_complete(raw []u8) bool {
 	head := text[..head_end].to_lower()
 	body := text[head_end + 4..]
 	if head.contains('transfer-encoding:') && head.contains('chunked') {
-		// A terminating chunk is `0\r\n` followed by the trailer's empty line.
-		return body == '0\r\n\r\n' || body.ends_with('\r\n0\r\n\r\n')
+		return cansub_chunks_complete(body)
 	}
 	if i := head.index('content-length:') {
 		length := head[i + 'content-length:'.len..].all_before('\r\n').trim_space().int()
 		return body.len >= length
 	}
 	return true
+}
+
+// cansub_chunks_complete walks the chunks the way cansub_dechunk does — the SAME reading of a
+// size line, extension and all — and answers whether the terminating chunk has arrived AND the
+// empty line that ends its trailer section. A bare `0\r\n\r\n` is the common shape, but
+// `0;ext\r\n` and `0\r\nTrailer: x\r\n\r\n` are legal too, and a completeness test that
+// recognised only the first would leave a kept-alive reader waiting on the others until its
+// timeout — for a reply cansub_dechunk would then accept (codex round 1 on #248). Walking the
+// chunks is also what keeps a `0` INSIDE a chunk's data from reading as the end.
+fn cansub_chunks_complete(body string) bool {
+	mut i := 0
+	for i < body.len {
+		eol := body.index_after('\r\n', i) or { return false }
+		mut header := body[i..eol]
+		if ext := header.index(';') {
+			header = header[..ext]
+		}
+		size := hex_int(header.trim_space()) or { return false }
+		i = eol + 2
+		if size == 0 {
+			// Trailers, if any, then the empty line: from here the rest is header lines and ends
+			// with the first empty one.
+			rest := body[i..]
+			return rest.starts_with('\r\n') || rest.contains('\r\n\r\n')
+		}
+		if size > body.len - i {
+			return false
+		}
+		i += size + 2
+	}
+	return false
 }
 
 // cansub_get is the read half, and the one used most: identity, channel list, channel state.
@@ -419,6 +457,18 @@ pub fn cansub_addr(host string) ?string {
 pub fn cansub_forget_addr(host string) {
 	lock cansub_addrs {
 		cansub_addrs.by_host.delete(host)
+	}
+	// AND THE CONNECTION DIALLED TO IT. An address is forgotten because the device behind it is
+	// not the one the name means any more — a firmware update moved it and another CANsub now
+	// answers there (open_cansub_bus's identity check). A kept-alive connection to that address
+	// is the same wrong device; left in the pool, the retry after the forget would ask it again
+	// and never re-resolve (codex round 1 on #248).
+	stale := lock cansub_pool {
+		cansub_pool.conns[host] or { unsafe { nil } }
+	}
+	if stale != unsafe { nil } {
+		mut s := unsafe { stale }
+		s.drop()
 	}
 }
 

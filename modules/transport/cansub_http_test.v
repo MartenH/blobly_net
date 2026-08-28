@@ -182,7 +182,7 @@ fn test_dechunk_refuses_a_chunk_longer_than_the_remainder() {
 // kept-alive connection it never does. Chunked (what the device sends), Content-Length, and a
 // bodiless reply; and every partial prefix of each is NOT complete.
 fn test_a_reply_is_complete_at_its_terminating_chunk_or_content_length() {
-	chunked := 'HTTP/1.1 200\r\nTransfer-Encoding: chunked\r\nContent-Type: application/json\r\n\r\n1a\r\n{"state":"error_active"}\r\n0\r\n\r\n'
+	chunked := 'HTTP/1.1 200\r\nTransfer-Encoding: chunked\r\nContent-Type: application/json\r\n\r\n18\r\n{"state":"error_active"}\r\n0\r\n\r\n'
 	assert cansub_response_complete(chunked.bytes())
 	for cut in 1 .. chunked.len {
 		assert !cansub_response_complete(chunked[..cut].bytes()), 'a prefix of ${cut} bytes read as complete'
@@ -195,4 +195,34 @@ fn test_a_reply_is_complete_at_its_terminating_chunk_or_content_length() {
 	assert !cansub_response_complete('HTTP/1.1 204\r\n'.bytes())
 	// The chunked check is about the terminator, not about an accidental "0" chunk in the body.
 	assert !cansub_response_complete('HTTP/1.1 200\r\nTransfer-Encoding: chunked\r\n\r\n1\r\n0\r\n'.bytes())
+}
+
+// THE TERMINATING CHUNK IS RECOGNISED IN EVERY SHAPE cansub_dechunk ACCEPTS: bare, with a chunk
+// extension, and followed by trailers — and a `0` inside a chunk's data is not it (codex round 1
+// on #248).
+fn test_a_terminating_chunk_with_an_extension_or_trailers_completes_the_reply() {
+	head := 'HTTP/1.1 200\r\nTransfer-Encoding: chunked\r\n\r\n'
+	with_ext := head + '5\r\nhello\r\n0;done=1\r\n\r\n'
+	assert cansub_response_complete(with_ext.bytes())
+	assert !cansub_response_complete(with_ext[..with_ext.len - 2].bytes())
+	with_trailer := head + '5\r\nhello\r\n0\r\nX-Checksum: abc\r\n\r\n'
+	assert cansub_response_complete(with_trailer.bytes())
+	assert !cansub_response_complete(with_trailer[..with_trailer.len - 2].bytes()), 'a trailer without its empty line is not the end'
+	// What the completeness test says complete, the dechunker accepts.
+	assert cansub_dechunk(with_ext[head.len..])! == 'hello'
+	assert cansub_dechunk(with_trailer[head.len..])! == 'hello'
+	// A zero in the data is data.
+	assert !cansub_response_complete((head + '3\r\n0\r\n\r\n').bytes())
+	assert cansub_response_complete((head + '3\r\n0\r\n\r\n0\r\n\r\n').bytes())
+}
+
+// FORGETTING AN ADDRESS ALSO FORGETS THE CONNECTION TO IT — there is no device here, so the
+// pool is exercised with no connection: the forget must simply be safe with nothing pooled, and
+// leave nothing pooled.
+fn test_forgetting_an_address_leaves_no_connection_pooled() {
+	cansub_forget_addr('192.0.2.1')
+	pooled := rlock cansub_pool {
+		'192.0.2.1' in cansub_pool.conns
+	}
+	assert !pooled
 }
