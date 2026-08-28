@@ -186,6 +186,7 @@ fn open_cansub_bus(iface string) !SharedDriver {
 	if r.status != 200 && r.status != 204 {
 		return error('cannot configure ${iface}: HTTP ${r.status} ${r.body}')
 	}
+	note_silence_applied(iface, silent) // the device took the mark: recorded, and nothing stands refused
 
 	// The device clock resets with a reboot and the vendor's own flow says to set it, so it is set
 	// on every open rather than once: frame timestamps are microseconds from a fixed epoch, and an
@@ -238,7 +239,7 @@ fn (mut b CansubBus) health_loop() {
 		// PUT went out — around 1.2 s of a controller acknowledging traffic on a bus the UI had
 		// already declared silent (codex round 8 on #204). Health is a number somebody reads;
 		// this is a promise about what the transceiver is doing.
-		b.reconcile_listen_only()
+		b.reconcile_listen_only(is_listen_only(b.iface), true) or {}
 		b.poll_health()
 		// Slept in short steps rather than one long one, so close() is noticed promptly instead of
 		// after the poll interval: a thread this one has to be joined by is a thread that must not
@@ -253,9 +254,13 @@ fn (mut b CansubBus) health_loop() {
 			// the toggle waited out the rest of the interval before the loop even reached the
 			// reconcile — so the worst case was a full poll period of ACKing rather than the one
 			// step it is now.
+			// ...UNLESS A REFUSAL ALREADY STANDS. With a device that refuses, `phy_silent` never
+			// reaches the mark, so breaking on the difference alone made this loop a zero-sleep
+			// GET+PUT+GET hammer on the REST API for the life of the run (code-review high on
+			// #223). A standing fault means the answer is known; it is re-asked once per period.
 			if is_listen_only(b.iface) != rlock b.stop {
 				b.stop.phy_silent
-			} {
+			} && wire_silence_fault(b.iface) == none {
 				break
 			}
 			time.sleep(50 * time.millisecond)
@@ -395,24 +400,97 @@ fn (mut b CansubBus) enqueue(rec CansubRecord) bool {
 // by the ports open on it and software cannot revise it. A CANsub can be revised: the mode is a
 // field in a PHY object we can PUT again. So it is reconfigured rather than refused.
 //
-// THE COST IS A BUS BOUNCE. A PHY PUT restarts the channel, so traffic stops for the length of one
-// HTTP round trip. That is the lesser evil by some distance: the alternative is a wire whose
-// behaviour disagrees with what the Buses panel says it is, indefinitely, which is exactly the
-// class of fault this repo refuses to ship elsewhere. It happens only when somebody actually
-// changes the mark, which is a deliberate act.
+// IT DOES NOT WORK ON THIS FIRMWARE, AND THIS FUNCTION NOW SAYS SO INSTEAD OF PRETENDING.
+//
+// The paragraph that used to sit here said a PHY PUT "restarts the channel, so traffic stops for
+// the length of one HTTP round trip" — the cost of a bus bounce, accepted as the lesser evil. It
+// was never measured mid-run. Measured on a CANsub.4 (02.04.00) with curl, from outside the app:
+// the SAME PUT body is answered 200 with nothing on the channel and **500 while any client holds
+// the channel's WebSocket**. So every mid-run PUT this function ever made was refused, and the
+// silent `return` below kept that to itself: the mark moved, the panel said listen-only, and the
+// controller went on acknowledging for as long as the run lasted. `cmd/silentcheck` phases 2 and
+// 5 are what finally showed it, on the first bench run after #221.
+//
+// So CANsub is, like Vector, a backend whose mode FOLLOWS THE MARK ONLY AT OPEN — for a driver
+// reason, not a gap: Vector's is pinned by its ports, CANsub's by a device that refuses PHY
+// reconfiguration on a live channel. The honest behaviour is Vector's: keep asking (one small PUT
+// per poll costs nothing and the firmware may change), and RECORD the refusal against the wire so
+// the Buses row shows NOT SILENT / STILL SILENT with the device's own answer, until a Stop and
+// Start applies the mark at open. What would make the toggle work is closing the WebSocket around
+// the PUT — a real reconnect inside the poll thread, the #214 shape — and that is a feature to
+// decide on, not a fix to slip in here.
 //
 // Best-effort: a failed PUT leaves `phy_silent` alone, so the next poll tries again rather than
 // recording a change that did not happen.
-fn (mut b CansubBus) reconcile_listen_only() {
-	// NOT ON THE WAY OUT. close() no longer waits for this thread (see there), so it can still be
-	// alive after the bus is considered closed — and reconfiguring a channel then would be this
-	// backend reaching out to hardware nobody believes it still holds.
+fn (mut b CansubBus) reconcile_listen_only(want bool, force bool) ! {
+	// THROUGH THE ONE SEAM. This used to hand-roll what silence.v owns — the per-wire lock, the
+	// record-on-failure / clear-on-success pair, the fault the Buses row reads — and every
+	// finding of the review on #223 was a consequence of the copy: a ghost poll thread of a
+	// closed run clearing the next run's fault, close() clearing before it stopped its own
+	// thread, a fast path that never cleared, and a caller left to GUESS what happened because
+	// nothing was returned. apply_silence_explained does all of it once, under one lock, and
+	// says what it did.
+	//
+	// What stays CANsub's is inside the closure: the device is asked before it is told, because
+	// the controller's actual bit is the truth and our cache is not (codex round 17 on #204), and
+	// a PUT is what changes it. `running` is re-checked INSIDE the closure, under the wire lock —
+	// so a thread of a closed run that gets the lock late sees `false` and attempts nothing, and
+	// close() (which takes the same lock through forget_wire_silence) never races a round trip.
+	// THE PROBE'S READBACK HAPPENS OUTSIDE THE LOCK. The poll thread is the one caller that
+	// reaches the device every period, and its readback ran inside the seam's closure — under the
+	// per-wire lock, with the dial unbounded — so a device that resolved and then blackholed held
+	// the lock for an OS connect timeout, every sender on the wire queued behind it, and close()
+	// queued too, through forget_wire_silence: the Stop hang the detached health thread exists to
+	// prevent, put back one layer up (codex round 3 on #223). So the poll thread asks the device
+	// FIRST, on its own time, and takes the lock only to compare and — if the controller was
+	// changed behind our back — to PUT. A readback that failed reaches the lock as "not
+	// attempted": a wire we could not read is not written to, and not waited for either.
+	pre := if force { b.phy_listen_only() } else { ?bool(none) }
+	set := fn [mut b, force, pre] (silent bool) int {
+		return b.apply_phy_silence(silent, force, pre)
+	}
+	if force {
+		// THE POLL THREAD PROBES: the device is asked even when the record says it is already
+		// where the policy wants it, because a REST device can be reconfigured behind our back.
+		apply_silence_probe(b.iface, want, set, cansub_silence_reason)!
+	} else {
+		apply_silence_explained(b.iface, want, set, cansub_silence_reason)!
+	}
+}
+
+// apply_phy_silence is the driver call apply_silence_explained wraps: readback, then PUT if the
+// device disagrees with the mark. Returns 0 when the device is in the wanted mode afterwards, the
+// HTTP status when it refused, and silence_not_attempted when it could not be asked at all.
+// `pre` is the poll thread's readback, taken before the lock (see reconcile_listen_only); the
+// ordinary caller passes none and reads under it, once per policy change.
+fn (mut b CansubBus) apply_phy_silence(want bool, force bool, pre ?bool) int {
+	// MEMORY IS CONSULTED FIRST, UNDER THE WIRE LOCK — before even the running check, because a
+	// standing declared refusal is the more useful answer than "not attempted" for a sender on a
+	// bus that is closing: it names the device's rule and the remedy. Checking for a standing
+	// refusal outside the lock let N senders that all found "no fault yet" queue behind the first
+	// attempt and then each run their own readback and PUT after it — N×1.4 s of stalled traffic
+	// on one wire for one toggle, recording the identical fault N times (code-review high on
+	// #223). Only the poll thread FORCES a real attempt, once per period; everybody else, once a
+	// refusal stands, is answered from it without a round trip.
+	if !force {
+		if f := wire_silence_fault(b.iface) {
+			if f.want == want && f.declared {
+				return 500 // re-recorded identically; the device is not asked again
+			}
+		}
+	}
 	if !rlock b.stop {
 		b.stop.running
 	} {
-		return
+		return silence_stale // a closed run's thread: records nothing, clears nothing
 	}
-	want := is_listen_only(b.iface)
+	// A FAULT ABOUT THE OTHER DIRECTION IS RESOLVED BY THIS REQUEST. The device refused to go
+	// silent, the fault says so, and now the row is unticked: the controller is where the row
+	// wants it, and NOT SILENT would be a claim about a request nobody is making any more. It
+	// went on being shown until the poll thread's next successful readback — indefinitely, if
+	// that thread was stuck dialling (codex round 1 on #223). apply_silence clears on success,
+	// so returning 0 below is what clears it; this comment is here so the next reader knows the
+	// clearing is deliberate and not incidental.
 	// THE DEVICE IS ASKED, NOT OUR MEMORY OF IT.
 	//
 	// `phy_silent` records what THIS bus last PUT, which is only the same thing as what the
@@ -429,9 +507,27 @@ fn (mut b CansubBus) reconcile_listen_only() {
 	//
 	// If the device cannot be read, fall back on what we last set. A wire we cannot ask about is
 	// not one to reconfigure on a guess.
-	have := b.phy_listen_only() or { rlock b.stop {
-		b.stop.phy_silent
-	} }
+	// NOT ONE TO RECONFIGURE ON A GUESS — and now that is enforced rather than stated: a wire we
+	// cannot read is not written to. The previous version fell back to its cache and PUT anyway,
+	// which could set phy_silent on the strength of a write never read back (codex #204 r17/18).
+	// A PROBE WHOSE POLICY MOVED WHILE IT WAS READING IS DISCARDED. `want` and `pre` were taken
+	// outside the lock; a row toggled meanwhile has already been reconciled on demand by the
+	// time the probe holds it, and applying the stale pair would PUT the opposite mode LAST — a
+	// listen-only wire acknowledging, or a normal one that cannot send (codex round 6 on #223).
+	// The policy is re-read under the lock, and a probe that no longer matches it attempts
+	// nothing; the next period asks again.
+	if force && is_listen_only(b.iface) != want {
+		// STALE, NOT "NOT ATTEMPTED": the status matters, because not-attempted clears a fault
+		// about the other direction — which here is the CURRENT direction's fault, recorded by
+		// the on-demand reconcile that overtook this probe (codex round 12 on #223). A
+		// discarded probe touches nothing.
+		return silence_stale
+	}
+	have := if force {
+		pre or { return silence_not_attempted }
+	} else {
+		b.phy_listen_only() or { return silence_not_attempted }
+	}
 	// THE CACHE IS PUBLISHED BEFORE THE PUT, not after it, and whether they agree or not.
 	//
 	// `send()` refuses while `phy_silent` says the controller is silent — that is what keeps a
@@ -447,12 +543,16 @@ fn (mut b CansubBus) reconcile_listen_only() {
 		b.stop.phy_silent = have
 	}
 	if want == have {
-		return
+		return 0 // the device already agrees; apply_silence records and clears
 	}
-	nominal := cansub_timing_for(b.spec.arb, cansub_default_sample_point) or { return }
+	nominal := cansub_timing_for(b.spec.arb, cansub_default_sample_point) or {
+		return silence_not_attempted
+	}
 	mut data := ?CansubTiming(none)
 	if b.spec.fd {
-		data = cansub_timing_for_data(b.spec.data, cansub_default_sample_point) or { return }
+		data = cansub_timing_for_data(b.spec.data, cansub_default_sample_point) or {
+			return silence_not_attempted
+		}
 	}
 	// THE SAME BOUNDED BUDGET AS THE HEALTH GET BESIDE IT, and for the same reason: this runs on
 	// the thread close() joins, so a device that has gone unreachable would park Stop here for
@@ -470,16 +570,54 @@ fn (mut b CansubBus) reconcile_listen_only() {
 	if !rlock b.stop {
 		b.stop.running
 	} {
-		return
+		return silence_stale // a closed run's thread: records nothing, clears nothing
 	}
+	// A PUT THAT COULD NOT BE DELIVERED IS A FAULT, NOT "NOT ATTEMPTED". The readback above has
+	// just shown the controller in the OTHER mode from the record, so the record is disproved
+	// whatever happens to the PUT; returning not-attempted preserved it, every ordinary caller
+	// then took the recorded-state shortcut, and a controller another tool had set back to normal
+	// went on acknowledging under a silent record with nothing on the Buses row until a later
+	// probe succeeded (codex round 8 on #223). Not-attempted is right only when the readback
+	// itself could not be made. This status clears the record and shows the fault; the poll
+	// thread retries.
 	r := cansub_request(b.host, 'PUT', '/api/can/${b.spec.channel}/phy', cansub_phy_json(nominal,
-		data, want), cansub_health_timeout) or { return }
+		data, want), cansub_health_timeout) or { return cansub_put_undelivered }
 	if r.status != 200 && r.status != 204 {
-		return
+		return r.status // apply_silence records it, in cansub_silence_reason's words
 	}
 	lock b.stop {
 		b.stop.phy_silent = want
 	}
+	return 0
+}
+
+// cansub_silence_reason reads a refused PHY PUT for the operator. A 500 on a live channel is
+// DECLARED — the device's rule, not a fault — which is what lets a bench tool call that phase not
+// applicable while still failing on a driver error elsewhere.
+fn cansub_silence_reason(want bool, status int) SilenceReason {
+	return SilenceReason{
+		why:      cansub_phy_refusal(status)
+		declared: status == 500
+	}
+}
+
+// cansub_phy_refusal is the operator-facing reading of a refused PHY PUT.
+//
+// Pure, so CI can hold the one answer that matters: a 500 on a live channel is not a fault in the
+// device or in us, it is the device declining to reconfigure a channel somebody is using — and the
+// remedy is a Stop and Start, which applies the mark at open, where the device accepts it.
+// cansub_put_undelivered is the status apply_phy_silence returns when the device was read but the
+// PUT to change it could not be delivered: a fault (the record is disproved), not a refusal.
+pub const cansub_put_undelivered = -1
+
+pub fn cansub_phy_refusal(status int) string {
+	if status == cansub_put_undelivered {
+		return 'the controller was read in the other mode and the PHY PUT to change it could not be delivered; retried every poll'
+	}
+	if status == 500 {
+		return 'the device refuses PHY reconfiguration while the channel is open (HTTP 500) — a CANsub follows listen-only only at open; Stop and Start to apply it'
+	}
+	return 'PHY reconfiguration refused (HTTP ${status})'
 }
 
 // phy_listen_only reads the controller's ACTUAL listen-only bit off the device. `/api/can/{ch}`
@@ -509,14 +647,7 @@ fn (mut b CansubBus) poll_health() {
 		b.health_miss()
 		return
 	}
-	h := match state {
-		'error_active' { BusHealth.ok }
-		'error_warning' { BusHealth.warning }
-		'error_passive' { BusHealth.error_passive }
-		'bus_off' { BusHealth.bus_off }
-		'stopped' { BusHealth.unknown } // not on the bus: nothing to report, and not a fault
-		else { BusHealth.unknown }
-	}
+	h := cansub_state_health(state)
 
 	lock b.stop {
 		b.stop.health = h
@@ -532,6 +663,35 @@ fn (mut b CansubBus) poll_health() {
 // that had stopped answering went on reporting a healthy controller indefinitely (codex rounds 7
 // and 13 on #204). One miss is a hiccup; several in a row is not knowing, and `.unknown` is what
 // this ladder has for that.
+// cansub_state_health maps the device's controller state onto this repo's ladder — one to one,
+// which is the whole reason health() can say anything here at all.
+fn cansub_state_health(state string) BusHealth {
+	return match state {
+		'error_active' { BusHealth.ok }
+		'error_warning' { BusHealth.warning }
+		'error_passive' { BusHealth.error_passive }
+		'bus_off' { BusHealth.bus_off }
+		'stopped' { BusHealth.unknown } // not on the bus: nothing to report, and not a fault
+		else { BusHealth.unknown }
+	}
+}
+
+// cansub_health_now asks the device for its controller state RIGHT NOW, on the caller's thread,
+// and returns none if it cannot be asked. Not what health() returns: that is the poll thread's
+// cache, and a bench tool proving that acknowledgements resumed needs a sample it can date —
+// one that provably postdates the frames it just sent — which a cache cannot give it whatever
+// its age is assumed to be (codex round 8 on #223). One GET per call; a tool's cost, not the
+// app's.
+pub fn cansub_health_now(iface string) ?BusHealth {
+	spec := parse_cansub_iface(iface) or { return none }
+	host := cansub_host(spec.id)
+	body := cansub_get_within(host, '/api/can/${spec.channel}', cansub_health_timeout) or {
+		return none
+	}
+	state := extract_json_string(body, 'state') or { return none }
+	return cansub_state_health(state)
+}
+
 fn (mut b CansubBus) health_miss() {
 	lock b.stop {
 		b.stop.health_misses++
@@ -620,7 +780,13 @@ pub fn (mut b CansubBus) send(frame CanFrame) ! {
 	if rlock b.stop {
 		b.stop.phy_silent
 	} {
-		return error('${b.iface}: the controller is still in listen-only — this wire was silenced and is being reconfigured; the frame was not sent')
+		// THE RECORDED REASON, when there is one. "is being reconfigured" was a hope this branch
+		// measured to be false on a live channel; when the device has refused, the sender is told
+		// what the Buses row shows, remedy included.
+		if f := wire_silence_fault(b.iface) {
+			return error('${b.iface}: ${f.why}; the frame was not sent')
+		}
+		return error('${b.iface}: the controller is still in listen-only; the frame was not sent — a CANsub follows the mark at open, so Stop and Start')
 	}
 	body := cansub_encode_frame(frame)!
 	// Encoded outside the lock, written inside it: the encoding is per-frame work with no shared
@@ -808,12 +974,29 @@ fn (b &CansubBus) failure() ?string {
 	}
 }
 
-// reconcile_silence — already done, continuously, by this backend's poll thread
-// (`reconcile_listen_only`), which additionally READS THE DEVICE BACK rather than trusting a
-// record of what was last PUT. That is the right shape for a device on the end of an HTTP round
-// trip and the wrong one for a vendor DLL, which is why PCAN and Kvaser answer this differently;
-// see silence.v. Nothing to do on demand.
-pub fn (mut b CansubBus) reconcile_silence(want bool) ! {}
+// reconcile_silence — on demand, when the mark differs from what the controller was last told.
+//
+// This was a no-op in #219 on the grounds that the poll thread's `reconcile_listen_only` does the
+// work continuously. True, and LATE: a handle joining an already-held wire, or a send after a
+// toggle, went through here, found nothing to do, and the refusal (or the change) landed only when
+// the poll thread next came round, up to a poll period later — so a check right after the join
+// found no fault recorded and the wire looking obedient while it was not.
+//
+// THE COMMON PATH COSTS A LOCK READ, NOT A ROUND TRIP. `SilentBus.send` calls this before every
+// send, so comparing against the cached `phy_silent` is what keeps an HTTP GET off the send path.
+// Only a DIFFERENCE runs the full reconcile — readback, PUT, and the fault record — on the
+// caller's thread, once, and the poll thread keeps retrying after that as before.
+pub fn (mut b CansubBus) reconcile_silence(want bool) ! {
+	// NO FAST PATH OUTSIDE THE LOCK. There used to be one — "if the cache already says `want`,
+	// return" — and it inverted a toggle: thread A is mid-PUT setting normal, `phy_silent` still
+	// says silent because it moves only when the PUT succeeds; the row is ticked back to
+	// listen-only; thread B reads the stale cache, matches, returns "done"; A's PUT lands last
+	// and the controller is normal under a listen-only mark, with nothing to correct it until the
+	// next poll (codex round 1 on #223). The lock is where the truth is: apply_silence takes it,
+	// checks its own record under it — which is what makes the common case a lock acquire and no
+	// I/O — and the closure answers a standing refusal from memory without a round trip.
+	b.reconcile_listen_only(want, false)!
+}
 
 pub fn (mut b CansubBus) close() {
 	lock b.stop {
@@ -822,6 +1005,14 @@ pub fn (mut b CansubBus) close() {
 		}
 		b.stop.running = false
 	}
+	// A FAULT MUST NOT OUTLIVE THE WIRE IT DESCRIBES — and the order here is the whole point.
+	// `running` goes false FIRST, so any reconcile that has not yet taken the wire lock attempts
+	// nothing; THEN forget_wire_silence takes that lock, which waits out a reconcile already in
+	// its (bounded) round trip and clears record and fault after it — never before it, which was
+	// how a ghost of this run re-recorded a fault the next run then displayed. #219 fixed the
+	// outliving fault for PCAN this way; the first cut of this branch cleared it up here, unlocked
+	// and unordered, and got it wrong twice (code-review high on #223).
+	forget_wire_silence(b.iface)
 	// THE SOCKET IS CLOSED BY THE THREAD THAT READS IT, and this function does not touch it.
 	//
 	// It used to: `running = false`, then `ws.close()` here to WAKE the reader out of
