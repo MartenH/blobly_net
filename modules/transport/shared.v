@@ -184,7 +184,10 @@ struct SharedEntry {
 	send_mu sync.Mutex
 	// settled is CLOSED by the first opener when its attempt has an outcome, success or failure:
 	// a closed channel wakes every waiter at once, which is the broadcast a cap-1 token cannot
-	// do. Waiters block on it with a bounded timeout rather than spinning on the registry lock.
+	// do. Waiters block on it -- unbounded, and on purpose: a bounded wait is a timed select,
+	// and under starvation a timed select can be handed a negative remainder by V's runtime and
+	// panic (docs/known_issues.md, "sem_timedwait: Invalid argument"). Every path out of the
+	// attempt closes it, so nothing is waited for that cannot come.
 	settled chan bool
 mut:
 	tx_acks bool
@@ -376,8 +379,8 @@ fn shared_open(key string, spec string, make fn (string) !Bus) !Bus {
 // registry lock before it calls make(); a second opener that finds `opening` waits for THAT
 // attempt rather than starting its own -- which is also what stops a GUI Start, whose monitor
 // and two transmit taps all open one wire, from paying an unavailable device three times over.
-// On success the entry is filled in and becomes `running`; on failure -- the factory's, or the
-// first opener's listen-only reconcile that follows it -- the failure is recorded on the entry,
+// On success the entry is filled in and becomes `running` -- only once the controller's policy
+// has been applied too; on failure -- the factory's, or that reconcile's -- the failure is recorded on the entry,
 // the entry is removed, and every waiter on that attempt gets that error. A caller arriving
 // after the removal opens afresh, as before: a failed open still publishes nothing to join.
 //
@@ -471,12 +474,9 @@ fn shared_open_events(key string, spec string, make fn (string) !SharedDriver) !
 		}
 		if wait {
 			if waited != none {
-				// Woken by the opener closing `settled`, or by the bound -- a belt for the
-				// braces, never the mechanism.
-				select {
-					_ := <-settled {}
-					shared_reader_poll_ms * time.millisecond {}
-				}
+				// Woken by the opener closing `settled` -- see the field for why there is no
+				// bound on this wait.
+				_ := <-settled
 			} else {
 				time.sleep(time.millisecond)
 			}
@@ -490,6 +490,23 @@ fn shared_open_events(key string, spec string, make fn (string) !SharedDriver) !
 				e.fail_open(err.msg())
 				return err
 			}
+			// THE CONTROLLER'S POLICY IS PART OF THE ATTEMPT, so the entry stays `opening` until
+			// it has been applied: set `running` first and a waiter woken by its bound could join
+			// during a listen-only reconcile that then failed -- the first opener's close was no
+			// longer the last, the failed entry stayed, and the waiters retried or returned
+			// handles instead of sharing the refusal (codex round 1 on #230). Asked of the
+			// driver directly: the handle's own reconcile refuses an entry that is not running.
+			want := is_listen_only(spec)
+			driver.reconcile_silence(want) or {
+				if want {
+					message := '${spec}: opened, but its controller would not be set listen-only — ${err.msg()}'
+					e.mu.lock()
+					e.driver = driver
+					e.mu.unlock()
+					e.fail_open(message)
+					return error(message)
+				}
+			}
 			e.mu.lock()
 			e.tx_acks = driver.reports_tx_ack()
 			e.driver = driver
@@ -501,7 +518,7 @@ fn shared_open_events(key string, spec string, make fn (string) !SharedDriver) !
 			e.unread[1] = time.ticks()
 			e.state = .running
 			e.mu.unlock()
-			handle = &SharedHandle{
+			mut h := &SharedHandle{
 				key:    key
 				entry:  e
 				id:     1
@@ -509,38 +526,24 @@ fn shared_open_events(key string, spec string, make fn (string) !SharedDriver) !
 				wake:   chan bool{cap: 1}
 			}
 			spawn e.read_loop()
+			e.settled.close()
+			h.entry.touch(h.id)
+			return h
 		}
 		if mut h := handle {
-			if start == none {
-				h.entry.admit(mut h) or {
-					// The generation is failed and removed; this handle's close releases its
-					// reference and the loop opens a fresh one through the factory.
-					h.close()
-					continue
-				}
+			h.entry.admit(mut h) or {
+				// The generation is failed and removed; this handle's close releases its
+				// reference and the loop opens a fresh one through the factory.
+				h.close()
+				continue
 			}
 			// A join still reconciles controller policy because its factory did not run.
 			want := is_listen_only(spec)
 			h.reconcile_silence(want) or {
 				if want {
-					message := '${spec}: joined an already-open wire but its controller would not be set listen-only — ${err.msg()}'
-					if mut e := start {
-						// The first opener's refusal is the ATTEMPT's outcome: recorded before
-						// the close removes the entry, so the waiters share it instead of each
-						// paying the factory to be refused the same way (self-review).
-						e.mu.lock()
-						e.open_failure = message
-						e.mu.unlock()
-					}
 					h.close()
-					if mut e := start {
-						e.settled.close()
-					}
-					return error(message)
+					return error('${spec}: joined an already-open wire but its controller would not be set listen-only — ${err.msg()}')
 				}
-			}
-			if mut e := start {
-				e.settled.close()
 			}
 			// The attentive second starts when the CALLER gets the handle, not when it was
 			// admitted: a reconcile that waited behind a mid-run silence transition could

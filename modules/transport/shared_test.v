@@ -28,6 +28,11 @@ struct FakeBus {
 	spec string
 	rx   chan CanFrame
 	ctl  &FakeControls
+	// reconcile_gate, when set, is waited on by every reconcile -- a controller that is slow to
+	// answer -- and reconcile_failure is what it then says. Only the slow factory sets them.
+	reconcile_gate    chan bool = chan bool{cap: 0}
+	reconcile_failure string
+	gated_reconcile   bool
 mut:
 	sent       []CanFrame
 	reconciles int
@@ -75,6 +80,12 @@ fn (mut f FakeBus) recv(timeout_ms int) !CanFrame {
 
 fn (mut f FakeBus) reconcile_silence(want bool) ! {
 	f.reconciles++
+	if f.gated_reconcile {
+		_ := <-f.reconcile_gate
+		if f.reconcile_failure != '' {
+			return error(f.reconcile_failure)
+		}
+	}
 }
 
 fn (mut f FakeBus) close() {
@@ -109,9 +120,11 @@ mut:
 // against a device that is reachable enough to stall. Which outcome it then has is the test's
 // choice; how many times it ran is counted, because one attempt shared is the whole point.
 __global (
-	slow_fake_gates   map[string]chan bool // one per wire: a token must release THAT factory
-	slow_fake_calls   i64
-	slow_fake_failure string
+	slow_fake_gates             map[string]chan bool // one per wire: a token must release THAT factory
+	slow_fake_calls             i64
+	slow_fake_failure           string
+	slow_fake_reconcile_gate    chan bool
+	slow_fake_reconcile_failure string
 )
 
 fn slow_fake_make(spec string) !Bus {
@@ -122,9 +135,12 @@ fn slow_fake_make(spec string) !Bus {
 		return error(slow_fake_failure)
 	}
 	return &FakeBus{
-		spec: spec
-		rx:   fake_rx
-		ctl:  fake_ctl
+		spec:              spec
+		rx:                fake_rx
+		ctl:               fake_ctl
+		gated_reconcile:   slow_fake_reconcile_failure != ''
+		reconcile_gate:    slow_fake_reconcile_gate
+		reconcile_failure: slow_fake_reconcile_failure
 	}
 }
 
@@ -134,9 +150,57 @@ fn reset_slow_fake(failure string) {
 		'slow:shared':  chan bool{cap: 8}
 		'slow:other':   chan bool{cap: 8}
 		'slow:failing': chan bool{cap: 8}
+		'slow:refused': chan bool{cap: 8}
 	}
 	stdatomic.store_i64(&slow_fake_calls, 0)
 	slow_fake_failure = failure
+	slow_fake_reconcile_gate = chan bool{cap: 8}
+	slow_fake_reconcile_failure = ''
+}
+
+// THE CONTROLLER'S POLICY IS PART OF THE ATTEMPT. A listen-only wire whose factory succeeds and
+// whose controller then refuses silence: a waiter that wakes while that reconcile is still in
+// flight must not join -- the entry is not running yet -- and when the refusal lands every
+// waiter shares it, from one factory call, with no handle issued to anybody (codex round 1 on
+// #230).
+fn test_a_first_open_whose_listen_only_reconcile_is_refused_fails_every_waiter_with_it() {
+	reset_slow_fake('')
+	slow_fake_reconcile_failure = 'controller stays normal'
+	set_listen_only('slow:refused', true)
+	defer {
+		set_listen_only('slow:refused', false)
+	}
+	out := chan SharedOpenOutcome{cap: 3}
+	for _ in 0 .. 3 {
+		spawn open_slow_for_test('slow:refused', out)
+	}
+	deadline := time.ticks() + 2000
+	for stdatomic.load_i64(&slow_fake_calls) < 1 {
+		assert time.ticks() < deadline, 'the factory was never called'
+		time.sleep(time.millisecond)
+	}
+	for shared_test_opening_waiters('slow:refused') < 2 {
+		assert time.ticks() < deadline, 'the other openers never found the reservation'
+		time.sleep(time.millisecond)
+	}
+	slow_fake_gates['slow:refused'] <- true // the factory returns; the reconcile now stalls
+	// Longer than the waiters' wake-up bound: they wake, find the entry still opening, wait on.
+	time.sleep((shared_reader_poll_ms + 20) * time.millisecond)
+	assert out.len == 0, 'an opener returned while the controller policy was still being applied'
+	slow_fake_reconcile_gate <- true
+	for _ in 0 .. 3 {
+		select {
+			got := <-out {
+				assert got.err.contains('controller stays normal'), 'an opener got `${got.err}`'
+			}
+			2000 * time.millisecond {
+				assert false, 'an opener never returned'
+			}
+		}
+	}
+	assert stdatomic.load_i64(&slow_fake_calls) == 1, 'waiters on a refused attempt started their own'
+	assert fake_ctl.closes == 1, 'the refused generation must release its driver once'
+	assert shared_test_opening_waiters('slow:refused') == 0, 'the refused reservation must be gone'
 }
 
 // shared_test_opening_waiters is how many callers are waiting on `key`'s current reservation.
