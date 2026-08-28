@@ -14,9 +14,20 @@ import time
 // poll then consumed the next test's injected item -- one timed-out receive turned into five
 // failures and a crash, in CI and on a two-core bench alike (#227). The globals are the TEST
 // thread's way to reach the current instance; a leftover reader keeps polling its own.
+// FakeControls is the reader-side state of one FakeBus generation: the counters its reader
+// thread touches and the failure it is armed with. One allocation per test, captured by pointer
+// at make, so a leftover reader from a failed earlier test counts and consumes on its own.
+struct FakeControls {
+mut:
+	closes     i64
+	recv_calls i64
+	recv_fails i64
+}
+
 struct FakeBus {
 	spec string
 	rx   chan CanFrame
+	ctl  &FakeControls
 mut:
 	sent       []CanFrame
 	reconciles int
@@ -28,11 +39,11 @@ fn (mut f FakeBus) send(frame CanFrame) ! {
 
 fn (mut f FakeBus) recv(timeout_ms int) !CanFrame {
 	// Counted atomically: the hub's reader thread increments it and the test thread reads it.
-	stdatomic.add_i64(&fake_recv_calls, 1)
+	stdatomic.add_i64(&f.ctl.recv_calls, 1)
 	// Fails ONCE per unit armed, so a test can fail one generation's read and let its
 	// replacement work.
-	if stdatomic.load_i64(&fake_recv_fails) > 0 {
-		stdatomic.add_i64(&fake_recv_fails, -1)
+	if stdatomic.load_i64(&f.ctl.recv_fails) > 0 {
+		stdatomic.add_i64(&f.ctl.recv_fails, -1)
 		return error(fake_recv_failure_msg)
 	}
 	if timeout_ms == 0 {
@@ -68,7 +79,7 @@ fn (mut f FakeBus) reconcile_silence(want bool) ! {
 
 fn (mut f FakeBus) close() {
 	// Atomic: the hub's reader thread closes a failed generation while a test thread polls.
-	stdatomic.add_i64(&fake_closes, 1)
+	stdatomic.add_i64(&f.ctl.closes, 1)
 }
 
 fn (mut f FakeBus) health() BusHealth {
@@ -96,11 +107,9 @@ mut:
 
 __global (
 	fake_opens      int
-	fake_closes     i64
 	fake_fails      bool
-	fake_recv_calls i64
-	fake_recv_fails i64
 	fake_rx         chan CanFrame
+	fake_ctl        &FakeControls
 	hub_fake        HubFakeConfig
 	hub_fake_opened chan bool
 	hub_fake_opens  int
@@ -115,14 +124,15 @@ fn fake_make(spec string) !Bus {
 	return &FakeBus{
 		spec: spec
 		rx:   fake_rx
+		ctl:  fake_ctl
 	}
 }
 
 fn reset_fakes() {
 	fake_opens = 0
-	fake_closes = 0
 	fake_fails = false
 	fake_rx = chan CanFrame{cap: 8}
+	fake_ctl = &FakeControls{}
 }
 
 fn test_second_open_does_not_reach_the_driver() {
@@ -142,9 +152,9 @@ fn test_driver_is_released_only_when_the_last_handle_closes() {
 	mut b := shared_open('k2', 'fake:1', fake_make)!
 	a.close()
 	// The reader closing must not take the wire away from the transmit taps still holding it.
-	assert fake_closes == 0
+	assert fake_ctl.closes == 0
 	b.close()
-	assert fake_closes == 1
+	assert fake_ctl.closes == 1
 }
 
 fn test_closing_a_handle_twice_does_not_release_the_wire() {
@@ -155,9 +165,9 @@ fn test_closing_a_handle_twice_does_not_release_the_wire() {
 	a.close() // the app does this on at least one race path
 	// Without the idempotence guard the second decrement reaches zero and closes the driver
 	// while `b` is still transmitting on it.
-	assert fake_closes == 0
+	assert fake_ctl.closes == 0
 	b.close()
-	assert fake_closes == 1
+	assert fake_ctl.closes == 1
 }
 
 fn test_a_closed_handle_refuses_to_send() {
@@ -177,7 +187,7 @@ fn test_reopening_after_the_last_close_opens_the_driver_again() {
 	reset_fakes()
 	mut a := shared_open('k5', 'fake:1', fake_make)!
 	a.close()
-	assert fake_closes == 1
+	assert fake_ctl.closes == 1
 	// Stop then Start: the entry must be gone, not a stale one pointing at a closed driver.
 	mut b := shared_open('k5', 'fake:1', fake_make)!
 	assert fake_opens == 2
@@ -190,9 +200,9 @@ fn test_different_destinations_are_independent() {
 	mut b := shared_open('k6b', 'fake:2', fake_make)!
 	assert fake_opens == 2
 	a.close()
-	assert fake_closes == 1
+	assert fake_ctl.closes == 1
 	b.close()
-	assert fake_closes == 2
+	assert fake_ctl.closes == 2
 }
 
 fn test_same_wire_with_different_settings_is_refused() {
@@ -221,7 +231,7 @@ fn test_a_failed_open_leaves_no_reservation_behind() {
 	assert fake_opens == 1
 	a.send(CanFrame{ id: 0x123 })!
 	a.close()
-	assert fake_closes == 1
+	assert fake_ctl.closes == 1
 }
 
 // A CLOSED HANDLE TOUCHES NO DRIVER, on the reconcile path as well as on send.
@@ -232,7 +242,7 @@ fn test_a_failed_open_leaves_no_reservation_behind() {
 // (codex round 4 on #219). It answers with the same sentence send() does.
 fn test_a_closed_shared_handle_does_not_reconcile() {
 	fake_opens = 0
-	fake_closes = 0
+	fake_ctl = &FakeControls{}
 	fake_fails = false
 	mut a := shared_open('fake:silent-guard', 'fake:silent-guard', fake_make) or {
 		assert false, err.msg()
@@ -693,10 +703,8 @@ fn test_a_stuck_send_does_not_block_health_reconcile_or_close() {
 // the saving would be paid for in latency.
 fn test_a_wire_with_no_subscriber_is_not_polled_and_the_first_recv_wakes_it() {
 	fake_opens = 0
-	fake_closes = 0
+	fake_ctl = &FakeControls{}
 	fake_fails = false
-	stdatomic.store_i64(&fake_recv_fails, 0)
-	stdatomic.store_i64(&fake_recv_calls, 0)
 	fake_rx = chan CanFrame{cap: 8}
 	mut tx_only := shared_open('fake:idle', 'fake:idle', fake_make)!
 	tx_only.send(CanFrame{ id: 0x100 }) or {}
@@ -706,10 +714,10 @@ fn test_a_wire_with_no_subscriber_is_not_polled_and_the_first_recv_wakes_it() {
 	shared_test_wait_parked(mut tx_only)
 	// Parked after the attentive second, which the reader spent polling on the fresh handle's
 	// behalf; what is counted is the cost from here on.
-	stdatomic.store_i64(&fake_recv_calls, 0)
+	stdatomic.store_i64(&fake_ctl.recv_calls, 0)
 	time.sleep(300 * time.millisecond)
 	// One drain at most in the window.
-	reads := stdatomic.load_i64(&fake_recv_calls)
+	reads := stdatomic.load_i64(&fake_ctl.recv_calls)
 	assert reads <= 1, 'the reader polled the driver ${reads} times with nobody listening'
 	// A frame arrives while nobody listens; then a listener opens. The kick that wakes the reader
 	// drains that frame away, so the listener's first receive is a timeout, not stale history.
@@ -740,13 +748,12 @@ fn test_a_wire_with_no_subscriber_is_not_polled_and_the_first_recv_wakes_it() {
 // drain reads the driver, and a fatal read error takes the generation down like any other.
 fn test_a_fatal_read_error_reaches_a_parked_reader() {
 	fake_opens = 0
-	fake_closes = 0
+	fake_ctl = &FakeControls{}
 	fake_fails = false
 	fake_rx = chan CanFrame{cap: 8}
-	stdatomic.store_i64(&fake_recv_fails, 0)
 	mut tx_only := shared_open('fake:idle-fatal', 'fake:idle-fatal', fake_make)!
 	shared_test_wait_parked(mut tx_only)
-	stdatomic.store_i64(&fake_recv_fails, 1)
+	stdatomic.store_i64(&fake_ctl.recv_fails, 1)
 	// The next drain tick finds it; nothing subscribes and nothing kicks. Observed on THIS
 	// entry — a global close count could be another test's leftover reader failing on the same
 	// global switch.
@@ -758,7 +765,6 @@ fn test_a_fatal_read_error_reaches_a_parked_reader() {
 		}
 		time.sleep(10 * time.millisecond)
 	}
-	stdatomic.store_i64(&fake_recv_fails, 0)
 	if _ := tx_only.send(CanFrame{ id: 0x102 }) {
 		assert false, 'a failed generation must reject later sends'
 	} else {
@@ -775,16 +781,15 @@ const fake_recv_failure_msg = 'device unplugged'
 // (codex rounds 1 and 2 on #224).
 fn test_a_join_that_finds_the_parked_generation_dead_reopens_through_the_factory() {
 	fake_opens = 0
-	stdatomic.store_i64(&fake_closes, 0)
+	fake_ctl = &FakeControls{}
 	fake_fails = false
 	fake_rx = chan CanFrame{cap: 8}
-	stdatomic.store_i64(&fake_recv_fails, 0)
 	mut tx_only := shared_open('fake:idle-dead', 'fake:idle-dead', fake_make)!
 	shared_test_wait_parked(mut tx_only)
-	stdatomic.store_i64(&fake_recv_fails, 1)
+	stdatomic.store_i64(&fake_ctl.recv_fails, 1)
 	mut listener := shared_open('fake:idle-dead', 'fake:idle-dead', fake_make)!
 	assert fake_opens == 2, 'the join found the generation dead and must have opened a new one'
-	assert stdatomic.load_i64(&fake_recv_fails) == 0, 'the armed failure was consumed by the join'
+	assert stdatomic.load_i64(&fake_ctl.recv_fails) == 0, 'the armed failure was consumed by the join'
 	if _ := tx_only.send(CanFrame{ id: 0x103 }) {
 		assert false, 'the old generation must be failed'
 	} else {
@@ -803,10 +808,9 @@ fn test_a_join_that_finds_the_parked_generation_dead_reopens_through_the_factory
 // on #224).
 fn test_an_expired_tap_starts_at_the_tail_when_it_finally_receives() {
 	fake_opens = 0
-	stdatomic.store_i64(&fake_closes, 0)
+	fake_ctl = &FakeControls{}
 	fake_fails = false
 	fake_rx = chan CanFrame{cap: 8}
-	stdatomic.store_i64(&fake_recv_fails, 0)
 	mut tap := shared_open('fake:idle-tap', 'fake:idle-tap', fake_make)!
 	mut reader := shared_open('fake:idle-tap', 'fake:idle-tap', fake_make)!
 	// Committed while the tap is attentive: the reader receives it, the tap does not read.
@@ -832,13 +836,12 @@ fn test_an_expired_tap_starts_at_the_tail_when_it_finally_receives() {
 // is the caller's answer, not a timeout followed by silence (codex round 3 on #224).
 fn test_a_late_first_receive_that_finds_the_adapter_gone_reports_it() {
 	fake_opens = 0
-	stdatomic.store_i64(&fake_closes, 0)
+	fake_ctl = &FakeControls{}
 	fake_fails = false
 	fake_rx = chan CanFrame{cap: 8}
-	stdatomic.store_i64(&fake_recv_fails, 0)
 	mut tap := shared_open('fake:idle-late-fatal', 'fake:idle-late-fatal', fake_make)!
 	shared_test_wait_parked(mut tap)
-	stdatomic.store_i64(&fake_recv_fails, 1)
+	stdatomic.store_i64(&fake_ctl.recv_fails, 1)
 	if _ := tap.recv(1000) {
 		assert false, 'a fatal read must not be swallowed by the late first receive'
 	} else {
@@ -852,10 +855,9 @@ fn test_a_late_first_receive_that_finds_the_adapter_gone_reports_it() {
 // sends a request must get the reply, not have it drained as nobody's (codex round 4 on #224).
 fn test_a_send_after_a_silent_second_keeps_the_reply() {
 	fake_opens = 0
-	stdatomic.store_i64(&fake_closes, 0)
+	fake_ctl = &FakeControls{}
 	fake_fails = false
 	fake_rx = chan CanFrame{cap: 8}
-	stdatomic.store_i64(&fake_recv_fails, 0)
 	mut client := shared_open('fake:idle-client', 'fake:idle-client', fake_make)!
 	shared_test_wait_parked(mut client)
 	client.send(CanFrame{ id: 0x7E0, data: [u8(0x3E)] })!
@@ -871,10 +873,9 @@ fn test_a_send_after_a_silent_second_keeps_the_reply() {
 // empty, that is the boundary, and what arrives after it is delivered (codex round 6 on #224).
 fn test_a_zero_timeout_poll_from_an_expired_tap_subscribes_on_a_quiet_wire() {
 	fake_opens = 0
-	stdatomic.store_i64(&fake_closes, 0)
+	fake_ctl = &FakeControls{}
 	fake_fails = false
 	fake_rx = chan CanFrame{cap: 8}
-	stdatomic.store_i64(&fake_recv_fails, 0)
 	mut tap := shared_open('fake:idle-poll', 'fake:idle-poll', fake_make)!
 	shared_test_wait_parked(mut tap)
 	if _ := tap.recv(0) {
@@ -937,7 +938,7 @@ fn shared_test_parked_discards(mut bus Bus) u64 {
 // and the SharedBusDriver adapter, which until this test was covered only by a bench run.
 fn test_shared_open_fans_a_plain_bus_out_to_every_handle() {
 	fake_opens = 0
-	fake_closes = 0
+	fake_ctl = &FakeControls{}
 	fake_fails = false
 	fake_rx = chan CanFrame{cap: 8}
 	mut a := shared_open('fake:fanout', 'fake:fanout', fake_make)!
@@ -958,7 +959,7 @@ fn test_shared_open_fans_a_plain_bus_out_to_every_handle() {
 	assert fb.data[0] == 0x02
 	a.close()
 	b.close()
-	assert fake_closes == 1
+	assert fake_ctl.closes == 1
 }
 
 fn test_a_tx_ack_from_a_closed_origin_still_reaches_other_handles() {

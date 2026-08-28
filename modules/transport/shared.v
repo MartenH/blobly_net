@@ -253,22 +253,38 @@ fn shared_remove_entry(e &SharedEntry) {
 // is kept wherever it stands; removing entries around it does not change the order of the rest,
 // which is what oldest-equal-first matching depends on.
 fn (mut e SharedEntry) expire_pending(now i64) {
-	mut kept := []SharedPendingSend{cap: e.pending.len}
-	mut dropped := 0
+	// Looked at before anything is rebuilt: this runs before every send, under e.mu, and with
+	// acknowledgements delayed the list is long and nothing in it has expired yet, so a rebuild
+	// per call would make sending quadratic and keep the reader off the lock (codex round 2 on
+	// #228).
+	mut any := false
 	for pending in e.pending {
 		if pending.expires_at > 0 && pending.expires_at <= now {
-			if pending.failed {
-				e.expired_failed_sends++
-			} else {
-				e.expired_tx_acks++
-			}
-			dropped++
+			any = true
+			break
+		}
+	}
+	if !any {
+		return
+	}
+	mut kept := []SharedPendingSend{cap: e.pending.len}
+	for pending in e.pending {
+		if pending.expires_at > 0 && pending.expires_at <= now {
+			e.retire_pending(pending)
 			continue
 		}
 		kept << pending
 	}
-	if dropped > 0 {
-		e.pending = kept
+	e.pending = kept
+}
+
+// retire_pending counts a pending entry that is leaving the list unacknowledged: a write that
+// failed was never a lost acknowledgement, whichever path removes it. Caller holds mu.
+fn (mut e SharedEntry) retire_pending(pending SharedPendingSend) {
+	if pending.failed {
+		e.expired_failed_sends++
+	} else {
+		e.expired_tx_acks++
 	}
 }
 
@@ -1004,8 +1020,8 @@ fn (mut h SharedHandle) send(frame CanFrame) ! {
 		now := time.ticks()
 		e.expire_pending(now)
 		if e.pending.len >= shared_pending_capacity {
+			e.retire_pending(e.pending[0])
 			e.pending.delete(0)
-			e.expired_tx_acks++
 		}
 		e.next_send_token++
 		token = e.next_send_token
