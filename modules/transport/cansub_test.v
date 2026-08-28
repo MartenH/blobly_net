@@ -776,6 +776,8 @@ fn test_warm_all_warms_each_device_once() {
 		cansub_addrs.warmups
 	} - before
 	assert two == 3
+}
+
 // A SEND THAT HANGS IS CUT OFF BEFORE ANYBODY NOTICES: Stop waits under the write lock for a
 // send in flight, so the write timeout is what bounds Stop on a wire whose device has stopped
 // taking bytes. The library's default is 30 s (#240).
