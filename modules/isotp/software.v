@@ -266,6 +266,8 @@ pub fn (mut c SoftChannel) drain_quiet(quiet_ms int) {
 // before it reports nothing: a finite backlog is crossed, an endless one is not waited out.
 const zero_poll_scan_frames = 4096
 
+// A frame is ours when its id, its WIDTH and its kind match: a remote request on our id carries
+// no data and is not ISO-TP (codex rounds 18 and 19 on #225).
 fn (mut c SoftChannel) rx_raw(timeout_ms int) ![]u8 {
 	// NEGATIVE IS FOREVER, as the kernel channel and every bus have it. Computed as a deadline it
 	// was a deadline in the past, and recv(-1) on the software channel returned timeout without
@@ -273,7 +275,7 @@ fn (mut c SoftChannel) rx_raw(timeout_ms int) ![]u8 {
 	if timeout_ms < 0 {
 		for {
 			f := c.bus.recv(-1)!
-			if f.id == c.rx_id && f.extended == c.ext {
+			if f.id == c.rx_id && f.extended == c.ext && !f.rtr {
 				return f.data
 			}
 		}
@@ -293,7 +295,7 @@ fn (mut c SoftChannel) rx_raw(timeout_ms int) ![]u8 {
 		}
 		c.scanned++
 		f := c.bus.recv(int(if rem < 0 { i64(0) } else { rem }))!
-		if f.id == c.rx_id && f.extended == c.ext {
+		if f.id == c.rx_id && f.extended == c.ext && !f.rtr {
 			return f.data
 		}
 	}

@@ -359,6 +359,9 @@ fn test_malformed_single_and_first_frames_are_refused() {
 	} else {
 		assert err.msg() == 'timeout', err.msg()
 	}
+	// (A remote request on our id is not data either — codex round 19 on #225 — but this app
+	// transmits no remote frames (#210), so the in-process bus refuses to inject one and the
+	// filter is pinned by review rather than by a test here.)
 	ch.close()
 	peer.close()
 }
