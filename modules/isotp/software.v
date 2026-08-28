@@ -113,6 +113,12 @@ pub fn (mut c SoftChannel) send(data []u8) ! {
 }
 
 // recv reassembles one ISO-TP PDU (SF directly; FF → send FC → collect CFs).
+// diagnostics is the bus's: what it dropped or the controller reported is what this channel's
+// PDUs were riding (#213).
+pub fn (mut c SoftChannel) diagnostics() transport.BusDiagnostics {
+	return c.bus.diagnostics()
+}
+
 pub fn (mut c SoftChannel) recv(timeout_ms int) ![]u8 {
 	// ONE DEADLINE FOR THE WHOLE PDU. Each Consecutive Frame used to get the full timeout afresh,
 	// so a peer stalling just under it between frames made request(..., 2000) wait many times

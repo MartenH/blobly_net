@@ -491,6 +491,20 @@ fn health_msg(iface string, from transport.BusHealth, to transport.BusHealth) st
 	}
 }
 
+// diag_msg words a change in a wire's diagnostics for the Log: what is new since the last line
+// and the total since open, so a reader can tell a burst from a steady leak — or, when a count
+// FELL, that the backend was reopened under the row (a reader handoff on a wire that is not
+// shared) and the totals start again.
+fn diag_msg(iface string, from transport.BusDiagnostics, to transport.BusDiagnostics) string {
+	if to.fell(from) {
+		if to.is_empty() {
+			return '${iface}: reopened — nothing counted yet'
+		}
+		return '${iface}: reopened — counts since: ${to.str()}'
+	}
+	return '${iface}: +${to.minus(from).short().replace(' · ', ', +')} — since open: ${to.str()}'
+}
+
 fn rx_loop(app &App, ci int, iface string, gen u64) {
 	mut bus := app.open_transport(iface) or {
 		eprintln('rx ${iface}: ${err}')
@@ -573,6 +587,12 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	// local last-state means no unlocked read of shared state, and the write is generation
 	// -guarded like every other flag this loop owns
 	mut last_health := transport.BusHealth.unknown
+	// Seeded from the row, which a handoff has filled with the retiring reader's last reading:
+	// a successor on a shared wire sees the same driver counters and must not narrate them
+	// again as new. At Start the row was reset, so this is empty there (#213).
+	a.mu.lock()
+	mut last_diag := if ci < a.chans.len { a.chans[ci].diag } else { transport.BusDiagnostics{} }
+	a.mu.unlock()
 	mut next_health := i64(0)
 	for a.running && a.run_gen == gen && a.chans[ci].enabled {
 		if time.ticks() >= next_health {
@@ -591,6 +611,21 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				vgui.wake()
 				last_health = h
 			}
+			// The same poll, the same rule, for what is neither a frame nor a rung (#213):
+			// narrated when the counts CHANGE — once a second at most, so a wire dropping
+			// steadily is one line a second, not one per record — and shown on the row.
+			d := bus.diagnostics()
+			if d != last_diag {
+				a.mu.lock()
+				if a.running && a.run_gen == gen && ci < a.chans.len {
+					a.chans[ci].diag = d
+					a.chans[ci].diag_at = time.ticks()
+					a.log_append_locked(diag_msg(iface, last_diag, d))
+				}
+				a.mu.unlock()
+				vgui.wake()
+				last_diag = d
+			}
 		}
 		// track the real link state so a bound-but-DOWN iface shows "down" (red), not "run",
 		// and flips to green the moment the user brings it up (ip link set … up).
@@ -607,6 +642,21 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			// an unplugged VN while the panel still showed the channel running.
 			if err.msg().contains('timeout') {
 				continue
+			}
+			// ONE LAST SAMPLE. The counts are polled before the receive, and a receive that
+			// fails can have counted first -- PCAN books an overrun verdict and then meets a
+			// failed one in the same call -- so what the wire knew at its death was the sample
+			// nobody read (codex round 1 on #231).
+			final := bus.diagnostics()
+			if final != last_diag {
+				a.mu.lock()
+				if a.running && a.run_gen == gen && ci < a.chans.len {
+					a.chans[ci].diag = final
+					a.chans[ci].diag_at = time.ticks()
+					a.log_append_locked(diag_msg(iface, last_diag, final))
+				}
+				a.mu.unlock()
+				last_diag = final
 			}
 			a.notify('${iface}: receive failed — ${err}')
 			// DISABLED, not merely broken out of. The teardown below respawns rx_loop whenever
@@ -761,7 +811,25 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			vgui.wake()
 		}
 	}
+	// ONE LAST SAMPLE ON THE WAY OUT, whatever ended the loop: a Stop inside the poll interval
+	// left up to a second of counts unread, and the retained chip is the operator's post-run
+	// view. Written AND narrated if the GENERATION still matches -- Stop has cleared `running`
+	// by now, but what this sample holds happened in this run, and the Log is the only record
+	// that survives the next Start (codex round 3 on #231, and again on the rebased head).
+	// Taken AFTER the close: a subscriber's close is where its last ring gap is booked, and a
+	// closed hub handle still answers with the wire's totals (codex round 5).
 	bus.close()
+	final := bus.diagnostics()
+	if final != last_diag {
+		a.mu.lock()
+		if a.run_gen == gen && ci < a.chans.len {
+			a.chans[ci].diag = final
+			a.chans[ci].diag_at = time.ticks()
+			a.log_append_locked(diag_msg(iface, last_diag, final))
+		}
+		a.mu.unlock()
+		last_diag = final
+	}
 	a.mu.lock()
 	// Only if this run is still the current one. A loop that exited because the generation moved
 	// on would otherwise clear a flag the NEW loop just set, and every emission after that would
@@ -796,6 +864,10 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 					// (codex #159).
 					a.chans[cj].rx_last = a.chans[ci].rx_last
 					a.chans[cj].rx_seen = a.chans[ci].rx_seen
+					// And the counts (#213): the successor seeds its narration from these,
+					// so a shared wire's totals are not logged twice as new.
+					a.chans[cj].diag = a.chans[ci].diag
+					a.chans[cj].diag_at = a.chans[ci].diag_at
 					a.chans[cj].spawning = true
 					spawn rx_loop(app, cj, other.iface, gen)
 					break
@@ -1265,7 +1337,12 @@ fn script_worker(app &App, path string) {
 	}
 	env.run_file(path) or { a.script_push('error: ${err}') }
 	a.script_push('${env.passed()}/${env.total()} passed, ${env.failed()} failed')
-	env.close()
+	// What the script's own wires counted (#213): a suite run from here while the measurement
+	// is stopped has no RX loop polling on its behalf, so this is its only outlet (codex
+	// round 5 on #231).
+	for name, d in env.close_reporting() {
+		a.script_push('${name}: ${d.str()}')
+	}
 	a.script_done()
 }
 

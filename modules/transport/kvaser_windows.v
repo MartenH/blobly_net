@@ -24,6 +24,7 @@
 // See docs/windows_can_hardware.md.
 module transport
 
+import sync.stdatomic
 import sync
 
 #include "kvaser_shim.h"
@@ -100,6 +101,9 @@ fn kvaser_handles(iface string) []int {
 pub struct KvaserBus {
 mut:
 	handle int
+	// Error frames canlib handed this handle: not frames, reported through diagnostics()
+	// (#213). Atomic: counted on whichever thread receives, read by the GUI's RX loop.
+	bus_errors u64
 	// The wire this handle is, so the silence policy can be asked about it — see ensure_silence.
 	iface string
 	// The mode this handle was OPENED in. A channel opened classic cannot carry an FD frame
@@ -411,6 +415,7 @@ pub fn (mut b KvaserBus) recv(timeout_ms int) !CanFrame {
 	// and is reported as nothing arriving, which is what the shim used to do with it.
 	f := kvaser_decode_flags(flags)
 	if f.error_frame {
+		stdatomic.add_u64(&b.bus_errors, 1)
 		return error('timeout')
 	}
 	mut out := []u8{len: int(ln)}
@@ -460,6 +465,13 @@ pub fn (mut b KvaserBus) health() BusHealth {
 		return .unknown
 	}
 	return kvaser_status_health(flags)
+}
+
+// diagnostics: the error frames this handle was handed and reported as nothing arriving (#213).
+pub fn (mut b KvaserBus) diagnostics() BusDiagnostics {
+	return BusDiagnostics{
+		bus_errors: stdatomic.load_u64(&b.bus_errors)
+	}
 }
 
 // kvaser_list enumerates attached Kvaser channels (physical + virtual) for discovery.

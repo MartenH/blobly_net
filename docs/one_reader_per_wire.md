@@ -135,9 +135,10 @@ today. Notifications carry no frames; a capacity-one wake token or equivalent ma
 number of commits because `recv` always rechecks the sequence state.
 
 Overwriting a slot never waits for a reader. Fast cursors continue normally, while only cursors
-behind the new oldest sequence observe a gap. The per-handle gap count remains internal in this
-change: #213 is the transport-wide diagnostics/telemetry seam. Tests must nevertheless make the
-count observable inside `transport` so a later API can expose it without changing the algorithm.
+behind the new oldest sequence observe a gap. The gap is counted per handle (its own loss) and
+summed per wire, and it is the WIRE's sum that `Bus.diagnostics()` reports as `dropped` through
+every handle (#213), folded with the driver's own counters — the row polls the handle that kept
+up, and the loss it must show is a sibling's.
 
 ## CANsub transmit acknowledgements and origin exclusion
 
@@ -185,9 +186,9 @@ still valid attribution for the pending item and all remaining handles receive t
 A flagged TX acknowledgement which matches no pending local send is **dropped**, increments an
 unmatched-TX diagnostic and is never published as an external frame. Guessing would be worse:
 publishing it as RX could feed a simulator or ISO-TP client its own request. Stale pending items
-expire and increment a missing-TX-ack diagnostic so the list remains bounded. These diagnostics
-stay internal until #213 provides the public transport telemetry seam; tests inspect them through
-transport-private helpers.
+expire and increment a missing-TX-ack diagnostic so the list remains bounded. These two stay
+internal — they describe the hub's bookkeeping, not the wire — and tests inspect them through
+transport-private helpers; what the wire itself counts travels `Bus.diagnostics()` (#213).
 
 There is one explicit limitation. If two identical sends are pending and an acknowledgement is
 lost, a later identical acknowledgement cannot reveal which physical send it belongs to; the
@@ -299,13 +300,13 @@ calls made outside the entry lock.
 - It does not route every backend through one process-wide broker.
 - It does not require one physical handle on Kvaser or change its threading model.
 - It does not remove Vector ports or pinning checks.
-- It does not add `RxEvent`, ingress timestamps, tracked sends, `open_tx`, or public drop counters
-  to `Bus`.
+- It does not add `RxEvent`, ingress timestamps, tracked sends or `open_tx` to `Bus`. (Drop
+  counters reached it later, through `Bus.diagnostics()` — #213.)
 - It does not make PCAN local sends visible to other logical handles; that is unchanged backend
   behaviour, and trace records them at emit.
 - It does not synthesize PCAN receive events.
 - It does not make subscriber overrun impossible. It bounds memory, isolates the lagging handle
-  and keeps enough internal accounting for #213 to expose later.
+  and kept enough internal accounting for #213 to expose, which it since has.
 - It does not establish exact physical-wire ordering on a backend which supplies no comparable
   timestamps. Ring sequence is the order in which the one raw reader accepted records.
 - It cannot exactly attribute a later TX acknowledgement after one of several identical pending

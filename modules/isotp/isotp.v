@@ -17,6 +17,8 @@
 // compiled on Windows since the rename that put it there.
 module isotp
 
+import transport
+
 // max_pdu is the ISO-TP maximum service data unit (classic addressing).
 pub const max_pdu = 4095
 
@@ -30,6 +32,10 @@ mut:
 	send(data []u8) !
 	recv(timeout_ms int) ![]u8
 	close()
+	// diagnostics is what the carrier underneath counted that no PDU carried -- the software
+	// channel's bus answers (#213); the kernel socket and DoIP have nothing to say. Here so a
+	// UDS connection a script opened can report at the end of a run like a bus it opened can.
+	diagnostics() transport.BusDiagnostics
 }
 
 // open returns an ISO-TP channel on `iface`, transmitting on `tx_id` and receiving on `rx_id`;

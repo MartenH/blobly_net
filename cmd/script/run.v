@@ -20,6 +20,13 @@ import uds
 import sim
 import doip
 import script
+import sync.stdatomic
+
+// loops_done counts the bus-holding loops that have exited, so the runner's bounded wait at the
+// end knows whether every wire has said its piece (#213).
+__global (
+	loops_done i64
+)
 
 // Ctl is the shared run flag the simulation threads poll; set false to stop them.
 struct Ctl {
@@ -106,6 +113,10 @@ fn main() {
 	// Through the same call the GUI makes, for the reason the block above exists: one policy, and
 	// the two front ends must not each keep their own reading of it. A WARNING, not a refusal —
 	// see project.fd_capability_warnings.
+	// Every loop that holds a wire -- simulated ECUs and diagnostic responders -- joined at the
+	// end so what their wires counted is booked and printed before the summary rather than
+	// racing the exit (#213, codex round 4 on #231).
+	mut sims := []thread{}
 	for w in project.fd_capability_warnings(proj.channels) {
 		eprintln('warning: ${w}')
 	}
@@ -193,7 +204,7 @@ fn main() {
 			// Passing only the suffixed form meant sim.apply_injected looked up
 			// `pcan:…@250000` while sim.fault() had stored under `pcan:…`, so a scripted
 			// fault on vendor hardware reported success and never reached the wire.
-			spawn sim_loop(ch.iface_with_bitrate(), ch.iface, db, nodes, ctl)
+			sims << spawn sim_loop(ch.iface_with_bitrate(), ch.iface, db, nodes, ctl)
 			// Diagnostics are per BUS and decided ONCE. Skipping outright after the first
 			// entry on an interface — rather than emptying the server list — is the difference
 			// that matters: the emptied list fell through to the default branch and spawned a
@@ -235,12 +246,12 @@ fn main() {
 					continue
 				}
 				if servers.len == 0 {
-					spawn diag_server_loop(ch.iface_with_bitrate(), ctl)
+					sims << spawn diag_server_loop(ch.iface_with_bitrate(), ctl)
 					println('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + UDS server')
 				} else {
 					for mut u in servers {
-						spawn uds_node_loop(ch.iface_with_bitrate(), u.rx, u.tx, u.ext, u.server,
-							ctl)
+						sims << spawn uds_node_loop(ch.iface_with_bitrate(), u.rx, u.tx, u.ext,
+							u.server, ctl)
 					}
 					println('channel ${ch.name} (${ch.iface}): simulating ${nodes.len} node(s) + ${servers.len} UDS target(s)')
 				}
@@ -273,9 +284,30 @@ fn main() {
 	}
 
 	ctl.running = false
+	// Joined BEFORE the script's buses are asked: a responder that fell behind books its gap
+	// at its close, into the wire, where the script's own handle then reads it. BOUNDED: a
+	// loop stuck in a stalled CANsub write cannot re-check ctl.running until the write returns,
+	// and the transport confines a stalled write to its sender on purpose -- the runner must
+	// not inherit its timeout (codex round 6 on #231). Loops still running when the bound
+	// expires are left to the exit; what they would have booked is not reported.
+	wait_until := time.ticks() + 2000
+	for stdatomic.load_i64(&loops_done) < i64(sims.len) && time.ticks() < wait_until {
+		time.sleep(10 * time.millisecond)
+	}
+	if stdatomic.load_i64(&loops_done) < i64(sims.len) {
+		eprintln('${sims.len - int(stdatomic.load_i64(&loops_done))} bus loop(s) still busy at exit; their wires are not reported')
+	}
+	// And what the script's own buses and connections counted (#213). EACH HANDLE REPORTS
+	// ITSELF, here and in the loops above at their close: on a shared wire every handle answers
+	// with the wire's totals, reconciled for every subscriber at the asking; on a backend that
+	// fans out natively each handle counts what it consumed. A separate reporting handle was
+	// tried and was wrong both ways -- it had to drain to see anything on the one kind and
+	// was itself a dropping subscriber on the other (codex rounds 8-11 on #231).
+	for name, d in env.close_reporting() {
+		eprintln('${name}: ${d.str()}')
+	}
 	passed := env.passed()
 	failed := env.failed()
-	env.close()
 
 	println('\n${passed} passed, ${failed} failed, ${errored} script error(s)')
 	if failed > 0 || errored > 0 {
@@ -298,6 +330,12 @@ fn load_channel_db(ch project.Channel, proj_dir string) candb.Database {
 // sim_loop runs the channel's simulated ECUs on a dedicated in-process bus
 // instance (driver-free twin of src/main.v's sim_loop, minus the GUI).
 fn sim_loop(open_iface string, fault_iface string, db candb.Database, nodes []project.NodeCfg, ctl &Ctl) {
+	// Counted done on EVERY way out, an open that fails included -- a loop that returned
+	// before counting itself left the runner's bounded wait waiting for it (codex round 7 on
+	// #231).
+	defer {
+		stdatomic.add_i64(&loops_done, 1)
+	}
 	mut bus := transport.open(open_iface) or { return }
 	mut engine := sim.Engine{}
 	for n in nodes {
@@ -320,13 +358,22 @@ fn sim_loop(open_iface string, fault_iface string, db candb.Database, nodes []pr
 			}
 		}
 	}
+	// CLOSED FIRST: a shared handle's close books the last gap its cursor lost, and a closed
+	// handle still answers with the wire's totals (codex round 12 on #231).
 	bus.close()
+	report_diag('${open_iface} (sim)', bus.diagnostics())
 }
 
 // diag_server_loop answers UDS requests (rx 0x7E0 / tx 0x7E8) over software
 // ISO-TP on the channel's bus, until stopped.
 // uds_node_loop answers one simulated ECU's diagnostic requests on its own addresses.
 fn uds_node_loop(iface string, rx u32, tx u32, ext bool, srv uds.Server, ctl &Ctl) {
+	// Counted done on EVERY way out, an open that fails included -- a loop that returned
+	// before counting itself left the runner's bounded wait waiting for it (codex round 7 on
+	// #231).
+	defer {
+		stdatomic.add_i64(&loops_done, 1)
+	}
 	mut ch := isotp.open_software(iface, tx, rx, ext) or { return }
 	mut s := srv
 	for ctl.running {
@@ -337,6 +384,7 @@ fn uds_node_loop(iface string, rx u32, tx u32, ext bool, srv uds.Server, ctl &Ct
 		}
 	}
 	ch.close()
+	report_diag('${iface} (uds node)', ch.diagnostics()) // after the close: see sim_loop
 }
 
 // doip_listen binds one simulated DoIP entity: the same uds.Server the CAN path serves,
@@ -386,6 +434,12 @@ fn doip_udp_loop(mut s doip.DoipServer, ctl &Ctl) {
 }
 
 fn diag_server_loop(iface string, ctl &Ctl) {
+	// Counted done on EVERY way out, an open that fails included -- a loop that returned
+	// before counting itself left the runner's bounded wait waiting for it (codex round 7 on
+	// #231).
+	defer {
+		stdatomic.add_i64(&loops_done, 1)
+	}
 	// Server side: transmit responses on 0x7E8, receive requests on 0x7E0
 	// (the mirror of the tester's tx 0x7E0 / rx 0x7E8).
 	mut ch := isotp.open_software(iface, 0x7E8, 0x7E0, false) or { return }
@@ -398,6 +452,7 @@ fn diag_server_loop(iface string, ctl &Ctl) {
 		}
 	}
 	ch.close()
+	report_diag('${iface} (uds server)', ch.diagnostics()) // after the close: see sim_loop
 }
 
 // build_node delegates to sim.from_project. This used to be a copy of the GUI's builder
@@ -411,4 +466,11 @@ fn build_node(db candb.Database, cfg project.NodeCfg) sim.SimEcu {
 		eprintln('${cfg.name}: ${w}')
 	}
 	return sim.from_project(db, cfg)
+}
+
+// report_diag prints what one handle counted that no frame carried, if anything (#213).
+fn report_diag(what string, d transport.BusDiagnostics) {
+	if !d.is_empty() {
+		eprintln('${what}: ${d.str()}')
+	}
 }

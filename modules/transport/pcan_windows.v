@@ -25,6 +25,7 @@
 // for the bench record and what "verified" means there.
 module transport
 
+import sync.stdatomic
 import time
 
 #include "pcan_shim.h"
@@ -79,8 +80,8 @@ mut:
 	// frames too, so this is read on every send and every receive.
 	fd bool
 	// Receive overruns seen on this channel: frames the driver dropped because nobody read fast
-	// enough. COUNTED, not silent, and not fatal — see pcan_read_verdict. Surfacing it beside the
-	// row is #213's job; recording it is this one's.
+	// enough. COUNTED, not silent, and not fatal — see pcan_read_verdict; diagnostics() is how it
+	// reaches the Buses row (#213).
 	overruns u64
 }
 
@@ -344,7 +345,7 @@ pub fn (mut b PcanBus) recv(timeout_ms int) !CanFrame {
 			// Frames were lost; the channel was not. Keep reading — there may be a frame behind
 			// the status right now, and returning an error here is what killed the wire: through
 			// the shared hub a fatal read uninitialises the channel under every handle (#221).
-			b.overruns++
+			stdatomic.add_u64(&b.overruns, 1)
 			continue
 		}
 		if verdict == .failed {
@@ -394,4 +395,13 @@ pub fn (mut b PcanBus) health() BusHealth {
 		return .unknown
 	}
 	return pcan_status_health(st)
+}
+
+// diagnostics: the receive overruns pcan_read_verdict counts -- frames the driver dropped because
+// nobody read fast enough (#213).
+pub fn (mut b PcanBus) diagnostics() BusDiagnostics {
+	// Atomic: counted on the hub's reader thread, read from the GUI's RX loop.
+	return BusDiagnostics{
+		dropped: stdatomic.load_u64(&b.overruns)
+	}
 }

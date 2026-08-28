@@ -94,6 +94,12 @@ mut:
 	// the RX loop polls this per wire, and V's interface-to-interface casts are not a
 	// foundation to build a hot path on.
 	health() BusHealth
+	// diagnostics is what the backend knows that is neither a frame nor a health rung — dropped
+	// records, controller error records, undecodable records — as counts since open (#213). On
+	// the interface for the reason health() is: the RX loop polls it per wire beside health, and
+	// V's interface-to-interface casts are not a foundation to build that on. Empty for a backend
+	// with nothing to say; a wrapper passes its inner bus's through.
+	diagnostics() BusDiagnostics
 	// reconcile_silence brings this wire's CONTROLLER into line with the listen-only policy, for
 	// the backends that have a controller to bring. Everything else answers by doing nothing:
 	// a software bus has no acknowledgement to suppress, so refusing to send is already the whole

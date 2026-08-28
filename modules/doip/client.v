@@ -7,6 +7,7 @@
 // the response, transparently skipping the 0x8002 positive ack. GUI-free.
 module doip
 
+import transport
 import net
 import time
 
@@ -195,4 +196,9 @@ pub fn (mut c DoipClient) close() {
 	if !isnil(c.conn) {
 		c.conn.close() or {}
 	}
+}
+
+// diagnostics: a TCP connection has no controller and drops nothing; nothing to say (#213).
+pub fn (mut c DoipClient) diagnostics() transport.BusDiagnostics {
+	return transport.BusDiagnostics{}
 }

@@ -54,6 +54,7 @@
 // the driver. The table is in docs/windows_can_hardware.md.
 module transport
 
+import sync.stdatomic
 import time
 
 #include "vector_shim.h"
@@ -62,7 +63,7 @@ fn C.ct_vector_load() int
 fn C.ct_vector_open(u32, u32, int, &int, &u64, &voidptr, &u64, int, u32, u32, u32, u32, u32, u32, u32) int
 fn C.ct_vector_write(int, u64, u32, u8, &u8, int, int) int
 fn C.ct_vector_write_fd(int, u64, u32, u8, &u8, int, int, int, int, &u8) int
-fn C.ct_vector_read(int, voidptr, &u32, &u8, &u8, &int, &int, int, &int, int, &int, &int, &int) int
+fn C.ct_vector_read(int, voidptr, &u32, &u8, &u8, &int, &int, int, &int, int, &int, &int, &int, &int) int
 fn C.ct_vector_close(int, u64, u64, voidptr)
 fn C.ct_vector_present(u32) int
 fn C.ct_vector_diag() int
@@ -83,11 +84,13 @@ fn C.ct_vector_err(int) &char
 // VectorBus is one open, activated XL port on a single channel.
 pub struct VectorBus {
 mut:
-	port   int
-	mask   u64
-	gen    u64 // which open of this channel we are; see the generation note in vector_shim.h
-	notify voidptr
-	silent bool
+	// Error records this port's queue carried, counted per read -- see diagnostics() (#213).
+	bus_errors u64
+	port       int
+	mask       u64
+	gen        u64 // which open of this channel we are; see the generation note in vector_shim.h
+	notify     voidptr
+	silent     bool
 	// WHICH INTERFACE VERSION THIS PORT WAS OPENED WITH, and therefore which of the two event
 	// encodings its queue carries. Not a preference that send/recv could reconsider per frame:
 	// reading a V4 queue with xlReceive decodes the first 48 bytes of a 128-byte event as if they
@@ -374,10 +377,16 @@ pub fn (mut b VectorBus) recv(timeout_ms int) !CanFrame {
 	mut brs := 0
 	mut esi := 0
 	pfd := if b.fd { 1 } else { 0 }
+	mut errs := 0
 	r := C.ct_vector_read(b.port, b.notify, &id, &ln, &data[0], &ext, &rtr, timeout_ms, &chip, pfd,
-		&isfd, &brs, &esi)
+		&isfd, &brs, &esi, &errs)
 	if chip >= 0 {
 		b.last_chip = chip
+	}
+	if errs > 0 {
+		// Error records the shim consumed on this port's queue during this read: not frames,
+		// reported through diagnostics() (#213). Atomic: read by the GUI's RX loop.
+		stdatomic.add_u64(&b.bus_errors, errs)
 	}
 	if r == 1 {
 		return error('timeout')
@@ -677,6 +686,14 @@ pub fn (mut b VectorBus) health() BusHealth {
 	h := if b.last_chip >= 0 { xl_chipstat_health(u8(b.last_chip)) } else { BusHealth.unknown }
 	C.ct_vector_reqchip(b.port, b.mask) // reply lands in recv's capture on a later frame
 	return h
+}
+
+// diagnostics: the error records this port's queue carried (#213). Per port, where
+// vector_error_frames() is the process-wide total the bench tools read.
+pub fn (mut b VectorBus) diagnostics() BusDiagnostics {
+	return BusDiagnostics{
+		bus_errors: stdatomic.load_u64(&b.bus_errors)
+	}
 }
 
 // chip_state_of asks a Bus for its controller state, when it is a Vector one. The type switch
