@@ -26,10 +26,12 @@ mut:
 	fd int = -1
 }
 
-// open binds a kernel ISO-TP socket on `iface`, transmitting on `tx_id` and
-// receiving on `rx_id`. Set `extended` for 29-bit identifiers. Returns the
-// platform-agnostic Channel interface.
-pub fn open(iface string, tx_id u32, rx_id u32, extended bool) !Channel {
+// open_kernel binds a kernel ISO-TP socket on `iface`, transmitting on `tx_id`
+// and receiving on `rx_id`. Set `extended` for 29-bit identifiers. Returns the
+// platform-agnostic Channel interface. Reached through isotp.open on Linux;
+// named, so a caller can ask for the kernel specifically.
+pub fn open_kernel(iface string, tx_id u32, rx_id u32, extended bool) !Channel {
+	check_ids(iface, tx_id, rx_id, extended)!
 	tx := encode_id(tx_id, extended)
 	rx := encode_id(rx_id, extended)
 	fd := C.ct_isotp_open(iface.str, rx, tx)

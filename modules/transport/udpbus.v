@@ -15,6 +15,7 @@ module transport
 
 import net
 import rand
+import sync.stdatomic
 import time
 
 pub const udp_default_group = '239.63.42.1'
@@ -47,11 +48,18 @@ fn parse_udp_iface(iface string) ?UdpTarget {
 	return UdpTarget{group, port}
 }
 
+// zero_poll_filtered_datagrams bounds how many filtered datagrams one zero-timeout poll crosses.
+const zero_poll_filtered_datagrams = 4096
+
 pub struct UdpBus {
 mut:
 	tx  &net.UdpConn = unsafe { nil } // dialed to group:port — sends
 	rx  &net.UdpConn = unsafe { nil } // bound to port + joined group — receives
 	src u32 // our source id; frames with this src are our own echoes
+	// closed is set by close(): a recv(-1) blocked in another thread must stop retrying once the
+	// socket is gone, instead of spinning on the read error forever (codex round 7 on #225).
+	closed_flag i64
+	closed      bool // unused: see closed_flag; read/written through stdatomic: close() runs on another thread than recv(-1)
 }
 
 // open_udp joins the localhost multicast bus `group:port`.
@@ -107,21 +115,57 @@ pub fn (mut b UdpBus) recv(timeout_ms int) !CanFrame {
 	// 10-byte header + up to 64 payload bytes. The old 64-byte buffer silently truncated a
 	// CAN-FD frame at read(), losing bytes before any of the decoding below could see them.
 	mut buf := []u8{len: 10 + 64}
+	// A zero-timeout poll looks past filtered datagrams (our own echo, malformed) but not
+	// forever: a socket fed a continuous stream of them would never let it return (codex round
+	// 17 on #225).
+	mut filtered := 0
 	for {
-		remaining := deadline - time.ticks()
-		if remaining <= 0 {
+		if timeout_ms == 0 && filtered >= zero_poll_filtered_datagrams {
 			return error('timeout')
 		}
+		// NEGATIVE IS FOREVER, as every other bus has it: computed as a deadline it was a deadline
+		// in the past, and recv(-1) returned timeout without reading (codex round 6 on #225, via
+		// the software ISO-TP channel that now runs on this bus off Linux). Waited in one-second
+		// slices so a close can still be noticed by the read failing.
+		mut remaining := i64(1000)
+		if timeout_ms >= 0 {
+			remaining = deadline - time.ticks()
+			// ZERO IS ONE LOOK: a datagram already queued is returned by a non-blocking poll
+			// (codex round 8 on #225). The socket read below gets the shortest timeout it takes.
+			// A zero timeout keeps LOOKING past datagrams the filters below drop — our own echo
+			// most commonly — until the socket is empty, which the read reports as a timeout of
+			// its own (codex round 9 on #225). A positive timeout expires by the clock.
+			if remaining <= 0 && timeout_ms > 0 {
+				return error('timeout')
+			}
+			if remaining <= 0 {
+				remaining = 1
+			}
+		}
 		b.rx.set_read_timeout(time.Duration(remaining * 1_000_000)) // ms → ns
-		n, _ := b.rx.read(mut buf) or { return error('timeout') }
+		n, _ := b.rx.read(mut buf) or {
+			if stdatomic.load_i64(&b.closed_flag) != 0 {
+				return error('bus is closed')
+			}
+			if timeout_ms < 0 && err.code() == net.err_timed_out_code {
+				continue // a slice ended without a frame; forever means forever
+			}
+			if timeout_ms < 0 {
+				return err // not a timeout: the socket is gone
+			}
+			return error('timeout')
+		}
 		if n < 10 {
+			filtered++
 			continue
 		}
 		if get_u32_le(buf, 0) == b.src {
+			filtered++
 			continue // our own frame echoed back — ignore
 		}
 		dlc := int(buf[9])
 		if 10 + dlc > n {
+			filtered++ // truncated: counted against the poll budget like the others (codex round 18)
 			continue
 		}
 		flags := buf[8]
@@ -150,6 +194,7 @@ pub fn (mut b UdpBus) reconcile_silence(want bool) ! {
 }
 
 pub fn (mut b UdpBus) close() {
+	stdatomic.store_i64(&b.closed_flag, 1)
 	b.tx.close() or {}
 	b.rx.close() or {}
 }

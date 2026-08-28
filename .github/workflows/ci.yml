@@ -49,6 +49,15 @@ jobs:
       - name: Unit tests (v test modules/)
         run: v -enable-globals test modules/
 
+      # EVERY cmd/ tool type-checks, for both OS targets. Nothing else here compiles a CLI
+      # tool, so a rename in modules/ could break any of them and the build stayed green: #217
+      # retired a helper and broke cmd/vectorcheck, and two smoke tools sat broken on Windows
+      # for months (#220). -check needs no C compiler and no GLFW, so this costs under a minute.
+      - name: Every cmd/ tool type-checks, both targets (scripts/check_cmds.sh)
+        run: |
+          chmod +x scripts/check_cmds.sh
+          ./scripts/check_cmds.sh
+
       # The shared answers behind setup_vcan.sh / build_vcan_module.sh. Pure functions of the
       # environment (whose home under sudo, is vcan available, may we even ask), driven through
       # stubbed getent/id/ip/sudo so they run unprivileged here. net#122 spent four review rounds
