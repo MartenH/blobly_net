@@ -236,6 +236,217 @@ fn (app &App) bitrate_iface(iface string) string {
 }
 
 // start opens every enabled, monitorable channel on its own RX thread.
+// open_taps_for_run opens every transmit tap a run needs — one named and one shared per
+// enabled CAN row, and the generators' — OFF the GUI thread. See start() for why. Each tap is
+// filed under a brief take of app.mu, and only into the run it was opened for: a Stop during a
+// slow open leaves `run_gen` behind, and the tap is closed instead of leaking into the next
+// run's map (rx_loop's rule, one layer over).
+fn open_taps_for_run(app &App, plan []TapWant, gen u64) {
+	// ONE WORKER PER WIRE. A single worker opening every tap in row order would hold every
+	// later wire behind the first slow one — a CANsub that is not there costs its whole
+	// timeout — while the generators, which start at once, dropped frames on healthy wires as
+	// "no open bus" for the duration (codex round 1 on #257). Grouped by destination, a
+	// stalled device delays its own wire and nobody else's.
+	mut by_wire := map[string][]TapWant{}
+	for w in plan {
+		by_wire[transport.destination_key(w.iface)] << w
+	}
+	for _, wants in by_wire {
+		spawn open_taps_for_wire(app, wants, gen)
+	}
+}
+
+// TapWant is one transmit tap a run needs: the channel (empty for the shared tap), the
+// logical interface the keys are made of, and the physical one to open — resolved by the
+// caller under app.mu, because bitrate_iface walks app.chans (codex round 6 on #257).
+struct TapWant {
+	chan_name string
+	iface     string
+	phys      string
+}
+
+fn open_taps_for_wire(app &App, wants []TapWant, gen u64) {
+	mut a := unsafe { app }
+	mut anon_tap_failed := map[string]bool{}
+	mut named_tap_failed := map[string]bool{}
+	for w in wants {
+		// A worker for a run that has ended stops here, before another open: each one it
+		// went on to make paid a device timeout for nothing and contended with the next
+		// Start for a single-client channel (codex round 3 on #257).
+		if !a.run_live(gen) {
+			return
+		}
+		a.install_tap(w.chan_name, w.iface, w.phys, gen, mut named_tap_failed, mut anon_tap_failed)
+	}
+}
+
+// spawn_tap_for opens the taps one generator needs — the shared one for its wire and its own
+// named one — on a worker, for the run on now. The one path for a tap wanted after Start:
+// Add generator and a retargeted generator both used to open inline on the GUI thread (codex
+// round 4 on #257), which is the freeze Start was cured of.
+fn (mut app App) spawn_tap_for(chan_name string, iface string) {
+	if iface == '' {
+		return
+	}
+	app.mu.lock()
+	gen := app.run_gen
+	live := app.running
+	phys := app.phys_for_locked(iface)
+	// A RETRY IS NOT A FAILURE: with the marker left standing, every send during the retry
+	// took the shared tap and was filed under the wrong channel (codex round 9 on #257). The
+	// marker comes back only if this attempt fails too (install_tap).
+	app.tap_failed.delete(tx_bus_key(chan_name, iface))
+	app.mu.unlock()
+	if !live {
+		return
+	}
+	spawn fn (app &App, w TapWant, gen u64) {
+		mut a := unsafe { app }
+		if !a.run_live(gen) {
+			return
+		}
+		mut nf := map[string]bool{}
+		mut af := map[string]bool{}
+		a.install_tap(w.chan_name, w.iface, w.phys, gen, mut nf, mut af)
+		// AND ONLY IF STILL WANTED: retargeted again, or removed, while this open ran, the
+		// generator no longer points here, and a tap filed anyway holds the wire until Stop —
+		// on a CANsub that is the channel's one WebSocket client (codex round 8 on #257).
+		a.drop_unwanted_taps(w.chan_name, w.iface)
+	}(app, TapWant{chan_name, iface, phys}, gen)
+}
+
+// drop_unwanted_taps closes the named tap of (chan_name, iface) if no generator fires on it
+// any more, and the wire's shared tap too if no enabled row and no generator uses the wire —
+// otherwise it holds the device (a CANsub's one WebSocket client) until Stop. Decided and
+// done under ONE take of app.mu: decided in one and done in another, a generator retargeted
+// back in between found its fresh tap deleted (codex round 9 on #257). The closes happen
+// after the unlock, because a close can wait on a driver.
+fn (mut app App) drop_unwanted_taps(chan_name string, iface string) {
+	mut doomed := []transport.Bus{}
+	app.mu.lock()
+	mut named_wanted := false
+	mut wire_wanted := false
+	dest := transport.destination_key(iface)
+	for sr in app.senders {
+		tgt := sr.target()
+		if tgt == '' {
+			continue
+		}
+		if sr.chan == chan_name && tgt == iface {
+			named_wanted = true
+		}
+		if transport.destination_key(tgt) == dest {
+			wire_wanted = true
+		}
+	}
+	for ch in app.chans {
+		if ch.enabled && !ch.doip && transport.destination_key(ch.iface) == dest {
+			wire_wanted = true
+		}
+	}
+	if !named_wanted {
+		if mut b := app.tx_buses[tx_bus_key(chan_name, iface)] {
+			doomed << b
+			app.tx_buses.delete(tx_bus_key(chan_name, iface))
+		}
+	}
+	if !wire_wanted {
+		if mut b := app.tx_buses[tx_bus_key('', iface)] {
+			doomed << b
+			app.tx_buses.delete(tx_bus_key('', iface))
+		}
+	}
+	app.mu.unlock()
+	for mut b in doomed {
+		b.close()
+	}
+}
+
+// phys_for_locked is the physical interface to open for `iface`, decided under app.mu. A target
+// that already carries a rate keeps it — a generator's `bus: pcan:…@250000` opens at 250 k, as
+// open_tap_full has always read it — and only a bare one is resolved from the rows, which is
+// the walk of app.chans that wants the lock (codex rounds 6 and 7 on #257).
+fn (app &App) phys_for_locked(iface string) string {
+	if iface.contains('@') {
+		return iface
+	}
+	return app.bitrate_iface(iface)
+}
+
+// run_live is whether the run `gen` is the one on now.
+fn (mut app App) run_live(gen u64) bool {
+	app.mu.lock()
+	defer {
+		app.mu.unlock()
+	}
+	return app.running && app.run_gen == gen
+}
+
+// install_tap opens the shared tap for iface and the named one for (chan_name, iface), and
+// files each into tx_buses if the run is still the one it was opened for. The shared tap
+// FIRST: tx_on falls back to it for the paths with no owning channel — Quick Send,
+// diagnostics, shell. Failures are remembered per key so one dead wire is reported once, not
+// once per row or per generator (codex #141 r3).
+fn (mut app App) install_tap(chan_name string, iface string, phys string, gen u64, mut named_failed map[string]bool, mut anon_failed map[string]bool) {
+	anon := tx_bus_key('', iface)
+	dest := transport.destination_key(iface)
+	if dest !in anon_failed && !app.has_tap(anon) {
+		if mut b := app.open_tap_phys(iface, phys, org_tx, '', 0, false) {
+			app.file_tap(anon, mut b, gen)
+		} else {
+			anon_failed[dest] = true
+			// Through the run's gate: a slow device that fails after Stop or a restart must
+			// not narrate the old run into the new Log (codex round 1 on #257).
+			notify_gen(app, gen, '${iface}: shared transmit tap failed to open — ${err}')
+		}
+	}
+	named := tx_bus_key(chan_name, iface)
+	if chan_name != '' && named !in named_failed && !app.has_tap(named) && app.run_live(gen) {
+		if mut b := app.open_tap_phys(iface, phys, org_tx, chan_name, gen, false) {
+			app.file_tap(named, mut b, gen)
+		} else {
+			named_failed[named] = true
+			// TERMINAL, and said so where gen_loop reads it: a sender waiting for this tap
+			// would otherwise wait for the rest of the run (codex round 6 on #257).
+			app.mu.lock()
+			if app.run_gen == gen {
+				app.tap_failed[named] = true
+			}
+			app.mu.unlock()
+			notify_gen(app, gen, '${chan_name}: transmit tap failed to open — ${err}')
+		}
+	}
+}
+
+fn (mut app App) has_tap(key string) bool {
+	app.mu.lock()
+	defer {
+		app.mu.unlock()
+	}
+	return key in app.tx_buses
+}
+
+// file_tap inserts an opened tap under the lock, into the run it belongs to — or closes it.
+fn (mut app App) file_tap(key string, mut b transport.Bus, gen u64) {
+	app.mu.lock()
+	// `running` AND the generation: Stop clears tx_buses and drops `running` but leaves
+	// run_gen where it was, so a tap that completed after Stop would otherwise land in the
+	// emptied map, sit there through the next Start (has_tap sees it and opens no
+	// replacement) and refuse every send with "run ended" (codex round 1 on #257).
+	keep := app.running && app.run_gen == gen && key !in app.tx_buses
+	if keep {
+		app.tx_buses[key] = b
+		// A tap that lands is not failed, whatever an earlier attempt said: a later worker —
+		// a generator added or retargeted — can succeed where Start's did not, and the sender
+		// must go back to its own tap (codex round 7 on #257).
+		app.tap_failed.delete(key)
+	}
+	app.mu.unlock()
+	if !keep {
+		b.close() // the run ended, or somebody inserted first — the loser must not leak
+	}
+}
+
 fn (mut app App) start() {
 	if app.running {
 		return
@@ -411,8 +622,6 @@ fn (mut app App) start() {
 	}
 	// Which wires already have a reader, so aliases do not each open one.
 	mut monitored := map[string]bool{}
-	mut anon_tap_failed := map[string]bool{}
-	mut named_tap_failed := map[string]bool{}
 	for ci, ch in app.chans {
 		// EVERY row, before the monitorable gate: a disabled row keeping an earlier run's
 		// BUS-OFF became the reader on a mid-run enable and showed it forever — a fresh
@@ -446,33 +655,6 @@ fn (mut app App) start() {
 			app.chans[ci].spawning = true
 			spawn rx_loop(app, ci, ch.iface, app.run_gen)
 		}
-		// A TX bus per CHANNEL (each generator fires on its target bus), plus one anonymous tap
-		// per wire for the paths with no particular channel — Quick Send, diagnostics, shell.
-		if tx_bus_key(ch.name, ch.iface) !in app.tx_buses {
-			// same silence class as rx_loop's open: a tap that fails here is a channel that
-			// cannot transmit, and swallowing the error left a dead Send button with no
-			// explanation anywhere a Windows user can see
-			if b := app.open_tap_on(ch.iface, org_tx, ch.name) {
-				app.tx_buses[tx_bus_key(ch.name, ch.iface)] = b
-			} else {
-				// recorded in the same set the generator loop consults, or a generator on
-				// this channel re-pays the ~2s vendor open and re-logs the line
-				named_tap_failed[tx_bus_key(ch.name, ch.iface)] = true
-				app.notify('${ch.name}: transmit tap failed to open — ${err}')
-			}
-		}
-		// ONE line per wire, not per row: nothing lands in tx_buses on failure, so every
-		// aliased row would re-attempt this shared tap and repeat the identical message —
-		// one dead wire read as several failures
-		anon_key := transport.destination_key(ch.iface)
-		if tx_bus_key('', ch.iface) !in app.tx_buses && anon_key !in anon_tap_failed {
-			if b := app.open_tap(ch.iface, org_tx) {
-				app.tx_buses[tx_bus_key('', ch.iface)] = b
-			} else {
-				anon_tap_failed[anon_key] = true
-				app.notify('${ch.iface}: shared transmit tap failed to open — ${err}')
-			}
-		}
 		if app.send_iface == '' {
 			app.send_iface = ch.iface // Send panel default = first monitor channel
 		}
@@ -487,36 +669,33 @@ fn (mut app App) start() {
 		}
 	}
 	// a generator may target a bus whose channel isn't itself monitored — open those too
-	for sr in app.senders {
-		tgt := sr.target()
-		// dedupe in the OUTER condition, like the named branch below: gating only the log
-		// line still re-attempted the open per sender, and a vendor open can block ~2s
-		// waiting for a port release — hundreds of generators on one dead target turned
-		// Start into minutes of retrying an answer it already had (codex #141 r3)
-		if tgt != '' && tx_bus_key('', tgt) !in app.tx_buses
-			&& transport.destination_key(tgt) !in anon_tap_failed {
-			// the anonymous tap FIRST: tx_on falls back to it for the paths with no owning
-			// channel — Quick Send, diagnostics, shell — and a bus that is only a generator
-			// target would otherwise have none, so those reported "no open bus for …".
-			if b := app.open_tap(tgt, org_tx) {
-				app.tx_buses[tx_bus_key('', tgt)] = b
-			} else {
-				// a generator whose only bus fails to open is a silent dead generator —
-				// the same class as the channel taps above, one loop down
-				anon_tap_failed[transport.destination_key(tgt)] = true
-				app.notify('generator target ${tgt}: transmit tap failed to open — ${err}')
-			}
-		}
-		if tgt != '' && tx_bus_key(sr.chan, tgt) !in app.tx_buses
-			&& tx_bus_key(sr.chan, tgt) !in named_tap_failed {
-			if b := app.open_tap_on(tgt, org_tx, sr.chan) {
-				app.tx_buses[tx_bus_key(sr.chan, tgt)] = b
-			} else {
-				named_tap_failed[tx_bus_key(sr.chan, tgt)] = true
-				app.notify('${sr.chan}: generator transmit tap failed to open — ${err}')
-			}
+	// THE TRANSMIT TAPS OPEN ON A WORKER, NOT HERE. This is the GUI thread, and a tap open is a
+	// driver open: on a CANsub that is an identity read, a PHY write and a WebSocket dial —
+	// two seconds cold, and as long as the name takes to resolve when the device has just
+	// moved or is not there. Opened in this function, Start froze the whole window for that
+	// long, on every Start, and looked like a hang (bench, 2026-08-29; measured 2.2 s on the
+	// GUI thread with a frame-stage timer). The Buses toggle learned this in #143 and opens
+	// after the unlock; Start now does the same, on a thread of its own: each tap is filed
+	// under a brief take of the lock as it comes up, guarded by the run it belongs to, and a
+	// send that arrives first gets "no open bus" — an answer, not a freeze.
+	// The plan is snapshotted UNDER the lock: the readers spawned above write these rows under
+	// it, and a fast backend's reader is already doing so (codex round 5 on #257).
+	app.mu.lock()
+	mut plan := []TapWant{}
+	for ch in app.chans {
+		if ch.enabled && !ch.doip {
+			plan << TapWant{ch.name, ch.iface, app.phys_for_locked(ch.iface)}
 		}
 	}
+	for sr in app.senders {
+		tgt := sr.target()
+		if tgt != '' {
+			plan << TapWant{sr.chan, tgt, app.phys_for_locked(tgt)}
+		}
+	}
+	app.tap_failed = map[string]bool{}
+	app.mu.unlock()
+	spawn open_taps_for_run(app, plan, start_gen)
 	// spawn the in-process simulation workloads (driver-free sim ECUs + a UDS server)
 	for sc in app.sims {
 		// DoIP carries diagnostics, not frames. sim_loop would call transport.open('doip:…'),
@@ -889,7 +1068,12 @@ fn (mut app App) stop() {
 	// The run flag FIRST. A supervisor that is unbound and has just decided to rebind would
 	// otherwise insert a fresh listener AFTER the snapshot below, escape this close, and
 	// survive into the next Start — whose own bind would then fail against it.
+	// UNDER app.mu, because file_tap decides "is this run still on" under that lock: flipped
+	// outside it, a tap that completed between file_tap's check and its insert landed in the
+	// map this function empties below and outlived the run (codex round 2 on #257).
+	app.mu.lock()
 	app.running = false
+	app.mu.unlock()
 	// Then close: the serve loops block in accept for up to 200ms, and close() interrupts them
 	// so the port is released now rather than whenever the last worker notices.
 	// Snapshot under the lock the supervisor uses: it inserts and deletes entries as channels
@@ -908,9 +1092,15 @@ fn (mut app App) stop() {
 	for ci in 0 .. app.chans.len {
 		app.chans[ci].running = false
 	}
-	for _, mut b in app.tx_buses {
+	// The taps: SNAPSHOT AND RESET UNDER THE LOCK, close outside it. The reset under app.mu is
+	// the other half of the file_tap contract above; the closes stay outside, because a close
+	// can wait on a driver and nothing must hold app.mu while it does.
+	app.mu.lock()
+	mut taps := app.tx_buses.clone()
+	app.tx_buses = map[string]transport.Bus{}
+	app.mu.unlock()
+	for _, mut b in taps {
 		b.close()
 	}
-	app.tx_buses = map[string]transport.Bus{}
 	app.send_iface = ''
 }

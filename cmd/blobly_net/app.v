@@ -266,6 +266,10 @@ mut:
 	// The session log file (logfile): every Log line, and what used to go only to stderr.
 	// none when it could not be opened — the app runs anyway and says so in the Log.
 	session_log ?logfile.Session
+	// Named transmit taps whose open FAILED this run, by tx_bus_key — a terminal answer the
+	// generator loop reads: a sender waiting for its own tap falls back to the wire's shared
+	// one once its own is known not to come (codex round 6 on #257). Cleared at Start.
+	tap_failed map[string]bool
 	// File ▸ Save was chosen this frame: performed by poll_shortcuts after the panels have
 	// drawn, for the reason given there.
 	save_requested bool

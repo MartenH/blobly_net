@@ -295,6 +295,24 @@ fn gen_loop(app &App) {
 				if tgt != '' && a.dest_left_the_run_locked(tgt) {
 					continue
 				}
+				// NOT BEFORE ITS TAP IS UP. The taps open on a worker since #257, and a cyclic
+				// sender that fired into "no open bus" had its first frame counted as fired
+				// and lost until the next cycle — on a slow CANsub and a long cycle, every
+				// Start dropped the first frame (codex round 3 on #257). Left unstamped, the
+				// first cycle fires the moment the tap is filed.
+				// ITS OWN tap when it has a channel: the shared tap is filed first and carries no
+				// channel identity, so a frame sent through it during the named open would be
+				// filed under whichever channel matched first (codex round 4 on #257).
+				// …unless its own is known not to come: then the shared tap is the answer, as
+				// it is for a manual send (codex round 6 on #257).
+				// An existing named tap wins outright; the shared one only stands in while the
+				// named one is known to have failed (codex round 7 on #257).
+				named := tx_bus_key(sr.chan, tgt)
+				ready := tgt == '' || (sr.chan != '' && named in a.tx_buses)
+					|| ((sr.chan == '' || named in a.tap_failed) && tx_bus_key('', tgt) in a.tx_buses)
+				if !ready {
+					continue
+				}
 				lf := last[i] or { i64(0) }
 				if now - lf >= i64(sr.sender.cycle_ms) {
 					last[i] = now
