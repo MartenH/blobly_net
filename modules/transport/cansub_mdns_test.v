@@ -331,3 +331,50 @@ fn test_live_browse_finds_the_bench_device() {
 	rows := cansub_rows(b.devices)
 	assert rows.any(it.iface == 'cansub:${want}/1')
 }
+
+// THE A QUESTION AND ITS ANSWER. The question is the browse's shape with the name and type
+// changed; the answer is parsed by the same record reader the browse uses, so a device that
+// answers its name is found the way its service is.
+fn test_the_a_question_asks_for_the_host_and_the_answer_is_its_address() {
+	q := cansub_mdns_a_query('e5a16adf-usb.local')
+	// header: id 0, flags 0, one question
+	assert q[..12] == [u8(0), 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
+	// the name, then A IN
+	assert q[12] == 12 && q[13..25].bytestr() == 'e5a16adf-usb'
+	assert q[25] == 5 && q[26..31].bytestr() == 'local'
+	assert q[31] == 0
+	assert q[32..36] == [u8(0), 1, 0, 1]
+	// A response: header (QR, one answer), name, type A, class IN (cache-flush bit set as
+	// mDNS responders do), TTL 120, rdlength 4, 10.98.13.1
+	mut a := []u8{}
+	a << [u8(0), 0, 0x84, 0, 0, 0, 0, 1, 0, 0, 0, 0]
+	a << u8(12)
+	a << 'e5a16adf-usb'.bytes()
+	a << u8(5)
+	a << 'local'.bytes()
+	a << u8(0)
+	a << [u8(0), 1, 0x80, 1, 0, 0, 0, 120, 0, 4, 10, 98, 13, 1]
+	assert cansub_mdns_answer_a(a, 'e5a16adf-usb.local')? == '10.98.13.1'
+	// Somebody else's name is not our answer.
+	assert cansub_mdns_answer_a(a, 'other-usb.local') == none
+	// An answer without an A record is no answer.
+	assert cansub_mdns_answer_a(cansub_mdns_query(), 'e5a16adf-usb.local') == none
+}
+
+// LIVE: `CANSUB_LIVE=<id> v -enable-globals test modules/transport/cansub_mdns_test.v` asks the
+// device on the bench for its address and expects an answer well inside the window.
+fn test_live_the_device_answers_its_name_by_mdns() {
+	id := os.getenv('CANSUB_LIVE')
+	if id == '' {
+		return
+	}
+	t0 := time.ticks()
+	ip := cansub_mdns_resolve(cansub_host(id), 2 * time.second) or {
+		assert false, 'no mDNS answer for ${cansub_host(id)}'
+		return
+	}
+	took := time.ticks() - t0
+	println('${cansub_host(id)} -> ${ip} in ${took} ms')
+	assert ip.split('.').len == 4
+	assert took < 1000, 'the device took ${took} ms — the OS resolver is not slower than that'
+}
