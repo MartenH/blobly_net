@@ -506,14 +506,23 @@ fn draw_stats(mut app App, chans []Chan, rx u64, txs string) {
 // nothing; only the padding below it would work, and that padding is exactly what disappears
 // once the log is long enough to want copying. A control that stops working as the panel fills
 // is worse than no control, and a button is discoverable besides.
-fn draw_copyable_log(id string, c LogCache) {
+fn draw_copyable_log(mut app App, id string, c LogCache) {
 	if vgui.small_button('Copy all##${id}') {
 		vgui.clipboard_set(c.text)
 	}
 	vgui.same_line()
 	vgui.text_dim('${c.lines} line(s) · drag to select, Ctrl+A / Ctrl+C')
 	vgui.child_begin('${id}box', 0)
+	// FOLLOWS NEW OUTPUT, unless the reader has scrolled up: whether the view sat at the end is
+	// read before the new lines are laid out, and only then is the end pinned. A console that
+	// does not follow shows the first hundred lines of a run for the whole run (2026-08-29).
+	grew := c.lines != app.console_shown[id]
+	follow := grew && vgui.scroll_at_bottom()
 	vgui.console_text('${id}text', c.text, c.lines)
+	if follow {
+		vgui.scroll_bottom()
+	}
+	app.console_shown[id] = c.lines
 	vgui.child_end()
 }
 
@@ -534,7 +543,7 @@ fn draw_log(mut app App) {
 	if gen != app.log_cache.gen {
 		app.log_cache.refresh(gen, src)
 	}
-	draw_copyable_log('##log', app.log_cache)
+	draw_copyable_log(mut app, '##log', app.log_cache)
 	vgui.end()
 }
 
@@ -1090,7 +1099,7 @@ fn draw_flash(mut app App) {
 		}
 	}
 	vgui.separator_text('log (newest last)')
-	draw_copyable_log('##flash', app.flash_cache)
+	draw_copyable_log(mut app, '##flash', app.flash_cache)
 	vgui.end()
 }
 
@@ -1159,7 +1168,7 @@ fn draw_diag(mut app App) {
 		vgui.text_dim('busy…')
 	}
 	vgui.separator_text('responses (newest last)')
-	draw_copyable_log('##diag', app.diag_cache)
+	draw_copyable_log(mut app, '##diag', app.diag_cache)
 	vgui.end()
 }
 
@@ -1210,6 +1219,6 @@ fn draw_script(mut app App) {
 		vgui.text_dim('running…')
 	}
 	vgui.separator_text('output')
-	draw_copyable_log('##script', app.script_cache)
+	draw_copyable_log(mut app, '##script', app.script_cache)
 	vgui.end()
 }

@@ -119,6 +119,7 @@ fn C.vgui_child_end()
 fn C.vgui_input_text(&char, &char, int) int
 fn C.vgui_console_input(&char, &char, int) int
 fn C.vgui_scroll_bottom()
+fn C.vgui_scroll_at_bottom() int
 fn C.vgui_console_text(&char, &char, int, int)
 fn C.vgui_text_edit(&char, &char, int, f32) int
 fn C.vgui_input_double(&char, &f64) int
@@ -588,6 +589,13 @@ pub fn console_text(id string, s string, nlines int) {
 // scroll_bottom pins the current child's scroll to the bottom (console output follows).
 pub fn scroll_bottom() {
 	C.vgui_scroll_bottom()
+}
+
+// scroll_at_bottom reports whether the current child was scrolled to its end when this frame
+// began — ask it before laying out new content, and follow only if it says yes: a user who has
+// scrolled up to read is not to be yanked down by the next line.
+pub fn scroll_at_bottom() bool {
+	return C.vgui_scroll_at_bottom() != 0
 }
 
 // input_double edits *v in place (numeric input, e.g. a signal value). Returns true on change.

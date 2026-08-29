@@ -207,9 +207,14 @@ fn test_platform_adapters_is_one_of_the_declared_lists() {
 // possibly-live bus able to ACK, at a 500 kbit/s guess nobody had confirmed (codex round 5 on
 // #204). It is a property of the adapter, so it belongs beside the other adapter properties, where
 // this can hold it.
-fn test_every_adapter_that_can_silence_its_controller_starts_silent() {
+fn test_no_adapter_starts_silent() {
+	// THE DEFAULT IS NORMAL, on every adapter (2026-08-29; see adapter_starts_silent for the
+	// argument it replaced). The tick is still a tick.
+	for a in adapters {
+		assert !adapter_starts_silent(a), '${a}: a new row must not start listen-only'
+	}
 	for a in silenced_at_the_transceiver {
-		assert adapter_starts_silent(a), '${a} is hardware that may already be wired to a running vehicle — a new row on it must not transmit until somebody confirms the rate'
+		assert adapter_silences_transceiver(a), '${a} can still be silenced when the tick is set'
 	}
 }
 
@@ -228,67 +233,12 @@ fn test_no_vendor_hardware_is_left_unsilenced() {
 	}
 }
 
-// THE CAPABILITY AND THE DEFAULT ARE DIFFERENT QUESTIONS, even while they have the same answer.
-// They were one function, and when PCAN and Kvaser gained the capability the GUI went on telling
-// operators that only Vector and CANsub had it — because the message asked the DEFAULT which
-// adapters could silence a transceiver.
-fn test_the_capability_and_the_default_agree_for_every_adapter() {
-	for a in adapters {
-		assert adapter_starts_silent(a) == adapter_silences_transceiver(a), a
-	}
-}
 
-// Nothing outside the vendor adapters may start silent: a software bus that defaulted to refusing
-// its own sends would look broken for a reason nobody would think to check.
-fn test_only_hardware_starts_silent() {
-	for a in adapters {
-		if adapter_starts_silent(a) {
-			assert a in vendor_adapters, '${a} starts silent but is not hardware'
-		}
-	}
-}
 
-// And the ones with nothing to silence must NOT start silent, or the tick means nothing and gets
-// ignored where it does matter. A software bus has no transceiver; a SocketCAN interface is
-// brought up by `ip link` with a rate its operator already chose.
-fn test_adapters_with_no_transceiver_do_not_start_silent() {
-	for a in software_adapters {
-		assert !adapter_starts_silent(a), '${a} has no transceiver to silence'
-	}
-	for a in kernel_adapters {
-		assert !adapter_starts_silent(a), '${a} is configured outside this app, at a rate its operator chose'
-	}
-	for a in non_can_adapters {
-		assert !adapter_starts_silent(a), '${a} is not a CAN bus'
-	}
-}
 
 // ---- changing a row's adapter (#204 round 6) -----------------------------
 
-// SWITCHING BETWEEN TWO ADAPTERS THAT BOTH START SILENT IS STILL A CHANGE OF HARDWARE. Expressed
-// in the GUI as "starts silent now and did not before", this missed exactly that pair: a
-// transmit-enabled Vector row switched to CANsub kept `listen_only = false` and the new controller
-// opened able to ACK, at a rate nobody had confirmed for it.
-fn test_switching_between_two_silent_starting_adapters_re_arms_silence() {
-	assert adapter_change_starts_silent('vector', 'cansub')
-	assert adapter_change_starts_silent('cansub', 'vector')
-}
 
-// DERIVED FROM `adapters`, not from a hand-written list of what used to be on the other side. The
-// list here named pcan and kvaser as adapters you could only move FROM; once they joined the
-// silenced set it generated `pcan -> pcan` and asserted that re-selecting the same adapter is a
-// change of hardware. Any adapter can be either side of this now, so the only pair to exclude is
-// the one that is not a change at all.
-fn test_becoming_hardware_re_arms_silence() {
-	for was in adapters {
-		for now in silenced_at_the_transceiver {
-			if was == now {
-				continue
-			}
-			assert adapter_change_starts_silent(was, now), '${was} -> ${now} is new hardware at an unconfirmed rate'
-		}
-	}
-}
 
 // Not a change is not a change: re-selecting the same adapter must not silently re-tick a box the
 // operator deliberately cleared.
@@ -300,14 +250,15 @@ fn test_reselecting_the_same_adapter_changes_nothing() {
 	assert !adapter_change_starts_silent('CANSUB', 'cansub')
 }
 
-// And moving to an adapter that does not start silent never arms it.
-fn test_moving_to_an_adapter_that_does_not_start_silent_arms_nothing() {
-	for now in adapters {
-		if now in silenced_at_the_transceiver {
-			continue
-		}
-		for was in adapters {
+// AND NO CHANGE OF ADAPTER RE-ARMS IT: the rule that a row moved onto hardware starts listen-only
+// went with the default (2026-08-29). The tick a row already has is kept across the change —
+// that is config.v's business, not this rule's.
+fn test_no_adapter_change_starts_silent() {
+	for was in adapters {
+		for now in adapters {
 			assert !adapter_change_starts_silent(was, now), '${was} -> ${now} must not arm listen-only'
 		}
 	}
+	assert !adapter_change_starts_silent('vector', 'cansub')
+	assert !adapter_change_starts_silent('', 'kvaser')
 }

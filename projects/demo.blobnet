@@ -13,7 +13,7 @@ channels:
     type: can            # can | canfd
     interface: vcan0     # SocketCAN iface (can0/can1 for real hardware)
     bitrate: 500000      # nominal/arbitration baud (vcan ignores it)
-    mode: monitor        # off | monitor | replay
+    mode: normal         # normal | replay
     listen_only: false   # silent / no-ACK read-only tap
     enabled: true
     databases:
