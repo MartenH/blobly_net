@@ -1040,6 +1040,22 @@ fn (app &App) diagnostics_text() (string, int) {
 fn (mut app App) roll_bus_load_locked() {
 	now := app.since_ms()
 	for i in 0 .. app.chans.len {
+		// Only a wire somebody is READING has a load to report. A row that is disabled,
+		// failed to open or between runs would otherwise roll zeros into its history, and a
+		// gap nobody observed would read as an idle trough once it was re-enabled (codex
+		// #263 r3); its interval and history reset instead. A spawning row counts as
+		// monitored: its reader is on the way and count_tx_load already files onto it. The
+		// handoff copies a wire's load to its successor under the same lock hold that clears
+		// the outgoing row's flag, so this cannot slip in between.
+		if !app.chans[i].running && !app.chans[i].spawning {
+			app.chans[i].load_bits = 0
+			app.chans[i].load_at = now
+			if app.chans[i].load_hist.len > 0 {
+				app.chans[i].load_hist = []f32{}
+				app.chans[i].load_pct = 0
+			}
+			continue
+		}
 		if app.chans[i].load_at == 0 {
 			app.chans[i].load_at = now
 			continue

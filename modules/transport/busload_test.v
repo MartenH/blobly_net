@@ -50,17 +50,17 @@ fn test_fd_frames_scale_their_data_phase_by_the_rate_switch() {
 	at_nominal := frame_bits(no_brs, 500000, 2000000)
 	at_data := frame_bits(fd64, 500000, 2000000)
 	assert at_data < at_nominal, 'BRS must shorten the frame in nominal bit-times'
-	// arb 17+4=21; data 1+4+512+5+21+5+1=549, dynamically stuffed over ESI+DLC+data
-	// (5+512-1)/4 = 129 -> 678; tail 12
-	assert at_nominal == f64(21 + 678 + 12)
+	// arb 17+4=21; data 1+4+512+5+21+5=548, dynamically stuffed over ESI+DLC+data
+	// (5+512-1)/4 = 129 -> 677; tail 13 (the CRC delimiter is back at nominal)
+	assert at_nominal == f64(21 + 677 + 13)
 	// with BRS at 4x the data part costs a quarter
-	assert at_data == f64(21) + 678.0 / 4.0 + f64(12)
-	// An empty FD frame still stuffs its ESI and DLC bits: 1+4+0+5+17+4+1 = 32, +1
+	assert at_data == f64(21) + 677.0 / 4.0 + f64(13)
+	// An empty FD frame still stuffs its ESI and DLC bits: 1+4+0+5+17+4 = 31, +1
 	fd0 := CanFrame{
 		id: 0x100
 		fd: true
 	}
-	assert frame_bits(fd0, 500000, 500000) == f64(21 + 33 + 12)
+	assert frame_bits(fd0, 500000, 500000) == f64(21 + 32 + 13)
 	// A classic 64-byte payload is impossible; an FD frame of 8 bytes is a little longer than
 	// its classic twin at the same rate (the FD control bits and the longer CRC).
 	fd8 := CanFrame{

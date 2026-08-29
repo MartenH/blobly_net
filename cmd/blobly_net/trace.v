@@ -342,13 +342,29 @@ fn (app &App) tx_counts_locked() string {
 fn (mut app App) count_tx_load(iface string, f transport.CanFrame) {
 	key := transport.destination_key(iface)
 	app.mu.lock()
+	defer {
+		app.mu.unlock()
+	}
+	// The running reader first; failing that, the row whose reader is on its way up — a tap
+	// can win the race against rx_loop at Start, and a handoff has a moment with no running
+	// row — so the first burst is the wire's load and not dropped (codex #263 r3). The roll
+	// treats a spawning row as monitored for the same reason.
+	mut fallback := -1
 	for i, c in app.chans {
-		if c.running && !c.doip && transport.destination_key(c.iface) == key {
+		if c.doip || transport.destination_key(c.iface) != key {
+			continue
+		}
+		if c.running {
 			app.chans[i].load_bits += transport.frame_bits(f, c.bitrate, c.data_bitrate)
-			break
+			return
+		}
+		if c.spawning && fallback < 0 {
+			fallback = i
 		}
 	}
-	app.mu.unlock()
+	if fallback >= 0 {
+		app.chans[fallback].load_bits += transport.frame_bits(f, app.chans[fallback].bitrate, app.chans[fallback].data_bitrate)
+	}
 }
 
 // retract_emit takes back an emission the driver refused. The row stays and is marked: the frame
