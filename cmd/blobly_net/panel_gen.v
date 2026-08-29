@@ -35,7 +35,12 @@ fn draw_quick_send(mut app App) {
 			app.qs_iface = app.chans[nsel].iface
 			target = app.qs_iface
 		}
-		vgui.same_line()
+	}
+	// Stopped, `send_iface` is empty (stop() clears it) and `qs_iface` is only set once the
+	// combo has been touched, so the row the button will send on is the selected one, or the
+	// first (codex round 1 on #256).
+	if target == '' && app.chans.len > 0 {
+		target = app.chans[cur].iface
 	}
 	// ONE FIELD PER LINE, and a Send that is always there. The bus, id and data used to share
 	// one row, which grew past the panel with any data worth typing; and the Send button
@@ -44,8 +49,10 @@ fn draw_quick_send(mut app App) {
 	// either way and greyed when stopped, the way the File tab greys its Save.
 	vgui.set_next_item_width(90 * app.ui_scale)
 	vgui.input_text('id (hex)', mut app.send_id_buf)
-	vgui.set_next_item_width(-1)
-	vgui.input_text('data (hex)##qsdata', mut app.send_data_buf)
+	// A fixed width with the label AFTER it, as ImGui draws labels: the full remaining width
+	// pushed "data (hex)" off the panel edge (codex round 1 on #256).
+	vgui.set_next_item_width(260 * app.ui_scale)
+	vgui.input_text('data (hex)', mut app.send_data_buf)
 	if app.running {
 		if vgui.button('Send##quicksend') {
 			id := u32(('0x' + vgui.buf_str(app.send_id_buf)).u64())
