@@ -551,7 +551,10 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			// reader, so an aliased row shows no failure of its own yet is equally
 			// unwatched. `running` is not required here: this failure belongs to the run
 			// that spawned this loop, which run_gen just proved is still current.
-			a.log_append_locked('${iface}: open failed — ${err} — nothing is monitoring this wire')
+			// A CANsub says how its name fared — the "not resolved" note is for exactly this line
+			// (codex round 1 on #262).
+			how := if n := transport.cansub_lookup_note(iface) { ' (${n})' } else { '' }
+			a.log_append_locked('${iface}: open failed — ${err}${how} — nothing is monitoring this wire')
 			say = true
 		}
 		a.mu.unlock()
@@ -594,7 +597,10 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		dest := transport.destination_key(iface)
 		for c in a.chans {
 			if c.monitorable() && transport.destination_key(c.iface) == dest {
-				a.log_append_locked('${c.name}: open on ${c.iface}')
+				// A CANsub row says how its name was found — the lookup is the part of its
+				// open that has been slow, and a line here beats a probe (2026-08-29).
+				how := if n := transport.cansub_lookup_note(c.iface) { ' (${n})' } else { '' }
+				a.log_append_locked('${c.name}: open on ${c.iface}${how}')
 			}
 		}
 	}

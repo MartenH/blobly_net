@@ -378,6 +378,84 @@ pub:
 // list (the silent-negative Discover has been caught on before, #192). A join that some
 // interfaces refused is reported in the note, because the device may be behind exactly one of
 // them.
+// cansub_mdns_a_query is one A question for `host` (`<id>-usb.local`), QM, id 0 — the same
+// shape as the PTR browse's question with a different name and type.
+pub fn cansub_mdns_a_query(host string) []u8 {
+	mut q := []u8{}
+	q << [u8(0), 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0] // id 0, flags 0, QDCOUNT 1
+	for label in host.trim_right('.').split('.') {
+		q << u8(label.len)
+		q << label.bytes()
+	}
+	q << u8(0)
+	q << [u8(0), 1, 0, 1] // A, IN
+	return q
+}
+
+// cansub_mdns_answer_a is the address `host` resolves to in one response packet, if the
+// packet carries an A record for it. Pure, so the golden vector in the test pins it.
+pub fn cansub_mdns_answer_a(pkt []u8, host string) ?string {
+	want := host.trim_right('.').to_lower()
+	recs := mdns_records(pkt) or { return none }
+	for r in recs {
+		if r.rtype == int(MdnsType.a) && r.name == want && r.addr != '' {
+			return r.addr
+		}
+	}
+	return none
+}
+
+// cansub_mdns_resolve answers `<id>-usb.local` by asking the device itself, on every
+// interface, and returns the FIRST A answer — tens of milliseconds where the OS resolver
+// takes ~2.7 s cold on Windows (measured 2026-08-28/29), which is what made a CANsub row come
+// up two seconds after the rows beside it on every Start (bench, 2026-08-29). The same socket
+// rules as the browse: share port 5353 with the host's responder, join the group, send
+// through every interface because the device sits on its own USB subnet. none within
+// `window` means the OS resolver gets its turn (cansub_lookup).
+pub fn cansub_mdns_resolve(host string, window time.Duration) ?string {
+	mut conn := net.listen_udp('0.0.0.0:${cansub_mdns_port}') or { return none }
+	defer {
+		conn.close() or {}
+	}
+	addrs := local_ipv4_addrs()
+	group := cansub_mdns_group.split('.').map(u8(it.int()))
+	dst := net.new_ip(u16(cansub_mdns_port), [group[0], group[1], group[2], group[3]]!)
+	q := cansub_mdns_a_query(host)
+	mut asked := 0
+	for a in addrs {
+		conn.join_multicast_group(cansub_mdns_group, a) or { continue }
+		conn.set_multicast_interface(a) or { continue }
+		conn.write_to(dst, q) or { continue }
+		asked++
+	}
+	if asked == 0 {
+		return none
+	}
+	deadline := time.ticks() + window.milliseconds()
+	mut buf := []u8{len: 9000}
+	for {
+		remaining := deadline - time.ticks()
+		if remaining <= 0 {
+			return none
+		}
+		conn.set_read_timeout(remaining * time.millisecond)
+		n, _ := conn.read(mut buf) or {
+			if err.code() == net.err_timed_out_code {
+				return none
+			}
+			time.sleep(time.millisecond)
+			continue
+		}
+		if n <= 0 {
+			continue
+		}
+		if ip := cansub_mdns_answer_a(buf[..n], host) {
+			return ip
+		}
+	}
+	return none
+}
+
 pub fn cansub_browse(window time.Duration) !CansubBrowse {
 	mut conn := net.listen_udp('0.0.0.0:${cansub_mdns_port}') or {
 		return error('mDNS port ${cansub_mdns_port} could not be shared: ${err.msg()}')

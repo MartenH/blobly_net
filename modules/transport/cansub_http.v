@@ -547,6 +547,23 @@ mut:
 	// Bumped by every forget of the name: what a dial in flight is checked against when it
 	// comes back (cansub_conn).
 	generation map[string]int
+	// How the name was last resolved — "10.98.13.1 by mDNS in 24 ms" — for the Log: the next
+	// "why is the CANsub row late" is answered by a line, not a probe (bench, 2026-08-29).
+	how map[string]string
+}
+
+// cansub_lookup_note is how the name in `iface` was last resolved, for the Log line that
+// announces the row; none before the first lookup or for a literal address.
+pub fn cansub_lookup_note(iface string) ?string {
+	spec := parse_cansub_iface(iface) or { return none }
+	host := cansub_host(spec.id)
+	note := rlock cansub_addrs {
+		cansub_addrs.how[host] or { '' }
+	}
+	if note == '' {
+		return none
+	}
+	return '${host} -> ${note}'
 }
 
 // cansub_addr_generation is how many times the name has been forgotten.
@@ -555,6 +572,11 @@ fn cansub_addr_generation(host string) int {
 		cansub_addrs.generation[host] or { 0 }
 	}
 }
+
+// cansub_mdns_resolve_window is how long the device gets to answer an A question before the
+// OS resolver is asked instead: a device on the wire answers in tens of milliseconds, and a
+// window this short costs the fallback path almost nothing.
+const cansub_mdns_resolve_window = time.Duration(300 * time.millisecond)
 
 // cansub_failed_lookup_memory is how long a failed lookup answers for the next caller. Long
 // enough that the rows of one project, queued behind one failed lookup, share it; short
@@ -617,23 +639,42 @@ fn cansub_lookup(host string, recent_failure_answers bool) ?string {
 	if recent_failure_answers && failed > 0 && time.ticks() - failed < cansub_failed_lookup_memory {
 		return none
 	}
-	addrs := net.resolve_ipaddrs(host, .ip, .tcp) or {
-		cansub_note_failed_lookup(host)
-		return none
-	}
-	if addrs.len == 0 {
-		cansub_note_failed_lookup(host)
-		return none
-	}
-	// The address without a port: resolve_ipaddrs answers for host:port pairs too, and the
-	// dialler adds its own port.
-	ip := addrs[0].str().all_before_last(':')
-	if ip == '' {
-		return none
+	// THE DEVICE FIRST, THE OS SECOND. A raw mDNS A-query answers in tens of milliseconds;
+	// Windows' resolver takes ~2.7 s cold for the same name, which put a CANsub row two seconds
+	// behind the rows beside it on every Start (bench, 2026-08-29). A literal address skips
+	// both. The resolver stays as the fallback for a host whose mDNS is blocked or filtered.
+	mut ip := ''
+	mut how := ''
+	t0 := time.ticks()
+	if host.split('.').all(it.len > 0 && it.bytes().all(it.is_digit())) {
+		ip = host
+	} else if mdns := cansub_mdns_resolve(host, cansub_mdns_resolve_window) {
+		ip = mdns
+		how = '${ip} by mDNS in ${time.ticks() - t0} ms'
+	} else {
+		addrs := net.resolve_ipaddrs(host, .ip, .tcp) or {
+			cansub_note_failed_lookup(host)
+			lock cansub_addrs {
+				cansub_addrs.how[host] = 'not resolved (no mDNS answer in ${cansub_mdns_resolve_window.milliseconds()} ms, OS resolver failed after ${time.ticks() - t0} ms)'
+			}
+			return none
+		}
+		if addrs.len == 0 {
+			cansub_note_failed_lookup(host)
+			return none
+		}
+		ip = addrs[0].str().all_before_last(':')
+		if ip == '' {
+			return none
+		}
+		how = '${ip} by the OS resolver in ${time.ticks() - t0} ms (no mDNS answer in ${cansub_mdns_resolve_window.milliseconds()} ms)'
 	}
 	lock cansub_addrs {
 		cansub_addrs.by_host[host] = ip
 		cansub_addrs.failed_at.delete(host)
+		if how != '' {
+			cansub_addrs.how[host] = how
+		}
 	}
 	return ip
 }
