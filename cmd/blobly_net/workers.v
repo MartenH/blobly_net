@@ -845,7 +845,8 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		// column landed — it is the TX/TX-S row that was already written at emit — so counting it
 		// here left the header claiming hundreds of RX frames above a table with no RX row in it
 		// (#105). What this counts now is what the bus brought us: everything nobody here sent.
-		// Every frame on the wire is load, ours included (ours counted at note_emit).
+		// Every frame on the wire is load, ours included (ours counted once the driver took them,
+	// count_tx_load), so the echo must not count twice.
 		if !ours {
 			a.chans[ci].load_bits += transport.frame_bits(f, a.chans[ci].bitrate, a.chans[ci].data_bitrate)
 		}

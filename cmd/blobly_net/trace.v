@@ -201,15 +201,6 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 		org_tx_sim { app.tx_sim_count++ }
 		else {} // REP never reaches a bus; RX is not ours to count here
 	}
-	// And the wire's load: what we put on it counts as much as what we read off it.
-	if origin == org_tx || origin == org_tx_sim {
-		for i, c in app.chans {
-			if c.name == chn {
-				app.chans[i].load_bits += transport.frame_bits(f, c.bitrate, c.data_bitrate)
-				break
-			}
-		}
-	}
 
 	epoch := app.tx_epoch
 	// ALWAYS record what we sent, on any backend that could echo — the emission is ours whether
@@ -341,6 +332,23 @@ fn (app &App) tx_counts_locked() string {
 		return 'TX ${app.tx_count}'
 	}
 	return 'TX ${app.tx_count} · ${org_tx_sim} ${app.tx_sim_count}'
+}
+
+// count_tx_load adds a frame the driver ACCEPTED to its wire's load. After the send and not
+// at note_emit, so a refused frame never needs refunding (codex #263 r1); and onto the row
+// that is RUNNING for the wire rather than the row named by the tap — two enabled rows on one
+// destination share one reader and one running flag, and the load is the wire's, so the
+// alias's frames would otherwise land on a row the panel and the toolbar skip (r1).
+fn (mut app App) count_tx_load(iface string, f transport.CanFrame) {
+	key := transport.destination_key(iface)
+	app.mu.lock()
+	for i, c in app.chans {
+		if c.running && !c.doip && transport.destination_key(c.iface) == key {
+			app.chans[i].load_bits += transport.frame_bits(f, c.bitrate, c.data_bitrate)
+			break
+		}
+	}
+	app.mu.unlock()
 }
 
 // retract_emit takes back an emission the driver refused. The row stays and is marked: the frame

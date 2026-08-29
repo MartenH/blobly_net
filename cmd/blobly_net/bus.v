@@ -39,8 +39,9 @@ mut:
 	rx      u64
 	// BUS LOAD (transport.busload): bit-times seen on this wire since the last roll, rolled
 	// once a second into `load_hist` — the last 60 seconds of load, oldest first — and the
-	// second's value in `load_pct`. Our own sends count (they are on the wire); so does
-	// every RX. Zeroed at Start.
+	// second's value in `load_pct`. Our own sends count (they are on the wire, and counted
+	// once the driver took them); so does every RX. Held by the wire's RUNNING row: an alias
+	// row on the same destination folds in here. Zeroed at Start.
 	load_bits f64
 	load_at   f64
 	load_pct  f32
@@ -238,6 +239,8 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 		t.app.unrecord(rec_id)
 		return err
 	}
+	// The driver has it: it is on the wire, and the wire's load.
+	t.app.count_tx_load(t.iface, wire)
 }
 
 fn (mut t TapBus) recv(timeout_ms int) !transport.CanFrame {
