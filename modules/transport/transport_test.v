@@ -72,7 +72,8 @@ fn test_which_backends_echo_our_own_sends() {
 	// otherwise would encode a Windows-only truth as a universal one.
 	$if windows {
 		assert !echoes_own_sends('pcan:PCAN_USBBUS1@500000')
-		assert !echoes_own_sends('kvaser:0')
+		assert echoes_own_sends('kvaser:0'), 'canlib echoes the writes of one handle to its siblings (#255)'
+		assert echoes_own_sends('kvaser:0@500000/2000000')
 		assert vendor_iface('pcan:PCAN_USBBUS1@250000')
 	} $else {
 		assert echoes_own_sends('pcan:PCAN_USBBUS1@500000')

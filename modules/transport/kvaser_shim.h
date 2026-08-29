@@ -43,7 +43,6 @@ typedef int     (__stdcall *ct_kvBusOff)(int);
 typedef int     (__stdcall *ct_kvWrite)(int, int32_t, void *, uint32_t, uint32_t);
 typedef int     (__stdcall *ct_kvReadWait)(int, int32_t *, void *, uint32_t *, uint32_t *, uint32_t *, uint32_t);
 typedef int     (__stdcall *ct_kvClose)(int);
-typedef int     (__stdcall *ct_kvIoCtl)(int, unsigned int, void *, unsigned int);
 
 static ct_kvInitLib  ct_kv_initlib;
 static ct_kvOpen     ct_kv_open;
@@ -55,7 +54,6 @@ static ct_kvBusOff   ct_kv_busoff;
 static ct_kvWrite    ct_kv_write;
 static ct_kvReadWait ct_kv_readwait;
 static ct_kvClose    ct_kv_close;
-static ct_kvIoCtl    ct_kv_ioctl;   /* canIoCtl — optional; without it local echo stays on */
 
 /* enumeration (optional — used for discovery, not I/O; older canlib may lack them) */
 typedef int (__stdcall *ct_kvNumChan)(int *);
@@ -87,7 +85,6 @@ static int ct_kvaser_load(void) {
 	ct_kv_readwait = (ct_kvReadWait)(void *)GetProcAddress(h, "canReadWait");
 	ct_kv_readstatus = (ct_kvReadStatus)(void *)GetProcAddress(h, "canReadStatus");
 	ct_kv_close    = (ct_kvClose)(void *)GetProcAddress(h, "canClose");
-	ct_kv_ioctl    = (ct_kvIoCtl)(void *)GetProcAddress(h, "canIoCtl");
 	ct_kv_numchan  = (ct_kvNumChan)(void *)GetProcAddress(h, "canGetNumberOfChannels");
 	ct_kv_chandata = (ct_kvChanData)(void *)GetProcAddress(h, "canGetChannelData");
 	if (!ct_kv_initlib || !ct_kv_open || !ct_kv_setbus || !ct_kv_buson ||
@@ -162,26 +159,11 @@ static int ct_kvaser_set_mode(int hnd, int silent) {
 /* Open channel `ch` (accepting virtual channels), set bitrate (a canBITRATE_* code,
  * negative), choose the output mode, then go bus-on. Returns the handle (>=0) or the negative
  * canStatus error. */
-/* canIOCTL_SET_LOCAL_TXECHO: whether a frame written on ANOTHER handle open on this channel is
- * delivered to this one as a received frame. canlib's default is ON, and this app opens each
- * wire several times per Start (the reader is not the handle a generator writes on), so every
- * frame we sent came back on the reader as a plain RX with no TX flag — the trace showed each
- * cyclic frame twice, TX then RX 0.5 ms later, on Kvaser alone (2026-08-29). Off, a handle hears
- * the bus and not its siblings, which is what PCAN (one handle per channel) and CANsub (an echo
- * that says it is one) already give. Best effort: an ancient canlib without canIoCtl keeps the
- * default, and the open goes on — a duplicate row is not worth refusing the wire for. */
-#define CT_KV_IOCTL_SET_LOCAL_TXECHO 32u
-static void ct_kvaser_no_local_echo(int hnd) {
-	unsigned int off = 0;
-	if (ct_kv_ioctl) ct_kv_ioctl(hnd, CT_KV_IOCTL_SET_LOCAL_TXECHO, &off, sizeof off);
-}
-
 static int ct_kvaser_open(int ch, int32_t bitrate_code, int silent) {
 	int hnd, st;
 	ct_kv_initlib();
 	hnd = ct_kv_open(ch, CT_KV_OPEN_ACCEPT_VIRTUAL);
 	if (hnd < 0) return hnd;
-	ct_kvaser_no_local_echo(hnd);
 	st = ct_kv_setbus(hnd, bitrate_code, 0, 0, 0, 0, 0);
 	if (st < 0) { ct_kv_close(hnd); return st; }
 	/* BEFORE canBusOn, and a refusal stops the open: going on the bus acknowledging when the row
@@ -206,7 +188,6 @@ static int ct_kvaser_open_fd(int ch, int32_t arb_code, int32_t data_code, int si
 	ct_kv_initlib();
 	hnd = ct_kv_open(ch, CT_KV_OPEN_ACCEPT_VIRTUAL | CT_KV_OPEN_CAN_FD);
 	if (hnd < 0) return hnd;
-	ct_kvaser_no_local_echo(hnd);
 	st = ct_kv_setbus(hnd, arb_code, 0, 0, 0, 0, 0);
 	if (st < 0) { ct_kv_close(hnd); return st; }
 	st = ct_kv_setbusfd(hnd, data_code, 0, 0, 0);
