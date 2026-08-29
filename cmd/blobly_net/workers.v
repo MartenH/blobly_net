@@ -594,7 +594,10 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		dest := transport.destination_key(iface)
 		for c in a.chans {
 			if c.monitorable() && transport.destination_key(c.iface) == dest {
-				a.log_append_locked('${c.name}: open on ${c.iface}')
+				// A CANsub row says how its name was found — the lookup is the part of its
+				// open that has been slow, and a line here beats a probe (2026-08-29).
+				how := if n := transport.cansub_lookup_note(c.iface) { ' (${n})' } else { '' }
+				a.log_append_locked('${c.name}: open on ${c.iface}${how}')
 			}
 		}
 	}
