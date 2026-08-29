@@ -6,6 +6,7 @@ import transport
 import wiretap
 import telem
 import canlog
+import project
 import vgui
 
 struct TraceRow {
@@ -389,8 +390,12 @@ fn (app &App) load_owner_locked(key string) int {
 // and an FD row may share a wire (the project warns rather than refuses), and the reader is
 // whichever came first, so a BRS frame read through the classic row would otherwise have its
 // whole payload charged at the nominal rate (codex #263 r4).
+//
+// An UNSET nominal rate is the project's default, the one reading the open path and
+// origination_framing already share (project.Channel.nominal_bitrate); the raw zero the row
+// keeps would make load_percent answer 0 % for every interval on a live wire (codex #263 r5).
 fn (app &App) wire_rates_locked(i int) (int, int) {
-	nominal := app.chans[i].bitrate
+	nominal := if app.chans[i].bitrate > 0 { app.chans[i].bitrate } else { project.default_bitrate }
 	if app.chans[i].data_bitrate > 0 {
 		return nominal, app.chans[i].data_bitrate
 	}

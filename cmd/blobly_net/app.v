@@ -1043,10 +1043,9 @@ fn (mut app App) roll_bus_load_locked() {
 		// Only a wire somebody is READING has a load to report. A row that is disabled,
 		// failed to open or between runs would otherwise roll zeros into its history, and a
 		// gap nobody observed would read as an idle trough once it was re-enabled (codex
-		// #263 r3); its interval and history reset instead. A spawning row counts as
-		// monitored: its reader is on the way and count_tx_load already files onto it. The
-		// handoff copies a wire's load to its successor under the same lock hold that clears
-		// the outgoing row's flag, so this cannot slip in between.
+		// #263 r3); its interval and history reset instead. The handoff copies a wire's load
+		// to its successor under the same lock hold that clears the outgoing row's flag, so
+		// this cannot slip in between.
 		if !app.chans[i].running && !app.chans[i].spawning {
 			app.chans[i].load_bits = 0
 			app.chans[i].load_at = now
@@ -1054,6 +1053,14 @@ fn (mut app App) roll_bus_load_locked() {
 				app.chans[i].load_hist = []f32{}
 				app.chans[i].load_pct = 0
 			}
+			continue
+		}
+		// A SPAWNING row keeps its interval OPEN: its reader has not opened the bus, so
+		// nothing it would have read is in the bits, and closing intervals there would file
+		// a slow open — a CANsub's, a reconnect's — as idle seconds (r5). The sends
+		// count_tx_load filed onto it stay, and the first interval closed once it runs
+		// averages over the whole window, which is the honest figure for it.
+		if !app.chans[i].running {
 			continue
 		}
 		if app.chans[i].load_at == 0 {
@@ -1064,7 +1071,8 @@ fn (mut app App) roll_bus_load_locked() {
 		if elapsed < 1000 {
 			continue
 		}
-		pct := transport.load_percent(app.chans[i].load_bits, i64(elapsed), app.chans[i].bitrate)
+		nominal, _ := app.wire_rates_locked(i)
+		pct := transport.load_percent(app.chans[i].load_bits, i64(elapsed), nominal)
 		app.chans[i].load_pct = pct
 		app.chans[i].load_hist << pct
 		if app.chans[i].load_hist.len > 60 {
