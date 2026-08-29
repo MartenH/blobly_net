@@ -302,7 +302,10 @@ fn gen_loop(app &App) {
 				// ITS OWN tap when it has a channel: the shared tap is filed first and carries no
 				// channel identity, so a frame sent through it during the named open would be
 				// filed under whichever channel matched first (codex round 4 on #257).
-				want_key := if sr.chan != '' { tx_bus_key(sr.chan, tgt) } else { tx_bus_key('', tgt) }
+				// …unless its own is known not to come: then the shared tap is the answer, as
+				// it is for a manual send (codex round 6 on #257).
+				named := tx_bus_key(sr.chan, tgt)
+				want_key := if sr.chan != '' && named !in a.tap_failed { named } else { tx_bus_key('', tgt) }
 				if tgt != '' && want_key !in a.tx_buses {
 					continue
 				}

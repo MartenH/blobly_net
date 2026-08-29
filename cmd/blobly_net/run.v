@@ -241,35 +241,28 @@ fn (app &App) bitrate_iface(iface string) string {
 // filed under a brief take of app.mu, and only into the run it was opened for: a Stop during a
 // slow open leaves `run_gen` behind, and the tap is closed instead of leaking into the next
 // run's map (rx_loop's rule, one layer over).
-fn open_taps_for_run(app &App, rows []Chan, senders []SenderRT, gen u64) {
+fn open_taps_for_run(app &App, plan []TapWant, gen u64) {
 	// ONE WORKER PER WIRE. A single worker opening every tap in row order would hold every
 	// later wire behind the first slow one — a CANsub that is not there costs its whole
 	// timeout — while the generators, which start at once, dropped frames on healthy wires as
 	// "no open bus" for the duration (codex round 1 on #257). Grouped by destination, a
 	// stalled device delays its own wire and nobody else's.
 	mut by_wire := map[string][]TapWant{}
-	for ch in rows {
-		if !ch.enabled || ch.doip {
-			continue
-		}
-		by_wire[transport.destination_key(ch.iface)] << TapWant{ch.name, ch.iface}
-	}
-	for sr in senders {
-		tgt := sr.target()
-		if tgt == '' {
-			continue
-		}
-		by_wire[transport.destination_key(tgt)] << TapWant{sr.chan, tgt}
+	for w in plan {
+		by_wire[transport.destination_key(w.iface)] << w
 	}
 	for _, wants in by_wire {
 		spawn open_taps_for_wire(app, wants, gen)
 	}
 }
 
-// TapWant is one (channel, interface) pair a run needs a transmit tap for.
+// TapWant is one transmit tap a run needs: the channel (empty for the shared tap), the
+// logical interface the keys are made of, and the physical one to open — resolved by the
+// caller under app.mu, because bitrate_iface walks app.chans (codex round 6 on #257).
 struct TapWant {
 	chan_name string
 	iface     string
+	phys      string
 }
 
 fn open_taps_for_wire(app &App, wants []TapWant, gen u64) {
@@ -283,7 +276,7 @@ fn open_taps_for_wire(app &App, wants []TapWant, gen u64) {
 		if !a.run_live(gen) {
 			return
 		}
-		a.install_tap(w.chan_name, w.iface, gen, mut named_tap_failed, mut anon_tap_failed)
+		a.install_tap(w.chan_name, w.iface, w.phys, gen, mut named_tap_failed, mut anon_tap_failed)
 	}
 }
 
@@ -292,22 +285,26 @@ fn open_taps_for_wire(app &App, wants []TapWant, gen u64) {
 // Add generator and a retargeted generator both used to open inline on the GUI thread (codex
 // round 4 on #257), which is the freeze Start was cured of.
 fn (mut app App) spawn_tap_for(chan_name string, iface string) {
+	if iface == '' {
+		return
+	}
 	app.mu.lock()
 	gen := app.run_gen
 	live := app.running
+	phys := app.bitrate_iface(iface) // under the lock: it walks app.chans
 	app.mu.unlock()
-	if !live || iface == '' {
+	if !live {
 		return
 	}
-	spawn fn (app &App, chan_name string, iface string, gen u64) {
+	spawn fn (app &App, w TapWant, gen u64) {
 		mut a := unsafe { app }
 		if !a.run_live(gen) {
 			return
 		}
 		mut nf := map[string]bool{}
 		mut af := map[string]bool{}
-		a.install_tap(chan_name, iface, gen, mut nf, mut af)
-	}(app, chan_name, iface, gen)
+		a.install_tap(w.chan_name, w.iface, w.phys, gen, mut nf, mut af)
+	}(app, TapWant{chan_name, iface, phys}, gen)
 }
 
 // run_live is whether the run `gen` is the one on now.
@@ -324,11 +321,11 @@ fn (mut app App) run_live(gen u64) bool {
 // FIRST: tx_on falls back to it for the paths with no owning channel — Quick Send,
 // diagnostics, shell. Failures are remembered per key so one dead wire is reported once, not
 // once per row or per generator (codex #141 r3).
-fn (mut app App) install_tap(chan_name string, iface string, gen u64, mut named_failed map[string]bool, mut anon_failed map[string]bool) {
+fn (mut app App) install_tap(chan_name string, iface string, phys string, gen u64, mut named_failed map[string]bool, mut anon_failed map[string]bool) {
 	anon := tx_bus_key('', iface)
 	dest := transport.destination_key(iface)
 	if dest !in anon_failed && !app.has_tap(anon) {
-		if mut b := app.open_tap(iface, org_tx) {
+		if mut b := app.open_tap_phys(iface, phys, org_tx, '', 0, false) {
 			app.file_tap(anon, mut b, gen)
 		} else {
 			anon_failed[dest] = true
@@ -339,10 +336,17 @@ fn (mut app App) install_tap(chan_name string, iface string, gen u64, mut named_
 	}
 	named := tx_bus_key(chan_name, iface)
 	if chan_name != '' && named !in named_failed && !app.has_tap(named) && app.run_live(gen) {
-		if mut b := app.open_tap_on_gen(iface, org_tx, chan_name, gen) {
+		if mut b := app.open_tap_phys(iface, phys, org_tx, chan_name, gen, false) {
 			app.file_tap(named, mut b, gen)
 		} else {
 			named_failed[named] = true
+			// TERMINAL, and said so where gen_loop reads it: a sender waiting for this tap
+			// would otherwise wait for the rest of the run (codex round 6 on #257).
+			app.mu.lock()
+			if app.run_gen == gen {
+				app.tap_failed[named] = true
+			}
+			app.mu.unlock()
 			notify_gen(app, gen, '${chan_name}: transmit tap failed to open — ${err}')
 		}
 	}
@@ -607,10 +611,21 @@ fn (mut app App) start() {
 	// The plan is snapshotted UNDER the lock: the readers spawned above write these rows under
 	// it, and a fast backend's reader is already doing so (codex round 5 on #257).
 	app.mu.lock()
-	tap_rows := app.chans.clone()
-	tap_senders := app.senders.clone()
+	mut plan := []TapWant{}
+	for ch in app.chans {
+		if ch.enabled && !ch.doip {
+			plan << TapWant{ch.name, ch.iface, app.bitrate_iface(ch.iface)}
+		}
+	}
+	for sr in app.senders {
+		tgt := sr.target()
+		if tgt != '' {
+			plan << TapWant{sr.chan, tgt, app.bitrate_iface(tgt)}
+		}
+	}
+	app.tap_failed = map[string]bool{}
 	app.mu.unlock()
-	spawn open_taps_for_run(app, tap_rows, tap_senders, start_gen)
+	spawn open_taps_for_run(app, plan, start_gen)
 	// spawn the in-process simulation workloads (driver-free sim ECUs + a UDS server)
 	for sc in app.sims {
 		// DoIP carries diagnostics, not frames. sim_loop would call transport.open('doip:…'),

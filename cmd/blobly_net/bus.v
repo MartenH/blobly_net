@@ -272,6 +272,14 @@ fn (app &App) open_tap_on_gen(iface string, origin string, chan_name string, gen
 // open_tap_full is open_tap_on_gen with the one thing the others cannot express: whether this tap
 // REPRODUCES frames rather than originating them. Replay is the only caller that passes true.
 fn (app &App) open_tap_full(iface string, origin string, chan_name string, gen u64, reproduces bool) !transport.Bus {
+	phys := if iface.contains('@') { iface } else { app.bitrate_iface(iface) }
+	return app.open_tap_phys(iface, phys, origin, chan_name, gen, reproduces)
+}
+
+// open_tap_phys is open_tap_full with the PHYSICAL interface already resolved — by a caller
+// that did so under app.mu. bitrate_iface walks app.chans, which the readers write under the
+// lock, so a worker opening a tap must not resolve it unlocked (codex round 6 on #257).
+fn (app &App) open_tap_phys(iface string, phys string, origin string, chan_name string, gen u64, reproduces bool) !transport.Bus {
 	// The bitrate suffix is an OPEN-time detail of the VENDOR backends, not part of a bus's
 	// identity: chan_name_for and the pending records both key on the logical name, so a caller
 	// that already carries `pcan:…@250000` (the script engine's ChanInfo does) would otherwise
@@ -290,7 +298,6 @@ fn (app &App) open_tap_full(iface string, origin string, chan_name string, gen u
 	// re-deriving from the current channels loses the rate whenever those no longer describe it
 	// — a script that outlives Stop and a project switch still holds the interface it captured,
 	// and a 250k bus would then be opened at the default.
-	phys := if iface.contains('@') { iface } else { app.bitrate_iface(iface) }
 	// VERBATIM, because this tap decides the format itself a few lines into TapBus.send — before it
 	// normalises and RECORDS the frame. Left framing to the bus underneath, the trace could hold a
 	// classic frame while an FD one went out, and a policy change mid-send could make the two
