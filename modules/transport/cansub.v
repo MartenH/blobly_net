@@ -954,11 +954,20 @@ pub fn (mut b CansubBus) send(frame CanFrame) ! {
 	defer {
 		b.wmu.unlock()
 	}
-	// Under the write lock, a connection that is over for writing is a FAILED write, not a
-	// refusal: nothing more may go onto that stream (see fail_send), and the hub's grace is
-	// the right answer for a send that was attempted and did not go.
+	// Under the write lock, MUTABLE state is read once more — and what it says is reported as a
+	// FAILED write, never as a refusal: the token exists by now (see the preflight note above),
+	// and a failed write is what the hub's grace is for. A connection over for writing: nothing
+	// more may go onto that stream (fail_send). A controller the health thread has just found
+	// silent: the socket would take the frame and the controller would not transmit it, and a
+	// send reported successful would put a frame in the trace that never reached the wire
+	// (codex round 16 on #251).
 	if e := b.send_refusal() {
 		return error('send on ${b.iface}: ${e}')
+	}
+	if rlock b.stop {
+		b.stop.phy_silent
+	} {
+		return error('send on ${b.iface}: the controller is in listen-only; the frame was not sent')
 	}
 	b.ws.write(cansub_hdlc_wrap(body), .binary_frame) or {
 		// A WRITE THAT FAILED IS THE END OF THIS CONNECTION FOR WRITING. A timed-out write may have
