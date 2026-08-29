@@ -44,7 +44,7 @@ channels:
                                 # (SocketCAN is the fallback — there is no `socketcan:`
                                 # prefix), or `pcan:PCAN_USBBUS1@500000` /
                                 # `kvaser:0@500000` on Windows.
-    mode: monitor
+    mode: normal
     databases:
       - dbc/blobly_net.dbc      # the NETWORK owns the database, not the ECU
     simulation:
@@ -59,7 +59,9 @@ Because the database belongs to the network, a simulated ECU never restates mess
 times, signal placement or byte order. It says only what its values should *do*. Move a signal
 in the DBC and the simulation follows.
 
-Channel `mode` is `off`, `monitor` (RX, the default) or `replay`. Simulation runs independently
+Channel `mode` is `normal` (the default; older files say `monitor`, which loads the same) or
+`replay`. There is no `off` any more — untick the row instead; an older file's `mode: off` loads
+as an unticked row. Simulation runs independently
 of the mode — the ECUs configured on a channel transmit whenever the measurement is running.
 
 ## Simulating ECUs

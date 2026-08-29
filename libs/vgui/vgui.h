@@ -73,6 +73,7 @@ int  vgui_input_text(const char* label, char* buf, int bufsize);
 int  vgui_console_input(const char* label, char* buf, int bufsize);
 int  vgui_text_edit(const char* id, char* buf, int cap, float h);
 void vgui_scroll_bottom(void);
+int  vgui_scroll_at_bottom(void);
 void vgui_console_text(const char* id, const char* text, int len, int nlines);
 int  vgui_input_double(const char* label, double* v);
 int  vgui_input_int(const char* label, int* v);

@@ -130,9 +130,11 @@ vector:1@250000        # …at 250 kbit/s
 vector:1@500000,silent # …listen-only: the transceiver never acknowledges
 ```
 
-A channel added through Discover starts silent on purpose: the 500 kbit/s default is a guess
-until somebody confirms it, and a node joining a live bus at the wrong bitrate floods error
-frames. There is no Vector software-virtual bus in Blobly Net — use `inproc:` for driver-free
+A channel added through Discover starts **normal** — able to transmit and acknowledge — since
+2026-08-29; it started listen-only before that, on the argument that the 500 kbit/s default is a
+guess and a node joining a live bus at the wrong bitrate floods error frames. That argument still
+holds on a live vehicle: tick **listen-only** on the row before Start there. There is no Vector
+software-virtual bus in Blobly Net — use `inproc:` for driver-free
 work. (Vector's own virtual channels exist and `cmd/vectorcheck --selftest` uses them.)
 
 A project `Channel` already carries `bitrate`, `fd`, `data_bitrate`, `sample_point`,

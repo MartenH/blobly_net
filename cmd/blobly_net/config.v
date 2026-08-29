@@ -197,9 +197,9 @@ fn (mut app App) add_bus_spec(adapter string, address string) {
 		address: address
 		iface:   project.compose_iface(adapter, address)
 		typ:     'can'
-		mode:    .monitor
-		// LISTEN-ONLY UNTIL SOMEBODY SAYS OTHERWISE — see project.adapter_starts_silent, which is
-		// where the rule lives now that more than one adapter needs it.
+		mode:    .normal
+		// Normal unless the adapter rule says otherwise — project.adapter_starts_silent, which
+		// answers false for every adapter since 2026-08-29 and says why.
 		listen_only: project.adapter_starts_silent(adapter)
 	}
 	app.dirty = true

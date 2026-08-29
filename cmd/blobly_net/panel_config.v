@@ -600,8 +600,8 @@ fn (mut app App) draw_bus_editor(i int) bool {
 		}
 		vgui.text('mode:')
 		vgui.same_line()
-		vgui.help_marker('off = configured but not attached · monitor = observe live traffic · replay = play a recording onto the bus.')
-		for md in ['off', 'monitor', 'replay'] {
+		vgui.help_marker('normal = live traffic in and out · replay = play a recording onto the bus. To keep a row out of a run, untick it; to keep it from transmitting, tick listen-only.')
+		for md in ['normal', 'replay'] {
 			vgui.same_line()
 			if vgui.toggle_button('${md}##md${i}_${md}', ch.mode.str() == md, 0) {
 				app.set_mode(i, md)

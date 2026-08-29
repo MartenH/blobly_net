@@ -257,6 +257,9 @@ mut:
 	// selected in a window that is collapsed or docked behind another. That is what decides
 	// whether Ctrl+S means the text or the project (codex round 3 on #250).
 	cfg_file_visible bool
+	// Lines each console pane (Log, Flash, Diagnostics, Script) showed last frame, by widget
+	// id: what tells draw_copyable_log that there is something new to follow.
+	console_shown map[string]int
 	// File ▸ Save was chosen this frame: performed by poll_shortcuts after the panels have
 	// drawn, for the reason given there.
 	save_requested bool
