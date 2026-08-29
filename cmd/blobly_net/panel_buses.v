@@ -492,6 +492,12 @@ fn draw_buses(mut app App, chans []Chan) {
 						// on a wire that WAS reopened it sees them fall and says so.
 						app.chans[i].spawning = true
 						spawn rx_loop(app, i, app.chans[i].iface, app.run_gen)
+					} else {
+						// A sibling already reads this wire, so no reader is spawned and the
+						// reader's own announcement (rx_loop) will not fire for this row: say
+						// it here, or an alias enabled mid-run joins in silence (codex round 3
+						// on #256).
+						app.log_append_locked('${app.chans[i].name}: open on ${app.chans[i].iface} (a sibling row reads this wire)')
 					}
 					// …and the TRANSMIT side, exactly as start() sets it up. Only the reader was
 					// started here, so a channel enabled after Start had no tap: Quick Send and

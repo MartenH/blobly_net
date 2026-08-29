@@ -543,6 +543,10 @@ fn draw_log(mut app App) {
 	if gen != app.log_cache.gen {
 		app.log_cache.refresh(gen, src)
 	}
+	if vgui.small_button('Clear##log') {
+		app.log_clear()
+	}
+	vgui.same_line()
 	draw_copyable_log(mut app, '##log', app.log_cache)
 	vgui.end()
 }

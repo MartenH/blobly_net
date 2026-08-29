@@ -553,6 +553,28 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	a.chans[ci].running = true
 	a.chans[ci].spawning = false
 	a.dbc_readers++ // this loop reads app.dbs lock-free (lookup_name per frame)
+	// SAID FOR EVERY ROW, under the same take of the lock as `running`. The failure two
+	// screens up has narrated itself since 2026-08-21; success never did, so a DoIP row
+	// announced its entity while a CAN row came up in silence and "started" — the button's
+	// one line — was the only word for all of them (2026-08-29). The same shape for every
+	// backend: the row's name, the wire it opened. EVERY row on the wire, because aliases
+	// share this one reader and would otherwise come up unannounced; and only while the run
+	// is still on — a slow hardware open that completes after Stop leaves `run_gen` where it
+	// was and `running` false, and a line then would record an open that ended before it
+	// was written (codex round 2 on #256).
+	// And the rows named are the ones start() would give a reader — monitorable(), which is
+	// enabled AND a CAN row: a DoIP row without an `interface` keeps the default string and
+	// would otherwise read as an alias of a real wire. Nothing at all if THIS row was unticked
+	// while its open was pending: the loop below leaves at once and a successor announces
+	// after its own open (codex round 4 on #256).
+	if a.running && a.chans[ci].monitorable() {
+		dest := transport.destination_key(iface)
+		for c in a.chans {
+			if c.monitorable() && transport.destination_key(c.iface) == dest {
+				a.log_append_locked('${c.name}: open on ${c.iface}')
+			}
+		}
+	}
 	a.mu.unlock()
 	defer {
 		a.mu.lock()
