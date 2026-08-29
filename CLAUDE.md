@@ -113,8 +113,9 @@ behind that guard). Bundle payload list: `scripts/stage_bundle.sh`, once, for bo
 [docs/releasing.md](docs/releasing.md).
 
 CI (`.github/workflows/`) runs `v -enable-globals test modules/` (plus
-`cmd/blobly_net/saverule/`, the one GUI-local rule with a test — what Save means, #250 —
-kept in a GUI-free sub-module so it runs without ImGui), `scripts/runtests.sh`,
+`cmd/blobly_net/saverule/` and `cmd/blobly_net/logfile/`, the GUI-local rules with tests —
+what Save means (#250) and where the session log lives, what it is called, how many are kept
+and what its header says (#258) — kept in GUI-free sub-modules so they run without ImGui), `scripts/runtests.sh`,
 `scripts/check_cmds.sh` (every `cmd/*` entry point type-checked for BOTH `-os` targets, on both
 jobs — nothing else compiles a CLI tool, and two sat broken for months that way, #220) and
 `scripts/vcan_common_test.sh` (the shared setup-script answers — whose home under sudo, is vcan

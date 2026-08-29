@@ -109,6 +109,7 @@ fn main() {
 	app.trace_filter2_buf = mkbuf('', 64)
 	app.symbol_filter_buf = mkbuf('', 64)
 	app.doip_host_buf = mkbuf('127.0.0.1', 64)
+	app.open_session_log(proj_path)
 	app.load_project(proj_path)
 	println('blobly_net: ${app.proj_name} — ${app.chans.len} channel(s), ${app.dbs.len} DBC(s), manifest=${app.has_manifest}. Press Start.')
 
@@ -123,7 +124,7 @@ fn main() {
 	if os.getenv('BLOBLY_SELFTEST_DBC') != '' {
 		app.show_dbc = true
 		if !vgui.init('blobly_net ${app_version} — selftest', 1500, 850, true) {
-			eprintln('vgui.init failed')
+			app.elog('vgui.init failed')
 			return
 		}
 		for frame in 0 .. 10 {
@@ -154,7 +155,7 @@ fn main() {
 	headless := max_frames > 0 || shot != ''
 	init_w, init_h := if headless { 1500, 850 } else { 1800, 1000 }
 	if !vgui.init('blobly_net ${app_version} — ${app.proj_name}', init_w, init_h, true) {
-		eprintln('vgui.init failed')
+		app.elog('vgui.init failed')
 		return
 	}
 	set_app_icon() // the B-on-blue window/taskbar icon (procedural placeholder as fallback)
@@ -308,7 +309,7 @@ fn main() {
 
 		vgui.frame_end()
 		if last {
-			eprintln('rendered ${frame} frames; RX ${rx}')
+			app.elog('rendered ${frame} frames; RX ${rx}')
 			break
 		}
 	}
