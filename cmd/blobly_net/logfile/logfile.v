@@ -36,23 +36,26 @@ pub fn dir() string {
 // file_name is the session file for a launch at `t` by process `pid`: sortable by name, safe
 // on every file system (no colons — Windows), unmistakably ours, and ONE PER LAUNCH — two
 // instances started in the same second would otherwise append into one file, headers and all
-// (codex round 1 on #259); the pid tells them apart.
+// (codex round 1 on #259); the pid tells them apart. IN UTC: rotation sorts by name, and a
+// local clock that steps back — the autumn DST hour — would put a later launch before an
+// earlier one and delete the wrong file (codex round 3 on #259). The header says local time.
 pub fn file_name(t time.Time, pid int) string {
-	return 'blobly_net-${t.year:04}-${t.month:02}-${t.day:02}T${t.hour:02}-${t.minute:02}-${t.second:02}-${pid}.log'
+	u := t.local_to_utc()
+	return 'blobly_net-${u.year:04}-${u.month:02}-${u.day:02}T${u.hour:02}-${u.minute:02}-${u.second:02}Z-${pid}.log'
 }
 
 // is_session_log is whether a name in the directory is one of ours — rotation touches
-// nothing else that may live there. `blobly_net-<date>T<time>-<pid>.log`, digits and dashes.
+// nothing else that may live there. `blobly_net-<date>T<time>Z-<pid>.log`, digits and dashes.
 pub fn is_session_log(name string) bool {
 	if !name.starts_with('blobly_net-') || !name.ends_with('.log') {
 		return false
 	}
 	body := name['blobly_net-'.len..name.len - '.log'.len]
-	if body.len < '2026-08-29T16-23-43-1'.len || body[10] != `T` {
+	if body.len < '2026-08-29T16-23-43Z-1'.len || body[10] != `T` || body[19] != `Z` {
 		return false
 	}
 	for i, c in body {
-		if i == 10 {
+		if i == 10 || i == 19 {
 			continue
 		}
 		if !(c.is_digit() || c == `-`) {
@@ -94,7 +97,7 @@ pub:
 pub fn header(f Facts) string {
 	mut b := []string{}
 	b << '# blobly_net ${f.version}'
-	b << '# started ${f.started.format_ss()}  log ${f.log_path}'
+	b << '# started ${f.started.format_ss()} local  log ${f.log_path}'
 	b << '# os ${f.os_name} ${f.os_ver}  arch ${f.arch}  cpus ${f.cpus}  v ${f.v_hash}'
 	b << '# project ${f.project}'
 	b << '# args ${f.args.join(' ')}'
