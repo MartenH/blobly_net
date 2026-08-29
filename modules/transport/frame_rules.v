@@ -21,6 +21,30 @@
 // are what tell an operator which row to go and look at.
 module transport
 
+// NotWritten is a send that was REFUSED before anything reached the socket: a frame the wire
+// cannot carry, a listen-only mark, a bus that has failed, a connection that is over for
+// writing. The hub reads the type: a write that FAILED may still have put the frame on the
+// wire, and its pending entry is kept matchable for a grace; a send that was never attempted
+// has no acknowledgement coming, and an entry kept for it could claim a late acknowledgement
+// meant for the original write and file that frame under the wrong handle (codex round 9 on
+// #251). Drivers return it through not_written().
+pub struct NotWritten {
+	Error
+pub:
+	msg string
+}
+
+pub fn (e NotWritten) msg() string {
+	return e.msg
+}
+
+// not_written is the refusal a driver returns for a send it did not attempt.
+pub fn not_written(msg string) IError {
+	return NotWritten{
+		msg: msg
+	}
+}
+
 // frame_send_refusal reports why this frame will not be put on a wire, or none.
 //
 // TWO KINDS OF REASON, and they are not the same kind of thing. Most are contradictions IN THE

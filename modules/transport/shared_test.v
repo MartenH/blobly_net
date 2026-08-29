@@ -532,7 +532,8 @@ fn hub_fake_take(ch chan bool, what string) ! {
 	}
 }
 
-fn (mut d HubFakeDriver) send(frame CanFrame) ! {
+fn (mut d HubFakeDriver) send(frame CanFrame, commit fn ()) ! {
+	commit()
 	d.sent <- shared_clone_frame(frame)
 	if d.send_blocking {
 		// A stuck socket write: this send does not return until the test says so.

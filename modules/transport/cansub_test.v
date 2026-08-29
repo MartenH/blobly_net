@@ -746,12 +746,16 @@ fn test_a_failed_lookup_is_shared_for_a_moment() {
 	// An OPEN is not answered from that memory: it asks again, whatever it costs (codex round 3
 	// on #249). Here the name still fails — the point is that it was looked up, which the
 	// failure stamp moving forward shows.
-	time.sleep(5 * time.millisecond)
+	// A stamp taken AFTER a pause, compared against a clock read before the open: two stamps
+	// compared with each other were equal when the pause fell inside one tick (seen twice
+	// on the Windows bench, #251).
+	time.sleep(20 * time.millisecond)
+	before := time.ticks()
 	assert cansub_addr('nobody.invalid') == none
 	again := rlock cansub_addrs {
 		cansub_addrs.failed_at['nobody.invalid'] or { 0 }
 	}
-	assert again > failed, 'the open took the remembered failure instead of looking the name up'
+	assert again >= before, 'the open took the remembered failure instead of looking the name up'
 	cansub_forget_addr('nobody.invalid')
 	cleared := rlock cansub_addrs {
 		cansub_addrs.failed_at['nobody.invalid'] or { 0 }
@@ -776,4 +780,70 @@ fn test_warm_all_warms_each_device_once() {
 		cansub_addrs.warmups
 	} - before
 	assert two == 3
+}
+
+// A SEND THAT HANGS IS CUT OFF BEFORE ANYBODY NOTICES: Stop waits under the write lock for a
+// send in flight, so the write timeout is what bounds Stop on a wire whose device has stopped
+// taking bytes. The library's default is 30 s (#240).
+fn test_a_cansub_write_is_bounded_well_below_the_librarys_default() {
+	// What the client is GIVEN, not the constant on its own (codex round 12 on #251).
+	opts := cansub_client_opts()
+	assert opts.write_timeout == cansub_write_timeout
+	assert opts.write_timeout <= 2 * time.second
+	assert opts.write_timeout >= 500 * time.millisecond, 'shorter than a slow but live device'
+	assert opts.read_timeout <= time.second, 'the read timeout is what bounds Stop on the other side'
+}
+
+// A WRITE THAT FAILED ENDS THE BUS: the failure is what every later send sees, and the reader is
+// told to stop and retire the socket (codex round 2 on #251).
+fn test_a_failed_write_stops_the_bus_with_its_reason() {
+	mut b := CansubBus{
+		iface: 'cansub:test/1'
+	}
+	assert b.failure() == none
+	b.fail_send('send on cansub:test/1: write timed out')
+	// Writes are refused from this instant; the READER is untouched — not stopped, no failure
+	// published — so a late acknowledgement of the frame that may have reached the wire is
+	// still read, for as long as the hub keeps it matchable (codex rounds 5–7 on #251).
+	assert b.send_refusal()? == 'send on cansub:test/1: write timed out'
+	assert b.failure() == none
+	// And a later send is refused BEFORE it commits — so the hub never publishes a token for
+	// it, and no acknowledgement grace exists for a send that was not attempted (codex rounds
+	// 9–17 on #251).
+	mut committed := false
+	b.send(CanFrame{ id: 0x123 }, fn [mut committed] () {
+		committed = true
+	}) or {
+		assert err is NotWritten, 'a refused send must be NotWritten, got ${err}'
+		assert err.msg().contains('write timed out')
+	}
+	assert !committed, 'a refused send must not commit'
+	reason := b.refusal(CanFrame{ id: 0x123 }) or {
+		assert false, 'a bus over for writing must refuse'
+		'none'
+	}
+	assert reason.contains('write timed out')
+	assert b.refusal(CanFrame{ id: 0x123, fd: true }) != none
+	assert rlock b.stop {
+		b.stop.running
+	}
+	// The first reason wins — including one the reader recorded before dropping `running`.
+	b.fail_send('later')
+	assert b.send_refusal()? == 'send on cansub:test/1: write timed out'
+	mut r := CansubBus{
+		iface: 'cansub:test/2'
+	}
+	lock r.stop {
+		r.stop.err = 'read: connection reset'
+	}
+	r.fail_send('send on cansub:test/2: write timed out')
+	assert r.failure()? == 'read: connection reset'
+	// And neither bus is closed: close() still has the teardown to do — the reader holds the
+	// device's one WebSocket until it is joined (codex round 3 on #251).
+	assert !rlock b.stop {
+		b.stop.closed
+	}
+	assert !rlock r.stop {
+		r.stop.closed
+	}
 }
