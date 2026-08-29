@@ -173,6 +173,19 @@ pub fn echoes_own_sends(iface string) bool {
 	if iface.trim_space().to_lower().starts_with('vector:') {
 		return true
 	}
+	// KVASER DOES, THE VECTOR WAY. canlib delivers a frame written on one handle to every other
+	// handle open on the channel (canIOCTL_SET_LOCAL_TXECHO, default on), and this app opens
+	// each wire several times per Start — the reader is not the handle a generator writes on —
+	// so our own sends came back on the reader as plain RX with no TX flag, and answering false
+	// here filed every cyclic frame twice, TX then RX 0.5 ms later, on Kvaser alone (measured
+	// 2026-08-29: 20 sent on one handle, PCAN on the wire heard 20, the sibling handle heard
+	// 20). Turning the echo OFF at the driver was tried and is the wrong fix: local echo is
+	// also how a frame another PROCESS sends on this channel reaches us, and how canlib's
+	// virtual channels deliver at all — so it stays on, and wiretap claims what matches our
+	// own recent sends, as it does for Vector (codex round 1 on #255).
+	if iface.trim_space().to_lower().starts_with('kvaser:') {
+		return true
+	}
 	// A CANsub does too, by a different mechanism and for the same reason. It acknowledges every
 	// frame it puts on the wire back over the same WebSocket, `open_cansub_bus` asks for those
 	// (`tx_ack_frames`), and they arrive carrying a hardware timestamp taken at start-of-frame —
