@@ -642,7 +642,10 @@ fn (mut app App) start() {
 		app.chans[ci].rx_last = 0
 		app.chans[ci].rx_seen = 0
 		app.chans[ci].load_bits = 0
-		app.chans[ci].load_at = 0
+		// The first load interval opens NOW, not at the next frame: a tap or a simulation can
+		// emit before the GUI loop rolls once, and bits counted against an interval that
+		// began later overstate the start (codex #263 r2).
+		app.chans[ci].load_at = app.since_ms()
 		app.chans[ci].load_pct = 0
 		app.chans[ci].load_hist = []f32{}
 	}

@@ -5,6 +5,13 @@ module transport
 // the load", "was that error burst a load peak". Computed here, GUI-free, from what every
 // backend already reports: the frame and the rates the row declared.
 //
+// AND ONLY FROM DECODED FRAMES. An error frame, a retransmission and a frame the receiver
+// dropped in overrun all occupied the wire and none of them arrives here as a frame with a
+// length — the backends report the first two as health and the last as a diagnostics count,
+// neither of which says how many bit-times were spent. So this gauge is the load of what was
+// READ; on a wire in an error storm it under-reads, and the fault ladder beside it is what
+// says so. The panel labels it that way.
+//
 // THE RULE IS BITS ON THE WIRE, and the bit count is the WORST case: a stuff bit follows five
 // equal bits, and since the stuff bit itself opens the next run the next one can follow four
 // more — so the bound is (stuffable - 1) / 4, not stuffable / 5 (codex #263 r1), and a frame
@@ -44,8 +51,9 @@ pub fn frame_bits(f CanFrame, nominal int, data int) f64 {
 	// stuff bits every 4 (crc/4), and the CRC delimiter 1.
 	crc := if n <= 16 { 17 } else { 21 }
 	data_bits := 1 + 4 + 8 * n + 5 + crc + crc / 4 + 1
-	// Dynamic stuffing in the data field, worst case.
-	data_stuffed := data_bits + worst_stuff(8 * n)
+	// Dynamic stuffing runs through ESI, DLC and the data field (the CRC has its fixed stuff
+	// bits, counted above), worst case.
+	data_stuffed := data_bits + worst_stuff(5 + 8 * n)
 	// Back at nominal: ACK 1 + delimiter 1, EOF 7, IFS 3.
 	tail := 12
 	rate := if f.brs && data > 0 && nominal > 0 { f64(nominal) / f64(data) } else { 1.0 }

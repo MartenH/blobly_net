@@ -572,7 +572,7 @@ fn draw_buses(mut app App, chans []Chan) {
 			if c.running && !c.doip && c.load_hist.len >= 2 {
 				vgui.same_line()
 				vgui.sparkline('##load${c.iface}', c.load_hist, 100, 90 * app.ui_scale, 16 * app.ui_scale)
-				vgui.set_item_tooltip('bus load, last ${c.load_hist.len} s — bit-times on ${c.iface} over ${c.bitrate} bit/s, worst-case stuffing')
+				vgui.set_item_tooltip('bus load, last ${c.load_hist.len} s — bit-times of DECODED frames on ${c.iface} over ${c.bitrate} bit/s, worst-case stuffing. Error frames, retransmissions and overrun drops are not in it — see the fault ladder')
 				vgui.same_line()
 				vgui.text_dim('load ${c.load_pct:.0f}%')
 			}

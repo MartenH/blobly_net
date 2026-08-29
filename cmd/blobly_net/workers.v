@@ -924,6 +924,14 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 					// so a shared wire's totals are not logged twice as new.
 					a.chans[cj].diag = a.chans[ci].diag
 					a.chans[cj].diag_at = a.chans[ci].diag_at
+					// And the LOAD: the interval in progress and the sixty seconds behind it
+					// are the wire's, and the panel reads them from the running row (codex
+					// #263 r2).
+					a.chans[cj].load_bits = a.chans[ci].load_bits
+					a.chans[cj].load_at = a.chans[ci].load_at
+					a.chans[cj].load_pct = a.chans[ci].load_pct
+					a.chans[cj].load_hist = a.chans[ci].load_hist.clone()
+					a.chans[ci].load_hist = []f32{}
 					a.chans[cj].spawning = true
 					spawn rx_loop(app, cj, other.iface, gen)
 					break
