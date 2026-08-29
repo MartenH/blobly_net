@@ -291,7 +291,7 @@ fn (mut app App) spawn_tap_for(chan_name string, iface string) {
 	app.mu.lock()
 	gen := app.run_gen
 	live := app.running
-	phys := app.bitrate_iface(iface) // under the lock: it walks app.chans
+	phys := app.phys_for_locked(iface)
 	app.mu.unlock()
 	if !live {
 		return
@@ -305,6 +305,17 @@ fn (mut app App) spawn_tap_for(chan_name string, iface string) {
 		mut af := map[string]bool{}
 		a.install_tap(w.chan_name, w.iface, w.phys, gen, mut nf, mut af)
 	}(app, TapWant{chan_name, iface, phys}, gen)
+}
+
+// phys_for_locked is the physical interface to open for `iface`, decided under app.mu. A target
+// that already carries a rate keeps it — a generator's `bus: pcan:…@250000` opens at 250 k, as
+// open_tap_full has always read it — and only a bare one is resolved from the rows, which is
+// the walk of app.chans that wants the lock (codex rounds 6 and 7 on #257).
+fn (app &App) phys_for_locked(iface string) string {
+	if iface.contains('@') {
+		return iface
+	}
+	return app.bitrate_iface(iface)
 }
 
 // run_live is whether the run `gen` is the one on now.
@@ -370,6 +381,10 @@ fn (mut app App) file_tap(key string, mut b transport.Bus, gen u64) {
 	keep := app.running && app.run_gen == gen && key !in app.tx_buses
 	if keep {
 		app.tx_buses[key] = b
+		// A tap that lands is not failed, whatever an earlier attempt said: a later worker —
+		// a generator added or retargeted — can succeed where Start's did not, and the sender
+		// must go back to its own tap (codex round 7 on #257).
+		app.tap_failed.delete(key)
 	}
 	app.mu.unlock()
 	if !keep {
@@ -614,13 +629,13 @@ fn (mut app App) start() {
 	mut plan := []TapWant{}
 	for ch in app.chans {
 		if ch.enabled && !ch.doip {
-			plan << TapWant{ch.name, ch.iface, app.bitrate_iface(ch.iface)}
+			plan << TapWant{ch.name, ch.iface, app.phys_for_locked(ch.iface)}
 		}
 	}
 	for sr in app.senders {
 		tgt := sr.target()
 		if tgt != '' {
-			plan << TapWant{sr.chan, tgt, app.bitrate_iface(tgt)}
+			plan << TapWant{sr.chan, tgt, app.phys_for_locked(tgt)}
 		}
 	}
 	app.tap_failed = map[string]bool{}

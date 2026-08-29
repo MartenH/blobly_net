@@ -304,9 +304,12 @@ fn gen_loop(app &App) {
 				// filed under whichever channel matched first (codex round 4 on #257).
 				// …unless its own is known not to come: then the shared tap is the answer, as
 				// it is for a manual send (codex round 6 on #257).
+				// An existing named tap wins outright; the shared one only stands in while the
+				// named one is known to have failed (codex round 7 on #257).
 				named := tx_bus_key(sr.chan, tgt)
-				want_key := if sr.chan != '' && named !in a.tap_failed { named } else { tx_bus_key('', tgt) }
-				if tgt != '' && want_key !in a.tx_buses {
+				ready := tgt == '' || (sr.chan != '' && named in a.tx_buses)
+					|| ((sr.chan == '' || named in a.tap_failed) && tx_bus_key('', tgt) in a.tx_buses)
+				if !ready {
 					continue
 				}
 				lf := last[i] or { i64(0) }
