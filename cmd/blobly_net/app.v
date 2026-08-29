@@ -261,6 +261,10 @@ mut:
 	// Lines each console pane (Log, Flash, Diagnostics, Script) showed last frame, by widget
 	// id: what tells draw_copyable_log that there is something new to follow.
 	console_shown map[string]int
+	// Named transmit taps whose open FAILED this run, by tx_bus_key — a terminal answer the
+	// generator loop reads: a sender waiting for its own tap falls back to the wire's shared
+	// one once its own is known not to come (codex round 6 on #257). Cleared at Start.
+	tap_failed map[string]bool
 	// File ▸ Save was chosen this frame: performed by poll_shortcuts after the panels have
 	// drawn, for the reason given there.
 	save_requested bool
