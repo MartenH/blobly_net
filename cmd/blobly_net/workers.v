@@ -557,8 +557,19 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	// screens up has narrated itself since 2026-08-21; success never did, so a DoIP row
 	// announced its entity while a CAN row came up in silence and "started" — the button's
 	// one line — was the only word for all of them (2026-08-29). The same shape for every
-	// backend: the row's name, the wire it opened.
-	a.log_append_locked('${a.chans[ci].name}: open on ${iface}')
+	// backend: the row's name, the wire it opened. EVERY row on the wire, because aliases
+	// share this one reader and would otherwise come up unannounced; and only while the run
+	// is still on — a slow hardware open that completes after Stop leaves `run_gen` where it
+	// was and `running` false, and a line then would record an open that ended before it
+	// was written (codex round 2 on #256).
+	if a.running {
+		dest := transport.destination_key(iface)
+		for c in a.chans {
+			if c.enabled && transport.destination_key(c.iface) == dest {
+				a.log_append_locked('${c.name}: open on ${c.iface}')
+			}
+		}
+	}
 	a.mu.unlock()
 	defer {
 		a.mu.lock()
