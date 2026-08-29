@@ -183,7 +183,8 @@ fn notify_gen(app &App, gen u64, msg string) {
 fn sim_loop(app &App, sc SimCfg, gen u64) {
 	a := unsafe { app }
 	mut bus := app.open_tap_on(sc.iface, org_tx_sim, sc.pch.name) or {
-		eprintln('sim ${sc.iface}: ${err}')
+		mut al := unsafe { app }
+		al.elog('sim ${sc.iface}: ${err}')
 		// consumer_failed only counts, and the count is read only by the replay gate — on a
 		// non-replay run a dead sim was discoverable only by the absence of its traffic.
 		// Gen-gated like every worker notify: a stale sim's late failure is not this run's.
@@ -507,7 +508,8 @@ fn diag_msg(iface string, from transport.BusDiagnostics, to transport.BusDiagnos
 
 fn rx_loop(app &App, ci int, iface string, gen u64) {
 	mut bus := app.open_transport(iface) or {
-		eprintln('rx ${iface}: ${err}')
+		mut al := unsafe { app }
+		al.elog('rx ${iface}: ${err}')
 		mut a := unsafe { app }
 		a.mu.lock()
 		// Same generation guard as the teardown below: opening can fail slowly, so a PREVIOUS

@@ -3,6 +3,7 @@ module main
 import os
 import time
 import project
+import logfile
 import transport
 import candb
 import vgui
@@ -243,6 +244,15 @@ fn draw_menubar(mut app App, rx u64) {
 		if vgui.menu_begin('Help') {
 			if vgui.menu_item('Documentation (opens in browser)') {
 				app.open_help_in_browser()
+			}
+			vgui.separator()
+			// The session log (#258): where it is, and the short form for an issue.
+			if vgui.menu_item('Open log folder') {
+				os.open_uri(logfile.dir()) or { app.notify('cannot open ${logfile.dir()}: ${err}') }
+			}
+			if vgui.menu_item('Copy diagnostics') {
+				vgui.clipboard_set(app.diagnostics_text())
+				app.notify('diagnostics copied — version, OS, project and the last ${if app.logs.len > 200 { 200 } else { app.logs.len }} Log lines')
 			}
 			vgui.menu_end()
 		}
