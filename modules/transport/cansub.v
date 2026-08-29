@@ -135,6 +135,13 @@ mut:
 	running bool      = true
 	health  BusHealth = .unknown
 	err     string
+	// A write failure: refuses every later send; the reader is unaffected — see fail_send.
+	send_err string
+	// Whether close() has run: its guard, SEPARATE from `running`. A bus that stopped itself
+	// (fail_send) has `running` false and a reader still holding the device's one WebSocket;
+	// guarded on `running`, close() returned at once and the hub admitted a reopen the device
+	// then refused (codex round 3 on #251).
+	closed bool
 	// What the CONTROLLER was last configured to, which is not the same question as what this
 	// process's silence policy currently says — see reconcile_listen_only.
 	phy_silent bool
@@ -160,6 +167,31 @@ mut:
 // open_cansub_bus is what shared_open_events calls. It creates the one raw connection behind that
 // wire's logical handles. SharedDriver is private to transport: it carries the device's
 // TX-acknowledgement bit as far as the shared hub without widening the public Bus contract.
+// cansub_write_timeout bounds one WebSocket write — see cansub_client_opts. Named so a test can
+// hold it below what a Stop is allowed to cost.
+const cansub_write_timeout = 2 * time.second
+
+// cansub_client_opts is the WebSocket client's configuration — a function rather than a literal
+// at the call site so the test can read what the client is actually GIVEN (codex round 12 on
+// #251): a constant asserted on its own would stay green with the option unwired.
+fn cansub_client_opts() websocket.ClientOpt {
+	return websocket.ClientOpt{
+		// SHORT, because this is what bounds Stop: the reader owns the socket and closes it on
+		// its way out (see close()), so a wire is released one read timeout after it is asked
+		// to stop. An idle reader waking twice a second costs nothing measurable; two seconds
+		// of dead air per wire at Stop is the thing somebody notices.
+		read_timeout:  500 * time.millisecond
+		// AND THE WRITE, for the same reason from the other side. Stop closes the socket under
+		// the write lock and waits for a send in flight to finish first — "a bounded thing",
+		// bounded by THIS, and the library's default is thirty seconds. A send to a device that
+		// has stopped taking bytes (unplugged mid-run, a WebSocket the firmware has abandoned)
+		// blocks in write() until then, and with it every sender on the wire and the Stop
+		// behind them (#240). Two seconds is longer than any send this device has been seen to
+		// take and shorter than anybody's patience.
+		write_timeout: cansub_write_timeout
+	}
+}
+
 fn open_cansub_bus(iface string) !SharedDriver {
 	spec := parse_cansub_iface(iface)!
 	host := cansub_host(spec.id)
@@ -212,12 +244,7 @@ fn open_cansub_bus(iface string) !SharedDriver {
 	// BY ADDRESS, NOT BY NAME — see cansub_addr: the name was resolved for the PHY PUT above, and
 	// resolving it again here is another cold mDNS lookup (2.7 s, measured) on the open path.
 	mut ws := websocket.new_client('wss://${cansub_addr(host) or { host }}/api/can/${spec.channel}/ws',
-		// SHORT, because this is now what bounds Stop: the reader owns the socket and closes it
-		// on its way out (see close()), so a wire is released one read timeout after it is asked
-		// to stop. An idle reader waking twice a second costs nothing measurable; two seconds of
-		// dead air per wire at Stop is the thing somebody notices.
-		read_timeout: 500 * time.millisecond
-	)!
+		cansub_client_opts())!
 	ws.connect() or { return error('cannot open ${iface}: ${err}') }
 
 	mut b := &CansubBus{
@@ -855,41 +882,41 @@ fn extract_json_string(s string, key string) ?string {
 	return rest[..end]
 }
 
-pub fn (mut b CansubBus) send(frame CanFrame) ! {
+// refusal is what send refuses BEFORE it commits to writing — see send, and the hub's
+// SharedDriver.send for why the split between "before commit" and "after" is the whole point.
+pub fn (b &CansubBus) refusal(frame CanFrame) ?string {
 	if frame.fd && !b.spec.fd {
 		// Refuse rather than truncate, which is what the Windows vendor backends do with an FD
 		// frame they cannot carry. The address is what asks for FD, so a classic channel being
 		// handed an FD frame is a project that disagrees with itself.
-		return error('${b.iface} is a classic channel — its address names one bitrate, so it cannot carry a CAN-FD frame')
+		return '${b.iface} is a classic channel — its address names one bitrate, so it cannot carry a CAN-FD frame'
 	}
+	cansub_encode_frame(frame) or { return err.msg() }
 	if e := b.failure() {
-		return error('${b.iface}: ${e}${b.diagnostic_suffix()}')
+		return '${b.iface}: ${e}${b.diagnostic_suffix()}'
 	}
-	// A SILENCED CONTROLLER CANNOT TRANSMIT, whatever this process's policy currently says.
-	//
-	// The two answers are not updated together and cannot be: `silenced()` is a table this process
-	// rewrites the moment a row is toggled, while the PHY is a register reached over HTTP by the
-	// health thread on its next pass. Going from listen-only to normal, SilentBus therefore starts
-	// permitting sends immediately while the controller is still silent — and a send in that window
-	// returned SUCCESS for a frame that never reached the wire, which the tap then recorded as a
-	// TX that happened (codex round 7 on #204). An experiment loses traffic and the trace says it
-	// did not, which is the one failure this backend exists to prevent.
-	//
-	// So the controller's ACTUAL state is what decides, and the window is a refusal rather than a
-	// lie. It also covers a reconcile that keeps failing: sends stay refused, honestly, instead of
-	// succeeding into a wire that cannot carry them. The reverse direction needs nothing — normal
-	// PHY with a silent policy is what SilentBus already refuses before reaching here.
+	if e := b.send_refusal() {
+		return '${b.iface}: ${e}'
+	}
 	if rlock b.stop {
 		b.stop.phy_silent
 	} {
-		// THE RECORDED REASON, when there is one. "is being reconfigured" was a hope this branch
-		// measured to be false on a live channel; when the device has refused, the sender is told
-		// what the Buses row shows, remedy included.
 		if f := wire_silence_fault(b.iface) {
-			return error('${b.iface}: ${f.why}; the frame was not sent')
+			return '${b.iface}: ${f.why}; the frame was not sent'
 		}
-		return error('${b.iface}: the controller is still in listen-only; the frame was not sent — a CANsub follows the mark at open, so Stop and Start')
+		return '${b.iface}: the controller is still in listen-only; the frame was not sent — a CANsub follows the mark at open, so Stop and Start'
 	}
+	return none
+}
+
+pub fn (mut b CansubBus) send(frame CanFrame, commit fn ()) ! {
+	// EVERYTHING IS DECIDED UNDER THE WRITE LOCK, AND THEN COMMITTED. The hub's token exists
+	// from commit() on and not before, so a refusal here — from state another thread may have
+	// changed a moment ago: a reader that stopped, a write that timed out, a controller the
+	// health thread found silent — is a refusal with no token to mis-match, and a failure
+	// after commit is a failed WRITE with the hub's grace, because the frame may have reached
+	// the wire (codex rounds 9–17 on #251, which took turns finding the check too early and
+	// too late until it was made atomic with the write).
 	body := cansub_encode_frame(frame)!
 	// Encoded outside the lock, written inside it: the encoding is per-frame work with no shared
 	// state, and the socket is the thing that cannot take two writers.
@@ -897,7 +924,19 @@ pub fn (mut b CansubBus) send(frame CanFrame) ! {
 	defer {
 		b.wmu.unlock()
 	}
+	if reason := b.refusal(frame) {
+		return not_written(reason)
+	}
+	commit()
 	b.ws.write(cansub_hdlc_wrap(body), .binary_frame) or {
+		// A WRITE THAT FAILED IS THE END OF THIS CONNECTION FOR WRITING. A timed-out write may have
+		// put the frame header or part of the payload on the stream before giving up; the next send
+		// would be read by the device as the rest of that frame, and CAN traffic is lost or
+		// misdecoded (codex round 2 on #251). So fail_send records the refusal (send_err), which
+		// every later send — and the hub, asking refusal() first — is answered by. NOTHING ELSE
+		// changes: the reader stays, because the frame may still have reached the device and its
+		// acknowledgement is still coming, and the hub closes the bus when it is done (rounds 5–7).
+		b.fail_send('send on ${b.iface}: ${err}')
 		return error('send on ${b.iface}: ${err}')
 	}
 	// From here the transmit counter is this node's own doing — see cansub_ladder.
@@ -1007,6 +1046,15 @@ fn (mut b CansubBus) recv_shared(timeout_ms int) !SharedIngress {
 					}
 					continue
 				}
+				if rec.tx {
+					// A TX acknowledgement is proof the frame reached the wire — including one for
+					// a write that timed out on the socket and was refused thereafter (codex round
+					// 17 on #251): from here the transmit counter is this node's own doing (see
+					// cansub_ladder), whether or not send() ever returned success.
+					lock b.stop {
+						b.stop.transmitted = true
+					}
+				}
 				return SharedIngress{
 					frame:  rec.frame
 					tx_ack: rec.tx
@@ -1071,6 +1119,34 @@ fn (b &CansubBus) diagnostic_suffix() string {
 	return if d == '' { '' } else { ' (${d})' }
 }
 
+// fail_send records a write failure as the reason this bus stopped — see send. The first
+// reason wins: a reader that has already stopped has the better story.
+fn (mut b CansubBus) fail_send(reason string) {
+	// THE CONNECTION IS OVER FOR WRITING, AND ONLY FOR WRITING. A timed-out write may have
+	// left part of a frame on the stream, so no later send may use it (send_err, read by send
+	// alone); it may also have REACHED the device, whose TX acknowledgement arrives a moment
+	// later and which the hub keeps matchable for its grace — so the reader is NOT stopped,
+	// by this or by any clock of its own: three timers were tried and each raced the hub's
+	// window from one side or the other (codex rounds 5–7 on #251). The reader reads on until
+	// close(), which the hub drives, and the receive path is told nothing it did not see.
+	lock b.stop {
+		if b.stop.send_err == '' {
+			b.stop.send_err = reason
+		}
+	}
+}
+
+// send_refusal is the write failure that ended this connection for sending, if one has.
+fn (b &CansubBus) send_refusal() ?string {
+	return rlock b.stop {
+		if b.stop.send_err == '' {
+			none
+		} else {
+			b.stop.send_err
+		}
+	}
+}
+
 // failure reports the reason the reader stopped, if it stopped.
 fn (b &CansubBus) failure() ?string {
 	return rlock b.stop {
@@ -1108,9 +1184,10 @@ pub fn (mut b CansubBus) reconcile_silence(want bool) ! {
 
 pub fn (mut b CansubBus) close() {
 	lock b.stop {
-		if !b.stop.running {
+		if b.stop.closed {
 			return
 		}
+		b.stop.closed = true
 		b.stop.running = false
 	}
 	// A FAULT MUST NOT OUTLIVE THE WIRE IT DESCRIBES — and the order here is the whole point.
