@@ -739,6 +739,12 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	// three seconds must not carry "saved" over to a project nobody wrote (codex round 1 on
 	// #250).
 	app.saved_at = 0
+	// SAID IN THE LOG, so the session file names every project this launch has had — its
+	// header names only the first, and a problem reproduced after an Open would otherwise be
+	// filed against the wrong project (codex round 1 on #259).
+	app.mu.lock()
+	app.log_append_locked('project: ${if path == '' { 'new (unsaved)' } else { path }}')
+	app.mu.unlock()
 	// drop editor state carried over from the previous project — stale cfg_bufs would otherwise
 	// be flushed into the newly loaded project by the next commit_cfg (same channel count = no
 	// resync in draw_config); stale discovery results belong to the old machine view.
@@ -1006,7 +1012,7 @@ fn (mut app App) open_session_log(proj_path string) {
 
 // diagnostics_text is the header's facts and the Log's last lines — what Help ▸ Copy
 // diagnostics puts on the clipboard for an issue.
-fn (app &App) diagnostics_text() string {
+fn (app &App) diagnostics_text() (string, int) {
 	mut a := unsafe { app }
 	a.mu.lock()
 	n := if a.logs.len > 200 { 200 } else { a.logs.len }
@@ -1021,8 +1027,7 @@ fn (app &App) diagnostics_text() string {
 	}
 	b << ''
 	b << tail
-	return b.join('
-')
+	return b.join('\n'), n
 }
 
 // log_clear empties the Log. The cache follows through the generation, as it does for an

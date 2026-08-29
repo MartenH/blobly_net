@@ -20,7 +20,12 @@ pub const keep = 10
 //   Linux    $XDG_STATE_HOME/blobly_net/logs, else ~/.local/state/blobly_net/logs
 pub fn dir() string {
 	$if windows {
-		return os.join_path(os.data_dir(), 'blobly_net', 'logs')
+		// Explicitly LocalAppData — machine-local, never the roaming profile a domain drags
+		// along — rather than trusting a library helper to mean the same (codex round 1 on
+		// #259).
+		local := os.getenv('LocalAppData')
+		base := if local != '' { local } else { os.join_path(os.home_dir(), 'AppData', 'Local') }
+		return os.join_path(base, 'blobly_net', 'logs')
 	} $else {
 		state := os.getenv('XDG_STATE_HOME')
 		base := if state != '' { state } else { os.join_path(os.home_dir(), '.local', 'state') }
@@ -28,16 +33,33 @@ pub fn dir() string {
 	}
 }
 
-// file_name is the session file for a launch at `t`: sortable by name, safe on every file
-// system (no colons — Windows), and unmistakably ours.
-pub fn file_name(t time.Time) string {
-	return 'blobly_net-${t.year:04}-${t.month:02}-${t.day:02}T${t.hour:02}-${t.minute:02}-${t.second:02}.log'
+// file_name is the session file for a launch at `t` by process `pid`: sortable by name, safe
+// on every file system (no colons — Windows), unmistakably ours, and ONE PER LAUNCH — two
+// instances started in the same second would otherwise append into one file, headers and all
+// (codex round 1 on #259); the pid tells them apart.
+pub fn file_name(t time.Time, pid int) string {
+	return 'blobly_net-${t.year:04}-${t.month:02}-${t.day:02}T${t.hour:02}-${t.minute:02}-${t.second:02}-${pid}.log'
 }
 
 // is_session_log is whether a name in the directory is one of ours — rotation touches
-// nothing else that may live there.
+// nothing else that may live there. `blobly_net-<date>T<time>-<pid>.log`, digits and dashes.
 pub fn is_session_log(name string) bool {
-	return name.starts_with('blobly_net-') && name.ends_with('.log') && name.len == 'blobly_net-2026-08-29T16-23-43.log'.len
+	if !name.starts_with('blobly_net-') || !name.ends_with('.log') {
+		return false
+	}
+	body := name['blobly_net-'.len..name.len - '.log'.len]
+	if body.len < '2026-08-29T16-23-43-1'.len || body[10] != `T` {
+		return false
+	}
+	for i, c in body {
+		if i == 10 {
+			continue
+		}
+		if !(c.is_digit() || c == `-`) {
+			return false
+		}
+	}
+	return true
 }
 
 // to_delete is which of `names` (ours, any order) rotation removes so that `keep_n` remain,
@@ -96,7 +118,7 @@ pub fn open(f Facts) !Session {
 	for old in to_delete(os.ls(d) or { [] }, keep - 1) {
 		os.rm(os.join_path(d, old)) or {}
 	}
-	path := os.join_path(d, file_name(f.started))
+	path := os.join_path(d, file_name(f.started, os.getpid()))
 	mut file := os.open_append(path)!
 	file.write_string(header(Facts{ ...f, log_path: path }))!
 	file.flush()

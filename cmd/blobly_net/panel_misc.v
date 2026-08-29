@@ -251,8 +251,9 @@ fn draw_menubar(mut app App, rx u64) {
 				os.open_uri(logfile.dir()) or { app.notify('cannot open ${logfile.dir()}: ${err}') }
 			}
 			if vgui.menu_item('Copy diagnostics') {
-				vgui.clipboard_set(app.diagnostics_text())
-				app.notify('diagnostics copied — version, OS, project and the last ${if app.logs.len > 200 { 200 } else { app.logs.len }} Log lines')
+				text, n := app.diagnostics_text() // the count comes from under the same lock
+				vgui.clipboard_set(text)
+				app.notify('diagnostics copied — version, OS, project and the last ${n} Log lines')
 			}
 			vgui.menu_end()
 		}
