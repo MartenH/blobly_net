@@ -292,6 +292,10 @@ fn (mut app App) spawn_tap_for(chan_name string, iface string) {
 	gen := app.run_gen
 	live := app.running
 	phys := app.phys_for_locked(iface)
+	// A RETRY IS NOT A FAILURE: with the marker left standing, every send during the retry
+	// took the shared tap and was filed under the wrong channel (codex round 9 on #257). The
+	// marker comes back only if this attempt fails too (install_tap).
+	app.tap_failed.delete(tx_bus_key(chan_name, iface))
 	app.mu.unlock()
 	if !live {
 		return
@@ -307,37 +311,55 @@ fn (mut app App) spawn_tap_for(chan_name string, iface string) {
 		// AND ONLY IF STILL WANTED: retargeted again, or removed, while this open ran, the
 		// generator no longer points here, and a tap filed anyway holds the wire until Stop —
 		// on a CANsub that is the channel's one WebSocket client (codex round 8 on #257).
-		if !a.sender_targets(w.chan_name, w.iface) {
-			a.drop_tap(tx_bus_key(w.chan_name, w.iface))
-		}
+		a.drop_unwanted_taps(w.chan_name, w.iface)
 	}(app, TapWant{chan_name, iface, phys}, gen)
 }
 
-// sender_targets is whether some generator still fires on (chan_name, iface).
-fn (mut app App) sender_targets(chan_name string, iface string) bool {
+// drop_unwanted_taps closes the named tap of (chan_name, iface) if no generator fires on it
+// any more, and the wire's shared tap too if no enabled row and no generator uses the wire —
+// otherwise it holds the device (a CANsub's one WebSocket client) until Stop. Decided and
+// done under ONE take of app.mu: decided in one and done in another, a generator retargeted
+// back in between found its fresh tap deleted (codex round 9 on #257). The closes happen
+// after the unlock, because a close can wait on a driver.
+fn (mut app App) drop_unwanted_taps(chan_name string, iface string) {
+	mut doomed := []transport.Bus{}
 	app.mu.lock()
-	defer {
-		app.mu.unlock()
-	}
+	mut named_wanted := false
+	mut wire_wanted := false
+	dest := transport.destination_key(iface)
 	for sr in app.senders {
-		if sr.chan == chan_name && sr.target() == iface {
-			return true
+		tgt := sr.target()
+		if tgt == '' {
+			continue
+		}
+		if sr.chan == chan_name && tgt == iface {
+			named_wanted = true
+		}
+		if transport.destination_key(tgt) == dest {
+			wire_wanted = true
 		}
 	}
-	return false
-}
-
-// drop_tap removes and closes one named tap nobody wants any more. The shared tap of the
-// wire stays: Quick Send, diagnostics and the shell fall back to it.
-fn (mut app App) drop_tap(key string) {
-	app.mu.lock()
-	mut b := app.tx_buses[key] or {
-		app.mu.unlock()
-		return
+	for ch in app.chans {
+		if ch.enabled && !ch.doip && transport.destination_key(ch.iface) == dest {
+			wire_wanted = true
+		}
 	}
-	app.tx_buses.delete(key)
+	if !named_wanted {
+		if mut b := app.tx_buses[tx_bus_key(chan_name, iface)] {
+			doomed << b
+			app.tx_buses.delete(tx_bus_key(chan_name, iface))
+		}
+	}
+	if !wire_wanted {
+		if mut b := app.tx_buses[tx_bus_key('', iface)] {
+			doomed << b
+			app.tx_buses.delete(tx_bus_key('', iface))
+		}
+	}
 	app.mu.unlock()
-	b.close()
+	for mut b in doomed {
+		b.close()
+	}
 }
 
 // phys_for_locked is the physical interface to open for `iface`, decided under app.mu. A target
