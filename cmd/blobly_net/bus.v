@@ -4,6 +4,7 @@ import os
 import sync
 import project
 import transport
+import taprule
 
 // Chan is one project channel's live state (the Buses panel row + Start/Stop target).
 struct Chan {
@@ -414,15 +415,24 @@ fn (mut app App) tx_on_chan(chan_name string, iface string, f transport.CanFrame
 		// carries no channel identity and the trace files it under the first channel on the
 		// wire (codex round 8 on #257). Same rule as gen_loop's. A Quick Send or a diagnostic
 		// path has no owning channel and takes the shared tap as before.
-		if chan_name != '' && named !in app.tap_failed {
-			app.mu.unlock()
-			app.notify('TX not sent: the transmit tap of ${chan_name} on ${iface} is still opening')
-			return false
-		}
-		app.tx_buses[tx_bus_key('', iface)] or {
-			app.mu.unlock()
-			app.notify('TX failed: no open bus for ${iface}')
-			return false
+		match taprule.fallback(app.taprule_taps_locked(), named, tx_bus_key('', iface), chan_name != '') {
+			.wait {
+				app.mu.unlock()
+				app.notify('TX not sent: the transmit tap of ${chan_name} on ${iface} is still opening')
+				return false
+			}
+			.none_open {
+				app.mu.unlock()
+				app.notify('TX failed: no open bus for ${iface}')
+				return false
+			}
+			.via_wire {
+				app.tx_buses[tx_bus_key('', iface)] or {
+					app.mu.unlock()
+					app.notify('TX failed: no open bus for ${iface}')
+					return false
+				}
+			}
 		}
 	}
 	app.mu.unlock()

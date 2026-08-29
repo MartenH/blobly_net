@@ -4,6 +4,7 @@ import os
 import time
 import project
 import transport
+import taprule
 import telem
 import isotp
 import uds
@@ -307,10 +308,8 @@ fn gen_loop(app &App) {
 				// it is for a manual send (codex round 6 on #257).
 				// An existing named tap wins outright; the shared one only stands in while the
 				// named one is known to have failed (codex round 7 on #257).
-				named := tx_bus_key(sr.chan, tgt)
-				ready := tgt == '' || (sr.chan != '' && named in a.tx_buses)
-					|| ((sr.chan == '' || named in a.tap_failed) && tx_bus_key('', tgt) in a.tx_buses)
-				if !ready {
+				if tgt != '' && !taprule.ready(a.taprule_taps_locked(), tx_bus_key(sr.chan, tgt),
+					tx_bus_key('', tgt), sr.chan != '') {
 					continue
 				}
 				lf := last[i] or { i64(0) }
