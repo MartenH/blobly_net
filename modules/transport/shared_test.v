@@ -532,7 +532,8 @@ fn hub_fake_take(ch chan bool, what string) ! {
 	}
 }
 
-fn (mut d HubFakeDriver) send(frame CanFrame) ! {
+fn (mut d HubFakeDriver) send(frame CanFrame, commit fn ()) ! {
+	commit()
 	d.sent <- shared_clone_frame(frame)
 	if d.send_blocking {
 		// A stuck socket write: this send does not return until the test says so.
@@ -556,10 +557,6 @@ fn (mut d HubFakeDriver) send(frame CanFrame) ! {
 	if d.fail_id != 0 && frame.id == d.fail_id {
 		return error('raw write of ${frame.id:x} failed')
 	}
-}
-
-fn (mut d HubFakeDriver) refusal(frame CanFrame) ?string {
-	return none
 }
 
 fn (mut d HubFakeDriver) recv_shared(timeout_ms int) !SharedIngress {

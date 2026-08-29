@@ -882,52 +882,25 @@ fn extract_json_string(s string, key string) ?string {
 	return rest[..end]
 }
 
-// pure_refusal is the part of refusal that depends on the frame and the channel alone — the
-// same answer whenever it is asked, so send may ask it again after the hub's preflight.
-pub fn (b &CansubBus) pure_refusal(frame CanFrame) ?string {
+// refusal is what send refuses BEFORE it commits to writing — see send, and the hub's
+// SharedDriver.send for why the split between "before commit" and "after" is the whole point.
+pub fn (b &CansubBus) refusal(frame CanFrame) ?string {
 	if frame.fd && !b.spec.fd {
 		// Refuse rather than truncate, which is what the Windows vendor backends do with an FD
 		// frame they cannot carry. The address is what asks for FD, so a classic channel being
 		// handed an FD frame is a project that disagrees with itself.
 		return '${b.iface} is a classic channel — its address names one bitrate, so it cannot carry a CAN-FD frame'
 	}
-	// A frame the codec will not encode: send encodes again — the encoding is pure.
 	cansub_encode_frame(frame) or { return err.msg() }
-	return none
-}
-
-// refusal is what send would refuse before writing — asked by the hub BEFORE it registers the
-// send (SharedDriver.refusal). The mutable answers live only here: see send.
-pub fn (b &CansubBus) refusal(frame CanFrame) ?string {
-	if r := b.pure_refusal(frame) {
-		return r
-	}
 	if e := b.failure() {
 		return '${b.iface}: ${e}${b.diagnostic_suffix()}'
 	}
 	if e := b.send_refusal() {
 		return '${b.iface}: ${e}'
 	}
-	// A SILENCED CONTROLLER CANNOT TRANSMIT, whatever this process's policy currently says.
-	//
-	// The two answers are not updated together and cannot be: `silenced()` is a table this process
-	// rewrites the moment a row is toggled, while the PHY is a register reached over HTTP by the
-	// health thread on its next pass. Going from listen-only to normal, SilentBus therefore starts
-	// permitting sends immediately while the controller is still silent — and a send in that window
-	// returned SUCCESS for a frame that never reached the wire, which the tap then recorded as a
-	// TX that happened (codex round 7 on #204). An experiment loses traffic and the trace says it
-	// did not, which is the one failure this backend exists to prevent.
-	//
-	// So the controller's ACTUAL state is what decides, and the window is a refusal rather than a
-	// lie. It also covers a reconcile that keeps failing: sends stay refused, honestly, instead of
-	// succeeding into a wire that cannot carry them. The reverse direction needs nothing — normal
-	// PHY with a silent policy is what SilentBus already refuses before reaching here.
 	if rlock b.stop {
 		b.stop.phy_silent
 	} {
-		// THE RECORDED REASON, when there is one. "is being reconfigured" was a hope this branch
-		// measured to be false on a live channel; when the device has refused, the sender is told
-		// what the Buses row shows, remedy included.
 		if f := wire_silence_fault(b.iface) {
 			return '${b.iface}: ${f.why}; the frame was not sent'
 		}
@@ -936,17 +909,14 @@ pub fn (b &CansubBus) refusal(frame CanFrame) ?string {
 	return none
 }
 
-pub fn (mut b CansubBus) send(frame CanFrame) ! {
-	// THE PREFLIGHT IS AUTHORITATIVE. The hub asked refusal() before it registered this send's
-	// acknowledgement token; from then on the token is matchable, and a refusal decided HERE —
-	// from state another thread may have changed since (a reader that stopped, a write that
-	// timed out) — would come after a late acknowledgement could already have been matched to
-	// a send that never happened (codex round 15 on #251). So only what cannot have changed is
-	// asked again — the frame against the channel — and everything else is attempted, its
-	// failure reported as a failed WRITE, which is what the hub's grace is for.
-	if reason := b.pure_refusal(frame) {
-		return not_written(reason)
-	}
+pub fn (mut b CansubBus) send(frame CanFrame, commit fn ()) ! {
+	// EVERYTHING IS DECIDED UNDER THE WRITE LOCK, AND THEN COMMITTED. The hub's token exists
+	// from commit() on and not before, so a refusal here — from state another thread may have
+	// changed a moment ago: a reader that stopped, a write that timed out, a controller the
+	// health thread found silent — is a refusal with no token to mis-match, and a failure
+	// after commit is a failed WRITE with the hub's grace, because the frame may have reached
+	// the wire (codex rounds 9–17 on #251, which took turns finding the check too early and
+	// too late until it was made atomic with the write).
 	body := cansub_encode_frame(frame)!
 	// Encoded outside the lock, written inside it: the encoding is per-frame work with no shared
 	// state, and the socket is the thing that cannot take two writers.
@@ -954,21 +924,10 @@ pub fn (mut b CansubBus) send(frame CanFrame) ! {
 	defer {
 		b.wmu.unlock()
 	}
-	// Under the write lock, MUTABLE state is read once more — and what it says is reported as a
-	// FAILED write, never as a refusal: the token exists by now (see the preflight note above),
-	// and a failed write is what the hub's grace is for. A connection over for writing: nothing
-	// more may go onto that stream (fail_send). A controller the health thread has just found
-	// silent: the socket would take the frame and the controller would not transmit it, and a
-	// send reported successful would put a frame in the trace that never reached the wire
-	// (codex round 16 on #251).
-	if e := b.send_refusal() {
-		return error('send on ${b.iface}: ${e}')
+	if reason := b.refusal(frame) {
+		return not_written(reason)
 	}
-	if rlock b.stop {
-		b.stop.phy_silent
-	} {
-		return error('send on ${b.iface}: the controller is in listen-only; the frame was not sent')
-	}
+	commit()
 	b.ws.write(cansub_hdlc_wrap(body), .binary_frame) or {
 		// A WRITE THAT FAILED IS THE END OF THIS CONNECTION FOR WRITING. A timed-out write may have
 		// put the frame header or part of the payload on the stream before giving up; the next send
@@ -1086,6 +1045,15 @@ fn (mut b CansubBus) recv_shared(timeout_ms int) !SharedIngress {
 						}
 					}
 					continue
+				}
+				if rec.tx {
+					// A TX acknowledgement is proof the frame reached the wire — including one for
+					// a write that timed out on the socket and was refused thereafter (codex round
+					// 17 on #251): from here the transmit counter is this node's own doing (see
+					// cansub_ladder), whether or not send() ever returned success.
+					lock b.stop {
+						b.stop.transmitted = true
+					}
 				}
 				return SharedIngress{
 					frame:  rec.frame

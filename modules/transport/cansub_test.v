@@ -807,16 +807,23 @@ fn test_a_failed_write_stops_the_bus_with_its_reason() {
 	// still read, for as long as the hub keeps it matchable (codex rounds 5–7 on #251).
 	assert b.send_refusal()? == 'send on cansub:test/1: write timed out'
 	assert b.failure() == none
-	// And what the hub's preflight gets is that refusal, BEFORE it registers a token — so no
-	// acknowledgement grace for a send that will not be attempted (codex rounds 9–15 on #251).
+	// And a later send is refused BEFORE it commits — so the hub never publishes a token for
+	// it, and no acknowledgement grace exists for a send that was not attempted (codex rounds
+	// 9–17 on #251).
+	mut committed := false
+	b.send(CanFrame{ id: 0x123 }, fn [mut committed] () {
+		committed = true
+	}) or {
+		assert err is NotWritten, 'a refused send must be NotWritten, got ${err}'
+		assert err.msg().contains('write timed out')
+	}
+	assert !committed, 'a refused send must not commit'
 	reason := b.refusal(CanFrame{ id: 0x123 }) or {
-		assert false, 'a bus over for writing must refuse in the preflight'
+		assert false, 'a bus over for writing must refuse'
 		'none'
 	}
 	assert reason.contains('write timed out')
-	// The pure half does not know about it: it is the frame against the channel, nothing more.
-	assert b.pure_refusal(CanFrame{ id: 0x123 }) == none
-	assert b.pure_refusal(CanFrame{ id: 0x123, fd: true }) != none
+	assert b.refusal(CanFrame{ id: 0x123, fd: true }) != none
 	assert rlock b.stop {
 		b.stop.running
 	}

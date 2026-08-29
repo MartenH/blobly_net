@@ -68,19 +68,21 @@ struct SharedIngress {
 // filtering has happened.
 interface SharedDriver {
 mut:
-	send(frame CanFrame) !
+	// send attempts `frame`. `commit` is the hub's: the driver calls it ONCE, at the moment it
+	// is committed to writing — its own checks passed, its write lock held, nothing left to
+	// decide — and the hub publishes the send's acknowledgement token in it. Before commit a
+	// driver returns not_written() and no token ever exists; after it, an error is a FAILED
+	// write and the token stays matchable for the hub's grace, because the frame may have
+	// reached the wire. Decided this way, atomically with the write, after three rounds on
+	// #251 showed that a refusal checked before the token is stale and one checked after it
+	// is too late (codex rounds 15–17).
+	send(frame CanFrame, commit fn ()) !
 	recv_shared(timeout_ms int) !SharedIngress
 	close()
 	health() BusHealth
 	diagnostics() BusDiagnostics
 	reconcile_silence(want bool) !
 	reports_tx_ack() bool
-	// refusal is the reason this driver would NOT attempt `frame`, asked BEFORE the hub
-	// registers the send's acknowledgement token: a token is matchable from the moment it
-	// exists, so a refusal learned from send() afterwards is learned too late — the reader may
-	// already have matched a late acknowledgement, meant for an earlier write of the same
-	// frame, to a send that never happened (codex round 10 on #251). none means "go ahead".
-	refusal(frame CanFrame) ?string
 }
 
 // SharedBusDriver adapts an ordinary Bus. PCAN uses this path; no public transport API changes.
@@ -89,12 +91,10 @@ mut:
 	bus Bus
 }
 
-fn (mut d SharedBusDriver) send(frame CanFrame) ! {
+fn (mut d SharedBusDriver) send(frame CanFrame, commit fn ()) ! {
+	// A plain Bus decides nothing before it writes: committed at once.
+	commit()
 	d.bus.send(frame)!
-}
-
-fn (mut d SharedBusDriver) refusal(frame CanFrame) ?string {
-	return none
 }
 
 fn (mut d SharedBusDriver) recv_shared(timeout_ms int) !SharedIngress {
@@ -161,12 +161,8 @@ enum SharedEntryState {
 // does, it answers as a closed bus rather than dereferencing nothing (#147's hazard, made loud).
 struct SharedNoDriver {}
 
-fn (mut d SharedNoDriver) send(frame CanFrame) ! {
-	return error('bus is not open yet')
-}
-
-fn (mut d SharedNoDriver) refusal(frame CanFrame) ?string {
-	return none
+fn (mut d SharedNoDriver) send(frame CanFrame, commit fn ()) ! {
+	return not_written('bus is not open yet')
 }
 
 fn (mut d SharedNoDriver) recv_shared(timeout_ms int) !SharedIngress {
@@ -1240,14 +1236,10 @@ fn (mut h SharedHandle) send(frame CanFrame) ! {
 	if closed_after_wait {
 		return error('${h.key}: bus is closed')
 	}
-	// ASKED BEFORE THE TOKEN EXISTS — see SharedDriver.refusal. The refusal is typed so the
-	// caller can tell it from a write that failed.
-	if reason := e.driver.refusal(frame) {
-		return not_written(reason)
-	}
 	mut terminal := ''
 	mut running := false
 	mut token := u64(0)
+	mut entry := SharedPendingSend{}
 	e.mu.lock()
 	running = e.state == .running
 	terminal = e.terminal
@@ -1260,7 +1252,7 @@ fn (mut h SharedHandle) send(frame CanFrame) ! {
 		}
 		e.next_send_token++
 		token = e.next_send_token
-		e.pending << SharedPendingSend{
+		entry = SharedPendingSend{
 			token:  token
 			origin: h.id
 			frame:  shared_clone_frame(frame)
@@ -1270,6 +1262,17 @@ fn (mut h SharedHandle) send(frame CanFrame) ! {
 		}
 	}
 	e.mu.unlock()
+	// THE TOKEN IS ALLOCATED HERE AND PUBLISHED BY THE DRIVER — see SharedDriver.send. Until
+	// commit runs, nothing can match it; a driver that refuses before commit leaves no entry
+	// to cancel, and one that fails after it leaves a matchable entry for the grace.
+	commit := fn [mut e, entry, token] () {
+		if token == 0 {
+			return
+		}
+		e.mu.lock()
+		e.pending << entry
+		e.mu.unlock()
+	}
 	if !running {
 		if terminal != '' {
 			return error(terminal)
@@ -1283,11 +1286,10 @@ fn (mut h SharedHandle) send(frame CanFrame) ! {
 	// "vanishes from trace and recording" outcome read_loop's in-flight rule exists to prevent,
 	// four CI runs out of four (#227). Whichever thread reaches the hub first, the frame the
 	// device acknowledged now exists; the sender is still told its write failed.
-	e.driver.send(frame) or {
+	e.driver.send(frame, commit) or {
 		if err is NotWritten {
-			// NOTHING REACHED THE WIRE, so no acknowledgement is coming, and an entry kept for
-			// this send could claim one meant for an earlier write of the same frame (codex
-			// round 9 on #251).
+			// Refused before commit: no entry was ever published. (cancel_pending is the belt
+			// for a driver that called commit and then returned NotWritten anyway.)
 			e.cancel_pending(token)
 			return err
 		}
