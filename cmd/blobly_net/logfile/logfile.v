@@ -115,13 +115,20 @@ mut:
 pub fn open(f Facts) !Session {
 	d := dir()
 	os.mkdir_all(d)!
-	for old in to_delete(os.ls(d) or { [] }, keep - 1) {
-		os.rm(os.join_path(d, old)) or {}
-	}
 	path := os.join_path(d, file_name(f.started, os.getpid()))
 	mut file := os.open_append(path)!
 	file.write_string(header(Facts{ ...f, log_path: path }))!
 	file.flush()
+	// ROTATE AFTER THIS FILE EXISTS, keeping `keep` including it. Rotating first, two launches
+	// at once both listed the same old files, both deleted down to keep-1, and then both
+	// created — eleven files (codex round 2 on #259). Each instance now sees the other's new
+	// file among the candidates and both converge on the newest `keep`; our own is newest by
+	// name unless the other started later, and either way the count is right.
+	for old in to_delete(os.ls(d) or { [] }, keep) {
+		if old != file_name(f.started, os.getpid()) {
+			os.rm(os.join_path(d, old)) or {}
+		}
+	}
 	return Session{
 		path: path
 		f:    file

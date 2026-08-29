@@ -68,8 +68,14 @@ fn test_the_directory_is_per_user() {
 	assert d.ends_with('logs')
 	assert d.contains('blobly_net')
 	$if windows {
-		assert d.to_lower().contains('appdata')
-		assert !d.to_lower().contains('roaming')
+		// Against the environment, whatever it says — a redirected LocalAppData is still the
+		// right answer (codex round 2 on #259).
+		local := os.getenv('LocalAppData')
+		if local != '' {
+			assert d.starts_with(local), '${d} is not under LocalAppData=${local}'
+		} else {
+			assert d.to_lower().contains('appdata')
+		}
 	} $else {
 		// Whatever XDG_STATE_HOME says, spelled however it is spelled (codex round 1 on
 		// #259); the fallback only when it says nothing.

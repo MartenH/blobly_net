@@ -462,6 +462,9 @@ fn selftest_config(mut app App) {
 
 fn selftest_check(name string, cond bool) bool {
 	if !cond {
+		// stderr on purpose: this is the console selftest (BLOBLY_SELFTEST_CONFIG), whose
+		// verdict goes to stdout beside it and which never opens a window — the one line that
+		// is not the session log's to carry.
 		eprintln('  FAIL: ${name}')
 	}
 	return cond

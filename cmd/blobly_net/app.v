@@ -745,10 +745,10 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	app.saved_at = 0
 	// SAID IN THE LOG, so the session file names every project this launch has had — its
 	// header names only the first, and a problem reproduced after an Open would otherwise be
-	// filed against the wrong project (codex round 1 on #259).
-	app.mu.lock()
+	// filed against the wrong project (codex round 1 on #259). UNDER THE LOCK THIS FUNCTION
+	// ALREADY HOLDS — a second take of a non-reentrant mutex here deadlocked every load,
+	// the launch's own included (codex round 2 on #259).
 	app.log_append_locked('project: ${if path == '' { 'new (unsaved)' } else { path }}')
-	app.mu.unlock()
 	// drop editor state carried over from the previous project — stale cfg_bufs would otherwise
 	// be flushed into the newly loaded project by the next commit_cfg (same channel count = no
 	// resync in draw_config); stale discovery results belong to the old machine view.
