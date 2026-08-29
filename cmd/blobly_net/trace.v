@@ -345,26 +345,62 @@ fn (mut app App) count_tx_load(iface string, f transport.CanFrame) {
 	defer {
 		app.mu.unlock()
 	}
-	// The running reader first; failing that, the row whose reader is on its way up — a tap
-	// can win the race against rx_loop at Start, and a handoff has a moment with no running
-	// row — so the first burst is the wire's load and not dropped (codex #263 r3). The roll
-	// treats a spawning row as monitored for the same reason.
-	mut fallback := -1
+	i := app.load_owner_locked(key)
+	if i < 0 {
+		return
+	}
+	nominal, data := app.wire_rates_locked(i)
+	app.chans[i].load_bits += transport.frame_bits(f, nominal, data)
+}
+
+// load_owner_locked is the row that holds a wire's load right now: the running reader; failing
+// that, the row whose reader is on its way up — a tap can win the race against rx_loop at
+// Start, and a handoff has a moment with no running row (codex #263 r3); failing THAT, the
+// wire's first enabled row — between `app.running = true` and the spawn loop that follows it
+// nothing is marked yet, and a script's guardless tap can send in that window (r4). The roll
+// runs on the GUI thread, the same thread start() runs on, so it cannot reset that row's
+// bits in between. -1 when no enabled row is on the wire.
+fn (app &App) load_owner_locked(key string) int {
+	mut spawning := -1
+	mut enabled := -1
 	for i, c in app.chans {
 		if c.doip || transport.destination_key(c.iface) != key {
 			continue
 		}
 		if c.running {
-			app.chans[i].load_bits += transport.frame_bits(f, c.bitrate, c.data_bitrate)
-			return
+			return i
 		}
-		if c.spawning && fallback < 0 {
-			fallback = i
+		if c.spawning && spawning < 0 {
+			spawning = i
+		}
+		if c.monitorable() && enabled < 0 {
+			enabled = i
 		}
 	}
-	if fallback >= 0 {
-		app.chans[fallback].load_bits += transport.frame_bits(f, app.chans[fallback].bitrate, app.chans[fallback].data_bitrate)
+	if spawning >= 0 {
+		return spawning
 	}
+	return enabled
+}
+
+// wire_rates_locked is the nominal and data rate a frame on row `i`'s WIRE is charged at. The
+// nominal one is the row's; the data one is too when it declares it, and otherwise whichever
+// enabled row on the same destination does — on SocketCAN and the software buses a classic row
+// and an FD row may share a wire (the project warns rather than refuses), and the reader is
+// whichever came first, so a BRS frame read through the classic row would otherwise have its
+// whole payload charged at the nominal rate (codex #263 r4).
+fn (app &App) wire_rates_locked(i int) (int, int) {
+	nominal := app.chans[i].bitrate
+	if app.chans[i].data_bitrate > 0 {
+		return nominal, app.chans[i].data_bitrate
+	}
+	key := transport.destination_key(app.chans[i].iface)
+	for c in app.chans {
+		if !c.doip && c.monitorable() && c.data_bitrate > 0 && transport.destination_key(c.iface) == key {
+			return nominal, c.data_bitrate
+		}
+	}
+	return nominal, 0
 }
 
 // retract_emit takes back an emission the driver refused. The row stays and is marked: the frame

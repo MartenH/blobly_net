@@ -569,10 +569,14 @@ fn draw_buses(mut app App, chans []Chan) {
 			// BUS LOAD, the gauge every CAN tool shows: the last sixty seconds as a strip and
 			// this second as a number. Bits on the wire over the wire's rate
 			// (transport.busload), worst-case stuffing, ours and theirs alike.
-			if c.running && !c.doip && c.load_hist.len >= 2 {
-				vgui.same_line()
-				vgui.sparkline('##load${c.iface}', c.load_hist, 100, 90 * app.ui_scale, 16 * app.ui_scale)
-				vgui.set_item_tooltip('bus load, last ${c.load_hist.len} s — bit-times of DECODED frames on ${c.iface} over ${c.bitrate} bit/s, worst-case stuffing. Error frames, retransmissions and overrun drops are not in it — see the fault ladder')
+			// The number as soon as one interval has closed; the strip once there are two points
+			// to draw a line between (codex #263 r4).
+			if c.running && !c.doip && c.load_hist.len >= 1 {
+				if c.load_hist.len >= 2 {
+					vgui.same_line()
+					vgui.sparkline('##load${c.iface}', c.load_hist, 100, 90 * app.ui_scale, 16 * app.ui_scale)
+					vgui.set_item_tooltip('bus load, last ${c.load_hist.len} s — bit-times of DECODED frames on ${c.iface} over ${c.bitrate} bit/s, worst-case stuffing. Error frames, retransmissions and overrun drops are not in it — see the fault ladder')
+				}
 				vgui.same_line()
 				vgui.text_dim('load ${c.load_pct:.0f}%')
 			}

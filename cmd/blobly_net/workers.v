@@ -848,7 +848,8 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		// Every frame on the wire is load, ours included (ours counted once the driver took them,
 	// count_tx_load), so the echo must not count twice.
 		if !ours {
-			a.chans[ci].load_bits += transport.frame_bits(f, a.chans[ci].bitrate, a.chans[ci].data_bitrate)
+			nominal, data := a.wire_rates_locked(ci)
+			a.chans[ci].load_bits += transport.frame_bits(f, nominal, data)
 		}
 		if !ours {
 			a.chans[ci].rx++

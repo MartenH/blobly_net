@@ -47,11 +47,12 @@ pub fn frame_bits(f CanFrame, nominal int, data int) f64 {
 	// IDE 1, FDF 1, res 1, BRS 1 — 17 or 37 bits, stuffed classically.
 	arb := if f.extended { 37 } else { 17 }
 	arb_stuffed := arb + worst_stuff(arb)
-	// FD data phase: ESI 1, DLC 4, data 8n, stuff count 4 + parity 1, CRC 17/21 with fixed
-	// stuff bits every 4 (crc/4). The CRC DELIMITER is where the rate switches back, so it is
+	// FD data phase: ESI 1, DLC 4, data 8n, then a fixed stuff bit, the 3-bit stuff count and
+	// its parity, a fixed stuff bit (6 in all — codex #263 r4 found the second), CRC 17/21
+	// with fixed stuff bits every 4 (crc/4). The CRC DELIMITER is where the rate switches back, so it is
 	// in the nominal tail below and not here (codex #263 r3).
 	crc := if n <= 16 { 17 } else { 21 }
-	data_bits := 1 + 4 + 8 * n + 5 + crc + crc / 4
+	data_bits := 1 + 4 + 8 * n + 6 + crc + crc / 4
 	// Dynamic stuffing runs through ESI, DLC and the data field (the CRC has its fixed stuff
 	// bits, counted above), worst case.
 	data_stuffed := data_bits + worst_stuff(5 + 8 * n)
