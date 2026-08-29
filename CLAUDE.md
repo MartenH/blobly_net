@@ -113,9 +113,12 @@ behind that guard). Bundle payload list: `scripts/stage_bundle.sh`, once, for bo
 [docs/releasing.md](docs/releasing.md).
 
 CI (`.github/workflows/`) runs `v -enable-globals test modules/` (plus
-`cmd/blobly_net/saverule/` and `cmd/blobly_net/logfile/`, the GUI-local rules with tests —
-what Save means (#250) and where the session log lives, what it is called, how many are kept
-and what its header says (#258) — kept in GUI-free sub-modules so they run without ImGui), `scripts/runtests.sh`,
+`cmd/blobly_net/saverule/`, `cmd/blobly_net/logfile/` and `cmd/blobly_net/taprule/`, the
+GUI-local rules with tests — what Save means (#250); where the session log lives, what it is
+called, how many are kept and what its header says (#258); and the transmit-tap lifecycle —
+when a tap is filed, when a sender is ready, when a manual send may fall back, when an
+abandoned tap is dropped — the path #257 took ten review rounds on (#260) — kept in GUI-free
+sub-modules so they run without ImGui), `scripts/runtests.sh`,
 `scripts/check_cmds.sh` (every `cmd/*` entry point type-checked for BOTH `-os` targets, on both
 jobs — nothing else compiles a CLI tool, and two sat broken for months that way, #220) and
 `scripts/vcan_common_test.sh` (the shared setup-script answers — whose home under sudo, is vcan

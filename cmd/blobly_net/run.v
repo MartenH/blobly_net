@@ -1,6 +1,7 @@
 module main
 
 import os
+import taprule
 import sync
 import time
 import project
@@ -324,33 +325,15 @@ fn (mut app App) spawn_tap_for(chan_name string, iface string) {
 fn (mut app App) drop_unwanted_taps(chan_name string, iface string) {
 	mut doomed := []transport.Bus{}
 	app.mu.lock()
-	mut named_wanted := false
-	mut wire_wanted := false
-	dest := transport.destination_key(iface)
-	for sr in app.senders {
-		tgt := sr.target()
-		if tgt == '' {
-			continue
-		}
-		if sr.chan == chan_name && tgt == iface {
-			named_wanted = true
-		}
-		if transport.destination_key(tgt) == dest {
-			wire_wanted = true
-		}
-	}
-	for ch in app.chans {
-		if ch.enabled && !ch.doip && transport.destination_key(ch.iface) == dest {
-			wire_wanted = true
-		}
-	}
-	if !named_wanted {
+	d := taprule.drop_decision(app.taprule_wants_locked(), tx_bus_key(chan_name, iface),
+		transport.destination_key(iface))
+	if d.named {
 		if mut b := app.tx_buses[tx_bus_key(chan_name, iface)] {
 			doomed << b
 			app.tx_buses.delete(tx_bus_key(chan_name, iface))
 		}
 	}
-	if !wire_wanted {
+	if d.wire {
 		if mut b := app.tx_buses[tx_bus_key('', iface)] {
 			doomed << b
 			app.tx_buses.delete(tx_bus_key('', iface))
@@ -371,6 +354,45 @@ fn (app &App) phys_for_locked(iface string) string {
 		return iface
 	}
 	return app.bitrate_iface(iface)
+}
+
+// THE ADAPTERS TO taprule: what the GUI holds, in the plain shape the rules read. Each is
+// called with app.mu held, because the answer is only as good as the snapshot it is taken
+// from (#257 round 9: a decision from one snapshot acted on under another).
+fn (app &App) taprule_run_locked() taprule.Run {
+	return taprule.Run{
+		running: app.running
+		gen:     app.run_gen
+	}
+}
+
+fn (app &App) taprule_taps_locked() taprule.Taps {
+	return taprule.Taps{
+		filed:  app.tx_buses.keys()
+		failed: app.tap_failed.keys()
+	}
+}
+
+fn (app &App) taprule_wants_locked() taprule.Wants {
+	mut pairs := []string{}
+	mut wires := []string{}
+	for sr in app.senders {
+		tgt := sr.target()
+		if tgt == '' {
+			continue
+		}
+		pairs << tx_bus_key(sr.chan, tgt)
+		wires << transport.destination_key(tgt)
+	}
+	for ch in app.chans {
+		if ch.enabled && !ch.doip {
+			wires << transport.destination_key(ch.iface)
+		}
+	}
+	return taprule.Wants{
+		pairs: pairs
+		wires: wires
+	}
 }
 
 // run_live is whether the run `gen` is the one on now.
@@ -433,7 +455,7 @@ fn (mut app App) file_tap(key string, mut b transport.Bus, gen u64) {
 	// run_gen where it was, so a tap that completed after Stop would otherwise land in the
 	// emptied map, sit there through the next Start (has_tap sees it and opens no
 	// replacement) and refuse every send with "run ended" (codex round 1 on #257).
-	keep := app.running && app.run_gen == gen && key !in app.tx_buses
+	keep := taprule.file_decision(app.taprule_run_locked(), gen, key in app.tx_buses)
 	if keep {
 		app.tx_buses[key] = b
 		// A tap that lands is not failed, whatever an earlier attempt said: a later worker —

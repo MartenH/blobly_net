@@ -4,6 +4,7 @@ import os
 import time
 import project
 import transport
+import taprule
 import telem
 import isotp
 import uds
@@ -280,6 +281,10 @@ fn gen_loop(app &App) {
 		now := time.ticks()
 		mut fire := []int{}
 		a.mu.lock()
+		// ONE snapshot of the taps per pass, not one per sender: this loop runs every 8 ms
+		// with app.mu held, and rebuilding the key lists per sender made it O(senders × taps)
+		// of allocation under the lock (codex round 1 on #261).
+		taps := a.taprule_taps_locked()
 		for i, sr in a.senders {
 			if sr.sender.trigger == 'cyclic' && sr.sender.cycle_ms > 0 {
 				// NOT ONTO A WIRE THAT HAS LEFT THE RUN — but "has no reader" is not that.
@@ -307,10 +312,8 @@ fn gen_loop(app &App) {
 				// it is for a manual send (codex round 6 on #257).
 				// An existing named tap wins outright; the shared one only stands in while the
 				// named one is known to have failed (codex round 7 on #257).
-				named := tx_bus_key(sr.chan, tgt)
-				ready := tgt == '' || (sr.chan != '' && named in a.tx_buses)
-					|| ((sr.chan == '' || named in a.tap_failed) && tx_bus_key('', tgt) in a.tx_buses)
-				if !ready {
+				if tgt != '' && !taprule.ready(taps, tx_bus_key(sr.chan, tgt),
+					tx_bus_key('', tgt), sr.chan != '') {
 					continue
 				}
 				lf := last[i] or { i64(0) }
