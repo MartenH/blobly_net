@@ -604,7 +604,13 @@ fn (mut app App) start() {
 	// after the unlock; Start now does the same, on a thread of its own: each tap is filed
 	// under a brief take of the lock as it comes up, guarded by the run it belongs to, and a
 	// send that arrives first gets "no open bus" — an answer, not a freeze.
-	spawn open_taps_for_run(app, app.chans.clone(), app.senders.clone(), start_gen)
+	// The plan is snapshotted UNDER the lock: the readers spawned above write these rows under
+	// it, and a fast backend's reader is already doing so (codex round 5 on #257).
+	app.mu.lock()
+	tap_rows := app.chans.clone()
+	tap_senders := app.senders.clone()
+	app.mu.unlock()
+	spawn open_taps_for_run(app, tap_rows, tap_senders, start_gen)
 	// spawn the in-process simulation workloads (driver-free sim ECUs + a UDS server)
 	for sc in app.sims {
 		// DoIP carries diagnostics, not frames. sim_loop would call transport.open('doip:…'),
