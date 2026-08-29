@@ -65,7 +65,7 @@ mut:
 }
 
 fn (c Chan) monitorable() bool {
-	return c.enabled && c.mode in ['monitor', 'replay'] && !c.doip
+	return c.enabled && c.mode in ['normal', 'replay'] && !c.doip
 }
 
 // replay_blocker names the reason a replay-mode channel will not play — '' when nothing

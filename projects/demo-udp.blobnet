@@ -15,7 +15,7 @@ channels:
   - name: CAN1
     type: can
     interface: udp:239.63.42.1:20000   # udp[:group[:port]] → software bus
-    mode: monitor
+    mode: normal
     enabled: true
     databases:
       - dbc/blobly_net.dbc

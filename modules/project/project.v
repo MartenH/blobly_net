@@ -23,10 +23,17 @@ import doip
 pub const schema_version = 2
 
 // Mode is a channel's operating mode within a measurement.
+//
+// TWO, NOT THREE. There was an `off`, "configured but not attached" — and the only thing that
+// ever read it was the rule that decides whether a row's bus is opened, which is exactly what
+// the row's enabled tick decides; two spellings of one fact, and the maintainer asked what the
+// difference was (2026-08-29). A file that says `mode: off` loads as an unticked row. And
+// `normal` was `monitor`, a name that read as "you cannot send" when what cannot send is a
+// listen-only row: the mode is what the channel DOES with the bus, the tick is what it may put
+// on it. `monitor` still loads as normal.
 pub enum Mode {
-	off     // configured but not attached
-	monitor // RX only — observe live traffic (today's default)
-	replay  // play a recording onto the bus / into the trace
+	normal // live traffic in and out (the default)
+	replay // play a recording onto the bus / into the trace
 }
 
 // Timing is advanced manual CAN bit timing (0 = derive from bitrate).
@@ -282,7 +289,7 @@ pub mut:
 	data_bitrate int
 	sample_point f64
 	timing       Timing
-	mode         Mode = .monitor
+	mode         Mode = .normal
 	listen_only  bool
 	enabled      bool = true
 	databases    []string
@@ -668,6 +675,10 @@ pub fn default_project() Project {
 }
 
 fn parse_channel(c yaml.Any) !Channel {
+	// `mode: off` is an older file's way of saying the row is unticked — see Mode. YAML 1.1
+	// reads a bare `off` as the boolean false, so the node arrives typed, not as the word.
+	mode_node := c.value('mode')
+	was_off := (mode_node is bool && !mode_node.bool()) || mode_node.string().to_lower() == 'off'
 	mut ch := Channel{
 		name:         c.value('name').default_to('CAN').string()
 		network:      c.value('network').default_to('').string()
@@ -675,9 +686,9 @@ fn parse_channel(c yaml.Any) !Channel {
 		fd:           c.value('fd').default_to(false).bool()
 		data_bitrate: strict_rate(c, 'data_bitrate')!
 		sample_point: c.value('sample_point').default_to(f64(0)).f64()
-		mode:         mode_from(c.value('mode').default_to('monitor').string())
+		mode:         mode_from(c.value('mode').default_to('normal').string())
 		listen_only:  c.value('listen_only').default_to(false).bool()
-		enabled:      c.value('enabled').default_to(true).bool()
+		enabled:      c.value('enabled').default_to(true).bool() && !was_off
 	}
 	// protocol/type: v2 `protocol:` (can|canfd), falling back to v1 `type:` (can|canfd|doip).
 	mut proto := c.value('protocol').default_to('').string()
@@ -1380,25 +1391,21 @@ pub fn adapter_silences_transceiver(adapter string) bool {
 
 // adapter_starts_silent reports whether a NEW row on this adapter should begin listen-only.
 //
-// TRUE FOR HARDWARE THAT MAY ALREADY BE ON A LIVE BUS. A row created in the editor or through
-// Discover arrives with the 500 kbit/s default, which nobody has confirmed — and a node joining a
-// running vehicle able to acknowledge, at a rate that is a guess, is how a tester disturbs the
-// thing it came to observe. Untick it once the rate is known.
+// FALSE, FOR EVERY ADAPTER — a decision, not an oversight. From #204 until 2026-08-29 every
+// hardware row (the `adapter_silences_transceiver` set) started listen-only, on the argument that
+// a row arrives with a 500 kbit/s guess nobody has confirmed and a node joining a live vehicle
+// able to acknowledge at the wrong rate disturbs what it came to observe. True, and the
+// maintainer's answer is that this is a bus TESTER: the normal case is a bench where this app is
+// meant to talk, and a tester whose every new row refuses to transmit until somebody finds the
+// tick is the wrong default for it. The tick is still there, in the Configure row and on the
+// Buses panel, for the case the old default was written for; and `,silent` in a Vector address
+// still ticks it (the loader), because that is the operator saying so.
 //
-// THE SAME SET AS `adapter_silences_transceiver`, and that is the rule rather than a coincidence:
-// the default is only honest where the transceiver will actually be silenced, and there is no
-// vendor adapter where it would be honest and unwanted. PCAN and Kvaser were a stated exception
-// while this app could not silence them — a default tick there promised what the transceiver would
-// not do — and that reason has now gone, so the exception goes with it. What changes is only what
-// a NEWLY CREATED row defaults to; a saved project carries its own answer.
-//
-// HERE RATHER THAN IN THE GUI, and the reason is the one this file keeps running into: the rule
-// lived in two hardcoded `== 'vector'` comparisons in cmd/blobly_net, so exposing CANsub in the
-// picker made the manual route the unsafe one while Discover stayed careful, and nothing failed to
-// say so (codex round 5 on #204). The registry test holds it against `adapters`, so a hardware
-// backend added later cannot quietly default to transmitting.
+// KEPT AS A FUNCTION, with its registry test, so the next person to want the old default changes
+// one line and one assertion instead of rediscovering the two `== 'vector'` comparisons #204
+// removed from the GUI.
 pub fn adapter_starts_silent(adapter string) bool {
-	return adapter_silences_transceiver(adapter)
+	return false
 }
 
 // adapter_change_starts_silent reports whether changing a row's adapter from `was` to `now`
@@ -1565,20 +1572,19 @@ pub fn decompose_iface(iface string) (string, string) {
 	return 'socketcan', s
 }
 
-// mode_from maps a string to a Mode (unknown → monitor).
+// mode_from maps a string to a Mode: `replay`, or `normal` — which is also what the older
+// `monitor` and anything unknown map to. `off` is handled by the loader (an unticked row).
 pub fn mode_from(s string) Mode {
 	return match s.to_lower() {
-		'off' { Mode.off }
 		'replay' { Mode.replay }
-		else { Mode.monitor }
+		else { Mode.normal }
 	}
 }
 
 // str renders a Mode for display.
 pub fn (m Mode) str() string {
 	return match m {
-		.off { 'off' }
-		.monitor { 'monitor' }
+		.normal { 'normal' }
 		.replay { 'replay' }
 	}
 }

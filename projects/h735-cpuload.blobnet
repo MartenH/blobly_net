@@ -27,7 +27,7 @@ channels:
     # Windows (PEAK driver) alternative — replace the line above with:
     #   interface: pcan:PCAN_USBBUS1@500000   # handle from PCAN-View
     bitrate: 500000
-    mode: monitor        # observe the load frames the board sends
+    mode: normal        # observe the load frames the board sends
     listen_only: false   # MUST ACK: a lone H735 transmitter with no ACK goes
                          # error-passive and its telemetry stalls. Unlike the vcan
                          # scale project (virtual bus self-ACKs), a real adapter has to

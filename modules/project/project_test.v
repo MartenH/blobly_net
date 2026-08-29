@@ -44,7 +44,7 @@ fn test_channel_one_defaults_and_db() {
 	assert c.name == 'CAN1'
 	assert c.iface == 'vcan0'
 	assert c.bitrate == 500000
-	assert c.mode == .monitor
+	assert c.mode == .normal
 	assert c.enabled == true // default
 	assert c.listen_only == false // default
 	assert c.databases == ['dbc/blobly_net.dbc']
@@ -71,15 +71,16 @@ fn test_default_project() {
 	p := default_project()
 	assert p.channels.len == 1
 	assert p.channels[0].iface == 'vcan0'
-	assert p.channels[0].mode == .monitor
+	assert p.channels[0].mode == .normal
 	assert p.channels[0].databases == ['dbc/blobly_net.dbc']
 }
 
 fn test_mode_from_and_str() {
-	assert mode_from('off') == .off
+	assert mode_from('monitor') == .normal, 'the older name still loads'
+	assert mode_from('normal') == .normal
 	assert mode_from('REPLAY') == .replay
-	assert mode_from('nonsense') == .monitor
-	assert Mode.monitor.str() == 'monitor'
+	assert mode_from('nonsense') == .normal
+	assert Mode.normal.str() == 'normal'
 }
 
 fn test_empty_channels() {
@@ -1547,4 +1548,22 @@ fn test_a_fractional_sample_point_near_the_default_is_still_refused() {
 			assert false, '${sp}% is not what the backend configures, so it must be refused'
 		}
 	}
+}
+
+// `mode: off` IS AN UNTICKED ROW. The old third mode said "configured but not attached", and the
+// enabled tick says the same; a file written with it loads as the tick (2026-08-29).
+fn test_mode_off_loads_as_a_disabled_row() {
+	p := parse('project:\n  name: o\nchannels:\n  - name: CAN1\n    type: can\n    interface: vcan0\n    mode: off\n') or {
+		assert false, err.msg()
+		return
+	}
+	assert p.channels[0].mode == .normal
+	assert !p.channels[0].enabled
+	// And the tick, when present, is the row's own answer only for a row that is not `off`.
+	q := parse('project:\n  name: o\nchannels:\n  - name: CAN1\n    type: can\n    interface: vcan0\n    mode: monitor\n    enabled: false\n') or {
+		assert false, err.msg()
+		return
+	}
+	assert q.channels[0].mode == .normal
+	assert !q.channels[0].enabled
 }

@@ -100,7 +100,7 @@ buses:
     address: CAN1                # adapter-specific
     protocol: can                # can | canfd
     bitrate: 500000
-    mode: monitor                # off | monitor | replay
+    mode: normal                 # normal | replay
     databases: [dbc/blobly_net.dbc]
     simulate: [Engine]
 ```
@@ -115,7 +115,7 @@ a network (grouping label); buses sit inside it with their adapter, DBC, and any
 ```mermaid
 flowchart TD
   subgraph PT["Powertrain (virtual)"]
-    B1["Bus: CAN1<br/>adapter: virtual · addr CAN1<br/>mode: monitor"]
+    B1["Bus: CAN1<br/>adapter: virtual · addr CAN1<br/>mode: normal"]
     DBC1[("blobly_net.dbc")]
     N1(["node: Engine (sim)"])
     B1 --- DBC1
@@ -147,9 +147,9 @@ another, both sharing the network's DBC.
 ```mermaid
 flowchart TD
   subgraph PT["Powertrain (virtual: CAN1)"]
-    B1["Bus: Sim<br/>adapter: virtual · addr CAN1<br/>mode: monitor"]
+    B1["Bus: Sim<br/>adapter: virtual · addr CAN1<br/>mode: normal"]
     N1(["node: Engine (sim)"])
-    B2["Bus: Tester<br/>adapter: virtual · addr CAN1<br/>mode: monitor · listen-only"]
+    B2["Bus: Tester<br/>adapter: virtual · addr CAN1<br/>mode: normal · listen-only"]
     DBC1[("blobly_net.dbc")]
     B1 --- N1
     B1 -. same wire .- B2
@@ -186,7 +186,7 @@ flowchart TD
     B1 --- D1
   end
   subgraph LIVE["Vehicle"]
-    B2["Bus: Live<br/>adapter: vcan · addr vcan0<br/>mode: monitor"]
+    B2["Bus: Live<br/>adapter: vcan · addr vcan0<br/>mode: normal"]
     B2 --- D1
   end
 ```
@@ -221,10 +221,10 @@ flowchart TD
 project: { name: Mixed rig, version: 2 }
 buses:
   - { name: PT_CAN,   network: Powertrain,  adapter: socketcan, address: can0,
-      protocol: can, bitrate: 500000, mode: monitor,
+      protocol: can, bitrate: 500000, mode: normal,
       databases: [dbc/powertrain.dbc], simulate: [Engine] }
   - { name: BODY_CAN, network: Body,        adapter: virtual,   address: CAN2,
-      protocol: can, bitrate: 500000, mode: monitor,
+      protocol: can, bitrate: 500000, mode: normal,
       databases: [dbc/body.dbc] }
   - { name: Gateway,  network: Diagnostics, adapter: doip,      address: 127.0.0.1:13400,
       tester_address: 0x0E80, ecu_address: 0x1000 }

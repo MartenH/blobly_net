@@ -631,6 +631,11 @@ int vgui_text_edit(const char* id, char* buf, int cap, float h) {
 }
 // pin the current child's scroll to the bottom (call after emitting console output lines).
 void vgui_scroll_bottom(void) { ImGui::SetScrollHereY(1.0f); }
+// vgui_scroll_at_bottom: whether the current child is scrolled to (within a line of) its end —
+// asked BEFORE new content is laid out, so it reports where the user left it last frame.
+int vgui_scroll_at_bottom(void) {
+    return (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - ImGui::GetTextLineHeight()) ? 1 : 0;
+}
 
 // numeric input editing *v in place (for signal values). Returns 1 when changed.
 int vgui_input_double(const char* label, double* v) {
