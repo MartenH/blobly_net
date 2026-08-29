@@ -242,21 +242,42 @@ fn (app &App) bitrate_iface(iface string) string {
 // slow open leaves `run_gen` behind, and the tap is closed instead of leaking into the next
 // run's map (rx_loop's rule, one layer over).
 fn open_taps_for_run(app &App, rows []Chan, senders []SenderRT, gen u64) {
-	mut a := unsafe { app }
-	mut anon_tap_failed := map[string]bool{}
-	mut named_tap_failed := map[string]bool{}
+	// ONE WORKER PER WIRE. A single worker opening every tap in row order would hold every
+	// later wire behind the first slow one — a CANsub that is not there costs its whole
+	// timeout — while the generators, which start at once, dropped frames on healthy wires as
+	// "no open bus" for the duration (codex round 1 on #257). Grouped by destination, a
+	// stalled device delays its own wire and nobody else's.
+	mut by_wire := map[string][]TapWant{}
 	for ch in rows {
 		if !ch.enabled || ch.doip {
 			continue
 		}
-		a.install_tap(ch.name, ch.iface, gen, mut named_tap_failed, mut anon_tap_failed)
+		by_wire[transport.destination_key(ch.iface)] << TapWant{ch.name, ch.iface}
 	}
 	for sr in senders {
 		tgt := sr.target()
 		if tgt == '' {
 			continue
 		}
-		a.install_tap(sr.chan, tgt, gen, mut named_tap_failed, mut anon_tap_failed)
+		by_wire[transport.destination_key(tgt)] << TapWant{sr.chan, tgt}
+	}
+	for _, wants in by_wire {
+		spawn open_taps_for_wire(app, wants, gen)
+	}
+}
+
+// TapWant is one (channel, interface) pair a run needs a transmit tap for.
+struct TapWant {
+	chan_name string
+	iface     string
+}
+
+fn open_taps_for_wire(app &App, wants []TapWant, gen u64) {
+	mut a := unsafe { app }
+	mut anon_tap_failed := map[string]bool{}
+	mut named_tap_failed := map[string]bool{}
+	for w in wants {
+		a.install_tap(w.chan_name, w.iface, gen, mut named_tap_failed, mut anon_tap_failed)
 	}
 }
 
@@ -273,7 +294,9 @@ fn (mut app App) install_tap(chan_name string, iface string, gen u64, mut named_
 			app.file_tap(anon, mut b, gen)
 		} else {
 			anon_failed[dest] = true
-			app.notify('${iface}: shared transmit tap failed to open — ${err}')
+			// Through the run's gate: a slow device that fails after Stop or a restart must
+			// not narrate the old run into the new Log (codex round 1 on #257).
+			notify_gen(app, gen, '${iface}: shared transmit tap failed to open — ${err}')
 		}
 	}
 	named := tx_bus_key(chan_name, iface)
@@ -282,7 +305,7 @@ fn (mut app App) install_tap(chan_name string, iface string, gen u64, mut named_
 			app.file_tap(named, mut b, gen)
 		} else {
 			named_failed[named] = true
-			app.notify('${chan_name}: transmit tap failed to open — ${err}')
+			notify_gen(app, gen, '${chan_name}: transmit tap failed to open — ${err}')
 		}
 	}
 }
@@ -298,7 +321,11 @@ fn (mut app App) has_tap(key string) bool {
 // file_tap inserts an opened tap under the lock, into the run it belongs to — or closes it.
 fn (mut app App) file_tap(key string, mut b transport.Bus, gen u64) {
 	app.mu.lock()
-	keep := app.run_gen == gen && key !in app.tx_buses
+	// `running` AND the generation: Stop clears tx_buses and drops `running` but leaves
+	// run_gen where it was, so a tap that completed after Stop would otherwise land in the
+	// emptied map, sit there through the next Start (has_tap sees it and opens no
+	// replacement) and refuse every send with "run ended" (codex round 1 on #257).
+	keep := app.running && app.run_gen == gen && key !in app.tx_buses
 	if keep {
 		app.tx_buses[key] = b
 	}
