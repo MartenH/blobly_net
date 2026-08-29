@@ -553,6 +553,12 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	a.chans[ci].running = true
 	a.chans[ci].spawning = false
 	a.dbc_readers++ // this loop reads app.dbs lock-free (lookup_name per frame)
+	// SAID FOR EVERY ROW, under the same take of the lock as `running`. The failure two
+	// screens up has narrated itself since 2026-08-21; success never did, so a DoIP row
+	// announced its entity while a CAN row came up in silence and "started" — the button's
+	// one line — was the only word for all of them (2026-08-29). The same shape for every
+	// backend: the row's name, the wire it opened.
+	a.log_append_locked('${a.chans[ci].name}: open on ${iface}')
 	a.mu.unlock()
 	defer {
 		a.mu.lock()
