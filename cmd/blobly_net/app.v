@@ -2,6 +2,7 @@ module main
 
 import os
 import sync
+import time
 import project
 import transport
 import wiretap
@@ -622,7 +623,12 @@ fn (mut app App) notify(msg string) {
 // operation (codex #141 r2), and a second copy of the trim is how the two would drift.
 // Caller holds app.mu.
 fn (mut app App) log_append_locked(msg string) {
-	app.logs << msg
+	// STAMPED, to the millisecond. A Log without a clock cannot say whether a line is new or
+	// has sat there since the last run, and when "started" and a fault are seconds apart or
+	// the same instant is exactly what a bench is asking (2026-08-29). Wall-clock, local, so
+	// it lines up with whatever else the operator is looking at; the trace has its own
+	// monotonic time base and the two are not meant to be subtracted.
+	app.logs << '${log_stamp()} ${msg}'
 	app.log_gen++
 	if app.logs.len > 500 {
 		app.logs = app.logs[app.logs.len - 500..].clone()
@@ -944,6 +950,22 @@ fn (mut app App) rebuild_from_proj() {
 //
 // GUI-thread state: only the draw functions touch a LogCache. The counters it compares against
 // live under app.mu with the buffers they describe.
+// log_stamp is the Log's clock: local time of day to the millisecond.
+fn log_stamp() string {
+	now := time.now()
+	return '${now.hour:02}:${now.minute:02}:${now.second:02}.${now.nanosecond / 1_000_000:03}'
+}
+
+// log_clear empties the Log. The cache follows through the generation, as it does for an
+// append; the Log is a window on the last 500 lines, not a record, so nothing is lost that
+// the Trace, a recording or the Diagnostics pane would not still have.
+fn (mut app App) log_clear() {
+	app.mu.lock()
+	app.logs = []string{}
+	app.log_gen++
+	app.mu.unlock()
+}
+
 struct LogCache {
 mut:
 	gen   u64
