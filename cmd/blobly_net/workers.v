@@ -299,8 +299,11 @@ fn gen_loop(app &App) {
 				// and lost until the next cycle — on a slow CANsub and a long cycle, every
 				// Start dropped the first frame (codex round 3 on #257). Left unstamped, the
 				// first cycle fires the moment the tap is filed.
-				if tgt != '' && tx_bus_key(sr.chan, tgt) !in a.tx_buses
-					&& tx_bus_key('', tgt) !in a.tx_buses {
+				// ITS OWN tap when it has a channel: the shared tap is filed first and carries no
+				// channel identity, so a frame sent through it during the named open would be
+				// filed under whichever channel matched first (codex round 4 on #257).
+				want_key := if sr.chan != '' { tx_bus_key(sr.chan, tgt) } else { tx_bus_key('', tgt) }
+				if tgt != '' && want_key !in a.tx_buses {
 					continue
 				}
 				lf := last[i] or { i64(0) }

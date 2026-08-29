@@ -274,23 +274,9 @@ fn (mut app App) add_generator() {
 	}
 	app.dirty = true
 	app.mu.unlock()
-	if app.running && iface != '' && tx_bus_key(cname, iface) !in app.tx_buses {
-		if b := app.open_tap_on(iface, org_tx, cname) {
-			// the OPEN runs unlocked (a vendor open can block ~2s), the INSERT re-takes the
-			// lock: a cyclic generator may be inside tx_on_chan's locked lookup of this very
-			// map, and a V map is not safe for a concurrent read and write (the invariant
-			// tx_on_chan documents; this site was the one sibling violating it)
-			app.mu.lock()
-			if tx_bus_key(cname, iface) !in app.tx_buses {
-				app.tx_buses[tx_bus_key(cname, iface)] = b
-			}
-			app.mu.unlock()
-		} else {
-			// a generator added mid-run onto a bus that will not open must not just
-			// quietly never fire
-			app.notify('${cname}: generator transmit tap failed to open — ${err}')
-		}
-	}
+	// The tap for a generator added mid-run opens on a worker (spawn_tap_for): opened here it
+	// ran on the GUI thread, and read tx_buses without the lock (codex round 4 on #257).
+	app.spawn_tap_for(cname, iface)
 }
 
 // remove_generator drops generator `i` from the session.
@@ -503,7 +489,6 @@ fn (mut app App) set_sender_bus(i int, bus string, chan_name string) {
 	// non-reentrant mutex, and an inline call here would deadlock the GUI thread
 	mut want_tgt := ''
 	mut want_own := ''
-	mut gen := u64(0)
 	app.mu.lock()
 	if i < app.senders.len {
 		app.senders[i].sender.bus = bus
@@ -518,17 +503,11 @@ fn (mut app App) set_sender_bus(i int, bus string, chan_name string) {
 			// same rule as Start's (open_taps_for_run), for the same freeze (2026-08-29).
 			want_tgt = tgt
 			want_own = own
-			gen = app.run_gen
 		}
 	}
 	app.mu.unlock()
 	if want_tgt != '' {
-		spawn fn (app &App, own string, tgt string, gen u64) {
-			mut a := unsafe { app }
-			mut nf := map[string]bool{}
-			mut af := map[string]bool{}
-			a.install_tap(own, tgt, gen, mut nf, mut af)
-		}(app, want_own, want_tgt, gen)
+		app.spawn_tap_for(want_own, want_tgt)
 	}
 }
 

@@ -287,6 +287,29 @@ fn open_taps_for_wire(app &App, wants []TapWant, gen u64) {
 	}
 }
 
+// spawn_tap_for opens the taps one generator needs — the shared one for its wire and its own
+// named one — on a worker, for the run on now. The one path for a tap wanted after Start:
+// Add generator and a retargeted generator both used to open inline on the GUI thread (codex
+// round 4 on #257), which is the freeze Start was cured of.
+fn (mut app App) spawn_tap_for(chan_name string, iface string) {
+	app.mu.lock()
+	gen := app.run_gen
+	live := app.running
+	app.mu.unlock()
+	if !live || iface == '' {
+		return
+	}
+	spawn fn (app &App, chan_name string, iface string, gen u64) {
+		mut a := unsafe { app }
+		if !a.run_live(gen) {
+			return
+		}
+		mut nf := map[string]bool{}
+		mut af := map[string]bool{}
+		a.install_tap(chan_name, iface, gen, mut nf, mut af)
+	}(app, chan_name, iface, gen)
+}
+
 // run_live is whether the run `gen` is the one on now.
 fn (mut app App) run_live(gen u64) bool {
 	app.mu.lock()
