@@ -406,9 +406,19 @@ fn (mut app App) tx_on_chan(chan_name string, iface string, f transport.CanFrame
 	// released before sending: b.send takes the interface's send lock and then app.mu inside
 	// note_emit, so holding app.mu across it would deadlock.
 	app.mu.lock()
-	mut b := app.tx_buses[tx_bus_key(chan_name, iface)] or {
-		// fall back to the anonymous tap for this wire — a Quick Send or a diagnostic path has
-		// no owning channel, and a generator whose channel was renamed mid-run still transmits
+	named := tx_bus_key(chan_name, iface)
+	mut b := app.tx_buses[named] or {
+		// THE SHARED TAP STANDS IN FOR A CHANNEL'S ONLY WHEN THAT CHANNEL'S IS KNOWN NOT TO
+		// COME. The taps open on a worker (#257), so for a moment after Start or a retarget a
+		// channel's own tap is not there yet; sent through the shared one meanwhile, the frame
+		// carries no channel identity and the trace files it under the first channel on the
+		// wire (codex round 8 on #257). Same rule as gen_loop's. A Quick Send or a diagnostic
+		// path has no owning channel and takes the shared tap as before.
+		if chan_name != '' && named !in app.tap_failed {
+			app.mu.unlock()
+			app.notify('TX not sent: the transmit tap of ${chan_name} on ${iface} is still opening')
+			return false
+		}
 		app.tx_buses[tx_bus_key('', iface)] or {
 			app.mu.unlock()
 			app.notify('TX failed: no open bus for ${iface}')

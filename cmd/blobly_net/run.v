@@ -304,7 +304,40 @@ fn (mut app App) spawn_tap_for(chan_name string, iface string) {
 		mut nf := map[string]bool{}
 		mut af := map[string]bool{}
 		a.install_tap(w.chan_name, w.iface, w.phys, gen, mut nf, mut af)
+		// AND ONLY IF STILL WANTED: retargeted again, or removed, while this open ran, the
+		// generator no longer points here, and a tap filed anyway holds the wire until Stop —
+		// on a CANsub that is the channel's one WebSocket client (codex round 8 on #257).
+		if !a.sender_targets(w.chan_name, w.iface) {
+			a.drop_tap(tx_bus_key(w.chan_name, w.iface))
+		}
 	}(app, TapWant{chan_name, iface, phys}, gen)
+}
+
+// sender_targets is whether some generator still fires on (chan_name, iface).
+fn (mut app App) sender_targets(chan_name string, iface string) bool {
+	app.mu.lock()
+	defer {
+		app.mu.unlock()
+	}
+	for sr in app.senders {
+		if sr.chan == chan_name && sr.target() == iface {
+			return true
+		}
+	}
+	return false
+}
+
+// drop_tap removes and closes one named tap nobody wants any more. The shared tap of the
+// wire stays: Quick Send, diagnostics and the shell fall back to it.
+fn (mut app App) drop_tap(key string) {
+	app.mu.lock()
+	mut b := app.tx_buses[key] or {
+		app.mu.unlock()
+		return
+	}
+	app.tx_buses.delete(key)
+	app.mu.unlock()
+	b.close()
 }
 
 // phys_for_locked is the physical interface to open for `iface`, decided under app.mu. A target
