@@ -939,7 +939,12 @@ fn (mut app App) stop() {
 	// The run flag FIRST. A supervisor that is unbound and has just decided to rebind would
 	// otherwise insert a fresh listener AFTER the snapshot below, escape this close, and
 	// survive into the next Start — whose own bind would then fail against it.
+	// UNDER app.mu, because file_tap decides "is this run still on" under that lock: flipped
+	// outside it, a tap that completed between file_tap's check and its insert landed in the
+	// map this function empties below and outlived the run (codex round 2 on #257).
+	app.mu.lock()
 	app.running = false
+	app.mu.unlock()
 	// Then close: the serve loops block in accept for up to 200ms, and close() interrupts them
 	// so the port is released now rather than whenever the last worker notices.
 	// Snapshot under the lock the supervisor uses: it inserts and deletes entries as channels
@@ -958,9 +963,15 @@ fn (mut app App) stop() {
 	for ci in 0 .. app.chans.len {
 		app.chans[ci].running = false
 	}
-	for _, mut b in app.tx_buses {
+	// The taps: SNAPSHOT AND RESET UNDER THE LOCK, close outside it. The reset under app.mu is
+	// the other half of the file_tap contract above; the closes stay outside, because a close
+	// can wait on a driver and nothing must hold app.mu while it does.
+	app.mu.lock()
+	mut taps := app.tx_buses.clone()
+	app.tx_buses = map[string]transport.Bus{}
+	app.mu.unlock()
+	for _, mut b in taps {
 		b.close()
 	}
-	app.tx_buses = map[string]transport.Bus{}
 	app.send_iface = ''
 }
