@@ -236,6 +236,78 @@ fn (app &App) bitrate_iface(iface string) string {
 }
 
 // start opens every enabled, monitorable channel on its own RX thread.
+// open_taps_for_run opens every transmit tap a run needs — one named and one shared per
+// enabled CAN row, and the generators' — OFF the GUI thread. See start() for why. Each tap is
+// filed under a brief take of app.mu, and only into the run it was opened for: a Stop during a
+// slow open leaves `run_gen` behind, and the tap is closed instead of leaking into the next
+// run's map (rx_loop's rule, one layer over).
+fn open_taps_for_run(app &App, rows []Chan, senders []SenderRT, gen u64) {
+	mut a := unsafe { app }
+	mut anon_tap_failed := map[string]bool{}
+	mut named_tap_failed := map[string]bool{}
+	for ch in rows {
+		if !ch.enabled || ch.doip {
+			continue
+		}
+		a.install_tap(ch.name, ch.iface, gen, mut named_tap_failed, mut anon_tap_failed)
+	}
+	for sr in senders {
+		tgt := sr.target()
+		if tgt == '' {
+			continue
+		}
+		a.install_tap(sr.chan, tgt, gen, mut named_tap_failed, mut anon_tap_failed)
+	}
+}
+
+// install_tap opens the shared tap for iface and the named one for (chan_name, iface), and
+// files each into tx_buses if the run is still the one it was opened for. The shared tap
+// FIRST: tx_on falls back to it for the paths with no owning channel — Quick Send,
+// diagnostics, shell. Failures are remembered per key so one dead wire is reported once, not
+// once per row or per generator (codex #141 r3).
+fn (mut app App) install_tap(chan_name string, iface string, gen u64, mut named_failed map[string]bool, mut anon_failed map[string]bool) {
+	anon := tx_bus_key('', iface)
+	dest := transport.destination_key(iface)
+	if dest !in anon_failed && !app.has_tap(anon) {
+		if mut b := app.open_tap(iface, org_tx) {
+			app.file_tap(anon, mut b, gen)
+		} else {
+			anon_failed[dest] = true
+			app.notify('${iface}: shared transmit tap failed to open — ${err}')
+		}
+	}
+	named := tx_bus_key(chan_name, iface)
+	if chan_name != '' && named !in named_failed && !app.has_tap(named) {
+		if mut b := app.open_tap_on_gen(iface, org_tx, chan_name, gen) {
+			app.file_tap(named, mut b, gen)
+		} else {
+			named_failed[named] = true
+			app.notify('${chan_name}: transmit tap failed to open — ${err}')
+		}
+	}
+}
+
+fn (mut app App) has_tap(key string) bool {
+	app.mu.lock()
+	defer {
+		app.mu.unlock()
+	}
+	return key in app.tx_buses
+}
+
+// file_tap inserts an opened tap under the lock, into the run it belongs to — or closes it.
+fn (mut app App) file_tap(key string, mut b transport.Bus, gen u64) {
+	app.mu.lock()
+	keep := app.run_gen == gen && key !in app.tx_buses
+	if keep {
+		app.tx_buses[key] = b
+	}
+	app.mu.unlock()
+	if !keep {
+		b.close() // the run ended, or somebody inserted first — the loser must not leak
+	}
+}
+
 fn (mut app App) start() {
 	if app.running {
 		return
@@ -411,8 +483,6 @@ fn (mut app App) start() {
 	}
 	// Which wires already have a reader, so aliases do not each open one.
 	mut monitored := map[string]bool{}
-	mut anon_tap_failed := map[string]bool{}
-	mut named_tap_failed := map[string]bool{}
 	for ci, ch in app.chans {
 		// EVERY row, before the monitorable gate: a disabled row keeping an earlier run's
 		// BUS-OFF became the reader on a mid-run enable and showed it forever — a fresh
@@ -446,33 +516,6 @@ fn (mut app App) start() {
 			app.chans[ci].spawning = true
 			spawn rx_loop(app, ci, ch.iface, app.run_gen)
 		}
-		// A TX bus per CHANNEL (each generator fires on its target bus), plus one anonymous tap
-		// per wire for the paths with no particular channel — Quick Send, diagnostics, shell.
-		if tx_bus_key(ch.name, ch.iface) !in app.tx_buses {
-			// same silence class as rx_loop's open: a tap that fails here is a channel that
-			// cannot transmit, and swallowing the error left a dead Send button with no
-			// explanation anywhere a Windows user can see
-			if b := app.open_tap_on(ch.iface, org_tx, ch.name) {
-				app.tx_buses[tx_bus_key(ch.name, ch.iface)] = b
-			} else {
-				// recorded in the same set the generator loop consults, or a generator on
-				// this channel re-pays the ~2s vendor open and re-logs the line
-				named_tap_failed[tx_bus_key(ch.name, ch.iface)] = true
-				app.notify('${ch.name}: transmit tap failed to open — ${err}')
-			}
-		}
-		// ONE line per wire, not per row: nothing lands in tx_buses on failure, so every
-		// aliased row would re-attempt this shared tap and repeat the identical message —
-		// one dead wire read as several failures
-		anon_key := transport.destination_key(ch.iface)
-		if tx_bus_key('', ch.iface) !in app.tx_buses && anon_key !in anon_tap_failed {
-			if b := app.open_tap(ch.iface, org_tx) {
-				app.tx_buses[tx_bus_key('', ch.iface)] = b
-			} else {
-				anon_tap_failed[anon_key] = true
-				app.notify('${ch.iface}: shared transmit tap failed to open — ${err}')
-			}
-		}
 		if app.send_iface == '' {
 			app.send_iface = ch.iface // Send panel default = first monitor channel
 		}
@@ -487,36 +530,16 @@ fn (mut app App) start() {
 		}
 	}
 	// a generator may target a bus whose channel isn't itself monitored — open those too
-	for sr in app.senders {
-		tgt := sr.target()
-		// dedupe in the OUTER condition, like the named branch below: gating only the log
-		// line still re-attempted the open per sender, and a vendor open can block ~2s
-		// waiting for a port release — hundreds of generators on one dead target turned
-		// Start into minutes of retrying an answer it already had (codex #141 r3)
-		if tgt != '' && tx_bus_key('', tgt) !in app.tx_buses
-			&& transport.destination_key(tgt) !in anon_tap_failed {
-			// the anonymous tap FIRST: tx_on falls back to it for the paths with no owning
-			// channel — Quick Send, diagnostics, shell — and a bus that is only a generator
-			// target would otherwise have none, so those reported "no open bus for …".
-			if b := app.open_tap(tgt, org_tx) {
-				app.tx_buses[tx_bus_key('', tgt)] = b
-			} else {
-				// a generator whose only bus fails to open is a silent dead generator —
-				// the same class as the channel taps above, one loop down
-				anon_tap_failed[transport.destination_key(tgt)] = true
-				app.notify('generator target ${tgt}: transmit tap failed to open — ${err}')
-			}
-		}
-		if tgt != '' && tx_bus_key(sr.chan, tgt) !in app.tx_buses
-			&& tx_bus_key(sr.chan, tgt) !in named_tap_failed {
-			if b := app.open_tap_on(tgt, org_tx, sr.chan) {
-				app.tx_buses[tx_bus_key(sr.chan, tgt)] = b
-			} else {
-				named_tap_failed[tx_bus_key(sr.chan, tgt)] = true
-				app.notify('${sr.chan}: generator transmit tap failed to open — ${err}')
-			}
-		}
-	}
+	// THE TRANSMIT TAPS OPEN ON A WORKER, NOT HERE. This is the GUI thread, and a tap open is a
+	// driver open: on a CANsub that is an identity read, a PHY write and a WebSocket dial —
+	// two seconds cold, and as long as the name takes to resolve when the device has just
+	// moved or is not there. Opened in this function, Start froze the whole window for that
+	// long, on every Start, and looked like a hang (bench, 2026-08-29; measured 2.2 s on the
+	// GUI thread with a frame-stage timer). The Buses toggle learned this in #143 and opens
+	// after the unlock; Start now does the same, on a thread of its own: each tap is filed
+	// under a brief take of the lock as it comes up, guarded by the run it belongs to, and a
+	// send that arrives first gets "no open bus" — an answer, not a freeze.
+	spawn open_taps_for_run(app, app.chans.clone(), app.senders.clone(), start_gen)
 	// spawn the in-process simulation workloads (driver-free sim ECUs + a UDS server)
 	for sc in app.sims {
 		// DoIP carries diagnostics, not frames. sim_loop would call transport.open('doip:…'),

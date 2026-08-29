@@ -501,7 +501,9 @@ fn (mut app App) set_cycle(i int, ms int) {
 fn (mut app App) set_sender_bus(i int, bus string, chan_name string) {
 	// a failure found while app.mu is held is said AFTER the unlock — notify re-takes the
 	// non-reentrant mutex, and an inline call here would deadlock the GUI thread
-	mut tap_err := ''
+	mut want_tgt := ''
+	mut want_own := ''
+	mut gen := u64(0)
 	app.mu.lock()
 	if i < app.senders.len {
 		app.senders[i].sender.bus = bus
@@ -511,16 +513,22 @@ fn (mut app App) set_sender_bus(i int, bus string, chan_name string) {
 		}
 		own := app.senders[i].chan
 		if app.running && tgt != '' && tx_bus_key(own, tgt) !in app.tx_buses {
-			if b := app.open_tap_on(tgt, org_tx, own) {
-				app.tx_buses[tx_bus_key(own, tgt)] = b
-			} else {
-				tap_err = '${own}: generator transmit tap failed to open — ${err}'
-			}
+			// NOT HERE: this is the GUI thread with app.mu held, and a CANsub tap open is
+			// seconds. Opened on a worker and filed under the lock when it comes up — the
+			// same rule as Start's (open_taps_for_run), for the same freeze (2026-08-29).
+			want_tgt = tgt
+			want_own = own
+			gen = app.run_gen
 		}
 	}
 	app.mu.unlock()
-	if tap_err != '' {
-		app.notify(tap_err)
+	if want_tgt != '' {
+		spawn fn (app &App, own string, tgt string, gen u64) {
+			mut a := unsafe { app }
+			mut nf := map[string]bool{}
+			mut af := map[string]bool{}
+			a.install_tap(own, tgt, gen, mut nf, mut af)
+		}(app, want_own, want_tgt, gen)
 	}
 }
 
