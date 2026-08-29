@@ -173,6 +173,13 @@ pub fn echoes_own_sends(iface string) bool {
 	if iface.trim_space().to_lower().starts_with('vector:') {
 		return true
 	}
+	// KVASER DOES NOT — by our choice, not canlib's. canlib delivers a frame written on one
+	// handle to every other handle on the channel (canIOCTL_SET_LOCAL_TXECHO, default on), and
+	// with several handles per wire that was the Vector shape all over again, unregistered here
+	// and so filed as RX. Rather than claim it, the shim turns local echo OFF on every handle
+	// (kvaser_shim.h), so a Kvaser reader hears the bus and not its siblings, like PCAN. A
+	// TXACK-flagged echo (canIOCTL_SET_TXACK) would let wiretap CONFIRM the wire the way CANsub
+	// does; not done yet, and this answer must flip to true when it is.
 	// A CANsub does too, by a different mechanism and for the same reason. It acknowledges every
 	// frame it puts on the wire back over the same WebSocket, `open_cansub_bus` asks for those
 	// (`tx_ack_frames`), and they arrive carrying a hardware timestamp taken at start-of-frame —
