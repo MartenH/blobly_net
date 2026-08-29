@@ -287,6 +287,15 @@ fn draw_toolbar(mut app App, rx u64, txs string, chans []Chan) {
 	vgui.same_line()
 	if app.running {
 		vgui.text_colored(90, 200, 120, 'running')
+		// The busiest wire's load, so saturation is on the toolbar and not only in a panel
+		// that may be closed — the same argument as the fault ladder's (#156).
+		app.mu.lock()
+		worst := app.worst_bus_load_locked()
+		app.mu.unlock()
+		if worst > 0 {
+			vgui.same_line()
+			vgui.text_dim('load ${worst:.0f}%')
+		}
 	} else {
 		vgui.text_colored(210, 120, 120, 'stopped')
 	}

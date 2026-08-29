@@ -37,6 +37,14 @@ struct Chan {
 mut:
 	enabled bool
 	rx      u64
+	// BUS LOAD (transport.busload): bit-times seen on this wire since the last roll, rolled
+	// once a second into `load_hist` — the last 60 seconds of load, oldest first — and the
+	// second's value in `load_pct`. Our own sends count (they are on the wire); so does
+	// every RX. Zeroed at Start.
+	load_bits f64
+	load_at   f64
+	load_pct  f32
+	load_hist []f32
 	// When traffic last reached this wire (the trace's clock, App.since_ms) and whether any ever
 	// did. Enough to answer "how long has this bus been silent?" without touching the trace: the
 	// ring is capped and filtered, and a wire is silent whether or not its rows are still on

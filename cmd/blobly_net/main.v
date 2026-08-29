@@ -207,6 +207,7 @@ fn main() {
 		}
 
 		app.mu.lock()
+		app.roll_bus_load_locked()
 		rx := app.rx
 		txs := app.tx_counts_locked()
 		rows := app.trace.clone()

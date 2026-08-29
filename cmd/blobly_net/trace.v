@@ -201,6 +201,15 @@ fn (mut app App) note_emit(iface string, chan_name string, origin string, f tran
 		org_tx_sim { app.tx_sim_count++ }
 		else {} // REP never reaches a bus; RX is not ours to count here
 	}
+	// And the wire's load: what we put on it counts as much as what we read off it.
+	if origin == org_tx || origin == org_tx_sim {
+		for i, c in app.chans {
+			if c.name == chn {
+				app.chans[i].load_bits += transport.frame_bits(f, c.bitrate, c.data_bitrate)
+				break
+			}
+		}
+	}
 
 	epoch := app.tx_epoch
 	// ALWAYS record what we sent, on any backend that could echo — the emission is ours whether

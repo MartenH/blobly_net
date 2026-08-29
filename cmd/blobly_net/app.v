@@ -1034,6 +1034,42 @@ fn (app &App) diagnostics_text() (string, int) {
 	return b.join('\n'), n
 }
 
+// roll_bus_load_locked closes each wire's current load second, once a second, and keeps the
+// last sixty: the strip on the Buses row and the number beside it. Called per frame with
+// app.mu held; the work is a compare per row until a second has passed.
+fn (mut app App) roll_bus_load_locked() {
+	now := app.since_ms()
+	for i in 0 .. app.chans.len {
+		if app.chans[i].load_at == 0 {
+			app.chans[i].load_at = now
+			continue
+		}
+		elapsed := now - app.chans[i].load_at
+		if elapsed < 1000 {
+			continue
+		}
+		pct := transport.load_percent(app.chans[i].load_bits, i64(elapsed), app.chans[i].bitrate)
+		app.chans[i].load_pct = pct
+		app.chans[i].load_hist << pct
+		if app.chans[i].load_hist.len > 60 {
+			app.chans[i].load_hist.delete(0)
+		}
+		app.chans[i].load_bits = 0
+		app.chans[i].load_at = now
+	}
+}
+
+// worst_bus_load_locked is the highest current load among the running wires, for the toolbar.
+fn (app &App) worst_bus_load_locked() f32 {
+	mut worst := f32(0)
+	for c in app.chans {
+		if c.running && c.load_pct > worst {
+			worst = c.load_pct
+		}
+	}
+	return worst
+}
+
 // log_clear empties the Log. The cache follows through the generation, as it does for an
 // append; the Log is a window on the last 500 lines, not a record, so nothing is lost that
 // the Trace, a recording or the Diagnostics pane would not still have.

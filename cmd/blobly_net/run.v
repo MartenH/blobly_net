@@ -641,6 +641,10 @@ fn (mut app App) start() {
 	for ci in 0 .. app.chans.len {
 		app.chans[ci].rx_last = 0
 		app.chans[ci].rx_seen = 0
+		app.chans[ci].load_bits = 0
+		app.chans[ci].load_at = 0
+		app.chans[ci].load_pct = 0
+		app.chans[ci].load_hist = []f32{}
 	}
 	// Which wires already have a reader, so aliases do not each open one.
 	mut monitored := map[string]bool{}
