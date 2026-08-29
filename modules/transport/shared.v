@@ -1244,12 +1244,6 @@ fn (mut h SharedHandle) send(frame CanFrame) ! {
 	running = e.state == .running
 	terminal = e.terminal
 	if running && e.tx_acks {
-		now := time.ticks()
-		e.expire_pending(now)
-		if e.pending.len >= shared_pending_capacity {
-			e.retire_pending(e.pending[0])
-			e.pending.delete(0)
-		}
 		e.next_send_token++
 		token = e.next_send_token
 		entry = SharedPendingSend{
@@ -1270,6 +1264,15 @@ fn (mut h SharedHandle) send(frame CanFrame) ! {
 			return
 		}
 		e.mu.lock()
+		// Expiry and the capacity eviction happen HERE, with the publication: done at
+		// allocation they cost a slot for a send that was then refused and never published,
+		// and the evicted entry's acknowledgement was counted unmatched (codex round 18 on
+		// #251). Only an attempted write consumes a slot.
+		e.expire_pending(time.ticks())
+		if e.pending.len >= shared_pending_capacity {
+			e.retire_pending(e.pending[0])
+			e.pending.delete(0)
+		}
 		e.pending << entry
 		e.mu.unlock()
 	}
