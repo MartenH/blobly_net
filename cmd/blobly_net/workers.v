@@ -294,6 +294,15 @@ fn gen_loop(app &App) {
 				if tgt != '' && a.dest_left_the_run_locked(tgt) {
 					continue
 				}
+				// NOT BEFORE ITS TAP IS UP. The taps open on a worker since #257, and a cyclic
+				// sender that fired into "no open bus" had its first frame counted as fired
+				// and lost until the next cycle — on a slow CANsub and a long cycle, every
+				// Start dropped the first frame (codex round 3 on #257). Left unstamped, the
+				// first cycle fires the moment the tap is filed.
+				if tgt != '' && tx_bus_key(sr.chan, tgt) !in a.tx_buses
+					&& tx_bus_key('', tgt) !in a.tx_buses {
+					continue
+				}
 				lf := last[i] or { i64(0) }
 				if now - lf >= i64(sr.sender.cycle_ms) {
 					last[i] = now

@@ -277,8 +277,23 @@ fn open_taps_for_wire(app &App, wants []TapWant, gen u64) {
 	mut anon_tap_failed := map[string]bool{}
 	mut named_tap_failed := map[string]bool{}
 	for w in wants {
+		// A worker for a run that has ended stops here, before another open: each one it
+		// went on to make paid a device timeout for nothing and contended with the next
+		// Start for a single-client channel (codex round 3 on #257).
+		if !a.run_live(gen) {
+			return
+		}
 		a.install_tap(w.chan_name, w.iface, gen, mut named_tap_failed, mut anon_tap_failed)
 	}
+}
+
+// run_live is whether the run `gen` is the one on now.
+fn (mut app App) run_live(gen u64) bool {
+	app.mu.lock()
+	defer {
+		app.mu.unlock()
+	}
+	return app.running && app.run_gen == gen
 }
 
 // install_tap opens the shared tap for iface and the named one for (chan_name, iface), and
@@ -300,7 +315,7 @@ fn (mut app App) install_tap(chan_name string, iface string, gen u64, mut named_
 		}
 	}
 	named := tx_bus_key(chan_name, iface)
-	if chan_name != '' && named !in named_failed && !app.has_tap(named) {
+	if chan_name != '' && named !in named_failed && !app.has_tap(named) && app.run_live(gen) {
 		if mut b := app.open_tap_on_gen(iface, org_tx, chan_name, gen) {
 			app.file_tap(named, mut b, gen)
 		} else {
