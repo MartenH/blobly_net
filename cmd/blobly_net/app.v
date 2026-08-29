@@ -3,7 +3,9 @@ module main
 import os
 import sync
 import time
+import runtime
 import project
+import logfile
 import transport
 import wiretap
 import candb
@@ -261,6 +263,9 @@ mut:
 	// Lines each console pane (Log, Flash, Diagnostics, Script) showed last frame, by widget
 	// id: what tells draw_copyable_log that there is something new to follow.
 	console_shown map[string]int
+	// The session log file (logfile): every Log line, and what used to go only to stderr.
+	// none when it could not be opened — the app runs anyway and says so in the Log.
+	session_log ?logfile.Session
 	// Named transmit taps whose open FAILED this run, by tx_bus_key — a terminal answer the
 	// generator loop reads: a sender waiting for its own tap falls back to the wire's shared
 	// one once its own is known not to come (codex round 6 on #257). Cleared at Start.
@@ -632,8 +637,14 @@ fn (mut app App) log_append_locked(msg string) {
 	// the same instant is exactly what a bench is asking (2026-08-29). Wall-clock, local, so
 	// it lines up with whatever else the operator is looking at; the trace has its own
 	// monotonic time base and the two are not meant to be subtracted.
-	app.logs << '${log_stamp()} ${msg}'
+	line := '${log_stamp()} ${msg}'
+	app.logs << line
 	app.log_gen++
+	// AND THE FILE, from the one place the Log is written: the file and the panel cannot
+	// disagree, and a crash a moment later leaves the line on disk (#258).
+	if mut s := app.session_log {
+		s.line(line)
+	}
 	if app.logs.len > 500 {
 		app.logs = app.logs[app.logs.len - 500..].clone()
 	}
@@ -649,7 +660,7 @@ fn (mut app App) load_project(path string) {
 	app.stop()
 	app.drop_index_bound_ui() // pending pickers and Scan results index the OLD channel set
 	proj := project.load(path) or {
-		eprintln('load ${path}: ${err}')
+		app.elog('load ${path}: ${err}')
 		app.notify('load failed: ${err}')
 		return
 	}
@@ -732,6 +743,12 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	// three seconds must not carry "saved" over to a project nobody wrote (codex round 1 on
 	// #250).
 	app.saved_at = 0
+	// SAID IN THE LOG, so the session file names every project this launch has had — its
+	// header names only the first, and a problem reproduced after an Open would otherwise be
+	// filed against the wrong project (codex round 1 on #259). UNDER THE LOCK THIS FUNCTION
+	// ALREADY HOLDS — a second take of a non-reentrant mutex here deadlocked every load,
+	// the launch's own included (codex round 2 on #259).
+	app.log_append_locked('project: ${if path == '' { 'new (unsaved)' } else { path }}')
 	// drop editor state carried over from the previous project — stale cfg_bufs would otherwise
 	// be flushed into the newly loaded project by the next commit_cfg (same channel count = no
 	// resync in draw_config); stale discovery results belong to the old machine view.
@@ -840,7 +857,7 @@ fn (mut app App) rebuild_from_proj() {
 				app.dbs_paths << rp // the editor saves back to this path
 				app.dbs_by_iface[ch.iface] << db // scoped to this channel (generator picker)
 			} else {
-				eprintln('dbc ${rp}: ${err}')
+				app.elog('dbc ${rp}: ${err}')
 			}
 		}
 		if ch.manifest != '' {
@@ -865,7 +882,7 @@ fn (mut app App) rebuild_from_proj() {
 			} else {
 				// a load/validation failure must be SEEN — silently keeping an
 				// earlier manifest reads as "no eth shell" with no reason
-				eprintln('manifest ${ch.manifest}: ${err}')
+				app.elog('manifest ${ch.manifest}: ${err}')
 			}
 		}
 		for s in ch.senders {
@@ -958,6 +975,63 @@ fn (mut app App) rebuild_from_proj() {
 fn log_stamp() string {
 	now := time.now()
 	return '${now.hour:02}:${now.minute:02}:${now.second:02}.${now.nanosecond / 1_000_000:03}'
+}
+
+// elog is for what used to be eprintln: stderr AND the session log. On the Windows
+// GUI-subsystem exe stderr goes nowhere, which is how "rx …: open failed" and "vgui.init
+// failed" were invisible on the bench (2026-08-29). Not the Log panel: these are the lines a
+// panel may not exist for yet, or that the panel already has by another route.
+fn (mut app App) elog(msg string) {
+	eprintln(msg)
+	app.mu.lock()
+	if mut s := app.session_log {
+		s.line('${log_stamp()} ${msg}')
+	}
+	app.mu.unlock()
+}
+
+// open_session_log starts this launch's file and states the facts a bug report needs. Called
+// FIRST, before the project loads, so a launch that dies on its first frame still leaves them.
+fn (mut app App) open_session_log(proj_path string) {
+	u := os.uname()
+	facts := logfile.Facts{
+		version: app_version
+		os_name: u.sysname
+		os_ver:  '${u.release} ${u.version}'.trim_space()
+		arch:    u.machine
+		cpus:    runtime.nr_cpus()
+		v_hash:  @VHASH
+		project: proj_path
+		args:    os.args
+		started: time.now()
+	}
+	app.session_log = logfile.open(facts) or {
+		eprintln('session log: ${err}')
+		app.mu.lock()
+		app.log_append_locked('session log could not be opened in ${logfile.dir()} — ${err}')
+		app.mu.unlock()
+		return
+	}
+}
+
+// diagnostics_text is the header's facts and the Log's last lines — what Help ▸ Copy
+// diagnostics puts on the clipboard for an issue.
+fn (app &App) diagnostics_text() (string, int) {
+	mut a := unsafe { app }
+	a.mu.lock()
+	n := if a.logs.len > 200 { 200 } else { a.logs.len }
+	tail := a.logs[a.logs.len - n..].clone()
+	a.mu.unlock()
+	u := os.uname()
+	mut b := []string{}
+	b << 'blobly_net ${app_version} · ${u.sysname} ${u.release} ${u.version} · ${u.machine} · ${runtime.nr_cpus()} cpus · v ${@VHASH}'
+	b << 'project ${app.proj_path}'
+	if s := app.session_log {
+		b << 'session log ${s.path}'
+	}
+	b << ''
+	b << tail
+	return b.join('\n'), n
 }
 
 // log_clear empties the Log. The cache follows through the generation, as it does for an

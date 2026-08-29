@@ -3,6 +3,7 @@ module main
 import os
 import time
 import project
+import logfile
 import transport
 import candb
 import vgui
@@ -244,6 +245,16 @@ fn draw_menubar(mut app App, rx u64) {
 			if vgui.menu_item('Documentation (opens in browser)') {
 				app.open_help_in_browser()
 			}
+			vgui.separator()
+			// The session log (#258): where it is, and the short form for an issue.
+			if vgui.menu_item('Open log folder') {
+				os.open_uri(logfile.dir()) or { app.notify('cannot open ${logfile.dir()}: ${err}') }
+			}
+			if vgui.menu_item('Copy diagnostics') {
+				text, n := app.diagnostics_text() // the count comes from under the same lock
+				vgui.clipboard_set(text)
+				app.notify('diagnostics copied — version, OS, project and the last ${n} Log lines')
+			}
 			vgui.menu_end()
 		}
 		vgui.menu_bar_end()
@@ -451,6 +462,9 @@ fn selftest_config(mut app App) {
 
 fn selftest_check(name string, cond bool) bool {
 	if !cond {
+		// stderr on purpose: this is the console selftest (BLOBLY_SELFTEST_CONFIG), whose
+		// verdict goes to stdout beside it and which never opens a window — the one line that
+		// is not the session log's to carry.
 		eprintln('  FAIL: ${name}')
 	}
 	return cond
