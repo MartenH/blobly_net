@@ -1,5 +1,6 @@
 module main
 
+import cyclerule
 import transport
 import candb
 import vgui
@@ -385,11 +386,13 @@ mut:
 	brs    bool
 	rtr    bool
 	count  int
-	// t_ms of the group's OLDEST frame still in the visible ring — the base of the `cycle (ms)`
-	// column. The ring holds 2000 rows, so this is the cadence over the window the reader is
-	// looking at, not over all time: a group that stops sending keeps its last computed cycle
-	// until its frames age out, exactly like the count next to it.
-	first_t f64
+	// The `cycle (ms)` measurement: the accepted frames it averages over. The ring holds 2000
+	// rows, so this is the cadence over the window the reader is looking at, not over all
+	// time — and not across a silence either: cyclerule restarts it at the run boundary (a
+	// row's seq against trace_run_base) and at a gap out of proportion to the cadence, because
+	// the ring survives a Stop and a window spanning the stopped gap read a 10 Hz message at
+	// hundreds of ms for a long while after.
+	cyc cyclerule.Window
 	// Any frame in this group that never reached the wire. Taken across the whole group, not
 	// from `last`: the newest row is the one whose echo window has had least time to close, so
 	// reading the flag off it would hide every miss but the stalest.
@@ -463,6 +466,14 @@ const gcol_data = 7
 
 fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt string) {
 	mut agg := map[string]GAgg{}
+	// The run boundary is row IDENTITY, not a stamp: every row carries the measurement it
+	// was pushed into (TraceRow.run — the base Start, Clear and Load each move, frozen at
+	// push, because the live base remembers only the newest boundary and a group silent
+	// across two Starts has rows from three measurements in the ring), and a group's first
+	// row of a new measurement starts the cycle window over. And a CLOCK boundary: a Resume
+	// without a Start appends live rows, on the app's clock, behind a recording's rows on the
+	// file's, in the same measurement — so a row also says which clock it is on
+	// (TraceRow.imported). Stamps alone can say neither (codex on #266, four rounds).
 	for r in rows {
 		if !trace_pass(r, filt) {
 			continue
@@ -478,9 +489,8 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 				ext:     r.ext
 				fd:      r.fd
 				brs:     r.brs
-				rtr:     r.rtr
-				first_t: r.t_ms
-				last:    r
+				rtr:    r.rtr
+				last:   r
 			}
 		}
 		if r.missed {
@@ -497,12 +507,12 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		}
 		if g.count > 0 {
 			g.prev = g.last // slide the previous-frame window forward
-		} else {
-			// the cycle clock starts at the first ACCEPTED frame: a group whose oldest
-			// retained row was refused otherwise carried the whole bus-off interval in its
-			// span, overstating the cycle long after recovery (codex #143 r3)
-			g.first_t = r.t_ms
 		}
+		// only ACCEPTED frames feed the cycle (the refused ones `continue`d above): a group
+		// whose oldest retained row was refused otherwise carried the whole bus-off interval
+		// in its span, overstating the cycle long after recovery (codex #143 r3)
+		new_run := g.count > 0 && (g.last.run != r.run || g.last.imported != r.imported)
+		g.cyc = cyclerule.step(g.cyc, r.t_ms, new_run)
 		g.count++
 		g.last = r
 		agg[k] = g
@@ -621,10 +631,10 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			// all-time total (survives the ring trim); fall back to the window count.
 			total := gcount[k] or { u64(g.count) }
 			vgui.table_cell('${total}')
-			// Cycle time over the frames the ring still holds: the span they cover divided by
-			// the n-1 intervals in it. Two frames minimum — a single frame has no interval,
-			// and inventing one from "now" would show a cycle for a message that may never
-			// come again.
+			// Cycle time over the frames the window holds (cyclerule): the span they cover
+			// divided by the n-1 intervals in it. Two frames minimum — a single frame has no
+			// interval, and inventing one from "now" would show a cycle for a message that may
+			// never come again.
 			//
 			// In MILLISECONDS, the unit CAN is specified in: a DBC states GenMsgCycleTime in
 			// ms, so this column is read against that number. It was fps until #150 — the
@@ -637,9 +647,8 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 			// is the obvious reading of "time since the previous frame" and is the wrong one
 			// here: it is noisy, and while the timestamps are host arrival stamps (#149) it
 			// would largely display our own poll jitter rather than the bus's cadence.
-			span_ms := r.t_ms - g.first_t
-			if g.count >= 2 && span_ms > 0 {
-				vgui.table_cell('${span_ms / f64(g.count - 1):.1}')
+			if cm := cyclerule.cycle_ms(g.cyc) {
+				vgui.table_cell('${cm:.1}')
 			} else {
 				vgui.table_cell('-')
 			}

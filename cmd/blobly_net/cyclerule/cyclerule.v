@@ -1,0 +1,106 @@
+module cyclerule
+
+// THE `cycle (ms)` COLUMN, AS A RULE. The trace's grouped view shows a message's cadence as
+// the span its frames cover divided by the intervals between them — averaged over the window,
+// because arrival stamps are host-side and a single interval mostly shows poll jitter. Two
+// things make that average lie, and both are a window that spans a silence:
+//
+//   1. A Stop. The ring survives it, so the first frames of the next run were averaged with
+//      the last frames of the previous one, the whole stopped gap inside the span: a 10 Hz
+//      message read hundreds of ms after a minute's pause, converging only as the old rows
+//      aged out of the 2000-row ring (2026-08-30).
+//   2. A dropout mid-run — a node bus-off and back, a cable reseated — same shape without
+//      a Stop to blame.
+//
+// So the window RESTARTS at a run boundary and at a gap out of proportion to the cadence seen
+// so far. Pure over plain numbers, like ../taprule and ../saverule, so the scenarios are a
+// test table rather than something to reproduce on a bench.
+
+// Window is one group's cycle measurement: the frames it is averaging over.
+pub struct Window {
+pub:
+	first_t f64 // stamp of the oldest frame in the measurement
+	last_t  f64 // stamp of the newest
+	count   int // frames in it; count-1 intervals
+	// Stamp of the SECOND frame, kept so the head interval can be reconsidered: with one
+	// pre-dropout frame left by a ring trim there is no interval to judge the gap against
+	// when the recovery frame arrives, so the gap is folded in and only the intervals that
+	// follow can say it was one. Unset (0 with count < 2, or after the head has been judged)
+	// when there is nothing to reconsider.
+	second_t f64
+}
+
+// gap_factor is how many cadences of silence break the window. A cyclic message's jitter is a
+// fraction of its cycle, so five cycles is far outside anything a live sender does and well
+// inside what a dropout worth knowing about lasts (a bus-off recovery alone is 128 x 11 bits).
+pub const gap_factor = 5.0
+
+// min_intervals is how many intervals the window needs before a gap can be judged against its
+// average. ONE: the ring is trimmed globally, so a sparse group can be left holding just two
+// frames from before a dropout, and a rule that waited for a second interval would fold the
+// recovery frame in, inflate the average with the gap, and then never see a gap again (codex
+// on #266: `[100, 200, 2200, 2300, 2400]` read 575 for good). Judging on one interval risks
+// only a spurious restart after an unusually short interval — which costs a `-` for one frame
+// and converges on the next, where the other mistake was permanent.
+pub const min_intervals = 1
+
+// step folds one accepted frame at `t` into `w`. `new_run` says this frame is the first of the
+// group in the current measurement — the caller knows it from row IDENTITY (a row's seq
+// against the base Start/Clear/Load reset), never from comparing stamps: a loaded recording's
+// rows are on the file's clock, and a Resume appends live rows behind them, so no stamp
+// comparison can tell the two apart (codex on #266). A new run starts the window over; frames
+// from BEFORE it are averaged among themselves as before, so a group that stopped sending
+// keeps its last cadence until its rows age out.
+pub fn step(w Window, t f64, new_run bool) Window {
+	if w.count == 0 || new_run || breaks(w, t) {
+		return Window{t, t, 1, 0}
+	}
+	if w.count == 1 {
+		return Window{w.first_t, t, 2, t}
+	}
+	return reconsider_head(Window{w.first_t, t, w.count + 1, w.second_t})
+}
+
+// reconsider_head drops the window's first frame when the interval after it, judged against
+// the cadence the frames SINCE it establish, was a gap: the shape a global ring trim leaves
+// when exactly one pre-dropout frame of a sparse group survives — `[100, 2200, 2300, 2400]`
+// read 767 for as long as the stale frame stayed (codex on #266). Judged once, on the first
+// post-gap interval, and the head then stops being a candidate: the frames after it are the
+// measurement.
+fn reconsider_head(w Window) Window {
+	if w.count < 3 || w.second_t <= w.first_t {
+		return w
+	}
+	rest := (w.last_t - w.second_t) / f64(w.count - 2)
+	if rest > 0 && w.second_t - w.first_t > gap_factor * rest {
+		return Window{w.second_t, w.last_t, w.count - 1, 0}
+	}
+	return Window{w.first_t, w.last_t, w.count, 0}
+}
+
+// breaks reports whether the silence between the window's newest frame and one at `t` is out
+// of proportion to the cadence the window has measured.
+pub fn breaks(w Window, t f64) bool {
+	if w.count - 1 < min_intervals {
+		return false
+	}
+	avg := (w.last_t - w.first_t) / f64(w.count - 1)
+	if avg <= 0 {
+		return false
+	}
+	return t - w.last_t > gap_factor * avg
+}
+
+// cycle_ms is the window's cadence, or none with fewer than two frames — a single frame has no
+// interval, and inventing one from "now" would show a cycle for a message that may never come
+// again.
+pub fn cycle_ms(w Window) ?f64 {
+	if w.count < 2 {
+		return none
+	}
+	span := w.last_t - w.first_t
+	if span <= 0 {
+		return none
+	}
+	return span / f64(w.count - 1)
+}
