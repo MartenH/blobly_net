@@ -857,6 +857,7 @@ fn (mut app App) save_cfg_text() {
 	app.notify('saved -> ${path}')
 	app.dirty = false
 	app.cfg_text_dirty = false
+	app.reserialize_confirm = '' // a File save persists the comments; a later Buses Save must re-warn (codex #268)
 	app.saved_at = time.ticks()
 	// rebuild_from_proj, NOT load_project: the full open path calls set_project, which clears
 	// the trace rows, grouped counts, telemetry records, diagnostic and script logs and signal
@@ -906,6 +907,7 @@ fn (mut app App) revert_proj_from_disk() {
 		return
 	}
 	app.dirty = false
+	app.reserialize_confirm = '' // revert replaced the model; drop any pending confirmation (codex #268)
 	app.cfg_invalidate()
 	app.load_cfg_text()
 	app.notify('unsaved model edits discarded (buses + generators)')
@@ -931,7 +933,45 @@ fn (mut app App) save_project() {
 		app.cfg_tab = 1
 		return
 	}
-	app.apply_edits()
+	// Fold pending editor + generator buffers into app.proj FIRST, so the comment-guard snapshot
+	// below is the EXACT model that would be written (a Buses text field or a generator edit made
+	// after the warning must change it, or the confirmation would pass for the wrong content —
+	// codex #268). This is the model half of apply_edits; the runtime rebuild (which resolves
+	// assets against proj_path) is deferred until AFTER the guard, so a refusal never rebases.
+	if app.running {
+		app.sync_senders_into_proj()
+	} else {
+		app.commit_cfg()
+		app.sync_senders_into_proj()
+	}
+	// #80: a reserializing Save (Buses tab / menu) rebuilds the file from the model and CANNOT
+	// keep its comments — only File ▸ Save writes the buffer verbatim. Warn on the FIRST such Save
+	// and remember (path, model); a second Save proceeds only if both are unchanged, so any edit /
+	// load / revert / different target re-warns rather than counting as the confirmation.
+	if os.exists(app.proj_path) {
+		on_disk := os.read_file(app.proj_path) or {
+			// present but unreadable: os.write_file may still truncate it and we cannot tell
+			// whether reserializing is destructive — refuse rather than assume no comments.
+			app.notify('not saved — could not read ${app.proj_path} to check for comments this Save would drop (${err}); resolve the read error first')
+			return
+		}
+		if saverule.reserialize_drops_comments(on_disk) {
+			// key the confirmation on the DESTINATION path AND the model: a snapshot alone would let
+			// a Save As to a different commented file (or the original) match a prior warning's
+			// snapshot and overwrite without its own warning (codex #268). '\x00' cannot occur in a
+			// path or in to_yaml output, so it is an unambiguous separator.
+			snap := app.proj_path + '\x00' + app.proj.to_yaml()
+			if app.reserialize_confirm != snap {
+				app.reserialize_confirm = snap
+				app.notify('not saved yet — this Save rewrites the file from the model and would DROP its comments (the header + inline hints). Use Configuration ▸ File ▸ Save to keep them, or repeat the Save to reserialize anyway.')
+				app.show_config = true
+				return
+			}
+		}
+	}
+	if !app.running {
+		app.rebuild_from_proj() // the runtime-rebuild half of apply_edits, now that the guard has passed
+	}
 	// THE SAME REFUSAL AS START'S, and Save needs it more: writing the file would persist the
 	// value the rejected field replaced, so a typo the operator can still see on screen becomes
 	// a stored rate they never chose — and the evidence that anything was wrong is gone as soon
@@ -956,6 +996,7 @@ fn (mut app App) save_project() {
 	}
 	app.dirty = false
 	app.saved_at = time.ticks()
+	app.reserialize_confirm = '' // the file was just rewritten (comments gone); re-warn if reopened
 	app.cfg_invalidate() // the file just changed under the File tab
 	app.notify('saved -> ${path}')
 }
@@ -1045,9 +1086,26 @@ fn (mut app App) save_as(path string) {
 	if !p.ends_with('.blobnet') && !p.ends_with('.yml') && !p.ends_with('.yaml') {
 		p += '.blobnet'
 	}
+	// Save As routes through save_project's #80 comment guard like any Save: if the destination
+	// carries comments it warns (keyed on that path + model) and a repeated Save As confirms. The
+	// guard biases to warn — an over-warn here costs one extra confirmation, which is why Save As is
+	// NOT refused outright (an outright refusal would hard-block a destination whose only '#' is
+	// inside a quoted value — codex #268). Nothing rebases on a refusal: save_project folds the
+	// model but defers the runtime rebuild until the guard passes.
+	prev_path := app.proj_path
+	before := app.saved_at
 	app.proj_path = p
 	app.proj.name = app.proj_name
 	app.save_project()
+	if app.saved_at == before {
+		// The Save As did not write (Project.save failed after the runtime was rebuilt against the
+		// destination). Restore the path and rebuild WITH the sender-preserving helper, so unsaved
+		// generator edits are not discarded merely because the destination was refused (codex #268).
+		app.proj_path = prev_path
+		if !app.running {
+			app.rebuild_preserving_senders()
+		}
+	}
 }
 
 // new_project resets to a blank, unsaved project (0 buses) — the from-scratch entry point.

@@ -51,3 +51,35 @@ pub fn save_target(s SaveState) SaveTarget {
 	}
 	return .model
 }
+
+// line_has_yaml_comment reports whether a line carries a YAML comment a reserializing Save would
+// drop: a '#' at line start (after whitespace) or preceded by whitespace. It DELIBERATELY does
+// not track quoting — a '#' inside a quoted value (`name: "a # b"`) is reported as a comment too.
+// This biases to WARN: a false warning costs one extra confirmation, a missed comment loses the
+// user's text silently, and only the latter is a real failure (codex #268 — three rounds chasing
+// quote edge cases the other way). '#' glued to a non-space char (`url: x#y`) is not a comment.
+pub fn line_has_yaml_comment(line string) bool {
+	mut prev := u8(0) // 0 = start of line
+	for c in line {
+		if c == `#` && (prev == ` ` || prev == `\t` || prev == 0) {
+			return true
+		}
+		prev = c
+	}
+	return false
+}
+
+// reserialize_drops_comments reports whether reserializing over `file_text` (a Buses-tab Save,
+// which rebuilds the file from the model) would drop authored comments — the header and inline
+// hints that are how the .blobnet format is learned (#80). Only File ▸ Save keeps them verbatim.
+pub fn reserialize_drops_comments(file_text string) bool {
+	// A UTF-8 BOM (EF BB BF) precedes the first character, so a BOM'd file whose first line is
+	// `# header` would otherwise not be seen as a comment on line 1 (codex #268). Strip it first.
+	text := file_text.trim_string_left('\ufeff')
+	for line in text.split_into_lines() {
+		if line_has_yaml_comment(line) {
+			return true
+		}
+	}
+	return false
+}
