@@ -384,28 +384,41 @@ fn (app &App) load_owner_locked(key string) int {
 	return enabled
 }
 
-// wire_rates_locked is the nominal and data rate a frame on row `i`'s WIRE is charged at. The
-// nominal one is the row's; the data one is too when it declares it, and otherwise whichever
-// enabled row on the same destination does — on SocketCAN and the software buses a classic row
-// and an FD row may share a wire (the project warns rather than refuses), and the reader is
-// whichever came first, so a BRS frame read through the classic row would otherwise have its
-// whole payload charged at the nominal rate (codex #263 r4).
+// wire_rates_locked is the nominal and data rate a frame on row `i`'s WIRE is charged at —
+// ONE answer per destination, whichever row asks: the nominal rate is the first enabled row's
+// on that wire, and the data rate is the first enabled row's that declares one. On SocketCAN
+// and the software buses two enabled rows may share a wire and disagree (the project warns
+// rather than refuses, because those adapters do not configure timing), and the reader is
+// whichever came first — so read from the reader's row, a BRS frame through a classic row
+// had its whole payload charged at the nominal rate (codex #263 r4), and reordering two rows
+// halved the load and a handoff reinterpreted an interval at another rate (r6). The first
+// enabled row is still an order, but it is the same order for RX, TX and the handoff.
 //
 // An UNSET nominal rate is the project's default, the one reading the open path and
 // origination_framing already share (project.Channel.nominal_bitrate); the raw zero the row
-// keeps would make load_percent answer 0 % for every interval on a live wire (codex #263 r5).
+// keeps would make load_percent answer 0 % for every interval on a live wire (r5).
 fn (app &App) wire_rates_locked(i int) (int, int) {
-	nominal := if app.chans[i].bitrate > 0 { app.chans[i].bitrate } else { project.default_bitrate }
-	if app.chans[i].data_bitrate > 0 {
-		return nominal, app.chans[i].data_bitrate
-	}
 	key := transport.destination_key(app.chans[i].iface)
+	mut nominal := 0
+	mut data := 0
 	for c in app.chans {
-		if !c.doip && c.monitorable() && c.data_bitrate > 0 && transport.destination_key(c.iface) == key {
-			return nominal, c.data_bitrate
+		if c.doip || !c.monitorable() || transport.destination_key(c.iface) != key {
+			continue
+		}
+		if nominal == 0 {
+			nominal = c.bitrate
+		}
+		if data == 0 && c.data_bitrate > 0 {
+			data = c.data_bitrate
 		}
 	}
-	return nominal, 0
+	if nominal == 0 {
+		nominal = app.chans[i].bitrate
+	}
+	if nominal <= 0 {
+		nominal = project.default_bitrate
+	}
+	return nominal, data
 }
 
 // retract_emit takes back an emission the driver refused. The row stays and is marked: the frame

@@ -6,6 +6,7 @@ import time
 import runtime
 import project
 import logfile
+import loadrule
 import transport
 import wiretap
 import candb
@@ -1034,52 +1035,36 @@ fn (app &App) diagnostics_text() (string, int) {
 	return b.join('\n'), n
 }
 
-// roll_bus_load_locked closes each wire's current load second, once a second, and keeps the
-// last sixty: the strip on the Buses row and the number beside it. Called per frame with
-// app.mu held; the work is a compare per row until a second has passed.
+// roll_bus_load_locked advances each row's load to now — the strip on the Buses row and the
+// number beside it. Called per frame with app.mu held; the rule is loadrule.roll (tested),
+// this is only the glue: what the row is to its wire, and the wire's nominal rate. The
+// handoff copies a wire's load to its successor under the same lock hold that clears the
+// outgoing row's flag, so a roll cannot slip in between; and start() runs on this thread, so
+// a roll cannot reset a row it is about to publish.
 fn (mut app App) roll_bus_load_locked() {
 	now := app.since_ms()
 	for i in 0 .. app.chans.len {
-		// Only a wire somebody is READING has a load to report. A row that is disabled,
-		// failed to open or between runs would otherwise roll zeros into its history, and a
-		// gap nobody observed would read as an idle trough once it was re-enabled (codex
-		// #263 r3); its interval and history reset instead. The handoff copies a wire's load
-		// to its successor under the same lock hold that clears the outgoing row's flag, so
-		// this cannot slip in between.
-		if !app.chans[i].running && !app.chans[i].spawning {
-			app.chans[i].load_bits = 0
-			app.chans[i].load_at = now
-			if app.chans[i].load_hist.len > 0 {
-				app.chans[i].load_hist = []f32{}
-				app.chans[i].load_pct = 0
-			}
-			continue
-		}
-		// A SPAWNING row keeps its interval OPEN: its reader has not opened the bus, so
-		// nothing it would have read is in the bits, and closing intervals there would file
-		// a slow open — a CANsub's, a reconnect's — as idle seconds (r5). The sends
-		// count_tx_load filed onto it stay, and the first interval closed once it runs
-		// averages over the whole window, which is the honest figure for it.
-		if !app.chans[i].running {
-			continue
-		}
-		if app.chans[i].load_at == 0 {
-			app.chans[i].load_at = now
-			continue
-		}
-		elapsed := now - app.chans[i].load_at
-		if elapsed < 1000 {
-			continue
+		owner := if app.chans[i].running {
+			loadrule.Owner.running
+		} else if app.chans[i].spawning {
+			loadrule.Owner.spawning
+		} else {
+			loadrule.Owner.unread
 		}
 		nominal, _ := app.wire_rates_locked(i)
-		pct := transport.load_percent(app.chans[i].load_bits, i64(elapsed), nominal)
-		app.chans[i].load_pct = pct
-		app.chans[i].load_hist << pct
-		if app.chans[i].load_hist.len > 60 {
-			app.chans[i].load_hist.delete(0)
+		mut w := loadrule.Wire{
+			bits: app.chans[i].load_bits
+			at:   app.chans[i].load_at
+			pct:  app.chans[i].load_pct
+			hist: app.chans[i].load_hist
 		}
-		app.chans[i].load_bits = 0
-		app.chans[i].load_at = now
+		loadrule.roll(mut w, owner, now, fn [nominal] (bits f64, ms i64) f32 {
+			return transport.load_percent(bits, ms, nominal)
+		})
+		app.chans[i].load_bits = w.bits
+		app.chans[i].load_at = w.at
+		app.chans[i].load_pct = w.pct
+		app.chans[i].load_hist = w.hist
 	}
 }
 
