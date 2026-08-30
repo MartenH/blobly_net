@@ -6,6 +6,7 @@ import time
 import runtime
 import project
 import logfile
+import loadrule
 import transport
 import wiretap
 import candb
@@ -1032,6 +1033,60 @@ fn (app &App) diagnostics_text() (string, int) {
 	b << ''
 	b << tail
 	return b.join('\n'), n
+}
+
+// roll_bus_load_locked advances each row's load to now — the strip on the Buses row and the
+// number beside it. Called per frame with app.mu held; the rule is loadrule.roll (tested),
+// this is only the glue: what the row is to its wire, and the wire's nominal rate. The
+// handoff copies a wire's load to its successor under the same lock hold that clears the
+// outgoing row's flag, so a roll cannot slip in between; and start() runs on this thread, so
+// a roll cannot reset a row it is about to publish.
+fn (mut app App) roll_bus_load_locked() {
+	now := app.since_ms()
+	for i in 0 .. app.chans.len {
+		owner := if app.chans[i].running {
+			loadrule.Owner.running
+		} else if app.chans[i].spawning {
+			loadrule.Owner.spawning
+		} else {
+			loadrule.Owner.unread
+		}
+		nominal, _ := app.wire_rates_locked(i)
+		mut w := loadrule.Wire{
+			bits:       app.chans[i].load_bits
+			at:         app.chans[i].load_at
+			pct:        app.chans[i].load_pct
+			hist:       app.chans[i].load_hist
+			carry_bits: app.chans[i].load_carry_bits
+			carry_ms:   app.chans[i].load_carry_ms
+		}
+		loadrule.roll(mut w, owner, now, fn [nominal] (bits f64, ms i64) f32 {
+			return transport.load_percent(bits, ms, nominal)
+		})
+		app.chans[i].load_bits = w.bits
+		app.chans[i].load_at = w.at
+		app.chans[i].load_pct = w.pct
+		app.chans[i].load_hist = w.hist
+		app.chans[i].load_carry_bits = w.carry_bits
+		app.chans[i].load_carry_ms = w.carry_ms
+	}
+}
+
+// worst_bus_load_locked is the highest current load among the running CAN wires, for the
+// toolbar, and whether there is one to show: a running wire with a closed interval reads
+// `load 0%` when idle, which is a measurement and not the absence of one (codex #263 r7).
+fn (app &App) worst_bus_load_locked() (f32, bool) {
+	mut worst := f32(0)
+	mut any := false
+	for c in app.chans {
+		if c.running && !c.doip && c.load_hist.len > 0 {
+			any = true
+			if c.load_pct > worst {
+				worst = c.load_pct
+			}
+		}
+	}
+	return worst, any
 }
 
 // log_clear empties the Log. The cache follows through the generation, as it does for an

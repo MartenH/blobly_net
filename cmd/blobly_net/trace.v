@@ -6,6 +6,7 @@ import transport
 import wiretap
 import telem
 import canlog
+import project
 import vgui
 
 struct TraceRow {
@@ -332,6 +333,99 @@ fn (app &App) tx_counts_locked() string {
 		return 'TX ${app.tx_count}'
 	}
 	return 'TX ${app.tx_count} · ${org_tx_sim} ${app.tx_sim_count}'
+}
+
+// count_tx_load adds a frame the driver ACCEPTED to its wire's load. After the send and not
+// at note_emit, so a refused frame never needs refunding (codex #263 r1); and onto the row
+// that is RUNNING for the wire rather than the row named by the tap — two enabled rows on one
+// destination share one reader and one running flag, and the load is the wire's, so the
+// alias's frames would otherwise land on a row the panel and the toolbar skip (r1).
+fn (mut app App) count_tx_load(iface string, f transport.CanFrame) {
+	key := transport.destination_key(iface)
+	app.mu.lock()
+	defer {
+		app.mu.unlock()
+	}
+	i := app.load_owner_locked(key)
+	if i < 0 {
+		return
+	}
+	nominal, data := app.wire_rates_locked(i)
+	app.chans[i].load_bits += transport.frame_bits(f, nominal, data)
+}
+
+// load_owner_locked is the row that holds a wire's load right now: the running reader; failing
+// that, the row whose reader is on its way up — a tap can win the race against rx_loop at
+// Start, and a handoff has a moment with no running row (codex #263 r3); failing THAT, the
+// wire's first enabled row — between `app.running = true` and the spawn loop that follows it
+// nothing is marked yet, and a script's guardless tap can send in that window (r4). The roll
+// runs on the GUI thread, the same thread start() runs on, so it cannot reset that row's
+// bits in between. -1 when no enabled row is on the wire.
+fn (app &App) load_owner_locked(key string) int {
+	mut spawning := -1
+	mut enabled := -1
+	for i, c in app.chans {
+		if c.doip || transport.destination_key(c.iface) != key {
+			continue
+		}
+		if c.running {
+			return i
+		}
+		if c.spawning && spawning < 0 {
+			spawning = i
+		}
+		if c.monitorable() && enabled < 0 {
+			enabled = i
+		}
+	}
+	if spawning >= 0 {
+		return spawning
+	}
+	return enabled
+}
+
+// wire_rates_locked is the nominal and data rate a frame on row `i`'s WIRE is charged at —
+// ONE answer per destination, whichever row asks: the nominal rate is the first enabled row's
+// on that wire, and the data rate is the first enabled row's that declares one. On SocketCAN
+// and the software buses two enabled rows may share a wire and disagree (the project warns
+// rather than refuses, because those adapters do not configure timing), and the reader is
+// whichever came first — so read from the reader's row, a BRS frame through a classic row
+// had its whole payload charged at the nominal rate (codex #263 r4), and reordering two rows
+// halved the load and a handoff reinterpreted an interval at another rate (r6). The first
+// enabled row is still an order, but it is the same order for RX, TX and the handoff. And
+// it is resolved ONCE per row per run and kept: enabling an alias that precedes the reader
+// mid-run would otherwise change the answer under an interval whose bits were priced at the
+// old one, and the roll would divide them by the new rate — a false spike or dip (r8).
+//
+// An UNSET nominal rate is the project's default, the one reading the open path and
+// origination_framing already share (project.Channel.nominal_bitrate); the raw zero the row
+// keeps would make load_percent answer 0 % for every interval on a live wire (r5).
+fn (mut app App) wire_rates_locked(i int) (int, int) {
+	if app.chans[i].load_nominal > 0 {
+		return app.chans[i].load_nominal, app.chans[i].load_data
+	}
+	key := transport.destination_key(app.chans[i].iface)
+	mut nominal := 0
+	mut data := 0
+	for c in app.chans {
+		if c.doip || !c.monitorable() || transport.destination_key(c.iface) != key {
+			continue
+		}
+		if nominal == 0 {
+			// normalised HERE: an unset rate on the first row is 500 kbit/s, not "no answer
+			// yet" for a later row to overwrite (codex #263 r9)
+			nominal = if c.bitrate > 0 { c.bitrate } else { project.default_bitrate }
+		}
+		if data == 0 && c.data_bitrate > 0 {
+			data = c.data_bitrate
+		}
+	}
+	if nominal == 0 {
+		nominal = if app.chans[i].bitrate > 0 { app.chans[i].bitrate } else { project.default_bitrate }
+	}
+	app.chans[i].load_nominal = nominal
+	app.chans[i].load_data = data
+	return nominal, data
 }
 
 // retract_emit takes back an emission the driver refused. The row stays and is marked: the frame

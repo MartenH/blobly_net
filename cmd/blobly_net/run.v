@@ -622,6 +622,22 @@ fn (mut app App) start() {
 	// symptom trace_run_base exists to prevent, reintroduced through the import's seq advance
 	// (codex #130 pre-review). Rows already in the ring keep their frozen idx.
 	app.trace_run_base = app.trace_seq
+	// The load starts over HERE, under app.mu and before the transmit locks below are
+	// released: a guardless tap a script kept from the previous run may send the instant
+	// they are, and count_tx_load writes these fields under the lock this reset would
+	// otherwise race unlocked (codex #263 r4). The first interval opens now, not at the GUI
+	// loop's next roll, so bits emitted before it are not divided by an interval that began
+	// later (r2).
+	for ci in 0 .. app.chans.len {
+		app.chans[ci].load_bits = 0
+		app.chans[ci].load_at = app.since_ms()
+		app.chans[ci].load_pct = 0
+		app.chans[ci].load_hist = []f32{}
+		app.chans[ci].load_nominal = 0
+		app.chans[ci].load_data = 0
+		app.chans[ci].load_carry_bits = 0
+		app.chans[ci].load_carry_ms = 0
+	}
 	app.mu.unlock()
 	for m in held {
 		m.unlock()
