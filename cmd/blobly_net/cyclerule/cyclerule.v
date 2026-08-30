@@ -22,6 +22,12 @@ pub:
 	first_t f64 // stamp of the oldest frame in the measurement
 	last_t  f64 // stamp of the newest
 	count   int // frames in it; count-1 intervals
+	// Stamp of the SECOND frame, kept so the head interval can be reconsidered: with one
+	// pre-dropout frame left by a ring trim there is no interval to judge the gap against
+	// when the recovery frame arrives, so the gap is folded in and only the intervals that
+	// follow can say it was one. Unset (0 with count < 2, or after the head has been judged)
+	// when there is nothing to reconsider.
+	second_t f64
 }
 
 // gap_factor is how many cadences of silence break the window. A cyclic message's jitter is a
@@ -47,9 +53,29 @@ pub const min_intervals = 1
 // keeps its last cadence until its rows age out.
 pub fn step(w Window, t f64, new_run bool) Window {
 	if w.count == 0 || new_run || breaks(w, t) {
-		return Window{t, t, 1}
+		return Window{t, t, 1, 0}
 	}
-	return Window{w.first_t, t, w.count + 1}
+	if w.count == 1 {
+		return Window{w.first_t, t, 2, t}
+	}
+	return reconsider_head(Window{w.first_t, t, w.count + 1, w.second_t})
+}
+
+// reconsider_head drops the window's first frame when the interval after it, judged against
+// the cadence the frames SINCE it establish, was a gap: the shape a global ring trim leaves
+// when exactly one pre-dropout frame of a sparse group survives — `[100, 2200, 2300, 2400]`
+// read 767 for as long as the stale frame stayed (codex on #266). Judged once, on the first
+// post-gap interval, and the head then stops being a candidate: the frames after it are the
+// measurement.
+fn reconsider_head(w Window) Window {
+	if w.count < 3 || w.second_t <= w.first_t {
+		return w
+	}
+	rest := (w.last_t - w.second_t) / f64(w.count - 2)
+	if rest > 0 && w.second_t - w.first_t > gap_factor * rest {
+		return Window{w.second_t, w.last_t, w.count - 1, 0}
+	}
+	return Window{w.first_t, w.last_t, w.count, 0}
 }
 
 // breaks reports whether the silence between the window's newest frame and one at `t` is out

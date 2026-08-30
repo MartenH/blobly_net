@@ -43,8 +43,8 @@ fn test_a_dropout_mid_run_restarts_the_window() {
 
 fn test_jitter_is_not_a_gap() {
 	// intervals of up to 4x the average stay in the window; five breaks it
-	assert !breaks(Window{0, 200, 3}, 200 + 400)
-	assert breaks(Window{0, 200, 3}, 200 + 501)
+	assert !breaks(Window{0, 200, 3, 100}, 200 + 400)
+	assert breaks(Window{0, 200, 3, 100}, 200 + 501)
 }
 
 fn test_a_dropout_is_judged_on_one_interval() {
@@ -54,6 +54,28 @@ fn test_a_dropout_is_judged_on_one_interval() {
 	w := fold([100.0, 200, 2200, 2300, 2400])
 	assert w.first_t == 2200
 	assert cycle_ms(w)? == 100.0
+}
+
+fn test_one_stale_frame_before_a_dropout_is_dropped_once_the_cadence_is_known() {
+	// the ring was trimmed to ONE pre-dropout frame: no interval to judge the gap by when the
+	// recovery frame comes, so it is folded in — and dropped again on the next frame, once
+	// the frames after it say what the cadence is (codex on #266)
+	mut w := fold([100.0, 2200])
+	assert cycle_ms(w)? == 2100.0 // honest with two frames: that is all it knows
+	
+	w = step(w, 2300, false)
+	assert w.first_t == 2200
+	assert cycle_ms(w)? == 100.0
+	w = step(w, 2400, false)
+	assert cycle_ms(w)? == 100.0
+	assert w.count == 3
+}
+
+fn test_a_steady_head_interval_is_kept() {
+	// the head is judged once and kept when it is in proportion; nothing is lost
+	w := fold([0.0, 100, 200, 300])
+	assert w.count == 4
+	assert w.first_t == 0
 }
 
 fn test_a_short_first_interval_costs_one_restart_only() {
