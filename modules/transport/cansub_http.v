@@ -243,6 +243,13 @@ __global (
 
 // cansub_conn is the device's connection, dialled on first use. `reused` reports whether the
 // caller got an existing one, which is what decides whether a failure deserves a second try.
+// CansubDialed is one dial that got through its handshake: what cansub_connect_attempts hands
+// back to cansub_conn, which then admits it to the pool.
+struct CansubDialed {
+	tcp &net.TcpConn
+	ssl &ssl.SSLConn
+}
+
 fn cansub_conn(host string) !(&CansubConn, bool) {
 	existing := rlock cansub_pool {
 		cansub_pool.conns[host] or { unsafe { nil } }
@@ -256,15 +263,24 @@ fn cansub_conn(host string) !(&CansubConn, bool) {
 	// round 4 on #248). So it is checked at admission, and a connection from an earlier
 	// generation is closed and refused — the caller's retry dials against the new address.
 	gen := cansub_addr_generation(host)
-	mut tcp := cansub_dial(host)!
-	mut conn := ssl.new_ssl_conn(
-		validate:     false // the device signs its own certificate; see the note at the top
-		read_timeout: cansub_conn_read_ceiling
-	)!
-	conn.connect(mut tcp, host) or {
-		tcp.close() or {}
-		return err
-	}
+	// A handshake a signal interrupted is dialled again at once, socket closed first — the same
+	// allowance the stream's open makes (cansub_connect_attempts, cansub.v), and this dial is
+	// the identity read that comes BEFORE it, so an interruption here failed the open one step
+	// earlier. Bounded by the read ceiling, which is what a caller of this dial can wait anyway.
+	d := cansub_connect_attempts[CansubDialed](time.now().add(cansub_conn_read_ceiling), fn [host] () !CansubDialed {
+		mut t := cansub_dial(host)!
+		mut c := ssl.new_ssl_conn(
+			validate:     false // the device signs its own certificate; see the note at the top
+			read_timeout: cansub_conn_read_ceiling
+		)!
+		c.connect(mut t, host) or {
+			t.close() or {}
+			return err
+		}
+		return CansubDialed{t, c}
+	})!
+	mut tcp := d.tcp
+	mut conn := d.ssl
 	mut c := &CansubConn{
 		host: host
 		tcp:  tcp
