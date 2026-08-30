@@ -933,12 +933,21 @@ fn (mut app App) save_project() {
 		app.cfg_tab = 1
 		return
 	}
+	// Fold pending editor + generator buffers into app.proj FIRST, so the comment-guard snapshot
+	// below is the EXACT model that would be written (a Buses text field or a generator edit made
+	// after the warning must change it, or the confirmation would pass for the wrong content —
+	// codex #268). This is the model half of apply_edits; the runtime rebuild (which resolves
+	// assets against proj_path) is deferred until AFTER the guard, so a refusal never rebases.
+	if app.running {
+		app.sync_senders_into_proj()
+	} else {
+		app.commit_cfg()
+		app.sync_senders_into_proj()
+	}
 	// #80: a reserializing Save (Buses tab / menu) rebuilds the file from the model and CANNOT
-	// keep its comments — only File ▸ Save writes the buffer verbatim. Guard BEFORE apply_edits so
-	// a refusal does not rebuild the runtime (which would resolve assets against a Save-As
-	// destination that is not being written — codex #268). Warn on the FIRST such Save and
-	// remember the model; a second Save proceeds only if the model is unchanged since, so any
-	// structured edit / load / revert re-warns rather than counting as the confirmation.
+	// keep its comments — only File ▸ Save writes the buffer verbatim. Warn on the FIRST such Save
+	// and remember (path, model); a second Save proceeds only if both are unchanged, so any edit /
+	// load / revert / different target re-warns rather than counting as the confirmation.
 	if os.exists(app.proj_path) {
 		on_disk := os.read_file(app.proj_path) or {
 			// present but unreadable: os.write_file may still truncate it and we cannot tell
@@ -960,7 +969,9 @@ fn (mut app App) save_project() {
 			}
 		}
 	}
-	app.apply_edits()
+	if !app.running {
+		app.rebuild_from_proj() // the runtime-rebuild half of apply_edits, now that the guard has passed
+	}
 	// THE SAME REFUSAL AS START'S, and Save needs it more: writing the file would persist the
 	// value the rejected field replaced, so a typo the operator can still see on screen becomes
 	// a stored rate they never chose — and the evidence that anything was wrong is gone as soon
@@ -1075,23 +1086,30 @@ fn (mut app App) save_as(path string) {
 	if !p.ends_with('.blobnet') && !p.ends_with('.yml') && !p.ends_with('.yaml') {
 		p += '.blobnet'
 	}
-	// save_project may STILL refuse here — its #80 comment guard warns before overwriting an
-	// existing commented target. If it does, proj_path must NOT stay bound to a file we did not
-	// write (relative assets would rebase and the next plain Save would target it). Restore the
-	// previous path when nothing was written, detected by saved_at not advancing (codex #268).
+	// #80: Save As over a DIFFERENT existing file that carries comments would drop them, and there
+	// is no "click again" story that makes sense across a picker — refuse outright and point at the
+	// two safe routes. Checked HERE, before proj_path moves, so a refusal never rebinds the app or
+	// rebases assets (codex #268). Saving As over the CURRENT file (p == proj_path) falls through to
+	// save_project's same-file comment guard, which does offer the in-place confirm.
+	if p != app.proj_path && os.exists(p) {
+		on_disk := os.read_file(p) or { '' }
+		if saverule.reserialize_drops_comments(on_disk) {
+			app.notify('not saved — "${p}" has comments a reserializing Save would drop. Choose a new name, or open it and use Configuration ▸ File ▸ Save to keep them.')
+			return
+		}
+	}
 	prev_path := app.proj_path
 	before := app.saved_at
 	app.proj_path = p
 	app.proj.name = app.proj_name
 	app.save_project()
 	if app.saved_at == before {
-		// The Save As did not write (the comment guard refused, or Project.save failed after
-		// apply_edits already rebuilt the runtime against the destination). Restore the path AND
-		// rebuild the assets back against it, so replay/DBC/manifest resolve from the old project's
-		// directory rather than the abandoned destination's (codex #268).
+		// The Save As did not write (Project.save failed after the runtime was rebuilt against the
+		// destination). Restore the path and rebuild WITH the sender-preserving helper, so unsaved
+		// generator edits are not discarded merely because the destination was refused (codex #268).
 		app.proj_path = prev_path
 		if !app.running {
-			app.rebuild_from_proj()
+			app.rebuild_preserving_senders()
 		}
 	}
 }
