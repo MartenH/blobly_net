@@ -465,6 +465,11 @@ const gcol_data = 7
 
 fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt string) {
 	mut agg := map[string]GAgg{}
+	// The run boundary applies to LIVE rows only. A recording's rows are stamped relative to
+	// the file's first entry (load_recording), not to the app clock run_start_ms is on, so
+	// comparing the two would make an arbitrary point inside the file a "Start" and reset the
+	// window there (codex on #266). Below any stamp, no frame can cross it.
+	run_start := if app.viewing_rec == '' { app.run_start_ms } else { -1.0 }
 	for r in rows {
 		if !trace_pass(r, filt) {
 			continue
@@ -502,7 +507,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		// only ACCEPTED frames feed the cycle (the refused ones `continue`d above): a group
 		// whose oldest retained row was refused otherwise carried the whole bus-off interval
 		// in its span, overstating the cycle long after recovery (codex #143 r3)
-		g.cyc = cyclerule.step(g.cyc, r.t_ms, app.run_start_ms)
+		g.cyc = cyclerule.step(g.cyc, r.t_ms, run_start)
 		g.count++
 		g.last = r
 		agg[k] = g

@@ -61,3 +61,10 @@ fn test_run_boundary_with_nothing_before_it() {
 	w := fold([5.0, 105, 205], 0)
 	assert w.count == 3
 }
+
+fn test_a_boundary_below_every_stamp_is_no_boundary() {
+	// a recording's rows are on the file's clock: the caller passes -1 and nothing resets
+	w := fold([0.0, 1000, 2000, 3000, 4000, 5000, 6000], -1)
+	assert w.count == 7
+	assert cycle_ms(w)? == 1000.0
+}

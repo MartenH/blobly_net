@@ -37,7 +37,9 @@ pub const min_intervals = 2
 // step folds one accepted frame at `t` into `w`. `run_start` is the stamp at which the current
 // run began: a frame at or after it, following one from before it, is the first of a new run
 // and starts the window over. Frames from BEFORE the run are averaged among themselves as
-// before — a group that stopped sending keeps its last cadence until its rows age out.
+// before — a group that stopped sending keeps its last cadence until its rows age out. A
+// `run_start` below every stamp (the caller passes -1 for a recording, whose stamps are on
+// the file's clock) means no boundary at all.
 pub fn step(w Window, t f64, run_start f64) Window {
 	if w.count == 0 {
 		return Window{t, t, 1}
