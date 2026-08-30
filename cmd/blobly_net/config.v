@@ -963,7 +963,7 @@ fn (mut app App) save_project() {
 			snap := app.proj_path + '\x00' + app.proj.to_yaml()
 			if app.reserialize_confirm != snap {
 				app.reserialize_confirm = snap
-				app.notify('not saved yet — this Save rewrites the file from the model and would DROP its comments (the header + inline hints). Use Configuration ▸ File ▸ Save to keep them, or click Save again to reserialize anyway.')
+				app.notify('not saved yet — this Save rewrites the file from the model and would DROP its comments (the header + inline hints). Use Configuration ▸ File ▸ Save to keep them, or repeat the Save to reserialize anyway.')
 				app.show_config = true
 				return
 			}
@@ -1086,18 +1086,12 @@ fn (mut app App) save_as(path string) {
 	if !p.ends_with('.blobnet') && !p.ends_with('.yml') && !p.ends_with('.yaml') {
 		p += '.blobnet'
 	}
-	// #80: Save As over a DIFFERENT existing file that carries comments would drop them, and there
-	// is no "click again" story that makes sense across a picker — refuse outright and point at the
-	// two safe routes. Checked HERE, before proj_path moves, so a refusal never rebinds the app or
-	// rebases assets (codex #268). Saving As over the CURRENT file (p == proj_path) falls through to
-	// save_project's same-file comment guard, which does offer the in-place confirm.
-	if p != app.proj_path && os.exists(p) {
-		on_disk := os.read_file(p) or { '' }
-		if saverule.reserialize_drops_comments(on_disk) {
-			app.notify('not saved — "${p}" has comments a reserializing Save would drop. Choose a new name, or open it and use Configuration ▸ File ▸ Save to keep them.')
-			return
-		}
-	}
+	// Save As routes through save_project's #80 comment guard like any Save: if the destination
+	// carries comments it warns (keyed on that path + model) and a repeated Save As confirms. The
+	// guard biases to warn — an over-warn here costs one extra confirmation, which is why Save As is
+	// NOT refused outright (an outright refusal would hard-block a destination whose only '#' is
+	// inside a quoted value — codex #268). Nothing rebases on a refusal: save_project folds the
+	// model but defers the runtime rebuild until the guard passes.
 	prev_path := app.proj_path
 	before := app.saved_at
 	app.proj_path = p

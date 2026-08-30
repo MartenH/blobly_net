@@ -73,7 +73,10 @@ pub fn line_has_yaml_comment(line string) bool {
 // which rebuilds the file from the model) would drop authored comments — the header and inline
 // hints that are how the .blobnet format is learned (#80). Only File ▸ Save keeps them verbatim.
 pub fn reserialize_drops_comments(file_text string) bool {
-	for line in file_text.split_into_lines() {
+	// A UTF-8 BOM (EF BB BF) precedes the first character, so a BOM'd file whose first line is
+	// `# header` would otherwise not be seen as a comment on line 1 (codex #268). Strip it first.
+	text := file_text.trim_string_left('\ufeff')
+	for line in text.split_into_lines() {
 		if line_has_yaml_comment(line) {
 			return true
 		}

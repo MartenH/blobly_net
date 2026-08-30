@@ -32,3 +32,8 @@ fn test_reserialize_drops_comments() {
 	assert reserialize_drops_comments('') == false
 	assert reserialize_drops_comments('url: x#y\nk: v\n') == false
 }
+
+fn test_bom_header_comment_detected() {
+	// a UTF-8 BOM before the first '#' must not hide the header comment (codex #268)
+	assert reserialize_drops_comments('﻿# header\nbuses:\n')
+}
