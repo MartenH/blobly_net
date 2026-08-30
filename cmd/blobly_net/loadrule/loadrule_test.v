@@ -95,13 +95,30 @@ fn test_handoff_carries_the_partial_interval_into_the_next_sample() {
 	// the successor spawns (rebasing) and runs; the carry survives the spawn
 	assert !roll(mut w, .spawning, 2400, at_500k)
 	assert w.carry_ms == 900
-	assert !roll(mut w, .running, 3000, at_500k)
-	w.bits = 148500 // 1100 ms at 27 %
-	assert roll(mut w, .running, 3500, at_500k)
+	// 900 ms carried: the interval closes once a second has been OBSERVED, which is 100 ms
+	// into the successor's own — not a second into it
+	assert !roll(mut w, .running, 2450, at_500k)
+	w.bits = 13500 // 100 ms at 27 %
+	assert roll(mut w, .running, 2500, at_500k)
 	assert w.pct == f32(27.0)
-	assert w.hist == [f32(27.0)]
+	assert w.hist == [f32(27.0)], 'one second observed: one column'
 	assert w.carry_ms == 0
 	assert w.carry_bits == 0
+}
+
+// A SAMPLE THAT COVERS TWO SECONDS TAKES TWO COLUMNS: carries accumulated across handoffs
+// while the successor was spawning close as one average, written once per second it stood
+// for, so the strip's width stays seconds (codex #263 r12).
+fn test_a_sample_spanning_seconds_takes_a_column_per_second() {
+	mut w := Wire{
+		at:         1000
+		carry_bits: 270000 // two seconds at 27 %, carried
+		carry_ms:   2000
+	}
+	w.bits = 135000 // and one more second at 27 %
+	assert roll(mut w, .running, 2000, at_500k)
+	assert w.pct == f32(27.0)
+	assert w.hist == [f32(27.0), 27, 27]
 }
 
 // AN IDLE STRETCH BEFORE A HANDOFF IS STILL OBSERVED: zero bits over its time, folded into
@@ -116,11 +133,11 @@ fn test_handoff_carries_an_idle_stretch_as_observed_time() {
 	handoff(mut w, 1500)
 	assert w.pct == 27, 'the number stands until a sample closes'
 	assert w.carry_ms == 500
-	assert !roll(mut w, .running, 2000, at_500k)
-	w.bits = 67500 // 13.5 % of a second; over the 1500 ms observed, 9 %
-	assert roll(mut w, .running, 2500, at_500k)
-	assert w.pct == f32(9.0)
-	assert w.hist == [f32(27.0), 9]
+	// 500 ms carried idle: closes 500 ms into the successor's own interval
+	w.bits = 67500 // 13.5 % of a second; over the 1000 ms observed, 13.5 %
+	assert roll(mut w, .running, 2000, at_500k)
+	assert w.pct == f32(13.5)
+	assert w.hist == [f32(27.0), 13.5]
 }
 
 // A ROW NOBODY READS DROPS ITS CARRY with the rest.

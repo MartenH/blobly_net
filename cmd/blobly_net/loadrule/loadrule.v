@@ -57,7 +57,12 @@ pub type Percent = fn (bits f64, ms i64) f32
 //               Start — a slow open (a CANsub's, a reconnect's) would otherwise dilute the
 //               first sample into idle time. The sends filed onto the row meanwhile STAY and
 //               land in that first interval: they were on the wire.
-//   running   — closes an interval once `interval_ms` has passed, into `pct` and `hist`.
+//   running   — closes an interval once `interval_ms` of OBSERVED time has passed — the
+//               interval's own plus what a handoff carried — into `pct` and `hist`. A column
+//               of the strip is a second: a sample that covers n full seconds (carries
+//               accumulated across handoffs) is written once per second it covered, its
+//               average standing for each, so sixty columns are about sixty seconds and a
+//               handoff neither compresses nor stretches them (codex #263 r12).
 pub fn roll(mut w Wire, owner Owner, now f64, pct Percent) bool {
 	match owner {
 		.unread {
@@ -81,15 +86,22 @@ pub fn roll(mut w Wire, owner Owner, now f64, pct Percent) bool {
 				return false
 			}
 			elapsed := now - w.at
-			if elapsed < interval_ms {
+			observed := elapsed + w.carry_ms
+			if observed < interval_ms {
 				return false
 			}
 			// plus whatever a handoff left unclosed, over the time it covered
-			w.pct = pct(w.bits + w.carry_bits, i64(elapsed + w.carry_ms))
+			w.pct = pct(w.bits + w.carry_bits, i64(observed))
 			w.carry_bits = 0
 			w.carry_ms = 0
-			w.hist << w.pct
-			if w.hist.len > keep {
+			mut columns := int(observed / interval_ms)
+			if columns < 1 {
+				columns = 1
+			}
+			for _ in 0 .. columns {
+				w.hist << w.pct
+			}
+			for w.hist.len > keep {
 				w.hist.delete(0)
 			}
 			w.bits = 0
