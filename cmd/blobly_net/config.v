@@ -857,6 +857,7 @@ fn (mut app App) save_cfg_text() {
 	app.notify('saved -> ${path}')
 	app.dirty = false
 	app.cfg_text_dirty = false
+	app.reserialize_warned = '' // a File save is not the warned reserializing Save; re-warn a later Buses Save (codex #268 r2)
 	app.saved_at = time.ticks()
 	// rebuild_from_proj, NOT load_project: the full open path calls set_project, which clears
 	// the trace rows, grouped counts, telemetry records, diagnostic and script logs and signal
@@ -906,6 +907,7 @@ fn (mut app App) revert_proj_from_disk() {
 		return
 	}
 	app.dirty = false
+	app.reserialize_warned = '' // the warned attempt was abandoned by the revert (codex #268 r2)
 	app.cfg_invalidate()
 	app.load_cfg_text()
 	app.notify('unsaved model edits discarded (buses + generators)')

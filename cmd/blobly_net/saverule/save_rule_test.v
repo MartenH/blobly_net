@@ -43,4 +43,8 @@ fn test_line_has_yaml_comment() {
 	assert line_has_yaml_comment('k: v#glued') == false // no whitespace before #
 	assert line_has_yaml_comment('k: v') == false
 	assert line_has_yaml_comment('') == false
+	assert line_has_yaml_comment("name: driver's CAN # bench note")
+	assert line_has_yaml_comment("it's fine # note")
+	assert line_has_yaml_comment("name: 'a # b'") == false
+	assert line_has_yaml_comment("- 'a # b'") == false
 }

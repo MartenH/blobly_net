@@ -59,10 +59,17 @@ pub fn save_target(s SaveState) SaveTarget {
 // than discovered on a file. A comment is a '#' that YAML would treat as one: at line start (after
 // whitespace) OR preceded by whitespace, and NOT inside a quoted scalar — so `name: "a # b"` and
 // `url: x#y` are not comments, but `interface: can0  # note` is (codex #268: trailing hints count).
+fn opens_quote(prev u8) bool {
+	// a quote begins a quoted scalar only where a scalar can start: after whitespace or a YAML
+	// value delimiter. An apostrophe inside a plain scalar (driver's CAN) is therefore content.
+	return prev == ` ` || prev == `\t` || prev == `:` || prev == `-` || prev == `[`
+		|| prev == `{` || prev == `,` || prev == 0
+}
+
 pub fn line_has_yaml_comment(line string) bool {
-	mut in_s := false // '\''
-	mut in_d := false // '"'
-	mut prev_ws := true // start-of-line counts as preceded by whitespace
+	mut in_s := false // inside '...'
+	mut in_d := false // inside "..."
+	mut prev := u8(0)  // 0 = start of line
 	for c in line {
 		if in_s {
 			if c == `'` {
@@ -72,14 +79,14 @@ pub fn line_has_yaml_comment(line string) bool {
 			if c == `"` {
 				in_d = false
 			}
-		} else if c == `'` {
+		} else if c == `'` && opens_quote(prev) {
 			in_s = true
-		} else if c == `"` {
+		} else if c == `"` && opens_quote(prev) {
 			in_d = true
-		} else if c == `#` && prev_ws {
+		} else if c == `#` && (prev == ` ` || prev == `\t` || prev == 0) {
 			return true
 		}
-		prev_ws = c == ` ` || c == `\t`
+		prev = c
 	}
 	return false
 }
