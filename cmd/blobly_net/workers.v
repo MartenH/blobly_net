@@ -4,6 +4,7 @@ import os
 import time
 import project
 import transport
+import loadrule
 import taprule
 import telem
 import isotp
@@ -925,13 +926,25 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 					// so a shared wire's totals are not logged twice as new.
 					a.chans[cj].diag = a.chans[ci].diag
 					a.chans[cj].diag_at = a.chans[ci].diag_at
-					// And the LOAD: the interval in progress and the sixty seconds behind it
-					// are the wire's, and the panel reads them from the running row (codex
-					// #263 r2).
-					a.chans[cj].load_bits = a.chans[ci].load_bits
-					a.chans[cj].load_at = a.chans[ci].load_at
-					a.chans[cj].load_pct = a.chans[ci].load_pct
-					a.chans[cj].load_hist = a.chans[ci].load_hist.clone()
+					// And the LOAD: the sixty seconds behind are the wire's, and the panel
+					// reads them from the running row (codex #263 r2); the interval in
+					// progress closes HERE as the outgoing reader's own sample, so the
+					// successor's first second is its own (r7, loadrule.handoff).
+					nominal, _ := a.wire_rates_locked(ci)
+					mut w := loadrule.Wire{
+						bits: a.chans[ci].load_bits
+						at:   a.chans[ci].load_at
+						pct:  a.chans[ci].load_pct
+						hist: a.chans[ci].load_hist
+					}
+					loadrule.handoff(mut w, a.since_ms(), fn [nominal] (bits f64, ms i64) f32 {
+						return transport.load_percent(bits, ms, nominal)
+					})
+					a.chans[cj].load_bits = 0
+					a.chans[cj].load_at = w.at
+					a.chans[cj].load_pct = w.pct
+					a.chans[cj].load_hist = w.hist
+					a.chans[ci].load_bits = 0
 					a.chans[ci].load_hist = []f32{}
 					a.chans[cj].spawning = true
 					spawn rx_loop(app, cj, other.iface, gen)

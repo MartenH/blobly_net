@@ -290,9 +290,9 @@ fn draw_toolbar(mut app App, rx u64, txs string, chans []Chan) {
 		// The busiest wire's load, so saturation is on the toolbar and not only in a panel
 		// that may be closed — the same argument as the fault ladder's (#156).
 		app.mu.lock()
-		worst := app.worst_bus_load_locked()
+		worst, measured := app.worst_bus_load_locked()
 		app.mu.unlock()
-		if worst > 0 {
+		if measured {
 			vgui.same_line()
 			vgui.text_dim('load ${worst:.0f}%')
 		}

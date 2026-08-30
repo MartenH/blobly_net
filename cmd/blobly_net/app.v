@@ -1068,15 +1068,21 @@ fn (mut app App) roll_bus_load_locked() {
 	}
 }
 
-// worst_bus_load_locked is the highest current load among the running wires, for the toolbar.
-fn (app &App) worst_bus_load_locked() f32 {
+// worst_bus_load_locked is the highest current load among the running CAN wires, for the
+// toolbar, and whether there is one to show: a running wire with a closed interval reads
+// `load 0%` when idle, which is a measurement and not the absence of one (codex #263 r7).
+fn (app &App) worst_bus_load_locked() (f32, bool) {
 	mut worst := f32(0)
+	mut any := false
 	for c in app.chans {
-		if c.running && c.load_pct > worst {
-			worst = c.load_pct
+		if c.running && !c.doip && c.load_hist.len > 0 {
+			any = true
+			if c.load_pct > worst {
+				worst = c.load_pct
+			}
 		}
 	}
-	return worst
+	return worst, any
 }
 
 // log_clear empties the Log. The cache follows through the generation, as it does for an

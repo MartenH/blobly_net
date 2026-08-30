@@ -36,6 +36,10 @@ pub const keep = 60
 // interval_ms is how long an interval runs before it closes.
 pub const interval_ms = 1000.0
 
+// min_handoff_ms is the shortest partial interval a handoff closes as a sample; shorter, the
+// bits are dropped rather than read as a rate over a few milliseconds.
+pub const min_handoff_ms = 100.0
+
 // Percent turns an interval's bits and its length into a load percentage — the caller's
 // transport.load_percent, passed in so this module imports nothing from modules/ (the CI test
 // line resolves no -path) and the formula lives in one place.
@@ -87,4 +91,26 @@ pub fn roll(mut w Wire, owner Owner, now f64, pct Percent) bool {
 			return true
 		}
 	}
+}
+
+// handoff closes the interval in progress when a wire's reader moves to another row: what
+// the outgoing reader measured is a sample of its own, over the time it actually covered, and
+// the successor starts a clean interval at `now`. Carried across as bits instead, they were
+// rebased through the successor's spawn and then divided by its first second — 900 ms of
+// traffic read as a spike in an idle second (codex #263 r7). A partial interval shorter than
+// `min_handoff_ms` is dropped: a rate over a few milliseconds is noise, not a sample.
+pub fn handoff(mut w Wire, now f64, pct Percent) bool {
+	elapsed := now - w.at
+	mut closed := false
+	if w.at > 0 && elapsed >= min_handoff_ms && w.bits > 0 {
+		w.pct = pct(w.bits, i64(elapsed))
+		w.hist << w.pct
+		if w.hist.len > keep {
+			w.hist.delete(0)
+		}
+		closed = true
+	}
+	w.bits = 0
+	w.at = now
+	return closed
 }
