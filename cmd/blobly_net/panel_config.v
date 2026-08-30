@@ -540,6 +540,26 @@ fn (mut app App) draw_bus_editor(i int) bool {
 	}
 	vgui.same_line()
 	vgui.text_dim(adapter_hint(ch.adapter))
+	// pick from detected: the SAME list the Discover... dialog shows, applied to THIS row.
+	// The mDNS browse lands on its own thread, so the row folds it in just as the dialog does.
+	_, landed, _ := app.cansub_browse_state()
+	if landed {
+		app.rebuild_discover_list()
+	}
+	if vgui.small_button('↻##pk${i}') {
+		app.refresh_discovery()
+		app.start_cansub_browse()
+	}
+	vgui.same_line()
+	vgui.help_marker('Detect interfaces (SocketCAN/vcan on this host, CANsub devices by mDNS) and point this bus at one. Only the adapter and address change; the name, bitrates, DBCs and manifests stay.')
+	vgui.same_line()
+	vgui.set_next_item_width(360)
+	sel := vgui.combo('##pick${i}', pick_items(app.disc_list), 0)
+	if sel > 0 && sel - 1 < app.disc_list.len {
+		d := app.disc_list[sel - 1]
+		app.retarget_bus(i, d.adapter, d.address)
+		app.refresh_discovery() // the [in project] marks follow the edit
+	}
 
 	if ch.adapter == 'doip' {
 		vgui.set_next_item_width(90)

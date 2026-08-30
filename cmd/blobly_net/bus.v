@@ -556,6 +556,20 @@ struct DiscoveredIface {
 	added   bool // already present in the project
 }
 
+// pick_items is the per-row "pick from detected" dropdown: index 0 is the placeholder, index
+// k+1 is list[k]. Rows already in the project are listed too, marked — retargeting one bus at
+// another's wire is a legitimate edit (swapping compute and edge), and hiding them made the
+// list look like the device had lost a channel.
+fn pick_items(list []DiscoveredIface) []string {
+	placeholder := if list.len == 0 { '(no detected interfaces — click ↻)' } else { 'pick a detected interface…' }
+	mut items := [placeholder]
+	for d in list {
+		tag := if d.added { '  [in project]' } else { '' }
+		items << '${d.adapter}: ${d.address}  ·  ${d.desc}${tag}'
+	}
+	return items
+}
+
 // iface_desc renders a short description for a transport-discovered interface (used for the
 // vendor/virtual entries that don't come with the rich /sys hardware label).
 fn iface_desc(f transport.Iface) string {
@@ -721,6 +735,7 @@ fn adapter_hint(a string) string {
 		'kvaser' { '0 — Kvaser channel index' }
 		'vector' { '1 — Vector application channel (see Vector Hardware Manager)' }
 		'doip' { '127.0.0.1:13400 — host:port' }
+		'cansub' { '1A2B3C4D/1 — device id / channel' }
 		else { '' }
 	}
 }
