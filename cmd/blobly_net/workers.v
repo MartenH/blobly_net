@@ -648,8 +648,16 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	mut next_health := i64(0)
 	for a.running && a.run_gen == gen && a.chans[ci].enabled {
 		if time.ticks() >= next_health {
-			next_health = time.ticks() + 1000
 			h := bus.health()
+			// ASK OFTEN UNTIL THE WIRE HAS ANSWERED ONCE. A driver's first health sample lands a
+			// few hundred ms after open (CANsub: its own first poll, ~260 ms after Start, measured
+			// 2026-08-30), and a first look here that came back `unknown` waited a full second
+			// for the next — so "bus ok" was narrated ~1 s after the wire had been carrying
+			// frames. Once one answer is in, a second per look is plenty.
+			next_health = time.ticks() + 1000
+			if h == .unknown && last_health == .unknown {
+				next_health = time.ticks() + 100
+			}
 			if h != .unknown && h != last_health {
 				a.mu.lock()
 				// running AND generation, notify_gen's own rule: a health event landing in
