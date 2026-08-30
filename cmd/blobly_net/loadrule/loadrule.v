@@ -28,6 +28,11 @@ pub mut:
 	pct f32
 	// the last `keep` closed intervals, oldest first
 	hist []f32
+	// what a handoff left unclosed — bits and the milliseconds they were seen over — folded
+	// into the next interval this row closes, so a partial interval is never a sample of
+	// its own (codex #263 r11) and never lost (r7, r9)
+	carry_bits f64
+	carry_ms   f64
 }
 
 // keep is how many closed intervals the strip shows.
@@ -35,10 +40,6 @@ pub const keep = 60
 
 // interval_ms is how long an interval runs before it closes.
 pub const interval_ms = 1000.0
-
-// min_handoff_ms is the shortest partial interval a handoff closes as a sample; shorter, the
-// bits are dropped rather than read as a rate over a few milliseconds.
-pub const min_handoff_ms = 100.0
 
 // Percent turns an interval's bits and its length into a load percentage — the caller's
 // transport.load_percent, passed in so this module imports nothing from modules/ (the CI test
@@ -62,6 +63,8 @@ pub fn roll(mut w Wire, owner Owner, now f64, pct Percent) bool {
 		.unread {
 			w.bits = 0
 			w.at = now
+			w.carry_bits = 0
+			w.carry_ms = 0
 			if w.hist.len > 0 {
 				w.hist = []f32{}
 				w.pct = 0
@@ -81,7 +84,10 @@ pub fn roll(mut w Wire, owner Owner, now f64, pct Percent) bool {
 			if elapsed < interval_ms {
 				return false
 			}
-			w.pct = pct(w.bits, i64(elapsed))
+			// plus whatever a handoff left unclosed, over the time it covered
+			w.pct = pct(w.bits + w.carry_bits, i64(elapsed + w.carry_ms))
+			w.carry_bits = 0
+			w.carry_ms = 0
 			w.hist << w.pct
 			if w.hist.len > keep {
 				w.hist.delete(0)
@@ -93,26 +99,19 @@ pub fn roll(mut w Wire, owner Owner, now f64, pct Percent) bool {
 	}
 }
 
-// handoff closes the interval in progress when a wire's reader moves to another row: what
-// the outgoing reader measured is a sample of its own, over the time it actually covered, and
-// the successor starts a clean interval at `now`. Carried across as bits instead, they were
-// rebased through the successor's spawn and then divided by its first second — 900 ms of
-// traffic read as a spike in an idle second (codex #263 r7). A partial interval shorter than
-// `min_handoff_ms` is dropped: a rate over a few milliseconds is noise, not a sample. An IDLE
-// partial interval closes as 0 % like any other — it was observed, and left open the
-// successor would show the previous sample for another second (codex #263 r9).
-pub fn handoff(mut w Wire, now f64, pct Percent) bool {
-	elapsed := now - w.at
-	mut closed := false
-	if w.at > 0 && elapsed >= min_handoff_ms {
-		w.pct = pct(w.bits, i64(elapsed))
-		w.hist << w.pct
-		if w.hist.len > keep {
-			w.hist.delete(0)
-		}
-		closed = true
+// handoff moves the interval in progress across when a wire's reader moves to another row:
+// what the outgoing reader measured — bits, and the milliseconds it watched them over — is
+// CARRIED into the next interval the successor closes rather than closed as a sample of its
+// own. Carried as bits alone, they were rebased through the successor's spawn and divided by
+// its first second — 900 ms of traffic read as a spike in an idle second (codex #263 r7); an
+// idle stretch carries as zero bits over its time, so it is still observed (r9); and closed as
+// a sample, a 100 ms interval took a full column of a strip labelled sixty seconds (r11). The
+// successor's first sample is a little longer than a second and true.
+pub fn handoff(mut w Wire, now f64) {
+	if w.at > 0 && now > w.at {
+		w.carry_bits += w.bits
+		w.carry_ms += now - w.at
 	}
 	w.bits = 0
 	w.at = now
-	return closed
 }

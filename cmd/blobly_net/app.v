@@ -1053,10 +1053,12 @@ fn (mut app App) roll_bus_load_locked() {
 		}
 		nominal, _ := app.wire_rates_locked(i)
 		mut w := loadrule.Wire{
-			bits: app.chans[i].load_bits
-			at:   app.chans[i].load_at
-			pct:  app.chans[i].load_pct
-			hist: app.chans[i].load_hist
+			bits:       app.chans[i].load_bits
+			at:         app.chans[i].load_at
+			pct:        app.chans[i].load_pct
+			hist:       app.chans[i].load_hist
+			carry_bits: app.chans[i].load_carry_bits
+			carry_ms:   app.chans[i].load_carry_ms
 		}
 		loadrule.roll(mut w, owner, now, fn [nominal] (bits f64, ms i64) f32 {
 			return transport.load_percent(bits, ms, nominal)
@@ -1065,6 +1067,8 @@ fn (mut app App) roll_bus_load_locked() {
 		app.chans[i].load_at = w.at
 		app.chans[i].load_pct = w.pct
 		app.chans[i].load_hist = w.hist
+		app.chans[i].load_carry_bits = w.carry_bits
+		app.chans[i].load_carry_ms = w.carry_ms
 	}
 }
 

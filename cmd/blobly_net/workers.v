@@ -928,26 +928,29 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 					a.chans[cj].diag_at = a.chans[ci].diag_at
 					// And the LOAD: the sixty seconds behind are the wire's, and the panel
 					// reads them from the running row (codex #263 r2); the interval in
-					// progress closes HERE as the outgoing reader's own sample, so the
-					// successor's first second is its own (r7, loadrule.handoff).
-					nominal, _ := a.wire_rates_locked(ci)
+					// progress is CARRIED into the successor's first sample, bits and time
+					// alike (r7, r9, r11 — loadrule.handoff).
 					mut w := loadrule.Wire{
-						bits: a.chans[ci].load_bits
-						at:   a.chans[ci].load_at
-						pct:  a.chans[ci].load_pct
-						hist: a.chans[ci].load_hist
+						bits:       a.chans[ci].load_bits
+						at:         a.chans[ci].load_at
+						pct:        a.chans[ci].load_pct
+						hist:       a.chans[ci].load_hist
+						carry_bits: a.chans[ci].load_carry_bits
+						carry_ms:   a.chans[ci].load_carry_ms
 					}
-					loadrule.handoff(mut w, a.since_ms(), fn [nominal] (bits f64, ms i64) f32 {
-						return transport.load_percent(bits, ms, nominal)
-					})
+					loadrule.handoff(mut w, a.since_ms())
 					a.chans[cj].load_bits = 0
 					a.chans[cj].load_at = w.at
 					a.chans[cj].load_pct = w.pct
 					a.chans[cj].load_hist = w.hist
+					a.chans[cj].load_carry_bits = w.carry_bits
+					a.chans[cj].load_carry_ms = w.carry_ms
 					a.chans[cj].load_nominal = a.chans[ci].load_nominal
 					a.chans[cj].load_data = a.chans[ci].load_data
 					a.chans[ci].load_bits = 0
 					a.chans[ci].load_hist = []f32{}
+					a.chans[ci].load_carry_bits = 0
+					a.chans[ci].load_carry_ms = 0
 					a.chans[cj].spawning = true
 					spawn rx_loop(app, cj, other.iface, gen)
 					break

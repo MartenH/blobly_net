@@ -46,6 +46,9 @@ mut:
 	load_at   f64
 	load_pct  f32
 	load_hist []f32
+	// what a handoff left unclosed (loadrule.Wire.carry_*)
+	load_carry_bits f64
+	load_carry_ms   f64
 	// The rates this row's load is priced at, resolved ONCE per run the first time they are
 	// asked for (wire_rates_locked) and kept, so an alias enabled mid-run cannot re-price bits
 	// already in the interval (codex #263 r8). Zeroed at Start; carried by the handoff.

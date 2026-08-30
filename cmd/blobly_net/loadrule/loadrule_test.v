@@ -77,50 +77,60 @@ fn test_unread_row_drops_interval_and_history() {
 	assert w.hist.len == 0
 }
 
-// A HANDOFF CLOSES WHAT THE OUTGOING READER MEASURED as its own sample, over the time it
-// covered, and the successor starts clean — 900 ms of traffic is a rate over 900 ms, not bits
-// waiting to be divided by the successor's first second (codex #263 r7).
-fn test_handoff_closes_the_partial_interval_as_its_own_sample() {
+// A HANDOFF CARRIES WHAT THE OUTGOING READER MEASURED into the successor's first interval —
+// bits AND the time they were watched over — so 900 ms at 27 % followed by 1100 ms at 27 % is
+// one sample of 27 % over two seconds: not a spike in the successor's first second (codex
+// #263 r7), not a 900 ms column in a strip labelled sixty seconds (r11).
+fn test_handoff_carries_the_partial_interval_into_the_next_sample() {
 	mut w := Wire{
 		at:   1000
 		bits: 121500 // 900 ms at 27 %
 	}
-	assert handoff(mut w, 1900, at_500k)
-	assert w.pct == f32(27.0)
-	assert w.hist == [f32(27.0)]
+	handoff(mut w, 1900)
+	assert w.hist.len == 0, 'a partial interval is not a sample of its own'
 	assert w.bits == 0
 	assert w.at == 1900
-	// the successor spawns and runs: its first second is its own
+	assert w.carry_bits == 121500
+	assert w.carry_ms == 900
+	// the successor spawns (rebasing) and runs; the carry survives the spawn
 	assert !roll(mut w, .spawning, 2400, at_500k)
-	assert !roll(mut w, .running, 2400, at_500k)
+	assert w.carry_ms == 900
 	assert !roll(mut w, .running, 3000, at_500k)
-	w.bits = 67500
-	assert roll(mut w, .running, 3400, at_500k)
-	assert w.pct == f32(13.5)
+	w.bits = 148500 // 1100 ms at 27 %
+	assert roll(mut w, .running, 3500, at_500k)
+	assert w.pct == f32(27.0)
+	assert w.hist == [f32(27.0)]
+	assert w.carry_ms == 0
+	assert w.carry_bits == 0
 }
 
-// A FEW MILLISECONDS ARE NOT A SAMPLE: a handoff right after an interval closed drops the
-// bits rather than reading two frames as a saturated wire.
-fn test_handoff_drops_a_partial_interval_too_short_to_read() {
-	mut w := Wire{
-		at:   1000
-		bits: 270
-	}
-	assert !handoff(mut w, 1010, at_500k)
-	assert w.hist.len == 0
-	assert w.bits == 0
-	assert w.at == 1010
-}
-
-// AN IDLE PARTIAL INTERVAL IS A SAMPLE TOO: observed and empty is 0 %, not the previous
-// second carried on (codex #263 r9).
-fn test_handoff_closes_an_idle_partial_interval_as_zero() {
+// AN IDLE STRETCH BEFORE A HANDOFF IS STILL OBSERVED: zero bits over its time, folded into
+// the successor's first sample, which then reads what was seen and not the previous second
+// carried on (codex #263 r9).
+fn test_handoff_carries_an_idle_stretch_as_observed_time() {
 	mut w := Wire{
 		at:   1000
 		pct:  27
 		hist: [f32(27.0)]
 	}
-	assert handoff(mut w, 1500, at_500k)
-	assert w.pct == 0
-	assert w.hist == [f32(27.0), 0]
+	handoff(mut w, 1500)
+	assert w.pct == 27, 'the number stands until a sample closes'
+	assert w.carry_ms == 500
+	assert !roll(mut w, .running, 2000, at_500k)
+	w.bits = 67500 // 13.5 % of a second; over the 1500 ms observed, 9 %
+	assert roll(mut w, .running, 2500, at_500k)
+	assert w.pct == f32(9.0)
+	assert w.hist == [f32(27.0), 9]
+}
+
+// A ROW NOBODY READS DROPS ITS CARRY with the rest.
+fn test_unread_row_drops_the_carry() {
+	mut w := Wire{
+		at:         1000
+		carry_bits: 500
+		carry_ms:   100
+	}
+	roll(mut w, .unread, 2000, at_500k)
+	assert w.carry_bits == 0
+	assert w.carry_ms == 0
 }
