@@ -244,14 +244,16 @@ fn cansub_connect_attempts[T](deadline time.Time, connect fn () !T) !T {
 // caller passes — the open budget — caps it regardless.
 const cansub_connect_tries = 3
 
-// mbedtls_err_ssl_want_read is MBEDTLS_ERR_SSL_WANT_READ (-0x6900).
+// mbedtls_err_ssl_want_read / _write are MBEDTLS_ERR_SSL_WANT_READ (-0x6900) and WANT_WRITE
+// (-0x6880): the handshake needs the socket again, to read or to send.
 const mbedtls_err_ssl_want_read = -26880
+const mbedtls_err_ssl_want_write = -26752
 
 // cansub_handshake_interrupted tells a TLS handshake that did not get to FINISH from one that
 // failed. V's client-side SSLConn.connect calls mbedtls_ssl_handshake once and surfaces any
 // non-zero return as an error; on the blocking sockets V uses by default the only way that call
-// yields MBEDTLS_ERR_SSL_WANT_READ is recv() returning EINTR — a signal landed mid-handshake
-// (mbedtls net_sockets.c maps exactly that to WANT_READ). A process with threads and a collector
+// yields MBEDTLS_ERR_SSL_WANT_READ or WANT_WRITE is recv() or send() returning EINTR — a signal
+// landed mid-handshake (mbedtls net_sockets.c maps exactly those to WANT_READ / WANT_WRITE). A process with threads and a collector
 // gets those. On the bench (2026-08-30) every Stop -> Start lost whichever wire had been
 // streaming last, and opening four channels at once lost two; with the V handshake loop in
 // place (see cansub_ws_connect) 46 of 46 opens over 23 Stop -> Start cycles went through.

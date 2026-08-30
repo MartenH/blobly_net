@@ -13,6 +13,9 @@ fn interrupted() IError {
 
 fn test_interrupted_is_want_read_on_a_handshake_only() {
 	assert cansub_handshake_interrupted(interrupted())
+	// Interrupted while SENDING: mbedtls maps that EINTR to WANT_WRITE (codex on #264).
+	assert cansub_handshake_interrupted(error_with_code('net.mbedtls SSLConn.connect, mbedtls_ssl_handshake failed 2; ret: -26752',
+		-26752))
 	// The same text without the code still qualifies (a wrapper that kept only the message).
 	assert cansub_handshake_interrupted(error('net.mbedtls SSLConn.connect, mbedtls_ssl_handshake failed 2; ret: -26880'))
 	// A handshake that FAILED (a real TLS error) is not an interruption.
