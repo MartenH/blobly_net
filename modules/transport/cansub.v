@@ -261,8 +261,12 @@ const mbedtls_err_ssl_want_write = -26752
 // error_with_code carries unchanged through the websocket client, and on the text in case a
 // wrapper kept only the message — both, so an unrelated error carrying -26880 does not qualify.
 fn cansub_handshake_interrupted(err IError) bool {
-	return err.msg().contains('mbedtls_ssl_handshake') && (err.code() == mbedtls_err_ssl_want_read
-		|| err.msg().contains('ret: ${mbedtls_err_ssl_want_read}'))
+	if !err.msg().contains('mbedtls_ssl_handshake') {
+		return false
+	}
+	return err.code() in [mbedtls_err_ssl_want_read, mbedtls_err_ssl_want_write]
+		|| err.msg().contains('ret: ${mbedtls_err_ssl_want_read}')
+		|| err.msg().contains('ret: ${mbedtls_err_ssl_want_write}')
 }
 
 fn open_cansub_bus(iface string) !SharedDriver {
