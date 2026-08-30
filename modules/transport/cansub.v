@@ -180,7 +180,7 @@ fn cansub_client_opts() websocket.ClientOpt {
 		// its way out (see close()), so a wire is released one read timeout after it is asked
 		// to stop. An idle reader waking twice a second costs nothing measurable; two seconds
 		// of dead air per wire at Stop is the thing somebody notices.
-		read_timeout:  500 * time.millisecond
+		read_timeout: 500 * time.millisecond
 		// AND THE WRITE, for the same reason from the other side. Stop closes the socket under
 		// the write lock and waits for a send in flight to finish first — "a bounded thing",
 		// bounded by THIS, and the library's default is thirty seconds. A send to a device that
@@ -190,6 +190,83 @@ fn cansub_client_opts() websocket.ClientOpt {
 		// take and shorter than anybody's patience.
 		write_timeout: cansub_write_timeout
 	}
+}
+
+// cansub_ws_connect opens the channel's WebSocket, trying again when the TLS handshake was
+// merely INTERRUPTED — see cansub_handshake_interrupted. The REST dial (cansub_conn) makes the
+// same allowance. A fresh client per attempt, because a Client whose connect failed is not
+// reusable; any other error is returned at once.
+//
+// This is the SAFETY NET, not the fix. The fix is in V (vlang/v: loop the client handshake on
+// WANT_READ/WANT_WRITE as the server side already does, and close the TcpConn in
+// websocket.dial_socket when the SSL connect fails) — with it, an interrupted handshake is
+// resumed inside the same connection and this loop never runs. Without it, every attempt that
+// fails this way leaks its connected socket (dial_socket drops the TcpConn before the client
+// owns it, so nothing here can close it — pre-existing on EVERY failed TLS open, this loop only
+// repeats it), and the device's small session pool is what those leaks fill: on the bench, four
+// or five failed opens in a row left it answering nothing for a while. So the tries are few.
+fn cansub_ws_connect(url string, deadline time.Time) !&websocket.Client {
+	return cansub_connect_attempts[&websocket.Client](deadline, fn [url] () !&websocket.Client {
+		mut c := websocket.new_client(url, cansub_client_opts())!
+		c.connect()!
+		return c
+	})
+}
+
+// cansub_connect_attempts runs `connect` until it succeeds, giving it another go — at once,
+// there is nothing to wait for — when it failed only because the TLS handshake was
+// interrupted, up to cansub_connect_tries in total and never past `deadline`. Any other error
+// ends it immediately; the last interrupted error is what a caller sees when the tries run out.
+// The connected thing comes back as the RETURN VALUE: a V closure captures by value, so a
+// `mut` capture written inside `connect` would update a copy (the first draft did exactly that
+// and handed back nil).
+fn cansub_connect_attempts[T](deadline time.Time, connect fn () !T) !T {
+	mut last := IError(none)
+	for attempt := 1; attempt <= cansub_connect_tries; attempt++ {
+		c := connect() or {
+			if !cansub_handshake_interrupted(err) {
+				return err
+			}
+			last = err
+			if attempt == cansub_connect_tries || time.now() >= deadline {
+				break
+			}
+			continue
+		}
+		return c
+	}
+	return error('${last.msg()} (handshake interrupted on every try)')
+}
+
+// cansub_connect_tries bounds the allowance: a handshake is interrupted by ONE signal, so a second
+// try almost always lands; the third is for a run of them. Each try is a fresh dial and handshake
+// (~100 ms to this device), so at most a few hundred ms are added to an open, and the deadline the
+// caller passes — the open budget — caps it regardless.
+const cansub_connect_tries = 3
+
+// mbedtls_err_ssl_want_read / _write are MBEDTLS_ERR_SSL_WANT_READ (-0x6900) and WANT_WRITE
+// (-0x6880): the handshake needs the socket again, to read or to send.
+const mbedtls_err_ssl_want_read = -26880
+const mbedtls_err_ssl_want_write = -26752
+
+// cansub_handshake_interrupted tells a TLS handshake that did not get to FINISH from one that
+// failed. V's client-side SSLConn.connect calls mbedtls_ssl_handshake once and surfaces any
+// non-zero return as an error; on the blocking sockets V uses by default the only way that call
+// yields MBEDTLS_ERR_SSL_WANT_READ or WANT_WRITE is recv() or send() returning EINTR — a signal
+// landed mid-handshake (mbedtls net_sockets.c maps exactly those to WANT_READ / WANT_WRITE). A process with threads and a collector
+// gets those. On the bench (2026-08-30) every Stop -> Start lost whichever wire had been
+// streaming last, and opening four channels at once lost two; with the V handshake loop in
+// place (see cansub_ws_connect) 46 of 46 opens over 23 Stop -> Start cycles went through.
+// Nothing was wrong with the device or the network; the handshake just needed another step. Matched on the code, which
+// error_with_code carries unchanged through the websocket client, and on the text in case a
+// wrapper kept only the message — both, so an unrelated error carrying -26880 does not qualify.
+fn cansub_handshake_interrupted(err IError) bool {
+	if !err.msg().contains('mbedtls_ssl_handshake') {
+		return false
+	}
+	return err.code() in [mbedtls_err_ssl_want_read, mbedtls_err_ssl_want_write]
+		|| err.msg().contains('ret: ${mbedtls_err_ssl_want_read}')
+		|| err.msg().contains('ret: ${mbedtls_err_ssl_want_write}')
 }
 
 fn open_cansub_bus(iface string) !SharedDriver {
@@ -243,9 +320,10 @@ fn open_cansub_bus(iface string) !SharedDriver {
 
 	// BY ADDRESS, NOT BY NAME — see cansub_addr: the name was resolved for the PHY PUT above, and
 	// resolving it again here is another cold mDNS lookup (2.7 s, measured) on the open path.
-	mut ws := websocket.new_client('wss://${cansub_addr(host) or { host }}/api/can/${spec.channel}/ws',
-		cansub_client_opts())!
-	ws.connect() or { return error('cannot open ${iface}: ${err}') }
+	url := 'wss://${cansub_addr(host) or { host }}/api/can/${spec.channel}/ws'
+	mut ws := cansub_ws_connect(url, time.now().add(cansub_open_timeout)) or {
+		return error('cannot open ${iface}: ${err}')
+	}
 
 	mut b := &CansubBus{
 		iface: iface
@@ -753,7 +831,9 @@ fn cansub_confirm_identity(host string, id string) ! {
 	body := cansub_get_within(host, '/api/info', cansub_open_timeout) or {
 		return error('the device at ${host} did not answer /api/info: ${err}')
 	}
-	got := extract_json_string(body, 'id') or { return error('the device at ${host} reports no id') }
+	got := extract_json_string(body, 'id') or {
+		return error('the device at ${host} reports no id')
+	}
 	if got.to_lower() != id.to_lower() {
 		return error('the device at ${host} is ${got}, not ${id} — the address has been reassigned')
 	}
