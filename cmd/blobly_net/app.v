@@ -253,6 +253,9 @@ mut:
 	// answer: a project switch or a structured Save left old YAML on screen that Save would
 	// then write over the new file.
 	cfg_text_dirty bool
+	// #80: a reserializing Save (Buses tab) drops the .blobnet's comments; warn ONCE per path,
+	// then let a second Save through. Holds the path the operator was warned about.
+	reserialize_warned string
 	// When the project (or the File tab's text) was last written, in time.ticks(): the toolbar
 	// shows "saved" beside the project name for a few seconds after, so a Ctrl+S is answered on
 	// the screen the user is looking at and not only in the Log (#247).

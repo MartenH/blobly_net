@@ -51,3 +51,19 @@ pub fn save_target(s SaveState) SaveTarget {
 	}
 	return .model
 }
+
+// reserialize_drops_comments reports whether writing the model back over `file_text` (a Buses-tab
+// Save, which reserializes from the model) would silently drop authored comments — the header and
+// inline hints that are how the .blobnet format is learned (#80). A reserializing Save is the ONLY
+// path that loses them (File ▸ Save writes the buffer verbatim). A line counts as a comment when
+// its first non-space character is '#'; a '#' inside a value is not a comment line, so a scan for
+// the character alone would over-warn. Pure so it is tested here rather than discovered on a file.
+pub fn reserialize_drops_comments(file_text string) bool {
+	for line in file_text.split_into_lines() {
+		t := line.trim_left(' \t')
+		if t.starts_with('#') {
+			return true
+		}
+	}
+	return false
+}

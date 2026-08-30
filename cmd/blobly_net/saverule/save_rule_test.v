@@ -20,3 +20,12 @@ fn test_save_target_by_state() {
 	assert save_target(SaveState{ picker_open: true }) == .nothing
 	assert save_target(SaveState{ picker_open: true, text_dirty: true, file_visible: true }) == .nothing
 }
+
+fn test_reserialize_drops_comments() {
+	assert reserialize_drops_comments('# a header\nbuses:\n')
+	assert reserialize_drops_comments('buses:\n  - name: CAN0  # trailing note is on its own? no\n') == false // trailing # is not a comment LINE
+	assert reserialize_drops_comments('    # indented comment\nx: 1') // leading whitespace before #
+	assert reserialize_drops_comments('buses:\n  - name: CAN0\n') == false
+	assert reserialize_drops_comments('') == false
+	assert reserialize_drops_comments('name: "a # b"') == false // # inside a value is not a comment line
+}

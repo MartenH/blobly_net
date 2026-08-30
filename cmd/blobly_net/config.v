@@ -946,6 +946,20 @@ fn (mut app App) save_project() {
 		app.show_config = true
 		return
 	}
+	// #80: this Save reserializes from the model and CANNOT keep the file's comments (only
+	// File ▸ Save writes the buffer verbatim). If the on-disk file has any, refuse the FIRST
+	// time and point at the File tab; a second Save (same path still selected) proceeds, so an
+	// operator who means it is not stuck. save_project is the one reserializing path (the Buses
+	// Save button and the menu both reach it), so the guard lives here.
+	if app.proj_path != app.reserialize_warned {
+		on_disk := os.read_file(app.proj_path) or { '' }
+		if saverule.reserialize_drops_comments(on_disk) {
+			app.reserialize_warned = app.proj_path
+			app.notify('not saved yet — this Save rewrites the file from the model and would DROP its comments (the header + inline hints). Use Configuration ▸ File ▸ Save to keep them, or click Save again to reserialize anyway.')
+			app.show_config = true
+			return
+		}
+	}
 	app.mu.lock()
 	p := app.proj
 	path := app.proj_path
@@ -956,6 +970,7 @@ fn (mut app App) save_project() {
 	}
 	app.dirty = false
 	app.saved_at = time.ticks()
+	app.reserialize_warned = '' // the file was just rewritten (comments gone); re-warn if reopened
 	app.cfg_invalidate() // the file just changed under the File tab
 	app.notify('saved -> ${path}')
 }
