@@ -532,6 +532,27 @@ fn (mut app App) set_adapter(i int, a string) {
 	app.rebuild_preserving_senders()
 }
 
+// retarget_bus points an EXISTING row at a detected interface — adapter and address together —
+// keeping its name, network, bitrates, DBCs and manifests. Before this the only way from
+// SocketCAN to a CANsub was Discover's "+ Add ticked", which ADDS a row, so switching a project
+// between the host's PCAN and the CANsub meant re-creating every bus and carrying its
+// attachments across by hand, or editing the file. The adapter half goes through set_adapter so
+// the listen-only and DoIP rules apply exactly as they do for the picker buttons.
+fn (mut app App) retarget_bus(i int, adapter string, address string) {
+	if i < 0 || i >= app.proj.channels.len || i >= app.cfg_bufs.len {
+		return
+	}
+	if app.proj.channels[i].adapter != adapter {
+		app.set_adapter(i, adapter)
+	}
+	old_iface := app.proj.channels[i].iface
+	app.cfg_bufs[i].address_buf = mkbuf(address, 64)
+	app.proj.channels[i].address = address
+	app.proj.channels[i].iface = project.compose_iface(adapter, address)
+	app.rebind_senders(old_iface, app.proj.channels[i].iface)
+	app.dirty = true
+}
+
 // rebuild_preserving_senders folds unsaved Generators-panel edits (gen_bufs id/data) into
 // app.proj before rebuilding the runtime view — so a structural config change (add/remove
 // bus/DBC, adapter/mode) doesn't discard them when rebuild_from_proj repopulates senders from
