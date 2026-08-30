@@ -646,16 +646,20 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	mut last_diag := if ci < a.chans.len { a.chans[ci].diag } else { transport.BusDiagnostics{} }
 	a.mu.unlock()
 	mut next_health := i64(0)
+	// ASK OFTEN UNTIL THE WIRE HAS ANSWERED ONCE, and only briefly. A driver's first health
+	// sample lands a few hundred ms after open (CANsub: its own first poll, ~260 ms after Start,
+	// measured 2026-08-30), and a first look here that came back `unknown` waited a full second
+	// for the next — so "bus ok" was narrated ~1 s after the wire had been carrying frames.
+	// Bounded by a WINDOW, not by the answer: inproc:, udp: and a healthy SocketCAN wire never
+	// report anything but `unknown`, and a cadence tied to the answer would keep them — and the
+	// diagnostics narration below, which shares this look — at 100 ms for the whole run
+	// (codex on #265). Two seconds covers any driver's first sample; after that, once a second.
+	fast_until := time.ticks() + 2000
 	for a.running && a.run_gen == gen && a.chans[ci].enabled {
 		if time.ticks() >= next_health {
 			h := bus.health()
-			// ASK OFTEN UNTIL THE WIRE HAS ANSWERED ONCE. A driver's first health sample lands a
-			// few hundred ms after open (CANsub: its own first poll, ~260 ms after Start, measured
-			// 2026-08-30), and a first look here that came back `unknown` waited a full second
-			// for the next — so "bus ok" was narrated ~1 s after the wire had been carrying
-			// frames. Once one answer is in, a second per look is plenty.
 			next_health = time.ticks() + 1000
-			if h == .unknown && last_health == .unknown {
+			if h == .unknown && last_health == .unknown && time.ticks() < fast_until {
 				next_health = time.ticks() + 100
 			}
 			if h != .unknown && h != last_health {
