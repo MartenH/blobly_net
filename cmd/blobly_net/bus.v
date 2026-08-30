@@ -37,6 +37,23 @@ struct Chan {
 mut:
 	enabled bool
 	rx      u64
+	// BUS LOAD (transport.busload): bit-times seen on this wire since the last roll, rolled
+	// once a second into `load_hist` — the last 60 seconds of load, oldest first — and the
+	// second's value in `load_pct`. Our own sends count (they are on the wire, and counted
+	// once the driver took them); so does every RX. Held by the wire's RUNNING row: an alias
+	// row on the same destination folds in here. Zeroed at Start.
+	load_bits f64
+	load_at   f64
+	load_pct  f32
+	load_hist []f32
+	// what a handoff left unclosed (loadrule.Wire.carry_*)
+	load_carry_bits f64
+	load_carry_ms   f64
+	// The rates this row's load is priced at, resolved ONCE per run the first time they are
+	// asked for (wire_rates_locked) and kept, so an alias enabled mid-run cannot re-price bits
+	// already in the interval (codex #263 r8). Zeroed at Start; carried by the handoff.
+	load_nominal int
+	load_data    int
 	// When traffic last reached this wire (the trace's clock, App.since_ms) and whether any ever
 	// did. Enough to answer "how long has this bus been silent?" without touching the trace: the
 	// ring is capped and filtered, and a wire is silent whether or not its rows are still on
@@ -230,6 +247,8 @@ fn (mut t TapBus) send(frame transport.CanFrame) ! {
 		t.app.unrecord(rec_id)
 		return err
 	}
+	// The driver has it: it is on the wire, and the wire's load.
+	t.app.count_tx_load(t.iface, wire)
 }
 
 fn (mut t TapBus) recv(timeout_ms int) !transport.CanFrame {

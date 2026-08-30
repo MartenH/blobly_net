@@ -104,6 +104,7 @@ fn C.vgui_spacing()
 fn C.vgui_separator()
 fn C.vgui_quit()
 fn C.vgui_plot_begin(&char, f32) int
+fn C.vgui_sparkline(&char, &f32, int, f32, f32, f32)
 fn C.vgui_plot_line(&char, &f32, &f32, int)
 fn C.vgui_plot_begin2(&char, f32, f64, f64, int) int
 fn C.vgui_plot_line_axis(&char, &f32, &f32, int, int)
@@ -473,6 +474,15 @@ pub fn quit() {
 
 // --- ImPlot line plots (native pan/zoom/legend; auto-fit axes) ---
 // plot_begin opens a plot of the given pixel height; returns false if not visible.
+// sparkline draws `ys` (each in 0..y_max) as a tiny frameless strip of `w` x `h` pixels — a
+// bus-load history on a Buses row, nothing to click, nothing to read but the shape.
+pub fn sparkline(id string, ys []f32, y_max f32, w f32, h f32) {
+	if ys.len < 2 {
+		return
+	}
+	C.vgui_sparkline(id.str, &ys[0], ys.len, y_max, w, h)
+}
+
 pub fn plot_begin(title string, height f32) bool {
 	return C.vgui_plot_begin(title.str, height) == 1
 }

@@ -474,6 +474,23 @@ void vgui_dock_3(const char* a, const char* b, const char* c, float aw, float cw
 }
 
 // --- ImPlot line plot (live signal graphs) ---
+// vgui_sparkline: a tiny frameless plot of `n` samples in [0, y_max] — no axes, no legend,
+// no mouse, no title — sized `w` x `h` pixels. For a bus-load strip on a Buses row.
+void vgui_sparkline(const char* id, const float* ys, int n, float y_max, float w, float h) {
+    ImPlotFlags pf = ImPlotFlags_NoTitle | ImPlotFlags_NoLegend | ImPlotFlags_NoMenus
+                   | ImPlotFlags_NoMouseText | ImPlotFlags_NoInputs | ImPlotFlags_NoFrame;
+    ImPlotAxisFlags af = ImPlotAxisFlags_NoDecorations;
+    ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(0, 0));
+    if (ImPlot::BeginPlot(id, ImVec2(w, h), pf)) {
+        ImPlot::SetupAxes(nullptr, nullptr, af, af);
+        ImPlot::SetupAxesLimits(0, n > 1 ? n - 1 : 1, 0, y_max, ImPlotCond_Always);
+        ImPlot::PlotShaded("##fill", ys, n, 0.0);
+        ImPlot::PlotLine("##line", ys, n);
+        ImPlot::EndPlot();
+    }
+    ImPlot::PopStyleVar();
+}
+
 int vgui_plot_begin(const char* title, float height) {
     if (ImPlot::BeginPlot(title, ImVec2(-1, height))) {
         ImPlot::SetupAxes("t (s)", NULL, ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);

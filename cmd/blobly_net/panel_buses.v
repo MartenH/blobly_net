@@ -566,6 +566,20 @@ fn draw_buses(mut app App, chans []Chan) {
 			vgui.text_colored(r, g, b, label)
 			vgui.same_line()
 			vgui.text('${c.name}  ${c.iface}  [${c.mode}]  RX ${c.rx}')
+			// BUS LOAD, the gauge every CAN tool shows: the last sixty seconds as a strip and
+			// this second as a number. Bits on the wire over the wire's rate
+			// (transport.busload), worst-case stuffing, ours and theirs alike.
+			// The number as soon as one interval has closed; the strip once there are two points
+			// to draw a line between (codex #263 r4).
+			if c.running && !c.doip && c.load_hist.len >= 1 {
+				if c.load_hist.len >= 2 {
+					vgui.same_line()
+					vgui.sparkline('##load${c.iface}', c.load_hist, 100, 90 * app.ui_scale, 16 * app.ui_scale)
+					vgui.set_item_tooltip('bus load, about the last ${c.load_hist.len} s — bit-times of DECODED frames on ${c.iface} over ${if c.load_nominal > 0 { c.load_nominal } else if c.bitrate > 0 { c.bitrate } else { project.default_bitrate }} bit/s, worst-case stuffing. Error frames, retransmissions and overrun drops are not in it — see the fault ladder')
+				}
+				vgui.same_line()
+				vgui.text_dim('load ${c.load_pct:.0f}%')
+			}
 			// Silence, per wire, next to the row it belongs to. The ladder colour to the left
 			// cannot carry this: a listening channel whose cable is pulled reports a perfectly
 			// healthy bus, because CAN has no link detection and an unplugged wire is
