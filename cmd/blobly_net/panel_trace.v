@@ -388,9 +388,10 @@ mut:
 	count  int
 	// The `cycle (ms)` measurement: the accepted frames it averages over. The ring holds 2000
 	// rows, so this is the cadence over the window the reader is looking at, not over all
-	// time — and not across a silence either: cyclerule restarts it at a run boundary and at
-	// a gap out of proportion to the cadence, because the ring survives a Stop and a window
-	// spanning the stopped gap read a 10 Hz message at hundreds of ms for a long while after.
+	// time — and not across a silence either: cyclerule restarts it at the run boundary (a
+	// row's seq against trace_run_base) and at a gap out of proportion to the cadence, because
+	// the ring survives a Stop and a window spanning the stopped gap read a 10 Hz message at
+	// hundreds of ms for a long while after.
 	cyc cyclerule.Window
 	// Any frame in this group that never reached the wire. Taken across the whole group, not
 	// from `last`: the newest row is the one whose echo window has had least time to close, so
@@ -465,11 +466,12 @@ const gcol_data = 7
 
 fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt string) {
 	mut agg := map[string]GAgg{}
-	// The run boundary applies to LIVE rows only. A recording's rows are stamped relative to
-	// the file's first entry (load_recording), not to the app clock run_start_ms is on, so
-	// comparing the two would make an arbitrary point inside the file a "Start" and reset the
-	// window there (codex on #266). Below any stamp, no frame can cross it.
-	run_start := if app.viewing_rec == '' { app.run_start_ms } else { -1.0 }
+	// The run boundary is row IDENTITY, not a stamp: Start, Clear and Load each reset
+	// trace_run_base to the next seq, so a row belongs to the current measurement iff its seq
+	// is at or past the base, and a group's first such row following one before it starts the
+	// cycle window over. Stamps cannot say this — a loaded recording's rows are on the file's
+	// clock and a Resume appends live rows behind them (codex on #266, twice).
+	base := app.trace_run_base
 	for r in rows {
 		if !trace_pass(r, filt) {
 			continue
@@ -507,7 +509,8 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		// only ACCEPTED frames feed the cycle (the refused ones `continue`d above): a group
 		// whose oldest retained row was refused otherwise carried the whole bus-off interval
 		// in its span, overstating the cycle long after recovery (codex #143 r3)
-		g.cyc = cyclerule.step(g.cyc, r.t_ms, run_start)
+		new_run := g.count > 0 && g.last.seq < base && r.seq >= base
+		g.cyc = cyclerule.step(g.cyc, r.t_ms, new_run)
 		g.count++
 		g.last = r
 		agg[k] = g

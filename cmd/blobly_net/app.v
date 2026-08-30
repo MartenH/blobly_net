@@ -89,9 +89,6 @@ mut:
 	// after a trimmed import starts at 0 instead of the file's frame count. Distinct from
 	// trace_base, which additionally advances on every ring trim.
 	trace_run_base u64
-	// since_ms() at the latest Start: the run boundary the `cycle (ms)` window restarts at
-	// (cyclerule), so a Stop's silence never enters a cadence.
-	run_start_ms f64
 	ghost_seq      u64                    // identities for emissions made while paused (see ghost_base)
 	tx_mutexes     map[string]&sync.Mutex // per-interface send order (see TapBus.tx_mu)
 	// Stable identity for recording entries, exactly like trace_seq/trace_base for rows: the

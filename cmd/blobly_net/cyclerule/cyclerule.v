@@ -34,18 +34,15 @@ pub const gap_factor = 5.0
 // second frame of every burst.
 pub const min_intervals = 2
 
-// step folds one accepted frame at `t` into `w`. `run_start` is the stamp at which the current
-// run began: a frame at or after it, following one from before it, is the first of a new run
-// and starts the window over. Frames from BEFORE the run are averaged among themselves as
-// before — a group that stopped sending keeps its last cadence until its rows age out. A
-// `run_start` below every stamp (the caller passes -1 for a recording, whose stamps are on
-// the file's clock) means no boundary at all.
-pub fn step(w Window, t f64, run_start f64) Window {
-	if w.count == 0 {
-		return Window{t, t, 1}
-	}
-	crosses_start := w.last_t < run_start && t >= run_start
-	if crosses_start || breaks(w, t) {
+// step folds one accepted frame at `t` into `w`. `new_run` says this frame is the first of the
+// group in the current measurement — the caller knows it from row IDENTITY (a row's seq
+// against the base Start/Clear/Load reset), never from comparing stamps: a loaded recording's
+// rows are on the file's clock, and a Resume appends live rows behind them, so no stamp
+// comparison can tell the two apart (codex on #266). A new run starts the window over; frames
+// from BEFORE it are averaged among themselves as before, so a group that stopped sending
+// keeps its last cadence until its rows age out.
+pub fn step(w Window, t f64, new_run bool) Window {
+	if w.count == 0 || new_run || breaks(w, t) {
 		return Window{t, t, 1}
 	}
 	return Window{w.first_t, t, w.count + 1}

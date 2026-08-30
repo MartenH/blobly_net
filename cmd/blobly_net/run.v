@@ -622,7 +622,6 @@ fn (mut app App) start() {
 	// symptom trace_run_base exists to prevent, reintroduced through the import's seq advance
 	// (codex #130 pre-review). Rows already in the ring keep their frozen idx.
 	app.trace_run_base = app.trace_seq
-	app.run_start_ms = app.since_ms()
 	// The load starts over HERE, under app.mu and before the transmit locks below are
 	// released: a guardless tap a script kept from the previous run may send the instant
 	// they are, and count_tx_load writes these fields under the lock this reset would
