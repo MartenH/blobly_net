@@ -951,8 +951,13 @@ fn (mut app App) save_project() {
 	// time and point at the File tab; a second Save (same path still selected) proceeds, so an
 	// operator who means it is not stuck. save_project is the one reserializing path (the Buses
 	// Save button and the menu both reach it), so the guard lives here.
-	if app.proj_path != app.reserialize_warned {
-		on_disk := os.read_file(app.proj_path) or { '' }
+	if app.proj_path != app.reserialize_warned && os.exists(app.proj_path) {
+		on_disk := os.read_file(app.proj_path) or {
+			// unreadable but present: we CANNOT tell whether reserializing is destructive, and
+			// os.write_file may still truncate it — refuse rather than assume no comments (codex #268)
+			app.notify('not saved — could not read ${app.proj_path} to check for comments this Save would drop (${err}); resolve the read error first')
+			return
+		}
 		if saverule.reserialize_drops_comments(on_disk) {
 			app.reserialize_warned = app.proj_path
 			app.notify('not saved yet — this Save rewrites the file from the model and would DROP its comments (the header + inline hints). Use Configuration ▸ File ▸ Save to keep them, or click Save again to reserialize anyway.')
@@ -1060,9 +1065,18 @@ fn (mut app App) save_as(path string) {
 	if !p.ends_with('.blobnet') && !p.ends_with('.yml') && !p.ends_with('.yaml') {
 		p += '.blobnet'
 	}
+	// save_project may STILL refuse here — its #80 comment guard warns before overwriting an
+	// existing commented target. If it does, proj_path must NOT stay bound to a file we did not
+	// write (relative assets would rebase and the next plain Save would target it). Restore the
+	// previous path when nothing was written, detected by saved_at not advancing (codex #268).
+	prev_path := app.proj_path
+	before := app.saved_at
 	app.proj_path = p
 	app.proj.name = app.proj_name
 	app.save_project()
+	if app.saved_at == before {
+		app.proj_path = prev_path // the Save As was refused: leave the app on its old file
+	}
 }
 
 // new_project resets to a blank, unsaved project (0 buses) — the from-scratch entry point.

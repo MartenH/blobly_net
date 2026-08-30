@@ -723,6 +723,7 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	// interface, node and message name, and a different project reusing all three would
 	// silently start with frames dropped or corrupted — as if the tool were broken.
 	sim.clear_all()
+	app.reserialize_warned = '' // a different project: a prior warning does not confirm THIS file's Save (codex #268)
 	app.cfg_invalidate() // a different project: the File tab must not keep the old one's text
 	app.mu.lock()
 	app.reset_trace_locked()

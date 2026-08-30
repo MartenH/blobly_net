@@ -115,7 +115,10 @@ behind that guard). Bundle payload list: `scripts/stage_bundle.sh`, once, for bo
 
 CI (`.github/workflows/`) runs `v -enable-globals test modules/` (plus
 `cmd/blobly_net/saverule/`, `cmd/blobly_net/logfile/`, `cmd/blobly_net/taprule/` and
-`cmd/blobly_net/loadrule/`, the GUI-local rules with tests — what Save means (#250); where the
+`cmd/blobly_net/loadrule/`, the GUI-local rules with tests — what Save means (#250; a
+model/reserializing Save — the Buses tab, the menu — rebuilds the file and CANNOT keep its
+comments, so it warns once and points at File ▸ Save, which writes the buffer verbatim; the
+predicate is `saverule.reserialize_drops_comments`, #80); where the
 session log lives, what it is called, how many are kept and what its header says (#258); the
 transmit-tap lifecycle — when a tap is filed, when a sender is ready, when a manual send may
 fall back, when an abandoned tap is dropped — the path #257 took ten review rounds on (#260);

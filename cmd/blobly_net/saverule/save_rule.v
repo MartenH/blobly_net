@@ -55,13 +55,38 @@ pub fn save_target(s SaveState) SaveTarget {
 // reserialize_drops_comments reports whether writing the model back over `file_text` (a Buses-tab
 // Save, which reserializes from the model) would silently drop authored comments — the header and
 // inline hints that are how the .blobnet format is learned (#80). A reserializing Save is the ONLY
-// path that loses them (File ▸ Save writes the buffer verbatim). A line counts as a comment when
-// its first non-space character is '#'; a '#' inside a value is not a comment line, so a scan for
-// the character alone would over-warn. Pure so it is tested here rather than discovered on a file.
+// path that loses them (File ▸ Save writes the buffer verbatim). Pure so it is tested here rather
+// than discovered on a file. A comment is a '#' that YAML would treat as one: at line start (after
+// whitespace) OR preceded by whitespace, and NOT inside a quoted scalar — so `name: "a # b"` and
+// `url: x#y` are not comments, but `interface: can0  # note` is (codex #268: trailing hints count).
+pub fn line_has_yaml_comment(line string) bool {
+	mut in_s := false // '\''
+	mut in_d := false // '"'
+	mut prev_ws := true // start-of-line counts as preceded by whitespace
+	for c in line {
+		if in_s {
+			if c == `'` {
+				in_s = false
+			}
+		} else if in_d {
+			if c == `"` {
+				in_d = false
+			}
+		} else if c == `'` {
+			in_s = true
+		} else if c == `"` {
+			in_d = true
+		} else if c == `#` && prev_ws {
+			return true
+		}
+		prev_ws = c == ` ` || c == `\t`
+	}
+	return false
+}
+
 pub fn reserialize_drops_comments(file_text string) bool {
 	for line in file_text.split_into_lines() {
-		t := line.trim_left(' \t')
-		if t.starts_with('#') {
+		if line_has_yaml_comment(line) {
 			return true
 		}
 	}

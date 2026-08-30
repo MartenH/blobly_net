@@ -23,9 +23,24 @@ fn test_save_target_by_state() {
 
 fn test_reserialize_drops_comments() {
 	assert reserialize_drops_comments('# a header\nbuses:\n')
-	assert reserialize_drops_comments('buses:\n  - name: CAN0  # trailing note is on its own? no\n') == false // trailing # is not a comment LINE
+	// trailing YAML comment after a value IS dropped by a reserializing Save (codex #268)
+	assert reserialize_drops_comments('buses:\n  - name: CAN0  # a hint\n')
 	assert reserialize_drops_comments('    # indented comment\nx: 1') // leading whitespace before #
 	assert reserialize_drops_comments('buses:\n  - name: CAN0\n') == false
 	assert reserialize_drops_comments('') == false
-	assert reserialize_drops_comments('name: "a # b"') == false // # inside a value is not a comment line
+	assert reserialize_drops_comments('name: "a # b"') == false // # inside a double-quoted value
+	assert reserialize_drops_comments("name: 'a # b'") == false // # inside a single-quoted value
+	assert reserialize_drops_comments('url: http://x#frag') == false // # not preceded by whitespace
+	assert reserialize_drops_comments('addr: can0  # note  # two') // first valid # wins
+}
+
+fn test_line_has_yaml_comment() {
+	assert line_has_yaml_comment('# whole line')
+	assert line_has_yaml_comment('   # indented')
+	assert line_has_yaml_comment('k: v # trailing')
+	assert line_has_yaml_comment('k: "v # not"') == false
+	assert line_has_yaml_comment("k: 'v # not'") == false
+	assert line_has_yaml_comment('k: v#glued') == false // no whitespace before #
+	assert line_has_yaml_comment('k: v') == false
+	assert line_has_yaml_comment('') == false
 }
