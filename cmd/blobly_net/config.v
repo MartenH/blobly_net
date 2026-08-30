@@ -857,7 +857,7 @@ fn (mut app App) save_cfg_text() {
 	app.notify('saved -> ${path}')
 	app.dirty = false
 	app.cfg_text_dirty = false
-	app.reserialize_warned = '' // a File save is not the warned reserializing Save; re-warn a later Buses Save (codex #268 r2)
+	app.reserialize_confirm = '' // a File save persists the comments; a later Buses Save must re-warn (codex #268)
 	app.saved_at = time.ticks()
 	// rebuild_from_proj, NOT load_project: the full open path calls set_project, which clears
 	// the trace rows, grouped counts, telemetry records, diagnostic and script logs and signal
@@ -907,7 +907,7 @@ fn (mut app App) revert_proj_from_disk() {
 		return
 	}
 	app.dirty = false
-	app.reserialize_warned = '' // the warned attempt was abandoned by the revert (codex #268 r2)
+	app.reserialize_confirm = '' // revert replaced the model; drop any pending confirmation (codex #268)
 	app.cfg_invalidate()
 	app.load_cfg_text()
 	app.notify('unsaved model edits discarded (buses + generators)')
@@ -933,6 +933,29 @@ fn (mut app App) save_project() {
 		app.cfg_tab = 1
 		return
 	}
+	// #80: a reserializing Save (Buses tab / menu) rebuilds the file from the model and CANNOT
+	// keep its comments — only File ▸ Save writes the buffer verbatim. Guard BEFORE apply_edits so
+	// a refusal does not rebuild the runtime (which would resolve assets against a Save-As
+	// destination that is not being written — codex #268). Warn on the FIRST such Save and
+	// remember the model; a second Save proceeds only if the model is unchanged since, so any
+	// structured edit / load / revert re-warns rather than counting as the confirmation.
+	if os.exists(app.proj_path) {
+		on_disk := os.read_file(app.proj_path) or {
+			// present but unreadable: os.write_file may still truncate it and we cannot tell
+			// whether reserializing is destructive — refuse rather than assume no comments.
+			app.notify('not saved — could not read ${app.proj_path} to check for comments this Save would drop (${err}); resolve the read error first')
+			return
+		}
+		if saverule.reserialize_drops_comments(on_disk) {
+			snap := app.proj.to_yaml()
+			if app.reserialize_confirm != snap {
+				app.reserialize_confirm = snap
+				app.notify('not saved yet — this Save rewrites the file from the model and would DROP its comments (the header + inline hints). Use Configuration ▸ File ▸ Save to keep them, or click Save again to reserialize anyway.')
+				app.show_config = true
+				return
+			}
+		}
+	}
 	app.apply_edits()
 	// THE SAME REFUSAL AS START'S, and Save needs it more: writing the file would persist the
 	// value the rejected field replaced, so a typo the operator can still see on screen becomes
@@ -948,25 +971,6 @@ fn (mut app App) save_project() {
 		app.show_config = true
 		return
 	}
-	// #80: this Save reserializes from the model and CANNOT keep the file's comments (only
-	// File ▸ Save writes the buffer verbatim). If the on-disk file has any, refuse the FIRST
-	// time and point at the File tab; a second Save (same path still selected) proceeds, so an
-	// operator who means it is not stuck. save_project is the one reserializing path (the Buses
-	// Save button and the menu both reach it), so the guard lives here.
-	if app.proj_path != app.reserialize_warned && os.exists(app.proj_path) {
-		on_disk := os.read_file(app.proj_path) or {
-			// unreadable but present: we CANNOT tell whether reserializing is destructive, and
-			// os.write_file may still truncate it — refuse rather than assume no comments (codex #268)
-			app.notify('not saved — could not read ${app.proj_path} to check for comments this Save would drop (${err}); resolve the read error first')
-			return
-		}
-		if saverule.reserialize_drops_comments(on_disk) {
-			app.reserialize_warned = app.proj_path
-			app.notify('not saved yet — this Save rewrites the file from the model and would DROP its comments (the header + inline hints). Use Configuration ▸ File ▸ Save to keep them, or click Save again to reserialize anyway.')
-			app.show_config = true
-			return
-		}
-	}
 	app.mu.lock()
 	p := app.proj
 	path := app.proj_path
@@ -977,7 +981,7 @@ fn (mut app App) save_project() {
 	}
 	app.dirty = false
 	app.saved_at = time.ticks()
-	app.reserialize_warned = '' // the file was just rewritten (comments gone); re-warn if reopened
+	app.reserialize_confirm = '' // the file was just rewritten (comments gone); re-warn if reopened
 	app.cfg_invalidate() // the file just changed under the File tab
 	app.notify('saved -> ${path}')
 }

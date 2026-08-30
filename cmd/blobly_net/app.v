@@ -253,9 +253,11 @@ mut:
 	// answer: a project switch or a structured Save left old YAML on screen that Save would
 	// then write over the new file.
 	cfg_text_dirty bool
-	// #80: a reserializing Save (Buses tab) drops the .blobnet's comments; warn ONCE per path,
-	// then let a second Save through. Holds the path the operator was warned about.
-	reserialize_warned string
+	// #80: a reserializing Save (Buses tab) drops the .blobnet's comments. On the first such Save
+	// we warn and remember the MODEL we warned about (its to_yaml); the next Save proceeds only
+	// if the model is byte-identical — so any structured edit, load or revert since the warning
+	// re-warns rather than silently confirming (codex #268). '' = no pending confirmation.
+	reserialize_confirm string
 	// When the project (or the File tab's text) was last written, in time.ticks(): the toolbar
 	// shows "saved" beside the project name for a few seconds after, so a Ctrl+S is answered on
 	// the screen the user is looking at and not only in the Log (#247).
@@ -723,7 +725,7 @@ fn (mut app App) set_project(proj project.Project, path string) {
 	// interface, node and message name, and a different project reusing all three would
 	// silently start with frames dropped or corrupted — as if the tool were broken.
 	sim.clear_all()
-	app.reserialize_warned = '' // a different project: a prior warning does not confirm THIS file's Save (codex #268)
+	app.reserialize_confirm = '' // a different project: a prior warning does not confirm THIS file's Save (codex #268)
 	app.cfg_invalidate() // a different project: the File tab must not keep the old one's text
 	app.mu.lock()
 	app.reset_trace_locked()

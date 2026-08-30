@@ -52,38 +52,16 @@ pub fn save_target(s SaveState) SaveTarget {
 	return .model
 }
 
-// reserialize_drops_comments reports whether writing the model back over `file_text` (a Buses-tab
-// Save, which reserializes from the model) would silently drop authored comments — the header and
-// inline hints that are how the .blobnet format is learned (#80). A reserializing Save is the ONLY
-// path that loses them (File ▸ Save writes the buffer verbatim). Pure so it is tested here rather
-// than discovered on a file. A comment is a '#' that YAML would treat as one: at line start (after
-// whitespace) OR preceded by whitespace, and NOT inside a quoted scalar — so `name: "a # b"` and
-// `url: x#y` are not comments, but `interface: can0  # note` is (codex #268: trailing hints count).
-fn opens_quote(prev u8) bool {
-	// a quote begins a quoted scalar only where a scalar can start: after whitespace or a YAML
-	// value delimiter. An apostrophe inside a plain scalar (driver's CAN) is therefore content.
-	return prev == ` ` || prev == `\t` || prev == `:` || prev == `-` || prev == `[`
-		|| prev == `{` || prev == `,` || prev == 0
-}
-
+// line_has_yaml_comment reports whether a line carries a YAML comment a reserializing Save would
+// drop: a '#' at line start (after whitespace) or preceded by whitespace. It DELIBERATELY does
+// not track quoting — a '#' inside a quoted value (`name: "a # b"`) is reported as a comment too.
+// This biases to WARN: a false warning costs one extra confirmation, a missed comment loses the
+// user's text silently, and only the latter is a real failure (codex #268 — three rounds chasing
+// quote edge cases the other way). '#' glued to a non-space char (`url: x#y`) is not a comment.
 pub fn line_has_yaml_comment(line string) bool {
-	mut in_s := false // inside '...'
-	mut in_d := false // inside "..."
-	mut prev := u8(0)  // 0 = start of line
+	mut prev := u8(0) // 0 = start of line
 	for c in line {
-		if in_s {
-			if c == `'` {
-				in_s = false
-			}
-		} else if in_d {
-			if c == `"` {
-				in_d = false
-			}
-		} else if c == `'` && opens_quote(prev) {
-			in_s = true
-		} else if c == `"` && opens_quote(prev) {
-			in_d = true
-		} else if c == `#` && (prev == ` ` || prev == `\t` || prev == 0) {
+		if c == `#` && (prev == ` ` || prev == `\t` || prev == 0) {
 			return true
 		}
 		prev = c
@@ -91,6 +69,9 @@ pub fn line_has_yaml_comment(line string) bool {
 	return false
 }
 
+// reserialize_drops_comments reports whether reserializing over `file_text` (a Buses-tab Save,
+// which rebuilds the file from the model) would drop authored comments — the header and inline
+// hints that are how the .blobnet format is learned (#80). Only File ▸ Save keeps them verbatim.
 pub fn reserialize_drops_comments(file_text string) bool {
 	for line in file_text.split_into_lines() {
 		if line_has_yaml_comment(line) {
