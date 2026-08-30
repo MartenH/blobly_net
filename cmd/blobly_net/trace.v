@@ -392,12 +392,18 @@ fn (app &App) load_owner_locked(key string) int {
 // whichever came first — so read from the reader's row, a BRS frame through a classic row
 // had its whole payload charged at the nominal rate (codex #263 r4), and reordering two rows
 // halved the load and a handoff reinterpreted an interval at another rate (r6). The first
-// enabled row is still an order, but it is the same order for RX, TX and the handoff.
+// enabled row is still an order, but it is the same order for RX, TX and the handoff. And
+// it is resolved ONCE per row per run and kept: enabling an alias that precedes the reader
+// mid-run would otherwise change the answer under an interval whose bits were priced at the
+// old one, and the roll would divide them by the new rate — a false spike or dip (r8).
 //
 // An UNSET nominal rate is the project's default, the one reading the open path and
 // origination_framing already share (project.Channel.nominal_bitrate); the raw zero the row
 // keeps would make load_percent answer 0 % for every interval on a live wire (r5).
-fn (app &App) wire_rates_locked(i int) (int, int) {
+fn (mut app App) wire_rates_locked(i int) (int, int) {
+	if app.chans[i].load_nominal > 0 {
+		return app.chans[i].load_nominal, app.chans[i].load_data
+	}
 	key := transport.destination_key(app.chans[i].iface)
 	mut nominal := 0
 	mut data := 0
@@ -418,6 +424,8 @@ fn (app &App) wire_rates_locked(i int) (int, int) {
 	if nominal <= 0 {
 		nominal = project.default_bitrate
 	}
+	app.chans[i].load_nominal = nominal
+	app.chans[i].load_data = data
 	return nominal, data
 }
 

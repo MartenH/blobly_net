@@ -944,6 +944,8 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 					a.chans[cj].load_at = w.at
 					a.chans[cj].load_pct = w.pct
 					a.chans[cj].load_hist = w.hist
+					a.chans[cj].load_nominal = a.chans[ci].load_nominal
+					a.chans[cj].load_data = a.chans[ci].load_data
 					a.chans[ci].load_bits = 0
 					a.chans[ci].load_hist = []f32{}
 					a.chans[cj].spawning = true

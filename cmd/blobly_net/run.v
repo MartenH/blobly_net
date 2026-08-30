@@ -633,6 +633,8 @@ fn (mut app App) start() {
 		app.chans[ci].load_at = app.since_ms()
 		app.chans[ci].load_pct = 0
 		app.chans[ci].load_hist = []f32{}
+		app.chans[ci].load_nominal = 0
+		app.chans[ci].load_data = 0
 	}
 	app.mu.unlock()
 	for m in held {
