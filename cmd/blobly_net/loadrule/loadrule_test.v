@@ -111,3 +111,16 @@ fn test_handoff_drops_a_partial_interval_too_short_to_read() {
 	assert w.bits == 0
 	assert w.at == 1010
 }
+
+// AN IDLE PARTIAL INTERVAL IS A SAMPLE TOO: observed and empty is 0 %, not the previous
+// second carried on (codex #263 r9).
+fn test_handoff_closes_an_idle_partial_interval_as_zero() {
+	mut w := Wire{
+		at:   1000
+		pct:  27
+		hist: [f32(27.0)]
+	}
+	assert handoff(mut w, 1500, at_500k)
+	assert w.pct == 0
+	assert w.hist == [f32(27.0), 0]
+}

@@ -412,17 +412,16 @@ fn (mut app App) wire_rates_locked(i int) (int, int) {
 			continue
 		}
 		if nominal == 0 {
-			nominal = c.bitrate
+			// normalised HERE: an unset rate on the first row is 500 kbit/s, not "no answer
+			// yet" for a later row to overwrite (codex #263 r9)
+			nominal = if c.bitrate > 0 { c.bitrate } else { project.default_bitrate }
 		}
 		if data == 0 && c.data_bitrate > 0 {
 			data = c.data_bitrate
 		}
 	}
 	if nominal == 0 {
-		nominal = app.chans[i].bitrate
-	}
-	if nominal <= 0 {
-		nominal = project.default_bitrate
+		nominal = if app.chans[i].bitrate > 0 { app.chans[i].bitrate } else { project.default_bitrate }
 	}
 	app.chans[i].load_nominal = nominal
 	app.chans[i].load_data = data

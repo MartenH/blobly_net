@@ -98,11 +98,13 @@ pub fn roll(mut w Wire, owner Owner, now f64, pct Percent) bool {
 // the successor starts a clean interval at `now`. Carried across as bits instead, they were
 // rebased through the successor's spawn and then divided by its first second — 900 ms of
 // traffic read as a spike in an idle second (codex #263 r7). A partial interval shorter than
-// `min_handoff_ms` is dropped: a rate over a few milliseconds is noise, not a sample.
+// `min_handoff_ms` is dropped: a rate over a few milliseconds is noise, not a sample. An IDLE
+// partial interval closes as 0 % like any other — it was observed, and left open the
+// successor would show the previous sample for another second (codex #263 r9).
 pub fn handoff(mut w Wire, now f64, pct Percent) bool {
 	elapsed := now - w.at
 	mut closed := false
-	if w.at > 0 && elapsed >= min_handoff_ms && w.bits > 0 {
+	if w.at > 0 && elapsed >= min_handoff_ms {
 		w.pct = pct(w.bits, i64(elapsed))
 		w.hist << w.pct
 		if w.hist.len > keep {
