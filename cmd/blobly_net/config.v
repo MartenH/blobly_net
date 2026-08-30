@@ -947,7 +947,11 @@ fn (mut app App) save_project() {
 			return
 		}
 		if saverule.reserialize_drops_comments(on_disk) {
-			snap := app.proj.to_yaml()
+			// key the confirmation on the DESTINATION path AND the model: a snapshot alone would let
+			// a Save As to a different commented file (or the original) match a prior warning's
+			// snapshot and overwrite without its own warning (codex #268). '\x00' cannot occur in a
+			// path or in to_yaml output, so it is an unambiguous separator.
+			snap := app.proj_path + '\x00' + app.proj.to_yaml()
 			if app.reserialize_confirm != snap {
 				app.reserialize_confirm = snap
 				app.notify('not saved yet — this Save rewrites the file from the model and would DROP its comments (the header + inline hints). Use Configuration ▸ File ▸ Save to keep them, or click Save again to reserialize anyway.')
@@ -1081,7 +1085,14 @@ fn (mut app App) save_as(path string) {
 	app.proj.name = app.proj_name
 	app.save_project()
 	if app.saved_at == before {
-		app.proj_path = prev_path // the Save As was refused: leave the app on its old file
+		// The Save As did not write (the comment guard refused, or Project.save failed after
+		// apply_edits already rebuilt the runtime against the destination). Restore the path AND
+		// rebuild the assets back against it, so replay/DBC/manifest resolve from the old project's
+		// directory rather than the abandoned destination's (codex #268).
+		app.proj_path = prev_path
+		if !app.running {
+			app.rebuild_from_proj()
+		}
 	}
 }
 
