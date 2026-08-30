@@ -37,6 +37,10 @@ struct TraceRow {
 	// Carried on the row rather than computed at draw time because it depends on the PREVIOUS
 	// frame's counter — a verdict the trace cannot reconstruct once the frames are just rows.
 	e2e string
+	// From a loaded recording: stamped on the FILE's clock, not the app's. A live row appended
+	// behind imported ones (Resume, no Start) is on another clock, and the cycle window has
+	// to know where one clock ends and the other begins (cyclerule; codex on #266).
+	imported bool
 mut:
 	// An outbound row is written at emit, so it states intent; `missed` says its echo window
 	// closed with the frame never coming back off the wire. Those disagree in every bench
@@ -64,6 +68,11 @@ mut:
 	// rows. Start/Clear/Load all reset the base, so a new measurement numbers from 0 — a
 	// trimmed import pre-advances seq, so its rows freeze to the file's own frame numbers.
 	idx u64
+	// The measurement this row was pushed into: trace_run_base at push, which Start, Clear and
+	// Load each move. Frozen on the row like idx, because the base itself remembers only the
+	// NEWEST boundary — a group silent across two Starts still has rows from three
+	// measurements in the ring, and the cycle window must restart at each (codex on #266).
+	run u64
 }
 
 // has_payload gates every SIGNAL-DECODING consumer of a row's data. An RTR frame's data is a
@@ -117,6 +126,7 @@ fn (mut app App) push_row_locked(row TraceRow) u64 {
 	mut r := row
 	r.seq = seq
 	r.idx = seq - app.trace_run_base // frozen here — see the field
+	r.run = app.trace_run_base
 	app.trace << r
 	// Trimmed in CHUNKS. Reslicing to the cap on every append copies the whole ring each time —
 	// unnoticeable at a few frames a second, and the dominant cost when a recording is imported,

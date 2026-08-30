@@ -244,6 +244,7 @@ fn (mut app App) load_recording(path string) {
 			name:   name
 			data:   f.data.clone()
 			e2e:    viol
+			imported: true
 		})
 	}
 	app.mu.unlock()

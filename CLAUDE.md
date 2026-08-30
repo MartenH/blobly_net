@@ -120,7 +120,10 @@ session log lives, what it is called, how many are kept and what its header says
 transmit-tap lifecycle — when a tap is filed, when a sender is ready, when a manual send may
 fall back, when an abandoned tap is dropped — the path #257 took ten review rounds on (#260);
 and when a bus-load interval closes and what a spawning or unread row does with the one in
-progress — the path #263 took four rounds on — kept in GUI-free sub-modules so they run
+progress — the path #263 took four rounds on; and `cmd/blobly_net/cyclerule/`, the trace's
+`cycle (ms)` window — when it restarts, at a run or clock boundary the caller names from row
+identity and at a gap out of proportion to the cadence, so a Stop's or a dropout's silence is
+never averaged into a cadence (#266) — kept in GUI-free sub-modules so they run
 without ImGui), `scripts/runtests.sh`,
 `scripts/check_cmds.sh` (every `cmd/*` entry point type-checked for BOTH `-os` targets, on both
 jobs — nothing else compiles a CLI tool, and two sat broken for months that way, #220) and
