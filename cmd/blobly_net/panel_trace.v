@@ -466,14 +466,14 @@ const gcol_data = 7
 
 fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt string) {
 	mut agg := map[string]GAgg{}
-	// The run boundary is row IDENTITY, not a stamp: Start, Clear and Load each reset
-	// trace_run_base to the next seq, so a row belongs to the current measurement iff its seq
-	// is at or past the base, and a group's first such row following one before it starts the
-	// cycle window over. And a CLOCK boundary: a Resume without a Start appends live rows,
-	// on the app's clock, behind a recording's rows on the file's, with the base untouched —
-	// so a row also says which clock it is on (TraceRow.imported), and a change of clock
-	// restarts the window too. Stamps alone cannot say either (codex on #266, three rounds).
-	base := app.trace_run_base
+	// The run boundary is row IDENTITY, not a stamp: every row carries the measurement it
+	// was pushed into (TraceRow.run — the base Start, Clear and Load each move, frozen at
+	// push, because the live base remembers only the newest boundary and a group silent
+	// across two Starts has rows from three measurements in the ring), and a group's first
+	// row of a new measurement starts the cycle window over. And a CLOCK boundary: a Resume
+	// without a Start appends live rows, on the app's clock, behind a recording's rows on the
+	// file's, in the same measurement — so a row also says which clock it is on
+	// (TraceRow.imported). Stamps alone can say neither (codex on #266, four rounds).
 	for r in rows {
 		if !trace_pass(r, filt) {
 			continue
@@ -511,8 +511,7 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		// only ACCEPTED frames feed the cycle (the refused ones `continue`d above): a group
 		// whose oldest retained row was refused otherwise carried the whole bus-off interval
 		// in its span, overstating the cycle long after recovery (codex #143 r3)
-		new_run := g.count > 0
-			&& ((g.last.seq < base && r.seq >= base) || g.last.imported != r.imported)
+		new_run := g.count > 0 && (g.last.run != r.run || g.last.imported != r.imported)
 		g.cyc = cyclerule.step(g.cyc, r.t_ms, new_run)
 		g.count++
 		g.last = r
