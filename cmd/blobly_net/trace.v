@@ -37,6 +37,10 @@ struct TraceRow {
 	// Carried on the row rather than computed at draw time because it depends on the PREVIOUS
 	// frame's counter — a verdict the trace cannot reconstruct once the frames are just rows.
 	e2e string
+	// From a loaded recording: stamped on the FILE's clock, not the app's. A live row appended
+	// behind imported ones (Resume, no Start) is on another clock, and the cycle window has
+	// to know where one clock ends and the other begins (cyclerule; codex on #266).
+	imported bool
 mut:
 	// An outbound row is written at emit, so it states intent; `missed` says its echo window
 	// closed with the frame never coming back off the wire. Those disagree in every bench

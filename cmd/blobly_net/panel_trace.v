@@ -469,8 +469,10 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 	// The run boundary is row IDENTITY, not a stamp: Start, Clear and Load each reset
 	// trace_run_base to the next seq, so a row belongs to the current measurement iff its seq
 	// is at or past the base, and a group's first such row following one before it starts the
-	// cycle window over. Stamps cannot say this — a loaded recording's rows are on the file's
-	// clock and a Resume appends live rows behind them (codex on #266, twice).
+	// cycle window over. And a CLOCK boundary: a Resume without a Start appends live rows,
+	// on the app's clock, behind a recording's rows on the file's, with the base untouched —
+	// so a row also says which clock it is on (TraceRow.imported), and a change of clock
+	// restarts the window too. Stamps alone cannot say either (codex on #266, three rounds).
 	base := app.trace_run_base
 	for r in rows {
 		if !trace_pass(r, filt) {
@@ -509,7 +511,8 @@ fn draw_trace_grouped(mut app App, rows []TraceRow, gcount map[string]u64, filt 
 		// only ACCEPTED frames feed the cycle (the refused ones `continue`d above): a group
 		// whose oldest retained row was refused otherwise carried the whole bus-off interval
 		// in its span, overstating the cycle long after recovery (codex #143 r3)
-		new_run := g.count > 0 && g.last.seq < base && r.seq >= base
+		new_run := g.count > 0
+			&& ((g.last.seq < base && r.seq >= base) || g.last.imported != r.imported)
 		g.cyc = cyclerule.step(g.cyc, r.t_ms, new_run)
 		g.count++
 		g.last = r

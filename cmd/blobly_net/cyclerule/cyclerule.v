@@ -30,9 +30,13 @@ pub:
 pub const gap_factor = 5.0
 
 // min_intervals is how many intervals the window needs before a gap can be judged against its
-// average: one interval is not a cadence, and breaking on it would restart the window on the
-// second frame of every burst.
-pub const min_intervals = 2
+// average. ONE: the ring is trimmed globally, so a sparse group can be left holding just two
+// frames from before a dropout, and a rule that waited for a second interval would fold the
+// recovery frame in, inflate the average with the gap, and then never see a gap again (codex
+// on #266: `[100, 200, 2200, 2300, 2400]` read 575 for good). Judging on one interval risks
+// only a spurious restart after an unusually short interval — which costs a `-` for one frame
+// and converges on the next, where the other mistake was permanent.
+pub const min_intervals = 1
 
 // step folds one accepted frame at `t` into `w`. `new_run` says this frame is the first of the
 // group in the current measurement — the caller knows it from row IDENTITY (a row's seq

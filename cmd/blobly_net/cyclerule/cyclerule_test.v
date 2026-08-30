@@ -25,6 +25,7 @@ fn test_a_stop_does_not_enter_the_span() {
 	mut w := fold([0.0, 100, 200])
 	assert cycle_ms(w)? == 100.0 // pre-run frames still average among themselves
 	
+
 	w = step(w, 60_010, true)
 	assert w.count == 1
 	assert cycle_ms(w) == none
@@ -46,16 +47,22 @@ fn test_jitter_is_not_a_gap() {
 	assert breaks(Window{0, 200, 3}, 200 + 501)
 }
 
-fn test_a_gap_is_not_judged_before_two_intervals() {
-	// two frames 100 apart, then one 10 s later: with one interval nothing is a cadence yet,
-	// so the window keeps all three and reports their (honest) average
-	w := fold([0.0, 100, 10_100])
-	assert w.count == 3
-	assert cycle_ms(w)? == 5050.0
-	// ...and the next frame at the true cadence breaks it against that inflated average only
-	// once it is out of proportion — it is not, so the window keeps converging honestly
-	w2 := step(w, 10_200, false)
-	assert w2.count == 4
+fn test_a_dropout_is_judged_on_one_interval() {
+	// the ring was trimmed to two pre-dropout frames of a sparse group: the gap is judged
+	// against the one interval left, so the recovered cadence shows and not 575 (codex on
+	// #266, and the reason min_intervals is one)
+	w := fold([100.0, 200, 2200, 2300, 2400])
+	assert w.first_t == 2200
+	assert cycle_ms(w)? == 100.0
+}
+
+fn test_a_short_first_interval_costs_one_restart_only() {
+	// a burst (two frames 10 ms apart) then the real 100 ms cadence: the first real interval
+	// is a "gap" against the burst, the window restarts, and converges on the next frame
+	mut w := fold([0.0, 10, 110])
+	assert w.count == 1
+	w = step(w, 210, false)
+	assert cycle_ms(w)? == 100.0
 }
 
 fn test_a_new_run_on_the_first_frame_is_just_a_first_frame() {
