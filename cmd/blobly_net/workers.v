@@ -930,21 +930,13 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 					// reads them from the running row (codex #263 r2); the interval in
 					// progress is CARRIED into the successor's first sample, bits and time
 					// alike (r7, r9, r11 — loadrule.handoff).
-					mut w := loadrule.Wire{
-						bits:       a.chans[ci].load_bits
-						at:         a.chans[ci].load_at
-						pct:        a.chans[ci].load_pct
-						hist:       a.chans[ci].load_hist
-						carry_bits: a.chans[ci].load_carry_bits
-						carry_ms:   a.chans[ci].load_carry_ms
-					}
-					loadrule.handoff(mut w, a.since_ms())
+					a.carry_load_locked(ci)
 					a.chans[cj].load_bits = 0
-					a.chans[cj].load_at = w.at
-					a.chans[cj].load_pct = w.pct
-					a.chans[cj].load_hist = w.hist
-					a.chans[cj].load_carry_bits = w.carry_bits
-					a.chans[cj].load_carry_ms = w.carry_ms
+					a.chans[cj].load_at = a.chans[ci].load_at
+					a.chans[cj].load_pct = a.chans[ci].load_pct
+					a.chans[cj].load_hist = a.chans[ci].load_hist
+					a.chans[cj].load_carry_bits = a.chans[ci].load_carry_bits
+					a.chans[cj].load_carry_ms = a.chans[ci].load_carry_ms
 					a.chans[cj].load_nominal = a.chans[ci].load_nominal
 					a.chans[cj].load_data = a.chans[ci].load_data
 					a.chans[ci].load_bits = 0
@@ -958,6 +950,11 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			}
 		}
 		if a.chans[ci].monitorable() && a.running {
+			// The SAME row restarts its reader: the interval it measured carries into the
+			// new reader's first sample exactly as it would to a sibling's — this path
+			// bypassed loadrule.handoff and the old bits were divided by the first second
+			// after the reopen (codex #263 r13).
+			a.carry_load_locked(ci)
 			a.chans[ci].spawning = true
 			spawn rx_loop(app, ci, iface, gen)
 		}
@@ -1521,4 +1518,23 @@ fn shell_worker_eth(app &App, line string, target string, sip telem.SomeipIdent,
 			else { a.shell_append('(error rc 0x${cli.result.rc.hex()})') }
 		}
 	}
+}
+
+// carry_load_locked moves row `ci`'s load interval in progress into its carry
+// (loadrule.handoff), for a reader that is about to be replaced — by a sibling's or by its
+// own restart. app.mu held.
+fn (mut a App) carry_load_locked(ci int) {
+	mut w := loadrule.Wire{
+		bits:       a.chans[ci].load_bits
+		at:         a.chans[ci].load_at
+		pct:        a.chans[ci].load_pct
+		hist:       a.chans[ci].load_hist
+		carry_bits: a.chans[ci].load_carry_bits
+		carry_ms:   a.chans[ci].load_carry_ms
+	}
+	loadrule.handoff(mut w, a.since_ms())
+	a.chans[ci].load_bits = w.bits
+	a.chans[ci].load_at = w.at
+	a.chans[ci].load_carry_bits = w.carry_bits
+	a.chans[ci].load_carry_ms = w.carry_ms
 }

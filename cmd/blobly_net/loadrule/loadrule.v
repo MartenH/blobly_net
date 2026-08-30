@@ -98,11 +98,19 @@ pub fn roll(mut w Wire, owner Owner, now f64, pct Percent) bool {
 			if columns < 1 {
 				columns = 1
 			}
-			for _ in 0 .. columns {
-				w.hist << w.pct
-			}
-			for w.hist.len > keep {
-				w.hist.delete(0)
+			// Capped BEFORE appending: a host paused for an hour with the reader alive
+			// observes thousands of seconds, and appending each and then deleting from the
+			// front is quadratic work on the GUI thread (codex #263 r13). More than `keep`
+			// columns IS the whole strip.
+			if columns >= keep {
+				w.hist = []f32{len: keep, init: w.pct}
+			} else {
+				for _ in 0 .. columns {
+					w.hist << w.pct
+				}
+				if w.hist.len > keep {
+					w.hist.delete_many(0, w.hist.len - keep)
+				}
 			}
 			w.bits = 0
 			w.at = now

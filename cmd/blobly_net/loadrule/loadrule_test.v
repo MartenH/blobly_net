@@ -151,3 +151,25 @@ fn test_unread_row_drops_the_carry() {
 	assert w.carry_bits == 0
 	assert w.carry_ms == 0
 }
+
+// A PAUSE OF AN HOUR IS THE WHOLE STRIP, not 3600 appends and 3540 front deletes on the GUI
+// thread (codex #263 r13).
+fn test_a_sample_spanning_more_than_the_strip_is_the_strip() {
+	mut w := Wire{
+		at:   1000
+		hist: [f32(5), 6, 7]
+	}
+	w.bits = 135000.0 * 3600.0 // an hour at 27 %
+	assert roll(mut w, .running, 1000.0 + 3600.0 * 1000.0, at_500k)
+	assert w.hist.len == keep
+	assert w.hist[0] == f32(27.0)
+	assert w.hist[keep - 1] == f32(27.0)
+	// and one that overflows by a few keeps the newest
+	w.hist = [f32(5), 6, 7]
+	w.at = 1000
+	w.bits = 135000.0 * 59.0
+	assert roll(mut w, .running, 1000.0 + 59.0 * 1000.0, at_500k)
+	assert w.hist.len == keep
+	assert w.hist[0] == f32(7.0)
+	assert w.hist[1] == f32(27.0)
+}
