@@ -322,3 +322,54 @@ fn test_roundtrip_senders() {
 	assert c.senders[1].trigger == 'cyclic'
 	assert c.senders[1].cycle_ms == 100
 }
+
+// A generator signal may carry a VALUE SOURCE — the same GenCfg vocabulary a simulated ECU's
+// signals use — and it must survive save/parse. A signal without one keeps the plain name/value
+// form every older project already has (and must not gain a spurious 'const' source).
+fn test_roundtrip_sender_wave() {
+	orig := Project{
+		name:     'wave'
+		channels: [
+			Channel{
+				name:    'CAN1'
+				iface:   'inproc:CAN1'
+				senders: [
+					Sender{
+						name:     'Sweep'
+						message:  'Powertrain'
+						trigger:  'cyclic'
+						cycle_ms: 100
+						signals:  [
+							SenderSig{
+								name: 'EngineSpeed'
+								wave: GenCfg{
+									typ:       'sine'
+									offset:    1500
+									amplitude: 1000
+									freq:      0.5
+								}
+							},
+							SenderSig{
+								name:  'CoolantTemp'
+								value: 42
+							},
+						]
+					},
+				]
+			},
+		]
+	}
+	txt := orig.to_yaml()
+	back := parse(txt) or { panic(err) }
+	sigs := back.channels[0].senders[0].signals
+	assert sigs.len == 2
+	assert sigs[0].name == 'EngineSpeed'
+	assert sigs[0].wave.typ == 'sine', 'typ=${sigs[0].wave.typ}'
+	assert sigs[0].wave.offset == 1500.0
+	assert sigs[0].wave.amplitude == 1000.0
+	assert sigs[0].wave.freq == 0.5
+	// no source: the static value survives and no waveform is invented
+	assert sigs[1].name == 'CoolantTemp'
+	assert sigs[1].value == 42.0
+	assert sigs[1].wave.typ == '', 'typ=${sigs[1].wave.typ}'
+}

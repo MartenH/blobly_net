@@ -199,7 +199,16 @@ pub fn (p Project) to_yaml() string {
 				if s.signals.len > 0 {
 					b.writeln('        signals:')
 					for sg in s.signals {
-						b.writeln('          - { name: ${sg.name}, value: ${num(sg.value)} }')
+						// A waveform writes the SAME inline form a simulated ECU's signal does
+						// (gen_inline) — one vocabulary, whoever sends it. No waveform: the plain
+						// name/value pair every older project already has.
+						if sg.wave.typ != '' {
+							mut g := sg.wave
+							g.signal = sg.name
+							b.writeln('          - ${gen_inline(g)}')
+						} else {
+							b.writeln('          - { name: ${sg.name}, value: ${num(sg.value)} }')
+						}
 					}
 				}
 			}

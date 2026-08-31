@@ -2,6 +2,7 @@ module main
 
 import math
 import project
+import sim
 import transport
 import candb
 import vgui
@@ -457,6 +458,112 @@ fn (mut app App) signal_input(i int, j int, sig candb.Signal, have bool) {
 			app.dirty = true
 		}
 	}
+	app.signal_source(i, j)
+}
+
+// wave_kinds: the value sources a signal can have, in the order the picker shows them. 'value'
+// is the absence of a source (send the static number above) and maps to GenCfg.typ == ''.
+const wave_kinds = ['value', 'const', 'sine', 'sawtooth', 'counter', 'stepmod']
+
+fn wave_typ_of(sel int) string {
+	if sel <= 0 || sel >= wave_kinds.len {
+		return ''
+	}
+	return wave_kinds[sel]
+}
+
+fn wave_sel_of(typ string) int {
+	for k, w in wave_kinds {
+		if w == typ && k > 0 {
+			return k
+		}
+	}
+	return 0
+}
+
+// signal_source draws the per-signal VALUE SOURCE: pick a waveform and it sweeps on every send,
+// exactly as a simulated ECU's signal does (same GenCfg, same sim.gen_from_cfg evaluator). The
+// difference is only who is sending — a generator is the tester, so its frames are TX, not TX-S.
+fn (mut app App) signal_source(i int, j int) {
+	w := app.senders[i].sender.signals[j].wave
+	vgui.same_line()
+	vgui.set_next_item_width(110 * app.ui_scale)
+	sel := vgui.combo('##src${i}_${j}', wave_kinds, wave_sel_of(w.typ))
+	if sel != wave_sel_of(w.typ) {
+		app.set_wave_typ(i, j, wave_typ_of(sel))
+	}
+	if w.typ == '' {
+		return
+	}
+	// only the parameters the chosen source actually reads — the same fields gen_from_cfg maps
+	pw := unsafe { &app.senders[i].sender.signals[j].wave }
+	mut fields := [][]string{}
+	match w.typ {
+		'const' { fields = [['value', 'value']] }
+		'sine' { fields = [['offset', 'offset'], ['amplitude', 'amplitude'], ['freq (rad/s)', 'freq'],
+			['phase', 'phase']] }
+		'sawtooth' { fields = [['min', 'min'], ['max', 'max'], ['period (s)', 'period']] }
+		'counter' { fields = [['start', 'start'], ['step', 'step'], ['modulo', 'modulo']] }
+		'stepmod' { fields = [['period (s)', 'period'], ['count', 'count'], ['base', 'base']] }
+		else {}
+	}
+	// TWO PER LINE, on their own rows under the signal. Sine alone has four parameters, and
+	// trailing them all off the value row ran them past the panel's right edge where a narrow
+	// dock clipped them out of reach.
+	for k, f in fields {
+		if k % 2 == 1 {
+			vgui.same_line()
+		}
+		vgui.set_next_item_width(70 * app.ui_scale)
+		mut p := unsafe { &pw.value }
+		match f[1] {
+			'value' { p = unsafe { &pw.value } }
+			'offset' { p = unsafe { &pw.offset } }
+			'amplitude' { p = unsafe { &pw.amplitude } }
+			'freq' { p = unsafe { &pw.freq } }
+			'phase' { p = unsafe { &pw.phase } }
+			'min' { p = unsafe { &pw.min } }
+			'max' { p = unsafe { &pw.max } }
+			'period' { p = unsafe { &pw.period } }
+			'start' { p = unsafe { &pw.start } }
+			'step' { p = unsafe { &pw.step } }
+			'modulo' { p = unsafe { &pw.modulo } }
+			'count' { p = unsafe { &pw.count } }
+			'base' { p = unsafe { &pw.base } }
+			else {}
+		}
+		if vgui.input_double('${f[0]}##wv${i}_${j}_${f[1]}', p) {
+			app.dirty = true
+		}
+	}
+}
+
+fn (mut app App) set_wave_typ(i int, j int, typ string) {
+	app.mu.lock()
+	if i < app.senders.len && j < app.senders[i].sender.signals.len {
+		mut sg := &app.senders[i].sender.signals[j]
+		sg.wave.typ = typ
+		// Seed a new source from what the signal already sends, so picking a waveform starts
+		// AT the current value rather than snapping to zero: a const takes it outright, a sine
+		// centres on it, a sawtooth spans up to it.
+		if typ == 'const' && sg.wave.value == 0 {
+			sg.wave.value = sg.value
+		} else if typ == 'sine' && sg.wave.offset == 0 && sg.wave.amplitude == 0 {
+			sg.wave.offset = sg.value
+			sg.wave.freq = 1.0
+		} else if typ == 'sawtooth' && sg.wave.max == 0 {
+			sg.wave.max = sg.value
+			sg.wave.period = 1.0
+		} else if typ == 'stepmod' && sg.wave.count == 0 {
+			sg.wave.count = 4
+			sg.wave.period = 1.0
+		}
+		if sg.wave.step == 0 {
+			sg.wave.step = 1.0
+		}
+	}
+	app.mu.unlock()
+	app.dirty = true
 }
 
 fn (mut app App) set_trigger(i int, t string) {
@@ -541,6 +648,18 @@ fn (mut app App) poll_hotkeys() {
 	}
 }
 
+// sender_value resolves one generator signal to the number that goes on the wire: its waveform
+// evaluated at the run clock when it has one, else its static value. The counter/stepmod sources
+// step per SEND, so each generator keeps its own send count (the simulated-ECU side counts the
+// same way with SimMessage.send_n).
+fn (mut app App) sender_value(i int, ss project.SenderSig) f64 {
+	if ss.wave.typ == '' {
+		return ss.value
+	}
+	n := app.gen_send_n[i] or { 0 }
+	return sim.gen_from_cfg(ss.wave).value(app.since_s(), n)
+}
+
 fn (mut app App) fire_index(i int) {
 	if i < 0 || i >= app.senders.len {
 		return
@@ -563,7 +682,11 @@ fn (mut app App) fire_index(i int) {
 				for ss in s.signals {
 					for sig in m.signals {
 						if sig.name == ss.name {
-							sig.encode(mut data, ss.value)
+							// The value SOURCE, evaluated at send time: a waveform sweeps
+							// (sine/sawtooth/counter/stepmod), no source sends the static value.
+							// Same GenCfg vocabulary and the same evaluator a simulated ECU uses
+							// — only the identity differs (this is the tester, so TX not TX-S).
+							sig.encode(mut data, app.sender_value(i, ss))
 							break
 						}
 					}
@@ -588,4 +711,5 @@ fn (mut app App) fire_index(i int) {
 		extended: ext
 		data:     data
 	})
+	app.gen_send_n[i] = (app.gen_send_n[i] or { 0 }) + 1 // per-send sources (counter/stepmod)
 }

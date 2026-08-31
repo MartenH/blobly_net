@@ -194,6 +194,16 @@ pub struct SenderSig {
 pub mut:
 	name  string
 	value f64
+	// Optional VALUE SOURCE. A generator signal used to be a constant while only a simulated
+	// ECU's signals could sweep (sine/sawtooth/counter/stepmod) — the same waveform vocabulary,
+	// welded to the wrong half. What a value is (const or a waveform) is orthogonal to WHO sends
+	// it (the tester -> TX, a simulated ECU -> TX-S), so the source is the same GenCfg both use
+	// and the same sim.gen_from_cfg evaluates. `wave.typ == ''` means "no source": send `value`.
+	// The default is written out because GenCfg's own `typ` defaults to 'const' — without it a
+	// code-built SenderSig would claim a source it never asked for (and save it back as one).
+	wave GenCfg = GenCfg{
+		typ: ''
+	}
 }
 
 // Sender is a declarative "interactive generator" (IG-style): a named,
@@ -1025,23 +1035,7 @@ fn parse_node(n yaml.Any) NodeCfg {
 	}
 	if sigs := n.value_opt('signals') {
 		for s in sigs.array() {
-			node.signals << GenCfg{
-				signal:    s.value('name').string()
-				typ:       s.value('type').default_to('const').string()
-				value:     s.value('value').f64()
-				offset:    s.value('offset').f64()
-				amplitude: s.value('amplitude').f64()
-				freq:      s.value('freq').f64()
-				phase:     s.value('phase').f64()
-				min:       s.value('min').f64()
-				max:       s.value('max').f64()
-				period:    s.value('period').f64()
-				start:     s.value('start').f64()
-				step:      s.value('step').default_to(f64(1)).f64()
-				modulo:    s.value('modulo').f64()
-				count:     s.value('count').f64()
-				base:      s.value('base').f64()
-			}
+			node.signals << parse_gencfg(s, 'const')
 		}
 	}
 	if u := n.value_opt('uds') {
@@ -1126,13 +1120,41 @@ fn parse_sender(s yaml.Any) Sender {
 	}
 	if sigs := s.value_opt('signals') {
 		for sg in sigs.array() {
+			// '' default: a generator signal with no `type:` is a plain constant `value`, which
+			// is what every project written before waveforms reached generators says.
+			w := parse_gencfg(sg, '')
 			snd.signals << SenderSig{
 				name:  sg.value('name').string()
 				value: sg.value('value').f64()
+				wave:  w
 			}
 		}
 	}
 	return snd
+}
+
+// parse_gencfg reads one generator entry — the value source shared by a simulated ECU's signals
+// and a generator's signals (see SenderSig.wave). `dflt_typ` is what an entry with no `type:` key
+// means: 'const' for a simulated ECU (a bare value is a constant), '' for a generator signal
+// (no source at all — its static `value` is used).
+fn parse_gencfg(s yaml.Any, dflt_typ string) GenCfg {
+	return GenCfg{
+		signal:    s.value('name').string()
+		typ:       s.value('type').default_to(dflt_typ).string()
+		value:     s.value('value').f64()
+		offset:    s.value('offset').f64()
+		amplitude: s.value('amplitude').f64()
+		freq:      s.value('freq').f64()
+		phase:     s.value('phase').f64()
+		min:       s.value('min').f64()
+		max:       s.value('max').f64()
+		period:    s.value('period').f64()
+		start:     s.value('start').f64()
+		step:      s.value('step').default_to(f64(1)).f64()
+		modulo:    s.value('modulo').f64()
+		count:     s.value('count').f64()
+		base:      s.value('base').f64()
+	}
 }
 
 // parse_hex_bytes reads a raw CAN payload written as hex bytes, with or without

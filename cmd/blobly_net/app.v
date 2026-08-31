@@ -253,6 +253,9 @@ mut:
 	// answer: a project switch or a structured Save left old YAML on screen that Save would
 	// then write over the new file.
 	cfg_text_dirty bool
+	// per-generator send count, for the value sources that step per send (counter/stepmod).
+	// Keyed by sender index like gen_bufs; cleared when the generator set is rebuilt.
+	gen_send_n map[int]int
 	// #80: a reserializing Save (Buses tab) drops the .blobnet's comments. On the first such Save
 	// we warn and remember the MODEL we warned about (its to_yaml); the next Save proceeds only
 	// if the model is byte-identical — so any structured edit, load or revert since the warning
