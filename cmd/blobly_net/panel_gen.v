@@ -525,26 +525,68 @@ fn (mut app App) signal_source(i int, j int) {
 			vgui.same_line()
 		}
 		vgui.set_next_item_width(70 * app.ui_scale)
-		mut p := unsafe { &pw.value }
-		match f[1] {
-			'value' { p = unsafe { &pw.value } }
-			'offset' { p = unsafe { &pw.offset } }
-			'amplitude' { p = unsafe { &pw.amplitude } }
-			'freq' { p = unsafe { &pw.freq } }
-			'phase' { p = unsafe { &pw.phase } }
-			'min' { p = unsafe { &pw.min } }
-			'max' { p = unsafe { &pw.max } }
-			'period' { p = unsafe { &pw.period } }
-			'start' { p = unsafe { &pw.start } }
-			'step' { p = unsafe { &pw.step } }
-			'modulo' { p = unsafe { &pw.modulo } }
-			'count' { p = unsafe { &pw.count } }
-			'base' { p = unsafe { &pw.base } }
+		// A COPY, written back through a locked setter. Writing through a pointer into the live
+		// sender raced the fire path's snapshot (the GUI thread edits while gen_loop clones), and
+		// left a value the Start-time check could never see — these fields stay editable during a
+		// run, so an edit that makes the source unusable has to say so when it is made.
+		mut cur := wave_param(w, f[1])
+		if vgui.input_double('${f[0]}##wv${i}_${j}_${f[1]}', &cur) {
+			app.set_wave_param(i, j, f[1], cur)
+		}
+	}
+}
+
+// wave_param reads one named parameter of a value source.
+fn wave_param(g project.GenCfg, field string) f64 {
+	return match field {
+		'value' { g.value }
+		'offset' { g.offset }
+		'amplitude' { g.amplitude }
+		'freq' { g.freq }
+		'phase' { g.phase }
+		'min' { g.min }
+		'max' { g.max }
+		'period' { g.period }
+		'start' { g.start }
+		'step' { g.step }
+		'modulo' { g.modulo }
+		'count' { g.count }
+		'base' { g.base }
+		else { f64(0) }
+	}
+}
+
+// set_wave_param writes one parameter under app.mu (the fire path clones the sender under it) and
+// says immediately when the edit leaves the source unusable — the Start-time warning has already
+// run by then, and silently falling back to the static value is the thing this PR is trying not
+// to do. notify() re-takes the non-reentrant mutex, so it is called after the unlock.
+fn (mut app App) set_wave_param(i int, j int, field string, v f64) {
+	mut why := ''
+	app.mu.lock()
+	if i < app.senders.len && j < app.senders[i].sender.signals.len {
+		mut w := &app.senders[i].sender.signals[j].wave
+		match field {
+			'value' { w.value = v }
+			'offset' { w.offset = v }
+			'amplitude' { w.amplitude = v }
+			'freq' { w.freq = v }
+			'phase' { w.phase = v }
+			'min' { w.min = v }
+			'max' { w.max = v }
+			'period' { w.period = v }
+			'start' { w.start = v }
+			'step' { w.step = v }
+			'modulo' { w.modulo = v }
+			'count' { w.count = v }
+			'base' { w.base = v }
 			else {}
 		}
-		if vgui.input_double('${f[0]}##wv${i}_${j}_${f[1]}', p) {
-			app.dirty = true
-		}
+		why = project.gen_source_invalid(*w)
+	}
+	app.mu.unlock()
+	app.dirty = true
+	if why != '' {
+		app.notify('generator signal: ${why} — sending its static value instead')
 	}
 }
 
@@ -664,7 +706,7 @@ fn (mut app App) poll_hotkeys() {
 // same way with SimMessage.send_n).
 // sender_value resolves one signal of an ALREADY-SNAPSHOTTED sender: pure, so the caller holds no
 // lock while encoding. `n` is the index reserved for this fire and `t0_ns` the run epoch.
-fn sender_value(ss project.SenderSig, n int, t0_ns u64) f64 {
+fn sender_value(ss project.SenderSig, n int, el f64) f64 {
 	if ss.wave.typ == '' {
 		return ss.value
 	}
@@ -674,11 +716,6 @@ fn sender_value(ss project.SenderSig, n int, t0_ns u64) f64 {
 	if project.gen_source_invalid(ss.wave) != '' {
 		return ss.value
 	}
-	// FROM THE RUN EPOCH, not app start: since_s() counts from process start, so an otherwise
-	// identical experiment began at a different phase depending on how long the GUI had been
-	// open (and counted the time spent stopped). The simulator uses its worker-local t0 for the
-	// same reason.
-	el := if t0_ns > 0 { f64(time.sys_mono_now() - t0_ns) / 1_000_000_000.0 } else { 0.0 }
 	return sim.gen_from_cfg(ss.wave).value(el, n)
 }
 
@@ -707,6 +744,11 @@ fn (mut app App) fire_index(i int) {
 	n := app.gen_send_n[i] or { 0 }
 	wt0 := app.wave_t0_ns
 	app.mu.unlock()
+	// ONE clock sample for the whole frame. Read per signal, two time-based sources in one message
+	// were sampled at different instants — the simulator passes a single `t` into its build() for
+	// the same reason. FROM THE RUN EPOCH, not process start, so a restarted measurement begins at
+	// the same phase instead of one that depends on how long the GUI had been open.
+	el := if wt0 > 0 { f64(time.sys_mono_now() - wt0) / 1_000_000_000.0 } else { 0.0 }
 	mut id := s.id
 	mut ext := s.ext
 	mut data := []u8{}
@@ -728,7 +770,7 @@ fn (mut app App) fire_index(i int) {
 							// (sine/sawtooth/counter/stepmod), no source sends the static value.
 							// Same GenCfg vocabulary and the same evaluator a simulated ECU uses
 							// — only the identity differs (this is the tester, so TX not TX-S).
-							sig.encode(mut data, sender_value(ss, n, wt0))
+							sig.encode(mut data, sender_value(ss, n, el))
 							break
 						}
 					}

@@ -139,7 +139,11 @@ fn (app &App) runtime_rows() []project.Channel {
 		// unusable value source could never fire (codex #269).
 		mut snd := []project.Sender{}
 		for sr in app.senders {
-			if sr.chan == c.name {
+			// BY NAME, or by the wire it targets. rebuild_from_proj leaves SenderRT.chan empty
+			// when a saved sender names an interface several channels share (the file cannot say
+			// which one owns it), and such a generator still transmits through the shared tap —
+			// filtering on the name alone left it in no row, so its warnings went unsaid.
+			if sr.chan == c.name || (sr.chan == '' && sr.target() == c.iface) {
 				snd << sr.sender
 			}
 		}
