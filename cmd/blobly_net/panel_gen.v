@@ -598,6 +598,10 @@ fn (mut app App) set_wave_typ(i int, j int, typ string) {
 	if i < app.senders.len && j < app.senders[i].sender.signals.len {
 		mut sg := &app.senders[i].sender.signals[j]
 		sg.wave.typ = typ
+		// A NEW SOURCE IS A NEW SEQUENCE. Every delivered frame advances this generator's send
+		// index whatever its source was, so a running generator switched to counter/stepmod would
+		// resume at start + step * frames-already-sent instead of the value just seeded below.
+		app.gen_send_n.delete(app.senders[i].uid)
 		// Seed a new source from what the signal already sends, so picking a waveform starts AT
 		// the current value rather than snapping to zero: a sine centres on it, a sawtooth spans
 		// up to it, a counter starts from it.

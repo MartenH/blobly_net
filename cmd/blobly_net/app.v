@@ -811,9 +811,6 @@ fn (mut app App) set_project(proj project.Project, path string) {
 // rebuild_from_proj derives the runtime view (chans, dbs, sims, senders, manifest, default
 // selection) from app.proj. Called after a load and after any config/generator edit, so the
 // live panels reflect the edited model. Must be called while stopped (no RX threads running).
-// reset_gen_state drops the per-generator send counts. They are keyed by sender INDEX, so any
-// change to the sender set (a removal shifting the rest, a different project) makes every stored
-// count belong to a generator that is no longer at that index.
 // reset_gen_state drops the per-generator send counts, for a new project or a new run where the
 // sequences legitimately restart. UNDER app.mu: a fire blocked in its transport send reads and
 // writes these under it, so replacing the map unlocked is an unsafe concurrent map write.

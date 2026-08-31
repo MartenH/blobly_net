@@ -16,10 +16,14 @@ import os
 import yaml
 import doip
 
-// schema_version is the current project-file format version. Bump it when the `.yml`
-// schema changes incompatibly. Files carry `version:`; Save writes schema_version,
-// and the loader flags a file whose version is NEWER than the app understands
-// (is_supported / version_note) so opening a future-format file isn't silent.
+// schema_version is the newest project-file format version this build understands. Bump it when
+// the `.yml` schema grows something an older build would not preserve. Files carry `version:`,
+// and the loader flags one whose version is NEWER than this app (is_supported / version_note, on
+// the Open path as well as the text-apply one) so a future-format file is not read in silence.
+//
+// Save does NOT write this constant: it writes version_for(p), the version that PARTICULAR
+// project needs. A project using no v3 feature still says v2 and stays openable by older builds
+// with no note, and only one that would actually lose something is labelled v3.
 pub const schema_version = 3
 
 // version_for is the version a PARTICULAR project must declare. Generator value sources (v3) are
