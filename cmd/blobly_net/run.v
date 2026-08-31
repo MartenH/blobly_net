@@ -535,6 +535,11 @@ fn (mut app App) start() {
 	for w in project.fd_capability_warnings(app.runtime_rows()) {
 		app.notify(w)
 	}
+	// A generator whose value source cannot be evaluated (unknown type, zero divisor) sends its
+	// static value instead — said at Start rather than silently transmitting the wrong thing.
+	for w in project.generator_source_warnings(app.runtime_rows()) {
+		app.notify(w)
+	}
 	// AND WHICH ROWS THE ALIAS CHECK COULD NOT COVER (#194). Same reasoning as the line above and
 	// the same shape: the refusals above already caught anything provable, so what is left is a
 	// gap the check could not see into. A driver that would not answer is not a reason to refuse a
@@ -650,6 +655,10 @@ fn (mut app App) start() {
 	// the class is every target). Closed at the state change, once, instead of teaching each
 	// confirm about app.running.
 	app.fb_open = false
+	// the epoch the time-based generator sources are evaluated from (sine/sawtooth/stepmod), so a
+	// restarted measurement starts at the same phase — the simulator's worker-local t0 equivalent
+	app.wave_t0_ns = time.sys_mono_now()
+	app.gen_send_n = map[int]int{} // a new run starts the per-send sequences at 0
 	app.running = true
 	// The quiet-bus verdict measures THIS run. Carrying a previous run's first/last across a
 	// Stop would have every wire reading "quiet for 4 minutes" the instant Start is pressed —

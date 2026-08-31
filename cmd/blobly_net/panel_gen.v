@@ -3,6 +3,7 @@ module main
 import math
 import project
 import sim
+import time
 import transport
 import candb
 import vgui
@@ -288,6 +289,8 @@ fn (mut app App) remove_generator(i int) {
 		if i < app.gen_bufs.len {
 			app.gen_bufs.delete(i)
 		}
+		// index-keyed: everything after `i` has just shifted down onto another generator's count
+		app.gen_send_n = map[int]int{}
 		app.dirty = true
 	}
 	app.mu.unlock()
@@ -368,17 +371,21 @@ fn (mut app App) set_sender_message(i int, msg string) {
 					continue
 				}
 				for sig in m.signals {
-					mut v := f64(0)
+					// carry the WHOLE matching signal across, not just its number: the value
+					// source (wave) is part of what the user configured, and copying only
+					// `value` silently dropped a waveform when the message was switched and
+					// switched back.
+					mut keep := project.SenderSig{
+						name: sig.name
+					}
 					for o in old {
 						if o.name == sig.name {
-							v = o.value
+							keep = o
+							keep.name = sig.name
 							break
 						}
 					}
-					sigs << project.SenderSig{
-						name:  sig.name
-						value: v
-					}
+					sigs << keep
 				}
 				found = true
 				break
@@ -656,8 +663,33 @@ fn (mut app App) sender_value(i int, ss project.SenderSig) f64 {
 	if ss.wave.typ == '' {
 		return ss.value
 	}
+	// An unusable source (unknown type, zero divisor) sends the STATIC value rather than a
+	// constant nobody asked for or a non-finite number packed into raw bits. The condition is
+	// also reported by project.generator_source_warnings, so it is said, not just survived.
+	if project.gen_source_invalid(ss.wave) != '' {
+		return ss.value
+	}
+	// FROM THE RUN EPOCH, not app start: since_s() counts from process start, so an otherwise
+	// identical experiment began at a different phase depending on how long the GUI had been
+	// open (and counted the time spent stopped). The simulator uses its worker-local t0 for the
+	// same reason.
+	app.mu.lock()
 	n := app.gen_send_n[i] or { 0 }
-	return sim.gen_from_cfg(ss.wave).value(app.since_s(), n)
+	t0 := app.wave_t0_ns
+	app.mu.unlock()
+	el := if t0 > 0 { f64(time.sys_mono_now() - t0) / 1_000_000_000.0 } else { 0.0 }
+	return sim.gen_from_cfg(ss.wave).value(el, n)
+}
+
+// advance_send_n counts one DELIVERED frame for the per-send sources (counter/stepmod). Under
+// app.mu because a cyclic fire (gen_loop) and a manual one (GUI thread) reach it concurrently and
+// a V map is not safe for a concurrent read and write. Only a successful send advances: a fire
+// refused while the transmit tap is still opening put nothing on the bus, and skipping a value
+// there would make the sequence lie about what was transmitted.
+fn (mut app App) advance_send_n(i int) {
+	app.mu.lock()
+	app.gen_send_n[i] = (app.gen_send_n[i] or { 0 }) + 1
+	app.mu.unlock()
 }
 
 fn (mut app App) fire_index(i int) {
@@ -706,10 +738,11 @@ fn (mut app App) fire_index(i int) {
 		id = u32(('0x' + vgui.buf_str(app.gen_bufs[i].id_buf)).u64())
 		data = parse_hex_bytes(vgui.buf_str(app.gen_bufs[i].data_buf))
 	}
-	app.tx_on_chan(app.senders[i].chan, app.senders[i].target(), transport.CanFrame{
+	if app.tx_on_chan(app.senders[i].chan, app.senders[i].target(), transport.CanFrame{
 		id:       id
 		extended: ext
 		data:     data
-	})
-	app.gen_send_n[i] = (app.gen_send_n[i] or { 0 }) + 1 // per-send sources (counter/stepmod)
+	}) {
+		app.advance_send_n(i) // per-send sources (counter/stepmod): delivered frames only
+	}
 }

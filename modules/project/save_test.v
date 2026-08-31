@@ -373,3 +373,34 @@ fn test_roundtrip_sender_wave() {
 	assert sigs[1].value == 42.0
 	assert sigs[1].wave.typ == '', 'typ=${sigs[1].wave.typ}'
 }
+
+// An unusable value source is REPORTED, not silently turned into a constant (or a non-finite
+// number packed into raw bits): an unknown type, and the zero divisors sawtooth/stepmod divide by.
+fn test_generator_source_warnings() {
+	chs := [
+		Channel{
+			name:    'CAN1'
+			senders: [
+				Sender{
+					name:    'g'
+					signals: [
+						SenderSig{ name: 'A', wave: GenCfg{ typ: 'counterr' } },
+						SenderSig{ name: 'B', wave: GenCfg{ typ: 'sawtooth', period: 0 } },
+						SenderSig{ name: 'C', wave: GenCfg{ typ: 'stepmod', period: 1, count: 0 } },
+						SenderSig{ name: 'D', wave: GenCfg{ typ: 'sine', freq: 0 } }, // freq 0 is valid (a flat sine)
+						SenderSig{ name: 'E', value: 7 }, // no source at all
+					]
+				},
+			]
+		},
+	]
+	w := generator_source_warnings(chs)
+	assert w.len == 3, w.str()
+	assert w[0].contains('unknown type'), w[0]
+	assert w[1].contains('non-zero period'), w[1]
+	assert w[2].contains('non-zero count'), w[2]
+	// and the predicate agrees per-signal
+	assert gen_source_invalid(GenCfg{ typ: '' }) == ''
+	assert gen_source_invalid(GenCfg{ typ: 'sine', freq: 0 }) == ''
+	assert gen_source_invalid(GenCfg{ typ: 'sawtooth', period: 2 }) == ''
+}

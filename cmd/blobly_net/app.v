@@ -254,8 +254,15 @@ mut:
 	// then write over the new file.
 	cfg_text_dirty bool
 	// per-generator send count, for the value sources that step per send (counter/stepmod).
-	// Keyed by sender index like gen_bufs; cleared when the generator set is rebuilt.
+	// Keyed by sender index like gen_bufs, so it is only meaningful for THIS sender set: removing
+	// a generator shifts every later index onto a count that belonged to another one, and a new
+	// project would continue an unrelated sequence. Both paths clear it (see reset_gen_state).
+	// Read and written under app.mu — a cyclic fire and a manual one race otherwise.
 	gen_send_n map[int]int
+	// The epoch the time-based value sources (sine/sawtooth/stepmod) are evaluated from: set at
+	// Start, so a restarted measurement begins at the same phase instead of one that depends on
+	// how long the GUI happened to be open. 0 = never started.
+	wave_t0_ns u64
 	// #80: a reserializing Save (Buses tab) drops the .blobnet's comments. On the first such Save
 	// we warn and remember the MODEL we warned about (its to_yaml); the next Save proceeds only
 	// if the model is byte-identical — so any structured edit, load or revert since the warning
@@ -773,7 +780,15 @@ fn (mut app App) set_project(proj project.Project, path string) {
 // rebuild_from_proj derives the runtime view (chans, dbs, sims, senders, manifest, default
 // selection) from app.proj. Called after a load and after any config/generator edit, so the
 // live panels reflect the edited model. Must be called while stopped (no RX threads running).
+// reset_gen_state drops the per-generator send counts. They are keyed by sender INDEX, so any
+// change to the sender set (a removal shifting the rest, a different project) makes every stored
+// count belong to a generator that is no longer at that index.
+fn (mut app App) reset_gen_state() {
+	app.gen_send_n = map[int]int{}
+}
+
 fn (mut app App) rebuild_from_proj() {
+	app.reset_gen_state()
 	app.replay_view_gen++ // the grouping the stopped Replay panel caches is derived from what
 	// this function rebuilds
 	// this replaces app.dbs wholesale, so a pending endpoint edit must land first or it is

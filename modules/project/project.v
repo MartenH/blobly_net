@@ -1133,6 +1133,49 @@ fn parse_sender(s yaml.Any) Sender {
 	return snd
 }
 
+// wave_kinds is the value-source vocabulary: what a `type:` may say. Shared by the simulator's
+// signals and a generator's, because it is one vocabulary (see SenderSig.wave).
+pub const wave_kinds = ['const', 'sine', 'sawtooth', 'counter', 'stepmod']
+
+// gen_source_invalid reports why a value source cannot be evaluated, or '' when it is fine. Two
+// things make one unusable, and both otherwise reach sim.Gen.value() and come out as garbage on
+// the wire: a type outside the vocabulary (gen_from_cfg falls through to a CONSTANT, so a
+// misspelled `counterr` silently transmits a fixed value), and a zero divisor (sawtooth/stepmod
+// divide by `period`, stepmod by `count`, so a zero yields a non-finite number that is then
+// packed into raw signal bits).
+pub fn gen_source_invalid(g GenCfg) string {
+	if g.typ == '' {
+		return '' // no source at all: the static value is used
+	}
+	if g.typ !in wave_kinds {
+		return 'unknown type "${g.typ}" (use ${wave_kinds.join(", ")})'
+	}
+	if (g.typ == 'sawtooth' || g.typ == 'stepmod') && g.period == 0 {
+		return '${g.typ} needs a non-zero period'
+	}
+	if g.typ == 'stepmod' && g.count == 0 {
+		return 'stepmod needs a non-zero count'
+	}
+	return ''
+}
+
+// generator_source_warnings reports generator signals whose value source cannot be evaluated —
+// said at load/Start rather than silently transmitting a constant or a non-finite value.
+pub fn generator_source_warnings(chs []Channel) []string {
+	mut out := []string{}
+	for c in chs {
+		for s in c.senders {
+			for sg in s.signals {
+				why := gen_source_invalid(sg.wave)
+				if why != '' {
+					out << '${c.name}: generator "${s.name}" signal "${sg.name}": ${why} — sending its static value instead'
+				}
+			}
+		}
+	}
+	return out
+}
+
 // parse_gencfg reads one generator entry — the value source shared by a simulated ECU's signals
 // and a generator's signals (see SenderSig.wave). `dflt_typ` is what an entry with no `type:` key
 // means: 'const' for a simulated ECU (a bare value is a constant), '' for a generator signal
