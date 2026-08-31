@@ -470,7 +470,10 @@ fn (mut app App) signal_input(i int, j int, sig candb.Signal, have bool) {
 
 // wave_kinds: the value sources a signal can have, in the order the picker shows them. 'value'
 // is the absence of a source (send the static number above) and maps to GenCfg.typ == ''.
-const wave_kinds = ['value', 'const', 'sine', 'sawtooth', 'counter', 'stepmod']
+// 'value' is the absence of a source (send the static number). 'const' is deliberately NOT here:
+// for a generator a constant source IS that static value, and offering both put two `value:` keys
+// in one saved mapping and two independently editable numbers behind one field (codex #269).
+const wave_kinds = ['value', 'sine', 'sawtooth', 'counter', 'stepmod']
 
 fn wave_typ_of(sel int) string {
 	if sel <= 0 || sel >= wave_kinds.len {
@@ -679,23 +682,19 @@ fn sender_value(ss project.SenderSig, n int, t0_ns u64) f64 {
 	return sim.gen_from_cfg(ss.wave).value(el, n)
 }
 
-// release_send_n gives back an index reserved for a fire that never reached the bus (the transmit
-// tap still opening, a driver refusal) — but ONLY when nothing else has reserved since, or it
-// would hand the same index to two fires. A counter sequence then counts delivered frames.
-fn (mut app App) release_send_n(i int, reserved int) {
-	app.mu.lock()
-	if (app.gen_send_n[i] or { 0 }) == reserved + 1 {
-		app.gen_send_n[i] = reserved
-	}
-	app.mu.unlock()
-}
 
 fn (mut app App) fire_index(i int) {
-	// ONE critical section for the snapshot AND the counter reservation. The panel stays editable
-	// during a run, so the GUI thread writes waveform fields through a pointer while gen_loop can
-	// be here — reading s.signals unlocked could encode a torn configuration. And reserving the
-	// per-send index here (rather than reading it now and advancing after the send) is what stops
-	// a cyclic fire and a manual "Send now" for the SAME generator from encoding one value twice.
+	// ONE FIRE AT A TIME, start to finish. Reserving an index and rolling it back on failure
+	// could not keep the count equal to DELIVERED frames when two fires finished out of order
+	// (A reserves, B reserves and sends, A fails — A's index is then unreturnable). Generators
+	// fire at millisecond cadences, so serialising them outright is cheaper than the bookkeeping
+	// and makes the whole read/encode/send/count atomic — which also settles the other half:
+	// the panel stays editable during a run, so an unlocked read of s.signals could encode a
+	// waveform the GUI thread was midway through changing.
+	app.gen_fire_mu.lock()
+	defer {
+		app.gen_fire_mu.unlock()
+	}
 	app.mu.lock()
 	if i < 0 || i >= app.senders.len {
 		app.mu.unlock()
@@ -705,8 +704,7 @@ fn (mut app App) fire_index(i int) {
 		...app.senders[i].sender
 		signals: app.senders[i].sender.signals.clone()
 	}
-	reserved := app.gen_send_n[i] or { 0 }
-	app.gen_send_n[i] = reserved + 1
+	n := app.gen_send_n[i] or { 0 }
 	wt0 := app.wave_t0_ns
 	app.mu.unlock()
 	mut id := s.id
@@ -730,7 +728,7 @@ fn (mut app App) fire_index(i int) {
 							// (sine/sawtooth/counter/stepmod), no source sends the static value.
 							// Same GenCfg vocabulary and the same evaluator a simulated ECU uses
 							// — only the identity differs (this is the tester, so TX not TX-S).
-							sig.encode(mut data, sender_value(ss, reserved, wt0))
+							sig.encode(mut data, sender_value(ss, n, wt0))
 							break
 						}
 					}
@@ -750,11 +748,15 @@ fn (mut app App) fire_index(i int) {
 		id = u32(('0x' + vgui.buf_str(app.gen_bufs[i].id_buf)).u64())
 		data = parse_hex_bytes(vgui.buf_str(app.gen_bufs[i].data_buf))
 	}
-	if !app.tx_on_chan(app.senders[i].chan, app.senders[i].target(), transport.CanFrame{
+	if app.tx_on_chan(app.senders[i].chan, app.senders[i].target(), transport.CanFrame{
 		id:       id
 		extended: ext
 		data:     data
 	}) {
-		app.release_send_n(i, reserved) // nothing reached the bus: do not consume the index
+		// delivered frames only — a fire refused while the tap is still opening put nothing on
+		// the bus, and counting it would make the sequence lie about what was transmitted
+		app.mu.lock()
+		app.gen_send_n[i] = n + 1
+		app.mu.unlock()
 	}
 }

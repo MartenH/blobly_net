@@ -446,3 +446,18 @@ fn test_version_for_wave() {
 	assert sg.wave.max == 10.0
 	assert sg.wave.period == 2.0
 }
+
+// A generator's `const` source is the same number as its static value (same key), so it folds
+// into that on read: one editable value, and never two `value:` keys in one saved mapping.
+fn test_sender_const_source_folds_to_value() {
+	p := parse('project:\n  name: c\nchannels:\n  - name: CAN1\n    interface: inproc:CAN1\n    senders:\n      - name: g\n        message: Powertrain\n        signals:\n          - { name: A, type: const, value: 5 }\n') or {
+		panic(err)
+	}
+	sg := p.channels[0].senders[0].signals[0]
+	assert sg.value == 5.0
+	assert sg.wave.typ == '', 'typ=${sg.wave.typ}'
+	// and it saves back as a plain value with no duplicate key
+	out := p.to_yaml()
+	assert out.contains('{ name: A, value: 5 }'), out
+	assert version_for(p) == 2
+}

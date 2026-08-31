@@ -259,6 +259,13 @@ mut:
 	// project would continue an unrelated sequence. Both paths clear it (see reset_gen_state).
 	// Read and written under app.mu — a cyclic fire and a manual one race otherwise.
 	gen_send_n map[int]int
+	// Serialises a COMPLETE generator fire (snapshot -> encode -> send -> count). Deliberately not
+	// app.mu: the send must not hold that (tx_on_chan takes it), and the reservation dance that
+	// avoided a full lock could not keep the count equal to delivered frames once two fires
+	// completed out of order — a cyclic fire and a manual "Send now" reach fire_index at once.
+	// Lock ORDER is gen_fire_mu then app.mu, never the reverse; gen_loop calls fire_index with
+	// app.mu released.
+	gen_fire_mu sync.Mutex
 	// The epoch the time-based value sources (sine/sawtooth/stepmod) are evaluated from: set at
 	// Start, so a restarted measurement begins at the same phase instead of one that depends on
 	// how long the GUI happened to be open. 0 = never started.

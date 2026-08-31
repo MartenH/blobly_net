@@ -1140,7 +1140,15 @@ fn parse_sender(s yaml.Any) Sender {
 		for sg in sigs.array() {
 			// '' default: a generator signal with no `type:` is a plain constant `value`, which
 			// is what every project written before waveforms reached generators says.
-			w := parse_gencfg(sg, '')
+			mut w := parse_gencfg(sg, '')
+			// A hand-written `type: const` on a GENERATOR signal means exactly what its static
+			// `value` already means (they even read the same key), so it is folded into that
+			// rather than kept as a second, separately-editable number the UI cannot show.
+			if w.typ == 'const' {
+				w = GenCfg{
+					typ: ''
+				}
+			}
 			snd.signals << SenderSig{
 				name:  sg.value('name').string()
 				value: sg.value('value').f64()
