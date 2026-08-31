@@ -659,7 +659,9 @@ fn (mut app App) poll_hotkeys() {
 // evaluated at the run clock when it has one, else its static value. The counter/stepmod sources
 // step per SEND, so each generator keeps its own send count (the simulated-ECU side counts the
 // same way with SimMessage.send_n).
-fn (mut app App) sender_value(i int, ss project.SenderSig) f64 {
+// sender_value resolves one signal of an ALREADY-SNAPSHOTTED sender: pure, so the caller holds no
+// lock while encoding. `n` is the index reserved for this fire and `t0_ns` the run epoch.
+fn sender_value(ss project.SenderSig, n int, t0_ns u64) f64 {
 	if ss.wave.typ == '' {
 		return ss.value
 	}
@@ -673,30 +675,40 @@ fn (mut app App) sender_value(i int, ss project.SenderSig) f64 {
 	// identical experiment began at a different phase depending on how long the GUI had been
 	// open (and counted the time spent stopped). The simulator uses its worker-local t0 for the
 	// same reason.
-	app.mu.lock()
-	n := app.gen_send_n[i] or { 0 }
-	t0 := app.wave_t0_ns
-	app.mu.unlock()
-	el := if t0 > 0 { f64(time.sys_mono_now() - t0) / 1_000_000_000.0 } else { 0.0 }
+	el := if t0_ns > 0 { f64(time.sys_mono_now() - t0_ns) / 1_000_000_000.0 } else { 0.0 }
 	return sim.gen_from_cfg(ss.wave).value(el, n)
 }
 
-// advance_send_n counts one DELIVERED frame for the per-send sources (counter/stepmod). Under
-// app.mu because a cyclic fire (gen_loop) and a manual one (GUI thread) reach it concurrently and
-// a V map is not safe for a concurrent read and write. Only a successful send advances: a fire
-// refused while the transmit tap is still opening put nothing on the bus, and skipping a value
-// there would make the sequence lie about what was transmitted.
-fn (mut app App) advance_send_n(i int) {
+// release_send_n gives back an index reserved for a fire that never reached the bus (the transmit
+// tap still opening, a driver refusal) — but ONLY when nothing else has reserved since, or it
+// would hand the same index to two fires. A counter sequence then counts delivered frames.
+fn (mut app App) release_send_n(i int, reserved int) {
 	app.mu.lock()
-	app.gen_send_n[i] = (app.gen_send_n[i] or { 0 }) + 1
+	if (app.gen_send_n[i] or { 0 }) == reserved + 1 {
+		app.gen_send_n[i] = reserved
+	}
 	app.mu.unlock()
 }
 
 fn (mut app App) fire_index(i int) {
+	// ONE critical section for the snapshot AND the counter reservation. The panel stays editable
+	// during a run, so the GUI thread writes waveform fields through a pointer while gen_loop can
+	// be here — reading s.signals unlocked could encode a torn configuration. And reserving the
+	// per-send index here (rather than reading it now and advancing after the send) is what stops
+	// a cyclic fire and a manual "Send now" for the SAME generator from encoding one value twice.
+	app.mu.lock()
 	if i < 0 || i >= app.senders.len {
+		app.mu.unlock()
 		return
 	}
-	s := app.senders[i].sender
+	s := project.Sender{
+		...app.senders[i].sender
+		signals: app.senders[i].sender.signals.clone()
+	}
+	reserved := app.gen_send_n[i] or { 0 }
+	app.gen_send_n[i] = reserved + 1
+	wt0 := app.wave_t0_ns
+	app.mu.unlock()
 	mut id := s.id
 	mut ext := s.ext
 	mut data := []u8{}
@@ -718,7 +730,7 @@ fn (mut app App) fire_index(i int) {
 							// (sine/sawtooth/counter/stepmod), no source sends the static value.
 							// Same GenCfg vocabulary and the same evaluator a simulated ECU uses
 							// — only the identity differs (this is the tester, so TX not TX-S).
-							sig.encode(mut data, app.sender_value(i, ss))
+							sig.encode(mut data, sender_value(ss, reserved, wt0))
 							break
 						}
 					}
@@ -738,11 +750,11 @@ fn (mut app App) fire_index(i int) {
 		id = u32(('0x' + vgui.buf_str(app.gen_bufs[i].id_buf)).u64())
 		data = parse_hex_bytes(vgui.buf_str(app.gen_bufs[i].data_buf))
 	}
-	if app.tx_on_chan(app.senders[i].chan, app.senders[i].target(), transport.CanFrame{
+	if !app.tx_on_chan(app.senders[i].chan, app.senders[i].target(), transport.CanFrame{
 		id:       id
 		extended: ext
 		data:     data
 	}) {
-		app.advance_send_n(i) // per-send sources (counter/stepmod): delivered frames only
+		app.release_send_n(i, reserved) // nothing reached the bus: do not consume the index
 	}
 }

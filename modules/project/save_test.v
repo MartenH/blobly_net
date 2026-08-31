@@ -131,7 +131,10 @@ fn test_roundtrip_v2() {
 		]
 	}
 	rp := parse(orig.to_yaml())!
-	assert rp.version == schema_version
+	// the version this project NEEDS (v2 here — it uses no generator value source), not blindly
+	// schema_version: a file that uses no v3 feature stays openable by an older build
+	assert rp.version == version_for(orig)
+	assert rp.version == 2
 	assert rp.channels.len == 3
 	c0 := rp.channels[0]
 	assert c0.name == 'CAN0'
@@ -403,4 +406,43 @@ fn test_generator_source_warnings() {
 	assert gen_source_invalid(GenCfg{ typ: '' }) == ''
 	assert gen_source_invalid(GenCfg{ typ: 'sine', freq: 0 }) == ''
 	assert gen_source_invalid(GenCfg{ typ: 'sawtooth', period: 2 }) == ''
+}
+
+// A project is labelled with the version it actually needs: v3 only once a generator carries a
+// value source, so an older build is flagged instead of silently dropping the waveform on save.
+fn test_version_for_wave() {
+	mut p := Project{
+		name:     'v'
+		channels: [
+			Channel{
+				name:    'CAN1'
+				senders: [
+					Sender{
+						name:    'g'
+						signals: [SenderSig{
+							name:  'A'
+							value: 1
+						}]
+					},
+				]
+			},
+		]
+	}
+	assert version_for(p) == 2
+	assert parse(p.to_yaml())!.version == 2
+	p.channels[0].senders[0].signals[0].wave = GenCfg{
+		typ:    'sawtooth'
+		min:    0
+		max:    10
+		period: 2
+	}
+	assert version_for(p) == 3
+	back := parse(p.to_yaml())!
+	assert back.version == 3
+	// and the static fallback survives beside the waveform
+	sg := back.channels[0].senders[0].signals[0]
+	assert sg.value == 1.0, 'value=${sg.value}'
+	assert sg.wave.typ == 'sawtooth'
+	assert sg.wave.max == 10.0
+	assert sg.wave.period == 2.0
 }

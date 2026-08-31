@@ -20,7 +20,25 @@ import doip
 // schema changes incompatibly. Files carry `version:`; Save writes schema_version,
 // and the loader flags a file whose version is NEWER than the app understands
 // (is_supported / version_note) so opening a future-format file isn't silent.
-pub const schema_version = 2
+pub const schema_version = 3
+
+// version_for is the version a PARTICULAR project must declare. Generator value sources (v3) are
+// written as extra keys an older build parses as an unknown-key no-op — it would then treat the
+// signal as its static value and a structured Save there would drop the waveform for good. So a
+// project that uses one says v3 (older builds flag it via is_supported / version_note) while
+// everything else keeps saying v2 and stays openable by them.
+pub fn version_for(p Project) int {
+	for c in p.channels {
+		for s in c.senders {
+			for sg in s.signals {
+				if sg.wave.typ != '' {
+					return 3
+				}
+			}
+		}
+	}
+	return 2
+}
 
 // Mode is a channel's operating mode within a measurement.
 //

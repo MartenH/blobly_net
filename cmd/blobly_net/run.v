@@ -133,7 +133,18 @@ fn (app &App) dest_is_read_locked(iface string) bool {
 fn (app &App) runtime_rows() []project.Channel {
 	mut rows := []project.Channel{}
 	for c in app.chans {
+		// THE LIVE GENERATORS TOO, for the same reason `fd` is copied below: these rows are what
+		// the warning checks are asked about, and a row with no senders made
+		// generator_source_warnings inspect nothing at all — the promised warning about an
+		// unusable value source could never fire (codex #269).
+		mut snd := []project.Sender{}
+		for sr in app.senders {
+			if sr.chan == c.name {
+				snd << sr.sender
+			}
+		}
 		rows << project.Channel{
+			senders: snd
 			name:    c.name
 			adapter: c.adapter
 			iface:   c.iface

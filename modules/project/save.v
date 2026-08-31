@@ -15,7 +15,9 @@ pub fn (p Project) to_yaml() string {
 	mut b := strings.new_builder(1024)
 	b.writeln('project:')
 	b.writeln('  name: ${p.name}')
-	b.writeln('  version: ${schema_version}') // we always write the current format
+	// the version THIS project needs, not blindly the newest: a file that uses no v3 feature stays
+	// v2 so an older build still opens it without a 'newer format' flag (codex #269)
+	b.writeln('  version: ${version_for(p)}')
 	b.writeln('')
 	b.writeln('buses:')
 	for ch in p.channels {
@@ -199,16 +201,16 @@ pub fn (p Project) to_yaml() string {
 				if s.signals.len > 0 {
 					b.writeln('        signals:')
 					for sg in s.signals {
-						// A waveform writes the SAME inline form a simulated ECU's signal does
-						// (gen_inline) — one vocabulary, whoever sends it. No waveform: the plain
-						// name/value pair every older project already has.
+						// The static `value` is written ALWAYS, waveform or not: it is the value the
+						// signal falls back to (source removed, or a source that cannot be
+						// evaluated), so dropping it on save turned a configured fallback into 0
+						// on the next open. The waveform's own params follow it, the same
+						// vocabulary a simulated ECU's signal uses.
+						mut parts := 'name: ${sg.name}, value: ${num(sg.value)}'
 						if sg.wave.typ != '' {
-							mut g := sg.wave
-							g.signal = sg.name
-							b.writeln('          - ${gen_inline(g)}')
-						} else {
-							b.writeln('          - { name: ${sg.name}, value: ${num(sg.value)} }')
+							parts += ', type: ${sg.wave.typ}' + gen_params_inline(sg.wave)
 						}
+						b.writeln('          - { ${parts} }')
 					}
 				}
 			}
@@ -237,7 +239,14 @@ pub fn (p Project) save(path string) ! {
 // gen_inline renders one signal generator as a compact flow mapping, emitting only
 // the params relevant to its type (matching the hand-written demo style).
 fn gen_inline(g GenCfg) string {
-	mut parts := ['name: ${g.signal}', 'type: ${g.typ}']
+	return '{ name: ${g.signal}, type: ${g.typ}' + gen_params_inline(g) + ' }'
+}
+
+// gen_params_inline is the type-specific half of a generator entry: ", k: v" for exactly the
+// params that type reads. Shared so a simulated ECU's signal and a generator's write the same
+// vocabulary (the generator prefixes its own name/value, which it keeps as the fallback).
+fn gen_params_inline(g GenCfg) string {
+	mut parts := []string{}
 	match g.typ {
 		'const' {
 			parts << 'value: ${num(g.value)}'
@@ -265,7 +274,10 @@ fn gen_inline(g GenCfg) string {
 		}
 		else {}
 	}
-	return '{ ${parts.join(', ')} }'
+	if parts.len == 0 {
+		return ''
+	}
+	return ', ' + parts.join(', ')
 }
 
 // yaml_scalar renders a string as a YAML scalar, double-quoting it when a bare value would
