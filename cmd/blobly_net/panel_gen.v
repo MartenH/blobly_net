@@ -598,13 +598,16 @@ fn (mut app App) set_wave_typ(i int, j int, typ string) {
 	if i < app.senders.len && j < app.senders[i].sender.signals.len {
 		mut sg := &app.senders[i].sender.signals[j]
 		sg.wave.typ = typ
-		// A NEW SOURCE IS A NEW SEQUENCE. Every delivered frame advances this generator's send
-		// index whatever its source was, so a running generator switched to counter/stepmod would
-		// resume at start + step * frames-already-sent instead of the value just seeded below.
-		app.gen_send_n.delete(app.senders[i].uid)
-		// Seed a new source from what the signal already sends, so picking a waveform starts AT
-		// the current value rather than snapping to zero: a sine centres on it, a sawtooth spans
-		// up to it, a counter starts from it.
+		// Seed a new source from what the signal already sends, so picking a waveform is anchored
+		// on the current value rather than snapping to zero: a sine centres on it, a sawtooth
+		// spans up to it, a counter and a stepmod base on it.
+		//
+		// The PER-SEND sources (counter/stepmod) ride this generator's send index, which is shared
+		// by every signal in the message and counts frames delivered since the run began — the
+		// simulator's per-message send_n, same semantics. So one enabled mid-run continues from
+		// where the generator already is rather than from its seed; it is not restarted here,
+		// because a sender-wide reset would restart every OTHER signal's counter in the same
+		// message and could be undone by a fire still in flight.
 		if typ == 'sine' && sg.wave.offset == 0 && sg.wave.amplitude == 0 {
 			sg.wave.offset = sg.value
 			sg.wave.freq = 1.0
@@ -614,6 +617,7 @@ fn (mut app App) set_wave_typ(i int, j int, typ string) {
 		} else if typ == 'counter' && sg.wave.start == 0 {
 			sg.wave.start = sg.value
 		} else if typ == 'stepmod' && sg.wave.count == 0 {
+			sg.wave.base = sg.value
 			sg.wave.count = 4
 			sg.wave.period = 1.0
 		}
