@@ -677,7 +677,7 @@ fn (mut app App) start() {
 	// unsafe concurrent map write and the epoch a plain data race (codex #269).
 	app.mu.lock()
 	app.wave_t0_ns = time.sys_mono_now()
-	app.gen_send_n = map[int]int{} // a new run starts the per-send sequences at 0
+	app.gen_send_n = map[u64]int{} // a new run starts the per-send sequences at 0
 	app.gen_state_epoch++ // a fire still in flight from the previous run must not write into it
 	app.mu.unlock()
 	app.running = true

@@ -259,7 +259,9 @@ fn (mut app App) add_generator() {
 	iface := if app.chans.len > 0 { app.chans[0].iface } else { '' }
 	cname := if app.chans.len > 0 { app.chans[0].name } else { '' }
 	app.mu.lock()
+	app.gen_next_uid++
 	app.senders << SenderRT{
+		uid:    app.gen_next_uid
 		iface:  iface
 		chan:   cname
 		sender: project.Sender{
@@ -289,9 +291,9 @@ fn (mut app App) remove_generator(i int) {
 		if i < app.gen_bufs.len {
 			app.gen_bufs.delete(i)
 		}
-		// index-keyed: everything after `i` has just shifted down onto another generator's count
-		app.gen_send_n = map[int]int{}
-		app.gen_state_epoch++ // and an in-flight fire must not write its old count back
+		// nothing to re-key: the per-generator state is keyed by SenderRT.uid, so the shift below
+		// cannot hand one generator's count or in-flight flag to another, and a fire still in
+		// flight for the removed generator writes back onto its own (now unused) entry
 		app.dirty = true
 	}
 	app.mu.unlock()
@@ -596,17 +598,17 @@ fn (mut app App) set_wave_typ(i int, j int, typ string) {
 	if i < app.senders.len && j < app.senders[i].sender.signals.len {
 		mut sg := &app.senders[i].sender.signals[j]
 		sg.wave.typ = typ
-		// Seed a new source from what the signal already sends, so picking a waveform starts
-		// AT the current value rather than snapping to zero: a const takes it outright, a sine
-		// centres on it, a sawtooth spans up to it.
-		if typ == 'const' && sg.wave.value == 0 {
-			sg.wave.value = sg.value
-		} else if typ == 'sine' && sg.wave.offset == 0 && sg.wave.amplitude == 0 {
+		// Seed a new source from what the signal already sends, so picking a waveform starts AT
+		// the current value rather than snapping to zero: a sine centres on it, a sawtooth spans
+		// up to it, a counter starts from it.
+		if typ == 'sine' && sg.wave.offset == 0 && sg.wave.amplitude == 0 {
 			sg.wave.offset = sg.value
 			sg.wave.freq = 1.0
 		} else if typ == 'sawtooth' && sg.wave.max == 0 {
 			sg.wave.max = sg.value
 			sg.wave.period = 1.0
+		} else if typ == 'counter' && sg.wave.start == 0 {
+			sg.wave.start = sg.value
 		} else if typ == 'stepmod' && sg.wave.count == 0 {
 			sg.wave.count = 4
 			sg.wave.period = 1.0
@@ -733,21 +735,22 @@ fn (mut app App) fire_index(i int) {
 		app.mu.unlock()
 		return
 	}
-	if app.gen_firing[i] {
+	uid := app.senders[i].uid
+	if app.gen_firing[uid] {
 		app.mu.unlock()
 		return
 	}
-	app.gen_firing[i] = true
+	app.gen_firing[uid] = true
 	defer {
 		app.mu.lock()
-		app.gen_firing.delete(i)
+		app.gen_firing.delete(uid)
 		app.mu.unlock()
 	}
 	s := project.Sender{
 		...app.senders[i].sender
 		signals: app.senders[i].sender.signals.clone()
 	}
-	n := app.gen_send_n[i] or { 0 }
+	n := app.gen_send_n[uid] or { 0 }
 	epoch := app.gen_state_epoch
 	wt0 := app.wave_t0_ns
 	app.mu.unlock()
@@ -808,8 +811,10 @@ fn (mut app App) fire_index(i int) {
 		// run since would have shifted or cleared the counts, and this write would land on
 		// whichever generator now sits at this index.
 		app.mu.lock()
+		// the epoch still guards the RUN/PROJECT boundary (a new run restarts the sequences); the
+		// uid already guarantees this lands on the generator the fire was snapshotted from
 		if app.gen_state_epoch == epoch {
-			app.gen_send_n[i] = n + 1
+			app.gen_send_n[uid] = n + 1
 		}
 		app.mu.unlock()
 	}

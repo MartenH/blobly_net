@@ -254,11 +254,11 @@ mut:
 	// then write over the new file.
 	cfg_text_dirty bool
 	// per-generator send count, for the value sources that step per send (counter/stepmod).
-	// Keyed by sender index like gen_bufs, so it is only meaningful for THIS sender set: removing
-	// a generator shifts every later index onto a count that belonged to another one, and a new
-	// project would continue an unrelated sequence. Both paths clear it (see reset_gen_state).
-	// Read and written under app.mu — a cyclic fire and a manual one race otherwise.
-	gen_send_n map[int]int
+	// Keyed by SenderRT.uid, so a removal cannot shift one generator's count onto another and an
+	// in-flight fire always writes back onto the generator it read. Cleared for a new project /
+	// a new run (reset_gen_state), where the sequences legitimately restart. Read and written
+	// under app.mu — a cyclic fire and a manual one race otherwise.
+	gen_send_n map[u64]int
 	// Bumped whenever gen_send_n is reset or the sender set is reordered. A fire captures it with
 	// its index and only writes the count back if it still matches: a fire can be blocked in the
 	// driver's send while the GUI removes a generator or a new run starts, and its late write
@@ -272,8 +272,10 @@ mut:
 	// in its driver's write block "Send now" on an unrelated healthy wire, and a stalled socket
 	// write must cost its sender and nobody else. A tick that finds its own generator still
 	// firing is skipped — the previous frame has not left yet, so there is nothing to overlap.
-	// Guarded by app.mu.
-	gen_firing map[int]bool
+	// Keyed by SenderRT.uid and guarded by app.mu.
+	gen_firing map[u64]bool
+	// the next generator identity to hand out (see SenderRT.uid)
+	gen_next_uid u64
 	// The epoch the time-based value sources (sine/sawtooth/stepmod) are evaluated from: set at
 	// Start, so a restarted measurement begins at the same phase instead of one that depends on
 	// how long the GUI happened to be open. 0 = never started.
@@ -434,6 +436,12 @@ mut:
 // SenderRT is a project sender bound to its channel iface (Generators panel).
 struct SenderRT {
 mut:
+	// A STABLE IDENTITY, assigned once when the generator enters the runtime set. Per-generator
+	// state (the send count, the in-flight flag) used to be keyed by array INDEX, and every
+	// removal shifted the rest onto each other's entries — a fire in flight then wrote its count
+	// onto a different generator, or cleared a flag that had come to mean another one. An index is
+	// a position, not an identity; this is the identity.
+	uid   u64
 	iface string // the bus this generator fires on (a channel iface); rebound if the iface changes
 	chan  string // the CHANNEL that owns it — two channels can share one iface, and only the
 	// name says which of them a generator's frames belong to
@@ -806,9 +814,14 @@ fn (mut app App) set_project(proj project.Project, path string) {
 // reset_gen_state drops the per-generator send counts. They are keyed by sender INDEX, so any
 // change to the sender set (a removal shifting the rest, a different project) makes every stored
 // count belong to a generator that is no longer at that index.
+// reset_gen_state drops the per-generator send counts, for a new project or a new run where the
+// sequences legitimately restart. UNDER app.mu: a fire blocked in its transport send reads and
+// writes these under it, so replacing the map unlocked is an unsafe concurrent map write.
 fn (mut app App) reset_gen_state() {
-	app.gen_send_n = map[int]int{}
-	app.gen_state_epoch++ // in-flight fires must not write their counts back onto the new set
+	app.mu.lock()
+	app.gen_send_n = map[u64]int{}
+	app.gen_state_epoch++ // an in-flight fire must not write its count back onto the new set
+	app.mu.unlock()
 }
 
 fn (mut app App) rebuild_from_proj() {
@@ -956,7 +969,9 @@ fn (mut app App) rebuild_from_proj() {
 					''
 				}
 			}
+			app.gen_next_uid++
 			app.senders << SenderRT{
+				uid:    app.gen_next_uid
 				iface:  ch.iface
 				chan:   owner
 				sender: s
