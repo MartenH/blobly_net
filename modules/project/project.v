@@ -23,10 +23,15 @@ import doip
 pub const schema_version = 3
 
 // version_for is the version a PARTICULAR project must declare. Generator value sources (v3) are
-// written as extra keys an older build parses as an unknown-key no-op — it would then treat the
-// signal as its static value and a structured Save there would drop the waveform for good. So a
-// project that uses one says v3 (older builds flag it via is_supported / version_note) while
-// everything else keeps saying v2 and stays openable by them.
+// written as extra keys an older parser reads as unknown-key no-ops — it would treat the signal as
+// its static value, and a structured Save there would drop the waveform for good. So a project
+// that uses one says v3 while everything else keeps saying v2 and stays openable by older builds
+// with no note at all.
+//
+// What the label buys, honestly: a build that CHECKS the version says so (version_note, now on the
+// normal Open path as well as the text-apply one). A build already released without that check
+// cannot be helped retroactively by anything written in the file — the label is for the ones that
+// look, which from here on is all of them.
 pub fn version_for(p Project) int {
 	for c in p.channels {
 		for s in c.senders {

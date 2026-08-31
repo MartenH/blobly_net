@@ -291,6 +291,7 @@ fn (mut app App) remove_generator(i int) {
 		}
 		// index-keyed: everything after `i` has just shifted down onto another generator's count
 		app.gen_send_n = map[int]int{}
+		app.gen_state_epoch++ // and an in-flight fire must not write its old count back
 		app.dirty = true
 	}
 	app.mu.unlock()
@@ -742,6 +743,7 @@ fn (mut app App) fire_index(i int) {
 		signals: app.senders[i].sender.signals.clone()
 	}
 	n := app.gen_send_n[i] or { 0 }
+	epoch := app.gen_state_epoch
 	wt0 := app.wave_t0_ns
 	app.mu.unlock()
 	// ONE clock sample for the whole frame. Read per signal, two time-based sources in one message
@@ -796,9 +798,14 @@ fn (mut app App) fire_index(i int) {
 		data:     data
 	}) {
 		// delivered frames only — a fire refused while the tap is still opening put nothing on
-		// the bus, and counting it would make the sequence lie about what was transmitted
+		// the bus, and counting it would make the sequence lie about what was transmitted.
+		// ...and only onto the generator set this fire was snapshotted from: a removal or a new
+		// run since would have shifted or cleared the counts, and this write would land on
+		// whichever generator now sits at this index.
 		app.mu.lock()
-		app.gen_send_n[i] = n + 1
+		if app.gen_state_epoch == epoch {
+			app.gen_send_n[i] = n + 1
+		}
 		app.mu.unlock()
 	}
 }

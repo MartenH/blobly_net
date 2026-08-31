@@ -259,6 +259,13 @@ mut:
 	// project would continue an unrelated sequence. Both paths clear it (see reset_gen_state).
 	// Read and written under app.mu — a cyclic fire and a manual one race otherwise.
 	gen_send_n map[int]int
+	// Bumped whenever gen_send_n is reset or the sender set is reordered. A fire captures it with
+	// its index and only writes the count back if it still matches: a fire can be blocked in the
+	// driver's send while the GUI removes a generator or a new run starts, and its late write
+	// would otherwise land on whichever generator now sits at that index. The same
+	// generation-guard shape the rx ring uses; a lock cannot serve here because those paths hold
+	// app.mu and the fire mutex is taken OUTSIDE it.
+	gen_state_epoch u64
 	// Serialises a COMPLETE generator fire (snapshot -> encode -> send -> count). Deliberately not
 	// app.mu: the send must not hold that (tx_on_chan takes it), and the reservation dance that
 	// avoided a full lock could not keep the count equal to delivered frames once two fires
@@ -687,6 +694,14 @@ fn (mut app App) load_project(path string) {
 		app.notify('load failed: ${err}')
 		return
 	}
+	// THE VERSION GATE ON THE NORMAL OPEN PATH TOO. It existed only where the Configuration text
+	// is applied, so File ▸ Open read a future-format file in silence — and a structured Save then
+	// wrote back what this build understood, dropping whatever it had ignored. Said, not refused:
+	// the file still opens, because most of it is readable and refusing would help nobody.
+	if note := non_empty(proj.version_note()) {
+		app.elog('${path}: ${note}')
+		app.notify('${note} — saving from here would drop them')
+	}
 	app.set_project(proj, path)
 	// Convenience: if a system.toml sits next to the project (the system_full layout),
 	// load it into the System panel and open it — so the per-ECU dashboard is one click
@@ -792,6 +807,7 @@ fn (mut app App) set_project(proj project.Project, path string) {
 // count belong to a generator that is no longer at that index.
 fn (mut app App) reset_gen_state() {
 	app.gen_send_n = map[int]int{}
+	app.gen_state_epoch++ // in-flight fires must not write their counts back onto the new set
 }
 
 fn (mut app App) rebuild_from_proj() {

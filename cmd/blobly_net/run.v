@@ -674,6 +674,7 @@ fn (mut app App) start() {
 	// restarted measurement starts at the same phase — the simulator's worker-local t0 equivalent
 	app.wave_t0_ns = time.sys_mono_now()
 	app.gen_send_n = map[int]int{} // a new run starts the per-send sequences at 0
+	app.gen_state_epoch++ // a fire still in flight from the previous run must not write into it
 	app.running = true
 	// The quiet-bus verdict measures THIS run. Carrying a previous run's first/last across a
 	// Stop would have every wire reading "quiet for 4 minutes" the instant Start is pressed —
