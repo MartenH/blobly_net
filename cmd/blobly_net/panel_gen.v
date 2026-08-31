@@ -722,21 +722,26 @@ fn sender_value(ss project.SenderSig, n int, el f64) f64 {
 
 
 fn (mut app App) fire_index(i int) {
-	// ONE FIRE AT A TIME, start to finish. Reserving an index and rolling it back on failure
-	// could not keep the count equal to DELIVERED frames when two fires finished out of order
-	// (A reserves, B reserves and sends, A fails — A's index is then unreturnable). Generators
-	// fire at millisecond cadences, so serialising them outright is cheaper than the bookkeeping
-	// and makes the whole read/encode/send/count atomic — which also settles the other half:
-	// the panel stays editable during a run, so an unlocked read of s.signals could encode a
-	// waveform the GUI thread was midway through changing.
-	app.gen_fire_mu.lock()
-	defer {
-		app.gen_fire_mu.unlock()
-	}
+	// ONE FIRE AT A TIME PER GENERATOR, start to finish: reserving an index and rolling it back
+	// could not keep the count equal to DELIVERED frames when two fires finished out of order.
+	// A flag rather than a held lock, because the send must not be inside one — a generator
+	// stalled in its driver's write would otherwise block every other generator's fire, and a
+	// stalled write must cost its sender alone. A tick that finds its own generator still firing
+	// is skipped: its previous frame has not left the wire, so there is nothing to overlap.
 	app.mu.lock()
 	if i < 0 || i >= app.senders.len {
 		app.mu.unlock()
 		return
+	}
+	if app.gen_firing[i] {
+		app.mu.unlock()
+		return
+	}
+	app.gen_firing[i] = true
+	defer {
+		app.mu.lock()
+		app.gen_firing.delete(i)
+		app.mu.unlock()
 	}
 	s := project.Sender{
 		...app.senders[i].sender

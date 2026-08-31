@@ -672,9 +672,14 @@ fn (mut app App) start() {
 	app.fb_open = false
 	// the epoch the time-based generator sources are evaluated from (sine/sawtooth/stepmod), so a
 	// restarted measurement starts at the same phase — the simulator's worker-local t0 equivalent
+	// UNDER app.mu: fire_index reads gen_send_n/gen_state_epoch under it, and a cyclic fire that
+	// survived the previous run can be in flight right here — replacing the map unlocked is an
+	// unsafe concurrent map write and the epoch a plain data race (codex #269).
+	app.mu.lock()
 	app.wave_t0_ns = time.sys_mono_now()
 	app.gen_send_n = map[int]int{} // a new run starts the per-send sequences at 0
 	app.gen_state_epoch++ // a fire still in flight from the previous run must not write into it
+	app.mu.unlock()
 	app.running = true
 	// The quiet-bus verdict measures THIS run. Carrying a previous run's first/last across a
 	// Stop would have every wire reading "quiet for 4 minutes" the instant Start is pressed —

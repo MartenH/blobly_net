@@ -266,13 +266,14 @@ mut:
 	// generation-guard shape the rx ring uses; a lock cannot serve here because those paths hold
 	// app.mu and the fire mutex is taken OUTSIDE it.
 	gen_state_epoch u64
-	// Serialises a COMPLETE generator fire (snapshot -> encode -> send -> count). Deliberately not
-	// app.mu: the send must not hold that (tx_on_chan takes it), and the reservation dance that
-	// avoided a full lock could not keep the count equal to delivered frames once two fires
-	// completed out of order — a cyclic fire and a manual "Send now" reach fire_index at once.
-	// Lock ORDER is gen_fire_mu then app.mu, never the reverse; gen_loop calls fire_index with
-	// app.mu released.
-	gen_fire_mu sync.Mutex
+	// Which generators have a fire in flight, so two fires of the SAME one cannot overlap (a
+	// cyclic tick landing on a manual "Send now") and encode one counter value twice. Per
+	// generator, and NOT a lock held across the send: one global mutex made a generator stalled
+	// in its driver's write block "Send now" on an unrelated healthy wire, and a stalled socket
+	// write must cost its sender and nobody else. A tick that finds its own generator still
+	// firing is skipped — the previous frame has not left yet, so there is nothing to overlap.
+	// Guarded by app.mu.
+	gen_firing map[int]bool
 	// The epoch the time-based value sources (sine/sawtooth/stepmod) are evaluated from: set at
 	// Start, so a restarted measurement begins at the same phase instead of one that depends on
 	// how long the GUI happened to be open. 0 = never started.
