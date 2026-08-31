@@ -471,22 +471,32 @@ fn (mut app App) signal_input(i int, j int, sig candb.Signal, have bool) {
 	app.signal_source(i, j)
 }
 
-// wave_kinds: the value sources a signal can have, in the order the picker shows them. 'value'
-// is the absence of a source (send the static number above) and maps to GenCfg.typ == ''.
-// 'value' is the absence of a source (send the static number). 'const' is deliberately NOT here:
-// for a generator a constant source IS that static value, and offering both put two `value:` keys
-// in one saved mapping and two independently editable numbers behind one field (codex #269).
-const wave_kinds = ['value', 'sine', 'sawtooth', 'counter', 'stepmod']
+// The picker's entries, DERIVED from project.wave_kinds rather than restated: a source added or
+// renamed there would otherwise parse, validate and serialize while the GUI could not select it.
+// Index 0 is 'value' — the absence of a source (send the static number) — which also stands in for
+// 'const': for a generator a constant source IS that static value, and offering both put two
+// `value:` keys in one saved mapping and two editable numbers behind one field (codex #269). That
+// presentation mapping lives HERE, in the one place that presents it.
+fn wave_kinds_ui() []string {
+	mut out := ['value']
+	for k in project.wave_kinds {
+		if k != 'const' {
+			out << k
+		}
+	}
+	return out
+}
 
 fn wave_typ_of(sel int) string {
-	if sel <= 0 || sel >= wave_kinds.len {
+	kinds := wave_kinds_ui()
+	if sel <= 0 || sel >= kinds.len {
 		return ''
 	}
-	return wave_kinds[sel]
+	return kinds[sel]
 }
 
 fn wave_sel_of(typ string) int {
-	for k, w in wave_kinds {
+	for k, w in wave_kinds_ui() {
 		if w == typ && k > 0 {
 			return k
 		}
@@ -501,7 +511,7 @@ fn (mut app App) signal_source(i int, j int) {
 	w := app.senders[i].sender.signals[j].wave
 	vgui.same_line()
 	vgui.set_next_item_width(110 * app.ui_scale)
-	sel := vgui.combo('##src${i}_${j}', wave_kinds, wave_sel_of(w.typ))
+	sel := vgui.combo('##src${i}_${j}', wave_kinds_ui(), wave_sel_of(w.typ))
 	if sel != wave_sel_of(w.typ) {
 		app.set_wave_typ(i, j, wave_typ_of(sel))
 	}
