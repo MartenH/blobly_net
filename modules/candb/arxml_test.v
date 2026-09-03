@@ -365,7 +365,12 @@ fn test_package_scoped_names_are_never_folded() {
 	assert (c.frame_of(m) or { panic('no frame') }).receivers == ['B_Node']
 	assert c.db.nodes == ['A_Node', 'B_Node']
 	assert c.ecus() == ['A_Node', 'B_Node']
-	assert a.report.notes.filter(it.contains('ECU name Node is used by 2 packages')).len == 2
+	assert a.report.notes.filter(it.contains('ECU name Node is used by another package too')).len == 2
+	// qualification is not injective on its own: a plain /C/A_Node is spelled like the
+	// qualified /A/Node, so names are allocated against what was given out
+	three := ecus.replace_once('</ELEMENTS></AR-PACKAGE>', '</ELEMENTS></AR-PACKAGE><AR-PACKAGE><SHORT-NAME>C</SHORT-NAME><ELEMENTS><ECU-INSTANCE><SHORT-NAME>A_Node</SHORT-NAME></ECU-INSTANCE></ELEMENTS></AR-PACKAGE>')
+	t := parse_arxml(arxml_head + ported + frame_xml + three + arxml_tail) or { panic(err) }
+	assert t.report.notes.any(it.contains('/C/A_Node: ECU name A_Node is used by another package too; this one is A_Node_2'))
 
 	// two I-SIGNALs of one SHORT-NAME from two packages in one message (a two-PDU frame)
 	two := offset_pdu_xml.replace('</PDU-TO-FRAME-MAPPINGS>', '<PDU-TO-FRAME-MAPPING><SHORT-NAME>M2</SHORT-NAME><PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/P2</PDU-REF><START-POSITION>40</START-POSITION></PDU-TO-FRAME-MAPPING></PDU-TO-FRAME-MAPPINGS>').replace('</I-SIGNAL-I-PDU></ELEMENTS>', '</I-SIGNAL-I-PDU><I-SIGNAL-I-PDU><SHORT-NAME>P2</SHORT-NAME><LENGTH>1</LENGTH><I-SIGNAL-TO-PDU-MAPPINGS><I-SIGNAL-TO-I-PDU-MAPPING><SHORT-NAME>MX</SHORT-NAME><I-SIGNAL-REF DEST="I-SIGNAL">/Sig2/V</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>0</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING></I-SIGNAL-TO-PDU-MAPPINGS></I-SIGNAL-I-PDU></ELEMENTS>') + '<AR-PACKAGE><SHORT-NAME>Sig2</SHORT-NAME><ELEMENTS><I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>8</LENGTH></I-SIGNAL></ELEMENTS></AR-PACKAGE>'
@@ -375,6 +380,14 @@ fn test_package_scoped_names_are_never_folded() {
 	dc := d.cluster('') or { panic(err) }
 	names := dc.db.messages[0].signals.map(it.name)
 	assert names == ['V', 'Crc', 'Ctr', 'Sig2_V']
+	// a third signal of a name already given out qualifies by ITS package; the suffix path is
+	// the ECU case above, where the qualified spelling is what was taken
+	third := two.replace('</I-SIGNAL-TO-PDU-MAPPINGS></I-SIGNAL-I-PDU></ELEMENTS>', '<I-SIGNAL-TO-I-PDU-MAPPING><SHORT-NAME>MY</SHORT-NAME><I-SIGNAL-REF DEST="I-SIGNAL">/Sig3/Sig2_V</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>0</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING></I-SIGNAL-TO-PDU-MAPPINGS></I-SIGNAL-I-PDU></ELEMENTS>') + '<AR-PACKAGE><SHORT-NAME>Sig3</SHORT-NAME><ELEMENTS><I-SIGNAL><SHORT-NAME>Sig2_V</SHORT-NAME><LENGTH>8</LENGTH></I-SIGNAL></ELEMENTS></AR-PACKAGE>'
+	t3 := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + third + arxml_tail) or {
+		panic(err)
+	}
+	t3c := t3.cluster('') or { panic(err) }
+	assert t3c.db.messages[0].signals.map(it.name) == ['V', 'Crc', 'Ctr', 'Sig2_V', 'Sig3_Sig2_V']
 	assert d.report.notes.any(it.contains('signal name V is already used in this message; this one is Sig2_V'))
 	// and the DBC export has no duplicate SG_
 	text := dc.export_dbc(ArxmlProvenance{}, d.report)
@@ -602,6 +615,22 @@ fn test_compu_method_shared_by_signals_of_two_widths() {
 		u64(15): 'Invalid'
 		u64(1):  'One'
 	}
+}
+
+fn test_enum_keys_above_2_pow_53_and_opaque_packing() {
+	big := offset_pdu_xml.replace('<SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH></I-SIGNAL>', '<SHORT-NAME>V</SHORT-NAME><LENGTH>64</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF></I-SIGNAL>').replace('<PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>0</START-POSITION>', '<PACKING-BYTE-ORDER>OPAQUE</PACKING-BYTE-ORDER><START-POSITION>0</START-POSITION>') + '<AR-PACKAGE><SHORT-NAME>Sys</SHORT-NAME><ELEMENTS><SYSTEM-SIGNAL><SHORT-NAME>S</SHORT-NAME><PHYSICAL-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/T</COMPU-METHOD-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></PHYSICAL-PROPS></SYSTEM-SIGNAL></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>CM</SHORT-NAME><ELEMENTS><COMPU-METHOD><SHORT-NAME>T</SHORT-NAME><CATEGORY>TEXTTABLE</CATEGORY><COMPU-INTERNAL-TO-PHYS><COMPU-SCALES><COMPU-SCALE><LOWER-LIMIT>9007199254740993</LOWER-LIMIT><UPPER-LIMIT>9007199254740993</UPPER-LIMIT><COMPU-CONST><VT>Odd</VT></COMPU-CONST></COMPU-SCALE></COMPU-SCALES></COMPU-INTERNAL-TO-PHYS></COMPU-METHOD></ELEMENTS></AR-PACKAGE>'
+	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + big + arxml_tail) or {
+		panic(err)
+	}
+	c := a.cluster('') or { panic(err) }
+	v := sig(c.db.messages[0], 'V')
+	// 2^53 + 1 survives as itself: an integer literal is parsed as an integer
+	assert v.values == {
+		u64(9007199254740993): 'Odd'
+	}
+	// OPAQUE: read as little-endian (the bytes round-trip) and said
+	assert v.byte_order == .little_endian
+	assert a.report.notes.any(it.contains('OPAQUE packing (a byte array) read as a little-endian integer'))
 }
 
 fn test_nonlinear_scales_and_negative_factors() {

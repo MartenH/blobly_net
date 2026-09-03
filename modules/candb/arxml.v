@@ -407,6 +407,21 @@ fn package_qualified(path string) string {
 	return '${pkg}_${path.all_after_last('/')}'
 }
 
+// claim_name hands out `want` if nobody in this namespace has it, else `want_2`, `want_3`…
+// — because package qualification alone is not injective (/A_B/F and /A/B_F both qualify to
+// A_B_F, and a plain /C/A_Node is spelled like a qualified /A/Node), so every name is
+// allocated against the set already given out. Deterministic in document order.
+fn claim_name(mut taken map[string]bool, want string) string {
+	mut name := want
+	mut i := 2
+	for (name in taken) {
+		name = '${want}_${i}'
+		i++
+	}
+	taken[name] = true
+	return name
+}
+
 // name_ecus decides what every ECU-INSTANCE is called: its SHORT-NAME, unless another
 // package has an ECU of the same SHORT-NAME — a legal AUTOSAR shape that, reduced to the
 // last path component, would fold two ECUs into one sender and one `--ecu` selection.
@@ -415,13 +430,14 @@ fn (mut r ArxmlReader) name_ecus() {
 	for p in r.kinds['ECU-INSTANCE'] {
 		count[p.all_after_last('/')]++
 	}
+	mut taken := map[string]bool{}
 	for p in r.kinds['ECU-INSTANCE'] {
 		short := p.all_after_last('/')
-		if count[short] > 1 {
-			r.ecus[p] = package_qualified(p)
-			r.report.notes << '${p}: ECU name ${short} is used by ${count[short]} packages; this one is ${r.ecus[p]}'
-		} else {
-			r.ecus[p] = short
+		want := if count[short] > 1 { package_qualified(p) } else { short }
+		name := claim_name(mut taken, want)
+		r.ecus[p] = name
+		if name != short {
+			r.report.notes << '${p}: ECU name ${short} is used by another package too; this one is ${name}'
 		}
 	}
 }
@@ -572,7 +588,7 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 	mut msgs := []Message{}
 	mut frames := map[string]ArxmlFrame{}
 	mut nodes := []string{}
-	mut names := map[string]int{} // message name -> how many frames of this cluster carry it
+	mut taken_names := map[string]bool{} // message names given out in this cluster
 	for ft in scope.get_elements_by_tag('CAN-FRAME-TRIGGERING') {
 		ft_path := r.path_of(ft, path)
 		frame, fpath := r.deref(ft, 'FRAME-REF', ft_path) or {
@@ -593,11 +609,11 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 		// protect: map), and AUTOSAR scopes a frame's SHORT-NAME per package — a second frame
 		// of the same name at another id is qualified by its package, and said, rather than
 		// shadowing the first
-		names[fname]++
-		if names[fname] > 1 {
-			qualified := package_qualified(fpath)
-			r.report.notes << '${ft_path}: frame name ${fname} is already used by another id in this cluster; this one is ${qualified}'
-			fname = qualified
+		want := if fname in taken_names { package_qualified(fpath) } else { fname }
+		claimed := claim_name(mut taken_names, want)
+		if claimed != fname {
+			r.report.notes << '${ft_path}: frame name ${fname} is already used by another id in this cluster; this one is ${claimed}'
+			fname = claimed
 		}
 		dlc := parse_int(child_text(frame, 'FRAME-LENGTH'))
 		mut info := ArxmlFrame{
@@ -622,7 +638,7 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 		// kept and the rest are reported rather than letting document order decide silently.
 		mut sigs := []Signal{}
 		mut pdus := 0
-		mut sig_names := map[string]int{} // a signal name is an identity within its message
+		mut sig_names := map[string]bool{} // signal names given out in this message
 		for pm in frame.get_elements_by_tag('PDU-TO-FRAME-MAPPING') {
 			pref := child(pm, 'PDU-REF') or { continue }
 			pdu, pdu_path := r.deref_node(pref, r.path_of(pm, '/' + fname)) or { continue }
@@ -814,7 +830,7 @@ fn (mut r ArxmlReader) load_secoc(pdu xml.XMLNode, pdu_path string, authentic in
 // load_signals reads every I-SIGNAL-TO-I-PDU-MAPPING of an I-SIGNAL-I-PDU. `pdu_off` is the
 // PDU's bit offset inside the frame, added to each start position — it is byte-aligned in
 // any real file, so it shifts an Intel and a Motorola start alike.
-fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off int, mut seen map[string]int) []Signal {
+fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off int, mut taken map[string]bool) []Signal {
 	mut out := []Signal{}
 	for m in pdu.get_elements_by_tag('I-SIGNAL-TO-I-PDU-MAPPING') {
 		// a signal-GROUP mapping has no I-SIGNAL-REF; its members are mapped individually
@@ -823,17 +839,24 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 		// two I-SIGNALs of one SHORT-NAME in different packages, mapped into one message
 		// (a multi-PDU frame, typically): the second is package-qualified, because a signal
 		// name is how everything downstream addresses it and a DBC refuses a duplicate SG_
-		seen[name]++
-		if seen[name] > 1 {
-			qualified := package_qualified(isig_path)
-			r.report.notes << '${isig_path}: signal name ${name} is already used in this message; this one is ${qualified}'
-			name = qualified
+		want := if name in taken { package_qualified(isig_path) } else { name }
+		claimed := claim_name(mut taken, want)
+		if claimed != name {
+			r.report.notes << '${isig_path}: signal name ${name} is already used in this message; this one is ${claimed}'
+			name = claimed
 		}
 		start := parse_int(child_text(m, 'START-POSITION')) + pdu_off
-		order := if child_text(m, 'PACKING-BYTE-ORDER') == 'MOST-SIGNIFICANT-BYTE-FIRST' {
+		packing := child_text(m, 'PACKING-BYTE-ORDER')
+		order := if packing == 'MOST-SIGNIFICANT-BYTE-FIRST' {
 			ByteOrder.big_endian
 		} else {
 			ByteOrder.little_endian
+		}
+		if packing == 'OPAQUE' {
+			// a byte array, not a number: read as a little-endian integer the bytes round-trip
+			// exactly, but the value has no numeric meaning and a factor or a range on it
+			// would be fiction — said, so nobody scales it
+			r.report.notes << '${isig_path}: OPAQUE packing (a byte array) read as a little-endian integer; its value is not a quantity'
 		}
 		length := parse_int(child_text(isig, 'LENGTH'))
 
@@ -1013,7 +1036,7 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 			if k := first(s, 'COMPU-CONST') {
 				label := first_text(k, 'VT')
 				if lo == hi && lo != '' {
-					values[u64(i64(parse_num(lo)))] = label
+					values[u64(parse_i64(lo))] = label
 				} else {
 					r.report.notes << '${cm_path}: maps the range ${lo}..${hi} to "${label}", which a value table cannot express; dropped'
 				}
@@ -1157,6 +1180,22 @@ fn parse_int(s string) int {
 		return int(t.f64())
 	}
 	return int(t.i64())
+}
+
+// parse_i64 reads an integer literal as an integer — an enum key above 2^53 would lose its
+// low bits through f64. Hex, decimal, or a float that is integral.
+fn parse_i64(s string) i64 {
+	t := s.trim_space()
+	if t == '' {
+		return 0
+	}
+	if t.starts_with('0x') || t.starts_with('0X') {
+		return i64(t[2..].parse_uint(16, 64) or { 0 })
+	}
+	if t.contains('.') || t.contains('e') || t.contains('E') {
+		return i64(t.f64())
+	}
+	return t.i64()
 }
 
 fn parse_num(s string) f64 {
