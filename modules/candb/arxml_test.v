@@ -337,6 +337,51 @@ fn test_e2e_positions_are_frame_relative_when_the_pdu_is_offset() {
 	assert s.crc == 'Crc'
 	assert s.counter == 'Ctr'
 	assert c.frame_toml('').contains('e2e  = { data_id = 0x7, crc_pos = 3, counter_pos = 4 }')
+	// the fields must be EXACTLY the profile's widths: a 4-bit signal at the CRC offset is not
+	// an 8-bit CRC, and a 2-bit one at the counter offset wraps early
+	narrow := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<SHORT-NAME>Crc</SHORT-NAME><LENGTH>8</LENGTH>', '<SHORT-NAME>Crc</SHORT-NAME><LENGTH>4</LENGTH>') + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>16</CRC-OFFSET>') + arxml_tail) or { panic(err) }
+	nc := narrow.cluster('') or { panic(err) }
+	assert nc.e2e_signals(nc.db.messages[0]) == none
+	assert !nc.frame_toml('').contains('\ne2e  =')
+}
+
+fn test_cluster_variants_and_duplicate_frame_names() {
+	// two CAN-CLUSTER-CONDITIONAL variants: the first is the bus, the second is reported
+	two_variants := cluster_xml('Bus', 256, '/Frames/F').replace('</CAN-CLUSTER-CONDITIONAL>', '</CAN-CLUSTER-CONDITIONAL><CAN-CLUSTER-CONDITIONAL><BAUDRATE>250000</BAUDRATE><PHYSICAL-CHANNELS><CAN-PHYSICAL-CHANNEL><SHORT-NAME>Ch2</SHORT-NAME><FRAME-TRIGGERINGS><CAN-FRAME-TRIGGERING><SHORT-NAME>FT2</SHORT-NAME><FRAME-REF DEST="CAN-FRAME">/Frames/F</FRAME-REF><CAN-ADDRESSING-MODE>STANDARD</CAN-ADDRESSING-MODE><IDENTIFIER>512</IDENTIFIER></CAN-FRAME-TRIGGERING></FRAME-TRIGGERINGS></CAN-PHYSICAL-CHANNEL></PHYSICAL-CHANNELS></CAN-CLUSTER-CONDITIONAL>')
+	a := parse_arxml(arxml_head + two_variants + frame_xml + arxml_tail) or { panic(err) }
+	c := a.cluster('') or { panic(err) }
+	assert c.baudrate == 500000
+	assert c.db.messages.len == 1 // the second variant's frame is not merged in
+	
+	assert c.db.messages[0].id == 256
+	assert a.report.notes.any(it.contains('2 CAN-CLUSTER-CONDITIONAL variants; the first is read, the other 1 are not'))
+
+	// two frames of one SHORT-NAME in different packages, both triggered: the second gets a
+	// package-qualified name, because a name is an identity downstream
+	dup := cluster_xml('Bus', 256, '/Frames/F').replace('</FRAME-TRIGGERINGS>', '<CAN-FRAME-TRIGGERING><SHORT-NAME>FT2</SHORT-NAME><FRAME-REF DEST="CAN-FRAME">/Other/F</FRAME-REF><CAN-ADDRESSING-MODE>STANDARD</CAN-ADDRESSING-MODE><IDENTIFIER>512</IDENTIFIER></CAN-FRAME-TRIGGERING></FRAME-TRIGGERINGS>')
+	other := frame_xml.replace('<SHORT-NAME>Frames</SHORT-NAME>', '<SHORT-NAME>Other</SHORT-NAME>')
+	d := parse_arxml(arxml_head + dup + frame_xml + other + arxml_tail) or { panic(err) }
+	dc := d.cluster('') or { panic(err) }
+	assert dc.db.messages.map(it.name) == ['F', 'Other_F']
+	assert dc.db.messages[1].id == 512
+	assert d.report.notes.any(it.contains('frame name F is already used by another id in this cluster; this one is Other_F'))
+}
+
+fn test_sub_millisecond_timing_is_said_never_zeroed() {
+	fast := offset_pdu_xml.replace('<LENGTH>4</LENGTH>\n<I-SIGNAL-TO-PDU-MAPPINGS>', '<LENGTH>4</LENGTH><I-PDU-TIMING-SPECIFICATIONS><I-PDU-TIMING><MINIMUM-DELAY>0.0025</MINIMUM-DELAY><TRANSMISSION-MODE-DECLARATION><TRANSMISSION-MODE-TRUE-TIMING><CYCLIC-TIMING><TIME-PERIOD><VALUE>0.0002</VALUE></TIME-PERIOD></CYCLIC-TIMING></TRANSMISSION-MODE-TRUE-TIMING></TRANSMISSION-MODE-DECLARATION></I-PDU-TIMING></I-PDU-TIMING-SPECIFICATIONS>\n<I-SIGNAL-TO-PDU-MAPPINGS>')
+	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + fast + arxml_tail) or {
+		panic(err)
+	}
+	c := a.cluster('') or { panic(err) }
+	f := c.frame_of(c.db.messages[0]) or { panic('no frame') }
+	// 200 µs is not 0 ms (that would make the frame event-driven): 1 ms, and a note
+	assert f.tx_mode == 'cyclic'
+	assert f.cycle_ms == 1
+	assert c.db.messages[0].cycle_ms == 1
+	assert a.report.notes.any(it.contains('TIME-PERIOD 0.0002 s is below a millisecond; read as 1 ms'))
+	// 2.5 ms rounds, and says so
+	assert f.min_delay_ms == 3
+	assert a.report.notes.any(it.contains('MINIMUM-DELAY 0.0025 s is not a whole millisecond; read as 3 ms'))
 }
 
 fn test_fixed_header_profile_is_named_not_approximated() {
@@ -424,8 +469,10 @@ fn test_e2e_export_needs_the_field_signals_and_a_known_checksum() {
 	m := c.db.messages[0]
 	assert m.signal_at(24) == 0 // V covers bit 24 …
 	
+
 	assert c.e2e_signals(m) == none // … but is not the CRC
 	
+
 	assert !c.export_dbc(ArxmlProvenance{}, a.report).contains('E2ECrcSignal" BO_')
 	// and the fragment follows the same verdict: no e2e entry, a comment saying why
 	assert !c.frame_toml('').contains('\ne2e  =')
@@ -716,7 +763,7 @@ fn test_frame_toml_per_ecu() {
 	c := example_cluster()
 	all := c.frame_toml('')
 	assert all.contains('[[frame]]\nname = "Powertrain"\nbus  = "Body"\ntx   = { mode = "cyclic", cycle_ms = 100, min_delay_ms = 20 }')
-	assert all.contains('name = "LampFrame"\nbus  = "Body"\ntx   = { mode = "mixed", cycle_ms = 100, min_delay_ms = 10 }\ne2e  = { data_id = 0x2A, crc_pos = 6, counter_pos = 7 }  # PROFILE_01')
+	assert all.contains('name = "LampFrame"\nbus  = "Body"\ntx   = { mode = "mixed", cycle_ms = 100, min_delay_ms = 10 }\ne2e  = { data_id = 0x2A, crc_pos = 6, counter_pos = 7 }  # crc8_j1850, from PROFILE_01 (blobly\'s primitive, not the full AUTOSAR profile)')
 	assert all.contains('# secoc = { key = "…", data_id = 0x2B, fresh_pos = 3, mac_pos = 4, mac_len = 4 }')
 	assert all.contains('name = "Wide"\nbus  = "Body"\n# CAN-FD frame (16 bytes)\ntx   = { mode = "event" }')
 	// a frame nobody sends is still listed when everything is asked for

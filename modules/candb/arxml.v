@@ -301,6 +301,9 @@ pub fn parse_arxml(text string) !Arxml {
 // Element kinds seen in a file and deliberately not extracted. Counted whether or not a frame
 // leads to them: the report is about the FILE, so a reader of it knows what the export lacks.
 const arxml_ignored_kinds = [
+	'LIN-UNCONDITIONAL-FRAME',
+	'LIN-SPORADIC-FRAME',
+	'LIN-EVENT-TRIGGERED-FRAME',
 	'MULTIPLEXED-I-PDU',
 	'CONTAINER-I-PDU',
 	'N-PDU',
@@ -521,32 +524,54 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 	name := path.all_after_last('/')
 	// the bus parameters sit at CAN-CLUSTER-VARIANTS/CAN-CLUSTER-CONDITIONAL, and a
 	// depth-first search from the cluster would walk every triggering to find them
+	// A cluster may carry several CAN-CLUSTER-CONDITIONAL variants (a variant-rich system
+	// description); the bus and the frames are read from the FIRST, because reading the bus
+	// from one variant and the frames from all of them describes a bus that exists in no
+	// variant. The others are reported, not merged.
 	mut baud := 0
 	mut fd_baud := 0
+	mut scope := cl
 	if variants := child(cl, 'CAN-CLUSTER-VARIANTS') {
-		if cond := child(variants, 'CAN-CLUSTER-CONDITIONAL') {
-			baud = parse_int(child_text(cond, 'BAUDRATE'))
-			fd_baud = parse_int(child_text(cond, 'CAN-FD-BAUDRATE'))
+		conds := variants.get_elements_by_tag('CAN-CLUSTER-CONDITIONAL')
+		if conds.len > 0 {
+			scope = conds[0]
+			baud = parse_int(child_text(scope, 'BAUDRATE'))
+			fd_baud = parse_int(child_text(scope, 'CAN-FD-BAUDRATE'))
+		}
+		if conds.len > 1 {
+			r.report.notes << '${path}: ${conds.len} CAN-CLUSTER-CONDITIONAL variants; the first is read, the other ${conds.len - 1} are not'
 		}
 	}
 	mut msgs := []Message{}
 	mut frames := map[string]ArxmlFrame{}
 	mut nodes := []string{}
-	for ft in cl.get_elements_by_tag('CAN-FRAME-TRIGGERING') {
+	mut names := map[string]int{} // message name -> how many frames of this cluster carry it
+	for ft in scope.get_elements_by_tag('CAN-FRAME-TRIGGERING') {
 		ft_path := r.path_of(ft, path)
-		frame, _ := r.deref(ft, 'FRAME-REF', ft_path) or {
+		frame, fpath := r.deref(ft, 'FRAME-REF', ft_path) or {
 			if child(ft, 'FRAME-REF') == none {
 				r.report.notes << '${ft_path}: CAN-FRAME-TRIGGERING without a FRAME-REF, skipped'
 			}
 			continue
 		}
-		fname := child_text(frame, 'SHORT-NAME')
+		mut fname := child_text(frame, 'SHORT-NAME')
 		id := u32(parse_int(child_text(ft, 'IDENTIFIER')))
 		ext := child_text(ft, 'CAN-ADDRESSING-MODE') == 'EXTENDED'
 		key := frame_key(id, ext)
 		if key in frames {
 			r.report.notes << '${ft_path}: a second triggering for id 0x${id:X} (${fname}); the first is kept'
 			continue
+		}
+		// a message NAME is an identity to everything downstream (the generator picker, the
+		// protect: map), and AUTOSAR scopes a frame's SHORT-NAME per package — a second frame
+		// of the same name at another id is qualified by its package, and said, rather than
+		// shadowing the first
+		names[fname]++
+		if names[fname] > 1 {
+			pkg := fpath.trim_left('/').all_before_last('/').replace('/', '_')
+			qualified := '${pkg}_${fname}'
+			r.report.notes << '${ft_path}: frame name ${fname} is already used by another id in this cluster; this one is ${qualified}'
+			fname = qualified
 		}
 		dlc := parse_int(child_text(frame, 'FRAME-LENGTH'))
 		mut info := ArxmlFrame{
@@ -606,7 +631,7 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			}
 			sigs << r.load_signals(sig_pdu, sig_pdu_path, pdu_off)
 			if first_pdu {
-				tm := r.load_timing(sig_pdu)
+				tm := r.load_timing(sig_pdu, sig_pdu_path)
 				info.tx_mode = tm.tx_mode
 				info.cycle_ms = tm.cycle_ms
 				info.min_delay_ms = tm.min_delay_ms
@@ -668,9 +693,9 @@ struct ArxmlTiming {
 // CYCLIC-TIMING, event if an EVENT-CONTROLLED-TIMING, mixed if both. The FALSE mode (what
 // the PDU does when its mode condition is off) is not read: COM's mode switching is ECU
 // configuration, and a bench needs the cadence the bus is expected to carry.
-fn (r ArxmlReader) load_timing(pdu xml.XMLNode) ArxmlTiming {
+fn (mut r ArxmlReader) load_timing(pdu xml.XMLNode, pdu_path string) ArxmlTiming {
 	spec := first(pdu, 'I-PDU-TIMING') or { return ArxmlTiming{} }
-	min_delay := seconds_to_ms(first_text(spec, 'MINIMUM-DELAY'))
+	min_delay := r.timing_ms(first_text(spec, 'MINIMUM-DELAY'), pdu_path, 'MINIMUM-DELAY')
 	tt := first(spec, 'TRANSMISSION-MODE-TRUE-TIMING') or {
 		return ArxmlTiming{
 			min_delay_ms: min_delay
@@ -680,7 +705,7 @@ fn (r ArxmlReader) load_timing(pdu xml.XMLNode) ArxmlTiming {
 	mut mode := ''
 	if ct := first(tt, 'CYCLIC-TIMING') {
 		if tp := first(ct, 'TIME-PERIOD') {
-			cycle = seconds_to_ms(first_text(tp, 'VALUE'))
+			cycle = r.timing_ms(first_text(tp, 'VALUE'), pdu_path, 'TIME-PERIOD')
 		}
 		mode = 'cyclic'
 	}
@@ -692,6 +717,30 @@ fn (r ArxmlReader) load_timing(pdu xml.XMLNode) ArxmlTiming {
 		cycle_ms: cycle
 		min_delay_ms: min_delay
 	}
+}
+
+// timing_ms converts a declared time to the model's whole milliseconds and SAYS when that
+// loses something: a sub-millisecond period rounded to 0 would turn a cyclic frame into an
+// event-driven one (period_ms <= 0 is "not cyclic" downstream), so a declared period is
+// never less than 1 ms, and any value that is not a whole millisecond is noted.
+fn (mut r ArxmlReader) timing_ms(s string, at string, what string) int {
+	if s.trim_space() == '' {
+		return 0
+	}
+	secs := parse_num(s)
+	if secs <= 0 {
+		return 0
+	}
+	ms := seconds_to_ms(s)
+	exact := f64(ms) / 1000.0
+	if ms == 0 {
+		r.report.notes << '${at}: ${what} ${s} s is below a millisecond; read as 1 ms'
+		return 1
+	}
+	if secs != exact {
+		r.report.notes << '${at}: ${what} ${s} s is not a whole millisecond; read as ${ms} ms'
+	}
+	return ms
 }
 
 // load_secoc reads a SECURED-I-PDU's layout; `authentic` is the payload PDU's length in bytes
@@ -769,7 +818,7 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 				// large negatives (SM). Said, since a raw value that decodes wrong in
 				// silence is the worst kind
 				is_signed = true
-				r.report.notes << '${isig_path}: ${enc} encoding is not modelled; decoded as two\'s complement, so negative values are wrong'
+				r.report.notes << "${isig_path}: ${enc} encoding is not modelled; decoded as two's complement, so negative values are wrong"
 			} else if enc.starts_with('IEEE754') {
 				r.report.notes << '${isig_path}: IEEE754 (floating-point) signal read as an unsigned integer'
 			}

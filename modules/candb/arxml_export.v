@@ -80,10 +80,11 @@ pub fn (c ArxmlCluster) e2e_signals(m Message) ?E2eSignals {
 	}
 }
 
-// is_e2e_field: a little-endian signal starting exactly at the field's bit and no wider than
-// the field (profile 1/2: an 8-bit CRC, a 4-bit counter in the low nibble).
+// is_e2e_field: a little-endian signal that IS the field — starting exactly at its bit and
+// exactly its width (profile 1/2: an 8-bit CRC, a 4-bit counter in the low nibble). A
+// narrower signal would truncate the checksum or wrap the counter early.
 fn is_e2e_field(s Signal, bit int, width int) bool {
-	return s.byte_order == .little_endian && s.start_bit == bit && s.length <= width
+	return s.byte_order == .little_endian && s.start_bit == bit && s.length == width
 }
 
 // single_data_id reports whether the protection uses ONE data id, whole: profile 1's
@@ -258,8 +259,11 @@ pub fn (c ArxmlCluster) frame_toml(ecu string) string {
 		if e := f.e2e {
 			// the SAME contract the DBC attributes carry (e2e_signals): a protection the
 			// export cannot state exactly is named, never approximated into an entry
-			if _ := c.e2e_signals(m) {
-				b << 'e2e  = { data_id = 0x${e.data_id:X}, crc_pos = ${e.crc_byte()}, counter_pos = ${e.counter_byte()} }  # ${e.profile}'
+			if s := c.e2e_signals(m) {
+				// what blobly_emb implements is its own CRC-8 + 4-bit counter, not the
+				// complete AUTOSAR profile (docs/simulation.md): the comment names the
+				// primitive the profile's checksum maps to, and where it came from
+				b << "e2e  = { data_id = 0x${e.data_id:X}, crc_pos = ${e.crc_byte()}, counter_pos = ${e.counter_byte()} }  # ${s.profile}, from ${e.profile} (blobly's primitive, not the full AUTOSAR profile)"
 			} else if !e.single_data_id() {
 				ids := e.data_ids.map('0x${it:X}').join(', ')
 				b << '# E2E ${e.profile} with ${e.data_id_mode} data ids (${ids}): this data-id mode is not expressible here'
