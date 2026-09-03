@@ -217,19 +217,45 @@ pub fn (a Arxml) cluster_names() []string {
 	return a.clusters.map(it.bus)
 }
 
-// name_clusters gives every cluster its `bus` identifier, allocated like every other name.
-fn name_clusters(clusters []ArxmlCluster) []ArxmlCluster {
+// allocate_names gives every path in `paths` the name it goes by, in TWO passes: first every
+// unique SHORT-NAME is reserved as itself, then every shared one is allocated its
+// package-qualified form against that set. One pass in document order was not enough — with
+// /A/Bus, /B/Bus and /C/A_Bus it handed `A_Bus` to /A/Bus and `A_Bus_2` to the cluster whose
+// own name is A_Bus, so selecting the latter by its documented name loaded the former.
+fn allocate_names(paths []string) map[string]string {
 	mut count := map[string]int{}
-	for c in clusters {
-		count[c.name]++
+	for p in paths {
+		count[p.all_after_last('/')]++
 	}
 	mut taken := map[string]bool{}
+	mut out := map[string]string{}
+	for p in paths {
+		short := p.all_after_last('/')
+		if count[short] == 1 {
+			out[p] = short
+			taken[short] = true
+		}
+	}
+	for p in paths {
+		if p !in out {
+			out[p] = claim_name(mut taken, package_qualified(p))
+		}
+	}
+	return out
+}
+
+// name_clusters gives every cluster its `bus` identifier — see allocate_names.
+fn (mut r ArxmlReader) name_clusters(clusters []ArxmlCluster) []ArxmlCluster {
+	names := allocate_names(clusters.map(it.path))
 	mut out := []ArxmlCluster{cap: clusters.len}
 	for c in clusters {
-		want := if count[c.name] > 1 { package_qualified(c.path) } else { c.name }
+		bus := names[c.path]
+		if bus != c.name {
+			r.report.notes << '${c.path}: cluster name ${c.name} is used by another package too; this one is ${bus}'
+		}
 		out << ArxmlCluster{
 			...c
-			bus: claim_name(mut taken, want)
+			bus: bus
 		}
 	}
 	return out
@@ -307,8 +333,9 @@ pub fn parse_arxml(text string) !Arxml {
 	for path in r.kinds['CAN-CLUSTER'] {
 		clusters << r.load_cluster(path)
 	}
+	named := r.name_clusters(clusters)
 	return Arxml{
-		clusters: name_clusters(clusters)
+		clusters: named
 		report: r.report
 	}
 }
@@ -442,18 +469,11 @@ fn claim_name(mut taken map[string]bool, want string) string {
 // package has an ECU of the same SHORT-NAME — a legal AUTOSAR shape that, reduced to the
 // last path component, would fold two ECUs into one sender and one `--ecu` selection.
 fn (mut r ArxmlReader) name_ecus() {
-	mut count := map[string]int{}
-	for p in r.kinds['ECU-INSTANCE'] {
-		count[p.all_after_last('/')]++
-	}
-	mut taken := map[string]bool{}
+	r.ecus = allocate_names(r.kinds['ECU-INSTANCE'])
 	for p in r.kinds['ECU-INSTANCE'] {
 		short := p.all_after_last('/')
-		want := if count[short] > 1 { package_qualified(p) } else { short }
-		name := claim_name(mut taken, want)
-		r.ecus[p] = name
-		if name != short {
-			r.report.notes << '${p}: ECU name ${short} is used by another package too; this one is ${name}'
+		if r.ecus[p] != short {
+			r.report.notes << '${p}: ECU name ${short} is used by another package too; this one is ${r.ecus[p]}'
 		}
 	}
 }
@@ -613,6 +633,8 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 	mut frames := map[string]ArxmlFrame{}
 	mut nodes := []string{}
 	mut taken_names := map[string]bool{} // message names given out in this cluster
+	mut fd_frames := 0
+	mut classic_frames := 0
 	for ft in scope.get_elements_by_tag('CAN-FRAME-TRIGGERING') {
 		ft_path := r.path_of(ft, path)
 		frame, fpath := r.deref(ft, 'FRAME-REF', ft_path) or {
@@ -670,7 +692,18 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 		for pm in frame.get_elements_by_tag('PDU-TO-FRAME-MAPPING') {
 			pref := child(pm, 'PDU-REF') or { continue }
 			pdu, pdu_path := r.deref_node(pref, r.path_of(pm, '/' + fname)) or { continue }
-			pdu_off := parse_int(child_text(pm, 'START-POSITION'))
+			// A PDU is a byte array laid into the frame at a BYTE; its PACKING-BYTE-ORDER only
+			// says how START-POSITION counts that byte — the LSB of it (MOST-SIGNIFICANT-
+			// BYTE-LAST, bit 8k) or the MSB (MOST-SIGNIFICANT-BYTE-FIRST, bit 8k+7), and real
+			// exports write 0 either way. Both land on byte k = position / 8, so the PDU's
+			// bytes are never reversed by it. Verified on a SystemWeaver export whose only
+			// CAN PDU is packed MSB-first: cantools reads it the same way. A position that
+			// is neither is not byte-aligned, which no PDU layout is — said.
+			pdu_pos := parse_int(child_text(pm, 'START-POSITION'))
+			pdu_off := (pdu_pos / 8) * 8
+			if pdu_pos % 8 != 0 && pdu_pos % 8 != 7 {
+				r.report.notes << '${ft_path}: PDU ${child_text(pdu, 'SHORT-NAME')} starts at bit ${pdu_pos} of frame ${fname}, not on a byte; read from byte ${pdu_pos / 8}'
+			}
 			pdus++
 			first_pdu := pdus == 1
 			if !first_pdu {
@@ -734,6 +767,11 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			}
 		}
 		info.receivers = ports.receivers
+		if info.fd {
+			fd_frames++
+		} else {
+			classic_frames++
+		}
 		msgs << Message{
 			name: fname
 			id: id
@@ -745,6 +783,12 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			signals: sigs
 		}
 		frames[key] = info
+	}
+	if fd_frames > 0 && classic_frames > 0 {
+		// Message carries no per-frame format, so on the bench the wire's policy decides
+		// ONE format for every frame this cluster simulates; the export's VFrameFormat and
+		// the fragment's per-frame comment are where the distinction survives
+		r.report.notes << '${path}: ${fd_frames} CAN-FD and ${classic_frames} classic frames on one cluster; the simulation applies one format per bus, the export keeps the distinction'
 	}
 	return ArxmlCluster{
 		name: name
@@ -879,6 +923,11 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 			name = claimed
 		}
 		start := parse_int(child_text(m, 'START-POSITION')) + pdu_off
+		if ub := child(m, 'UPDATE-BIT-POSITION') {
+			// a receiver may treat the signal as not updated while the bit is clear, and a
+			// simulated frame leaves every unlisted bit clear — said, since nothing sets it
+			r.report.notes << '${isig_path}: declares an update bit at bit ${parse_int(el_text(ub)) + pdu_off}; not modelled, a simulated frame leaves it clear'
+		}
 		packing := child_text(m, 'PACKING-BYTE-ORDER')
 		order := if packing == 'MOST-SIGNIFICANT-BYTE-FIRST' {
 			ByteOrder.big_endian
@@ -1136,11 +1185,14 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 				linear_seen = true
 				if d != 0 {
 					offset = if num.len > 0 { num[0] / d } else { 0.0 }
-					// a one-term numerator is a CONSTANT (every raw value maps to it), so its
-					// factor is 0 — not the identity's 1
-					factor = if num.len > 1 {
-						num[1] / d
-					} else if num.len == 1 { 0.0 } else { 1.0 }
+					// a one-term numerator is a CONSTANT: every raw value maps to it, which no
+					// factor/offset pair can say (factor 0 divides by zero on encode). Not
+					// modelled: said, and the raw value is what decodes
+					if num.len == 1 {
+						r.report.notes << '${cm_path}: a constant conversion (every raw value is ${fmt_num(num[0])}) is not modelled; read as factor 1 offset 0'
+						offset = 0.0
+					}
+					factor = if num.len > 1 { num[1] / d } else { 1.0 }
 				}
 				if lo != '' && hi != '' {
 					has_domain = true

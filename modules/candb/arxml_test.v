@@ -28,9 +28,12 @@ fn test_cluster_and_nodes() {
 	assert c.fd_baudrate == 2000000
 	assert c.db.messages.len == 5
 	assert c.db.nodes == ['ECU_A', 'ECU_B', 'ECU_C']
-	// the file is complete: nothing dangling, nothing partially read
+	// the file is complete: nothing dangling, and the one partial read is the mixed-format
+	// cluster, which the simulation cannot carry per frame
 	assert a.report.unresolved == []
-	assert a.report.notes == []
+	assert a.report.notes == [
+		'/Cluster/Body: 1 CAN-FD and 4 classic frames on one cluster; the simulation applies one format per bus, the export keeps the distinction',
+	]
 	// and the one PDU kind not extracted is counted, not dropped in silence
 	assert a.report.ignored == {
 		'N-PDU': 1
@@ -370,7 +373,8 @@ fn test_package_scoped_names_are_never_folded() {
 	// qualified /A/Node, so names are allocated against what was given out
 	three := ecus.replace_once('</ELEMENTS></AR-PACKAGE>', '</ELEMENTS></AR-PACKAGE><AR-PACKAGE><SHORT-NAME>C</SHORT-NAME><ELEMENTS><ECU-INSTANCE><SHORT-NAME>A_Node</SHORT-NAME></ECU-INSTANCE></ELEMENTS></AR-PACKAGE>')
 	t := parse_arxml(arxml_head + ported + frame_xml + three + arxml_tail) or { panic(err) }
-	assert t.report.notes.any(it.contains('/C/A_Node: ECU name A_Node is used by another package too; this one is A_Node_2'))
+	assert t.report.notes.any(it.contains('/A/Node: ECU name Node is used by another package too; this one is A_Node_2'))
+	assert !t.report.notes.any(it.contains('/C/A_Node'))
 
 	// two I-SIGNALs of one SHORT-NAME from two packages in one message (a two-PDU frame)
 	two := offset_pdu_xml.replace('</PDU-TO-FRAME-MAPPINGS>', '<PDU-TO-FRAME-MAPPING><SHORT-NAME>M2</SHORT-NAME><PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/P2</PDU-REF><START-POSITION>40</START-POSITION></PDU-TO-FRAME-MAPPING></PDU-TO-FRAME-MAPPINGS>').replace('</I-SIGNAL-I-PDU></ELEMENTS>', '</I-SIGNAL-I-PDU><I-SIGNAL-I-PDU><SHORT-NAME>P2</SHORT-NAME><LENGTH>1</LENGTH><I-SIGNAL-TO-PDU-MAPPINGS><I-SIGNAL-TO-I-PDU-MAPPING><SHORT-NAME>MX</SHORT-NAME><I-SIGNAL-REF DEST="I-SIGNAL">/Sig2/V</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>0</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING></I-SIGNAL-TO-PDU-MAPPINGS></I-SIGNAL-I-PDU></ELEMENTS>') + '<AR-PACKAGE><SHORT-NAME>Sig2</SHORT-NAME><ELEMENTS><I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>8</LENGTH></I-SIGNAL></ELEMENTS></AR-PACKAGE>'
@@ -718,14 +722,61 @@ fn test_nonlinear_scales_and_negative_factors() {
 	assert ns.offset == 100
 	assert ns.minimum == -27.5
 	assert ns.maximum == 100
-	// a one-term numerator is a constant: factor 0, not the identity
+	// a one-term numerator is a constant, which factor/offset cannot say (factor 0 divides by
+	// zero on encode): reported, read as the identity
 	konst := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + sigs + poly.replace('@COEFFS@', '<V>5</V>') + arxml_tail) or { panic(err) }
 	kc := konst.cluster('') or { panic(err) }
 	ks := sig(kc.db.messages[0], 'Crc')
-	assert ks.factor == 0
-	assert ks.offset == 5
-	assert ks.minimum == 5
-	assert ks.maximum == 5
+	assert ks.factor == 1
+	assert ks.offset == 0
+	assert konst.report.notes.any(it.contains('a constant conversion (every raw value is 5) is not modelled'))
+}
+
+fn test_selectors_never_collide_with_a_documented_short_name() {
+	// /A/Bus, /B/Bus and /C/A_Bus: the cluster whose own name is A_Bus keeps it, and the
+	// shared pair get names allocated around it — selecting by a documented SHORT-NAME
+	// must never load another cluster
+	three := cluster_xml('Bus', 1, '/Frames/F').replace('<SHORT-NAME>Bus</SHORT-NAME><ELEMENTS>', '<SHORT-NAME>A</SHORT-NAME><ELEMENTS>') + cluster_xml('Bus', 2, '/Frames/F').replace('<SHORT-NAME>Bus</SHORT-NAME><ELEMENTS>', '<SHORT-NAME>B</SHORT-NAME><ELEMENTS>') + cluster_xml('A_Bus', 3, '/Frames/F').replace('<SHORT-NAME>A_Bus</SHORT-NAME><ELEMENTS>', '<SHORT-NAME>C</SHORT-NAME><ELEMENTS>')
+	a := parse_arxml(arxml_head + three + frame_xml + arxml_tail) or { panic(err) }
+	assert a.clusters.map(it.path) == ['/A/Bus', '/B/Bus', '/C/A_Bus']
+	assert a.cluster_names() == ['A_Bus_2', 'B_Bus', 'A_Bus']
+	assert (a.cluster('A_Bus') or { panic(err) }).path == '/C/A_Bus'
+	assert (a.cluster('A_Bus_2') or { panic(err) }).path == '/A/Bus'
+	assert a.report.notes.any(it.contains('/A/Bus: cluster name Bus is used by another package too; this one is A_Bus_2'))
+	// the same allocation for ECUs: /A/Node, /B/Node, /C/A_Node
+	ecus := '<AR-PACKAGE><SHORT-NAME>A</SHORT-NAME><ELEMENTS><ECU-INSTANCE><SHORT-NAME>Node</SHORT-NAME></ECU-INSTANCE></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>B</SHORT-NAME><ELEMENTS><ECU-INSTANCE><SHORT-NAME>Node</SHORT-NAME></ECU-INSTANCE></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>C</SHORT-NAME><ELEMENTS><ECU-INSTANCE><SHORT-NAME>A_Node</SHORT-NAME></ECU-INSTANCE></ELEMENTS></AR-PACKAGE>'
+	e := parse_arxml(arxml_head + ecus + arxml_tail) or { panic(err) }
+	assert e.report.notes.any(it.contains('/A/Node: ECU name Node is used by another package too; this one is A_Node_2'))
+	assert e.report.notes.any(it.contains('/B/Node: ECU name Node is used by another package too; this one is B_Node'))
+	assert !e.report.notes.any(it.contains('/C/A_Node'))
+}
+
+fn test_shapes_reported_rather_than_misread() {
+	// a PDU packed MSB-first into its frame: the PDU's start is counted at the MSB of its
+	// first byte (bit 15 for byte 1), and the bytes are not reversed — the same layout as
+	// the LSB-first mapping at bit 8, which is what a real export and cantools agree on
+	msb := offset_pdu_xml.replace('<PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/P</PDU-REF><START-POSITION>8</START-POSITION>', '<PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-FIRST</PACKING-BYTE-ORDER><PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/P</PDU-REF><START-POSITION>15</START-POSITION>')
+	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + msb + arxml_tail) or {
+		panic(err)
+	}
+	c := a.cluster('') or { panic(err) }
+	assert sig(c.db.messages[0], 'V').start_bit == 8
+	assert sig(c.db.messages[0], 'Crc').start_bit == 24
+	assert a.report.notes.len == 0
+	// a start that is on neither convention's byte boundary is said, and read from its byte
+	odd := offset_pdu_xml.replace_once('<START-POSITION>8</START-POSITION>', '<START-POSITION>12</START-POSITION>')
+	o := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + odd + arxml_tail) or {
+		panic(err)
+	}
+	oc := o.cluster('') or { panic(err) }
+	assert sig(oc.db.messages[0], 'V').start_bit == 8
+	assert o.report.notes.any(it.contains('PDU P starts at bit 12 of frame F, not on a byte; read from byte 1'))
+	// an update bit: said, with its frame-relative position
+	ub := offset_pdu_xml.replace('<I-SIGNAL-REF DEST="I-SIGNAL">/Sig/V</I-SIGNAL-REF>', '<I-SIGNAL-REF DEST="I-SIGNAL">/Sig/V</I-SIGNAL-REF><UPDATE-BIT-POSITION>31</UPDATE-BIT-POSITION>')
+	u := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + ub + arxml_tail) or {
+		panic(err)
+	}
+	assert u.report.notes.any(it.contains('/Sig/V: declares an update bit at bit 39; not modelled'))
 }
 
 fn test_two_triggerings_of_one_id_keep_the_first_and_say_so() {
@@ -929,7 +980,10 @@ fn test_report_lines() {
 	l := a.report.lines()
 	assert l.len == 1
 	assert l[0].starts_with('unresolved reference: ')
-	assert example_arxml().report.lines() == ['ignored: 1 × N-PDU']
+	assert example_arxml().report.lines() == [
+		'ignored: 1 × N-PDU',
+		'note: /Cluster/Body: 1 CAN-FD and 4 classic frames on one cluster; the simulation applies one format per bus, the export keeps the distinction',
+	]
 }
 
 fn index_of_first(lines []string, prefix string) int {
