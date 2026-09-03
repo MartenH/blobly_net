@@ -149,6 +149,7 @@ fn test_secoc_frame_reaches_the_authentic_pdu() {
 	assert s.freshness_tx_len == 8
 	assert s.auth_info_tx_len == 32
 	assert s.authentic_len == 3
+	assert s.pdu_offset == 0
 	assert s.fresh_bit == 24
 	assert s.mac_bit == 32
 	assert s.byte_aligned
@@ -366,17 +367,114 @@ fn test_secoc_with_a_freshness_that_is_not_byte_aligned() {
 	assert !s.byte_aligned
 	assert a.report.notes.any(it.contains('a 4-bit freshness puts the MAC at bit 36'))
 	// the fragment refuses to give byte positions it cannot stand behind
-	assert c.frame_toml('').contains('# SecOC (data_id 0x9): a 4-bit freshness puts the MAC at bit 36')
+	assert c.frame_toml('').contains('# SecOC (data_id 0x9): a 4-bit freshness and a 28-bit MAC at bit 36')
 	assert !c.frame_toml('').contains('mac_pos')
-	// and a byte-aligned one is stated
+	// a byte-aligned freshness with a 28-bit MAC is no better: mac_len = 4 would describe a
+	// 32-bit MAC
 	b := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + secoc_xml(8) + arxml_tail) or {
 		panic(err)
 	}
 	bc := b.cluster('') or { panic(err) }
-	assert bc.frame_toml('').contains('fresh_pos = 4, mac_pos = 5, mac_len = 4')
+	assert !bc.frame_toml('').contains('mac_pos')
+	assert b.report.notes.any(it.contains('a 28-bit MAC does not fill whole bytes'))
+	// whole bytes on both: stated, and FRAME-relative when the secured PDU is offset
+	w := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + secoc_xml(8).replace('<AUTH-INFO-TX-LENGTH>28<', '<AUTH-INFO-TX-LENGTH>24<').replace('<START-POSITION>0<', '<START-POSITION>8<') + arxml_tail) or { panic(err) }
+	wc := w.cluster('') or { panic(err) }
+	ws := (wc.frame_of(wc.db.messages[0]) or { panic('no frame') }).secoc or { panic('no secoc') }
+	assert ws.pdu_offset == 8
+	assert ws.fresh_byte == 5
+	assert ws.mac_byte == 6
+	assert ws.mac_len == 3
+	assert wc.frame_toml('').contains('fresh_pos = 5, mac_pos = 6, mac_len = 3')
 	// the PAYLOAD-REF chain is followed once, so a dangling one is reported once
 	d := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + secoc_xml(8).replace('/PDUs/T<', '/PDUs/Missing<') + arxml_tail) or { panic(err) }
 	assert d.report.unresolved.len == 1
+}
+
+fn test_alternating_data_ids_are_named_not_collapsed() {
+	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>16</CRC-OFFSET><DATA-ID-MODE>ALTERNATING-8-BIT</DATA-ID-MODE>').replace('<DATA-ID>7</DATA-ID>', '<DATA-ID>7</DATA-ID><DATA-ID>9</DATA-ID>') + arxml_tail) or { panic(err) }
+	c := a.cluster('') or { panic(err) }
+	m := c.db.messages[0]
+	e := (c.frame_of(m) or { panic('no frame') }).e2e or { panic('unprotected') }
+	assert e.data_ids == [u32(7), 9]
+	assert !e.single_data_id()
+	assert c.e2e_signals(m) == none
+	assert !c.export_dbc(ArxmlProvenance{}, a.report).contains('E2EDataId')
+	assert c.frame_toml('').contains('# E2E PROFILE_01 with ALTERNATING-8-BIT data ids (0x7, 0x9): alternating ids are not expressible here')
+}
+
+fn test_duplicate_cluster_short_names_need_the_path() {
+	// two packages, one SHORT-NAME: legal AUTOSAR, and the name alone must not pick one
+	dup := cluster_xml('Body', 1, '/Frames/F') + cluster_xml('Body', 2, '/Frames/F').replace('<SHORT-NAME>Body</SHORT-NAME><ELEMENTS>', '<SHORT-NAME>Other</SHORT-NAME><ELEMENTS>')
+	a := parse_arxml(arxml_head + dup + frame_xml + arxml_tail) or { panic(err) }
+	assert a.clusters.len == 2
+	assert a.clusters.map(it.path) == ['/Body/Body', '/Other/Body']
+	assert a.cluster_names() == ['/Body/Body', '/Other/Body']
+	if _ := a.cluster('Body') {
+		assert false, 'a shared short name must be refused'
+	} else {
+		assert err.msg().contains('"Body" names 2 CAN clusters (/Body/Body, /Other/Body): use the path')
+	}
+	assert (a.cluster('/Other/Body') or { panic(err) }).db.messages[0].id == 2
+	// a unique short name still works, by name or by path
+	one := parse_arxml(arxml_head + cluster_xml('Body', 1, '/Frames/F') + frame_xml + arxml_tail) or {
+		panic(err)
+	}
+	assert one.cluster_names() == ['Body']
+	assert (one.cluster('Body') or { panic(err) }).path == '/Body/Body'
+	assert (one.cluster('/Body/Body') or { panic(err) }).name == 'Body'
+}
+
+fn test_multi_pdu_frame_keeps_the_first_pdus_metadata_and_says_so() {
+	two := offset_pdu_xml.replace('</PDU-TO-FRAME-MAPPINGS>', '<PDU-TO-FRAME-MAPPING><SHORT-NAME>M2</SHORT-NAME><PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/P2</PDU-REF><START-POSITION>40</START-POSITION></PDU-TO-FRAME-MAPPING></PDU-TO-FRAME-MAPPINGS>').replace('</I-SIGNAL-I-PDU></ELEMENTS>', '</I-SIGNAL-I-PDU><I-SIGNAL-I-PDU><SHORT-NAME>P2</SHORT-NAME><LENGTH>1</LENGTH><I-PDU-TIMING-SPECIFICATIONS><I-PDU-TIMING><TRANSMISSION-MODE-DECLARATION><TRANSMISSION-MODE-TRUE-TIMING><CYCLIC-TIMING><TIME-PERIOD><VALUE>0.5</VALUE></TIME-PERIOD></CYCLIC-TIMING></TRANSMISSION-MODE-TRUE-TIMING></TRANSMISSION-MODE-DECLARATION></I-PDU-TIMING></I-PDU-TIMING-SPECIFICATIONS><I-SIGNAL-TO-PDU-MAPPINGS><I-SIGNAL-TO-I-PDU-MAPPING><SHORT-NAME>MX</SHORT-NAME><I-SIGNAL-REF DEST="I-SIGNAL">/Sig/Ctr</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>0</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING></I-SIGNAL-TO-PDU-MAPPINGS></I-SIGNAL-I-PDU></ELEMENTS>')
+	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + two + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>16</CRC-OFFSET>') + arxml_tail) or { panic(err) }
+	c := a.cluster('') or { panic(err) }
+	m := c.db.messages[0]
+	// every PDU's signals; the first PDU's timing and protection; and a note about the rest
+	assert m.signals.len == 4
+	assert m.signals[3].start_bit == 40
+	f := c.frame_of(m) or { panic('no frame') }
+	assert f.pdu == 'P'
+	assert f.cycle_ms == 0
+	assert f.e2e != none
+	assert a.report.notes.any(it.contains('frame F maps 2 PDUs; the signals of P2 are read, its timing and protection are not'))
+}
+
+fn test_compu_method_shared_by_signals_of_two_widths() {
+	// one TEXTTABLE with a 255 entry, read by an 8-bit and a 4-bit signal in that order: the
+	// second must not inherit the first's masked table
+	shared_xml := offset_pdu_xml.replace('<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>8</LENGTH></I-SIGNAL>', '<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>8</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF></I-SIGNAL>').replace('<I-SIGNAL><SHORT-NAME>Ctr</SHORT-NAME><LENGTH>4</LENGTH></I-SIGNAL>', '<I-SIGNAL><SHORT-NAME>Ctr</SHORT-NAME><LENGTH>4</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF></I-SIGNAL>') + '<AR-PACKAGE><SHORT-NAME>Sys</SHORT-NAME><ELEMENTS><SYSTEM-SIGNAL><SHORT-NAME>S</SHORT-NAME><PHYSICAL-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/T</COMPU-METHOD-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></PHYSICAL-PROPS></SYSTEM-SIGNAL></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>CM</SHORT-NAME><ELEMENTS><COMPU-METHOD><SHORT-NAME>T</SHORT-NAME><CATEGORY>TEXTTABLE</CATEGORY><COMPU-INTERNAL-TO-PHYS><COMPU-SCALES><COMPU-SCALE><LOWER-LIMIT>255</LOWER-LIMIT><UPPER-LIMIT>255</UPPER-LIMIT><COMPU-CONST><VT>Invalid</VT></COMPU-CONST></COMPU-SCALE><COMPU-SCALE><LOWER-LIMIT>1</LOWER-LIMIT><UPPER-LIMIT>1</UPPER-LIMIT><COMPU-CONST><VT>One</VT></COMPU-CONST></COMPU-SCALE></COMPU-SCALES></COMPU-INTERNAL-TO-PHYS></COMPU-METHOD></ELEMENTS></AR-PACKAGE>'
+	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + shared_xml + arxml_tail) or {
+		panic(err)
+	}
+	c := a.cluster('') or { panic(err) }
+	m := c.db.messages[0]
+	assert sig(m, 'Crc').values == {
+		u64(255): 'Invalid'
+		u64(1):   'One'
+	}
+	assert sig(m, 'Ctr').values == {
+		u64(15): 'Invalid'
+		u64(1):  'One'
+	}
+}
+
+fn test_nonlinear_scales_and_negative_factors() {
+	// a zero quadratic term before a nonzero cubic one is still a curve
+	poly := '<AR-PACKAGE><SHORT-NAME>Sys</SHORT-NAME><ELEMENTS><SYSTEM-SIGNAL><SHORT-NAME>S</SHORT-NAME><PHYSICAL-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/L</COMPU-METHOD-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></PHYSICAL-PROPS></SYSTEM-SIGNAL></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>CM</SHORT-NAME><ELEMENTS><COMPU-METHOD><SHORT-NAME>L</SHORT-NAME><CATEGORY>LINEAR</CATEGORY><COMPU-INTERNAL-TO-PHYS><COMPU-SCALES><COMPU-SCALE><LOWER-LIMIT>0</LOWER-LIMIT><UPPER-LIMIT>255</UPPER-LIMIT><COMPU-RATIONAL-COEFFS><COMPU-NUMERATOR>@COEFFS@</COMPU-NUMERATOR><COMPU-DENOMINATOR><V>1</V></COMPU-DENOMINATOR></COMPU-RATIONAL-COEFFS></COMPU-SCALE></COMPU-SCALES></COMPU-INTERNAL-TO-PHYS></COMPU-METHOD></ELEMENTS></AR-PACKAGE>'
+	sigs := offset_pdu_xml.replace('<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>8</LENGTH></I-SIGNAL>', '<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>8</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF></I-SIGNAL>')
+	cubic := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + sigs + poly.replace('@COEFFS@', '<V>0</V><V>1</V><V>0</V><V>1</V>') + arxml_tail) or { panic(err) }
+	cc := cubic.cluster('') or { panic(err) }
+	assert sig(cc.db.messages[0], 'Crc').factor == 1
+	assert cubic.report.notes.any(it.contains('a polynomial of degree 3'))
+	// a negative factor: the physical range still reads low to high
+	neg := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + sigs + poly.replace('@COEFFS@', '<V>100</V><V>-0.5</V>') + arxml_tail) or { panic(err) }
+	nc := neg.cluster('') or { panic(err) }
+	ns := sig(nc.db.messages[0], 'Crc')
+	assert ns.factor == -0.5
+	assert ns.offset == 100
+	assert ns.minimum == -27.5
+	assert ns.maximum == 100
 }
 
 fn test_two_triggerings_of_one_id_keep_the_first_and_say_so() {
@@ -507,6 +605,10 @@ fn test_export_dbc_carries_provenance_and_attributes() {
 	assert lines.any(it == 'BA_ "E2EProfile" BO_ 512 "crc8_j1850";')
 	assert lines.any(it == 'BA_ "E2EDataId" BO_ 512 42;')
 	assert lines.filter(it.starts_with('BA_ "E2E')).len == 4
+	// the frame format survives: the one thing that tells a short FD frame from a classic one
+	assert lines.any(it.starts_with('BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN"'))
+	assert lines.any(it == 'BA_ "VFrameFormat" BO_ 2149235934 15;')
+	assert lines.filter(it.starts_with('BA_ "VFrameFormat"')).len == 1
 	// section order the format requires: every BA_DEF_ before every BA_DEF_DEF_ before every
 	// BA_, the comment with the CM_ records, value tables last
 	last_def := index_of_last(lines, 'BA_DEF_ ')
@@ -543,21 +645,25 @@ fn test_frame_toml_per_ecu() {
 	assert all.contains('[[frame]]\nname = "Powertrain"\nbus  = "Body"\ntx   = { mode = "cyclic", cycle_ms = 100, min_delay_ms = 20 }')
 	assert all.contains('name = "LampFrame"\nbus  = "Body"\ntx   = { mode = "mixed", cycle_ms = 100, min_delay_ms = 10 }\ne2e  = { data_id = 0x2A, crc_pos = 6, counter_pos = 7 }  # PROFILE_01')
 	assert all.contains('# secoc = { key = "…", data_id = 0x2B, fresh_pos = 3, mac_pos = 4, mac_len = 4 }')
-	assert all.contains('name = "Wide"\nbus  = "Body"\ntx   = { mode = "event" }')
+	assert all.contains('name = "Wide"\nbus  = "Body"\n# CAN-FD frame (16 bytes)\ntx   = { mode = "event" }')
 	// a frame nobody sends is still listed when everything is asked for
 	assert all.contains('name = "DiagReq"')
-	assert !all.contains('rx   =')
+	assert !all.contains('\nrx   =')
 
 	// ECU_A: sends Powertrain, receives LampFrame, SecureFrame and DiagReq; never sees Wide
 	a := c.frame_toml('ECU_A')
 	assert a.contains('name = "Powertrain"\nbus  = "Body"\ntx   =')
-	assert a.contains('name = "LampFrame"\nbus  = "Body"\n# rx timeout is ECU configuration (ComTimeout), not in the system description\nrx   = { timeout_ms = 300 }\ne2e  =')
-	assert a.contains('name = "DiagReq"\nbus  = "Body"\n# rx timeout')
-	assert a.contains('rx   = { timeout_ms = 0 }') // no cadence to derive one from: 0, not a guess
-	
-
+	// the deadline is not in the file: a placeholder with the cadence beside it, never a number
+	assert a.contains('name = "LampFrame"\nbus  = "Body"\n# rx   = { timeout_ms = ? }  # set from the ECU\'s ComTimeout (the sender\'s cycle is 100 ms)\ne2e  =')
+	assert a.contains('name = "DiagReq"\nbus  = "Body"\n# rx   = { timeout_ms = ? }  # set from the ECU\'s ComTimeout (no cycle declared)')
+	assert !a.contains('\nrx   =')
 	assert !a.contains('name = "Wide"')
 	assert !a.contains('name = "Powertrain"\nbus  = "Body"\n# rx')
+	// FD is a bus property in ecu.toml: stated once for the bus, and marked on the frame
+	assert all.contains('# [bus.Body]  baudrate = 500000, data_baudrate = 2000000, fd = true')
+	assert all.contains('name = "Wide"\nbus  = "Body"\n# CAN-FD frame (16 bytes)\ntx   =')
+	// an ECU the cluster never names is a typo, not an empty fragment
+	assert c.ecus() == ['ECU_A', 'ECU_B', 'ECU_C']
 }
 
 fn test_report_lines() {

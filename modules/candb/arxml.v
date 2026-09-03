@@ -96,16 +96,17 @@ pub fn (e ArxmlE2e) counter_byte() int {
 pub struct ArxmlSecOc {
 pub:
 	data_id          u32
-	freshness_len    int // FRESHNESS-VALUE-LENGTH, bits, the full counter
-	freshness_tx_len int // FRESHNESS-VALUE-TX-LENGTH, bits actually on the wire
-	auth_info_tx_len int // AUTH-INFO-TX-LENGTH, bits of MAC on the wire
-	authentic_len    int // bytes of the authentic (payload) PDU
-	fresh_bit        int // bit offset of the freshness value in the secured PDU
-	mac_bit          int // bit offset of the MAC
-	byte_aligned     bool // freshness AND MAC start on byte boundaries
+	freshness_len    int  // FRESHNESS-VALUE-LENGTH, bits, the full counter
+	freshness_tx_len int  // FRESHNESS-VALUE-TX-LENGTH, bits actually on the wire
+	auth_info_tx_len int  // AUTH-INFO-TX-LENGTH, bits of MAC on the wire
+	authentic_len    int  // bytes of the authentic (payload) PDU
+	pdu_offset       int  // bits, where the secured PDU starts in the frame
+	fresh_bit        int  // FRAME-relative bit offset of the freshness value
+	mac_bit          int  // FRAME-relative bit offset of the MAC
+	byte_aligned     bool // freshness and MAC both start on a byte boundary AND fill whole bytes
 	fresh_byte       int
 	mac_byte         int
-	mac_len          int // bytes of MAC, rounded up
+	mac_len          int // bytes of MAC (exact when byte_aligned)
 }
 
 // ArxmlFrame is what the system description says about a message that a DBC has no field for.
@@ -125,7 +126,8 @@ pub mut:
 // ArxmlCluster is one CAN cluster: the bus, its Database, and the per-message extras.
 pub struct ArxmlCluster {
 pub:
-	name        string
+	name        string // the SHORT-NAME — package-scoped, so two clusters may share it
+	path        string // the AUTOSAR path, unique: what `cluster()` accepts when names collide
 	baudrate    int
 	fd_baudrate int
 	db          Database
@@ -175,25 +177,46 @@ pub:
 	report   ArxmlReport
 }
 
-// cluster selects a CAN cluster by name; '' means "the only one", and is refused when there
-// are several — naming the choices — rather than picking the first, because a bus chosen
-// silently is a database applied to the wrong wire.
+// cluster selects a CAN cluster by SHORT-NAME or by AUTOSAR path; '' means "the only one".
+// Refused, naming the choices, when there are several and none is named, and when the name
+// is one two packages share (a SHORT-NAME is package-scoped) — rather than picking the first,
+// because a bus chosen silently is a database applied to the wrong wire.
 pub fn (a Arxml) cluster(name string) !ArxmlCluster {
 	if a.clusters.len == 0 {
 		return error('no CAN cluster in the file')
 	}
 	if name == '' {
 		if a.clusters.len > 1 {
-			return error('${a.clusters.len} CAN clusters (${a.clusters.map(it.name).join(', ')}): name one')
+			return error('${a.clusters.len} CAN clusters (${a.cluster_names().join(', ')}): name one')
 		}
 		return a.clusters[0]
 	}
+	mut hits := []ArxmlCluster{}
 	for c in a.clusters {
-		if c.name == name {
+		if c.path == name {
 			return c
 		}
+		if c.name == name {
+			hits << c
+		}
 	}
-	return error('no CAN cluster "${name}" (have ${a.clusters.map(it.name).join(', ')})')
+	if hits.len == 1 {
+		return hits[0]
+	}
+	if hits.len > 1 {
+		return error('"${name}" names ${hits.len} CAN clusters (${hits.map(it.path).join(', ')}): use the path')
+	}
+	return error('no CAN cluster "${name}" (have ${a.cluster_names().join(', ')})')
+}
+
+// cluster_names lists the clusters the way `cluster()` accepts them: the SHORT-NAME where it
+// is unique, the path where two packages share one.
+pub fn (a Arxml) cluster_names() []string {
+	mut count := map[string]int{}
+	for c in a.clusters {
+		count[c.name]++
+	}
+	return a.clusters.map(if count[it.name] > 1 { it.path } else { it.name })
 }
 
 // --- the per-file parse cache ---------------------------------------------------------------
@@ -543,17 +566,27 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			}
 		}
 
-		// the PDU behind the frame
+		// the PDU behind the frame. A frame may map several; their signals all belong to the
+		// message, but ArxmlFrame holds ONE timing and ONE protection, so the first PDU's are
+		// kept and the rest are reported rather than letting document order decide silently.
 		mut sigs := []Signal{}
+		mut pdus := 0
 		for pm in frame.get_elements_by_tag('PDU-TO-FRAME-MAPPING') {
 			pref := child(pm, 'PDU-REF') or { continue }
 			pdu, pdu_path := r.deref_node(pref, r.path_of(pm, '/' + fname)) or { continue }
 			pdu_off := parse_int(child_text(pm, 'START-POSITION'))
-			info.pdu = child_text(pdu, 'SHORT-NAME')
-			info.pdu_kind = pref.attributes['DEST'] or { pdu.name }
+			pdus++
+			first_pdu := pdus == 1
+			if !first_pdu {
+				r.report.notes << '${ft_path}: frame ${fname} maps ${pdus} PDUs; the signals of ${child_text(pdu,
+					'SHORT-NAME')} are read, its timing and protection are not (the first PDU\'s are kept)'
+			} else {
+				info.pdu = child_text(pdu, 'SHORT-NAME')
+				info.pdu_kind = pref.attributes['DEST'] or { pdu.name }
+			}
 			mut sig_pdu := pdu
 			mut sig_pdu_path := pdu_path
-			if info.pdu_kind == 'SECURED-I-PDU' {
+			if (pref.attributes['DEST'] or { pdu.name }) == 'SECURED-I-PDU' {
 				// the authentic PDU is behind PAYLOAD-REF -> PDU-TRIGGERING -> I-PDU-REF;
 				// followed ONCE here, and handed to the layout reader
 				trig, _ := r.deref(pdu, 'PAYLOAD-REF', pdu_path) or { continue }
@@ -562,7 +595,10 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 					continue
 				}
 				sig_pdu, sig_pdu_path = r.deref_node(iref, pdu_path) or { continue }
-				info.secoc = r.load_secoc(pdu, pdu_path, parse_int(child_text(sig_pdu, 'LENGTH')))
+				if first_pdu {
+					info.secoc = r.load_secoc(pdu, pdu_path, parse_int(child_text(sig_pdu,
+						'LENGTH')), pdu_off)
+				}
 			}
 			if sig_pdu.name != 'I-SIGNAL-I-PDU' {
 				// N-PDU (ISO-TP), NM-PDU, container, multiplexed …: a real frame with a real
@@ -571,14 +607,16 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 				continue
 			}
 			sigs << r.load_signals(sig_pdu, sig_pdu_path, pdu_off)
-			tm := r.load_timing(sig_pdu)
-			info.tx_mode = tm.tx_mode
-			info.cycle_ms = tm.cycle_ms
-			info.min_delay_ms = tm.min_delay_ms
-			if e := r.e2e[sig_pdu_path] {
-				info.e2e = ArxmlE2e{
-					...e
-					pdu_offset: pdu_off
+			if first_pdu {
+				tm := r.load_timing(sig_pdu)
+				info.tx_mode = tm.tx_mode
+				info.cycle_ms = tm.cycle_ms
+				info.min_delay_ms = tm.min_delay_ms
+				if e := r.e2e[sig_pdu_path] {
+					info.e2e = ArxmlE2e{
+						...e
+						pdu_offset: pdu_off
+					}
 				}
 			}
 			// the I-PDU-group answer to who sends and who listens, unioned with the ports'
@@ -605,8 +643,9 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 		frames[key] = info
 	}
 	return ArxmlCluster{
-		name: name
-		baudrate: baud
+		name:        name
+		path:        path
+		baudrate:    baud
 		fd_baudrate: fd_baud
 		db: Database{
 			messages: msgs
@@ -653,8 +692,9 @@ fn (r ArxmlReader) load_timing(pdu xml.XMLNode) ArxmlTiming {
 }
 
 // load_secoc reads a SECURED-I-PDU's layout; `authentic` is the payload PDU's length in bytes
-// (the caller has already followed PAYLOAD-REF, so a dangling one is reported once).
-fn (mut r ArxmlReader) load_secoc(pdu xml.XMLNode, pdu_path string, authentic int) ?ArxmlSecOc {
+// (the caller has already followed PAYLOAD-REF, so a dangling one is reported once) and
+// `pdu_off` where the secured PDU sits in its frame, so the positions are frame-relative.
+fn (mut r ArxmlReader) load_secoc(pdu xml.XMLNode, pdu_path string, authentic int, pdu_off int) ?ArxmlSecOc {
 	props := first(pdu, 'SECURE-COMMUNICATION-PROPS') or {
 		r.report.notes << '${pdu_path}: SECURED-I-PDU without SECURE-COMMUNICATION-PROPS, layout unknown'
 		return none
@@ -664,24 +704,30 @@ fn (mut r ArxmlReader) load_secoc(pdu xml.XMLNode, pdu_path string, authentic in
 	if child(props, 'AUTH-DATA-FRESHNESS-START-POSITION') != none {
 		r.report.notes << '${pdu_path}: AUTH-DATA-FRESHNESS (freshness taken from the payload) is not modelled; the layout assumes a trailing freshness'
 	}
-	fresh_bit := authentic * 8
+	fresh_bit := pdu_off + authentic * 8
 	mac_bit := fresh_bit + fresh_tx
-	aligned := fresh_tx % 8 == 0
-	if !aligned {
+	// a byte layout (blobly_emb's fresh_pos/mac_pos/mac_len) can state this only if the
+	// freshness fills whole bytes AND the MAC does: a 28-bit MAC rounded up to 4 bytes would
+	// describe a 32-bit one
+	aligned := fresh_tx % 8 == 0 && auth_tx % 8 == 0
+	if fresh_tx % 8 != 0 {
 		r.report.notes << '${pdu_path}: a ${fresh_tx}-bit freshness puts the MAC at bit ${mac_bit}, not on a byte boundary; no byte layout is given'
+	} else if auth_tx % 8 != 0 {
+		r.report.notes << '${pdu_path}: a ${auth_tx}-bit MAC does not fill whole bytes; no byte layout is given'
 	}
 	return ArxmlSecOc{
-		data_id: u32(parse_int(child_text(props, 'DATA-ID')))
-		freshness_len: parse_int(child_text(props, 'FRESHNESS-VALUE-LENGTH'))
+		data_id:          u32(parse_int(child_text(props, 'DATA-ID')))
+		freshness_len:    parse_int(child_text(props, 'FRESHNESS-VALUE-LENGTH'))
 		freshness_tx_len: fresh_tx
 		auth_info_tx_len: auth_tx
-		authentic_len: authentic
-		fresh_bit: fresh_bit
-		mac_bit: mac_bit
-		byte_aligned: aligned
-		fresh_byte: authentic
-		mac_byte: mac_bit / 8
-		mac_len: (auth_tx + 7) / 8
+		authentic_len:    authentic
+		pdu_offset:       pdu_off
+		fresh_bit:        fresh_bit
+		mac_bit:          mac_bit
+		byte_aligned:     aligned
+		fresh_byte:       fresh_bit / 8
+		mac_byte:         mac_bit / 8
+		mac_len:          auth_tx / 8
 	}
 }
 
@@ -755,10 +801,15 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 		}
 		mut scale := ArxmlScale{}
 		if cm_path != '' {
-			scale = r.load_compu(cm, cm_path, length)
+			scale = r.load_compu(cm, cm_path)
 			factor = scale.factor
 			offset = scale.offset
-			values = scale.values.clone()
+			// the table is cached UNMASKED (one method serves signals of several widths):
+			// the width-sized raw pattern, which is what raw_value produces, is this signal's
+			mask := if length >= 64 { ~u64(0) } else { (u64(1) << length) - 1 }
+			for k, v in scale.values {
+				values[k & mask] = v
+			}
 		}
 		if u, _ := r.deref(phys, 'UNIT-REF', sys_path) {
 			unit = first_text(u, 'DISPLAY-NAME')
@@ -793,12 +844,11 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 				minimum = parse_num(child_text(pc, 'LOWER-LIMIT'))
 				maximum = parse_num(child_text(pc, 'UPPER-LIMIT'))
 			} else if ic := first(d, 'INTERNAL-CONSTRS') {
-				minimum = parse_num(child_text(ic, 'LOWER-LIMIT')) * factor + offset
-				maximum = parse_num(child_text(ic, 'UPPER-LIMIT')) * factor + offset
+				minimum, maximum = scaled_range(parse_num(child_text(ic, 'LOWER-LIMIT')),
+					parse_num(child_text(ic, 'UPPER-LIMIT')), factor, offset)
 			}
 		} else if scale.has_domain {
-			minimum = scale.lower * factor + offset
-			maximum = scale.upper * factor + offset
+			minimum, maximum = scaled_range(scale.lower, scale.upper, factor, offset)
 		}
 
 		// description: the system signal's, else the I-SIGNAL's own
@@ -828,10 +878,21 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 struct ArxmlScale {
 	factor     f64 = 1.0
 	offset     f64
-	values     map[u64]string
+	values     map[u64]string // UNMASKED raw values: one method serves signals of several widths
 	has_domain bool // the linear scale declared LOWER-LIMIT/UPPER-LIMIT (raw)
 	lower      f64
 	upper      f64
+}
+
+// scaled_range maps a raw interval to physical and ORDERS it: a negative factor turns the raw
+// lower limit into the physical maximum.
+fn scaled_range(lo f64, hi f64, factor f64, offset f64) (f64, f64) {
+	a := lo * factor + offset
+	b := hi * factor + offset
+	if a <= b {
+		return a, b
+	}
+	return b, a
 }
 
 // load_compu reads a COMPU-METHOD's internal-to-physical scales, once per method (OEM files
@@ -839,7 +900,7 @@ struct ArxmlScale {
 // offset (numerator V0 = offset, V1 = factor, over denominator V0); TEXTTABLE scales with
 // equal limits give the enum; SCALE_LINEAR_AND_TEXTTABLE gives both. A rational function
 // with a non-constant denominator is not a factor/offset and is noted — once.
-fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string, width int) ArxmlScale {
+fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 	if s := r.compu[cm_path] {
 		return s
 	}
@@ -850,7 +911,6 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string, width int) Arx
 	mut has_domain := false
 	mut lower := 0.0
 	mut upper := 0.0
-	mask := if width >= 64 { ~u64(0) } else { (u64(1) << width) - 1 }
 	if itp := first(cm, 'COMPU-INTERNAL-TO-PHYS') {
 		for s in itp.get_elements_by_tag('COMPU-SCALE') {
 			lo := child_text(s, 'LOWER-LIMIT')
@@ -858,8 +918,7 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string, width int) Arx
 			if k := first(s, 'COMPU-CONST') {
 				label := first_text(k, 'VT')
 				if lo == hi && lo != '' {
-					raw := parse_int(lo)
-					values[u64(raw) & mask] = label
+					values[u64(i64(parse_num(lo)))] = label
 				} else {
 					r.report.notes << '${cm_path}: maps the range ${lo}..${hi} to "${label}", which a value table cannot express; dropped'
 				}
@@ -879,11 +938,14 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string, width int) Arx
 					}
 				}
 				d := if den.len > 0 { den[0] } else { 1.0 }
-				if den.len > 1 && den[1] != 0 {
+				// linear means: every denominator coefficient past the constant is zero, and
+				// every numerator coefficient past the linear one is — any later nonzero term
+				// is a curve, whatever the ones before it are
+				if den.len > 1 && den[1..].any(it != 0) {
 					r.report.notes << '${cm_path}: a rational function (non-constant denominator), read as factor 1 offset 0'
 					continue
 				}
-				if num.len > 2 && num[2] != 0 {
+				if num.len > 2 && num[2..].any(it != 0) {
 					r.report.notes << '${cm_path}: a polynomial of degree ${num.len - 1}, read as factor 1 offset 0'
 					continue
 				}

@@ -91,9 +91,12 @@ fn main() {
 		eprintln('arxml2dbc: ${l}')
 	}
 	if list {
-		for c in a.clusters {
+		names := a.cluster_names()
+		for ci, c in a.clusters {
 			fd := if c.fd_baudrate > 0 { ' fd ${c.fd_baudrate}' } else { '' }
-			println('${c.name}\t${c.baudrate}${fd}\t${c.db.messages.len} messages\t${c.db.nodes.len} nodes')
+			// the first column is what --cluster takes: the SHORT-NAME, or the path when two
+			// packages share one
+			println('${names[ci]}\t${c.baudrate}${fd}\t${c.db.messages.len} messages\t${c.db.nodes.len} nodes\t${c.path}')
 		}
 		return
 	}
@@ -107,9 +110,9 @@ fn main() {
 	}
 	version := (vmod.decode(@VMOD_FILE) or { panic('v.mod unparsable: ${err}') }).version
 	dbc := c.export_dbc(candb.ArxmlProvenance{
-		source:  os.base(src)
-		sha256:  sha256.hexhash(text)
-		reader:  'blobly_net ${version}'
+		source: os.base(src)
+		sha256: sha256.hexhash(text)
+		reader: 'blobly_net ${version}'
 		cluster: c.name
 	}, a.report)
 	// stdout carries ONE file: the DBC by default, the fragment when `--toml -` asks for it
@@ -126,6 +129,12 @@ fn main() {
 		eprintln('arxml2dbc: wrote ${dbc_out} (${c.db.messages.len} messages)')
 	}
 	if toml_out != '' {
+		if ecu != '' && ecu !in c.ecus() {
+			// an empty fragment written with a success line is a typo turned into an ECU
+			// that sends and receives nothing
+			eprintln('arxml2dbc: no ECU "${ecu}" in cluster ${c.name} (have ${c.ecus().join(', ')})')
+			exit(1)
+		}
 		frag := c.frame_toml(ecu)
 		if toml_to_stdout {
 			print(frag)
