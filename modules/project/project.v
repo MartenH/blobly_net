@@ -11,6 +11,7 @@
 // `ip link set can0 type can bitrate … sample-point …`.
 module project
 
+import candb
 import transport
 import os
 import yaml
@@ -613,11 +614,15 @@ pub fn wire_framings(chs []Channel) map[string]transport.Framing {
 // runtests.sh had changed to the repository root — so a project kept anywhere else loaded an
 // EMPTY database and the simulation emitted nothing, silently.
 pub fn resolve_asset(dir string, path string) string {
-	if path == '' || os.is_abs_path(path) {
+	// an ARXML reference may carry `#Cluster` (candb.split_database_ref): the file system is
+	// asked about the FILE, and the fragment rides along on whatever answer comes back
+	file, cluster := candb.split_database_ref(path)
+	frag := if cluster != '' { '#' + cluster } else { '' }
+	if file == '' || os.is_abs_path(file) {
 		return path
 	}
-	rel := os.join_path(dir, path)
-	return if os.exists(rel) { rel } else { path }
+	rel := os.join_path(dir, file)
+	return if os.exists(rel) { rel + frag } else { path }
 }
 
 // is_supported reports whether this app understands the file's format version

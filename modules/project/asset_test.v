@@ -48,3 +48,20 @@ fn test_iface_with_bitrate_applies_only_to_vendor_adapters() {
 	none_rate := Channel{ iface: 'pcan:PCAN_USBBUS1', adapter: 'pcan', bitrate: 0 }
 	assert none_rate.iface_with_bitrate() == 'pcan:PCAN_USBBUS1'
 }
+
+fn test_resolve_asset_keeps_an_arxml_cluster_fragment() {
+	dir := os.join_path(os.temp_dir(), 'project_asset_frag_test')
+	os.mkdir_all(os.join_path(dir, 'db')) or {}
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	os.write_file(os.join_path(dir, 'db', 'net.arxml'), '<AUTOSAR/>') or { panic(err) }
+	// the file system is asked about the FILE; the fragment rides along on the answer
+	assert resolve_asset(dir, 'db/net.arxml#Body') == os.join_path(dir, 'db', 'net.arxml') + '#Body'
+	assert resolve_asset(dir, 'db/net.arxml') == os.join_path(dir, 'db', 'net.arxml')
+	// a missing file comes back as written, fragment included, so the error names it
+	assert resolve_asset(dir, 'db/missing.arxml#Body') == 'db/missing.arxml#Body'
+	// absolute stays absolute
+	abs := os.join_path(dir, 'db', 'net.arxml') + '#Body'
+	assert resolve_asset('/elsewhere', abs) == abs
+}

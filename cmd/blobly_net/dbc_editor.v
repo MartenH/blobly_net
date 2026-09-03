@@ -374,10 +374,14 @@ fn draw_dbc_editor(mut app App) {
 	app.mu.lock()
 	live_readers := app.dbc_readers
 	app.mu.unlock()
-	ro := app.running || live_readers > 0
+	mut ro := app.running || live_readers > 0
 	if ro {
 		vgui.text_colored(230, 170, 70,
 			'read-only while measuring — Stop to edit (workers drain briefly after Stop)')
+	} else if candb.is_arxml_ref(app.db_path(app.dbc_ed.db)) {
+		// the banner for the gate below; read from the selection so it sits with the other one
+		vgui.text_colored(230, 170, 70,
+			'read-only: an AUTOSAR system description — export a DBC with cmd/arxml2dbc to edit')
 	}
 	// a project swap replaces dbs_paths: dirty entries for paths no longer
 	// attached are unreachable ghosts — drop them (the swap discarded those
@@ -418,6 +422,12 @@ fn draw_dbc_editor(mut app App) {
 		return
 	}
 	dbc_path := app.db_path(di)
+	// an ARXML-backed database is never saved from here: Save serialises DBC text to the
+	// selected path, and that path is the customer's system description. Export it with
+	// cmd/arxml2dbc and edit the DBC that produces.
+	if candb.is_arxml_ref(dbc_path) {
+		ro = true
+	}
 
 	// save / revert controls
 	vgui.same_line()
@@ -460,7 +470,7 @@ fn draw_dbc_editor(mut app App) {
 	}
 	vgui.same_line()
 	if !ro && dbc_path != '' && vgui.small_button('Revert') {
-		if db := candb.load_dbc_file(dbc_path) {
+		if db := candb.load_database(dbc_path) {
 			// Cancel only on SUCCESS. Revert reloads the file and then refreshes, which reaches
 			// the resolver before the next frame can cancel on selection mismatch, so the
 			// pending value would land on the database the user just discarded. But if the

@@ -11,14 +11,15 @@ module candb
 // unprotected. Same project, different bus.
 //
 // The key is id AND frame format, which is what actually identifies a CAN message. Unreadable
-// files are skipped, as both callers already did.
+// files are skipped, as both callers already did. A path may be a `.dbc` or an
+// `.arxml[#Cluster]` (database.v).
 pub fn merge_files(paths []string) Database {
 	mut msgs := []Message{}
 	mut nodes := []string{}
 	mut seen := map[string]bool{}
 	mut seen_node := map[string]bool{}
 	for p in paths {
-		db := load_dbc_file(p) or { continue }
+		db := load_database(p) or { continue }
 		for m in db.messages {
 			key := '${m.id}|${m.ext}'
 			if key in seen {

@@ -47,6 +47,9 @@ channels:
     mode: normal
     databases:
       - dbc/blobly_net.dbc      # the NETWORK owns the database, not the ECU
+                                # an AUTOSAR system description works here too:
+                                # `db/net.arxml`, or `db/net.arxml#Body` to name the
+                                # CAN cluster when the file describes several
     simulation:
       - name: SUT               # must SEND something in the DBC — named as a message's
                                 # transmitter. A BU_ entry alone is not enough; a node
@@ -58,6 +61,13 @@ channels:
 Because the database belongs to the network, a simulated ECU never restates message ids, cycle
 times, signal placement or byte order. It says only what its values should *do*. Move a signal
 in the DBC and the simulation follows.
+
+**ARXML.** A `.arxml` entry is read natively (AUTOSAR 4.x system description; `modules/candb/
+arxml.v`) — the OEM's file stays the source of truth and nothing is regenerated when a new one
+arrives. It is read-only in the DBC editor. For a consumer that needs a DBC (blobly_emb's build,
+or you, to edit), `cmd/arxml2dbc` exports one with the E2E contract as message attributes and a
+provenance comment naming the ARXML it came from. What the reader could not resolve or chose
+not to extract (container PDUs, LIN clusters, …) is reported on load, never dropped in silence.
 
 Channel `mode` is `normal` (the default; older files say `monitor`, which loads the same) or
 `replay`. There is no `off` any more — untick the row instead; an older file's `mode: off` loads

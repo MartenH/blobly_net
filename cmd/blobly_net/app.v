@@ -844,7 +844,10 @@ fn (mut app App) rebuild_from_proj() {
 		}
 		for dbpath in ch.databases {
 			mut rp := app.resolve_asset(dbpath)
-			rp = os.real_path(rp) // canonical: two spellings of one file are ONE db
+			// canonical: two spellings of one file are ONE db — of the FILE; an ARXML's
+			// `#Cluster` is not a path component and rides along
+			rp_file, rp_cluster := candb.split_database_ref(rp)
+			rp = os.real_path(rp_file) + if rp_cluster != '' { '#' + rp_cluster } else { '' }
 			// a DBC attached to several channels loads ONCE — duplicate dbs
 			// entries would let the editor mutate one copy while decode reads
 			// another
@@ -859,9 +862,9 @@ fn (mut app App) rebuild_from_proj() {
 				app.dbs << dbc_keep[rp]
 				app.dbs_paths << rp
 				app.dbs_by_iface[ch.iface] << dbc_keep[rp]
-			} else if db := candb.load_dbc_file(rp) {
+			} else if db := candb.load_database(rp) {
 				app.dbs << db
-				app.dbs_paths << rp // the editor saves back to this path
+				app.dbs_paths << rp // the editor saves back to this path (a .dbc; an .arxml is read-only there)
 				app.dbs_by_iface[ch.iface] << db // scoped to this channel (generator picker)
 			} else {
 				app.elog('dbc ${rp}: ${err}')
