@@ -96,13 +96,13 @@ pub fn (e ArxmlE2e) counter_byte() int {
 pub struct ArxmlSecOc {
 pub:
 	data_id          u32
-	freshness_len    int  // FRESHNESS-VALUE-LENGTH, bits, the full counter
-	freshness_tx_len int  // FRESHNESS-VALUE-TX-LENGTH, bits actually on the wire
-	auth_info_tx_len int  // AUTH-INFO-TX-LENGTH, bits of MAC on the wire
-	authentic_len    int  // bytes of the authentic (payload) PDU
-	pdu_offset       int  // bits, where the secured PDU starts in the frame
-	fresh_bit        int  // FRAME-relative bit offset of the freshness value
-	mac_bit          int  // FRAME-relative bit offset of the MAC
+	freshness_len    int // FRESHNESS-VALUE-LENGTH, bits, the full counter
+	freshness_tx_len int // FRESHNESS-VALUE-TX-LENGTH, bits actually on the wire
+	auth_info_tx_len int // AUTH-INFO-TX-LENGTH, bits of MAC on the wire
+	authentic_len    int // bytes of the authentic (payload) PDU
+	pdu_offset       int // bits, where the secured PDU starts in the frame
+	fresh_bit        int // FRAME-relative bit offset of the freshness value
+	mac_bit          int // FRAME-relative bit offset of the MAC
 	byte_aligned     bool // freshness and MAC both start on a byte boundary AND fill whole bytes
 	fresh_byte       int
 	mac_byte         int
@@ -578,8 +578,7 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			pdus++
 			first_pdu := pdus == 1
 			if !first_pdu {
-				r.report.notes << '${ft_path}: frame ${fname} maps ${pdus} PDUs; the signals of ${child_text(pdu,
-					'SHORT-NAME')} are read, its timing and protection are not (the first PDU\'s are kept)'
+				r.report.notes << "${ft_path}: frame ${fname} maps ${pdus} PDUs; the signals of ${child_text(pdu, 'SHORT-NAME')} are read, its timing and protection are not (the first PDU's are kept)"
 			} else {
 				info.pdu = child_text(pdu, 'SHORT-NAME')
 				info.pdu_kind = pref.attributes['DEST'] or { pdu.name }
@@ -596,8 +595,7 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 				}
 				sig_pdu, sig_pdu_path = r.deref_node(iref, pdu_path) or { continue }
 				if first_pdu {
-					info.secoc = r.load_secoc(pdu, pdu_path, parse_int(child_text(sig_pdu,
-						'LENGTH')), pdu_off)
+					info.secoc = r.load_secoc(pdu, pdu_path, parse_int(child_text(sig_pdu, 'LENGTH')), pdu_off)
 				}
 			}
 			if sig_pdu.name != 'I-SIGNAL-I-PDU' {
@@ -643,9 +641,9 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 		frames[key] = info
 	}
 	return ArxmlCluster{
-		name:        name
-		path:        path
-		baudrate:    baud
+		name: name
+		path: path
+		baudrate: baud
 		fd_baudrate: fd_baud
 		db: Database{
 			messages: msgs
@@ -701,33 +699,34 @@ fn (mut r ArxmlReader) load_secoc(pdu xml.XMLNode, pdu_path string, authentic in
 	}
 	fresh_tx := parse_int(child_text(props, 'FRESHNESS-VALUE-TX-LENGTH'))
 	auth_tx := parse_int(child_text(props, 'AUTH-INFO-TX-LENGTH'))
-	if child(props, 'AUTH-DATA-FRESHNESS-START-POSITION') != none {
-		r.report.notes << '${pdu_path}: AUTH-DATA-FRESHNESS (freshness taken from the payload) is not modelled; the layout assumes a trailing freshness'
+	payload_freshness := child(props, 'AUTH-DATA-FRESHNESS-START-POSITION') != none
+	if payload_freshness {
+		r.report.notes << '${pdu_path}: AUTH-DATA-FRESHNESS (freshness taken from the payload) is not modelled; no byte layout is given'
 	}
 	fresh_bit := pdu_off + authentic * 8
 	mac_bit := fresh_bit + fresh_tx
 	// a byte layout (blobly_emb's fresh_pos/mac_pos/mac_len) can state this only if the
-	// freshness fills whole bytes AND the MAC does: a 28-bit MAC rounded up to 4 bytes would
-	// describe a 32-bit one
-	aligned := fresh_tx % 8 == 0 && auth_tx % 8 == 0
+	// freshness is the trailing one this model assumes, fills whole bytes, AND the MAC does:
+	// a 28-bit MAC rounded up to 4 bytes would describe a 32-bit one
+	aligned := !payload_freshness && fresh_tx % 8 == 0 && auth_tx % 8 == 0
 	if fresh_tx % 8 != 0 {
 		r.report.notes << '${pdu_path}: a ${fresh_tx}-bit freshness puts the MAC at bit ${mac_bit}, not on a byte boundary; no byte layout is given'
 	} else if auth_tx % 8 != 0 {
 		r.report.notes << '${pdu_path}: a ${auth_tx}-bit MAC does not fill whole bytes; no byte layout is given'
 	}
 	return ArxmlSecOc{
-		data_id:          u32(parse_int(child_text(props, 'DATA-ID')))
-		freshness_len:    parse_int(child_text(props, 'FRESHNESS-VALUE-LENGTH'))
+		data_id: u32(parse_int(child_text(props, 'DATA-ID')))
+		freshness_len: parse_int(child_text(props, 'FRESHNESS-VALUE-LENGTH'))
 		freshness_tx_len: fresh_tx
 		auth_info_tx_len: auth_tx
-		authentic_len:    authentic
-		pdu_offset:       pdu_off
-		fresh_bit:        fresh_bit
-		mac_bit:          mac_bit
-		byte_aligned:     aligned
-		fresh_byte:       fresh_bit / 8
-		mac_byte:         mac_bit / 8
-		mac_len:          auth_tx / 8
+		authentic_len: authentic
+		pdu_offset: pdu_off
+		fresh_bit: fresh_bit
+		mac_bit: mac_bit
+		byte_aligned: aligned
+		fresh_byte: fresh_bit / 8
+		mac_byte: mac_bit / 8
+		mac_len: auth_tx / 8
 	}
 }
 
@@ -844,8 +843,7 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 				minimum = parse_num(child_text(pc, 'LOWER-LIMIT'))
 				maximum = parse_num(child_text(pc, 'UPPER-LIMIT'))
 			} else if ic := first(d, 'INTERNAL-CONSTRS') {
-				minimum, maximum = scaled_range(parse_num(child_text(ic, 'LOWER-LIMIT')),
-					parse_num(child_text(ic, 'UPPER-LIMIT')), factor, offset)
+				minimum, maximum = scaled_range(parse_num(child_text(ic, 'LOWER-LIMIT')), parse_num(child_text(ic, 'UPPER-LIMIT')), factor, offset)
 			}
 		} else if scale.has_domain {
 			minimum, maximum = scaled_range(scale.lower, scale.upper, factor, offset)
@@ -956,7 +954,11 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 				linear_seen = true
 				if d != 0 {
 					offset = if num.len > 0 { num[0] / d } else { 0.0 }
-					factor = if num.len > 1 { num[1] / d } else { 1.0 }
+					// a one-term numerator is a CONSTANT (every raw value maps to it), so its
+					// factor is 0 — not the identity's 1
+					factor = if num.len > 1 {
+						num[1] / d
+					} else if num.len == 1 { 0.0 } else { 1.0 }
 				}
 				if lo != '' && hi != '' {
 					has_domain = true

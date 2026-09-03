@@ -73,10 +73,12 @@ pub fn (db Database) lookup_frame(id u32, ext bool) ?Message {
 	return none
 }
 
-// messages_from returns every message whose transmitter is `node` — i.e. the
-// messages a simulated ECU named `node` is responsible for sending.
+// messages_from returns every message `node` transmits — i.e. the messages a simulated ECU
+// named `node` is responsible for sending. Through senders(), so a node declared only as an
+// ADDITIONAL transmitter (a DBC BO_TX_BU_, an ARXML frame two ECUs send) gets its frames too;
+// filtered on `sender` alone, such a node simulated nothing while the database listed it.
 pub fn (db Database) messages_from(node string) []Message {
-	return db.messages.filter(it.sender == node)
+	return db.messages.filter(node in it.senders())
 }
 
 // load_dbc_file reads and parses a .dbc file from disk.

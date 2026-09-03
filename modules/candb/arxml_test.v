@@ -386,6 +386,12 @@ fn test_secoc_with_a_freshness_that_is_not_byte_aligned() {
 	assert ws.mac_byte == 6
 	assert ws.mac_len == 3
 	assert wc.frame_toml('').contains('fresh_pos = 5, mac_pos = 6, mac_len = 3')
+	// freshness taken from the payload (AUTH-DATA-FRESHNESS): the trailing layout this model
+	// assumes is not the one on the wire, so no byte positions
+	pf := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + secoc_xml(8).replace('<AUTH-INFO-TX-LENGTH>28<', '<AUTH-INFO-TX-LENGTH>24<').replace('<DATA-ID>9</DATA-ID>', '<AUTH-DATA-FRESHNESS-START-POSITION>0</AUTH-DATA-FRESHNESS-START-POSITION><AUTH-DATA-FRESHNESS-LENGTH>8</AUTH-DATA-FRESHNESS-LENGTH><DATA-ID>9</DATA-ID>') + arxml_tail) or { panic(err) }
+	pfc := pf.cluster('') or { panic(err) }
+	assert !((pfc.frame_of(pfc.db.messages[0]) or { panic('no frame') }).secoc or { panic('no secoc') }).byte_aligned
+	assert !pfc.frame_toml('').contains('mac_pos')
 	// the PAYLOAD-REF chain is followed once, so a dangling one is reported once
 	d := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + secoc_xml(8).replace('/PDUs/T<', '/PDUs/Missing<') + arxml_tail) or { panic(err) }
 	assert d.report.unresolved.len == 1
@@ -400,7 +406,45 @@ fn test_alternating_data_ids_are_named_not_collapsed() {
 	assert !e.single_data_id()
 	assert c.e2e_signals(m) == none
 	assert !c.export_dbc(ArxmlProvenance{}, a.report).contains('E2EDataId')
-	assert c.frame_toml('').contains('# E2E PROFILE_01 with ALTERNATING-8-BIT data ids (0x7, 0x9): alternating ids are not expressible here')
+	assert c.frame_toml('').contains('# E2E PROFILE_01 with ALTERNATING-8-BIT data ids (0x7, 0x9): this data-id mode is not expressible here')
+	// LOWER-12-BIT feeds part of the id into the CRC: one scalar cannot say that either
+	l := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>16</CRC-OFFSET><DATA-ID-MODE>LOWER-12-BIT</DATA-ID-MODE>') + arxml_tail) or { panic(err) }
+	lc := l.cluster('') or { panic(err) }
+	assert lc.e2e_signals(lc.db.messages[0]) == none
+	assert lc.frame_toml('').contains('with LOWER-12-BIT data ids (0x7): this data-id mode')
+}
+
+fn test_e2e_export_needs_the_field_signals_and_a_known_checksum() {
+	// the CRC offset inside a 16-bit application signal is not a CRC signal
+	inside := offset_pdu_xml.replace('<START-POSITION>16</START-POSITION>', '<START-POSITION>48</START-POSITION>').replace('<START-POSITION>24</START-POSITION>', '<START-POSITION>56</START-POSITION>').replace('<SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH>', '<SHORT-NAME>V</SHORT-NAME><LENGTH>32</LENGTH>')
+	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + inside + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>16</CRC-OFFSET>') + arxml_tail) or { panic(err) }
+	c := a.cluster('') or { panic(err) }
+	m := c.db.messages[0]
+	assert m.signal_at(24) == 0 // V covers bit 24 …
+	
+	assert c.e2e_signals(m) == none // … but is not the CRC
+	
+	assert !c.export_dbc(ArxmlProvenance{}, a.report).contains('E2ECrcSignal" BO_')
+	// a profile whose checksum this app cannot compute exports no contract either, even with
+	// the fields in place
+	p := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + e2e_xml('PROFILE_07', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>16</CRC-OFFSET>') + arxml_tail) or { panic(err) }
+	pc := p.cluster('') or { panic(err) }
+	assert pc.e2e_signals(pc.db.messages[0]) == none
+	assert !pc.export_dbc(ArxmlProvenance{}, p.report).contains('E2EProfile')
+}
+
+fn test_messages_from_counts_additional_transmitters() {
+	// ECU_B and ECU_C both OUT on one frame: the second is an additional transmitter, and
+	// must still get the frame from messages_from, or it simulates nothing
+	two := cluster_xml('Bus', 256, '/Frames/F').replace('<FRAME-REF DEST="CAN-FRAME">', '<FRAME-PORT-REFS><FRAME-PORT-REF DEST="FRAME-PORT">/ECUs/ECU_B/Conn/Out</FRAME-PORT-REF><FRAME-PORT-REF DEST="FRAME-PORT">/ECUs/ECU_C/Conn/Out</FRAME-PORT-REF></FRAME-PORT-REFS><FRAME-REF DEST="CAN-FRAME">') + '<AR-PACKAGE><SHORT-NAME>ECUs</SHORT-NAME><ELEMENTS>' + '<ECU-INSTANCE><SHORT-NAME>ECU_B</SHORT-NAME><CONNECTORS><CAN-COMMUNICATION-CONNECTOR><SHORT-NAME>Conn</SHORT-NAME><ECU-COMM-PORT-INSTANCES><FRAME-PORT><SHORT-NAME>Out</SHORT-NAME><COMMUNICATION-DIRECTION>OUT</COMMUNICATION-DIRECTION></FRAME-PORT></ECU-COMM-PORT-INSTANCES></CAN-COMMUNICATION-CONNECTOR></CONNECTORS></ECU-INSTANCE>' + '<ECU-INSTANCE><SHORT-NAME>ECU_C</SHORT-NAME><CONNECTORS><CAN-COMMUNICATION-CONNECTOR><SHORT-NAME>Conn</SHORT-NAME><ECU-COMM-PORT-INSTANCES><FRAME-PORT><SHORT-NAME>Out</SHORT-NAME><COMMUNICATION-DIRECTION>OUT</COMMUNICATION-DIRECTION></FRAME-PORT></ECU-COMM-PORT-INSTANCES></CAN-COMMUNICATION-CONNECTOR></CONNECTORS></ECU-INSTANCE>' + '</ELEMENTS></AR-PACKAGE>'
+	a := parse_arxml(arxml_head + two + frame_xml + arxml_tail) or { panic(err) }
+	c := a.cluster('') or { panic(err) }
+	m := c.db.messages[0]
+	assert m.sender == 'ECU_B'
+	assert m.tx_nodes == ['ECU_C']
+	assert c.db.messages_from('ECU_B').len == 1
+	assert c.db.messages_from('ECU_C').len == 1
+	assert c.db.messages_from('ECU_A').len == 0
 }
 
 fn test_duplicate_cluster_short_names_need_the_path() {
@@ -475,6 +519,14 @@ fn test_nonlinear_scales_and_negative_factors() {
 	assert ns.offset == 100
 	assert ns.minimum == -27.5
 	assert ns.maximum == 100
+	// a one-term numerator is a constant: factor 0, not the identity
+	konst := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + sigs + poly.replace('@COEFFS@', '<V>5</V>') + arxml_tail) or { panic(err) }
+	kc := konst.cluster('') or { panic(err) }
+	ks := sig(kc.db.messages[0], 'Crc')
+	assert ks.factor == 0
+	assert ks.offset == 5
+	assert ks.minimum == 5
+	assert ks.maximum == 5
 }
 
 fn test_two_triggerings_of_one_id_keep_the_first_and_say_so() {
@@ -608,7 +660,10 @@ fn test_export_dbc_carries_provenance_and_attributes() {
 	// the frame format survives: the one thing that tells a short FD frame from a classic one
 	assert lines.any(it.starts_with('BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN"'))
 	assert lines.any(it == 'BA_ "VFrameFormat" BO_ 2149235934 15;')
-	assert lines.filter(it.starts_with('BA_ "VFrameFormat"')).len == 1
+	// every frame states its format once the attribute exists: the default would be
+	// StandardCAN, wrong for an extended classic frame
+	assert lines.any(it == 'BA_ "VFrameFormat" BO_ 256 0;')
+	assert lines.filter(it.starts_with('BA_ "VFrameFormat"')).len == 5
 	// section order the format requires: every BA_DEF_ before every BA_DEF_DEF_ before every
 	// BA_, the comment with the CM_ records, value tables last
 	last_def := index_of_last(lines, 'BA_DEF_ ')

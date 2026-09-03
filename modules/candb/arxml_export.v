@@ -58,25 +58,41 @@ pub fn (c ArxmlCluster) e2e_signals(m Message) ?E2eSignals {
 	if !e.has_crc_counter || !e.single_data_id() {
 		return none
 	}
+	profile := e2e_profile_primitive(e.profile)
+	if profile == '' {
+		return none // a checksum this app cannot compute is not a contract it can export
+	}
+	// the signal must BE the field, not merely contain the offset: an offset inside an
+	// ordinary multi-bit signal would name an application signal as the CRC
 	ci := m.signal_at(e.crc_bit())
 	ki := m.signal_at(e.counter_bit())
 	if ci < 0 || ki < 0 || ci == ki {
 		return none
 	}
+	if !is_e2e_field(m.signals[ci], e.crc_bit(), 8) || !is_e2e_field(m.signals[ki], e.counter_bit(), 4) {
+		return none
+	}
 	return E2eSignals{
 		counter: m.signals[ki].name
 		crc: m.signals[ci].name
-		profile: e2e_profile_primitive(e.profile)
+		profile: profile
 		data_id: e.data_id
 	}
 }
 
-// single_data_id reports whether the protection uses ONE data id — profile 1's
-// ALTERNATING-8-BIT mode switches between two per counter parity, which neither the DBC
-// attributes nor blobly_emb's `[[frame]].e2e` can state, so the export names it instead of
-// exporting a contract that rejects every other frame.
+// is_e2e_field: a little-endian signal starting exactly at the field's bit and no wider than
+// the field (profile 1/2: an 8-bit CRC, a 4-bit counter in the low nibble).
+fn is_e2e_field(s Signal, bit int, width int) bool {
+	return s.byte_order == .little_endian && s.start_bit == bit && s.length <= width
+}
+
+// single_data_id reports whether the protection uses ONE data id, whole: profile 1's
+// ALTERNATING-8-BIT switches between two per counter parity, and LOWER-8-BIT / LOWER-12-BIT
+// feed part of the id into the CRC — neither the DBC attributes nor blobly_emb's
+// `[[frame]].e2e` can state either, so the export names the mode instead of exporting a
+// contract that rejects valid traffic. An unset mode is profile 1's default, ALL-16-BIT.
 pub fn (e ArxmlE2e) single_data_id() bool {
-	return e.data_ids.len <= 1 && e.data_id_mode != 'ALTERNATING-8-BIT'
+	return e.data_ids.len <= 1 && (e.data_id_mode == '' || e.data_id_mode == 'ALL-16-BIT')
 }
 
 // ecus lists every ECU the cluster names as a sender or a receiver, sorted — what `--ecu`
@@ -136,17 +152,27 @@ pub fn (c ArxmlCluster) export_dbc(p ArxmlProvenance, report ArxmlReport) string
 	// attribute definition): 16 bits is the common case, a profile-4 id needs 32
 	mut max_id := u32(65535)
 	mut fmt := DbcAttr{
-		name:    'VFrameFormat'
-		typ:     vframe_format_enum
+		name: 'VFrameFormat'
+		typ: vframe_format_enum
 		default: '0'
 	}
 	mut msgs := c.db.messages.clone()
 	msgs.sort_with_compare(message_order)
+	mut any_fd := false
+	for _, f in c.frames {
+		any_fd = any_fd || f.fd
+	}
 	for m in msgs {
-		if f := c.frame_of(m) {
-			if f.fd {
-				fmt.values << DbcAttrValue{m.id, m.ext, if m.ext { '15' } else { '14' }}
-			}
+		// once the attribute exists every frame states its format — the default is
+		// StandardCAN, which an extended classic frame would otherwise inherit
+		if any_fd {
+			fd := (c.frame_of(m) or { ArxmlFrame{} }).fd
+			fmt.values << DbcAttrValue{m.id, m.ext, match true {
+				fd && m.ext { '15' }
+				fd { '14' }
+				m.ext { '1' }
+				else { '0' }
+			}}
 		}
 		s := c.e2e_signals(m) or { continue }
 		counter.values << DbcAttrValue{m.id, m.ext, '"${dbc_str(s.counter)}"'}
@@ -232,7 +258,7 @@ pub fn (c ArxmlCluster) frame_toml(ecu string) string {
 		if e := f.e2e {
 			if !e.single_data_id() {
 				ids := e.data_ids.map('0x${it:X}').join(', ')
-				b << '# E2E ${e.profile} with ${e.data_id_mode} data ids (${ids}): alternating ids are not expressible here'
+				b << '# E2E ${e.profile} with ${e.data_id_mode} data ids (${ids}): this data-id mode is not expressible here'
 			} else if e.has_crc_counter {
 				b << 'e2e  = { data_id = 0x${e.data_id:X}, crc_pos = ${e.crc_byte()}, counter_pos = ${e.counter_byte()} }  # ${e.profile}'
 			} else {
