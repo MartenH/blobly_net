@@ -657,6 +657,10 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			}
 		}
 
+		// the frame ports' receivers listen to the WHOLE frame; a PDU's I-PDU-group receivers
+		// listen to that PDU's signals only, which is what the signals carry (a DBC states
+		// receivers per signal) — the frame's receivers stay the union
+		frame_rx := ports.receivers.clone()
 		// the PDU behind the frame. A frame may map several; their signals all belong to the
 		// message, but ArxmlFrame holds ONE timing and ONE protection, so the first PDU's are
 		// kept and the rest are reported rather than letting document order decide silently.
@@ -696,7 +700,17 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 				// count_ignored, so nothing here is silent.
 				continue
 			}
-			sigs << r.load_signals(sig_pdu, sig_pdu_path, pdu_off, mut sig_names)
+			mut pdu_sigs := r.load_signals(sig_pdu, sig_pdu_path, pdu_off, mut sig_names)
+			mut pdu_rx := frame_rx.clone()
+			for ecu in r.pdu_in[sig_pdu_path] {
+				if ecu !in pdu_rx {
+					pdu_rx << ecu
+				}
+			}
+			for mut s in pdu_sigs {
+				s.receivers = pdu_rx.clone()
+			}
+			sigs << pdu_sigs
 			if first_pdu {
 				tm := r.load_timing(sig_pdu, sig_pdu_path)
 				info.tx_mode = tm.tx_mode
@@ -720,11 +734,6 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			}
 		}
 		info.receivers = ports.receivers
-		// a DBC states receivers per signal; the system description per frame — every signal
-		// of the frame gets the frame's, so the export carries them
-		for mut s in sigs {
-			s.receivers = ports.receivers.clone()
-		}
 		msgs << Message{
 			name: fname
 			id: id

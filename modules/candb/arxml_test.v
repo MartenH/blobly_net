@@ -656,6 +656,25 @@ fn test_pdu_group_directions_do_not_leak_into_subgroups() {
 	assert c.db.messages_from('Node').len == 0
 }
 
+fn test_receivers_are_per_pdu_on_a_multi_pdu_frame() {
+	// two PDUs in one frame, each received by a different ECU through its I-PDU group: the
+	// signals carry their own PDU's receivers, the frame the union
+	two := offset_pdu_xml.replace('</PDU-TO-FRAME-MAPPINGS>', '<PDU-TO-FRAME-MAPPING><SHORT-NAME>M2</SHORT-NAME><PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/P2</PDU-REF><START-POSITION>40</START-POSITION></PDU-TO-FRAME-MAPPING></PDU-TO-FRAME-MAPPINGS>').replace('</I-SIGNAL-I-PDU></ELEMENTS>', '</I-SIGNAL-I-PDU><I-SIGNAL-I-PDU><SHORT-NAME>P2</SHORT-NAME><LENGTH>1</LENGTH><I-SIGNAL-TO-PDU-MAPPINGS><I-SIGNAL-TO-I-PDU-MAPPING><SHORT-NAME>MX</SHORT-NAME><I-SIGNAL-REF DEST="I-SIGNAL">/Sig2/W</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>0</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING></I-SIGNAL-TO-PDU-MAPPINGS></I-SIGNAL-I-PDU></ELEMENTS>') + '<AR-PACKAGE><SHORT-NAME>Sig2</SHORT-NAME><ELEMENTS><I-SIGNAL><SHORT-NAME>W</SHORT-NAME><LENGTH>8</LENGTH></I-SIGNAL></ELEMENTS></AR-PACKAGE>'
+	groups := '<AR-PACKAGE><SHORT-NAME>PduGroups</SHORT-NAME><ELEMENTS>' + '<I-SIGNAL-I-PDU-GROUP><SHORT-NAME>RxP</SHORT-NAME><COMMUNICATION-DIRECTION>IN</COMMUNICATION-DIRECTION><I-SIGNAL-I-PDUS><I-SIGNAL-I-PDU-REF-CONDITIONAL><I-SIGNAL-I-PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/P</I-SIGNAL-I-PDU-REF></I-SIGNAL-I-PDU-REF-CONDITIONAL></I-SIGNAL-I-PDUS></I-SIGNAL-I-PDU-GROUP>' + '<I-SIGNAL-I-PDU-GROUP><SHORT-NAME>RxP2</SHORT-NAME><COMMUNICATION-DIRECTION>IN</COMMUNICATION-DIRECTION><I-SIGNAL-I-PDUS><I-SIGNAL-I-PDU-REF-CONDITIONAL><I-SIGNAL-I-PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/P2</I-SIGNAL-I-PDU-REF></I-SIGNAL-I-PDU-REF-CONDITIONAL></I-SIGNAL-I-PDUS></I-SIGNAL-I-PDU-GROUP>' + '</ELEMENTS></AR-PACKAGE><AR-PACKAGE><SHORT-NAME>ECUs</SHORT-NAME><ELEMENTS>' + '<ECU-INSTANCE><SHORT-NAME>X</SHORT-NAME><ASSOCIATED-COM-I-PDU-GROUP-REFS><ASSOCIATED-COM-I-PDU-GROUP-REF DEST="I-SIGNAL-I-PDU-GROUP">/PduGroups/RxP</ASSOCIATED-COM-I-PDU-GROUP-REF></ASSOCIATED-COM-I-PDU-GROUP-REFS></ECU-INSTANCE>' + '<ECU-INSTANCE><SHORT-NAME>Y</SHORT-NAME><ASSOCIATED-COM-I-PDU-GROUP-REFS><ASSOCIATED-COM-I-PDU-GROUP-REF DEST="I-SIGNAL-I-PDU-GROUP">/PduGroups/RxP2</ASSOCIATED-COM-I-PDU-GROUP-REF></ASSOCIATED-COM-I-PDU-GROUP-REFS></ECU-INSTANCE>' + '</ELEMENTS></AR-PACKAGE>'
+	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + two + groups + arxml_tail) or {
+		panic(err)
+	}
+	c := a.cluster('') or { panic(err) }
+	m := c.db.messages[0]
+	assert sig(m, 'V').receivers == ['X']
+	assert sig(m, 'Crc').receivers == ['X']
+	assert sig(m, 'W').receivers == ['Y']
+	assert (c.frame_of(m) or { panic('no frame') }).receivers == ['X', 'Y']
+	text := c.export_dbc(ArxmlProvenance{}, a.report)
+	assert text.contains(' SG_ V : 8|16@1+ (1,0) [0|0] "" X')
+	assert text.contains(' SG_ W : 40|8@1+ (1,0) [0|0] "" Y')
+}
+
 fn test_signal_shapes_the_model_cannot_hold_are_said() {
 	// wider than 64 bits: not read, and said
 	wide := offset_pdu_xml.replace('<SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH>', '<SHORT-NAME>V</SHORT-NAME><LENGTH>72</LENGTH>')
