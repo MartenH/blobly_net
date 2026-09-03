@@ -319,7 +319,11 @@ pub fn parse_arxml(text string) !Arxml {
 	if lname(doc.root) != 'AUTOSAR' {
 		return error('root element is <${doc.root.name}>, not <AUTOSAR>')
 	}
-	ns := doc.root.attributes['xmlns'] or { '' }
+	// the namespace the ROOT is in: the default one, or the one its prefix is bound to —
+	// a 3.x file with a prefixed root must meet the same guard as one without
+	prefix := if doc.root.name.contains(':') { doc.root.name.all_before(':') } else { '' }
+	ns_attr := if prefix == '' { 'xmlns' } else { 'xmlns:${prefix}' }
+	ns := doc.root.attributes[ns_attr] or { '' }
 	if ns != '' && !ns.contains('autosar.org/schema/r4') {
 		// 3.x (autosar.org/3.x.y) renames half the elements this walk names, so nothing
 		// below would match — say so rather than returning an empty database
@@ -753,6 +757,11 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 				info.min_delay_ms = tm.min_delay_ms
 				info.repetitions = tm.repetitions
 				info.repetition_ms = tm.repetition_ms
+				if tm.repetitions > 0 {
+					// the bench simulates a change as one send; a receiver expecting the
+					// declared burst sees fewer frames than the ECU would send
+					r.report.notes << '${sig_pdu_path}: event-controlled timing repeats a change ${tm.repetitions} more times ${tm.repetition_ms} ms apart; the simulation sends once'
+				}
 				if e := r.e2e[sig_pdu_path] {
 					info.e2e = ArxmlE2e{
 						...e
@@ -1382,6 +1391,15 @@ fn parse_key(s string) u64 {
 	}
 	if t.starts_with('0x') || t.starts_with('0X') {
 		return t[2..].parse_uint(16, 64) or { 0 }
+	}
+	// `9007199254740993.0` is the same key as `9007199254740993` and must not go through f64:
+	// a decimal spelling with a zero fraction is an integer literal
+	if t.contains('.') {
+		whole := t.all_before('.')
+		frac := t.all_after('.')
+		if frac.len > 0 && frac.count('0') == frac.len && !whole.contains_any('eE') {
+			return whole.parse_uint(10, 64) or { 0 }
+		}
 	}
 	if t.contains('.') || t.contains('e') || t.contains('E') {
 		return u64(i64(t.f64()))

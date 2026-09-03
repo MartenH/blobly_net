@@ -157,7 +157,7 @@ pub fn (c ArxmlCluster) export_dbc(p ArxmlProvenance, report ArxmlReport) string
 	mut fmt := DbcAttr{
 		name: 'VFrameFormat'
 		typ: vframe_format_enum
-		default: '0'
+		default: '"StandardCAN"' // an ENUM's default is the quoted choice; its values are indices
 	}
 	mut msgs := c.db.messages.clone()
 	msgs.sort_with_compare(message_order)

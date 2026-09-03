@@ -349,6 +349,8 @@ fn test_event_bursts_are_carried_and_named_in_the_fragment() {
 	assert f.repetitions == 2
 	assert f.repetition_ms == 20
 	assert c.frame_toml('').contains('# event burst: a change is sent 3 times, 20 ms apart')
+	// and the native load path hears about it too, not only the fragment
+	assert a.report.notes.any(it.contains('event-controlled timing repeats a change 2 more times 20 ms apart; the simulation sends once'))
 }
 
 fn test_not_autosar_and_not_4x_are_refused() {
@@ -359,6 +361,12 @@ fn test_not_autosar_and_not_4x_are_refused() {
 	}
 	if _ := parse_arxml('<?xml version="1.0"?><AUTOSAR xmlns="http://autosar.org/3.2.3"></AUTOSAR>') {
 		assert false
+	} else {
+		assert err.msg().contains('not 4.x')
+	}
+	// the guard reads the namespace the ROOT is in, prefixed or not
+	if _ := parse_arxml('<?xml version="1.0"?><ar:AUTOSAR xmlns:ar="http://autosar.org/3.2.3"></ar:AUTOSAR>') {
+		assert false, 'a prefixed 3.x root must be refused too'
 	} else {
 		assert err.msg().contains('not 4.x')
 	}
@@ -716,6 +724,10 @@ fn test_enum_keys_above_2_pow_53_and_opaque_packing() {
 		u64(18446744073709551615): 'Max'
 	}
 	assert parse_key('-1') == u64(18446744073709551615)
+	// a zero-fraction decimal spelling is the same integer, above 2^53 too
+	assert parse_key('9007199254740993.0') == u64(9007199254740993)
+	assert parse_key('9007199254740993.000') == u64(9007199254740993)
+	assert parse_key('12.5') == 12
 	// OPAQUE: read as little-endian (the bytes round-trip) and said
 	assert v.byte_order == .little_endian
 	assert a.report.notes.any(it.contains('OPAQUE packing (a byte array) read as a little-endian integer'))
@@ -983,6 +995,8 @@ fn test_export_dbc_carries_provenance_and_attributes() {
 	assert lines.any(it == ' SG_ EngineSpeed : 0|16@1+ (0.25,0) [0|8000] "rpm" ECU_B,ECU_C')
 	// the frame format survives: the one thing that tells a short FD frame from a classic one
 	assert lines.any(it.starts_with('BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN"'))
+	assert lines.any(it == 'BA_DEF_DEF_ "VFrameFormat" "StandardCAN";') // an ENUM default is the choice
+	
 	assert lines.any(it == 'BA_ "VFrameFormat" BO_ 2149235934 15;')
 	// every frame states its format once the attribute exists: the default would be
 	// StandardCAN, wrong for an extended classic frame

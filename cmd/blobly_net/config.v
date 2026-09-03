@@ -1,5 +1,6 @@
 module main
 
+import candb
 import os
 import time
 import project
@@ -600,9 +601,26 @@ fn (mut app App) add_dbc(ci int, path string) {
 	if ci < 0 || ci >= app.proj.channels.len {
 		return
 	}
+	// an ARXML with several CAN clusters needs one named (`file.arxml#Cluster`), and the
+	// picker hands over a bare path: attach the FIRST cluster and say which others there
+	// are, so the reference is complete and editable in the File tab — a bare path would
+	// be refused at load with nowhere in the GUI to complete it
+	mut frag := ''
+	if candb.is_arxml_path(path) {
+		if a := candb.load_arxml_file(path) {
+			names := a.cluster_names()
+			if names.len > 1 {
+				frag = '#${names[0]}'
+				app.notify('${os.file_name(path)} has ${names.len} CAN clusters (${names.join(', ')}): attached ${names[0]} — change the #cluster in the File tab for another')
+			}
+		} else {
+			app.notify('${os.file_name(path)}: ${err}')
+		}
+	}
 	app.drop_replay_scan(ci) // the census on display was attributed through the OLD databases
 	app.commit_cfg()
-	app.proj.channels[ci].databases << rel_path(path)
+	// the fragment rides on the RESOLVED path: rel_path asks the file system about it
+	app.proj.channels[ci].databases << rel_path(path) + frag
 	app.dirty = true
 	app.sync_cfg_bufs()
 	app.rebuild_preserving_senders()
