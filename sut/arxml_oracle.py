@@ -4,14 +4,15 @@
 
     python3 sut/arxml_oracle.py dbc/example.arxml [--cluster Body] > /tmp/oracle.txt
     v -enable-globals -path "@vlib|@vmodules|modules" run cmd/arxml2dbc/ dbc/example.arxml --dump > /tmp/ours.txt
-    diff /tmp/oracle.txt <(grep -v '^e2e-layout' /tmp/ours.txt)
+    diff /tmp/oracle.txt <(grep -v '^e2e-layout\|^e2e-header' /tmp/ours.txt)
 
 An independent implementation is the point (see README.md): agreement between a V reader and a
 V writer proves only that they agree with each other. What is deliberately NOT compared, because
 the two model different things:
 
-  - `e2e-layout` lines (CRC and counter byte offsets): cantools keeps the profile and data ids
-    only, so the offsets are ours alone to prove — arxml_test.v pins them against the fixture.
+  - `e2e-layout` / `e2e-header` lines (CRC and counter bytes, or a fixed-header profile's
+    offset): cantools keeps the profile and data ids only, so the offsets are ours alone to
+    prove — arxml_test.v pins them against the fixture.
   - signal min/max: cantools takes the LINEAR compu scale's raw domain, this reader the declared
     DATA-CONSTR (physical) when there is one; both are legitimate AUTOSAR and they differ.
   - descriptions: cantools folds every language, this reader takes the first L-2.

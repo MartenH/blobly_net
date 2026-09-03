@@ -343,6 +343,43 @@ fn test_e2e_positions_are_frame_relative_when_the_pdu_is_offset() {
 	nc := narrow.cluster('') or { panic(err) }
 	assert nc.e2e_signals(nc.db.messages[0]) == none
 	assert !nc.frame_toml('').contains('\ne2e  =')
+	// and on a byte boundary: a CRC at bit 20 has no crc_pos
+	skew := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<START-POSITION>16</START-POSITION>', '<START-POSITION>12</START-POSITION>') + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>12</CRC-OFFSET>') + arxml_tail) or { panic(err) }
+	sc := skew.cluster('') or { panic(err) }
+	assert sig(sc.db.messages[0], 'Crc').start_bit == 20
+	assert sc.e2e_signals(sc.db.messages[0]) == none
+	assert !sc.frame_toml('').contains('\ne2e  =')
+}
+
+fn test_package_scoped_names_are_never_folded() {
+	// the class the review kept finding one kind at a time: a SHORT-NAME is scoped per
+	// package, and the reader must not fold two of them into one identity — clusters and
+	// frames are covered above; here ECUs and signals
+	ecus := '<AR-PACKAGE><SHORT-NAME>A</SHORT-NAME><ELEMENTS><ECU-INSTANCE><SHORT-NAME>Node</SHORT-NAME><CONNECTORS><CAN-COMMUNICATION-CONNECTOR><SHORT-NAME>Conn</SHORT-NAME><ECU-COMM-PORT-INSTANCES><FRAME-PORT><SHORT-NAME>Out</SHORT-NAME><COMMUNICATION-DIRECTION>OUT</COMMUNICATION-DIRECTION></FRAME-PORT></ECU-COMM-PORT-INSTANCES></CAN-COMMUNICATION-CONNECTOR></CONNECTORS></ECU-INSTANCE></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>B</SHORT-NAME><ELEMENTS><ECU-INSTANCE><SHORT-NAME>Node</SHORT-NAME><CONNECTORS><CAN-COMMUNICATION-CONNECTOR><SHORT-NAME>Conn</SHORT-NAME><ECU-COMM-PORT-INSTANCES><FRAME-PORT><SHORT-NAME>In</SHORT-NAME><COMMUNICATION-DIRECTION>IN</COMMUNICATION-DIRECTION></FRAME-PORT></ECU-COMM-PORT-INSTANCES></CAN-COMMUNICATION-CONNECTOR></CONNECTORS></ECU-INSTANCE></ELEMENTS></AR-PACKAGE>'
+	ported := cluster_xml('Bus', 256, '/Frames/F').replace('<FRAME-REF DEST="CAN-FRAME">', '<FRAME-PORT-REFS><FRAME-PORT-REF DEST="FRAME-PORT">/A/Node/Conn/Out</FRAME-PORT-REF><FRAME-PORT-REF DEST="FRAME-PORT">/B/Node/Conn/In</FRAME-PORT-REF></FRAME-PORT-REFS><FRAME-REF DEST="CAN-FRAME">')
+	a := parse_arxml(arxml_head + ported + frame_xml + ecus + arxml_tail) or { panic(err) }
+	c := a.cluster('') or { panic(err) }
+	m := c.db.messages[0]
+	// two ECUs, two names — one sends, the other listens, and nothing says "Node sends to Node"
+	assert m.sender == 'A_Node'
+	assert (c.frame_of(m) or { panic('no frame') }).receivers == ['B_Node']
+	assert c.db.nodes == ['A_Node', 'B_Node']
+	assert c.ecus() == ['A_Node', 'B_Node']
+	assert a.report.notes.filter(it.contains('ECU name Node is used by 2 packages')).len == 2
+
+	// two I-SIGNALs of one SHORT-NAME from two packages in one message (a two-PDU frame)
+	two := offset_pdu_xml.replace('</PDU-TO-FRAME-MAPPINGS>', '<PDU-TO-FRAME-MAPPING><SHORT-NAME>M2</SHORT-NAME><PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/P2</PDU-REF><START-POSITION>40</START-POSITION></PDU-TO-FRAME-MAPPING></PDU-TO-FRAME-MAPPINGS>').replace('</I-SIGNAL-I-PDU></ELEMENTS>', '</I-SIGNAL-I-PDU><I-SIGNAL-I-PDU><SHORT-NAME>P2</SHORT-NAME><LENGTH>1</LENGTH><I-SIGNAL-TO-PDU-MAPPINGS><I-SIGNAL-TO-I-PDU-MAPPING><SHORT-NAME>MX</SHORT-NAME><I-SIGNAL-REF DEST="I-SIGNAL">/Sig2/V</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>0</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING></I-SIGNAL-TO-PDU-MAPPINGS></I-SIGNAL-I-PDU></ELEMENTS>') + '<AR-PACKAGE><SHORT-NAME>Sig2</SHORT-NAME><ELEMENTS><I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>8</LENGTH></I-SIGNAL></ELEMENTS></AR-PACKAGE>'
+	d := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + two + arxml_tail) or {
+		panic(err)
+	}
+	dc := d.cluster('') or { panic(err) }
+	names := dc.db.messages[0].signals.map(it.name)
+	assert names == ['V', 'Crc', 'Ctr', 'Sig2_V']
+	assert d.report.notes.any(it.contains('signal name V is already used in this message; this one is Sig2_V'))
+	// and the DBC export has no duplicate SG_
+	text := dc.export_dbc(ArxmlProvenance{}, d.report)
+	assert text.contains(' SG_ V : 8|16@1+')
+	assert text.contains(' SG_ Sig2_V : 40|8@1+')
 }
 
 fn test_cluster_variants_and_duplicate_frame_names() {
@@ -353,6 +390,7 @@ fn test_cluster_variants_and_duplicate_frame_names() {
 	assert c.baudrate == 500000
 	assert c.db.messages.len == 1 // the second variant's frame is not merged in
 	
+
 	assert c.db.messages[0].id == 256
 	assert a.report.notes.any(it.contains('2 CAN-CLUSTER-CONDITIONAL variants; the first is read, the other 1 are not'))
 

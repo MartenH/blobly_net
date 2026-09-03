@@ -192,9 +192,15 @@ fn dump_cluster(c candb.ArxmlCluster) string {
 			b << 'signal ${m.name}.${s.name} start=${s.start_bit} len=${s.length} order=${order} signed=${s.is_signed} factor=${candb.fmt_num(s.factor)} offset=${candb.fmt_num(s.offset)} unit=${s.unit} choices=${ch.join(';')}'
 		}
 		if e := f.e2e {
-			// two lines: what cantools also models, and the layout only this reader carries
+			// two lines: what cantools also models, and the layout only this reader carries —
+			// CRC/counter bytes where the profile declares them, the header offset where it
+			// declares that instead (a zero-valued default is not a position)
 			b << 'e2e ${m.name} profile=${e.profile} data_id=${e.data_id}'
-			b << 'e2e-layout ${m.name} crc_byte=${e.crc_byte()} counter_byte=${e.counter_byte()}'
+			if e.has_crc_counter {
+				b << 'e2e-layout ${m.name} crc_byte=${e.crc_byte()} counter_byte=${e.counter_byte()}'
+			} else {
+				b << 'e2e-header ${m.name} offset_bit=${e.pdu_offset + e.data_offset + e.offset}'
+			}
 		}
 		if s := f.secoc {
 			b << 'secoc ${m.name} data_id=${s.data_id} payload_len=${s.authentic_len}'

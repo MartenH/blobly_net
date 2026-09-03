@@ -284,6 +284,7 @@ pub fn parse_arxml(text string) !Arxml {
 	mut r := &ArxmlReader{}
 	r.index_node(doc.root, '')
 	r.count_ignored()
+	r.name_ecus()
 	r.load_e2e()
 	r.load_pdu_groups()
 	mut clusters := []ArxmlCluster{}
@@ -329,6 +330,7 @@ mut:
 	pdu_out map[string][]string // I-SIGNAL-I-PDU path -> ECUs whose OUT I-PDU group carries it
 	pdu_in  map[string][]string // ... and whose IN group does
 	compu   map[string]ArxmlScale // COMPU-METHOD path -> its scale, read once
+	ecus    map[string]string // ECU-INSTANCE path -> the name it goes by (package-qualified when shared)
 	report  ArxmlReport
 }
 
@@ -388,15 +390,40 @@ fn (r ArxmlReader) path_of(n xml.XMLNode, fallback string) string {
 fn (r ArxmlReader) ecu_of(port_path string) ?string {
 	mut p := port_path
 	for p.len > 0 {
-		if n := r.by_path[p] {
-			if n.name == 'ECU-INSTANCE' {
-				return p.all_after_last('/')
-			}
+		if n := r.ecus[p] {
+			return n
 		}
 		i := p.last_index('/') or { return none }
 		p = p[..i]
 	}
 	return none
+}
+
+// package_qualified is the name a package-scoped SHORT-NAME goes by when another package
+// uses the same one: the package path joined by `_`, then the name — `Other_F` for
+// /Other/F. Identifier-safe, deterministic, and said in the report wherever it is applied.
+fn package_qualified(path string) string {
+	pkg := path.trim_left('/').all_before_last('/').replace('/', '_')
+	return '${pkg}_${path.all_after_last('/')}'
+}
+
+// name_ecus decides what every ECU-INSTANCE is called: its SHORT-NAME, unless another
+// package has an ECU of the same SHORT-NAME — a legal AUTOSAR shape that, reduced to the
+// last path component, would fold two ECUs into one sender and one `--ecu` selection.
+fn (mut r ArxmlReader) name_ecus() {
+	mut count := map[string]int{}
+	for p in r.kinds['ECU-INSTANCE'] {
+		count[p.all_after_last('/')]++
+	}
+	for p in r.kinds['ECU-INSTANCE'] {
+		short := p.all_after_last('/')
+		if count[short] > 1 {
+			r.ecus[p] = package_qualified(p)
+			r.report.notes << '${p}: ECU name ${short} is used by ${count[short]} packages; this one is ${r.ecus[p]}'
+		} else {
+			r.ecus[p] = short
+		}
+	}
 }
 
 // load_pdu_groups reads the SECOND way a system description says who sends and who listens:
@@ -407,7 +434,7 @@ fn (r ArxmlReader) ecu_of(port_path string) ?string {
 fn (mut r ArxmlReader) load_pdu_groups() {
 	for ecu_path in r.kinds['ECU-INSTANCE'] {
 		ecu := r.by_path[ecu_path] or { continue }
-		name := ecu_path.all_after_last('/')
+		name := r.ecus[ecu_path] or { continue }
 		for gref in ecu.get_elements_by_tag('ASSOCIATED-COM-I-PDU-GROUP-REF') {
 			group, gpath := r.deref_node(gref, ecu_path) or { continue }
 			r.collect_pdu_group(group, gpath, name, '', 0)
@@ -568,8 +595,7 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 		// shadowing the first
 		names[fname]++
 		if names[fname] > 1 {
-			pkg := fpath.trim_left('/').all_before_last('/').replace('/', '_')
-			qualified := '${pkg}_${fname}'
+			qualified := package_qualified(fpath)
 			r.report.notes << '${ft_path}: frame name ${fname} is already used by another id in this cluster; this one is ${qualified}'
 			fname = qualified
 		}
@@ -596,6 +622,7 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 		// kept and the rest are reported rather than letting document order decide silently.
 		mut sigs := []Signal{}
 		mut pdus := 0
+		mut sig_names := map[string]int{} // a signal name is an identity within its message
 		for pm in frame.get_elements_by_tag('PDU-TO-FRAME-MAPPING') {
 			pref := child(pm, 'PDU-REF') or { continue }
 			pdu, pdu_path := r.deref_node(pref, r.path_of(pm, '/' + fname)) or { continue }
@@ -629,7 +656,7 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 				// count_ignored, so nothing here is silent.
 				continue
 			}
-			sigs << r.load_signals(sig_pdu, sig_pdu_path, pdu_off)
+			sigs << r.load_signals(sig_pdu, sig_pdu_path, pdu_off, mut sig_names)
 			if first_pdu {
 				tm := r.load_timing(sig_pdu, sig_pdu_path)
 				info.tx_mode = tm.tx_mode
@@ -787,12 +814,21 @@ fn (mut r ArxmlReader) load_secoc(pdu xml.XMLNode, pdu_path string, authentic in
 // load_signals reads every I-SIGNAL-TO-I-PDU-MAPPING of an I-SIGNAL-I-PDU. `pdu_off` is the
 // PDU's bit offset inside the frame, added to each start position — it is byte-aligned in
 // any real file, so it shifts an Intel and a Motorola start alike.
-fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off int) []Signal {
+fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off int, mut seen map[string]int) []Signal {
 	mut out := []Signal{}
 	for m in pdu.get_elements_by_tag('I-SIGNAL-TO-I-PDU-MAPPING') {
 		// a signal-GROUP mapping has no I-SIGNAL-REF; its members are mapped individually
 		isig, isig_path := r.deref(m, 'I-SIGNAL-REF', r.path_of(m, pdu_path)) or { continue }
-		name := child_text(isig, 'SHORT-NAME')
+		mut name := child_text(isig, 'SHORT-NAME')
+		// two I-SIGNALs of one SHORT-NAME in different packages, mapped into one message
+		// (a multi-PDU frame, typically): the second is package-qualified, because a signal
+		// name is how everything downstream addresses it and a DBC refuses a duplicate SG_
+		seen[name]++
+		if seen[name] > 1 {
+			qualified := package_qualified(isig_path)
+			r.report.notes << '${isig_path}: signal name ${name} is already used in this message; this one is ${qualified}'
+			name = qualified
+		}
 		start := parse_int(child_text(m, 'START-POSITION')) + pdu_off
 		order := if child_text(m, 'PACKING-BYTE-ORDER') == 'MOST-SIGNIFICANT-BYTE-FIRST' {
 			ByteOrder.big_endian

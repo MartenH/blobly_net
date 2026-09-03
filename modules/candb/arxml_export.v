@@ -80,11 +80,13 @@ pub fn (c ArxmlCluster) e2e_signals(m Message) ?E2eSignals {
 	}
 }
 
-// is_e2e_field: a little-endian signal that IS the field — starting exactly at its bit and
-// exactly its width (profile 1/2: an 8-bit CRC, a 4-bit counter in the low nibble). A
-// narrower signal would truncate the checksum or wrap the counter early.
+// is_e2e_field: a little-endian signal that IS the field — starting exactly at its bit,
+// exactly its width (profile 1/2: an 8-bit CRC, a 4-bit counter in the low nibble), and on
+// a byte boundary, because the contract is exported in BYTES (crc_pos/counter_pos) and a
+// field at bit 20 has no byte. A narrower signal would truncate the checksum or wrap the
+// counter early.
 fn is_e2e_field(s Signal, bit int, width int) bool {
-	return s.byte_order == .little_endian && s.start_bit == bit && s.length == width
+	return s.byte_order == .little_endian && s.start_bit == bit && s.length == width && bit % 8 == 0
 }
 
 // single_data_id reports whether the protection uses ONE data id, whole: profile 1's
