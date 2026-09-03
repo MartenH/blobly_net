@@ -245,6 +245,12 @@ pub fn (c ArxmlCluster) frame_toml(ecu string) string {
 			if f.tx_mode == '' {
 				b << '# no transmission mode in the system description; cyclic assumed'
 			}
+			if f.repetitions > 0 {
+				// the burst a change triggers is not a thing ecu.toml can say; a fragment
+				// that looked complete without this line would be a contract that sends
+				// less than the ECU declares
+				b << '# event burst: a change is sent ${f.repetitions + 1} times, ${f.repetition_ms} ms apart — not expressible here, one send is what the mode above gives'
+			}
 			b << 'tx   = { ${tx} }'
 		}
 		if receives {

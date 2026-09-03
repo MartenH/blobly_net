@@ -279,6 +279,78 @@ fn test_ignored_kinds_are_counted_from_the_whole_file() {
 	}
 }
 
+fn test_namespace_prefixed_document_reads_the_same() {
+	// the same fixture with every element prefixed `ar:` — a prefix is the author's choice
+	path := os.join_path(os.dir(@FILE), '..', '..', 'dbc', 'example.arxml')
+	plain := os.read_file(path) or { panic(err) }
+	prefixed := plain.replace('<AUTOSAR xmlns="http://autosar.org/schema/r4.0"', '<ar:AUTOSAR xmlns:ar="http://autosar.org/schema/r4.0"')
+	mut out := []string{}
+	mut in_comment := false
+	for line in prefixed.split_into_lines() {
+		mut l := line
+		if l.contains('<!--') {
+			in_comment = true
+		}
+		if !in_comment {
+			// <NAME> and </NAME> get the prefix; the root was done above
+			l = l.replace('</', '</ar:').replace('<ar:ar:', '<ar:')
+			mut o := ''
+			mut i := 0
+			for i < l.len {
+				if l[i] == `<` && i + 1 < l.len && l[i + 1] != `/` && l[i + 1] != `!` && l[i + 1] != `?` && !l[i..].starts_with('<ar:') {
+					o += '<ar:'
+				} else {
+					o += l[i].ascii_str()
+				}
+				i++
+			}
+			l = o
+		}
+		if l.contains('-->') {
+			in_comment = false
+		}
+		out << l
+	}
+	a := parse_arxml(out.join('\n')) or { panic(err) }
+	c := a.cluster('') or { panic(err) }
+	assert c.db.messages.len == 5
+	assert c.db.nodes == ['ECU_A', 'ECU_B', 'ECU_C']
+	pt := c.db.lookup(0x100) or { panic('no Powertrain') }
+	assert pt.signals.len == 4
+	assert sig(pt, 'EngineSpeed').desc == 'Engine speed & direction'
+	assert (c.frame_of(c.db.lookup(0x200) or { panic('no LampFrame') }) or { panic('no frame') }).e2e != none
+	assert a.report.ignored == {
+		'N-PDU': 1
+	}
+}
+
+fn test_descriptions_keep_marked_up_text_and_enum_bounds_compare_numerically() {
+	marked := offset_pdu_xml.replace('<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>8</LENGTH></I-SIGNAL>', '<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>8</LENGTH><DESC><L-2 L="EN">checksum over <E>all</E> bytes, see <TT>E2E</TT></L-2></DESC><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF></I-SIGNAL>') + '<AR-PACKAGE><SHORT-NAME>Sys</SHORT-NAME><ELEMENTS><SYSTEM-SIGNAL><SHORT-NAME>S</SHORT-NAME><PHYSICAL-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/T</COMPU-METHOD-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></PHYSICAL-PROPS></SYSTEM-SIGNAL></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>CM</SHORT-NAME><ELEMENTS><COMPU-METHOD><SHORT-NAME>T</SHORT-NAME><CATEGORY>TEXTTABLE</CATEGORY><COMPU-INTERNAL-TO-PHYS><COMPU-SCALES><COMPU-SCALE><LOWER-LIMIT>1</LOWER-LIMIT><UPPER-LIMIT>1.0</UPPER-LIMIT><COMPU-CONST><VT>One</VT></COMPU-CONST></COMPU-SCALE><COMPU-SCALE><LOWER-LIMIT>2</LOWER-LIMIT><UPPER-LIMIT>2E0</UPPER-LIMIT><COMPU-CONST><VT>Two</VT></COMPU-CONST></COMPU-SCALE></COMPU-SCALES></COMPU-INTERNAL-TO-PHYS></COMPU-METHOD></ELEMENTS></AR-PACKAGE>'
+	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + marked + arxml_tail) or {
+		panic(err)
+	}
+	c := a.cluster('') or { panic(err) }
+	s := sig(c.db.messages[0], 'Crc')
+	assert s.desc == 'checksum over all bytes, see E2E'
+	assert s.values == {
+		u64(1): 'One'
+		u64(2): 'Two'
+	}
+}
+
+fn test_event_bursts_are_carried_and_named_in_the_fragment() {
+	burst := offset_pdu_xml.replace('<LENGTH>4</LENGTH>\n<I-SIGNAL-TO-PDU-MAPPINGS>', '<LENGTH>4</LENGTH><I-PDU-TIMING-SPECIFICATIONS><I-PDU-TIMING><TRANSMISSION-MODE-DECLARATION><TRANSMISSION-MODE-TRUE-TIMING><EVENT-CONTROLLED-TIMING><NUMBER-OF-REPETITIONS>2</NUMBER-OF-REPETITIONS><REPETITION-PERIOD><VALUE>0.02</VALUE></REPETITION-PERIOD></EVENT-CONTROLLED-TIMING></TRANSMISSION-MODE-TRUE-TIMING></TRANSMISSION-MODE-DECLARATION></I-PDU-TIMING></I-PDU-TIMING-SPECIFICATIONS>\n<I-SIGNAL-TO-PDU-MAPPINGS>')
+	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + burst + arxml_tail) or {
+		panic(err)
+	}
+	c := a.cluster('') or { panic(err) }
+	f := c.frame_of(c.db.messages[0]) or { panic('no frame') }
+	assert f.tx_mode == 'event'
+	assert f.repetitions == 2
+	assert f.repetition_ms == 20
+	assert c.frame_toml('').contains('# event burst: a change is sent 3 times, 20 ms apart')
+}
+
 fn test_not_autosar_and_not_4x_are_refused() {
 	if _ := parse_arxml('<?xml version="1.0"?><ROOT/>') {
 		assert false
