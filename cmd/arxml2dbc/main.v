@@ -113,7 +113,7 @@ fn main() {
 		source: os.base(src)
 		sha256: sha256.hexhash(text)
 		reader: 'blobly_net ${version}'
-		cluster: c.name
+		cluster: c.bus
 	}, a.report)
 	// stdout carries ONE file: the DBC by default, the fragment when `--toml -` asks for it
 	toml_to_stdout := toml_out == '-'
@@ -132,7 +132,7 @@ fn main() {
 		if ecu != '' && ecu !in c.ecus() {
 			// an empty fragment written with a success line is a typo turned into an ECU
 			// that sends and receives nothing
-			eprintln('arxml2dbc: no ECU "${ecu}" in cluster ${c.name} (have ${c.ecus().join(', ')})')
+			eprintln('arxml2dbc: no ECU "${ecu}" in cluster ${c.bus} (have ${c.ecus().join(', ')})')
 			exit(1)
 		}
 		frag := c.frame_toml(ecu)
@@ -164,7 +164,7 @@ fn usage() {
 // produces from cantools, so the two can be diffed by `diff` alone.
 fn dump_cluster(c candb.ArxmlCluster) string {
 	mut b := []string{}
-	b << 'cluster ${c.name} baudrate=${c.baudrate} fd_baudrate=${c.fd_baudrate}'
+	b << 'cluster ${c.bus} baudrate=${c.baudrate} fd_baudrate=${c.fd_baudrate}'
 	mut nodes := c.db.nodes.clone()
 	nodes.sort()
 	b << 'nodes ${nodes.join(',')}'

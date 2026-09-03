@@ -567,19 +567,24 @@ fn test_duplicate_cluster_short_names_need_the_path() {
 	a := parse_arxml(arxml_head + dup + frame_xml + arxml_tail) or { panic(err) }
 	assert a.clusters.len == 2
 	assert a.clusters.map(it.path) == ['/Body/Body', '/Other/Body']
-	assert a.cluster_names() == ['/Body/Body', '/Other/Body']
+	// the bus identifier is collision-free and identifier-safe: what the export writes and
+	// what --cluster takes (the path works too)
+	assert a.cluster_names() == ['Body_Body', 'Other_Body']
 	if _ := a.cluster('Body') {
 		assert false, 'a shared short name must be refused'
 	} else {
-		assert err.msg().contains('"Body" names 2 CAN clusters (/Body/Body, /Other/Body): use the path')
+		assert err.msg().contains('"Body" names 2 CAN clusters: use Body_Body or Other_Body, or the path')
 	}
 	assert (a.cluster('/Other/Body') or { panic(err) }).db.messages[0].id == 2
+	assert (a.cluster('Other_Body') or { panic(err) }).db.messages[0].id == 2
+	assert (a.cluster('Other_Body') or { panic(err) }).frame_toml('').contains('bus  = "Other_Body"')
 	// a unique short name still works, by name or by path
 	one := parse_arxml(arxml_head + cluster_xml('Body', 1, '/Frames/F') + frame_xml + arxml_tail) or {
 		panic(err)
 	}
 	assert one.cluster_names() == ['Body']
 	assert (one.cluster('Body') or { panic(err) }).path == '/Body/Body'
+	assert (one.cluster('Body') or { panic(err) }).bus == 'Body'
 	assert (one.cluster('/Body/Body') or { panic(err) }).name == 'Body'
 }
 
@@ -628,9 +633,54 @@ fn test_enum_keys_above_2_pow_53_and_opaque_packing() {
 	assert v.values == {
 		u64(9007199254740993): 'Odd'
 	}
+	// and the top of a 64-bit unsigned domain survives too: a non-negative key is a u64
+	top := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + big.replace('9007199254740993', '18446744073709551615').replace('<VT>Odd</VT>', '<VT>Max</VT>') + arxml_tail) or { panic(err) }
+	tc := top.cluster('') or { panic(err) }
+	assert sig(tc.db.messages[0], 'V').values == {
+		u64(18446744073709551615): 'Max'
+	}
+	assert parse_key('-1') == u64(18446744073709551615)
 	// OPAQUE: read as little-endian (the bytes round-trip) and said
 	assert v.byte_order == .little_endian
 	assert a.report.notes.any(it.contains('OPAQUE packing (a byte array) read as a little-endian integer'))
+}
+
+fn test_pdu_group_directions_do_not_leak_into_subgroups() {
+	// an OUT group containing an IN subgroup: the subgroup's PDU is received, not sent
+	groups := '<AR-PACKAGE><SHORT-NAME>PduGroups</SHORT-NAME><ELEMENTS>' + '<I-SIGNAL-I-PDU-GROUP><SHORT-NAME>Tx</SHORT-NAME><COMMUNICATION-DIRECTION>OUT</COMMUNICATION-DIRECTION><CONTAINED-I-SIGNAL-I-PDU-GROUP-REFS><CONTAINED-I-SIGNAL-I-PDU-GROUP-REF DEST="I-SIGNAL-I-PDU-GROUP">/PduGroups/Rx</CONTAINED-I-SIGNAL-I-PDU-GROUP-REF></CONTAINED-I-SIGNAL-I-PDU-GROUP-REFS></I-SIGNAL-I-PDU-GROUP>' + '<I-SIGNAL-I-PDU-GROUP><SHORT-NAME>Rx</SHORT-NAME><COMMUNICATION-DIRECTION>IN</COMMUNICATION-DIRECTION><I-SIGNAL-I-PDUS><I-SIGNAL-I-PDU-REF-CONDITIONAL><I-SIGNAL-I-PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/P</I-SIGNAL-I-PDU-REF></I-SIGNAL-I-PDU-REF-CONDITIONAL></I-SIGNAL-I-PDUS></I-SIGNAL-I-PDU-GROUP>' + '</ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>ECUs</SHORT-NAME><ELEMENTS><ECU-INSTANCE><SHORT-NAME>Node</SHORT-NAME><ASSOCIATED-COM-I-PDU-GROUP-REFS><ASSOCIATED-COM-I-PDU-GROUP-REF DEST="I-SIGNAL-I-PDU-GROUP">/PduGroups/Tx</ASSOCIATED-COM-I-PDU-GROUP-REF></ASSOCIATED-COM-I-PDU-GROUP-REFS></ECU-INSTANCE></ELEMENTS></AR-PACKAGE>'
+	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + groups + arxml_tail) or { panic(err) }
+	c := a.cluster('') or { panic(err) }
+	m := c.db.messages[0]
+	assert m.senders() == []
+	assert (c.frame_of(m) or { panic('no frame') }).receivers == ['Node']
+	assert c.db.messages_from('Node').len == 0
+}
+
+fn test_signal_shapes_the_model_cannot_hold_are_said() {
+	// wider than 64 bits: not read, and said
+	wide := offset_pdu_xml.replace('<SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH>', '<SHORT-NAME>V</SHORT-NAME><LENGTH>72</LENGTH>')
+	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + wide + arxml_tail) or {
+		panic(err)
+	}
+	c := a.cluster('') or { panic(err) }
+	assert c.db.messages[0].signals.map(it.name) == ['Crc', 'Ctr']
+	assert a.report.notes.any(it.contains('72-bit signal is wider than the 64-bit scalar model; not read'))
+	// two property variants: the first is read, and said
+	vari := offset_pdu_xml.replace('<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>8</LENGTH></I-SIGNAL>', '<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>8</LENGTH><NETWORK-REPRESENTATION-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><BASE-TYPE-REF DEST="SW-BASE-TYPE">/BT/s8</BASE-TYPE-REF></SW-DATA-DEF-PROPS-CONDITIONAL><SW-DATA-DEF-PROPS-CONDITIONAL><BASE-TYPE-REF DEST="SW-BASE-TYPE">/BT/u8</BASE-TYPE-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></NETWORK-REPRESENTATION-PROPS></I-SIGNAL>') + '<AR-PACKAGE><SHORT-NAME>BT</SHORT-NAME><ELEMENTS><SW-BASE-TYPE><SHORT-NAME>s8</SHORT-NAME><BASE-TYPE-ENCODING>2C</BASE-TYPE-ENCODING></SW-BASE-TYPE><SW-BASE-TYPE><SHORT-NAME>u8</SHORT-NAME><BASE-TYPE-ENCODING>NONE</BASE-TYPE-ENCODING></SW-BASE-TYPE></ELEMENTS></AR-PACKAGE>'
+	v := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + vari + arxml_tail) or {
+		panic(err)
+	}
+	vc := v.cluster('') or { panic(err) }
+	assert sig(vc.db.messages[0], 'Crc').is_signed
+	assert v.report.notes.any(it.contains('2 SW-DATA-DEF-PROPS-CONDITIONAL variants; the first is read'))
+	// a numeric lookup table (COMPU-CONST/V) is not an enum: not read, and said
+	tab := offset_pdu_xml.replace('<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>8</LENGTH></I-SIGNAL>', '<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>8</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF></I-SIGNAL>') + '<AR-PACKAGE><SHORT-NAME>Sys</SHORT-NAME><ELEMENTS><SYSTEM-SIGNAL><SHORT-NAME>S</SHORT-NAME><PHYSICAL-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/N</COMPU-METHOD-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></PHYSICAL-PROPS></SYSTEM-SIGNAL></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>CM</SHORT-NAME><ELEMENTS><COMPU-METHOD><SHORT-NAME>N</SHORT-NAME><CATEGORY>TAB_NOINTP</CATEGORY><COMPU-INTERNAL-TO-PHYS><COMPU-SCALES><COMPU-SCALE><LOWER-LIMIT>0</LOWER-LIMIT><UPPER-LIMIT>0</UPPER-LIMIT><COMPU-CONST><V>10</V></COMPU-CONST></COMPU-SCALE></COMPU-SCALES></COMPU-INTERNAL-TO-PHYS></COMPU-METHOD></ELEMENTS></AR-PACKAGE>'
+	t := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + tab + arxml_tail) or {
+		panic(err)
+	}
+	tc := t.cluster('') or { panic(err) }
+	assert sig(tc.db.messages[0], 'Crc').values.len == 0
+	assert t.report.notes.any(it.contains('a numeric lookup table (COMPU-CONST/V) is not modelled'))
 }
 
 fn test_nonlinear_scales_and_negative_factors() {

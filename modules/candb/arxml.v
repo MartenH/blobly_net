@@ -127,7 +127,8 @@ pub mut:
 pub struct ArxmlCluster {
 pub:
 	name        string // the SHORT-NAME — package-scoped, so two clusters may share it
-	path        string // the AUTOSAR path, unique: what `cluster()` accepts when names collide
+	path        string // the AUTOSAR path, unique
+	bus         string // the collision-free identifier: the SHORT-NAME, or package-qualified when shared
 	baudrate    int
 	fd_baudrate int
 	db          Database
@@ -193,7 +194,7 @@ pub fn (a Arxml) cluster(name string) !ArxmlCluster {
 	}
 	mut hits := []ArxmlCluster{}
 	for c in a.clusters {
-		if c.path == name {
+		if c.path == name || c.bus == name {
 			return c
 		}
 		if c.name == name {
@@ -204,19 +205,34 @@ pub fn (a Arxml) cluster(name string) !ArxmlCluster {
 		return hits[0]
 	}
 	if hits.len > 1 {
-		return error('"${name}" names ${hits.len} CAN clusters (${hits.map(it.path).join(', ')}): use the path')
+		return error('"${name}" names ${hits.len} CAN clusters: use ${hits.map(it.bus).join(' or ')}, or the path')
 	}
 	return error('no CAN cluster "${name}" (have ${a.cluster_names().join(', ')})')
 }
 
-// cluster_names lists the clusters the way `cluster()` accepts them: the SHORT-NAME where it
-// is unique, the path where two packages share one.
+// cluster_names lists the clusters by the identifier `cluster()` accepts and the export
+// writes as the bus: the SHORT-NAME where unique, package-qualified where two packages
+// share one (`A_Bus`, `B_Bus`) — an identifier, so it can be a `[bus.<name>]` in ecu.toml.
 pub fn (a Arxml) cluster_names() []string {
+	return a.clusters.map(it.bus)
+}
+
+// name_clusters gives every cluster its `bus` identifier, allocated like every other name.
+fn name_clusters(clusters []ArxmlCluster) []ArxmlCluster {
 	mut count := map[string]int{}
-	for c in a.clusters {
+	for c in clusters {
 		count[c.name]++
 	}
-	return a.clusters.map(if count[it.name] > 1 { it.path } else { it.name })
+	mut taken := map[string]bool{}
+	mut out := []ArxmlCluster{cap: clusters.len}
+	for c in clusters {
+		want := if count[c.name] > 1 { package_qualified(c.path) } else { c.name }
+		out << ArxmlCluster{
+			...c
+			bus: claim_name(mut taken, want)
+		}
+	}
+	return out
 }
 
 // --- the per-file parse cache ---------------------------------------------------------------
@@ -292,7 +308,7 @@ pub fn parse_arxml(text string) !Arxml {
 		clusters << r.load_cluster(path)
 	}
 	return Arxml{
-		clusters: clusters
+		clusters: name_clusters(clusters)
 		report: r.report
 	}
 }
@@ -467,21 +483,29 @@ fn (mut r ArxmlReader) collect_pdu_group(group xml.XMLNode, group_path string, e
 	if dir == '' {
 		dir = dir_in
 	}
-	for pref in group.get_elements_by_tag('I-SIGNAL-I-PDU-REF') {
-		_, target := r.deref_node(pref, group_path) or { continue }
-		if dir == 'OUT' {
-			if ecu !in r.pdu_out[target] {
-				r.pdu_out[target] << ecu
-			}
-		} else if dir == 'IN' {
-			if ecu !in r.pdu_in[target] {
-				r.pdu_in[target] << ecu
+	// DIRECT members only: a deep search would also visit a contained group's PDUs under
+	// THIS group's direction, and the recursion below visits them again under their own —
+	// an ECU that only receives a subgroup's PDU then transmitted it too
+	if pdus := child(group, 'I-SIGNAL-I-PDUS') {
+		for cond in children(pdus, 'I-SIGNAL-I-PDU-REF-CONDITIONAL') {
+			pref := child(cond, 'I-SIGNAL-I-PDU-REF') or { continue }
+			_, target := r.deref_node(pref, group_path) or { continue }
+			if dir == 'OUT' {
+				if ecu !in r.pdu_out[target] {
+					r.pdu_out[target] << ecu
+				}
+			} else if dir == 'IN' {
+				if ecu !in r.pdu_in[target] {
+					r.pdu_in[target] << ecu
+				}
 			}
 		}
 	}
-	for cref in group.get_elements_by_tag('CONTAINED-I-SIGNAL-I-PDU-GROUP-REF') {
-		sub, spath := r.deref_node(cref, group_path) or { continue }
-		r.collect_pdu_group(sub, spath, ecu, dir, depth + 1)
+	if subs := child(group, 'CONTAINED-I-SIGNAL-I-PDU-GROUP-REFS') {
+		for cref in children(subs, 'CONTAINED-I-SIGNAL-I-PDU-GROUP-REF') {
+			sub, spath := r.deref_node(cref, group_path) or { continue }
+			r.collect_pdu_group(sub, spath, ecu, dir, depth + 1)
+		}
 	}
 }
 
@@ -859,14 +883,23 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 			r.report.notes << '${isig_path}: OPAQUE packing (a byte array) read as a little-endian integer; its value is not a quantity'
 		}
 		length := parse_int(child_text(isig, 'LENGTH'))
+		if length > 64 {
+			// the model decodes into a u64 and the DBC writer assumes a width-sized scalar:
+			// a wider signal would lose its top bits in silence. Reported and left out.
+			r.report.notes << '${isig_path}: ${length}-bit signal is wider than the 64-bit scalar model; not read'
+			continue
+		}
 
-		// base type: signedness (and the one encoding this model cannot hold)
+		// base type: signedness (and the one encoding this model cannot hold). The props
+		// may come in several variants (a variation point); the first is read and the
+		// rest are reported, since nothing here evaluates a variation condition
 		mut is_signed := false
 		props := first(isig, 'SW-DATA-DEF-PROPS-CONDITIONAL') or {
 			xml.XMLNode{
 				name: ''
 			}
 		}
+		r.note_variants(isig, isig_path)
 		if bt, _ := r.deref(props, 'BASE-TYPE-REF', isig_path) {
 			enc := first_text(bt, 'BASE-TYPE-ENCODING')
 			if enc == '2C' {
@@ -905,6 +938,7 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 			sys_path = sp
 			if pp := first(s, 'PHYSICAL-PROPS') {
 				phys = first(pp, 'SW-DATA-DEF-PROPS-CONDITIONAL') or { phys }
+				r.note_variants(pp, sp)
 			}
 		}
 		mut cm := xml.XMLNode{
@@ -993,6 +1027,18 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 	return out
 }
 
+// note_variants reports a SW-DATA-DEF-PROPS-VARIANTS with more than one conditional: the
+// reader takes the first and says so, rather than letting document order choose a signal's
+// signedness or scaling without a word.
+fn (mut r ArxmlReader) note_variants(n xml.XMLNode, at string) {
+	if v := first(n, 'SW-DATA-DEF-PROPS-VARIANTS') {
+		conds := children(v, 'SW-DATA-DEF-PROPS-CONDITIONAL')
+		if conds.len > 1 {
+			r.report.notes << '${at}: ${conds.len} SW-DATA-DEF-PROPS-CONDITIONAL variants; the first is read'
+		}
+	}
+}
+
 struct ArxmlScale {
 	factor     f64 = 1.0
 	offset     f64
@@ -1034,9 +1080,16 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 			lo := child_text(s, 'LOWER-LIMIT')
 			hi := child_text(s, 'UPPER-LIMIT')
 			if k := first(s, 'COMPU-CONST') {
+				if child(k, 'VT') == none {
+					// a NUMERIC constant (TAB-NOINTP: raw 0 means physical 10) is a lookup
+					// this model has no home for — a label would be empty and the value
+					// would decode as its raw self
+					r.report.notes << '${cm_path}: a numeric lookup table (COMPU-CONST/V) is not modelled; read as factor 1 offset 0'
+					continue
+				}
 				label := first_text(k, 'VT')
 				if lo == hi && lo != '' {
-					values[u64(parse_i64(lo))] = label
+					values[parse_key(lo)] = label
 				} else {
 					r.report.notes << '${cm_path}: maps the range ${lo}..${hi} to "${label}", which a value table cannot express; dropped'
 				}
@@ -1114,6 +1167,19 @@ fn child(n xml.XMLNode, name string) ?xml.XMLNode {
 	return none
 }
 
+// children returns the DIRECT child elements named `name`, document order.
+fn children(n xml.XMLNode, name string) []xml.XMLNode {
+	mut out := []xml.XMLNode{}
+	for c in n.children {
+		if c is xml.XMLNode {
+			if c.name == name {
+				out << c
+			}
+		}
+	}
+	return out
+}
+
 fn child_text(n xml.XMLNode, name string) string {
 	c := child(n, name) or { return '' }
 	return el_text(c)
@@ -1180,6 +1246,24 @@ fn parse_int(s string) int {
 		return int(t.f64())
 	}
 	return int(t.i64())
+}
+
+// parse_key reads an enum key as the width-sized raw pattern candb keys value tables by: a
+// non-negative literal as u64 (so the top half of a 64-bit domain survives), a negative one
+// through i64 (its two's-complement pattern). Hex, decimal, or a float that is integral —
+// never through f64 for an integer literal, which would lose the low bits above 2^53.
+fn parse_key(s string) u64 {
+	t := s.trim_space()
+	if t.starts_with('-') {
+		return u64(parse_i64(t))
+	}
+	if t.starts_with('0x') || t.starts_with('0X') {
+		return t[2..].parse_uint(16, 64) or { 0 }
+	}
+	if t.contains('.') || t.contains('e') || t.contains('E') {
+		return u64(i64(t.f64()))
+	}
+	return t.parse_uint(10, 64) or { 0 }
 }
 
 // parse_i64 reads an integer literal as an integer — an enum key above 2^53 would lose its
