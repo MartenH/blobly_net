@@ -57,6 +57,8 @@ fn test_plain_cyclic_frame_with_every_signal_shape() {
 	assert f.e2e == none
 	assert f.secoc == none
 	assert m.signals.len == 4
+	// every signal carries the frame's receivers, the way a DBC states them
+	assert m.signals.all(it.receivers == ['ECU_B', 'ECU_C'])
 
 	// Intel, linear compu method, unit via the compu method, physical range, entity in desc
 	es := sig(m, 'EngineSpeed')
@@ -425,12 +427,26 @@ fn test_e2e_export_needs_the_field_signals_and_a_known_checksum() {
 	assert c.e2e_signals(m) == none // … but is not the CRC
 	
 	assert !c.export_dbc(ArxmlProvenance{}, a.report).contains('E2ECrcSignal" BO_')
+	// and the fragment follows the same verdict: no e2e entry, a comment saying why
+	assert !c.frame_toml('').contains('\ne2e  =')
+	assert c.frame_toml('').contains('# E2E PROFILE_01 (data_id 0x7, CRC at byte 3, counter at byte 4): not exported')
 	// a profile whose checksum this app cannot compute exports no contract either, even with
 	// the fields in place
 	p := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + e2e_xml('PROFILE_07', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>16</CRC-OFFSET>') + arxml_tail) or { panic(err) }
 	pc := p.cluster('') or { panic(err) }
 	assert pc.e2e_signals(pc.db.messages[0]) == none
 	assert !pc.export_dbc(ArxmlProvenance{}, p.report).contains('E2EProfile')
+	assert !pc.frame_toml('').contains('\ne2e  =')
+}
+
+fn test_ones_complement_and_sign_magnitude_are_said() {
+	enc := offset_pdu_xml.replace('<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>8</LENGTH></I-SIGNAL>', '<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>8</LENGTH><NETWORK-REPRESENTATION-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><BASE-TYPE-REF DEST="SW-BASE-TYPE">/BT/s8</BASE-TYPE-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></NETWORK-REPRESENTATION-PROPS></I-SIGNAL>') + '<AR-PACKAGE><SHORT-NAME>BT</SHORT-NAME><ELEMENTS><SW-BASE-TYPE><SHORT-NAME>s8</SHORT-NAME><BASE-TYPE-ENCODING>1C</BASE-TYPE-ENCODING></SW-BASE-TYPE></ELEMENTS></AR-PACKAGE>'
+	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + enc + arxml_tail) or {
+		panic(err)
+	}
+	c := a.cluster('') or { panic(err) }
+	assert sig(c.db.messages[0], 'Crc').is_signed
+	assert a.report.notes.any(it.contains('1C encoding is not modelled'))
 }
 
 fn test_messages_from_counts_additional_transmitters() {
@@ -657,6 +673,8 @@ fn test_export_dbc_carries_provenance_and_attributes() {
 	assert lines.any(it == 'BA_ "E2EProfile" BO_ 512 "crc8_j1850";')
 	assert lines.any(it == 'BA_ "E2EDataId" BO_ 512 42;')
 	assert lines.filter(it.starts_with('BA_ "E2E')).len == 4
+	// receivers reach the SG_ lines
+	assert lines.any(it == ' SG_ EngineSpeed : 0|16@1+ (0.25,0) [0|8000] "rpm" ECU_B,ECU_C')
 	// the frame format survives: the one thing that tells a short FD frame from a classic one
 	assert lines.any(it.starts_with('BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN"'))
 	assert lines.any(it == 'BA_ "VFrameFormat" BO_ 2149235934 15;')

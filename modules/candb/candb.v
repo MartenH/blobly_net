@@ -29,6 +29,9 @@ pub mut:
 	// signal; multiplexed signals are only present when the switch equals their
 	// selector value. is_multiplexor and is_multiplexed can both be true for
 	// extended multiplexing ('m<N>M').
+	// the ECUs that receive this signal (DBC SG_ receiver list; an ARXML frame's IN ports and
+	// I-PDU groups). Empty means none declared — 'Vector__XXX' is normalised away, like sender.
+	receivers         []string
 	is_multiplexor    bool // 'M' — selects which multiplexed signals are present
 	is_multiplexed    bool // 'm<N>' — present only when the switch == multiplexor_value
 	multiplexor_value int  // the N in 'm<N>'

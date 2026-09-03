@@ -131,7 +131,11 @@ pub fn (db Database) to_dbc_with(x DbcExtras) string {
 			}
 			order := if s.byte_order == .little_endian { '1' } else { '0' }
 			sign := if s.is_signed { '-' } else { '+' }
-			b << ' SG_ ${s.name}${mux} : ${s.start_bit}|${s.length}@${order}${sign} (${fmt_num(s.factor)},${fmt_num(s.offset)}) [${fmt_num(s.minimum)}|${fmt_num(s.maximum)}] "${dbc_str(s.unit)}" Vector__XXX'
+			// receivers sorted, so the text is canonical; none is the format's placeholder
+			mut rcv := s.receivers.clone()
+			rcv.sort()
+			rcv_s := if rcv.len == 0 { 'Vector__XXX' } else { rcv.join(',') }
+			b << ' SG_ ${s.name}${mux} : ${s.start_bit}|${s.length}@${order}${sign} (${fmt_num(s.factor)},${fmt_num(s.offset)}) [${fmt_num(s.minimum)}|${fmt_num(s.maximum)}] "${dbc_str(s.unit)}" ${rcv_s}'
 		}
 		b << ''
 	}

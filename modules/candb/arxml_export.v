@@ -256,11 +256,15 @@ pub fn (c ArxmlCluster) frame_toml(ecu string) string {
 			b << "# rx   = { timeout_ms = ? }  # set from the ECU's ComTimeout (${cadence})"
 		}
 		if e := f.e2e {
-			if !e.single_data_id() {
+			// the SAME contract the DBC attributes carry (e2e_signals): a protection the
+			// export cannot state exactly is named, never approximated into an entry
+			if _ := c.e2e_signals(m) {
+				b << 'e2e  = { data_id = 0x${e.data_id:X}, crc_pos = ${e.crc_byte()}, counter_pos = ${e.counter_byte()} }  # ${e.profile}'
+			} else if !e.single_data_id() {
 				ids := e.data_ids.map('0x${it:X}').join(', ')
 				b << '# E2E ${e.profile} with ${e.data_id_mode} data ids (${ids}): this data-id mode is not expressible here'
 			} else if e.has_crc_counter {
-				b << 'e2e  = { data_id = 0x${e.data_id:X}, crc_pos = ${e.crc_byte()}, counter_pos = ${e.counter_byte()} }  # ${e.profile}'
+				b << '# E2E ${e.profile} (data_id 0x${e.data_id:X}, CRC at byte ${e.crc_byte()}, counter at byte ${e.counter_byte()}): not exported — the offsets do not land on dedicated CRC/counter signals, or the checksum is not one blobly computes'
 			} else {
 				b << '# E2E ${e.profile} (data_id 0x${e.data_id:X}, header at bit ${e.pdu_offset + e.data_offset + e.offset}): a fixed-header profile blobly_emb does not implement'
 			}

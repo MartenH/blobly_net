@@ -628,6 +628,11 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			}
 		}
 		info.receivers = ports.receivers
+		// a DBC states receivers per signal; the system description per frame — every signal
+		// of the frame gets the frame's, so the export carries them
+		for mut s in sigs {
+			s.receivers = ports.receivers.clone()
+		}
 		msgs << Message{
 			name: fname
 			id: id
@@ -756,8 +761,15 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 		}
 		if bt, _ := r.deref(props, 'BASE-TYPE-REF', isig_path) {
 			enc := first_text(bt, 'BASE-TYPE-ENCODING')
-			if enc == '2C' || enc == '1C' || enc == 'SM' {
+			if enc == '2C' {
 				is_signed = true
+			} else if enc == '1C' || enc == 'SM' {
+				// one's complement and sign-magnitude are signed, but the model decodes
+				// two's complement only: negative values come out wrong by one (1C) or as
+				// large negatives (SM). Said, since a raw value that decodes wrong in
+				// silence is the worst kind
+				is_signed = true
+				r.report.notes << '${isig_path}: ${enc} encoding is not modelled; decoded as two\'s complement, so negative values are wrong'
 			} else if enc.starts_with('IEEE754') {
 				r.report.notes << '${isig_path}: IEEE754 (floating-point) signal read as an unsigned integer'
 			}
