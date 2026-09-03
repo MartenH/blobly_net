@@ -374,12 +374,21 @@ fn draw_dbc_editor(mut app App) {
 	app.mu.lock()
 	live_readers := app.dbc_readers
 	app.mu.unlock()
-	mut ro := app.running || live_readers > 0
-	if ro {
+	// the selection is settled BEFORE anything reads it, so the read-only answer below is
+	// the one every control on this frame sees
+	if app.dbc_ed.db < 0 && app.dbs.len > 0 {
+		app.dbc_ed.db = 0
+	}
+	// an ARXML-backed database is never saved from here: Save serialises DBC text to the
+	// selected path, and that path is the customer's system description. Export it with
+	// cmd/arxml2dbc and edit the DBC that produces. ONE gate — the rule is candb's
+	// (is_arxml_ref, tested there), this is the only place the editor asks it.
+	arxml := candb.is_arxml_ref(app.db_path(app.dbc_ed.db))
+	ro := app.running || live_readers > 0 || arxml
+	if app.running || live_readers > 0 {
 		vgui.text_colored(230, 170, 70,
 			'read-only while measuring — Stop to edit (workers drain briefly after Stop)')
-	} else if candb.is_arxml_ref(app.db_path(app.dbc_ed.db)) {
-		// the banner for the gate below; read from the selection so it sits with the other one
+	} else if arxml {
 		vgui.text_colored(230, 170, 70,
 			'read-only: an AUTOSAR system description — export a DBC with cmd/arxml2dbc to edit')
 	}
@@ -406,9 +415,6 @@ fn draw_dbc_editor(mut app App) {
 		}
 		names << '${mark}${disp} (${db.messages.len} msgs) ##${i}'
 	}
-	if app.dbc_ed.db < 0 && app.dbs.len > 0 {
-		app.dbc_ed.db = 0
-	}
 	vgui.set_next_item_width(280 * sc)
 	ndb := vgui.combo('database', names, app.dbc_ed.db)
 	if ndb != app.dbc_ed.db {
@@ -422,12 +428,6 @@ fn draw_dbc_editor(mut app App) {
 		return
 	}
 	dbc_path := app.db_path(di)
-	// an ARXML-backed database is never saved from here: Save serialises DBC text to the
-	// selected path, and that path is the customer's system description. Export it with
-	// cmd/arxml2dbc and edit the DBC that produces.
-	if candb.is_arxml_ref(dbc_path) {
-		ro = true
-	}
 
 	// save / revert controls
 	vgui.same_line()

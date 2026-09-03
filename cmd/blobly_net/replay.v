@@ -1048,7 +1048,7 @@ fn resolve_replay_bus(buses []mf4.BusInfo, ch Chan) !string {
 fn replay_db(app &App, ch Chan) candb.Database {
 	mut a := unsafe { app }
 	a.mu.lock()
-	db := merge_dbs_from(app.loaded_dbs_for(ch.databases.map(os.real_path(app.resolve_asset(it)))))
+	db := merge_dbs_from(app.loaded_dbs_for(ch.databases.map(candb.canonical_database_ref(app.resolve_asset(it)))))
 	a.mu.unlock()
 	return db
 }

@@ -8,11 +8,12 @@
 //   --ecu <name>       the `[[frame]]` fragment for this ECU only (tx for what it sends, rx
 //                      for what it receives); default: every frame, as sent
 //   --dbc <path>       write the DBC here (default: stdout)
-//   --toml <path>      write the fragment here (default: not written; --toml - for stdout)
+//   --toml <path>      write the fragment here (default: not written). `--toml -` sends it
+//                      to stdout INSTEAD of the DBC — one stream carries one file
 //   --list             print the clusters and stop
 //   --dump             print the messages and signals as read (the oracle's diff format)
 //
-// The DBC's leading comment carries the provenance: source file, SHA-256, reader version,
+// The DBC's network comment carries the provenance: source file, SHA-256, reader version,
 // cluster, and how much the reader dropped — so an export found later can say which ARXML it
 // came from and whether anyone edited it since. The report (dangling references, ignored
 // element kinds, partial reads) goes to stderr, always: an importer that quietly drops a PDU
@@ -26,10 +27,6 @@ import v.vmod
 
 fn main() {
 	args := os.args[1..].clone()
-	if args.len == 0 || args[0] == '-h' || args[0] == '--help' {
-		usage()
-		exit(2)
-	}
 	mut src := ''
 	mut cluster := ''
 	mut ecu := ''
@@ -41,6 +38,10 @@ fn main() {
 	for i < args.len {
 		a := args[i]
 		match a {
+			'-h', '--help' {
+				usage()
+				exit(0)
+			}
 			'--cluster' {
 				cluster = take(args, i, a)
 				i++
@@ -106,13 +107,17 @@ fn main() {
 	}
 	version := (vmod.decode(@VMOD_FILE) or { panic('v.mod unparsable: ${err}') }).version
 	dbc := c.export_dbc(candb.ArxmlProvenance{
-		source: os.base(src)
-		sha256: sha256.hexhash(text)
-		reader: 'blobly_net ${version}'
+		source:  os.base(src)
+		sha256:  sha256.hexhash(text)
+		reader:  'blobly_net ${version}'
 		cluster: c.name
 	}, a.report)
+	// stdout carries ONE file: the DBC by default, the fragment when `--toml -` asks for it
+	toml_to_stdout := toml_out == '-'
 	if dbc_out == '' || dbc_out == '-' {
-		print(dbc)
+		if !toml_to_stdout {
+			print(dbc)
+		}
 	} else {
 		os.write_file(dbc_out, dbc) or {
 			eprintln('arxml2dbc: ${dbc_out}: ${err}')
@@ -122,7 +127,7 @@ fn main() {
 	}
 	if toml_out != '' {
 		frag := c.frame_toml(ecu)
-		if toml_out == '-' {
+		if toml_to_stdout {
 			print(frag)
 		} else {
 			os.write_file(toml_out, frag) or {
@@ -143,7 +148,7 @@ fn take(args []string, i int, flag string) string {
 }
 
 fn usage() {
-	eprintln('usage: arxml2dbc <file.arxml> [--cluster <name>] [--ecu <name>] [--dbc <out.dbc>] [--toml <out.toml>] [--list] [--dump]')
+	eprintln('usage: arxml2dbc <file.arxml> [--cluster <name>] [--ecu <name>] [--dbc <out.dbc>] [--toml <out.toml>|-] [--list] [--dump]')
 }
 
 // dump_cluster prints the database in the line-per-fact form sut/arxml_oracle.py also
@@ -155,20 +160,10 @@ fn dump_cluster(c candb.ArxmlCluster) string {
 	nodes.sort()
 	b << 'nodes ${nodes.join(',')}'
 	mut msgs := c.db.messages.clone()
-	msgs.sort_with_compare(fn (x &candb.Message, y &candb.Message) int {
-		if x.id != y.id {
-			return if x.id < y.id { -1 } else { 1 }
-		}
-		return if !x.ext && y.ext {
-			-1
-		} else if x.ext && !y.ext { 1 } else { 0 }
-	})
+	msgs.sort_with_compare(candb.message_order)
 	for m in msgs {
-		f := c.frames[m.name] or { candb.ArxmlFrame{} }
-		mut senders := m.tx_nodes.clone()
-		if m.sender != '' {
-			senders << m.sender
-		}
+		f := c.frame_of(m) or { candb.ArxmlFrame{} }
+		mut senders := m.senders()
 		senders.sort()
 		mut rx := f.receivers.clone()
 		rx.sort()
@@ -185,23 +180,16 @@ fn dump_cluster(c candb.ArxmlCluster) string {
 			for k in keys {
 				ch << '${k}=${s.values[k]}'
 			}
-			b << 'signal ${m.name}.${s.name} start=${s.start_bit} len=${s.length} order=${order} signed=${s.is_signed} factor=${fmt_num(s.factor)} offset=${fmt_num(s.offset)} unit=${s.unit} choices=${ch.join(';')}'
+			b << 'signal ${m.name}.${s.name} start=${s.start_bit} len=${s.length} order=${order} signed=${s.is_signed} factor=${candb.fmt_num(s.factor)} offset=${candb.fmt_num(s.offset)} unit=${s.unit} choices=${ch.join(';')}'
 		}
 		if e := f.e2e {
 			// two lines: what cantools also models, and the layout only this reader carries
 			b << 'e2e ${m.name} profile=${e.profile} data_id=${e.data_id}'
-			b << 'e2e-layout ${m.name} crc_byte=${e.crc_byte} counter_byte=${e.counter_byte}'
+			b << 'e2e-layout ${m.name} crc_byte=${e.crc_byte()} counter_byte=${e.counter_byte()}'
 		}
 		if s := f.secoc {
 			b << 'secoc ${m.name} data_id=${s.data_id} payload_len=${s.authentic_len}'
 		}
 	}
 	return b.join('\n') + '\n'
-}
-
-fn fmt_num(f f64) string {
-	if f == f64(i64(f)) {
-		return '${i64(f)}'
-	}
-	return '${f}'
 }

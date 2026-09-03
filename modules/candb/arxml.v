@@ -8,15 +8,20 @@
 // that already exists, deliberately not a model of ARXML — the schema is enormous and a
 // reader that mirrored it would be maintained forever.
 //
+// The split rule: `Message` carries what a DBC can say (ids, layout, senders, cycle time);
+// `ArxmlFrame` carries the rest, keyed by the same identity the rest of candb uses — id and
+// frame kind (`frame_key`), never the SHORT-NAME, which AUTOSAR scopes per package.
+//
 // The walk (System Template, 4.x element names — 3.x renamed half of them and is not shipped
 // any more):
 //
 //   CAN-CLUSTER → CAN-PHYSICAL-CHANNEL → CAN-FRAME-TRIGGERING (id, addressing mode, FD)
 //     → FRAME-REF → CAN-FRAME (length) → PDU-TO-FRAME-MAPPING (PDU offset)
 //       → PDU-REF → I-SIGNAL-I-PDU (timing) → I-SIGNAL-TO-I-PDU-MAPPING (start, byte order)
-//         → I-SIGNAL-REF → I-SIGNAL (length, base type) → SYSTEM-SIGNAL (description)
+//         → I-SIGNAL-REF → I-SIGNAL (length, base type) → SYSTEM-SIGNAL (scaling, description)
 //           → COMPU-METHOD (factor/offset, enums), UNIT, DATA-CONSTR (range)
 //     → FRAME-PORT-REF → ECU-INSTANCE (sender / receivers, by port direction)
+//   ECU-INSTANCE → ASSOCIATED-COM-I-PDU-GROUP → I-SIGNAL-I-PDU-GROUP (the other sender answer)
 //   END-TO-END-PROTECTION-SET → per protected I-SIGNAL-I-PDU: profile, data id, offsets
 //   SECURED-I-PDU → freshness and MAC layout, then PAYLOAD-REF → the authentic I-SIGNAL-I-PDU
 //
@@ -29,39 +34,65 @@
 //      is how an extract silently yields a frame with no signals;
 //   2. what was ignored is COUNTED by element kind (container PDUs, LIN clusters, ...) — an
 //      importer that quietly drops a PDU is worse than one that refuses.
+// `load_arxml_file` caches the parse per file content: a real file is tens of MB and seconds
+// to parse, and a project opens each channel's databases several times per Start.
 //
 // Bit numbering: an ARXML START-POSITION is the LSB for MOST-SIGNIFICANT-BYTE-LAST (Intel)
 // and the MSB for MOST-SIGNIFICANT-BYTE-FIRST (Motorola), in byte-wise LSB-0 numbering —
 // the same convention the DBC `@1` / `@0` start bit uses, and what `Signal.start_bit`
 // holds, so the number is carried across as is (plus the PDU's own offset in the frame).
-// cantools agrees (sut/ diffs the two — see docs/simulation.md and cmd/arxml2dbc).
+// cantools agrees (sut/arxml_oracle.py diffs the two against cmd/arxml2dbc --dump).
 module candb
 
+import crypto.sha256
 import encoding.xml
 import os
+import sync
 
-// ArxmlE2e is the AUTOSAR end-to-end protection declared for one PDU. Offsets are in BITS
-// from the start of the protected data window, as the file states them; `crc_byte` and
-// `counter_byte` are the same offsets in whole bytes from the start of the PDU, which is
-// what blobly_emb's `[[frame]].e2e` and #271's attributes take.
+// ArxmlE2e is the AUTOSAR end-to-end protection declared for one PDU. Offsets are in BITS as
+// the file states them: `crc_offset`/`counter_offset` within the protected window (profiles
+// 1 and 2), `offset` the window's header position (profiles 4 to 7, which declare ONE offset
+// and a fixed header layout this reader does not model — `has_crc_counter` says which kind
+// was declared). `pdu_offset` is where the PDU sits in its FRAME, so the byte positions below
+// are frame-relative, which is what blobly_emb's `[[frame]].e2e` and #271's attributes take.
 pub struct ArxmlE2e {
 pub:
-	profile        string // END-TO-END-PROFILE CATEGORY: PROFILE_01, PROFILE_02, PROFILE_05 …
-	data_id        u32
-	data_ids       []u32 // every declared DATA-ID (profile 1 may alternate between two)
-	data_id_mode   string // DATA-ID-MODE (ALL-16-BIT, LOWER-12-BIT, LOWER-8-BIT, ALTERNATING-8-BIT) or ''
-	crc_offset     int // bits, within the data window
-	counter_offset int // bits, within the data window
-	data_offset    int // bits, where the protected window starts in the PDU
-	data_length    int // bits
-	crc_byte       int // (data_offset + crc_offset) / 8
-	counter_byte   int // (data_offset + counter_offset) / 8
+	profile         string // END-TO-END-PROFILE CATEGORY: PROFILE_01, PROFILE_02, PROFILE_05 …
+	data_id         u32
+	data_ids        []u32 // every declared DATA-ID (profile 1 may alternate between two)
+	data_id_mode    string // DATA-ID-MODE (ALL-16-BIT, LOWER-12-BIT, LOWER-8-BIT, ALTERNATING-8-BIT) or ''
+	has_crc_counter bool // CRC-OFFSET and COUNTER-OFFSET were declared (profiles 1/2/11/22)
+	crc_offset      int // bits, within the data window
+	counter_offset  int // bits, within the data window
+	offset          int // bits, OFFSET of the fixed header (profiles 4/5/6/7), else 0
+	data_offset     int // bits, where the protected window starts in the PDU
+	data_length     int // bits
+	pdu_offset      int // bits, where the PDU starts in the frame (PDU-TO-FRAME-MAPPING)
 }
 
-// ArxmlSecOc is the SecOC layout of a SECURED-I-PDU. The secured PDU is the authentic PDU
-// followed by the transmitted part of the freshness value and then the truncated MAC —
-// `fresh_byte`, `mac_byte` and `mac_len` derive that from the declared lengths in the form
-// blobly_emb's `[[frame]].secoc` takes. The key is never in an ARXML.
+// crc_bit is the CRC's frame-relative bit position; crc_byte the byte it starts in.
+pub fn (e ArxmlE2e) crc_bit() int {
+	return e.pdu_offset + e.data_offset + e.crc_offset
+}
+
+pub fn (e ArxmlE2e) counter_bit() int {
+	return e.pdu_offset + e.data_offset + e.counter_offset
+}
+
+pub fn (e ArxmlE2e) crc_byte() int {
+	return e.crc_bit() / 8
+}
+
+pub fn (e ArxmlE2e) counter_byte() int {
+	return e.counter_bit() / 8
+}
+
+// ArxmlSecOc is the SecOC layout of a SECURED-I-PDU: the authentic PDU, then the transmitted
+// part of the freshness value, then the truncated MAC, packed BIT-contiguously and padded
+// only at the end. `fresh_bit`/`mac_bit` are exact; the byte forms are what blobly_emb's
+// `[[frame]].secoc` takes and are only meaningful when `byte_aligned` — a 4-bit freshness
+// puts the MAC in the middle of a byte, and then no byte position is honest. The key is
+// never in an ARXML.
 pub struct ArxmlSecOc {
 pub:
 	data_id          u32
@@ -69,21 +100,24 @@ pub:
 	freshness_tx_len int // FRESHNESS-VALUE-TX-LENGTH, bits actually on the wire
 	auth_info_tx_len int // AUTH-INFO-TX-LENGTH, bits of MAC on the wire
 	authentic_len    int // bytes of the authentic (payload) PDU
-	fresh_byte       int // byte offset of the freshness value
-	mac_byte         int // byte offset of the MAC
+	fresh_bit        int // bit offset of the freshness value in the secured PDU
+	mac_bit          int // bit offset of the MAC
+	byte_aligned     bool // freshness AND MAC start on byte boundaries
+	fresh_byte       int
+	mac_byte         int
 	mac_len          int // bytes of MAC, rounded up
 }
 
 // ArxmlFrame is what the system description says about a message that a DBC has no field for.
 pub struct ArxmlFrame {
-pub:
+pub mut:
 	pdu          string // the I-SIGNAL-I-PDU short name behind the frame (or the secured PDU's)
 	pdu_kind     string // DEST of the PDU behind the frame: I-SIGNAL-I-PDU, SECURED-I-PDU, N-PDU, NM-PDU …
 	tx_mode      string // 'cyclic' | 'event' | 'mixed' | '' — from the transmission-mode timing
 	cycle_ms     int
 	min_delay_ms int
 	fd           bool // CAN-FRAME-TX-BEHAVIOR / RX-BEHAVIOR = CAN-FD
-	receivers    []string // ECUs with an IN frame port on the triggering
+	receivers    []string // ECUs with an IN frame port, or an IN I-PDU group, for it
 	e2e          ?ArxmlE2e
 	secoc        ?ArxmlSecOc
 }
@@ -95,7 +129,18 @@ pub:
 	baudrate    int
 	fd_baudrate int
 	db          Database
-	frames      map[string]ArxmlFrame // keyed by message name
+	frames      map[string]ArxmlFrame // keyed by frame_key(id, ext)
+}
+
+// frame_key is the identity candb uses for a message everywhere else (merge.v, the trace):
+// the id and the frame kind, never the name.
+pub fn frame_key(id u32, ext bool) string {
+	return '${id}|${ext}'
+}
+
+// frame_of returns the extras for a message of this cluster, if the file said anything.
+pub fn (c ArxmlCluster) frame_of(m Message) ?ArxmlFrame {
+	return c.frames[frame_key(m.id, m.ext)] or { return none }
 }
 
 // ArxmlReport carries the two honesty rules' output.
@@ -104,6 +149,23 @@ pub mut:
 	unresolved []string // "<referrer> <TAG> -> <target> (<DEST>)"
 	ignored    map[string]int // element kind -> how many were seen and not extracted
 	notes      []string // things extracted PARTIALLY, one line each
+}
+
+// lines renders the findings for a terminal or a log, one line each.
+pub fn (r ArxmlReport) lines() []string {
+	mut out := []string{}
+	for u in r.unresolved {
+		out << 'unresolved reference: ${u}'
+	}
+	mut kinds := r.ignored.keys()
+	kinds.sort()
+	for k in kinds {
+		out << 'ignored: ${r.ignored[k]} × ${k}'
+	}
+	for n in r.notes {
+		out << 'note: ${n}'
+	}
+	return out
 }
 
 // Arxml is a parsed system description.
@@ -134,9 +196,54 @@ pub fn (a Arxml) cluster(name string) !ArxmlCluster {
 	return error('no CAN cluster "${name}" (have ${a.clusters.map(it.name).join(', ')})')
 }
 
-// load_arxml_file reads and parses a .arxml from disk.
+// --- the per-file parse cache ---------------------------------------------------------------
+struct ArxmlCached {
+	sha string
+	a   Arxml
+}
+
+__global (
+	arxml_cache_mu   sync.Mutex
+	arxml_cache      map[string]ArxmlCached
+	arxml_cache_hits int
+)
+
+// load_arxml_file reads and parses a .arxml from disk, once per file CONTENT: the GUI and
+// the headless runner open each channel's databases several times per Start, and a real
+// system description costs seconds and hundreds of MB to parse, where reading and hashing it
+// cost milliseconds. Keyed on the real path and the SHA-256 of the bytes — not size and
+// mtime, which a same-length rewrite within one second defeats. Process-wide, never evicted:
+// a bench holds one or two of these.
 pub fn load_arxml_file(path string) !Arxml {
-	return parse_arxml(os.read_file(path)!)!
+	text := os.read_file(path)!
+	key := os.real_path(path)
+	sha := sha256.hexhash(text)
+	arxml_cache_mu.lock()
+	if c := arxml_cache[key] {
+		if c.sha == sha {
+			arxml_cache_hits++
+			arxml_cache_mu.unlock()
+			return c.a
+		}
+	}
+	arxml_cache_mu.unlock()
+	a := parse_arxml(text)!
+	arxml_cache_mu.lock()
+	arxml_cache[key] = ArxmlCached{
+		sha: sha
+		a: a
+	}
+	arxml_cache_mu.unlock()
+	return a
+}
+
+// arxml_cache_hit_count is how many loads the cache answered — for the test that pins it.
+pub fn arxml_cache_hit_count() int {
+	arxml_cache_mu.lock()
+	defer {
+		arxml_cache_mu.unlock()
+	}
+	return arxml_cache_hits
 }
 
 // parse_arxml parses ARXML text. Pure (no I/O) so it is directly unit-testable.
@@ -191,11 +298,11 @@ const arxml_ignored_kinds = [
 struct ArxmlReader {
 mut:
 	by_path map[string]xml.XMLNode // every identifiable element, by AUTOSAR path
-	kind_of map[string]string // path -> element name
 	kinds   map[string][]string // element name -> paths, in document order
 	e2e     map[string]ArxmlE2e // protected I-SIGNAL-I-PDU path -> its protection
 	pdu_out map[string][]string // I-SIGNAL-I-PDU path -> ECUs whose OUT I-PDU group carries it
 	pdu_in  map[string][]string // ... and whose IN group does
+	compu   map[string]ArxmlScale // COMPU-METHOD path -> its scale, read once
 	report  ArxmlReport
 }
 
@@ -207,7 +314,6 @@ fn (mut r ArxmlReader) index_node(n xml.XMLNode, parent string) {
 	if sn := child(n, 'SHORT-NAME') {
 		path = '${parent}/${el_text(sn)}'
 		r.by_path[path] = n
-		r.kind_of[path] = n.name
 		r.kinds[n.name] << path
 	}
 	for c in n.children {
@@ -227,17 +333,17 @@ fn (mut r ArxmlReader) count_ignored() {
 	}
 }
 
-// deref follows a `*-REF` child of `n` named `tag` and returns the target, recording a
-// dangling one against `from` (the referrer's path, for the report).
-fn (mut r ArxmlReader) deref(n xml.XMLNode, tag string, from string) ?xml.XMLNode {
+// deref follows a `*-REF` child of `n` named `tag`, returning the target and its path, and
+// recording a dangling one against `from` (the referrer's path, for the report).
+fn (mut r ArxmlReader) deref(n xml.XMLNode, tag string, from string) ?(xml.XMLNode, string) {
 	ref := child(n, tag) or { return none }
 	return r.deref_node(ref, from)
 }
 
-fn (mut r ArxmlReader) deref_node(ref xml.XMLNode, from string) ?xml.XMLNode {
+fn (mut r ArxmlReader) deref_node(ref xml.XMLNode, from string) ?(xml.XMLNode, string) {
 	target := el_text(ref)
 	if t := r.by_path[target] {
-		return t
+		return t, target
 	}
 	dest := ref.attributes['DEST'] or { '?' }
 	r.report.unresolved << '${from} ${ref.name} -> ${target} (${dest})'
@@ -256,8 +362,8 @@ fn (r ArxmlReader) path_of(n xml.XMLNode, fallback string) string {
 fn (r ArxmlReader) ecu_of(port_path string) ?string {
 	mut p := port_path
 	for p.len > 0 {
-		if k := r.kind_of[p] {
-			if k == 'ECU-INSTANCE' {
+		if n := r.by_path[p] {
+			if n.name == 'ECU-INSTANCE' {
 				return p.all_after_last('/')
 			}
 		}
@@ -277,8 +383,8 @@ fn (mut r ArxmlReader) load_pdu_groups() {
 		ecu := r.by_path[ecu_path] or { continue }
 		name := ecu_path.all_after_last('/')
 		for gref in ecu.get_elements_by_tag('ASSOCIATED-COM-I-PDU-GROUP-REF') {
-			group := r.deref_node(gref, ecu_path) or { continue }
-			r.collect_pdu_group(group, el_text(gref), name, '', 0)
+			group, gpath := r.deref_node(gref, ecu_path) or { continue }
+			r.collect_pdu_group(group, gpath, name, '', 0)
 		}
 	}
 }
@@ -293,11 +399,7 @@ fn (mut r ArxmlReader) collect_pdu_group(group xml.XMLNode, group_path string, e
 		dir = dir_in
 	}
 	for pref in group.get_elements_by_tag('I-SIGNAL-I-PDU-REF') {
-		target := el_text(pref)
-		if target !in r.by_path {
-			r.deref_node(pref, group_path)
-			continue
-		}
+		_, target := r.deref_node(pref, group_path) or { continue }
 		if dir == 'OUT' {
 			if ecu !in r.pdu_out[target] {
 				r.pdu_out[target] << ecu
@@ -309,8 +411,8 @@ fn (mut r ArxmlReader) collect_pdu_group(group xml.XMLNode, group_path string, e
 		}
 	}
 	for cref in group.get_elements_by_tag('CONTAINED-I-SIGNAL-I-PDU-GROUP-REF') {
-		sub := r.deref_node(cref, group_path) or { continue }
-		r.collect_pdu_group(sub, el_text(cref), ecu, dir, depth + 1)
+		sub, spath := r.deref_node(cref, group_path) or { continue }
+		r.collect_pdu_group(sub, spath, ecu, dir, depth + 1)
 	}
 }
 
@@ -330,50 +432,86 @@ fn (mut r ArxmlReader) load_e2e() {
 				ids << u32(parse_int(el_text(d)))
 			}
 			category := child_text(profile, 'CATEGORY')
-			crc_off := parse_int(child_text(profile, 'CRC-OFFSET'))
-			ctr_off := parse_int(child_text(profile, 'COUNTER-OFFSET'))
-			mode := child_text(profile, 'DATA-ID-MODE')
+			has_cc := child(profile, 'CRC-OFFSET') != none && child(profile, 'COUNTER-OFFSET') != none
+			if !has_cc {
+				r.report.notes << '${prot_path}: ${category} declares no CRC-OFFSET/COUNTER-OFFSET (a fixed-header profile); its layout is not modelled'
+			}
+			e := ArxmlE2e{
+				profile: category
+				data_id: if ids.len > 0 { ids[0] } else { 0 }
+				data_ids: ids
+				data_id_mode: child_text(profile, 'DATA-ID-MODE')
+				has_crc_counter: has_cc
+				crc_offset: parse_int(child_text(profile, 'CRC-OFFSET'))
+				counter_offset: parse_int(child_text(profile, 'COUNTER-OFFSET'))
+				offset: parse_int(child_text(profile, 'OFFSET'))
+			}
 			for tgt in prot.get_elements_by_tag('END-TO-END-PROTECTION-I-SIGNAL-I-PDU') {
 				ref := child(tgt, 'I-SIGNAL-I-PDU-REF') or { continue }
-				pdu_path := el_text(ref)
-				if pdu_path !in r.by_path {
-					r.deref_node(ref, prot_path)
-					continue
-				}
-				d_off := parse_int(child_text(tgt, 'DATA-OFFSET'))
-				d_len := parse_int(child_text(tgt, 'DATA-LENGTH'))
+				_, pdu_path := r.deref_node(ref, prot_path) or { continue }
 				if pdu_path in r.e2e {
 					r.report.notes << '${pdu_path}: protected by more than one END-TO-END-PROTECTION, the first is kept'
 					continue
 				}
 				r.e2e[pdu_path] = ArxmlE2e{
-					profile: category
-					data_id: if ids.len > 0 { ids[0] } else { 0 }
-					data_ids: ids
-					data_id_mode: mode
-					crc_offset: crc_off
-					counter_offset: ctr_off
-					data_offset: d_off
-					data_length: d_len
-					crc_byte: (d_off + crc_off) / 8
-					counter_byte: (d_off + ctr_off) / 8
+					...e
+					data_offset: parse_int(child_text(tgt, 'DATA-OFFSET'))
+					data_length: parse_int(child_text(tgt, 'DATA-LENGTH'))
 				}
 			}
 		}
 	}
 }
 
+// ArxmlPorts accumulates who sends and who listens for one frame, from both sources (frame
+// ports, I-PDU groups) through one rule: the first OUT ECU is the sender, later ones are
+// additional transmitters, IN ECUs are receivers — each once.
+struct ArxmlPorts {
+mut:
+	sender    string
+	tx_nodes  []string
+	receivers []string
+}
+
+fn (mut p ArxmlPorts) tx(ecu string) {
+	if p.sender == '' {
+		p.sender = ecu
+	} else if ecu != p.sender && ecu !in p.tx_nodes {
+		p.tx_nodes << ecu
+	}
+}
+
+fn (mut p ArxmlPorts) rx(ecu string) {
+	if ecu !in p.receivers {
+		p.receivers << ecu
+	}
+}
+
+fn note_node(mut nodes []string, ecu string) {
+	if ecu !in nodes {
+		nodes << ecu
+	}
+}
+
 fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 	cl := r.by_path[path] or { return ArxmlCluster{} }
 	name := path.all_after_last('/')
-	baud := parse_int(first_text(cl, 'BAUDRATE'))
-	fd_baud := parse_int(first_text(cl, 'CAN-FD-BAUDRATE'))
+	// the bus parameters sit at CAN-CLUSTER-VARIANTS/CAN-CLUSTER-CONDITIONAL, and a
+	// depth-first search from the cluster would walk every triggering to find them
+	mut baud := 0
+	mut fd_baud := 0
+	if variants := child(cl, 'CAN-CLUSTER-VARIANTS') {
+		if cond := child(variants, 'CAN-CLUSTER-CONDITIONAL') {
+			baud = parse_int(child_text(cond, 'BAUDRATE'))
+			fd_baud = parse_int(child_text(cond, 'CAN-FD-BAUDRATE'))
+		}
+	}
 	mut msgs := []Message{}
 	mut frames := map[string]ArxmlFrame{}
 	mut nodes := []string{}
 	for ft in cl.get_elements_by_tag('CAN-FRAME-TRIGGERING') {
 		ft_path := r.path_of(ft, path)
-		frame := r.deref(ft, 'FRAME-REF', ft_path) or {
+		frame, _ := r.deref(ft, 'FRAME-REF', ft_path) or {
 			if child(ft, 'FRAME-REF') == none {
 				r.report.notes << '${ft_path}: CAN-FRAME-TRIGGERING without a FRAME-REF, skipped'
 			}
@@ -382,62 +520,49 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 		fname := child_text(frame, 'SHORT-NAME')
 		id := u32(parse_int(child_text(ft, 'IDENTIFIER')))
 		ext := child_text(ft, 'CAN-ADDRESSING-MODE') == 'EXTENDED'
-		fd := child_text(ft, 'CAN-FRAME-TX-BEHAVIOR') == 'CAN-FD' || child_text(ft, 'CAN-FRAME-RX-BEHAVIOR') == 'CAN-FD'
+		key := frame_key(id, ext)
+		if key in frames {
+			r.report.notes << '${ft_path}: a second triggering for id 0x${id:X} (${fname}); the first is kept'
+			continue
+		}
 		dlc := parse_int(child_text(frame, 'FRAME-LENGTH'))
+		mut info := ArxmlFrame{
+			fd: child_text(ft, 'CAN-FRAME-TX-BEHAVIOR') == 'CAN-FD' || child_text(ft, 'CAN-FRAME-RX-BEHAVIOR') == 'CAN-FD'
+		}
 
 		// who sends, who listens: the frame ports on the triggering, by direction
-		mut sender := ''
-		mut tx_nodes := []string{}
-		mut receivers := []string{}
+		mut ports := ArxmlPorts{}
 		for pref in ft.get_elements_by_tag('FRAME-PORT-REF') {
-			port := r.deref_node(pref, ft_path) or { continue }
-			ecu := r.ecu_of(el_text(pref)) or { continue }
-			if ecu !in nodes {
-				nodes << ecu
-			}
+			port, port_path := r.deref_node(pref, ft_path) or { continue }
+			ecu := r.ecu_of(port_path) or { continue }
+			note_node(mut nodes, ecu)
 			if child_text(port, 'COMMUNICATION-DIRECTION') == 'OUT' {
-				if sender == '' {
-					sender = ecu
-				} else if ecu != sender && ecu !in tx_nodes {
-					tx_nodes << ecu
-				}
-			} else if ecu !in receivers {
-				receivers << ecu
+				ports.tx(ecu)
+			} else {
+				ports.rx(ecu)
 			}
 		}
 
 		// the PDU behind the frame
 		mut sigs := []Signal{}
-		mut info := ArxmlFrame{
-			fd: fd
-			receivers: receivers
-		}
 		for pm in frame.get_elements_by_tag('PDU-TO-FRAME-MAPPING') {
 			pref := child(pm, 'PDU-REF') or { continue }
-			pdu_path := el_text(pref)
-			pdu := r.deref_node(pref, r.path_of(pm, '/' + fname)) or { continue }
+			pdu, pdu_path := r.deref_node(pref, r.path_of(pm, '/' + fname)) or { continue }
 			pdu_off := parse_int(child_text(pm, 'START-POSITION'))
-			kind := pref.attributes['DEST'] or { pdu.name }
-			info = ArxmlFrame{
-				...info
-				pdu: child_text(pdu, 'SHORT-NAME')
-				pdu_kind: kind
-			}
+			info.pdu = child_text(pdu, 'SHORT-NAME')
+			info.pdu_kind = pref.attributes['DEST'] or { pdu.name }
 			mut sig_pdu := pdu
 			mut sig_pdu_path := pdu_path
-			if kind == 'SECURED-I-PDU' {
-				info = ArxmlFrame{
-					...info
-					secoc: r.load_secoc(pdu, pdu_path)
-				}
-				// the authentic PDU is behind PAYLOAD-REF -> PDU-TRIGGERING -> I-PDU-REF
-				trig := r.deref(pdu, 'PAYLOAD-REF', pdu_path) or { continue }
+			if info.pdu_kind == 'SECURED-I-PDU' {
+				// the authentic PDU is behind PAYLOAD-REF -> PDU-TRIGGERING -> I-PDU-REF;
+				// followed ONCE here, and handed to the layout reader
+				trig, _ := r.deref(pdu, 'PAYLOAD-REF', pdu_path) or { continue }
 				iref := child(trig, 'I-PDU-REF') or {
 					r.report.notes << '${pdu_path}: PAYLOAD-REF target has no I-PDU-REF, no signals'
 					continue
 				}
-				sig_pdu = r.deref_node(iref, pdu_path) or { continue }
-				sig_pdu_path = el_text(iref)
+				sig_pdu, sig_pdu_path = r.deref_node(iref, pdu_path) or { continue }
+				info.secoc = r.load_secoc(pdu, pdu_path, parse_int(child_text(sig_pdu, 'LENGTH')))
 			}
 			if sig_pdu.name != 'I-SIGNAL-I-PDU' {
 				// N-PDU (ISO-TP), NM-PDU, container, multiplexed …: a real frame with a real
@@ -447,52 +572,37 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			}
 			sigs << r.load_signals(sig_pdu, sig_pdu_path, pdu_off)
 			tm := r.load_timing(sig_pdu)
-			info = ArxmlFrame{
-				...info
-				tx_mode: tm.tx_mode
-				cycle_ms: tm.cycle_ms
-				min_delay_ms: tm.min_delay_ms
-			}
+			info.tx_mode = tm.tx_mode
+			info.cycle_ms = tm.cycle_ms
+			info.min_delay_ms = tm.min_delay_ms
 			if e := r.e2e[sig_pdu_path] {
-				info = ArxmlFrame{
-					...info
-					e2e: e
+				info.e2e = ArxmlE2e{
+					...e
+					pdu_offset: pdu_off
 				}
 			}
 			// the I-PDU-group answer to who sends and who listens, unioned with the ports'
 			for ecu in r.pdu_out[sig_pdu_path] {
-				if ecu !in nodes {
-					nodes << ecu
-				}
-				if sender == '' {
-					sender = ecu
-				} else if ecu != sender && ecu !in tx_nodes {
-					tx_nodes << ecu
-				}
+				note_node(mut nodes, ecu)
+				ports.tx(ecu)
 			}
 			for ecu in r.pdu_in[sig_pdu_path] {
-				if ecu !in nodes {
-					nodes << ecu
-				}
-				if ecu !in receivers {
-					receivers << ecu
-				}
+				note_node(mut nodes, ecu)
+				ports.rx(ecu)
 			}
 		}
+		info.receivers = ports.receivers
 		msgs << Message{
 			name: fname
 			id: id
 			ext: ext
 			dlc: dlc
-			sender: sender
-			tx_nodes: tx_nodes
+			sender: ports.sender
+			tx_nodes: ports.tx_nodes
 			cycle_ms: info.cycle_ms
 			signals: sigs
 		}
-		frames[fname] = ArxmlFrame{
-			...info
-			receivers: receivers
-		}
+		frames[key] = info
 	}
 	return ArxmlCluster{
 		name: name
@@ -542,32 +652,35 @@ fn (r ArxmlReader) load_timing(pdu xml.XMLNode) ArxmlTiming {
 	}
 }
 
-fn (mut r ArxmlReader) load_secoc(pdu xml.XMLNode, pdu_path string) ?ArxmlSecOc {
+// load_secoc reads a SECURED-I-PDU's layout; `authentic` is the payload PDU's length in bytes
+// (the caller has already followed PAYLOAD-REF, so a dangling one is reported once).
+fn (mut r ArxmlReader) load_secoc(pdu xml.XMLNode, pdu_path string, authentic int) ?ArxmlSecOc {
 	props := first(pdu, 'SECURE-COMMUNICATION-PROPS') or {
 		r.report.notes << '${pdu_path}: SECURED-I-PDU without SECURE-COMMUNICATION-PROPS, layout unknown'
 		return none
 	}
 	fresh_tx := parse_int(child_text(props, 'FRESHNESS-VALUE-TX-LENGTH'))
 	auth_tx := parse_int(child_text(props, 'AUTH-INFO-TX-LENGTH'))
-	// the authentic PDU's length, in bytes: the secured PDU is payload ‖ freshness ‖ MAC
-	mut authentic := 0
-	if trig := r.deref(pdu, 'PAYLOAD-REF', pdu_path) {
-		if ipdu := r.deref(trig, 'I-PDU-REF', pdu_path) {
-			authentic = parse_int(child_text(ipdu, 'LENGTH'))
-		}
-	}
 	if child(props, 'AUTH-DATA-FRESHNESS-START-POSITION') != none {
-		r.report.notes << '${pdu_path}: AUTH-DATA-FRESHNESS (freshness taken from the payload) is not modelled; fresh_byte assumes a trailing freshness'
+		r.report.notes << '${pdu_path}: AUTH-DATA-FRESHNESS (freshness taken from the payload) is not modelled; the layout assumes a trailing freshness'
 	}
-	fresh_bytes := (fresh_tx + 7) / 8
+	fresh_bit := authentic * 8
+	mac_bit := fresh_bit + fresh_tx
+	aligned := fresh_tx % 8 == 0
+	if !aligned {
+		r.report.notes << '${pdu_path}: a ${fresh_tx}-bit freshness puts the MAC at bit ${mac_bit}, not on a byte boundary; no byte layout is given'
+	}
 	return ArxmlSecOc{
 		data_id: u32(parse_int(child_text(props, 'DATA-ID')))
 		freshness_len: parse_int(child_text(props, 'FRESHNESS-VALUE-LENGTH'))
 		freshness_tx_len: fresh_tx
 		auth_info_tx_len: auth_tx
 		authentic_len: authentic
+		fresh_bit: fresh_bit
+		mac_bit: mac_bit
+		byte_aligned: aligned
 		fresh_byte: authentic
-		mac_byte: authentic + fresh_bytes
+		mac_byte: mac_bit / 8
 		mac_len: (auth_tx + 7) / 8
 	}
 }
@@ -578,15 +691,8 @@ fn (mut r ArxmlReader) load_secoc(pdu xml.XMLNode, pdu_path string) ?ArxmlSecOc 
 fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off int) []Signal {
 	mut out := []Signal{}
 	for m in pdu.get_elements_by_tag('I-SIGNAL-TO-I-PDU-MAPPING') {
-		m_path := r.path_of(m, pdu_path)
-		isig := r.deref(m, 'I-SIGNAL-REF', m_path) or {
-			if child(m, 'I-SIGNAL-GROUP-REF') != none {
-				// a signal group mapping: its members are mapped individually
-				continue
-			}
-			continue
-		}
-		isig_path := el_text(child(m, 'I-SIGNAL-REF') or { continue })
+		// a signal-GROUP mapping has no I-SIGNAL-REF; its members are mapped individually
+		isig, isig_path := r.deref(m, 'I-SIGNAL-REF', r.path_of(m, pdu_path)) or { continue }
 		name := child_text(isig, 'SHORT-NAME')
 		start := parse_int(child_text(m, 'START-POSITION')) + pdu_off
 		order := if child_text(m, 'PACKING-BYTE-ORDER') == 'MOST-SIGNIFICANT-BYTE-FIRST' {
@@ -603,7 +709,7 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 				name: ''
 			}
 		}
-		if bt := r.deref(props, 'BASE-TYPE-REF', isig_path) {
+		if bt, _ := r.deref(props, 'BASE-TYPE-REF', isig_path) {
 			enc := first_text(bt, 'BASE-TYPE-ENCODING')
 			if enc == '2C' || enc == '1C' || enc == 'SM' {
 				is_signed = true
@@ -622,50 +728,67 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 		mut unit := ''
 		mut minimum := 0.0
 		mut maximum := 0.0
-		sys := r.deref(isig, 'SYSTEM-SIGNAL-REF', isig_path)
-		sys_path := if s := sys { r.path_of(s, '') } else { '' }
+		mut sys_path := ''
 		mut phys := xml.XMLNode{
 			name: ''
 		}
-		if s := sys {
+		mut sys := xml.XMLNode{
+			name: ''
+		}
+		if s, sp := r.deref(isig, 'SYSTEM-SIGNAL-REF', isig_path) {
+			sys = s
+			sys_path = sp
 			if pp := first(s, 'PHYSICAL-PROPS') {
 				phys = first(pp, 'SW-DATA-DEF-PROPS-CONDITIONAL') or { phys }
 			}
 		}
-		mut cm := r.deref(phys, 'COMPU-METHOD-REF', sys_path)
-		if cm == none {
-			cm = r.deref(props, 'COMPU-METHOD-REF', isig_path)
+		mut cm := xml.XMLNode{
+			name: ''
+		}
+		mut cm_path := ''
+		if c, cp := r.deref(phys, 'COMPU-METHOD-REF', sys_path) {
+			cm = c
+			cm_path = cp
+		} else if c, cp := r.deref(props, 'COMPU-METHOD-REF', isig_path) {
+			cm = c
+			cm_path = cp
 		}
 		mut scale := ArxmlScale{}
-		if c := cm {
-			scale = r.load_compu(c, isig_path, length)
+		if cm_path != '' {
+			scale = r.load_compu(cm, cm_path, length)
 			factor = scale.factor
 			offset = scale.offset
 			values = scale.values.clone()
 		}
-		if u := r.deref(phys, 'UNIT-REF', sys_path) {
+		if u, _ := r.deref(phys, 'UNIT-REF', sys_path) {
 			unit = first_text(u, 'DISPLAY-NAME')
 		}
-		if unit == '' {
-			if c := cm {
-				if u := r.deref(c, 'UNIT-REF', isig_path) {
-					unit = first_text(u, 'DISPLAY-NAME')
-				}
+		if unit == '' && cm_path != '' {
+			if u, _ := r.deref(cm, 'UNIT-REF', cm_path) {
+				unit = first_text(u, 'DISPLAY-NAME')
 			}
 		}
 		if unit == '' {
-			if u := r.deref(props, 'UNIT-REF', isig_path) {
+			if u, _ := r.deref(props, 'UNIT-REF', isig_path) {
 				unit = first_text(u, 'DISPLAY-NAME')
 			}
 		}
 
 		// range: a data constraint's physical limits, else its internal ones scaled, else the
 		// domain of the linear compu scale (raw) scaled — the last being cantools' answer
-		mut dc := r.deref(phys, 'DATA-CONSTR-REF', sys_path)
-		if dc == none {
-			dc = r.deref(props, 'DATA-CONSTR-REF', isig_path)
+		mut dc := xml.XMLNode{
+			name: ''
 		}
-		if d := dc {
+		mut has_dc := false
+		if d, _ := r.deref(phys, 'DATA-CONSTR-REF', sys_path) {
+			dc = d
+			has_dc = true
+		} else if d, _ := r.deref(props, 'DATA-CONSTR-REF', isig_path) {
+			dc = d
+			has_dc = true
+		}
+		if has_dc {
+			d := dc
 			if pc := first(d, 'PHYS-CONSTRS') {
 				minimum = parse_num(child_text(pc, 'LOWER-LIMIT'))
 				maximum = parse_num(child_text(pc, 'UPPER-LIMIT'))
@@ -679,10 +802,7 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 		}
 
 		// description: the system signal's, else the I-SIGNAL's own
-		mut desc := ''
-		if s := sys {
-			desc = desc_text(s)
-		}
+		mut desc := desc_text(sys)
 		if desc == '' {
 			desc = desc_text(isig)
 		}
@@ -714,11 +834,15 @@ struct ArxmlScale {
 	upper      f64
 }
 
-// load_compu reads a COMPU-METHOD's internal-to-physical scales: one LINEAR scale gives the
-// factor and offset (numerator V0 = offset, V1 = factor, over denominator V0); TEXTTABLE
-// scales with equal limits give the enum; SCALE_LINEAR_AND_TEXTTABLE gives both. A
-// rational function with a non-constant denominator is not a factor/offset and is noted.
-fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, at string, width int) ArxmlScale {
+// load_compu reads a COMPU-METHOD's internal-to-physical scales, once per method (OEM files
+// share one enum table across thousands of signals): one LINEAR scale gives the factor and
+// offset (numerator V0 = offset, V1 = factor, over denominator V0); TEXTTABLE scales with
+// equal limits give the enum; SCALE_LINEAR_AND_TEXTTABLE gives both. A rational function
+// with a non-constant denominator is not a factor/offset and is noted — once.
+fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string, width int) ArxmlScale {
+	if s := r.compu[cm_path] {
+		return s
+	}
 	mut factor := 1.0
 	mut offset := 0.0
 	mut values := map[u64]string{}
@@ -727,60 +851,60 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, at string, width int) ArxmlSca
 	mut lower := 0.0
 	mut upper := 0.0
 	mask := if width >= 64 { ~u64(0) } else { (u64(1) << width) - 1 }
-	cm_name := child_text(cm, 'SHORT-NAME')
-	itp := first(cm, 'COMPU-INTERNAL-TO-PHYS') or { return ArxmlScale{} }
-	for s in itp.get_elements_by_tag('COMPU-SCALE') {
-		lo := child_text(s, 'LOWER-LIMIT')
-		hi := child_text(s, 'UPPER-LIMIT')
-		if k := first(s, 'COMPU-CONST') {
-			label := first_text(k, 'VT')
-			if lo == hi && lo != '' {
-				raw := parse_int(lo)
-				values[u64(raw) & mask] = label
-			} else {
-				r.report.notes << '${at}: ${cm_name} maps the range ${lo}..${hi} to "${label}", which a value table cannot express; dropped'
-			}
-			continue
-		}
-		if rc := first(s, 'COMPU-RATIONAL-COEFFS') {
-			mut num := []f64{}
-			mut den := []f64{}
-			if nn := first(rc, 'COMPU-NUMERATOR') {
-				for v in nn.get_elements_by_tag('V') {
-					num << parse_num(el_text(v))
+	if itp := first(cm, 'COMPU-INTERNAL-TO-PHYS') {
+		for s in itp.get_elements_by_tag('COMPU-SCALE') {
+			lo := child_text(s, 'LOWER-LIMIT')
+			hi := child_text(s, 'UPPER-LIMIT')
+			if k := first(s, 'COMPU-CONST') {
+				label := first_text(k, 'VT')
+				if lo == hi && lo != '' {
+					raw := parse_int(lo)
+					values[u64(raw) & mask] = label
+				} else {
+					r.report.notes << '${cm_path}: maps the range ${lo}..${hi} to "${label}", which a value table cannot express; dropped'
 				}
+				continue
 			}
-			if dd := first(rc, 'COMPU-DENOMINATOR') {
-				for v in dd.get_elements_by_tag('V') {
-					den << parse_num(el_text(v))
+			if rc := first(s, 'COMPU-RATIONAL-COEFFS') {
+				mut num := []f64{}
+				mut den := []f64{}
+				if nn := first(rc, 'COMPU-NUMERATOR') {
+					for v in nn.get_elements_by_tag('V') {
+						num << parse_num(el_text(v))
+					}
 				}
-			}
-			d := if den.len > 0 { den[0] } else { 1.0 }
-			if den.len > 1 && den[1] != 0 {
-				r.report.notes << '${at}: ${cm_name} is a rational function (non-constant denominator), read as factor 1 offset 0'
-				continue
-			}
-			if num.len > 2 && num[2] != 0 {
-				r.report.notes << '${at}: ${cm_name} is a polynomial of degree ${num.len - 1}, read as factor 1 offset 0'
-				continue
-			}
-			if linear_seen {
-				r.report.notes << '${at}: ${cm_name} has more than one linear scale, the first is kept'
-				continue
-			}
-			linear_seen = true
-			if d != 0 {
-				offset = if num.len > 0 { num[0] / d } else { 0.0 }
-				factor = if num.len > 1 { num[1] / d } else { 1.0 }
-			}
-			if lo != '' && hi != '' {
-				has_domain = true
-				lower = parse_num(lo)
-				upper = parse_num(hi)
+				if dd := first(rc, 'COMPU-DENOMINATOR') {
+					for v in dd.get_elements_by_tag('V') {
+						den << parse_num(el_text(v))
+					}
+				}
+				d := if den.len > 0 { den[0] } else { 1.0 }
+				if den.len > 1 && den[1] != 0 {
+					r.report.notes << '${cm_path}: a rational function (non-constant denominator), read as factor 1 offset 0'
+					continue
+				}
+				if num.len > 2 && num[2] != 0 {
+					r.report.notes << '${cm_path}: a polynomial of degree ${num.len - 1}, read as factor 1 offset 0'
+					continue
+				}
+				if linear_seen {
+					r.report.notes << '${cm_path}: more than one linear scale, the first is kept'
+					continue
+				}
+				linear_seen = true
+				if d != 0 {
+					offset = if num.len > 0 { num[0] / d } else { 0.0 }
+					factor = if num.len > 1 { num[1] / d } else { 1.0 }
+				}
+				if lo != '' && hi != '' {
+					has_domain = true
+					lower = parse_num(lo)
+					upper = parse_num(hi)
+				}
 			}
 		}
 	}
-	return ArxmlScale{
+	sc := ArxmlScale{
 		factor: factor
 		offset: offset
 		values: values
@@ -788,6 +912,8 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, at string, width int) ArxmlSca
 		lower: lower
 		upper: upper
 	}
+	r.compu[cm_path] = sc
+	return sc
 }
 
 // --- XML helpers ---------------------------------------------------------------------------
@@ -835,8 +961,10 @@ fn desc_text(n xml.XMLNode) string {
 	return first_text(d, 'L-2')
 }
 
-// el_text is the element's own text, trimmed and with the five XML entities decoded —
-// vlib's parser hands them through undecoded.
+// el_text is the element's own text, trimmed, with entities decoded — vlib's parser hands
+// them through undecoded, and its own decoder is the one that undoes them. A reference it
+// does not know (a numeric one, say) fails the whole decode, and the raw text is then the
+// honest answer rather than nothing.
 fn el_text(n xml.XMLNode) string {
 	mut s := ''
 	for c in n.children {
@@ -851,7 +979,7 @@ fn xml_unescape(s string) string {
 	if !s.contains('&') {
 		return s
 	}
-	return s.replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"').replace('&apos;', "'").replace('&amp;', '&')
+	return xml.unescape_text(s) or { s }
 }
 
 // parse_int reads an ARXML integer: decimal, 0x hex, or a float that happens to be integral

@@ -46,7 +46,7 @@ fn test_plain_cyclic_frame_with_every_signal_shape() {
 	assert m.sender == 'ECU_A'
 	assert m.tx_nodes == []
 	assert m.cycle_ms == 100
-	f := c.frames['Powertrain']
+	f := c.frame_of(m) or { panic('no frame info') }
 	assert f.pdu == 'Powertrain_PDU'
 	assert f.pdu_kind == 'I-SIGNAL-I-PDU'
 	assert f.tx_mode == 'cyclic'
@@ -111,7 +111,7 @@ fn test_e2e_protected_frame() {
 	assert m.cycle_ms == 100 // written as 1.0E-1 s
 	
 
-	f := c.frames['LampFrame']
+	f := c.frame_of(m) or { panic('no frame info') }
 	assert f.tx_mode == 'mixed'
 	assert f.min_delay_ms == 10
 	assert f.receivers == ['ECU_A']
@@ -120,11 +120,13 @@ fn test_e2e_protected_frame() {
 	assert e.data_id == 42
 	assert e.data_ids == [u32(42)]
 	assert e.data_id_mode == 'ALL-16-BIT'
+	assert e.has_crc_counter
 	assert e.crc_offset == 48
 	assert e.counter_offset == 56
 	assert e.data_length == 64
-	assert e.crc_byte == 6
-	assert e.counter_byte == 7
+	assert e.pdu_offset == 0
+	assert e.crc_byte() == 6
+	assert e.counter_byte() == 7
 	// the CRC and counter SIGNALS sit exactly there — what #271's attributes will name
 	assert sig(m, 'LampCrc').start_bit == 48
 	assert sig(m, 'LampCounter').start_bit == 56
@@ -137,7 +139,7 @@ fn test_secoc_frame_reaches_the_authentic_pdu() {
 	assert m.dlc == 8
 	assert m.sender == 'ECU_B'
 	assert m.cycle_ms == 50
-	f := c.frames['SecureFrame']
+	f := c.frame_of(m) or { panic('no frame info') }
 	assert f.pdu == 'Secure_PDU'
 	assert f.pdu_kind == 'SECURED-I-PDU'
 	assert f.tx_mode == 'cyclic'
@@ -147,6 +149,9 @@ fn test_secoc_frame_reaches_the_authentic_pdu() {
 	assert s.freshness_tx_len == 8
 	assert s.auth_info_tx_len == 32
 	assert s.authentic_len == 3
+	assert s.fresh_bit == 24
+	assert s.mac_bit == 32
+	assert s.byte_aligned
 	assert s.fresh_byte == 3
 	assert s.mac_byte == 4
 	assert s.mac_len == 4
@@ -163,7 +168,7 @@ fn test_extended_fd_event_frame() {
 	assert m.dlc == 16
 	assert m.sender == 'ECU_C'
 	assert m.cycle_ms == 0
-	f := c.frames['Wide']
+	f := c.frame_of(m) or { panic('no frame info') }
 	assert f.fd
 	assert f.tx_mode == 'event'
 	assert f.receivers == []
@@ -179,7 +184,7 @@ fn test_n_pdu_frame_is_a_frame_without_signals() {
 	m := c.db.lookup(0x7E0) or { panic('no DiagReq') }
 	assert m.signals.len == 0
 	assert m.sender == ''
-	f := c.frames['DiagReq']
+	f := c.frame_of(m) or { panic('no frame info') }
 	assert f.pdu_kind == 'N-PDU'
 	assert f.receivers == ['ECU_A']
 }
@@ -286,6 +291,166 @@ fn test_not_autosar_and_not_4x_are_refused() {
 	}
 }
 
+// --- the layout traps the review named ------------------------------------------------------
+
+// a PDU that does not start at byte 0 of its frame: signal starts shift, and so must the E2E
+// byte positions — blobly_emb's crc_pos/counter_pos are frame-relative
+const offset_pdu_xml = '<AR-PACKAGE><SHORT-NAME>Frames</SHORT-NAME><ELEMENTS><CAN-FRAME><SHORT-NAME>F</SHORT-NAME>
+<FRAME-LENGTH>8</FRAME-LENGTH><PDU-TO-FRAME-MAPPINGS><PDU-TO-FRAME-MAPPING><SHORT-NAME>M</SHORT-NAME>
+<PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/P</PDU-REF><START-POSITION>8</START-POSITION>
+</PDU-TO-FRAME-MAPPING></PDU-TO-FRAME-MAPPINGS></CAN-FRAME></ELEMENTS></AR-PACKAGE>
+<AR-PACKAGE><SHORT-NAME>PDUs</SHORT-NAME><ELEMENTS><I-SIGNAL-I-PDU><SHORT-NAME>P</SHORT-NAME><LENGTH>4</LENGTH>
+<I-SIGNAL-TO-PDU-MAPPINGS>
+<I-SIGNAL-TO-I-PDU-MAPPING><SHORT-NAME>MV</SHORT-NAME><I-SIGNAL-REF DEST="I-SIGNAL">/Sig/V</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>0</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING>
+<I-SIGNAL-TO-I-PDU-MAPPING><SHORT-NAME>MC</SHORT-NAME><I-SIGNAL-REF DEST="I-SIGNAL">/Sig/Crc</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>16</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING>
+<I-SIGNAL-TO-I-PDU-MAPPING><SHORT-NAME>MN</SHORT-NAME><I-SIGNAL-REF DEST="I-SIGNAL">/Sig/Ctr</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>24</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING>
+</I-SIGNAL-TO-PDU-MAPPINGS></I-SIGNAL-I-PDU></ELEMENTS></AR-PACKAGE>
+<AR-PACKAGE><SHORT-NAME>Sig</SHORT-NAME><ELEMENTS>
+<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH></I-SIGNAL>
+<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>8</LENGTH></I-SIGNAL>
+<I-SIGNAL><SHORT-NAME>Ctr</SHORT-NAME><LENGTH>4</LENGTH></I-SIGNAL>
+</ELEMENTS></AR-PACKAGE>'
+
+fn e2e_xml(profile string, offsets string) string {
+	return '<AR-PACKAGE><SHORT-NAME>E2E</SHORT-NAME><ELEMENTS><END-TO-END-PROTECTION-SET><SHORT-NAME>S</SHORT-NAME>\n<END-TO-END-PROTECTIONS><END-TO-END-PROTECTION><SHORT-NAME>P</SHORT-NAME><END-TO-END-PROFILE>\n<CATEGORY>${profile}</CATEGORY>${offsets}<DATA-IDS><DATA-ID>7</DATA-ID></DATA-IDS><DATA-LENGTH>32</DATA-LENGTH>\n</END-TO-END-PROFILE><END-TO-END-PROTECTION-I-SIGNAL-I-PDUS><END-TO-END-PROTECTION-I-SIGNAL-I-PDU>\n<DATA-LENGTH>32</DATA-LENGTH><DATA-OFFSET>0</DATA-OFFSET><I-SIGNAL-I-PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/P</I-SIGNAL-I-PDU-REF>\n</END-TO-END-PROTECTION-I-SIGNAL-I-PDU></END-TO-END-PROTECTION-I-SIGNAL-I-PDUS></END-TO-END-PROTECTION>\n</END-TO-END-PROTECTIONS></END-TO-END-PROTECTION-SET></ELEMENTS></AR-PACKAGE>'
+}
+
+fn test_e2e_positions_are_frame_relative_when_the_pdu_is_offset() {
+	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>16</CRC-OFFSET>') + arxml_tail) or { panic(err) }
+	assert a.report.unresolved == []
+	c := a.cluster('') or { panic(err) }
+	m := c.db.messages[0]
+	// the PDU begins at frame byte 1: every signal moved by 8 bits …
+	assert sig(m, 'V').start_bit == 8
+	assert sig(m, 'Crc').start_bit == 24
+	assert sig(m, 'Ctr').start_bit == 32
+	// … and so did the protection
+	f := c.frame_of(m) or { panic('no frame info') }
+	e := f.e2e or { panic('unprotected') }
+	assert e.pdu_offset == 8
+	assert e.crc_byte() == 3
+	assert e.counter_byte() == 4
+	s := c.e2e_signals(m) or { panic('no e2e signals') }
+	assert s.crc == 'Crc'
+	assert s.counter == 'Ctr'
+	assert c.frame_toml('').contains('e2e  = { data_id = 0x7, crc_pos = 3, counter_pos = 4 }')
+}
+
+fn test_fixed_header_profile_is_named_not_approximated() {
+	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + e2e_xml('PROFILE_05', '<OFFSET>0</OFFSET>') + arxml_tail) or { panic(err) }
+	c := a.cluster('') or { panic(err) }
+	m := c.db.messages[0]
+	e := (c.frame_of(m) or { panic('no frame info') }).e2e or { panic('unprotected') }
+	assert !e.has_crc_counter
+	assert e.profile == 'PROFILE_05'
+	// nothing invents a CRC signal, the attributes stay out, the fragment says why
+	assert c.e2e_signals(m) == none
+	assert !c.export_dbc(ArxmlProvenance{}, a.report).contains('E2E')
+	assert c.frame_toml('').contains('# E2E PROFILE_05 (data_id 0x7, header at bit 8): a fixed-header profile')
+	assert a.report.notes.any(it.contains('PROFILE_05 declares no CRC-OFFSET/COUNTER-OFFSET'))
+}
+
+fn secoc_xml(fresh_tx int) string {
+	return '<AR-PACKAGE><SHORT-NAME>Frames</SHORT-NAME><ELEMENTS><CAN-FRAME><SHORT-NAME>F</SHORT-NAME>\n<FRAME-LENGTH>8</FRAME-LENGTH><PDU-TO-FRAME-MAPPINGS><PDU-TO-FRAME-MAPPING><SHORT-NAME>M</SHORT-NAME>\n<PDU-REF DEST="SECURED-I-PDU">/PDUs/Sec</PDU-REF><START-POSITION>0</START-POSITION>\n</PDU-TO-FRAME-MAPPING></PDU-TO-FRAME-MAPPINGS></CAN-FRAME></ELEMENTS></AR-PACKAGE>\n<AR-PACKAGE><SHORT-NAME>PDUs</SHORT-NAME><ELEMENTS>\n<SECURED-I-PDU><SHORT-NAME>Sec</SHORT-NAME><LENGTH>8</LENGTH><PAYLOAD-REF DEST="PDU-TRIGGERING">/PDUs/T</PAYLOAD-REF>\n<SECURE-COMMUNICATION-PROPS><AUTH-INFO-TX-LENGTH>28</AUTH-INFO-TX-LENGTH><DATA-ID>9</DATA-ID>\n<FRESHNESS-VALUE-LENGTH>64</FRESHNESS-VALUE-LENGTH><FRESHNESS-VALUE-TX-LENGTH>${fresh_tx}</FRESHNESS-VALUE-TX-LENGTH>\n</SECURE-COMMUNICATION-PROPS></SECURED-I-PDU>\n<PDU-TRIGGERING><SHORT-NAME>T</SHORT-NAME><I-PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/P</I-PDU-REF></PDU-TRIGGERING>\n<I-SIGNAL-I-PDU><SHORT-NAME>P</SHORT-NAME><LENGTH>4</LENGTH></I-SIGNAL-I-PDU>\n</ELEMENTS></AR-PACKAGE>'
+}
+
+fn test_secoc_with_a_freshness_that_is_not_byte_aligned() {
+	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + secoc_xml(4) + arxml_tail) or {
+		panic(err)
+	}
+	c := a.cluster('') or { panic(err) }
+	m := c.db.messages[0]
+	s := (c.frame_of(m) or { panic('no frame info') }).secoc or { panic('no secoc') }
+	assert s.fresh_bit == 32
+	assert s.mac_bit == 36
+	assert !s.byte_aligned
+	assert a.report.notes.any(it.contains('a 4-bit freshness puts the MAC at bit 36'))
+	// the fragment refuses to give byte positions it cannot stand behind
+	assert c.frame_toml('').contains('# SecOC (data_id 0x9): a 4-bit freshness puts the MAC at bit 36')
+	assert !c.frame_toml('').contains('mac_pos')
+	// and a byte-aligned one is stated
+	b := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + secoc_xml(8) + arxml_tail) or {
+		panic(err)
+	}
+	bc := b.cluster('') or { panic(err) }
+	assert bc.frame_toml('').contains('fresh_pos = 4, mac_pos = 5, mac_len = 4')
+	// the PAYLOAD-REF chain is followed once, so a dangling one is reported once
+	d := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + secoc_xml(8).replace('/PDUs/T<', '/PDUs/Missing<') + arxml_tail) or { panic(err) }
+	assert d.report.unresolved.len == 1
+}
+
+fn test_two_triggerings_of_one_id_keep_the_first_and_say_so() {
+	two := cluster_xml('Bus', 256, '/Frames/F').replace('</FRAME-TRIGGERINGS>', '<CAN-FRAME-TRIGGERING><SHORT-NAME>FT2</SHORT-NAME><FRAME-REF DEST="CAN-FRAME">/Frames/F</FRAME-REF><CAN-ADDRESSING-MODE>STANDARD</CAN-ADDRESSING-MODE><IDENTIFIER>256</IDENTIFIER></CAN-FRAME-TRIGGERING></FRAME-TRIGGERINGS>')
+	a := parse_arxml(arxml_head + two + frame_xml + arxml_tail) or { panic(err) }
+	c := a.cluster('') or { panic(err) }
+	assert c.db.messages.len == 1
+	assert a.report.notes.any(it.contains('a second triggering for id 0x100'))
+}
+
+fn test_load_arxml_file_is_cached_per_file() {
+	path := os.join_path(os.dir(@FILE), '..', '..', 'dbc', 'example.arxml')
+	before := arxml_cache_hit_count()
+	load_arxml_file(path) or { panic(err) }
+	load_arxml_file(path) or { panic(err) }
+	assert arxml_cache_hit_count() >= before + 1
+	// a rewritten file (new content, same length, same second) is read again
+	dir := os.join_path(os.temp_dir(), 'candb_arxml_cache_test')
+	os.mkdir_all(dir) or {}
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	p := os.join_path(dir, 'a.arxml')
+	os.write_file(p, arxml_head + cluster_xml('One', 1, '/Frames/F') + frame_xml + arxml_tail) or {
+		panic(err)
+	}
+	a1 := load_arxml_file(p) or { panic(err) }
+	assert a1.clusters[0].name == 'One'
+	os.write_file(p, arxml_head + cluster_xml('Two', 1, '/Frames/F') + frame_xml + arxml_tail) or {
+		panic(err)
+	}
+	a2 := load_arxml_file(p) or { panic(err) }
+	assert a2.clusters[0].name == 'Two'
+}
+
+fn test_merge_files_report_says_what_it_skipped() {
+	dir := os.join_path(os.temp_dir(), 'candb_arxml_merge_report_test')
+	os.mkdir_all(dir) or {}
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	two := os.join_path(dir, 'two.arxml')
+	os.write_file(two, arxml_head + cluster_xml('Body', 1, '/Frames/F') + cluster_xml('Chassis', 2, '/Frames/F') + frame_xml + arxml_tail) or { panic(err) }
+	// no fragment on a two-cluster file: refused, and the refusal is in the notes rather
+	// than being the silent empty database the merge used to hand back
+	db, notes := merge_files_report([two, os.join_path(dir, 'missing.dbc')])
+	assert db.messages.len == 0
+	assert notes.len == 2
+	assert notes[0].contains('cannot load ${two}: 2 CAN clusters (Body, Chassis): name one')
+	assert notes[1].starts_with('cannot load ')
+	// named: loaded, and the reader's own notes come along, prefixed with the file
+	db2, notes2 := merge_files_report([two + '#Chassis'])
+	assert db2.messages.len == 1
+	// the frame's dangling PDU-REF is followed once per cluster that carries the frame
+	assert notes2.len == 2
+	assert notes2.all(it.starts_with('two.arxml: unresolved reference:'))
+	assert merge_files([two + '#Chassis']).messages.len == 1
+}
+
+fn test_canonical_database_ref_keeps_the_fragment() {
+	dir := os.join_path(os.temp_dir(), 'candb_arxml_canon_test')
+	os.mkdir_all(dir) or {}
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	p := os.join_path(dir, 'x.arxml')
+	os.write_file(p, '<AUTOSAR/>') or { panic(err) }
+	real := os.real_path(p)
+	assert canonical_database_ref(p + '#Body') == real + '#Body'
+	assert canonical_database_ref(p) == real
+	// the same file reached two ways is ONE key, fragment and all
+	assert canonical_database_ref(os.join_path(dir, '.', 'x.arxml') + '#Body') == real + '#Body'
+}
+
 fn test_number_forms() {
 	assert parse_int('256') == 256
 	assert parse_int('0x100') == 256
@@ -296,6 +461,8 @@ fn test_number_forms() {
 	assert seconds_to_ms('0.02') == 20
 	assert seconds_to_ms('') == 0
 	assert xml_unescape('a &amp; b &lt; c &gt; d &quot;e&quot; &apos;f&apos;') == 'a & b < c > d "e" \'f\''
+	// a reference vlib does not know fails its decode; the raw text is the honest answer
+	assert xml_unescape('x &unknown; y') == 'x &unknown; y'
 }
 
 // --- the export (arxml_export.v) --------------------------------------------------------

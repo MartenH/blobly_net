@@ -67,7 +67,9 @@ arxml.v`) — the OEM's file stays the source of truth and nothing is regenerate
 arrives. It is read-only in the DBC editor. For a consumer that needs a DBC (blobly_emb's build,
 or you, to edit), `cmd/arxml2dbc` exports one with the E2E contract as message attributes and a
 provenance comment naming the ARXML it came from. What the reader could not resolve or chose
-not to extract (container PDUs, LIN clusters, …) is reported on load, never dropped in silence.
+not to extract (container PDUs, LIN clusters, …) is reported on load — in the Log, on the
+headless runner's stderr, by `cmd/sim_startup_check` — never dropped in silence; and a file
+with several CAN clusters is refused until the entry names one (`net.arxml#Body`).
 
 Channel `mode` is `normal` (the default; older files say `monitor`, which loads the same) or
 `replay`. There is no `off` any more — untick the row instead; an older file's `mode: off` loads

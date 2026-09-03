@@ -8,8 +8,9 @@
 module candb
 
 // fmt_num renders a DBC number: integers without a decimal point, floats in
-// V's shortest form — deterministic either way.
-fn fmt_num(f f64) string {
+// V's shortest form — deterministic either way. Public because cmd/arxml2dbc's --dump must
+// render a factor exactly as the DBC does, or the oracle diff reports rendering as reading.
+pub fn fmt_num(f f64) string {
 	if f == f64(i64(f)) {
 		return '${i64(f)}'
 	}
@@ -36,14 +37,64 @@ fn sext(k u64, mask u64, sign_bit u64) i64 {
 // raw_dbc_id renders the BO_/VAL_/CM_ id: extended (29-bit) ids carry the EFF
 // high bit in DBC files, exactly as the parser strips it.
 fn raw_dbc_id(m Message) u32 {
-	if m.ext {
-		return m.id | can_eff_flag
+	return raw_id(m.id, m.ext)
+}
+
+fn raw_id(id u32, ext bool) u32 {
+	if ext {
+		return id | can_eff_flag
 	}
-	return m.id
+	return id
+}
+
+// message_order is THE canonical message order: by id, a standard frame before an extended
+// one sharing the numeric id (the frame KIND is part of identity — see lookup_frame), then by
+// name. One comparator, because the writer, the ARXML export and its dump each need it and
+// three copies had already lost the name tie-break between them.
+pub fn message_order(a &Message, b &Message) int {
+	if a.id != b.id {
+		return if a.id < b.id { -1 } else { 1 }
+	}
+	if a.ext != b.ext {
+		return if !a.ext { -1 } else { 1 }
+	}
+	return a.name.compare(b.name)
+}
+
+// DbcAttr is a message attribute the writer emits beside GenMsgCycleTime: its definition
+// (`typ` is the BA_DEF_ type clause, 'STRING' or 'INT 0 65535'), its default (RENDERED, so
+// '""' for an empty string and '0' for a number), and its per-message values (rendered too).
+pub struct DbcAttr {
+pub mut:
+	name    string
+	typ     string
+	default string
+	values  []DbcAttrValue
+}
+
+pub struct DbcAttrValue {
+pub:
+	id    u32
+	ext   bool
+	value string
+}
+
+// DbcExtras is what a caller may add to the canonical text: a network comment (`CM_ "…";`)
+// and message attributes. The writer places them in the sections the format assigns, so no
+// caller has to know its order.
+pub struct DbcExtras {
+pub mut:
+	comment string
+	attrs   []DbcAttr
 }
 
 // to_dbc renders the database as canonical DBC text.
 pub fn (db Database) to_dbc() string {
+	return db.to_dbc_with(DbcExtras{})
+}
+
+// to_dbc_with renders the database with extras spliced into their sections.
+pub fn (db Database) to_dbc_with(x DbcExtras) string {
 	mut b := []string{}
 	b << 'VERSION ""'
 	b << ''
@@ -57,17 +108,7 @@ pub fn (db Database) to_dbc() string {
 	b << ''
 
 	mut msgs := db.messages.clone()
-	msgs.sort_with_compare(fn (a &Message, mb &Message) int {
-		if a.id != mb.id {
-			return if a.id < mb.id { -1 } else { 1 }
-		}
-		// std before ext on a shared numeric id: the frame KIND is part of
-		// the canonical order (and of identity — see lookup_frame)
-		if a.ext != mb.ext {
-			return if !a.ext { -1 } else { 1 }
-		}
-		return a.name.compare(mb.name)
-	})
+	msgs.sort_with_compare(message_order)
 
 	for m in msgs {
 		sender := if m.sender == '' { 'Vector__XXX' } else { m.sender }
@@ -105,6 +146,10 @@ pub fn (db Database) to_dbc() string {
 		}
 	}
 
+	// the network comment leads the CM_ section
+	if x.comment != '' {
+		b << 'CM_ "${dbc_str(x.comment)}";'
+	}
 	// signal comments (CM_ SG_), in message order then signal name
 	for m in msgs {
 		mut sigs := m.signals.clone()
@@ -118,30 +163,40 @@ pub fn (db Database) to_dbc() string {
 		}
 	}
 
-	// GenMsgCycleTime: declare the attribute once, then per-message values
-	mut any_cycle := false
+	// attributes: GenMsgCycleTime first, then the extras — every definition, then every
+	// default, then every value, which is the order the format requires
+	mut attrs := []DbcAttr{}
+	mut cycle := DbcAttr{
+		name:    'GenMsgCycleTime'
+		default: '0'
+	}
+	// the declared range must cover every emitted value (a file must not
+	// contradict its own attribute definition), and values are emitted
+	// VERBATIM — clamping would silently change message timing and break
+	// the round-trip contract
+	mut max_cyc := 1_000_000
 	for m in msgs {
 		if m.cycle_ms > 0 {
-			any_cycle = true
-		}
-	}
-	if any_cycle {
-		// the declared range must cover every emitted value (a file must not
-		// contradict its own attribute definition), and values are emitted
-		// VERBATIM — clamping would silently change message timing and break
-		// the round-trip contract
-		mut max_cyc := 1_000_000
-		for m in msgs {
+			cycle.values << DbcAttrValue{m.id, m.ext, '${m.cycle_ms}'}
 			if m.cycle_ms > max_cyc {
 				max_cyc = m.cycle_ms
 			}
 		}
-		b << 'BA_DEF_ BO_ "GenMsgCycleTime" INT 0 ${max_cyc};'
-		b << 'BA_DEF_DEF_ "GenMsgCycleTime" 0;'
-		for m in msgs {
-			if m.cycle_ms > 0 {
-				b << 'BA_ "GenMsgCycleTime" BO_ ${raw_dbc_id(m)} ${m.cycle_ms};'
-			}
+	}
+	cycle.typ = 'INT 0 ${max_cyc}'
+	if cycle.values.len > 0 {
+		attrs << cycle
+	}
+	attrs << x.attrs
+	for a in attrs {
+		b << 'BA_DEF_ BO_ "${a.name}" ${a.typ};'
+	}
+	for a in attrs {
+		b << 'BA_DEF_DEF_ "${a.name}" ${a.default};'
+	}
+	for a in attrs {
+		for v in a.values {
+			b << 'BA_ "${a.name}" BO_ ${raw_id(v.id, v.ext)} ${v.value};'
 		}
 	}
 
