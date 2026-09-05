@@ -114,9 +114,11 @@ function doip.listen(window_ms, opts)
   opts = opts or {}
   if type(opts) == "number" then opts = { port = opts } end   -- back-compat: listen(ms, port)
   -- A `from` that is not a name (a uds handle, `true`) would reach the host as "" and read as
-  -- ABSENT — the quiet default this option exists to remove. Refused here, by type.
-  if opts.from ~= nil and type(opts.from) ~= "string" then
-    error("doip.listen: from must be a channel name (a string), got " .. type(opts.from), 2)
+  -- ABSENT — the quiet default this option exists to remove. Refused here, by type; and an
+  -- EMPTY name too (an unset variable), which is the same "" by another route.
+  if opts.from ~= nil and (type(opts.from) ~= "string" or opts.from == "") then
+    error("doip.listen: from must be a channel name (a non-empty string), got " ..
+          (type(opts.from) == "string" and "an empty string" or type(opts.from)), 2)
   end
   -- port 0 = "derive": with `from`, the port that channel is on; otherwise 13400.
   local raw = __doip_listen(opts.port or 0, window_ms or 1000,

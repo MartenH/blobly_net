@@ -103,6 +103,7 @@ fn test_doip_listen_from_resolves_or_refuses() {
 		test("a from that is not a name is refused by the prelude, not read as absent", function()
 			refused("from must be a channel name", 10, { from = true })
 			refused("from must be a channel name", 10, { from = { channel = "Alt" } })
+			refused("from must be a channel name", 10, { from = "" })   -- an unset variable, say
 		end)
 	')!
 	assert env.total() == 4

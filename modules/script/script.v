@@ -652,8 +652,12 @@ fn l_doip_listen(l lua.State) int {
 		from_port = info.carrier.port
 		// AND ITS ADDRESS FAMILY. An IPv6 entity announces to ff02::1, which only a v6 listener
 		// that joined the group can hear — a port taken from the channel with the family left at
-		// the caller's default is #233 again, one family over. The same test announce() uses.
-		use_ip6 = use_ip6 || info.carrier.host.contains(':')
+		// the caller's default is #233 again, one family over. THE MODULE'S ONE RULE, the same
+		// one the entity announces by: the family is read off the literal, so a hostname that
+		// resolves to IPv6 only is read as v4 here exactly as it is there (docs/doip.md, the
+		// IPv6 passive-discovery limitation) — a second rule here would make the tester and the
+		// entity disagree about one channel.
+		use_ip6 = use_ip6 || doip.addr_family(info.carrier.host) == .ip6
 	}
 	use_port := listen_port(port, from, from_port) or { return l.fail('doip.listen: ${err}') }
 	found := doip.collect_announcements_af(use_port, window, use_ip6) or {
