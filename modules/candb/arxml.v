@@ -478,6 +478,20 @@ fn (mut r ArxmlReader) name_ecus() {
 	r.ecus = allocate_names(r.kinds['ECU-INSTANCE'])
 	for p in r.kinds['ECU-INSTANCE'] {
 		short := p.all_after_last('/')
+		if r.ecus[p] == 'Vector__XXX' {
+			// the DBC's placeholder for "no transmitter": an ECU that legitimately bears the
+			// name would be normalised away by senders() and simulate nothing, and a DBC round
+			// trip would lose it as the sender — so it gets a collision-free exported name and
+			// a note (codex on #273 round 27)
+			mut taken := map[string]bool{}
+			for _, n in r.ecus {
+				taken[n] = true
+			}
+			nn := claim_name(mut taken, package_qualified(p))
+			r.ecus[p] = nn
+			r.report.notes << '${p}: ECU name Vector__XXX is the DBC placeholder for "no transmitter"; this ECU is exported as ${nn}'
+			continue
+		}
 		if r.ecus[p] != short {
 			r.report.notes << '${p}: ECU name ${short} is used by another package too; this one is ${r.ecus[p]}'
 		}
@@ -833,17 +847,6 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 					// a simulated transmitter of this frame sends an unstamped counter and CRC
 					// that the declared receiver rejects. Said, once per frame (round 17)
 					r.report.notes << "${fname}: declares an E2E ${e.profile} contract; carried to the DBC export and the fragment, but NOT applied by the native simulation, which protects only what the project's protect: entries name"
-					if !e.single_data_id() || e2e_profile_primitive(e.profile) == '' {
-						// what the DBC attributes cannot say: a data-id mode other than
-						// ALL-16-BIT, or a checksum no primitive computes. The fragment names the
-						// mode; the DBC would otherwise lose the contract without a word (round 26)
-						why := if !e.single_data_id() {
-							'its data-id mode ${e.data_id_mode}'
-						} else {
-							'its profile'
-						}
-						r.report.notes << '${fname}: the DBC export carries NO E2E attributes for it — ${why} is not expressible there; the fragment names it'
-					}
 					info.e2e = ArxmlE2e{
 						...e
 						pdu_offset: pdu_off
@@ -871,7 +874,7 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 		} else {
 			classic_frames++
 		}
-		msgs << Message{
+		msg := Message{
 			name: fname
 			id: id
 			ext: ext
@@ -881,6 +884,16 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			cycle_ms: info.cycle_ms
 			signals: sigs
 		}
+		if e := info.e2e {
+			// what the DBC attributes cannot say, by the SAME predicate the export refuses with
+			// (e2e_export_refusal): the fragment carries the contract, a DBC-only consumer never
+			// sees the fragment, and the DBC would otherwise lose it without a word (rounds 26–27)
+			why := e2e_export_refusal(msg, e)
+			if why != '' {
+				r.report.notes << '${fname}: the DBC export carries NO E2E attributes for it — ${why}; the fragment names the contract'
+			}
+		}
+		msgs << msg
 		frames[key] = info
 	}
 	if fd_frames > 0 && classic_frames > 0 {
@@ -1251,9 +1264,9 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 		}
 
 		// description: the system signal's, else the I-SIGNAL's own
-		mut desc := desc_text(sys)
+		mut desc := r.desc_of(sys, sys_path)
 		if desc == '' {
-			desc = desc_text(isig)
+			desc = r.desc_of(isig, isig_path)
 		}
 
 		out << Signal{
@@ -1541,6 +1554,20 @@ fn first_text(n xml.XMLNode, name string) string {
 }
 
 // desc_text reads a DESC's first language entry.
+// desc_of is desc_text with the report: a DESC in several languages keeps its first entry only
+// — Signal.desc is one string — and says so, since the other translations do not reach the
+// database or the export (codex on #273 round 27).
+fn (mut r ArxmlReader) desc_of(n xml.XMLNode, path string) string {
+	if d := child(n, 'DESC') {
+		langs := descendants(d, 'L-2')
+		if langs.len > 1 {
+			first := langs[0].attributes['L'] or { '?' }
+			r.report.notes << '${path}: the description has ${langs.len} languages; only the first (${first}) is kept'
+		}
+	}
+	return desc_text(n)
+}
+
 fn desc_text(n xml.XMLNode) string {
 	d := child(n, 'DESC') or { return '' }
 	l := first(d, 'L-2') or { return '' }

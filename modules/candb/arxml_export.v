@@ -59,29 +59,43 @@ pub fn e2e_profile_primitive(profile string) string {
 pub fn (c ArxmlCluster) e2e_signals(m Message) ?E2eSignals {
 	f := c.frame_of(m) or { return none }
 	e := f.e2e or { return none }
-	if !e.has_crc_counter || !e.single_data_id() {
-		return none
-	}
-	profile := e2e_profile_primitive(e.profile)
-	if profile == '' {
-		return none // a checksum this app cannot compute is not a contract it can export
-	}
-	// the signal must BE the field, not merely contain the offset: an offset inside an
-	// ordinary multi-bit signal would name an application signal as the CRC
-	ci := m.signal_at(e.crc_bit())
-	ki := m.signal_at(e.counter_bit())
-	if ci < 0 || ki < 0 || ci == ki {
-		return none
-	}
-	if !is_e2e_field(m.signals[ci], e.crc_bit(), 8) || !is_e2e_field(m.signals[ki], e.counter_bit(), 4) {
+	if e2e_export_refusal(m, e) != '' {
 		return none
 	}
 	return E2eSignals{
-		counter: m.signals[ki].name
-		crc: m.signals[ci].name
-		profile: profile
+		counter: m.signals[m.signal_at(e.counter_bit())].name
+		crc: m.signals[m.signal_at(e.crc_bit())].name
+		profile: e2e_profile_primitive(e.profile)
 		data_id: e.data_id
 	}
+}
+
+// e2e_export_refusal is WHY a declared contract cannot be exported as DBC attributes — '' when
+// it can. ONE predicate, asked by the export and by the reader's load note alike, so the note
+// names every refusal the export makes and not a subset of them (codex on #273 rounds 26–27):
+// a checksum this app cannot compute is not a contract it can export; a data-id mode other than
+// ALL-16-BIT feeds the id into the CRC differently than the attributes can say; and the signal
+// must BE the field, not merely contain the offset — an offset inside an ordinary multi-bit
+// signal would name an application signal as the CRC.
+pub fn e2e_export_refusal(m Message, e ArxmlE2e) string {
+	if !e.has_crc_counter {
+		return 'it declares no CRC and counter offsets'
+	}
+	if !e.single_data_id() {
+		return 'its data-id mode ${e.data_id_mode} is not expressible there'
+	}
+	if e2e_profile_primitive(e.profile) == '' {
+		return 'its profile ${e.profile} has no checksum this app computes'
+	}
+	ci := m.signal_at(e.crc_bit())
+	ki := m.signal_at(e.counter_bit())
+	if ci < 0 || ki < 0 || ci == ki {
+		return 'no dedicated signal sits at both its CRC and its counter offset'
+	}
+	if !is_e2e_field(m.signals[ci], e.crc_bit(), 8) || !is_e2e_field(m.signals[ki], e.counter_bit(), 4) {
+		return 'the signals at its CRC and counter offsets are not the byte-aligned 8-bit CRC and 4-bit counter fields'
+	}
+	return ''
 }
 
 // is_e2e_field: a signal that IS the field — exactly its width (profile 1/2: an 8-bit CRC, a

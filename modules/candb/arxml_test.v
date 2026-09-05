@@ -594,6 +594,14 @@ fn test_alternating_data_ids_are_named_not_collapsed() {
 	assert !c.export_dbc(ArxmlProvenance{}, a.report).contains('E2EDataId')
 	// and the load report says so, since a DBC-only consumer never sees the fragment (round 26)
 	assert a.report.notes.any(it.contains('F: the DBC export carries NO E2E attributes for it — its data-id mode ALTERNATING-8-BIT is not expressible there')), a.report.notes.str()
+	// and by the same predicate the export refuses with, so a layout refusal is said too: a CRC
+	// offset inside an application signal (round 27)
+	inside := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>0</CRC-OFFSET>') + arxml_tail) or {
+		panic(err)
+	}
+	ic := inside.cluster('') or { panic(err) }
+	assert ic.e2e_signals(ic.db.messages[0]) == none
+	assert inside.report.notes.any(it.contains('F: the DBC export carries NO E2E attributes for it — the signals at its CRC and counter offsets are not the byte-aligned')), inside.report.notes.str()
 	assert c.frame_toml('').contains('# E2E PROFILE_01 with ALTERNATING-8-BIT data ids (0x7, 0x9): this data-id mode is not expressible here')
 	// LOWER-12-BIT feeds part of the id into the CRC: one scalar cannot say that either
 	l := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>16</CRC-OFFSET><DATA-ID-MODE>LOWER-12-BIT</DATA-ID-MODE>') + arxml_tail) or { panic(err) }
@@ -1013,6 +1021,15 @@ fn test_round_15_shapes_are_said_or_read_right() {
 	assert ec.db.messages[0].sender == 'E', ec.db.messages[0].sender
 	assert 'R' in sig(ec.db.messages[0], 'V').receivers
 	assert 'E' in ec.db.nodes && 'R' in ec.db.nodes
+	// an ECU that bears the DBC placeholder name is renamed, or senders() would normalise it
+	// away and it would simulate nothing (round 27)
+	ph := parse_arxml(arxml_head + cl.replace('/ECUs/E/Conn/P_Out', '/ECUs/Vector__XXX/Conn/P_Out') + offset_pdu_xml + ecus.replace('<SHORT-NAME>E</SHORT-NAME>', '<SHORT-NAME>Vector__XXX</SHORT-NAME>') + arxml_tail) or {
+		panic(err)
+	}
+	phc := ph.cluster('') or { panic(err) }
+	assert phc.db.messages[0].sender == 'ECUs_Vector__XXX', phc.db.messages[0].sender
+	assert phc.db.messages[0].senders() == ['ECUs_Vector__XXX']
+	assert ph.report.notes.any(it.contains('/ECUs/Vector__XXX: ECU name Vector__XXX is the DBC placeholder'))
 	// and an IN port listens to ITS PDU only: on a frame mapping P and Q, Q's receiver is not a
 	// receiver of P's signals (round 16)
 	two := offset_pdu_xml.replace('</PDU-TO-FRAME-MAPPING></PDU-TO-FRAME-MAPPINGS>', '</PDU-TO-FRAME-MAPPING><PDU-TO-FRAME-MAPPING><SHORT-NAME>MQ</SHORT-NAME><PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/Q</PDU-REF><START-POSITION>48</START-POSITION></PDU-TO-FRAME-MAPPING></PDU-TO-FRAME-MAPPINGS>').replace('</I-SIGNAL-I-PDU>', '</I-SIGNAL-I-PDU><I-SIGNAL-I-PDU><SHORT-NAME>Q</SHORT-NAME><LENGTH>2</LENGTH><I-SIGNAL-TO-PDU-MAPPINGS><I-SIGNAL-TO-I-PDU-MAPPING><SHORT-NAME>MW</SHORT-NAME><I-SIGNAL-REF DEST="I-SIGNAL">/Sig/W</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>0</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING></I-SIGNAL-TO-PDU-MAPPINGS></I-SIGNAL-I-PDU>').replace(v_sig, v_sig + '<I-SIGNAL><SHORT-NAME>W</SHORT-NAME><LENGTH>16</LENGTH></I-SIGNAL>')
@@ -1140,6 +1157,13 @@ fn test_round_19_shapes() {
 	ov2v := sig((ov2.cluster('') or { panic(err) }).db.messages[0], 'V')
 	assert ov2v.minimum == 1.0 && ov2v.maximum == 50.0
 	assert !ov2.report.notes.any(it.contains('is OPEN'))
+	// a description in two languages keeps the first and says so
+	bilingual := offset_pdu_xml.replace(v_sig, '<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><DESC><L-2 L="EN">speed</L-2><L-2 L="DE">Geschwindigkeit</L-2></DESC><LENGTH>16</LENGTH></I-SIGNAL>')
+	bl := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + bilingual + arxml_tail) or {
+		panic(err)
+	}
+	assert sig((bl.cluster('') or { panic(err) }).db.messages[0], 'V').desc == 'speed'
+	assert bl.report.notes.any(it.contains('/Sig/V: the description has 2 languages; only the first (EN) is kept'))
 }
 
 fn test_two_triggerings_of_one_id_keep_the_first_and_say_so() {
