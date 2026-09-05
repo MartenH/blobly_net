@@ -1220,6 +1220,15 @@ fn test_unique_names_are_reserved_before_duplicates_are_qualified() {
 	assert snames == ['B_V', 'B_V_2', 'Crc', 'Ctr', 'V'], snames.str()
 	assert sig(m, 'B_V').start_bit == 28, 'the signal whose own name is B_V keeps it'
 	assert s.report.notes.any(it.contains('/B/V: signal name V is already used in this message; this one is B_V_2'))
+	// one signal mapped TWICE keeps its first name and the second mapping is `_2` — not both
+	// qualified, which allocating per occurrence did (round 31)
+	twice := offset_pdu_xml.replace_once('</I-SIGNAL-TO-PDU-MAPPINGS>', '<I-SIGNAL-TO-I-PDU-MAPPING><SHORT-NAME>MV2</SHORT-NAME><I-SIGNAL-REF DEST="I-SIGNAL">/Sig/V</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>16</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING></I-SIGNAL-TO-PDU-MAPPINGS>')
+	tw := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + twice + arxml_tail) or {
+		panic(err)
+	}
+	mut tnames := (tw.cluster('') or { panic(err) }).db.messages[0].signals.map(it.name)
+	tnames.sort()
+	assert tnames == ['Crc', 'Ctr', 'V', 'V_2'], tnames.str()
 }
 
 fn test_a_j1939_cluster_is_counted_as_ignored() {

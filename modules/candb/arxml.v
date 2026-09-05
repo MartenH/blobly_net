@@ -971,7 +971,16 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 		// the name `B_V` and renamed the signal whose own name is B_V. A signal name is how
 		// everything downstream addresses it, and a DBC refuses a duplicate SG_, so what
 		// allocate_names cannot separate (one signal mapped twice) claim_name still does
-		sig_names := allocate_names_first_keeps(sig_paths)
+		// over the DISTINCT paths: one signal mapped twice is one allocation, and the claim
+		// below is what tells the two mappings apart (`V`, `V_2`) — allocating per occurrence
+		// let the second overwrite the first's name with a qualified one (round 31)
+		mut distinct := []string{}
+		for sp in sig_paths {
+			if sp !in distinct {
+				distinct << sp
+			}
+		}
+		sig_names := allocate_names_first_keeps(distinct)
 		mut taken_sigs := map[string]bool{}
 		for i, mut s in sigs {
 			wanted := sig_names[sig_paths[i]] or { s.name }

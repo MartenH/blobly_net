@@ -132,12 +132,26 @@ pub fn (s Signal) phys_from_raw(raw u64) f64 {
 pub fn (s Signal) raw_from_phys(phys f64) u64 {
 	// round half away from zero; a bare `+ 0.5` truncates negatives wrongly.
 	r := math.round((phys - s.offset) / s.factor)
-	// A negative goes through i64: its two's-complement pattern masked to the width IS the raw
-	// value (adding 1 << length first changes nothing the mask keeps). A non-negative goes
-	// through u64 DIRECTLY — via i64 it saturates at 2^63, so the top half of an unsigned
-	// 64-bit signal's domain encoded as INT64_MIN.
-	raw := if r < 0 { u64(i64(r)) } else { u64(r) }
 	mask := if s.length >= 64 { ~u64(0) } else { (u64(1) << s.length) - 1 }
+	// CLAMPED TO THE DOMAIN'S ENDPOINTS before the cast: f64 cannot hold 2^64-1 or 2^63-1
+	// exactly, so a wide signal set to its maximum rounded to 2^64 (zero, on the C backend) or
+	// to 2^63 (the sign bit: the MINIMUM) — the opposite endpoint (codex on #273 round 31).
+	if s.is_signed && s.length > 0 {
+		top := if s.length >= 64 { u64(1) << 63 } else { u64(1) << (s.length - 1) }
+		if r >= f64(top) {
+			return (top - 1) & mask
+		}
+		if r < -f64(top) {
+			return top & mask
+		}
+	} else if r >= f64(mask) + 1.0 {
+		// f64(mask) + 1 is exactly 2^length for every width, 64 included
+		return mask
+	}
+	// A negative goes through i64: its two's-complement pattern masked to the width IS the raw
+	// value. A non-negative goes through u64 DIRECTLY — via i64 it saturates at 2^63, so the
+	// top half of an unsigned 64-bit signal's domain encoded as INT64_MIN.
+	raw := if r < 0 { u64(i64(r)) } else { u64(r) }
 	return raw & mask
 }
 

@@ -164,6 +164,27 @@ fn test_signed_64_bit() {
 	assert u.raw_from_phys(1.0e19) == u64(10000000000000000000)
 	assert u.raw_from_phys(1.0e19) != u.raw_from_phys(1.8e19)
 	assert u.phys_from_raw(u.raw_from_phys(1.0e19)) == 1.0e19
+	// the ENDPOINTS: f64 rounds 2^64-1 up to 2^64 and 2^63-1 up to 2^63, which cast to 0 and to
+	// the sign bit — the opposite endpoint. Clamped instead (round 31)
+	assert u.raw_from_phys(18446744073709551615.0) == ~u64(0)
+	assert u.raw_from_phys(u.phys_from_raw(~u64(0))) == ~u64(0)
+	assert s.raw_from_phys(9223372036854775807.0) == u64(9223372036854775807)
+	assert s.raw_from_phys(s.phys_from_raw(u64(9223372036854775807))) == u64(9223372036854775807)
+	assert s.raw_from_phys(-9223372036854775808.0) == u64(1) << 63
+	assert s.raw_from_phys(-1.0e19) == u64(1) << 63 // below the minimum clamps to it
+	assert s.raw_from_phys(1.0e19) == u64(9223372036854775807) // above the maximum clamps to it
+	n8 := Signal{
+		name:      'N8'
+		length:    8
+		is_signed: true
+	}
+	assert n8.raw_from_phys(127.0) == 127 && n8.raw_from_phys(200.0) == 127
+	assert n8.raw_from_phys(-128.0) == 128 && n8.raw_from_phys(-300.0) == 128
+	u8s := Signal{
+		name:   'U8'
+		length: 8
+	}
+	assert u8s.raw_from_phys(255.0) == 255 && u8s.raw_from_phys(300.0) == 255
 }
 
 fn test_big_endian_signed() {
