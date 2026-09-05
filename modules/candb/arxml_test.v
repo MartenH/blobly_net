@@ -939,6 +939,14 @@ fn test_nonlinear_scales_and_negative_factors() {
 	assert ks.factor == 1
 	assert ks.offset == 0
 	assert konst.report.notes.any(it.contains('a constant conversion (every raw value is 5) is not modelled'))
+	// a scale bound that is present and not a number: no DATA-CONSTR to override it, so the
+	// signal keeps the unspecified range — and the note says so, rather than the provenance
+	// calling the read complete (round 44)
+	bad := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + sigs + poly.replace('<UPPER-LIMIT>255</UPPER-LIMIT>', '<UPPER-LIMIT>25x</UPPER-LIMIT>').replace('@COEFFS@', '<V>0</V><V>1</V>') + arxml_tail) or { panic(err) }
+	bc := bad.cluster('') or { panic(err) }
+	bs := sig(bc.db.messages[0], 'Crc')
+	assert bs.minimum == 0 && bs.maximum == 0
+	assert bad.report.notes.any(it.contains('LOWER-LIMIT "0" and UPPER-LIMIT "25x" are not both numbers; the domain is not read')), bad.report.notes.str()
 }
 
 fn test_selectors_never_collide_with_a_documented_short_name() {

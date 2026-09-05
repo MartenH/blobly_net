@@ -127,7 +127,7 @@ fn test_referenced_nodes_are_declared() {
 					Signal{
 						name:      'V'
 						length:    8
-						receivers: ['A', 'R', 'Vector__XXX']
+						receivers: ['R', 'A', 'R', '', 'Vector__XXX']
 					},
 				]
 			},
@@ -135,7 +135,9 @@ fn test_referenced_nodes_are_declared() {
 	}
 	text := db.to_dbc()
 	assert text.contains('BU_: A R S T\n'), text
-	assert text.contains(' SG_ V : 0|8@1+ (1,0) [0|0] "" A,R')
+	// and the SG_ list is written as the parser reads it: no placeholder beside a real receiver,
+	// no empty name, no repeat (round 44)
+	assert text.contains(' SG_ V : 0|8@1+ (1,0) [0|0] "" A,R\n'), text
 	// and it stays a fixpoint: parsing the written file yields the same nodes
 	again := parse_dbc(text) or { panic(err) }
 	assert again.nodes == ['A', 'R', 'S', 'T']

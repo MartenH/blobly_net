@@ -130,6 +130,12 @@ fn main() {
 			eprintln('arxml2dbc: ${out} is a directory; name the file to write')
 			exit(2)
 		}
+		if out != '' && out != '-' && os.is_link(out) && !os.exists(out) {
+			// a link to nothing: `canon` would publish onto the LINK (its target does not exist to
+			// resolve to), replacing it with a file, and nothing says where the user meant
+			eprintln('arxml2dbc: ${out} is a symbolic link to a file that does not exist; name the file to write')
+			exit(2)
+		}
 	}
 	both_files := dbc_out != '' && dbc_out != '-' && toml_out != '' && toml_out != '-'
 	if both_files && canon(dbc_out) == canon(toml_out) {
@@ -195,13 +201,17 @@ fn main() {
 	mut staged := [][]string{} // [temporary, destination, what was written]
 	// exit() does not run the defer above, so every failing path unlocks by hand (round 37)
 	if dbc_to_file {
-		staged << stage(dbc_out, dbc, staged) or { unlock_and_exit(locks, 1) }
+		staged << stage(canon(dbc_out), dbc, staged) or { unlock_and_exit(locks, 1) }
 		staged[staged.len - 1] << '${dbc_out} (${c.db.messages.len} messages)'
 	}
 	if toml_out != '' && !toml_to_stdout {
-		staged << stage(toml_out, frag, staged) or { unlock_and_exit(locks, 1) }
+		staged << stage(canon(toml_out), frag, staged) or { unlock_and_exit(locks, 1) }
 		staged[staged.len - 1] << toml_out
 	}
+	// TO THE CANONICAL PATH (round 44), the one the locks name: a destination that is a SYMLINK
+	// was itself set aside and replaced by a regular file, its target untouched and the command
+	// reporting success. `canon` resolves an existing link whole, so the file lands where the
+	// link points and the link survives
 	// PUBLISHED WITH A WAY BACK (round 39): each destination that exists is set aside before its
 	// replacement moves in, and a later move failing puts every earlier one back — so a reported
 	// failure never leaves a regenerated DBC beside the previous fragment. The set-aside copies

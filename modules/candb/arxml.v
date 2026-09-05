@@ -1844,10 +1844,17 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 						factor = num[1] / d
 					}
 				}
-				if lo != '' && hi != '' && num_text(lo) != none && num_text(hi) != none {
+				lo_n := num_text(lo)
+				hi_n := num_text(hi)
+				if (lo != '' || hi != '') && (lo_n == none || hi_n == none) {
+					// a bound that is PRESENT and not a number: the domain is not read, and
+					// said — silently false, the signal took the unspecified [0|0] range and
+					// the provenance called the read complete (round 44)
+					r.report.notes << '${cm_path}: scale bounds LOWER-LIMIT "${lo.trim_space()}" and UPPER-LIMIT "${hi.trim_space()}" are not both numbers; the domain is not read'
+				} else if lo_n != none && hi_n != none {
 					has_domain = true
-					lower = parse_num(lo)
-					upper = parse_num(hi)
+					lower = lo_n
+					upper = hi_n
 					// the scale's domain becomes the signal's range when no data constraint
 					// overrides it, so an OPEN or INFINITE bound here is the same lost meaning
 					// the constraint path reports — CARRIED, and said only by a signal that

@@ -149,8 +149,16 @@ pub fn (db Database) to_dbc_with(x DbcExtras) string {
 			}
 			order := if s.byte_order == .little_endian { '1' } else { '0' }
 			sign := if s.is_signed { '-' } else { '+' }
-			// receivers sorted, so the text is canonical; none is the format's placeholder
-			mut rcv := s.receivers.clone()
+			// receivers as the parser reads them — no empties, no placeholder, no repeats — and
+			// sorted, so the text is canonical and a parse of it is a fixpoint; none is the
+			// format's placeholder. A programmatic Signal (the editor, the ARXML reader) is
+			// not bound by the parser's normalisation, so the writer applies it (round 44)
+			mut rcv := []string{}
+			for n in s.receivers {
+				if n != '' && n != 'Vector__XXX' && n !in rcv {
+					rcv << n
+				}
+			}
 			rcv.sort()
 			rcv_s := if rcv.len == 0 { 'Vector__XXX' } else { rcv.join(',') }
 			b << ' SG_ ${s.name}${mux} : ${s.start_bit}|${s.length}@${order}${sign} (${fmt_num(s.factor)},${fmt_num(s.offset)}) [${fmt_num(s.minimum)}|${fmt_num(s.maximum)}] "${dbc_str(s.unit)}" ${rcv_s}'
