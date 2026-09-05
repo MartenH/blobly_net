@@ -1070,6 +1070,12 @@ fn test_round_15_shapes_are_said_or_read_right() {
 	}, sig(bm, 'Ctr').values.str()
 	assert bo.report.notes.any(it.contains('/Sig/Crc: enum key -1 ("Neg") of /CM/B does not fit a 64-bit unsigned'))
 	assert bo.report.notes.any(it.contains('/Sig/Ctr: enum key 18446744073709551615 ("Max") of /CM/B does not fit a 64-bit signed'))
+	// and a RANGE between them is not a singleton, whatever their patterns say (round 22)
+	span := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + both.replace('<LOWER-LIMIT>-1</LOWER-LIMIT><UPPER-LIMIT>-1</UPPER-LIMIT><COMPU-CONST><VT>Neg</VT>', '<LOWER-LIMIT>-1</LOWER-LIMIT><UPPER-LIMIT>18446744073709551615</UPPER-LIMIT><COMPU-CONST><VT>Span</VT>') + arxml_tail) or {
+		panic(err)
+	}
+	assert sig((span.cluster('') or { panic(err) }).db.messages[0], 'Ctr').values.len == 0
+	assert span.report.notes.any(it.contains('/CM/B: maps the range -1..18446744073709551615 to "Span"'))
 	// signed hex and a zero linear term
 	assert parse_num('-0x1E') == -30.0
 	assert parse_num('+0x10') == 16.0

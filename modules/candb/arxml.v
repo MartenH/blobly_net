@@ -1340,9 +1340,15 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 					continue
 				}
 				k_lo := klo or { 0 }
-				if singleton && k_lo == (khi or { 0 }) {
-					if lo.trim_space().starts_with('-') && k_lo != 0 {
-						neg_values[k_lo] = label // `-0` is zero: a sign with no sign bit
+				k_hi := khi or { 0 }
+				// the SIGN is part of the value: `-1` and `18446744073709551615` are one u64
+				// pattern and two integers, so a range between them is not a singleton (round 22).
+				// `-0` is zero: a sign with no sign bit
+				neg_lo := lo.trim_space().starts_with('-') && k_lo != 0
+				neg_hi := hi.trim_space().starts_with('-') && k_hi != 0
+				if singleton && neg_lo == neg_hi && k_lo == k_hi {
+					if neg_lo {
+						neg_values[k_lo] = label
 					} else {
 						values[k_lo] = label
 					}

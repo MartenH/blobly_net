@@ -528,6 +528,21 @@ fn diag_msg(iface string, from transport.BusDiagnostics, to transport.BusDiagnos
 	return '${iface}: +${to.minus(from).short().replace(' · ', ', +')} — since open: ${to.str()}'
 }
 
+// script_db is one channel's merged database for a script, from the LOADED copies by the resolved
+// key replay_db uses — and, like replay_db, UNDER app.mu: a script launched while stopped runs
+// beside an editable Configuration panel, whose structural edits rebuild app.dbs, and a scan of
+// that array outside the lock could hand the script an empty or half-rebuilt database (codex on
+// #273 round 22). The reserved dbc_readers slot keeps the DBC editor off; it does not keep every
+// rebuild caller off, so the lock does.
+fn (a &App) script_db(ch Chan) candb.Database {
+	mut al := unsafe { a }
+	al.mu.lock()
+	defer {
+		al.mu.unlock()
+	}
+	return merge_dbs_from(a.loaded_dbs_for(ch.databases.map(candb.canonical_database_ref(a.resolve_asset(it)))))
+}
+
 fn rx_loop(app &App, ci int, iface string, gen u64) {
 	mut bus := app.open_transport(iface) or {
 		mut al := unsafe { app }
@@ -1414,7 +1429,7 @@ fn script_worker(app &App, path string) {
 			// gave the script an empty database while the trace and the simulator had loaded
 			// the same file resolved (codex on #273 round 13). The reader slot reserved above
 			// is what makes app.dbs safe to read here without app.mu.
-			db:      merge_dbs_from(a.loaded_dbs_for(ch.databases.map(candb.canonical_database_ref(a.resolve_asset(it)))))
+			db:      a.script_db(ch)
 			nodes:   sim_nodes // so a fault that cannot take effect can be refused
 			carrier: script.carrier_of(pch)
 		}

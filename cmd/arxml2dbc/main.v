@@ -115,6 +115,21 @@ fn main() {
 		reader: 'blobly_net ${version}'
 		cluster: c.bus
 	}, a.report)
+	// REFUSED BEFORE ANY WRITE: an output path that is the SOURCE replaces the system description
+	// — the one file this tool exists to leave alone — with its own output, and two outputs on
+	// one path leave only the second after reporting both written (codex on #273 round 22).
+	// Compared as real paths, so `./x.arxml` and `x.arxml` are one file.
+	for out in [dbc_out, toml_out] {
+		if out != '' && out != '-' && os.real_path(out) == os.real_path(src) {
+			eprintln('arxml2dbc: ${out} is the input ARXML; refusing to overwrite the source')
+			exit(2)
+		}
+	}
+	both_files := dbc_out != '' && dbc_out != '-' && toml_out != '' && toml_out != '-'
+	if both_files && os.real_path(dbc_out) == os.real_path(toml_out) {
+		eprintln('arxml2dbc: --dbc and --toml name the same file (${dbc_out}); only one would survive')
+		exit(2)
+	}
 	// stdout carries ONE file: the DBC by default, the fragment when `--toml -` asks for it
 	toml_to_stdout := toml_out == '-'
 	if dbc_out == '' || dbc_out == '-' {
