@@ -157,6 +157,11 @@ __global (
 	g_borrow_mu     &sync.Mutex
 	g_shutting_down bool
 	g_restoring     int // restorations in flight; the handler must not exit through one
+	// Restores that FAILED. give_back runs from a defer and cannot return a failure into the
+	// command's result, so a driver reset or an adapter unplugged mid-run left channels 61/62
+	// (or 63/64) pointed at the test hardware — in a state that survives reboots — while the
+	// run printed its verdict and exited 0 (#197). Counted here, read by restore_verdict.
+	g_restore_failed int
 )
 
 // The handler runs on another thread, and `borrow()` appends to the same array — an append that
@@ -207,6 +212,11 @@ fn on_interrupt(_ os.Signal) {
 			break
 		}
 		time.sleep(10 * time.millisecond)
+	}
+	// An interrupt whose restore failed is not a clean interrupt: say so, and do not exit 130 as
+	// if it were (#197).
+	if restore_summary() > 0 {
+		exit(3)
 	}
 	exit(130)
 }
@@ -316,13 +326,48 @@ fn give_back(bs []Borrowed) {
 		// unasked-for change to somebody's bench, just quieter.
 		if p := b.prev {
 			transport.vector_assign(b.app, p) or {
-				eprintln('note: could not restore Vector application channel ${b.app}: ${err}')
+				// THE TRIPLE, not the name: vector_assignment fills hw_type/index/channel only, and
+				// the triple is what `--channel ${b.app} --assign <row>` needs to put it back
+				eprintln('FAIL: could not restore Vector application channel ${b.app} to hardware ${p.hw_type}:${p.hw_index}:${p.hw_channel}: ${err}')
+				restore_failed()
 			}
 		} else {
 			transport.vector_unassign(b.app) or {
-				eprintln('note: could not clear Vector application channel ${b.app}: ${err}')
+				eprintln('FAIL: could not clear Vector application channel ${b.app}: ${err}')
+				restore_failed()
 			}
 		}
+	}
+}
+
+fn restore_failed() {
+	borrow_lock()
+	g_restore_failed++
+	borrow_unlock()
+}
+
+// restore_summary says how many borrowed channels stayed misassigned, and how to put them back:
+// a channel that HAD a mapping wants `--channel <n> --assign <row>` at the hardware the FAIL line
+// names (`--release` would clear the operator's own mapping for good); one that had none wants
+// `--release <n>`. Returns the count so each exit path decides its own status.
+fn restore_summary() int {
+	borrow_lock()
+	n := g_restore_failed
+	borrow_unlock()
+	if n > 0 {
+		eprintln('vectorcheck: ${n} borrowed application channel(s) could not be handed back — the bench is not as it was found. See the FAIL lines above: `--probe` shows what each points at now; one that had a mapping goes back with `--channel <n> --assign <row> --seconds 1` at the hardware named there, one that had none is cleared with `--release <n>`')
+	}
+	return n
+}
+
+// restore_verdict is the last word of every command that borrows channels: a run whose cleanup
+// failed has changed somebody's bench for good, and that must fail the command however the test
+// itself went — on the success path AND the failure path, since a driver reset fails both. Exit
+// 3, distinct from 1 (the test failed) and 2 (usage): a wrapper that retries on 1 would borrow
+// the misassigned channels again, snapshot the leftover mapping as `prev` and cement it.
+fn restore_verdict() {
+	if restore_summary() > 0 {
+		exit(3)
 	}
 }
 
@@ -675,18 +720,26 @@ fn main() {
 		println('application channel ${o.release} cleared')
 		return
 	}
+	// The two commands that BORROW channels (--pair and --selftest; --modecheck opens whatever
+	// mapping exists and borrows nothing) end in restore_verdict on BOTH paths: their deferred
+	// give_back has run by the time they return, and a restore that failed fails the command
+	// (#197) — whether the test passed, or failed for the same reason the restore did.
 	if o.pair != '' {
 		pair_test(o) or {
 			eprintln('vectorcheck: ${err}')
+			restore_verdict()
 			exit(1)
 		}
+		restore_verdict()
 		return
 	}
 	if o.selftest {
 		selftest(o.create_channels) or {
 			eprintln('vectorcheck: ${err}')
+			restore_verdict()
 			exit(1)
 		}
+		restore_verdict()
 		return
 	}
 	if o.modecheck {
