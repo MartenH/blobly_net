@@ -204,17 +204,24 @@ fn on_interrupt(_ os.Signal) {
 	// list and this handler had nothing to do — and exiting over it leaves exactly the
 	// half-restored bench the handler exists to prevent. Bounded, because a stuck restore must
 	// not make Ctrl-C useless.
+	mut still_busy := false
 	for _ in 0 .. 300 {
 		borrow_lock()
-		busy := g_restoring > 0
+		still_busy = g_restoring > 0
 		borrow_unlock()
-		if !busy {
+		if !still_busy {
 			break
 		}
 		time.sleep(10 * time.millisecond)
 	}
 	// An interrupt whose restore failed is not a clean interrupt: say so, and do not exit 130 as
-	// if it were (#197).
+	// if it were (#197). And a restore STILL IN FLIGHT when the wait runs out is not known to have
+	// succeeded — exiting through it ends the driver call, so the assignment's state is unknown
+	// rather than clean, and that is reported as a failure too (codex round 1 on #278).
+	if still_busy {
+		eprintln('vectorcheck: a channel restore was still in flight after 3 s and this exit ends it — the assignment state is UNKNOWN; check `--probe`')
+		exit(3)
+	}
 	if restore_summary() > 0 {
 		exit(3)
 	}
