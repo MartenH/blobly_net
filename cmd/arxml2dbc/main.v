@@ -207,6 +207,8 @@ fn main() {
 				unlock_and_exit(locks, 1)
 			}
 			set_aside << [st[1], prev]
+		} else {
+			set_aside << [st[1], ''] // nothing to restore: a rollback REMOVES what this created (round 40)
 		}
 		os.mv(st[0], st[1]) or {
 			eprintln('arxml2dbc: ${st[1]}: ${err}')
@@ -216,7 +218,9 @@ fn main() {
 		eprintln('arxml2dbc: wrote ${st[2]}')
 	}
 	for sa in set_aside {
-		os.rm(sa[1]) or {}
+		if sa[1] != '' {
+			os.rm(sa[1]) or {}
+		}
 	}
 }
 
@@ -224,6 +228,9 @@ fn main() {
 fn roll_back(set_aside [][]string) {
 	for i := set_aside.len - 1; i >= 0; i-- {
 		os.rm(set_aside[i][0]) or {}
+		if set_aside[i][1] == '' {
+			continue // it did not exist before; removed is restored
+		}
 		os.mv(set_aside[i][1], set_aside[i][0]) or {
 			eprintln('arxml2dbc: could not restore ${set_aside[i][0]} from ${set_aside[i][1]}: ${err}')
 		}

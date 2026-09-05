@@ -599,8 +599,8 @@ fn test_alternating_data_ids_are_named_not_collapsed() {
 	// a DATA-ID or an offset that is not an integer makes the contract untrustworthy: refused
 	// and said, never exported with the 0 the lenient parser read (round 39)
 	for bad in [['<DATA-ID>7</DATA-ID>', '<DATA-ID>invalid</DATA-ID>', 'DATA-ID "invalid" is not an integer'],
-		['<CRC-OFFSET>16</CRC-OFFSET>', '<CRC-OFFSET>x</CRC-OFFSET>', 'CRC-OFFSET "x" is not a non-negative integer'],
-		['<COUNTER-OFFSET>24</COUNTER-OFFSET>', '<COUNTER-OFFSET>-8</COUNTER-OFFSET>', 'COUNTER-OFFSET "-8" is not a non-negative integer']] {
+		['<CRC-OFFSET>16</CRC-OFFSET>', '<CRC-OFFSET>x</CRC-OFFSET>', 'CRC-OFFSET "x" is not an integer'],
+		['<COUNTER-OFFSET>24</COUNTER-OFFSET>', '<COUNTER-OFFSET>-8</COUNTER-OFFSET>', 'COUNTER-OFFSET -8 is outside 0..512']] {
 		mb := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>16</CRC-OFFSET>').replace(bad[0], bad[1]) + arxml_tail) or {
 			panic(err)
 		}
@@ -608,6 +608,13 @@ fn test_alternating_data_ids_are_named_not_collapsed() {
 		assert mc.e2e_signals(mc.db.messages[0]) == none, bad[1]
 		assert mb.report.notes.any(it.contains('carries NO E2E attributes for it — its ' + bad[2])), mb.report.notes.str()
 	}
+	// an overflowing DATA-ID is malformed too, not the id 0 (round 40)
+	ovid := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>16</CRC-OFFSET>').replace('<DATA-ID>7</DATA-ID>', '<DATA-ID>0x10000000000000000</DATA-ID>') + arxml_tail) or {
+		panic(err)
+	}
+	ovc := ovid.cluster('') or { panic(err) }
+	assert ovc.e2e_signals(ovc.db.messages[0]) == none
+	assert ovid.report.notes.any(it.contains('its DATA-ID 0x10000000000000000 is outside 0..4294967295')), ovid.report.notes.str()
 	// a protection with no DATA-ID is not exported as id 0 (round 38)
 	no_id := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>16</CRC-OFFSET>').replace('<DATA-IDS><DATA-ID>7</DATA-ID></DATA-IDS>', '<DATA-IDS></DATA-IDS>') + arxml_tail) or {
 		panic(err)
@@ -1175,7 +1182,7 @@ fn test_round_19_shapes() {
 		panic(err)
 	}
 	assert (zero_w.cluster('') or { panic(err) }).db.messages[0].signals.map(it.name) == ['Crc', 'Ctr']
-	assert zero_w.report.notes.any(it.contains('/Sig/V: LENGTH missing or 0; not read'))
+	assert zero_w.report.notes.any(it.contains('/Sig/V: LENGTH 0 is outside 1..1048576; not read'))
 	// `-0` is zero: filed under raw 0 for an unsigned signal, not dropped as a negative that
 	// no sign bit can hold; a COMPU-DEFAULT-VALUE and nested SCALE-CONSTRS are said
 	shapes := offset_pdu_xml.replace(v_sig, '<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF></I-SIGNAL>') + '<AR-PACKAGE><SHORT-NAME>Sys</SHORT-NAME><ELEMENTS><SYSTEM-SIGNAL><SHORT-NAME>S</SHORT-NAME><PHYSICAL-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/Z</COMPU-METHOD-REF><DATA-CONSTR-REF DEST="DATA-CONSTR">/DC/Split</DATA-CONSTR-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></PHYSICAL-PROPS></SYSTEM-SIGNAL></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>CM</SHORT-NAME><ELEMENTS><COMPU-METHOD><SHORT-NAME>Z</SHORT-NAME><CATEGORY>TEXTTABLE</CATEGORY><COMPU-INTERNAL-TO-PHYS><COMPU-SCALES><COMPU-SCALE><LOWER-LIMIT>-0</LOWER-LIMIT><UPPER-LIMIT>-0.0</UPPER-LIMIT><COMPU-CONST><VT>Off</VT></COMPU-CONST></COMPU-SCALE></COMPU-SCALES><COMPU-DEFAULT-VALUE><VT>Other</VT></COMPU-DEFAULT-VALUE></COMPU-INTERNAL-TO-PHYS></COMPU-METHOD></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>DC</SHORT-NAME><ELEMENTS><DATA-CONSTR><SHORT-NAME>Split</SHORT-NAME><DATA-CONSTR-RULES><DATA-CONSTR-RULE><PHYS-CONSTRS><LOWER-LIMIT>0</LOWER-LIMIT><UPPER-LIMIT>100</UPPER-LIMIT><SCALE-CONSTRS><SCALE-CONSTR><LOWER-LIMIT>0</LOWER-LIMIT><UPPER-LIMIT>10</UPPER-LIMIT></SCALE-CONSTR><SCALE-CONSTR><LOWER-LIMIT>90</LOWER-LIMIT><UPPER-LIMIT>100</UPPER-LIMIT></SCALE-CONSTR></SCALE-CONSTRS></PHYS-CONSTRS></DATA-CONSTR-RULE></DATA-CONSTR-RULES></DATA-CONSTR></ELEMENTS></AR-PACKAGE>'
@@ -1230,6 +1237,13 @@ fn test_round_19_shapes() {
 	}
 	assert (two_t.cluster('') or { panic(err) }).db.messages[0].cycle_ms == 100
 	assert two_t.report.notes.any(it.contains('/PDUs/P: 2 I-PDU-TIMING specifications; the first is read'))
+	// a TIME-PERIOD that is not a number leaves no cycle, and says so twice over (round 40)
+	nan_t := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace(pdu_head, pdu_head + '<I-PDU-TIMING-SPECIFICATIONS>' + timing('fast') + '</I-PDU-TIMING-SPECIFICATIONS>') + arxml_tail) or {
+		panic(err)
+	}
+	assert (nan_t.cluster('') or { panic(err) }).db.messages[0].cycle_ms == 0
+	assert nan_t.report.notes.any(it.contains('/PDUs/P: TIME-PERIOD "fast" is not a number; read as none'))
+	assert nan_t.report.notes.any(it.contains('/PDUs/P: CYCLIC-TIMING with no usable TIME-PERIOD; the simulation sends nothing'))
 	// a FALSE-mode timing beside the TRUE one: the true cadence is read and the choice said (round 29)
 	false_t := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace(pdu_head, pdu_head + '<I-PDU-TIMING-SPECIFICATIONS>' + timing('0.1').replace('</TRANSMISSION-MODE-TRUE-TIMING>', '</TRANSMISSION-MODE-TRUE-TIMING><TRANSMISSION-MODE-FALSE-TIMING><CYCLIC-TIMING><TIME-PERIOD><VALUE>1.0</VALUE></TIME-PERIOD></CYCLIC-TIMING></TRANSMISSION-MODE-FALSE-TIMING>') + '</I-PDU-TIMING-SPECIFICATIONS>') + arxml_tail) or {
 		panic(err)
@@ -1315,7 +1329,7 @@ fn test_frame_lengths_are_bounded() {
 		panic(err)
 	}
 	assert (big.cluster('') or { panic(err) }).db.messages.len == 0
-	assert big.report.notes.any(it.contains('frame F has FRAME-LENGTH 72, outside 0..64; not read'))
+	assert big.report.notes.any(it.contains('frame F has FRAME-LENGTH 72 is outside 0..64; not read'))
 	none_ := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<FRAME-LENGTH>8</FRAME-LENGTH>', '') + arxml_tail) or {
 		panic(err)
 	}
@@ -1326,13 +1340,13 @@ fn test_frame_lengths_are_bounded() {
 		panic(err)
 	}
 	assert (nan.cluster('') or { panic(err) }).db.messages.len == 0
-	assert nan.report.notes.any(it.contains('frame F has FRAME-LENGTH "eight", not a non-negative integer; not read'))
+	assert nan.report.notes.any(it.contains('frame F has FRAME-LENGTH "eight" is not an integer; not read'))
 	// …and one that overflows the parser is refused too, not read as 0 (round 39)
 	huge := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<FRAME-LENGTH>8</FRAME-LENGTH>', '<FRAME-LENGTH>0x10000000000000000</FRAME-LENGTH>') + arxml_tail) or {
 		panic(err)
 	}
 	assert (huge.cluster('') or { panic(err) }).db.messages.len == 0
-	assert huge.report.notes.any(it.contains('frame F has FRAME-LENGTH "0x10000000000000000", outside 0..64; not read'))
+	assert huge.report.notes.any(it.contains('frame F has FRAME-LENGTH 0x10000000000000000 is outside 0..64; not read'))
 	// classic CAN carries 8 bytes: a 12-byte frame not declared CAN-FD is not read (round 35)
 	classic12 := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<FRAME-LENGTH>8</FRAME-LENGTH>', '<FRAME-LENGTH>12</FRAME-LENGTH>') + arxml_tail) or {
 		panic(err)
@@ -1344,6 +1358,31 @@ fn test_frame_lengths_are_bounded() {
 		panic(err)
 	}
 	assert (fd12.cluster('') or { panic(err) }).db.messages[0].dlc == 12
+	// …but only at a length a DLC expresses: 9 is padded by the software buses and refused by the
+	// vendor backends, so it is not read (round 40)
+	fd9 := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F').replace('<IDENTIFIER>256</IDENTIFIER>', '<IDENTIFIER>256</IDENTIFIER><CAN-FRAME-TX-BEHAVIOR>CAN-FD</CAN-FRAME-TX-BEHAVIOR>') + offset_pdu_xml.replace('<FRAME-LENGTH>8</FRAME-LENGTH>', '<FRAME-LENGTH>9</FRAME-LENGTH>') + arxml_tail) or {
+		panic(err)
+	}
+	assert (fd9.cluster('') or { panic(err) }).db.messages.len == 0
+	assert fd9.report.notes.any(it.contains('frame F is CAN-FD with FRAME-LENGTH 9, which no DLC expresses'))
+	// an addressing mode that is neither STANDARD nor EXTENDED is not read as STANDARD
+	weird := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F').replace('<CAN-ADDRESSING-MODE>STANDARD</CAN-ADDRESSING-MODE>', '<CAN-ADDRESSING-MODE>WIDE</CAN-ADDRESSING-MODE>') + offset_pdu_xml + arxml_tail) or {
+		panic(err)
+	}
+	assert (weird.cluster('') or { panic(err) }).db.messages.len == 0
+	assert weird.report.notes.any(it.contains('CAN-ADDRESSING-MODE "WIDE" is neither STANDARD nor EXTENDED; not read'))
+	// a mapping without a PDU-REF is said, not silently an empty frame
+	noref := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/P</PDU-REF>', '') + arxml_tail) or {
+		panic(err)
+	}
+	assert (noref.cluster('') or { panic(err) }).db.messages[0].signals.len == 0
+	assert noref.report.notes.any(it.contains('PDU-TO-FRAME-MAPPING M of frame F has no PDU-REF; not read'))
+	// an overflowing PDU START-POSITION is refused, not read as byte 0
+	ovp := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/P</PDU-REF><START-POSITION>8</START-POSITION>', '<PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/P</PDU-REF><START-POSITION>0x10000000000000000</START-POSITION>') + arxml_tail) or {
+		panic(err)
+	}
+	assert (ovp.cluster('') or { panic(err) }).db.messages[0].signals.len == 0
+	assert ovp.report.notes.any(it.contains('PDU P') && it.contains('START-POSITION 0x10000000000000000 is outside 0..512'))
 	// an IDENTIFIER that is missing, negative or too wide for its addressing mode is not read
 	for bad in ['<IDENTIFIER>2048</IDENTIFIER>', '<IDENTIFIER>-1</IDENTIFIER>', '',
 		'<IDENTIFIER>invalid</IDENTIFIER>', '<IDENTIFIER>1.5</IDENTIFIER>'] {
@@ -1358,14 +1397,14 @@ fn test_frame_lengths_are_bounded() {
 		panic(err)
 	}
 	assert !(neg.cluster('') or { panic(err) }).db.messages[0].signals.any(it.name == 'V')
-	assert neg.report.notes.any(it.contains('/Sig/V: START-POSITION -16 (in a PDU at bit 8) is negative; not read'))
+	assert neg.report.notes.any(it.contains('/Sig/V: START-POSITION -16 is outside 0..512; not read'))
 	// a START-POSITION missing or not an integer is not read (round 37)
 	for bad in ['<START-POSITION>x</START-POSITION>', ''] {
 		bp := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<START-POSITION>0</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING>', bad + '</I-SIGNAL-TO-I-PDU-MAPPING>') + arxml_tail) or {
 			panic(err)
 		}
 		assert !(bp.cluster('') or { panic(err) }).db.messages[0].signals.any(it.name == 'V'), bad
-		assert bp.report.notes.any(it.contains('/Sig/V: START-POSITION') && it.contains('is missing or not an integer')), bp.report.notes.str()
+		assert bp.report.notes.any(it.contains('/Sig/V: ') && it.contains('START-POSITION') && it.contains('not read')), bp.report.notes.str()
 	}
 	// a PDU whose own START-POSITION is negative, missing or not a number is not read, before
 	// the byte normalisation could round -1 to byte 0 (round 38)
@@ -1374,7 +1413,7 @@ fn test_frame_lengths_are_bounded() {
 			panic(err)
 		}
 		assert (bp.cluster('') or { panic(err) }).db.messages[0].signals.len == 0, bad
-		assert bp.report.notes.any(it.contains('PDU P START-POSITION') && it.contains('not read')), bp.report.notes.str()
+		assert bp.report.notes.any(it.contains('PDU P') && it.contains('START-POSITION') && it.contains('not read')), bp.report.notes.str()
 	}
 	// a signal that extends past the frame payload is not read: 16 bits at frame bit 56 of 8 bytes
 	past := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<START-POSITION>0</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING>', '<START-POSITION>48</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING>') + arxml_tail) or {
