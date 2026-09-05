@@ -136,6 +136,36 @@ fn test_big_endian_roundtrip() {
 	assert data[0] == 0x30 && data[1] == 0x39 // 12345 = 0x3039
 }
 
+// A signed signal the full 64 bits wide: the raw pattern IS the i64, so all-ones is -1 and not
+// 1.8e19 — the sign-extension below 64 bits shifts by the width, which would be a shift by 64.
+fn test_signed_64_bit() {
+	s := Signal{
+		name:      'Wide'
+		start_bit: 0
+		length:    64
+		is_signed: true
+	}
+	assert s.phys_from_raw(~u64(0)) == -1.0
+	assert s.phys_from_raw(u64(1) << 63) == -9223372036854775808.0
+	assert s.phys_from_raw(5) == 5.0
+	assert s.raw_from_phys(-1.0) == ~u64(0)
+	assert s.raw_from_phys(5.0) == 5
+	mut data := []u8{len: 8}
+	s.encode(mut data, -2.0)
+	assert s.physical(data) == -2.0
+	// and UNSIGNED 64 bits wide: the top half of the domain encodes as itself, not as INT64_MIN
+	u := Signal{
+		name:      'WideU'
+		start_bit: 0
+		length:    64
+		is_signed: false
+	}
+	assert u.phys_from_raw(~u64(0)) == 18446744073709551615.0
+	assert u.raw_from_phys(1.0e19) == u64(10000000000000000000)
+	assert u.raw_from_phys(1.0e19) != u.raw_from_phys(1.8e19)
+	assert u.phys_from_raw(u.raw_from_phys(1.0e19)) == 1.0e19
+}
+
 fn test_big_endian_signed() {
 	s := Signal{
 		name:       'bes'

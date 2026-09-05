@@ -970,6 +970,23 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 			r.report.notes << '${isig_path}: ${length}-bit signal is wider than the 64-bit scalar model; not read'
 			continue
 		}
+		if iv := child(isig, 'INIT-VALUE') {
+			// what the ECU transmits before the first write. The model has no place for it (a
+			// DBC's GenSigStartValue is not read either), so the simulated ECUs start every
+			// unconfigured signal at raw 0 — a nonzero declaration is a payload that differs
+			// from the file, and is said. Judged by the DIRECT form: a deep search for a VALUE
+			// would read a TEXT-VALUE's label as 0 and an ARRAY's first element as the whole.
+			// Zero is what the frame does anyway. After the width guard, so nothing is said
+			// about the simulated outcome of a signal the model does not carry
+			if num := child(iv, 'NUMERICAL-VALUE-SPECIFICATION') {
+				ivt := child_text(num, 'VALUE').trim_space()
+				if parse_num(ivt) != 0 {
+					r.report.notes << '${isig_path}: declares an initial value of ${ivt}; not modelled, the simulated ECUs start it at raw 0'
+				}
+			} else {
+				r.report.notes << '${isig_path}: declares an initial value in a form not read (not a NUMERICAL-VALUE-SPECIFICATION); not modelled, the simulated ECUs start it at raw 0'
+			}
+		}
 
 		// base type: signedness (and the one encoding this model cannot hold). The props
 		// may come in several variants (a variation point); the first is read and the
@@ -1385,37 +1402,56 @@ fn parse_int(s string) int {
 // through i64 (its two's-complement pattern). Hex, decimal, or a float that is integral —
 // never through f64 for an integer literal, which would lose the low bits above 2^53.
 fn parse_key(s string) u64 {
-	t := s.trim_space()
+	t := s.trim_space().trim_left('+')
 	if t.starts_with('-') {
 		return u64(parse_i64(t))
 	}
 	if t.starts_with('0x') || t.starts_with('0X') {
 		return t[2..].parse_uint(16, 64) or { 0 }
 	}
-	// `9007199254740993.0` is the same key as `9007199254740993` and must not go through f64:
-	// a decimal spelling with a zero fraction is an integer literal
-	if t.contains('.') {
-		whole := t.all_before('.')
-		frac := t.all_after('.')
-		if frac.len > 0 && frac.count('0') == frac.len && !whole.contains_any('eE') {
-			return whole.parse_uint(10, 64) or { 0 }
-		}
+	if whole := integral_decimal(t) {
+		return whole.parse_uint(10, 64) or { 0 }
 	}
 	if t.contains('.') || t.contains('e') || t.contains('E') {
-		return u64(i64(t.f64()))
+		// non-negative here (the sign went above), so straight to u64: through i64 a key at or
+		// above 2^63 saturates, and `1.8E19` and `1.9E19` become one entry at INT64_MIN
+		return u64(t.f64())
 	}
 	return t.parse_uint(10, 64) or { 0 }
+}
+
+// integral_decimal is the whole part of a decimal literal whose fraction is all zeros:
+// `9007199254740993.0` is the same key as `9007199254740993`, and so is `-9007199254740993.0`
+// — an integer literal in either sign, which must not go through f64 (the low bits above 2^53
+// would round away). None for anything else: a real fraction, an exponent, no point at all.
+fn integral_decimal(t string) ?string {
+	if !t.contains('.') || t.contains_any('eE') {
+		return none
+	}
+	frac := t.all_after('.')
+	if frac.len > 0 && frac.count('0') == frac.len {
+		return t.all_before('.')
+	}
+	return none
 }
 
 // parse_i64 reads an integer literal as an integer — an enum key above 2^53 would lose its
 // low bits through f64. Hex, decimal, or a float that is integral.
 fn parse_i64(s string) i64 {
-	t := s.trim_space()
+	t := s.trim_space().trim_left('+')
 	if t == '' {
 		return 0
 	}
+	if t.starts_with('-') {
+		// THE SIGN IS ONE RULE for every form below: `-0x1E` tested as hex only without its sign
+		// fell through to the float fallback (it contains an E) and read as -0.0
+		return -parse_i64(t[1..])
+	}
 	if t.starts_with('0x') || t.starts_with('0X') {
 		return i64(t[2..].parse_uint(16, 64) or { 0 })
+	}
+	if whole := integral_decimal(t) {
+		return whole.i64()
 	}
 	if t.contains('.') || t.contains('e') || t.contains('E') {
 		return i64(t.f64())

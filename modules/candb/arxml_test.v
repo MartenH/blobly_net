@@ -728,6 +728,20 @@ fn test_enum_keys_above_2_pow_53_and_opaque_packing() {
 	assert parse_key('9007199254740993.0') == u64(9007199254740993)
 	assert parse_key('9007199254740993.000') == u64(9007199254740993)
 	assert parse_key('12.5') == 12
+	// and a NEGATIVE zero-fraction spelling too: the sign must not send it through f64
+	assert parse_key('-9007199254740993.0') == u64(i64(-9007199254740993))
+	assert parse_key('-9007199254740993') == u64(i64(-9007199254740993))
+	assert parse_i64('-9007199254740993.0') == i64(-9007199254740993)
+	assert parse_i64('-12.5') == -12
+	assert parse_i64('-1.0E2') == -100
+	// the sign is one rule for every literal form: a negative hex key with an E in it is not a float
+	assert parse_i64('-0x1E') == -30
+	assert parse_key('-0x1E') == u64(i64(-30))
+	assert parse_key('+5') == 5
+	assert parse_i64('+5.0') == 5
+	// a non-negative float spelling at the top of the u64 domain stays there (not INT64_MIN)
+	assert parse_key('1.8E19') == u64(18000000000000000000)
+	assert parse_key('1.8E19') != parse_key('1.9E19')
 	// OPAQUE: read as little-endian (the bytes round-trip) and said
 	assert v.byte_order == .little_endian
 	assert a.report.notes.any(it.contains('OPAQUE packing (a byte array) read as a little-endian integer'))
@@ -861,6 +875,42 @@ fn test_shapes_reported_rather_than_misread() {
 		panic(err)
 	}
 	assert u.report.notes.any(it.contains('/Sig/V: declares an update bit at bit 39; not modelled'))
+}
+
+fn test_initial_values_are_said_not_dropped() {
+	v_sig := '<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH></I-SIGNAL>'
+	init := fn (spec string) string {
+		return '<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH><INIT-VALUE>${spec}</INIT-VALUE></I-SIGNAL>'
+	}
+	// nonzero: the simulated frame would carry a different payload than the file declares
+	seven := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace(v_sig, init('<NUMERICAL-VALUE-SPECIFICATION><VALUE>7</VALUE></NUMERICAL-VALUE-SPECIFICATION>')) + arxml_tail) or {
+		panic(err)
+	}
+	assert seven.report.notes.any(it.contains('/Sig/V: declares an initial value of 7; not modelled, the simulated ECUs start it at raw 0'))
+	assert sig(seven.cluster('') or { panic(err) }.db.messages[0], 'V').length == 16
+	// zero is what the frame does anyway: nothing to say
+	zero := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace(v_sig, init('<NUMERICAL-VALUE-SPECIFICATION><VALUE>0.0</VALUE></NUMERICAL-VALUE-SPECIFICATION>')) + arxml_tail) or {
+		panic(err)
+	}
+	assert !zero.report.notes.any(it.contains('initial value'))
+	// every other form is said as unread, never judged by a VALUE found somewhere inside it: a
+	// TEXT-VALUE's label would read as 0, an ARRAY's first element as the whole
+	unread := 'declares an initial value in a form not read (not a NUMERICAL-VALUE-SPECIFICATION)'
+	for form in ['<CONSTANT-REFERENCE><CONSTANT-REF DEST="CONSTANT-SPECIFICATION">/C/Init</CONSTANT-REF></CONSTANT-REFERENCE>',
+		'<TEXT-VALUE-SPECIFICATION><VALUE>Off</VALUE></TEXT-VALUE-SPECIFICATION>',
+		'<ARRAY-VALUE-SPECIFICATION><ELEMENTS><NUMERICAL-VALUE-SPECIFICATION><VALUE>0</VALUE></NUMERICAL-VALUE-SPECIFICATION><NUMERICAL-VALUE-SPECIFICATION><VALUE>255</VALUE></NUMERICAL-VALUE-SPECIFICATION></ELEMENTS></ARRAY-VALUE-SPECIFICATION>'] {
+		other := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace(v_sig, init(form)) + arxml_tail) or {
+			panic(err)
+		}
+		assert other.report.notes.any(it.contains('/Sig/V: ${unread}')), form
+		assert !other.report.notes.any(it.contains('declares an initial value of')), form
+	}
+	// a signal the model does not carry gets no claim about its simulated outcome
+	wide := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace(v_sig, init('<NUMERICAL-VALUE-SPECIFICATION><VALUE>7</VALUE></NUMERICAL-VALUE-SPECIFICATION>').replace('<LENGTH>16</LENGTH>', '<LENGTH>72</LENGTH>')) + arxml_tail) or {
+		panic(err)
+	}
+	assert wide.report.notes.any(it.contains('72-bit signal is wider'))
+	assert !wide.report.notes.any(it.contains('initial value'))
 }
 
 fn test_two_triggerings_of_one_id_keep_the_first_and_say_so() {

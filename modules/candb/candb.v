@@ -115,7 +115,10 @@ pub fn (s Signal) raw_value(data []u8) u64 {
 // e.g. a VAL_ table key (which is stored two's-complement for signed signals).
 pub fn (s Signal) phys_from_raw(raw u64) f64 {
 	mut v := f64(raw)
-	if s.is_signed && s.length > 0 && s.length < 64 {
+	if s.is_signed && s.length == 64 {
+		// the full word: the pattern IS the i64, and the shift below would be by 64
+		v = f64(i64(raw))
+	} else if s.is_signed && s.length > 0 && s.length < 64 {
 		sign_bit := u64(1) << (s.length - 1)
 		if raw & sign_bit != 0 {
 			v = f64(i64(raw) - (i64(1) << s.length)) // two's-complement negative
@@ -128,12 +131,14 @@ pub fn (s Signal) phys_from_raw(raw u64) f64 {
 // masked to the signal width for signed signals).
 pub fn (s Signal) raw_from_phys(phys f64) u64 {
 	// round half away from zero; a bare `+ 0.5` truncates negatives wrongly.
-	mut raw := i64(math.round((phys - s.offset) / s.factor))
-	if raw < 0 {
-		raw += i64(1) << s.length
-	}
+	r := math.round((phys - s.offset) / s.factor)
+	// A negative goes through i64: its two's-complement pattern masked to the width IS the raw
+	// value (adding 1 << length first changes nothing the mask keeps). A non-negative goes
+	// through u64 DIRECTLY — via i64 it saturates at 2^63, so the top half of an unsigned
+	// 64-bit signal's domain encoded as INT64_MIN.
+	raw := if r < 0 { u64(i64(r)) } else { u64(r) }
 	mask := if s.length >= 64 { ~u64(0) } else { (u64(1) << s.length) - 1 }
-	return u64(raw) & mask
+	return raw & mask
 }
 
 // physical applies sign-extension, factor and offset: phys = raw * factor + offset.
