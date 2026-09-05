@@ -478,12 +478,15 @@ was fine as the only symptom. It also *listens* after assigning rather than exit
 62, runs, and puts back whatever they pointed at, including on Ctrl-C. That makes it the least
 disruptive way to test a bench whose mappings you did not make.
 
-**Best effort, though.** The restore runs from a deferred cleanup that cannot fail the command: if
+**And a restore that fails, fails the command.** The restore runs from a deferred cleanup, so if
 the driver resets or disconnects mid-run and `xlSetApplConfig` is rejected, `give_back` prints a
-`note:` line and the run still reports its result. So a `--pair` that ends with a note about a
-channel it could not restore has left 61 or 62 pointing at the test hardware, persistently — read
-those notes, and check `--list` afterwards on a bench that matters. Making a failed restore change
-the exit status is [#197](https://github.com/MartenH/blobly_net/issues/197).
+`FAIL:` line naming the channel and the hardware triple it should point back at, and the command
+ends with a summary and **exit status 3** — distinct from 1 (the test failed) and 2 (usage), and
+whether or not the test itself passed, since a driver reset fails both. A `--pair` that ends that
+way has left 61 or 62 pointing at the test hardware, persistently: `--probe` shows what each
+points at now, `--channel <n> --assign <row> --seconds 1` puts back one that had a mapping, and
+`--release <n>` clears one that had none. Ctrl-C follows the same rule: a clean interrupt exits
+130, one whose restore failed exits 3 ([#197](https://github.com/MartenH/blobly_net/issues/197)).
 
 It does need those two channels to be *registered*, though — 61 and 62 are hardcoded, and the borrow
 refuses to touch a channel it cannot first read, which is exactly the protection that stops it

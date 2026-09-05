@@ -551,6 +551,18 @@ fn (a &App) script_db(ch Chan) candb.Database {
 	return db
 }
 
+// row_is_mine_locked: may a worker spawned for run `gen` into row `ci` of `iface` write to
+// a.chans[ci]? Under app.mu. The generation says the RUN is the one it was spawned into; the
+// bounds and the interface say the ROW is. Both are needed, because Stop leaves the generation
+// where it was and so does a project load — so a vendor open that blocked for seconds, outlived
+// Stop AND a File ▸ Open, and then failed, passed the generation check alone and wrote into the
+// NEW project's array: out of bounds, or onto whatever row now sat at that index (#140). One
+// spelling for every row write in rx_loop; the Log lines beside them are the RUN's and need only
+// the generation — a wire that failed to open is news whether or not its row still exists.
+fn (a &App) row_is_mine_locked(ci int, iface string, gen u64) bool {
+	return a.run_gen == gen && ci < a.chans.len && a.chans[ci].iface == iface
+}
+
 fn rx_loop(app &App, ci int, iface string, gen u64) {
 	mut bus := app.open_transport(iface) or {
 		mut al := unsafe { app }
@@ -563,8 +575,10 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		// after it recorded as having no watcher, and its echo read as the ECU's.
 		mut say := false
 		if a.run_gen == gen {
-			a.chans[ci].running = false
-			a.chans[ci].spawning = false // release the guard, or it can never be re-enabled
+			if a.row_is_mine_locked(ci, iface, gen) {
+				a.chans[ci].running = false
+				a.chans[ci].spawning = false // release the guard, or it can never be re-enabled
+			}
 			// Append UNDER THE SAME take of the lock as the flags: a check that unlocks
 			// first can straddle a Stop/Start and narrate the replacement run (codex #141
 			// r2 — the exact gap the guard exists for, one layer up). And say it at all,
@@ -592,8 +606,10 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	// Only for the run we belong to. Opening a bus takes time, so a loop from the PREVIOUS run
 	// can arrive here after a restart — and since the teardown below is generation-guarded, the
 	// flag it set would stay true with nobody reading: note_emit would then count a watcher that
-	// does not exist and mark healthy traffic as never having reached the wire.
-	if a.run_gen != gen {
+	// does not exist and mark healthy traffic as never having reached the wire. And only for the
+	// ROW we belong to (#140): a slow open that succeeds after a Stop and a project load would
+	// otherwise index the new project's array here, before any of the guarded sites below.
+	if !a.row_is_mine_locked(ci, iface, gen) {
 		a.mu.unlock()
 		bus.close()
 		return
@@ -690,7 +706,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 				// running AND generation, notify_gen's own rule: a health event landing in
 				// the teardown after Stop must neither narrate a finished run nor seed a
 				// stale verdict for the next one (self-review)
-				if a.running && a.run_gen == gen && ci < a.chans.len {
+				if a.running && a.row_is_mine_locked(ci, iface, gen) {
 					a.chans[ci].health = h
 					a.log_append_locked(health_msg(iface, last_health, h))
 				}
@@ -704,7 +720,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			d := bus.diagnostics()
 			if d != last_diag {
 				a.mu.lock()
-				if a.running && a.run_gen == gen && ci < a.chans.len {
+				if a.running && a.row_is_mine_locked(ci, iface, gen) {
 					a.chans[ci].diag = d
 					a.chans[ci].diag_at = time.ticks()
 					a.log_append_locked(diag_msg(iface, last_diag, d))
@@ -737,7 +753,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			final := bus.diagnostics()
 			if final != last_diag {
 				a.mu.lock()
-				if a.running && a.run_gen == gen && ci < a.chans.len {
+				if a.running && a.row_is_mine_locked(ci, iface, gen) {
 					a.chans[ci].diag = final
 					a.chans[ci].diag_at = time.ticks()
 					a.log_append_locked(diag_msg(iface, last_diag, final))
@@ -751,7 +767,7 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 			// repeated the failure — the same spin, one open slower. A channel whose adapter has
 			// gone stops being part of the run until somebody says otherwise.
 			a.mu.lock()
-			if a.run_gen == gen && ci < a.chans.len {
+			if a.row_is_mine_locked(ci, iface, gen) {
 				// EVERY ALIAS ON THIS WIRE. Disabling only the reader-owning row let the
 				// teardown hand the reader to a sibling, which opens the same failed adapter and
 				// fails the same way — a relay race around a port that has gone.
@@ -786,8 +802,10 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		a.mu.lock()
 		// AGAIN under the lock. The check after recv can pass and then this thread be
 		// descheduled while Start resets the ring and advances the generation — the stale loop
-		// would resume here and claim or record its old frame against the new run.
-		if a.run_gen != gen {
+		// would resume here and claim or record its old frame against the new run. And the ROW
+		// (#140): a frame that wakes this recv after a Stop and a project load would otherwise
+		// be filed against the rebuilt array's row `ci`, or past its end.
+		if !a.row_is_mine_locked(ci, iface, gen) {
 			a.mu.unlock()
 			break
 		}
@@ -839,8 +857,8 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		a.mu.lock()
 		// The run again: this iteration released the lock after claiming, and a Stop→Start in
 		// that gap resets the ring and moves the generation — publishing here would put the old
-		// run's frame into the new run's trace, recording and verifier.
-		if a.run_gen != gen {
+		// run's frame into the new run's trace, recording and verifier. The row too (#140).
+		if !a.row_is_mine_locked(ci, iface, gen) {
 			a.mu.unlock()
 			break
 		}
@@ -915,9 +933,11 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	final := bus.diagnostics()
 	if final != last_diag {
 		a.mu.lock()
-		if a.run_gen == gen && ci < a.chans.len {
-			a.chans[ci].diag = final
-			a.chans[ci].diag_at = time.ticks()
+		if a.run_gen == gen {
+			if a.row_is_mine_locked(ci, iface, gen) {
+				a.chans[ci].diag = final
+				a.chans[ci].diag_at = time.ticks()
+			}
 			a.log_append_locked(diag_msg(iface, last_diag, final))
 		}
 		a.mu.unlock()
@@ -927,8 +947,10 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	// Only if this run is still the current one. A loop that exited because the generation moved
 	// on would otherwise clear a flag the NEW loop just set, and every emission after that would
 	// see no watcher: its echo classified as the device under test's, recorded twice and fed to
-	// the verifier, while the monitor was in fact running the whole time.
-	if a.run_gen == gen {
+	// the verifier, while the monitor was in fact running the whole time. And only if the ROW is
+	// still this loop's (#140): after a Stop and a project load the index may be out of range or
+	// somebody else's.
+	if a.row_is_mine_locked(ci, iface, gen) {
 		a.chans[ci].running = false
 		a.chans[ci].spawning = false
 		// Re-enabled while we were on our way out? The toggle saw `running` still true and
