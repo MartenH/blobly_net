@@ -747,9 +747,13 @@ or move its origin.
 
 **CAN-FD replays.** The `fd`/`brs` flags come from the recording's own `EDL`/`BRS` fields (and a
 payload over 8 bytes is FD whatever the flag says), and travel through to the wire. `--dry-run`
-reports the FD share, because the destination interface has to be FD-capable and up — SocketCAN
+reports the FD share per destination, because that interface has to be FD-capable and up — SocketCAN
 declines `CAN_RAW_FD_FRAMES` on a classic interface, and the send then fails with that named as
-the likely cause rather than a bare errno. This matters at real scale: of one vehicle's 12
+the likely cause rather than a bare errno. The GUI says the same thing at Start, in the per-channel
+replay line: when a **classic** channel on a vendor adapter (Vector, Kvaser, PCAN, CANsub — where
+the row's mode is the controller's) is about to replay FD frames, the line names how many and that
+each will be refused and counted as failed. On SocketCAN and the software buses a classic row
+carries FD frames regardless, so nothing is said there. This matters at real scale: of one vehicle's 12
 databased buses, six are majority FD, one entirely so.
 
 **Who counts as a sender.** A DBC may name additional transmitters with `BO_TX_BU_`, and the

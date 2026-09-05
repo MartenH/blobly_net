@@ -514,7 +514,7 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 	}
 	plan := player.build_multi(all, specs)
 	mut total := 0
-	for b in plan.buses {
+	for i, b in plan.buses {
 		total += b.report.kept
 		// EVERY BUCKET THAT REMOVED A FRAME, not just the excluded node's. Reporting only
 		// `withheld_excluded`, a remote-only recording announced "nothing to replay, 0 withheld"
@@ -525,6 +525,17 @@ fn replay_group(app &App, source string, cis []int, gen u64, token u64) {
 		mut why := '${gone} withheld'
 		if b.report.remote > 0 {
 			why += ' (${b.report.remote} remote request(s), never replayed)'
+		}
+		// AND WHAT WILL BE REFUSED ON THE WAY OUT (#184): the mirror of fd_capability_warnings at
+		// Start. That one covers an FD ROW on a backend that refuses FD; this is a CLASSIC row —
+		// on a backend where the row's mode is the controller's (project.refuses_fd_frames) —
+		// whose kept frames include FD ones: each is refused, counted into `failed`, and the run
+		// reads as a successful measurement quietly missing traffic. Said here, from the plan's
+		// own post-subtraction count and after every refusal above, so it names frames that will
+		// actually be sent by a run that will actually start. A warning, not a refusal: the
+		// classic half is real. plan.buses is in specs order, which is chans order.
+		if b.report.fd > 0 && i < chans.len && chans[i].for_open().refuses_fd_frames() {
+			why += '; ${b.report.fd} CAN-FD frame(s) on a classic ${chans[i].adapter} channel — each will be refused and counted as failed'
 		}
 		if b.report.kept == 0 {
 			a.notify('replay ${b.dst}: nothing to replay, ${why}')

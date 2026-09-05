@@ -81,6 +81,59 @@ fn test_the_excluded_nodes_frames_are_withheld() {
 	assert rep.kept == 3
 }
 
+// The FD count is of the KEPT frames: an excluded node's FD traffic is withheld, not refused, and
+// the front ends warn with this number rather than one counted off the recording (#184). By the
+// frame's flag, not its length — a 2-byte FD frame is still FD.
+fn test_fd_frames_are_counted_among_the_kept_only() {
+	mut src := on_bus(sample(), 'mf4:group25')
+	src << canlog.LogEntry{
+		iface: 'mf4:group25'
+		t_s:   9.0
+		frame: transport.CanFrame{
+			id:   0x100 // the SUT's — withheld
+			fd:   true
+			data: []u8{len: 12}
+		}
+	}
+	src << canlog.LogEntry{
+		iface: 'mf4:group25'
+		t_s:   9.1
+		frame: transport.CanFrame{
+			id:   0x200 // EBS's — kept
+			fd:   true
+			data: [u8(1), 2]
+		}
+	}
+	src << canlog.LogEntry{
+		iface: 'mf4:group25'
+		t_s:   9.2
+		frame: transport.CanFrame{
+			id:   0x7FF // unknown to the database — kept
+			fd:   true
+			brs:  true
+			data: []u8{len: 64}
+		}
+	}
+	_, rep := without_senders(src, sample_db(), ['SUT_ECU'], true)
+	assert rep.fd == 2
+	assert rep.withheld_excluded == 3
+	none_excluded, all_rep := without_senders(src, sample_db(), [], true)
+	assert all_rep.fd == 3
+	assert none_excluded.count(it.frame.fd) == 3
+	// and it rides the multi-bus plan per bus, through the same tally
+	plan := build_multi(src, [
+		BusSpec{
+			src:                 'mf4:group25'
+			dst:                 'vcan0'
+			db:                  sample_db()
+			exclude:             ['SUT_ECU']
+			replay_unattributed: true
+		},
+	])
+	assert plan.buses[0].report.fd == 2
+	assert plan.buses[0].report.kept == rep.kept
+}
+
 // An id the database does not define is still evidence: the recording proves it was on the wire.
 // Dropping what the database omits would quietly gut a rest bus wherever the database is
 // incomplete, which is the normal state of affairs.

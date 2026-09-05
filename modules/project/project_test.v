@@ -1174,6 +1174,18 @@ fn test_fd_capability_warnings_stay_quiet_where_fd_works() {
 
 // DISABLED ROWS HAVE NO SAY, the rule every check here follows — and a CLASSIC row on PCAN is
 // perfectly ordinary, so the warning must key on `fd` rather than on the adapter alone.
+// A classic row refuses an FD frame only where the row's mode IS the controller's: the vendor
+// adapters. SocketCAN and the software buses carry FD frames whatever the row declares (#184).
+fn test_refuses_fd_frames_follows_the_data_phase_seam() {
+	for adapter in ['vector', 'kvaser', 'pcan', 'cansub'] {
+		assert Channel{ adapter: adapter }.refuses_fd_frames(), adapter
+		assert !Channel{ adapter: adapter, fd: true }.refuses_fd_frames(), adapter
+	}
+	for adapter in ['socketcan', 'virtual', 'inproc', 'udp', 'doip', ''] {
+		assert !Channel{ adapter: adapter }.refuses_fd_frames(), adapter
+	}
+}
+
 fn test_fd_capability_warnings_ignore_disabled_and_classic_rows() {
 	off := Channel{
 		name:    'off'
