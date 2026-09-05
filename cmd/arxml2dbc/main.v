@@ -229,6 +229,7 @@ fn main() {
 			os.mv(st[1], prev) or {
 				eprintln('arxml2dbc: ${st[1]}: cannot set the previous file aside: ${err}')
 				roll_back(set_aside)
+				unstage(staged) // and no complete artifact left under a .tmp name (round 47)
 				unlock_and_exit(locks, 1)
 			}
 			set_aside << [st[1], prev]
@@ -238,6 +239,7 @@ fn main() {
 		os.mv(st[0], st[1]) or {
 			eprintln('arxml2dbc: ${st[1]}: ${err}')
 			roll_back(set_aside)
+			unstage(staged)
 			unlock_and_exit(locks, 1)
 		}
 		wrote << st[2]
@@ -303,6 +305,16 @@ fn stage(dst string, text string, earlier [][]string) ![]string {
 		return err
 	}
 	C.close(fd)
+	if os.exists(dst) {
+		// the replacement keeps the mode of what it replaces (round 47): a 0600 database
+		// regenerated under a 022 umask came back world-readable. A new file takes the default
+		os.chmod(tmp, int(os.inode(dst).bitmask())) or {
+			eprintln('arxml2dbc: ${tmp}: cannot carry the mode of ${dst}: ${err}')
+			os.rm(tmp) or {}
+			unstage(earlier)
+			return err
+		}
+	}
 	return [tmp, dst]
 }
 
