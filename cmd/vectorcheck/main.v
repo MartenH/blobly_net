@@ -22,6 +22,7 @@ import os
 import time
 import sync
 import transport
+import restorerule
 
 struct Opts {
 	list       bool
@@ -152,21 +153,14 @@ struct Borrowed {
 // not cover Ctrl-C, which is how anybody stops a diagnostic that is transmitting for ten
 // seconds — and the process then exits with somebody's bench still pointed at our test
 // hardware. The one thing this tool must never do is leave a configuration changed.
+// The RULES of who restores what, and what an exit may claim, are restorerule's — pure state
+// under this one lock, tested where these driver calls cannot be (#197/#278 took four review
+// rounds in that path before it had a test). `g_prev` keeps the driver-facing half: the hardware
+// each borrowed channel is to be put back to, by application channel.
 __global (
-	g_borrowed      []Borrowed
-	g_borrow_mu     &sync.Mutex
-	g_shutting_down bool
-	g_restoring     int // restorations in flight; the handler must not exit through one
-	// Restores that FAILED. give_back runs from a defer and cannot return a failure into the
-	// command's result, so a driver reset or an adapter unplugged mid-run left channels 61/62
-	// (or 63/64) pointed at the test hardware — in a state that survives reboots — while the
-	// run printed its verdict and exited 0 (#197). Counted here, read by restore_verdict.
-	g_restore_failed int
-	// The restores IN FLIGHT: claimed off g_borrowed by give_back and not yet written back. An
-	// interrupt that times out waiting on one exits through it, and by then the record has left
-	// g_borrowed and no FAIL line has been printed — so this is the one place the channel and
-	// its original target can still be read from (codex round 3 on #278).
-	g_in_flight []Borrowed
+	g_ledger    restorerule.Ledger
+	g_prev      map[int]Borrowed
+	g_borrow_mu &sync.Mutex
 )
 
 // The handler runs on another thread, and `borrow()` appends to the same array — an append that
@@ -200,26 +194,12 @@ fn on_interrupt(_ os.Signal) {
 	// so releasing the lock and then exiting left the main thread free to borrow one more
 	// channel — which no snapshot could contain, and which therefore stayed pointed at the test
 	// hardware for good.
-	g_shutting_down = true
-	snapshot := g_borrowed.clone()
+	snapshot := g_ledger.close()
 	borrow_unlock()
 	give_back(snapshot)
-	// WAIT OUT ANYONE ELSE'S RESTORE. The ordinary deferred cleanup may be partway through
-	// writing assignments back — it claims the entries first, so the snapshot above saw an empty
-	// list and this handler had nothing to do — and exiting over it leaves exactly the
-	// half-restored bench the handler exists to prevent. Bounded, because a stuck restore must
-	// not make Ctrl-C useless.
-	// An interrupt whose restore failed is not a clean interrupt: say so, and do not exit 130 as
-	// if it were (#197). And a restore STILL IN FLIGHT when the wait runs out is not known to have
-	// succeeded — exiting through it ends the driver call, so the assignment's state is unknown
-	// rather than clean, and that is reported as a failure too (codex round 1 on #278).
-	if wait_out_restores() {
-		exit(3)
-	}
-	if restore_summary() > 0 {
-		exit(3)
-	}
-	exit(130)
+	// WAIT OUT ANYONE ELSE'S RESTORE, then say what this exit is — clean (130), failed, or
+	// unknown because a restore is still in flight and this exit ends it (restorerule.verdict).
+	exit(settle(true).exit)
 }
 
 fn borrow(app int, hw transport.VectorChannel, create_ok bool) !Borrowed {
@@ -265,6 +245,7 @@ fn borrow(app int, hw transport.VectorChannel, create_ok bool) !Borrowed {
 		app:  app
 		prev: if had { ?transport.VectorChannel(prev) } else { none }
 	}
+	e := b.entry()
 	// RECORDED BEFORE THE CHANGE. Appending afterwards left a window in which Ctrl-C restored
 	// every earlier borrow and not this one — the assignment already written, and nothing left
 	// that knew to undo it. Recording an intention we might not carry out is harmless: giving
@@ -273,91 +254,72 @@ fn borrow(app int, hw transport.VectorChannel, create_ok bool) !Borrowed {
 	// restore a channel the main thread was about to overwrite — putting the assignment back
 	// after the cleanup that was meant to undo it.
 	borrow_lock()
-	if g_shutting_down {
+	if !g_ledger.record(e) {
 		borrow_unlock()
 		return error('interrupted before this channel was taken')
 	}
-	g_borrowed << b
+	g_prev[app] = b
 	transport.vector_assign(app, hw) or {
-		g_borrowed.delete_last()
+		g_ledger.unrecord(app)
+		g_prev.delete(app)
 		borrow_unlock()
 		return err
 	}
 	borrow_unlock()
-	// Recorded in g_borrowed, so give_back now owns the unlock for this borrow.
+	// Recorded in the ledger, so give_back now owns the unlock for this borrow.
 	ok = true
 	return b
+}
+
+// entry is the borrow as the ledger names it: the channel, and the hardware triple it goes back
+// to ('' for "had no mapping" — cleared). The triple, not the name: vector_assignment fills
+// hw_type/index/channel only, and the triple is what `--channel <n> --assign <row>` needs.
+fn (b Borrowed) entry() restorerule.Entry {
+	return restorerule.Entry{
+		app:    b.app
+		target: if p := b.prev { '${p.hw_type}:${p.hw_index}:${p.hw_channel}' } else { '' }
+	}
 }
 
 // EXACTLY ONCE PER CHANNEL, whoever gets there first. The interrupt handler and the ordinary
 // deferred cleanup can run at the same time, and neither used to claim what it was about to
 // restore — so both wrote the same mappings, and a handler delayed past the interprocess unlock
-// could overwrite the assignments of the NEXT vectorcheck to take the lock. Each entry is
-// removed from the shared list under the mutex before it is restored; a caller that finds
-// nothing left has nothing to do.
-fn give_back(bs []Borrowed) {
+// could overwrite the assignments of the NEXT vectorcheck to take the lock. The ledger hands each
+// entry to one claimer (restorerule.claim); a caller that gets nothing has nothing to do, and is
+// not counted as a restorer at work.
+fn give_back(want []restorerule.Entry) {
 	borrow_lock()
-	mut mine := []Borrowed{}
-	for b in bs {
-		for i, g in g_borrowed {
-			if g.app == b.app {
-				mine << g
-				g_borrowed.delete(i)
-				break
-			}
-		}
-	}
+	mine := g_ledger.claim(want)
+	borrow_unlock()
 	if mine.len == 0 {
-		// nothing claimed — the other party (the handler, or the deferred cleanup) has them. Not
-		// counted as in flight: a count with no record behind it read as a restore that never
-		// finished (codex round 4 on #278)
-		borrow_unlock()
 		return
 	}
-	// COUNTED WHILE IT HAPPENS. Claiming removes the entries from the shared list, so between
-	// the claim and the writes an interrupt sees an empty list, concludes there is nothing to do,
-	// and exits THROUGH a restoration that is halfway done — the one moment when stopping is
-	// worse than either finishing or never having started.
-	g_restoring++
-	g_in_flight << mine
-	borrow_unlock()
 	defer {
 		borrow_lock()
-		g_restoring--
-		forget_in_flight(mine) // its own function: V allows no `break` inside a defer
+		g_ledger.finish(mine)
 		borrow_unlock()
 		for _ in mine {
 			transport.vector_borrow_unlock()
 		}
 	}
-	for b in mine {
+	for e in mine {
+		borrow_lock()
+		b := g_prev[e.app] or { Borrowed{
+			app: e.app
+		} }
+		borrow_unlock()
 		// AS WE FOUND IT includes "not assigned at all". Restoring only the channels that had a
 		// mapping left the others pointing at our test hardware for good, which is the same
 		// unasked-for change to somebody's bench, just quieter.
 		if p := b.prev {
-			transport.vector_assign(b.app, p) or {
-				// THE TRIPLE, not the name: vector_assignment fills hw_type/index/channel only, and
-				// the triple is what `--channel ${b.app} --assign <row>` needs to put it back
-				eprintln('FAIL: could not restore Vector application channel ${b.app} to hardware ${p.hw_type}:${p.hw_index}:${p.hw_channel}: ${err}')
+			transport.vector_assign(e.app, p) or {
+				eprintln('FAIL: could not restore Vector application channel ${e.app} to hardware ${e.target}: ${err}')
 				restore_failed()
 			}
 		} else {
-			transport.vector_unassign(b.app) or {
-				eprintln('FAIL: could not clear Vector application channel ${b.app}: ${err}')
+			transport.vector_unassign(e.app) or {
+				eprintln('FAIL: could not clear Vector application channel ${e.app}: ${err}')
 				restore_failed()
-			}
-		}
-	}
-}
-
-// forget_in_flight drops the given entries from g_in_flight, by application channel. Caller
-// holds the borrow lock.
-fn forget_in_flight(done []Borrowed) {
-	for m in done {
-		for i, g in g_in_flight {
-			if g.app == m.app {
-				g_in_flight.delete(i)
-				break
 			}
 		}
 	}
@@ -365,53 +327,32 @@ fn forget_in_flight(done []Borrowed) {
 
 fn restore_failed() {
 	borrow_lock()
-	g_restore_failed++
+	g_ledger.fail()
 	borrow_unlock()
-}
-
-// restore_summary says how many borrowed channels stayed misassigned, and how to put them back:
-// a channel that HAD a mapping wants `--channel <n> --assign <row>` at the hardware the FAIL line
-// names (`--release` would clear the operator's own mapping for good); one that had none wants
-// `--release <n>`. Returns the count so each exit path decides its own status.
-fn restore_summary() int {
-	borrow_lock()
-	n := g_restore_failed
-	borrow_unlock()
-	if n > 0 {
-		eprintln('vectorcheck: ${n} borrowed application channel(s) could not be handed back — the bench is not as it was found. See the FAIL lines above: `--probe` shows what each points at now; one that had a mapping goes back with `--channel <n> --assign <row> --seconds 1` at the hardware named there, one that had none is cleared with `--release <n>`')
-	}
-	return n
 }
 
 // restore_verdict is the last word of every command that borrows channels: a run whose cleanup
 // failed has changed somebody's bench for good, and that must fail the command however the test
-// itself went — on the success path AND the failure path, since a driver reset fails both. Exit
-// 3, distinct from 1 (the test failed) and 2 (usage): a wrapper that retries on 1 would borrow
-// the misassigned channels again, snapshot the leftover mapping as `prev` and cement it.
-//
-// It WAITS first: the interrupt handler may have claimed the records and be stalled in the
-// driver while the main thread finishes — its deferred give_back then finds nothing to do, and
-// returning here would end the handler's restore mid-write with the count still at zero (codex
-// round 4 on #278). The same bounded wait and the same unknown-state verdict the handler uses.
+// itself went — on the success path AND the failure path, since a driver reset fails both. The
+// verdict and its exit status are restorerule.verdict's; this waits and prints.
 fn restore_verdict() {
-	if wait_out_restores() {
-		exit(3)
-	}
-	if restore_summary() > 0 {
-		exit(3)
+	v := settle(false)
+	if v.exit != 0 {
+		exit(v.exit)
 	}
 }
 
-// wait_out_restores waits, bounded, for every restore in flight — the handler's or the deferred
-// cleanup's, whichever this thread is not — and reports true when one is STILL in flight, naming
-// what it was putting back: the records have left g_borrowed and the blocked call printed no
-// FAIL line, so without this the original mapping would be gone with the process (codex rounds
-// 1–3 on #278). Read once more after the loop, since a restore that finished during the last
-// sleep is not in flight (round 2).
-fn wait_out_restores() bool {
+// settle waits, bounded, for every restore in flight — the handler's or the deferred cleanup's,
+// whichever this thread is not — and then reads the verdict and says it. Bounded, because a
+// stuck restore must not make Ctrl-C useless; read ONCE MORE after the loop, since a restore
+// that finished during the last sleep is not in flight. An UNKNOWN verdict names what was being
+// put back: the records have left the borrowed list and the blocked call printed no FAIL line,
+// so without this the original mapping would be gone with the process (#278 rounds 1–4; the
+// rules themselves are restorerule's, with those rounds as its test table).
+fn settle(interrupted bool) restorerule.Verdict {
 	for _ in 0 .. 300 {
 		borrow_lock()
-		busy := g_restoring > 0
+		busy := g_ledger.restoring > 0
 		borrow_unlock()
 		if !busy {
 			break
@@ -419,21 +360,28 @@ fn wait_out_restores() bool {
 		time.sleep(10 * time.millisecond)
 	}
 	borrow_lock()
-	still_busy := g_restoring > 0
-	pending := g_in_flight.clone()
+	v := g_ledger.verdict(interrupted)
 	borrow_unlock()
-	if !still_busy {
-		return false
-	}
-	eprintln('vectorcheck: a channel restore was still in flight after 3 s and this exit ends it — the assignment state is UNKNOWN:')
-	for b in pending {
-		if p := b.prev {
-			eprintln('  application channel ${b.app} was being put back to hardware ${p.hw_type}:${p.hw_index}:${p.hw_channel} — `--channel ${b.app} --assign <row> --seconds 1` at that hw (the row is in `--probe`)')
-		} else {
-			eprintln('  application channel ${b.app} was being cleared — `--release ${b.app}`')
+	match v.outcome {
+		.unknown {
+			eprintln('vectorcheck: a channel restore was still in flight after 3 s and this exit ends it — the assignment state is UNKNOWN:')
+			for e in v.pending {
+				if e.target != '' {
+					eprintln('  application channel ${e.app} was being put back to hardware ${e.target} — `--channel ${e.app} --assign <row> --seconds 1` at that hw (the row is in `--probe`)')
+				} else {
+					eprintln('  application channel ${e.app} was being cleared — `--release ${e.app}`')
+				}
+			}
 		}
+		.failed {
+			// how to put them back: a channel that HAD a mapping wants `--channel <n> --assign
+			// <row>` at the hardware the FAIL line names (`--release` would clear the operator's
+			// own mapping for good); one that had none wants `--release <n>`
+			eprintln('vectorcheck: ${v.failed} borrowed application channel(s) could not be handed back — the bench is not as it was found. See the FAIL lines above: `--probe` shows what each points at now; one that had a mapping goes back with `--channel <n> --assign <row> --seconds 1` at the hardware named there, one that had none is cleared with `--release <n>`')
+		}
+		.clean {}
 	}
-	return true
+	return v
 }
 
 // poll returns a frame, or none when the queue is simply empty, and FAILS on anything else.
@@ -1235,7 +1183,7 @@ fn selftest(create_ok bool) ! {
 	a_ch, b_ch := 63, 64
 	mut borrowed := []Borrowed{}
 	defer {
-		give_back(borrowed)
+		give_back(borrowed.map(it.entry()))
 	}
 	borrowed << borrow(a_ch, virt[0], create_ok)!
 	borrowed << borrow(b_ch, virt[1], create_ok)!
@@ -1319,7 +1267,7 @@ fn pair_test(o Opts) ! {
 	a_app, b_app := 61, 62
 	mut borrowed := []Borrowed{}
 	defer {
-		give_back(borrowed)
+		give_back(borrowed.map(it.entry()))
 	}
 	borrowed << borrow(a_app, chans[a_row], o.create_channels)!
 	borrowed << borrow(b_app, chans[b_row], o.create_channels)!
