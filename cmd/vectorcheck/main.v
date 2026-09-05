@@ -204,12 +204,11 @@ fn on_interrupt(_ os.Signal) {
 	// list and this handler had nothing to do — and exiting over it leaves exactly the
 	// half-restored bench the handler exists to prevent. Bounded, because a stuck restore must
 	// not make Ctrl-C useless.
-	mut still_busy := false
 	for _ in 0 .. 300 {
 		borrow_lock()
-		still_busy = g_restoring > 0
+		busy := g_restoring > 0
 		borrow_unlock()
-		if !still_busy {
+		if !busy {
 			break
 		}
 		time.sleep(10 * time.millisecond)
@@ -217,7 +216,12 @@ fn on_interrupt(_ os.Signal) {
 	// An interrupt whose restore failed is not a clean interrupt: say so, and do not exit 130 as
 	// if it were (#197). And a restore STILL IN FLIGHT when the wait runs out is not known to have
 	// succeeded — exiting through it ends the driver call, so the assignment's state is unknown
-	// rather than clean, and that is reported as a failure too (codex round 1 on #278).
+	// rather than clean, and that is reported as a failure too (codex round 1 on #278). Read
+	// ONCE MORE after the loop: a restore that finished during the last sleep is not in flight,
+	// and the loop's own flag would still say it was (codex round 2).
+	borrow_lock()
+	still_busy := g_restoring > 0
+	borrow_unlock()
 	if still_busy {
 		eprintln('vectorcheck: a channel restore was still in flight after 3 s and this exit ends it — the assignment state is UNKNOWN; check `--probe`')
 		exit(3)
@@ -670,7 +674,7 @@ fn main() {
 			eprintln('the driver reports no channels (is the XL Driver Library installed?)')
 			exit(1)
 		}
-		println('idx  name                              transceiver                   serial     bus     rate      can-fd')
+		println('idx  name                              transceiver                   serial     bus     rate      can-fd  hw')
 		for i, c in chans {
 			bus := match c.bus_type {
 				0 { '-' }
@@ -684,7 +688,9 @@ fn main() {
 			// cannot carry CAN-FD at all; `bosch-only` means it can, in a frame format this
 			// backend does not speak.
 			fd := if c.fd_note() == '' { '-' } else { c.fd_note() }
-			println('${i:3}  ${c.name:-32}  ${c.transceiver:-28}  ${c.serial:-9}  ${bus:-6}  ${rate:-9} ${fd}')
+			// `hw` is the type:index:channel triple a FAIL line from give_back names, so the row to
+			// hand back with `--channel <n> --assign <row>` can be found here (codex round 2 on #278)
+			println('${i:3}  ${c.name:-32}  ${c.transceiver:-28}  ${c.serial:-9}  ${bus:-6}  ${rate:-9} ${fd:-7} ${c.hw_type}:${c.hw_index}:${c.hw_channel}')
 		}
 		println('')
 		println('rate is what the channel is running at NOW — it reflects whatever application')
