@@ -120,13 +120,13 @@ fn main() {
 	// one path leave only the second after reporting both written (codex on #273 round 22).
 	// Compared as real paths, so `./x.arxml` and `x.arxml` are one file.
 	for out in [dbc_out, toml_out] {
-		if out != '' && out != '-' && os.real_path(out) == os.real_path(src) {
+		if out != '' && out != '-' && canon(out) == canon(src) {
 			eprintln('arxml2dbc: ${out} is the input ARXML; refusing to overwrite the source')
 			exit(2)
 		}
 	}
 	both_files := dbc_out != '' && dbc_out != '-' && toml_out != '' && toml_out != '-'
-	if both_files && os.real_path(dbc_out) == os.real_path(toml_out) {
+	if both_files && canon(dbc_out) == canon(toml_out) {
 		eprintln('arxml2dbc: --dbc and --toml name the same file (${dbc_out}); only one would survive')
 		exit(2)
 	}
@@ -140,29 +140,56 @@ fn main() {
 	}
 	// stdout carries ONE file: the DBC by default, the fragment when `--toml -` asks for it
 	toml_to_stdout := toml_out == '-'
-	if dbc_out == '' || dbc_out == '-' {
-		if !toml_to_stdout {
-			print(dbc)
-		}
-	} else {
-		os.write_file(dbc_out, dbc) or {
-			eprintln('arxml2dbc: ${dbc_out}: ${err}')
+	dbc_to_file := dbc_out != '' && dbc_out != '-'
+	frag := if toml_out != '' { c.frame_toml(ecu) } else { '' }
+	if !dbc_to_file && !toml_to_stdout {
+		print(dbc)
+	}
+	if toml_to_stdout {
+		print(frag)
+	}
+	// STAGED, THEN MOVED INTO PLACE (round 33): both artifacts are written beside their
+	// destinations first and renamed only once every write succeeded — a TOML write failing
+	// (unwritable parent, full disk) after the DBC was already replaced left a regenerated DBC
+	// beside the previous fragment, the inconsistent pair the ECU check above exists to prevent
+	mut staged := [][]string{} // [temporary, destination, what was written]
+	if dbc_to_file {
+		staged << stage(dbc_out, dbc, staged) or { exit(1) }
+		staged[staged.len - 1] << '${dbc_out} (${c.db.messages.len} messages)'
+	}
+	if toml_out != '' && !toml_to_stdout {
+		staged << stage(toml_out, frag, staged) or { exit(1) }
+		staged[staged.len - 1] << toml_out
+	}
+	for st in staged {
+		os.mv(st[0], st[1]) or {
+			eprintln('arxml2dbc: ${st[1]}: ${err}')
 			exit(1)
 		}
-		eprintln('arxml2dbc: wrote ${dbc_out} (${c.db.messages.len} messages)')
+		eprintln('arxml2dbc: wrote ${st[2]}')
 	}
-	if toml_out != '' {
-		frag := c.frame_toml(ecu)
-		if toml_to_stdout {
-			print(frag)
-		} else {
-			os.write_file(toml_out, frag) or {
-				eprintln('arxml2dbc: ${toml_out}: ${err}')
-				exit(1)
-			}
-			eprintln('arxml2dbc: wrote ${toml_out}')
+}
+
+// stage writes `text` to a temporary beside `dst` and returns [temporary, dst]; on failure it
+// removes every earlier staged temporary too, so nothing is left behind and nothing was replaced.
+fn stage(dst string, text string, earlier [][]string) ![]string {
+	tmp := dst + '.arxml2dbc.tmp'
+	os.write_file(tmp, text) or {
+		eprintln('arxml2dbc: ${dst}: ${err}')
+		for e in earlier {
+			os.rm(e[0]) or {}
 		}
+		return err
 	}
+	return [tmp, dst]
+}
+
+// canon is a path spelling two names of one file agree on, whether or not the file exists yet:
+// the parent's real path plus the base name. `os.real_path` of a leaf that does not exist yet
+// returns its spelling unchanged, so `out` and `./out` compared unequal and the second write
+// replaced the first (codex on #273 round 33).
+fn canon(p string) string {
+	return os.join_path(os.real_path(os.dir(p)), os.base(p))
 }
 
 fn take(args []string, i int, flag string) string {

@@ -1128,6 +1128,12 @@ fn test_round_19_shapes() {
 	assert sig(m, 'V').length == 8
 	assert a.report.notes.any(it.contains('72-bit signal is wider'))
 	assert !a.report.notes.any(it.contains('is already used in this message'))
+	// a LENGTH missing or 0 is dropped and said too — before its name is claimed (round 33)
+	zero_w := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace(v_sig, '<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>0</LENGTH></I-SIGNAL>') + arxml_tail) or {
+		panic(err)
+	}
+	assert (zero_w.cluster('') or { panic(err) }).db.messages[0].signals.map(it.name) == ['Crc', 'Ctr']
+	assert zero_w.report.notes.any(it.contains('/Sig/V: LENGTH missing or 0; not read'))
 	// `-0` is zero: filed under raw 0 for an unsigned signal, not dropped as a negative that
 	// no sign bit can hold; a COMPU-DEFAULT-VALUE and nested SCALE-CONSTRS are said
 	shapes := offset_pdu_xml.replace(v_sig, '<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF></I-SIGNAL>') + '<AR-PACKAGE><SHORT-NAME>Sys</SHORT-NAME><ELEMENTS><SYSTEM-SIGNAL><SHORT-NAME>S</SHORT-NAME><PHYSICAL-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/Z</COMPU-METHOD-REF><DATA-CONSTR-REF DEST="DATA-CONSTR">/DC/Split</DATA-CONSTR-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></PHYSICAL-PROPS></SYSTEM-SIGNAL></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>CM</SHORT-NAME><ELEMENTS><COMPU-METHOD><SHORT-NAME>Z</SHORT-NAME><CATEGORY>TEXTTABLE</CATEGORY><COMPU-INTERNAL-TO-PHYS><COMPU-SCALES><COMPU-SCALE><LOWER-LIMIT>-0</LOWER-LIMIT><UPPER-LIMIT>-0.0</UPPER-LIMIT><COMPU-CONST><VT>Off</VT></COMPU-CONST></COMPU-SCALE></COMPU-SCALES><COMPU-DEFAULT-VALUE><VT>Other</VT></COMPU-DEFAULT-VALUE></COMPU-INTERNAL-TO-PHYS></COMPU-METHOD></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>DC</SHORT-NAME><ELEMENTS><DATA-CONSTR><SHORT-NAME>Split</SHORT-NAME><DATA-CONSTR-RULES><DATA-CONSTR-RULE><PHYS-CONSTRS><LOWER-LIMIT>0</LOWER-LIMIT><UPPER-LIMIT>100</UPPER-LIMIT><SCALE-CONSTRS><SCALE-CONSTR><LOWER-LIMIT>0</LOWER-LIMIT><UPPER-LIMIT>10</UPPER-LIMIT></SCALE-CONSTR><SCALE-CONSTR><LOWER-LIMIT>90</LOWER-LIMIT><UPPER-LIMIT>100</UPPER-LIMIT></SCALE-CONSTR></SCALE-CONSTRS></PHYS-CONSTRS></DATA-CONSTR-RULE></DATA-CONSTR-RULES></DATA-CONSTR></ELEMENTS></AR-PACKAGE>'

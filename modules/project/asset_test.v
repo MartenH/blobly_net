@@ -26,6 +26,15 @@ fn test_resolve_asset_uses_the_projects_own_directory() {
 	// projects keep working
 	assert resolve_asset(dir, 'dbc/missing.dbc') == 'dbc/missing.dbc'
 	assert resolve_asset(dir, '') == ''
+
+	// the COMPLETE path is tried first: a recording whose own name carries `.arxml#` is that
+	// file, not an ARXML with a cluster (#273 round 33)
+	odd := os.join_path('dbc', 'capture.arxml#run.mf4')
+	os.write_file(os.join_path(dir, odd), 'x') or { panic(err) }
+	assert resolve_asset(dir, odd) == os.join_path(dir, odd)
+	// and an ARXML reference with a cluster resolves the FILE and keeps the fragment
+	os.write_file(os.join_path(dir, 'dbc', 'net.arxml'), '<AUTOSAR/>') or { panic(err) }
+	assert resolve_asset(dir, 'dbc/net.arxml#Body') == os.join_path(dir, 'dbc', 'net.arxml') + '#Body'
 }
 
 // The vendor backends default to 500 kbit/s when the interface carries no rate, so a channel

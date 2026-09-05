@@ -1191,6 +1191,12 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 		isig, isig_path := r.deref(m, 'I-SIGNAL-REF', r.path_of(m, pdu_path)) or { continue }
 		mut name := child_text(isig, 'SHORT-NAME')
 		length := parse_int(child_text(isig, 'LENGTH'))
+		if length <= 0 {
+			// missing or zero: no width to decode at, and `1 << (length - 1)` below it would be
+			// a negative shift. Reported and left out, before its name is claimed (round 33)
+			r.report.notes << '${isig_path}: LENGTH missing or 0; not read'
+			continue
+		}
 		if length > 64 {
 			// the model decodes into a u64 and the DBC writer assumes a width-sized scalar:
 			// a wider signal would lose its top bits in silence. Reported and left out — BEFORE
