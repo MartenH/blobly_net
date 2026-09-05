@@ -1413,26 +1413,59 @@ fn parse_key(s string) u64 {
 		return whole.parse_uint(10, 64) or { 0 }
 	}
 	if t.contains('.') || t.contains('e') || t.contains('E') {
-		// non-negative here (the sign went above), so straight to u64: through i64 a key at or
-		// above 2^63 saturates, and `1.8E19` and `1.9E19` become one entry at INT64_MIN
+		// a REAL fraction, non-negative here (the sign went above), so straight to u64: through
+		// i64 a key at or above 2^63 saturates, and `1.8E19` and `1.9E19` become one entry at
+		// INT64_MIN. Integral spellings never reach this line
 		return u64(t.f64())
 	}
 	return t.parse_uint(10, 64) or { 0 }
 }
 
-// integral_decimal is the whole part of a decimal literal whose fraction is all zeros:
-// `9007199254740993.0` is the same key as `9007199254740993`, and so is `-9007199254740993.0`
-// — an integer literal in either sign, which must not go through f64 (the low bits above 2^53
-// would round away). None for anything else: a real fraction, an exponent, no point at all.
+// integral_decimal is the integer a decimal literal spells when its value IS an integer, as a
+// digit string: `9007199254740993.0`, `9.007199254740993E15` and `9007199254740993` are one
+// key, and so is `-9007199254740993.0` — none of which may go through f64, where the low bits
+// above 2^53 round away and the label lands on the neighbouring raw value. The point is moved by
+// the exponent in DIGITS, not arithmetic: an exponent that leaves a non-zero fraction, a bare
+// integer (nothing to normalise) and anything that is not a decimal literal answer none.
 fn integral_decimal(t string) ?string {
-	if !t.contains('.') || t.contains_any('eE') {
+	if !t.contains('.') && !t.contains_any('eE') {
 		return none
 	}
-	frac := t.all_after('.')
-	if frac.len > 0 && frac.count('0') == frac.len {
-		return t.all_before('.')
+	mut body := t
+	mut sign := ''
+	if body.starts_with('-') {
+		sign = '-'
+		body = body[1..]
 	}
-	return none
+	mut exp := 0
+	if body.contains_any('eE') {
+		e_at := body.index_any('eE')
+		exp = body[e_at + 1..].int()
+		if body[e_at + 1..] != exp.str() && body[e_at + 1..] != '+' + exp.str() {
+			return none // not an integer exponent
+		}
+		body = body[..e_at]
+	}
+	whole := body.all_before('.')
+	frac := if body.contains('.') { body.all_after('.') } else { '' }
+	digits := whole + frac
+	if digits.len == 0 || !digits.bytes().all(it >= `0` && it <= `9`) {
+		return none
+	}
+	// the point sits after `whole`; the exponent moves it right (positive) or left (negative)
+	point := whole.len + exp
+	if point < 0 {
+		return if digits.count('0') == digits.len { '0' } else { none }
+	}
+	if point > digits.len {
+		return sign + digits + '0'.repeat(point - digits.len)
+	}
+	rest := digits[point..]
+	if rest.len > 0 && rest.count('0') != rest.len {
+		return none // a real fraction remains
+	}
+	int_part := digits[..point].trim_left('0')
+	return if int_part == '' { '0' } else { sign + int_part }
 }
 
 // parse_i64 reads an integer literal as an integer — an enum key above 2^53 would lose its

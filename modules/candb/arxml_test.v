@@ -742,6 +742,20 @@ fn test_enum_keys_above_2_pow_53_and_opaque_packing() {
 	// a non-negative float spelling at the top of the u64 domain stays there (not INT64_MIN)
 	assert parse_key('1.8E19') == u64(18000000000000000000)
 	assert parse_key('1.8E19') != parse_key('1.9E19')
+	// an integral EXPONENT spelling is the same integer too, in digits and never through f64
+	assert parse_key('9.007199254740993E15') == u64(9007199254740993)
+	assert parse_key('9.007199254740993e+15') == u64(9007199254740993)
+	assert parse_key('-9.007199254740993E15') == u64(i64(-9007199254740993))
+	assert parse_i64('-9.007199254740993E15') == i64(-9007199254740993)
+	assert parse_key('12E2') == 1200
+	assert parse_key('1200E-2') == 12
+	assert parse_key('0.5E1') == 5
+	assert integral_decimal('9.0071992547409931E15') == none // a real fraction remains: f64 territory
+	assert integral_decimal('1.25E1') == none
+	assert integral_decimal('1.5') == none
+	assert integral_decimal('15') == none
+	assert integral_decimal('0.000E-3') or { '' } == '0'
+	assert integral_decimal('18446744073709551615.0') or { '' } == '18446744073709551615'
 	// OPAQUE: read as little-endian (the bytes round-trip) and said
 	assert v.byte_order == .little_endian
 	assert a.report.notes.any(it.contains('OPAQUE packing (a byte array) read as a little-endian integer'))

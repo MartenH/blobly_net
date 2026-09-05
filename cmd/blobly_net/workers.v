@@ -1408,8 +1408,13 @@ fn script_worker(app &App, path string) {
 			key_iface: ch.iface // faults key on the LOGICAL interface, not the opened string
 			// This channel's OWN merged database. Handing every channel the first one meant a
 			// real message on any other DBC was rejected as unknown, or a coincidentally named
-			// message was accepted with the wrong signal metadata.
-			db:      merge_dbs(ch.databases)
+			// message was accepted with the wrong signal metadata. The LOADED copies, by the
+			// same resolved key replay_db uses: the raw project-relative strings opened the file
+			// against the process working directory, so a project outside the launch directory
+			// gave the script an empty database while the trace and the simulator had loaded
+			// the same file resolved (codex on #273 round 13). The reader slot reserved above
+			// is what makes app.dbs safe to read here without app.mu.
+			db:      merge_dbs_from(a.loaded_dbs_for(ch.databases.map(candb.canonical_database_ref(a.resolve_asset(it)))))
 			nodes:   sim_nodes // so a fault that cannot take effect can be refused
 			carrier: script.carrier_of(pch)
 		}
