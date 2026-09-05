@@ -1038,6 +1038,34 @@ fn test_round_15_shapes_are_said_or_read_right() {
 	assert sk.report.notes.any(it.contains('/Sig/V: enum key 200 ("TooWide") of /CM/K does not fit a 8-bit signed signal; dropped'))
 }
 
+fn test_round_19_shapes() {
+	v_sig := '<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH></I-SIGNAL>'
+	// a signal the width guard drops must not reserve its name: the supported one behind it
+	// keeps the plain name and no collision is reported
+	wide_then_same := offset_pdu_xml.replace(v_sig, '<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>72</LENGTH></I-SIGNAL>').replace('</I-SIGNAL-TO-PDU-MAPPINGS>', '<I-SIGNAL-TO-I-PDU-MAPPING><SHORT-NAME>MV2</SHORT-NAME><I-SIGNAL-REF DEST="I-SIGNAL">/Sig2/V</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>16</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING></I-SIGNAL-TO-PDU-MAPPINGS>') + '<AR-PACKAGE><SHORT-NAME>Sig2</SHORT-NAME><ELEMENTS><I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>8</LENGTH></I-SIGNAL></ELEMENTS></AR-PACKAGE>'
+	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + wide_then_same + arxml_tail) or {
+		panic(err)
+	}
+	m := (a.cluster('') or { panic(err) }).db.messages[0]
+	assert m.signals.map(it.name) == ['Crc', 'Ctr', 'V'], m.signals.map(it.name).str()
+	assert sig(m, 'V').length == 8
+	assert a.report.notes.any(it.contains('72-bit signal is wider'))
+	assert !a.report.notes.any(it.contains('is already used in this message'))
+	// `-0` is zero: filed under raw 0 for an unsigned signal, not dropped as a negative that
+	// no sign bit can hold; a COMPU-DEFAULT-VALUE and nested SCALE-CONSTRS are said
+	shapes := offset_pdu_xml.replace(v_sig, '<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF></I-SIGNAL>') + '<AR-PACKAGE><SHORT-NAME>Sys</SHORT-NAME><ELEMENTS><SYSTEM-SIGNAL><SHORT-NAME>S</SHORT-NAME><PHYSICAL-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/Z</COMPU-METHOD-REF><DATA-CONSTR-REF DEST="DATA-CONSTR">/DC/Split</DATA-CONSTR-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></PHYSICAL-PROPS></SYSTEM-SIGNAL></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>CM</SHORT-NAME><ELEMENTS><COMPU-METHOD><SHORT-NAME>Z</SHORT-NAME><CATEGORY>TEXTTABLE</CATEGORY><COMPU-INTERNAL-TO-PHYS><COMPU-SCALES><COMPU-SCALE><LOWER-LIMIT>-0</LOWER-LIMIT><UPPER-LIMIT>-0.0</UPPER-LIMIT><COMPU-CONST><VT>Off</VT></COMPU-CONST></COMPU-SCALE></COMPU-SCALES><COMPU-DEFAULT-VALUE><VT>Other</VT></COMPU-DEFAULT-VALUE></COMPU-INTERNAL-TO-PHYS></COMPU-METHOD></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>DC</SHORT-NAME><ELEMENTS><DATA-CONSTR><SHORT-NAME>Split</SHORT-NAME><DATA-CONSTR-RULES><DATA-CONSTR-RULE><PHYS-CONSTRS><LOWER-LIMIT>0</LOWER-LIMIT><UPPER-LIMIT>100</UPPER-LIMIT><SCALE-CONSTRS><SCALE-CONSTR><LOWER-LIMIT>0</LOWER-LIMIT><UPPER-LIMIT>10</UPPER-LIMIT></SCALE-CONSTR><SCALE-CONSTR><LOWER-LIMIT>90</LOWER-LIMIT><UPPER-LIMIT>100</UPPER-LIMIT></SCALE-CONSTR></SCALE-CONSTRS></PHYS-CONSTRS></DATA-CONSTR-RULE></DATA-CONSTR-RULES></DATA-CONSTR></ELEMENTS></AR-PACKAGE>'
+	b := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + shapes + arxml_tail) or {
+		panic(err)
+	}
+	bv := sig((b.cluster('') or { panic(err) }).db.messages[0], 'V')
+	assert bv.values == {
+		u64(0): 'Off'
+	}, bv.values.str()
+	assert bv.minimum == 0.0 && bv.maximum == 100.0
+	assert b.report.notes.any(it.contains('/CM/Z: declares a COMPU-DEFAULT-VALUE ("Other")'))
+	assert b.report.notes.any(it.contains('/Sig/V: the data constraint has SCALE-CONSTRS'))
+}
+
 fn test_two_triggerings_of_one_id_keep_the_first_and_say_so() {
 	two := cluster_xml('Bus', 256, '/Frames/F').replace('</FRAME-TRIGGERINGS>', '<CAN-FRAME-TRIGGERING><SHORT-NAME>FT2</SHORT-NAME><FRAME-REF DEST="CAN-FRAME">/Frames/F</FRAME-REF><CAN-ADDRESSING-MODE>STANDARD</CAN-ADDRESSING-MODE><IDENTIFIER>256</IDENTIFIER></CAN-FRAME-TRIGGERING></FRAME-TRIGGERINGS>')
 	a := parse_arxml(arxml_head + two + frame_xml + arxml_tail) or { panic(err) }

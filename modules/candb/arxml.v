@@ -1017,6 +1017,15 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 		// a signal-GROUP mapping has no I-SIGNAL-REF; its members are mapped individually
 		isig, isig_path := r.deref(m, 'I-SIGNAL-REF', r.path_of(m, pdu_path)) or { continue }
 		mut name := child_text(isig, 'SHORT-NAME')
+		length := parse_int(child_text(isig, 'LENGTH'))
+		if length > 64 {
+			// the model decodes into a u64 and the DBC writer assumes a width-sized scalar:
+			// a wider signal would lose its top bits in silence. Reported and left out — BEFORE
+			// its name is claimed, or a supported signal of the same name behind it is renamed
+			// for a collision with a signal the database does not contain (round 19)
+			r.report.notes << '${isig_path}: ${length}-bit signal is wider than the 64-bit scalar model; not read'
+			continue
+		}
 		// two I-SIGNALs of one SHORT-NAME in different packages, mapped into one message
 		// (a multi-PDU frame, typically): the second is package-qualified, because a signal
 		// name is how everything downstream addresses it and a DBC refuses a duplicate SG_
@@ -1043,13 +1052,6 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 			// exactly, but the value has no numeric meaning and a factor or a range on it
 			// would be fiction — said, so nobody scales it
 			r.report.notes << '${isig_path}: OPAQUE packing (a byte array) read as a little-endian integer; its value is not a quantity'
-		}
-		length := parse_int(child_text(isig, 'LENGTH'))
-		if length > 64 {
-			// the model decodes into a u64 and the DBC writer assumes a width-sized scalar:
-			// a wider signal would lose its top bits in silence. Reported and left out.
-			r.report.notes << '${isig_path}: ${length}-bit signal is wider than the 64-bit scalar model; not read'
-			continue
 		}
 		if iv := child(isig, 'INIT-VALUE') {
 			// what the ECU transmits before the first write. The model has no place for it (a
@@ -1201,6 +1203,11 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 		}
 		if has_dc {
 			d := dc
+			if first(d, 'SCALE-CONSTRS') != none {
+				// restricted or disjoint sub-intervals inside the bounds: the range model is one
+				// interval, so the gaps between them are advertised as valid (round 19)
+				r.report.notes << '${isig_path}: the data constraint has SCALE-CONSTRS (sub-intervals) which the single-interval range model cannot hold; only the outer bounds are read'
+			}
 			if pc := first(d, 'PHYS-CONSTRS') {
 				minimum = parse_num(child_text(pc, 'LOWER-LIMIT'))
 				maximum = parse_num(child_text(pc, 'UPPER-LIMIT'))
@@ -1315,8 +1322,8 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 				singleton := lo != '' && hi != '' && integral_literal(lo) && integral_literal(hi)
 				if singleton && parse_key(lo) == parse_key(hi) {
 					values[parse_key(lo)] = label
-					if lo.trim_space().starts_with('-') {
-						negative[parse_key(lo)] = true
+					if lo.trim_space().starts_with('-') && parse_key(lo) != 0 {
+						negative[parse_key(lo)] = true // `-0` is zero: a sign with no sign bit
 					}
 				} else {
 					r.report.notes << '${cm_path}: maps the range ${lo}..${hi} to "${label}", which a value table (one exact raw value per label) cannot express; dropped'
@@ -1371,6 +1378,11 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 				}
 			}
 		}
+	}
+	if dv := first(cm, 'COMPU-DEFAULT-VALUE') {
+		// the label for every raw value no scale names: a value table has no default entry, so
+		// those values decode as their number in the editor and the export (round 19)
+		r.report.notes << '${cm_path}: declares a COMPU-DEFAULT-VALUE ("${first_text(dv, 'VT')}${first_text(dv, 'V')}") for raw values no scale names; not modelled, those values decode as their number'
 	}
 	if first(cm, 'COMPU-INTERNAL-TO-PHYS') == none && first(cm, 'COMPU-PHYS-TO-INTERNAL') != none {
 		// the inverse direction only: not inverted here (a linear inverse is invertible, but a
