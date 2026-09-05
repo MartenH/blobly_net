@@ -3,6 +3,7 @@ module main
 import os
 import time
 import project
+import candb
 import transport
 import loadrule
 import taprule
@@ -526,6 +527,29 @@ fn diag_msg(iface string, from transport.BusDiagnostics, to transport.BusDiagnos
 		return '${iface}: reopened — counts since: ${to.str()}'
 	}
 	return '${iface}: +${to.minus(from).short().replace(' · ', ', +')} — since open: ${to.str()}'
+}
+
+// script_db is one channel's merged database for a script: the channel's files, RESOLVED against
+// the project (round 13 — the raw project-relative strings opened against the process working
+// directory), read through the same loader the simulation uses. From the FILES, not from
+// app.dbs: a script launched while stopped runs beside an editable Configuration panel whose
+// structural edits rebuild app.dbs, and rebuild_from_proj repopulates that array outside app.mu,
+// so no reader-side lock can make a snapshot of it whole (codex on #273 rounds 22–23). A loader
+// that needs no shared array needs no lock; the script sees the saved file, as the headless
+// runner does. Only the project path is read under the lock.
+fn (a &App) script_db(ch Chan) candb.Database {
+	mut al := unsafe { a }
+	al.mu.lock()
+	paths := ch.databases.map(a.resolve_asset(it))
+	al.mu.unlock()
+	// WITH THE REPORT: a file deleted or broken since the project was loaded, or a reader note,
+	// would otherwise hand the script an empty or partial database and let it fail on "unknown
+	// message" with nothing in the Log to say the reload was the cause (round 24)
+	db, notes := candb.merge_files_report(paths)
+	for n in notes {
+		al.notify('script: ${ch.name}: ${n}')
+	}
+	return db
 }
 
 // row_is_mine_locked: may a worker spawned for run `gen` into row `ci` of `iface` write to
@@ -1430,8 +1454,13 @@ fn script_worker(app &App, path string) {
 			key_iface: ch.iface // faults key on the LOGICAL interface, not the opened string
 			// This channel's OWN merged database. Handing every channel the first one meant a
 			// real message on any other DBC was rejected as unknown, or a coincidentally named
-			// message was accepted with the wrong signal metadata.
-			db:      merge_dbs(ch.databases)
+			// message was accepted with the wrong signal metadata. The LOADED copies, by the
+			// same resolved key replay_db uses: the raw project-relative strings opened the file
+			// against the process working directory, so a project outside the launch directory
+			// gave the script an empty database while the trace and the simulator had loaded
+			// the same file resolved (codex on #273 round 13). The reader slot reserved above
+			// is what makes app.dbs safe to read here without app.mu.
+			db:      a.script_db(ch)
 			nodes:   sim_nodes // so a fault that cannot take effect can be refused
 			carrier: script.carrier_of(pch)
 		}

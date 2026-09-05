@@ -73,10 +73,12 @@ pub fn (db Database) lookup_frame(id u32, ext bool) ?Message {
 	return none
 }
 
-// messages_from returns every message whose transmitter is `node` — i.e. the
-// messages a simulated ECU named `node` is responsible for sending.
+// messages_from returns every message `node` transmits — i.e. the messages a simulated ECU
+// named `node` is responsible for sending. Through senders(), so a node declared only as an
+// ADDITIONAL transmitter (a DBC BO_TX_BU_, an ARXML frame two ECUs send) gets its frames too;
+// filtered on `sender` alone, such a node simulated nothing while the database listed it.
 pub fn (db Database) messages_from(node string) []Message {
-	return db.messages.filter(it.sender == node)
+	return db.messages.filter(node in it.senders())
 }
 
 // load_dbc_file reads and parses a .dbc file from disk.
@@ -100,6 +102,7 @@ mut:
 	values            map[u64]string
 	is_signed         bool
 	byte_order        ByteOrder
+	receivers         []string
 	is_multiplexor    bool
 	is_multiplexed    bool
 	multiplexor_value int
@@ -179,6 +182,7 @@ pub fn parse_dbc(text string) !Database {
 				values:            sb.values.clone()
 				is_signed:         sb.is_signed
 				byte_order:        sb.byte_order
+				receivers:         sb.receivers.clone()
 				is_multiplexor:    sb.is_multiplexor
 				is_multiplexed:    sb.is_multiplexed
 				multiplexor_value: sb.multiplexor_value
@@ -289,6 +293,14 @@ fn parse_sg(line string) !SigBuilder {
 	q2 := index_byte_from(body, `"`, q1 + 1) or { return error('SG_ unterminated unit: ${line}') }
 	unit := body[q1 + 1..q2]
 	pre := body[..q1].trim_space() // "<start>|<len>@<order><sign> (f,o) [min|max]"
+	// what follows the unit is the receiver list: `Vector__XXX` (none) or `NodeA,NodeB`
+	mut receivers := []string{}
+	for rcv in body[q2 + 1..].trim_space().split(',') {
+		n := rcv.trim_space()
+		if n != '' && n != 'Vector__XXX' && n !in receivers {
+			receivers << n
+		}
+	}
 
 	pf := pre.fields()
 	if pf.len < 2 {
@@ -335,6 +347,7 @@ fn parse_sg(line string) !SigBuilder {
 		unit:              unit
 		is_signed:         is_signed
 		byte_order:        byte_order
+		receivers:         receivers
 		is_multiplexor:    is_multiplexor
 		is_multiplexed:    is_multiplexed
 		multiplexor_value: multiplexor_value

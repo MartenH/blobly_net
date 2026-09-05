@@ -264,7 +264,7 @@ pub fn verify_usable(m candb.Message, p project.ProtectCfg) bool {
 	if p.counter != '' && p.counter == p.crc {
 		return false // one field cannot be both; see validate_verify for why
 	}
-	if p.crc != '' && p.profile !in ['crc8_j1850', 'crc8_autosar', 'sum8', 'xor8'] {
+	if p.crc != '' && p.profile !in candb.e2e_profiles {
 		return false
 	}
 	mut have := map[string]candb.Signal{}
@@ -330,7 +330,7 @@ pub fn validate_verify(db candb.Database, verify []project.ProtectCfg) []string 
 			warns << 'verify: the id on "${p.message}" is not a valid number — entry ignored'
 			continue
 		}
-		if p.crc != '' && p.profile !in ['crc8_j1850', 'crc8_autosar', 'sum8', 'xor8'] {
+		if p.crc != '' && p.profile !in candb.e2e_profiles {
 			// checksum_of falls back to sum8, so real traffic using the intended algorithm is
 			// reported corrupt while the configuration looks fine
 			warns << 'verify: unknown profile "${p.profile}" on ${p.message} — traffic would be reported corrupt'

@@ -110,6 +110,37 @@ fn test_write_parse_roundtrip_preserves_the_model() {
 	assert volt.factor == 0.1
 }
 
+// A node the file references — as a sender or as a signal receiver — is declared in BU_ even if
+// the node list lost it (the editor removes a node, the receivers still name it): a file whose
+// SG_ names an undeclared receiver is one other tools refuse (#273 round 39).
+fn test_referenced_nodes_are_declared() {
+	db := Database{
+		nodes:    ['A']
+		messages: [
+			Message{
+				name:     'M'
+				id:       0x100
+				dlc:      8
+				sender:   'S'
+				tx_nodes: ['T']
+				signals:  [
+					Signal{
+						name:      'V'
+						length:    8
+						receivers: ['A', 'R', 'Vector__XXX']
+					},
+				]
+			},
+		]
+	}
+	text := db.to_dbc()
+	assert text.contains('BU_: A R S T\n'), text
+	assert text.contains(' SG_ V : 0|8@1+ (1,0) [0|0] "" A,R')
+	// and it stays a fixpoint: parsing the written file yields the same nodes
+	again := parse_dbc(text) or { panic(err) }
+	assert again.nodes == ['A', 'R', 'S', 'T']
+}
+
 fn test_canonical_form_is_a_fixpoint() {
 	db := full_db()
 	once := db.to_dbc()

@@ -43,10 +43,13 @@ fn main() {
 			// quietly absent. That is the shape of failure this tool exists to catch.
 			mut lost := 0
 			for pth in paths {
-				candb.load_dbc_file(pth) or {
+				loaded := candb.open_database(pth) or {
 					eprintln('  ${ch.name}: cannot load ${pth}: ${err}')
 					lost++
 					continue
+				}
+				for n in loaded.notes {
+					eprintln('  ${ch.name}: ${n}')
 				}
 			}
 			db = candb.merge_files(paths)

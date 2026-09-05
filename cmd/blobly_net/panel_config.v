@@ -1,5 +1,6 @@
 module main
 
+import candb
 import os
 import project
 import transport
@@ -26,7 +27,7 @@ fn (mut app App) open_browser(target string) {
 	app.fb_ext = if target == 'open' || target == 'saveas' {
 		['.blobnet', '.yml', '.yaml']
 	} else if target.starts_with('dbc') {
-		['.dbc']
+		['.dbc', '.arxml'] // an ARXML attaches as is; a multi-cluster one is refused at load, naming them
 	} else if target.starts_with('manifest') {
 		['.csv']
 	} else if target == 'system' {
@@ -1017,7 +1018,7 @@ fn (mut app App) start_replay_scan(i int, rp string) {
 	// stopped-only state, while app.chans[i] is still being written by a winding-down
 	// rx_loop under app.mu right after Stop — copying it here was an unlocked read of a
 	// worker-mutated element, the exact class CLAUDE.md names (codex #135 r3).
-	paths := app.proj.channels[i].databases.map(os.real_path(app.resolve_asset(it)))
+	paths := app.proj.channels[i].databases.map(candb.canonical_database_ref(app.resolve_asset(it)))
 	app.mu.lock()
 	app.replay_scans[i] = mine
 	db := merge_dbs_from(app.loaded_dbs_for(paths))

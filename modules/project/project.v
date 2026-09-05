@@ -11,6 +11,7 @@
 // `ip link set can0 type can bitrate … sample-point …`.
 module project
 
+import candb
 import transport
 import os
 import yaml
@@ -653,8 +654,21 @@ pub fn resolve_asset(dir string, path string) string {
 	if path == '' || os.is_abs_path(path) {
 		return path
 	}
-	rel := os.join_path(dir, path)
-	return if os.exists(rel) { rel } else { path }
+	// THE COMPLETE PATH FIRST: this resolves recordings and manifests too, and a file may carry
+	// `.arxml#` in its own name (`capture.arxml#run.mf4`) — split before it is tried, that
+	// recording resolved against a file that does not exist (codex on #273 round 33)
+	whole := os.join_path(dir, path)
+	if os.exists(whole) {
+		return whole
+	}
+	// an ARXML reference may carry `#Cluster` (candb.split_database_ref): the file system is
+	// asked about the FILE, and the fragment rides along on whatever answer comes back
+	file, cluster := candb.split_database_ref(path)
+	if cluster == '' {
+		return path
+	}
+	rel := os.join_path(dir, file)
+	return if os.exists(rel) { rel + '#' + cluster } else { path }
 }
 
 // is_supported reports whether this app understands the file's format version

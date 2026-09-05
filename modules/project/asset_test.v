@@ -26,6 +26,15 @@ fn test_resolve_asset_uses_the_projects_own_directory() {
 	// projects keep working
 	assert resolve_asset(dir, 'dbc/missing.dbc') == 'dbc/missing.dbc'
 	assert resolve_asset(dir, '') == ''
+
+	// the COMPLETE path is tried first: a recording whose own name carries `.arxml#` is that
+	// file, not an ARXML with a cluster (#273 round 33)
+	odd := os.join_path('dbc', 'capture.arxml#run.mf4')
+	os.write_file(os.join_path(dir, odd), 'x') or { panic(err) }
+	assert resolve_asset(dir, odd) == os.join_path(dir, odd)
+	// and an ARXML reference with a cluster resolves the FILE and keeps the fragment
+	os.write_file(os.join_path(dir, 'dbc', 'net.arxml'), '<AUTOSAR/>') or { panic(err) }
+	assert resolve_asset(dir, 'dbc/net.arxml#Body') == os.join_path(dir, 'dbc', 'net.arxml') + '#Body'
 }
 
 // The vendor backends default to 500 kbit/s when the interface carries no rate, so a channel
@@ -47,4 +56,21 @@ fn test_iface_with_bitrate_applies_only_to_vendor_adapters() {
 	// and an unset rate must not append @0
 	none_rate := Channel{ iface: 'pcan:PCAN_USBBUS1', adapter: 'pcan', bitrate: 0 }
 	assert none_rate.iface_with_bitrate() == 'pcan:PCAN_USBBUS1'
+}
+
+fn test_resolve_asset_keeps_an_arxml_cluster_fragment() {
+	dir := os.join_path(os.temp_dir(), 'project_asset_frag_test')
+	os.mkdir_all(os.join_path(dir, 'db')) or {}
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	os.write_file(os.join_path(dir, 'db', 'net.arxml'), '<AUTOSAR/>') or { panic(err) }
+	// the file system is asked about the FILE; the fragment rides along on the answer
+	assert resolve_asset(dir, 'db/net.arxml#Body') == os.join_path(dir, 'db', 'net.arxml') + '#Body'
+	assert resolve_asset(dir, 'db/net.arxml') == os.join_path(dir, 'db', 'net.arxml')
+	// a missing file comes back as written, fragment included, so the error names it
+	assert resolve_asset(dir, 'db/missing.arxml#Body') == 'db/missing.arxml#Body'
+	// absolute stays absolute
+	abs := os.join_path(dir, 'db', 'net.arxml') + '#Body'
+	assert resolve_asset('/elsewhere', abs) == abs
 }

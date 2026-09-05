@@ -374,10 +374,23 @@ fn draw_dbc_editor(mut app App) {
 	app.mu.lock()
 	live_readers := app.dbc_readers
 	app.mu.unlock()
-	ro := app.running || live_readers > 0
-	if ro {
+	// the selection is settled BEFORE anything reads it, so the read-only answer below is
+	// the one every control on this frame sees
+	if app.dbc_ed.db < 0 && app.dbs.len > 0 {
+		app.dbc_ed.db = 0
+	}
+	// an ARXML-backed database is never saved from here: Save serialises DBC text to the
+	// selected path, and that path is the customer's system description. Export it with
+	// cmd/arxml2dbc and edit the DBC that produces. ONE gate — the rule is candb's
+	// (is_arxml_ref, tested there), this is the only place the editor asks it.
+	arxml := candb.is_arxml_ref(app.db_path(app.dbc_ed.db))
+	ro := app.running || live_readers > 0 || arxml
+	if app.running || live_readers > 0 {
 		vgui.text_colored(230, 170, 70,
 			'read-only while measuring — Stop to edit (workers drain briefly after Stop)')
+	} else if arxml {
+		vgui.text_colored(230, 170, 70,
+			'read-only: an AUTOSAR system description — export a DBC with cmd/arxml2dbc to edit')
 	}
 	// a project swap replaces dbs_paths: dirty entries for paths no longer
 	// attached are unreachable ghosts — drop them (the swap discarded those
@@ -401,9 +414,6 @@ fn draw_dbc_editor(mut app App) {
 			'DBC #${i}'
 		}
 		names << '${mark}${disp} (${db.messages.len} msgs) ##${i}'
-	}
-	if app.dbc_ed.db < 0 && app.dbs.len > 0 {
-		app.dbc_ed.db = 0
 	}
 	vgui.set_next_item_width(280 * sc)
 	ndb := vgui.combo('database', names, app.dbc_ed.db)
@@ -460,7 +470,7 @@ fn draw_dbc_editor(mut app App) {
 	}
 	vgui.same_line()
 	if !ro && dbc_path != '' && vgui.small_button('Revert') {
-		if db := candb.load_dbc_file(dbc_path) {
+		if db := candb.load_database(dbc_path) {
 			// Cancel only on SUCCESS. Revert reloads the file and then refreshes, which reaches
 			// the resolver before the next frame can cancel on selection mismatch, so the
 			// pending value would land on the database the user just discarded. But if the
