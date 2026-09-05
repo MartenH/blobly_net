@@ -324,14 +324,7 @@ fn give_back(bs []Borrowed) {
 	defer {
 		borrow_lock()
 		g_restoring--
-		for m in mine {
-			for i, g in g_in_flight {
-				if g.app == m.app {
-					g_in_flight.delete(i)
-					break
-				}
-			}
-		}
+		forget_in_flight(mine) // its own function: V allows no `break` inside a defer
 		borrow_unlock()
 		for _ in mine {
 			transport.vector_borrow_unlock()
@@ -352,6 +345,19 @@ fn give_back(bs []Borrowed) {
 			transport.vector_unassign(b.app) or {
 				eprintln('FAIL: could not clear Vector application channel ${b.app}: ${err}')
 				restore_failed()
+			}
+		}
+	}
+}
+
+// forget_in_flight drops the given entries from g_in_flight, by application channel. Caller
+// holds the borrow lock.
+fn forget_in_flight(done []Borrowed) {
+	for m in done {
+		for i, g in g_in_flight {
+			if g.app == m.app {
+				g_in_flight.delete(i)
+				break
 			}
 		}
 	}
