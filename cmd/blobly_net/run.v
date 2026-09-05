@@ -133,7 +133,22 @@ fn (app &App) dest_is_read_locked(iface string) bool {
 fn (app &App) runtime_rows() []project.Channel {
 	mut rows := []project.Channel{}
 	for c in app.chans {
+		// THE LIVE GENERATORS TOO, for the same reason `fd` is copied below: these rows are what
+		// the warning checks are asked about, and a row with no senders made
+		// generator_source_warnings inspect nothing at all — the promised warning about an
+		// unusable value source could never fire (codex #269).
+		mut snd := []project.Sender{}
+		for sr in app.senders {
+			// BY NAME, or by the wire it targets. rebuild_from_proj leaves SenderRT.chan empty
+			// when a saved sender names an interface several channels share (the file cannot say
+			// which one owns it), and such a generator still transmits through the shared tap —
+			// filtering on the name alone left it in no row, so its warnings went unsaid.
+			if sr.chan == c.name || (sr.chan == '' && sr.target() == c.iface) {
+				snd << sr.sender
+			}
+		}
 		rows << project.Channel{
+			senders: snd
 			name:    c.name
 			adapter: c.adapter
 			iface:   c.iface
@@ -535,6 +550,11 @@ fn (mut app App) start() {
 	for w in project.fd_capability_warnings(app.runtime_rows()) {
 		app.notify(w)
 	}
+	// A generator whose value source cannot be evaluated (unknown type, zero divisor) sends its
+	// static value instead — said at Start rather than silently transmitting the wrong thing.
+	for w in project.generator_source_warnings(app.runtime_rows()) {
+		app.notify(w)
+	}
 	// AND WHICH ROWS THE ALIAS CHECK COULD NOT COVER (#194). Same reasoning as the line above and
 	// the same shape: the refusals above already caught anything provable, so what is left is a
 	// gap the check could not see into. A driver that would not answer is not a reason to refuse a
@@ -650,6 +670,16 @@ fn (mut app App) start() {
 	// the class is every target). Closed at the state change, once, instead of teaching each
 	// confirm about app.running.
 	app.fb_open = false
+	// the epoch the time-based generator sources are evaluated from (sine/sawtooth/stepmod), so a
+	// restarted measurement starts at the same phase — the simulator's worker-local t0 equivalent
+	// UNDER app.mu: fire_index reads gen_send_n/gen_state_epoch under it, and a cyclic fire that
+	// survived the previous run can be in flight right here — replacing the map unlocked is an
+	// unsafe concurrent map write and the epoch a plain data race (codex #269).
+	app.mu.lock()
+	app.wave_t0_ns = time.sys_mono_now()
+	app.gen_send_n = map[u64]int{} // a new run starts the per-send sequences at 0
+	app.gen_state_epoch++ // a fire still in flight from the previous run must not write into it
+	app.mu.unlock()
 	app.running = true
 	// The quiet-bus verdict measures THIS run. Carrying a previous run's first/last across a
 	// Stop would have every wire reading "quiet for 4 minutes" the instant Start is pressed —

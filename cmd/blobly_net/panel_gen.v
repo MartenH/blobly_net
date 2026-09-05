@@ -2,6 +2,8 @@ module main
 
 import math
 import project
+import sim
+import time
 import transport
 import candb
 import vgui
@@ -257,7 +259,9 @@ fn (mut app App) add_generator() {
 	iface := if app.chans.len > 0 { app.chans[0].iface } else { '' }
 	cname := if app.chans.len > 0 { app.chans[0].name } else { '' }
 	app.mu.lock()
+	app.gen_next_uid++
 	app.senders << SenderRT{
+		uid:    app.gen_next_uid
 		iface:  iface
 		chan:   cname
 		sender: project.Sender{
@@ -287,6 +291,9 @@ fn (mut app App) remove_generator(i int) {
 		if i < app.gen_bufs.len {
 			app.gen_bufs.delete(i)
 		}
+		// nothing to re-key: the per-generator state is keyed by SenderRT.uid, so the shift below
+		// cannot hand one generator's count or in-flight flag to another, and a fire still in
+		// flight for the removed generator writes back onto its own (now unused) entry
 		app.dirty = true
 	}
 	app.mu.unlock()
@@ -367,17 +374,21 @@ fn (mut app App) set_sender_message(i int, msg string) {
 					continue
 				}
 				for sig in m.signals {
-					mut v := f64(0)
+					// carry the WHOLE matching signal across, not just its number: the value
+					// source (wave) is part of what the user configured, and copying only
+					// `value` silently dropped a waveform when the message was switched and
+					// switched back.
+					mut keep := project.SenderSig{
+						name: sig.name
+					}
 					for o in old {
 						if o.name == sig.name {
-							v = o.value
+							keep = o
+							keep.name = sig.name
 							break
 						}
 					}
-					sigs << project.SenderSig{
-						name:  sig.name
-						value: v
-					}
+					sigs << keep
 				}
 				found = true
 				break
@@ -457,6 +468,177 @@ fn (mut app App) signal_input(i int, j int, sig candb.Signal, have bool) {
 			app.dirty = true
 		}
 	}
+	app.signal_source(i, j)
+}
+
+// The picker's entries, DERIVED from project.wave_kinds rather than restated: a source added or
+// renamed there would otherwise parse, validate and serialize while the GUI could not select it.
+// Index 0 is 'value' — the absence of a source (send the static number) — which also stands in for
+// 'const': for a generator a constant source IS that static value, and offering both put two
+// `value:` keys in one saved mapping and two editable numbers behind one field (codex #269). That
+// presentation mapping lives HERE, in the one place that presents it.
+fn wave_kinds_ui() []string {
+	mut out := ['value']
+	for k in project.wave_kinds {
+		if k != 'const' {
+			out << k
+		}
+	}
+	return out
+}
+
+fn wave_typ_of(sel int) string {
+	kinds := wave_kinds_ui()
+	if sel <= 0 || sel >= kinds.len {
+		return ''
+	}
+	return kinds[sel]
+}
+
+fn wave_sel_of(typ string) int {
+	for k, w in wave_kinds_ui() {
+		if w == typ && k > 0 {
+			return k
+		}
+	}
+	return 0
+}
+
+// signal_source draws the per-signal VALUE SOURCE: pick a waveform and it sweeps on every send,
+// exactly as a simulated ECU's signal does (same GenCfg, same sim.gen_from_cfg evaluator). The
+// difference is only who is sending — a generator is the tester, so its frames are TX, not TX-S.
+fn (mut app App) signal_source(i int, j int) {
+	w := app.senders[i].sender.signals[j].wave
+	vgui.same_line()
+	vgui.set_next_item_width(110 * app.ui_scale)
+	sel := vgui.combo('##src${i}_${j}', wave_kinds_ui(), wave_sel_of(w.typ))
+	if sel != wave_sel_of(w.typ) {
+		app.set_wave_typ(i, j, wave_typ_of(sel))
+	}
+	if w.typ == '' {
+		return
+	}
+	// only the parameters the chosen source actually reads — the same fields gen_from_cfg maps
+	pw := unsafe { &app.senders[i].sender.signals[j].wave }
+	mut fields := [][]string{}
+	match w.typ {
+		'const' { fields = [['value', 'value']] }
+		'sine' { fields = [['offset', 'offset'], ['amplitude', 'amplitude'], ['freq (rad/s)', 'freq'],
+			['phase', 'phase']] }
+		'sawtooth' { fields = [['min', 'min'], ['max', 'max'], ['period (s)', 'period']] }
+		'counter' { fields = [['start', 'start'], ['step', 'step'], ['modulo', 'modulo']] }
+		'stepmod' { fields = [['period (s)', 'period'], ['count', 'count'], ['base', 'base']] }
+		else {}
+	}
+	// TWO PER LINE, on their own rows under the signal. Sine alone has four parameters, and
+	// trailing them all off the value row ran them past the panel's right edge where a narrow
+	// dock clipped them out of reach.
+	for k, f in fields {
+		if k % 2 == 1 {
+			vgui.same_line()
+		}
+		vgui.set_next_item_width(70 * app.ui_scale)
+		// A COPY, written back through a locked setter. Writing through a pointer into the live
+		// sender raced the fire path's snapshot (the GUI thread edits while gen_loop clones), and
+		// left a value the Start-time check could never see — these fields stay editable during a
+		// run, so an edit that makes the source unusable has to say so when it is made.
+		mut cur := wave_param(w, f[1])
+		if vgui.input_double('${f[0]}##wv${i}_${j}_${f[1]}', &cur) {
+			app.set_wave_param(i, j, f[1], cur)
+		}
+	}
+}
+
+// wave_param reads one named parameter of a value source.
+fn wave_param(g project.GenCfg, field string) f64 {
+	return match field {
+		'value' { g.value }
+		'offset' { g.offset }
+		'amplitude' { g.amplitude }
+		'freq' { g.freq }
+		'phase' { g.phase }
+		'min' { g.min }
+		'max' { g.max }
+		'period' { g.period }
+		'start' { g.start }
+		'step' { g.step }
+		'modulo' { g.modulo }
+		'count' { g.count }
+		'base' { g.base }
+		else { f64(0) }
+	}
+}
+
+// set_wave_param writes one parameter under app.mu (the fire path clones the sender under it) and
+// says immediately when the edit leaves the source unusable — the Start-time warning has already
+// run by then, and silently falling back to the static value is the thing this PR is trying not
+// to do. notify() re-takes the non-reentrant mutex, so it is called after the unlock.
+fn (mut app App) set_wave_param(i int, j int, field string, v f64) {
+	mut why := ''
+	app.mu.lock()
+	if i < app.senders.len && j < app.senders[i].sender.signals.len {
+		mut w := &app.senders[i].sender.signals[j].wave
+		match field {
+			'value' { w.value = v }
+			'offset' { w.offset = v }
+			'amplitude' { w.amplitude = v }
+			'freq' { w.freq = v }
+			'phase' { w.phase = v }
+			'min' { w.min = v }
+			'max' { w.max = v }
+			'period' { w.period = v }
+			'start' { w.start = v }
+			'step' { w.step = v }
+			'modulo' { w.modulo = v }
+			'count' { w.count = v }
+			'base' { w.base = v }
+			else {}
+		}
+		why = project.gen_source_invalid(*w)
+	}
+	app.mu.unlock()
+	app.dirty = true
+	if why != '' {
+		app.notify('generator signal: ${why} — sending its static value instead')
+	}
+}
+
+fn (mut app App) set_wave_typ(i int, j int, typ string) {
+	app.mu.lock()
+	if i < app.senders.len && j < app.senders[i].sender.signals.len {
+		mut sg := &app.senders[i].sender.signals[j]
+		sg.wave.typ = typ
+		// Seed a new source from what the signal already sends, so picking a waveform is anchored
+		// on the current value rather than snapping to zero: a sine centres on it, a sawtooth
+		// spans up to it, a counter and a stepmod base on it.
+		//
+		// The one PER-SEND source (counter) rides this generator's send index, which is shared
+		// by every signal in the message and counts frames delivered since the run began — the
+		// simulator's per-message send_n, same semantics. So one enabled mid-run continues from
+		// where the generator already is rather than from its seed; it is not restarted here,
+		// because a sender-wide reset would restart every OTHER signal's counter in the same
+		// message and could be undone by a fire still in flight. stepmod is NOT per send: like
+		// sine and sawtooth it is a function of the run clock (floor(t / period) mod count,
+		// sim.Gen.value), so it has no state to restart and ignores the index.
+		if typ == 'sine' && sg.wave.offset == 0 && sg.wave.amplitude == 0 {
+			sg.wave.offset = sg.value
+			sg.wave.freq = 1.0
+		} else if typ == 'sawtooth' && sg.wave.max == 0 {
+			sg.wave.max = sg.value
+			sg.wave.period = 1.0
+		} else if typ == 'counter' && sg.wave.start == 0 {
+			sg.wave.start = sg.value
+		} else if typ == 'stepmod' && sg.wave.count == 0 {
+			sg.wave.base = sg.value
+			sg.wave.count = 4
+			sg.wave.period = 1.0
+		}
+		if sg.wave.step == 0 {
+			sg.wave.step = 1.0
+		}
+	}
+	app.mu.unlock()
+	app.dirty = true
 }
 
 fn (mut app App) set_trigger(i int, t string) {
@@ -541,11 +723,62 @@ fn (mut app App) poll_hotkeys() {
 	}
 }
 
+// sender_value resolves one generator signal to the number that goes on the wire: its waveform
+// evaluated at the run clock when it has one, else its static value. The counter source steps
+// per SEND, so each generator keeps its own send count (the simulated-ECU side counts the same
+// way with SimMessage.send_n); sine, sawtooth and stepmod are functions of the run clock.
+// sender_value resolves one signal of an ALREADY-SNAPSHOTTED sender: pure, so the caller holds no
+// lock while encoding. `n` is the index reserved for this fire and `t0_ns` the run epoch.
+fn sender_value(ss project.SenderSig, n int, el f64) f64 {
+	if ss.wave.typ == '' {
+		return ss.value
+	}
+	// An unusable source (unknown type, zero divisor) sends the STATIC value rather than a
+	// constant nobody asked for or a non-finite number packed into raw bits. The condition is
+	// also reported by project.generator_source_warnings, so it is said, not just survived.
+	if project.gen_source_invalid(ss.wave) != '' {
+		return ss.value
+	}
+	return sim.gen_from_cfg(ss.wave).value(el, n)
+}
+
+
 fn (mut app App) fire_index(i int) {
+	// ONE FIRE AT A TIME PER GENERATOR, start to finish: reserving an index and rolling it back
+	// could not keep the count equal to DELIVERED frames when two fires finished out of order.
+	// A flag rather than a held lock, because the send must not be inside one — a generator
+	// stalled in its driver's write would otherwise block every other generator's fire, and a
+	// stalled write must cost its sender alone. A tick that finds its own generator still firing
+	// is skipped: its previous frame has not left the wire, so there is nothing to overlap.
+	app.mu.lock()
 	if i < 0 || i >= app.senders.len {
+		app.mu.unlock()
 		return
 	}
-	s := app.senders[i].sender
+	uid := app.senders[i].uid
+	if app.gen_firing[uid] {
+		app.mu.unlock()
+		return
+	}
+	app.gen_firing[uid] = true
+	defer {
+		app.mu.lock()
+		app.gen_firing.delete(uid)
+		app.mu.unlock()
+	}
+	s := project.Sender{
+		...app.senders[i].sender
+		signals: app.senders[i].sender.signals.clone()
+	}
+	n := app.gen_send_n[uid] or { 0 }
+	epoch := app.gen_state_epoch
+	wt0 := app.wave_t0_ns
+	app.mu.unlock()
+	// ONE clock sample for the whole frame. Read per signal, two time-based sources in one message
+	// were sampled at different instants — the simulator passes a single `t` into its build() for
+	// the same reason. FROM THE RUN EPOCH, not process start, so a restarted measurement begins at
+	// the same phase instead of one that depends on how long the GUI had been open.
+	el := if wt0 > 0 { f64(time.sys_mono_now() - wt0) / 1_000_000_000.0 } else { 0.0 }
 	mut id := s.id
 	mut ext := s.ext
 	mut data := []u8{}
@@ -563,7 +796,11 @@ fn (mut app App) fire_index(i int) {
 				for ss in s.signals {
 					for sig in m.signals {
 						if sig.name == ss.name {
-							sig.encode(mut data, ss.value)
+							// The value SOURCE, evaluated at send time: a waveform sweeps
+							// (sine/sawtooth/counter/stepmod), no source sends the static value.
+							// Same GenCfg vocabulary and the same evaluator a simulated ECU uses
+							// — only the identity differs (this is the tester, so TX not TX-S).
+							sig.encode(mut data, sender_value(ss, n, el))
 							break
 						}
 					}
@@ -583,9 +820,22 @@ fn (mut app App) fire_index(i int) {
 		id = u32(('0x' + vgui.buf_str(app.gen_bufs[i].id_buf)).u64())
 		data = parse_hex_bytes(vgui.buf_str(app.gen_bufs[i].data_buf))
 	}
-	app.tx_on_chan(app.senders[i].chan, app.senders[i].target(), transport.CanFrame{
+	if app.tx_on_chan(app.senders[i].chan, app.senders[i].target(), transport.CanFrame{
 		id:       id
 		extended: ext
 		data:     data
-	})
+	}) {
+		// delivered frames only — a fire refused while the tap is still opening put nothing on
+		// the bus, and counting it would make the sequence lie about what was transmitted.
+		// ...and only onto the generator set this fire was snapshotted from: a removal or a new
+		// run since would have shifted or cleared the counts, and this write would land on
+		// whichever generator now sits at this index.
+		app.mu.lock()
+		// the epoch still guards the RUN/PROJECT boundary (a new run restarts the sequences); the
+		// uid already guarantees this lands on the generator the fire was snapshotted from
+		if app.gen_state_epoch == epoch {
+			app.gen_send_n[uid] = n + 1
+		}
+		app.mu.unlock()
+	}
 }

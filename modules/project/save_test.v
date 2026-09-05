@@ -131,7 +131,10 @@ fn test_roundtrip_v2() {
 		]
 	}
 	rp := parse(orig.to_yaml())!
-	assert rp.version == schema_version
+	// the version this project NEEDS (v2 here — it uses no generator value source), not blindly
+	// schema_version: a file that uses no v3 feature stays openable by an older build
+	assert rp.version == version_for(orig)
+	assert rp.version == 2
 	assert rp.channels.len == 3
 	c0 := rp.channels[0]
 	assert c0.name == 'CAN0'
@@ -321,4 +324,140 @@ fn test_roundtrip_senders() {
 	assert c.senders[1].data == [u8(0xDE), 0xAD]
 	assert c.senders[1].trigger == 'cyclic'
 	assert c.senders[1].cycle_ms == 100
+}
+
+// A generator signal may carry a VALUE SOURCE — the same GenCfg vocabulary a simulated ECU's
+// signals use — and it must survive save/parse. A signal without one keeps the plain name/value
+// form every older project already has (and must not gain a spurious 'const' source).
+fn test_roundtrip_sender_wave() {
+	orig := Project{
+		name:     'wave'
+		channels: [
+			Channel{
+				name:    'CAN1'
+				iface:   'inproc:CAN1'
+				senders: [
+					Sender{
+						name:     'Sweep'
+						message:  'Powertrain'
+						trigger:  'cyclic'
+						cycle_ms: 100
+						signals:  [
+							SenderSig{
+								name: 'EngineSpeed'
+								wave: GenCfg{
+									typ:       'sine'
+									offset:    1500
+									amplitude: 1000
+									freq:      0.5
+								}
+							},
+							SenderSig{
+								name:  'CoolantTemp'
+								value: 42
+							},
+						]
+					},
+				]
+			},
+		]
+	}
+	txt := orig.to_yaml()
+	back := parse(txt) or { panic(err) }
+	sigs := back.channels[0].senders[0].signals
+	assert sigs.len == 2
+	assert sigs[0].name == 'EngineSpeed'
+	assert sigs[0].wave.typ == 'sine', 'typ=${sigs[0].wave.typ}'
+	assert sigs[0].wave.offset == 1500.0
+	assert sigs[0].wave.amplitude == 1000.0
+	assert sigs[0].wave.freq == 0.5
+	// no source: the static value survives and no waveform is invented
+	assert sigs[1].name == 'CoolantTemp'
+	assert sigs[1].value == 42.0
+	assert sigs[1].wave.typ == '', 'typ=${sigs[1].wave.typ}'
+}
+
+// An unusable value source is REPORTED, not silently turned into a constant (or a non-finite
+// number packed into raw bits): an unknown type, and the zero divisors sawtooth/stepmod divide by.
+fn test_generator_source_warnings() {
+	chs := [
+		Channel{
+			name:    'CAN1'
+			senders: [
+				Sender{
+					name:    'g'
+					signals: [
+						SenderSig{ name: 'A', wave: GenCfg{ typ: 'counterr' } },
+						SenderSig{ name: 'B', wave: GenCfg{ typ: 'sawtooth', period: 0 } },
+						SenderSig{ name: 'C', wave: GenCfg{ typ: 'stepmod', period: 1, count: 0 } },
+						SenderSig{ name: 'D', wave: GenCfg{ typ: 'sine', freq: 0 } }, // freq 0 is valid (a flat sine)
+						SenderSig{ name: 'E', value: 7 }, // no source at all
+					]
+				},
+			]
+		},
+	]
+	w := generator_source_warnings(chs)
+	assert w.len == 3, w.str()
+	assert w[0].contains('unknown type'), w[0]
+	assert w[1].contains('non-zero period'), w[1]
+	assert w[2].contains('non-zero count'), w[2]
+	// and the predicate agrees per-signal
+	assert gen_source_invalid(GenCfg{ typ: '' }) == ''
+	assert gen_source_invalid(GenCfg{ typ: 'sine', freq: 0 }) == ''
+	assert gen_source_invalid(GenCfg{ typ: 'sawtooth', period: 2 }) == ''
+}
+
+// A project is labelled with the version it actually needs: v3 only once a generator carries a
+// value source, so an older build is flagged instead of silently dropping the waveform on save.
+fn test_version_for_wave() {
+	mut p := Project{
+		name:     'v'
+		channels: [
+			Channel{
+				name:    'CAN1'
+				senders: [
+					Sender{
+						name:    'g'
+						signals: [SenderSig{
+							name:  'A'
+							value: 1
+						}]
+					},
+				]
+			},
+		]
+	}
+	assert version_for(p) == 2
+	assert parse(p.to_yaml())!.version == 2
+	p.channels[0].senders[0].signals[0].wave = GenCfg{
+		typ:    'sawtooth'
+		min:    0
+		max:    10
+		period: 2
+	}
+	assert version_for(p) == 3
+	back := parse(p.to_yaml())!
+	assert back.version == 3
+	// and the static fallback survives beside the waveform
+	sg := back.channels[0].senders[0].signals[0]
+	assert sg.value == 1.0, 'value=${sg.value}'
+	assert sg.wave.typ == 'sawtooth'
+	assert sg.wave.max == 10.0
+	assert sg.wave.period == 2.0
+}
+
+// A generator's `const` source is the same number as its static value (same key), so it folds
+// into that on read: one editable value, and never two `value:` keys in one saved mapping.
+fn test_sender_const_source_folds_to_value() {
+	p := parse('project:\n  name: c\nchannels:\n  - name: CAN1\n    interface: inproc:CAN1\n    senders:\n      - name: g\n        message: Powertrain\n        signals:\n          - { name: A, type: const, value: 5 }\n') or {
+		panic(err)
+	}
+	sg := p.channels[0].senders[0].signals[0]
+	assert sg.value == 5.0
+	assert sg.wave.typ == '', 'typ=${sg.wave.typ}'
+	// and it saves back as a plain value with no duplicate key
+	out := p.to_yaml()
+	assert out.contains('{ name: A, value: 5 }'), out
+	assert version_for(p) == 2
 }
