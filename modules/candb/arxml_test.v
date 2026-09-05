@@ -712,7 +712,7 @@ fn test_compu_method_shared_by_signals_of_two_widths() {
 }
 
 fn test_enum_keys_above_2_pow_53_and_opaque_packing() {
-	big := offset_pdu_xml.replace('<SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH></I-SIGNAL>', '<SHORT-NAME>V</SHORT-NAME><LENGTH>64</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF></I-SIGNAL>').replace('<PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>0</START-POSITION>', '<PACKING-BYTE-ORDER>OPAQUE</PACKING-BYTE-ORDER><START-POSITION>0</START-POSITION>') + '<AR-PACKAGE><SHORT-NAME>Sys</SHORT-NAME><ELEMENTS><SYSTEM-SIGNAL><SHORT-NAME>S</SHORT-NAME><PHYSICAL-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/T</COMPU-METHOD-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></PHYSICAL-PROPS></SYSTEM-SIGNAL></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>CM</SHORT-NAME><ELEMENTS><COMPU-METHOD><SHORT-NAME>T</SHORT-NAME><CATEGORY>TEXTTABLE</CATEGORY><COMPU-INTERNAL-TO-PHYS><COMPU-SCALES><COMPU-SCALE><LOWER-LIMIT>9007199254740993</LOWER-LIMIT><UPPER-LIMIT>9007199254740993</UPPER-LIMIT><COMPU-CONST><VT>Odd</VT></COMPU-CONST></COMPU-SCALE></COMPU-SCALES></COMPU-INTERNAL-TO-PHYS></COMPU-METHOD></ELEMENTS></AR-PACKAGE>'
+	big := offset_pdu_xml.replace('<SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH></I-SIGNAL>', '<SHORT-NAME>V</SHORT-NAME><LENGTH>64</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF></I-SIGNAL>') + '<AR-PACKAGE><SHORT-NAME>Sys</SHORT-NAME><ELEMENTS><SYSTEM-SIGNAL><SHORT-NAME>S</SHORT-NAME><PHYSICAL-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/T</COMPU-METHOD-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></PHYSICAL-PROPS></SYSTEM-SIGNAL></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>CM</SHORT-NAME><ELEMENTS><COMPU-METHOD><SHORT-NAME>T</SHORT-NAME><CATEGORY>TEXTTABLE</CATEGORY><COMPU-INTERNAL-TO-PHYS><COMPU-SCALES><COMPU-SCALE><LOWER-LIMIT>9007199254740993</LOWER-LIMIT><UPPER-LIMIT>9007199254740993</UPPER-LIMIT><COMPU-CONST><VT>Odd</VT></COMPU-CONST></COMPU-SCALE></COMPU-SCALES></COMPU-INTERNAL-TO-PHYS></COMPU-METHOD></ELEMENTS></AR-PACKAGE>'
 	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + big + arxml_tail) or {
 		panic(err)
 	}
@@ -765,8 +765,27 @@ fn test_enum_keys_above_2_pow_53_and_opaque_packing() {
 	assert integral_decimal('0.000E-3') or { '' } == '0'
 	assert integral_decimal('18446744073709551615.0') or { '' } == '18446744073709551615'
 	// OPAQUE: read as little-endian (the bytes round-trip) and said
-	assert v.byte_order == .little_endian
-	assert a.report.notes.any(it.contains('OPAQUE packing (a byte array) read as a little-endian integer'))
+	// OPAQUE: read as little-endian (the bytes round-trip), said, and carrying NO numeric
+	// metadata — the same system signal's text table is not applied to a byte array (round 20)
+	o := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + big.replace('<PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>0</START-POSITION>', '<PACKING-BYTE-ORDER>OPAQUE</PACKING-BYTE-ORDER><START-POSITION>0</START-POSITION>') + arxml_tail) or {
+		panic(err)
+	}
+	ov := sig((o.cluster('') or { panic(err) }).db.messages[0], 'V')
+	assert ov.byte_order == .little_endian
+	assert ov.values.len == 0 && ov.factor == 1.0 && ov.offset == 0.0
+	assert o.report.notes.any(it.contains('OPAQUE packing (a byte array) read as a little-endian integer; its value is not a quantity, and no compu method, unit or constraint is applied'))
+	// a bound past what a 64-bit raw key holds is dropped and said, not filed on raw zero
+	over := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + big.replace('9007199254740993', '18446744073709551616').replace('<VT>Odd</VT>', '<VT>Over</VT>') + arxml_tail) or {
+		panic(err)
+	}
+	assert sig((over.cluster('') or { panic(err) }).db.messages[0], 'V').values.len == 0
+	assert over.report.notes.any(it.contains('/CM/T: the bounds 18446744073709551616..18446744073709551616 of "Over" do not fit a 64-bit raw key; dropped'))
+	assert key_of('18446744073709551616') == none
+	assert parse_key('18446744073709551616') == 0 // the compare-only fallback, documented
+	assert key_of('-9223372036854775808') or { 0 } == u64(1) << 63
+	assert key_of('-9223372036854775809') == none
+	assert key_of('1.8E19') or { 0 } == u64(18000000000000000000)
+	assert key_of('1.85E19') == none // past 2^64
 }
 
 fn test_pdu_group_directions_do_not_leak_into_subgroups() {

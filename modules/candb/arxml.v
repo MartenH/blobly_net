@@ -1047,11 +1047,14 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 		} else {
 			ByteOrder.little_endian
 		}
-		if packing == 'OPAQUE' {
+		opaque := packing == 'OPAQUE'
+		if opaque {
 			// a byte array, not a number: read as a little-endian integer the bytes round-trip
 			// exactly, but the value has no numeric meaning and a factor or a range on it
-			// would be fiction — said, so nobody scales it
-			r.report.notes << '${isig_path}: OPAQUE packing (a byte array) read as a little-endian integer; its value is not a quantity'
+			// would be fiction — said, so nobody scales it; and a COMPU-METHOD or DATA-CONSTR
+			// the system signal carries is NOT applied either, or the bytes would be scaled on
+			// the way out after all (round 20)
+			r.report.notes << '${isig_path}: OPAQUE packing (a byte array) read as a little-endian integer; its value is not a quantity, and no compu method, unit or constraint is applied to it'
 		}
 		if iv := child(isig, 'INIT-VALUE') {
 			// what the ECU transmits before the first write. The model has no place for it (a
@@ -1131,7 +1134,9 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 			name: ''
 		}
 		mut cm_path := ''
-		if c, cp := r.deref(phys, 'COMPU-METHOD-REF', sys_path) {
+		if opaque {
+			// a byte array has no scale, no enum, no unit
+		} else if c, cp := r.deref(phys, 'COMPU-METHOD-REF', sys_path) {
 			cm = c
 			cm_path = cp
 		} else if c, cp := r.deref(props, 'COMPU-METHOD-REF', isig_path) {
@@ -1174,7 +1179,8 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 				values[k & mask] = v
 			}
 		}
-		if u, _ := r.deref(phys, 'UNIT-REF', sys_path) {
+		if opaque {
+		} else if u, _ := r.deref(phys, 'UNIT-REF', sys_path) {
 			unit = first_text(u, 'DISPLAY-NAME')
 		}
 		if unit == '' && cm_path != '' {
@@ -1182,7 +1188,7 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 				unit = first_text(u, 'DISPLAY-NAME')
 			}
 		}
-		if unit == '' {
+		if unit == '' && !opaque {
 			if u, _ := r.deref(props, 'UNIT-REF', isig_path) {
 				unit = first_text(u, 'DISPLAY-NAME')
 			}
@@ -1194,7 +1200,9 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 			name: ''
 		}
 		mut has_dc := false
-		if d, _ := r.deref(phys, 'DATA-CONSTR-REF', sys_path) {
+		if opaque {
+			// nor a range
+		} else if d, _ := r.deref(phys, 'DATA-CONSTR-REF', sys_path) {
 			dc = d
 			has_dc = true
 		} else if d, _ := r.deref(props, 'DATA-CONSTR-REF', isig_path) {
@@ -1320,10 +1328,19 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 				// a singleton is two INTEGRAL bounds spelling one integer: `1.1`..`1.9` both
 				// truncate to raw 1 and would file a label for a range that EXCLUDES raw 1
 				singleton := lo != '' && hi != '' && integral_literal(lo) && integral_literal(hi)
-				if singleton && parse_key(lo) == parse_key(hi) {
-					values[parse_key(lo)] = label
-					if lo.trim_space().starts_with('-') && parse_key(lo) != 0 {
-						negative[parse_key(lo)] = true // `-0` is zero: a sign with no sign bit
+				klo := key_of(lo)
+				khi := key_of(hi)
+				if klo == none || khi == none {
+					// past what a 64-bit raw key holds: the 0 fallback filed the label on raw
+					// zero, an out-of-domain label on a value the table never named (round 20)
+					r.report.notes << '${cm_path}: the bounds ${lo}..${hi} of "${label}" do not fit a 64-bit raw key; dropped'
+					continue
+				}
+				k_lo := klo or { 0 }
+				if singleton && k_lo == (khi or { 0 }) {
+					values[k_lo] = label
+					if lo.trim_space().starts_with('-') && k_lo != 0 {
+						negative[k_lo] = true // `-0` is zero: a sign with no sign bit
 					}
 				} else {
 					r.report.notes << '${cm_path}: maps the range ${lo}..${hi} to "${label}", which a value table (one exact raw value per label) cannot express; dropped'
@@ -1559,23 +1576,39 @@ fn parse_int(s string) int {
 // through i64 (its two's-complement pattern). Hex, decimal, or a float that is integral —
 // never through f64 for an integer literal, which would lose the low bits above 2^53.
 fn parse_key(s string) u64 {
+	return key_of(s) or { 0 }
+}
+
+// key_of is parse_key that can SAY NO: a literal no 64-bit raw key can hold — `18446744073709551616`,
+// a magnitude past 2^63 with a minus sign — is none, where the fallback to 0 filed its label on
+// raw zero (codex on #273 round 20). The value-table filing asks this; parse_key keeps the 0
+// fallback for the callers that only compare.
+fn key_of(s string) ?u64 {
 	t := s.trim_space().trim_left('+')
 	if t.starts_with('-') {
-		return u64(parse_i64(t))
+		mag := key_of(t[1..])?
+		if mag > u64(1) << 63 {
+			return none
+		}
+		return (~mag) + 1 // two's-complement negate, valid for 2^63 itself
 	}
 	if t.starts_with('0x') || t.starts_with('0X') {
-		return t[2..].parse_uint(16, 64) or { 0 }
+		return t[2..].parse_uint(16, 64) or { return none }
 	}
 	if whole := integral_decimal(t) {
-		return whole.parse_uint(10, 64) or { 0 }
+		return whole.parse_uint(10, 64) or { return none }
 	}
 	if t.contains('.') || t.contains('e') || t.contains('E') {
 		// a REAL fraction, non-negative here (the sign went above), so straight to u64: through
 		// i64 a key at or above 2^63 saturates, and `1.8E19` and `1.9E19` become one entry at
 		// INT64_MIN. Integral spellings never reach this line
-		return u64(t.f64())
+		f := t.f64()
+		if f < 0 || f >= 18446744073709551616.0 || f != f {
+			return none
+		}
+		return u64(f)
 	}
-	return t.parse_uint(10, 64) or { 0 }
+	return t.parse_uint(10, 64) or { return none }
 }
 
 // integral_literal is whether a numeric literal spells an INTEGER: a bare digit string, a hex
