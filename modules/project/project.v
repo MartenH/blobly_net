@@ -16,11 +16,38 @@ import os
 import yaml
 import doip
 
-// schema_version is the current project-file format version. Bump it when the `.yml`
-// schema changes incompatibly. Files carry `version:`; Save writes schema_version,
-// and the loader flags a file whose version is NEWER than the app understands
-// (is_supported / version_note) so opening a future-format file isn't silent.
-pub const schema_version = 2
+// schema_version is the newest project-file format version this build understands. Bump it when
+// the `.yml` schema grows something an older build would not preserve. Files carry `version:`,
+// and the loader flags one whose version is NEWER than this app (is_supported / version_note, on
+// the Open path as well as the text-apply one) so a future-format file is not read in silence.
+//
+// Save does NOT write this constant: it writes version_for(p), the version that PARTICULAR
+// project needs. A project using no v3 feature still says v2 and stays openable by older builds
+// with no note, and only one that would actually lose something is labelled v3.
+pub const schema_version = 3
+
+// version_for is the version a PARTICULAR project must declare. Generator value sources (v3) are
+// written as extra keys an older parser reads as unknown-key no-ops — it would treat the signal as
+// its static value, and a structured Save there would drop the waveform for good. So a project
+// that uses one says v3 while everything else keeps saying v2 and stays openable by older builds
+// with no note at all.
+//
+// What the label buys, honestly: a build that CHECKS the version says so (version_note, now on the
+// normal Open path as well as the text-apply one). A build already released without that check
+// cannot be helped retroactively by anything written in the file — the label is for the ones that
+// look, which from here on is all of them.
+pub fn version_for(p Project) int {
+	for c in p.channels {
+		for s in c.senders {
+			for sg in s.signals {
+				if sg.wave.typ != '' {
+					return 3
+				}
+			}
+		}
+	}
+	return 2
+}
 
 // Mode is a channel's operating mode within a measurement.
 //
@@ -194,6 +221,16 @@ pub struct SenderSig {
 pub mut:
 	name  string
 	value f64
+	// Optional VALUE SOURCE. A generator signal used to be a constant while only a simulated
+	// ECU's signals could sweep (sine/sawtooth/counter/stepmod) — the same waveform vocabulary,
+	// welded to the wrong half. What a value is (const or a waveform) is orthogonal to WHO sends
+	// it (the tester -> TX, a simulated ECU -> TX-S), so the source is the same GenCfg both use
+	// and the same sim.gen_from_cfg evaluates. `wave.typ == ''` means "no source": send `value`.
+	// The default is written out because GenCfg's own `typ` defaults to 'const' — without it a
+	// code-built SenderSig would claim a source it never asked for (and save it back as one).
+	wave GenCfg = GenCfg{
+		typ: ''
+	}
 }
 
 // Sender is a declarative "interactive generator" (IG-style): a named,
@@ -1025,23 +1062,7 @@ fn parse_node(n yaml.Any) NodeCfg {
 	}
 	if sigs := n.value_opt('signals') {
 		for s in sigs.array() {
-			node.signals << GenCfg{
-				signal:    s.value('name').string()
-				typ:       s.value('type').default_to('const').string()
-				value:     s.value('value').f64()
-				offset:    s.value('offset').f64()
-				amplitude: s.value('amplitude').f64()
-				freq:      s.value('freq').f64()
-				phase:     s.value('phase').f64()
-				min:       s.value('min').f64()
-				max:       s.value('max').f64()
-				period:    s.value('period').f64()
-				start:     s.value('start').f64()
-				step:      s.value('step').default_to(f64(1)).f64()
-				modulo:    s.value('modulo').f64()
-				count:     s.value('count').f64()
-				base:      s.value('base').f64()
-			}
+			node.signals << parse_gencfg(s, 'const')
 		}
 	}
 	if u := n.value_opt('uds') {
@@ -1126,13 +1147,92 @@ fn parse_sender(s yaml.Any) Sender {
 	}
 	if sigs := s.value_opt('signals') {
 		for sg in sigs.array() {
+			// '' default: a generator signal with no `type:` is a plain constant `value`, which
+			// is what every project written before waveforms reached generators says.
+			mut w := parse_gencfg(sg, '')
+			// A hand-written `type: const` on a GENERATOR signal means exactly what its static
+			// `value` already means (they even read the same key), so it is folded into that
+			// rather than kept as a second, separately-editable number the UI cannot show.
+			if w.typ == 'const' {
+				w = GenCfg{
+					typ: ''
+				}
+			}
 			snd.signals << SenderSig{
 				name:  sg.value('name').string()
 				value: sg.value('value').f64()
+				wave:  w
 			}
 		}
 	}
 	return snd
+}
+
+// wave_kinds is the value-source vocabulary: what a `type:` may say. Shared by the simulator's
+// signals and a generator's, because it is one vocabulary (see SenderSig.wave).
+pub const wave_kinds = ['const', 'sine', 'sawtooth', 'counter', 'stepmod']
+
+// gen_source_invalid reports why a value source cannot be evaluated, or '' when it is fine. Two
+// things make one unusable, and both otherwise reach sim.Gen.value() and come out as garbage on
+// the wire: a type outside the vocabulary (gen_from_cfg falls through to a CONSTANT, so a
+// misspelled `counterr` silently transmits a fixed value), and a zero divisor (sawtooth/stepmod
+// divide by `period`, stepmod by `count`, so a zero yields a non-finite number that is then
+// packed into raw signal bits).
+pub fn gen_source_invalid(g GenCfg) string {
+	if g.typ == '' {
+		return '' // no source at all: the static value is used
+	}
+	if g.typ !in wave_kinds {
+		return 'unknown type "${g.typ}" (use ${wave_kinds.join(", ")})'
+	}
+	if (g.typ == 'sawtooth' || g.typ == 'stepmod') && g.period == 0 {
+		return '${g.typ} needs a non-zero period'
+	}
+	if g.typ == 'stepmod' && g.count == 0 {
+		return 'stepmod needs a non-zero count'
+	}
+	return ''
+}
+
+// generator_source_warnings reports generator signals whose value source cannot be evaluated —
+// said at load/Start rather than silently transmitting a constant or a non-finite value.
+pub fn generator_source_warnings(chs []Channel) []string {
+	mut out := []string{}
+	for c in chs {
+		for s in c.senders {
+			for sg in s.signals {
+				why := gen_source_invalid(sg.wave)
+				if why != '' {
+					out << '${c.name}: generator "${s.name}" signal "${sg.name}": ${why} — sending its static value instead'
+				}
+			}
+		}
+	}
+	return out
+}
+
+// parse_gencfg reads one generator entry — the value source shared by a simulated ECU's signals
+// and a generator's signals (see SenderSig.wave). `dflt_typ` is what an entry with no `type:` key
+// means: 'const' for a simulated ECU (a bare value is a constant), '' for a generator signal
+// (no source at all — its static `value` is used).
+fn parse_gencfg(s yaml.Any, dflt_typ string) GenCfg {
+	return GenCfg{
+		signal:    s.value('name').string()
+		typ:       s.value('type').default_to(dflt_typ).string()
+		value:     s.value('value').f64()
+		offset:    s.value('offset').f64()
+		amplitude: s.value('amplitude').f64()
+		freq:      s.value('freq').f64()
+		phase:     s.value('phase').f64()
+		min:       s.value('min').f64()
+		max:       s.value('max').f64()
+		period:    s.value('period').f64()
+		start:     s.value('start').f64()
+		step:      s.value('step').default_to(f64(1)).f64()
+		modulo:    s.value('modulo').f64()
+		count:     s.value('count').f64()
+		base:      s.value('base').f64()
+	}
 }
 
 // parse_hex_bytes reads a raw CAN payload written as hex bytes, with or without
