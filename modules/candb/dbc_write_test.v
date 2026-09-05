@@ -122,7 +122,7 @@ fn test_referenced_nodes_are_declared() {
 				id:       0x100
 				dlc:      8
 				sender:   'S'
-				tx_nodes: ['T']
+				tx_nodes: ['T', '', 'T']
 				signals:  [
 					Signal{
 						name:      'V'
@@ -138,6 +138,8 @@ fn test_referenced_nodes_are_declared() {
 	// and the SG_ list is written as the parser reads it: no placeholder beside a real receiver,
 	// no empty name, no repeat (round 44)
 	assert text.contains(' SG_ V : 0|8@1+ (1,0) [0|0] "" A,R\n'), text
+	// the additional transmitters too (round 46)
+	assert text.contains('BO_TX_BU_ 256 : T;\n'), text
 	// and it stays a fixpoint: parsing the written file yields the same nodes
 	again := parse_dbc(text) or { panic(err) }
 	assert again.nodes == ['A', 'R', 'S', 'T']

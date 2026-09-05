@@ -220,6 +220,9 @@ fn main() {
 	// failure never leaves a regenerated DBC beside the previous fragment. The set-aside copies
 	// go only once every move succeeded.
 	mut set_aside := [][]string{} // [destination, its previous content's temporary]
+	mut wrote := []string{} // announced only once EVERY destination is published (round 46): a
+	// later move failing rolls the earlier one back, and a `wrote` already printed for it
+	// claimed an artifact that the exit status then denied
 	for st in staged {
 		prev := st[1] + '.arxml2dbc.${os.getpid()}.prev'
 		if os.exists(st[1]) {
@@ -237,7 +240,10 @@ fn main() {
 			roll_back(set_aside)
 			unlock_and_exit(locks, 1)
 		}
-		eprintln('arxml2dbc: wrote ${st[2]}')
+		wrote << st[2]
+	}
+	for w in wrote {
+		eprintln('arxml2dbc: wrote ${w}')
 	}
 	for sa in set_aside {
 		if sa[1] != '' {

@@ -170,9 +170,18 @@ pub fn (db Database) to_dbc_with(x DbcExtras) string {
 	// deleted real content on every save: a message the database said two nodes send would come
 	// back saying one, and the rest-bus subtraction would stop withholding the ECU under test's
 	// own frames. Emitted after the messages, which is where the format puts them.
+	// Written as `apply_tx_bu` reads them — no empty name, no repeat — so a programmatic Message
+	// round-trips as a fixpoint like a parsed one does (round 46). The order is kept: the parser
+	// keeps the file's, so declaration order is already canonical here
 	for m in msgs {
-		if m.tx_nodes.len > 0 {
-			b << 'BO_TX_BU_ ${raw_dbc_id(m)} : ${m.tx_nodes.join(',')};'
+		mut tx := []string{}
+		for n in m.tx_nodes {
+			if n != '' && n !in tx {
+				tx << n
+			}
+		}
+		if tx.len > 0 {
+			b << 'BO_TX_BU_ ${raw_dbc_id(m)} : ${tx.join(',')};'
 		}
 	}
 
