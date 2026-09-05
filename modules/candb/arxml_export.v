@@ -81,6 +81,9 @@ pub fn e2e_export_refusal(m Message, e ArxmlE2e) string {
 	if !e.has_crc_counter {
 		return 'it declares no CRC and counter offsets'
 	}
+	if e.data_ids.len == 0 {
+		return 'it declares no DATA-ID, and an absent id is not the id 0'
+	}
 	if !e.single_data_id() {
 		return 'its data-id mode ${e.data_id_mode} is not expressible there'
 	}
@@ -122,7 +125,9 @@ fn is_e2e_field(s Signal, bit int, width int) bool {
 // `[[frame]].e2e` can state either, so the export names the mode instead of exporting a
 // contract that rejects valid traffic. An unset mode is profile 1's default, ALL-16-BIT.
 pub fn (e ArxmlE2e) single_data_id() bool {
-	return e.data_ids.len <= 1 && (e.data_id_mode == '' || e.data_id_mode == 'ALL-16-BIT')
+	// EXACTLY one: a protection with no DATA-ID at all defaulted to 0 and was exported as the
+	// legitimate id 0, a different checksum contract (round 38)
+	return e.data_ids.len == 1 && (e.data_id_mode == '' || e.data_id_mode == 'ALL-16-BIT')
 }
 
 // ecus lists every ECU the cluster names as a sender or a receiver, sorted — what `--ecu`

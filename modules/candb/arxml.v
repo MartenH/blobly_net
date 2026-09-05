@@ -324,7 +324,15 @@ fn frame_admission(ft xml.XMLNode, frame xml.XMLNode, fname string) FrameAdmissi
 			refusal: 'frame ${fname} has no FRAME-LENGTH; not read'
 		}
 	}
-	dlc := parse_int(child_text(frame, 'FRAME-LENGTH'))
+	len_text := child_text(frame, 'FRAME-LENGTH').trim_space()
+	if !integral_literal(len_text) {
+		// read as 0 for want of a number, a malformed frame claimed its id and dropped the real
+		// one as a duplicate (round 38)
+		return FrameAdmission{
+			refusal: 'frame ${fname} has FRAME-LENGTH "${len_text}", not an integer; not read'
+		}
+	}
+	dlc := int(parse_i64(len_text))
 	if dlc < 0 || dlc > 64 {
 		return FrameAdmission{
 			refusal: 'frame ${fname} has FRAME-LENGTH ${dlc}, outside 0..64; not read'
@@ -937,7 +945,15 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			// bytes are never reversed by it. Verified on a SystemWeaver export whose only
 			// CAN PDU is packed MSB-first: cantools reads it the same way. A position that
 			// is neither is not byte-aligned, which no PDU layout is — said.
-			pdu_pos := parse_int(child_text(pm, 'START-POSITION'))
+			pos_text := child_text(pm, 'START-POSITION').trim_space()
+			if child(pm, 'START-POSITION') == none || !integral_literal(pos_text) || parse_i64(pos_text) < 0 {
+				// VALIDATED BEFORE the byte normalisation below: -1 rounded to byte 0 and -8 with a
+				// signal at 16 came out at frame bit 8, and a missing or non-numeric position read
+				// as 0 shifted every signal of the PDU (round 38)
+				r.report.notes << '${ft_path}: PDU ${child_text(pdu, 'SHORT-NAME')} START-POSITION "${pos_text}" is missing, not an integer or negative; not read'
+				continue
+			}
+			pdu_pos := int(parse_i64(pos_text))
 			pdu_off := (pdu_pos / 8) * 8
 			if pdu_pos % 8 != 0 && pdu_pos % 8 != 7 {
 				r.report.notes << '${ft_path}: PDU ${child_text(pdu, 'SHORT-NAME')} starts at bit ${pdu_pos} of frame ${fname}, not on a byte; read from byte ${pdu_pos / 8}'
@@ -1963,7 +1979,10 @@ fn key_of(s string) ?u64 {
 fn integral_literal(s string) bool {
 	t := s.trim_space().trim_left('+-')
 	if t.starts_with('0x') || t.starts_with('0X') {
-		return t.len > 2
+		// at least one digit, and nothing but digits: `0xZZ` passed as hex and parsed as 0 (round 38)
+		h := t[2..]
+		return h.len > 0 && h.bytes().all((it >= `0` && it <= `9`) || (it >= `a` && it <= `f`)
+			|| (it >= `A` && it <= `F`))
 	}
 	if t.len > 0 && t.bytes().all(it >= `0` && it <= `9`) {
 		return true

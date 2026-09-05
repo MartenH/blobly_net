@@ -596,6 +596,13 @@ fn test_alternating_data_ids_are_named_not_collapsed() {
 	assert !c.export_dbc(ArxmlProvenance{}, a.report).contains('E2EDataId')
 	// and the load report says so, since a DBC-only consumer never sees the fragment (round 26)
 	assert a.report.notes.any(it.contains('F: the DBC export carries NO E2E attributes for it — its data-id mode ALTERNATING-8-BIT is not expressible there')), a.report.notes.str()
+	// a protection with no DATA-ID is not exported as id 0 (round 38)
+	no_id := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>16</CRC-OFFSET>').replace('<DATA-IDS><DATA-ID>7</DATA-ID></DATA-IDS>', '<DATA-IDS></DATA-IDS>') + arxml_tail) or {
+		panic(err)
+	}
+	nc := no_id.cluster('') or { panic(err) }
+	assert nc.e2e_signals(nc.db.messages[0]) == none
+	assert no_id.report.notes.any(it.contains('F: the DBC export carries NO E2E attributes for it — it declares no DATA-ID')), no_id.report.notes.str()
 	// and by the same predicate the export refuses with, so a layout refusal is said too: a CRC
 	// offset inside an application signal (round 27)
 	inside := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>0</CRC-OFFSET>') + arxml_tail) or {
@@ -1018,6 +1025,7 @@ fn test_round_15_shapes_are_said_or_read_right() {
 	assert a.report.notes.any(it.contains('/PDUs/P: event-controlled timing only, no cyclic timing'))
 	assert integral_literal('0x1E') && integral_literal('-7') && integral_literal('2.0') && integral_literal('1E2')
 	assert !integral_literal('1.1') && !integral_literal('') && !integral_literal('0x')
+	assert !integral_literal('0xZZ') && !integral_literal('0x1G') && integral_literal('0xfF') // round 38
 	// endpoints declared through I-PDU ports alone (no frame ports) still give the frame a
 	// sender and a receiver
 	ft_pdus := '<IDENTIFIER>256</IDENTIFIER><PDU-TRIGGERINGS><PDU-TRIGGERING-REF-CONDITIONAL><PDU-TRIGGERING-REF DEST="PDU-TRIGGERING">/Bus/Bus/Ch/PT</PDU-TRIGGERING-REF></PDU-TRIGGERING-REF-CONDITIONAL></PDU-TRIGGERINGS></CAN-FRAME-TRIGGERING>'
@@ -1301,6 +1309,12 @@ fn test_frame_lengths_are_bounded() {
 	}
 	assert (none_.cluster('') or { panic(err) }).db.messages.len == 0
 	assert none_.report.notes.any(it.contains('frame F has no FRAME-LENGTH; not read'))
+	// …and a FRAME-LENGTH that is not an integer is refused rather than read as 0 (round 38)
+	nan := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<FRAME-LENGTH>8</FRAME-LENGTH>', '<FRAME-LENGTH>eight</FRAME-LENGTH>') + arxml_tail) or {
+		panic(err)
+	}
+	assert (nan.cluster('') or { panic(err) }).db.messages.len == 0
+	assert nan.report.notes.any(it.contains('frame F has FRAME-LENGTH "eight", not an integer; not read'))
 	// classic CAN carries 8 bytes: a 12-byte frame not declared CAN-FD is not read (round 35)
 	classic12 := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<FRAME-LENGTH>8</FRAME-LENGTH>', '<FRAME-LENGTH>12</FRAME-LENGTH>') + arxml_tail) or {
 		panic(err)
@@ -1334,6 +1348,15 @@ fn test_frame_lengths_are_bounded() {
 		}
 		assert !(bp.cluster('') or { panic(err) }).db.messages[0].signals.any(it.name == 'V'), bad
 		assert bp.report.notes.any(it.contains('/Sig/V: START-POSITION') && it.contains('is missing or not an integer')), bp.report.notes.str()
+	}
+	// a PDU whose own START-POSITION is negative, missing or not a number is not read, before
+	// the byte normalisation could round -1 to byte 0 (round 38)
+	for bad in ['<START-POSITION>-1</START-POSITION>', '<START-POSITION>eight</START-POSITION>', ''] {
+		bp := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/P</PDU-REF><START-POSITION>8</START-POSITION>', '<PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/P</PDU-REF>' + bad) + arxml_tail) or {
+			panic(err)
+		}
+		assert (bp.cluster('') or { panic(err) }).db.messages[0].signals.len == 0, bad
+		assert bp.report.notes.any(it.contains('PDU P START-POSITION') && it.contains('not read')), bp.report.notes.str()
 	}
 	// a signal that extends past the frame payload is not read: 16 bits at frame bit 56 of 8 bytes
 	past := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<START-POSITION>0</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING>', '<START-POSITION>48</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING>') + arxml_tail) or {
