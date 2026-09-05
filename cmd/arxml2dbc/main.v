@@ -155,15 +155,32 @@ fn main() {
 	// ONE PUBLISHER AT A TIME per destination pair (round 35): two exports racing could still
 	// interleave their two moves and leave one's DBC beside the other's fragment, each reporting
 	// success. A directory is the portable atomic create; a stale one names the way out.
-	lock_at := if dbc_to_file { dbc_out } else { toml_out }
-	if dbc_to_file || (toml_out != '' && !toml_to_stdout) {
-		lock_dir := canon(lock_at) + '.arxml2dbc.lock'
+	// EVERY file destination, in one order (round 36): two exports sharing only the fragment
+	// (`a.dbc`+`shared.toml`, `b.dbc`+`shared.toml`) each held their own DBC's lock and both
+	// replaced the fragment. Sorted, so two exports of one pair cannot deadlock on each other
+	mut dests := []string{}
+	if dbc_to_file {
+		dests << canon(dbc_out)
+	}
+	if toml_out != '' && !toml_to_stdout {
+		dests << canon(toml_out)
+	}
+	dests.sort()
+	mut locks := []string{}
+	for d in dests {
+		lock_dir := d + '.arxml2dbc.lock'
 		os.mkdir(lock_dir) or {
-			eprintln('arxml2dbc: another export is publishing to ${lock_at} (${lock_dir} exists); wait for it, or remove that directory if it is stale')
+			for held in locks {
+				os.rmdir(held) or {}
+			}
+			eprintln('arxml2dbc: another export is publishing to ${d} (${lock_dir} exists); wait for it, or remove that directory if it is stale')
 			exit(3)
 		}
-		defer {
-			os.rmdir(lock_dir) or {}
+		locks << lock_dir
+	}
+	defer {
+		for held in locks {
+			os.rmdir(held) or {}
 		}
 	}
 	mut staged := [][]string{} // [temporary, destination, what was written]

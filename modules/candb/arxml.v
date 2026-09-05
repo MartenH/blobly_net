@@ -767,13 +767,22 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			r.report.notes << '${ft_path}: no IDENTIFIER; not read'
 			continue
 		}
-		raw_id := parse_i64(child_text(ft, 'IDENTIFIER'))
+		id_text := child_text(ft, 'IDENTIFIER').trim_space()
 		ext := child_text(ft, 'CAN-ADDRESSING-MODE') == 'EXTENDED'
-		if raw_id < 0 || raw_id > (if ext { i64(0x1FFFFFFF) } else { i64(0x7FF) }) {
-			// a missing id read as 0 would claim the real id-0 frame and drop it as a duplicate;
-			// an oversized one reaches the simulator and is refused there (round 35)
-			bits := if ext { '29' } else { '11' }
-			r.report.notes << '${ft_path}: IDENTIFIER ${raw_id} does not fit ${bits} bits; not read'
+		bits := if ext { '29' } else { '11' }
+		// PARSED FALLIBLY: an id read as 0 for want of a number would claim the real id-0 frame
+		// and drop it as a duplicate (rounds 35–36); an oversized one reaches the simulator and
+		// is refused there. `-1` is a pattern no width holds and fails the bound like `2048`
+		if !integral_literal(id_text) {
+			r.report.notes << '${ft_path}: IDENTIFIER "${id_text}" is not an integer; not read'
+			continue
+		}
+		raw_id := key_of(id_text) or {
+			r.report.notes << '${ft_path}: IDENTIFIER "${id_text}" is not an integer; not read'
+			continue
+		}
+		if raw_id > (if ext { u64(0x1FFFFFFF) } else { u64(0x7FF) }) {
+			r.report.notes << '${ft_path}: IDENTIFIER ${id_text} does not fit ${bits} bits; not read'
 			continue
 		}
 		id := u32(raw_id)

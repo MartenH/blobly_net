@@ -1311,7 +1311,8 @@ fn test_frame_lengths_are_bounded() {
 	}
 	assert (fd12.cluster('') or { panic(err) }).db.messages[0].dlc == 12
 	// an IDENTIFIER that is missing, negative or too wide for its addressing mode is not read
-	for bad in ['<IDENTIFIER>2048</IDENTIFIER>', '<IDENTIFIER>-1</IDENTIFIER>', ''] {
+	for bad in ['<IDENTIFIER>2048</IDENTIFIER>', '<IDENTIFIER>-1</IDENTIFIER>', '',
+		'<IDENTIFIER>invalid</IDENTIFIER>', '<IDENTIFIER>1.5</IDENTIFIER>'] {
 		b := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F').replace('<IDENTIFIER>256</IDENTIFIER>', bad) + offset_pdu_xml + arxml_tail) or {
 			panic(err)
 		}
