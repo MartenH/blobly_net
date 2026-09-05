@@ -184,21 +184,32 @@ fn main() {
 		}
 	}
 	mut staged := [][]string{} // [temporary, destination, what was written]
+	// exit() does not run the defer above, so every failing path unlocks by hand (round 37)
 	if dbc_to_file {
-		staged << stage(dbc_out, dbc, staged) or { exit(1) }
+		staged << stage(dbc_out, dbc, staged) or { unlock_and_exit(locks, 1) }
 		staged[staged.len - 1] << '${dbc_out} (${c.db.messages.len} messages)'
 	}
 	if toml_out != '' && !toml_to_stdout {
-		staged << stage(toml_out, frag, staged) or { exit(1) }
+		staged << stage(toml_out, frag, staged) or { unlock_and_exit(locks, 1) }
 		staged[staged.len - 1] << toml_out
 	}
 	for st in staged {
 		os.mv(st[0], st[1]) or {
 			eprintln('arxml2dbc: ${st[1]}: ${err}')
-			exit(1)
+			unlock_and_exit(locks, 1)
 		}
 		eprintln('arxml2dbc: wrote ${st[2]}')
 	}
+}
+
+// unlock_and_exit removes the publication locks and exits: a lock left by a failed export would
+// refuse every later export to the same destination as "concurrent" until removed by hand.
+@[noreturn]
+fn unlock_and_exit(locks []string, code int) {
+	for held in locks {
+		os.rmdir(held) or {}
+	}
+	exit(code)
 }
 
 // stage writes `text` to a temporary beside `dst` and returns [temporary, dst]; on failure it

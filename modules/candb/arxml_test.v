@@ -724,8 +724,9 @@ fn test_compu_method_shared_by_signals_of_two_widths() {
 }
 
 fn test_enum_keys_above_2_pow_53_and_opaque_packing() {
-	big := offset_pdu_xml.replace('<SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH></I-SIGNAL>', '<SHORT-NAME>V</SHORT-NAME><LENGTH>64</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF></I-SIGNAL>') + '<AR-PACKAGE><SHORT-NAME>Sys</SHORT-NAME><ELEMENTS><SYSTEM-SIGNAL><SHORT-NAME>S</SHORT-NAME><PHYSICAL-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/T</COMPU-METHOD-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></PHYSICAL-PROPS></SYSTEM-SIGNAL></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>CM</SHORT-NAME><ELEMENTS><COMPU-METHOD><SHORT-NAME>T</SHORT-NAME><CATEGORY>TEXTTABLE</CATEGORY><COMPU-INTERNAL-TO-PHYS><COMPU-SCALES><COMPU-SCALE><LOWER-LIMIT>9007199254740993</LOWER-LIMIT><UPPER-LIMIT>9007199254740993</UPPER-LIMIT><COMPU-CONST><VT>Odd</VT></COMPU-CONST></COMPU-SCALE></COMPU-SCALES></COMPU-INTERNAL-TO-PHYS></COMPU-METHOD></ELEMENTS></AR-PACKAGE>'
-	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + big + arxml_tail) or {
+	mut big := offset_pdu_xml.replace('<SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH></I-SIGNAL>', '<SHORT-NAME>V</SHORT-NAME><LENGTH>64</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF></I-SIGNAL>') + '<AR-PACKAGE><SHORT-NAME>Sys</SHORT-NAME><ELEMENTS><SYSTEM-SIGNAL><SHORT-NAME>S</SHORT-NAME><PHYSICAL-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/T</COMPU-METHOD-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></PHYSICAL-PROPS></SYSTEM-SIGNAL></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>CM</SHORT-NAME><ELEMENTS><COMPU-METHOD><SHORT-NAME>T</SHORT-NAME><CATEGORY>TEXTTABLE</CATEGORY><COMPU-INTERNAL-TO-PHYS><COMPU-SCALES><COMPU-SCALE><LOWER-LIMIT>9007199254740993</LOWER-LIMIT><UPPER-LIMIT>9007199254740993</UPPER-LIMIT><COMPU-CONST><VT>Odd</VT></COMPU-CONST></COMPU-SCALE></COMPU-SCALES></COMPU-INTERNAL-TO-PHYS></COMPU-METHOD></ELEMENTS></AR-PACKAGE>'
+	big = big.replace('<FRAME-LENGTH>8</FRAME-LENGTH>', '<FRAME-LENGTH>16</FRAME-LENGTH>') // a 64-bit signal needs the 16-byte CAN-FD payload fd_cluster declares
+	a := parse_arxml(arxml_head + fd_cluster() + big + arxml_tail) or {
 		panic(err)
 	}
 	c := a.cluster('') or { panic(err) }
@@ -735,7 +736,7 @@ fn test_enum_keys_above_2_pow_53_and_opaque_packing() {
 		u64(9007199254740993): 'Odd'
 	}
 	// and the top of a 64-bit unsigned domain survives too: a non-negative key is a u64
-	top := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + big.replace('9007199254740993', '18446744073709551615').replace('<VT>Odd</VT>', '<VT>Max</VT>') + arxml_tail) or { panic(err) }
+	top := parse_arxml(arxml_head + fd_cluster() + big.replace('9007199254740993', '18446744073709551615').replace('<VT>Odd</VT>', '<VT>Max</VT>') + arxml_tail) or { panic(err) }
 	tc := top.cluster('') or { panic(err) }
 	assert sig(tc.db.messages[0], 'V').values == {
 		u64(18446744073709551615): 'Max'
@@ -779,7 +780,7 @@ fn test_enum_keys_above_2_pow_53_and_opaque_packing() {
 	// OPAQUE: read as little-endian (the bytes round-trip) and said
 	// OPAQUE: read as little-endian (the bytes round-trip), said, and carrying NO numeric
 	// metadata — the same system signal's text table is not applied to a byte array (round 20)
-	o := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + big.replace('<PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>0</START-POSITION>', '<PACKING-BYTE-ORDER>OPAQUE</PACKING-BYTE-ORDER><START-POSITION>0</START-POSITION>') + arxml_tail) or {
+	o := parse_arxml(arxml_head + fd_cluster() + big.replace('<PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>0</START-POSITION>', '<PACKING-BYTE-ORDER>OPAQUE</PACKING-BYTE-ORDER><START-POSITION>0</START-POSITION>') + arxml_tail) or {
 		panic(err)
 	}
 	ov := sig((o.cluster('') or { panic(err) }).db.messages[0], 'V')
@@ -787,7 +788,7 @@ fn test_enum_keys_above_2_pow_53_and_opaque_packing() {
 	assert ov.values.len == 0 && ov.factor == 1.0 && ov.offset == 0.0
 	assert o.report.notes.any(it.contains('OPAQUE packing (a byte array) read as a little-endian integer; its value is not a quantity, and no compu method, unit or constraint is applied'))
 	// a bound past what a 64-bit raw key holds is dropped and said, not filed on raw zero
-	over := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + big.replace('9007199254740993', '18446744073709551616').replace('<VT>Odd</VT>', '<VT>Over</VT>') + arxml_tail) or {
+	over := parse_arxml(arxml_head + fd_cluster() + big.replace('9007199254740993', '18446744073709551616').replace('<VT>Odd</VT>', '<VT>Over</VT>') + arxml_tail) or {
 		panic(err)
 	}
 	assert sig((over.cluster('') or { panic(err) }).db.messages[0], 'V').values.len == 0
@@ -1091,8 +1092,9 @@ fn test_round_15_shapes_are_said_or_read_right() {
 	assert wrapped.report.notes.any(it.contains('/Sig/V: enum key -257 ("Neg") of /CM/K does not fit a 8-bit signed signal; dropped'))
 	// -1 and 2^64-1 are one u64 pattern; a method shared by a signed and an unsigned 64-bit signal
 	// keeps them apart, and each signal takes the one its domain holds (round 21)
-	both := offset_pdu_xml.replace('<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>8</LENGTH></I-SIGNAL>', '<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>64</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF></I-SIGNAL>').replace('<I-SIGNAL><SHORT-NAME>Ctr</SHORT-NAME><LENGTH>4</LENGTH></I-SIGNAL>', '<I-SIGNAL><SHORT-NAME>Ctr</SHORT-NAME><LENGTH>64</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF><NETWORK-REPRESENTATION-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><BASE-TYPE-REF DEST="SW-BASE-TYPE">/BT/s8</BASE-TYPE-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></NETWORK-REPRESENTATION-PROPS></I-SIGNAL>') + '<AR-PACKAGE><SHORT-NAME>Sys</SHORT-NAME><ELEMENTS><SYSTEM-SIGNAL><SHORT-NAME>S</SHORT-NAME><PHYSICAL-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/B</COMPU-METHOD-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></PHYSICAL-PROPS></SYSTEM-SIGNAL></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>BT</SHORT-NAME><ELEMENTS><SW-BASE-TYPE><SHORT-NAME>s8</SHORT-NAME><BASE-TYPE-ENCODING>2C</BASE-TYPE-ENCODING></SW-BASE-TYPE></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>CM</SHORT-NAME><ELEMENTS><COMPU-METHOD><SHORT-NAME>B</SHORT-NAME><CATEGORY>TEXTTABLE</CATEGORY><COMPU-INTERNAL-TO-PHYS><COMPU-SCALES><COMPU-SCALE><LOWER-LIMIT>-1</LOWER-LIMIT><UPPER-LIMIT>-1</UPPER-LIMIT><COMPU-CONST><VT>Neg</VT></COMPU-CONST></COMPU-SCALE><COMPU-SCALE><LOWER-LIMIT>18446744073709551615</LOWER-LIMIT><UPPER-LIMIT>18446744073709551615</UPPER-LIMIT><COMPU-CONST><VT>Max</VT></COMPU-CONST></COMPU-SCALE></COMPU-SCALES></COMPU-INTERNAL-TO-PHYS></COMPU-METHOD></ELEMENTS></AR-PACKAGE>'
-	bo := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + both + arxml_tail) or {
+	mut both := offset_pdu_xml.replace('<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>8</LENGTH></I-SIGNAL>', '<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>64</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF></I-SIGNAL>').replace('<I-SIGNAL><SHORT-NAME>Ctr</SHORT-NAME><LENGTH>4</LENGTH></I-SIGNAL>', '<I-SIGNAL><SHORT-NAME>Ctr</SHORT-NAME><LENGTH>64</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF><NETWORK-REPRESENTATION-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><BASE-TYPE-REF DEST="SW-BASE-TYPE">/BT/s8</BASE-TYPE-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></NETWORK-REPRESENTATION-PROPS></I-SIGNAL>') + '<AR-PACKAGE><SHORT-NAME>Sys</SHORT-NAME><ELEMENTS><SYSTEM-SIGNAL><SHORT-NAME>S</SHORT-NAME><PHYSICAL-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/B</COMPU-METHOD-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></PHYSICAL-PROPS></SYSTEM-SIGNAL></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>BT</SHORT-NAME><ELEMENTS><SW-BASE-TYPE><SHORT-NAME>s8</SHORT-NAME><BASE-TYPE-ENCODING>2C</BASE-TYPE-ENCODING></SW-BASE-TYPE></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>CM</SHORT-NAME><ELEMENTS><COMPU-METHOD><SHORT-NAME>B</SHORT-NAME><CATEGORY>TEXTTABLE</CATEGORY><COMPU-INTERNAL-TO-PHYS><COMPU-SCALES><COMPU-SCALE><LOWER-LIMIT>-1</LOWER-LIMIT><UPPER-LIMIT>-1</UPPER-LIMIT><COMPU-CONST><VT>Neg</VT></COMPU-CONST></COMPU-SCALE><COMPU-SCALE><LOWER-LIMIT>18446744073709551615</LOWER-LIMIT><UPPER-LIMIT>18446744073709551615</UPPER-LIMIT><COMPU-CONST><VT>Max</VT></COMPU-CONST></COMPU-SCALE></COMPU-SCALES></COMPU-INTERNAL-TO-PHYS></COMPU-METHOD></ELEMENTS></AR-PACKAGE>'
+	both = both.replace('<FRAME-LENGTH>8</FRAME-LENGTH>', '<FRAME-LENGTH>16</FRAME-LENGTH>') // a 64-bit signal needs the 16-byte CAN-FD payload fd_cluster declares
+	bo := parse_arxml(arxml_head + fd_cluster() + both + arxml_tail) or {
 		panic(err)
 	}
 	bm := (bo.cluster('') or { panic(err) }).db.messages[0]
@@ -1105,7 +1107,7 @@ fn test_round_15_shapes_are_said_or_read_right() {
 	assert bo.report.notes.any(it.contains('/Sig/Crc: enum key -1 ("Neg") of /CM/B does not fit a 64-bit unsigned'))
 	assert bo.report.notes.any(it.contains('/Sig/Ctr: enum key 18446744073709551615 ("Max") of /CM/B does not fit a 64-bit signed'))
 	// and a RANGE between them is not a singleton, whatever their patterns say (round 22)
-	span := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + both.replace('<LOWER-LIMIT>-1</LOWER-LIMIT><UPPER-LIMIT>-1</UPPER-LIMIT><COMPU-CONST><VT>Neg</VT>', '<LOWER-LIMIT>-1</LOWER-LIMIT><UPPER-LIMIT>18446744073709551615</UPPER-LIMIT><COMPU-CONST><VT>Span</VT>') + arxml_tail) or {
+	span := parse_arxml(arxml_head + fd_cluster() + both.replace('<LOWER-LIMIT>-1</LOWER-LIMIT><UPPER-LIMIT>-1</UPPER-LIMIT><COMPU-CONST><VT>Neg</VT>', '<LOWER-LIMIT>-1</LOWER-LIMIT><UPPER-LIMIT>18446744073709551615</UPPER-LIMIT><COMPU-CONST><VT>Span</VT>') + arxml_tail) or {
 		panic(err)
 	}
 	assert sig((span.cluster('') or { panic(err) }).db.messages[0], 'Ctr').values.len == 0
@@ -1325,6 +1327,32 @@ fn test_frame_lengths_are_bounded() {
 	}
 	assert !(neg.cluster('') or { panic(err) }).db.messages[0].signals.any(it.name == 'V')
 	assert neg.report.notes.any(it.contains('/Sig/V: START-POSITION -16 (in a PDU at bit 8) is negative; not read'))
+	// a START-POSITION missing or not an integer is not read (round 37)
+	for bad in ['<START-POSITION>x</START-POSITION>', ''] {
+		bp := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<START-POSITION>0</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING>', bad + '</I-SIGNAL-TO-I-PDU-MAPPING>') + arxml_tail) or {
+			panic(err)
+		}
+		assert !(bp.cluster('') or { panic(err) }).db.messages[0].signals.any(it.name == 'V'), bad
+		assert bp.report.notes.any(it.contains('/Sig/V: START-POSITION') && it.contains('is missing or not an integer')), bp.report.notes.str()
+	}
+	// a signal that extends past the frame payload is not read: 16 bits at frame bit 56 of 8 bytes
+	past := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<START-POSITION>0</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING>', '<START-POSITION>48</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING>') + arxml_tail) or {
+		panic(err)
+	}
+	assert !(past.cluster('') or { panic(err) }).db.messages[0].signals.any(it.name == 'V')
+	assert past.report.notes.any(it.contains('/Sig/V: 16-bit signal at frame bit 56 extends past the 8-byte frame F; not read'))
+	// the fit rule, both byte orders
+	assert signal_fits_frame(Signal{ start_bit: 48, length: 16 }, 8)
+	assert !signal_fits_frame(Signal{ start_bit: 56, length: 16 }, 8)
+	assert signal_fits_frame(Signal{ start_bit: 63, length: 16, byte_order: .big_endian }, 8) == false // 63..56 then 55..48? no: Motorola from 63 descends to 56, then 71.. — past
+	assert signal_fits_frame(Signal{ start_bit: 55, length: 16, byte_order: .big_endian }, 8) // 55..48, 63..56
+	assert signal_fits_frame(Signal{ start_bit: 7, length: 8, byte_order: .big_endian }, 1)
+	assert !signal_fits_frame(Signal{ start_bit: 7, length: 9, byte_order: .big_endian }, 1)
+	// a rejected triggering reserves no name: /Frames/F with an invalid id, then /B/F imports as F
+	rej := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F').replace('<IDENTIFIER>256</IDENTIFIER></CAN-FRAME-TRIGGERING>', '<IDENTIFIER>invalid</IDENTIFIER></CAN-FRAME-TRIGGERING><CAN-FRAME-TRIGGERING><SHORT-NAME>FTB</SHORT-NAME><FRAME-REF DEST="CAN-FRAME">/B/F</FRAME-REF><CAN-ADDRESSING-MODE>STANDARD</CAN-ADDRESSING-MODE><IDENTIFIER>257</IDENTIFIER></CAN-FRAME-TRIGGERING>') + offset_pdu_xml + '<AR-PACKAGE><SHORT-NAME>B</SHORT-NAME><ELEMENTS><CAN-FRAME><SHORT-NAME>F</SHORT-NAME><FRAME-LENGTH>8</FRAME-LENGTH><PDU-TO-FRAME-MAPPINGS><PDU-TO-FRAME-MAPPING><SHORT-NAME>M</SHORT-NAME><PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/P</PDU-REF><START-POSITION>8</START-POSITION></PDU-TO-FRAME-MAPPING></PDU-TO-FRAME-MAPPINGS></CAN-FRAME></ELEMENTS></AR-PACKAGE>' + arxml_tail) or {
+		panic(err)
+	}
+	assert (rej.cluster('') or { panic(err) }).db.messages.map(it.name) == ['F']
 }
 
 fn test_a_j1939_cluster_is_counted_as_ignored() {
@@ -1333,6 +1361,12 @@ fn test_a_j1939_cluster_is_counted_as_ignored() {
 	}
 	assert j.report.ignored['J-1939-CLUSTER'] == 1, j.report.ignored.str()
 	assert j.report.lines().any(it.contains('J-1939-CLUSTER'))
+}
+
+// fd_cluster is cluster_xml's one triggering declared CAN-FD, for fixtures whose 64-bit signals
+// need a 16-byte payload: a classic frame carries 8 bytes and the reader now holds it to that.
+fn fd_cluster() string {
+	return cluster_xml('Bus', 256, '/Frames/F').replace('<IDENTIFIER>256</IDENTIFIER>', '<IDENTIFIER>256</IDENTIFIER><CAN-FRAME-TX-BEHAVIOR>CAN-FD</CAN-FRAME-TX-BEHAVIOR>')
 }
 
 fn test_two_triggerings_of_one_id_keep_the_first_and_say_so() {

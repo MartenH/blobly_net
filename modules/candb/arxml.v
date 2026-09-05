@@ -282,6 +282,87 @@ fn allocate_names_first_keeps(paths []string) map[string]string {
 	return out
 }
 
+// FrameAdmission is what a CAN-FRAME-TRIGGERING and its frame resolve to — or why they are not
+// read. ONE predicate for the naming pre-pass and the import pass, so what one reserves the other
+// imports (round 37).
+struct FrameAdmission {
+	refusal string // '' when admissible
+	id      u32
+	ext     bool
+	dlc     int
+	fd      bool
+}
+
+// frame_admission validates the identifier and the frame length where they are read: no schema
+// validation happens anywhere else. An id read as 0 for want of a number would claim the real
+// id-0 frame; an oversized one reaches the simulator and is refused there; a simulated sender
+// allocates its payload from the length, so a negative one panicked and one over 64 went to a
+// transport that cannot carry it; and a classic frame over 8 bytes would simulate three ways —
+// the software buses carry it, SocketCAN clamps it, the vendor backends refuse it (rounds 34–36).
+fn frame_admission(ft xml.XMLNode, frame xml.XMLNode, fname string) FrameAdmission {
+	if child(ft, 'IDENTIFIER') == none {
+		return FrameAdmission{
+			refusal: 'no IDENTIFIER; not read'
+		}
+	}
+	id_text := child_text(ft, 'IDENTIFIER').trim_space()
+	ext := child_text(ft, 'CAN-ADDRESSING-MODE') == 'EXTENDED'
+	bits := if ext { '29' } else { '11' }
+	raw_id := key_of(id_text) or { 0 }
+	if !integral_literal(id_text) || key_of(id_text) == none {
+		return FrameAdmission{
+			refusal: 'IDENTIFIER "${id_text}" is not an integer; not read'
+		}
+	}
+	if raw_id > (if ext { u64(0x1FFFFFFF) } else { u64(0x7FF) }) {
+		return FrameAdmission{
+			refusal: 'IDENTIFIER ${id_text} does not fit ${bits} bits; not read'
+		}
+	}
+	if child(frame, 'FRAME-LENGTH') == none {
+		return FrameAdmission{
+			refusal: 'frame ${fname} has no FRAME-LENGTH; not read'
+		}
+	}
+	dlc := parse_int(child_text(frame, 'FRAME-LENGTH'))
+	if dlc < 0 || dlc > 64 {
+		return FrameAdmission{
+			refusal: 'frame ${fname} has FRAME-LENGTH ${dlc}, outside 0..64; not read'
+		}
+	}
+	fd := child_text(ft, 'CAN-FRAME-TX-BEHAVIOR') == 'CAN-FD' || child_text(ft, 'CAN-FRAME-RX-BEHAVIOR') == 'CAN-FD'
+	if !fd && dlc > 8 {
+		return FrameAdmission{
+			refusal: 'frame ${fname} is classic CAN with FRAME-LENGTH ${dlc}, above the 8 bytes classic carries; not read'
+		}
+	}
+	return FrameAdmission{
+		id: u32(raw_id)
+		ext: ext
+		dlc: dlc
+		fd: fd
+	}
+}
+
+// signal_fits_frame: does the signal's whole bit traversal lie inside a `dlc`-byte payload?
+// set_raw drops what lies outside and raw_value reads it as 0, so a signal past the payload
+// simulated truncated while the export advertised it whole (round 37). Motorola descends within
+// a byte and then to the next byte's MSB, so its last byte is counted from what is left of the
+// first byte below the start bit.
+fn signal_fits_frame(s Signal, dlc int) bool {
+	if s.start_bit < 0 || s.length <= 0 {
+		return false
+	}
+	last_byte := if s.byte_order == .little_endian {
+		(s.start_bit + s.length - 1) / 8
+	} else {
+		first := s.start_bit / 8
+		in_first := s.start_bit % 8 + 1 // bits available from the start bit down to bit 0 of its byte
+		if s.length <= in_first { first } else { first + (s.length - in_first + 7) / 8 }
+	}
+	return last_byte < dlc
+}
+
 // name_clusters gives every cluster its `bus` identifier — see allocate_names.
 fn (mut r ArxmlReader) name_clusters(clusters []ArxmlCluster) []ArxmlCluster {
 	names := allocate_names(clusters.map(it.path))
@@ -733,12 +814,16 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 	mut seen_keys := map[string]bool{}
 	for ft in descendants(scope, 'CAN-FRAME-TRIGGERING') {
 		// a QUIET lookup: the loop below reports a dangling FRAME-REF once, and this pass must
-		// not report it a second time
+		// not report it a second time — and ONLY admissible triggerings, by the same predicate
+		// the import pass refuses with, or a rejected /A/F reserved `F` and the imported /B/F
+		// came out `B_F` (round 37)
 		fp := el_text(child(ft, 'FRAME-REF') or { continue })
-		if fp !in r.by_path {
+		fnode := r.by_path[fp] or { continue }
+		adm := frame_admission(ft, fnode, child_text(fnode, 'SHORT-NAME'))
+		if adm.refusal != '' {
 			continue
 		}
-		k := frame_key(u32(parse_int(child_text(ft, 'IDENTIFIER'))), child_text(ft, 'CAN-ADDRESSING-MODE') == 'EXTENDED')
+		k := frame_key(adm.id, adm.ext)
 		if k in seen_keys || fp in fpaths {
 			continue
 		}
@@ -763,29 +848,14 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			continue
 		}
 		mut fname := child_text(frame, 'SHORT-NAME')
-		if child(ft, 'IDENTIFIER') == none {
-			r.report.notes << '${ft_path}: no IDENTIFIER; not read'
+		adm := frame_admission(ft, frame, fname)
+		if adm.refusal != '' {
+			r.report.notes << '${ft_path}: ${adm.refusal}'
 			continue
 		}
-		id_text := child_text(ft, 'IDENTIFIER').trim_space()
-		ext := child_text(ft, 'CAN-ADDRESSING-MODE') == 'EXTENDED'
-		bits := if ext { '29' } else { '11' }
-		// PARSED FALLIBLY: an id read as 0 for want of a number would claim the real id-0 frame
-		// and drop it as a duplicate (rounds 35–36); an oversized one reaches the simulator and
-		// is refused there. `-1` is a pattern no width holds and fails the bound like `2048`
-		if !integral_literal(id_text) {
-			r.report.notes << '${ft_path}: IDENTIFIER "${id_text}" is not an integer; not read'
-			continue
-		}
-		raw_id := key_of(id_text) or {
-			r.report.notes << '${ft_path}: IDENTIFIER "${id_text}" is not an integer; not read'
-			continue
-		}
-		if raw_id > (if ext { u64(0x1FFFFFFF) } else { u64(0x7FF) }) {
-			r.report.notes << '${ft_path}: IDENTIFIER ${id_text} does not fit ${bits} bits; not read'
-			continue
-		}
-		id := u32(raw_id)
+		id := adm.id
+		ext := adm.ext
+		dlc := adm.dlc
 		key := frame_key(id, ext)
 		if key in frames {
 			r.report.notes << '${ft_path}: a second triggering for id 0x${id:X} (${fname}); the first is kept'
@@ -802,25 +872,8 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			r.report.notes << '${ft_path}: frame name ${fname} is already used by another id in this cluster; this one is ${claimed}'
 			fname = claimed
 		}
-		if child(frame, 'FRAME-LENGTH') == none {
-			r.report.notes << '${ft_path}: frame ${fname} has no FRAME-LENGTH; not read'
-			continue
-		}
-		dlc := parse_int(child_text(frame, 'FRAME-LENGTH'))
-		if dlc < 0 || dlc > 64 {
-			// no schema validation here, so the bound a CAN-FD frame has is checked where the
-			// value is read: a simulated sender allocates the payload from it (round 34)
-			r.report.notes << '${ft_path}: frame ${fname} has FRAME-LENGTH ${dlc}, outside 0..64; not read'
-			continue
-		}
 		mut info := ArxmlFrame{
-			fd: child_text(ft, 'CAN-FRAME-TX-BEHAVIOR') == 'CAN-FD' || child_text(ft, 'CAN-FRAME-RX-BEHAVIOR') == 'CAN-FD'
-		}
-		if !info.fd && dlc > 8 {
-			// a classic frame cannot carry it: the software buses would, SocketCAN clamps and
-			// the vendor backends refuse, so the same file would simulate three ways (round 35)
-			r.report.notes << '${ft_path}: frame ${fname} is classic CAN with FRAME-LENGTH ${dlc}, above the 8 bytes classic carries; not read'
-			continue
+			fd: adm.fd
 		}
 
 		// who sends, who listens: the frame ports on the triggering, by direction
@@ -925,8 +978,17 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 				// count_ignored, so nothing here is silent.
 				continue
 			}
-			mut pdu_sigs, pdu_paths := r.load_signals(sig_pdu, sig_pdu_path, pdu_off)
-			sig_paths << pdu_paths
+			mut loaded, loaded_paths := r.load_signals(sig_pdu, sig_pdu_path, pdu_off)
+			// INSIDE THE PAYLOAD, every bit of it: the two lists stay aligned through the filter
+			mut pdu_sigs := []Signal{}
+			for si, ls in loaded {
+				if signal_fits_frame(ls, dlc) {
+					pdu_sigs << ls
+					sig_paths << loaded_paths[si]
+				} else {
+					r.report.notes << '${loaded_paths[si]}: ${ls.length}-bit signal at frame bit ${ls.start_bit} extends past the ${dlc}-byte frame ${fname}; not read'
+				}
+			}
 			ubp := child_text(sig_pdu, 'UNUSED-BIT-PATTERN').trim_space()
 			if ubp != '' && parse_int(ubp) != 0 {
 				// the fill of every bit no signal maps; the simulated ECUs fill with 0, and a
@@ -1242,7 +1304,14 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 			r.report.notes << '${isig_path}: ${length}-bit signal is wider than the 64-bit scalar model; not read'
 			continue
 		}
-		start := parse_int(child_text(m, 'START-POSITION')) + pdu_off
+		pos_text := child_text(m, 'START-POSITION').trim_space()
+		if child(m, 'START-POSITION') == none || !integral_literal(pos_text) {
+			// read as 0 for want of a number, the signal landed at the PDU's first bit over
+			// whatever sits there (round 37)
+			r.report.notes << '${isig_path}: START-POSITION "${pos_text}" is missing or not an integer; not read'
+			continue
+		}
+		start := int(parse_i64(pos_text)) + pdu_off
 		if start < 0 {
 			// raw_value and set_raw guard the upper bound only; a negative byte index from here
 			// would terminate the decoder (round 35)
