@@ -124,6 +124,12 @@ fn main() {
 			eprintln('arxml2dbc: ${out} is the input ARXML; refusing to overwrite the source')
 			exit(2)
 		}
+		if out != '' && out != '-' && os.is_dir(out) {
+			// publication renames the destination aside and moves a file in: a DIRECTORY named by
+			// mistake would be renamed away and replaced by a file (codex on #273 round 43)
+			eprintln('arxml2dbc: ${out} is a directory; name the file to write')
+			exit(2)
+		}
 	}
 	both_files := dbc_out != '' && dbc_out != '-' && toml_out != '' && toml_out != '-'
 	if both_files && canon(dbc_out) == canon(toml_out) {
