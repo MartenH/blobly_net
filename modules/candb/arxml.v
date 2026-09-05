@@ -746,6 +746,14 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 		fpaths << fp
 	}
 	frame_names := allocate_names_first_keeps(fpaths)
+	// every allocated name is TAKEN before any is given out, so a frame triggered under two ids
+	// (its second occurrence suffixed below) cannot take a name reserved for a frame not yet
+	// reached — `/A/F` twice and then `/B/F_2` gave the repeat `F_2` and the real F_2 `F_2_2`
+	// (round 32). A path's FIRST occurrence takes its own allocation as it stands
+	for _, n in frame_names {
+		taken_names[n] = true
+	}
+	mut seen_fpaths := map[string]bool{}
 	for ft in descendants(scope, 'CAN-FRAME-TRIGGERING') {
 		ft_path := r.path_of(ft, path)
 		frame, fpath := r.deref(ft, 'FRAME-REF', ft_path) or {
@@ -767,7 +775,8 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 		// of the same name at another id is qualified by its package, and said, rather than
 		// shadowing the first
 		want := frame_names[fpath] or { fname }
-		claimed := claim_name(mut taken_names, want)
+		claimed := if fpath in seen_fpaths { claim_name(mut taken_names, want) } else { want }
+		seen_fpaths[fpath] = true
 		if claimed != fname {
 			r.report.notes << '${ft_path}: frame name ${fname} is already used by another id in this cluster; this one is ${claimed}'
 			fname = claimed
@@ -981,10 +990,21 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			}
 		}
 		sig_names := allocate_names_first_keeps(distinct)
+		// seeded with every allocation, so a repeated mapping's suffix cannot take a name
+		// reserved for a signal not yet reached (`/A/V` twice, then `/B/V_2` — round 32)
 		mut taken_sigs := map[string]bool{}
+		for _, n in sig_names {
+			taken_sigs[n] = true
+		}
+		mut seen_sigs := map[string]bool{}
 		for i, mut s in sigs {
 			wanted := sig_names[sig_paths[i]] or { s.name }
-			given := claim_name(mut taken_sigs, wanted)
+			given := if sig_paths[i] in seen_sigs {
+				claim_name(mut taken_sigs, wanted)
+			} else {
+				wanted
+			}
+			seen_sigs[sig_paths[i]] = true
 			if given != s.name {
 				r.report.notes << '${sig_paths[i]}: signal name ${s.name} is already used in this message; this one is ${given}'
 				s.name = given
@@ -1526,6 +1546,11 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 					for v in descendants(dd, 'V') {
 						den << parse_num(el_text(v))
 					}
+				}
+				if num.len == 0 {
+					// structurally valid, numerically empty: said rather than indexed (round 32)
+					r.report.notes << '${cm_path}: rational coefficients without a numerator; read as factor 1 offset 0'
+					continue
 				}
 				d := if den.len > 0 { den[0] } else { 1.0 }
 				// linear means: every denominator coefficient past the constant is zero, and

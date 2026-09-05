@@ -1107,6 +1107,12 @@ fn test_round_15_shapes_are_said_or_read_right() {
 	zv := sig((zs.cluster('') or { panic(err) }).db.messages[0], 'V')
 	assert zv.factor == 1.0 && zv.offset == 0.0
 	assert zs.report.notes.any(it.contains('/CM/C: a constant conversion (every raw value is 5) is not modelled'))
+	// rational coefficients with no numerator at all: said, not indexed (round 32)
+	no_num := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + zero_slope.replace('<COMPU-NUMERATOR><V>5</V><V>0</V></COMPU-NUMERATOR>', '<COMPU-NUMERATOR></COMPU-NUMERATOR>') + arxml_tail) or {
+		panic(err)
+	}
+	assert sig((no_num.cluster('') or { panic(err) }).db.messages[0], 'V').factor == 1.0
+	assert no_num.report.notes.any(it.contains('/CM/C: rational coefficients without a numerator'))
 }
 
 fn test_round_19_shapes() {
@@ -1229,6 +1235,29 @@ fn test_unique_names_are_reserved_before_duplicates_are_qualified() {
 	mut tnames := (tw.cluster('') or { panic(err) }).db.messages[0].signals.map(it.name)
 	tnames.sort()
 	assert tnames == ['Crc', 'Ctr', 'V', 'V_2'], tnames.str()
+	// and a repeat cannot take a name RESERVED for a signal not yet reached: /Sig/V twice, then a
+	// signal whose own name is V_2 — the repeat is V_3, V_2 stays V_2 (round 32)
+	v2 := twice.replace_once('</I-SIGNAL-TO-PDU-MAPPINGS>', '<I-SIGNAL-TO-I-PDU-MAPPING><SHORT-NAME>MV3</SHORT-NAME><I-SIGNAL-REF DEST="I-SIGNAL">/D/V_2</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>24</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING></I-SIGNAL-TO-PDU-MAPPINGS>') + '<AR-PACKAGE><SHORT-NAME>D</SHORT-NAME><ELEMENTS><I-SIGNAL><SHORT-NAME>V_2</SHORT-NAME><LENGTH>4</LENGTH></I-SIGNAL></ELEMENTS></AR-PACKAGE>'
+	rv := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + v2 + arxml_tail) or {
+		panic(err)
+	}
+	rm := (rv.cluster('') or { panic(err) }).db.messages[0]
+	mut rnames := rm.signals.map(it.name)
+	rnames.sort()
+	assert rnames == ['Crc', 'Ctr', 'V', 'V_2', 'V_3'], rnames.str()
+	assert sig(rm, 'V_2').start_bit == 32, 'the signal whose own name is V_2 keeps it'
+	// the same for a frame triggered under two ids before a frame whose own name is F_2
+	trig2 := fn (name string, id int, ref string) string {
+		return '<CAN-FRAME-TRIGGERING><SHORT-NAME>${name}</SHORT-NAME><FRAME-REF DEST="CAN-FRAME">${ref}</FRAME-REF><CAN-ADDRESSING-MODE>STANDARD</CAN-ADDRESSING-MODE><IDENTIFIER>${id}</IDENTIFIER></CAN-FRAME-TRIGGERING>'
+	}
+	f2 := '<AR-PACKAGE><SHORT-NAME>G</SHORT-NAME><ELEMENTS><CAN-FRAME><SHORT-NAME>F_2</SHORT-NAME><FRAME-LENGTH>8</FRAME-LENGTH><PDU-TO-FRAME-MAPPINGS><PDU-TO-FRAME-MAPPING><SHORT-NAME>M</SHORT-NAME><PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/P</PDU-REF><START-POSITION>8</START-POSITION></PDU-TO-FRAME-MAPPING></PDU-TO-FRAME-MAPPINGS></CAN-FRAME></ELEMENTS></AR-PACKAGE>'
+	clr := cluster_xml('Bus', 256, '/Frames/F').replace('</FRAME-TRIGGERINGS>', trig2('FTb', 257, '/Frames/F') + trig2('FTc', 258, '/G/F_2') + '</FRAME-TRIGGERINGS>')
+	rf := parse_arxml(arxml_head + clr + offset_pdu_xml + f2 + arxml_tail) or { panic(err) }
+	rfc := rf.cluster('') or { panic(err) }
+	mut fnames := rfc.db.messages.map(it.name)
+	fnames.sort()
+	assert fnames == ['F', 'F_2', 'F_3'], fnames.str()
+	assert (rfc.db.lookup(258) or { panic('no 258') }).name == 'F_2'
 }
 
 fn test_a_j1939_cluster_is_counted_as_ignored() {
