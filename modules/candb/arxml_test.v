@@ -32,6 +32,7 @@ fn test_cluster_and_nodes() {
 	// cluster, which the simulation cannot carry per frame
 	assert a.report.unresolved == []
 	assert a.report.notes == [
+		'/PDUs/Wide_PDU: event-controlled timing only, no cyclic timing; the simulation sends on a cycle and sends nothing for this frame',
 		'/Cluster/Body: 1 CAN-FD and 4 classic frames on one cluster; the simulation applies one format per bus, the export keeps the distinction',
 	]
 	// and the one PDU kind not extracted is counted, not dropped in silence
@@ -953,6 +954,42 @@ fn test_open_bounds_and_inverse_only_conversions_are_said() {
 	assert sig(d.cluster('') or { panic(err) }.db.messages[0], 'V').desc == 'use foo, then (bar) over all bytes.'
 }
 
+fn test_round_15_shapes_are_said_or_read_right() {
+	v_sig := '<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH></I-SIGNAL>'
+	pdu_head := '<I-SIGNAL-I-PDU><SHORT-NAME>P</SHORT-NAME><LENGTH>4</LENGTH>'
+	// fractional text-table bounds are not a singleton at the raw key they truncate to; a masked
+	// bitfield table is not a value table; an unmodelled encoding is said; a nonzero unused-bit
+	// pattern is said; event-only timing is said
+	shapes := offset_pdu_xml.replace(v_sig, '<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH><NETWORK-REPRESENTATION-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><BASE-TYPE-REF DEST="SW-BASE-TYPE">/BT/bcd</BASE-TYPE-REF><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/Frac</COMPU-METHOD-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></NETWORK-REPRESENTATION-PROPS></I-SIGNAL>').replace('<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>8</LENGTH></I-SIGNAL>', '<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>8</LENGTH><NETWORK-REPRESENTATION-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/Bits</COMPU-METHOD-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></NETWORK-REPRESENTATION-PROPS></I-SIGNAL>').replace(pdu_head, pdu_head + '<UNUSED-BIT-PATTERN>255</UNUSED-BIT-PATTERN><I-PDU-TIMING-SPECIFICATIONS><I-PDU-TIMING><TRANSMISSION-MODE-DECLARATION><TRANSMISSION-MODE-TRUE-TIMING><EVENT-CONTROLLED-TIMING><NUMBER-OF-REPETITIONS>0</NUMBER-OF-REPETITIONS></EVENT-CONTROLLED-TIMING></TRANSMISSION-MODE-TRUE-TIMING></TRANSMISSION-MODE-DECLARATION></I-PDU-TIMING></I-PDU-TIMING-SPECIFICATIONS>') + '<AR-PACKAGE><SHORT-NAME>BT</SHORT-NAME><ELEMENTS><SW-BASE-TYPE><SHORT-NAME>bcd</SHORT-NAME><BASE-TYPE-ENCODING>BCD-P</BASE-TYPE-ENCODING></SW-BASE-TYPE></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>CM</SHORT-NAME><ELEMENTS><COMPU-METHOD><SHORT-NAME>Frac</SHORT-NAME><CATEGORY>TEXTTABLE</CATEGORY><COMPU-INTERNAL-TO-PHYS><COMPU-SCALES><COMPU-SCALE><LOWER-LIMIT>1.1</LOWER-LIMIT><UPPER-LIMIT>1.9</UPPER-LIMIT><COMPU-CONST><VT>Between</VT></COMPU-CONST></COMPU-SCALE><COMPU-SCALE><LOWER-LIMIT>2</LOWER-LIMIT><UPPER-LIMIT>2.0</UPPER-LIMIT><COMPU-CONST><VT>Two</VT></COMPU-CONST></COMPU-SCALE></COMPU-SCALES></COMPU-INTERNAL-TO-PHYS></COMPU-METHOD><COMPU-METHOD><SHORT-NAME>Bits</SHORT-NAME><CATEGORY>BITFIELD_TEXTTABLE</CATEGORY><COMPU-INTERNAL-TO-PHYS><COMPU-SCALES><COMPU-SCALE><MASK>1</MASK><LOWER-LIMIT>1</LOWER-LIMIT><UPPER-LIMIT>1</UPPER-LIMIT><COMPU-CONST><VT>Bit0</VT></COMPU-CONST></COMPU-SCALE></COMPU-SCALES></COMPU-INTERNAL-TO-PHYS></COMPU-METHOD></ELEMENTS></AR-PACKAGE>'
+	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + shapes + arxml_tail) or {
+		panic(err)
+	}
+	c := a.cluster('') or { panic(err) }
+	v := sig(c.db.messages[0], 'V')
+	assert v.values == {
+		u64(2): 'Two'
+	}
+	assert a.report.notes.any(it.contains('/CM/Frac: maps the range 1.1..1.9 to "Between"'))
+	assert sig(c.db.messages[0], 'Crc').values.len == 0
+	assert a.report.notes.any(it.contains('/CM/Bits: a masked bitfield text table'))
+	assert a.report.notes.any(it.contains('/Sig/V: BASE-TYPE-ENCODING BCD-P is not modelled'))
+	assert a.report.notes.any(it.contains('/PDUs/P: UNUSED-BIT-PATTERN 255 is not modelled'))
+	assert a.report.notes.any(it.contains('/PDUs/P: event-controlled timing only, no cyclic timing'))
+	assert integral_literal('0x1E') && integral_literal('-7') && integral_literal('2.0') && integral_literal('1E2')
+	assert !integral_literal('1.1') && !integral_literal('') && !integral_literal('0x')
+	// endpoints declared through I-PDU ports alone (no frame ports) still give the frame a
+	// sender and a receiver
+	ft_pdus := '<IDENTIFIER>256</IDENTIFIER><PDU-TRIGGERINGS><PDU-TRIGGERING-REF-CONDITIONAL><PDU-TRIGGERING-REF DEST="PDU-TRIGGERING">/Bus/Bus/Ch/PT</PDU-TRIGGERING-REF></PDU-TRIGGERING-REF-CONDITIONAL></PDU-TRIGGERINGS></CAN-FRAME-TRIGGERING>'
+	ch_pdus := '</FRAME-TRIGGERINGS><PDU-TRIGGERINGS><PDU-TRIGGERING><SHORT-NAME>PT</SHORT-NAME><I-PDU-PORT-REFS><I-PDU-PORT-REF DEST="I-PDU-PORT">/ECUs/E/Conn/P_Out</I-PDU-PORT-REF><I-PDU-PORT-REF DEST="I-PDU-PORT">/ECUs/R/Conn/P_In</I-PDU-PORT-REF></I-PDU-PORT-REFS><I-PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/P</I-PDU-REF></PDU-TRIGGERING></PDU-TRIGGERINGS></CAN-PHYSICAL-CHANNEL>'
+	ecus := '<AR-PACKAGE><SHORT-NAME>ECUs</SHORT-NAME><ELEMENTS><ECU-INSTANCE><SHORT-NAME>E</SHORT-NAME><CONNECTORS><CAN-COMMUNICATION-CONNECTOR><SHORT-NAME>Conn</SHORT-NAME><ECU-COMM-PORT-INSTANCES><I-PDU-PORT><SHORT-NAME>P_Out</SHORT-NAME><COMMUNICATION-DIRECTION>OUT</COMMUNICATION-DIRECTION></I-PDU-PORT></ECU-COMM-PORT-INSTANCES></CAN-COMMUNICATION-CONNECTOR></CONNECTORS></ECU-INSTANCE><ECU-INSTANCE><SHORT-NAME>R</SHORT-NAME><CONNECTORS><CAN-COMMUNICATION-CONNECTOR><SHORT-NAME>Conn</SHORT-NAME><ECU-COMM-PORT-INSTANCES><I-PDU-PORT><SHORT-NAME>P_In</SHORT-NAME><COMMUNICATION-DIRECTION>IN</COMMUNICATION-DIRECTION></I-PDU-PORT></ECU-COMM-PORT-INSTANCES></CAN-COMMUNICATION-CONNECTOR></CONNECTORS></ECU-INSTANCE></ELEMENTS></AR-PACKAGE>'
+	cl := cluster_xml('Bus', 256, '/Frames/F').replace('<IDENTIFIER>256</IDENTIFIER></CAN-FRAME-TRIGGERING>', ft_pdus).replace('</FRAME-TRIGGERINGS></CAN-PHYSICAL-CHANNEL>', ch_pdus)
+	e := parse_arxml(arxml_head + cl + offset_pdu_xml + ecus + arxml_tail) or { panic(err) }
+	ec := e.cluster('') or { panic(err) }
+	assert ec.db.messages[0].sender == 'E', ec.db.messages[0].sender
+	assert 'R' in sig(ec.db.messages[0], 'V').receivers
+	assert 'E' in ec.db.nodes && 'R' in ec.db.nodes
+}
+
 fn test_two_triggerings_of_one_id_keep_the_first_and_say_so() {
 	two := cluster_xml('Bus', 256, '/Frames/F').replace('</FRAME-TRIGGERINGS>', '<CAN-FRAME-TRIGGERING><SHORT-NAME>FT2</SHORT-NAME><FRAME-REF DEST="CAN-FRAME">/Frames/F</FRAME-REF><CAN-ADDRESSING-MODE>STANDARD</CAN-ADDRESSING-MODE><IDENTIFIER>256</IDENTIFIER></CAN-FRAME-TRIGGERING></FRAME-TRIGGERINGS>')
 	a := parse_arxml(arxml_head + two + frame_xml + arxml_tail) or { panic(err) }
@@ -1158,6 +1195,7 @@ fn test_report_lines() {
 	assert l[0].starts_with('unresolved reference: ')
 	assert example_arxml().report.lines() == [
 		'ignored: 1 × N-PDU',
+		'note: /PDUs/Wide_PDU: event-controlled timing only, no cyclic timing; the simulation sends on a cycle and sends nothing for this frame',
 		'note: /Cluster/Body: 1 CAN-FD and 4 classic frames on one cluster; the simulation applies one format per bus, the export keeps the distinction',
 	]
 }

@@ -684,6 +684,22 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 				ports.rx(ecu)
 			}
 		}
+		// and the I-PDU ports on the PDU triggerings this frame triggering references: a system
+		// description may declare its endpoints there ALONE, with no frame ports at all, and a
+		// frame with no sender simulates nothing (codex on #273 round 15)
+		for tref in descendants(ft, 'PDU-TRIGGERING-REF') {
+			trig, trig_path := r.deref_node(tref, ft_path) or { continue }
+			for pref in descendants(trig, 'I-PDU-PORT-REF') {
+				port, port_path := r.deref_node(pref, trig_path) or { continue }
+				ecu := r.ecu_of(port_path) or { continue }
+				note_node(mut nodes, ecu)
+				if child_text(port, 'COMMUNICATION-DIRECTION') == 'OUT' {
+					ports.tx(ecu)
+				} else {
+					ports.rx(ecu)
+				}
+			}
+		}
 
 		// the frame ports' receivers listen to the WHOLE frame; a PDU's I-PDU-group receivers
 		// listen to that PDU's signals only, which is what the signals carry (a DBC states
@@ -740,6 +756,12 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 				continue
 			}
 			mut pdu_sigs := r.load_signals(sig_pdu, sig_pdu_path, pdu_off, mut sig_names)
+			ubp := child_text(sig_pdu, 'UNUSED-BIT-PATTERN').trim_space()
+			if ubp != '' && parse_int(ubp) != 0 {
+				// the fill of every bit no signal maps; the simulated ECUs fill with 0, and a
+				// checksum over the completed payload sees that 0 (codex on #273 round 15)
+				r.report.notes << '${sig_pdu_path}: UNUSED-BIT-PATTERN ${ubp} is not modelled; the simulated ECUs fill unmapped bits with 0, which any checksum over the payload also sees'
+			}
 			mut pdu_rx := frame_rx.clone()
 			for ecu in r.pdu_in[sig_pdu_path] {
 				if ecu !in pdu_rx {
@@ -761,6 +783,11 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 					// the bench simulates a change as one send; a receiver expecting the
 					// declared burst sees fewer frames than the ECU would send
 					r.report.notes << '${sig_pdu_path}: event-controlled timing repeats a change ${tm.repetitions} more times ${tm.repetition_ms} ms apart; the simulation sends once'
+				}
+				if tm.tx_mode == 'event' {
+					// no cycle at all: the simulation sends on a cycle and so sends NOTHING for
+					// this frame, where the ECU sends once per change (codex on #273 round 15)
+					r.report.notes << '${sig_pdu_path}: event-controlled timing only, no cyclic timing; the simulation sends on a cycle and sends nothing for this frame'
 				}
 				if e := r.e2e[sig_pdu_path] {
 					info.e2e = ArxmlE2e{
@@ -1011,6 +1038,11 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 				r.report.notes << "${isig_path}: ${enc} encoding is not modelled; decoded as two's complement, so negative values are wrong"
 			} else if enc.starts_with('IEEE754') {
 				r.report.notes << '${isig_path}: IEEE754 (floating-point) signal read as an unsigned integer'
+			} else if enc != '' && enc != 'NONE' && enc != 'BOOLEAN' {
+				// BCD-P, BCD-UP, DSP-FRACTIONAL, the string encodings, VOID: none of them is a
+				// binary integer, and 0x12 read as one is 18 where packed BCD means 12. Said,
+				// like the three above, rather than silently binary (codex on #273 round 15)
+				r.report.notes << '${isig_path}: BASE-TYPE-ENCODING ${enc} is not modelled; read as an unsigned binary integer'
 			}
 		}
 
@@ -1175,11 +1207,21 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 	mut has_domain := false
 	mut lower := 0.0
 	mut upper := 0.0
+	// a BITFIELD_TEXTTABLE labels raw values by MASK, so one label applies to every raw value
+	// that matches under it — which a value table keyed by exact raw value cannot say. Said
+	// once, and its labels are NOT filed as exact keys (codex on #273 round 15)
+	masked := child_text(cm, 'CATEGORY') == 'BITFIELD_TEXTTABLE' || descendants(cm, 'MASK').len > 0
+	if masked {
+		r.report.notes << '${cm_path}: a masked bitfield text table (BITFIELD_TEXTTABLE / MASK) is not modelled; its labels are dropped'
+	}
 	if itp := first(cm, 'COMPU-INTERNAL-TO-PHYS') {
 		for s in descendants(itp, 'COMPU-SCALE') {
 			lo := child_text(s, 'LOWER-LIMIT')
 			hi := child_text(s, 'UPPER-LIMIT')
 			if k := first(s, 'COMPU-CONST') {
+				if masked {
+					continue
+				}
 				if child(k, 'VT') == none {
 					// a NUMERIC constant (TAB-NOINTP: raw 0 means physical 10) is a lookup
 					// this model has no home for — a label would be empty and the value
@@ -1188,10 +1230,13 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 					continue
 				}
 				label := first_text(k, 'VT')
-				if lo != '' && hi != '' && parse_key(lo) == parse_key(hi) {
+				// a singleton is two INTEGRAL bounds spelling one integer: `1.1`..`1.9` both
+				// truncate to raw 1 and would file a label for a range that EXCLUDES raw 1
+				singleton := lo != '' && hi != '' && integral_literal(lo) && integral_literal(hi)
+				if singleton && parse_key(lo) == parse_key(hi) {
 					values[parse_key(lo)] = label
 				} else {
-					r.report.notes << '${cm_path}: maps the range ${lo}..${hi} to "${label}", which a value table cannot express; dropped'
+					r.report.notes << '${cm_path}: maps the range ${lo}..${hi} to "${label}", which a value table (one exact raw value per label) cannot express; dropped'
 				}
 				continue
 			}
@@ -1346,6 +1391,10 @@ fn desc_text(n xml.XMLNode) string {
 	return xml_unescape(deep_text(l).trim_space())
 }
 
+// closing_punctuation: what the source cannot have had a space before, so no reconstructed
+// boundary space goes there
+const closing_punctuation = [u8(`.`), `,`, `;`, `:`, `!`, `?`, `)`, `]`]
+
 fn deep_text(n xml.XMLNode) string {
 	mut s := ''
 	for c in n.children {
@@ -1362,8 +1411,9 @@ fn deep_text(n xml.XMLNode) string {
 		// sides lack it — except where the source cannot have had one, before closing
 		// punctuation ("use <E>foo</E>." is "use foo.", not "use foo .") and after an opening
 		// bracket. The trim took the boundary; this is the honest reconstruction of it
-		if s != '' && !s.ends_with(' ') && !chunk.starts_with(' ') && !s.ends_with('(')
-			&& !s.ends_with('[') && chunk[0] !in [u8(`.`), `,`, `;`, `:`, `!`, `?`, `)`, `]`] {
+		opens := s.ends_with('(') || s.ends_with('[')
+		closes := chunk[0] in closing_punctuation
+		if s != '' && !s.ends_with(' ') && !chunk.starts_with(' ') && !opens && !closes {
 			s += ' '
 		}
 		s += chunk
@@ -1430,6 +1480,20 @@ fn parse_key(s string) u64 {
 		return u64(t.f64())
 	}
 	return t.parse_uint(10, 64) or { 0 }
+}
+
+// integral_literal is whether a numeric literal spells an INTEGER: a bare digit string, a hex
+// one, or a decimal/exponent form integral_decimal accepts. `1.1` and `1.9` are not, and must
+// not be compared as the raw keys they truncate to.
+fn integral_literal(s string) bool {
+	t := s.trim_space().trim_left('+-')
+	if t.starts_with('0x') || t.starts_with('0X') {
+		return t.len > 2
+	}
+	if t.len > 0 && t.bytes().all(it >= `0` && it <= `9`) {
+		return true
+	}
+	return integral_decimal(t) != none
 }
 
 // integral_decimal is the integer a decimal literal spells when its value IS an integer, as a
