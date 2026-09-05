@@ -612,12 +612,14 @@ fn (mut app App) set_wave_typ(i int, j int, typ string) {
 		// on the current value rather than snapping to zero: a sine centres on it, a sawtooth
 		// spans up to it, a counter and a stepmod base on it.
 		//
-		// The PER-SEND sources (counter/stepmod) ride this generator's send index, which is shared
+		// The one PER-SEND source (counter) rides this generator's send index, which is shared
 		// by every signal in the message and counts frames delivered since the run began — the
 		// simulator's per-message send_n, same semantics. So one enabled mid-run continues from
 		// where the generator already is rather than from its seed; it is not restarted here,
 		// because a sender-wide reset would restart every OTHER signal's counter in the same
-		// message and could be undone by a fire still in flight.
+		// message and could be undone by a fire still in flight. stepmod is NOT per send: like
+		// sine and sawtooth it is a function of the run clock (floor(t / period) mod count,
+		// sim.Gen.value), so it has no state to restart and ignores the index.
 		if typ == 'sine' && sg.wave.offset == 0 && sg.wave.amplitude == 0 {
 			sg.wave.offset = sg.value
 			sg.wave.freq = 1.0
@@ -722,9 +724,9 @@ fn (mut app App) poll_hotkeys() {
 }
 
 // sender_value resolves one generator signal to the number that goes on the wire: its waveform
-// evaluated at the run clock when it has one, else its static value. The counter/stepmod sources
-// step per SEND, so each generator keeps its own send count (the simulated-ECU side counts the
-// same way with SimMessage.send_n).
+// evaluated at the run clock when it has one, else its static value. The counter source steps
+// per SEND, so each generator keeps its own send count (the simulated-ECU side counts the same
+// way with SimMessage.send_n); sine, sawtooth and stepmod are functions of the run clock.
 // sender_value resolves one signal of an ALREADY-SNAPSHOTTED sender: pure, so the caller holds no
 // lock while encoding. `n` is the index reserved for this fire and `t0_ns` the run epoch.
 fn sender_value(ss project.SenderSig, n int, el f64) f64 {
