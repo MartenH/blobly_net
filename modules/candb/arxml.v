@@ -811,6 +811,12 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 					r.report.notes << '${sig_pdu_path}: event-controlled timing only, no cyclic timing; the simulation sends on a cycle and sends nothing for this frame'
 				}
 				if e := r.e2e[sig_pdu_path] {
+					// CARRIED, NOT APPLIED: the contract reaches the DBC export's attributes and
+					// the fragment, but the native simulation protects only what the project's
+					// `protect:` entries name (dbc.v does not read the attributes back — #271), so
+					// a simulated transmitter of this frame sends an unstamped counter and CRC
+					// that the declared receiver rejects. Said, once per frame (round 17)
+					r.report.notes << "${fname}: declares an E2E ${e.profile} contract; carried to the DBC export and the fragment, but NOT applied by the native simulation, which protects only what the project's protect: entries name"
 					info.e2e = ArxmlE2e{
 						...e
 						pdu_offset: pdu_off
@@ -1123,7 +1129,11 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 				// one — a sign-extended pattern with the width's top bit set
 				top := u64(1) << (length - 1)
 				negative := is_signed && length < 64 && (k | mask) == ~u64(0) && (k & top) != 0
-				if k > mask && !negative {
+				// a SIGNED width holds non-negatives only below its top bit: 200 in an 8-bit signed
+				// signal is the pattern 0xC8, which decodes as -56, so the label would name a
+				// value the signal cannot carry (round 17)
+				positive_fits := if is_signed && length < 64 { k < top } else { k <= mask }
+				if !positive_fits && !negative {
 					shown := if is_signed && (k | mask) == ~u64(0) { i64(k).str() } else { k.str() }
 					sgn := if is_signed { 'signed' } else { 'unsigned' }
 					r.report.notes << '${isig_path}: enum key ${shown} ("${v}") of ${cm_path} does not fit a ${length}-bit ${sgn} signal; dropped'

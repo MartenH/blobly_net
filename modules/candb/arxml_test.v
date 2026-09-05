@@ -32,6 +32,7 @@ fn test_cluster_and_nodes() {
 	// cluster, which the simulation cannot carry per frame
 	assert a.report.unresolved == []
 	assert a.report.notes == [
+		"LampFrame: declares an E2E PROFILE_01 contract; carried to the DBC export and the fragment, but NOT applied by the native simulation, which protects only what the project's protect: entries name",
 		'/PDUs/Wide_PDU: event-controlled timing only, no cyclic timing; the simulation sends on a cycle and sends nothing for this frame',
 		'/Cluster/Body: 1 CAN-FD and 4 classic frames on one cluster; the simulation applies one format per bus, the export keeps the distinction',
 	]
@@ -1013,6 +1014,19 @@ fn test_round_15_shapes_are_said_or_read_right() {
 	}, kv.values.str()
 	assert k.report.notes.any(it.contains('/Sig/V: enum key 256 ("TooWide") of /CM/K does not fit a 8-bit unsigned signal; dropped'))
 	assert k.report.notes.any(it.contains('enum key 18446744073709551615 ("Neg") of /CM/K does not fit a 8-bit unsigned'))
+	// and for a SIGNED 8-bit signal: -1 fits (0xFF), 200 does not (0xC8 decodes as -56), 100 does
+	signed_keys := wide_keys.replace('<LENGTH>8</LENGTH><NETWORK-REPRESENTATION-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL>', '<LENGTH>8</LENGTH><NETWORK-REPRESENTATION-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><BASE-TYPE-REF DEST="SW-BASE-TYPE">/BT/s8</BASE-TYPE-REF>').replace('<LOWER-LIMIT>256</LOWER-LIMIT><UPPER-LIMIT>256</UPPER-LIMIT><COMPU-CONST><VT>TooWide</VT>', '<LOWER-LIMIT>200</LOWER-LIMIT><UPPER-LIMIT>200</UPPER-LIMIT><COMPU-CONST><VT>TooWide</VT></COMPU-CONST></COMPU-SCALE><COMPU-SCALE><LOWER-LIMIT>100</LOWER-LIMIT><UPPER-LIMIT>100</UPPER-LIMIT><COMPU-CONST><VT>Hundred</VT>') + '<AR-PACKAGE><SHORT-NAME>BT</SHORT-NAME><ELEMENTS><SW-BASE-TYPE><SHORT-NAME>s8</SHORT-NAME><BASE-TYPE-ENCODING>2C</BASE-TYPE-ENCODING></SW-BASE-TYPE></ELEMENTS></AR-PACKAGE>'
+	sk := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + signed_keys + arxml_tail) or {
+		panic(err)
+	}
+	skv := sig((sk.cluster('') or { panic(err) }).db.messages[0], 'V')
+	assert skv.is_signed
+	assert skv.values == {
+		u64(0):   'Zero'
+		u64(100): 'Hundred'
+		u64(255): 'Neg'
+	}, skv.values.str()
+	assert sk.report.notes.any(it.contains('/Sig/V: enum key 200 ("TooWide") of /CM/K does not fit a 8-bit signed signal; dropped'))
 }
 
 fn test_two_triggerings_of_one_id_keep_the_first_and_say_so() {
@@ -1220,6 +1234,7 @@ fn test_report_lines() {
 	assert l[0].starts_with('unresolved reference: ')
 	assert example_arxml().report.lines() == [
 		'ignored: 1 × N-PDU',
+		"note: LampFrame: declares an E2E PROFILE_01 contract; carried to the DBC export and the fragment, but NOT applied by the native simulation, which protects only what the project's protect: entries name",
 		'note: /PDUs/Wide_PDU: event-controlled timing only, no cyclic timing; the simulation sends on a cycle and sends nothing for this frame',
 		'note: /Cluster/Body: 1 CAN-FD and 4 classic frames on one cluster; the simulation applies one format per bus, the export keeps the distinction',
 	]
