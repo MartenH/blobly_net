@@ -127,7 +127,10 @@ progress — the path #263 took four rounds on; and `cmd/blobly_net/cyclerule/`,
 `cycle (ms)` window — when it restarts, at a run or clock boundary the caller names from row
 identity and at a gap out of proportion to the cadence, so a Stop's or a dropout's silence is
 never averaged into a cadence (#266) — kept in GUI-free sub-modules so they run
-without ImGui), `scripts/runtests.sh`,
+without ImGui; and `cmd/vectorcheck/restorerule/`, the borrow-and-restore ledger — who restores a
+channel when the deferred cleanup and the Ctrl-C handler race, what an empty claim means, and what
+an exit may claim (clean / failed / unknown-because-in-flight), the path #197's fix took four codex
+rounds on before it had a test (#278)), `scripts/runtests.sh`,
 `scripts/check_cmds.sh` (every `cmd/*` entry point type-checked for BOTH `-os` targets, on both
 jobs — nothing else compiles a CLI tool, and two sat broken for months that way, #220) and
 `scripts/vcan_common_test.sh` (the shared setup-script answers — whose home under sudo, is vcan
