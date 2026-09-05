@@ -166,6 +166,15 @@ case "${FAKE_GH_CASE:-}:$endpoint" in
 	body_only:repos/MartenH/blobly_net/issues/123/comments)
 		printf '[]\n'
 		;;
+	blob_only:repos/MartenH/blobly_net/pulls/123/reviews)
+		printf '[{"id":13,"submitted_at":"2026-01-01T00:00:02Z","user":%s,"body":"### Codex Review https://github.com/MartenH/blobly_net/blob/abcdef1234567890abcdef1234567890abcdef12/file.v#L44-L45 **P2 Badge** Normalize before writing"}]\n' "$bot"
+		;;
+	blob_only:repos/MartenH/blobly_net/pulls/123/comments)
+		printf '[]\n'
+		;;
+	blob_only:repos/MartenH/blobly_net/issues/123/comments)
+		printf '[]\n'
+		;;
 	foreign_review:repos/MartenH/blobly_net/pulls/123/reviews)
 		printf '[{"id":14,"submitted_at":"2026-01-01T00:00:02Z","user":%s,"body":"Human note linking /blob/abcdef1234567890/file.v#L44 without a reviewed marker"}]\n' "$human"
 		;;
@@ -321,6 +330,11 @@ ok "old inline comments fresh clean result" "$(grep -c '^RESULT=clean$' "$out")"
 rc=$(run_case body_only "$out")
 ok "body-only findings still exit 20" "$rc" "20"
 ok "body-only has zero inline comments" "$(grep -c '^PULL_COMMENTS=0$' "$out")" "1"
+
+# a body-only review with NO `Reviewed commit:` marker, only /blob/<sha> links (net#273 round 46)
+rc=$(run_case blob_only "$out")
+ok "body-only review without a marker is identified by its blob link" "$rc" "20"
+ok "body-only review without a marker reports findings" "$(grep -c '^RESULT=findings$' "$out")" "1"
 
 rc=$(run_case foreign_review "$out")
 ok "foreign review mentioning SHA is pending" "$rc" "1"

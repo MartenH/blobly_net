@@ -329,6 +329,11 @@ response shape changes.
   (`**Reviewed commit:** \`abc…\``), so a regex expecting `Reviewed commit: <sha>` finds nothing.
 - **Findings can arrive in the review BODY, not only as inline comments.** A body carrying a
   `P1`/`P2` badge or a `/blob/<sha>/file#L…` link is NOT clean, whatever the comment count says.
+  **And such a body may carry no `Reviewed commit:` marker at all** — net#273 round 46 was one
+  finding in the body, a `/blob/<sha>/…#L174-L175` link and nothing else naming the commit, and
+  the watcher sat its whole hour on it. The link names the commit as surely as the marker does,
+  so the bot's review is identified by either (`names_head`); the actor check is what keeps a
+  human's link from counting.
 - **Review-comment ids and issue-comment ids are different id spaces.** A baseline taken from one
   and compared against the other never matches, so the count sits at 0 forever.
 - **A "review failed" scan needs its own baseline too**, or one historical failure fires on every

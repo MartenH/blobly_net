@@ -471,7 +471,23 @@ def has_review_marker(text: str, sha: str) -> bool:
 
 
 def body_has_finding(text: str, sha: str) -> bool:
-    return bool(re.search(r"!\[P[0-9] Badge\]", text)) or f"/blob/{sha}" in text or f"/blob/{sha[:10]}" in text
+    return bool(re.search(r"!\[P[0-9] Badge\]", text)) or links_head(text, sha)
+
+
+def links_head(text: str, sha: str) -> bool:
+    return f"/blob/{sha[:10]}" in text
+
+
+def names_head(text: str, sha: str) -> bool:
+    """Does this review say which commit it reviewed?
+
+    Usually with the `**Reviewed commit:**` marker — but a review whose findings sit in its
+    BODY may carry no marker at all, only `/blob/<sha>/file#L..` links to the lines it
+    means (net#273 round 46 arrived that way and sat unread for the watcher's whole hour).
+    The link names the commit as surely as the marker does, so either identifies the verdict;
+    the actor check upstream is what keeps a human's link from counting.
+    """
+    return has_review_marker(text, sha) or links_head(text, sha)
 
 
 def has_exact_request_marker(item: dict[str, Any], sha: str, requester: str) -> bool:
@@ -501,7 +517,7 @@ def scan_once(config: WatchConfig, deadline: float | None = None) -> tuple[int, 
         for item in reviews
         if actor(item) == config.actor
         and is_fresh(item, config.baseline_review_id, config.requested_at, "submitted_at")
-        and has_review_marker(body(item), config.sha)
+        and names_head(body(item), config.sha)
     ]
     review = max(matching_reviews, key=item_id, default=None)
     if review:
