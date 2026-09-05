@@ -468,14 +468,16 @@ fn test_package_scoped_names_are_never_folded() {
 	dc := d.cluster('') or { panic(err) }
 	names := dc.db.messages[0].signals.map(it.name)
 	assert names == ['V', 'Crc', 'Ctr', 'Sig2_V']
-	// a third signal of a name already given out qualifies by ITS package; the suffix path is
-	// the ECU case above, where the qualified spelling is what was taken
+	// a third signal whose OWN name is the qualified spelling of an earlier duplicate keeps it:
+	// unique names are reserved before duplicates are qualified (round 30), so the duplicate
+	// /Sig2/V is the one that moves on, to the suffix path the ECU case above shows
 	third := two.replace('</I-SIGNAL-TO-PDU-MAPPINGS></I-SIGNAL-I-PDU></ELEMENTS>', '<I-SIGNAL-TO-I-PDU-MAPPING><SHORT-NAME>MY</SHORT-NAME><I-SIGNAL-REF DEST="I-SIGNAL">/Sig3/Sig2_V</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>0</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING></I-SIGNAL-TO-PDU-MAPPINGS></I-SIGNAL-I-PDU></ELEMENTS>') + '<AR-PACKAGE><SHORT-NAME>Sig3</SHORT-NAME><ELEMENTS><I-SIGNAL><SHORT-NAME>Sig2_V</SHORT-NAME><LENGTH>8</LENGTH></I-SIGNAL></ELEMENTS></AR-PACKAGE>'
 	t3 := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + third + arxml_tail) or {
 		panic(err)
 	}
 	t3c := t3.cluster('') or { panic(err) }
-	assert t3c.db.messages[0].signals.map(it.name) == ['V', 'Crc', 'Ctr', 'Sig2_V', 'Sig3_Sig2_V']
+	assert t3c.db.messages[0].signals.map(it.name) == ['V', 'Crc', 'Ctr', 'Sig2_V_2', 'Sig2_V']
+	assert t3.report.notes.any(it.contains('/Sig2/V: signal name V is already used in this message; this one is Sig2_V_2'))
 	assert d.report.notes.any(it.contains('signal name V is already used in this message; this one is Sig2_V'))
 	// and the DBC export has no duplicate SG_
 	text := dc.export_dbc(ArxmlProvenance{}, d.report)
@@ -1184,6 +1186,42 @@ fn test_round_19_shapes() {
 
 // a J1939 cluster beside a CAN one is a whole bus discarded: counted, so the load report and
 // the provenance do not present the file as complete (round 28)
+// A unique SHORT-NAME is reserved before any duplicate is qualified: with /Frames/F, /B/F and
+// /C/B_F triggered in that order, the frame whose own name is B_F keeps it and the duplicate
+// /B/F is qualified past it; the same for signals /Sig/V, /B/V, /C/B_V in one message (round 30).
+fn test_unique_names_are_reserved_before_duplicates_are_qualified() {
+	trig := fn (name string, id int, ref string) string {
+		return '<CAN-FRAME-TRIGGERING><SHORT-NAME>${name}</SHORT-NAME><FRAME-REF DEST="CAN-FRAME">${ref}</FRAME-REF><CAN-ADDRESSING-MODE>STANDARD</CAN-ADDRESSING-MODE><IDENTIFIER>${id}</IDENTIFIER></CAN-FRAME-TRIGGERING>'
+	}
+	frame := fn (pkg string, name string) string {
+		return '<AR-PACKAGE><SHORT-NAME>${pkg}</SHORT-NAME><ELEMENTS><CAN-FRAME><SHORT-NAME>${name}</SHORT-NAME><FRAME-LENGTH>8</FRAME-LENGTH><PDU-TO-FRAME-MAPPINGS><PDU-TO-FRAME-MAPPING><SHORT-NAME>M</SHORT-NAME><PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/P</PDU-REF><START-POSITION>8</START-POSITION></PDU-TO-FRAME-MAPPING></PDU-TO-FRAME-MAPPINGS></CAN-FRAME></ELEMENTS></AR-PACKAGE>'
+	}
+	cl := cluster_xml('Bus', 256, '/Frames/F').replace('</FRAME-TRIGGERINGS>', trig('FT2', 257, '/B/F') + trig('FT3', 258, '/C/B_F') + '</FRAME-TRIGGERINGS>')
+	a := parse_arxml(arxml_head + cl + offset_pdu_xml + frame('B', 'F') + frame('C', 'B_F') + arxml_tail) or {
+		panic(err)
+	}
+	c := a.cluster('') or { panic(err) }
+	mut names := c.db.messages.map(it.name)
+	names.sort()
+	assert names == ['B_F', 'B_F_2', 'F'], names.str()
+	assert (c.db.lookup(258) or { panic('no 258') }).name == 'B_F', 'the frame whose own name is B_F keeps it'
+	assert (c.db.lookup(256) or { panic('no 256') }).name == 'F', 'the first duplicate keeps the short name'
+	// signals: the same order inside one message
+	v_sig := '<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH></I-SIGNAL>'
+	maps := '<I-SIGNAL-TO-I-PDU-MAPPING><SHORT-NAME>MB</SHORT-NAME><I-SIGNAL-REF DEST="I-SIGNAL">/B/V</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>16</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING><I-SIGNAL-TO-I-PDU-MAPPING><SHORT-NAME>MC</SHORT-NAME><I-SIGNAL-REF DEST="I-SIGNAL">/C/B_V</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>20</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING></I-SIGNAL-TO-PDU-MAPPINGS>'
+	sigs_xml := offset_pdu_xml.replace_once('</I-SIGNAL-TO-PDU-MAPPINGS>', maps) + '<AR-PACKAGE><SHORT-NAME>B</SHORT-NAME><ELEMENTS><I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>4</LENGTH></I-SIGNAL></ELEMENTS></AR-PACKAGE><AR-PACKAGE><SHORT-NAME>C</SHORT-NAME><ELEMENTS><I-SIGNAL><SHORT-NAME>B_V</SHORT-NAME><LENGTH>4</LENGTH></I-SIGNAL></ELEMENTS></AR-PACKAGE>'
+	assert sigs_xml.contains(v_sig)
+	s := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + sigs_xml + arxml_tail) or {
+		panic(err)
+	}
+	m := (s.cluster('') or { panic(err) }).db.messages[0]
+	mut snames := m.signals.map(it.name)
+	snames.sort()
+	assert snames == ['B_V', 'B_V_2', 'Crc', 'Ctr', 'V'], snames.str()
+	assert sig(m, 'B_V').start_bit == 28, 'the signal whose own name is B_V keeps it'
+	assert s.report.notes.any(it.contains('/B/V: signal name V is already used in this message; this one is B_V_2'))
+}
+
 fn test_a_j1939_cluster_is_counted_as_ignored() {
 	j := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + '<AR-PACKAGE><SHORT-NAME>J</SHORT-NAME><ELEMENTS><J-1939-CLUSTER><SHORT-NAME>Truck</SHORT-NAME></J-1939-CLUSTER></ELEMENTS></AR-PACKAGE>' + arxml_tail) or {
 		panic(err)

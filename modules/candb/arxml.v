@@ -247,6 +247,41 @@ fn allocate_names(paths []string) map[string]string {
 	return out
 }
 
+// allocate_names_first_keeps is allocate_names for frames and signals, whose rule since round 4
+// is that the FIRST of a shared SHORT-NAME keeps it and the later ones are qualified — but, as
+// for clusters and ECUs, every UNIQUE short name is reserved first, so a later frame whose own
+// name is `B_F` is not renamed because an earlier duplicate took `B_F` as its qualified form
+// (codex on #273 round 30). Document order decides only among the duplicates themselves.
+fn allocate_names_first_keeps(paths []string) map[string]string {
+	mut count := map[string]int{}
+	for p in paths {
+		count[p.all_after_last('/')]++
+	}
+	mut taken := map[string]bool{}
+	mut out := map[string]string{}
+	for p in paths {
+		short := p.all_after_last('/')
+		if count[short] == 1 {
+			out[p] = short
+			taken[short] = true
+		}
+	}
+	mut first_seen := map[string]bool{}
+	for p in paths {
+		if p in out {
+			continue
+		}
+		short := p.all_after_last('/')
+		if short !in first_seen && short !in taken {
+			first_seen[short] = true
+			out[p] = claim_name(mut taken, short)
+		} else {
+			out[p] = claim_name(mut taken, package_qualified(p))
+		}
+	}
+	return out
+}
+
 // name_clusters gives every cluster its `bus` identifier — see allocate_names.
 fn (mut r ArxmlReader) name_clusters(clusters []ArxmlCluster) []ArxmlCluster {
 	names := allocate_names(clusters.map(it.path))
@@ -689,6 +724,28 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 	mut taken_names := map[string]bool{} // message names given out in this cluster
 	mut fd_frames := 0
 	mut classic_frames := 0
+	// NAMES FIRST, over every frame this cluster triggers: a unique SHORT-NAME is reserved as
+	// itself before any duplicate is qualified, as allocate_names does for clusters and ECUs.
+	// One pass in document order handed `B_F` to the duplicate /B/F and then renamed the frame
+	// whose own name is B_F to `C_B_F` (codex on #273 round 30). A second triggering of an id
+	// already seen is skipped below and reserves nothing here.
+	mut fpaths := []string{}
+	mut seen_keys := map[string]bool{}
+	for ft in descendants(scope, 'CAN-FRAME-TRIGGERING') {
+		// a QUIET lookup: the loop below reports a dangling FRAME-REF once, and this pass must
+		// not report it a second time
+		fp := el_text(child(ft, 'FRAME-REF') or { continue })
+		if fp !in r.by_path {
+			continue
+		}
+		k := frame_key(u32(parse_int(child_text(ft, 'IDENTIFIER'))), child_text(ft, 'CAN-ADDRESSING-MODE') == 'EXTENDED')
+		if k in seen_keys || fp in fpaths {
+			continue
+		}
+		seen_keys[k] = true
+		fpaths << fp
+	}
+	frame_names := allocate_names_first_keeps(fpaths)
 	for ft in descendants(scope, 'CAN-FRAME-TRIGGERING') {
 		ft_path := r.path_of(ft, path)
 		frame, fpath := r.deref(ft, 'FRAME-REF', ft_path) or {
@@ -709,7 +766,7 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 		// protect: map), and AUTOSAR scopes a frame's SHORT-NAME per package — a second frame
 		// of the same name at another id is qualified by its package, and said, rather than
 		// shadowing the first
-		want := if fname in taken_names { package_qualified(fpath) } else { fname }
+		want := frame_names[fpath] or { fname }
 		claimed := claim_name(mut taken_names, want)
 		if claimed != fname {
 			r.report.notes << '${ft_path}: frame name ${fname} is already used by another id in this cluster; this one is ${claimed}'
@@ -770,7 +827,7 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 		// kept and the rest are reported rather than letting document order decide silently.
 		mut sigs := []Signal{}
 		mut pdus := 0
-		mut sig_names := map[string]bool{} // signal names given out in this message
+		mut sig_paths := []string{} // one per entry of `sigs`: named LAST, over the whole message
 		for pm in descendants(frame, 'PDU-TO-FRAME-MAPPING') {
 			pref := child(pm, 'PDU-REF') or { continue }
 			pdu, pdu_path := r.deref_node(pref, r.path_of(pm, '/' + fname)) or { continue }
@@ -822,7 +879,8 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 				// count_ignored, so nothing here is silent.
 				continue
 			}
-			mut pdu_sigs := r.load_signals(sig_pdu, sig_pdu_path, pdu_off, mut sig_names)
+			mut pdu_sigs, pdu_paths := r.load_signals(sig_pdu, sig_pdu_path, pdu_off)
+			sig_paths << pdu_paths
 			ubp := child_text(sig_pdu, 'UNUSED-BIT-PATTERN').trim_space()
 			if ubp != '' && parse_int(ubp) != 0 {
 				// the fill of every bit no signal maps; the simulated ECUs fill with 0, and a
@@ -907,6 +965,21 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			fd_frames++
 		} else {
 			classic_frames++
+		}
+		// NAMES LAST, over the whole message (round 30): a unique SHORT-NAME is reserved as itself
+		// before any duplicate is qualified — one pass in mapping order gave the duplicate /B/V
+		// the name `B_V` and renamed the signal whose own name is B_V. A signal name is how
+		// everything downstream addresses it, and a DBC refuses a duplicate SG_, so what
+		// allocate_names cannot separate (one signal mapped twice) claim_name still does
+		sig_names := allocate_names_first_keeps(sig_paths)
+		mut taken_sigs := map[string]bool{}
+		for i, mut s in sigs {
+			wanted := sig_names[sig_paths[i]] or { s.name }
+			given := claim_name(mut taken_sigs, wanted)
+			if given != s.name {
+				r.report.notes << '${sig_paths[i]}: signal name ${s.name} is already used in this message; this one is ${given}'
+				s.name = given
+			}
 		}
 		msg := Message{
 			name: fname
@@ -1081,8 +1154,9 @@ fn (mut r ArxmlReader) load_secoc(pdu xml.XMLNode, pdu_path string, authentic in
 // load_signals reads every I-SIGNAL-TO-I-PDU-MAPPING of an I-SIGNAL-I-PDU. `pdu_off` is the
 // PDU's bit offset inside the frame, added to each start position — it is byte-aligned in
 // any real file, so it shifts an Intel and a Motorola start alike.
-fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off int, mut taken map[string]bool) []Signal {
+fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off int) ([]Signal, []string) {
 	mut out := []Signal{}
+	mut paths := []string{} // the I-SIGNAL path of each entry of `out`, for the naming pass
 	for m in descendants(pdu, 'I-SIGNAL-TO-I-PDU-MAPPING') {
 		// a signal-GROUP mapping has no I-SIGNAL-REF; its members are mapped individually
 		isig, isig_path := r.deref(m, 'I-SIGNAL-REF', r.path_of(m, pdu_path)) or { continue }
@@ -1096,15 +1170,7 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 			r.report.notes << '${isig_path}: ${length}-bit signal is wider than the 64-bit scalar model; not read'
 			continue
 		}
-		// two I-SIGNALs of one SHORT-NAME in different packages, mapped into one message
-		// (a multi-PDU frame, typically): the second is package-qualified, because a signal
-		// name is how everything downstream addresses it and a DBC refuses a duplicate SG_
-		want := if name in taken { package_qualified(isig_path) } else { name }
-		claimed := claim_name(mut taken, want)
-		if claimed != name {
-			r.report.notes << '${isig_path}: signal name ${name} is already used in this message; this one is ${claimed}'
-			name = claimed
-		}
+		paths << isig_path // named after the whole message is known — see the caller
 		start := parse_int(child_text(m, 'START-POSITION')) + pdu_off
 		if ub := child(m, 'UPDATE-BIT-POSITION') {
 			// a receiver may treat the signal as not updated while the bit is clear, and a
@@ -1330,7 +1396,7 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 			byte_order: order
 		}
 	}
-	return out
+	return out, paths
 }
 
 // note_variants reports a SW-DATA-DEF-PROPS-VARIANTS with more than one conditional: the
