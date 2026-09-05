@@ -162,6 +162,11 @@ __global (
 	// (or 63/64) pointed at the test hardware — in a state that survives reboots — while the
 	// run printed its verdict and exited 0 (#197). Counted here, read by restore_verdict.
 	g_restore_failed int
+	// The restores IN FLIGHT: claimed off g_borrowed by give_back and not yet written back. An
+	// interrupt that times out waiting on one exits through it, and by then the record has left
+	// g_borrowed and no FAIL line has been printed — so this is the one place the channel and
+	// its original target can still be read from (codex round 3 on #278).
+	g_in_flight []Borrowed
 )
 
 // The handler runs on another thread, and `borrow()` appends to the same array — an append that
@@ -221,9 +226,19 @@ fn on_interrupt(_ os.Signal) {
 	// and the loop's own flag would still say it was (codex round 2).
 	borrow_lock()
 	still_busy := g_restoring > 0
+	pending := g_in_flight.clone()
 	borrow_unlock()
 	if still_busy {
-		eprintln('vectorcheck: a channel restore was still in flight after 3 s and this exit ends it — the assignment state is UNKNOWN; check `--probe`')
+		// NAMING WHAT WAS BEING RESTORED: the records have left g_borrowed and the blocked call
+		// printed no FAIL line, so without this the original mapping is gone with the process
+		eprintln('vectorcheck: a channel restore was still in flight after 3 s and this exit ends it — the assignment state is UNKNOWN:')
+		for b in pending {
+			if p := b.prev {
+				eprintln('  application channel ${b.app} was being put back to hardware ${p.hw_type}:${p.hw_index}:${p.hw_channel} — `--channel ${b.app} --assign <row> --seconds 1` at that hw (the row is in `--probe`)')
+			} else {
+				eprintln('  application channel ${b.app} was being cleared — `--release ${b.app}`')
+			}
+		}
 		exit(3)
 	}
 	if restore_summary() > 0 {
@@ -322,10 +337,19 @@ fn give_back(bs []Borrowed) {
 	// and exits THROUGH a restoration that is halfway done — the one moment when stopping is
 	// worse than either finishing or never having started.
 	g_restoring++
+	g_in_flight << mine
 	borrow_unlock()
 	defer {
 		borrow_lock()
 		g_restoring--
+		for m in mine {
+			for i, g in g_in_flight {
+				if g.app == m.app {
+					g_in_flight.delete(i)
+					break
+				}
+			}
+		}
 		borrow_unlock()
 		for _ in mine {
 			transport.vector_borrow_unlock()
