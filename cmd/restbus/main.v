@@ -122,7 +122,7 @@ fn main() {
 	if rep.remote > 0 {
 		println('  note: ${rep.remote} remote request(s) in the recording — not replayed; this app does not transmit them')
 	}
-	fd_n := kept.filter(it.frame.fd).len
+	fd_n := rep.fd // the plan's own count, the one the GUI states too (#184)
 	if fd_n > 0 {
 		pct := 100.0 * f64(fd_n) / f64(kept.len)
 		big := kept.filter(it.frame.data.len > 8).len
@@ -322,9 +322,12 @@ fn run_multi(o Opts, rec mf4.Recording) {
 	}
 	span := plan.end_s - plan.t0_s
 	println('replay   ${total} frames over ${span:.2f}s across ${plan.buses.len} bus(es)')
-	fd_n := plan.entries.filter(it.frame.fd).len
-	if fd_n > 0 {
-		println('  CAN-FD:  ${fd_n} frames — every destination interface must be FD-capable and up')
+	// PER DESTINATION, from the plan's own count: a total over every bus told the operator that
+	// every destination must be FD-capable when only the FD bus's needs to be (#184).
+	for b in plan.buses {
+		if b.report.fd > 0 {
+			println('  CAN-FD:  ${b.report.fd} frames onto ${b.dst} — that interface must be FD-capable and up')
+		}
 	}
 	if o.dry_run {
 		println('dry run: nothing transmitted')
