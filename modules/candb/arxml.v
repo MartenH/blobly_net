@@ -759,6 +759,13 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 				sig_pdu, sig_pdu_path = r.deref_node(iref, pdu_path) or { continue }
 				if first_pdu {
 					info.secoc = r.load_secoc(pdu, pdu_path, parse_int(child_text(sig_pdu, 'LENGTH')), pdu_off)
+					if info.secoc != none {
+						// CARRIED, NOT APPLIED, like E2E below — and with less behind it: the
+						// native simulation has no SecOC stamping at all, so a simulated sender
+						// of this frame puts its authentic bytes on the wire with freshness and
+						// MAC as 0, which a conforming receiver rejects (round 18)
+						r.report.notes << '${fname}: declares SecOC protection; carried to the fragment, but NOT applied by the native simulation, which has no SecOC stamping — freshness and MAC bytes go out as 0'
+					}
 				}
 			}
 			if lname(sig_pdu) != 'I-SIGNAL-I-PDU' {
@@ -809,6 +816,15 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 					// no cycle at all: the simulation sends on a cycle and so sends NOTHING for
 					// this frame, where the ECU sends once per change (codex on #273 round 15)
 					r.report.notes << '${sig_pdu_path}: event-controlled timing only, no cyclic timing; the simulation sends on a cycle and sends nothing for this frame'
+				} else if tm.tx_mode == 'mixed' {
+					// a cycle AND a send per change: the simulation keeps the cycle only, so a
+					// change waits for the next cycle where the ECU sends at once (round 18)
+					r.report.notes << '${sig_pdu_path}: cyclic and event-controlled timing; the simulation sends on the cycle only, never on a change'
+				}
+				if tm.offset_ms > 0 {
+					// the phase between cyclic frames: the simulation starts every cyclic frame at
+					// 0, and the fragment carries no phase either (round 18)
+					r.report.notes << '${sig_pdu_path}: cyclic TIME-OFFSET ${tm.offset_ms} ms is not modelled; the simulation starts every cyclic frame at 0, and the fragment carries no phase'
 				}
 				if e := r.e2e[sig_pdu_path] {
 					// CARRIED, NOT APPLIED: the contract reaches the DBC export's attributes and
@@ -878,6 +894,7 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 struct ArxmlTiming {
 	tx_mode       string
 	cycle_ms      int
+	offset_ms     int // CYCLIC-TIMING TIME-OFFSET: the phase, which nothing downstream carries
 	min_delay_ms  int
 	repetitions   int // EVENT-CONTROLLED-TIMING: how many repeats a change sends
 	repetition_ms int // … and how far apart
@@ -896,10 +913,14 @@ fn (mut r ArxmlReader) load_timing(pdu xml.XMLNode, pdu_path string) ArxmlTiming
 		}
 	}
 	mut cycle := 0
+	mut offset := 0
 	mut mode := ''
 	if ct := first(tt, 'CYCLIC-TIMING') {
 		if tp := first(ct, 'TIME-PERIOD') {
 			cycle = r.timing_ms(first_text(tp, 'VALUE'), pdu_path, 'TIME-PERIOD')
+		}
+		if to := first(ct, 'TIME-OFFSET') {
+			offset = r.timing_ms(first_text(to, 'VALUE'), pdu_path, 'TIME-OFFSET')
 		}
 		mode = 'cyclic'
 	}
@@ -915,6 +936,7 @@ fn (mut r ArxmlReader) load_timing(pdu xml.XMLNode, pdu_path string) ArxmlTiming
 	return ArxmlTiming{
 		tx_mode: mode
 		cycle_ms: cycle
+		offset_ms: offset
 		min_delay_ms: min_delay
 		repetitions: reps
 		repetition_ms: rep_ms
@@ -1127,14 +1149,22 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 				// 8-bit signal and labelled a value the table never named (codex round 16). A
 				// non-negative key fits below the mask; a signed signal also takes a negative
 				// one — a sign-extended pattern with the width's top bit set
-				top := u64(1) << (length - 1)
-				negative := is_signed && length < 64 && (k | mask) == ~u64(0) && (k & top) != 0
-				// a SIGNED width holds non-negatives only below its top bit: 200 in an 8-bit signed
-				// signal is the pattern 0xC8, which decodes as -56, so the label would name a
-				// value the signal cannot carry (round 17)
-				positive_fits := if is_signed && length < 64 { k < top } else { k <= mask }
-				if !positive_fits && !negative {
-					shown := if is_signed && (k | mask) == ~u64(0) { i64(k).str() } else { k.str() }
+				// BY THE LITERAL'S SIGN, which the pattern alone cannot say at width 64 (-2^63
+				// and +2^63 are one pattern): a negative literal fits a SIGNED width whose top
+				// bit it sets and whose upper bits it sign-extends; a non-negative one fits a
+				// signed width below its top bit (200 in an 8-bit signed signal is 0xC8, which
+				// decodes as -56) and an unsigned one up to its mask (rounds 17–18)
+				top := if length >= 64 { u64(1) << 63 } else { u64(1) << (length - 1) }
+				neg_lit := k in scale.negative
+				fits := if neg_lit {
+					is_signed && (k | mask) == ~u64(0) && (k & top) != 0
+				} else if is_signed {
+					k < top
+				} else {
+					k <= mask
+				}
+				if !fits {
+					shown := if neg_lit { i64(k).str() } else { k.str() }
 					sgn := if is_signed { 'signed' } else { 'unsigned' }
 					r.report.notes << '${isig_path}: enum key ${shown} ("${v}") of ${cm_path} does not fit a ${length}-bit ${sgn} signal; dropped'
 					continue
@@ -1223,6 +1253,7 @@ struct ArxmlScale {
 	factor     f64 = 1.0
 	offset     f64
 	values     map[u64]string // UNMASKED raw values: one method serves signals of several widths
+	negative   map[u64]bool // the keys spelled with a minus sign: -1 and 2^64-1 are one pattern
 	has_domain bool // the linear scale declared LOWER-LIMIT/UPPER-LIMIT (raw)
 	lower      f64
 	upper      f64
@@ -1251,6 +1282,7 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 	mut factor := 1.0
 	mut offset := 0.0
 	mut values := map[u64]string{}
+	mut negative := map[u64]bool{}
 	mut linear_seen := false
 	mut has_domain := false
 	mut lower := 0.0
@@ -1283,6 +1315,9 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 				singleton := lo != '' && hi != '' && integral_literal(lo) && integral_literal(hi)
 				if singleton && parse_key(lo) == parse_key(hi) {
 					values[parse_key(lo)] = label
+					if lo.trim_space().starts_with('-') {
+						negative[parse_key(lo)] = true
+					}
 				} else {
 					r.report.notes << '${cm_path}: maps the range ${lo}..${hi} to "${label}", which a value table (one exact raw value per label) cannot express; dropped'
 				}
@@ -1347,6 +1382,7 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 		factor: factor
 		offset: offset
 		values: values
+		negative: negative
 		has_domain: has_domain
 		lower: lower
 		upper: upper
