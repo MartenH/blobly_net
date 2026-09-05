@@ -528,19 +528,20 @@ fn diag_msg(iface string, from transport.BusDiagnostics, to transport.BusDiagnos
 	return '${iface}: +${to.minus(from).short().replace(' · ', ', +')} — since open: ${to.str()}'
 }
 
-// script_db is one channel's merged database for a script, from the LOADED copies by the resolved
-// key replay_db uses — and, like replay_db, UNDER app.mu: a script launched while stopped runs
-// beside an editable Configuration panel, whose structural edits rebuild app.dbs, and a scan of
-// that array outside the lock could hand the script an empty or half-rebuilt database (codex on
-// #273 round 22). The reserved dbc_readers slot keeps the DBC editor off; it does not keep every
-// rebuild caller off, so the lock does.
+// script_db is one channel's merged database for a script: the channel's files, RESOLVED against
+// the project (round 13 — the raw project-relative strings opened against the process working
+// directory), read through the same loader the simulation uses. From the FILES, not from
+// app.dbs: a script launched while stopped runs beside an editable Configuration panel whose
+// structural edits rebuild app.dbs, and rebuild_from_proj repopulates that array outside app.mu,
+// so no reader-side lock can make a snapshot of it whole (codex on #273 rounds 22–23). A loader
+// that needs no shared array needs no lock; the script sees the saved file, as the headless
+// runner does. Only the project path is read under the lock.
 fn (a &App) script_db(ch Chan) candb.Database {
 	mut al := unsafe { a }
 	al.mu.lock()
-	defer {
-		al.mu.unlock()
-	}
-	return merge_dbs_from(a.loaded_dbs_for(ch.databases.map(candb.canonical_database_ref(a.resolve_asset(it)))))
+	paths := ch.databases.map(a.resolve_asset(it))
+	al.mu.unlock()
+	return candb.merge_files(paths)
 }
 
 fn rx_loop(app &App, ci int, iface string, gen u64) {

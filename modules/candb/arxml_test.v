@@ -1114,6 +1114,14 @@ fn test_round_19_shapes() {
 	assert bv.minimum == 0.0 && bv.maximum == 100.0
 	assert b.report.notes.any(it.contains('/CM/Z: declares a COMPU-DEFAULT-VALUE ("Other")'))
 	assert b.report.notes.any(it.contains('/Sig/V: the data constraint has SCALE-CONSTRS'))
+	// two rules: the first is read, and the choice is said (round 23)
+	two_rules := shapes.replace('</DATA-CONSTR-RULE></DATA-CONSTR-RULES>', '</DATA-CONSTR-RULE><DATA-CONSTR-RULE><CONSTR-LEVEL>1</CONSTR-LEVEL><PHYS-CONSTRS><LOWER-LIMIT>5</LOWER-LIMIT><UPPER-LIMIT>50</UPPER-LIMIT></PHYS-CONSTRS></DATA-CONSTR-RULE></DATA-CONSTR-RULES>')
+	tr := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + two_rules + arxml_tail) or {
+		panic(err)
+	}
+	trv := sig((tr.cluster('') or { panic(err) }).db.messages[0], 'V')
+	assert trv.minimum == 0.0 && trv.maximum == 100.0
+	assert tr.report.notes.any(it.contains('/Sig/V: the data constraint has 2 DATA-CONSTR-RULEs; the first physical'))
 }
 
 fn test_two_triggerings_of_one_id_keep_the_first_and_say_so() {

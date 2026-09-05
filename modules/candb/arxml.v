@@ -1212,6 +1212,13 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 		}
 		if has_dc {
 			d := dc
+			rules := descendants(d, 'DATA-CONSTR-RULE').len
+			if rules > 1 {
+				// several rules (per constraint level, typically): the first physical — else the
+				// first internal — constraint found is read as THE range, and the rest are not
+				// weighed (round 23)
+				r.report.notes << '${isig_path}: the data constraint has ${rules} DATA-CONSTR-RULEs; the first physical (else internal) constraint is read as the range, the others are not'
+			}
 			if first(d, 'SCALE-CONSTRS') != none {
 				// restricted or disjoint sub-intervals inside the bounds: the range model is one
 				// interval, so the gaps between them are advertised as valid (round 19)
