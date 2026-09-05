@@ -800,6 +800,9 @@ fn test_enum_keys_above_2_pow_53_and_opaque_packing() {
 	assert key_of('1.85E19') == none // past 2^64
 	assert key_of('1E100000000') == none // refused before a hundred million zeroes are built
 	assert integral_decimal('1E21') == none && integral_decimal('1E19') or { '' } == '1' + '0'.repeat(19)
+	assert integral_decimal('0.1E20') or { '' } == '1' + '0'.repeat(19) // leading zeroes are not digits
+	assert key_of('0.1E20') or { 0 } == u64(10000000000000000000)
+	assert integral_decimal('0.0E1') or { '' } == '0' && integral_decimal('0.05E1') == none
 }
 
 fn test_pdu_group_directions_do_not_leak_into_subgroups() {
@@ -1123,6 +1126,13 @@ fn test_round_15_shapes_are_said_or_read_right() {
 	}
 	assert sig((no_num.cluster('') or { panic(err) }).db.messages[0], 'V').factor == 1.0
 	assert no_num.report.notes.any(it.contains('/CM/C: rational coefficients without a numerator'))
+	// a zero denominator: said, read as identity, and not counted as the linear scale (round 35)
+	zero_den := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + zero_slope.replace('<COMPU-NUMERATOR><V>5</V><V>0</V></COMPU-NUMERATOR><COMPU-DENOMINATOR><V>1</V></COMPU-DENOMINATOR>', '<COMPU-NUMERATOR><V>5</V><V>2</V></COMPU-NUMERATOR><COMPU-DENOMINATOR><V>0</V></COMPU-DENOMINATOR>') + arxml_tail) or {
+		panic(err)
+	}
+	zdv := sig((zero_den.cluster('') or { panic(err) }).db.messages[0], 'V')
+	assert zdv.factor == 1.0 && zdv.offset == 0.0
+	assert zero_den.report.notes.any(it.contains('/CM/C: a linear scale with denominator 0 is not a conversion'))
 }
 
 fn test_round_19_shapes() {
@@ -1289,6 +1299,31 @@ fn test_frame_lengths_are_bounded() {
 	}
 	assert (none_.cluster('') or { panic(err) }).db.messages.len == 0
 	assert none_.report.notes.any(it.contains('frame F has no FRAME-LENGTH; not read'))
+	// classic CAN carries 8 bytes: a 12-byte frame not declared CAN-FD is not read (round 35)
+	classic12 := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<FRAME-LENGTH>8</FRAME-LENGTH>', '<FRAME-LENGTH>12</FRAME-LENGTH>') + arxml_tail) or {
+		panic(err)
+	}
+	assert (classic12.cluster('') or { panic(err) }).db.messages.len == 0
+	assert classic12.report.notes.any(it.contains('frame F is classic CAN with FRAME-LENGTH 12, above the 8 bytes'))
+	// …and is read when the triggering declares CAN-FD
+	fd12 := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F').replace('<IDENTIFIER>256</IDENTIFIER>', '<IDENTIFIER>256</IDENTIFIER><CAN-FRAME-TX-BEHAVIOR>CAN-FD</CAN-FRAME-TX-BEHAVIOR>') + offset_pdu_xml.replace('<FRAME-LENGTH>8</FRAME-LENGTH>', '<FRAME-LENGTH>12</FRAME-LENGTH>') + arxml_tail) or {
+		panic(err)
+	}
+	assert (fd12.cluster('') or { panic(err) }).db.messages[0].dlc == 12
+	// an IDENTIFIER that is missing, negative or too wide for its addressing mode is not read
+	for bad in ['<IDENTIFIER>2048</IDENTIFIER>', '<IDENTIFIER>-1</IDENTIFIER>', ''] {
+		b := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F').replace('<IDENTIFIER>256</IDENTIFIER>', bad) + offset_pdu_xml + arxml_tail) or {
+			panic(err)
+		}
+		assert (b.cluster('') or { panic(err) }).db.messages.len == 0, bad
+		assert b.report.notes.any(it.contains('IDENTIFIER') && it.contains('not read')), b.report.notes.str()
+	}
+	// a negative START-POSITION is not read
+	neg := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<START-POSITION>0</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING>', '<START-POSITION>-16</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING>') + arxml_tail) or {
+		panic(err)
+	}
+	assert !(neg.cluster('') or { panic(err) }).db.messages[0].signals.any(it.name == 'V')
+	assert neg.report.notes.any(it.contains('/Sig/V: START-POSITION -16 (in a PDU at bit 8) is negative; not read'))
 }
 
 fn test_a_j1939_cluster_is_counted_as_ignored() {

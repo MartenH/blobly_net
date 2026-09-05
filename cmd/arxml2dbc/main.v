@@ -152,6 +152,20 @@ fn main() {
 	// destinations first and renamed only once every write succeeded — a TOML write failing
 	// (unwritable parent, full disk) after the DBC was already replaced left a regenerated DBC
 	// beside the previous fragment, the inconsistent pair the ECU check above exists to prevent
+	// ONE PUBLISHER AT A TIME per destination pair (round 35): two exports racing could still
+	// interleave their two moves and leave one's DBC beside the other's fragment, each reporting
+	// success. A directory is the portable atomic create; a stale one names the way out.
+	lock_at := if dbc_to_file { dbc_out } else { toml_out }
+	if dbc_to_file || (toml_out != '' && !toml_to_stdout) {
+		lock_dir := canon(lock_at) + '.arxml2dbc.lock'
+		os.mkdir(lock_dir) or {
+			eprintln('arxml2dbc: another export is publishing to ${lock_at} (${lock_dir} exists); wait for it, or remove that directory if it is stale')
+			exit(3)
+		}
+		defer {
+			os.rmdir(lock_dir) or {}
+		}
+	}
 	mut staged := [][]string{} // [temporary, destination, what was written]
 	if dbc_to_file {
 		staged << stage(dbc_out, dbc, staged) or { exit(1) }

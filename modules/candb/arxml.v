@@ -763,8 +763,20 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			continue
 		}
 		mut fname := child_text(frame, 'SHORT-NAME')
-		id := u32(parse_int(child_text(ft, 'IDENTIFIER')))
+		if child(ft, 'IDENTIFIER') == none {
+			r.report.notes << '${ft_path}: no IDENTIFIER; not read'
+			continue
+		}
+		raw_id := parse_i64(child_text(ft, 'IDENTIFIER'))
 		ext := child_text(ft, 'CAN-ADDRESSING-MODE') == 'EXTENDED'
+		if raw_id < 0 || raw_id > (if ext { i64(0x1FFFFFFF) } else { i64(0x7FF) }) {
+			// a missing id read as 0 would claim the real id-0 frame and drop it as a duplicate;
+			// an oversized one reaches the simulator and is refused there (round 35)
+			bits := if ext { '29' } else { '11' }
+			r.report.notes << '${ft_path}: IDENTIFIER ${raw_id} does not fit ${bits} bits; not read'
+			continue
+		}
+		id := u32(raw_id)
 		key := frame_key(id, ext)
 		if key in frames {
 			r.report.notes << '${ft_path}: a second triggering for id 0x${id:X} (${fname}); the first is kept'
@@ -794,6 +806,12 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 		}
 		mut info := ArxmlFrame{
 			fd: child_text(ft, 'CAN-FRAME-TX-BEHAVIOR') == 'CAN-FD' || child_text(ft, 'CAN-FRAME-RX-BEHAVIOR') == 'CAN-FD'
+		}
+		if !info.fd && dlc > 8 {
+			// a classic frame cannot carry it: the software buses would, SocketCAN clamps and
+			// the vendor backends refuse, so the same file would simulate three ways (round 35)
+			r.report.notes << '${ft_path}: frame ${fname} is classic CAN with FRAME-LENGTH ${dlc}, above the 8 bytes classic carries; not read'
+			continue
 		}
 
 		// who sends, who listens: the frame ports on the triggering, by direction
@@ -1215,8 +1233,13 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 			r.report.notes << '${isig_path}: ${length}-bit signal is wider than the 64-bit scalar model; not read'
 			continue
 		}
-		paths << isig_path // named after the whole message is known — see the caller
 		start := parse_int(child_text(m, 'START-POSITION')) + pdu_off
+		if start < 0 {
+			// raw_value and set_raw guard the upper bound only; a negative byte index from here
+			// would terminate the decoder (round 35)
+			r.report.notes << '${isig_path}: START-POSITION ${start - pdu_off} (in a PDU at bit ${pdu_off}) is negative; not read'
+			continue
+		}
 		if ub := child(m, 'UPDATE-BIT-POSITION') {
 			// a receiver may treat the signal as not updated while the bit is clear, and a
 			// simulated frame leaves every unlisted bit clear — said, since nothing sets it
@@ -1428,6 +1451,9 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 			desc = r.desc_of(isig, isig_path)
 		}
 
+		// RECORDED BESIDE THE SIGNAL, after every skip above, so the two lists stay aligned — named
+		// after the whole message is known (see the caller)
+		paths << isig_path
 		out << Signal{
 			name: name
 			start_bit: start
@@ -1580,6 +1606,12 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 				}
 				if num.len > 2 && num[2..].any(it != 0) {
 					r.report.notes << '${cm_path}: a polynomial of degree ${num.len - 1}, read as factor 1 offset 0'
+					continue
+				}
+				if d == 0 {
+					// a zero constant denominator is not a conversion at all: said, and NOT
+					// counted as the linear scale, so a valid one later still applies (round 35)
+					r.report.notes << '${cm_path}: a linear scale with denominator 0 is not a conversion; read as factor 1 offset 0'
 					continue
 				}
 				if linear_seen {
@@ -1890,17 +1922,27 @@ fn integral_decimal(t string) ?string {
 	}
 	whole := body.all_before('.')
 	frac := if body.contains('.') { body.all_after('.') } else { '' }
-	digits := whole + frac
+	mut digits := whole + frac
 	if digits.len == 0 || !digits.bytes().all(it >= `0` && it <= `9`) {
 		return none
 	}
 	// the point sits after `whole`; the exponent moves it right (positive) or left (negative)
-	point := whole.len + exp
+	mut point := whole.len + exp
 	if point < 0 {
 		return if digits.count('0') == digits.len { '0' } else { none }
 	}
+	// insignificant leading zeroes first (`0.1E20` is 1E19, twenty digits, and fits), THEN the
+	// bound: no 64-bit key has more than 20 digits, and `1E100000000` is not expanded to find out
+	lead := digits.len - digits.trim_left('0').len
+	digits = digits[lead..]
+	point -= lead
+	if point < 0 {
+		// every significant digit sits right of the point: zero if there is none (`0.0E1`), else
+		// a real fraction
+		return if digits.len == 0 { '0' } else { none }
+	}
 	if point > 20 {
-		return none // no 64-bit key has more than 20 digits; `1E100000000` is not expanded to find out
+		return none
 	}
 	if point > digits.len {
 		return sign + digits + '0'.repeat(point - digits.len)
