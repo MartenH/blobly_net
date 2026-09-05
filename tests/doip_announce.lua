@@ -35,14 +35,27 @@ test("a listening tester hears an entity announce itself", function()
   log("heard", #seen, "announcement(s)")
 end)
 
--- An entity announces where it is BOUND, so a listener on another port hears nothing.
-test("announcements arrive on the entity's own port", function()
-  local seen = doip.listen(1200, { port = 13555 })   -- AltPort lives there
+-- An entity announces where it is BOUND, so a listener on another port hears nothing. `from`
+-- names the channel and the listener takes the port that channel is on, so the suite does not
+-- repeat a number the project already states. The prelude accepted `from` for a release while
+-- the host ignored it and listened on 13400 (#233) — which this window, written that way, would
+-- have caught. One window, not two: the suite already runs three back-to-back against a
+-- ~4 s announcement sequence, and a fourth would be timing out that sequence rather than
+-- testing anything.
+test("announcements arrive on the entity's own port, named through its channel", function()
+  local seen = doip.listen(1200, { from = "AltPort" })   -- AltPort lives on 13555
   local found = false
   for _, a in ipairs(seen) do
     if a.vin == "ALTPORTVIN0000001" then found = true; check.equal(a.logical_address, 0x4000) end
   end
-  check.truthy(found, "heard nothing on 13555 — announcements went to the wrong port")
+  check.truthy(found, "heard nothing on AltPort's own port — announcements went to the wrong port")
+end)
+
+-- Two answers to one question are refused, never silently overruled. No window: the refusal
+-- comes before any socket is opened (the branches themselves are pinned in modules/script).
+test("a port that contradicts the channel is refused", function()
+  local ok, err = pcall(doip.listen, 100, { from = "AltPort", port = 13400 })
+  check.truthy(not ok and tostring(err):find("contradicts", 1, true), "a contradicting port was accepted: " .. tostring(err))
 end)
 
 -- announce_count 0 is a legitimate ECU to simulate, and the fault worth injecting at a tester

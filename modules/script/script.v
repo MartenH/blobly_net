@@ -583,14 +583,35 @@ fn l_uds_read_did(l lua.State) int {
 // identification). Scriptable because the ANNOUNCED identity and the SERVED identity are
 // separate values that can disagree — and a test that can only read DID 0xF190 cannot see
 // half of that.
-fn l_doip_discover(l lua.State) int {
-	mut env := env_of(l)
-	name := l.arg_str(1)
-	ci := env.find_chan(name) or { return l.fail('unknown channel "${name}"') }
+// doip_chan resolves a channel a DoIP primitive names, with the two refusals every one of them
+// makes — ONE lookup and one wording, where discover and listen each had their own.
+fn (env &Env) doip_chan(name string) !ChanInfo {
+	ci := env.find_chan(name) or { return error('unknown channel "${name}"') }
 	info := env.chans[ci]
 	if !info.carrier.doip {
-		return l.fail('doip.discover("${name}"): not a DoIP channel')
+		return error('"${name}" is not a DoIP channel')
 	}
+	return info
+}
+
+// listen_port is the port doip.listen binds: the channel `from` names decides when it is given,
+// and a `requested` port that disagrees with it is refused rather than overruled — two answers
+// to one question. Without `from`, the request or the DoIP default. Pure, so the three branches
+// are pinned by direct asserts and not only through a Lua VM and an error string.
+fn listen_port(requested int, from string, from_port int) !int {
+	if from == '' {
+		return if requested == 0 { 13400 } else { requested }
+	}
+	if requested != 0 && requested != from_port {
+		return error('port ${requested} contradicts from = "${from}", whose entity is on port ${from_port}; give one or the other')
+	}
+	return from_port
+}
+
+fn l_doip_discover(l lua.State) int {
+	env := env_of(l)
+	name := l.arg_str(1)
+	info := env.doip_chan(name) or { return l.fail('doip.discover: ${err}') }
 	v := doip.discover(info.carrier.host, info.carrier.port, 1200) or {
 		return l.fail('doip.discover("${name}") on ${info.carrier.host}:${info.carrier.port}: ${err}')
 	}
@@ -618,8 +639,27 @@ fn probe_says_dead(err IError) bool {
 fn l_doip_listen(l lua.State) int {
 	port := int(l.arg_int(1))
 	window := int(l.arg_int(2))
-	use_ip6 := l.arg_bool(3)
-	use_port := if port == 0 { 13400 } else { port }
+	mut use_ip6 := l.arg_bool(3)
+	from := l.arg_str(4)
+	mut from_port := 0
+	if from != '' {
+		// `from` names a channel: the listener takes THAT channel's own port, so a suite does
+		// not repeat a number the project already states. The prelude documented and passed
+		// this for a release while the host read three arguments and defaulted to 13400 — a
+		// script asking for AltPort's port listened on the default, heard nothing, and failed
+		// as if the entity were silent (#233). Resolved here, refused loudly when it cannot be.
+		info := env_of(l).doip_chan(from) or { return l.fail('doip.listen: ${err}') }
+		from_port = info.carrier.port
+		// AND ITS ADDRESS FAMILY. An IPv6 entity announces to ff02::1, which only a v6 listener
+		// that joined the group can hear — a port taken from the channel with the family left at
+		// the caller's default is #233 again, one family over. THE MODULE'S ONE RULE, the same
+		// one the entity announces by: the family is read off the literal, so a hostname that
+		// resolves to IPv6 only is read as v4 here exactly as it is there (docs/doip.md, the
+		// IPv6 passive-discovery limitation) — a second rule here would make the tester and the
+		// entity disagree about one channel.
+		use_ip6 = use_ip6 || doip.addr_family(info.carrier.host) == .ip6
+	}
+	use_port := listen_port(port, from, from_port) or { return l.fail('doip.listen: ${err}') }
 	found := doip.collect_announcements_af(use_port, window, use_ip6) or {
 		return l.fail('doip.listen(${use_port}): ${err}')
 	}

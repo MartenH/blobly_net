@@ -17,7 +17,7 @@ For *why* DoIP came before SOME/IP and how the modules are laid out, see the des
 | Starting a simulated DoIP entity from a **project**, headless | ✅ `scripts/runtests.sh --project <p.blobnet>` |
 | **Starting a simulated DoIP entity from the GUI** | ✅ ▶ Start hosts it; the channel goes green only once the listener is up |
 | **UDS from the Diagnostics panel over a DoIP channel** | ✅ listed as a target, addressed by logical address |
-| Passive discovery — hearing an entity announce itself | ✅ `doip.listen(window_ms)` / `collect_announcements` |
+| Passive discovery — hearing an entity announce itself | ✅ `doip.listen(window_ms [, {from=}])` / `collect_announcements` |
 | A simulated entity announcing itself at Start | ✅ per DoIP **channel** (one channel is one entity): `announce_count` (0 = silent), `announce_interval_ms`, `announce_to` |
 | **Subnet scan — finding an entity that neither announced nor sits at a known address** | 🧭 planned |
 
@@ -71,9 +71,10 @@ Both halves exist now. The companion firmware (blobly_emb) broadcasts its vehicl
 three times at boot, per ISO 13400, and answers identification requests afterwards — so a tester
 arriving late can still find it. Blobly Net does both sides of that:
 
-- **Passive**: `doip.collect_announcements()` (Lua: `doip.listen(window_ms)`) binds the wildcard
-  address and collects **unsolicited** announcements, each carrying the sender's `host:port` so
-  you can dial what you just found. Start listening BEFORE the entity comes up — nothing is
+- **Passive**: `doip.collect_announcements()` (Lua: `doip.listen(window_ms)`, or
+  `doip.listen(window_ms, { from = "Ch" })` to listen where that channel's entity is bound) binds
+  the wildcard address and collects **unsolicited** announcements, each carrying the sender's
+  `host:port` so you can dial what you just found. Start listening BEFORE the entity comes up — nothing is
   queued for a listener that is not there.
 - **Active**: `doip.discover(host, port, timeout_ms)` (Lua: `doip.discover(channel)`, which uses
   the channel's configured endpoint) sends an identification request to one address and reads

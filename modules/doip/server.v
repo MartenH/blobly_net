@@ -130,7 +130,7 @@ fn join_host_port(host string, port int) string {
 }
 
 // addr_family picks the socket family for a host: ip6 for an IPv6 literal, else ip.
-fn addr_family(host string) net.AddrFamily {
+pub fn addr_family(host string) net.AddrFamily {
 	return if host.contains(':') { net.AddrFamily.ip6 } else { net.AddrFamily.ip }
 }
 
