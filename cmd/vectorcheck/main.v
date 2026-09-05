@@ -209,36 +209,11 @@ fn on_interrupt(_ os.Signal) {
 	// list and this handler had nothing to do — and exiting over it leaves exactly the
 	// half-restored bench the handler exists to prevent. Bounded, because a stuck restore must
 	// not make Ctrl-C useless.
-	for _ in 0 .. 300 {
-		borrow_lock()
-		busy := g_restoring > 0
-		borrow_unlock()
-		if !busy {
-			break
-		}
-		time.sleep(10 * time.millisecond)
-	}
 	// An interrupt whose restore failed is not a clean interrupt: say so, and do not exit 130 as
 	// if it were (#197). And a restore STILL IN FLIGHT when the wait runs out is not known to have
 	// succeeded — exiting through it ends the driver call, so the assignment's state is unknown
-	// rather than clean, and that is reported as a failure too (codex round 1 on #278). Read
-	// ONCE MORE after the loop: a restore that finished during the last sleep is not in flight,
-	// and the loop's own flag would still say it was (codex round 2).
-	borrow_lock()
-	still_busy := g_restoring > 0
-	pending := g_in_flight.clone()
-	borrow_unlock()
-	if still_busy {
-		// NAMING WHAT WAS BEING RESTORED: the records have left g_borrowed and the blocked call
-		// printed no FAIL line, so without this the original mapping is gone with the process
-		eprintln('vectorcheck: a channel restore was still in flight after 3 s and this exit ends it — the assignment state is UNKNOWN:')
-		for b in pending {
-			if p := b.prev {
-				eprintln('  application channel ${b.app} was being put back to hardware ${p.hw_type}:${p.hw_index}:${p.hw_channel} — `--channel ${b.app} --assign <row> --seconds 1` at that hw (the row is in `--probe`)')
-			} else {
-				eprintln('  application channel ${b.app} was being cleared — `--release ${b.app}`')
-			}
-		}
+	// rather than clean, and that is reported as a failure too (codex round 1 on #278).
+	if wait_out_restores() {
 		exit(3)
 	}
 	if restore_summary() > 0 {
@@ -332,6 +307,13 @@ fn give_back(bs []Borrowed) {
 			}
 		}
 	}
+	if mine.len == 0 {
+		// nothing claimed — the other party (the handler, or the deferred cleanup) has them. Not
+		// counted as in flight: a count with no record behind it read as a restore that never
+		// finished (codex round 4 on #278)
+		borrow_unlock()
+		return
+	}
 	// COUNTED WHILE IT HAPPENS. Claiming removes the entries from the shared list, so between
 	// the claim and the writes an interrupt sees an empty list, concludes there is nothing to do,
 	// and exits THROUGH a restoration that is halfway done — the one moment when stopping is
@@ -400,10 +382,52 @@ fn restore_summary() int {
 // itself went — on the success path AND the failure path, since a driver reset fails both. Exit
 // 3, distinct from 1 (the test failed) and 2 (usage): a wrapper that retries on 1 would borrow
 // the misassigned channels again, snapshot the leftover mapping as `prev` and cement it.
+//
+// It WAITS first: the interrupt handler may have claimed the records and be stalled in the
+// driver while the main thread finishes — its deferred give_back then finds nothing to do, and
+// returning here would end the handler's restore mid-write with the count still at zero (codex
+// round 4 on #278). The same bounded wait and the same unknown-state verdict the handler uses.
 fn restore_verdict() {
+	if wait_out_restores() {
+		exit(3)
+	}
 	if restore_summary() > 0 {
 		exit(3)
 	}
+}
+
+// wait_out_restores waits, bounded, for every restore in flight — the handler's or the deferred
+// cleanup's, whichever this thread is not — and reports true when one is STILL in flight, naming
+// what it was putting back: the records have left g_borrowed and the blocked call printed no
+// FAIL line, so without this the original mapping would be gone with the process (codex rounds
+// 1–3 on #278). Read once more after the loop, since a restore that finished during the last
+// sleep is not in flight (round 2).
+fn wait_out_restores() bool {
+	for _ in 0 .. 300 {
+		borrow_lock()
+		busy := g_restoring > 0
+		borrow_unlock()
+		if !busy {
+			break
+		}
+		time.sleep(10 * time.millisecond)
+	}
+	borrow_lock()
+	still_busy := g_restoring > 0
+	pending := g_in_flight.clone()
+	borrow_unlock()
+	if !still_busy {
+		return false
+	}
+	eprintln('vectorcheck: a channel restore was still in flight after 3 s and this exit ends it — the assignment state is UNKNOWN:')
+	for b in pending {
+		if p := b.prev {
+			eprintln('  application channel ${b.app} was being put back to hardware ${p.hw_type}:${p.hw_index}:${p.hw_channel} — `--channel ${b.app} --assign <row> --seconds 1` at that hw (the row is in `--probe`)')
+		} else {
+			eprintln('  application channel ${b.app} was being cleared — `--release ${b.app}`')
+		}
+	}
+	return true
 }
 
 // poll returns a frame, or none when the queue is simply empty, and FAILS on anything else.
