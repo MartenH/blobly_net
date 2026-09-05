@@ -798,6 +798,8 @@ fn test_enum_keys_above_2_pow_53_and_opaque_packing() {
 	assert key_of('-9223372036854775809') == none
 	assert key_of('1.8E19') or { 0 } == u64(18000000000000000000)
 	assert key_of('1.85E19') == none // past 2^64
+	assert key_of('1E100000000') == none // refused before a hundred million zeroes are built
+	assert integral_decimal('1E21') == none && integral_decimal('1E19') or { '' } == '1' + '0'.repeat(19)
 }
 
 fn test_pdu_group_directions_do_not_leak_into_subgroups() {
@@ -1076,6 +1078,14 @@ fn test_round_15_shapes_are_said_or_read_right() {
 		u64(255): 'Neg'
 	}, skv.values.str()
 	assert sk.report.notes.any(it.contains('/Sig/V: enum key 200 ("TooWide") of /CM/K does not fit a 8-bit signed signal; dropped'))
+	// a negative key below the signed minimum whose PATTERN still sign-extends into the width
+	// (-257 for 8 bits) is dropped, not filed on raw -1 (round 34)
+	wrapped := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + signed_keys.replace('<LOWER-LIMIT>-1</LOWER-LIMIT><UPPER-LIMIT>-1</UPPER-LIMIT>', '<LOWER-LIMIT>-257</LOWER-LIMIT><UPPER-LIMIT>-257</UPPER-LIMIT>') + arxml_tail) or {
+		panic(err)
+	}
+	wv := sig((wrapped.cluster('') or { panic(err) }).db.messages[0], 'V')
+	assert u64(255) !in wv.values, wv.values.str()
+	assert wrapped.report.notes.any(it.contains('/Sig/V: enum key -257 ("Neg") of /CM/K does not fit a 8-bit signed signal; dropped'))
 	// -1 and 2^64-1 are one u64 pattern; a method shared by a signed and an unsigned 64-bit signal
 	// keeps them apart, and each signal takes the one its domain holds (round 21)
 	both := offset_pdu_xml.replace('<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>8</LENGTH></I-SIGNAL>', '<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>64</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF></I-SIGNAL>').replace('<I-SIGNAL><SHORT-NAME>Ctr</SHORT-NAME><LENGTH>4</LENGTH></I-SIGNAL>', '<I-SIGNAL><SHORT-NAME>Ctr</SHORT-NAME><LENGTH>64</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF><NETWORK-REPRESENTATION-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><BASE-TYPE-REF DEST="SW-BASE-TYPE">/BT/s8</BASE-TYPE-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></NETWORK-REPRESENTATION-PROPS></I-SIGNAL>') + '<AR-PACKAGE><SHORT-NAME>Sys</SHORT-NAME><ELEMENTS><SYSTEM-SIGNAL><SHORT-NAME>S</SHORT-NAME><PHYSICAL-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/B</COMPU-METHOD-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></PHYSICAL-PROPS></SYSTEM-SIGNAL></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>BT</SHORT-NAME><ELEMENTS><SW-BASE-TYPE><SHORT-NAME>s8</SHORT-NAME><BASE-TYPE-ENCODING>2C</BASE-TYPE-ENCODING></SW-BASE-TYPE></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>CM</SHORT-NAME><ELEMENTS><COMPU-METHOD><SHORT-NAME>B</SHORT-NAME><CATEGORY>TEXTTABLE</CATEGORY><COMPU-INTERNAL-TO-PHYS><COMPU-SCALES><COMPU-SCALE><LOWER-LIMIT>-1</LOWER-LIMIT><UPPER-LIMIT>-1</UPPER-LIMIT><COMPU-CONST><VT>Neg</VT></COMPU-CONST></COMPU-SCALE><COMPU-SCALE><LOWER-LIMIT>18446744073709551615</LOWER-LIMIT><UPPER-LIMIT>18446744073709551615</UPPER-LIMIT><COMPU-CONST><VT>Max</VT></COMPU-CONST></COMPU-SCALE></COMPU-SCALES></COMPU-INTERNAL-TO-PHYS></COMPU-METHOD></ELEMENTS></AR-PACKAGE>'
@@ -1264,6 +1274,21 @@ fn test_unique_names_are_reserved_before_duplicates_are_qualified() {
 	fnames.sort()
 	assert fnames == ['F', 'F_2', 'F_3'], fnames.str()
 	assert (rfc.db.lookup(258) or { panic('no 258') }).name == 'F_2'
+}
+
+// a frame whose FRAME-LENGTH is missing or outside 0..64 is not read: a simulated sender sizes
+// its payload from it (round 34)
+fn test_frame_lengths_are_bounded() {
+	big := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<FRAME-LENGTH>8</FRAME-LENGTH>', '<FRAME-LENGTH>72</FRAME-LENGTH>') + arxml_tail) or {
+		panic(err)
+	}
+	assert (big.cluster('') or { panic(err) }).db.messages.len == 0
+	assert big.report.notes.any(it.contains('frame F has FRAME-LENGTH 72, outside 0..64; not read'))
+	none_ := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<FRAME-LENGTH>8</FRAME-LENGTH>', '') + arxml_tail) or {
+		panic(err)
+	}
+	assert (none_.cluster('') or { panic(err) }).db.messages.len == 0
+	assert none_.report.notes.any(it.contains('frame F has no FRAME-LENGTH; not read'))
 }
 
 fn test_a_j1939_cluster_is_counted_as_ignored() {

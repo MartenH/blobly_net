@@ -173,7 +173,10 @@ fn main() {
 // stage writes `text` to a temporary beside `dst` and returns [temporary, dst]; on failure it
 // removes every earlier staged temporary too, so nothing is left behind and nothing was replaced.
 fn stage(dst string, text string, earlier [][]string) ![]string {
-	tmp := dst + '.arxml2dbc.tmp'
+	// PER INVOCATION: two exports of one pair running at once wrote the same temporary and could
+	// publish one's DBC with the other's TOML (round 34). Distinct temporaries end that; which of
+	// two concurrent exports publishes last is still the caller's to order
+	tmp := '${dst}.arxml2dbc.${os.getpid()}.tmp'
 	os.write_file(tmp, text) or {
 		eprintln('arxml2dbc: ${dst}: ${err}')
 		for e in earlier {

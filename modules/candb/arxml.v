@@ -781,7 +781,17 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			r.report.notes << '${ft_path}: frame name ${fname} is already used by another id in this cluster; this one is ${claimed}'
 			fname = claimed
 		}
+		if child(frame, 'FRAME-LENGTH') == none {
+			r.report.notes << '${ft_path}: frame ${fname} has no FRAME-LENGTH; not read'
+			continue
+		}
 		dlc := parse_int(child_text(frame, 'FRAME-LENGTH'))
+		if dlc < 0 || dlc > 64 {
+			// no schema validation here, so the bound a CAN-FD frame has is checked where the
+			// value is read: a simulated sender allocates the payload from it (round 34)
+			r.report.notes << '${ft_path}: frame ${fname} has FRAME-LENGTH ${dlc}, outside 0..64; not read'
+			continue
+		}
 		mut info := ArxmlFrame{
 			fd: child_text(ft, 'CAN-FRAME-TX-BEHAVIOR') == 'CAN-FD' || child_text(ft, 'CAN-FRAME-RX-BEHAVIOR') == 'CAN-FD'
 		}
@@ -1343,7 +1353,9 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 			}
 			for k, v in scale.neg_values {
 				top := if length >= 64 { u64(1) << 63 } else { u64(1) << (length - 1) }
-				if !(is_signed && (k | mask) == ~u64(0) && (k & top) != 0) {
+				// the INTEGER must lie in [-2^(width-1), -1]: a pattern test let -257 through for an
+				// 8-bit signal (all-one upper bits, low sign bit set) and labelled raw -1 (round 34)
+				if !(is_signed && i64(k) < 0 && i64(k) >= -i64(top)) {
 					sgn := if is_signed { 'signed' } else { 'unsigned' }
 					r.report.notes << '${isig_path}: enum key ${i64(k)} ("${v}") of ${cm_path} does not fit a ${length}-bit ${sgn} signal; dropped'
 					continue
@@ -1886,6 +1898,9 @@ fn integral_decimal(t string) ?string {
 	point := whole.len + exp
 	if point < 0 {
 		return if digits.count('0') == digits.len { '0' } else { none }
+	}
+	if point > 20 {
+		return none // no 64-bit key has more than 20 digits; `1E100000000` is not expanded to find out
 	}
 	if point > digits.len {
 		return sign + digits + '0'.repeat(point - digits.len)
