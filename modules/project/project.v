@@ -1738,6 +1738,20 @@ pub fn (c Channel) can_carry_fd() bool {
 	return transport.adapter_carries_fd(c.adapter)
 }
 
+// refuses_fd_frames reports whether a CAN-FD frame put to this row is REFUSED rather than carried.
+//
+// A classic row on a backend that CONFIGURES the data phase (`transport.adapter_configures_data_phase`
+// — the vendor adapters) opens the controller classic, and every FD frame is then refused and
+// counted as failed. SocketCAN and the software buses carry FD frames whatever the row says: there
+// the data phase is the interface's (`ip link`, the MTU) or nobody's, and the row's `fd` bit is
+// not handed to the open at all — so a classic row there refuses nothing, and a warning that said
+// otherwise would be false on the default bench and taught to be ignored on the one where it is
+// true. The replay preflight asks this (#184); it is the other direction of fd_capability_warnings,
+// which asks whether an FD ROW sits on a backend that cannot carry FD.
+pub fn (c Channel) refuses_fd_frames() bool {
+	return !c.fd && transport.adapter_configures_data_phase(c.adapter)
+}
+
 // Framing is how a frame this app ORIGINATES on a channel should be put on the wire.
 //
 // A frame carries the format, and until now every frame the app built carried the classic one —

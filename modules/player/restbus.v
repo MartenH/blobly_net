@@ -46,6 +46,11 @@ pub:
 	unattributed          int // frames whose message the DBC defines but gives no transmitter
 	unknown               int // frames whose id the DBC does not define at all
 	remote                int // remote requests in the recording, which cannot be replayed
+	// Of `kept`, how many are CAN-FD frames — the ones a channel PINNED to classic cannot replay.
+	// Counted here, in the one walk that decides what is kept, so the front ends state the
+	// number that will actually reach the send loop rather than one taken from the recording
+	// before subtraction (#184); by the frame's flag, which is what the loaders set.
+	fd int
 	// The ids behind the two buckets above that have them, so a report can name those rather
 	// than merely count them.
 	// Sorted, each id once.
@@ -197,6 +202,7 @@ mut:
 	unattr_n          int
 	unknown_n         int
 	remote_n          int
+	fd_n              int // CAN-FD frames among the kept
 	// KEYED BY IDENTITY, not by number — the same `key(id, ext)` the decision itself uses.
 	unattr  map[u64]bool
 	unknown map[u64]bool
@@ -209,6 +215,16 @@ mut:
 // already does.
 pub fn (mut t Tally) add(v Verdict, f transport.CanFrame) bool {
 	id := key(f.id, f.extended)
+	keep := t.file(v, id)
+	if keep && f.fd {
+		t.fd_n++
+	}
+	return keep
+}
+
+// file books the verdict's bucket and says whether the frame survives; add counts the frame's
+// own facts (its format) over the ones that do.
+fn (mut t Tally) file(v Verdict, id u64) bool {
 	match v {
 		.keep {
 			return true
@@ -250,6 +266,7 @@ pub fn (t Tally) done(kept int) Subtraction {
 		unattributed:          t.unattr_n
 		unknown:               t.unknown_n
 		remote:                t.remote_n
+		fd:                    t.fd_n
 		unattributed_ids:      u_ids
 		unknown_ids:           k_ids
 	}
