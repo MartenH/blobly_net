@@ -229,7 +229,8 @@ fn roll_back(set_aside [][]string) {
 	for i := set_aside.len - 1; i >= 0; i-- {
 		os.rm(set_aside[i][0]) or {}
 		if set_aside[i][1] == '' {
-			continue // it did not exist before; removed is restored
+			// it did not exist before; removed is restored
+			continue
 		}
 		os.mv(set_aside[i][1], set_aside[i][0]) or {
 			eprintln('arxml2dbc: could not restore ${set_aside[i][0]} from ${set_aside[i][1]}: ${err}')

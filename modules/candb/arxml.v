@@ -737,9 +737,15 @@ fn (mut r ArxmlReader) load_e2e() {
 					continue
 				}
 				match off {
-					'CRC-OFFSET' { crc_off = int(v) }
-					'COUNTER-OFFSET' { ctr_off = int(v) }
-					else { hdr_off = int(v) }
+					'CRC-OFFSET' {
+						crc_off = int(v)
+					}
+					'COUNTER-OFFSET' {
+						ctr_off = int(v)
+					}
+					else {
+						hdr_off = int(v)
+					}
 				}
 			}
 			category := child_text(profile, 'CATEGORY')
@@ -1013,6 +1019,11 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			if (pref.attributes['DEST'] or { lname(pdu) }) == 'SECURED-I-PDU' {
 				// the authentic PDU is behind PAYLOAD-REF -> PDU-TRIGGERING -> I-PDU-REF;
 				// followed ONCE here, and handed to the layout reader
+				if child(pdu, 'PAYLOAD-REF') == none {
+					// its signals, timing and layout all live behind that reference (round 41)
+					r.report.notes << '${pdu_path}: SECURED-I-PDU without a PAYLOAD-REF; its authentic PDU cannot be found, no signals'
+					continue
+				}
 				trig, _ := r.deref(pdu, 'PAYLOAD-REF', pdu_path) or { continue }
 				iref := child(trig, 'I-PDU-REF') or {
 					r.report.notes << '${pdu_path}: PAYLOAD-REF target has no I-PDU-REF, no signals'
@@ -1020,8 +1031,11 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 				}
 				sig_pdu, sig_pdu_path = r.deref_node(iref, pdu_path) or { continue }
 				if first_pdu {
-					authentic := int(r.int_of(sig_pdu, 'LENGTH', sig_pdu_path, 0, 64) or { 0 })
-					info.secoc = r.load_secoc(pdu, pdu_path, authentic, pdu_off)
+					// no layout at all from an unreadable authentic length: computed from a zero-byte
+					// payload it advertised freshness and MAC positions at the wrong offsets (round 41)
+					if authentic := r.int_of(sig_pdu, 'LENGTH', sig_pdu_path, 0, 64) {
+						info.secoc = r.load_secoc(pdu, pdu_path, int(authentic), pdu_off)
+					}
 					if info.secoc != none {
 						// CARRIED, NOT APPLIED, like E2E below — and with less behind it: the
 						// native simulation has no SecOC stamping at all, so a simulated sender
@@ -1262,7 +1276,9 @@ fn (mut r ArxmlReader) load_timing(pdu xml.XMLNode, pdu_path string) ArxmlTiming
 	mut rep_ms := 0
 	if ev := first(tt, 'EVENT-CONTROLLED-TIMING') {
 		mode = if mode == 'cyclic' { 'mixed' } else { 'event' }
-		reps = int(int_in(ev, 'NUMBER-OF-REPETITIONS', 0, 1000) or { 0 })
+		if child(ev, 'NUMBER-OF-REPETITIONS') != none {
+			reps = int(r.int_of(ev, 'NUMBER-OF-REPETITIONS', pdu_path, 0, 1000) or { 0 })
+		}
 		if rp := first(ev, 'REPETITION-PERIOD') {
 			rep_ms = r.timing_ms(first_text(rp, 'VALUE'), pdu_path, 'REPETITION-PERIOD')
 		}
@@ -1358,6 +1374,9 @@ fn (mut r ArxmlReader) load_secoc(pdu xml.XMLNode, pdu_path string, authentic in
 fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off int) ([]Signal, []string) {
 	mut out := []Signal{}
 	mut paths := []string{} // the I-SIGNAL path of each entry of `out`, for the naming pass
+	// the PDU's own length bounds its signals: the frame check alone let a 16-bit signal of a
+	// one-byte PDU run into the PDU behind it (round 41). Unreadable: no PDU bound is applied
+	pdu_len := int(int_in(pdu, 'LENGTH', 0, 64) or { -1 })
 	for m in descendants(pdu, 'I-SIGNAL-TO-I-PDU-MAPPING') {
 		// a signal-GROUP mapping has no I-SIGNAL-REF; its members are mapped individually
 		isig, isig_path := r.deref(m, 'I-SIGNAL-REF', r.path_of(m, pdu_path)) or { continue }
@@ -1376,7 +1395,8 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 		}
 		// read as 0 for want of a number, the signal landed at the PDU's first bit over whatever
 		// sits there; negative, it indexed below the payload (rounds 35, 37, 40)
-		start := int(r.int_of(m, 'START-POSITION', isig_path, 0, 512) or { continue }) + pdu_off
+		in_pdu := int(r.int_of(m, 'START-POSITION', isig_path, 0, 512) or { continue })
+		start := in_pdu + pdu_off
 		if child(m, 'UPDATE-BIT-POSITION') != none {
 			// a receiver may treat the signal as not updated while the bit is clear, and a
 			// simulated frame leaves every unlisted bit clear — said, since nothing sets it
@@ -1386,7 +1406,12 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 				r.report.notes << '${isig_path}: ${err.msg()}; the update bit is not modelled either way'
 			}
 		}
-		packing := child_text(m, 'PACKING-BYTE-ORDER')
+		packing := child_text(m, 'PACKING-BYTE-ORDER').trim_space()
+		if packing !in ['', 'MOST-SIGNIFICANT-BYTE-FIRST', 'MOST-SIGNIFICANT-BYTE-LAST', 'OPAQUE'] {
+			// read as little-endian, a typo in a big-endian mapping changed every value (round 41)
+			r.report.notes << '${isig_path}: PACKING-BYTE-ORDER "${packing}" is not MOST-SIGNIFICANT-BYTE-FIRST, -LAST or OPAQUE; not read'
+			continue
+		}
 		order := if packing == 'MOST-SIGNIFICANT-BYTE-FIRST' {
 			ByteOrder.big_endian
 		} else {
@@ -1592,6 +1617,10 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 			desc = r.desc_of(isig, isig_path)
 		}
 
+		if pdu_len >= 0 && !signal_fits_frame(Signal{ start_bit: in_pdu, length: length, byte_order: order }, pdu_len) {
+			r.report.notes << '${isig_path}: ${length}-bit signal at PDU bit ${in_pdu} extends past the ${pdu_len}-byte PDU; not read'
+			continue
+		}
 		// RECORDED BESIDE THE SIGNAL, after every skip above, so the two lists stay aligned — named
 		// after the whole message is known (see the caller)
 		paths << isig_path
@@ -1722,15 +1751,27 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 			if rc := first(s, 'COMPU-RATIONAL-COEFFS') {
 				mut num := []f64{}
 				mut den := []f64{}
+				mut bad_coeff := ''
 				if nn := first(rc, 'COMPU-NUMERATOR') {
 					for v in descendants(nn, 'V') {
+						if !is_number(el_text(v)) {
+							bad_coeff = el_text(v).trim_space()
+						}
 						num << parse_num(el_text(v))
 					}
 				}
 				if dd := first(rc, 'COMPU-DENOMINATOR') {
 					for v in descendants(dd, 'V') {
+						if !is_number(el_text(v)) {
+							bad_coeff = el_text(v).trim_space()
+						}
 						den << parse_num(el_text(v))
 					}
+				}
+				if bad_coeff != '' {
+					// read as 0, a malformed coefficient invented an offset or a factor (round 41)
+					r.report.notes << '${cm_path}: rational coefficient "${bad_coeff}" is not a number; the scale is not read'
+					continue
 				}
 				if num.len == 0 {
 					// structurally valid, numerically empty: said rather than indexed (round 32)
@@ -2031,7 +2072,8 @@ fn int_text(tag string, t string, lo i64, hi i64) !i64 {
 		return error('${tag} "${s}" is not an integer')
 	}
 	neg := s.starts_with('-')
-	mag := key_of(s.trim_left('+-')) or { return error('${tag} ${s} is outside ${lo}..${hi}') }
+	body := one_sign(s) or { '' }
+	mag := key_of(body) or { return error('${tag} ${s} is outside ${lo}..${hi}') }
 	if mag > u64(9223372036854775807) {
 		return error('${tag} ${s} is outside ${lo}..${hi}')
 	}
@@ -2040,6 +2082,16 @@ fn int_text(tag string, t string, lo i64, hi i64) !i64 {
 		return error('${tag} ${s} is outside ${lo}..${hi}')
 	}
 	return v
+}
+
+// one_sign strips at most ONE leading sign and returns what follows — none when a second sign
+// follows the first: `+-256` passed as an integer and was read as 256 (round 41).
+fn one_sign(t string) ?string {
+	body := if t.starts_with('+') || t.starts_with('-') { t[1..] } else { t }
+	if body.starts_with('+') || body.starts_with('-') {
+		return none
+	}
+	return body
 }
 
 // int_in is int_text over a child element, refusing a missing one too.
@@ -2071,7 +2123,7 @@ fn is_number(t string) bool {
 // one, or a decimal/exponent form integral_decimal accepts. `1.1` and `1.9` are not, and must
 // not be compared as the raw keys they truncate to.
 fn integral_literal(s string) bool {
-	t := s.trim_space().trim_left('+-')
+	t := one_sign(s.trim_space()) or { return false }
 	if t.starts_with('0x') || t.starts_with('0X') {
 		// at least one digit, and nothing but digits: `0xZZ` passed as hex and parsed as 0 (round 38)
 		h := t[2..]

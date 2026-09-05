@@ -543,6 +543,17 @@ fn secoc_xml(fresh_tx int) string {
 	return '<AR-PACKAGE><SHORT-NAME>Frames</SHORT-NAME><ELEMENTS><CAN-FRAME><SHORT-NAME>F</SHORT-NAME>\n<FRAME-LENGTH>8</FRAME-LENGTH><PDU-TO-FRAME-MAPPINGS><PDU-TO-FRAME-MAPPING><SHORT-NAME>M</SHORT-NAME>\n<PDU-REF DEST="SECURED-I-PDU">/PDUs/Sec</PDU-REF><START-POSITION>0</START-POSITION>\n</PDU-TO-FRAME-MAPPING></PDU-TO-FRAME-MAPPINGS></CAN-FRAME></ELEMENTS></AR-PACKAGE>\n<AR-PACKAGE><SHORT-NAME>PDUs</SHORT-NAME><ELEMENTS>\n<SECURED-I-PDU><SHORT-NAME>Sec</SHORT-NAME><LENGTH>8</LENGTH><PAYLOAD-REF DEST="PDU-TRIGGERING">/PDUs/T</PAYLOAD-REF>\n<SECURE-COMMUNICATION-PROPS><AUTH-INFO-TX-LENGTH>28</AUTH-INFO-TX-LENGTH><DATA-ID>9</DATA-ID>\n<FRESHNESS-VALUE-LENGTH>64</FRESHNESS-VALUE-LENGTH><FRESHNESS-VALUE-TX-LENGTH>${fresh_tx}</FRESHNESS-VALUE-TX-LENGTH>\n</SECURE-COMMUNICATION-PROPS></SECURED-I-PDU>\n<PDU-TRIGGERING><SHORT-NAME>T</SHORT-NAME><I-PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/P</I-PDU-REF></PDU-TRIGGERING>\n<I-SIGNAL-I-PDU><SHORT-NAME>P</SHORT-NAME><LENGTH>4</LENGTH></I-SIGNAL-I-PDU>\n</ELEMENTS></AR-PACKAGE>'
 }
 
+// a SECURED-I-PDU with no PAYLOAD-REF is said: its signals, timing and layout all live behind
+// that reference, and the frame was published as an empty message with no word why (round 41)
+fn test_secured_pdu_without_payload_ref_is_said() {
+	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + secoc_xml(8).replace('<PAYLOAD-REF DEST="PDU-TRIGGERING">/PDUs/T</PAYLOAD-REF>', '') + arxml_tail) or {
+		panic(err)
+	}
+	c := a.cluster('') or { panic(err) }
+	assert c.db.messages[0].signals.len == 0
+	assert a.report.notes.any(it.contains('/PDUs/Sec: SECURED-I-PDU without a PAYLOAD-REF; its authentic PDU cannot be found, no signals'))
+}
+
 fn test_secoc_with_a_freshness_that_is_not_byte_aligned() {
 	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + secoc_xml(4) + arxml_tail) or {
 		panic(err)
@@ -751,7 +762,7 @@ fn test_compu_method_shared_by_signals_of_two_widths() {
 
 fn test_enum_keys_above_2_pow_53_and_opaque_packing() {
 	mut big := offset_pdu_xml.replace('<SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH></I-SIGNAL>', '<SHORT-NAME>V</SHORT-NAME><LENGTH>64</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF></I-SIGNAL>') + '<AR-PACKAGE><SHORT-NAME>Sys</SHORT-NAME><ELEMENTS><SYSTEM-SIGNAL><SHORT-NAME>S</SHORT-NAME><PHYSICAL-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/T</COMPU-METHOD-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></PHYSICAL-PROPS></SYSTEM-SIGNAL></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>CM</SHORT-NAME><ELEMENTS><COMPU-METHOD><SHORT-NAME>T</SHORT-NAME><CATEGORY>TEXTTABLE</CATEGORY><COMPU-INTERNAL-TO-PHYS><COMPU-SCALES><COMPU-SCALE><LOWER-LIMIT>9007199254740993</LOWER-LIMIT><UPPER-LIMIT>9007199254740993</UPPER-LIMIT><COMPU-CONST><VT>Odd</VT></COMPU-CONST></COMPU-SCALE></COMPU-SCALES></COMPU-INTERNAL-TO-PHYS></COMPU-METHOD></ELEMENTS></AR-PACKAGE>'
-	big = big.replace('<FRAME-LENGTH>8</FRAME-LENGTH>', '<FRAME-LENGTH>16</FRAME-LENGTH>') // a 64-bit signal needs the 16-byte CAN-FD payload fd_cluster declares
+	big = big.replace('<FRAME-LENGTH>8</FRAME-LENGTH>', '<FRAME-LENGTH>16</FRAME-LENGTH>').replace('<SHORT-NAME>P</SHORT-NAME><LENGTH>4</LENGTH>', '<SHORT-NAME>P</SHORT-NAME><LENGTH>16</LENGTH>') // a 64-bit signal needs the 16-byte CAN-FD payload fd_cluster declares
 	a := parse_arxml(arxml_head + fd_cluster() + big + arxml_tail) or {
 		panic(err)
 	}
@@ -1045,6 +1056,7 @@ fn test_round_15_shapes_are_said_or_read_right() {
 	assert integral_literal('0x1E') && integral_literal('-7') && integral_literal('2.0') && integral_literal('1E2')
 	assert !integral_literal('1.1') && !integral_literal('') && !integral_literal('0x')
 	assert !integral_literal('0xZZ') && !integral_literal('0x1G') && integral_literal('0xfF') // round 38
+	assert !integral_literal('+-256') && !integral_literal('--1') && integral_literal('+256') // round 41
 	// endpoints declared through I-PDU ports alone (no frame ports) still give the frame a
 	// sender and a receiver
 	ft_pdus := '<IDENTIFIER>256</IDENTIFIER><PDU-TRIGGERINGS><PDU-TRIGGERING-REF-CONDITIONAL><PDU-TRIGGERING-REF DEST="PDU-TRIGGERING">/Bus/Bus/Ch/PT</PDU-TRIGGERING-REF></PDU-TRIGGERING-REF-CONDITIONAL></PDU-TRIGGERINGS></CAN-FRAME-TRIGGERING>'
@@ -1120,7 +1132,7 @@ fn test_round_15_shapes_are_said_or_read_right() {
 	// -1 and 2^64-1 are one u64 pattern; a method shared by a signed and an unsigned 64-bit signal
 	// keeps them apart, and each signal takes the one its domain holds (round 21)
 	mut both := offset_pdu_xml.replace('<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>8</LENGTH></I-SIGNAL>', '<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>64</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF></I-SIGNAL>').replace('<I-SIGNAL><SHORT-NAME>Ctr</SHORT-NAME><LENGTH>4</LENGTH></I-SIGNAL>', '<I-SIGNAL><SHORT-NAME>Ctr</SHORT-NAME><LENGTH>64</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF><NETWORK-REPRESENTATION-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><BASE-TYPE-REF DEST="SW-BASE-TYPE">/BT/s8</BASE-TYPE-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></NETWORK-REPRESENTATION-PROPS></I-SIGNAL>') + '<AR-PACKAGE><SHORT-NAME>Sys</SHORT-NAME><ELEMENTS><SYSTEM-SIGNAL><SHORT-NAME>S</SHORT-NAME><PHYSICAL-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/B</COMPU-METHOD-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></PHYSICAL-PROPS></SYSTEM-SIGNAL></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>BT</SHORT-NAME><ELEMENTS><SW-BASE-TYPE><SHORT-NAME>s8</SHORT-NAME><BASE-TYPE-ENCODING>2C</BASE-TYPE-ENCODING></SW-BASE-TYPE></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>CM</SHORT-NAME><ELEMENTS><COMPU-METHOD><SHORT-NAME>B</SHORT-NAME><CATEGORY>TEXTTABLE</CATEGORY><COMPU-INTERNAL-TO-PHYS><COMPU-SCALES><COMPU-SCALE><LOWER-LIMIT>-1</LOWER-LIMIT><UPPER-LIMIT>-1</UPPER-LIMIT><COMPU-CONST><VT>Neg</VT></COMPU-CONST></COMPU-SCALE><COMPU-SCALE><LOWER-LIMIT>18446744073709551615</LOWER-LIMIT><UPPER-LIMIT>18446744073709551615</UPPER-LIMIT><COMPU-CONST><VT>Max</VT></COMPU-CONST></COMPU-SCALE></COMPU-SCALES></COMPU-INTERNAL-TO-PHYS></COMPU-METHOD></ELEMENTS></AR-PACKAGE>'
-	both = both.replace('<FRAME-LENGTH>8</FRAME-LENGTH>', '<FRAME-LENGTH>16</FRAME-LENGTH>') // a 64-bit signal needs the 16-byte CAN-FD payload fd_cluster declares
+	both = both.replace('<FRAME-LENGTH>8</FRAME-LENGTH>', '<FRAME-LENGTH>16</FRAME-LENGTH>').replace('<SHORT-NAME>P</SHORT-NAME><LENGTH>4</LENGTH>', '<SHORT-NAME>P</SHORT-NAME><LENGTH>16</LENGTH>') // a 64-bit signal needs the 16-byte CAN-FD payload fd_cluster declares
 	bo := parse_arxml(arxml_head + fd_cluster() + both + arxml_tail) or {
 		panic(err)
 	}
@@ -1155,6 +1167,13 @@ fn test_round_15_shapes_are_said_or_read_right() {
 	}
 	assert sig((no_num.cluster('') or { panic(err) }).db.messages[0], 'V').factor == 1.0
 	assert no_num.report.notes.any(it.contains('/CM/C: rational coefficients without a numerator'))
+	// a coefficient that is not a number: the scale is not read, no offset is invented (round 41)
+	bad_c := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + zero_slope.replace('<COMPU-NUMERATOR><V>5</V><V>0</V></COMPU-NUMERATOR>', '<COMPU-NUMERATOR><V>invalid</V><V>2</V></COMPU-NUMERATOR>') + arxml_tail) or {
+		panic(err)
+	}
+	bcv := sig((bad_c.cluster('') or { panic(err) }).db.messages[0], 'V')
+	assert bcv.factor == 1.0 && bcv.offset == 0.0
+	assert bad_c.report.notes.any(it.contains('/CM/C: rational coefficient "invalid" is not a number; the scale is not read'))
 	// a zero denominator: said, read as identity, and not counted as the linear scale (round 35)
 	zero_den := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + zero_slope.replace('<COMPU-NUMERATOR><V>5</V><V>0</V></COMPU-NUMERATOR><COMPU-DENOMINATOR><V>1</V></COMPU-DENOMINATOR>', '<COMPU-NUMERATOR><V>5</V><V>2</V></COMPU-NUMERATOR><COMPU-DENOMINATOR><V>0</V></COMPU-DENOMINATOR>') + arxml_tail) or {
 		panic(err)
@@ -1244,6 +1263,11 @@ fn test_round_19_shapes() {
 	assert (nan_t.cluster('') or { panic(err) }).db.messages[0].cycle_ms == 0
 	assert nan_t.report.notes.any(it.contains('/PDUs/P: TIME-PERIOD "fast" is not a number; read as none'))
 	assert nan_t.report.notes.any(it.contains('/PDUs/P: CYCLIC-TIMING with no usable TIME-PERIOD; the simulation sends nothing'))
+	// a NUMBER-OF-REPETITIONS that cannot be read is said, not silently zero (round 41)
+	bad_rep := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace(pdu_head, pdu_head + '<I-PDU-TIMING-SPECIFICATIONS><I-PDU-TIMING><TRANSMISSION-MODE-DECLARATION><TRANSMISSION-MODE-TRUE-TIMING><EVENT-CONTROLLED-TIMING><NUMBER-OF-REPETITIONS>many</NUMBER-OF-REPETITIONS></EVENT-CONTROLLED-TIMING></TRANSMISSION-MODE-TRUE-TIMING></TRANSMISSION-MODE-DECLARATION></I-PDU-TIMING></I-PDU-TIMING-SPECIFICATIONS>') + arxml_tail) or {
+		panic(err)
+	}
+	assert bad_rep.report.notes.any(it.contains('/PDUs/P: NUMBER-OF-REPETITIONS "many" is not an integer; not read'))
 	// a FALSE-mode timing beside the TRUE one: the true cadence is read and the choice said (round 29)
 	false_t := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace(pdu_head, pdu_head + '<I-PDU-TIMING-SPECIFICATIONS>' + timing('0.1').replace('</TRANSMISSION-MODE-TRUE-TIMING>', '</TRANSMISSION-MODE-TRUE-TIMING><TRANSMISSION-MODE-FALSE-TIMING><CYCLIC-TIMING><TIME-PERIOD><VALUE>1.0</VALUE></TIME-PERIOD></CYCLIC-TIMING></TRANSMISSION-MODE-FALSE-TIMING>') + '</I-PDU-TIMING-SPECIFICATIONS>') + arxml_tail) or {
 		panic(err)
@@ -1385,7 +1409,7 @@ fn test_frame_lengths_are_bounded() {
 	assert ovp.report.notes.any(it.contains('PDU P') && it.contains('START-POSITION 0x10000000000000000 is outside 0..512'))
 	// an IDENTIFIER that is missing, negative or too wide for its addressing mode is not read
 	for bad in ['<IDENTIFIER>2048</IDENTIFIER>', '<IDENTIFIER>-1</IDENTIFIER>', '',
-		'<IDENTIFIER>invalid</IDENTIFIER>', '<IDENTIFIER>1.5</IDENTIFIER>'] {
+		'<IDENTIFIER>invalid</IDENTIFIER>', '<IDENTIFIER>1.5</IDENTIFIER>', '<IDENTIFIER>+-256</IDENTIFIER>'] {
 		b := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F').replace('<IDENTIFIER>256</IDENTIFIER>', bad) + offset_pdu_xml + arxml_tail) or {
 			panic(err)
 		}
@@ -1416,11 +1440,23 @@ fn test_frame_lengths_are_bounded() {
 		assert bp.report.notes.any(it.contains('PDU P') && it.contains('START-POSITION') && it.contains('not read')), bp.report.notes.str()
 	}
 	// a signal that extends past the frame payload is not read: 16 bits at frame bit 56 of 8 bytes
-	past := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<START-POSITION>0</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING>', '<START-POSITION>48</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING>') + arxml_tail) or {
+	past := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<START-POSITION>0</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING>', '<START-POSITION>48</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING>').replace('<SHORT-NAME>P</SHORT-NAME><LENGTH>4</LENGTH>', '<SHORT-NAME>P</SHORT-NAME><LENGTH>8</LENGTH>') + arxml_tail) or {
 		panic(err)
 	}
 	assert !(past.cluster('') or { panic(err) }).db.messages[0].signals.any(it.name == 'V')
 	assert past.report.notes.any(it.contains('/Sig/V: 16-bit signal at frame bit 56 extends past the 8-byte frame F; not read'))
+	// …and past its own PDU: a 16-bit signal in a 1-byte PDU, with frame room to spare (round 41)
+	pdu1 := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<I-SIGNAL-I-PDU><SHORT-NAME>P</SHORT-NAME><LENGTH>4</LENGTH>', '<I-SIGNAL-I-PDU><SHORT-NAME>P</SHORT-NAME><LENGTH>1</LENGTH>') + arxml_tail) or {
+		panic(err)
+	}
+	assert !(pdu1.cluster('') or { panic(err) }).db.messages[0].signals.any(it.name == 'V')
+	assert pdu1.report.notes.any(it.contains('/Sig/V: 16-bit signal at PDU bit 0 extends past the 1-byte PDU; not read'))
+	// a PACKING-BYTE-ORDER that is none of the three is not read as little-endian
+	pbo := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace_once('<PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER>', '<PACKING-BYTE-ORDER>MIDDLE-ENDIAN</PACKING-BYTE-ORDER>') + arxml_tail) or {
+		panic(err)
+	}
+	assert !(pbo.cluster('') or { panic(err) }).db.messages[0].signals.any(it.name == 'V')
+	assert pbo.report.notes.any(it.contains('/Sig/V: PACKING-BYTE-ORDER "MIDDLE-ENDIAN" is not MOST-SIGNIFICANT-BYTE-FIRST, -LAST or OPAQUE; not read'))
 	// the fit rule, both byte orders
 	assert signal_fits_frame(Signal{ start_bit: 48, length: 16 }, 8)
 	assert !signal_fits_frame(Signal{ start_bit: 56, length: 16 }, 8)
