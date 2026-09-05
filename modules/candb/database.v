@@ -14,6 +14,11 @@ import os
 // split_database_ref separates `file.arxml#Cluster` into the file and the cluster name. The
 // `#` is a fragment ONLY after an `.arxml` extension — a DBC named `a#b.dbc` keeps its hash.
 pub fn split_database_ref(ref string) (string, string) {
+	if ref.to_lower().ends_with('.dbc') {
+		// the WHOLE reference names a DBC: `archive.arxml#body.dbc` is one DBC file with a hash
+		// in its name, not an ARXML with a `body.dbc` cluster (codex on #273 round 26)
+		return ref, ''
+	}
 	i := ref.last_index('#') or { return ref, '' }
 	file := ref[..i]
 	if !is_arxml_path(file) {

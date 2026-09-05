@@ -592,6 +592,8 @@ fn test_alternating_data_ids_are_named_not_collapsed() {
 	assert !e.single_data_id()
 	assert c.e2e_signals(m) == none
 	assert !c.export_dbc(ArxmlProvenance{}, a.report).contains('E2EDataId')
+	// and the load report says so, since a DBC-only consumer never sees the fragment (round 26)
+	assert a.report.notes.any(it.contains('F: the DBC export carries NO E2E attributes for it — its data-id mode ALTERNATING-8-BIT is not expressible there')), a.report.notes.str()
 	assert c.frame_toml('').contains('# E2E PROFILE_01 with ALTERNATING-8-BIT data ids (0x7, 0x9): this data-id mode is not expressible here')
 	// LOWER-12-BIT feeds part of the id into the CRC: one scalar cannot say that either
 	l := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>16</CRC-OFFSET><DATA-ID-MODE>LOWER-12-BIT</DATA-ID-MODE>') + arxml_tail) or { panic(err) }
@@ -1391,6 +1393,11 @@ fn test_split_database_ref() {
 	f2, c2 := split_database_ref('x/net.arxml')
 	assert f2 == 'x/net.arxml'
 	assert c2 == ''
+	// a DBC keeps its hash whatever precedes it: this is one DBC file, not an ARXML fragment
+	fd, cd := split_database_ref('archive.arxml#body.dbc')
+	assert fd == 'archive.arxml#body.dbc'
+	assert cd == ''
+	assert !is_arxml_ref('archive.arxml#body.dbc')
 	// a hash in a DBC name is a character, not a fragment
 	f3, c3 := split_database_ref('odd#name.dbc')
 	assert f3 == 'odd#name.dbc'

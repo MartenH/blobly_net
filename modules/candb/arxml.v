@@ -833,6 +833,17 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 					// a simulated transmitter of this frame sends an unstamped counter and CRC
 					// that the declared receiver rejects. Said, once per frame (round 17)
 					r.report.notes << "${fname}: declares an E2E ${e.profile} contract; carried to the DBC export and the fragment, but NOT applied by the native simulation, which protects only what the project's protect: entries name"
+					if !e.single_data_id() || e2e_profile_primitive(e.profile) == '' {
+						// what the DBC attributes cannot say: a data-id mode other than
+						// ALL-16-BIT, or a checksum no primitive computes. The fragment names the
+						// mode; the DBC would otherwise lose the contract without a word (round 26)
+						why := if !e.single_data_id() {
+							'its data-id mode ${e.data_id_mode}'
+						} else {
+							'its profile'
+						}
+						r.report.notes << '${fname}: the DBC export carries NO E2E attributes for it — ${why} is not expressible there; the fragment names it'
+					}
 					info.e2e = ArxmlE2e{
 						...e
 						pdu_offset: pdu_off

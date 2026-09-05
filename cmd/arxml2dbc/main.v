@@ -130,6 +130,14 @@ fn main() {
 		eprintln('arxml2dbc: --dbc and --toml name the same file (${dbc_out}); only one would survive')
 		exit(2)
 	}
+	// AND THE ECU, before the first write: an empty fragment written with a success line is a
+	// typo turned into an ECU that sends and receives nothing — and refused after the DBC was
+	// already written, a typo left a regenerated DBC beside a stale TOML for the next build to
+	// consume as a pair (round 26)
+	if toml_out != '' && ecu != '' && ecu !in c.ecus() {
+		eprintln('arxml2dbc: no ECU "${ecu}" in cluster ${c.bus} (have ${c.ecus().join(', ')})')
+		exit(1)
+	}
 	// stdout carries ONE file: the DBC by default, the fragment when `--toml -` asks for it
 	toml_to_stdout := toml_out == '-'
 	if dbc_out == '' || dbc_out == '-' {
@@ -144,12 +152,6 @@ fn main() {
 		eprintln('arxml2dbc: wrote ${dbc_out} (${c.db.messages.len} messages)')
 	}
 	if toml_out != '' {
-		if ecu != '' && ecu !in c.ecus() {
-			// an empty fragment written with a success line is a typo turned into an ECU
-			// that sends and receives nothing
-			eprintln('arxml2dbc: no ECU "${ecu}" in cluster ${c.bus} (have ${c.ecus().join(', ')})')
-			exit(1)
-		}
 		frag := c.frame_toml(ecu)
 		if toml_to_stdout {
 			print(frag)
@@ -177,6 +179,17 @@ fn usage() {
 
 // dump_cluster prints the database in the line-per-fact form sut/arxml_oracle.py also
 // produces from cantools, so the two can be diffed by `diff` alone.
+// signed_key is the integer a width-sized two's-complement pattern means.
+fn signed_key(k u64, length int) i64 {
+	if length <= 0 || length >= 64 {
+		return i64(k)
+	}
+	if k & (u64(1) << (length - 1)) != 0 {
+		return i64(k) - (i64(1) << length)
+	}
+	return i64(k)
+}
+
 fn dump_cluster(c candb.ArxmlCluster) string {
 	mut b := []string{}
 	b << 'cluster ${c.bus} baudrate=${c.baudrate} fd_baudrate=${c.fd_baudrate}'
@@ -198,11 +211,23 @@ fn dump_cluster(c candb.ArxmlCluster) string {
 		})
 		for s in sigs {
 			order := if s.byte_order == .little_endian { 'little' } else { 'big' }
-			mut keys := s.values.keys()
-			keys.sort()
+			// a signed signal's negative choices are stored as width-sized two's-complement
+			// patterns; shown as the integers they mean, sorted as such, which is what the
+			// cantools oracle prints — `255=Invalid` for an 8-bit -1 was a false mismatch (round 26)
 			mut ch := []string{}
-			for k in keys {
-				ch << '${k}=${s.values[k]}'
+			if s.is_signed {
+				mut keys := s.values.keys().map(signed_key(it, s.length))
+				keys.sort()
+				mask := if s.length >= 64 { ~u64(0) } else { (u64(1) << s.length) - 1 }
+				for k in keys {
+					ch << '${k}=${s.values[u64(k) & mask]}'
+				}
+			} else {
+				mut keys := s.values.keys()
+				keys.sort()
+				for k in keys {
+					ch << '${k}=${s.values[k]}'
+				}
 			}
 			b << 'signal ${m.name}.${s.name} start=${s.start_bit} len=${s.length} order=${order} signed=${s.is_signed} factor=${candb.fmt_num(s.factor)} offset=${candb.fmt_num(s.offset)} unit=${s.unit} choices=${ch.join(';')}'
 		}
