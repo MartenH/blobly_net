@@ -1055,6 +1055,31 @@ fn test_round_15_shapes_are_said_or_read_right() {
 		u64(255): 'Neg'
 	}, skv.values.str()
 	assert sk.report.notes.any(it.contains('/Sig/V: enum key 200 ("TooWide") of /CM/K does not fit a 8-bit signed signal; dropped'))
+	// -1 and 2^64-1 are one u64 pattern; a method shared by a signed and an unsigned 64-bit signal
+	// keeps them apart, and each signal takes the one its domain holds (round 21)
+	both := offset_pdu_xml.replace('<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>8</LENGTH></I-SIGNAL>', '<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>64</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF></I-SIGNAL>').replace('<I-SIGNAL><SHORT-NAME>Ctr</SHORT-NAME><LENGTH>4</LENGTH></I-SIGNAL>', '<I-SIGNAL><SHORT-NAME>Ctr</SHORT-NAME><LENGTH>64</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF><NETWORK-REPRESENTATION-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><BASE-TYPE-REF DEST="SW-BASE-TYPE">/BT/s8</BASE-TYPE-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></NETWORK-REPRESENTATION-PROPS></I-SIGNAL>') + '<AR-PACKAGE><SHORT-NAME>Sys</SHORT-NAME><ELEMENTS><SYSTEM-SIGNAL><SHORT-NAME>S</SHORT-NAME><PHYSICAL-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/B</COMPU-METHOD-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></PHYSICAL-PROPS></SYSTEM-SIGNAL></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>BT</SHORT-NAME><ELEMENTS><SW-BASE-TYPE><SHORT-NAME>s8</SHORT-NAME><BASE-TYPE-ENCODING>2C</BASE-TYPE-ENCODING></SW-BASE-TYPE></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>CM</SHORT-NAME><ELEMENTS><COMPU-METHOD><SHORT-NAME>B</SHORT-NAME><CATEGORY>TEXTTABLE</CATEGORY><COMPU-INTERNAL-TO-PHYS><COMPU-SCALES><COMPU-SCALE><LOWER-LIMIT>-1</LOWER-LIMIT><UPPER-LIMIT>-1</UPPER-LIMIT><COMPU-CONST><VT>Neg</VT></COMPU-CONST></COMPU-SCALE><COMPU-SCALE><LOWER-LIMIT>18446744073709551615</LOWER-LIMIT><UPPER-LIMIT>18446744073709551615</UPPER-LIMIT><COMPU-CONST><VT>Max</VT></COMPU-CONST></COMPU-SCALE></COMPU-SCALES></COMPU-INTERNAL-TO-PHYS></COMPU-METHOD></ELEMENTS></AR-PACKAGE>'
+	bo := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + both + arxml_tail) or {
+		panic(err)
+	}
+	bm := (bo.cluster('') or { panic(err) }).db.messages[0]
+	assert sig(bm, 'Crc').values == {
+		u64(18446744073709551615): 'Max'
+	}, sig(bm, 'Crc').values.str()
+	assert sig(bm, 'Ctr').values == {
+		u64(18446744073709551615): 'Neg'
+	}, sig(bm, 'Ctr').values.str()
+	assert bo.report.notes.any(it.contains('/Sig/Crc: enum key -1 ("Neg") of /CM/B does not fit a 64-bit unsigned'))
+	assert bo.report.notes.any(it.contains('/Sig/Ctr: enum key 18446744073709551615 ("Max") of /CM/B does not fit a 64-bit signed'))
+	// signed hex and a zero linear term
+	assert parse_num('-0x1E') == -30.0
+	assert parse_num('+0x10') == 16.0
+	zero_slope := offset_pdu_xml.replace(v_sig, '<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF></I-SIGNAL>') + '<AR-PACKAGE><SHORT-NAME>Sys</SHORT-NAME><ELEMENTS><SYSTEM-SIGNAL><SHORT-NAME>S</SHORT-NAME><PHYSICAL-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/C</COMPU-METHOD-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></PHYSICAL-PROPS></SYSTEM-SIGNAL></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>CM</SHORT-NAME><ELEMENTS><COMPU-METHOD><SHORT-NAME>C</SHORT-NAME><CATEGORY>LINEAR</CATEGORY><COMPU-INTERNAL-TO-PHYS><COMPU-SCALES><COMPU-SCALE><COMPU-RATIONAL-COEFFS><COMPU-NUMERATOR><V>5</V><V>0</V></COMPU-NUMERATOR><COMPU-DENOMINATOR><V>1</V></COMPU-DENOMINATOR></COMPU-RATIONAL-COEFFS></COMPU-SCALE></COMPU-SCALES></COMPU-INTERNAL-TO-PHYS></COMPU-METHOD></ELEMENTS></AR-PACKAGE>'
+	zs := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + zero_slope + arxml_tail) or {
+		panic(err)
+	}
+	zv := sig((zs.cluster('') or { panic(err) }).db.messages[0], 'V')
+	assert zv.factor == 1.0 && zv.offset == 0.0
+	assert zs.report.notes.any(it.contains('/CM/C: a constant conversion (every raw value is 5) is not modelled'))
 }
 
 fn test_round_19_shapes() {
@@ -1203,7 +1228,9 @@ fn test_export_dbc_carries_provenance_and_attributes() {
 	}, a.report)
 	lines := text.split('\n')
 	// the network comment says where the file came from and what the reader dropped
-	assert lines.any(it == 'CM_ "arxml2dbc: source=example.arxml sha256=abc123 reader=0.2.0 cluster=Body dropped=1 unresolved=0";')
+	// notes=5: the same five the golden list in test_cluster_and_nodes pins — a partial read is
+	// stamped as one, and travels with the DBC
+	assert lines.any(it == 'CM_ "arxml2dbc: source=example.arxml sha256=abc123 reader=0.2.0 cluster=Body dropped=1 unresolved=0 notes=5";'), lines.filter(it.starts_with('CM_ "arxml2dbc')).str()
 	// #271's attributes, defined once, valued on the protected message only
 	assert lines.any(it == 'BA_DEF_ BO_ "E2ECounterSignal" STRING;')
 	assert lines.any(it == 'BA_DEF_ BO_ "E2EDataId" INT 0 65535;')
@@ -1252,6 +1279,7 @@ fn test_export_dbc_without_protection_has_no_attribute_block() {
 	assert !text.contains('E2E')
 	assert text.contains('unresolved=1')
 	assert text.contains('dropped=0')
+	assert text.contains('notes=')
 }
 
 fn test_frame_toml_per_ecu() {

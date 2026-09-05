@@ -1162,18 +1162,19 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 				// signed width below its top bit (200 in an 8-bit signed signal is 0xC8, which
 				// decodes as -56) and an unsigned one up to its mask (rounds 17–18)
 				top := if length >= 64 { u64(1) << 63 } else { u64(1) << (length - 1) }
-				neg_lit := k in scale.negative
-				fits := if neg_lit {
-					is_signed && (k | mask) == ~u64(0) && (k & top) != 0
-				} else if is_signed {
-					k < top
-				} else {
-					k <= mask
-				}
+				fits := if is_signed { k < top } else { k <= mask }
 				if !fits {
-					shown := if neg_lit { i64(k).str() } else { k.str() }
 					sgn := if is_signed { 'signed' } else { 'unsigned' }
-					r.report.notes << '${isig_path}: enum key ${shown} ("${v}") of ${cm_path} does not fit a ${length}-bit ${sgn} signal; dropped'
+					r.report.notes << '${isig_path}: enum key ${k} ("${v}") of ${cm_path} does not fit a ${length}-bit ${sgn} signal; dropped'
+					continue
+				}
+				values[k & mask] = v
+			}
+			for k, v in scale.neg_values {
+				top := if length >= 64 { u64(1) << 63 } else { u64(1) << (length - 1) }
+				if !(is_signed && (k | mask) == ~u64(0) && (k & top) != 0) {
+					sgn := if is_signed { 'signed' } else { 'unsigned' }
+					r.report.notes << '${isig_path}: enum key ${i64(k)} ("${v}") of ${cm_path} does not fit a ${length}-bit ${sgn} signal; dropped'
 					continue
 				}
 				values[k & mask] = v
@@ -1265,10 +1266,12 @@ fn (mut r ArxmlReader) note_variants(n xml.XMLNode, at string) {
 }
 
 struct ArxmlScale {
-	factor     f64 = 1.0
-	offset     f64
-	values     map[u64]string // UNMASKED raw values: one method serves signals of several widths
-	negative   map[u64]bool // the keys spelled with a minus sign: -1 and 2^64-1 are one pattern
+	factor f64 = 1.0
+	offset f64
+	values map[u64]string // UNMASKED raw values: one method serves signals of several widths
+	// the keys spelled with a minus sign, KEPT APART: -1 and 2^64-1 are one u64 pattern, and one
+	// method shared by a signed and an unsigned 64-bit signal may name both (round 21)
+	neg_values map[u64]string
 	has_domain bool // the linear scale declared LOWER-LIMIT/UPPER-LIMIT (raw)
 	lower      f64
 	upper      f64
@@ -1297,7 +1300,7 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 	mut factor := 1.0
 	mut offset := 0.0
 	mut values := map[u64]string{}
-	mut negative := map[u64]bool{}
+	mut neg_values := map[u64]string{}
 	mut linear_seen := false
 	mut has_domain := false
 	mut lower := 0.0
@@ -1338,9 +1341,10 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 				}
 				k_lo := klo or { 0 }
 				if singleton && k_lo == (khi or { 0 }) {
-					values[k_lo] = label
 					if lo.trim_space().starts_with('-') && k_lo != 0 {
-						negative[k_lo] = true // `-0` is zero: a sign with no sign bit
+						neg_values[k_lo] = label // `-0` is zero: a sign with no sign bit
+					} else {
+						values[k_lo] = label
 					}
 				} else {
 					r.report.notes << '${cm_path}: maps the range ${lo}..${hi} to "${label}", which a value table (one exact raw value per label) cannot express; dropped'
@@ -1382,11 +1386,16 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 					// a one-term numerator is a CONSTANT: every raw value maps to it, which no
 					// factor/offset pair can say (factor 0 divides by zero on encode). Not
 					// modelled: said, and the raw value is what decodes
-					if num.len == 1 {
+					// … in either spelling: a one-term numerator, or a linear term of ZERO, which
+					// is the same constant and would otherwise become factor 0 and a division
+					// by zero on encode (round 21)
+					if num.len == 1 || num[1] == 0 {
 						r.report.notes << '${cm_path}: a constant conversion (every raw value is ${fmt_num(num[0])}) is not modelled; read as factor 1 offset 0'
 						offset = 0.0
+						factor = 1.0
+					} else {
+						factor = num[1] / d
 					}
-					factor = if num.len > 1 { num[1] / d } else { 1.0 }
 				}
 				if lo != '' && hi != '' {
 					has_domain = true
@@ -1411,7 +1420,7 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 		factor: factor
 		offset: offset
 		values: values
-		negative: negative
+		neg_values: neg_values
 		has_domain: has_domain
 		lower: lower
 		upper: upper
@@ -1699,7 +1708,12 @@ fn parse_i64(s string) i64 {
 }
 
 fn parse_num(s string) f64 {
-	t := s.trim_space()
+	t := s.trim_space().trim_left('+')
+	if t.starts_with('-') {
+		// the sign is one rule here too: `-0x1E` tested as hex only without it read as 0
+		// through f64 (codex on #273 round 21)
+		return -parse_num(t[1..])
+	}
 	if t.starts_with('0x') || t.starts_with('0X') {
 		return f64(t[2..].parse_uint(16, 64) or { 0 })
 	}
