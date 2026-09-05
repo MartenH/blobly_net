@@ -93,6 +93,9 @@ pub fn e2e_export_refusal(m Message, e ArxmlE2e) string {
 	if e2e_profile_primitive(e.profile) == '' {
 		return 'its profile ${e.profile} has no checksum this app computes'
 	}
+	if e.data_length > 0 && (e.crc_offset + 8 > e.data_length || e.counter_offset + 4 > e.data_length) {
+		return 'its CRC or counter field lies outside the protected DATA-LENGTH of ${e.data_length} bits'
+	}
 	ci := m.signal_at(e.crc_bit())
 	ki := m.signal_at(e.counter_bit())
 	if ci < 0 || ki < 0 || ci == ki {

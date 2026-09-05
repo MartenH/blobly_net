@@ -552,6 +552,14 @@ fn test_secured_pdu_without_payload_ref_is_said() {
 	c := a.cluster('') or { panic(err) }
 	assert c.db.messages[0].signals.len == 0
 	assert a.report.notes.any(it.contains('/PDUs/Sec: SECURED-I-PDU without a PAYLOAD-REF; its authentic PDU cannot be found, no signals'))
+	// a layout that does not fit the secured PDU gets no byte positions (round 42): 4 authentic
+	// bytes + 8-bit freshness + 28-bit MAC is 68 bits in an 8-byte PDU
+	over := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + secoc_xml(8) + arxml_tail) or {
+		panic(err)
+	}
+	assert over.report.notes.any(it.contains('/PDUs/Sec: 4 authentic bytes + 8-bit freshness + 28-bit MAC exceed the 8-byte secured PDU; no byte layout is given')), over.report.notes.str()
+	oc := over.cluster('') or { panic(err) }
+	assert (oc.frame_of(oc.db.messages[0]) or { panic('no frame') }).secoc == none
 }
 
 fn test_secoc_with_a_freshness_that_is_not_byte_aligned() {
@@ -626,6 +634,13 @@ fn test_alternating_data_ids_are_named_not_collapsed() {
 	ovc := ovid.cluster('') or { panic(err) }
 	assert ovc.e2e_signals(ovc.db.messages[0]) == none
 	assert ovid.report.notes.any(it.contains('its DATA-ID 0x10000000000000000 is outside 0..4294967295')), ovid.report.notes.str()
+	// a CRC field past the protected DATA-LENGTH is not exported (round 42)
+	outside := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>28</CRC-OFFSET>') + arxml_tail) or {
+		panic(err)
+	}
+	oc := outside.cluster('') or { panic(err) }
+	assert oc.e2e_signals(oc.db.messages[0]) == none
+	assert outside.report.notes.any(it.contains('its CRC or counter field lies outside the protected DATA-LENGTH of 32 bits')), outside.report.notes.str()
 	// a protection with no DATA-ID is not exported as id 0 (round 38)
 	no_id := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>16</CRC-OFFSET>').replace('<DATA-IDS><DATA-ID>7</DATA-ID></DATA-IDS>', '<DATA-IDS></DATA-IDS>') + arxml_tail) or {
 		panic(err)
@@ -1066,6 +1081,12 @@ fn test_round_15_shapes_are_said_or_read_right() {
 	e := parse_arxml(arxml_head + cl + offset_pdu_xml + ecus + arxml_tail) or { panic(err) }
 	ec := e.cluster('') or { panic(err) }
 	assert ec.db.messages[0].sender == 'E', ec.db.messages[0].sender
+	// a port whose direction is neither OUT nor IN is not read as IN (round 42)
+	side := parse_arxml(arxml_head + cl + offset_pdu_xml + ecus.replace('<SHORT-NAME>P_Out</SHORT-NAME><COMMUNICATION-DIRECTION>OUT</COMMUNICATION-DIRECTION>', '<SHORT-NAME>P_Out</SHORT-NAME><COMMUNICATION-DIRECTION>SIDEWAYS</COMMUNICATION-DIRECTION>') + arxml_tail) or {
+		panic(err)
+	}
+	assert (side.cluster('') or { panic(err) }).db.messages[0].sender == ''
+	assert side.report.notes.any(it.contains('/ECUs/E/Conn/P_Out: COMMUNICATION-DIRECTION "SIDEWAYS" is neither OUT nor IN; the port is not read'))
 	assert 'R' in sig(ec.db.messages[0], 'V').receivers
 	assert 'E' in ec.db.nodes && 'R' in ec.db.nodes
 	// an ECU that bears the DBC placeholder name is renamed, or senders() would normalise it
@@ -1174,6 +1195,13 @@ fn test_round_15_shapes_are_said_or_read_right() {
 	bcv := sig((bad_c.cluster('') or { panic(err) }).db.messages[0], 'V')
 	assert bcv.factor == 1.0 && bcv.offset == 0.0
 	assert bad_c.report.notes.any(it.contains('/CM/C: rational coefficient "invalid" is not a number; the scale is not read'))
+	// …while a HEX coefficient is a number parse_num has always taken (round 42)
+	hex_c := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + zero_slope.replace('<COMPU-NUMERATOR><V>5</V><V>0</V></COMPU-NUMERATOR>', '<COMPU-NUMERATOR><V>0</V><V>0x10</V></COMPU-NUMERATOR>') + arxml_tail) or {
+		panic(err)
+	}
+	assert sig((hex_c.cluster('') or { panic(err) }).db.messages[0], 'V').factor == 16.0
+	assert num_text('0x10') or { 0 } == 16.0 && num_text('-1.5e2') or { 0 } == -150.0
+	assert num_text('1.2.3') == none && num_text('1e5e5') == none && num_text('+-1') == none && num_text('x') == none
 	// a zero denominator: said, read as identity, and not counted as the linear scale (round 35)
 	zero_den := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + zero_slope.replace('<COMPU-NUMERATOR><V>5</V><V>0</V></COMPU-NUMERATOR><COMPU-DENOMINATOR><V>1</V></COMPU-DENOMINATOR>', '<COMPU-NUMERATOR><V>5</V><V>2</V></COMPU-NUMERATOR><COMPU-DENOMINATOR><V>0</V></COMPU-DENOMINATOR>') + arxml_tail) or {
 		panic(err)
@@ -1223,6 +1251,13 @@ fn test_round_19_shapes() {
 	trv := sig((tr.cluster('') or { panic(err) }).db.messages[0], 'V')
 	assert trv.minimum == 0.0 && trv.maximum == 100.0
 	assert tr.report.notes.any(it.contains('/Sig/V: the data constraint has 2 DATA-CONSTR-RULEs; the first physical'))
+	// a bound that is not a number leaves the range unspecified and is said, no range invented (round 42)
+	bad_b := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + shapes.replace('<LOWER-LIMIT>0</LOWER-LIMIT><UPPER-LIMIT>100</UPPER-LIMIT><SCALE-CONSTRS>', '<LOWER-LIMIT>invalid</LOWER-LIMIT><UPPER-LIMIT>100</UPPER-LIMIT><SCALE-CONSTRS>') + arxml_tail) or {
+		panic(err)
+	}
+	bbv := sig((bad_b.cluster('') or { panic(err) }).db.messages[0], 'V')
+	assert bbv.minimum == 0.0 && bbv.maximum == 0.0
+	assert bad_b.report.notes.any(it.contains('/Sig/V: LOWER-LIMIT "invalid" is not a number; the range is not read'))
 	// a linear scale's own OPEN bound, used as the range when nothing overrides it, is said too
 	open_scale := offset_pdu_xml.replace(v_sig, '<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF></I-SIGNAL>') + '<AR-PACKAGE><SHORT-NAME>Sys</SHORT-NAME><ELEMENTS><SYSTEM-SIGNAL><SHORT-NAME>S</SHORT-NAME><PHYSICAL-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/L</COMPU-METHOD-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></PHYSICAL-PROPS></SYSTEM-SIGNAL></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>CM</SHORT-NAME><ELEMENTS><COMPU-METHOD><SHORT-NAME>L</SHORT-NAME><CATEGORY>LINEAR</CATEGORY><COMPU-INTERNAL-TO-PHYS><COMPU-SCALES><COMPU-SCALE><LOWER-LIMIT INTERVAL-TYPE="OPEN">0</LOWER-LIMIT><UPPER-LIMIT>1000</UPPER-LIMIT><COMPU-RATIONAL-COEFFS><COMPU-NUMERATOR><V>0</V><V>0.1</V></COMPU-NUMERATOR><COMPU-DENOMINATOR><V>1</V></COMPU-DENOMINATOR></COMPU-RATIONAL-COEFFS></COMPU-SCALE></COMPU-SCALES></COMPU-INTERNAL-TO-PHYS></COMPU-METHOD></ELEMENTS></AR-PACKAGE>'
 	os_ := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + open_scale + arxml_tail) or {
@@ -1457,6 +1492,13 @@ fn test_frame_lengths_are_bounded() {
 	}
 	assert !(pbo.cluster('') or { panic(err) }).db.messages[0].signals.any(it.name == 'V')
 	assert pbo.report.notes.any(it.contains('/Sig/V: PACKING-BYTE-ORDER "MIDDLE-ENDIAN" is not MOST-SIGNIFICANT-BYTE-FIRST, -LAST or OPAQUE; not read'))
+	// a PDU whose LENGTH cannot be read maps no signals: a bound that cannot be applied is not one
+	// that may be skipped (round 42)
+	plen := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<SHORT-NAME>P</SHORT-NAME><LENGTH>4</LENGTH>', '<SHORT-NAME>P</SHORT-NAME><LENGTH>four</LENGTH>') + arxml_tail) or {
+		panic(err)
+	}
+	assert (plen.cluster('') or { panic(err) }).db.messages[0].signals.len == 0
+	assert plen.report.notes.any(it.contains('/PDUs/P: LENGTH "four" is not an integer; not read'))
 	// the fit rule, both byte orders
 	assert signal_fits_frame(Signal{ start_bit: 48, length: 16 }, 8)
 	assert !signal_fits_frame(Signal{ start_bit: 56, length: 16 }, 8)

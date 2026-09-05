@@ -142,11 +142,14 @@ fn main() {
 	toml_to_stdout := toml_out == '-'
 	dbc_to_file := dbc_out != '' && dbc_out != '-'
 	frag := if toml_out != '' { c.frame_toml(ecu) } else { '' }
-	if !dbc_to_file && !toml_to_stdout {
-		print(dbc)
-	}
-	if toml_to_stdout {
-		print(frag)
+	// STDOUT LAST (round 42): an artifact redirected to a file by the shell is a file too, and
+	// printed before the others were published it stood beside the previous ones when they failed
+	stdout_text := if toml_to_stdout {
+		frag
+	} else if !dbc_to_file {
+		dbc
+	} else {
+		''
 	}
 	// STAGED, THEN MOVED INTO PLACE (round 33): both artifacts are written beside their
 	// destinations first and renamed only once every write succeeded — a TOML write failing
@@ -222,6 +225,7 @@ fn main() {
 			os.rm(sa[1]) or {}
 		}
 	}
+	print(stdout_text)
 }
 
 // roll_back puts every destination that was set aside back where it was, newest first.

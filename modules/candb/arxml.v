@@ -936,8 +936,14 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 		for pref in descendants(ft, 'FRAME-PORT-REF') {
 			port, port_path := r.deref_node(pref, ft_path) or { continue }
 			ecu := r.ecu_of(port_path) or { continue }
+			dir := child_text(port, 'COMMUNICATION-DIRECTION').trim_space()
+			if dir !in ['OUT', 'IN'] {
+				// read as IN, a malformed sender port left the frame with no transmitter (round 42)
+				r.report.notes << '${port_path}: COMMUNICATION-DIRECTION "${dir}" is neither OUT nor IN; the port is not read'
+				continue
+			}
 			note_node(mut nodes, ecu)
-			if child_text(port, 'COMMUNICATION-DIRECTION') == 'OUT' {
+			if dir == 'OUT' {
 				ports.tx(ecu)
 			} else {
 				ports.rx(ecu)
@@ -961,8 +967,13 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			for pref in descendants(trig, 'I-PDU-PORT-REF') {
 				port, port_path := r.deref_node(pref, trig_path) or { continue }
 				ecu := r.ecu_of(port_path) or { continue }
+				dir := child_text(port, 'COMMUNICATION-DIRECTION').trim_space()
+				if dir !in ['OUT', 'IN'] {
+					r.report.notes << '${port_path}: COMMUNICATION-DIRECTION "${dir}" is neither OUT nor IN; the port is not read'
+					continue
+				}
 				note_node(mut nodes, ecu)
-				if child_text(port, 'COMMUNICATION-DIRECTION') == 'OUT' {
+				if dir == 'OUT' {
 					ports.tx(ecu)
 				} else if ipdu_path == '' {
 					ports.rx(ecu) // no PDU to scope it to: the frame's
@@ -1352,6 +1363,13 @@ fn (mut r ArxmlReader) load_secoc(pdu xml.XMLNode, pdu_path string, authentic in
 	} else if auth_tx % 8 != 0 {
 		r.report.notes << '${pdu_path}: a ${auth_tx}-bit MAC does not fill whole bytes; no byte layout is given'
 	}
+	// and the whole layout inside the SECURED PDU: authentic bytes, then freshness, then MAC —
+	// positions past its LENGTH were advertised as a usable byte layout (round 42)
+	secured_len := int(r.int_of(pdu, 'LENGTH', pdu_path, 0, 64) or { return none })
+	if authentic * 8 + fresh_tx + auth_tx > secured_len * 8 {
+		r.report.notes << '${pdu_path}: ${authentic} authentic bytes + ${fresh_tx}-bit freshness + ${auth_tx}-bit MAC exceed the ${secured_len}-byte secured PDU; no byte layout is given'
+		return none
+	}
 	return ArxmlSecOc{
 		data_id: sec_id
 		freshness_len: fresh_len
@@ -1375,8 +1393,9 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 	mut out := []Signal{}
 	mut paths := []string{} // the I-SIGNAL path of each entry of `out`, for the naming pass
 	// the PDU's own length bounds its signals: the frame check alone let a 16-bit signal of a
-	// one-byte PDU run into the PDU behind it (round 41). Unreadable: no PDU bound is applied
-	pdu_len := int(int_in(pdu, 'LENGTH', 0, 64) or { -1 })
+	// one-byte PDU run into the PDU behind it (round 41). Unreadable, said and NO signals: a
+	// bound that cannot be applied is not one that may be skipped (round 42)
+	pdu_len := int(r.int_of(pdu, 'LENGTH', pdu_path, 0, 64) or { return out, paths })
 	for m in descendants(pdu, 'I-SIGNAL-TO-I-PDU-MAPPING') {
 		// a signal-GROUP mapping has no I-SIGNAL-REF; its members are mapped individually
 		isig, isig_path := r.deref(m, 'I-SIGNAL-REF', r.path_of(m, pdu_path)) or { continue }
@@ -1597,12 +1616,20 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 				r.report.notes << '${isig_path}: the data constraint has SCALE-CONSTRS (sub-intervals) which the single-interval range model cannot hold; only the outer bounds are read'
 			}
 			if pc := first(d, 'PHYS-CONSTRS') {
-				minimum = parse_num(child_text(pc, 'LOWER-LIMIT'))
-				maximum = parse_num(child_text(pc, 'UPPER-LIMIT'))
-				r.note_open_bounds(pc, isig_path)
+				if lo_v := r.num_of(pc, 'LOWER-LIMIT', isig_path) {
+					if hi_v := r.num_of(pc, 'UPPER-LIMIT', isig_path) {
+						minimum = lo_v
+						maximum = hi_v
+						r.note_open_bounds(pc, isig_path)
+					}
+				}
 			} else if ic := first(d, 'INTERNAL-CONSTRS') {
-				minimum, maximum = scaled_range(parse_num(child_text(ic, 'LOWER-LIMIT')), parse_num(child_text(ic, 'UPPER-LIMIT')), factor, offset)
-				r.note_open_bounds(ic, isig_path)
+				if lo_v := r.num_of(ic, 'LOWER-LIMIT', isig_path) {
+					if hi_v := r.num_of(ic, 'UPPER-LIMIT', isig_path) {
+						minimum, maximum = scaled_range(lo_v, hi_v, factor, offset)
+						r.note_open_bounds(ic, isig_path)
+					}
+				}
 			}
 		} else if scale.has_domain {
 			minimum, maximum = scaled_range(scale.lower, scale.upper, factor, offset)
@@ -1617,7 +1644,7 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 			desc = r.desc_of(isig, isig_path)
 		}
 
-		if pdu_len >= 0 && !signal_fits_frame(Signal{ start_bit: in_pdu, length: length, byte_order: order }, pdu_len) {
+		if !signal_fits_frame(Signal{ start_bit: in_pdu, length: length, byte_order: order }, pdu_len) {
 			r.report.notes << '${isig_path}: ${length}-bit signal at PDU bit ${in_pdu} extends past the ${pdu_len}-byte PDU; not read'
 			continue
 		}
@@ -1817,7 +1844,7 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 						factor = num[1] / d
 					}
 				}
-				if lo != '' && hi != '' {
+				if lo != '' && hi != '' && num_text(lo) != none && num_text(hi) != none {
 					has_domain = true
 					lower = parse_num(lo)
 					upper = parse_num(hi)
@@ -2094,6 +2121,20 @@ fn one_sign(t string) ?string {
 	return body
 }
 
+// num_of is num_text over a child element, with the report: a bound that cannot be read is said
+// and leaves the range where it was (0, 0: unspecified) rather than inventing one (round 42).
+fn (mut r ArxmlReader) num_of(n xml.XMLNode, tag string, path string) ?f64 {
+	c := child(n, tag) or {
+		r.report.notes << '${path}: no ${tag}; the range is not read'
+		return none
+	}
+	v := num_text(el_text(c)) or {
+		r.report.notes << '${path}: ${tag} "${el_text(c).trim_space()}" is not a number; the range is not read'
+		return none
+	}
+	return v
+}
+
 // int_in is int_text over a child element, refusing a missing one too.
 fn int_in(n xml.XMLNode, tag string, lo i64, hi i64) !i64 {
 	c := child(n, tag) or { return error('no ${tag}') }
@@ -2109,14 +2150,39 @@ fn (mut r ArxmlReader) int_of(n xml.XMLNode, tag string, path string, lo i64, hi
 	return v
 }
 
-// is_number is whether `t` can be read as a decimal number at all — a TIME-PERIOD of `x` read
-// as 0 through the lenient float parser and switched a cyclic frame off in silence (round 40).
-fn is_number(t string) bool {
-	s := t.trim_space().trim_left('+-')
-	if s.len == 0 || !s.bytes().any(it >= `0` && it <= `9`) {
-		return false
+// num_text reads a number in every form parse_num accepts — decimal, with a fraction or an
+// exponent, or 0x hex, one sign — and says no to anything else, where parse_num hands back 0:
+// a TIME-PERIOD of `x` switched a cyclic frame off, a LOWER-LIMIT of `invalid` invented a range,
+// and a decimal-only check refused the hex `0x10` parse_num had always taken (rounds 40–42).
+fn num_text(t string) ?f64 {
+	s := t.trim_space()
+	body := one_sign(s) or { return none }
+	if body.starts_with('0x') || body.starts_with('0X') {
+		if !integral_literal(body) {
+			return none
+		}
+		return parse_num(s)
 	}
-	return s.bytes().all((it >= `0` && it <= `9`) || it in [u8(`.`), `e`, `E`, `+`, `-`])
+	if body.len == 0 || !body.bytes().any(it >= `0` && it <= `9`) {
+		return none
+	}
+	if !body.bytes().all((it >= `0` && it <= `9`) || it in [u8(`.`), `e`, `E`, `+`, `-`]) {
+		return none
+	}
+	// one point at most, one exponent at most, and a sign only right after the exponent
+	if body.count('.') > 1 || body.count('e') + body.count('E') > 1 {
+		return none
+	}
+	for i, c in body {
+		if (c == `+` || c == `-`) && !(i > 0 && body[i - 1] in [u8(`e`), `E`]) {
+			return none
+		}
+	}
+	return parse_num(s)
+}
+
+fn is_number(t string) bool {
+	return num_text(t) != none
 }
 
 // integral_literal is whether a numeric literal spells an INTEGER: a bare digit string, a hex
