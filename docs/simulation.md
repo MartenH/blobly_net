@@ -407,6 +407,8 @@ From a script, listen for them the way a real tester would:
 ```lua
 local seen = doip.listen(1200)                     -- window in ms, port defaults to 13400
 local seen = doip.listen(1200, { port = 13555 })   -- an entity bound elsewhere
+local seen = doip.listen(1200, { from = "AltPort" }) -- the same, without repeating the port the
+                                                     -- project already states for that channel
 -- seen = { { vin = "BLOBLYNETGATEWAY1", logical_address = 0x1000, from = "127.0.0.1:13400" }, ... }
 ```
 

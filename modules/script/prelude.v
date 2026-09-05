@@ -105,13 +105,20 @@ end
 --
 -- Unsolicited announcements, the way a real tester discovers ECUs it was never told about.
 --
--- opts = { port = 13400, ip6 = false }. Nothing is queued for a listener that is not there, so
--- start listening before the entity announces — or give it a long enough sequence to still be
--- in progress. IPv4 is the verified path; see docs/doip.md for the IPv6 caveat.
+-- opts = { port = 13400, ip6 = false, from = "DoIP1" }. `from` names a channel and listens on
+-- the port that channel is on (a `port` that contradicts it is an error, not overruled). Nothing is
+-- queued for a listener that is not there, so start listening before the entity announces — or
+-- give it a long enough sequence to still be in progress. IPv4 is the verified path; see
+-- docs/doip.md for the IPv6 caveat.
 function doip.listen(window_ms, opts)
   opts = opts or {}
   if type(opts) == "number" then opts = { port = opts } end   -- back-compat: listen(ms, port)
-  -- port 0 = "derive": with `from`, that channel own port; otherwise 13400.
+  -- A `from` that is not a name (a uds handle, `true`) would reach the host as "" and read as
+  -- ABSENT — the quiet default this option exists to remove. Refused here, by type.
+  if opts.from ~= nil and type(opts.from) ~= "string" then
+    error("doip.listen: from must be a channel name (a string), got " .. type(opts.from), 2)
+  end
+  -- port 0 = "derive": with `from`, the port that channel is on; otherwise 13400.
   local raw = __doip_listen(opts.port or 0, window_ms or 1000,
                             opts.ip6 and true or false, opts.from or "")
   local out = {}
