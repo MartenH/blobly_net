@@ -745,6 +745,9 @@ fn test_enum_keys_above_2_pow_53_and_opaque_packing() {
 	// an integral EXPONENT spelling is the same integer too, in digits and never through f64
 	assert parse_key('9.007199254740993E15') == u64(9007199254740993)
 	assert parse_key('9.007199254740993e+15') == u64(9007199254740993)
+	assert parse_key('9.007199254740993E015') == u64(9007199254740993) // leading zeros are digits too
+	assert parse_key('9007199254740993E-00') == u64(9007199254740993)
+	assert integral_decimal('1E1x') == none
 	assert parse_key('-9.007199254740993E15') == u64(i64(-9007199254740993))
 	assert parse_i64('-9.007199254740993E15') == i64(-9007199254740993)
 	assert parse_key('12E2') == 1200
@@ -925,6 +928,29 @@ fn test_initial_values_are_said_not_dropped() {
 	}
 	assert wide.report.notes.any(it.contains('72-bit signal is wider'))
 	assert !wide.report.notes.any(it.contains('initial value'))
+}
+
+fn test_open_bounds_and_inverse_only_conversions_are_said() {
+	v_sig := '<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH></I-SIGNAL>'
+	linked := offset_pdu_xml.replace(v_sig, '<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF></I-SIGNAL>') + '<AR-PACKAGE><SHORT-NAME>Sys</SHORT-NAME><ELEMENTS><SYSTEM-SIGNAL><SHORT-NAME>S</SHORT-NAME><PHYSICAL-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/Inv</COMPU-METHOD-REF><DATA-CONSTR-REF DEST="DATA-CONSTR">/DC/Open</DATA-CONSTR-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></PHYSICAL-PROPS></SYSTEM-SIGNAL></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>CM</SHORT-NAME><ELEMENTS><COMPU-METHOD><SHORT-NAME>Inv</SHORT-NAME><CATEGORY>LINEAR</CATEGORY><COMPU-PHYS-TO-INTERNAL><COMPU-SCALES><COMPU-SCALE><COMPU-RATIONAL-COEFFS><COMPU-NUMERATOR><V>-5</V><V>0.5</V></COMPU-NUMERATOR><COMPU-DENOMINATOR><V>1</V></COMPU-DENOMINATOR></COMPU-RATIONAL-COEFFS></COMPU-SCALE></COMPU-SCALES></COMPU-PHYS-TO-INTERNAL></COMPU-METHOD></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>DC</SHORT-NAME><ELEMENTS><DATA-CONSTR><SHORT-NAME>Open</SHORT-NAME><DATA-CONSTR-RULES><DATA-CONSTR-RULE><PHYS-CONSTRS><LOWER-LIMIT INTERVAL-TYPE="OPEN">0</LOWER-LIMIT><UPPER-LIMIT INTERVAL-TYPE="INFINITE">0</UPPER-LIMIT></PHYS-CONSTRS></DATA-CONSTR-RULE></DATA-CONSTR-RULES></DATA-CONSTR></ELEMENTS></AR-PACKAGE>'
+	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + linked + arxml_tail) or {
+		panic(err)
+	}
+	c := a.cluster('') or { panic(err) }
+	v := sig(c.db.messages[0], 'V')
+	// the inverse-only method is NOT applied as if it were the forward one, and is said
+	assert v.factor == 1.0
+	assert v.offset == 0.0
+	assert a.report.notes.any(it.contains('/CM/Inv: gives only a physical-to-internal conversion'))
+	// the bounds are read as closed, and each open one is said with its kind
+	assert a.report.notes.any(it.contains('/Sig/V: LOWER-LIMIT 0 is OPEN; read as a closed'))
+	assert a.report.notes.any(it.contains('/Sig/V: UPPER-LIMIT 0 is INFINITE; read as a closed'))
+	// a description keeps its punctuation tight against inline markup
+	punct := offset_pdu_xml.replace(v_sig, '<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><DESC><L-2 L="EN">use <E>foo</E>, then (<TT>bar</TT>) over <E>all</E> bytes.</L-2></DESC><LENGTH>16</LENGTH></I-SIGNAL>')
+	d := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + punct + arxml_tail) or {
+		panic(err)
+	}
+	assert sig(d.cluster('') or { panic(err) }.db.messages[0], 'V').desc == 'use foo, then (bar) over all bytes.'
 }
 
 fn test_two_triggerings_of_one_id_keep_the_first_and_say_so() {

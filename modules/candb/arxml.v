@@ -1094,8 +1094,10 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 			if pc := first(d, 'PHYS-CONSTRS') {
 				minimum = parse_num(child_text(pc, 'LOWER-LIMIT'))
 				maximum = parse_num(child_text(pc, 'UPPER-LIMIT'))
+				r.note_open_bounds(pc, isig_path)
 			} else if ic := first(d, 'INTERNAL-CONSTRS') {
 				minimum, maximum = scaled_range(parse_num(child_text(ic, 'LOWER-LIMIT')), parse_num(child_text(ic, 'UPPER-LIMIT')), factor, offset)
+				r.note_open_bounds(ic, isig_path)
 			}
 		} else if scale.has_domain {
 			minimum, maximum = scaled_range(scale.lower, scale.upper, factor, offset)
@@ -1242,6 +1244,12 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 			}
 		}
 	}
+	if first(cm, 'COMPU-INTERNAL-TO-PHYS') == none && first(cm, 'COMPU-PHYS-TO-INTERNAL') != none {
+		// the inverse direction only: not inverted here (a linear inverse is invertible, but a
+		// table or a curve is not, and one rule for the direction beats two), and the identity
+		// it falls back to is said rather than silently applied to every signal on the method
+		r.report.notes << '${cm_path}: gives only a physical-to-internal conversion (COMPU-PHYS-TO-INTERNAL); not inverted, read as factor 1 offset 0'
+	}
 	sc := ArxmlScale{
 		factor: factor
 		offset: offset
@@ -1351,8 +1359,11 @@ fn deep_text(n xml.XMLNode) string {
 		}
 		// the parser trims the text on either side of an inline element, so "over <E>all</E>
 		// bytes" arrives as three chunks with no boundary space: put one back where both
-		// sides lack it
-		if s != '' && !s.ends_with(' ') && !chunk.starts_with(' ') {
+		// sides lack it — except where the source cannot have had one, before closing
+		// punctuation ("use <E>foo</E>." is "use foo.", not "use foo .") and after an opening
+		// bracket. The trim took the boundary; this is the honest reconstruction of it
+		if s != '' && !s.ends_with(' ') && !chunk.starts_with(' ') && !s.ends_with('(')
+			&& !s.ends_with('[') && chunk[0] !in [u8(`.`), `,`, `;`, `:`, `!`, `?`, `)`, `]`] {
 			s += ' '
 		}
 		s += chunk
@@ -1440,10 +1451,12 @@ fn integral_decimal(t string) ?string {
 	mut exp := 0
 	if body.contains_any('eE') {
 		e_at := body.index_any('eE')
-		exp = body[e_at + 1..].int()
-		if body[e_at + 1..] != exp.str() && body[e_at + 1..] != '+' + exp.str() {
+		exp_s := body[e_at + 1..].trim_left('+')
+		exp_digits := exp_s.trim_left('-')
+		if exp_digits.len == 0 || !exp_digits.bytes().all(it >= `0` && it <= `9`) {
 			return none // not an integer exponent
 		}
+		exp = exp_s.int() // `E015` is fifteen: an optionally signed digit string, not a canonical spelling
 		body = body[..e_at]
 	}
 	whole := body.all_before('.')
@@ -1498,6 +1511,21 @@ fn parse_num(s string) f64 {
 		return f64(t[2..].parse_uint(16, 64) or { 0 })
 	}
 	return t.f64()
+}
+
+// note_open_bounds says when a constraint's bound is not the closed one the model keeps. A DBC
+// range is inclusive on both ends, so an OPEN bound (the value itself excluded) or an INFINITE
+// one (no bound; the value is meaningless) read as a closed bound advertise the excluded value
+// as valid — in the editor, in the exported DBC, and to range-based fault handling. Said,
+// since the constraint changed meaning on the way in.
+fn (mut r ArxmlReader) note_open_bounds(c xml.XMLNode, path string) {
+	for lim in ['LOWER-LIMIT', 'UPPER-LIMIT'] {
+		l := child(c, lim) or { continue }
+		kind := l.attributes['INTERVAL-TYPE'] or { 'CLOSED' }
+		if kind != 'CLOSED' {
+			r.report.notes << '${path}: ${lim} ${el_text(l)} is ${kind}; read as a closed (inclusive) bound, which the range model is'
+		}
+	}
 }
 
 // seconds_to_ms converts an ARXML time (seconds, "0.1" or "1.0E-2") to whole milliseconds,
