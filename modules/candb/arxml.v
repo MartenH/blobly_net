@@ -268,12 +268,13 @@ fn (mut r ArxmlReader) name_clusters(clusters []ArxmlCluster) []ArxmlCluster {
 struct ArxmlCached {
 	sha string
 	a   Arxml
+	err string // a parse that FAILED for these bytes: remembered, so a broken file attached to a project is not reparsed on every rebuild (round 29)
 }
 
 __global (
 	arxml_cache_mu       sync.Mutex
 	arxml_cache          map[string]ArxmlCached
-	arxml_cache_hits     int
+	arxml_cache_hits     int // parses answered from the cache — successes AND remembered failures
 	// the keys a parse is RUNNING for: a second miss on one of them waits for that parse rather
 	// than starting its own — a real file is seconds and hundreds of MB, and a project rebuild
 	// overlapping a script reload would otherwise pay twice (codex on #273 round 28)
@@ -296,6 +297,9 @@ pub fn load_arxml_file(path string) !Arxml {
 			if c.sha == sha {
 				arxml_cache_hits++
 				arxml_cache_mu.unlock()
+				if c.err != '' {
+					return error(c.err)
+				}
 				return c.a
 			}
 		}
@@ -313,7 +317,17 @@ pub fn load_arxml_file(path string) !Arxml {
 		arxml_cache_inflight.delete(key)
 		arxml_cache_mu.unlock()
 	}
-	a := parse_arxml(text)!
+	a := parse_arxml(text) or {
+		// remembered under the same path-and-content key, so repaired bytes retry and the
+		// same broken bytes do not cost seconds and hundreds of MB per rebuild
+		arxml_cache_mu.lock()
+		arxml_cache[key] = ArxmlCached{
+			sha: sha
+			err: err.msg()
+		}
+		arxml_cache_mu.unlock()
+		return err
+	}
 	arxml_cache_mu.lock()
 	arxml_cache[key] = ArxmlCached{
 		sha: sha
@@ -956,6 +970,12 @@ fn (mut r ArxmlReader) load_timing(pdu xml.XMLNode, pdu_path string) ArxmlTiming
 		r.report.notes << '${pdu_path}: ${specs.len} I-PDU-TIMING specifications; the first is read, the others are not'
 	}
 	spec := first(pdu, 'I-PDU-TIMING') or { return ArxmlTiming{} }
+	if first(spec, 'TRANSMISSION-MODE-FALSE-TIMING') != none {
+		// COM's mode switching is ECU configuration this reader does not evaluate, so the TRUE
+		// mode's cadence is what the bus is expected to carry — said, since the false branch
+		// may be the active one on a given ECU (codex on #273 round 29)
+		r.report.notes << "${pdu_path}: declares a TRANSMISSION-MODE-FALSE-TIMING too; the TRUE mode's timing is read and the mode condition is not evaluated"
+	}
 	min_delay := r.timing_ms(first_text(spec, 'MINIMUM-DELAY'), pdu_path, 'MINIMUM-DELAY')
 	tt := first(spec, 'TRANSMISSION-MODE-TRUE-TIMING') or {
 		return ArxmlTiming{

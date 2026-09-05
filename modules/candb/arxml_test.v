@@ -1174,6 +1174,12 @@ fn test_round_19_shapes() {
 	}
 	assert (two_t.cluster('') or { panic(err) }).db.messages[0].cycle_ms == 100
 	assert two_t.report.notes.any(it.contains('/PDUs/P: 2 I-PDU-TIMING specifications; the first is read'))
+	// a FALSE-mode timing beside the TRUE one: the true cadence is read and the choice said (round 29)
+	false_t := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace(pdu_head, pdu_head + '<I-PDU-TIMING-SPECIFICATIONS>' + timing('0.1').replace('</TRANSMISSION-MODE-TRUE-TIMING>', '</TRANSMISSION-MODE-TRUE-TIMING><TRANSMISSION-MODE-FALSE-TIMING><CYCLIC-TIMING><TIME-PERIOD><VALUE>1.0</VALUE></TIME-PERIOD></CYCLIC-TIMING></TRANSMISSION-MODE-FALSE-TIMING>') + '</I-PDU-TIMING-SPECIFICATIONS>') + arxml_tail) or {
+		panic(err)
+	}
+	assert (false_t.cluster('') or { panic(err) }).db.messages[0].cycle_ms == 100
+	assert false_t.report.notes.any(it.contains("/PDUs/P: declares a TRANSMISSION-MODE-FALSE-TIMING too; the TRUE mode's timing is read"))
 }
 
 // a J1939 cluster beside a CAN one is a whole bus discarded: counted, so the load report and
@@ -1206,6 +1212,20 @@ fn test_load_arxml_file_is_cached_per_file() {
 	defer {
 		os.rmdir_all(dir) or {}
 	}
+	// a parse that FAILS is remembered for the same bytes too — the second load is a hit that
+	// still errors — and repaired bytes retry (round 29)
+	bad := os.join_path(dir, 'bad.arxml')
+	os.write_file(bad, '<AUTOSAR><oops>') or { panic(err) }
+	load_arxml_file(bad) or {}
+	hits_before_bad := arxml_cache_hit_count()
+	if _ := load_arxml_file(bad) {
+		assert false, 'a broken file parsed'
+	}
+	assert arxml_cache_hit_count() == hits_before_bad + 1
+	os.write_file(bad, arxml_head + cluster_xml('One', 1, '/Frames/F') + frame_xml + arxml_tail) or {
+		panic(err)
+	}
+	load_arxml_file(bad) or { panic('repaired bytes must parse: ${err}') }
 	p := os.join_path(dir, 'a.arxml')
 	os.write_file(p, arxml_head + cluster_xml('One', 1, '/Frames/F') + frame_xml + arxml_tail) or {
 		panic(err)
@@ -1442,6 +1462,11 @@ fn test_split_database_ref() {
 	assert fd == 'archive.arxml#body.dbc'
 	assert cd == ''
 	assert !is_arxml_ref('archive.arxml#body.dbc')
+	// …and one ARXML whose name carries `.arxml#`: a cluster fragment never ends in an extension
+	fa, ca := split_database_ref('archive.arxml#copy.arxml')
+	assert fa == 'archive.arxml#copy.arxml'
+	assert ca == ''
+	assert is_arxml_ref('archive.arxml#copy.arxml')
 	// a hash in a DBC name is a character, not a fragment
 	f3, c3 := split_database_ref('odd#name.dbc')
 	assert f3 == 'odd#name.dbc'
