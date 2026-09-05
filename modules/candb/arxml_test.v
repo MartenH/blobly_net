@@ -690,7 +690,8 @@ fn test_multi_pdu_frame_keeps_the_first_pdus_metadata_and_says_so() {
 
 fn test_compu_method_shared_by_signals_of_two_widths() {
 	// one TEXTTABLE with a 255 entry, read by an 8-bit and a 4-bit signal in that order: the
-	// second must not inherit the first's masked table
+	// second must not inherit the first's masked table — and (round 16) must not fold 255 onto
+	// its raw 15 either, a value the table never named: the key does not fit and is said
 	shared_xml := offset_pdu_xml.replace('<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>8</LENGTH></I-SIGNAL>', '<I-SIGNAL><SHORT-NAME>Crc</SHORT-NAME><LENGTH>8</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF></I-SIGNAL>').replace('<I-SIGNAL><SHORT-NAME>Ctr</SHORT-NAME><LENGTH>4</LENGTH></I-SIGNAL>', '<I-SIGNAL><SHORT-NAME>Ctr</SHORT-NAME><LENGTH>4</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF></I-SIGNAL>') + '<AR-PACKAGE><SHORT-NAME>Sys</SHORT-NAME><ELEMENTS><SYSTEM-SIGNAL><SHORT-NAME>S</SHORT-NAME><PHYSICAL-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/T</COMPU-METHOD-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></PHYSICAL-PROPS></SYSTEM-SIGNAL></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>CM</SHORT-NAME><ELEMENTS><COMPU-METHOD><SHORT-NAME>T</SHORT-NAME><CATEGORY>TEXTTABLE</CATEGORY><COMPU-INTERNAL-TO-PHYS><COMPU-SCALES><COMPU-SCALE><LOWER-LIMIT>255</LOWER-LIMIT><UPPER-LIMIT>255</UPPER-LIMIT><COMPU-CONST><VT>Invalid</VT></COMPU-CONST></COMPU-SCALE><COMPU-SCALE><LOWER-LIMIT>1</LOWER-LIMIT><UPPER-LIMIT>1</UPPER-LIMIT><COMPU-CONST><VT>One</VT></COMPU-CONST></COMPU-SCALE></COMPU-SCALES></COMPU-INTERNAL-TO-PHYS></COMPU-METHOD></ELEMENTS></AR-PACKAGE>'
 	a := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + shared_xml + arxml_tail) or {
 		panic(err)
@@ -702,9 +703,9 @@ fn test_compu_method_shared_by_signals_of_two_widths() {
 		u64(1):   'One'
 	}
 	assert sig(m, 'Ctr').values == {
-		u64(15): 'Invalid'
-		u64(1):  'One'
+		u64(1): 'One'
 	}
+	assert a.report.notes.any(it.contains('/Sig/Ctr: enum key 255 ("Invalid") of /CM/T does not fit a 4-bit unsigned signal; dropped'))
 }
 
 fn test_enum_keys_above_2_pow_53_and_opaque_packing() {
@@ -988,6 +989,30 @@ fn test_round_15_shapes_are_said_or_read_right() {
 	assert ec.db.messages[0].sender == 'E', ec.db.messages[0].sender
 	assert 'R' in sig(ec.db.messages[0], 'V').receivers
 	assert 'E' in ec.db.nodes && 'R' in ec.db.nodes
+	// and an IN port listens to ITS PDU only: on a frame mapping P and Q, Q's receiver is not a
+	// receiver of P's signals (round 16)
+	two := offset_pdu_xml.replace('</PDU-TO-FRAME-MAPPING></PDU-TO-FRAME-MAPPINGS>', '</PDU-TO-FRAME-MAPPING><PDU-TO-FRAME-MAPPING><SHORT-NAME>MQ</SHORT-NAME><PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/Q</PDU-REF><START-POSITION>48</START-POSITION></PDU-TO-FRAME-MAPPING></PDU-TO-FRAME-MAPPINGS>').replace('</I-SIGNAL-I-PDU>', '</I-SIGNAL-I-PDU><I-SIGNAL-I-PDU><SHORT-NAME>Q</SHORT-NAME><LENGTH>2</LENGTH><I-SIGNAL-TO-PDU-MAPPINGS><I-SIGNAL-TO-I-PDU-MAPPING><SHORT-NAME>MW</SHORT-NAME><I-SIGNAL-REF DEST="I-SIGNAL">/Sig/W</I-SIGNAL-REF><PACKING-BYTE-ORDER>MOST-SIGNIFICANT-BYTE-LAST</PACKING-BYTE-ORDER><START-POSITION>0</START-POSITION></I-SIGNAL-TO-I-PDU-MAPPING></I-SIGNAL-TO-PDU-MAPPINGS></I-SIGNAL-I-PDU>').replace(v_sig, v_sig + '<I-SIGNAL><SHORT-NAME>W</SHORT-NAME><LENGTH>16</LENGTH></I-SIGNAL>')
+	ch_two := ch_pdus.replace('</PDU-TRIGGERING></PDU-TRIGGERINGS>', '</PDU-TRIGGERING><PDU-TRIGGERING><SHORT-NAME>PTQ</SHORT-NAME><I-PDU-PORT-REFS><I-PDU-PORT-REF DEST="I-PDU-PORT">/ECUs/S/Conn/Q_In</I-PDU-PORT-REF></I-PDU-PORT-REFS><I-PDU-REF DEST="I-SIGNAL-I-PDU">/PDUs/Q</I-PDU-REF></PDU-TRIGGERING></PDU-TRIGGERINGS>')
+	ft_two := ft_pdus.replace('</PDU-TRIGGERING-REF-CONDITIONAL></PDU-TRIGGERINGS>', '</PDU-TRIGGERING-REF-CONDITIONAL><PDU-TRIGGERING-REF-CONDITIONAL><PDU-TRIGGERING-REF DEST="PDU-TRIGGERING">/Bus/Bus/Ch/PTQ</PDU-TRIGGERING-REF></PDU-TRIGGERING-REF-CONDITIONAL></PDU-TRIGGERINGS>')
+	ecus_s := ecus.replace('</ECU-INSTANCE></ELEMENTS>', '</ECU-INSTANCE><ECU-INSTANCE><SHORT-NAME>S</SHORT-NAME><CONNECTORS><CAN-COMMUNICATION-CONNECTOR><SHORT-NAME>Conn</SHORT-NAME><ECU-COMM-PORT-INSTANCES><I-PDU-PORT><SHORT-NAME>Q_In</SHORT-NAME><COMMUNICATION-DIRECTION>IN</COMMUNICATION-DIRECTION></I-PDU-PORT></ECU-COMM-PORT-INSTANCES></CAN-COMMUNICATION-CONNECTOR></CONNECTORS></ECU-INSTANCE></ELEMENTS>')
+	cl2 := cluster_xml('Bus', 256, '/Frames/F').replace('<IDENTIFIER>256</IDENTIFIER></CAN-FRAME-TRIGGERING>', ft_two).replace('</FRAME-TRIGGERINGS></CAN-PHYSICAL-CHANNEL>', ch_two)
+	e2 := parse_arxml(arxml_head + cl2 + two + ecus_s + arxml_tail) or { panic(err) }
+	m2 := (e2.cluster('') or { panic(err) }).db.messages[0]
+	assert m2.sender == 'E'
+	assert 'R' in sig(m2, 'V').receivers && 'S' !in sig(m2, 'V').receivers, sig(m2, 'V').receivers.str()
+	assert 'S' in sig(m2, 'W').receivers && 'R' !in sig(m2, 'W').receivers, sig(m2, 'W').receivers.str()
+	// an enum key the signal's width cannot hold is dropped and said, not aliased onto a value
+	// the table never named
+	wide_keys := offset_pdu_xml.replace(v_sig, '<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>8</LENGTH><NETWORK-REPRESENTATION-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/K</COMPU-METHOD-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></NETWORK-REPRESENTATION-PROPS></I-SIGNAL>') + '<AR-PACKAGE><SHORT-NAME>CM</SHORT-NAME><ELEMENTS><COMPU-METHOD><SHORT-NAME>K</SHORT-NAME><CATEGORY>TEXTTABLE</CATEGORY><COMPU-INTERNAL-TO-PHYS><COMPU-SCALES><COMPU-SCALE><LOWER-LIMIT>0</LOWER-LIMIT><UPPER-LIMIT>0</UPPER-LIMIT><COMPU-CONST><VT>Zero</VT></COMPU-CONST></COMPU-SCALE><COMPU-SCALE><LOWER-LIMIT>256</LOWER-LIMIT><UPPER-LIMIT>256</UPPER-LIMIT><COMPU-CONST><VT>TooWide</VT></COMPU-CONST></COMPU-SCALE><COMPU-SCALE><LOWER-LIMIT>-1</LOWER-LIMIT><UPPER-LIMIT>-1</UPPER-LIMIT><COMPU-CONST><VT>Neg</VT></COMPU-CONST></COMPU-SCALE></COMPU-SCALES></COMPU-INTERNAL-TO-PHYS></COMPU-METHOD></ELEMENTS></AR-PACKAGE>'
+	k := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + wide_keys + arxml_tail) or {
+		panic(err)
+	}
+	kv := sig((k.cluster('') or { panic(err) }).db.messages[0], 'V')
+	assert kv.values == {
+		u64(0): 'Zero'
+	}, kv.values.str()
+	assert k.report.notes.any(it.contains('/Sig/V: enum key 256 ("TooWide") of /CM/K does not fit a 8-bit unsigned signal; dropped'))
+	assert k.report.notes.any(it.contains('enum key 18446744073709551615 ("Neg") of /CM/K does not fit a 8-bit unsigned'))
 }
 
 fn test_two_triggerings_of_one_id_keep_the_first_and_say_so() {

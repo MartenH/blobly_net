@@ -686,17 +686,29 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 		}
 		// and the I-PDU ports on the PDU triggerings this frame triggering references: a system
 		// description may declare its endpoints there ALONE, with no frame ports at all, and a
-		// frame with no sender simulates nothing (codex on #273 round 15)
+		// frame with no sender simulates nothing (codex on #273 round 15). An OUT port sends the
+		// frame; an IN port listens to ITS PDU only — so on a frame mapping several PDUs the IN
+		// side is kept per PDU (by the triggering's I-PDU-REF) and reaches only that PDU's
+		// signals, like an I-PDU group's receivers do, and the frame keeps the union (round 16)
+		mut pdu_port_rx := map[string][]string{}
 		for tref in descendants(ft, 'PDU-TRIGGERING-REF') {
 			trig, trig_path := r.deref_node(tref, ft_path) or { continue }
+			mut ipdu_path := ''
+			if iref := child(trig, 'I-PDU-REF') {
+				if _, ip := r.deref_node(iref, trig_path) {
+					ipdu_path = ip
+				}
+			}
 			for pref in descendants(trig, 'I-PDU-PORT-REF') {
 				port, port_path := r.deref_node(pref, trig_path) or { continue }
 				ecu := r.ecu_of(port_path) or { continue }
 				note_node(mut nodes, ecu)
 				if child_text(port, 'COMMUNICATION-DIRECTION') == 'OUT' {
 					ports.tx(ecu)
-				} else {
-					ports.rx(ecu)
+				} else if ipdu_path == '' {
+					ports.rx(ecu) // no PDU to scope it to: the frame's
+				} else if ecu !in pdu_port_rx[ipdu_path] {
+					pdu_port_rx[ipdu_path] << ecu
 				}
 			}
 		}
@@ -768,6 +780,15 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 					pdu_rx << ecu
 				}
 			}
+			// the I-PDU ports' IN side, scoped to this PDU: the triggering names the MAPPED PDU
+			// (the secured one, for SecOC), the signals sit behind it — either key is this PDU
+			for pk in [pdu_path, sig_pdu_path] {
+				for ecu in pdu_port_rx[pk] {
+					if ecu !in pdu_rx {
+						pdu_rx << ecu
+					}
+				}
+			}
 			for mut s in pdu_sigs {
 				s.receivers = pdu_rx.clone()
 			}
@@ -804,6 +825,11 @@ fn (mut r ArxmlReader) load_cluster(path string) ArxmlCluster {
 			for ecu in r.pdu_in[sig_pdu_path] {
 				note_node(mut nodes, ecu)
 				ports.rx(ecu)
+			}
+			for pk in [pdu_path, sig_pdu_path] {
+				for ecu in pdu_port_rx[pk] {
+					ports.rx(ecu)
+				}
 			}
 		}
 		info.receivers = ports.receivers
@@ -1091,6 +1117,18 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 			// the width-sized raw pattern, which is what raw_value produces, is this signal's
 			mask := if length >= 64 { ~u64(0) } else { (u64(1) << length) - 1 }
 			for k, v in scale.values {
+				// ONLY KEYS THIS WIDTH CAN HOLD: masking every key aliased 256 onto raw 0 of an
+				// 8-bit signal and labelled a value the table never named (codex round 16). A
+				// non-negative key fits below the mask; a signed signal also takes a negative
+				// one — a sign-extended pattern with the width's top bit set
+				top := u64(1) << (length - 1)
+				negative := is_signed && length < 64 && (k | mask) == ~u64(0) && (k & top) != 0
+				if k > mask && !negative {
+					shown := if is_signed && (k | mask) == ~u64(0) { i64(k).str() } else { k.str() }
+					sgn := if is_signed { 'signed' } else { 'unsigned' }
+					r.report.notes << '${isig_path}: enum key ${shown} ("${v}") of ${cm_path} does not fit a ${length}-bit ${sgn} signal; dropped'
+					continue
+				}
 				values[k & mask] = v
 			}
 		}
