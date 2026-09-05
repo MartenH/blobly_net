@@ -1122,6 +1122,14 @@ fn test_round_19_shapes() {
 	trv := sig((tr.cluster('') or { panic(err) }).db.messages[0], 'V')
 	assert trv.minimum == 0.0 && trv.maximum == 100.0
 	assert tr.report.notes.any(it.contains('/Sig/V: the data constraint has 2 DATA-CONSTR-RULEs; the first physical'))
+	// a linear scale's own OPEN bound, used as the range when nothing overrides it, is said too
+	open_scale := offset_pdu_xml.replace(v_sig, '<I-SIGNAL><SHORT-NAME>V</SHORT-NAME><LENGTH>16</LENGTH><SYSTEM-SIGNAL-REF DEST="SYSTEM-SIGNAL">/Sys/S</SYSTEM-SIGNAL-REF></I-SIGNAL>') + '<AR-PACKAGE><SHORT-NAME>Sys</SHORT-NAME><ELEMENTS><SYSTEM-SIGNAL><SHORT-NAME>S</SHORT-NAME><PHYSICAL-PROPS><SW-DATA-DEF-PROPS-VARIANTS><SW-DATA-DEF-PROPS-CONDITIONAL><COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/L</COMPU-METHOD-REF></SW-DATA-DEF-PROPS-CONDITIONAL></SW-DATA-DEF-PROPS-VARIANTS></PHYSICAL-PROPS></SYSTEM-SIGNAL></ELEMENTS></AR-PACKAGE>' + '<AR-PACKAGE><SHORT-NAME>CM</SHORT-NAME><ELEMENTS><COMPU-METHOD><SHORT-NAME>L</SHORT-NAME><CATEGORY>LINEAR</CATEGORY><COMPU-INTERNAL-TO-PHYS><COMPU-SCALES><COMPU-SCALE><LOWER-LIMIT INTERVAL-TYPE="OPEN">0</LOWER-LIMIT><UPPER-LIMIT>1000</UPPER-LIMIT><COMPU-RATIONAL-COEFFS><COMPU-NUMERATOR><V>0</V><V>0.1</V></COMPU-NUMERATOR><COMPU-DENOMINATOR><V>1</V></COMPU-DENOMINATOR></COMPU-RATIONAL-COEFFS></COMPU-SCALE></COMPU-SCALES></COMPU-INTERNAL-TO-PHYS></COMPU-METHOD></ELEMENTS></AR-PACKAGE>'
+	os_ := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + open_scale + arxml_tail) or {
+		panic(err)
+	}
+	osv := sig((os_.cluster('') or { panic(err) }).db.messages[0], 'V')
+	assert osv.factor == 0.1 && osv.minimum == 0.0 && osv.maximum == 100.0
+	assert os_.report.notes.any(it.contains('/CM/L: LOWER-LIMIT 0 is OPEN; read as a closed'))
 }
 
 fn test_two_triggerings_of_one_id_keep_the_first_and_say_so() {
@@ -1213,6 +1221,14 @@ fn test_number_forms() {
 // --- the export (arxml_export.v) --------------------------------------------------------
 fn example_cluster() ArxmlCluster {
 	return example_arxml().cluster('Body') or { panic(err) }
+}
+
+// the mapped primitive is one the simulation can compute, by the one list
+fn test_e2e_profile_primitive_is_held_to_the_shared_list() {
+	for p in ['PROFILE_01', 'PROFILE_11', 'PROFILE_02', 'PROFILE_22'] {
+		assert e2e_profile_primitive(p) in e2e_profiles, p
+	}
+	assert e2e_profile_primitive('PROFILE_05') == ''
 }
 
 fn test_e2e_signals_from_offsets() {

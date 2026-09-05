@@ -1414,6 +1414,10 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 					has_domain = true
 					lower = parse_num(lo)
 					upper = parse_num(hi)
+					// the scale's domain becomes the signal's range when no data constraint
+					// overrides it, so an OPEN or INFINITE bound here is the same lost meaning
+					// the constraint path already reports (round 24)
+					r.note_open_bounds(s, cm_path)
 				}
 			}
 		}

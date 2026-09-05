@@ -40,11 +40,15 @@ pub:
 // 1's header layout and counter rules are the file's, not ours — and a profile with a CRC
 // this app lacks (profile 4/5/6/7 are CRC-16/32/64) maps to '' so nothing pretends.
 pub fn e2e_profile_primitive(profile string) string {
-	return match profile {
+	p := match profile {
 		'PROFILE_01', 'PROFILE_11' { 'crc8_j1850' }
 		'PROFILE_02', 'PROFILE_22' { 'crc8_autosar' }
 		else { '' }
 	}
+	// HELD TO THE ONE LIST: a primitive renamed or removed from e2e_profiles must stop being
+	// exported here too, or the DBC attributes and the fragment would carry a checksum the
+	// simulation's validators reject (codex on #273 round 24)
+	return if p in e2e_profiles { p } else { '' }
 }
 
 // e2e_signals resolves a frame's E2E declaration to the signals at its offsets, or none if

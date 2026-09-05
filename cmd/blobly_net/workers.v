@@ -541,7 +541,14 @@ fn (a &App) script_db(ch Chan) candb.Database {
 	al.mu.lock()
 	paths := ch.databases.map(a.resolve_asset(it))
 	al.mu.unlock()
-	return candb.merge_files(paths)
+	// WITH THE REPORT: a file deleted or broken since the project was loaded, or a reader note,
+	// would otherwise hand the script an empty or partial database and let it fail on "unknown
+	// message" with nothing in the Log to say the reload was the cause (round 24)
+	db, notes := candb.merge_files_report(paths)
+	for n in notes {
+		al.notify('script: ${ch.name}: ${n}')
+	}
+	return db
 }
 
 fn rx_loop(app &App, ci int, iface string, gen u64) {
