@@ -583,8 +583,10 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 	// Only for the run we belong to. Opening a bus takes time, so a loop from the PREVIOUS run
 	// can arrive here after a restart — and since the teardown below is generation-guarded, the
 	// flag it set would stay true with nobody reading: note_emit would then count a watcher that
-	// does not exist and mark healthy traffic as never having reached the wire.
-	if a.run_gen != gen {
+	// does not exist and mark healthy traffic as never having reached the wire. And only for the
+	// ROW we belong to (#140): a slow open that succeeds after a Stop and a project load would
+	// otherwise index the new project's array here, before any of the guarded sites below.
+	if !a.row_is_mine_locked(ci, iface, gen) {
 		a.mu.unlock()
 		bus.close()
 		return
