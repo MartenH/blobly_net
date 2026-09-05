@@ -185,8 +185,6 @@ a wire-visible feature, the matching host support usually lands here in the same
   is hardware and not standard, stated because `XLcanFdConf` has no prescaler field and nothing
   in the API reports what it divided. Kvaser and PCAN have it too, below.
 
-Kept last: this is where the roadmap ends, not where it starts.
-
 - ✅ **CAN-FD on Kvaser** — `kvaser:<ch>@<arb>/<data>`, the data rate in the address asking for FD
   exactly as it does on Vector. `canOpenChannel(canOPEN_CAN_FD)` + `canSetBusParamsFd`, and the
   FD/BRS flags are read back per frame because an FD channel carries classic frames too.
@@ -287,3 +285,5 @@ Kept last: this is where the roadmap ends, not where it starts.
 - ✅ **Dear ImGui + ImPlot** GUI · ✅ Windows build + CI
 - ✅ **Lua scripting** — test framework, headless runner for CI, Script panel in the GUI
 - ✅ `.blobnet` project files
+
+Kept last: this is where the roadmap ends, not where it starts.
