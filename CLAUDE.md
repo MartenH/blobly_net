@@ -317,7 +317,7 @@ response shape changes.
 
   | outcome | where | match on |
   |---|---|---|
-  | findings | `pulls/N/reviews` | the review's `commit_id`, else `**Reviewed commit:** \`<sha>\`` or a `/blob/<sha>/…` link in its body (`review_is_for`) |
+  | findings | `pulls/N/reviews` | the review's `commit_id` when GitHub supplies one (it decides, whatever the text says); else `**Reviewed commit:** \`<sha>\`` or a `/blob/<sha>/…` link in its body (`review_is_for`) |
   | **clean** | `issues/N/comments` or `pulls/N/reviews` | `**Reviewed commit:** \`<sha>\`` in the body |
   | failed | `issues/N/comments` | "Something went wrong" — re-request, do not wait |
 

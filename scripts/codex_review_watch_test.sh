@@ -184,6 +184,15 @@ case "${FAKE_GH_CASE:-}:$endpoint" in
 	blob_other_sha:repos/MartenH/blobly_net/issues/123/comments)
 		printf '[]\n'
 		;;
+	commit_id_other:repos/MartenH/blobly_net/pulls/123/reviews)
+		printf '[{"id":13,"submitted_at":"2026-01-01T00:00:02Z","commit_id":"0123456789abcdef0123456789abcdef01234567","user":%s,"body":"Codex Review: Didn'\''t find any major issues. **Reviewed commit:** `abcdef1234`"}]\n' "$bot"
+		;;
+	commit_id_other:repos/MartenH/blobly_net/pulls/123/comments)
+		printf '[]\n'
+		;;
+	commit_id_other:repos/MartenH/blobly_net/issues/123/comments)
+		printf '[]\n'
+		;;
 	commit_id_only:repos/MartenH/blobly_net/pulls/123/reviews)
 		printf '[{"id":13,"submitted_at":"2026-01-01T00:00:02Z","commit_id":"abcdef1234567890abcdef1234567890abcdef12","user":%s,"body":"### Codex Review nothing here names the commit"}]\n' "$bot"
 		;;
@@ -362,6 +371,12 @@ ok "a bot review linking another commit claims no findings" "$(grep -c '^RESULT=
 rc=$(run_case commit_id_only "$out")
 ok "a review is identified by its commit_id" "$rc" "20"
 ok "its inline comment is counted by commit_id" "$(grep -c '^PULL_COMMENTS=1$' "$out")" "1"
+
+# and commit_id WINS: a review GitHub attaches to another commit is not this head's verdict,
+# however its text reads (codex on net#281)
+rc=$(run_case commit_id_other "$out")
+ok "a review with another commit_id is pending whatever its marker says" "$rc" "1"
+ok "a review with another commit_id is never clean" "$(grep -c '^RESULT=clean$' "$out")" "0"
 
 rc=$(run_case foreign_review "$out")
 ok "foreign review mentioning SHA is pending" "$rc" "1"
