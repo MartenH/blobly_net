@@ -78,6 +78,9 @@ pub fn (c ArxmlCluster) e2e_signals(m Message) ?E2eSignals {
 // must BE the field, not merely contain the offset — an offset inside an ordinary multi-bit
 // signal would name an application signal as the CRC.
 pub fn e2e_export_refusal(m Message, e ArxmlE2e) string {
+	if e.malformed != '' {
+		return e.malformed
+	}
 	if !e.has_crc_counter {
 		return 'it declares no CRC and counter offsets'
 	}

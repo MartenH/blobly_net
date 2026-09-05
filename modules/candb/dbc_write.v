@@ -103,6 +103,24 @@ pub fn (db Database) to_dbc_with(x DbcExtras) string {
 	b << 'BS_:'
 	b << ''
 	mut nodes := db.nodes.clone()
+	// EVERY NODE THE FILE REFERENCES IS DECLARED: a sender, an additional transmitter or a signal
+	// receiver the editor removed from the node list would otherwise be written on its BO_ or
+	// SG_ line and be missing from BU_ — a file the parser reads and other tools refuse (#273
+	// round 39). The placeholder is not a node.
+	for m in db.messages {
+		for n in m.senders() {
+			if n !in nodes {
+				nodes << n
+			}
+		}
+		for s in m.signals {
+			for n in s.receivers {
+				if n != '' && n != 'Vector__XXX' && n !in nodes {
+					nodes << n
+				}
+			}
+		}
+	}
 	nodes.sort()
 	b << 'BU_: ${nodes.join(' ')}'
 	b << ''

@@ -193,12 +193,40 @@ fn main() {
 		staged << stage(toml_out, frag, staged) or { unlock_and_exit(locks, 1) }
 		staged[staged.len - 1] << toml_out
 	}
+	// PUBLISHED WITH A WAY BACK (round 39): each destination that exists is set aside before its
+	// replacement moves in, and a later move failing puts every earlier one back — so a reported
+	// failure never leaves a regenerated DBC beside the previous fragment. The set-aside copies
+	// go only once every move succeeded.
+	mut set_aside := [][]string{} // [destination, its previous content's temporary]
 	for st in staged {
+		prev := st[1] + '.arxml2dbc.${os.getpid()}.prev'
+		if os.exists(st[1]) {
+			os.mv(st[1], prev) or {
+				eprintln('arxml2dbc: ${st[1]}: cannot set the previous file aside: ${err}')
+				roll_back(set_aside)
+				unlock_and_exit(locks, 1)
+			}
+			set_aside << [st[1], prev]
+		}
 		os.mv(st[0], st[1]) or {
 			eprintln('arxml2dbc: ${st[1]}: ${err}')
+			roll_back(set_aside)
 			unlock_and_exit(locks, 1)
 		}
 		eprintln('arxml2dbc: wrote ${st[2]}')
+	}
+	for sa in set_aside {
+		os.rm(sa[1]) or {}
+	}
+}
+
+// roll_back puts every destination that was set aside back where it was, newest first.
+fn roll_back(set_aside [][]string) {
+	for i := set_aside.len - 1; i >= 0; i-- {
+		os.rm(set_aside[i][0]) or {}
+		os.mv(set_aside[i][1], set_aside[i][0]) or {
+			eprintln('arxml2dbc: could not restore ${set_aside[i][0]} from ${set_aside[i][1]}: ${err}')
+		}
 	}
 }
 
@@ -234,6 +262,11 @@ fn stage(dst string, text string, earlier [][]string) ![]string {
 // returns its spelling unchanged, so `out` and `./out` compared unequal and the second write
 // replaced the first (codex on #273 round 33).
 fn canon(p string) string {
+	if os.exists(p) {
+		// an existing leaf resolves whole, symlink included: `link.arxml --dbc real.arxml`
+		// compared two base names and overwrote the link's target (round 39)
+		return os.real_path(p)
+	}
 	return os.join_path(os.real_path(os.dir(p)), os.base(p))
 }
 

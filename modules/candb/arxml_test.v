@@ -596,6 +596,18 @@ fn test_alternating_data_ids_are_named_not_collapsed() {
 	assert !c.export_dbc(ArxmlProvenance{}, a.report).contains('E2EDataId')
 	// and the load report says so, since a DBC-only consumer never sees the fragment (round 26)
 	assert a.report.notes.any(it.contains('F: the DBC export carries NO E2E attributes for it — its data-id mode ALTERNATING-8-BIT is not expressible there')), a.report.notes.str()
+	// a DATA-ID or an offset that is not an integer makes the contract untrustworthy: refused
+	// and said, never exported with the 0 the lenient parser read (round 39)
+	for bad in [['<DATA-ID>7</DATA-ID>', '<DATA-ID>invalid</DATA-ID>', 'DATA-ID "invalid" is not an integer'],
+		['<CRC-OFFSET>16</CRC-OFFSET>', '<CRC-OFFSET>x</CRC-OFFSET>', 'CRC-OFFSET "x" is not a non-negative integer'],
+		['<COUNTER-OFFSET>24</COUNTER-OFFSET>', '<COUNTER-OFFSET>-8</COUNTER-OFFSET>', 'COUNTER-OFFSET "-8" is not a non-negative integer']] {
+		mb := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>16</CRC-OFFSET>').replace(bad[0], bad[1]) + arxml_tail) or {
+			panic(err)
+		}
+		mc := mb.cluster('') or { panic(err) }
+		assert mc.e2e_signals(mc.db.messages[0]) == none, bad[1]
+		assert mb.report.notes.any(it.contains('carries NO E2E attributes for it — its ' + bad[2])), mb.report.notes.str()
+	}
 	// a protection with no DATA-ID is not exported as id 0 (round 38)
 	no_id := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + e2e_xml('PROFILE_01', '<COUNTER-OFFSET>24</COUNTER-OFFSET><CRC-OFFSET>16</CRC-OFFSET>').replace('<DATA-IDS><DATA-ID>7</DATA-ID></DATA-IDS>', '<DATA-IDS></DATA-IDS>') + arxml_tail) or {
 		panic(err)
@@ -1314,7 +1326,13 @@ fn test_frame_lengths_are_bounded() {
 		panic(err)
 	}
 	assert (nan.cluster('') or { panic(err) }).db.messages.len == 0
-	assert nan.report.notes.any(it.contains('frame F has FRAME-LENGTH "eight", not an integer; not read'))
+	assert nan.report.notes.any(it.contains('frame F has FRAME-LENGTH "eight", not a non-negative integer; not read'))
+	// …and one that overflows the parser is refused too, not read as 0 (round 39)
+	huge := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<FRAME-LENGTH>8</FRAME-LENGTH>', '<FRAME-LENGTH>0x10000000000000000</FRAME-LENGTH>') + arxml_tail) or {
+		panic(err)
+	}
+	assert (huge.cluster('') or { panic(err) }).db.messages.len == 0
+	assert huge.report.notes.any(it.contains('frame F has FRAME-LENGTH "0x10000000000000000", outside 0..64; not read'))
 	// classic CAN carries 8 bytes: a 12-byte frame not declared CAN-FD is not read (round 35)
 	classic12 := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace('<FRAME-LENGTH>8</FRAME-LENGTH>', '<FRAME-LENGTH>12</FRAME-LENGTH>') + arxml_tail) or {
 		panic(err)

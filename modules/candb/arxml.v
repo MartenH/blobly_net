@@ -63,6 +63,10 @@ pub:
 	data_ids        []u32 // every declared DATA-ID (profile 1 may alternate between two)
 	data_id_mode    string // DATA-ID-MODE (ALL-16-BIT, LOWER-12-BIT, LOWER-8-BIT, ALTERNATING-8-BIT) or ''
 	has_crc_counter bool // CRC-OFFSET and COUNTER-OFFSET were declared (profiles 1/2/11/22)
+	// why the declaration cannot be trusted at all: a DATA-ID or an offset that is not an
+	// integer, which the lenient parser read as 0 — and 0 is a legitimate id and a legitimate
+	// offset, so the export would have published a different contract (round 39). '' when sound
+	malformed string
 	crc_offset      int // bits, within the data window
 	counter_offset  int // bits, within the data window
 	offset          int // bits, OFFSET of the fixed header (profiles 4/5/6/7), else 0
@@ -325,14 +329,25 @@ fn frame_admission(ft xml.XMLNode, frame xml.XMLNode, fname string) FrameAdmissi
 		}
 	}
 	len_text := child_text(frame, 'FRAME-LENGTH').trim_space()
-	if !integral_literal(len_text) {
-		// read as 0 for want of a number, a malformed frame claimed its id and dropped the real
-		// one as a duplicate (round 38)
+	// FALLIBLY AND BOUNDED: read as 0 for want of a number — or for an overflow the lenient
+	// parser also turned into 0 — a malformed frame claimed its id and dropped the real one as
+	// a duplicate (rounds 38–39)
+	if !integral_literal(len_text) || len_text.starts_with('-') {
 		return FrameAdmission{
-			refusal: 'frame ${fname} has FRAME-LENGTH "${len_text}", not an integer; not read'
+			refusal: 'frame ${fname} has FRAME-LENGTH "${len_text}", not a non-negative integer; not read'
 		}
 	}
-	dlc := int(parse_i64(len_text))
+	wide := key_of(len_text) or {
+		return FrameAdmission{
+			refusal: 'frame ${fname} has FRAME-LENGTH "${len_text}", outside 0..64; not read'
+		}
+	}
+	if wide > 64 {
+		return FrameAdmission{
+			refusal: 'frame ${fname} has FRAME-LENGTH ${len_text}, outside 0..64; not read'
+		}
+	}
+	dlc := int(wide)
 	if dlc < 0 || dlc > 64 {
 		return FrameAdmission{
 			refusal: 'frame ${fname} has FRAME-LENGTH ${dlc}, outside 0..64; not read'
@@ -719,8 +734,20 @@ fn (mut r ArxmlReader) load_e2e() {
 				continue
 			}
 			mut ids := []u32{}
+			mut malformed := ''
 			for d in descendants(profile, 'DATA-ID') {
+				if !integral_literal(el_text(d)) {
+					malformed = 'its DATA-ID "${el_text(d).trim_space()}" is not an integer'
+					continue
+				}
 				ids << u32(parse_int(el_text(d)))
+			}
+			for off in ['CRC-OFFSET', 'COUNTER-OFFSET'] {
+				if c := child(profile, off) {
+					if !integral_literal(el_text(c)) || el_text(c).trim_space().starts_with('-') {
+						malformed = 'its ${off} "${el_text(c).trim_space()}" is not a non-negative integer'
+					}
+				}
 			}
 			category := child_text(profile, 'CATEGORY')
 			has_cc := child(profile, 'CRC-OFFSET') != none && child(profile, 'COUNTER-OFFSET') != none
@@ -733,6 +760,7 @@ fn (mut r ArxmlReader) load_e2e() {
 				data_ids: ids
 				data_id_mode: child_text(profile, 'DATA-ID-MODE')
 				has_crc_counter: has_cc
+				malformed: malformed
 				crc_offset: parse_int(child_text(profile, 'CRC-OFFSET'))
 				counter_offset: parse_int(child_text(profile, 'COUNTER-OFFSET'))
 				offset: parse_int(child_text(profile, 'OFFSET'))
