@@ -1234,6 +1234,9 @@ fn (mut r ArxmlReader) load_signals(pdu xml.XMLNode, pdu_path string, pdu_off in
 			}
 		} else if scale.has_domain {
 			minimum, maximum = scaled_range(scale.lower, scale.upper, factor, offset)
+			for f in scale.domain_open {
+				r.report.notes << "${isig_path}: the compu scale's ${f}; read as a closed (inclusive) bound, which the range model is"
+			}
 		}
 
 		// description: the system signal's, else the I-SIGNAL's own
@@ -1278,10 +1281,11 @@ struct ArxmlScale {
 	values map[u64]string // UNMASKED raw values: one method serves signals of several widths
 	// the keys spelled with a minus sign, KEPT APART: -1 and 2^64-1 are one u64 pattern, and one
 	// method shared by a signed and an unsigned 64-bit signal may name both (round 21)
-	neg_values map[u64]string
-	has_domain bool // the linear scale declared LOWER-LIMIT/UPPER-LIMIT (raw)
-	lower      f64
-	upper      f64
+	neg_values  map[u64]string
+	has_domain  bool // the linear scale declared LOWER-LIMIT/UPPER-LIMIT (raw)
+	domain_open []string // which of those bounds is OPEN/INFINITE: said by the signal that uses the domain
+	lower       f64
+	upper       f64
 }
 
 // scaled_range maps a raw interval to physical and ORDERS it: a negative factor turns the raw
@@ -1312,6 +1316,7 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 	mut has_domain := false
 	mut lower := 0.0
 	mut upper := 0.0
+	mut domain_open := []string{}
 	// a BITFIELD_TEXTTABLE labels raw values by MASK, so one label applies to every raw value
 	// that matches under it — which a value table keyed by exact raw value cannot say. Said
 	// once, and its labels are NOT filed as exact keys (codex on #273 round 15)
@@ -1416,8 +1421,10 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 					upper = parse_num(hi)
 					// the scale's domain becomes the signal's range when no data constraint
 					// overrides it, so an OPEN or INFINITE bound here is the same lost meaning
-					// the constraint path already reports (round 24)
-					r.note_open_bounds(s, cm_path)
+					// the constraint path reports — CARRIED, and said only by a signal that
+					// selects this domain: a method whose every user has a constraint is not a
+					// partial read (rounds 24–25)
+					domain_open = open_bound_facts(s)
 				}
 			}
 		}
@@ -1439,6 +1446,7 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 		values: values
 		neg_values: neg_values
 		has_domain: has_domain
+		domain_open: domain_open
 		lower: lower
 		upper: upper
 	}
@@ -1743,13 +1751,23 @@ fn parse_num(s string) f64 {
 // as valid — in the editor, in the exported DBC, and to range-based fault handling. Said,
 // since the constraint changed meaning on the way in.
 fn (mut r ArxmlReader) note_open_bounds(c xml.XMLNode, path string) {
+	for f in open_bound_facts(c) {
+		r.report.notes << '${path}: ${f}; read as a closed (inclusive) bound, which the range model is'
+	}
+}
+
+// open_bound_facts names each bound of `c` that is not CLOSED — `LOWER-LIMIT 0 is OPEN` — pure,
+// so a scale can carry them until a signal actually USES its domain as the range (round 25).
+fn open_bound_facts(c xml.XMLNode) []string {
+	mut out := []string{}
 	for lim in ['LOWER-LIMIT', 'UPPER-LIMIT'] {
 		l := child(c, lim) or { continue }
 		kind := l.attributes['INTERVAL-TYPE'] or { 'CLOSED' }
 		if kind != 'CLOSED' {
-			r.report.notes << '${path}: ${lim} ${el_text(l)} is ${kind}; read as a closed (inclusive) bound, which the range model is'
+			out << '${lim} ${el_text(l)} is ${kind}'
 		}
 	}
+	return out
 }
 
 // seconds_to_ms converts an ARXML time (seconds, "0.1" or "1.0E-2") to whole milliseconds,

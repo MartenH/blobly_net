@@ -1129,7 +1129,15 @@ fn test_round_19_shapes() {
 	}
 	osv := sig((os_.cluster('') or { panic(err) }).db.messages[0], 'V')
 	assert osv.factor == 0.1 && osv.minimum == 0.0 && osv.maximum == 100.0
-	assert os_.report.notes.any(it.contains('/CM/L: LOWER-LIMIT 0 is OPEN; read as a closed'))
+	assert os_.report.notes.any(it.contains("/Sig/V: the compu scale's LOWER-LIMIT 0 is OPEN; read as a closed"))
+	// …and NOT when a data constraint overrides the scale's domain: that import is exact (round 25)
+	overridden := open_scale.replace('<COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/L</COMPU-METHOD-REF>', '<COMPU-METHOD-REF DEST="COMPU-METHOD">/CM/L</COMPU-METHOD-REF><DATA-CONSTR-REF DEST="DATA-CONSTR">/DC/Split</DATA-CONSTR-REF>') + '<AR-PACKAGE><SHORT-NAME>DC</SHORT-NAME><ELEMENTS><DATA-CONSTR><SHORT-NAME>Split</SHORT-NAME><DATA-CONSTR-RULES><DATA-CONSTR-RULE><PHYS-CONSTRS><LOWER-LIMIT>1</LOWER-LIMIT><UPPER-LIMIT>50</UPPER-LIMIT></PHYS-CONSTRS></DATA-CONSTR-RULE></DATA-CONSTR-RULES></DATA-CONSTR></ELEMENTS></AR-PACKAGE>'
+	ov2 := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + overridden + arxml_tail) or {
+		panic(err)
+	}
+	ov2v := sig((ov2.cluster('') or { panic(err) }).db.messages[0], 'V')
+	assert ov2v.minimum == 1.0 && ov2v.maximum == 50.0
+	assert !ov2.report.notes.any(it.contains('is OPEN'))
 }
 
 fn test_two_triggerings_of_one_id_keep_the_first_and_say_so() {
