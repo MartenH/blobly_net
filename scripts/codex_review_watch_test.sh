@@ -167,12 +167,30 @@ case "${FAKE_GH_CASE:-}:$endpoint" in
 		printf '[]\n'
 		;;
 	blob_only:repos/MartenH/blobly_net/pulls/123/reviews)
-		printf '[{"id":13,"submitted_at":"2026-01-01T00:00:02Z","user":%s,"body":"### Codex Review https://github.com/MartenH/blobly_net/blob/abcdef1234567890abcdef1234567890abcdef12/file.v#L44-L45 **P2 Badge** Normalize before writing"}]\n' "$bot"
+		printf '[{"id":13,"submitted_at":"2026-01-01T00:00:02Z","user":%s,"body":"### Codex Review https://github.com/MartenH/blobly_net/blob/abcdef1234567890abcdef1234567890abcdef12/file.v#L44-L45 ![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat) Normalize before writing"}]\n' "$bot"
 		;;
 	blob_only:repos/MartenH/blobly_net/pulls/123/comments)
 		printf '[]\n'
 		;;
 	blob_only:repos/MartenH/blobly_net/issues/123/comments)
+		printf '[]\n'
+		;;
+	blob_other_sha:repos/MartenH/blobly_net/pulls/123/reviews)
+		printf '[{"id":13,"submitted_at":"2026-01-01T00:00:02Z","user":%s,"body":"### Codex Review https://github.com/MartenH/blobly_net/blob/0123456789abcdef0123456789abcdef01234567/file.v#L44 ![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat) an older head"}]\n' "$bot"
+		;;
+	blob_other_sha:repos/MartenH/blobly_net/pulls/123/comments)
+		printf '[]\n'
+		;;
+	blob_other_sha:repos/MartenH/blobly_net/issues/123/comments)
+		printf '[]\n'
+		;;
+	commit_id_only:repos/MartenH/blobly_net/pulls/123/reviews)
+		printf '[{"id":13,"submitted_at":"2026-01-01T00:00:02Z","commit_id":"abcdef1234567890abcdef1234567890abcdef12","user":%s,"body":"### Codex Review nothing here names the commit"}]\n' "$bot"
+		;;
+	commit_id_only:repos/MartenH/blobly_net/pulls/123/comments)
+		printf '[{"id":31,"created_at":"2026-01-01T00:00:02Z","commit_id":"abcdef1234567890abcdef1234567890abcdef12","pull_request_review_id":13,"user":%s,"body":"![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat) an inline finding"}]\n' "$bot"
+		;;
+	commit_id_only:repos/MartenH/blobly_net/issues/123/comments)
 		printf '[]\n'
 		;;
 	foreign_review:repos/MartenH/blobly_net/pulls/123/reviews)
@@ -335,6 +353,15 @@ ok "body-only has zero inline comments" "$(grep -c '^PULL_COMMENTS=0$' "$out")" 
 rc=$(run_case blob_only "$out")
 ok "body-only review without a marker is identified by its blob link" "$rc" "20"
 ok "body-only review without a marker reports findings" "$(grep -c '^RESULT=findings$' "$out")" "1"
+
+rc=$(run_case blob_other_sha "$out")
+ok "a bot review linking another commit is not this head's verdict" "$rc" "1"
+ok "a bot review linking another commit claims no findings" "$(grep -c '^RESULT=findings$' "$out")" "0"
+
+# the identity GitHub records: a review whose body names nothing, with commit_id == head
+rc=$(run_case commit_id_only "$out")
+ok "a review is identified by its commit_id" "$rc" "20"
+ok "its inline comment is counted by commit_id" "$(grep -c '^PULL_COMMENTS=1$' "$out")" "1"
 
 rc=$(run_case foreign_review "$out")
 ok "foreign review mentioning SHA is pending" "$rc" "1"

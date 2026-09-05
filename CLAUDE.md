@@ -317,7 +317,7 @@ response shape changes.
 
   | outcome | where | match on |
   |---|---|---|
-  | findings | `pulls/N/reviews` | `**Reviewed commit:** \`<sha>\`` in the body |
+  | findings | `pulls/N/reviews` | the review's `commit_id`, else `**Reviewed commit:** \`<sha>\`` or a `/blob/<sha>/…` link in its body (`review_is_for`) |
   | **clean** | `issues/N/comments` or `pulls/N/reviews` | `**Reviewed commit:** \`<sha>\`` in the body |
   | failed | `issues/N/comments` | "Something went wrong" — re-request, do not wait |
 
@@ -330,10 +330,11 @@ response shape changes.
 - **Findings can arrive in the review BODY, not only as inline comments.** A body carrying a
   `P1`/`P2` badge or a `/blob/<sha>/file#L…` link is NOT clean, whatever the comment count says.
   **And such a body may carry no `Reviewed commit:` marker at all** — net#273 round 46 was one
-  finding in the body, a `/blob/<sha>/…#L174-L175` link and nothing else naming the commit, and
-  the watcher sat its whole hour on it. The link names the commit as surely as the marker does,
-  so the bot's review is identified by either (`names_head`); the actor check is what keeps a
-  human's link from counting.
+  finding in the body, a `/blob/<sha>/…#L174-L175` link and nothing else in the text naming the
+  commit, and a watcher matching the marker sat its whole hour on it. GitHub records the
+  reviewed commit on the review object (`commit_id`; every codex review on #273 carries it and
+  agrees with its marker), so that is the identity and the body text is the fallback
+  (`review_is_for`). The clean channel keeps the marker: an issue comment has no `commit_id`.
 - **Review-comment ids and issue-comment ids are different id spaces.** A baseline taken from one
   and compared against the other never matches, so the count sits at 0 forever.
 - **A "review failed" scan needs its own baseline too**, or one historical failure fires on every
