@@ -779,8 +779,10 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		a.mu.lock()
 		// AGAIN under the lock. The check after recv can pass and then this thread be
 		// descheduled while Start resets the ring and advances the generation — the stale loop
-		// would resume here and claim or record its old frame against the new run.
-		if a.run_gen != gen {
+		// would resume here and claim or record its old frame against the new run. And the ROW
+		// (#140): a frame that wakes this recv after a Stop and a project load would otherwise
+		// be filed against the rebuilt array's row `ci`, or past its end.
+		if !a.row_is_mine_locked(ci, iface, gen) {
 			a.mu.unlock()
 			break
 		}
@@ -832,8 +834,8 @@ fn rx_loop(app &App, ci int, iface string, gen u64) {
 		a.mu.lock()
 		// The run again: this iteration released the lock after claiming, and a Stop→Start in
 		// that gap resets the ring and moves the generation — publishing here would put the old
-		// run's frame into the new run's trace, recording and verifier.
-		if a.run_gen != gen {
+		// run's frame into the new run's trace, recording and verifier. The row too (#140).
+		if !a.row_is_mine_locked(ci, iface, gen) {
 			a.mu.unlock()
 			break
 		}
