@@ -252,7 +252,7 @@ Plus the full Lua 5.4 standard library (`string`, `table`, `math`, …).
 | `sim.fault(channel, node, message, kind [, ms [, signal]])` | inject a fault into a simulated ECU's message — `drop`, `bad_crc`, `freeze_counter`, `out_of_range` (with `signal`), or `clear`; `ms` limits it in time. A fault that cannot take effect (no such node, no protection field for `bad_crc`) is refused, not silently armed. See [simulation.md](simulation.md). |
 | `sim.clear_fault(channel, node, message)` | lift it |
 | `doip.discover(channel)` | one identification request to the channel's configured endpoint |
-| `doip.listen(window_ms [, {port=, ip6=, from=}])` | collect vehicle announcements for a window; each entry names the sender's endpoint. `from=` (listen on that channel's own port) is accepted but currently ignored — [#233](https://github.com/MartenH/blobly_net/issues/233) |
+| `doip.listen(window_ms [, {port=, ip6=, from=}])` | collect vehicle announcements for a window; each entry names the sender's endpoint. `from=` names a channel and listens on that channel's own port; a `port=` that contradicts it is an error |
 
 `uds.open` validates its ids (negative or above `0x1FFFFFFF` is an error) and uses 29-bit
 addressing for any id above `0x7FF`. The handle it returns exposes `handle` and `channel`.
