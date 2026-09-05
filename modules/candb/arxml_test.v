@@ -1164,6 +1164,26 @@ fn test_round_19_shapes() {
 	}
 	assert sig((bl.cluster('') or { panic(err) }).db.messages[0], 'V').desc == 'speed'
 	assert bl.report.notes.any(it.contains('/Sig/V: the description has 2 languages; only the first (EN) is kept'))
+	// two timing specifications on one PDU: the first is read and the count said (round 28)
+	pdu_head := '<I-SIGNAL-I-PDU><SHORT-NAME>P</SHORT-NAME><LENGTH>4</LENGTH>'
+	timing := fn (ms string) string {
+		return '<I-PDU-TIMING><TRANSMISSION-MODE-DECLARATION><TRANSMISSION-MODE-TRUE-TIMING><CYCLIC-TIMING><TIME-PERIOD><VALUE>${ms}</VALUE></TIME-PERIOD></CYCLIC-TIMING></TRANSMISSION-MODE-TRUE-TIMING></TRANSMISSION-MODE-DECLARATION></I-PDU-TIMING>'
+	}
+	two_t := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml.replace(pdu_head, pdu_head + '<I-PDU-TIMING-SPECIFICATIONS>' + timing('0.1') + timing('0.5') + '</I-PDU-TIMING-SPECIFICATIONS>') + arxml_tail) or {
+		panic(err)
+	}
+	assert (two_t.cluster('') or { panic(err) }).db.messages[0].cycle_ms == 100
+	assert two_t.report.notes.any(it.contains('/PDUs/P: 2 I-PDU-TIMING specifications; the first is read'))
+}
+
+// a J1939 cluster beside a CAN one is a whole bus discarded: counted, so the load report and
+// the provenance do not present the file as complete (round 28)
+fn test_a_j1939_cluster_is_counted_as_ignored() {
+	j := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + offset_pdu_xml + '<AR-PACKAGE><SHORT-NAME>J</SHORT-NAME><ELEMENTS><J-1939-CLUSTER><SHORT-NAME>Truck</SHORT-NAME></J-1939-CLUSTER></ELEMENTS></AR-PACKAGE>' + arxml_tail) or {
+		panic(err)
+	}
+	assert j.report.ignored['J-1939-CLUSTER'] == 1, j.report.ignored.str()
+	assert j.report.lines().any(it.contains('J-1939-CLUSTER'))
 }
 
 fn test_two_triggerings_of_one_id_keep_the_first_and_say_so() {

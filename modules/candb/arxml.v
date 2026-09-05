@@ -48,6 +48,7 @@ import crypto.sha256
 import encoding.xml
 import os
 import sync
+import time
 
 // ArxmlE2e is the AUTOSAR end-to-end protection declared for one PDU. Offsets are in BITS as
 // the file states them: `crc_offset`/`counter_offset` within the protected window (profiles
@@ -270,9 +271,13 @@ struct ArxmlCached {
 }
 
 __global (
-	arxml_cache_mu   sync.Mutex
-	arxml_cache      map[string]ArxmlCached
-	arxml_cache_hits int
+	arxml_cache_mu       sync.Mutex
+	arxml_cache          map[string]ArxmlCached
+	arxml_cache_hits     int
+	// the keys a parse is RUNNING for: a second miss on one of them waits for that parse rather
+	// than starting its own — a real file is seconds and hundreds of MB, and a project rebuild
+	// overlapping a script reload would otherwise pay twice (codex on #273 round 28)
+	arxml_cache_inflight map[string]bool
 )
 
 // load_arxml_file reads and parses a .arxml from disk, once per file CONTENT: the GUI and
@@ -285,15 +290,29 @@ pub fn load_arxml_file(path string) !Arxml {
 	text := os.read_file(path)!
 	key := os.real_path(path)
 	sha := sha256.hexhash(text)
-	arxml_cache_mu.lock()
-	if c := arxml_cache[key] {
-		if c.sha == sha {
-			arxml_cache_hits++
-			arxml_cache_mu.unlock()
-			return c.a
+	for {
+		arxml_cache_mu.lock()
+		if c := arxml_cache[key] {
+			if c.sha == sha {
+				arxml_cache_hits++
+				arxml_cache_mu.unlock()
+				return c.a
+			}
 		}
+		if key !in arxml_cache_inflight {
+			arxml_cache_inflight[key] = true
+			arxml_cache_mu.unlock()
+			break
+		}
+		// somebody is parsing this very file: wait for their answer instead of parsing it again
+		arxml_cache_mu.unlock()
+		time.sleep(10 * time.millisecond)
 	}
-	arxml_cache_mu.unlock()
+	defer {
+		arxml_cache_mu.lock()
+		arxml_cache_inflight.delete(key)
+		arxml_cache_mu.unlock()
+	}
 	a := parse_arxml(text)!
 	arxml_cache_mu.lock()
 	arxml_cache[key] = ArxmlCached{
@@ -366,6 +385,7 @@ const arxml_ignored_kinds = [
 	'LIN-CLUSTER',
 	'FLEXRAY-CLUSTER',
 	'ETHERNET-CLUSTER',
+	'J-1939-CLUSTER', // a whole bus, discarded; counted, or the file read as complete (round 28)
 	'END-TO-END-PROTECTION-VARIABLE-PROTOTYPE',
 	'SO-AD-ROUTING-GROUP',
 	'SOCKET-CONNECTION-BUNDLE',
@@ -929,6 +949,12 @@ struct ArxmlTiming {
 // the PDU does when its mode condition is off) is not read: COM's mode switching is ECU
 // configuration, and a bench needs the cadence the bus is expected to carry.
 fn (mut r ArxmlReader) load_timing(pdu xml.XMLNode, pdu_path string) ArxmlTiming {
+	specs := descendants(pdu, 'I-PDU-TIMING')
+	if specs.len > 1 {
+		// timing per configuration variant: the first is read, like every other variant
+		// container here, and the rest are said (codex on #273 round 28)
+		r.report.notes << '${pdu_path}: ${specs.len} I-PDU-TIMING specifications; the first is read, the others are not'
+	}
 	spec := first(pdu, 'I-PDU-TIMING') or { return ArxmlTiming{} }
 	min_delay := r.timing_ms(first_text(spec, 'MINIMUM-DELAY'), pdu_path, 'MINIMUM-DELAY')
 	tt := first(spec, 'TRANSMISSION-MODE-TRUE-TIMING') or {
