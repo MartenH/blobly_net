@@ -193,9 +193,22 @@ fn test_unreadable_rows_never_refuse_a_project() {
 			enabled: true
 		},
 	]
-	// On this machine physical_wire answers `.nothing` for everything, so both are empty; the
-	// property being pinned is that they are SEPARATE channels, and that the warning path cannot
-	// contribute to the refusal path whatever the driver says.
+	// The property being pinned is that they are SEPARATE channels, and that the warning path
+	// cannot contribute to the refusal path WHATEVER THE DRIVER SAYS — so the assertion must hold
+	// for every answer the driver can give, not only for the one this machine happens to give.
+	// On Linux physical_wire answers `.nothing` for everything and the warnings are empty; on a
+	// Windows bench with the XL library installed it is asked for real, and `vector:1` may well
+	// be unreadable there, or absent from the driver's table, which is a WARNING about this row
+	// — the case the split exists for, and the case the old `== []` assertion failed on (#252).
+	// A single row cannot conflict with anything, so the refusal side is empty on every
+	// platform. The warning's WORDING is not re-pinned here (the pure alias_unreadable_lines
+	// test does that, on every platform); a warning that does arrive must be about this row.
 	assert destination_conflicts(rows) == []
-	assert alias_unreadable_warnings(rows) == []
+	for w in alias_unreadable_warnings(rows) {
+		assert w.contains('CAN1 (vector:1)'), w
+	}
+	$if !windows {
+		// and where no driver can answer, nothing is said either
+		assert alias_unreadable_warnings(rows) == []
+	}
 }
