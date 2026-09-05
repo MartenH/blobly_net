@@ -23,7 +23,10 @@ module main
 import candb
 import crypto.sha256
 import os
+import rand
 import v.vmod
+
+#include <fcntl.h>
 
 fn main() {
 	args := os.args[1..].clone()
@@ -274,15 +277,56 @@ fn stage(dst string, text string, earlier [][]string) ![]string {
 	// PER INVOCATION: two exports of one pair running at once wrote the same temporary and could
 	// publish one's DBC with the other's TOML (round 34). Distinct temporaries end that; which of
 	// two concurrent exports publishes last is still the caller's to order
-	tmp := '${dst}.arxml2dbc.${os.getpid()}.tmp'
-	os.write_file(tmp, text) or {
+	// AND EXCLUSIVELY, UNDER A NAME NOBODY CAN GUESS (round 45): `os.write_file` FOLLOWS a symlink,
+	// so in a directory another account can write to, a link planted at the predictable pid-named
+	// temporary made this export truncate whatever the link pointed at. O_CREAT|O_EXCL refuses a
+	// path that already exists as anything, a link included, and the random suffix leaves no
+	// name to plant one at. The publication lock orders cooperating exports and nothing else
+	tmp := '${dst}.arxml2dbc.${os.getpid()}.${rand.hex(16)}.tmp'
+	fd := C.open(&char(tmp.str), excl_create_flags(), 0o644)
+	if fd < 0 {
+		eprintln('arxml2dbc: ${tmp}: cannot create the staging file (something already has that name)')
+		unstage(earlier)
+		return error('cannot create ${tmp}')
+	}
+	write_all(fd, text) or {
+		C.close(fd)
+		os.rm(tmp) or {}
 		eprintln('arxml2dbc: ${dst}: ${err}')
-		for e in earlier {
-			os.rm(e[0]) or {}
-		}
+		unstage(earlier)
 		return err
 	}
+	C.close(fd)
 	return [tmp, dst]
+}
+
+// excl_create_flags is O_WRONLY|O_CREAT|O_EXCL — plus O_BINARY where the C runtime would
+// otherwise translate line endings — spelled here because `os` keeps its own flag constants
+// private and offers no exclusive-create mode.
+fn excl_create_flags() i32 {
+	$if windows {
+		return i32(0x0001 | 0x0100 | 0x0400 | 0x8000)
+	} $else {
+		return i32(C.O_WRONLY | C.O_CREAT | C.O_EXCL)
+	}
+}
+
+fn unstage(staged [][]string) {
+	for e in staged {
+		os.rm(e[0]) or {}
+	}
+}
+
+// write_all writes text to a descriptor opened by this program, whole, or says what stopped it.
+fn write_all(fd i32, text string) ! {
+	mut off := 0
+	for off < text.len {
+		n := C.write(fd, unsafe { text.str + off }, usize(text.len - off))
+		if n <= 0 {
+			return error('write failed after ${off} of ${text.len} bytes')
+		}
+		off += int(n)
+	}
 }
 
 // canon is a path spelling two names of one file agree on, whether or not the file exists yet:
