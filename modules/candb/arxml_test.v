@@ -939,6 +939,12 @@ fn test_nonlinear_scales_and_negative_factors() {
 	assert ks.factor == 1
 	assert ks.offset == 0
 	assert konst.report.notes.any(it.contains('a constant conversion (every raw value is 5) is not modelled'))
+	// an EMPTY coefficient is not a number either: the scale is refused and said, not read with
+	// a 0 in that place (round 55)
+	empty := parse_arxml(arxml_head + cluster_xml('Bus', 256, '/Frames/F') + sigs + poly.replace('@COEFFS@', '<V/><V>2</V>') + arxml_tail) or { panic(err) }
+	ec2 := empty.cluster('') or { panic(err) }
+	assert sig(ec2.db.messages[0], 'Crc').factor == 1
+	assert empty.report.notes.any(it.contains('rational coefficient "" is not a number; the scale is not read')), empty.report.notes.str()
 	// a scale bound that is present and not a number: no DATA-CONSTR to override it, so the
 	// signal keeps the unspecified range — and the note says so, rather than the provenance
 	// calling the read complete (round 44)

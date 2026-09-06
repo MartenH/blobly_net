@@ -1794,10 +1794,13 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 			if rc := first(s, 'COMPU-RATIONAL-COEFFS') {
 				mut num := []f64{}
 				mut den := []f64{}
+				mut bad := false // separate from the text: an EMPTY <V/> is not a number either,
+				// and as the sentinel it read as "none bad" and became a coefficient of 0 (round 55)
 				mut bad_coeff := ''
 				if nn := first(rc, 'COMPU-NUMERATOR') {
 					for v in descendants(nn, 'V') {
 						if !is_number(el_text(v)) {
+							bad = true
 							bad_coeff = el_text(v).trim_space()
 						}
 						num << parse_num(el_text(v))
@@ -1806,12 +1809,13 @@ fn (mut r ArxmlReader) load_compu(cm xml.XMLNode, cm_path string) ArxmlScale {
 				if dd := first(rc, 'COMPU-DENOMINATOR') {
 					for v in descendants(dd, 'V') {
 						if !is_number(el_text(v)) {
+							bad = true
 							bad_coeff = el_text(v).trim_space()
 						}
 						den << parse_num(el_text(v))
 					}
 				}
-				if bad_coeff != '' {
+				if bad {
 					// read as 0, a malformed coefficient invented an offset or a factor (round 41)
 					r.report.notes << '${cm_path}: rational coefficient "${bad_coeff}" is not a number; the scale is not read'
 					continue
