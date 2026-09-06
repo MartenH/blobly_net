@@ -27,13 +27,6 @@ fn parse_hex_bytes(s string) []u8 {
 	return out
 }
 
-// merge_dbs loads + concatenates a channel's DBCs into one Database (for the sim engine).
-// merge_dbs delegates to candb.merge_files — the single implementation shared with the
-// headless runner, which used to dedupe differently and so simulated a different catalogue.
-fn merge_dbs(paths []string) candb.Database {
-	return candb.merge_files(paths)
-}
-
 // build_node delegates to sim.from_project — the single implementation. This file, cmd/script
 // and cmd/sim_startup_check each carried a byte-identical copy, so a change here (like adding
 // end-to-end protection) reached the GUI and silently skipped the headless runner CI uses.

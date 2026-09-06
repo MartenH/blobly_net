@@ -895,8 +895,9 @@ fn (mut app App) rebuild_from_proj() {
 			replay_loop:    if r := ch.replay { r.repeat } else { false }
 		}
 		for dbpath in ch.databases {
-			mut rp := app.resolve_asset(dbpath)
-			rp = os.real_path(rp) // canonical: two spellings of one file are ONE db
+			// canonical: two spellings of one file are ONE db (and an ARXML's `#Cluster`
+			// rides along — every lookup keys through the same function)
+			rp := candb.canonical_database_ref(app.resolve_asset(dbpath))
 			// a DBC attached to several channels loads ONCE — duplicate dbs
 			// entries would let the editor mutate one copy while decode reads
 			// another
@@ -911,10 +912,13 @@ fn (mut app App) rebuild_from_proj() {
 				app.dbs << dbc_keep[rp]
 				app.dbs_paths << rp
 				app.dbs_by_iface[ch.iface] << dbc_keep[rp]
-			} else if db := candb.load_dbc_file(rp) {
-				app.dbs << db
-				app.dbs_paths << rp // the editor saves back to this path
-				app.dbs_by_iface[ch.iface] << db // scoped to this channel (generator picker)
+			} else if loaded := candb.open_database(rp) {
+				app.dbs << loaded.db
+				app.dbs_paths << rp // the editor saves back to this path (a .dbc; an .arxml is read-only there)
+				app.dbs_by_iface[ch.iface] << loaded.db // scoped to this channel (generator picker)
+				for n in loaded.notes {
+					app.elog('dbc ${n}') // the reader's honesty report: never dropped in silence
+				}
 			} else {
 				app.elog('dbc ${rp}: ${err}')
 			}
@@ -997,13 +1001,21 @@ fn (mut app App) rebuild_from_proj() {
 			// resolve_asset like the database list above: raw paths here re-based the
 			// simulator's DBCs onto the launch/bundle cwd, so an external project's
 			// relative DBC fed the sim nothing (codex #63 r4)
+			// the merge's own skips are narrated too: a refused ARXML (a cluster to name)
+			// otherwise gives the simulated ECUs an empty catalogue with the reason only in
+			// the load loop above, and a missing file none at all
+			sim_paths := ch.databases.map(app.resolve_asset(it))
+			sim_db, sim_notes := candb.merge_files_report(sim_paths)
+			for n in sim_notes {
+				app.elog('sim ${ch.name}: ${n}')
+			}
 			app.sims << SimCfg{
 				iface:    ch.iface
 				pch:      ch
-				db:       merge_dbs(ch.databases.map(app.resolve_asset(it)))
+				db:       sim_db
 				nodes:    nodes
 				verify:   ch.verify
-				db_paths: ch.databases.map(app.resolve_asset(it))
+				db_paths: sim_paths.map(candb.canonical_database_ref(it))
 			}
 		}
 	}

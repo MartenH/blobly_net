@@ -18,6 +18,7 @@ So each one pins a V module to something written by someone else:
 | `mf4_bridge.py` | `modules/mf4` | asammdf parses the same `.mf4`; frame counts/ids must match |
 | `uds_server.py` | `modules/uds` | the behaviour `modules/uds/server.v` was written to mirror |
 | `doip_server.py` | `modules/doip` | an independent DoIP peer to talk to |
+| `arxml_oracle.py` | `modules/candb` (`arxml.v`) | cantools reads the same AUTOSAR system description; `diff` against `cmd/arxml2dbc --dump`. The known differences (E2E offsets, ranges, receivers of signal-less frames) are in its docstring |
 
 They run **at development time**, by hand, when a decoder changes — not in CI, which is V-only.
 `can_sut.py` is stdlib-only; the rest need [`requirements.txt`](requirements.txt).

@@ -190,4 +190,9 @@ fn test_senders_without_the_record() {
 	assert plain.senders() == ['ECM']
 	orphan := db.lookup(301) or { return }
 	assert orphan.senders() == [], 'Vector__XXX is not a transmitter'
+	// receivers: the SG_ list, with the placeholder normalised away, and written back sorted
+	assert plain.signals[0].receivers == []
+	assert orphan.signals[0].receivers == ['ECM']
+	assert db.to_dbc().contains(' SG_ B : 0|8@1+ (1,0) [0|255] "" ECM')
+	assert db.to_dbc().contains(' SG_ A : 0|8@1+ (1,0) [0|255] "" Vector__XXX')
 }

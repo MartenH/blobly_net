@@ -192,7 +192,7 @@ pub fn validate_protection(db candb.Database, cfg project.NodeCfg) []string {
 			// goes out with none. Both membership checks pass, which is why this needs saying.
 			warns << 'protect: counter and crc are both "${p.counter}" on ${p.message} — the checksum overwrites the counter'
 		}
-		if p.crc != '' && p.profile !in ['crc8_j1850', 'crc8_autosar', 'sum8', 'xor8'] {
+		if p.crc != '' && p.profile !in candb.e2e_profiles {
 			warns << 'protect: unknown profile "${p.profile}" on ${p.message} — falling back to sum8'
 		}
 	}
