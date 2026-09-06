@@ -21,8 +21,10 @@ echo "==> 2/5 V compiler (built from source, at the commit .v-version pins)"
 # comes down and nothing else (codex on #282).
 V_PIN=$(tr -d '[:space:]' < .v-version)
 if [ ! -x "$HOME/v/v" ]; then
+	# re-runnable: a fetch that failed once leaves the init behind, and `remote add` on it fails
 	git init -q "$HOME/v"
-	git -C "$HOME/v" remote add origin https://github.com/vlang/v
+	git -C "$HOME/v" remote add origin https://github.com/vlang/v 2>/dev/null \
+		|| git -C "$HOME/v" remote set-url origin https://github.com/vlang/v
 	git -C "$HOME/v" fetch -q --depth=1 origin "$V_PIN"
 	git -C "$HOME/v" checkout -q FETCH_HEAD
 	make -C "$HOME/v"
