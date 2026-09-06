@@ -252,6 +252,17 @@ fn main() {
 	for st in staged {
 		prev := st[1] + '.arxml2dbc.${os.getpid()}.prev'
 		if os.exists(st[1]) {
+			// asked again at the moment of replacement (round 54): the checks above ran before
+			// staging, and a destination that became a directory, a FIFO or a link meanwhile
+			// would be renamed aside and replaced. This narrows the window to the rename itself;
+			// rename-based publication in a directory another account can write to has no
+			// atomic "only if still a regular file", and the lock orders cooperating exports only
+			if os.inode(st[1]).typ != .regular {
+				eprintln('arxml2dbc: ${st[1]}: is no longer a regular file; not replaced')
+				roll_back(set_aside)
+				unstage(staged)
+				unlock_and_exit(locks, 1)
+			}
 			os.mv(st[1], prev) or {
 				eprintln('arxml2dbc: ${st[1]}: cannot set the previous file aside: ${err}')
 				roll_back(set_aside)
