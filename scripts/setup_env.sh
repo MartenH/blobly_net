@@ -14,10 +14,21 @@ sudo apt-get install -y \
 	can-utils \
 	mesa-utils xdotool imagemagick x11-utils   # diagnostics + screenshot verification
 
-echo "==> 2/5 V compiler (built from source)"
+echo "==> 2/5 V compiler (built from source, at the commit .v-version pins)"
+# The SAME commit CI builds with (.v-version), not master: V master is V3-only since 2026-09-05
+# and this repo does not build under V3, so a fresh machine that cloned master got a compiler
+# that fails on the first `-old-compiler`. GitHub serves a fetch by full SHA, so one commit
+# comes down and nothing else (codex on #282).
+V_PIN=$(tr -d '[:space:]' < .v-version)
 if [ ! -x "$HOME/v/v" ]; then
-	git clone --depth=1 https://github.com/vlang/v "$HOME/v"
+	git init -q "$HOME/v"
+	git -C "$HOME/v" remote add origin https://github.com/vlang/v
+	git -C "$HOME/v" fetch -q --depth=1 origin "$V_PIN"
+	git -C "$HOME/v" checkout -q FETCH_HEAD
 	make -C "$HOME/v"
+elif [ "$(git -C "$HOME/v" rev-parse HEAD 2>/dev/null || true)" != "$V_PIN" ]; then
+	echo "  note: $HOME/v is not at the pinned commit ${V_PIN:0:12} (.v-version); CI builds with that one."
+	echo "        to match it: git -C $HOME/v fetch origin $V_PIN && git -C $HOME/v checkout $V_PIN && make -C $HOME/v"
 fi
 mkdir -p "$HOME/.local/bin"
 ln -sf "$HOME/v/v" "$HOME/.local/bin/v"

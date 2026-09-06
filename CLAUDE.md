@@ -141,7 +141,8 @@ release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks 
 and `V_C_ERROR_BUG_REPORT_DISABLED=1` at workflow level (#232; why, and why an env var rather
 than a flag in the scripts, is in `docs/known_issues.md`), and install the V named in
 **`.v-version`** — pinned, not master, since V master went V3-only on 2026-09-05 and a V3-only
-`v` refuses `-old-compiler`; bump the file to move, together with that flag.
+`v` refuses `-old-compiler`; `release.yml`'s Linux job and `scripts/setup_env.sh` read the same
+file. Bump it to move, together with that flag.
 
 ## Conventions
 

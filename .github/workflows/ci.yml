@@ -13,9 +13,9 @@ name: ci
 # was retired when the migration landed, so there's no gui/vglyph to fetch here, and
 # vlang/markdown is vendored in libs/markdown.
 #
-# V acquisition: vlang/setup-v with check-latest (master V — the in-process bus and the
-# vendored Lua need a current toolchain; the 0.5.1 *release* predates vlib/yaml which
-# modules/project uses).
+# V acquisition: vlang/setup-v at the master commit `.v-version` names (a master V — the
+# in-process bus and the vendored Lua need a current toolchain; the 0.5.1 *release* predates
+# vlib/yaml which modules/project uses — but PINNED; see the note at the install step).
 #
 # VFLAGS=-old-compiler, for every `v` in both jobs. V 0.5.2 tries its experimental V3 compiler
 # FIRST on every build and falls back to the established one when V3 cannot build the program
@@ -48,7 +48,7 @@ concurrency:
 # edf824295b, "make macOS and Linux self-builds V3-only"), and a V3-only `v` REFUSES
 # `-old-compiler` — so every Linux job on every branch failed at `make` before a single test ran.
 # This repo does not build under V3 yet, so `.v-version` names the last master commit a green
-# run here built (5d34e477, 2026-09-05 06:06 UTC). One file, read by both jobs, so the pin is
+# run here built (5d34e477, 2026-09-05 06:06 UTC). One file, read by both jobs here, by release.yml's Linux job and by scripts/setup_env.sh, so the pin is
 # stated once. Moving to V3 is a decision, not a drift: bump `.v-version` on purpose, and drop
 # VFLAGS=-old-compiler in the same change.
 env:

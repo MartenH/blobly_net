@@ -156,8 +156,10 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   died at toolchain setup: `` `-old-compiler` is not available: this V executable contains
   only the V3 compiler ``. This repo does not build under V3 yet, so `ci.yml` no longer takes
   master: `vlang/setup-v` reads `.v-version`, which names the last master commit a green run
-  built (`5d34e477`, 2026-09-05 06:06 UTC). Bump that file to move; drop `VFLAGS=-old-compiler`
-  in the same change, and expect the V3 fallback behaviour described above to be what you meet.
+  built (`5d34e477`, 2026-09-05 06:06 UTC) — and so do `release.yml`'s Linux job and
+  `scripts/setup_env.sh`, or a tagged release and a fresh bench would each build the master this
+  pin exists to avoid. Bump that file to move; drop `VFLAGS=-old-compiler` in the same change,
+  and expect the V3 fallback behaviour described above to be what you meet.
 - 🟡 **V will NOT self-compile on the Windows runner — CI must DOWNLOAD a prebuilt V.**
   `makev.bat` hangs at `Compiling v_stage.exe`, independent of bootstrap compiler, final compiler,
   disk and Defender (every combination timed out at up to 90 min; the same build is ~100 s
