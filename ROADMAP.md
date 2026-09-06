@@ -12,6 +12,19 @@ Status keys: ✅ shipped · 🔨 in progress · ⏭️ next · 🧭 planned · �
 
 - ⏭️ **A `-prod` build**, once CI exercises one. Releases themselves are routine since
   `v0.1.0` (2026-08-21) — see the shipped list and [docs/releasing.md](docs/releasing.md).
+  **There is now a known blocker, measured:** `-prod` plus a Boehm GC mode makes every call out
+  of a frame holding a pointerful array BY VALUE cost O(len) — a 1.23 M-frame replay went from
+  real time to about thirteen days (~17,000×), and nothing profiles as hot. First entry in
+  [docs/known_issues.md](docs/known_issues.md); upstream
+  [vlang/v#28418](https://github.com/vlang/v/issues/28418). `cmd/restbus` is **done** — its
+  transmit loop is `pump()`, which holds nothing big by value and replays 1,069,214 frames in
+  66 s under `-prod` where the inline version managed 562 in ten minutes. What is left, measured
+  as `collect_keepalive` sites in the `-prod` C: `main__draw_dbc_editor` 1959,
+  `main__replay_group` 1014, `main__draw_buses` 636, `main__draw_replay_config` 549. Only
+  `replay_group` is a per-frame loop, and it is deliberately untouched — `cmd/blobly_net` has no
+  tests (#161) and that function's comments record four codex rounds of mid-run stop/seek
+  defects, so it is not a thing to restructure for a benefit no test can observe. Do it in the
+  same change that turns `-prod` on, with a large-recording replay actually timed.
 - ⏭️ **`fill_rect` / drawlist binding in `vgui`** — the blocker for two shipped-adjacent features:
   **trace-manifest rows** and a **drawn topology graph** in the System panel both wait on it.
 - ⏭️ **System wizards** ([`docs/dbc_editor.md`](docs/dbc_editor.md)) — "add a signal/frame"

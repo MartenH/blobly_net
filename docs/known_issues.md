@@ -30,8 +30,10 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   repo builds `-prod` — `release.yml` ships "the same non-optimized build every test and CI run
   exercises" — and the unmodified `cmd/restbus` replays all 1,069,214 frames of that recording
   in 67 s. So this is filed against the "Revisit when CI itself builds `-prod`" note in
-  `release.yml`: **turning `-prod` on without fixing this first would take replay from real time
-  to ~100× slower**, silently, on exactly the large real recordings nobody replays in CI. The
+  `release.yml`: **turning `-prod` on without fixing this first would have taken that replay
+  from real time to roughly thirteen days** — 0.94 frames/s against 16,200, about 17,000×, the
+  ~9 ms landing on each of the ~100 calls a frame makes out of the pinned frame — silently, on
+  exactly the large real recordings nobody replays in CI. The
   fix when that day comes is per-frame, not global: pass big recordings/plans by reference
   (`&mf4.Recording`) and keep the transmit loop in a frame that holds nothing big by value —
   verified to restore full speed. `-gc none` also removes it, but leaks.
@@ -46,6 +48,28 @@ Status key: 🔴 open · 🟡 worked around · 🟢 fixed, kept for the reason �
   cost is attributed to whichever tiny function the loop happens to call, `GC_get_gc_no()` never
   advances and `GC_disable()` changes nothing — so it does not look like the GC even though it
   is emitted by the GC path.
+
+  **How to find them without guessing.** The pins are visible in the generated C, so the metric
+  is objective: `v -enable-globals -prod -path "@vlib|@vmodules|modules" -o out.c cmd/<tool>`,
+  then count `collect_keepalive` per function. `cmd/restbus` before this was written down:
+  `main__run_multi` 591, `main__main` 531, `player__build_multi` **0** — and build_multi holds
+  a million-entry array by value too, so the count, not the shape, is what to trust.
+  `cmd/restbus`'s transmit loop now lives in `pump()`, which measures **3**, and under `-prod`
+  it replays 1,069,214 frames in 66 s where the inline version managed 562 in ten minutes.
+  The rest of the app is measured but NOT changed, because none of it is a per-frame loop and
+  none of it is exercised by a test: `main__draw_dbc_editor` 1959, `main__replay_group` 1014,
+  `main__draw_buses` 636, `main__draw_replay_config` 549. `replay_group` is the one that would
+  matter on the day `-prod` is switched on — it is the GUI's per-frame transmit loop, holding
+  the recording, the plan and the `player.Player` by value in the frame that sends.
+- 🟡 **The GUI does not build with `-prod` without one edit.** `unused variable` is a warning in
+  a normal build and an **error** under `-prod`, so `cmd/blobly_net/panel_gen.v`'s dead `pw` was
+  enough to stop the whole `-prod` build — nothing catches it because nothing builds `-prod`.
+  Removed here. Expect the same class again the next time `-prod` is tried: fix them before
+  concluding anything about `-prod`, since the build fails before any measurement is possible.
+  (Unrelated: on a bare Windows bench `v ... -o gui.exe cmd/blobly_net` fails at LINK time
+  — `ld returned 1` — for want of the native GL/FreeType libraries; that reproduces on an
+  untouched `main` and is an environment matter, not a code one. `-check` and `-o out.c` both
+  work, which is enough to verify a change compiles.)
 - 🟡 **`v test` needs `-cc gcc` on Windows, or it looks like it cannot run at all.**
   `v -enable-globals test modules/` on native Windows (MSYS2/mingw) fails before running a
   single test with

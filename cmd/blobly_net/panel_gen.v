@@ -519,7 +519,6 @@ fn (mut app App) signal_source(i int, j int) {
 		return
 	}
 	// only the parameters the chosen source actually reads — the same fields gen_from_cfg maps
-	pw := unsafe { &app.senders[i].sender.signals[j].wave }
 	mut fields := [][]string{}
 	match w.typ {
 		'const' { fields = [['value', 'value']] }
