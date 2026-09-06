@@ -151,10 +151,11 @@ fn main() {
 			eprintln('arxml2dbc: ${out} is a directory; name the file to write')
 			exit(2)
 		}
-		if dsts[k] != '' && os.exists(dsts[k]) && !os.is_file(dsts[k]) {
+		if dsts[k] != '' && os.exists(dsts[k]) && os.inode(dsts[k]).typ != .regular {
 			// and the same for anything else that is not a regular file — a FIFO, a socket, a
 			// device: `--dbc /dev/null` run as root would have renamed the device aside, put a
-			// file in its place and deleted the device at cleanup (round 53). `-` is stdout
+			// file in its place and deleted the device at cleanup (round 53). `-` is stdout.
+			// Asked of the inode: `os.is_file` is "exists and not a directory", true of a FIFO
 			eprintln('arxml2dbc: ${out} exists and is not a regular file; name a file to write, or - for stdout')
 			exit(2)
 		}
