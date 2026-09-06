@@ -139,7 +139,9 @@ additionally downloads a prebuilt V toolchain from this repo's **`v-toolchain` r
 release or its `v-ddc9c99-windows.zip` asset disappears, the Windows job breaks — and runs
 `v test modules/isotp/` plus the cmd sweep there. Both Linux jobs set `VFLAGS=-old-compiler`
 and `V_C_ERROR_BUG_REPORT_DISABLED=1` at workflow level (#232; why, and why an env var rather
-than a flag in the scripts, is in `docs/known_issues.md`).
+than a flag in the scripts, is in `docs/known_issues.md`), and install the V named in
+**`.v-version`** — pinned, not master, since V master went V3-only on 2026-09-05 and a V3-only
+`v` refuses `-old-compiler`; bump the file to move, together with that flag.
 
 ## Conventions
 
